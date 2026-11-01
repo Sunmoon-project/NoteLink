@@ -153,7 +153,13 @@ next_check() {
   PREV_STATUS=online; PREV_ERR=2; QUEUED=2; WAIT_MIN=45
   decide
   [ "$EVENT" = stuck ] && [ "$NEW_STUCK" = 1 ] && [ "$NEW_ERR" = 0 ]
-  PREV_STUCK=1
+  # 다음 확인: 같은 정체가 이어져도 ✅ · 🟡를 다시 보내지 않음
+  next_check; decide
+  [ -z "$EVENT" ] && [ "$NEW_STUCK" = 1 ]
+}
+
+@test "decide: 🟡를 이미 보냈으면 다시 읽힐 때 ✅만 보낸다" {
+  PREV_STATUS=online; PREV_ERR=2; PREV_STUCK=1; QUEUED=2; WAIT_MIN=45
   decide
   [ "$EVENT" = recovered ] && [ "$NEW_STUCK" = 1 ]
 }
@@ -238,7 +244,7 @@ next_check() {
   DONE_OK=""; PREV_STATUS=offline; PREV_SINCE=100
   compose summary
   [[ "$TEXT" != *"부터"* ]]
-  [[ "$TEXT" == *"지난 24시간 Codex 리뷰: 확인하지 못함"* ]]
+  [[ "$TEXT" == *"지난 24시간에 끝난 Codex 리뷰: 확인하지 못함"* ]]
 }
 
 @test "queue_line: 대기 수를 모르면 그렇다고 적는다" {
@@ -268,7 +274,11 @@ gh() {
   case "$path" in
     *actions/runners*) jq -r "$filter" "$TMP/runners.json" ;;
     *created=*) jq -r "$filter" "$TMP/counts.json" ;;
-    *) jq --arg s "$st" '.workflow_runs |= map(select(.status == $s))' "$TMP/runs.json" | jq -r "$filter" ;;
+    *) # --paginate: GH_PAGES쪽이면 쪽마다 필터 결과가 한 줄씩 나옴(같은 내용을 여러 쪽으로 흉내)
+      local i
+      for (( i = 0; i < ${GH_PAGES:-1}; i++ )); do
+        jq --arg s "$st" '.workflow_runs |= map(select(.status == $s))' "$TMP/runs.json" | jq -r "$filter"
+      done ;;
   esac
 }
 
@@ -334,8 +344,14 @@ EOF
   need_jq; fixtures
   read_queue
   [ "$QUEUED" = 2 ] && [ "$WAIT_MIN" = 59 ]
-  grep -q 'runs?status=queued&per_page=100' "$TMP/gh.calls"
-  grep -q 'runs?status=pending&per_page=100' "$TMP/gh.calls"
+  grep -q 'runs?status=queued&per_page=100 --jq .* --paginate' "$TMP/gh.calls"
+  grep -q 'runs?status=pending&per_page=100 --jq .* --paginate' "$TMP/gh.calls"
+}
+
+@test "read_queue: 대기가 여러 쪽(100건 넘게)이면 쪽마다 더하고 가장 오래된 것을 고른다" {
+  need_jq; fixtures; GH_PAGES=3
+  read_queue
+  [ "$QUEUED" = 6 ] && [ "$WAIT_MIN" = 59 ]
 }
 
 @test "read_queue: 조회에 실패하면 대기 수를 모름(빈 값)" {
@@ -348,8 +364,8 @@ EOF
   need_jq; fixtures
   read_counts
   [ "$DONE_OK" = 2 ] && [ "$DONE_FAIL" = 2 ] && [ "$DONE_CANCEL" = 1 ]
-  # 만든 시각은 48시간 전까지 넓혀 받고, 쪽을 넘겨 모두 받음
-  grep -q 'runs?per_page=100&created=%3E%3D2025-10-29T08:40:00Z --jq .* --paginate' "$TMP/gh.calls"
+  # 만든 시각은 7일 전까지 넓혀 받고(재실행은 만든 시각이 그대로), 쪽을 넘겨 모두 받음
+  grep -q 'runs?per_page=100&created=%3E%3D2025-10-24T08:40:00Z --jq .* --paginate' "$TMP/gh.calls"
 }
 
 @test "read_counts: 끝난 리뷰가 없으면 모두 0" {
