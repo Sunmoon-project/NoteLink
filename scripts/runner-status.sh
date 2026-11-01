@@ -6,7 +6,7 @@
 #
 # - check 알림: 🔴 오프라인이 됨 · 🟢 다시 온라인(멈춰 있던 시간) · 🟡 온라인인데 Codex 리뷰가
 #   STUCK_MINUTES분 넘게 대기(작업을 못 받는 상태) · ⚠️ 러너 상태를 ERR_ALERT_AFTER번 연속 읽지 못함 · ✅ 다시 읽힘
-# - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간 Codex 리뷰 성공 · 실패 · 취소
+# - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간에 끝난 Codex 리뷰 성공 · 실패 · 취소
 # - 지난 상태는 STATE_FILE에 둡니다(워크플로가 Actions 캐시로 이어 줌). 처음이면 온라인은 알리지 않습니다.
 #   상태를 읽지 못한 동안에는 마지막으로 안 상태와 그 시각을 그대로 둡니다(멈춘 시간이 끊기지 않게).
 # - 디스코드로 보내지 못하면 상태를 저장하지 않고 실패합니다(다음 실행에서 다시 보냄).
@@ -115,17 +115,19 @@ read_runner() {
 }
 
 # → QUEUED(대기 · 동시 실행 대기 개수, 읽지 못하면 빈 값) · WAIT_MIN(가장 오래 기다린 분, 없으면 0)
-# 최근 실행 목록에서 고르면 건너뜀 · 취소가 쌓였을 때 오래된 대기가 밀려나므로 API에서 상태로 거름
+# 최근 실행 목록에서 고르면 건너뜀 · 취소가 쌓였을 때 오래된 대기가 밀려나므로 API에서 상태로 거름.
+# 100건이 넘어도 빠지지 않게 쪽마다(--paginate) 받음(쪽마다 "개수 \t 가장 오래된 시각" 한 줄)
 read_queue() {
   QUEUED=""; WAIT_MIN=0
   local s out n t total=0 oldest=""
   for s in queued pending; do
     out=$(gh api "repos/$REPO/actions/workflows/$REVIEW_WORKFLOW/runs?status=$s&per_page=100" \
-      --jq "$QUEUE_JQ" 2> /dev/null) || return 0
-    IFS=$'\t' read -r n t <<< "$out"
-    [[ "$n" =~ ^[0-9]+$ ]] || return 0
-    total=$(( total + n ))
-    if [ -n "$t" ] && { [ -z "$oldest" ] || [[ "$t" < "$oldest" ]]; }; then oldest=$t; fi
+      --jq "$QUEUE_JQ" --paginate 2> /dev/null) || return 0
+    while IFS=$'\t' read -r n t; do
+      [[ "$n" =~ ^[0-9]+$ ]] || return 0
+      total=$(( total + n ))
+      if [ -n "$t" ] && { [ -z "$oldest" ] || [[ "$t" < "$oldest" ]]; }; then oldest=$t; fi
+    done <<< "$out"
   done
   QUEUED=$total
   if [ -n "$oldest" ]; then
@@ -135,13 +137,14 @@ read_queue() {
 
 # 지난 24시간에 끝난 Codex 리뷰 → DONE_OK · DONE_FAIL(시간 초과 포함) · DONE_CANCEL (읽지 못하면 빈 값)
 # API의 created는 만든 시각이라, 오래 기다리다 오늘 끝난 리뷰도 세도록 끝난 시각(updated_at)으로 거름.
-# 대기는 최대 24시간이므로 48시간 안에 만든 실행을 쪽마다(--paginate) 받아 봄.
-# 알려진 한계: 이틀 넘게 지난 실행을 재실행해 끝낸 것은 세지 않음
+# 대기는 최대 24시간이지만 지난 실행을 재실행하면 만든 시각은 그대로이므로, 7일 안에 만든 실행을
+# 쪽마다(--paginate) 받아 봄(하루 20건 안팎이라 2쪽 정도).
+# 알려진 한계: 7일 넘게 지난 실행을 재실행해 끝낸 것은 세지 않음
 read_counts() {
   DONE_OK=""; DONE_FAIL=""; DONE_CANCEL=""
   local from since out
   from=$(date -u -d "@$(( NOW - 86400 ))" '+%Y-%m-%dT%H:%M:%SZ')
-  since=$(date -u -d "@$(( NOW - 2 * 86400 ))" '+%Y-%m-%dT%H:%M:%SZ')
+  since=$(date -u -d "@$(( NOW - 7 * 86400 ))" '+%Y-%m-%dT%H:%M:%SZ')
   out=$(gh api "repos/$REPO/actions/workflows/$REVIEW_WORKFLOW/runs?per_page=100&created=%3E%3D$since" \
     --jq "$(done_jq "$from")" --paginate 2> /dev/null) || return 0
   DONE_OK=$(grep -cx 'success' <<< "$out" || true)
@@ -248,9 +251,9 @@ $(queue_line)" ;;
         since=" — $(kst "$PREV_SINCE")부터"
       fi
       if [ -n "$DONE_OK" ]; then
-        done_line="지난 24시간 Codex 리뷰: 성공 ${DONE_OK} · 실패 ${DONE_FAIL} · 취소 ${DONE_CANCEL}"
+        done_line="지난 24시간에 끝난 Codex 리뷰: 성공 ${DONE_OK} · 실패 ${DONE_FAIL} · 취소 ${DONE_CANCEL}"
       else
-        done_line="지난 24시간 Codex 리뷰: 확인하지 못함"
+        done_line="지난 24시간에 끝난 Codex 리뷰: 확인하지 못함"
       fi
       TEXT="러너 \`$CODEX_RUNNER\`: $(status_word "$CUR_STATUS")$since"
       [ -n "$ERROR_MSG" ] && TEXT+="
