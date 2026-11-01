@@ -173,3 +173,37 @@ it('정지→재개→정지의 빠른 입력은 마지막 의도로 합치고 �
   expect(resume).not.toHaveBeenCalled();
   expect(useSession.getState().since).toBeNull();
 });
+
+it('재개로 취소된 자동 종료를 기다리던 항목 전환도 이전 세션을 실제 정산한다', async () => {
+  await start();
+  const previousId = useSession.getState().sessionId;
+  const next = await settle(
+    api.study.addItem({ title: '전환 후 항목', subjectName: '영어', goalMin: null }),
+  );
+  jest.advanceTimersByTime(10000);
+  await settle(useSession.getState().pause());
+  jest.advanceTimersByTime(600001);
+  const finish = jest.spyOn(api.study, 'endSession');
+  const resumed = useSession.getState().resume();
+  const automatic = useSession.getState().end('auto_pause_timeout');
+  const switched = useSession.getState().start(next._id);
+  await settle(Promise.all([resumed, automatic, switched]));
+  expect(finish).toHaveBeenCalledTimes(1);
+  expect(finish).toHaveBeenCalledWith(previousId, expect.objectContaining({ endReason: 'switch' }));
+  expect(useSession.getState().itemId).toBe(next._id);
+  expect(useSession.getState().sessionId).not.toBe(previousId);
+});
+it('재개로 자동 종료가 취소돼도 같이 요청한 수동 종료는 처리한다', async () => {
+  await start();
+  jest.advanceTimersByTime(10000);
+  await settle(useSession.getState().pause());
+  jest.advanceTimersByTime(600001);
+  const finish = jest.spyOn(api.study, 'endSession');
+  const resumed = useSession.getState().resume();
+  const automatic = useSession.getState().end('auto_pause_timeout');
+  const manual = useSession.getState().end('manual');
+  const result = await settle(Promise.all([resumed, automatic, manual]));
+  expect(finish).toHaveBeenCalledTimes(1);
+  expect(result[2]).toMatchObject({ sec: 10 });
+  expect(useSession.getState().sessionId).toBeNull();
+});

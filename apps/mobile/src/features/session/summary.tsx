@@ -173,8 +173,13 @@ export function LandscapeScreen() {
   return (
     <Pressable onPress={exit} className="flex-1 items-center justify-center bg-black px-10">
       <View className="absolute top-8 left-10 flex-row items-center gap-1.5">
-        <View className="h-1.5 w-1.5 rounded-full bg-sun" />
-        <Text className="text-footnote text-white">자동 측정 중</Text>
+        <View
+          className="h-1.5 w-1.5 rounded-full"
+          style={{ backgroundColor: s.since ? C.sun : C.sub }}
+        />
+        <Text className="text-footnote text-white">
+          {s.since ? '자동 측정 중' : s.sessionId ? '일시정지' : '측정 시작 대기'}
+        </Text>
       </View>
       <Text className="text-body font-semibold text-white">
         {active ? `${active.title} · ${active.subjectName}` : '순공시간'}

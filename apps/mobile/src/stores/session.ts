@@ -40,8 +40,12 @@ const idle = {
 let gen = 0;
 // 로그아웃 · 계정 전환 때만 올린다. 이전 계정의 응답은 서버에 다시 보내지 않고 버린다
 let epoch = 0;
-let ending: { generation: number; promise: Promise<{ sec: number; pointsEarned: number }> } | null =
-  null;
+let ending: {
+  generation: number;
+  reason: string;
+  sessionId: string | null;
+  promise: Promise<{ sec: number; pointsEarned: number }>;
+} | null = null;
 
 type PauseChange = { generation: number; desiredPaused: boolean; promise: Promise<void> };
 let changingPause: PauseChange | null = null;
@@ -103,8 +107,22 @@ export const useSession = create<Session>((set, get) => ({
   pause: () => changePause(true),
   resume: () => changePause(false),
   end: async (reason) => {
-    if (ending?.generation === gen) return ending.promise;
+    if (ending?.generation === gen) {
+      const pending = ending;
+      return pending.promise.then((result) => {
+        // 재개 때문에 자동 종료가 취소돼도 명시적인 종료 의도까지 취소하지 않는다.
+        if (
+          reason !== 'auto_pause_timeout' &&
+          pending.reason === 'auto_pause_timeout' &&
+          pending.generation === gen &&
+          get().sessionId === pending.sessionId
+        )
+          return get().end(reason);
+        return result;
+      });
+    }
     const generation = gen;
+    const sessionId = get().sessionId;
     const pausedAt = get().pausedAt;
     const transition = changingPause?.generation === gen ? changingPause.promise : null;
     const promise = (async () => {
@@ -133,7 +151,7 @@ export const useSession = create<Session>((set, get) => ({
       }
       return { sec: result.durationSec, pointsEarned: result.pointsEarned };
     })();
-    const request = { generation, promise };
+    const request = { generation, reason, sessionId, promise };
     ending = request;
     try {
       return await promise;

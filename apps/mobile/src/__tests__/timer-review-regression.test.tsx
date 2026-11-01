@@ -7,6 +7,7 @@ import { api } from '../lib/api';
 import { HomeScreen } from '../features/session/home';
 import { WeekGoalSheet } from '../features/session/sheets';
 import { LandscapeScreen, SummaryScreen } from '../features/session/summary';
+import { useToast } from '../stores/toast';
 import { useSession } from '../stores/session';
 import { renderScreen } from '../test-utils';
 
@@ -241,4 +242,20 @@ it('가로 타이머도 자정 이후 오늘 시간만 표시한다', async () =
   useSession.setState({ itemId: 'item', sessionId: 'session', since: mockNow - 3602000 });
   await renderScreen(<LandscapeScreen />, client());
   expect(await screen.findByText('00:00:02')).toBeTruthy();
+});
+
+it('가로 화면도 재개 실패 시 측정 중으로 표시하지 않고 휴식을 유지한다', async () => {
+  useSession.setState({
+    itemId: 'paused-landscape',
+    sessionId: 'paused-session',
+    since: null,
+    pausedAt: mockNow,
+  });
+  const resume = jest.spyOn(api.study, 'resumeSession').mockRejectedValue(new Error('offline'));
+  await renderScreen(<LandscapeScreen />, client());
+  await waitFor(() => expect(resume).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(useToast.getState().msg).toMatch(/재개.*못/));
+  expect(screen.getByText('일시정지')).toBeTruthy();
+  expect(screen.queryByText('자동 측정 중')).toBeNull();
+  expect(useSession.getState().since).toBeNull();
 });
