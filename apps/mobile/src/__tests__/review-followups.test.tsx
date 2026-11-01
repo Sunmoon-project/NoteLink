@@ -124,8 +124,8 @@ it('설정 저장 실패 뒤 서버 값으로 화면을 복구한다', async () 
 it('제공되지 않은 화면으로 이동하지 않는다', async () => {
   jest.mocked(useSitemap).mockReturnValue(null);
   await renderScreen(<SettingsScreen />);
-  await fireEvent.press(await screen.findByText('📅 캘린더 바로가기'));
-  await fireEvent.press(screen.getByText('🎁 상점 바로가기'));
+  await fireEvent.press(await screen.findByText('캘린더 바로가기'));
+  await fireEvent.press(screen.getByText('상점 바로가기'));
   await fireEvent.press(screen.getByLabelText('프로필 사진 변경'));
   expect(router.push).not.toHaveBeenCalled();
 });

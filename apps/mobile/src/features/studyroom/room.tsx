@@ -30,10 +30,9 @@ import {
 import type { Message, RoomMember } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { socket } from '@/lib/socket';
-import { hms } from '@/lib/dates';
+import { hms, seoul, ymd } from '@/lib/dates';
 import { useNow, useSocket } from '@/hooks';
 import { useMockFlags } from '@/lib/mock/flags';
-import { useSession } from '@/stores/session';
 import { toast } from '@/stores/toast';
 import {
   Alert,
@@ -292,13 +291,11 @@ export function RoomScreen() {
     enabled: !!chatId.data,
   });
   const live = useLiveRoom(id);
-  const myItem = useSession();
   const now = useNow();
-  const [started] = useState(() => Date.now());
+  const [membersAt, setMembersAt] = useState(() => Date.now());
   const [members, setMembers] = useState<RoomMember[]>([]);
   const [msgs, setMsgs] = useState<Message[]>([]);
   const [timer, setTimer] = useState<{ label: string; endsAt: number } | null>(null);
-  const [hear, setHear] = useState(true);
   const [menu, setMenu] = useState(false);
   const [pick, setPick] = useState(false);
   const [chat, setChat] = useState(false);
@@ -313,6 +310,7 @@ export function RoomScreen() {
   if (room.data && room.data !== loadedRoom) {
     setLoadedRoom(room.data);
     setMembers(room.data.members);
+    setMembersAt(now);
     const rule = room.data.timerRule;
     if (rule?.enabled && rule !== loadedRoom?.timerRule)
       setTimer({ label: '집중', endsAt: now + rule.focusMin * 60000 });
@@ -339,7 +337,15 @@ export function RoomScreen() {
     );
     return () => socket.emit('room:leave', { roomId: id });
   }, [id]);
-  useSocket('room:presence', (p) => p.roomId === id && setMembers(p.members), [id]);
+  useSocket(
+    'room:presence',
+    (p) => {
+      if (p.roomId !== id) return;
+      setMembers(p.members);
+      setMembersAt(Date.now());
+    },
+    [id],
+  );
   useSocket(
     'room:timer',
     (p) =>
@@ -429,13 +435,15 @@ export function RoomScreen() {
   const last = msgs[msgs.length - 1];
   const tiles = chat ? members.slice(0, 2) : members;
   const remain = timer ? Math.max(0, Math.floor((timer.endsAt - now) / 1000)) : 0;
+  const day = ymd(seoul(now));
+  const midnight = Date.parse(`${day}T00:00:00+09:00`);
   const mySec =
-    (members.find((m) => m.userId === myId)?.todaySec ?? 0) +
-    Math.floor((now - started) / 1000) +
-    (myItem.since ? 0 : 0);
+    (ymd(seoul(membersAt)) === day ? (members.find((m) => m.userId === myId)?.todaySec ?? 0) : 0) +
+    Math.max(0, Math.floor((now - Math.max(membersAt, midnight)) / 1000));
 
   return (
     <Screen scroll={false} pad={false}>
+      {live.error && <Text>{live.error}</Text>}
       {conn === 'lost' && (
         <View className="bg-sun/25 px-5 py-2">
           <Text className="text-caption font-semibold text-ink">
@@ -487,6 +495,7 @@ export function RoomScreen() {
                 camOn ? 'bg-night' : 'bg-mint',
               )}
             >
+              {live.video(m.userId)}
               {camOn && (
                 <View className="absolute top-2.5 right-2.5 h-1.5 w-1.5 rounded-full bg-sun" />
               )}
@@ -504,8 +513,13 @@ export function RoomScreen() {
                   : hms(
                       me
                         ? mySec
-                        : (m.todaySec ?? 0) +
-                            (conn === 'lost' ? 0 : Math.floor((now - started) / 1000)),
+                        : (ymd(seoul(membersAt)) === day ? (m.todaySec ?? 0) : 0) +
+                            (conn === 'lost'
+                              ? 0
+                              : Math.max(
+                                  0,
+                                  Math.floor((now - Math.max(membersAt, midnight)) / 1000),
+                                )),
                     )}
               </Text>
               {!chat && !(me ? live.micOn : m.micOn) && (
@@ -574,16 +588,16 @@ export function RoomScreen() {
               label={`내 카메라 ${live.camOn ? '켜짐' : '꺼짐'}`}
             />
             <Ctl
-              on={hear}
-              onPress={() => setHear((h) => !h)}
+              on={live.hearing}
+              onPress={live.toggleHearing}
               icon={
-                hear ? (
+                live.hearing ? (
                   <Volume2 size={ICON.sm} color={C.ink} />
                 ) : (
                   <VolumeX size={ICON.sm} color={C.sub} />
                 )
               }
-              label={`듣기 ${hear ? '켜짐' : '꺼짐'}`}
+              label={`듣기 ${live.hearing ? '켜짐' : '꺼짐'}`}
               sub="내 학습하는 소리만"
               strong
             />
@@ -705,7 +719,7 @@ export function RoomScreen() {
         secondary="홈으로"
         onSecondary={() => router.dismissTo('/')}
         primary="다시 입장"
-        onPrimary={() => setConn('ok')}
+        onPrimary={() => (!lost ? setConn('back') : toast('연결을 복구한 뒤 다시 입장해 주세요'))}
       />
     </Screen>
   );

@@ -1,3 +1,5 @@
+import { useAuth } from '../stores/auth';
+import { useMockFlags } from '../lib/mock/flags';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import * as Calendar from 'expo-calendar';
@@ -28,6 +30,10 @@ jest.mock('expo-haptics', () => ({
 }));
 
 const client = () => new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+beforeEach(() => {
+  useNet.setState({ state: 'ok' });
+  useMockFlags.setState({ roomDisconnect: false, roomKick: false });
+});
 afterEach(() => {
   jest.restoreAllMocks();
   jest.clearAllMocks();
@@ -164,4 +170,50 @@ it('재연결은 방과 기록을 다시 조회하고 소켓 누락 기록을 ID
   });
   expect(screen.getAllByText(existing.text!)).toHaveLength(1);
   expect(screen.getAllByText(missed.text!)).toHaveLength(1);
+});
+
+it('오전 9시 그리드를 누르면 유효한 서울 일정으로 추가한다', async () => {
+  const [brief] = await api.rooms.recommended();
+  setParams({ id: brief!._id });
+  const schedule = await api.rooms.schedule(brief!._id);
+  jest
+    .spyOn(api.rooms, 'schedule')
+    .mockResolvedValue({ ...schedule, startHour: 9, grid: [[2, 0, 0, 0, 0, 0, 0]] });
+  await renderScreen(<ScheduleScreen />, client());
+  await fireEvent.press(await screen.findByLabelText('월 9:00 일정 추가'));
+  await waitFor(() => expect(Calendar.createEventInCalendarAsync).toHaveBeenCalled());
+  const event = jest.mocked(Calendar.createEventInCalendarAsync).mock.calls[0]![0]!;
+  expect(new Date(event.startDate!).toISOString().slice(11, 16)).toBe('00:00');
+});
+it('자동 퇴장 후 다시 입장하면 방 구독과 기록을 다시 동기화한다', async () => {
+  const [brief] = await api.rooms.recommended();
+  setParams({ id: brief!._id });
+  const join = jest.spyOn(socket, 'emit');
+  const messages = jest.spyOn(api.social, 'messages');
+  const chatId = await api.rooms.chatRoomId(brief!._id);
+  const qc = client();
+  await renderScreen(<RoomScreen />, qc);
+  await screen.findByText(brief!.title);
+  await waitFor(() => expect(qc.getQueryState(['messages', chatId])?.status).toBe('success'));
+  const before = messages.mock.calls.length;
+  await act(async () => useMockFlags.setState({ roomKick: true }));
+  await fireEvent.press(await screen.findByText('다시 입장'));
+  await waitFor(() => expect(messages.mock.calls.length).toBeGreaterThan(before));
+  expect(join.mock.calls.filter(([event]) => event === 'room:join').length).toBeGreaterThan(1);
+});
+
+it('서울 자정 뒤 오늘 시간은 전날 입장 경과 시간을 포함하지 않는다', async () => {
+  const before = Date.parse('2026-11-01T14:59:58Z');
+  const now = jest.spyOn(Date, 'now').mockReturnValue(before);
+  const [brief] = await api.rooms.recommended();
+  const room = await api.rooms.get(brief!._id);
+  const me = room.members[0]!;
+  useAuth.setState({ userId: me.userId });
+  jest.spyOn(api.rooms, 'get').mockResolvedValue({ ...room, members: [{ ...me, todaySec: 3600 }] });
+  setParams({ id: room._id });
+  const ui = await renderScreen(<RoomScreen />, client());
+  await screen.findByText(room.title);
+  now.mockReturnValue(before + 5000);
+  await waitFor(() => expect(screen.getByText('00:00:03')).toBeTruthy(), { timeout: 2500 });
+  await ui.unmount();
 });
