@@ -282,9 +282,23 @@ export function PhotoGenScreen() {
 }
 
 const AV_STYLES = [
-  { id: 'nice', name: 'Nice Avatar', sub: '2D 플랫 스타일', face: '👩🏻', bg: '#f6e3d8' },
-  { id: '3d', name: '3D Avatar Creator', sub: '3D 리얼리즘', face: '👩🏽', bg: '#d9dcd6' },
-  { id: 'toon', name: 'Cartoon 3D', sub: '3D 카툰', face: '👩🏼‍🦱', bg: '#f3e6d6' },
+  {
+    id: 'nice',
+    name: 'Nice Avatar',
+    sub: '2D 플랫 스타일',
+    face: '👩🏻',
+    maleFace: '👨🏻',
+    bg: '#f6e3d8',
+  },
+  {
+    id: '3d',
+    name: '3D Avatar Creator',
+    sub: '3D 리얼리즘',
+    face: '👩🏽',
+    maleFace: '👨🏽',
+    bg: '#d9dcd6',
+  },
+  { id: 'toon', name: 'Cartoon 3D', sub: '3D 카툰', face: '👩🏼‍🦱', maleFace: '👨🏼‍🦱', bg: '#f3e6d6' },
 ];
 
 /** p.83 #26 아바타 스타일 선택 */
@@ -345,11 +359,16 @@ const COLORS = ['#d9363e', '#5f6b7a', '#e2b33c', '#3b6e5b', '#2f4f86'] as const;
 export function AvatarCustomScreen() {
   const qc = useQueryClient();
   const { style = '3d' } = useLocalSearchParams<{ style?: string }>();
+  const selectedStyle = AV_STYLES.find((s) => s.id === style) ?? AV_STYLES[1]!;
   const [g, setG] = useState<'남자' | '여자'>('여자');
   const [c, setC] = useState<string>(COLORS[3]);
   const save = useMutation({
     mutationFn: () =>
-      api.me.saveAvatar({ style, gender: g === '남자' ? 'male' : 'female', color: c }),
+      api.me.saveAvatar({
+        style: selectedStyle.id,
+        gender: g === '남자' ? 'male' : 'female',
+        color: c,
+      }),
     onSuccess: () => {
       router.dismissTo('/(tabs)/profile');
       qc.invalidateQueries({ queryKey: ['me'] });
@@ -375,8 +394,11 @@ export function AvatarCustomScreen() {
         className="mt-4 aspect-square items-center justify-center rounded-2xl border border-line"
         style={{ backgroundColor: `${c}22` }}
       >
-        <Text className="text-timer-xl">{g === '여자' ? '👩🏽' : '👨🏽'}</Text>
+        <Text className="text-timer-xl">
+          {g === '여자' ? selectedStyle.face : selectedStyle.maleFace}
+        </Text>
       </View>
+      <Text className="mt-2 text-center text-caption text-sub">{selectedStyle.name}</Text>
       <View className="mt-4 flex-row gap-2 rounded-2xl bg-cream p-2">
         {COLORS.map((x) => (
           <Pressable

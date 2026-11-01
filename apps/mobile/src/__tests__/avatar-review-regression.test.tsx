@@ -184,3 +184,19 @@ it('설정 프로필은 서버 avatarUrl을 실제 Image로 표시하고 새 URL
     expect(screen.getByLabelText('프로필 사진').props.source).toEqual({ uri: generated.avatarUrl }),
   );
 });
+
+it.each([
+  ['nice', 'Nice Avatar', '👩🏻', '👨🏻'],
+  ['3d', '3D Avatar Creator', '👩🏽', '👨🏽'],
+  ['toon', 'Cartoon 3D', '👩🏼‍🦱', '👨🏼‍🦱'],
+])(
+  '선택한 %s 스타일과 성별을 커스터마이징 미리보기에 반영한다',
+  async (style, name, female, male) => {
+    setParams({ style });
+    await renderScreen(<AvatarCustomScreen />, qc());
+    expect(screen.getByText(name!)).toBeTruthy();
+    expect(screen.getByText(female!)).toBeTruthy();
+    await fireEvent.press(screen.getByText('남자'));
+    expect(screen.getByText(male!)).toBeTruthy();
+  },
+);
