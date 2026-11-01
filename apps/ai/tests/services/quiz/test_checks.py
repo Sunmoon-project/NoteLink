@@ -269,3 +269,19 @@ def test_fraction_and_range_are_distinct_options_and_answers() -> None:
         )
         assert "보기 5개가 아니거나 겹침" not in reasons
         assert correct == index
+
+
+def test_option_key_ignores_non_numeric_parentheses_for_duplicates() -> None:
+    reasons = why(draft(options=["stacked", "(stacked)", "folded", "painted", "cleared"]))
+    assert "보기 5개가 아니거나 겹침" in reasons
+
+
+def test_option_key_ignores_parentheses_for_answer_match() -> None:
+    assert code_check(draft(answer="(stacked)"), NEW, PAGE, "빈칸", [])[1] == 0
+
+
+def test_numeric_separator_ignores_surrounding_parentheses() -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key("1/(2)") == option_key("1/2")
+    assert option_key("350,000 mL") == option_key("350000 mL")
