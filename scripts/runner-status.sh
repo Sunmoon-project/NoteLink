@@ -137,13 +137,14 @@ read_queue() {
 
 # 지난 24시간에 끝난 Codex 리뷰 → DONE_OK · DONE_FAIL(시간 초과 포함) · DONE_CANCEL (읽지 못하면 빈 값)
 # API의 created는 만든 시각이라, 오래 기다리다 오늘 끝난 리뷰도 세도록 끝난 시각(updated_at)으로 거름.
-# 재실행하면 만든 시각은 그대로인데, GitHub는 처음 실행 후 30일까지만 재실행을 허용하므로
-# 30일 안에 만든 실행을 쪽마다(--paginate) 받아 보면 빠지는 것이 없음(하루 한 번, 하루 20건 안팎이라 6쪽 정도)
+# 재실행하면 만든 시각은 그대로인데, GitHub는 처음 실행 후 30일까지만 재실행을 허용함. 30일째에 재실행해
+# 대기(최대 24시간) · 처리 후 끝난 것을 다음 날 요약(24시간 구간)에서도 세도록 32일 안에 만든 실행을
+# 쪽마다(--paginate) 받아 봄(하루 한 번, 하루 20건 안팎이라 7쪽 정도)
 read_counts() {
   DONE_OK=""; DONE_FAIL=""; DONE_CANCEL=""
   local from since out
   from=$(date -u -d "@$(( NOW - 86400 ))" '+%Y-%m-%dT%H:%M:%SZ')
-  since=$(date -u -d "@$(( NOW - 30 * 86400 ))" '+%Y-%m-%dT%H:%M:%SZ')
+  since=$(date -u -d "@$(( NOW - 32 * 86400 ))" '+%Y-%m-%dT%H:%M:%SZ')
   out=$(gh api "repos/$REPO/actions/workflows/$REVIEW_WORKFLOW/runs?per_page=100&created=%3E%3D$since" \
     --jq "$(done_jq "$from")" --paginate 2> /dev/null) || return 0
   DONE_OK=$(grep -cx 'success' <<< "$out" || true)
