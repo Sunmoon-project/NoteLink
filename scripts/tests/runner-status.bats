@@ -395,8 +395,18 @@ EOF
   need_jq; fixtures
   read_counts
   [ "$DONE_OK" = 2 ] && [ "$DONE_FAIL" = 2 ] && [ "$DONE_CANCEL" = 1 ]
-  # 만든 시각은 재실행 기한(30일) + 이틀인 32일 전까지 넓혀 받고(재실행은 만든 시각이 그대로), 쪽을 넘겨 모두 받음
-  grep -q 'runs?per_page=100&created=%3E%3D2025-09-29T08:40:00Z --jq .* --paginate' "$TMP/gh.calls"
+  # 만든 시각은 35일 전까지 넓혀 받고(재실행은 만든 시각이 그대로), 쪽을 넘겨 모두 받음
+  grep -q 'runs?per_page=100&created=%3E%3D2025-09-26T08:40:00Z --jq .* --paginate' "$TMP/gh.calls"
+}
+
+@test "read_counts: 가장 늦은 경우(기한 끝 재실행 · 대기 · 처리 · 다음 날 요약)도 센다" {
+  need_jq; fixtures
+  # 9/29 08:20 생성 → 29일 23시간 50분째 재실행 → 23시간 50분 대기 → 50분 처리 → 10/31 08:00 완료.
+  # 만든 지 32일 20분이라 범위가 32일이면 빠짐
+  echo '{"workflow_runs":[{"status":"completed","conclusion":"success","created_at":"2025-09-29T08:20:00Z","updated_at":"2025-10-31T08:00:00Z"}]}' \
+    > "$TMP/counts.p2.json"
+  read_counts
+  [ "$DONE_OK" = 3 ]
 }
 
 @test "read_counts: 30일 하고 조금 전에 만들어, 기한 안에 재실행해 오늘 끝낸 것도 센다" {
