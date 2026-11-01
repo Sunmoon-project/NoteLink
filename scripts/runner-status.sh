@@ -11,13 +11,15 @@
 #   상태를 읽지 못한 동안에는 마지막으로 안 상태와 그 시각을 그대로 둡니다(멈춘 시간이 끊기지 않게).
 # - 디스코드로 보내지 못하면 상태를 저장하지 않고 실패합니다(다음 실행에서 다시 보냄).
 #
-# 필요한 환경 변수: REPO(owner/name), DISCORD_WEBHOOK, RUNNER_TOKEN(러너 목록을 읽는 토큰,
+# 필요한 환경 변수: REPO(owner/name), DISCORD_WEBHOOK, STATUS_TOKEN(러너 목록을 읽는 토큰,
 #   Administration: Read-only), GH_TOKEN(실행 목록을 읽는 토큰, 워크플로의 GITHUB_TOKEN), STATE_FILE
 # 필요한 것: gh, jq, curl, GNU date. 시각은 서울 시간으로 적습니다.
 #
 # 테스트: scripts/tests/runner-status.bats (source하면 main은 실행되지 않습니다)
 
-RUNNER_NAME="${RUNNER_NAME:-notelink-codex}"
+# 감시할 러너 이름. RUNNER_NAME · RUNNER_OS처럼 RUNNER_로 시작하는 이름은 Actions가 지금 작업을 돌리는
+# 러너의 정보로 채우므로 쓰지 않습니다(CI에서 RUNNER_NAME="GitHub Actions N"을 찾다가 missing이 됐음).
+CODEX_RUNNER="${CODEX_RUNNER:-notelink-codex}"
 REVIEW_WORKFLOW="${REVIEW_WORKFLOW:-codex-review.yml}"
 STUCK_MINUTES="${STUCK_MINUTES:-30}"
 ERR_ALERT_AFTER="${ERR_ALERT_AFTER:-2}"  # 15분 × 2 = 30분 넘게 못 읽으면 알림(일시적인 API 오류는 넘김)
@@ -85,15 +87,15 @@ state_changed() {
 # → CUR_STATUS(online|offline|error|missing) · BUSY(true|false) · ERROR_MSG
 read_runner() {
   CUR_STATUS=""; BUSY=false; ERROR_MSG=""
-  if [ -z "${RUNNER_TOKEN:-}" ]; then
+  if [ -z "${STATUS_TOKEN:-}" ]; then
     CUR_STATUS=error; ERROR_MSG="RUNNER_STATUS_TOKEN 비밀값이 없습니다"
     return
   fi
   local out errf
   errf=$(mktemp)
   # 성공했을 때 gh가 stderr에 남기는 안내가 결과에 섞이지 않게 stderr는 따로 받음
-  if ! out=$(GH_TOKEN="$RUNNER_TOKEN" gh api "repos/$REPO/actions/runners?per_page=100" \
-      --jq "$(runner_jq "$RUNNER_NAME")" 2> "$errf"); then
+  if ! out=$(GH_TOKEN="$STATUS_TOKEN" gh api "repos/$REPO/actions/runners?per_page=100" \
+      --jq "$(runner_jq "$CODEX_RUNNER")" 2> "$errf"); then
     CUR_STATUS=error; ERROR_MSG=$(head -n 1 "$errf" | cut -c 1-200)
     : "${ERROR_MSG:=러너 목록을 읽지 못했습니다}"
     rm -f "$errf"
@@ -101,7 +103,7 @@ read_runner() {
   fi
   rm -f "$errf"
   if [ -z "$out" ]; then
-    CUR_STATUS=missing; ERROR_MSG="저장소에서 러너 $RUNNER_NAME 을 찾지 못했습니다"
+    CUR_STATUS=missing; ERROR_MSG="저장소에서 러너 $CODEX_RUNNER 을 찾지 못했습니다"
     return
   fi
   IFS=$'\t' read -r CUR_STATUS BUSY <<< "$(head -n 1 <<< "$out")"
@@ -211,18 +213,18 @@ compose() {  # $1 = offline|online|stuck|error|recovered|summary
   case "$1" in
     offline)
       TITLE="🔴 리뷰 컴퓨터 러너 오프라인"; COLOR=$COLOR_RED
-      TEXT="\`$RUNNER_NAME\` 러너가 오프라인입니다. ($(kst "$NOW") 확인)
+      TEXT="\`$CODEX_RUNNER\` 러너가 오프라인입니다. ($(kst "$NOW") 확인)
 $(queue_line)
 리뷰 컴퓨터가 켜져 있는지, 러너 서비스가 돌고 있는지 확인하세요.
 [러너 목록]($runners) · [Codex 리뷰 실행]($queue)" ;;
     online)
       TITLE="🟢 리뷰 컴퓨터 러너 다시 온라인"; COLOR=$COLOR_GREEN
-      TEXT="\`$RUNNER_NAME\` 러너가 다시 온라인입니다.
+      TEXT="\`$CODEX_RUNNER\` 러너가 다시 온라인입니다.
 멈춰 있던 시간: 약 $(duration $(( (NOW - PREV_SINCE) / 60 ))) ($(kst "$PREV_SINCE") ~ $(kst "$NOW"))
 $(queue_line)" ;;
     stuck)
       TITLE="🟡 Codex 리뷰가 처리되지 않음"; COLOR=$COLOR_YELLOW
-      TEXT="\`$RUNNER_NAME\` 러너는 온라인인데 리뷰를 받지 못하고 있습니다.
+      TEXT="\`$CODEX_RUNNER\` 러너는 온라인인데 리뷰를 받지 못하고 있습니다.
 $(queue_line)
 리뷰 컴퓨터에서 러너 서비스를 다시 시작하세요.
 [Codex 리뷰 실행]($queue)" ;;
@@ -246,7 +248,7 @@ $(queue_line)" ;;
       else
         done_line="지난 24시간 Codex 리뷰: 확인하지 못함"
       fi
-      TEXT="러너 \`$RUNNER_NAME\`: $(status_word "$CUR_STATUS")$since"
+      TEXT="러너 \`$CODEX_RUNNER\`: $(status_word "$CUR_STATUS")$since"
       [ -n "$ERROR_MSG" ] && TEXT+="
 ($ERROR_MSG)"
       TEXT+="
@@ -281,7 +283,7 @@ main() {
   load_state
   read_runner
   read_queue
-  echo "러너 $RUNNER_NAME: $CUR_STATUS (작업 중: $BUSY) ${ERROR_MSG:+— $ERROR_MSG}"
+  echo "러너 $CODEX_RUNNER: $CUR_STATUS (작업 중: $BUSY) ${ERROR_MSG:+— $ERROR_MSG}"
   echo "지난 상태: ${PREV_STATUS:-없음} (연속 확인 실패 $PREV_ERR번) · $(queue_line)"
 
   if [ "$mode" = summary ]; then

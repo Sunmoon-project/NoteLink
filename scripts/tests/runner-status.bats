@@ -24,6 +24,12 @@ next_check() {
 
 # ---------- kst · duration ----------
 
+@test "Actions가 채우는 RUNNER_NAME · RUNNER_TOKEN과 상관없이 notelink-codex를 본다" {
+  RUNNER_NAME="GitHub Actions 3" RUNNER_TOKEN=x bash -c \
+    'unset CODEX_RUNNER STATUS_TOKEN; source "$1"; [ "$CODEX_RUNNER" = notelink-codex ] && [ -z "${STATUS_TOKEN:-}" ]' \
+    _ "$BATS_TEST_DIRNAME/../runner-status.sh"
+}
+
 @test "kst: 서울 시간(UTC+9)으로 적는다" {
   [ "$(kst 0)" = "01/01 09:00" ]
   [ "$(kst "$NOW")" = "10/31 17:40" ]
@@ -281,31 +287,31 @@ EOF
 }
 
 @test "read_runner: 이름이 같은 러너의 상태 · 작업 중 여부를 읽는다" {
-  need_jq; fixtures; RUNNER_TOKEN=t
+  need_jq; fixtures; STATUS_TOKEN=t
   read_runner
   [ "$CUR_STATUS" = online ] && [ "$BUSY" = true ] && [ -z "$ERROR_MSG" ]
 }
 
 @test "read_runner: 성공했을 때 gh가 stderr에 남긴 안내는 결과에 섞이지 않는다" {
-  need_jq; fixtures; RUNNER_TOKEN=t; GH_WARN=1
+  need_jq; fixtures; STATUS_TOKEN=t; GH_WARN=1
   read_runner
   [ "$CUR_STATUS" = online ] && [ -z "$ERROR_MSG" ]
 }
 
 @test "read_runner: 러너가 없으면 missing" {
-  need_jq; fixtures; RUNNER_TOKEN=t; RUNNER_NAME=nope
+  need_jq; fixtures; STATUS_TOKEN=t; CODEX_RUNNER=nope
   read_runner
   [ "$CUR_STATUS" = missing ] && [[ "$ERROR_MSG" == *"nope"* ]]
 }
 
 @test "read_runner: 조회에 실패하면 error와 gh 오류 첫 줄" {
-  fixtures; RUNNER_TOKEN=t; GH_FAIL=1
+  fixtures; STATUS_TOKEN=t; GH_FAIL=1
   read_runner
   [ "$CUR_STATUS" = error ] && [ "$ERROR_MSG" = "gh: Bad credentials (HTTP 401)" ]
 }
 
 @test "read_runner: 토큰이 없으면 gh를 부르지 않고 error" {
-  RUNNER_TOKEN=""
+  STATUS_TOKEN=""
   read_runner
   [ "$CUR_STATUS" = error ] && [[ "$ERROR_MSG" == *"RUNNER_STATUS_TOKEN"* ]]
   [ ! -e "$TMP/gh.calls" ]
@@ -354,7 +360,7 @@ write_state() {  # $1 = 상태 파일 내용
 }
 
 @test "main check: 처음 확인(온라인)은 알리지 않고 상태만 저장한다" {
-  need_jq; fixtures; RUNNER_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
+  need_jq; fixtures; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
   GITHUB_OUTPUT="$TMP/out"
   run main check
   [ "$status" -eq 0 ]
@@ -365,7 +371,7 @@ write_state() {  # $1 = 상태 파일 내용
 }
 
 @test "main check: 상태가 그대로면 저장하지 않는다(캐시를 새로 만들지 않음)" {
-  need_jq; fixtures; RUNNER_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
+  need_jq; fixtures; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
   write_state 'status=online\nsince=5\nstuck=0\nerr=0\n'
   GITHUB_OUTPUT="$TMP/out"
   run main check
@@ -375,7 +381,7 @@ write_state() {  # $1 = 상태 파일 내용
 }
 
 @test "main check: 오프라인을 알리고 저장한다" {
-  need_jq; fixtures; RUNNER_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
+  need_jq; fixtures; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
   sed -i 's/"status":"online","busy":true/"status":"offline","busy":false/' "$TMP/runners.json"
   write_state 'status=online\nsince=5\nstuck=0\nerr=0\n'
   run main check
@@ -386,7 +392,7 @@ write_state() {  # $1 = 상태 파일 내용
 }
 
 @test "main check: 상태를 한 번 못 읽으면 알리지 않고 횟수만 저장한다" {
-  need_jq; fixtures; RUNNER_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook; GH_FAIL=1
+  need_jq; fixtures; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook; GH_FAIL=1
   write_state 'status=offline\nsince=5\nstuck=0\nerr=0\n'
   run main check
   [ "$status" -eq 0 ]
@@ -397,7 +403,7 @@ write_state() {  # $1 = 상태 파일 내용
 }
 
 @test "main check: 디스코드로 못 보내면 실패하고 상태를 저장하지 않는다(다음에 다시 보냄)" {
-  need_jq; fixtures; RUNNER_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook; CURL_RC=22
+  need_jq; fixtures; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook; CURL_RC=22
   sed -i 's/"status":"online","busy":true/"status":"offline","busy":false/' "$TMP/runners.json"
   write_state 'status=online\nsince=5\nstuck=0\nerr=0\n'
   run main check
@@ -406,7 +412,7 @@ write_state() {  # $1 = 상태 파일 내용
 }
 
 @test "main summary: 요약을 보내고 상태는 건드리지 않는다" {
-  need_jq; fixtures; RUNNER_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
+  need_jq; fixtures; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
   run main summary
   [ "$status" -eq 0 ]
   [[ "$(jq -r '.embeds[0].title' "$TMP/posted.json")" == "📋"* ]]
