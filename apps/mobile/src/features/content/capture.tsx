@@ -357,7 +357,7 @@ export function PickedScreen() {
   const notHand = files.filter((f) => v(f) === 'not_handwriting');
   const blurry = files.find((f) => v(f) === 'blurry');
   const remove = (uri: string) => set({ files: files.filter((f) => f.uri !== uri) });
-  const reselect = async () => {
+  const selectPhotos = async (append: boolean) => {
     const r = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsMultipleSelection: true,
@@ -365,14 +365,19 @@ export function PickedScreen() {
     });
     if (!r.canceled)
       set({
-        files: r.assets.map((a, i) => ({
-          uri: a.uri,
-          name: a.fileName ?? `photo_${i + 1}.jpg`,
-          mimeType: a.mimeType,
-          size: a.fileSize,
-        })),
+        files: [
+          ...(append ? useDraft.getState().files : []),
+          ...r.assets.map((a, i) => ({
+            uri: a.uri,
+            name: a.fileName ?? `photo_${i + 1}.jpg`,
+            mimeType: a.mimeType,
+            size: a.fileSize,
+          })),
+        ].filter((file, index, all) => all.findIndex((f) => f.uri === file.uri) === index),
       });
   };
+  const reselect = () => selectPhotos(false);
+  const addPhotos = () => selectPhotos(true);
   const next = () => {
     if (!check.isSuccess || check.isFetching || prohibited.length || notHand.length) return;
     if (blurry && dlg !== 'blurry') return setDlg('blurry');
@@ -458,7 +463,7 @@ export function PickedScreen() {
         ))}
       </View>
       <Pressable
-        onPress={reselect}
+        onPress={addPhotos}
         className="mt-2 h-12 items-center justify-center rounded-2xl border border-brand/40"
       >
         <Text className="text-subhead text-sub">+ 사진 추가</Text>
@@ -567,9 +572,15 @@ export function RecUploadScreen() {
   );
 }
 
+function RecordingAwake() {
+  useKeepAwake('recording');
+  return null;
+}
+
 /** p.63 #15 실시간 녹음 — 기기 마이크 · 소리 크기로 파형 */
 export function RecLiveScreen() {
-  useKeepAwake('recording'); // 설정의 "녹음 중 화면 켜 두기"
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.me.get() });
+  const keepAwake = me.data?.settings.keepScreenOnWhileRecording ?? false;
   const insets = useSafeAreaInsets();
   const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
   const st = useAudioRecorderState(recorder, 120);
@@ -659,6 +670,7 @@ export function RecLiveScreen() {
       className="flex-1 bg-night px-5"
       style={{ paddingTop: insets.top + 8, paddingBottom: insets.bottom + 24 }}
     >
+      {keepAwake && <RecordingAwake />}
       <Pressable accessibilityLabel="닫기" onPress={() => router.back()} hitSlop={10}>
         <X size={ICON.lg} color="#fff" />
       </Pressable>

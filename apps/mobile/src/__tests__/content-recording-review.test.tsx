@@ -16,7 +16,9 @@ const mockRecorder = {
   stop: jest.fn(),
 };
 const mockRecorderState = { durationMillis: 5200, isRecording: false, metering: -30 };
-jest.mock('../lib/api', () => ({ api: {} }));
+jest.mock('../lib/api', () => ({
+  api: { me: { get: async () => ({ settings: { keepScreenOnWhileRecording: false } }) } },
+}));
 jest.mock('../lib/upload', () => ({ checkFile: jest.fn(), uploadToBlob: jest.fn() }));
 jest.mock('../lib/image-edit', () => ({ editPhoto: jest.fn() }));
 jest.mock('../stores/toast', () => ({ toast: (...args: unknown[]) => mockToast(...args) }));

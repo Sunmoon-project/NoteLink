@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
 import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
@@ -94,9 +94,16 @@ export function NoteListScreen() {
   );
   const tags = ['전체', ...new Set((folders.data ?? []).map((f) => f.subjectName ?? ''))];
 
+  const consumedUpload = useRef<string | undefined>(undefined);
   // 종료 요약에서 "필기 사진 / 녹음"을 누르고 들어온 경우 첫 폴더로 바로 이동
   useEffect(() => {
-    if (!upload || !folders.data) return;
+    if (!upload) {
+      consumedUpload.current = undefined;
+      return;
+    }
+    if (!folders.data || consumedUpload.current === upload) return;
+    consumedUpload.current = upload;
+    router.setParams({ upload: undefined });
     if (folders.data[0])
       router.push({
         pathname: '/(tabs)/note/folder/[id]',
