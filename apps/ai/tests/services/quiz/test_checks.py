@@ -288,7 +288,14 @@ def test_numeric_separator_ignores_surrounding_parentheses() -> None:
 
 
 @pytest.mark.parametrize(
-    ("a", "b"), [("1/(2+3)", "1/2+3"), ("(1+2)/3", "1+2/3"), ("1*(2+3)", "1*2+3")]
+    ("a", "b"),
+    [
+        ("1/(2+3)", "1/2+3"),
+        ("(1+2)/3", "1+2/3"),
+        ("1*(2+3)", "1*2+3"),
+        ("(-2)^2", "-2^2"),
+        ("((-2))^2", "-2^2"),
+    ],
 )
 def test_option_key_preserves_arithmetic_grouping(a: str, b: str) -> None:
     from app.services.quiz.checks import option_key
@@ -321,3 +328,12 @@ def test_option_key_preserves_boundary_operators(a: str, b: str) -> None:
     assert code_check(d, NEW, a, "규칙", [])[1] == 0
     d["options"] = [b, "3", "4", "5", "6"]
     assert code_check(d, NEW, a, "규칙", [])[1] is None
+
+
+@pytest.mark.parametrize(
+    ("a", "b"), [("((1+2))", "1+2"), ("((-2))^2", "(-2)^2"), ("(-2)*3", "-2*3")]
+)
+def test_redundant_arithmetic_parentheses_do_not_create_distinct_options(a: str, b: str) -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key(a) == option_key(b)
