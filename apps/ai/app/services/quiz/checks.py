@@ -94,7 +94,7 @@ def reversed_of(d: Draft, seen: list[Seen]) -> bool:
 # 지수 표시 ^가 있어야 지수로 읽음('10x100'은 배율). 앞이 영어 글자 · 숫자가 아닐 때만
 # '-'를 부호로 봄('10-20'은 범위). 한국어 뒤에 붙은 수도 읽음('약3.5×10^5')
 _EXP = r"(?:\s*[×xX*]\s*10\s*\^\s*([-+]?\d+)|[eE]([-+]?\d+))?"
-NUMBER = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
+_NUMBER = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
 _TRAILING = re.compile(r"[\s.,;:!?]+$")
 
 
@@ -117,8 +117,14 @@ def number_values(s: str | None) -> tuple[list[Decimal], str]:
             return f" {m.group(0)} "
         return " "
 
-    rest = NUMBER.sub(take, unicodedata.normalize("NFC", s or "").replace(",", ""))
+    rest = _NUMBER.sub(take, unicodedata.normalize("NFC", s or "").replace(",", ""))
     return vals, _TRAILING.sub("", " ".join(rest.lower().split()))
+
+
+def number_spans(s: str) -> list[tuple[int, int, list[Decimal]]]:
+    """s 안의 수마다 (시작, 끝, 값). 위치를 쓰려면 s는 NFC이고 쉼표가 없어야 합니다
+    (number_values는 쉼표를 지우고 읽음). 값을 읽지 못한 지수는 빈 목록입니다."""
+    return [(*m.span(), number_values(m.group(0))[0]) for m in _NUMBER.finditer(s)]
 
 
 def same_value(a: str, b: str) -> bool:

@@ -173,6 +173,19 @@ def test_note_lines_keep_only_what_is_really_in_the_note() -> None:
     assert (missing["line"], missing["raw"]) == (None, "노트에 없는 줄")
 
 
+def test_note_line_pieces_from_another_page_are_dropped() -> None:
+    # 출처는 쪽 하나라, 다른 쪽에서만 확인된 조각을 붙이면 학생에게 틀린 쪽을 안내하게 됨
+    llm = FakeLlm({"Line": [{"line": "쌓다 = stack / 고정하다 = fasten"}]})
+    notes = {"m1": {1: "쌓다 = stack"}, "m2": {4: "고정하다 = fasten"}}
+    got = review.note_line(llm, "뜻", [("m1", 1), ("m2", 4)], notes)
+    assert (got["line"], got["materialId"], got["pageNo"], got["kept"]) == (
+        "쌓다 = stack",
+        "m1",
+        1,
+        "1/2",
+    )
+
+
 @pytest.mark.parametrize(
     ("note", "said", "kept"),
     [
@@ -195,6 +208,8 @@ def test_note_lines_keep_only_what_is_really_in_the_note() -> None:
         ("투여 용량 1.5 mL\n보관 온도 15 도", "투여 용량 15 mL", False),  # 다른 줄에 있는 수
         ("투여 용량 15 mL\n투여 용량 1.5 mL", "투여 용량 1.5 mL", True),  # 두 곳 다 봄
         ("균 3.5×10^5 CFU/mL", "균 3.5 × 10^5 CFU/mL", True),  # 지수 꼴도 한 수
+        ("용량 3 mL", "———", False),  # 대시만: 비교 키가 빈 글
+        ("Vitamin D3 보충", "D—3", False),  # 비교 키 'd3'은 3글자가 안 됨
     ],
 )
 def test_note_line_keeps_numbers_as_written(note: str, said: str, kept: bool) -> None:

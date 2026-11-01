@@ -40,7 +40,12 @@ from typing import Any, Literal, Protocol, cast
 from app.clients.llm import JsonObject, Llm, LlmError
 from app.core.config import settings
 from app.services.quiz import quality, similar, srs
-from app.services.quiz.checks import NUMBER, Seen, Target, number_values, seen_question
+from app.services.quiz.checks import (
+    Seen,
+    Target,
+    number_spans,
+    seen_question,
+)
 from app.services.quiz.models import Draft, Notes, Page, Question
 from app.services.quiz.text import clean_pages, locate, norm, short_answer
 
@@ -276,11 +281,12 @@ _DASHES = re.compile(r"[\u2010-\u2015\u2212\uff0d\ufe63]")  # 여러 대시를 '
 @dataclass
 class _Quoted:
     """인용 확인용 글. text: NFC · 대시를 '-'로 · 쉼표를 뺀 원문, key: 그 norm,
-    at[i]: key[i]가 나온 text 위치."""
+    at[i]: key[i]가 나온 text 위치, spans: text의 수(checks.number_spans)."""
 
     text: str
     key: str
     at: list[int]
+    spans: list[tuple[int, int, list[Decimal]]]
 
 
 def _quoted(s: str) -> _Quoted:
@@ -291,7 +297,7 @@ def _quoted(s: str) -> _Quoted:
         for c in norm(ch):
             key.append(c)
             at.append(i)
-    return _Quoted(text, "".join(key), at)
+    return _Quoted(text, "".join(key), at, number_spans(text))
 
 
 def _numbers_at(page: _Quoted, start: int, end: int) -> set[Decimal] | None:
@@ -299,21 +305,20 @@ def _numbers_at(page: _Quoted, start: int, end: int) -> set[Decimal] | None:
 
     수 앞의 부호 · 소수점('-3'의 '-')은 norm이 지워 맞은 곳 밖에 남으므로 그 수에 붙여 읽습니다.
     """
-    kept = set(page.at)
     vals: set[Decimal] = set()
-    for m in NUMBER.finditer(page.text):
-        a, b = m.span()
+    for a, b, v in page.spans:
         if b <= start or a >= end:
             continue
-        if any(i in kept for i in [*range(a, start), *range(end, b)]):
+        # 맞은 곳 밖에 norm이 남기는 글자(숫자 등)가 있으면 수 중간에서 끊김
+        if norm(page.text[a:start] + page.text[end:b]):
             return None
-        vals.update(number_values(m.group(0))[0])
+        vals.update(v)
     return vals
 
 
 def _found_in(piece: _Quoted, page: _Quoted) -> bool:
     """조각이 그 쪽에 있고, 맞은 원문 구간의 수가 조각에 적힌 수와 같은지('1.5 mL' ≠ '15 mL')."""
-    nums = set(number_values(piece.text)[0])
+    nums = {v for _, _, vs in piece.spans for v in vs}
     i = page.key.find(piece.key)
     while i >= 0:
         start, end = page.at[i], page.at[i + len(piece.key) - 1] + 1
@@ -334,7 +339,7 @@ def note_line(llm: Llm, concept: str, keys: list[tuple[str, int]], notes: Notes)
     부호('-3 도'), 띄어 쓰면 글머리('- 1차')로 봅니다. 알려진 한계(로컬과 같음): '3,5'와
     '35'(쉼표는 천 단위로 봄)는 구별하지 못하고, 붙여 쓴 글머리('-1차')는 부호로 읽어 '1차'로
     옮긴 줄을 확인하지 못합니다.
-    조각이 여러 쪽에서 나와도 출처는 첫 조각의 쪽 하나만 돌려줍니다.
+    출처는 쪽 하나만 돌려주므로, 첫 조각과 다른 쪽에서만 확인된 조각은 뺍니다.
     """
     body = "\n".join(f'<노트 쪽="{n}">\n{notes[mid][n][:2000]}\n</노트>' for mid, n in keys)
     try:
@@ -350,14 +355,17 @@ def note_line(llm: Llm, concept: str, keys: list[tuple[str, int]], notes: Notes)
         raw, err = (got.strip() if isinstance(got, str) else ""), None
     except LlmError as e:
         raw, err = "", str(e)
-    pieces = [s.strip() for s in _JOINED.split(raw) if len(norm(s)) >= 3]
+    # 3글자는 비교에 쓰는 키로 셈: '———'은 norm으로는 3글자지만 키는 빈 글이라 어디에나 맞음
+    pieces = [(s.strip(), q) for s in _JOINED.split(raw) if len((q := _quoted(s.strip())).key) >= 3]
     pages = {k: _quoted(notes[k[0]][k[1]]) for k in keys} if pieces else {}
-    hits: list[tuple[str, tuple[str, int]]] = []
-    for s in pieces:
-        piece = _quoted(s)
+    hits: list[tuple[str, list[tuple[str, int]]]] = []
+    for s, piece in pieces:
         found = [k for k in keys if _found_in(piece, pages[k])]
         if found:
-            hits.append((s, found[0]))
+            hits.append((s, found))
+    if hits:
+        src = hits[0][1][0]
+        hits = [(s, found) for s, found in hits if src in found]
     if not hits:
         return {
             "concept": concept,
@@ -370,8 +378,8 @@ def note_line(llm: Llm, concept: str, keys: list[tuple[str, int]], notes: Notes)
     return {
         "concept": concept,
         "line": " / ".join(s for s, _ in hits),
-        "materialId": hits[0][1][0],
-        "pageNo": hits[0][1][1],
+        "materialId": src[0],
+        "pageNo": src[1],
         "raw": None,
         "kept": f"{len(hits)}/{len(pieces)}",
     }
