@@ -177,6 +177,7 @@ export function ChatScreen() {
       return [...new Map([...fetched, ...cached].map((m) => [m._id, m])).values()];
     },
     enabled: !!room.data,
+    refetchOnMount: 'always',
   });
   const [v, setV] = useState('');
   const [menu, setMenu] = useState(false);

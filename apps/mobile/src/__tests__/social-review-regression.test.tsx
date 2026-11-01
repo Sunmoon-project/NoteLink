@@ -118,7 +118,7 @@ describe('PR33 채팅 기록과 실시간 메시지', () => {
     await first.unmount();
     await renderScreen(<ChatScreen />, qc);
     await waitFor(() => expect(screen.getByText(message.text)).toBeTruthy());
-    expect(mockApi.social.messages).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockApi.social.messages).toHaveBeenCalledTimes(2));
   });
 });
 
