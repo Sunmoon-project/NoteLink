@@ -147,29 +147,36 @@ export function WeekGoalSheet({ open, onClose }: { open: boolean; onClose: () =>
   const hours = manual ? Number(inputH) : h;
   const valid = Number.isFinite(hours) && hours >= 1 && hours <= 168 && Number.isInteger(hours * 2);
   const [alarm, setAlarm] = useState(true);
-  const wasOpen = useRef(false);
-  const loadedDay = useRef('');
-  const initialized = useRef(false);
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    if (open && (!wasOpen.current || loadedDay.current !== day)) {
-      initialized.current = false;
-      setReady(false);
-      loadedDay.current = day;
-      goal.refetch();
-    }
-    wasOpen.current = open;
-  }, [open, day]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (open && goal.data && !goal.isFetching && !initialized.current) {
-      initialized.current = true;
-      setReady(true);
-      setH(goal.data.targetMin / 60);
-      setInputH(String(goal.data.targetMin / 60));
-      setAlarm(goal.data.notify80);
+  const [loaded, setLoaded] = useState<{ day: string; error: boolean } | null>(null);
+  const [observed, setObserved] = useState({ open, day });
+  if (observed.open !== open || observed.day !== day) {
+    setObserved({ open, day });
+    setLoaded(null);
+  }
+  const loadVersion = useRef(0);
+  const load = () => {
+    const version = ++loadVersion.current;
+    return goal.refetch().then((result) => {
+      if (version !== loadVersion.current) return;
+      if (!result.isSuccess) {
+        setLoaded({ day, error: true });
+        return;
+      }
+      setH(result.data.targetMin / 60);
+      setInputH(String(result.data.targetMin / 60));
+      setAlarm(result.data.notify80);
       setManual(false);
-    }
-  }, [open, day, goal.data, goal.isFetching]);
+      setLoaded({ day, error: false });
+    });
+  };
+  useEffect(() => {
+    const generation = loadVersion;
+    if (open) void load();
+    return () => {
+      generation.current++;
+    };
+  }, [open, day]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ready = loaded?.day === day && !loaded.error;
   const save = useMutation({
     mutationFn: () => {
       if (!valid) throw new Error('목표 범위를 확인해주세요');
@@ -185,7 +192,21 @@ export function WeekGoalSheet({ open, onClose }: { open: boolean; onClose: () =>
   if (open && !ready)
     return (
       <Sheet open={open} onClose={onClose}>
-        <Loading />
+        {loaded?.error ? (
+          <>
+            <Text>목표를 불러오지 못했어요</Text>
+            <Btn
+              onPress={() => {
+                setLoaded(null);
+                void load();
+              }}
+            >
+              다시 시도
+            </Btn>
+          </>
+        ) : (
+          <Loading />
+        )}
       </Sheet>
     );
   return (

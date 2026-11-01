@@ -39,6 +39,8 @@ const idle = {
 let gen = 0;
 // 로그아웃 · 계정 전환 때만 올린다. 이전 계정의 응답은 서버에 다시 보내지 않고 버린다
 let epoch = 0;
+let ending: { generation: number; promise: Promise<{ sec: number; pointsEarned: number }> } | null =
+  null;
 
 export const useSession = create<Session>((set, get) => ({
   ...idle,
@@ -110,16 +112,34 @@ export const useSession = create<Session>((set, get) => ({
     if (s.sessionId) api.study.resumeSession(s.sessionId).catch(() => {});
   },
   end: async (reason) => {
+    if (ending?.generation === gen) return ending.promise;
     const s = get();
     const sec = s.elapsed();
-    gen++;
-    set(idle);
-    if (!s.sessionId) return { sec, pointsEarned: 0 };
-    // 서버가 잰 시간을 기준으로 삼는다 (기기 시계 조작으로 포인트를 받지 못하게)
-    const r = await api.study.endSession(s.sessionId, {
-      clientDurationSec: sec,
-      endReason: reason,
-    });
-    return { sec: r.durationSec, pointsEarned: r.pointsEarned };
+    const g = gen;
+    if (!s.sessionId) {
+      gen++;
+      set(idle);
+      return { sec, pointsEarned: 0 };
+    }
+    const promise = api.study
+      .endSession(s.sessionId, {
+        clientDurationSec: sec,
+        endReason: reason,
+      })
+      .then((r) => {
+        // 계정 전환이나 새 측정의 상태를 늦은 종료 응답으로 지우지 않는다.
+        if (g === gen) {
+          gen++;
+          set(idle);
+        }
+        return { sec: r.durationSec, pointsEarned: r.pointsEarned };
+      });
+    const request = { generation: g, promise };
+    ending = request;
+    try {
+      return await promise;
+    } finally {
+      if (ending === request) ending = null;
+    }
   },
 }));

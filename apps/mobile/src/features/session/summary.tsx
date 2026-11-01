@@ -8,7 +8,7 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { Mic, PartyPopper, PenLine, X } from 'lucide-react-native';
 import { api } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
-import { diffLabel, goalLabel, hm, hms, today as seoulToday } from '@/lib/dates';
+import { diffLabel, goalLabel, hm, hms, seoul, ymd, today as seoulToday } from '@/lib/dates';
 import { useNow } from '@/hooks';
 import { useSession } from '@/stores/session';
 import { toast } from '@/stores/toast';
@@ -145,11 +145,14 @@ export function SummaryScreen() {
 /** p.49 #8 가로로 돌리면 자동 측정 — 세로로 세우면 측정을 멈추고 돌아간다 */
 export function LandscapeScreen() {
   const s = useSession();
-  const today = useQuery({ queryKey: ['study', 'today', seoulToday()], queryFn: api.study.today });
   const now = useNow();
+  const day = ymd(seoul(now));
+  const midnight = Date.parse(`${day}T00:00:00+09:00`);
+  const today = useQuery({ queryKey: ['study', 'today', day], queryFn: api.study.today });
   const active = today.data?.items.find((i) => i._id === s.itemId);
   const total =
-    (today.data?.items ?? []).reduce((a, i) => a + i.accumulatedSec, 0) + s.elapsed(now);
+    (today.data?.items ?? []).reduce((a, i) => a + i.accumulatedSec, 0) +
+    s.elapsedSince(midnight, now);
   const leaving = useRef(false);
   const exit = () => {
     if (leaving.current) return;

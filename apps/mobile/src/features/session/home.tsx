@@ -10,6 +10,7 @@ import { Pause, Play, Square, Target, Users } from 'lucide-react-native';
 import { api } from '@/lib/api';
 import { dLabel, goalLabel, hm, hms, seoul, ymd } from '@/lib/dates';
 import { useNow } from '@/hooks';
+import { toast } from '@/stores/toast';
 import { AUTO_END_MS, useSession } from '@/stores/session';
 import { Badge, Btn, Card, Dashed, Screen, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
@@ -68,6 +69,8 @@ export function HomeScreen() {
         pathname: '/summary',
         params: { sec: String(r.sec), points: String(r.pointsEarned) },
       });
+    } catch {
+      toast('종료하지 못했어요. 연결을 확인하고 다시 종료해주세요');
     } finally {
       ending.current = false;
     }

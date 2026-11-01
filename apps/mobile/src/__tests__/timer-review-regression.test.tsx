@@ -82,11 +82,15 @@ it('직접 입력한 주간 목표를 실제 입력값으로 저장한다', asyn
 });
 it('10분 쉬면 종료 요청을 한 번만 보낸다', async () => {
   mockNow = Date.now();
-  useSession.setState({ itemId: 'item', since: null, pausedAt: mockNow - 600001 });
-  const end = jest.spyOn(useSession.getState(), 'end').mockImplementation(async () => {
-    useSession.getState().reset();
-    return { sec: 100, pointsEarned: 1 };
+  useSession.setState({
+    itemId: 'item',
+    sessionId: 'auto-session',
+    since: null,
+    pausedAt: mockNow - 600001,
   });
+  const end = jest
+    .spyOn(api.study, 'endSession')
+    .mockResolvedValue({ durationSec: 100, pointsEarned: 1 } as never);
   await renderScreen(<HomeScreen />, client());
   await waitFor(() => expect(end).toHaveBeenCalledTimes(1));
 });
@@ -187,4 +191,54 @@ it('목표 시트를 다시 열면 새 주 목표로 입력을 초기화한다',
   mockNow += 2000;
   await act(async () => setOpen(true));
   expect(await screen.findByText('30시간')).toBeTruthy();
+});
+
+it('종료 실패는 세션을 보존하고 다시 종료할 수 있다', async () => {
+  mockNow = Date.now();
+  useSession.setState({ itemId: 'item', sessionId: 'retry-session', since: mockNow - 5000 });
+  const end = jest
+    .spyOn(api.study, 'endSession')
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValue({ durationSec: 5, pointsEarned: 1 } as never);
+  await expect(useSession.getState().end('manual')).rejects.toThrow('offline');
+  expect(useSession.getState().sessionId).toBe('retry-session');
+  await expect(useSession.getState().end('manual')).resolves.toEqual({ sec: 5, pointsEarned: 1 });
+  expect(end).toHaveBeenCalledTimes(2);
+  expect(useSession.getState().sessionId).toBeNull();
+});
+it('같은 날 목표 시트를 재열어도 새 조회 결과로 초기화한다', async () => {
+  mockNow = Date.parse('2026-11-01T10:00:00Z');
+  const original = await api.study.weeklyGoal();
+  const query = jest
+    .spyOn(api.study, 'weeklyGoal')
+    .mockResolvedValue({ ...original, targetMin: 600 });
+  let setOpen!: (v: boolean) => void;
+  function Harness() {
+    const [open, change] = useState(true);
+    setOpen = change;
+    return <WeekGoalSheet open={open} onClose={jest.fn()} />;
+  }
+  await renderScreen(<Harness />, client());
+  await screen.findByText('10시간');
+  await act(async () => setOpen(false));
+  query.mockResolvedValue({ ...original, targetMin: 1800 });
+  await act(async () => setOpen(true));
+  expect(await screen.findByText('30시간')).toBeTruthy();
+});
+it('최초 목표 조회가 실패하면 오류와 재시도를 제공한다', async () => {
+  const original = await api.study.weeklyGoal();
+  jest
+    .spyOn(api.study, 'weeklyGoal')
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValue({ ...original, targetMin: 900 });
+  await renderScreen(<WeekGoalSheet open onClose={jest.fn()} />, client());
+  await fireEvent.press(await screen.findByText('다시 시도'));
+  expect(await screen.findByText('15시간')).toBeTruthy();
+});
+it('가로 타이머도 자정 이후 오늘 시간만 표시한다', async () => {
+  mockNow = Date.parse('2026-11-01T15:00:02Z');
+  jest.spyOn(api.study, 'today').mockResolvedValue({ items: [], totalSec: 0 } as never);
+  useSession.setState({ itemId: 'item', sessionId: 'session', since: mockNow - 3602000 });
+  await renderScreen(<LandscapeScreen />, client());
+  expect(await screen.findByText('00:00:02')).toBeTruthy();
 });
