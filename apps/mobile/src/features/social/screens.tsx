@@ -40,6 +40,7 @@ export function FriendAddScreen() {
   });
   const send = useMutation({
     mutationFn: (userId: string) => api.social.sendRequest(userId),
+    onError: () => toast('친구 요청을 보내지 못했어요. 다시 시도해주세요'),
     onSuccess: (_, userId) => {
       setSent((p) => [...p, userId]);
       toast('친구 요청을 보냈어요');
@@ -204,7 +205,13 @@ export function ChatScreen() {
   };
   const remove = useMutation({
     mutationFn: () => api.social.remove(id),
-    onSuccess: () => {
+    onSuccess: async () => {
+      await qc.cancelQueries({ queryKey: ['dm', id], exact: true });
+      if (room.data?._id) {
+        await qc.cancelQueries({ queryKey: ['messages', room.data._id], exact: true });
+        qc.removeQueries({ queryKey: ['messages', room.data._id], exact: true });
+      }
+      qc.removeQueries({ queryKey: ['dm', id], exact: true });
       qc.invalidateQueries({ queryKey: ['friends'] });
       setDel(false);
       router.back();
