@@ -325,11 +325,19 @@ export function RoomScreen() {
   const [msgs, setMsgs] = useState<Message[]>([]);
   const timerEnd = timer?.endsAt;
   const requestedTimerEnd = useRef<number | null>(null);
+  const timerRetryAt = useRef(0);
   const refetchRoom = room.refetch;
   useEffect(() => {
-    if (timerEnd === undefined || timerEnd > now || requestedTimerEnd.current === timerEnd) return;
+    if (timerEnd === undefined || timerEnd > now) return;
+    if (requestedTimerEnd.current === timerEnd && now < timerRetryAt.current) return;
     requestedTimerEnd.current = timerEnd;
-    void refetchRoom();
+    timerRetryAt.current = Infinity;
+    const retry = () => {
+      if (requestedTimerEnd.current === timerEnd) timerRetryAt.current = Date.now() + 5000;
+    };
+    void refetchRoom().then((result) => {
+      if (result.isError) retry();
+    }, retry);
   }, [timerEnd, now, refetchRoom]);
   const [menu, setMenu] = useState(false);
   const [pick, setPick] = useState(false);

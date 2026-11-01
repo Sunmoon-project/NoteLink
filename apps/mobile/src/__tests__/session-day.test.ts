@@ -30,3 +30,9 @@ it('월요일 이전의 구간은 새 주 누적에 포함하지 않는다', () 
   });
   expect(useSession.getState().elapsedSince(monday, monday + 7000)).toBe(5);
 });
+
+it('종료 구간 중간의 과거 시각 이후 시간은 합산하지 않는다', () => {
+  useSession.setState({ segments: [{ start: 1000, end: 11000 }], banked: 10, since: null });
+  expect(useSession.getState().elapsedSince(1000, 6000)).toBe(5);
+  expect(useSession.getState().elapsedSince(7000, 6000)).toBe(0);
+});

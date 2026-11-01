@@ -231,3 +231,38 @@ it.each(['upload', 'report'] as const)(
       );
   },
 );
+
+it('신고 PNG 첨부는 원본 파일명·MIME·크기를 보존하고 Blob URL만 전송한다', async () => {
+  mockPicker.mockResolvedValueOnce({
+    canceled: false,
+    assets: [
+      {
+        uri: 'file://evidence.png',
+        fileName: 'evidence.png',
+        mimeType: 'image/png',
+        fileSize: 123,
+      },
+    ],
+  });
+  mockUpload.mockResolvedValueOnce('https://blob.test/evidence.png');
+  await renderScreen(<ReportScreen />, client());
+  await fillReport();
+  await fireEvent.press(screen.getByRole('button', { name: '신고하기' }));
+  await screen.findByText('신고 완료');
+  expect(mockUpload).toHaveBeenCalledWith(
+    'image',
+    expect.objectContaining({
+      uri: 'file://evidence.png',
+      name: 'evidence.png',
+      mimeType: 'image/png',
+      size: 123,
+    }),
+  );
+  expect(mockApi.rooms.report).toHaveBeenCalledWith({
+    roomId: room._id,
+    targetUserId: 'friend-1',
+    reportType: 'spam',
+    details: reportBody,
+    imageUrls: ['https://blob.test/evidence.png'],
+  });
+});

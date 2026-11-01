@@ -26,7 +26,7 @@ import {
 } from 'lucide-react-native';
 import type { ReportType, TimerRule } from '@notelink/shared';
 import { api } from '@/lib/api';
-import { uploadToBlob } from '@/lib/upload';
+import { uploadToBlob, type LocalFile } from '@/lib/upload';
 import { addDays, seoul, ymd, WD } from '@/lib/dates';
 import { toast } from '@/stores/toast';
 import {
@@ -76,23 +76,30 @@ export function ReportScreen() {
   const target = t ? { id: t.userId, name: t.nickname } : null;
   const [type, setType] = useState<ReportType | null>(null);
   const [body, setBody] = useState('');
-  const [photos, setPhotos] = useState<string[]>([]);
+  const [photos, setPhotos] = useState<LocalFile[]>([]);
   const [sheet, setSheet] = useState<null | 'target' | 'type'>(null);
   const [done, setDone] = useState(false);
   const addPhoto = async () => {
     const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
-    const uri = r.canceled ? undefined : r.assets[0]?.uri;
-    if (uri) setPhotos((p) => [...p, uri].slice(0, MAX_REPORT_PHOTOS));
+    const asset = r.canceled ? undefined : r.assets[0];
+    if (asset) {
+      const name = asset.fileName ?? asset.uri.split('/').at(-1) ?? 'report.jpg';
+      const mimeType =
+        asset.mimeType ??
+        (/\.png$/i.test(name) ? 'image/png' : /\.webp$/i.test(name) ? 'image/webp' : 'image/jpeg');
+      setPhotos((p) =>
+        [...p, { uri: asset.uri, name, mimeType, size: asset.fileSize }].slice(
+          0,
+          MAX_REPORT_PHOTOS,
+        ),
+      );
+    }
   };
   const send = useMutation({
     mutationFn: async () => {
       if (!target || !reportReady({ target: target.id, type, body }))
         throw new Error('입력을 확인해 주세요');
-      const urls = await Promise.all(
-        photos.map((uri, i) =>
-          uploadToBlob('image', { uri, name: `report_${i}.jpg`, mimeType: 'image/jpeg' }),
-        ),
-      );
+      const urls = await Promise.all(photos.map((file) => uploadToBlob('image', file)));
       await api.rooms.report({
         roomId: id,
         targetUserId: target.id,
@@ -164,8 +171,8 @@ export function ReportScreen() {
           </Text>
           <Text className="mt-4 mb-1.5 text-caption text-sub">사진 첨부</Text>
           <View className="flex-row gap-2">
-            {photos.map((u) => (
-              <Image key={u} source={{ uri: u }} className="h-14 w-14 rounded-xl" />
+            {photos.map((file) => (
+              <Image key={file.uri} source={{ uri: file.uri }} className="h-14 w-14 rounded-xl" />
             ))}
             {photos.length < MAX_REPORT_PHOTOS && (
               <Pressable
@@ -281,7 +288,7 @@ export function TimerScreen() {
         enabled: on,
         type,
         focusMin: Number(focus) || 50,
-        breakMin: Number(rest) || 10,
+        breakMin: rest === '' ? 10 : Number(rest),
         repeat,
         periods,
       });

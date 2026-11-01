@@ -164,9 +164,10 @@ it('실제 목업 타이머는 조회마다 시작하지 않고 절대 종료 �
   const created = await response(
     realMockApi.rooms.create({ title: '실제 목업 타이머', categoryName: '공부', isPublic: true }),
   );
+  const configured = await response(realMockApi.rooms.setTimer(created._id, rule));
+  // 연결 검사를 통과해 서버가 설정을 적용한 시점부터 타이머가 시작한다.
   const startedAt = Date.now();
   const focusEnd = new Date(startedAt + 25 * 60000).toISOString();
-  const configured = await response(realMockApi.rooms.setTimer(created._id, rule));
   expect(configured).toMatchObject({ timerState: { phase: 'focus', endsAt: focusEnd } });
   await jest.advanceTimersByTimeAsync(5 * 60000);
   const later = await response(realMockApi.rooms.get(created._id));
