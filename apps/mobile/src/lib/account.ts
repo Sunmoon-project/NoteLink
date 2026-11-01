@@ -1,4 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query';
+import { useQuizProgress } from '@/stores/quiz-progress';
 import { disconnectSocket } from '@/lib/socket';
 import { useDraft } from '@/stores/draft';
 import { useSession } from '@/stores/session';
@@ -9,4 +10,5 @@ export function clearAccountState(qc: QueryClient) {
   qc.clear();
   useSession.getState().reset();
   useDraft.getState().reset();
+  useQuizProgress.getState().reset();
 }

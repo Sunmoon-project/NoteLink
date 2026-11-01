@@ -9,6 +9,7 @@ import type { LearnerType, SocialProvider } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { getProviderToken, socialLoginReady } from '@/lib/social-auth';
 import { clearAccountState } from '@/lib/account';
+import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { Btn, Chip, Input, Label, Screen, Sheet, Title, cx } from '@/components/ui';
@@ -71,7 +72,14 @@ export function LoginScreen() {
       .getState()
       .signIn({ accessToken: r.accessToken, refreshToken: r.refreshToken }, r.user);
     qc.setQueryData(['me'], r.user);
-    router.replace(useAuth.getState().onboarded ? '/' : '/(auth)/terms');
+    const progress = useQuizProgress.getState().progress;
+    router.replace(
+      useAuth.getState().onboarded
+        ? prev === r.user._id && progress
+          ? { pathname: '/play/solve', params: { setId: progress.setId } }
+          : '/'
+        : '/(auth)/terms',
+    );
   };
   const social = useMutation({
     mutationFn: async (p: SocialProvider) => api.auth.socialLogin(p, await getProviderToken(p)),

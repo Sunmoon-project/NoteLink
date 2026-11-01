@@ -255,3 +255,14 @@ def test_option_key_keeps_sign_and_decimal_but_ignores_spacing() -> None:
         )[1]
         == 0
     )
+
+
+def test_fraction_and_range_are_distinct_options_and_answers() -> None:
+    opts = ["1/2", "1-2", "3/4", "3-4", "5"]
+    for answer, index in [("1/2", 0), ("1-2", 1)]:
+        reasons, correct = code_check(
+            draft(stem="값을 고르시오", passage="", options=opts, answer=answer),
+            NEW, answer, "규칙", [],
+        )
+        assert "보기 5개가 아니거나 겹침" not in reasons
+        assert correct == index

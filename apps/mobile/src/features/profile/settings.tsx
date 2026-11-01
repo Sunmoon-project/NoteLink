@@ -1,7 +1,8 @@
+import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useEffect, useRef, useState } from 'react';
 import { Linking, Pressable, ScrollView, View } from 'react-native';
 import { Text } from '@/components/text';
-import { router, useLocalSearchParams, useSitemap, type SitemapType } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CalendarDays,
@@ -52,24 +53,6 @@ const gb = (b: number) =>
 
 /** 앱 버전은 app.config.ts의 version을 읽는다 */
 const APP_VERSION = Constants.expoConfig?.version ?? '-';
-type FeaturePath = '/record' | '/shop' | '/(tabs)/profile/photo' | '/(tabs)/profile/avatar-style';
-
-// 기능 PR이 합쳐지면 실제 화면으로 이동하고, 아직 없는 화면은 준비 중으로 안내한다.
-function useFeatureNavigation() {
-  const sitemap = useSitemap();
-  return (path: FeaturePath) => {
-    const normalized = (p: string) => p.replace(/\/\([^/]+\)/g, '').replace(/\/$/, '');
-    const exists = (node: SitemapType | null): boolean =>
-      !!node &&
-      ((!node.isInternal &&
-        typeof node.href === 'string' &&
-        normalized(node.href) === normalized(path)) ||
-        node.children.some(exists));
-    if (exists(sitemap)) router.push(path);
-    else toast('이 기능은 준비 중이에요');
-  };
-}
-
 export function SettingsScreen() {
   const openFeature = useFeatureNavigation();
   const qc = useQueryClient();
@@ -136,7 +119,7 @@ export function SettingsScreen() {
               accessibilityLabel="프로필 사진 변경"
               onPress={() => openFeature('/(tabs)/profile/photo')}
             >
-              <Avatar name={u.nickname.slice(1)} size={48} />
+              <Avatar name={u.nickname} uri={u.avatarUrl} size={48} />
             </Pressable>
             <Pressable
               className="flex-1 flex-row items-center"
