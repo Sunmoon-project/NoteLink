@@ -101,6 +101,7 @@ export function ReportScreen() {
         imageUrls: urls,
       });
     },
+    onError: () => toast('신고를 보내지 못했어요. 입력을 유지했으니 다시 시도해주세요'),
     onSuccess: () => setDone(true),
   });
   return (
@@ -622,7 +623,6 @@ export function RoomSettingsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const qc = useQueryClient();
   const room = useQuery({ queryKey: ['room', id], queryFn: () => api.rooms.get(id) });
-  const [alarm, setAlarm] = useState(true);
   const [code, setCode] = useState(false);
   const [leave, setLeave] = useState(false);
   const out = useMutation({
@@ -643,7 +643,7 @@ export function RoomSettingsScreen() {
           <View className="flex-row items-center gap-2 rounded-xl bg-cream px-4 py-4">
             <Bell size={ICON.md} color={C.ink} />
             <Text className="flex-1 text-subhead font-semibold text-ink">알림</Text>
-            <Toggle label="알림" on={alarm} onChange={setAlarm} />
+            <Text className="text-caption text-sub">알림 설정은 준비 중이에요</Text>
           </View>
           <Pressable
             onPress={() => router.push({ pathname: '/room/invite', params: { id } })}

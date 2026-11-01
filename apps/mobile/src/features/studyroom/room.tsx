@@ -314,8 +314,7 @@ export function RoomScreen() {
     setMembers(room.data.members);
     setMembersAt(now);
     const rule = room.data.timerRule;
-    if (rule?.enabled && rule !== loadedRoom?.timerRule)
-      setTimer({ label: '집중', endsAt: now + rule.focusMin * 60000 });
+    if (!rule?.enabled) setTimer(null);
   }
   const [loadedMsgs, setLoadedMsgs] = useState<typeof history.data>();
   if (history.data && history.data !== loadedMsgs) {
@@ -354,7 +353,10 @@ export function RoomScreen() {
       p.roomId === id &&
       setTimer(
         p.rule?.enabled && p.endsAt
-          ? { label: p.phase === 'break' ? '휴식' : '집중', endsAt: new Date(p.endsAt).getTime() }
+          ? {
+              label: p.phase === 'break' ? '휴식' : p.phase === 'period' ? '교시' : '집중',
+              endsAt: new Date(p.endsAt).getTime(),
+            }
           : null,
       ),
     [id],
