@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Linking, Pressable, Text, View } from 'react-native';
+import { Linking, Pressable, View } from 'react-native';
+import { Text } from '@/components/text';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -8,10 +9,11 @@ import type { LearnerType, SocialProvider } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { getProviderToken, socialLoginReady } from '@/lib/social-auth';
 import { clearAccountState } from '@/lib/account';
+import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { Btn, Chip, Input, Label, Screen, Sheet, Title, cx } from '@/components/ui';
-import { C } from '@/theme';
+import { C, ICON } from '@/theme';
 
 // p.104 가입부터 홈까지 — 온보딩 · 로그인 · 약관 동의 · 프로필 설정 (스플래시는 네이티브 스플래시 화면)
 
@@ -38,10 +40,10 @@ export function OnboardingScreen() {
           <View className="h-40 w-40 items-center justify-center rounded-full bg-mint">
             <Sparkles size={56} color={C.brand} />
           </View>
-          <Text className="mt-10 text-center text-[20px] font-bold leading-7 text-ink">
+          <Text className="mt-10 text-center text-title3 font-bold leading-7 text-ink">
             {SLIDES[i]?.[0]}
           </Text>
-          <Text className="mt-2 text-center text-[13px] text-sub">{SLIDES[i]?.[1]}</Text>
+          <Text className="mt-2 text-center text-footnote text-sub">{SLIDES[i]?.[1]}</Text>
         </Animated.View>
         <View className="mt-8 flex-row gap-1.5">
           {SLIDES.map((_, n) => (
@@ -70,7 +72,14 @@ export function LoginScreen() {
       .getState()
       .signIn({ accessToken: r.accessToken, refreshToken: r.refreshToken }, r.user);
     qc.setQueryData(['me'], r.user);
-    router.replace(useAuth.getState().onboarded ? '/' : '/(auth)/terms');
+    const progress = useQuizProgress.getState().progress;
+    router.replace(
+      useAuth.getState().onboarded
+        ? prev === r.user._id && progress
+          ? { pathname: '/play/solve', params: { setId: progress.setId } }
+          : '/'
+        : '/(auth)/terms',
+    );
   };
   const social = useMutation({
     mutationFn: async (p: SocialProvider) => api.auth.socialLogin(p, await getProviderToken(p)),
@@ -88,8 +97,8 @@ export function LoginScreen() {
         <View className="h-16 w-16 items-center justify-center rounded-2xl bg-brand">
           <BookOpen size={30} color="#fff" />
         </View>
-        <Text className="mt-4 text-[20px] font-bold text-ink">노트링크</Text>
-        <Text className="mt-1 text-[12px] text-sub">
+        <Text className="mt-4 text-title3 font-bold text-ink">노트링크</Text>
+        <Text className="mt-1 text-caption text-sub">
           수기 대신 스마트하게, AI와 함께 배우는 노트 앱
         </Text>
       </View>
@@ -120,7 +129,7 @@ export function LoginScreen() {
         </Btn>
         <Btn onPress={() => setEmailOpen(true)}>이메일로 시작하기</Btn>
         {!socialLoginReady && (
-          <Text className="text-center text-[12px] text-sub">
+          <Text className="text-center text-caption text-sub">
             소셜 로그인은 준비 중이에요. 이메일로 시작해 주세요
           </Text>
         )}
@@ -169,7 +178,7 @@ const Box = ({ on }: { on: boolean }) => (
       on ? 'bg-brand' : 'border border-cream-2',
     )}
   >
-    {on && <Check size={14} color="#fff" />}
+    {on && <Check size={ICON.xs} color="#fff" />}
   </View>
 );
 
@@ -195,7 +204,7 @@ export function TermsScreen() {
         className="flex-row items-center gap-3 rounded-2xl bg-mint px-4 py-4"
       >
         <Box on={all} />
-        <Text className="text-[15px] font-bold text-ink">전체 동의</Text>
+        <Text className="text-callout font-bold text-ink">전체 동의</Text>
       </Pressable>
       <View className="mt-2 gap-2">
         {TERMS.map(([k, l, , url]) => {
@@ -210,7 +219,7 @@ export function TermsScreen() {
                 className="flex-1 flex-row items-center gap-3 py-3.5 pl-4"
               >
                 <Box on={on} />
-                <Text className="flex-1 text-[14px] text-ink">{l}</Text>
+                <Text className="flex-1 text-subhead text-ink">{l}</Text>
               </Pressable>
               <Pressable
                 accessibilityRole="link"
@@ -218,7 +227,7 @@ export function TermsScreen() {
                 onPress={() => Linking.openURL(url)}
                 className="px-2 py-3.5"
               >
-                <Text className="text-[12px] text-sub">보기</Text>
+                <Text className="text-caption text-sub">보기</Text>
               </Pressable>
             </View>
           );

@@ -321,6 +321,7 @@ const COLORS = ['#d9363e', '#5f6b7a', '#e2b33c', '#3b6e5b', '#2f4f86'] as const;
 
 /** p.83 #27 아바타 캐릭터 색상 선택 */
 export function AvatarCustomScreen() {
+  const qc = useQueryClient();
   const { style = '3d' } = useLocalSearchParams<{ style?: string }>();
   const [g, setG] = useState<'남자' | '여자'>('여자');
   const [c, setC] = useState<string>(COLORS[3]);
@@ -329,6 +330,7 @@ export function AvatarCustomScreen() {
       api.me.saveAvatar({ style, gender: g === '남자' ? 'male' : 'female', color: c }),
     onSuccess: () => {
       router.dismissTo('/(tabs)/profile');
+      qc.invalidateQueries({ queryKey: ['me'] });
       toast('아바타를 저장했어요');
     },
     onError: () => toast('아바타를 저장하지 못했어요. 다시 시도해 주세요'),

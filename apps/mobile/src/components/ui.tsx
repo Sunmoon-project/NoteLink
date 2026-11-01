@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -65,6 +66,7 @@ export function Tap({
   className,
   onPressIn,
   onPressOut,
+  style,
   ...props
 }: ComponentProps<typeof Pressable> & { scaleTo?: number; className?: string }) {
   const scale = useSharedValue(1);
@@ -75,6 +77,10 @@ export function Tap({
       <Pressable
         {...props}
         className={inner}
+        style={(state) => [
+          typeof style === 'function' ? style(state) : style,
+          { minWidth: 44, minHeight: 44 },
+        ]}
         onPressIn={(e) => {
           scale.set(withSpring(scaleTo, PRESS));
           onPressIn?.(e);
@@ -845,11 +851,13 @@ export const Avatar = ({
   name,
   size = 44,
   face,
+  uri,
   tone = 'brand',
 }: {
   name?: string;
   size?: number;
   face?: string;
+  uri?: string | null;
   tone?: 'brand' | 'mint';
 }) => (
   <View
@@ -859,12 +867,20 @@ export const Avatar = ({
     )}
     style={{ width: size, height: size }}
   >
-    <Text
-      className={cx('font-bold', tone === 'brand' ? 'text-white' : 'text-brand')}
-      style={{ fontSize: face ? size * 0.55 : size * 0.4 }}
-    >
-      {face ?? (name && name.length > 1 ? name.slice(-2, -1) : name)}
-    </Text>
+    {uri ? (
+      <Image
+        accessibilityLabel="프로필 사진"
+        source={{ uri }}
+        style={{ width: size, height: size, borderRadius: size / 2 }}
+      />
+    ) : (
+      <Text
+        className={cx('font-bold', tone === 'brand' ? 'text-white' : 'text-brand')}
+        style={{ fontSize: face ? size * 0.55 : size * 0.4 }}
+      >
+        {face ?? (name && name.length > 1 ? name.slice(-2, -1) : name)}
+      </Text>
+    )}
   </View>
 );
 

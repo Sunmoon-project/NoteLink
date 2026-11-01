@@ -92,8 +92,15 @@ export const useAuth = create<Auth>((set, get) => {
       await persist();
     },
     signOut: async () => {
-      set({ tokens: null, user: null, userId: null, onboarded: false, expired: false });
-      await persist();
+      const identity = get().userId;
+      const operation = writing.then(async () => {
+        if (get().userId !== identity) return;
+        await SecureStore.deleteItemAsync(KEY);
+        if (get().userId === identity)
+          set({ tokens: null, user: null, userId: null, onboarded: false, expired: false });
+      });
+      writing = operation.catch(() => {});
+      await operation;
     },
   };
 });
