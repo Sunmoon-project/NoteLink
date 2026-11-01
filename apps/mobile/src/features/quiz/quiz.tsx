@@ -48,7 +48,14 @@ const Tutor = ({ size = 76 }: { size?: number }) => (
 
 export function QuizHomeScreen() {
   const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
-  const latest = sets.data?.find((s) => s.status === 'ready');
+  const progress = useQuizProgress((s) => s.progress);
+  const latest = progress
+    ? (sets.data?.find((s) => s._id === progress.setId) ?? {
+        _id: progress.setId,
+        title: '풀던 퀴즈',
+        questionCount: 0,
+      })
+    : sets.data?.find((s) => s.status === 'ready');
   return (
     <Screen>
       <NetBanner />
@@ -60,9 +67,10 @@ export function QuizHomeScreen() {
             onPress={() => router.push({ pathname: '/play/solve', params: { setId: latest._id } })}
             className="mt-4 p-4"
           >
-            <Text className="text-caption text-sub">이어서 풀기</Text>
+            <Text className="text-caption text-sub">{progress ? '이어서 풀기' : '퀴즈 풀기'}</Text>
             <Text className="text-body font-bold text-ink">
-              {latest.title} · {latest.questionCount}문제
+              {latest.title}
+              {latest.questionCount > 0 ? ` · ${latest.questionCount}문제` : ''}
             </Text>
             <Progress value={100} className="mt-2" />
           </Card>
@@ -285,6 +293,7 @@ export function QuizGenScreen() {
   const [failureMessage, setFailureMessage] = useState('');
   const canceled = useRef(false);
   const activeJob = useRef<string | null>(null);
+  const completedJob = useRef<string | null>(null);
   useEffect(() => {
     let disposed = false;
     canceled.current = false;
@@ -315,17 +324,44 @@ export function QuizGenScreen() {
     (p) => p.jobId === job?._id && setJob((j) => (j ? { ...j, progress: p.progress } : j)),
     [job?._id],
   );
-  useSocket(
-    'ai:done',
-    ({ jobId, job: done }) => {
-      if (canceled.current || jobId !== job?._id) return;
-      qc.invalidateQueries({ queryKey: ['quiz-sets'] });
-      if (done.status === 'succeeded')
-        router.replace({ pathname: '/play/ready', params: { setId: setId!, title } });
-      else setFailed(done.error ?? 'FAILED');
-    },
-    [job?._id, setId],
-  );
+  const acceptJob = (done: AiJob) => {
+    if (canceled.current || done._id !== activeJob.current || completedJob.current === done._id)
+      return;
+    if (!['succeeded', 'failed', 'canceled'].includes(done.status)) return;
+    completedJob.current = done._id;
+    qc.invalidateQueries({ queryKey: ['quiz-sets'] });
+    if (done.status === 'succeeded' && setId)
+      router.replace({ pathname: '/play/ready', params: { setId, title } });
+    else setFailed(done.error ?? 'FAILED');
+  };
+  useSocket('ai:done', ({ job }) => acceptJob(job), [job?._id, setId]);
+  useEffect(() => {
+    if (!job?._id || !setId) return;
+    let active = true;
+    const checkStatus = async () => {
+      if (
+        canceled.current ||
+        completedJob.current === job._id ||
+        useNet.getState().state === 'offline'
+      )
+        return;
+      try {
+        const current = await api.ai.job(job._id);
+        if (active) {
+          setJob(current);
+          acceptJob(current);
+        }
+      } catch {
+        /* 일시적인 조회 실패는 다음 검사에서 복구한다. */
+      }
+    };
+    void checkStatus();
+    const timer = setInterval(() => void checkStatus(), 1500);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [job?._id, setId]); // eslint-disable-line react-hooks/exhaustive-deps
   const credit = failed === ERROR_CODES.AI_CREDIT_EXHAUSTED;
   const partial = useQuery({
     queryKey: ['quiz-set', setId],
@@ -456,17 +492,32 @@ export function QuizSolveScreen() {
   const expired = useAuth((s) => s.expired);
   const finishing = useRef(false);
   const finish = useMutation({
-    mutationFn: () => api.quiz.finish(attemptId!),
+    mutationFn: (request: {
+      owner: string | null;
+      progress: ReturnType<typeof useQuizProgress.getState>['progress'];
+    }) => api.quiz.finish(request.progress?.attemptId ?? attemptId!),
     // 완료는 포인트를 적립하므로 응답 유실 시 자동으로 재전송하지 않는다.
     retry: false,
-    onSuccess: (r) => {
+    onSuccess: (r, request) => {
+      if (
+        !mounted.current ||
+        useAuth.getState().userId !== request.owner ||
+        useQuizProgress.getState().progress !== request.progress
+      )
+        return;
       useQuizProgress.getState().reset();
       router.replace({
         pathname: '/play/review',
         params: { setId: set.data!._id, points: String(r.pointsEarned) },
       });
     },
-    onError: (e) => {
+    onError: (e, request) => {
+      if (
+        !mounted.current ||
+        useAuth.getState().userId !== request.owner ||
+        useQuizProgress.getState().progress !== request.progress
+      )
+        return;
       if (e instanceof ApiError && e.code === ERROR_CODES.TOKEN_EXPIRED)
         useAuth.getState().setExpired(true);
       toast('완료 결과를 저장하지 못했어요. 다시 시도해 주세요');
@@ -556,7 +607,10 @@ export function QuizSolveScreen() {
     if (i >= qs.length - 1) {
       if (!attemptId) return;
       finishing.current = true;
-      finish.mutate();
+      finish.mutate({
+        owner: useAuth.getState().userId,
+        progress: useQuizProgress.getState().progress,
+      });
       return;
     }
     setI((x) => x + 1);
