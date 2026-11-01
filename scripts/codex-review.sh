@@ -7,7 +7,9 @@
 #   실행 중이면 끝날 때까지 기다리고, 실패했으면 Codex 리뷰 대신 실패 로그를 댓글로 남깁니다.
 # - 처음 실행: PR 전체 변경을 리뷰합니다(치명적 문제 / 중요 / 제안 / 좋았던 점 / 권장 조치).
 # - 다시 실행: 지난 Codex 리뷰 이후의 새 커밋을 보고, 이전 지적이 반영됐는지 먼저 확인합니다(재리뷰).
-# - --dry-run: 댓글을 올리지 않고 결과만 보여 줍니다.
+# - CI 실패 알림에는 검사 SHA를 표시하고, 최신 CI 성공 뒤 과거 실패 안내를 해결 표시합니다.
+# - 게시 전 HEAD가 바뀌었으면 오래된 결과를 올리지 않습니다. 같은 SHA의 실패는 기존 댓글을 갱신합니다.
+# - --dry-run: 댓글을 올리거나 갱신하지 않고 결과만 보여 줍니다.
 #
 # 필요한 것: git, gh(로그인), codex(로그인). 현재 작업 폴더는 건드리지 않고
 # 임시 worktree에서 리뷰합니다. 리뷰 기준은 AGENTS.md의 Code Review Rules입니다.
@@ -66,6 +68,85 @@ ci_result() {  # $1 = jobs.tsv → "CI 결과" job의 conclusion (없으면 빈 
 
 failed_jobs() {  # $1 = jobs.tsv → 실패 · 취소 · 시간 초과 job 줄만
   awk -F '\t' '$1 == "failure" || $1 == "cancelled" || $1 == "timed_out"' "$1"
+}
+
+# 게시 직전에 다시 확인한다. 2는 새 커밋이 들어온 정상적인 생략, 1은 조회 오류다.
+current_review_head() {
+  local latest
+  if ! latest=$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq .headRefOid); then
+    echo "PR 최신 커밋 조회 실패: 결과 게시를 보류합니다." >&2
+    return 1
+  fi
+  if [ -z "$latest" ]; then
+    echo "PR 최신 커밋이 비어 있어 결과 게시를 보류합니다." >&2
+    return 1
+  fi
+  if [ "$latest" != "$HEAD_SHA" ]; then
+    echo "PR 커밋 변경(${HEAD_SHA:0:7} → ${latest:0:7}): 이전 결과 게시를 생략합니다." >&2
+    return 2
+  fi
+}
+
+# 리뷰 계정 자신의 미해결 CI 실패 안내만 고른다. 일반 코드 리뷰는 정리하지 않는다.
+ci_comments_jq() {
+  printf '.[] | select(.user.login == "%s" and (.body | contains("<!-- %s-ci sha=")) and (.body | contains("<!-- %s-ci-resolved ") | not)) | .id' "$1" "$MARKER" "$MARKER"
+}
+
+parse_ci_marker() {
+  sed -n "s/.*<!-- $MARKER-ci sha=\([0-9a-f]\{1,\}\) -->.*/\1/p" <<< "$1" | tail -n 1
+}
+
+publish_review_comment() {  # $1 = 본문 파일, $2 = 갱신할 댓글 ID (없으면 새 댓글)
+  current_review_head || return $?
+  local file="$1" id="${2:-}" payload
+  if $DRY_RUN; then
+    echo "----- (dry-run) 게시·갱신할 댓글 ${id:-new} -----"
+    cat "$file"
+  elif [ -n "$id" ]; then
+    payload="$WORK/comment-$id.json"
+    jq -n --rawfile body "$file" '{body:$body}' > "$payload" || return 1
+    gh api "repos/$REPO/issues/comments/$id" --method PATCH --input "$payload" >/dev/null || return 1
+  else
+    gh pr comment "$PR" -R "$REPO" --body-file "$file" >/dev/null || return 1
+  fi
+}
+
+post_ci_failure() {  # 같은 커밋의 실패 알림은 중복 생성하지 않는다.
+  local ids id body existing=""
+  ids=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq "$(ci_comments_jq "$ME")") || return 1
+  for id in $ids; do
+    body=$(gh api "repos/$REPO/issues/comments/$id" --jq .body) || return 1
+    if [ "$(parse_ci_marker "$body")" = "$HEAD_SHA" ]; then existing="$id"; break; fi
+  done
+  publish_review_comment "$1" "$existing"
+}
+
+resolve_ci_failures() {
+  [ "$CI_RESULT" = success ] || return 0
+  local ids id body previous file
+  ids=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq "$(ci_comments_jq "$ME")") || return 1
+  for id in $ids; do
+    body=$(gh api "repos/$REPO/issues/comments/$id" --jq .body) || return 1
+    previous=$(parse_ci_marker "$body")
+    [ -n "$previous" ] || continue
+    file="$WORK/resolved-$id.md"
+    {
+      echo "### 🤖 Codex 자동 검증 — 해결됨 ✅"
+      echo
+      echo "과거 커밋 \`${previous:0:7}\`의 실패 기록입니다. 후속 검사에서 커밋 \`${HEAD_SHA:0:7}\`의 **[CI 결과가 통과](https://github.com/$REPO/actions/runs/$RUN_ID)**해 이 실패는 해결됐습니다."
+      echo
+      echo "아래는 원래 검사 당시의 기록이며, 후속 커밋의 실패를 뜻하지 않습니다."
+      echo
+      echo '<details><summary>과거 실패 원문과 로그</summary>'
+      echo
+      printf '%s\n' "$body"
+      echo
+      echo '</details>'
+      echo
+      echo "<!-- $MARKER-ci-resolved sha=$HEAD_SHA previous=$previous -->"
+    } > "$file"
+    publish_review_comment "$file" "$id" || return $?
+  done
 }
 
 # 파일 단위로 diff를 모읍니다. 줄 수 한도(MAX_DIFF_LINES)를 넘는 파일은 중간에 자르지 않고
@@ -134,23 +215,16 @@ main() {
     read -r PREV_SHA PREV_ROUND <<< "$(parse_marker "$PREV_BODY")" || true
     ROUND=$(( ${PREV_ROUND:-1} + 1 ))
   fi
-  if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" = "$HEAD_SHA" ]; then
-    echo "마지막 Codex 리뷰(${PREV_SHA:0:7}) 이후 새 커밋이 없습니다."
-    exit 0
-  fi
 
   WORK=$(mktemp -d)
   WT="$WORK/pr-$PR"
   trap 'git worktree remove --force "$WT" >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
 
-  post() {  # $1 = 댓글 본문 파일
-    if $DRY_RUN; then
-      echo "----- (dry-run) 올라갈 댓글 -----"
-      cat "$1"
-    else
-      gh pr comment "$PR" --body-file "$1" >/dev/null
-      echo "✔ PR #$PR 에 댓글을 남겼습니다: $(gh pr view "$PR" --json url --jq .url)"
-    fi
+  post() {  # 변경된 HEAD는 정상 생략하고, 게시 오류는 실패로 전달한다.
+    local result=0
+    publish_review_comment "$1" || result=$?
+    [ "$result" -ne 2 ] || exit 0
+    return "$result"
   }
 
   if [ "$ROUND" -eq 1 ]; then
@@ -173,6 +247,8 @@ main() {
     exit 1
   fi
 
+  current_review_head || { result=$?; [ "$result" -ne 2 ] || exit 0; exit "$result"; }
+
   if [ "$CI_RESULT" != "success" ]; then
     echo "▶ CI 결과: $CI_RESULT — Codex 리뷰 대신 실패 내용을 남깁니다."
     BODY_FILE="$WORK/body.md"
@@ -180,6 +256,10 @@ main() {
       echo "$HEADING"
       echo
       echo "**자동 검증(lint·typecheck·build·test): 실패/중단 ($CI_RESULT) ❌**"
+      echo
+      echo "**검사 대상: [\`${HEAD_SHA:0:7}\`](https://github.com/$REPO/commit/$HEAD_SHA) · [CI 실행](https://github.com/$REPO/actions/runs/$RUN_ID)**"
+      echo
+      echo "_이 결과는 표시된 커밋의 검사 기록입니다. 후속 커밋의 상태와 구분해 주세요._"
       echo
       echo "---"
       echo
@@ -203,10 +283,20 @@ main() {
       echo
       echo "<!-- $MARKER-ci sha=$HEAD_SHA -->"
     } > "$BODY_FILE"
-    post "$BODY_FILE"
+    post_ci_failure "$BODY_FILE" || { result=$?; [ "$result" -ne 2 ] || exit 0; exit "$result"; }
     exit 0
   fi
   echo "▶ CI 통과 ✅"
+  # 같은 커밋의 코드 리뷰가 이미 있어도, 성공한 CI의 과거 실패 안내는 먼저 정리한다.
+  resolve_ci_failures || {
+    result=$?
+    [ "$result" -ne 2 ] || exit 0
+    echo "::warning::과거 CI 댓글 정리에 실패했습니다. 코드 리뷰는 계속합니다."
+  }
+  if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" = "$HEAD_SHA" ]; then
+    echo "마지막 Codex 리뷰(${PREV_SHA:0:7}) 이후 새 커밋이 없습니다."
+    exit 0
+  fi
 
   # ---------- diff 준비 ----------
   git fetch -q origin "+refs/heads/$BASE:refs/remotes/origin/$BASE" "+refs/pull/$PR/head:refs/codex-review/pr-$PR"
