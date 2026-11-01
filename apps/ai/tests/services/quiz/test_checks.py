@@ -262,7 +262,10 @@ def test_fraction_and_range_are_distinct_options_and_answers() -> None:
     for answer, index in [("1/2", 0), ("1-2", 1)]:
         reasons, correct = code_check(
             draft(stem="값을 고르시오", passage="", options=opts, answer=answer),
-            NEW, answer, "규칙", [],
+            NEW,
+            answer,
+            "규칙",
+            [],
         )
         assert "보기 5개가 아니거나 겹침" not in reasons
         assert correct == index
