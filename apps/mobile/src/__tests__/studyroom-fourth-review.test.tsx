@@ -1,4 +1,6 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { router } from 'expo-router';
+import { useLiveRoom } from '../lib/livekit';
 import { QueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
@@ -22,7 +24,7 @@ jest.mock('../lib/api', () => ({
 }));
 jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
 jest.mock('../lib/livekit', () => ({
-  useLiveRoom: () => ({
+  useLiveRoom: jest.fn(() => ({
     connected: false,
     micOn: false,
     camOn: false,
@@ -33,7 +35,7 @@ jest.mock('../lib/livekit', () => ({
     toggleCam: jest.fn(),
     toggleHearing: jest.fn(),
     retry: jest.fn(),
-  }),
+  })),
 }));
 jest.mock('../lib/socket', () => ({ socket: { emit: jest.fn(), on: jest.fn(() => () => {}) } }));
 jest.mock('../hooks', () => ({ ...jest.requireActual('../hooks'), useNow: () => mockNow }));
@@ -178,4 +180,24 @@ it('기존 0분 휴식 설정은 수정 없이 저장해도 10분으로 바뀌�
       expect.objectContaining({ breakMin: 0 }),
     ),
   );
+});
+
+it('방 최초 조회 실패는 오류·재시도를 제공하고 조회 전 미디어를 시작하지 않는다', async () => {
+  mockApi.rooms.get.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(room);
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText('스터디룸 정보를 불러오지 못했어요');
+  expect(jest.mocked(useLiveRoom).mock.calls.at(-1)?.[1]).toBe(false);
+  await fireEvent.press(screen.getByRole('button', { name: '다시 시도' }));
+  await screen.findByText(room.title);
+  expect(mockApi.rooms.get).toHaveBeenCalledTimes(2);
+  expect(jest.mocked(useLiveRoom).mock.calls.at(-1)?.[1]).toBe(true);
+});
+
+it('없는 방이나 접근 거절은 무한 로딩 대신 복귀 경로를 제공한다', async () => {
+  mockApi.rooms.get.mockRejectedValue(new Error('NOT_FOUND'));
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText('스터디룸 정보를 불러오지 못했어요');
+  await fireEvent.press(screen.getByRole('button', { name: '돌아가기' }));
+  expect(router.back).toHaveBeenCalledTimes(1);
+  expect(jest.mocked(useLiveRoom).mock.calls.at(-1)?.[1]).toBe(false);
 });
