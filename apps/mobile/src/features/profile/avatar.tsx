@@ -7,7 +7,7 @@ import type { AiJob } from '@notelink/shared';
 import * as ImagePicker from 'expo-image-picker';
 import { Camera, Check, ChevronRight, ImageIcon, Info } from 'lucide-react-native';
 import { api } from '@/lib/api';
-import { uploadToBlob } from '@/lib/upload';
+import { uploadToBlob, type LocalFile } from '@/lib/upload';
 import { socket } from '@/lib/socket';
 import { useSocket } from '@/hooks';
 import { toast } from '@/stores/toast';
@@ -49,8 +49,18 @@ export function PhotoScreen() {
     const r = camera
       ? await ImagePicker.launchCameraAsync(opts)
       : await ImagePicker.launchImageLibraryAsync(opts);
-    const uri = r.canceled ? undefined : r.assets[0]?.uri;
-    if (uri) router.push({ pathname: '/(tabs)/profile/photo-style', params: { uri } });
+    const asset = r.canceled ? undefined : r.assets[0];
+    const uri = asset?.uri;
+    if (asset && uri) {
+      router.push({
+        pathname: '/(tabs)/profile/photo-style',
+        params: {
+          uri,
+          name: asset.fileName ?? uri.split('/').pop(),
+          mimeType: asset.mimeType ?? undefined,
+        },
+      });
+    }
   };
   return (
     <Screen>
@@ -89,18 +99,24 @@ const STYLES = ['기본 일러스트', '3D 캐릭터', '수채화', '픽셀 아�
 
 /** p.82 #23 프로필 형태 선택 */
 export function PhotoStyleScreen() {
-  const params = useLocalSearchParams<{ uri?: string }>();
-  const [uri, setUri] = useState(params.uri);
+  const params = useLocalSearchParams<{ uri?: string; name?: string; mimeType?: string }>();
+  const [file, setFile] = useState<LocalFile | undefined>(() =>
+    params.uri
+      ? {
+          uri: params.uri,
+          name: params.name ?? params.uri.split('/').pop() ?? 'profile.jpg',
+          mimeType: params.mimeType,
+        }
+      : undefined,
+  );
+  const uri = file?.uri;
   const [prompt, setPrompt] = useState('');
   const [style, setStyle] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const gen = useMutation({
     mutationFn: async () => {
-      const blob = await uploadToBlob('image', {
-        uri: uri!,
-        name: 'profile.jpg',
-        mimeType: 'image/jpeg',
-      });
+      if (!file) throw new Error('사진을 선택해 주세요');
+      const blob = await uploadToBlob('image', file);
       return api.me.generateProfile({ photoBlobUrl: blob, prompt, style });
     },
     onSuccess: (job) =>
@@ -114,8 +130,14 @@ export function PhotoStyleScreen() {
       aspect: [1, 1],
       quality: 0.8,
     });
-    const picked = r.canceled ? undefined : r.assets[0]?.uri;
-    if (picked) setUri(picked);
+    const picked = r.canceled ? undefined : r.assets[0];
+    if (picked)
+      setFile({
+        uri: picked.uri,
+        name: picked.fileName ?? picked.uri.split('/').pop() ?? 'profile.jpg',
+        mimeType: picked.mimeType ?? undefined,
+        size: picked.fileSize,
+      });
   };
   return (
     <Screen
