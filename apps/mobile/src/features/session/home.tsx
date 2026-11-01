@@ -10,6 +10,7 @@ import { Pause, Play, Square, Target, Users } from 'lucide-react-native';
 import { api } from '@/lib/api';
 import { dLabel, goalLabel, hm, hms, seoul, ymd } from '@/lib/dates';
 import { useNow } from '@/hooks';
+import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { AUTO_END_MS, useSession } from '@/stores/session';
 import { Badge, Btn, Card, Dashed, Screen, cx } from '@/components/ui';
@@ -55,23 +56,52 @@ export function HomeScreen() {
     if (s.itemId === id && running) return s.pause();
     // 다른 항목으로 바꾸면 start()가 앞 세션을 끝낸다 → 서버 누적을 다시 받아 방금 공부한 시간이 빠지지 않게
     const switching = !!s.itemId && s.itemId !== id;
-    await s.start(id);
-    if (switching) await qc.invalidateQueries({ queryKey: ['study'] });
+    try {
+      await s.start(id);
+      if (switching) await qc.invalidateQueries({ queryKey: ['study'] });
+    } catch {
+      toast('공부를 시작하지 못했어요. 연결을 확인하고 다시 시도해주세요');
+    }
   };
   const ending = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const finish = async (reason = 'manual') => {
     if (ending.current) return;
     ending.current = true;
+    const owner = useAuth.getState().userId;
+    let valid = true;
+    const stopAuth = useAuth.subscribe((next, previous) => {
+      if (next.userId !== previous.userId || (previous.tokens && !next.tokens)) valid = false;
+    });
+    const stopSession = useSession.subscribe((next) => {
+      if (next.itemId && (next.itemId !== s.itemId || next.sessionId !== s.sessionId))
+        valid = false;
+    });
+    const current = () =>
+      valid &&
+      mounted.current &&
+      useAuth.getState().userId === owner &&
+      useSession.getState().itemId === null;
     try {
       const r = await s.end(reason);
+      if (!current()) return;
       await qc.invalidateQueries({ queryKey: ['study'] });
+      if (!current()) return;
       router.push({
         pathname: '/summary',
         params: { sec: String(r.sec), points: String(r.pointsEarned) },
       });
     } catch {
-      toast('종료하지 못했어요. 연결을 확인하고 다시 종료해주세요');
+      if (valid && mounted.current) toast('종료하지 못했어요. 연결을 확인하고 다시 종료해주세요');
     } finally {
+      stopAuth();
+      stopSession();
       ending.current = false;
     }
   };

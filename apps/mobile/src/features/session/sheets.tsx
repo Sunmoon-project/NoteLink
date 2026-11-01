@@ -51,6 +51,7 @@ export function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => 
       if (typeof input === 'string') throw new Error(input);
       return api.study.addItem(input);
     },
+    onError: () => toast('항목을 추가하지 못했어요. 다시 시도해주세요'),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['study', 'today'] });
       qc.invalidateQueries({ queryKey: ['subjects'] });
