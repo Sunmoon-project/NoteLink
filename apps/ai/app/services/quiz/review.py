@@ -229,7 +229,7 @@ def parse(raw: JsonObject) -> ReviewInput:
                 raise InputError(f"{w}[{j}].ocrText")
             # 녹음 정리 시제품(10/25)이 쪽 번호를 '1'처럼 글로 저장한 노트가 있음
             no = _get(p, "pageNo", (int, str), f"{w}[{j}]")
-            if isinstance(no, str) and not no.isdigit():
+            if isinstance(no, str) and not (no.isascii() and no.isdigit()):  # "²"는 int()가 못 읽음
                 raise InputError(f"{w}[{j}].pageNo")
             checked.append({"pageNo": int(no), "ocrText": text})
         notes[str(mid)] = clean_pages(checked)

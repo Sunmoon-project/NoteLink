@@ -326,6 +326,8 @@ def broken(change: str) -> JsonObject:
         inp["sets"][0]["questions"][0]["choices"] = "be"
     elif change == "page":
         inp["notes"]["m1"][0]["pageNo"] = "첫 쪽"
+    elif change == "superscript page":
+        inp["notes"]["m1"][0]["pageNo"] = "²"  # isdigit()은 참이지만 int()가 못 읽음
     return inp
 
 
@@ -340,6 +342,7 @@ def broken(change: str) -> JsonObject:
         "srs without step",
         "choices",
         "page",
+        "superscript page",
     ],
 )
 def test_bad_input_fails_at_once(change: str) -> None:
