@@ -80,9 +80,9 @@ export function SettingsScreen() {
     try {
       if (withdraw) await api.me.withdraw();
       else await api.auth.logout().catch(() => {});
-      clearAccountState(qc);
       failure = '기기의 로그인 정보를 지우지 못했어요. 다시 시도해 주세요';
       await useAuth.getState().signOut();
+      clearAccountState(qc);
       router.replace('/(auth)/login');
     } catch {
       toast(failure);

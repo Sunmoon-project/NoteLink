@@ -144,3 +144,15 @@ it('로그아웃 저장 삭제 실패 시 인증 상태를 유지하고 성공�
   await useAuth.getState().signOut();
   expect(useAuth.getState()).toMatchObject({ userId: null, tokens: null, onboarded: false });
 });
+
+it('온보딩 완료 동일 계정의 미완료 풀이가 있으면 해당 세트 ID로 복귀한다', async () => {
+  await signedIn();
+  saveProgress();
+  const previous = useQuizProgress.getState().progress;
+  await renderScreen(<LoginScreen />, client());
+  await submitLogin();
+  await waitFor(() =>
+    expect(router.replace).toHaveBeenCalledWith({ pathname: '/play/solve', params: { setId } }),
+  );
+  expect(useQuizProgress.getState().progress).toEqual(previous);
+});

@@ -135,14 +135,22 @@ def _same_parsed(a: tuple[list[Decimal], str], b: tuple[list[Decimal], str]) -> 
     return bool(a[0]) and a == b
 
 
-def option_key(o: str) -> tuple[str, tuple[Decimal, ...], str]:
+def option_key(o: str) -> tuple[str, tuple[Decimal, ...], tuple[str, ...]]:
     """보기 · 정답이 같은지 볼 때 쓰는 키: norm(대소문자 · 문장부호 무시)에 적힌 수를 더함.
 
     norm은 '.' · '-'를 지우므로 수까지 따로 보지 않으면 '1.5 mL'과 '15 mL',
     '-20℃'와 '20℃'가 같은 보기가 됩니다. 'No.5'와 'No. 5'는 같은 보기입니다.
     """
-    values, rest = number_values(o)
-    return norm(o), tuple(values), "".join(rest.split())
+    values, _ = number_values(o)
+    # 일반 괄호·문장부호는 norm처럼 무시하되, 인접한 숫자 사이의 연산 기호만 보존한다.
+    # 숫자 바깥의 괄호는 답의 표현 차이이고, 1/2의 '/'와 1-2의 '-'는 값의 차이다.
+    text = unicodedata.normalize("NFC", o).replace(",", "")
+    matches = list(_NUMBER.finditer(text))
+    separators = tuple(
+        re.sub(r"[^+\-*/÷×^:=%<>]", "", text[left.end() : right.start()])
+        for left, right in zip(matches, matches[1:], strict=False)
+    )
+    return norm(o), tuple(values), separators
 
 
 def form(w: str | None) -> Literal["ing", "ed", "base"]:
