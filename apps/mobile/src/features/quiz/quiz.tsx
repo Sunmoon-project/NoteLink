@@ -282,6 +282,7 @@ export function QuizGenScreen() {
   const [job, setJob] = useState<AiJob | null>(null);
   const [setId, setSetId] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  const [failureMessage, setFailureMessage] = useState('');
   const canceled = useRef(false);
   const activeJob = useRef<string | null>(null);
   useEffect(() => {
@@ -300,7 +301,10 @@ export function QuizGenScreen() {
         socket.emit('ai:subscribe', { jobId: r.job._id });
       })
       .catch((e) => {
-        if (!disposed && !canceled.current) setFailed(e instanceof ApiError ? e.code : 'NETWORK');
+        if (!disposed && !canceled.current) {
+          setFailed(e instanceof ApiError ? e.code : 'NETWORK');
+          setFailureMessage(e instanceof Error ? e.message : '문제를 생성하지 못했어요');
+        }
       });
     return () => {
       disposed = true;
@@ -323,6 +327,12 @@ export function QuizGenScreen() {
     [job?._id, setId],
   );
   const credit = failed === ERROR_CODES.AI_CREDIT_EXHAUSTED;
+  const partial = useQuery({
+    queryKey: ['quiz-set', setId],
+    queryFn: () => api.quiz.set(setId!),
+    enabled: credit && !!setId,
+  });
+  const count = credit && setId ? (partial.data?.questions.length ?? 0) : 0;
   const pct = job?.progress ?? 0;
   return (
     <View className="flex-1">
@@ -356,19 +366,18 @@ export function QuizGenScreen() {
         open={credit}
         tone="sun"
         title={'이번 달 AI 크레딧을\n모두 사용했어요'}
-        body={`문제를 3개까지 만들었어요.\n갱신 후 이어서 만들 수 있어요.`}
-        extra={
-          <View className="mt-3 w-full">
-            <Text className="text-right text-caption2 text-sub">3 / 5</Text>
-            <Progress value={60} />
-          </View>
+        body={
+          count > 0
+            ? `${count}개 문제를 만들었어요. 갱신 후 이어서 만들 수 있어요.`
+            : failureMessage || '크레딧이 부족해 문제를 생성하지 못했어요.'
         }
-        secondary="나중에"
+        secondary={count > 0 ? '나중에' : undefined}
         onSecondary={() => router.back()}
-        primary="만든 문제 보기"
-        onPrimary={() =>
-          router.replace({ pathname: '/play/solve', params: { setId: setId ?? '' } })
-        }
+        primary={count > 0 ? '만든 문제 보기' : '돌아가기'}
+        onPrimary={() => {
+          if (setId && count > 0) router.replace({ pathname: '/play/solve', params: { setId } });
+          else router.back();
+        }}
       />
       <Alert
         open={!!failed && !credit}
@@ -431,9 +440,16 @@ export function QuizSolveScreen() {
   const [startError, setStartError] = useState(false);
   const [answerText, setAnswerText] = useState(previous?.answerText ?? '');
   const answering = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [startRound, setStartRound] = useState(0);
   const [i, setI] = useState(previous?.index ?? 0);
-  const [pick, setPick] = useState<string | null>(previous?.pick ?? null);
+  const [pick, setPick] = useState<string | null>(previous?.right == null ? null : previous.pick);
   const [right, setRight] = useState<boolean | null>(previous?.right ?? null);
   const [results, setResults] = useState<boolean[]>(previous?.results ?? []);
   const [speaking, setSpeaking] = useState(false);
@@ -516,6 +532,7 @@ export function QuizSolveScreen() {
     setPick(c);
     try {
       const r = await api.quiz.answer(attemptId, q._id, c);
+      if (!mounted.current) return;
       setRight(r.correct);
       setResults((x) => [...x, r.correct]);
       Haptics.notificationAsync(
@@ -524,6 +541,7 @@ export function QuizSolveScreen() {
           : Haptics.NotificationFeedbackType.Error,
       );
     } catch (e) {
+      if (!mounted.current) return;
       // 로그인 만료: 풀던 내용은 그대로 두고 다이얼로그 (p.101)
       if (e instanceof ApiError && e.code === ERROR_CODES.TOKEN_EXPIRED)
         useAuth.getState().setExpired(true);
