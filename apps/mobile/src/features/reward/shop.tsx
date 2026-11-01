@@ -124,12 +124,12 @@ export function ShopScreen() {
       qc.setQueryData(['ledger', '전체'], ledger);
       qc.invalidateQueries({ queryKey: ['ledger'] });
       const confirmed = mine.some((u) => u.itemId === uncertainId && u.isOwned);
-      if (confirmed) setUncertainId(null);
+      setUncertainId(null);
       setFail(false);
       setMsg(
         confirmed
           ? '구매 완료를 확인했어요'
-          : '구매 완료 여부를 확인하지 못했어요. 내역을 확인해주세요',
+          : '현재 보유 내역에 없어요. 구매하려면 상품을 다시 선택해 주세요',
       );
     } catch {
       setMsg('구매 결과를 확인하지 못했어요. 연결 후 다시 확인해주세요');
@@ -458,7 +458,7 @@ export function BoxScreen() {
   const { equip: eq } = useLocalSearchParams<{ equip?: string }>();
   // 상점에서 '장착하러 가기'로 들어오면 그 아이템을 고른 상태로 연다 (렌더 중 상태 조정)
   const [opened, setOpened] = useState<string>();
-  const key = eq && all.data && loaded ? `${eq}:${all.dataUpdatedAt}` : undefined;
+  const key = eq && all.data && loaded ? `${eq}:${all.dataUpdatedAt}:${owned.has(eq)}` : undefined;
   if (key && key !== opened) {
     setOpened(key);
     setPick(owned.has(eq!) ? (all.data?.find((i) => i._id === eq) ?? null) : null);

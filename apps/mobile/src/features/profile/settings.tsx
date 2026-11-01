@@ -1,8 +1,19 @@
+import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useEffect, useRef, useState } from 'react';
-import { Linking, Pressable, ScrollView, Text, View } from 'react-native';
-import { router, useLocalSearchParams, useSitemap, type SitemapType } from 'expo-router';
+import { Linking, Pressable, ScrollView, View } from 'react-native';
+import { Text } from '@/components/text';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, CircleAlert, ExternalLink } from 'lucide-react-native';
+import {
+  CalendarDays,
+  Check,
+  ChevronRight,
+  CircleAlert,
+  ExternalLink,
+  FlaskConical,
+  Gift,
+  Zap,
+} from 'lucide-react-native';
 import type { PlanTier, UserSettings } from '@notelink/shared';
 import { api } from '@/lib/api';
 import { env } from '@/lib/env';
@@ -30,7 +41,8 @@ import {
   cx,
   Empty,
 } from '@/components/ui';
-import { C } from '@/theme';
+import { C, ICON } from '@/theme';
+import Constants from 'expo-constants';
 
 // p.43~45 프로필 · 설정 · 계정 정보 · 닉네임 · 요금제
 
@@ -39,24 +51,8 @@ const PAGE = { swipe: '좌우 스와이프', scroll: '위아래 스크롤', tap:
 const gb = (b: number) =>
   b >= 1024 ** 3 ? `${Math.round(b / 1024 ** 3)}GB` : b ? `${Math.round(b / 1024 ** 2)}MB` : '0KB';
 
-type FeaturePath = '/record' | '/shop' | '/(tabs)/profile/photo' | '/(tabs)/profile/avatar-style';
-
-// 기능 PR이 합쳐지면 실제 화면으로 이동하고, 아직 없는 화면은 준비 중으로 안내한다.
-function useFeatureNavigation() {
-  const sitemap = useSitemap();
-  return (path: FeaturePath) => {
-    const normalized = (p: string) => p.replace(/\/\([^/]+\)/g, '').replace(/\/$/, '');
-    const exists = (node: SitemapType | null): boolean =>
-      !!node &&
-      ((!node.isInternal &&
-        typeof node.href === 'string' &&
-        normalized(node.href) === normalized(path)) ||
-        node.children.some(exists));
-    if (exists(sitemap)) router.push(path);
-    else toast('이 기능은 준비 중이에요');
-  };
-}
-
+/** 앱 버전은 app.config.ts의 version을 읽는다 */
+const APP_VERSION = Constants.expoConfig?.version ?? '-';
 export function SettingsScreen() {
   const openFeature = useFeatureNavigation();
   const qc = useQueryClient();
@@ -123,19 +119,19 @@ export function SettingsScreen() {
               accessibilityLabel="프로필 사진 변경"
               onPress={() => openFeature('/(tabs)/profile/photo')}
             >
-              <Avatar name={u.nickname.slice(1)} size={48} />
+              <Avatar name={u.nickname} uri={u.avatarUrl} size={48} />
             </Pressable>
             <Pressable
               className="flex-1 flex-row items-center"
               onPress={() => router.push('/(tabs)/profile/account')}
             >
               <View className="flex-1">
-                <Text className="text-[16px] font-bold text-ink">{u.nickname}</Text>
-                <Text className="text-[12px] text-sub">
+                <Text className="text-body font-bold text-ink">{u.nickname}</Text>
+                <Text className="text-caption text-sub">
                   {u.school?.replace('등학교', '')} {u.grade} · {u.email}
                 </Text>
               </View>
-              <ChevronRight size={18} color={C.sub} />
+              <ChevronRight size={ICON.md} color={C.sub} />
             </Pressable>
           </View>
           <View className="my-4 h-px bg-line" />
@@ -144,19 +140,19 @@ export function SettingsScreen() {
             className="flex-row items-center gap-3"
           >
             <View className="h-10 w-10 items-center justify-center rounded-xl bg-white">
-              <Text className="text-sun">⚡</Text>
+              <Zap size={ICON.md} color={C.sun} />
             </View>
             <View className="flex-1">
-              <Text className="text-[15px] font-semibold text-ink">
+              <Text className="text-callout font-semibold text-ink">
                 {{ free: 'Free', pro: 'Pro', max: 'MAX' }[u.subscription?.tier ?? 'free']} 플랜
               </Text>
-              <Text className="text-[12px] text-sub">더 많은 기능을 사용해보세요</Text>
+              <Text className="text-caption text-sub">더 많은 기능을 사용해보세요</Text>
             </View>
-            <ChevronRight size={18} color={C.sub} />
+            <ChevronRight size={ICON.md} color={C.sub} />
           </Pressable>
           <View className="mt-4 flex-row justify-between">
-            <Text className="text-[12px] text-sub">저장 공간</Text>
-            <Text className="text-[12px] text-sub">
+            <Text className="text-caption text-sub">저장 공간</Text>
+            <Text className="text-caption text-sub">
               {gb(u.usage?.storageBytes ?? 0)} / {gb(u.usage?.storageLimitBytes ?? 0)}
             </Text>
           </View>
@@ -168,8 +164,8 @@ export function SettingsScreen() {
             className="mt-1.5"
           />
           <View className="mt-3 flex-row justify-between">
-            <Text className="text-[12px] text-sub">AI 크레딧</Text>
-            <Text className="text-[12px] text-sub">
+            <Text className="text-caption text-sub">AI 크레딧</Text>
+            <Text className="text-caption text-sub">
               {u.usage?.aiCredits ?? 0} / {u.usage?.aiCreditLimit ?? 800}
             </Text>
           </View>
@@ -181,14 +177,14 @@ export function SettingsScreen() {
 
         <Label>학습</Label>
         <Group>
-          <Row chevron onPress={() => openFeature('/record')}>
-            📅 캘린더 바로가기
+          <Row icon={CalendarDays} chevron onPress={() => openFeature('/record')}>
+            캘린더 바로가기
           </Row>
         </Group>
         <Label>상점</Label>
         <Group>
-          <Row chevron onPress={() => openFeature('/shop')}>
-            🎁 상점 바로가기
+          <Row icon={Gift} chevron onPress={() => openFeature('/shop')}>
+            상점 바로가기
           </Row>
         </Group>
         <Label>녹음·재생</Label>
@@ -215,7 +211,7 @@ export function SettingsScreen() {
             onPress={() => setSheet('lang')}
             right={
               <View className="rounded-full border border-line bg-white px-3 py-1">
-                <Text className="text-[12px] text-sub">{s.subtitleLanguage} ›</Text>
+                <Text className="text-caption text-sub">{s.subtitleLanguage} ›</Text>
               </View>
             }
           >
@@ -226,7 +222,7 @@ export function SettingsScreen() {
         <Group>
           <Row
             onPress={() => setSheet('page')}
-            right={<Text className="text-[13px] text-sub">{PAGE[s.pageTurn]} ›</Text>}
+            right={<Text className="text-footnote text-sub">{PAGE[s.pageTurn]} ›</Text>}
           >
             페이지 넘김 방식
           </Row>
@@ -276,23 +272,23 @@ export function SettingsScreen() {
           </Row>
           <Row
             onPress={() => Linking.openURL('https://notelink.app/terms')}
-            right={<ExternalLink size={16} color={C.sub} />}
+            right={<ExternalLink size={ICON.sm} color={C.sub} />}
           >
             서비스 이용약관
           </Row>
           <Row
             onPress={() => Linking.openURL('https://notelink.app/privacy')}
-            right={<ExternalLink size={16} color={C.sub} />}
+            right={<ExternalLink size={ICON.sm} color={C.sub} />}
           >
             개인정보처리방침
           </Row>
           <Row chevron onPress={() => setSheet('biz')}>
             사업자 정보
           </Row>
-          <Row right={<Text className="text-[13px] text-sub">0.1.0</Text>}>앱 버전</Row>
+          <Row right={<Text className="text-footnote text-sub">{APP_VERSION}</Text>}>앱 버전</Row>
           {env.useMock && (
-            <Row chevron onPress={() => router.push('/(tabs)/profile/dev')}>
-              🧪 예외 시나리오 (목업 전용)
+            <Row icon={FlaskConical} chevron onPress={() => router.push('/(tabs)/profile/dev')}>
+              예외 시나리오 (목업 전용)
             </Row>
           )}
         </Group>
@@ -303,7 +299,7 @@ export function SettingsScreen() {
           className="mt-3 self-center rounded-full px-3 py-1"
           onPress={() => setDlg('withdraw')}
         >
-          <Text className="text-[13px] text-danger">회원 탈퇴</Text>
+          <Text className="text-footnote text-danger">회원 탈퇴</Text>
         </Pressable>
       </Screen>
 
@@ -316,7 +312,7 @@ export function SettingsScreen() {
                 update.mutate({ subtitleLanguage: l });
                 setSheet(null);
               }}
-              right={s.subtitleLanguage === l && <Text className="text-brand">✓</Text>}
+              right={s.subtitleLanguage === l && <Check size={ICON.md} color={C.brand} />}
             >
               {l}
             </Row>
@@ -332,7 +328,7 @@ export function SettingsScreen() {
                 update.mutate({ pageTurn: k });
                 setSheet(null);
               }}
-              right={s.pageTurn === k && <Text className="text-brand">✓</Text>}
+              right={s.pageTurn === k && <Check size={ICON.md} color={C.brand} />}
             >
               {PAGE[k]}
             </Row>
@@ -363,7 +359,7 @@ export function SettingsScreen() {
             '주소 · 충청남도 아산시 탕정면 선문로 221번길 70',
             '문의 · help@notelink.app',
           ].map((t) => (
-            <Text key={t} className="text-[13px] text-ink/80">
+            <Text key={t} className="text-footnote text-ink/80">
               {t}
             </Text>
           ))}
@@ -418,10 +414,10 @@ export function AccountScreen() {
         className="flex-row items-center px-4 py-3"
       >
         <View className="flex-1">
-          <Text className="text-[11px] text-sub">아바타</Text>
-          <Text className="text-[15px] text-ink">아바타 설정하기</Text>
+          <Text className="text-caption2 text-sub">아바타</Text>
+          <Text className="text-callout text-ink">아바타 설정하기</Text>
         </View>
-        <ChevronRight size={18} color={C.sub} />
+        <ChevronRight size={ICON.md} color={C.sub} />
       </Card>
       <View className="mt-3 overflow-hidden rounded-2xl bg-cream">
         {rows.map(([k, v, go], i) => (
@@ -431,10 +427,10 @@ export function AccountScreen() {
             className={cx('flex-row items-center px-4 py-3', i > 0 && 'border-t border-line')}
           >
             <View className="flex-1">
-              <Text className="text-[11px] text-sub">{k}</Text>
-              <Text className="text-[15px] text-ink">{v}</Text>
+              <Text className="text-caption2 text-sub">{k}</Text>
+              <Text className="text-callout text-ink">{v}</Text>
             </View>
-            <ChevronRight size={18} color={C.sub} />
+            <ChevronRight size={ICON.md} color={C.sub} />
           </Pressable>
         ))}
       </View>
@@ -467,10 +463,10 @@ export function NicknameScreen() {
       <Label>닉네임</Label>
       <Input value={v} onChangeText={(x) => setV(x.slice(0, 10))} autoFocus invalid={!ok && !!v} />
       <View className="mt-2 flex-row justify-between">
-        <Text className={cx('text-[12px]', !ok ? 'text-danger' : 'text-sub')}>
+        <Text className={cx('text-caption', !ok ? 'text-danger' : 'text-sub')}>
           2~10자로 입력해주세요
         </Text>
-        <Text className="text-[12px] text-sub">{v.length}/10</Text>
+        <Text className="text-caption text-sub">{v.length}/10</Text>
       </View>
     </Screen>
   );
@@ -522,19 +518,19 @@ export function PlanScreen() {
         {PLANS.map((p) => (
           <Card key={p.id} className="p-4">
             <View className="flex-row items-center justify-between">
-              <Text className="text-[17px] font-bold text-ink">{p.name}</Text>
+              <Text className="text-headline font-bold text-ink">{p.name}</Text>
               {p.hot && <Badge tone="dark">인기</Badge>}
             </View>
             <Text
               className={cx(
-                'mt-1 text-[15px] font-semibold',
+                'mt-1 text-callout font-semibold',
                 p.id === 'free' ? 'text-sub' : 'text-brand',
               )}
             >
               {p.price}
             </Text>
             {p.desc.map((d) => (
-              <Text key={d} className="text-[12px] text-sub">
+              <Text key={d} className="text-caption text-sub">
                 {d}
               </Text>
             ))}
@@ -559,7 +555,7 @@ export function PlanScreen() {
       <Alert
         open={!!pick}
         tone="brand"
-        icon="⚡"
+        icon={<Zap size={ICON.lg} color={C.brand} />}
         title={`${PLANS.find((p) => p.id === pick)?.name} 플랜으로 바꿀까요?`}
         body="결제는 앱 마켓 계정으로 진행돼요. 언제든 해지할 수 있어요."
         secondary="취소"
