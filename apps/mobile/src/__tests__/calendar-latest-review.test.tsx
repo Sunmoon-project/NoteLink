@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
@@ -42,6 +42,7 @@ const customDay = `${monthKey}-07`;
 const preferenceKey = 'notelink.holiday-auto.calendar-review-user';
 beforeEach(() => {
   jest.clearAllMocks();
+  useToast.getState().hide();
   mockStored.clear();
   setParams({});
   useAuth.setState({ userId: 'calendar-review-user' });
@@ -272,9 +273,15 @@ it('캘린더 링크 생성 값과 결과·폐기 후 재조회를 검증한다'
         rangeStart: publicDay,
         rangeEnd: customDay,
         createdAt: new Date().toISOString(),
-      } as never,
+        token: 'new-share-token',
+        ownerId: 'me',
+        scopes: ['todos', 'study'],
+        expiresAt: null,
+        revokedAt: null,
+        subscribers: [],
+      },
     ];
-    return { url: 'notelink.test/new-share' } as never;
+    return { ...shares[0]!, url: 'notelink.test/new-share' };
   });
   const revoke = jest.spyOn(api.calendar, 'revokeShare').mockImplementation(async () => {
     shares = [];
@@ -293,9 +300,12 @@ it('캘린더 링크 생성 값과 결과·폐기 후 재조회를 검증한다'
   await fireEvent.press(await screen.findByText('삭제'));
   await waitFor(() => expect(revoke.mock.calls[0]?.[0]).toBe('new-share'));
   await waitFor(() => expect(screen.queryByText('삭제')).toBeNull());
+  expect(screen.queryByText('notelink.test/new-share')).toBeNull();
+  expect(screen.queryByText('복사')).toBeNull();
+  expect(screen.queryByText('카카오톡으로 공유')).toBeNull();
   expect(get.mock.calls.length).toBeGreaterThan(1);
 });
-it('캘린더 링크 생성·폐기 실패를 안내하고 다시 시도할 수 있다', async () => {
+it('캘린더 링크 생성 실패를 안내하고 다시 시도할 수 있다', async () => {
   const create = jest.spyOn(api.calendar, 'createShare').mockRejectedValue(new Error('offline'));
   await renderScreen(<CalShareScreen />, client());
   await fireEvent.press(screen.getByText('공유 링크 생성'));
@@ -366,4 +376,92 @@ it('화면에서 직접 입력한 시각은 할 일 목록을 다시 열어도 �
   );
   await screen.findByText('직접 시각 화면 검증');
   expect(screen.getAllByText('일반 · 09:35').length).toBeGreaterThan(0);
+});
+
+function sharedCalendar(id: string): Awaited<ReturnType<typeof api.calendar.createShare>> {
+  return {
+    _id: id,
+    token: id,
+    ownerId: 'me',
+    rangeStart: publicDay,
+    rangeEnd: customDay,
+    scopes: ['todos'],
+    expiresAt: null,
+    revokedAt: null,
+    createdAt: new Date().toISOString(),
+    subscribers: [],
+    url: `notelink.test/${id}`,
+  };
+}
+it('링크 폐기 실패는 목록·현재 링크를 보존하고 같은 링크로 다시 시도할 수 있다', async () => {
+  const created = sharedCalendar('revoke-retry');
+  let shares = [created];
+  jest.spyOn(api.calendar, 'shares').mockImplementation(async () => shares);
+  jest.spyOn(api.calendar, 'createShare').mockResolvedValue(created);
+  const revoke = jest
+    .spyOn(api.calendar, 'revokeShare')
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockImplementation(async () => {
+      shares = [];
+    });
+  await renderScreen(<CalShareScreen />, client());
+  await fireEvent.press(screen.getByText('공유 링크 생성'));
+  await screen.findByText(created.url);
+  await fireEvent.press(screen.getByText('삭제'));
+  await waitFor(() => expect(useToast.getState().msg).toMatch(/삭제.*못/));
+  expect(screen.getByText(created.url)).toBeTruthy();
+  await waitFor(() => {
+    expect(screen.getByText('복사')).toBeEnabled();
+    expect(screen.getByText('삭제')).toBeEnabled();
+  });
+  await fireEvent.press(screen.getByText('삭제'));
+  await waitFor(() => expect(screen.queryByText(created.url)).toBeNull());
+  expect(revoke.mock.calls.map(([id]) => id)).toEqual([created._id, created._id]);
+});
+it('이전 링크 폐기 응답이 늦게 와도 새로 생성한 링크를 지우지 않는다', async () => {
+  const first = sharedCalendar('older-link'),
+    second = sharedCalendar('newer-link');
+  let shares: (typeof first)[] = [];
+  jest.spyOn(api.calendar, 'shares').mockImplementation(async () => shares);
+  jest.spyOn(api.calendar, 'createShare').mockImplementation(async () => {
+    const result = shares.length ? second : first;
+    shares = [...shares, result];
+    return result;
+  });
+  let complete!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  const revoke = jest.spyOn(api.calendar, 'revokeShare').mockImplementation(async (id) => {
+    await pending;
+    shares = shares.filter((s) => s._id !== id);
+  });
+  const view = await renderScreen(<CalShareScreen />, client());
+  try {
+    await fireEvent.press(screen.getByText('공유 링크 생성'));
+    await screen.findByText(first.url);
+    await fireEvent.press(await screen.findByText('삭제'));
+    await waitFor(() => expect(revoke.mock.calls[0]?.[0]).toBe(first._id));
+    await waitFor(() => expect(screen.getByText('복사')).toBeDisabled());
+    await fireEvent.press(screen.getByText('공유 링크 생성'));
+    await screen.findByText(second.url);
+    await act(async () => complete());
+    await waitFor(() => expect(screen.getAllByText('삭제')).toHaveLength(1));
+    expect(screen.getByText(second.url)).toBeTruthy();
+    expect(screen.getByText('복사')).toBeEnabled();
+  } finally {
+    complete();
+    await view.unmount();
+  }
+});
+it('공유 목록 조회 실패는 빈 목록 대신 오류와 재시도를 제공한다', async () => {
+  const shares = jest
+    .spyOn(api.calendar, 'shares')
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValue([sharedCalendar('loaded-after-retry')]);
+  await renderScreen(<CalShareScreen />, client());
+  await screen.findByText('공유 목록을 불러오지 못했어요');
+  await fireEvent.press(screen.getByRole('button', { name: '공유 목록 다시 시도' }));
+  await screen.findByText('삭제');
+  expect(shares).toHaveBeenCalledTimes(2);
 });

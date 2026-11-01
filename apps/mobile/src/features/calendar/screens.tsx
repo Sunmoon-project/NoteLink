@@ -154,20 +154,28 @@ export function CalShareScreen() {
   const qc = useQueryClient();
   const shares = useQuery({ queryKey: ['calendar-shares'], queryFn: api.calendar.shares });
   const [period, setPeriod] = useState<7 | 30 | null>(30);
+  const [createdShare, setCreatedShare] = useState<{ id: string; url: string } | null>(null);
   const start = ymd(new Date(seoul().getFullYear(), seoul().getMonth(), 1));
   const end = ymd(new Date(seoul().getFullYear(), seoul().getMonth() + 1, 0));
   const create = useMutation({
     mutationFn: () =>
       api.calendar.createShare({ rangeStart: start, rangeEnd: end, expiresInDays: period }),
     onError: () => toast('공유 링크를 생성하지 못했어요. 다시 시도해주세요'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['calendar-shares'] }),
+    onSuccess: (share) => {
+      setCreatedShare({ id: share._id, url: share.url });
+      return qc.invalidateQueries({ queryKey: ['calendar-shares'] });
+    },
   });
   const revoke = useMutation({
     mutationFn: api.calendar.revokeShare,
     onError: () => toast('공유 링크를 삭제하지 못했어요. 다시 시도해주세요'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['calendar-shares'] }),
+    onSuccess: (_response, id) => {
+      setCreatedShare((current) => (current?.id === id ? null : current));
+      return qc.invalidateQueries({ queryKey: ['calendar-shares'] });
+    },
   });
-  const link = create.data?.url;
+  const link = createdShare?.url;
+  const revokingCreated = revoke.isPending && revoke.variables === createdShare?.id;
   return (
     <Screen>
       <Header title="캘린더 공유" />
@@ -200,6 +208,8 @@ export function CalShareScreen() {
           <View className="mt-3 flex-row items-center rounded-xl bg-cream px-4 py-3">
             <Text className="flex-1 text-footnote text-sub">{link}</Text>
             <Pressable
+              disabled={revokingCreated}
+              accessibilityState={{ disabled: revokingCreated }}
               onPress={async () => {
                 await Clipboard.setStringAsync(`https://${link}`);
                 toast('링크를 복사했어요');
@@ -211,6 +221,7 @@ export function CalShareScreen() {
           {/* 카카오톡 SDK 연동 전까지 OS 공유 시트로 카카오톡을 고를 수 있다 */}
           <Btn
             kind="sun"
+            disabled={revokingCreated}
             className="mt-2"
             onPress={() => Share.share({ message: `내 학습 캘린더를 공유해요 👉 https://${link}` })}
           >
@@ -219,6 +230,15 @@ export function CalShareScreen() {
         </>
       )}
       <Label>공유한 링크 관리</Label>
+      {shares.isPending && (
+        <Text className="py-3 text-caption text-sub">공유 목록을 불러오고 있어요</Text>
+      )}
+      {shares.isError && (
+        <View className="gap-2 py-3">
+          <Text>공유 목록을 불러오지 못했어요</Text>
+          <Btn onPress={() => void shares.refetch()}>공유 목록 다시 시도</Btn>
+        </View>
+      )}
       <View className="gap-2">
         {shares.data?.map((s) => (
           <Card key={s._id} tone="white" className="flex-row items-center px-4 py-3">
@@ -228,7 +248,13 @@ export function CalShareScreen() {
               </Text>
               <Text className="text-caption2 text-sub">{timeAgo(s.createdAt)} 생성</Text>
             </View>
-            <Pressable onPress={() => revoke.mutate(s._id)} hitSlop={8}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={revoke.isPending}
+              accessibilityState={{ disabled: revoke.isPending }}
+              onPress={() => revoke.mutate(s._id)}
+              hitSlop={8}
+            >
               <Text className="text-footnote text-danger">삭제</Text>
             </Pressable>
           </Card>
