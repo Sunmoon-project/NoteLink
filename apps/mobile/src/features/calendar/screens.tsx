@@ -50,10 +50,12 @@ export function HolidayScreen() {
   const hide = useMutation({
     mutationFn: ({ date, hidden }: { date: string; hidden: boolean }) =>
       api.calendar.setHolidayHidden(date, hidden),
+    onError: () => toast('공휴일 표시를 변경하지 못했어요. 다시 시도해주세요'),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['holidays', year] }),
   });
   const addCustom = useMutation({
     mutationFn: () => api.calendar.addCustomHoliday({ name: v.trim(), date }),
+    onError: () => toast('휴일을 추가하지 못했어요. 다시 시도해주세요'),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['holidays', 'custom'] });
       setV('');
@@ -63,6 +65,7 @@ export function HolidayScreen() {
   });
   const removeCustom = useMutation({
     mutationFn: api.calendar.removeCustomHoliday,
+    onError: () => toast('휴일을 삭제하지 못했어요. 다시 시도해주세요'),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['holidays', 'custom'] }),
   });
   const upcoming = (hol.data ?? []).filter((h) => h._id >= today()).slice(0, 3);
@@ -396,7 +399,14 @@ export function TimetableScreen() {
                       onPress={() => setPick(c)}
                       className="absolute left-0.5 right-0.5 rounded-md px-1 py-0.5"
                       style={{
-                        top: (toH(c.startTime) - firstHour) * H + 2,
+                        top: Math.max(
+                          0,
+                          Math.min(
+                            (toH(c.startTime) - firstHour) * H + 2,
+                            (lastHour - firstHour) * H -
+                              Math.max(6, (toH(c.endTime) - toH(c.startTime)) * H - 3),
+                          ),
+                        ),
                         height: Math.max(6, (toH(c.endTime) - toH(c.startTime)) * H - 3),
                         backgroundColor: c.color,
                       }}

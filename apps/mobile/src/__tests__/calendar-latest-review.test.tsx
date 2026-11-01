@@ -9,6 +9,7 @@ import {
   CalShareScreen,
 } from '../features/calendar/screens';
 import { RepeatGoalScreen } from '../features/progress/goals';
+import { AddTodoSheet, TodoSheet } from '../features/calendar/todo';
 import { RecordScreen } from '../features/progress/record';
 import { api } from '../lib/api';
 import { useToast } from '../stores/toast';
@@ -345,4 +346,24 @@ it('주간 보기도 07시와 23시 수업을 시간 범위 안에 표시한다'
   await screen.findByText('주간 아침');
   expect(screen.getByText('07시')).toBeTruthy();
   expect(screen.getByText('23시')).toBeTruthy();
+});
+
+it('화면에서 직접 입력한 시각은 할 일 목록을 다시 열어도 표시된다', async () => {
+  const close = jest.fn();
+  const view = await renderScreen(<AddTodoSheet open date={publicDay} onClose={close} />, client());
+  await fireEvent.changeText(
+    screen.getByPlaceholderText('수학 워크북 3단원 제출'),
+    '직접 시각 화면 검증',
+  );
+  await fireEvent.press(screen.getByText('직접 입력'));
+  await fireEvent.changeText(screen.getByPlaceholderText('HH:MM (24시간)'), '09:35');
+  await fireEvent.press(screen.getByText('추가하기'));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  await view.unmount();
+  await renderScreen(
+    <TodoSheet open date={publicDay} onClose={jest.fn()} onAdd={jest.fn()} />,
+    client(),
+  );
+  await screen.findByText('직접 시각 화면 검증');
+  expect(screen.getAllByText('일반 · 09:35').length).toBeGreaterThan(0);
 });

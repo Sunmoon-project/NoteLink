@@ -44,6 +44,7 @@ export function DDayScreen() {
   const [date, setDate] = useState(() => ymd(addDays(seoul(), 30)));
   const add = useMutation({
     mutationFn: () => api.calendar.addDday({ title: title.trim(), date }),
+    onError: () => toast('D-day를 추가하지 못했어요. 다시 시도해주세요'),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ddays'] });
       setTitle('');

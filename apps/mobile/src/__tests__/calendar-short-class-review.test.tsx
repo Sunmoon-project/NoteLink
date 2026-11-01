@@ -1,6 +1,7 @@
 import { fireEvent, screen } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { StyleSheet } from 'react-native';
+import { RecordScreen } from '../features/progress/record';
 import { TimetableScreen } from '../features/calendar/screens';
 import { api } from '../lib/api';
 import { renderScreen, setParams } from '../test-utils';
@@ -47,4 +48,73 @@ it('1분 수업도 양수 높이의 블록으로 표시하고 눌러 삭제 패�
   expect(StyleSheet.flatten(block.props.style).height).toBeGreaterThan(0);
   await fireEvent.press(title);
   expect(await screen.findByRole('button', { name: '수업 삭제' })).toBeTruthy();
+});
+
+it.each(['시간표', '주간'])('%s의 마지막 1분 수업 전체가 격자 안에 배치된다', async (mode) => {
+  jest.spyOn(api.timetable, 'get').mockResolvedValue({
+    _id: 'late',
+    updatedAt: '',
+    classes: [
+      {
+        _id: 'last',
+        subjectName: '마지막 1분',
+        days: [1],
+        startTime: '23:58',
+        endTime: '23:59',
+        location: '',
+        color: '#abc',
+        source: 'manual',
+      },
+      {
+        _id: 'first',
+        subjectName: '새벽 1분',
+        days: [2],
+        startTime: '00:00',
+        endTime: '00:01',
+        location: '',
+        color: '#def',
+        source: 'manual',
+      },
+    ],
+  });
+  jest.spyOn(api.rooms, 'mine').mockResolvedValue([]);
+  setParams({ mode: '주간' });
+  await renderScreen(mode === '시간표' ? <TimetableScreen /> : <RecordScreen />, qc);
+  for (const label of ['마지막 1분', '새벽 1분']) {
+    let block: ReturnType<typeof screen.getByText> | null = await screen.findByText(label);
+    while (block && typeof StyleSheet.flatten(block.props.style)?.top !== 'number')
+      block = block.parent;
+    if (!block) throw new Error('블록 없음');
+    const style = StyleSheet.flatten(block.props.style);
+    let grid = block.parent;
+    while (grid && typeof StyleSheet.flatten(grid.props.style)?.height !== 'number')
+      grid = grid.parent;
+    if (!grid) throw new Error('격자 없음');
+    expect(style.top).toBeGreaterThanOrEqual(0);
+    expect(style.height).toBeGreaterThan(0);
+    expect(style.top + style.height).toBeLessThanOrEqual(
+      StyleSheet.flatten(grid.props.style).height,
+    );
+  }
+});
+
+it('주간 기록은 가입한 스터디룸의 교시 일정을 실제 규칙으로 표시한다', async () => {
+  const room = await api.rooms.get('calendar-room');
+  jest.spyOn(api.rooms, 'mine').mockResolvedValue([
+    {
+      ...room,
+      title: '실제 야간 스터디',
+      timerRule: {
+        enabled: true,
+        type: 'period',
+        focusMin: 50,
+        breakMin: 10,
+        repeat: 4,
+        periods: [{ start: '23:58', end: '23:59', label: '마지막 교시' }],
+      },
+    },
+  ]);
+  setParams({ mode: '주간' });
+  await renderScreen(<RecordScreen />, qc);
+  expect(await screen.findAllByText('스터디룸 · 실제 야간 스터디 · 마지막 교시')).toHaveLength(7);
 });

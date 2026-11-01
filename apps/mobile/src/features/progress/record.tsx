@@ -19,6 +19,7 @@ import { useHolidayPreference } from '@/lib/holiday-preference';
 import { addDays, diffLabel, dLabel, hm, md, parse, today, ymd, WD, seoul } from '@/lib/dates';
 import {
   Badge,
+  Btn,
   Card,
   Group,
   Header,
@@ -378,14 +379,38 @@ export function RecordScreen() {
 
 function WeekView({ onMonth }: { onMonth: () => void }) {
   const tt = useQuery({ queryKey: ['timetable'], queryFn: api.timetable.get });
+  const rooms = useQuery({ queryKey: ['my-rooms'], queryFn: api.rooms.mine });
   const [offset, setOffset] = useState(0);
   const base = addDays(seoul(), offset * 7);
   const sun = addDays(base, -base.getDay());
   const days = Array.from({ length: 7 }, (_, i) => addDays(sun, i));
   const H = 22;
   const toH = (t: string) => Number(t.slice(0, 2)) + Number(t.slice(3)) / 60;
-  const START = Math.min(9, ...(tt.data?.classes ?? []).map((c) => Math.floor(toH(c.startTime))));
-  const END = Math.max(23, ...(tt.data?.classes ?? []).map((c) => Math.ceil(toH(c.endTime))));
+  // 교시 규칙은 서울 기준 매일 반복한다. 뽀모도로는 고정 시각 일정이 아니다.
+  const roomPeriods = (rooms.data ?? []).flatMap((room) =>
+    room.timerRule?.enabled && room.timerRule.type === 'period'
+      ? room.timerRule.periods
+          .filter(
+            (p) =>
+              /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(p.start) &&
+              /^(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)$/.test(p.end) &&
+              toH(p.start) >= 0 &&
+              toH(p.end) <= 24 &&
+              toH(p.end) > toH(p.start),
+          )
+          .map((p) => ({ ...p, roomTitle: room.title }))
+      : [],
+  );
+  const starts = [
+    ...(tt.data?.classes ?? []).map((c) => toH(c.startTime)),
+    ...roomPeriods.map((p) => toH(p.start)),
+  ];
+  const ends = [
+    ...(tt.data?.classes ?? []).map((c) => toH(c.endTime)),
+    ...roomPeriods.map((p) => toH(p.end)),
+  ];
+  const START = Math.min(9, ...starts.map(Math.floor));
+  const END = Math.max(23, ...ends.map(Math.ceil));
   const blocks = [
     ...(tt.data?.classes ?? []).flatMap((c) =>
       c.days.map((d) => ({
@@ -394,6 +419,15 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
         h: toH(c.endTime) - toH(c.startTime),
         label: c.subjectName,
         bg: c.color,
+      })),
+    ),
+    ...roomPeriods.flatMap((p) =>
+      days.map((d) => ({
+        day: d.getDay(),
+        top: toH(p.start) - START,
+        h: toH(p.end) - toH(p.start),
+        label: `스터디룸 · ${p.roomTitle} · ${p.label}`,
+        bg: '#dfece4',
       })),
     ),
   ];
@@ -461,7 +495,10 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
                     key={i}
                     className="absolute left-0.5 right-0.5 rounded-md px-1 py-0.5"
                     style={{
-                      top: b.top * H + 4,
+                      top: Math.max(
+                        0,
+                        Math.min(b.top * H + 4, (END - START) * H - Math.max(1, b.h * H - 4)),
+                      ),
                       height: Math.max(1, b.h * H - 4),
                       backgroundColor: b.bg,
                     }}
@@ -473,7 +510,15 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
           ))}
         </View>
       </View>
-      <Text className="mt-2 text-caption2 text-sub">● 시간표 자동연동 ● 스터디룸 일정</Text>
+      <Text className="mt-2 text-caption2 text-sub">● 시간표 자동연동 ● 스터디룸 교시 일정</Text>
+      {rooms.isError && (
+        <View className="mt-2">
+          <Text>스터디룸 일정을 불러오지 못했어요</Text>
+          <Btn small onPress={() => void rooms.refetch()}>
+            일정 다시 시도
+          </Btn>
+        </View>
+      )}
       <Card
         tone="mint"
         onPress={() => router.push('/timetable')}
