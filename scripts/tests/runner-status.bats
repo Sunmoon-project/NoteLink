@@ -401,9 +401,10 @@ EOF
 
 @test "read_counts: 가장 늦은 경우(기한 끝 재실행 · 대기 · 처리 · 다음 날 요약)도 센다" {
   need_jq; fixtures
-  # 9/29 08:20 생성 → 29일 23시간 50분째 재실행 → 23시간 50분 대기 → 50분 처리 → 10/31 08:00 완료.
+  # 9/29 08:20 생성 → 29일 23시간 50분째(10/29 08:10) 재실행 → 23시간 50분 대기 → 50분 처리 → 10/30 08:50 완료,
+  # 다음 날 10/31 08:40 요약(지난 24시간 = 10/30 08:40부터).
   # 만든 지 32일 20분이라 범위가 32일이면 빠짐
-  echo '{"workflow_runs":[{"status":"completed","conclusion":"success","created_at":"2025-09-29T08:20:00Z","updated_at":"2025-10-31T08:00:00Z"}]}' \
+  echo '{"workflow_runs":[{"status":"completed","conclusion":"success","created_at":"2025-09-29T08:20:00Z","updated_at":"2025-10-30T08:50:00Z"}]}' \
     > "$TMP/counts.p2.json"
   read_counts
   [ "$DONE_OK" = 3 ]
