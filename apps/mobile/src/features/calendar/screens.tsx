@@ -156,10 +156,12 @@ export function CalShareScreen() {
   const create = useMutation({
     mutationFn: () =>
       api.calendar.createShare({ rangeStart: start, rangeEnd: end, expiresInDays: period }),
+    onError: () => toast('공유 링크를 생성하지 못했어요. 다시 시도해주세요'),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['calendar-shares'] }),
   });
   const revoke = useMutation({
     mutationFn: api.calendar.revokeShare,
+    onError: () => toast('공유 링크를 삭제하지 못했어요. 다시 시도해주세요'),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['calendar-shares'] }),
   });
   const link = create.data?.url;
@@ -344,6 +346,8 @@ export function TimetableScreen() {
   const classes = tt.data?.classes ?? [];
   const H = 26;
   const toH = (t: string) => Number(t.slice(0, 2)) + Number(t.slice(3)) / 60;
+  const firstHour = Math.min(9, ...classes.map((c) => Math.floor(toH(c.startTime))));
+  const lastHour = Math.max(19, ...classes.map((c) => Math.ceil(toH(c.endTime))));
   return (
     <View className="flex-1">
       <Screen>
@@ -369,14 +373,16 @@ export function TimetableScreen() {
             </Text>
           ))}
         </View>
-        <View className="relative mt-1" style={{ height: 10 * H }}>
-          {Array.from({ length: 10 }, (_, i) => (
+        <View className="relative mt-1" style={{ height: (lastHour - firstHour) * H }}>
+          {Array.from({ length: lastHour - firstHour }, (_, i) => (
             <View
               key={i}
               className="absolute left-0 right-0 border-t border-line"
               style={{ top: i * H }}
             >
-              <Text className="text-caption2 text-sub">{String(9 + i).padStart(2, '0')}</Text>
+              <Text className="text-caption2 text-sub">
+                {String(firstHour + i).padStart(2, '0')}
+              </Text>
             </View>
           ))}
           <View className="absolute inset-0 left-6 flex-row">
@@ -390,7 +396,7 @@ export function TimetableScreen() {
                       onPress={() => setPick(c)}
                       className="absolute left-0.5 right-0.5 rounded-md px-1 py-0.5"
                       style={{
-                        top: (toH(c.startTime) - 9) * H + 2,
+                        top: (toH(c.startTime) - firstHour) * H + 2,
                         height: (toH(c.endTime) - toH(c.startTime)) * H - 3,
                         backgroundColor: c.color,
                       }}

@@ -2,10 +2,16 @@ import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
-import { CalSharedScreen, HolidayScreen } from '../features/calendar/screens';
+import {
+  CalSharedScreen,
+  HolidayScreen,
+  TimetableScreen,
+  CalShareScreen,
+} from '../features/calendar/screens';
 import { RepeatGoalScreen } from '../features/progress/goals';
 import { RecordScreen } from '../features/progress/record';
 import { api } from '../lib/api';
+import { useToast } from '../stores/toast';
 import { today } from '../lib/dates';
 import { useAuth } from '../stores/auth';
 import { renderScreen, setParams } from '../test-utils';
@@ -199,4 +205,99 @@ it('공유받은 두 번째 소유자를 고르고 공유 시작 월에서 이�
   await waitFor(() => expect(subscribe.mock.calls[0]?.[0]).toBe('share-two'));
   await fireEvent.press(screen.getByText('첫 번째 소유자'));
   expect(screen.getByText('2027년 2월')).toBeTruthy();
+});
+
+it('직접 입력한 할일 시각은 저장 후 다시 조회해도 유지된다', async () => {
+  const item = await api.calendar.addTodo({
+    dueDate: publicDay,
+    content: '시간 보존',
+    todoType: 'general',
+    timeSlot: 'custom',
+    dueTime: '09:35',
+    subjectName: null,
+  });
+  expect((await api.calendar.todos(publicDay)).find((x) => x._id === item._id)?.dueTime).toBe(
+    '09:35',
+  );
+});
+it('두 번째 반복 목표도 기록에서 편집할 수 있다', async () => {
+  jest.spyOn(api.study, 'recurringGoals').mockResolvedValue([
+    { _id: 'one', name: '첫 목표', streak: 1, days: [1], targetMin: 30 },
+    { _id: 'two', name: '둘째 목표', streak: 2, days: [2], targetMin: 30 },
+  ] as never);
+  await renderScreen(<RecordScreen />, client());
+  await fireEvent.press(await screen.findByText('둘째 목표 · 연속 2일째'));
+  expect(router.push).toHaveBeenCalledWith({ pathname: '/repeat', params: { id: 'two' } });
+});
+it('시간표는 이른 아침과 늦은 밤 수업도 그리드 안에 배치한다', async () => {
+  jest.spyOn(api.timetable, 'get').mockResolvedValue({
+    _id: 'tt',
+    updatedAt: '',
+    classes: [
+      {
+        _id: 'early',
+        subjectName: '새벽 수업',
+        days: [1],
+        startTime: '07:00',
+        endTime: '08:00',
+        location: '',
+        color: '#fff',
+        source: 'manual',
+      },
+      {
+        _id: 'late',
+        subjectName: '밤 수업',
+        days: [2],
+        startTime: '22:00',
+        endTime: '23:00',
+        location: '',
+        color: '#fff',
+        source: 'manual',
+      },
+    ],
+  });
+  await renderScreen(<TimetableScreen />, client());
+  await screen.findByText('새벽 수업');
+  expect(screen.getByText('07')).toBeTruthy();
+  expect(screen.getByText('22')).toBeTruthy();
+});
+it('캘린더 링크 생성 값과 결과·폐기 후 재조회를 검증한다', async () => {
+  let shares: Awaited<ReturnType<typeof api.calendar.shares>> = [];
+  const get = jest.spyOn(api.calendar, 'shares').mockImplementation(async () => shares);
+  const create = jest.spyOn(api.calendar, 'createShare').mockImplementation(async () => {
+    shares = [
+      {
+        _id: 'new-share',
+        rangeStart: publicDay,
+        rangeEnd: customDay,
+        createdAt: new Date().toISOString(),
+      } as never,
+    ];
+    return { url: 'notelink.test/new-share' } as never;
+  });
+  const revoke = jest.spyOn(api.calendar, 'revokeShare').mockImplementation(async () => {
+    shares = [];
+  });
+  await renderScreen(<CalShareScreen />, client());
+  await fireEvent.press(screen.getByText('7일'));
+  await fireEvent.press(screen.getByText('공유 링크 생성'));
+  await screen.findByText('notelink.test/new-share');
+  expect(create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      expiresInDays: 7,
+      rangeStart: expect.stringMatching(/^\d{4}-\d{2}-01$/),
+      rangeEnd: expect.any(String),
+    }),
+  );
+  await fireEvent.press(await screen.findByText('삭제'));
+  await waitFor(() => expect(revoke.mock.calls[0]?.[0]).toBe('new-share'));
+  await waitFor(() => expect(screen.queryByText('삭제')).toBeNull());
+  expect(get.mock.calls.length).toBeGreaterThan(1);
+});
+it('캘린더 링크 생성·폐기 실패를 안내하고 다시 시도할 수 있다', async () => {
+  const create = jest.spyOn(api.calendar, 'createShare').mockRejectedValue(new Error('offline'));
+  await renderScreen(<CalShareScreen />, client());
+  await fireEvent.press(screen.getByText('공유 링크 생성'));
+  await waitFor(() => expect(create).toHaveBeenCalled());
+  await waitFor(() => expect(useToast.getState().msg).toMatch(/생성.*못/));
 });

@@ -212,24 +212,23 @@ export function RecordScreen() {
             <Card onPress={() => router.push('/repeat')} className="mt-2 p-3">
               <Text>+ 반복 목표 추가</Text>
             </Card>
-            {goals.data?.[0] && (
+            {goals.data?.map((goal) => (
               <Card
+                key={goal._id}
                 tone="white"
-                onPress={() =>
-                  router.push({ pathname: '/repeat', params: { id: goals.data?.[0]?._id ?? '' } })
-                }
+                onPress={() => router.push({ pathname: '/repeat', params: { id: goal._id } })}
                 className="mt-2 flex-row items-center gap-3 px-4 py-3"
               >
                 <Repeat size={ICON.md} color={C.brand} />
                 <View className="flex-1">
                   <Text className="text-subhead font-semibold text-ink">반복 목표</Text>
                   <Text className="text-caption text-sub">
-                    {goals.data[0].name} · 연속 {goals.data[0].streak}일째
+                    {goal.name} · 연속 {goal.streak}일째
                   </Text>
                 </View>
                 <ChevronRight size={ICON.md} color={C.sub} />
               </Card>
-            )}
+            ))}
             <View className="mt-5 flex-row items-center justify-between">
               <Pressable accessibilityLabel="이전 달" onPress={() => shift(-1)} hitSlop={10}>
                 <ChevronLeft size={ICON.md} color={C.sub} />
