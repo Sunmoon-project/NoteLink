@@ -397,7 +397,7 @@ export function TimetableScreen() {
                       className="absolute left-0.5 right-0.5 rounded-md px-1 py-0.5"
                       style={{
                         top: (toH(c.startTime) - firstHour) * H + 2,
-                        height: (toH(c.endTime) - toH(c.startTime)) * H - 3,
+                        height: Math.max(6, (toH(c.endTime) - toH(c.startTime)) * H - 3),
                         backgroundColor: c.color,
                       }}
                     >
