@@ -300,25 +300,28 @@ def _quoted(s: str) -> _Quoted:
     return _Quoted(text, "".join(key), at, number_spans(text))
 
 
-def _numbers_at(page: _Quoted, start: int, end: int) -> set[Decimal] | None:
-    """원문 text[start:end]에 걸친 수. 맞은 곳이 수 중간에서 끊기면 None('11.5'의 '1.5').
+def _numbers_at(page: _Quoted, start: int, end: int) -> list[Decimal] | None:
+    """원문 text[start:end]에 걸친 수(차례대로). 맞은 곳이 수 중간에서 끊기면 None('11.5'의 '1.5').
 
     수 앞의 부호 · 소수점('-3'의 '-')은 norm이 지워 맞은 곳 밖에 남으므로 그 수에 붙여 읽습니다.
     """
-    vals: set[Decimal] = set()
+    vals: list[Decimal] = []
     for a, b, v in page.spans:
         if b <= start or a >= end:
             continue
         # 맞은 곳 밖에 norm이 남기는 글자(숫자 등)가 있으면 수 중간에서 끊김
         if norm(page.text[a:start] + page.text[end:b]):
             return None
-        vals.update(v)
+        vals.extend(v)
     return vals
 
 
 def _found_in(piece: _Quoted, page: _Quoted) -> bool:
-    """조각이 그 쪽에 있고, 맞은 원문 구간의 수가 조각에 적힌 수와 같은지('1.5 mL' ≠ '15 mL')."""
-    nums = {v for _, _, vs in piece.spans for v in vs}
+    """조각이 그 쪽에 있고, 맞은 원문 구간의 수가 조각에 적힌 수와 차례까지 같은지.
+
+    '1.5 mL' ≠ '15 mL', '1.5 mL, 최대 15 mL' ≠ '15 mL, 최대 1.5 mL'(Codex 재리뷰 3차).
+    """
+    nums = [v for _, _, vs in piece.spans for v in vs]
     i = page.key.find(piece.key)
     while i >= 0:
         start, end = page.at[i], page.at[i + len(piece.key) - 1] + 1
@@ -335,10 +338,11 @@ def note_line(llm: Llm, concept: str, keys: list[tuple[str, int]], notes: Notes)
     ' / '로 이어 붙이기도 해서 조각마다 따로 확인합니다. 'of' · '1.' · '—'처럼 정리하면 3글자가 안
     되는 조각은 어느 쪽에나 들어 있어 확인으로 치지 않습니다(로컬은 2글자 이상 원문이면 확인).
     norm은 '.' · '-'를 지워 '1.5 mL'과 '15 mL'이 같아지므로, 조각과 맞은 원문 구간에 적힌 수가
-    조각의 수와 같아야 합니다(Codex 리뷰 10/29 · 재리뷰). 줄 앞 '-'는 수에 붙어 있으면
+    조각의 수와 차례까지 같아야 합니다(Codex 리뷰 10/29 · 재리뷰). 줄 앞 '-'는 수에 붙어 있으면
     부호('-3 도'), 띄어 쓰면 글머리('- 1차')로 봅니다. 알려진 한계(로컬과 같음): '3,5'와
     '35'(쉼표는 천 단위로 봄)는 구별하지 못하고, 붙여 쓴 글머리('-1차')는 부호로 읽어 '1차'로
-    옮긴 줄을 확인하지 못합니다.
+    옮긴 줄을 확인하지 못합니다. 글자 · 수 뒤의 '-'에서 자른 조각('A-3 구역'의 '-3 구역',
+    '10-20 도'의 '-20 도')도 조각만 부호로 읽어 확인하지 못합니다(놓칠 뿐 잘못 통과하지는 않음).
     출처는 쪽 하나만 돌려주므로, 첫 조각과 다른 쪽에서만 확인된 조각은 뺍니다.
     """
     body = "\n".join(f'<노트 쪽="{n}">\n{notes[mid][n][:2000]}\n</노트>' for mid, n in keys)
