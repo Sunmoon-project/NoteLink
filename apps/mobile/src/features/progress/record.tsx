@@ -296,7 +296,10 @@ export function RecordScreen() {
                 ['총 순공시간', `${Math.round((stats.data?.totalSec ?? 0) / 3600)}시간`],
                 ['공부한 날', `${stats.data?.studyDays ?? 0}일`],
                 ['최장 연속', `${stats.data?.longestStreak ?? 0}일`],
-                ['주로 공부한 시간', `오후 ${(stats.data?.peakHour ?? 21) - 12}시`],
+                [
+                  '주로 공부한 시간',
+                  `${(stats.data?.peakHour ?? 21) < 12 ? '오전' : '오후'} ${(stats.data?.peakHour ?? 21) % 12 || 12}시`,
+                ],
               ].map(([k, v]) => (
                 <Card key={k} className="w-[48.5%] px-3 py-2.5">
                   <Text className="text-caption2 text-sub">{k}</Text>
@@ -379,9 +382,10 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
   const base = addDays(seoul(), offset * 7);
   const sun = addDays(base, -base.getDay());
   const days = Array.from({ length: 7 }, (_, i) => addDays(sun, i));
-  const H = 22,
-    START = 9;
+  const H = 22;
   const toH = (t: string) => Number(t.slice(0, 2)) + Number(t.slice(3)) / 60;
+  const START = Math.min(9, ...(tt.data?.classes ?? []).map((c) => Math.floor(toH(c.startTime))));
+  const END = Math.max(23, ...(tt.data?.classes ?? []).map((c) => Math.ceil(toH(c.endTime))));
   const blocks = [
     ...(tt.data?.classes ?? []).flatMap((c) =>
       c.days.map((d) => ({
@@ -434,12 +438,15 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
           </View>
         ))}
       </View>
-      <View className="relative mt-2" style={{ height: 14 * H }}>
-        {['09시', '12시', '15시', '18시', '21시'].map((t, i) => (
+      <View className="relative mt-2" style={{ height: (END - START) * H }}>
+        {Array.from(
+          { length: END - START },
+          (_, i) => `${String(START + i).padStart(2, '0')}시`,
+        ).map((t, i) => (
           <View
             key={t}
             className="absolute left-0 right-0 border-t border-line"
-            style={{ top: i * 3 * H }}
+            style={{ top: i * H }}
           >
             <Text className="text-caption2 text-sub">{t}</Text>
           </View>
@@ -453,7 +460,11 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
                   <View
                     key={i}
                     className="absolute left-0.5 right-0.5 rounded-md px-1 py-0.5"
-                    style={{ top: b.top * H + 4, height: b.h * H, backgroundColor: b.bg }}
+                    style={{
+                      top: b.top * H + 4,
+                      height: Math.max(1, b.h * H - 4),
+                      backgroundColor: b.bg,
+                    }}
                   >
                     <Text className="text-caption2 leading-3 text-ink">{b.label}</Text>
                   </View>

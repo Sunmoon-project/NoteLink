@@ -301,3 +301,48 @@ it('캘린더 링크 생성·폐기 실패를 안내하고 다시 시도할 수 
   await waitFor(() => expect(create).toHaveBeenCalled());
   await waitFor(() => expect(useToast.getState().msg).toMatch(/생성.*못/));
 });
+
+it.each([
+  [0, '오전 12시'],
+  [9, '오전 9시'],
+  [12, '오후 12시'],
+  [21, '오후 9시'],
+] as const)('주요 공부 시간 %s시를 올바르게 표시한다', async (peakHour, label) => {
+  const data = await api.study.stats('all');
+  jest.spyOn(api.study, 'stats').mockResolvedValue({ ...data, peakHour });
+  await renderScreen(<RecordScreen />, client());
+  expect(await screen.findByText(label)).toBeTruthy();
+});
+it('주간 보기도 07시와 23시 수업을 시간 범위 안에 표시한다', async () => {
+  jest.spyOn(api.timetable, 'get').mockResolvedValue({
+    _id: 'tt',
+    updatedAt: '',
+    classes: [
+      {
+        _id: 'early',
+        subjectName: '주간 아침',
+        days: [1],
+        startTime: '07:00',
+        endTime: '08:00',
+        location: '',
+        color: '#fff',
+        source: 'manual',
+      },
+      {
+        _id: 'late',
+        subjectName: '주간 밤',
+        days: [2],
+        startTime: '23:00',
+        endTime: '23:59',
+        location: '',
+        color: '#fff',
+        source: 'manual',
+      },
+    ],
+  });
+  setParams({ mode: '주간' });
+  await renderScreen(<RecordScreen />, client());
+  await screen.findByText('주간 아침');
+  expect(screen.getByText('07시')).toBeTruthy();
+  expect(screen.getByText('23시')).toBeTruthy();
+});
