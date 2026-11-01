@@ -35,12 +35,18 @@ export function HomeScreen() {
 
   const items = today.data?.items ?? [];
   const has = items.length > 0;
-  const active = items.find((i) => i._id === s.itemId);
-  const live = (id: string, base: number) => base + (id === s.itemId ? s.elapsed(now) : 0);
-  const todaySec = items.reduce((a, i) => a + live(i._id, i.accumulatedSec), 0);
-  const weekSec = (weekly.data?.totalSec ?? 0) + (s.itemId ? s.elapsed(now) : 0);
+  const active =
+    items.find((i) => i._id === s.itemId) ??
+    (s.itemId ? { _id: s.itemId, title: '진행 중인 공부', subjectName: '' } : undefined);
+  const midnight = Date.parse(`${day}T00:00:00+09:00`);
+  const weekday = new Date(midnight + 9 * 3600000).getUTCDay();
+  const monday = midnight - ((weekday + 6) % 7) * 86400000;
+  const dayLive = s.itemId ? s.elapsedSince(midnight, now) : 0;
+  const live = (id: string, base: number) => base + (id === s.itemId ? dayLive : 0);
+  const todaySec = items.reduce((a, i) => a + i.accumulatedSec, 0) + dayLive;
+  const weekSec = (weekly.data?.totalSec ?? 0) + (s.itemId ? s.elapsedSince(monday, now) : 0);
   const goalMin = goal.data?.targetMin ?? 21 * 60;
-  const pct = has ? Math.round((weekSec / 60 / goalMin) * 100) : 0;
+  const pct = Math.round((weekSec / 60 / goalMin) * 100);
   const nextDday = ddays.data?.find((d) => d.daysLeft >= 0);
 
   const toggle = async (id: string) => {
@@ -151,7 +157,7 @@ export function HomeScreen() {
                   ? '쉬는 중 · 10분이 지나면 자동으로 종료돼요'
                   : has
                     ? `이번주 ${hm(weekSec)} / 목표 ${goalMin / 60}시간 (${pct}%) ›`
-                    : '이번주 목표 0% ›'}
+                    : `이번주 ${hm(weekSec)} / 목표 ${goalMin / 60}시간 (${pct}%) ›`}
             </Text>
           </Pressable>
           <Pressable onPress={() => active && router.push('/landscape')}>
@@ -264,9 +270,7 @@ export function HomeScreen() {
             <Text className="text-caption text-sub">이번주 순공시간</Text>
             <Text className="text-caption font-semibold text-brand">기록 · 캘린더 ›</Text>
           </View>
-          <Text className="mt-1 text-title2 font-bold text-ink">
-            {has ? hm(weekSec) : '0시간 0분'}
-          </Text>
+          <Text className="mt-1 text-title2 font-bold text-ink">{hm(weekSec)}</Text>
           <Text className="text-caption text-sub">
             {has
               ? `지난주보다 ${hm(Math.abs(weekly.data?.diffFromLastWeekSec ?? 0)).replace('0시간 ', '')} ${(weekly.data?.diffFromLastWeekSec ?? 0) < 0 ? '줄었어요' : '늘었어요'}`

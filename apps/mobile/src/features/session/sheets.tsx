@@ -1,13 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { toast } from '@/stores/toast';
-import { Btn, Card, Chip, Input, Label, Sheet, Toggle } from '@/components/ui';
+import { Btn, Card, Chip, Input, Label, Loading, Sheet, Toggle } from '@/components/ui';
 import { TrendingUp } from 'lucide-react-native';
 import { ICON, C } from '@/theme';
-import { hm } from '@/lib/dates';
+import { hm, seoul, ymd } from '@/lib/dates';
+import { useNow } from '@/hooks';
 
 // p.47 #2 공부할 항목 추가 / p.49 #7 이번주 목표 시간
 
@@ -133,20 +134,42 @@ const Step = ({ label, d, onPress }: { label: string; d: number; onPress: () => 
 
 export function WeekGoalSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const qc = useQueryClient();
-  const goal = useQuery({ queryKey: ['goal', 'weekly'], queryFn: api.study.weeklyGoal });
+  const day = ymd(seoul(useNow()));
+  const goal = useQuery({
+    queryKey: ['goal', 'weekly', day],
+    queryFn: api.study.weeklyGoal,
+    enabled: open,
+    refetchOnMount: 'always',
+  });
   const [h, setH] = useState(21);
   const [manual, setManual] = useState(false);
   const [inputH, setInputH] = useState('21');
   const hours = manual ? Number(inputH) : h;
   const valid = Number.isFinite(hours) && hours >= 1 && hours <= 168 && Number.isInteger(hours * 2);
   const [alarm, setAlarm] = useState(true);
-  // 저장된 목표를 처음 불러왔을 때만 입력값을 채운다 — 재조회가 입력을 덮어쓰지 않게 (렌더 중 상태 조정)
-  const [loaded, setLoaded] = useState(false);
-  if (goal.data && !loaded) {
-    setLoaded(true);
-    setH(goal.data.targetMin / 60);
-    setAlarm(goal.data.notify80);
-  }
+  const wasOpen = useRef(false);
+  const loadedDay = useRef('');
+  const initialized = useRef(false);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    if (open && (!wasOpen.current || loadedDay.current !== day)) {
+      initialized.current = false;
+      setReady(false);
+      loadedDay.current = day;
+      goal.refetch();
+    }
+    wasOpen.current = open;
+  }, [open, day]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (open && goal.data && !goal.isFetching && !initialized.current) {
+      initialized.current = true;
+      setReady(true);
+      setH(goal.data.targetMin / 60);
+      setInputH(String(goal.data.targetMin / 60));
+      setAlarm(goal.data.notify80);
+      setManual(false);
+    }
+  }, [open, day, goal.data, goal.isFetching]);
   const save = useMutation({
     mutationFn: () => {
       if (!valid) throw new Error('목표 범위를 확인해주세요');
@@ -159,6 +182,12 @@ export function WeekGoalSheet({ open, onClose }: { open: boolean; onClose: () =>
       toast(`이번주 목표를 ${hours}시간으로 정했어요`);
     },
   });
+  if (open && !ready)
+    return (
+      <Sheet open={open} onClose={onClose}>
+        <Loading />
+      </Sheet>
+    );
   return (
     <Sheet open={open} onClose={onClose}>
       <Text className="text-headline font-bold text-ink">이번주 목표 시간</Text>
@@ -235,7 +264,7 @@ export function WeekGoalSheet({ open, onClose }: { open: boolean; onClose: () =>
       </Card>
       <Btn
         className="mt-5"
-        disabled={!valid}
+        disabled={!valid || goal.isFetching || !goal.data}
         loading={save.isPending}
         onPress={() => save.mutate()}
       >

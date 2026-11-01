@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
@@ -147,4 +148,43 @@ it('홈은 전주보다 줄어든 시간을 양수와 감소 안내로 표시한
   await api.study.addItem({ title: '감소 표시 확인', subjectName: '수학', goalMin: 30 });
   await renderScreen(<HomeScreen />, client());
   expect(await screen.findByText('지난주보다 1시간 30분 줄었어요')).toBeTruthy();
+});
+
+it('오늘 항목이 없어도 이번주 누적 기록을 표시한다', async () => {
+  jest.spyOn(api.study, 'today').mockResolvedValue({ items: [], totalSec: 0 } as never);
+  const weekly = await api.study.weekly();
+  jest.spyOn(api.study, 'weekly').mockResolvedValue({ ...weekly, totalSec: 7200 });
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('2시간 0분')).toBeTruthy();
+});
+it('서울 자정 이후 목록에 없는 진행 중 세션도 종료할 수 있다', async () => {
+  mockNow = Date.parse('2026-11-01T15:00:02Z');
+  jest.spyOn(api.study, 'today').mockResolvedValue({ items: [], totalSec: 0 } as never);
+  useSession.setState({ itemId: 'yesterday', sessionId: 'session', since: mockNow - 5000 });
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('종료')).toBeTruthy();
+  expect(screen.getByText('00:00:02')).toBeTruthy();
+});
+it('목표 시트를 다시 열면 새 주 목표로 입력을 초기화한다', async () => {
+  mockNow = Date.parse('2026-11-01T14:59:59Z');
+  const goal = await api.study.weeklyGoal();
+  jest
+    .spyOn(api.study, 'weeklyGoal')
+    .mockResolvedValue({ ...goal, targetMin: 600, notify80: false });
+  const qc = client();
+  let setOpen!: (v: boolean) => void;
+  function Harness() {
+    const [open, change] = useState(true);
+    setOpen = change;
+    return <WeekGoalSheet open={open} onClose={jest.fn()} />;
+  }
+  await renderScreen(<Harness />, qc);
+  await screen.findByText('10시간');
+  await act(async () => setOpen(false));
+  jest
+    .spyOn(api.study, 'weeklyGoal')
+    .mockResolvedValue({ ...goal, targetMin: 1800, notify80: true });
+  mockNow += 2000;
+  await act(async () => setOpen(true));
+  expect(await screen.findByText('30시간')).toBeTruthy();
 });
