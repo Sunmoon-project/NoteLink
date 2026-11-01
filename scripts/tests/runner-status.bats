@@ -273,7 +273,12 @@ gh() {
   st=$(sed -n 's/.*[?&]status=\([a-z_]*\).*/\1/p' <<< "$path")
   case "$path" in
     *actions/runners*) jq -r "$filter" "$TMP/runners.json" ;;
-    *created=*) for f in $(pages counts); do jq -r "$filter" "$f"; done ;;
+    *created=*) # API처럼 만든 시각(created_at)이 조건보다 이른 실행은 빼고 돌려줌(created_at이 없으면 범위 안)
+      local c
+      c=$(sed -n 's/.*created=%3E%3D\([^&]*\).*/\1/p' <<< "$path")
+      for f in $(pages counts); do
+        jq --arg c "$c" '.workflow_runs |= map(select((.created_at // "9999") >= $c))' "$f" | jq -r "$filter"
+      done ;;
     *) for f in $(pages runs); do
          jq --arg s "$st" '.workflow_runs |= map(select(.status == $s))' "$f" | jq -r "$filter"
        done ;;
@@ -356,7 +361,17 @@ EOF
   grep -q 'runs?status=pending&per_page=100 --jq .* --paginate' "$TMP/gh.calls"
 }
 
-@test "read_queue: 대기가 여러 쪽(100건 넘게)이면 쪽마다 더하고, 둘째 쪽 이후의 가장 오래된 것도 고른다" {
+@test "read_queue: 대기가 101건(100건 + 1건, 두 쪽)이면 모두 세고, 둘째 쪽의 가장 오래된 것을 고른다" {
+  need_jq; fixtures
+  jq -n '{workflow_runs: [range(100) | {status: "queued", created_at: "2025-10-31T08:00:00Z", run_started_at: "2025-10-31T08:00:00Z"}]}' \
+    > "$TMP/runs.json"
+  echo '{"workflow_runs":[{"status":"queued","created_at":"2025-10-31T07:10:00Z","run_started_at":"2025-10-31T07:10:00Z"}]}' \
+    > "$TMP/runs.p2.json"
+  read_queue
+  [ "$QUEUED" = 101 ] && [ "$WAIT_MIN" = 90 ]
+}
+
+@test "read_queue: 쪽마다 더하고, 둘째 쪽 이후의 가장 오래된 것도 고른다(queued · pending 따로)" {
   need_jq; fixtures
   cat > "$TMP/runs.p2.json" <<'EOF'
 {"workflow_runs":[{"status":"queued","created_at":"2025-10-31T06:40:30Z","run_started_at":"2025-10-31T06:40:30Z"},
@@ -380,8 +395,17 @@ EOF
   need_jq; fixtures
   read_counts
   [ "$DONE_OK" = 2 ] && [ "$DONE_FAIL" = 2 ] && [ "$DONE_CANCEL" = 1 ]
-  # 만든 시각은 재실행할 수 있는 30일 전까지 넓혀 받고(재실행은 만든 시각이 그대로), 쪽을 넘겨 모두 받음
-  grep -q 'runs?per_page=100&created=%3E%3D2025-10-01T08:40:00Z --jq .* --paginate' "$TMP/gh.calls"
+  # 만든 시각은 재실행 기한(30일) + 이틀인 32일 전까지 넓혀 받고(재실행은 만든 시각이 그대로), 쪽을 넘겨 모두 받음
+  grep -q 'runs?per_page=100&created=%3E%3D2025-09-29T08:40:00Z --jq .* --paginate' "$TMP/gh.calls"
+}
+
+@test "read_counts: 30일 하고 조금 전에 만들어, 기한 안에 재실행해 오늘 끝낸 것도 센다" {
+  need_jq; fixtures
+  # 10/01 08:00에 만들고(30일 40분 전) 10/31 07:30에 재실행, 08:00에 끝남. 범위가 30일이면 빠짐
+  echo '{"workflow_runs":[{"status":"completed","conclusion":"success","created_at":"2025-10-01T08:00:00Z","updated_at":"2025-10-31T08:00:00Z"}]}' \
+    > "$TMP/counts.p2.json"
+  read_counts
+  [ "$DONE_OK" = 3 ]
 }
 
 @test "read_counts: 둘째 쪽 이후의 결과도 센다(20일 전에 만들어 오늘 재실행해 끝낸 것 포함)" {
