@@ -56,11 +56,15 @@ export function HomeScreen() {
     if (s.itemId === id && running) return s.pause();
     // 다른 항목으로 바꾸면 start()가 앞 세션을 끝낸다 → 서버 누적을 다시 받아 방금 공부한 시간이 빠지지 않게
     const switching = !!s.itemId && s.itemId !== id;
+    const owner = useAuth.getState().userId;
     try {
       await s.start(id);
-      if (switching) await qc.invalidateQueries({ queryKey: ['study'] });
     } catch {
-      toast('공부를 시작하지 못했어요. 연결을 확인하고 다시 시도해주세요');
+      if (useAuth.getState().userId === owner)
+        toast('공부를 시작하지 못했어요. 연결을 확인하고 다시 시도해주세요');
+    } finally {
+      if (switching && useAuth.getState().userId === owner)
+        await qc.invalidateQueries({ queryKey: ['study'] });
     }
   };
   const ending = useRef(false);

@@ -255,3 +255,45 @@ describe('PR34 종료 중 인증 갱신과 재로그인 구분', () => {
     ).toBe(false);
   });
 });
+
+it('기존 세션 종료 성공 후 새 시작만 실패해도 저장된 공부 시간을 재조회해 표시한다', async () => {
+  startOldSession();
+  let previousEnded = false;
+  mockApi.study.today.mockImplementation(async () => ({
+    items: [{ ...oldItem, accumulatedSec: previousEnded ? 12 : 0 }, nextItem],
+    totalSec: previousEnded ? 12 : 0,
+  }));
+  mockApi.study.weekly.mockImplementation(async () => ({
+    totalSec: previousEnded ? 12 : 0,
+    diffFromLastWeekSec: 0,
+    days: [],
+  }));
+  mockApi.study.endSession.mockImplementation(async () => {
+    previousEnded = true;
+    return { durationSec: 12, pointsEarned: 5 };
+  });
+  mockApi.study.startSession.mockRejectedValue(new Error('새 세션 생성 실패'));
+  const qc = client();
+  await renderScreen(<HomeScreen />, qc);
+  const nextStart = await screen.findByLabelText('새 공부 시작');
+  await waitFor(() => expect(mockApi.study.weekly).toHaveBeenCalled());
+  const initialDaily = mockApi.study.today.mock.calls.length;
+  const initialWeekly = mockApi.study.weekly.mock.calls.length;
+  await fireEvent.press(nextStart);
+  expect(previousEnded).toBe(true);
+  expect(mockApi.study.endSession).toHaveBeenCalledWith(
+    'old-session',
+    expect.objectContaining({ endReason: 'switch' }),
+  );
+  expect(mockApi.study.startSession).toHaveBeenCalledTimes(1);
+  expect(useSession.getState()).toMatchObject({ itemId: null, sessionId: null, since: null });
+  expect(mockToast).toHaveBeenCalled();
+  await waitFor(() => {
+    expect(mockApi.study.today.mock.calls.length).toBeGreaterThan(initialDaily);
+    expect(mockApi.study.weekly.mock.calls.length).toBeGreaterThan(initialWeekly);
+  });
+  expect(await screen.findAllByText('00:00:12')).not.toHaveLength(0);
+  expect(
+    qc.getQueriesData<{ totalSec: number }>({ queryKey: ['study', 'weekly'] })[0]?.[1]?.totalSec,
+  ).toBe(12);
+});
