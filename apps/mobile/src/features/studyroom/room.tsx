@@ -284,7 +284,35 @@ export function RoomScreen() {
   const openFeature = useFeatureNavigation();
   const myId = useAuth((s) => s.userId);
   const { id } = useLocalSearchParams<{ id: string }>();
-  const room = useQuery({ queryKey: ['room', id], queryFn: () => api.rooms.get(id) });
+  const timerGeneration = useRef(0);
+  const [timer, setTimer] = useState<{ label: string; endsAt: number } | null>(null);
+  const room = useQuery({
+    queryKey: ['room', id],
+    refetchOnMount: 'always',
+    queryFn: () => {
+      const generation = timerGeneration.current;
+      return api.rooms.get(id).then((received) => {
+        // 조회를 기다리는 사이 새 소켓 상태를 받았으면 과거 스냅샷은 적용하지 않는다.
+        if (generation === timerGeneration.current && received.timerState !== undefined) {
+          const current = received.timerState;
+          setTimer(
+            received.timerRule?.enabled && current?.endsAt
+              ? {
+                  label:
+                    current.phase === 'break'
+                      ? '휴식'
+                      : current.phase === 'period'
+                        ? '교시'
+                        : '집중',
+                  endsAt: Date.parse(current.endsAt),
+                }
+              : null,
+          );
+        }
+        return received;
+      });
+    },
+  });
   const chatId = useQuery({ queryKey: ['room-chat', id], queryFn: () => api.rooms.chatRoomId(id) });
   const history = useQuery({
     queryKey: ['messages', chatId.data],
@@ -295,7 +323,14 @@ export function RoomScreen() {
   const [membersAt, setMembersAt] = useState(() => Date.now());
   const [members, setMembers] = useState<RoomMember[]>([]);
   const [msgs, setMsgs] = useState<Message[]>([]);
-  const [timer, setTimer] = useState<{ label: string; endsAt: number } | null>(null);
+  const timerEnd = timer?.endsAt;
+  const requestedTimerEnd = useRef<number | null>(null);
+  const refetchRoom = room.refetch;
+  useEffect(() => {
+    if (timerEnd === undefined || timerEnd > now || requestedTimerEnd.current === timerEnd) return;
+    requestedTimerEnd.current = timerEnd;
+    void refetchRoom();
+  }, [timerEnd, now, refetchRoom]);
   const [menu, setMenu] = useState(false);
   const [pick, setPick] = useState(false);
   const [chat, setChat] = useState(false);
@@ -313,8 +348,6 @@ export function RoomScreen() {
     setLoadedRoom(room.data);
     setMembers(room.data.members);
     setMembersAt(now);
-    const rule = room.data.timerRule;
-    if (!rule?.enabled) setTimer(null);
   }
   const [loadedMsgs, setLoadedMsgs] = useState<typeof history.data>();
   if (history.data && history.data !== loadedMsgs) {
@@ -349,8 +382,9 @@ export function RoomScreen() {
   );
   useSocket(
     'room:timer',
-    (p) =>
-      p.roomId === id &&
+    (p) => {
+      if (p.roomId !== id) return;
+      timerGeneration.current++;
       setTimer(
         p.rule?.enabled && p.endsAt
           ? {
@@ -358,7 +392,8 @@ export function RoomScreen() {
               endsAt: new Date(p.endsAt).getTime(),
             }
           : null,
-      ),
+      );
+    },
     [id],
   );
   useSocket('chat:message', (m) => m.chatRoomId === chatId.data && receiveMessage(m), [
@@ -480,7 +515,9 @@ export function RoomScreen() {
           <View className="flex-row items-center justify-between">
             <Text className="text-title3 font-bold text-ink">{room.data.title}</Text>
             <View className="flex-row gap-1">
-              {timer && <Badge tone="dark">{`${timer.label} ${hms(remain).slice(3)}`}</Badge>}
+              {timer && (
+                <Badge tone="dark">{`${timer.label} ${remain >= 3600 ? hms(remain) : hms(remain).slice(3)}`}</Badge>
+              )}
               <Badge tone="gray">{`${members.length}명 접속중`}</Badge>
             </View>
           </View>

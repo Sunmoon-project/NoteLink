@@ -507,8 +507,9 @@ export function ScheduleScreen() {
     const target = WD.indexOf(day.trim().slice(0, 1));
     if (target < 0) return toast('일정의 요일을 확인해주세요');
     const now = seoul();
-    const d = addDays(now, (target - now.getDay() + 7) % 7 || 7);
+    let d = addDays(now, (target - now.getDay() + 7) % 7);
     const at = (t: string) => new Date(`${ymd(d)}T${t.padStart(5, '0')}:00+09:00`);
+    if (at(start).getTime() <= Date.now()) d = addDays(d, 7);
     const r = await Calendar.createEventInCalendarAsync({
       title: `${room.data?.title ?? '스터디룸'} 공동 학습`,
       startDate: at(start),
