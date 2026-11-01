@@ -285,3 +285,55 @@ def test_numeric_separator_ignores_surrounding_parentheses() -> None:
 
     assert option_key("1/(2)") == option_key("1/2")
     assert option_key("350,000 mL") == option_key("350000 mL")
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("1/(2+3)", "1/2+3"),
+        ("(1+2)/3", "1+2/3"),
+        ("1*(2+3)", "1*2+3"),
+        ("(-2)^2", "-2^2"),
+        ("((-2))^2", "-2^2"),
+    ],
+)
+def test_option_key_preserves_arithmetic_grouping(a: str, b: str) -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key(a) != option_key(b)
+    d = draft(passage="", options=[a, b, "4", "5", "6"], answer=a)
+    reasons, correct = code_check(d, NEW, a, "규칙", [])
+    assert "보기 5개가 아니거나 겹침" not in reasons
+    assert correct == 0
+    d["options"] = [b, "3", "4", "5", "6"]
+    assert code_check(d, NEW, a, "규칙", [])[1] is None
+
+
+def test_word_hyphens_do_not_become_numeric_operators() -> None:
+    from app.services.quiz.checks import option_key
+
+    a, b = "1-year-old and 2-year-old", "1 year old and 2 year old"
+    assert option_key(a) == option_key(b)
+    assert code_check(draft(options=[a, b, "c", "d", "e"], answer=a), NEW, a, "규칙", [])[1] is None
+    assert code_check(draft(options=[a, "b", "c", "d", "e"], answer=b), NEW, a, "규칙", [])[1] == 0
+
+
+@pytest.mark.parametrize(("a", "b"), [("-(1+2)", "(1+2)"), ("- (2)", "(2)"), ("1%", "1")])
+def test_option_key_preserves_boundary_operators(a: str, b: str) -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key(a) != option_key(b)
+    options = [a, b, "4", "5", "6"]
+    d = draft(passage="", options=options, answer=a)
+    assert code_check(d, NEW, a, "규칙", [])[1] == 0
+    d["options"] = [b, "3", "4", "5", "6"]
+    assert code_check(d, NEW, a, "규칙", [])[1] is None
+
+
+@pytest.mark.parametrize(
+    ("a", "b"), [("((1+2))", "1+2"), ("((-2))^2", "(-2)^2"), ("(-2)*3", "-2*3")]
+)
+def test_redundant_arithmetic_parentheses_do_not_create_distinct_options(a: str, b: str) -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key(a) == option_key(b)

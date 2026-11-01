@@ -21,7 +21,7 @@ import { ERROR_CODES, type ShopItem } from '@notelink/shared';
 import { api, ApiError, NetworkError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { clock } from '@/lib/dates';
-import { BASE_AVATAR } from '@/lib/mock/seed';
+import { BASE_AVATAR } from '@/lib/shop-items';
 import { Alert, Badge, Btn, Dialog, Loading, Sheet, Two, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
