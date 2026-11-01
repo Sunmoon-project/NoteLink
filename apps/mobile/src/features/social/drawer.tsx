@@ -23,8 +23,15 @@ export const STATUS: Record<User['status'], { label: string; dot: string }> = {
 
 export const StatusText = ({ status }: { status: User['status'] }) => (
   <View className="flex-row items-center">
-    <View className={cx('mr-1 h-1.5 w-1.5 rounded-full', STATUS[status].dot)} />
-    <Text className="text-caption2 text-sub">{STATUS[status].label}</Text>
+    <View
+      className={cx(
+        'mr-1 h-1.5 w-1.5 rounded-full',
+        (Object.hasOwn(STATUS, status) ? STATUS[status] : STATUS.offline).dot,
+      )}
+    />
+    <Text className="text-caption2 text-sub">
+      {(Object.hasOwn(STATUS, status) ? STATUS[status] : STATUS.offline).label}
+    </Text>
   </View>
 );
 

@@ -202,3 +202,9 @@ describe('PR33 친구 삭제', () => {
     expect(screen.getByText('친구님을 친구에서 삭제할까요?')).toBeTruthy();
   });
 });
+
+it('잘못된 외부 status 파라미터도 채팅 화면을 깨뜨리지 않는다', async () => {
+  setParams({ id: 'friend-1', status: 'invalid' });
+  await renderScreen(<ChatScreen />, client());
+  expect(await screen.findByText('오프라인')).toBeTruthy();
+});
