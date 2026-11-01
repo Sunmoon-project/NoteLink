@@ -5,8 +5,15 @@ import { router } from 'expo-router';
 import { PhotoCheckScreen, PickedScreen } from '../features/content/capture';
 import { DocDetailScreen, HandDetailScreen } from '../features/content/detail';
 import { Player } from '../features/content/player';
+import { ResultScreen } from '../features/content/convert';
 import { useDraft } from '../stores/draft';
 import { renderScreen, setParams } from '../test-utils';
+
+jest.mock('expo-router', () => ({
+  router: { push: jest.fn(), replace: jest.fn(), back: jest.fn(), dismissTo: jest.fn() },
+  useLocalSearchParams: () => globalThis.mockParams,
+  useSegments: () => [],
+}));
 
 const mockApi = {
   content: {
@@ -15,6 +22,7 @@ const mockApi = {
     downloadUrl: jest.fn(),
     recording: jest.fn(),
     addBookmark: jest.fn(),
+    saveMaterial: jest.fn(),
   },
 };
 const mockUpload = jest.fn();
@@ -231,5 +239,43 @@ describe('PR36 실제 원본 및 북마크', () => {
     );
     await act(async () => pending.resolve());
     await screen.findByText('북마크 모음 (1)');
+  });
+});
+
+describe('PR36 녹음·변환 결과 조회 복구', () => {
+  it.each(['recording', 'material'] as const)(
+    '%s 조회 실패 후 재시도하면 재생 화면을 복구한다',
+    async (endpoint) => {
+      mockApi.content[endpoint].mockRejectedValueOnce(new Error('조회 실패'));
+      await renderScreen(<Player materialId="material1" />, client());
+      expect(await screen.findByText('재생 자료를 불러오지 못했어요')).toBeTruthy();
+      expect(screen.queryByLabelText('북마크 추가')).toBeNull();
+      await fireEvent.press(screen.getByRole('button', { name: '다시 시도' }));
+      await screen.findByText('북마크 모음 (0)');
+      expect(mockApi.content[endpoint]).toHaveBeenCalledTimes(2);
+    },
+  );
+  it('변환 결과 조회 실패를 재시도한 뒤 같은 자료를 저장한다', async () => {
+    mockApi.content.material.mockRejectedValueOnce(new Error('결과 조회 실패'));
+    mockApi.content.saveMaterial.mockResolvedValue(undefined);
+    await renderScreen(<ResultScreen />, client());
+    expect(await screen.findByText('변환 결과를 불러오지 못했어요')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '학습자료에 저장' })).toBeNull();
+    expect(mockApi.content.saveMaterial).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByRole('button', { name: '다시 시도' }));
+    await fireEvent.press(await screen.findByRole('button', { name: '학습자료에 저장' }));
+    await waitFor(() => expect(mockApi.content.saveMaterial).toHaveBeenCalledWith('material1'));
+    await waitFor(() =>
+      expect(router.dismissTo).toHaveBeenCalledWith({
+        pathname: '/(tabs)/note/folder/[id]',
+        params: { id: 'folder1' },
+      }),
+    );
+  });
+  it('결과 조회 실패 화면에서 뒤로 이동할 수 있다', async () => {
+    mockApi.content.material.mockRejectedValueOnce(new Error('결과 조회 실패'));
+    await renderScreen(<ResultScreen />, client());
+    await fireEvent.press(await screen.findByRole('button', { name: '뒤로' }));
+    expect(router.back).toHaveBeenCalled();
   });
 });

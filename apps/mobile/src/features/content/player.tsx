@@ -14,7 +14,7 @@ import * as Haptics from 'expo-haptics';
 import { Bookmark, Pause, Play, Repeat, Sparkles } from 'lucide-react-native';
 import { api } from '@/lib/api';
 import { toast } from '@/stores/toast';
-import { Chip, Loading, Sheet, cx } from '@/components/ui';
+import { Btn, Chip, Loading, Sheet, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
 // p.66 #22 · p.69 녹음 요약 재생 · 아바타 립싱크 · 북마크 · 원문 텍스트
@@ -156,6 +156,21 @@ export function Player({
       marking.current = false;
     }
   };
+  if (mat.isError || rec.isError)
+    return (
+      <View className="gap-3 p-4">
+        <Text>재생 자료를 불러오지 못했어요</Text>
+        <Btn
+          loading={mat.isFetching || rec.isFetching}
+          onPress={() => {
+            if (mat.isError) void mat.refetch();
+            if (rec.isError) void rec.refetch();
+          }}
+        >
+          다시 시도
+        </Btn>
+      </View>
+    );
   if (!mat.data || !rec.data) return <Loading />;
   return (
     <>
