@@ -8,7 +8,7 @@ import Animated, {
   withTiming,
   cancelAnimation,
 } from 'react-native-reanimated';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import { Bookmark, Pause, Play, Repeat, Sparkles } from 'lucide-react-native';
@@ -102,6 +102,7 @@ export function Player({
   initialView?: 'summary' | 'text';
   openBookmarks?: boolean;
 }) {
+  const qc = useQueryClient();
   const rec = useQuery({
     queryKey: ['recording', materialId],
     queryFn: () => api.content.recording(materialId),
@@ -134,6 +135,18 @@ export function Player({
     const at = p.pos;
     try {
       await api.content.addBookmark(materialId, at);
+      qc.setQueryData<Awaited<ReturnType<typeof api.content.material>>>(
+        ['material', materialId],
+        (current) =>
+          current
+            ? {
+                ...current,
+                bookmarks: current.bookmarks.some((b) => b.atSec === at)
+                  ? current.bookmarks
+                  : [...current.bookmarks, { atSec: at }],
+              }
+            : current,
+      );
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       setMarks((m) => [...new Set([...m, at])].sort((a, b) => a - b));
       toast(`${hhmmss(at)} 구간을 북마크했어요`);

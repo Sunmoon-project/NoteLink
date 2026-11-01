@@ -27,7 +27,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Circle, Path } from 'react-native-svg';
+import Svg, { Circle, Path, SvgXml } from 'react-native-svg';
 import { router, useSegments } from 'expo-router';
 import {
   Check,
@@ -859,31 +859,49 @@ export const Avatar = ({
   face?: string;
   uri?: string | null;
   tone?: 'brand' | 'mint';
-}) => (
-  <View
-    className={cx(
-      'items-center justify-center rounded-full',
-      tone === 'brand' ? 'bg-brand' : 'bg-mint',
-    )}
-    style={{ width: size, height: size }}
-  >
-    {uri ? (
-      <Image
-        accessibilityLabel="프로필 사진"
-        source={{ uri }}
-        style={{ width: size, height: size, borderRadius: size / 2 }}
-      />
-    ) : (
-      <Text
-        className={cx('font-bold', tone === 'brand' ? 'text-white' : 'text-brand')}
-        style={{ fontSize: face ? size * 0.55 : size * 0.4 }}
-      >
-        {face ?? (name && name.length > 1 ? name.slice(-2, -1) : name)}
-      </Text>
-    )}
-  </View>
-);
-
+}) => {
+  const svgData = !!uri && /^data:image\/svg\+xml[;,]/i.test(uri);
+  let xml: string | undefined;
+  if (svgData) {
+    try {
+      const decoded = decodeURIComponent(uri!.slice(uri!.indexOf(',') + 1));
+      if (decoded.trim().startsWith('<svg')) xml = decoded;
+    } catch {
+      /* 잘못된 데이터 URI는 이름으로 대신 표시한다. */
+    }
+  }
+  const fallback = (
+    <Text
+      className={cx('font-bold', tone === 'brand' ? 'text-white' : 'text-brand')}
+      style={{ fontSize: face ? size * 0.55 : size * 0.4 }}
+    >
+      {face ?? (name && name.length > 1 ? name.slice(-2, -1) : name)}
+    </Text>
+  );
+  return (
+    <View
+      className={cx(
+        'items-center justify-center rounded-full',
+        tone === 'brand' ? 'bg-brand' : 'bg-mint',
+      )}
+      style={{ width: size, height: size }}
+    >
+      {xml ? (
+        <View accessibilityRole="image" accessibilityLabel="프로필 사진" accessible>
+          <SvgXml xml={xml} width={size} height={size} fallback={fallback} onError={() => {}} />
+        </View>
+      ) : uri && !svgData ? (
+        <Image
+          accessibilityLabel="프로필 사진"
+          source={{ uri }}
+          style={{ width: size, height: size, borderRadius: size / 2 }}
+        />
+      ) : (
+        fallback
+      )}
+    </View>
+  );
+};
 /** 막대 진행률 — 값이 바뀌면 부드럽게 채운다 (width 대신 transform) */
 export function Progress({
   value,

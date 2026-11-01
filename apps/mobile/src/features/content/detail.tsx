@@ -501,14 +501,25 @@ export function ShareScreen() {
   const friends = useQuery({ queryKey: ['friends'], queryFn: api.social.friends });
   const [tab, setTab] = useState<keyof typeof TABS>('필기');
   const [sel, setSel] = useState<string[]>(id ? [id] : []);
+  const [loadedShare, setLoadedShare] = useState<string>();
+  if (material.data && material.data._id === id && loadedShare !== material.data._id) {
+    setLoadedShare(material.data._id);
+    const initialTab = (Object.keys(TABS) as (keyof typeof TABS)[]).find(
+      (key) => TABS[key] === material.data.kind,
+    );
+    if (initialTab) setTab(initialTab);
+    setSel([material.data._id]);
+  }
   const [to, setTo] = useState<{ type: 'room' | 'friend'; id: string; name: string } | null>(null);
   const [pick, setPick] = useState(false);
   const list = (mats.data ?? []).filter((m) => m.kind === TABS[tab]);
+  const selected = list.filter((m) => sel.includes(m._id));
+  const selectedIds = selected.map((m) => m._id);
   const share = useMutation({
     mutationFn: () => {
-      if (!to || !targets.some((t) => t.type === to.type && t.id === to.id) || !sel.length)
+      if (!to || !targets.some((t) => t.type === to.type && t.id === to.id) || !selectedIds.length)
         throw new Error('공유 대상을 선택해주세요');
-      return api.content.share({ materialIds: sel, target: { type: to.type, id: to.id } });
+      return api.content.share({ materialIds: selectedIds, target: { type: to.type, id: to.id } });
     },
     onError: () => toast('공유하지 못했어요. 대상과 연결을 확인해주세요'),
     onSuccess: () =>
@@ -516,9 +527,9 @@ export function ShareScreen() {
         pathname: '/note-shared',
         params: {
           to: to!.name,
-          n: String(sel.length),
+          n: String(selectedIds.length),
           tab,
-          name: mats.data?.find((m) => m._id === sel[0])?.title,
+          name: selected[0]?.title,
         },
       }),
   });
@@ -535,7 +546,7 @@ export function ShareScreen() {
       footer={
         <Btn
           disabled={
-            !sel.length || !to || !targets.some((t) => t.type === to.type && t.id === to.id)
+            !selectedIds.length || !to || !targets.some((t) => t.type === to.type && t.id === to.id)
           }
           loading={share.isPending}
           onPress={() => share.mutate()}
@@ -545,7 +556,14 @@ export function ShareScreen() {
       }
     >
       <Header title="공유하기" large={false} />
-      <Segment items={Object.keys(TABS) as (keyof typeof TABS)[]} value={tab} onChange={setTab} />
+      <Segment
+        items={Object.keys(TABS) as (keyof typeof TABS)[]}
+        value={tab}
+        onChange={(next) => {
+          setTab(next);
+          setSel([]);
+        }}
+      />
       <View className="mt-3 gap-2">
         {list.length === 0 && (
           <Text className="py-6 text-center text-footnote text-sub">

@@ -464,6 +464,11 @@ export const StudyRoom = z.object({
   maxCapacity: z.number(),
   memberCount: z.number(),
   timerRule: TimerRule.nullable(),
+  /** 서버가 계산한 현재 단계와 UTC 종료 시각. 입장·재연결 때 로컬에서 타이머를 새로 시작하지 않는다. */
+  timerState: z
+    .object({ phase: z.enum(['focus', 'break', 'period']), endsAt: date.nullable() })
+    .nullable()
+    .optional(),
   description: z.string().optional(),
   tags: z.array(z.string()).optional(),
   members: z.array(RoomMember),

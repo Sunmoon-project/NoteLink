@@ -2,6 +2,7 @@ import { File, UploadType } from 'expo-file-system';
 import { UPLOAD_RULES } from '@notelink/shared';
 import { api } from './api';
 import { env } from './env';
+import { rememberMockUpload } from './mock/uploads';
 
 // 앱 → Azure Blob 직접 업로드 (p.19: 서버를 거치지 않는 직접 연결)
 // 1) 메인 API에서 SAS 주소 발급 → 2) PUT으로 바로 올림 → 3) blobUrl만 서버에 저장
@@ -71,6 +72,7 @@ export async function uploadToBlob(
       onProgress?.(p);
       await new Promise((r) => setTimeout(r, 60));
     }
+    rememberMockUpload(sas.blobUrl, f.uri);
     return sas.blobUrl;
   }
   const task = file.createUploadTask(sas.uploadUrl, {
