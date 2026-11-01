@@ -60,7 +60,7 @@ jobs:
         env:
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-          RUNNER_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+          STATUS_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_RUNNER_WEBHOOK }}
         run: scripts/runner-status.sh "$MODE"
 
