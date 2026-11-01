@@ -136,6 +136,11 @@ def utc_date(v: object, where: str) -> datetime:
     return v.astimezone(UTC).replace(tzinfo=None) if v.tzinfo else v
 
 
+def is_void(v: object) -> bool:
+    """무효 풀이 표시: true 또는 무효 이유 글(today_review가 씀). 그 밖의 값은 무효가 아님."""
+    return v is True or (isinstance(v, str) and v != "")
+
+
 def parse_srs(raw: object, where: str) -> srs.Srs | None:
     """아직 풀지 않은 문제는 None이나 {}(로컬 DB의 맞춤 퀴즈 49문제): 처음 푸는 문제로 셈."""
     if raw is None or raw == {}:
@@ -145,7 +150,7 @@ def parse_srs(raw: object, where: str) -> srs.Srs | None:
     for key in ("step", "streak", "reviews"):
         need(raw, key, int, where)
     # srs.moved가 dueAt을 dueBefore로 옮김. state가 없던 예전 기록은 복습 중으로
-    s = {"dueAt": None, "state": "active", **raw}
+    s = {"dueAt": None, "lastResult": None, "state": "active", **raw}
     for key in ("dueAt", "dueBefore"):
         if s.get(key) is not None:
             s[key] = utc_date(s[key], f"{where}.{key}")
@@ -186,8 +191,8 @@ def _attempt(raw: object, where: str) -> Attempt:
     answers = []
     for i, a in enumerate(need_list(raw, "answers", where)):
         w = f"{where}.answers[{i}]"
-        void = a.get("void") if isinstance(a, dict) else None  # true 또는 무효 이유 글
-        answers.append((need(a, "questionId", str, w), need(a, "correct", bool, w), bool(void)))
+        void = a.get("void") if isinstance(a, dict) else None
+        answers.append((need(a, "questionId", str, w), need(a, "correct", bool, w), is_void(void)))
     return Attempt(
         need(raw, "id", str, where),
         need(raw, "quizSetId", str, where),
@@ -255,6 +260,11 @@ def judge(correct: bool) -> Reason | None:
 
 def concept_of(q: Question) -> str:
     return (q.get("conceptTags") or [OTHER])[0]
+
+
+def seoul_day(t: datetime) -> date:
+    """UTC 시각(tzinfo 없음)의 서울 날짜."""
+    return t.replace(tzinfo=UTC).astimezone(SEOUL).date()
 
 
 def seoul_midnight(d: date) -> datetime:
@@ -449,7 +459,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     quiz = sets[attempt.quiz_set_id]
     qmap = {q["id"]: q for q in quiz.questions}
     f = attempt.finished_at
-    day = f.replace(tzinfo=UTC).astimezone(SEOUL).date()
+    day = seoul_day(f)
     today = seoul_midnight(day)
 
     # 1. 코드: 문제마다 맞았는지, 복습 상태. 무효 풀이(결함 문제)는 없는 풀이로 봄

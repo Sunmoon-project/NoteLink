@@ -9,10 +9,13 @@ ai_jobs.type = 'today_review' (공용 계약 AiJobType, 11/01 추가).
 input — NestJS가 작업을 만들 때 담습니다. ObjectId는 문자열, 날짜는 Date 또는 ISO 문자열
   day       오늘(서울 날짜 YYYY-MM-DD). 다음 날 서울 0시 전에 dueAt이 된 문제를 고릅니다
   size?     세트 문제 수(기본 5, '5문제 다시 보기')
-  sets      [{id, materialId, folderId?, questions}] 사용자의 퀴즈 세트(지운 것 제외). 점수가 같은
-            문제는 이 순서(만든 순)대로 고릅니다
+  sets      [{id, materialId, deletedAt?, questions}] 사용자의 퀴즈 세트. 지운 세트(deletedAt
+            있음)도 담습니다: 문제는 내지 않지만 그 세트의 풀이를 약한 개념 · 무효 풀이에 셉니다
+            (로컬과 같음).
+            점수가 같은 문제는 이 순서(만든 순)대로 고릅니다
   attempts  [{id, quizSetId, finishedAt, answers: [{questionId, answer, correct, void?}]}]
-            사용자의 모든 풀이. 약한 개념(로컬처럼 기간 없이)과 무효로 할 풀이 찾기에 씁니다
+            사용자의 모든 풀이. 약한 개념(로컬처럼 기간 없이)과 무효로 할 풀이 찾기에 씁니다.
+            void는 true 또는 무효 이유 글(review.is_void)
   notes     {materialId: [{pageNo, ocrText}]} 사용자의 노트 전부(오늘의 복습은 노트를 섞음)
 
 result — NestJS가 반영합니다
@@ -30,11 +33,18 @@ result — NestJS가 반영합니다
 되돌리기(로컬 today.undo, NestJS 몫): 하나도 풀지 않고 그만두면 세트를 지우고, movedTo가 이
 세트 문제인 moved 문제는 state='active' · dueAt=dueBefore로 돌리고(movedTo · dueBefore 지움),
 flawed 문제의 movedTo가 가리키는 새 문제는 그 flawed 문제의 세트 끝에 붙입니다.
+
+LLM 장애(로컬에는 없는 처리): '정답 둘' 검사 호출이 실패하면 그 문제는 검사하지 않은 그대로 내고
+다음에 다시 검사합니다(quality.two_answers는 실패를 '통과'로 돌려주므로 checked를 남기지 않음).
+새 문제 만들기 호출이 모두 실패하면 그 문제만 내일로 미루고 flawTries는 늘리지 않습니다.
+알려진 한계(로컬과 같음): 노트 글이 없는 자료의 문제도 사용자의 다른 노트 쪽(text.locate)으로
+검사합니다. 오늘의 복습 세트는 노트를 섞어서 세트의 materialId로 쪽을 가릴 수 없습니다.
 """
 
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, cast
 
 from app.clients.llm import JsonObject, Llm, LlmError
@@ -43,16 +53,17 @@ from app.services.quiz.checks import Target, seen_question
 from app.services.quiz.models import CHOICES, Draft, Notes, Question
 from app.services.quiz.review import (
     REVIEW_SET_SIZE,
-    SEOUL,
     InputError,
     Progress,
     concept_of,
+    is_void,
     judge,
     need,
     need_list,
     new_id,
     parse_notes,
     parse_question,
+    seoul_day,
     seoul_midnight,
     utc_date,
 )
@@ -60,6 +71,7 @@ from app.services.quiz.text import locate, same_item
 
 TYPE = "today_review"
 FLAW_TRIES = 3  # 결함 문제를 새 문제로 바꾸려 해 볼 날 수. 그래도 못 만들면 복습에서 뺌
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")  # date.fromisoformat은 '20261101' · '2026-W44-7'도 받음
 
 
 @dataclass(frozen=True)
@@ -67,6 +79,7 @@ class QuizSet:
     id: str
     material_id: str
     questions: list[Question]
+    deleted: bool = False  # 지운 세트: 문제는 내지 않고 풀이만 셈
 
 
 @dataclass
@@ -106,16 +119,19 @@ def _answer(raw: object, where: str) -> Answer:
         need(raw, "questionId", str, where),
         a,
         need(raw, "correct", bool, where),
-        void if isinstance(void, str) and void else void is True,
+        cast(bool | str, void) if is_void(void) else False,
     )
 
 
 def parse(raw: JsonObject) -> TodayInput:
     """input을 확인해 꺼냅니다. 맞지 않으면 InputError(다시 해도 같으므로 바로 실패)."""
+    text = need(raw, "day", str, "input")
     try:
-        day = date.fromisoformat(need(raw, "day", str, "input"))
+        day = date.fromisoformat(text) if _DAY.fullmatch(text) else None
     except ValueError:
-        raise InputError("input.day") from None
+        day = None
+    if day is None:
+        raise InputError("input.day")
     size = raw.get("size", REVIEW_SET_SIZE)
     if not isinstance(size, int) or isinstance(size, bool) or size < 1:
         raise InputError("input.size")
@@ -126,7 +142,8 @@ def parse(raw: JsonObject) -> TodayInput:
             parse_question(q, f"{w}.questions[{j}]")
             for j, q in enumerate(need_list(s, "questions", w))
         ]
-        sets.append(QuizSet(need(s, "id", str, w), need(s, "materialId", str, w), qs))
+        deleted = s.get("deletedAt") is not None
+        sets.append(QuizSet(need(s, "id", str, w), need(s, "materialId", str, w), qs, deleted))
     attempts = []
     for i, a in enumerate(need_list(raw, "attempts", "input")):
         w = f"input.attempts[{i}]"
@@ -145,14 +162,8 @@ def parse(raw: JsonObject) -> TodayInput:
 # ---------------------------------------------------------------- code
 
 
-def seoul_day(t: datetime) -> date:
-    """UTC 시각(tzinfo 없음)의 서울 날짜."""
-    return t.replace(tzinfo=UTC).astimezone(SEOUL).date()
-
-
-def weakness(sets: list[QuizSet], attempts: list[Attempt]) -> Counter[str]:
-    """개념마다 틀린 수. 사용자의 모든 풀이(무효 풀이 제외)."""
-    qmaps = {s.id: {q["id"]: q for q in s.questions} for s in sets}
+def weakness(qmaps: dict[str, dict[str, Question]], attempts: list[Attempt]) -> Counter[str]:
+    """개념마다 틀린 수. 사용자의 모든 풀이(무효 풀이 제외, 지운 세트 포함)."""
     weak: Counter[str] = Counter()
     for a in attempts:
         qm = qmaps.get(a.quiz_set_id, {})
@@ -184,8 +195,25 @@ def _page(q: Question, notes: Notes, s: QuizSet) -> tuple[int, str]:
     return page, notes[mid][page]
 
 
-def flaw(llm: Llm, s: QuizSet, q: Question, notes: Notes, hits: list[str]) -> list[str]:
-    """저장된 문제에 '정답 둘' 검사(quality.two_answers). 걸린 보기는 hits에 모읍니다."""
+class _Watch:
+    """LLM 호출이 실패했는지 기억합니다. quality.two_answers는 실패를 '자연스럽지 않음'으로 봄."""
+
+    def __init__(self, llm: Llm) -> None:
+        self._llm, self.failed = llm, False
+
+    def call(self, *args: Any, **kwargs: Any) -> JsonObject:
+        try:
+            return self._llm.call(*args, **kwargs)
+        except LlmError:
+            self.failed = True
+            raise
+
+
+def flaw(llm: Llm, s: QuizSet, q: Question, notes: Notes, hits: list[str]) -> list[str] | None:
+    """저장된 문제에 '정답 둘' 검사(quality.two_answers). 걸린 보기는 hits에 모읍니다.
+
+    검사 호출이 하나라도 실패하면 None(검사하지 못함).
+    """
     _, text = _page(q, notes, s)
     d: Draft = {
         "stem": q["prompt"],
@@ -193,7 +221,9 @@ def flaw(llm: Llm, s: QuizSet, q: Question, notes: Notes, hits: list[str]) -> li
         "options": q["choices"] or [],
         "answer": q["answer"],
     }
-    return quality.two_answers(llm, d, text, q.get("type"), hits)
+    watch = _Watch(llm)
+    why = quality.two_answers(cast(Llm, watch), d, text, q.get("type"), hits)
+    return None if watch.failed else why
 
 
 def void_flawed(
@@ -204,7 +234,7 @@ def void_flawed(
     그 풀이만큼 reviews를 빼고, lastResult는 같은 낱말에서 무효가 아닌 마지막 풀이로 돌립니다.
     """
     voided, last, voids = 0, None, []
-    for a in sorted(attempts, key=lambda a: a.finished_at):
+    for a in attempts:  # 푼 순서대로
         qm = qmaps.get(a.quiz_set_id, {})
         for x in a.answers:
             oq = qm.get(x.question_id)
@@ -238,11 +268,11 @@ def replace_flawed(
     hits: list[str],
     notes: Notes,
     slot: int,
-) -> Question | None:
-    """q의 복습을 이어 갈 같은 낱말의 깨끗한 문제. 모델이 못 만들면 None.
+) -> tuple[Question | None, bool]:
+    """(q의 복습을 이어 갈 같은 낱말의 깨끗한 문제, LLM 장애). 모델이 못 만들면 문제는 None.
 
-    생성 호출이 모두 실패하면(LLM 장애) LlmError: 작업 처리기가 나중에 다시 시도합니다(로컬에는
-    없는 처리. 장애를 '못 만듦'으로 세면 flawTries가 늘어 3일 뒤 복습에서 빠지므로).
+    생성 호출이 모두 실패했으면(장애) 두 번째 값이 True: 장애를 '못 만듦'으로 세면 flawTries가
+    늘어 3일 뒤 복습에서 빠지므로 부른 쪽이 따로 처리합니다(로컬에는 없는 처리).
     """
     page, text = _page(q, notes, s)
     st = cast(srs.Srs, q["srs"])
@@ -250,10 +280,8 @@ def replace_flawed(
     t = Target("wrong" if st["lastResult"] == "wrong" else "right", q["answer"], concept_of(q))
     avoid = list(dict.fromkeys(hits + quality.group_words(q["answer"], text)))
     m = similar.make_similar(llm, q, t, page, text, slot, seen, avoid)
-    if m.llm_down:
-        raise LlmError("결함 문제 바꾸기 호출이 모두 실패")
     if m.question is None:
-        return None
+        return None, m.llm_down
     g = m.question
     new: Question = {
         **q,
@@ -266,28 +294,30 @@ def replace_flawed(
         "explanation": g.get("explanation"),
         "srs": {**st, "state": "active", "checked": True},
     }
-    return new
+    return new, False
 
 
 def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     """today_review 작업 하나."""
     inp = parse(raw)
     sets, notes, day = inp.sets, inp.notes, inp.day
+    live = [s for s in sets if not s.deleted]  # 문제를 내는 세트. 풀이는 지운 세트까지 셈
     tomorrow = seoul_midnight(day + timedelta(days=1))
-    weak = weakness(sets, inp.attempts)
     qmaps = {s.id: {q["id"]: q for q in s.questions} for s in sets}
+    attempts = sorted(inp.attempts, key=lambda a: a.finished_at)
+    weak = weakness(qmaps, attempts)
     changed: dict[tuple[str, str], srs.Srs] = {}  # (quizSetId, questionId) → 바꾼 복습 상태
 
     # 1. 코드: 날짜가 된 문제 — 지난번 틀린 문제 → 약한 개념 → 오래된 날짜
     due: list[tuple[QuizSet, Question]] = []
-    for s in sets:
+    for s in live:
         for q in s.questions:
             st = q.get("srs")
             if st and st["state"] == "active" and st["dueAt"] and st["dueAt"] < tomorrow:
                 due.append((s, q))
     due.sort(
         key=lambda sq: (
-            cast(srs.Srs, sq[1]["srs"])["lastResult"] != "wrong",
+            cast(srs.Srs, sq[1]["srs"]).get("lastResult") != "wrong",
             -weak[concept_of(sq[1])],
             cast(srs.Srs, sq[1]["srs"])["dueAt"],
         )
@@ -300,8 +330,11 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     voids: list[JsonObject] = []
     made: set[str] = set()
     has_notes = any(notes.values())
+    shown = 15
     for n, (s, q) in enumerate(due, 1):
-        report(15 + 70 * n // len(due), "복습할 문제 고르기")
+        if (value := 15 + 70 * n // len(due)) != shown:  # 진행률은 바뀔 때만 씀(ai_jobs 쓰기)
+            report(value, "복습할 문제 고르기")
+            shown = value
         if any(same_item(q["answer"], p["answer"]) for _, p in picked):
             continue
         st = cast(srs.Srs, q["srs"])
@@ -312,17 +345,26 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
             # '정답 둘' 검사(10/22) 전에 만든 문제는 검사한 적이 없음. 5번째 보기를 못 더한
             # 4지선다(10/26)도 같은 방법으로 다시 만듦
             hits: list[str] = []
-            why = flaw(llm, s, q, notes, hits) if not st.get("checked") else []
+            found = flaw(llm, s, q, notes, hits) if not st.get("checked") else []
+            if found is None:  # 검사 호출 실패: 검사하지 않은 그대로 내고 다음에 다시 검사
+                picked.append((s, q))
+                if len(picked) == inp.size:
+                    break
+                continue
+            why = found
             if short:
                 why.append(f"보기 {len(choices)}개({CHOICES}지선다 아님)")
-            new = None
+            new, down = None, False
             if why:
-                st, found = void_flawed(inp.attempts, qmaps, q, hits)
-                voids += found
+                st, voided = void_flawed(attempts, qmaps, q, hits)
+                voids += voided
                 q["srs"] = st
-                new = replace_flawed(llm, sets, s, q, hits, notes, len(picked))
+                new, down = replace_flawed(llm, sets, s, q, hits, notes, len(picked))
             tries = st.get("flawTries", 0) + 1
-            if why and new:
+            if why and down:
+                # 생성 모델 장애: 못 만든 날로 세지 않고 내일 다시 만들어 봄
+                st = {**st, "dueAt": tomorrow, "flaw": "; ".join(why)}
+            elif why and new:
                 st = {**st, "state": "flawed", "dueAt": None, "flaw": "; ".join(why)}
                 st["movedTo"] = new["id"]
             elif why and tries < FLAW_TRIES:
@@ -363,7 +405,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         if len(picked) == inp.size:
             break
 
-    counts = progress(sets)
+    counts = progress(live)
     result: JsonObject = {
         "questions": [],
         "title": None,
@@ -389,7 +431,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         nxt = min(
             (
                 st["dueAt"]
-                for s in sets
+                for s in live
                 for q in s.questions
                 if (st := q.get("srs")) and st["state"] == "active" and st["dueAt"]
             ),
@@ -404,7 +446,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     questions: list[JsonObject] = []
     merged = 0
     active = [
-        (s, q, cast(srs.Srs, q["srs"])) for s in sets for q in s.questions if _state(q) == "active"
+        (s, q, cast(srs.Srs, q["srs"])) for s in live for q in s.questions if _state(q) == "active"
     ]
     for i, (_, q) in enumerate(picked, 1):
         # 결함 문제를 바꾼 새 문제는 id를 그대로 둠: flawed 문제의 movedTo가 이 id를 가리킴

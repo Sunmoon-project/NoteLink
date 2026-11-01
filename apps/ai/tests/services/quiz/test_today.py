@@ -175,6 +175,32 @@ def test_progress_is_listed_by_wrong_answers() -> None:
     ]
 
 
+def test_deleted_sets_give_no_questions_but_their_answers_count() -> None:
+    inp = ordering_input()
+    gone = {
+        "id": "s9",
+        "materialId": "m1",
+        "deletedAt": "2026-10-25T00:00:00Z",
+        "questions": [q("qz", "zulu", "C3", st(TOMORROW - timedelta(days=9)))],
+    }
+    inp["sets"].append(gone)
+    inp["attempts"] += [{**wrong("qz", "s9"), "id": f"z{i}"} for i in range(3)]
+    result = run(FakeLlm(), inp)
+    assert "zulu" not in [x["answer"] for x in result["questions"]]
+    assert "qz" not in updates(result)
+    # C3이 틀린 3번으로 가장 약한 개념이 되어 echo가 C1 문제보다 앞에 옴
+    assert [x["answer"] for x in result["questions"]] == ["bravo", "echo", "charlie", "alpha"]
+
+
+def test_old_review_state_without_last_result_is_read() -> None:
+    old = st(TOMORROW - timedelta(days=1))
+    del old["lastResult"]
+    result = run(
+        FakeLlm(), job({"id": "s1", "materialId": "m1", "questions": [q("q1", "a", "C1", old)]})
+    )
+    assert [x["answer"] for x in result["questions"]] == ["a"]
+
+
 def test_void_answers_do_not_count_as_wrong() -> None:
     inp = ordering_input()
     inp["attempts"] = [wrong("qa", void="문제 오류"), wrong("qc", void=True)]
@@ -305,10 +331,23 @@ def test_question_with_four_choices_is_replaced_by_a_new_one() -> None:
     assert not llm.named("Natural")  # 검사한 문제라 '정답 둘' 검사는 다시 하지 않음
 
 
-def test_llm_down_while_replacing_raises_so_the_job_is_retried() -> None:
+def test_llm_down_while_replacing_puts_only_that_question_off_a_day() -> None:
+    old = four_choices()
+    other = q("q2", "fasten", "fasten의 뜻", st(TOMORROW - timedelta(days=1)))
+    old["sets"][0]["questions"].append(other)
     llm = FakeLlm({"Review": [LlmError("HTTP 503")] * 3})
-    with pytest.raises(LlmError):
-        run(llm, four_choices())
+    result = run(llm, old)
+    assert [x["answer"] for x in result["questions"]] == ["fasten"]  # 다른 문제는 그대로 냄
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"], s.get("flawTries")) == ("active", TOMORROW, None)
+
+
+def test_check_call_failing_leaves_the_question_unchecked() -> None:
+    llm = FakeLlm({"Natural": [LlmError("HTTP 503")] * 9})
+    result = run(llm, flawed_input(unchecked()))
+    [x] = result["questions"]
+    assert x["answer"] == "fastened" and "checked" not in x["srs"]  # 다음에 다시 검사
+    assert result["dropped"] == [] and result["voidAnswers"] == []
 
 
 def test_without_note_text_flawed_questions_are_asked_as_they_are() -> None:
@@ -331,6 +370,10 @@ def broken(change: str) -> JsonObject:
     inp = copy.deepcopy(ordering_input())
     if change == "day":
         inp["day"] = "오늘"
+    elif change == "week day":
+        inp["day"] = "2026-W44-5"  # date.fromisoformat은 받음
+    elif change == "compact day":
+        inp["day"] = "20261030"
     elif change == "size":
         inp["size"] = 0
     elif change == "bool size":
@@ -347,7 +390,18 @@ def broken(change: str) -> JsonObject:
 
 
 @pytest.mark.parametrize(
-    "change", ["day", "size", "bool size", "answer", "finishedAt", "set id", "notes"]
+    "change",
+    [
+        "day",
+        "week day",
+        "compact day",
+        "size",
+        "bool size",
+        "answer",
+        "finishedAt",
+        "set id",
+        "notes",
+    ],
 )
 def test_bad_input_fails_at_once(change: str) -> None:
     with pytest.raises(InputError):

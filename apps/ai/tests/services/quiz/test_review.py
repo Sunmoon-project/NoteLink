@@ -490,3 +490,8 @@ def test_another_target_of_this_attempt_is_not_reused() -> None:
     moved = [u for u in result["srsUpdates"] if u["srs"]["state"] == "moved"]
     assert [u["questionId"] for u in moved] == ["q1"]
     assert moved[0]["srs"]["dueBefore"] is not None
+
+
+@pytest.mark.parametrize("value", [1, {}, "", False, None])
+def test_only_true_or_a_reason_marks_an_answer_void(value: object) -> None:
+    assert not review.is_void(value)
