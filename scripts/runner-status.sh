@@ -40,6 +40,10 @@ runner_jq() {  # $1 = 러너 이름
 # 상태로 거른 실행 목록: 개수 \t 가장 오래 기다린 시작 시각 (없으면 빈 값)
 # 재실행(Re-run)한 실행은 created_at이 처음 만든 시각으로 남으므로 run_started_at(재실행 때 바뀜)을 씀
 QUEUE_JQ='[.workflow_runs[] | (.run_started_at // .created_at)] | [length, (min // "")] | @tsv'
+# 이 시각 이후에 끝난 실행의 결론을 한 줄씩 (ISO 시각은 문자열 비교로 순서가 맞음)
+done_jq() {  # $1 = 시작 시각(UTC ISO)
+  printf '.workflow_runs[] | select(.status == "completed" and .updated_at >= "%s") | .conclusion' "$1"
+}
 
 kst() {  # $1 = epoch → "11/01 14:42" (서울은 서머타임이 없어 +9시간)
   date -u -d "@$(( $1 + 9 * 3600 ))" '+%m/%d %H:%M'
@@ -129,22 +133,20 @@ read_queue() {
   fi
 }
 
-# 지난 24시간의 Codex 리뷰 결과 → DONE_OK · DONE_FAIL(시간 초과 포함) · DONE_CANCEL (읽지 못하면 빈 값)
-# 한 쪽(100개)을 넘어도 맞게 세도록 결론별 total_count를 씀
+# 지난 24시간에 끝난 Codex 리뷰 → DONE_OK · DONE_FAIL(시간 초과 포함) · DONE_CANCEL (읽지 못하면 빈 값)
+# API의 created는 만든 시각이라, 오래 기다리다 오늘 끝난 리뷰도 세도록 끝난 시각(updated_at)으로 거름.
+# 대기는 최대 24시간이므로 48시간 안에 만든 실행을 쪽마다(--paginate) 받아 봄.
+# 알려진 한계: 이틀 넘게 지난 실행을 재실행해 끝낸 것은 세지 않음
 read_counts() {
   DONE_OK=""; DONE_FAIL=""; DONE_CANCEL=""
-  local from c n
-  local -A got=()
+  local from since out
   from=$(date -u -d "@$(( NOW - 86400 ))" '+%Y-%m-%dT%H:%M:%SZ')
-  for c in success failure timed_out cancelled; do
-    n=$(gh api "repos/$REPO/actions/workflows/$REVIEW_WORKFLOW/runs?status=$c&created=%3E%3D$from&per_page=1" \
-      --jq '.total_count' 2> /dev/null) || return 0
-    [[ "$n" =~ ^[0-9]+$ ]] || return 0
-    got[$c]=$n
-  done
-  DONE_OK=${got[success]}
-  DONE_FAIL=$(( ${got[failure]} + ${got[timed_out]} ))
-  DONE_CANCEL=${got[cancelled]}
+  since=$(date -u -d "@$(( NOW - 2 * 86400 ))" '+%Y-%m-%dT%H:%M:%SZ')
+  out=$(gh api "repos/$REPO/actions/workflows/$REVIEW_WORKFLOW/runs?per_page=100&created=%3E%3D$since" \
+    --jq "$(done_jq "$from")" --paginate 2> /dev/null) || return 0
+  DONE_OK=$(grep -cx 'success' <<< "$out" || true)
+  DONE_FAIL=$(grep -cxE 'failure|timed_out' <<< "$out" || true)
+  DONE_CANCEL=$(grep -cx 'cancelled' <<< "$out" || true)
 }
 
 # ---------- 판단 ----------
@@ -179,8 +181,10 @@ decide() {
   [ -n "$QUEUED" ] || return 0
   if [ "$CUR_STATUS" = online ] && [ "$BUSY" != true ] && [ "$QUEUED" -gt 0 ] \
       && [ "$WAIT_MIN" -ge "$STUCK_MINUTES" ]; then
+    # 아직 알리지 않았으면 ✅ 복구보다 🟡를 보냄(상태를 다시 읽는다는 것도 함께 알 수 있음).
+    # 보내지 않은 알림을 보낸 것으로 기록하면 같은 정체가 이어져도 다시 알리지 않게 됨
     NEW_STUCK=1
-    [ "$PREV_STUCK" = 1 ] || [ -n "$EVENT" ] || EVENT=stuck
+    [ "$PREV_STUCK" = 1 ] || EVENT=stuck
   else
     NEW_STUCK=0
   fi
