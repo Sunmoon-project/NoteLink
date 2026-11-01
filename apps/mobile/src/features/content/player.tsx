@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
 import { Text } from '@/components/text';
 import Animated, {
@@ -14,7 +14,7 @@ import * as Haptics from 'expo-haptics';
 import { Bookmark, Pause, Play, Repeat, Sparkles } from 'lucide-react-native';
 import { api } from '@/lib/api';
 import { toast } from '@/stores/toast';
-import { Chip, Sheet, cx } from '@/components/ui';
+import { Chip, Loading, Sheet, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
 // p.66 #22 · p.69 녹음 요약 재생 · 아바타 립싱크 · 북마크 · 원문 텍스트
@@ -127,12 +127,23 @@ export function Player({
     rec.data?.slides.find((s) => p.pos >= s.startSec && p.pos < s.endSec) ?? rec.data?.slides[2];
   const segs = rec.data?.transcript.segments ?? [];
   const cap = Math.floor((p.pos / 30) % Math.max(1, segs.length));
-  const addMark = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setMarks((m) => [...m, p.pos].sort((a, b) => a - b));
-    api.content.addBookmark(materialId, p.pos).catch(() => {});
-    toast(`${hhmmss(p.pos)} 구간을 북마크했어요`);
+  const marking = useRef(false);
+  const addMark = async () => {
+    if (marking.current) return;
+    marking.current = true;
+    const at = p.pos;
+    try {
+      await api.content.addBookmark(materialId, at);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setMarks((m) => [...new Set([...m, at])].sort((a, b) => a - b));
+      toast(`${hhmmss(at)} 구간을 북마크했어요`);
+    } catch {
+      toast('북마크를 저장하지 못했어요. 다시 시도해 주세요');
+    } finally {
+      marking.current = false;
+    }
   };
+  if (!mat.data || !rec.data) return <Loading />;
   return (
     <>
       <View className="rounded-3xl bg-night p-3">

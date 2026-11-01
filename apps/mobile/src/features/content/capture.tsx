@@ -15,19 +15,11 @@ import {
 import { useKeepAwake } from 'expo-keep-awake';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
-import {
-  Camera,
-  Check,
-  Crop,
-  FileText,
-  Mic,
-  RotateCw,
-  SunMedium,
-  X,
-  Zap,
-} from 'lucide-react-native';
+import { Camera, Check, Crop, FileText, Mic, RotateCw, X, Zap } from 'lucide-react-native';
 import { api, type ImageVerdict } from '@/lib/api';
-import { checkFile, type LocalFile } from '@/lib/upload';
+import { editPhoto } from '@/lib/image-edit';
+import { toast } from '@/stores/toast';
+import { checkFile, uploadToBlob, type LocalFile } from '@/lib/upload';
 import { useDraft } from '@/stores/draft';
 import { Alert, Badge, Btn, Chip, Header, Input, Label, Screen, Two, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
@@ -210,7 +202,23 @@ export function CameraScreen() {
 export function PhotoCheckScreen() {
   const file = useDraft((s) => s.files[0]);
   const [rot, setRot] = useState(0);
-  const [bright, setBright] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const saveLock = useRef(false);
+  const apply = async () => {
+    if (!file || saveLock.current) return;
+    saveLock.current = true;
+    setSaving(true);
+    try {
+      const edited = await editPhoto(file, rot % 360, crop);
+      useDraft.getState().set({ files: [edited, ...useDraft.getState().files.slice(1)] });
+      router.replace('/capture/picked');
+    } catch {
+      toast('사진을 보정하지 못했어요. 다시 시도해 주세요');
+    } finally {
+      saveLock.current = false;
+      setSaving(false);
+    }
+  };
   const [crop, setCrop] = useState(false);
   return (
     <Screen
@@ -219,7 +227,9 @@ export function PhotoCheckScreen() {
           <Btn kind="outline" onPress={() => router.replace('/capture/camera')}>
             다시 촬영
           </Btn>
-          <Btn onPress={() => router.replace('/capture/picked')}>다음</Btn>
+          <Btn disabled={!file} loading={saving} onPress={apply}>
+            다음
+          </Btn>
         </Two>
       }
     >
@@ -232,12 +242,7 @@ export function PhotoCheckScreen() {
         style={{ transform: [{ rotate: `${rot}deg` }] }}
       >
         {file ? (
-          <Image
-            source={{ uri: file.uri }}
-            className="h-full w-full"
-            style={{ opacity: bright ? 1 : 0.94 }}
-            resizeMode="cover"
-          />
+          <Image source={{ uri: file.uri }} className="h-full w-full" resizeMode="cover" />
         ) : (
           <View className="flex-row items-center gap-1.5">
             <Camera size={ICON.xs} color={C.sub} />
@@ -250,12 +255,6 @@ export function PhotoCheckScreen() {
           <View className="flex-row items-center gap-1">
             <RotateCw size={ICON.xs} color={C.ink} />
             <Text className="text-caption text-ink">회전</Text>
-          </View>
-        </Chip>
-        <Chip small on={bright} onPress={() => setBright((b) => !b)}>
-          <View className="flex-row items-center gap-1">
-            <SunMedium size={ICON.xs} color={bright ? '#fff' : C.ink} />
-            <Text className={cx('text-caption', bright ? 'text-white' : 'text-ink')}>밝기</Text>
           </View>
         </Chip>
         <Chip small on={crop} onPress={() => setCrop((c) => !c)}>
@@ -279,12 +278,31 @@ export function PickedScreen() {
   // 2) 통과한 사진만 AI 서버가 필기 여부 · 글씨 신뢰도 판별
   const check = useQuery({
     queryKey: ['image-check', files.map((f) => f.uri).join()],
-    queryFn: () =>
-      api.content.checkImages(
+    queryFn: async () => {
+      const checked = await Promise.all(
         files
           .filter((f) => local[f.uri]?.ok)
-          .map((f) => ({ name: f.name, sizeBytes: f.size ?? 0, uri: f.uri })),
-      ),
+          .map(async (f) => ({
+            name: f.name,
+            sizeBytes: f.size ?? 0,
+            uri: await uploadToBlob('image', f),
+          })),
+      );
+      const result = await api.content.checkImages(checked);
+      if (
+        checked.some(
+          (f) =>
+            !result.some(
+              (v) =>
+                v.name === f.name &&
+                ['ok', 'blurry', 'not_handwriting', 'not_allowed'].includes(v.verdict),
+            ),
+        )
+      )
+        throw new Error('검사 결과가 누락됐어요');
+      return result;
+    },
+    retry: false,
     enabled: files.length > 0,
   });
   const verdicts: Record<string, ImageVerdict> = Object.fromEntries(
@@ -318,6 +336,7 @@ export function PickedScreen() {
       });
   };
   const next = () => {
+    if (!check.isSuccess || check.isFetching || bad.length || notHand.length) return;
     if (blurry && dlg !== 'blurry') return setDlg('blurry');
     router.replace('/convert');
   };
@@ -347,7 +366,10 @@ export function PickedScreen() {
             </Btn>
           </View>
         ) : (
-          <Btn disabled={!files.length || !!bad.length || check.isFetching} onPress={next}>
+          <Btn
+            disabled={!files.length || !!bad.length || check.isFetching || !check.isSuccess}
+            onPress={next}
+          >
             다음
           </Btn>
         )
@@ -362,6 +384,12 @@ export function PickedScreen() {
         </View>
       )}
       <Header title={`선택한 사진 (${files.length}장)`} />
+      {check.isError && (
+        <View>
+          <Text>사진 검사에 실패했어요. 다시 시도해 주세요.</Text>
+          <Btn onPress={() => check.refetch()}>다시 검사</Btn>
+        </View>
+      )}
       <View className="gap-2">
         {files.map((f) => (
           <View

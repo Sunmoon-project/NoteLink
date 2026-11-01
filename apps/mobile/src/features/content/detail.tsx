@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pressable, View } from 'react-native';
+import { Linking, Pressable, View } from 'react-native';
 import { Text, TextInput } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -11,7 +11,6 @@ import {
   FileText,
   Folder,
   Heading1,
-  Image,
   ImageIcon,
   Link2,
   List,
@@ -54,6 +53,31 @@ function useMaterial() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const q = useQuery({ queryKey: ['material', id], queryFn: () => api.content.material(id) });
   return { id, m: q.data };
+}
+
+function OriginalFile({ m }: { m: Material }) {
+  const [busy, setBusy] = useState(false);
+  const open = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { url } = await api.content.downloadUrl(m._id);
+      if (!/^https?:\/\//i.test(url)) throw new Error('원본 주소가 없어요');
+      await Linking.openURL(url);
+    } catch {
+      toast('원본 파일을 열지 못했어요. 다시 시도해 주세요');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <View>
+      <Text>{m.title}</Text>
+      <Btn loading={busy} onPress={open}>
+        원본 파일 열기
+      </Btn>
+    </View>
+  );
 }
 
 /** ⋯ 옵션 → 편집 · 공유 · 삭제 (p.72~73) */
@@ -193,15 +217,7 @@ export function HandDetailScreen() {
           {tab === '정리된 노트' ? (
             <NoteBody sections={m.summary?.sections ?? []} />
           ) : (
-            <View className="rounded-2xl bg-cream p-3">
-              <View className="aspect-[4/3] items-center justify-center rounded-xl bg-cream-2">
-                <Image size={ICON.xl} color={C.brand} />
-              </View>
-              <Text className="mt-2 text-footnote font-semibold text-ink">
-                {m.title.replace(' ', '_')}
-              </Text>
-              <Text className="text-caption2 text-sub">1600 × 2133 · 3.1MB</Text>
-            </View>
+            <OriginalFile m={m} />
           )}
         </View>
         <Label>과목</Label>
@@ -376,7 +392,6 @@ export function DocDetailScreen() {
   const { tab: t } = useLocalSearchParams<{ tab?: '요약' | '원본 문서' }>();
   const { id, m } = useMaterial();
   const [tab, setTab] = useState<'요약' | '원본 문서'>(t ?? '요약');
-  const [page, setPage] = useState(0);
   const [opt, setOpt] = useState(false);
   const download = useMutation({
     mutationFn: async () => {
@@ -424,38 +439,7 @@ export function DocDetailScreen() {
             <Badge>수학</Badge>
           </>
         ) : (
-          <>
-            <Text className="mt-3 text-caption text-sub">{page + 1} / 3 페이지</Text>
-            <Pressable
-              onPress={() => setPage((p) => (p + 1) % 3)}
-              className="mt-2 rounded-xl border border-line p-4"
-            >
-              <Text className="text-footnote font-bold text-ink">
-                {['이차방정식 연습문제', '연습문제 풀이', '정답과 해설'][page]}
-              </Text>
-              {[90, 70, 85, 50, 0, 95, 80, 60, 85, 40, 0, 90, 70].map((w, i) =>
-                w ? (
-                  <View
-                    key={i}
-                    className="mt-2 h-1.5 rounded-full bg-cream-2"
-                    style={{ width: `${w}%` }}
-                  />
-                ) : (
-                  <View key={i} className="h-3" />
-                ),
-              )}
-            </Pressable>
-            <View className="mt-3 flex-row justify-center gap-1.5">
-              {[0, 1, 2].map((i) => (
-                <Pressable
-                  key={i}
-                  accessibilityLabel={`${i + 1}페이지`}
-                  onPress={() => setPage(i)}
-                  className={cx('h-2 w-2 rounded-full', page === i ? 'bg-brand' : 'bg-cream-2')}
-                />
-              ))}
-            </View>
-          </>
+          <OriginalFile m={m} />
         )}
       </Screen>
       <FileOptions m={m} open={opt} onClose={() => setOpt(false)} />

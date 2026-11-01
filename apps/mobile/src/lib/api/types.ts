@@ -121,6 +121,7 @@ export interface Api {
       todoType: TodoType;
       dueDate: string;
       timeSlot: Todo['timeSlot'];
+      dueTime?: string;
       subjectName: string | null;
     }): Promise<Todo>;
     toggleTodo(id: string, done: boolean): Promise<void>;
