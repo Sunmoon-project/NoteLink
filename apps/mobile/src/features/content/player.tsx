@@ -126,7 +126,7 @@ export function Player({
   const slide =
     rec.data?.slides.find((s) => p.pos >= s.startSec && p.pos < s.endSec) ?? rec.data?.slides[2];
   const segs = rec.data?.transcript.segments ?? [];
-  const cap = Math.floor((p.pos / 30) % Math.max(1, segs.length));
+  const cap = segs.findIndex((s) => p.pos >= s.startSec && p.pos < s.endSec);
   const marking = useRef(false);
   const addMark = async () => {
     if (marking.current) return;

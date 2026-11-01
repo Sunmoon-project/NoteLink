@@ -239,28 +239,19 @@ const Toolbar = () => (
 export function EditScreen() {
   const { id, m } = useMaterial();
   const qc = useQueryClient();
-  const [text, setText] = useState('');
+  const [sections, setSections] = useState<{ heading: string; body: string }[]>([]);
   const [editing, setEditing] = useState(false);
   const [tags, setTags] = useState(['수학']);
   // 자료를 처음 불러왔을 때만 편집할 본문을 채운다 — 재조회가 고치던 글을 덮어쓰지 않게 (렌더 중 상태 조정)
   const [loaded, setLoaded] = useState<string>();
   if (m && m._id !== loaded) {
     setLoaded(m._id);
-    setText((m.summary?.sections ?? []).map((s) => `${s.heading}\n${s.body}`).join('\n\n'));
+    setSections((m.summary?.sections ?? []).map((section) => ({ ...section })));
   }
   const save = useMutation({
     mutationFn: () => {
       if (!m || loaded !== id) throw new Error('자료를 먼저 불러와 주세요');
-      return api.content.updateSummary(
-        id,
-        text
-          .split(/\n\s*\n/)
-          .map((b) => {
-            const [heading, ...rest] = b.split('\n');
-            return { heading: (heading ?? '').trim(), body: rest.join(' ').trim() };
-          })
-          .filter((s) => s.heading),
-      );
+      return api.content.updateSummary(id, sections);
     },
     onError: () => toast('노트를 저장하지 못했어요. 다시 시도해주세요'),
     onSuccess: () => {
@@ -321,19 +312,36 @@ export function EditScreen() {
         <View className="absolute top-3 right-3 h-6 w-6 items-center justify-center rounded-full bg-blue">
           <Pencil size={ICON.xs} color="#fff" />
         </View>
-        <TextInput
-          accessibilityLabel="노트 내용"
-          multiline
-          value={text}
-          onChangeText={setText}
-          onFocus={() => setEditing(true)}
-          onBlur={() => setEditing(false)}
-          className="min-h-56 text-footnote leading-5 text-ink"
-          style={{ textAlignVertical: 'top' }}
-        />
+        {sections.map((section, index) => (
+          <View key={index}>
+            <TextInput
+              accessibilityLabel={`섹션 ${index + 1} 제목`}
+              value={section.heading}
+              onChangeText={(heading) =>
+                setSections((all) => all.map((s, i) => (i === index ? { ...s, heading } : s)))
+              }
+              onFocus={() => setEditing(true)}
+              onBlur={() => setEditing(false)}
+            />
+            <TextInput
+              accessibilityLabel={index === 0 ? '노트 내용' : `섹션 ${index + 1} 본문`}
+              multiline
+              value={section.body}
+              onChangeText={(body) =>
+                setSections((all) => all.map((s, i) => (i === index ? { ...s, body } : s)))
+              }
+              onFocus={() => setEditing(true)}
+              onBlur={() => setEditing(false)}
+              className="min-h-32 text-footnote leading-5 text-ink"
+              style={{ textAlignVertical: 'top' }}
+            />
+          </View>
+        ))}
       </View>
       <Pressable
-        onPress={() => setText((s) => `${s}\n\n4. 새 섹션\n내용을 입력하세요`)}
+        onPress={() =>
+          setSections((s) => [...s, { heading: '새 섹션', body: '내용을 입력하세요' }])
+        }
         className="mt-3 self-start rounded-full border border-brand/40 px-3 py-1"
       >
         <Text className="text-caption text-brand">+ 섹션 추가</Text>

@@ -204,12 +204,38 @@ export function PhotoCheckScreen() {
   const [rot, setRot] = useState(0);
   const [saving, setSaving] = useState(false);
   const saveLock = useRef(false);
+  const [crop, setCrop] = useState(false);
+  const [rendered, setRendered] = useState<{
+    source: LocalFile;
+    rot: number;
+    crop: boolean;
+    file: LocalFile;
+  } | null>(null);
+  const previewReady =
+    !!file && rendered?.source === file && rendered.rot === rot && rendered.crop === crop;
+  const preview = previewReady ? rendered.file : null;
+  useEffect(() => {
+    let active = true;
+    if (!file) return;
+    editPhoto(file, rot % 360, crop)
+      .then((result) => {
+        if (active) {
+          setRendered({ source: file, rot, crop, file: result });
+        }
+      })
+      .catch(() => {
+        if (active) toast('사진을 보정하지 못했어요. 다시 시도해 주세요');
+      });
+    return () => {
+      active = false;
+    };
+  }, [file, rot, crop]);
   const apply = async () => {
-    if (!file || saveLock.current) return;
+    if (!file || !preview || !previewReady || saveLock.current) return;
     saveLock.current = true;
     setSaving(true);
     try {
-      const edited = await editPhoto(file, rot % 360, crop);
+      const edited = preview;
       useDraft.getState().set({ files: [edited, ...useDraft.getState().files.slice(1)] });
       router.replace('/capture/picked');
     } catch {
@@ -219,7 +245,6 @@ export function PhotoCheckScreen() {
       setSaving(false);
     }
   };
-  const [crop, setCrop] = useState(false);
   return (
     <Screen
       footer={
@@ -227,7 +252,7 @@ export function PhotoCheckScreen() {
           <Btn kind="outline" onPress={() => router.replace('/capture/camera')}>
             다시 촬영
           </Btn>
-          <Btn disabled={!file} loading={saving} onPress={apply}>
+          <Btn disabled={!file || !previewReady} loading={saving} onPress={apply}>
             다음
           </Btn>
         </Two>
@@ -237,12 +262,15 @@ export function PhotoCheckScreen() {
       <View
         className={cx(
           'aspect-square items-center justify-center self-center overflow-hidden rounded-xl bg-cream',
-          crop ? 'w-[85%]' : 'w-full',
+          'w-full',
         )}
-        style={{ transform: [{ rotate: `${rot}deg` }] }}
       >
         {file ? (
-          <Image source={{ uri: file.uri }} className="h-full w-full" resizeMode="cover" />
+          <Image
+            source={{ uri: (preview ?? file).uri }}
+            className="h-full w-full"
+            resizeMode="contain"
+          />
         ) : (
           <View className="flex-row items-center gap-1.5">
             <Camera size={ICON.xs} color={C.sub} />
@@ -283,12 +311,18 @@ export function PickedScreen() {
         files
           .filter((f) => local[f.uri]?.ok)
           .map(async (f) => ({
-            name: f.name,
+            name:
+              files.filter((x) => x.name === f.name).length > 1
+                ? `${files.indexOf(f)}-${f.name}`
+                : f.name,
+            localUri: f.uri,
             sizeBytes: f.size ?? 0,
             uri: await uploadToBlob('image', f),
           })),
       );
-      const result = await api.content.checkImages(checked);
+      const result = await api.content.checkImages(
+        checked.map(({ localUri: _localUri, ...request }) => request),
+      );
       if (
         checked.some(
           (f) =>
@@ -300,13 +334,16 @@ export function PickedScreen() {
         )
       )
         throw new Error('검사 결과가 누락됐어요');
-      return result;
+      return checked.map((f) => ({
+        ...result.find((v) => v.name === f.name)!,
+        localUri: f.localUri,
+      }));
     },
     retry: false,
     enabled: files.length > 0,
   });
   const verdicts: Record<string, ImageVerdict> = Object.fromEntries(
-    (check.data ?? []).map((v) => [v.name, v.verdict]),
+    (check.data ?? []).map((v) => [v.localUri, v.verdict]),
   );
   // 걸러진 사진 수가 바뀌면 안내창을 연다 (렌더 중 상태 조정)
   const [badCount, setBadCount] = useState(0);
@@ -315,7 +352,8 @@ export function PickedScreen() {
     if (bad.length) setDlg('bad');
   }
   const v = (f: LocalFile): ImageVerdict | undefined =>
-    !local[f.uri]?.ok ? 'not_allowed' : verdicts[f.name];
+    !local[f.uri]?.ok ? 'not_allowed' : verdicts[f.uri];
+  const prohibited = files.filter((f) => v(f) === 'not_allowed');
   const notHand = files.filter((f) => v(f) === 'not_handwriting');
   const blurry = files.find((f) => v(f) === 'blurry');
   const remove = (uri: string) => set({ files: files.filter((f) => f.uri !== uri) });
@@ -336,7 +374,7 @@ export function PickedScreen() {
       });
   };
   const next = () => {
-    if (!check.isSuccess || check.isFetching || bad.length || notHand.length) return;
+    if (!check.isSuccess || check.isFetching || prohibited.length || notHand.length) return;
     if (blurry && dlg !== 'blurry') return setDlg('blurry');
     router.replace('/convert');
   };
@@ -367,7 +405,7 @@ export function PickedScreen() {
           </View>
         ) : (
           <Btn
-            disabled={!files.length || !!bad.length || check.isFetching || !check.isSuccess}
+            disabled={!files.length || !!prohibited.length || check.isFetching || !check.isSuccess}
             onPress={next}
           >
             다음
@@ -537,16 +575,41 @@ export function RecLiveScreen() {
   const st = useAudioRecorderState(recorder, 120);
   const [bars, setBars] = useState<number[]>(Array(26).fill(6));
   const [denied, setDenied] = useState(false);
+  const alive = useRef(true);
+  const ready = useRef(false);
+  const finishing = useRef(false);
   useEffect(() => {
+    alive.current = true;
     (async () => {
-      const p = await AudioModule.requestRecordingPermissionsAsync();
-      if (!p.granted) return setDenied(true);
-      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
-      await recorder.prepareToRecordAsync();
-      recorder.record();
+      try {
+        const p = await AudioModule.requestRecordingPermissionsAsync();
+        if (!alive.current) return;
+        if (!p.granted) return setDenied(true);
+        await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+        if (!alive.current) {
+          await setAudioModeAsync({ allowsRecording: false });
+          return;
+        }
+        await recorder.prepareToRecordAsync();
+        if (!alive.current) {
+          await recorder.stop();
+          await setAudioModeAsync({ allowsRecording: false });
+          return;
+        }
+        recorder.record();
+        ready.current = true;
+      } catch {
+        if (alive.current) toast('녹음을 시작하지 못했어요. 권한과 마이크를 확인해주세요');
+        await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+      }
     })();
     return () => {
-      recorder.stop().catch(() => {});
+      alive.current = false;
+      ready.current = false;
+      recorder
+        .stop()
+        .catch(() => {})
+        .finally(() => setAudioModeAsync({ allowsRecording: false }).catch(() => {}));
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // 녹음 시간이 갱신될 때마다 파형 막대를 한 칸 민다 (렌더 중 상태 조정)
@@ -557,15 +620,36 @@ export function RecLiveScreen() {
     const h = Math.max(6, Math.min(48, ((db + 60) / 60) * 48));
     setBars((b) => [...b.slice(1), h]);
   }
-  const toggle = () => (st.isRecording ? recorder.pause() : recorder.record());
+  const toggle = () => {
+    if (!ready.current || finishing.current) return;
+    try {
+      if (st.isRecording) recorder.pause();
+      else recorder.record();
+    } catch {
+      toast('녹음 상태를 바꾸지 못했어요');
+    }
+  };
   const finish = async () => {
-    await recorder.stop();
-    if (recorder.uri)
+    if (!ready.current || finishing.current) return;
+    finishing.current = true;
+    try {
+      await recorder.stop();
+      if (!alive.current) return;
+      if (!recorder.uri) throw new Error('녹음 파일이 없어요');
+      await setAudioModeAsync({ allowsRecording: false });
+      if (!alive.current) return;
       useDraft.getState().set({
+        kind: 'recording',
+        source: 'live_recording',
         files: [{ uri: recorder.uri, name: `강의녹음_${Date.now()}.m4a`, mimeType: 'audio/mp4' }],
         title: '실시간 강의 녹음',
       });
-    router.replace('/convert');
+      router.replace('/convert');
+    } catch {
+      if (alive.current) toast('녹음 파일을 저장하지 못했어요. 다시 시도해주세요');
+    } finally {
+      finishing.current = false;
+    }
   };
   if (denied) return <NeedPermission onGrant={() => Linking.openSettings()} canAsk={false} />;
   const sec = Math.floor(st.durationMillis / 1000);
