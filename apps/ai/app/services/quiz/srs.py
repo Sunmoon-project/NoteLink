@@ -36,6 +36,7 @@ class Srs(TypedDict):
     movedTo: NotRequired[str]
     dueBefore: NotRequired[datetime | None]  # 넘겨주기 전 복습 날짜 (안 푼 오늘의 복습 되돌리기용)
     flaw: NotRequired[str]
+    flawTries: NotRequired[int]  # 결함 문제를 새 문제로 바꾸려 해 본 날 수 (오늘의 복습)
 
 
 def fresh(today: datetime, carry: Srs | None = None) -> Srs:

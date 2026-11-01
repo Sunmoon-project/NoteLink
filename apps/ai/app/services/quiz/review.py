@@ -9,7 +9,8 @@ ai_jobs.type = 'similar_quiz' (공용 계약 AiJobType, 로컬 이름 review.age
 input — NestJS가 작업을 만들 때 담습니다. ObjectId는 문자열, 날짜는 Date 또는 ISO 문자열
   attemptId · quizSetId  이번 풀이와 그 세트
   finishedAt             푼 시각. 복습 날짜는 푼 날(서울 기준, AGENTS.md)의 0시부터 셉니다
-  answers                [{questionId, correct, void?}] 이번 풀이. void(결함 문제라 무효인 풀이)는
+  answers                [{questionId, correct, void?}] 이번 풀이. void(결함 문제라 무효인 풀이:
+                         true 또는 무효 이유 글, today_review가 정함)는
                          없는 풀이로 봅니다: 판단 · 복습 상태 · 약한 개념에서 모두 뺌
   sets                   [{id, materialId, questions}] 사용자의 퀴즈 세트 전부(지운 것 제외,
                          이번 세트 포함). 오늘의 복습 세트는 노트를 섞으므로 겹침 검사 ·
@@ -107,7 +108,7 @@ class Judged:
 # ---------------------------------------------------------------- input
 
 
-def _get(obj: object, key: str, kind: type | tuple[type, ...], where: str) -> Any:
+def need(obj: object, key: str, kind: type | tuple[type, ...], where: str) -> Any:
     v = obj.get(key) if isinstance(obj, dict) else None
     if not isinstance(v, kind) or (isinstance(v, bool) and bool not in _kinds(kind)):
         raise InputError(f"{where}.{key}")
@@ -118,12 +119,12 @@ def _kinds(kind: type | tuple[type, ...]) -> tuple[type, ...]:
     return kind if isinstance(kind, tuple) else (kind,)
 
 
-def _list(obj: object, key: str, where: str) -> list[Any]:
-    v: list[Any] = _get(obj, key, list, where)
+def need_list(obj: object, key: str, where: str) -> list[Any]:
+    v: list[Any] = need(obj, key, list, where)
     return v
 
 
-def _date(v: object, where: str) -> datetime:
+def utc_date(v: object, where: str) -> datetime:
     """UTC, tzinfo 없음. Date(pymongo는 tzinfo 없는 UTC로 줌) 또는 ISO 문자열."""
     if isinstance(v, str):
         try:
@@ -135,23 +136,23 @@ def _date(v: object, where: str) -> datetime:
     return v.astimezone(UTC).replace(tzinfo=None) if v.tzinfo else v
 
 
-def _srs(raw: object, where: str) -> srs.Srs | None:
+def parse_srs(raw: object, where: str) -> srs.Srs | None:
     """아직 풀지 않은 문제는 None이나 {}(로컬 DB의 맞춤 퀴즈 49문제): 처음 푸는 문제로 셈."""
     if raw is None or raw == {}:
         return None
     if not isinstance(raw, dict):
         raise InputError(where)
     for key in ("step", "streak", "reviews"):
-        _get(raw, key, int, where)
+        need(raw, key, int, where)
     # srs.moved가 dueAt을 dueBefore로 옮김. state가 없던 예전 기록은 복습 중으로
     s = {"dueAt": None, "state": "active", **raw}
     for key in ("dueAt", "dueBefore"):
         if s.get(key) is not None:
-            s[key] = _date(s[key], f"{where}.{key}")
+            s[key] = utc_date(s[key], f"{where}.{key}")
     return cast(srs.Srs, s)
 
 
-def _question(raw: object, where: str) -> Question:
+def parse_question(raw: object, where: str) -> Question:
     if not isinstance(raw, dict):
         raise InputError(where)
     choices = raw.get("choices")
@@ -160,37 +161,37 @@ def _question(raw: object, where: str) -> Question:
     ):
         raise InputError(f"{where}.choices")
     q: Question = {
-        "id": _get(raw, "id", str, where),
-        "order": _get(raw, "order", int, where),
-        "prompt": _get(raw, "prompt", str, where),
+        "id": need(raw, "id", str, where),
+        "order": need(raw, "order", int, where),
+        "prompt": need(raw, "prompt", str, where),
         "choices": choices,
-        "answer": _get(raw, "answer", str, where),
+        "answer": need(raw, "answer", str, where),
     }
     if raw.get("type") is not None:
-        q["type"] = _get(raw, "type", str, where)
+        q["type"] = need(raw, "type", str, where)
     if raw.get("passage") is not None:
-        q["passage"] = _get(raw, "passage", str, where)
+        q["passage"] = need(raw, "passage", str, where)
     if raw.get("explanation") is not None:
-        q["explanation"] = _get(raw, "explanation", str, where)
+        q["explanation"] = need(raw, "explanation", str, where)
     tags = raw.get("conceptTags")
     if tags is not None:
         if not (isinstance(tags, list) and all(isinstance(t, str) for t in tags)):
             raise InputError(f"{where}.conceptTags")
         q["conceptTags"] = tags
-    q["srs"] = _srs(raw.get("srs"), f"{where}.srs")
+    q["srs"] = parse_srs(raw.get("srs"), f"{where}.srs")
     return q
 
 
 def _attempt(raw: object, where: str) -> Attempt:
     answers = []
-    for i, a in enumerate(_list(raw, "answers", where)):
+    for i, a in enumerate(need_list(raw, "answers", where)):
         w = f"{where}.answers[{i}]"
-        void = a.get("void") if isinstance(a, dict) else None
-        answers.append((_get(a, "questionId", str, w), _get(a, "correct", bool, w), void is True))
+        void = a.get("void") if isinstance(a, dict) else None  # true 또는 무효 이유 글
+        answers.append((need(a, "questionId", str, w), need(a, "correct", bool, w), bool(void)))
     return Attempt(
-        _get(raw, "id", str, where),
-        _get(raw, "quizSetId", str, where),
-        _date(_get(raw, "finishedAt", (str, datetime), where), f"{where}.finishedAt"),
+        need(raw, "id", str, where),
+        need(raw, "quizSetId", str, where),
+        utc_date(need(raw, "finishedAt", (str, datetime), where), f"{where}.finishedAt"),
         answers,
     )
 
@@ -207,16 +208,24 @@ def parse(raw: JsonObject) -> ReviewInput:
         "input",
     )
     sets = {}
-    for i, s in enumerate(_list(raw, "sets", "input")):
+    for i, s in enumerate(need_list(raw, "sets", "input")):
         w = f"input.sets[{i}]"
-        qs = [_question(q, f"{w}.questions[{j}]") for j, q in enumerate(_list(s, "questions", w))]
-        sets[_get(s, "id", str, w)] = QuizSet(_get(s, "materialId", str, w), qs)
+        qs = [
+            parse_question(q, f"{w}.questions[{j}]")
+            for j, q in enumerate(need_list(s, "questions", w))
+        ]
+        sets[need(s, "id", str, w)] = QuizSet(need(s, "materialId", str, w), qs)
     if attempt.quiz_set_id not in sets:
         raise InputError("input.sets에 이번 세트가 없음")
     history = [
-        _attempt(h, f"input.history[{i}]") for i, h in enumerate(_list(raw, "history", "input"))
+        _attempt(h, f"input.history[{i}]") for i, h in enumerate(need_list(raw, "history", "input"))
     ]
-    notes_raw = _get(raw, "notes", dict, "input")
+    notes = parse_notes(need(raw, "notes", dict, "input"))
+    return ReviewInput(attempt, sets, history, notes)
+
+
+def parse_notes(notes_raw: dict[str, Any]) -> Notes:
+    """input.notes {materialId: [{pageNo, ocrText}]} → 정리된 노트 글(text.clean_pages)."""
     notes: Notes = {}
     for mid, pages in notes_raw.items():
         w = f"input.notes.{mid}"
@@ -228,12 +237,12 @@ def parse(raw: JsonObject) -> ReviewInput:
             if text is not None and not isinstance(text, str):
                 raise InputError(f"{w}[{j}].ocrText")
             # 녹음 정리 시제품(10/25)이 쪽 번호를 '1'처럼 글로 저장한 노트가 있음
-            no = _get(p, "pageNo", (int, str), f"{w}[{j}]")
+            no = need(p, "pageNo", (int, str), f"{w}[{j}]")
             if isinstance(no, str) and not (no.isascii() and no.isdigit()):  # "²"는 int()가 못 읽음
                 raise InputError(f"{w}[{j}].pageNo")
             checked.append({"pageNo": int(no), "ocrText": text})
         notes[str(mid)] = clean_pages(checked)
-    return ReviewInput(attempt, sets, history, notes)
+    return notes
 
 
 # ---------------------------------------------------------------- code: judgment

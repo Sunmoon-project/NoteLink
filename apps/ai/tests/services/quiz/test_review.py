@@ -401,10 +401,11 @@ def test_question_missed_for_the_last_time_is_not_asked_again() -> None:
     assert "요청 동사 뒤 동사원형" in [n["concept"] for n in result["noteLines"]]
 
 
-def test_void_answers_in_this_attempt_are_left_out() -> None:
+@pytest.mark.parametrize("void", [True, "문제 오류: 정답 둘(is도 맞음)"])  # 오늘의 복습은 이유 글
+def test_void_answers_in_this_attempt_are_left_out(void: object) -> None:
     inp = job_input()
     inp["history"] = []
-    inp["answers"][0]["void"] = True  # q1은 결함 문제라 무효
+    inp["answers"][0]["void"] = void  # q1은 결함 문제라 무효
     llm = FakeLlm({"Review": [STACK], "Check": [ok("A")], "Line": [{"line": "x"}]})
     result, _ = run(llm, inp)
     assert [a["questionId"] for a in result["answers"]] == ["q2", "q3"]

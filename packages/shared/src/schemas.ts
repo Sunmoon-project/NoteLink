@@ -258,6 +258,7 @@ export const AiJobType = z.enum([
   'document_summary',
   'quiz_generate',
   'similar_quiz',
+  'today_review',
   'explain',
   'avatar_profile',
   'image_check',
