@@ -179,3 +179,30 @@ describe('PR36 녹음 대본 시간 구간', () => {
     await act(async () => {});
   });
 });
+
+it('중복 이름에 접두사가 붙은 다른 원본 이름이 있어도 검사 판정을 혼동하지 않는다', async () => {
+  const files = [
+    { ...firstPhoto, name: 'a.jpg', uri: 'file:///a.jpg' },
+    { ...firstPhoto, name: 'a.jpg', uri: 'file:///b.jpg' },
+    { ...firstPhoto, name: '0-a.jpg', uri: 'file:///c.jpg' },
+  ];
+  useDraft.getState().set({ files });
+  mockUpload.mockImplementation(async (_kind: string, file: { uri: string }) =>
+    file.uri.replace('file:///', 'https://blob.example/'),
+  );
+  mockApi.content.checkImages.mockImplementation(
+    async (requests: { name: string; uri: string }[]) =>
+      requests.map((f) => ({
+        name: f.name,
+        verdict: f.uri.endsWith('/c.jpg') ? 'not_allowed' : 'ok',
+      })),
+  );
+  await renderScreen(<PickedScreen />, client());
+  await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalled());
+  await screen.findByText('올릴 수 없는 파일');
+  const checked = mockApi.content.checkImages.mock.calls[0]![0] as { name: string }[];
+  expect(new Set(checked.map((f) => f.name)).size).toBe(3);
+  expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+  await fireEvent.press(screen.getByRole('button', { name: '다음' }));
+  expect(router.replace).not.toHaveBeenCalledWith('/convert');
+});

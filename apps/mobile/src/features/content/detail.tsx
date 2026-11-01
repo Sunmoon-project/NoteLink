@@ -52,7 +52,26 @@ import { seoul } from '@/lib/dates';
 function useMaterial() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const q = useQuery({ queryKey: ['material', id], queryFn: () => api.content.material(id) });
-  return { id, m: q.data };
+  return { id, m: q.data, isError: q.isError, error: q.error, refetch: q.refetch };
+}
+
+function MaterialError({ retry }: { retry: () => unknown }) {
+  return (
+    <Screen>
+      <Header title="자료 조회" />
+      <Text>자료를 불러오지 못했어요. 삭제되었거나 연결을 확인해야 할 수 있어요.</Text>
+      <Btn
+        onPress={() => {
+          void retry();
+        }}
+      >
+        다시 시도
+      </Btn>
+      <Btn kind="outline" onPress={() => router.back()}>
+        뒤로
+      </Btn>
+    </Screen>
+  );
 }
 
 function OriginalFile({ m }: { m: Material }) {
@@ -185,9 +204,10 @@ const dateLabel = (m: Material, kind: string) =>
 
 export function HandDetailScreen() {
   const { tab: t } = useLocalSearchParams<{ tab?: '정리된 노트' | '원본 이미지' }>();
-  const { id, m } = useMaterial();
+  const { id, m, isError, refetch } = useMaterial();
   const [tab, setTab] = useState<'정리된 노트' | '원본 이미지'>(t ?? '정리된 노트');
   const [opt, setOpt] = useState(false);
+  if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
     <View className="flex-1">
@@ -370,8 +390,9 @@ export function EditScreen() {
 
 export function RecDetailScreen() {
   const { view, bookmarks } = useLocalSearchParams<{ view?: 'text'; bookmarks?: string }>();
-  const { id, m } = useMaterial();
+  const { id, m, isError, refetch } = useMaterial();
   const [opt, setOpt] = useState(false);
+  if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
     <View className="flex-1">
@@ -398,7 +419,7 @@ export function RecDetailScreen() {
 
 export function DocDetailScreen() {
   const { tab: t } = useLocalSearchParams<{ tab?: '요약' | '원본 문서' }>();
-  const { id, m } = useMaterial();
+  const { id, m, isError, refetch } = useMaterial();
   const [tab, setTab] = useState<'요약' | '원본 문서'>(t ?? '요약');
   const [opt, setOpt] = useState(false);
   const download = useMutation({
@@ -415,6 +436,7 @@ export function DocDetailScreen() {
     onSuccess: (fileName) => router.push({ pathname: '/downloaded', params: { name: fileName } }),
     onError: () => toast('다운로드하지 못했어요. 연결을 확인해 주세요'),
   });
+  if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
     <View className="flex-1">

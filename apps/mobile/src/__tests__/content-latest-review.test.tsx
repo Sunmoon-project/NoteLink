@@ -142,7 +142,7 @@ describe('PR36 사진 검사 경계', () => {
     await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalled());
     expect(mockUpload.mock.calls[0]?.slice(0, 2)).toEqual(['image', localPhoto]);
     expect(mockApi.content.checkImages).toHaveBeenCalledWith([
-      { name: localPhoto.name, sizeBytes: localPhoto.size, uri: blobUrl },
+      { name: `0-${localPhoto.name}`, sizeBytes: localPhoto.size, uri: blobUrl },
     ]);
     await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
     await fireEvent.press(screen.getByRole('button', { name: '다음' }));
@@ -184,7 +184,7 @@ describe('PR36 사진 검사 경계', () => {
       expect(mockUpload.mock.calls[0]?.slice(0, 2)).toEqual(['image', editedPhoto]),
     );
     expect(mockApi.content.checkImages).toHaveBeenCalledWith([
-      { name: editedPhoto.name, sizeBytes: editedPhoto.size, uri: blobUrl },
+      { name: `0-${editedPhoto.name}`, sizeBytes: editedPhoto.size, uri: blobUrl },
     ]);
   });
 });

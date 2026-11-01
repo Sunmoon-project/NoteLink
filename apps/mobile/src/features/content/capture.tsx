@@ -311,10 +311,8 @@ export function PickedScreen() {
         files
           .filter((f) => local[f.uri]?.ok)
           .map(async (f) => ({
-            name:
-              files.filter((x) => x.name === f.name).length > 1
-                ? `${files.indexOf(f)}-${f.name}`
-                : f.name,
+            // 원본 이름과도 충돌하지 않도록 모든 파일에 서로 다른 위치를 붙인다.
+            name: `${files.indexOf(f)}-${f.name}`,
             localUri: f.uri,
             sizeBytes: f.size ?? 0,
             uri: await uploadToBlob('image', f),
