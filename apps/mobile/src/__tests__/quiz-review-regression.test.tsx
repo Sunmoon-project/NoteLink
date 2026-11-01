@@ -106,6 +106,7 @@ it('유사 퀴즈 저장 응답 대기 중 같은 문제를 연속 저장하지 
   const save = jest.spyOn(api.quiz, 'saveFlashcard').mockReturnValue(delayed.promise);
   setParams({ setId: 'qs1' });
   await renderScreen(<QuizSimilarScreen />, client());
+  await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
   const button = (await screen.findAllByText('플래시카드 저장'))[0]!;
   const user = userEvent.setup();
   try {

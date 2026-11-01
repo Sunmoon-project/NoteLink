@@ -42,6 +42,7 @@ describe('유사 퀴즈 플래시카드 저장', () => {
     const spy = jest.spyOn(qc, 'invalidateQueries');
     setParams({ setId: 'qs1' });
     await renderScreen(<QuizSimilarScreen />, qc);
+    await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
     await fireEvent.press(
       (await screen.findAllByText('플래시카드 저장', {}, { timeout: 8000 }))[0]!,
     );

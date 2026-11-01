@@ -25,6 +25,7 @@ import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { socket } from '@/lib/socket';
 import { useSocket } from '@/hooks';
+import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
 import { toast } from '@/stores/toast';
@@ -422,15 +423,19 @@ export function QuizSolveScreen() {
     queryKey: ['quiz-set', setId ?? 'latest'],
     queryFn: () => api.quiz.set(setId ?? ''),
   });
-  const [attemptId, setAttemptId] = useState<string | null>(null);
+  const [previous] = useState(() => {
+    const saved = useQuizProgress.getState().progress;
+    return saved?.setId === setId ? saved : null;
+  });
+  const [attemptId, setAttemptId] = useState<string | null>(previous?.attemptId ?? null);
   const [startError, setStartError] = useState(false);
-  const [answerText, setAnswerText] = useState('');
+  const [answerText, setAnswerText] = useState(previous?.answerText ?? '');
   const answering = useRef(false);
   const [startRound, setStartRound] = useState(0);
-  const [i, setI] = useState(0);
-  const [pick, setPick] = useState<string | null>(null);
-  const [right, setRight] = useState<boolean | null>(null);
-  const [results, setResults] = useState<boolean[]>([]);
+  const [i, setI] = useState(previous?.index ?? 0);
+  const [pick, setPick] = useState<string | null>(previous?.pick ?? null);
+  const [right, setRight] = useState<boolean | null>(previous?.right ?? null);
+  const [results, setResults] = useState<boolean[]>(previous?.results ?? []);
   const [speaking, setSpeaking] = useState(false);
   const expired = useAuth((s) => s.expired);
   const finishing = useRef(false);
@@ -438,11 +443,13 @@ export function QuizSolveScreen() {
     mutationFn: () => api.quiz.finish(attemptId!),
     // 완료는 포인트를 적립하므로 응답 유실 시 자동으로 재전송하지 않는다.
     retry: false,
-    onSuccess: (r) =>
+    onSuccess: (r) => {
+      useQuizProgress.getState().reset();
       router.replace({
         pathname: '/play/review',
         params: { setId: set.data!._id, points: String(r.pointsEarned) },
-      }),
+      });
+    },
     onError: (e) => {
       if (e instanceof ApiError && e.code === ERROR_CODES.TOKEN_EXPIRED)
         useAuth.getState().setExpired(true);
@@ -455,7 +462,7 @@ export function QuizSolveScreen() {
 
   useEffect(() => {
     let active = true;
-    if (set.data)
+    if (set.data && !attemptId)
       api.quiz
         .startAttempt(set.data._id)
         .then((a) => {
@@ -474,6 +481,19 @@ export function QuizSolveScreen() {
     },
     [],
   );
+  useEffect(() => {
+    if (set.data && !finish.isSuccess)
+      useQuizProgress
+        .getState()
+        .save({ setId: set.data._id, attemptId, index: i, answerText, pick, right, results });
+  }, [set.data, attemptId, i, answerText, pick, right, results, finish.isSuccess]);
+  if (set.isError)
+    return (
+      <Screen>
+        <Text>퀴즈를 불러오지 못했어요</Text>
+        <Btn onPress={() => set.refetch()}>다시 시도</Btn>
+      </Screen>
+    );
   if (!set.data) return <Loading />;
   const qs = set.data.questions;
   const q = qs[i];
@@ -811,15 +831,25 @@ export function QuizExplainScreen() {
 
 export function QuizSimilarScreen() {
   const { setId } = useLocalSearchParams<{ setId?: string }>();
-  const sim = useQuery({
-    queryKey: ['similar', setId],
-    queryFn: () => api.quiz.similar(setId ?? ''),
+  const qc = useQueryClient();
+  const cached = useQuery({
+    queryKey: ['similar-result', setId],
+    queryFn: () => Promise.resolve(null),
+    enabled: false,
   });
+  const generate = useMutation({
+    mutationFn: () => api.quiz.similar(setId ?? ''),
+    retry: false,
+    onSuccess: (data) => qc.setQueryData(['similar-result', setId], data),
+  });
+  const sim = {
+    data: (cached.data ?? generate.data) as
+      Awaited<ReturnType<typeof api.quiz.similar>> | undefined,
+  };
   const [open, setOpen] = useState<string[]>([]);
   const [saved, setSaved] = useState<string[]>([]);
   const saving = useRef(new Set<string>());
   const [pendingIds, setPendingIds] = useState<string[]>([]);
-  const qc = useQueryClient();
   const save = useMutation({
     mutationFn: (q: Question) =>
       api.quiz.saveFlashcard({ front: q.prompt, back: q.answer, sourceQuestionId: q._id }),
@@ -847,7 +877,14 @@ export function QuizSimilarScreen() {
       <Text className="text-caption text-sub">
         원본과 같은 난이도로 {sim.data?.questionCount ?? 3}문제를 새로 만들었어요
       </Text>
-      {!sim.data && <Loading />}
+      {!sim.data && (
+        <Btn loading={generate.isPending} onPress={() => generate.mutate()}>
+          {generate.isError ? '다시 시도' : '유사 퀴즈 만들기'}
+        </Btn>
+      )}
+      {generate.isError && (
+        <Text>생성 결과를 받지 못했어요. 다시 시도하면 새 생성 요청을 보내요.</Text>
+      )}
       <View className="mt-3 gap-2">
         {sim.data?.questions.map((q, i) => (
           <View key={q._id} className="rounded-2xl border border-line p-3">

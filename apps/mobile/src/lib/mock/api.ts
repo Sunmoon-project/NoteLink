@@ -352,7 +352,6 @@ export const mockApi: Api = {
       const cur = db.recurring.find((x) => x._id === g._id);
       if (cur) return ok(Object.assign(cur, g));
       const n = {
-        _id: uid('rg'),
         days: [],
         targetMin: 30,
         subjectId: null,
@@ -362,6 +361,7 @@ export const mockApi: Api = {
         streak: 0,
         isActive: true,
         ...g,
+        _id: uid('rg'),
       };
       db.recurring.push(n);
       return ok(n);
@@ -468,9 +468,11 @@ export const mockApi: Api = {
     },
     removeClass: (id) => ok(void (db.classes = db.classes.filter((c) => c._id !== id))),
     share: (p) => {
-      for (const friendId of p.friendIds)
-        if (!db.timetableShares.some((x) => x.friendId === friendId))
-          db.timetableShares.push({ _id: uid('ts'), friendId, mode: p.mode, sharedAt: now() });
+      for (const friendId of p.friendIds) {
+        const existing = db.timetableShares.find((x) => x.friendId === friendId);
+        if (existing) Object.assign(existing, { mode: p.mode, sharedAt: now() });
+        else db.timetableShares.push({ _id: uid('ts'), friendId, mode: p.mode, sharedAt: now() });
+      }
       return ok(undefined);
     },
     shares: () => ok(db.timetableShares),
