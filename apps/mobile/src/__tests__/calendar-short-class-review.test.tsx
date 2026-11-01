@@ -118,3 +118,31 @@ it('주간 기록은 가입한 스터디룸의 교시 일정을 실제 규칙으
   await renderScreen(<RecordScreen />, qc);
   expect(await screen.findAllByText('스터디룸 · 실제 야간 스터디 · 마지막 교시')).toHaveLength(7);
 });
+
+it('스터디룸 일정 조회 실패는 안내하고 사용자가 다시 요청하면 일정을 복구한다', async () => {
+  const room = await api.rooms.get('retry-calendar-room');
+  const mine = jest
+    .spyOn(api.rooms, 'mine')
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValue([
+      {
+        ...room,
+        title: '재조회 스터디',
+        timerRule: {
+          enabled: true,
+          type: 'period',
+          focusMin: 50,
+          breakMin: 10,
+          repeat: 4,
+          periods: [{ start: '18:00', end: '19:00', label: '복구한 교시' }],
+        },
+      },
+    ]);
+  setParams({ mode: '주간' });
+  await renderScreen(<RecordScreen />, qc);
+  await screen.findByText('스터디룸 일정을 불러오지 못했어요');
+  expect(screen.queryByText('스터디룸 · 재조회 스터디 · 복구한 교시')).toBeNull();
+  await fireEvent.press(screen.getByRole('button', { name: '일정 다시 시도' }));
+  expect(await screen.findAllByText('스터디룸 · 재조회 스터디 · 복구한 교시')).toHaveLength(7);
+  expect(mine).toHaveBeenCalledTimes(2);
+});
