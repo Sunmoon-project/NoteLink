@@ -53,7 +53,7 @@ export const useSession = create<Session>((set, get) => ({
   elapsedSince: (boundary, now = Date.now()) => {
     const s = get();
     const closed = s.segments.reduce(
-      (sum, p) => sum + Math.max(0, p.end - Math.max(p.start, boundary)),
+      (sum, p) => sum + Math.max(0, Math.min(p.end, now) - Math.max(p.start, boundary)),
       0,
     );
     return Math.floor(

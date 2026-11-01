@@ -338,14 +338,11 @@ export function QuizGenScreen() {
   useEffect(() => {
     if (!job?._id || !setId) return;
     let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const checkStatus = async () => {
-      if (
-        canceled.current ||
-        completedJob.current === job._id ||
-        useNet.getState().state === 'offline'
-      )
-        return;
+      if (!active || canceled.current || completedJob.current === job._id) return;
       try {
+        if (useNet.getState().state === 'offline') return;
         const current = await api.ai.job(job._id);
         if (active) {
           setJob(current);
@@ -353,13 +350,15 @@ export function QuizGenScreen() {
         }
       } catch {
         /* 일시적인 조회 실패는 다음 검사에서 복구한다. */
+      } finally {
+        if (active && !canceled.current && completedJob.current !== job._id)
+          timer = setTimeout(() => void checkStatus(), 1500);
       }
     };
     void checkStatus();
-    const timer = setInterval(() => void checkStatus(), 1500);
     return () => {
       active = false;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
   }, [job?._id, setId]); // eslint-disable-line react-hooks/exhaustive-deps
   const credit = failed === ERROR_CODES.AI_CREDIT_EXHAUSTED;
@@ -477,8 +476,15 @@ export function QuizSolveScreen() {
   const [answerText, setAnswerText] = useState(previous?.answerText ?? '');
   const answering = useRef(false);
   const mounted = useRef(true);
+  const screenGeneration = useRef(useQuizProgress.getState().generation);
+  const screenOwner = useRef(useAuth.getState().userId);
+  const ownsProgress = () =>
+    mounted.current &&
+    useAuth.getState().userId === screenOwner.current &&
+    useQuizProgress.getState().generation === screenGeneration.current;
   useEffect(() => {
     mounted.current = true;
+    screenGeneration.current = useQuizProgress.getState().claim();
     return () => {
       mounted.current = false;
     };
@@ -492,17 +498,15 @@ export function QuizSolveScreen() {
   const expired = useAuth((s) => s.expired);
   const finishing = useRef(false);
   const finish = useMutation({
-    mutationFn: (_request: {
-      owner: string | null;
-      progress: ReturnType<typeof useQuizProgress.getState>['progress'];
-    }) => api.quiz.finish(attemptId!),
+    mutationFn: (_request: { owner: string | null; generation: number }) =>
+      api.quiz.finish(attemptId!),
     // 완료는 포인트를 적립하므로 응답 유실 시 자동으로 재전송하지 않는다.
     retry: false,
     onSuccess: (r, request) => {
       if (
-        !mounted.current ||
+        !ownsProgress() ||
         useAuth.getState().userId !== request.owner ||
-        useQuizProgress.getState().progress !== request.progress
+        useQuizProgress.getState().generation !== request.generation
       )
         return;
       useQuizProgress.getState().reset();
@@ -513,9 +517,9 @@ export function QuizSolveScreen() {
     },
     onError: (e, request) => {
       if (
-        !mounted.current ||
+        !ownsProgress() ||
         useAuth.getState().userId !== request.owner ||
-        useQuizProgress.getState().progress !== request.progress
+        useQuizProgress.getState().generation !== request.generation
       )
         return;
       if (e instanceof ApiError && e.code === ERROR_CODES.TOKEN_EXPIRED)
@@ -533,10 +537,10 @@ export function QuizSolveScreen() {
       api.quiz
         .startAttempt(set.data._id)
         .then((a) => {
-          if (active) setAttemptId(a._id);
+          if (active && ownsProgress()) setAttemptId(a._id);
         })
         .catch(() => {
-          if (active) setStartError(true);
+          if (active && ownsProgress()) setStartError(true);
         });
     return () => {
       active = false;
@@ -549,11 +553,13 @@ export function QuizSolveScreen() {
     [],
   );
   useEffect(() => {
-    if (set.data && !finish.isSuccess)
+    if (set.data && !finish.isSuccess && ownsProgress()) {
       useQuizProgress
         .getState()
         .save({ setId: set.data._id, attemptId, index: i, answerText, pick, right, results });
-  }, [set.data, attemptId, i, answerText, pick, right, results, finish.isSuccess]);
+      screenGeneration.current = useQuizProgress.getState().generation;
+    }
+  }, [set.data, attemptId, i, answerText, pick, right, results, finish.isSuccess]); // eslint-disable-line react-hooks/exhaustive-deps
   if (set.isError)
     return (
       <Screen>
@@ -578,12 +584,13 @@ export function QuizSolveScreen() {
     });
   };
   const choose = async (c: string) => {
+    if (!ownsProgress()) return toast('다른 풀이를 진행 중이에요. 풀던 퀴즈를 다시 열어주세요');
     if (answering.current || pick || !attemptId || !c.trim()) return;
     answering.current = true;
     setPick(c);
     try {
       const r = await api.quiz.answer(attemptId, q._id, c);
-      if (!mounted.current) return;
+      if (!ownsProgress()) return;
       setRight(r.correct);
       setResults((x) => [...x, r.correct]);
       Haptics.notificationAsync(
@@ -592,7 +599,7 @@ export function QuizSolveScreen() {
           : Haptics.NotificationFeedbackType.Error,
       );
     } catch (e) {
-      if (!mounted.current) return;
+      if (!ownsProgress()) return;
       // 로그인 만료: 풀던 내용은 그대로 두고 다이얼로그 (p.101)
       if (e instanceof ApiError && e.code === ERROR_CODES.TOKEN_EXPIRED)
         useAuth.getState().setExpired(true);
@@ -603,6 +610,7 @@ export function QuizSolveScreen() {
     }
   };
   const next = () => {
+    if (!ownsProgress()) return toast('다른 풀이를 진행 중이에요. 풀던 퀴즈를 다시 열어주세요');
     if (finishing.current) return;
     if (i >= qs.length - 1) {
       const progress = useQuizProgress.getState().progress;
@@ -611,7 +619,10 @@ export function QuizSolveScreen() {
         return;
       }
       finishing.current = true;
-      finish.mutate({ owner: useAuth.getState().userId, progress });
+      finish.mutate({
+        owner: useAuth.getState().userId,
+        generation: useQuizProgress.getState().generation,
+      });
       return;
     }
     setI((x) => x + 1);
@@ -620,6 +631,7 @@ export function QuizSolveScreen() {
     setRight(null);
   };
   const retry = () => {
+    if (!ownsProgress()) return toast('다른 풀이를 진행 중이에요. 풀던 퀴즈를 다시 열어주세요');
     setPick(null);
     setRight(null);
     setResults((r) => r.slice(0, -1));
@@ -655,6 +667,7 @@ export function QuizSolveScreen() {
             <Text>퀴즈를 시작하지 못했어요</Text>
             <Btn
               onPress={() => {
+                if (!ownsProgress()) return toast('풀던 퀴즈를 다시 열어주세요');
                 setStartError(false);
                 setStartRound((n) => n + 1);
               }}
@@ -683,7 +696,9 @@ export function QuizSolveScreen() {
                 <>
                   <TextInput
                     value={answerText}
-                    onChangeText={setAnswerText}
+                    onChangeText={(value) => {
+                      if (ownsProgress()) setAnswerText(value);
+                    }}
                     placeholder="답을 입력해주세요"
                     editable={!!attemptId && pick === null}
                     className="rounded-xl border border-line p-3"

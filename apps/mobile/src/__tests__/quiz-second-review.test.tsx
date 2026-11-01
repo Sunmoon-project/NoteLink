@@ -252,3 +252,35 @@ it('홈 이어서 풀기는 첫 ready 세트 대신 저장된 세트·풀이 ID�
   expect(useQuizProgress.getState().progress?.attemptId).toBe(savedAttempt);
   expect(mockApi.quiz.startAttempt).not.toHaveBeenCalled();
 });
+
+it('느린 생성 상태 조회가 끝날 때까지 다음 폴링을 시작하지 않는다', async () => {
+  jest.useFakeTimers();
+  const slow = deferred<AiJob>();
+  mockApi.quiz.createSet.mockResolvedValue({ quizSet, job: queued });
+  mockApi.ai.job
+    .mockReturnValueOnce(slow.promise)
+    .mockResolvedValue({ ...queued, status: 'running' });
+  setParams({ materialId: 'slow-generation' });
+  const view = await renderScreen(<QuizGenScreen />, client());
+  try {
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(4500);
+    });
+    expect(mockApi.ai.job).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      slow.resolve({ ...queued, status: 'running' });
+    });
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1499);
+    });
+    expect(mockApi.ai.job).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1);
+    });
+    expect(mockApi.ai.job).toHaveBeenCalledTimes(2);
+  } finally {
+    await view.unmount();
+    slow.resolve(queued);
+    jest.useRealTimers();
+  }
+});
