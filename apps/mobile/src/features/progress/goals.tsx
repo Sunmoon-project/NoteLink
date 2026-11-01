@@ -150,7 +150,7 @@ export function RepeatGoalScreen() {
       // 요일이 없으면 저장하지 않는다 (FR-11-04) — 버튼과 별도로 저장 경로에서도 막는다
       if (noDays) throw new Error('요일을 선택해주세요');
       return api.study.saveRecurringGoal({
-        _id: g?._id,
+        ...(g ? { _id: g._id } : {}),
         name,
         days,
         targetMin: min,

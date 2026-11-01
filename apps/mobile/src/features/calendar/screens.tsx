@@ -7,6 +7,7 @@ import * as Clipboard from 'expo-clipboard';
 import { Check, ChevronRight, Pin, Users, X } from 'lucide-react-native';
 import type { TimetableClass } from '@notelink/shared';
 import { api } from '@/lib/api';
+import { useHolidayPreference } from '@/lib/holiday-preference';
 import { timeAgo, today, ymd, seoul } from '@/lib/dates';
 import { toast } from '@/stores/toast';
 import {
@@ -34,7 +35,7 @@ import { validYmd } from '../progress/goals';
 export function HolidayScreen() {
   const qc = useQueryClient();
   const year = seoul().getFullYear();
-  const [auto, setAuto] = useState(true);
+  const { auto, setAuto } = useHolidayPreference();
   const hol = useQuery({
     queryKey: ['holidays', year],
     queryFn: () => api.calendar.holidays(year),
@@ -255,8 +256,15 @@ export function CalSharedScreen() {
       toast('공유받은 일정을 내 캘린더에 추가했어요');
     },
   });
-  const s = recv.data?.[0];
-  const ym = today().slice(0, 7);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [month, setMonth] = useState<string | null>(null);
+  const s = recv.data?.find((s) => s._id === selected) ?? recv.data?.[0];
+  const ym = month ?? s?.rangeStart.slice(0, 7) ?? today().slice(0, 7);
+  const shift = (n: number) => {
+    const d = new Date(`${ym}-01T00:00:00`);
+    d.setMonth(d.getMonth() + n);
+    setMonth(ymd(d).slice(0, 7));
+  };
   return (
     <Screen
       footer={
@@ -268,6 +276,28 @@ export function CalSharedScreen() {
       }
     >
       <Header title="공유받은 캘린더" />
+      <View className="flex-row flex-wrap gap-2">
+        {recv.data?.map((c) => (
+          <Chip
+            key={c._id}
+            on={c._id === s?._id}
+            onPress={() => {
+              setSelected(c._id);
+              setMonth(c.rangeStart.slice(0, 7));
+            }}
+          >
+            {c.ownerNickname}
+          </Chip>
+        ))}
+      </View>
+      <View className="flex-row justify-between">
+        <Btn small onPress={() => shift(-1)}>
+          이전 달
+        </Btn>
+        <Btn small onPress={() => shift(1)}>
+          다음 달
+        </Btn>
+      </View>
       {s && (
         <>
           <Card tone="white" className="flex-row items-center gap-3 px-4 py-3">

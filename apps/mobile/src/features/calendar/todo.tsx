@@ -16,7 +16,7 @@ const slotLabel = (t: Todo) =>
   t.timeSlot === 'none'
     ? '시간 미정'
     : t.dueTime
-      ? `${t.timeSlot === 'am' ? '오전' : '오후'} ${Number(t.dueTime.slice(0, 2)) % 12 || 12}시`
+      ? t.dueTime
       : t.timeSlot === 'am'
         ? '오전'
         : '오후';
@@ -40,10 +40,8 @@ export function TodoSheet({
   });
   const toggle = useMutation({
     mutationFn: (t: Todo) => api.calendar.toggleTodo(t._id, !t.done),
-    onMutate: (t) =>
-      qc.setQueryData<Todo[]>(['todos', date], (p) =>
-        p?.map((x) => (x._id === t._id ? { ...x, done: !x.done } : x)),
-      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['todos', date] }),
+    onError: () => toast('할 일을 저장하지 못했어요. 다시 시도해 주세요'),
   });
   const list = todos.data ?? [];
   return (
@@ -62,6 +60,7 @@ export function TodoSheet({
         {list.map((t) => (
           <Pressable
             key={t._id}
+            disabled={toggle.isPending}
             onPress={() => toggle.mutate(t)}
             className="flex-row items-center gap-3 rounded-2xl border border-line px-4 py-3"
           >
@@ -114,6 +113,8 @@ export function AddTodoSheet({
   const subjects = useQuery({ queryKey: ['subjects'], queryFn: api.study.subjects });
   const [content, setContent] = useState('');
   const [type, setType] = useState<TodoType>('assignment');
+  const [dueTime, setDueTime] = useState('');
+  const validTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(dueTime);
   const [slot, setSlot] = useState<Todo['timeSlot']>('none');
   const [subj, setSubj] = useState<string | null>('영어');
   const add = useMutation({
@@ -123,6 +124,7 @@ export function AddTodoSheet({
         todoType: type,
         dueDate: date,
         timeSlot: slot,
+        ...(slot === 'custom' ? { dueTime } : {}),
         subjectName: subj,
       }),
     onSuccess: () => {
@@ -180,6 +182,14 @@ export function AddTodoSheet({
           </Chip>
         ))}
       </View>
+      {slot === 'custom' && (
+        <Input
+          placeholder="HH:MM (24시간)"
+          value={dueTime}
+          onChangeText={setDueTime}
+          keyboardType="numbers-and-punctuation"
+        />
+      )}
       <Label>과목 (선택)</Label>
       <View className="flex-row flex-wrap gap-2">
         <Chip on={subj === null} onPress={() => setSubj(null)}>
@@ -193,7 +203,7 @@ export function AddTodoSheet({
       </View>
       <Btn
         className="mt-6"
-        disabled={!content.trim()}
+        disabled={!content.trim() || (slot === 'custom' && !validTime)}
         loading={add.isPending}
         onPress={() => add.mutate()}
       >

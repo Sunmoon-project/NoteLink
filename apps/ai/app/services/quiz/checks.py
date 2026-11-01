@@ -135,13 +135,14 @@ def _same_parsed(a: tuple[list[Decimal], str], b: tuple[list[Decimal], str]) -> 
     return bool(a[0]) and a == b
 
 
-def option_key(o: str) -> tuple[str, tuple[Decimal, ...]]:
+def option_key(o: str) -> tuple[str, tuple[Decimal, ...], str]:
     """보기 · 정답이 같은지 볼 때 쓰는 키: norm(대소문자 · 문장부호 무시)에 적힌 수를 더함.
 
     norm은 '.' · '-'를 지우므로 수까지 따로 보지 않으면 '1.5 mL'과 '15 mL',
     '-20℃'와 '20℃'가 같은 보기가 됩니다. 'No.5'와 'No. 5'는 같은 보기입니다.
     """
-    return norm(o), tuple(number_values(o)[0])
+    values, rest = number_values(o)
+    return norm(o), tuple(values), "".join(rest.split())
 
 
 def form(w: str | None) -> Literal["ing", "ed", "base"]:

@@ -15,6 +15,7 @@ import {
   Users,
 } from 'lucide-react-native';
 import { api } from '@/lib/api';
+import { useHolidayPreference } from '@/lib/holiday-preference';
 import { addDays, diffLabel, dLabel, hm, md, parse, today, ymd, WD, seoul } from '@/lib/dates';
 import {
   Badge,
@@ -40,6 +41,7 @@ export function Month({
   levels,
   dots,
   shared,
+  holidays,
 }: {
   ym: string;
   selected?: string;
@@ -47,6 +49,7 @@ export function Month({
   levels?: Record<string, number>;
   dots?: Set<string>;
   shared?: Set<string>;
+  holidays?: Record<string, string>;
 }) {
   const first = parse(`${ym}-01`);
   const n = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
@@ -76,6 +79,7 @@ export function Month({
           return (
             <Pressable
               key={d}
+              accessibilityLabel={`${d}${holidays?.[d] ? ` ${holidays[d]}` : ''}`}
               onPress={() => onPick?.(d)}
               className="h-10 w-[14.28%] items-center justify-center"
             >
@@ -102,7 +106,9 @@ export function Month({
                       ? 'font-semibold text-white'
                       : shared?.has(d)
                         ? 'font-semibold text-brand'
-                        : 'text-ink/80',
+                        : holidays?.[d]
+                          ? 'text-danger'
+                          : 'text-ink/80',
                   )}
                 >
                   {Number(d.slice(8))}
@@ -143,6 +149,19 @@ export function RecordScreen() {
     setCursor(ymd(new Date(d.getFullYear(), d.getMonth() + n, 1)).slice(0, 7));
   };
   const [y, m] = cursor.split('-').map(Number);
+  const { auto } = useHolidayPreference();
+  const holidays = useQuery({
+    queryKey: ['holidays', y],
+    queryFn: () => api.calendar.holidays(y!),
+  });
+  const custom = useQuery({
+    queryKey: ['holidays', 'custom'],
+    queryFn: api.calendar.customHolidays,
+  });
+  const holidayNames: Record<string, string> = Object.fromEntries([
+    ...(auto ? (holidays.data ?? []).filter((h) => !h.hidden).map((h) => [h._id, h.name]) : []),
+    ...(custom.data ?? []).map((h) => [h.date, h.name]),
+  ]);
   return (
     <View className="flex-1">
       <Screen>
@@ -190,6 +209,9 @@ export function RecordScreen() {
                 <Badge tone="sun">{dLabel(next.daysLeft)}</Badge>
               </Card>
             )}
+            <Card onPress={() => router.push('/repeat')} className="mt-2 p-3">
+              <Text>+ 반복 목표 추가</Text>
+            </Card>
             {goals.data?.[0] && (
               <Card
                 tone="white"
@@ -227,6 +249,7 @@ export function RecordScreen() {
             />
             <Month
               ym={cursor}
+              holidays={holidayNames}
               levels={levels}
               dots={dots}
               selected={day}
@@ -235,6 +258,13 @@ export function RecordScreen() {
                 setSheet('todo');
               }}
             />
+            {Object.entries(holidayNames)
+              .filter(([date]) => date.startsWith(cursor))
+              .map(([date, name]) => (
+                <Text key={date} className="text-caption text-danger">
+                  {date} · {name}
+                </Text>
+              ))}
             <Text className="mt-2 text-caption2 text-sub">
               색이 진할수록 공부 시간이 길고, 점은 할 일이 있는 날이에요
             </Text>
@@ -363,7 +393,6 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
         bg: c.color,
       })),
     ),
-    { day: 6, top: 11, h: 2, label: '스터디룸 · 화학', bg: '#f8e7b4' },
   ];
   return (
     <>

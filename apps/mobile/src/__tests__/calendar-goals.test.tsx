@@ -1,3 +1,5 @@
+import * as toastModule from '../stores/toast';
+import { TodoSheet, AddTodoSheet } from '../features/calendar/todo';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { RepeatGoalScreen, validYmd } from '../features/progress/goals';
 import { TimetableScreen } from '../features/calendar/screens';
@@ -74,5 +76,43 @@ describe('시간표 시간 검증', () => {
     await fireEvent.press(screen.getByText('추가하기'));
     await act(async () => {});
     expect(add).not.toHaveBeenCalled();
+  });
+});
+
+describe('최신 리뷰 회귀', () => {
+  afterEach(() => jest.restoreAllMocks());
+  it('새 목표의 undefined ID가 생성된 ID를 덮어쓰지 않는다', async () => {
+    const goal = await api.study.saveRecurringGoal({ name: '새 목표', _id: undefined });
+    expect(typeof goal._id).toBe('string');
+  });
+  it('할 일 완료 저장 실패시 완료 상태를 남기지 않는다', async () => {
+    const todo = await api.calendar.addTodo({
+      content: '실패 복구',
+      todoType: 'general',
+      dueDate: '2026-11-01',
+      timeSlot: 'none',
+      subjectName: null,
+    });
+    const notify = jest.spyOn(toastModule, 'toast');
+    jest.spyOn(api.calendar, 'toggleTodo').mockRejectedValue(new Error('실패'));
+    await renderScreen(<TodoSheet open date="2026-11-01" onClose={jest.fn()} onAdd={jest.fn()} />);
+    await fireEvent.press(await screen.findByText(todo.content));
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining('저장하지 못했어요')),
+    );
+    expect(screen.getByText(todo.content).props.className).not.toContain('line-through');
+  });
+  it('직접 입력한 할 일 시각을 전송한다', async () => {
+    const save = jest.spyOn(api.calendar, 'addTodo');
+    await renderScreen(<AddTodoSheet open date="2026-11-01" onClose={jest.fn()} />);
+    await fireEvent.changeText(screen.getByPlaceholderText('수학 워크북 3단원 제출'), '직접 시각');
+    await fireEvent.press(screen.getByText('직접 입력'));
+    await fireEvent.changeText(screen.getByPlaceholderText('HH:MM (24시간)'), '09:35');
+    await fireEvent.press(screen.getByText('추가하기'));
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({ timeSlot: 'custom', dueTime: '09:35' }),
+      ),
+    );
   });
 });

@@ -7,6 +7,8 @@ import { api } from '@/lib/api';
 export const AUTO_END_MS = 10 * 60 * 1000; // 쉬는 중 10분이 지나면 자동 종료 (p.48)
 
 type Session = {
+  segments: { start: number; end: number }[];
+  elapsedSince: (boundary: number, now?: number) => number;
   itemId: string | null;
   sessionId: string | null;
   /** 측정 시작(또는 재개) 시각 */
@@ -25,7 +27,14 @@ type Session = {
   reset: () => void;
 };
 
-const idle = { itemId: null, sessionId: null, since: null, banked: 0, pausedAt: null };
+const idle = {
+  segments: [] as { start: number; end: number }[],
+  itemId: null,
+  sessionId: null,
+  since: null,
+  banked: 0,
+  pausedAt: null,
+};
 // 측정이 바뀔 때마다(시작 · 종료 · 초기화) 올린다. 늦게 온 시작 응답이 지금 측정의 것인지 가리는 데 쓴다
 let gen = 0;
 // 로그아웃 · 계정 전환 때만 올린다. 이전 계정의 응답은 서버에 다시 보내지 않고 버린다
@@ -38,6 +47,16 @@ export const useSession = create<Session>((set, get) => ({
     gen++;
     epoch++;
     set({ ...idle, mode: 'personal' });
+  },
+  elapsedSince: (boundary, now = Date.now()) => {
+    const s = get();
+    const closed = s.segments.reduce(
+      (sum, p) => sum + Math.max(0, p.end - Math.max(p.start, boundary)),
+      0,
+    );
+    return Math.floor(
+      (closed + (s.since ? Math.max(0, now - Math.max(s.since, boundary)) : 0)) / 1000,
+    );
   },
   elapsed: (now = Date.now()) => {
     const s = get();
@@ -56,7 +75,7 @@ export const useSession = create<Session>((set, get) => ({
     const g = ++gen;
     // 서버 확인 전에는 대기 상태다. 과거 휴식 시각을 보내는 계약이 없으므로
     // 응답 전 로컬 정지·재개를 허용해 서버 정산과 어긋나게 하지 않는다.
-    set({ itemId, since: null, banked: 0, pausedAt: null, mode, sessionId: null });
+    set({ ...idle, itemId, mode });
     let s;
     try {
       s = await api.study.startSession({ studyItemId: itemId, mode });
@@ -76,7 +95,12 @@ export const useSession = create<Session>((set, get) => ({
   pause: () => {
     const s = get();
     if (!s.sessionId || !s.since) return;
-    set({ banked: s.elapsed(), since: null, pausedAt: Date.now() });
+    set({
+      banked: s.elapsed(),
+      segments: [...s.segments, { start: s.since, end: Date.now() }],
+      since: null,
+      pausedAt: Date.now(),
+    });
     if (s.sessionId) api.study.pauseSession(s.sessionId).catch(() => {});
   },
   resume: () => {
