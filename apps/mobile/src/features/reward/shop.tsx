@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { Image, Pressable, ScrollView, View } from 'react-native';
 import { Text } from '@/components/text';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -52,13 +52,46 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
   );
 }
 
+function ItemPreview({ item, large = false }: { item: ShopItem; large?: boolean }) {
+  const size = large ? 96 : 64;
+  const label = `${item.name} 미리보기`;
+  if (item.thumbnailUrl && /^(https?:|file:|data:)/.test(item.thumbnailUrl))
+    return (
+      <Image
+        accessibilityRole="image"
+        accessibilityLabel={label}
+        source={{ uri: item.thumbnailUrl }}
+        style={{ width: size, height: size }}
+        resizeMode="contain"
+      />
+    );
+  return (
+    <View accessibilityLabel={label}>
+      {item.thumbnailUrl ? (
+        <Text className={large ? 'text-display-lg' : 'text-display'}>{item.thumbnailUrl}</Text>
+      ) : (
+        <Package size={size} color={C.brand} />
+      )}
+    </View>
+  );
+}
+
 function useShopData() {
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
   const mine = useQuery({ queryKey: ['my-items'], queryFn: api.shop.myItems });
   const owned = new Set((mine.data ?? []).filter((u) => u.isOwned).map((u) => u.itemId));
   const wished = new Set((mine.data ?? []).filter((u) => u.isWished).map((u) => u.itemId));
-  const equipped = mine.data?.find((u) => u.isEquipped)?.itemId ?? 'base';
-  return { points: me.data?.pointBalance ?? 0, owned, wished, equipped, loaded: mine.isSuccess };
+  const equippedIds = new Set((mine.data ?? []).filter((u) => u.isEquipped).map((u) => u.itemId));
+  const equipped =
+    mine.data?.find((u) => u.isEquipped && u.itemCategory === 'avatar')?.itemId ?? 'base';
+  return {
+    points: me.data?.pointBalance ?? 0,
+    owned,
+    wished,
+    equipped,
+    equippedIds,
+    loaded: mine.isSuccess,
+  };
 }
 
 export function ShopScreen() {
@@ -85,6 +118,8 @@ export function ShopScreen() {
   const [checking, setChecking] = useState(false);
   const checkingRef = useRef(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const buying = useRef(false);
+  const purchased = useRef(new Set<string>());
 
   const wish = useMutation({
     mutationFn: api.shop.wish,
@@ -94,12 +129,17 @@ export function ShopScreen() {
     mutationFn: (it: ShopItem) => api.shop.purchase(it._id),
     retry: false,
     onSuccess: (_, it) => {
+      purchased.current.add(it._id);
+      setConfirm(null);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       qc.invalidateQueries({ queryKey: ['me'] });
       qc.invalidateQueries({ queryKey: ['my-items'] });
       // 포인트 내역을 열어 둔 적이 있어도 새 구매 내역이 바로 보이게
       qc.invalidateQueries({ queryKey: ['ledger'] });
       setMsg(`🎉 구매 완료 · ${it.name}`);
+    },
+    onSettled: () => {
+      buying.current = false;
     },
     onError: (e, it) => {
       if (e instanceof ApiError && e.code === ERROR_CODES.POINTS_INSUFFICIENT) setPoor(it);
@@ -142,6 +182,7 @@ export function ShopScreen() {
   const list =
     tab === '찜' ? (items.data ?? []).filter((i) => wished.has(i._id)) : (items.data ?? []);
   const tryBuy = (it: ShopItem) => {
+    if (buying.current || owned.has(it._id) || purchased.current.has(it._id)) return;
     setDetail(null);
     if (uncertainId === it._id) {
       setFail(true);
@@ -215,7 +256,7 @@ export function ShopScreen() {
               <View key={it._id} className="w-[48.5%] rounded-2xl bg-cream p-2">
                 <Pressable onPress={() => setDetail(it)}>
                   <View className="h-24 items-center justify-center rounded-xl bg-white">
-                    <Text className="text-display">{it.thumbnailUrl}</Text>
+                    <ItemPreview item={it} />
                     {it.badge && (
                       <View
                         className={cx(
@@ -274,7 +315,7 @@ export function ShopScreen() {
         {detail && (
           <>
             <View className="h-36 items-center justify-center rounded-2xl bg-cream">
-              <Text className="text-display-lg">{detail.thumbnailUrl}</Text>
+              <ItemPreview item={detail} large />
             </View>
             <View className="mt-3 flex-row items-center justify-between">
               <Text className="text-body font-bold text-ink">{detail.name}</Text>
@@ -341,6 +382,16 @@ export function ShopScreen() {
                   onPress={() => {
                     const it = confirm;
                     setConfirm(null);
+                    const mine = qc.getQueryData<Awaited<ReturnType<typeof api.shop.myItems>>>([
+                      'my-items',
+                    ]);
+                    if (
+                      buying.current ||
+                      purchased.current.has(it._id) ||
+                      mine?.some((u) => u.itemId === it._id && u.isOwned)
+                    )
+                      return;
+                    buying.current = true;
                     buy.mutate(it);
                   }}
                 >
@@ -450,7 +501,7 @@ export function PointsScreen() {
 export function BoxScreen() {
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
-  const { owned, equipped, loaded } = useShopData();
+  const { owned, equipped, equippedIds, loaded } = useShopData();
   const all = useQuery({ queryKey: ['shop', 'all'], queryFn: () => api.shop.items({}) });
   const [tab, setTab] = useState<'전체' | '아바타' | '테마'>('전체');
   const [pick, setPick] = useState<ShopItem | null>(null);
@@ -492,7 +543,7 @@ export function BoxScreen() {
           </Pressable>
         )}
         <View className="mt-3 h-32 items-center justify-center rounded-2xl bg-cream">
-          <Text className="text-display-lg">{cur.thumbnailUrl}</Text>
+          <ItemPreview item={cur} large />
           <View className="absolute right-3 bottom-3 rounded-full bg-white px-2 py-0.5">
             <Text className="text-caption2 text-ink">현재 아바타</Text>
           </View>
@@ -530,26 +581,26 @@ export function BoxScreen() {
             {items.map((it) => (
               <Pressable
                 key={it._id}
-                onPress={() => it._id !== equipped && setPick(it)}
+                onPress={() => !equippedIds.has(it._id) && setPick(it)}
                 className="w-[48.5%] rounded-2xl bg-cream p-2"
               >
                 <View className="h-24 items-center justify-center rounded-xl bg-white">
-                  <Text className="text-display">{it.thumbnailUrl}</Text>
+                  <ItemPreview item={it} />
                 </View>
                 <Text className="mt-2 px-1 text-footnote font-semibold text-ink">{it.name}</Text>
                 <View
                   className={cx(
                     'ml-1 mt-0.5 self-start rounded-full px-2 py-0.5',
-                    it._id === equipped ? 'bg-brand' : 'bg-mint',
+                    equippedIds.has(it._id) ? 'bg-brand' : 'bg-mint',
                   )}
                 >
                   <Text
                     className={cx(
                       'text-caption2',
-                      it._id === equipped ? 'text-white' : 'text-brand',
+                      equippedIds.has(it._id) ? 'text-white' : 'text-brand',
                     )}
                   >
-                    {it._id === equipped ? '장착중' : '보유중'}
+                    {equippedIds.has(it._id) ? '장착중' : '보유중'}
                   </Text>
                 </View>
               </Pressable>
@@ -561,7 +612,7 @@ export function BoxScreen() {
         {pick && (
           <>
             <View className="h-36 items-center justify-center rounded-2xl bg-cream">
-              <Text className="text-display-lg">{pick.thumbnailUrl}</Text>
+              <ItemPreview item={pick} large />
             </View>
             <View className="mt-3 flex-row items-center justify-between">
               <Text className="text-body font-bold text-ink">{pick.name}</Text>

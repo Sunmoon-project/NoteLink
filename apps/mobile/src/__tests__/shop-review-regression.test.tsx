@@ -157,3 +157,18 @@ it('캐시된 소유 목록이 갱신되면 장착 진입 파라미터를 다시
   );
   expect(await screen.findByText('장착하기')).toBeTruthy();
 });
+
+it('상품 URL은 이미지로 표시하고 null은 대체 미리보기를 표시한다', async () => {
+  const item = (await api.shop.items({}))[0]!;
+  jest.spyOn(api.shop, 'items').mockResolvedValue([
+    { ...item, thumbnailUrl: 'https://example.test/item.png' },
+    { ...item, _id: 'no-image', name: '이미지 없음', thumbnailUrl: null },
+  ]);
+  await renderScreen(<ShopScreen />, client());
+  await screen.findByText(item.name);
+  expect(screen.getByLabelText(`${item.name} 미리보기`).props.source.uri).toBe(
+    'https://example.test/item.png',
+  );
+  expect(screen.queryByText('https://example.test/item.png')).toBeNull();
+  expect(screen.getByLabelText('이미지 없음 미리보기')).toBeTruthy();
+});

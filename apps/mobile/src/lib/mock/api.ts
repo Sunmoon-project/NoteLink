@@ -379,7 +379,7 @@ export const mockApi: Api = {
         todoType: p.todoType,
         isDday: p.todoType !== 'general',
         timeSlot: p.timeSlot,
-        dueTime: null,
+        dueTime: p.dueTime ?? null,
         subjectId: null,
         subjectName: p.subjectName ?? undefined,
         done: false,
@@ -509,7 +509,10 @@ export const mockApi: Api = {
         db.folders.map((f) => ({
           ...f,
           materialCount: db.materials.filter(
-            (m) => m.folderId === f._id && m.processing.status === 'done',
+            (m) =>
+              m.folderId === f._id &&
+              (m.processing.status === 'done' ||
+                (m as Material & { saved?: boolean }).saved === true),
           ).length,
         })),
       ),
@@ -531,7 +534,8 @@ export const mockApi: Api = {
         db.materials.filter(
           (m) =>
             m.folderId === folderId &&
-            m.processing.status === 'done' &&
+            (m.processing.status === 'done' ||
+              (m as Material & { saved?: boolean }).saved === true) &&
             (m as Material & { saved?: boolean }).saved !== false,
         ),
       ),
@@ -838,7 +842,10 @@ export const mockApi: Api = {
     purchase: (itemId) => {
       if (useMockFlags.getState().purchaseFail)
         return Promise.reject(new NetworkError('purchase interrupted'));
-      const item = S.SHOP.find((i) => i._id === itemId)!;
+      const item = S.SHOP.find((i) => i._id === itemId);
+      if (!item) return fail(ERROR_CODES.NOT_FOUND, '상품을 찾을 수 없어요');
+      if (db.userItems.some((u) => u.itemId === itemId && u.isOwned))
+        return ok({ balance: db.user.pointBalance });
       if (db.user.pointBalance < item.price)
         return fail(ERROR_CODES.POINTS_INSUFFICIENT, '포인트가 부족해요');
       db.user.pointBalance -= item.price;
@@ -867,7 +874,11 @@ export const mockApi: Api = {
       return ok({ balance: db.user.pointBalance }, 500);
     },
     equip: (itemId) => {
-      db.userItems.forEach((u) => (u.isEquipped = u.itemId === itemId));
+      const selected = db.userItems.find((u) => u.itemId === itemId && u.isOwned);
+      if (!selected) return fail(ERROR_CODES.NOT_FOUND, '보유한 아이템이 아니에요');
+      db.userItems.forEach((u) => {
+        if (u.itemCategory === selected.itemCategory) u.isEquipped = u.itemId === itemId;
+      });
       return ok(undefined);
     },
     ledger: (type) =>
