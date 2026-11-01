@@ -94,7 +94,7 @@ def reversed_of(d: Draft, seen: list[Seen]) -> bool:
 # 지수 표시 ^가 있어야 지수로 읽음('10x100'은 배율). 앞이 영어 글자 · 숫자가 아닐 때만
 # '-'를 부호로 봄('10-20'은 범위). 한국어 뒤에 붙은 수도 읽음('약3.5×10^5')
 _EXP = r"(?:\s*[×xX*]\s*10\s*\^\s*([-+]?\d+)|[eE]([-+]?\d+))?"
-_NUMBER = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
+NUMBER = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
 _TRAILING = re.compile(r"[\s.,;:!?]+$")
 
 
@@ -117,7 +117,7 @@ def number_values(s: str | None) -> tuple[list[Decimal], str]:
             return f" {m.group(0)} "
         return " "
 
-    rest = _NUMBER.sub(take, unicodedata.normalize("NFC", s or "").replace(",", ""))
+    rest = NUMBER.sub(take, unicodedata.normalize("NFC", s or "").replace(",", ""))
     return vals, _TRAILING.sub("", " ".join(rest.lower().split()))
 
 

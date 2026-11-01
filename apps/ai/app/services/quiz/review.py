@@ -30,6 +30,7 @@ result — NestJS가 읽어 quiz_sets에 반영합니다
 import re
 import secrets
 import time
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -39,7 +40,7 @@ from typing import Any, Literal, Protocol, cast
 from app.clients.llm import JsonObject, Llm, LlmError
 from app.core.config import settings
 from app.services.quiz import quality, similar, srs
-from app.services.quiz.checks import Seen, Target, number_values, seen_question
+from app.services.quiz.checks import NUMBER, Seen, Target, number_values, seen_question
 from app.services.quiz.models import Draft, Notes, Page, Question
 from app.services.quiz.text import clean_pages, locate, norm, short_answer
 
@@ -270,13 +271,56 @@ L_SYS = (
 )
 _JOINED = re.compile(r"\s+/\s+|\n|\s+\|\s+")
 _DASHES = re.compile(r"[\u2010-\u2015\u2212\uff0d\ufe63]")  # 여러 대시를 '-'로
-_BULLET = re.compile(r"^[ \t]*[-*\u2022\u00b7][ \t]*", re.M)  # 줄 앞 글머리는 부호가 아님('-1차 …')
 
 
-def _quote_key(s: str) -> tuple[str, set[Decimal]]:
-    """인용 확인용 (norm한 글, 적힌 수). 수는 부호 · 소수점까지 봅니다('-3' ≠ '3', '1.5' ≠ '15')."""
-    s = _BULLET.sub("", _DASHES.sub("-", s))
-    return norm(s), set(number_values(s)[0])
+@dataclass
+class _Quoted:
+    """인용 확인용 글. text: NFC · 대시를 '-'로 · 쉼표를 뺀 원문, key: 그 norm,
+    at[i]: key[i]가 나온 text 위치."""
+
+    text: str
+    key: str
+    at: list[int]
+
+
+def _quoted(s: str) -> _Quoted:
+    text = _DASHES.sub("-", unicodedata.normalize("NFC", s)).replace(",", "")
+    key: list[str] = []
+    at: list[int] = []
+    for i, ch in enumerate(text):  # 글자마다 norm: 맞은 곳을 원문 위치로 되돌리기 위해
+        for c in norm(ch):
+            key.append(c)
+            at.append(i)
+    return _Quoted(text, "".join(key), at)
+
+
+def _numbers_at(page: _Quoted, start: int, end: int) -> set[Decimal] | None:
+    """원문 text[start:end]에 걸친 수. 맞은 곳이 수 중간에서 끊기면 None('11.5'의 '1.5').
+
+    수 앞의 부호 · 소수점('-3'의 '-')은 norm이 지워 맞은 곳 밖에 남으므로 그 수에 붙여 읽습니다.
+    """
+    kept = set(page.at)
+    vals: set[Decimal] = set()
+    for m in NUMBER.finditer(page.text):
+        a, b = m.span()
+        if b <= start or a >= end:
+            continue
+        if any(i in kept for i in [*range(a, start), *range(end, b)]):
+            return None
+        vals.update(number_values(m.group(0))[0])
+    return vals
+
+
+def _found_in(piece: _Quoted, page: _Quoted) -> bool:
+    """조각이 그 쪽에 있고, 맞은 원문 구간의 수가 조각에 적힌 수와 같은지('1.5 mL' ≠ '15 mL')."""
+    nums = set(number_values(piece.text)[0])
+    i = page.key.find(piece.key)
+    while i >= 0:
+        start, end = page.at[i], page.at[i + len(piece.key) - 1] + 1
+        if _numbers_at(page, start, end) == nums:
+            return True
+        i = page.key.find(piece.key, i + 1)
+    return False
 
 
 def note_line(llm: Llm, concept: str, keys: list[tuple[str, int]], notes: Notes) -> JsonObject:
@@ -285,9 +329,12 @@ def note_line(llm: Llm, concept: str, keys: list[tuple[str, int]], notes: Notes)
     모델이 말한 쪽은 믿지 않고, 옮긴 줄이 어느 쪽에 정말 있는지 코드가 찾습니다. 모델이 여러 줄을
     ' / '로 이어 붙이기도 해서 조각마다 따로 확인합니다. 'of' · '1.' · '—'처럼 정리하면 3글자가 안
     되는 조각은 어느 쪽에나 들어 있어 확인으로 치지 않습니다(로컬은 2글자 이상 원문이면 확인).
-    norm은 '.' · '-'를 지워 '1.5 mL'과 '15 mL'이 같아지므로, 조각에 적힌 수가 그 쪽에도 수로
-    적혀 있어야 합니다(Codex 리뷰 10/29). 알려진 한계: 같은 쪽 다른 곳에 그 수가 있으면 통과하고,
-    '3,5'와 '35'(쉼표는 천 단위로 봄), '- 3'과 '-3'(띄어 쓴 부호)은 구별하지 못합니다.
+    norm은 '.' · '-'를 지워 '1.5 mL'과 '15 mL'이 같아지므로, 조각과 맞은 원문 구간에 적힌 수가
+    조각의 수와 같아야 합니다(Codex 리뷰 10/29 · 재리뷰). 줄 앞 '-'는 수에 붙어 있으면
+    부호('-3 도'), 띄어 쓰면 글머리('- 1차')로 봅니다. 알려진 한계(로컬과 같음): '3,5'와
+    '35'(쉼표는 천 단위로 봄)는 구별하지 못하고, 붙여 쓴 글머리('-1차')는 부호로 읽어 '1차'로
+    옮긴 줄을 확인하지 못합니다.
+    조각이 여러 쪽에서 나와도 출처는 첫 조각의 쪽 하나만 돌려줍니다.
     """
     body = "\n".join(f'<노트 쪽="{n}">\n{notes[mid][n][:2000]}\n</노트>' for mid, n in keys)
     try:
@@ -304,11 +351,11 @@ def note_line(llm: Llm, concept: str, keys: list[tuple[str, int]], notes: Notes)
     except LlmError as e:
         raw, err = "", str(e)
     pieces = [s.strip() for s in _JOINED.split(raw) if len(norm(s)) >= 3]
-    pages = {k: _quote_key(notes[k[0]][k[1]]) for k in keys} if pieces else {}
+    pages = {k: _quoted(notes[k[0]][k[1]]) for k in keys} if pieces else {}
     hits: list[tuple[str, tuple[str, int]]] = []
     for s in pieces:
-        text, nums = _quote_key(s)
-        found = [k for k in keys if text in pages[k][0] and nums <= pages[k][1]]
+        piece = _quoted(s)
+        found = [k for k in keys if _found_in(piece, pages[k])]
         if found:
             hits.append((s, found[0]))
     if not hits:

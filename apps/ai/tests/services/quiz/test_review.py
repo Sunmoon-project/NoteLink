@@ -189,7 +189,12 @@ def test_note_lines_keep_only_what_is_really_in_the_note() -> None:
         ("수면 7 - 9 시간", "수면 7-9 시간", True),  # 범위는 띄어 써도 같음
         ("비타민 D 600 800 IU", "800 IU", True),  # 띄어 쓴 다른 수 바로 뒤
         ("IL-6 증가가 핵심", "IL6 증가", True),  # 이름 속 붙임표는 부호가 아님
-        ("-1차 면역반응: IgM 증가", "1차 면역반응: IgM 증가", True),  # 줄 앞 글머리
+        ("- 1차 면역반응: IgM 증가", "1차 면역반응: IgM 증가", True),  # 줄 앞 글머리
+        ("-1차 면역반응: IgM 증가", "-1차 면역반응: IgM 증가", True),  # 붙인 글머리는 그대로
+        ("응고 조건\n-3 도에서 응고", "3 도에서 응고", False),  # 줄 앞 부호가 빠진 수치
+        ("투여 용량 1.5 mL\n보관 온도 15 도", "투여 용량 15 mL", False),  # 다른 줄에 있는 수
+        ("투여 용량 15 mL\n투여 용량 1.5 mL", "투여 용량 1.5 mL", True),  # 두 곳 다 봄
+        ("균 3.5×10^5 CFU/mL", "균 3.5 × 10^5 CFU/mL", True),  # 지수 꼴도 한 수
     ],
 )
 def test_note_line_keeps_numbers_as_written(note: str, said: str, kept: bool) -> None:
@@ -239,6 +244,24 @@ def test_reused_question_in_another_set_is_handed_over_there() -> None:
     moved = {(u["quizSetId"], u["questionId"]): u["srs"] for u in result["srsUpdates"]}
     assert moved[("s2", "q7")]["state"] == "moved"
     assert moved[("s2", "q7")]["dueBefore"] == datetime(2026, 10, 31)
+
+
+def test_existing_question_with_another_answer_keeps_its_review_state() -> None:
+    # 'be'를 틀렸는데 'became' 문제를 넘기면 오답과 무관한 문제가 moved가 됨(Codex 재리뷰 10/29)
+    inp = job_input()
+    inp["answers"] = inp["answers"][:1]
+    inp["history"] = []
+    before = {"step": 1, "streak": 1, "reviews": 2, "state": "active", "checked": True,
+              "lastResult": "right", "dueAt": "2026-10-31T00:00:00Z"}  # fmt: skip
+    other = q("q7", 1, "became", "요청 동사 뒤 동사원형", srs=before)
+    other["prompt"] = "알맞은 것을 고르시오."
+    inp["sets"].append({"id": "s2", "materialId": "m1", "questions": [other]})
+    near = gen("be", ["be", "is", "are", "was", "been"])
+    near["question"]["passage"] = ""
+    llm = FakeLlm({"Review": [near] * 3, "Line": [{"line": "x"}]})
+    result, _ = run(llm, inp)
+    assert result["targets"][0]["reusedFrom"] != "q7"
+    assert "q7" not in [u["questionId"] for u in result["srsUpdates"]]
 
 
 def test_all_right_answers_make_nothing() -> None:
