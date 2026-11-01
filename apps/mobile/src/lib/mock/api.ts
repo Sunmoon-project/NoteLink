@@ -212,8 +212,21 @@ export const mockApi: Api = {
       return ok(db.user);
     },
     withdraw: () => ok(undefined),
-    generateProfile: (p) => ok(runJob('avatar_profile', p.photoBlobUrl, () => {})),
-    saveAvatar: () => ok(undefined),
+    generateProfile: (p) =>
+      ok(
+        runJob('avatar_profile', p.photoBlobUrl, (job) => {
+          // 목업은 입력 사진을 성공 결과로 재사용한다. 실제 AI 생성은 서버가 담당한다.
+          db.user.avatarUrl = p.photoBlobUrl;
+          job.result = { avatarUrl: p.photoBlobUrl };
+        }),
+      ),
+    saveAvatar: (p) => {
+      const color = /^#[0-9a-f]{6}$/i.test(p.color) ? p.color : '#8cbea3';
+      const descriptor = encodeURIComponent(`${p.style}:${p.gender}:${p.color}`);
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><desc>${descriptor}</desc><rect width="128" height="128" rx="64" fill="${color}"/><circle cx="64" cy="53" r="28" fill="#f5d3b3"/><path d="M24 128v-18a40 40 0 0 1 80 0v18" fill="#ffffff"/><circle cx="54" cy="52" r="3"/><circle cx="74" cy="52" r="3"/><path d="M55 67q9 8 18 0" fill="none" stroke="#76533d" stroke-width="3"/></svg>`;
+      db.user.avatarUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      return ok(undefined);
+    },
   },
   upload: {
     getSas: (p) => {
