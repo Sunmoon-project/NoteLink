@@ -92,6 +92,8 @@ const STEPS: Partial<Record<AiJobType, string[]>> = {
   avatar_profile: ['사진 분석', '스타일 적용', '프로필 생성', '마무리'],
 };
 
+const jobCompletions = new Map<string, (job: AiJob) => void>();
+
 function runJob(type: AiJobType, targetId: string, onDone: (job: AiJob) => void): AiJob {
   const flags = useMockFlags.getState();
   const job: AiJob = {
@@ -108,6 +110,7 @@ function runJob(type: AiJobType, targetId: string, onDone: (job: AiJob) => void)
     updatedAt: now(),
   };
   db.jobs.set(job._id, job);
+  jobCompletions.set(job._id, onDone);
   const steps = STEPS[type] ?? ['노트 분석', '문제 생성', '해설 작성', '검토'];
   const total = flags.llmSlow ? 9000 : 3200;
   const started = Date.now();
@@ -726,17 +729,11 @@ export const mockApi: Api = {
     },
     retry: async (id) => {
       await ok(undefined);
-
-      const old = db.jobs.get(id)!;
+      const old = db.jobs.get(id);
+      const complete = jobCompletions.get(id);
+      if (!old || !complete) return fail(ERROR_CODES.NOT_FOUND, '작업을 찾을 수 없어요', 404);
       useMockFlags.setState({ llmFail: false, llmSlow: false });
-      const m = db.materials.find((x) => x._id === old.targetId);
-      return structuredClone(
-        runJob(
-          old.type,
-          old.targetId,
-          () => m && (m.processing = { status: 'done', progress: 100, jobId: null }),
-        ),
-      );
+      return structuredClone(runJob(old.type, old.targetId, complete));
     },
   },
   quiz: {
