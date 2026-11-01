@@ -114,7 +114,7 @@ it('세로로 세워 정지한 다음 다시 가로로 돌리면 측정을 재�
   const firstLandscape = await renderScreen(<LandscapeScreen />, client());
   const portraitListener = jest.mocked(Accelerometer.addListener).mock.calls.at(-1)![0];
   await act(async () => portraitListener({ x: 0, y: 1, z: 0, timestamp: 0 }));
-  expect(useSession.getState().since).toBeNull();
+  await waitFor(() => expect(useSession.getState().since).toBeNull());
   expect(useSession.getState().pausedAt).not.toBeNull();
   expect(router.back).toHaveBeenCalledTimes(1);
   await firstLandscape.unmount();

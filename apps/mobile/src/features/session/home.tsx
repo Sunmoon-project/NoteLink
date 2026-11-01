@@ -110,10 +110,15 @@ export function HomeScreen() {
     }
   };
 
-  // 쉬는 중 10분이 지나면 자동 종료 (p.48)
+  // 같은 휴식의 자동 종료는 한 번만 요청한다. 실패 후에는 화면의 종료 버튼으로 재시도한다.
+  const attemptedAutoEnd = useRef<string | null>(null);
   useEffect(() => {
-    if (s.pausedAt && now - s.pausedAt > AUTO_END_MS) finish('auto_pause_timeout');
-  }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!s.pausedAt || now - s.pausedAt <= AUTO_END_MS) return;
+    const key = `${s.sessionId}:${s.pausedAt}`;
+    if (attemptedAutoEnd.current === key) return;
+    attemptedAutoEnd.current = key;
+    void finish('auto_pause_timeout');
+  }, [now, s.pausedAt, s.sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <View className="flex-1 bg-white">

@@ -1,4 +1,6 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { useState } from 'react';
+import { Pressable, Text, View } from 'react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { HomeScreen } from '../features/session/home';
@@ -7,7 +9,8 @@ import { useAuth } from '../stores/auth';
 import { useSession } from '../stores/session';
 import { renderScreen } from '../test-utils';
 
-const mockNow = Date.now();
+const initialNow = Date.now();
+let mockNow = initialNow;
 const oldItem = {
   _id: 'old-item',
   title: '기존 공부',
@@ -87,6 +90,7 @@ const startOldSession = () =>
     pausedAt: null,
   });
 beforeEach(() => {
+  mockNow = initialNow;
   jest.clearAllMocks();
   useSession.getState().reset();
   useAuth.setState({
@@ -296,4 +300,42 @@ it('기존 세션 종료 성공 후 새 시작만 실패해도 저장된 공부 
   expect(
     qc.getQueriesData<{ totalSec: number }>({ queryKey: ['study', 'weekly'] })[0]?.[1]?.totalSec,
   ).toBe(12);
+});
+
+it('자동 종료 실패는 같은 휴식에 한 번만 시도하고 수동 재시도는 허용한다', async () => {
+  useSession.setState({
+    itemId: oldItem._id,
+    sessionId: 'auto-failure',
+    since: null,
+    pausedAt: mockNow - 600001,
+  });
+  mockApi.study.endSession.mockRejectedValue(new Error('offline'));
+  function Clock() {
+    const [tick, setTick] = useState(0);
+    return (
+      <View>
+        <Pressable accessibilityLabel="자동 종료 테스트 시계" onPress={() => setTick((n) => n + 1)}>
+          <Text>{tick}</Text>
+        </Pressable>
+        <HomeScreen />
+      </View>
+    );
+  }
+  await renderScreen(<Clock />, client());
+  await waitFor(() => expect(mockApi.study.endSession).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(mockToast).toHaveBeenCalledTimes(1));
+  for (let tick = 0; tick < 4; tick++) {
+    mockNow += 1000;
+    await fireEvent.press(screen.getByLabelText('자동 종료 테스트 시계'));
+    await act(async () => {});
+  }
+  expect(mockApi.study.endSession).toHaveBeenCalledTimes(1);
+  expect(mockToast).toHaveBeenCalledTimes(1);
+  mockApi.study.endSession.mockResolvedValue({ durationSec: 12, pointsEarned: 5 });
+  await fireEvent.press(screen.getByText('종료'));
+  await waitFor(() => expect(mockApi.study.endSession).toHaveBeenCalledTimes(2));
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/summary',
+    params: { sec: '12', points: '5' },
+  });
 });
