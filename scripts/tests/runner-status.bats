@@ -273,13 +273,21 @@ gh() {
   st=$(sed -n 's/.*[?&]status=\([a-z_]*\).*/\1/p' <<< "$path")
   case "$path" in
     *actions/runners*) jq -r "$filter" "$TMP/runners.json" ;;
-    *created=*) jq -r "$filter" "$TMP/counts.json" ;;
-    *) # --paginate: GH_PAGES쪽이면 쪽마다 필터 결과가 한 줄씩 나옴(같은 내용을 여러 쪽으로 흉내)
-      local i
-      for (( i = 0; i < ${GH_PAGES:-1}; i++ )); do
-        jq --arg s "$st" '.workflow_runs |= map(select(.status == $s))' "$TMP/runs.json" | jq -r "$filter"
-      done ;;
+    *created=*) for f in $(pages counts); do jq -r "$filter" "$f"; done ;;
+    *) for f in $(pages runs); do
+         jq --arg s "$st" '.workflow_runs |= map(select(.status == $s))' "$f" | jq -r "$filter"
+       done ;;
   esac
+}
+
+# --paginate 흉내: 첫 쪽은 $1.json, 둘째 쪽부터는 $1.p2.json · $1.p3.json … (있는 것만, 쪽마다 필터 결과가 따로 나옴)
+pages() {
+  local k
+  echo "$TMP/$1.json"
+  for (( k = 2; ; k++ )); do
+    [ -f "$TMP/$1.p$k.json" ] || break
+    echo "$TMP/$1.p$k.json"
+  done
 }
 
 fixtures() {
@@ -348,10 +356,18 @@ EOF
   grep -q 'runs?status=pending&per_page=100 --jq .* --paginate' "$TMP/gh.calls"
 }
 
-@test "read_queue: 대기가 여러 쪽(100건 넘게)이면 쪽마다 더하고 가장 오래된 것을 고른다" {
-  need_jq; fixtures; GH_PAGES=3
+@test "read_queue: 대기가 여러 쪽(100건 넘게)이면 쪽마다 더하고, 둘째 쪽 이후의 가장 오래된 것도 고른다" {
+  need_jq; fixtures
+  cat > "$TMP/runs.p2.json" <<'EOF'
+{"workflow_runs":[{"status":"queued","created_at":"2025-10-31T06:40:30Z","run_started_at":"2025-10-31T06:40:30Z"},
+ {"status":"queued","created_at":"2025-10-31T08:00:00Z","run_started_at":"2025-10-31T08:00:00Z"}]}
+EOF
+  cat > "$TMP/runs.p3.json" <<'EOF'
+{"workflow_runs":[{"status":"pending","created_at":"2025-10-31T08:30:00Z","run_started_at":"2025-10-31T08:30:00Z"}]}
+EOF
   read_queue
-  [ "$QUEUED" = 6 ] && [ "$WAIT_MIN" = 59 ]
+  # queued: 1(첫 쪽) + 2(둘째 쪽), pending: 1(첫 쪽) + 1(셋째 쪽). 가장 오래된 것은 둘째 쪽의 06:40:30
+  [ "$QUEUED" = 5 ] && [ "$WAIT_MIN" = 119 ]
 }
 
 @test "read_queue: 조회에 실패하면 대기 수를 모름(빈 값)" {
@@ -364,8 +380,19 @@ EOF
   need_jq; fixtures
   read_counts
   [ "$DONE_OK" = 2 ] && [ "$DONE_FAIL" = 2 ] && [ "$DONE_CANCEL" = 1 ]
-  # 만든 시각은 7일 전까지 넓혀 받고(재실행은 만든 시각이 그대로), 쪽을 넘겨 모두 받음
-  grep -q 'runs?per_page=100&created=%3E%3D2025-10-24T08:40:00Z --jq .* --paginate' "$TMP/gh.calls"
+  # 만든 시각은 재실행할 수 있는 30일 전까지 넓혀 받고(재실행은 만든 시각이 그대로), 쪽을 넘겨 모두 받음
+  grep -q 'runs?per_page=100&created=%3E%3D2025-10-01T08:40:00Z --jq .* --paginate' "$TMP/gh.calls"
+}
+
+@test "read_counts: 둘째 쪽 이후의 결과도 센다(20일 전에 만들어 오늘 재실행해 끝낸 것 포함)" {
+  need_jq; fixtures
+  cat > "$TMP/counts.p2.json" <<'EOF'
+{"workflow_runs":[
+ {"status":"completed","conclusion":"success","created_at":"2025-10-11T09:00:00Z","updated_at":"2025-10-31T07:00:00Z"},
+ {"status":"completed","conclusion":"failure","created_at":"2025-10-11T08:00:00Z","updated_at":"2025-10-11T08:30:00Z"}]}
+EOF
+  read_counts
+  [ "$DONE_OK" = 3 ] && [ "$DONE_FAIL" = 2 ] && [ "$DONE_CANCEL" = 1 ]
 }
 
 @test "read_counts: 끝난 리뷰가 없으면 모두 0" {
