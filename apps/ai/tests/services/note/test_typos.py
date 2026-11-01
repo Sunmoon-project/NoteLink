@@ -54,6 +54,19 @@ def test_two_words_become_one_candidate_when_joined_is_closer() -> None:
     assert x["word"] == "이책 아메바" and x["options"][0] == "이핵아메바"
 
 
+@pytest.mark.parametrize("line", ["4. 이책 [?]아메바", "4. 이책  아메바"])
+def test_two_word_candidate_keeps_the_original_text(line: str) -> None:
+    c = chunk(line)
+    (x,) = candidates(c, TERMS)
+    assert x["word"] in c["text"]  # 원문 그대로라야 바꿀 수 있음
+    (out,) = apply_fixes([c], [fix(x["word"], "이핵아메바")])
+    assert out["text"] == "4. 이핵아메바"
+
+
+def test_two_words_with_other_prefix_are_not_joined() -> None:
+    assert all(x["word"] != "이책 (아메바" for x in candidates(chunk("4. 이책 (아메바"), TERMS))
+
+
 def test_find_typos_one_call_per_page_and_status() -> None:
     p1, p2 = chunk("- 포남형 : 인체 감염형", page=1), chunk("- 두직이 있다", page=2)
     p2["order"] = 2
@@ -143,6 +156,24 @@ def test_apply_fixes_moves_marks_after_a_shorter_replacement() -> None:
     (out,) = apply_fixes([c], [fix("이책 아메바", "이핵아메바")])
     (m,) = out["emphasis"]["marks"]
     assert out["text"][m["start"] : m["end"]] == "★"
+
+
+@pytest.mark.parametrize(
+    ("word", "want"),
+    [
+        ("[?]포남형", "포낭형"),  # [?]까지 떼며 짧아져도 낱말 강조가 사라지지 않음
+        ("포남형", "포낭형"),
+        ("남", "포낭형"),  # 낱말 일부 강조는 고친 낱말 전체로
+        ("형이 있다", "포낭형이 있다"),  # 낱말 안에서 시작한 강조도 낱말 처음부터
+    ],
+)
+def test_marks_inside_a_fixed_word_follow_the_new_word(word: str, want: str) -> None:
+    text = "- [?]포남형이 있다"
+    at = text.index(word)
+    c = chunk(text, marks=[{"kind": "highlight", "start": at, "end": at + len(word)}])
+    (out,) = apply_fixes([c], [fix("포남형", "포낭형")])
+    (m,) = out["emphasis"]["marks"]
+    assert out["text"] == "- 포낭형이 있다" and out["text"][m["start"] : m["end"]] == want
 
 
 def test_chunks_without_fixes_are_unchanged() -> None:

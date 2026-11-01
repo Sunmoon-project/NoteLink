@@ -72,8 +72,8 @@ class ClaudeSearch:
                 raise SearchError("refusal")
             if res.stop_reason != "pause_turn":
                 return answer_of([b.model_dump() for b in blocks])
-            # 멈춘 차례를 그대로 붙여 보내면 서버가 이어서 함
-            messages = [messages[0], {"role": "assistant", "content": res.content}]
+            # 지금까지 받은 차례를 모두 붙여 보내면 서버가 이어서 함(두 번째 멈춤에도 앞 검색 유지)
+            messages = [messages[0], {"role": "assistant", "content": list(blocks)}]
         raise SearchError("pause_turn")
 
 

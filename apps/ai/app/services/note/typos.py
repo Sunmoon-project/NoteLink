@@ -79,12 +79,13 @@ def candidates(chunk: Chunk, terms: TermDict, start_id: int = 1) -> list[Candida
             )
 
     for line in chunk["text"].split("\n"):
-        tokens = line.split()
-        cores = [split_word(t, terms) for t in tokens]
+        spans = [(m.start(), m.group()) for m in re.finditer(r"\S+", line)]
+        cores = [split_word(t, terms) for _, t in spans]
         used: set[int] = set()
         # 띄어 쓴 두 낱말은 붙인 꼴이 낱말 하나보다 더 비슷할 때만 한 후보로
-        for i, ((_, a, a_tail), (_, b, _)) in enumerate(zip(cores, cores[1:], strict=False)):
-            if not a or a_tail or syllables(b) < 2:
+        pairs = zip(cores, cores[1:], strict=False)
+        for i, ((a_head, a, a_tail), (b_head, b, _)) in enumerate(pairs):
+            if not a or a_tail or b_head not in ("", UNSURE) or syllables(b) < 2:
                 continue
             joined = a + b
             opts = [t for t in terms.near(joined) if similarity(joined, t) >= PAIR_MIN]
@@ -93,7 +94,10 @@ def candidates(chunk: Chunk, terms: TermDict, start_id: int = 1) -> list[Candida
                 and joined not in terms
                 and similarity(joined, opts[0]) > max(terms.best(a), terms.best(b))
             ):
-                add(f"{a} {b}", opts)
+                # 원문 글자 그대로(사이 공백 · [?] 포함)여야 apply_fixes가 찾아 바꿈
+                lo = spans[i][0] + len(a_head)
+                hi = spans[i + 1][0] + len(b_head) + len(b)
+                add(line[lo:hi], opts)
                 used |= {i, i + 1}
         for i, (_, core, _) in enumerate(cores):
             if i in used or syllables(core) < 2 or core in terms:
@@ -207,7 +211,7 @@ def _fix(s: str, swaps: dict[str, str]) -> str:
 
 
 def _replace(text: str, marks: list[Mark], old: str, new: str) -> tuple[str, list[Mark]]:
-    """낱말로 쓰인 old를 모두 new로 바꾸고, 뒤 강조 구간 위치를 글자 수 차이만큼 옮김.
+    """낱말로 쓰인 old를 모두 new로 바꾸고, 강조 구간 위치를 바뀐 글에 맞게 옮김.
 
     앞에 한글이 붙어 있거나 뒤에 조사 · '중' 말고 한글이 이어지면 다른 낱말이라 두고 감.
     """
@@ -217,14 +221,19 @@ def _replace(text: str, marks: list[Mark], old: str, new: str) -> tuple[str, lis
     parts, pos = [], 0
     for m in word.finditer(text):
         parts.append(text[pos : m.start()] + new)
-        delta = len(new) - len(old)
-        start = len("".join(parts)) - len(new)  # 바꾼 뒤 글에서 이 자리
-        marks = [_shift(mk, start + len(old), delta) for mk in marks]
+        at = len("".join(parts)) - len(new)  # 바꾼 뒤 글에서 이 자리
+        marks = [_shift(mk, at, len(old), len(new)) for mk in marks]
         pos = m.end()
     return "".join(parts) + text[pos:], marks
 
 
-def _shift(m: Mark, after: int, delta: int) -> Mark:
-    s = m["start"] + delta if m["start"] >= after else m["start"]
-    e = m["end"] + delta if m["end"] >= after else m["end"]
+def _shift(m: Mark, at: int, old: int, new: int) -> Mark:
+    """[at, at+old)가 [at, at+new)로 바뀜. 바뀐 자리 안에 걸친 끝은 새 낱말 경계로 맞춤."""
+
+    def move(x: int, inside: int) -> int:
+        if x <= at:
+            return x
+        return x + new - old if x >= at + old else inside
+
+    s, e = move(m["start"], at), move(m["end"], at + new)
     return {**m, "start": s, "end": max(e, s)}

@@ -110,6 +110,14 @@ def test_pause_turn_resumes_with_the_paused_turn() -> None:
     assert a["text"] == "- 간흡충" and len(a["evidence"]) == 1  # 두 응답을 합침
 
 
+def test_second_pause_resends_every_earlier_turn() -> None:
+    first, second = [FETCH], [text("- 간흡충\n")]
+    s, m = search(Res(first, "pause_turn"), Res(second, "pause_turn"), Res([text("- 회충")]))
+    a = s.search("sys", "q", domains=[])
+    assert m.sent[2]["messages"][1] == {"role": "assistant", "content": first + second}
+    assert a["text"] == "- 간흡충\n- 회충"
+
+
 def test_refusal_and_api_errors_raise() -> None:
     s, _ = search(Res([], "refusal"))
     with pytest.raises(SearchError, match="refusal"):
