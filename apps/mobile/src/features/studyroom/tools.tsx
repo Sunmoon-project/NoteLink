@@ -627,6 +627,7 @@ export function RoomSettingsScreen() {
   const [leave, setLeave] = useState(false);
   const out = useMutation({
     mutationFn: () => api.rooms.leave(id),
+    onError: () => toast('스터디룸에서 나가지 못했어요. 다시 시도해주세요'),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['rooms'] });
       setLeave(false);
@@ -720,6 +721,7 @@ export function InviteScreen() {
   const [invited, setInvited] = useState<string[]>([]);
   const inv = useMutation({
     mutationFn: (uid: string) => api.rooms.invite(id, [uid]),
+    onError: () => toast('초대하지 못했어요. 다시 시도해주세요'),
     onSuccess: (_, uid) => {
       setInvited((p) => [...p, uid]);
       toast('초대했어요');

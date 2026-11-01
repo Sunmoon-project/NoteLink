@@ -221,6 +221,7 @@ export function RoomCreateScreen() {
   const [pub, setPub] = useState(true);
   const create = useMutation({
     mutationFn: () => api.rooms.create({ title: name.trim(), categoryName: cat, isPublic: pub }),
+    onError: () => toast('스터디룸을 만들지 못했어요. 다시 시도해주세요'),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ['rooms'] });
       router.replace({ pathname: '/room/[id]', params: { id: r._id } });
@@ -290,7 +291,6 @@ export function RoomScreen() {
     queryFn: () => api.social.messages(chatId.data!),
     enabled: !!chatId.data,
   });
-  const live = useLiveRoom(id);
   const now = useNow();
   const [membersAt, setMembersAt] = useState(() => Date.now());
   const [members, setMembers] = useState<RoomMember[]>([]);
@@ -300,6 +300,8 @@ export function RoomScreen() {
   const [pick, setPick] = useState(false);
   const [chat, setChat] = useState(false);
   const [conn, setConn] = useState<'ok' | 'lost' | 'back' | 'kicked'>('ok');
+  const [mediaGeneration, setMediaGeneration] = useState(0);
+  const live = useLiveRoom(id, conn !== 'kicked', mediaGeneration);
   const [v, setV] = useState('');
   const pending = useRef<{ clientId: string; text: string }[]>([]);
   const messageSeq = useRef(0);
@@ -719,7 +721,11 @@ export function RoomScreen() {
         secondary="홈으로"
         onSecondary={() => router.dismissTo('/')}
         primary="다시 입장"
-        onPrimary={() => (!lost ? setConn('back') : toast('연결을 복구한 뒤 다시 입장해 주세요'))}
+        onPrimary={() => {
+          if (lost) return toast('연결을 복구한 뒤 다시 입장해 주세요');
+          setMediaGeneration((n) => n + 1);
+          setConn('back');
+        }}
       />
     </Screen>
   );

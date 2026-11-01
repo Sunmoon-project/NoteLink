@@ -6,14 +6,18 @@ import { toast } from '@/stores/toast';
 import type { MediaConnection } from './livekit-native';
 
 /** 실제 미디어 연결이 성공한 후에만 제어 상태를 표시한다. */
-export function useLiveRoom(roomId: string) {
-  const [connection, setConnection] = useState<{ id: string; room: MediaConnection } | null>(null);
+export function useLiveRoom(roomId: string, enabled = true, generation = 0) {
+  const [connection, setConnection] = useState<{
+    id: string;
+    generation: number;
+    room: MediaConnection;
+  } | null>(null);
   const [, update] = useState(0);
   const [failure, setFailure] = useState<{ id: string; message: string } | null>(null);
   useEffect(() => {
     let alive = true;
     let activeRoom: MediaConnection | null = null;
-    if (!env.useMock) {
+    if (enabled && !env.useMock) {
       loadMedia()
         .then(({ connectMedia }) => connectMedia(roomId, () => alive && update((n) => n + 1)))
         .then(async (room) => {
@@ -22,7 +26,8 @@ export function useLiveRoom(roomId: string) {
             return;
           }
           activeRoom = room;
-          setConnection({ id: roomId, room });
+          setFailure(null);
+          setConnection({ id: roomId, generation, room });
         })
         .catch(() => {
           if (alive)
@@ -33,8 +38,11 @@ export function useLiveRoom(roomId: string) {
       alive = false;
       activeRoom?.close().catch(() => {});
     };
-  }, [roomId]);
-  const room = connection?.id === roomId ? connection.room : null;
+  }, [roomId, enabled, generation]);
+  const room =
+    enabled && connection?.id === roomId && connection.generation === generation
+      ? connection.room
+      : null;
   const control = async (action: 'toggleMic' | 'toggleCam' | 'toggleHearing') => {
     if (!room?.connected)
       return toast(
