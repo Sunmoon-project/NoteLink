@@ -22,7 +22,7 @@ import { api, ApiError, NetworkError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { clock } from '@/lib/dates';
 import { BASE_AVATAR } from '@/lib/mock/seed';
-import { Alert, Badge, Btn, Dialog, Sheet, Two, cx } from '@/components/ui';
+import { Alert, Badge, Btn, Dialog, Loading, Sheet, Two, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
 // p.91~95 상점 · 정렬 · 상세 · 구매 · 포인트 내역 · 보관함 / p.101 구매 중 연결 끊김
@@ -76,6 +76,21 @@ function ItemPreview({ item, large = false }: { item: ShopItem; large?: boolean 
   );
 }
 
+function ShopError({ retry }: { retry: () => unknown }) {
+  return (
+    <View className="flex-1 items-center justify-center p-5">
+      <Text>상점 정보를 불러오지 못했어요</Text>
+      <Btn
+        onPress={() => {
+          void retry();
+        }}
+      >
+        다시 시도
+      </Btn>
+    </View>
+  );
+}
+
 function useShopData() {
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
   const mine = useQuery({ queryKey: ['my-items'], queryFn: api.shop.myItems });
@@ -91,6 +106,9 @@ function useShopData() {
     equipped,
     equippedIds,
     loaded: mine.isSuccess,
+    pending: me.isPending || mine.isPending,
+    error: me.isError || mine.isError,
+    retry: () => Promise.all([me.refetch(), mine.refetch()]),
   };
 }
 
@@ -108,7 +126,8 @@ export function ShopScreen() {
         sort,
       }),
   });
-  const { points, owned, wished } = useShopData();
+  const shop = useShopData();
+  const { points, owned, wished } = shop;
   const [sortOpen, setSortOpen] = useState(false);
   const [detail, setDetail] = useState<ShopItem | null>(null);
   const [confirm, setConfirm] = useState<ShopItem | null>(null);
@@ -184,7 +203,7 @@ export function ShopScreen() {
   const tryBuy = (it: ShopItem) => {
     if (buying.current || owned.has(it._id) || purchased.current.has(it._id)) return;
     setDetail(null);
-    if (uncertainId === it._id) {
+    if (uncertainId) {
       setFail(true);
       return;
     }
@@ -192,6 +211,8 @@ export function ShopScreen() {
     else setConfirm(it);
   };
 
+  if (shop.error || items.isError)
+    return <ShopError retry={() => Promise.all([shop.retry(), items.refetch()])} />;
   return (
     <View className="flex-1 bg-white" style={{ paddingTop: insets.top }}>
       <ScrollView className="flex-1" contentContainerClassName="px-5 pb-8">
@@ -214,8 +235,11 @@ export function ShopScreen() {
           className="mt-2 rounded-2xl bg-mint px-4 py-3"
         >
           <Text className="text-caption2 text-sub">보유 포인트</Text>
-          <Text className="text-headline font-bold text-ink">{points.toLocaleString()} P</Text>
+          <Text className="text-headline font-bold text-ink">
+            {shop.pending ? '확인 중…' : `${points.toLocaleString()} P`}
+          </Text>
         </Pressable>
+        {(shop.pending || items.isPending) && <Loading />}
         <View className="mt-4 flex-row gap-1">
           {(['전체', '아바타', '테마', '찜'] as const).map((t) => (
             <Pressable
@@ -440,12 +464,15 @@ export function ShopScreen() {
 
 export function PointsScreen() {
   const insets = useSafeAreaInsets();
-  const { points } = useShopData();
+  const shop = useShopData();
+  const { points } = shop;
   const [tab, setTab] = useState<'전체' | '적립' | '사용'>('전체');
   const ledger = useQuery({
     queryKey: ['ledger', tab],
     queryFn: () => api.shop.ledger(tab === '전체' ? undefined : tab === '적립' ? 'earn' : 'spend'),
   });
+  if (shop.error || ledger.isError)
+    return <ShopError retry={() => Promise.all([shop.retry(), ledger.refetch()])} />;
   return (
     <ScrollView
       className="flex-1 bg-white"
@@ -476,6 +503,7 @@ export function PointsScreen() {
         ))}
       </View>
       <View className="mt-2">
+        {(ledger.isPending || shop.pending) && <Loading />}
         {ledger.data?.map((l) => (
           <View key={l._id} className="flex-row items-center border-b border-line py-3">
             <View className="flex-1">
@@ -501,7 +529,8 @@ export function PointsScreen() {
 export function BoxScreen() {
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
-  const { owned, equipped, equippedIds, loaded } = useShopData();
+  const shop = useShopData();
+  const { owned, equipped, equippedIds, loaded } = shop;
   const all = useQuery({ queryKey: ['shop', 'all'], queryFn: () => api.shop.items({}) });
   const [tab, setTab] = useState<'전체' | '아바타' | '테마'>('전체');
   const [pick, setPick] = useState<ShopItem | null>(null);
@@ -531,6 +560,9 @@ export function BoxScreen() {
       setMsg(`✓ 장착 완료 · ${it.name}`);
     },
   });
+  if (shop.error || all.isError)
+    return <ShopError retry={() => Promise.all([shop.retry(), all.refetch()])} />;
+  if (shop.pending || all.isPending) return <Loading />;
   return (
     <View className="flex-1 bg-white px-5" style={{ paddingTop: insets.top }}>
       <ScrollView className="flex-1" contentContainerClassName="pb-8">
