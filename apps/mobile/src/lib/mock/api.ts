@@ -18,6 +18,8 @@ import { mockServer } from '../socket';
 import { useNet } from '@/stores/net';
 import { useMockFlags } from './flags';
 import * as S from './seed';
+import { mockUploadSource } from './uploads';
+import { roomTimerState } from './timer';
 
 // 목업 백엔드. 실서버와 같은 Api 인터페이스를 구현하고, AI 작업 진행률은 소켓 이벤트로 흘려보낸다.
 
@@ -55,6 +57,9 @@ const db = {
   userItems: S.seedUserItems(),
   ledger: S.seedLedger(),
 };
+
+const timerStartedAt = new Map<string, number>();
+const presetTimerStartedAt = Date.now();
 
 let seq = 1;
 const uid = (p: string) => `${p}-${Date.now().toString(36)}${seq++}`;
@@ -216,8 +221,9 @@ export const mockApi: Api = {
       ok(
         runJob('avatar_profile', p.photoBlobUrl, (job) => {
           // 목업은 입력 사진을 성공 결과로 재사용한다. 실제 AI 생성은 서버가 담당한다.
-          db.user.avatarUrl = p.photoBlobUrl;
-          job.result = { avatarUrl: p.photoBlobUrl };
+          const avatarUrl = mockUploadSource(p.photoBlobUrl);
+          db.user.avatarUrl = avatarUrl;
+          job.result = { avatarUrl };
         }),
       ),
     saveAvatar: (p) => {
@@ -501,7 +507,13 @@ export const mockApi: Api = {
       if (accept && r) db.friends.push({ ...r.requester, _id: uid('fr') });
       return ok(undefined);
     },
-    remove: (userId) => ok(void (db.friends = db.friends.filter((f) => f.userId !== userId))),
+    remove: async (userId) => {
+      await ok(undefined);
+      db.friends = db.friends.filter((f) => f.userId !== userId);
+      // 빈 방을 남겨 재입장 때 초기 예시 대화가 다시 생성되지 않게 한다.
+      db.messages.set(`dm-${userId}`, []);
+      db.timetableShares = db.timetableShares.filter((share) => share.friendId !== userId);
+    },
     openDirect: (userId) => {
       const id = `dm-${userId}`;
       if (!db.messages.has(id)) db.messages.set(id, userId === 'u-jiwoo' ? S.seedDm(id) : []);
@@ -756,23 +768,33 @@ export const mockApi: Api = {
       if (!db.rooms.some((x) => x._id === r._id)) db.rooms.push(r);
       return ok(r);
     },
-    get: (id) =>
-      ok(
+    get: (id) => {
+      const room =
         db.rooms.find((r) => r._id === id) ??
-          S.RECOMMENDED.find((r) => r._id === id) ??
-          S.makeRoom(),
-      ),
+        S.RECOMMENDED.find((r) => r._id === id) ??
+        S.makeRoom({ _id: id });
+      return ok({
+        ...room,
+        timerState: roomTimerState(room.timerRule, timerStartedAt.get(id) ?? presetTimerStartedAt),
+      });
+    },
     leave: (id) => ok(void (db.rooms = db.rooms.filter((r) => r._id !== id))),
     setTimer: (id, rule) => {
-      const r = db.rooms.find((x) => x._id === id) ?? S.makeRoom();
-      r.timerRule = rule;
+      let room = db.rooms.find((r) => r._id === id);
+      if (!room) {
+        room = structuredClone(S.RECOMMENDED.find((r) => r._id === id) ?? S.makeRoom({ _id: id }));
+        db.rooms.push(room);
+      }
+      room.timerRule = rule;
+      timerStartedAt.set(id, Date.now());
+      room.timerState = roomTimerState(rule, timerStartedAt.get(id)!);
       mockServer.push('room:timer', {
         roomId: id,
         rule,
-        phase: 'focus',
-        endsAt: new Date(Date.now() + rule.focusMin * 60000).toISOString(),
+        phase: room.timerState?.phase ?? 'focus',
+        endsAt: room.timerState?.endsAt ?? null,
       });
-      return ok(r);
+      return ok(room);
     },
     schedule: () =>
       ok({

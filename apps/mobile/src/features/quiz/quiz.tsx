@@ -492,10 +492,10 @@ export function QuizSolveScreen() {
   const expired = useAuth((s) => s.expired);
   const finishing = useRef(false);
   const finish = useMutation({
-    mutationFn: (request: {
+    mutationFn: (_request: {
       owner: string | null;
       progress: ReturnType<typeof useQuizProgress.getState>['progress'];
-    }) => api.quiz.finish(request.progress?.attemptId ?? attemptId!),
+    }) => api.quiz.finish(attemptId!),
     // 완료는 포인트를 적립하므로 응답 유실 시 자동으로 재전송하지 않는다.
     retry: false,
     onSuccess: (r, request) => {
@@ -605,12 +605,13 @@ export function QuizSolveScreen() {
   const next = () => {
     if (finishing.current) return;
     if (i >= qs.length - 1) {
-      if (!attemptId) return;
+      const progress = useQuizProgress.getState().progress;
+      if (!attemptId || progress?.attemptId !== attemptId || progress.setId !== set.data?._id) {
+        toast('현재 풀이와 저장된 진행이 달라요. 풀던 퀴즈를 다시 열어주세요');
+        return;
+      }
       finishing.current = true;
-      finish.mutate({
-        owner: useAuth.getState().userId,
-        progress: useQuizProgress.getState().progress,
-      });
+      finish.mutate({ owner: useAuth.getState().userId, progress });
       return;
     }
     setI((x) => x + 1);
