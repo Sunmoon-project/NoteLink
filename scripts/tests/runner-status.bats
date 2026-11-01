@@ -149,6 +149,15 @@ next_check() {
   [ "$EVENT" = offline ]
 }
 
+@test "decide: 다시 읽히는 순간 리뷰도 막혀 있으면 🟡를 보내고, 보낸 것으로 기록한다" {
+  PREV_STATUS=online; PREV_ERR=2; QUEUED=2; WAIT_MIN=45
+  decide
+  [ "$EVENT" = stuck ] && [ "$NEW_STUCK" = 1 ] && [ "$NEW_ERR" = 0 ]
+  PREV_STUCK=1
+  decide
+  [ "$EVENT" = recovered ] && [ "$NEW_STUCK" = 1 ]
+}
+
 @test "decide: missing(러너 없음)도 상태를 못 읽은 것으로 센다" {
   PREV_STATUS=online; PREV_ERR=1; CUR_STATUS=missing
   decide
@@ -249,7 +258,7 @@ next_check() {
 
 # ---------- GitHub 조회 (gh 흉내 + jq 필터) ----------
 
-# API처럼 ?status=로 거른 뒤(created=가 있으면 결론별 total_count) --jq 필터를 적용
+# 러너 목록 · 집계(created=)는 고정 JSON에, 대기열은 API처럼 ?status=로 거른 뒤 --jq 필터를 적용
 gh() {
   echo "$*" >> "$TMP/gh.calls"
   [ -n "${GH_FAIL:-}" ] && { echo "gh: Bad credentials (HTTP 401)" >&2; return 1; }
@@ -258,9 +267,7 @@ gh() {
   st=$(sed -n 's/.*[?&]status=\([a-z_]*\).*/\1/p' <<< "$path")
   case "$path" in
     *actions/runners*) jq -r "$filter" "$TMP/runners.json" ;;
-    *created=*)
-      jq --arg s "$st" '{total_count: ([.workflow_runs[] | select(.conclusion == $s)] | length)}' \
-        "$TMP/counts.json" | jq -r "$filter" ;;
+    *created=*) jq -r "$filter" "$TMP/counts.json" ;;
     *) jq --arg s "$st" '.workflow_runs |= map(select(.status == $s))' "$TMP/runs.json" | jq -r "$filter" ;;
   esac
 }
@@ -277,12 +284,18 @@ EOF
  {"status":"queued","created_at":"2025-10-28T01:00:00Z","run_started_at":"2025-10-31T07:40:30Z"},
  {"status":"completed","conclusion":"success","created_at":"2025-10-31T06:00:00Z"}]}
 EOF
+  # 지난 24시간은 10/30 08:40:00Z부터. 첫 success는 이틀 전에 만들어져 오래 기다리다 오늘 끝난 것,
+  # 마지막 success는 24시간 전에 끝난 것
   cat > "$TMP/counts.json" <<'EOF'
 {"workflow_runs":[
- {"status":"completed","conclusion":"success"},{"status":"completed","conclusion":"success"},
- {"status":"completed","conclusion":"failure"},{"status":"completed","conclusion":"timed_out"},
- {"status":"completed","conclusion":"cancelled"},{"status":"completed","conclusion":"skipped"},
- {"status":"queued","conclusion":null}]}
+ {"status":"completed","conclusion":"success","created_at":"2025-10-29T09:00:00Z","updated_at":"2025-10-31T02:00:00Z"},
+ {"status":"completed","conclusion":"success","updated_at":"2025-10-31T03:00:00Z"},
+ {"status":"completed","conclusion":"failure","updated_at":"2025-10-31T04:00:00Z"},
+ {"status":"completed","conclusion":"timed_out","updated_at":"2025-10-31T05:00:00Z"},
+ {"status":"completed","conclusion":"cancelled","updated_at":"2025-10-30T08:40:00Z"},
+ {"status":"completed","conclusion":"skipped","updated_at":"2025-10-31T06:00:00Z"},
+ {"status":"completed","conclusion":"success","updated_at":"2025-10-30T08:39:59Z"},
+ {"status":"queued","conclusion":null,"updated_at":"2025-10-31T07:00:00Z"}]}
 EOF
 }
 
@@ -331,14 +344,22 @@ EOF
   [ -z "$QUEUED" ] && [ "$WAIT_MIN" = 0 ]
 }
 
-@test "read_counts: 지난 24시간 결과를 성공 · 실패(시간 초과 포함) · 취소로 센다(건너뜀 제외)" {
+@test "read_counts: 지난 24시간에 끝난 결과를 성공 · 실패(시간 초과 포함) · 취소로 센다(건너뜀 제외)" {
   need_jq; fixtures
   read_counts
   [ "$DONE_OK" = 2 ] && [ "$DONE_FAIL" = 2 ] && [ "$DONE_CANCEL" = 1 ]
-  grep -q 'status=success&created=%3E%3D2025-10-30T08:40:00Z&per_page=1' "$TMP/gh.calls"
+  # 만든 시각은 48시간 전까지 넓혀 받고, 쪽을 넘겨 모두 받음
+  grep -q 'runs?per_page=100&created=%3E%3D2025-10-29T08:40:00Z --jq .* --paginate' "$TMP/gh.calls"
 }
 
-@test "read_counts: 하나라도 못 읽으면 모두 빈 값(일부만 적지 않음)" {
+@test "read_counts: 끝난 리뷰가 없으면 모두 0" {
+  need_jq; fixtures
+  echo '{"workflow_runs":[]}' > "$TMP/counts.json"
+  read_counts
+  [ "$DONE_OK" = 0 ] && [ "$DONE_FAIL" = 0 ] && [ "$DONE_CANCEL" = 0 ]
+}
+
+@test "read_counts: 못 읽으면 모두 빈 값" {
   fixtures; GH_FAIL=1
   read_counts
   [ -z "$DONE_OK" ] && [ -z "$DONE_FAIL" ] && [ -z "$DONE_CANCEL" ]
