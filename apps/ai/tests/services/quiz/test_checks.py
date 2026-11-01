@@ -309,3 +309,15 @@ def test_word_hyphens_do_not_become_numeric_operators() -> None:
     assert option_key(a) == option_key(b)
     assert code_check(draft(options=[a, b, "c", "d", "e"], answer=a), NEW, a, "규칙", [])[1] is None
     assert code_check(draft(options=[a, "b", "c", "d", "e"], answer=b), NEW, a, "규칙", [])[1] == 0
+
+
+@pytest.mark.parametrize(("a", "b"), [("-(1+2)", "(1+2)"), ("- (2)", "(2)"), ("1%", "1")])
+def test_option_key_preserves_boundary_operators(a: str, b: str) -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key(a) != option_key(b)
+    options = [a, b, "4", "5", "6"]
+    d = draft(passage="", options=options, answer=a)
+    assert code_check(d, NEW, a, "규칙", [])[1] == 0
+    d["options"] = [b, "3", "4", "5", "6"]
+    assert code_check(d, NEW, a, "규칙", [])[1] is None

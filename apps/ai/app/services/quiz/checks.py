@@ -164,7 +164,17 @@ def option_key(o: str) -> tuple[str, tuple[Decimal, ...], tuple[str, ...]]:
             if len(numbers) > 1 and re.fullmatch(r"[\s()+\-*/÷×^:=%<>]*", rest):
                 before = sum(m.end() <= start for m in matches)
                 groups.append(f"group:{before}:{before + len(numbers)}")
-    return norm(o), tuple(values), (*separators, *groups)
+    boundaries: list[str] = []
+    if matches:
+        for label, edge in [
+            ("prefix", text[: matches[0].start()]),
+            ("suffix", text[matches[-1].end() :]),
+        ]:
+            if re.fullmatch(r"[\s()+\-*/÷×^:=%<>]*", edge):
+                operators = re.sub(r"[\s()]", "", edge)
+                if operators:
+                    boundaries.append(f"{label}:{operators}")
+    return norm(o), tuple(values), (*separators, *groups, *boundaries)
 
 
 def form(w: str | None) -> Literal["ing", "ed", "base"]:
