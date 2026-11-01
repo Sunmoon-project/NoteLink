@@ -72,7 +72,7 @@ export function SocialDrawer({ open, onClose }: { open: boolean; onClose: () => 
             onPress={() => setStatusOpen(true)}
             className="flex-row items-center gap-3 rounded-2xl bg-mint/60 px-3 py-3"
           >
-            <Avatar name="형욱" size={36} tone="mint" />
+            <Avatar name={me.data?.nickname} uri={me.data?.avatarUrl} size={36} tone="mint" />
             <View className="flex-1">
               <Text className="text-subhead font-semibold text-ink">{me.data?.nickname}</Text>
               {me.data && (

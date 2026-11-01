@@ -58,6 +58,9 @@ const db = {
   ledger: S.seedLedger(),
 };
 
+const endedSessions = new Map<string, { durationSec: number; pointsEarned: number }>();
+const finishedAttempts = new Map<string, { pointsEarned: number; balance: number }>();
+
 const timerStartedAt = new Map<string, number>();
 const presetTimerStartedAt = Date.now();
 
@@ -299,8 +302,12 @@ export const mockApi: Api = {
       if (p) p.endedAt = now();
       return ok(undefined, 60);
     },
-    endSession: (id, p) => {
+    endSession: async (id, p) => {
+      await ok(undefined);
+      const previous = endedSessions.get(id);
+      if (previous) return structuredClone(previous);
       const s = db.sessions.get(id);
+      if (!s) throw new ApiError(ERROR_CODES.NOT_FOUND, '세션을 찾을 수 없어요', 404);
       // 실서버와 같이 서버 쪽 기록(시작 · 일시정지 시각)으로 시간을 계산한다
       const paused = (s?.pauses ?? []).reduce(
         (a, x) => a + ((x.endedAt ? Date.parse(x.endedAt) : Date.now()) - Date.parse(x.startedAt)),
@@ -325,7 +332,9 @@ export const mockApi: Api = {
           createdAt: now(),
         });
       }
-      return ok({ durationSec, pointsEarned: pts });
+      const result = { durationSec, pointsEarned: pts };
+      endedSessions.set(id, result);
+      return structuredClone(result);
     },
     weekly: () =>
       ok({
@@ -688,7 +697,12 @@ export const mockApi: Api = {
       }
       return ok({ correct, correctAnswer: q.answer }, 120);
     },
-    finish: (attemptId) => {
+    finish: async (attemptId) => {
+      await ok(undefined);
+      const previous = finishedAttempts.get(attemptId);
+      if (previous) return structuredClone(previous);
+      if (!db.attempts.has(attemptId))
+        throw new ApiError(ERROR_CODES.NOT_FOUND, '풀이를 찾을 수 없어요', 404);
       const pts = 120;
       db.user.pointBalance += pts;
       db.ledger.unshift({
@@ -701,7 +715,9 @@ export const mockApi: Api = {
       });
       const a = db.attempts.get(attemptId);
       if (a) Object.assign(a, { finishedAt: now(), pointsEarned: pts });
-      return ok({ pointsEarned: pts, balance: db.user.pointBalance });
+      const result = { pointsEarned: pts, balance: db.user.pointBalance };
+      finishedAttempts.set(attemptId, result);
+      return structuredClone(result);
     },
     explanation: (qid) =>
       ok(
@@ -725,7 +741,8 @@ export const mockApi: Api = {
       ),
     box: () => ok(S.QUESTIONS),
     flashcards: () => ok(db.flashcards),
-    saveFlashcard: (p) => {
+    saveFlashcard: async (p) => {
+      await ok(undefined);
       const f = {
         _id: uid('fc'),
         materialId: null,
@@ -738,7 +755,7 @@ export const mockApi: Api = {
         createdAt: now(),
       };
       db.flashcards.push(f);
-      return ok(f);
+      return structuredClone(f);
     },
     deleteFlashcards: (ids) =>
       ok(void (db.flashcards = db.flashcards.filter((f) => !ids.includes(f._id)))),
@@ -851,26 +868,28 @@ export const mockApi: Api = {
   shop: {
     items: (p) => {
       let list = S.SHOP.filter((i) => !p.category || i.category === p.category);
-      if (p.category === 'theme') list = [];
       if (p.sort === 'price') list = [...list].sort((a, b) => a.price - b.price);
       if (p.sort === 'popular') list = [...list].sort((a, b) => b.purchaseCount - a.purchaseCount);
       return ok(list);
     },
     myItems: () => ok(db.userItems),
     wish: (itemId) => {
+      const item = S.SHOP.find((i) => i._id === itemId);
+      if (!item) return fail(ERROR_CODES.NOT_FOUND, '상품을 찾을 수 없어요');
       let ui = db.userItems.find((u) => u.itemId === itemId);
       if (!ui)
         db.userItems.push(
           (ui = {
             _id: uid('ui'),
             itemId,
-            itemCategory: 'avatar',
+            itemCategory: item.category,
             isOwned: false,
             isWished: false,
             isEquipped: false,
             acquiredAt: null,
           }),
         );
+      ui.itemCategory = item.category;
       ui.isWished = !ui.isWished;
       return ok(ui.isWished, 60);
     },
@@ -879,8 +898,9 @@ export const mockApi: Api = {
         return Promise.reject(new NetworkError('purchase interrupted'));
       const item = S.SHOP.find((i) => i._id === itemId);
       if (!item) return fail(ERROR_CODES.NOT_FOUND, '상품을 찾을 수 없어요');
-      if (db.userItems.some((u) => u.itemId === itemId && u.isOwned))
-        return ok({ balance: db.user.pointBalance });
+      const existing = db.userItems.find((u) => u.itemId === itemId);
+      if (existing) existing.itemCategory = item.category;
+      if (existing?.isOwned) return ok({ balance: db.user.pointBalance });
       if (db.user.pointBalance < item.price)
         return fail(ERROR_CODES.POINTS_INSUFFICIENT, '포인트가 부족해요');
       db.user.pointBalance -= item.price;
@@ -897,7 +917,7 @@ export const mockApi: Api = {
             acquiredAt: null,
           }),
         );
-      Object.assign(ui, { isOwned: true, acquiredAt: now() });
+      Object.assign(ui, { isOwned: true, itemCategory: item.category, acquiredAt: now() });
       db.ledger.unshift({
         _id: uid('pl'),
         amount: -item.price,

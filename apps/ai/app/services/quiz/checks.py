@@ -142,15 +142,29 @@ def option_key(o: str) -> tuple[str, tuple[Decimal, ...], tuple[str, ...]]:
     '-20℃'와 '20℃'가 같은 보기가 됩니다. 'No.5'와 'No. 5'는 같은 보기입니다.
     """
     values, _ = number_values(o)
-    # 일반 괄호·문장부호는 norm처럼 무시하되, 인접한 숫자 사이의 연산 기호만 보존한다.
-    # 숫자 바깥의 괄호는 답의 표현 차이이고, 1/2의 '/'와 1-2의 '-'는 값의 차이다.
+    # 단어 사이 하이픈을 연산자로 취급하지 않는다. 숫자만 연결하는 기호를 비교한다.
     text = unicodedata.normalize("NFC", o).replace(",", "")
     matches = list(_NUMBER.finditer(text))
     separators = tuple(
-        re.sub(r"[^+\-*/÷×^:=%<>]", "", text[left.end() : right.start()])
+        re.sub(r"[\s()]", "", gap) if re.fullmatch(r"[\s()+\-*/÷×^:=%<>]*", gap) else ""
         for left, right in zip(matches, matches[1:], strict=False)
+        for gap in [text[left.end() : right.start()]]
     )
-    return norm(o), tuple(values), separators
+    # 수식의 다항 괄호는 계산 순서를 바꾼다. (stacked), (2) 같은 표현용 괄호는 무시한다.
+    stack: list[int] = []
+    groups: list[str] = []
+    for index, char in enumerate(text):
+        if char == "(":
+            stack.append(index)
+        elif char == ")" and stack:
+            start = stack.pop()
+            inside = text[start + 1 : index]
+            numbers = list(_NUMBER.finditer(inside))
+            rest = _NUMBER.sub("", inside)
+            if len(numbers) > 1 and re.fullmatch(r"[\s()+\-*/÷×^:=%<>]*", rest):
+                before = sum(m.end() <= start for m in matches)
+                groups.append(f"group:{before}:{before + len(numbers)}")
+    return norm(o), tuple(values), (*separators, *groups)
 
 
 def form(w: str | None) -> Literal["ing", "ed", "base"]:

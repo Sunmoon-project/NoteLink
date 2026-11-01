@@ -208,3 +208,16 @@ it('잘못된 외부 status 파라미터도 채팅 화면을 깨뜨리지 않는
   await renderScreen(<ChatScreen />, client());
   expect(await screen.findByText('오프라인')).toBeTruthy();
 });
+
+it('드로어가 조회한 내 프로필 사진과 이름을 표시한다', async () => {
+  mockApi.me.get.mockResolvedValue({
+    nickname: '사진 변경',
+    avatarUrl: 'https://example.test/me.png',
+    status: 'active',
+  });
+  await renderScreen(<SocialDrawer open onClose={jest.fn()} />, client());
+  await screen.findByText('사진 변경');
+  expect(screen.getByLabelText('프로필 사진').props.source).toEqual({
+    uri: 'https://example.test/me.png',
+  });
+});
