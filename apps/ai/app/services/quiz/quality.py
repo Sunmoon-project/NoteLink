@@ -8,7 +8,8 @@
                    노트가 아니라 일반 실력으로 묻습니다.
                    '노트상 정답인가'로 물으면 결함 2개 중 0개를 잡았습니다.
 
-LLM 호출이 실패하면 그 보기는 표시하지 않고 넘어갑니다(로컬 원본과 같은 동작).
+LLM 판정을 받지 못하면(호출 실패 · 답 모양 오류) 그 보기는 걸리지 않은 것으로 넘어가고(로컬
+원본과 같은 동작), 걸린 보기가 없으면 '검사 못 함'(screen의 두 번째 값)으로 알려 줍니다.
 
 걸린 오답 보기가 한두 개뿐이면 버리지 않고 그 보기만 바꿔(repair) 다시 검사합니다(checked).
 """
@@ -212,18 +213,30 @@ def _mode(item: _Item) -> tuple[str, Callable[[str], str], str] | None:
 
 
 def natural_options(
-    llm: Llm, item: _Item, model: str, mode: tuple[str, Callable[[str], str], str] | None
+    llm: Llm,
+    item: _Item,
+    model: str,
+    mode: tuple[str, Callable[[str], str], str] | None,
+    failed: list[str] | None = None,
 ) -> list[str] | None:
     """모델이 자연스럽다고 본 오답 보기. 이 검사를 하지 않는 유형(mode가 None)이면 None.
 
     정답 보기는 대소문자 · 공백만 달라도 빼고 봅니다(code_check와 같은 기준).
+    failed에는 판정을 받지 못한 보기를 모읍니다(호출 실패 · 답 모양 오류).
     """
     if mode is None:
         return None
     system, make, _ = mode
     answer_key = option_key(item["answer"])
     wrong = [o for o in item["choices"] if option_key(o) != answer_key]
-    return [o for o in wrong if _natural(llm, model, system, make(o)) is True]
+    found = []
+    for o in wrong:
+        v = _natural(llm, model, system, make(o))
+        if v is None and failed is not None:
+            failed.append(o)
+        if v is True:
+            found.append(o)
+    return found
 
 
 def two_answers(
@@ -233,8 +246,24 @@ def two_answers(
     qtype: str | None = None,
     hits: list[str] | None = None,
 ) -> list[str]:
-    """초안에 두 검사를 모두 돌려 탈락 이유를 돌려줍니다. 비어 있으면 통과.
+    """screen의 탈락 이유만. 판정을 받지 못한 보기는 걸리지 않은 것으로 넘깁니다(오답 복습이 기존
+    문제를 다시 낼 때). 검사 못 함을 알아야 하면 screen을 씁니다."""
+    return screen(llm, d, page_text, qtype, hits)[0]
 
+
+def screen(
+    llm: Llm,
+    d: Draft,
+    page_text: str,
+    qtype: str | None = None,
+    hits: list[str] | None = None,
+) -> tuple[list[str], bool]:
+    """초안에 두 검사를 모두 돌려 (탈락 이유, 검사 못 함)을 돌려줍니다. 이유가 없고 검사 못 함이
+    False여야 통과입니다.
+
+    검사 못 함: 걸린 보기는 없는데 LLM 판정(_natural)을 받지 못한 것이 있음(호출 실패 · 답 모양
+    오류). 통과로 볼 수 없어 부른 쪽이 LLM 장애로 처리합니다. 걸린 보기가 있으면 그 이유는 받은
+    판정에서 나온 것이라 False입니다.
     hits에는 걸린 보기를 모읍니다(다음 시도에서 피할 낱말).
     채점한 61문제(10/22)에서 나쁜 문제 21개 중 14개를 잡고 좋은 문제 40개 중 4개를 버렸습니다
     (검사 모델만). 결함 문제 2개가 다시 보기까지 간 뒤 10/25에 생성 모델을 2차 판정으로 더했습니다.
@@ -252,12 +281,13 @@ def two_answers(
     pair = contrasts(d["answer"], page_text)
     item["choices"] = [o for o in item["choices"] if o.strip().lower() not in pair]
     mode = _mode(item)
-    n = natural_options(llm, item, settings.quiz_check_model, mode)
+    failed: list[str] = []
+    n = natural_options(llm, item, settings.quiz_check_model, mode, failed)
     if n == [] and qtype not in KO_SYS:
         # 검사 모델 혼자서는 'extended'를 두 번 놓침. 생성 모델을 2차 판정으로:
         # 빈칸 39문제(10/22 채점) 나쁜 것 10/14 → 13/14, 좋은 것 버림 3/25 → 8/25
         # (좋은 초안을 버려도 재시도 한 번 비용)
-        n = natural_options(llm, item, settings.quiz_gen_model, mode)
+        n = natural_options(llm, item, settings.quiz_gen_model, mode, failed)
     if n and mode:
         why.append(f"{mode[2]}: {', '.join(n)}")
     if hits is not None:
@@ -267,15 +297,21 @@ def two_answers(
         # 정답 자체도 맞아야 함: 'The construction team will ____ the road'에
         # 정답 'resurfacing' (10/26)
         user = f"문장: {p}\n빈칸에 넣을 표현: {item['answer']}"
-        if _natural(llm, settings.quiz_check_model, BLANK_SYS, user) is False:
+        fits = _natural(llm, settings.quiz_check_model, BLANK_SYS, user)
+        if fits is None:
+            failed.append(item["answer"])
+        if fits is False:
             why.append("정답을 빈칸에 넣으면 문장이 틀림")
     if qtype in KO_SYS and not why:
         # 용어 과목: 정답도 맞아야 함 — OCR 오류로 노트 자체가 틀릴 수 있음
         # (미생 시험의 '항산성균은 보통 염색으로 쉽게 염색되며')
         user = _ko_make(qtype, p)(item["answer"])
-        if _natural(llm, settings.quiz_check_model, KO_SYS[qtype], user) is False:
+        right = _natural(llm, settings.quiz_check_model, KO_SYS[qtype], user)
+        if right is None:
+            failed.append(item["answer"])
+        if right is False:
             why.append("정답이 일반 전공 지식과 맞지 않음(노트 OCR 오류 가능)")
-    return why
+    return why, bool(failed) and not why
 
 
 R_SYS = (
@@ -354,23 +390,26 @@ def checked(
     qtype: str | None,
     avoid: Iterable[str] = (),
     hits: list[str] | None = None,
-) -> tuple[Draft, list[str], int | None, bool]:
-    """코드 검사(check)를 통과한 초안에 two_answers를 돌리고, 걸린 오답 보기는 한 번 고쳐 봅니다.
+) -> tuple[Draft, list[str], int | None, bool, bool]:
+    """코드 검사(check)를 통과한 초안에 screen을 돌리고, 걸린 오답 보기는 한 번 고쳐 봅니다.
 
-    check(초안) → (탈락 이유, 정답 위치). (초안, 탈락 이유, 고친 초안의 정답 위치, 고쳤는지)를
-    돌려줍니다. 고친 초안도 떨어지면 처음 초안과 처음 이유를 돌려줍니다(재시도 지시에 들어감).
+    check(초안) → (탈락 이유, 정답 위치). (초안, 탈락 이유, 고친 초안의 정답 위치, 고쳤는지,
+    검사 못 함)을 돌려줍니다. 고친 초안도 떨어지면 처음 초안과 처음 이유를 돌려줍니다(재시도
+    지시에 들어감). 검사 못 함은 돌려주는 초안에 대한 마지막 screen의 값입니다: 처음 검사에서
+    판정을 못 받은 보기가 있어도 고친 초안의 재검사가 모두 판정을 받고 통과했으면 False.
     hits에는 처음 초안에서 걸린 보기를 모읍니다.
     """
     hits = [] if hits is None else hits
-    why = two_answers(llm, d, page_text, qtype, hits)
+    why, unchecked = screen(llm, d, page_text, qtype, hits)
     if not why:
-        return d, why, None, False
+        return d, why, None, False, unchecked
     fixed = repair(llm, d, set(hits), why, page_text, avoid)
     if fixed is None:
-        return d, why, None, False
+        return d, why, None, False, False
     why2, k2 = check(fixed)
+    unchecked2 = False
     if not why2:
-        why2 = two_answers(llm, fixed, page_text, qtype)
+        why2, unchecked2 = screen(llm, fixed, page_text, qtype)
     if why2:
-        return d, why, None, False
-    return fixed, [], k2, True
+        return d, why, None, False, False
+    return fixed, [], k2, True, unchecked2

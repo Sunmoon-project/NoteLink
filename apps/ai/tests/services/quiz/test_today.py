@@ -293,7 +293,8 @@ def test_second_right_answer_voids_those_answers_and_waits_a_day_for_a_new_quest
     s = updates(result)["q1"]
     assert (s["state"], s["dueAt"], s["flawTries"]) == ("active", TOMORROW, 1)
     assert (s["reviews"], s["lastResult"]) == (1, "right")  # 무효 풀이를 빼고 마지막 풀이로
-    assert (s["streak"], s["step"]) == (1, 0)  # 남은 풀이(맞힘 1번)로 다시 셈
+    # 남은 풀이(맞힘 1번)로 다시 셈. step은 저장값(1)보다 낮아지지 않음
+    assert (s["streak"], s["step"]) == (1, 1)
     assert "secured" in s["flaw"]
     assert result["dropped"] == [
         {
@@ -354,6 +355,26 @@ def test_answers_on_another_question_of_the_same_word_do_not_restore_the_streak(
     s = updates(run(llm, inp))["q1"]
     # q1은 맞힘 1번 · 무효 오답 1번뿐: qz의 맞힘 2번으로 다 익힘이 되지 않음
     assert (s["state"], s["streak"], s["reviews"], s["flawTries"]) == ("active", 1, 1, 1)
+
+
+def test_restoring_starts_from_the_carried_reviews() -> None:
+    # 다시 보기 새 문제: 옛 문제의 2번을 이어받고 이 문제를 맞힘 1번 · secured 오답 1번
+    inp = flawed_input(unchecked(reviews=4, step=2))
+    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    s = updates(run(llm, inp))["q1"]
+    # 이어받은 2번 + 남은 1번, step은 저장값 2(다시 세면 1)보다 낮아지지 않음
+    assert (s["reviews"], s["streak"], s["step"], s["lastResult"]) == (3, 1, 2, "right")
+
+
+def test_answers_voided_before_still_restore_the_review_state() -> None:
+    # 예전에 무효로 한 secured 오답: 그때 되살리지 않아 연속 정답이 0으로 남은 상태
+    inp = flawed_input(unchecked())
+    inp["attempts"][1]["answers"][0]["void"] = "문제 오류: 정답 둘(secured도 맞음)"
+    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    result = run(llm, inp)
+    assert result["voidAnswers"] == []  # 새로 무효로 한 것은 없음
+    s = updates(result)["q1"]
+    assert (s["streak"], s["lastResult"]) == (1, "right")
 
 
 def test_flawed_question_is_dropped_after_three_days() -> None:

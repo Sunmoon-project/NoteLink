@@ -38,10 +38,13 @@ result — NestJS가 반영합니다
 세트 문제인 moved 문제는 state='active' · dueAt=dueBefore로 돌리고(movedTo · dueBefore 지움),
 flawed 문제의 movedTo가 가리키는 새 문제는 그 flawed 문제의 세트 끝에 붙입니다.
 
-LLM 장애(로컬에는 없는 처리): '정답 둘' 검사 호출이 실패하면 그 문제는 검사하지 않은 그대로 내고
-다음에 다시 검사합니다(quality.two_answers는 실패를 '통과'로 돌려주므로 checked를 남기지 않음).
-새 문제 만들기가 시도마다 생성 · 검사 호출 실패로 끝나면 그 문제만 내일로 미루고 flawTries는
-늘리지 않습니다.
+LLM 장애(로컬에는 없는 처리): '정답 둘' 검사가 판정을 받지 못하면(quality.screen의 '검사 못 함':
+걸린 보기 없이 호출 실패 · 답 모양 오류) 그 문제는 검사하지 않은 그대로 내고 다음에 다시
+검사합니다(checked를 남기지 않음). 새 문제 만들기가 LLM 장애(similar.make_similar의 llm_down)로
+끝나면 그 문제만 내일로 미루고 flawTries는 늘리지 않습니다.
+알려진 한계: 같은 낱말은 text.same_word로 보지만, 새 문제를 만들 때의 겹침 검사(checks.code_check)와
+기존 문제 다시 내기(similar.reuse_existing)의 '이미 쓴 답'은 아직 text.same_item입니다(오답 복습
+전체 동작이 바뀌므로 따로 다룸).
 알려진 한계(로컬과 같음): 노트 글이 없는 자료의 문제도 사용자의 다른 노트 쪽(text.locate)으로
 검사합니다. 오늘의 복습 세트는 노트를 섞어서 세트의 materialId로 쪽을 가릴 수 없습니다.
 """
@@ -201,9 +204,9 @@ def _page(q: Question, notes: Notes, s: QuizSet) -> tuple[int, str]:
 
 
 def flaw(llm: Llm, s: QuizSet, q: Question, notes: Notes, hits: list[str]) -> list[str] | None:
-    """저장된 문제에 '정답 둘' 검사(quality.two_answers). 걸린 보기는 hits에 모읍니다.
+    """저장된 문제에 '정답 둘' 검사(quality.screen). 걸린 보기는 hits에 모읍니다.
 
-    검사 호출이 하나라도 실패하면 None(검사하지 못함).
+    검사 못 함(걸린 보기 없이 판정을 받지 못한 것이 있음)이면 None.
     """
     _, text = _page(q, notes, s)
     d: Draft = {
@@ -212,9 +215,8 @@ def flaw(llm: Llm, s: QuizSet, q: Question, notes: Notes, hits: list[str]) -> li
         "options": q["choices"] or [],
         "answer": q["answer"],
     }
-    watch = similar.LlmWatch(llm)
-    why = quality.two_answers(cast(Llm, watch), d, text, q.get("type"), hits)
-    return None if watch.failed else why
+    why, unchecked = quality.screen(llm, d, text, q.get("type"), hits)
+    return None if unchecked else why
 
 
 def void_flawed(
@@ -222,9 +224,10 @@ def void_flawed(
 ) -> tuple[srs.Srs, list[JsonObject]]:
     """두 번째 정답(hits)을 고른 이 문제(또는 사본, _copy_of)의 풀이를 무효로.
 
-    무효로 한 풀이가 있으면 이 문제와 사본의 남은 풀이로 복습 상태를 되살립니다(_restored).
+    이 문제와 사본의 풀이 중 무효 풀이가 하나라도 있으면(이번에 무효로 한 것이 없어도: 예전에
+    무효로 하고 복습 상태를 되살리지 않았을 수 있음) 남은 풀이로 복습 상태를 되살립니다(_restored).
     """
-    voided, kept, voids = 0, [], []
+    voided, kept, voids, any_void = 0, [], [], False
     for a in attempts:  # 푼 순서대로
         qm = qmaps.get(a.quiz_set_id, {})
         for x in a.answers:
@@ -235,10 +238,12 @@ def void_flawed(
                 x.void = f"문제 오류: 정답 둘({x.answer}도 맞음)"
                 voids.append({"attemptId": a.id, "questionId": x.question_id, "void": x.void})
                 voided += 1
-            if not x.void:
+            if x.void:
+                any_void = True
+            else:
                 kept.append((a.finished_at, x.correct))
     st = cast(srs.Srs, q["srs"])
-    return (_restored(st, kept, voided) if voided else st), voids
+    return (_restored(st, kept, voided) if any_void else st), voids
 
 
 def _copy_of(oq: Question, q: Question) -> bool:
@@ -253,25 +258,38 @@ def _copy_of(oq: Question, q: Question) -> bool:
 def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], voided: int) -> srs.Srs:
     """무효 풀이를 뺀 복습 상태(Codex 리뷰 · /code-review 11/02).
 
-    kept는 이 문제와 그 사본의 무효가 아닌 풀이(푼 차례). 이를 srs.update로 다시 풀어 streak ·
-    step · lastResult를 되살립니다. 무효 오답이 0으로 만든 연속 정답이 남으면 다 익힘 판정과 복습
-    간격이 틀어지기 때문입니다. 같은 낱말이라도 다른 문제(다른 세트에서 따로 만든 문제)의 풀이는
-    넣지 않습니다: 이 문제를 한 번도 맞히지 않았는데 다 익힘이 될 수 있음.
-    reviews는 무효로 한 수만큼 뺍니다 = 이어받은 수(다시 보기 새 문제는 옛 문제의 횟수를 이어받음)
-    + 이 문제의 남은 풀이 수이고, 남은 풀이 수보다 작아지지 않습니다. 이어받은 연속 정답은 다시 셀
-    수 없어 넣지 않습니다(다 익힘을 늦출 뿐 앞당기지 않음). dueAt은 그대로(오늘 날짜가 된 복습)이고,
-    되살린 연속 정답으로 다 익혔으면 mastered · dueAt 없음입니다. 다른 필드(checked · flawTries
-    등)는 그대로 둡니다.
+    kept는 이 문제와 그 사본의 무효가 아닌 풀이(푼 차례), voided는 이번에 무효로 한 수.
+    같은 낱말이라도 다른 문제(다른 세트에서 따로 만든 문제)의 풀이는 넣지 않습니다:
+    이 문제를 한 번도 맞히지 않았는데 다 익힘이 될 수 있음.
+    이 문제가 시작한 상태에서 kept를 srs.update로 다시 풉니다. 시작 상태는 저장값으로
+    거꾸로 셉니다: 이어받은 횟수 = 저장된 reviews − voided − len(kept)(0보다 작으면 0).
+    0이면 처음 낸 문제(srs 없음), 아니면 다시 보기 새 문제(srs.fresh: step 0, 이어받은 횟수).
+    한계: 이어받은 연속 정답 · 단계는 저장되어 있지 않아 0에서 셉니다. 그래서 streak · step은
+    다시 센 값과 저장값 중 큰 쪽을 씁니다: 무효로 하는 풀이는 두 번째 정답을 고른 오답뿐이라,
+    빼면 연속 정답 · 단계가 줄 수 없습니다.
+    reviews는 다시 센 값(= 저장값 − voided, 남은 풀이 수보다 작지 않음). lastResult는 남은
+    마지막 풀이(없으면 None). dueAt은 그대로(오늘 날짜가 된 복습)이고, 연속 정답이 차면
+    mastered · dueAt 없음입니다. 다른 필드(checked · flawTries 등)는 그대로 둡니다.
     """
+    carried = max(0, st["reviews"] - voided - len(kept))
     replay: srs.Srs | None = None
+    if carried:
+        replay = {
+            "step": 0,
+            "dueAt": None,
+            "lastResult": None,
+            "streak": 0,
+            "reviews": carried,
+            "state": "active",
+        }
     for t, ok in kept:
         replay = srs.update(replay, ok, t)
     out: srs.Srs = {
         **st,
-        "reviews": max(len(kept), st["reviews"] - voided),
-        "streak": replay["streak"] if replay else 0,
-        "step": replay["step"] if replay else 0,
-        "lastResult": replay["lastResult"] if replay else None,
+        "reviews": replay["reviews"] if replay else 0,
+        "streak": max(replay["streak"] if replay else 0, st["streak"]),
+        "step": max(replay["step"] if replay else 0, st["step"]),
+        "lastResult": replay["lastResult"] if kept and replay else None,
     }
     if out["streak"] >= srs.MASTER_STREAK:
         out["state"], out["dueAt"] = "mastered", None

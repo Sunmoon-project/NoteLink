@@ -151,6 +151,12 @@ def test_failed_calls_and_malformed_answers_alone_are_llm_down() -> None:
     assert m.question is None and m.llm_down
 
 
+def test_one_failed_call_with_two_malformed_answers_is_not_llm_down() -> None:
+    llm = FakeLlm({"Review": [{}, {}, LlmError("HTTP 503")]})
+    m = similar.make_similar(llm, question(), target(), 1, PAGE, 0, [])
+    assert m.question is None and not m.llm_down
+
+
 def test_malformed_answers_alone_are_not_llm_down() -> None:
     llm = FakeLlm({"Review": [{}, {}, {}]})
     assert not similar.make_similar(llm, question(), target(), 1, PAGE, 0, []).llm_down

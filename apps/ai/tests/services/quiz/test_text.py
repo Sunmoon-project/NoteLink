@@ -193,7 +193,10 @@ def test_place_moves_answer_to_slot_position() -> None:
         ("1.5 mL", "1.5mL", True),
         ("port", "report", False),  # 안에 있지만 앞부분이 아님
         ("1.5 mL", "15 mL", False),  # norm은 '.'을 지움
-        ("1/2", "1-2", False),  # 수는 같고 기호가 다름
+        ("IL-6", "IL6", True),  # 수가 있으면 나머지 글은 norm으로
+        ("IL 6", "IL6", True),
+        ("IL-6", "IL-8", False),
+        ("1/2", "1-2", True),  # 알려진 한계: 수 목록이 같고 norm이 기호를 지움
         ("Type I hypersensitivity", "Type II hypersensitivity", False),  # 로마 숫자
         ("Stage I", "Stage IV", False),
         ("affect", "effect", False),  # 유사도만 높고 앞부분이 다름

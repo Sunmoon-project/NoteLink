@@ -249,7 +249,7 @@ def test_repair_returns_none_when_the_new_option_is_unusable(
 def test_checked_passes_a_clean_draft_without_repair() -> None:
     d = draft(SCENE, ["stack", "fasten", "order", "move", "lift"], "stack")
     llm = FakeLlm()
-    assert qa.checked(llm, d, no_conflict, PAGE, "규칙") == (d, [], None, False)
+    assert qa.checked(llm, d, no_conflict, PAGE, "규칙") == (d, [], None, False, False)
     assert llm.calls == []
 
 
@@ -257,12 +257,13 @@ def test_checked_repairs_and_rechecks() -> None:
     d = draft(SCENE, ["fasten", "stock", "stack", "order", "move"], "stack")
     hits: list[str] = []
     llm = FakeLlm({"Repair": [{"options": ["lift"]}]})
-    fixed, why, k, repaired = qa.checked(llm, d, no_conflict, PAGE, "규칙", hits=hits)
-    assert (fixed["options"], why, k, repaired) == (
+    fixed, why, k, repaired, unchecked = qa.checked(llm, d, no_conflict, PAGE, "규칙", hits=hits)
+    assert (fixed["options"], why, k, repaired, unchecked) == (
         ["fasten", "lift", "stack", "order", "move"],
         [],
         2,
         True,
+        False,
     )
     assert hits == ["stock"]  # 다음 시도에서 피할 낱말
 
@@ -275,7 +276,7 @@ def test_checked_keeps_the_first_reasons_when_the_repair_fails_again() -> None:
         return ["보기 5개가 아니거나 겹침"], None
 
     out = qa.checked(llm, d, code_fails, PAGE, "규칙")
-    assert out == (d, ["노트에서 정답과 같은 묶음인 보기: stock"], None, False)
+    assert out == (d, ["노트에서 정답과 같은 묶음인 보기: stock"], None, False, False)
 
 
 def test_repair_keeps_a_new_option_that_only_contains_the_answer() -> None:
@@ -283,3 +284,45 @@ def test_repair_keeps_a_new_option_that_only_contains_the_answer() -> None:
     d = draft(SCENE, ["be", "is", "are", "was", "been"], "be")
     fixed = qa.repair(FakeLlm({"Repair": [{"options": ["became"]}]}), d, {"been"}, ["x"], PAGE)
     assert fixed is not None and fixed["options"][-1] == "became"
+
+
+ROPE = "The rope was ____ to the post."
+ROPE_OPTIONS = ["fastened", "secured", "extended", "displayed", "stacked"]
+
+
+def test_screen_reports_an_unchecked_draft_when_calls_fail() -> None:
+    d = draft(ROPE, ROPE_OPTIONS, "fastened")
+    llm = FakeLlm({"Natural": [LlmError("HTTP 503")] * 9})
+    assert qa.screen(llm, d, PAGE, "빈칸") == ([], True)
+    assert qa.two_answers(FakeLlm({"Natural": [LlmError("HTTP 503")] * 9}), d, PAGE, "빈칸") == []
+
+
+def test_screen_with_a_flagged_option_is_a_real_rejection_even_with_a_failed_call() -> None:
+    d = draft(ROPE, ROPE_OPTIONS, "fastened")
+    llm = FakeLlm({"Natural": natural(True, LlmError("HTTP 503"), False, False)})
+    assert qa.screen(llm, d, PAGE, "빈칸") == (
+        ["빈칸에 넣어도 말이 되는 오답 보기: secured"],
+        False,
+    )
+
+
+def test_checked_uses_the_recheck_after_a_first_check_with_a_failed_call() -> None:
+    # 처음 검사: secured가 걸리고 한 보기는 판정 못 받음 → secured만 고침 → 재검사가 모두 통과
+    d = draft(ROPE, ROPE_OPTIONS, "fastened")
+    first = natural(True, LlmError("HTTP 503"), False, False)
+    llm = FakeLlm(
+        {"Natural": first + natural(*[False] * 8, True), "Repair": [{"options": ["lifted"]}]}
+    )
+    fixed, why, _, repaired, unchecked = qa.checked(llm, d, no_conflict, PAGE, "빈칸")
+    assert (why, repaired, unchecked) == ([], True, False)
+    assert "lifted" in fixed["options"]
+
+
+def test_checked_reports_unchecked_when_the_recheck_fails() -> None:
+    d = draft(ROPE, ROPE_OPTIONS, "fastened")
+    first = natural(True, False, False, False)
+    llm = FakeLlm(
+        {"Natural": first + [LlmError("HTTP 503")] * 9, "Repair": [{"options": ["lifted"]}]}
+    )
+    _, why, _, repaired, unchecked = qa.checked(llm, d, no_conflict, PAGE, "빈칸")
+    assert (why, repaired, unchecked) == ([], True, True)

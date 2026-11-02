@@ -12,7 +12,6 @@
 import difflib
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from typing import Any, cast
 
 from app.clients.llm import JsonObject, Llm, LlmError
 from app.core.config import settings
@@ -208,21 +207,6 @@ def _draft(r: JsonObject) -> Draft | None:
     return d
 
 
-class LlmWatch:
-    """LLM 호출이 실패했는지 기억합니다. quality의 검사는 호출 실패를 '걸리지 않음'으로 넘기므로,
-    검사를 통과했어도 실패가 있었으면 검사하지 못한 것입니다."""
-
-    def __init__(self, llm: Llm) -> None:
-        self._llm, self.failed = llm, False
-
-    def call(self, *args: Any, **kwargs: Any) -> JsonObject:
-        try:
-            return self._llm.call(*args, **kwargs)
-        except LlmError:
-            self.failed = True
-            raise
-
-
 def solved(
     llm: Llm, d: Draft, options: list[str], pos: int, page_text: str
 ) -> tuple[bool | None, str]:
@@ -260,11 +244,12 @@ def make_similar(
     세 번째 시도는 처음 유형으로 돌아가되, 그때까지 걸린 보기를 avoid에 더해 줍니다. 노트가
     유의어 묶음(fastened / secured / anchored)을 가르치면 모델이 같은 유의어를 계속 냈습니다(10/26).
     llm_down(LLM 장애로 못 만듦): 초안이 정상으로 떨어진 시도(코드 검사 · 정답 둘 검사 · 검사
-    모델의 다른 답)가 한 번도 없고, 호출 실패(생성 · 정답 둘 검사 · 검사 모델)가 한 번 이상 있음.
-    답 모양이 틀린 시도는 정상 탈락으로 세지 않습니다. 장애를 '못 만듦'으로 세면 오늘의 복습은
-    flawTries를 늘려 3일 뒤 문제를 빼고, 오답 복습은 기존 문제를 다시 냅니다(Codex 리뷰 ·
-    /code-review 11/02). 정답 둘 검사(quality.checked) 안에서 호출이 실패하고 걸린 보기가 없으면
-    검사하지 못한 초안이므로 쓰지 않습니다. 실패한 시도 뒤에도 다음 시도 준비(LAST_TIP)는 같습니다.
+    모델의 다른 답)가 한 번도 없고, 호출 실패(생성 · 정답 둘 검사 못 함 · 검사 모델)가 시도의
+    과반(3번 중 2번 이상)임. 답 모양이 틀린 시도는 정상 탈락도 호출 실패도 아닙니다: 모양 오류 2 +
+    실패 1은 장애가 아니고, 실패 2 + 모양 오류 1은 장애입니다. 장애를 '못 만듦'으로 세면 오늘의
+    복습은 flawTries를 늘려 3일 뒤 문제를 빼고, 오답 복습은 기존 문제를 다시 냅니다(Codex 리뷰 ·
+    /code-review 11/02). 정답 둘 검사가 '검사 못 함'(quality.checked)이면 그 초안은 쓰지 않습니다.
+    실패한 시도 뒤에도 다음 시도 준비(LAST_TIP)는 같습니다.
     """
     orig = q["prompt"] + (f"\n제시문: {q['passage']}" if q.get("passage") else "")
     first = q.get("type") or "규칙"
@@ -311,13 +296,12 @@ def make_similar(
             why, k = check(d)
             if not why:
                 hits: list[str] = []
-                watch = LlmWatch(llm)
-                d, why, k2, _ = quality.checked(
-                    cast(Llm, watch), d, check, page_text, ty, avoid, hits
+                d, why, k2, _, unchecked = quality.checked(
+                    llm, d, check, page_text, ty, avoid, hits
                 )
                 k = k if k2 is None else k2
                 avoid += [h for h in hits if h not in avoid]
-                if watch.failed and not why:  # 검사하지 못한 초안은 쓰지 않음
+                if unchecked:  # 검사하지 못한 초안은 쓰지 않음
                     down, failed, out.why = down + 1, True, ["정답 둘 검사 호출이 실패함"]
             if not failed and not why and k is not None:
                 options, pos = place(d["options"], k, slot)
@@ -342,7 +326,7 @@ def make_similar(
                 )
         if attempt == 1 and first in BLANK_TYPES:  # 실패한 시도 뒤에도 마지막 시도는 똑같이 준비
             notes += LAST_TIP
-    out.llm_down = down > 0 and not rejected
+    out.llm_down = not rejected and 2 * down > out.tries
     return out
 
 

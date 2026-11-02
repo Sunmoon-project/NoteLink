@@ -16,7 +16,7 @@ from typing import Literal
 from app.clients.llm import JsonObject, Llm, LlmError
 from app.core.config import settings
 from app.services.quiz.models import Question
-from app.services.quiz.text import norm, numbered_apart, same_item, short_answer
+from app.services.quiz.text import norm, numbered_apart, same_answer, short_answer
 
 type Verdict = Literal["오타", "잘림"]
 
@@ -122,11 +122,6 @@ def issue(name: str, subject: set[str] | frozenset[str] = frozenset()) -> str | 
 
 def key(name: str, subject: set[str] | frozenset[str] = frozenset()) -> str:
     return norm("".join(core(name, subject))) or norm(name)
-
-
-def same_answer(a: str, b: str) -> bool:
-    """답 비교용 same_item. 'Type I …'과 'Type II …'는 따로 둡니다(unify)."""
-    return same_item(a, b) and not numbered_apart(a, b)
 
 
 def same_name(a: str, b: str, subject: set[str] | frozenset[str] = frozenset()) -> bool:
