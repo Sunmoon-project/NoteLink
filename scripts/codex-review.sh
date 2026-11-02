@@ -153,7 +153,9 @@ pause_review() {
     printf '### ⏸️ Codex 리뷰 멈춤\n\n%s\n' "$note" >> "$GITHUB_STEP_SUMMARY" || true
   fi
   if [ -n "${CODEX_PAUSED_FILE:-}" ]; then
-    printf 'pr=%s\nsha=%s\nretry=%s\nreason=%s\n' "$PR" "$HEAD_SHA" "$USAGE_RETRY" "$USAGE_REASON" \
+    # attempt: 이 실행의 회차. 다시 돌리면 회차가 올라가므로 runner-status.sh가 이미 다시 돌렸는지 알 수 있음
+    printf 'pr=%s\nsha=%s\nretry=%s\nreason=%s\nattempt=%s\n' \
+      "$PR" "$HEAD_SHA" "$USAGE_RETRY" "$USAGE_REASON" "${GITHUB_RUN_ATTEMPT:-1}" \
       > "$CODEX_PAUSED_FILE" || true
   fi
   exit 0

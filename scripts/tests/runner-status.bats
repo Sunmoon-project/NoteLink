@@ -749,9 +749,10 @@ artifact_zip() {
   (cd "$TMP/z$1" && zip -q "$TMP/artifact-$1.zip" "$name") || skip "zip 실패"
 }
 
-# 실행 정보: $1 = 실행 id, $2 = 워크플로 파일, $3 = 이벤트, $4 = 상태
+# 실행 정보: $1 = 실행 id, $2 = 워크플로 파일, $3 = 이벤트, $4 = 상태, $5 = 회차
 run_info() {
-  printf '{"path":"%s","event":"%s","status":"%s"}\n' "$2" "$3" "${4:-completed}" > "$TMP/run-$1.json"
+  printf '{"path":"%s","event":"%s","status":"%s","run_attempt":%s}\n' "$2" "$3" "${4:-completed}" "${5:-1}" \
+    > "$TMP/run-$1.json"
 }
 
 USAGE_TXT='at=1761897600\nplan=plus\nlimit=0\nretry=\np_used=34\np_window=10080\np_reset=1762261200\ns_used=\ns_window=\ns_reset=\n'
@@ -816,7 +817,7 @@ artifacts_fixture() {
 #   PR 90: 57(실행 157, 최근 · 아직 멈춤 시각 전) · 56(실행 156, 옛것)
 #   55(실행 155) — 만료됨
 paused_marker() {  # $1 = 결과 파일 id, $2 = PR, $3 = 다시 가능한 시각
-  artifact_zip "$1" "pr=$2\nsha=abc\nretry=$3\nreason=low\n" codex-paused.txt
+  artifact_zip "$1" "pr=$2\nsha=abc\nretry=$3\nreason=low\nattempt=1\n" codex-paused.txt
 }
 
 prs_fixture() {
@@ -842,12 +843,14 @@ prs_fixture() {
   run_info 125 ".github/workflows/ci.yml" pull_request
 }
 
-@test "resume_paused: 다시 가능한 시각이 지난 PR마다 가장 최근 멈춘 실행 하나만 다시 돌리고, 그 PR의 표시를 모두 지운다" {
+@test "resume_paused: 다시 가능한 시각이 지난 PR마다 가장 최근 멈춘 실행 하나만 다시 돌리고, 알린 뒤 그 PR의 표시를 모두 지운다" {
   need_jq; prs_fixture
   resume_paused
   [ "$RESUMED" = "#12" ] && [ -z "$RESUME_FAILED" ]
   grep -qx 'api repos/team/repo/actions/runs/152/rerun -X POST' "$TMP/gh.calls"
   not grep -q 'runs/150/rerun' "$TMP/gh.calls"
+  not grep -qE 'artifacts/5[12] -X DELETE' "$TMP/gh.calls"  # 아직 알리기 전
+  delete_paused
   grep -qx 'api repos/team/repo/actions/artifacts/52 -X DELETE' "$TMP/gh.calls"
   grep -qx 'api repos/team/repo/actions/artifacts/51 -X DELETE' "$TMP/gh.calls"
   grep -q 'actions/artifacts?name=codex-paused&' "$TMP/gh.calls"
@@ -883,6 +886,7 @@ prs_fixture() {
   : > "$TMP/gh.calls"; PREV_FAILED=$NEW_FAILED
   resume_paused
   [ "$RESUMED" = "#12" ] && [ -z "$RESUME_FAILED" ] && [ -z "$NEW_FAILED" ]
+  delete_paused
   grep -qx 'api repos/team/repo/actions/artifacts/52 -X DELETE' "$TMP/gh.calls"
   grep -qx 'api repos/team/repo/actions/artifacts/51 -X DELETE' "$TMP/gh.calls"
 }
@@ -1068,4 +1072,32 @@ not() { if "$@"; then return 1; fi; }
   grep -qx 'api repos/team/repo/actions/runs/152/rerun -X POST' "$TMP/gh.calls"
   [[ "$(jq -r '.embeds[0].description' "$TMP/posted.json")" == *"다시 돌리지 못함: #12"* ]]
   grep -qx 'failed=52' "$STATE_FILE"
+}
+
+@test "resume_paused: 실행 회차가 표시보다 올라가 있으면 이미 다시 돌린 것으로 보고 또 돌리지 않는다" {
+  need_jq; prs_fixture
+  run_info 152 "$REVIEW_WF" pull_request_target in_progress 2
+  resume_paused
+  [ "$RESUMED" = "#12" ]
+  not grep -q '/rerun' "$TMP/gh.calls"
+  delete_paused
+  grep -qx 'api repos/team/repo/actions/artifacts/52 -X DELETE' "$TMP/gh.calls"
+  grep -qx 'api repos/team/repo/actions/artifacts/51 -X DELETE' "$TMP/gh.calls"
+}
+
+@test "main check: 다시 돌린 뒤 디스코드 전송에 실패하면 표시를 남기고, 다음 확인에서 또 돌리지 않고 알린 뒤 지운다" {
+  need_jq; fixtures; prs_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
+  write_state 'status=online\nsince=5\nstuck=0\nerr=0\nusage=ok\n'
+  CURL_RC=22 run main check
+  [ "$status" -eq 1 ]
+  grep -qx 'api repos/team/repo/actions/runs/152/rerun -X POST' "$TMP/gh.calls"
+  not grep -qE 'artifacts/5[12] -X DELETE' "$TMP/gh.calls"
+  # 다시 돌린 실행은 회차가 2가 됨
+  run_info 152 "$REVIEW_WF" pull_request_target in_progress 2
+  : > "$TMP/gh.calls"
+  run main check
+  [ "$status" -eq 0 ]
+  not grep -q '/rerun' "$TMP/gh.calls"
+  [[ "$(jq -r '.embeds[0].description' "$TMP/posted.json")" == *"다시 돌립니다: #12"* ]]
+  grep -qx 'api repos/team/repo/actions/artifacts/52 -X DELETE' "$TMP/gh.calls"
 }
