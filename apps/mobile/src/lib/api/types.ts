@@ -208,6 +208,9 @@ export interface Api {
     explanation(questionId: string): Promise<{ text: string }>;
     similar(quizSetId: string): Promise<QuizSet>;
     box(): Promise<Question[]>;
+    /** 같은 문제 ID를 여러 번 저장해도 보관함에 한 번만 남긴다. */
+    saveToBox(questionIds: string[]): Promise<Question[]>;
+    deleteFromBox(questionIds: string[]): Promise<void>;
     flashcards(): Promise<Flashcard[]>;
     saveFlashcard(p: {
       front: string;
