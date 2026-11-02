@@ -232,3 +232,61 @@ need_jq() { command -v jq >/dev/null || skip "jq 없음"; }
     {"id":4,"created_at":"t4","user":{"login":"me"},"body":"일반 댓글"}]'
   [ "$(jq -r "$(prev_review_jq me)" <<< "$json")" = $'t1\t1' ]
 }
+
+# ---------- record_usage (Codex 남은 사용량 기록) ----------
+
+# 가짜 사용량 스크립트: 받은 인자를 적고, FAKE_OUT을 출력하고 FAKE_RC로 끝남
+fake_usage_script() {
+  USAGE_SCRIPT="$TMP/fake-usage.cjs"
+  cat > "$USAGE_SCRIPT" <<'JS'
+const fs = require('node:fs');
+fs.writeFileSync(process.env.ARGS_FILE, process.argv.slice(2).join(' '));
+process.stdout.write(process.env.FAKE_OUT || '');
+process.exit(Number(process.env.FAKE_RC || 0));
+JS
+  export ARGS_FILE="$TMP/args"
+}
+
+@test "record_usage: CODEX_USAGE_FILE이 없으면 아무것도 하지 않는다" {
+  command -v node > /dev/null || skip "node 없음"
+  fake_usage_script
+  unset CODEX_USAGE_FILE
+  run record_usage 1000 "$TMP/codex.log"
+  [ "$status" -eq 0 ]
+  [ ! -e "$ARGS_FILE" ]
+}
+
+@test "record_usage: 시작 시각 · 로그를 넘기고 출력을 파일에 적는다" {
+  command -v node > /dev/null || skip "node 없음"
+  fake_usage_script
+  CODEX_USAGE_FILE="$TMP/usage.txt" FAKE_OUT=$'at=1\nlimit=0' run record_usage 1793590000000 "$TMP/codex.log"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TMP/usage.txt")" = $'at=1\nlimit=0' ]
+  [[ "$(cat "$ARGS_FILE")" == "--since 1793590000000 --log "*codex.log ]]
+}
+
+@test "record_usage: 읽을 것이 없거나 스크립트가 실패해도 파일을 만들지 않고 성공한다" {
+  command -v node > /dev/null || skip "node 없음"
+  fake_usage_script
+  CODEX_USAGE_FILE="$TMP/usage.txt" run record_usage 1 "$TMP/codex.log"
+  [ "$status" -eq 0 ] && [ ! -e "$TMP/usage.txt" ]
+  CODEX_USAGE_FILE="$TMP/usage.txt" FAKE_OUT="at=1" FAKE_RC=1 run record_usage 1 "$TMP/codex.log"
+  [ "$status" -eq 0 ] && [ ! -e "$TMP/usage.txt" ]
+}
+
+@test "record_usage: node가 없으면 건너뛰고 성공한다" {
+  USAGE_SCRIPT="$TMP/x.mjs"
+  PATH="$TMP/empty-path" CODEX_USAGE_FILE="$TMP/usage.txt" run record_usage 1 "$TMP/codex.log"
+  [ "$status" -eq 0 ] && [ ! -e "$TMP/usage.txt" ]
+  [[ "$output" == *"node가 없어"* ]]
+}
+
+@test "main: Codex 실행 바로 뒤(성공 여부를 보기 전)에 사용량을 기록한다" {
+  # 한도에 걸려 리뷰가 실패해도 기록되어야 하므로, 결과 확인보다 앞에 있어야 함
+  local f="$BATS_TEST_DIRNAME/../codex-review.sh"
+  exec_line=$(grep -n 'codex exec ' "$f" | head -n 1 | cut -d: -f1)
+  record_line=$(grep -n '^  record_usage ' "$f" | cut -d: -f1)
+  check_line=$(grep -n 'if \[ ! -s "\$REVIEW" \]' "$f" | cut -d: -f1)
+  [ -n "$exec_line" ] && [ -n "$record_line" ] && [ -n "$check_line" ]
+  [ "$record_line" -eq $(( exec_line + 1 )) ] && [ "$record_line" -lt "$check_line" ]
+}

@@ -11,6 +11,8 @@
 #
 # 필요한 것: git, gh(로그인), codex(로그인). 현재 작업 폴더는 건드리지 않고
 # 임시 worktree에서 리뷰합니다. 리뷰 기준은 AGENTS.md의 Code Review Rules입니다.
+# CODEX_USAGE_FILE을 주면 Codex 실행 뒤 남은 사용량(scripts/codex-usage.mjs, node 필요)을 그 파일에 적습니다
+# (codex-review.yml이 결과 파일로 올리고 러너 상태 알림이 읽음). 실패해도 리뷰는 계속합니다.
 #
 # 테스트: scripts/tests/codex-review.bats (source하면 main은 실행되지 않습니다)
 
@@ -95,6 +97,22 @@ omitted_note() {  # $1 = 범위, $2 = diff 파일
   done < "$2.omitted"
 }
 
+# Codex 실행 뒤 남은 사용량을 CODEX_USAGE_FILE에 적음 (주지 않았거나 읽을 것이 없으면 건너뜀, 항상 성공)
+# Windows의 node는 Git Bash 경로(/c/...)를 모르므로 cygpath로 바꿔 넘김
+record_usage() {  # $1 = Codex 시작 시각(epoch ms), $2 = codex 로그
+  [ -n "${CODEX_USAGE_FILE:-}" ] || return 0
+  command -v node > /dev/null || { echo "  (node가 없어 Codex 사용량을 기록하지 않습니다)"; return 0; }
+  local script log out
+  script=$(cygpath -m "$USAGE_SCRIPT" 2> /dev/null || printf '%s' "$USAGE_SCRIPT")
+  log=$(cygpath -m "$2" 2> /dev/null || printf '%s' "$2")
+  out=$(node "$script" --since "$1" --log "$log" 2> /dev/null) || out=""
+  if [ -n "$out" ]; then
+    printf '%s
+' "$out" > "$CODEX_USAGE_FILE" || true
+  fi
+  return 0
+}
+
 # 결과에 임시 폴더 경로가 섞이면 저장소 기준 경로로 바꾸기
 strip_prefix() {
   # -v는 역슬래시를 이스케이프로 읽어 Windows 경로가 깨지므로 환경 변수로 넘김
@@ -113,6 +131,7 @@ main() {
   fi
 
   cd "$(git rev-parse --show-toplevel)"
+  USAGE_SCRIPT="$PWD/scripts/codex-usage.mjs"
   REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
   ME=$(gh api user --jq .login)
 
@@ -297,7 +316,9 @@ EOF
 
   echo "▶ Codex 리뷰 중... ($( [ "$ROUND" -eq 1 ] && echo 1차 || echo "${ROUND}차 재리뷰" ))"
   REVIEW="$WORK/review.md"
+  CODEX_START_MS="$(date +%s)000"
   ( cd "$WT" && codex exec --sandbox read-only --output-last-message "$REVIEW" - < "$PROMPT" > "$WORK/codex.log" 2>&1 ) || true
+  record_usage "$CODEX_START_MS" "$WORK/codex.log"
   if [ ! -s "$REVIEW" ]; then
     echo "codex 실행 실패. 로그 마지막 부분:" >&2
     tail -n 20 "$WORK/codex.log" >&2

@@ -13,6 +13,12 @@ setup() {
   NOW=1761900000  # 2025-10-31 08:40:00 UTC = 17:40 서울
   PREV_STATUS=""; PREV_SINCE=0; PREV_STUCK=0; PREV_ERR=0
   CUR_STATUS=online; BUSY=false; QUEUED=0; WAIT_MIN=0; ERROR_MSG=""
+  PREV_USAGE=""; USAGE_ERR=0; no_usage
+}
+
+no_usage() {  # Codex 사용량 기록 없음
+  U_AT=""; U_PLAN=""; U_LIMIT=0; U_RETRY=""
+  U_P_USED=""; U_P_WINDOW=""; U_P_RESET=""; U_S_USED=""; U_S_WINDOW=""; U_S_RESET=""
 }
 
 need_jq() { command -v jq > /dev/null || skip "jq 없음"; }
@@ -20,6 +26,7 @@ need_jq() { command -v jq > /dev/null || skip "jq 없음"; }
 # decide를 부른 뒤 저장될 값을 다음 확인의 지난 상태로 넘김
 next_check() {
   PREV_STATUS=$NEW_STATUS; PREV_SINCE=$NEW_SINCE; PREV_STUCK=$NEW_STUCK; PREV_ERR=$NEW_ERR
+  PREV_USAGE=${NEW_USAGE:-$PREV_USAGE}
 }
 
 # ---------- kst · duration ----------
@@ -273,6 +280,13 @@ gh() {
   st=$(sed -n 's/.*[?&]status=\([a-z_]*\).*/\1/p' <<< "$path")
   case "$path" in
     *actions/runners*) jq -r "$filter" "$TMP/runners.json" ;;
+    *"actions/artifacts?name="*)  # 결과 파일 목록 (없으면 빈 목록)
+      if [ -f "$TMP/artifacts.json" ]; then jq -r "$filter" "$TMP/artifacts.json"
+      else jq -r "$filter" <<< '{"artifacts":[]}'; fi ;;
+    *actions/artifacts/*/zip)  # 결과 파일 내려받기: id마다 $TMP/artifact-<id>.zip
+      local id=${path#*artifacts/}; id=${id%/zip}
+      [ -f "$TMP/artifact-$id.zip" ] || { echo "gh: Not Found (HTTP 404)" >&2; return 1; }
+      cat "$TMP/artifact-$id.zip" ;;
     *created=*) # API처럼 만든 시각(created_at)이 조건보다 이른 실행은 빼고 돌려줌(created_at이 없으면 범위 안)
       local c
       c=$(sed -n 's/.*created=%3E%3D\([^&]*\).*/\1/p' <<< "$path")
@@ -546,4 +560,240 @@ WF="$BATS_TEST_DIRNAME/../../.github/workflows/runner-status.yml"
 @test "워크플로: 상태가 바뀐 check에서만 캐시를 저장한다" {
   grep -qF "if: steps.check.outputs.changed == 'true'" "$WF"
   grep -qF 'echo "changed=true" >> "$GITHUB_OUTPUT"' "$BATS_TEST_DIRNAME/../runner-status.sh"
+}
+
+# ---------- Codex 사용량 ----------
+# NOW = 10/31 17:40 서울. 아래 기록은 10/31 17:00(서울) 리뷰에서 뽑은 것
+U_AT_FIX=1761897600
+H5_RESET=1761904800    # 10/31 19:00 서울 (5시간 창)
+WEEK_RESET=1762261200  # 11/04 22:00 서울 (주간 창)
+
+weekly() {  # $1 = 주간 사용률
+  no_usage
+  U_AT=$U_AT_FIX; U_PLAN=plus; U_P_USED=$1; U_P_WINDOW=10080; U_P_RESET=$WEEK_RESET
+}
+
+two_windows() {  # $1 = 5시간 사용률, $2 = 주간 사용률
+  weekly "$2"
+  U_S_USED=$U_P_USED; U_S_WINDOW=$U_P_WINDOW; U_S_RESET=$U_P_RESET
+  U_P_USED=$1; U_P_WINDOW=300; U_P_RESET=$H5_RESET
+}
+
+@test "save_state · load_state: Codex 사용량 단계를 저장하고, 이상한 값은 무시한다" {
+  NEW_STATUS=online; NEW_SINCE=0; NEW_STUCK=0; NEW_ERR=0; NEW_USAGE=limit
+  save_state
+  load_state
+  [ "$PREV_USAGE" = limit ]
+  write_state 'status=online\nusage=$(touch pwned)\n'
+  load_state
+  [ -z "$PREV_USAGE" ] && [ "$PREV_STATUS" = online ]
+}
+
+@test "window_name: 5시간 · 주간 · 일 · 시간 · 분" {
+  [ "$(window_name 300)" = "5시간" ]
+  [ "$(window_name 10080)" = "주간" ]
+  [ "$(window_name 1440)" = "1일" ]
+  [ "$(window_name 90)" = "90분" ]
+}
+
+@test "usage_level: 기록이 없으면 판단하지 않는다" {
+  usage_level
+  [ -z "$CUR_USAGE" ]
+}
+
+@test "usage_level: 80% 미만은 ok, 한 창이라도 80% 이상이면 warn" {
+  weekly 34; usage_level; [ "$CUR_USAGE" = ok ]
+  weekly 79; usage_level; [ "$CUR_USAGE" = ok ]
+  two_windows 12 80; usage_level; [ "$CUR_USAGE" = warn ]
+  two_windows 85 10; usage_level; [ "$CUR_USAGE" = warn ]
+}
+
+@test "usage_level: 창 하나를 다 썼으면 limit, 다시 가능한 시각은 그 창의 초기화 시각" {
+  two_windows 100 40; usage_level
+  [ "$CUR_USAGE" = limit ] && [ "$USAGE_RETRY" = "$H5_RESET" ]
+  # 둘 다 다 썼으면 늦게 풀리는 쪽
+  two_windows 100 100; usage_level
+  [ "$CUR_USAGE" = limit ] && [ "$USAGE_RETRY" = "$WEEK_RESET" ]
+  # 초기화 시각을 모르는 창을 다 썼으면 모름
+  two_windows 100 100; U_S_RESET=""; usage_level
+  [ "$CUR_USAGE" = limit ] && [ -z "$USAGE_RETRY" ]
+}
+
+@test "usage_level: 초기화 시각이 지난 창은 0%로 본다" {
+  two_windows 100 40; NOW=$(( H5_RESET + 60 )); usage_level
+  [ "$CUR_USAGE" = ok ]
+  two_windows 100 90; NOW=$(( H5_RESET + 60 )); usage_level
+  [ "$CUR_USAGE" = warn ]
+}
+
+@test "usage_level: 한도 문구가 있으면 다시 가능한 시각까지 limit, 지나면 창 사용률로 판단" {
+  no_usage; U_AT=$U_AT_FIX; U_LIMIT=1; U_RETRY=$H5_RESET
+  usage_level
+  [ "$CUR_USAGE" = limit ] && [ "$USAGE_RETRY" = "$H5_RESET" ]
+  NOW=$(( H5_RESET + 1 )); usage_level
+  [ "$CUR_USAGE" = ok ]
+  # 다시 가능한 시각을 모르면 새 기록이 올 때까지 limit
+  U_RETRY=""; NOW=$(( H5_RESET + 86400 )); usage_level
+  [ "$CUR_USAGE" = limit ] && [ -z "$USAGE_RETRY" ]
+}
+
+@test "decide_usage: 처음 확인은 ok면 조용히, warn · limit이면 알린다" {
+  CUR_USAGE=ok; decide_usage; [ -z "$USAGE_EVENT" ] && [ "$NEW_USAGE" = ok ]
+  CUR_USAGE=warn; decide_usage; [ "$USAGE_EVENT" = usage_warn ]
+  CUR_USAGE=limit; decide_usage; [ "$USAGE_EVENT" = usage_limit ]
+}
+
+@test "decide_usage: ok → warn → limit → (풀림) ok 마다 한 번씩만 알린다" {
+  PREV_USAGE=ok
+  CUR_USAGE=warn; decide_usage; [ "$USAGE_EVENT" = usage_warn ]
+  next_check; decide_usage; [ -z "$USAGE_EVENT" ]
+  CUR_USAGE=limit; next_check; decide_usage; [ "$USAGE_EVENT" = usage_limit ]
+  next_check; decide_usage; [ -z "$USAGE_EVENT" ]
+  CUR_USAGE=ok; next_check; decide_usage; [ "$USAGE_EVENT" = usage_ok ] && [ "$NEW_USAGE" = ok ]
+}
+
+@test "decide_usage: limit에서 다른 창이 아직 80% 넘은 채 풀려도 '풀림'을 알리고, warn → ok는 조용히" {
+  PREV_USAGE=limit; CUR_USAGE=warn; decide_usage
+  [ "$USAGE_EVENT" = usage_ok ] && [ "$NEW_USAGE" = warn ]
+  PREV_USAGE=warn; CUR_USAGE=ok; decide_usage
+  [ -z "$USAGE_EVENT" ] && [ "$NEW_USAGE" = ok ]
+}
+
+@test "decide_usage: 기록을 읽지 못하면 지난 단계를 그대로 둔다" {
+  PREV_USAGE=limit; CUR_USAGE=""; decide_usage
+  [ -z "$USAGE_EVENT" ] && [ "$NEW_USAGE" = limit ]
+}
+
+@test "usage_line: 창별 남은 양 · 초기화 시각 · 몇 시 리뷰 기준인지 적는다" {
+  weekly 34; usage_level
+  [ "$(usage_line)" = "Codex 사용량: 주간 66% 남음 (11/04 22:00 초기화) — 10/31 17:00 리뷰 기준 · 플랜 plus" ]
+  two_windows 85 40; usage_level
+  [ "$(usage_line)" = "Codex 사용량: 🟡 5시간 15% 남음 (10/31 19:00 초기화) · 주간 60% 남음 (11/04 22:00 초기화) — 10/31 17:00 리뷰 기준 · 플랜 plus" ]
+}
+
+@test "usage_line: 한도 도달은 다시 가능한 시각을, 지난 창은 초기화됨을 적는다" {
+  two_windows 100 40; usage_level
+  [ "$(usage_line)" = "Codex 사용량: 🟠 한도 도달, 10/31 19:00부터 다시 가능 · 5시간 0% 남음 (10/31 19:00 초기화) · 주간 60% 남음 (11/04 22:00 초기화) — 10/31 17:00 리뷰 기준 · 플랜 plus" ]
+  NOW=$(( H5_RESET + 60 )); usage_level
+  [ "$(usage_line)" = "Codex 사용량: 5시간 초기화됨 (10/31 19:00) · 주간 60% 남음 (11/04 22:00 초기화) — 10/31 17:00 리뷰 기준 · 플랜 plus" ]
+}
+
+@test "usage_line: 로그의 한도 문구만 있을 때 · 기록이 없을 때 · 못 읽었을 때" {
+  no_usage; U_AT=$U_AT_FIX; U_LIMIT=1; U_RETRY=$H5_RESET; usage_level
+  [ "$(usage_line)" = "Codex 사용량: 🟠 한도 도달, 10/31 19:00부터 다시 가능 — 10/31 17:00 리뷰 기준" ]
+  U_RETRY=""; usage_level
+  [ "$(usage_line)" = "Codex 사용량: 🟠 한도 도달, 다시 가능한 시각 모름 — 10/31 17:00 리뷰 기준" ]
+  U_RETRY=$H5_RESET; NOW=$(( H5_RESET + 60 )); usage_level
+  [ "$(usage_line)" = "Codex 사용량: 한도가 풀림 (10/31 19:00) — 10/31 17:00 리뷰 기준" ]
+  no_usage; usage_level
+  [ "$(usage_line)" = "Codex 사용량: 기록 없음 (최근에 Codex를 돌린 리뷰가 없음)" ]
+  USAGE_ERR=1
+  [ "$(usage_line)" = "Codex 사용량: 확인하지 못함" ]
+}
+
+@test "compose usage_limit · usage_ok · usage_warn: 안내와 실패한 리뷰 목록 링크" {
+  two_windows 100 40; usage_level
+  compose usage_limit
+  [[ "$TITLE" == "🟠"* ]] && [ "$COLOR" = "$COLOR_ORANGE" ]
+  [[ "$TEXT" == *"10/31 19:00부터 다시 가능"* ]]
+  [[ "$TEXT" == *"(https://github.com/team/repo/actions/workflows/codex-review.yml?query=is%3Afailure)"* ]]
+  compose usage_ok
+  [[ "$TITLE" == "🔵"* ]] && [[ "$TEXT" == *"다시 실행(Re-run)"* ]]
+  compose usage_warn
+  [ "$TITLE" = "🟡 Codex 남은 사용량 20% 아래" ]
+}
+
+# 결과 파일 zip을 만듦: $1 = id, $2 = codex-usage.txt 내용(printf %b)
+artifact_zip() {
+  command -v zip > /dev/null && command -v unzip > /dev/null || skip "zip · unzip 없음"
+  mkdir -p "$TMP/z$1"
+  printf '%b' "$2" > "$TMP/z$1/codex-usage.txt"
+  (cd "$TMP/z$1" && zip -q "$TMP/artifact-$1.zip" codex-usage.txt) || skip "zip 실패"
+}
+
+USAGE_TXT='at=1761897600\nplan=plus\nlimit=0\nretry=\np_used=34\np_window=10080\np_reset=1762261200\ns_used=\ns_window=\ns_reset=\n'
+
+artifacts_fixture() {
+  # 가장 최근 것(30)은 만료됨 → 20을 씀
+  printf '%s\n' '{"artifacts":[' \
+    ' {"id":30,"name":"codex-usage","expired":true,"created_at":"2025-10-31T08:30:00Z"},' \
+    ' {"id":20,"name":"codex-usage","expired":false,"created_at":"2025-10-31T08:00:00Z"},' \
+    ' {"id":10,"name":"codex-usage","expired":false,"created_at":"2025-10-30T08:00:00Z"}]}' > "$TMP/artifacts.json"
+}
+
+@test "read_usage: 만료되지 않은 가장 최근 결과 파일을 내려받아 읽는다" {
+  need_jq; artifacts_fixture
+  artifact_zip 20 "$USAGE_TXT"
+  artifact_zip 10 'at=1\np_used=99\n'
+  read_usage
+  [ "$USAGE_ERR" = 0 ] && [ "$U_AT" = 1761897600 ] && [ "$U_PLAN" = plus ]
+  [ "$U_P_USED" = 34 ] && [ "$U_P_WINDOW" = 10080 ] && [ "$U_P_RESET" = 1762261200 ] && [ -z "$U_S_USED" ]
+  grep -q 'actions/artifacts?name=codex-usage' "$TMP/gh.calls"
+}
+
+@test "read_usage: 결과 파일 안의 이상한 값은 무시한다" {
+  need_jq; artifacts_fixture
+  artifact_zip 20 'at=1761897600\nplan=$(touch pwned)\np_used=1000\np_window=0\nlimit=yes\nevil=1\n'
+  read_usage
+  [ "$U_AT" = 1761897600 ] && [ -z "$U_PLAN" ] && [ -z "$U_P_USED" ] && [ -z "$U_P_WINDOW" ] && [ "$U_LIMIT" = 0 ]
+  [ ! -e pwned ]
+}
+
+@test "read_usage: 결과 파일이 없으면 기록 없음, 목록 · 내려받기에 실패하면 확인 실패" {
+  need_jq
+  read_usage
+  [ -z "$U_AT" ] && [ "$USAGE_ERR" = 0 ]
+  artifacts_fixture  # zip이 없어 내려받기 실패
+  read_usage
+  [ -z "$U_AT" ] && [ "$USAGE_ERR" = 1 ]
+  GH_FAIL=1 read_usage
+  [ -z "$U_AT" ] && [ "$USAGE_ERR" = 1 ]
+}
+
+@test "main check: 러너 오프라인과 사용량 한도를 한 메시지(embed 두 개)로 보내고 둘 다 저장한다" {
+  need_jq; fixtures; artifacts_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
+  artifact_zip 20 'at=1761897600\nlimit=1\nretry=1761904800\n'
+  sed -i 's/"status":"online","busy":true/"status":"offline","busy":false/' "$TMP/runners.json"
+  write_state 'status=online\nsince=5\nstuck=0\nerr=0\nusage=ok\n'
+  run main check
+  [ "$status" -eq 0 ]
+  [ "$(jq '.embeds | length' "$TMP/posted.json")" = 2 ]
+  [[ "$(jq -r '.embeds[0].title' "$TMP/posted.json")" == "🔴"* ]]
+  [[ "$(jq -r '.embeds[1].title' "$TMP/posted.json")" == "🟠"* ]]
+  grep -qx 'status=offline' "$STATE_FILE"
+  grep -qx 'usage=limit' "$STATE_FILE"
+}
+
+@test "main check: 사용량만 바뀌어도 알리고 저장하며, 그대로면 저장하지 않는다" {
+  need_jq; fixtures; artifacts_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
+  artifact_zip 20 'at=1761897600\np_used=85\np_window=10080\np_reset=1762261200\n'
+  write_state 'status=online\nsince=5\nstuck=0\nerr=0\nusage=ok\n'
+  GITHUB_OUTPUT="$TMP/out"
+  run main check
+  [ "$status" -eq 0 ]
+  [ "$(jq '.embeds | length' "$TMP/posted.json")" = 1 ]
+  [[ "$(jq -r '.embeds[0].title' "$TMP/posted.json")" == "🟡 Codex"* ]]
+  grep -qx 'usage=warn' "$STATE_FILE" && grep -qx 'changed=true' "$TMP/out"
+  rm -f "$TMP/posted.json" "$TMP/out"
+  run main check
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMP/posted.json" ] && [ ! -e "$TMP/out" ]
+}
+
+@test "main check: 사용량을 읽지 못해도 러너 판단은 그대로 하고 사용량 단계는 유지한다" {
+  need_jq; fixtures; artifacts_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
+  write_state 'status=online\nsince=5\nstuck=0\nerr=0\nusage=limit\n'
+  GITHUB_OUTPUT="$TMP/out"
+  run main check
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMP/posted.json" ] && [ ! -e "$TMP/out" ]
+  grep -qx 'usage=limit' "$STATE_FILE"
+}
+
+@test "main summary: 아침 요약에 Codex 남은 사용량 줄이 들어간다" {
+  need_jq; fixtures; artifacts_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
+  artifact_zip 20 "$USAGE_TXT"
+  run main summary
+  [ "$status" -eq 0 ]
+  [[ "$(jq -r '.embeds[0].description' "$TMP/posted.json")" == *$'\nCodex 사용량: 주간 66% 남음 (11/04 22:00 초기화) — 10/31 17:00 리뷰 기준 · 플랜 plus\n'* ]]
 }

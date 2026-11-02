@@ -6,14 +6,18 @@
 #
 # - check 알림: 🔴 오프라인이 됨 · 🟢 다시 온라인(멈춰 있던 시간) · 🟡 온라인인데 Codex 리뷰가
 #   STUCK_MINUTES분 넘게 대기(작업을 못 받는 상태) · ⚠️ 러너 상태를 ERR_ALERT_AFTER번 연속 읽지 못함 · ✅ 다시 읽힘
-# - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간에 끝난 Codex 리뷰 성공 · 실패 · 취소
+#   Codex 사용량: 🟡 남은 양이 (100 - USAGE_WARN)% 아래 · 🟠 한도 도달(다시 가능한 시각) · 🔵 한도가 풀림
+#   (한 번 확인에서 둘 다 생기면 한 메시지에 embed 두 개로 보냄)
+# - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간에 끝난 Codex 리뷰 성공 · 실패 · 취소, Codex 남은 사용량
+# - Codex 사용량은 리뷰가 끝날 때 리뷰 컴퓨터가 올린 결과 파일(codex-review.yml의 codex-usage,
+#   scripts/codex-usage.mjs)의 가장 최근 것을 읽습니다. 리뷰가 돌 때만 바뀌므로 몇 시 리뷰 기준인지 함께 적습니다.
 # - 지난 상태는 STATE_FILE에 둡니다(워크플로가 Actions 캐시로 이어 줌). 처음이면 온라인은 알리지 않습니다.
 #   상태를 읽지 못한 동안에는 마지막으로 안 상태와 그 시각을 그대로 둡니다(멈춘 시간이 끊기지 않게).
 # - 디스코드로 보내지 못하면 상태를 저장하지 않고 실패합니다(다음 실행에서 다시 보냄).
 #
 # 필요한 환경 변수: REPO(owner/name), DISCORD_WEBHOOK, STATUS_TOKEN(러너 목록을 읽는 토큰,
-#   Administration: Read-only), GH_TOKEN(실행 목록을 읽는 토큰, 워크플로의 GITHUB_TOKEN), STATE_FILE
-# 필요한 것: gh, jq, curl, GNU date. 시각은 서울 시간으로 적습니다.
+#   Administration: Read-only), GH_TOKEN(실행 목록 · 결과 파일을 읽는 토큰, 워크플로의 GITHUB_TOKEN), STATE_FILE
+# 필요한 것: gh, jq, curl, unzip, GNU date. 시각은 서울 시간으로 적습니다.
 #
 # 테스트: scripts/tests/runner-status.bats (source하면 main은 실행되지 않습니다)
 
@@ -24,10 +28,14 @@ REVIEW_WORKFLOW="${REVIEW_WORKFLOW:-codex-review.yml}"
 STUCK_MINUTES="${STUCK_MINUTES:-30}"
 ERR_ALERT_AFTER="${ERR_ALERT_AFTER:-2}"  # 15분 × 2 = 30분 넘게 못 읽으면 알림(일시적인 API 오류는 넘김)
 STATE_FILE="${STATE_FILE:-.runner-status/state}"
+USAGE_ARTIFACT="${USAGE_ARTIFACT:-codex-usage}"  # codex-review.yml이 올리는 결과 파일 이름
+USAGE_FILE_NAME="codex-usage.txt"                  # 결과 파일(zip) 안의 파일 이름
+USAGE_WARN="${USAGE_WARN:-80}"                     # 한 창이라도 이 % 이상 쓰면 🟡
 
 # 디스코드 embed 색
 COLOR_RED=15026253     # #E5484D
 COLOR_GREEN=3187820    # #30A46C
+COLOR_ORANGE=15761187  # #F08223
 COLOR_YELLOW=16098596  # #F5A524
 COLOR_GRAY=9145752     # #8B8D98
 COLOR_BLUE=4088797     # #3E63DD
@@ -44,6 +52,8 @@ QUEUE_JQ='[.workflow_runs[] | (.run_started_at // .created_at)] | [length, (min 
 done_jq() {  # $1 = 시작 시각(UTC ISO)
   printf '.workflow_runs[] | select(.status == "completed" and .updated_at >= "%s") | .conclusion' "$1"
 }
+# 이름으로 거른 결과 파일 중 만료되지 않은 가장 최근 것의 id (없으면 빈 출력). API는 최근 것부터 돌려줌
+ARTIFACT_JQ='[.artifacts[] | select(.expired | not)] | max_by(.created_at) | .id // empty'
 
 kst() {  # $1 = epoch → "11/01 14:42" (서울은 서머타임이 없어 +9시간)
   date -u -d "@$(( $1 + 9 * 3600 ))" '+%m/%d %H:%M'
@@ -61,8 +71,9 @@ duration() {  # $1 = 분 → "2일 3시간 5분" / "45분"
 
 # → PREV_STATUS(마지막으로 안 상태: online|offline, 처음이면 빈 값) · PREV_SINCE(그 상태가 된 시각, 모르면 0)
 #   · PREV_STUCK(🟡 알림을 보냈는지 0|1) · PREV_ERR(연속으로 상태를 읽지 못한 횟수)
+#   · PREV_USAGE(마지막으로 안 Codex 사용량 단계: ok|warn|limit, 처음이면 빈 값)
 load_state() {
-  PREV_STATUS=""; PREV_SINCE=0; PREV_STUCK=0; PREV_ERR=0
+  PREV_STATUS=""; PREV_SINCE=0; PREV_STUCK=0; PREV_ERR=0; PREV_USAGE=""
   [ -f "$STATE_FILE" ] || return 0
   local k v
   while IFS='=' read -r k v; do
@@ -71,6 +82,7 @@ load_state() {
       since) [[ "$v" =~ ^[0-9]+$ ]] && PREV_SINCE=$v ;;
       stuck) [[ "$v" =~ ^[01]$ ]] && PREV_STUCK=$v ;;
       err) [[ "$v" =~ ^[0-9]+$ ]] && PREV_ERR=$v ;;
+      usage) [[ "$v" =~ ^(ok|warn|limit)$ ]] && PREV_USAGE=$v ;;
     esac
   done < "$STATE_FILE"
   return 0
@@ -78,12 +90,13 @@ load_state() {
 
 save_state() {
   mkdir -p "$(dirname "$STATE_FILE")"
-  printf 'status=%s\nsince=%s\nstuck=%s\nerr=%s\n' "$NEW_STATUS" "$NEW_SINCE" "$NEW_STUCK" "$NEW_ERR" > "$STATE_FILE"
+  printf 'status=%s\nsince=%s\nstuck=%s\nerr=%s\nusage=%s\n' \
+    "$NEW_STATUS" "$NEW_SINCE" "$NEW_STUCK" "$NEW_ERR" "$NEW_USAGE" > "$STATE_FILE"
 }
 
 state_changed() {
   [ ! -f "$STATE_FILE" ] || [ "$NEW_STATUS" != "$PREV_STATUS" ] || [ "$NEW_SINCE" != "$PREV_SINCE" ] \
-    || [ "$NEW_STUCK" != "$PREV_STUCK" ] || [ "$NEW_ERR" != "$PREV_ERR" ]
+    || [ "$NEW_STUCK" != "$PREV_STUCK" ] || [ "$NEW_ERR" != "$PREV_ERR" ] || [ "$NEW_USAGE" != "$PREV_USAGE" ]
 }
 
 # ---------- GitHub 조회 ----------
@@ -152,6 +165,50 @@ read_counts() {
   DONE_CANCEL=$(grep -cx 'cancelled' <<< "$out" || true)
 }
 
+# 사용량 파일(key=value, scripts/codex-usage.mjs 출력)을 U_*로 읽음. 모르는 키 · 이상한 값은 무시
+# U_AT(기록 시각) · U_PLAN · U_LIMIT(한도 문구 0|1) · U_RETRY(다시 가능한 시각)
+# · U_P_*/U_S_* (창별 USED(%) · WINDOW(분) · RESET(초기화 시각))
+load_usage() {  # $1 = 파일
+  local k v
+  while IFS='=' read -r k v; do
+    case "$k" in
+      at) [[ "$v" =~ ^[0-9]+$ ]] && U_AT=$v ;;
+      plan) [[ "$v" =~ ^[a-z0-9_]{1,32}$ ]] && U_PLAN=$v ;;
+      limit) [[ "$v" =~ ^[01]$ ]] && U_LIMIT=$v ;;
+      retry) [[ "$v" =~ ^[0-9]+$ ]] && U_RETRY=$v ;;
+      p_used) [[ "$v" =~ ^[0-9]{1,3}$ ]] && U_P_USED=$v ;;
+      p_window) [[ "$v" =~ ^[1-9][0-9]*$ ]] && U_P_WINDOW=$v ;;
+      p_reset) [[ "$v" =~ ^[0-9]+$ ]] && U_P_RESET=$v ;;
+      s_used) [[ "$v" =~ ^[0-9]{1,3}$ ]] && U_S_USED=$v ;;
+      s_window) [[ "$v" =~ ^[1-9][0-9]*$ ]] && U_S_WINDOW=$v ;;
+      s_reset) [[ "$v" =~ ^[0-9]+$ ]] && U_S_RESET=$v ;;
+    esac
+  done < "$1"
+  return 0
+}
+
+# 가장 최근 codex-usage 결과 파일 → U_* (없으면 U_AT 빈 값) · USAGE_ERR(조회 · 내려받기에 실패했으면 1)
+read_usage() {
+  U_AT=""; U_PLAN=""; U_LIMIT=0; U_RETRY=""
+  U_P_USED=""; U_P_WINDOW=""; U_P_RESET=""; U_S_USED=""; U_S_WINDOW=""; U_S_RESET=""
+  USAGE_ERR=0
+  local id dir
+  if ! id=$(gh api "repos/$REPO/actions/artifacts?name=$USAGE_ARTIFACT&per_page=100" \
+      --jq "$ARTIFACT_JQ" 2> /dev/null); then
+    USAGE_ERR=1; return 0
+  fi
+  [ -n "$id" ] || return 0  # 보관 기간 안에 Codex를 돌린 리뷰가 없음
+  [[ "$id" =~ ^[0-9]+$ ]] || { USAGE_ERR=1; return 0; }
+  dir=$(mktemp -d)
+  if gh api "repos/$REPO/actions/artifacts/$id/zip" > "$dir/usage.zip" 2> /dev/null \
+      && unzip -p "$dir/usage.zip" "$USAGE_FILE_NAME" > "$dir/usage" 2> /dev/null; then
+    load_usage "$dir/usage"
+  fi
+  rm -rf "$dir"
+  [ -n "$U_AT" ] || USAGE_ERR=1
+  return 0
+}
+
 # ---------- 판단 ----------
 
 # 지난 상태(PREV_*)와 지금(CUR_STATUS · BUSY · QUEUED · WAIT_MIN · NOW)으로
@@ -193,6 +250,54 @@ decide() {
   fi
 }
 
+# 지금(NOW) 기준 Codex 사용량 단계 → CUR_USAGE(ok|warn|limit, 기록이 없으면 빈 값)
+#   · USAGE_RETRY(limit일 때 다시 가능한 시각, 모르면 빈 값)
+# - 한도 문구가 있고 다시 가능한 시각이 아직 안 됐으면(모르면 새 기록이 올 때까지) limit
+# - 초기화 시각이 지난 창은 0%로 봄. 지나지 않은 창이 100%면 limit, USAGE_WARN% 이상이면 warn
+usage_level() {
+  CUR_USAGE=""; USAGE_RETRY=""
+  [ -n "$U_AT" ] || return 0
+  if [ "$U_LIMIT" = 1 ] && { [ -z "$U_RETRY" ] || [ "$U_RETRY" -gt "$NOW" ]; }; then
+    CUR_USAGE=limit; USAGE_RETRY=$U_RETRY
+    return 0
+  fi
+  CUR_USAGE=ok
+  local w used reset
+  for w in P S; do
+    used="U_${w}_USED"; reset="U_${w}_RESET"
+    used=${!used}; reset=${!reset}
+    [ -n "$used" ] || continue
+    if [ -n "$reset" ] && [ "$reset" -le "$NOW" ]; then continue; fi
+    if [ "$used" -ge 100 ]; then
+      CUR_USAGE=limit
+      # 둘 다 다 썼으면 늦게 풀리는 쪽 (초기화 시각을 모르는 창이 있으면 모름)
+      if [ -z "$reset" ]; then USAGE_RETRY=unknown
+      elif [ "$USAGE_RETRY" != unknown ] && { [ -z "$USAGE_RETRY" ] || [ "$reset" -gt "$USAGE_RETRY" ]; }; then
+        USAGE_RETRY=$reset
+      fi
+    elif [ "$used" -ge "$USAGE_WARN" ] && [ "$CUR_USAGE" = ok ]; then
+      CUR_USAGE=warn
+    fi
+  done
+  [ "$USAGE_RETRY" = unknown ] && USAGE_RETRY=""
+  return 0
+}
+
+# 지난 단계(PREV_USAGE)와 지금(CUR_USAGE)으로 USAGE_EVENT(usage_warn|usage_limit|usage_ok)와 NEW_USAGE를 정함.
+# 기록을 읽지 못했으면 판단하지 않고 그대로 둠. 처음 확인이라도 warn · limit은 알림
+decide_usage() {
+  USAGE_EVENT=""; NEW_USAGE=$PREV_USAGE
+  [ -n "$CUR_USAGE" ] || return 0
+  NEW_USAGE=$CUR_USAGE
+  [ "$CUR_USAGE" = "$PREV_USAGE" ] && return 0
+  case "$CUR_USAGE" in
+    limit) USAGE_EVENT=usage_limit ;;
+    warn) [ "$PREV_USAGE" = limit ] && USAGE_EVENT=usage_ok || USAGE_EVENT=usage_warn ;;
+    ok) [ "$PREV_USAGE" = limit ] && USAGE_EVENT=usage_ok ;;
+  esac
+  return 0
+}
+
 # ---------- 메시지 ----------
 
 queue_line() {  # 대기 중인 리뷰 한 줄
@@ -213,11 +318,76 @@ status_word() {  # $1 = 상태 → 한국어
   esac
 }
 
+window_name() {  # $1 = 창 길이(분) → "5시간" · "주간" · "3일" …
+  case "$1" in
+    10080) echo "주간" ;;
+    *) if (( $1 % 1440 == 0 )); then echo "$(( $1 / 1440 ))일"
+       elif (( $1 % 60 == 0 )); then echo "$(( $1 / 60 ))시간"
+       else echo "$1분"; fi ;;
+  esac
+}
+
+# 창별 남은 양: "5시간 88% 남음 (11/02 15:01 초기화) · 주간 66% 남음 (11/07 15:01 초기화)"
+usage_windows() {
+  local out="" w used win reset part
+  for w in P S; do
+    used="U_${w}_USED"; win="U_${w}_WINDOW"; reset="U_${w}_RESET"
+    used=${!used}; win=${!win}; reset=${!reset}
+    [ -n "$used" ] || continue
+    part=$( [ -n "$win" ] && window_name "$win" || echo "사용량")
+    if [ -n "$reset" ] && [ "$reset" -le "$NOW" ]; then
+      part+=" 초기화됨 ($(kst "$reset"))"
+    else
+      part+=" $(( used >= 100 ? 0 : 100 - used ))% 남음"
+      [ -n "$reset" ] && part+=" ($(kst "$reset") 초기화)"
+    fi
+    out+="${out:+ · }$part"
+  done
+  printf '%s' "$out"
+}
+
+usage_line() {  # Codex 사용량 한 줄 (read_usage · usage_level 뒤)
+  if [ -z "$U_AT" ]; then
+    [ "$USAGE_ERR" = 1 ] && echo "Codex 사용량: 확인하지 못함" \
+      || echo "Codex 사용량: 기록 없음 (최근에 Codex를 돌린 리뷰가 없음)"
+    return
+  fi
+  local wins basis
+  wins=$(usage_windows)
+  basis="$(kst "$U_AT") 리뷰 기준${U_PLAN:+ · 플랜 $U_PLAN}"
+  case "$CUR_USAGE" in
+    limit)
+      local retry="다시 가능한 시각 모름"
+      [ -n "$USAGE_RETRY" ] && retry="$(kst "$USAGE_RETRY")부터 다시 가능"
+      echo "Codex 사용량: 🟠 한도 도달, $retry${wins:+ · $wins} — $basis" ;;
+    warn) echo "Codex 사용량: 🟡 $wins — $basis" ;;
+    *)
+      if [ -z "$wins" ] && [ "$U_LIMIT" = 1 ]; then wins="한도가 풀림 ($(kst "$U_RETRY"))"; fi
+      echo "Codex 사용량: ${wins:-남은 양 모름} — $basis" ;;
+  esac
+}
+
 # EVENT(또는 summary)에 맞는 TITLE · TEXT · COLOR를 채움
-compose() {  # $1 = offline|online|stuck|error|recovered|summary
+compose() {  # $1 = offline|online|stuck|error|recovered|usage_warn|usage_limit|usage_ok|summary
   local runners="https://github.com/$REPO/settings/actions/runners"
   local queue="https://github.com/$REPO/actions/workflows/$REVIEW_WORKFLOW"
+  local failed="$queue?query=is%3Afailure"
   case "$1" in
+    usage_warn)
+      TITLE="🟡 Codex 남은 사용량 $(( 100 - USAGE_WARN ))% 아래"; COLOR=$COLOR_YELLOW
+      TEXT="$(usage_line)
+한도에 걸리면 초기화될 때까지 Codex 리뷰가 실패합니다." ;;
+    usage_limit)
+      TITLE="🟠 Codex 사용량 한도 도달"; COLOR=$COLOR_ORANGE
+      TEXT="Codex 리뷰가 사용량 한도에 걸려 실패합니다.
+$(usage_line)
+한도가 풀린 뒤 실패한 리뷰를 다시 실행(Re-run)하세요.
+[실패한 Codex 리뷰]($failed)" ;;
+    usage_ok)
+      TITLE="🔵 Codex 사용량 한도가 풀림"; COLOR=$COLOR_BLUE
+      TEXT="Codex 리뷰를 다시 돌릴 수 있습니다. 한도 때문에 실패한 리뷰는 다시 실행(Re-run)하세요.
+$(usage_line)
+[실패한 Codex 리뷰]($failed)" ;;
     offline)
       TITLE="🔴 리뷰 컴퓨터 러너 오프라인"; COLOR=$COLOR_RED
       TEXT="\`$CODEX_RUNNER\` 러너가 오프라인입니다. ($(kst "$NOW") 확인)
@@ -261,15 +431,21 @@ $(queue_line)" ;;
       TEXT+="
 $(queue_line)
 $done_line
+$(usage_line)
 [Codex 리뷰 실행]($queue)" ;;
   esac
 }
 
-# 디스코드 웹후크 본문 (멘션은 막음)
+# compose로 채운 TITLE · TEXT · COLOR를 보낼 embed 목록(EMBEDS, JSON 배열)에 더함
+add_embed() {
+  EMBEDS=$(jq -c --arg title "$TITLE" --arg text "$TEXT" --argjson color "$COLOR" \
+    '. + [{title: $title, description: $text, color: $color}]' <<< "${EMBEDS:-[]}")
+}
+
+# 디스코드 웹후크 본문 (멘션은 막음). EMBEDS가 없으면 지금 TITLE · TEXT · COLOR 하나
 payload() {
-  jq -n --arg title "$TITLE" --arg text "$TEXT" --argjson color "$COLOR" \
-    '{username: "NoteLink 러너", allowed_mentions: {parse: []},
-      embeds: [{title: $title, description: $text, color: $color}]}'
+  [ -n "${EMBEDS:-}" ] || add_embed
+  jq -n --argjson embeds "$EMBEDS" '{username: "NoteLink 러너", allowed_mentions: {parse: []}, embeds: $embeds}'
 }
 
 post() {
@@ -290,9 +466,13 @@ main() {
   load_state
   read_runner
   read_queue
+  read_usage
+  usage_level
   echo "러너 $CODEX_RUNNER: $CUR_STATUS (작업 중: $BUSY) ${ERROR_MSG:+— $ERROR_MSG}"
   echo "지난 상태: ${PREV_STATUS:-없음} (연속 확인 실패 $PREV_ERR번) · $(queue_line)"
+  echo "$(usage_line) · 지난 단계: ${PREV_USAGE:-없음}"
 
+  EMBEDS=""
   if [ "$mode" = summary ]; then
     read_counts
     compose summary
@@ -302,10 +482,13 @@ main() {
   fi
 
   decide
-  if [ -n "$EVENT" ]; then
-    compose "$EVENT"
+  decide_usage
+  # 러너 알림과 사용량 알림을 한 메시지로 보냄(하나만 보내지고 하나는 실패하는 일이 없게)
+  [ -n "$EVENT" ] && { compose "$EVENT"; add_embed; }
+  [ -n "$USAGE_EVENT" ] && { compose "$USAGE_EVENT"; add_embed; }
+  if [ -n "$EMBEDS" ]; then
     post || { echo "::error::디스코드로 보내지 못했습니다. 상태를 저장하지 않고 다음 실행에서 다시 보냅니다." >&2; return 1; }
-    echo "알림: $EVENT"
+    echo "알림: $EVENT $USAGE_EVENT"
   else
     echo "알릴 것 없음"
   fi
