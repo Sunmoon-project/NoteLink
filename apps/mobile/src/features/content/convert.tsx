@@ -15,7 +15,6 @@ import { useNet } from '@/stores/net';
 import { toast } from '@/stores/toast';
 import {
   Alert,
-  Badge,
   Btn,
   Card,
   Chip,
@@ -353,9 +352,8 @@ export function ConvertScreen() {
 }
 
 const defaultTitle = (kind: keyof typeof TITLE, name?: string) =>
-  kind === 'handwriting'
-    ? '이차방정식 필기.jpg'
-    : (name ?? (kind === 'recording' ? '강의 녹음' : '학습 자료'));
+  name?.trim() ||
+  (kind === 'recording' ? '강의 녹음' : kind === 'handwriting' ? '필기 자료' : '학습 자료');
 
 /* ── 정리 완료 (p.66 #21~23) ─────────────────────── */
 
@@ -400,8 +398,7 @@ export function ResultScreen() {
         <>
           <Header title="노트 정리 완료" large={false} />
           <View className="mb-3 flex-row items-center gap-2">
-            <Text className="text-title3 font-bold text-ink">이차방정식 풀이</Text>
-            <Badge>수학</Badge>
+            <Text className="text-title3 font-bold text-ink">{mat.title}</Text>
           </View>
           <NoteBody sections={mat.summary?.sections ?? []} />
           <Card
@@ -426,10 +423,7 @@ export function ResultScreen() {
         <>
           <Header title="녹음 요약 정리" />
           <View className="-mt-2 mb-3 flex-row items-center gap-2">
-            <Badge>화학</Badge>
-            <Text className="text-footnote font-semibold text-sub">
-              이온화 에너지와 원자 반지름
-            </Text>
+            <Text className="text-footnote font-semibold text-sub">{mat.title}</Text>
           </View>
           <Player materialId={id} />
         </>
@@ -440,7 +434,10 @@ export function ResultScreen() {
           <DocSummary
             points={mat.summary?.points ?? []}
             keywords={mat.keywords}
-            file={{ name: mat.title, meta: '2.4MB · 3페이지' }}
+            file={{
+              name: mat.title,
+              meta: mat.pages?.length ? `${mat.pages.length}페이지` : '원본 문서',
+            }}
             onOriginal={() =>
               router.push({ pathname: '/(tabs)/note/doc/[id]', params: { id, tab: '원본 문서' } })
             }
@@ -484,7 +481,6 @@ export function DocSummary({
             <Text className="text-callout font-bold text-ink">{file.name}</Text>
             <Text className="text-caption text-sub">{file.meta}</Text>
           </View>
-          <Badge>수학</Badge>
         </View>
       )}
       <View className="flex-row items-center gap-1.5 mt-5 mb-2">

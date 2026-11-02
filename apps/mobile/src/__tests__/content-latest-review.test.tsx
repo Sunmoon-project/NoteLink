@@ -359,3 +359,37 @@ describe('PR36 검사 Blob 재사용', () => {
     expect(mockUpload.mock.calls[1]?.[1]).toEqual(editedPhoto);
   });
 });
+
+it.each([
+  ['생물 세포 필기.jpg', '생물 세포 필기.jpg'],
+  ['', '필기 자료'],
+])('필기 변환 기본 제목은 원본 이름 %s 또는 중립적인 이름을 사용한다', async (fileName, title) => {
+  useDraft.getState().set({ title: '', files: [{ ...localPhoto, name: fileName }] });
+  await renderScreen(<ConvertScreen />, client());
+  await waitFor(() =>
+    expect(mockApi.content.createMaterial).toHaveBeenCalledWith(expect.objectContaining({ title })),
+  );
+});
+
+it.each(['handwriting', 'recording', 'document'])(
+  '%s 결과는 예제 제목·과목·파일 크기 대신 조회한 자료를 표시한다',
+  async (kind) => {
+    mockApi.content.material.mockResolvedValue({
+      _id: 'material1',
+      folderId: 'folder1',
+      title: '생물 세포 학습 자료',
+      kind,
+      keywords: [],
+      bookmarks: [],
+      summary: { sections: [], points: [] },
+      pages: [],
+    });
+    await renderScreen(<ResultScreen />, client());
+    expect(await screen.findByText('생물 세포 학습 자료')).toBeTruthy();
+    expect(screen.queryByText('이차방정식 풀이')).toBeNull();
+    expect(screen.queryByText('이온화 에너지와 원자 반지름')).toBeNull();
+    expect(screen.queryByText('수학')).toBeNull();
+    expect(screen.queryByText('화학')).toBeNull();
+    expect(screen.queryByText('2.4MB · 3페이지')).toBeNull();
+  },
+);
