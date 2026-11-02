@@ -259,3 +259,31 @@ it('가로 화면도 재개 실패 시 측정 중으로 표시하지 않고 휴�
   expect(screen.queryByText('자동 측정 중')).toBeNull();
   expect(useSession.getState().since).toBeNull();
 });
+
+it('세로 정지 응답이 늦어도 가로 재진입의 재개 의도를 이어서 적용한다', async () => {
+  mockNow = Date.now();
+  let confirmPause!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    confirmPause = resolve;
+  });
+  const pause = jest.spyOn(api.study, 'pauseSession').mockReturnValueOnce(pending);
+  const resume = jest.spyOn(api.study, 'resumeSession').mockResolvedValue(undefined);
+  useSession.setState({
+    itemId: 'fast-item',
+    sessionId: 'fast-session',
+    since: mockNow - 1000,
+    pausedAt: null,
+  });
+  const first = await renderScreen(<LandscapeScreen />, client());
+  const portrait = jest.mocked(Accelerometer.addListener).mock.calls.at(-1)![0];
+  await act(async () => portrait({ x: 0, y: 1, z: 0, timestamp: 0 }));
+  expect(pause).toHaveBeenCalledTimes(1);
+  expect(useSession.getState().since).not.toBeNull();
+  await first.unmount();
+  await renderScreen(<LandscapeScreen />, client());
+  await act(async () => confirmPause());
+  await waitFor(() => expect(resume).toHaveBeenCalledWith('fast-session'));
+  expect(useSession.getState().since).not.toBeNull();
+  expect(useSession.getState().pausedAt).toBeNull();
+  expect(screen.getByText('자동 측정 중')).toBeTruthy();
+});

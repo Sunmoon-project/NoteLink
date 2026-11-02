@@ -162,7 +162,8 @@ export function LandscapeScreen() {
   };
   useEffect(() => {
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
-    if (!s.since && s.itemId) s.resume();
+    // 이전 화면의 정지 요청이 대기 중이어도 마지막 가로 진입 의도를 전달한다.
+    if (s.itemId) void s.resume();
     Accelerometer.setUpdateInterval(400);
     const sub = Accelerometer.addListener(({ y }) => Math.abs(y) > 0.8 && exit());
     return () => {
