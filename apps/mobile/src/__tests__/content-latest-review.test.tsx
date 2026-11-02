@@ -6,7 +6,9 @@ import { PhotoCheckScreen, PickedScreen } from '../features/content/capture';
 import { DocDetailScreen, HandDetailScreen, RecDetailScreen } from '../features/content/detail';
 import { Player } from '../features/content/player';
 import { ConvertScreen, ResultScreen } from '../features/content/convert';
+import { FolderScreen } from '../features/content/notes';
 import { NetworkError } from '../lib/api';
+import { useAuth } from '../stores/auth';
 import { useDraft } from '../stores/draft';
 import { renderScreen, setParams } from '../test-utils';
 
@@ -25,6 +27,8 @@ const mockApi = {
     addBookmark: jest.fn(),
     saveMaterial: jest.fn(),
     createMaterial: jest.fn(),
+    folders: jest.fn(),
+    materials: jest.fn(),
   },
 };
 const mockUpload = jest.fn();
@@ -142,6 +146,17 @@ beforeEach(() => {
     transcript: { text: '', segments: [] },
   });
   mockApi.content.addBookmark.mockResolvedValue(undefined);
+  mockApi.content.folders.mockResolvedValue([
+    { _id: 'folder1', title: '학습 폴더', subjectName: '생물', createdAt: '2026-11-01T00:00:00Z' },
+  ]);
+  mockApi.content.materials.mockResolvedValue([
+    {
+      _id: 'registered-material',
+      title: '서버에서 확인한 자료',
+      kind: 'handwriting',
+      createdAt: '2026-11-01T00:00:00Z',
+    },
+  ]);
   mockApi.content.createMaterial.mockResolvedValue({
     material: { _id: 'created' },
     job: { _id: 'job1', status: 'running', progress: 0 },
@@ -515,3 +530,74 @@ it.each([
     }
   },
 );
+
+it('불명확한 등록 확인은 30초 이내 빈 목록 캐시도 실제 재조회하고 폴더에 결과를 표시한다', async () => {
+  mockApi.content.createMaterial.mockRejectedValueOnce(
+    Object.assign(new Error('응답 유실'), { code: 'MATERIAL_REGISTRATION_UNCERTAIN' }),
+  );
+  const qc = client();
+  qc.setDefaultOptions({ queries: { retry: false, staleTime: 30000, gcTime: Infinity } });
+  qc.setQueryData(['materials', 'folder1'], []);
+  const convert = await renderScreen(<ConvertScreen />, qc);
+  await fireEvent.press(await screen.findByText('학습자료에서 확인'));
+  expect(mockApi.content.materials).toHaveBeenCalledWith('folder1');
+  await convert.unmount();
+  setParams({ id: 'folder1' });
+  await renderScreen(<FolderScreen />, qc);
+  expect(await screen.findByText('서버에서 확인한 자료')).toBeTruthy();
+  expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1);
+});
+
+it('등록 여부 조회가 실패하면 안내하고 같은 조회만 재시도하며 등록은 반복하지 않는다', async () => {
+  mockApi.content.createMaterial.mockRejectedValueOnce(
+    Object.assign(new Error('응답 유실'), { code: 'MATERIAL_REGISTRATION_UNCERTAIN' }),
+  );
+  mockApi.content.materials.mockRejectedValueOnce(new Error('목록 조회 실패'));
+  await renderScreen(<ConvertScreen />, client());
+  await fireEvent.press(await screen.findByText('학습자료에서 확인'));
+  expect(mockToast).toHaveBeenCalledWith(
+    '등록 여부를 확인하지 못했어요. 연결을 확인하고 다시 눌러주세요',
+  );
+  expect(router.replace).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByText('학습자료에서 확인'));
+  expect(mockApi.content.materials).toHaveBeenCalledTimes(2);
+  expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1);
+  expect(router.replace).toHaveBeenCalled();
+});
+
+it('등록 목록 확인을 기다리다 화면을 나가면 늦은 응답으로 다시 이동하지 않는다', async () => {
+  mockApi.content.createMaterial.mockRejectedValueOnce(
+    Object.assign(new Error('응답 유실'), { code: 'MATERIAL_REGISTRATION_UNCERTAIN' }),
+  );
+  const pending = deferred<never[]>();
+  mockApi.content.materials.mockReturnValueOnce(pending.promise);
+  const rendered = await renderScreen(<ConvertScreen />, client());
+  await userEvent.setup().press(await screen.findByText('학습자료에서 확인'));
+  await waitFor(() => expect(mockApi.content.materials).toHaveBeenCalledTimes(1));
+  await rendered.unmount();
+  await act(async () => pending.resolve([]));
+  expect(router.replace).not.toHaveBeenCalled();
+  expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1);
+});
+
+it('등록 목록 확인 중 계정이 바뀌면 이전 결과를 캐시나 화면 이동에 반영하지 않는다', async () => {
+  const owner = useAuth.getState().userId;
+  mockApi.content.createMaterial.mockRejectedValueOnce(
+    Object.assign(new Error('응답 유실'), { code: 'MATERIAL_REGISTRATION_UNCERTAIN' }),
+  );
+  const pending = deferred<{ _id: string }[]>();
+  mockApi.content.materials.mockReturnValueOnce(pending.promise);
+  const qc = client();
+  qc.setQueryData(['materials', 'folder1'], []);
+  try {
+    await renderScreen(<ConvertScreen />, qc);
+    await userEvent.setup().press(await screen.findByText('학습자료에서 확인'));
+    await waitFor(() => expect(mockApi.content.materials).toHaveBeenCalledTimes(1));
+    useAuth.setState({ userId: 'different-owner' });
+    await act(async () => pending.resolve([{ _id: 'old-owner-material' }]));
+    expect(qc.getQueryData(['materials', 'folder1'])).toEqual([]);
+    expect(router.replace).not.toHaveBeenCalled();
+  } finally {
+    useAuth.setState({ userId: owner });
+  }
+});

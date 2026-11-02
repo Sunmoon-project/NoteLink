@@ -11,6 +11,7 @@ import { notifyLocal } from '@/lib/push';
 import { socket } from '@/lib/socket';
 import { useSocket } from '@/hooks';
 import { useDraft } from '@/stores/draft';
+import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
 import { toast } from '@/stores/toast';
 import {
@@ -63,6 +64,8 @@ export function ConvertScreen() {
   const running = useRef(false);
   const handled = useRef(false);
   const canceled = useRef(false);
+  const checkingRegistration = useRef(false);
+  const [checking, setChecking] = useState(false);
 
   // 처음 상태가 'upload'라 다시 시도할 때만 호출하는 쪽에서 phase를 되돌린다
   const run = async () => {
@@ -209,6 +212,30 @@ export function ConvertScreen() {
     router.back();
   };
 
+  const confirmRegistration = async () => {
+    if (checkingRegistration.current) return;
+    checkingRegistration.current = true;
+    setChecking(true);
+    const folderId = draft.folderId ?? 'fo1';
+    const owner = useAuth.getState().userId;
+    const active = () =>
+      !abort.current.signal.aborted && !canceled.current && useAuth.getState().userId === owner;
+    try {
+      // 캐시의 나이나 이전 조회 상태와 무관하게 등록 여부를 서버에서 새로 확인한다.
+      await qc.cancelQueries({ queryKey: ['materials', folderId], exact: true });
+      if (!active()) return;
+      const materials = await api.content.materials(folderId);
+      if (!active()) return;
+      qc.setQueryData(['materials', folderId], materials);
+      void qc.invalidateQueries({ queryKey: ['folders'] });
+      router.replace({ pathname: '/(tabs)/note/folder/[id]', params: { id: folderId } });
+    } catch {
+      if (active()) toast('등록 여부를 확인하지 못했어요. 연결을 확인하고 다시 눌러주세요');
+    } finally {
+      checkingRegistration.current = false;
+      if (!abort.current.signal.aborted) setChecking(false);
+    }
+  };
   const credit = job?.error === ERROR_CODES.AI_CREDIT_EXHAUSTED;
   const pct =
     phase === 'upload'
@@ -288,13 +315,10 @@ export function ConvertScreen() {
         open={phase === 'uncertain'}
         title="등록 결과를 확인할 수 없어요"
         body="같은 자료를 중복 등록하지 않도록 다시 보내지 않았어요. 학습자료 목록에서 등록 여부를 확인해 주세요."
-        primary="학습자료에서 확인"
-        onPrimary={() =>
-          router.replace({
-            pathname: '/(tabs)/note/folder/[id]',
-            params: { id: draft.folderId ?? 'fo1' },
-          })
-        }
+        primary={checking ? '목록 확인 중…' : '학습자료에서 확인'}
+        onPrimary={() => {
+          void confirmRegistration();
+        }}
       />
       <Sheet open={phase === 'paused'} onClose={() => router.back()}>
         <View className="rounded-xl border border-line p-3">
