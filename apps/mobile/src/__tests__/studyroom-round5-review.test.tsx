@@ -238,3 +238,39 @@ describe('RoomSettingsScreen', () => {
     expect(qc.getQueryState(['rooms', 'mine'])?.isInvalidated).toBe(false);
   });
 });
+
+it('강제 퇴장 없이 최초 미디어 연결 실패를 화면에서 재시도하고 정상 연결로 복구한다', async () => {
+  const pending = deferred<MediaConnection>();
+  mockConnectMedia
+    .mockRejectedValueOnce(new Error('최초 연결 실패'))
+    .mockReturnValueOnce(pending.promise);
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText(/캠·음성을 연결하지 못했어요/);
+  expect(useMockFlags.getState().roomKick).toBe(false);
+  expect(screen.queryByText('스터디룸에서 나갔어요')).toBeNull();
+  await fireEvent.press(await screen.findByRole('button', { name: '미디어 다시 연결' }));
+  await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole('button', { name: '미디어 다시 연결' })).toBeNull();
+  await act(async () => pending.resolve(media()));
+  expect(await screen.findByText('듣기 켜짐')).toBeTruthy();
+  expect(screen.queryByText(/캠·음성을 연결하지 못했어요/)).toBeNull();
+});
+
+it('미디어 재연결도 실패하면 다시 시도할 수 있고 오프라인에서는 새 연결을 시작하지 않는다', async () => {
+  mockConnectMedia
+    .mockRejectedValueOnce(new Error('최초 실패'))
+    .mockRejectedValueOnce(new Error('재연결 실패'))
+    .mockResolvedValueOnce(media());
+  await renderScreen(<RoomScreen />, client());
+  await fireEvent.press(await screen.findByRole('button', { name: '미디어 다시 연결' }));
+  await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(2));
+  await screen.findByRole('button', { name: '미디어 다시 연결' });
+  await act(async () => useNet.setState({ state: 'offline' }));
+  await fireEvent.press(screen.getByRole('button', { name: '미디어 다시 연결' }));
+  expect(mockConnectMedia).toHaveBeenCalledTimes(2);
+  expect(useToast.getState().msg).toBe('연결을 복구한 뒤 다시 시도해 주세요');
+  await act(async () => useNet.setState({ state: 'ok' }));
+  await fireEvent.press(screen.getByRole('button', { name: '미디어 다시 연결' }));
+  await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(3));
+  expect(await screen.findByText('듣기 켜짐')).toBeTruthy();
+});

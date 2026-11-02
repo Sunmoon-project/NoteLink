@@ -13,7 +13,11 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0) {
     room: MediaConnection;
   } | null>(null);
   const [, update] = useState(0);
-  const [failure, setFailure] = useState<{ id: string; message: string } | null>(null);
+  const [failure, setFailure] = useState<{
+    id: string;
+    generation: number;
+    message: string;
+  } | null>(null);
   useEffect(() => {
     let alive = true;
     let activeRoom: MediaConnection | null = null;
@@ -31,7 +35,11 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0) {
         })
         .catch(() => {
           if (alive)
-            setFailure({ id: roomId, message: '캠·음성을 연결하지 못했어요. 다시 입장해 주세요' });
+            setFailure({
+              id: roomId,
+              generation,
+              message: '캠·음성을 연결하지 못했어요. 다시 입장해 주세요',
+            });
         });
     }
     return () => {
@@ -67,7 +75,7 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0) {
     micOn,
     camOn,
     hearing: room?.hearing ?? false,
-    error: failure?.id === roomId ? failure.message : null,
+    error: failure?.id === roomId && failure.generation === generation ? failure.message : null,
     toggleMic: () => control('toggleMic'),
     toggleCam: () => control('toggleCam'),
     toggleHearing: () => control('toggleHearing'),

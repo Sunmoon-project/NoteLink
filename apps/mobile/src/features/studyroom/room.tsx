@@ -503,7 +503,21 @@ export function RoomScreen() {
 
   return (
     <Screen scroll={false} pad={false}>
-      {live.error && <Text>{live.error}</Text>}
+      {live.error && (
+        <View className="gap-2 p-4">
+          <Text>{live.error}</Text>
+          {conn !== 'kicked' && (
+            <Btn
+              onPress={() => {
+                if (lost) return toast('연결을 복구한 뒤 다시 시도해 주세요');
+                setMediaGeneration((n) => n + 1);
+              }}
+            >
+              미디어 다시 연결
+            </Btn>
+          )}
+        </View>
+      )}
       {conn === 'lost' && (
         <View className="bg-sun/25 px-5 py-2">
           <Text className="text-caption font-semibold text-ink">
