@@ -17,7 +17,7 @@
 #   CODEX_USAGE_FILE(주면, codex-review.yml이 결과 파일로 올리고 러너 상태 알림이 읽음)에 적습니다.
 # - 마지막 기록에서 남은 양이 10% 이하이거나 한도에 걸렸으면 Codex를 돌리지 않고 끝냅니다(한도에 걸려 리뷰가
 #   실패했을 때도 같음). PR에는 댓글을 남기지 않고, 실행 화면에 ⏸️ 경고(annotation) · 요약만 남깁니다.
-#   CODEX_PAUSED_FILE(주면)에 멈춘 PR을 적고, codex-review.yml이 codex-paused-pr-<번호> 결과 파일로 올립니다.
+#   CODEX_PAUSED_FILE(주면)에 멈춘 PR을 적고, codex-review.yml이 codex-paused 결과 파일로 올립니다.
 #   사용량이 초기화되면 러너 상태 알림(runner-status.sh)이 그 결과 파일을 보고 이 실행을 다시 돌립니다.
 # - 사용량을 읽지 못해도 리뷰는 그대로 합니다.
 #

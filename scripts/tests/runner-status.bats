@@ -275,17 +275,16 @@ gh() {
   st=$(sed -n 's/.*[?&]status=\([a-z_]*\).*/\1/p' <<< "$path")
   case "$path" in
     *actions/runners*) jq -r "$filter" "$TMP/runners.json" ;;
-    *"actions/artifacts?name="*)  # 결과 파일 목록 (없으면 빈 목록)
-      if [ -f "$TMP/artifacts.json" ]; then jq -r "$filter" "$TMP/artifacts.json"
+    *"actions/artifacts?name="*)  # 결과 파일 목록: codex-paused는 paused.json, 그 밖은 artifacts.json (없으면 빈 목록)
+      local list="$TMP/artifacts.json"
+      [[ "$path" == *"name=codex-paused&"* ]] && list="$TMP/paused.json"
+      if [ -f "$list" ]; then jq -r "$filter" "$list"
       else jq -r "$filter" <<< '{"artifacts":[]}'; fi ;;
     *actions/artifacts/*/zip)  # 결과 파일 내려받기: id마다 $TMP/artifact-<id>.zip
       local id=${path#*artifacts/}; id=${id%/zip}
       [ -f "$TMP/artifact-$id.zip" ] || { echo "gh: Not Found (HTTP 404)" >&2; return 1; }
       cat "$TMP/artifact-$id.zip" ;;
     */actions/artifacts/[0-9]*) return "${DELETE_RC:-0}" ;;  # 결과 파일 지우기(-X DELETE)
-    *"actions/artifacts?per_page="*)  # 이름으로 거르지 않은 결과 파일 목록 (없으면 빈 목록)
-      if [ -f "$TMP/all-artifacts.json" ]; then jq -r "$filter" "$TMP/all-artifacts.json"
-      else jq -r "$filter" <<< '{"artifacts":[]}'; fi ;;
     */actions/runs/*/rerun) return "${RERUN_RC:-0}" ;;
     */actions/runs/*)  # 실행 정보: $TMP/run-<id>.json
       local run=${path##*/}
@@ -734,12 +733,13 @@ two_windows() {  # $1 = 5시간 사용률, $2 = 주간 사용률
   [[ "$TEXT" == *"다시 돌리지 못함: #56"*"(https://github.com/team/repo/actions/workflows/codex-review.yml?query=is%3Afailure)"* ]]
 }
 
-# 결과 파일 zip을 만듦: $1 = id, $2 = codex-usage.txt 내용(printf %b)
+# 결과 파일 zip을 만듦: $1 = id, $2 = 안의 파일 내용(printf %b), $3 = 안의 파일 이름(기본 codex-usage.txt)
 artifact_zip() {
   command -v zip > /dev/null && command -v unzip > /dev/null || skip "zip · unzip 없음"
+  local name=${3:-codex-usage.txt}
   mkdir -p "$TMP/z$1"
-  printf '%b' "$2" > "$TMP/z$1/codex-usage.txt"
-  (cd "$TMP/z$1" && zip -q "$TMP/artifact-$1.zip" codex-usage.txt) || skip "zip 실패"
+  printf '%b' "$2" > "$TMP/z$1/$name"
+  (cd "$TMP/z$1" && zip -q "$TMP/artifact-$1.zip" "$name") || skip "zip 실패"
 }
 
 # 실행 정보: $1 = 실행 id, $2 = 워크플로 파일, $3 = 이벤트, $4 = 상태
@@ -802,64 +802,85 @@ artifacts_fixture() {
   [ -z "$U_AT" ] && [ "$USAGE_ERR" = 1 ]
 }
 
-# 멈춘 리뷰 표시(codex-paused-pr-<번호>):
-#   12: 두 번 멈춤(51 → 실행 150, 52 → 실행 152가 최근) · 34: 닫힌 PR(53) · 56: 실행이 CI 워크플로(54)
-#   78: 만료된 표시(55) · 그 밖에 이름이 다른 결과 파일(60)
+# 멈춘 리뷰 표시(codex-paused). NOW = 1761900000
+#   PR 12: 52(실행 152, 최근) · 51(실행 150, 옛것) — 다시 가능한 시각이 지남
+#   PR 34: 53(실행 153) — 닫힌 PR
+#   PR 56: 54(실행 125) — CI 워크플로가 같은 이름으로 올림(믿지 않음)
+#   PR 90: 57(실행 157, 최근 · 아직 멈춤 시각 전) · 56(실행 156, 옛것)
+#   55(실행 155) — 만료됨
+paused_marker() {  # $1 = 결과 파일 id, $2 = PR, $3 = 다시 가능한 시각
+  artifact_zip "$1" "pr=$2\nsha=abc\nretry=$3\nreason=low\n" codex-paused.txt
+}
+
 prs_fixture() {
   printf '%s\n' '{"artifacts":[' \
-    ' {"id":60,"name":"codex-usage","expired":false,"created_at":"2025-10-31T05:00:00Z","workflow_run":{"id":160}},' \
-    ' {"id":51,"name":"codex-paused-pr-12","expired":false,"created_at":"2025-10-31T01:00:00Z","workflow_run":{"id":150}},' \
-    ' {"id":53,"name":"codex-paused-pr-34","expired":false,"created_at":"2025-10-31T02:00:00Z","workflow_run":{"id":153}},' \
-    ' {"id":52,"name":"codex-paused-pr-12","expired":false,"created_at":"2025-10-31T03:00:00Z","workflow_run":{"id":152}},' \
-    ' {"id":54,"name":"codex-paused-pr-56","expired":false,"created_at":"2025-10-31T04:00:00Z","workflow_run":{"id":125}},' \
-    ' {"id":55,"name":"codex-paused-pr-78","expired":true,"created_at":"2025-10-31T04:30:00Z","workflow_run":{"id":155}}]}' \
-    > "$TMP/all-artifacts.json"
+    ' {"id":51,"expired":false,"created_at":"2025-10-31T01:00:00Z","workflow_run":{"id":150}},' \
+    ' {"id":53,"expired":false,"created_at":"2025-10-31T02:00:00Z","workflow_run":{"id":153}},' \
+    ' {"id":52,"expired":false,"created_at":"2025-10-31T03:00:00Z","workflow_run":{"id":152}},' \
+    ' {"id":54,"expired":false,"created_at":"2025-10-31T04:00:00Z","workflow_run":{"id":125}},' \
+    ' {"id":55,"expired":true,"created_at":"2025-10-31T04:30:00Z","workflow_run":{"id":155}},' \
+    ' {"id":56,"expired":false,"created_at":"2025-10-31T05:00:00Z","workflow_run":{"id":156}},' \
+    ' {"id":57,"expired":false,"created_at":"2025-10-31T06:00:00Z","workflow_run":{"id":157}}]}' > "$TMP/paused.json"
+  paused_marker 51 12 $(( NOW - 7200 ))
+  paused_marker 52 12 $(( NOW - 60 ))
+  paused_marker 53 34 $(( NOW - 60 ))
+  paused_marker 54 56 $(( NOW - 60 ))
+  paused_marker 55 78 $(( NOW - 60 ))
+  paused_marker 56 90 $(( NOW - 60 ))
+  paused_marker 57 90 $(( NOW + 3600 ))
   echo '{"state":"open"}' > "$TMP/pull-12.json"
   echo '{"state":"closed"}' > "$TMP/pull-34.json"
-  echo '{"state":"open"}' > "$TMP/pull-56.json"
-  run_info 150 "$REVIEW_WF" pull_request_target
-  run_info 152 "$REVIEW_WF" pull_request_target
+  echo '{"state":"open"}' > "$TMP/pull-90.json"
+  for r in 150 152 153 156 157; do run_info "$r" "$REVIEW_WF" pull_request_target; done
   run_info 125 ".github/workflows/ci.yml" pull_request
 }
 
-@test "resume_paused: PR마다 가장 최근 멈춘 실행 하나만 다시 돌리고, 그 PR의 표시를 모두 지운다" {
+@test "resume_paused: 다시 가능한 시각이 지난 PR마다 가장 최근 멈춘 실행 하나만 다시 돌리고, 그 PR의 표시를 모두 지운다" {
   need_jq; prs_fixture
   resume_paused
-  [ "$RESUMED" = "#12" ]
+  [ "$RESUMED" = "#12" ] && [ -z "$RESUME_FAILED" ]
   grep -qx 'api repos/team/repo/actions/runs/152/rerun -X POST' "$TMP/gh.calls"
   not grep -q 'runs/150/rerun' "$TMP/gh.calls"
-  grep -qx 'api repos/team/repo/actions/artifacts/51 -X DELETE' "$TMP/gh.calls"
   grep -qx 'api repos/team/repo/actions/artifacts/52 -X DELETE' "$TMP/gh.calls"
+  grep -qx 'api repos/team/repo/actions/artifacts/51 -X DELETE' "$TMP/gh.calls"
+  grep -q 'actions/artifacts?name=codex-paused&' "$TMP/gh.calls"
 }
 
-@test "resume_paused: 닫힌 PR은 돌리지 않고 표시만 지우며, 리뷰 워크플로가 아닌 실행 · 만료된 표시는 건드리지 않는다" {
+@test "resume_paused: 닫힌 PR은 돌리지 않고 표시만 지우며, 리뷰 워크플로가 아닌 표시 · 만료된 표시는 건드리지 않는다" {
   need_jq; prs_fixture
   resume_paused
   not grep -q 'runs/153/rerun' "$TMP/gh.calls"
   grep -qx 'api repos/team/repo/actions/artifacts/53 -X DELETE' "$TMP/gh.calls"
-  [ "$RESUME_FAILED" = "#56" ]
-  not grep -q 'runs/125/rerun' "$TMP/gh.calls"
-  not grep -q 'artifacts/54 -X DELETE' "$TMP/gh.calls"
-  not grep -qE 'pulls/78|runs/155|artifacts/55 ' "$TMP/gh.calls"
-  not grep -q 'artifacts/60 -X DELETE' "$TMP/gh.calls"
+  not grep -qE 'runs/125/rerun|artifacts/54 |artifacts/54/zip|pulls/56' "$TMP/gh.calls"
+  not grep -qE 'runs/155|artifacts/55' "$TMP/gh.calls"
 }
 
-@test "resume_paused: 다시 돌리기에 실패하거나 실행이 아직 안 끝났으면 표시를 남기고 돌리지 못한 것으로 적는다" {
+@test "resume_paused: 가장 최근 표시의 다시 가능한 시각이 아직이면 그 PR은 옛 표시까지 그대로 둔다" {
+  need_jq; prs_fixture
+  resume_paused
+  not grep -qE 'runs/15[67]/rerun|artifacts/5[67] -X DELETE' "$TMP/gh.calls"
+  [[ " $RESUMED $RESUME_FAILED " != *"#90"* ]]
+}
+
+@test "resume_paused: 다시 돌리기에 실패하면 알리고 표시를 지우며, 실행이 아직 안 끝났으면 기다린다" {
   need_jq; prs_fixture
   RERUN_RC=1 resume_paused
-  [ -z "$RESUMED" ] && [ "$RESUME_FAILED" = "#12 #56" ]
-  not grep -q 'artifacts/52 -X DELETE' "$TMP/gh.calls"
+  [ -z "$RESUMED" ] && [ "$RESUME_FAILED" = "#12" ]
+  grep -qx 'api repos/team/repo/actions/artifacts/52 -X DELETE' "$TMP/gh.calls"
+  : > "$TMP/gh.calls"
   run_info 152 "$REVIEW_WF" pull_request_target in_progress
   resume_paused
-  [ -z "$RESUMED" ] && [ "$RESUME_FAILED" = "#12 #56" ]
+  [ -z "$RESUMED" ] && [ -z "$RESUME_FAILED" ]
+  not grep -qE 'runs/152/rerun|artifacts/5[12] -X DELETE' "$TMP/gh.calls"
 }
 
-@test "resume_paused: 멈춘 리뷰가 없으면 아무것도 하지 않고, 목록을 읽지 못하면 그렇다고 적는다" {
+@test "resume_paused: 멈춘 리뷰가 없거나 목록을 읽지 못하면 아무것도 하지 않는다" {
   need_jq
   resume_paused
   [ -z "$RESUMED" ] && [ -z "$RESUME_FAILED" ]
+  prs_fixture
   GH_FAIL=1 resume_paused
-  [ -z "$RESUMED" ] && [ "$RESUME_FAILED" = "(멈춘 리뷰 목록을 읽지 못함)" ]
+  [ -z "$RESUMED" ] && [ -z "$RESUME_FAILED" ]
 }
 
 @test "main check: 러너 오프라인과 리뷰 멈춤을 한 메시지(embed 두 개)로 보내고 둘 다 저장한다" {
@@ -904,14 +925,26 @@ prs_fixture() {
   grep -qx 'usage=ok' "$STATE_FILE"
 }
 
-@test "main check: 멈춤이 이어지면 다시 돌리지 않는다" {
+@test "main check: 멈춤 단계가 이어지면 표시의 시각이 지났어도 다시 돌리지 않는다" {
   need_jq; fixtures; artifacts_fixture; prs_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
   artifact_zip 20 'at=1761897600\np_used=95\np_window=300\np_reset=1761904800\n'
   write_state 'status=online\nsince=5\nstuck=0\nerr=0\nusage=stop\n'
   run main check
   [ "$status" -eq 0 ]
   [ ! -e "$TMP/posted.json" ]
-  not grep -q '/rerun' "$TMP/gh.calls"
+  not grep -qE '/rerun|codex-paused' "$TMP/gh.calls"
+}
+
+@test "main check: 사용량 기록이 없어도 표시의 다시 가능한 시각이 지나면 다시 돌리고 ▶️를 알린다" {
+  need_jq; fixtures; prs_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
+  write_state 'status=online\nsince=5\nstuck=0\nerr=0\nusage=ok\n'
+  run main check
+  [ "$status" -eq 0 ]
+  [ "$(jq '.embeds | length' "$TMP/posted.json")" = 1 ]
+  [ "$(jq -r '.embeds[0].title' "$TMP/posted.json")" = "▶️ Codex 리뷰 다시 시작" ]
+  [[ "$(jq -r '.embeds[0].description' "$TMP/posted.json")" == *"다시 돌립니다: #12"*"Codex 사용량: 기록 없음"* ]]
+  grep -qx 'api repos/team/repo/actions/runs/152/rerun -X POST' "$TMP/gh.calls"
+  # 다음 확인에서는 표시가 지워졌으므로(흉내에서는 남아 있어 여기서는 확인하지 않음) 같은 알림이 반복되지 않음
 }
 
 @test "main check: 사용량을 읽지 못해도 러너 판단은 그대로 하고 사용량 단계는 유지한다" {
@@ -932,7 +965,7 @@ prs_fixture() {
   [[ "$(jq -r '.embeds[0].description' "$TMP/posted.json")" == *$'\nCodex 사용량: 주간 66% 남음 (11/04 22:00 초기화) — 10/31 17:00 리뷰 기준 · 플랜 plus\n'* ]]
 }
 
-@test "워크플로: 멈춘 리뷰를 다시 돌리고 PR 댓글을 읽을 권한이 있다" {
+@test "워크플로: 멈춘 리뷰를 다시 돌리고 PR 상태를 읽을 권한이 있다" {
   grep -qE '^  actions: write' "$WF"
   grep -qE '^  pull-requests: read' "$WF"
 }
@@ -940,21 +973,10 @@ prs_fixture() {
 # bats에서 `! cmd` 한 줄은 실패해도 테스트를 실패시키지 않으므로 대신 씀
 not() { if "$@"; then return 1; fi; }
 
-@test "main summary: 멈춘 상태가 아닌데 남은 멈춤 표시가 있으면 다시 돌리고 요약에 적는다" {
+@test "main summary: 아침 요약은 멈춘 리뷰를 다시 돌리지 않는다(15분 확인과 겹치지 않게)" {
   need_jq; fixtures; artifacts_fixture; prs_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
   artifact_zip 20 "$USAGE_TXT"
   run main summary
   [ "$status" -eq 0 ]
-  desc=$(jq -r '.embeds[0].description' "$TMP/posted.json")
-  [[ "$desc" == *$'\n▶️ 멈춰 있던 리뷰를 다시 돌림: #12\n'* ]]
-  [[ "$desc" == *"멈춘 리뷰를 다시 돌리지 못함: #56"* ]]
-  grep -qx 'api repos/team/repo/actions/runs/152/rerun -X POST' "$TMP/gh.calls"
-}
-
-@test "main summary: 아직 멈춘 상태면 다시 돌리지 않는다" {
-  need_jq; fixtures; artifacts_fixture; prs_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
-  artifact_zip 20 'at=1761897600\np_used=95\np_window=300\np_reset=1761904800\n'
-  run main summary
-  [ "$status" -eq 0 ]
-  not grep -q '/rerun' "$TMP/gh.calls"
+  not grep -qE '/rerun|codex-paused' "$TMP/gh.calls"
 }

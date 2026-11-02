@@ -7,8 +7,9 @@
 # - check 알림: 🔴 오프라인이 됨 · 🟢 다시 온라인(멈춰 있던 시간) · 🟡 온라인인데 Codex 리뷰가
 #   STUCK_MINUTES분 넘게 대기(작업을 못 받는 상태) · ⚠️ 러너 상태를 ERR_ALERT_AFTER번 연속 읽지 못함 · ✅ 다시 읽힘
 #   Codex 사용량(기준은 scripts/codex-usage-lib.sh): 🟡 남은 양이 20% 미만 · ⏸️ 10% 이하이거나 한도에 걸려
-#   리뷰 컴퓨터가 리뷰를 멈춤 · ▶️ 초기화되어 다시 시작(멈춘 리뷰 실행을 다시 돌림. 멈춘 실행은 PR 댓글 없이
-#   codex-paused-pr-<번호> 결과 파일만 남김)
+#   리뷰 컴퓨터가 리뷰를 멈춤 · ▶️ 다시 시작(초기화됨) · 멈춘 리뷰를 다시 돌림
+#   멈춘 실행은 PR 댓글 없이 codex-paused 결과 파일(PR 번호 · 다시 가능한 시각)만 남기고, check가 15분마다
+#   그 시각이 지난 것을 다시 돌림(Re-run). summary는 다시 돌리지 않음(check와 겹쳐 같은 실행을 두 번 돌리지 않게)
 #   (한 번 확인에서 러너 알림과 함께 생기면 한 메시지에 embed 두 개로 보냄)
 # - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간에 끝난 Codex 리뷰 성공 · 실패 · 취소, Codex 남은 사용량
 # - Codex 사용량은 리뷰가 끝날 때 리뷰 컴퓨터가 올린 결과 파일(codex-review.yml의 codex-usage,
@@ -61,9 +62,9 @@ done_jq() {  # $1 = 시작 시각(UTC ISO)
 ARTIFACT_JQ='[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | reverse | .[] | [.id, .workflow_run.id] | @tsv'
 # 실행 정보: 워크플로 파일 \t 이벤트 \t 상태
 RUN_JQ='[.path, .event, .status] | @tsv'
-# 멈춘 리뷰 표시(codex-paused-pr-<번호>) 결과 파일: created_at \t PR 번호 \t 결과 파일 id \t 실행 id
-PAUSED_PREFIX="codex-paused-pr-"
-PAUSED_JQ='.artifacts[] | select((.name | startswith("'"$PAUSED_PREFIX"'")) and (.expired | not)) | [.created_at, (.name | ltrimstr("'"$PAUSED_PREFIX"'")), .id, .workflow_run.id] | @tsv'
+# 멈춘 리뷰 표시 결과 파일 (codex-review.yml이 올림, 안에 pr= · retry= …)
+PAUSED_ARTIFACT="${PAUSED_ARTIFACT:-codex-paused}"
+PAUSED_FILE_NAME="codex-paused.txt"
 
 # kst · load_usage · usage_level (리뷰 컴퓨터와 같은 기준)
 # shellcheck source=codex-usage-lib.sh
@@ -201,39 +202,63 @@ read_usage() {
   return 0  # 최근 것 중 리뷰 워크플로가 올린 것이 없음 → 기록 없음
 }
 
-# 사용량이 초기화되면 멈춘 리뷰를 다시 돌림 → RESUMED · RESUME_FAILED ("#12 #34" 꼴)
-# 멈춘 실행이 올린 codex-paused-pr-<번호> 결과 파일을 모아 PR마다 가장 최근 실행 하나를 다시 돌리고(Re-run),
-# 그 PR의 표시를 모두 지움(다음 초기화 때 또 돌지 않게). 닫힌 PR은 돌리지 않고 표시만 지움.
-# 실행이 리뷰 워크플로(pull_request_target)의 것이고 끝난 상태일 때만 다시 돌림(이름만 보고 믿지 않음).
-# 다시 돌리지 못한 PR의 표시는 남겨 둠(보관 기간 안에 다음 초기화 때 다시 시도)
+# 결과 파일 하나를 내려받아 안의 파일을 $3에 씀 (실패하면 1)
+download_artifact() {  # $1 = 결과 파일 id, $2 = 안의 파일 이름, $3 = 쓸 파일
+  local dir ok=1
+  dir=$(mktemp -d)
+  if gh api "repos/$REPO/actions/artifacts/$1/zip" > "$dir/a.zip" 2> /dev/null \
+      && unzip -p "$dir/a.zip" "$2" > "$3" 2> /dev/null; then
+    ok=0
+  fi
+  rm -rf "$dir"
+  return "$ok"
+}
+
+sort_prs() {  # "#34 #12" → "#12 #34"
+  tr ' ' '\n' | grep -E '^#[0-9]+$' | sort -t '#' -k 2 -n | paste -sd ' ' -
+}
+
+# 다시 가능한 시각이 지난 멈춘 리뷰를 다시 돌림 → RESUMED · RESUME_FAILED ("#12 #34" 꼴)
+# - codex-paused 결과 파일을 최근 것부터 봄. PR마다 가장 최근 표시 하나로 정함(같은 PR의 옛 표시는 함께 지움)
+# - 표시의 retry가 지나지 않았거나, 그 실행이 아직 끝나지 않았으면 그대로 둠(다음 확인에서 다시 봄)
+# - 리뷰 워크플로(pull_request_target)가 올린 표시만 믿고, 다른 것은 건너뜀
+# - 닫힌 PR은 돌리지 않고 표시만 지움. 다시 돌리기에 실패하면 알리고 표시를 지움(15분마다 같은 알림이 가지 않게)
+# - 목록을 읽지 못하면 아무것도 하지 않음(다음 확인에서 다시)
 resume_paused() {
   RESUMED=""; RESUME_FAILED=""
-  local list prs n newest run state src ids id
-  if ! list=$(gh api "repos/$REPO/actions/artifacts?per_page=100" --jq "$PAUSED_JQ" --paginate 2> /dev/null); then
-    RESUME_FAILED="(멈춘 리뷰 목록을 읽지 못함)"
-    return 0
-  fi
-  list=$(grep -E $'^[^\t]+\t[0-9]+\t[0-9]+\t[0-9]+$' <<< "$list" | sort -r)
-  prs=$(cut -f 2 <<< "$list" | grep -E '^[0-9]+$' | sort -un)  # PR 번호 순
-  for n in $prs; do
-    newest=$(awk -F '\t' -v n="$n" '$2 == n { print $4; exit }' <<< "$list")
-    ids=$(awk -F '\t' -v n="$n" '$2 == n { print $3 }' <<< "$list")
-    state=$(gh api "repos/$REPO/pulls/$n" --jq .state 2> /dev/null) || state=""
-    if [ "$state" = closed ]; then
-      :  # 닫힌 PR: 다시 돌리지 않고 표시만 지움
-    elif [ "$state" = open ] \
-        && src=$(gh api "repos/$REPO/actions/runs/$newest" --jq "$RUN_JQ" 2> /dev/null) \
-        && [ "$src" = "$REVIEW_WORKFLOW_PATH"$'\t'"pull_request_target"$'\t'"completed" ] \
-        && gh api "repos/$REPO/actions/runs/$newest/rerun" -X POST > /dev/null 2>&1; then
-      RESUMED+="${RESUMED:+ }#$n"
-    else
-      RESUME_FAILED+="${RESUME_FAILED:+ }#$n"
+  local list id run src pr retry state tmp
+  local -A decided=()
+  list=$(gh api "repos/$REPO/actions/artifacts?name=$PAUSED_ARTIFACT&per_page=100" \
+    --jq "$ARTIFACT_JQ" 2> /dev/null) || return 0
+  [ -n "$list" ] || return 0
+  tmp=$(mktemp)
+  while IFS=$'\t' read -r id run; do
+    [[ "$id" =~ ^[0-9]+$ ]] && [[ "$run" =~ ^[0-9]+$ ]] || continue
+    src=$(gh api "repos/$REPO/actions/runs/$run" --jq "$RUN_JQ" 2> /dev/null) || continue
+    [ "$(cut -f 1,2 <<< "$src")" = "$REVIEW_WORKFLOW_PATH"$'\t'"pull_request_target" ] || continue
+    download_artifact "$id" "$PAUSED_FILE_NAME" "$tmp" || continue
+    pr=$(sed -n 's/^pr=\([0-9]\{1,\}\)$/\1/p' "$tmp" | head -n 1)
+    retry=$(sed -n 's/^retry=\([0-9]\{1,\}\)$/\1/p' "$tmp" | head -n 1)
+    [ -n "$pr" ] || continue
+    if [ -n "${decided[$pr]:-}" ]; then
+      # 같은 PR의 더 오래된 표시: 가장 최근 표시를 처리했으면 함께 지움
+      [ "${decided[$pr]}" = wait ] || gh api "repos/$REPO/actions/artifacts/$id" -X DELETE > /dev/null 2>&1 || true
       continue
     fi
-    for id in $ids; do
-      gh api "repos/$REPO/actions/artifacts/$id" -X DELETE > /dev/null 2>&1 || true
-    done
-  done
+    if [ -n "$retry" ] && [ "$retry" -gt "$NOW" ]; then decided[$pr]=wait; continue; fi
+    if [ "$(cut -f 3 <<< "$src")" != completed ]; then decided[$pr]=wait; continue; fi
+    state=$(gh api "repos/$REPO/pulls/$pr" --jq .state 2> /dev/null) || { decided[$pr]=wait; continue; }
+    if [ "$state" = closed ]; then
+      decided[$pr]=closed
+    elif gh api "repos/$REPO/actions/runs/$run/rerun" -X POST > /dev/null 2>&1; then
+      decided[$pr]=resumed; RESUMED+=" #$pr"
+    else
+      decided[$pr]=failed; RESUME_FAILED+=" #$pr"
+    fi
+    gh api "repos/$REPO/actions/artifacts/$id" -X DELETE > /dev/null 2>&1 || true
+  done <<< "$list"
+  rm -f "$tmp"
+  RESUMED=$(sort_prs <<< "$RESUMED"); RESUME_FAILED=$(sort_prs <<< "$RESUME_FAILED")
   return 0
 }
 
@@ -384,7 +409,7 @@ $(usage_line)" ;;
       TITLE="▶️ Codex 리뷰 다시 시작"; COLOR=$COLOR_GREEN
       TEXT="Codex 사용량이 초기화됐습니다."
       if [ -n "$RESUMED" ]; then TEXT+=" 멈췄던 리뷰를 다시 돌립니다: $RESUMED"
-      else TEXT+=" 멈춘 리뷰는 없습니다."; fi
+      elif [ -z "$RESUME_FAILED" ]; then TEXT+=" 다시 돌릴 멈춘 리뷰는 없습니다."; fi
       if [ -n "$RESUME_FAILED" ]; then TEXT+="
 다시 돌리지 못함: $RESUME_FAILED — PR의 Codex 리뷰 실행을 직접 Re-run 하세요. [실패한 Codex 리뷰]($failed)"; fi
       TEXT+="
@@ -432,12 +457,7 @@ $(queue_line)" ;;
       TEXT+="
 $(queue_line)
 $done_line
-$(usage_line)"
-      [ -n "${RESUMED:-}" ] && TEXT+="
-▶️ 멈춰 있던 리뷰를 다시 돌림: $RESUMED"
-      [ -n "${RESUME_FAILED:-}" ] && TEXT+="
-멈춘 리뷰를 다시 돌리지 못함: $RESUME_FAILED — 직접 Re-run 하세요."
-      TEXT+="
+$(usage_line)
 [Codex 리뷰 실행]($queue)" ;;
   esac
 }
@@ -481,10 +501,6 @@ main() {
   EMBEDS=""
   if [ "$mode" = summary ]; then
     read_counts
-    # 하루 한 번 남은 멈춤 표시를 정리: 멈춘 상태가 아닌데 표시가 남아 있으면(결과 파일을 한 번 못 올려
-    # 15분 확인이 멈춤을 못 본 경우 등) 그 리뷰를 다시 돌림
-    RESUMED=""; RESUME_FAILED=""
-    if [ -n "$CUR_USAGE" ] && [ "$CUR_USAGE" != stop ]; then resume_paused; fi
     compose summary
     post || { echo "::error::디스코드로 보내지 못했습니다." >&2; return 1; }
     echo "아침 요약을 보냈습니다."
@@ -493,7 +509,11 @@ main() {
 
   decide
   decide_usage
-  [ "$USAGE_EVENT" = usage_resume ] && resume_paused
+  # 지금 멈춤 단계로 확인되지 않으면(기록을 못 읽은 경우 포함) 다시 가능한 시각이 지난 멈춘 리뷰를 다시 돌림.
+  # 초기화 전환이 아닐 때 다시 돌린 것이 있어도 ▶️를 보냄
+  RESUMED=""; RESUME_FAILED=""
+  [ "$CUR_USAGE" != stop ] && resume_paused
+  if [ -z "$USAGE_EVENT" ] && [ -n "$RESUMED$RESUME_FAILED" ]; then USAGE_EVENT=usage_resume; fi
   # 러너 알림과 사용량 알림을 한 메시지로 보냄(하나만 보내지고 하나는 실패하는 일이 없게)
   [ -n "$EVENT" ] && { compose "$EVENT"; add_embed; }
   [ -n "$USAGE_EVENT" ] && { compose "$USAGE_EVENT"; add_embed; }
