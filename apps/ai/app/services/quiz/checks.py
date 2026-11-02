@@ -161,6 +161,9 @@ def option_key(o: str) -> tuple[str, tuple[Decimal, ...], tuple[str, ...]]:
     values, _ = number_values(o)
     # 단어 사이 하이픈을 연산자로 취급하지 않는다. 숫자만 연결하는 기호를 비교한다.
     text = unicodedata.normalize("NFC", o).replace(",", "")
+    # norm이 무시하는 장식용 문장부호 때문에 AST 경로가 달라지지 않게 한다.
+    # 소수점·부호·연산 순서를 나타내는 괄호와 연산자는 그대로 보존한다.
+    text = re.sub(r"[\[\]'\"!?~·_]", " ", text).rstrip(" .:\t\r\n").lstrip(": \t\r\n")
     # 숫자 수식은 구문 트리로 비교해 음수 밑·단항 부호·중복 괄호를 일관되게 처리한다.
     # 코드를 실행하지 않으며, 숫자와 허용한 연산 노드 이외의 문법은 사용하지 않는다.
     if re.fullmatch(r"[0-9.eE\s()+\-*/÷×^:%]+", text):
