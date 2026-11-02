@@ -84,3 +84,53 @@ it('같은 풀이도 새 화면이 소유권을 얻으면 이전 화면의 세�
   expect(generation()).toBeGreaterThan(before);
   expect(useQuizProgress.getState().progress).toEqual(progress);
 });
+
+it('같은 풀이의 입력 저장과 화면 claim은 완료 결과와 풀이 세대를 보존한다', () => {
+  const completed = { pointsEarned: 120, balance: 720 };
+  const before = useQuizProgress.getState().attemptGeneration;
+  useQuizProgress.getState().save({ ...progress, completed });
+  const started = useQuizProgress.getState().attemptGeneration;
+  expect(started).toBeGreaterThan(before);
+  useQuizProgress.getState().claim();
+  useQuizProgress.getState().save({ ...progress, index: 1 });
+  expect(useQuizProgress.getState().attemptGeneration).toBe(started);
+  expect(useQuizProgress.getState().progress).toEqual({ ...progress, index: 1, completed });
+});
+
+it.each([
+  { label: '세트 변경', next: { ...progress, setId: 'next-set' } },
+  { label: '풀이 변경', next: { ...progress, attemptId: 'next-attempt' } },
+  { label: '풀이 초기 상태로 변경', next: { ...progress, attemptId: null } },
+])('$label은 풀이 세대를 올리고 이전 완료 결과를 전달하지 않는다', ({ next }) => {
+  useQuizProgress.getState().save({ ...progress, completed: { pointsEarned: 120, balance: 120 } });
+  const before = useQuizProgress.getState().attemptGeneration;
+  useQuizProgress.getState().save(next);
+  expect(useQuizProgress.getState().attemptGeneration).toBeGreaterThan(before);
+  expect(useQuizProgress.getState().progress).toEqual(next);
+  expect(useQuizProgress.getState().progress?.completed).toBeUndefined();
+});
+
+it('null 풀이가 실제 풀이 ID를 받으면 풀이 세대를 올린다', () => {
+  useQuizProgress.getState().save({ ...progress, attemptId: null });
+  const before = useQuizProgress.getState().attemptGeneration;
+  useQuizProgress.getState().save(progress);
+  expect(useQuizProgress.getState().attemptGeneration).toBeGreaterThan(before);
+});
+
+it('reset은 완료 결과를 지우고 동일 ID 재사용 시에도 이전 완료 세대를 무효화한다', () => {
+  useQuizProgress.getState().save({ ...progress, completed: { pointsEarned: 120, balance: 120 } });
+  const before = useQuizProgress.getState().attemptGeneration;
+  useQuizProgress.getState().reset();
+  const cleared = useQuizProgress.getState().attemptGeneration;
+  expect(cleared).toBeGreaterThan(before);
+  expect(useQuizProgress.getState().progress).toBeNull();
+  useQuizProgress.getState().save(progress);
+  expect(useQuizProgress.getState().attemptGeneration).toBeGreaterThan(cleared);
+  expect(useQuizProgress.getState().progress?.completed).toBeUndefined();
+});
+
+it('비어 있는 저장소의 reset도 완료 세대를 올린다', () => {
+  const before = useQuizProgress.getState().attemptGeneration;
+  useQuizProgress.getState().reset();
+  expect(useQuizProgress.getState().attemptGeneration).toBeGreaterThan(before);
+});
