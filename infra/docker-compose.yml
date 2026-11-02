@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongodb/mongodb-atlas-local:8.0.32
+    container_name: notelink-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGODB_INITDB_ROOT_USERNAME=admin
+      - MONGODB_INITDB_ROOT_PASSWORD=password
+    volumes:
+      - mongodb_data:/data/db
+    command: ["mongod", "--bind_ip_all", "--replSet", "rs0"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    container_name: notelink-azurite
+    ports:
+      - "10000:10000"
+      - "10001:10001"
+      - "10002:10002"
+    volumes:
+      - azurite_data:/data
+
+volumes:
+  mongodb_data:
+  azurite_data:
