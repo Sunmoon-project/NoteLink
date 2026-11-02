@@ -53,6 +53,7 @@ const db = {
   quizSets: [] as QuizSet[],
   attempts: new Map<string, QuizAttempt>(),
   flashcards: S.seedFlashcards(),
+  quizBox: [...S.QUESTIONS],
   rooms: [] as ReturnType<typeof S.makeRoom>[],
   userItems: S.seedUserItems(),
   ledger: S.seedLedger(),
@@ -828,7 +829,26 @@ export const mockApi: Api = {
         },
         900,
       ),
-    box: () => ok(S.QUESTIONS),
+    box: () => ok(db.quizBox),
+    saveToBox: async (questionIds) => {
+      await ok(undefined);
+      const questions = [
+        ...S.QUESTIONS,
+        ...S.SIMILAR,
+        ...db.quizSets.flatMap((set) => set.questions),
+      ];
+      const selected = [...new Set(questionIds)].map((id) => questions.find((q) => q._id === id));
+      if (selected.some((q) => !q))
+        throw new ApiError(ERROR_CODES.NOT_FOUND, '보관할 문제를 찾을 수 없어요', 404);
+      for (const q of selected) {
+        if (q && !db.quizBox.some((item) => item._id === q._id)) db.quizBox.push(q);
+      }
+      return structuredClone(db.quizBox);
+    },
+    deleteFromBox: async (questionIds) => {
+      await ok(undefined);
+      db.quizBox = db.quizBox.filter((q) => !questionIds.includes(q._id));
+    },
     flashcards: () => ok(db.flashcards),
     saveFlashcard: async (p) => {
       await ok(undefined);
