@@ -124,8 +124,7 @@ export function Player({
     setMarks(mat.data.bookmarks.map((b) => b.atSec));
   }
 
-  const slide =
-    rec.data?.slides.find((s) => p.pos >= s.startSec && p.pos < s.endSec) ?? rec.data?.slides[2];
+  const slide = rec.data?.slides.find((s) => p.pos >= s.startSec && p.pos < s.endSec);
   const segs = rec.data?.transcript.segments ?? [];
   const cap = segs.findIndex((s) => p.pos >= s.startSec && p.pos < s.endSec);
   const marking = useRef(false);
@@ -178,27 +177,33 @@ export function Player({
         {view === 'summary' ? (
           <>
             <View className="relative rounded-2xl bg-white/5 p-4">
-              <Text className="text-caption2 text-white/50">
-                슬라이드 {(slide?.index ?? 2) + 1} / {rec.data?.slides.length ?? 8}
-              </Text>
-              <Text className="mt-1 text-callout font-bold text-white">
-                {slide?.title ?? '이온화 에너지 주기적 경향성'}
-              </Text>
-              <View className="mt-2 flex-row items-end justify-between">
-                <View className="gap-0.5">
-                  {(slide?.bullets ?? []).map((b) => (
-                    <Text key={b} className="text-caption2 text-white/60">
-                      • {b}
-                    </Text>
-                  ))}
-                </View>
-                <View className="flex-row items-end gap-1 pr-14">
-                  {[18, 26, 32, 22, 38].map((h, i) => (
-                    <View key={i} className="w-3 rounded-sm bg-brand" style={{ height: h }} />
-                  ))}
-                </View>
-              </View>
-              <LipSyncAvatar playing={p.playing} />
+              {slide ? (
+                <>
+                  <Text className="text-caption2 text-white/50">
+                    슬라이드 {slide.index + 1} / {rec.data.slides.length}
+                  </Text>
+                  <Text className="mt-1 text-callout font-bold text-white">{slide.title}</Text>
+                  <View className="mt-2 flex-row items-end justify-between">
+                    <View className="gap-0.5">
+                      {slide.bullets.map((b) => (
+                        <Text key={b} className="text-caption2 text-white/60">
+                          • {b}
+                        </Text>
+                      ))}
+                    </View>
+                    <View className="flex-row items-end gap-1 pr-14">
+                      {[18, 26, 32, 22, 38].map((h, i) => (
+                        <View key={i} className="w-3 rounded-sm bg-brand" style={{ height: h }} />
+                      ))}
+                    </View>
+                  </View>
+                  <LipSyncAvatar playing={p.playing} />
+                </>
+              ) : (
+                <Text className="text-caption text-white/60">
+                  이 구간에는 요약 슬라이드가 없어요
+                </Text>
+              )}
             </View>
             <View className="mt-8 rounded-lg border border-white/10 p-3">
               <View className="flex-row items-center gap-1.5">

@@ -450,3 +450,68 @@ it('새 초안이나 자료 내용 변경은 이전 등록 키를 재사용하�
   useDraft.getState().reset();
   expect(useDraft.getState().getCreationId()).not.toBe(edited);
 });
+
+it('실서버 등록 결과가 불명확하면 재등록 버튼 대신 자료 확인 경로를 제공한다', async () => {
+  mockApi.content.createMaterial.mockRejectedValueOnce(
+    Object.assign(new Error('응답 유실'), { code: 'MATERIAL_REGISTRATION_UNCERTAIN' }),
+  );
+  await renderScreen(<ConvertScreen />, client());
+  expect(await screen.findByText('등록 결과를 확인할 수 없어요')).toBeTruthy();
+  expect(screen.queryByText('지금 다시 시도')).toBeNull();
+  expect(screen.queryByText('다시 시도')).toBeNull();
+  await fireEvent.press(screen.getByText('학습자료에서 확인'));
+  expect(router.replace).toHaveBeenCalledWith({
+    pathname: '/(tabs)/note/folder/[id]',
+    params: { id: 'folder1' },
+  });
+  expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  [],
+  [
+    { index: 0, title: '첫 슬라이드', bullets: [], startSec: 0, endSec: 2 },
+    { index: 1, title: '두 번째 슬라이드', bullets: [], startSec: 3, endSec: 5 },
+    { index: 2, title: '관계없는 세 번째 슬라이드', bullets: [], startSec: 50, endSec: 60 },
+  ],
+])(
+  '빈 슬라이드나 42초 구간 사이에는 예제·세 번째 슬라이드 대신 빈 상태를 표시한다 (%#)',
+  async (...slides) => {
+    mockApi.content.recording.mockResolvedValue({
+      audioUrl: 'https://blob.example/audio.m4a',
+      durationSec: 180,
+      slides,
+      transcript: { text: '실제 대본', segments: [] },
+    });
+    await renderScreen(<Player materialId="material1" />, client());
+    expect(await screen.findByText('이 구간에는 요약 슬라이드가 없어요')).toBeTruthy();
+    expect(screen.queryByText('관계없는 세 번째 슬라이드')).toBeNull();
+    expect(screen.queryByText('이온화 에너지 주기적 경향성')).toBeNull();
+    expect(screen.queryByText('슬라이드 3 / 0')).toBeNull();
+  },
+);
+
+it.each([
+  { startSec: 40, endSec: 50, visible: true },
+  { startSec: 42, endSec: 50, visible: true },
+  { startSec: 40, endSec: 42, visible: false },
+])(
+  '슬라이드 구간 $startSec~$endSec의 42초 표시 경계를 지킨다',
+  async ({ startSec, endSec, visible }) => {
+    mockApi.content.recording.mockResolvedValue({
+      audioUrl: 'https://blob.example/audio.m4a',
+      durationSec: 180,
+      slides: [{ index: 0, title: '현재 구간 요약', bullets: ['실제 요약'], startSec, endSec }],
+      transcript: { text: '', segments: [] },
+    });
+    await renderScreen(<Player materialId="material1" />, client());
+    await screen.findByText('북마크 모음 (0)');
+    if (visible) {
+      expect(screen.getByText('현재 구간 요약')).toBeTruthy();
+      expect(screen.getByText('슬라이드 1 / 1')).toBeTruthy();
+    } else {
+      expect(screen.queryByText('현재 구간 요약')).toBeNull();
+      expect(screen.getByText('이 구간에는 요약 슬라이드가 없어요')).toBeTruthy();
+    }
+  },
+);

@@ -48,7 +48,7 @@ export function ConvertScreen() {
   const draft = useDraft();
   const qc = useQueryClient();
   const net = useNet((s) => s.state);
-  const [phase, setPhase] = useState<'upload' | 'paused' | 'ai' | 'failed'>('upload');
+  const [phase, setPhase] = useState<'upload' | 'paused' | 'ai' | 'failed' | 'uncertain'>('upload');
   const [uploadPct, setUploadPct] = useState(0);
   const [job, setJob] = useState<AiJob | null>(null);
   const [materialId, setMaterialId] = useState<string | null>(null);
@@ -110,7 +110,14 @@ export function ConvertScreen() {
       setJob(r.job);
       setPhase('ai');
     } catch (e) {
-      if (!canceled.current) setPhase(e instanceof NetworkError ? 'paused' : 'failed');
+      if (!canceled.current)
+        setPhase(
+          e instanceof Error && 'code' in e && e.code === 'MATERIAL_REGISTRATION_UNCERTAIN'
+            ? 'uncertain'
+            : e instanceof NetworkError
+              ? 'paused'
+              : 'failed',
+        );
     } finally {
       running.current = false;
     }
@@ -277,6 +284,18 @@ export function ConvertScreen() {
         )}
       </Screen>
 
+      <Alert
+        open={phase === 'uncertain'}
+        title="등록 결과를 확인할 수 없어요"
+        body="같은 자료를 중복 등록하지 않도록 다시 보내지 않았어요. 학습자료 목록에서 등록 여부를 확인해 주세요."
+        primary="학습자료에서 확인"
+        onPrimary={() =>
+          router.replace({
+            pathname: '/(tabs)/note/folder/[id]',
+            params: { id: draft.folderId ?? 'fo1' },
+          })
+        }
+      />
       <Sheet open={phase === 'paused'} onClose={() => router.back()}>
         <View className="rounded-xl border border-line p-3">
           <View className="flex-row justify-between">
