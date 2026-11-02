@@ -202,6 +202,7 @@ npm run dev:mobile   # 앱 개발 서버
   - **Codex 리뷰**: `develop` · `main`으로 가는 PR이 열리거나 커밋이 올라오면 리뷰 전용 컴퓨터(self-hosted runner, 라벨 `codex`)가 `scripts/codex-review.sh`로 Codex 리뷰를 돌려 PR 댓글(치명적 문제 · 중요 · 제안 · 좋았던 점 · 권장 조치)로 남깁니다(`.github/workflows/codex-review.yml`). CI가 실패한 상태면 리뷰 대신 실패 로그를 남깁니다. 지적을 고쳐 커밋을 올리면 재리뷰합니다(이전 지적 반영 여부를 먼저 확인). 초안 PR은 "Ready for review"로 바꿀 때 리뷰합니다. 리뷰 컴퓨터가 꺼져 있으면 최완우가 `scripts/codex-review.sh <PR번호>`로 직접 돌립니다(재리뷰는 같은 계정의 지난 리뷰를 찾아 이어 가므로, 리뷰 컴퓨터와 같은 계정으로 돌려야 합니다). 리뷰 기준은 `AGENTS.md`의 Code Review Rules입니다.
   - 리뷰 컴퓨터는 Codex 리뷰 전용입니다. 다른 워크플로에서 `runs-on`에 `self-hosted` · `codex`를 쓰지 않습니다.
   - 자동 리뷰는 PR의 대상 브랜치와 상관없이 기본 브랜치(`main`)의 `codex-review.yml` · `scripts/codex-review.sh`로 돕니다. 둘을 고치면 `main`에도 반영해야 자동 리뷰에 적용됩니다.
+  - **러너 상태 알림**: 리뷰 컴퓨터 러너(`notelink-codex`)가 오프라인이 되거나 다시 온라인이 될 때, 온라인인데 Codex 리뷰가 30분 넘게 대기할 때, 러너 상태를 읽지 못할 때 디스코드로 알립니다. 매일 09:00(서울) 무렵에는 아침 요약(지금 상태 · 대기 중인 리뷰 · 지난 24시간 리뷰 결과)을 보냅니다(`.github/workflows/runner-status.yml`, `scripts/runner-status.sh`). GitHub 클라우드 러너에서 15분마다 확인하므로 리뷰 컴퓨터가 멈춰도 알림은 옵니다. 비밀값 `DISCORD_RUNNER_WEBHOOK`(웹후크 주소)과 `RUNNER_STATUS_TOKEN`(러너 목록을 읽는 fine-grained PAT, Administration: Read-only)이 필요하고, 토큰 기한이 끝나면 ⚠️ 알림이 옵니다. Actions 탭의 "러너 상태 알림 → Run workflow"로 요약을 바로 보낼 수 있습니다. 예약 실행이라 `main`의 파일로 돕니다. 공개 저장소는 60일 동안 활동이 없으면 GitHub가 예약 실행을 끄므로(알림도 멈춤), 방학처럼 오래 쉬었다면 Actions 탭에서 이 워크플로가 켜져 있는지 확인합니다.
 
 ### 버전 · 보안
 
