@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -17,11 +19,16 @@ class Settings(BaseSettings):
     # 노트 후처리(오타 고치기 · 개념 태그). 과목 용어 사전이 준비될 때까지 꺼 둠
     note_refine_enabled: bool = False
     note_refine_model: str = "gemma-4-26b"  # qwen은 호출 1~3분이라 쓰지 않음(10/30 실험)
-    # 시드 용어 찾기(Claude 웹 검색). 키가 없으면 작업 input의 시드로만 처리
-    anthropic_api_key: SecretStr = SecretStr("")
-    seed_search_model: str = "claude-opus-5-5"
-    seed_search_max_uses: int = 5  # 한 주제에 검색 · 가져오기 각각 최대 횟수
+    # 시드 용어 찾기(웹 검색 LLM). 키 · 프로젝트가 없으면 작업 input의 시드로만 처리
+    seed_search_provider: Literal["gemini", "claude"] = "gemini"  # Claude 키 발급 전(11/02)
     seed_search_domains: list[str] = []  # 비면 사이트 제한 없음
+    anthropic_api_key: SecretStr = SecretStr("")
+    seed_search_claude_model: str = "claude-opus-5-5"
+    seed_search_max_uses: int = 5  # Claude: 한 주제에 검색 · 가져오기 각각 최대 횟수
+    # Gemini(Vertex AI). 인증은 GOOGLE_APPLICATION_CREDENTIALS(서비스 계정 키 파일)
+    google_cloud_project: str = ""
+    google_cloud_location: str = "global"
+    seed_search_gemini_model: str = "gemini-3.5-flash"
 
     # ai_jobs 작업 처리기. FastAPI는 이 컬렉션만 읽고 씁니다(DB · 색인 관리는 NestJS).
     mongodb_uri: SecretStr = SecretStr("")

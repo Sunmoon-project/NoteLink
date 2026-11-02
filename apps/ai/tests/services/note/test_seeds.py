@@ -2,8 +2,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from app.clients.claude import Evidence, SearchAnswer, SearchError
 from app.clients.llm import LlmError
+from app.clients.web_search import Evidence, SearchAnswer, SearchError
 from app.services.note.chunking import split_rows
 from app.services.note.seeds import (
     TopicSeed,

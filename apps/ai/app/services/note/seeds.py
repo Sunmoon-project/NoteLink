@@ -12,8 +12,8 @@ LLM이 기억으로 용어를 지어내게 하지 않음(10/31 실험: 없는 �
 import re
 from typing import TypedDict
 
-from app.clients.claude import Evidence, Searcher, SearchError
 from app.clients.llm import JsonObject, Llm, LlmError
+from app.clients.web_search import Evidence, Searcher, SearchError
 from app.services.note.models import Chunk
 from app.services.note.terms import TermDict, syllables
 
@@ -112,7 +112,7 @@ def search_seed(searcher: Searcher, subject: str, topic: str, domains: list[str]
     answer = searcher.search(
         SEARCH_SYSTEM,
         f"과목 「{subject}」의 단원 「{topic}」에 나오는 한국어 전문용어를 모아라. "
-        "용어집 · 교재 목차 · 학회 자료 같은 페이지를 찾아 원문을 읽고(web_fetch), "
+        "용어집 · 교재 목차 · 학회 자료 같은 페이지를 찾아 원문을 읽고, "
         "원문에 나온 용어만 한 줄에 하나씩 「- 용어」 꼴로 써라. 설명은 쓰지 않는다.",
         domains=domains,
     )

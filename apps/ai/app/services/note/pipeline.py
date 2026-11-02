@@ -4,15 +4,15 @@ result = note_result([{"pageNo": 1, "read": ocr_json, "image": img}, ...])
 result["pages"]        # ① 쪽별 원본 글자
 result["lineResults"]  # ② 쪽별 OCR 줄 결과
 chunks = split_with_llm(llm, model, result["chunks"])   # ④ 노트 조각
-chunks, new_seeds = refine_note(llm, model, claude_search(), chunks, subject, input_seeds)
+chunks, new_seeds = refine_note(llm, model, web_search(), chunks, subject, input_seeds)
                                                         # 시드 → 오타 · 개념 태그 (설정으로 켬)
 vectors = voyage().embed(embed_texts(chunks), "document")
 """
 
 from typing import Any, NotRequired, TypedDict
 
-from app.clients.claude import Searcher
 from app.clients.llm import JsonObject, Llm, LlmError
+from app.clients.web_search import Searcher
 from app.core.config import settings
 from app.services.note.chunking import split_rows
 from app.services.note.emphasis import Image, annotate_colors, merge_marks
