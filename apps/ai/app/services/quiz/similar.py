@@ -182,6 +182,8 @@ class Made:
     drafts: list[Draft] = field(default_factory=list)
     llm_down: bool = False  # 정상 탈락 없이 호출 실패로 못 만듦(LLM 장애, make_similar 참고)
     reused_from: str | None = None  # 기존 문제를 다시 냈으면 그 문제 id
+    # 다시 낸 기존 문제를 '정답 둘' 검사하지 못함(LLM 장애): 새 문제에 checked를 붙이지 않음
+    unchecked: bool = False
 
 
 def _draft(r: JsonObject) -> Draft | None:

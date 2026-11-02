@@ -375,6 +375,20 @@ def test_answers_voided_before_still_restore_the_review_state() -> None:
     assert result["voidAnswers"] == []  # 새로 무효로 한 것은 없음
     s = updates(result)["q1"]
     assert (s["streak"], s["lastResult"]) == (1, "right")
+    # 옛 무효 풀이는 저장된 reviews(2)에서 아직 빠지지 않음: 남은 맞힘 1번만. step은 저장값 1
+    assert (s["reviews"], s["step"], s["voidedReviews"]) == (1, 1, 1)
+
+
+def test_restoring_twice_gives_the_same_state() -> None:
+    inp = flawed_input(unchecked(reviews=4))
+    parsed = today.parse(inp)
+    qmaps = {x.id: {y["id"]: y for y in x.questions} for x in parsed.sets}
+    q1 = parsed.sets[0].questions[0]
+    first, voids = today.void_flawed(parsed.attempts, qmaps, q1, ["secured"])
+    assert len(voids) == 1 and (first["reviews"], first["voidedReviews"]) == (3, 1)
+    q1["srs"] = first  # 되살린 상태를 저장한 뒤 다시(무효 풀이는 이제 예전 것)
+    again, voids = today.void_flawed(parsed.attempts, qmaps, q1, ["secured"])
+    assert voids == [] and again == first
 
 
 def test_flawed_question_is_dropped_after_three_days() -> None:

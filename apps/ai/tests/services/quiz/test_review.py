@@ -264,6 +264,28 @@ def test_reused_question_in_another_set_is_handed_over_there() -> None:
     assert moved[("s2", "q7")]["dueBefore"] == datetime(2026, 10, 31)
 
 
+def test_reused_question_that_could_not_be_checked_is_asked_without_checked() -> None:
+    inp = job_input()
+    inp["answers"] = inp["answers"][:1]
+    inp["history"] = []
+    blank = "He requested that she ____ informed."
+    before = {"step": 1, "streak": 1, "reviews": 2, "state": "active",
+              "lastResult": "right", "dueAt": "2026-10-31T00:00:00Z"}  # fmt: skip
+    other = q("q7", 1, "be", "요청 동사 뒤 동사원형", srs=before, passage=blank)
+    other["prompt"] = "알맞은 것을 고르시오."
+    inp["sets"].append({"id": "s2", "materialId": "m1", "questions": [other]})
+    near = gen("be", ["be", "is", "are", "was", "been"])
+    near["question"]["passage"] = blank
+    llm = FakeLlm(
+        {"Review": [near] * 3, "Natural": [LlmError("HTTP 503")] * 9, "Line": [{"line": "x"}]}
+    )
+    result, _ = run(llm, inp)
+    assert result["targets"][0]["reusedFrom"] == "q7"
+    assert llm.named("Natural")  # 검사 안 한 옛 문제라 '정답 둘' 검사를 함
+    [new] = result["reviewQuestions"]
+    assert "checked" not in new["srs"]  # 검사 못 함: 오늘의 복습이 나중에 다시 검사
+
+
 def test_existing_question_with_another_answer_keeps_its_review_state() -> None:
     # 'be'를 틀렸는데 'became' 문제를 넘기면 오답과 무관한 문제가 moved가 됨(Codex 재리뷰 10/29)
     inp = job_input()

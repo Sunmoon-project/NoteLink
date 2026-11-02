@@ -23,7 +23,8 @@ result — NestJS가 반영합니다
   title          '오늘의 복습 · MM-DD'
   baseSetId      materialId · folderId를 따올 세트(첫 문제가 나온 세트). sourceSetId는 null
   srsUpdates     [{quizSetId, questionId, srs}] 원래 문제의 복습 상태: 사본으로 넘겨줌(moved,
-                 dueBefore에 옛 날짜) · 결함(flawed) · 검사 통과(checked) · 다시 만들 날(flawTries).
+                 dueBefore에 옛 날짜) · 결함(flawed) · 검사 통과(checked) · 다시 만들 날
+                 (flawTries) · reviews에서 이미 뺀 무효 풀이 수(voidedReviews, 그대로 저장).
                  결함 문제의 무효 풀이를 빼고 다시 세어 연속 정답이 차면 다 익힘(mastered, dueAt
                  null, flaw에 결함 이유): 새 문제로 바꾸지 않고 복습에서 뺌
   voidAnswers    [{attemptId, questionId, void}] 무효로 할 풀이. void(이유 글)를 그 풀이에 씀
@@ -227,7 +228,7 @@ def void_flawed(
     이 문제와 사본의 풀이 중 무효 풀이가 하나라도 있으면(이번에 무효로 한 것이 없어도: 예전에
     무효로 하고 복습 상태를 되살리지 않았을 수 있음) 남은 풀이로 복습 상태를 되살립니다(_restored).
     """
-    voided, kept, voids, any_void = 0, [], [], False
+    kept, voids, void_count = [], [], 0
     for a in attempts:  # 푼 순서대로
         qm = qmaps.get(a.quiz_set_id, {})
         for x in a.answers:
@@ -237,13 +238,12 @@ def void_flawed(
             if x.answer in hits and not x.void:
                 x.void = f"문제 오류: 정답 둘({x.answer}도 맞음)"
                 voids.append({"attemptId": a.id, "questionId": x.question_id, "void": x.void})
-                voided += 1
             if x.void:
-                any_void = True
+                void_count += 1
             else:
                 kept.append((a.finished_at, x.correct))
     st = cast(srs.Srs, q["srs"])
-    return (_restored(st, kept, voided) if any_void else st), voids
+    return (_restored(st, kept, void_count) if void_count else st), voids
 
 
 def _copy_of(oq: Question, q: Question) -> bool:
@@ -255,23 +255,27 @@ def _copy_of(oq: Question, q: Question) -> bool:
     )
 
 
-def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], voided: int) -> srs.Srs:
+def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], void_count: int) -> srs.Srs:
     """무효 풀이를 뺀 복습 상태(Codex 리뷰 · /code-review 11/02).
 
-    kept는 이 문제와 그 사본의 무효가 아닌 풀이(푼 차례), voided는 이번에 무효로 한 수.
+    kept는 이 문제와 그 사본의 무효가 아닌 풀이(푼 차례), void_count는 무효 풀이 전체 수(예전에
+    무효로 한 것 포함).
     같은 낱말이라도 다른 문제(다른 세트에서 따로 만든 문제)의 풀이는 넣지 않습니다:
     이 문제를 한 번도 맞히지 않았는데 다 익힘이 될 수 있음.
     이 문제가 시작한 상태에서 kept를 srs.update로 다시 풉니다. 시작 상태는 저장값으로
-    거꾸로 셉니다: 이어받은 횟수 = 저장된 reviews − voided − len(kept)(0보다 작으면 0).
+    거꾸로 셉니다: 이어받은 횟수 = 저장된 reviews + voidedReviews − void_count − len(kept)
+    (0보다 작으면 0). 저장된 reviews는 푼 풀이 전체에서 voidedReviews(이미 뺀 무효 풀이 수)만큼
+    빠진 값이라, 무효 풀이를 모두 빼고 남은 풀이를 빼면 이어받은 횟수가 됩니다. 되살린 뒤
+    voidedReviews = void_count로 두므로, 되살린 상태를 다시 넣어도 결과가 같습니다(멱등).
     0이면 처음 낸 문제(srs 없음), 아니면 다시 보기 새 문제(srs.fresh: step 0, 이어받은 횟수).
     한계: 이어받은 연속 정답 · 단계는 저장되어 있지 않아 0에서 셉니다. 그래서 streak · step은
     다시 센 값과 저장값 중 큰 쪽을 씁니다: 무효로 하는 풀이는 두 번째 정답을 고른 오답뿐이라,
     빼면 연속 정답 · 단계가 줄 수 없습니다.
-    reviews는 다시 센 값(= 저장값 − voided, 남은 풀이 수보다 작지 않음). lastResult는 남은
+    reviews는 다시 센 값(이어받은 횟수 + 남은 풀이 수). lastResult는 남은
     마지막 풀이(없으면 None). dueAt은 그대로(오늘 날짜가 된 복습)이고, 연속 정답이 차면
     mastered · dueAt 없음입니다. 다른 필드(checked · flawTries 등)는 그대로 둡니다.
     """
-    carried = max(0, st["reviews"] - voided - len(kept))
+    carried = max(0, st["reviews"] + st.get("voidedReviews", 0) - void_count - len(kept))
     replay: srs.Srs | None = None
     if carried:
         replay = {
@@ -290,6 +294,7 @@ def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], voided: int) -> sr
         "streak": max(replay["streak"] if replay else 0, st["streak"]),
         "step": max(replay["step"] if replay else 0, st["step"]),
         "lastResult": replay["lastResult"] if kept and replay else None,
+        "voidedReviews": void_count,
     }
     if out["streak"] >= srs.MASTER_STREAK:
         out["state"], out["dueAt"] = "mastered", None
@@ -437,6 +442,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
                 }
                 carry.pop("flaw", None)
                 carry.pop("movedTo", None)
+                carry.pop("voidedReviews", None)  # 새 문제는 풀이가 따로라 뺀 수도 따로 셈
                 new["srs"] = carry
                 made.add(new["id"])
                 q = new

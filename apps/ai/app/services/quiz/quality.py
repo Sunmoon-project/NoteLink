@@ -8,8 +8,9 @@
                    노트가 아니라 일반 실력으로 묻습니다.
                    '노트상 정답인가'로 물으면 결함 2개 중 0개를 잡았습니다.
 
-LLM 판정을 받지 못하면(호출 실패 · 답 모양 오류) 그 보기는 걸리지 않은 것으로 넘어가고(로컬
-원본과 같은 동작), 걸린 보기가 없으면 '검사 못 함'(screen의 두 번째 값)으로 알려 줍니다.
+LLM 판정을 받지 못하면(호출 실패 · 답 모양 오류) 그 보기는 걸리지 않은 것으로 넘어갑니다(로컬
+원본과 같은 동작). 호출이 실패했고 걸린 보기가 없으면 '검사 못 함'(screen의 두 번째 값)으로
+알려 줍니다. 답 모양 오류는 검사 못 함이 아닙니다(similar.make_similar의 모양 오류와 같은 기준).
 
 걸린 오답 보기가 한두 개뿐이면 버리지 않고 그 보기만 바꿔(repair) 다시 검사합니다(checked).
 """
@@ -179,11 +180,16 @@ def _ko_make(qtype: str, passage: str) -> Callable[[str], str]:
     return lambda o: f"{first}: {passage}\n{second}: {o}"
 
 
-def _natural(llm: Llm, model: str, system: str, user: str) -> bool | None:
-    """True · False, 호출이 실패하면 None."""
+def _natural(
+    llm: Llm, model: str, system: str, user: str, failed: list[str] | None = None, what: str = ""
+) -> bool | None:
+    """True · False, 판정을 받지 못하면 None. 호출이 실패했을 때만 failed에 what을 더합니다
+    (답 모양 오류는 더하지 않음)."""
     try:
         r = llm.call(model, system, user, N_SCHEMA, "Natural", max_tokens=60)
     except LlmError:
+        if failed is not None:
+            failed.append(what)
         return None
     v = r.get("natural")
     return v if isinstance(v, bool) else None
@@ -222,7 +228,7 @@ def natural_options(
     """모델이 자연스럽다고 본 오답 보기. 이 검사를 하지 않는 유형(mode가 None)이면 None.
 
     정답 보기는 대소문자 · 공백만 달라도 빼고 봅니다(code_check와 같은 기준).
-    failed에는 판정을 받지 못한 보기를 모읍니다(호출 실패 · 답 모양 오류).
+    failed에는 호출이 실패한 보기를 모읍니다(답 모양 오류는 넣지 않음).
     """
     if mode is None:
         return None
@@ -231,9 +237,7 @@ def natural_options(
     wrong = [o for o in item["choices"] if option_key(o) != answer_key]
     found = []
     for o in wrong:
-        v = _natural(llm, model, system, make(o))
-        if v is None and failed is not None:
-            failed.append(o)
+        v = _natural(llm, model, system, make(o), failed, o)
         if v is True:
             found.append(o)
     return found
@@ -261,9 +265,10 @@ def screen(
     """초안에 두 검사를 모두 돌려 (탈락 이유, 검사 못 함)을 돌려줍니다. 이유가 없고 검사 못 함이
     False여야 통과입니다.
 
-    검사 못 함: 걸린 보기는 없는데 LLM 판정(_natural)을 받지 못한 것이 있음(호출 실패 · 답 모양
-    오류). 통과로 볼 수 없어 부른 쪽이 LLM 장애로 처리합니다. 걸린 보기가 있으면 그 이유는 받은
-    판정에서 나온 것이라 False입니다.
+    검사 못 함: 걸린 보기는 없는데 LLM 판정(_natural) 호출이 실패한 것이 있음. 통과로 볼 수 없어
+    부른 쪽이 LLM 장애로 처리합니다. 걸린 보기가 있으면 그 이유는 받은 판정에서 나온 것이라
+    False입니다. 답 모양이 틀린 판정은 그 보기를 걸리지 않은 것으로 넘기고 검사 못 함에 넣지
+    않습니다(similar.make_similar도 모양 오류를 장애로 세지 않음).
     hits에는 걸린 보기를 모읍니다(다음 시도에서 피할 낱말).
     채점한 61문제(10/22)에서 나쁜 문제 21개 중 14개를 잡고 좋은 문제 40개 중 4개를 버렸습니다
     (검사 모델만). 결함 문제 2개가 다시 보기까지 간 뒤 10/25에 생성 모델을 2차 판정으로 더했습니다.
@@ -297,18 +302,16 @@ def screen(
         # 정답 자체도 맞아야 함: 'The construction team will ____ the road'에
         # 정답 'resurfacing' (10/26)
         user = f"문장: {p}\n빈칸에 넣을 표현: {item['answer']}"
-        fits = _natural(llm, settings.quiz_check_model, BLANK_SYS, user)
-        if fits is None:
-            failed.append(item["answer"])
+        fits = _natural(llm, settings.quiz_check_model, BLANK_SYS, user, failed, item["answer"])
         if fits is False:
             why.append("정답을 빈칸에 넣으면 문장이 틀림")
     if qtype in KO_SYS and not why:
         # 용어 과목: 정답도 맞아야 함 — OCR 오류로 노트 자체가 틀릴 수 있음
         # (미생 시험의 '항산성균은 보통 염색으로 쉽게 염색되며')
         user = _ko_make(qtype, p)(item["answer"])
-        right = _natural(llm, settings.quiz_check_model, KO_SYS[qtype], user)
-        if right is None:
-            failed.append(item["answer"])
+        right = _natural(
+            llm, settings.quiz_check_model, KO_SYS[qtype], user, failed, item["answer"]
+        )
         if right is False:
             why.append("정답이 일반 전공 지식과 맞지 않음(노트 OCR 오류 가능)")
     return why, bool(failed) and not why

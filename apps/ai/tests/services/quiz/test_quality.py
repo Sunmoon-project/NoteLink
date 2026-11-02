@@ -326,3 +326,9 @@ def test_checked_reports_unchecked_when_the_recheck_fails() -> None:
     )
     _, why, _, repaired, unchecked = qa.checked(llm, d, no_conflict, PAGE, "빈칸")
     assert (why, repaired, unchecked) == ([], True, True)
+
+
+def test_screen_does_not_count_malformed_verdicts_as_unchecked() -> None:
+    d = draft(ROPE, ROPE_OPTIONS, "fastened")
+    llm = FakeLlm({"Natural": [{"natural": "yes"}] * 9})  # 모양이 틀린 판정: 걸리지 않음
+    assert qa.screen(llm, d, PAGE, "빈칸") == ([], False)

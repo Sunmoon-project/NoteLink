@@ -441,11 +441,20 @@ def _similar_for(
         "explanation": old.get("explanation"),
     }
     was = old.get("srs")
-    # '정답 둘' 검사(10/22) 전에 만든 문제가 이 검사에 떨어지면 다시 내지 않음
-    if not (was and was.get("checked")) and quality.two_answers(llm, d, text, old.get("type")):
-        return m
+    unchecked = False
+    if not (was and was.get("checked")):
+        # '정답 둘' 검사(10/22) 전에 만든 문제가 이 검사에 떨어지면 다시 내지 않음. 검사 못 함
+        # (LLM 장애)이면 다시 내되 checked를 붙이지 않음: 오늘의 복습이 나중에 다시 검사
+        why, unchecked = quality.screen(llm, d, text, old.get("type"))
+        if why:
+            return m
     return similar.Made(
-        question=d, type=old.get("type"), tries=m.tries, why=m.why, reused_from=old["id"]
+        question=d,
+        type=old.get("type"),
+        tries=m.tries,
+        why=m.why,
+        reused_from=old["id"],
+        unchecked=unchecked,
     )
 
 
@@ -552,6 +561,9 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
             continue
         g = m.question
         qid = new_id()
+        fresh = srs.fresh(today, carry=after[t.q["id"]])
+        if m.unchecked:  # 검사하지 못하고 다시 낸 기존 문제
+            del fresh["checked"]
         new_qs.append(
             {
                 "id": qid,
@@ -563,7 +575,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
                 "answer": g["answer"],
                 "explanation": g.get("explanation"),
                 "conceptTags": [t.concept],
-                "srs": srs.fresh(today, carry=after[t.q["id"]]),
+                "srs": fresh,
             }
         )
         after[t.q["id"]] = srs.moved(after[t.q["id"]], qid)
