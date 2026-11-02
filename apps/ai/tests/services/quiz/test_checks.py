@@ -337,3 +337,42 @@ def test_redundant_arithmetic_parentheses_do_not_create_distinct_options(a: str,
     from app.services.quiz.checks import option_key
 
     assert option_key(a) == option_key(b)
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("2", "[2]"),
+        ("2", "2?"),
+        ("2", "2:"),
+        ("2", "_2_"),
+        ("2", "~2~"),
+        ("2", "(2)!"),
+        ("2", '"2"'),
+        ("1/2", "1/2?"),
+        ("1/2", "[1/2]"),
+        ("1/2", "1/2."),
+        ("1/(2+3)", "[1/(2+3)]!"),
+        ("(-2)^2", "[(-2)^2]?"),
+        ("E. coli", "E coli"),
+    ],
+)
+def test_ignored_option_punctuation_keeps_duplicate_and_answer_matching(a: str, b: str) -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key(a) == option_key(b)
+    duplicate = draft(passage="", options=[a, b, "c", "d", "f"], answer=a)
+    reasons, correct = code_check(duplicate, NEW, a, "규칙", [])
+    assert "보기 5개가 아니거나 겹침" in reasons
+    assert correct is None
+    for option, answer in [(a, b), (b, a)]:
+        single = draft(passage="", options=[option, "c", "d", "f", "g"], answer=answer)
+        assert code_check(single, NEW, a, "규칙", [])[1] == 0
+
+
+def test_punctuation_normalization_does_not_merge_numeric_tokens_or_ratios() -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key("2~3") == option_key("2 3")
+    assert option_key("2~3") != option_key("23")
+    assert option_key("1:2") != option_key("1/2")
