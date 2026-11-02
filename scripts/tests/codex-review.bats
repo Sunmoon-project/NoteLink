@@ -327,7 +327,9 @@ usage_state() {
   [ "$status" -eq 0 ]
   [[ "$output" == "::warning title=Codex 리뷰 멈춤::⏸️ PR #12: Codex 남은 사용량이 10% 이하(8% 남음) — 리뷰를 멈췄습니다. 10/31 19:00(서울) 사용량이 초기화되면 이 실행을 자동으로 다시 돌립니다." ]]
   [[ "$(cat "$TMP/summary.md")" == "### ⏸️ Codex 리뷰 멈춤"*"10/31 19:00(서울)"* ]]
-  [ "$(cat "$TMP/paused.txt")" = $'pr=12\nsha=abc123\nretry=1761904800\nreason=low' ]
+  [ "$(cat "$TMP/paused.txt")" = $'pr=12\nsha=abc123\nretry=1761904800\nreason=low\nattempt=1' ]
+  GITHUB_RUN_ATTEMPT=3 GITHUB_STEP_SUMMARY="$TMP/summary.md" CODEX_PAUSED_FILE="$TMP/paused.txt" run pause_review
+  [[ "$(cat "$TMP/paused.txt")" == *$'\nattempt=3' ]]
   [ ! -e "$TMP/gh.calls" ]  # 댓글을 남기지 않음
 }
 

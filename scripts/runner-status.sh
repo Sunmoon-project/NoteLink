@@ -60,8 +60,8 @@ done_jq() {  # $1 = 시작 시각(UTC ISO)
 }
 # 이름으로 거른 결과 파일 중 만료되지 않은 것을 최근 것부터: 결과 파일 id \t 올린 실행 id
 ARTIFACT_JQ='[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | reverse | .[] | [.id, .workflow_run.id] | @tsv'
-# 실행 정보: 워크플로 파일 \t 이벤트 \t 상태
-RUN_JQ='[.path, .event, .status] | @tsv'
+# 실행 정보: 워크플로 파일 \t 이벤트 \t 상태 \t 회차(다시 돌릴 때마다 1씩 오름)
+RUN_JQ='[.path, .event, .status, (.run_attempt // 1 | tostring)] | @tsv'
 # 멈춘 리뷰 표시 결과 파일 (codex-review.yml이 올림, 안에 pr= · retry= …)
 PAUSED_ARTIFACT="${PAUSED_ARTIFACT:-codex-paused}"
 PAUSED_FILE_NAME="codex-paused.txt"
@@ -231,10 +231,13 @@ sort_prs() {  # "#34 #12" → "#12 #34"
 # - 리뷰 워크플로(pull_request_target)가 올린 표시만 믿고, 다른 것은 건너뜀
 # - 닫힌 PR은 돌리지 않고 표시만 지움
 # - 다시 돌리기에 실패하면 표시를 남겨 다음 확인에서 다시 시도하고, 처음 실패했을 때만 알림
+# - 다시 돌린 PR의 표시는 바로 지우지 않고 PAUSED_DELETE에 모아, 디스코드로 알린 뒤 지움(delete_paused).
+#   알리지 못하면 표시가 남고, 다음 확인에서 실행 회차가 표시의 attempt보다 올라가 있으면 이미 다시 돌린 것으로 보고
+#   또 돌리지 않고 알림만 다시 함
 # - 목록을 읽지 못하면 아무것도 하지 않음(다음 확인에서 다시, 알린 실패 기록은 그대로)
 resume_paused() {
-  RESUMED=""; RESUME_FAILED=""
-  local list id run src pr retry state tmp failed=""
+  RESUMED=""; RESUME_FAILED=""; PAUSED_DELETE=""
+  local list id run src pr retry attempt state tmp failed=""
   local -A decided=()
   if ! list=$(gh api "repos/$REPO/actions/artifacts?name=$PAUSED_ARTIFACT&per_page=100" \
       --jq "$PAUSED_JQ" --paginate 2> /dev/null); then
@@ -252,12 +255,19 @@ resume_paused() {
     download_artifact "$id" "$PAUSED_FILE_NAME" "$tmp" || continue
     pr=$(sed -n 's/^pr=\([0-9]\{1,\}\)$/\1/p' "$tmp" | head -n 1)
     retry=$(sed -n 's/^retry=\([0-9]\{1,\}\)$/\1/p' "$tmp" | head -n 1)
+    attempt=$(sed -n 's/^attempt=\([0-9]\{1,\}\)$/\1/p' "$tmp" | head -n 1)
     [ -n "$pr" ] || continue
     if [ -n "${decided[$pr]:-}" ]; then
       # 같은 PR의 더 오래된 표시: 가장 최근 표시로 다시 돌렸거나 닫힌 PR이면 함께 지움
       case "${decided[$pr]}" in
-        resumed | closed) gh api "repos/$REPO/actions/artifacts/$id" -X DELETE > /dev/null 2>&1 || true ;;
+        resumed) PAUSED_DELETE+=" $id" ;;
+        closed) gh api "repos/$REPO/actions/artifacts/$id" -X DELETE > /dev/null 2>&1 || true ;;
       esac
+      continue
+    fi
+    # 이미 다시 돌린 실행(회차가 표시보다 큼): 지난 확인에서 알리지 못한 경우 → 돌리지 않고 알림만
+    if [ "$(cut -f 4 <<< "$src")" -gt "${attempt:-1}" ] 2> /dev/null; then
+      decided[$pr]=resumed; RESUMED+=" #$pr"; PAUSED_DELETE+=" $id"
       continue
     fi
     if [ -n "$retry" ] && [ "$retry" -gt "$NOW" ]; then decided[$pr]=wait; continue; fi
@@ -266,7 +276,8 @@ resume_paused() {
     if [ "$state" = closed ]; then
       decided[$pr]=closed
     elif gh api "repos/$REPO/actions/runs/$run/rerun" -X POST > /dev/null 2>&1; then
-      decided[$pr]=resumed; RESUMED+=" #$pr"
+      decided[$pr]=resumed; RESUMED+=" #$pr"; PAUSED_DELETE+=" $id"
+      continue
     else
       # 표시를 남겨 다음 확인에서 다시 시도. 이미 알린 실패면 다시 알리지 않음
       decided[$pr]=failed; failed+="${failed:+,}$id"
@@ -279,6 +290,15 @@ resume_paused() {
   NEW_FAILED=$failed
   RESUMED=$(sort_prs <<< "$RESUMED"); RESUME_FAILED=$(sort_prs <<< "$RESUME_FAILED")
   return 0
+}
+
+# 다시 돌린 PR의 멈춤 표시를 지움 (디스코드로 알린 뒤)
+delete_paused() {
+  local id
+  for id in ${PAUSED_DELETE:-}; do
+    gh api "repos/$REPO/actions/artifacts/$id" -X DELETE > /dev/null 2>&1 || true
+  done
+  PAUSED_DELETE=""
 }
 
 # ---------- 판단 ----------
@@ -531,7 +551,7 @@ main() {
   # 지금 멈춤 단계로 확인되지 않으면(기록을 못 읽은 경우 포함) 다시 가능한 시각이 지난 멈춘 리뷰를 다시 돌림.
   # 다시 돌린 · 돌리지 못한 것이 있으면 사용량 알림(🟡 등)과 따로 ▶️ embed를 붙임.
   # 사용량 알림이 이미 ▶️(초기화 전환)이면 그 안에 함께 적으므로 붙이지 않음
-  RESUMED=""; RESUME_FAILED=""; NEW_FAILED=${PREV_FAILED:-}
+  RESUMED=""; RESUME_FAILED=""; PAUSED_DELETE=""; NEW_FAILED=${PREV_FAILED:-}
   [ "$CUR_USAGE" != stop ] && resume_paused
   local resume_event=""
   if [ -n "$RESUMED$RESUME_FAILED" ] && [ "$USAGE_EVENT" != usage_resume ]; then resume_event=usage_resume; fi
@@ -543,6 +563,7 @@ main() {
   if [ -n "$EMBEDS" ]; then
     post || { echo "::error::디스코드로 보내지 못했습니다. 상태를 저장하지 않고 다음 실행에서 다시 보냅니다." >&2; return 1; }
     echo "알림: $EVENT $USAGE_EVENT $resume_event"
+    delete_paused  # 알린 뒤에 지움(못 알렸으면 위에서 끝나 표시가 남음)
   else
     echo "알릴 것 없음"
   fi
