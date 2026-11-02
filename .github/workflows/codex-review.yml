@@ -74,4 +74,18 @@ jobs:
           # 스크립트의 임시 폴더(mktemp)를 러너 작업용 임시 폴더에 둡니다. 러너가 작업마다 비우므로
           # 취소된 실행이 남긴 폴더도 쌓이지 않습니다.
           TMPDIR: ${{ runner.temp }}
+          # Codex 실행 뒤 남은 사용량을 적을 파일 (다음 단계에서 올림)
+          CODEX_USAGE_FILE: ${{ runner.temp }}/codex-usage.txt
         run: scripts/codex-review.sh "$PR"
+
+      # 남은 사용량을 러너 상태 알림(runner-status.yml)이 읽도록 결과 파일로 올립니다.
+      # 한도에 걸려 리뷰가 실패해도 올립니다. CI 실패 · 이미 리뷰함 등으로 Codex를 돌리지 않았으면 파일이 없어 건너뜁니다.
+      # 사용률 · 초기화 시각 · 플랜 이름만 들어 있습니다(공개 저장소라 로그인한 누구나 받을 수 있음).
+      - name: Codex 사용량 올리기
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-usage
+          path: ${{ runner.temp }}/codex-usage.txt
+          if-no-files-found: ignore
+          retention-days: 14
