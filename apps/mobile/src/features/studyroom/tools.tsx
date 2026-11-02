@@ -267,6 +267,23 @@ export function TimerScreen() {
   const [rest, setRest] = useState('10');
   const [repeat, setRepeat] = useState(4);
   const [periods, setPeriods] = useState<TimerRule['periods']>(PERIODS);
+  const [editing, setEditing] = useState<(TimerRule['periods'][number] & { index: number }) | null>(
+    null,
+  );
+  const editPeriod = (index: number) => setEditing({ ...(periods[index] ?? PERIODS[0]!), index });
+  const applyPeriod = () => {
+    if (!editing) return;
+    const validTime = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+    const { index, start, end, label } = editing;
+    if (!validTime(start) || !validTime(end) || start >= end)
+      return toast('시작·종료 시간을 HH:MM 형식과 순서에 맞게 입력해 주세요');
+    if (periods.some((period, i) => i !== index && start < period.end && end > period.start))
+      return toast('다른 교시와 시간이 겹치지 않게 입력해 주세요');
+    const next = [...periods];
+    next[index] = { start, end, label: label.trim() };
+    setPeriods(next.sort((a, b) => a.start.localeCompare(b.start)));
+    setEditing(null);
+  };
   const [help, setHelp] = useState(false);
   // 방의 시간 규칙을 처음 불러왔을 때만 입력값을 채운다 — 재조회가 입력을 덮어쓰지 않게 (렌더 중 상태 조정)
   const r = room.data?.timerRule;
@@ -435,7 +452,7 @@ export function TimerScreen() {
           <Label
             right={
               <Pressable
-                onPress={() => toast('교시 시간을 눌러 바꿀 수 있어요')}
+                onPress={() => editPeriod(0)}
                 className="rounded-full border border-brand/40 px-2 py-0.5"
               >
                 <Text className="text-caption2 text-brand">시간표 편집</Text>
@@ -449,8 +466,11 @@ export function TimerScreen() {
           </Label>
           <View className="gap-1.5 rounded-2xl bg-cream p-2">
             {periods.map((p, i) => (
-              <View
-                key={p.start}
+              <Pressable
+                key={i}
+                accessibilityRole="button"
+                accessibilityLabel={`${i + 1}교시 편집`}
+                onPress={() => editPeriod(i)}
                 className={cx(
                   'flex-row items-center gap-3 rounded-xl px-3 py-2.5',
                   i === 0 ? 'bg-mint' : 'bg-white',
@@ -475,7 +495,7 @@ export function TimerScreen() {
                   <Text className="text-caption2 text-sub">{p.label}</Text>
                 </View>
                 <Pencil size={ICON.md} color={C.brand} />
-              </View>
+              </Pressable>
             ))}
           </View>
           <Label>
@@ -490,6 +510,39 @@ export function TimerScreen() {
           </View>
         </View>
       </Screen>
+      <Dialog open={editing !== null} onClose={() => setEditing(null)}>
+        <Text className="text-body font-bold text-ink">교시 편집</Text>
+        {editing && (
+          <View className="mt-3 w-full gap-3">
+            {(
+              [
+                ['start', '교시 시작'],
+                ['end', '교시 종료'],
+                ['label', '교시 이름'],
+              ] as const
+            ).map(([field, label]) => (
+              <View key={field}>
+                <Text className="text-caption text-sub">
+                  {label}
+                  {field !== 'label' ? ' (HH:MM)' : ''}
+                </Text>
+                <TextInput
+                  accessibilityLabel={label}
+                  value={editing[field]}
+                  onChangeText={(value) =>
+                    setEditing((current) => (current ? { ...current, [field]: value } : current))
+                  }
+                  className="mt-1 rounded-xl border border-line px-3 py-2 text-ink"
+                />
+              </View>
+            ))}
+            <Btn onPress={applyPeriod}>교시 적용</Btn>
+            <Btn kind="outline" onPress={() => setEditing(null)}>
+              취소
+            </Btn>
+          </View>
+        )}
+      </Dialog>
       <Alert
         open={help}
         tone="brand"

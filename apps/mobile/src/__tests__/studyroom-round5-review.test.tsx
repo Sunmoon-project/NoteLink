@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { RoomCreateScreen, RoomScreen } from '../features/studyroom/room';
-import { InviteScreen, RoomSettingsScreen } from '../features/studyroom/tools';
+import { InviteScreen, RoomSettingsScreen, TimerScreen } from '../features/studyroom/tools';
 import { useMockFlags } from '../lib/mock/flags';
 import { useNet } from '../stores/net';
 import { useToast } from '../stores/toast';
@@ -16,6 +16,7 @@ const mockApi = {
     invite: jest.fn(),
     leave: jest.fn(),
     chatRoomId: jest.fn(),
+    setTimer: jest.fn(),
   },
   social: { friends: jest.fn(), messages: jest.fn() },
 };
@@ -88,6 +89,7 @@ beforeEach(() => {
   mockConnectMedia.mockReset();
   mockConnectMedia.mockResolvedValue(media());
   mockApi.rooms.get.mockResolvedValue(room);
+  mockApi.rooms.setTimer.mockResolvedValue(room);
   mockApi.rooms.create.mockResolvedValue({ ...room, _id: 'created-room' });
   mockApi.rooms.invite.mockResolvedValue(undefined);
   mockApi.rooms.leave.mockResolvedValue(undefined);
@@ -273,4 +275,72 @@ it('미디어 재연결도 실패하면 다시 시도할 수 있고 오프라인
   await fireEvent.press(screen.getByRole('button', { name: '미디어 다시 연결' }));
   await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(3));
   expect(await screen.findByText('듣기 켜짐')).toBeTruthy();
+});
+
+it('연결에 성공한 미디어만 종료되면 오류와 재연결 버튼을 표시하고 기존 연결을 정리한다', async () => {
+  const first = media();
+  mockConnectMedia.mockResolvedValueOnce(first).mockResolvedValueOnce(media());
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText('듣기 켜짐');
+  await act(async () => {
+    first.connected = false;
+    mockConnectMedia.mock.calls[0][1]();
+  });
+  expect(useNet.getState().state).toBe('ok');
+  await fireEvent.press(await screen.findByRole('button', { name: '미디어 다시 연결' }));
+  await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(first.close).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('듣기 켜짐')).toBeTruthy();
+});
+
+describe('교시 시간표 편집', () => {
+  async function edit() {
+    await renderScreen(<TimerScreen />, client());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '저장하기' })).not.toBeDisabled(),
+    );
+    await fireEvent.press(screen.getByText('시간표 편집'));
+    await screen.findByLabelText('교시 시작');
+  }
+  it('교시 시간과 이름을 편집해 미리보기와 서버 저장에 반영한다', async () => {
+    await edit();
+    await fireEvent.changeText(screen.getByLabelText('교시 시작'), '08:10');
+    await fireEvent.changeText(screen.getByLabelText('교시 종료'), '08:55');
+    await fireEvent.changeText(screen.getByLabelText('교시 이름'), '아침 복습');
+    await fireEvent.press(screen.getByRole('button', { name: '교시 적용' }));
+    expect(screen.getByText('08:10 - 08:55')).toBeTruthy();
+    expect(screen.getByText('아침 복습')).toBeTruthy();
+    await fireEvent.press(screen.getByRole('button', { name: '저장하기' }));
+    await waitFor(() =>
+      expect(mockApi.rooms.setTimer).toHaveBeenCalledWith(
+        room._id,
+        expect.objectContaining({
+          periods: expect.arrayContaining([{ start: '08:10', end: '08:55', label: '아침 복습' }]),
+        }),
+      ),
+    );
+  });
+  it.each([
+    ['25:00', '25:50'],
+    ['09:50', '09:00'],
+    ['10:10', '10:40'],
+  ])('잘못된 시간 또는 겹치는 구간 %s~%s는 적용하지 않는다', async (start, end) => {
+    await edit();
+    await fireEvent.changeText(screen.getByLabelText('교시 시작'), start);
+    await fireEvent.changeText(screen.getByLabelText('교시 종료'), end);
+    await fireEvent.press(screen.getByRole('button', { name: '교시 적용' }));
+    expect(screen.getByLabelText('교시 시작')).toBeTruthy();
+    expect(screen.getByText('09:00 - 09:50')).toBeTruthy();
+    expect(useToast.getState().msg).toBeTruthy();
+    expect(mockApi.rooms.setTimer).not.toHaveBeenCalled();
+  });
+  it('다른 교시 행에서 열어 편집하다 취소하면 기존 내용을 유지한다', async () => {
+    await renderScreen(<TimerScreen />, client());
+    await fireEvent.press(await screen.findByRole('button', { name: '2교시 편집' }));
+    expect(screen.getByLabelText('교시 시작').props.value).toBe('10:00');
+    await fireEvent.changeText(screen.getByLabelText('교시 이름'), '취소할 내용');
+    await fireEvent.press(screen.getByRole('button', { name: '취소' }));
+    expect(screen.getByText('영어 독해')).toBeTruthy();
+    expect(screen.queryByText('취소할 내용')).toBeNull();
+  });
 });

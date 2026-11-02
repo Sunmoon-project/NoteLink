@@ -75,7 +75,12 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0) {
     micOn,
     camOn,
     hearing: room?.hearing ?? false,
-    error: failure?.id === roomId && failure.generation === generation ? failure.message : null,
+    error:
+      failure?.id === roomId && failure.generation === generation
+        ? failure.message
+        : room && !room.connected
+          ? '캠·음성 연결이 종료됐어요. 다시 연결해 주세요'
+          : null,
     toggleMic: () => control('toggleMic'),
     toggleCam: () => control('toggleCam'),
     toggleHearing: () => control('toggleHearing'),
