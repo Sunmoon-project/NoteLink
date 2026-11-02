@@ -77,14 +77,18 @@ export function ConvertScreen() {
         if (!file) continue;
         const kind =
           draft.kind === 'recording' ? 'audio' : draft.kind === 'document' ? 'document' : 'image';
-        blobs.current.push(
-          await uploadToBlob(
+        const cached = useDraft.getState().uploads.find((upload) => upload.file === file);
+        const url =
+          cached?.url ??
+          (await uploadToBlob(
             kind,
             file,
             (p) => setUploadPct(Math.round(((i + p / 100) / draft.files.length) * 100)),
             abort.current.signal,
-          ),
-        );
+          ));
+        useDraft.getState().rememberUpload(file, url);
+        blobs.current.push(url);
+        setUploadPct(Math.round(((i + 1) / draft.files.length) * 100));
         setUploaded(blobs.current.length);
       }
       // 2) 서버에 자료 등록 → ai_jobs 큐에 작업이 들어간다

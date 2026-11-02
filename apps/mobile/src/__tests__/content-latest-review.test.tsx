@@ -5,7 +5,7 @@ import { router } from 'expo-router';
 import { PhotoCheckScreen, PickedScreen } from '../features/content/capture';
 import { DocDetailScreen, HandDetailScreen } from '../features/content/detail';
 import { Player } from '../features/content/player';
-import { ResultScreen } from '../features/content/convert';
+import { ConvertScreen, ResultScreen } from '../features/content/convert';
 import { useDraft } from '../stores/draft';
 import { renderScreen, setParams } from '../test-utils';
 
@@ -23,9 +23,11 @@ const mockApi = {
     recording: jest.fn(),
     addBookmark: jest.fn(),
     saveMaterial: jest.fn(),
+    createMaterial: jest.fn(),
   },
 };
 const mockUpload = jest.fn();
+jest.mock('../lib/socket', () => ({ socket: { emit: jest.fn(), on: () => () => {} } }));
 const mockEdit = jest.fn();
 const mockToast = jest.fn();
 jest.mock('../lib/api', () => ({
@@ -138,6 +140,10 @@ beforeEach(() => {
     transcript: { text: '', segments: [] },
   });
   mockApi.content.addBookmark.mockResolvedValue(undefined);
+  mockApi.content.createMaterial.mockResolvedValue({
+    material: { _id: 'created' },
+    job: { _id: 'job1', status: 'running', progress: 0 },
+  });
 });
 afterEach(() => {
   clients.splice(0).forEach((qc) => qc.clear());
@@ -277,5 +283,79 @@ describe('PR36 녹음·변환 결과 조회 복구', () => {
     await renderScreen(<ResultScreen />, client());
     await fireEvent.press(await screen.findByRole('button', { name: '뒤로' }));
     expect(router.back).toHaveBeenCalled();
+  });
+});
+
+describe('PR36 검사 Blob 재사용', () => {
+  it('검사한 파일별 URL을 변환에서 재사용해 중복 업로드하지 않는다', async () => {
+    const second = { ...localPhoto, uri: 'file:///second.jpg', name: 'second.jpg' };
+    useDraft.getState().set({ files: [localPhoto, second] });
+    mockUpload.mockImplementation(
+      async (_kind: string, file: { name: string }) => `https://blob.example/${file.name}`,
+    );
+    const picked = await renderScreen(<PickedScreen />, client());
+    await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
+    await picked.unmount();
+    await renderScreen(<ConvertScreen />, client());
+    await waitFor(() =>
+      expect(mockApi.content.createMaterial).toHaveBeenCalledWith(
+        expect.objectContaining({
+          blobUrls: ['https://blob.example/picked.jpg', 'https://blob.example/second.jpg'],
+        }),
+      ),
+    );
+    expect(mockUpload).toHaveBeenCalledTimes(2);
+  });
+  it('검사 API 실패 뒤 재검사에서도 업로드한 URL을 재사용한다', async () => {
+    mockApi.content.checkImages.mockRejectedValueOnce(new Error('검사 실패'));
+    await renderScreen(<PickedScreen />, client());
+    await fireEvent.press(await screen.findByText('다시 검사'));
+    await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
+    expect(mockUpload).toHaveBeenCalledTimes(1);
+    expect(mockApi.content.checkImages).toHaveBeenCalledTimes(2);
+  });
+  it('사진 추가는 기존 URL을 유지하고 같은 URI의 교체 파일은 새로 업로드한다', async () => {
+    await renderScreen(<PickedScreen />, client());
+    await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
+    const second = { ...localPhoto, uri: 'file:///second.jpg', name: 'second.jpg' };
+    await act(async () => useDraft.getState().set({ files: [localPhoto, second] }));
+    await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
+    expect(mockUpload).toHaveBeenCalledTimes(2);
+    await act(async () => useDraft.getState().set({ files: [{ ...localPhoto }, second] }));
+    await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalledTimes(3));
+    expect(mockUpload).toHaveBeenCalledTimes(3);
+  });
+  it('제거·초기화한 사진과 뒤늦은 업로드 응답은 초안에 남기지 않는다', async () => {
+    const pending = deferred<string>();
+    mockUpload.mockReturnValueOnce(pending.promise);
+    const rendered = await renderScreen(<PickedScreen />, client());
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledTimes(1));
+    await rendered.unmount();
+    useDraft.getState().reset();
+    await act(async () => pending.resolve(blobUrl));
+    expect(useDraft.getState().uploads).toEqual([]);
+    useDraft.getState().set({ files: [localPhoto] });
+    const next = await renderScreen(<PickedScreen />, client());
+    await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
+    expect(mockUpload).toHaveBeenCalledTimes(2);
+    await next.unmount();
+    useDraft.getState().set({ files: [] });
+    expect(useDraft.getState().uploads).toEqual([]);
+  });
+  it('보정한 사진은 이전 검사 URL 대신 보정본을 업로드한다', async () => {
+    const picked = await renderScreen(<PickedScreen />, client());
+    await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
+    await picked.unmount();
+    const edit = await renderScreen(<PhotoCheckScreen />, client());
+    await fireEvent.press(screen.getByText('회전'));
+    await fireEvent.press(screen.getByRole('button', { name: '다음' }));
+    await waitFor(() => expect(useDraft.getState().files[0]).toEqual(editedPhoto));
+    await edit.unmount();
+    expect(useDraft.getState().uploads).toEqual([]);
+    await renderScreen(<ConvertScreen />, client());
+    await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalled());
+    expect(mockUpload).toHaveBeenCalledTimes(2);
+    expect(mockUpload.mock.calls[1]?.[1]).toEqual(editedPhoto);
   });
 });

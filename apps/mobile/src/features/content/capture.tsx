@@ -298,25 +298,30 @@ export function PhotoCheckScreen() {
 
 /** p.62 #13 선택 사진 확인 + p.102 이미지 검사 (기기 → AI 서버) */
 export function PickedScreen() {
-  const { files, set } = useDraft();
+  const { files, fileVersion, set } = useDraft();
   const [dlg, setDlg] = useState<null | 'bad' | 'blurry'>(null);
   // 1) 형식 · 용량은 기기에서 먼저
   const local = Object.fromEntries(files.map((f) => [f.uri, checkFile('image', f)]));
   const bad = files.filter((f) => !local[f.uri]?.ok);
   // 2) 통과한 사진만 AI 서버가 필기 여부 · 글씨 신뢰도 판별
   const check = useQuery({
-    queryKey: ['image-check', files.map((f) => f.uri).join()],
+    queryKey: ['image-check', fileVersion],
     queryFn: async () => {
       const checked = await Promise.all(
         files
           .filter((f) => local[f.uri]?.ok)
-          .map(async (f) => ({
-            // 원본 이름과도 충돌하지 않도록 모든 파일에 서로 다른 위치를 붙인다.
-            name: `${files.indexOf(f)}-${f.name}`,
-            localUri: f.uri,
-            sizeBytes: f.size ?? 0,
-            uri: await uploadToBlob('image', f),
-          })),
+          .map(async (f) => {
+            const cached = useDraft.getState().uploads.find((upload) => upload.file === f);
+            const uri = cached?.url ?? (await uploadToBlob('image', f));
+            useDraft.getState().rememberUpload(f, uri);
+            return {
+              // 원본 이름과도 충돌하지 않도록 모든 파일에 서로 다른 위치를 붙인다.
+              name: `${files.indexOf(f)}-${f.name}`,
+              localUri: f.uri,
+              sizeBytes: f.size ?? 0,
+              uri,
+            };
+          }),
       );
       const result = await api.content.checkImages(
         checked.map(({ localUri: _localUri, ...request }) => request),
