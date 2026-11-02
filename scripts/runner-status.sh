@@ -529,16 +529,20 @@ main() {
   decide
   decide_usage
   # 지금 멈춤 단계로 확인되지 않으면(기록을 못 읽은 경우 포함) 다시 가능한 시각이 지난 멈춘 리뷰를 다시 돌림.
-  # 초기화 전환이 아닐 때 다시 돌린 것이 있어도 ▶️를 보냄
+  # 다시 돌린 · 돌리지 못한 것이 있으면 사용량 알림(🟡 등)과 따로 ▶️ embed를 붙임.
+  # 사용량 알림이 이미 ▶️(초기화 전환)이면 그 안에 함께 적으므로 붙이지 않음
   RESUMED=""; RESUME_FAILED=""; NEW_FAILED=${PREV_FAILED:-}
   [ "$CUR_USAGE" != stop ] && resume_paused
-  if [ -z "$USAGE_EVENT" ] && [ -n "$RESUMED$RESUME_FAILED" ]; then USAGE_EVENT=usage_resume; fi
-  # 러너 알림과 사용량 알림을 한 메시지로 보냄(하나만 보내지고 하나는 실패하는 일이 없게)
+  local resume_event=""
+  if [ -n "$RESUMED$RESUME_FAILED" ] && [ "$USAGE_EVENT" != usage_resume ]; then resume_event=usage_resume; fi
+  # 러너 · 사용량 · 다시 돌리기 알림을 한 메시지로 보냄(하나만 보내지고 하나는 실패하는 일이 없게).
+  # 보내지 못하면 상태(알린 실패 기록 포함)를 저장하지 않으므로 다음 확인에서 다시 시도 · 알림
   [ -n "$EVENT" ] && { compose "$EVENT"; add_embed; }
   [ -n "$USAGE_EVENT" ] && { compose "$USAGE_EVENT"; add_embed; }
+  [ -n "$resume_event" ] && { compose "$resume_event"; add_embed; }
   if [ -n "$EMBEDS" ]; then
     post || { echo "::error::디스코드로 보내지 못했습니다. 상태를 저장하지 않고 다음 실행에서 다시 보냅니다." >&2; return 1; }
-    echo "알림: $EVENT $USAGE_EVENT"
+    echo "알림: $EVENT $USAGE_EVENT $resume_event"
   else
     echo "알릴 것 없음"
   fi

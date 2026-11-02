@@ -1040,3 +1040,32 @@ not() { if "$@"; then return 1; fi; }
   [ "$status" -eq 0 ]
   not grep -qE '/rerun|codex-paused' "$TMP/gh.calls"
 }
+
+@test "main check: 🟡 경고와 다시 돌리기 실패가 같이 생기면 둘 다 보낸다(실패를 알리지 않고 기록하지 않음)" {
+  need_jq; fixtures; artifacts_fixture; prs_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook; RERUN_RC=1
+  artifact_zip 20 'at=1761897600\np_used=85\np_window=10080\np_reset=1762261200\n'
+  write_state 'status=online\nsince=5\nstuck=0\nerr=0\nusage=ok\n'
+  run main check
+  [ "$status" -eq 0 ]
+  [ "$(jq '.embeds | length' "$TMP/posted.json")" = 2 ]
+  [ "$(jq -r '.embeds[0].title' "$TMP/posted.json")" = "🟡 Codex 남은 사용량 20% 미만" ]
+  [ "$(jq -r '.embeds[1].title' "$TMP/posted.json")" = "▶️ Codex 리뷰 다시 시작" ]
+  [[ "$(jq -r '.embeds[1].description' "$TMP/posted.json")" == *"다시 돌리지 못함: #12"* ]]
+  grep -qx 'failed=52' "$STATE_FILE"
+}
+
+@test "main check: 다시 돌리기 · 디스코드 전송이 모두 실패하면 기록하지 않고, 다음 확인에서 다시 시도해 알린다" {
+  need_jq; fixtures; prs_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook
+  write_state 'status=online\nsince=5\nstuck=0\nerr=0\nusage=ok\n'
+  RERUN_RC=1 CURL_RC=22 run main check
+  [ "$status" -eq 1 ]
+  not grep -q '^failed=52' "$STATE_FILE"
+  not grep -q 'artifacts/52 -X DELETE' "$TMP/gh.calls"
+  # 다음 확인: 표시가 남아 있으므로 다시 시도하고, 아직 알리지 않았으므로 알림
+  : > "$TMP/gh.calls"
+  RERUN_RC=1 run main check
+  [ "$status" -eq 0 ]
+  grep -qx 'api repos/team/repo/actions/runs/152/rerun -X POST' "$TMP/gh.calls"
+  [[ "$(jq -r '.embeds[0].description' "$TMP/posted.json")" == *"다시 돌리지 못함: #12"* ]]
+  grep -qx 'failed=52' "$STATE_FILE"
+}
