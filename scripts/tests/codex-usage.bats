@@ -104,7 +104,7 @@ s_reset=" ]
 
 @test "한도 문구 'try again at 3:01 PM' → 오늘 15:01(서울)에 다시 가능" {
   printf 'ERROR: You\xe2\x80\x99ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 3:01 PM.\n' > "$BATS_TEST_TMPDIR/codex.log"
-  run_usage --since $(( NOW_MS - 60000 )) --log "$BATS_TEST_TMPDIR/codex.log"
+  run_usage --since $(( NOW_MS - 60000 )) --log "$BATS_TEST_TMPDIR/codex.log" --failed 1
   [ "$status" -eq 0 ]
   [ "$(value limit)" = 1 ]
   [ "$(value retry)" = 1793599260 ]  # 2026-11-02 06:01 UTC
@@ -113,17 +113,17 @@ s_reset=" ]
 
 @test "한도 문구의 시각이 이미 지났으면 다음 날, 날짜가 있으면 그 날짜" {
   echo "ERROR: You've hit your usage limit. try again at 9:05 AM." > "$BATS_TEST_TMPDIR/codex.log"
-  run_usage --since 0 --log "$BATS_TEST_TMPDIR/codex.log"
+  run_usage --since 0 --log "$BATS_TEST_TMPDIR/codex.log" --failed 1
   [ "$(value retry)" = 1793664300 ]  # 11/03 09:05 서울 = 11/03 00:05 UTC
   echo "ERROR: You've hit your usage limit. ... or try again at Nov 5th, 2026 12:00 AM." > "$BATS_TEST_TMPDIR/codex.log"
-  run_usage --since 0 --log "$BATS_TEST_TMPDIR/codex.log"
+  run_usage --since 0 --log "$BATS_TEST_TMPDIR/codex.log" --failed 1
   [ "$(value retry)" = 1793804400 ]  # 11/05 00:00 서울 = 11/04 15:00 UTC
 }
 
 @test "한도 문구에 시각이 없으면 다 쓴(100%) 창의 초기화 시각을 쓴다" {
   rollout rollout-a.jsonl "$(token_count '{"primary":{"used_percent":100,"window_minutes":300,"resets_at":1793600000},"secondary":{"used_percent":40,"window_minutes":10080,"resets_at":1793775042},"rate_limit_reached_type":"primary"}')"
   echo "ERROR: You've hit your usage limit." > "$BATS_TEST_TMPDIR/codex.log"
-  run_usage --since $(( NOW_MS - 60000 )) --log "$BATS_TEST_TMPDIR/codex.log"
+  run_usage --since $(( NOW_MS - 60000 )) --log "$BATS_TEST_TMPDIR/codex.log" --failed 1
   [ "$(value limit)" = 1 ] && [ "$(value retry)" = 1793600000 ]
 }
 
@@ -134,8 +134,33 @@ s_reset=" ]
 }
 
 @test "기록 · 로그가 모두 없거나 CODEX_HOME이 없어도 조용히 0으로 끝난다" {
-  run_usage --since 0 --log "$BATS_TEST_TMPDIR/없는.log"
+  run_usage --since 0 --log "$BATS_TEST_TMPDIR/없는.log" --failed 1
   [ "$status" -eq 0 ] && [ -z "$output" ]
   CODEX_HOME="$BATS_TEST_TMPDIR/없음" run_usage --since 0
   [ "$status" -eq 0 ] && [ -z "$output" ]
+}
+
+@test "리뷰가 성공했으면(--failed 없음) 로그의 한도 문구를 보지 않는다" {
+  echo "ERROR: You've hit your usage limit. try again at 3:01 PM." > "$BATS_TEST_TMPDIR/codex.log"
+  rollout rollout-a.jsonl "$(token_count "$WEEKLY")"
+  run_usage --since $(( NOW_MS - 60000 )) --log "$BATS_TEST_TMPDIR/codex.log"
+  [ "$(value limit)" = 0 ] && [ -z "$(value retry)" ] && [ "$(value p_used)" = 34 ]
+  run_usage --since $(( NOW_MS - 60000 )) --log "$BATS_TEST_TMPDIR/codex.log" --failed 0
+  [ "$(value limit)" = 0 ]
+}
+
+@test "로그에 찍힌 프롬프트(PR 디프)의 한도 문구는 줄 맨 앞이 ERROR:가 아니라 한도로 보지 않는다" {
+  # 이 기능의 테스트 디프처럼, 리뷰한 PR에 같은 문구가 있는 경우 (codex 로그에는 프롬프트도 찍힘)
+  printf '%s
+' 'user' '## PR 전체 변경 디프 (base...HEAD)'     "+  echo \"ERROR: You've hit your usage limit. try again at Nov 5th, 2026 12:00 AM.\" > x.log"     " ERROR: You've hit your usage limit. try again at 9:05 AM."     'codex' 'ERROR: stream disconnected before completion' > "$BATS_TEST_TMPDIR/codex.log"
+  run_usage --since 0 --log "$BATS_TEST_TMPDIR/codex.log" --failed 1
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+}
+
+@test "Windows 줄바꿈(CRLF) 로그의 한도 문구도 읽는다" {
+  printf 'x
+ERROR: Youâve hit your usage limit. try again at 3:01 PM.
+' > "$BATS_TEST_TMPDIR/codex.log"
+  run_usage --since 0 --log "$BATS_TEST_TMPDIR/codex.log" --failed 1
+  [ "$(value limit)" = 1 ] && [ "$(value retry)" = 1793599260 ]
 }

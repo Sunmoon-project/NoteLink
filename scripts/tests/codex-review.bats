@@ -233,52 +233,110 @@ need_jq() { command -v jq >/dev/null || skip "jq 없음"; }
   [ "$(jq -r "$(prev_review_jq me)" <<< "$json")" = $'t1\t1' ]
 }
 
-# ---------- record_usage (Codex 남은 사용량 기록) ----------
+# ---------- Codex 사용량 기록 · 멈춤 ----------
 
 # 가짜 사용량 스크립트: 받은 인자를 적고, FAKE_OUT을 출력하고 FAKE_RC로 끝남
 fake_usage_script() {
   USAGE_SCRIPT="$TMP/fake-usage.cjs"
-  cat > "$USAGE_SCRIPT" <<'JS'
-const fs = require('node:fs');
-fs.writeFileSync(process.env.ARGS_FILE, process.argv.slice(2).join(' '));
-process.stdout.write(process.env.FAKE_OUT || '');
-process.exit(Number(process.env.FAKE_RC || 0));
-JS
+  printf '%s\n' \
+    "const fs = require('node:fs');" \
+    "fs.writeFileSync(process.env.ARGS_FILE, process.argv.slice(2).join(' '));" \
+    "process.stdout.write(process.env.FAKE_OUT || '');" \
+    "process.exit(Number(process.env.FAKE_RC || 0));" > "$USAGE_SCRIPT"
   export ARGS_FILE="$TMP/args"
+  CODEX_USAGE_STATE="$TMP/state-usage"
 }
 
-@test "record_usage: CODEX_USAGE_FILE이 없으면 아무것도 하지 않는다" {
-  command -v node > /dev/null || skip "node 없음"
-  fake_usage_script
-  unset CODEX_USAGE_FILE
-  run record_usage 1000 "$TMP/codex.log"
-  [ "$status" -eq 0 ]
-  [ ! -e "$ARGS_FILE" ]
-}
+need_node() { command -v node > /dev/null || skip "node 없음"; }
 
-@test "record_usage: 시작 시각 · 로그를 넘기고 출력을 파일에 적는다" {
-  command -v node > /dev/null || skip "node 없음"
-  fake_usage_script
-  CODEX_USAGE_FILE="$TMP/usage.txt" FAKE_OUT=$'at=1\nlimit=0' run record_usage 1793590000000 "$TMP/codex.log"
+@test "record_usage: 시작 시각 · 로그 · 실패 여부를 넘기고, 이 컴퓨터의 기록과 결과 파일에 적는다" {
+  need_node; fake_usage_script
+  CODEX_USAGE_FILE="$TMP/usage.txt" FAKE_OUT=$'at=1\nlimit=0' run record_usage 1793590000000 "$TMP/codex.log" 1
   [ "$status" -eq 0 ]
   [ "$(cat "$TMP/usage.txt")" = $'at=1\nlimit=0' ]
-  [[ "$(cat "$ARGS_FILE")" == "--since 1793590000000 --log "*codex.log ]]
+  [ "$(cat "$CODEX_USAGE_STATE")" = $'at=1\nlimit=0' ]
+  [[ "$(cat "$ARGS_FILE")" == "--since 1793590000000 --log "*"codex.log --failed 1" ]]
 }
 
-@test "record_usage: 읽을 것이 없거나 스크립트가 실패해도 파일을 만들지 않고 성공한다" {
-  command -v node > /dev/null || skip "node 없음"
-  fake_usage_script
-  CODEX_USAGE_FILE="$TMP/usage.txt" run record_usage 1 "$TMP/codex.log"
+@test "record_usage: CODEX_USAGE_FILE이 없으면 이 컴퓨터의 기록에만 적고, 실패 여부는 기본 0" {
+  need_node; fake_usage_script
+  unset CODEX_USAGE_FILE
+  FAKE_OUT="at=1" run record_usage 1 "$TMP/codex.log"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$CODEX_USAGE_STATE")" = "at=1" ]
+  [[ "$(cat "$ARGS_FILE")" == *"--failed 0" ]]
+}
+
+@test "record_usage: 읽을 것이 없거나 스크립트가 실패하면 지난 기록을 지우지 않고 성공한다" {
+  need_node; fake_usage_script
+  echo "at=5" > "$CODEX_USAGE_STATE"
+  CODEX_USAGE_FILE="$TMP/usage.txt" run record_usage 1 "$TMP/codex.log" 0
   [ "$status" -eq 0 ] && [ ! -e "$TMP/usage.txt" ]
-  CODEX_USAGE_FILE="$TMP/usage.txt" FAKE_OUT="at=1" FAKE_RC=1 run record_usage 1 "$TMP/codex.log"
+  CODEX_USAGE_FILE="$TMP/usage.txt" FAKE_OUT="at=1" FAKE_RC=1 run record_usage 1 "$TMP/codex.log" 0
   [ "$status" -eq 0 ] && [ ! -e "$TMP/usage.txt" ]
+  [ "$(cat "$CODEX_USAGE_STATE")" = "at=5" ]
 }
 
 @test "record_usage: node가 없으면 건너뛰고 성공한다" {
-  USAGE_SCRIPT="$TMP/x.mjs"
-  PATH="$TMP/empty-path" CODEX_USAGE_FILE="$TMP/usage.txt" run record_usage 1 "$TMP/codex.log"
-  [ "$status" -eq 0 ] && [ ! -e "$TMP/usage.txt" ]
+  USAGE_SCRIPT="$TMP/x.mjs"; CODEX_USAGE_STATE="$TMP/state-usage"
+  PATH="$TMP/empty-path" CODEX_USAGE_FILE="$TMP/usage.txt" run record_usage 1 "$TMP/codex.log" 0
+  [ "$status" -eq 0 ] && [ ! -e "$TMP/usage.txt" ] && [ ! -e "$CODEX_USAGE_STATE" ]
   [[ "$output" == *"node가 없어"* ]]
+}
+
+# 지금 시각 기준으로 사용량 기록을 만듦: 나머지 인자 = key=value
+usage_state() {
+  CODEX_USAGE_STATE="$TMP/state-usage"
+  printf '%s\n' "at=$(( $(date +%s) - 600 ))" "$@" > "$CODEX_USAGE_STATE"
+}
+
+@test "usage_paused: 기록이 없거나 남은 양이 10%보다 많으면 리뷰를 한다" {
+  CODEX_USAGE_STATE="$TMP/없음"
+  not usage_paused
+  later=$(( $(date +%s) + 3600 ))
+  usage_state p_used=85 p_window=300 "p_reset=$later"   # 15% 남음 → 경고만
+  not usage_paused
+  [ "$CUR_USAGE" = warn ]
+}
+
+@test "usage_paused: 남은 양 10% 이하면 멈추고, 다시 돌릴 시각은 그 창의 초기화 시각" {
+  later=$(( $(date +%s) + 3600 ))
+  usage_state p_used=90 p_window=300 "p_reset=$later" s_used=40 s_window=10080 "s_reset=$(( later + 86400 ))"
+  usage_paused
+  [ "$USAGE_REASON" = low ] && [ "$USAGE_LEFT" = 10 ] && [ "$USAGE_RETRY" = "$later" ]
+}
+
+@test "usage_paused: 한도 문구가 있으면 다시 가능한 시각까지 멈추고, 지나면 다시 리뷰한다" {
+  usage_state limit=1 "retry=$(( $(date +%s) + 600 ))"
+  usage_paused
+  [ "$USAGE_REASON" = limit ]
+  usage_state limit=1 "retry=$(( $(date +%s) - 60 ))"
+  not usage_paused
+}
+
+@test "usage_paused: 초기화 시각이 지난 창은 다 남은 것으로 보고 리뷰한다" {
+  usage_state p_used=100 p_window=300 "p_reset=$(( $(date +%s) - 60 ))"
+  not usage_paused
+  [ "$CUR_USAGE" = ok ]
+}
+
+@test "pause_review: PR 댓글 없이 실행 화면에 경고 · 요약을 남기고, 멈춘 PR을 적은 뒤 성공으로 끝낸다" {
+  PR=12; HEAD_SHA=abc123; USAGE_REASON=low; USAGE_LEFT=8; USAGE_RETRY=1761904800  # 10/31 19:00 서울
+  gh() { echo "gh $*" >> "$TMP/gh.calls"; }
+  GITHUB_STEP_SUMMARY="$TMP/summary.md" CODEX_PAUSED_FILE="$TMP/paused.txt" run pause_review
+  [ "$status" -eq 0 ]
+  [[ "$output" == "::warning title=Codex 리뷰 멈춤::⏸️ PR #12: Codex 남은 사용량이 10% 이하(8% 남음) — 리뷰를 멈췄습니다. 10/31 19:00(서울) 사용량이 초기화되면 이 실행을 자동으로 다시 돌립니다." ]]
+  [[ "$(cat "$TMP/summary.md")" == "### ⏸️ Codex 리뷰 멈춤"*"10/31 19:00(서울)"* ]]
+  [ "$(cat "$TMP/paused.txt")" = $'pr=12\nsha=abc123\nretry=1761904800\nreason=low' ]
+  [ ! -e "$TMP/gh.calls" ]  # 댓글을 남기지 않음
+}
+
+@test "pause_review: 한도 도달 · Actions 밖(직접 실행)이면 직접 다시 실행하라고 적고 파일은 만들지 않는다" {
+  PR=12; HEAD_SHA=abc123; USAGE_REASON=limit; USAGE_LEFT=0; USAGE_RETRY=1761904800
+  unset CODEX_PAUSED_FILE GITHUB_STEP_SUMMARY
+  run pause_review
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Codex 사용량 한도에 걸림 — 리뷰를 멈췄습니다."*"초기화된 뒤 다시 실행하세요." ]]
 }
 
 @test "main: Codex 실행 바로 뒤(성공 여부를 보기 전)에 사용량을 기록한다" {
@@ -289,4 +347,14 @@ JS
   check_line=$(grep -n 'if \[ ! -s "\$REVIEW" \]' "$f" | cut -d: -f1)
   [ -n "$exec_line" ] && [ -n "$record_line" ] && [ -n "$check_line" ]
   [ "$record_line" -eq $(( exec_line + 1 )) ] && [ "$record_line" -lt "$check_line" ]
+}
+
+@test "main: 사용량 확인은 CI 통과 뒤 · Codex 실행 전이고, 한도로 실패해도 멈춤으로 끝낸다" {
+  local f="$BATS_TEST_DIRNAME/../codex-review.sh"
+  ci_line=$(grep -n 'echo "▶ CI 통과 ✅"' "$f" | cut -d: -f1)
+  gate_line=$(grep -n '^  if usage_paused; then pause_review; fi' "$f" | cut -d: -f1)
+  exec_line=$(grep -n 'codex exec ' "$f" | head -n 1 | cut -d: -f1)
+  fail_line=$(grep -n 'if usage_paused && \[ "\$USAGE_REASON" = limit \]; then pause_review; fi' "$f" | cut -d: -f1)
+  [ -n "$ci_line" ] && [ -n "$gate_line" ] && [ -n "$fail_line" ]
+  [ "$ci_line" -lt "$gate_line" ] && [ "$gate_line" -lt "$exec_line" ] && [ "$exec_line" -lt "$fail_line" ]
 }
