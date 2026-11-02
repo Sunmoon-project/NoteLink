@@ -6,10 +6,12 @@
     "moduleResolution": "nodenext",
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
+    // Mongoose @Prop / class-validator DTO는 선언만 하고 생성자에서 초기화하지 않으므로 끕니다.
+    "strictPropertyInitialization": false,
     "outDir": "dist",
     "rootDir": ".",
     "sourceMap": true,
-    "types": ["node"]
+    "types": ["node", "express"]
   },
   "include": ["src", "test", "vitest.config.ts"]
 }
