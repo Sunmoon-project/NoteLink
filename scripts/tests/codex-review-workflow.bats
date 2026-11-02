@@ -83,8 +83,9 @@ not() { if "$@"; then return 1; fi; }
   local workflow="$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml"
   grep -qF 'CODEX_PAUSED_FILE: ${{ runner.temp }}/codex-paused.txt' "$workflow"
   grep -qF 'path: ${{ runner.temp }}/codex-paused.txt' "$workflow"
-  grep -qF 'name: codex-paused-pr-${{ github.event.pull_request.number }}' "$workflow"
-  grep -qF 'PAUSED_PREFIX="codex-paused-pr-"' "$BATS_TEST_DIRNAME/../runner-status.sh"
+  grep -qF 'name: codex-paused' "$workflow"
+  grep -qF 'PAUSED_ARTIFACT="${PAUSED_ARTIFACT:-codex-paused}"' "$BATS_TEST_DIRNAME/../runner-status.sh"
+  grep -qF 'PAUSED_FILE_NAME="codex-paused.txt"' "$BATS_TEST_DIRNAME/../runner-status.sh"
   # 다시 돌린 실행이 같은 이름으로 다시 올릴 수 있어야 함
   [ "$(grep -c 'overwrite: true' "$workflow")" -eq 2 ]
 }

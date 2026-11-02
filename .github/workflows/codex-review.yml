@@ -95,14 +95,14 @@ jobs:
           overwrite: true
           retention-days: 14
 
-      # 사용량 때문에 리뷰를 멈췄으면 PR 번호를 담은 결과 파일을 올립니다. 사용량이 초기화되면 러너 상태 알림이
-      # 이 이름(codex-paused-pr-<번호>)으로 멈춘 실행을 찾아 다시 돌리고(Re-run), 이 결과 파일을 지웁니다.
+      # 사용량 때문에 리뷰를 멈췄으면 PR 번호 · 다시 가능한 시각을 담은 결과 파일(codex-paused)을 올립니다.
+      # 러너 상태 알림이 15분마다 이 이름으로 찾아, 그 시각이 지난 것을 다시 돌리고(Re-run) 이 결과 파일을 지웁니다.
       # 주간 한도로 최대 7일 멈출 수 있어 10일 보관합니다.
       - name: 멈춘 리뷰 표시 올리기
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: codex-paused-pr-${{ github.event.pull_request.number }}
+          name: codex-paused
           path: ${{ runner.temp }}/codex-paused.txt
           if-no-files-found: ignore
           overwrite: true
