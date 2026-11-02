@@ -80,7 +80,8 @@ export const httpApi: Api = {
     createFolder: (p) => http.post(P.folders, p),
     deleteFolder: (id) => http.del(P.folder(id)),
     materials: (folderId) => http.get(P.folderMaterials(folderId)),
-    createMaterial: (p) => http.post(P.materials, p),
+    createMaterial: ({ requestId, ...payload }) =>
+      http.post(P.materials, payload, { idempotencyKey: requestId }),
     material: (id) => http.get(P.material(id)),
     saveMaterial: (id) => http.patch(P.material(id), { saved: true }),
     updateSummary: (id, sections) => http.patch(P.material(id), { summary: { sections } }),
