@@ -205,6 +205,8 @@ const dateLabel = (m: Material, kind: string) =>
 export function HandDetailScreen() {
   const { tab: t } = useLocalSearchParams<{ tab?: '정리된 노트' | '원본 이미지' }>();
   const { id, m, isError, refetch } = useMaterial();
+  const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
+  const subject = folders.data?.find((f) => f._id === m?.folderId)?.subjectName;
   const [tab, setTab] = useState<'정리된 노트' | '원본 이미지'>(t ?? '정리된 노트');
   const [opt, setOpt] = useState(false);
   if (isError) return <MaterialError retry={refetch} />;
@@ -240,8 +242,12 @@ export function HandDetailScreen() {
             <OriginalFile m={m} />
           )}
         </View>
-        <Label>과목</Label>
-        <Badge>수학</Badge>
+        {subject && (
+          <>
+            <Label>과목</Label>
+            <Badge>{subject}</Badge>
+          </>
+        )}
       </Screen>
       <FileOptions m={m} open={opt} onClose={() => setOpt(false)} />
     </View>

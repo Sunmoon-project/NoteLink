@@ -601,3 +601,40 @@ it('등록 목록 확인 중 계정이 바뀌면 이전 결과를 캐시나 화�
     useAuth.setState({ userId: owner });
   }
 });
+
+describe('PR36 자료 표시는 실제 값만 쓴다', () => {
+  it('필기 과목은 소속 폴더 값을 쓰고, 폴더를 못 찾으면 생략한다', async () => {
+    setParams({ id: 'material1' });
+    const first = await renderScreen(<HandDetailScreen />, client());
+    expect(await screen.findByText('생물')).toBeTruthy();
+    expect(screen.queryByText('수학')).toBeNull();
+    await first.unmount();
+
+    mockApi.content.folders.mockResolvedValue([]);
+    await renderScreen(<HandDetailScreen />, client());
+    await screen.findByText('실제 업로드 자료');
+    await waitFor(() => expect(mockApi.content.folders).toHaveBeenCalledTimes(2));
+    await act(async () => {});
+    expect(screen.queryByText('과목')).toBeNull();
+  });
+
+  it.each([
+    ['done', '자동 요약 완료'],
+    ['failed', '요약 실패'],
+    ['processing', '요약 중'],
+  ])('녹음 목록은 처리 상태 %s를 %s로 표시하고 고정 길이를 쓰지 않는다', async (status, label) => {
+    mockApi.content.materials.mockResolvedValue([
+      {
+        _id: 'rec1',
+        title: '녹음 자료',
+        kind: 'recording',
+        createdAt: '2026-11-01T00:00:00Z',
+        processing: { status, progress: 0, jobId: null },
+      },
+    ]);
+    setParams({ id: 'folder1' });
+    await renderScreen(<FolderScreen />, client());
+    expect(await screen.findByText(new RegExp(`11/1 업로드 · ${label}$`))).toBeTruthy();
+    expect(screen.queryByText(/32:10/)).toBeNull();
+  });
+});

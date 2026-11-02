@@ -241,6 +241,13 @@ export function NoteTitleScreen() {
   );
 }
 
+const summaryState = (m: Material) =>
+  m.processing.status === 'done'
+    ? '자동 요약 완료'
+    : m.processing.status === 'failed'
+      ? '요약 실패'
+      : '요약 중';
+
 export function FolderScreen() {
   const { id, upload } = useLocalSearchParams<{ id: string; upload?: 'hand' | 'rec' | 'doc' }>();
   const qc = useQueryClient();
@@ -367,10 +374,9 @@ export function FolderScreen() {
                   <View className="flex-1">
                     <Text className="text-subhead font-semibold text-ink">{m.title}</Text>
                     <Text className="text-caption2 text-sub">
-                      {KIND[m.kind][1]} ·{' '}
-                      {m.kind === 'recording'
-                        ? '32:10 · 자동 요약 완료'
-                        : `${seoul(m.createdAt).getMonth() + 1}/${seoul(m.createdAt).getDate()} 업로드`}
+                      {KIND[m.kind][1]} · {seoul(m.createdAt).getMonth() + 1}/
+                      {seoul(m.createdAt).getDate()} 업로드
+                      {m.kind === 'recording' && ` · ${summaryState(m)}`}
                     </Text>
                   </View>
                   <ChevronRight size={ICON.sm} color={C.sub} />
