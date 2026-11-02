@@ -65,6 +65,8 @@ RUN_JQ='[.path, .event, .status] | @tsv'
 # 멈춘 리뷰 표시 결과 파일 (codex-review.yml이 올림, 안에 pr= · retry= …)
 PAUSED_ARTIFACT="${PAUSED_ARTIFACT:-codex-paused}"
 PAUSED_FILE_NAME="codex-paused.txt"
+# 만료되지 않은 멈춤 표시: created_at 	 결과 파일 id 	 실행 id (쪽마다 나오므로 합친 뒤 정렬)
+PAUSED_JQ='.artifacts[] | select(.expired | not) | [.created_at, .id, .workflow_run.id] | @tsv'
 
 # kst · load_usage · usage_level (리뷰 컴퓨터와 같은 기준)
 # shellcheck source=codex-usage-lib.sh
@@ -83,8 +85,9 @@ duration() {  # $1 = 분 → "2일 3시간 5분" / "45분"
 # → PREV_STATUS(마지막으로 안 상태: online|offline, 처음이면 빈 값) · PREV_SINCE(그 상태가 된 시각, 모르면 0)
 #   · PREV_STUCK(🟡 알림을 보냈는지 0|1) · PREV_ERR(연속으로 상태를 읽지 못한 횟수)
 #   · PREV_USAGE(마지막으로 안 Codex 사용량 단계: ok|warn|stop, 처음이면 빈 값)
+#   · PREV_FAILED(다시 돌리기에 실패해 이미 알린 멈춤 표시 id, 쉼표로 구분)
 load_state() {
-  PREV_STATUS=""; PREV_SINCE=0; PREV_STUCK=0; PREV_ERR=0; PREV_USAGE=""
+  PREV_STATUS=""; PREV_SINCE=0; PREV_STUCK=0; PREV_ERR=0; PREV_USAGE=""; PREV_FAILED=""
   [ -f "$STATE_FILE" ] || return 0
   local k v
   while IFS='=' read -r k v; do
@@ -94,6 +97,7 @@ load_state() {
       stuck) [[ "$v" =~ ^[01]$ ]] && PREV_STUCK=$v ;;
       err) [[ "$v" =~ ^[0-9]+$ ]] && PREV_ERR=$v ;;
       usage) [[ "$v" =~ ^(ok|warn|stop)$ ]] && PREV_USAGE=$v ;;
+      failed) [[ "$v" =~ ^[0-9]+(,[0-9]+)*$ ]] && PREV_FAILED=$v ;;
     esac
   done < "$STATE_FILE"
   return 0
@@ -101,13 +105,14 @@ load_state() {
 
 save_state() {
   mkdir -p "$(dirname "$STATE_FILE")"
-  printf 'status=%s\nsince=%s\nstuck=%s\nerr=%s\nusage=%s\n' \
-    "$NEW_STATUS" "$NEW_SINCE" "$NEW_STUCK" "$NEW_ERR" "$NEW_USAGE" > "$STATE_FILE"
+  printf 'status=%s\nsince=%s\nstuck=%s\nerr=%s\nusage=%s\nfailed=%s\n' \
+    "$NEW_STATUS" "$NEW_SINCE" "$NEW_STUCK" "$NEW_ERR" "$NEW_USAGE" "${NEW_FAILED:-}" > "$STATE_FILE"
 }
 
 state_changed() {
   [ ! -f "$STATE_FILE" ] || [ "$NEW_STATUS" != "$PREV_STATUS" ] || [ "$NEW_SINCE" != "$PREV_SINCE" ] \
-    || [ "$NEW_STUCK" != "$PREV_STUCK" ] || [ "$NEW_ERR" != "$PREV_ERR" ] || [ "$NEW_USAGE" != "$PREV_USAGE" ]
+    || [ "$NEW_STUCK" != "$PREV_STUCK" ] || [ "$NEW_ERR" != "$PREV_ERR" ] || [ "$NEW_USAGE" != "$PREV_USAGE" ] \
+    || [ "${NEW_FAILED:-}" != "${PREV_FAILED:-}" ]
 }
 
 # ---------- GitHub 조회 ----------
@@ -218,18 +223,26 @@ sort_prs() {  # "#34 #12" → "#12 #34"
   tr ' ' '\n' | grep -E '^#[0-9]+$' | sort -t '#' -k 2 -n | paste -sd ' ' -
 }
 
-# 다시 가능한 시각이 지난 멈춘 리뷰를 다시 돌림 → RESUMED · RESUME_FAILED ("#12 #34" 꼴)
-# - codex-paused 결과 파일을 최근 것부터 봄. PR마다 가장 최근 표시 하나로 정함(같은 PR의 옛 표시는 함께 지움)
+# 다시 가능한 시각이 지난 멈춘 리뷰를 다시 돌림 → RESUMED · RESUME_FAILED("#12 #34" 꼴, 새로 알릴 실패만)
+#   · NEW_FAILED(다시 돌리기에 실패한 표시 id. 상태 파일에 남겨 같은 실패를 15분마다 다시 알리지 않음)
+# - codex-paused 결과 파일을 모든 쪽(--paginate)에서 최근 것부터 봄. PR마다 가장 최근 표시 하나로 정함
+#   (다시 돌렸거나 닫힌 PR이면 그 PR의 옛 표시도 함께 지움)
 # - 표시의 retry가 지나지 않았거나, 그 실행이 아직 끝나지 않았으면 그대로 둠(다음 확인에서 다시 봄)
 # - 리뷰 워크플로(pull_request_target)가 올린 표시만 믿고, 다른 것은 건너뜀
-# - 닫힌 PR은 돌리지 않고 표시만 지움. 다시 돌리기에 실패하면 알리고 표시를 지움(15분마다 같은 알림이 가지 않게)
-# - 목록을 읽지 못하면 아무것도 하지 않음(다음 확인에서 다시)
+# - 닫힌 PR은 돌리지 않고 표시만 지움
+# - 다시 돌리기에 실패하면 표시를 남겨 다음 확인에서 다시 시도하고, 처음 실패했을 때만 알림
+# - 목록을 읽지 못하면 아무것도 하지 않음(다음 확인에서 다시, 알린 실패 기록은 그대로)
 resume_paused() {
   RESUMED=""; RESUME_FAILED=""
-  local list id run src pr retry state tmp
+  local list id run src pr retry state tmp failed=""
   local -A decided=()
-  list=$(gh api "repos/$REPO/actions/artifacts?name=$PAUSED_ARTIFACT&per_page=100" \
-    --jq "$ARTIFACT_JQ" 2> /dev/null) || return 0
+  if ! list=$(gh api "repos/$REPO/actions/artifacts?name=$PAUSED_ARTIFACT&per_page=100" \
+      --jq "$PAUSED_JQ" --paginate 2> /dev/null); then
+    NEW_FAILED=${PREV_FAILED:-}
+    return 0
+  fi
+  NEW_FAILED=""
+  list=$(sort -r <<< "$list" | cut -f 2,3)  # 모든 쪽을 합쳐 최근 것부터
   [ -n "$list" ] || return 0
   tmp=$(mktemp)
   while IFS=$'\t' read -r id run; do
@@ -241,8 +254,10 @@ resume_paused() {
     retry=$(sed -n 's/^retry=\([0-9]\{1,\}\)$/\1/p' "$tmp" | head -n 1)
     [ -n "$pr" ] || continue
     if [ -n "${decided[$pr]:-}" ]; then
-      # 같은 PR의 더 오래된 표시: 가장 최근 표시를 처리했으면 함께 지움
-      [ "${decided[$pr]}" = wait ] || gh api "repos/$REPO/actions/artifacts/$id" -X DELETE > /dev/null 2>&1 || true
+      # 같은 PR의 더 오래된 표시: 가장 최근 표시로 다시 돌렸거나 닫힌 PR이면 함께 지움
+      case "${decided[$pr]}" in
+        resumed | closed) gh api "repos/$REPO/actions/artifacts/$id" -X DELETE > /dev/null 2>&1 || true ;;
+      esac
       continue
     fi
     if [ -n "$retry" ] && [ "$retry" -gt "$NOW" ]; then decided[$pr]=wait; continue; fi
@@ -253,11 +268,15 @@ resume_paused() {
     elif gh api "repos/$REPO/actions/runs/$run/rerun" -X POST > /dev/null 2>&1; then
       decided[$pr]=resumed; RESUMED+=" #$pr"
     else
-      decided[$pr]=failed; RESUME_FAILED+=" #$pr"
+      # 표시를 남겨 다음 확인에서 다시 시도. 이미 알린 실패면 다시 알리지 않음
+      decided[$pr]=failed; failed+="${failed:+,}$id"
+      [[ ",${PREV_FAILED:-}," == *",$id,"* ]] || RESUME_FAILED+=" #$pr"
+      continue
     fi
     gh api "repos/$REPO/actions/artifacts/$id" -X DELETE > /dev/null 2>&1 || true
   done <<< "$list"
   rm -f "$tmp"
+  NEW_FAILED=$failed
   RESUMED=$(sort_prs <<< "$RESUMED"); RESUME_FAILED=$(sort_prs <<< "$RESUME_FAILED")
   return 0
 }
@@ -411,7 +430,7 @@ $(usage_line)" ;;
       if [ -n "$RESUMED" ]; then TEXT+=" 멈췄던 리뷰를 다시 돌립니다: $RESUMED"
       elif [ -z "$RESUME_FAILED" ]; then TEXT+=" 다시 돌릴 멈춘 리뷰는 없습니다."; fi
       if [ -n "$RESUME_FAILED" ]; then TEXT+="
-다시 돌리지 못함: $RESUME_FAILED — PR의 Codex 리뷰 실행을 직접 Re-run 하세요. [실패한 Codex 리뷰]($failed)"; fi
+다시 돌리지 못함: $RESUME_FAILED — 15분마다 다시 시도합니다. 계속 안 되면 PR의 Codex 리뷰 실행을 직접 Re-run 하세요. [실패한 Codex 리뷰]($failed)"; fi
       TEXT+="
 $(usage_line)" ;;
     offline)
@@ -511,7 +530,7 @@ main() {
   decide_usage
   # 지금 멈춤 단계로 확인되지 않으면(기록을 못 읽은 경우 포함) 다시 가능한 시각이 지난 멈춘 리뷰를 다시 돌림.
   # 초기화 전환이 아닐 때 다시 돌린 것이 있어도 ▶️를 보냄
-  RESUMED=""; RESUME_FAILED=""
+  RESUMED=""; RESUME_FAILED=""; NEW_FAILED=${PREV_FAILED:-}
   [ "$CUR_USAGE" != stop ] && resume_paused
   if [ -z "$USAGE_EVENT" ] && [ -n "$RESUMED$RESUME_FAILED" ]; then USAGE_EVENT=usage_resume; fi
   # 러너 알림과 사용량 알림을 한 메시지로 보냄(하나만 보내지고 하나는 실패하는 일이 없게)

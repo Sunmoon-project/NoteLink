@@ -13,7 +13,7 @@ setup() {
   NOW=1761900000  # 2025-10-31 08:40:00 UTC = 17:40 서울
   PREV_STATUS=""; PREV_SINCE=0; PREV_STUCK=0; PREV_ERR=0
   CUR_STATUS=online; BUSY=false; QUEUED=0; WAIT_MIN=0; ERROR_MSG=""
-  PREV_USAGE=""; USAGE_ERR=0; no_usage  # no_usage는 scripts/codex-usage-lib.sh
+  PREV_USAGE=""; PREV_FAILED=""; USAGE_ERR=0; no_usage  # no_usage는 scripts/codex-usage-lib.sh
 }
 
 need_jq() { command -v jq > /dev/null || skip "jq 없음"; }
@@ -276,9 +276,11 @@ gh() {
   case "$path" in
     *actions/runners*) jq -r "$filter" "$TMP/runners.json" ;;
     *"actions/artifacts?name="*)  # 결과 파일 목록: codex-paused는 paused.json, 그 밖은 artifacts.json (없으면 빈 목록)
-      local list="$TMP/artifacts.json"
-      [[ "$path" == *"name=codex-paused&"* ]] && list="$TMP/paused.json"
-      if [ -f "$list" ]; then jq -r "$filter" "$list"
+      if [[ "$path" == *"name=codex-paused&"* ]]; then
+        if [ -f "$TMP/paused.json" ]; then
+          for f in $(pages paused); do jq -r "$filter" "$f"; done
+        else jq -r "$filter" <<< '{"artifacts":[]}'; fi
+      elif [ -f "$TMP/artifacts.json" ]; then jq -r "$filter" "$TMP/artifacts.json"
       else jq -r "$filter" <<< '{"artifacts":[]}'; fi ;;
     *actions/artifacts/*/zip)  # 결과 파일 내려받기: id마다 $TMP/artifact-<id>.zip
       local id=${path#*artifacts/}; id=${id%/zip}
@@ -867,25 +869,78 @@ prs_fixture() {
   [[ " $RESUMED $RESUME_FAILED " != *"#90"* ]]
 }
 
-@test "resume_paused: 다시 돌리기에 실패하면 알리고 표시를 지우며, 실행이 아직 안 끝났으면 기다린다" {
+@test "resume_paused: 다시 돌리기에 실패하면 표시를 남겨 다음에 다시 시도하고, 처음 실패만 알린다" {
   need_jq; prs_fixture
   RERUN_RC=1 resume_paused
-  [ -z "$RESUMED" ] && [ "$RESUME_FAILED" = "#12" ]
+  [ -z "$RESUMED" ] && [ "$RESUME_FAILED" = "#12" ] && [ "$NEW_FAILED" = 52 ]
+  not grep -qE 'artifacts/5[12] -X DELETE' "$TMP/gh.calls"
+  # 다음 확인: 다시 시도하지만 이미 알렸으므로 알리지 않음
+  : > "$TMP/gh.calls"; PREV_FAILED=$NEW_FAILED
+  RERUN_RC=1 resume_paused
+  [ -z "$RESUME_FAILED" ] && [ "$NEW_FAILED" = 52 ]
+  grep -qx 'api repos/team/repo/actions/runs/152/rerun -X POST' "$TMP/gh.calls"
+  # 그다음 확인에서 성공하면 표시를 지우고 실패 기록도 비움
+  : > "$TMP/gh.calls"; PREV_FAILED=$NEW_FAILED
+  resume_paused
+  [ "$RESUMED" = "#12" ] && [ -z "$RESUME_FAILED" ] && [ -z "$NEW_FAILED" ]
   grep -qx 'api repos/team/repo/actions/artifacts/52 -X DELETE' "$TMP/gh.calls"
-  : > "$TMP/gh.calls"
+  grep -qx 'api repos/team/repo/actions/artifacts/51 -X DELETE' "$TMP/gh.calls"
+}
+
+@test "resume_paused: 실행이 아직 안 끝났으면 기다린다" {
+  need_jq; prs_fixture
   run_info 152 "$REVIEW_WF" pull_request_target in_progress
   resume_paused
   [ -z "$RESUMED" ] && [ -z "$RESUME_FAILED" ]
   not grep -qE 'runs/152/rerun|artifacts/5[12] -X DELETE' "$TMP/gh.calls"
 }
 
-@test "resume_paused: 멈춘 리뷰가 없거나 목록을 읽지 못하면 아무것도 하지 않는다" {
-  need_jq
+@test "resume_paused: 표시가 100건을 넘어도 모든 쪽을 보고, 쪽을 합쳐 최근 것부터 정한다" {
+  need_jq; prs_fixture
+  # 첫 쪽: 아직 시각 전인 PR 90의 표시만 · 둘째 쪽: 다시 가능한 PR 12의 표시(52가 51보다 최근)
+  printf '%s\n' '{"artifacts":[{"id":57,"expired":false,"created_at":"2025-10-31T06:00:00Z","workflow_run":{"id":157}}]}' > "$TMP/paused.json"
+  printf '%s\n' '{"artifacts":[' \
+    ' {"id":51,"expired":false,"created_at":"2025-10-31T01:00:00Z","workflow_run":{"id":150}},' \
+    ' {"id":52,"expired":false,"created_at":"2025-10-31T03:00:00Z","workflow_run":{"id":152}}]}' > "$TMP/paused.p2.json"
   resume_paused
-  [ -z "$RESUMED" ] && [ -z "$RESUME_FAILED" ]
+  grep -q 'actions/artifacts?name=codex-paused&per_page=100 --jq .* --paginate' "$TMP/gh.calls"
+  [ "$RESUMED" = "#12" ]
+  grep -qx 'api repos/team/repo/actions/runs/152/rerun -X POST' "$TMP/gh.calls"
+  not grep -q 'runs/150/rerun' "$TMP/gh.calls"
+}
+
+@test "resume_paused: 멈춘 리뷰가 없거나 목록을 읽지 못하면 아무것도 하지 않는다(못 읽으면 실패 기록 유지)" {
+  need_jq
+  PREV_FAILED=52
+  resume_paused
+  [ -z "$RESUMED" ] && [ -z "$RESUME_FAILED" ] && [ -z "$NEW_FAILED" ]  # 표시가 없으니 기록도 정리
   prs_fixture
   GH_FAIL=1 resume_paused
-  [ -z "$RESUMED" ] && [ -z "$RESUME_FAILED" ]
+  [ -z "$RESUMED" ] && [ -z "$RESUME_FAILED" ] && [ "$NEW_FAILED" = 52 ]
+}
+
+@test "save_state · load_state: 알린 '다시 돌리기 실패' 표시 id를 저장하고, 이상한 값은 무시한다" {
+  NEW_STATUS=online; NEW_SINCE=0; NEW_STUCK=0; NEW_ERR=0; NEW_USAGE=ok; NEW_FAILED=52,60
+  save_state
+  load_state
+  [ "$PREV_FAILED" = 52,60 ]
+  write_state 'status=online\nfailed=52;rm -rf /\n'
+  load_state
+  [ -z "$PREV_FAILED" ]
+}
+
+@test "main check: 다시 돌리기에 실패하면 한 번 알리고 기록하며, 다음 확인에서는 다시 알리지 않는다" {
+  need_jq; fixtures; prs_fixture; STATUS_TOKEN=t; DISCORD_WEBHOOK=https://discord.test/hook; RERUN_RC=1
+  write_state 'status=online\nsince=5\nstuck=0\nerr=0\nusage=ok\n'
+  run main check
+  [ "$status" -eq 0 ]
+  [[ "$(jq -r '.embeds[0].description' "$TMP/posted.json")" == *"다시 돌리지 못함: #12 — 15분마다 다시 시도합니다."* ]]
+  grep -qx 'failed=52' "$STATE_FILE"
+  rm -f "$TMP/posted.json"
+  run main check
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMP/posted.json" ]
+  grep -qx 'failed=52' "$STATE_FILE"
 }
 
 @test "main check: 러너 오프라인과 리뷰 멈춤을 한 메시지(embed 두 개)로 보내고 둘 다 저장한다" {
