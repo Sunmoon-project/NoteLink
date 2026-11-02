@@ -121,6 +121,12 @@ def number_values(s: str | None) -> tuple[list[Decimal], str]:
     return vals, _TRAILING.sub("", " ".join(rest.lower().split()))
 
 
+def number_spans(s: str) -> list[tuple[int, int, list[Decimal]]]:
+    """s 안의 수마다 (시작, 끝, 값). 위치를 쓰려면 s는 NFC이고 쉼표가 없어야 합니다
+    (number_values는 쉼표를 지우고 읽음). 값을 읽지 못한 지수는 빈 목록입니다."""
+    return [(*m.span(), number_values(m.group(0))[0]) for m in _NUMBER.finditer(s)]
+
+
 def same_value(a: str, b: str) -> bool:
     """같은 값을 다른 꼴로 쓴 두 보기 (350,000 CFU/mL과 3.5×10^5 CFU/mL, 미생 시험).
 

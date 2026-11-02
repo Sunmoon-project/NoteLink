@@ -99,7 +99,7 @@ def tidy(d: Draft) -> Draft:
     stem = BLANK.sub("____", d["stem"])
     if "____" in passage and "뜻" in stem:  # 빈칸 문장인데 '한국어 뜻에 알맞은…'으로 물음
         stem = "다음 빈칸에 들어갈 가장 알맞은 표현을 고르시오."
-    options = _strip_labels(d["options"])
+    options = strip_labels(d["options"])
     answer = d["answer"]
     if options != [o.strip() for o in d["options"]]:  # 기호를 뗐으면 기호 붙은 정답도 같이 뗌
         bare = _LABEL.sub("", answer).strip()
@@ -107,7 +107,7 @@ def tidy(d: Draft) -> Draft:
     return {**d, "stem": stem, "passage": passage, "options": options, "answer": answer}
 
 
-def _strip_labels(options: list[str]) -> list[str]:
+def strip_labels(options: list[str]) -> list[str]:
     """보기가 모두 A, B, C… 순서로 기호를 달고 있을 때만 뗍니다(기호 뒤 띄어쓰기는 없어도 됨).
 
     'B. anthracis' · 'E. coli' 같은 학명의 첫 글자를 기호로 보고 지우지 않게 합니다.

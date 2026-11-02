@@ -191,3 +191,95 @@ def test_failed_llm_calls_do_not_flag_options() -> None:
     d = draft("The rope was ____ to the post.", ["fastened", "secured", "a", "b", "c"], "fastened")
     llm = FakeLlm({"Natural": natural(*[LlmError("HTTP 503")] * 9)})
     assert qa.two_answers(llm, d, PAGE, "빈칸") == []
+
+
+# ---------- 걸린 오답 보기만 바꾸기 (repair · checked) ----------
+
+# 장면 · 규칙 문제(빈칸 아님)는 LLM 검사 없이 노트 묶음만 봄: 호출 순서를 정하기 쉬움
+SCENE = "상자를 쌓는 상황"
+
+
+def no_conflict(d: Draft) -> tuple[list[str], int | None]:
+    return [], d["options"].index(d["answer"])
+
+
+def test_repair_swaps_only_the_flagged_options() -> None:
+    d = draft(SCENE, ["stack", "stock", "fasten", "order", "move"], "stack")
+    llm = FakeLlm({"Repair": [{"options": ["lift"]}]})
+    fixed = qa.repair(llm, d, {"stock"}, ["노트 묶음"], PAGE, avoid=["pile"])
+    assert fixed is not None
+    assert fixed["options"] == ["stack", "lift", "fasten", "order", "move"]
+    assert (fixed["stem"], fixed["passage"], fixed["answer"]) == (d["stem"], SCENE, "stack")
+    user = llm.calls[0].user
+    assert "바꿀 오답 보기: stock" in user and "쓰지 않을 말: pile, stock" in user
+    assert llm.calls[0].model == settings.quiz_gen_model
+
+
+@pytest.mark.parametrize(
+    ("hits", "new"),
+    [
+        (set(), None),  # 걸린 보기 없음
+        ({"stock", "fasten", "order"}, None),  # 3개 이상: 문장 자체를 새로 만들어야 함
+        ({"stack"}, None),  # 정답은 바꾸지 않음
+    ],
+)
+def test_repair_gives_up_without_a_call(hits: set[str], new: None) -> None:
+    d = draft(SCENE, ["stack", "stock", "fasten", "order", "move"], "stack")
+    llm = FakeLlm()
+    assert qa.repair(llm, d, hits, ["x"], PAGE) is new
+    assert llm.calls == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        [{"options": ["stocks"]}],  # 피할 말의 변형
+        [{"options": ["a", "b"]}],  # 개수가 다름
+        [{"options": [3]}],  # 모양이 틀림
+        [LlmError("HTTP 503")],
+    ],
+)
+def test_repair_returns_none_when_the_new_option_is_unusable(
+    answer: list[JsonObject | LlmError],
+) -> None:
+    d = draft(SCENE, ["stack", "stock", "fasten", "order", "move"], "stack")
+    assert qa.repair(FakeLlm({"Repair": answer}), d, {"stock"}, ["x"], PAGE) is None
+
+
+def test_checked_passes_a_clean_draft_without_repair() -> None:
+    d = draft(SCENE, ["stack", "fasten", "order", "move", "lift"], "stack")
+    llm = FakeLlm()
+    assert qa.checked(llm, d, no_conflict, PAGE, "규칙") == (d, [], None, False)
+    assert llm.calls == []
+
+
+def test_checked_repairs_and_rechecks() -> None:
+    d = draft(SCENE, ["fasten", "stock", "stack", "order", "move"], "stack")
+    hits: list[str] = []
+    llm = FakeLlm({"Repair": [{"options": ["lift"]}]})
+    fixed, why, k, repaired = qa.checked(llm, d, no_conflict, PAGE, "규칙", hits=hits)
+    assert (fixed["options"], why, k, repaired) == (
+        ["fasten", "lift", "stack", "order", "move"],
+        [],
+        2,
+        True,
+    )
+    assert hits == ["stock"]  # 다음 시도에서 피할 낱말
+
+
+def test_checked_keeps_the_first_reasons_when_the_repair_fails_again() -> None:
+    d = draft(SCENE, ["stack", "stock", "fasten", "order", "move"], "stack")
+    llm = FakeLlm({"Repair": [{"options": ["lift"]}]})
+
+    def code_fails(x: Draft) -> tuple[list[str], int | None]:
+        return ["보기 5개가 아니거나 겹침"], None
+
+    out = qa.checked(llm, d, code_fails, PAGE, "규칙")
+    assert out == (d, ["노트에서 정답과 같은 묶음인 보기: stock"], None, False)
+
+
+def test_repair_keeps_a_new_option_that_only_contains_the_answer() -> None:
+    # same_item은 안에 들어 있으면 같다고 봄: 정답 'be'와 비교하면 'became'까지 버리게 됨
+    d = draft(SCENE, ["be", "is", "are", "was", "been"], "be")
+    fixed = qa.repair(FakeLlm({"Repair": [{"options": ["became"]}]}), d, {"been"}, ["x"], PAGE)
+    assert fixed is not None and fixed["options"][-1] == "became"
