@@ -6,17 +6,21 @@
 #
 # - check 알림: 🔴 오프라인이 됨 · 🟢 다시 온라인(멈춰 있던 시간) · 🟡 온라인인데 Codex 리뷰가
 #   STUCK_MINUTES분 넘게 대기(작업을 못 받는 상태) · ⚠️ 러너 상태를 ERR_ALERT_AFTER번 연속 읽지 못함 · ✅ 다시 읽힘
-#   Codex 사용량: 🟡 남은 양이 (100 - USAGE_WARN)% 아래 · 🟠 한도 도달(다시 가능한 시각) · 🔵 한도가 풀림
-#   (한 번 확인에서 둘 다 생기면 한 메시지에 embed 두 개로 보냄)
+#   Codex 사용량(기준은 scripts/codex-usage-lib.sh): 🟡 남은 양이 20% 미만 · ⏸️ 10% 이하이거나 한도에 걸려
+#   리뷰 컴퓨터가 리뷰를 멈춤 · ▶️ 초기화되어 다시 시작(멈춘 리뷰 실행을 다시 돌림. 멈춘 실행은 PR 댓글 없이
+#   codex-paused-pr-<번호> 결과 파일만 남김)
+#   (한 번 확인에서 러너 알림과 함께 생기면 한 메시지에 embed 두 개로 보냄)
 # - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간에 끝난 Codex 리뷰 성공 · 실패 · 취소, Codex 남은 사용량
 # - Codex 사용량은 리뷰가 끝날 때 리뷰 컴퓨터가 올린 결과 파일(codex-review.yml의 codex-usage,
 #   scripts/codex-usage.mjs)의 가장 최근 것을 읽습니다. 리뷰가 돌 때만 바뀌므로 몇 시 리뷰 기준인지 함께 적습니다.
+#   리뷰 워크플로(pull_request_target)가 올린 것만 씁니다(같은 이름으로 다른 워크플로가 올린 것은 건너뜀).
 # - 지난 상태는 STATE_FILE에 둡니다(워크플로가 Actions 캐시로 이어 줌). 처음이면 온라인은 알리지 않습니다.
 #   상태를 읽지 못한 동안에는 마지막으로 안 상태와 그 시각을 그대로 둡니다(멈춘 시간이 끊기지 않게).
 # - 디스코드로 보내지 못하면 상태를 저장하지 않고 실패합니다(다음 실행에서 다시 보냄).
 #
 # 필요한 환경 변수: REPO(owner/name), DISCORD_WEBHOOK, STATUS_TOKEN(러너 목록을 읽는 토큰,
-#   Administration: Read-only), GH_TOKEN(실행 목록 · 결과 파일을 읽는 토큰, 워크플로의 GITHUB_TOKEN), STATE_FILE
+#   Administration: Read-only), GH_TOKEN(실행 목록 · 결과 파일을 읽고 멈춘 리뷰를 다시 돌리는 토큰,
+#   워크플로의 GITHUB_TOKEN: actions: write · pull-requests: read), STATE_FILE
 # 필요한 것: gh, jq, curl, unzip, GNU date. 시각은 서울 시간으로 적습니다.
 #
 # 테스트: scripts/tests/runner-status.bats (source하면 main은 실행되지 않습니다)
@@ -30,7 +34,8 @@ ERR_ALERT_AFTER="${ERR_ALERT_AFTER:-2}"  # 15분 × 2 = 30분 넘게 못 읽으�
 STATE_FILE="${STATE_FILE:-.runner-status/state}"
 USAGE_ARTIFACT="${USAGE_ARTIFACT:-codex-usage}"  # codex-review.yml이 올리는 결과 파일 이름
 USAGE_FILE_NAME="codex-usage.txt"                  # 결과 파일(zip) 안의 파일 이름
-USAGE_WARN="${USAGE_WARN:-80}"                     # 한 창이라도 이 % 이상 쓰면 🟡
+USAGE_CANDIDATES="${USAGE_CANDIDATES:-5}"          # 출처를 확인할 최근 결과 파일 수
+REVIEW_WORKFLOW_PATH=".github/workflows/$REVIEW_WORKFLOW"
 
 # 디스코드 embed 색
 COLOR_RED=15026253     # #E5484D
@@ -52,12 +57,17 @@ QUEUE_JQ='[.workflow_runs[] | (.run_started_at // .created_at)] | [length, (min 
 done_jq() {  # $1 = 시작 시각(UTC ISO)
   printf '.workflow_runs[] | select(.status == "completed" and .updated_at >= "%s") | .conclusion' "$1"
 }
-# 이름으로 거른 결과 파일 중 만료되지 않은 가장 최근 것의 id (없으면 빈 출력). API는 최근 것부터 돌려줌
-ARTIFACT_JQ='[.artifacts[] | select(.expired | not)] | max_by(.created_at) | .id // empty'
+# 이름으로 거른 결과 파일 중 만료되지 않은 것을 최근 것부터: 결과 파일 id \t 올린 실행 id
+ARTIFACT_JQ='[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | reverse | .[] | [.id, .workflow_run.id] | @tsv'
+# 실행 정보: 워크플로 파일 \t 이벤트 \t 상태
+RUN_JQ='[.path, .event, .status] | @tsv'
+# 멈춘 리뷰 표시(codex-paused-pr-<번호>) 결과 파일: created_at \t PR 번호 \t 결과 파일 id \t 실행 id
+PAUSED_PREFIX="codex-paused-pr-"
+PAUSED_JQ='.artifacts[] | select((.name | startswith("'"$PAUSED_PREFIX"'")) and (.expired | not)) | [.created_at, (.name | ltrimstr("'"$PAUSED_PREFIX"'")), .id, .workflow_run.id] | @tsv'
 
-kst() {  # $1 = epoch → "11/01 14:42" (서울은 서머타임이 없어 +9시간)
-  date -u -d "@$(( $1 + 9 * 3600 ))" '+%m/%d %H:%M'
-}
+# kst · load_usage · usage_level (리뷰 컴퓨터와 같은 기준)
+# shellcheck source=codex-usage-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/codex-usage-lib.sh"
 
 duration() {  # $1 = 분 → "2일 3시간 5분" / "45분"
   local m=$(( $1 < 0 ? 0 : $1 )) out=""
@@ -71,7 +81,7 @@ duration() {  # $1 = 분 → "2일 3시간 5분" / "45분"
 
 # → PREV_STATUS(마지막으로 안 상태: online|offline, 처음이면 빈 값) · PREV_SINCE(그 상태가 된 시각, 모르면 0)
 #   · PREV_STUCK(🟡 알림을 보냈는지 0|1) · PREV_ERR(연속으로 상태를 읽지 못한 횟수)
-#   · PREV_USAGE(마지막으로 안 Codex 사용량 단계: ok|warn|limit, 처음이면 빈 값)
+#   · PREV_USAGE(마지막으로 안 Codex 사용량 단계: ok|warn|stop, 처음이면 빈 값)
 load_state() {
   PREV_STATUS=""; PREV_SINCE=0; PREV_STUCK=0; PREV_ERR=0; PREV_USAGE=""
   [ -f "$STATE_FILE" ] || return 0
@@ -82,7 +92,7 @@ load_state() {
       since) [[ "$v" =~ ^[0-9]+$ ]] && PREV_SINCE=$v ;;
       stuck) [[ "$v" =~ ^[01]$ ]] && PREV_STUCK=$v ;;
       err) [[ "$v" =~ ^[0-9]+$ ]] && PREV_ERR=$v ;;
-      usage) [[ "$v" =~ ^(ok|warn|limit)$ ]] && PREV_USAGE=$v ;;
+      usage) [[ "$v" =~ ^(ok|warn|stop)$ ]] && PREV_USAGE=$v ;;
     esac
   done < "$STATE_FILE"
   return 0
@@ -165,47 +175,65 @@ read_counts() {
   DONE_CANCEL=$(grep -cx 'cancelled' <<< "$out" || true)
 }
 
-# 사용량 파일(key=value, scripts/codex-usage.mjs 출력)을 U_*로 읽음. 모르는 키 · 이상한 값은 무시
-# U_AT(기록 시각) · U_PLAN · U_LIMIT(한도 문구 0|1) · U_RETRY(다시 가능한 시각)
-# · U_P_*/U_S_* (창별 USED(%) · WINDOW(분) · RESET(초기화 시각))
-load_usage() {  # $1 = 파일
-  local k v
-  while IFS='=' read -r k v; do
-    case "$k" in
-      at) [[ "$v" =~ ^[0-9]+$ ]] && U_AT=$v ;;
-      plan) [[ "$v" =~ ^[a-z0-9_]{1,32}$ ]] && U_PLAN=$v ;;
-      limit) [[ "$v" =~ ^[01]$ ]] && U_LIMIT=$v ;;
-      retry) [[ "$v" =~ ^[0-9]+$ ]] && U_RETRY=$v ;;
-      p_used) [[ "$v" =~ ^[0-9]{1,3}$ ]] && U_P_USED=$v ;;
-      p_window) [[ "$v" =~ ^[1-9][0-9]*$ ]] && U_P_WINDOW=$v ;;
-      p_reset) [[ "$v" =~ ^[0-9]+$ ]] && U_P_RESET=$v ;;
-      s_used) [[ "$v" =~ ^[0-9]{1,3}$ ]] && U_S_USED=$v ;;
-      s_window) [[ "$v" =~ ^[1-9][0-9]*$ ]] && U_S_WINDOW=$v ;;
-      s_reset) [[ "$v" =~ ^[0-9]+$ ]] && U_S_RESET=$v ;;
-    esac
-  done < "$1"
-  return 0
-}
-
 # 가장 최근 codex-usage 결과 파일 → U_* (없으면 U_AT 빈 값) · USAGE_ERR(조회 · 내려받기에 실패했으면 1)
+# 리뷰 워크플로가 pull_request_target으로 올린 것만 씀. 최근 USAGE_CANDIDATES개 중 처음 맞는 것
 read_usage() {
-  U_AT=""; U_PLAN=""; U_LIMIT=0; U_RETRY=""
-  U_P_USED=""; U_P_WINDOW=""; U_P_RESET=""; U_S_USED=""; U_S_WINDOW=""; U_S_RESET=""
-  USAGE_ERR=0
-  local id dir
-  if ! id=$(gh api "repos/$REPO/actions/artifacts?name=$USAGE_ARTIFACT&per_page=100" \
+  no_usage; USAGE_ERR=0
+  local list id run src dir
+  if ! list=$(gh api "repos/$REPO/actions/artifacts?name=$USAGE_ARTIFACT&per_page=100" \
       --jq "$ARTIFACT_JQ" 2> /dev/null); then
     USAGE_ERR=1; return 0
   fi
-  [ -n "$id" ] || return 0  # 보관 기간 안에 Codex를 돌린 리뷰가 없음
-  [[ "$id" =~ ^[0-9]+$ ]] || { USAGE_ERR=1; return 0; }
-  dir=$(mktemp -d)
-  if gh api "repos/$REPO/actions/artifacts/$id/zip" > "$dir/usage.zip" 2> /dev/null \
-      && unzip -p "$dir/usage.zip" "$USAGE_FILE_NAME" > "$dir/usage" 2> /dev/null; then
-    load_usage "$dir/usage"
+  [ -n "$list" ] || return 0  # 보관 기간 안에 Codex를 돌린 리뷰가 없음
+  while IFS=$'\t' read -r id run; do
+    [[ "$id" =~ ^[0-9]+$ ]] && [[ "$run" =~ ^[0-9]+$ ]] || continue
+    src=$(gh api "repos/$REPO/actions/runs/$run" --jq "$RUN_JQ" 2> /dev/null) || { USAGE_ERR=1; return 0; }
+    [ "$(cut -f 1,2 <<< "$src")" = "$REVIEW_WORKFLOW_PATH"$'\t'"pull_request_target" ] || continue
+    dir=$(mktemp -d)
+    if gh api "repos/$REPO/actions/artifacts/$id/zip" > "$dir/usage.zip" 2> /dev/null \
+        && unzip -p "$dir/usage.zip" "$USAGE_FILE_NAME" > "$dir/usage" 2> /dev/null; then
+      load_usage "$dir/usage"
+    fi
+    rm -rf "$dir"
+    [ -n "$U_AT" ] || USAGE_ERR=1
+    return 0
+  done < <(head -n "$USAGE_CANDIDATES" <<< "$list")
+  return 0  # 최근 것 중 리뷰 워크플로가 올린 것이 없음 → 기록 없음
+}
+
+# 사용량이 초기화되면 멈춘 리뷰를 다시 돌림 → RESUMED · RESUME_FAILED ("#12 #34" 꼴)
+# 멈춘 실행이 올린 codex-paused-pr-<번호> 결과 파일을 모아 PR마다 가장 최근 실행 하나를 다시 돌리고(Re-run),
+# 그 PR의 표시를 모두 지움(다음 초기화 때 또 돌지 않게). 닫힌 PR은 돌리지 않고 표시만 지움.
+# 실행이 리뷰 워크플로(pull_request_target)의 것이고 끝난 상태일 때만 다시 돌림(이름만 보고 믿지 않음).
+# 다시 돌리지 못한 PR의 표시는 남겨 둠(보관 기간 안에 다음 초기화 때 다시 시도)
+resume_paused() {
+  RESUMED=""; RESUME_FAILED=""
+  local list prs n newest run state src ids id
+  if ! list=$(gh api "repos/$REPO/actions/artifacts?per_page=100" --jq "$PAUSED_JQ" --paginate 2> /dev/null); then
+    RESUME_FAILED="(멈춘 리뷰 목록을 읽지 못함)"
+    return 0
   fi
-  rm -rf "$dir"
-  [ -n "$U_AT" ] || USAGE_ERR=1
+  list=$(grep -E $'^[^\t]+\t[0-9]+\t[0-9]+\t[0-9]+$' <<< "$list" | sort -r)
+  prs=$(cut -f 2 <<< "$list" | grep -E '^[0-9]+$' | sort -un)  # PR 번호 순
+  for n in $prs; do
+    newest=$(awk -F '\t' -v n="$n" '$2 == n { print $4; exit }' <<< "$list")
+    ids=$(awk -F '\t' -v n="$n" '$2 == n { print $3 }' <<< "$list")
+    state=$(gh api "repos/$REPO/pulls/$n" --jq .state 2> /dev/null) || state=""
+    if [ "$state" = closed ]; then
+      :  # 닫힌 PR: 다시 돌리지 않고 표시만 지움
+    elif [ "$state" = open ] \
+        && src=$(gh api "repos/$REPO/actions/runs/$newest" --jq "$RUN_JQ" 2> /dev/null) \
+        && [ "$src" = "$REVIEW_WORKFLOW_PATH"$'\t'"pull_request_target"$'\t'"completed" ] \
+        && gh api "repos/$REPO/actions/runs/$newest/rerun" -X POST > /dev/null 2>&1; then
+      RESUMED+="${RESUMED:+ }#$n"
+    else
+      RESUME_FAILED+="${RESUME_FAILED:+ }#$n"
+      continue
+    fi
+    for id in $ids; do
+      gh api "repos/$REPO/actions/artifacts/$id" -X DELETE > /dev/null 2>&1 || true
+    done
+  done
   return 0
 }
 
@@ -250,50 +278,17 @@ decide() {
   fi
 }
 
-# 지금(NOW) 기준 Codex 사용량 단계 → CUR_USAGE(ok|warn|limit, 기록이 없으면 빈 값)
-#   · USAGE_RETRY(limit일 때 다시 가능한 시각, 모르면 빈 값)
-# - 한도 문구가 있고 다시 가능한 시각이 아직 안 됐으면(모르면 새 기록이 올 때까지) limit
-# - 초기화 시각이 지난 창은 0%로 봄. 지나지 않은 창이 100%면 limit, USAGE_WARN% 이상이면 warn
-usage_level() {
-  CUR_USAGE=""; USAGE_RETRY=""
-  [ -n "$U_AT" ] || return 0
-  if [ "$U_LIMIT" = 1 ] && { [ -z "$U_RETRY" ] || [ "$U_RETRY" -gt "$NOW" ]; }; then
-    CUR_USAGE=limit; USAGE_RETRY=$U_RETRY
-    return 0
-  fi
-  CUR_USAGE=ok
-  local w used reset
-  for w in P S; do
-    used="U_${w}_USED"; reset="U_${w}_RESET"
-    used=${!used}; reset=${!reset}
-    [ -n "$used" ] || continue
-    if [ -n "$reset" ] && [ "$reset" -le "$NOW" ]; then continue; fi
-    if [ "$used" -ge 100 ]; then
-      CUR_USAGE=limit
-      # 둘 다 다 썼으면 늦게 풀리는 쪽 (초기화 시각을 모르는 창이 있으면 모름)
-      if [ -z "$reset" ]; then USAGE_RETRY=unknown
-      elif [ "$USAGE_RETRY" != unknown ] && { [ -z "$USAGE_RETRY" ] || [ "$reset" -gt "$USAGE_RETRY" ]; }; then
-        USAGE_RETRY=$reset
-      fi
-    elif [ "$used" -ge "$USAGE_WARN" ] && [ "$CUR_USAGE" = ok ]; then
-      CUR_USAGE=warn
-    fi
-  done
-  [ "$USAGE_RETRY" = unknown ] && USAGE_RETRY=""
-  return 0
-}
-
-# 지난 단계(PREV_USAGE)와 지금(CUR_USAGE)으로 USAGE_EVENT(usage_warn|usage_limit|usage_ok)와 NEW_USAGE를 정함.
-# 기록을 읽지 못했으면 판단하지 않고 그대로 둠. 처음 확인이라도 warn · limit은 알림
+# 지난 단계(PREV_USAGE)와 지금(CUR_USAGE, usage_level)으로 USAGE_EVENT(usage_warn|usage_stop|usage_resume)와
+# NEW_USAGE를 정함. 기록을 읽지 못했으면 판단하지 않고 그대로 둠. 처음 확인이라도 warn · stop은 알림
 decide_usage() {
   USAGE_EVENT=""; NEW_USAGE=$PREV_USAGE
   [ -n "$CUR_USAGE" ] || return 0
   NEW_USAGE=$CUR_USAGE
   [ "$CUR_USAGE" = "$PREV_USAGE" ] && return 0
   case "$CUR_USAGE" in
-    limit) USAGE_EVENT=usage_limit ;;
-    warn) [ "$PREV_USAGE" = limit ] && USAGE_EVENT=usage_ok || USAGE_EVENT=usage_warn ;;
-    ok) [ "$PREV_USAGE" = limit ] && USAGE_EVENT=usage_ok ;;
+    stop) USAGE_EVENT=usage_stop ;;
+    warn) if [ "$PREV_USAGE" = stop ]; then USAGE_EVENT=usage_resume; else USAGE_EVENT=usage_warn; fi ;;
+    ok) [ "$PREV_USAGE" = stop ] && USAGE_EVENT=usage_resume ;;
   esac
   return 0
 }
@@ -348,46 +343,52 @@ usage_windows() {
 
 usage_line() {  # Codex 사용량 한 줄 (read_usage · usage_level 뒤)
   if [ -z "$U_AT" ]; then
-    [ "$USAGE_ERR" = 1 ] && echo "Codex 사용량: 확인하지 못함" \
-      || echo "Codex 사용량: 기록 없음 (최근에 Codex를 돌린 리뷰가 없음)"
+    if [ "$USAGE_ERR" = 1 ]; then echo "Codex 사용량: 확인하지 못함"
+    else echo "Codex 사용량: 기록 없음 (최근에 Codex를 돌린 리뷰가 없음)"; fi
     return
   fi
-  local wins basis
+  local wins basis why
   wins=$(usage_windows)
   basis="$(kst "$U_AT") 리뷰 기준${U_PLAN:+ · 플랜 $U_PLAN}"
   case "$CUR_USAGE" in
-    limit)
-      local retry="다시 가능한 시각 모름"
-      [ -n "$USAGE_RETRY" ] && retry="$(kst "$USAGE_RETRY")부터 다시 가능"
-      echo "Codex 사용량: 🟠 한도 도달, $retry${wins:+ · $wins} — $basis" ;;
+    stop)
+      why="남은 양 ${USAGE_STOP_LEFT}% 이하"
+      [ "$USAGE_REASON" = limit ] && why="한도 도달"
+      echo "Codex 사용량: ⏸️ 리뷰 멈춤($why), $(kst "$USAGE_RETRY")에 다시 시작${wins:+ · $wins} — $basis" ;;
     warn) echo "Codex 사용량: 🟡 $wins — $basis" ;;
     *)
-      if [ -z "$wins" ] && [ "$U_LIMIT" = 1 ]; then wins="한도가 풀림 ($(kst "$U_RETRY"))"; fi
+      if [ -z "$wins" ] && [ "$U_LIMIT" = 1 ]; then wins="한도가 풀림"; fi
       echo "Codex 사용량: ${wins:-남은 양 모름} — $basis" ;;
   esac
 }
 
 # EVENT(또는 summary)에 맞는 TITLE · TEXT · COLOR를 채움
-compose() {  # $1 = offline|online|stuck|error|recovered|usage_warn|usage_limit|usage_ok|summary
+compose() {  # $1 = offline|online|stuck|error|recovered|usage_warn|usage_stop|usage_resume|summary
   local runners="https://github.com/$REPO/settings/actions/runners"
   local queue="https://github.com/$REPO/actions/workflows/$REVIEW_WORKFLOW"
   local failed="$queue?query=is%3Afailure"
   case "$1" in
     usage_warn)
-      TITLE="🟡 Codex 남은 사용량 $(( 100 - USAGE_WARN ))% 아래"; COLOR=$COLOR_YELLOW
+      TITLE="🟡 Codex 남은 사용량 ${USAGE_WARN_LEFT}% 미만"; COLOR=$COLOR_YELLOW
       TEXT="$(usage_line)
-한도에 걸리면 초기화될 때까지 Codex 리뷰가 실패합니다." ;;
-    usage_limit)
-      TITLE="🟠 Codex 사용량 한도 도달"; COLOR=$COLOR_ORANGE
-      TEXT="Codex 리뷰가 사용량 한도에 걸려 실패합니다.
-$(usage_line)
-한도가 풀린 뒤 실패한 리뷰를 다시 실행(Re-run)하세요.
-[실패한 Codex 리뷰]($failed)" ;;
-    usage_ok)
-      TITLE="🔵 Codex 사용량 한도가 풀림"; COLOR=$COLOR_BLUE
-      TEXT="Codex 리뷰를 다시 돌릴 수 있습니다. 한도 때문에 실패한 리뷰는 다시 실행(Re-run)하세요.
-$(usage_line)
-[실패한 Codex 리뷰]($failed)" ;;
+남은 양이 ${USAGE_STOP_LEFT}% 이하가 되면 리뷰를 멈추고, 초기화되면 멈춘 리뷰를 자동으로 다시 돌립니다." ;;
+    usage_stop)
+      COLOR=$COLOR_ORANGE
+      if [ "$USAGE_REASON" = limit ]; then TITLE="⏸️ Codex 리뷰 멈춤 — 사용량 한도 도달"
+      else TITLE="⏸️ Codex 리뷰 멈춤 — 남은 사용량 ${USAGE_STOP_LEFT}% 이하"; fi
+      TEXT="$(kst "$USAGE_RETRY")에 사용량이 초기화될 때까지 리뷰 컴퓨터가 Codex 리뷰를 하지 않습니다.
+그동안의 리뷰 실행은 PR 댓글 없이 실행 화면에 ⏸️로 남고, 초기화되면 자동으로 다시 돌립니다.
+[Codex 리뷰 실행]($queue)
+$(usage_line)" ;;
+    usage_resume)
+      TITLE="▶️ Codex 리뷰 다시 시작"; COLOR=$COLOR_GREEN
+      TEXT="Codex 사용량이 초기화됐습니다."
+      if [ -n "$RESUMED" ]; then TEXT+=" 멈췄던 리뷰를 다시 돌립니다: $RESUMED"
+      else TEXT+=" 멈춘 리뷰는 없습니다."; fi
+      if [ -n "$RESUME_FAILED" ]; then TEXT+="
+다시 돌리지 못함: $RESUME_FAILED — PR의 Codex 리뷰 실행을 직접 Re-run 하세요. [실패한 Codex 리뷰]($failed)"; fi
+      TEXT+="
+$(usage_line)" ;;
     offline)
       TITLE="🔴 리뷰 컴퓨터 러너 오프라인"; COLOR=$COLOR_RED
       TEXT="\`$CODEX_RUNNER\` 러너가 오프라인입니다. ($(kst "$NOW") 확인)
@@ -431,7 +432,12 @@ $(queue_line)" ;;
       TEXT+="
 $(queue_line)
 $done_line
-$(usage_line)
+$(usage_line)"
+      [ -n "${RESUMED:-}" ] && TEXT+="
+▶️ 멈춰 있던 리뷰를 다시 돌림: $RESUMED"
+      [ -n "${RESUME_FAILED:-}" ] && TEXT+="
+멈춘 리뷰를 다시 돌리지 못함: $RESUME_FAILED — 직접 Re-run 하세요."
+      TEXT+="
 [Codex 리뷰 실행]($queue)" ;;
   esac
 }
@@ -475,6 +481,10 @@ main() {
   EMBEDS=""
   if [ "$mode" = summary ]; then
     read_counts
+    # 하루 한 번 남은 멈춤 표시를 정리: 멈춘 상태가 아닌데 표시가 남아 있으면(결과 파일을 한 번 못 올려
+    # 15분 확인이 멈춤을 못 본 경우 등) 그 리뷰를 다시 돌림
+    RESUMED=""; RESUME_FAILED=""
+    if [ -n "$CUR_USAGE" ] && [ "$CUR_USAGE" != stop ]; then resume_paused; fi
     compose summary
     post || { echo "::error::디스코드로 보내지 못했습니다." >&2; return 1; }
     echo "아침 요약을 보냈습니다."
@@ -483,6 +493,7 @@ main() {
 
   decide
   decide_usage
+  [ "$USAGE_EVENT" = usage_resume ] && resume_paused
   # 러너 알림과 사용량 알림을 한 메시지로 보냄(하나만 보내지고 하나는 실패하는 일이 없게)
   [ -n "$EVENT" ] && { compose "$EVENT"; add_embed; }
   [ -n "$USAGE_EVENT" ] && { compose "$USAGE_EVENT"; add_embed; }

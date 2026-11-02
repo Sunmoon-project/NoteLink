@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 // 방금 끝난 Codex 실행의 남은 사용량을 뽑아 key=value 줄로 출력합니다 (scripts/codex-review.sh가 부름).
 //
-//   node scripts/codex-usage.mjs --since <시작 epoch ms> [--log <codex 로그>] [--now <epoch ms>]
+//   node scripts/codex-usage.mjs --since <시작 epoch ms> [--log <codex 로그> --failed 1] [--now <epoch ms>]
 //
 // - Codex는 세션 기록($CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl, 기본 ~/.codex)의 token_count
 //   이벤트에 rate_limits(창별 사용률 · 창 길이(분) · 초기화 시각, 플랜)를 남깁니다. --since 이후에 바뀐
 //   세션 기록 중 가장 최근 것의 마지막 rate_limits를 씁니다.
-// - 한도에 걸리면 codex 로그에 "You've hit your usage limit … try again at 3:01 PM."이 남습니다.
+// - 한도에 걸리면 codex 로그에 "ERROR: You've hit your usage limit … try again at 3:01 PM."이 남습니다.
 //   그때는 limit=1로 적고, 다시 가능한 시각(retry)을 그 문구(리뷰 컴퓨터 현지 시각)에서 읽습니다.
 //   문구에서 못 읽으면 다 쓴(100%) 창의 초기화 시각을 씁니다.
+//   codex 로그에는 프롬프트(리뷰할 PR 디프)도 찍히므로, 리뷰가 실패했을 때(--failed 1)만 로그를 보고
+//   줄 맨 앞이 "ERROR:"인 줄만 봅니다(디프 줄은 + · - · 공백으로 시작). 그래야 PR 내용에 같은 문구가 있어도
+//   한도로 잘못 보지 않습니다.
 // - 사용률 · 초기화 시각 · 플랜 이름만 적습니다(계정 · 크레딧 잔액은 적지 않음. 결과 파일은 공개 저장소에 올라감).
 // - 읽을 것이 없으면 아무것도 출력하지 않습니다. 오류로 리뷰를 멈추지 않도록 항상 0으로 끝납니다.
 //
@@ -134,7 +137,7 @@ function limitFromLog(file, nowMs) {
   } catch {
     return null;
   }
-  const line = text.split('\n').filter((l) => /usage limit/i.test(l)).pop();
+  const line = text.split(/\r?\n/).filter((l) => /^ERROR:.*usage limit/i.test(l)).pop();
   if (!line) return null;
   const again = /try again (?:at |on )?(.*)$/i.exec(line);
   return { retry: again ? parseRetry(again[1], nowMs) : null };
@@ -156,10 +159,11 @@ function windowOf(w, nowMs) {
   return { used: int(w.used_percent), window: int(w.window_minutes), reset };
 }
 
-function usage({ codexHome, sinceMs, logFile, nowMs }) {
+function usage({ codexHome, sinceMs, logFile, failed, nowMs }) {
   const rollout = latestRollout(codexHome, sinceMs);
   const rl = rollout ? lastRateLimits(rollout) : null;
-  const hit = logFile ? limitFromLog(logFile, nowMs) : null;
+  // 리뷰가 성공했으면 한도에 걸린 것이 아니므로 로그를 보지 않음
+  const hit = logFile && failed ? limitFromLog(logFile, nowMs) : null;
   if (!rl && !hit) return null;
 
   const p = windowOf(rl && rl.primary, nowMs);
@@ -192,7 +196,7 @@ function main() {
     const nowMs = args.now ? Number(args.now) : Date.now();
     const sinceMs = args.since ? Number(args.since) : nowMs - 3600000;
     const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-    const result = usage({ codexHome, sinceMs, logFile: args.log, nowMs });
+    const result = usage({ codexHome, sinceMs, logFile: args.log, failed: args.failed === '1', nowMs });
     if (result) {
       process.stdout.write(Object.entries(result).map(([k, v]) => `${k}=${v}\n`).join(''));
     }
