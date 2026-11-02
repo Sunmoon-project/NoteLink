@@ -166,6 +166,8 @@ export interface Api {
     deleteFolder(id: string): Promise<void>;
     materials(folderId: string): Promise<Material[]>;
     createMaterial(p: {
+      /** 같은 계정·등록 요청의 재시도는 같은 키로 보내며 서버는 결과를 재사용해야 한다. */
+      requestId?: string;
       folderId: string;
       kind: MaterialKind;
       source: MaterialSource;
