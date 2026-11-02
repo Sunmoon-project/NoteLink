@@ -16,6 +16,7 @@ import type { Api, MonthDay } from '../api/types';
 import { addDays, daysBetween, parse, seoul, today, ymd } from '../dates';
 import { mockServer } from '../socket';
 import { useNet } from '@/stores/net';
+import { useAuth } from '@/stores/auth';
 import { useMockFlags } from './flags';
 import * as S from './seed';
 import { mockUploadSource } from './uploads';
@@ -60,6 +61,10 @@ const db = {
 };
 
 const endedSessions = new Map<string, { durationSec: number; pointsEarned: number }>();
+const createdMaterials = new Map<
+  string,
+  { payload: string; result: { material: Material; job: AiJob } }
+>();
 const finishedAttempts = new Map<string, { pointsEarned: number; balance: number }>();
 
 const timerStartedAt = new Map<string, number>();
@@ -645,8 +650,20 @@ export const mockApi: Api = {
         ),
       ),
     createMaterial: async (p) => {
+      const { requestId, ...payload } = p;
+      const key = requestId ? `${useAuth.getState().userId}:${requestId}` : null;
+      const fingerprint = JSON.stringify(payload);
       await ok(undefined);
-
+      const previous = key ? createdMaterials.get(key) : undefined;
+      if (previous) {
+        if (previous.payload !== fingerprint)
+          throw new ApiError(
+            'IDEMPOTENCY_CONFLICT',
+            '같은 등록 키에 다른 자료를 보낼 수 없어요',
+            409,
+          );
+        return structuredClone(previous.result);
+      }
       if (useMockFlags.getState().uploadPause)
         return Promise.reject(new NetworkError('upload paused'));
       const m = S.makeMaterial(p.folderId, p.kind, {
@@ -670,7 +687,9 @@ export const mockApi: Api = {
         () => (m.processing = { status: 'done', progress: 100, jobId: null }),
       );
       m.processing.jobId = job._id;
-      return structuredClone({ material: m, job });
+      const result = { material: m, job };
+      if (key) createdMaterials.set(key, { payload: fingerprint, result });
+      return structuredClone(result);
     },
     material: (id) => {
       const m = db.materials.find((x) => x._id === id);
