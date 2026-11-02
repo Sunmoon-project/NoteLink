@@ -727,10 +727,15 @@ two_windows() {  # $1 = 5시간 사용률, $2 = 주간 사용률
   compose usage_resume
   [ "$TITLE" = "▶️ Codex 리뷰 다시 시작" ] && [ "$COLOR" = "$COLOR_GREEN" ]
   [[ "$TEXT" == *"멈췄던 리뷰를 다시 돌립니다: #12 #34"* ]] && [[ "$TEXT" != *"다시 돌리지 못함"* ]]
+  # 돌리지 못한 것만 있으면 "없습니다"라고 하지 않고 직접 다시 실행하라고 안내
   RESUMED=""; RESUME_FAILED="#56"
   compose usage_resume
-  [[ "$TEXT" == *"멈춘 리뷰는 없습니다."* ]]
+  [[ "$TEXT" != *"멈춘 리뷰는 없습니다."* ]]
   [[ "$TEXT" == *"다시 돌리지 못함: #56"*"(https://github.com/team/repo/actions/workflows/codex-review.yml?query=is%3Afailure)"* ]]
+  # 초기화됐는데 멈춘 리뷰가 하나도 없을 때
+  RESUMED=""; RESUME_FAILED=""
+  compose usage_resume
+  [[ "$TEXT" == "Codex 사용량이 초기화됐습니다. 다시 돌릴 멈춘 리뷰는 없습니다."* ]]
 }
 
 # 결과 파일 zip을 만듦: $1 = id, $2 = 안의 파일 내용(printf %b), $3 = 안의 파일 이름(기본 codex-usage.txt)
