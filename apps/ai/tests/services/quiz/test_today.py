@@ -212,7 +212,7 @@ def test_numbers_and_inner_words_are_different_answers() -> None:
             q("q3", "port", "C3", st(due - timedelta(days=3))),
             q("q4", "report", "C4", st(due - timedelta(days=2))),
             q("q5", "fasten", "C5", st(due)),
-            q("q6", "fastened", "C5", st(TOMORROW + timedelta(days=3))),  # 아직 아님
+            q("q6", "fasten", "C5", st(TOMORROW + timedelta(days=3))),  # 아직 아님
             q("q7", "Type I", "C6", st(due)),
             q("q8", "Type II", "C7", st(due)),
         ],
@@ -224,6 +224,30 @@ def test_numbers_and_inner_words_are_different_answers() -> None:
     up = updates(result)
     assert up["q6"]["state"] == "moved" and up["q6"]["movedTo"] == copies["fasten"]  # 같은 낱말
     assert result["merged"] == 1
+
+
+def test_words_that_only_look_alike_are_each_reviewed() -> None:
+    due = TOMORROW - timedelta(days=1)
+    s1 = {
+        "id": "s1",
+        "materialId": "m1",
+        "questions": [
+            q("q1", "act", "C1", st(due - timedelta(days=2))),
+            q("q2", "active", "C2", st(due - timedelta(days=1))),
+            q("q3", "세포", "C3", st(due)),
+            q("q4", "세포막", "C4", st(TOMORROW + timedelta(days=3))),  # 아직 아님
+            q("q5", "전립선암", "C5", st(due)),
+            q("q6", "전립선염", "C6", st(TOMORROW + timedelta(days=3))),
+            q("q7", "fasten", "C7", st(due)),
+            q("q8", "fastened", "C7", st(TOMORROW + timedelta(days=3))),
+        ],
+    }
+    result = run(FakeLlm(), {**job(s1), "size": 7})
+    answers = [x["answer"] for x in result["questions"]]
+    assert answers == ["act", "active", "세포", "전립선암", "fasten"]
+    up = updates(result)
+    # 다른 낱말이라 사본으로 넘기지 않음: 각자의 날짜에 복습
+    assert "q4" not in up and "q6" not in up and "q8" not in up and result["merged"] == 0
 
 
 def test_void_answers_do_not_count_as_wrong() -> None:
@@ -459,6 +483,19 @@ def test_checker_down_while_replacing_does_not_use_up_a_day() -> None:
     assert result["questions"] == []
     s = updates(result)["q1"]
     assert (s["state"], s["dueAt"], s.get("flawTries")) == ("active", TOMORROW, None)
+
+
+def test_question_put_off_to_tomorrow_is_not_handed_to_a_same_word_copy() -> None:
+    inp = four_choices()  # q1(지난번 틀림)이 먼저: 새 문제 만들기가 LLM 장애로 내일로 미뤄짐
+    other = q("q2", "stack", "stack의 뜻", st(TOMORROW - timedelta(days=1)))
+    inp["sets"].append({"id": "s2", "materialId": "m1", "questions": [other]})
+    llm = FakeLlm({"Review": [LlmError("HTTP 503")] * 3})
+    result = run(llm, inp)
+    assert [x["answer"] for x in result["questions"]] == ["stack"]  # q2의 사본
+    up = updates(result)
+    assert (up["q1"]["state"], up["q1"]["dueAt"]) == ("active", TOMORROW)  # 사본으로 넘기지 않음
+    assert up["q2"]["state"] == "moved" and result["merged"] == 0
+    assert [d["state"] for d in result["dropped"]] == ["active"]
 
 
 def test_check_call_failing_leaves_the_question_unchecked() -> None:

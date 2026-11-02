@@ -243,18 +243,6 @@ def natural_options(
     return found
 
 
-def two_answers(
-    llm: Llm,
-    d: Draft,
-    page_text: str,
-    qtype: str | None = None,
-    hits: list[str] | None = None,
-) -> list[str]:
-    """screen의 탈락 이유만. 판정을 받지 못한 보기는 걸리지 않은 것으로 넘깁니다(오답 복습이 기존
-    문제를 다시 낼 때). 검사 못 함을 알아야 하면 screen을 씁니다."""
-    return screen(llm, d, page_text, qtype, hits)[0]
-
-
 def screen(
     llm: Llm,
     d: Draft,

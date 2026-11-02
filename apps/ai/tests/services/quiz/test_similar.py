@@ -157,6 +157,15 @@ def test_one_failed_call_with_two_malformed_answers_is_not_llm_down() -> None:
     assert m.question is None and not m.llm_down
 
 
+def test_malformed_check_answer_is_not_a_real_rejection() -> None:
+    # 검사 모델의 잘린 답({}) 1번 + 호출 실패 2번: 정상 탈락이 없으니 장애
+    review = [gen(GOOD), LlmError("HTTP 503"), gen(GOOD)]
+    llm = FakeLlm({"Review": review, "Check": [{}, LlmError("HTTP 503")]})
+    m = similar.make_similar(llm, question(), target(), 1, PAGE, 0, [])
+    assert m.question is None and m.llm_down
+    assert all("문제점" not in c.user for c in llm.named("Review"))
+
+
 def test_malformed_answers_alone_are_not_llm_down() -> None:
     llm = FakeLlm({"Review": [{}, {}, {}]})
     assert not similar.make_similar(llm, question(), target(), 1, PAGE, 0, []).llm_down

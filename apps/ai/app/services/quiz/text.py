@@ -1,7 +1,6 @@
 """퀴즈 서비스 공용 도우미: 글 비교, 노트 정리, 문제가 나온 쪽 찾기, 초안 다듬기."""
 
 import difflib
-import os
 import re
 import unicodedata
 from decimal import Decimal, InvalidOperation
@@ -93,8 +92,7 @@ def number_values(s: str | None) -> tuple[list[Decimal], str]:
     수는 Decimal로 정확히 읽어 반올림 · 넘침 없이 비교합니다(3×10^-7과 4×10^-7, 1e-999와 1e999).
     Decimal도 읽지 못하는 지수(OCR로 숫자가 길게 붙은 경우)는 수가 아니라 글로 남깁니다.
     나머지 글은 NFC · 소문자로 맞추고 공백을 한 칸으로, 끝의 마침표 · 쉼표만 떼며
-    부호 · 기호는 남깁니다(이 값으로는 '1/2'와 '1-2', '.5'와 '5'가 다름). same_word는 나머지 글을
-    norm으로 다시 맞춰 비교하므로 '1/2'와 '1-2'를 같게 봅니다(알려진 한계).
+    부호 · 기호는 남깁니다(이 값으로는 '1/2'와 '1-2', '.5'와 '5'가 다름).
     """
     vals: list[Decimal] = []
 
@@ -131,28 +129,22 @@ def same_answer(a: str | None, b: str | None) -> bool:
 
 
 def same_word(a: str | None, b: str | None) -> bool:
-    """같은 낱말로 묶을지(오늘의 복습의 고르기 · 넘겨주기 · 무효 풀이): same_item보다 좁게 봅니다.
+    """같은 낱말로 묶을지(오늘의 복습의 고르기 · 넘겨주기 · 무효 풀이): 띄어쓰기만 다른 똑같은 답.
 
-    같은 낱말의 다른 문제를 사본으로 넘기면(moved) 그 문제의 복습이 사라지므로, same_item이
-    같다고 본 것에 조건을 더합니다(Codex 리뷰 · /code-review 11/02).
-    - 번호가 다르면 다른 답: Type I ~ Type II, Stage I ~ Stage IV(same_answer)
-    - 수가 있으면 수와 나머지 글(norm)이 같아야 함: 1.5 ~ 15는 다르고(norm은 '.'을 지움)
-      IL-6 ~ IL6 ~ IL 6은 같음
-    - 한쪽이 다른 쪽 안에 있으면 앞부분일 때만 같음: fasten ~ fastened는 같고 port ~ report는 다름
-    - 75% 유사도로만 같으면 앞부분이 짧은 쪽의 절반 이상 같아야 함: analysis ~ analyses는 같고
-      affect ~ effect, mitosis ~ meiosis는 다름
-    알려진 한계: be ~ because of처럼 앞부분이 같은 다른 말, 1/2 ~ 1-2처럼 수는 같고 기호만 다른
-    답(norm이 기호를 지움)은 아직 같게 봅니다. 기준은 #9에서 채점 세트로 측정하며 고칩니다.
+    같은 낱말의 다른 문제를 사본으로 넘기면(moved) 그 문제의 복습이 사라집니다. 비슷한 철자 ·
+    굴절 어미 · 대소문자 · 부호로 넓히면 그때마다 다른 말이 같게 되어(port ~ report, act ~ active,
+    principal ~ principle, custom ~ customs, Plasmodium vivax ~ Plasmodium ovale, 전립선암 ~
+    전립선염, CO ~ Co, Cl- ~ Cl: Codex 리뷰 · /code-review 11/02), NFC로 맞추고 띄어쓰기만 뺀 글이
+    같아야 같은 낱말입니다(1.5 mL ~ 1.5mL, 대립 유전자 ~ 대립유전자). 같은 말을 다르게 보면 한
+    세트에 함께 나올 뿐입니다(fasten ~ fastened, IL-6 ~ IL6, alpha ~ Alpha). 빈 답은 어떤 답과도
+    다릅니다(관계없는 빈 답 문제끼리 묶지 않음).
     """
-    if not same_answer(a, b):
-        return False
-    (va, ra), (vb, rb) = number_values(a), number_values(b)
-    if va or vb:
-        return va == vb and norm(ra) == norm(rb)
-    x, y = sorted((norm(a), norm(b)), key=len)
-    if x in y:
-        return y.startswith(x)
-    return 2 * len(os.path.commonprefix([x, y])) >= len(x)
+    x = _spaceless(a)
+    return bool(x) and x == _spaceless(b)
+
+
+def _spaceless(s: str | None) -> str:
+    return "".join(unicodedata.normalize("NFC", s or "").split())
 
 
 def short_answer(a: str | None) -> bool:

@@ -14,6 +14,13 @@ be being V+ed 사람 없는 사진
 organize = arrange"""
 
 
+def reasons(
+    llm: FakeLlm, d: Draft, page: str, qtype: str | None = None, hits: list[str] | None = None
+) -> list[str]:
+    """screen의 탈락 이유만."""
+    return qa.screen(llm, d, page, qtype, hits)[0]
+
+
 def draft(passage: str, options: list[str], answer: str) -> Draft:
     return {
         "stem": "알맞은 것을 고르시오.",
@@ -88,7 +95,7 @@ def test_same_gloss_is_a_synonym_not_a_contrast() -> None:
     assert qa.contrasts("begin", "begin - 시작하다\nstart - 시작하다") == []
     d = draft("The meeting will ____ at noon.", ["begin", "start", "a", "b", "c"], "begin")
     llm = FakeLlm({"Natural": natural(True, False, False, False)})
-    assert qa.two_answers(llm, d, "begin - 시작하다\nstart - 시작하다", "빈칸") == [
+    assert reasons(llm, d, "begin - 시작하다\nstart - 시작하다", "빈칸") == [
         "빈칸에 넣어도 말이 되는 오답 보기: start"
     ]
 
@@ -106,9 +113,7 @@ def test_blank_option_that_also_fits_is_rejected_and_collected() -> None:
     d = draft("The rope was ____ to the post.", ["fastened", "secured", "a", "b", "c"], "fastened")
     llm = FakeLlm({"Natural": natural(True, False, False, False)})
     hits: list[str] = []
-    assert qa.two_answers(llm, d, PAGE, "빈칸", hits) == [
-        "빈칸에 넣어도 말이 되는 오답 보기: secured"
-    ]
+    assert reasons(llm, d, PAGE, "빈칸", hits) == ["빈칸에 넣어도 말이 되는 오답 보기: secured"]
     assert hits == ["secured"]
     assert {c.model for c in llm.calls} == {settings.quiz_check_model}
 
@@ -117,27 +122,27 @@ def test_second_judge_runs_when_check_model_finds_nothing() -> None:
     d = draft("The rope was ____ to the post.", ["fastened", "extended", "a", "b", "c"], "fastened")
     # 검사 모델 4번 모두 false → 생성 모델이 extended를 잡음
     llm = FakeLlm({"Natural": natural(*[False] * 4, True, False, False, False)})
-    assert qa.two_answers(llm, d, PAGE, "빈칸") == ["빈칸에 넣어도 말이 되는 오답 보기: extended"]
+    assert reasons(llm, d, PAGE, "빈칸") == ["빈칸에 넣어도 말이 되는 오답 보기: extended"]
     assert llm.calls[4].model == settings.quiz_gen_model
 
 
 def test_answer_itself_must_fit_the_blank() -> None:
     d = draft("The team will ____ the road.", ["resurfacing", "a", "b", "c", "d"], "resurfacing")
     llm = FakeLlm({"Natural": natural(*[False] * 8, False)})  # 오답 8번 + 정답 1번
-    assert qa.two_answers(llm, d, PAGE, "빈칸") == ["정답을 빈칸에 넣으면 문장이 틀림"]
+    assert reasons(llm, d, PAGE, "빈칸") == ["정답을 빈칸에 넣으면 문장이 틀림"]
 
 
 def test_note_contrast_pair_is_not_checked() -> None:
     d = draft("We paid the ____.", ["installation", "instalment", "a", "b", "c"], "installation")
     llm = FakeLlm({"Natural": natural(*[False] * 6, True)})
-    assert qa.two_answers(llm, d, PAGE, "빈칸") == []
+    assert reasons(llm, d, PAGE, "빈칸") == []
     assert all("instalment" not in c.user for c in llm.calls)
 
 
 def test_note_group_conflict_is_reported_with_llm_result() -> None:
     d = draft("The boxes are ____.", ["stacked", "stock", "a", "b", "c"], "stacked")
     llm = FakeLlm({"Natural": natural(*[False] * 8)})
-    assert qa.two_answers(llm, d, PAGE, "빈칸") == ["노트에서 정답과 같은 묶음인 보기: stock"]
+    assert reasons(llm, d, PAGE, "빈칸") == ["노트에서 정답과 같은 묶음인 보기: stock"]
 
 
 def test_answer_option_with_different_case_is_not_a_wrong_option() -> None:
@@ -146,7 +151,7 @@ def test_answer_option_with_different_case_is_not_a_wrong_option() -> None:
     d = draft("The rope was ____ to the post.", ["Fastened", "tied", "a", "b", "c"], "fastened")
     # 오답 4개 × 두 모델 = 8번, 마지막 1번은 정답이 빈칸에 맞는지 확인
     llm = FakeLlm({"Natural": natural(*[False] * 8, True)})
-    assert qa.two_answers(llm, d, PAGE, "빈칸") == []
+    assert reasons(llm, d, PAGE, "빈칸") == []
     assert all("Fastened" not in c.user for c in llm.calls[:8])
 
 
@@ -156,13 +161,13 @@ def test_reason_matches_the_check_type() -> None:
         "산소 없이 증식하는 세균", ["무산소성 세균", "통성 세균", "a", "b", "c"], "무산소성 세균"
     )
     llm = FakeLlm({"Natural": natural(True, False, False, False)})
-    assert qa.two_answers(llm, d, PAGE, "정의") == ["설명에 함께 해당하는 오답 보기: 통성 세균"]
+    assert reasons(llm, d, PAGE, "정의") == ["설명에 함께 해당하는 오답 보기: 통성 세균"]
     d = draft("쌓다", ["stack", "pile", "a", "b", "c"], "stack")
     llm = FakeLlm({"Natural": natural(True, False, False, False)})
-    assert qa.two_answers(llm, d, "", "어휘") == ["같은 뜻으로 쓰이는 오답 보기: pile"]
+    assert reasons(llm, d, "", "어휘") == ["같은 뜻으로 쓰이는 오답 보기: pile"]
     d = draft("황색포도알균", ["그람양성균", "구균", "a", "b", "c"], "그람양성균")
     llm = FakeLlm({"Natural": natural(True, False, False, False)})
-    assert qa.two_answers(llm, d, "", "분류") == ["용어가 함께 속하는 오답 분류: 구균"]
+    assert reasons(llm, d, "", "분류") == ["용어가 함께 속하는 오답 분류: 구균"]
 
 
 def test_term_subject_checks_the_right_answer_too() -> None:
@@ -172,7 +177,7 @@ def test_term_subject_checks_the_right_answer_too() -> None:
         "보통 염색으로 쉽게 염색된다",
     )
     llm = FakeLlm({"Natural": natural(False, False, False, False, False)})
-    assert qa.two_answers(llm, d, PAGE, "특징") == [
+    assert reasons(llm, d, PAGE, "특징") == [
         "정답이 일반 전공 지식과 맞지 않음(노트 OCR 오류 가능)"
     ]
     assert llm.calls[0].user == "용어: 항산성균\n문장: a"
@@ -183,14 +188,14 @@ def test_scene_questions_skip_the_llm_check() -> None:
         "고객이 병을 닫고 있다.", ["A customer is closing a bottle.", "a", "b", "c", "d"], "a"
     )
     llm = FakeLlm()
-    assert qa.two_answers(llm, d, PAGE, "묘사") == []
+    assert reasons(llm, d, PAGE, "묘사") == []
     assert llm.calls == []
 
 
 def test_failed_llm_calls_do_not_flag_options() -> None:
     d = draft("The rope was ____ to the post.", ["fastened", "secured", "a", "b", "c"], "fastened")
     llm = FakeLlm({"Natural": natural(*[LlmError("HTTP 503")] * 9)})
-    assert qa.two_answers(llm, d, PAGE, "빈칸") == []
+    assert reasons(llm, d, PAGE, "빈칸") == []
 
 
 # ---------- 걸린 오답 보기만 바꾸기 (repair · checked) ----------
@@ -294,7 +299,6 @@ def test_screen_reports_an_unchecked_draft_when_calls_fail() -> None:
     d = draft(ROPE, ROPE_OPTIONS, "fastened")
     llm = FakeLlm({"Natural": [LlmError("HTTP 503")] * 9})
     assert qa.screen(llm, d, PAGE, "빈칸") == ([], True)
-    assert qa.two_answers(FakeLlm({"Natural": [LlmError("HTTP 503")] * 9}), d, PAGE, "빈칸") == []
 
 
 def test_screen_with_a_flagged_option_is_a_real_rejection_even_with_a_failed_call() -> None:

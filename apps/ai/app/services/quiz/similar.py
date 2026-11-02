@@ -12,6 +12,7 @@
 import difflib
 from collections.abc import Collection
 from dataclasses import dataclass, field
+from typing import Literal
 
 from app.clients.llm import JsonObject, Llm, LlmError
 from app.core.config import settings
@@ -115,12 +116,14 @@ CHK_SYS = (
     "너는 퀴즈 검수자다. 주어진 노트만 근거로 문제를 직접 푼다. "
     "정답 기호, 정답이 하나뿐인지, 노트만으로 답을 확정할 수 있는지 답한다. JSON으로만 답한다."
 )
+CHK_ANSWERS = [*LETTERS, "없음"]
+Solved = Literal["pass", "fail", "down", "bad"]  # solved의 결과
 CHK_SCHEMA: JsonObject = {
     "type": "object",
     "additionalProperties": False,
     "required": ["answer", "only_one", "supported"],
     "properties": {
-        "answer": {"type": "string", "enum": [*LETTERS, "없음"]},
+        "answer": {"type": "string", "enum": CHK_ANSWERS},
         "only_one": {"type": "boolean"},
         "supported": {"type": "boolean"},
     },
@@ -209,12 +212,12 @@ def _draft(r: JsonObject) -> Draft | None:
     return d
 
 
-def solved(
-    llm: Llm, d: Draft, options: list[str], pos: int, page_text: str
-) -> tuple[bool | None, str]:
-    """검사 모델이 노트만 보고 풀어 봄. (통과했는지, 검수자 답 또는 호출 오류).
+def solved(llm: Llm, d: Draft, options: list[str], pos: int, page_text: str) -> tuple[Solved, str]:
+    """검사 모델이 노트만 보고 풀어 봄. (결과, 검수자 답 또는 호출 오류).
 
-    호출이 실패하면 None: 초안이 떨어진 것이 아니라 LLM 장애입니다(make_similar가 llm_down에 셈).
+    결과: pass(통과) · fail(정상 탈락: 다른 답 · 정답이 둘 · 노트로 못 정함) · down(호출 실패:
+    LLM 장애, make_similar가 llm_down에 셈) · bad(답 모양이 틀림: 스키마 밖 · 잘린 JSON, 초안 탓도
+    장애도 아님).
     """
     shown = d["stem"] + (f"\n{d['passage']}" if d["passage"] else "")
     user = f"<노트>\n{page_text[:3000]}\n</노트>\n\n문제: {shown}\n" + "\n".join(
@@ -223,11 +226,16 @@ def solved(
     try:
         c = llm.call(settings.quiz_check_model, CHK_SYS, user, CHK_SCHEMA, "Check", max_tokens=200)
     except LlmError as e:
-        return None, str(e)
-    ok = (
-        c.get("answer") == LETTERS[pos] and c.get("only_one") is True and c.get("supported") is True
-    )
-    return ok, str(c.get("answer"))
+        return "down", str(e)
+    said = c.get("answer")
+    if (
+        said not in CHK_ANSWERS
+        or not isinstance(c.get("only_one"), bool)
+        or not isinstance(c.get("supported"), bool)
+    ):
+        return "bad", "검사 모델의 답 모양이 맞지 않음"
+    ok = said == LETTERS[pos] and c.get("only_one") is True and c.get("supported") is True
+    return ("pass" if ok else "fail"), str(said)
 
 
 def make_similar(
@@ -307,14 +315,16 @@ def make_similar(
                     down, failed, out.why = down + 1, True, ["정답 둘 검사 호출이 실패함"]
             if not failed and not why and k is not None:
                 options, pos = place(d["options"], k, slot)
-                ok, said = solved(llm, d, options, pos, page_text)
-                if ok:
+                verdict, said = solved(llm, d, options, pos, page_text)
+                if verdict == "pass":
                     seen.append(seen_draft(d))
                     out.question, out.answer_pos = {**d, "options": options}, LETTERS[pos]
                     out.type, out.why = ty, []
                     return out
-                if ok is None:
+                if verdict == "down":
                     down, failed, out.why = down + 1, True, [said]
+                elif verdict == "bad":  # 답 모양 오류: 재시도 지시에 문제점으로 넣지 않음
+                    failed, out.why = True, [said]
                 else:
                     why = [f"검사 탈락(검수자 답 {said})"]
             if not failed:

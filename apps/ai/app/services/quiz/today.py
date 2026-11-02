@@ -4,7 +4,7 @@ ai_jobs.type = 'today_review' (공용 계약 AiJobType, 11/01 추가).
   코드  날짜가 된 문제 고르기 — 지난번 틀린 문제 → 약한 개념(사용자의 모든 풀이에서 틀린 수) →
         오래된 날짜 순, 같은 낱말(text.same_word)은 하나만 · 사본으로 복습 넘겨주기 · 개념별 진행
   LLM   '정답 둘' 검사(10/22) 전에 만든 문제와 보기가 5개가 아닌 문제(10/26)를 검사하고
-        (quality.two_answers), 걸리면 같은 낱말의 새 문제로 바꿈(similar.make_similar)
+        (quality.screen), 걸리면 같은 낱말의 새 문제로 바꿈(similar.make_similar)
 
 input — NestJS가 작업을 만들 때 담습니다. ObjectId는 문자열, 날짜는 Date 또는 ISO 문자열
   day       오늘(서울 날짜 YYYY-MM-DD). 다음 날 서울 0시 전에 dueAt이 된 문제를 고릅니다
@@ -39,10 +39,11 @@ result — NestJS가 반영합니다
 세트 문제인 moved 문제는 state='active' · dueAt=dueBefore로 돌리고(movedTo · dueBefore 지움),
 flawed 문제의 movedTo가 가리키는 새 문제는 그 flawed 문제의 세트 끝에 붙입니다.
 
-LLM 장애(로컬에는 없는 처리): '정답 둘' 검사가 판정을 받지 못하면(quality.screen의 '검사 못 함':
-걸린 보기 없이 호출 실패 · 답 모양 오류) 그 문제는 검사하지 않은 그대로 내고 다음에 다시
-검사합니다(checked를 남기지 않음). 새 문제 만들기가 LLM 장애(similar.make_similar의 llm_down)로
-끝나면 그 문제만 내일로 미루고 flawTries는 늘리지 않습니다.
+LLM 장애(로컬에는 없는 처리): '정답 둘' 검사의 호출이 실패해 판정을 다 받지 못하면(quality.screen의
+'검사 못 함': 걸린 보기 없이 호출 실패) 그 문제는 검사하지 않은 그대로 내고 다음에 다시
+검사합니다(checked를 남기지 않음). 답 모양이 틀린 판정은 전처럼 그 보기를 걸리지 않은 것으로
+봅니다. 새 문제 만들기가 LLM 장애(similar.make_similar의 llm_down)로 끝나면 그 문제만 내일로
+미루고 flawTries는 늘리지 않습니다.
 알려진 한계: 같은 낱말은 text.same_word로 보지만, 새 문제를 만들 때의 겹침 검사(checks.code_check)와
 기존 문제 다시 내기(similar.reuse_existing)의 '이미 쓴 답'은 아직 text.same_item입니다(오답 복습
 전체 동작이 바뀌므로 따로 다룸).
@@ -492,8 +493,13 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     # 3. 코드: 사본으로 넘겨줌. 같은 낱말의 다른 복습 중 문제도 함께 넘겨 내일 다시 나오지 않게
     questions: list[JsonObject] = []
     merged = 0
+    # 결함으로 내일 다시 만들 문제(dropped의 active)는 넘기지 않음: 결함 처리가 덮임
+    held = {(d["quizSetId"], d["questionId"]) for d in dropped if d["state"] == "active"}
     active = [
-        (s, q, cast(srs.Srs, q["srs"])) for s in live for q in s.questions if _state(q) == "active"
+        (s, q, cast(srs.Srs, q["srs"]))
+        for s in live
+        for q in s.questions
+        if _state(q) == "active" and (s.id, q["id"]) not in held
     ]
     for i, (_, q) in enumerate(picked, 1):
         # 결함 문제를 바꾼 새 문제는 id를 그대로 둠: flawed 문제의 movedTo가 이 id를 가리킴
