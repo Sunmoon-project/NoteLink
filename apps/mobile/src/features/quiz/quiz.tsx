@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, TextInput, View } from 'react-native';
 import { Text } from '@/components/text';
 import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Speech from 'expo-speech';
 import * as Haptics from 'expo-haptics';
 import {
@@ -478,11 +478,14 @@ export function QuizSolveScreen() {
   const answering = useRef(false);
   const mounted = useRef(true);
   const screenGeneration = useRef(useQuizProgress.getState().generation);
-  const screenOwner = useRef(useAuth.getState().userId);
-  const ownsProgress = () =>
-    mounted.current &&
-    useAuth.getState().userId === screenOwner.current &&
-    useQuizProgress.getState().generation === screenGeneration.current;
+  const [screenOwner] = useState(() => useAuth.getState().userId);
+  const ownsProgress = useCallback(
+    () =>
+      mounted.current &&
+      useAuth.getState().userId === screenOwner &&
+      useQuizProgress.getState().generation === screenGeneration.current,
+    [screenOwner],
+  );
   useEffect(() => {
     mounted.current = true;
     screenGeneration.current = useQuizProgress.getState().claim();
@@ -498,10 +501,12 @@ export function QuizSolveScreen() {
   const [speaking, setSpeaking] = useState(false);
   const expired = useAuth((s) => s.expired);
   const finishing = useRef(false);
+  const completionKey = ['quiz-finish', screenOwner, attemptId];
+  const completing = useIsMutating({ mutationKey: completionKey }) > 0;
   const finish = useMutation({
+    mutationKey: completionKey,
     mutationFn: (request: {
       owner: string | null;
-      generation: number;
       attemptGeneration: number;
       setId: string;
       attemptId: string;
@@ -521,10 +526,12 @@ export function QuizSolveScreen() {
       state.save({ ...state.progress, completed: r });
     },
     onError: (e, request) => {
+      const state = useQuizProgress.getState();
       if (
-        !ownsProgress() ||
         useAuth.getState().userId !== request.owner ||
-        useQuizProgress.getState().generation !== request.generation
+        state.attemptGeneration !== request.attemptGeneration ||
+        state.progress?.setId !== request.setId ||
+        state.progress.attemptId !== request.attemptId
       )
         return;
       if (e instanceof ApiError && e.code === ERROR_CODES.TOKEN_EXPIRED)
@@ -564,7 +571,7 @@ export function QuizSolveScreen() {
         .save({ setId: set.data._id, attemptId, index: i, answerText, pick, right, results });
       screenGeneration.current = useQuizProgress.getState().generation;
     }
-  }, [set.data, attemptId, i, answerText, pick, right, results, finish.isSuccess]);
+  }, [set.data, attemptId, i, answerText, pick, right, results, finish.isSuccess, ownsProgress]);
   const completedSetId = set.data?._id ?? activeSetId;
   const completed = useQuizProgress((state) =>
     state.progress?.setId === completedSetId ? state.progress?.completed : undefined,
@@ -576,7 +583,7 @@ export function QuizSolveScreen() {
       pathname: '/play/review',
       params: { setId: completedSetId, points: String(completed.pointsEarned) },
     });
-  }, [completed, attemptId, completedSetId]);
+  }, [completed, attemptId, completedSetId, ownsProgress]);
   if (set.isError)
     return (
       <Screen>
@@ -628,7 +635,7 @@ export function QuizSolveScreen() {
   };
   const next = () => {
     if (!ownsProgress()) return toast('다른 풀이를 진행 중이에요. 풀던 퀴즈를 다시 열어주세요');
-    if (finishing.current) return;
+    if (finishing.current || completing) return;
     if (i >= qs.length - 1) {
       const progress = useQuizProgress.getState().progress;
       if (!attemptId || progress?.attemptId !== attemptId || progress.setId !== set.data?._id) {
@@ -638,7 +645,6 @@ export function QuizSolveScreen() {
       finishing.current = true;
       finish.mutate({
         owner: useAuth.getState().userId,
-        generation: useQuizProgress.getState().generation,
         attemptGeneration: useQuizProgress.getState().attemptGeneration,
         setId: set.data._id,
         attemptId,
@@ -665,15 +671,15 @@ export function QuizSolveScreen() {
               {speaking ? '읽어주는 중… (탭해서 멈춤)' : '음성으로 듣기'}
             </Btn>
           ) : right ? (
-            <Btn loading={finish.isPending} onPress={next}>
+            <Btn loading={finish.isPending || completing} onPress={next}>
               다음 문제 풀기
             </Btn>
           ) : right === false ? (
             <View className="gap-2">
-              <Btn kind="cream" disabled={finish.isPending} onPress={retry}>
+              <Btn kind="cream" disabled={finish.isPending || completing} onPress={retry}>
                 다시 풀기
               </Btn>
-              <Btn loading={finish.isPending} onPress={next}>
+              <Btn loading={finish.isPending || completing} onPress={next}>
                 다음 문제 풀기
               </Btn>
             </View>
@@ -850,7 +856,11 @@ export function QuizReviewScreen() {
                 <Btn
                   disabled={!sel}
                   onPress={() =>
-                    sel && router.push({ pathname: '/play/explain', params: { qid: sel } })
+                    sel &&
+                    router.push({
+                      pathname: '/play/explain',
+                      params: { qid: sel, setId: set.data._id },
+                    })
                   }
                 >
                   AI 설명 보기
@@ -896,7 +906,10 @@ export function QuizReviewScreen() {
               onPress={() =>
                 select
                   ? setSel(q._id)
-                  : router.push({ pathname: '/play/explain', params: { qid: q._id } })
+                  : router.push({
+                      pathname: '/play/explain',
+                      params: { qid: q._id, setId: set.data._id },
+                    })
               }
               className={cx('rounded-2xl bg-cream p-3', sel === q._id && 'border-2 border-brand')}
             >
@@ -931,10 +944,38 @@ export function QuizReviewScreen() {
 }
 
 export function QuizExplainScreen() {
-  const { qid = 'q3' } = useLocalSearchParams<{ qid?: string }>();
-  const box = useQuery({ queryKey: ['quiz-box'], queryFn: api.quiz.box });
-  const ex = useQuery({ queryKey: ['explain', qid], queryFn: () => api.quiz.explanation(qid) });
-  const q = box.data?.find((x) => x._id === qid);
+  const { qid, setId } = useLocalSearchParams<{ qid?: string; setId?: string }>();
+  const box = useQuery({ queryKey: ['quiz-box'], queryFn: api.quiz.box, enabled: !setId });
+  const source = useQuery({
+    queryKey: ['quiz-set', setId],
+    queryFn: () => api.quiz.set(setId!),
+    enabled: !!setId,
+  });
+  const q = (setId ? source.data?.questions : box.data)?.find((x) => x._id === qid);
+  const ex = useQuery({
+    queryKey: ['explain', qid],
+    queryFn: () => api.quiz.explanation(qid!),
+    enabled: !!q,
+  });
+  const query = setId ? source : box;
+  if (query.isError)
+    return (
+      <Screen>
+        <Text>설명할 문제를 불러오지 못했어요</Text>
+        <Btn onPress={() => void query.refetch()}>문제 다시 시도</Btn>
+        <Btn kind="outline" onPress={() => router.back()}>
+          뒤로 가기
+        </Btn>
+      </Screen>
+    );
+  if (query.isPending) return <Loading />;
+  if (!q)
+    return (
+      <Screen>
+        <Text>문제를 찾을 수 없어요</Text>
+        <Btn onPress={() => router.back()}>뒤로 가기</Btn>
+      </Screen>
+    );
   return (
     <Screen>
       <Pressable
@@ -951,7 +992,14 @@ export function QuizExplainScreen() {
           <Text className="text-subhead text-ink">{q?.prompt}</Text>
         </View>
         <View className="p-3 pt-6">
-          {ex.data ? (
+          {ex.isError ? (
+            <View>
+              <Text>설명을 불러오지 못했어요</Text>
+              <Btn loading={ex.isFetching} onPress={() => void ex.refetch()}>
+                설명 다시 시도
+              </Btn>
+            </View>
+          ) : ex.data ? (
             ex.data.text.split('\n').map((l) => (
               <Text
                 key={l}

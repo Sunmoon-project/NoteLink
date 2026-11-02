@@ -1,7 +1,12 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import { QuizSolveScreen, QuizReviewScreen, QuizBoxScreen } from '../features/quiz/quiz';
+import {
+  QuizSolveScreen,
+  QuizExplainScreen,
+  QuizReviewScreen,
+  QuizBoxScreen,
+} from '../features/quiz/quiz';
 import { useAuth } from '../stores/auth';
 import { useQuizProgress } from '../stores/quiz-progress';
 import { useToast } from '../stores/toast';
@@ -16,6 +21,7 @@ const mockApi = {
     box: jest.fn(),
     saveToBox: jest.fn(),
     deleteFromBox: jest.fn(),
+    explanation: jest.fn(),
   },
 };
 jest.mock('../lib/api', () => ({
@@ -70,6 +76,7 @@ beforeEach(() => {
   mockApi.quiz.answer.mockResolvedValue({ correct: true, correctAnswer: '답' });
   mockApi.quiz.finish.mockResolvedValue({ pointsEarned: 120, balance: 120 });
   mockApi.quiz.box.mockResolvedValue([question]);
+  mockApi.quiz.explanation.mockResolvedValue({ text: '실제 문제 해설' });
   mockApi.quiz.saveToBox.mockResolvedValue([question]);
   mockApi.quiz.deleteFromBox.mockResolvedValue(undefined);
 });
@@ -93,10 +100,17 @@ it.each([
     if (withoutSetId) setParams({});
     const pending = deferred<{ pointsEarned: number; balance: number }>();
     mockApi.quiz.finish.mockReturnValueOnce(pending.promise);
-    const first = await renderScreen(<QuizSolveScreen />, client());
+    const qc = client();
+    const first = await renderScreen(<QuizSolveScreen />, qc);
     await submit();
     await first.unmount();
-    if (reenterBeforeResponse) await renderScreen(<QuizSolveScreen />, client());
+    if (reenterBeforeResponse) {
+      await renderScreen(<QuizSolveScreen />, qc);
+      const next = await screen.findByRole('button', { disabled: true });
+      expect(next).toBeDisabled();
+      await fireEvent.press(next);
+      expect(mockApi.quiz.finish).toHaveBeenCalledTimes(1);
+    }
     await act(async () => pending.resolve({ pointsEarned: 120, balance: 120 }));
     if (!reenterBeforeResponse) {
       expect(router.replace).not.toHaveBeenCalled();
@@ -197,4 +211,67 @@ it('완료 요청 이후 같은 ID의 진행을 초기화했으면 늦은 성공
   await act(async () => pending.resolve({ pointsEarned: 120, balance: 120 }));
   expect(useQuizProgress.getState().progress?.completed).toBeUndefined();
   expect(router.replace).not.toHaveBeenCalled();
+});
+
+it('리뷰에서 보관하지 않은 문제 설명을 열어도 원래 세트의 본문을 표시한다', async () => {
+  mockApi.quiz.box.mockResolvedValue([]);
+  const qc = client();
+  const review = await renderScreen(<QuizReviewScreen />, qc);
+  await fireEvent.press(await screen.findByText(`Q. ${question.prompt}`));
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/play/explain',
+    params: { qid: question._id, setId: quizSet._id },
+  });
+  await review.unmount();
+  setParams({ qid: question._id, setId: quizSet._id });
+  await renderScreen(<QuizExplainScreen />, qc);
+  expect(await screen.findByText(question.prompt)).toBeTruthy();
+  expect(await screen.findByText('실제 문제 해설')).toBeTruthy();
+});
+
+it('설명 조회 실패는 안내 후 같은 문제로 재시도할 수 있다', async () => {
+  mockApi.quiz.explanation.mockRejectedValueOnce(new Error('해설 실패'));
+  setParams({ qid: question._id, setId: quizSet._id });
+  await renderScreen(<QuizExplainScreen />, client());
+  await fireEvent.press(await screen.findByRole('button', { name: '설명 다시 시도' }));
+  expect(await screen.findByText('실제 문제 해설')).toBeTruthy();
+  expect(screen.getByText(question.prompt)).toBeTruthy();
+});
+
+it('재진입 후 완료 요청이 실패하면 안내하고 대기 잠금을 풀어 수동 재시도를 허용한다', async () => {
+  let reject!: (error: Error) => void;
+  const pending = new Promise<never>((_resolve, fail) => {
+    reject = fail;
+  });
+  mockApi.quiz.finish.mockReturnValueOnce(pending);
+  const qc = client();
+  const first = await renderScreen(<QuizSolveScreen />, qc);
+  await submit();
+  await first.unmount();
+  await renderScreen(<QuizSolveScreen />, qc);
+  await screen.findByRole('button', { disabled: true });
+  await act(async () => reject(new Error('완료 실패')));
+  await waitFor(() => expect(useToast.getState().msg).toContain('완료 결과를 저장하지 못'));
+  const retry = await screen.findByRole('button', { name: '다음 문제 풀기' });
+  expect(retry).not.toBeDisabled();
+  await fireEvent.press(retry);
+  await waitFor(() => expect(mockApi.quiz.finish).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(router.replace).toHaveBeenCalled());
+});
+
+it('설명할 원본 문제 조회 실패를 재시도하면 문제 본문과 설명을 함께 복구한다', async () => {
+  mockApi.quiz.set.mockRejectedValueOnce(new Error('원본 조회 실패'));
+  setParams({ qid: question._id, setId: quizSet._id });
+  await renderScreen(<QuizExplainScreen />, client());
+  await fireEvent.press(await screen.findByRole('button', { name: '문제 다시 시도' }));
+  expect(await screen.findByText(question.prompt)).toBeTruthy();
+  expect(await screen.findByText('실제 문제 해설')).toBeTruthy();
+});
+
+it('보관함에서 사라진 문제는 빈 본문 대신 안내하고 설명 요청을 보내지 않는다', async () => {
+  mockApi.quiz.box.mockResolvedValue([]);
+  setParams({ qid: 'deleted-question' });
+  await renderScreen(<QuizExplainScreen />, client());
+  expect(await screen.findByText('문제를 찾을 수 없어요')).toBeTruthy();
+  expect(mockApi.quiz.explanation).not.toHaveBeenCalled();
 });
