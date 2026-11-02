@@ -463,13 +463,14 @@ export function QuizReadyScreen() {
 
 export function QuizSolveScreen() {
   const { setId, from } = useLocalSearchParams<{ setId?: string; from?: string }>();
-  const set = useQuery({
-    queryKey: ['quiz-set', setId ?? 'latest'],
-    queryFn: () => api.quiz.set(setId ?? ''),
-  });
   const [previous] = useState(() => {
     const saved = useQuizProgress.getState().progress;
-    return saved?.setId === setId ? saved : null;
+    return saved && (!setId || saved.setId === setId) ? saved : null;
+  });
+  const activeSetId = setId ?? previous?.setId;
+  const set = useQuery({
+    queryKey: ['quiz-set', activeSetId ?? 'latest'],
+    queryFn: () => api.quiz.set(activeSetId ?? ''),
   });
   const [attemptId, setAttemptId] = useState<string | null>(previous?.attemptId ?? null);
   const [startError, setStartError] = useState(false);
@@ -498,22 +499,26 @@ export function QuizSolveScreen() {
   const expired = useAuth((s) => s.expired);
   const finishing = useRef(false);
   const finish = useMutation({
-    mutationFn: (_request: { owner: string | null; generation: number }) =>
-      api.quiz.finish(attemptId!),
+    mutationFn: (request: {
+      owner: string | null;
+      generation: number;
+      attemptGeneration: number;
+      setId: string;
+      attemptId: string;
+    }) => api.quiz.finish(request.attemptId),
     // 완료는 포인트를 적립하므로 응답 유실 시 자동으로 재전송하지 않는다.
     retry: false,
     onSuccess: (r, request) => {
+      const state = useQuizProgress.getState();
       if (
-        !ownsProgress() ||
         useAuth.getState().userId !== request.owner ||
-        useQuizProgress.getState().generation !== request.generation
+        state.attemptGeneration !== request.attemptGeneration ||
+        state.progress?.setId !== request.setId ||
+        state.progress.attemptId !== request.attemptId
       )
         return;
-      useQuizProgress.getState().reset();
-      router.replace({
-        pathname: '/play/review',
-        params: { setId: set.data!._id, points: String(r.pointsEarned) },
-      });
+      // 화면을 떠나도 같은 풀이의 완료 응답은 보존하고 재진입 화면이 결과를 연다.
+      state.save({ ...state.progress, completed: r });
     },
     onError: (e, request) => {
       if (
@@ -559,7 +564,19 @@ export function QuizSolveScreen() {
         .save({ setId: set.data._id, attemptId, index: i, answerText, pick, right, results });
       screenGeneration.current = useQuizProgress.getState().generation;
     }
-  }, [set.data, attemptId, i, answerText, pick, right, results, finish.isSuccess]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [set.data, attemptId, i, answerText, pick, right, results, finish.isSuccess]);
+  const completedSetId = set.data?._id ?? activeSetId;
+  const completed = useQuizProgress((state) =>
+    state.progress?.setId === completedSetId ? state.progress?.completed : undefined,
+  );
+  useEffect(() => {
+    if (!completed || !completedSetId || !ownsProgress() || !attemptId) return;
+    useQuizProgress.getState().reset();
+    router.replace({
+      pathname: '/play/review',
+      params: { setId: completedSetId, points: String(completed.pointsEarned) },
+    });
+  }, [completed, attemptId, completedSetId]);
   if (set.isError)
     return (
       <Screen>
@@ -622,6 +639,9 @@ export function QuizSolveScreen() {
       finish.mutate({
         owner: useAuth.getState().userId,
         generation: useQuizProgress.getState().generation,
+        attemptGeneration: useQuizProgress.getState().attemptGeneration,
+        setId: set.data._id,
+        attemptId,
       });
       return;
     }
@@ -786,24 +806,56 @@ export function QuizReviewScreen() {
   const [select, setSelect] = useState(false);
   // 선택 모드에서는 문제 하나를 골라 AI 설명을 본다 (FR-52-01 ~ 05)
   const [sel, setSel] = useState<string | null>(null);
+  const storeInBox = useMutation({
+    mutationFn: (questionIds: string[]) => api.quiz.saveToBox(questionIds),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['quiz-box'] });
+      setSel(null);
+      setSelect(false);
+      toast('퀴즈 보관함에 저장했어요');
+    },
+    onError: () => toast('보관함에 저장하지 못했어요. 다시 시도해 주세요'),
+  });
   useEffect(() => {
     if (points) qc.invalidateQueries({ queryKey: ['me'] });
   }, [points]); // eslint-disable-line react-hooks/exhaustive-deps
   const qs = set.data?.questions ?? [];
+  if (set.isError)
+    return (
+      <Screen>
+        <Text>완료한 퀴즈를 불러오지 못했어요</Text>
+        <Btn loading={set.isFetching} onPress={() => void set.refetch()}>
+          다시 시도
+        </Btn>
+        <Btn kind="outline" onPress={() => router.back()}>
+          뒤로
+        </Btn>
+      </Screen>
+    );
+  if (!set.data) return <Loading />;
   return (
     <View className="flex-1">
       <Screen
         footer={
           <>
             {select ? (
-              <Btn
-                disabled={!sel}
-                onPress={() =>
-                  sel && router.push({ pathname: '/play/explain', params: { qid: sel } })
-                }
-              >
-                AI 설명 보기
-              </Btn>
+              <View className="gap-2">
+                <Btn
+                  disabled={!sel}
+                  loading={storeInBox.isPending}
+                  onPress={() => sel && storeInBox.mutate([sel])}
+                >
+                  보관함에 저장
+                </Btn>
+                <Btn
+                  disabled={!sel}
+                  onPress={() =>
+                    sel && router.push({ pathname: '/play/explain', params: { qid: sel } })
+                  }
+                >
+                  AI 설명 보기
+                </Btn>
+              </View>
             ) : (
               <Btn onPress={() => router.dismissTo('/(tabs)/quiz')}>확인</Btn>
             )}
@@ -1152,6 +1204,17 @@ export function CardsScreen() {
 }
 
 export function QuizBoxScreen() {
+  const qc = useQueryClient();
+  const [selected, setSelected] = useState<string[]>([]);
+  const remove = useMutation({
+    mutationFn: (ids: string[]) => api.quiz.deleteFromBox(ids),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['quiz-box'] });
+      setSelected([]);
+      toast('선택한 퀴즈를 삭제했어요');
+    },
+    onError: () => toast('보관함에서 삭제하지 못했어요. 다시 시도해 주세요'),
+  });
   const box = useQuery({ queryKey: ['quiz-box'], queryFn: api.quiz.box });
   const [shown, setShown] = useState<string[]>([]);
   const [select, setSelect] = useState(false);
@@ -1161,12 +1224,42 @@ export function QuizBoxScreen() {
     setLoaded(box.data);
     if (box.data[0]) setShown([box.data[0]._id]);
   }
+  if (box.isError)
+    return (
+      <Screen>
+        <Text>보관함을 불러오지 못했어요</Text>
+        <Btn loading={box.isFetching} onPress={() => void box.refetch()}>
+          다시 시도
+        </Btn>
+        <Btn kind="outline" onPress={() => router.back()}>
+          뒤로
+        </Btn>
+      </Screen>
+    );
+  if (!box.data) return <Loading />;
   return (
-    <Screen footer={<Btn onPress={() => router.back()}>확인</Btn>}>
+    <Screen
+      footer={
+        select ? (
+          <Btn
+            disabled={!selected.length}
+            loading={remove.isPending}
+            onPress={() => remove.mutate(selected)}
+          >
+            선택 삭제
+          </Btn>
+        ) : (
+          <Btn onPress={() => router.back()}>확인</Btn>
+        )
+      }
+    >
       <View className="flex-row items-center justify-between pt-5">
         <Text className="text-body font-bold text-ink">퀴즈 보관함</Text>
         <Pressable
-          onPress={() => setSelect((x) => !x)}
+          onPress={() => {
+            setSelect((x) => !x);
+            setSelected([]);
+          }}
           className={cx('rounded-full px-3 py-1', select ? 'bg-ink' : 'border border-line')}
         >
           <Text className={cx('text-caption', select ? 'text-white' : 'text-ink')}>
@@ -1174,6 +1267,7 @@ export function QuizBoxScreen() {
           </Text>
         </Pressable>
       </View>
+      {!box.data.length && <Text>보관한 퀴즈가 없어요</Text>}
       <View className="mt-3 gap-2">
         {box.data?.map((q, n) => (
           <View key={q._id} className="rounded-2xl bg-cream p-3">
@@ -1203,7 +1297,21 @@ export function QuizBoxScreen() {
               >
                 <Text className="text-caption2 text-brand">AI 설명 보기</Text>
               </Pressable>
-              {select && <Badge tone="gray">선택</Badge>}
+              {select && (
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityLabel={`보관함 선택 ${q._id}`}
+                  accessibilityState={{ checked: selected.includes(q._id) }}
+                  disabled={remove.isPending}
+                  onPress={() =>
+                    setSelected((ids) =>
+                      ids.includes(q._id) ? ids.filter((id) => id !== q._id) : [...ids, q._id],
+                    )
+                  }
+                >
+                  <Badge tone="gray">{selected.includes(q._id) ? '선택됨' : '선택'}</Badge>
+                </Pressable>
+              )}
             </View>
           </View>
         ))}
