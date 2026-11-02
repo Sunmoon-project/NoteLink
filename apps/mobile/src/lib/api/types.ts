@@ -166,7 +166,7 @@ export interface Api {
     deleteFolder(id: string): Promise<void>;
     materials(folderId: string): Promise<Material[]>;
     createMaterial(p: {
-      /** 같은 계정·등록 요청의 재시도는 같은 키로 보내며 서버는 결과를 재사용해야 한다. */
+      /** 같은 등록의 실서버 HTTP 요청은 한 번만 보내고 불명확한 응답은 재전송하지 않는다. */
       requestId?: string;
       folderId: string;
       kind: MaterialKind;
