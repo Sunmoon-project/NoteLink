@@ -135,6 +135,34 @@ def test_checker_failure_next_to_a_real_rejection_is_not_llm_down() -> None:
     assert m.question is None and not m.llm_down
 
 
+def test_two_answers_check_failing_keeps_the_draft_out() -> None:
+    # 어휘 문제의 '같은 뜻' 검사(Natural)가 모두 실패: 걸린 보기가 없어도 검사하지 못한 초안
+    review = [gen(GOOD), LlmError("HTTP 503"), gen(GOOD)]
+    llm = FakeLlm({"Review": review, "Natural": [LlmError("HTTP 503")] * 40})
+    m = similar.make_similar(llm, question(qtype="어휘"), target(), 1, PAGE, 0, [])
+    assert m.question is None and m.llm_down
+    assert m.why == ["정답 둘 검사 호출이 실패함"]
+    assert not llm.named("Check")  # 검사 모델에 보내지도 않음
+
+
+def test_failed_calls_and_malformed_answers_alone_are_llm_down() -> None:
+    llm = FakeLlm({"Review": [gen(GOOD), {}, gen(GOOD)], "Check": [LlmError("HTTP 503")] * 2})
+    m = similar.make_similar(llm, question(), target(), 1, PAGE, 0, [])
+    assert m.question is None and m.llm_down
+
+
+def test_malformed_answers_alone_are_not_llm_down() -> None:
+    llm = FakeLlm({"Review": [{}, {}, {}]})
+    assert not similar.make_similar(llm, question(), target(), 1, PAGE, 0, []).llm_down
+
+
+def test_last_try_gets_the_last_tip_after_a_failed_call() -> None:
+    llm = FakeLlm({"Review": [gen(FOUR), LlmError("HTTP 503"), gen(FOUR)]})
+    similar.make_similar(llm, question(qtype="어휘"), target(), 1, PAGE, 0, [])
+    third = llm.named("Review")[2].user
+    assert similar.LAST_TIP in third and "앞서 만든 문제의 문제점: 보기 5개가" in third
+
+
 def test_a_malformed_answer_is_a_failed_try_not_a_crash() -> None:
     llm = FakeLlm({"Review": [{"question": {"stem": 1}}, {}, gen(FOUR)]})
     m = similar.make_similar(llm, question(), target(), 1, PAGE, 0, [])

@@ -12,6 +12,7 @@
 import difflib
 from collections.abc import Collection
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 from app.clients.llm import JsonObject, Llm, LlmError
 from app.core.config import settings
@@ -180,7 +181,7 @@ class Made:
     why: list[str] = field(default_factory=list)  # 마지막 시도의 탈락 이유
     # '이미 있는 문제와 거의 같음'으로 떨어진 초안: reuse_existing이 가장 가까운 기존 문제를 고름
     drafts: list[Draft] = field(default_factory=list)
-    llm_down: bool = False  # 시도마다 생성이나 검사 호출이 실패함(LLM 장애)
+    llm_down: bool = False  # 정상 탈락 없이 호출 실패로 못 만듦(LLM 장애, make_similar 참고)
     reused_from: str | None = None  # 기존 문제를 다시 냈으면 그 문제 id
 
 
@@ -205,6 +206,21 @@ def _draft(r: JsonObject) -> Draft | None:
     if isinstance(q.get("difficulty"), str):
         d["difficulty"] = q["difficulty"]
     return d
+
+
+class LlmWatch:
+    """LLM 호출이 실패했는지 기억합니다. quality의 검사는 호출 실패를 '걸리지 않음'으로 넘기므로,
+    검사를 통과했어도 실패가 있었으면 검사하지 못한 것입니다."""
+
+    def __init__(self, llm: Llm) -> None:
+        self._llm, self.failed = llm, False
+
+    def call(self, *args: Any, **kwargs: Any) -> JsonObject:
+        try:
+            return self._llm.call(*args, **kwargs)
+        except LlmError:
+            self.failed = True
+            raise
 
 
 def solved(
@@ -243,9 +259,12 @@ def make_similar(
     slot은 세트 안 순번: 정답 자리를 A~E에 고르게 놓습니다(text.place).
     세 번째 시도는 처음 유형으로 돌아가되, 그때까지 걸린 보기를 avoid에 더해 줍니다. 노트가
     유의어 묶음(fastened / secured / anchored)을 가르치면 모델이 같은 유의어를 계속 냈습니다(10/26).
-    시도마다 생성 호출이나 검사 모델 호출(solved)이 실패해 못 만들었으면 llm_down입니다: 검사 장애를
-    '못 만듦'으로 세면 오늘의 복습은 flawTries를 늘려 3일 뒤 문제를 빼고, 오답 복습은 기존 문제를
-    다시 냅니다(Codex 리뷰 11/01). 초안이 한 번이라도 정상으로 떨어졌으면 llm_down이 아닙니다.
+    llm_down(LLM 장애로 못 만듦): 초안이 정상으로 떨어진 시도(코드 검사 · 정답 둘 검사 · 검사
+    모델의 다른 답)가 한 번도 없고, 호출 실패(생성 · 정답 둘 검사 · 검사 모델)가 한 번 이상 있음.
+    답 모양이 틀린 시도는 정상 탈락으로 세지 않습니다. 장애를 '못 만듦'으로 세면 오늘의 복습은
+    flawTries를 늘려 3일 뒤 문제를 빼고, 오답 복습은 기존 문제를 다시 냅니다(Codex 리뷰 ·
+    /code-review 11/02). 정답 둘 검사(quality.checked) 안에서 호출이 실패하고 걸린 보기가 없으면
+    검사하지 못한 초안이므로 쓰지 않습니다. 실패한 시도 뒤에도 다음 시도 준비(LAST_TIP)는 같습니다.
     """
     orig = q["prompt"] + (f"\n제시문: {q['passage']}" if q.get("passage") else "")
     first = q.get("type") or "규칙"
@@ -254,7 +273,8 @@ def make_similar(
     avoid = list(avoid or [])
     out = Made()
     notes = ""
-    down = 0
+    down = 0  # 호출이 실패한 시도 수
+    rejected = False  # 초안이 정상으로 떨어진 시도가 있었는지
     for attempt, ty in enumerate((first, SWITCH.get(first, "빈칸"), first)):
         out.tries = attempt + 1
         user = (
@@ -275,44 +295,54 @@ def make_similar(
                 temperature=0.7,
             )
         except LlmError as e:
-            down += 1
-            out.why = [str(e)]
-            continue
-        raw = _draft(r)
-        if raw is None:
-            out.why = ["답 모양이 맞지 않음"]
-            continue
-        d = tidy(raw)
+            r = None
+            down, out.why = down + 1, [str(e)]
+        # 호출 실패 · 답 모양 오류(failed): 초안 잘못이 아니므로 재시도 지시(문제점)는 더하지 않음
+        failed = r is None
+        raw = None if r is None else _draft(r)
+        if r is not None and raw is None:
+            failed, out.why = True, ["답 모양이 맞지 않음"]
+        if raw is not None:
+            d = tidy(raw)
 
-        def check(x: Draft, ty: str = ty) -> tuple[list[str], int | None]:
-            return code_check(x, t, page_text, ty, seen)
+            def check(x: Draft, ty: str = ty) -> tuple[list[str], int | None]:
+                return code_check(x, t, page_text, ty, seen)
 
-        why, k = check(d)
-        if not why:
-            hits: list[str] = []
-            d, why, k2, _ = quality.checked(llm, d, check, page_text, ty, avoid, hits)
-            k = k if k2 is None else k2
-            avoid += [h for h in hits if h not in avoid]
-        if not why and k is not None:
-            options, pos = place(d["options"], k, slot)
-            ok, said = solved(llm, d, options, pos, page_text)
-            if ok:
-                seen.append(seen_draft(d))
-                out.question, out.answer_pos = {**d, "options": options}, LETTERS[pos]
-                out.type, out.why = ty, []
-                return out
-            if ok is None:  # 검사 호출 실패: 초안 잘못이 아니므로 재시도 지시는 더하지 않음
-                down += 1
-                out.why = [said]
-                continue
-            why = [f"검사 탈락(검수자 답 {said})"]
-        out.why = why
-        if TOO_CLOSE in why:
-            out.drafts.append(d)
-        notes = f"\n앞서 만든 문제의 문제점: {'; '.join(why)} — 다른 문장과 상황으로 새로 만든다. "
-        if attempt == 1 and first in BLANK_TYPES:
+            why, k = check(d)
+            if not why:
+                hits: list[str] = []
+                watch = LlmWatch(llm)
+                d, why, k2, _ = quality.checked(
+                    cast(Llm, watch), d, check, page_text, ty, avoid, hits
+                )
+                k = k if k2 is None else k2
+                avoid += [h for h in hits if h not in avoid]
+                if watch.failed and not why:  # 검사하지 못한 초안은 쓰지 않음
+                    down, failed, out.why = down + 1, True, ["정답 둘 검사 호출이 실패함"]
+            if not failed and not why and k is not None:
+                options, pos = place(d["options"], k, slot)
+                ok, said = solved(llm, d, options, pos, page_text)
+                if ok:
+                    seen.append(seen_draft(d))
+                    out.question, out.answer_pos = {**d, "options": options}, LETTERS[pos]
+                    out.type, out.why = ty, []
+                    return out
+                if ok is None:
+                    down, failed, out.why = down + 1, True, [said]
+                else:
+                    why = [f"검사 탈락(검수자 답 {said})"]
+            if not failed:
+                rejected = True
+                out.why = why
+                if TOO_CLOSE in why:
+                    out.drafts.append(d)
+                notes = (
+                    f"\n앞서 만든 문제의 문제점: {'; '.join(why)} — "
+                    "다른 문장과 상황으로 새로 만든다. "
+                )
+        if attempt == 1 and first in BLANK_TYPES:  # 실패한 시도 뒤에도 마지막 시도는 똑같이 준비
             notes += LAST_TIP
-    out.llm_down = down == out.tries
+    out.llm_down = down > 0 and not rejected
     return out
 
 

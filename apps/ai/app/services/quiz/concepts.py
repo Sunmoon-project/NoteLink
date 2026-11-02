@@ -16,7 +16,7 @@ from typing import Literal
 from app.clients.llm import JsonObject, Llm, LlmError
 from app.core.config import settings
 from app.services.quiz.models import Question
-from app.services.quiz.text import norm, same_item, short_answer
+from app.services.quiz.text import norm, numbered_apart, same_item, short_answer
 
 type Verdict = Literal["오타", "잘림"]
 
@@ -122,20 +122,6 @@ def issue(name: str, subject: set[str] | frozenset[str] = frozenset()) -> str | 
 
 def key(name: str, subject: set[str] | frozenset[str] = frozenset()) -> str:
     return norm("".join(core(name, subject))) or norm(name)
-
-
-NUMBER = re.compile(r"(?<![0-9.])\d+(?:\.\d+)?|(?<![A-Za-z])[IVXivx]+(?![A-Za-z])")
-
-
-def numbers(name: str) -> set[str]:
-    """이름의 숫자 · 로마 숫자('Type II' · 'type ii' → {'II'}, 'Phase 1 대사' → {'1'})."""
-    return {n.upper() for n in NUMBER.findall(name)}
-
-
-def numbered_apart(a: str, b: str) -> bool:
-    """둘 다 번호가 있고 서로 다름: 나머지가 아무리 비슷해도 다른 것."""
-    na, nb = numbers(a), numbers(b)
-    return bool(na and nb and na != nb)
 
 
 def same_answer(a: str, b: str) -> bool:

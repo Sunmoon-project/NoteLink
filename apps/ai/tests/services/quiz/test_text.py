@@ -7,6 +7,7 @@ from app.services.quiz.text import (
     norm,
     place,
     same_item,
+    same_word,
     short_answer,
     terms,
     tidy,
@@ -181,3 +182,23 @@ def test_place_moves_answer_to_slot_position() -> None:
     assert place(opts, 0, 2) == (["b", "c", "정답", "d", "e"], 2)
     assert place(opts, 0, 7) == (["b", "c", "정답", "d", "e"], 2)  # 5로 나눈 나머지
     assert place(["b", "정답", "c", "d", "e"], 1, 0) == (["정답", "b", "c", "d", "e"], 0)
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("fasten", "fastened", True),  # 앞부분
+        ("analysis", "analyses", True),  # 유사도 + 앞부분 절반 이상
+        ("alpha", "Alpha", True),
+        ("1.5 mL", "1.5mL", True),
+        ("port", "report", False),  # 안에 있지만 앞부분이 아님
+        ("1.5 mL", "15 mL", False),  # norm은 '.'을 지움
+        ("1/2", "1-2", False),  # 수는 같고 기호가 다름
+        ("Type I hypersensitivity", "Type II hypersensitivity", False),  # 로마 숫자
+        ("Stage I", "Stage IV", False),
+        ("affect", "effect", False),  # 유사도만 높고 앞부분이 다름
+        ("mitosis", "meiosis", False),
+    ],
+)
+def test_same_word_is_narrower_than_same_item(a: str, b: str, same: bool) -> None:
+    assert same_word(a, b) is same and same_word(b, a) is same

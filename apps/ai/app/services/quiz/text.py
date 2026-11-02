@@ -1,8 +1,11 @@
 """퀴즈 서비스 공용 도우미: 글 비교, 노트 정리, 문제가 나온 쪽 찾기, 초안 다듬기."""
 
 import difflib
+import functools
+import os
 import re
 import unicodedata
+from decimal import Decimal, InvalidOperation
 
 from app.services.quiz.models import CHOICES, Draft, Notes, Page, Question
 
@@ -75,6 +78,78 @@ def same_item(a: str | None, b: str | None) -> bool:
     return bool(x and y) and (
         x in y or y in x or difflib.SequenceMatcher(None, x, y).ratio() >= 0.75
     )
+
+
+# 수 하나: 3.5×10^5 · 3.5 × 10^5 · 3.5x10^5 · 1.5e3 · 1.5E3 · 1.5E+3 · .5 · -5 · 350000.
+# 지수 표시 ^가 있어야 지수로 읽음('10x100'은 배율). 앞이 영어 글자 · 숫자가 아닐 때만
+# '-'를 부호로 봄('10-20'은 범위). 한국어 뒤에 붙은 수도 읽음('약3.5×10^5')
+_EXP = r"(?:\s*[×xX*]\s*10\s*\^\s*([-+]?\d+)|[eE]([-+]?\d+))?"
+VALUE = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
+_TRAILING = re.compile(r"[\s.,;:!?]+$")
+
+
+def number_values(s: str | None) -> tuple[list[Decimal], str]:
+    """(글에 적힌 수를 적힌 순서대로, 수를 뺀 나머지 글).
+
+    수는 Decimal로 정확히 읽어 반올림 · 넘침 없이 비교합니다(3×10^-7과 4×10^-7, 1e-999와 1e999).
+    Decimal도 읽지 못하는 지수(OCR로 숫자가 길게 붙은 경우)는 수가 아니라 글로 남깁니다.
+    나머지 글은 NFC · 소문자로 맞추고 공백을 한 칸으로, 끝의 마침표 · 쉼표만 떼며
+    부호 · 기호는 남깁니다('1/2'와 '1-2', '.5'와 '5'는 다름).
+    """
+    vals: list[Decimal] = []
+
+    def take(m: re.Match[str]) -> str:
+        base = m.group(1) or m.group(4)
+        exp = m.group(2) or m.group(3) or m.group(5) or m.group(6) or "0"
+        try:
+            vals.append(Decimal(f"{base}E{exp}"))
+        except InvalidOperation:
+            return f" {m.group(0)} "
+        return " "
+
+    rest = VALUE.sub(take, unicodedata.normalize("NFC", s or "").replace(",", ""))
+    return vals, _TRAILING.sub("", " ".join(rest.lower().split()))
+
+
+NUMBERED = re.compile(r"(?<![0-9.])\d+(?:\.\d+)?|(?<![A-Za-z])[IVXivx]+(?![A-Za-z])")
+
+
+def numbers(name: str) -> set[str]:
+    """이름의 숫자 · 로마 숫자('Type II' · 'type ii' → {'II'}, 'Phase 1 대사' → {'1'})."""
+    return {n.upper() for n in NUMBERED.findall(name)}
+
+
+def numbered_apart(a: str, b: str) -> bool:
+    """둘 다 번호가 있고 서로 다름: 나머지가 아무리 비슷해도 다른 것."""
+    na, nb = numbers(a), numbers(b)
+    return bool(na and nb and na != nb)
+
+
+@functools.lru_cache(maxsize=65536)
+def same_word(a: str | None, b: str | None) -> bool:
+    """같은 낱말로 묶을지(오늘의 복습의 고르기 · 넘겨주기 · 무효 풀이): same_item보다 좁게 봅니다.
+
+    같은 낱말의 다른 문제를 사본으로 넘기면(moved) 그 문제의 복습이 사라지므로, same_item이
+    같다고 본 것에 조건을 더합니다(Codex 리뷰 · /code-review 11/02).
+    - 번호가 다르면 다른 답: Type I ~ Type II, Stage I ~ Stage IV(numbered_apart)
+    - 수가 있으면 수와 나머지 글(기호 포함)이 모두 같아야 함: 1.5 ~ 15(norm은 '.'을 지움),
+      1/2 ~ 1-2
+    - 한쪽이 다른 쪽 안에 있으면 앞부분일 때만 같음: fasten ~ fastened는 같고 port ~ report는 다름
+    - 75% 유사도로만 같으면 앞부분이 짧은 쪽의 절반 이상 같아야 함: analysis ~ analyses는 같고
+      affect ~ effect, mitosis ~ meiosis는 다름
+    알려진 한계: be ~ because of처럼 앞부분이 같은 다른 말은 아직 같게 봅니다. 기준은 #9에서
+    채점 세트로 측정하며 고칩니다. 같은 쌍을 거듭 비교하므로(고른 문제 × 복습 중 문제, 풀이마다)
+    결과를 기억합니다.
+    """
+    if not same_item(a, b) or numbered_apart(a or "", b or ""):
+        return False
+    (va, ra), (vb, rb) = number_values(a), number_values(b)
+    if va or vb:
+        return va == vb and ra == rb
+    x, y = sorted((norm(a), norm(b)), key=len)
+    if x in y:
+        return y.startswith(x)
+    return 2 * len(os.path.commonprefix([x, y])) >= len(x)
 
 
 def short_answer(a: str | None) -> bool:

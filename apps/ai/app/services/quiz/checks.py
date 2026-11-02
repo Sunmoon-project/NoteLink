@@ -5,13 +5,12 @@ code_check는 탈락 이유 목록과 정답 보기의 위치를 돌려줍니다
 
 import difflib
 import re
-import unicodedata
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Literal, NotRequired, TypedDict
 
 from app.services.quiz.models import CHOICES, Draft, Question
-from app.services.quiz.text import norm, same_item, short_answer, terms
+from app.services.quiz.text import VALUE, norm, number_values, same_item, short_answer, terms
 
 NEGATIVE = re.compile(r"아닌|않은|틀린|옳지\s?않|잘못된|거리가 먼")
 KO_TYPES = ("정의", "특징", "분류")  # 한국어 용어 과목 유형 (임상병리, 10/22)
@@ -90,41 +89,10 @@ def reversed_of(d: Draft, seen: list[Seen]) -> bool:
     return False
 
 
-# 수 하나: 3.5×10^5 · 3.5 × 10^5 · 3.5x10^5 · 1.5e3 · 1.5E3 · 1.5E+3 · .5 · -5 · 350000.
-# 지수 표시 ^가 있어야 지수로 읽음('10x100'은 배율). 앞이 영어 글자 · 숫자가 아닐 때만
-# '-'를 부호로 봄('10-20'은 범위). 한국어 뒤에 붙은 수도 읽음('약3.5×10^5')
-_EXP = r"(?:\s*[×xX*]\s*10\s*\^\s*([-+]?\d+)|[eE]([-+]?\d+))?"
-_NUMBER = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
-_TRAILING = re.compile(r"[\s.,;:!?]+$")
-
-
-def number_values(s: str | None) -> tuple[list[Decimal], str]:
-    """(글에 적힌 수를 적힌 순서대로, 수를 뺀 나머지 글).
-
-    수는 Decimal로 정확히 읽어 반올림 · 넘침 없이 비교합니다(3×10^-7과 4×10^-7, 1e-999와 1e999).
-    Decimal도 읽지 못하는 지수(OCR로 숫자가 길게 붙은 경우)는 수가 아니라 글로 남깁니다.
-    나머지 글은 NFC · 소문자로 맞추고 공백을 한 칸으로, 끝의 마침표 · 쉼표만 떼며
-    부호 · 기호는 남깁니다('1/2'와 '1-2', '.5'와 '5'는 다름).
-    """
-    vals: list[Decimal] = []
-
-    def take(m: re.Match[str]) -> str:
-        base = m.group(1) or m.group(4)
-        exp = m.group(2) or m.group(3) or m.group(5) or m.group(6) or "0"
-        try:
-            vals.append(Decimal(f"{base}E{exp}"))
-        except InvalidOperation:
-            return f" {m.group(0)} "
-        return " "
-
-    rest = _NUMBER.sub(take, unicodedata.normalize("NFC", s or "").replace(",", ""))
-    return vals, _TRAILING.sub("", " ".join(rest.lower().split()))
-
-
 def number_spans(s: str) -> list[tuple[int, int, list[Decimal]]]:
     """s 안의 수마다 (시작, 끝, 값). 위치를 쓰려면 s는 NFC이고 쉼표가 없어야 합니다
     (number_values는 쉼표를 지우고 읽음). 값을 읽지 못한 지수는 빈 목록입니다."""
-    return [(*m.span(), number_values(m.group(0))[0]) for m in _NUMBER.finditer(s)]
+    return [(*m.span(), number_values(m.group(0))[0]) for m in VALUE.finditer(s)]
 
 
 def same_value(a: str, b: str) -> bool:

@@ -213,11 +213,14 @@ def test_numbers_and_inner_words_are_different_answers() -> None:
             q("q4", "report", "C4", st(due - timedelta(days=2))),
             q("q5", "fasten", "C5", st(due)),
             q("q6", "fastened", "C5", st(TOMORROW + timedelta(days=3))),  # 아직 아님
+            q("q7", "Type I", "C6", st(due)),
+            q("q8", "Type II", "C7", st(due)),
         ],
     }
-    result = run(FakeLlm(), job(s1))
+    result = run(FakeLlm(), {**job(s1), "size": 7})
     copies = {x["answer"]: x["id"] for x in result["questions"]}
-    assert list(copies) == ["1.5 mL", "15 mL", "port", "report", "fasten"]  # 각자 나옴
+    # 각자 나옴
+    assert list(copies) == ["1.5 mL", "15 mL", "port", "report", "fasten", "Type I", "Type II"]
     up = updates(result)
     assert up["q6"]["state"] == "moved" and up["q6"]["movedTo"] == copies["fasten"]  # 같은 낱말
     assert result["merged"] == 1
@@ -325,10 +328,32 @@ def test_right_then_voided_wrong_then_right_is_mastered() -> None:
     result = run(llm, inp)
     assert result["questions"] == [] and len(result["voidAnswers"]) == 1
     s = updates(result)["q1"]
-    assert (s["state"], s["dueAt"], s["streak"], s["reviews"]) == ("mastered", None, 2, 1)
+    # reviews는 남은 이 문제 풀이 수(2)보다 작아지지 않음(저장된 2 - 무효 1 = 1)
+    assert (s["state"], s["dueAt"], s["streak"], s["reviews"]) == ("mastered", None, 2, 2)
     assert "secured" in s["flaw"] and "flawTries" not in s
     assert result["dropped"][0]["state"] == "mastered"
     assert result["dropped"][0]["replacedBy"] is None
+
+
+def test_answers_on_another_question_of_the_same_word_do_not_restore_the_streak() -> None:
+    inp = flawed_input(unchecked())
+    other = q(
+        "qz",
+        "fastened",
+        "fasten의 뜻",
+        {**st(None), "state": "mastered"},
+        prompt="다른 세트에서 따로 만든 문제",
+    )
+    inp["sets"].append({"id": "s2", "materialId": "m1", "questions": [other]})
+    for i, day in enumerate(["2026-10-12", "2026-10-15"]):
+        right = {"questionId": "qz", "answer": "fastened", "correct": True}
+        inp["attempts"].append(
+            {"id": f"z{i}", "quizSetId": "s2", "finishedAt": f"{day}T06:00:00Z", "answers": [right]}
+        )
+    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    s = updates(run(llm, inp))["q1"]
+    # q1은 맞힘 1번 · 무효 오답 1번뿐: qz의 맞힘 2번으로 다 익힘이 되지 않음
+    assert (s["state"], s["streak"], s["reviews"], s["flawTries"]) == ("active", 1, 1, 1)
 
 
 def test_flawed_question_is_dropped_after_three_days() -> None:

@@ -2,7 +2,7 @@
 
 ai_jobs.type = 'today_review' (공용 계약 AiJobType, 11/01 추가).
   코드  날짜가 된 문제 고르기 — 지난번 틀린 문제 → 약한 개념(사용자의 모든 풀이에서 틀린 수) →
-        오래된 날짜 순, 같은 낱말(same_answer)은 하나만 · 사본으로 복습 넘겨주기 · 개념별 진행
+        오래된 날짜 순, 같은 낱말(text.same_word)은 하나만 · 사본으로 복습 넘겨주기 · 개념별 진행
   LLM   '정답 둘' 검사(10/22) 전에 만든 문제와 보기가 5개가 아닌 문제(10/26)를 검사하고
         (quality.two_answers), 걸리면 같은 낱말의 새 문제로 바꿈(similar.make_similar)
 
@@ -23,9 +23,13 @@ result — NestJS가 반영합니다
   title          '오늘의 복습 · MM-DD'
   baseSetId      materialId · folderId를 따올 세트(첫 문제가 나온 세트). sourceSetId는 null
   srsUpdates     [{quizSetId, questionId, srs}] 원래 문제의 복습 상태: 사본으로 넘겨줌(moved,
-                 dueBefore에 옛 날짜) · 결함(flawed) · 검사 통과(checked) · 다시 만들 날(flawTries)
+                 dueBefore에 옛 날짜) · 결함(flawed) · 검사 통과(checked) · 다시 만들 날(flawTries).
+                 결함 문제의 무효 풀이를 빼고 다시 세어 연속 정답이 차면 다 익힘(mastered, dueAt
+                 null, flaw에 결함 이유): 새 문제로 바꾸지 않고 복습에서 뺌
   voidAnswers    [{attemptId, questionId, void}] 무효로 할 풀이. void(이유 글)를 그 풀이에 씀
-  dropped        [{quizSetId, questionId, flaw, replacedBy, state}] 결함 문제(앱 안내 · 확인용)
+  dropped        [{quizSetId, questionId, flaw, replacedBy, state}] 결함 문제(앱 안내 · 확인용).
+                 state는 active(내일 다시 만들어 봄) · flawed(새 문제로 바꿈 · 그만 냄) ·
+                 mastered(무효 풀이를 빼니 다 익힘, replacedBy null)
   due · merged   날짜가 된 문제 수 · 같은 낱말이라 함께 넘긴 다른 문제 수
   nextReview     고른 문제가 없을 때 다음 복습 날짜(서울 날짜), 남은 복습이 없으면 null
   progress       [{concept, mastered, stopped, active, wrong}] 개념별 진행(틀린 수 많은 순)
@@ -46,11 +50,11 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, cast
+from typing import cast
 
-from app.clients.llm import JsonObject, Llm, LlmError
+from app.clients.llm import JsonObject, Llm
 from app.services.quiz import quality, similar, srs
-from app.services.quiz.checks import Target, number_values, seen_question
+from app.services.quiz.checks import Target, seen_question
 from app.services.quiz.models import CHOICES, Draft, Notes, Question
 from app.services.quiz.review import (
     REVIEW_SET_SIZE,
@@ -68,7 +72,7 @@ from app.services.quiz.review import (
     seoul_midnight,
     utc_date,
 )
-from app.services.quiz.text import locate, norm, same_item
+from app.services.quiz.text import locate, same_word
 
 TYPE = "today_review"
 FLAW_TRIES = 3  # 결함 문제를 새 문제로 바꾸려 해 볼 날 수. 그래도 못 만들면 복습에서 뺌
@@ -175,22 +179,6 @@ def weakness(qmaps: dict[str, dict[str, Question]], attempts: list[Attempt]) -> 
     return weak
 
 
-def same_answer(a: str | None, b: str | None) -> bool:
-    """같은 낱말로 묶을지: text.same_item에 두 조건을 더해 좁게 봅니다(Codex 리뷰 11/01).
-
-    - 적힌 수가 다르면 다른 답: norm은 '.'을 지워 1.5와 15를 같게 봄
-    - 한쪽이 다른 쪽 안에 들어 있으면 앞부분일 때만 같음: fasten ~ fastened는 같고
-      port ~ report는 다름
-    오늘의 복습은 같은 낱말의 다른 문제까지 사본으로 넘기므로(moved), 다른 답을 묶으면 그 문제의
-    복습이 사라집니다. 알려진 한계: be ~ because of처럼 앞부분이 같은 다른 말은 아직 같게 봅니다.
-    기준은 #9에서 채점 세트로 측정하며 고칩니다.
-    """
-    if not same_item(a, b) or number_values(a)[0] != number_values(b)[0]:
-        return False
-    x, y = sorted((norm(a), norm(b)), key=len)
-    return x not in y or y.startswith(x)
-
-
 def progress(sets: list[QuizSet]) -> defaultdict[str, Counter[str]]:
     """개념마다 다 익힘 / 중단 / 복습 중인 문제 수."""
     out: defaultdict[str, Counter[str]] = defaultdict(Counter)
@@ -212,20 +200,6 @@ def _page(q: Question, notes: Notes, s: QuizSet) -> tuple[int, str]:
     return page, notes[mid][page]
 
 
-class _Watch:
-    """LLM 호출이 실패했는지 기억합니다. quality.two_answers는 실패를 '자연스럽지 않음'으로 봄."""
-
-    def __init__(self, llm: Llm) -> None:
-        self._llm, self.failed = llm, False
-
-    def call(self, *args: Any, **kwargs: Any) -> JsonObject:
-        try:
-            return self._llm.call(*args, **kwargs)
-        except LlmError:
-            self.failed = True
-            raise
-
-
 def flaw(llm: Llm, s: QuizSet, q: Question, notes: Notes, hits: list[str]) -> list[str] | None:
     """저장된 문제에 '정답 둘' 검사(quality.two_answers). 걸린 보기는 hits에 모읍니다.
 
@@ -238,7 +212,7 @@ def flaw(llm: Llm, s: QuizSet, q: Question, notes: Notes, hits: list[str]) -> li
         "options": q["choices"] or [],
         "answer": q["answer"],
     }
-    watch = _Watch(llm)
+    watch = similar.LlmWatch(llm)
     why = quality.two_answers(cast(Llm, watch), d, text, q.get("type"), hits)
     return None if watch.failed else why
 
@@ -246,23 +220,18 @@ def flaw(llm: Llm, s: QuizSet, q: Question, notes: Notes, hits: list[str]) -> li
 def void_flawed(
     attempts: list[Attempt], qmaps: dict[str, dict[str, Question]], q: Question, hits: list[str]
 ) -> tuple[srs.Srs, list[JsonObject]]:
-    """두 번째 정답(hits)을 고른 이 문제(또는 문제 글 · 제시문이 같은 사본)의 풀이를 무효로.
+    """두 번째 정답(hits)을 고른 이 문제(또는 사본, _copy_of)의 풀이를 무효로.
 
-    무효로 한 풀이가 있으면 복습 상태를 되살립니다(_restored). 같은 낱말은 same_answer로 봅니다.
+    무효로 한 풀이가 있으면 이 문제와 사본의 남은 풀이로 복습 상태를 되살립니다(_restored).
     """
     voided, kept, voids = 0, [], []
     for a in attempts:  # 푼 순서대로
         qm = qmaps.get(a.quiz_set_id, {})
         for x in a.answers:
             oq = qm.get(x.question_id)
-            if not oq or not same_answer(oq["answer"], q["answer"]):
+            if not oq or not _copy_of(oq, q):
                 continue
-            if (
-                oq.get("passage") == q.get("passage")
-                and oq["prompt"] == q["prompt"]
-                and x.answer in hits
-                and not x.void
-            ):
+            if x.answer in hits and not x.void:
                 x.void = f"문제 오류: 정답 둘({x.answer}도 맞음)"
                 voids.append({"attemptId": a.id, "questionId": x.question_id, "void": x.void})
                 voided += 1
@@ -272,22 +241,34 @@ def void_flawed(
     return (_restored(st, kept, voided) if voided else st), voids
 
 
-def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], voided: int) -> srs.Srs:
-    """무효 풀이를 뺀 복습 상태(Codex 리뷰 11/01).
+def _copy_of(oq: Question, q: Question) -> bool:
+    """oq가 q 자신이나 그 사본인지: 문제 글 · 제시문 · 답이 같음(오늘의 복습 사본은 셋 다 같음)."""
+    return (
+        oq["prompt"] == q["prompt"]
+        and oq.get("passage") == q.get("passage")
+        and same_word(oq["answer"], q["answer"])
+    )
 
-    남은 풀이(kept, 같은 낱말의 무효가 아닌 풀이)를 푼 차례대로 srs.update로 다시 풀어 streak ·
+
+def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], voided: int) -> srs.Srs:
+    """무효 풀이를 뺀 복습 상태(Codex 리뷰 · /code-review 11/02).
+
+    kept는 이 문제와 그 사본의 무효가 아닌 풀이(푼 차례). 이를 srs.update로 다시 풀어 streak ·
     step · lastResult를 되살립니다. 무효 오답이 0으로 만든 연속 정답이 남으면 다 익힘 판정과 복습
-    간격이 틀어지기 때문입니다. reviews는 무효로 한 수만큼 뺍니다(kept에는 이 문제가 이어받지 않은
-    같은 낱말 문제의 풀이도 있어 다시 센 수와 다를 수 있음). dueAt은 그대로(오늘 날짜가 된
-    복습)이고, 되살린 연속 정답으로 다 익혔으면 mastered · dueAt 없음입니다. 다른 필드(checked ·
-    flawTries 등)는 그대로 둡니다.
+    간격이 틀어지기 때문입니다. 같은 낱말이라도 다른 문제(다른 세트에서 따로 만든 문제)의 풀이는
+    넣지 않습니다: 이 문제를 한 번도 맞히지 않았는데 다 익힘이 될 수 있음.
+    reviews는 무효로 한 수만큼 뺍니다 = 이어받은 수(다시 보기 새 문제는 옛 문제의 횟수를 이어받음)
+    + 이 문제의 남은 풀이 수이고, 남은 풀이 수보다 작아지지 않습니다. 이어받은 연속 정답은 다시 셀
+    수 없어 넣지 않습니다(다 익힘을 늦출 뿐 앞당기지 않음). dueAt은 그대로(오늘 날짜가 된 복습)이고,
+    되살린 연속 정답으로 다 익혔으면 mastered · dueAt 없음입니다. 다른 필드(checked · flawTries
+    등)는 그대로 둡니다.
     """
     replay: srs.Srs | None = None
     for t, ok in kept:
         replay = srs.update(replay, ok, t)
     out: srs.Srs = {
         **st,
-        "reviews": max(0, st["reviews"] - voided),
+        "reviews": max(len(kept), st["reviews"] - voided),
         "streak": replay["streak"] if replay else 0,
         "step": replay["step"] if replay else 0,
         "lastResult": replay["lastResult"] if replay else None,
@@ -372,7 +353,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         if (value := 15 + 70 * n // len(due)) != shown:  # 진행률은 바뀔 때만 씀(ai_jobs 쓰기)
             report(value, "복습할 문제 고르기")
             shown = value
-        if any(same_answer(q["answer"], p["answer"]) for _, p in picked):
+        if any(same_word(q["answer"], p["answer"]) for _, p in picked):
             continue
         st = cast(srs.Srs, q["srs"])
         choices = q["choices"]
@@ -496,7 +477,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         copy: Question = {**q, "id": cid, "order": i, "srs": {**cast(srs.Srs, q["srs"])}}
         questions.append(cast(JsonObject, copy))
         for s2, q2, st2 in active:
-            if q2["id"] == q["id"] or same_answer(q2["answer"], q["answer"]):
+            if q2["id"] == q["id"] or same_word(q2["answer"], q["answer"]):
                 changed[(s2.id, q2["id"])] = srs.moved(st2, cid)
                 merged += q2["id"] != q["id"]
     report(100, "복습 세트 만들기")
