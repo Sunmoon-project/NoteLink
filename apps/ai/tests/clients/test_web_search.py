@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -11,6 +12,7 @@ from pydantic import SecretStr
 import app.clients.web_search as web_search_module
 from app.clients.web_search import (
     FETCH_TOKENS,
+    PAGE_CHARS,
     ClaudeSearch,
     GeminiSearch,
     SearchError,
@@ -206,12 +208,32 @@ def web(req: httpx2.Request) -> httpx2.Response:
     return httpx2.Response(200, headers={"content-type": kind}, text=body)
 
 
+HOSTS = {"grounding.test", "a.test", "www.a.test", "b.test", "down.test"}
+
+
+def resolve(host: str) -> list[str]:
+    """시험용 DNS: 바깥 사이트는 공인 주소, inside.test는 내부 주소, IP는 그대로."""
+    if host in HOSTS:
+        return ["93.184.216.34"]
+    if host == "inside.test":
+        return ["127.0.0.1"]
+    if host[0].isdigit():
+        return [host]
+    raise OSError(host)
+
+
 def gemini(
     *answers: genai_types.GenerateContentResponse | Exception,
+    transport: httpx2.BaseTransport | None = None,
 ) -> tuple[GeminiSearch, Models]:
     m = Models(list(answers))
     s = GeminiSearch(
-        "p", "global", "gemini-test", client=GenaiClient(m), transport=httpx2.MockTransport(web)
+        "p",
+        "global",
+        "gemini-test",
+        client=GenaiClient(m),
+        transport=transport or httpx2.MockTransport(web),
+        resolve=resolve,
     )
     return s, m
 
@@ -276,3 +298,42 @@ def test_web_search_picks_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(web_search_module.genai, "Client", lambda **_: object())
     assert isinstance(web_search("gemini"), GeminiSearch)
     assert isinstance(web_search("claude"), ClaudeSearch)
+
+
+def test_gemini_never_requests_internal_addresses() -> None:
+    sent: list[str] = []
+
+    def spy(req: httpx2.Request) -> httpx2.Response:
+        sent.append(req.url.host)
+        return web(req)
+
+    uris = [REDIRECT + "http://inside.test/secret", "http://169.254.169.254/latest"]
+    s, _ = gemini(gemini_res("- 간흡충", *uris), transport=httpx2.MockTransport(spy))
+    assert s.search("sys", "q", domains=[])["evidence"] == []
+    assert sent == ["grounding.test"]  # 리디렉트 목적지(내부 주소)는 요청하지 않음
+
+
+def test_gemini_stops_reading_large_or_skipped_pages() -> None:
+    pulled = {"big": 0, "pdf": 0}
+
+    def body(name: str, chunk: bytes) -> Iterator[bytes]:
+        for _ in range(100):
+            pulled[name] += 1
+            yield chunk
+
+    def big(req: httpx2.Request) -> httpx2.Response:
+        if req.url.path == "/big":
+            return httpx2.Response(
+                200,
+                headers={"content-type": "text/html"},
+                content=body("big", "가".encode() * 50000),
+            )
+        return httpx2.Response(
+            200, headers={"content-type": "application/pdf"}, content=body("pdf", b"x" * 50000)
+        )
+
+    uris = ["https://a.test/big", "https://a.test/file.pdf"]
+    s, _ = gemini(gemini_res("- 간흡충", *uris), transport=httpx2.MockTransport(big))
+    (page,) = s.search("sys", "q", domains=[])["evidence"]
+    assert len(page["text"]) <= PAGE_CHARS
+    assert pulled["big"] < 100 and pulled["pdf"] == 0

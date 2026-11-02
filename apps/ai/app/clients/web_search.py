@@ -4,9 +4,12 @@
 """
 
 import html
+import ipaddress
 import re
+import socket
+from collections.abc import Callable
 from typing import Any, Literal, Protocol, TypedDict
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import anthropic
 import httpx2
@@ -23,6 +26,8 @@ PAUSE_MAX = 3  # 서버 쪽 검색이 길어 멈추면(pause_turn) 이어 가는
 FETCH_TOKENS = 10000  # 가져온 페이지 하나에서 읽는 최대 토큰(긴 교재 페이지 비용 막기)
 PAGES_MAX = 8  # Gemini 답의 출처 페이지를 직접 받는 최대 수
 PAGE_CHARS = 40000  # 받은 페이지 하나에서 쓰는 최대 글자 수
+PAGE_BYTES = 1_000_000  # 페이지 하나에서 받는 최대 바이트(넘으면 거기서 끊음)
+REDIRECTS_MAX = 5
 
 
 class SearchError(Exception):
@@ -125,15 +130,15 @@ class GeminiSearch:
         *,
         client: Any = None,
         transport: httpx2.BaseTransport | None = None,
+        resolve: Callable[[str], list[str]] | None = None,
     ) -> None:
         self._client = client or genai.Client(vertexai=True, project=project, location=location)
         self._model = model
+        # 리디렉트는 직접 따라가며 주소마다 검사(내부망 요청 막기)
         self._http = httpx2.Client(
-            headers={"User-Agent": USER_AGENT},
-            timeout=20.0,
-            follow_redirects=True,  # 출처 주소는 Google 리디렉트 주소
-            transport=transport,
+            headers={"User-Agent": USER_AGENT}, timeout=20.0, transport=transport
         )
+        self._resolve = resolve or _resolve
 
     def search(self, system: str, user: str, *, domains: list[str]) -> SearchAnswer:
         """domains가 있으면 그 사이트만 찾게 하고, 받은 페이지도 그 사이트 것만 씀."""
@@ -158,17 +163,35 @@ class GeminiSearch:
         out: list[Evidence] = []
         for uri in uris[:PAGES_MAX]:
             try:
-                res = self._http.get(uri)
+                page = self._fetch(uri, domains)
             except httpx2.HTTPError:
                 continue  # 못 받은 출처는 근거에서 뺌
-            url = str(res.url)
-            kind = res.headers.get("content-type", "")
-            if res.status_code != 200 or not kind.startswith("text/"):
-                continue
-            if domains and not on_domains(url, domains):
-                continue
-            out.append({"url": url, "text": page_text(res.text)[:PAGE_CHARS]})
+            if page:
+                out.append(page)
         return out
+
+    def _fetch(self, url: str, domains: list[str]) -> Evidence | None:
+        """공인 주소만, 글(text/*)만, PAGE_BYTES까지만 받음. 상태 · 종류는 본문 전에 봄."""
+        for _ in range(REDIRECTS_MAX + 1):
+            if not public_url(url, self._resolve):
+                return None
+            with self._http.stream("GET", url) as res:
+                if res.is_redirect and "location" in res.headers:
+                    url = urljoin(url, res.headers["location"])
+                    continue
+                kind = res.headers.get("content-type", "")
+                if res.status_code != 200 or not kind.startswith("text/"):
+                    return None
+                if domains and not on_domains(url, domains):
+                    return None
+                raw = b""
+                for part in res.iter_bytes():
+                    raw += part
+                    if len(raw) >= PAGE_BYTES:
+                        break
+                text = raw[:PAGE_BYTES].decode(res.encoding or "utf-8", errors="replace")
+                return {"url": url, "text": page_text(text)[:PAGE_CHARS]}
+        return None
 
 
 def grounding_uris(res: Any) -> list[str]:
@@ -180,6 +203,22 @@ def grounding_uris(res: Any) -> list[str]:
             if chunk.web and chunk.web.uri:
                 uris.append(chunk.web.uri)
     return list(dict.fromkeys(uris))
+
+
+def _resolve(host: str) -> list[str]:
+    return [str(a[4][0]) for a in socket.getaddrinfo(host, None)]
+
+
+def public_url(url: str, resolve: Callable[[str], list[str]]) -> bool:
+    """http(s)이고 호스트의 모든 주소가 공인 주소일 때만(내부 · 루프백 · 링크 로컬 막기)."""
+    u = urlparse(url)
+    if u.scheme not in ("http", "https") or not u.hostname:
+        return False
+    try:
+        addrs = resolve(u.hostname)
+        return bool(addrs) and all(ipaddress.ip_address(a.split("%")[0]).is_global for a in addrs)
+    except (OSError, ValueError):
+        return False
 
 
 def on_domains(url: str, domains: list[str]) -> bool:
