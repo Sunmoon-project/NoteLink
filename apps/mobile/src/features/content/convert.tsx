@@ -92,6 +92,7 @@ export function ConvertScreen() {
       }
       // 2) 서버에 자료 등록 → ai_jobs 큐에 작업이 들어간다
       const r = await api.content.createMaterial({
+        requestId: useDraft.getState().getCreationId(),
         folderId: draft.folderId ?? 'fo1',
         kind: draft.kind,
         source: draft.source,

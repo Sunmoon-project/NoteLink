@@ -3,9 +3,10 @@ import { Linking } from 'react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { PhotoCheckScreen, PickedScreen } from '../features/content/capture';
-import { DocDetailScreen, HandDetailScreen } from '../features/content/detail';
+import { DocDetailScreen, HandDetailScreen, RecDetailScreen } from '../features/content/detail';
 import { Player } from '../features/content/player';
 import { ConvertScreen, ResultScreen } from '../features/content/convert';
+import { NetworkError } from '../lib/api';
 import { useDraft } from '../stores/draft';
 import { renderScreen, setParams } from '../test-utils';
 
@@ -31,6 +32,7 @@ jest.mock('../lib/socket', () => ({ socket: { emit: jest.fn(), on: () => () => {
 const mockEdit = jest.fn();
 const mockToast = jest.fn();
 jest.mock('../lib/api', () => ({
+  NetworkError: class NetworkError extends Error {},
   get api() {
     return mockApi;
   },
@@ -393,3 +395,58 @@ it.each(['handwriting', 'recording', 'document'])(
     expect(screen.queryByText('2.4MB · 3페이지')).toBeNull();
   },
 );
+
+it.each([false, true])(
+  '자료 등록 응답 유실 뒤 재시도/재진입(%s)는 같은 중복 방지 ID를 재사용한다',
+  async (remount) => {
+    mockApi.content.createMaterial.mockRejectedValueOnce(new NetworkError('응답 유실'));
+    const first = await renderScreen(<ConvertScreen />, client());
+    await screen.findByText('업로드가 잠시 멈췄어요');
+    const request = mockApi.content.createMaterial.mock.calls[0][0];
+    expect(request.requestId).toEqual(expect.any(String));
+    expect(request.requestId.length).toBeGreaterThan(10);
+    if (remount) {
+      await first.unmount();
+      await renderScreen(<ConvertScreen />, client());
+    } else await fireEvent.press(screen.getByText('지금 다시 시도'));
+    await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(2));
+    expect(mockApi.content.createMaterial.mock.calls[1][0]).toEqual(request);
+    expect(mockUpload).toHaveBeenCalledTimes(1);
+  },
+);
+
+it.each(['recording', 'document'])(
+  '%s 저장 후 상세도 실제 제목·페이지 정보를 표시한다',
+  async (kind) => {
+    mockApi.content.material.mockResolvedValue({
+      _id: 'material1',
+      folderId: 'folder1',
+      title: '생물 상세 자료',
+      kind,
+      createdAt: '2026-11-01T00:00:00Z',
+      keywords: [],
+      bookmarks: [],
+      summary: { sections: [], points: [] },
+      pages: [{ pageNo: 1 }, { pageNo: 2 }, { pageNo: 3 }, { pageNo: 4 }],
+    });
+    await renderScreen(kind === 'recording' ? <RecDetailScreen /> : <DocDetailScreen />, client());
+    expect(await screen.findByText('생물 상세 자료')).toBeTruthy();
+    expect(screen.queryByText('이온화 에너지와 원자 반지름')).toBeNull();
+    expect(screen.queryByText('화학')).toBeNull();
+    expect(screen.queryByText('수학')).toBeNull();
+    if (kind === 'document') {
+      expect(screen.getByText(/4페이지/)).toBeTruthy();
+      expect(screen.queryByText(/3페이지/)).toBeNull();
+    }
+  },
+);
+
+it('새 초안이나 자료 내용 변경은 이전 등록 키를 재사용하지 않는다', () => {
+  const first = useDraft.getState().getCreationId();
+  expect(useDraft.getState().getCreationId()).toBe(first);
+  useDraft.getState().set({ title: '새로 편집한 자료' });
+  const edited = useDraft.getState().getCreationId();
+  expect(edited).not.toBe(first);
+  useDraft.getState().reset();
+  expect(useDraft.getState().getCreationId()).not.toBe(edited);
+});

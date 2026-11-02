@@ -403,8 +403,7 @@ export function RecDetailScreen() {
           right={<More onPress={() => setOpt(true)} />}
         />
         <View className="-mt-2 mb-3 flex-row items-center gap-2">
-          <Badge>화학</Badge>
-          <Text className="text-caption text-sub">이온화 에너지와 원자 반지름</Text>
+          <Text className="text-caption text-sub">{m.title}</Text>
         </View>
         <Player
           materialId={id}
@@ -457,7 +456,7 @@ export function DocDetailScreen() {
       >
         <Header
           title={m.title}
-          sub={`${dateLabel(m, '문서')} · 3페이지`}
+          sub={`${dateLabel(m, '문서')}${m.pages?.length ? ` · ${m.pages.length}페이지` : ''}`}
           large={false}
           right={<More onPress={() => setOpt(true)} />}
         />
@@ -465,8 +464,6 @@ export function DocDetailScreen() {
         {tab === '요약' ? (
           <>
             <DocSummary points={m.summary?.points ?? []} keywords={m.keywords} />
-            <Label>과목</Label>
-            <Badge>수학</Badge>
           </>
         ) : (
           <OriginalFile m={m} />
