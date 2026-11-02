@@ -201,6 +201,28 @@ def test_old_review_state_without_last_result_is_read() -> None:
     assert [x["answer"] for x in result["questions"]] == ["a"]
 
 
+def test_numbers_and_inner_words_are_different_answers() -> None:
+    due = TOMORROW - timedelta(days=1)
+    s1 = {
+        "id": "s1",
+        "materialId": "m1",
+        "questions": [
+            q("q1", "1.5 mL", "C1", st(due - timedelta(days=5))),
+            q("q2", "15 mL", "C2", st(due - timedelta(days=4))),
+            q("q3", "port", "C3", st(due - timedelta(days=3))),
+            q("q4", "report", "C4", st(due - timedelta(days=2))),
+            q("q5", "fasten", "C5", st(due)),
+            q("q6", "fastened", "C5", st(TOMORROW + timedelta(days=3))),  # 아직 아님
+        ],
+    }
+    result = run(FakeLlm(), job(s1))
+    copies = {x["answer"]: x["id"] for x in result["questions"]}
+    assert list(copies) == ["1.5 mL", "15 mL", "port", "report", "fasten"]  # 각자 나옴
+    up = updates(result)
+    assert up["q6"]["state"] == "moved" and up["q6"]["movedTo"] == copies["fasten"]  # 같은 낱말
+    assert result["merged"] == 1
+
+
 def test_void_answers_do_not_count_as_wrong() -> None:
     inp = ordering_input()
     inp["attempts"] = [wrong("qa", void="문제 오류"), wrong("qc", void=True)]
@@ -268,6 +290,7 @@ def test_second_right_answer_voids_those_answers_and_waits_a_day_for_a_new_quest
     s = updates(result)["q1"]
     assert (s["state"], s["dueAt"], s["flawTries"]) == ("active", TOMORROW, 1)
     assert (s["reviews"], s["lastResult"]) == (1, "right")  # 무효 풀이를 빼고 마지막 풀이로
+    assert (s["streak"], s["step"]) == (1, 0)  # 남은 풀이(맞힘 1번)로 다시 셈
     assert "secured" in s["flaw"]
     assert result["dropped"] == [
         {
@@ -279,6 +302,33 @@ def test_second_right_answer_voids_those_answers_and_waits_a_day_for_a_new_quest
         }
     ]
     assert result["nextReview"] == "2026-10-31"
+
+
+def test_voided_wrong_answer_is_taken_off_the_wrong_count() -> None:
+    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    result = run(llm, flawed_input(unchecked()))
+    [p] = result["progress"]
+    assert (p["concept"], p["wrong"]) == ("fasten의 뜻", 0)
+
+
+def test_right_then_voided_wrong_then_right_is_mastered() -> None:
+    inp = flawed_input(unchecked())
+    inp["attempts"].append(
+        {
+            "id": "a2",
+            "quizSetId": "s1",
+            "finishedAt": "2026-10-25T06:00:00Z",
+            "answers": [{"questionId": "q1", "answer": "fastened", "correct": True}],
+        }
+    )
+    llm = FakeLlm({"Natural": natural(True, False, False, False)})  # 새 문제는 만들지 않음
+    result = run(llm, inp)
+    assert result["questions"] == [] and len(result["voidAnswers"]) == 1
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"], s["streak"], s["reviews"]) == ("mastered", None, 2, 1)
+    assert "secured" in s["flaw"] and "flawTries" not in s
+    assert result["dropped"][0]["state"] == "mastered"
+    assert result["dropped"][0]["replacedBy"] is None
 
 
 def test_flawed_question_is_dropped_after_three_days() -> None:
@@ -338,6 +388,15 @@ def test_llm_down_while_replacing_puts_only_that_question_off_a_day() -> None:
     llm = FakeLlm({"Review": [LlmError("HTTP 503")] * 3})
     result = run(llm, old)
     assert [x["answer"] for x in result["questions"]] == ["fasten"]  # 다른 문제는 그대로 냄
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"], s.get("flawTries")) == ("active", TOMORROW, None)
+
+
+def test_checker_down_while_replacing_does_not_use_up_a_day() -> None:
+    review = [STACK, LlmError("HTTP 503"), STACK]  # 1 · 3번째는 검사 호출, 2번째는 생성 호출 실패
+    llm = FakeLlm({"Review": review, "Check": [LlmError("HTTP 503")] * 2})
+    result = run(llm, four_choices())
+    assert result["questions"] == []
     s = updates(result)["q1"]
     assert (s["state"], s["dueAt"], s.get("flawTries")) == ("active", TOMORROW, None)
 

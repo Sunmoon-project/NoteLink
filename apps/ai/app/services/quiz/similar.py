@@ -180,7 +180,7 @@ class Made:
     why: list[str] = field(default_factory=list)  # 마지막 시도의 탈락 이유
     # '이미 있는 문제와 거의 같음'으로 떨어진 초안: reuse_existing이 가장 가까운 기존 문제를 고름
     drafts: list[Draft] = field(default_factory=list)
-    llm_down: bool = False  # 생성 호출이 모두 실패함(LLM 장애)
+    llm_down: bool = False  # 시도마다 생성이나 검사 호출이 실패함(LLM 장애)
     reused_from: str | None = None  # 기존 문제를 다시 냈으면 그 문제 id
 
 
@@ -207,8 +207,13 @@ def _draft(r: JsonObject) -> Draft | None:
     return d
 
 
-def solved(llm: Llm, d: Draft, options: list[str], pos: int, page_text: str) -> tuple[bool, str]:
-    """검사 모델이 노트만 보고 풀어 봄. (통과했는지, 검수자 답 또는 호출 오류)."""
+def solved(
+    llm: Llm, d: Draft, options: list[str], pos: int, page_text: str
+) -> tuple[bool | None, str]:
+    """검사 모델이 노트만 보고 풀어 봄. (통과했는지, 검수자 답 또는 호출 오류).
+
+    호출이 실패하면 None: 초안이 떨어진 것이 아니라 LLM 장애입니다(make_similar가 llm_down에 셈).
+    """
     shown = d["stem"] + (f"\n{d['passage']}" if d["passage"] else "")
     user = f"<노트>\n{page_text[:3000]}\n</노트>\n\n문제: {shown}\n" + "\n".join(
         f"{LETTERS[i]}. {o}" for i, o in enumerate(options)
@@ -216,7 +221,7 @@ def solved(llm: Llm, d: Draft, options: list[str], pos: int, page_text: str) -> 
     try:
         c = llm.call(settings.quiz_check_model, CHK_SYS, user, CHK_SCHEMA, "Check", max_tokens=200)
     except LlmError as e:
-        return False, str(e)
+        return None, str(e)
     ok = (
         c.get("answer") == LETTERS[pos] and c.get("only_one") is True and c.get("supported") is True
     )
@@ -238,6 +243,9 @@ def make_similar(
     slot은 세트 안 순번: 정답 자리를 A~E에 고르게 놓습니다(text.place).
     세 번째 시도는 처음 유형으로 돌아가되, 그때까지 걸린 보기를 avoid에 더해 줍니다. 노트가
     유의어 묶음(fastened / secured / anchored)을 가르치면 모델이 같은 유의어를 계속 냈습니다(10/26).
+    시도마다 생성 호출이나 검사 모델 호출(solved)이 실패해 못 만들었으면 llm_down입니다: 검사 장애를
+    '못 만듦'으로 세면 오늘의 복습은 flawTries를 늘려 3일 뒤 문제를 빼고, 오답 복습은 기존 문제를
+    다시 냅니다(Codex 리뷰 11/01). 초안이 한 번이라도 정상으로 떨어졌으면 llm_down이 아닙니다.
     """
     orig = q["prompt"] + (f"\n제시문: {q['passage']}" if q.get("passage") else "")
     first = q.get("type") or "규칙"
@@ -293,6 +301,10 @@ def make_similar(
                 out.question, out.answer_pos = {**d, "options": options}, LETTERS[pos]
                 out.type, out.why = ty, []
                 return out
+            if ok is None:  # 검사 호출 실패: 초안 잘못이 아니므로 재시도 지시는 더하지 않음
+                down += 1
+                out.why = [said]
+                continue
             why = [f"검사 탈락(검수자 답 {said})"]
         out.why = why
         if TOO_CLOSE in why:

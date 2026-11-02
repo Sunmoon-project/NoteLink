@@ -119,6 +119,22 @@ def test_llm_down_on_every_try_is_reported() -> None:
     assert m.question is None and m.llm_down and m.why == ["HTTP 503"]
 
 
+def test_checker_call_failing_on_every_try_is_llm_down() -> None:
+    # 시도마다 생성이나 검사 호출이 실패: 1 · 3번째는 검사, 2번째는 생성
+    review = [gen(GOOD), LlmError("HTTP 503"), gen(GOOD)]
+    llm = FakeLlm({"Review": review, "Check": [LlmError("HTTP 503")] * 2})
+    m = similar.make_similar(llm, question(), target(), 1, PAGE, 0, [])
+    assert m.question is None and m.llm_down and m.why == ["HTTP 503"]
+    # 초안 잘못이 아니므로 다음 시도에 문제점을 적지 않음
+    assert all("문제점" not in c.user for c in llm.named("Review"))
+
+
+def test_checker_failure_next_to_a_real_rejection_is_not_llm_down() -> None:
+    llm = FakeLlm({"Review": [gen(GOOD), gen(FOUR), gen(FOUR)], "Check": [LlmError("HTTP 503")]})
+    m = similar.make_similar(llm, question(), target(), 1, PAGE, 0, [])
+    assert m.question is None and not m.llm_down
+
+
 def test_a_malformed_answer_is_a_failed_try_not_a_crash() -> None:
     llm = FakeLlm({"Review": [{"question": {"stem": 1}}, {}, gen(FOUR)]})
     m = similar.make_similar(llm, question(), target(), 1, PAGE, 0, [])

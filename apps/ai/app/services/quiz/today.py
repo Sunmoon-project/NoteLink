@@ -2,7 +2,7 @@
 
 ai_jobs.type = 'today_review' (공용 계약 AiJobType, 11/01 추가).
   코드  날짜가 된 문제 고르기 — 지난번 틀린 문제 → 약한 개념(사용자의 모든 풀이에서 틀린 수) →
-        오래된 날짜 순, 같은 낱말(text.same_item)은 하나만 · 사본으로 복습 넘겨주기 · 개념별 진행
+        오래된 날짜 순, 같은 낱말(same_answer)은 하나만 · 사본으로 복습 넘겨주기 · 개념별 진행
   LLM   '정답 둘' 검사(10/22) 전에 만든 문제와 보기가 5개가 아닌 문제(10/26)를 검사하고
         (quality.two_answers), 걸리면 같은 낱말의 새 문제로 바꿈(similar.make_similar)
 
@@ -36,7 +36,8 @@ flawed 문제의 movedTo가 가리키는 새 문제는 그 flawed 문제의 세�
 
 LLM 장애(로컬에는 없는 처리): '정답 둘' 검사 호출이 실패하면 그 문제는 검사하지 않은 그대로 내고
 다음에 다시 검사합니다(quality.two_answers는 실패를 '통과'로 돌려주므로 checked를 남기지 않음).
-새 문제 만들기 호출이 모두 실패하면 그 문제만 내일로 미루고 flawTries는 늘리지 않습니다.
+새 문제 만들기가 시도마다 생성 · 검사 호출 실패로 끝나면 그 문제만 내일로 미루고 flawTries는
+늘리지 않습니다.
 알려진 한계(로컬과 같음): 노트 글이 없는 자료의 문제도 사용자의 다른 노트 쪽(text.locate)으로
 검사합니다. 오늘의 복습 세트는 노트를 섞어서 세트의 materialId로 쪽을 가릴 수 없습니다.
 """
@@ -49,7 +50,7 @@ from typing import Any, cast
 
 from app.clients.llm import JsonObject, Llm, LlmError
 from app.services.quiz import quality, similar, srs
-from app.services.quiz.checks import Target, seen_question
+from app.services.quiz.checks import Target, number_values, seen_question
 from app.services.quiz.models import CHOICES, Draft, Notes, Question
 from app.services.quiz.review import (
     REVIEW_SET_SIZE,
@@ -67,7 +68,7 @@ from app.services.quiz.review import (
     seoul_midnight,
     utc_date,
 )
-from app.services.quiz.text import locate, same_item
+from app.services.quiz.text import locate, norm, same_item
 
 TYPE = "today_review"
 FLAW_TRIES = 3  # 결함 문제를 새 문제로 바꾸려 해 볼 날 수. 그래도 못 만들면 복습에서 뺌
@@ -174,6 +175,22 @@ def weakness(qmaps: dict[str, dict[str, Question]], attempts: list[Attempt]) -> 
     return weak
 
 
+def same_answer(a: str | None, b: str | None) -> bool:
+    """같은 낱말로 묶을지: text.same_item에 두 조건을 더해 좁게 봅니다(Codex 리뷰 11/01).
+
+    - 적힌 수가 다르면 다른 답: norm은 '.'을 지워 1.5와 15를 같게 봄
+    - 한쪽이 다른 쪽 안에 들어 있으면 앞부분일 때만 같음: fasten ~ fastened는 같고
+      port ~ report는 다름
+    오늘의 복습은 같은 낱말의 다른 문제까지 사본으로 넘기므로(moved), 다른 답을 묶으면 그 문제의
+    복습이 사라집니다. 알려진 한계: be ~ because of처럼 앞부분이 같은 다른 말은 아직 같게 봅니다.
+    기준은 #9에서 채점 세트로 측정하며 고칩니다.
+    """
+    if not same_item(a, b) or number_values(a)[0] != number_values(b)[0]:
+        return False
+    x, y = sorted((norm(a), norm(b)), key=len)
+    return x not in y or y.startswith(x)
+
+
 def progress(sets: list[QuizSet]) -> defaultdict[str, Counter[str]]:
     """개념마다 다 익힘 / 중단 / 복습 중인 문제 수."""
     out: defaultdict[str, Counter[str]] = defaultdict(Counter)
@@ -231,14 +248,14 @@ def void_flawed(
 ) -> tuple[srs.Srs, list[JsonObject]]:
     """두 번째 정답(hits)을 고른 이 문제(또는 문제 글 · 제시문이 같은 사본)의 풀이를 무효로.
 
-    그 풀이만큼 reviews를 빼고, lastResult는 같은 낱말에서 무효가 아닌 마지막 풀이로 돌립니다.
+    무효로 한 풀이가 있으면 복습 상태를 되살립니다(_restored). 같은 낱말은 same_answer로 봅니다.
     """
-    voided, last, voids = 0, None, []
+    voided, kept, voids = 0, [], []
     for a in attempts:  # 푼 순서대로
         qm = qmaps.get(a.quiz_set_id, {})
         for x in a.answers:
             oq = qm.get(x.question_id)
-            if not oq or not same_item(oq["answer"], q["answer"]):
+            if not oq or not same_answer(oq["answer"], q["answer"]):
                 continue
             if (
                 oq.get("passage") == q.get("passage")
@@ -250,14 +267,34 @@ def void_flawed(
                 voids.append({"attemptId": a.id, "questionId": x.question_id, "void": x.void})
                 voided += 1
             if not x.void:
-                last = "right" if x.correct else "wrong"
+                kept.append((a.finished_at, x.correct))
     st = cast(srs.Srs, q["srs"])
+    return (_restored(st, kept, voided) if voided else st), voids
+
+
+def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], voided: int) -> srs.Srs:
+    """무효 풀이를 뺀 복습 상태(Codex 리뷰 11/01).
+
+    남은 풀이(kept, 같은 낱말의 무효가 아닌 풀이)를 푼 차례대로 srs.update로 다시 풀어 streak ·
+    step · lastResult를 되살립니다. 무효 오답이 0으로 만든 연속 정답이 남으면 다 익힘 판정과 복습
+    간격이 틀어지기 때문입니다. reviews는 무효로 한 수만큼 뺍니다(kept에는 이 문제가 이어받지 않은
+    같은 낱말 문제의 풀이도 있어 다시 센 수와 다를 수 있음). dueAt은 그대로(오늘 날짜가 된
+    복습)이고, 되살린 연속 정답으로 다 익혔으면 mastered · dueAt 없음입니다. 다른 필드(checked ·
+    flawTries 등)는 그대로 둡니다.
+    """
+    replay: srs.Srs | None = None
+    for t, ok in kept:
+        replay = srs.update(replay, ok, t)
     out: srs.Srs = {
         **st,
         "reviews": max(0, st["reviews"] - voided),
-        "lastResult": cast(Any, last) if voided else st["lastResult"],
+        "streak": replay["streak"] if replay else 0,
+        "step": replay["step"] if replay else 0,
+        "lastResult": replay["lastResult"] if replay else None,
     }
-    return out, voids
+    if out["streak"] >= srs.MASTER_STREAK:
+        out["state"], out["dueAt"] = "mastered", None
+    return out
 
 
 def replace_flawed(
@@ -271,8 +308,8 @@ def replace_flawed(
 ) -> tuple[Question | None, bool]:
     """(q의 복습을 이어 갈 같은 낱말의 깨끗한 문제, LLM 장애). 모델이 못 만들면 문제는 None.
 
-    생성 호출이 모두 실패했으면(장애) 두 번째 값이 True: 장애를 '못 만듦'으로 세면 flawTries가
-    늘어 3일 뒤 복습에서 빠지므로 부른 쪽이 따로 처리합니다(로컬에는 없는 처리).
+    시도마다 생성 · 검사 호출이 실패했으면(장애) 두 번째 값이 True: 장애를 '못 만듦'으로 세면
+    flawTries가 늘어 3일 뒤 복습에서 빠지므로 부른 쪽이 따로 처리합니다(로컬에는 없는 처리).
     """
     page, text = _page(q, notes, s)
     st = cast(srs.Srs, q["srs"])
@@ -335,7 +372,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         if (value := 15 + 70 * n // len(due)) != shown:  # 진행률은 바뀔 때만 씀(ai_jobs 쓰기)
             report(value, "복습할 문제 고르기")
             shown = value
-        if any(same_item(q["answer"], p["answer"]) for _, p in picked):
+        if any(same_answer(q["answer"], p["answer"]) for _, p in picked):
             continue
         st = cast(srs.Srs, q["srs"])
         choices = q["choices"]
@@ -359,9 +396,12 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
                 st, voided = void_flawed(attempts, qmaps, q, hits)
                 voids += voided
                 q["srs"] = st
-                new, down = replace_flawed(llm, sets, s, q, hits, notes, len(picked))
+                if st["state"] == "active":  # 무효 오답을 빼니 다 익혔으면 바꿀 필요 없음
+                    new, down = replace_flawed(llm, sets, s, q, hits, notes, len(picked))
             tries = st.get("flawTries", 0) + 1
-            if why and down:
+            if why and st["state"] != "active":
+                st = {**st, "flaw": "; ".join(why)}
+            elif why and down:
                 # 생성 모델 장애: 못 만든 날로 세지 않고 내일 다시 만들어 봄
                 st = {**st, "dueAt": tomorrow, "flaw": "; ".join(why)}
             elif why and new:
@@ -405,6 +445,8 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         if len(picked) == inp.size:
             break
 
+    if voids:  # 이번에 무효로 한 오답은 틀린 수에서 뺌(고르는 순서는 처음 센 대로)
+        weak = weakness(qmaps, attempts)
     counts = progress(live)
     result: JsonObject = {
         "questions": [],
@@ -454,7 +496,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         copy: Question = {**q, "id": cid, "order": i, "srs": {**cast(srs.Srs, q["srs"])}}
         questions.append(cast(JsonObject, copy))
         for s2, q2, st2 in active:
-            if q2["id"] == q["id"] or same_item(q2["answer"], q["answer"]):
+            if q2["id"] == q["id"] or same_answer(q2["answer"], q["answer"]):
                 changed[(s2.id, q2["id"])] = srs.moved(st2, cid)
                 merged += q2["id"] != q["id"]
     report(100, "복습 세트 만들기")
