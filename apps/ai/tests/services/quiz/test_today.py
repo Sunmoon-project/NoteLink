@@ -333,8 +333,8 @@ def test_second_right_answer_voids_those_answers_and_waits_a_day_for_a_new_quest
     s = updates(result)["q1"]
     assert (s["state"], s["dueAt"], s["flawTries"]) == ("active", TOMORROW, 1)
     assert (s["reviews"], s["lastResult"]) == (1, "right")  # 무효 풀이를 빼고 마지막 풀이로
-    # 남은 풀이(맞힘 1번)로 다시 셈. step은 저장값(1)보다 낮아지지 않음
-    assert (s["streak"], s["step"]) == (1, 1)
+    # 이어받은 풀이가 없어 남은 풀이(맞힘 1번)로 처음부터 다시 셈: 처음 맞힌 문제는 step 0
+    assert (s["streak"], s["step"]) == (1, 0)
     assert "secured" in s["flaw"]
     assert result["dropped"] == [
         {
@@ -376,6 +376,18 @@ def test_right_then_voided_wrong_then_right_is_mastered() -> None:
     assert result["dropped"][0]["replacedBy"] is None
 
 
+def test_voiding_the_first_wrong_answer_counts_the_step_again() -> None:
+    # [오답(secured, 무효), 정답]: 저장된 step 1은 오답 뒤 정답으로 오른 값.
+    # 오답을 빼면 처음 맞힌 것(step 0)
+    inp = flawed_input(unchecked())
+    right, wrong_one = inp["attempts"]
+    right["finishedAt"], wrong_one["finishedAt"] = "2026-10-20T06:00:00Z", "2026-10-10T06:00:00Z"
+    inp["attempts"] = [wrong_one, right]
+    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    s = updates(run(llm, inp))["q1"]
+    assert (s["reviews"], s["lastResult"], s["streak"], s["step"]) == (1, "right", 1, 0)
+
+
 def test_answers_on_another_question_of_the_same_word_do_not_restore_the_streak() -> None:
     inp = flawed_input(unchecked())
     other = q(
@@ -415,8 +427,9 @@ def test_answers_voided_before_still_restore_the_review_state() -> None:
     assert result["voidAnswers"] == []  # 새로 무효로 한 것은 없음
     s = updates(result)["q1"]
     assert (s["streak"], s["lastResult"]) == (1, "right")
-    # 옛 무효 풀이는 저장된 reviews(2)에서 아직 빠지지 않음: 남은 맞힘 1번만. step은 저장값 1
-    assert (s["reviews"], s["step"], s["voidedReviews"]) == (1, 1, 1)
+    # 옛 무효 풀이는 저장된 reviews(2)에서 아직 빠지지 않음: 남은 맞힘 1번만(이어받은 풀이 없음).
+    # step도 남은 맞힘 1번으로 다시 셈
+    assert (s["reviews"], s["step"], s["voidedReviews"]) == (1, 0, 1)
 
 
 def test_restoring_twice_gives_the_same_state() -> None:
