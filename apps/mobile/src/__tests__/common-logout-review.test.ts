@@ -20,3 +20,17 @@ it('로그아웃은 서버가 폐기할 리프레시 토큰을 본문으로 보�
   expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: 'r1' });
   fetchMock.mockRestore();
 });
+
+it('로그아웃은 토큰을 갱신해 옛 토큰으로 다시 보내지 않는다', async () => {
+  useAuth.setState({ tokens: { accessToken: 'a', refreshToken: 'r1' } });
+  const fetchMock = jest
+    .spyOn(globalThis, 'fetch')
+    .mockResolvedValue(
+      new Response(JSON.stringify({ code: 'AUTH_TOKEN_EXPIRED', message: '만료' }), {
+        status: 401,
+      }),
+    );
+  await expect(httpApi.auth.logout()).rejects.toThrow();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  fetchMock.mockRestore();
+});
