@@ -277,7 +277,8 @@ def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], void_count: int) -
     voidedReviews = void_count로 두므로, 되살린 상태를 다시 넣어도 결과가 같습니다(멱등).
     0이면 처음 낸 문제(srs 없음), 아니면 다시 보기 새 문제(srs.fresh: step 0, 이어받은 횟수).
     이어받은 횟수가 0이면 처음부터 다시 센 streak · step이 정확해서 그 값을 씁니다(첫 풀이인
-    오답을 빼면 step이 줄 수 있음: [오답, 정답]은 1, [정답]은 0).
+    오답을 빼면 step이 줄 수 있음: [오답, 정답]은 1, [정답]은 0). 남은 풀이도 없으면(풀이가 모두
+    무효) streak · step은 0입니다.
     한계: 이어받은 연속 정답 · 단계는 저장되어 있지 않아 0에서 셉니다. 그래서 이어받은 횟수가
     있으면 streak · step은 다시 센 값과 저장값 중 큰 쪽을 씁니다.
     reviews는 다시 센 값(이어받은 횟수 + 남은 풀이 수). lastResult는 남은
@@ -297,14 +298,14 @@ def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], void_count: int) -
         }
     for t, ok in kept:
         replay = srs.update(replay, ok, t)
-    exact = replay if not carried else None  # 처음부터 다시 셈
+    streak, step = (replay["streak"], replay["step"]) if replay else (0, 0)
+    if carried:  # 이어받은 연속 정답 · 단계를 몰라 저장값보다 낮추지 않음
+        streak, step = max(streak, st["streak"]), max(step, st["step"])
     out: srs.Srs = {
         **st,
         "reviews": replay["reviews"] if replay else 0,
-        "streak": exact["streak"]
-        if exact
-        else max(replay["streak"] if replay else 0, st["streak"]),
-        "step": exact["step"] if exact else max(replay["step"] if replay else 0, st["step"]),
+        "streak": streak,
+        "step": step,
         "lastResult": replay["lastResult"] if kept and replay else None,
         "voidedReviews": void_count,
     }

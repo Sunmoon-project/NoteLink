@@ -388,6 +388,15 @@ def test_voiding_the_first_wrong_answer_counts_the_step_again() -> None:
     assert (s["reviews"], s["lastResult"], s["streak"], s["step"]) == (1, "right", 1, 0)
 
 
+def test_all_answers_voided_start_the_streak_and_step_from_zero() -> None:
+    # 맞힘은 오답 복습이 무효로(void: true), secured 오답은 이번에 무효로: 남은 풀이가 없음
+    inp = flawed_input(unchecked(streak=1, step=1))
+    inp["attempts"][0]["answers"][0]["void"] = True
+    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    s = updates(run(llm, inp))["q1"]
+    assert (s["reviews"], s["lastResult"], s["streak"], s["step"]) == (0, None, 0, 0)
+
+
 def test_answers_on_another_question_of_the_same_word_do_not_restore_the_streak() -> None:
     inp = flawed_input(unchecked())
     other = q(
