@@ -196,8 +196,13 @@ PAGES = {
 }
 
 
+def asked(req: httpx2.Request) -> str:
+    """연결은 검사한 IP로 가므로, 원래 주소는 Host 헤더로 되살림."""
+    return f"{req.url.scheme}://{req.headers['host']}{req.url.raw_path.decode()}"
+
+
 def web(req: httpx2.Request) -> httpx2.Response:
-    url = str(req.url)
+    url = asked(req)
     if url.startswith(REDIRECT):
         return httpx2.Response(302, headers={"location": url.removeprefix(REDIRECT)})
     if url == "https://down.test/":
@@ -304,7 +309,7 @@ def test_gemini_never_requests_internal_addresses() -> None:
     sent: list[str] = []
 
     def spy(req: httpx2.Request) -> httpx2.Response:
-        sent.append(req.url.host)
+        sent.append(req.headers["host"])
         return web(req)
 
     uris = [REDIRECT + "http://inside.test/secret", "http://169.254.169.254/latest"]
@@ -337,3 +342,44 @@ def test_gemini_stops_reading_large_or_skipped_pages() -> None:
     (page,) = s.search("sys", "q", domains=[])["evidence"]
     assert len(page["text"]) <= PAGE_CHARS
     assert pulled["big"] < 100 and pulled["pdf"] == 0
+
+
+def test_gemini_connects_to_the_checked_ip() -> None:
+    """검사 뒤 DNS 답이 내부 주소로 바뀌어도 연결은 검사한 공인 IP로 감(DNS 재바인딩)."""
+    answers = {"a.test": [["93.184.216.34"], ["127.0.0.1"]]}
+    sent: list[httpx2.Request] = []
+
+    def rebinding(host: str) -> list[str]:
+        return answers[host].pop(0) if host in answers else resolve(host)
+
+    def spy(req: httpx2.Request) -> httpx2.Response:
+        sent.append(req)
+        return web(req)
+
+    m = Models([gemini_res("- 간흡충", "https://a.test/glossary")])
+    s = GeminiSearch(
+        "p",
+        "global",
+        "m",
+        client=GenaiClient(m),
+        transport=httpx2.MockTransport(spy),
+        resolve=rebinding,
+    )
+    (page,) = s.search("sys", "q", domains=["a.test"])["evidence"]
+    assert page["url"] == "https://a.test/glossary"
+    (req,) = sent
+    assert req.url.host == "93.184.216.34" and req.headers["host"] == "a.test"
+    assert req.extensions["sni_hostname"] == "a.test"  # 인증서는 원래 이름으로 확인
+    assert answers["a.test"] == [["127.0.0.1"]]  # DNS는 검사할 때 한 번만 봄
+
+
+def test_gemini_skips_malformed_urls_and_keeps_going() -> None:
+    def bad_location(req: httpx2.Request) -> httpx2.Response:
+        if asked(req) == "https://b.test/other":
+            return httpx2.Response(302, headers={"location": "https://["})
+        return web(req)
+
+    uris = ["https://[", "https://b.test/other", REDIRECT + "https://a.test/glossary"]
+    s, _ = gemini(gemini_res("- 간흡충", *uris), transport=httpx2.MockTransport(bad_location))
+    a = s.search("sys", "q", domains=[])
+    assert [e["url"] for e in a["evidence"]] == ["https://a.test/glossary"]

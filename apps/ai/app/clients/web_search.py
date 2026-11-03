@@ -164,18 +164,31 @@ class GeminiSearch:
         for uri in uris[:PAGES_MAX]:
             try:
                 page = self._fetch(uri, domains)
-            except httpx2.HTTPError:
-                continue  # 못 받은 출처는 근거에서 뺌
+            except (httpx2.HTTPError, ValueError):
+                continue  # 못 받거나 주소가 깨진 출처는 근거에서 뺌
             if page:
                 out.append(page)
         return out
 
     def _fetch(self, url: str, domains: list[str]) -> Evidence | None:
-        """공인 주소만, 글(text/*)만, PAGE_BYTES까지만 받음. 상태 · 종류는 본문 전에 봄."""
+        """공인 주소만, 글(text/*)만, PAGE_BYTES까지만 받음. 상태 · 종류는 본문 전에 봄.
+
+        연결은 검사한 IP로 고정하고 Host · TLS 이름은 원래 호스트로 둠(DNS 재바인딩 막기).
+        """
         for _ in range(REDIRECTS_MAX + 1):
-            if not public_url(url, self._resolve):
+            u = urlparse(url)
+            ip = public_ip(url, self._resolve)
+            if ip is None or u.hostname is None:
                 return None
-            with self._http.stream("GET", url) as res:
+            pinned = u._replace(netloc=f"[{ip}]" if ":" in ip else ip)
+            if u.port:
+                pinned = pinned._replace(netloc=f"{pinned.netloc}:{u.port}")
+            with self._http.stream(
+                "GET",
+                pinned.geturl(),
+                headers={"Host": u.netloc.rsplit("@", 1)[-1]},
+                extensions={"sni_hostname": u.hostname},
+            ) as res:
                 if res.is_redirect and "location" in res.headers:
                     url = urljoin(url, res.headers["location"])
                     continue
@@ -209,16 +222,21 @@ def _resolve(host: str) -> list[str]:
     return [str(a[4][0]) for a in socket.getaddrinfo(host, None)]
 
 
-def public_url(url: str, resolve: Callable[[str], list[str]]) -> bool:
-    """http(s)이고 호스트의 모든 주소가 공인 주소일 때만(내부 · 루프백 · 링크 로컬 막기)."""
-    u = urlparse(url)
-    if u.scheme not in ("http", "https") or not u.hostname:
-        return False
+def public_ip(url: str, resolve: Callable[[str], list[str]]) -> str | None:
+    """http(s)이고 호스트의 모든 주소가 공인 주소면 연결할 IP, 아니면 None.
+
+    내부 · 루프백 · 링크 로컬을 막고, 깨진 주소도 None.
+    """
     try:
-        addrs = resolve(u.hostname)
-        return bool(addrs) and all(ipaddress.ip_address(a.split("%")[0]).is_global for a in addrs)
+        u = urlparse(url)
+        if u.scheme not in ("http", "https") or not u.hostname:
+            return None
+        addrs = [a.split("%")[0] for a in resolve(u.hostname)]
+        if addrs and all(ipaddress.ip_address(a).is_global for a in addrs):
+            return addrs[0]
     except (OSError, ValueError):
-        return False
+        pass
+    return None
 
 
 def on_domains(url: str, domains: list[str]) -> bool:
