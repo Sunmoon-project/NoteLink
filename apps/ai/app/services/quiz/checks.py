@@ -97,8 +97,12 @@ def reversed_of(d: Draft, seen: list[Seen]) -> bool:
 _EXP = r"(?:\s*[×xX*]\s*10\s*\^\s*([-+]?\d+)|[eE]([-+]?\d+))?"
 _NUMBER = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
 _TRAILING = re.compile(r"[\s.,;:!?]+$")
-# (수식)(단위): 단위는 연산자로 시작하지 않고 숫자 · 괄호가 없음('5 %'나 '2 apples + 3'은 아님)
-_WITH_UNIT = re.compile(r"([0-9.\s()+\-*/÷×^:%]*[0-9)])\s*[^\s\d()+\-*/÷×^:=%<>][^\d()]*")
+# (수식)(단위): 단위는 연산자로 시작하지 않고 숫자 · 괄호가 없음('5 %'나 '2 apples + 3'은 아님).
+# 지수 표기(1e3)와 단위의 거듭제곱(m^2)은 허용한다.
+_WITH_UNIT = re.compile(
+    r"((?:[0-9.\s()+\-*/÷×^:%]|(?<=\d)[eE](?=[-+]?\d))*[0-9)])\s*"
+    r"[^\s\d()+\-*/÷×^:=%<>](?:[^\d()+\-*÷×:=%<>]|\^-?\d+)*"
+)
 
 
 def number_values(s: str | None) -> tuple[list[Decimal], str]:
@@ -179,7 +183,11 @@ def option_key(o: str) -> tuple[str, tuple[Decimal, ...], tuple[str, ...]]:
         except (SyntaxError, ValueError, RecursionError):
             shape = None
         if shape is not None:
-            return norm(o), tuple(values), (shape,)
+            # 수 하나는 연산 순서가 없고 부호는 values에 있다.
+            # '- (2)'처럼 values에 없는 부호만 남긴다.
+            # ('2 year old'와 '2-year-old', '-20℃'와 '(-20℃)'는 같은 보기).
+            trivial = shape == "number" or (shape == "USub(number)" and values[:1] < [Decimal(0)])
+            return norm(o), tuple(values), () if trivial else (shape,)
     matches = list(_NUMBER.finditer(text))
     separators = tuple(
         re.sub(r"[\s()]", "", gap) if re.fullmatch(r"[\s()+\-*/÷×^:=%<>]*", gap) else ""

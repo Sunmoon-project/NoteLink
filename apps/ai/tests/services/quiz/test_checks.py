@@ -390,6 +390,15 @@ def test_punctuation_normalization_does_not_merge_numeric_tokens_or_ratios() -> 
         ("[1+2]*3", "(1+2)*3", True),
         ("[1+2]*3", "1+2*3", False),
         ("[1] 정답", "1 정답", True),
+        ("(1e3+2) mL", "((1e3+2)) mL", True),
+        ("1e3/2 kg", "(1e3/2) kg", True),
+        ("1/2 m^2", "(1/2) m^2", True),
+        ("1/2 m^2", "1-2 m^2", False),
+        ("2 year old", "2-year-old", True),
+        ("1 year old", "1-year-old", True),
+        ("20℃", "(20℃)", True),
+        ("-20℃", "(-20℃)", True),
+        ("-20℃", "20℃", False),
         ("5 %", "5", False),
         ("2 apples + 3 oranges", "2 apples - 3 oranges", False),
     ],
@@ -398,3 +407,21 @@ def test_option_key_compares_expressions_with_units_and_brackets(
     a: str, b: str, same: bool
 ) -> None:
     assert (option_key(a) == option_key(b)) is same
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("(1e3+2) mL", "((1e3+2)) mL"),
+        ("1/2 m^2", "(1/2) m^2"),
+        ("2 year old", "2-year-old"),
+        ("-20℃", "(-20℃)"),
+    ],
+)
+def test_code_check_treats_same_expression_as_duplicate_and_answer(a: str, b: str) -> None:
+    rest = ["91 mL", "92 mL", "93 mL"]
+    for answer, listed in ((a, b), (b, a)):
+        d = draft(stem="값은?", passage="", options=[listed, "94 mL", *rest], answer=answer)
+        assert code_check(d, NEW, listed, "규칙", [])[1] == 0
+        dup = draft(stem="값은?", passage="", options=[a, b, *rest], answer=a)
+        assert any("겹침" in why for why in code_check(dup, NEW, a, "규칙", [])[0])
