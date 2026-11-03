@@ -183,9 +183,11 @@ def option_key(o: str) -> tuple[str, tuple[Decimal, ...], tuple[str, ...]]:
         except (SyntaxError, ValueError, RecursionError):
             shape = None
         if shape is not None:
-            # 수 하나는 연산 순서가 없다. 경로에 따라 키가 갈리지 않게 빈 값으로 둔다
-            # ('2 year old'와 '2-year-old', '20℃'와 '(20℃)'는 같은 보기).
-            return norm(o), tuple(values), (shape,) if shape != "number" else ()
+            # 수 하나는 연산 순서가 없고 부호는 values에 있다.
+            # '- (2)'처럼 values에 없는 부호만 남긴다.
+            # ('2 year old'와 '2-year-old', '-20℃'와 '(-20℃)'는 같은 보기).
+            trivial = shape == "number" or (shape == "USub(number)" and values[:1] < [Decimal(0)])
+            return norm(o), tuple(values), () if trivial else (shape,)
     matches = list(_NUMBER.finditer(text))
     separators = tuple(
         re.sub(r"[\s()]", "", gap) if re.fullmatch(r"[\s()+\-*/÷×^:=%<>]*", gap) else ""
