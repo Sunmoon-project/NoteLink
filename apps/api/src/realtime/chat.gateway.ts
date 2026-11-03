@@ -8,6 +8,7 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
+import { Types } from 'mongoose';
 import type { Server, Socket } from 'socket.io';
 
 import { CHAT_EVENTS } from '../modules/studyroom/chat.events.js';
@@ -83,7 +84,7 @@ export class ChatGateway implements OnGatewayInit {
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody() body: { roomId: string },
   ): Promise<void> {
-    await client.leave(this.roomName(body.roomId));
+    if (Types.ObjectId.isValid(body.roomId)) await client.leave(this.roomName(body.roomId));
   }
 
   /** 메시지 전송: 저장한 뒤 같은 방에 방송하고, 보낸 사람에게 저장본을 확인 응답으로 돌려줍니다. */
@@ -122,7 +123,8 @@ export class ChatGateway implements OnGatewayInit {
   }
 
   private roomName(roomId: string): string {
-    return `study-room:${roomId}`;
+    // ObjectId는 대소문자 · 12자 표기도 통과하므로 표기를 하나로 맞춥니다.
+    return `study-room:${new Types.ObjectId(roomId).toHexString()}`;
   }
 
   /** 핸드셰이크 auth.token 또는 Authorization 헤더에서 JWT를 꺼냅니다. */

@@ -116,6 +116,7 @@ describe('StudyroomService', () => {
       });
       expect(chain.limit).toHaveBeenCalledWith(50);
       expect(rooms).toHaveLength(1);
+      expect(rooms[0]?.members).toEqual([]); // 공개방 목록에 멤버 신원을 넣지 않음
     });
 
     it('mine은 공개 여부와 무관하게 내가 참여 중인 방', async () => {
@@ -185,8 +186,12 @@ describe('StudyroomService', () => {
 
   describe('leave', () => {
     const roomId = new Types.ObjectId().toString();
+    const left = (over: Record<string, unknown>) => {
+      model.findOneAndUpdate.mockResolvedValue(fakeRoom(over));
+    };
 
-    it('없는 방 · 멤버가 아니면 거부한다', async () => {
+    it('갱신되지 않으면 없는 방과 멤버 아님을 구분한다', async () => {
+      model.findOneAndUpdate.mockResolvedValue(null);
       model.findById.mockResolvedValue(null);
       await expect(service.leave(userId.toString(), roomId)).rejects.toBeInstanceOf(
         NotFoundException,
@@ -197,31 +202,29 @@ describe('StudyroomService', () => {
       );
     });
 
-    it('멤버가 나가면 인원을 증감으로 줄인다', async () => {
-      const room = fakeRoom({
-        memberCount: 2,
-        members: [member(hostId, 'joined', 'host'), member(userId)],
-      });
-      model.findById.mockResolvedValue(room);
+    it('참여 중일 때만 한 번의 갱신으로 나가고 인원을 줄인다', async () => {
+      left({ members: [member(hostId, 'joined', 'host'), member(userId, 'left')] });
       await expect(service.leave(userId.toString(), roomId)).resolves.toEqual({ closed: false });
-      expect(room.$inc).toHaveBeenCalledWith('memberCount', -1);
-      expect(room.members[1]?.status).toBe('left');
+      const [filter, update] = model.findOneAndUpdate.mock.calls[0] as [
+        { members: unknown },
+        { $inc: unknown },
+      ];
+      expect(filter.members).toEqual({ $elemMatch: { userId, status: 'joined' } });
+      expect(update.$inc).toEqual({ memberCount: -1 });
     });
 
-    it('host가 나가면 가장 먼저 들어온 멤버에게 넘긴다', async () => {
-      const room = fakeRoom({
-        memberCount: 2,
-        members: [member(hostId, 'joined', 'host'), member(userId)],
-      });
-      model.findById.mockResolvedValue(room);
+    it('host가 나가면 남은 멤버에게 넘긴다', async () => {
+      const next = member(userId);
+      const room = fakeRoom({ members: [member(hostId, 'left', 'host'), next] });
+      model.findOneAndUpdate.mockResolvedValue(room);
       await service.leave(hostId.toString(), roomId);
       expect(room.hostId).toEqual(userId);
-      expect(room.members[1]?.role).toBe('host');
+      expect(next.role).toBe('host');
     });
 
     it('마지막 사람이 나가면 방을 닫는다', async () => {
-      const room = fakeRoom();
-      model.findById.mockResolvedValue(room);
+      const room = fakeRoom({ members: [member(hostId, 'left', 'host')] });
+      model.findOneAndUpdate.mockResolvedValue(room);
       await expect(service.leave(hostId.toString(), roomId)).resolves.toEqual({ closed: true });
       expect(room.closedAt).toBeInstanceOf(Date);
     });

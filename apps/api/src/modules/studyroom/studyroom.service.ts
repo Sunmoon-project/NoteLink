@@ -116,7 +116,7 @@ export class StudyroomService {
       .limit(safeLimit)
       .exec();
 
-    return this.toViews(rooms);
+    return this.toViews(rooms, Boolean(mineOf));
   }
 
   /**
@@ -227,34 +227,37 @@ export class StudyroomService {
       });
     }
 
-    const room = await this.studyRoomModel.findById(roomId);
-    if (!room || room.closedAt) {
-      throw new NotFoundException({
-        code: 'ROOM_NOT_FOUND',
-        message: '존재하지 않는 스터디룸입니다.',
-      });
-    }
-
     const userObjectId = new Types.ObjectId(userId);
-    const me = room.members.find(
-      (m) => m.userId.equals(userObjectId) && m.status === ROOM_MEMBER_STATUS.JOINED,
+    const now = new Date();
+    // 멤버 확인과 퇴장을 한 번에 해서 중복 요청이 인원을 두 번 줄이지 못하게 합니다.
+    const room = await this.studyRoomModel.findOneAndUpdate(
+      {
+        _id: roomId,
+        closedAt: { $exists: false },
+        members: { $elemMatch: { userId: userObjectId, status: ROOM_MEMBER_STATUS.JOINED } },
+      },
+      {
+        $set: { 'members.$.status': ROOM_MEMBER_STATUS.LEFT, 'members.$.leftAt': now },
+        $inc: { memberCount: -1 },
+      },
+      { new: true },
     );
-
-    // 참여 중이 아닌 사람은 나갈 수 없습니다.
-    if (!me) {
+    if (!room) {
+      const existing = await this.studyRoomModel.findById(roomId);
+      if (!existing || existing.closedAt) {
+        throw new NotFoundException({
+          code: 'ROOM_NOT_FOUND',
+          message: '존재하지 않는 스터디룸입니다.',
+        });
+      }
+      // 참여 중이 아닌 사람은 나갈 수 없습니다.
       throw new ConflictException({
         code: 'NOT_A_MEMBER',
         message: '참여 중인 스터디룸이 아닙니다.',
       });
     }
 
-    const wasHost = me.role === ROOM_MEMBER_ROLES.HOST;
-
-    // 본인을 나간 상태로 표시
-    me.status = ROOM_MEMBER_STATUS.LEFT;
-    me.leftAt = new Date();
-    // 동시 입장의 $inc를 덮어쓰지 않도록 값 대신 증감으로 저장합니다.
-    room.$inc('memberCount', -1);
+    const wasHost = room.hostId.equals(userObjectId);
 
     // 남아 있는(joined) 다른 멤버들
     const remaining = room.members.filter((m) => m.status === ROOM_MEMBER_STATUS.JOINED);
@@ -349,11 +352,14 @@ export class StudyroomService {
     return (await this.toViews([room]))[0]!;
   }
 
-  private async toViews(rooms: StudyRoomDocument[]): Promise<StudyRoomView[]> {
+  /** withMembers=false: 참여자가 아닌 사람에게 멤버 신원을 보이지 않습니다 (공개방 목록). */
+  private async toViews(rooms: StudyRoomDocument[], withMembers = true): Promise<StudyRoomView[]> {
     const joined = (room: StudyRoomDocument) =>
       room.members.filter((m) => m.status === ROOM_MEMBER_STATUS.JOINED);
     const users = await this.userModel
-      .find({ _id: { $in: rooms.flatMap((r) => joined(r).map((m) => m.userId)) } })
+      .find({
+        _id: { $in: withMembers ? rooms.flatMap((r) => joined(r).map((m) => m.userId)) : [] },
+      })
       .select('nickname');
     const nicknames = new Map(users.map((u) => [u._id.toString(), u.nickname]));
     return rooms.map((room) => ({
@@ -367,7 +373,7 @@ export class StudyroomService {
       maxCapacity: room.maxCapacity,
       memberCount: room.memberCount,
       timerRule: room.timerRule ?? null,
-      members: joined(room).map((m) => ({
+      members: (withMembers ? joined(room) : []).map((m) => ({
         userId: m.userId.toString(),
         nickname: nicknames.get(m.userId.toString()) ?? '알 수 없음',
         avatarUrl: null, // ponytail: users에 프로필 사진 필드가 생기면 채움

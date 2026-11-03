@@ -9,7 +9,7 @@ import { ChatGateway } from './chat.gateway.js';
 const setup = () => {
   const chat = {
     assertMember: vi.fn().mockResolvedValue(undefined),
-    studyRoomOf: vi.fn().mockResolvedValue('r1'),
+    studyRoomOf: vi.fn().mockResolvedValue('aaaaaaaaaaaaaaaaaaaaaaaa'),
     saveMessage: vi.fn().mockResolvedValue({ _id: 'm1', clientId: 'c1' }),
   };
   const jwt = { verifyAsync: vi.fn().mockResolvedValue({ sub: 'u1' }) };
@@ -66,15 +66,15 @@ describe('ChatGateway', () => {
   it('room:join은 멤버만 구독하고 확인 응답을 돌려준다', async () => {
     const { gateway, chat, client } = setup();
     await expect(
-      gateway.handleJoin(client as unknown as Authed, { roomId: 'r1' }),
+      gateway.handleJoin(client as unknown as Authed, { roomId: 'aaaaaaaaaaaaaaaaaaaaaaaa' }),
     ).resolves.toEqual({
       ok: true,
     });
-    expect(client.join).toHaveBeenCalledWith('study-room:r1');
+    expect(client.join).toHaveBeenCalledWith('study-room:aaaaaaaaaaaaaaaaaaaaaaaa');
 
     chat.assertMember.mockRejectedValue(new Error('no'));
     await expect(
-      gateway.handleJoin(client as unknown as Authed, { roomId: 'r2' }),
+      gateway.handleJoin(client as unknown as Authed, { roomId: 'aaaaaaaaaaaaaaaaaaaaaaaa' }),
     ).resolves.toEqual({
       ok: false,
     });
@@ -87,8 +87,8 @@ describe('ChatGateway', () => {
       text: ' 안녕 ',
       clientId: 'c1',
     });
-    expect(chat.saveMessage).toHaveBeenCalledWith('u1', 'r1', '안녕', 'c1');
-    expect(server.to).toHaveBeenCalledWith('study-room:r1');
+    expect(chat.saveMessage).toHaveBeenCalledWith('u1', 'aaaaaaaaaaaaaaaaaaaaaaaa', '안녕', 'c1');
+    expect(server.to).toHaveBeenCalledWith('study-room:aaaaaaaaaaaaaaaaaaaaaaaa');
     expect(emit).toHaveBeenCalledWith('chat:message', ack);
     expect(ack).toMatchObject({ _id: 'm1', clientId: 'c1' });
   });
@@ -105,8 +105,8 @@ describe('ChatGateway', () => {
 
   it('스터디룸을 나가면 그 사용자의 모든 소켓을 구독에서 뺀다', () => {
     const { gateway, server, socketsLeave } = setup();
-    gateway.removeFromRoom('u1', 'r1');
+    gateway.removeFromRoom('u1', 'AAAAAAAAAAAAAAAAAAAAAAAA'); // 대문자로 나가도 같은 방
     expect(server.in).toHaveBeenCalledWith('user:u1');
-    expect(socketsLeave).toHaveBeenCalledWith('study-room:r1');
+    expect(socketsLeave).toHaveBeenCalledWith('study-room:aaaaaaaaaaaaaaaaaaaaaaaa');
   });
 });
