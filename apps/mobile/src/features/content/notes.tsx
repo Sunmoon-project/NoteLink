@@ -205,7 +205,7 @@ export function NoteTagScreen() {
 export function NoteTitleScreen() {
   const { tag = '수학' } = useLocalSearchParams<{ tag?: string }>();
   const qc = useQueryClient();
-  const [title, setTitle] = useState('이차방정식 풀이');
+  const [title, setTitle] = useState('');
   const d = seoul();
   const create = useMutation({
     mutationFn: () => api.content.createFolder({ title: title.trim(), subjectName: tag }),
@@ -225,7 +225,7 @@ export function NoteTitleScreen() {
     >
       <Header title="새 자료 만들기" right={<Steps n={1} />} />
       <Label>제목</Label>
-      <Input value={title} onChangeText={setTitle} autoFocus />
+      <Input value={title} onChangeText={setTitle} placeholder="제목을 입력해 주세요" autoFocus />
       <Pressable
         onPress={() => setTitle(`${d.getMonth() + 1}월 ${d.getDate()}일 ${tag} 녹음`)}
         className="mt-2"
