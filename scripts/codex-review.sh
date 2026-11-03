@@ -11,7 +11,7 @@
 # - 게시 전 HEAD가 바뀌었으면 오래된 결과를 올리지 않습니다. 같은 SHA의 실패는 기존 댓글을 갱신합니다.
 # - --dry-run: 댓글을 올리거나 갱신하지 않고 결과만 보여 줍니다.
 #
-# 필요한 것: git, jq, gh(로그인), codex(로그인). 현재 작업 폴더는 건드리지 않고
+# 필요한 것: git, gh(로그인), codex(로그인). 현재 작업 폴더는 건드리지 않고
 # 임시 worktree에서 리뷰합니다. 리뷰 기준은 AGENTS.md의 Code Review Rules입니다.
 #
 # Codex 사용량 보호 (기준은 scripts/codex-usage-lib.sh):
@@ -111,14 +111,13 @@ parse_ci_marker() {
 
 publish_review_comment() {  # $1 = 본문 파일, $2 = 갱신할 댓글 ID (없으면 새 댓글)
   current_review_head || return $?
-  local file="$1" id="${2:-}" payload
+  local file="$1" id="${2:-}"
   if $DRY_RUN; then
     echo "----- (dry-run) 게시·갱신할 댓글 ${id:-new} -----"
     cat "$file"
   elif [ -n "$id" ]; then
-    payload="$WORK/comment-$id.json"
-    jq -n --rawfile body "$file" '{body:$body}' > "$payload" || return 1
-    gh api "repos/$REPO/issues/comments/$id" --method PATCH --input "$payload" >/dev/null || return 1
+    # 리뷰 컴퓨터에 jq가 없어도 되도록 gh가 본문을 그대로 읽어 JSON으로 보낸다
+    gh api "repos/$REPO/issues/comments/$id" --method PATCH -F body=@- < "$file" >/dev/null || return 1
   else
     gh pr comment "$PR" -R "$REPO" --body-file "$file" >/dev/null || return 1
   fi
