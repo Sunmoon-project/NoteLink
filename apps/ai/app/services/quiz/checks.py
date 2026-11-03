@@ -98,10 +98,11 @@ _EXP = r"(?:\s*[×xX*]\s*10\s*\^\s*([-+]?\d+)|[eE]([-+]?\d+))?"
 _NUMBER = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
 _TRAILING = re.compile(r"[\s.,;:!?]+$")
 # (수식)(단위): 단위는 연산자로 시작하지 않고 숫자 · 괄호가 없음('5 %'나 '2 apples + 3'은 아님).
-# 지수 표기(1e3)와 단위의 거듭제곱(m^2)은 허용한다.
+# 지수 표기(1e3), 단위의 거듭제곱(m^2)과 낱말 사이 하이픈(ft-lb)은 허용한다.
 _WITH_UNIT = re.compile(
     r"((?:[0-9.\s()+\-*/÷×^:%]|(?<=\d)[eE](?=[-+]?\d))*[0-9)])\s*"
-    r"[^\s\d()+\-*/÷×^:=%<>](?:[^\d()+\-*÷×:=%<>]|\^-?\d+)*"
+    r"[^\s\d()+\-*/÷×^:=%<>]"
+    r"(?:[^\d()+\-*÷×:=%<>]|\^-?\d+|(?<=[^\W\d])-(?=[^\W\d]))*"
 )
 
 
@@ -158,6 +159,18 @@ def _arithmetic_shape(node: ast.AST) -> str | None:
     return None
 
 
+def _strip_wrapping_parens(text: str) -> str:
+    """전체를 감싼 표시용 괄호만 벗긴다('(1/2 kg)'는 벗기고 '(1)(2)'는 그대로)."""
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        for index, char in enumerate(text):
+            depth += (char == "(") - (char == ")")
+            if depth == 0 and index < len(text) - 1:
+                return text
+        text = text[1:-1].strip()
+    return text
+
+
 def option_key(o: str) -> tuple[str, tuple[Decimal, ...], tuple[str, ...]]:
     """보기 · 정답이 같은지 볼 때 쓰는 키: norm(대소문자 · 문장부호 무시)에 적힌 수를 더함.
 
@@ -171,6 +184,7 @@ def option_key(o: str) -> tuple[str, tuple[Decimal, ...], tuple[str, ...]]:
     # norm이 무시하는 장식용 문장부호 때문에 AST 경로가 달라지지 않게 한다.
     # 소수점·부호·연산 순서를 나타내는 괄호와 연산자는 그대로 보존한다.
     text = re.sub(r"['\"!?~·_]", " ", text).rstrip(" .:\t\r\n").lstrip(": \t\r\n")
+    text = _strip_wrapping_parens(text)
     # 숫자 수식은 구문 트리로 비교해 음수 밑·단항 부호·중복 괄호를 일관되게 처리한다.
     # 코드를 실행하지 않으며, 숫자와 허용한 연산 노드 이외의 문법은 사용하지 않는다.
     # 뒤에 단위만 붙은 수식('(1/2) kg')도 수식 부분을 같은 방법으로 비교한다.

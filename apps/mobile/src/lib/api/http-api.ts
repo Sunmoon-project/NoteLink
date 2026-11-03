@@ -60,13 +60,9 @@ export const httpApi: Api = {
       http.post(P.socialLogin(provider), { token: providerToken }),
     emailLogin: (email, password) => http.post(P.emailLogin, { email, password }),
     agreeTerms: (termCodes) => http.post(P.terms, { termCodes }),
-    // 서버가 이 토큰을 폐기한다. 갱신 뒤 재시도하면 이미 바뀐 토큰을 보내게 되므로 재시도하지 않는다
+    // 서버가 폐기할 토큰. 토큰 갱신 뒤 재시도하면 그때의 토큰을 보낸다
     logout: () =>
-      http.post(
-        P.logout,
-        { refreshToken: useAuth.getState().tokens?.refreshToken },
-        { retry: false },
-      ),
+      http.post(P.logout, () => ({ refreshToken: useAuth.getState().tokens?.refreshToken })),
   },
   me: {
     get: () => http.get(P.me),
