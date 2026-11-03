@@ -48,6 +48,7 @@ it('타이머 활성화만 바꿔도 기존 반복과 교시표를 보존한다'
   });
   const save = jest.spyOn(api.rooms, 'setTimer').mockResolvedValue(full);
   setParams({ id: full._id });
+  useAuth.setState({ userId: full.hostId });
   await renderScreen(<TimerScreen />, client());
   await waitFor(() => expect(screen.getByLabelText('방 시간 규칙').props.value).toBe(true));
   await fireEvent(screen.getByLabelText('방 시간 규칙'), 'valueChange', false);

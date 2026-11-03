@@ -27,7 +27,7 @@ import {
   VolumeX,
   X,
 } from 'lucide-react-native';
-import type { Message, RoomMember } from '@notelink/shared';
+import type { Message, RoomMember, RoomSharedItem } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { socket } from '@/lib/socket';
 import { hms, seoul, ymd } from '@/lib/dates';
@@ -54,6 +54,7 @@ import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
 import { C, ICON } from '@/theme';
 import { useLiveRoom } from '@/lib/livekit';
+import { LoadError } from './tools';
 
 // p.75 스터디룸 입장 · 만들기 / p.76 진입 · 채팅 / p.77 카드 / p.100 연결 끊김
 
@@ -282,7 +283,6 @@ export function RoomCreateScreen() {
 }
 
 export function RoomScreen() {
-  const openFeature = useFeatureNavigation();
   const myId = useAuth((s) => s.userId);
   const { id } = useLocalSearchParams<{ id: string }>();
   const timerGeneration = useRef(0);
@@ -345,7 +345,13 @@ export function RoomScreen() {
   const [chat, setChat] = useState(false);
   const [conn, setConn] = useState<'ok' | 'lost' | 'back' | 'kicked'>('ok');
   const [mediaGeneration, setMediaGeneration] = useState(0);
-  const live = useLiveRoom(id, conn !== 'kicked' && !!room.data, mediaGeneration);
+  const today = useQuery({ queryKey: ['study-today'], queryFn: () => api.study.today() });
+  const live = useLiveRoom(
+    id,
+    conn !== 'kicked' && !!room.data,
+    mediaGeneration,
+    today.data?.totalSec,
+  );
   const [v, setV] = useState('');
   const pending = useRef<{ clientId: string; text: string }[]>([]);
   const messageSeq = useRef(0);
@@ -767,7 +773,7 @@ export function RoomScreen() {
           <Pressable
             onPress={() => {
               setPick(false);
-              openFeature({ pathname: '/play/solve', params: { from: 'room' } });
+              router.push({ pathname: '/room/cards', params: { id } });
             }}
             className="h-20 flex-1 items-center justify-center rounded-2xl bg-mint"
           >
@@ -837,7 +843,15 @@ const Ctl = ({
 
 export function RoomCardsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const openFeature = useFeatureNavigation();
   const shared = useQuery({ queryKey: ['room-shared', id], queryFn: () => api.rooms.shared(id) });
+  const others = shared.data?.items.filter((i) => i.itemType !== 'flashcards') ?? [];
+  const openItem = (item: RoomSharedItem) => {
+    if (item.itemType === 'quiz' && item.quizSetId)
+      openFeature({ pathname: '/play/solve', params: { setId: item.quizSetId, from: 'room' } });
+    else if (item.itemType === 'material' && item.materialId)
+      openFeature({ pathname: '/(tabs)/note/doc/[id]', params: { id: item.materialId } });
+  };
   const [flip, setFlip] = useState<string[]>([]);
   const owner = shared.data?.items.find((i) => i.itemType === 'flashcards')?.sharedByNickname;
   return (
@@ -849,6 +863,25 @@ export function RoomCardsScreen() {
         <ArrowLeft size={ICON.sm} color={C.ink} />
         <Text className="text-footnote text-ink">뒤로 가기</Text>
       </Pressable>
+      {shared.isError && (
+        <LoadError message="공유 자료를 불러오지 못했어요" retry={shared.refetch} />
+      )}
+      {shared.isSuccess && others.length === 0 && shared.data.flashcards.length === 0 && (
+        <Text className="py-12 text-center text-footnote text-sub">아직 공유된 자료가 없어요</Text>
+      )}
+      {others.map((item) => (
+        <Pressable
+          key={item._id}
+          accessibilityRole="button"
+          onPress={() => openItem(item)}
+          className="mt-3 flex-row items-center justify-between rounded-xl border border-line px-4 py-3"
+        >
+          <Text className="flex-1 text-footnote font-semibold text-ink">{item.title}</Text>
+          <Text className="text-caption2 text-sub">
+            {item.sharedByNickname} · {item.itemType === 'quiz' ? '퀴즈' : '자료'}
+          </Text>
+        </Pressable>
+      ))}
       <Text className="mt-3 text-caption text-sub">
         {owner ? `${owner}님이 공유한 플래시 카드` : '공유된 플래시 카드'} · 탭해서 뒤집기
       </Text>

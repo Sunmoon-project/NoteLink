@@ -6,7 +6,7 @@ import { toast } from '@/stores/toast';
 import type { MediaConnection } from './livekit-native';
 
 /** 실제 미디어 연결이 성공한 후에만 제어 상태를 표시한다. */
-export function useLiveRoom(roomId: string, enabled = true, generation = 0) {
+export function useLiveRoom(roomId: string, enabled = true, generation = 0, todaySec = 0) {
   const [connection, setConnection] = useState<{
     id: string;
     generation: number;
@@ -68,8 +68,8 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0) {
   const micOn = room?.micOn ?? false;
   const camOn = room?.camOn ?? false;
   useEffect(() => {
-    if (room?.connected) socket.emit('room:state', { roomId, micOn, camOn, todaySec: 0 });
-  }, [roomId, micOn, camOn, room]);
+    if (room?.connected) socket.emit('room:state', { roomId, micOn, camOn, todaySec });
+  }, [roomId, micOn, camOn, room, todaySec]);
   return {
     connected: room?.connected ?? false,
     micOn,

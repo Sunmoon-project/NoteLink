@@ -1,3 +1,4 @@
+import { useAuth } from '../stores/auth';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
@@ -294,6 +295,7 @@ it('연결에 성공한 미디어만 종료되면 오류와 재연결 버튼을 
 });
 
 describe('교시 시간표 편집', () => {
+  beforeEach(() => useAuth.setState({ userId: room.hostId }));
   async function edit() {
     await renderScreen(<TimerScreen />, client());
     await waitFor(() =>

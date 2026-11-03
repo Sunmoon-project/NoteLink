@@ -59,6 +59,16 @@ const REPORT_TYPES: [ReportType, string][] = [
   ['other', '기타'],
 ];
 
+/** 조회 실패 안내. 서버가 준비되지 않았거나 끊겼을 때 빈 화면 대신 다시 시도하게 한다 */
+export const LoadError = ({ message, retry }: { message: string; retry: () => unknown }) => (
+  <View className="items-center gap-3 py-12">
+    <Text className="text-center text-footnote text-sub">{message}</Text>
+    <Btn kind="outline" onPress={() => void retry()}>
+      다시 시도
+    </Btn>
+  </View>
+);
+
 export const MIN_REPORT_CHARS = 10;
 export const MAX_REPORT_PHOTOS = 5;
 /** 신고 대상 · 유형(필수) · 내용 10자 이상을 채워야 보낼 수 있다 (FR-33-02 · 03) */
@@ -260,7 +270,9 @@ const PERIODS = [
 export function TimerScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const qc = useQueryClient();
+  const myId = useAuth((s) => s.userId);
   const room = useQuery({ queryKey: ['room', id], queryFn: () => api.rooms.get(id) });
+  const isHost = room.data?.hostId === myId;
   const [on, setOn] = useState(true);
   const [type, setType] = useState<TimerRule['type']>('pomodoro');
   const [focus, setFocus] = useState('50');
@@ -317,12 +329,19 @@ export function TimerScreen() {
       toast(on ? '모든 참여자에게 타이머를 적용했어요' : '타이머를 껐어요');
     },
   });
+  if (room.isError)
+    return (
+      <Screen>
+        <Header title="방 시간 규칙" center />
+        <LoadError message="방 설정을 불러오지 못했어요" retry={room.refetch} />
+      </Screen>
+    );
   return (
     <View className="flex-1">
       <Screen
         footer={
-          <Btn disabled={!room.data} loading={save.isPending} onPress={() => save.mutate()}>
-            저장하기
+          <Btn disabled={!isHost} loading={save.isPending} onPress={() => save.mutate()}>
+            {!room.data || isHost ? '저장하기' : '방장만 바꿀 수 있어요'}
           </Btn>
         }
       >
@@ -579,6 +598,13 @@ export function ScheduleScreen() {
     if (r.action === 'saved') toast('기기 캘린더에 일정을 추가했어요');
   };
   const s = sch.data;
+  if (sch.isError)
+    return (
+      <Screen>
+        <Header title="시간표" center />
+        <LoadError message="멤버 일정을 불러오지 못했어요" retry={sch.refetch} />
+      </Screen>
+    );
   return (
     <Screen>
       <View className="h-12 flex-row items-center gap-2 pt-2">
@@ -588,7 +614,9 @@ export function ScheduleScreen() {
         <Text className="flex-1 text-headline font-bold text-ink">시간표</Text>
         <Pressable
           onPress={() =>
-            s?.matches[0] && addToCalendar(s.matches[0].day, s.matches[0].start, s.matches[0].end)
+            s?.matches[0]
+              ? addToCalendar(s.matches[0].day, s.matches[0].start, s.matches[0].end)
+              : toast('아직 공통 가능 시간이 없어요')
           }
           className="rounded-full bg-mint px-3 py-1"
         >
@@ -652,6 +680,11 @@ export function ScheduleScreen() {
           <Sparkles size={ICON.xs} color={C.brand} />
           <Text className="text-footnote font-bold text-ink">실시간 매칭된 공통 가능 시간</Text>
         </View>
+        {s?.matches.length === 0 && (
+          <Text className="py-3 text-center text-caption text-sub">
+            아직 공통 가능 시간이 없어요
+          </Text>
+        )}
         {s?.matches.map((m) => (
           <Pressable
             key={m.label}
@@ -790,6 +823,13 @@ export function InviteScreen() {
   });
   const inRoom = new Set(room.data?.members.map((m) => m.userId));
   const list = (friends.data ?? []).filter((f) => f.nickname.includes(q));
+  if (room.isError)
+    return (
+      <Screen footer={<Btn onPress={() => router.back()}>스터디룸으로 돌아가기</Btn>}>
+        <Header title="친구 초대" center />
+        <LoadError message="방 정보를 불러오지 못했어요" retry={room.refetch} />
+      </Screen>
+    );
   return (
     <Screen footer={<Btn onPress={() => router.back()}>스터디룸으로 돌아가기</Btn>}>
       <Header title="친구 초대" center />
@@ -823,6 +863,14 @@ export function InviteScreen() {
         <Text className="text-footnote text-sub">{invited.length}명 초대됨</Text>
       </View>
       <Search value={q} onChangeText={setQ} placeholder="친구 이름으로 검색" />
+      {friends.isError && (
+        <LoadError message="친구 목록을 불러오지 못했어요" retry={friends.refetch} />
+      )}
+      {friends.isSuccess && friends.data.length === 0 && (
+        <Text className="py-6 text-center text-caption text-sub">
+          아직 친구가 없어요. 초대 코드를 공유해 보세요
+        </Text>
+      )}
       <View className="mt-2 gap-2">
         {list.map((f) => {
           const st = inRoom.has(f.userId)
