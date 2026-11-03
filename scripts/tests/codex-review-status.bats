@@ -22,13 +22,13 @@ setup() {
   printf '검증 결과\n인용 "내용"\n두 번째 줄\n' > "$TMP/body.md"
 
   gh() {
-    local command="$1" sub="${2:-}" method="GET" endpoint="" query="" input="" body_file=""
-    local arg previous=""
+    local command="$1" sub="${2:-}" method="GET" endpoint="" query="" body_file=""
+    local arg previous="" field=""
     shift
     for arg in "$@"; do
       case "$previous" in
         --method|-X) method="$arg" ;;
-        --input) input="$arg" ;;
+        -F) field="$arg" ;;
         --jq|-q) query="$arg" ;;
         --body-file) body_file="$arg" ;;
       esac
@@ -70,9 +70,9 @@ setup() {
     fi
     if [ "$command" = api ] && [ "$method" = PATCH ]; then
       local id="${endpoint##*/}"
-      [ -n "$input" ] || return 1
-      if [ "$input" = - ]; then cat > "$TMP/payloads/$id.json"
-      else cp "$input" "$TMP/payloads/$id.json"; fi
+      # gh가 표준 입력을 그대로 JSON 문자열로 바꿔 보내는 동작을 흉내 낸다
+      [ "$field" = 'body=@-' ] || return 1
+      jq -n --rawfile body /dev/stdin '{body:$body}' > "$TMP/payloads/$id.json"
       jq -e '.body | type == "string"' "$TMP/payloads/$id.json" >/dev/null || return 1
       printf 'PATCH\t%s\n' "$id" >> "$TMP/writes.tsv"
       jq --arg id "$id" --slurpfile payload "$TMP/payloads/$id.json" \
