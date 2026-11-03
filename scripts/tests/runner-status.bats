@@ -1101,3 +1101,19 @@ not() { if "$@"; then return 1; fi; }
   [[ "$(jq -r '.embeds[0].description' "$TMP/posted.json")" == *"다시 돌립니다: #12"* ]]
   grep -qx 'api repos/team/repo/actions/artifacts/52 -X DELETE' "$TMP/gh.calls"
 }
+
+@test "review_run: 리뷰 워크플로의 PR 이벤트 · 리뷰 요청 댓글 실행만 믿는다" {
+  review_run "$REVIEW_WF"$'\tpull_request_target\tcompleted\t1'
+  review_run "$REVIEW_WF"$'\tissue_comment\tcompleted\t2'
+  not review_run "$REVIEW_WF"$'\tpull_request\tcompleted\t1'
+  not review_run $'.github/workflows/ci.yml\tissue_comment\tcompleted\t1'
+  not review_run ''
+}
+
+@test "read_usage: 리뷰 요청 댓글(issue_comment)로 돈 리뷰가 올린 결과 파일도 읽는다" {
+  need_jq; artifacts_fixture
+  run_info 120 "$REVIEW_WF" issue_comment
+  artifact_zip 20 "$USAGE_TXT"
+  read_usage
+  [ "$USAGE_ERR" = 0 ] && [ "$U_AT" = 1761897600 ] && [ "$U_P_USED" = 34 ]
+}

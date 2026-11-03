@@ -1,7 +1,12 @@
-# develop · main으로 가는 PR에 Codex 리뷰를 자동으로 남깁니다 (scripts/codex-review.sh).
+# develop · main으로 가는 PR에 Codex 리뷰를 남깁니다 (scripts/codex-review.sh).
+# Codex 사용량을 아끼려고 자동으로는 첫 리뷰만 합니다.
+# - 자동(PR 열림 · 커밋 push · 다시 열림 · Ready for review): 이 계정의 Codex 리뷰가 아직 없을 때만 리뷰합니다.
+#   문서(*.md · *.mdx · docs/ 아래 · LICENSE)만 바뀐 PR은 건너뜁니다. 이미 리뷰했으면 CI를 기다리지 않고 바로 끝납니다.
+# - 재리뷰는 요청할 때만: PR에 codex-review 라벨을 붙이거나(스크립트가 바로 떼므로 다시 붙이면 또 요청),
+#   PR에 "/codex review"로 시작하는 댓글을 남깁니다(저장소 쓰기 권한이 있는 사람만, 받으면 👀).
 # 리뷰 전용 컴퓨터(self-hosted runner, 라벨 codex)에서 돌고, 댓글은 그 컴퓨터의 gh에 로그인한 계정으로 남습니다.
 # GITHUB_TOKEN은 넘기지 않습니다. 넘기면 댓글 작성자가 봇이 되어 지난 리뷰를 찾지 못합니다(재리뷰가 깨짐).
-# pull_request_target: 이 파일과 스크립트는 PR의 대상 브랜치와 상관없이 기본 브랜치(main)의 것을 씁니다.
+# pull_request_target · issue_comment: 이 파일과 스크립트는 PR의 대상 브랜치와 상관없이 기본 브랜치(main)의 것을 씁니다.
 # 이 파일이 main에 있어야 develop으로 가는 PR에서도 돌고, 고친 내용도 main에 들어가야 적용됩니다.
 # PR이 이 워크플로나 스크립트를 바꿔도 리뷰 컴퓨터에서는 실행되지 않습니다.
 # PR 코드(AGENTS.md 포함)는 Codex가 읽기 전용으로 보지만 Codex의 입력이
@@ -11,26 +16,46 @@ name: Codex 리뷰
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
     branches: [develop, main]
+  # 댓글은 대상 브랜치로 거를 수 없어 스크립트가 develop · main인지 확인합니다.
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
 
-# 같은 PR에 push가 이어지면 앞 리뷰를 멈추고 마지막 커밋만 리뷰합니다.
+# 같은 PR에서 자동 실행끼리, 요청끼리는 앞 실행을 멈추고 마지막 것만 돌립니다.
+# 자동과 요청은 그룹을 나눠, 재리뷰 요청이 뒤이은 push(자동은 이미 리뷰했으면 바로 끝남)에 취소되지 않게 합니다.
+# 상관없는 댓글 · 다른 라벨은 job이 건너뛰지만 실행은 생기므로, 각자 따로인 그룹에 넣어 진행 중인 리뷰를 취소하지 않게 합니다.
 concurrency:
-  group: codex-review-${{ github.event.pull_request.number }}
+  group: >-
+    ${{
+    ((github.event_name == 'issue_comment' && !startsWith(github.event.comment.body, '/codex review')) ||
+    (github.event.action == 'labeled' && github.event.label.name != 'codex-review'))
+    && format('codex-review-ignore-{0}', github.run_id)
+    || format('codex-review-{0}-{1}', github.event.pull_request.number || github.event.issue.number,
+    (github.event_name == 'issue_comment' || github.event.action == 'labeled') && 'request' || 'auto')
+    }}
   cancel-in-progress: true
 
 jobs:
   review:
     name: Codex 리뷰
-    # 포크 PR(외부인) · 초안 · Dependabot은 건너뜁니다.
+    # 포크 PR(외부인) · 초안 · Dependabot은 건너뜁니다. 라벨은 codex-review만, 댓글은 PR에 단 "/codex review"만 받습니다.
     # pull_request_target에는 "외부 기여자 승인" 설정이 적용되지 않으므로 포크는 여기서 막습니다.
+    # 댓글 요청은 이벤트에 PR 정보가 없어, 포크 · 초안 · 요청한 사람의 권한은 스크립트가 확인합니다.
     if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      !github.event.pull_request.draft &&
-      github.event.pull_request.user.login != 'dependabot[bot]'
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       !github.event.pull_request.draft &&
+       github.event.pull_request.user.login != 'dependabot[bot]' &&
+       (github.event.action != 'labeled' || github.event.label.name == 'codex-review')) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       github.event.issue.state == 'open' &&
+       github.event.comment.user.type != 'Bot' &&
+       startsWith(github.event.comment.body, '/codex review'))
     runs-on: [self-hosted, codex]
     timeout-minutes: 60
     defaults:
@@ -70,7 +95,12 @@ jobs:
 
       - name: 리뷰
         env:
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          # auto: 첫 리뷰만 · 문서만 바뀌면 건너뜀 / request: 라벨 · 댓글로 요청한 재리뷰 (scripts/codex-review.sh)
+          CODEX_TRIGGER: ${{ (github.event_name == 'issue_comment' || github.event.action == 'labeled') && 'request' || 'auto' }}
+          CODEX_REQUEST_LABEL: ${{ github.event.action == 'labeled' && github.event.label.name || '' }}
+          CODEX_REQUESTER: ${{ github.event.comment.user.login }}
+          CODEX_REQUEST_COMMENT: ${{ github.event.comment.id }}
           # 스크립트의 임시 폴더(mktemp)를 러너 작업용 임시 폴더에 둡니다. 러너가 작업마다 비우므로
           # 취소된 실행이 남긴 폴더도 쌓이지 않습니다.
           TMPDIR: ${{ runner.temp }}

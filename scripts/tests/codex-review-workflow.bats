@@ -89,3 +89,39 @@ not() { if "$@"; then return 1; fi; }
   # 다시 돌린 실행이 같은 이름으로 다시 올릴 수 있어야 함
   [ "$(grep -c 'overwrite: true' "$workflow")" -eq 2 ]
 }
+
+# ---------- 언제 도는지 (자동은 첫 리뷰만, 재리뷰는 라벨 · 댓글 요청) ----------
+
+@test "트리거: PR 이벤트에 labeled, 댓글(issue_comment created)을 받는다" {
+  local workflow="$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml"
+  grep -qF 'types: [opened, synchronize, reopened, ready_for_review, labeled]' "$workflow"
+  awk '/^  issue_comment:/ { f = 1; next } f && /types: \[created\]/ { ok = 1 } END { exit !ok }' "$workflow"
+}
+
+@test "트리거: 라벨 이름 · 댓글 명령이 스크립트와 같고, job 조건 · 동시 실행 그룹에서 같은 값으로 거른다" {
+  local workflow="$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml"
+  local script="$BATS_TEST_DIRNAME/../codex-review.sh"
+  grep -qF 'REQUEST_LABEL="codex-review"' "$script"
+  grep -qF 'REQUEST_COMMAND="/codex review"' "$script"
+  [ "$(grep -cF "github.event.label.name == 'codex-review'" "$workflow")" -eq 1 ]
+  [ "$(grep -cF "github.event.label.name != 'codex-review'" "$workflow")" -eq 1 ]
+  [ "$(grep -cF "startsWith(github.event.comment.body, '/codex review')" "$workflow")" -eq 2 ]
+}
+
+@test "트리거: 상관없는 댓글 · 라벨 실행은 따로인 그룹이라 진행 중인 리뷰를 취소하지 않고, 자동과 요청은 그룹이 다르다" {
+  local workflow="$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml"
+  grep -qF "format('codex-review-ignore-{0}', github.run_id)" "$workflow"
+  grep -qF "format('codex-review-{0}-{1}', github.event.pull_request.number || github.event.issue.number," "$workflow"
+  grep -qF "(github.event_name == 'issue_comment' || github.event.action == 'labeled') && 'request' || 'auto')" "$workflow"
+}
+
+@test "트리거: 리뷰 단계에 PR 번호 · 실행 종류 · 요청 정보를 넘긴다" {
+  local workflow="$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml"
+  grep -qF 'PR: ${{ github.event.pull_request.number || github.event.issue.number }}' "$workflow"
+  grep -qF "CODEX_TRIGGER: \${{ (github.event_name == 'issue_comment' || github.event.action == 'labeled') && 'request' || 'auto' }}" "$workflow"
+  grep -qF "CODEX_REQUEST_LABEL: \${{ github.event.action == 'labeled' && github.event.label.name || '' }}" "$workflow"
+  grep -qF 'CODEX_REQUESTER: ${{ github.event.comment.user.login }}' "$workflow"
+  grep -qF 'CODEX_REQUEST_COMMENT: ${{ github.event.comment.id }}' "$workflow"
+  # 이벤트 값은 env로만 넘기고 run 안에 직접 넣지 않음(명령 주입 방지)
+  not grep -qE 'run: .*\$\{\{ github\.event\.(comment|label|issue)' "$workflow"
+}
