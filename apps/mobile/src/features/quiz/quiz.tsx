@@ -282,7 +282,7 @@ export function QuizNotesScreen() {
 }
 
 export function QuizGenScreen() {
-  const { materialId, title = '이차방정식 풀이' } = useLocalSearchParams<{
+  const { materialId, title } = useLocalSearchParams<{
     materialId: string;
     title?: string;
   }>();
@@ -429,6 +429,9 @@ export function QuizGenScreen() {
 
 export function QuizReadyScreen() {
   const { setId, title } = useLocalSearchParams<{ setId: string; title?: string }>();
+  // 문제 수는 서버가 만든 실제 값을 보여 준다. 못 읽으면 숫자 없이 안내한다
+  const set = useQuery({ queryKey: ['quiz-set', setId], queryFn: () => api.quiz.set(setId) });
+  const count = set.data?.questionCount;
   return (
     <Screen
       footer={
@@ -452,10 +455,12 @@ export function QuizReadyScreen() {
         >
           <CircleCheck size={ICON.xl} color={C.brand} />
         </Animated.View>
-        <Text className="mt-5 text-headline font-bold text-ink">총 5문제가 생성됐어요!</Text>
-        <Text className="text-caption text-sub">
-          {title ?? '이차방정식 풀이'} 노트를 기반으로 만들었어요
+        <Text className="mt-5 text-headline font-bold text-ink">
+          {count ? `총 ${count}문제가 생성됐어요!` : '문제가 생성됐어요!'}
         </Text>
+        {!!title && (
+          <Text className="text-caption text-sub">{title} 노트를 기반으로 만들었어요</Text>
+        )}
       </View>
     </Screen>
   );
