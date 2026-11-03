@@ -1,8 +1,58 @@
 import { PATHS as P } from '@notelink/shared';
-import { http } from './http';
+import { ApiError, http } from './http';
+import { useAuth } from '@/stores/auth';
 import type { Api } from './types';
 
 // 실서버(NestJS 메인 API) 구현. 경로와 응답 형태는 @notelink/shared 계약을 따른다.
+
+type MaterialRequest = Parameters<Api['content']['createMaterial']>[0];
+type MaterialResponse = Awaited<ReturnType<Api['content']['createMaterial']>>;
+const registrations = new Map<
+  string,
+  { fingerprint: string; promise: Promise<MaterialResponse> }
+>();
+
+// 서버의 헤더 지원 여부와 무관하게 같은 등록은 실제 HTTP 요청을 한 번만 보낸다.
+// 결과가 불명확한 실패는 보존하고, 재전송 대신 목록 확인을 안내한다.
+async function registerMaterial({
+  requestId,
+  ...payload
+}: MaterialRequest): Promise<MaterialResponse> {
+  if (!requestId) return http.post(P.materials, payload);
+  const key = JSON.stringify([useAuth.getState().userId, requestId]);
+  const fingerprint = JSON.stringify(payload);
+  const previous = registrations.get(key);
+  if (previous) {
+    if (previous.fingerprint !== fingerprint)
+      throw new ApiError('IDEMPOTENCY_CONFLICT', '같은 등록 키에 다른 자료를 보낼 수 없어요', 409);
+    return JSON.parse(JSON.stringify(await previous.promise));
+  }
+  const pending: Promise<MaterialResponse> = http
+    .post<MaterialResponse>(P.materials, payload, { idempotencyKey: requestId })
+    .then((result) => {
+      if (!result?.material?._id || !result?.job?._id)
+        throw new Error('등록 결과 응답이 누락됐어요');
+      return result;
+    })
+    .catch((error: unknown) => {
+      if (
+        error instanceof ApiError &&
+        error.status >= 400 &&
+        error.status < 500 &&
+        error.status !== 408
+      ) {
+        if (registrations.get(key)?.promise === pending) registrations.delete(key);
+        throw error;
+      }
+      throw new ApiError(
+        'MATERIAL_REGISTRATION_UNCERTAIN',
+        '등록 결과를 확인할 수 없어요. 학습자료 목록에서 확인해 주세요',
+        0,
+      );
+    });
+  registrations.set(key, { fingerprint, promise: pending });
+  return JSON.parse(JSON.stringify(await pending));
+}
 
 export const httpApi: Api = {
   auth: {
@@ -10,7 +60,9 @@ export const httpApi: Api = {
       http.post(P.socialLogin(provider), { token: providerToken }),
     emailLogin: (email, password) => http.post(P.emailLogin, { email, password }),
     agreeTerms: (termCodes) => http.post(P.terms, { termCodes }),
-    logout: () => http.post(P.logout),
+    // 서버가 폐기할 토큰. 토큰 갱신 뒤 재시도하면 그때의 토큰을 보낸다
+    logout: () =>
+      http.post(P.logout, () => ({ refreshToken: useAuth.getState().tokens?.refreshToken })),
   },
   me: {
     get: () => http.get(P.me),
@@ -63,6 +115,7 @@ export const httpApi: Api = {
     addClass: (c) => http.post(P.timetableClasses, c),
     removeClass: (id) => http.del(P.timetableClass(id)),
     share: (p) => http.post(P.timetableShares, p),
+    shares: () => http.get(P.timetableShares),
   },
   social: {
     friends: () => http.get(P.friends),
@@ -79,7 +132,7 @@ export const httpApi: Api = {
     createFolder: (p) => http.post(P.folders, p),
     deleteFolder: (id) => http.del(P.folder(id)),
     materials: (folderId) => http.get(P.folderMaterials(folderId)),
-    createMaterial: (p) => http.post(P.materials, p),
+    createMaterial: registerMaterial,
     material: (id) => http.get(P.material(id)),
     saveMaterial: (id) => http.patch(P.material(id), { saved: true }),
     updateSummary: (id, sections) => http.patch(P.material(id), { summary: { sections } }),
@@ -106,6 +159,8 @@ export const httpApi: Api = {
     explanation: (questionId) => http.get(P.explanation(questionId)),
     similar: (id) => http.post(P.similarQuiz(id)),
     box: () => http.get(P.quizBox),
+    saveToBox: (questionIds) => http.post(P.quizBox, { questionIds }),
+    deleteFromBox: (questionIds) => http.post(`${P.quizBox}/delete`, { questionIds }),
     flashcards: () => http.get(P.flashcards),
     saveFlashcard: (p) => http.post(P.flashcards, p),
     deleteFlashcards: (ids) => http.post(P.flashcardsDelete, { ids }),

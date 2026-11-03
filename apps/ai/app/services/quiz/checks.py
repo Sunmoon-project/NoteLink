@@ -3,6 +3,7 @@
 code_check는 탈락 이유 목록과 정답 보기의 위치를 돌려줍니다. 이유가 없어야 다음 검사로 갑니다.
 """
 
+import ast
 import difflib
 import re
 import unicodedata
@@ -96,6 +97,13 @@ def reversed_of(d: Draft, seen: list[Seen]) -> bool:
 _EXP = r"(?:\s*[×xX*]\s*10\s*\^\s*([-+]?\d+)|[eE]([-+]?\d+))?"
 _NUMBER = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
 _TRAILING = re.compile(r"[\s.,;:!?]+$")
+# (수식)(단위): 단위는 연산자로 시작하지 않고 숫자 · 괄호가 없음('5 %'나 '2 apples + 3'은 아님).
+# 지수 표기(1e3), 단위의 거듭제곱(m^2)과 낱말 사이 하이픈(ft-lb)은 허용한다.
+_WITH_UNIT = re.compile(
+    r"((?:[0-9.\s()+\-*/÷×^:%]|(?<=\d)[eE](?=[-+]?\d))*[0-9)])\s*"
+    r"[^\s\d()+\-*/÷×^:=%<>]"
+    r"(?:[^\d()+\-*÷×:=%<>]|\^-?\d+|(?<=[^\W\d])-(?=[^\W\d]))*"
+)
 
 
 def number_values(s: str | None) -> tuple[list[Decimal], str]:
@@ -141,13 +149,101 @@ def _same_parsed(a: tuple[list[Decimal], str], b: tuple[list[Decimal], str]) -> 
     return bool(a[0]) and a == b
 
 
-def option_key(o: str) -> tuple[str, tuple[Decimal, ...]]:
+def _arithmetic_shape(node: ast.AST) -> str | None:
+    """평가 없이 숫자 수식의 연산 순서만 비교한다."""
+    if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+        return "number"
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        operand = _arithmetic_shape(node.operand)
+        return f"{type(node.op).__name__}({operand})" if operand is not None else None
+    if isinstance(node, ast.BinOp) and isinstance(
+        node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)
+    ):
+        left, right = _arithmetic_shape(node.left), _arithmetic_shape(node.right)
+        if left is not None and right is not None:
+            return f"{type(node.op).__name__}({left},{right})"
+    return None
+
+
+def _strip_wrapping_parens(text: str) -> str:
+    """전체를 감싼 표시용 괄호만 벗긴다('(1/2 kg)'는 벗기고 '(1)(2)'는 그대로)."""
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        for index, char in enumerate(text):
+            depth += (char == "(") - (char == ")")
+            if depth == 0 and index < len(text) - 1:
+                return text
+        text = text[1:-1].strip()
+    return text
+
+
+def option_key(o: str) -> tuple[str, tuple[Decimal, ...], tuple[str, ...]]:
     """보기 · 정답이 같은지 볼 때 쓰는 키: norm(대소문자 · 문장부호 무시)에 적힌 수를 더함.
 
     norm은 '.' · '-'를 지우므로 수까지 따로 보지 않으면 '1.5 mL'과 '15 mL',
     '-20℃'와 '20℃'가 같은 보기가 됩니다. 'No.5'와 'No. 5'는 같은 보기입니다.
     """
-    return norm(o), tuple(number_values(o)[0])
+    values, _ = number_values(o)
+    # 단어 사이 하이픈을 연산자로 취급하지 않는다. 숫자만 연결하는 기호를 비교한다.
+    # 대괄호도 소괄호처럼 연산 순서를 바꾸므로 지우지 않는다('[1+2]*3'과 '1+2*3'은 다름).
+    text = unicodedata.normalize("NFC", o).replace(",", "").replace("[", "(").replace("]", ")")
+    # norm이 무시하는 장식용 문장부호 때문에 AST 경로가 달라지지 않게 한다.
+    # 소수점·부호·연산 순서를 나타내는 괄호와 연산자는 그대로 보존한다.
+    text = re.sub(r"['\"!?~·_]", " ", text).rstrip(" .:\t\r\n").lstrip(": \t\r\n")
+    text = _strip_wrapping_parens(text)
+    # 숫자 수식은 구문 트리로 비교해 음수 밑·단항 부호·중복 괄호를 일관되게 처리한다.
+    # 코드를 실행하지 않으며, 숫자와 허용한 연산 노드 이외의 문법은 사용하지 않는다.
+    # 뒤에 단위만 붙은 수식('(1/2) kg')도 수식 부분을 같은 방법으로 비교한다.
+    unit = re.fullmatch(_WITH_UNIT, text)
+    expression = text if re.fullmatch(r"[0-9.eE\s()+\-*/÷×^:%]+", text) else unit and unit[1]
+    if expression:
+        expression = expression.replace("^", "**").replace("×", "*").replace("÷", "/").strip()
+        try:
+            shape = _arithmetic_shape(ast.parse(expression, mode="eval").body)
+        except (SyntaxError, ValueError, RecursionError):
+            shape = None
+        if shape is not None:
+            # 수 하나는 연산 순서가 없고 부호는 values에 있다.
+            # '- (2)'처럼 values에 없는 부호만 남긴다.
+            # ('2 year old'와 '2-year-old', '-20℃'와 '(-20℃)'는 같은 보기).
+            trivial = shape == "number" or (shape == "USub(number)" and values[:1] < [Decimal(0)])
+            return norm(o), tuple(values), () if trivial else (shape,)
+    matches = list(_NUMBER.finditer(text))
+    separators = tuple(
+        re.sub(r"[\s()]", "", gap) if re.fullmatch(r"[\s()+\-*/÷×^:=%<>]*", gap) else ""
+        for left, right in zip(matches, matches[1:], strict=False)
+        for gap in [text[left.end() : right.start()]]
+    )
+    # 수식의 다항 괄호는 계산 순서를 바꾼다. (stacked), (2) 같은 표현용 괄호는 무시한다.
+    stack: list[int] = []
+    groups: list[str] = []
+    for index, char in enumerate(text):
+        if char == "(":
+            stack.append(index)
+        elif char == ")" and stack:
+            start = stack.pop()
+            inside = text[start + 1 : index]
+            numbers = list(_NUMBER.finditer(inside))
+            rest = _NUMBER.sub("", inside)
+            signed_power = (
+                len(numbers) == 1
+                and numbers[0].group().lstrip().startswith(("-", "+"))
+                and re.match(r"\s*(?:\^|\*\*)", text[index + 1 :]) is not None
+            )
+            if (len(numbers) > 1 or signed_power) and re.fullmatch(r"[\s()+\-*/÷×^:=%<>]*", rest):
+                before = sum(m.end() <= start for m in matches)
+                groups.append(f"group:{before}:{before + len(numbers)}")
+    boundaries: list[str] = []
+    if matches:
+        for label, edge in [
+            ("prefix", text[: matches[0].start()]),
+            ("suffix", text[matches[-1].end() :]),
+        ]:
+            if re.fullmatch(r"[\s()+\-*/÷×^:=%<>]*", edge):
+                operators = re.sub(r"[\s()]", "", edge)
+                if operators:
+                    boundaries.append(f"{label}:{operators}")
+    return norm(o), tuple(values), (*separators, *groups, *boundaries)
 
 
 def form(w: str | None) -> Literal["ing", "ed", "base"]:

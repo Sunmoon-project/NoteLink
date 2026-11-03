@@ -6,6 +6,7 @@ from app.services.quiz.checks import (
     code_check,
     form_giveaway,
     number_values,
+    option_key,
     reversed_of,
     same_value,
     seen_draft,
@@ -255,3 +256,175 @@ def test_option_key_keeps_sign_and_decimal_but_ignores_spacing() -> None:
         )[1]
         == 0
     )
+
+
+def test_fraction_and_range_are_distinct_options_and_answers() -> None:
+    opts = ["1/2", "1-2", "3/4", "3-4", "5"]
+    for answer, index in [("1/2", 0), ("1-2", 1)]:
+        reasons, correct = code_check(
+            draft(stem="값을 고르시오", passage="", options=opts, answer=answer),
+            NEW,
+            answer,
+            "규칙",
+            [],
+        )
+        assert "보기 5개가 아니거나 겹침" not in reasons
+        assert correct == index
+
+
+def test_option_key_ignores_non_numeric_parentheses_for_duplicates() -> None:
+    reasons = why(draft(options=["stacked", "(stacked)", "folded", "painted", "cleared"]))
+    assert "보기 5개가 아니거나 겹침" in reasons
+
+
+def test_option_key_ignores_parentheses_for_answer_match() -> None:
+    assert code_check(draft(answer="(stacked)"), NEW, PAGE, "빈칸", [])[1] == 0
+
+
+def test_numeric_separator_ignores_surrounding_parentheses() -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key("1/(2)") == option_key("1/2")
+    assert option_key("350,000 mL") == option_key("350000 mL")
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("1/(2+3)", "1/2+3"),
+        ("(1+2)/3", "1+2/3"),
+        ("1*(2+3)", "1*2+3"),
+        ("(-2)^2", "-2^2"),
+        ("((-2))^2", "-2^2"),
+    ],
+)
+def test_option_key_preserves_arithmetic_grouping(a: str, b: str) -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key(a) != option_key(b)
+    d = draft(passage="", options=[a, b, "4", "5", "6"], answer=a)
+    reasons, correct = code_check(d, NEW, a, "규칙", [])
+    assert "보기 5개가 아니거나 겹침" not in reasons
+    assert correct == 0
+    d["options"] = [b, "3", "4", "5", "6"]
+    assert code_check(d, NEW, a, "규칙", [])[1] is None
+
+
+def test_word_hyphens_do_not_become_numeric_operators() -> None:
+    from app.services.quiz.checks import option_key
+
+    a, b = "1-year-old and 2-year-old", "1 year old and 2 year old"
+    assert option_key(a) == option_key(b)
+    assert code_check(draft(options=[a, b, "c", "d", "e"], answer=a), NEW, a, "규칙", [])[1] is None
+    assert code_check(draft(options=[a, "b", "c", "d", "e"], answer=b), NEW, a, "규칙", [])[1] == 0
+
+
+@pytest.mark.parametrize(("a", "b"), [("-(1+2)", "(1+2)"), ("- (2)", "(2)"), ("1%", "1")])
+def test_option_key_preserves_boundary_operators(a: str, b: str) -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key(a) != option_key(b)
+    options = [a, b, "4", "5", "6"]
+    d = draft(passage="", options=options, answer=a)
+    assert code_check(d, NEW, a, "규칙", [])[1] == 0
+    d["options"] = [b, "3", "4", "5", "6"]
+    assert code_check(d, NEW, a, "규칙", [])[1] is None
+
+
+@pytest.mark.parametrize(
+    ("a", "b"), [("((1+2))", "1+2"), ("((-2))^2", "(-2)^2"), ("(-2)*3", "-2*3")]
+)
+def test_redundant_arithmetic_parentheses_do_not_create_distinct_options(a: str, b: str) -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key(a) == option_key(b)
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("2", "[2]"),
+        ("2", "2?"),
+        ("2", "2:"),
+        ("2", "_2_"),
+        ("2", "~2~"),
+        ("2", "(2)!"),
+        ("2", '"2"'),
+        ("1/2", "1/2?"),
+        ("1/2", "[1/2]"),
+        ("1/2", "1/2."),
+        ("1/(2+3)", "[1/(2+3)]!"),
+        ("(-2)^2", "[(-2)^2]?"),
+        ("E. coli", "E coli"),
+    ],
+)
+def test_ignored_option_punctuation_keeps_duplicate_and_answer_matching(a: str, b: str) -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key(a) == option_key(b)
+    duplicate = draft(passage="", options=[a, b, "c", "d", "f"], answer=a)
+    reasons, correct = code_check(duplicate, NEW, a, "규칙", [])
+    assert "보기 5개가 아니거나 겹침" in reasons
+    assert correct is None
+    for option, answer in [(a, b), (b, a)]:
+        single = draft(passage="", options=[option, "c", "d", "f", "g"], answer=answer)
+        assert code_check(single, NEW, a, "규칙", [])[1] == 0
+
+
+def test_punctuation_normalization_does_not_merge_numeric_tokens_or_ratios() -> None:
+    from app.services.quiz.checks import option_key
+
+    assert option_key("2~3") == option_key("2 3")
+    assert option_key("2~3") != option_key("23")
+    assert option_key("1:2") != option_key("1/2")
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("(1+2) mL", "((1+2)) mL", True),
+        ("1/((2+3)) mL", "1/(2+3) mL", True),
+        ("1/2 kg", "(1/2) kg", True),
+        ("(1+2)*3 mL", "1+2*3 mL", False),
+        ("1/2 kg", "1-2 kg", False),
+        ("[1+2]*3", "(1+2)*3", True),
+        ("[1+2]*3", "1+2*3", False),
+        ("[1] 정답", "1 정답", True),
+        ("(1e3+2) mL", "((1e3+2)) mL", True),
+        ("1e3/2 kg", "(1e3/2) kg", True),
+        ("1/2 m^2", "(1/2) m^2", True),
+        ("1/2 m^2", "1-2 m^2", False),
+        ("2 year old", "2-year-old", True),
+        ("1 year old", "1-year-old", True),
+        ("20℃", "(20℃)", True),
+        ("-20℃", "(-20℃)", True),
+        ("1/2 ft-lb", "(1/2) ft-lb", True),
+        ("1/2 ft-lb", "1-2 ft-lb", False),
+        ("1/2 kg", "(1/2 kg)", True),
+        ("-20℃", "20℃", False),
+        ("5 %", "5", False),
+        ("2 apples + 3 oranges", "2 apples - 3 oranges", False),
+    ],
+)
+def test_option_key_compares_expressions_with_units_and_brackets(
+    a: str, b: str, same: bool
+) -> None:
+    assert (option_key(a) == option_key(b)) is same
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("(1e3+2) mL", "((1e3+2)) mL"),
+        ("1/2 m^2", "(1/2) m^2"),
+        ("2 year old", "2-year-old"),
+        ("-20℃", "(-20℃)"),
+    ],
+)
+def test_code_check_treats_same_expression_as_duplicate_and_answer(a: str, b: str) -> None:
+    rest = ["91 mL", "92 mL", "93 mL"]
+    for answer, listed in ((a, b), (b, a)):
+        d = draft(stem="값은?", passage="", options=[listed, "94 mL", *rest], answer=answer)
+        assert code_check(d, NEW, listed, "규칙", [])[1] == 0
+        dup = draft(stem="값은?", passage="", options=[a, b, *rest], answer=a)
+        assert any("겹침" in why for why in code_check(dup, NEW, a, "규칙", [])[0])

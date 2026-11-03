@@ -26,8 +26,33 @@ const config: ExpoConfig = {
   },
   plugins: [
     'expo-router',
+    '@livekit/react-native-expo-plugin',
+    '@config-plugins/react-native-webrtc',
     'expo-status-bar',
-    'expo-font',
+    [
+      'expo-font',
+      {
+        // 앱 글꼴: Pretendard (SIL OFL 1.1, assets/fonts/LICENSE-Pretendard.txt). 굵기는 fontWeight로 고른다
+        ios: {
+          fonts: (['Regular', 'Medium', 'SemiBold', 'Bold'] as const).map(
+            (w) => `./assets/fonts/Pretendard-${w}.otf`,
+          ),
+        },
+        android: {
+          fonts: [
+            {
+              fontFamily: 'Pretendard',
+              fontDefinitions: [
+                { path: './assets/fonts/Pretendard-Regular.otf', weight: 400 },
+                { path: './assets/fonts/Pretendard-Medium.otf', weight: 500 },
+                { path: './assets/fonts/Pretendard-SemiBold.otf', weight: 600 },
+                { path: './assets/fonts/Pretendard-Bold.otf', weight: 700 },
+              ],
+            },
+          ],
+        },
+      },
+    ],
     'expo-secure-store',
     'expo-sharing',
     [

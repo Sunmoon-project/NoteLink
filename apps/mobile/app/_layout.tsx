@@ -34,16 +34,15 @@ export default function RootLayout() {
   return (
     <QueryClientProvider client={queryClient}>
       <StatusBar style="dark" />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#fff' } }}>
-        <Stack.Screen name="landscape" options={{ animation: 'fade', orientation: 'landscape' }} />
-        <Stack.Screen name="capture/camera" options={{ animation: 'fade' }} />
-        <Stack.Screen name="capture/rec-live" options={{ animation: 'fade' }} />
-        <Stack.Screen
-          name="summary"
-          options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }}
-        />
-        <Stack.Screen name="convert" options={{ gestureEnabled: false }} />
-      </Stack>
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          contentStyle: { backgroundColor: '#fff' },
+          // 앞으로 가면 오른쪽에서 들어오고 뒤로 가면 오른쪽으로 나간다 (두 플랫폼 같게)
+          animation: 'slide_from_right',
+          animationDuration: 280,
+        }}
+      />
       <AppOverlays />
     </QueryClientProvider>
   );

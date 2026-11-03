@@ -1,4 +1,15 @@
-import { addDays, dLabel, daysBetween, goalLabel, hms, md, seoul, today, ymd } from '../lib/dates';
+import {
+  addDays,
+  diffLabel,
+  dLabel,
+  daysBetween,
+  goalLabel,
+  hms,
+  md,
+  seoul,
+  today,
+  ymd,
+} from '../lib/dates';
 
 describe('dates', () => {
   it('초를 00:00:00으로 바꾼다', () => {
@@ -38,5 +49,11 @@ describe('dates', () => {
     jest.useFakeTimers({ now: new Date('2026-10-26T15:30:00Z') });
     expect(today()).toBe('2026-10-27');
     jest.useRealTimers();
+  });
+
+  it('지난주와 비교한 문구', () => {
+    expect(diffLabel(6000)).toBe('지난주보다 1시간 40분 늘었어요');
+    expect(diffLabel(-1800)).toBe('지난주보다 30분 줄었어요');
+    expect(diffLabel(30)).toBe('지난주와 비슷해요');
   });
 });

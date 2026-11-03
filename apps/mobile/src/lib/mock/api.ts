@@ -9,14 +9,18 @@ import {
   type QuizAttempt,
   type QuizSet,
   type StudySession,
+  type TimetableShare,
 } from '@notelink/shared';
 import { ApiError, NetworkError } from '../api/http';
 import type { Api, MonthDay } from '../api/types';
 import { addDays, daysBetween, parse, seoul, today, ymd } from '../dates';
 import { mockServer } from '../socket';
 import { useNet } from '@/stores/net';
+import { useAuth } from '@/stores/auth';
 import { useMockFlags } from './flags';
 import * as S from './seed';
+import { mockUploadSource } from './uploads';
+import { roomTimerState } from './timer';
 
 // 목업 백엔드. 실서버와 같은 Api 인터페이스를 구현하고, AI 작업 진행률은 소켓 이벤트로 흘려보낸다.
 
@@ -24,7 +28,16 @@ const db = {
   user: S.seedUser(),
   items: S.seedItems(),
   sessions: new Map<string, StudySession>(),
-  weeklyGoal: { _id: 'wg1', weekStart: today(), targetMin: 21 * 60, notify80: true },
+  weeklyGoal: {
+    _id: 'wg1',
+    weekStart: today(),
+    targetMin: 21 * 60,
+    notify80: true,
+    recentAvgMin: 18 * 60 + 30,
+  },
+  timetableShares: [
+    { _id: 'ts1', friendId: 'u-jiwoo', mode: 'full', sharedAt: new Date().toISOString() },
+  ] as TimetableShare[],
   recurring: S.seedRecurring(),
   todos: S.seedTodos(),
   manualDdays: S.seedManualDdays(),
@@ -41,10 +54,21 @@ const db = {
   quizSets: [] as QuizSet[],
   attempts: new Map<string, QuizAttempt>(),
   flashcards: S.seedFlashcards(),
+  quizBox: [...S.QUESTIONS],
   rooms: [] as ReturnType<typeof S.makeRoom>[],
   userItems: S.seedUserItems(),
   ledger: S.seedLedger(),
 };
+
+const endedSessions = new Map<string, { durationSec: number; pointsEarned: number }>();
+const createdMaterials = new Map<
+  string,
+  { payload: string; result: { material: Material; job: AiJob } }
+>();
+const finishedAttempts = new Map<string, { pointsEarned: number; balance: number }>();
+
+const timerStartedAt = new Map<string, number>();
+const presetTimerStartedAt = Date.now();
 
 let seq = 1;
 const uid = (p: string) => `${p}-${Date.now().toString(36)}${seq++}`;
@@ -74,6 +98,13 @@ const STEPS: Partial<Record<AiJobType, string[]>> = {
   avatar_profile: ['사진 분석', '스타일 적용', '프로필 생성', '마무리'],
 };
 
+const jobCompletions = new Map<string, (job: AiJob) => void>();
+
+const markMaterialFailed = (id: string) => {
+  const m = db.materials.find((x) => x._id === id);
+  if (m) m.processing.status = 'failed';
+};
+
 function runJob(type: AiJobType, targetId: string, onDone: (job: AiJob) => void): AiJob {
   const flags = useMockFlags.getState();
   const job: AiJob = {
@@ -90,6 +121,7 @@ function runJob(type: AiJobType, targetId: string, onDone: (job: AiJob) => void)
     updatedAt: now(),
   };
   db.jobs.set(job._id, job);
+  jobCompletions.set(job._id, onDone);
   const steps = STEPS[type] ?? ['노트 분석', '문제 생성', '해설 작성', '검토'];
   const total = flags.llmSlow ? 9000 : 3200;
   const started = Date.now();
@@ -104,6 +136,7 @@ function runJob(type: AiJobType, targetId: string, onDone: (job: AiJob) => void)
         : 101;
     if (p >= failAt) {
       clearInterval(tick);
+      markMaterialFailed(j.targetId);
       Object.assign(j, {
         status: 'failed',
         progress: failAt,
@@ -190,20 +223,45 @@ export const mockApi: Api = {
         return fail(ERROR_CODES.TOKEN_EXPIRED, '로그인이 만료됐어요', 401);
       return ok(db.user);
     },
-    update: (patch) => {
+    update: async (patch) => {
+      await ok(undefined);
+
       Object.assign(db.user, { ...patch, settings: { ...db.user.settings, ...patch.settings } });
-      return ok(db.user);
+      return structuredClone(db.user);
     },
-    setStatus: (status) => ok(void (db.user.status = status)),
+    setStatus: async (status) => {
+      await ok(undefined);
+      return structuredClone(void (db.user.status = status));
+    },
     registerDevice: () => ok(undefined),
-    changePlan: (tier) => {
+    changePlan: async (tier) => {
+      await ok(undefined);
+
       db.user.subscription = { tier, status: 'active' };
       db.user.usage!.storageLimitBytes = { free: 2, pro: 50, max: 200 }[tier] * 1024 ** 3;
-      return ok(db.user);
+      return structuredClone(db.user);
     },
     withdraw: () => ok(undefined),
-    generateProfile: (p) => ok(runJob('avatar_profile', p.photoBlobUrl, () => {})),
-    saveAvatar: () => ok(undefined),
+    generateProfile: async (p) => {
+      await ok(undefined);
+      return structuredClone(
+        runJob('avatar_profile', p.photoBlobUrl, (job) => {
+          // 목업은 입력 사진을 성공 결과로 재사용한다. 실제 AI 생성은 서버가 담당한다.
+          const avatarUrl = mockUploadSource(p.photoBlobUrl);
+          db.user.avatarUrl = avatarUrl;
+          job.result = { avatarUrl };
+        }),
+      );
+    },
+    saveAvatar: async (p) => {
+      await ok(undefined);
+
+      const color = /^#[0-9a-f]{6}$/i.test(p.color) ? p.color : '#8cbea3';
+      const descriptor = encodeURIComponent(`${p.style}:${p.gender}:${p.color}`);
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><desc>${descriptor}</desc><rect width="128" height="128" rx="64" fill="${color}"/><circle cx="64" cy="53" r="28" fill="#f5d3b3"/><path d="M24 128v-18a40 40 0 0 1 80 0v18" fill="#ffffff"/><circle cx="54" cy="52" r="3"/><circle cx="74" cy="52" r="3"/><path d="M55 67q9 8 18 0" fill="none" stroke="#76533d" stroke-width="3"/></svg>`;
+      db.user.avatarUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      return structuredClone(undefined);
+    },
   },
   upload: {
     getSas: (p) => {
@@ -227,7 +285,9 @@ export const mockApi: Api = {
         streakOk: true,
         items: db.items,
       }),
-    addItem: (p) => {
+    addItem: async (p) => {
+      await ok(undefined);
+
       const it = {
         _id: uid('item'),
         title: p.title,
@@ -237,9 +297,11 @@ export const mockApi: Api = {
         accumulatedSec: 0,
       };
       db.items.push(it);
-      return ok(it);
+      return structuredClone(it);
     },
-    startSession: (p) => {
+    startSession: async (p) => {
+      await ok(undefined, 80);
+
       const s: StudySession = {
         _id: uid('ss'),
         studyDate: today(),
@@ -256,22 +318,29 @@ export const mockApi: Api = {
         pauses: [],
       };
       db.sessions.set(s._id, s);
-      return ok(s, 80);
+      return structuredClone(s);
     },
-    pauseSession: (id) =>
-      ok(
+    pauseSession: async (id) => {
+      await ok(undefined, 60);
+      return structuredClone(
         void db.sessions
           .get(id)
           ?.pauses.push({ startedAt: now(), endedAt: null, reason: 'manual' }),
-        60,
-      ),
-    resumeSession: (id) => {
+      );
+    },
+    resumeSession: async (id) => {
+      await ok(undefined, 60);
+
       const p = db.sessions.get(id)?.pauses.at(-1);
       if (p) p.endedAt = now();
-      return ok(undefined, 60);
+      return structuredClone(undefined);
     },
-    endSession: (id, p) => {
+    endSession: async (id, p) => {
+      await ok(undefined);
+      const previous = endedSessions.get(id);
+      if (previous) return structuredClone(previous);
       const s = db.sessions.get(id);
+      if (!s) throw new ApiError(ERROR_CODES.NOT_FOUND, '세션을 찾을 수 없어요', 404);
       // 실서버와 같이 서버 쪽 기록(시작 · 일시정지 시각)으로 시간을 계산한다
       const paused = (s?.pauses ?? []).reduce(
         (a, x) => a + ((x.endedAt ? Date.parse(x.endedAt) : Date.now()) - Date.parse(x.startedAt)),
@@ -296,7 +365,9 @@ export const mockApi: Api = {
           createdAt: now(),
         });
       }
-      return ok({ durationSec, pointsEarned: pts });
+      const result = { durationSec, pointsEarned: pts };
+      endedSessions.set(id, result);
+      return structuredClone(result);
     },
     weekly: () =>
       ok({
@@ -336,13 +407,17 @@ export const mockApi: Api = {
         })),
       }),
     weeklyGoal: () => ok(db.weeklyGoal),
-    setWeeklyGoal: (p) => ok(Object.assign(db.weeklyGoal, p)),
+    setWeeklyGoal: async (p) => {
+      await ok(undefined);
+      return structuredClone(Object.assign(db.weeklyGoal, p));
+    },
     recurringGoals: () => ok(db.recurring),
-    saveRecurringGoal: (g) => {
+    saveRecurringGoal: async (g) => {
+      await ok(undefined);
+
       const cur = db.recurring.find((x) => x._id === g._id);
-      if (cur) return ok(Object.assign(cur, g));
+      if (cur) return structuredClone(Object.assign(cur, g));
       const n = {
-        _id: uid('rg'),
         days: [],
         targetMin: 30,
         subjectId: null,
@@ -352,16 +427,22 @@ export const mockApi: Api = {
         streak: 0,
         isActive: true,
         ...g,
+        _id: uid('rg'),
       };
       db.recurring.push(n);
-      return ok(n);
+      return structuredClone(n);
     },
-    deleteRecurringGoal: (id) => ok(void (db.recurring = db.recurring.filter((g) => g._id !== id))),
+    deleteRecurringGoal: async (id) => {
+      await ok(undefined);
+      return structuredClone(void (db.recurring = db.recurring.filter((g) => g._id !== id)));
+    },
     subjects: () => ok(S.subjects),
   },
   calendar: {
     todos: (date) => ok(db.todos.filter((t) => t.dueDate === date && !t.isDday)),
-    addTodo: (p) => {
+    addTodo: async (p) => {
+      await ok(undefined);
+
       const t = {
         _id: uid('todo'),
         dueDate: p.dueDate,
@@ -369,7 +450,7 @@ export const mockApi: Api = {
         todoType: p.todoType,
         isDday: p.todoType !== 'general',
         timeSlot: p.timeSlot,
-        dueTime: null,
+        dueTime: p.dueTime ?? null,
         subjectId: null,
         subjectName: p.subjectName ?? undefined,
         done: false,
@@ -378,20 +459,28 @@ export const mockApi: Api = {
       };
       db.todos.push(t);
       if (t.isDday) db.todos.push({ ...t, _id: uid('todo'), isDday: false });
-      return ok(t);
+      return structuredClone(t);
     },
-    toggleTodo: (id, done) =>
-      ok(
+    toggleTodo: async (id, done) => {
+      await ok(undefined);
+      return structuredClone(
         void Object.assign(db.todos.find((t) => t._id === id) ?? {}, {
           done,
           doneAt: done ? now() : null,
         }),
-      ),
+      );
+    },
     ddays: () => ok(ddays()),
-    addDday: (p) => {
+    addDday: async (p) => {
+      await ok(undefined);
+
       const d = { _id: uid('dd'), title: p.title, date: p.date, kind: '목표일' };
       db.manualDdays.push(d);
-      return ok({ ...d, source: 'manual' as const, daysLeft: daysBetween(today(), p.date) });
+      return structuredClone({
+        ...d,
+        source: 'manual' as const,
+        daysLeft: daysBetween(today(), p.date),
+      });
     },
     holidays: (year) =>
       ok(
@@ -401,18 +490,29 @@ export const mockApi: Api = {
           hidden: db.hiddenHolidays.has(md),
         })),
       ),
-    setHolidayHidden: (date, hidden) => {
+    setHolidayHidden: async (date, hidden) => {
+      await ok(undefined, 60);
+
       const md = date.slice(5);
       if (hidden) db.hiddenHolidays.add(md);
       else db.hiddenHolidays.delete(md);
-      return ok(undefined, 60);
+      return structuredClone(undefined);
     },
     customHolidays: () => ok(db.customHolidays),
-    addCustomHoliday: (p) => ok(void db.customHolidays.push({ _id: uid('ch'), ...p })),
-    removeCustomHoliday: (id) =>
-      ok(void (db.customHolidays = db.customHolidays.filter((h) => h._id !== id))),
+    addCustomHoliday: async (p) => {
+      await ok(undefined);
+      return structuredClone(void db.customHolidays.push({ _id: uid('ch'), ...p }));
+    },
+    removeCustomHoliday: async (id) => {
+      await ok(undefined);
+      return structuredClone(
+        void (db.customHolidays = db.customHolidays.filter((h) => h._id !== id)),
+      );
+    },
     shares: () => ok(db.shares.filter((s) => !s.revokedAt)),
-    createShare: (p) => {
+    createShare: async (p) => {
+      await ok(undefined);
+
       const s: CalendarShare = {
         _id: uid('cs'),
         token: Math.random().toString(16).slice(2, 8),
@@ -426,10 +526,14 @@ export const mockApi: Api = {
         subscribers: [],
       };
       db.shares.unshift(s);
-      return ok({ ...s, url: `notelink.app/share/${s.token}` });
+      return structuredClone({ ...s, url: `notelink.app/share/${s.token}` });
     },
-    revokeShare: (id) =>
-      ok(void Object.assign(db.shares.find((s) => s._id === id) ?? {}, { revokedAt: now() })),
+    revokeShare: async (id) => {
+      await ok(undefined);
+      return structuredClone(
+        void Object.assign(db.shares.find((s) => s._id === id) ?? {}, { revokedAt: now() }),
+      );
+    },
     received: () => {
       const start = new Date();
       start.setDate(1);
@@ -451,30 +555,55 @@ export const mockApi: Api = {
   },
   timetable: {
     get: () => ok({ _id: 'tt', updatedAt: now(), classes: db.classes }),
-    addClass: (c) => {
+    addClass: async (c) => {
+      await ok(undefined);
+
       const k = { ...c, _id: uid('cls'), source: 'manual' };
       db.classes.push(k);
-      return ok(k);
+      return structuredClone(k);
     },
-    removeClass: (id) => ok(void (db.classes = db.classes.filter((c) => c._id !== id))),
-    share: () => ok(undefined),
+    removeClass: async (id) => {
+      await ok(undefined);
+      return structuredClone(void (db.classes = db.classes.filter((c) => c._id !== id)));
+    },
+    share: async (p) => {
+      await ok(undefined);
+
+      for (const friendId of p.friendIds) {
+        const existing = db.timetableShares.find((x) => x.friendId === friendId);
+        if (existing) Object.assign(existing, { mode: p.mode, sharedAt: now() });
+        else db.timetableShares.push({ _id: uid('ts'), friendId, mode: p.mode, sharedAt: now() });
+      }
+      return structuredClone(undefined);
+    },
+    shares: () => ok(db.timetableShares),
   },
   social: {
     friends: () => ok(db.friends),
     search: (q) => ok(S.searchable.filter((f) => q.trim() && f.nickname === q.trim())),
     sendRequest: () => ok(undefined),
     received: () => ok(db.requests),
-    respond: (id, accept) => {
+    respond: async (id, accept) => {
+      await ok(undefined);
+
       const r = db.requests.find((x) => x._id === id);
       db.requests = db.requests.filter((x) => x._id !== id);
       if (accept && r) db.friends.push({ ...r.requester, _id: uid('fr') });
-      return ok(undefined);
+      return structuredClone(undefined);
     },
-    remove: (userId) => ok(void (db.friends = db.friends.filter((f) => f.userId !== userId))),
-    openDirect: (userId) => {
+    remove: async (userId) => {
+      await ok(undefined);
+      db.friends = db.friends.filter((f) => f.userId !== userId);
+      // 빈 방을 남겨 재입장 때 초기 예시 대화가 다시 생성되지 않게 한다.
+      db.messages.set(`dm-${userId}`, []);
+      db.timetableShares = db.timetableShares.filter((share) => share.friendId !== userId);
+    },
+    openDirect: async (userId) => {
+      await ok(undefined);
+
       const id = `dm-${userId}`;
       if (!db.messages.has(id)) db.messages.set(id, userId === 'u-jiwoo' ? S.seedDm(id) : []);
-      return ok({
+      return structuredClone({
         _id: id,
         type: 'direct',
         studyRoomId: null,
@@ -491,11 +620,16 @@ export const mockApi: Api = {
         db.folders.map((f) => ({
           ...f,
           materialCount: db.materials.filter(
-            (m) => m.folderId === f._id && m.processing.status === 'done',
+            (m) =>
+              m.folderId === f._id &&
+              (m.processing.status === 'done' ||
+                (m as Material & { saved?: boolean }).saved === true),
           ).length,
         })),
       ),
-    createFolder: (p) => {
+    createFolder: async (p) => {
+      await ok(undefined);
+
       const f = {
         _id: uid('fo'),
         title: p.title,
@@ -505,19 +639,37 @@ export const mockApi: Api = {
         updatedAt: now(),
       };
       db.folders.push(f);
-      return ok(f);
+      return structuredClone(f);
     },
-    deleteFolder: (id) => ok(void (db.folders = db.folders.filter((f) => f._id !== id))),
+    deleteFolder: async (id) => {
+      await ok(undefined);
+      return structuredClone(void (db.folders = db.folders.filter((f) => f._id !== id)));
+    },
     materials: (folderId) =>
       ok(
         db.materials.filter(
           (m) =>
             m.folderId === folderId &&
-            m.processing.status === 'done' &&
+            (m.processing.status === 'done' ||
+              (m as Material & { saved?: boolean }).saved === true) &&
             (m as Material & { saved?: boolean }).saved !== false,
         ),
       ),
-    createMaterial: (p) => {
+    createMaterial: async (p) => {
+      const { requestId, ...payload } = p;
+      const key = requestId ? `${useAuth.getState().userId}:${requestId}` : null;
+      const fingerprint = JSON.stringify(payload);
+      await ok(undefined);
+      const previous = key ? createdMaterials.get(key) : undefined;
+      if (previous) {
+        if (previous.payload !== fingerprint)
+          throw new ApiError(
+            'IDEMPOTENCY_CONFLICT',
+            '같은 등록 키에 다른 자료를 보낼 수 없어요',
+            409,
+          );
+        return structuredClone(previous.result);
+      }
       if (useMockFlags.getState().uploadPause)
         return Promise.reject(new NetworkError('upload paused'));
       const m = S.makeMaterial(p.folderId, p.kind, {
@@ -541,24 +693,38 @@ export const mockApi: Api = {
         () => (m.processing = { status: 'done', progress: 100, jobId: null }),
       );
       m.processing.jobId = job._id;
-      return ok({ material: m, job });
+      const result = { material: m, job };
+      if (key) createdMaterials.set(key, { payload: fingerprint, result });
+      return structuredClone(result);
     },
     material: (id) => {
       const m = db.materials.find((x) => x._id === id);
       return m ? ok(m) : fail(ERROR_CODES.NOT_FOUND, '자료를 찾을 수 없어요', 404);
     },
-    saveMaterial: (id) =>
-      ok(void Object.assign(db.materials.find((m) => m._id === id) ?? {}, { saved: true })),
-    updateSummary: (id, sections) => {
+    saveMaterial: async (id) => {
+      await ok(undefined);
+      return structuredClone(
+        void Object.assign(db.materials.find((m) => m._id === id) ?? {}, { saved: true }),
+      );
+    },
+    updateSummary: async (id, sections) => {
+      await ok(undefined);
+
       const m = db.materials.find((x) => x._id === id)!;
       m.summary = { sections, points: m.summary?.points ?? [] };
-      return ok(m);
+      return structuredClone(m);
     },
-    deleteMaterial: (id) =>
-      ok(void (db.materials = db.materials.filter((m) => m._id !== id)), 1400),
+    deleteMaterial: async (id) => {
+      await ok(undefined, 1400);
+      return structuredClone(void (db.materials = db.materials.filter((m) => m._id !== id)));
+    },
     recording: (id) => ok(S.RECORDING(id)),
-    addBookmark: (id, atSec) =>
-      ok(void db.materials.find((m) => m._id === id)?.bookmarks.push({ atSec }), 60),
+    addBookmark: async (id, atSec) => {
+      await ok(undefined, 60);
+      return structuredClone(
+        void db.materials.find((m) => m._id === id)?.bookmarks.push({ atSec }),
+      );
+    },
     downloadUrl: (id) =>
       ok({
         url: 'https://notelinkblob.blob.core.windows.net/uploads/sample.pdf',
@@ -579,24 +745,30 @@ export const mockApi: Api = {
       ),
   },
   ai: {
-    job: (id) => ok(db.jobs.get(id)!),
-    cancel: (id) => ok(void Object.assign(db.jobs.get(id) ?? {}, { status: 'canceled' })),
-    retry: (id) => {
-      const old = db.jobs.get(id)!;
+    job: (id) => {
+      const j = db.jobs.get(id);
+      return j ? ok(j) : fail(ERROR_CODES.NOT_FOUND, '작업을 찾을 수 없어요', 404);
+    },
+    cancel: async (id) => {
+      await ok(undefined);
+      const job = db.jobs.get(id);
+      if (job && job.status !== 'succeeded') markMaterialFailed(job.targetId);
+      return structuredClone(void Object.assign(job ?? {}, { status: 'canceled' }));
+    },
+    retry: async (id) => {
+      await ok(undefined);
+      const old = db.jobs.get(id);
+      const complete = jobCompletions.get(id);
+      if (!old || !complete) return fail(ERROR_CODES.NOT_FOUND, '작업을 찾을 수 없어요', 404);
       useMockFlags.setState({ llmFail: false, llmSlow: false });
-      const m = db.materials.find((x) => x._id === old.targetId);
-      return ok(
-        runJob(
-          old.type,
-          old.targetId,
-          () => m && (m.processing = { status: 'done', progress: 100, jobId: null }),
-        ),
-      );
+      return structuredClone(runJob(old.type, old.targetId, complete));
     },
   },
   quiz: {
     sets: () => ok(db.quizSets),
-    createSet: (materialId) => {
+    createSet: async (materialId) => {
+      await ok(undefined);
+
       const qs = {
         ...S.makeQuizSet(materialId, materialId),
         status: 'generating' as const,
@@ -606,10 +778,12 @@ export const mockApi: Api = {
       const job = runJob('quiz_generate', qs._id, () =>
         Object.assign(qs, { status: 'ready', progress: 100 }),
       );
-      return ok({ quizSet: qs, job });
+      return structuredClone({ quizSet: qs, job });
     },
     set: (id) => ok(db.quizSets.find((q) => q._id === id) ?? S.makeQuizSet('m', '이차방정식 풀이')),
-    startAttempt: (quizSetId) => {
+    startAttempt: async (quizSetId) => {
+      await ok(undefined);
+
       const a: QuizAttempt = {
         _id: uid('att'),
         quizSetId,
@@ -621,9 +795,11 @@ export const mockApi: Api = {
         finishedAt: null,
       };
       db.attempts.set(a._id, a);
-      return ok(a);
+      return structuredClone(a);
     },
-    answer: (attemptId, questionId, answer) => {
+    answer: async (attemptId, questionId, answer) => {
+      await ok(undefined, 120);
+
       if (useMockFlags.getState().tokenExpired)
         return fail(ERROR_CODES.TOKEN_EXPIRED, '로그인이 만료됐어요', 401);
       const q = S.QUESTIONS.find((x) => x._id === questionId)!;
@@ -636,9 +812,14 @@ export const mockApi: Api = {
         ];
         a.correctCount = a.answers.filter((x) => x.correct).length;
       }
-      return ok({ correct, correctAnswer: q.answer }, 120);
+      return structuredClone({ correct, correctAnswer: q.answer });
     },
-    finish: (attemptId) => {
+    finish: async (attemptId) => {
+      await ok(undefined);
+      const previous = finishedAttempts.get(attemptId);
+      if (previous) return structuredClone(previous);
+      if (!db.attempts.has(attemptId))
+        throw new ApiError(ERROR_CODES.NOT_FOUND, '풀이를 찾을 수 없어요', 404);
       const pts = 120;
       db.user.pointBalance += pts;
       db.ledger.unshift({
@@ -651,7 +832,9 @@ export const mockApi: Api = {
       });
       const a = db.attempts.get(attemptId);
       if (a) Object.assign(a, { finishedAt: now(), pointsEarned: pts });
-      return ok({ pointsEarned: pts, balance: db.user.pointBalance });
+      const result = { pointsEarned: pts, balance: db.user.pointBalance };
+      finishedAttempts.set(attemptId, result);
+      return structuredClone(result);
     },
     explanation: (qid) =>
       ok(
@@ -673,9 +856,29 @@ export const mockApi: Api = {
         },
         900,
       ),
-    box: () => ok(S.QUESTIONS),
+    box: () => ok(db.quizBox),
+    saveToBox: async (questionIds) => {
+      await ok(undefined);
+      const questions = [
+        ...S.QUESTIONS,
+        ...S.SIMILAR,
+        ...db.quizSets.flatMap((set) => set.questions),
+      ];
+      const selected = [...new Set(questionIds)].map((id) => questions.find((q) => q._id === id));
+      if (selected.some((q) => !q))
+        throw new ApiError(ERROR_CODES.NOT_FOUND, '보관할 문제를 찾을 수 없어요', 404);
+      for (const q of selected) {
+        if (q && !db.quizBox.some((item) => item._id === q._id)) db.quizBox.push(q);
+      }
+      return structuredClone(db.quizBox);
+    },
+    deleteFromBox: async (questionIds) => {
+      await ok(undefined);
+      db.quizBox = db.quizBox.filter((q) => !questionIds.includes(q._id));
+    },
     flashcards: () => ok(db.flashcards),
-    saveFlashcard: (p) => {
+    saveFlashcard: async (p) => {
+      await ok(undefined);
       const f = {
         _id: uid('fc'),
         materialId: null,
@@ -688,15 +891,21 @@ export const mockApi: Api = {
         createdAt: now(),
       };
       db.flashcards.push(f);
-      return ok(f);
+      return structuredClone(f);
     },
-    deleteFlashcards: (ids) =>
-      ok(void (db.flashcards = db.flashcards.filter((f) => !ids.includes(f._id)))),
+    deleteFlashcards: async (ids) => {
+      await ok(undefined);
+      return structuredClone(
+        void (db.flashcards = db.flashcards.filter((f) => !ids.includes(f._id))),
+      );
+    },
   },
   rooms: {
     recommended: () => ok(S.RECOMMENDED),
     mine: () => ok(db.rooms),
-    create: (p) => {
+    create: async (p) => {
+      await ok(undefined);
+
       const r = S.makeRoom({
         _id: uid('room'),
         title: p.title,
@@ -708,33 +917,50 @@ export const mockApi: Api = {
         members: S.ROOM_MEMBERS.filter((m) => m.userId === 'u-me'),
       });
       db.rooms.push(r);
-      return ok(r);
+      return structuredClone(r);
     },
-    join: (code) => {
+    join: async (code) => {
+      await ok(undefined);
+
       if (code.length !== 6)
         return fail(ERROR_CODES.ROOM_CODE_INVALID, '코드를 다시 확인해 주세요');
       const r =
         S.RECOMMENDED.find((x) => x.inviteCode === code) ?? S.makeRoom({ inviteCode: code });
       if (!db.rooms.some((x) => x._id === r._id)) db.rooms.push(r);
-      return ok(r);
+      return structuredClone(r);
     },
-    get: (id) =>
-      ok(
+    get: (id) => {
+      const room =
         db.rooms.find((r) => r._id === id) ??
-          S.RECOMMENDED.find((r) => r._id === id) ??
-          S.makeRoom(),
-      ),
-    leave: (id) => ok(void (db.rooms = db.rooms.filter((r) => r._id !== id))),
-    setTimer: (id, rule) => {
-      const r = db.rooms.find((x) => x._id === id) ?? S.makeRoom();
-      r.timerRule = rule;
+        S.RECOMMENDED.find((r) => r._id === id) ??
+        S.makeRoom({ _id: id });
+      return ok({
+        ...room,
+        timerState: roomTimerState(room.timerRule, timerStartedAt.get(id) ?? presetTimerStartedAt),
+      });
+    },
+    leave: async (id) => {
+      await ok(undefined);
+      return structuredClone(void (db.rooms = db.rooms.filter((r) => r._id !== id)));
+    },
+    setTimer: async (id, rule) => {
+      await ok(undefined);
+
+      let room = db.rooms.find((r) => r._id === id);
+      if (!room) {
+        room = structuredClone(S.RECOMMENDED.find((r) => r._id === id) ?? S.makeRoom({ _id: id }));
+        db.rooms.push(room);
+      }
+      room.timerRule = rule;
+      timerStartedAt.set(id, Date.now());
+      room.timerState = roomTimerState(rule, timerStartedAt.get(id)!);
       mockServer.push('room:timer', {
         roomId: id,
         rule,
-        phase: 'focus',
-        endsAt: new Date(Date.now() + rule.focusMin * 60000).toISOString(),
+        phase: room.timerState?.phase ?? 'focus',
+        endsAt: room.timerState?.endsAt ?? null,
       });
-      return ok(r);
+      return structuredClone(room);
     },
     schedule: () =>
       ok({
@@ -760,7 +986,26 @@ export const mockApi: Api = {
         ],
       }),
     invite: () => ok(undefined),
-    shared: () => ok({ items: [], flashcards: db.flashcards }),
+    shared: (id) =>
+      ok({
+        items: [
+          {
+            _id: 'rs1',
+            roomId: id,
+            sharedBy: 'u-sumin',
+            sharedByNickname: '수민',
+            itemType: 'flashcards' as const,
+            quizSetId: null,
+            folderId: null,
+            materialId: null,
+            questionIds: [],
+            flashcardIds: db.flashcards.map((c) => c._id),
+            title: '플래시 카드',
+            createdAt: now(),
+          },
+        ],
+        flashcards: db.flashcards,
+      }),
     livekitToken: () => ok({ token: 'mock-livekit-token', url: 'wss://notelink.livekit.cloud' }),
     report: () => ok(undefined, 500),
     chatRoomId: async (id) => {
@@ -772,33 +1017,43 @@ export const mockApi: Api = {
   shop: {
     items: (p) => {
       let list = S.SHOP.filter((i) => !p.category || i.category === p.category);
-      if (p.category === 'theme') list = [];
       if (p.sort === 'price') list = [...list].sort((a, b) => a.price - b.price);
       if (p.sort === 'popular') list = [...list].sort((a, b) => b.purchaseCount - a.purchaseCount);
       return ok(list);
     },
     myItems: () => ok(db.userItems),
-    wish: (itemId) => {
+    wish: async (itemId) => {
+      await ok(undefined, 60);
+
+      const item = S.SHOP.find((i) => i._id === itemId);
+      if (!item) return fail(ERROR_CODES.NOT_FOUND, '상품을 찾을 수 없어요');
       let ui = db.userItems.find((u) => u.itemId === itemId);
       if (!ui)
         db.userItems.push(
           (ui = {
             _id: uid('ui'),
             itemId,
-            itemCategory: 'avatar',
+            itemCategory: item.category,
             isOwned: false,
             isWished: false,
             isEquipped: false,
             acquiredAt: null,
           }),
         );
+      ui.itemCategory = item.category;
       ui.isWished = !ui.isWished;
-      return ok(ui.isWished, 60);
+      return structuredClone(ui.isWished);
     },
-    purchase: (itemId) => {
+    purchase: async (itemId) => {
+      await ok(undefined, 500);
+
       if (useMockFlags.getState().purchaseFail)
         return Promise.reject(new NetworkError('purchase interrupted'));
-      const item = S.SHOP.find((i) => i._id === itemId)!;
+      const item = S.SHOP.find((i) => i._id === itemId);
+      if (!item) return fail(ERROR_CODES.NOT_FOUND, '상품을 찾을 수 없어요');
+      const existing = db.userItems.find((u) => u.itemId === itemId);
+      if (existing) existing.itemCategory = item.category;
+      if (existing?.isOwned) return structuredClone({ balance: db.user.pointBalance });
       if (db.user.pointBalance < item.price)
         return fail(ERROR_CODES.POINTS_INSUFFICIENT, '포인트가 부족해요');
       db.user.pointBalance -= item.price;
@@ -815,7 +1070,7 @@ export const mockApi: Api = {
             acquiredAt: null,
           }),
         );
-      Object.assign(ui, { isOwned: true, acquiredAt: now() });
+      Object.assign(ui, { isOwned: true, itemCategory: item.category, acquiredAt: now() });
       db.ledger.unshift({
         _id: uid('pl'),
         amount: -item.price,
@@ -824,11 +1079,17 @@ export const mockApi: Api = {
         description: `${item.name} 구매`,
         createdAt: now(),
       });
-      return ok({ balance: db.user.pointBalance }, 500);
+      return structuredClone({ balance: db.user.pointBalance });
     },
-    equip: (itemId) => {
-      db.userItems.forEach((u) => (u.isEquipped = u.itemId === itemId));
-      return ok(undefined);
+    equip: async (itemId) => {
+      await ok(undefined);
+
+      const selected = db.userItems.find((u) => u.itemId === itemId && u.isOwned);
+      if (!selected) return fail(ERROR_CODES.NOT_FOUND, '보유한 아이템이 아니에요');
+      db.userItems.forEach((u) => {
+        if (u.itemCategory === selected.itemCategory) u.isEquipped = u.itemId === itemId;
+      });
+      return structuredClone(undefined);
     },
     ledger: (type) =>
       ok(db.ledger.filter((l) => !type || (type === 'earn' ? l.amount > 0 : l.amount < 0))),

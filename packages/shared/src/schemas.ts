@@ -37,6 +37,8 @@ export const User = z.object({
   grade: z.string().optional(),
   phone: z.string().optional(),
   avatarUrl: z.string().optional(),
+  /** 지금까지 이어진 연속 학습일 (서울 자정 기준, 서버 계산 · FR-09-08) */
+  streakDays: z.number().int().nonnegative(),
   subscription: z
     .object({ tier: PlanTier, status: z.string(), currentPeriodEnd: date.optional() })
     .optional(),
@@ -332,6 +334,8 @@ export const WeeklyGoal = z.object({
   weekStart: ymd,
   targetMin: z.number(),
   notify80: z.boolean(),
+  /** 최근 4주 평균 순공 분 — 목표를 정할 때 참고로 보여 준다 (서버 계산 · FR-06-24) */
+  recentAvgMin: z.number().nonnegative(),
 });
 
 export const RecurringGoal = z.object({
@@ -460,6 +464,11 @@ export const StudyRoom = z.object({
   maxCapacity: z.number(),
   memberCount: z.number(),
   timerRule: TimerRule.nullable(),
+  /** 서버가 계산한 현재 단계와 UTC 종료 시각. 입장·재연결 때 로컬에서 타이머를 새로 시작하지 않는다. */
+  timerState: z
+    .object({ phase: z.enum(['focus', 'break', 'period']), endsAt: date.nullable() })
+    .nullable()
+    .optional(),
   description: z.string().optional(),
   tags: z.array(z.string()).optional(),
   members: z.array(RoomMember),
@@ -471,6 +480,7 @@ export const RoomSharedItem = z.object({
   _id: id,
   roomId: id,
   sharedBy: id,
+  sharedByNickname: z.string(),
   itemType: z.enum(['quiz', 'flashcards', 'material']),
   quizSetId: id.nullable(),
   folderId: id.nullable(),

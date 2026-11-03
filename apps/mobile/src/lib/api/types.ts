@@ -33,6 +33,7 @@ import type {
   TimerRule,
   Timetable,
   TimetableClass,
+  TimetableShare,
   Todo,
   TodoType,
   UploadTarget,
@@ -120,6 +121,7 @@ export interface Api {
       todoType: TodoType;
       dueDate: string;
       timeSlot: Todo['timeSlot'];
+      dueTime?: string;
       subjectName: string | null;
     }): Promise<Todo>;
     toggleTodo(id: string, done: boolean): Promise<void>;
@@ -145,6 +147,8 @@ export interface Api {
     addClass(c: Omit<TimetableClass, '_id' | 'source'>): Promise<TimetableClass>;
     removeClass(id: string): Promise<void>;
     share(p: { friendIds: string[]; mode: 'full' | 'free_only' }): Promise<void>;
+    /** 내가 시간표를 공유 중인 친구들 (FR-14-05 '공유 중' 표시) */
+    shares(): Promise<TimetableShare[]>;
   };
   social: {
     friends(): Promise<Friend[]>;
@@ -162,6 +166,8 @@ export interface Api {
     deleteFolder(id: string): Promise<void>;
     materials(folderId: string): Promise<Material[]>;
     createMaterial(p: {
+      /** 같은 등록의 실서버 HTTP 요청은 한 번만 보내고 불명확한 응답은 재전송하지 않는다. */
+      requestId?: string;
       folderId: string;
       kind: MaterialKind;
       source: MaterialSource;
@@ -204,6 +210,9 @@ export interface Api {
     explanation(questionId: string): Promise<{ text: string }>;
     similar(quizSetId: string): Promise<QuizSet>;
     box(): Promise<Question[]>;
+    /** 같은 문제 ID를 여러 번 저장해도 보관함에 한 번만 남긴다. */
+    saveToBox(questionIds: string[]): Promise<Question[]>;
+    deleteFromBox(questionIds: string[]): Promise<void>;
     flashcards(): Promise<Flashcard[]>;
     saveFlashcard(p: {
       front: string;

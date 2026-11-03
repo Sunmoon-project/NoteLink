@@ -2,7 +2,7 @@ import { View } from 'react-native';
 import { Redirect, Tabs } from 'expo-router';
 import { BookOpen, Home, NotebookPen, User, Users, type LucideIcon } from 'lucide-react-native';
 import { useAuth } from '@/stores/auth';
-import { C } from '@/theme';
+import { C, ICON } from '@/theme';
 
 // 하단 탭 5개: 홈 · 노트 · 퀴즈 · 스터디룸 · 프로필 (세팅안 v2 6장)
 const TABS: [string, string, LucideIcon][] = [
@@ -23,6 +23,8 @@ export default function TabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
+        // 탭을 바꾸면 화면이 살짝 밀리며 바뀐다
+        animation: 'shift',
         tabBarActiveTintColor: C.brand,
         tabBarInactiveTintColor: '#a3a8ae',
         tabBarStyle: { borderTopColor: C.line },
@@ -40,7 +42,7 @@ export default function TabsLayout() {
                 className="h-7 w-7 items-center justify-center rounded-lg"
                 style={{ backgroundColor: focused ? C.brand : '#e6e8eb' }}
               >
-                <Icon size={15} color={focused ? '#fff' : '#a3a8ae'} />
+                <Icon size={ICON.sm} color={focused ? '#fff' : '#a3a8ae'} />
               </View>
             ),
           }}

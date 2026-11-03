@@ -18,6 +18,7 @@ type Opts = {
   query?: Record<string, string | number | boolean | undefined>;
   auth?: boolean;
   retry?: boolean;
+  idempotencyKey?: string;
 };
 
 type Tokens = NonNullable<ReturnType<typeof useAuth.getState>['tokens']>;
@@ -77,10 +78,13 @@ export async function request<T>(
       method,
       headers: {
         Accept: 'application/json',
+        ...(opts.idempotencyKey && { 'Idempotency-Key': opts.idempotencyKey }),
         ...(body !== undefined && { 'Content-Type': 'application/json' }),
         ...(token && opts.auth !== false && { Authorization: `Bearer ${token}` }),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      // 함수 본문은 보낼 때마다 다시 읽는다 (토큰 갱신 뒤 재시도에 새 값이 들어가게)
+      body:
+        body === undefined ? undefined : JSON.stringify(typeof body === 'function' ? body() : body),
     });
   } catch {
     // 연결 실패 — 배너로 알리고 호출한 쪽에서 대기열/재시도 처리 (p.97)
@@ -113,7 +117,8 @@ export async function request<T>(
 
 export const http = {
   get: <T>(p: string, query?: Opts['query']) => request<T>('GET', p, undefined, { query }),
-  post: <T>(p: string, body?: unknown) => request<T>('POST', p, body ?? {}),
+  post: <T>(p: string, body?: unknown, opts: Pick<Opts, 'idempotencyKey'> = {}) =>
+    request<T>('POST', p, body ?? {}, opts),
   patch: <T>(p: string, body: unknown) => request<T>('PATCH', p, body),
   put: <T>(p: string, body: unknown) => request<T>('PUT', p, body),
   del: <T = void>(p: string) => request<T>('DELETE', p),

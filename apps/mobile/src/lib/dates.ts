@@ -45,6 +45,12 @@ export const hms = (sec: number) => {
 /** 14시간 22분 */
 export const hm = (sec: number) =>
   `${Math.floor(sec / 3600)}시간 ${Math.floor((sec % 3600) / 60)}분`;
+/** 지난주와 비교한 문구 (주간 요약의 diffFromLastWeekSec) */
+export const diffLabel = (sec: number) => {
+  if (Math.abs(sec) < 60) return '지난주와 비슷해요';
+  const t = hm(Math.abs(sec)).replace(/^0시간 /, '');
+  return sec > 0 ? `지난주보다 ${t} 늘었어요` : `지난주보다 ${t} 줄었어요`;
+};
 export const goalLabel = (min: number | null) =>
   !min ? '목표 없음' : min >= 60 ? `${min / 60}시간` : `${min}분`;
 export const timeAgo = (iso: string) => {

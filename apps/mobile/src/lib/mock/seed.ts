@@ -40,6 +40,7 @@ export const seedUser = (): User => ({
   school: '선문고등학교',
   grade: '3학년',
   phone: '010-1234-5678',
+  streakDays: 12,
   settings: {
     resumePlayback: true,
     keepScreenOnWhileRecording: true,
@@ -813,19 +814,7 @@ export const SHOP: ShopItem[] = [
     isDefault: false,
   },
 ];
-export const BASE_AVATAR: ShopItem = {
-  _id: 'base',
-  category: 'avatar',
-  name: '기본 아바타',
-  description: '기본으로 제공되는 아바타예요.',
-  price: 0,
-  avatarStyle: 'nice',
-  thumbnailUrl: '🧑🏻',
-  assetUrl: '🧑🏻',
-  purchaseCount: 0,
-  isActive: true,
-  isDefault: true,
-};
+export { BASE_AVATAR } from '../shop-items';
 
 export const seedUserItems = (): UserItem[] => [
   {
