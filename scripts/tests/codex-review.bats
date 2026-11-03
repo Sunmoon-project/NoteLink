@@ -360,3 +360,146 @@ usage_state() {
   [ -n "$ci_line" ] && [ -n "$gate_line" ] && [ -n "$fail_line" ]
   [ "$ci_line" -lt "$gate_line" ] && [ "$gate_line" -lt "$exec_line" ] && [ "$exec_line" -lt "$fail_line" ]
 }
+
+# ---------- 언제 리뷰할지 (자동은 첫 리뷰만 · 문서만 바뀌면 건너뜀 · 재리뷰는 요청) ----------
+
+@test "is_doc_path: 마크다운 · docs 폴더 · LICENSE만 문서로 본다" {
+  for f in README.md AGENTS.md apps/api/README.md guide.mdx docs/a.png apps/mobile/docs/x.ts LICENSE LICENSE.txt NOTE.MD; do
+    is_doc_path "$f" || { echo "문서여야 함: $f"; return 1; }
+  done
+  for f in scripts/codex-review.sh .github/workflows/ci.yml package.json apps/ai/requirements.txt md docs mydocs/a.ts README.md.bak; do
+    not is_doc_path "$f" || { echo "문서가 아니어야 함: $f"; return 1; }
+  done
+}
+
+@test "docs_only: 모두 문서면 0, 하나라도 코드가 있거나 목록이 비었으면 1" {
+  docs_only <<< $'README.md\ndocs/guide.md'
+  not docs_only <<< $'README.md\napps/api/src/main.ts'
+  not docs_only <<< ''
+  not docs_only < /dev/null
+}
+
+# 가짜 gh: 받은 인자를 적고, pulls/*/files는 $TMP/files를 돌려줌(FILES_RC로 실패)
+fake_gh_files() {
+  printf '%s' "$1" > "$TMP/files"
+  gh() {
+    echo "gh $*" >> "$TMP/gh.calls"
+    case "$*" in
+      *pulls/*/files*) [ "${FILES_RC:-0}" -eq 0 ] || return "$FILES_RC"; cat "$TMP/files" ;;
+    esac
+  }
+}
+
+@test "auto_skip_reason: 이 계정의 리뷰가 이미 있으면 파일을 보지 않고 재리뷰 요청 방법을 알려 준다" {
+  PR=12; PREV_ID=555
+  fake_gh_files $'apps/api/src/main.ts\n'
+  run auto_skip_reason
+  [ "$status" -eq 0 ]
+  [[ "$output" == "첫 리뷰가 이미 있어 자동으로는 다시 리뷰하지 않습니다."*'`codex-review` 라벨'*'`/codex review` 댓글'* ]]
+  [ ! -e "$TMP/gh.calls" ]
+}
+
+@test "auto_skip_reason: 첫 리뷰 전이면 문서만 바뀐 PR은 건너뛰고, 코드가 있으면 리뷰한다" {
+  PR=12; PREV_ID=""
+  fake_gh_files $'README.md\ndocs/plan.md\n'
+  run auto_skip_reason
+  [[ "$output" == "문서만 바뀐 PR이라 자동 리뷰를 건너뜁니다."* ]]
+  grep -q 'gh api --paginate repos/team/repo/pulls/12/files?per_page=100 --jq' "$TMP/gh.calls"
+  fake_gh_files $'README.md\napps/api/src/main.ts\n'
+  run auto_skip_reason
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+}
+
+@test "auto_skip_reason: 바뀐 파일을 못 읽거나 목록이 비었으면 리뷰한다" {
+  PR=12; PREV_ID=""
+  fake_gh_files 'README.md'
+  FILES_RC=1 run auto_skip_reason
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+  fake_gh_files ''
+  run auto_skip_reason
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+}
+
+@test "PR_FILES_JQ: 바뀐 파일과 이름을 바꾼 파일의 옛 이름을 모두 낸다" {
+  need_jq
+  json='[{"filename":"docs/a.md"},{"filename":"docs/b.md","previous_filename":"src/b.ts"}]'
+  [ "$(jq -r "$PR_FILES_JQ" <<< "$json")" = $'docs/a.md\ndocs/b.md\nsrc/b.ts' ]
+}
+
+# 가짜 gh: 받은 인자를 적고, 권한 조회는 FAKE_PERM을 돌려줌(PERM_RC로 실패)
+fake_gh_request() {
+  gh() {
+    echo "gh $*" >> "$TMP/gh.calls"
+    case "$*" in
+      *"/permission "*) [ "${PERM_RC:-0}" -eq 0 ] || return "$PERM_RC"; echo "${FAKE_PERM:-}" ;;
+    esac
+  }
+}
+
+@test "accept_request: 라벨 요청은 라벨을 떼고 받는다(떼지 못해도 받음)" {
+  PR=12; fake_gh_request
+  CODEX_REQUEST_LABEL=codex-review run accept_request
+  [ "$status" -eq 0 ]
+  grep -qx 'gh api --method DELETE repos/team/repo/issues/12/labels/codex-review' "$TMP/gh.calls"
+  gh() { return 1; }
+  CODEX_REQUEST_LABEL=codex-review run accept_request
+  [ "$status" -eq 0 ] && [[ "$output" == *"떼지 못했습니다"* ]]
+}
+
+@test "accept_request: 댓글 요청은 쓰기 권한이 있으면 받고 👀를 단다" {
+  PR=12; fake_gh_request
+  for FAKE_PERM in admin maintain write; do
+    : > "$TMP/gh.calls"
+    CODEX_REQUESTER=alice CODEX_REQUEST_COMMENT=987 run accept_request
+    [ "$status" -eq 0 ]
+    grep -q 'gh api repos/team/repo/collaborators/alice/permission --jq .permission' "$TMP/gh.calls"
+    grep -qx 'gh api --method POST repos/team/repo/issues/comments/987/reactions -f content=eyes' "$TMP/gh.calls"
+  done
+}
+
+@test "accept_request: 쓰기 권한이 없거나 확인하지 못하면 받지 않고 👀도 달지 않는다" {
+  PR=12; fake_gh_request
+  for FAKE_PERM in read triage none ""; do
+    : > "$TMP/gh.calls"
+    CODEX_REQUESTER=mallory CODEX_REQUEST_COMMENT=987 run accept_request
+    [ "$status" -eq 1 ]
+    [[ "$output" == "mallory 님은 저장소 쓰기 권한이 없어"* ]]
+    not grep -q reactions "$TMP/gh.calls"
+  done
+  PERM_RC=1 CODEX_REQUESTER=mallory run accept_request
+  [ "$status" -eq 1 ] && [[ "$output" == *"(확인 실패)"* ]]
+}
+
+@test "accept_request: 요청한 사람 이름이 이상하면 API를 부르지 않고 받지 않는다" {
+  PR=12; fake_gh_request
+  CODEX_REQUESTER='a/../../x' run accept_request
+  [ "$status" -eq 1 ]
+  [ ! -e "$TMP/gh.calls" ]
+}
+
+@test "accept_request: 직접 실행(요청 정보 없음)이면 아무것도 하지 않고 받는다" {
+  PR=12; fake_gh_request
+  unset CODEX_REQUEST_LABEL CODEX_REQUESTER CODEX_REQUEST_COMMENT
+  run accept_request
+  [ "$status" -eq 0 ] && [ ! -e "$TMP/gh.calls" ]
+}
+
+@test "skip_review: PR 댓글 없이 실행 화면에 알림 · 요약을 남기고 성공으로 끝낸다" {
+  PR=12
+  gh() { echo "gh $*" >> "$TMP/gh.calls"; }
+  GITHUB_STEP_SUMMARY="$TMP/summary.md" run skip_review "문서만 바뀐 PR이라 자동 리뷰를 건너뜁니다."
+  [ "$status" -eq 0 ]
+  [ "$output" = "::notice title=Codex 리뷰 건너뜀::PR #12: 문서만 바뀐 PR이라 자동 리뷰를 건너뜁니다." ]
+  [[ "$(cat "$TMP/summary.md")" == "### Codex 리뷰 건너뜀"*"문서만 바뀐 PR"* ]]
+  [ ! -e "$TMP/gh.calls" ]
+}
+
+@test "main: 자동 실행의 건너뛰기 판단은 지난 리뷰를 찾은 바로 뒤 · CI를 기다리기 전이다" {
+  local f="$BATS_TEST_DIRNAME/../codex-review.sh"
+  prev_line=$(grep -n '^  PREV_ID=\$(gh api' "$f" | cut -d: -f1)
+  auto_line=$(grep -n '^  if \[ "\$TRIGGER" = auto \]; then' "$f" | cut -d: -f1)
+  wait_line=$(grep -n '^  if ! ci_wait' "$f" | cut -d: -f1)
+  request_line=$(grep -n '^  if \[ "\$TRIGGER" = request \]; then' "$f" | cut -d: -f1)
+  [ -n "$prev_line" ] && [ -n "$auto_line" ] && [ -n "$wait_line" ] && [ -n "$request_line" ]
+  [ "$request_line" -lt "$prev_line" ] && [ "$prev_line" -lt "$auto_line" ] && [ "$auto_line" -lt "$wait_line" ]
+}
