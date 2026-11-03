@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +13,7 @@ import app.clients.web_search as web_search_module
 from app.clients.web_search import (
     FETCH_TOKENS,
     PAGE_CHARS,
+    PAGE_SECONDS,
     ClaudeSearch,
     GeminiSearch,
     SearchError,
@@ -213,7 +214,8 @@ def web(req: httpx2.Request) -> httpx2.Response:
     return httpx2.Response(200, headers={"content-type": kind}, text=body)
 
 
-HOSTS = {"grounding.test", "a.test", "www.a.test", "b.test", "down.test"}
+IDN = "한글.test".encode("idna").decode()  # xn--bj0bj06e.test
+HOSTS = {"grounding.test", "a.test", "www.a.test", "b.test", "down.test", IDN}
 
 
 def resolve(host: str) -> list[str]:
@@ -230,6 +232,7 @@ def resolve(host: str) -> list[str]:
 def gemini(
     *answers: genai_types.GenerateContentResponse | Exception,
     transport: httpx2.BaseTransport | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> tuple[GeminiSearch, Models]:
     m = Models(list(answers))
     s = GeminiSearch(
@@ -239,6 +242,7 @@ def gemini(
         client=GenaiClient(m),
         transport=transport or httpx2.MockTransport(web),
         resolve=resolve,
+        clock=clock,
     )
     return s, m
 
@@ -383,3 +387,69 @@ def test_gemini_skips_malformed_urls_and_keeps_going() -> None:
     s, _ = gemini(gemini_res("- 간흡충", *uris), transport=httpx2.MockTransport(bad_location))
     a = s.search("sys", "q", domains=[])
     assert [e["url"] for e in a["evidence"]] == ["https://a.test/glossary"]
+
+
+def test_gemini_gives_up_on_slow_pages_and_keeps_going() -> None:
+    """조금씩 천천히 보내는 페이지는 PAGE_SECONDS에서 버리고 다음 출처를 받음."""
+    now = [0.0]
+    pulled = [0]
+
+    def drip() -> Iterator[bytes]:
+        for _ in range(100):
+            pulled[0] += 1
+            now[0] += 10  # 조각마다 10초
+            yield "가".encode()
+
+    def slow(req: httpx2.Request) -> httpx2.Response:
+        if req.url.path == "/slow":
+            return httpx2.Response(200, headers={"content-type": "text/html"}, content=drip())
+        return web(req)
+
+    uris = ["https://a.test/slow", "https://a.test/glossary"]
+    s, _ = gemini(
+        gemini_res("- 간흡충", *uris), transport=httpx2.MockTransport(slow), clock=lambda: now[0]
+    )
+    a = s.search("sys", "q", domains=[])
+    assert [e["url"] for e in a["evidence"]] == ["https://a.test/glossary"]
+    assert pulled[0] <= PAGE_SECONDS // 10 + 1
+
+
+def test_gemini_tries_the_next_checked_ip() -> None:
+    sent: list[str] = []
+
+    def two(host: str) -> list[str]:
+        return ["93.184.216.34", "93.184.216.35"] if host == "a.test" else resolve(host)
+
+    def first_down(req: httpx2.Request) -> httpx2.Response:
+        sent.append(req.url.host)
+        if req.url.host == "93.184.216.34":
+            raise httpx2.ConnectError("down", request=req)
+        return web(req)
+
+    m = Models([gemini_res("- 간흡충", "https://a.test/glossary")])
+    s = GeminiSearch(
+        "p",
+        "global",
+        "m",
+        client=GenaiClient(m),
+        transport=httpx2.MockTransport(first_down),
+        resolve=two,
+    )
+    (page,) = s.search("sys", "q", domains=[])["evidence"]
+    assert page["url"] == "https://a.test/glossary"
+    assert sent == ["93.184.216.34", "93.184.216.35"]
+
+
+def test_gemini_reads_hangul_domains() -> None:
+    hosts: list[str] = []
+
+    def idn(req: httpx2.Request) -> httpx2.Response:
+        hosts.append(req.headers["host"])
+        return httpx2.Response(200, headers={"content-type": "text/html"}, text="<p>간흡충</p>")
+
+    s, _ = gemini(
+        gemini_res("- 간흡충", "https://한글.test/용어"), transport=httpx2.MockTransport(idn)
+    )
+    (page,) = s.search("sys", "q", domains=[])["evidence"]
+    assert page == {"url": "https://한글.test/용어", "text": "간흡충"}
+    assert hosts == [IDN]

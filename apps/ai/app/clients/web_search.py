@@ -7,6 +7,7 @@ import html
 import ipaddress
 import re
 import socket
+import time
 from collections.abc import Callable
 from typing import Any, Literal, Protocol, TypedDict
 from urllib.parse import urljoin, urlparse
@@ -28,6 +29,8 @@ PAGES_MAX = 8  # Gemini 답의 출처 페이지를 직접 받는 최대 수
 PAGE_CHARS = 40000  # 받은 페이지 하나에서 쓰는 최대 글자 수
 PAGE_BYTES = 1_000_000  # 페이지 하나에서 받는 최대 바이트(넘으면 거기서 끊음)
 REDIRECTS_MAX = 5
+PAGE_SECONDS = 30  # 페이지 하나(리디렉트 포함)를 받는 전체 시간 상한
+READ_TIMEOUT = 20.0
 
 
 class SearchError(Exception):
@@ -131,14 +134,16 @@ class GeminiSearch:
         client: Any = None,
         transport: httpx2.BaseTransport | None = None,
         resolve: Callable[[str], list[str]] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._client = client or genai.Client(vertexai=True, project=project, location=location)
         self._model = model
         # 리디렉트는 직접 따라가며 주소마다 검사(내부망 요청 막기)
         self._http = httpx2.Client(
-            headers={"User-Agent": USER_AGENT}, timeout=20.0, transport=transport
+            headers={"User-Agent": USER_AGENT}, timeout=READ_TIMEOUT, transport=transport
         )
         self._resolve = resolve or _resolve
+        self._clock = clock or time.monotonic
 
     def search(self, system: str, user: str, *, domains: list[str]) -> SearchAnswer:
         """domains가 있으면 그 사이트만 찾게 하고, 받은 페이지도 그 사이트 것만 씀."""
@@ -171,40 +176,64 @@ class GeminiSearch:
         return out
 
     def _fetch(self, url: str, domains: list[str]) -> Evidence | None:
-        """공인 주소만, 글(text/*)만, PAGE_BYTES까지만 받음. 상태 · 종류는 본문 전에 봄.
+        """공인 주소만, 글(text/*)만, PAGE_BYTES까지만, PAGE_SECONDS 안에 받음.
 
         연결은 검사한 IP로 고정하고 Host · TLS 이름은 원래 호스트로 둠(DNS 재바인딩 막기).
         """
+        deadline = self._clock() + PAGE_SECONDS
         for _ in range(REDIRECTS_MAX + 1):
-            u = urlparse(url)
-            ip = public_ip(url, self._resolve)
-            if ip is None or u.hostname is None:
-                return None
-            pinned = u._replace(netloc=f"[{ip}]" if ":" in ip else ip)
-            if u.port:
-                pinned = pinned._replace(netloc=f"{pinned.netloc}:{u.port}")
-            with self._http.stream(
-                "GET",
-                pinned.geturl(),
-                headers={"Host": u.netloc.rsplit("@", 1)[-1]},
-                extensions={"sni_hostname": u.hostname},
-            ) as res:
-                if res.is_redirect and "location" in res.headers:
-                    url = urljoin(url, res.headers["location"])
-                    continue
-                kind = res.headers.get("content-type", "")
-                if res.status_code != 200 or not kind.startswith("text/"):
-                    return None
-                if domains and not on_domains(url, domains):
-                    return None
-                raw = b""
-                for part in res.iter_bytes():
-                    raw += part
-                    if len(raw) >= PAGE_BYTES:
-                        break
-                text = raw[:PAGE_BYTES].decode(res.encoding or "utf-8", errors="replace")
-                return {"url": url, "text": page_text(text)[:PAGE_CHARS]}
+            got = self._try_ips(url, domains, deadline)
+            if not isinstance(got, str):
+                return got
+            url = urljoin(url, got)  # 리디렉트
         return None
+
+    def _try_ips(self, url: str, domains: list[str], deadline: float) -> Evidence | str | None:
+        """검사한 IP를 차례로 연결해 봄. 연결이 안 되면 다음 IP. 리디렉트면 Location."""
+        u = urlparse(url)
+        ips = public_ips(url, self._resolve)
+        if not ips or u.hostname is None:
+            return None
+        name = u.hostname.encode("idna").decode("ascii")  # 한글 도메인은 xn-- 꼴
+        port = f":{u.port}" if u.port else ""
+        for ip in ips:
+            target = u._replace(netloc=(f"[{ip}]" if ":" in ip else ip) + port).geturl()
+            try:
+                return self._get(target, name, port, url, domains, deadline)
+            except (httpx2.ConnectError, httpx2.ConnectTimeout):
+                continue
+        return None
+
+    def _get(
+        self, target: str, name: str, port: str, url: str, domains: list[str], deadline: float
+    ) -> Evidence | str | None:
+        """상태 · 종류는 본문 전에 보고, 마감이 지나면 그 출처를 버림."""
+        left = deadline - self._clock()
+        if left <= 0:
+            return None
+        with self._http.stream(
+            "GET",
+            target,
+            headers={"Host": name + port},
+            extensions={"sni_hostname": name},
+            timeout=min(READ_TIMEOUT, left),
+        ) as res:
+            if res.is_redirect and "location" in res.headers:
+                return res.headers["location"]
+            kind = res.headers.get("content-type", "")
+            if res.status_code != 200 or not kind.startswith("text/"):
+                return None
+            if domains and not on_domains(url, domains):
+                return None
+            raw = b""
+            for part in res.iter_bytes():
+                raw += part
+                if self._clock() > deadline:
+                    return None
+                if len(raw) >= PAGE_BYTES:
+                    break
+            text = raw[:PAGE_BYTES].decode(res.encoding or "utf-8", errors="replace")
+            return {"url": url, "text": page_text(text)[:PAGE_CHARS]}
 
 
 def grounding_uris(res: Any) -> list[str]:
@@ -222,21 +251,21 @@ def _resolve(host: str) -> list[str]:
     return [str(a[4][0]) for a in socket.getaddrinfo(host, None)]
 
 
-def public_ip(url: str, resolve: Callable[[str], list[str]]) -> str | None:
-    """http(s)이고 호스트의 모든 주소가 공인 주소면 연결할 IP, 아니면 None.
+def public_ips(url: str, resolve: Callable[[str], list[str]]) -> list[str]:
+    """http(s)이고 호스트의 모든 주소가 공인 주소면 그 주소들, 아니면 빈 목록.
 
-    내부 · 루프백 · 링크 로컬을 막고, 깨진 주소도 None.
+    내부 · 루프백 · 링크 로컬을 막고, 깨진 주소도 빈 목록.
     """
     try:
         u = urlparse(url)
         if u.scheme not in ("http", "https") or not u.hostname:
-            return None
-        addrs = [a.split("%")[0] for a in resolve(u.hostname)]
+            return []
+        addrs = [a.split("%")[0] for a in resolve(u.hostname.encode("idna").decode("ascii"))]
         if addrs and all(ipaddress.ip_address(a).is_global for a in addrs):
-            return addrs[0]
+            return list(dict.fromkeys(addrs))
     except (OSError, ValueError):
         pass
-    return None
+    return []
 
 
 def on_domains(url: str, domains: list[str]) -> bool:
