@@ -50,6 +50,7 @@ jest.mock('expo-router', () => ({
 }));
 
 const room = {
+  hostId: 'host-1',
   _id: 'room-1',
   title: '테스트 스터디룸',
   inviteCode: 'AB1234',
