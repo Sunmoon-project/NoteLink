@@ -115,7 +115,7 @@ export async function request<T>(
 
 export const http = {
   get: <T>(p: string, query?: Opts['query']) => request<T>('GET', p, undefined, { query }),
-  post: <T>(p: string, body?: unknown, opts: Pick<Opts, 'idempotencyKey'> = {}) =>
+  post: <T>(p: string, body?: unknown, opts: Pick<Opts, 'idempotencyKey' | 'retry'> = {}) =>
     request<T>('POST', p, body ?? {}, opts),
   patch: <T>(p: string, body: unknown) => request<T>('PATCH', p, body),
   put: <T>(p: string, body: unknown) => request<T>('PUT', p, body),
