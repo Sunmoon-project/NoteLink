@@ -749,10 +749,10 @@ artifact_zip() {
   (cd "$TMP/z$1" && zip -q "$TMP/artifact-$1.zip" "$name") || skip "zip 실패"
 }
 
-# 실행 정보: $1 = 실행 id, $2 = 워크플로 파일, $3 = 이벤트, $4 = 상태, $5 = 회차
+# 실행 정보: $1 = 실행 id, $2 = 워크플로 파일, $3 = 이벤트, $4 = 상태, $5 = 회차, $6 = 실행 브랜치(기본 main)
 run_info() {
-  printf '{"path":"%s","event":"%s","status":"%s","run_attempt":%s}\n' "$2" "$3" "${4:-completed}" "${5:-1}" \
-    > "$TMP/run-$1.json"
+  printf '{"path":"%s","event":"%s","status":"%s","run_attempt":%s,"head_branch":"%s"}\n' \
+    "$2" "$3" "${4:-completed}" "${5:-1}" "${6:-main}" > "$TMP/run-$1.json"
 }
 
 USAGE_TXT='at=1761897600\nplan=plus\nlimit=0\nretry=\np_used=34\np_window=10080\np_reset=1762261200\ns_used=\ns_window=\ns_reset=\n'
@@ -1102,12 +1102,21 @@ not() { if "$@"; then return 1; fi; }
   grep -qx 'api repos/team/repo/actions/artifacts/52 -X DELETE' "$TMP/gh.calls"
 }
 
-@test "review_run: 리뷰 워크플로의 PR 이벤트 · 리뷰 요청 댓글 실행만 믿는다" {
-  review_run "$REVIEW_WF"$'\tpull_request_target\tcompleted\t1'
-  review_run "$REVIEW_WF"$'\tissue_comment\tcompleted\t2'
-  not review_run "$REVIEW_WF"$'\tpull_request\tcompleted\t1'
-  not review_run $'.github/workflows/ci.yml\tissue_comment\tcompleted\t1'
+@test "review_run: 리뷰 워크플로의 PR 이벤트 · 리뷰 요청 댓글 · main에서 돈 직접 요청만 믿는다" {
+  review_run "$REVIEW_WF"$'\tpull_request_target\tcompleted\t1\tfeature/x'
+  review_run "$REVIEW_WF"$'\tissue_comment\tcompleted\t2\tmain'
+  review_run "$REVIEW_WF"$'\tworkflow_dispatch\tcompleted\t1\tmain'
+  not review_run "$REVIEW_WF"$'\tworkflow_dispatch\tcompleted\t1\tfeature/evil'
+  not review_run "$REVIEW_WF"$'\tworkflow_dispatch\tcompleted\t1\t'
+  not review_run "$REVIEW_WF"$'\tpull_request\tcompleted\t1\tmain'
+  not review_run $'.github/workflows/ci.yml\tissue_comment\tcompleted\t1\tmain'
   not review_run ''
+}
+
+@test "RUN_JQ: 실행 브랜치까지 낸다(없으면 빈 값)" {
+  need_jq
+  [ "$(jq -r "$RUN_JQ" <<< '{"path":"p","event":"workflow_dispatch","status":"completed","run_attempt":2,"head_branch":"main"}')" = $'p\tworkflow_dispatch\tcompleted\t2\tmain' ]
+  [ "$(jq -r "$RUN_JQ" <<< '{"path":"p","event":"e","status":"queued"}')" = $'p\te\tqueued\t1\t' ]
 }
 
 @test "read_usage: 리뷰 요청 댓글(issue_comment)로 돈 리뷰가 올린 결과 파일도 읽는다" {

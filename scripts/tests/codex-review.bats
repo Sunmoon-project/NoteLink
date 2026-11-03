@@ -430,12 +430,13 @@ fake_gh_files() {
   [ "$(jq -r "$PR_FILES_JQ" <<< "$json")" = $'docs/a.md\ndocs/b.md\nsrc/b.ts' ]
 }
 
-@test "is_request_command: 첫 줄이 정확히 /codex review일 때만(끝 공백 · CR · 다음 줄은 괜찮음)" {
+@test "is_request_command: 첫 줄이 /codex review일 때만(대소문자 무시, 끝 공백 · CR · 다음 줄은 괜찮음)" {
   is_request_command '/codex review'
   is_request_command $'/codex review  \r\n지난 지적을 반영했습니다.'
   is_request_command $'/codex review\t'
+  is_request_command '/Codex Review'
   not is_request_command '/codex reviewed — 반영했습니다'
-  not is_request_command '/Codex Review'
+  not is_request_command '/codex review 부탁드립니다'
   not is_request_command ' /codex review'
   not is_request_command $'반영했습니다\n/codex review'
   not is_request_command ''
@@ -451,16 +452,19 @@ fake_gh_request() {
   }
 }
 
-@test "accept_request: 라벨 요청은 라벨을 떼고, 붙인 사람의 쓰기 권한을 확인해 받는다(라벨을 떼지 못해도 받음)" {
+@test "accept_request: 라벨 요청은 붙인 사람의 쓰기 권한을 확인해 받고, 라벨은 건드리지 않는다(unlabel job이 뗌)" {
   PR=12; fake_gh_request; FAKE_PERM=write
   CODEX_REQUEST_LABEL=codex-review CODEX_REQUESTER=alice run accept_request
   [ "$status" -eq 0 ]
-  grep -qx 'gh api --method DELETE repos/team/repo/issues/12/labels/codex-review' "$TMP/gh.calls"
-  grep -q 'gh api repos/team/repo/collaborators/alice/permission --jq .permission' "$TMP/gh.calls"
-  not grep -q reactions "$TMP/gh.calls"
-  gh() { case "$*" in *"/permission "*) echo write ;; *) return 1 ;; esac; }
-  CODEX_REQUEST_LABEL=codex-review CODEX_REQUESTER=alice run accept_request
-  [ "$status" -eq 0 ] && [[ "$output" == *"떼지 못했습니다"* ]]
+  [ "$(cat "$TMP/gh.calls")" = 'gh api repos/team/repo/collaborators/alice/permission --jq .permission' ]
+}
+
+@test "accept_request: Run workflow(요청 정보는 누른 사람만)도 쓰기 권한을 확인한다" {
+  PR=12; fake_gh_request
+  FAKE_PERM=write CODEX_REQUESTER=alice run accept_request
+  [ "$status" -eq 0 ]
+  FAKE_PERM=read CODEX_REQUESTER=alice run accept_request
+  [ "$status" -eq 1 ]
 }
 
 @test "accept_request: 라벨을 붙인 사람이 triage 권한이면 받지 않는다" {
@@ -485,7 +489,7 @@ fake_gh_request() {
   PR=12; fake_gh_request; FAKE_PERM=admin
   CODEX_REQUESTER=alice CODEX_REQUEST_COMMENT=987 CODEX_REQUEST_BODY='/codex reviewed — 반영했습니다' run accept_request
   [ "$status" -eq 1 ]
-  [[ "$output" == *'댓글 첫 줄이 정확히 `/codex review`가 아니어서'* ]]
+  [[ "$output" == *'댓글 첫 줄이 `/codex review`가 아니어서'* ]]
   [ ! -e "$TMP/gh.calls" ]
 }
 
@@ -545,31 +549,52 @@ fake_gh_request() {
   not has_open_ci_failures
 }
 
-@test "head_moved: 지난 리뷰가 있는 요청 리뷰면 라벨을 다시 붙여 새 커밋으로 다시 요청하고 성공으로 끝낸다" {
+# 가짜 gh: 받은 인자를 적고, pulls/*/files는 $TMP/files, workflow run은 RUN_RC로 끝남
+fake_gh_rerun() {
+  printf '%s' "$1" > "$TMP/files"
+  gh() {
+    echo "gh $*" >> "$TMP/gh.calls"
+    case "$*" in
+      *pulls/*/files*) cat "$TMP/files" ;;
+      "workflow run "*) return "${RUN_RC:-0}" ;;
+    esac
+  }
+}
+
+@test "head_moved: 첫 리뷰가 있는 요청 리뷰면 workflow_dispatch로 새 커밋을 다시 요청하고 성공으로 끝낸다" {
   PR=12; TRIGGER=request; CODEX_TRIGGER=request; PREV_ID=555; DRY_RUN=false
-  gh() { echo "gh $*" >> "$TMP/gh.calls"; }
+  fake_gh_rerun $'apps/api/src/main.ts\n'
   run head_moved
   [ "$status" -eq 0 ]
-  grep -qxF 'gh api --method POST repos/team/repo/issues/12/labels -f labels[]=codex-review' "$TMP/gh.calls"
+  grep -qxF 'gh workflow run codex-review.yml -R team/repo -f pr=12' "$TMP/gh.calls"
   [[ "$output" == "::notice title=Codex 재리뷰 다시 요청::PR #12:"* ]]
-  gh() { return 1; }
-  run head_moved
+  RUN_RC=1 run head_moved
   [ "$status" -eq 0 ] && [[ "$output" == "::warning title=Codex 재리뷰 다시 요청 실패::"* ]]
 }
 
-@test "head_moved: 자동 실행 · 첫 리뷰 전 · 직접 실행 · dry-run이면 다시 요청하지 않고 끝낸다" {
-  PR=12; DRY_RUN=false
-  gh() { echo "gh $*" >> "$TMP/gh.calls"; }
-  TRIGGER=auto CODEX_TRIGGER=auto PREV_ID=555 run head_moved
+@test "head_moved: 첫 리뷰 전이라도 문서만 바뀐 PR(자동 실행이 건너뜀)이면 다시 요청한다" {
+  PR=12; TRIGGER=request; CODEX_TRIGGER=request; PREV_ID=""; DRY_RUN=false
+  fake_gh_rerun $'README.md\n'
+  run head_moved
   [ "$status" -eq 0 ]
+  grep -qxF 'gh workflow run codex-review.yml -R team/repo -f pr=12' "$TMP/gh.calls"
+}
+
+@test "head_moved: 첫 리뷰 전 코드 PR(자동 실행이 리뷰함) · 자동 실행 · 직접 실행 · dry-run이면 다시 요청하지 않는다" {
+  PR=12; DRY_RUN=false
+  fake_gh_rerun $'apps/api/src/main.ts\n'
   TRIGGER=request CODEX_TRIGGER=request PREV_ID="" run head_moved
+  [ "$status" -eq 0 ]
+  not grep -q 'workflow run' "$TMP/gh.calls"
+  : > "$TMP/gh.calls"
+  TRIGGER=auto CODEX_TRIGGER=auto PREV_ID=555 run head_moved
   [ "$status" -eq 0 ]
   unset CODEX_TRIGGER
   TRIGGER=request PREV_ID=555 run head_moved
   [ "$status" -eq 0 ]
   TRIGGER=request CODEX_TRIGGER=request PREV_ID=555 DRY_RUN=true run head_moved
   [ "$status" -eq 0 ]
-  [ ! -e "$TMP/gh.calls" ]
+  [ ! -s "$TMP/gh.calls" ]
 }
 
 @test "skip_review: PR 댓글 없이 실행 화면에 알림 · 요약을 남기고 성공으로 끝낸다" {
