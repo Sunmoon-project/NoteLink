@@ -11,7 +11,7 @@
 #   멈춘 실행은 PR 댓글 없이 codex-paused 결과 파일(PR 번호 · 다시 가능한 시각)만 남기고, check가 15분마다
 #   그 시각이 지난 것을 다시 돌림(Re-run). summary는 다시 돌리지 않음(check와 겹쳐 같은 실행을 두 번 돌리지 않게)
 #   (한 번 확인에서 러너 알림과 함께 생기면 한 메시지에 embed 두 개로 보냄)
-# - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간에 끝난 Codex 리뷰 성공 · 실패 · 취소, Codex 남은 사용량
+# - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간에 끝난 Codex 리뷰 실행 성공(건너뛴 실행 포함) · 실패 · 취소, Codex 남은 사용량
 # - Codex 사용량은 리뷰가 끝날 때 리뷰 컴퓨터가 올린 결과 파일(codex-review.yml의 codex-usage,
 #   scripts/codex-usage.mjs)의 가장 최근 것을 읽습니다. 리뷰가 돌 때만 바뀌므로 몇 시 리뷰 기준인지 함께 적습니다.
 #   리뷰 워크플로가 PR 이벤트(pull_request_target)나 리뷰 요청 댓글(issue_comment)로 돈 실행이 올린 것만 씁니다
@@ -165,11 +165,14 @@ read_queue() {
   fi
 }
 
-# 지난 24시간에 끝난 Codex 리뷰 → DONE_OK · DONE_FAIL(시간 초과 포함) · DONE_CANCEL (읽지 못하면 빈 값)
+# 지난 24시간에 끝난 Codex 리뷰 실행 → DONE_OK · DONE_FAIL(시간 초과 포함) · DONE_CANCEL (읽지 못하면 빈 값)
+# 첫 리뷰 뒤 push · 문서만 바뀐 PR 등 Codex를 돌리지 않고 건너뛴 실행도 성공으로 끝나므로 DONE_OK에 들어감.
+# 상관없는 댓글로 생긴 실행은 job을 건너뛰어(skipped) 어느 쪽에도 세지 않음
 # API의 created는 만든 시각이라, 오래 기다리다 오늘 끝난 리뷰도 세도록 끝난 시각(updated_at)으로 거름.
 # 재실행하면 만든 시각은 그대로인데, GitHub는 처음 실행 후 30일까지만 재실행을 허용함. 가장 늦은 경우는
 # 재실행 기한 30일 + 대기 최대 24시간 + 리뷰 처리 최대 60분(codex-review.yml timeout) + 요약 구간 24시간 = 32일 1시간.
-# 여유를 두어 35일 안에 만든 실행을 쪽마다(--paginate) 받아 봄(하루 한 번, 하루 20건 안팎이라 7~8쪽)
+# 여유를 두어 35일 안에 만든 실행을 쪽마다(--paginate) 받아 봄(하루 한 번. PR 댓글마다 건너뛴 실행이 생기므로
+# 하루 수십 건, 십수 쪽까지 될 수 있음)
 read_counts() {
   DONE_OK=""; DONE_FAIL=""; DONE_CANCEL=""
   local from since out
@@ -496,9 +499,9 @@ $(queue_line)" ;;
         since=" — $(kst "$PREV_SINCE")부터"
       fi
       if [ -n "$DONE_OK" ]; then
-        done_line="지난 24시간에 끝난 Codex 리뷰: 성공 ${DONE_OK} · 실패 ${DONE_FAIL} · 취소 ${DONE_CANCEL}"
+        done_line="지난 24시간에 끝난 Codex 리뷰 실행: 성공 ${DONE_OK} · 실패 ${DONE_FAIL} · 취소 ${DONE_CANCEL} (성공에는 건너뛴 실행 포함)"
       else
-        done_line="지난 24시간에 끝난 Codex 리뷰: 확인하지 못함"
+        done_line="지난 24시간에 끝난 Codex 리뷰 실행: 확인하지 못함"
       fi
       TEXT="러너 \`$CODEX_RUNNER\`: $(status_word "$CUR_STATUS")$since"
       [ -n "$ERROR_MSG" ] && TEXT+="

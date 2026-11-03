@@ -239,14 +239,14 @@ next_check() {
   compose summary
   [[ "$TITLE" == *"(10/31)" ]]
   [[ "$TEXT" == *"🟢 온라인 (리뷰 중) — 10/31 16:40부터"* ]]
-  [[ "$TEXT" == *"성공 5 · 실패 1 · 취소 2"* ]]
+  [[ "$TEXT" == *"지난 24시간에 끝난 Codex 리뷰 실행: 성공 5 · 실패 1 · 취소 2 (성공에는 건너뛴 실행 포함)"* ]]
   PREV_SINCE=0  # 처음 확인에서 온라인이었음(언제부터인지 모름)
   compose summary
   [[ "$TEXT" != *"부터"* ]]
   DONE_OK=""; PREV_STATUS=offline; PREV_SINCE=100
   compose summary
   [[ "$TEXT" != *"부터"* ]]
-  [[ "$TEXT" == *"지난 24시간에 끝난 Codex 리뷰: 확인하지 못함"* ]]
+  [[ "$TEXT" == *"지난 24시간에 끝난 Codex 리뷰 실행: 확인하지 못함"* ]]
 }
 
 @test "queue_line: 대기 수를 모르면 그렇다고 적는다" {
