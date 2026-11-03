@@ -6,6 +6,7 @@ from app.services.quiz.checks import (
     code_check,
     form_giveaway,
     number_values,
+    option_key,
     reversed_of,
     same_value,
     seen_draft,
@@ -376,3 +377,24 @@ def test_punctuation_normalization_does_not_merge_numeric_tokens_or_ratios() -> 
     assert option_key("2~3") == option_key("2 3")
     assert option_key("2~3") != option_key("23")
     assert option_key("1:2") != option_key("1/2")
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("(1+2) mL", "((1+2)) mL", True),
+        ("1/((2+3)) mL", "1/(2+3) mL", True),
+        ("1/2 kg", "(1/2) kg", True),
+        ("(1+2)*3 mL", "1+2*3 mL", False),
+        ("1/2 kg", "1-2 kg", False),
+        ("[1+2]*3", "(1+2)*3", True),
+        ("[1+2]*3", "1+2*3", False),
+        ("[1] 정답", "1 정답", True),
+        ("5 %", "5", False),
+        ("2 apples + 3 oranges", "2 apples - 3 oranges", False),
+    ],
+)
+def test_option_key_compares_expressions_with_units_and_brackets(
+    a: str, b: str, same: bool
+) -> None:
+    assert (option_key(a) == option_key(b)) is same
