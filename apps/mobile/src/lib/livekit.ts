@@ -1,37 +1,89 @@
 import { useEffect, useState } from 'react';
-import { api } from './api';
+import { loadMedia } from './livekit-loader';
+import { env } from './env';
 import { socket } from './socket';
+import { toast } from '@/stores/toast';
+import type { MediaConnection } from './livekit-native';
 
-// 캠 · 음성 스터디 (LiveKit Cloud). 입장 토큰은 메인 API가 발급하고, 영상 · 음성은 앱이 LiveKit에 직접 연결한다 (p.19).
-// 마이크 · 카메라 상태는 Socket.IO로 다른 멤버에게도 알린다.
-// TODO(스터디룸 담당): @livekit/react-native 설치 후 connect()에서 Room.connect(url, token) 호출
-
-export function useLiveRoom(roomId: string) {
-  const [micOn, setMic] = useState(true);
-  const [camOn, setCam] = useState(true);
-  const [token, setToken] = useState<{ token: string; url: string } | null>(null);
-
+/** 실제 미디어 연결이 성공한 후에만 제어 상태를 표시한다. */
+export function useLiveRoom(roomId: string, enabled = true, generation = 0, todaySec = 0) {
+  const [connection, setConnection] = useState<{
+    id: string;
+    generation: number;
+    room: MediaConnection;
+  } | null>(null);
+  const [, update] = useState(0);
+  const [failure, setFailure] = useState<{
+    id: string;
+    generation: number;
+    message: string;
+  } | null>(null);
   useEffect(() => {
     let alive = true;
-    api.rooms
-      .livekitToken(roomId)
-      .then((t) => alive && setToken(t))
-      .catch(() => {});
+    let activeRoom: MediaConnection | null = null;
+    if (enabled && !env.useMock) {
+      loadMedia()
+        .then(({ connectMedia }) => connectMedia(roomId, () => alive && update((n) => n + 1)))
+        .then(async (room) => {
+          if (!alive) {
+            await room.close();
+            return;
+          }
+          activeRoom = room;
+          setFailure(null);
+          setConnection({ id: roomId, generation, room });
+        })
+        .catch(() => {
+          if (alive)
+            setFailure({
+              id: roomId,
+              generation,
+              message: '캠·음성을 연결하지 못했어요. 다시 입장해 주세요',
+            });
+        });
+    }
     return () => {
       alive = false;
+      activeRoom?.close().catch(() => {});
     };
-  }, [roomId]);
-
+  }, [roomId, enabled, generation]);
+  const room =
+    enabled && connection?.id === roomId && connection.generation === generation
+      ? connection.room
+      : null;
+  const control = async (action: 'toggleMic' | 'toggleCam' | 'toggleHearing') => {
+    if (!room?.connected)
+      return toast(
+        env.useMock
+          ? '캠·음성은 실제 서버 연결에서 사용할 수 있어요'
+          : '캠·음성 연결을 확인해 주세요',
+      );
+    try {
+      await room[action]();
+      update((n) => n + 1);
+    } catch {
+      toast('미디어 설정을 바꾸지 못했어요. 권한과 연결을 확인해 주세요');
+    }
+  };
+  const micOn = room?.micOn ?? false;
+  const camOn = room?.camOn ?? false;
   useEffect(() => {
-    socket.emit('room:state', { roomId, micOn, camOn, todaySec: 0 });
-  }, [roomId, micOn, camOn]);
-
+    if (room?.connected) socket.emit('room:state', { roomId, micOn, camOn, todaySec });
+  }, [roomId, micOn, camOn, room, todaySec]);
   return {
-    connected: !!token,
-    token,
+    connected: room?.connected ?? false,
     micOn,
     camOn,
-    toggleMic: () => setMic((v) => !v),
-    toggleCam: () => setCam((v) => !v),
+    hearing: room?.hearing ?? false,
+    error:
+      failure?.id === roomId && failure.generation === generation
+        ? failure.message
+        : room && !room.connected
+          ? '캠·음성 연결이 종료됐어요. 다시 연결해 주세요'
+          : null,
+    toggleMic: () => control('toggleMic'),
+    toggleCam: () => control('toggleCam'),
+    toggleHearing: () => control('toggleHearing'),
+    video: (userId: string) => room?.video(userId) ?? null,
   };
 }
