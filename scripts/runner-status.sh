@@ -14,7 +14,8 @@
 # - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간에 끝난 Codex 리뷰 성공 · 실패 · 취소, Codex 남은 사용량
 # - Codex 사용량은 리뷰가 끝날 때 리뷰 컴퓨터가 올린 결과 파일(codex-review.yml의 codex-usage,
 #   scripts/codex-usage.mjs)의 가장 최근 것을 읽습니다. 리뷰가 돌 때만 바뀌므로 몇 시 리뷰 기준인지 함께 적습니다.
-#   리뷰 워크플로(pull_request_target)가 올린 것만 씁니다(같은 이름으로 다른 워크플로가 올린 것은 건너뜀).
+#   리뷰 워크플로가 PR 이벤트(pull_request_target)나 리뷰 요청 댓글(issue_comment)로 돈 실행이 올린 것만 씁니다
+#   (같은 이름으로 다른 워크플로나 PR 브랜치의 워크플로가 올린 것은 건너뜀).
 # - 지난 상태는 STATE_FILE에 둡니다(워크플로가 Actions 캐시로 이어 줌). 처음이면 온라인은 알리지 않습니다.
 #   상태를 읽지 못한 동안에는 마지막으로 안 상태와 그 시각을 그대로 둡니다(멈춘 시간이 끊기지 않게).
 # - 디스코드로 보내지 못하면 상태를 저장하지 않고 실패합니다(다음 실행에서 다시 보냄).
@@ -181,8 +182,17 @@ read_counts() {
   DONE_CANCEL=$(grep -cx 'cancelled' <<< "$out" || true)
 }
 
+# 실행 정보(RUN_JQ 출력)가 리뷰 워크플로를 기본 브랜치(main)의 파일로 돌린 것이면 0:
+# PR 이벤트(pull_request_target) · 리뷰 요청 댓글(issue_comment). pull_request는 PR 브랜치의 파일이라 믿지 않음
+review_run() {  # $1 = "path \t event \t status \t attempt"
+  local path event
+  IFS=$'\t' read -r path event _ <<< "$1"
+  [ "$path" = "$REVIEW_WORKFLOW_PATH" ] || return 1
+  [ "$event" = pull_request_target ] || [ "$event" = issue_comment ]
+}
+
 # 가장 최근 codex-usage 결과 파일 → U_* (없으면 U_AT 빈 값) · USAGE_ERR(조회 · 내려받기에 실패했으면 1)
-# 리뷰 워크플로가 pull_request_target으로 올린 것만 씀. 최근 USAGE_CANDIDATES개 중 처음 맞는 것
+# 리뷰 워크플로가 기본 브랜치 파일로 돈 실행(review_run)이 올린 것만 씀. 최근 USAGE_CANDIDATES개 중 처음 맞는 것
 read_usage() {
   no_usage; USAGE_ERR=0
   local list id run src dir
@@ -194,7 +204,7 @@ read_usage() {
   while IFS=$'\t' read -r id run; do
     [[ "$id" =~ ^[0-9]+$ ]] && [[ "$run" =~ ^[0-9]+$ ]] || continue
     src=$(gh api "repos/$REPO/actions/runs/$run" --jq "$RUN_JQ" 2> /dev/null) || { USAGE_ERR=1; return 0; }
-    [ "$(cut -f 1,2 <<< "$src")" = "$REVIEW_WORKFLOW_PATH"$'\t'"pull_request_target" ] || continue
+    review_run "$src" || continue
     dir=$(mktemp -d)
     if gh api "repos/$REPO/actions/artifacts/$id/zip" > "$dir/usage.zip" 2> /dev/null \
         && unzip -p "$dir/usage.zip" "$USAGE_FILE_NAME" > "$dir/usage" 2> /dev/null; then
@@ -228,7 +238,7 @@ sort_prs() {  # "#34 #12" → "#12 #34"
 # - codex-paused 결과 파일을 모든 쪽(--paginate)에서 최근 것부터 봄. PR마다 가장 최근 표시 하나로 정함
 #   (다시 돌렸거나 닫힌 PR이면 그 PR의 옛 표시도 함께 지움)
 # - 표시의 retry가 지나지 않았거나, 그 실행이 아직 끝나지 않았으면 그대로 둠(다음 확인에서 다시 봄)
-# - 리뷰 워크플로(pull_request_target)가 올린 표시만 믿고, 다른 것은 건너뜀
+# - 리뷰 워크플로가 기본 브랜치 파일로 돈 실행(review_run)이 올린 표시만 믿고, 다른 것은 건너뜀
 # - 닫힌 PR은 돌리지 않고 표시만 지움
 # - 다시 돌리기에 실패하면 표시를 남겨 다음 확인에서 다시 시도하고, 처음 실패했을 때만 알림
 # - 다시 돌린 PR의 표시는 바로 지우지 않고 PAUSED_DELETE에 모아, 디스코드로 알린 뒤 지움(delete_paused).
@@ -251,7 +261,7 @@ resume_paused() {
   while IFS=$'\t' read -r id run; do
     [[ "$id" =~ ^[0-9]+$ ]] && [[ "$run" =~ ^[0-9]+$ ]] || continue
     src=$(gh api "repos/$REPO/actions/runs/$run" --jq "$RUN_JQ" 2> /dev/null) || continue
-    [ "$(cut -f 1,2 <<< "$src")" = "$REVIEW_WORKFLOW_PATH"$'\t'"pull_request_target" ] || continue
+    review_run "$src" || continue
     download_artifact "$id" "$PAUSED_FILE_NAME" "$tmp" || continue
     pr=$(sed -n 's/^pr=\([0-9]\{1,\}\)$/\1/p' "$tmp" | head -n 1)
     retry=$(sed -n 's/^retry=\([0-9]\{1,\}\)$/\1/p' "$tmp" | head -n 1)
