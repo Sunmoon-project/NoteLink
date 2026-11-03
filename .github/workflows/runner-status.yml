@@ -1,7 +1,11 @@
 # 리뷰 컴퓨터 러너(notelink-codex)의 상태를 디스코드로 알립니다 (scripts/runner-status.sh).
 # 러너가 멈추면 스스로 알릴 수 없으므로, GitHub 클라우드 러너(ubuntu-latest)에서 GitHub에 러너 상태를 물어봅니다.
 # - 15분마다: 상태가 바뀔 때만 알림 (🔴 오프라인 · 🟢 다시 온라인 · 🟡 온라인인데 리뷰가 30분 넘게 대기 · ⚠️ 확인 실패)
-# - 매일 09:00(서울) 무렵: 📋 아침 요약 (지금 상태 · 대기 중인 리뷰 · 지난 24시간 리뷰 결과)
+#   Codex 사용량도 바뀔 때만 알림 (🟡 남은 양 20% 미만 · ⏸️ 10% 이하 · 한도로 리뷰 멈춤 · ▶️ 초기화되어 다시 시작)
+#   멈춘 리뷰 실행(codex-paused 결과 파일)은 다시 가능한 시각이 지나면 check가 다시 돌립니다(Re-run). PR 댓글은 남기지 않습니다.
+# - 매일 09:00(서울) 무렵: 📋 아침 요약 (지금 상태 · 대기 중인 리뷰 · 지난 24시간 리뷰 결과 · Codex 남은 사용량)
+# Codex 사용량은 리뷰 컴퓨터가 리뷰를 마칠 때 올리는 결과 파일(codex-review.yml의 codex-usage)의
+# 가장 최근 것을 읽습니다. 멈추는 판단은 리뷰 컴퓨터가 같은 기준(scripts/codex-usage-lib.sh)으로 합니다.
 # - 수동 실행(Run workflow): summary를 고르면 아침 요약을 바로 보냅니다(시험 알림용).
 # 예약 실행은 기본 브랜치(main)의 이 파일로 돌고, GitHub 사정에 따라 몇 분~수십 분 늦을 수 있습니다.
 # 비밀값: DISCORD_RUNNER_WEBHOOK(디스코드 웹후크 주소), RUNNER_STATUS_TOKEN(러너 목록을 읽는 fine-grained PAT,
@@ -25,7 +29,8 @@ on:
 
 permissions:
   contents: read
-  actions: read # Codex 리뷰 실행 목록
+  actions: write # Codex 리뷰 실행 목록 · 결과 파일 읽기, 멈춘 리뷰 다시 돌리기(Re-run) · 멈춤 표시 지우기
+  pull-requests: read # 멈춘 PR이 아직 열려 있는지
 
 # 상태 파일(캐시)을 차례로 읽고 쓰도록 check는 한 번에 하나씩 돕니다. 그룹마다 대기 실행은 하나만 남으므로
 # 상태를 저장하지 않는 summary는 그룹을 따로 둡니다(00:00 UTC에 check와 함께 떠도 밀려 취소되지 않게).
