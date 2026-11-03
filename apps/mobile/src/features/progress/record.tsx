@@ -377,6 +377,21 @@ export function RecordScreen() {
   );
 }
 
+/** 같은 요일에 시간이 겹치는 블록을 나란히 놓는다. 아니면 나중 블록이 앞 블록을 가린다. */
+// ponytail: 칸 수는 요일 전체의 최댓값. 겹치는 묶음별로 넓히는 건 빽빽해지면
+export function laneBlocks<T extends { top: number; h: number }>(items: T[]) {
+  const ends: number[] = [];
+  const placed = [...items]
+    .sort((a, b) => a.top - b.top)
+    .map((block) => {
+      const free = ends.findIndex((end) => end <= block.top);
+      const lane = free < 0 ? ends.length : free;
+      ends[lane] = block.top + block.h;
+      return { block, lane };
+    });
+  return placed.map((p) => ({ ...p, lanes: ends.length }));
+}
+
 function WeekView({ onMonth }: { onMonth: () => void }) {
   const tt = useQuery({ queryKey: ['timetable'], queryFn: api.timetable.get });
   const rooms = useQuery({ queryKey: ['my-rooms'], queryFn: api.rooms.mine });
@@ -488,13 +503,14 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
         <View className="absolute inset-0 left-7 flex-row">
           {days.map((_, di) => (
             <View key={di} className="relative flex-1">
-              {blocks
-                .filter((b) => b.day === di)
-                .map((b, i) => (
+              {laneBlocks(blocks.filter((b) => b.day === di)).map(
+                ({ block: b, lane, lanes }, i) => (
                   <View
                     key={i}
-                    className="absolute left-0.5 right-0.5 rounded-md px-1 py-0.5"
+                    className="absolute rounded-md px-1 py-0.5"
                     style={{
+                      left: `${(lane * 100) / lanes}%`,
+                      width: `${100 / lanes}%`,
                       top: Math.max(
                         0,
                         Math.min(b.top * H + 4, (END - START) * H - Math.max(1, b.h * H - 4)),
@@ -505,7 +521,8 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
                   >
                     <Text className="text-caption2 leading-3 text-ink">{b.label}</Text>
                   </View>
-                ))}
+                ),
+              )}
             </View>
           ))}
         </View>
