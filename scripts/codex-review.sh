@@ -11,7 +11,7 @@
 # - 게시 전 HEAD가 바뀌었으면 오래된 결과를 올리지 않습니다. 같은 SHA의 실패는 기존 댓글을 갱신합니다.
 # - --dry-run: 댓글을 올리거나 갱신하지 않고 결과만 보여 줍니다.
 #
-# 필요한 것: git, gh(로그인), codex(로그인). 현재 작업 폴더는 건드리지 않고
+# 필요한 것: git, jq, gh(로그인), codex(로그인). 현재 작업 폴더는 건드리지 않고
 # 임시 worktree에서 리뷰합니다. 리뷰 기준은 AGENTS.md의 Code Review Rules입니다.
 #
 # 테스트: scripts/tests/codex-review.bats (source하면 main은 실행되지 않습니다)
