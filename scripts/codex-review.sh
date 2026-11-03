@@ -12,9 +12,22 @@
 # 필요한 것: git, gh(로그인), codex(로그인). 현재 작업 폴더는 건드리지 않고
 # 임시 worktree에서 리뷰합니다. 리뷰 기준은 AGENTS.md의 Code Review Rules입니다.
 #
+# Codex 사용량 보호 (기준은 scripts/codex-usage-lib.sh):
+# - Codex 실행 뒤 남은 사용량(scripts/codex-usage.mjs, node 필요)을 CODEX_USAGE_STATE(이 컴퓨터에 남는 기록)와
+#   CODEX_USAGE_FILE(주면, codex-review.yml이 결과 파일로 올리고 러너 상태 알림이 읽음)에 적습니다.
+# - 마지막 기록에서 남은 양이 10% 이하이거나 한도에 걸렸으면 Codex를 돌리지 않고 끝냅니다(한도에 걸려 리뷰가
+#   실패했을 때도 같음). PR에는 댓글을 남기지 않고, 실행 화면에 ⏸️ 경고(annotation) · 요약만 남깁니다.
+#   CODEX_PAUSED_FILE(주면)에 멈춘 PR을 적고, codex-review.yml이 codex-paused 결과 파일로 올립니다.
+#   사용량이 초기화되면 러너 상태 알림(runner-status.sh)이 그 결과 파일을 보고 이 실행을 다시 돌립니다.
+# - 사용량을 읽지 못해도 리뷰는 그대로 합니다.
+#
 # 테스트: scripts/tests/codex-review.bats (source하면 main은 실행되지 않습니다)
 
+# shellcheck source=codex-usage-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/codex-usage-lib.sh"
+
 MARKER="codex-review"
+CODEX_USAGE_STATE="${CODEX_USAGE_STATE:-$HOME/.notelink-codex-usage}"
 CI_WORKFLOW="CI"
 CI_RESULT_JOB="CI 결과"
 MAX_DIFF_LINES="${MAX_DIFF_LINES:-4000}"
@@ -95,6 +108,59 @@ omitted_note() {  # $1 = 범위, $2 = diff 파일
   done < "$2.omitted"
 }
 
+# Codex 실행 뒤 남은 사용량을 CODEX_USAGE_STATE와 CODEX_USAGE_FILE(주면)에 적음
+# (읽을 것이 없으면 건너뜀, 항상 성공). Windows의 node는 Git Bash 경로(/c/...)를 모르므로 cygpath로 바꿔 넘김
+record_usage() {  # $1 = Codex 시작 시각(epoch ms), $2 = codex 로그, $3 = 리뷰가 실패했으면 1
+  command -v node > /dev/null || { echo "  (node가 없어 Codex 사용량을 기록하지 않습니다)"; return 0; }
+  local script log out f
+  script=$(cygpath -m "$USAGE_SCRIPT" 2> /dev/null || printf '%s' "$USAGE_SCRIPT")
+  log=$(cygpath -m "$2" 2> /dev/null || printf '%s' "$2")
+  out=$(node "$script" --since "$1" --log "$log" --failed "${3:-0}" 2> /dev/null) || out=""
+  [ -n "$out" ] || return 0
+  for f in "$CODEX_USAGE_STATE" "${CODEX_USAGE_FILE:-}"; do
+    [ -n "$f" ] || continue
+    printf '%s\n' "$out" > "$f" || true
+  done
+  return 0
+}
+
+# 마지막 사용량 기록으로 리뷰를 멈춰야 하면 0 (CUR_USAGE · USAGE_LEFT · USAGE_REASON · USAGE_RETRY가 채워짐)
+usage_paused() {
+  load_usage "$CODEX_USAGE_STATE"
+  NOW=$(date +%s)
+  usage_level
+  [ "$CUR_USAGE" = stop ]
+}
+
+# ⏸️ 리뷰 멈춤 안내 한 줄 (usage_paused 뒤)
+paused_note() {
+  local why="Codex 남은 사용량이 ${USAGE_STOP_LEFT}% 이하(${USAGE_LEFT}% 남음)"
+  [ "$USAGE_REASON" = limit ] && why="Codex 사용량 한도에 걸림"
+  if [ -n "${CODEX_PAUSED_FILE:-}" ]; then
+    echo "⏸️ PR #$PR: $why — 리뷰를 멈췄습니다. $(kst "$USAGE_RETRY")(서울) 사용량이 초기화되면 이 실행을 자동으로 다시 돌립니다."
+  else
+    echo "⏸️ PR #$PR: $why — 리뷰를 멈췄습니다. $(kst "$USAGE_RETRY")(서울) 사용량이 초기화된 뒤 다시 실행하세요."
+  fi
+}
+
+# 리뷰를 멈춤: PR 댓글 없이 실행 화면(경고 annotation · 작업 요약)에만 알리고,
+# CODEX_PAUSED_FILE에 멈춘 PR을 적음(codex-review.yml이 올리고, 초기화 뒤 runner-status.sh가 이 실행을 다시 돌림)
+pause_review() {
+  local note
+  note=$(paused_note)
+  echo "::warning title=Codex 리뷰 멈춤::$note"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf '### ⏸️ Codex 리뷰 멈춤\n\n%s\n' "$note" >> "$GITHUB_STEP_SUMMARY" || true
+  fi
+  if [ -n "${CODEX_PAUSED_FILE:-}" ]; then
+    # attempt: 이 실행의 회차. 다시 돌리면 회차가 올라가므로 runner-status.sh가 이미 다시 돌렸는지 알 수 있음
+    printf 'pr=%s\nsha=%s\nretry=%s\nreason=%s\nattempt=%s\n' \
+      "$PR" "$HEAD_SHA" "$USAGE_RETRY" "$USAGE_REASON" "${GITHUB_RUN_ATTEMPT:-1}" \
+      > "$CODEX_PAUSED_FILE" || true
+  fi
+  exit 0
+}
+
 # 결과에 임시 폴더 경로가 섞이면 저장소 기준 경로로 바꾸기
 strip_prefix() {
   # -v는 역슬래시를 이스케이프로 읽어 Windows 경로가 깨지므로 환경 변수로 넘김
@@ -113,6 +179,7 @@ main() {
   fi
 
   cd "$(git rev-parse --show-toplevel)"
+  USAGE_SCRIPT="$PWD/scripts/codex-usage.mjs"
   REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
   ME=$(gh api user --jq .login)
 
@@ -208,6 +275,9 @@ main() {
   fi
   echo "▶ CI 통과 ✅"
 
+  # ---------- Codex 사용량 보호 (PR 댓글 없이 실행 화면에만 알림) ----------
+  if usage_paused; then pause_review; fi
+
   # ---------- diff 준비 ----------
   git fetch -q origin "+refs/heads/$BASE:refs/remotes/origin/$BASE" "+refs/pull/$PR/head:refs/codex-review/pr-$PR"
   git worktree add -q --detach "$WT" "$HEAD_SHA"
@@ -297,10 +367,14 @@ EOF
 
   echo "▶ Codex 리뷰 중... ($( [ "$ROUND" -eq 1 ] && echo 1차 || echo "${ROUND}차 재리뷰" ))"
   REVIEW="$WORK/review.md"
+  CODEX_START_MS="$(date +%s)000"
   ( cd "$WT" && codex exec --sandbox read-only --output-last-message "$REVIEW" - < "$PROMPT" > "$WORK/codex.log" 2>&1 ) || true
+  record_usage "$CODEX_START_MS" "$WORK/codex.log" "$( [ -s "$REVIEW" ] && echo 0 || echo 1 )"
   if [ ! -s "$REVIEW" ]; then
     echo "codex 실행 실패. 로그 마지막 부분:" >&2
     tail -n 20 "$WORK/codex.log" >&2
+    # 한도에 걸려 실패했으면(방금 기록에 한도 문구) 멈춤 댓글을 남기고, 초기화 뒤 다시 돌게 함
+    if usage_paused && [ "$USAGE_REASON" = limit ]; then pause_review; fi
     exit 1
   fi
 

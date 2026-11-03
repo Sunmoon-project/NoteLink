@@ -68,3 +68,24 @@ run_check() {
 
 # bats에서 `! cmd` 한 줄은 실패해도 테스트를 실패시키지 않으므로 대신 씀
 not() { if "$@"; then return 1; fi; }
+
+@test "사용량: 리뷰 단계가 적는 파일과 올리는 파일이 같고, 리뷰가 실패해도 올린다" {
+  local workflow="$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml"
+  grep -qF 'CODEX_USAGE_FILE: ${{ runner.temp }}/codex-usage.txt' "$workflow"
+  grep -qF 'path: ${{ runner.temp }}/codex-usage.txt' "$workflow"
+  awk '/- name: Codex 사용량 올리기/ { f = 1 } f && /if: always\(\)/ { ok = 1 } f && /name: codex-usage/ { n = 1 } END { exit !(ok && n) }' "$workflow"
+  # runner-status.sh가 찾는 결과 파일 · 파일 이름과 같아야 함
+  grep -qF 'USAGE_ARTIFACT="${USAGE_ARTIFACT:-codex-usage}"' "$BATS_TEST_DIRNAME/../runner-status.sh"
+  grep -qF 'USAGE_FILE_NAME="codex-usage.txt"' "$BATS_TEST_DIRNAME/../runner-status.sh"
+}
+
+@test "멈춤: 리뷰 단계가 적는 파일과 올리는 파일이 같고, 이름이 runner-status.sh가 찾는 것과 같다" {
+  local workflow="$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml"
+  grep -qF 'CODEX_PAUSED_FILE: ${{ runner.temp }}/codex-paused.txt' "$workflow"
+  grep -qF 'path: ${{ runner.temp }}/codex-paused.txt' "$workflow"
+  grep -qF 'name: codex-paused' "$workflow"
+  grep -qF 'PAUSED_ARTIFACT="${PAUSED_ARTIFACT:-codex-paused}"' "$BATS_TEST_DIRNAME/../runner-status.sh"
+  grep -qF 'PAUSED_FILE_NAME="codex-paused.txt"' "$BATS_TEST_DIRNAME/../runner-status.sh"
+  # 다시 돌린 실행이 같은 이름으로 다시 올릴 수 있어야 함
+  [ "$(grep -c 'overwrite: true' "$workflow")" -eq 2 ]
+}
