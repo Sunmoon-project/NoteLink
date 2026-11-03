@@ -100,6 +100,11 @@ const STEPS: Partial<Record<AiJobType, string[]>> = {
 
 const jobCompletions = new Map<string, (job: AiJob) => void>();
 
+const markMaterialFailed = (id: string) => {
+  const m = db.materials.find((x) => x._id === id);
+  if (m) m.processing.status = 'failed';
+};
+
 function runJob(type: AiJobType, targetId: string, onDone: (job: AiJob) => void): AiJob {
   const flags = useMockFlags.getState();
   const job: AiJob = {
@@ -131,6 +136,7 @@ function runJob(type: AiJobType, targetId: string, onDone: (job: AiJob) => void)
         : 101;
     if (p >= failAt) {
       clearInterval(tick);
+      markMaterialFailed(j.targetId);
       Object.assign(j, {
         status: 'failed',
         progress: failAt,
@@ -745,7 +751,9 @@ export const mockApi: Api = {
     },
     cancel: async (id) => {
       await ok(undefined);
-      return structuredClone(void Object.assign(db.jobs.get(id) ?? {}, { status: 'canceled' }));
+      const job = db.jobs.get(id);
+      if (job && job.status !== 'succeeded') markMaterialFailed(job.targetId);
+      return structuredClone(void Object.assign(job ?? {}, { status: 'canceled' }));
     },
     retry: async (id) => {
       await ok(undefined);
