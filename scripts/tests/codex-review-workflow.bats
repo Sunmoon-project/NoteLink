@@ -98,30 +98,38 @@ not() { if "$@"; then return 1; fi; }
   awk '/^  issue_comment:/ { f = 1; next } f && /types: \[created\]/ { ok = 1 } END { exit !ok }' "$workflow"
 }
 
-@test "트리거: 라벨 이름 · 댓글 명령이 스크립트와 같고, job 조건 · 동시 실행 그룹에서 같은 값으로 거른다" {
+@test "트리거: 라벨 이름 · 댓글 명령이 스크립트와 같고, job 조건과 동시 실행 그룹이 같은 값으로 거른다" {
   local workflow="$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml"
   local script="$BATS_TEST_DIRNAME/../codex-review.sh"
   grep -qF 'REQUEST_LABEL="codex-review"' "$script"
   grep -qF 'REQUEST_COMMAND="/codex review"' "$script"
-  [ "$(grep -cF "github.event.label.name == 'codex-review'" "$workflow")" -eq 1 ]
-  [ "$(grep -cF "github.event.label.name != 'codex-review'" "$workflow")" -eq 1 ]
-  [ "$(grep -cF "startsWith(github.event.comment.body, '/codex review')" "$workflow")" -eq 2 ]
+  # 그룹(concurrency)과 job if를 나눠, 같은 이름 · 명령을 쓰는지 각각 확인
+  group=$(awk '/^concurrency:/ { f = 1 } f && /^jobs:/ { exit } f' "$workflow")
+  cond=$(awk '/^    if: >-/ { f = 1; next } f && /^    runs-on:/ { exit } f' "$workflow")
+  [[ "$group" == *"github.event.label.name != 'codex-review'"* ]]
+  [[ "$group" == *"startsWith(github.event.comment.body, '/codex review')"* ]]
+  [[ "$cond" == *"github.event.label.name == 'codex-review'"* ]]
+  [[ "$cond" == *"startsWith(github.event.comment.body, '/codex review')"* ]]
+  # 둘 다 이 두 값 말고 다른 라벨 이름 · 명령을 쓰지 않음
+  [ "$(grep -oE "label\.name [!=]= '[^']*'" <<< "$group$cond" | sort -u | sed "s/.*'\(.*\)'/\1/" | sort -u)" = codex-review ]
+  [ "$(grep -oE "comment\.body, '[^']*'" <<< "$group$cond" | sort -u | sed "s/.*'\(.*\)'/\1/" | sort -u)" = "/codex review" ]
 }
 
-@test "트리거: 상관없는 댓글 · 라벨 실행은 따로인 그룹이라 진행 중인 리뷰를 취소하지 않고, 자동과 요청은 그룹이 다르다" {
+@test "트리거: 상관없는 댓글 · 라벨은 따로인 그룹, 자동과 요청은 다른 그룹, 요청은 요청한 사람마다 그룹이 다르다" {
   local workflow="$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml"
   grep -qF "format('codex-review-ignore-{0}', github.run_id)" "$workflow"
   grep -qF "format('codex-review-{0}-{1}', github.event.pull_request.number || github.event.issue.number," "$workflow"
-  grep -qF "(github.event_name == 'issue_comment' || github.event.action == 'labeled') && 'request' || 'auto')" "$workflow"
+  grep -qF "&& format('request-{0}', github.event.comment.user.login || github.event.sender.login) || 'auto')" "$workflow"
 }
 
-@test "트리거: 리뷰 단계에 PR 번호 · 실행 종류 · 요청 정보를 넘긴다" {
+@test "트리거: 리뷰 단계에 PR 번호 · 실행 종류 · 요청 정보를 env로만 넘긴다" {
   local workflow="$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml"
   grep -qF 'PR: ${{ github.event.pull_request.number || github.event.issue.number }}' "$workflow"
   grep -qF "CODEX_TRIGGER: \${{ (github.event_name == 'issue_comment' || github.event.action == 'labeled') && 'request' || 'auto' }}" "$workflow"
   grep -qF "CODEX_REQUEST_LABEL: \${{ github.event.action == 'labeled' && github.event.label.name || '' }}" "$workflow"
-  grep -qF 'CODEX_REQUESTER: ${{ github.event.comment.user.login }}' "$workflow"
+  grep -qF 'CODEX_REQUESTER: ${{ github.event.comment.user.login || github.event.sender.login }}' "$workflow"
   grep -qF 'CODEX_REQUEST_COMMENT: ${{ github.event.comment.id }}' "$workflow"
-  # 이벤트 값은 env로만 넘기고 run 안에 직접 넣지 않음(명령 주입 방지)
-  not grep -qE 'run: .*\$\{\{ github\.event\.(comment|label|issue)' "$workflow"
+  grep -qF 'CODEX_REQUEST_BODY: ${{ github.event.comment.body }}' "$workflow"
+  # 이벤트 값은 run 안에 직접 넣지 않음(명령 주입 방지): run 블록 안에 github.event가 없어야 함
+  not awk '/^ *run: / { r = 1 } /^ *- name: / { r = 0 } r && /\$\{\{ *github\.event\./ { found = 1 } END { exit !found }' "$workflow"
 }
