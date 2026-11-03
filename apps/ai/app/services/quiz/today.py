@@ -41,12 +41,17 @@ flawed 문제의 movedTo가 가리키는 새 문제는 그 flawed 문제의 세�
 
 LLM 장애(로컬에는 없는 처리): '정답 둘' 검사의 호출이 실패해 판정을 다 받지 못하면(quality.screen의
 '검사 못 함': 걸린 보기 없이 호출 실패) 그 문제는 검사하지 않은 그대로 내고 다음에 다시
-검사합니다(checked를 남기지 않음). 답 모양이 틀린 판정은 전처럼 그 보기를 걸리지 않은 것으로
-봅니다. 새 문제 만들기가 LLM 장애(similar.make_similar의 llm_down)로 끝나면 그 문제만 내일로
+검사합니다(checked를 남기지 않음). 다만 전날 결함으로 미룬 문제(flaw 있음)는 그대로 내지 않고
+flawTries를 늘리지 않은 채 하루 더 미룹니다(dropped에 state 'active'). 미룬 결함 문제도 날마다 다시
+검사해 통과하면 flaw · flawTries를 지웁니다(검사 모델이 잘못 걸렀을 수 있음. 전날 무효로 한 풀이는
+그대로). 답 모양이 틀린 판정은 전처럼 그 보기를 걸리지 않은 것으로 봅니다. 새 문제 만들기가
+LLM 장애(similar.make_similar의 llm_down)로 끝나면 그 문제만 내일로
 미루고 flawTries는 늘리지 않습니다.
 알려진 한계: 같은 낱말은 text.same_word로 보지만, 새 문제를 만들 때의 겹침 검사(checks.code_check)와
 기존 문제 다시 내기(similar.reuse_existing)의 '이미 쓴 답'은 아직 text.same_item입니다(오답 복습
-전체 동작이 바뀌므로 따로 다룸).
+전체 동작이 바뀌므로 따로 다룸). 결함 문제를 바꿀 새 문제는 세트에서 이미 고른 정답과 겹침 검사를
+하지 않아, 드물게 같은 답이 한 세트에 두 번 나올 수 있습니다(넓은 same_item으로 막으면 지난번 틀린
+낱말과 비슷한 낱말이 이미 있을 때 새 문제를 영영 못 만들어 복습에서 빠짐).
 알려진 한계(로컬과 같음): 노트 글이 없는 자료의 문제도 사용자의 다른 노트 쪽(text.locate)으로
 검사합니다. 오늘의 복습 세트는 노트를 섞어서 세트의 materialId로 쪽을 가릴 수 없습니다.
 """
@@ -142,7 +147,9 @@ def parse(raw: JsonObject) -> TodayInput:
         day = None
     if day is None:
         raise InputError("input.day")
-    size = raw.get("size", REVIEW_SET_SIZE)
+    size = raw.get("size")
+    if size is None:  # 없거나 null이면 기본 크기
+        size = REVIEW_SET_SIZE
     if not isinstance(size, int) or isinstance(size, bool) or size < 1:
         raise InputError("input.size")
     sets = []
@@ -388,6 +395,22 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
             # 4지선다(10/26)도 같은 방법으로 다시 만듦
             hits: list[str] = []
             found = flaw(llm, s, q, notes, hits) if not st.get("checked") else []
+            if found is None and st.get("flaw"):
+                # 전날 결함으로 미룬 문제는 검사를 못 해도 그대로 내지 않음: 하루 더 미룸
+                # (시도 수는 그대로)
+                st = {**st, "dueAt": tomorrow}
+                q["srs"] = st
+                changed[(s.id, q["id"])] = st
+                dropped.append(
+                    {
+                        "quizSetId": s.id,
+                        "questionId": q["id"],
+                        "flaw": st["flaw"],
+                        "replacedBy": None,
+                        "state": "active",
+                    }
+                )
+                continue
             if found is None:  # 검사 호출 실패: 검사하지 않은 그대로 내고 다음에 다시 검사
                 picked.append((s, q))
                 if len(picked) == inp.size:
@@ -419,7 +442,11 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
                 # FLAW_TRIES일 동안 못 만듦: 깨끗하게 낼 수 없는 문제는 그만 냄(노트 줄은 남음)
                 st = {**st, "state": "flawed", "dueAt": None, "flaw": "; ".join(why)}
             else:
+                # 전날 결함으로 미룬 문제가 오늘 검사를 통과: 결함 표시 · 시도 수를 지움(검사 모델이
+                # 잘못 걸렀을 수 있어 날마다 다시 검사함. 전날 무효로 한 풀이는 그대로 둠)
                 st = {**st, "checked": True}
+                st.pop("flaw", None)
+                st.pop("flawTries", None)
             q["srs"] = st
             changed[(s.id, q["id"])] = st
             if why:
@@ -443,6 +470,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
                 }
                 carry.pop("flaw", None)
                 carry.pop("movedTo", None)
+                carry.pop("flawTries", None)  # 새 문제는 결함 시도를 처음부터 셈
                 carry.pop("voidedReviews", None)  # 새 문제는 풀이가 따로라 뺀 수도 따로 셈
                 new["srs"] = carry
                 made.add(new["id"])

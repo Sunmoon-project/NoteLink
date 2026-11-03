@@ -124,6 +124,11 @@ def test_copies_carry_the_review_on_and_the_same_word_joins() -> None:
     assert result["merged"] == 1
 
 
+def test_null_size_uses_the_default_size() -> None:
+    result = run(FakeLlm(), {**ordering_input(), "size": None})
+    assert len(result["questions"]) == 4
+
+
 def test_set_size_limits_the_picked_questions() -> None:
     result = run(FakeLlm(), {**ordering_input(), "size": 2})
     assert [x["answer"] for x in result["questions"]] == ["bravo", "charlie"]
@@ -306,6 +311,17 @@ def test_unchecked_question_that_passes_is_marked_checked() -> None:
     assert result["dropped"] == []
 
 
+def test_question_put_off_that_passes_the_next_day_loses_its_flaw_mark() -> None:
+    llm = FakeLlm({"Natural": natural(*[False] * 8, True)})
+    result = run(llm, flawed_input(unchecked(flaw="정답 둘", flawTries=1)))
+    [x] = result["questions"]
+    assert x["srs"]["checked"] is True
+    assert "flaw" not in x["srs"] and "flawTries" not in x["srs"]
+    s = updates(result)["q1"]
+    assert "flaw" not in s and "flawTries" not in s
+    assert result["dropped"] == [] and result["voidAnswers"] == []
+
+
 def test_second_right_answer_voids_those_answers_and_waits_a_day_for_a_new_question() -> None:
     # secured도 빈칸에 맞음 → 무효. 새 문제는 세 번 다 모양이 틀려 못 만듦
     llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
@@ -465,6 +481,16 @@ def test_question_with_four_choices_is_replaced_by_a_new_one() -> None:
     assert not llm.named("Natural")  # 검사한 문제라 '정답 둘' 검사는 다시 하지 않음
 
 
+def test_new_question_counts_its_own_flaw_tries() -> None:
+    inp = four_choices()
+    inp["sets"][0]["questions"][0]["srs"]["flawTries"] = 1
+    llm = FakeLlm(
+        {"Review": [STACK], "Check": [{"answer": "A", "only_one": True, "supported": True}]}
+    )
+    [new] = run(llm, inp)["questions"]
+    assert "flawTries" not in new["srs"]
+
+
 def test_llm_down_while_replacing_puts_only_that_question_off_a_day() -> None:
     old = four_choices()
     other = q("q2", "fasten", "fasten의 뜻", st(TOMORROW - timedelta(days=1)))
@@ -496,6 +522,29 @@ def test_question_put_off_to_tomorrow_is_not_handed_to_a_same_word_copy() -> Non
     assert (up["q1"]["state"], up["q1"]["dueAt"]) == ("active", TOMORROW)  # 사본으로 넘기지 않음
     assert up["q2"]["state"] == "moved" and result["merged"] == 0
     assert [d["state"] for d in result["dropped"]] == ["active"]
+
+
+def test_question_put_off_is_not_asked_when_the_check_call_fails() -> None:
+    llm = FakeLlm({"Natural": [LlmError("HTTP 503")] * 9})
+    result = run(
+        llm, flawed_input(unchecked(flaw="빈칸에 넣어도 말이 되는 오답 보기: secured", flawTries=1))
+    )
+    assert result["questions"] == []
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"], s["flawTries"]) == ("active", TOMORROW, 1)
+    assert [d["state"] for d in result["dropped"]] == ["active"]
+
+
+def test_question_put_off_is_not_handed_to_a_copy_when_the_check_call_fails() -> None:
+    flaw = "빈칸에 넣어도 말이 되는 오답 보기: secured"
+    inp = flawed_input(unchecked(flaw=flaw, flawTries=1))
+    other = q("q2", "fastened", "fasten의 뜻", st(TOMORROW - timedelta(days=1)))
+    inp["sets"].append({"id": "s2", "materialId": "m1", "questions": [other]})
+    result = run(FakeLlm({"Natural": [LlmError("HTTP 503")] * 9}), inp)
+    assert [x["answer"] for x in result["questions"]] == ["fastened"]  # q2의 사본
+    up = updates(result)
+    assert (up["q1"]["state"], up["q1"]["dueAt"]) == ("active", TOMORROW)
+    assert up["q2"]["state"] == "moved" and result["merged"] == 0
 
 
 def test_check_call_failing_leaves_the_question_unchecked() -> None:
