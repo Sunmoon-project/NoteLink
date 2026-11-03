@@ -27,7 +27,9 @@ it('AI 정리가 실패해도 원본만 저장하면 폴더 목록에서 다시 
     await api.content.saveMaterial(material._id);
     const listed = await api.content.materials(folderId);
     expect(listed.map((item) => item._id)).toContain(material._id);
-    expect(listed.find((item) => item._id === material._id)?.title).toBe('실패 후 원본.pdf');
+    const saved = listed.find((item) => item._id === material._id);
+    expect(saved?.title).toBe('실패 후 원본.pdf');
+    expect(saved?.processing.status).toBe('failed');
   } finally {
     await api.ai.cancel(job._id);
   }

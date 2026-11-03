@@ -97,6 +97,8 @@ def reversed_of(d: Draft, seen: list[Seen]) -> bool:
 _EXP = r"(?:\s*[×xX*]\s*10\s*\^\s*([-+]?\d+)|[eE]([-+]?\d+))?"
 _NUMBER = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
 _TRAILING = re.compile(r"[\s.,;:!?]+$")
+# (수식)(단위): 단위는 연산자로 시작하지 않고 숫자 · 괄호가 없음('5 %'나 '2 apples + 3'은 아님)
+_WITH_UNIT = re.compile(r"([0-9.\s()+\-*/÷×^:%]*[0-9)])\s*[^\s\d()+\-*/÷×^:=%<>][^\d()]*")
 
 
 def number_values(s: str | None) -> tuple[list[Decimal], str]:
@@ -160,14 +162,18 @@ def option_key(o: str) -> tuple[str, tuple[Decimal, ...], tuple[str, ...]]:
     """
     values, _ = number_values(o)
     # 단어 사이 하이픈을 연산자로 취급하지 않는다. 숫자만 연결하는 기호를 비교한다.
-    text = unicodedata.normalize("NFC", o).replace(",", "")
+    # 대괄호도 소괄호처럼 연산 순서를 바꾸므로 지우지 않는다('[1+2]*3'과 '1+2*3'은 다름).
+    text = unicodedata.normalize("NFC", o).replace(",", "").replace("[", "(").replace("]", ")")
     # norm이 무시하는 장식용 문장부호 때문에 AST 경로가 달라지지 않게 한다.
     # 소수점·부호·연산 순서를 나타내는 괄호와 연산자는 그대로 보존한다.
-    text = re.sub(r"[\[\]'\"!?~·_]", " ", text).rstrip(" .:\t\r\n").lstrip(": \t\r\n")
+    text = re.sub(r"['\"!?~·_]", " ", text).rstrip(" .:\t\r\n").lstrip(": \t\r\n")
     # 숫자 수식은 구문 트리로 비교해 음수 밑·단항 부호·중복 괄호를 일관되게 처리한다.
     # 코드를 실행하지 않으며, 숫자와 허용한 연산 노드 이외의 문법은 사용하지 않는다.
-    if re.fullmatch(r"[0-9.eE\s()+\-*/÷×^:%]+", text):
-        expression = text.replace("^", "**").replace("×", "*").replace("÷", "/").strip()
+    # 뒤에 단위만 붙은 수식('(1/2) kg')도 수식 부분을 같은 방법으로 비교한다.
+    unit = re.fullmatch(_WITH_UNIT, text)
+    expression = text if re.fullmatch(r"[0-9.eE\s()+\-*/÷×^:%]+", text) else unit and unit[1]
+    if expression:
+        expression = expression.replace("^", "**").replace("×", "*").replace("÷", "/").strip()
         try:
             shape = _arithmetic_shape(ast.parse(expression, mode="eval").body)
         except (SyntaxError, ValueError, RecursionError):
