@@ -27,7 +27,7 @@ import {
   cx,
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
-import { Month } from '../progress/record';
+import { Month, laneBlocks } from '../progress/record';
 import { validYmd } from '../progress/goals';
 
 // p.52 공휴일 · 캘린더 공유 · 공유받은 캘린더 / p.56 시간표
@@ -417,32 +417,40 @@ export function TimetableScreen() {
           <View className="absolute inset-0 left-6 flex-row">
             {[1, 2, 3, 4, 5].map((d) => (
               <View key={d} className="relative flex-1">
-                {classes
-                  .filter((c) => c.days.includes(d))
-                  .map((c) => (
-                    <Pressable
-                      key={c._id}
-                      onPress={() => setPick(c)}
-                      className="absolute left-0.5 right-0.5 rounded-md px-1 py-0.5"
-                      style={{
-                        top: Math.max(
-                          0,
-                          Math.min(
-                            (toH(c.startTime) - firstHour) * H + 2,
-                            (lastHour - firstHour) * H -
-                              Math.max(6, (toH(c.endTime) - toH(c.startTime)) * H - 3),
-                          ),
+                {laneBlocks(
+                  classes
+                    .filter((c) => c.days.includes(d))
+                    .map((c) => ({
+                      c,
+                      top: toH(c.startTime),
+                      h: toH(c.endTime) - toH(c.startTime),
+                    })),
+                ).map(({ block: { c }, lane, lanes }) => (
+                  <Pressable
+                    key={c._id}
+                    onPress={() => setPick(c)}
+                    className="absolute rounded-md px-1 py-0.5"
+                    style={{
+                      left: `${(lane * 100) / lanes}%`,
+                      width: `${100 / lanes}%`,
+                      top: Math.max(
+                        0,
+                        Math.min(
+                          (toH(c.startTime) - firstHour) * H + 2,
+                          (lastHour - firstHour) * H -
+                            Math.max(6, (toH(c.endTime) - toH(c.startTime)) * H - 3),
                         ),
-                        height: Math.max(6, (toH(c.endTime) - toH(c.startTime)) * H - 3),
-                        backgroundColor: c.color,
-                      }}
-                    >
-                      <Text className="text-caption2 font-bold text-ink">{c.subjectName}</Text>
-                      {!!c.location && (
-                        <Text className="text-caption2 text-ink/70">{c.location}</Text>
-                      )}
-                    </Pressable>
-                  ))}
+                      ),
+                      height: Math.max(6, (toH(c.endTime) - toH(c.startTime)) * H - 3),
+                      backgroundColor: c.color,
+                    }}
+                  >
+                    <Text className="text-caption2 font-bold text-ink">{c.subjectName}</Text>
+                    {!!c.location && (
+                      <Text className="text-caption2 text-ink/70">{c.location}</Text>
+                    )}
+                  </Pressable>
+                ))}
               </View>
             ))}
           </View>
