@@ -23,6 +23,15 @@ interface AuthedSocket extends Socket {
  * 스터디룸 채팅 게이트웨이 (Socket.IO).
  * REST가 경로로 분기한다면, 여기서는 @SubscribeMessage(이벤트 이름)로 분기합니다.
  */
+// 소켓 본문은 DTO 검증을 거치지 않으므로 입구에서 형식을 확인합니다.
+const HEX_ID = /^[0-9a-fA-F]{24}$/;
+const hexId = (value: unknown): string => {
+  if (typeof value !== 'string' || !HEX_ID.test(value)) {
+    throw { code: 'ROOM_NOT_FOUND', message: '존재하지 않는 스터디룸입니다.' };
+  }
+  return value.toLowerCase();
+};
+
 // 앱은 기본 네임스페이스에 연결합니다 (apps/mobile lib/socket.ts).
 @WebSocketGateway({
   cors: { origin: '*' }, // 개발용. 운영에서는 허용 도메인으로 제한하세요.
@@ -69,8 +78,9 @@ export class ChatGateway implements OnGatewayInit {
     @MessageBody() body: { roomId: string },
   ): Promise<{ ok: boolean }> {
     try {
-      await this.chatService.assertMember(client.data.userId!, body.roomId);
-      await client.join(this.roomName(body.roomId));
+      const roomId = hexId(body?.roomId);
+      await this.chatService.assertMember(client.data.userId!, roomId);
+      await client.join(this.roomName(roomId));
       return { ok: true };
     } catch (err) {
       this.emitError(client, err);
@@ -84,7 +94,7 @@ export class ChatGateway implements OnGatewayInit {
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody() body: { roomId: string },
   ): Promise<void> {
-    if (Types.ObjectId.isValid(body.roomId)) await client.leave(this.roomName(body.roomId));
+    if (HEX_ID.test(String(body?.roomId))) await client.leave(this.roomName(body.roomId));
   }
 
   /** 메시지 전송: 저장한 뒤 같은 방에 방송하고, 보낸 사람에게 저장본을 확인 응답으로 돌려줍니다. */
@@ -94,7 +104,7 @@ export class ChatGateway implements OnGatewayInit {
     @MessageBody() body: { chatRoomId: string; text: string; clientId?: string },
   ): Promise<ChatMessageView | undefined> {
     const userId = client.data.userId!;
-    const text = (body.text ?? '').trim();
+    const text = typeof body?.text === 'string' ? body.text.trim() : '';
     if (!text) {
       this.emitError(client, {
         code: 'EMPTY_MESSAGE',
@@ -104,7 +114,7 @@ export class ChatGateway implements OnGatewayInit {
     }
 
     try {
-      const roomId = await this.chatService.studyRoomOf(body.chatRoomId);
+      const roomId = await this.chatService.studyRoomOf(hexId(body.chatRoomId));
       await this.chatService.assertMember(userId, roomId);
       const message = await this.chatService.saveMessage(userId, roomId, text, body.clientId);
       this.server.to(this.roomName(roomId)).emit(CHAT_EVENTS.MESSAGE, message);

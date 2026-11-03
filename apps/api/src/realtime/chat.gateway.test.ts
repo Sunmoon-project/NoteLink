@@ -83,7 +83,7 @@ describe('ChatGateway', () => {
   it('chat:send는 chatRoomId로 방을 찾아 방송하고 저장본으로 응답한다', async () => {
     const { gateway, chat, client, emit, server } = setup();
     const ack = await gateway.handleSend(client as unknown as Authed, {
-      chatRoomId: 'c9',
+      chatRoomId: 'bbbbbbbbbbbbbbbbbbbbbbbb',
       text: ' 안녕 ',
       clientId: 'c1',
     });
@@ -97,7 +97,10 @@ describe('ChatGateway', () => {
     const { gateway, chat, client, emit } = setup();
     chat.assertMember.mockRejectedValue(new Error('no'));
     await expect(
-      gateway.handleSend(client as unknown as Authed, { chatRoomId: 'c9', text: '안녕' }),
+      gateway.handleSend(client as unknown as Authed, {
+        chatRoomId: 'bbbbbbbbbbbbbbbbbbbbbbbb',
+        text: '안녕',
+      }),
     ).resolves.toBeUndefined();
     expect(emit).not.toHaveBeenCalled();
     expect(client.emit).toHaveBeenCalledWith('chat:error', expect.anything());
@@ -109,4 +112,16 @@ describe('ChatGateway', () => {
     expect(server.in).toHaveBeenCalledWith('user:u1');
     expect(socketsLeave).toHaveBeenCalledWith('study-room:aaaaaaaaaaaaaaaaaaaaaaaa');
   });
+
+  it.each([123, { $ne: null }, 'abcdefghijkl'])(
+    '형식이 다른 방 id %j는 멤버 확인 전에 거부한다',
+    async (roomId) => {
+      const { gateway, chat, client } = setup();
+      await expect(
+        gateway.handleJoin(client as unknown as Authed, { roomId } as { roomId: string }),
+      ).resolves.toEqual({ ok: false });
+      expect(chat.assertMember).not.toHaveBeenCalled();
+      expect(client.join).not.toHaveBeenCalled();
+    },
+  );
 });
