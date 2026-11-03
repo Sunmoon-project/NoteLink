@@ -14,12 +14,13 @@
 # 언제 Codex를 돌리는지 (CODEX_TRIGGER, codex-review.yml이 넣음. 직접 실행하면 request로 봄):
 # - auto(PR 열림 · 커밋 push · 다시 열림 · Ready for review): 이 계정의 Codex 리뷰가 아직 없을 때만 첫 리뷰를 합니다.
 #   문서(*.md · *.mdx · LICENSE · 루트 docs/의 그림 · PDF, AGENTS.md · CLAUDE.md 제외)만 바뀐 PR은 건너뜁니다.
-# - request(PR에 codex-review 라벨을 붙이거나 첫 줄이 정확히 "/codex review"인 댓글): 재리뷰를 합니다(문서만 바뀌었어도 함).
-#   라벨이든 댓글이든 요청한 사람(CODEX_REQUESTER)에게 저장소 쓰기 권한이 있어야 받습니다. 라벨은 바로 떼서
-#   다시 붙이면 또 요청할 수 있게 하고, 댓글은 👀로 표시합니다. 같은 커밋을 다시 요청하면 건너뜁니다.
+# - request(PR에 codex-review 라벨 · 첫 줄이 "/codex review"인 댓글 · Actions의 Run workflow): 재리뷰를 합니다
+#   (문서만 바뀌었어도 함). 요청한 사람(CODEX_REQUESTER)에게 저장소 쓰기 권한이 있어야 받고, 댓글은 👀로 표시합니다.
+#   라벨은 codex-review.yml의 unlabel job이 바로 뗍니다. 같은 커밋을 다시 요청하면 건너뜁니다.
 # - 건너뛸 때는 CI를 기다리지 않고 바로 끝냅니다. 다만 이 계정의 해결되지 않은 CI 실패 안내가 있으면
 #   CI를 확인해 실패 안내 · 해결 표시를 한 뒤 끝냅니다(Codex는 돌리지 않음).
-# - 요청 리뷰 도중 새 커밋이 올라와 결과를 버리면, 자동 실행은 첫 리뷰가 있어 건너뛰므로 라벨을 다시 붙여 새 커밋으로 다시 요청합니다.
+# - 요청 리뷰 도중 새 커밋이 올라와 결과를 버릴 때, 새 커밋의 자동 실행이 건너뛸 PR(첫 리뷰가 있거나 문서만 바뀜)이면
+#   workflow_dispatch로 새 커밋을 다시 요청합니다.
 # - 워크플로에서 돌 때(CODEX_TRIGGER가 있을 때)는 포크 · 초안 · Dependabot PR과 develop · main이 아닌 대상은 건너뜁니다.
 #   댓글(issue_comment)로 온 요청은 워크플로가 PR 정보를 모르므로 여기서 확인합니다.
 #
@@ -52,6 +53,7 @@ EX=( ':(exclude).env' ':(exclude).env.*' ':(exclude)**/.env' ':(exclude)**/.env.
      ':(exclude)package-lock.json' ':(exclude)**/package-lock.json' )
 REQUEST_LABEL="codex-review"      # codex-review.yml의 라벨 이름과 같아야 함
 REQUEST_COMMAND="/codex review"   # codex-review.yml의 댓글 명령과 같아야 함
+REVIEW_WORKFLOW_FILE="codex-review.yml"  # 다시 요청할 때 workflow_dispatch로 돌릴 워크플로
 REVIEW_BASES="develop main"       # 리뷰하는 PR 대상 브랜치
 
 # gh --jq 필터 (테스트에서 jq로 같은 필터를 검증합니다)
@@ -104,26 +106,22 @@ auto_skip_reason() {
   fi
 }
 
-# 댓글 본문이 리뷰 요청 명령이면 0: 첫 줄(끝 공백 · CR 제외)이 정확히 REQUEST_COMMAND
-# (워크플로의 startsWith는 대소문자를 가리지 않고 접두어만 보므로 "/codex reviewed …"도 들어옴)
+# 댓글 본문이 리뷰 요청 명령이면 0: 첫 줄(끝 공백 · CR 제외)이 REQUEST_COMMAND와 같음(대소문자는 가리지 않음).
+# codex-review.yml은 같은 기준(본문 전체가 명령이거나 명령 바로 뒤에 줄바꿈, 대소문자 무시)으로 먼저 거릅니다.
 is_request_command() {  # $1 = 댓글 본문
   local first="${1%%$'\n'*}"
   first="${first%$'\r'}"
   first="${first%"${first##*[![:space:]]}"}"
-  [ "$first" = "$REQUEST_COMMAND" ]
+  [ "${first,,}" = "${REQUEST_COMMAND,,}" ]
 }
 
-# 요청(request)을 받아들이면 0. 댓글 요청은 본문이 명령인지 먼저 봄. 라벨 요청은 라벨을 떼고
-# (다시 붙여 또 요청할 수 있게), 둘 다 요청한 사람의 쓰기 권한(admin · maintain · write)을 확인한 뒤
-# 댓글 요청이면 👀를 답니다. 라벨 떼기 · 👀가 실패해도 리뷰는 함. 직접 실행(요청 정보 없음)이면 그냥 받음
+# 요청(request)을 받아들이면 0. 댓글 요청은 본문이 명령인지 먼저 봄. 요청한 사람(라벨 · 댓글 · Run workflow)의
+# 쓰기 권한(admin · maintain · write)을 확인한 뒤 댓글 요청이면 👀를 답니다(👀가 실패해도 리뷰는 함).
+# 라벨은 codex-review.yml의 unlabel job이 뗍니다. 직접 실행(요청 정보 없음)이면 그냥 받음
 accept_request() {
   if [ -n "${CODEX_REQUEST_COMMENT:-}" ] && ! is_request_command "${CODEX_REQUEST_BODY:-}"; then
-    echo "댓글 첫 줄이 정확히 \`$REQUEST_COMMAND\`가 아니어서 리뷰 요청으로 보지 않습니다."
+    echo "댓글 첫 줄이 \`$REQUEST_COMMAND\`가 아니어서 리뷰 요청으로 보지 않습니다."
     return 1
-  fi
-  if [ -n "${CODEX_REQUEST_LABEL:-}" ]; then
-    gh api --method DELETE "repos/$REPO/issues/$PR/labels/$CODEX_REQUEST_LABEL" > /dev/null 2>&1 \
-      || echo "  (라벨 $CODEX_REQUEST_LABEL 을(를) 떼지 못했습니다. 이미 떼어졌으면 괜찮습니다)"
   fi
   if [ -z "${CODEX_REQUESTER:-}" ]; then
     if [ -n "${CODEX_REQUEST_LABEL:-}${CODEX_REQUEST_COMMENT:-}" ]; then
@@ -175,14 +173,15 @@ has_open_ci_failures() {
   [ -n "$ids" ]
 }
 
-# 게시 직전에 PR에 새 커밋이 올라와 결과를 버리고 끝냄. 요청 리뷰이고 지난 리뷰가 있으면 자동 실행은 새 커밋을
-# 건너뛰므로, 라벨을 다시 붙여 새 커밋으로 다시 요청함(이 계정이 붙인 라벨도 워크플로를 깨움)
+# 게시 직전에 PR에 새 커밋이 올라와 결과를 버리고 끝냄. 요청 리뷰인데 새 커밋의 자동 실행이 건너뛸 PR
+# (첫 리뷰가 있거나 문서만 바뀜, auto_skip_reason)이면 workflow_dispatch로 새 커밋을 다시 요청함.
+# 라벨 대신 workflow_dispatch를 쓰는 것은, 실행마다 그룹이 달라 지금 실행을 취소하지 않기 때문(codex-review.yml)
 head_moved() {
-  if [ "$TRIGGER" = request ] && [ -n "${CODEX_TRIGGER:-}" ] && [ -n "$PREV_ID" ] && ! $DRY_RUN; then
-    if gh api --method POST "repos/$REPO/issues/$PR/labels" -f "labels[]=$REQUEST_LABEL" > /dev/null 2>&1; then
-      echo "::notice title=Codex 재리뷰 다시 요청::PR #$PR: 리뷰하는 동안 새 커밋이 올라와 \`$REQUEST_LABEL\` 라벨을 다시 붙였습니다. 새 커밋으로 다시 리뷰합니다."
+  if [ "$TRIGGER" = request ] && [ -n "${CODEX_TRIGGER:-}" ] && ! $DRY_RUN && [ -n "$(auto_skip_reason)" ]; then
+    if gh workflow run "$REVIEW_WORKFLOW_FILE" -R "$REPO" -f "pr=$PR" > /dev/null 2>&1; then
+      echo "::notice title=Codex 재리뷰 다시 요청::PR #$PR: 리뷰하는 동안 새 커밋이 올라와 새 커밋으로 다시 요청했습니다."
     else
-      echo "::warning title=Codex 재리뷰 다시 요청 실패::PR #$PR: 리뷰하는 동안 새 커밋이 올라왔습니다. \`$REQUEST_LABEL\` 라벨을 다시 붙이거나 \`$REQUEST_COMMAND\` 댓글로 다시 요청하세요."
+      echo "::warning title=Codex 재리뷰 다시 요청 실패::PR #$PR: 리뷰하는 동안 새 커밋이 올라왔습니다. \`$REQUEST_LABEL\` 라벨을 붙이거나 \`$REQUEST_COMMAND\` 댓글로 다시 요청하세요."
     fi
   fi
   exit 0
@@ -408,6 +407,8 @@ main() {
     --jq '[.state, .baseRefName, .headRefOid, (.isDraft // false | tostring), (.isCrossRepository // false | tostring), (.author.login // "-")] | @tsv')
   TITLE=$(gh pr view "$PR" --json title --jq .title)
   if [ "$STATE" != "OPEN" ]; then
+    # 워크플로에서 돌 때(라벨 · 댓글 · Run workflow로 닫힌 PR을 요청)는 실패로 남기지 않고 건너뜀
+    [ -z "${CODEX_TRIGGER:-}" ] || skip_review "PR이 열려 있지 않습니다($STATE)."
     echo "PR #$PR 은(는) 열려 있지 않습니다 ($STATE)." >&2
     exit 1
   fi

@@ -14,7 +14,7 @@
 # - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간에 끝난 Codex 리뷰 실행 성공(건너뛴 실행 포함) · 실패 · 취소, Codex 남은 사용량
 # - Codex 사용량은 리뷰가 끝날 때 리뷰 컴퓨터가 올린 결과 파일(codex-review.yml의 codex-usage,
 #   scripts/codex-usage.mjs)의 가장 최근 것을 읽습니다. 리뷰가 돌 때만 바뀌므로 몇 시 리뷰 기준인지 함께 적습니다.
-#   리뷰 워크플로가 PR 이벤트(pull_request_target)나 리뷰 요청 댓글(issue_comment)로 돈 실행이 올린 것만 씁니다
+#   리뷰 워크플로가 PR 이벤트 · 리뷰 요청 댓글 · 직접 요청(review_run)으로 돈 실행이 올린 것만 씁니다
 #   (같은 이름으로 다른 워크플로나 PR 브랜치의 워크플로가 올린 것은 건너뜀).
 # - 지난 상태는 STATE_FILE에 둡니다(워크플로가 Actions 캐시로 이어 줌). 처음이면 온라인은 알리지 않습니다.
 #   상태를 읽지 못한 동안에는 마지막으로 안 상태와 그 시각을 그대로 둡니다(멈춘 시간이 끊기지 않게).
@@ -38,6 +38,7 @@ USAGE_ARTIFACT="${USAGE_ARTIFACT:-codex-usage}"  # codex-review.yml이 올리는
 USAGE_FILE_NAME="codex-usage.txt"                  # 결과 파일(zip) 안의 파일 이름
 USAGE_CANDIDATES="${USAGE_CANDIDATES:-5}"          # 출처를 확인할 최근 결과 파일 수
 REVIEW_WORKFLOW_PATH=".github/workflows/$REVIEW_WORKFLOW"
+REVIEW_DEFAULT_BRANCH="${REVIEW_DEFAULT_BRANCH:-main}"  # 직접 요청(workflow_dispatch)은 이 브랜치에서 돈 것만 믿음
 
 # 디스코드 embed 색
 COLOR_RED=15026253     # #E5484D
@@ -62,7 +63,7 @@ done_jq() {  # $1 = 시작 시각(UTC ISO)
 # 이름으로 거른 결과 파일 중 만료되지 않은 것을 최근 것부터: 결과 파일 id \t 올린 실행 id
 ARTIFACT_JQ='[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | reverse | .[] | [.id, .workflow_run.id] | @tsv'
 # 실행 정보: 워크플로 파일 \t 이벤트 \t 상태 \t 회차(다시 돌릴 때마다 1씩 오름)
-RUN_JQ='[.path, .event, .status, (.run_attempt // 1 | tostring)] | @tsv'
+RUN_JQ='[.path, .event, .status, (.run_attempt // 1 | tostring), (.head_branch // "")] | @tsv'
 # 멈춘 리뷰 표시 결과 파일 (codex-review.yml이 올림, 안에 pr= · retry= …)
 PAUSED_ARTIFACT="${PAUSED_ARTIFACT:-codex-paused}"
 PAUSED_FILE_NAME="codex-paused.txt"
@@ -186,12 +187,18 @@ read_counts() {
 }
 
 # 실행 정보(RUN_JQ 출력)가 리뷰 워크플로를 기본 브랜치(main)의 파일로 돌린 것이면 0:
-# PR 이벤트(pull_request_target) · 리뷰 요청 댓글(issue_comment). pull_request는 PR 브랜치의 파일이라 믿지 않음
-review_run() {  # $1 = "path \t event \t status \t attempt"
-  local path event
-  IFS=$'\t' read -r path event _ <<< "$1"
+# PR 이벤트(pull_request_target) · 리뷰 요청 댓글(issue_comment) · 직접 요청(workflow_dispatch).
+# pull_request는 PR 브랜치의 파일이라 믿지 않음. workflow_dispatch는 고른 브랜치의 파일로 돌므로
+# 기본 브랜치(REVIEW_DEFAULT_BRANCH)에서 돈 것만 믿음
+review_run() {  # $1 = "path \t event \t status \t attempt \t head_branch"
+  local path event status attempt branch
+  IFS=$'\t' read -r path event status attempt branch <<< "$1"
   [ "$path" = "$REVIEW_WORKFLOW_PATH" ] || return 1
-  [ "$event" = pull_request_target ] || [ "$event" = issue_comment ]
+  case "$event" in
+    pull_request_target | issue_comment) return 0 ;;
+    workflow_dispatch) [ "$branch" = "$REVIEW_DEFAULT_BRANCH" ] ;;
+    *) return 1 ;;
+  esac
 }
 
 # 가장 최근 codex-usage 결과 파일 → U_* (없으면 U_AT 빈 값) · USAGE_ERR(조회 · 내려받기에 실패했으면 1)
