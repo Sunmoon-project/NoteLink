@@ -1,5 +1,5 @@
-import { Type } from 'class-transformer';
-import { IsInt, IsOptional, Max, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsBoolean, IsInt, IsOptional, Max, Min } from 'class-validator';
 
 /**
  * 공개 스터디룸 목록 조회 (발표자료 p.75 "1. 스터디룸 탭 최초 화면")
@@ -13,4 +13,16 @@ export class ListStudyRoomsDto {
   @Min(1)
   @Max(50)
   limit?: number;
+
+  // GET /study-rooms?mine=true — 내가 참여 중인 방
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => value === 'true')
+  @IsBoolean()
+  mine?: boolean;
+
+  // GET /study-rooms?recommended=true — 공개방 (지금은 기본 목록과 같음)
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => value === 'true')
+  @IsBoolean()
+  recommended?: boolean;
 }

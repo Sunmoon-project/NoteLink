@@ -20,11 +20,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard.js';
 import { CreateReportDto } from './dto/create-report.dto.js';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto.js';
-import {
-  ReportDetailView,
-  ReportView,
-  SocialService,
-} from './social.service.js';
+import { ReportDetailView, ReportView, SocialService } from './social.service.js';
 
 @Controller()
 @UseGuards(JwtAuthGuard, RolesGuard) // 로그인 + (지정 시) 역할 검사
@@ -45,9 +41,7 @@ export class SocialController {
   // GET /api/v1/reports — 신고 목록 조회 (관리자 전용)
   @Get('reports')
   @Roles(ROLES.ADMIN)
-  async listReports(
-    @Query('status') status?: string,
-  ): Promise<{ data: ReportDetailView[] }> {
+  async listReports(@Query('status') status?: string): Promise<{ data: ReportDetailView[] }> {
     const data = await this.socialService.listReports({ status });
     return { data };
   }

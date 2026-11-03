@@ -8,11 +8,13 @@ import {
   MinLength,
 } from 'class-validator';
 
+import { REPORT_TYPES } from '../report.constants.js';
+
 /** 신고 접수 (발표자료 p.78 "10. 신고 내용 입력") */
 export class CreateReportDto {
   @IsMongoId() roomId: string;
   @IsMongoId() targetUserId: string;
-  @IsIn(['chat', 'profile', 'behavior']) reportType: string;
+  @IsIn(REPORT_TYPES) reportType: string;
 
   @IsString() @MinLength(1) @MaxLength(500) details: string;
 

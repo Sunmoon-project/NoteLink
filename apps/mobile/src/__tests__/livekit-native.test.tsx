@@ -178,3 +178,16 @@ it('접속 실패와 SDK 정리 오류가 겹쳐도 오디오 세션을 멈춘�
   await expect(connectMedia('room-1', jest.fn())).rejects.toThrow();
   expect(mockStop).toHaveBeenCalledTimes(1);
 });
+
+it('연결이 겹치면 마지막 연결이 닫힐 때만 오디오 세션을 끈다', async () => {
+  mockToken.mockResolvedValue({ token: 't', url: 'wss://live.example' });
+  mockStart.mockClear();
+  mockStop.mockClear();
+  const previous = await connectMedia('room-1', jest.fn());
+  const next = await connectMedia('room-1', jest.fn());
+  expect(mockStart).toHaveBeenCalledTimes(1);
+  await previous.close();
+  expect(mockStop).not.toHaveBeenCalled();
+  await next.close();
+  expect(mockStop).toHaveBeenCalledTimes(1);
+});

@@ -1,15 +1,8 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
-import {
-  StudyRoom,
-  StudyRoomDocument,
-} from '../studyroom/schemas/study-room.schema.js';
+import { StudyRoom, StudyRoomDocument } from '../studyroom/schemas/study-room.schema.js';
 import { ROOM_MEMBER_STATUS } from '../studyroom/study-room.constants.js';
 import { REPORT_STATUS, ReportStatus } from './report.constants.js';
 import { Report, ReportDocument } from './schemas/report.schema.js';
@@ -75,9 +68,7 @@ export class SocialService {
     const targetObjectId = new Types.ObjectId(input.targetUserId);
 
     const isMember = (id: Types.ObjectId): boolean =>
-      room.members.some(
-        (m) => m.userId.equals(id) && m.status === ROOM_MEMBER_STATUS.JOINED,
-      );
+      room.members.some((m) => m.userId.equals(id) && m.status === ROOM_MEMBER_STATUS.JOINED);
 
     // 신고자 본인이 그 방 멤버여야 함
     if (!isMember(reporterObjectId)) {
@@ -111,10 +102,12 @@ export class SocialService {
   // ===== 관리자(admin) 전용 =====
 
   /** 신고 목록을 조회합니다. status로 필터 가능. 미처리(pending) 우선 최신순. */
-  async listReports(options: {
-    status?: string;
-    limit?: number;
-  } = {}): Promise<ReportDetailView[]> {
+  async listReports(
+    options: {
+      status?: string;
+      limit?: number;
+    } = {},
+  ): Promise<ReportDetailView[]> {
     const safeLimit = Math.min(Math.max(options.limit ?? 50, 1), 100);
     const filter: Record<string, unknown> = {};
     if (options.status) {
@@ -131,10 +124,7 @@ export class SocialService {
   }
 
   /** 신고 상태를 변경합니다 (예: pending → resolved). */
-  async updateReportStatus(
-    reportId: string,
-    status: ReportStatus,
-  ): Promise<ReportDetailView> {
+  async updateReportStatus(reportId: string, status: ReportStatus): Promise<ReportDetailView> {
     const report = await this.findReportOr404(reportId);
     report.status = status;
     // 처리 완료 상태면 종료 시각을 기록합니다.

@@ -27,12 +27,19 @@ export interface AuthTokens {
   refreshToken: string;
 }
 
+export type AuthResult = AuthTokens & { user: PublicUser };
+
+/** packages/shared의 User 중 서버가 아직 가진 값 */
 export interface PublicUser {
-  id: string;
-  email?: string;
+  _id: string;
+  email: string | null;
   nickname: string;
   role: string;
   pointBalance: number;
+  status: string;
+  settings: Record<string, unknown>;
+  interestCategoryIds: string[];
+  streakDays: number;
 }
 
 @Injectable()
@@ -49,7 +56,7 @@ export class AuthService {
     email: string;
     password: string;
     nickname: string;
-  }): Promise<{ user: PublicUser; tokens: AuthTokens }> {
+  }): Promise<AuthResult> {
     const existing = await this.userModel.exists({ email: input.email });
     if (existing) {
       throw new ConflictException({
@@ -59,20 +66,24 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
-    const user = await this.userModel.create({
-      email: input.email,
-      passwordHash,
-      nickname: input.nickname,
-    });
+    // 동시 가입은 유일 인덱스가 막습니다. 위 exists는 빠른 안내용입니다.
+    const user = await this.userModel
+      .create({ email: input.email, passwordHash, nickname: input.nickname })
+      .catch((err: { code?: number }) => {
+        if (err.code === 11000) {
+          throw new ConflictException({
+            code: 'EMAIL_ALREADY_EXISTS',
+            message: '이미 사용 중인 이메일입니다.',
+          });
+        }
+        throw err;
+      });
 
     const tokens = await this.issueTokens(user);
-    return { user: this.toPublicUser(user), tokens };
+    return { ...tokens, user: this.toPublicUser(user) };
   }
 
-  async login(input: {
-    email: string;
-    password: string;
-  }): Promise<{ user: PublicUser; tokens: AuthTokens }> {
+  async login(input: { email: string; password: string }): Promise<AuthResult> {
     const user = await this.userModel.findOne({ email: input.email });
     // 비밀번호가 없는 계정(소셜 전용)이나 없는 이메일은 같은 오류로 응답합니다.
     if (!user?.passwordHash) {
@@ -94,7 +105,7 @@ export class AuthService {
     await user.save();
 
     const tokens = await this.issueTokens(user);
-    return { user: this.toPublicUser(user), tokens };
+    return { ...tokens, user: this.toPublicUser(user) };
   }
 
   /** refresh 토큰을 검증하고 회전(기존 폐기 + 신규 발급)합니다. */
@@ -112,10 +123,13 @@ export class AuthService {
     }
 
     const tokenHash = this.hashToken(refreshToken);
-    const stored = await this.refreshTokenModel.findOne({ tokenHash });
-
-    // 저장돼 있지 않거나 이미 폐기된 토큰이면 거부합니다.
-    if (!stored || stored.revokedAt || stored.expiresAt.getTime() < Date.now()) {
+    // 조회와 폐기를 한 번에 해서 같은 토큰의 동시 요청 중 하나만 통과시킵니다.
+    const now = new Date();
+    const stored = await this.refreshTokenModel.findOneAndUpdate(
+      { tokenHash, revokedAt: { $exists: false }, expiresAt: { $gt: now } },
+      { $set: { revokedAt: now } },
+    );
+    if (!stored) {
       throw new UnauthorizedException({
         code: 'INVALID_REFRESH_TOKEN',
         message: '유효하지 않은 리프레시 토큰입니다.',
@@ -123,16 +137,12 @@ export class AuthService {
     }
 
     const user = await this.userModel.findById(payload.sub);
-    if (!user) {
+    if (!user || user.deletedAt) {
       throw new UnauthorizedException({
         code: 'INVALID_REFRESH_TOKEN',
         message: '유효하지 않은 리프레시 토큰입니다.',
       });
     }
-
-    // 회전: 사용한 토큰은 폐기하고 새 토큰 쌍을 발급합니다.
-    stored.revokedAt = new Date();
-    await stored.save();
 
     return this.issueTokens(user);
   }
@@ -203,11 +213,15 @@ export class AuthService {
 
   private toPublicUser(user: UserDocument): PublicUser {
     return {
-      id: user._id.toString(),
-      email: user.email,
+      _id: user._id.toString(),
+      email: user.email ?? null,
       nickname: user.nickname,
       role: user.role,
       pointBalance: user.pointBalance,
+      status: user.status,
+      settings: user.settings ?? {},
+      interestCategoryIds: (user.interestCategoryIds ?? []).map(String),
+      streakDays: 0, // ponytail: 학습 기록 모듈이 생기면 서울 자정 기준으로 계산
     };
   }
 }

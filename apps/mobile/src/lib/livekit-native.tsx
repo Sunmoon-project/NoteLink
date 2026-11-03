@@ -17,6 +17,20 @@ export type MediaConnection = {
   video(userId: string): ReactNode;
 };
 
+// 오디오 세션은 앱에 하나다. 연결이 겹치면 마지막 연결이 닫힐 때만 끈다.
+let audioUsers = 0;
+let audioOps: Promise<unknown> = Promise.resolve();
+const audioOp = (op: () => Promise<void>) =>
+  (audioOps = audioOps.catch(() => {}).then(op)) as Promise<void>;
+const acquireAudio = () => {
+  audioUsers += 1;
+  return audioUsers === 1 ? audioOp(() => AudioSession.startAudioSession()) : audioOps;
+};
+const releaseAudio = () => {
+  audioUsers -= 1;
+  return audioUsers === 0 ? audioOp(() => AudioSession.stopAudioSession()) : Promise.resolve();
+};
+
 export async function connectMedia(roomId: string, onChange: () => void): Promise<MediaConnection> {
   const { token, url } = await api.rooms.livekitToken(roomId);
   if (!token || !/^wss?:\/\//.test(url)) throw new Error('미디어 연결 주소를 확인해 주세요');
@@ -46,14 +60,14 @@ export async function connectMedia(roomId: string, onChange: () => void): Promis
   ];
   events.forEach((event) => room.on(event, syncAudio));
   try {
-    await AudioSession.startAudioSession();
+    await acquireAudio();
     await room.connect(url, token);
   } catch (e) {
     room.removeAllListeners();
     try {
       await room.disconnect();
     } finally {
-      await AudioSession.stopAudioSession();
+      await releaseAudio();
     }
     throw e;
   }
@@ -89,7 +103,7 @@ export async function connectMedia(roomId: string, onChange: () => void): Promis
       try {
         await room.disconnect();
       } finally {
-        await AudioSession.stopAudioSession();
+        await releaseAudio();
       }
     },
     video(userId) {

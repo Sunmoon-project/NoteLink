@@ -11,6 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 
+import { ChatGateway } from '../../realtime/chat.gateway.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard.js';
 import { ChatService, ChatMessageView } from './chat.service.js';
@@ -28,6 +29,7 @@ export class StudyroomController {
   constructor(
     private readonly studyroomService: StudyroomService,
     private readonly chatService: ChatService,
+    private readonly chatGateway: ChatGateway,
   ) {}
 
   // POST /api/v1/study-rooms — 방 만들기 (p.75 "3. 스터디룸 만들기")
@@ -45,9 +47,13 @@ export class StudyroomController {
   // GET /api/v1/study-rooms — 공개방 목록 (p.75 "1. 스터디룸 탭 최초 화면")
   @Get()
   async list(
+    @Req() req: AuthenticatedRequest,
     @Query() query: ListStudyRoomsDto,
   ): Promise<{ data: StudyRoomView[] }> {
-    const data = await this.studyroomService.list(query.limit);
+    const data = await this.studyroomService.list(
+      query.limit,
+      query.mine ? req.user.userId : undefined,
+    );
     return { data };
   }
 
@@ -58,10 +64,7 @@ export class StudyroomController {
     @Req() req: AuthenticatedRequest,
     @Body() dto: JoinStudyRoomDto,
   ): Promise<{ data: StudyRoomView }> {
-    const data = await this.studyroomService.joinByCode(
-      req.user.userId,
-      dto.inviteCode,
-    );
+    const data = await this.studyroomService.joinByCode(req.user.userId, dto.inviteCode);
     return { data };
   }
 
@@ -73,7 +76,28 @@ export class StudyroomController {
     @Param('id') id: string,
   ): Promise<{ data: { closed: boolean } }> {
     const data = await this.studyroomService.leave(req.user.userId, id);
+    // 나간 뒤에는 열어 둔 소켓으로도 대화를 받지 않습니다.
+    this.chatGateway.removeFromRoom(req.user.userId, id);
     return { data };
+  }
+
+  // GET /api/v1/study-rooms/:id — 방 정보
+  @Get(':id')
+  async get(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ): Promise<{ data: StudyRoomView }> {
+    return { data: await this.studyroomService.get(req.user.userId, id) };
+  }
+
+  // GET /api/v1/study-rooms/:id/chat-room — 앱이 채팅에 쓰는 chatRoomId
+  @Get(':id/chat-room')
+  async chatRoom(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ): Promise<{ data: { chatRoomId: string } }> {
+    await this.chatService.assertMember(req.user.userId, id);
+    return { data: { chatRoomId: await this.chatService.getChatRoomId(id) } };
   }
 
   // GET /api/v1/study-rooms/:id/messages — 채팅 히스토리 (무한 스크롤)
@@ -99,6 +123,28 @@ export class StudyroomController {
     @Param('id') id: string,
   ): Promise<{ data: StudyRoomMemberView[] }> {
     const data = await this.studyroomService.getMembers(req.user.userId, id);
+    return { data };
+  }
+}
+
+// 앱의 채팅 기록 주소 (packages/shared PATHS.chatMessages)
+@Controller('chat-rooms')
+@UseGuards(JwtAuthGuard)
+export class ChatRoomsController {
+  constructor(private readonly chatService: ChatService) {}
+
+  @Get(':id/messages')
+  async messages(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Query() query: ListMessagesDto,
+  ): Promise<{ data: ChatMessageView[] }> {
+    const roomId = await this.chatService.studyRoomOf(id);
+    await this.chatService.assertMember(req.user.userId, roomId);
+    const data = await this.chatService.getHistory(roomId, {
+      limit: query.limit,
+      before: query.before,
+    });
     return { data };
   }
 }

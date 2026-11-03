@@ -41,8 +41,12 @@ export class StudyRoom {
   @Prop({ required: true })
   title: string;
 
-  @Prop({ type: Types.ObjectId, ref: 'Category', required: true })
-  categoryId: Types.ObjectId; // categories 참조[cite: 28]
+  // ponytail: 앱이 이름만 보낸다. categories 컬렉션이 생기면 이름을 id로 바꿔 저장
+  @Prop({ required: true })
+  categoryName: string;
+
+  @Prop({ type: Types.ObjectId, ref: 'Category' })
+  categoryId?: Types.ObjectId; // categories 참조[cite: 28]
 
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   hostId: Types.ObjectId; // users 참조[cite: 28]

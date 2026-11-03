@@ -60,7 +60,7 @@ describe('SocialService', () => {
         service.createReport(reporterId, {
           roomId,
           targetUserId: reporterId, // 동일인
-          reportType: 'chat',
+          reportType: 'spam',
           details: 'x',
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
@@ -72,7 +72,7 @@ describe('SocialService', () => {
         service.createReport(reporterId, {
           roomId,
           targetUserId: targetId,
-          reportType: 'chat',
+          reportType: 'spam',
           details: 'x',
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
@@ -91,7 +91,7 @@ describe('SocialService', () => {
         service.createReport(reporterId, {
           roomId,
           targetUserId: targetId,
-          reportType: 'chat',
+          reportType: 'spam',
           details: 'x',
         }),
       ).rejects.toMatchObject({ response: { code: 'TARGET_NOT_IN_ROOM' } });
@@ -106,7 +106,7 @@ describe('SocialService', () => {
       const result = await service.createReport(reporterId, {
         roomId,
         targetUserId: targetId,
-        reportType: 'behavior',
+        reportType: 'other',
         details: '부적절한 언행',
       });
 
@@ -159,7 +159,7 @@ describe('SocialService', () => {
         roomId: new Types.ObjectId(),
         reporterId: new Types.ObjectId(),
         targetUserId: new Types.ObjectId(),
-        reportType: 'chat',
+        reportType: 'spam',
         details: 'x',
         imageUrls: [],
         status: 'pending',
@@ -168,10 +168,7 @@ describe('SocialService', () => {
         get: () => new Date(),
       });
 
-      const result = await service.updateReportStatus(
-        new Types.ObjectId().toString(),
-        'resolved',
-      );
+      const result = await service.updateReportStatus(new Types.ObjectId().toString(), 'resolved');
       expect(save).toHaveBeenCalledOnce();
       expect(result.status).toBe('resolved');
     });
@@ -180,9 +177,9 @@ describe('SocialService', () => {
   describe('deleteReport', () => {
     it('없는 신고면 REPORT_NOT_FOUND', async () => {
       reportModel.findById.mockResolvedValue(null);
-      await expect(
-        service.deleteReport(new Types.ObjectId().toString()),
-      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.deleteReport(new Types.ObjectId().toString())).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
 
     it('있으면 deleteOne 호출', async () => {

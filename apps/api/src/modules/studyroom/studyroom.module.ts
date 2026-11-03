@@ -7,7 +7,7 @@ import { ChatRoom, ChatRoomSchema } from '../social/schemas/chat-room.schema.js'
 import { Message, MessageSchema } from '../social/schemas/message.schema.js';
 import { ChatService } from './chat.service.js';
 import { StudyRoom, StudyRoomSchema } from './schemas/study-room.schema.js';
-import { StudyroomController } from './studyroom.controller.js';
+import { ChatRoomsController, StudyroomController } from './studyroom.controller.js';
 import { StudyroomService } from './studyroom.service.js';
 
 @Module({
@@ -20,7 +20,7 @@ import { StudyroomService } from './studyroom.service.js';
     // JwtAuthGuard와 소켓 JWT 검증을 위해 Auth 모듈(JwtModule 포함)을 가져옵니다.
     AuthModule,
   ],
-  controllers: [StudyroomController],
+  controllers: [StudyroomController, ChatRoomsController],
   providers: [StudyroomService, ChatService, ChatGateway],
   exports: [MongooseModule, StudyroomService, ChatService],
 })

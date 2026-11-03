@@ -26,7 +26,7 @@ function createUserModelMock() {
 function createRefreshModelMock() {
   return {
     create: vi.fn().mockResolvedValue({}),
-    findOne: vi.fn(),
+    findOneAndUpdate: vi.fn(),
     updateOne: vi.fn().mockResolvedValue({ modifiedCount: 1 }),
   };
 }
@@ -97,10 +97,18 @@ describe('AuthService', () => {
       };
       expect(createArg.passwordHash).not.toBe('password1');
       expect(await bcrypt.compare('password1', createArg.passwordHash)).toBe(true);
-      expect(result.tokens.accessToken).toBe('signed.jwt.token');
-      expect(result.user.id).toBe('uid1');
+      expect(result.accessToken).toBe('signed.jwt.token');
+      expect(result.user._id).toBe('uid1');
       expect(refreshModel.create).toHaveBeenCalledOnce();
     });
+  });
+
+  it('동시 가입으로 유일 인덱스에 걸리면 ConflictException', async () => {
+    userModel.exists.mockResolvedValue(null);
+    userModel.create.mockRejectedValue(Object.assign(new Error('dup'), { code: 11000 }));
+    await expect(
+      service.register({ email: 'a@b.com', password: 'password1', nickname: 'kim' }),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 
   describe('login', () => {
@@ -138,7 +146,7 @@ describe('AuthService', () => {
       });
 
       const result = await service.login({ email: 'a@b.com', password: 'correct-password' });
-      expect(result.tokens.accessToken).toBe('signed.jwt.token');
+      expect(result.accessToken).toBe('signed.jwt.token');
       expect(save).toHaveBeenCalledOnce();
     });
   });
@@ -146,40 +154,22 @@ describe('AuthService', () => {
   describe('refresh', () => {
     it('저장돼 있지 않은 토큰이면 UnauthorizedException', async () => {
       jwt.verifyAsync.mockResolvedValue({ sub: 'uid1', jti: 'j1' });
-      refreshModel.findOne.mockResolvedValue(null);
+      refreshModel.findOneAndUpdate.mockResolvedValue(null);
       await expect(service.refresh('some.refresh.token')).rejects.toBeInstanceOf(
         UnauthorizedException,
       );
     });
 
-    it('이미 폐기된 토큰이면 UnauthorizedException', async () => {
+    it('사용하지 않은 토큰만 한 번의 갱신으로 폐기하고 새 토큰을 발급한다(회전)', async () => {
       jwt.verifyAsync.mockResolvedValue({ sub: 'uid1', jti: 'j1' });
-      refreshModel.findOne.mockResolvedValue({
-        revokedAt: new Date(),
-        expiresAt: new Date(Date.now() + 10000),
-        save: vi.fn(),
-      });
-      await expect(service.refresh('some.refresh.token')).rejects.toBeInstanceOf(
-        UnauthorizedException,
-      );
-    });
-
-    it('유효한 토큰이면 기존 토큰을 폐기하고 새 토큰을 발급한다(회전)', async () => {
-      jwt.verifyAsync.mockResolvedValue({ sub: 'uid1', jti: 'j1' });
-      const save = vi.fn();
-      refreshModel.findOne.mockResolvedValue({
-        revokedAt: undefined,
-        expiresAt: new Date(Date.now() + 10000),
-        save,
-      });
-      userModel.findById.mockResolvedValue({
-        _id: { toString: () => 'uid1' },
-        role: 'user',
-      });
+      refreshModel.findOneAndUpdate.mockResolvedValue({});
+      userModel.findById.mockResolvedValue({ _id: { toString: () => 'uid1' }, role: 'user' });
 
       const tokens = await service.refresh('some.refresh.token');
-      expect(save).toHaveBeenCalledOnce(); // 기존 토큰 폐기 저장
-      expect(refreshModel.create).toHaveBeenCalledOnce(); // 새 토큰 발급
+
+      const filter = refreshModel.findOneAndUpdate.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(filter.revokedAt).toEqual({ $exists: false });
+      expect(refreshModel.create).toHaveBeenCalledOnce();
       expect(tokens.accessToken).toBe('signed.jwt.token');
     });
   });

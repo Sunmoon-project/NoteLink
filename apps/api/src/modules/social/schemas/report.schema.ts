@@ -15,7 +15,7 @@ export class Report {
   targetUserId: Types.ObjectId; // 신고 대상 유저[cite: 28]
 
   @Prop({ required: true })
-  reportType: string; // chat, profile, behavior 등[cite: 28]
+  reportType: string; // packages/shared ReportType
 
   @Prop({ required: true })
   details: string;

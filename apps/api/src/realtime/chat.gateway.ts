@@ -1,10 +1,9 @@
-import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import {
   ConnectedSocket,
   MessageBody,
-  OnGatewayConnection,
+  OnGatewayInit,
   SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
@@ -12,7 +11,7 @@ import {
 import type { Server, Socket } from 'socket.io';
 
 import { CHAT_EVENTS } from '../modules/studyroom/chat.events.js';
-import { ChatService } from '../modules/studyroom/chat.service.js';
+import { ChatMessageView, ChatService } from '../modules/studyroom/chat.service.js';
 
 // 소켓에 로그인 사용자 정보를 붙여두기 위한 타입
 interface AuthedSocket extends Socket {
@@ -23,13 +22,11 @@ interface AuthedSocket extends Socket {
  * 스터디룸 채팅 게이트웨이 (Socket.IO).
  * REST가 경로로 분기한다면, 여기서는 @SubscribeMessage(이벤트 이름)로 분기합니다.
  */
+// 앱은 기본 네임스페이스에 연결합니다 (apps/mobile lib/socket.ts).
 @WebSocketGateway({
-  namespace: '/chat',
   cors: { origin: '*' }, // 개발용. 운영에서는 허용 도메인으로 제한하세요.
 })
-export class ChatGateway implements OnGatewayConnection {
-  private readonly logger = new Logger(ChatGateway.name);
-
+export class ChatGateway implements OnGatewayInit {
   @WebSocketServer()
   private server!: Server;
 
@@ -39,22 +36,29 @@ export class ChatGateway implements OnGatewayConnection {
     private readonly config: ConfigService,
   ) {}
 
-  /** 소켓이 연결될 때 JWT를 검증합니다. 실패하면 연결을 끊습니다. */
-  async handleConnection(client: AuthedSocket): Promise<void> {
-    try {
-      const token = this.extractToken(client);
-      const payload = await this.jwtService.verifyAsync<{ sub: string }>(
-        token,
-        { secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET') },
+  /** 연결 전에 JWT를 검증해, connect가 끝난 소켓은 항상 로그인 상태입니다. */
+  afterInit(server: Server): void {
+    server.use((client: AuthedSocket, next) => {
+      void this.authenticate(client).then(
+        () => next(),
+        () =>
+          next(Object.assign(new Error('인증이 필요합니다.'), { data: { code: 'UNAUTHORIZED' } })),
       );
-      client.data.userId = payload.sub;
-    } catch {
-      client.emit(CHAT_EVENTS.ERROR, {
-        code: 'UNAUTHORIZED',
-        message: '인증이 필요합니다.',
-      });
-      client.disconnect(true);
-    }
+    });
+  }
+
+  private async authenticate(client: AuthedSocket): Promise<void> {
+    const payload = await this.jwtService.verifyAsync<{ sub: string }>(this.extractToken(client), {
+      secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
+    });
+    client.data.userId = payload.sub;
+    // 사용자 단위로 내보낼 수 있게 (removeFromRoom)
+    await client.join(this.userRoom(payload.sub));
+  }
+
+  /** 스터디룸을 나간 사용자의 모든 소켓을 그 방 구독에서 뺍니다. */
+  removeFromRoom(userId: string, roomId: string): void {
+    this.server.in(this.userRoom(userId)).socketsLeave(this.roomName(roomId));
   }
 
   /** 방 입장: 참여 멤버인지 확인 후 Socket.IO 룸에 join */
@@ -62,17 +66,14 @@ export class ChatGateway implements OnGatewayConnection {
   async handleJoin(
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody() body: { roomId: string },
-  ): Promise<void> {
-    const userId = client.data.userId;
-    if (!userId) {
-      return;
-    }
+  ): Promise<{ ok: boolean }> {
     try {
-      await this.chatService.assertMember(userId, body.roomId);
+      await this.chatService.assertMember(client.data.userId!, body.roomId);
       await client.join(this.roomName(body.roomId));
-      client.emit(CHAT_EVENTS.JOINED, { roomId: body.roomId });
+      return { ok: true };
     } catch (err) {
       this.emitError(client, err);
+      return { ok: false };
     }
   }
 
@@ -85,43 +86,40 @@ export class ChatGateway implements OnGatewayConnection {
     await client.leave(this.roomName(body.roomId));
   }
 
-  /** 메시지 전송: 저장한 뒤 같은 방 사람들에게 실시간 전달 */
+  /** 메시지 전송: 저장한 뒤 같은 방에 방송하고, 보낸 사람에게 저장본을 확인 응답으로 돌려줍니다. */
   @SubscribeMessage(CHAT_EVENTS.SEND)
   async handleSend(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { roomId: string; text: string },
-  ): Promise<void> {
-    const userId = client.data.userId;
-    if (!userId) {
-      return;
-    }
-
+    @MessageBody() body: { chatRoomId: string; text: string; clientId?: string },
+  ): Promise<ChatMessageView | undefined> {
+    const userId = client.data.userId!;
     const text = (body.text ?? '').trim();
     if (!text) {
       this.emitError(client, {
         code: 'EMPTY_MESSAGE',
         message: '빈 메시지는 보낼 수 없습니다.',
       });
-      return;
+      return undefined;
     }
 
     try {
-      // 멤버 확인 → 저장 → 같은 방에 방송
-      await this.chatService.assertMember(userId, body.roomId);
-      const message = await this.chatService.saveMessage(
-        userId,
-        body.roomId,
-        text,
-      );
-      this.server
-        .to(this.roomName(body.roomId))
-        .emit(CHAT_EVENTS.MESSAGE, message);
+      const roomId = await this.chatService.studyRoomOf(body.chatRoomId);
+      await this.chatService.assertMember(userId, roomId);
+      const message = await this.chatService.saveMessage(userId, roomId, text, body.clientId);
+      this.server.to(this.roomName(roomId)).emit(CHAT_EVENTS.MESSAGE, message);
+      return message;
     } catch (err) {
+      // 앱의 확인 콜백은 Message만 받으므로 실패는 오류 이벤트로만 알립니다.
       this.emitError(client, err);
+      return undefined;
     }
   }
 
   // --- 헬퍼 ---
+
+  private userRoom(userId: string): string {
+    return `user:${userId}`;
+  }
 
   private roomName(roomId: string): string {
     return `study-room:${roomId}`;

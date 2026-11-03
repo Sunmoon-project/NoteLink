@@ -45,6 +45,7 @@ import {
   Input,
   Label,
   Loading,
+  Avatar,
   Screen,
   Two,
   cx,
@@ -575,9 +576,7 @@ export function RoomScreen() {
               {camOn && (
                 <View className="absolute top-2.5 right-2.5 h-1.5 w-1.5 rounded-full bg-sun" />
               )}
-              {!camOn && (
-                <Text className={chat ? 'text-title3' : 'text-large'}>{m.avatarUrl ?? '🙂'}</Text>
-              )}
+              {!camOn && <Avatar uri={m.avatarUrl} name={m.nickname} size={chat ? 28 : 44} />}
               <Text className={cx('text-footnote font-bold', camOn ? 'text-white' : 'text-ink')}>
                 {m.nickname}
               </Text>

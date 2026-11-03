@@ -117,3 +117,8 @@ export class User {
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
+// 이메일은 소셜 가입자에게 없을 수 있어, 있는 문서끼리만 유일합니다.
+UserSchema.index(
+  { email: 1 },
+  { unique: true, partialFilterExpression: { email: { $type: 'string' } } },
+);

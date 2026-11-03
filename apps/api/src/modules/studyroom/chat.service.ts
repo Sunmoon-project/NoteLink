@@ -8,13 +8,16 @@ import { MESSAGE_TYPES } from './chat.events.js';
 import { ROOM_MEMBER_STATUS } from './study-room.constants.js';
 import { StudyRoom, StudyRoomDocument } from './schemas/study-room.schema.js';
 
+/** packages/shared의 Message */
 export interface ChatMessageView {
-  id: string;
-  roomId: string;
+  _id: string;
+  chatRoomId: string;
   senderId: string;
   type: string;
-  text?: string;
+  text: string | null;
+  sharedItemId: null;
   createdAt: string;
+  clientId?: string;
 }
 
 @Injectable()
@@ -50,9 +53,7 @@ export class ChatService {
 
     const userObjectId = new Types.ObjectId(userId);
     const isMember = room.members.some(
-      (m) =>
-        m.userId.equals(userObjectId) &&
-        m.status === ROOM_MEMBER_STATUS.JOINED,
+      (m) => m.userId.equals(userObjectId) && m.status === ROOM_MEMBER_STATUS.JOINED,
     );
     if (!isMember) {
       throw new ForbiddenException({
@@ -67,6 +68,7 @@ export class ChatService {
     userId: string,
     roomId: string,
     text: string,
+    clientId?: string,
   ): Promise<ChatMessageView> {
     // 스터디룸에 연결된 chat_room을 찾습니다(없으면 안전하게 생성).
     const chatRoom = await this.getOrCreateChatRoom(roomId);
@@ -86,7 +88,7 @@ export class ChatService {
     };
     await chatRoom.save();
 
-    return this.toMessageView(message, roomId);
+    return { ...this.toMessageView(message), ...(clientId ? { clientId } : {}) };
   }
 
   /**
@@ -127,35 +129,54 @@ export class ChatService {
       .exec();
 
     // 화면 표시용으로 오래된→최신 순으로 뒤집어 반환합니다.
-    return docs.reverse().map((m) => this.toMessageView(m, roomId));
+    return docs.reverse().map((m) => this.toMessageView(m));
   }
 
   /** Message 문서를 방송·응답용 뷰로 변환합니다. */
-  private toMessageView(m: MessageDocument, roomId: string): ChatMessageView {
+  private toMessageView(m: MessageDocument): ChatMessageView {
     return {
-      id: m._id.toString(),
-      roomId,
+      _id: m._id.toString(),
+      chatRoomId: m.chatRoomId.toString(),
       senderId: m.senderId.toString(),
       type: m.type,
-      text: m.text,
+      text: m.text ?? null,
+      sharedItemId: null,
       createdAt: (m.get('createdAt') as Date).toISOString(),
     };
   }
 
   /** 스터디룸에 연결된 chat_room을 찾고, 없으면 만듭니다. */
-  private async getOrCreateChatRoom(
-    roomId: string,
-  ): Promise<ChatRoomDocument> {
-    const studyRoomObjectId = new Types.ObjectId(roomId);
-    const existing = await this.chatRoomModel.findOne({
-      studyRoomId: studyRoomObjectId,
-    });
-    if (existing) {
-      return existing;
+  private async getOrCreateChatRoom(roomId: string): Promise<ChatRoomDocument> {
+    const studyRoomId = new Types.ObjectId(roomId);
+    const upsert = () =>
+      this.chatRoomModel.findOneAndUpdate(
+        { studyRoomId },
+        { $setOnInsert: { type: 'study_room', studyRoomId } },
+        { upsert: true, new: true },
+      );
+    // 동시 생성이면 유일 인덱스에 걸린 쪽은 다시 읽습니다.
+    return upsert().catch((err: { code?: number }) => {
+      if (err.code === 11000) return upsert();
+      throw err;
+    }) as Promise<ChatRoomDocument>;
+  }
+
+  /** 앱이 채팅에 쓰는 chatRoomId (GET /study-rooms/:id/chat-room) */
+  async getChatRoomId(roomId: string): Promise<string> {
+    return (await this.getOrCreateChatRoom(roomId))._id.toString();
+  }
+
+  /** chatRoomId가 가리키는 스터디룸 id. 스터디룸 채팅이 아니면 없는 방으로 처리합니다. */
+  async studyRoomOf(chatRoomId: string): Promise<string> {
+    const chatRoom = Types.ObjectId.isValid(chatRoomId)
+      ? await this.chatRoomModel.findById(chatRoomId)
+      : null;
+    if (!chatRoom?.studyRoomId) {
+      throw new NotFoundException({
+        code: 'ROOM_NOT_FOUND',
+        message: '존재하지 않는 채팅방입니다.',
+      });
     }
-    return this.chatRoomModel.create({
-      type: 'study_room',
-      studyRoomId: studyRoomObjectId,
-    });
+    return chatRoom.studyRoomId.toString();
   }
 }

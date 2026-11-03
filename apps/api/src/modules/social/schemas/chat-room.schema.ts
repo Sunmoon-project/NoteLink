@@ -43,3 +43,8 @@ export class ChatRoom {
 }
 
 export const ChatRoomSchema = SchemaFactory.createForClass(ChatRoom);
+// 스터디룸 하나에 채팅방 하나 (1:1 채팅방에는 studyRoomId가 없음)
+ChatRoomSchema.index(
+  { studyRoomId: 1 },
+  { unique: true, partialFilterExpression: { studyRoomId: { $exists: true } } },
+);

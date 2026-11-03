@@ -38,7 +38,14 @@ export class JwtAuthGuard implements CanActivate {
       });
       request.user = { userId: payload.sub, role: payload.role };
       return true;
-    } catch {
+    } catch (err) {
+      // 앱은 이 코드를 받아야 토큰을 갱신합니다 (packages/shared ERROR_CODES.TOKEN_EXPIRED).
+      if ((err as Error).name === 'TokenExpiredError') {
+        throw new UnauthorizedException({
+          code: 'AUTH_TOKEN_EXPIRED',
+          message: '액세스 토큰이 만료되었습니다.',
+        });
+      }
       throw new UnauthorizedException({
         code: 'UNAUTHORIZED',
         message: '유효하지 않은 액세스 토큰입니다.',
