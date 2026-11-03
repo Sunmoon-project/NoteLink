@@ -420,12 +420,14 @@ export function TimetableScreen() {
                 {laneBlocks(
                   classes
                     .filter((c) => c.days.includes(d))
-                    .map((c) => ({
-                      c,
-                      top: toH(c.startTime),
-                      h: toH(c.endTime) - toH(c.startTime),
-                    })),
-                ).map(({ block: { c }, lane, lanes }) => (
+                    // 겹침은 그려지는 위치로 판단한다 (짧은 수업은 최소 높이 · 아래쪽 보정으로 위치가 바뀐다)
+                    .map((c) => {
+                      const h = Math.max(6, (toH(c.endTime) - toH(c.startTime)) * H - 3);
+                      const maxTop = (lastHour - firstHour) * H - h;
+                      const top = (toH(c.startTime) - firstHour) * H + 2;
+                      return { c, h, top: Math.max(0, Math.min(top, maxTop)) };
+                    }),
+                ).map(({ block: { c, top, h }, lane, lanes }) => (
                   <Pressable
                     key={c._id}
                     onPress={() => setPick(c)}
@@ -433,15 +435,8 @@ export function TimetableScreen() {
                     style={{
                       left: `${(lane * 100) / lanes}%`,
                       width: `${100 / lanes}%`,
-                      top: Math.max(
-                        0,
-                        Math.min(
-                          (toH(c.startTime) - firstHour) * H + 2,
-                          (lastHour - firstHour) * H -
-                            Math.max(6, (toH(c.endTime) - toH(c.startTime)) * H - 3),
-                        ),
-                      ),
-                      height: Math.max(6, (toH(c.endTime) - toH(c.startTime)) * H - 3),
+                      top,
+                      height: h,
                       backgroundColor: c.color,
                     }}
                   >

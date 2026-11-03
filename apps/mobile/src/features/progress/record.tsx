@@ -503,26 +503,30 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
         <View className="absolute inset-0 left-7 flex-row">
           {days.map((_, di) => (
             <View key={di} className="relative flex-1">
-              {laneBlocks(blocks.filter((b) => b.day === di)).map(
-                ({ block: b, lane, lanes }, i) => (
-                  <View
-                    key={i}
-                    className="absolute rounded-md px-1 py-0.5"
-                    style={{
-                      left: `${(lane * 100) / lanes}%`,
-                      width: `${100 / lanes}%`,
-                      top: Math.max(
-                        0,
-                        Math.min(b.top * H + 4, (END - START) * H - Math.max(1, b.h * H - 4)),
-                      ),
-                      height: Math.max(1, b.h * H - 4),
-                      backgroundColor: b.bg,
-                    }}
-                  >
-                    <Text className="text-caption2 leading-3 text-ink">{b.label}</Text>
-                  </View>
-                ),
-              )}
+              {laneBlocks(
+                blocks
+                  .filter((b) => b.day === di)
+                  // 겹침은 그려지는 위치로 판단한다
+                  .map((b) => {
+                    const h = Math.max(1, b.h * H - 4);
+                    const maxTop = (END - START) * H - h;
+                    return { ...b, h, top: Math.max(0, Math.min(b.top * H + 4, maxTop)) };
+                  }),
+              ).map(({ block: b, lane, lanes }, i) => (
+                <View
+                  key={i}
+                  className="absolute rounded-md px-1 py-0.5"
+                  style={{
+                    left: `${(lane * 100) / lanes}%`,
+                    width: `${100 / lanes}%`,
+                    top: b.top,
+                    height: b.h,
+                    backgroundColor: b.bg,
+                  }}
+                >
+                  <Text className="text-caption2 leading-3 text-ink">{b.label}</Text>
+                </View>
+              ))}
             </View>
           ))}
         </View>
