@@ -526,13 +526,16 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     # 3. 코드: 사본으로 넘겨줌. 같은 낱말의 다른 복습 중 문제도 함께 넘겨 내일 다시 나오지 않게
     questions: list[JsonObject] = []
     merged = 0
-    # 결함으로 내일 다시 만들 문제(dropped의 active)는 넘기지 않음: 결함 처리가 덮임
-    held = {(d["quizSetId"], d["questionId"]) for d in dropped if d["state"] == "active"}
+    # 결함으로 다시 만들 복습 중 문제(flaw 있음)는 같은 낱말의 사본으로 넘기지 않음: 결함 처리가
+    # 덮임. 오늘 미룬 것(dropped의 active)뿐 아니라 전날 미뤄 오늘 같은 낱말 검사로 건너뛴 것도.
+    # 고른 문제 자신은 그 사본으로 넘김(노트가 없으면 결함 문제도 그대로 냄)
+    chosen = {(s.id, q["id"]) for s, q in picked}
     active = [
         (s, q, cast(srs.Srs, q["srs"]))
         for s in live
         for q in s.questions
-        if _state(q) == "active" and (s.id, q["id"]) not in held
+        if _state(q) == "active"
+        and (not cast(srs.Srs, q["srs"]).get("flaw") or (s.id, q["id"]) in chosen)
     ]
     for i, (_, q) in enumerate(picked, 1):
         # 결함 문제를 바꾼 새 문제는 id를 그대로 둠: flawed 문제의 movedTo가 이 id를 가리킴

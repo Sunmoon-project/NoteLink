@@ -569,6 +569,20 @@ def test_question_put_off_is_not_handed_to_a_copy_when_the_check_call_fails() ->
     assert up["q2"]["state"] == "moved" and result["merged"] == 0
 
 
+def test_question_put_off_the_day_before_is_not_handed_to_a_same_word_copy() -> None:
+    # 전날 미룬 q1과 같은 답의 q2(더 오래됨)가 함께 날짜가 됨: q2를 고르고 q1은 같은 낱말이라
+    # 건너뜀(검사도 하지 않음). q1은 q2의 사본으로 넘기지 않고 내일 다시 만들어 봄
+    inp = flawed_input(unchecked(flaw="빈칸에 넣어도 말이 되는 오답 보기: secured", flawTries=1))
+    other = q("q2", "fastened", "fasten의 뜻", st(TOMORROW - timedelta(days=5), "wrong"))
+    inp["sets"].append({"id": "s2", "materialId": "m1", "questions": [other]})
+    llm = FakeLlm()
+    result = run(llm, inp)
+    assert [x["answer"] for x in result["questions"]] == ["fastened"]  # q2의 사본
+    up = updates(result)
+    assert "q1" not in up and up["q2"]["state"] == "moved" and result["merged"] == 0
+    assert not llm.calls
+
+
 def test_check_call_failing_leaves_the_question_unchecked() -> None:
     llm = FakeLlm({"Natural": [LlmError("HTTP 503")] * 9})
     result = run(llm, flawed_input(unchecked()))
