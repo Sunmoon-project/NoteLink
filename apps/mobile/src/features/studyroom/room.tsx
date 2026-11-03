@@ -345,7 +345,11 @@ export function RoomScreen() {
   const [chat, setChat] = useState(false);
   const [conn, setConn] = useState<'ok' | 'lost' | 'back' | 'kicked'>('ok');
   const [mediaGeneration, setMediaGeneration] = useState(0);
-  const today = useQuery({ queryKey: ['study-today'], queryFn: () => api.study.today() });
+  // 서울 자정이 지나면 키가 바뀌어 새 날의 학습 시간을 다시 읽는다
+  const today = useQuery({
+    queryKey: ['study-today', ymd(seoul(now))],
+    queryFn: () => api.study.today(),
+  });
   const live = useLiveRoom(
     id,
     conn !== 'kicked' && !!room.data,

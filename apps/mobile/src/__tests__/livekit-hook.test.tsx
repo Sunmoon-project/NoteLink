@@ -163,3 +163,23 @@ it('다른 방을 연결하는 동안 이전 방의 연결·송출 상태를 표
   await act(async () => next.resolve(second));
   await waitFor(() => expect(result.current.connected).toBe(true));
 });
+
+it('room:state에 전달받은 오늘 학습 시간을 보낸다', async () => {
+  mockUseMock = false;
+  mockConnectMedia.mockResolvedValue({
+    connected: true,
+    micOn: false,
+    camOn: false,
+    hearing: true,
+    close: jest.fn(async () => {}),
+    video: () => null,
+  } as unknown as MediaConnection);
+  await renderHook(() => useLiveRoom('room-1', true, 0, 120));
+  await act(async () => {});
+  expect(mockEmit).toHaveBeenCalledWith('room:state', {
+    roomId: 'room-1',
+    micOn: false,
+    camOn: false,
+    todaySec: 120,
+  });
+});
