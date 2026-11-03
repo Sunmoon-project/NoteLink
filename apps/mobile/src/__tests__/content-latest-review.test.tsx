@@ -541,7 +541,9 @@ it('불명확한 등록 확인은 30초 이내 빈 목록 캐시도 실제 재�
   const convert = await renderScreen(<ConvertScreen />, qc);
   await fireEvent.press(await screen.findByText('학습자료에서 확인'));
   expect(mockApi.content.materials).toHaveBeenCalledWith('folder1');
-  expect(mockToast).toHaveBeenCalledWith('목록에 없으면 등록되지 않은 자료예요. 다시 올려주세요');
+  expect(mockToast).toHaveBeenCalledWith(
+    '목록에 없으면 저장을 마치지 못한 자료예요. 필요하면 다시 올려주세요',
+  );
   await convert.unmount();
   setParams({ id: 'folder1' });
   await renderScreen(<FolderScreen />, qc);

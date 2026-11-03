@@ -229,7 +229,7 @@ export function ConvertScreen() {
       qc.setQueryData(['materials', folderId], materials);
       void qc.invalidateQueries({ queryKey: ['folders'] });
       router.replace({ pathname: '/(tabs)/note/folder/[id]', params: { id: folderId } });
-      toast('목록에 없으면 등록되지 않은 자료예요. 다시 올려주세요');
+      toast('목록에 없으면 저장을 마치지 못한 자료예요. 필요하면 다시 올려주세요');
     } catch {
       if (active()) toast('등록 여부를 확인하지 못했어요. 연결을 확인하고 다시 눌러주세요');
     } finally {
