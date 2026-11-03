@@ -55,7 +55,7 @@ jobs:
             echo "::error::Git Bash가 아닌 bash($OSTYPE, $BASH, 루트 $root)로 실행됐습니다. 시스템 PATH 맨 위에 Git for Windows의 bin(보통 C:\\Program Files\\Git\\bin)을 두세요."
             exit 1
           fi
-          for c in git jq gh codex; do
+          for c in git gh codex; do
             command -v "$c" > /dev/null || { echo "::error::$c 를 찾을 수 없습니다. 리뷰 컴퓨터의 시스템 PATH를 확인하세요."; exit 1; }
           done
           login=$(gh api user --jq .login)
