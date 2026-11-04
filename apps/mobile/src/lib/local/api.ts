@@ -162,7 +162,11 @@ function db(): Db {
   let d = loaded.get(id);
   if (!d) {
     d = readDb(`user-${id}`) as Db | null as Db;
-    if (!d) throw new ApiError(ERROR_CODES.TOKEN_EXPIRED, '로그인이 필요해요', 401);
+    if (!d) {
+      // 이 기기에 계정 데이터가 없으면 서버의 토큰 만료처럼 다시 로그인하게 한다
+      useAuth.getState().setExpired(true);
+      throw new ApiError(ERROR_CODES.TOKEN_EXPIRED, '로그인이 필요해요', 401);
+    }
     loaded.set(id, d);
   }
   return d;
