@@ -72,7 +72,12 @@ export function QuizHomeScreen() {
               {latest.title}
               {latest.questionCount > 0 ? ` · ${latest.questionCount}문제` : ''}
             </Text>
-            <Progress value={100} className="mt-2" />
+            {!!progress && latest.questionCount > 0 && (
+              <Progress
+                value={Math.round((progress.index / latest.questionCount) * 100)}
+                className="mt-2"
+              />
+            )}
           </Card>
           <View className="mt-3 flex-row flex-wrap justify-between gap-y-2">
             {(
@@ -191,7 +196,7 @@ export function QuizNotesScreen() {
           </View>
         )}
         <View className="mt-3 flex-row flex-wrap justify-between gap-y-3">
-          {list.map((f, i) => (
+          {list.map((f) => (
             <Card
               key={f._id}
               tone="mint"
@@ -202,20 +207,7 @@ export function QuizNotesScreen() {
               }
               className={cx('w-[48.5%] p-2.5', picked === f._id && 'border-2 border-blue')}
             >
-              <View className="h-16 rounded-xl bg-white">
-                {offline && (
-                  <View
-                    className={cx(
-                      'absolute top-2 left-2 rounded-full px-2 py-0.5',
-                      i % 2 ? 'bg-sun/30' : 'border border-line bg-white',
-                    )}
-                  >
-                    <Text className="text-caption2 font-semibold text-ink">
-                      {i % 2 ? '동기화 대기' : '기기에 저장됨'}
-                    </Text>
-                  </View>
-                )}
-              </View>
+              <View className="h-16 rounded-xl bg-white"></View>
               <Text className="mt-2 px-1 text-footnote font-semibold text-ink">{f.title}</Text>
               <Text className="px-1 text-caption2 text-sub">
                 {f.subjectName} · {seoul(f.createdAt).getMonth() + 1}/{seoul(f.createdAt).getDate()}
@@ -589,7 +581,7 @@ export function QuizSolveScreen() {
       params: { setId: completedSetId, points: String(completed.pointsEarned) },
     });
   }, [completed, attemptId, completedSetId, ownsProgress]);
-  if (set.isError)
+  if (set.isError && !set.data)
     return (
       <Screen>
         <Text>퀴즈를 불러오지 못했어요</Text>
@@ -599,7 +591,22 @@ export function QuizSolveScreen() {
   if (!set.data) return <Loading />;
   const qs = set.data.questions;
   const q = qs[i];
-  if (!q) return <Loading />;
+  // 문제가 없거나 저장된 위치가 어긋나면 로딩에 갇히지 않게 나갈 길을 준다
+  if (!q)
+    return (
+      <Screen>
+        <Text className="pt-8 text-center text-body text-ink">풀 수 있는 문제가 없어요</Text>
+        <Btn
+          className="mt-4"
+          onPress={() => {
+            if (ownsProgress()) useQuizProgress.getState().reset();
+            router.back();
+          }}
+        >
+          돌아가기
+        </Btn>
+      </Screen>
+    );
   const speak = () => {
     if (speaking) {
       Speech.stop();
@@ -831,7 +838,7 @@ export function QuizReviewScreen() {
     if (points) qc.invalidateQueries({ queryKey: ['me'] });
   }, [points]); // eslint-disable-line react-hooks/exhaustive-deps
   const qs = set.data?.questions ?? [];
-  if (set.isError)
+  if (set.isError && !set.data)
     return (
       <Screen>
         <Text>완료한 퀴즈를 불러오지 못했어요</Text>
@@ -963,7 +970,7 @@ export function QuizExplainScreen() {
     enabled: !!q,
   });
   const query = setId ? source : box;
-  if (query.isError)
+  if (query.isError && !query.data)
     return (
       <Screen>
         <Text>설명할 문제를 불러오지 못했어요</Text>
@@ -1068,7 +1075,9 @@ export function QuizSimilarScreen() {
     <Screen footer={<Btn onPress={() => router.back()}>확인</Btn>}>
       <Text className="pt-5 text-body font-bold text-ink">유사 퀴즈 생성</Text>
       <Text className="text-caption text-sub">
-        원본과 같은 난이도로 {sim.data?.questionCount ?? 3}문제를 새로 만들었어요
+        {sim.data
+          ? `원본과 같은 난이도로 ${sim.data.questionCount}문제를 새로 만들었어요`
+          : '원본과 같은 난이도로 새 문제를 만들어요'}
       </Text>
       {!sim.data && (
         <Btn loading={generate.isPending} onPress={() => generate.mutate()}>
@@ -1277,7 +1286,7 @@ export function QuizBoxScreen() {
     setLoaded(box.data);
     if (box.data[0]) setShown([box.data[0]._id]);
   }
-  if (box.isError)
+  if (box.isError && !box.data)
     return (
       <Screen>
         <Text>보관함을 불러오지 못했어요</Text>
