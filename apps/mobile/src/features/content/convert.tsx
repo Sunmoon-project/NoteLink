@@ -497,7 +497,7 @@ export function ResultScreen() {
             tone="white"
             onPress={() =>
               router.push({
-                pathname: '/(tabs)/note/hand/[id]',
+                pathname: '/result/hand/[id]',
                 params: { id, tab: '원본 이미지' },
               })
             }
@@ -531,7 +531,7 @@ export function ResultScreen() {
               meta: mat.pages?.length ? `${mat.pages.length}페이지` : '원본 문서',
             }}
             onOriginal={() =>
-              router.push({ pathname: '/(tabs)/note/doc/[id]', params: { id, tab: '원본 문서' } })
+              router.push({ pathname: '/result/doc/[id]', params: { id, tab: '원본 문서' } })
             }
           />
         </>

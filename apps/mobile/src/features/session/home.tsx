@@ -116,12 +116,13 @@ export function HomeScreen() {
       if (!current()) return;
       await qc.invalidateQueries({ queryKey: ['study'] });
       if (!current()) return;
-      if (focused.current)
+      if (reason === 'auto_pause_timeout' && !focused.current)
+        toast('쉬는 시간이 길어져 공부 측정을 자동으로 끝냈어요');
+      else
         router.push({
           pathname: '/summary',
           params: { sec: String(r.sec), points: String(r.pointsEarned) },
         });
-      else toast('쉬는 시간이 길어져 공부 측정을 자동으로 끝냈어요');
     } catch {
       if (valid && mounted.current) toast('종료하지 못했어요. 연결을 확인하고 다시 종료해주세요');
     } finally {
@@ -189,7 +190,9 @@ export function HomeScreen() {
         {/* 순공시간 카드 */}
         <View className="mt-3 rounded-3xl bg-night p-5">
           <View className="flex-row items-center justify-between">
-            <Text className="text-caption text-white/70">오늘 순공시간</Text>
+            <Text className="text-caption text-white/70">
+              {active ? '이 항목 오늘 공부 시간' : '오늘 순공시간'}
+            </Text>
             <View className="flex-row items-center gap-1">
               <View
                 className={cx('h-1.5 w-1.5 rounded-full', running ? 'bg-sun' : 'bg-white/50')}

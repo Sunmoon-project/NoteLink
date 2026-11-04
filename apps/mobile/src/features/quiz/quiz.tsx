@@ -29,7 +29,18 @@ import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
 import { toast } from '@/stores/toast';
-import { Alert, Badge, Btn, Card, Loading, Progress, Screen, Search, cx } from '@/components/ui';
+import {
+  Header,
+  Alert,
+  Badge,
+  Btn,
+  Card,
+  Loading,
+  Progress,
+  Screen,
+  Search,
+  cx,
+} from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON } from '@/theme';
 import { seoul } from '@/lib/dates';
@@ -194,9 +205,9 @@ export function QuizNotesScreen() {
       : toast('퀴즈를 만들 노트를 먼저 골라 주세요');
   return (
     <View className="flex-1 bg-white">
-      <Screen>
+      <Screen footer={chosen ? <Btn onPress={make}>이 노트로 퀴즈 만들기</Btn> : undefined}>
         <NetBanner />
-        <Text className="pt-4 pb-3 text-body font-bold text-ink">어떤 노트로 퀴즈를 만들까요?</Text>
+        <Header title="어떤 노트로 퀴즈를 만들까요?" large={false} />
         <Search value={q} onChangeText={setQ} placeholder="노트 검색" />
         {notes.isError && !notes.data && <ErrorAlert retry={() => notes.refetch()} />}
         {notes.isSuccess && notes.data.length === 0 && (
@@ -223,7 +234,9 @@ export function QuizNotesScreen() {
               }
               className={cx('w-[48.5%] p-2.5', picked === f._id && 'border-2 border-blue')}
             >
-              <View className="h-16 rounded-xl bg-white"></View>
+              <View className="h-16 items-center justify-center rounded-xl bg-white">
+                <FileText size={ICON.lg} color={C.brand} />
+              </View>
               <Text className="mt-2 px-1 text-footnote font-semibold text-ink">{f.title}</Text>
               <Text className="px-1 text-caption2 text-sub">
                 {f.subjectName} · {seoul(f.createdAt).getMonth() + 1}/{seoul(f.createdAt).getDate()}
@@ -242,7 +255,9 @@ export function QuizNotesScreen() {
       {menu && (
         <View className="absolute inset-0 z-20">
           <Pressable className="absolute inset-0 bg-black/45" onPress={() => setMenu(false)} />
-          <View className="absolute right-5 bottom-24 items-end gap-3">
+          <View
+            className={cx('absolute right-5 items-end gap-3', chosen ? 'bottom-44' : 'bottom-24')}
+          >
             {(
               [
                 ['플래시 카드', Layers, () => router.push('/play/flash')],
@@ -279,7 +294,8 @@ export function QuizNotesScreen() {
         accessibilityLabel={menu ? '닫기' : '메뉴'}
         onPress={() => setMenu((m) => !m)}
         className={cx(
-          'absolute right-5 bottom-5 z-30 h-14 w-14 items-center justify-center rounded-full shadow-lg',
+          'absolute right-5 z-30 h-14 w-14 items-center justify-center rounded-full shadow-lg',
+          chosen ? 'bottom-24' : 'bottom-5',
           menu ? 'bg-ink' : 'border border-line bg-white',
         )}
       >

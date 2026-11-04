@@ -18,7 +18,7 @@ it('새 자료 제목은 비어 있고, 입력해야 만들 수 있다', async (
   await renderScreen(<NoteTitleScreen />);
   expect(screen.queryByDisplayValue(/이차방정식/)).toBeNull();
   expect(screen.getByRole('button', { name: '완료' })).toBeDisabled();
-  await fireEvent.changeText(screen.getByPlaceholderText('제목을 입력해 주세요'), '영어 단어');
+  await fireEvent.changeText(screen.getByPlaceholderText('폴더 이름을 입력해 주세요'), '영어 단어');
   await fireEvent.press(screen.getByRole('button', { name: '완료' }));
   await waitFor(() =>
     expect(create).toHaveBeenCalledWith({ title: '영어 단어', subjectName: '영어' }),

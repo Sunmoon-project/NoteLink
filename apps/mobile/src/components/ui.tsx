@@ -583,11 +583,32 @@ export function Search({
   );
 }
 
+// ponytail: 닫힘 시간 기준 대기. Modal의 닫힘 이벤트를 믿을 수 있게 되면 그쪽으로 바꾼다
+// 테스트는 jest.setup.js에서 0으로 둔다 (기다림 자체는 modal-navigation-sim-review 테스트가 본다)
+const modalCloseMs = () =>
+  (globalThis as { MODAL_CLOSE_MS?: number }).MODAL_CLOSE_MS ?? MOTION.exit + 120;
+let closingUntil = 0;
+const markClosing = () => {
+  closingUntil = Date.now() + modalCloseMs();
+};
+const closingLeft = () => Math.max(0, closingUntil - Date.now());
+
 /** 닫힐 때 나가는 애니메이션이 끝날 때까지 Modal을 띄워 둔다 */
 function useMounted(open: boolean) {
   const [mounted, setMounted] = useState(open);
-  if (open && !mounted) setMounted(true);
+  const [wasOpen, setWasOpen] = useState(open);
+  const [, wake] = useState(0);
+  if (wasOpen !== open) {
+    setWasOpen(open);
+    if (!open && mounted) markClosing();
+  }
+  // 닫히는 Modal이 남아 있을 때 새 Modal을 띄우면 iOS가 무시한다. 다 닫힌 뒤에 띄운다
+  if (open && !mounted && closingLeft() === 0) setMounted(true);
   useEffect(() => {
+    if (open && !mounted) {
+      const t = setTimeout(() => wake((n) => n + 1), closingLeft());
+      return () => clearTimeout(t);
+    }
     if (open || !mounted) return;
     const t = setTimeout(() => setMounted(false), MOTION.exit);
     return () => clearTimeout(t);
@@ -596,6 +617,13 @@ function useMounted(open: boolean) {
 }
 
 /** 하단 시트. 스프링으로 올라오고 바깥(딤)을 누르면 내려가며 닫힌다. */
+/**
+ * 시트를 닫은 뒤 사진 · 파일 선택기 같은 시스템 화면을 열 때 기다린다.
+ * 닫히는 중인 Modal 위에 띄우면 Modal이 사라지며 선택기도 함께 닫힌다(iOS).
+ */
+export const afterSheetClosed = () =>
+  new Promise<void>((resolve) => setTimeout(resolve, modalCloseMs()));
+
 export function Sheet({
   open,
   onClose,
@@ -859,6 +887,11 @@ export const Avatar = ({
   uri?: string | null;
   tone?: 'brand' | 'mint';
 }) => {
+  // 주소가 아닌 값(이모지 아바타 등)을 이미지로 읽으면 빈 원이 된다
+  if (uri && !/^(https?:|file:|content:|data:image\/)/i.test(uri)) {
+    face = uri;
+    uri = null;
+  }
   const svgData = !!uri && /^data:image\/svg\+xml[;,]/i.test(uri);
   let xml: string | undefined;
   if (svgData) {
