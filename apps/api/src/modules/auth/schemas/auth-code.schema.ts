@@ -1,3 +1,5 @@
+// apps/api/src/modules/auth/schemas/auth-code.schema.ts
+
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 

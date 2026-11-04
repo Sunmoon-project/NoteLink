@@ -12,10 +12,10 @@ export class Folder {
   title: string;
 
   @Prop({ type: Types.ObjectId, ref: 'Subject' })
-  subjectId: Types.ObjectId; // subjcets 참조
+  subjectId: Types.ObjectId; // subjects 참조
 
-  @Prop()
-  deletedAt: Date;
+  @Prop({ default: null })
+  deletedAt?: Date | null;
 }
 
 export const FolderSchema = SchemaFactory.createForClass(Folder);

@@ -1,3 +1,5 @@
+// apps/api/src/modules/auth/schemas/user.schema.ts
+
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 
@@ -71,8 +73,8 @@ export type UserDocument = HydratedDocument<User>;
 
 @Schema({ collection: 'users', timestamps: true })
 export class User {
-  @Prop()
-  email?: string; // 소셜 가입자의 경우 선택 필드[cite: 24]
+  @Prop({ index: { unique: true, sparse: true } })
+  email?: string; // 소셜 가입자의 경우 선택 필드. 있으면 유일(sparse: null은 중복 허용)
 
   @Prop()
   passwordHash?: string;

@@ -18,25 +18,25 @@ export class Recording {
   durationSec: number;
 
   @Prop({ type: Object })
-  transcript?: Record<string, any>; // STT transcript object
+  transcript?: Record<string, unknown>; // STT transcript object
 
   @Prop({ type: [Object], default: [] })
-  slides: Record<string, any>[];
+  slides: Record<string, unknown>[];
 
   @Prop()
   visemeUrl?: string; // lipsync url
 
   @Prop({ type: [Object], default: [] })
-  distractionRanges: Record<string, any>[];
+  distractionRanges: Record<string, unknown>[];
 
   @Prop({ type: Object })
-  summary?: Record<string, any>;
+  summary?: Record<string, unknown>;
 
   @Prop()
   keywords?: string;
 
   @Prop({ type: [Object], default: [] })
-  bookmarks: Record<string, any>[];
+  bookmarks: Record<string, unknown>[];
 
   @Prop()
   deletedAt?: Date;

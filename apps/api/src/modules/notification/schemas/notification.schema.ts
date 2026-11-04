@@ -1,21 +1,28 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Types } from 'mongoose';
+import { HydratedDocument, Types } from 'mongoose';
 
-export type NotificationDocument = Notification & Document;
+export type NotificationDocument = HydratedDocument<Notification>;
 
-@Schema({ timestamps: true, collection: 'notifications' })
+// notifications (공용 스키마 packages/shared Notification을 따름)
+@Schema({ collection: 'notifications', timestamps: true })
 export class Notification {
-  @Prop({ type: Types.ObjectId, ref: 'users', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
+
+  @Prop({ required: true })
+  type: string;
 
   @Prop({ required: true })
   title: string;
 
   @Prop({ required: true })
-  message: string;
+  body: string;
 
-  @Prop({ default: false })
-  isRead: boolean;
+  @Prop({ type: Object, default: null })
+  data?: Record<string, unknown> | null;
+
+  @Prop({ default: null })
+  readAt?: Date | null;
 }
 
 export const NotificationSchema = SchemaFactory.createForClass(Notification);

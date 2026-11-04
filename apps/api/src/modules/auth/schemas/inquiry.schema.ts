@@ -1,21 +1,28 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document } from 'mongoose';
+import { HydratedDocument, Types } from 'mongoose';
 
-export type AuthCodeDocument = AuthCode & Document;
+export type InquiryDocument = HydratedDocument<Inquiry>;
 
-@Schema({ timestamps: true, collection: 'inquiries' })
-export class AuthCode {
-  @Prop({ required: true })
-  email: string;
-
-  @Prop({ required: true })
-  codeHash: string;
+// inquiries: 사용자 문의(1:1 문의)
+@Schema({ collection: 'inquiries', timestamps: true })
+export class Inquiry {
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  userId: Types.ObjectId;
 
   @Prop({ required: true })
-  expiresAt: Date;
+  title: string;
 
-  @Prop({ default: false })
-  isVerified: boolean;
+  @Prop({ required: true })
+  content: string;
+
+  @Prop({ required: true, enum: ['open', 'answered', 'closed'], default: 'open' })
+  status: string;
+
+  @Prop({ default: null })
+  answer?: string | null;
+
+  @Prop({ default: null })
+  answeredAt?: Date | null;
 }
 
-export const AuthCodeSchema = SchemaFactory.createForClass(AuthCode);
+export const InquirySchema = SchemaFactory.createForClass(Inquiry);

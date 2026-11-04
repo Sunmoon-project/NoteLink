@@ -20,12 +20,18 @@
     "@types/supertest": "7.2.1",
     "supertest": "7.3.1",
     "unplugin-swc": "2.0.0",
-    "vitest": "5.0.3"
+    "vitest": "5.0.3",
+    "mongodb": "7.7.0"
   },
   "dependencies": {
     "@nestjs/common": "12.1.2",
+    "@nestjs/config": "12.0.1",
     "@nestjs/core": "12.1.2",
+    "@nestjs/mongoose": "12.0.0",
     "@nestjs/platform-express": "12.1.2",
+    "class-transformer": "0.5.1",
+    "class-validator": "0.15.1",
+    "mongoose": "9.11.4",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2"
   }

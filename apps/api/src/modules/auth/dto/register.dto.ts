@@ -1,3 +1,5 @@
+// apps/api/src/modules/auth/dto/register.dto.ts
+
 import { IsEmail, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class RegisterDto {

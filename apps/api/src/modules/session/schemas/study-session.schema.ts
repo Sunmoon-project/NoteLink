@@ -29,17 +29,19 @@ export class StudySession {
   @Prop({ required: true })
   studyDate: string; // YYYY-MM-DD 형식[cite: 26]
 
-  @Prop({ type: Types.ObjectId, ref: 'Subject' })
-  studyItemId?: Types.ObjectId;
+  @Prop({ type: Types.ObjectId, default: null })
+  studyItemId?: Types.ObjectId | null;
 
-  @Prop({ type: Types.ObjectId, ref: 'StudyRoom' })
-  roomId?: Types.ObjectId; // study_rooms 참조[cite: 26]
+  @Prop({ type: Types.ObjectId, ref: 'StudyRoom', default: null })
+  roomId?: Types.ObjectId | null; // study_rooms 참조
 
-  @Prop({ required: true })
-  mode: string; // timer, stopwatch 등[cite: 26]
+  // 공용 스키마 SessionMode: personal · room · auto_landscape
+  @Prop({ required: true, enum: ['personal', 'room', 'auto_landscape'] })
+  mode: string;
 
-  @Prop({ required: true, default: 'active' })
-  status: string; // active, paused, finished[cite: 26]
+  // 공용 스키마: running · paused · ended
+  @Prop({ required: true, enum: ['running', 'paused', 'ended'], default: 'running' })
+  status: string;
 
   @Prop({ required: true })
   startedAt: Date;

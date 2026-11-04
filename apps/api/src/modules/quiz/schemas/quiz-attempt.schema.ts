@@ -1,13 +1,14 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 
+// 내장 문서: AttemptAnswer (공용 스키마 AttemptAnswer를 따름)
 @Schema({ _id: false })
 export class AttemptAnswer {
-  @Prop({ type: Types.ObjectId, requited: true })
+  @Prop({ type: Types.ObjectId, required: true })
   questionId: Types.ObjectId;
 
-  @Prop()
-  answer?: string;
+  @Prop({ default: null })
+  answer?: string | null;
 
   @Prop({ required: true, default: false })
   correct: boolean;
@@ -18,13 +19,25 @@ export class AttemptAnswer {
 
 export const AttemptAnswerSchema = SchemaFactory.createForClass(AttemptAnswer);
 
+// 메인 스키마: quiz_attempts (공용 스키마 QuizAttempt를 따름)
 export type QuizAttemptDocument = HydratedDocument<QuizAttempt>;
 
 @Schema({ collection: 'quiz_attempts', timestamps: false })
 export class QuizAttempt {
   @Prop({ type: Types.ObjectId, ref: 'QuizSet', required: true })
-  @Prop({ type: Types.ObjectId, ref: 'Uesr', required: true })
+  quizSetId: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
+
+  @Prop({ required: true, default: 0 })
+  correctCount: number;
+
+  @Prop({ required: true, default: 0 })
+  total: number;
+
+  @Prop({ required: true, default: 0 })
+  pointsEarned: number;
 
   @Prop({ type: [AttemptAnswerSchema], default: [] })
   answers: AttemptAnswer[];
@@ -32,8 +45,8 @@ export class QuizAttempt {
   @Prop({ required: true })
   startedAt: Date;
 
-  @Prop()
-  finishedAt?: Date;
+  @Prop({ default: null })
+  finishedAt?: Date | null;
 }
 
 export const QuizAttemptSchema = SchemaFactory.createForClass(QuizAttempt);

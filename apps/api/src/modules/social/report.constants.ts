@@ -1,5 +1,11 @@
-/** 신고 유형 (발표자료 p.28 reports.reportType) */
-export const REPORT_TYPES = ['chat', 'profile', 'behavior'] as const;
+/** 신고 유형 (공용 스키마 packages/shared ReportType을 따름) */
+export const REPORT_TYPES = [
+  'abusive_language',
+  'spam',
+  'disturbing',
+  'obscene',
+  'other',
+] as const;
 export type ReportType = (typeof REPORT_TYPES)[number];
 
 /** 신고 처리 상태 */

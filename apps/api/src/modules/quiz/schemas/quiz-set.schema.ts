@@ -1,37 +1,38 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 
-// Embedded document -> Question
+// 내장 문서: Question (공용 스키마 Question을 따름)
 @Schema()
 export class Question {
   @Prop({ type: Types.ObjectId, auto: true })
-  _id: Types.ObjectId; // Individual issues ID
+  _id: Types.ObjectId;
 
-  @Prop({ required: true })
-  type: string; // multiple_choice, short_answer
+  @Prop({ required: true, default: 0 })
+  order: number;
+
+  @Prop({ required: true, enum: ['multiple_choice', 'short_answer', 'ox'] })
+  type: string;
 
   @Prop({ required: true })
   prompt: string;
 
-  @Prop({ type: [String], default: [] })
-  choices?: string[];
+  // 객관식이 아니면 null
+  @Prop({ type: [String], default: null })
+  choices?: string[] | null;
 
   @Prop({ required: true })
   answer: string;
 
-  @Prop()
-  explanation?: string;
+  @Prop({ default: null })
+  explanation?: string | null;
 
-  @Prop()
-  conceptTags?: string;
-
-  @Prop({ type: Object })
-  srs?: Record<string, any>;
+  @Prop({ type: [String], default: [] })
+  conceptTags: string[];
 }
 
 export const QuestionSchema = SchemaFactory.createForClass(Question);
 
-// main Schema: quiz_sets
+// 메인 스키마: quiz_sets (공용 스키마 QuizSet을 따름)
 export type QuizSetDocument = HydratedDocument<QuizSet>;
 
 @Schema({ collection: 'quiz_sets', timestamps: true })
@@ -45,26 +46,18 @@ export class QuizSet {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   ownerId: Types.ObjectId;
 
-  @Prop({ required: true })
-  source: string; // ai_generated, manual
+  @Prop({ required: true, enum: ['ai_generated', 'manual'] })
+  source: string;
 
-  @Prop({ type: Types.ObjectId, ref: 'QuizSet' })
-  sourceSetId?: Types.ObjectId;
+  @Prop({ type: Types.ObjectId, ref: 'QuizSet', default: null })
+  sourceSetId?: Types.ObjectId | null;
 
   @Prop({ required: true })
   title: string;
 
-  @Prop({ required: true, default: 0 })
-  total: number;
-
-  @Prop({ required: true, default: 0 })
-  correctCount: number;
-
-  @Prop({ required: true, default: 0 })
-  pointsEarned: number;
-
-  @Prop({ required: true, default: 'ready' })
-  status: number;
+  // 공용 스키마의 status는 'generating' | 'ready' | 'failed' 문자열이다.
+  @Prop({ required: true, enum: ['generating', 'ready', 'failed'], default: 'generating' })
+  status: string;
 
   @Prop({ required: true, default: 0 })
   progress: number;
@@ -75,8 +68,8 @@ export class QuizSet {
   @Prop({ type: [QuestionSchema], default: [] })
   questions: Question[];
 
-  @Prop()
-  deletedAt?: Date;
+  @Prop({ default: null })
+  deletedAt?: Date | null;
 }
 
 export const QuizSetSchema = SchemaFactory.createForClass(QuizSet);

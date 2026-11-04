@@ -27,7 +27,7 @@ export class Flashcard {
   sourceQuestionId: Types.ObjectId;
 
   @Prop({ type: Object })
-  srs?: Record<string, any>;
+  srs?: Record<string, unknown>;
 
   @Prop()
   lastResult?: string;
