@@ -60,6 +60,8 @@ export interface Api {
     /** providerToken: 카카오 · 네이버 · Google SDK가 준 토큰. 서버가 서명 · 대상 · 만료를 검증한 뒤 자체 토큰을 발급한다 */
     socialLogin(provider: SocialProvider, providerToken: string): Promise<AuthTokens>;
     emailLogin(email: string, password: string): Promise<AuthTokens>;
+    /** 이메일로 가입하고 바로 로그인한다. 이미 있는 이메일이면 409 EMAIL_TAKEN */
+    emailSignup(email: string, password: string): Promise<AuthTokens>;
     agreeTerms(termCodes: string[]): Promise<void>;
     logout(): Promise<void>;
   };

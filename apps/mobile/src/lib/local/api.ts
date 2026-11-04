@@ -43,6 +43,7 @@ import {
   sumRange,
   weekStart,
 } from './stats';
+import * as SecureStore from 'expo-secure-store';
 import { dropDb, dropFile, fileInfo, readDb, writeDb } from './storage';
 import { AI_WAITING_STEP } from '../ai';
 
@@ -303,17 +304,25 @@ function todayByItem(d: Db) {
 
 /* ── 세션 · 로그인 ───────────────────────────────── */
 
-function signInAs(email: string) {
+const accountOf = (email: string) => {
+  const id = accounts[email.trim().toLowerCase()];
+  return id && readDb(`user-${id}`) ? id : null;
+};
+// ponytail: 비밀번호는 기기 키체인에만 둔다. 서버가 붙으면 서버 인증으로 바뀐다
+const pwKey = (id: string) => `notelink-pw-${id}`;
+
+function createAccount(email: string) {
   const key = email.trim().toLowerCase();
-  let id = accounts[key];
-  if (!id || !readDb(`user-${id}`)) {
-    id = uid('user');
-    accounts = { ...accounts, [key]: id };
-    writeDb('accounts', accounts);
-    const d = newDb(id, key);
-    loaded.set(id, d);
-    writeDb(`user-${id}`, d);
-  }
+  const id = uid('user');
+  accounts = { ...accounts, [key]: id };
+  writeDb('accounts', accounts);
+  const d = newDb(id, key);
+  loaded.set(id, d);
+  writeDb(`user-${id}`, d);
+  return id;
+}
+
+function signInAs(id: string) {
   const d = loaded.get(id) ?? (readDb(`user-${id}`) as Db);
   loaded.set(id, d);
   // 기기 안에서만 쓰는 토큰 — 서버가 붙으면 서버가 발급한 토큰으로 바뀐다
@@ -327,7 +336,20 @@ const api: Api = {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
         return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
       if (!password) return fail(ERROR_CODES.VALIDATION, '비밀번호를 입력해 주세요');
-      return signInAs(email);
+      const id = accountOf(email);
+      if (!id || (await SecureStore.getItemAsync(pwKey(id))) !== password)
+        return fail(ERROR_CODES.VALIDATION, '이메일 또는 비밀번호가 맞지 않아요');
+      return signInAs(id);
+    },
+    emailSignup: async (email, password) => {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+        return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
+      if (password.length < 8)
+        return fail(ERROR_CODES.VALIDATION, '비밀번호는 8자 이상이어야 해요');
+      if (accountOf(email)) return fail(ERROR_CODES.EMAIL_TAKEN, '이미 가입한 이메일이에요', 409);
+      const id = createAccount(email);
+      await SecureStore.setItemAsync(pwKey(id), password);
+      return signInAs(id);
     },
     agreeTerms: (codes) => {
       db().terms = codes;
@@ -359,6 +381,7 @@ const api: Api = {
       const id = d.user._id;
       loaded.delete(id);
       dropDb(`user-${id}`);
+      await SecureStore.deleteItemAsync(pwKey(id));
       accounts = Object.fromEntries(Object.entries(accounts).filter(([, v]) => v !== id));
       writeDb('accounts', accounts);
     },
