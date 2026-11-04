@@ -151,18 +151,19 @@ def retry_tip(ty: str) -> str:
 
 def guidance(q: Question, t: Target, avoid: list[str]) -> str:
     """학생 상황 안내. avoid는 오답 보기로 쓰지 않을 낱말(노트의 정답 유의어 · 앞서 걸린 보기)."""
+    keep = (
+        f" 정답은 원래 정답과 같은 '{q['answer']}'로 하고, 문장과 상황만 새로 만든다."
+        if (t.reason == "wrong" or t.keep_answer) and short_answer(q["answer"])
+        else ""
+    )
     if t.reason == "wrong":
-        keep = (
-            f" 정답은 원래 정답과 같은 '{q['answer']}'로 하고, 문장과 상황만 새로 만든다."
-            if short_answer(q["answer"])
-            else ""
-        )
         text = (
             "학생은 이 문제를 틀렸다. 노트에 적힌 설명을 그대로 확인하는 쉬운 문제로 낸다." + keep
         )
     else:
         text = (
             "학생은 지난번에 맞혔다. 같은 개념을 다른 문장이나 상황으로 다시 확인하는 문제로 낸다."
+            + keep
         )
     if avoid:
         text += (

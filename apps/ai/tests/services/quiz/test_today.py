@@ -493,6 +493,24 @@ def test_flawed_question_is_replaced_by_a_new_one() -> None:
     assert "flaw" not in new["srs"] and "movedTo" not in new["srs"]
 
 
+def test_question_answered_right_is_replaced_on_the_same_word() -> None:
+    # 지난번 맞힌 결함 문제도 원래 정답을 다시 물음: 다른 낱말(request)의 초안은 버림
+    request = {
+        "question": {
+            **FASTENED["question"],
+            "passage": "She made a ____ for more time so that she could finish.",
+            "options": ["request", "extended", "displayed", "stacked", "fastened"],
+            "answer": "request",
+        }
+    }
+    srs = st(TOMORROW - timedelta(days=1), "right")
+    del srs["checked"]
+    llm = FakeLlm({"Natural": SECURED + CLEAN, "Review": [request, FASTENED], "Check": [CHECK_A]})
+    [new] = run(llm, flawed_input(srs))["questions"]
+    assert new["answer"] == "fastened"
+    assert "정답은 원래 정답과 같은 'fastened'" in llm.named("Review")[0].user
+
+
 def test_new_question_counts_its_own_flaw_tries() -> None:
     llm = FakeLlm({"Natural": SECURED + CLEAN, "Review": [FASTENED], "Check": [CHECK_A]})
     [new] = run(llm, flawed_input(unchecked(flawTries=1)))["questions"]

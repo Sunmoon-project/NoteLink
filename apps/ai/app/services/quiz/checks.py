@@ -51,6 +51,8 @@ class Target:
     answer: str = ""
     concept: str = ""
     used_answers: list[str] = field(default_factory=list)  # 이 세트에서 이미 쓴 정답
+    # 지난번 맞혔어도 원래 정답을 다시 물음(오늘의 복습이 결함 문제를 같은 낱말로 바꿀 때)
+    keep_answer: bool = False
 
 
 def too_close(d: Draft, seen: list[Seen]) -> bool:
@@ -204,12 +206,13 @@ def code_check(
         same_item(d["answer"], w) for w in re.findall(r"[A-Za-z][A-Za-z\-']+", t.concept)
     )
     if (
-        t.reason == "wrong"
+        (t.reason == "wrong" or t.keep_answer)
         and short_answer(t.answer)
         and not same_item(d["answer"], t.answer)
         and not in_concept
     ):
-        why.append(f"틀린 낱말('{t.answer}')을 다시 묻지 않음")
+        kind = "틀린" if t.reason == "wrong" else "원래"
+        why.append(f"{kind} 낱말('{t.answer}')을 다시 묻지 않음")
     if any(same_item(d["answer"], u) for u in t.used_answers):
         why.append("세트 안에서 정답이 겹침")
     if too_close(d, seen):

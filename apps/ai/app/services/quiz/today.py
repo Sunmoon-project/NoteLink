@@ -331,7 +331,14 @@ def replace_flawed(
     page, text = _page(q, notes, s)
     st = cast(srs.Srs, q["srs"])
     seen = [seen_question(x) for y in sets for x in y.questions]
-    t = Target("wrong" if st["lastResult"] == "wrong" else "right", q["answer"], concept_of(q))
+    # 지난번 맞혔어도 원래 정답을 다시 물음: 새 문제가 이 낱말의 복습을 이어 가고(carry), 3단계는
+    # 새 정답으로 같은 낱말을 넘겨줌
+    t = Target(
+        "wrong" if st["lastResult"] == "wrong" else "right",
+        q["answer"],
+        concept_of(q),
+        keep_answer=True,
+    )
     avoid = list(dict.fromkeys(hits + quality.group_words(q["answer"], text)))
     m = similar.make_similar(llm, q, t, page, text, slot, seen, avoid)
     if m.question is None:
