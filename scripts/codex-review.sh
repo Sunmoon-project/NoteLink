@@ -13,12 +13,15 @@
 #
 # 언제 Codex를 돌리는지 (CODEX_TRIGGER, codex-review.yml이 넣음. 직접 실행하면 request로 봄):
 # - auto(PR 열림 · 커밋 push · 다시 열림 · Ready for review): 이 계정의 Codex 리뷰가 아직 없을 때만 첫 리뷰를 합니다.
-#   문서(*.md · *.mdx · LICENSE · 루트 docs/의 그림 · PDF, AGENTS.md · CLAUDE.md 제외)만 바뀐 PR은 건너뜁니다.
+#   문서(*.md · *.mdx · LICENSE · 루트 docs/의 그림 · PDF, 리뷰 기준인 루트 README.md · AGENTS.md · CLAUDE.md 제외)만
+#   바뀐 PR은 건너뜁니다.
 # - request(PR에 codex-review 라벨 · 첫 줄이 "/codex review"인 댓글 · Actions의 Run workflow): 재리뷰를 합니다
-#   (문서만 바뀌었어도 함). 요청한 사람(CODEX_REQUESTER)에게 저장소 쓰기 권한이 있어야 받고, 댓글은 👀로 표시합니다.
+#   (문서만 바뀌었어도 함). 요청한 사람(CODEX_REQUESTER)에게 저장소 쓰기 권한이 있어야 받습니다. 댓글 요청은
+#   리뷰를 시작할 때 👀, 받은 요청을 건너뛸 때(같은 커밋 등) 😕를 답니다.
 #   라벨은 codex-review.yml의 unlabel job이 바로 뗍니다. 같은 커밋을 다시 요청하면 건너뜁니다.
 # - 건너뛸 때는 CI를 기다리지 않고 바로 끝냅니다. 다만 이 계정의 해결되지 않은 CI 실패 안내가 있으면
-#   CI를 확인해 실패 안내 · 해결 표시를 한 뒤 끝냅니다(Codex는 돌리지 않음).
+#   CI를 확인해 통과했으면 해결 표시를 한 뒤 끝냅니다. 이때 CI가 실패했거나 확인하지 못해도 새 실패 안내는
+#   달지 않고 건너뜀으로 끝냅니다(Codex는 돌리지 않음).
 # - 요청 리뷰 도중 새 커밋이 올라와 결과를 버릴 때, 새 커밋의 자동 실행이 건너뛸 PR(첫 리뷰가 있거나 문서만 바뀜)이면
 #   workflow_dispatch로 새 커밋을 다시 요청합니다.
 # - 워크플로에서 돌 때(CODEX_TRIGGER가 있을 때)는 포크 · 초안 · Dependabot PR과 develop · main이 아닌 대상은 건너뜁니다.
@@ -71,10 +74,11 @@ PR_FILES_JQ='.[] | .filename, (.previous_filename // empty)'
 # ---------- 언제 리뷰할지 ----------
 
 # 문서로 치는 경로면 0: 마크다운(.md · .mdx) · LICENSE · 루트 docs/ 아래의 그림 · PDF
-# AGENTS.md · CLAUDE.md는 에이전트 · 리뷰 규칙이라 문서로 치지 않습니다. docs 폴더라도 코드는 문서가 아닙니다.
+# 리뷰 기준 문서는 문서로 치지 않습니다: 루트 README.md(5장 개발 규칙, Codex 프롬프트가 기준으로 씀) ·
+# AGENTS.md · CLAUDE.md(에이전트 · 리뷰 규칙). docs 폴더라도 코드는 문서가 아닙니다.
 is_doc_path() {  # $1 = 저장소 기준 경로
   case "$1" in
-    AGENTS.md | */AGENTS.md | CLAUDE.md | */CLAUDE.md) return 1 ;;
+    README.md | AGENTS.md | */AGENTS.md | CLAUDE.md | */CLAUDE.md) return 1 ;;
     *.md | *.MD | *.mdx | LICENSE | LICENSE.*) return 0 ;;
     docs/*.png | docs/*.jpg | docs/*.jpeg | docs/*.gif | docs/*.svg | docs/*.webp | docs/*.pdf) return 0 ;;
   esac
@@ -114,13 +118,22 @@ is_request_command() {  # $1 = 댓글 본문
   [ "${first,,}" = "${REQUEST_COMMAND,,}" ]
 }
 
-# 요청(request)을 받아들이면 0. 댓글 요청은 본문이 명령인지 먼저 봄. 요청한 사람(라벨 · 댓글 · Run workflow)의
-# 쓰기 권한(admin · maintain · write)을 확인한 뒤 댓글 요청이면 👀를 답니다(👀가 실패해도 리뷰는 함).
+# 요청(request)을 받아들이면 0. 댓글 요청은 댓글 본문을 API로 읽어 명령인지 먼저 봄(본문 전체를 env로 넘기면
+# Windows 환경 변수 길이 한도에 걸릴 수 있음). 요청한 사람(라벨 · 댓글 · Run workflow)의 쓰기 권한
+# (admin · maintain · write)을 확인함. 👀 · 😕는 리뷰를 시작하거나 건너뛸 때 답니다(react_request).
 # 라벨은 codex-review.yml의 unlabel job이 뗍니다. 직접 실행(요청 정보 없음)이면 그냥 받음
 accept_request() {
-  if [ -n "${CODEX_REQUEST_COMMENT:-}" ] && ! is_request_command "${CODEX_REQUEST_BODY:-}"; then
-    echo "댓글 첫 줄이 \`$REQUEST_COMMAND\`가 아니어서 리뷰 요청으로 보지 않습니다."
-    return 1
+  if [ -n "${CODEX_REQUEST_COMMENT:-}" ]; then
+    local body
+    if ! [[ "$CODEX_REQUEST_COMMENT" =~ ^[0-9]+$ ]]; then
+      echo "댓글 번호($CODEX_REQUEST_COMMENT)가 이상해 리뷰 요청으로 보지 않습니다."
+      return 1
+    fi
+    body=$(gh api "repos/$REPO/issues/comments/$CODEX_REQUEST_COMMENT" --jq .body 2> /dev/null) || body=""
+    if ! is_request_command "$body"; then
+      echo "댓글 첫 줄이 \`$REQUEST_COMMAND\`가 아니어서(또는 댓글을 읽지 못해) 리뷰 요청으로 보지 않습니다."
+      return 1
+    fi
   fi
   if [ -z "${CODEX_REQUESTER:-}" ]; then
     if [ -n "${CODEX_REQUEST_LABEL:-}${CODEX_REQUEST_COMMENT:-}" ]; then
@@ -139,13 +152,20 @@ accept_request() {
     admin | maintain | write) ;;
     *) echo "$CODEX_REQUESTER 님은 저장소 쓰기 권한이 없어 리뷰 요청을 받지 않습니다(${perm:-확인 실패})."; return 1 ;;
   esac
-  if [[ "${CODEX_REQUEST_COMMENT:-}" =~ ^[0-9]+$ ]]; then
-    gh api --method POST "repos/$REPO/issues/comments/$CODEX_REQUEST_COMMENT/reactions" -f content=eyes > /dev/null 2>&1 || true
-  fi
+}
+
+# 받은 댓글 요청에 반응을 닮: eyes(리뷰 시작) · confused(건너뜀). 한 번만 달고, 실패해도 그대로 진행
+# REQUEST_PENDING은 main이 댓글 요청을 받았을 때 true로 둠
+react_request() {  # $1 = 반응(eyes · confused)
+  [ "${REQUEST_PENDING:-false}" = true ] || return 0
+  REQUEST_PENDING=false
+  ${DRY_RUN:-false} && return 0
+  gh api --method POST "repos/$REPO/issues/comments/$CODEX_REQUEST_COMMENT/reactions" -f "content=$1" > /dev/null 2>&1 || true
 }
 
 # Codex를 돌리지 않고 끝냄: PR 댓글 없이 실행 화면(알림 annotation · 작업 요약)에만 이유를 남김
 skip_review() {  # $1 = 이유
+  react_request confused  # 받은 댓글 요청을 건너뛰면 😕 (요청을 받기 전이면 아무것도 안 함)
   echo "::notice title=Codex 리뷰 건너뜀::PR #$PR: $1"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     printf '### Codex 리뷰 건너뜀\n\n%s\n' "$1" >> "$GITHUB_STEP_SUMMARY" || true
@@ -421,7 +441,7 @@ main() {
   fi
   if [ "$TRIGGER" = request ]; then
     reason=$(accept_request) || skip_review "$reason"
-    [ -z "$reason" ] || echo "$reason"
+    [[ ! "${CODEX_REQUEST_COMMENT:-}" =~ ^[0-9]+$ ]] || REQUEST_PENDING=true
     echo "▶ 리뷰 요청을 받았습니다."
   fi
 
@@ -451,6 +471,8 @@ main() {
     else
       skip_review "$SKIP_REASON"
     fi
+  else
+    react_request eyes  # 받은 댓글 요청: 리뷰를 시작함
   fi
 
   WORK=$(mktemp -d)
@@ -472,6 +494,7 @@ main() {
 
   # ---------- CI 결과 확인 (PR 최신 커밋에 pull_request 이벤트로 돈 CI 워크플로 기준) ----------
   if ! ci_wait || [ -z "$RUN_ID" ]; then
+    [ -z "$DEFER_SKIP" ] || skip_review "$DEFER_SKIP (CI 상태를 확인하지 못해 지난 실패 안내는 그대로 둡니다)"
     echo "CI 상태를 확인하지 못했습니다(${RUN_STATUS:-CI 실행 없음}). 댓글을 남기지 않고 멈춥니다." >&2
     echo "PR 화면의 Checks 탭을 확인한 뒤 다시 실행하세요." >&2
     exit 1
@@ -480,6 +503,7 @@ main() {
   gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --jq "$JOBS_JQ" > "$JOBS"
   CI_RESULT=$(ci_result "$JOBS")
   if [ -z "$CI_RESULT" ]; then
+    [ -z "$DEFER_SKIP" ] || skip_review "$DEFER_SKIP (CI 결과를 찾지 못해 지난 실패 안내는 그대로 둡니다)"
     echo "CI 실행 $RUN_ID 에서 '$CI_RESULT_JOB' job을 찾지 못했습니다. 댓글을 남기지 않고 멈춥니다." >&2
     exit 1
   fi
@@ -487,6 +511,8 @@ main() {
   current_review_head || { result=$?; [ "$result" -ne 2 ] || head_moved; exit "$result"; }
 
   if [ "$CI_RESULT" != "success" ]; then
+    # 건너뛸 실행(지난 실패 안내를 정리하려고 CI만 확인함)은 새 실패 안내를 달지 않음
+    [ -z "$DEFER_SKIP" ] || skip_review "$DEFER_SKIP (CI 결과: $CI_RESULT, 새 실패 안내는 달지 않습니다)"
     echo "▶ CI 결과: $CI_RESULT — Codex 리뷰 대신 실패 내용을 남깁니다."
     BODY_FILE="$WORK/body.md"
     {

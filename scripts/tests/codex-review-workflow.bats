@@ -150,7 +150,13 @@ COMMAND_CR="startsWith(github.event.comment.body, format('/codex review{0}', fro
   [[ "$group" == *"format('codex-review-{0}-dispatch-{1}', inputs.pr, github.run_id)"* ]]
   [[ "$group" == *"format('codex-review-{0}-{1}', github.event.pull_request.number || github.event.issue.number,"* ]]
   [[ "$group" == *"&& format('request-{0}', github.event.comment.user.login || github.event.sender.login) || 'auto')"* ]]
-  [[ "$group" == *"cancel-in-progress: true"* ]]
+  # 자동 실행끼리만 앞 실행을 멈추고, 요청은 뒤에 줄을 세움(같은 커밋이면 Codex 없이 건너뜀)
+  [[ "$group" == *"cancel-in-progress: \${{ !(github.event_name == 'issue_comment' || github.event.action == 'labeled') }}"* ]]
+}
+
+@test "트리거: 댓글은 저장소와 관계있는 사람(OWNER · MEMBER · COLLABORATOR)의 것만 리뷰 컴퓨터로 보낸다" {
+  cond=$(review_if)
+  [[ "$cond" == *"contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"]'), github.event.comment.author_association)"* ]]
 }
 
 @test "unlabel: codex-review 라벨이 붙으면 리뷰 job과 따로(동시 실행 그룹 없이) 클라우드 러너에서 바로 뗀다" {
@@ -160,6 +166,10 @@ COMMAND_CR="startsWith(github.event.comment.body, format('/codex review{0}', fro
   [[ "$job" == *"runs-on: ubuntu-latest"* ]]
   [[ "$job" == *"pull-requests: write"* ]]
   [[ "$job" == *'gh api --method DELETE "repos/$REPO/issues/$PR/labels/codex-review"'* ]]
+  # 이미 떼어진 경우(404)만 넘어가고 다른 오류는 실패로 남김
+  [[ "$job" == *'*"HTTP 404"*) echo'* ]]
+  [[ "$job" == *'exit 1'* ]]
+  not grep -qF '|| echo "라벨이 이미 떼어져 있습니다."' "$(WF_FILE)"
   [[ "$job" != *"concurrency"* ]]
   [[ "$job" != *"self-hosted"* ]]
 }
@@ -171,7 +181,8 @@ COMMAND_CR="startsWith(github.event.comment.body, format('/codex review{0}', fro
   grep -qF "CODEX_REQUEST_LABEL: \${{ github.event.action == 'labeled' && github.event.label.name || '' }}" "$workflow"
   grep -qF 'CODEX_REQUESTER: ${{ github.event.comment.user.login || github.event.sender.login }}' "$workflow"
   grep -qF 'CODEX_REQUEST_COMMENT: ${{ github.event.comment.id }}' "$workflow"
-  grep -qF 'CODEX_REQUEST_BODY: ${{ github.event.comment.body }}' "$workflow"
+  # 댓글 본문은 넘기지 않음(Windows 환경 변수 길이 한도, 스크립트가 댓글 번호로 읽음)
+  not grep -q 'CODEX_REQUEST_BODY' "$workflow"
   # 이벤트 값 · 입력은 run 안에 직접 넣지 않음(명령 주입 방지): run 블록 안에 github.event · inputs가 없어야 함
   not awk '/^ *run: / { r = 1 } /^ *- (name|uses): |^  [a-z]+:|^    [a-z-]+:/ { r = 0 } r && /\$\{\{ *(github\.event\.|inputs\.)/ { found = 1 } END { exit !found }' "$workflow"
 }
