@@ -37,7 +37,7 @@ rl.on('line', (line) => {
 EOF
 
   # 가짜 디스코드: 요청을 "METHOD 경로?쿼리 본문" 한 줄씩 남기고, POST는 {"id":"msg-<n>"}을 돌려줌
-  #   PATCH_STATUS · POST_STATUS로 응답 코드를 바꿈
+  #   PATCH_STATUS · POST_STATUS로 응답 코드를 바꿈. HANG_METHOD(PATCH · POST)는 기록만 하고 응답하지 않음
   cat > "$BATS_TEST_TMPDIR/fake-discord.mjs" <<'EOF'
 import http from 'node:http';
 import fs from 'node:fs';
@@ -48,6 +48,7 @@ http.createServer((req, res) => {
   req.on('data', (d) => { body += d; });
   req.on('end', () => {
     fs.appendFileSync(log, `${req.method} ${req.url} ${body}\n`);
+    if (req.method === process.env.HANG_METHOD) return;
     const status = Number((req.method === 'PATCH' ? process.env.PATCH_STATUS : process.env.POST_STATUS) || 200);
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(req.method === 'POST' && status === 200 ? JSON.stringify({ id: `msg-${++n}` }) : '{}');
@@ -76,6 +77,9 @@ rl() {  # $1 = 5시간 사용률, $2 = 주간 사용률, $3 = rateLimitReachedTy
   printf '{"limitId":"codex","primary":{"usedPercent":%s,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":%s,"windowDurationMins":10080,"resetsAt":%s},"credits":{"hasCredits":true,"unlimited":false,"balance":"12.5"},"planType":"plus","rateLimitReachedType":%s}' \
     "$1" $(( NOW + 3 * 3600 )) "$2" $(( NOW + 4 * 86400 )) "${3:-null}"
 }
+
+# bats에서 `! cmd` 한 줄은 실패해도 테스트를 실패시키지 않으므로 대신 씀 (codex-review-workflow.bats와 같음)
+not() { if "$@"; then return 1; fi; }
 
 dry() {
   run node "$SCRIPT" --now "$NOW_MS" --dry-run
@@ -144,7 +148,7 @@ dry() {
   [[ "$(cat "$REQ_LOG")" == *'"title":"📊 Codex 남은 사용량 (리뷰 컴퓨터)"'* ]]
   grep -q '"allowed_mentions":{"parse":\[\]}' "$REQ_LOG"
   grep -q '"messageId":"msg-1"' "$CODEX_USAGE_LIVE_STATE"
-  ! grep -qE 'credits|12\.5|balance' "$CODEX_USAGE_LIVE_STATE"
+  not grep -qE 'credits|12\.5|balance' "$CODEX_USAGE_LIVE_STATE"
 }
 
 @test "다음부터는 같은 메시지를 고친다(새 메시지를 올리지 않음)" {
@@ -180,7 +184,7 @@ dry() {
   run node "$SCRIPT" --now "$NOW_MS"
   [ "$status" -eq 1 ]
   [[ "$output" == *"메시지 고치기 실패(HTTP 500)"* ]]
-  ! grep -q '^POST' "$REQ_LOG"
+  not grep -q '^POST' "$REQ_LOG"
   [ "$(cat "$CODEX_USAGE_LIVE_STATE")" = '{"messageId":"keep"}' ]
 }
 
@@ -263,6 +267,24 @@ dry() {
   [[ "$last" != *"한도에 걸려"* ]]
 }
 
+@test "디스코드가 응답하지 않으면 시간 초과로 1로 끝나고 상태 파일을 바꾸지 않는다" {
+  export FAKE_RL="$(rl 5 30)"
+  start_discord
+  node "$SCRIPT" --now "$NOW_MS"
+  before=$(cat "$CODEX_USAGE_LIVE_STATE")
+  kill "$DISCORD_PID"
+  export HANG_METHOD=PATCH DISCORD_TIMEOUT_MS=300
+  start_discord
+  start=$(date +%s)
+  run node "$SCRIPT" --now $(( NOW_MS + 600000 ))
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"디스코드 응답 없음(시간 초과)"* ]]
+  [ $(( $(date +%s) - start )) -lt 10 ]
+  # 고치기가 끝나지 않았으므로 새 메시지를 올리지 않음
+  [[ "$(tail -n 1 "$REQ_LOG")" == PATCH* ]]
+  [ "$(cat "$CODEX_USAGE_LIVE_STATE")" = "$before" ]
+}
+
 @test "웹후크 주소가 없으면 1로 끝난다" {
   export FAKE_RL="$(rl 5 90)"
   run node "$SCRIPT" --now "$NOW_MS"
@@ -273,7 +295,7 @@ dry() {
 @test "워크플로: 리뷰 컴퓨터에서 돌고 · 스크립트만 받고 · Codex 리뷰가 끝날 때도 돈다" {
   grep -q 'runs-on: \[self-hosted, codex\]' "$WORKFLOW"
   # checkout 없이 main의 스크립트 하나만 받음(리뷰 작업 폴더를 건드리지 않고, 다른 브랜치 코드를 돌리지 않음)
-  ! grep -q 'actions/checkout' "$WORKFLOW"
+  not grep -q 'actions/checkout' "$WORKFLOW"
   grep -q 'contents/scripts/codex-usage-live.mjs?ref=main' "$WORKFLOW"
   grep -q 'node "$script"' "$WORKFLOW"
   # 건너뛴 · 취소된 리뷰 뒤에는 돌지 않음
@@ -287,6 +309,6 @@ dry() {
   grep -q "github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'" "$WORKFLOW"
   # 사용량 대기 실행이 쌓이지 않게 한 그룹. job 단위라 건너뛰는 실행은 그룹에 들어가지 않음
   grep -q '^    concurrency:$' "$WORKFLOW"
-  ! grep -q '^concurrency:' "$WORKFLOW"
+  not grep -q '^concurrency:' "$WORKFLOW"
   grep -q 'group: codex-usage-live' "$WORKFLOW"
 }

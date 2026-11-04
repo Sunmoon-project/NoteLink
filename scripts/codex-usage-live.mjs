@@ -23,6 +23,7 @@
 //   USAGE_WARN_LEFT · USAGE_STOP_LEFT   경고 · 멈춤 기준(남은 %, 기본 20 · 10)
 //   USAGE_LIVE_EVERY           메시지에 적는 갱신 간격(분, 기본 10)
 //   CODEX_READ_TIMEOUT_MS      app-server 응답을 기다리는 시간 (기본 30000)
+//   DISCORD_TIMEOUT_MS         디스코드 요청 하나를 기다리는 시간 (기본 15000)
 //
 // 테스트: scripts/tests/codex-usage-live.bats
 
@@ -35,6 +36,9 @@ const WARN_LEFT = Number(process.env.USAGE_WARN_LEFT || 20);
 const STOP_LEFT = Number(process.env.USAGE_STOP_LEFT || 10);
 const EVERY_MIN = Number(process.env.USAGE_LIVE_EVERY || 10);
 const READ_TIMEOUT_MS = Number(process.env.CODEX_READ_TIMEOUT_MS || 30000);
+// 디스코드가 응답하지 않아도 리뷰 전용 러너를 job 제한 시간(3분)까지 붙잡지 않게 요청마다 끊음
+// (읽기 30초 + PATCH · POST 15초씩이면 1분 안에 끝남)
+const DISCORD_TIMEOUT_MS = Number(process.env.DISCORD_TIMEOUT_MS || 15000);
 const BAR_CELLS = 10;
 
 // 디스코드 embed 색 (scripts/runner-status.sh와 같음)
@@ -246,21 +250,33 @@ function webhookUrl(base, suffix, query) {
   return u.toString();
 }
 
+// 제한 시간이 있는 fetch. 응답 본문까지 같은 제한 시간 안에 읽음(json()도 이 안에서 부름)
+async function request(url, init, read) {
+  try {
+    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS) });
+    return await read(res);
+  } catch (e) {
+    if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) throw new Error('디스코드 응답 없음(시간 초과)');
+    throw e;
+  }
+}
+
 // 메시지를 고치거나(있으면) 새로 올림 → 메시지 id. 실패하면 Error
 async function upsertMessage(webhook, messageId, embed) {
   const body = JSON.stringify({ embeds: [embed], allowed_mentions: { parse: [] } });
   const headers = { 'Content-Type': 'application/json' };
   if (messageId) {
-    const res = await fetch(webhookUrl(webhook, `/messages/${encodeURIComponent(messageId)}`), {
+    const status = await request(webhookUrl(webhook, `/messages/${encodeURIComponent(messageId)}`), {
       method: 'PATCH', headers, body,
-    });
-    if (res.ok) return messageId;
+    }, async (res) => { await res.arrayBuffer(); return res.status; });
+    if (status >= 200 && status < 300) return messageId;
     // 메시지가 지워졌으면 새로 올림. 다른 오류는 새 메시지를 만들지 않음(메시지가 여러 개 생기지 않게)
-    if (res.status !== 404) throw new Error(`메시지 고치기 실패(HTTP ${res.status})`);
+    if (status !== 404) throw new Error(`메시지 고치기 실패(HTTP ${status})`);
   }
-  const res = await fetch(webhookUrl(webhook, '', { wait: 'true' }), { method: 'POST', headers, body });
-  if (!res.ok) throw new Error(`메시지 올리기 실패(HTTP ${res.status})`);
-  const json = await res.json();
+  const json = await request(webhookUrl(webhook, '', { wait: 'true' }), { method: 'POST', headers, body }, async (res) => {
+    if (!res.ok) throw new Error(`메시지 올리기 실패(HTTP ${res.status})`);
+    return res.json();
+  });
   if (!json || typeof json.id !== 'string') throw new Error('올린 메시지의 id가 없음');
   return json.id;
 }
