@@ -132,11 +132,6 @@ function ErrorAlert({ retry }: { retry: () => void }) {
       open={open}
       title="문제가 생겼어요"
       body={`잠시 후 다시 시도해 주세요.\n작성한 내용은 그대로 보관돼 있어요.`}
-      extra={
-        <View className="mt-2 rounded border border-line px-1.5">
-          <Text className="text-caption2 text-sub">오류 코드 E-5012</Text>
-        </View>
-      }
       secondary="닫기"
       onSecondary={() => setOpen(false)}
       primary="다시 시도"
@@ -183,6 +178,7 @@ export function QuizNotesScreen() {
         <NetBanner />
         <Text className="pt-4 pb-3 text-body font-bold text-ink">어떤 노트로 퀴즈를 만들까요?</Text>
         <Search value={q} onChangeText={setQ} placeholder="노트 검색" />
+        {notes.isError && !notes.data && <ErrorAlert retry={() => notes.refetch()} />}
         {notes.isSuccess && notes.data.length === 0 && (
           <View className="items-center py-16">
             <Text className="text-footnote text-sub">아직 노트가 없어요</Text>
@@ -1152,6 +1148,7 @@ export function FlashScreen() {
         <ArrowLeft size={ICON.sm} color={C.ink} />
         <Text className="text-footnote text-ink">뒤로 가기</Text>
       </Pressable>
+      {cards.isError && !cards.data && <ErrorAlert retry={() => cards.refetch()} />}
       {cards.isSuccess && list.length === 0 && <Text>저장한 플래시카드가 없어요</Text>}
       {c && (
         <View className="-mx-5 mt-10 bg-mint/70 px-8 py-1">
@@ -1243,6 +1240,7 @@ export function CardsScreen() {
           </Text>
         </Pressable>
       </View>
+      {cards.isError && !cards.data && <ErrorAlert retry={() => cards.refetch()} />}
       <View className="mt-4 flex-row flex-wrap justify-between gap-y-3">
         {cards.data?.map((c, i) => (
           <Pressable
