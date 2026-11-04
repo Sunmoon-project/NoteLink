@@ -135,6 +135,9 @@ export function ReportScreen() {
         }
       >
         <Header title="신고" center />
+        {room.isError && !room.data && (
+          <LoadError message="방 멤버를 불러오지 못했어요" retry={room.refetch} />
+        )}
         <View className="rounded-2xl border border-line p-4">
           <Text className="mb-1.5 text-caption text-sub">신고 대상</Text>
           <Pressable
@@ -262,9 +265,9 @@ export function ReportScreen() {
 }
 
 const PERIODS = [
-  { start: '09:00', end: '09:50', label: '수학 문제풀이' },
-  { start: '10:00', end: '10:50', label: '영어 독해' },
-  { start: '11:00', end: '11:50', label: '자율 학습' },
+  { start: '09:00', end: '09:50', label: '1교시' },
+  { start: '10:00', end: '10:50', label: '2교시' },
+  { start: '11:00', end: '11:50', label: '3교시' },
 ];
 
 export function TimerScreen() {
@@ -622,7 +625,6 @@ export function ScheduleScreen() {
         >
           <Text className="text-caption2 font-semibold text-brand">캘린더</Text>
         </Pressable>
-        <Settings size={ICON.md} color={C.sub} />
       </View>
       <View className="mt-2 flex-row items-center rounded-2xl bg-mint p-4">
         <View className="flex-1">
@@ -733,6 +735,9 @@ export function RoomSettingsScreen() {
     <View className="flex-1">
       <Screen>
         <Header title="" />
+        {room.isError && !room.data && (
+          <LoadError message="방 정보를 불러오지 못했어요" retry={room.refetch} />
+        )}
         <View className="gap-3 rounded-2xl border border-line p-3">
           <View className="flex-row items-center gap-2 rounded-xl bg-cream px-4 py-4">
             <Bell size={ICON.md} color={C.ink} />

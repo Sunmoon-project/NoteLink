@@ -754,7 +754,7 @@ export function RoomScreen() {
             onChangeText={setV}
             onSubmitEditing={send}
             returnKeyType="send"
-            placeholder="채팅을 입력하는 중입"
+            placeholder="채팅을 입력해 주세요"
             placeholderTextColor={C.sub}
             className="h-11 flex-1 text-footnote text-ink"
           />
@@ -889,6 +889,7 @@ export function RoomCardsScreen() {
       openFeature({ pathname: '/play/solve', params: { setId: item.quizSetId, from: 'room' } });
     else if (item.itemType === 'material' && item.materialId)
       openFeature({ pathname: '/(tabs)/note/doc/[id]', params: { id: item.materialId } });
+    else toast('이 자료를 열 수 없어요');
   };
   const [flip, setFlip] = useState<string[]>([]);
   const owner = shared.data?.items.find((i) => i.itemType === 'flashcards')?.sharedByNickname;
@@ -901,7 +902,7 @@ export function RoomCardsScreen() {
         <ArrowLeft size={ICON.sm} color={C.ink} />
         <Text className="text-footnote text-ink">뒤로 가기</Text>
       </Pressable>
-      {shared.isError && (
+      {shared.isError && !shared.data && (
         <LoadError message="공유 자료를 불러오지 못했어요" retry={shared.refetch} />
       )}
       {shared.isSuccess && others.length === 0 && shared.data.flashcards.length === 0 && (
@@ -920,9 +921,11 @@ export function RoomCardsScreen() {
           </Text>
         </Pressable>
       ))}
-      <Text className="mt-3 text-caption text-sub">
-        {owner ? `${owner}님이 공유한 플래시 카드` : '공유된 플래시 카드'} · 탭해서 뒤집기
-      </Text>
+      {!!shared.data?.flashcards.length && (
+        <Text className="mt-3 text-caption text-sub">
+          {owner ? `${owner}님이 공유한 플래시 카드` : '공유된 플래시 카드'} · 탭해서 뒤집기
+        </Text>
+      )}
       <View className="mt-3 flex-row flex-wrap justify-between gap-y-3">
         {shared.data?.flashcards.map((c) => {
           const on = flip.includes(c._id);

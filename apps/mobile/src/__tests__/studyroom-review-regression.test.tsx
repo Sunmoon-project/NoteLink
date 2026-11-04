@@ -100,7 +100,7 @@ it('기록을 기다리는 동안 쓴 대기 메시지는 늦은 기록에도 �
   await renderScreen(<RoomScreen />, client());
   await screen.findByText(brief!.title);
   await waitFor(() => expect(resolve).toBeDefined());
-  const input = screen.getByPlaceholderText('채팅을 입력하는 중입');
+  const input = screen.getByPlaceholderText('채팅을 입력해 주세요');
   await fireEvent(input, 'focus');
   await act(async () => useNet.getState().set('unstable'));
   await fireEvent.changeText(input, '기록보다 먼저 쓴 말');
@@ -149,7 +149,7 @@ it('재연결은 방과 기록을 다시 조회하고 소켓 누락 기록을 ID
   setParams({ id: full._id });
   await renderScreen(<RoomScreen />, client());
   await screen.findByText(full.title);
-  await fireEvent(screen.getByPlaceholderText('채팅을 입력하는 중입'), 'focus');
+  await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
   await screen.findByText(existing.text!);
   const initialJoins = emit.mock.calls.filter((call) => call[0] === 'room:join').length;
   await act(async () => useNet.getState().set('unstable'));

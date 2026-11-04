@@ -343,7 +343,7 @@ describe('교시 시간표 편집', () => {
     expect(screen.getByLabelText('교시 시작').props.value).toBe('10:00');
     await fireEvent.changeText(screen.getByLabelText('교시 이름'), '취소할 내용');
     await fireEvent.press(screen.getByRole('button', { name: '취소' }));
-    expect(screen.getByText('영어 독해')).toBeTruthy();
+    expect(screen.getByText('2교시')).toBeTruthy();
     expect(screen.queryByText('취소할 내용')).toBeNull();
   });
 });

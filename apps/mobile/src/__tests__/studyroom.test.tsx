@@ -55,7 +55,7 @@ describe('실제 연결 끊김', () => {
     const emit = jest.spyOn(socket, 'emit');
     await renderScreen(<RoomScreen />);
     await screen.findByText(room!.title);
-    const input = screen.getByPlaceholderText('채팅을 입력하는 중입');
+    const input = screen.getByPlaceholderText('채팅을 입력해 주세요');
     await fireEvent(input, 'focus');
     // 기록 조회가 늦게 도착해 대기 메시지를 덮어쓰는 경쟁과 구분한다.
     await screen.findByText('다들 얼마정도 푸셨나요?');

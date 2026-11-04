@@ -74,8 +74,8 @@ beforeEach(() => {
 afterEach(() => jest.useRealTimers());
 
 const sendMessage = async (text: string) => {
-  await fireEvent(screen.getByPlaceholderText('채팅을 입력하는 중입'), 'focus');
-  await fireEvent.changeText(screen.getByPlaceholderText('채팅을 입력하는 중입'), text);
+  await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+  await fireEvent.changeText(screen.getByPlaceholderText('채팅을 입력해 주세요'), text);
   await fireEvent.press(screen.getByLabelText('전송'));
 };
 
