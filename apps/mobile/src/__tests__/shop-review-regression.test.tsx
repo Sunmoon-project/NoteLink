@@ -24,9 +24,9 @@ const client = () => new QueryClient({ defaultOptions: { queries: { retry: false
 it('포인트 필터는 적립과 사용을 실제 조회하고 가짜 더보기는 없다', async () => {
   const ledger = jest.spyOn(api.shop, 'ledger');
   await renderScreen(<PointsScreen />, client());
-  await fireEvent.press(await screen.findByText('적립'));
+  await fireEvent.press(screen.getByText('적립'));
   await waitFor(() => expect(ledger).toHaveBeenCalledWith('earn'));
-  await fireEvent.press(await screen.findByText('사용'));
+  await fireEvent.press(screen.getByText('사용'));
   await waitFor(() => expect(ledger).toHaveBeenCalledWith('spend'));
   expect(screen.queryByText('이전 내역 더 보기')).toBeNull();
 });
@@ -41,13 +41,12 @@ it('구매 응답 유실은 재구매하지 않고 소유 상태와 잔액, 내�
   const ledger = jest.spyOn(api.shop, 'ledger');
   await renderScreen(<ShopScreen />, qc);
   await fireEvent.press((await screen.findAllByText(cheap.name))[0]!);
-  await fireEvent.press(await screen.findByText('구매'));
-  await screen.findByText(/구매할까요/);
+  await fireEvent.press(screen.getByText('구매'));
   await fireEvent.press(screen.getAllByText('구매').at(-1)!);
   expect(await screen.findByText('구매 결과를 확인해주세요')).toBeTruthy();
   expect(screen.queryByText(/포인트는 차감되지 않았어요/)).toBeNull();
   const before = myItems.mock.calls.length;
-  await fireEvent.press(await screen.findByText('구매 결과 확인'));
+  await fireEvent.press(screen.getByText('구매 결과 확인'));
   await waitFor(() => expect(myItems.mock.calls.length).toBeGreaterThan(before));
   expect(ledger).toHaveBeenCalled();
   expect(buy).toHaveBeenCalledTimes(1);
@@ -90,15 +89,13 @@ it('구매 미완료 확인 후 같은 상품을 다시 선택할 수 있다', a
     .mockResolvedValue({ balance: 100 });
   await renderScreen(<ShopScreen />, qc);
   await fireEvent.press((await screen.findAllByText(item.name))[0]!);
-  await fireEvent.press(await screen.findByText('구매'));
-  await screen.findByText(/구매할까요/);
+  await fireEvent.press(screen.getByText('구매'));
   await fireEvent.press(screen.getAllByText('구매').at(-1)!);
   await fireEvent.press(await screen.findByText('구매 결과 확인'));
   await screen.findByText(/현재 보유 내역에 없어요/);
-  await fireEvent.press(await screen.findByLabelText('닫기'));
+  await fireEvent.press(screen.getByLabelText('닫기'));
   await fireEvent.press(screen.getAllByText(item.name)[0]!);
-  await fireEvent.press(await screen.findByText('구매'));
-  await screen.findByText(/구매할까요/);
+  await fireEvent.press(screen.getByText('구매'));
   await fireEvent.press(screen.getAllByText('구매').at(-1)!);
   await waitFor(() => expect(buy).toHaveBeenCalledTimes(2));
 });
@@ -129,8 +126,7 @@ it('구매 완료 후 응답만 유실되면 재구매 없이 소유를 확인�
   });
   await renderScreen(<ShopScreen />, qc);
   await fireEvent.press((await screen.findAllByText(item.name))[0]!);
-  await fireEvent.press(await screen.findByText('구매'));
-  await screen.findByText(/구매할까요/);
+  await fireEvent.press(screen.getByText('구매'));
   await fireEvent.press(screen.getAllByText('구매').at(-1)!);
   await fireEvent.press(await screen.findByText('구매 결과 확인'));
   expect(await screen.findByText('구매 완료를 확인했어요')).toBeTruthy();

@@ -26,7 +26,14 @@ function SheetThenDialog() {
   );
 }
 
-afterEach(() => jest.useRealTimers());
+const testGlobal = globalThis as { MODAL_CLOSE_MS?: number };
+beforeEach(() => {
+  delete testGlobal.MODAL_CLOSE_MS;
+});
+afterEach(() => {
+  testGlobal.MODAL_CLOSE_MS = 0;
+  jest.useRealTimers();
+});
 
 it('시트를 닫으며 여는 확인 창은 시트가 다 닫힌 뒤에 뜬다 (iOS가 겹친 Modal을 무시함)', async () => {
   await renderScreen(<SheetThenDialog />);

@@ -151,12 +151,12 @@ describe('PR33 내 상태 변경', () => {
   async function openStatus(qc: QueryClient) {
     await renderScreen(<SocialDrawer open onClose={jest.fn()} />, qc);
     await fireEvent.press(await screen.findByText('내 이름'));
-    expect(await screen.findByText('상태 변경')).toBeTruthy();
+    expect(screen.getByText('상태 변경')).toBeTruthy();
   }
   it('저장 성공 후 사용자 정보를 다시 조회하고 선택 창을 닫는다', async () => {
     await openStatus(client());
     mockApi.me.get.mockResolvedValue({ nickname: '내 이름', status: 'resting' });
-    await fireEvent.press(await screen.findByText('쉬는 중'));
+    await fireEvent.press(screen.getByText('쉬는 중'));
     await waitFor(() => expect(mockApi.me.setStatus).toHaveBeenCalledWith('resting'));
     await waitFor(() => expect(mockApi.me.get).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText('상태 변경')).toBeNull());
@@ -165,10 +165,10 @@ describe('PR33 내 상태 변경', () => {
   it('저장 실패 시 선택 창과 이전 상태를 유지하고 실패를 안내한다', async () => {
     mockApi.me.setStatus.mockRejectedValueOnce(new Error('저장 거절'));
     await openStatus(client());
-    await fireEvent.press(await screen.findByText('쉬는 중'));
+    await fireEvent.press(screen.getByText('쉬는 중'));
     await waitFor(() => expect(mockApi.me.setStatus).toHaveBeenCalled());
     await waitFor(() => expect(useToast.getState().msg).toBeTruthy());
-    expect(await screen.findByText('상태 변경')).toBeTruthy();
+    expect(screen.getByText('상태 변경')).toBeTruthy();
     expect(mockApi.me.get).toHaveBeenCalledTimes(1);
   });
 });
@@ -177,14 +177,14 @@ describe('PR33 친구 삭제', () => {
   async function openDelete(qc: QueryClient) {
     await renderScreen(<ChatScreen />, qc);
     await waitFor(() => expect(mockApi.social.messages).toHaveBeenCalled());
-    await fireEvent.press(await screen.findByLabelText('더보기'));
-    await fireEvent.press(await screen.findByText('친구 삭제'));
+    await fireEvent.press(screen.getByLabelText('더보기'));
+    await fireEvent.press(screen.getByText('친구 삭제'));
   }
   it('삭제 성공 후 친구 캐시를 갱신하고 방을 닫는다', async () => {
     const qc = client();
     qc.setQueryData(['friends'], [{ userId: 'friend-1' }]);
     await openDelete(qc);
-    await fireEvent.press(await screen.findByText('삭제'));
+    await fireEvent.press(screen.getByText('삭제'));
     await waitFor(() => expect(mockApi.social.remove).toHaveBeenCalledWith('friend-1'));
     await waitFor(() => expect(qc.getQueryState(['friends'])?.isInvalidated).toBe(true));
     expect(router.back).toHaveBeenCalledTimes(1);
@@ -194,7 +194,7 @@ describe('PR33 친구 삭제', () => {
     const qc = client();
     qc.setQueryData(['friends'], [{ userId: 'friend-1' }]);
     await openDelete(qc);
-    await fireEvent.press(await screen.findByText('삭제'));
+    await fireEvent.press(screen.getByText('삭제'));
     await waitFor(() => expect(mockApi.social.remove).toHaveBeenCalled());
     await waitFor(() => expect(useToast.getState().msg).toBeTruthy());
     expect(router.back).not.toHaveBeenCalled();

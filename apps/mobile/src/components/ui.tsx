@@ -584,10 +584,12 @@ export function Search({
 }
 
 // ponytail: 닫힘 시간 기준 대기. Modal의 닫힘 이벤트를 믿을 수 있게 되면 그쪽으로 바꾼다
-const MODAL_CLOSE_MS = MOTION.exit + 120;
+// 테스트는 jest.setup.js에서 0으로 둔다 (기다림 자체는 modal-navigation-sim-review 테스트가 본다)
+const modalCloseMs = () =>
+  (globalThis as { MODAL_CLOSE_MS?: number }).MODAL_CLOSE_MS ?? MOTION.exit + 120;
 let closingUntil = 0;
 const markClosing = () => {
-  closingUntil = Date.now() + MODAL_CLOSE_MS;
+  closingUntil = Date.now() + modalCloseMs();
 };
 const closingLeft = () => Math.max(0, closingUntil - Date.now());
 
@@ -620,7 +622,7 @@ function useMounted(open: boolean) {
  * 닫히는 중인 Modal 위에 띄우면 Modal이 사라지며 선택기도 함께 닫힌다(iOS).
  */
 export const afterSheetClosed = () =>
-  new Promise<void>((resolve) => setTimeout(resolve, MODAL_CLOSE_MS));
+  new Promise<void>((resolve) => setTimeout(resolve, modalCloseMs()));
 
 export function Sheet({
   open,

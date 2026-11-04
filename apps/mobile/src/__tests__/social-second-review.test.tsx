@@ -61,9 +61,9 @@ it('친구 삭제 후 즉시 다시 입장해도 이전 DM 캐시와 삭제된 �
   const qc = client();
   const first = await renderScreen(<ChatScreen />, qc);
   expect(await screen.findByText(old.text)).toBeTruthy();
-  await fireEvent.press(await screen.findByLabelText('더보기'));
-  await fireEvent.press(await screen.findByText('친구 삭제'));
-  await fireEvent.press(await screen.findByText('삭제'));
+  await fireEvent.press(screen.getByLabelText('더보기'));
+  await fireEvent.press(screen.getByText('친구 삭제'));
+  await fireEvent.press(screen.getByText('삭제'));
   await waitFor(() => expect(router.back).toHaveBeenCalledTimes(1));
   expect(mockApi.social.remove).toHaveBeenCalledWith('friend-1');
   await first.unmount();
@@ -82,7 +82,7 @@ it('친구 요청 실패를 안내하고 같은 사용자에게 재시도하면 
     .mockRejectedValueOnce(new Error('네트워크 오류'))
     .mockResolvedValueOnce(undefined);
   await renderScreen(<FriendAddScreen />, client());
-  await fireEvent.changeText(await screen.findByPlaceholderText('닉네임을 입력해주세요.'), user.nickname);
+  await fireEvent.changeText(screen.getByPlaceholderText('닉네임을 입력해주세요.'), user.nickname);
   await fireEvent.press(await screen.findByText('친구 요청 보내기'));
   await waitFor(() => expect(mockApi.social.sendRequest).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(useToast.getState().msg).toBeTruthy());
