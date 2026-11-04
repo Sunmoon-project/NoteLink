@@ -69,7 +69,7 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0, toda
   const camOn = room?.camOn ?? false;
   useEffect(() => {
     if (room?.connected) socket.emit('room:state', { roomId, micOn, camOn, todaySec });
-  }, [roomId, micOn, camOn, room, todaySec]);
+  }, [roomId, micOn, camOn, room]); // eslint-disable-line react-hooks/exhaustive-deps -- 시간이 흐를 때마다 보내지 않는다
   return {
     connected: room?.connected ?? false,
     micOn,

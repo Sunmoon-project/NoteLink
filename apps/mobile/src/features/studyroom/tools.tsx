@@ -442,7 +442,7 @@ export function TimerScreen() {
                     <Settings size={ICON.xs} color={C.brand} />
                     <Text className="text-caption font-bold text-ink">직접 설정</Text>
                   </View>
-                  <Text className="text-caption text-brand">4회 반복</Text>
+                  <Text className="text-caption text-brand">{repeat}회 반복</Text>
                 </View>
                 <View className="mt-2 flex-row gap-2">
                   {(

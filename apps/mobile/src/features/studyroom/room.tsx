@@ -58,6 +58,8 @@ import { LoadError } from './tools';
 
 // p.75 스터디룸 입장 · 만들기 / p.76 진입 · 채팅 / p.77 카드 / p.100 연결 끊김
 
+const ACK_TIMEOUT_MS = 8000;
+
 export function RoomListScreen() {
   const mine = useQuery({ queryKey: ['rooms', 'mine'], queryFn: api.rooms.mine });
   const rec = useQuery({ queryKey: ['rooms', 'recommended'], queryFn: api.rooms.recommended });
@@ -90,7 +92,11 @@ export function RoomListScreen() {
             className="ml-2 h-11 flex-1 text-subhead text-ink"
           />
         </View>
-        {joined.length ? (
+        {mine.isPending ? (
+          <Loading />
+        ) : mine.isError && !mine.data ? (
+          <LoadError message="참여 중인 스터디룸을 불러오지 못했어요" retry={mine.refetch} />
+        ) : joined.length ? (
           <>
             <Label>참여 중인 스터디룸</Label>
             {joined.map((r) => (
@@ -150,6 +156,9 @@ export function RoomListScreen() {
         <Label>
           <Text className="text-footnote font-bold text-ink">추천 스터디룸</Text>
         </Label>
+        {rec.isError && !rec.data && (
+          <LoadError message="추천 스터디룸을 불러오지 못했어요" retry={rec.refetch} />
+        )}
         <View className="gap-2">
           {rec.data
             ?.filter((r) => r.title.includes(q))
@@ -345,20 +354,37 @@ export function RoomScreen() {
   const [chat, setChat] = useState(false);
   const [conn, setConn] = useState<'ok' | 'lost' | 'back' | 'kicked'>('ok');
   const [mediaGeneration, setMediaGeneration] = useState(0);
-  // 서울 자정이 지나면 키가 바뀌어 새 날의 학습 시간을 다시 읽는다
-  const today = useQuery({
-    queryKey: ['study-today', ymd(seoul(now))],
-    queryFn: () => api.study.today(),
-  });
-  const live = useLiveRoom(
-    id,
-    conn !== 'kicked' && !!room.data,
-    mediaGeneration,
-    today.data?.totalSec,
-  );
+  const day = ymd(seoul(now));
+  const midnight = Date.parse(`${day}T00:00:00+09:00`);
+  // 입장 시점 값이 아니라 지금까지의 학습 시간을 알린다 (서울 자정에 다시 센다)
+  const mySec =
+    (ymd(seoul(membersAt)) === day ? (members.find((m) => m.userId === myId)?.todaySec ?? 0) : 0) +
+    Math.max(0, Math.floor((now - Math.max(membersAt, midnight)) / 1000));
+  const live = useLiveRoom(id, conn !== 'kicked' && !!room.data, mediaGeneration, mySec);
   const [v, setV] = useState('');
   const pending = useRef<{ clientId: string; text: string }[]>([]);
   const messageSeq = useRef(0);
+  // 확인 응답이 오지 않은 메시지. 입력을 지운 뒤에도 실패를 알고 다시 보낼 수 있게 한다
+  const [failedIds, setFailedIds] = useState<string[]>([]);
+  const ackTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    const timers = ackTimers.current;
+    return () => timers.forEach(clearTimeout);
+  }, []);
+  const deliver = (chatRoomId: string, clientId: string, text: string) => {
+    setFailedIds((ids) => ids.filter((x) => x !== clientId));
+    clearTimeout(ackTimers.current.get(clientId));
+    ackTimers.current.set(
+      clientId,
+      setTimeout(() => setFailedIds((ids) => [...ids, clientId]), ACK_TIMEOUT_MS),
+    );
+    socket.emit('chat:send', { chatRoomId, text, clientId }, (m) => {
+      clearTimeout(ackTimers.current.get(clientId));
+      ackTimers.current.delete(clientId);
+      setFailedIds((ids) => ids.filter((x) => x !== clientId));
+      receiveMessage(m, clientId);
+    });
+  };
   const list = useRef<FlatList<Message>>(null);
 
   // 방 정보 · 대화 기록을 불러오면 목록을 채운다 (렌더 중 상태 조정)
@@ -377,17 +403,16 @@ export function RoomScreen() {
   }
   const receiveMessage = (m: Message, clientId?: string) =>
     setMsgs((messages) => {
-      const confirmed = clientId ? messages.filter((x) => x._id !== clientId) : messages;
+      const local = clientId ?? m.clientId;
+      const confirmed = local ? messages.filter((x) => x._id !== local) : messages;
       return confirmed.some((x) => x._id === m._id) ? confirmed : [...confirmed, m];
     });
   useEffect(() => {
-    socket.emit(
-      'room:join',
-      { roomId: id },
-      (r) =>
-        r.missed &&
-        setMsgs((p) => [...new Map([...p, ...r.missed!].map((m) => [m._id, m])).values()]),
-    );
+    socket.emit('room:join', { roomId: id }, (r) => {
+      if (!r.ok) toast('채팅에 연결하지 못했어요. 나갔다가 다시 들어와 주세요');
+      if (r.missed)
+        setMsgs((p) => [...new Map([...p, ...r.missed!].map((m) => [m._id, m])).values()]);
+    });
     return () => socket.emit('room:leave', { roomId: id });
   }, [id]);
   useSocket(
@@ -437,22 +462,25 @@ export function RoomScreen() {
   useEffect(() => {
     if (conn !== 'back') return;
     socket.emit('room:join', { roomId: id }, (r) => {
+      if (!r.ok) toast('채팅에 연결하지 못했어요. 나갔다가 다시 들어와 주세요');
       if (r.missed)
         setMsgs((p) => [...new Map([...p, ...r.missed!].map((m) => [m._id, m])).values()]);
     });
     room.refetch();
     history.refetch();
     const roomId = chatId.data;
-    if (roomId)
-      pending.current.forEach(({ clientId, text }) =>
-        socket.emit('chat:send', { chatRoomId: roomId, text, clientId }, (m) =>
-          receiveMessage(m, clientId),
-        ),
-      );
+    if (roomId) pending.current.forEach(({ clientId, text }) => deliver(roomId, clientId, text));
     pending.current = [];
     const t = setTimeout(() => setConn('ok'), 2600);
     return () => clearTimeout(t);
   }, [conn]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // HTTP 실패로 끊김 상태가 된 뒤 소켓은 살아 있으면 복구 신호가 없다. 주기적으로 확인한다
+  useEffect(() => {
+    if (conn !== 'lost' || disconnect) return;
+    const t = setInterval(() => void refetchRoom(), 15_000);
+    return () => clearInterval(t);
+  }, [conn, disconnect, refetchRoom]);
 
   // 5분 넘게 끊기면 자동 퇴장 (공부 시간 기록은 서버에 저장돼 있다)
   const kick = useMockFlags((s) => s.roomKick);
@@ -467,26 +495,27 @@ export function RoomScreen() {
   }, [conn]);
 
   const send = () => {
-    if (!v.trim() || !chatId.data) return;
+    if (!v.trim()) return;
+    if (!chatId.data) {
+      void chatId.refetch();
+      return toast('채팅을 준비하고 있어요. 잠시 후 다시 보내 주세요');
+    }
     const clientId = `c${Date.now()}-${++messageSeq.current}`;
-    if (conn === 'lost') {
-      pending.current.push({ clientId, text: v.trim() });
-      setMsgs((p) => [
-        ...p,
-        {
-          _id: clientId,
-          chatRoomId: chatId.data!,
-          senderId: myId ?? '',
-          type: 'text',
-          text: v.trim(),
-          sharedItemId: null,
-          createdAt: new Date().toISOString(),
-        },
-      ]);
-    } else
-      socket.emit('chat:send', { chatRoomId: chatId.data, text: v.trim(), clientId }, (m) =>
-        receiveMessage(m),
-      );
+    const text = v.trim();
+    setMsgs((p) => [
+      ...p,
+      {
+        _id: clientId,
+        chatRoomId: chatId.data!,
+        senderId: myId ?? '',
+        type: 'text',
+        text,
+        sharedItemId: null,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    if (conn === 'lost') pending.current.push({ clientId, text });
+    else deliver(chatId.data, clientId, text);
     setV('');
   };
   if (!room.data && room.isError)
@@ -506,11 +535,6 @@ export function RoomScreen() {
   const last = msgs[msgs.length - 1];
   const tiles = chat ? members.slice(0, 2) : members;
   const remain = timer ? Math.max(0, Math.floor((timer.endsAt - now) / 1000)) : 0;
-  const day = ymd(seoul(now));
-  const midnight = Date.parse(`${day}T00:00:00+09:00`);
-  const mySec =
-    (ymd(seoul(membersAt)) === day ? (members.find((m) => m.userId === myId)?.todaySec ?? 0) : 0) +
-    Math.max(0, Math.floor((now - Math.max(membersAt, midnight)) / 1000));
 
   return (
     <Screen scroll={false} pad={false}>
@@ -632,12 +656,22 @@ export function RoomScreen() {
                 {!mine && (
                   <View className="flex-row items-center gap-1.5 mb-1">
                     <MessageCircle size={ICON.xs} color={C.sub} />
-                    <Text className="text-caption2 text-sub">{m.senderNickname}</Text>
+                    <Text className="text-caption2 text-sub">{m.senderNickname ?? '멤버'}</Text>
                   </View>
                 )}
                 <View className="max-w-[78%] rounded-2xl bg-white px-3 py-2">
-                  <Text className="text-footnote text-ink">{m.text}</Text>
+                  <Text className="text-footnote text-ink">{m.text ?? '공유 자료를 보냈어요'}</Text>
                 </View>
+                {failedIds.includes(m._id) && (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => deliver(m.chatRoomId, m._id, m.text ?? '')}
+                  >
+                    <Text className="mt-1 text-caption2 text-danger">
+                      전송하지 못했어요 · 다시 보내기
+                    </Text>
+                  </Pressable>
+                )}
                 {mine && conn === 'back' && m === msgs[msgs.length - 1] && (
                   <Text className="mt-1 text-caption2 text-brand">자동으로 전송했어요</Text>
                 )}
@@ -692,7 +726,7 @@ export function RoomScreen() {
               <Text numberOfLines={1} className="text-caption text-sub">
                 💬{' '}
                 {last
-                  ? `${last.senderId === myId ? '나' : last.senderNickname}: ${last.text}`
+                  ? `${last.senderId === myId ? '나' : (last.senderNickname ?? '멤버')}: ${last.text ?? '공유 자료'}`
                   : '채팅을 시작해 보세요'}
               </Text>
             </Pressable>
