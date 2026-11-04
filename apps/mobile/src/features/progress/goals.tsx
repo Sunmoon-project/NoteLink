@@ -29,6 +29,7 @@ import {
   Target,
 } from 'lucide-react-native';
 import { ICON, C } from '@/theme';
+import { LoadError } from './load-error';
 
 // p.51 #13 D-day 관리 / #14 반복 목표 설정
 
@@ -83,6 +84,9 @@ export function DDayScreen() {
   return (
     <Screen>
       <Header title="D-day 관리" sub="과제 · 시험으로 등록한 할 일이 자동으로 올라옵니다." />
+      {ddays.isError && !ddays.data && (
+        <LoadError message="D-day를 불러오지 못했어요" retry={ddays.refetch} />
+      )}
       <Label>할 일에서 자동</Label>
       {ddays.data?.filter((d) => d.source === 'todo').map(row)}
       <Label>직접 등록</Label>
@@ -174,6 +178,14 @@ export function RepeatGoalScreen() {
       toast('목표를 삭제했어요');
     },
   });
+  // 고칠 목표를 못 읽었으면 새 목표 화면으로 넘어가 중복을 만들지 않게 한다
+  if (id && goals.isError && !goals.data)
+    return (
+      <Screen>
+        <Header title="반복 목표 설정" />
+        <LoadError message="반복 목표를 불러오지 못했어요" retry={goals.refetch} />
+      </Screen>
+    );
   return (
     <Screen
       footer={
@@ -245,7 +257,7 @@ export function RepeatGoalScreen() {
       <Card tone="white" className="mt-3 flex-row items-center px-4 py-3">
         <View className="flex-1">
           <Text className="text-subhead font-semibold text-ink">리마인드 알림</Text>
-          <Text className="text-caption text-sub">매일 20:00에 알려드려요</Text>
+          <Text className="text-caption text-sub">고른 요일 20:00에 알려드려요</Text>
         </View>
         <Toggle label="리마인드 알림" on={remind} onChange={setRemind} />
       </Card>

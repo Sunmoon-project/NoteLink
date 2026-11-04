@@ -29,6 +29,7 @@ import {
 import { C, ICON } from '@/theme';
 import { Month, laneBlocks } from '../progress/record';
 import { validYmd } from '../progress/goals';
+import { LoadError } from '../progress/load-error';
 
 // p.52 공휴일 · 캘린더 공유 · 공유받은 캘린더 / p.56 시간표
 
@@ -82,6 +83,9 @@ export function HolidayScreen() {
         <Toggle label="공휴일 자동 연동" on={auto} onChange={setAuto} />
       </Card>
       <Label>다가오는 공휴일</Label>
+      {hol.isError && !hol.data && (
+        <LoadError message="공휴일을 불러오지 못했어요" retry={hol.refetch} />
+      )}
       <View className={cx('gap-2', !auto && 'opacity-40')}>
         {upcoming.map((h) => (
           <Card key={h._id} tone="white" className="flex-row items-center px-4 py-3">
@@ -101,6 +105,9 @@ export function HolidayScreen() {
         ))}
       </View>
       <Label>사용자 정의 휴일</Label>
+      {custom.isError && !custom.data && (
+        <LoadError message="사용자 정의 휴일을 불러오지 못했어요" retry={custom.refetch} />
+      )}
       {custom.data?.map((c) => (
         <Card key={c._id} tone="mint" className="mb-2 flex-row items-center px-4 py-3">
           <View className="flex-1 flex-row items-center gap-1.5">
@@ -184,7 +191,6 @@ export function CalShareScreen() {
         <Text className="flex-1 text-subhead text-ink">
           {start.replaceAll('-', '.')} ~ {end.replaceAll('-', '.')}
         </Text>
-        <ChevronRight size={ICON.sm} color={C.sub} />
       </Card>
       <Label>유효기간</Label>
       <View className="flex-row gap-2">
@@ -307,6 +313,9 @@ export function CalSharedScreen() {
       }
     >
       <Header title="공유받은 캘린더" />
+      {recv.isError && !recv.data && (
+        <LoadError message="공유받은 캘린더를 불러오지 못했어요" retry={recv.refetch} />
+      )}
       <View className="flex-row flex-wrap gap-2">
         {recv.data?.map((c) => (
           <Chip
@@ -395,6 +404,9 @@ export function TimetableScreen() {
             </Pressable>
           }
         />
+        {tt.isError && !tt.data && (
+          <LoadError message="시간표를 불러오지 못했어요" retry={tt.refetch} />
+        )}
         <View className="flex-row pl-6">
           {WEEK.map((d) => (
             <Text key={d} className="flex-1 text-center text-caption text-sub">
@@ -618,6 +630,9 @@ function ShareTimetableSheet({ open, onClose }: { open: boolean; onClose: () => 
         className="w-60"
       />
       <Label>공유할 친구</Label>
+      {friends.isError && !friends.data && (
+        <LoadError message="친구 목록을 불러오지 못했어요" retry={friends.refetch} />
+      )}
       <View className="gap-2">
         {friends.data?.map((f) => {
           const on = pick.includes(f.userId);

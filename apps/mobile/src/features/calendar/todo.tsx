@@ -9,6 +9,7 @@ import { md, today } from '@/lib/dates';
 import { toast } from '@/stores/toast';
 import { Badge, Btn, Chip, Dashed, Input, Label, Sheet, cx } from '@/components/ui';
 import { ICON, C } from '@/theme';
+import { LoadError } from '../progress/load-error';
 
 // p.50 #11 날짜별 할 일 / p.51 #12 할 일 추가
 
@@ -54,7 +55,10 @@ export function TodoSheet({
         할 일 {list.length}개 · {list.filter((t) => t.done).length}개 완료
       </Text>
       <View className="mt-3 gap-2">
-        {list.length === 0 && (
+        {todos.isError && !todos.data && (
+          <LoadError message="할 일을 불러오지 못했어요" retry={todos.refetch} />
+        )}
+        {todos.isSuccess && list.length === 0 && (
           <Text className="py-6 text-center text-footnote text-sub">이 날은 할 일이 없어요</Text>
         )}
         {list.map((t) => (
@@ -172,7 +176,6 @@ export function AddTodoSheet({
           <CalendarDays size={ICON.sm} color={C.sub} />
           <Text className="text-subhead text-ink">{md(date)}</Text>
         </View>
-        <Text className="text-caption text-brand">변경</Text>
       </View>
       <Label>시간 (선택)</Label>
       <View className="flex-row flex-wrap gap-2">

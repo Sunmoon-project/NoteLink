@@ -32,6 +32,7 @@ import {
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
 import { AddTodoSheet, TodoSheet } from '../calendar/todo';
+import { LoadError } from './load-error';
 
 // p.50 학습 기록 · 주간 보기 · 날짜별 할 일
 
@@ -277,6 +278,9 @@ export function RecordScreen() {
                   {date} · {name}
                 </Text>
               ))}
+            {month.isError && !month.data && (
+              <LoadError message="이번 달 기록을 불러오지 못했어요" retry={month.refetch} />
+            )}
             <Text className="mt-2 text-caption2 text-sub">
               색이 진할수록 공부 시간이 길고, 점은 할 일이 있는 날이에요
             </Text>
@@ -553,6 +557,9 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
           ))}
         </View>
       </View>
+      {tt.isError && !tt.data && (
+        <LoadError message="시간표를 불러오지 못했어요" retry={tt.refetch} />
+      )}
       <Text className="mt-2 text-caption2 text-sub">● 시간표 자동연동 ● 스터디룸 교시 일정</Text>
       {rooms.isError && (
         <View className="mt-2">
