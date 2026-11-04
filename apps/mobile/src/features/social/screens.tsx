@@ -280,6 +280,14 @@ export function ChatScreen() {
           <StatusText status={status} />
         </View>
       </View>
+      {history.isError && !history.data && (
+        <View className="gap-2 py-3">
+          <Text className="text-footnote text-sub">대화 기록을 불러오지 못했어요</Text>
+          <Btn small onPress={() => void history.refetch()}>
+            대화 기록 다시 시도
+          </Btn>
+        </View>
+      )}
       <FlatList
         ref={list}
         data={history.data ?? []}

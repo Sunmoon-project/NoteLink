@@ -112,9 +112,20 @@ export function SummaryScreen() {
           <Progress value={pct} className="mt-1.5" />
         </>
       )}
-      <Text className="mt-1 text-caption text-sub">
-        {hm(weekly.data?.totalSec ?? 0)} · {diffLabel(weekly.data?.diffFromLastWeekSec ?? 0)}
-      </Text>
+      {weekly.data ? (
+        <Text className="mt-1 text-caption text-sub">
+          {hm(weekly.data.totalSec)} · {diffLabel(weekly.data.diffFromLastWeekSec)}
+        </Text>
+      ) : (
+        weekly.isError && (
+          <View className="mt-2 gap-2">
+            <Text className="text-caption text-sub">이번주 기록을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void weekly.refetch()}>
+              이번주 기록 다시 시도
+            </Btn>
+          </View>
+        )
+      )}
       <Card tone="white" className="mt-4 p-4">
         <Text className="text-subhead font-semibold text-ink">오늘 공부를 노트로 남겨둘까요?</Text>
         <Text className="text-caption text-sub">

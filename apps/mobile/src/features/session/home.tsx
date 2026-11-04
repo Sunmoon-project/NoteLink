@@ -49,8 +49,11 @@ export function HomeScreen() {
   const weekSec = (weekly.data?.totalSec ?? 0) + (s.itemId ? s.elapsedSince(monday, now) : 0);
   // 목표를 읽지 못했으면 임의의 목표로 계산하지 않는다
   const goalMin = goal.data?.targetMin;
-  const pct = goalMin ? Math.round((weekSec / 60 / goalMin) * 100) : null;
-  const weekLabel = `이번주 ${hm(weekSec)}${goalMin ? ` / 목표 ${goalMin / 60}시간 (${pct}%)` : ''} ›`;
+  // 주간 기록을 못 읽었으면 0시간이나 0%로 표시하지 않는다
+  const pct = goalMin && weekly.data ? Math.round((weekSec / 60 / goalMin) * 100) : null;
+  const weekLabel = weekly.data
+    ? `이번주 ${hm(weekSec)}${goalMin ? ` / 목표 ${goalMin / 60}시간 (${pct}%)` : ''} ›`
+    : '주간 목표 설정 ›';
   const nextDday = ddays.data?.find((d) => d.daysLeft >= 0);
 
   const toggle = async (id: string) => {
@@ -324,10 +327,17 @@ export function HomeScreen() {
             {weekly.data ? hm(weekSec) : '-'}
           </Text>
           <Text className="text-caption text-sub">
-            {has
-              ? `지난주보다 ${hm(Math.abs(weekly.data?.diffFromLastWeekSec ?? 0)).replace('0시간 ', '')} ${(weekly.data?.diffFromLastWeekSec ?? 0) < 0 ? '줄었어요' : '늘었어요'}`
-              : '학습 기록이 쌓이면 스트릭이 시작돼요'}
+            {weekly.isError && !weekly.data
+              ? '이번주 기록을 불러오지 못했어요'
+              : has
+                ? `지난주보다 ${hm(Math.abs(weekly.data?.diffFromLastWeekSec ?? 0)).replace('0시간 ', '')} ${(weekly.data?.diffFromLastWeekSec ?? 0) < 0 ? '줄었어요' : '늘었어요'}`
+                : '학습 기록이 쌓이면 스트릭이 시작돼요'}
           </Text>
+          {weekly.isError && !weekly.data && (
+            <Btn small className="mt-2" onPress={() => void weekly.refetch()}>
+              이번주 기록 다시 시도
+            </Btn>
+          )}
         </Card>
       </Screen>
       <AddItemSheet open={sheet === 'add'} onClose={() => setSheet(null)} />
