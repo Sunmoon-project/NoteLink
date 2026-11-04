@@ -3,8 +3,8 @@
 ai_jobs.type = 'today_review' (공용 계약 AiJobType, 11/01 추가).
   코드  날짜가 된 문제 고르기 — 지난번 틀린 문제 → 약한 개념(사용자의 모든 풀이에서 틀린 수) →
         오래된 날짜 순, 같은 낱말(text.same_word)은 하나만 · 사본으로 복습 넘겨주기 · 개념별 진행
-  LLM   '정답 둘' 검사(10/22) 전에 만든 문제와 보기가 5개가 아닌 문제(10/26)를 검사하고
-        (quality.screen), 걸리면 같은 낱말의 새 문제로 바꿈(similar.make_similar)
+  LLM   '정답 둘' 검사(10/22) 전에 만든 문제를 검사하고(quality.screen), 걸리면 같은 낱말의
+        새 문제로 바꿈(similar.make_similar)
 
 input — NestJS가 작업을 만들 때 담습니다. ObjectId는 문자열, 날짜는 Date 또는 ISO 문자열
   day       오늘(서울 날짜 YYYY-MM-DD). 다음 날 서울 0시 전에 dueAt이 된 문제를 고릅니다
@@ -65,7 +65,7 @@ from typing import cast
 from app.clients.llm import JsonObject, Llm
 from app.services.quiz import quality, similar, srs
 from app.services.quiz.checks import Target, seen_question
-from app.services.quiz.models import CHOICES, Draft, Notes, Question
+from app.services.quiz.models import Draft, Notes, Question
 from app.services.quiz.review import (
     REVIEW_SET_SIZE,
     InputError,
@@ -378,7 +378,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     )
     report(15, "복습할 문제 고르기")
 
-    # 2. 같은 낱말은 하나만. 검사 안 한 문제 · 보기가 5개가 아닌 문제는 검사하고 걸리면 바꿈
+    # 2. 같은 낱말은 하나만. 검사 안 한 문제는 검사하고 걸리면 바꿈
     picked: list[tuple[QuizSet, Question]] = []
     dropped: list[JsonObject] = []
     voids: list[JsonObject] = []
@@ -393,13 +393,13 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
             continue
         st = cast(srs.Srs, q["srs"])
         choices = q["choices"]
-        short = choices is not None and len(choices) != CHOICES
-        # 단답형(choices 없음)은 검사 대상이 아니고, 노트 글이 없으면 검사 · 새 문제를 못 함
-        if has_notes and choices is not None and (not st.get("checked") or short):
-            # '정답 둘' 검사(10/22) 전에 만든 문제는 검사한 적이 없음. 5번째 보기를 못 더한
-            # 4지선다(10/26)도 같은 방법으로 다시 만듦
+        # 단답형(choices 없음)은 검사 대상이 아니고, 노트 글이 없으면 검사 · 새 문제를 못 함.
+        # 보기는 모두 5지선다로 만들어서(models.CHOICES) 보기 수는 보지 않음(로컬에만 있는
+        # 10/26 전 4지선다 처리)
+        if has_notes and choices is not None and not st.get("checked"):
+            # '정답 둘' 검사(10/22) 전에 만든 문제는 검사한 적이 없음
             hits: list[str] = []
-            found = flaw(llm, s, q, notes, hits) if not st.get("checked") else []
+            found = flaw(llm, s, q, notes, hits)
             if found is None and st.get("flaw"):
                 # 전날 결함으로 미룬 문제는 검사를 못 해도 그대로 내지 않음: 하루 더 미룸
                 # (시도 수는 그대로)
@@ -422,8 +422,6 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
                     break
                 continue
             why = found
-            if short:
-                why.append(f"보기 {len(choices)}개({CHOICES}지선다 아님)")
             new, down = None, False
             if why:
                 st, voided = void_flawed(attempts, qmaps, q, hits)

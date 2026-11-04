@@ -461,85 +461,74 @@ def test_flawed_question_is_dropped_after_three_days() -> None:
     assert result["dropped"][0]["state"] == "flawed"
 
 
-STACK = {
+FASTENED = {
     "question": {
-        "stem": "알맞은 것을 고르시오.",
-        "passage": "상자를 창고에 차곡차곡 두는 장면",
-        "options": ["stack", "fasten", "request", "inform", "order"],
-        "answer": "stack",
+        "stem": "빈칸에 알맞은 것은?",
+        "passage": "The box was ____ to the shelf so that it would not fall.",
+        "options": ["fastened", "extended", "displayed", "stacked", "requested"],
+        "answer": "fastened",
         "explanation": "노트 설명",
         "difficulty": "쉬움",
     }
 }
+CHECK_A = {"answer": "A", "only_one": True, "supported": True}
+# FakeLlm은 받은 목록에서 답을 꺼내 쓰므로 시험마다 새 목록을 만듦(+로 합치거나 list())
+SECURED = natural(True, False, False, False)  # 저장된 문제: secured도 빈칸에 맞음
+CLEAN = natural(*[False] * 8, True)  # 새 문제: 걸린 보기 없음 · 정답이 빈칸에 맞음
 
 
-def four_choices() -> JsonObject:
-    """보기가 4개인 문제(10/26): 검사는 했어도 같은 낱말의 새 문제로 바꿈."""
-    old = q(
-        "q1",
-        "stack",
-        "stack의 뜻",
-        st(TOMORROW - timedelta(days=1), "wrong"),
-        choices=["stack", "fasten", "request", "inform"],
-    )
-    return job({"id": "s1", "materialId": "m1", "questions": [old]})
-
-
-def test_question_with_four_choices_is_replaced_by_a_new_one() -> None:
-    llm = FakeLlm(
-        {"Review": [STACK], "Check": [{"answer": "A", "only_one": True, "supported": True}]}
-    )
-    result = run(llm, four_choices())
+def test_flawed_question_is_replaced_by_a_new_one() -> None:
+    llm = FakeLlm({"Natural": SECURED + CLEAN, "Review": [FASTENED], "Check": [CHECK_A]})
+    result = run(llm, flawed_input(unchecked()))
     [new] = result["questions"]
-    assert (new["answer"], new["choices"][0], len(new["choices"])) == ("stack", "stack", 5)
+    assert (new["answer"], new["choices"][0], len(new["choices"])) == ("fastened", "fastened", 5)
     old = updates(result)["q1"]
     assert (old["state"], old["dueAt"], old["movedTo"]) == ("flawed", None, new["id"])
-    assert old["flaw"] == "보기 4개(5지선다 아님)"
+    assert "secured" in old["flaw"]
     assert result["dropped"][0]["replacedBy"] == new["id"]
-    # 새 문제가 복습을 이어 감: 날짜 · 횟수는 그대로, 결함 표시는 없음
+    # 새 문제가 복습을 이어 감: 날짜는 그대로, 횟수는 무효 풀이를 뺀 값, 결함 표시는 없음
     assert new["srs"]["dueAt"] == TOMORROW - timedelta(days=1)
-    assert new["srs"]["reviews"] == 2 and new["srs"]["state"] == "active"
+    assert new["srs"]["reviews"] == 1 and new["srs"]["state"] == "active"
+    assert new["srs"]["checked"] is True
     assert "flaw" not in new["srs"] and "movedTo" not in new["srs"]
-    assert not llm.named("Natural")  # 검사한 문제라 '정답 둘' 검사는 다시 하지 않음
 
 
 def test_new_question_counts_its_own_flaw_tries() -> None:
-    inp = four_choices()
-    inp["sets"][0]["questions"][0]["srs"]["flawTries"] = 1
-    llm = FakeLlm(
-        {"Review": [STACK], "Check": [{"answer": "A", "only_one": True, "supported": True}]}
-    )
-    [new] = run(llm, inp)["questions"]
+    llm = FakeLlm({"Natural": SECURED + CLEAN, "Review": [FASTENED], "Check": [CHECK_A]})
+    [new] = run(llm, flawed_input(unchecked(flawTries=1)))["questions"]
     assert "flawTries" not in new["srs"]
 
 
 def test_llm_down_while_replacing_puts_only_that_question_off_a_day() -> None:
-    old = four_choices()
-    other = q("q2", "fasten", "fasten의 뜻", st(TOMORROW - timedelta(days=1)))
-    old["sets"][0]["questions"].append(other)
-    llm = FakeLlm({"Review": [LlmError("HTTP 503")] * 3})
-    result = run(llm, old)
-    assert [x["answer"] for x in result["questions"]] == ["fasten"]  # 다른 문제는 그대로 냄
+    inp = flawed_input(unchecked())
+    other = q("q2", "stack", "stack의 뜻", st(TOMORROW - timedelta(days=1)))
+    inp["sets"][0]["questions"].append(other)
+    llm = FakeLlm({"Natural": list(SECURED), "Review": [LlmError("HTTP 503")] * 3})
+    result = run(llm, inp)
+    assert [x["answer"] for x in result["questions"]] == ["stack"]  # 다른 문제는 그대로 냄
     s = updates(result)["q1"]
     assert (s["state"], s["dueAt"], s.get("flawTries")) == ("active", TOMORROW, None)
 
 
 def test_checker_down_while_replacing_does_not_use_up_a_day() -> None:
-    review = [STACK, LlmError("HTTP 503"), STACK]  # 1 · 3번째는 검사 호출, 2번째는 생성 호출 실패
-    llm = FakeLlm({"Review": review, "Check": [LlmError("HTTP 503")] * 2})
-    result = run(llm, four_choices())
+    # 1 · 3번째 시도는 검사 모델 호출 실패, 2번째는 생성 호출 실패
+    review = [FASTENED, LlmError("HTTP 503"), FASTENED]
+    natural_ = SECURED + CLEAN + CLEAN
+    llm = FakeLlm({"Natural": natural_, "Review": review, "Check": [LlmError("HTTP 503")] * 2})
+    result = run(llm, flawed_input(unchecked()))
     assert result["questions"] == []
     s = updates(result)["q1"]
     assert (s["state"], s["dueAt"], s.get("flawTries")) == ("active", TOMORROW, None)
 
 
 def test_question_put_off_to_tomorrow_is_not_handed_to_a_same_word_copy() -> None:
-    inp = four_choices()  # q1(지난번 틀림)이 먼저: 새 문제 만들기가 LLM 장애로 내일로 미뤄짐
-    other = q("q2", "stack", "stack의 뜻", st(TOMORROW - timedelta(days=1)))
+    # q1(지난번 틀림)이 먼저: 새 문제 만들기가 LLM 장애로 내일로 미뤄짐
+    inp = flawed_input(unchecked())
+    other = q("q2", "fastened", "fasten의 뜻", st(TOMORROW - timedelta(days=1)))
     inp["sets"].append({"id": "s2", "materialId": "m1", "questions": [other]})
-    llm = FakeLlm({"Review": [LlmError("HTTP 503")] * 3})
+    llm = FakeLlm({"Natural": list(SECURED), "Review": [LlmError("HTTP 503")] * 3})
     result = run(llm, inp)
-    assert [x["answer"] for x in result["questions"]] == ["stack"]  # q2의 사본
+    assert [x["answer"] for x in result["questions"]] == ["fastened"]  # q2의 사본
     up = updates(result)
     assert (up["q1"]["state"], up["q1"]["dueAt"]) == ("active", TOMORROW)  # 사본으로 넘기지 않음
     assert up["q2"]["state"] == "moved" and result["merged"] == 0
@@ -591,11 +580,12 @@ def test_check_call_failing_leaves_the_question_unchecked() -> None:
     assert result["dropped"] == [] and result["voidAnswers"] == []
 
 
-def test_without_note_text_flawed_questions_are_asked_as_they_are() -> None:
-    inp = {**four_choices(), "notes": {}}
-    result = run(FakeLlm(), inp)
-    assert [x["answer"] for x in result["questions"]] == ["stack"]
-    assert result["dropped"] == []
+def test_without_note_text_unchecked_questions_are_asked_as_they_are() -> None:
+    inp = {**flawed_input(unchecked()), "notes": {}}
+    llm = FakeLlm()
+    result = run(llm, inp)
+    assert [x["answer"] for x in result["questions"]] == ["fastened"]
+    assert result["dropped"] == [] and not llm.calls
 
 
 def test_short_answer_question_is_not_checked() -> None:
