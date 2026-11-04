@@ -21,6 +21,7 @@ export const ERROR_CODES = {
   FILE_NOT_ALLOWED: 'FILE_NOT_ALLOWED',
   ROOM_CODE_INVALID: 'ROOM_CODE_INVALID',
   NOT_FOUND: 'NOT_FOUND',
+  EMAIL_TAKEN: 'EMAIL_TAKEN',
 } as const;
 
 /** 업로드 허용 규칙 — 앱이 올리기 전에 먼저 검사한다 (p.102) */
@@ -50,6 +51,7 @@ export const PATHS = {
   // 인증 · 회원
   socialLogin: (provider: string) => `/auth/social/${seg(provider)}`,
   emailLogin: '/auth/email/login',
+  emailSignup: '/auth/email/signup',
   refresh: '/auth/refresh',
   logout: '/auth/logout',
   terms: '/auth/terms',
