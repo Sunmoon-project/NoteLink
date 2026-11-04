@@ -89,3 +89,100 @@ not() { if "$@"; then return 1; fi; }
   # 다시 돌린 실행이 같은 이름으로 다시 올릴 수 있어야 함
   [ "$(grep -c 'overwrite: true' "$workflow")" -eq 2 ]
 }
+
+# ---------- 언제 도는지 (자동은 첫 리뷰만, 재리뷰는 라벨 · 댓글 · Run workflow 요청) ----------
+
+WF_FILE() { echo "$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml"; }
+# review job의 if · concurrency 부분만 꺼냄
+review_if() { awk '/^  review:/ { r = 1 } r && /^    if: >-/ { f = 1; next } f && /^    [a-z#]/ { exit } f' "$(WF_FILE)"; }
+review_group() { awk '/^  review:/ { r = 1 } r && /^    concurrency:/ { f = 1; next } f && /^    runs-on:/ { exit } f' "$(WF_FILE)"; }
+# 댓글이 명령인지 보는 식(본문 전체가 명령이거나 명령 바로 뒤에 줄바꿈). if와 그룹이 똑같이 써야 함
+COMMAND_EXPR="github.event.comment.body == '/codex review' ||"
+COMMAND_NL="startsWith(github.event.comment.body, format('/codex review{0}', fromJSON('\"\\n\"')))"
+COMMAND_CR="startsWith(github.event.comment.body, format('/codex review{0}', fromJSON('\"\\r\"')))"
+
+@test "트리거: PR 이벤트에 labeled, 댓글(issue_comment created), 직접 요청(workflow_dispatch, PR 번호)을 받는다" {
+  local workflow; workflow=$(WF_FILE)
+  grep -qF 'types: [opened, synchronize, reopened, ready_for_review, labeled]' "$workflow"
+  awk '/^  issue_comment:/ { f = 1; next } f && /types: \[created\]/ { ok = 1 } END { exit !ok }' "$workflow"
+  awk '/^  workflow_dispatch:/ { f = 1; next } f && /^      pr:/ { ok = 1 } END { exit !ok }' "$workflow"
+}
+
+@test "트리거: 라벨 이름 · 댓글 명령이 스크립트와 같고, job 조건과 동시 실행 그룹이 같은 식으로 거른다" {
+  local script="$BATS_TEST_DIRNAME/../codex-review.sh"
+  grep -qF 'REQUEST_LABEL="codex-review"' "$script"
+  grep -qF 'REQUEST_COMMAND="/codex review"' "$script"
+  grep -qF 'REVIEW_WORKFLOW_FILE="codex-review.yml"' "$script"
+  cond=$(review_if); group=$(review_group)
+  [ -n "$cond" ] && [ -n "$group" ]
+  for part in "$COMMAND_EXPR" "$COMMAND_NL" "$COMMAND_CR"; do
+    [[ "$cond" == *"$part"* ]] || { echo "if에 없음: $part"; return 1; }
+    [[ "$group" == *"$part"* ]] || { echo "그룹에 없음: $part"; return 1; }
+  done
+  [[ "$cond" == *"github.event.label.name == 'codex-review'"* ]]
+  [[ "$group" == *"github.event.label.name != 'codex-review'"* ]]
+  # 접두어만 보는 옛 식이 남지 않음
+  not grep -qF "startsWith(github.event.comment.body, '/codex review')" "$(WF_FILE)"
+  # 이 두 값 말고 다른 라벨 이름을 쓰지 않음
+  [ "$(grep -oE "label\.name [!=]= '[^']*'" <<< "$group$cond" | sed "s/.*'\(.*\)'/\1/" | sort -u)" = codex-review ]
+}
+
+@test "트리거: 닫힌 PR은 거르고, 직접 요청은 기본 브랜치에서 돌린 것만 받는다" {
+  cond=$(review_if)
+  [[ "$cond" == *"github.event.pull_request.state == 'open'"* ]]
+  [[ "$cond" == *"github.event.issue.state == 'open'"* ]]
+  [[ "$cond" == *"(github.event_name == 'workflow_dispatch' &&"* ]]
+  [[ "$cond" == *"github.ref == format('refs/heads/{0}', github.event.repository.default_branch))"* ]]
+  # workflow_dispatch가 브랜치 조건 없이 따로 허용되지 않음
+  not grep -qE "^ *github\.event_name == 'workflow_dispatch' *$" <<< "$cond"
+}
+
+@test "checkout: 이벤트와 상관없이 기본 브랜치를 받는다(Run workflow가 고른 브랜치의 스크립트를 돌리지 않게)" {
+  awk '/- uses: actions\/checkout@/ { f = 1; next } f && /^      - / { exit } f' "$(WF_FILE)" \
+    | grep -qF 'ref: ${{ github.event.repository.default_branch }}'
+}
+
+@test "트리거: 동시 실행은 review job에만 있고, 걸러지는 실행 · 직접 요청은 실행마다 따로인 그룹, 요청은 사람마다 그룹이 다르다" {
+  local workflow; workflow=$(WF_FILE)
+  not grep -q '^concurrency:' "$workflow"
+  group=$(review_group)
+  [[ "$group" == *"format('codex-review-ignore-{0}', github.run_id)"* ]]
+  [[ "$group" == *"format('codex-review-{0}-dispatch-{1}', inputs.pr, github.run_id)"* ]]
+  [[ "$group" == *"format('codex-review-{0}-{1}', github.event.pull_request.number || github.event.issue.number,"* ]]
+  [[ "$group" == *"&& format('request-{0}', github.event.comment.user.login || github.event.sender.login) || 'auto')"* ]]
+  # 자동 실행끼리만 앞 실행을 멈추고, 요청은 뒤에 줄을 세움(같은 커밋이면 Codex 없이 건너뜀)
+  [[ "$group" == *"cancel-in-progress: \${{ !(github.event_name == 'issue_comment' || github.event.action == 'labeled') }}"* ]]
+}
+
+@test "트리거: 댓글은 저장소와 관계있는 사람(OWNER · MEMBER · COLLABORATOR)의 것만 리뷰 컴퓨터로 보낸다" {
+  cond=$(review_if)
+  [[ "$cond" == *"contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"]'), github.event.comment.author_association)"* ]]
+}
+
+@test "unlabel: codex-review 라벨이 붙으면 리뷰 job과 따로(동시 실행 그룹 없이) 클라우드 러너에서 바로 뗀다" {
+  job=$(awk '/^  unlabel:/ { f = 1 } f && /^  review:/ { exit } f' "$(WF_FILE)")
+  [[ "$job" == *"github.event.action == 'labeled' &&"* ]]
+  [[ "$job" == *"github.event.label.name == 'codex-review'"* ]]
+  [[ "$job" == *"runs-on: ubuntu-latest"* ]]
+  [[ "$job" == *"pull-requests: write"* ]]
+  [[ "$job" == *'gh api --method DELETE "repos/$REPO/issues/$PR/labels/codex-review"'* ]]
+  # 이미 떼어진 경우(404)만 넘어가고 다른 오류는 실패로 남김
+  [[ "$job" == *'*"HTTP 404"*) echo'* ]]
+  [[ "$job" == *'exit 1'* ]]
+  not grep -qF '|| echo "라벨이 이미 떼어져 있습니다."' "$(WF_FILE)"
+  [[ "$job" != *"concurrency"* ]]
+  [[ "$job" != *"self-hosted"* ]]
+}
+
+@test "트리거: 리뷰 단계에 PR 번호 · 실행 종류 · 요청 정보를 env로만 넘긴다" {
+  local workflow; workflow=$(WF_FILE)
+  grep -qF 'PR: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}' "$workflow"
+  grep -qF "CODEX_TRIGGER: \${{ (github.event_name == 'issue_comment' || github.event_name == 'workflow_dispatch' || github.event.action == 'labeled') && 'request' || 'auto' }}" "$workflow"
+  grep -qF "CODEX_REQUEST_LABEL: \${{ github.event.action == 'labeled' && github.event.label.name || '' }}" "$workflow"
+  grep -qF 'CODEX_REQUESTER: ${{ github.event.comment.user.login || github.event.sender.login }}' "$workflow"
+  grep -qF 'CODEX_REQUEST_COMMENT: ${{ github.event.comment.id }}' "$workflow"
+  # 댓글 본문은 넘기지 않음(Windows 환경 변수 길이 한도, 스크립트가 댓글 번호로 읽음)
+  not grep -q 'CODEX_REQUEST_BODY' "$workflow"
+  # 이벤트 값 · 입력은 run 안에 직접 넣지 않음(명령 주입 방지): run 블록 안에 github.event · inputs가 없어야 함
+  not awk '/^ *run: / { r = 1 } /^ *- (name|uses): |^  [a-z]+:|^    [a-z-]+:/ { r = 0 } r && /\$\{\{ *(github\.event\.|inputs\.)/ { found = 1 } END { exit !found }' "$workflow"
+}
