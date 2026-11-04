@@ -23,7 +23,7 @@ export class Flashcard {
   @Prop({ type: Types.ObjectId, ref: 'QuizSet' })
   sourceQuizSetId: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'Question' })
+  @Prop({ type: Types.ObjectId })
   sourceQuestionId: Types.ObjectId;
 
   @Prop({ type: Object })

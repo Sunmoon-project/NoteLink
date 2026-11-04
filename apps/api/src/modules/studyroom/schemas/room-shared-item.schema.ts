@@ -23,7 +23,7 @@ export class RoomSharedItem {
   @Prop({ type: Types.ObjectId, ref: 'Material' })
   materialId?: Types.ObjectId;
 
-  @Prop({ type: [{ type: Types.ObjectId, ref: 'Question' }], default: [] })
+  @Prop({ type: [Types.ObjectId], default: [] })
   questionIds: Types.ObjectId[];
 
   @Prop({ type: [{ type: Types.ObjectId, ref: 'Flashcard' }], default: [] })

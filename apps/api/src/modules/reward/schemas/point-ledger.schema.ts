@@ -4,7 +4,7 @@ import { HydratedDocument, Types } from 'mongoose';
 export type PointLedgerDocument = HydratedDocument<PointLedger>;
 
 // updatedAt은 필요 없으므로 createdAt만 자동 기록합니다[cite: 25].
-@Schema({ collection: 'point_ledger', timestamps: { createdAt: true, updatedAt: false } })
+@Schema({ collection: 'point_ledgers', timestamps: { createdAt: true, updatedAt: false } })
 export class PointLedger {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
