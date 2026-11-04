@@ -5,14 +5,14 @@ import Animated, { FadeIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, Check, Sparkles } from 'lucide-react-native';
-import type { LearnerType, SocialProvider } from '@notelink/shared';
+import { ERROR_CODES, type LearnerType, type SocialProvider } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { getProviderToken, socialLoginReady } from '@/lib/social-auth';
 import { clearAccountState } from '@/lib/account';
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
-import { Btn, Chip, Input, Label, Screen, Sheet, Title, cx } from '@/components/ui';
+import { Btn, Chip, Header, Input, Label, Screen, Sheet, Title, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
 // p.104 가입부터 홈까지 — 온보딩 · 로그인 · 약관 동의 · 프로필 설정 (스플래시는 네이티브 스플래시 화면)
@@ -58,12 +58,10 @@ export function OnboardingScreen() {
   );
 }
 
-export function LoginScreen() {
+/** 로그인 · 가입이 끝난 뒤 공통 처리 */
+function useFinishSignIn() {
   const qc = useQueryClient();
-  const [emailOpen, setEmailOpen] = useState(false);
-  const [email, setEmail] = useState('');
-  const [pw, setPw] = useState('');
-  const done = async (r: Awaited<ReturnType<typeof api.auth.socialLogin>>) => {
+  return async (r: Awaited<ReturnType<typeof api.auth.socialLogin>>) => {
     // 다른 계정으로 로그인하면 이전 계정의 캐시 · 소켓 연결을 버린다
     // (같은 계정의 만료 후 재로그인은 풀던 퀴즈를 이어 가도록 남긴다 — FR-67-01)
     const prev = useAuth.getState().userId;
@@ -81,6 +79,13 @@ export function LoginScreen() {
         : '/(auth)/terms',
     );
   };
+}
+
+export function LoginScreen() {
+  const [emailOpen, setEmailOpen] = useState(false);
+  const [email, setEmail] = useState('');
+  const [pw, setPw] = useState('');
+  const done = useFinishSignIn();
   const social = useMutation({
     mutationFn: async (p: SocialProvider) => api.auth.socialLogin(p, await getProviderToken(p)),
     onSuccess: done,
@@ -134,7 +139,7 @@ export function LoginScreen() {
           </Text>
         )}
       </View>
-      <Sheet open={emailOpen} onClose={() => setEmailOpen(false)} title="이메일로 시작하기">
+      <Sheet open={emailOpen} onClose={() => setEmailOpen(false)} title="이메일로 로그인">
         <Label>이메일</Label>
         <Input
           value={email}
@@ -160,7 +165,97 @@ export function LoginScreen() {
         >
           로그인
         </Btn>
+        <Pressable
+          accessibilityRole="button"
+          className="mt-3 self-center py-2"
+          onPress={() => {
+            setEmailOpen(false);
+            router.push('/(auth)/signup');
+          }}
+        >
+          <Text className="text-footnote text-sub">
+            계정이 없나요? <Text className="font-semibold text-brand">회원가입</Text>
+          </Text>
+        </Pressable>
       </Sheet>
+    </Screen>
+  );
+}
+
+/** 가입 입력 검사. 문제가 없으면 null (아직 안 쓴 칸은 탓하지 않는다) */
+export function signupError(email: string, pw: string, confirm: string): string | null {
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+    return '이메일 형식을 확인해 주세요';
+  if (pw && pw.length < 8) return '비밀번호는 8자 이상이어야 해요';
+  if (confirm && pw !== confirm) return '비밀번호가 서로 달라요';
+  return null;
+}
+
+export function SignupScreen() {
+  const [email, setEmail] = useState('');
+  const [pw, setPw] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [taken, setTaken] = useState(false);
+  const finish = useFinishSignIn();
+  const error = signupError(email, pw, confirm);
+  const signup = useMutation({
+    mutationFn: () => api.auth.emailSignup(email.trim(), pw),
+    onSuccess: finish,
+    onError: (e) => {
+      if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
+      else toast(e instanceof ApiError ? e.message : '가입하지 못했어요. 다시 시도해 주세요');
+    },
+  });
+  return (
+    <Screen
+      footer={
+        <Btn
+          disabled={!email || !pw || !confirm || !!error}
+          loading={signup.isPending}
+          onPress={() => signup.mutate()}
+        >
+          가입하기
+        </Btn>
+      }
+    >
+      <Header title="회원가입" sub="이메일과 비밀번호로 시작해요" />
+      <Label>이메일</Label>
+      <Input
+        value={email}
+        onChangeText={(v) => {
+          setEmail(v);
+          setTaken(false);
+        }}
+        placeholder="you@example.com"
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoComplete="email"
+      />
+      <Label>비밀번호</Label>
+      <Input
+        value={pw}
+        onChangeText={setPw}
+        placeholder="8자 이상"
+        secureTextEntry
+        autoComplete="new-password"
+      />
+      <Label>비밀번호 확인</Label>
+      <Input
+        value={confirm}
+        onChangeText={setConfirm}
+        placeholder="한 번 더 입력해 주세요"
+        secureTextEntry
+        autoComplete="new-password"
+      />
+      {!!error && <Text className="mt-3 text-footnote text-danger">{error}</Text>}
+      {taken && (
+        <View className="mt-3 flex-row items-center gap-2">
+          <Text className="text-footnote text-danger">이미 가입한 이메일이에요</Text>
+          <Pressable accessibilityRole="button" onPress={() => router.back()}>
+            <Text className="text-footnote font-semibold text-brand">로그인하기</Text>
+          </Pressable>
+        </View>
+      )}
     </Screen>
   );
 }
