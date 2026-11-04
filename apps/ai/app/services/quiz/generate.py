@@ -346,15 +346,22 @@ def history(
         return where[q["id"]]
 
     # 개념 이름이 없는 문제(OTHER)는 셈에서 뺌: 여러 쪽의 문제가 '기타' 하나로 모여 첫 쪽에 몰림
-    mastered = set()
+    # 같은 개념의 문제가 아직 복습 중(active)이면 다 익힌 개념이 아님: 예전 문제 하나를 익혔어도
+    # 새 문제를 계속 틀리면 그 틀린 답을 셈(Codex 리뷰 #94)
+    mastered: set[str] = set()
+    active: set[str] = set()
     page_of: dict[str, int] = {}
     for s in sets:
         for q in s.questions:
             st = q.get("srs")
+            state = st.get("state") if st else None
             c = concept_of(q)
-            if st and st.get("state") == "mastered" and c != OTHER and home(s, q)[0] == material_id:
-                mastered.add(c)
+            if state not in ("mastered", "active") or c == OTHER or home(s, q)[0] != material_id:
+                continue
+            (mastered if state == "mastered" else active).add(c)
+            if state == "mastered":
                 page_of.setdefault(c, home(s, q)[1])
+    mastered -= active
     wrong: Counter[str] = Counter()
     for a in attempts:
         qset = by_id.get(a.quiz_set_id)
@@ -524,6 +531,7 @@ def gen_one(
                 out.why = ["정답 둘 검사 호출이 실패함"]
                 continue
         if not why and k is not None:
+            d = similar.answer_as_option(d, k)
             options, pos = place(d["options"], k, slot)
             verdict, said = similar.solved(llm, d, options, pos, text[:CHECK_CAP])
             if verdict == "pass":

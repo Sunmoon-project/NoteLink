@@ -165,6 +165,13 @@ OPTION_TIP = {
 OPTION_TIP["어휘"] = OPTION_TIP["빈칸"]
 
 
+def answer_as_option(d: Draft, k: int) -> Draft:
+    """정답 글을 맞은 보기 글 그대로: code_check는 띄어쓰기 · 대소문자 · 부호를 무시하고 보기를
+    찾아서, '이질아메바'를 정답으로 '이질 아메바' 보기가 통과하면 저장된 answer가 choices에 없었음
+    (Codex 리뷰 #94)."""
+    return {**d, "answer": d["options"][k]}
+
+
 def first_tip(ty: str) -> str:
     """첫 초안부터 주는 안내: 오답 보기 고르는 법, 빈칸이면 단서 절(10/29 전에는 재시도에만).
 
@@ -339,6 +346,7 @@ def make_similar(
                 if unchecked:  # 검사하지 못한 초안은 쓰지 않음
                     down, failed, out.why = down + 1, True, ["정답 둘 검사 호출이 실패함"]
             if not failed and not why and k is not None:
+                d = answer_as_option(d, k)
                 options, pos = place(d["options"], k, slot)
                 verdict, said = solved(llm, d, options, pos, page_text)
                 if verdict == "pass":

@@ -153,6 +153,9 @@ def form_giveaway(d: Draft) -> bool:
     return sum(form(o) == form(d["answer"]) for o in opts) < 2
 
 
+CLASS_ENDS = ("류", "검사")  # 기생충에서 본 분류 이름(편모충류 · 대변 검사)
+
+
 def class_tail(a: str | None) -> str | None:
     """마지막 한글 음절: 분류의 종류를 나타냄(편모충류 → 류, 대변 검사 → 사). 한글이 없으면 None."""
     words = re.findall(r"[가-힣]+", a or "")
@@ -168,9 +171,12 @@ def class_giveaway(d: Draft) -> bool:
     form_giveaway처럼 오답 둘을 요구하면 좋은 초안도 걸렸습니다(무산소성 세균에 진균 · 고균,
     근동충류의 영양형).
     """
-    tail = class_tail(d["answer"])
-    if not tail:
+    # 분류 이름 꼴(…류 · …검사)인 정답만 봄: '포도당 → 탄수화물'에 지방 · 단백질 · 비타민 ·
+    # 무기질처럼 끝 글자가 다른 분류 이름도 있음(Codex 리뷰 #94)
+    words = re.findall(r"[가-힣]+", d["answer"])
+    if not words or not words[-1].endswith(CLASS_ENDS):
         return False
+    tail = class_tail(d["answer"])
     answer_key = option_key(d["answer"])
     # 뒤에 붙은 영어 · 괄호('근족충류 (Sarcodina)')는 정답과 같은 기준(class_tail)으로 뗌
     return not any(class_tail(o) == tail for o in d["options"] if option_key(o) != answer_key)

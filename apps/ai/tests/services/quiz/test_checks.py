@@ -323,3 +323,14 @@ def test_class_names_with_a_gloss_are_still_class_names() -> None:
 def test_code_parentheses_are_not_several_blanks() -> None:
     d = draft(passage="useState()와 useEffect()를 함께 쓴다", answer="stacked")
     assert "빈칸이 여러 개" not in why(tidy(d), "규칙")
+
+
+def test_class_names_with_other_last_syllables_are_not_caught() -> None:
+    # 끝 글자가 다른 분류 이름(영양소): 분류 이름 꼴(…류 · …검사)인 정답만 봄(Codex 리뷰 #94)
+    d = draft(
+        stem="다음 용어가 속하는 분류는?",
+        passage="포도당",
+        answer="탄수화물",
+        options=["탄수화물", "지방", "단백질", "비타민", "무기질"],
+    )
+    assert not class_giveaway(d)

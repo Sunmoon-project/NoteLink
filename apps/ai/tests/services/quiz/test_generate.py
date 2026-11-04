@@ -517,3 +517,38 @@ def test_a_broken_draft_that_repeats_an_answer_does_not_close_the_page() -> None
     llm = happy([GOOD["이질 아메바"], again, again, GOOD["대장 아메바"]])
     result, _ = run(llm, inp)
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바"]
+
+
+def test_the_answer_is_stored_as_the_option_it_matched() -> None:
+    # code_check는 띄어쓰기를 무시하고 보기를 찾음: '이질아메바' 정답이 '이질 아메바' 보기로
+    # 통과하면 저장된 answer가 choices에 없었음(Codex 리뷰 #94)
+    d = copy.deepcopy(GOOD["이질 아메바"])
+    d["question"]["answer"] = "이질아메바"
+
+    def nat(user: str) -> JsonObject:
+        value = user.rsplit("\n", 1)[-1].split(": ", 1)[-1]
+        return {"natural": value.replace(" ", "") == "이질아메바"}
+
+    llm = ScriptLlm(
+        {"Quiz": quiz_from([d]), "Natural": nat, "Check": checker(lambda u: "이질 아메바")}
+    )
+    inp = job(size=1)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    result, _ = run(llm, inp)
+    q = result["questions"][0]
+    assert q["answer"] == "이질 아메바" and q["answer"] in q["choices"]
+
+
+def test_a_concept_still_in_review_is_not_mastered() -> None:
+    # 예전 문제를 익혔어도 같은 개념의 새 문제를 계속 틀리면 약한 개념(Codex 리뷰 #94)
+    qs = [
+        stored("q3", "이질 아메바", "이질 아메바", "mastered"),
+        stored("q5", "이질 아메바", "이질 아메바", "active"),
+    ]
+    inp = job(
+        sets=[{"id": "s1", "materialId": "m1", "questions": qs}],
+        attempts=[attempt("q5", False), attempt("q5", False)],
+    )
+    g = generate.parse(inp)
+    per = generate.history(g.sets, g.attempts, "m1", {"m1": generate.note_pages(g.material)})
+    assert (per[1].wrong, per[1].weak, per[1].mastered) == (2, ["이질 아메바"], 0)
