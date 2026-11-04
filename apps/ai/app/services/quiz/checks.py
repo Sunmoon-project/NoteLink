@@ -10,7 +10,15 @@ from decimal import Decimal
 from typing import Literal, NotRequired, TypedDict
 
 from app.services.quiz.models import CHOICES, Draft, Question
-from app.services.quiz.text import VALUE, norm, number_values, same_item, short_answer, terms
+from app.services.quiz.text import (
+    VALUE,
+    norm,
+    number_values,
+    same_item,
+    same_word,
+    short_answer,
+    terms,
+)
 
 NEGATIVE = re.compile(r"아닌|않은|틀린|옳지\s?않|잘못된|거리가 먼")
 KO_TYPES = ("정의", "특징", "분류")  # 한국어 용어 과목 유형 (임상병리, 10/22)
@@ -51,7 +59,8 @@ class Target:
     answer: str = ""
     concept: str = ""
     used_answers: list[str] = field(default_factory=list)  # 이 세트에서 이미 쓴 정답
-    # 지난번 맞혔어도 원래 정답을 다시 물음(오늘의 복습이 결함 문제를 같은 낱말로 바꿀 때)
+    # 지난번 맞혔어도 원래 정답을 다시 물음(오늘의 복습이 결함 문제를 같은 낱말로 바꿀 때). 이때는
+    # 오늘의 복습의 같은 낱말 기준(text.same_word: 띄어쓰기만 다른 똑같은 답)으로 봅니다
     keep_answer: bool = False
 
 
@@ -205,12 +214,14 @@ def code_check(
     in_concept = any(
         same_item(d["answer"], w) for w in re.findall(r"[A-Za-z][A-Za-z\-']+", t.concept)
     )
-    if (
-        (t.reason == "wrong" or t.keep_answer)
-        and short_answer(t.answer)
-        and not same_item(d["answer"], t.answer)
-        and not in_concept
-    ):
+    # keep_answer: 새 문제가 이 낱말의 복습을 이어 가므로 똑같은 답만(port → report, 개념 이름의
+    # 다른 낱말도 안 됨). 오답 복습은 넓게(same_item · 개념 이름)
+    same = (
+        same_word(d["answer"], t.answer)
+        if t.keep_answer
+        else same_item(d["answer"], t.answer) or in_concept
+    )
+    if (t.reason == "wrong" or t.keep_answer) and short_answer(t.answer) and not same:
         kind = "틀린" if t.reason == "wrong" else "원래"
         why.append(f"{kind} 낱말('{t.answer}')을 다시 묻지 않음")
     if any(same_item(d["answer"], u) for u in t.used_answers):
