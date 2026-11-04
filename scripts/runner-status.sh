@@ -11,10 +11,11 @@
 #   멈춘 실행은 PR 댓글 없이 codex-paused 결과 파일(PR 번호 · 다시 가능한 시각)만 남기고, check가 15분마다
 #   그 시각이 지난 것을 다시 돌림(Re-run). summary는 다시 돌리지 않음(check와 겹쳐 같은 실행을 두 번 돌리지 않게)
 #   (한 번 확인에서 러너 알림과 함께 생기면 한 메시지에 embed 두 개로 보냄)
-# - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간에 끝난 Codex 리뷰 성공 · 실패 · 취소, Codex 남은 사용량
+# - summary: 지금 상태, 대기 중인 리뷰, 지난 24시간에 끝난 Codex 리뷰 실행 성공(건너뛴 실행 포함) · 실패 · 취소, Codex 남은 사용량
 # - Codex 사용량은 리뷰가 끝날 때 리뷰 컴퓨터가 올린 결과 파일(codex-review.yml의 codex-usage,
 #   scripts/codex-usage.mjs)의 가장 최근 것을 읽습니다. 리뷰가 돌 때만 바뀌므로 몇 시 리뷰 기준인지 함께 적습니다.
-#   리뷰 워크플로(pull_request_target)가 올린 것만 씁니다(같은 이름으로 다른 워크플로가 올린 것은 건너뜀).
+#   리뷰 워크플로가 PR 이벤트 · 리뷰 요청 댓글 · 직접 요청(review_run)으로 돈 실행이 올린 것만 씁니다
+#   (같은 이름으로 다른 워크플로나 PR 브랜치의 워크플로가 올린 것은 건너뜀).
 # - 지난 상태는 STATE_FILE에 둡니다(워크플로가 Actions 캐시로 이어 줌). 처음이면 온라인은 알리지 않습니다.
 #   상태를 읽지 못한 동안에는 마지막으로 안 상태와 그 시각을 그대로 둡니다(멈춘 시간이 끊기지 않게).
 # - 디스코드로 보내지 못하면 상태를 저장하지 않고 실패합니다(다음 실행에서 다시 보냄).
@@ -37,6 +38,7 @@ USAGE_ARTIFACT="${USAGE_ARTIFACT:-codex-usage}"  # codex-review.yml이 올리는
 USAGE_FILE_NAME="codex-usage.txt"                  # 결과 파일(zip) 안의 파일 이름
 USAGE_CANDIDATES="${USAGE_CANDIDATES:-5}"          # 출처를 확인할 최근 결과 파일 수
 REVIEW_WORKFLOW_PATH=".github/workflows/$REVIEW_WORKFLOW"
+REVIEW_DEFAULT_BRANCH="${REVIEW_DEFAULT_BRANCH:-main}"  # 직접 요청(workflow_dispatch)은 이 브랜치에서 돈 것만 믿음
 
 # 디스코드 embed 색
 COLOR_RED=15026253     # #E5484D
@@ -61,7 +63,7 @@ done_jq() {  # $1 = 시작 시각(UTC ISO)
 # 이름으로 거른 결과 파일 중 만료되지 않은 것을 최근 것부터: 결과 파일 id \t 올린 실행 id
 ARTIFACT_JQ='[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | reverse | .[] | [.id, .workflow_run.id] | @tsv'
 # 실행 정보: 워크플로 파일 \t 이벤트 \t 상태 \t 회차(다시 돌릴 때마다 1씩 오름)
-RUN_JQ='[.path, .event, .status, (.run_attempt // 1 | tostring)] | @tsv'
+RUN_JQ='[.path, .event, .status, (.run_attempt // 1 | tostring), (.head_branch // "")] | @tsv'
 # 멈춘 리뷰 표시 결과 파일 (codex-review.yml이 올림, 안에 pr= · retry= …)
 PAUSED_ARTIFACT="${PAUSED_ARTIFACT:-codex-paused}"
 PAUSED_FILE_NAME="codex-paused.txt"
@@ -164,11 +166,14 @@ read_queue() {
   fi
 }
 
-# 지난 24시간에 끝난 Codex 리뷰 → DONE_OK · DONE_FAIL(시간 초과 포함) · DONE_CANCEL (읽지 못하면 빈 값)
+# 지난 24시간에 끝난 Codex 리뷰 실행 → DONE_OK · DONE_FAIL(시간 초과 포함) · DONE_CANCEL (읽지 못하면 빈 값)
+# 첫 리뷰 뒤 push · 문서만 바뀐 PR 등 Codex를 돌리지 않고 건너뛴 실행도 성공으로 끝나므로 DONE_OK에 들어감.
+# 상관없는 댓글로 생긴 실행은 job을 건너뛰어(skipped) 어느 쪽에도 세지 않음
 # API의 created는 만든 시각이라, 오래 기다리다 오늘 끝난 리뷰도 세도록 끝난 시각(updated_at)으로 거름.
 # 재실행하면 만든 시각은 그대로인데, GitHub는 처음 실행 후 30일까지만 재실행을 허용함. 가장 늦은 경우는
 # 재실행 기한 30일 + 대기 최대 24시간 + 리뷰 처리 최대 60분(codex-review.yml timeout) + 요약 구간 24시간 = 32일 1시간.
-# 여유를 두어 35일 안에 만든 실행을 쪽마다(--paginate) 받아 봄(하루 한 번, 하루 20건 안팎이라 7~8쪽)
+# 여유를 두어 35일 안에 만든 실행을 쪽마다(--paginate) 받아 봄(하루 한 번. PR 댓글마다 건너뛴 실행이 생기므로
+# 하루 수십 건, 십수 쪽까지 될 수 있음)
 read_counts() {
   DONE_OK=""; DONE_FAIL=""; DONE_CANCEL=""
   local from since out
@@ -181,8 +186,23 @@ read_counts() {
   DONE_CANCEL=$(grep -cx 'cancelled' <<< "$out" || true)
 }
 
+# 실행 정보(RUN_JQ 출력)가 리뷰 워크플로를 기본 브랜치(main)의 파일로 돌린 것이면 0:
+# PR 이벤트(pull_request_target) · 리뷰 요청 댓글(issue_comment) · 직접 요청(workflow_dispatch).
+# pull_request는 PR 브랜치의 파일이라 믿지 않음. workflow_dispatch는 고른 브랜치의 파일로 돌므로
+# 기본 브랜치(REVIEW_DEFAULT_BRANCH)에서 돈 것만 믿음
+review_run() {  # $1 = "path \t event \t status \t attempt \t head_branch"
+  local path event status attempt branch
+  IFS=$'\t' read -r path event status attempt branch <<< "$1"
+  [ "$path" = "$REVIEW_WORKFLOW_PATH" ] || return 1
+  case "$event" in
+    pull_request_target | issue_comment) return 0 ;;
+    workflow_dispatch) [ "$branch" = "$REVIEW_DEFAULT_BRANCH" ] ;;
+    *) return 1 ;;
+  esac
+}
+
 # 가장 최근 codex-usage 결과 파일 → U_* (없으면 U_AT 빈 값) · USAGE_ERR(조회 · 내려받기에 실패했으면 1)
-# 리뷰 워크플로가 pull_request_target으로 올린 것만 씀. 최근 USAGE_CANDIDATES개 중 처음 맞는 것
+# 리뷰 워크플로가 기본 브랜치 파일로 돈 실행(review_run)이 올린 것만 씀. 최근 USAGE_CANDIDATES개 중 처음 맞는 것
 read_usage() {
   no_usage; USAGE_ERR=0
   local list id run src dir
@@ -194,7 +214,7 @@ read_usage() {
   while IFS=$'\t' read -r id run; do
     [[ "$id" =~ ^[0-9]+$ ]] && [[ "$run" =~ ^[0-9]+$ ]] || continue
     src=$(gh api "repos/$REPO/actions/runs/$run" --jq "$RUN_JQ" 2> /dev/null) || { USAGE_ERR=1; return 0; }
-    [ "$(cut -f 1,2 <<< "$src")" = "$REVIEW_WORKFLOW_PATH"$'\t'"pull_request_target" ] || continue
+    review_run "$src" || continue
     dir=$(mktemp -d)
     if gh api "repos/$REPO/actions/artifacts/$id/zip" > "$dir/usage.zip" 2> /dev/null \
         && unzip -p "$dir/usage.zip" "$USAGE_FILE_NAME" > "$dir/usage" 2> /dev/null; then
@@ -228,7 +248,7 @@ sort_prs() {  # "#34 #12" → "#12 #34"
 # - codex-paused 결과 파일을 모든 쪽(--paginate)에서 최근 것부터 봄. PR마다 가장 최근 표시 하나로 정함
 #   (다시 돌렸거나 닫힌 PR이면 그 PR의 옛 표시도 함께 지움)
 # - 표시의 retry가 지나지 않았거나, 그 실행이 아직 끝나지 않았으면 그대로 둠(다음 확인에서 다시 봄)
-# - 리뷰 워크플로(pull_request_target)가 올린 표시만 믿고, 다른 것은 건너뜀
+# - 리뷰 워크플로가 기본 브랜치 파일로 돈 실행(review_run)이 올린 표시만 믿고, 다른 것은 건너뜀
 # - 닫힌 PR은 돌리지 않고 표시만 지움
 # - 다시 돌리기에 실패하면 표시를 남겨 다음 확인에서 다시 시도하고, 처음 실패했을 때만 알림
 # - 다시 돌린 PR의 표시는 바로 지우지 않고 PAUSED_DELETE에 모아, 디스코드로 알린 뒤 지움(delete_paused).
@@ -251,7 +271,7 @@ resume_paused() {
   while IFS=$'\t' read -r id run; do
     [[ "$id" =~ ^[0-9]+$ ]] && [[ "$run" =~ ^[0-9]+$ ]] || continue
     src=$(gh api "repos/$REPO/actions/runs/$run" --jq "$RUN_JQ" 2> /dev/null) || continue
-    [ "$(cut -f 1,2 <<< "$src")" = "$REVIEW_WORKFLOW_PATH"$'\t'"pull_request_target" ] || continue
+    review_run "$src" || continue
     download_artifact "$id" "$PAUSED_FILE_NAME" "$tmp" || continue
     pr=$(sed -n 's/^pr=\([0-9]\{1,\}\)$/\1/p' "$tmp" | head -n 1)
     retry=$(sed -n 's/^retry=\([0-9]\{1,\}\)$/\1/p' "$tmp" | head -n 1)
@@ -486,9 +506,9 @@ $(queue_line)" ;;
         since=" — $(kst "$PREV_SINCE")부터"
       fi
       if [ -n "$DONE_OK" ]; then
-        done_line="지난 24시간에 끝난 Codex 리뷰: 성공 ${DONE_OK} · 실패 ${DONE_FAIL} · 취소 ${DONE_CANCEL}"
+        done_line="지난 24시간에 끝난 Codex 리뷰 실행: 성공 ${DONE_OK} · 실패 ${DONE_FAIL} · 취소 ${DONE_CANCEL} (성공에는 건너뛴 실행 포함)"
       else
-        done_line="지난 24시간에 끝난 Codex 리뷰: 확인하지 못함"
+        done_line="지난 24시간에 끝난 Codex 리뷰 실행: 확인하지 못함"
       fi
       TEXT="러너 \`$CODEX_RUNNER\`: $(status_word "$CUR_STATUS")$since"
       [ -n "$ERROR_MSG" ] && TEXT+="
