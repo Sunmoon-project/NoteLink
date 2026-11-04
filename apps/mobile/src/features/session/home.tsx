@@ -46,6 +46,10 @@ export function HomeScreen() {
   const dayLive = s.itemId ? s.elapsedSince(midnight, now) : 0;
   const live = (id: string, base: number) => base + (id === s.itemId ? dayLive : 0);
   const todaySec = items.reduce((a, i) => a + i.accumulatedSec, 0) + dayLive;
+  // 큰 타이머는 지금 공부하는 항목의 시간만 보여 준다 (다른 항목 시간이 이어 붙지 않게)
+  const activeSec = s.itemId
+    ? live(s.itemId, items.find((i) => i._id === s.itemId)?.accumulatedSec ?? 0)
+    : null;
   const weekSec = (weekly.data?.totalSec ?? 0) + (s.itemId ? s.elapsedSince(monday, now) : 0);
   const goalMin = goal.data?.targetMin ?? 21 * 60;
   const pct = Math.round((weekSec / 60 / goalMin) * 100);
@@ -181,7 +185,9 @@ export function HomeScreen() {
         {/* 순공시간 카드 */}
         <View className="mt-3 rounded-3xl bg-night p-5">
           <View className="flex-row items-center justify-between">
-            <Text className="text-caption text-white/70">오늘 순공시간</Text>
+            <Text className="text-caption text-white/70">
+              {active ? '이 항목 오늘 공부 시간' : '오늘 순공시간'}
+            </Text>
             <View className="flex-row items-center gap-1">
               <View
                 className={cx('h-1.5 w-1.5 rounded-full', running ? 'bg-sun' : 'bg-white/50')}
@@ -202,8 +208,9 @@ export function HomeScreen() {
             className="mt-1 tabular-nums text-display font-bold text-white"
             style={{ fontVariant: ['tabular-nums'] }}
           >
-            {hms(active || todaySec ? todaySec : 0)}
+            {hms(activeSec ?? todaySec)}
           </Text>
+          {active && <Text className="text-caption text-white/60">오늘 전체 {hms(todaySec)}</Text>}
           <Pressable accessibilityLabel="주간 목표 설정" onPress={() => setSheet('goal')}>
             <Text className="text-footnote text-white/80">
               {running

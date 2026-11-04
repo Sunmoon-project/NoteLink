@@ -287,3 +287,31 @@ it('세로 정지 응답이 늦어도 가로 재진입의 재개 의도를 이�
   expect(useSession.getState().pausedAt).toBeNull();
   expect(screen.getByText('자동 측정 중')).toBeTruthy();
 });
+
+it('큰 타이머는 지금 공부하는 항목의 시간만 보여 주고 전체는 따로 적는다', async () => {
+  mockNow = Date.parse('2026-11-02T03:00:00Z');
+  const base = await api.study.today();
+  const item = (id: string, sec: number) => ({
+    ...(base.items[0] ?? {}),
+    _id: id,
+    title: id,
+    subjectName: '수학',
+    goalMin: null,
+    accumulatedSec: sec,
+  });
+  jest.spyOn(api.study, 'today').mockResolvedValue({
+    ...base,
+    items: [item('a', 100), item('b', 10)],
+  } as never);
+  useSession.setState({
+    itemId: 'b',
+    sessionId: 's',
+    since: mockNow,
+    pausedAt: null,
+    segments: [],
+    banked: 0,
+  });
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('오늘 전체 00:01:50')).toBeTruthy();
+  expect(screen.getAllByText('00:00:10')).toHaveLength(2);
+});

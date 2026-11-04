@@ -53,15 +53,15 @@ it('A 구매 응답이 미확정이면 B 구매도 A 결과 확인 전에는 실
     .mockResolvedValue({ balance: 90000 });
   await renderScreen(<ShopScreen />, client());
   await fireEvent.press((await screen.findAllByText(a!.name))[0]!);
-  await fireEvent.press(screen.getByText('구매'));
-  await fireEvent.press(screen.getByText('구매'));
+  await fireEvent.press(await screen.findByText('구매'));
+  await fireEvent.press(await screen.findByText('구매'));
   await screen.findByText('구매 결과를 확인해주세요');
-  await fireEvent.press(screen.getByText('닫기'));
+  await fireEvent.press(await screen.findByText('닫기'));
 
   await fireEvent.press(screen.getAllByText(b!.name)[0]!);
-  await fireEvent.press(screen.getByText('구매'));
+  await fireEvent.press(await screen.findByText('구매'));
   if (screen.queryByText(`${b!.name}를 구매할까요?`)) {
-    await fireEvent.press(screen.getByRole('button', { name: '구매' }));
+    await fireEvent.press(await screen.findByRole('button', { name: '구매' }));
   }
   await act(async () => {});
   expect(buy).toHaveBeenCalledTimes(1);
@@ -70,8 +70,8 @@ it('A 구매 응답이 미확정이면 B 구매도 A 결과 확인 전에는 실
   await fireEvent.press(await screen.findByText('구매 결과 확인'));
   await screen.findByText(/현재 보유 내역에 없어요/);
   await fireEvent.press(screen.getAllByText(b!.name)[0]!);
-  await fireEvent.press(screen.getByText('구매'));
-  await fireEvent.press(screen.getByText('구매'));
+  await fireEvent.press(await screen.findByText('구매'));
+  await fireEvent.press(await screen.findByText('구매'));
   await waitFor(() => expect(buy).toHaveBeenCalledTimes(2));
   expect(buy).toHaveBeenLastCalledWith(b!._id);
 });
@@ -90,7 +90,7 @@ it.each(['items', 'me', 'myItems'] as const)(
     await renderScreen(<ShopScreen />, client());
     expect(await screen.findByText(/불러오지 못했어요/)).toBeTruthy();
     expect(screen.queryByText('준비 중인 아이템이에요')).toBeNull();
-    await fireEvent.press(screen.getByText('다시 시도'));
+    await fireEvent.press(await screen.findByText('다시 시도'));
     await waitFor(() => expect(query.mock.calls.length).toBeGreaterThan(1));
     await waitFor(() => expect(screen.queryByText(/불러오지 못했어요/)).toBeNull());
     expect(await screen.findByText(first!.name)).toBeTruthy();
@@ -101,7 +101,7 @@ it('포인트 내역 조회 실패는 빈 화면 대신 오류와 재시도로 �
   const query = jest.spyOn(api.shop, 'ledger').mockRejectedValueOnce(new Error('내역 조회 거절'));
   await renderScreen(<PointsScreen />, client());
   expect(await screen.findByText(/불러오지 못했어요/)).toBeTruthy();
-  await fireEvent.press(screen.getByText('다시 시도'));
+  await fireEvent.press(await screen.findByText('다시 시도'));
   await waitFor(() => expect(query.mock.calls.length).toBeGreaterThan(1));
   await waitFor(() => expect(screen.queryByText(/불러오지 못했어요/)).toBeNull());
   expect(screen.getByText('포인트 내역')).toBeTruthy();
@@ -114,7 +114,7 @@ it('보유 목록 실패를 아이템 없음으로 표시하지 않고 재시도
   await renderScreen(<BoxScreen />, client());
   expect(await screen.findByText(/불러오지 못했어요/)).toBeTruthy();
   expect(screen.queryByText('아직 보유한 아이템이 없어요')).toBeNull();
-  await fireEvent.press(screen.getByText('다시 시도'));
+  await fireEvent.press(await screen.findByText('다시 시도'));
   await waitFor(() => expect(query.mock.calls.length).toBeGreaterThan(1));
   await waitFor(() => expect(screen.queryByText(/불러오지 못했어요/)).toBeNull());
   expect(await screen.findByText('현재 아바타')).toBeTruthy();

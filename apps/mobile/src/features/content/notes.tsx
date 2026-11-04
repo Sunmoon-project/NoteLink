@@ -30,6 +30,7 @@ import { api } from '@/lib/api';
 import { toast } from '@/stores/toast';
 import { useDraft } from '@/stores/draft';
 import {
+  afterSheetClosed,
   Alert,
   Btn,
   Card,
@@ -232,17 +233,22 @@ export function NoteTitleScreen() {
         </Btn>
       }
     >
-      <Header title="새 자료 만들기" right={<Steps n={1} />} />
-      <Label>제목</Label>
-      <Input value={title} onChangeText={setTitle} placeholder="제목을 입력해 주세요" autoFocus />
+      <Header title="폴더 이름" right={<Steps n={1} />} />
+      <Label>이름</Label>
+      <Input
+        value={title}
+        onChangeText={setTitle}
+        placeholder="폴더 이름을 입력해 주세요"
+        autoFocus
+      />
       <Pressable
-        onPress={() => setTitle(`${d.getMonth() + 1}월 ${d.getDate()}일 ${tag} 녹음`)}
+        onPress={() => setTitle(`${d.getMonth() + 1}월 ${d.getDate()}일 ${tag}`)}
         className="mt-2"
       >
         <View className="flex-row items-center gap-1.5">
           <Lightbulb size={ICON.xs} color={C.brand} />
           <Text className="text-caption text-brand">
-            추천: {d.getMonth() + 1}월 {d.getDate()}일 {tag} 녹음
+            추천: {d.getMonth() + 1}월 {d.getDate()}일 {tag}
           </Text>
         </View>
       </Pressable>
@@ -296,6 +302,7 @@ export function FolderScreen() {
 
   const pickGallery = async () => {
     start('handwriting', 'gallery');
+    await afterSheetClosed();
     const r = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsMultipleSelection: true,
@@ -319,6 +326,7 @@ export function FolderScreen() {
   };
   const pickDoc = async () => {
     start('document', 'file');
+    await afterSheetClosed();
     const r = await DocumentPicker.getDocumentAsync({
       type: ['application/pdf', 'image/*'],
       copyToCacheDirectory: true,

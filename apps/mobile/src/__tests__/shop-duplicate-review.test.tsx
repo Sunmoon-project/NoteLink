@@ -57,8 +57,8 @@ it('느린 구매 중 같은 상품을 다시 열어도 첫 성공 뒤 남은 �
   const buy = jest.spyOn(api.shop, 'purchase').mockImplementation(() => pending.promise);
   await renderScreen(<ShopScreen />, client());
   await fireEvent.press((await screen.findAllByText(item.name))[0]!);
-  await fireEvent.press(screen.getByText('구매'));
-  await fireEvent.press(screen.getByText('구매'));
+  await fireEvent.press(await screen.findByText('구매'));
+  await fireEvent.press(await screen.findByText('구매'));
   await waitFor(() => expect(buy).toHaveBeenCalledTimes(1));
 
   // 첫 응답 대기 중 그리드에서 동일 상품을 다시 열고 확인창을 다시 열어 본다.

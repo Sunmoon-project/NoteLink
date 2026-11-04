@@ -80,10 +80,10 @@ async function signedIn(onboarded = true) {
   if (onboarded) await useAuth.getState().finishOnboarding();
 }
 async function submitLogin() {
-  await fireEvent.press(screen.getByText('이메일로 시작하기'));
-  await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'learner@example.com');
-  await fireEvent.changeText(screen.getByPlaceholderText('8자 이상'), 'password-a');
-  await fireEvent.press(screen.getByText('로그인'));
+  await fireEvent.press(await screen.findByText('이메일로 시작하기'));
+  await fireEvent.changeText(await screen.findByPlaceholderText('you@example.com'), 'learner@example.com');
+  await fireEvent.changeText(await screen.findByPlaceholderText('8자 이상'), 'password-a');
+  await fireEvent.press(await screen.findByText('로그인'));
   await screen.findByRole('button', { name: '로그인' });
 }
 beforeEach(() => {
@@ -153,7 +153,7 @@ it('만료 안내→로그인→풀이 재마운트 후 기존 풀이 ID·문제
   expect(screen.getByText('복습 퀴즈 2 / 2')).toBeTruthy();
   expect(screen.getByPlaceholderText('답을 입력해주세요').props.value).toBe('기억할 답');
   expect(mockApi.quiz.startAttempt).toHaveBeenCalledTimes(1);
-  await fireEvent.press(screen.getByText('답 제출'));
+  await fireEvent.press(await screen.findByText('답 제출'));
   await waitFor(() =>
     expect(mockApi.quiz.answer).toHaveBeenLastCalledWith(attemptId, 'second', '기억할 답'),
   );

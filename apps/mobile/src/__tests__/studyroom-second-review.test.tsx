@@ -170,20 +170,20 @@ it('저장 API가 없는 방별 알림은 가짜 토글 대신 준비 중으로 
 const reportBody = '학습과 무관한 광고 링크를 계속 올립니다';
 async function fillReport() {
   await screen.findByText('신고할 친구');
-  await fireEvent.press(screen.getByText('신고 유형을 골라 주세요'));
-  await fireEvent.press(screen.getByText('스팸 · 광고'));
+  await fireEvent.press(await screen.findByText('신고 유형을 골라 주세요'));
+  await fireEvent.press(await screen.findByText('스팸 · 광고'));
   await fireEvent.changeText(
     screen.getByPlaceholderText('신고 사유를 자세히 입력해 주세요. (10자 이상)'),
     reportBody,
   );
-  await fireEvent.press(screen.getByText('0/5'));
+  await fireEvent.press(await screen.findByText('0/5'));
   await screen.findByText('1/5');
 }
 
 it('신고는 첨부를 Blob에 올린 URL만 신고 API에 전달하고 성공 후 복귀한다', async () => {
   await renderScreen(<ReportScreen />, client());
   await fillReport();
-  await fireEvent.press(screen.getByRole('button', { name: '신고하기' }));
+  await fireEvent.press(await screen.findByRole('button', { name: '신고하기' }));
   await screen.findByText('신고 완료');
   expect(mockUpload).toHaveBeenCalledWith(
     'image',
@@ -200,7 +200,7 @@ it('신고는 첨부를 Blob에 올린 URL만 신고 API에 전달하고 성공 
     details: reportBody,
     imageUrls: ['https://blob.test/evidence.jpg'],
   });
-  await fireEvent.press(screen.getByText('확인'));
+  await fireEvent.press(await screen.findByText('확인'));
   expect(router.back).toHaveBeenCalledTimes(1);
 });
 
@@ -211,7 +211,7 @@ it.each(['upload', 'report'] as const)(
     else mockApi.rooms.report.mockRejectedValueOnce(new Error('신고 저장 실패'));
     await renderScreen(<ReportScreen />, client());
     await fillReport();
-    await fireEvent.press(screen.getByRole('button', { name: '신고하기' }));
+    await fireEvent.press(await screen.findByRole('button', { name: '신고하기' }));
     await waitFor(() => expect(mockUpload).toHaveBeenCalled());
     await waitFor(() => expect(useToast.getState().msg).toBeTruthy());
     expect(screen.queryByText('신고 완료')).toBeNull();
@@ -247,7 +247,7 @@ it('신고 PNG 첨부는 원본 파일명·MIME·크기를 보존하고 Blob URL
   mockUpload.mockResolvedValueOnce('https://blob.test/evidence.png');
   await renderScreen(<ReportScreen />, client());
   await fillReport();
-  await fireEvent.press(screen.getByRole('button', { name: '신고하기' }));
+  await fireEvent.press(await screen.findByRole('button', { name: '신고하기' }));
   await screen.findByText('신고 완료');
   expect(mockUpload).toHaveBeenCalledWith(
     'image',
