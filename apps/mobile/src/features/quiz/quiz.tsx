@@ -124,12 +124,21 @@ export function QuizHomeScreen() {
   );
 }
 
-/** p.97 알 수 없는 오류 — 화면만 오류 처리, 입력은 그대로 보존 */
+/** p.97 알 수 없는 오류 — 대화상자를 닫아도 화면에 다시 시도할 길을 남긴다 */
 function ErrorAlert({ retry }: { retry: () => void }) {
   const [open, setOpen] = useState(true);
+  if (!open)
+    return (
+      <View className="items-center gap-3 py-12">
+        <Text className="text-center text-footnote text-sub">내용을 불러오지 못했어요</Text>
+        <Btn small onPress={retry}>
+          다시 불러오기
+        </Btn>
+      </View>
+    );
   return (
     <Alert
-      open={open}
+      open
       title="문제가 생겼어요"
       body={`잠시 후 다시 시도해 주세요.\n작성한 내용은 그대로 보관돼 있어요.`}
       secondary="닫기"

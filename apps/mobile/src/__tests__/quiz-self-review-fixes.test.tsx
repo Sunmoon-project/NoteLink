@@ -70,3 +70,14 @@ it('홈의 진행 막대는 진행 정보가 없으면 100%로 표시하지 않�
   expect(await screen.findByText(/퀴즈 · 2문제/)).toBeTruthy();
   expect(screen.queryByRole('progressbar')).toBeNull();
 });
+
+it('조회 실패 안내를 닫거나 재시도가 또 실패해도 다시 시도할 수 있다', async () => {
+  const sets = jest.spyOn(api.quiz, 'sets').mockRejectedValue(new Error('실패'));
+  setParams({});
+  await renderScreen(<QuizHomeScreen />, client());
+  await fireEvent.press(await screen.findByText('다시 시도'));
+  await fireEvent.press(await screen.findByText('다시 불러오기'));
+  await act(async () => {});
+  expect(sets.mock.calls.length).toBeGreaterThanOrEqual(3);
+  expect(screen.getByText('다시 불러오기')).toBeTruthy();
+});
