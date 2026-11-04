@@ -493,7 +493,7 @@ const PLANS: { id: PlanTier; name: string; price: string; desc: string[]; hot?: 
   },
 ];
 
-/** 결제 연동 전: 무료 플랜으로만 바꿀 수 있다 (목업은 화면 확인용으로 모두 허용) */
+/** 결제 연동 전: 무료 플랜으로만 바꿀 수 있다 (기기 저장 모드는 화면 확인용으로 모두 허용) */
 export const canChangePlan = (t: PlanTier) => t === 'free' || env.localData;
 
 export function PlanScreen() {

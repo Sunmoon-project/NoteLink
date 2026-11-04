@@ -5,7 +5,7 @@ import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
 
 // Socket.IO (NestJS realtime 게이트웨이): 채팅 · 스터디룸 상태 · AI 진행률 (p.19~20)
-// 목업 모드에서는 같은 모양의 로컬 이벤트 버스를 쓴다.
+// 기기 저장 모드에서는 같은 모양의 로컬 이벤트 버스를 쓴다.
 
 type Ev = keyof ServerToClient;
 type Handler<E extends Ev> = ServerToClient[E];
