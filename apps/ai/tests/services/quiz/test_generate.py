@@ -504,3 +504,16 @@ def test_pages_no_chunk_starts_on_keep_their_ocr_text() -> None:
         {"order": 2, "text": "쪽 없는 조각", "lines": []},
     ]  # fmt: skip
     assert generate.note_pages(generate.parse(inp).material) == {1: "1. 회충\n- 높다", 2: PAGE2}
+
+
+def test_a_broken_draft_that_repeats_an_answer_does_not_close_the_page() -> None:
+    # 정답이 겹친다는 판정도 보기가 망가진 초안이면 믿지 않음: 기생충 3 실제 실행(11/04)에서
+    # '정답 글이 보기와 안 맞음 · 제시문에 정답 노출 · 세트 안에서 정답이 겹침' 초안 하나에
+    # 1쪽이 닫힘
+    again = copy.deepcopy(GOOD["이질 아메바"])
+    again["question"]["options"] = again["question"]["options"][:4]
+    inp = job(size=3)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    llm = happy([GOOD["이질 아메바"], again, again, GOOD["대장 아메바"]])
+    result, _ = run(llm, inp)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바"]

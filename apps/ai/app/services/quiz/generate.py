@@ -626,8 +626,10 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
                     got = r
                     made.append((page, r))
                     break
-                if any(w in DRY_REASONS for w in r.why):
-                    dry.add(page)  # 이 쪽에는 새로 물을 것이 남지 않음
+                # 이 쪽에는 새로 물을 것이 남지 않음. 이유가 모두 겹침일 때만: 보기가 망가진 초안의
+                # '정답이 겹침'에 1쪽이 닫혀 0문제가 됨(기생충 3 실제 실행, 11/04)
+                if r.why and all(w in DRY_REASONS for w in r.why):
+                    dry.add(page)
             if got is None:
                 failed.append({"pageNo": last_page, "why": last_why})
             slot += 1
