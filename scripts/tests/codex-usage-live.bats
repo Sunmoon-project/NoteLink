@@ -194,19 +194,26 @@ dry() {
 }
 
 @test "읽지 못하면 마지막 값을 두고 ⚠️ 확인 실패를 적는다(0으로 끝남, 마지막 값은 그대로)" {
-  export FAKE_RL="$(rl 5 90)"
+  export FAKE_RL="$(rl 5 30)"
   start_discord
   node "$SCRIPT" --now "$NOW_MS"
   before=$(cat "$CODEX_USAGE_LIVE_STATE")
   export FAKE_MODE=error
   run node "$SCRIPT" --now $(( NOW_MS + 600000 ))
   [ "$status" -eq 0 ]
-  [[ "$output" == *"::warning::Codex 사용량을 읽지 못했습니다: 사용량 읽기 실패: not logged in"* ]]
+  [[ "$output" == *"::warning::Codex 사용량을 읽지 못했습니다: 사용량 읽기 실패(코드 -32000)"* ]]
+  # 오류 원문(계정 정보가 섞일 수 있음)은 로그 · 메시지에 넣지 않음
+  [[ "$output" != *"not logged in"* ]]
   last=$(tail -n 1 "$REQ_LOG")
   [[ "$last" == PATCH* ]]
   [[ "$last" == *"⚠️ 11/04 09:10 확인 실패"* ]]
   [[ "$last" == *"아래는 11/04 09:00에 읽은 값입니다"* ]]
   [[ "$last" == *"95% 남음"* ]]
+  [[ "$last" != *"not logged in"* ]]
+  # 꼬리말은 지금 시각이 아니라 마지막으로 읽은 시각
+  [[ "$last" == *"11/04 09:00에 마지막으로 읽음"* ]]
+  [[ "$last" != *"09:10 확인 ("* ]]
+  # 마지막 값이 🟢였으면 회색으로 확인 실패를 알림(🟡 · ⏸️였으면 그 색을 유지 — 아래 테스트)
   [[ "$last" == *'"color":9145752'* ]]
   [ "$(cat "$CODEX_USAGE_LIVE_STATE")" = "$before" ]
 }
@@ -222,6 +229,8 @@ dry() {
   [[ "$last" == *"codex app-server가 끝남(코드 3)"* ]]
   [[ "$last" == *"🟢 **5시간** 100% 남음 \`██████████\` · 11/04 12:00 초기화됨"* ]]
   [[ "$last" == *"⏸️ **주간** 10% 남음"* ]]
+  # 읽지 못했어도 마지막 값이 ⏸️면 회색이 아니라 멈춤 색을 유지
+  [[ "$last" == *'"color":15761187'* ]]
 }
 
 @test "읽은 적도 없고 읽지도 못하면 그렇게 적는다" {
@@ -229,6 +238,7 @@ dry() {
   dry
   [ "$status" -eq 0 ]
   [[ "$output" == *"아직 읽은 값이 없습니다"* ]]
+  [[ "$output" == *"읽은 값 없음 ("* ]]
   [[ "$output" == *'"color":9145752'* ]]
 }
 
@@ -273,6 +283,10 @@ dry() {
   # workflow_run은 워크플로 이름으로 찾으므로 codex-review.yml의 name과 같아야 함
   review_name=$(sed -n 's/^name: //p' "$BATS_TEST_DIRNAME/../../.github/workflows/codex-review.yml")
   grep -q "workflows: \[$review_name\]" "$WORKFLOW"
-  # 사용량 대기 실행이 쌓이지 않게 한 그룹
+  # 수동 실행은 main에서만(수동 실행은 고른 브랜치의 YAML로 돎)
+  grep -q "github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'" "$WORKFLOW"
+  # 사용량 대기 실행이 쌓이지 않게 한 그룹. job 단위라 건너뛰는 실행은 그룹에 들어가지 않음
+  grep -q '^    concurrency:$' "$WORKFLOW"
+  ! grep -q '^concurrency:' "$WORKFLOW"
   grep -q 'group: codex-usage-live' "$WORKFLOW"
 }
