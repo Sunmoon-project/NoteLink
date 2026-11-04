@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, TextInput, View } from 'react-native';
 import { Text } from '@/components/text';
-import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Speech from 'expo-speech';
@@ -244,7 +244,7 @@ export function QuizNotesScreen() {
                 ['퀴즈 만들기', PenLine, make],
               ] as const
             ).map(([l, Ic, fn], i) => (
-              <Animated.View key={l} entering={ZoomIn.delay(i * 30)}>
+              <Animated.View key={l} entering={FadeInDown.duration(180).delay(i * 30)}>
                 <Pressable
                   onPress={() => {
                     setMenu(false);
@@ -447,7 +447,7 @@ export function QuizReadyScreen() {
     >
       <View className="items-center pt-40">
         <Animated.View
-          entering={ZoomIn}
+          entering={FadeIn}
           className="h-20 w-20 items-center justify-center rounded-full bg-mint"
         >
           <CircleCheck size={ICON.xl} color={C.brand} />
@@ -771,7 +771,7 @@ export function QuizSolveScreen() {
             </View>
           </Animated.View>
         ) : (
-          <Animated.View entering={ZoomIn}>
+          <Animated.View entering={FadeIn}>
             <View
               className={cx('mt-8 rounded-xl py-2.5', right ? 'bg-correct-soft' : 'bg-danger/10')}
             >
@@ -950,7 +950,7 @@ export function QuizReviewScreen() {
         >
           <Tutor size={96} />
           <Text className="mt-4 text-headline font-bold text-white">퀴즈 풀기 성공!</Text>
-          <Animated.View entering={ZoomIn} className="mt-3 rounded-2xl bg-cream px-10 py-3">
+          <Animated.View entering={FadeIn} className="mt-3 rounded-2xl bg-cream px-10 py-3">
             <Text className="text-headline font-bold text-brand">+{points}P</Text>
           </Animated.View>
           <Text className="mt-6 text-caption2 text-white/60">탭해서 닫기</Text>
@@ -1098,7 +1098,7 @@ export function QuizSimilarScreen() {
             <Text className="text-caption font-semibold text-ink">문제 {i + 1}</Text>
             <Text className="text-footnote text-ink">{q.prompt}</Text>
             {open.includes(q._id) && (
-              <Animated.View entering={ZoomIn} className="mt-2 rounded-xl bg-sun/25 px-3 py-2">
+              <Animated.View entering={FadeIn} className="mt-2 rounded-xl bg-sun/25 px-3 py-2">
                 <Text className="text-caption font-semibold text-ink">문제 {i + 1} 정답</Text>
                 <Text className="text-caption text-ink">{q.answer}</Text>
               </Animated.View>
@@ -1347,7 +1347,7 @@ export function QuizBoxScreen() {
               <Text className="flex-1 text-footnote text-ink">Q. {q.prompt}</Text>
             </View>
             {shown.includes(q._id) && (
-              <Animated.View entering={ZoomIn} className="mt-2 rounded-lg bg-mint px-3 py-2">
+              <Animated.View entering={FadeIn} className="mt-2 rounded-lg bg-mint px-3 py-2">
                 <Text className="text-caption text-brand">A. {q.answer}</Text>
               </Animated.View>
             )}
