@@ -127,11 +127,19 @@ COMMAND_CR="startsWith(github.event.comment.body, format('/codex review{0}', fro
   [ "$(grep -oE "label\.name [!=]= '[^']*'" <<< "$group$cond" | sed "s/.*'\(.*\)'/\1/" | sort -u)" = codex-review ]
 }
 
-@test "트리거: 닫힌 PR은 거르고, 직접 요청은 받는다" {
+@test "트리거: 닫힌 PR은 거르고, 직접 요청은 기본 브랜치에서 돌린 것만 받는다" {
   cond=$(review_if)
   [[ "$cond" == *"github.event.pull_request.state == 'open'"* ]]
   [[ "$cond" == *"github.event.issue.state == 'open'"* ]]
-  [[ "$cond" == *"github.event_name == 'workflow_dispatch'"* ]]
+  [[ "$cond" == *"(github.event_name == 'workflow_dispatch' &&"* ]]
+  [[ "$cond" == *"github.ref == format('refs/heads/{0}', github.event.repository.default_branch))"* ]]
+  # workflow_dispatch가 브랜치 조건 없이 따로 허용되지 않음
+  not grep -qE "^ *github\.event_name == 'workflow_dispatch' *$" <<< "$cond"
+}
+
+@test "checkout: 이벤트와 상관없이 기본 브랜치를 받는다(Run workflow가 고른 브랜치의 스크립트를 돌리지 않게)" {
+  awk '/- uses: actions\/checkout@/ { f = 1; next } f && /^      - / { exit } f' "$(WF_FILE)" \
+    | grep -qF 'ref: ${{ github.event.repository.default_branch }}'
 }
 
 @test "트리거: 동시 실행은 review job에만 있고, 걸러지는 실행 · 직접 요청은 실행마다 따로인 그룹, 요청은 사람마다 그룹이 다르다" {
@@ -165,5 +173,5 @@ COMMAND_CR="startsWith(github.event.comment.body, format('/codex review{0}', fro
   grep -qF 'CODEX_REQUEST_COMMENT: ${{ github.event.comment.id }}' "$workflow"
   grep -qF 'CODEX_REQUEST_BODY: ${{ github.event.comment.body }}' "$workflow"
   # 이벤트 값 · 입력은 run 안에 직접 넣지 않음(명령 주입 방지): run 블록 안에 github.event · inputs가 없어야 함
-  not awk '/^ *run: / { r = 1 } /^ *- name: / { r = 0 } r && /\$\{\{ *(github\.event\.|inputs\.)/ { found = 1 } END { exit !found }' "$workflow"
+  not awk '/^ *run: / { r = 1 } /^ *- (name|uses): |^  [a-z]+:|^    [a-z-]+:/ { r = 0 } r && /\$\{\{ *(github\.event\.|inputs\.)/ { found = 1 } END { exit !found }' "$workflow"
 }
