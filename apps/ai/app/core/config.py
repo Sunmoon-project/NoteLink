@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     # 녹음 쪽: 음성 인식(Azure AI Speech). 키는 .env에만.
     azure_speech_endpoint: str = ""
     azure_speech_key: SecretStr = SecretStr("")
+    recording_model: str = "gemma-4-26b"  # 녹음 슬라이드 만들기 (경계 · 제목 · 요약 · 도식)
 
     @property
     def is_production(self) -> bool:
