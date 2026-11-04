@@ -33,8 +33,9 @@ export function SummaryScreen() {
   const items = today.data?.items ?? [];
   const total = items.reduce((a, i) => a + i.accumulatedSec, 0);
   const done = items.filter((i) => i.goalMin && i.accumulatedSec >= i.goalMin * 60).length;
-  const goalMin = goal.data?.targetMin ?? 1260;
-  const pct = Math.round(((weekly.data?.totalSec ?? 0) / 60 / goalMin) * 100);
+  const goalMin = goal.data?.targetMin;
+  const pct =
+    goalMin && weekly.data ? Math.round((weekly.data.totalSec / 60 / goalMin) * 100) : null;
   useEffect(() => {
     if (Number(points) > 0) toast(`순공 세션 완료 +${points}P`);
   }, [points]);
@@ -63,6 +64,14 @@ export function SummaryScreen() {
         </Text>
         <Text className="tabular-nums text-large font-bold text-brand">{hms(total)}</Text>
       </View>
+      {today.isError && !today.data && (
+        <View className="mt-4 gap-2">
+          <Text className="text-footnote text-sub">오늘 기록을 불러오지 못했어요</Text>
+          <Btn small onPress={() => void today.refetch()}>
+            오늘 기록 다시 시도
+          </Btn>
+        </View>
+      )}
       <Card className="mt-4 p-4">
         <View className="flex-row justify-between">
           <Text className="text-footnote font-semibold text-ink">항목별 목표</Text>
@@ -92,14 +101,31 @@ export function SummaryScreen() {
           </View>
         ))}
       </Card>
-      <View className="mt-4 flex-row justify-between">
-        <Text className="text-subhead font-semibold text-ink">이번주 목표 {goalMin / 60}시간</Text>
-        <Text className="text-subhead font-semibold text-brand">{pct}%</Text>
-      </View>
-      <Progress value={pct} className="mt-1.5" />
-      <Text className="mt-1 text-caption text-sub">
-        {hm(weekly.data?.totalSec ?? 0)} · {diffLabel(weekly.data?.diffFromLastWeekSec ?? 0)}
-      </Text>
+      {goalMin && pct !== null && (
+        <>
+          <View className="mt-4 flex-row justify-between">
+            <Text className="text-subhead font-semibold text-ink">
+              이번주 목표 {goalMin / 60}시간
+            </Text>
+            <Text className="text-subhead font-semibold text-brand">{pct}%</Text>
+          </View>
+          <Progress value={pct} className="mt-1.5" />
+        </>
+      )}
+      {weekly.data ? (
+        <Text className="mt-1 text-caption text-sub">
+          {hm(weekly.data.totalSec)} · {diffLabel(weekly.data.diffFromLastWeekSec)}
+        </Text>
+      ) : (
+        weekly.isError && (
+          <View className="mt-2 gap-2">
+            <Text className="text-caption text-sub">이번주 기록을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void weekly.refetch()}>
+              이번주 기록 다시 시도
+            </Btn>
+          </View>
+        )
+      )}
       <Card tone="white" className="mt-4 p-4">
         <Text className="text-subhead font-semibold text-ink">오늘 공부를 노트로 남겨둘까요?</Text>
         <Text className="text-caption text-sub">
