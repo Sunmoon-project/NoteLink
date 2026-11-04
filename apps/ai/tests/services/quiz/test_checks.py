@@ -3,7 +3,6 @@ import pytest
 from app.services.quiz.checks import (
     Seen,
     Target,
-    class_giveaway,
     code_check,
     form_giveaway,
     number_values,
@@ -289,48 +288,21 @@ def test_one_answer_fills_one_blank() -> None:
     assert "빈칸이 여러 개" not in why(draft())
 
 
-def class_draft(answer: str, options: list[str]) -> Draft:
-    return draft(
-        stem="다음 용어가 속하는 분류는?", passage="질편모충", answer=answer, options=options
-    )
-
-
-def test_class_options_must_be_class_names_too() -> None:
-    giveaway = class_draft(
-        "편모충류", ["편모충류", "이질 아메바", "대장 아메바", "요오드 아메바", "이핵아메바"]
-    )
-    good = class_draft("편모충류", ["편모충류", "근족충류", "섬모충류", "포자충류", "선충류"])
-    test = class_draft("대변 검사", ["대변 검사", "직접 도말법", "부유법", "침전법", "배양법"])
-    assert class_giveaway(giveaway) and not class_giveaway(good) and class_giveaway(test)
-    assert "오답 보기가 분류 이름이 아님" in why(giveaway, "분류")[0]
-    assert (
-        why(giveaway, "특징") == []
-        or "오답 보기가 분류 이름이 아님" not in why(giveaway, "특징")[0]
-    )
-    assert not class_giveaway(
-        class_draft("Bacteria", ["Bacteria", "a", "b", "c", "d"])
-    )  # 한글 없음
-
-
-def test_class_names_with_a_gloss_are_still_class_names() -> None:
-    d = class_draft(
-        "편모충류 (Flagellata)",
-        ["편모충류 (Flagellata)", "근족충류 (Sarcodina)", "섬모충류", "포자충류", "선충류"],
-    )
-    assert not class_giveaway(d)
-
-
 def test_code_parentheses_are_not_several_blanks() -> None:
     d = draft(passage="useState()와 useEffect()를 함께 쓴다", answer="stacked")
     assert "빈칸이 여러 개" not in why(tidy(d), "규칙")
 
 
-def test_class_names_with_other_last_syllables_are_not_caught() -> None:
-    # 끝 글자가 다른 분류 이름(영양소): 분류 이름 꼴(…류 · …검사)인 정답만 봄(Codex 리뷰 #94)
-    d = draft(
-        stem="다음 용어가 속하는 분류는?",
-        passage="포도당",
-        answer="탄수화물",
-        options=["탄수화물", "지방", "단백질", "비타민", "무기질"],
-    )
-    assert not class_giveaway(d)
+def test_class_questions_are_not_judged_by_the_last_syllable() -> None:
+    # 끝 글자로 분류 이름을 가리던 검사는 기생충에 맞춘 규칙이라 뺌(Codex 재리뷰 #94)
+    for passage, answer, wrong in [
+        ("표고버섯", "균류", ["동물", "식물", "원생생물", "원핵생물"]),
+        ("포도당", "탄수화물", ["지방", "단백질", "비타민", "무기질"]),
+    ]:
+        d = draft(
+            stem="다음 용어가 속하는 분류는?",
+            passage=passage,
+            answer=answer,
+            options=[answer, *wrong],
+        )
+        assert not any("분류 이름" in w for w in why(d, "분류"))

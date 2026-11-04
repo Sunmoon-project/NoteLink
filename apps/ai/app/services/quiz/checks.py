@@ -153,35 +153,6 @@ def form_giveaway(d: Draft) -> bool:
     return sum(form(o) == form(d["answer"]) for o in opts) < 2
 
 
-CLASS_ENDS = ("류", "검사")  # 기생충에서 본 분류 이름(편모충류 · 대변 검사)
-
-
-def class_tail(a: str | None) -> str | None:
-    """마지막 한글 음절: 분류의 종류를 나타냄(편모충류 → 류, 대변 검사 → 사). 한글이 없으면 None."""
-    words = re.findall(r"[가-힣]+", a or "")
-    return words[-1][-1] if words else None
-
-
-def class_giveaway(d: Draft) -> bool:
-    """분류 문제인데 보기 중 정답만 분류 이름 (기생충, 11/01).
-
-    질편모충 → 편모충류에 아메바 이름 넷, 직접 도말법 → 대변 검사에 다른 검사법 넷. 오답 보기 중
-    정답과 같은 음절로 끝나는 것이 하나도 없으면 걸립니다. 기생충 · 미생 분류 초안 44개에서 8개를
-    잡았습니다(다른 검사를 다 통과한 위 두 문제와, 어차피 떨어진 6개). 마지막 낱말(세균)로 보거나
-    form_giveaway처럼 오답 둘을 요구하면 좋은 초안도 걸렸습니다(무산소성 세균에 진균 · 고균,
-    근동충류의 영양형).
-    """
-    # 분류 이름 꼴(…류 · …검사)인 정답만 봄: '포도당 → 탄수화물'에 지방 · 단백질 · 비타민 ·
-    # 무기질처럼 끝 글자가 다른 분류 이름도 있음(Codex 리뷰 #94)
-    words = re.findall(r"[가-힣]+", d["answer"])
-    if not words or not words[-1].endswith(CLASS_ENDS):
-        return False
-    tail = class_tail(d["answer"])
-    answer_key = option_key(d["answer"])
-    # 뒤에 붙은 영어 · 괄호('근족충류 (Sarcodina)')는 정답과 같은 기준(class_tail)으로 뗌
-    return not any(class_tail(o) == tail for o in d["options"] if option_key(o) != answer_key)
-
-
 def code_check(
     d: Draft, t: Target, page_text: str, ty: str, seen: list[Seen]
 ) -> tuple[list[str], int | None]:
@@ -209,10 +180,9 @@ def code_check(
     # ('The rope was ____ to the post'에 fastened와 -ing 낱말 넷, 10/26)
     if "____" in p and form_giveaway(d):
         why.append("형태만 보고 정답이 보임(오답 보기를 정답과 같은 형태로)")
-    if ty == "분류" and class_giveaway(d):
-        why.append(
-            f"오답 보기가 분류 이름이 아님(오답도 '{d['answer']}'와 같은 수준의 다른 분류 이름으로)"
-        )
+    # 분류 문제를 끝 글자로 가리는 검사는 두지 않음: 기생충에서 본 이름(편모충류 · 대변 검사)에
+    # 맞춘 규칙이라 '표고버섯 → 균류'(동물 · 식물 · 원생생물 · 원핵생물)도 버렸음(Codex 재리뷰 #94).
+    # 정답만 분류 이름인 보기는 과목과 상관없이 품질 검사에서 볼 일(퀴즈 속도 개선 작업)
     # 토익 유형만: 한국어 문장의 빈칸은 정상적인 정의 문제 (React Native 강의, 10/25)
     if "____" in p and ty not in KO_TYPES and _KO.search(p):
         why.append("빈칸 문장에 한국어 뜻 노출")
