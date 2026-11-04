@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
-import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
@@ -418,7 +418,7 @@ export function FolderScreen() {
                 ['hand', '필기 올리기', PenLine],
               ] as const
             ).map(([k, l, Ic], i) => (
-              <Animated.View key={k} entering={ZoomIn.delay(i * 30)}>
+              <Animated.View key={k} entering={FadeInDown.duration(180).delay(i * 30)}>
                 <Pressable
                   onPress={() => {
                     setDial(false);

@@ -20,7 +20,6 @@ import Animated, {
   FadeOut,
   SlideInDown,
   SlideOutDown,
-  ZoomIn,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
@@ -635,7 +634,7 @@ export function Sheet({
         )}
         {open && (
           <Animated.View
-            entering={SlideInDown.springify().damping(24).stiffness(240)}
+            entering={SlideInDown.duration(MOTION.enter).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(MOTION.exit).easing(Easing.in(Easing.cubic))}
             accessibilityViewIsModal
             className="max-h-[88%] rounded-t-3xl bg-white px-5 pt-2"
@@ -696,7 +695,7 @@ export function Dialog({
         )}
         {open && (
           <Animated.View
-            entering={ZoomIn.springify().damping(20).stiffness(260)}
+            entering={FadeInDown.duration(MOTION.enter).easing(Easing.out(Easing.cubic))}
             exiting={FadeOut.duration(MOTION.exit)}
             accessibilityViewIsModal
             className="w-full items-center rounded-3xl bg-white p-6"
@@ -813,7 +812,7 @@ export function Success({
   return (
     <View className="items-center pt-24">
       <Animated.View
-        entering={ZoomIn}
+        entering={FadeIn.duration(MOTION.enter)}
         className="h-20 w-20 items-center justify-center rounded-full bg-mint"
       >
         <Check size={ICON.xl} color={C.brand} />

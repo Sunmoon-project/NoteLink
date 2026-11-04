@@ -68,6 +68,16 @@ export function HomeScreen() {
     }
   };
   const ending = useRef(false);
+  // 다른 화면을 보는 중이면 자동 종료로 화면을 끌고 가지 않는다
+  const focused = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      focused.current = true;
+      return () => {
+        focused.current = false;
+      };
+    }, []),
+  );
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -97,10 +107,12 @@ export function HomeScreen() {
       if (!current()) return;
       await qc.invalidateQueries({ queryKey: ['study'] });
       if (!current()) return;
-      router.push({
-        pathname: '/summary',
-        params: { sec: String(r.sec), points: String(r.pointsEarned) },
-      });
+      if (focused.current)
+        router.push({
+          pathname: '/summary',
+          params: { sec: String(r.sec), points: String(r.pointsEarned) },
+        });
+      else toast('쉬는 시간이 길어져 공부 측정을 자동으로 끝냈어요');
     } catch {
       if (valid && mounted.current) toast('종료하지 못했어요. 연결을 확인하고 다시 종료해주세요');
     } finally {

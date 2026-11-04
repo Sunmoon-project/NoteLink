@@ -45,10 +45,8 @@ export function SocialDrawer({ open, onClose }: { open: boolean; onClose: () => 
     enabled: open,
   });
   const [statusOpen, setStatusOpen] = useState(false);
-  const go = (href: Parameters<typeof router.push>[0]) => {
-    onClose();
-    router.push(href);
-  };
+  // 드로어를 닫았다가 여는 대신 그 자리를 바꿔, 사이에 홈 화면이 비치지 않게 한다
+  const go = (href: Parameters<typeof router.replace>[0]) => router.replace(href);
   return (
     <Modal
       visible={open}
