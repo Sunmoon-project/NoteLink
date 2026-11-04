@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     voyage_api_key: SecretStr = SecretStr("")
     voyage_model: str = "voyage-4"  # 1,024차원
 
+    # 녹음 쪽: 음성 인식(Azure AI Speech). 키는 .env에만.
+    azure_speech_endpoint: str = ""
+    azure_speech_key: SecretStr = SecretStr("")
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
