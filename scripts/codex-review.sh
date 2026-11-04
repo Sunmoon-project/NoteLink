@@ -106,12 +106,11 @@ auto_skip_reason() {
   fi
 }
 
-# 댓글 본문이 리뷰 요청 명령이면 0: 첫 줄(끝 공백 · CR 제외)이 REQUEST_COMMAND와 같음(대소문자는 가리지 않음).
-# codex-review.yml은 같은 기준(본문 전체가 명령이거나 명령 바로 뒤에 줄바꿈, 대소문자 무시)으로 먼저 거릅니다.
+# 댓글 본문이 리뷰 요청 명령이면 0: 본문 전체가 REQUEST_COMMAND이거나 명령 바로 뒤에 줄바꿈(LF · CR)이 옴.
+# 대소문자는 가리지 않고, 끝 공백은 허용하지 않음. codex-review.yml의 job if · 동시 실행 그룹과 같은 기준입니다
+# (워크플로가 먼저 거르므로, 어긋나면 받을 댓글이 워크플로에서 걸러지거나 그 반대가 됨).
 is_request_command() {  # $1 = 댓글 본문
-  local first="${1%%$'\n'*}"
-  first="${first%$'\r'}"
-  first="${first%"${first##*[![:space:]]}"}"
+  local first="${1%%[$'\r\n']*}"
   [ "${first,,}" = "${REQUEST_COMMAND,,}" ]
 }
 

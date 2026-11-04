@@ -430,16 +430,38 @@ fake_gh_files() {
   [ "$(jq -r "$PR_FILES_JQ" <<< "$json")" = $'docs/a.md\ndocs/b.md\nsrc/b.ts' ]
 }
 
-@test "is_request_command: 첫 줄이 /codex review일 때만(대소문자 무시, 끝 공백 · CR · 다음 줄은 괜찮음)" {
+# 워크플로의 거르는 식(본문 == 명령 || 명령+LF로 시작 || 명령+CR로 시작, 대소문자 무시)을 그대로 옮긴 것
+workflow_accepts() {
+  local b="${1,,}" c="/codex review"
+  [ "$b" = "$c" ] || [[ "$b" == "$c"$'\n'* ]] || [[ "$b" == "$c"$'\r'* ]]
+}
+
+@test "is_request_command: 본문 전체가 /codex review이거나 바로 뒤에 줄바꿈일 때만(대소문자 무시, 끝 공백은 안 됨)" {
   is_request_command '/codex review'
-  is_request_command $'/codex review  \r\n지난 지적을 반영했습니다.'
-  is_request_command $'/codex review\t'
+  is_request_command $'/codex review\n지난 지적을 반영했습니다.'
+  is_request_command $'/codex review\r\n지난 지적을 반영했습니다.'
   is_request_command '/Codex Review'
+  not is_request_command '/codex review  '
+  not is_request_command $'/codex review\t'
+  not is_request_command $'/codex review  \r\n설명'
   not is_request_command '/codex reviewed — 반영했습니다'
   not is_request_command '/codex review 부탁드립니다'
   not is_request_command ' /codex review'
   not is_request_command $'반영했습니다\n/codex review'
   not is_request_command ''
+}
+
+@test "is_request_command: 워크플로의 거르는 식과 같은 댓글을 받는다" {
+  local b
+  for b in '/codex review' '/CODEX REVIEW' $'/codex review\n설명' $'/codex review\r\n설명' $'/codex review\r' \
+      '/codex review  ' $'/codex review\t' $'/codex review \n설명' '/codex reviewed' '/codex review 부탁' \
+      ' /codex review' $'설명\n/codex review' '' '/codex'; do
+    if workflow_accepts "$b"; then
+      is_request_command "$b" || { echo "워크플로는 받는데 스크립트는 거절: [$b]"; return 1; }
+    else
+      not is_request_command "$b" || { echo "워크플로는 거르는데 스크립트는 받음: [$b]"; return 1; }
+    fi
+  done
 }
 
 # 가짜 gh: 받은 인자를 적고, 권한 조회는 FAKE_PERM을 돌려줌(PERM_RC로 실패)
