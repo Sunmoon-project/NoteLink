@@ -107,7 +107,8 @@ function useShopData() {
     equippedIds,
     loaded: mine.isSuccess,
     pending: me.isPending || mine.isPending,
-    error: me.isError || mine.isError,
+    // 이미 불러온 내용이 있으면 재조회 실패로 화면을 지우지 않는다
+    error: (me.isError && !me.data) || (mine.isError && !mine.data),
     retry: () => Promise.all([me.refetch(), mine.refetch()]),
   };
 }
@@ -211,7 +212,7 @@ export function ShopScreen() {
     else setConfirm(it);
   };
 
-  if (shop.error || items.isError)
+  if (shop.error || (items.isError && !items.data))
     return <ShopError retry={() => Promise.all([shop.retry(), items.refetch()])} />;
   return (
     <View className="flex-1 bg-white" style={{ paddingTop: insets.top }}>
@@ -471,7 +472,7 @@ export function PointsScreen() {
     queryKey: ['ledger', tab],
     queryFn: () => api.shop.ledger(tab === '전체' ? undefined : tab === '적립' ? 'earn' : 'spend'),
   });
-  if (shop.error || ledger.isError)
+  if (shop.error || (ledger.isError && !ledger.data))
     return <ShopError retry={() => Promise.all([shop.retry(), ledger.refetch()])} />;
   return (
     <ScrollView
@@ -560,7 +561,7 @@ export function BoxScreen() {
       setMsg(`✓ 장착 완료 · ${it.name}`);
     },
   });
-  if (shop.error || all.isError)
+  if (shop.error || (all.isError && !all.data))
     return <ShopError retry={() => Promise.all([shop.retry(), all.refetch()])} />;
   if (shop.pending || all.isPending) return <Loading />;
   return (
