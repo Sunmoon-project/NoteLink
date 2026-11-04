@@ -363,12 +363,12 @@ usage_state() {
 
 # ---------- 언제 리뷰할지 (자동은 첫 리뷰만 · 문서만 바뀌면 건너뜀 · 재리뷰는 요청) ----------
 
-@test "is_doc_path: 마크다운 · LICENSE · 루트 docs/의 그림 · PDF만 문서로 본다" {
-  for f in README.md apps/api/README.md guide.mdx NOTE.MD LICENSE LICENSE.txt .github/pull_request_template.md \
+@test "is_doc_path: 마크다운 · LICENSE · 루트 docs/의 그림 · PDF만 문서로 본다(리뷰 기준 문서는 뺌)" {
+  for f in apps/api/README.md apps/mobile/README.md docs/guide.md guide.mdx NOTE.MD LICENSE LICENSE.txt .github/pull_request_template.md \
       docs/a.png docs/sub/diagram.svg docs/spec.pdf; do
     is_doc_path "$f" || { echo "문서여야 함: $f"; return 1; }
   done
-  for f in AGENTS.md apps/ai/AGENTS.md CLAUDE.md scripts/codex-review.sh .github/workflows/ci.yml package.json \
+  for f in README.md AGENTS.md apps/ai/AGENTS.md CLAUDE.md scripts/codex-review.sh .github/workflows/ci.yml package.json \
       apps/ai/requirements.txt apps/api/src/docs/swagger.ts apps/mobile/docs/x.ts docs/build.ts docs/config.json \
       md docs mydocs/a.ts README.md.bak; do
     not is_doc_path "$f" || { echo "문서가 아니어야 함: $f"; return 1; }
@@ -376,7 +376,8 @@ usage_state() {
 }
 
 @test "docs_only: 모두 문서면 0, 하나라도 코드가 있거나 목록이 비었으면 1" {
-  docs_only <<< $'README.md\ndocs/guide.png'
+  docs_only <<< $'apps/api/README.md\ndocs/guide.png'
+  not docs_only <<< $'README.md\ndocs/guide.png'
   not docs_only <<< $'README.md\napps/api/src/main.ts'
   not docs_only <<< $'README.md\nAGENTS.md'
   not docs_only <<< ''
@@ -405,7 +406,7 @@ fake_gh_files() {
 
 @test "auto_skip_reason: 첫 리뷰 전이면 문서만 바뀐 PR은 건너뛰고, 코드가 있으면 리뷰한다" {
   PR=12; PREV_ID=""
-  fake_gh_files $'README.md\ndocs/plan.png\n'
+  fake_gh_files $'docs/guide.md\ndocs/plan.png\n'
   run auto_skip_reason
   [[ "$output" == "문서만 바뀐 PR이라 자동 리뷰를 건너뜁니다."* ]]
   grep -q 'gh api --paginate repos/team/repo/pulls/12/files?per_page=100 --jq' "$TMP/gh.calls"
@@ -464,12 +465,13 @@ workflow_accepts() {
   done
 }
 
-# 가짜 gh: 받은 인자를 적고, 권한 조회는 FAKE_PERM을 돌려줌(PERM_RC로 실패)
+# 가짜 gh: 받은 인자를 적고, 권한 조회는 FAKE_PERM(PERM_RC로 실패), 댓글 본문 조회는 FAKE_BODY(BODY_RC로 실패)를 돌려줌
 fake_gh_request() {
   gh() {
     echo "gh $*" >> "$TMP/gh.calls"
     case "$*" in
       *"/permission "*) [ "${PERM_RC:-0}" -eq 0 ] || return "$PERM_RC"; echo "${FAKE_PERM:-}" ;;
+      *"/issues/comments/"*"--jq .body"*) [ "${BODY_RC:-0}" -eq 0 ] || return "$BODY_RC"; printf '%s\n' "${FAKE_BODY:-}" ;;
     esac
   }
 }
@@ -496,43 +498,52 @@ fake_gh_request() {
   [[ "$output" == *"helper 님은 저장소 쓰기 권한이 없어"* ]]
 }
 
-@test "accept_request: 댓글 요청은 명령이 맞고 쓰기 권한이 있으면 받고 👀를 단다" {
-  PR=12; fake_gh_request
+@test "accept_request: 댓글 요청은 본문을 API로 읽어 명령이고 쓰기 권한이 있으면 받는다(반응은 여기서 달지 않음)" {
+  PR=12; fake_gh_request; FAKE_BODY=$'/codex review\n지난 지적을 반영했습니다.'
   for FAKE_PERM in admin maintain write; do
     : > "$TMP/gh.calls"
-    CODEX_REQUESTER=alice CODEX_REQUEST_COMMENT=987 CODEX_REQUEST_BODY='/codex review' run accept_request
+    CODEX_REQUESTER=alice CODEX_REQUEST_COMMENT=987 run accept_request
     [ "$status" -eq 0 ]
+    grep -qxF 'gh api repos/team/repo/issues/comments/987 --jq .body' "$TMP/gh.calls"
     grep -q 'gh api repos/team/repo/collaborators/alice/permission --jq .permission' "$TMP/gh.calls"
-    grep -qx 'gh api --method POST repos/team/repo/issues/comments/987/reactions -f content=eyes' "$TMP/gh.calls"
+    not grep -q reactions "$TMP/gh.calls"
   done
 }
 
-@test "accept_request: 명령이 아닌 댓글은 API를 부르지 않고 받지 않는다" {
+@test "accept_request: 명령이 아니거나 본문을 읽지 못한 댓글은 권한 API를 부르지 않고 받지 않는다" {
   PR=12; fake_gh_request; FAKE_PERM=admin
-  CODEX_REQUESTER=alice CODEX_REQUEST_COMMENT=987 CODEX_REQUEST_BODY='/codex reviewed — 반영했습니다' run accept_request
+  FAKE_BODY='/codex reviewed — 반영했습니다' CODEX_REQUESTER=alice CODEX_REQUEST_COMMENT=987 run accept_request
   [ "$status" -eq 1 ]
   [[ "$output" == *'댓글 첫 줄이 `/codex review`가 아니어서'* ]]
+  not grep -q permission "$TMP/gh.calls"
+  BODY_RC=1 FAKE_BODY='/codex review' CODEX_REQUESTER=alice CODEX_REQUEST_COMMENT=987 run accept_request
+  [ "$status" -eq 1 ]
+  not grep -q permission "$TMP/gh.calls"
+}
+
+@test "accept_request: 댓글 번호가 숫자가 아니면 API를 부르지 않고 받지 않는다" {
+  PR=12; fake_gh_request; FAKE_PERM=admin; FAKE_BODY='/codex review'
+  CODEX_REQUESTER=alice CODEX_REQUEST_COMMENT='1/../x' run accept_request
+  [ "$status" -eq 1 ]
   [ ! -e "$TMP/gh.calls" ]
 }
 
-@test "accept_request: 쓰기 권한이 없거나 확인하지 못하면 받지 않고 👀도 달지 않는다" {
-  PR=12; fake_gh_request
+@test "accept_request: 쓰기 권한이 없거나 확인하지 못하면 받지 않는다" {
+  PR=12; fake_gh_request; FAKE_BODY='/codex review'
   for FAKE_PERM in read triage none ""; do
-    : > "$TMP/gh.calls"
-    CODEX_REQUESTER=mallory CODEX_REQUEST_COMMENT=987 CODEX_REQUEST_BODY='/codex review' run accept_request
+    CODEX_REQUESTER=mallory CODEX_REQUEST_COMMENT=987 run accept_request
     [ "$status" -eq 1 ]
     [[ "$output" == "mallory 님은 저장소 쓰기 권한이 없어"* ]]
-    not grep -q reactions "$TMP/gh.calls"
   done
-  PERM_RC=1 CODEX_REQUESTER=mallory CODEX_REQUEST_COMMENT=987 CODEX_REQUEST_BODY='/codex review' run accept_request
+  PERM_RC=1 CODEX_REQUESTER=mallory CODEX_REQUEST_COMMENT=987 run accept_request
   [ "$status" -eq 1 ] && [[ "$output" == *"(확인 실패)"* ]]
+  not grep -q reactions "$TMP/gh.calls"
 }
 
 @test "accept_request: 요청한 사람이 없거나 이름이 이상하면 권한 API를 부르지 않고 받지 않는다" {
-  PR=12; fake_gh_request; FAKE_PERM=admin
-  CODEX_REQUESTER='a/../../x' CODEX_REQUEST_COMMENT=987 CODEX_REQUEST_BODY='/codex review' run accept_request
+  PR=12; fake_gh_request; FAKE_PERM=admin; FAKE_BODY='/codex review'
+  CODEX_REQUESTER='a/../../x' CODEX_REQUEST_COMMENT=987 run accept_request
   [ "$status" -eq 1 ]
-  [ ! -e "$TMP/gh.calls" ]
   CODEX_REQUESTER='dependabot[bot]' CODEX_REQUEST_LABEL=codex-review run accept_request
   [ "$status" -eq 1 ]
   not grep -q permission "$TMP/gh.calls"
@@ -543,9 +554,31 @@ fake_gh_request() {
 
 @test "accept_request: 직접 실행(요청 정보 없음)이면 아무것도 하지 않고 받는다" {
   PR=12; fake_gh_request
-  unset CODEX_REQUEST_LABEL CODEX_REQUESTER CODEX_REQUEST_COMMENT CODEX_REQUEST_BODY
+  unset CODEX_REQUEST_LABEL CODEX_REQUESTER CODEX_REQUEST_COMMENT
   run accept_request
   [ "$status" -eq 0 ] && [ ! -e "$TMP/gh.calls" ]
+}
+
+@test "react_request: 받은 댓글 요청에만 한 번 반응을 달고, dry-run이면 달지 않는다" {
+  PR=12; CODEX_REQUEST_COMMENT=987; DRY_RUN=false
+  gh() { echo "gh $*" >> "$TMP/gh.calls"; }
+  REQUEST_PENDING=false; react_request eyes
+  [ ! -e "$TMP/gh.calls" ]
+  REQUEST_PENDING=true; react_request eyes; react_request confused
+  [ "$(cat "$TMP/gh.calls")" = 'gh api --method POST repos/team/repo/issues/comments/987/reactions -f content=eyes' ]
+  [ "$REQUEST_PENDING" = false ]
+  : > "$TMP/gh.calls"
+  REQUEST_PENDING=true; DRY_RUN=true; react_request eyes
+  [ ! -s "$TMP/gh.calls" ]
+  REQUEST_PENDING=true; DRY_RUN=false; gh() { return 1; }; react_request eyes  # 실패해도 성공
+}
+
+@test "skip_review: 받은 댓글 요청을 건너뛰면 😕를 단다" {
+  PR=12; CODEX_REQUEST_COMMENT=987; DRY_RUN=false; REQUEST_PENDING=true
+  gh() { echo "gh $*" >> "$TMP/gh.calls"; }
+  run skip_review "마지막 Codex 리뷰(abc1234) 이후 새 커밋이 없습니다."
+  [ "$status" -eq 0 ]
+  grep -qxF 'gh api --method POST repos/team/repo/issues/comments/987/reactions -f content=confused' "$TMP/gh.calls"
 }
 
 @test "workflow_skip_reason: 포크 · 초안 · 다른 대상 브랜치 · Dependabot은 건너뛰고, 나머지는 리뷰한다" {
@@ -596,7 +629,7 @@ fake_gh_rerun() {
 
 @test "head_moved: 첫 리뷰 전이라도 문서만 바뀐 PR(자동 실행이 건너뜀)이면 다시 요청한다" {
   PR=12; TRIGGER=request; CODEX_TRIGGER=request; PREV_ID=""; DRY_RUN=false
-  fake_gh_rerun $'README.md\n'
+  fake_gh_rerun $'docs/guide.md\n'
   run head_moved
   [ "$status" -eq 0 ]
   grep -qxF 'gh workflow run codex-review.yml -R team/repo -f pr=12' "$TMP/gh.calls"
@@ -647,4 +680,25 @@ fake_gh_rerun() {
   local f="$BATS_TEST_DIRNAME/../codex-review.sh"
   [ "$(grep -c '\[ "\$result" -ne 2 \] || head_moved' "$f")" -eq 4 ]
   not grep -q '\[ "\$result" -ne 2 \] || exit 0' "$f"
+}
+
+@test "main: 건너뛸 실행(지난 CI 실패 안내 정리용)은 CI를 확인하지 못하거나 실패해도 새 안내 없이 건너뛴다" {
+  local f="$BATS_TEST_DIRNAME/../codex-review.sh"
+  [ "$(grep -c '^ *\[ -z "\$DEFER_SKIP" \] || skip_review' "$f")" -eq 4 ]
+  # CI 실패 분기에서는 실패 안내를 만들기 전에 건너뜀
+  fail_line=$(grep -n '^  if \[ "\$CI_RESULT" != "success" \]; then' "$f" | cut -d: -f1)
+  defer_line=$(grep -n 'skip_review "\$DEFER_SKIP (CI 결과: \$CI_RESULT' "$f" | cut -d: -f1)
+  body_line=$(grep -n '^    BODY_FILE="\$WORK/body.md"' "$f" | head -n 1 | cut -d: -f1)
+  [ -n "$fail_line" ] && [ -n "$defer_line" ] && [ -n "$body_line" ]
+  [ "$fail_line" -lt "$defer_line" ] && [ "$defer_line" -lt "$body_line" ]
+}
+
+@test "main: 받은 댓글 요청은 건너뛰지 않을 때(CI를 기다리기 전) 👀를 단다" {
+  local f="$BATS_TEST_DIRNAME/../codex-review.sh"
+  eyes_line=$(grep -n '^    react_request eyes' "$f" | cut -d: -f1)
+  skip_line=$(grep -n '^      skip_review "\$SKIP_REASON"' "$f" | cut -d: -f1)
+  wait_line=$(grep -n '^  if ! ci_wait' "$f" | cut -d: -f1)
+  [ -n "$eyes_line" ] && [ -n "$skip_line" ] && [ -n "$wait_line" ]
+  [ "$skip_line" -lt "$eyes_line" ] && [ "$eyes_line" -lt "$wait_line" ]
+  grep -q '^    \[\[ ! "\${CODEX_REQUEST_COMMENT:-}" =~ ^\[0-9\]+\$ \]\] || REQUEST_PENDING=true' "$f"
 }
