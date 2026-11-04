@@ -64,11 +64,7 @@ export function PhotoScreen() {
   };
   return (
     <Screen>
-      <Header
-        title="프로필"
-        sub="프로필을 만들어 보세요"
-        right={<Avatar name="형" size={28} tone="mint" />}
-      />
+      <Header title="프로필" sub="프로필을 만들어 보세요" />
       <View className="aspect-square items-center justify-center rounded-2xl bg-night">
         <Text className="absolute top-3 text-caption text-white/50">1/2</Text>
         <Camera size={40} color="rgba(255,255,255,.5)" />
@@ -307,17 +303,14 @@ export function AvatarStyleScreen() {
   return (
     <Screen
       footer={
-        <>
-          <Btn
-            kind="cream"
-            onPress={() =>
-              router.push({ pathname: '/(tabs)/profile/avatar-custom', params: { style: pick } })
-            }
-          >
-            다음
-          </Btn>
-          <Text className="mt-2 text-caption2 text-sub">오늘 남은 생성 횟수 2회</Text>
-        </>
+        <Btn
+          kind="cream"
+          onPress={() =>
+            router.push({ pathname: '/(tabs)/profile/avatar-custom', params: { style: pick } })
+          }
+        >
+          다음
+        </Btn>
       }
     >
       <Header
