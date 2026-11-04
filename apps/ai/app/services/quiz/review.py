@@ -149,6 +149,9 @@ def parse_srs(raw: object, where: str) -> srs.Srs | None:
         raise InputError(where)
     for key in ("step", "streak", "reviews"):
         need(raw, key, int, where)
+    for key in ("flawTries", "voidedReviews"):  # 오늘의 복습이 셈에 씀: 있으면 정수
+        if key in raw:
+            need(raw, key, int, where)
     # srs.moved가 dueAt을 dueBefore로 옮김. state가 없던 예전 기록은 복습 중으로
     s = {"dueAt": None, "lastResult": None, "state": "active", **raw}
     for key in ("dueAt", "dueBefore"):

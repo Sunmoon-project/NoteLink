@@ -511,6 +511,51 @@ def test_question_answered_right_is_replaced_on_the_same_word() -> None:
     assert "정답은 원래 정답과 같은 'fastened'" in llm.named("Review")[0].user
 
 
+def test_two_new_questions_made_in_one_run_do_not_overlap() -> None:
+    # q1을 바꾼 새 문제(FASTENED)와 거의 같은 q3의 초안은 버림:
+    # 같은 실행에서 만든 새 문제와도 겹침 검사
+    inp = flawed_input(unchecked())
+    q3 = q(
+        "q3",
+        "request",
+        "request의 뜻",
+        unchecked(),
+        type="빈칸",
+        passage="He made a ____ for help.",
+        choices=["request", "inform", "order", "stack", "fasten"],
+    )
+    inp["sets"].append({"id": "s3", "materialId": "m1", "questions": [q3]})
+    same = {
+        "question": {
+            **FASTENED["question"],
+            "options": ["request", "extend", "display", "stack", "fasten"],
+            "answer": "request",
+        }
+    }
+    check_b = {**CHECK_A, "answer": "B"}  # 세트의 두 번째 문제
+    natural_ = SECURED + CLEAN + natural(True, False, False, False) + CLEAN
+    review = [FASTENED, same, {}, {}]  # q3의 2 · 3번째 시도는 모양이 틀려 못 만듦
+    llm = FakeLlm({"Natural": natural_, "Review": review, "Check": [CHECK_A, check_b]})
+    result = run(llm, inp)
+    assert [x["answer"] for x in result["questions"]] == ["fastened"]
+    assert [(d["questionId"], d["replacedBy"] is None) for d in result["dropped"]] == [
+        ("q1", False),
+        ("q3", True),
+    ]
+
+
+def test_sentence_answer_does_not_avoid_note_group_words() -> None:
+    # 짧은 답만 노트 묶음의 유의어를 오답 보기에서 피함(review._similar_for와 같음)
+    answer = "요청 동사 뒤에는 동사원형을 쓴다"
+    notes = {"m1": [{"pageNo": 1, "ocrText": f"{answer}: insist, demand"}]}
+    one = q("q1", answer, "요청", st(TOMORROW))
+    inp = today.parse(job({"id": "s1", "materialId": "m1", "questions": [one]}, notes=notes))
+    llm = FakeLlm({"Review": [{}, {}, {}]})
+    s = inp.sets[0]
+    assert today.replace_flawed(llm, [], s, s.questions[0], [], inp.notes, 0) == (None, False)
+    assert "오답 보기로" not in llm.named("Review")[0].user
+
+
 def test_new_question_counts_its_own_flaw_tries() -> None:
     llm = FakeLlm({"Natural": SECURED + CLEAN, "Review": [FASTENED], "Check": [CHECK_A]})
     [new] = run(llm, flawed_input(unchecked(flawTries=1)))["questions"]
@@ -635,6 +680,10 @@ def broken(change: str) -> JsonObject:
         del inp["sets"][0]["id"]
     elif change == "notes":
         inp["notes"] = []
+    elif change == "null flawTries":
+        inp["sets"][0]["questions"][0]["srs"]["flawTries"] = None
+    elif change == "text voidedReviews":
+        inp["sets"][0]["questions"][0]["srs"]["voidedReviews"] = "1"
     return inp
 
 
@@ -650,6 +699,8 @@ def broken(change: str) -> JsonObject:
         "finishedAt",
         "set id",
         "notes",
+        "null flawTries",
+        "text voidedReviews",
     ],
 )
 def test_bad_input_fails_at_once(change: str) -> None:

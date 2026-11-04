@@ -64,7 +64,7 @@ from typing import cast
 
 from app.clients.llm import JsonObject, Llm
 from app.services.quiz import quality, similar, srs
-from app.services.quiz.checks import Target, seen_question
+from app.services.quiz.checks import Seen, Target, seen_question
 from app.services.quiz.models import Draft, Notes, Question
 from app.services.quiz.review import (
     REVIEW_SET_SIZE,
@@ -82,7 +82,7 @@ from app.services.quiz.review import (
     seoul_midnight,
     utc_date,
 )
-from app.services.quiz.text import locate, same_word
+from app.services.quiz.text import locate, same_word, short_answer
 
 TYPE = "today_review"
 FLAW_TRIES = 3  # 결함 문제를 새 문제로 바꾸려 해 볼 날 수. 그래도 못 만들면 복습에서 뺌
@@ -316,7 +316,7 @@ def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], void_count: int) -
 
 def replace_flawed(
     llm: Llm,
-    sets: list[QuizSet],
+    seen: list[Seen],
     s: QuizSet,
     q: Question,
     hits: list[str],
@@ -327,10 +327,11 @@ def replace_flawed(
 
     시도마다 생성 · 검사 호출이 실패했으면(장애) 두 번째 값이 True: 장애를 '못 만듦'으로 세면
     flawTries가 늘어 3일 뒤 복습에서 빠지므로 부른 쪽이 따로 처리합니다(로컬에는 없는 처리).
+    seen은 run이 한 번 만든 목록: 통과한 새 문제가 더해져 같은 실행의 다음 결함 문제와도 겹침을
+    봅니다(review.run과 같음).
     """
     page, text = _page(q, notes, s)
     st = cast(srs.Srs, q["srs"])
-    seen = [seen_question(x) for y in sets for x in y.questions]
     # 지난번 맞혔어도 원래 정답을 다시 물음: 새 문제가 이 낱말의 복습을 이어 가고(carry), 3단계는
     # 새 정답으로 같은 낱말을 넘겨줌
     t = Target(
@@ -339,7 +340,9 @@ def replace_flawed(
         concept_of(q),
         keep_answer=True,
     )
-    avoid = list(dict.fromkeys(hits + quality.group_words(q["answer"], text)))
+    # 노트 묶음의 유의어는 짧은 답일 때만 피함(review._similar_for와 같음)
+    group = quality.group_words(q["answer"], text) if short_answer(q["answer"]) else []
+    avoid = list(dict.fromkeys(hits + group))
     m = similar.make_similar(llm, q, t, page, text, slot, seen, avoid)
     if m.question is None:
         return None, m.llm_down
@@ -391,6 +394,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     voids: list[JsonObject] = []
     made: set[str] = set()
     has_notes = any(notes.values())
+    seen = [seen_question(x) for y in sets for x in y.questions]  # 새 문제의 겹침 검사
     shown = 15
     for n, (s, q) in enumerate(due, 1):
         if (value := 15 + 70 * n // len(due)) != shown:  # 진행률은 바뀔 때만 씀(ai_jobs 쓰기)
@@ -435,7 +439,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
                 voids += voided
                 q["srs"] = st
                 if st["state"] == "active":  # 무효 오답을 빼니 다 익혔으면 바꿀 필요 없음
-                    new, down = replace_flawed(llm, sets, s, q, hits, notes, len(picked))
+                    new, down = replace_flawed(llm, seen, s, q, hits, notes, len(picked))
             tries = st.get("flawTries", 0) + 1
             if why and st["state"] != "active":
                 st = {**st, "flaw": "; ".join(why)}
