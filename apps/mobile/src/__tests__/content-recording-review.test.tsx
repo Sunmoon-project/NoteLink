@@ -145,3 +145,13 @@ describe('PR36 실제 녹음 수명주기', () => {
     expect(mockToast).toHaveBeenCalled();
   });
 });
+
+it('녹음 화면을 닫으려면 확인을 거치고, 계속 녹음을 고르면 머문다', async () => {
+  await renderScreen(<RecLiveScreen />);
+  await fireEvent.press(await screen.findByLabelText('닫기'));
+  await fireEvent.press(await screen.findByText('계속 녹음'));
+  expect(router.back).not.toHaveBeenCalled();
+  await fireEvent.press(await screen.findByLabelText('닫기'));
+  await fireEvent.press(await screen.findByText('그만두기'));
+  expect(router.back).toHaveBeenCalledTimes(1);
+});

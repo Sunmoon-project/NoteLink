@@ -267,7 +267,6 @@ export function EditScreen() {
   const qc = useQueryClient();
   const [sections, setSections] = useState<{ heading: string; body: string }[]>([]);
   const [editing, setEditing] = useState(false);
-  const [tags, setTags] = useState(['수학']);
   // 자료를 처음 불러왔을 때만 편집할 본문을 채운다 — 재조회가 고치던 글을 덮어쓰지 않게 (렌더 중 상태 조정)
   const [loaded, setLoaded] = useState<string>();
   if (m && m._id !== loaded) {
@@ -372,19 +371,6 @@ export function EditScreen() {
       >
         <Text className="text-caption text-brand">+ 섹션 추가</Text>
       </Pressable>
-      <Label>과목</Label>
-      <View className="flex-row items-center gap-2">
-        {tags.map((t) => (
-          <Badge key={t}>{t}</Badge>
-        ))}
-        <Pressable
-          accessibilityLabel="과목 추가"
-          onPress={() => setTags((t) => (t.includes('과학') ? t : [...t, '과학']))}
-          className="h-6 w-6 items-center justify-center rounded-full border border-brand/40"
-        >
-          <Text className="text-brand">+</Text>
-        </Pressable>
-      </View>
       {editing && (
         <View className="mt-4">
           <Toolbar />
@@ -659,9 +645,6 @@ export function SharedScreen() {
     <Screen
       footer={
         <>
-          <Pressable onPress={() => toast('공유 내역: 오늘 3건')} className="mb-2">
-            <Text className="text-center text-caption text-sub underline">공유 내역 보기</Text>
-          </Pressable>
           <Btn onPress={() => router.back()}>확인</Btn>
         </>
       }

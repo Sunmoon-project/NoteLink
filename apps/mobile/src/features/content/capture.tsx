@@ -503,8 +503,6 @@ export function PickedScreen() {
 /** p.63 #14 녹음 파일 선택 */
 export function RecUploadScreen() {
   const { files, set } = useDraft();
-  const [av, setAv] = useState('🐻');
-  const [cat, setCat] = useState('화학');
   const file = files[0];
   const pick = async () => {
     const r = await DocumentPicker.getDocumentAsync({
@@ -525,7 +523,6 @@ export function RecUploadScreen() {
         <Btn
           disabled={!file}
           onPress={() => {
-            set({ avatar: av });
             router.replace('/convert');
           }}
         >
@@ -548,29 +545,6 @@ export function RecUploadScreen() {
           {file?.size ? `${(file.size / 1024 / 1024).toFixed(1)}MB` : 'mp3 · m4a · wav'}
         </Text>
       </Pressable>
-      <Label>내 아바타 선택</Label>
-      <View className="flex-row gap-3">
-        {['🐻', '🐱', '🐰', '🎓'].map((a) => (
-          <Pressable
-            key={a}
-            onPress={() => setAv(a)}
-            className={cx(
-              'h-12 w-12 items-center justify-center rounded-full bg-cream',
-              av === a && 'border-2 border-brand',
-            )}
-          >
-            <Text className="text-title2">{a}</Text>
-          </Pressable>
-        ))}
-      </View>
-      <Label>카테고리</Label>
-      <View className="flex-row gap-2">
-        {['수학', '화학', '영어', '+'].map((c) => (
-          <Chip key={c} small on={cat === c} onPress={() => setCat(c)}>
-            {c}
-          </Chip>
-        ))}
-      </View>
     </Screen>
   );
 }
@@ -592,6 +566,7 @@ export function RecLiveScreen() {
   const alive = useRef(true);
   const ready = useRef(false);
   const finishing = useRef(false);
+  const [confirmClose, setConfirmClose] = useState(false);
   useEffect(() => {
     alive.current = true;
     (async () => {
@@ -674,9 +649,18 @@ export function RecLiveScreen() {
       style={{ paddingTop: insets.top + 8, paddingBottom: insets.bottom + 24 }}
     >
       {keepAwake && <RecordingAwake />}
-      <Pressable accessibilityLabel="닫기" onPress={() => router.back()} hitSlop={10}>
+      <Pressable accessibilityLabel="닫기" onPress={() => setConfirmClose(true)} hitSlop={10}>
         <X size={ICON.lg} color="#fff" />
       </Pressable>
+      <Alert
+        open={confirmClose}
+        title="녹음을 그만둘까요?"
+        body="지금까지 녹음한 내용은 저장되지 않아요."
+        secondary="계속 녹음"
+        onSecondary={() => setConfirmClose(false)}
+        primary="그만두기"
+        onPrimary={() => router.back()}
+      />
       <View className="mt-24 self-center rounded-full border border-white/50 px-5 py-1">
         <Text className="tabular-nums text-title1 text-white">{t}</Text>
       </View>

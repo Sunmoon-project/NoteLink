@@ -30,6 +30,7 @@ import { api } from '@/lib/api';
 import { toast } from '@/stores/toast';
 import { useDraft } from '@/stores/draft';
 import {
+  Alert,
   Btn,
   Card,
   Chip,
@@ -257,6 +258,7 @@ export function FolderScreen() {
   const [filter, setFilter] = useState('전체');
   const [dial, setDial] = useState(false);
   const [sheet, setSheet] = useState<null | 'hand' | 'rec' | 'doc' | 'more'>(upload ?? null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const draft = useDraft();
   const del = useMutation({
     mutationFn: () => api.content.deleteFolder(id),
@@ -487,13 +489,25 @@ export function FolderScreen() {
             danger
             onPress={() => {
               setSheet(null);
-              del.mutate();
+              setConfirmDelete(true);
             }}
           >
             폴더 삭제
           </Row>
         </Group>
       </Sheet>
+      <Alert
+        open={confirmDelete}
+        title="폴더를 삭제할까요?"
+        body={`${folder?.title ?? '이 폴더'}를 삭제하면 복구할 수 없어요.`}
+        secondary="취소"
+        onSecondary={() => setConfirmDelete(false)}
+        primary="삭제"
+        onPrimary={() => {
+          setConfirmDelete(false);
+          del.mutate();
+        }}
+      />
     </View>
   );
 }

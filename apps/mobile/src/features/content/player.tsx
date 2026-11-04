@@ -13,6 +13,7 @@ import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import { Bookmark, Pause, Play, Repeat, Sparkles } from 'lucide-react-native';
 import { api } from '@/lib/api';
+import { env } from '@/lib/env';
 import { toast } from '@/stores/toast';
 import { Btn, Chip, Loading, Sheet, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
@@ -28,9 +29,15 @@ const SPEEDS = [1, 1.25, 1.5, 2];
 function usePlayback(url: string | undefined, duration: number) {
   const player = useAudioPlayer(url ? { uri: url } : null);
   const status = useAudioPlayerStatus(player);
-  const [sim, setSim] = useState({ pos: 134, playing: true, rate: 1, loop: false });
+  // 시뮬레이션은 목업 전용이다. 실서버에서 주소가 없으면 재생 중인 척하지 않는다
+  const [sim, setSim] = useState({
+    pos: env.useMock ? 134 : 0,
+    playing: env.useMock,
+    rate: 1,
+    loop: false,
+  });
   useEffect(() => {
-    if (url || !sim.playing) return;
+    if (url || !sim.playing || !env.useMock) return;
     const id = setInterval(
       () =>
         setSim((s) => {
@@ -61,7 +68,10 @@ function usePlayback(url: string | undefined, duration: number) {
   }
   return {
     ...sim,
-    toggle: () => setSim((s) => ({ ...s, playing: !s.playing })),
+    toggle: () =>
+      env.useMock
+        ? setSim((s) => ({ ...s, playing: !s.playing }))
+        : toast('재생할 오디오가 아직 없어요'),
     seek: (p: number) => setSim((s) => ({ ...s, pos: Math.max(0, Math.min(duration, p)) })),
     setRate: (rate: number) => setSim((s) => ({ ...s, rate })),
     setLoop: (loop: boolean) => setSim((s) => ({ ...s, loop })),
@@ -111,7 +121,8 @@ export function Player({
     queryKey: ['material', materialId],
     queryFn: () => api.content.material(materialId),
   });
-  const duration = rec.data?.durationSec ?? 340;
+  const duration = rec.data?.durationSec || 0;
+  const percent = (sec: number) => `${duration ? (sec / duration) * 100 : 0}%` as const;
   const p = usePlayback(rec.data?.audioUrl || undefined, duration);
   const [view, setView] = useState(initialView);
   const [sheet, setSheet] = useState(openBookmarks);
@@ -236,21 +247,18 @@ export function Player({
           onPress={(e) => p.seek((e.nativeEvent.locationX / barW) * duration)}
         >
           <View className="h-1 rounded-full bg-white/20">
-            <View
-              className="h-1 rounded-full bg-white"
-              style={{ width: `${(p.pos / duration) * 100}%` }}
-            />
+            <View className="h-1 rounded-full bg-white" style={{ width: percent(p.pos) }} />
           </View>
           {marks.map((m) => (
             <View
               key={m}
               className="absolute top-2 h-1.5 w-1.5 rounded-full bg-sun"
-              style={{ left: `${(m / duration) * 100}%` }}
+              style={{ left: percent(m) }}
             />
           ))}
           <View
             className="absolute h-4 w-4 rounded-full bg-white"
-            style={{ left: `${(p.pos / duration) * 100}%`, marginLeft: -4 }}
+            style={{ left: percent(p.pos), marginLeft: -4 }}
           />
         </Pressable>
         <View className="flex-row items-center justify-between px-1">
