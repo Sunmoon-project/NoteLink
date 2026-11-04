@@ -382,7 +382,7 @@ export function TimetableScreen() {
       <Screen>
         <Header
           title="내 시간표"
-          sub={`2026-2학기 · 총 ${classes.reduce((a, c) => a + c.days.length, 0)}개 수업`}
+          sub={`총 ${classes.reduce((a, c) => a + c.days.length, 0)}개 수업`}
           right={
             <Pressable
               onPress={() => setSheet('share')}
@@ -479,16 +479,16 @@ export function TimetableScreen() {
 
 function AddClassSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const qc = useQueryClient();
-  const [name, setName] = useState('수학 II');
-  const [days, setDays] = useState([2, 4]);
-  const [start, setStart] = useState('10:00');
-  const [end, setEnd] = useState('11:30');
-  const [place, setPlace] = useState('3-2 교실');
+  const [name, setName] = useState('');
+  const [days, setDays] = useState<number[]>([]);
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
+  const [place, setPlace] = useState('');
   const [color, setColor] = useState<string>(COLORS[1]);
   const add = useMutation({
     mutationFn: () =>
       api.timetable.addClass({
-        subjectName: name,
+        subjectName: name.trim(),
         days,
         startTime: start,
         endTime: end,
@@ -498,7 +498,12 @@ function AddClassSheet({ open, onClose }: { open: boolean; onClose: () => void }
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['timetable'] });
       onClose();
-      toast(`${name} 수업을 추가했어요`);
+      toast(`${name.trim()} 수업을 추가했어요`);
+      setName('');
+      setDays([]);
+      setStart('');
+      setEnd('');
+      setPlace('');
     },
   });
   const valid =
@@ -511,7 +516,7 @@ function AddClassSheet({ open, onClose }: { open: boolean; onClose: () => void }
     <Sheet open={open} onClose={onClose}>
       <Text className="text-headline font-bold text-ink">수업 추가</Text>
       <Label>과목명</Label>
-      <Input value={name} onChangeText={setName} />
+      <Input value={name} onChangeText={setName} placeholder="예) 수학" />
       <Label>요일</Label>
       <View className="flex-row gap-2">
         {WEEK.map((d, i) => {
@@ -538,6 +543,7 @@ function AddClassSheet({ open, onClose }: { open: boolean; onClose: () => void }
           className="flex-1"
           value={start}
           onChangeText={setStart}
+          placeholder="10:00"
           keyboardType="numbers-and-punctuation"
           maxLength={5}
         />
@@ -546,12 +552,13 @@ function AddClassSheet({ open, onClose }: { open: boolean; onClose: () => void }
           className="flex-1"
           value={end}
           onChangeText={setEnd}
+          placeholder="11:30"
           keyboardType="numbers-and-punctuation"
           maxLength={5}
         />
       </View>
       <Label>장소 (선택)</Label>
-      <Input value={place} onChangeText={setPlace} />
+      <Input value={place} onChangeText={setPlace} placeholder="예) 3-2 교실" />
       <Label>색상</Label>
       <View className="flex-row gap-3">
         {COLORS.map((c) => (

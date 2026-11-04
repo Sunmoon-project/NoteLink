@@ -181,10 +181,22 @@ export function RecordScreen() {
         {mode === '월간' ? (
           <>
             <Text className="text-caption text-sub">이번주 순공시간</Text>
-            <Text className="text-title2 font-bold text-ink">{hm(weekly.data?.totalSec ?? 0)}</Text>
-            <Text className="text-caption text-sub">
-              {diffLabel(weekly.data?.diffFromLastWeekSec ?? 0)}
+            <Text className="text-title2 font-bold text-ink">
+              {weekly.data ? hm(weekly.data.totalSec) : '-'}
             </Text>
+            {weekly.data && (
+              <Text className="text-caption text-sub">
+                {diffLabel(weekly.data.diffFromLastWeekSec)}
+              </Text>
+            )}
+            {weekly.isError && !weekly.data && (
+              <View className="mt-2 gap-2">
+                <Text className="text-caption text-sub">이번주 기록을 불러오지 못했어요</Text>
+                <Btn small onPress={() => void weekly.refetch()}>
+                  이번주 기록 다시 시도
+                </Btn>
+              </View>
+            )}
             <Label
               right={
                 <Pressable onPress={() => router.push('/dday')}>
@@ -294,12 +306,14 @@ export function RecordScreen() {
             </Label>
             <View className="flex-row flex-wrap justify-between gap-y-2">
               {[
-                ['총 순공시간', `${Math.round((stats.data?.totalSec ?? 0) / 3600)}시간`],
-                ['공부한 날', `${stats.data?.studyDays ?? 0}일`],
-                ['최장 연속', `${stats.data?.longestStreak ?? 0}일`],
+                ['총 순공시간', stats.data ? `${Math.round(stats.data.totalSec / 3600)}시간` : '-'],
+                ['공부한 날', stats.data ? `${stats.data.studyDays}일` : '-'],
+                ['최장 연속', stats.data ? `${stats.data.longestStreak}일` : '-'],
                 [
                   '주로 공부한 시간',
-                  `${(stats.data?.peakHour ?? 21) < 12 ? '오전' : '오후'} ${(stats.data?.peakHour ?? 21) % 12 || 12}시`,
+                  stats.data?.peakHour == null
+                    ? '-'
+                    : `${stats.data.peakHour < 12 ? '오전' : '오후'} ${stats.data.peakHour % 12 || 12}시`,
                 ],
               ].map(([k, v]) => (
                 <Card key={k} className="w-[48.5%] px-3 py-2.5">
@@ -308,6 +322,14 @@ export function RecordScreen() {
                 </Card>
               ))}
             </View>
+            {stats.isError && !stats.data && (
+              <View className="mt-2 gap-2">
+                <Text className="text-caption text-sub">누적 기록을 불러오지 못했어요</Text>
+                <Btn small onPress={() => void stats.refetch()}>
+                  누적 기록 다시 시도
+                </Btn>
+              </View>
+            )}
             <View className="mt-3 flex-row flex-wrap gap-[3px] rounded-2xl border border-line p-3">
               {(stats.data?.heatmap ?? []).map((h) => (
                 <View

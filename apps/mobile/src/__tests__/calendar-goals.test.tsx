@@ -71,8 +71,10 @@ describe('시간표 시간 검증', () => {
     const add = jest.spyOn(api.timetable, 'addClass');
     await renderScreen(<TimetableScreen />);
     await fireEvent.press(await screen.findByText('+ 수업 추가'));
-    await fireEvent.changeText(screen.getByDisplayValue('10:00'), '25:70');
-    await fireEvent.changeText(screen.getByDisplayValue('11:30'), '99:99');
+    await fireEvent.changeText(screen.getByPlaceholderText('예) 수학'), '수학');
+    await fireEvent.press(screen.getAllByText('월').at(-1)!);
+    await fireEvent.changeText(screen.getByPlaceholderText('10:00'), '25:70');
+    await fireEvent.changeText(screen.getByPlaceholderText('11:30'), '99:99');
     await fireEvent.press(screen.getByText('추가하기'));
     await act(async () => {});
     expect(add).not.toHaveBeenCalled();

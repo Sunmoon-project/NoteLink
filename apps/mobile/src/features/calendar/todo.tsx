@@ -116,7 +116,7 @@ export function AddTodoSheet({
   const [dueTime, setDueTime] = useState('');
   const validTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(dueTime);
   const [slot, setSlot] = useState<Todo['timeSlot']>('none');
-  const [subj, setSubj] = useState<string | null>('영어');
+  const [subj, setSubj] = useState<string | null>(null);
   const add = useMutation({
     mutationFn: () =>
       api.calendar.addTodo({
