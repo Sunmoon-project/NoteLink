@@ -11,8 +11,10 @@
 // - 기준 값은 scripts/codex-usage-lib.sh와 같습니다: 🟢 남은 양 20% 이상 · 🟡 20% 미만 · ⏸️ 10% 이하이거나 한도.
 //   표시만 합니다. 리뷰를 멈출지는 codex-review.sh가 마지막 리뷰의 기록으로 따로 정하므로 서로 다를 수 있습니다.
 // - 읽지 못하면 마지막으로 읽은 값을 그대로 두고 ⚠️ 확인 실패와 시각을 적습니다(경고만 남기고 0으로 끝남).
+//   꼬리말에는 마지막으로 읽은 시각을 두고, 마지막 값이 🟡 · ⏸️였으면 그 색을 유지합니다.
 //   디스코드에 올리지 못하면 1로 끝납니다(Actions에 실패로 보임).
 // - 사용률 · 창 길이 · 초기화 시각 · 플랜 이름만 다룹니다. 계정 · 크레딧은 로그 · 메시지 · 상태 파일에 넣지 않습니다.
+//   app-server · 서버의 오류 원문에도 계정 정보가 섞일 수 있어, 오류는 정해진 문구와 코드만 적습니다.
 //
 // 환경 변수
 //   DISCORD_WEBHOOK            디스코드 웹후크 주소 (--dry-run이 아니면 필수)
@@ -85,6 +87,11 @@ function killTree(child) {
   } catch { /* 이미 끝남 */ }
 }
 
+// JSON-RPC 오류 → "코드 N" (원문 message는 공개 로그 · 메시지에 넣지 않음)
+function errCode(e) {
+  return e && Number.isInteger(e.code) ? `코드 ${e.code}` : '알 수 없음';
+}
+
 // `codex app-server`에 account/rateLimits/read를 보내 rateLimits를 받음 (실패하면 Error)
 function readRateLimits() {
   return new Promise((resolve, reject) => {
@@ -113,7 +120,7 @@ function readRateLimits() {
     };
     const timer = setTimeout(() => finish(new Error('응답 없음(시간 초과)')), READ_TIMEOUT_MS);
     const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
-    child.on('error', (e) => finish(new Error(`codex를 실행하지 못함: ${e.message}`)));
+    child.on('error', (e) => finish(new Error(`codex를 실행하지 못함(${typeof e.code === 'string' ? e.code : '알 수 없음'})`)));
     child.on('exit', () => { exited = true; });
     // close는 stdout을 다 읽은 뒤에 옴(exit는 남은 출력보다 먼저 올 수 있음)
     child.on('close', (code) => finish(new Error(`codex app-server가 끝남(코드 ${code})`)));
@@ -128,12 +135,12 @@ function readRateLimits() {
         let m;
         try { m = JSON.parse(line); } catch { continue; }
         if (m.id === 1) {
-          if (m.error) return finish(new Error(`initialize 실패: ${m.error.message || '알 수 없음'}`));
+          if (m.error) return finish(new Error(`initialize 실패(${errCode(m.error)})`));
           send({ method: 'initialized' });
           send({ id: 2, method: 'account/rateLimits/read', params: null });
         } else if (m.id === 2) {
           if (m.error || !m.result || !m.result.rateLimits) {
-            return finish(new Error(`사용량 읽기 실패: ${(m.error && m.error.message) || '결과 없음'}`));
+            return finish(new Error(`사용량 읽기 실패(${m.error ? errCode(m.error) : '결과 없음'})`));
           }
           return finish(null, m.result.rateLimits);
         }
@@ -204,12 +211,15 @@ function compose(snap, nowSec, failure) {
       lines.push('', `🟡 남은 양이 ${WARN_LEFT}% 미만입니다.`);
     }
   }
-  lines.push('', `${snap && snap.plan ? `플랜 ${snap.plan} · ` : ''}${kst(snap && !failure ? snap.at : nowSec)} 확인`
+  // 읽지 못했으면 꼬리말에 지금 시각 대신 마지막으로 읽은 시각을 둠(오래된 값이 방금 읽은 값처럼 보이지 않게)
+  const when = !failure ? `${kst(snap.at)} 확인` : snap ? `${kst(snap.at)}에 마지막으로 읽음` : '읽은 값 없음';
+  lines.push('', `${snap && snap.plan ? `플랜 ${snap.plan} · ` : ''}${when}`
     + ` (${EVERY_MIN}분마다 · Codex 리뷰가 끝날 때마다 고침)`);
   return {
     title: '📊 Codex 남은 사용량 (리뷰 컴퓨터)',
     description: lines.join('\n'),
-    color: failure ? COLOR.error : COLOR[worst],
+    // 읽지 못했어도 마지막 값이 🟡 · ⏸️였으면 그 색을 유지(회색으로 바꾸면 멈춤 기준에 걸린 것이 가려짐)
+    color: failure && worst === 'ok' ? COLOR.error : COLOR[worst],
   };
 }
 
