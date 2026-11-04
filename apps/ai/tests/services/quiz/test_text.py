@@ -7,6 +7,7 @@ from app.services.quiz.text import (
     norm,
     place,
     same_item,
+    same_word,
     short_answer,
     terms,
     tidy,
@@ -181,3 +182,33 @@ def test_place_moves_answer_to_slot_position() -> None:
     assert place(opts, 0, 2) == (["b", "c", "정답", "d", "e"], 2)
     assert place(opts, 0, 7) == (["b", "c", "정답", "d", "e"], 2)  # 5로 나눈 나머지
     assert place(["b", "정답", "c", "d", "e"], 1, 0) == (["정답", "b", "c", "d", "e"], 0)
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("1.5 mL", "1.5mL", True),  # 띄어쓰기만 다름
+        ("대립 유전자", "대립유전자", True),
+        ("-", "-", True),  # norm이 비는 답도 자기 자신과는 같음
+        ("", "", False),  # 빈 답끼리는 묶지 않음
+        (" ", "", False),
+        ("1.5 mL", "15 mL", False),
+        ("1/2", "1-2", False),
+        ("Type I hypersensitivity", "Type II hypersensitivity", False),
+        ("CO", "Co", False),  # 대소문자 · 부호도 다른 답(일산화탄소 ~ 코발트)
+        ("Cl-", "Cl", False),
+        ("alpha", "Alpha", False),
+        ("IL-6", "IL6", False),
+        ("port", "report", False),  # same_item은 같게 봄(안에 들어 있음)
+        ("act", "active", False),
+        ("custom", "customs", False),
+        ("affect", "effect", False),  # same_item은 같게 봄(75% 유사)
+        ("principal", "principle", False),
+        ("Plasmodium vivax", "Plasmodium ovale", False),
+        ("전립선암", "전립선염", False),
+        ("세포", "세포막", False),
+        ("fasten", "fastened", False),  # 굴절형도 다른 답으로 봄: 한 세트에 함께 나올 뿐
+    ],
+)
+def test_same_word_is_narrower_than_same_item(a: str, b: str, same: bool) -> None:
+    assert same_word(a, b) is same and same_word(b, a) is same
