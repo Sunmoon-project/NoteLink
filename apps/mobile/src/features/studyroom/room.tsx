@@ -641,6 +641,12 @@ export function RoomScreen() {
         })}
       </View>
 
+      {chat && chatId.isError && !chatId.data && (
+        <LoadError message="채팅방을 불러오지 못했어요" retry={chatId.refetch} />
+      )}
+      {chat && history.isError && !history.data && (
+        <LoadError message="대화 기록을 불러오지 못했어요" retry={history.refetch} />
+      )}
       {chat ? (
         <FlatList
           ref={list}

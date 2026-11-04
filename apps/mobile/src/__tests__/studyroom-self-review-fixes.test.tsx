@@ -138,3 +138,11 @@ it('타이머의 반복 횟수는 저장된 규칙 값을 표시한다', async (
   await renderScreen(<TimerScreen />, client());
   expect(await screen.findByText('7회 반복')).toBeTruthy();
 });
+
+it('대화 기록을 못 읽으면 빈 대화로 두지 않고 다시 시도하게 한다', async () => {
+  mockApi.social.messages.mockRejectedValue(new Error('실패'));
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText('방');
+  await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+  expect(await screen.findByText('대화 기록을 불러오지 못했어요')).toBeTruthy();
+});
