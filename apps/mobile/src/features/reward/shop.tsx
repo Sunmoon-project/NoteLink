@@ -203,6 +203,8 @@ export function ShopScreen() {
     tab === '찜' ? (items.data ?? []).filter((i) => wished.has(i._id)) : (items.data ?? []);
   const tryBuy = (it: ShopItem) => {
     if (buying.current || owned.has(it._id) || purchased.current.has(it._id)) return;
+    // 잔액과 보유 내역을 읽기 전에는 포인트가 0인 것처럼 판단하지 않는다
+    if (shop.pending) return setMsg('보유 포인트를 확인하고 있어요. 잠시 후 다시 눌러 주세요');
     setDetail(null);
     if (uncertainId) {
       setFail(true);
@@ -548,6 +550,7 @@ export function BoxScreen() {
     (i) => tab === '전체' || (tab === '아바타' ? i.category === 'avatar' : i.category === 'theme'),
   );
   const cur = [BASE_AVATAR, ...(all.data ?? [])].find((i) => i._id === equipped) ?? BASE_AVATAR;
+  const isEquipped = (it: ShopItem) => equippedIds.has(it._id) || it._id === equipped;
   const equip = useMutation({
     mutationFn: (it: ShopItem) => {
       if (it._id !== BASE_AVATAR._id && !owned.has(it._id))
@@ -614,7 +617,7 @@ export function BoxScreen() {
             {items.map((it) => (
               <Pressable
                 key={it._id}
-                onPress={() => !equippedIds.has(it._id) && setPick(it)}
+                onPress={() => !isEquipped(it) && setPick(it)}
                 className="w-[48.5%] rounded-2xl bg-cream p-2"
               >
                 <View className="h-24 items-center justify-center rounded-xl bg-white">
@@ -624,16 +627,13 @@ export function BoxScreen() {
                 <View
                   className={cx(
                     'ml-1 mt-0.5 self-start rounded-full px-2 py-0.5',
-                    equippedIds.has(it._id) ? 'bg-brand' : 'bg-mint',
+                    isEquipped(it) ? 'bg-brand' : 'bg-mint',
                   )}
                 >
                   <Text
-                    className={cx(
-                      'text-caption2',
-                      equippedIds.has(it._id) ? 'text-white' : 'text-brand',
-                    )}
+                    className={cx('text-caption2', isEquipped(it) ? 'text-white' : 'text-brand')}
                   >
-                    {equippedIds.has(it._id) ? '장착중' : '보유중'}
+                    {isEquipped(it) ? '장착중' : '보유중'}
                   </Text>
                 </View>
               </Pressable>
