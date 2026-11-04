@@ -1,5 +1,5 @@
 import type { TimerRule } from '@notelink/shared';
-import { roomTimerState } from '../lib/mock/timer';
+import { roomTimerState } from './fixtures/timer';
 
 const PERIOD_RULE: TimerRule = {
   enabled: true,

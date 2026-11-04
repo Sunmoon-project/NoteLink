@@ -10,7 +10,6 @@ import {
   ChevronRight,
   CircleAlert,
   ExternalLink,
-  FlaskConical,
   Gift,
   Zap,
 } from 'lucide-react-native';
@@ -291,11 +290,6 @@ export function SettingsScreen() {
             사업자 정보
           </Row>
           <Row right={<Text className="text-footnote text-sub">{APP_VERSION}</Text>}>앱 버전</Row>
-          {env.useMock && (
-            <Row icon={FlaskConical} chevron onPress={() => router.push('/(tabs)/profile/dev')}>
-              예외 시나리오 (목업 전용)
-            </Row>
-          )}
         </Group>
         <Btn kind="cream" className="mt-6" onPress={() => setDlg('logout')}>
           로그아웃
@@ -500,7 +494,7 @@ const PLANS: { id: PlanTier; name: string; price: string; desc: string[]; hot?: 
 ];
 
 /** 결제 연동 전: 무료 플랜으로만 바꿀 수 있다 (목업은 화면 확인용으로 모두 허용) */
-export const canChangePlan = (t: PlanTier) => t === 'free' || env.useMock;
+export const canChangePlan = (t: PlanTier) => t === 'free' || env.localData;
 
 export function PlanScreen() {
   const qc = useQueryClient();

@@ -43,7 +43,7 @@ import type {
   WeeklySummary,
 } from '@notelink/shared';
 
-// 화면이 쓰는 API 전체. http-api.ts(실서버)와 mock/api.ts(목업)가 같은 모양으로 구현한다.
+// 화면이 쓰는 API 전체. http-api.ts(실서버)와 local/api.ts(기기 저장)가 같은 모양으로 구현한다.
 
 export type MonthDay = { studyDate: string; level: number; hasTodo: boolean };
 export type ImageVerdict = 'ok' | 'not_allowed' | 'not_handwriting' | 'blurry';

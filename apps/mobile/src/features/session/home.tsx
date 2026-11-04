@@ -46,6 +46,10 @@ export function HomeScreen() {
   const dayLive = s.itemId ? s.elapsedSince(midnight, now) : 0;
   const live = (id: string, base: number) => base + (id === s.itemId ? dayLive : 0);
   const todaySec = items.reduce((a, i) => a + i.accumulatedSec, 0) + dayLive;
+  // 큰 타이머는 지금 공부하는 항목의 시간만 보여 준다 (다른 항목 시간이 이어 붙지 않게)
+  const activeSec = s.itemId
+    ? live(s.itemId, items.find((i) => i._id === s.itemId)?.accumulatedSec ?? 0)
+    : null;
   const weekSec = (weekly.data?.totalSec ?? 0) + (s.itemId ? s.elapsedSince(monday, now) : 0);
   // 목표를 읽지 못했으면 임의의 목표로 계산하지 않는다
   const goalMin = goal.data?.targetMin;
@@ -140,7 +144,7 @@ export function HomeScreen() {
   return (
     <View className="flex-1 bg-white">
       {running && <KeepAwake />}
-      {s.itemId && <TiltWatcher />}
+      <TiltWatcher />
       <Screen>
         <NetBanner />
         <View className="flex-row items-start justify-between pt-4">
@@ -206,8 +210,9 @@ export function HomeScreen() {
             className="mt-1 tabular-nums text-display font-bold text-white"
             style={{ fontVariant: ['tabular-nums'] }}
           >
-            {hms(active || todaySec ? todaySec : 0)}
+            {hms(activeSec ?? todaySec)}
           </Text>
+          {active && <Text className="text-caption text-white/60">오늘 전체 {hms(todaySec)}</Text>}
           <Pressable accessibilityLabel="주간 목표 설정" onPress={() => setSheet('goal')}>
             <Text className="text-footnote text-white/80">
               {running
@@ -371,9 +376,12 @@ function TiltWatcher() {
       pushed.current = false;
       Accelerometer.setUpdateInterval(400);
       const sub = Accelerometer.addListener(({ x, y }) => {
+        // 다시 세우면 다음 기울임을 받는다
+        if (Math.abs(y) > 0.8) pushed.current = false;
         if (!pushed.current && Math.abs(x) > 0.8 && Math.abs(y) < 0.35) {
           pushed.current = true;
-          router.push('/landscape');
+          if (useSession.getState().itemId) router.push('/landscape');
+          else toast('공부할 항목을 시작한 뒤 가로로 돌려 주세요');
         }
       });
       return () => sub.remove();

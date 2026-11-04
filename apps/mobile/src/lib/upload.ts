@@ -2,7 +2,7 @@ import { File, UploadType } from 'expo-file-system';
 import { UPLOAD_RULES } from '@notelink/shared';
 import { api } from './api';
 import { env } from './env';
-import { rememberMockUpload } from './mock/uploads';
+import { keepFile } from './local/storage';
 
 // 앱 → Azure Blob 직접 업로드 (p.19: 서버를 거치지 않는 직접 연결)
 // 1) 메인 API에서 SAS 주소 발급 → 2) PUT으로 바로 올림 → 3) blobUrl만 서버에 저장
@@ -65,16 +65,14 @@ export async function uploadToBlob(
   // 호출하는 화면이 빠뜨려도 형식 · 용량 검사를 거친다
   const check = checkFile(kind, { ...f, size: sizeBytes });
   if (!check.ok) throw new UploadError(check.reason);
-  const sas = await api.upload.getSas({ kind, fileName: f.name, contentType, sizeBytes });
-  if (env.useMock) {
-    // 목업: 실제 전송 대신 진행률만 흉내 낸다
-    for (let p = 0; p <= 100; p += 20) {
-      onProgress?.(p);
-      await new Promise((r) => setTimeout(r, 60));
-    }
-    rememberMockUpload(sas.blobUrl, f.uri);
-    return sas.blobUrl;
+  if (env.localData) {
+    // 기기 저장 모드: 고른 파일을 앱 저장 공간에 복사해 두고 그 주소를 쓴다 (원본을 지워도 남게)
+    onProgress?.(0);
+    const kept = keepFile(f.uri, f.name);
+    onProgress?.(100);
+    return kept.uri;
   }
+  const sas = await api.upload.getSas({ kind, fileName: f.name, contentType, sizeBytes });
   const task = file.createUploadTask(sas.uploadUrl, {
     httpMethod: 'PUT',
     uploadType: UploadType.BINARY_CONTENT,

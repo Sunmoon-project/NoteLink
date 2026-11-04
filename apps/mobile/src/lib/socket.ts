@@ -16,7 +16,7 @@ let real: Socket<ServerToClient, ClientToServer> | null = null;
 
 /** 로그인 뒤 한 번 연결한다. 계정이 바뀌면 clearAccountState()가 끊는다 */
 export function connectSocket() {
-  if (env.useMock || real) return;
+  if (env.localData || real) return;
   real = io(env.socketUrl, {
     transports: ['websocket'],
     // 다시 연결할 때마다 지금 토큰을 읽는다 (갱신된 토큰 · 다른 계정 토큰이 섞이지 않게)
@@ -50,12 +50,12 @@ export const socket = {
   },
   emit<E extends keyof ClientToServer>(ev: E, ...args: Parameters<ClientToServer[E]>) {
     if (real) (real.emit as (...a: unknown[]) => void)(ev, ...args);
-    else mockServer.onClient?.(ev, args);
+    else localSocket.onClient?.(ev, args);
   },
 };
 
-/** 목업 서버가 클라이언트로 이벤트를 보낼 때 쓴다 */
-export const mockServer = {
+/** 서버 없이 동작할 때 기기 저장소(lib/local)가 소켓 이벤트를 주고받는 통로 */
+export const localSocket = {
   push<E extends Ev>(ev: E, ...args: Parameters<ServerToClient[E]>) {
     bus.get(ev)?.forEach((fn) => (fn as (...a: unknown[]) => void)(...args));
   },

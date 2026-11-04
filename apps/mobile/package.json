@@ -18,7 +18,11 @@
       "./jest.setup.js"
     ],
     "resolver": "react-native-worklets/jest/resolver",
-    "testTimeout": 20000
+    "testTimeout": 20000,
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/__tests__/fixtures/"
+    ]
   },
   "dependencies": {
     "@config-plugins/react-native-webrtc": "15.0.2",

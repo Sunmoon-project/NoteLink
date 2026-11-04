@@ -176,9 +176,8 @@ export function LandscapeScreen() {
   const midnight = Date.parse(`${day}T00:00:00+09:00`);
   const today = useQuery({ queryKey: ['study', 'today', day], queryFn: api.study.today });
   const active = today.data?.items.find((i) => i._id === s.itemId);
-  const total =
-    (today.data?.items ?? []).reduce((a, i) => a + i.accumulatedSec, 0) +
-    s.elapsedSince(midnight, now);
+  // 지금 공부하는 항목의 오늘 시간 (다른 항목 시간은 더하지 않는다)
+  const total = (active?.accumulatedSec ?? 0) + s.elapsedSince(midnight, now);
   const leaving = useRef(false);
   const exit = () => {
     if (leaving.current) return;

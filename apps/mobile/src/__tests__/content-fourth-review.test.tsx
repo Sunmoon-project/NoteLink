@@ -19,7 +19,7 @@ jest.mock('../lib/api', () => ({
   NetworkError: class NetworkError extends Error {},
 }));
 jest.mock('../lib/push', () => ({ notifyLocal: jest.fn() }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'https://api.example' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'https://api.example' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(),
   setItemAsync: jest.fn(),

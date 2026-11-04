@@ -32,7 +32,6 @@ import { api, ApiError } from '@/lib/api';
 import { socket } from '@/lib/socket';
 import { hms, seoul, ymd } from '@/lib/dates';
 import { useNow, useSocket } from '@/hooks';
-import { useMockFlags } from '@/lib/mock/flags';
 import { toast } from '@/stores/toast';
 import {
   Alert,
@@ -444,20 +443,11 @@ export function RoomScreen() {
     chatId.data,
   ]);
 
-  // p.100 연결 끊김 시나리오: 끊김 → (재연결 | 5분 넘으면 자동 퇴장). 목업에서는 설정 > 예외 시나리오로 켠다
-  // 실제 소켓이 끊기면 useNet이 'unstable' · 'offline'이 된다. 목업 스위치도 같은 경로로 들어온다
-  const disconnect = useMockFlags((s) => s.roomDisconnect);
-  const netLost = useNet((s) => s.state === 'unstable' || s.state === 'offline');
-  const lost = disconnect || netLost;
+  // p.100 연결 끊김 시나리오: 끊김 → (재연결 | 5분 넘으면 자동 퇴장). 소켓이 끊기면 useNet이 'unstable' · 'offline'이 된다
+  const lost = useNet((s) => s.state === 'unstable' || s.state === 'offline');
   // 끊김 ↔ 복구 전이 (렌더 중 상태 조정)
   if (lost && conn !== 'lost' && conn !== 'kicked') setConn('lost');
   if (!lost && conn === 'lost') setConn('back');
-  // 목업: 6초 뒤 다시 연결된 것으로 친다
-  useEffect(() => {
-    if (!disconnect) return;
-    const t = setTimeout(() => useMockFlags.setState({ roomDisconnect: false }), 6000);
-    return () => clearTimeout(t);
-  }, [disconnect]);
   // 다시 연결되면 끊긴 동안 쓴 메시지를 보내고 잠시 뒤 안내를 닫는다
   useEffect(() => {
     if (conn !== 'back') return;
@@ -477,17 +467,12 @@ export function RoomScreen() {
 
   // HTTP 실패로 끊김 상태가 된 뒤 소켓은 살아 있으면 복구 신호가 없다. 주기적으로 확인한다
   useEffect(() => {
-    if (conn !== 'lost' || disconnect) return;
+    if (conn !== 'lost') return;
     const t = setInterval(() => void refetchRoom(), 15_000);
     return () => clearInterval(t);
-  }, [conn, disconnect, refetchRoom]);
+  }, [conn, refetchRoom]);
 
   // 5분 넘게 끊기면 자동 퇴장 (공부 시간 기록은 서버에 저장돼 있다)
-  const kick = useMockFlags((s) => s.roomKick);
-  if (kick && conn !== 'kicked') setConn('kicked');
-  useEffect(() => {
-    if (kick) useMockFlags.setState({ roomKick: false });
-  }, [kick]);
   useEffect(() => {
     if (conn !== 'lost') return;
     const t = setTimeout(() => setConn('kicked'), 5 * 60 * 1000);

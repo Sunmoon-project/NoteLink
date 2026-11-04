@@ -6,7 +6,7 @@ import { ReportScreen, RoomSettingsScreen } from '../features/studyroom/tools';
 import { useAuth } from '../stores/auth';
 import { useToast } from '../stores/toast';
 import { useNet } from '../stores/net';
-import { useMockFlags } from '../lib/mock/flags';
+import { useMockFlags } from './fixtures/flags';
 import { renderScreen, setParams } from '../test-utils';
 
 const mockApi = {
@@ -23,7 +23,7 @@ jest.mock('../lib/api', () => ({
   },
   ApiError: class ApiError extends Error {},
 }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('../lib/upload', () => ({ uploadToBlob: (...args: unknown[]) => mockUpload(...args) }));
 jest.mock('../lib/livekit', () => ({
   useLiveRoom: () => ({

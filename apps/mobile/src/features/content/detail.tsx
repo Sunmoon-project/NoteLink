@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Linking, Pressable, View } from 'react-native';
+import { Image as RNImage, Linking, Pressable, ScrollView, View } from 'react-native';
 import { Text, TextInput } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -22,8 +22,8 @@ import {
 } from 'lucide-react-native';
 import type { Material } from '@notelink/shared';
 import { api } from '@/lib/api';
-import { env } from '@/lib/env';
 import { toast } from '@/stores/toast';
+import { AiPending } from '@/components/AiPending';
 import {
   Badge,
   Btn,
@@ -81,9 +81,7 @@ function OriginalFile({ m }: { m: Material }) {
     if (busy) return;
     setBusy(true);
     try {
-      const { url } = await api.content.downloadUrl(m._id);
-      if (!/^https?:\/\//i.test(url)) throw new Error('원본 주소가 없어요');
-      await Linking.openURL(url);
+      await openOriginal(m._id);
     } catch {
       toast('원본 파일을 열지 못했어요. 다시 시도해 주세요');
     } finally {
@@ -92,10 +90,57 @@ function OriginalFile({ m }: { m: Material }) {
   };
   return (
     <View>
-      <Text>{m.title}</Text>
       <Btn loading={busy} onPress={open}>
         원본 파일 열기
       </Btn>
+    </View>
+  );
+}
+
+/** 자료가 든 폴더의 과목 이름 */
+function useSubject(folderId?: string) {
+  const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
+  return folders.data?.find((f) => f._id === folderId)?.subjectName;
+}
+
+const mb = (bytes: number) => (bytes > 0 ? `${(bytes / 1024 / 1024).toFixed(1)}MB` : '');
+
+/** 원본 파일을 시스템 미리보기 · 공유 시트로 연다 (파일 앱에 저장 · 다른 앱으로 열기) */
+async function openOriginal(id: string) {
+  const { url } = await api.content.downloadUrl(id);
+  if (url.startsWith('file://') && (await Sharing.isAvailableAsync()))
+    return Sharing.shareAsync(url);
+  if (!/^https?:\/\//i.test(url)) throw new Error('원본 주소가 없어요');
+  await Linking.openURL(url);
+}
+
+/** 원본 페이지 이미지 — 두 손가락으로 확대 (FR-25-02) */
+function PageImages({ pages }: { pages: NonNullable<Material['pages']> }) {
+  if (!pages.length)
+    return <Text className="mt-4 text-center text-footnote text-sub">원본 이미지가 없어요</Text>;
+  return (
+    <View className="gap-3">
+      {pages.map((p) => (
+        <View key={p.pageNo} className="overflow-hidden rounded-2xl bg-cream">
+          <ScrollView
+            maximumZoomScale={4}
+            minimumZoomScale={1}
+            centerContent
+            showsHorizontalScrollIndicator={false}
+            showsVerticalScrollIndicator={false}
+          >
+            <RNImage
+              source={{ uri: p.imageUrl }}
+              accessibilityLabel={`${p.pageNo}페이지 원본`}
+              className="aspect-[3/4] w-full"
+              resizeMode="contain"
+            />
+          </ScrollView>
+          <Text className="px-3 py-2 text-caption text-sub">
+            {p.pageNo}페이지{p.sizeBytes ? ` · ${mb(p.sizeBytes)}` : ''}
+          </Text>
+        </View>
+      ))}
     </View>
   );
 }
@@ -206,10 +251,9 @@ const dateLabel = (m: Material, kind: string) =>
 export function HandDetailScreen() {
   const { tab: t } = useLocalSearchParams<{ tab?: '정리된 노트' | '원본 이미지' }>();
   const { id, m, isError, refetch } = useMaterial();
-  const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
-  const subject = folders.data?.find((f) => f._id === m?.folderId)?.subjectName;
   const [tab, setTab] = useState<'정리된 노트' | '원본 이미지'>(t ?? '정리된 노트');
   const [opt, setOpt] = useState(false);
+  const subject = useSubject(m?.folderId);
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
@@ -238,9 +282,16 @@ export function HandDetailScreen() {
         <Segment items={['정리된 노트', '원본 이미지'] as const} value={tab} onChange={setTab} />
         <View className="mt-4">
           {tab === '정리된 노트' ? (
-            <NoteBody sections={m.summary?.sections ?? []} />
+            m.summary?.sections.length ? (
+              <NoteBody sections={m.summary.sections} />
+            ) : (
+              <AiPending what="필기 정리" hint="직접 정리하려면 '편집하기'를 눌러 써 보세요." />
+            )
           ) : (
-            <OriginalFile m={m} />
+            <View className="gap-3">
+              {!!m.pages?.length && <PageImages pages={m.pages} />}
+              <OriginalFile m={m} />
+            </View>
           )}
         </View>
         {subject && (
@@ -386,18 +437,24 @@ export function RecDetailScreen() {
   const { view, bookmarks } = useLocalSearchParams<{ view?: 'text'; bookmarks?: string }>();
   const { id, m, isError, refetch } = useMaterial();
   const [opt, setOpt] = useState(false);
+  const subject = useSubject(m?.folderId);
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
     <View className="flex-1">
       <Screen>
         <Header
-          title={view === 'text' ? '원문 텍스트 보기' : '녹음 요약 정리'}
+          title={view === 'text' ? '원문 텍스트 보기' : m.title}
+          sub={dateLabel(m, '녹음')}
           large={false}
           right={<More onPress={() => setOpt(true)} />}
         />
         <View className="-mt-2 mb-3 flex-row items-center gap-2">
-          <Text className="text-caption text-sub">{m.title}</Text>
+          {view === 'text' && <Text className="text-caption text-sub">{m.title}</Text>}
+          {subject && <Badge>{subject}</Badge>}
+          {m.description ? (
+            <Text className="flex-1 text-caption text-sub">{m.description}</Text>
+          ) : null}
         </View>
         <Player
           materialId={id}
@@ -415,10 +472,15 @@ export function DocDetailScreen() {
   const { id, m, isError, refetch } = useMaterial();
   const [tab, setTab] = useState<'요약' | '원본 문서'>(t ?? '요약');
   const [opt, setOpt] = useState(false);
+  const subject = useSubject(m?.folderId);
   const download = useMutation({
     mutationFn: async () => {
       const { url, fileName } = await api.content.downloadUrl(id);
-      if (env.useMock) return fileName;
+      // 기기에 있는 원본은 바로 공유 시트로 → '파일에 저장'
+      if (url.startsWith('file://')) {
+        await openOriginal(id);
+        return fileName;
+      }
       // Blob에서 받아 기기에 저장 → 공유 시트에서 "파일에 저장" 선택
       const dir = new Directory(Paths.document, 'downloads');
       if (!dir.exists) dir.create();
@@ -456,11 +518,24 @@ export function DocDetailScreen() {
         />
         <Segment items={['요약', '원본 문서'] as const} value={tab} onChange={setTab} />
         {tab === '요약' ? (
-          <>
-            <DocSummary points={m.summary?.points ?? []} keywords={m.keywords} />
-          </>
+          <View className="mt-4">
+            {m.summary?.points.length ? (
+              <DocSummary points={m.summary.points} keywords={m.keywords} />
+            ) : (
+              <AiPending what="문서 요약" />
+            )}
+            {subject && (
+              <>
+                <Label>과목</Label>
+                <Badge>{subject}</Badge>
+              </>
+            )}
+          </View>
         ) : (
-          <OriginalFile m={m} />
+          <View className="mt-4 gap-3">
+            {!!m.pages?.length && <PageImages pages={m.pages} />}
+            <OriginalFile m={m} />
+          </View>
         )}
       </Screen>
       <FileOptions m={m} open={opt} onClose={() => setOpt(false)} />

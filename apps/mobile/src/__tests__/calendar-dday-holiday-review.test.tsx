@@ -9,7 +9,7 @@ import { useAuth } from '../stores/auth';
 import { renderScreen } from '../test-utils';
 
 const mockToast = jest.fn();
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'https://api.example' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'https://api.example' } }));
 jest.mock('../stores/toast', () => ({ toast: (...args: unknown[]) => mockToast(...args) }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),

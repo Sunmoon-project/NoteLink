@@ -3,7 +3,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { SettingsScreen } from '../features/profile/settings';
-import { seedUser } from '../lib/mock/seed';
+import { seedUser } from './fixtures/seed';
 import { disconnectSocket } from '../lib/socket';
 import { useAuth } from '../stores/auth';
 import { useDraft } from '../stores/draft';
@@ -29,7 +29,7 @@ jest.mock('../lib/api', () => ({
   ApiError: class ApiError extends Error {},
   NetworkError: class NetworkError extends Error {},
 }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('../lib/socket', () => ({ disconnectSocket: jest.fn(), socket: { emit: jest.fn() } }));
 
 const user = { ...seedUser(), _id: 'settings-signout-user' };

@@ -1,12 +1,12 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { scanPages } from '../features/content/capture';
 import { ConvertScreen } from '../features/content/convert';
-import { useMockFlags } from '../lib/mock/flags';
+import { useMockFlags } from './fixtures/flags';
 import { socket } from '../lib/socket';
 import { useDraft } from '../stores/draft';
 import { renderScreen } from '../test-utils';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),

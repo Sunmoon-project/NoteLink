@@ -28,7 +28,7 @@ jest.mock('../lib/api', () => ({
     return mockApi;
   },
 }));
-jest.mock('../lib/env', () => ({ env: { useMock: false } }));
+jest.mock('../lib/env', () => ({ env: { localData: false } }));
 const user = {
   _id: 'user-a',
   nickname: '테스터',

@@ -1,8 +1,8 @@
-import { mockApi } from '../lib/mock/api';
-import { useMockFlags } from '../lib/mock/flags';
+import { mockApi } from './fixtures/api';
+import { useMockFlags } from './fixtures/flags';
 import { useNet } from '../stores/net';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(),

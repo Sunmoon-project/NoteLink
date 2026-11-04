@@ -16,7 +16,7 @@ jest.mock('../lib/api', () => ({
   },
   ApiError: class ApiError extends Error {},
 }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('../lib/upload', () => ({ uploadToBlob: jest.fn() }));
 jest.mock('../lib/livekit', () => ({ useLiveRoom: jest.fn() }));
 jest.mock('../lib/socket', () => ({ socket: { emit: jest.fn(), on: () => () => {} } }));

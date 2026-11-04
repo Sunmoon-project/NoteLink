@@ -31,7 +31,7 @@ jest.mock('../lib/api', () => ({
 }));
 jest.mock('../lib/upload', () => ({ uploadToBlob: (...args: unknown[]) => mockUpload(...args) }));
 jest.mock('../stores/toast', () => ({ toast: (...args: unknown[]) => mockToast(...args) }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('../lib/socket', () => ({ socket: { emit: jest.fn(), on: () => () => {} } }));
 jest.mock('../lib/push', () => ({ notifyLocal: jest.fn() }));
 jest.mock('expo-file-system', () => ({ Directory: jest.fn(), File: jest.fn(), Paths: {} }));

@@ -11,10 +11,10 @@ import {
   type StudySession,
   type TimetableShare,
 } from '@notelink/shared';
-import { ApiError, NetworkError } from '../api/http';
-import type { Api, MonthDay } from '../api/types';
-import { addDays, daysBetween, parse, seoul, today, ymd } from '../dates';
-import { mockServer } from '../socket';
+import { ApiError, NetworkError } from '../../lib/api/http';
+import type { Api, MonthDay } from '../../lib/api/types';
+import { addDays, daysBetween, parse, seoul, today, ymd } from '../../lib/dates';
+import { localSocket } from '../../lib/socket';
 import { useNet } from '@/stores/net';
 import { useAuth } from '@/stores/auth';
 import { useMockFlags } from './flags';
@@ -143,24 +143,24 @@ function runJob(type: AiJobType, targetId: string, onDone: (job: AiJob) => void)
         error: flags.aiCreditExhausted ? ERROR_CODES.AI_CREDIT_EXHAUSTED : 'LLM_FAILED',
         updatedAt: now(),
       });
-      mockServer.push('ai:progress', {
+      localSocket.push('ai:progress', {
         jobId: j._id,
         status: 'failed',
         progress: failAt,
         step: steps[2],
       });
-      mockServer.push('ai:done', { jobId: j._id, job: structuredClone(j) });
+      localSocket.push('ai:done', { jobId: j._id, job: structuredClone(j) });
       return;
     }
     j.status = p >= 100 ? 'succeeded' : 'running';
     j.progress = p;
     j.step = steps[Math.min(3, Math.floor(p / 25))];
     if (flags.llmSlow) j.attempts = p < 40 ? 1 : p < 75 ? 2 : 3;
-    mockServer.push('ai:progress', { jobId: j._id, status: j.status, progress: p, step: j.step });
+    localSocket.push('ai:progress', { jobId: j._id, status: j.status, progress: p, step: j.step });
     if (p >= 100) {
       clearInterval(tick);
       onDone(j);
-      mockServer.push('ai:done', { jobId: j._id, job: structuredClone(j) });
+      localSocket.push('ai:done', { jobId: j._id, job: structuredClone(j) });
     }
   }, 120);
   return job;
@@ -954,7 +954,7 @@ export const mockApi: Api = {
       room.timerRule = rule;
       timerStartedAt.set(id, Date.now());
       room.timerState = roomTimerState(rule, timerStartedAt.get(id)!);
-      mockServer.push('room:timer', {
+      localSocket.push('room:timer', {
         roomId: id,
         rule,
         phase: room.timerState?.phase ?? 'focus',
@@ -1097,7 +1097,7 @@ export const mockApi: Api = {
 };
 
 /** 채팅 전송을 목업 서버가 받아 되돌려준다 */
-mockServer.onClient = (ev, args) => {
+localSocket.onClient = (ev, args) => {
   if (ev !== 'chat:send') return;
   const [p, ack] = args as [
     { chatRoomId: string; text: string; clientId: string },
@@ -1115,7 +1115,7 @@ mockServer.onClient = (ev, args) => {
     clientId: p.clientId,
   };
   db.messages.set(p.chatRoomId, [...(db.messages.get(p.chatRoomId) ?? []), m]);
-  setTimeout(() => (ack ? ack(m) : mockServer.push('chat:message', m)), 120);
+  setTimeout(() => (ack ? ack(m) : localSocket.push('chat:message', m)), 120);
 };
 
 /** 데모용: 홈 화면에서 측정 중 상태를 바로 보여줄 때 */
