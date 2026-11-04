@@ -118,8 +118,16 @@ export function NoteListScreen() {
       <Screen>
         <NetBanner />
         <View className="pt-4">
-          <Search value={q} onChangeText={setQ} placeholder="이온화 에너지 검색" />
+          <Search value={q} onChangeText={setQ} placeholder="학습 폴더 검색" />
         </View>
+        {folders.isError && !folders.data && (
+          <View className="items-center gap-3 py-12">
+            <Text className="text-footnote text-sub">학습 폴더를 불러오지 못했어요</Text>
+            <Btn small onPress={() => void folders.refetch()}>
+              학습 폴더 다시 시도
+            </Btn>
+          </View>
+        )}
         {folders.isSuccess && folders.data.length === 0 ? (
           <View className="pt-24">
             <EmptyNote>
@@ -204,7 +212,7 @@ export function NoteTagScreen() {
 }
 
 export function NoteTitleScreen() {
-  const { tag = '수학' } = useLocalSearchParams<{ tag?: string }>();
+  const { tag = '기타' } = useLocalSearchParams<{ tag?: string }>();
   const qc = useQueryClient();
   const [title, setTitle] = useState('');
   const d = seoul();
@@ -352,13 +360,23 @@ export function FolderScreen() {
             </Chip>
           ))}
         </View>
+        {mats.isError && !mats.data && (
+          <View className="items-center gap-3 py-12">
+            <Text className="text-footnote text-sub">자료를 불러오지 못했어요</Text>
+            <Btn small onPress={() => void mats.refetch()}>
+              자료 다시 시도
+            </Btn>
+          </View>
+        )}
         {mats.isSuccess && mats.data.length === 0 ? (
           <View className="pt-24">
             <EmptyNote />
           </View>
         ) : (
           <>
-            <Text className="mt-4 mb-2 text-caption text-sub">자료 {mats.data?.length ?? 0}개</Text>
+            {mats.data && (
+              <Text className="mt-4 mb-2 text-caption text-sub">자료 {mats.data.length}개</Text>
+            )}
             <View className="gap-2">
               {items.map((m) => (
                 <Card

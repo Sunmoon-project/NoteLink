@@ -52,7 +52,8 @@ import { seoul } from '@/lib/dates';
 function useMaterial() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const q = useQuery({ queryKey: ['material', id], queryFn: () => api.content.material(id) });
-  return { id, m: q.data, isError: q.isError, error: q.error, refetch: q.refetch };
+  // 이미 불러온 자료가 있으면 재조회 실패로 화면을 지우지 않는다
+  return { id, m: q.data, isError: q.isError && !q.data, error: q.error, refetch: q.refetch };
 }
 
 function MaterialError({ retry }: { retry: () => unknown }) {
@@ -263,7 +264,7 @@ const Toolbar = () => (
 );
 
 export function EditScreen() {
-  const { id, m } = useMaterial();
+  const { id, m, isError, refetch } = useMaterial();
   const qc = useQueryClient();
   const [sections, setSections] = useState<{ heading: string; body: string }[]>([]);
   const [editing, setEditing] = useState(false);
@@ -285,6 +286,7 @@ export function EditScreen() {
       toast('노트를 저장했어요');
     },
   });
+  if (isError) return <MaterialError retry={refetch} />;
   return (
     <Screen
       footer={
@@ -467,19 +469,23 @@ export function DocDetailScreen() {
 }
 
 export function DownloadedScreen() {
-  const { name = '연습문제.pdf' } = useLocalSearchParams<{ name?: string }>();
+  const { name } = useLocalSearchParams<{ name?: string }>();
   return (
     <Screen footer={<Btn onPress={() => router.back()}>확인</Btn>}>
       <Success
         title="다운로드가 완료됐어요!"
-        body={`${name} 파일이 다운로드 폴더에 저장됐어요`}
+        body={
+          name ? `${name} 파일이 다운로드 폴더에 저장됐어요` : '파일이 다운로드 폴더에 저장됐어요'
+        }
         card={
           <Card className="flex-row items-center gap-3 p-3">
             <View className="h-10 w-10 items-center justify-center rounded-lg bg-mint">
               <FileText size={ICON.sm} color={C.sub} />
             </View>
             <View>
-              <Text className="text-subhead font-semibold text-ink">{name}</Text>
+              <Text className="text-subhead font-semibold text-ink">
+                {name ?? '다운로드한 파일'}
+              </Text>
               <View className="flex-row items-center gap-1.5">
                 <Folder size={ICON.xs} color={C.sub} />
                 <Text className="text-caption2 text-sub">다운로드 폴더에 저장됨</Text>
@@ -576,7 +582,15 @@ export function ShareScreen() {
         }}
       />
       <View className="mt-3 gap-2">
-        {list.length === 0 && (
+        {mats.isError && !mats.data && (
+          <View className="gap-2 py-3">
+            <Text className="text-footnote text-sub">자료 목록을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void mats.refetch()}>
+              자료 목록 다시 시도
+            </Btn>
+          </View>
+        )}
+        {mats.isSuccess && list.length === 0 && (
           <Text className="py-6 text-center text-footnote text-sub">
             공유할 {tab} 자료가 없어요
           </Text>
@@ -636,10 +650,10 @@ export function ShareScreen() {
 
 export function SharedScreen() {
   const {
-    to = '화학 스터디룸',
+    to,
     n = '1',
-    tab = '필기',
-    name = '이차방정식_필기.pdf',
+    tab = '자료',
+    name,
   } = useLocalSearchParams<{ to?: string; n?: string; tab?: string; name?: string }>();
   return (
     <Screen
@@ -651,17 +665,17 @@ export function SharedScreen() {
     >
       <Success
         title="공유가 완료됐어요!"
-        body={`${to}에 ${tab} ${n}개를 공유했어요`}
+        body={to ? `${to}에 ${tab} ${n}개를 공유했어요` : `${tab} ${n}개를 공유했어요`}
         card={
           <Card className="flex-row items-center gap-3 p-3">
             <View className="h-10 w-10 items-center justify-center rounded-lg bg-mint">
               <FileText size={ICON.sm} color={C.sub} />
             </View>
             <View>
-              <Text className="text-subhead font-semibold text-ink">{name}</Text>
+              <Text className="text-subhead font-semibold text-ink">{name ?? '공유한 자료'}</Text>
               <View className="flex-row items-center gap-1.5">
                 <Users size={ICON.xs} color={C.sub} />
-                <Text className="text-caption2 text-sub">{to}으로 전송됨</Text>
+                <Text className="text-caption2 text-sub">{to ? `${to}으로 전송됨` : '전송됨'}</Text>
               </View>
             </View>
           </Card>

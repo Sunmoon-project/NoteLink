@@ -123,9 +123,6 @@ export function CameraScreen() {
       <Text className="mt-6 text-center text-footnote text-white">
         {scan ? '문서를 프레임 안에 맞춰주세요' : '필기한 종이를 프레임 안에 맞춰주세요'}
       </Text>
-      {scan && (
-        <Text className="text-center text-caption2 text-white/60">자동으로 인식하고 있어요</Text>
-      )}
       <View
         className={cx(
           'mx-auto mt-4 aspect-[3/4] w-[85%] rounded-xl border-2',

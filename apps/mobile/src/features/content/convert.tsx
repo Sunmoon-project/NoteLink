@@ -67,6 +67,10 @@ export function ConvertScreen() {
   const checkingRegistration = useRef(false);
   const [checking, setChecking] = useState(false);
 
+  const requireFolder = () => {
+    if (!draft.folderId) throw new Error('자료를 넣을 폴더가 없어요');
+    return draft.folderId;
+  };
   // 처음 상태가 'upload'라 다시 시도할 때만 호출하는 쪽에서 phase를 되돌린다
   const run = async () => {
     if (running.current || canceled.current) return;
@@ -96,7 +100,7 @@ export function ConvertScreen() {
       // 2) 서버에 자료 등록 → ai_jobs 큐에 작업이 들어간다
       const r = await api.content.createMaterial({
         requestId: useDraft.getState().getCreationId(),
-        folderId: draft.folderId ?? 'fo1',
+        folderId: requireFolder(),
         kind: draft.kind,
         source: draft.source,
         title: draft.title || defaultTitle(draft.kind, draft.files[0]?.name),
@@ -216,11 +220,11 @@ export function ConvertScreen() {
     if (checkingRegistration.current) return;
     checkingRegistration.current = true;
     setChecking(true);
-    const folderId = draft.folderId ?? 'fo1';
     const owner = useAuth.getState().userId;
     const active = () =>
       !abort.current.signal.aborted && !canceled.current && useAuth.getState().userId === owner;
     try {
+      const folderId = requireFolder();
       // 캐시의 나이나 이전 조회 상태와 무관하게 등록 여부를 서버에서 새로 확인한다.
       await qc.cancelQueries({ queryKey: ['materials', folderId], exact: true });
       if (!active()) return;
@@ -416,7 +420,7 @@ export function ResultScreen() {
       toast('학습자료에 저장했어요');
     },
   });
-  if (m.isError)
+  if (m.isError && !m.data)
     return (
       <Screen>
         <Header title="변환 결과" />

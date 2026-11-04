@@ -166,7 +166,7 @@ export function Player({
       marking.current = false;
     }
   };
-  if (mat.isError || rec.isError)
+  if ((mat.isError && !mat.data) || (rec.isError && !rec.data))
     return (
       <View className="gap-3 p-4">
         <Text>재생 자료를 불러오지 못했어요</Text>
@@ -202,11 +202,6 @@ export function Player({
                         </Text>
                       ))}
                     </View>
-                    <View className="flex-row items-end gap-1 pr-14">
-                      {[18, 26, 32, 22, 38].map((h, i) => (
-                        <View key={i} className="w-3 rounded-sm bg-brand" style={{ height: h }} />
-                      ))}
-                    </View>
                   </View>
                   <LipSyncAvatar playing={p.playing} />
                 </>
@@ -220,7 +215,7 @@ export function Player({
               <View className="flex-row items-center gap-1.5">
                 <Sparkles size={ICON.xs} color={'#fff'} />
                 <Text className="text-caption2 font-semibold text-white">
-                  아바타 립싱크 재생 중
+                  {p.playing ? '아바타 립싱크 재생 중' : '아바타 립싱크 일시정지'}
                 </Text>
               </View>
               <Text className="mt-1 text-caption leading-5 text-white/50">

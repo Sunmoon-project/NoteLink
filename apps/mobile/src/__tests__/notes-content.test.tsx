@@ -55,7 +55,9 @@ describe('AI 변환 다시 시도', () => {
   it('다시 시도로 새 작업이 생기면 그 작업을 구독한다', async () => {
     const emit = jest.spyOn(socket, 'emit');
     useMockFlags.setState({ llmFail: true });
-    useDraft.getState().set({ kind: 'handwriting', files: [page('A')], title: '테스트 노트' });
+    useDraft
+      .getState()
+      .set({ folderId: 'fo1', kind: 'handwriting', files: [page('A')], title: '테스트 노트' });
     await renderScreen(<ConvertScreen />);
     const subs = () =>
       emit.mock.calls
