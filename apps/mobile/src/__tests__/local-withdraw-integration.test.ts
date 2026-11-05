@@ -3,6 +3,7 @@
 
 const mockDisk = new Map<string, string>();
 let mockFailDelete: ((uri: string) => boolean) | null = null;
+let mockFailRead: ((uri: string) => boolean) | null = null;
 jest.mock('expo-file-system', () => {
   class File {
     uri: string;
@@ -26,6 +27,7 @@ jest.mock('expo-file-system', () => {
       mockDisk.set(this.uri, v);
     }
     textSync() {
+      if (mockFailRead?.(this.uri)) throw new Error('read failed');
       return mockDisk.get(this.uri)!;
     }
     move(to: File) {
@@ -82,6 +84,7 @@ beforeEach(() => {
   mockDisk.clear();
   mockKeychain.clear();
   mockFailDelete = null;
+  mockFailRead = null;
 });
 
 it('탈퇴가 DB 삭제에서 실패한 뒤 앱을 다시 켜도 자료 원본은 남고, 다시 탈퇴하면 지운다', async () => {
@@ -117,13 +120,12 @@ it('탈퇴가 DB 삭제에서 실패한 뒤 앱을 다시 켜도 자료 원본�
   expect(mockDisk.has('file:///doc/notelink-orphans.json')).toBe(false);
 });
 
-it('소유자가 적히지 않은 예전 형식 목록이어도, 남은 계정이 쓰는 원본은 앱을 켤 때 지우지 않는다', async () => {
+it('소유자가 적히지 않은 예전 형식 목록은 앱을 켤 때 아무 파일도 지우지 않고 목록만 정리한다', async () => {
   let { api, login } = boot();
   await api.auth.emailSignup('a@test.com', 'pw12345678');
-  await login('a@test.com');
+  const user = await login('a@test.com');
   const folder = await api.content.createFolder({ title: '수학', subjectName: '수학' } as never);
   mockDisk.set('file:///doc/files/a.pdf', '원본');
-  mockDisk.set('file:///doc/files/old.jpg', '탈퇴한 계정 사진');
   await api.content.createMaterial({
     requestId: 'r1',
     folderId: folder._id,
@@ -132,14 +134,39 @@ it('소유자가 적히지 않은 예전 형식 목록이어도, 남은 계정�
     title: '자료',
     blobUrls: ['file:///doc/files/a.pdf'],
   });
-  // 이전 구현이 남긴 목록: 주소만 있다 (a.pdf는 살아 있는 계정 자료, old.jpg는 주인이 없다)
-  mockDisk.set(
-    'file:///doc/notelink-orphans.json',
-    JSON.stringify(['file:///doc/files/a.pdf', 'file:///doc/files/old.jpg']),
-  );
+  // 이전 구현이 남긴 목록: 주소만 있어 누구 것인지 알 수 없다
+  mockDisk.set('file:///doc/notelink-orphans.json', JSON.stringify(['file:///doc/files/a.pdf']));
+  // 그 계정 DB를 읽지 못해도(일시적 오류) 지우지 않는다
+  mockFailRead = (uri) => uri === `file:///doc/notelink-user-${user._id}.json`;
   ({ api, login } = boot());
   expect(mockDisk.get('file:///doc/files/a.pdf')).toBe('원본');
-  expect(mockDisk.has('file:///doc/files/old.jpg')).toBe(false);
+  expect(mockDisk.has('file:///doc/notelink-orphans.json')).toBe(false);
+  mockFailRead = null;
   await login('a@test.com');
   expect(await api.content.materials(folder._id)).toHaveLength(1);
+});
+
+it('탈퇴 실패 뒤 앱을 켤 때 계정 목록 · 계정 DB를 읽지 못해도 원본과 정리 목록을 지킨다', async () => {
+  let { api, login } = boot();
+  await api.auth.emailSignup('a@test.com', 'pw12345678');
+  const user = await login('a@test.com');
+  const folder = await api.content.createFolder({ title: '수학', subjectName: '수학' } as never);
+  mockDisk.set('file:///doc/files/a.pdf', '원본');
+  await api.content.createMaterial({
+    requestId: 'r1',
+    folderId: folder._id,
+    kind: 'document',
+    source: 'file',
+    title: '자료',
+    blobUrls: ['file:///doc/files/a.pdf'],
+  });
+  const dbUri = `file:///doc/notelink-user-${user._id}.json`;
+  mockFailDelete = (uri) => uri === dbUri;
+  await expect(api.me.withdraw()).rejects.toThrow('탈퇴를 마치지 못했어요');
+  mockFailDelete = null;
+  // 다음 실행에서 계정 목록과 계정 DB 읽기가 모두 실패한다
+  mockFailRead = (uri) => uri === dbUri || uri.endsWith('notelink-accounts.json');
+  ({ api, login } = boot());
+  expect(mockDisk.get('file:///doc/files/a.pdf')).toBe('원본');
+  expect(mockDisk.has('file:///doc/notelink-orphans.json')).toBe(true);
 });

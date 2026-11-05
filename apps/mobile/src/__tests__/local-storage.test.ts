@@ -185,16 +185,10 @@ it('목록의 파일이라도 그 계정 DB가 남아 있으면(탈퇴 실패) �
   expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(false);
 });
 
-it('예전 형식(주소만 적힌) 목록도 읽어 지운다', () => {
+it('소유자가 없는 예전 형식 항목은 누구 것인지 몰라 지우지 않고 목록에서만 뺀다', () => {
   mockDisk.set('file:///doc/files/a.pdf', 'a');
   writeDb('orphans', ['file:///doc/files/a.pdf']);
   expect(dropFiles()).toEqual([]);
-  expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(false);
-});
-
-it('남은 계정이 쓰는 파일(inUse)은 목록에 있어도 지우지 않는다', () => {
-  mockDisk.set('file:///doc/files/a.pdf', 'a');
-  writeDb('orphans', ['file:///doc/files/a.pdf']);
-  expect(dropFiles((u) => u === 'file:///doc/files/a.pdf')).toEqual(['file:///doc/files/a.pdf']);
   expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(true);
+  expect(readDb('orphans')).toBeNull();
 });

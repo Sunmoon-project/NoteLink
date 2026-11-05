@@ -115,13 +115,14 @@ export function rememberOrphans(owner: string, uris: string[]) {
 
 /**
  * 기기 목록(orphans)의 파일을 지운다. 탈퇴 뒤 · 앱을 켤 때 로그인 없이 부른다. 남은 주소를 돌려준다.
- * - 그 계정 DB가 아직 있으면(탈퇴가 중간에 실패) 살아 있는 계정의 자료라 지우지 않고 목록에만 둔다
- * - inUse: 남아 있는 계정이 아직 쓰는 파일이면 지우지 않는다 (소유자가 적히지 않은 예전 형식 항목도 지킨다)
+ * - 소유 계정 DB 파일이 아직 있으면(탈퇴가 중간에 실패) 지우지 않고 목록에 둔다. DB를 읽지 않고 파일이
+ *   있는지만 보므로 읽기 실패로 살아 있는 계정의 자료를 지우는 일이 없다
+ * - 소유자가 적히지 않은 예전 형식 항목은 누구 것인지 알 수 없어 지우지 않고 목록에서만 뺀다
  * - 목록 갱신에 실패해도 이전 목록(지울 파일을 모두 담고 있다)이 남아 다음 실행 때 다시 지운다
  */
-export function dropFiles(inUse: (uri: string) => boolean = () => false) {
+export function dropFiles() {
   const left = orphans().filter(
-    (o) => (o.owner && dbAlive(o.owner)) || inUse(o.uri) || !dropFile(o.uri),
+    (o): o is Required<Orphan> => !!o.owner && (dbAlive(o.owner) || !dropFile(o.uri)),
   );
   try {
     if (left.length) writeDb('orphans', left);
