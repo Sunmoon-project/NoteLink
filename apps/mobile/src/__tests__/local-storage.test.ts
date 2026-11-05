@@ -93,6 +93,17 @@ it('탈퇴하면 남아 있던 백업 · 임시 파일까지 지워 다시 읽�
   expect(readDb('u')).toBeNull();
 });
 
+it('백업을 지우지 못하면 실패를 알리고 본 파일은 남겨 다시 시도할 수 있다', () => {
+  writeDb('u', { v: 1 });
+  mockDisk.set('file:///doc/notelink-u.json.bak', '{"v":0}');
+  mockFailDelete = (uri) => uri.endsWith('.bak');
+  expect(() => dropDb('u')).toThrow('delete failed');
+  mockFailDelete = null;
+  expect(readDb('u')).toEqual({ v: 1 });
+  dropDb('u');
+  expect([...mockDisk.keys()]).toEqual([]);
+});
+
 it('DB에 적힌 값에서 앱 저장 공간의 파일만 모은다', () => {
   expect(
     keptFilesIn({

@@ -4,6 +4,7 @@ import { useNet } from '../stores/net';
 // 실제 기기 저장 계층을 메모리 파일로 돌린다 (앱을 다시 켜도 남는지까지 확인)
 const mockFiles = new Map<string, string>();
 let mockWriteFails = false;
+let mockDropDbFails = false;
 const mockDropFile = jest.fn();
 jest.mock('../lib/local/storage', () => ({
   readDb: (n: string) => (mockFiles.has(n) ? JSON.parse(mockFiles.get(n)!) : null),
@@ -11,7 +12,10 @@ jest.mock('../lib/local/storage', () => ({
     if (mockWriteFails) throw new Error('disk full');
     mockFiles.set(n, JSON.stringify(d));
   },
-  dropDb: (n: string) => void mockFiles.delete(n),
+  dropDb: (n: string) => {
+    if (mockDropDbFails) throw new Error('delete failed');
+    mockFiles.delete(n);
+  },
   dropFile: (...a: unknown[]) => mockDropFile(...a),
   keptFilesIn: (d: unknown) => [
     ...new Set(JSON.stringify(d).match(/file:\/\/\/doc\/files\/[^"]+/g) ?? []),
@@ -41,6 +45,7 @@ async function signup(email: string) {
 beforeEach(() => {
   mockFiles.clear();
   mockWriteFails = false;
+  mockDropDbFails = false;
   mockDropFile.mockClear();
   useNet.setState({ state: 'ok' });
   mockKeychain.clear();
@@ -340,4 +345,45 @@ it('프로필 생성 요청이 실패하면 방금 복사한 사진을 지운다
   ).rejects.toThrow('offline');
   useNet.setState({ state: 'ok' });
   expect(mockDropFile).toHaveBeenCalledWith('file:///doc/files/p.jpg');
+});
+
+it('DB를 지우지 못하면 탈퇴 실패를 알리고, 로그인한 채로 다시 탈퇴할 수 있다', async () => {
+  await signup('a@test.com');
+  const f = await addFolder();
+  await api.content.createMaterial(material(f._id));
+  mockDropDbFails = true;
+  await expect(api.me.withdraw()).rejects.toThrow('탈퇴를 마치지 못했어요');
+  mockDropDbFails = false;
+  expect(mockDropFile).not.toHaveBeenCalled();
+  expect(await api.content.materials(f._id)).toHaveLength(1);
+  await api.me.withdraw();
+  expect(mockDropFile).toHaveBeenCalledWith('file:///doc/files/a.pdf');
+  await expect(api.auth.emailLogin('a@test.com', 'pw12345678')).rejects.toThrow('맞지 않아요');
+});
+
+it('테마를 끼워도 장착한 아바타는 그대로이고, 같은 종류끼리만 바뀐다', async () => {
+  const user = await signup('a@test.com');
+  // 새 계정은 포인트가 0이라 저장된 DB에 포인트를 넣고 다시 읽는다
+  const file = `user-${user._id}`;
+  const saved = JSON.parse(mockFiles.get(file)!);
+  saved.user.pointBalance = 100000;
+  mockFiles.set(file, JSON.stringify(saved));
+  resetLocalForTests();
+  await login('a@test.com');
+  const items = await api.shop.items({ sort: 'price' } as never);
+  const theme = items.find((i) => i.category === 'theme')!;
+  const avatar = items.find((i) => i.category === 'avatar' && i.price > 0)!;
+  await api.shop.purchase(avatar._id);
+  await api.shop.purchase(theme._id);
+  const owned = await api.shop.myItems();
+  const has = (id: string) => owned.some((u) => u.itemId === id && u.isOwned);
+  expect(has(theme._id) && has(avatar._id)).toBe(true);
+  await api.shop.equip(avatar._id);
+  await api.shop.equip(theme._id);
+  const after = await api.shop.myItems();
+  const on = (id: string) => after.find((u) => u.itemId === id)?.isEquipped;
+  expect(on(avatar._id)).toBe(true);
+  expect(on(theme._id)).toBe(true);
+  expect(after.filter((u) => u.isEquipped && u.itemCategory === 'avatar')).toHaveLength(1);
+  await expect(api.shop.equip('없는-아이템')).rejects.toThrow('보유한');
 });

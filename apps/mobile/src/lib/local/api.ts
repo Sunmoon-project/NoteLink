@@ -418,15 +418,25 @@ const api: Api = {
       // 탈퇴: 이 계정의 기록과 기기에 복사해 둔 파일을 모두 지운다 (FR-03-08)
       const d = db();
       const id = d.user._id;
-      // 계정 목록을 먼저 고친다. 실패하면 아무것도 지우지 않아 다시 시도할 수 있다
-      const next = Object.fromEntries(Object.entries(accounts).filter(([, v]) => v !== id));
-      writeDb('accounts', next);
-      accounts = next;
+      const files = keptFilesIn(d);
+      // DB(백업 포함)를 먼저 지운다. 실패하면 계정이 그대로라 로그인한 채 다시 시도할 수 있다
+      try {
+        dropDb(`user-${id}`);
+      } catch {
+        return fail('STORAGE_FAILED', '탈퇴를 마치지 못했어요. 다시 시도해 주세요', 507);
+      }
       loaded.delete(id);
       savedJson.delete(id);
-      dropDb(`user-${id}`);
+      // DB가 없으면 로그인되지 않으므로 계정 목록 정리가 실패해도 남은 항목은 쓰이지 않는다
+      const next = Object.fromEntries(Object.entries(accounts).filter(([, v]) => v !== id));
+      try {
+        writeDb('accounts', next);
+      } catch {
+        // 다음 저장 때 다시 쓴다
+      }
+      accounts = next;
       // 자료 원본 · 프로필 사진 등 이 계정이 기기에 복사해 둔 파일을 모두 지운다
-      for (const uri of keptFilesIn(d)) dropFile(uri);
+      for (const uri of files) dropFile(uri);
       // 계정이 이미 없어 재시도할 수 없으므로 비밀번호 삭제 실패로 탈퇴를 막지 않는다
       // (남은 비밀번호는 어떤 계정과도 이어지지 않는다)
       await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
@@ -1241,7 +1251,11 @@ const api: Api = {
     },
     equip: (itemId) => {
       const d = db();
-      for (const u of d.userItems) u.isEquipped = u.itemId === itemId && u.isOwned;
+      const target = d.userItems.find((u) => u.itemId === itemId && u.isOwned);
+      if (!target) return fail(ERROR_CODES.NOT_FOUND, '보유한 아이템이 아니에요', 404);
+      // 같은 종류(아바타 · 테마)끼리만 바꿔 낀다
+      for (const u of d.userItems)
+        if (u.itemCategory === target.itemCategory) u.isEquipped = u === target;
       return ok(undefined);
     },
     ledger: (type) =>
