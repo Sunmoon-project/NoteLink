@@ -161,7 +161,7 @@ export function RoomListScreen() {
         )}
         <View className="gap-2">
           {rec.data
-            ?.filter((r) => r.title.includes(q))
+            ?.filter((r) => r.title.includes(q) && !joined.some((j) => j._id === r._id))
             .map((r) => (
               <Card
                 key={r._id}
@@ -784,7 +784,7 @@ export function RoomScreen() {
       )}
 
       {menu && (
-        <View className="absolute right-5 bottom-[150px] z-20 gap-1 rounded-2xl border border-line bg-white p-1.5 shadow-lg">
+        <View className="absolute right-5 bottom-[178px] z-20 gap-1 rounded-2xl border border-line bg-white p-1.5 shadow-lg">
           {(
             [
               [

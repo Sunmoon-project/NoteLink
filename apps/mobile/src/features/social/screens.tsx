@@ -280,7 +280,7 @@ export function ChatScreen() {
       />
       <Sheet open={menu} onClose={() => setMenu(false)}>
         <Group>
-          <Row>알림 설정 준비 중 · #71</Row>
+          <Row>알림 설정은 준비 중이에요</Row>
           <Row
             danger
             onPress={() => {
