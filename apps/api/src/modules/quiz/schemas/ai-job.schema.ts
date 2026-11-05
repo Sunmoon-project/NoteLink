@@ -19,11 +19,13 @@ export class AiJob {
       'avatar_profile',
       'image_check',
     ],
+    type: String,
   })
   type: string;
 
   @Prop({
     required: true,
+    type: String,
     enum: ['queued', 'running', 'succeeded', 'failed', 'canceled'],
     default: 'queued',
   })
@@ -32,42 +34,42 @@ export class AiJob {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   targetType: string;
 
-  @Prop({ type: Types.ObjectId, required: true })
+  @Prop({ type: Types.ObjectId, required: true, ref: 'QuizSet' })
   targetId: Types.ObjectId;
 
   // 처리에 필요한 자료를 NestJS가 넣는다(처리기는 다른 컬렉션을 읽지 않음).
-  @Prop({ type: Object, required: true })
+  @Prop({ type: Object, required: true, default: {} })
   input: Record<string, unknown>;
 
   // 처리기가 쓴 결과를 NestJS가 읽어 quiz_sets 등에 반영한다.
-  @Prop({ type: Object, default: null })
+  @Prop({ type: Object, default: {} })
   result?: Record<string, unknown> | null;
 
-  @Prop({ required: true, default: 0 })
+  @Prop({ required: true, type: Number, default: 0 })
   progress: number;
 
-  @Prop({ required: true, default: 0 })
+  @Prop({ required: true, type: Number, default: 0 })
   attempts: number;
 
   // 공용 스키마에서 '없거나 문자열'. 처리기는 None 대신 필드를 지운다.
-  @Prop()
+  @Prop({ type: String, default: null })
   step?: string;
 
-  @Prop({ default: null })
-  error?: string | null;
+  @Prop({ type: String, default: null })
+  error?: string | null; // 예: "ValueError: 잘못된 입력"
 
   // 잠금(처리기가 관리)
-  @Prop({ default: null })
-  lockedBy?: string | null;
+  @Prop({ type: String, default: null })
+  lockedBy?: string | null; // 예: "job_123"
 
-  @Prop({ default: null })
-  lockedUntil?: Date | null;
+  @Prop({ type: Date, default: null })
+  lockedUntil?: Date | null; // 예: "2026-01-01 12:00:00" 이후 잠금 해제
 
-  @Prop({ default: null })
-  retryAt?: Date | null;
+  @Prop({ type: Date, default: null })
+  retryAt?: Date | null; // 예: "2026-01-01 12:00:00" 이후 재시도
 }
 
 export const AiJobSchema = SchemaFactory.createForClass(AiJob);

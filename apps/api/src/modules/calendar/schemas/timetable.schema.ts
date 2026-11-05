@@ -1,36 +1,36 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 
-// 임베디드 문서: TimetableClass (개별 수업 교시)[cite: 27]
+// 임베디드 문서: TimetableClass (개별 수업 교시)
 @Schema()
 export class TimetableClass {
   @Prop({ type: Types.ObjectId, auto: true })
   _id: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, ref: 'Subject' })
-  subjectId?: Types.ObjectId; // subjects 참조[cite: 27]
+  subjectId?: Types.ObjectId; // subjects 참조
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   subjectName: string;
 
   @Prop({ type: [Number], required: true })
-  days: number[]; // 수업 요일 배열 (0: 일요일, 1: 월요일 등)[cite: 27]
+  days: number[]; // 수업 요일 배열 (0: 일요일, 1: 월요일 등)
 
-  @Prop({ required: true })
-  startTime: string; // 예: "10:00"[cite: 27]
+  @Prop({ required: true, type: String })
+  startTime: string; // 예: "10:00"
 
-  @Prop({ required: true })
-  endTime: string; // 예: "11:30"[cite: 27]
+  @Prop({ required: true, type: String })
+  endTime: string; // 예: "11:30"
 
-  @Prop()
-  location?: string; // 강의실 위치[cite: 27]
+  @Prop({ type: String, default: null })
+  location?: string; // 강의실 위치
 
-  @Prop({ required: true, default: '#000000' })
+  @Prop({ required: true, type: String, default: '#000000' }) // hex color code
   color: string;
 }
 export const TimetableClassSchema = SchemaFactory.createForClass(TimetableClass);
 
-// 메인 스키마: timetables[cite: 27]
+// 메인 스키마: timetables
 export type TimetableDocument = HydratedDocument<Timetable>;
 
 @Schema({ collection: 'timetables', timestamps: true })
@@ -39,7 +39,7 @@ export class Timetable {
   userId: Types.ObjectId;
 
   @Prop({ type: [TimetableClassSchema], default: [] })
-  classes: TimetableClass[]; // 내장된 수업 목록 배열[cite: 27]
+  classes: TimetableClass[]; // 내장된 수업 목록 배열
 }
 
 export const TimetableSchema = SchemaFactory.createForClass(Timetable);

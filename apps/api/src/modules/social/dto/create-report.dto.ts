@@ -1,4 +1,12 @@
-import { IsArray, IsIn, IsMongoId, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsArray,
+  IsIn,
+  IsMongoId,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 import { REPORT_TYPES } from '../report.constants.js';
 import type { ReportType } from '../report.constants.js';

@@ -1,11 +1,5 @@
 /** 신고 유형 (공용 스키마 packages/shared ReportType을 따름) */
-export const REPORT_TYPES = [
-  'abusive_language',
-  'spam',
-  'disturbing',
-  'obscene',
-  'other',
-] as const;
+export const REPORT_TYPES = ['abusive_language', 'spam', 'disturbing', 'obscene', 'other'] as const;
 export type ReportType = (typeof REPORT_TYPES)[number];
 
 /** 신고 처리 상태 */

@@ -8,13 +8,13 @@ export class Folder {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   ownerId: Types.ObjectId; // users 참조
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   title: string;
 
   @Prop({ type: Types.ObjectId, ref: 'Subject' })
   subjectId: Types.ObjectId; // subjects 참조
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   deletedAt?: Date | null;
 }
 

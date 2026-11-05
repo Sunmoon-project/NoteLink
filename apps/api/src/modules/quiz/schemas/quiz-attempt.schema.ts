@@ -7,13 +7,13 @@ export class AttemptAnswer {
   @Prop({ type: Types.ObjectId, required: true })
   questionId: Types.ObjectId;
 
-  @Prop({ default: null })
+  @Prop({ type: String, default: null })
   answer?: string | null;
 
-  @Prop({ required: true, default: false })
+  @Prop({ required: true, type: Boolean, default: false })
   correct: boolean;
 
-  @Prop({ required: true, default: 1 })
+  @Prop({ required: true, type: Number, default: 1 })
   tries: number;
 }
 
@@ -30,22 +30,22 @@ export class QuizAttempt {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
 
-  @Prop({ required: true, default: 0 })
+  @Prop({ required: true, type: Number, default: 0 })
   correctCount: number;
 
-  @Prop({ required: true, default: 0 })
+  @Prop({ required: true, type: Number, default: 0 })
   total: number;
 
-  @Prop({ required: true, default: 0 })
+  @Prop({ required: true, type: Number, default: 0 })
   pointsEarned: number;
 
   @Prop({ type: [AttemptAnswerSchema], default: [] })
   answers: AttemptAnswer[];
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: Date })
   startedAt: Date;
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   finishedAt?: Date | null;
 }
 

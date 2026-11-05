@@ -6,10 +6,10 @@ export type UserItemDocument = HydratedDocument<UserItem>;
 @Schema({ collection: 'user_items', timestamps: true })
 export class UserItem {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
-  userId: Types.ObjectId; // users 참조[cite: 25]
+  userId: Types.ObjectId; // users 참조
 
   @Prop({ type: Types.ObjectId, ref: 'ShopItem', required: true })
-  itemId: Types.ObjectId; // shop_items 참조[cite: 25]
+  itemId: Types.ObjectId; // shop_items 참조
 
   @Prop({ required: true })
   itemCategory: string;
@@ -21,16 +21,16 @@ export class UserItem {
   isWished: boolean;
 
   @Prop({ required: true, default: false })
-  isEquipped: boolean; // 현재 장착 여부[cite: 25]
+  isEquipped: boolean; // 현재 장착 여부
 
-  @Prop()
-  wishedAt?: Date;
+  @Prop({ type: Date, default: null })
+  wishedAt?: Date | null;
 
-  @Prop()
-  acquiredAt?: Date;
+  @Prop({ type: Date, default: null })
+  acquiredAt?: Date | null;
 
-  @Prop()
-  acquiredType?: string; // purchase, event 등[cite: 25]
+  @Prop({ type: String, default: null })
+  acquiredType?: string; // purchase, event 등
 }
 
 export const UserItemSchema = SchemaFactory.createForClass(UserItem);

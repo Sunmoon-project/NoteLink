@@ -23,11 +23,16 @@ export class Question {
   @Prop({ required: true })
   answer: string;
 
-  @Prop({ default: null })
+  @Prop({ type: String, default: null })
   explanation?: string | null;
 
   @Prop({ type: [String], default: [] })
   conceptTags: string[];
+
+  // 복습 상태(step · dueAt · lastResult · streak · reviews · state 등). 형식은 처리기(apps/ai srs.py)가 정하고,
+  // 오답 복습(similar_quiz)의 srsUpdates를 NestJS가 여기에 반영한다. 공용 스키마에는 아직 없다.
+  @Prop({ type: Object, default: null })
+  srs?: Record<string, unknown> | null;
 }
 
 export const QuestionSchema = SchemaFactory.createForClass(Question);
@@ -46,29 +51,29 @@ export class QuizSet {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   ownerId: Types.ObjectId;
 
-  @Prop({ required: true, enum: ['ai_generated', 'manual'] })
+  @Prop({ required: true, type: String, enum: ['ai_generated', 'manual'] })
   source: string;
 
   @Prop({ type: Types.ObjectId, ref: 'QuizSet', default: null })
   sourceSetId?: Types.ObjectId | null;
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   title: string;
 
   // 공용 스키마의 status는 'generating' | 'ready' | 'failed' 문자열이다.
-  @Prop({ required: true, enum: ['generating', 'ready', 'failed'], default: 'generating' })
+  @Prop({ required: true, type: String, enum: ['generating', 'ready', 'failed'], default: 'generating' })
   status: string;
 
-  @Prop({ required: true, default: 0 })
+  @Prop({ required: true, type: Number, default: 0 })
   progress: number;
 
-  @Prop({ required: true, default: 0 })
+  @Prop({ required: true, type: Number,default: 0 })
   questionCount: number;
 
   @Prop({ type: [QuestionSchema], default: [] })
   questions: Question[];
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   deletedAt?: Date | null;
 }
 

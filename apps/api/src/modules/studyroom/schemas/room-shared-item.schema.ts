@@ -1,6 +1,9 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 
+// 공용 스키마 RoomSharedItem.itemType
+export const SHARED_ITEM_TYPES = ['quiz', 'flashcards', 'material'] as const;
+
 export type RoomSharedItemDocument = HydratedDocument<RoomSharedItem>;
 
 @Schema({ collection: 'room_shared_items', timestamps: true })
@@ -11,8 +14,8 @@ export class RoomSharedItem {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   sharedBy: Types.ObjectId;
 
-  @Prop({ required: true })
-  itemType: string; // quiz_set, folder, material 등[cite: 28]
+  @Prop({ required: true, type: String, enum: SHARED_ITEM_TYPES })
+  itemType: string; // quiz · flashcards · material
 
   @Prop({ type: Types.ObjectId, ref: 'QuizSet' })
   quizSetId?: Types.ObjectId;
@@ -29,8 +32,8 @@ export class RoomSharedItem {
   @Prop({ type: [{ type: Types.ObjectId, ref: 'Flashcard' }], default: [] })
   flashcardIds: Types.ObjectId[];
 
-  @Prop()
-  deletedAt?: Date;
+  @Prop({ type: Date, default: null })
+  deletedAt?: Date |null;
 }
 
 export const RoomSharedItemSchema = SchemaFactory.createForClass(RoomSharedItem);

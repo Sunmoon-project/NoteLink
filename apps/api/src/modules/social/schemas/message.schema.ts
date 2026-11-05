@@ -11,11 +11,11 @@ export class Message {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   senderId: Types.ObjectId;
 
-  @Prop({ required: true, default: 'text' })
-  type: string; // text, shared_item, system 등[cite: 28]
+  @Prop({ required: true, type: String, default: 'text' })
+  type: string; // text, shared_item, system 등
 
-  @Prop()
-  text?: string;
+  @Prop({ type: String, default: null })
+  text?: string | null;
 
   @Prop({ type: Types.ObjectId, ref: 'Message' })
   chatMessageId?: Types.ObjectId;
@@ -26,8 +26,8 @@ export class Message {
   @Prop({ type: Object })
   sharePreview?: Record<string, unknown>;
 
-  @Prop()
-  deletedAt?: Date;
+  @Prop({ type: Date, default: null })
+  deletedAt?: Date | null;
 }
 
 export const MessageSchema = SchemaFactory.createForClass(Message);

@@ -6,6 +6,7 @@ export const ROOM_MEMBER_ROLES = {
 
 /** 스터디룸 멤버 상태 */
 export const ROOM_MEMBER_STATUS = {
+  INVITED: 'invited',
   JOINED: 'joined',
   LEFT: 'left',
   KICKED: 'kicked',

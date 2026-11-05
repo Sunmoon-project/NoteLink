@@ -9,19 +9,19 @@ export class Notification {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String})
   type: string;
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   title: string;
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   body: string;
 
   @Prop({ type: Object, default: null })
   data?: Record<string, unknown> | null;
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   readAt?: Date | null;
 }
 

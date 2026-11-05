@@ -12,16 +12,16 @@ export class Friendship {
   userB: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
-  requesterId: Types.ObjectId; // 요청을 보낸 사람[cite: 28]
+  requesterId: Types.ObjectId; // 요청을 보낸 사람
 
-  @Prop({ required: true, default: 'pending' })
-  status: string; // pending, accepted, rejected, blocked[cite: 28]
+  @Prop({ required: true, type: String, default: 'pending' })
+  status: string; // pending, accepted, rejected, blocked
 
-  @Prop({ required: true, default: Date.now })
+  @Prop({ required: true, type: Date, default: Date.now })
   requestedAt: Date;
 
-  @Prop()
-  acceptedAt?: Date;
+  @Prop({ type: Date, default: null })
+  acceptedAt?: Date | null;
 }
 
 export const FriendshipSchema = SchemaFactory.createForClass(Friendship);

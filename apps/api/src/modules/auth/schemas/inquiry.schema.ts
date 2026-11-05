@@ -9,19 +9,19 @@ export class Inquiry {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   title: string;
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   content: string;
 
-  @Prop({ required: true, enum: ['open', 'answered', 'closed'], default: 'open' })
+  @Prop({ required: true, type: String, enum: ['open', 'answered', 'closed'], default: 'open' })
   status: string;
 
-  @Prop({ default: null })
+  @Prop({ type: String, default: null })
   answer?: string | null;
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   answeredAt?: Date | null;
 }
 

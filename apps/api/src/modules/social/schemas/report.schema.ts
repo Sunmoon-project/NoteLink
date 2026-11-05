@@ -17,19 +17,19 @@ export class Report {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   targetUserId: Types.ObjectId; // 신고 대상 유저
 
-  @Prop({ required: true, enum: REPORT_TYPES })
+  @Prop({ required: true, type: String, enum: REPORT_TYPES })
   reportType: string;
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   details: string;
 
   @Prop({ type: [String], default: [] })
   imageUrls: string[];
 
-  @Prop({ required: true, default: 'pending' })
+  @Prop({ required: true, type: String, default: 'pending' })
   status: string; // pending, in_review, resolved, dismissed
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   endAt?: Date | null;
 }
 

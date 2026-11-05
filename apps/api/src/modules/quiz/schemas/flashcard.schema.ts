@@ -14,26 +14,26 @@ export class Flashcard {
   @Prop({ type: Types.ObjectId, ref: 'User' })
   ownerId: Types.ObjectId;
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   front: string; // front(question)
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   back: string; // back(answer)
 
-  @Prop({ type: Types.ObjectId, ref: 'QuizSet' })
+  @Prop({ type: Types.ObjectId, required: true, ref: 'QuizSet' })
   sourceQuizSetId: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId })
+  @Prop({ type: Types.ObjectId, required: true })
   sourceQuestionId: Types.ObjectId;
 
   @Prop({ type: Object })
-  srs?: Record<string, unknown>;
+  srs?: Record<string, unknown> | null;
 
   @Prop()
-  lastResult?: string;
+  lastResult?: string | null;
 
   @Prop()
-  deletedAt?: Date;
+  deletedAt?: Date | null;
 }
 
 export const FlashcardSchema = SchemaFactory.createForClass(Flashcard);

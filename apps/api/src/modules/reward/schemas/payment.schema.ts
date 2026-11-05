@@ -8,29 +8,29 @@ export class Payment {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
 
-  @Prop({ required: true })
-  purpose: string; // subscription 등[cite: 25]
+  @Prop({ required: true, type: String })
+  purpose: string; // subscription 등
 
-  @Prop()
-  planTier?: string; // pro, max 등[cite: 25]
+  @Prop({ type: String, default: null })
+  planTier?: string; // pro, max 등
 
-  @Prop()
-  periodEnd?: Date;
+  @Prop({ type: Date, default: null })
+  periodEnd?: Date | null;
 
-  @Prop({ required: true })
-  amountKrw: number; // 실제 결제 원화 금액[cite: 25]
+  @Prop({ required: true, type: Number })
+  amountKrw: number; // 실제 결제 원화 금액
 
   @Prop({ required: true, default: 'pending' })
-  status: string; // pending, paid, failed, canceled[cite: 25]
+  status: string; // pending, paid, failed, canceled
 
-  @Prop()
-  pgTransactionId?: string; // PG사 승인 번호[cite: 25]
+  @Prop({ type: String, default: null })
+  pgTransactionId?: string; // PG사 승인 번호
 
-  @Prop()
-  failedReason?: string;
+  @Prop({ type: String, default: null })
+  failedReason?: string | null;
 
-  @Prop()
-  paidAt?: Date;
+  @Prop({ type: Date, default: null })
+  paidAt?: Date | null;
 }
 
 export const PaymentSchema = SchemaFactory.createForClass(Payment);
