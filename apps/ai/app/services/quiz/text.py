@@ -3,10 +3,17 @@
 import difflib
 import re
 import unicodedata
+from decimal import Decimal, InvalidOperation
 
 from app.services.quiz.models import CHOICES, Draft, Notes, Page, Question
 
-BLANK = re.compile(r"_{3,}|\(\s*\)|\(\s{2,}\)|\[\s*\]")
+# 빈칸은 ____와 안이 띄어진 ( ) · [ ]만. 빈 ()·[]는 어디서든 빈칸이 아님: 코드(useState() ·
+# useEffect(() => {}, []) · return ())를 빈칸으로 바꾸면 코드 노트 문제가 '빈칸이 여러 개'로
+# 버려지거나 유형이 빈칸으로 저장됨. 앞 글자로 코드를 가리는 예외는 끝이 없어 두지 않음
+# (/code-review #94). 생성 안내는 빈칸을 ____로 쓰게 함(similar.GEN_SYS)
+BLANK = re.compile(r"_{3,}|\(\s+\)|\[\s+\]")
+# 붙어 있던 빈칸 둘('( )( )')이 ____ 하나로 보이지 않게 띄움
+_JOINED = re.compile(r"____(?=____)")
 _PUNCT = re.compile(r"[\s\-_.·:()\[\]'\"~/,!?]+")
 _LABEL = re.compile(r"^\s*[\(\[]?([A-Ea-e])[\)\]\.:]\s*")
 _KO_GLOSS = re.compile(r"\s*\([^()]*[가-힣][^()]*\)\s*$")
@@ -77,6 +84,75 @@ def same_item(a: str | None, b: str | None) -> bool:
     )
 
 
+# 수 하나: 3.5×10^5 · 3.5 × 10^5 · 3.5x10^5 · 1.5e3 · 1.5E3 · 1.5E+3 · .5 · -5 · 350000.
+# 지수 표시 ^가 있어야 지수로 읽음('10x100'은 배율). 앞이 영어 글자 · 숫자가 아닐 때만
+# '-'를 부호로 봄('10-20'은 범위). 한국어 뒤에 붙은 수도 읽음('약3.5×10^5')
+_EXP = r"(?:\s*[×xX*]\s*10\s*\^\s*([-+]?\d+)|[eE]([-+]?\d+))?"
+VALUE = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
+_TRAILING = re.compile(r"[\s.,;:!?]+$")
+
+
+def number_values(s: str | None) -> tuple[list[Decimal], str]:
+    """(글에 적힌 수를 적힌 순서대로, 수를 뺀 나머지 글).
+
+    수는 Decimal로 정확히 읽어 반올림 · 넘침 없이 비교합니다(3×10^-7과 4×10^-7, 1e-999와 1e999).
+    Decimal도 읽지 못하는 지수(OCR로 숫자가 길게 붙은 경우)는 수가 아니라 글로 남깁니다.
+    나머지 글은 NFC · 소문자로 맞추고 공백을 한 칸으로, 끝의 마침표 · 쉼표만 떼며
+    부호 · 기호는 남깁니다(이 값으로는 '1/2'와 '1-2', '.5'와 '5'가 다름).
+    """
+    vals: list[Decimal] = []
+
+    def take(m: re.Match[str]) -> str:
+        base = m.group(1) or m.group(4)
+        exp = m.group(2) or m.group(3) or m.group(5) or m.group(6) or "0"
+        try:
+            vals.append(Decimal(f"{base}E{exp}"))
+        except InvalidOperation:
+            return f" {m.group(0)} "
+        return " "
+
+    rest = VALUE.sub(take, unicodedata.normalize("NFC", s or "").replace(",", ""))
+    return vals, _TRAILING.sub("", " ".join(rest.lower().split()))
+
+
+NUMBERED = re.compile(r"(?<![0-9.])\d+(?:\.\d+)?|(?<![A-Za-z])[IVXivx]+(?![A-Za-z])")
+
+
+def numbers(name: str) -> set[str]:
+    """이름의 숫자 · 로마 숫자('Type II' · 'type ii' → {'II'}, 'Phase 1 대사' → {'1'})."""
+    return {n.upper() for n in NUMBERED.findall(name)}
+
+
+def numbered_apart(a: str, b: str) -> bool:
+    """둘 다 번호가 있고 서로 다름: 나머지가 아무리 비슷해도 다른 것."""
+    na, nb = numbers(a), numbers(b)
+    return bool(na and nb and na != nb)
+
+
+def same_answer(a: str | None, b: str | None) -> bool:
+    """답 비교용 same_item. 'Type I …'과 'Type II …'는 따로 둡니다(concepts.unify)."""
+    return same_item(a, b) and not numbered_apart(a or "", b or "")
+
+
+def same_word(a: str | None, b: str | None) -> bool:
+    """같은 낱말로 묶을지(오늘의 복습의 고르기 · 넘겨주기 · 무효 풀이): 띄어쓰기만 다른 똑같은 답.
+
+    같은 낱말의 다른 문제를 사본으로 넘기면(moved) 그 문제의 복습이 사라집니다. 비슷한 철자 ·
+    굴절 어미 · 대소문자 · 부호로 넓히면 그때마다 다른 말이 같게 되어(port ~ report, act ~ active,
+    principal ~ principle, custom ~ customs, Plasmodium vivax ~ Plasmodium ovale, 전립선암 ~
+    전립선염, CO ~ Co, Cl- ~ Cl: Codex 리뷰 · /code-review 11/02), NFC로 맞추고 띄어쓰기만 뺀 글이
+    같아야 같은 낱말입니다(1.5 mL ~ 1.5mL, 대립 유전자 ~ 대립유전자). 같은 말을 다르게 보면 한
+    세트에 함께 나올 뿐입니다(fasten ~ fastened, IL-6 ~ IL6, alpha ~ Alpha). 빈 답은 어떤 답과도
+    다릅니다(관계없는 빈 답 문제끼리 묶지 않음).
+    """
+    x = _spaceless(a)
+    return bool(x) and x == _spaceless(b)
+
+
+def _spaceless(s: str | None) -> str:
+    return "".join(unicodedata.normalize("NFC", s or "").split())
+
+
 def short_answer(a: str | None) -> bool:
     """문장이 아닌 낱말 · 짧은 표현(그대로 다시 물을 수 있는 것).
 
@@ -93,10 +169,10 @@ def short_answer(a: str | None) -> bool:
 
 def tidy(d: Draft) -> Draft:
     """빈칸 표시를 ____로 통일하고 보기 앞 기호(A. (b) 등)를 뗍니다."""
-    passage = BLANK.sub("____", d["passage"].strip())
+    passage = _JOINED.sub("____ ", BLANK.sub("____", d["passage"].strip()))
     if "____" in passage:  # 영어 빈칸 문장 뒤에 괄호로 붙은 한국어 뜻풀이는 정답을 알려 줌
         passage = _KO_GLOSS.sub("", passage)
-    stem = BLANK.sub("____", d["stem"])
+    stem = _JOINED.sub("____ ", BLANK.sub("____", d["stem"]))
     if "____" in passage and "뜻" in stem:  # 빈칸 문장인데 '한국어 뜻에 알맞은…'으로 물음
         stem = "다음 빈칸에 들어갈 가장 알맞은 표현을 고르시오."
     options = strip_labels(d["options"])

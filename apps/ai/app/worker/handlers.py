@@ -1,14 +1,15 @@
-"""작업 종류(ai_jobs.type) → 처리 함수. 7 · 8번 PR(오늘의 복습 · 맞춤 퀴즈)에서 더 채웁니다.
+"""작업 종류(ai_jobs.type) → 처리 함수.
 
 처리기는 여기 등록된 종류만 가져가므로, 아직 만들지 않은 종류의 작업은 queued로 남습니다.
 """
 
+from collections.abc import Callable
 from functools import cache
 
-from app.clients.llm import JsonObject, LlmError, SchoolLlm, school_llm
+from app.clients.llm import JsonObject, Llm, LlmError, SchoolLlm, school_llm
 from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
-from app.services.quiz import review
+from app.services.quiz import generate, review, today
 from app.services.recording import job as recording_job
 from app.worker.runner import Handler, JobInputError, Report
 
@@ -29,12 +30,24 @@ def _voyage() -> Voyage:
     return voyage()
 
 
-def similar_quiz(inp: JsonObject, report: Report) -> JsonObject:
-    """오답 복습(review.run). input 오류는 다시 해도 같으므로 JobInputError로 바로 실패시킵니다."""
-    try:
-        return review.run(_llm(), inp, report)
-    except review.InputError as e:
-        raise JobInputError(str(e)) from e
+type _Run = Callable[[Llm, JsonObject, Report], JsonObject]
+
+
+def _handler(run: _Run) -> Handler:
+    """퀴즈 서비스의 run을 처리 함수로. input 오류는 다시 해도 같으므로 바로 실패시킵니다."""
+
+    def handle(inp: JsonObject, report: Report) -> JsonObject:
+        try:
+            return run(_llm(), inp, report)
+        except review.InputError as e:
+            raise JobInputError(str(e)) from e
+
+    return handle
+
+
+similar_quiz = _handler(review.run)  # 오답 복습
+today_review = _handler(today.run)  # 오늘의 복습
+quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
 
 
 def recording_summary(inp: JsonObject, report: Report) -> JsonObject:
@@ -58,5 +71,7 @@ def recording_summary(inp: JsonObject, report: Report) -> JsonObject:
 
 HANDLERS: dict[str, Handler] = {
     review.TYPE: similar_quiz,
+    today.TYPE: today_review,
+    generate.TYPE: quiz_generate,
     recording_job.TYPE: recording_summary,
 }

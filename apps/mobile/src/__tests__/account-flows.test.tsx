@@ -140,6 +140,7 @@ describe('설정 · 온보딩', () => {
     mockApi.me.update.mockResolvedValue(user('u-a'));
     await renderScreen(<ProfileSetupScreen />);
     await fireEvent.changeText(screen.getByPlaceholderText('노트러버'), '한결');
+    await fireEvent.press(screen.getByText('대학생'));
     await fireEvent.press(screen.getByText('시작하기'));
     await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/'));
     expect(mockApi.me.update).toHaveBeenCalledWith(

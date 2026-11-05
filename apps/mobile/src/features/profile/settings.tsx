@@ -16,6 +16,7 @@ import {
 } from 'lucide-react-native';
 import type { PlanTier, UserSettings } from '@notelink/shared';
 import { api } from '@/lib/api';
+import { nicknameError } from '@/lib/validation';
 import { env } from '@/lib/env';
 import { clearAccountState } from '@/lib/account';
 import { useAuth } from '@/stores/auth';
@@ -89,7 +90,7 @@ export function SettingsScreen() {
     }
   };
   // 내 정보를 못 불러와도 다시 시도 · 로그아웃은 할 수 있게 한다
-  if (me.isError)
+  if (me.isError && !me.data)
     return (
       <Screen>
         <Title>설정</Title>
@@ -166,11 +167,16 @@ export function SettingsScreen() {
           <View className="mt-3 flex-row justify-between">
             <Text className="text-caption text-sub">AI 크레딧</Text>
             <Text className="text-caption text-sub">
-              {u.usage?.aiCredits ?? 0} / {u.usage?.aiCreditLimit ?? 800}
+              {u.usage?.aiCredits ?? 0}
+              {u.usage?.aiCreditLimit ? ` / ${u.usage.aiCreditLimit}` : ''}
             </Text>
           </View>
           <Progress
-            value={Math.max(2, ((u.usage?.aiCredits ?? 0) / (u.usage?.aiCreditLimit || 1)) * 100)}
+            value={
+              u.usage?.aiCreditLimit
+                ? Math.max(2, ((u.usage.aiCredits ?? 0) / u.usage.aiCreditLimit) * 100)
+                : 0
+            }
             className="mt-1.5"
           />
         </Card>
@@ -442,7 +448,8 @@ export function NicknameScreen() {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
   const [v, setV] = useState(me.data?.nickname ?? '');
-  const ok = v.trim().length >= 2 && v.trim().length <= 10;
+  const err = nicknameError(v);
+  const ok = !err;
   const save = useMutation({
     mutationFn: () => api.me.update({ nickname: v.trim() }),
     onSuccess: () => {
@@ -464,7 +471,7 @@ export function NicknameScreen() {
       <Input value={v} onChangeText={(x) => setV(x.slice(0, 10))} autoFocus invalid={!ok && !!v} />
       <View className="mt-2 flex-row justify-between">
         <Text className={cx('text-caption', !ok ? 'text-danger' : 'text-sub')}>
-          2~10자로 입력해주세요
+          {err ?? '한글 · 영문 · 숫자 2~10자'}
         </Text>
         <Text className="text-caption text-sub">{v.length}/10</Text>
       </View>

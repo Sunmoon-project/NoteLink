@@ -6,6 +6,7 @@ import { LoginScreen } from '../features/auth/auth';
 import { seedUser } from '../lib/mock/seed';
 import { useAuth } from '../stores/auth';
 import { useQuizProgress } from '../stores/quiz-progress';
+import { ApiError } from '../lib/api';
 import { useToast } from '../stores/toast';
 import { renderScreen } from '../test-utils';
 
@@ -60,7 +61,7 @@ function saveProgress() {
   });
 }
 async function submitLogin() {
-  await fireEvent.press(screen.getByText('이메일로 시작하기'));
+  await fireEvent.press(screen.getByText('이메일로 로그인'));
   await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'learner@example.com');
   await fireEvent.changeText(screen.getByPlaceholderText('8자 이상'), 'password-a');
   await fireEvent.press(screen.getByText('로그인'));
@@ -128,7 +129,7 @@ it('로그인 정보 저장 실패는 안내하고 화면을 이동하지 않으
   jest.mocked(SecureStore.setItemAsync).mockRejectedValueOnce(new Error('기기 저장 실패'));
   await renderScreen(<LoginScreen />, qc);
   await submitLogin();
-  await waitFor(() => expect(useToast.getState().msg).toBe('로그인하지 못했어요'));
+  expect(await screen.findByText('로그인하지 못했어요')).toBeTruthy();
   expect(router.replace).not.toHaveBeenCalled();
   expect(qc.getQueryData(['me'])).toBeUndefined();
   await fireEvent.press(screen.getByText('로그인'));
@@ -155,4 +156,15 @@ it('온보딩 완료 동일 계정의 미완료 풀이가 있으면 해당 세�
     expect(router.replace).toHaveBeenCalledWith({ pathname: '/play/solve', params: { setId } }),
   );
   expect(useQuizProgress.getState().progress).toEqual(previous);
+});
+
+it('로그인 실패는 시트 안에 안내하고, 입력을 고치면 지운다', async () => {
+  const failure = new ApiError('VALIDATION_FAILED', '', 400);
+  failure.message = '이메일 또는 비밀번호가 맞지 않아요';
+  mockApi.auth.emailLogin.mockRejectedValueOnce(failure);
+  await renderScreen(<LoginScreen />, client());
+  await submitLogin();
+  expect(await screen.findByText('이메일 또는 비밀번호가 맞지 않아요')).toBeTruthy();
+  await fireEvent.changeText(screen.getByPlaceholderText('8자 이상'), '123456789');
+  expect(screen.queryByText('이메일 또는 비밀번호가 맞지 않아요')).toBeNull();
 });

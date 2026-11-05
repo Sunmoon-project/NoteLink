@@ -62,6 +62,14 @@ export function FriendAddScreen() {
           닉네임으로 친구를 찾아보세요 · 예) 홍길동
         </Text>
       )}
+      {q.trim() && result.isError && (
+        <View className="gap-2 py-3">
+          <Text className="text-footnote text-sub">친구를 찾지 못했어요</Text>
+          <Btn small onPress={() => void result.refetch()}>
+            검색 다시 시도
+          </Btn>
+        </View>
+      )}
       {q.trim() && result.isSuccess && found.length === 0 && (
         <Card className="mt-3 items-center py-10">
           <SearchIcon size={ICON.lg} color={C.sub} />
@@ -117,6 +125,14 @@ export function RequestsScreen() {
   return (
     <Screen>
       <Header title={`받은 친구 요청 (${reqs.data?.length ?? 0})`} />
+      {reqs.isError && !reqs.data && (
+        <View className="gap-2 py-3">
+          <Text className="text-footnote text-sub">친구 요청을 불러오지 못했어요</Text>
+          <Btn small onPress={() => void reqs.refetch()}>
+            친구 요청 다시 시도
+          </Btn>
+        </View>
+      )}
       {reqs.data?.length === 0 && (
         <Text className="py-16 text-center text-footnote text-sub">받은 친구 요청이 없어요</Text>
       )}
@@ -220,6 +236,16 @@ export function ChatScreen() {
     onError: () => toast('친구 삭제에 실패했어요. 다시 시도해주세요'),
   });
 
+  if (room.isError && !room.data)
+    return (
+      <Screen>
+        <Header title={name} />
+        <Text className="mt-8 text-center text-body">대화를 불러오지 못했어요</Text>
+        <Btn className="mt-4" onPress={() => void room.refetch()}>
+          다시 시도
+        </Btn>
+      </Screen>
+    );
   return (
     <Screen
       scroll={false}
@@ -254,6 +280,14 @@ export function ChatScreen() {
           <StatusText status={status} />
         </View>
       </View>
+      {history.isError && !history.data && (
+        <View className="gap-2 py-3">
+          <Text className="text-footnote text-sub">대화 기록을 불러오지 못했어요</Text>
+          <Btn small onPress={() => void history.refetch()}>
+            대화 기록 다시 시도
+          </Btn>
+        </View>
+      )}
       <FlatList
         ref={list}
         data={history.data ?? []}
@@ -280,7 +314,7 @@ export function ChatScreen() {
       />
       <Sheet open={menu} onClose={() => setMenu(false)}>
         <Group>
-          <Row>알림 설정 준비 중 · #71</Row>
+          <Row>알림 설정은 준비 중이에요</Row>
           <Row
             danger
             onPress={() => {

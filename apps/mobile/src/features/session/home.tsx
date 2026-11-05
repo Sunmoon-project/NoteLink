@@ -46,9 +46,18 @@ export function HomeScreen() {
   const dayLive = s.itemId ? s.elapsedSince(midnight, now) : 0;
   const live = (id: string, base: number) => base + (id === s.itemId ? dayLive : 0);
   const todaySec = items.reduce((a, i) => a + i.accumulatedSec, 0) + dayLive;
+  // 큰 타이머는 지금 공부하는 항목의 시간만 보여 준다 (다른 항목 시간이 이어 붙지 않게)
+  const activeSec = s.itemId
+    ? live(s.itemId, items.find((i) => i._id === s.itemId)?.accumulatedSec ?? 0)
+    : null;
   const weekSec = (weekly.data?.totalSec ?? 0) + (s.itemId ? s.elapsedSince(monday, now) : 0);
-  const goalMin = goal.data?.targetMin ?? 21 * 60;
-  const pct = Math.round((weekSec / 60 / goalMin) * 100);
+  // 목표를 읽지 못했으면 임의의 목표로 계산하지 않는다
+  const goalMin = goal.data?.targetMin;
+  // 주간 기록을 못 읽었으면 0시간이나 0%로 표시하지 않는다
+  const pct = goalMin && weekly.data ? Math.round((weekSec / 60 / goalMin) * 100) : null;
+  const weekLabel = weekly.data
+    ? `이번주 ${hm(weekSec)}${goalMin ? ` / 목표 ${goalMin / 60}시간 (${pct}%)` : ''} ›`
+    : '주간 목표 설정 ›';
   const nextDday = ddays.data?.find((d) => d.daysLeft >= 0);
 
   const toggle = async (id: string) => {
@@ -68,6 +77,16 @@ export function HomeScreen() {
     }
   };
   const ending = useRef(false);
+  // 다른 화면을 보는 중이면 자동 종료로 화면을 끌고 가지 않는다
+  const focused = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      focused.current = true;
+      return () => {
+        focused.current = false;
+      };
+    }, []),
+  );
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -97,10 +116,13 @@ export function HomeScreen() {
       if (!current()) return;
       await qc.invalidateQueries({ queryKey: ['study'] });
       if (!current()) return;
-      router.push({
-        pathname: '/summary',
-        params: { sec: String(r.sec), points: String(r.pointsEarned) },
-      });
+      if (reason === 'auto_pause_timeout' && !focused.current)
+        toast('쉬는 시간이 길어져 공부 측정을 자동으로 끝냈어요');
+      else
+        router.push({
+          pathname: '/summary',
+          params: { sec: String(r.sec), points: String(r.pointsEarned) },
+        });
     } catch {
       if (valid && mounted.current) toast('종료하지 못했어요. 연결을 확인하고 다시 종료해주세요');
     } finally {
@@ -123,7 +145,7 @@ export function HomeScreen() {
   return (
     <View className="flex-1 bg-white">
       {running && <KeepAwake />}
-      {s.itemId && <TiltWatcher />}
+      <TiltWatcher />
       <Screen>
         <NetBanner />
         <View className="flex-row items-start justify-between pt-4">
@@ -168,7 +190,9 @@ export function HomeScreen() {
         {/* 순공시간 카드 */}
         <View className="mt-3 rounded-3xl bg-night p-5">
           <View className="flex-row items-center justify-between">
-            <Text className="text-caption text-white/70">오늘 순공시간</Text>
+            <Text className="text-caption text-white/70">
+              {active ? '이 항목 오늘 공부 시간' : '오늘 순공시간'}
+            </Text>
             <View className="flex-row items-center gap-1">
               <View
                 className={cx('h-1.5 w-1.5 rounded-full', running ? 'bg-sun' : 'bg-white/50')}
@@ -189,17 +213,16 @@ export function HomeScreen() {
             className="mt-1 tabular-nums text-display font-bold text-white"
             style={{ fontVariant: ['tabular-nums'] }}
           >
-            {hms(active || todaySec ? todaySec : 0)}
+            {hms(activeSec ?? todaySec)}
           </Text>
+          {active && <Text className="text-caption text-white/60">오늘 전체 {hms(todaySec)}</Text>}
           <Pressable accessibilityLabel="주간 목표 설정" onPress={() => setSheet('goal')}>
             <Text className="text-footnote text-white/80">
               {running
-                ? `책상 앞이에요 · 이번주 목표 ${pct}%`
+                ? `책상 앞이에요${pct === null ? '' : ` · 이번주 목표 ${pct}%`}`
                 : active
                   ? '쉬는 중 · 10분이 지나면 자동으로 종료돼요'
-                  : has
-                    ? `이번주 ${hm(weekSec)} / 목표 ${goalMin / 60}시간 (${pct}%) ›`
-                    : `이번주 ${hm(weekSec)} / 목표 ${goalMin / 60}시간 (${pct}%) ›`}
+                  : weekLabel}
             </Text>
           </Pressable>
           <Pressable onPress={() => active && router.push('/landscape')}>
@@ -256,7 +279,15 @@ export function HomeScreen() {
           <Text className="text-headline font-bold text-ink">오늘 공부할 목록</Text>
           <Text className="text-caption text-sub">{items.length}개</Text>
         </View>
-        {!has && (
+        {today.isError && !today.data && (
+          <View className="gap-2 py-3">
+            <Text className="text-footnote text-sub">오늘 목록을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void today.refetch()}>
+              오늘 목록 다시 시도
+            </Btn>
+          </View>
+        )}
+        {today.isSuccess && !has && (
           <View className="items-center rounded-2xl border border-dashed border-cream-2 py-5">
             <Text className="text-footnote text-sub">아직 공부할 목록이 없어요</Text>
             <Text className="text-caption2 text-sub/80">
@@ -312,12 +343,21 @@ export function HomeScreen() {
             <Text className="text-caption text-sub">이번주 순공시간</Text>
             <Text className="text-caption font-semibold text-brand">기록 · 캘린더 ›</Text>
           </View>
-          <Text className="mt-1 text-title2 font-bold text-ink">{hm(weekSec)}</Text>
-          <Text className="text-caption text-sub">
-            {has
-              ? `지난주보다 ${hm(Math.abs(weekly.data?.diffFromLastWeekSec ?? 0)).replace('0시간 ', '')} ${(weekly.data?.diffFromLastWeekSec ?? 0) < 0 ? '줄었어요' : '늘었어요'}`
-              : '학습 기록이 쌓이면 스트릭이 시작돼요'}
+          <Text className="mt-1 text-title2 font-bold text-ink">
+            {weekly.data ? hm(weekSec) : '-'}
           </Text>
+          <Text className="text-caption text-sub">
+            {weekly.isError && !weekly.data
+              ? '이번주 기록을 불러오지 못했어요'
+              : has
+                ? `지난주보다 ${hm(Math.abs(weekly.data?.diffFromLastWeekSec ?? 0)).replace('0시간 ', '')} ${(weekly.data?.diffFromLastWeekSec ?? 0) < 0 ? '줄었어요' : '늘었어요'}`
+                : '학습 기록이 쌓이면 스트릭이 시작돼요'}
+          </Text>
+          {weekly.isError && !weekly.data && (
+            <Btn small className="mt-2" onPress={() => void weekly.refetch()}>
+              이번주 기록 다시 시도
+            </Btn>
+          )}
         </Card>
       </Screen>
       <AddItemSheet open={sheet === 'add'} onClose={() => setSheet(null)} />
@@ -339,9 +379,12 @@ function TiltWatcher() {
       pushed.current = false;
       Accelerometer.setUpdateInterval(400);
       const sub = Accelerometer.addListener(({ x, y }) => {
+        // 다시 세우면 다음 기울임을 받는다
+        if (Math.abs(y) > 0.8) pushed.current = false;
         if (!pushed.current && Math.abs(x) > 0.8 && Math.abs(y) < 0.35) {
           pushed.current = true;
-          router.push('/landscape');
+          if (useSession.getState().itemId) router.push('/landscape');
+          else toast('공부할 항목을 시작한 뒤 가로로 돌려 주세요');
         }
       });
       return () => sub.remove();

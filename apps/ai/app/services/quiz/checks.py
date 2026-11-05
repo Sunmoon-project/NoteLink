@@ -5,13 +5,21 @@ code_check는 탈락 이유 목록과 정답 보기의 위치를 돌려줍니다
 
 import difflib
 import re
-import unicodedata
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Literal, NotRequired, TypedDict
 
 from app.services.quiz.models import CHOICES, Draft, Question
-from app.services.quiz.text import norm, same_item, short_answer, terms
+from app.services.quiz.text import (
+    BLANK,
+    VALUE,
+    norm,
+    number_values,
+    same_item,
+    same_word,
+    short_answer,
+    terms,
+)
 
 NEGATIVE = re.compile(r"아닌|않은|틀린|옳지\s?않|잘못된|거리가 먼")
 KO_TYPES = ("정의", "특징", "분류")  # 한국어 용어 과목 유형 (임상병리, 10/22)
@@ -52,6 +60,9 @@ class Target:
     answer: str = ""
     concept: str = ""
     used_answers: list[str] = field(default_factory=list)  # 이 세트에서 이미 쓴 정답
+    # 지난번 맞혔어도 원래 정답을 다시 물음(오늘의 복습이 결함 문제를 같은 낱말로 바꿀 때). 이때는
+    # 오늘의 복습의 같은 낱말 기준(text.same_word: 띄어쓰기만 다른 똑같은 답)으로 봅니다
+    keep_answer: bool = False
 
 
 def too_close(d: Draft, seen: list[Seen]) -> bool:
@@ -90,41 +101,10 @@ def reversed_of(d: Draft, seen: list[Seen]) -> bool:
     return False
 
 
-# 수 하나: 3.5×10^5 · 3.5 × 10^5 · 3.5x10^5 · 1.5e3 · 1.5E3 · 1.5E+3 · .5 · -5 · 350000.
-# 지수 표시 ^가 있어야 지수로 읽음('10x100'은 배율). 앞이 영어 글자 · 숫자가 아닐 때만
-# '-'를 부호로 봄('10-20'은 범위). 한국어 뒤에 붙은 수도 읽음('약3.5×10^5')
-_EXP = r"(?:\s*[×xX*]\s*10\s*\^\s*([-+]?\d+)|[eE]([-+]?\d+))?"
-_NUMBER = re.compile(rf"(?<![A-Za-z0-9])(-?(?:\d+(?:\.\d+)?|\.\d+)){_EXP}|(\d+(?:\.\d+)?){_EXP}")
-_TRAILING = re.compile(r"[\s.,;:!?]+$")
-
-
-def number_values(s: str | None) -> tuple[list[Decimal], str]:
-    """(글에 적힌 수를 적힌 순서대로, 수를 뺀 나머지 글).
-
-    수는 Decimal로 정확히 읽어 반올림 · 넘침 없이 비교합니다(3×10^-7과 4×10^-7, 1e-999와 1e999).
-    Decimal도 읽지 못하는 지수(OCR로 숫자가 길게 붙은 경우)는 수가 아니라 글로 남깁니다.
-    나머지 글은 NFC · 소문자로 맞추고 공백을 한 칸으로, 끝의 마침표 · 쉼표만 떼며
-    부호 · 기호는 남깁니다('1/2'와 '1-2', '.5'와 '5'는 다름).
-    """
-    vals: list[Decimal] = []
-
-    def take(m: re.Match[str]) -> str:
-        base = m.group(1) or m.group(4)
-        exp = m.group(2) or m.group(3) or m.group(5) or m.group(6) or "0"
-        try:
-            vals.append(Decimal(f"{base}E{exp}"))
-        except InvalidOperation:
-            return f" {m.group(0)} "
-        return " "
-
-    rest = _NUMBER.sub(take, unicodedata.normalize("NFC", s or "").replace(",", ""))
-    return vals, _TRAILING.sub("", " ".join(rest.lower().split()))
-
-
 def number_spans(s: str) -> list[tuple[int, int, list[Decimal]]]:
     """s 안의 수마다 (시작, 끝, 값). 위치를 쓰려면 s는 NFC이고 쉼표가 없어야 합니다
     (number_values는 쉼표를 지우고 읽음). 값을 읽지 못한 지수는 빈 목록입니다."""
-    return [(*m.span(), number_values(m.group(0))[0]) for m in _NUMBER.finditer(s)]
+    return [(*m.span(), number_values(m.group(0))[0]) for m in VALUE.finditer(s)]
 
 
 def same_value(a: str, b: str) -> bool:
@@ -191,10 +171,18 @@ def code_check(
     p = d["passage"].strip()
     if ty == "빈칸" and "____" not in p:
         why.append("빈칸 문장 없음")
+    # 정답 하나는 빈칸 하나를 채움: '방법은 ____, ____, ____ 등이 있습니다'에 정답 도말법이
+    # 모든 검사를 통과함(기생충, 11/01). 코드의 빈 ()·[](useState() · () => · [])는 text.BLANK가
+    # 빈칸으로 보지 않아 유형과 상관없이 봄(/code-review #94)
+    if len(BLANK.findall(p)) > 1:
+        why.append("빈칸이 여러 개")
     # 요청한 유형이 아니라 모양으로 판단: '어휘' 초안이 빈칸 문장으로 오기도 함
     # ('The rope was ____ to the post'에 fastened와 -ing 낱말 넷, 10/26)
     if "____" in p and form_giveaway(d):
         why.append("형태만 보고 정답이 보임(오답 보기를 정답과 같은 형태로)")
+    # 분류 문제를 끝 글자로 가리는 검사는 두지 않음: 기생충에서 본 이름(편모충류 · 대변 검사)에
+    # 맞춘 규칙이라 '표고버섯 → 균류'(동물 · 식물 · 원생생물 · 원핵생물)도 버렸음(Codex 재리뷰 #94).
+    # 정답만 분류 이름인 보기는 과목과 상관없이 품질 검사에서 볼 일(퀴즈 속도 개선 작업)
     # 토익 유형만: 한국어 문장의 빈칸은 정상적인 정의 문제 (React Native 강의, 10/25)
     if "____" in p and ty not in KO_TYPES and _KO.search(p):
         why.append("빈칸 문장에 한국어 뜻 노출")
@@ -206,7 +194,8 @@ def code_check(
         why.append("물을 뜻 없음")
     if ty == "정의" and len(re.findall(r"[가-힣]", p)) < 10:
         why.append("설명 문장 없음")
-    if ty in ("특징", "분류") and not (1 <= len(p) <= 40):
+    # passage가 '____'뿐이어도 용어가 아님: 미생 초안 9개가 지식 검사에 '용어: ____'로 감(10/29)
+    if ty in ("특징", "분류") and not (1 <= len(BLANK.sub("", p).strip()) <= 40):
         why.append("물을 용어 없음")
     if ty == "정의" and p and norm(d["answer"]) in norm(p):
         why.append("설명에 정답 용어 노출")
@@ -235,13 +224,16 @@ def code_check(
     in_concept = any(
         same_item(d["answer"], w) for w in re.findall(r"[A-Za-z][A-Za-z\-']+", t.concept)
     )
-    if (
-        t.reason == "wrong"
-        and short_answer(t.answer)
-        and not same_item(d["answer"], t.answer)
-        and not in_concept
-    ):
-        why.append(f"틀린 낱말('{t.answer}')을 다시 묻지 않음")
+    # keep_answer: 새 문제가 이 낱말의 복습을 이어 가므로 똑같은 답만(port → report, 개념 이름의
+    # 다른 낱말도 안 됨). 오답 복습은 넓게(same_item · 개념 이름)
+    same = (
+        same_word(d["answer"], t.answer)
+        if t.keep_answer
+        else same_item(d["answer"], t.answer) or in_concept
+    )
+    if (t.reason == "wrong" or t.keep_answer) and short_answer(t.answer) and not same:
+        kind = "틀린" if t.reason == "wrong" else "원래"
+        why.append(f"{kind} 낱말('{t.answer}')을 다시 묻지 않음")
     if any(same_item(d["answer"], u) for u in t.used_answers):
         why.append("세트 안에서 정답이 겹침")
     if too_close(d, seen):

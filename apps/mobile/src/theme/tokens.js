@@ -53,7 +53,8 @@ const icon = { xs: 14, sm: 16, md: 20, lg: 24, xl: 32 }; // xl: 빈 화면 · �
 
 /** 모션: 스프링 · 시간. 들어올 때보다 나갈 때 짧게 */
 const motion = {
-  press: { scale: 0.97, damping: 18, stiffness: 320 },
+  // 눌림은 튕기지 않게 임계 감쇠에 가깝게 둔다
+  press: { scale: 0.98, damping: 34, stiffness: 320 },
   enter: 280,
   exit: 180,
   stagger: 40,

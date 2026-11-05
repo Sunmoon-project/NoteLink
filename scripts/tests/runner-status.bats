@@ -239,14 +239,14 @@ next_check() {
   compose summary
   [[ "$TITLE" == *"(10/31)" ]]
   [[ "$TEXT" == *"🟢 온라인 (리뷰 중) — 10/31 16:40부터"* ]]
-  [[ "$TEXT" == *"성공 5 · 실패 1 · 취소 2"* ]]
+  [[ "$TEXT" == *"지난 24시간에 끝난 Codex 리뷰 실행: 성공 5 · 실패 1 · 취소 2 (성공에는 건너뛴 실행 포함)"* ]]
   PREV_SINCE=0  # 처음 확인에서 온라인이었음(언제부터인지 모름)
   compose summary
   [[ "$TEXT" != *"부터"* ]]
   DONE_OK=""; PREV_STATUS=offline; PREV_SINCE=100
   compose summary
   [[ "$TEXT" != *"부터"* ]]
-  [[ "$TEXT" == *"지난 24시간에 끝난 Codex 리뷰: 확인하지 못함"* ]]
+  [[ "$TEXT" == *"지난 24시간에 끝난 Codex 리뷰 실행: 확인하지 못함"* ]]
 }
 
 @test "queue_line: 대기 수를 모르면 그렇다고 적는다" {
@@ -749,10 +749,10 @@ artifact_zip() {
   (cd "$TMP/z$1" && zip -q "$TMP/artifact-$1.zip" "$name") || skip "zip 실패"
 }
 
-# 실행 정보: $1 = 실행 id, $2 = 워크플로 파일, $3 = 이벤트, $4 = 상태, $5 = 회차
+# 실행 정보: $1 = 실행 id, $2 = 워크플로 파일, $3 = 이벤트, $4 = 상태, $5 = 회차, $6 = 실행 브랜치(기본 main)
 run_info() {
-  printf '{"path":"%s","event":"%s","status":"%s","run_attempt":%s}\n' "$2" "$3" "${4:-completed}" "${5:-1}" \
-    > "$TMP/run-$1.json"
+  printf '{"path":"%s","event":"%s","status":"%s","run_attempt":%s,"head_branch":"%s"}\n' \
+    "$2" "$3" "${4:-completed}" "${5:-1}" "${6:-main}" > "$TMP/run-$1.json"
 }
 
 USAGE_TXT='at=1761897600\nplan=plus\nlimit=0\nretry=\np_used=34\np_window=10080\np_reset=1762261200\ns_used=\ns_window=\ns_reset=\n'
@@ -1100,4 +1100,29 @@ not() { if "$@"; then return 1; fi; }
   not grep -q '/rerun' "$TMP/gh.calls"
   [[ "$(jq -r '.embeds[0].description' "$TMP/posted.json")" == *"다시 돌립니다: #12"* ]]
   grep -qx 'api repos/team/repo/actions/artifacts/52 -X DELETE' "$TMP/gh.calls"
+}
+
+@test "review_run: 리뷰 워크플로의 PR 이벤트 · 리뷰 요청 댓글 · main에서 돈 직접 요청만 믿는다" {
+  review_run "$REVIEW_WF"$'\tpull_request_target\tcompleted\t1\tfeature/x'
+  review_run "$REVIEW_WF"$'\tissue_comment\tcompleted\t2\tmain'
+  review_run "$REVIEW_WF"$'\tworkflow_dispatch\tcompleted\t1\tmain'
+  not review_run "$REVIEW_WF"$'\tworkflow_dispatch\tcompleted\t1\tfeature/evil'
+  not review_run "$REVIEW_WF"$'\tworkflow_dispatch\tcompleted\t1\t'
+  not review_run "$REVIEW_WF"$'\tpull_request\tcompleted\t1\tmain'
+  not review_run $'.github/workflows/ci.yml\tissue_comment\tcompleted\t1\tmain'
+  not review_run ''
+}
+
+@test "RUN_JQ: 실행 브랜치까지 낸다(없으면 빈 값)" {
+  need_jq
+  [ "$(jq -r "$RUN_JQ" <<< '{"path":"p","event":"workflow_dispatch","status":"completed","run_attempt":2,"head_branch":"main"}')" = $'p\tworkflow_dispatch\tcompleted\t2\tmain' ]
+  [ "$(jq -r "$RUN_JQ" <<< '{"path":"p","event":"e","status":"queued"}')" = $'p\te\tqueued\t1\t' ]
+}
+
+@test "read_usage: 리뷰 요청 댓글(issue_comment)로 돈 리뷰가 올린 결과 파일도 읽는다" {
+  need_jq; artifacts_fixture
+  run_info 120 "$REVIEW_WF" issue_comment
+  artifact_zip 20 "$USAGE_TXT"
+  read_usage
+  [ "$USAGE_ERR" = 0 ] && [ "$U_AT" = 1761897600 ] && [ "$U_P_USED" = 34 ]
 }

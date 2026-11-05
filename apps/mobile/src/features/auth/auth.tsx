@@ -2,17 +2,24 @@ import { useState } from 'react';
 import { Linking, Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
 import Animated, { FadeIn } from 'react-native-reanimated';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, Check, Sparkles } from 'lucide-react-native';
-import type { LearnerType, SocialProvider } from '@notelink/shared';
+import { ERROR_CODES, type LearnerType, type SocialProvider } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { getProviderToken, socialLoginReady } from '@/lib/social-auth';
 import { clearAccountState } from '@/lib/account';
+import {
+  confirmError,
+  emailError,
+  looksLikeEmail,
+  nicknameError,
+  passwordError,
+} from '@/lib/validation';
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
-import { Btn, Chip, Input, Label, Screen, Sheet, Title, cx } from '@/components/ui';
+import { Btn, Chip, Header, Input, Label, Screen, Sheet, Title, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
 // p.104 가입부터 홈까지 — 온보딩 · 로그인 · 약관 동의 · 프로필 설정 (스플래시는 네이티브 스플래시 화면)
@@ -58,12 +65,10 @@ export function OnboardingScreen() {
   );
 }
 
-export function LoginScreen() {
+/** 로그인 · 가입이 끝난 뒤 공통 처리 */
+function useFinishSignIn() {
   const qc = useQueryClient();
-  const [emailOpen, setEmailOpen] = useState(false);
-  const [email, setEmail] = useState('');
-  const [pw, setPw] = useState('');
-  const done = async (r: Awaited<ReturnType<typeof api.auth.socialLogin>>) => {
+  return async (r: Awaited<ReturnType<typeof api.auth.socialLogin>>) => {
     // 다른 계정으로 로그인하면 이전 계정의 캐시 · 소켓 연결을 버린다
     // (같은 계정의 만료 후 재로그인은 풀던 퀴즈를 이어 가도록 남긴다 — FR-67-01)
     const prev = useAuth.getState().userId;
@@ -81,19 +86,62 @@ export function LoginScreen() {
         : '/(auth)/terms',
     );
   };
+}
+
+/** 카카오 · 네이버 · Google 간편 로그인 버튼. 처음 쓰는 계정은 서버가 만들고 초기 설정으로 이어진다 */
+function SocialButtons() {
+  const done = useFinishSignIn();
   const social = useMutation({
     mutationFn: async (p: SocialProvider) => api.auth.socialLogin(p, await getProviderToken(p)),
     onSuccess: done,
     onError: (e) => toast(e instanceof Error ? e.message : '로그인하지 못했어요'),
   });
+  return (
+    <View className="gap-2.5">
+      {(
+        [
+          ['kakao', 'sun', '카카오로 시작하기'],
+          ['naver', 'outline', '네이버로 시작하기'],
+          ['google', 'outline', 'Google로 시작하기'],
+        ] as const
+      ).map(([p, kind, label]) => (
+        <Btn
+          key={p}
+          kind={kind}
+          disabled={!socialLoginReady}
+          loading={social.isPending && social.variables === p}
+          onPress={() => social.mutate(p)}
+        >
+          {label}
+        </Btn>
+      ))}
+      {!socialLoginReady && (
+        <Text className="text-center text-caption text-sub">
+          간편 로그인은 준비 중이에요. 이메일로 시작해 주세요
+        </Text>
+      )}
+    </View>
+  );
+}
+
+export function LoginScreen() {
+  // 가입을 마치고 오면 가입한 이메일이 채워진 로그인 창을 바로 연다
+  const { email: joined } = useLocalSearchParams<{ email?: string }>();
+  const [emailOpen, setEmailOpen] = useState(!!joined);
+  const [email, setEmail] = useState(joined ?? '');
+  const [pw, setPw] = useState('');
+  const done = useFinishSignIn();
+  // 토스트는 시트 뒤에 가려지므로 로그인 실패는 시트 안에 적는다
+  const [loginError, setLoginError] = useState<string | null>(null);
   const byEmail = useMutation({
     mutationFn: () => api.auth.emailLogin(email.trim(), pw),
+    onMutate: () => setLoginError(null),
     onSuccess: done,
-    onError: (e) => toast(e instanceof ApiError ? e.message : '로그인하지 못했어요'),
+    onError: (e) => setLoginError(e instanceof ApiError ? e.message : '로그인하지 못했어요'),
   });
   return (
     <Screen>
-      <View className="items-center pt-40">
+      <View className="items-center pt-32">
         <View className="h-16 w-16 items-center justify-center rounded-2xl bg-brand">
           <BookOpen size={30} color="#fff" />
         </View>
@@ -102,43 +150,27 @@ export function LoginScreen() {
           수기 대신 스마트하게, AI와 함께 배우는 노트 앱
         </Text>
       </View>
-      <View className="mt-24 gap-2.5">
-        <Btn
-          kind="sun"
-          disabled={!socialLoginReady}
-          loading={social.isPending && social.variables === 'kakao'}
-          onPress={() => social.mutate('kakao')}
+      <View className="mt-16 gap-2.5">
+        <SocialButtons />
+        <Btn onPress={() => setEmailOpen(true)}>이메일로 로그인</Btn>
+        <Pressable
+          accessibilityRole="button"
+          className="mt-1 self-center py-2"
+          onPress={() => router.push('/(auth)/signup')}
         >
-          카카오로 시작하기
-        </Btn>
-        <Btn
-          kind="outline"
-          disabled={!socialLoginReady}
-          loading={social.isPending && social.variables === 'naver'}
-          onPress={() => social.mutate('naver')}
-        >
-          네이버로 시작하기
-        </Btn>
-        <Btn
-          kind="outline"
-          disabled={!socialLoginReady}
-          loading={social.isPending && social.variables === 'google'}
-          onPress={() => social.mutate('google')}
-        >
-          Google로 시작하기
-        </Btn>
-        <Btn onPress={() => setEmailOpen(true)}>이메일로 시작하기</Btn>
-        {!socialLoginReady && (
-          <Text className="text-center text-caption text-sub">
-            소셜 로그인은 준비 중이에요. 이메일로 시작해 주세요
+          <Text className="text-footnote text-sub">
+            계정이 없나요? <Text className="font-semibold text-brand">회원가입</Text>
           </Text>
-        )}
+        </Pressable>
       </View>
-      <Sheet open={emailOpen} onClose={() => setEmailOpen(false)} title="이메일로 시작하기">
+      <Sheet open={emailOpen} onClose={() => setEmailOpen(false)} title="이메일로 로그인">
         <Label>이메일</Label>
         <Input
           value={email}
-          onChangeText={setEmail}
+          onChangeText={(v) => {
+            setEmail(v);
+            setLoginError(null);
+          }}
           placeholder="you@example.com"
           keyboardType="email-address"
           autoCapitalize="none"
@@ -147,20 +179,134 @@ export function LoginScreen() {
         <Label>비밀번호</Label>
         <Input
           value={pw}
-          onChangeText={setPw}
+          onChangeText={(v) => {
+            setPw(v);
+            setLoginError(null);
+          }}
           placeholder="8자 이상"
           secureTextEntry
           autoComplete="password"
         />
+        {!!loginError && <Text className="mt-3 text-footnote text-danger">{loginError}</Text>}
         <Btn
           className="mt-6"
-          disabled={!/^\S+@\S+\.\S+$/.test(email) || pw.length < 8}
+          disabled={!looksLikeEmail(email) || pw.length < 8}
           loading={byEmail.isPending}
           onPress={() => byEmail.mutate()}
         >
           로그인
         </Btn>
       </Sheet>
+    </Screen>
+  );
+}
+
+/** 칸 아래 안내 (없으면 그리지 않는다) */
+const FieldError = ({ msg }: { msg: string | null }) =>
+  msg ? <Text className="mt-1.5 text-caption text-danger">{msg}</Text> : null;
+
+type SignupField = 'email' | 'pw' | 'confirm';
+
+export function SignupScreen() {
+  const [email, setEmail] = useState('');
+  const [pw, setPw] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [taken, setTaken] = useState(false);
+  // 안내는 칸을 벗어나거나 가입하기를 누른 뒤부터 보여 준다 (쓰는 중인 칸을 탓하지 않는다)
+  const [touched, setTouched] = useState<Record<SignupField, boolean>>({
+    email: false,
+    pw: false,
+    confirm: false,
+  });
+  const touch = (f: SignupField) => () => setTouched((t) => ({ ...t, [f]: true }));
+  const errors = {
+    email: emailError(email),
+    pw: passwordError(pw),
+    confirm: confirmError(pw, confirm),
+  };
+  const shown = (f: SignupField) => (touched[f] ? errors[f] : null);
+  // 확인 칸은 마지막 칸이라 벗어나지 않고 가입하기를 누르기 쉽다 — 다 쓴 만큼 입력하면 바로 비교한다
+  const confirmShown =
+    shown('confirm') ?? (confirm.length >= pw.length && confirm ? errors.confirm : null);
+  const submit = () => {
+    setTouched({ email: true, pw: true, confirm: true });
+    if (!errors.email && !errors.pw && !errors.confirm) signup.mutate();
+  };
+  const toLogin = () =>
+    router.replace({ pathname: '/(auth)/login', params: { email: email.trim() } });
+  const signup = useMutation({
+    mutationFn: () => api.auth.emailSignup(email.trim(), pw),
+    onSuccess: () => {
+      toast('가입했어요. 로그인해 주세요');
+      toLogin();
+    },
+    onError: (e) => {
+      if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
+      else toast(e instanceof ApiError ? e.message : '가입하지 못했어요. 다시 시도해 주세요');
+    },
+  });
+  return (
+    <Screen
+      footer={
+        <Btn loading={signup.isPending} onPress={submit}>
+          가입하기
+        </Btn>
+      }
+    >
+      <Header title="회원가입" sub="아이디로 쓸 이메일과 비밀번호를 정해 주세요" />
+      <Label>이메일 (아이디)</Label>
+      <Input
+        value={email}
+        onChangeText={(v) => {
+          setEmail(v);
+          setTaken(false);
+        }}
+        onBlur={touch('email')}
+        invalid={!!shown('email')}
+        placeholder="you@example.com"
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoComplete="email"
+        maxLength={254}
+      />
+      <FieldError msg={shown('email')} />
+      <Label>비밀번호</Label>
+      <Input
+        value={pw}
+        onChangeText={setPw}
+        onBlur={touch('pw')}
+        invalid={!!shown('pw')}
+        placeholder="영문 · 숫자 포함 8자 이상"
+        secureTextEntry
+        autoCapitalize="none"
+        autoComplete="new-password"
+        maxLength={64}
+      />
+      <FieldError msg={shown('pw')} />
+      <Label>비밀번호 확인</Label>
+      <Input
+        value={confirm}
+        onChangeText={setConfirm}
+        onBlur={touch('confirm')}
+        invalid={!!confirmShown}
+        placeholder="한 번 더 입력해 주세요"
+        secureTextEntry
+        autoCapitalize="none"
+        autoComplete="new-password"
+        maxLength={64}
+      />
+      <FieldError msg={confirmShown} />
+      {taken && (
+        <View className="mt-3 flex-row items-center gap-2">
+          <Text className="text-footnote text-danger">이미 가입한 이메일이에요</Text>
+          <Pressable accessibilityRole="button" onPress={toLogin}>
+            <Text className="text-footnote font-semibold text-brand">로그인하기</Text>
+          </Pressable>
+        </View>
+      )}
+      <Text className="mt-8 mb-3 text-center text-caption text-sub">또는 간편하게 시작</Text>
+      <SocialButtons />
     </Screen>
   );
 }
@@ -247,22 +393,29 @@ const INTERESTS = ['자격증', '수능', '어학', '전공', '코딩', '공무�
 export function ProfileSetupScreen() {
   const qc = useQueryClient();
   const [nick, setNick] = useState('');
-  const [type, setType] = useState<LearnerType>('university');
-  const [interests, setInterests] = useState<string[]>(['자격증', '수능']);
+  const [type, setType] = useState<LearnerType | null>(null);
+  const [interests, setInterests] = useState<string[]>([]);
   const save = useMutation({
     mutationFn: () =>
-      api.me.update({ nickname: nick.trim(), learnerType: type, interestCategoryIds: interests }),
+      api.me.update({ nickname: nick.trim(), learnerType: type!, interestCategoryIds: interests }),
     onSuccess: async (u) => {
       qc.setQueryData(['me'], u);
       await useAuth.getState().finishOnboarding();
       router.replace('/');
     },
   });
-  const ok = nick.trim().length >= 2 && nick.trim().length <= 10;
+  const [tried, setTried] = useState(false);
+  const nickErr = nicknameError(nick);
+  // 닉네임은 쓰기 시작하면 바로, 학습자 유형은 시작하기를 누른 뒤에 안내한다
+  const nickShown = nick || tried ? nickErr : null;
+  const start = () => {
+    setTried(true);
+    if (!nickErr && type) save.mutate();
+  };
   return (
     <Screen
       footer={
-        <Btn disabled={!ok} loading={save.isPending} onPress={() => save.mutate()}>
+        <Btn loading={save.isPending} onPress={start}>
           시작하기
         </Btn>
       }
@@ -274,8 +427,10 @@ export function ProfileSetupScreen() {
         onChangeText={(v) => setNick(v.slice(0, 10))}
         placeholder="노트러버"
         autoFocus
+        invalid={!!nickShown}
         right={`${nick.length}/10`}
       />
+      <FieldError msg={nickShown} />
       <Label>학습자 유형</Label>
       <View className="flex-row gap-2">
         {TYPES.map(([k, l]) => (
@@ -284,6 +439,7 @@ export function ProfileSetupScreen() {
           </Chip>
         ))}
       </View>
+      <FieldError msg={tried && !type ? '학습자 유형을 골라 주세요' : null} />
       <Label>관심 분야</Label>
       <View className="flex-row flex-wrap gap-2">
         {INTERESTS.map((x) => (

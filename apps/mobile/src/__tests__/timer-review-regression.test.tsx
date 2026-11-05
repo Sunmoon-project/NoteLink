@@ -147,6 +147,20 @@ it.each([
   },
 );
 
+it('주간 목표가 0분이면 종료 요약에 목표 줄도 맨 숫자 0도 그리지 않는다', async () => {
+  const goal = await api.study.weeklyGoal();
+  jest.spyOn(api.study, 'weeklyGoal').mockResolvedValue({ ...goal, targetMin: 0 });
+  await renderScreen(<SummaryScreen />, client());
+  await screen.findByText(/수고했어요/);
+  expect(screen.queryByText(/이번주 목표/)).toBeNull();
+  type Node = { type: string; children?: (Node | string)[] | null };
+  const bare = (n: Node | string): boolean =>
+    typeof n !== 'string' &&
+    n.type !== 'Text' &&
+    (n.children ?? []).some((c) => typeof c === 'string' || bare(c));
+  expect(bare(screen.toJSON() as Node)).toBe(false);
+});
+
 it('홈은 전주보다 줄어든 시간을 양수와 감소 안내로 표시한다', async () => {
   const weekly = await api.study.weekly();
   jest.spyOn(api.study, 'weekly').mockResolvedValue({ ...weekly, diffFromLastWeekSec: -5400 });
@@ -286,4 +300,47 @@ it('세로 정지 응답이 늦어도 가로 재진입의 재개 의도를 이�
   expect(useSession.getState().since).not.toBeNull();
   expect(useSession.getState().pausedAt).toBeNull();
   expect(screen.getByText('자동 측정 중')).toBeTruthy();
+});
+
+it('큰 타이머는 지금 공부하는 항목의 시간만 보여 주고 전체는 따로 적는다', async () => {
+  mockNow = Date.parse('2026-11-02T03:00:00Z');
+  const base = await api.study.today();
+  const item = (id: string, sec: number) => ({
+    ...(base.items[0] ?? {}),
+    _id: id,
+    title: id,
+    subjectName: '수학',
+    goalMin: null,
+    accumulatedSec: sec,
+  });
+  jest.spyOn(api.study, 'today').mockResolvedValue({
+    ...base,
+    items: [item('a', 100), item('b', 10)],
+  } as never);
+  useSession.setState({
+    itemId: 'b',
+    sessionId: 's',
+    since: mockNow,
+    pausedAt: null,
+    segments: [],
+    banked: 0,
+  });
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('오늘 전체 00:01:50')).toBeTruthy();
+  expect(screen.getAllByText('00:00:10')).toHaveLength(2);
+});
+
+it('측정 중이 아닐 때 가로로 돌리면 이동하지 않고 안내하며, 다시 세우면 다시 받는다', async () => {
+  await renderScreen(<HomeScreen />, client());
+  await waitFor(() => expect(Accelerometer.addListener).toHaveBeenCalled());
+  const listener = jest.mocked(Accelerometer.addListener).mock.calls[0]![0];
+  await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).not.toHaveBeenCalledWith('/landscape');
+  expect(useToast.getState().msg).toContain('가로로 돌려 주세요');
+  useSession.setState({ itemId: 'item', since: null, pausedAt: mockNow });
+  await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).not.toHaveBeenCalledWith('/landscape');
+  await act(async () => listener({ x: 0, y: 1, z: 0, timestamp: 0 }));
+  await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).toHaveBeenCalledWith('/landscape');
 });
