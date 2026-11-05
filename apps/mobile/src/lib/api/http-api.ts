@@ -56,8 +56,7 @@ async function registerMaterial({
 
 export const httpApi: Api = {
   auth: {
-    socialLogin: (provider, providerToken) =>
-      http.post(P.socialLogin(provider), { token: providerToken }),
+    socialLogin: (provider, proof) => http.post(P.socialLogin(provider), proof),
     emailLogin: (email, password) => http.post(P.emailLogin, { email, password }),
     emailSignup: (email, password) => http.post(P.emailSignup, { email, password }),
     agreeTerms: (termCodes) => http.post(P.terms, { termCodes }),
