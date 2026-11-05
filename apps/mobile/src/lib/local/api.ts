@@ -349,7 +349,6 @@ const api: Api = {
       if (accountOf(email)) return fail(ERROR_CODES.EMAIL_TAKEN, '이미 가입한 이메일이에요', 409);
       const id = createAccount(email);
       await SecureStore.setItemAsync(pwKey(id), password);
-      return signInAs(id);
     },
     agreeTerms: (codes) => {
       db().terms = codes;

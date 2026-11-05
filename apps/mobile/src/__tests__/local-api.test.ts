@@ -19,15 +19,14 @@ jest.mock('expo-secure-store', () => ({
 const { localApi: api, resetLocalForTests } =
   jest.requireActual<typeof import('../lib/local/api')>('../lib/local/api');
 
-async function signup(email: string) {
-  const r = await api.auth.emailSignup(email, 'pw12345678');
-  useAuth.setState({ userId: r.user._id });
-  return r.user;
-}
 async function login(email: string) {
   const r = await api.auth.emailLogin(email, 'pw12345678');
   useAuth.setState({ userId: r.user._id });
   return r.user;
+}
+async function signup(email: string) {
+  await api.auth.emailSignup(email, 'pw12345678');
+  return login(email);
 }
 
 beforeEach(() => {

@@ -52,6 +52,7 @@ const seg = (v: string) => encodeURIComponent(v);
 export const PATHS = {
   // 인증 · 회원
   socialLogin: (provider: string) => `/auth/social/${seg(provider)}`,
+  socialStart: (provider: string) => `/auth/social/${seg(provider)}/start`,
   emailLogin: '/auth/email/login',
   emailSignup: '/auth/email/signup',
   refresh: '/auth/refresh',
