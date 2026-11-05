@@ -33,7 +33,7 @@ export class Processing {
   })
   status: string;
 
-  @Prop({ required: true, type: Number, default: 0 })
+  @Prop({ required: true, type: Number})
   progress: number;
 
   @Prop({ type: Types.ObjectId, ref: 'AiJob', default: null })
@@ -72,7 +72,7 @@ export class Bookmark {
   @Prop({ required: true, type: Number })
   atSec: number;
 
-  @Prop({ type: String, default: null } ) // 예: "중간고사"
+  @Prop({ type: String } ) // 예: "중간고사"
   label?: string;
 }
 
