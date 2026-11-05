@@ -30,7 +30,7 @@ import { addDays, daysBetween, parse, seoul, today, ymd } from '../dates';
 import { localSocket } from '../socket';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
-import { DEFAULT_SUBJECTS, HOLIDAYS, SHOP } from './catalog';
+import { BASE_AVATAR, DEFAULT_SUBJECTS, HOLIDAYS, SHOP } from './catalog';
 import {
   ABUSE_SEC,
   DAILY_CAP_SEC,
@@ -46,7 +46,8 @@ import {
 } from './stats';
 import * as SecureStore from 'expo-secure-store';
 import { roomTimerState } from './timer';
-import { dropDb, dropFile, fileInfo, keptFilesIn, readDb, writeDb } from './storage';
+import { dropDb, dropFile, dropFiles, fileInfo, keptFilesIn, readDb, writeDb } from './storage';
+import { avatarFace } from '../avatar-styles';
 import { AI_WAITING_STEP, withTopic } from '../ai';
 
 // 기기 저장 백엔드 — 서버(NestJS · MongoDB · Blob)가 붙기 전까지 실서버와 같은 Api를 기기 안에서 구현한다.
@@ -100,6 +101,8 @@ const uid = (p: string) =>
 
 /** 이 기기의 계정 목록: 이메일 → 사용자 id */
 let accounts: Record<string, string> = (readDb('accounts') as Record<string, string>) ?? {};
+// 지난 탈퇴 때 지우지 못한 파일을 앱을 켤 때 로그인 없이 다시 지운다
+dropFiles([]);
 const loaded = new Map<string, Db>();
 
 function newDb(userId: string, email: string): Db {
@@ -435,8 +438,9 @@ const api: Api = {
         // 다음 저장 때 다시 쓴다
       }
       accounts = next;
-      // 자료 원본 · 프로필 사진 등 이 계정이 기기에 복사해 둔 파일을 모두 지운다
-      for (const uri of files) dropFile(uri);
+      // 자료 원본 · 프로필 사진 등 이 계정이 기기에 복사해 둔 파일을 모두 지운다.
+      // 계정이 없어져 재시도할 수 없으니, 못 지운 파일은 기기 목록에 남겨 다음 실행 때 다시 지운다
+      dropFiles(files);
       // 계정이 이미 없어 재시도할 수 없으므로 비밀번호 삭제 실패로 탈퇴를 막지 않는다
       // (남은 비밀번호는 어떤 계정과도 이어지지 않는다)
       await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
@@ -450,7 +454,13 @@ const api: Api = {
         throw e;
       }
     },
-    saveAvatar: (p) => ok(void (db().avatar = p)),
+    saveAvatar: (p) => {
+      const d = db();
+      d.avatar = p;
+      // 프로필 · 친구 목록 · 스터디룸이 avatarUrl을 그린다 — 고른 스타일의 얼굴을 넣는다
+      d.user.avatarUrl = avatarFace(p.style, p.gender);
+      return ok(undefined);
+    },
   },
   upload: {
     // 기기 저장 모드에서는 upload.ts가 파일을 앱 저장 공간에 바로 복사한다
@@ -1251,6 +1261,11 @@ const api: Api = {
     },
     equip: (itemId) => {
       const d = db();
+      // 기본 아바타는 보유 기록 없이 누구나 쓴다 — 낀 아바타를 모두 풀면 기본 아바타다
+      if (itemId === BASE_AVATAR._id) {
+        for (const u of d.userItems) if (u.itemCategory === 'avatar') u.isEquipped = false;
+        return ok(undefined);
+      }
       const target = d.userItems.find((u) => u.itemId === itemId && u.isOwned);
       if (!target) return fail(ERROR_CODES.NOT_FOUND, '보유한 아이템이 아니에요', 404);
       // 같은 종류(아바타 · 테마)끼리만 바꿔 낀다

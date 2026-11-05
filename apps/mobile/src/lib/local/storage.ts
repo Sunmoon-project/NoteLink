@@ -79,14 +79,31 @@ export function keepFile(uri: string, name: string): { uri: string; size: number
   return { uri: dest.uri, size: dest.size ?? 0 };
 }
 
-/** 앱 저장 공간의 파일을 지운다 (자료 삭제 · 탈퇴) */
+/** 앱 저장 공간의 파일을 지운다 (자료 삭제 · 탈퇴). 지우지 못하면 false */
 export function dropFile(uri: string) {
   try {
     const f = new File(uri);
     if (f.exists && f.uri.includes(`/${FILES_DIR}/`)) f.delete();
+    return true;
   } catch {
-    // 이미 없으면 그만
+    return false;
   }
+}
+
+/**
+ * 탈퇴처럼 계정이 사라진 뒤라 다시 시도할 수 없는 파일 삭제.
+ * 지우지 못한 파일은 기기 목록(orphans)에 남겨 다음 실행 때 로그인 없이 다시 지운다. 남은 주소를 돌려준다.
+ */
+export function dropFiles(uris: string[]) {
+  const pending = [...new Set([...((readDb('orphans') as string[] | null) ?? []), ...uris])];
+  const left = pending.filter((u) => !dropFile(u));
+  try {
+    if (left.length) writeDb('orphans', left);
+    else dropDb('orphans');
+  } catch {
+    // 목록을 못 쓰면 이번에 지운 것만 남는다 — 다음 탈퇴 · 실행 때 다시 모은다
+  }
+  return left;
 }
 
 /**

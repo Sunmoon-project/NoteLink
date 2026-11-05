@@ -11,6 +11,7 @@ import { uploadToBlob, type LocalFile } from '@/lib/upload';
 import { socket } from '@/lib/socket';
 import { useSocket } from '@/hooks';
 import { toast } from '@/stores/toast';
+import { AV_STYLES } from '@/lib/avatar-styles';
 import { useNet } from '@/stores/net';
 import {
   Avatar,
@@ -293,26 +294,6 @@ export function PhotoGenScreen() {
     </Screen>
   );
 }
-
-const AV_STYLES = [
-  {
-    id: 'nice',
-    name: 'Nice Avatar',
-    sub: '2D 플랫 스타일',
-    face: '👩🏻',
-    maleFace: '👨🏻',
-    bg: '#f6e3d8',
-  },
-  {
-    id: '3d',
-    name: '3D Avatar Creator',
-    sub: '3D 리얼리즘',
-    face: '👩🏽',
-    maleFace: '👨🏽',
-    bg: '#d9dcd6',
-  },
-  { id: 'toon', name: 'Cartoon 3D', sub: '3D 카툰', face: '👩🏼‍🦱', maleFace: '👨🏼‍🦱', bg: '#f3e6d6' },
-];
 
 /** p.83 #26 아바타 스타일 선택 */
 export function AvatarStyleScreen() {

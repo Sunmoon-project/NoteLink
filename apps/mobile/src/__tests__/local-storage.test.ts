@@ -36,7 +36,7 @@ jest.mock('expo-file-system', () => {
   return { File, Directory: class {}, Paths: { document: { uri: 'file:///doc/' } } };
 });
 jest.unmock('../lib/local/storage');
-const { dropDb, keptFilesIn, readDb, writeDb } =
+const { dropDb, dropFiles, keptFilesIn, readDb, writeDb } =
   jest.requireActual<typeof import('../lib/local/storage')>('../lib/local/storage');
 
 beforeEach(() => {
@@ -138,4 +138,20 @@ it('앱 폴더 경로가 바뀌어도 파일 주소를 현재 경로로 읽는�
   writeDb('u', { uri: 'file:///doc/files/a.pdf' });
   expect(mockDisk.get('file:///doc/notelink-u.json')).not.toContain('file:///doc/');
   expect(readDb('u')).toEqual({ uri: 'file:///doc/files/a.pdf' });
+});
+
+it('탈퇴 때 지우지 못한 파일은 기기 목록에 남겼다가 다음 실행 때 로그인 없이 지운다', () => {
+  mockDisk.set('file:///doc/files/a.pdf', 'a');
+  mockDisk.set('file:///doc/files/b.jpg', 'b');
+  mockFailDelete = (uri) => uri.endsWith('b.jpg');
+  expect(dropFiles(['file:///doc/files/a.pdf', 'file:///doc/files/b.jpg'])).toEqual([
+    'file:///doc/files/b.jpg',
+  ]);
+  expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(false);
+  expect(readDb('orphans')).toEqual(['file:///doc/files/b.jpg']);
+  // 다음 실행: 계정 없이 목록만으로 다시 지우고, 다 지우면 목록도 없앤다
+  mockFailDelete = null;
+  expect(dropFiles([])).toEqual([]);
+  expect(mockDisk.has('file:///doc/files/b.jpg')).toBe(false);
+  expect(readDb('orphans')).toBeNull();
 });

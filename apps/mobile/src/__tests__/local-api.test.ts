@@ -17,6 +17,10 @@ jest.mock('../lib/local/storage', () => ({
     mockFiles.delete(n);
   },
   dropFile: (...a: unknown[]) => mockDropFile(...a),
+  dropFiles: (uris: string[]) => {
+    for (const u of uris) mockDropFile(u);
+    return [];
+  },
   keptFilesIn: (d: unknown) => [
     ...new Set(JSON.stringify(d).match(/file:\/\/\/doc\/files\/[^"]+/g) ?? []),
   ],
@@ -386,4 +390,34 @@ it('테마를 끼워도 장착한 아바타는 그대로이고, 같은 종류끼
   expect(on(theme._id)).toBe(true);
   expect(after.filter((u) => u.isEquipped && u.itemCategory === 'avatar')).toHaveLength(1);
   await expect(api.shop.equip('없는-아이템')).rejects.toThrow('보유한');
+});
+
+it('구매한 아바타를 낀 뒤 기본 아바타로 돌아갈 수 있고, 테마는 그대로다', async () => {
+  const user = await signup('a@test.com');
+  const file = `user-${user._id}`;
+  const saved = JSON.parse(mockFiles.get(file)!);
+  saved.user.pointBalance = 100000;
+  mockFiles.set(file, JSON.stringify(saved));
+  resetLocalForTests();
+  await login('a@test.com');
+  const items = await api.shop.items({ sort: 'price' } as never);
+  const theme = items.find((i) => i.category === 'theme')!;
+  const avatar = items.find((i) => i.category === 'avatar' && i.price > 0)!;
+  await api.shop.purchase(avatar._id);
+  await api.shop.purchase(theme._id);
+  await api.shop.equip(avatar._id);
+  await api.shop.equip(theme._id);
+  await expect(api.shop.equip('base')).resolves.toBeUndefined();
+  const after = await api.shop.myItems();
+  expect(after.filter((u) => u.isEquipped && u.itemCategory === 'avatar')).toHaveLength(0);
+  expect(after.find((u) => u.itemId === theme._id)?.isEquipped).toBe(true);
+});
+
+it('저장한 아바타가 프로필에 보이고, 다시 켜도 남는다', async () => {
+  await signup('a@test.com');
+  await api.me.saveAvatar({ style: 'toon', gender: 'male', color: '#3b6e5b' });
+  expect((await api.me.get()).avatarUrl).toBe('👨🏼‍🦱');
+  resetLocalForTests();
+  await login('a@test.com');
+  expect((await api.me.get()).avatarUrl).toBe('👨🏼‍🦱');
 });
