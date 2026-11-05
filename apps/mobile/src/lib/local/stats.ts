@@ -19,6 +19,32 @@ export function dailyTotals(sessions: StudySession[]): Map<string, number> {
   return m;
 }
 
+/** 쉰 시간을 뺀 공부 시간을 서울 날짜별 초로 나눈다 (자정을 넘긴 세션) */
+export function secondsBySeoulDay(
+  startMs: number,
+  endMs: number,
+  pauses: { startMs: number; endMs: number }[],
+): Map<string, number> {
+  const ms = new Map<string, number>();
+  const add = (from: number, to: number) => {
+    let at = from;
+    while (at < to) {
+      const day = ymd(seoul(at));
+      const midnight = Date.parse(`${ymd(addDays(parse(day), 1))}T00:00:00+09:00`);
+      const until = Math.min(to, midnight);
+      ms.set(day, (ms.get(day) ?? 0) + until - at);
+      at = until;
+    }
+  };
+  let at = startMs;
+  for (const p of [...pauses].sort((a, b) => a.startMs - b.startMs)) {
+    add(at, Math.min(p.startMs, endMs));
+    at = Math.max(at, p.endMs);
+  }
+  add(at, endMs);
+  return new Map([...ms].map(([day, v]) => [day, Math.floor(v / 1000)]));
+}
+
 /** 이번 주 월요일 (서울) */
 export const weekStart = (date = ymd(seoul())) => {
   const d = parse(date);

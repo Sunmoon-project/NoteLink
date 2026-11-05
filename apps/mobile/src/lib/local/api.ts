@@ -37,6 +37,7 @@ import {
   STREAK_MIN_SEC,
   currentStreak,
   dailyTotals,
+  secondsBySeoulDay,
   levelOf,
   longestStreak,
   peakHour,
@@ -173,17 +174,31 @@ function db(): Db {
   return d;
 }
 
-// 바뀐 내용은 잠깐 모았다가 한 번에 쓴다
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
+// 마지막으로 파일에 쓴 내용. 바뀌지 않았으면(조회) 다시 쓰지 않는다
+const savedJson = new Map<string, string>();
+/** 바뀐 내용을 바로 파일에 쓴다. 성공 응답을 받은 변경은 곧바로 앱이 꺼져도 남는다 */
 function save() {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    for (const [id, d] of loaded) writeDb(`user-${id}`, d);
-  }, 250);
+  const id = useAuth.getState().userId;
+  const d = id ? loaded.get(id) : undefined;
+  if (!id || !d) return;
+  const json = JSON.stringify(d);
+  if (savedJson.get(id) === json) return;
+  try {
+    writeDb(`user-${id}`, d);
+    savedJson.set(id, json);
+  } catch {
+    // 저장 못 한 변경을 메모리에 남기지 않는다. 다음 조회는 마지막 정상 파일을 읽는다
+    loaded.delete(id);
+    savedJson.delete(id);
+    throw new ApiError(
+      'STORAGE_FAILED',
+      '기기에 저장하지 못했어요. 저장 공간을 확인해 주세요',
+      507,
+    );
+  }
 }
 
-/** 응답: 저장을 예약하고 복사본을 돌려준다(화면이 DB를 직접 바꾸지 못하게) */
+/** 응답: 바뀐 내용을 저장하고 복사본을 돌려준다(화면이 DB를 직접 바꾸지 못하게) */
 /** 같은 등록 키로 다시 보내면 자료를 또 만들지 않는다. ponytail: 앱을 다시 켜면 비워진다, 서버는 DB로 보장 */
 const createdMaterials = new Map<
   string,
@@ -311,15 +326,20 @@ const accountOf = (email: string) => {
 // ponytail: 비밀번호는 기기 키체인에만 둔다. 서버가 붙으면 서버 인증으로 바뀐다
 const pwKey = (id: string) => `notelink-pw-${id}`;
 
-function createAccount(email: string) {
+/** DB를 먼저 쓰고 계정 목록에 올린다. 어느 쪽이든 실패하면 계정은 없던 일이 된다 */
+function createAccount(email: string, id: string) {
   const key = email.trim().toLowerCase();
-  const id = uid('user');
-  accounts = { ...accounts, [key]: id };
-  writeDb('accounts', accounts);
   const d = newDb(id, key);
-  loaded.set(id, d);
   writeDb(`user-${id}`, d);
-  return id;
+  const next = { ...accounts, [key]: id };
+  try {
+    writeDb('accounts', next);
+  } catch (e) {
+    dropDb(`user-${id}`);
+    throw e;
+  }
+  accounts = next;
+  loaded.set(id, d);
 }
 
 function signInAs(id: string) {
@@ -347,8 +367,15 @@ const api: Api = {
       if (password.length < 8)
         return fail(ERROR_CODES.VALIDATION, '비밀번호는 8자 이상이어야 해요');
       if (accountOf(email)) return fail(ERROR_CODES.EMAIL_TAKEN, '이미 가입한 이메일이에요', 409);
-      const id = createAccount(email);
-      await SecureStore.setItemAsync(pwKey(id), password);
+      const id = uid('user');
+      try {
+        await SecureStore.setItemAsync(pwKey(id), password);
+        createAccount(email, id);
+      } catch {
+        // 비밀번호 없는 계정이나 계정 없는 비밀번호를 남기지 않아 같은 이메일로 다시 가입할 수 있다
+        await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
+        return fail('STORAGE_FAILED', '가입 정보를 저장하지 못했어요. 다시 시도해 주세요', 507);
+      }
     },
     agreeTerms: (codes) => {
       db().terms = codes;
@@ -379,6 +406,7 @@ const api: Api = {
       for (const m of d.materials) for (const f of m.files) dropFile(f.uri);
       const id = d.user._id;
       loaded.delete(id);
+      savedJson.delete(id);
       dropDb(`user-${id}`);
       await SecureStore.deleteItemAsync(pwKey(id));
       accounts = Object.fromEntries(Object.entries(accounts).filter(([, v]) => v !== id));
@@ -463,25 +491,39 @@ const api: Api = {
       const s = d.sessions.find((x) => x._id === id);
       if (!s) return ok({ durationSec: 0, pointsEarned: 0 });
       // 시간은 기기가 보낸 값이 아니라 저장된 시작 · 일시정지 시각으로 계산한다
-      const paused = s.pauses.reduce(
-        (a, x) => a + ((x.endedAt ? Date.parse(x.endedAt) : Date.now()) - Date.parse(x.startedAt)),
-        0,
+      const endMs = Date.now();
+      const days = secondsBySeoulDay(
+        Date.parse(s.startedAt),
+        endMs,
+        s.pauses.map((x) => ({
+          startMs: Date.parse(x.startedAt),
+          endMs: x.endedAt ? Date.parse(x.endedAt) : endMs,
+        })),
       );
-      let durationSec = Math.max(
-        0,
-        Math.floor((Date.now() - Date.parse(s.startedAt) - paused) / 1000),
-      );
-      const isAbuse = durationSec >= ABUSE_SEC;
-      // 하루 16시간을 넘는 부분은 세지 않는다 (FR-06-15)
-      const before = dailyTotals(d.sessions).get(s.studyDate) ?? 0;
-      durationSec = Math.max(0, Math.min(durationSec, DAILY_CAP_SEC - before));
-      Object.assign(s, {
-        status: 'ended',
-        endedAt: now(),
-        durationSec,
-        endReason: p.endReason,
-        isAbuse,
-      });
+      const isAbuse = [...days.values()].reduce((a, v) => a + v, 0) >= ABUSE_SEC;
+      let durationSec = 0;
+      // 자정을 넘긴 시간은 그 날짜에 쌓고, 하루 16시간을 넘는 부분은 세지 않는다 (FR-06-15)
+      for (const [day, sec] of days) {
+        const before = dailyTotals(d.sessions).get(day) ?? 0;
+        const counted = Math.max(0, Math.min(sec, DAILY_CAP_SEC - before));
+        durationSec += counted;
+        const part = { status: 'ended', endedAt: now(), durationSec: counted, isAbuse };
+        const reason = { endReason: p.endReason };
+        if (day === s.studyDate) Object.assign(s, part, reason);
+        else
+          d.sessions.push({
+            ...s,
+            ...part,
+            ...reason,
+            _id: uid('ss'),
+            studyDate: day,
+            startedAt: new Date(Date.parse(`${day}T00:00:00+09:00`)).toISOString(),
+            pauses: [],
+          } as StudySession);
+      }
+      // 시작 날짜에 공부한 시간이 없어도(바로 일시정지 등) 세션은 끝낸다
+      if (s.status !== 'ended')
+        Object.assign(s, { status: 'ended', endedAt: now(), endReason: p.endReason, isAbuse });
       const pts = !isAbuse && durationSec >= STREAK_MIN_SEC ? 30 : 0;
       if (pts) addPoints(d, pts, 'session_complete', '순공 세션 완료');
       return ok({ durationSec, pointsEarned: pts });
@@ -647,24 +689,8 @@ const api: Api = {
       return ok(undefined);
     },
     shares: () => ok(db().calShares.filter((s) => !s.revokedAt)),
-    createShare: (p) => {
-      const d = db();
-      const s: CalendarShare = {
-        _id: uid('cs'),
-        token: Math.random().toString(16).slice(2, 10),
-        ownerId: d.user._id,
-        rangeStart: p.rangeStart,
-        rangeEnd: p.rangeEnd,
-        scopes: ['todos', 'study'],
-        expiresAt: p.expiresInDays ? addDays(new Date(), p.expiresInDays).toISOString() : null,
-        revokedAt: null,
-        createdAt: now(),
-        subscribers: [],
-      };
-      d.calShares.unshift(s);
-      // 링크 주소는 만들어 두고, 다른 사람이 여는 것은 서버 연결 후에 된다
-      return ok({ ...s, url: `notelink.app/share/${s.token}` });
-    },
+    // 다른 사람이 열 수 있는 링크는 서버가 있어야 만들 수 있다
+    createShare: () => needServer('캘린더 공유'),
     revokeShare: (id) => {
       Object.assign(db().calShares.find((s) => s._id === id) ?? {}, { revokedAt: now() });
       return ok(undefined);
@@ -1211,7 +1237,11 @@ localSocket.onClient = (ev, args) => {
     clientId: p.clientId,
   };
   d.messages[p.chatRoomId] = [...(d.messages[p.chatRoomId] ?? []), m];
-  save();
+  try {
+    save();
+  } catch {
+    return; // 확인 응답을 보내지 않아 화면이 전송 실패로 안내하고 다시 보내게 한다
+  }
   setTimeout(() => (ack ? ack(m) : localSocket.push('chat:message', m)), 0);
 };
 
@@ -1219,4 +1249,5 @@ localSocket.onClient = (ev, args) => {
 export const resetLocalForTests = () => {
   accounts = (readDb('accounts') as Record<string, string>) ?? {};
   loaded.clear();
+  savedJson.clear();
 };

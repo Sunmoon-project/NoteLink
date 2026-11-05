@@ -1,0 +1,84 @@
+// 실제 저장 계층을 메모리 파일 시스템으로 돌려 파일 교체 실패를 재현한다
+const mockDisk = new Map<string, string>();
+let mockFailMove: ((to: string) => boolean) | null = null;
+jest.mock('expo-file-system', () => {
+  class File {
+    uri: string;
+    constructor(base: { uri: string } | string, name?: string) {
+      this.uri = typeof base === 'string' ? base : `${base.uri}${name}`;
+    }
+    get exists() {
+      return mockDisk.has(this.uri);
+    }
+    create() {
+      mockDisk.set(this.uri, '');
+    }
+    delete() {
+      mockDisk.delete(this.uri);
+    }
+    write(v: string) {
+      mockDisk.set(this.uri, v);
+    }
+    textSync() {
+      return mockDisk.get(this.uri)!;
+    }
+    move(to: File) {
+      if (mockFailMove?.(to.uri)) throw new Error('move failed');
+      mockDisk.set(to.uri, mockDisk.get(this.uri)!);
+      mockDisk.delete(this.uri);
+    }
+  }
+  return { File, Directory: class {}, Paths: { document: { uri: 'file:///doc/' } } };
+});
+jest.unmock('../lib/local/storage');
+const { readDb, writeDb } =
+  jest.requireActual<typeof import('../lib/local/storage')>('../lib/local/storage');
+
+beforeEach(() => {
+  mockDisk.clear();
+  mockFailMove = null;
+});
+
+it('새 파일로 바꿔 끼우지 못하면 실패를 알리고 이전 내용을 지키며, 임시 · 백업을 정리한다', () => {
+  writeDb('u', { v: 1 });
+  mockFailMove = (to) => to.endsWith('notelink-u.json');
+  // 되돌리는 이동까지 막지 않도록 한 번만 실패시킨다
+  let failed = false;
+  const fail = mockFailMove;
+  mockFailMove = (to) => {
+    if (!failed && fail(to)) {
+      failed = true;
+      return true;
+    }
+    return false;
+  };
+  expect(() => writeDb('u', { v: 2 })).toThrow('move failed');
+  mockFailMove = null;
+  expect(readDb('u')).toEqual({ v: 1 });
+});
+
+it('임시 파일에 쓰다 실패해도 이전 파일을 건드리지 않는다', () => {
+  writeDb('u', { v: 1 });
+  const original = jest.requireMock<{ File: { prototype: { write: unknown } } }>('expo-file-system')
+    .File.prototype;
+  const write = original.write;
+  original.write = () => {
+    throw new Error('disk full');
+  };
+  expect(() => writeDb('u', { v: 2 })).toThrow('disk full');
+  original.write = write;
+  expect(readDb('u')).toEqual({ v: 1 });
+});
+
+it('교체 중 앱이 꺼졌으면 다음 읽기에서 이전 파일로 되돌린다', () => {
+  writeDb('u', { v: 1 });
+  mockDisk.set('file:///doc/notelink-u.json.bak', mockDisk.get('file:///doc/notelink-u.json')!);
+  mockDisk.delete('file:///doc/notelink-u.json');
+  expect(readDb('u')).toEqual({ v: 1 });
+});
+
+it('앱 폴더 경로가 바뀌어도 파일 주소를 현재 경로로 읽는다', () => {
+  writeDb('u', { uri: 'file:///doc/files/a.pdf' });
+  expect(mockDisk.get('file:///doc/notelink-u.json')).not.toContain('file:///doc/');
+  expect(readDb('u')).toEqual({ uri: 'file:///doc/files/a.pdf' });
+});

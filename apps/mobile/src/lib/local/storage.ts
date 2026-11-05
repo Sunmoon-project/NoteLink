@@ -12,6 +12,9 @@ const DOC_TOKEN = 'notelink-doc://';
 export function readDb(name: string): unknown | null {
   try {
     const f = new File(Paths.document, dbFile(name));
+    // 교체 중에 앱이 꺼졌으면 치워 둔 이전 파일로 되돌린다
+    const bak = new File(Paths.document, `${dbFile(name)}.bak`);
+    if (!f.exists && bak.exists) bak.move(f);
     if (!f.exists) return null;
     return JSON.parse(f.textSync().replaceAll(DOC_TOKEN, Paths.document.uri));
   } catch {
@@ -19,19 +22,28 @@ export function readDb(name: string): unknown | null {
   }
 }
 
-/** DB 전체를 쓴다 (임시 파일에 쓰고 바꿔 끼워 중간에 꺼져도 이전 내용이 남게) */
+/**
+ * DB 전체를 쓴다. 임시 파일을 다 쓴 뒤 이전 파일을 치우고 바꿔 끼워, 어느 단계에서 실패하거나 꺼져도
+ * 마지막 정상 파일이 남는다. 실패는 호출한 쪽으로 던진다.
+ */
 export function writeDb(name: string, data: unknown) {
-  try {
-    const tmp = new File(Paths.document, `${dbFile(name)}.tmp`);
-    if (tmp.exists) tmp.delete();
-    tmp.create();
-    tmp.write(JSON.stringify(data).replaceAll(Paths.document.uri, DOC_TOKEN));
-    const target = new File(Paths.document, dbFile(name));
-    if (target.exists) target.delete();
-    tmp.move(target);
-  } catch {
-    // 테스트 · 웹처럼 파일 시스템이 없으면 메모리에만 둔다
+  const target = new File(Paths.document, dbFile(name));
+  const tmp = new File(Paths.document, `${dbFile(name)}.tmp`);
+  const bak = new File(Paths.document, `${dbFile(name)}.bak`);
+  if (tmp.exists) tmp.delete();
+  tmp.create();
+  tmp.write(JSON.stringify(data).replaceAll(Paths.document.uri, DOC_TOKEN));
+  if (target.exists) {
+    if (bak.exists) bak.delete();
+    target.move(bak);
   }
+  try {
+    tmp.move(target);
+  } catch (e) {
+    if (bak.exists) bak.move(target);
+    throw e;
+  }
+  if (bak.exists) bak.delete();
 }
 
 const filesDir = () => {
