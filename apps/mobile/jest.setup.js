@@ -1,4 +1,6 @@
 /* global jest */
+// 화면 테스트는 서버 없이 돈다. 서버 모드는 server-mode.test.ts가 따로 본다
+process.env.EXPO_PUBLIC_USE_LOCAL_DATA = 'true';
 // 화면 테스트용: 애니메이션 · 워클릿 네이티브 모듈 대신 목을 쓴다
 jest.mock('react-native-reanimated', () => require('react-native-reanimated/mock'));
 // 화면 테스트는 기기 저장소 대신 시드가 든 가짜 API를 쓴다 (앱 번들에는 들어가지 않는다)

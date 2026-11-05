@@ -23,6 +23,7 @@ export const ERROR_CODES = {
   NOT_FOUND: 'NOT_FOUND',
   /** 입력 형식 오류 (이메일 · 필수 값 등) */
   VALIDATION: 'VALIDATION_FAILED',
+  EMAIL_TAKEN: 'EMAIL_TAKEN',
 } as const;
 
 /** 업로드 허용 규칙 — 앱이 올리기 전에 먼저 검사한다 (p.102) */
@@ -52,6 +53,7 @@ export const PATHS = {
   // 인증 · 회원
   socialLogin: (provider: string) => `/auth/social/${seg(provider)}`,
   emailLogin: '/auth/email/login',
+  emailSignup: '/auth/email/signup',
   refresh: '/auth/refresh',
   logout: '/auth/logout',
   terms: '/auth/terms',

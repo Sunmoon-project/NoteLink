@@ -279,7 +279,15 @@ export function HomeScreen() {
           <Text className="text-headline font-bold text-ink">오늘 공부할 목록</Text>
           <Text className="text-caption text-sub">{items.length}개</Text>
         </View>
-        {!has && (
+        {today.isError && !today.data && (
+          <View className="gap-2 py-3">
+            <Text className="text-footnote text-sub">오늘 목록을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void today.refetch()}>
+              오늘 목록 다시 시도
+            </Btn>
+          </View>
+        )}
+        {today.isSuccess && !has && (
           <View className="items-center rounded-2xl border border-dashed border-cream-2 py-5">
             <Text className="text-footnote text-sub">아직 공부할 목록이 없어요</Text>
             <Text className="text-caption2 text-sub/80">
@@ -335,12 +343,21 @@ export function HomeScreen() {
             <Text className="text-caption text-sub">이번주 순공시간</Text>
             <Text className="text-caption font-semibold text-brand">기록 · 캘린더 ›</Text>
           </View>
-          <Text className="mt-1 text-title2 font-bold text-ink">{hm(weekSec)}</Text>
-          <Text className="text-caption text-sub">
-            {has
-              ? `지난주보다 ${hm(Math.abs(weekly.data?.diffFromLastWeekSec ?? 0)).replace('0시간 ', '')} ${(weekly.data?.diffFromLastWeekSec ?? 0) < 0 ? '줄었어요' : '늘었어요'}`
-              : '학습 기록이 쌓이면 스트릭이 시작돼요'}
+          <Text className="mt-1 text-title2 font-bold text-ink">
+            {weekly.data ? hm(weekSec) : '-'}
           </Text>
+          <Text className="text-caption text-sub">
+            {weekly.isError && !weekly.data
+              ? '이번주 기록을 불러오지 못했어요'
+              : has
+                ? `지난주보다 ${hm(Math.abs(weekly.data?.diffFromLastWeekSec ?? 0)).replace('0시간 ', '')} ${(weekly.data?.diffFromLastWeekSec ?? 0) < 0 ? '줄었어요' : '늘었어요'}`
+                : '학습 기록이 쌓이면 스트릭이 시작돼요'}
+          </Text>
+          {weekly.isError && !weekly.data && (
+            <Btn small className="mt-2" onPress={() => void weekly.refetch()}>
+              이번주 기록 다시 시도
+            </Btn>
+          )}
         </Card>
       </Screen>
       <AddItemSheet open={sheet === 'add'} onClose={() => setSheet(null)} />

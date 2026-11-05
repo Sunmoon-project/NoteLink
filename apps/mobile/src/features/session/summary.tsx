@@ -64,6 +64,14 @@ export function SummaryScreen() {
         </Text>
         <Text className="tabular-nums text-large font-bold text-brand">{hms(total)}</Text>
       </View>
+      {today.isError && !today.data && (
+        <View className="mt-4 gap-2">
+          <Text className="text-footnote text-sub">오늘 기록을 불러오지 못했어요</Text>
+          <Btn small onPress={() => void today.refetch()}>
+            오늘 기록 다시 시도
+          </Btn>
+        </View>
+      )}
       <Card className="mt-4 p-4">
         <View className="flex-row justify-between">
           <Text className="text-footnote font-semibold text-ink">항목별 목표</Text>
