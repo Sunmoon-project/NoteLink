@@ -51,8 +51,13 @@ export function HomeScreen() {
     ? live(s.itemId, items.find((i) => i._id === s.itemId)?.accumulatedSec ?? 0)
     : null;
   const weekSec = (weekly.data?.totalSec ?? 0) + (s.itemId ? s.elapsedSince(monday, now) : 0);
-  const goalMin = goal.data?.targetMin ?? 21 * 60;
-  const pct = Math.round((weekSec / 60 / goalMin) * 100);
+  // 목표를 읽지 못했으면 임의의 목표로 계산하지 않는다
+  const goalMin = goal.data?.targetMin;
+  // 주간 기록을 못 읽었으면 0시간이나 0%로 표시하지 않는다
+  const pct = goalMin && weekly.data ? Math.round((weekSec / 60 / goalMin) * 100) : null;
+  const weekLabel = weekly.data
+    ? `이번주 ${hm(weekSec)}${goalMin ? ` / 목표 ${goalMin / 60}시간 (${pct}%)` : ''} ›`
+    : '주간 목표 설정 ›';
   const nextDday = ddays.data?.find((d) => d.daysLeft >= 0);
 
   const toggle = async (id: string) => {
@@ -214,12 +219,10 @@ export function HomeScreen() {
           <Pressable accessibilityLabel="주간 목표 설정" onPress={() => setSheet('goal')}>
             <Text className="text-footnote text-white/80">
               {running
-                ? `책상 앞이에요 · 이번주 목표 ${pct}%`
+                ? `책상 앞이에요${pct === null ? '' : ` · 이번주 목표 ${pct}%`}`
                 : active
                   ? '쉬는 중 · 10분이 지나면 자동으로 종료돼요'
-                  : has
-                    ? `이번주 ${hm(weekSec)} / 목표 ${goalMin / 60}시간 (${pct}%) ›`
-                    : `이번주 ${hm(weekSec)} / 목표 ${goalMin / 60}시간 (${pct}%) ›`}
+                  : weekLabel}
             </Text>
           </Pressable>
           <Pressable onPress={() => active && router.push('/landscape')}>

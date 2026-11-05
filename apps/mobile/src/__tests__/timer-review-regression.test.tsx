@@ -315,3 +315,13 @@ it('큰 타이머는 지금 공부하는 항목의 시간만 보여 주고 전�
   expect(await screen.findByText('오늘 전체 00:01:50')).toBeTruthy();
   expect(screen.getAllByText('00:00:10')).toHaveLength(2);
 });
+
+it('주간 목표를 정하지 않은 새 계정은 NaN% 없이 이번주 시간만 보여 준다', async () => {
+  const goal = await api.study.weeklyGoal();
+  const week = await api.study.weekly();
+  jest.spyOn(api.study, 'weeklyGoal').mockResolvedValue({ ...goal, targetMin: 0 });
+  jest.spyOn(api.study, 'weekly').mockResolvedValue({ ...week, totalSec: 0 });
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('이번주 0시간 0분 ›')).toBeTruthy();
+  expect(screen.queryByText(/NaN/)).toBeNull();
+});
