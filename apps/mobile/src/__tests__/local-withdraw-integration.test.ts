@@ -116,3 +116,30 @@ it('탈퇴가 DB 삭제에서 실패한 뒤 앱을 다시 켜도 자료 원본�
   expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(false);
   expect(mockDisk.has('file:///doc/notelink-orphans.json')).toBe(false);
 });
+
+it('소유자가 적히지 않은 예전 형식 목록이어도, 남은 계정이 쓰는 원본은 앱을 켤 때 지우지 않는다', async () => {
+  let { api, login } = boot();
+  await api.auth.emailSignup('a@test.com', 'pw12345678');
+  await login('a@test.com');
+  const folder = await api.content.createFolder({ title: '수학', subjectName: '수학' } as never);
+  mockDisk.set('file:///doc/files/a.pdf', '원본');
+  mockDisk.set('file:///doc/files/old.jpg', '탈퇴한 계정 사진');
+  await api.content.createMaterial({
+    requestId: 'r1',
+    folderId: folder._id,
+    kind: 'document',
+    source: 'file',
+    title: '자료',
+    blobUrls: ['file:///doc/files/a.pdf'],
+  });
+  // 이전 구현이 남긴 목록: 주소만 있다 (a.pdf는 살아 있는 계정 자료, old.jpg는 주인이 없다)
+  mockDisk.set(
+    'file:///doc/notelink-orphans.json',
+    JSON.stringify(['file:///doc/files/a.pdf', 'file:///doc/files/old.jpg']),
+  );
+  ({ api, login } = boot());
+  expect(mockDisk.get('file:///doc/files/a.pdf')).toBe('원본');
+  expect(mockDisk.has('file:///doc/files/old.jpg')).toBe(false);
+  await login('a@test.com');
+  expect(await api.content.materials(folder._id)).toHaveLength(1);
+});

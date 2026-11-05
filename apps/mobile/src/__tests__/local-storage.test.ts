@@ -191,3 +191,10 @@ it('예전 형식(주소만 적힌) 목록도 읽어 지운다', () => {
   expect(dropFiles()).toEqual([]);
   expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(false);
 });
+
+it('남은 계정이 쓰는 파일(inUse)은 목록에 있어도 지우지 않는다', () => {
+  mockDisk.set('file:///doc/files/a.pdf', 'a');
+  writeDb('orphans', ['file:///doc/files/a.pdf']);
+  expect(dropFiles((u) => u === 'file:///doc/files/a.pdf')).toEqual(['file:///doc/files/a.pdf']);
+  expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(true);
+});

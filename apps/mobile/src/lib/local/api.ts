@@ -110,8 +110,13 @@ const uid = (p: string) =>
 
 /** 이 기기의 계정 목록: 이메일 → 사용자 id */
 let accounts: Record<string, string> = (readDb('accounts') as Record<string, string>) ?? {};
+/** 이 기기에 남은 계정들이 아직 쓰는 파일 (정리 목록에 있어도 지우지 않는다) */
+const inUseByAccounts = () => {
+  const used = new Set(Object.values(accounts).flatMap((id) => keptFilesIn(readDb(`user-${id}`))));
+  return (uri: string) => used.has(uri);
+};
 // 지난 탈퇴 때 지우지 못한 파일을 앱을 켤 때 로그인 없이 다시 지운다
-dropFiles();
+dropFiles(inUseByAccounts());
 const loaded = new Map<string, Db>();
 
 function newDb(userId: string, email: string): Db {
@@ -451,7 +456,7 @@ const api: Api = {
       accounts = next;
       // 자료 원본 · 프로필 사진 등 이 계정이 기기에 복사해 둔 파일을 모두 지운다.
       // 계정이 없어져 재시도할 수 없으니, 못 지운 파일은 기기 목록에 남겨 다음 실행 때 다시 지운다
-      dropFiles();
+      dropFiles(inUseByAccounts());
       // 계정이 이미 없어 재시도할 수 없으므로 비밀번호 삭제 실패로 탈퇴를 막지 않는다
       // (남은 비밀번호는 어떤 계정과도 이어지지 않는다)
       await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
