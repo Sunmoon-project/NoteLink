@@ -8,18 +8,17 @@ const dbFile = (name: string) => `notelink-${name}.json`;
 // iOS는 앱을 업데이트하면 문서 폴더의 절대 경로가 바뀐다. DB에는 경로 앞부분을 빼고 저장한다
 const DOC_TOKEN = 'notelink-doc://';
 
-/** 저장된 JSON을 읽는다(계정 목록 'accounts' · 계정별 DB 'user-<id>'). 처음이면 null */
+/**
+ * 저장된 JSON을 읽는다(계정 목록 'accounts' · 계정별 DB 'user-<id>'). 파일이 없으면(처음) null.
+ * 파일은 있는데 읽거나 풀지 못하면 던진다 — '없음'으로 여겨 새로 쓰면 남은 기록을 덮어쓰기 때문이다.
+ */
 export function readDb(name: string): unknown | null {
-  try {
-    const f = new File(Paths.document, dbFile(name));
-    // 교체 중에 앱이 꺼졌으면 치워 둔 이전 파일로 되돌린다
-    const bak = new File(Paths.document, `${dbFile(name)}.bak`);
-    if (!f.exists && bak.exists) bak.move(f);
-    if (!f.exists) return null;
-    return JSON.parse(f.textSync().replaceAll(DOC_TOKEN, Paths.document.uri));
-  } catch {
-    return null; // 깨진 파일은 새로 시작한다
-  }
+  const f = new File(Paths.document, dbFile(name));
+  // 교체 중에 앱이 꺼졌으면 치워 둔 이전 파일로 되돌린다
+  const bak = new File(Paths.document, `${dbFile(name)}.bak`);
+  if (!f.exists && bak.exists) bak.move(f);
+  if (!f.exists) return null;
+  return JSON.parse(f.textSync().replaceAll(DOC_TOKEN, Paths.document.uri));
 }
 
 /**
@@ -121,7 +120,13 @@ export function rememberOrphans(owner: string, uris: string[]) {
  * - 목록 갱신에 실패해도 이전 목록(지울 파일을 모두 담고 있다)이 남아 다음 실행 때 다시 지운다
  */
 export function dropFiles() {
-  const left = orphans().filter(
+  let list: Orphan[];
+  try {
+    list = orphans();
+  } catch {
+    return []; // 목록을 읽지 못하면 아무것도 지우지 않고 다음 실행 때 다시 본다
+  }
+  const left = list.filter(
     (o): o is Required<Orphan> => !!o.owner && (dbAlive(o.owner) || !dropFile(o.uri)),
   );
   try {

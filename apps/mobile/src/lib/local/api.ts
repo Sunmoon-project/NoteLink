@@ -109,7 +109,31 @@ const uid = (p: string) =>
   `${p}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
 /** 이 기기의 계정 목록: 이메일 → 사용자 id */
-let accounts: Record<string, string> = (readDb('accounts') as Record<string, string>) ?? {};
+// 읽지 못했으면 null — 빈 목록으로 여기면 가입이 남은 계정 연결을 덮어쓰므로, 쓸 때 다시 읽는다
+let accounts: Record<string, string> | null = readAccounts();
+function readAccounts() {
+  try {
+    return (readDb('accounts') as Record<string, string> | null) ?? {};
+  } catch {
+    return null;
+  }
+}
+/** 계정 목록. 읽지 못하면 가입 · 로그인을 멈춘다 (저장 오류) */
+function accountsMap(): Record<string, string> {
+  accounts ??= readAccounts();
+  if (!accounts) throw storageError('기기의 계정 정보를 읽지 못했어요. 앱을 다시 켜 주세요');
+  return accounts;
+}
+/** 파일은 있는데 읽지 못함 — 새로 시작하지 않고 멈춘다 */
+const storageError = (message: string) => new ApiError('STORAGE_FAILED', message, 507);
+/** 계정 DB 읽기. 파일이 없으면 null, 읽지 못하면 저장 오류 */
+function readUserDb(id: string) {
+  try {
+    return readDb(`user-${id}`) as Db | null;
+  } catch {
+    throw storageError('기기에 저장된 기록을 읽지 못했어요. 앱을 다시 켜 주세요');
+  }
+}
 // 지난 탈퇴 때 지우지 못한 파일을 앱을 켤 때 로그인 없이 다시 지운다
 dropFiles();
 const loaded = new Map<string, Db>();
@@ -180,12 +204,13 @@ function db(): Db {
   if (!id) throw new ApiError(ERROR_CODES.TOKEN_EXPIRED, '로그인이 필요해요', 401);
   let d = loaded.get(id);
   if (!d) {
-    d = readDb(`user-${id}`) as Db | null as Db;
-    if (!d) {
+    const read = readUserDb(id);
+    if (!read) {
       // 이 기기에 계정 데이터가 없으면 서버의 토큰 만료처럼 다시 로그인하게 한다
       useAuth.getState().setExpired(true);
       throw new ApiError(ERROR_CODES.TOKEN_EXPIRED, '로그인이 필요해요', 401);
     }
+    d = read;
     loaded.set(id, d);
   }
   return d;
@@ -346,8 +371,8 @@ function todayByItem(d: Db) {
 /* ── 세션 · 로그인 ───────────────────────────────── */
 
 const accountOf = (email: string) => {
-  const id = accounts[email.trim().toLowerCase()];
-  return id && readDb(`user-${id}`) ? id : null;
+  const id = accountsMap()[email.trim().toLowerCase()];
+  return id && readUserDb(id) ? id : null;
 };
 // ponytail: 비밀번호는 기기 키체인에만 둔다. 서버가 붙으면 서버 인증으로 바뀐다
 const pwKey = (id: string) => `notelink-pw-${id}`;
@@ -357,7 +382,7 @@ function createAccount(email: string, id: string) {
   const key = email.trim().toLowerCase();
   const d = newDb(id, key);
   writeDb(`user-${id}`, d);
-  const next = { ...accounts, [key]: id };
+  const next = { ...accountsMap(), [key]: id };
   try {
     writeDb('accounts', next);
   } catch (e) {
@@ -369,7 +394,7 @@ function createAccount(email: string, id: string) {
 }
 
 function signInAs(id: string) {
-  const d = loaded.get(id) ?? (readDb(`user-${id}`) as Db);
+  const d = loaded.get(id) ?? readUserDb(id)!;
   loaded.set(id, d);
   // 기기 안에서만 쓰는 토큰 — 서버가 붙으면 서버가 발급한 토큰으로 바뀐다
   return { accessToken: `local-${id}`, refreshToken: `local-${id}`, user: withStats(d) };
@@ -442,13 +467,13 @@ const api: Api = {
       loaded.delete(id);
       savedJson.delete(id);
       // DB가 없으면 로그인되지 않으므로 계정 목록 정리가 실패해도 남은 항목은 쓰이지 않는다
-      const next = Object.fromEntries(Object.entries(accounts).filter(([, v]) => v !== id));
       try {
+        const next = Object.fromEntries(Object.entries(accountsMap()).filter(([, v]) => v !== id));
         writeDb('accounts', next);
+        accounts = next;
       } catch {
-        // 다음 저장 때 다시 쓴다
+        // 다음 저장 · 실행 때 다시 읽는다
       }
-      accounts = next;
       // 자료 원본 · 프로필 사진 등 이 계정이 기기에 복사해 둔 파일을 모두 지운다.
       // 계정이 없어져 재시도할 수 없으니, 못 지운 파일은 기기 목록에 남겨 다음 실행 때 다시 지운다
       dropFiles();
@@ -1339,7 +1364,7 @@ localSocket.onClient = (ev, args) => {
 
 /** 테스트용: 앱을 다시 켠 것처럼 메모리를 비우고 파일에서 다시 읽는다 */
 export const resetLocalForTests = () => {
-  accounts = (readDb('accounts') as Record<string, string>) ?? {};
+  accounts = readAccounts();
   loaded.clear();
   savedJson.clear();
 };
