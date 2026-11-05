@@ -3,7 +3,7 @@ import json
 import httpx2
 import pytest
 
-from app.clients.llm import LlmError, SchoolLlm, repair
+from app.clients.llm import LlmCutError, LlmError, SchoolLlm, repair
 
 SCHEMA = {"type": "object"}
 
@@ -105,6 +105,19 @@ def test_unreadable_answer_is_retried_then_raises() -> None:
     with pytest.raises(LlmError, match="JSON"):
         server.client(retries=1).call("gemma", "s", "u", SCHEMA, "X")
     assert len(server.requests) == 2
+
+
+def test_unreadable_answer_raises_cut_error_with_same_message() -> None:
+    server = Server(reply("모르겠습니다"), reply("[1, 2]"))
+    with pytest.raises(LlmCutError, match="^JSON$"):
+        server.client(retries=1).call("gemma", "s", "u", SCHEMA, "X")
+
+
+def test_server_error_is_not_a_cut_error() -> None:
+    server = Server(reply("", 503))
+    with pytest.raises(LlmError) as e:
+        server.client(retries=0).call("gemma", "s", "u", SCHEMA, "X")
+    assert not isinstance(e.value, LlmCutError)
 
 
 def test_calls_keep_the_minimum_gap() -> None:

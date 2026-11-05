@@ -18,7 +18,6 @@ from app.core.config import settings
 API_VERSION = "2025-10-15"
 LOCALE = "ko-KR"
 PATH = "/speechtotext/transcriptions:transcribe"
-RECORDING_MAX_MS = 2 * 60 * 60 * 1000  # 처리하는 녹음의 최대 길이(2시간)
 
 
 class SpeechError(Exception):

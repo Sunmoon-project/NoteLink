@@ -76,6 +76,18 @@ def test_bad_input_fails_without_retry(col: Any) -> None:
     assert (doc["status"], doc["error"]) == ("failed", "입력 오류: questions 없음")
 
 
+def test_input_error_with_code_starts_with_the_code(col: Any) -> None:
+    def handler(inp: JsonObject, report: Report) -> JsonObject:
+        raise JobInputError("녹음이 너무 김", code="INVALID_FILE")
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["error"], doc["attempts"]) == (
+        "failed",
+        "INVALID_FILE: 녹음이 너무 김",
+        1,
+    )
+
+
 def test_input_that_is_not_an_object_fails(col: Any) -> None:
     col.update_one({"_id": "j1"}, {"$set": {"input": None}})
     called: list[bool] = []

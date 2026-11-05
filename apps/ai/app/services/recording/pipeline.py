@@ -13,9 +13,10 @@ again = organize(llm, result["sentences"], result["durationMs"])  # 다시 정�
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from app.clients.llm import JsonObject, Llm, LlmError
+from app.clients.llm import JsonObject, Llm, LlmCutError, LlmError
 from app.clients.speech import NoSpeechError, Phrase, Transcript
 from app.core.config import settings
 from app.services.recording.models import (
@@ -47,7 +48,6 @@ DIAGRAM_KINDS = ("sequence", "contrast", "hierarchy", "cause", "list")
 DIAGRAM_MIN_TERMS = 2
 DIAGRAM_MAX_TERMS = 4
 DIAGRAM_TERM_MAX_CHARS = 20
-ANSWER_CUT = "JSON"  # 답을 JSON으로 읽지 못했을 때의 LlmError 문구(주로 응답 잘림)
 ANSWER_TEMPERATURES = (0.0, 0.3)  # 같은 온도로 다시 물으면 같은 답이 나옴
 HANGUL = re.compile(r"[가-힣]")
 SENTENCE_END = re.compile(r".+?(?:[.!?]+(?=\s|$)|$)", re.DOTALL)  # '1.5배'의 점에서는 안 끊음
@@ -129,6 +129,10 @@ def _slides_schema(number_key: str) -> JsonObject:
 
 WINDOW_SCHEMA = _slides_schema("start")
 FILL_SCHEMA = _slides_schema("number")
+
+
+class _HalfFailedError(LlmError):
+    """나눈 조각을 다시 물어도 실패. 바깥 창에서 다시 묻지 않음(끝난 조각을 또 부르게 됨)."""
 
 
 @dataclass(frozen=True)
@@ -213,9 +217,7 @@ def read_window(llm: Llm, sentences: list[Sentence], window: SentenceRange) -> W
                 max_tokens=TOKENS_PER_SLIDE * expected,
                 temperature=temperature,
             )
-        except LlmError as e:
-            if str(e) != ANSWER_CUT:
-                raise
+        except LlmCutError as e:
             error = e  # 클라이언트가 같은 양을 이미 여러 번 보냄
             break
         answer = _parse_window(raw, window)
@@ -231,8 +233,22 @@ def read_window(llm: Llm, sentences: list[Sentence], window: SentenceRange) -> W
         raise error
     middle = (start + end) // 2
     left = read_window(llm, sentences, (start, middle))
-    right = read_window(llm, sentences, (middle, end))
+    right = _read_right_half(llm, sentences, (middle, end))
     return WindowAnswer([*left.starts, *right.starts], {**left.bodies, **right.bodies})
+
+
+def _read_right_half(llm: Llm, sentences: list[Sentence], window: SentenceRange) -> WindowAnswer:
+    """왼쪽 답을 버리지 않으려고 오른쪽만 한 번 더 묻습니다. 그 안에서 이미 다시 물었으면 그대로."""
+    try:
+        return read_window(llm, sentences, window)
+    except _HalfFailedError:
+        raise
+    except LlmError:
+        pass
+    try:
+        return read_window(llm, sentences, window)
+    except LlmError as e:
+        raise _HalfFailedError(str(e)) from e
 
 
 def _parse_window(answer: JsonObject, window: SentenceRange) -> WindowAnswer:
@@ -441,11 +457,33 @@ def result_from(
     }
 
 
-def organize(llm: Llm, sentences: list[Sentence], duration_ms: int) -> RecordingResult:
-    """문장 목록 → 슬라이드(후처리 한 단계). STT를 다시 하지 않음."""
+def organize(
+    llm: Llm,
+    sentences: list[Sentence],
+    duration_ms: int,
+    *,
+    on_window: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> RecordingResult:
+    """문장 목록 → 슬라이드(후처리 한 단계). STT를 다시 하지 않음.
+
+    on_window(끝난 창 수, 전체 창 수)는 창이 끝날 때마다 부릅니다. 창 사이에 should_stop이 참이면
+    남은 창을 부르지 않고, 끝난 창까지의 슬라이드에 PARTIAL 경고를 답니다(창 하나는 항상 처리).
+    """
     windows = slide_windows(sentences)
-    answers = [read_window(llm, sentences, w) for w in windows]
-    return result_from(sentences, assemble_slides(llm, sentences, windows, answers), duration_ms)
+    answers: list[WindowAnswer] = []
+    for window in windows:
+        if answers and should_stop is not None and should_stop():
+            break
+        answers.append(read_window(llm, sentences, window))
+        if on_window is not None:
+            on_window(len(answers), len(windows))
+    done = windows[: len(answers)]
+    slides = assemble_slides(llm, sentences[: done[-1][1]], done, answers)
+    result = result_from(sentences, slides, duration_ms)
+    if len(done) < len(windows):
+        result["warnings"] = [{"code": "PARTIAL", "untilMs": slides[-1]["endMs"]}]
+    return result
 
 
 def recording_result(llm: Llm, transcript: Transcript) -> RecordingResult:

@@ -2,7 +2,7 @@
 
 처리 함수(Handler)는 input을 받아 result를 돌려주고, 진행률은 report(값, 단계)로 알립니다.
   - LlmError        일시 오류 → 시도 한도까지 기다렸다가 다시 시도
-  - JobInputError   input이 작업에 맞지 않음 → 바로 실패(다시 해도 같음)
+  - JobInputError   input이 작업에 맞지 않음 → 바로 실패(다시 해도 같음). 오류 문구는 code로 시작
   - 그 밖의 예외    코드 오류 → 바로 실패. 오류 문구는 앱에 보이므로 자세한 내용은 로그에만 남김
   - JobGoneError    취소됐거나 잠금을 잃음 → 아무것도 쓰지 않고 다음 작업으로
   - PyMongoError    DB 연결 문제 → 쓰지 않고 둠. 잠금이 끝나면 다시 가져감(시도 한도 안에서)
@@ -25,7 +25,14 @@ log = logging.getLogger(__name__)
 
 
 class JobInputError(ValueError):
-    """input이 작업에 맞지 않음(빠진 필드 · 잘못된 형식). 메시지는 앱에 보이는 짧은 원인."""
+    """input이 작업에 맞지 않음(빠진 필드 · 잘못된 형식). 메시지는 앱에 보이는 짧은 원인.
+
+    code가 있으면 앱이 구분할 수 있게 ai_jobs.error를 '<code>: <원인>'으로 씁니다.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class Report(Protocol):
@@ -85,7 +92,7 @@ def run_once(
         _fail(store, job, f"AI 응답을 받지 못함({e})", retry=True)
     except JobInputError as e:
         log.warning("작업 %s: 입력 오류 %s", job.id, e)
-        _fail(store, job, f"입력 오류: {e}", retry=False)
+        _fail(store, job, f"{e.code}: {e}" if e.code else f"입력 오류: {e}", retry=False)
     except PyMongoError:
         raise  # 실패로 쓰지 않음: run_forever가 기록하고, 잠금이 끝나면 다시 가져감
     except Exception:

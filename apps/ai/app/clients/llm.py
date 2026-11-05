@@ -27,6 +27,10 @@ class LlmError(Exception):
     """다시 보내도 답을 받지 못함. 메시지는 짧은 원인(예: 'HTTP 503', 'JSON')."""
 
 
+class LlmCutError(LlmError):
+    """답을 JSON으로 읽지 못함(주로 응답 잘림)."""
+
+
 class Llm(Protocol):
     """서비스 코드는 이 형태에만 기대고, 테스트에서는 가짜로 바꿔 끼웁니다."""
 
@@ -152,6 +156,8 @@ class SchoolLlm:
                 err = "JSON"
                 continue
             return parsed
+        if err == "JSON":
+            raise LlmCutError(err)
         raise LlmError(err)
 
 

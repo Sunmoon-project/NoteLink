@@ -17,6 +17,7 @@ from app.clients.speech import (
     Transcript,
     Word,
 )
+from app.core.config import settings
 
 AUDIO_URL = "https://blob.example.test/recordings/a.m4a?sig=secret-sas"
 
@@ -218,6 +219,6 @@ def test_transcribe_rejects_bad_response_shape(response: httpx2.Response) -> Non
 
 
 def test_speech_factory_requires_endpoint_and_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(speech_module.settings, "azure_speech_endpoint", "")
+    monkeypatch.setattr(settings, "azure_speech_endpoint", "")
     with pytest.raises(SpeechError, match="AZURE_SPEECH"):
         speech_module.speech()

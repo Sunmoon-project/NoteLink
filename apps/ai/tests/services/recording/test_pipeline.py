@@ -5,7 +5,7 @@ from collections.abc import Callable, Sequence
 import httpx2
 import pytest
 
-from app.clients.llm import JsonObject, LlmError, SchoolLlm
+from app.clients.llm import JsonObject, Llm, LlmCutError, LlmError, SchoolLlm
 from app.clients.speech import NoSpeechError, Phrase, Transcript, Word
 from app.core.config import settings
 from app.services.recording.models import Sentence, Slide
@@ -110,7 +110,7 @@ def starts_of(slides: list[Slide]) -> list[int]:
     return [s["sentenceStart"] for s in slides]
 
 
-def build(llm: WindowLlm | FakeLlm, data: list[Sentence]) -> list[Slide]:
+def build(llm: Llm, data: list[Sentence]) -> list[Slide]:
     return organize(llm, data, 1000)["slides"]
 
 
@@ -514,7 +514,8 @@ def test_diagram_accepts_each_kind(kind: str) -> None:
     diagram = {"kind": kind, "terms": ["가", "나", "다", "라"], "relations": []}
     llm = FakeLlm({SLIDES: [{"slides": [item(diagram=diagram)]}]})
 
-    assert build(llm, sentences(1))[0]["diagram"] == diagram
+    got: object = build(llm, sentences(1))[0]["diagram"]
+    assert got == diagram
 
 
 def test_diagram_null_is_allowed() -> None:
@@ -527,11 +528,8 @@ def test_diagram_null_is_allowed() -> None:
 def test_diagram_strips_terms_and_defaults_relations() -> None:
     llm = FakeLlm({SLIDES: [{"slides": [item(diagram={"kind": "list", "terms": [" 가 ", "나"]})]}]})
 
-    assert build(llm, sentences(1))[0]["diagram"] == {
-        "kind": "list",
-        "terms": ["가", "나"],
-        "relations": [],
-    }
+    got: object = build(llm, sentences(1))[0]["diagram"]
+    assert got == {"kind": "list", "terms": ["가", "나"], "relations": []}
 
 
 @pytest.mark.parametrize(
@@ -848,9 +846,9 @@ def test_answer_cut_after_complete_slide_keeps_it_and_fills_the_rest() -> None:
 
 
 def test_window_with_few_slides_is_not_split_when_cut() -> None:
-    llm = FakeLlm({SLIDES: [LlmError("JSON")]})
+    llm = FakeLlm({SLIDES: [LlmCutError("JSON")]})
 
-    with pytest.raises(LlmError, match="JSON"):
+    with pytest.raises(LlmCutError, match="JSON"):
         build(llm, sentences(3))
     assert len(llm.calls) == 1
 
@@ -875,7 +873,7 @@ def test_long_window_does_not_split_on_server_error() -> None:
 def test_second_answer_cut_keeps_first_answer() -> None:
     llm = FakeLlm(
         {
-            SLIDES: [{"slides": [item(1, "앞")]}, LlmError("JSON")],
+            SLIDES: [{"slides": [item(1, "앞")]}, LlmCutError("JSON")],
             FILL: [{"slides": [fill_item(1), fill_item(2)]}],
         }
     )
@@ -909,3 +907,143 @@ def test_one_sentence_over_char_limit_stays_whole_and_prompt_is_bounded() -> Non
     assert [(s["sentenceStart"], s["sentenceEnd"]) for s in slides] == [(0, 1), (1, 2)]
     assert len(llm.users[0]) < WINDOW_CHARS  # 창 목록은 LINE_CHARS로 줄임
     assert llm.fills == [1, 1]  # 글자 상한 때문에 혼자 한 묶음
+
+
+# ---------- 창 나누기: 잘림 판별 · 성공한 조각 재사용 ----------
+
+
+def test_error_with_json_text_that_is_not_a_cut_does_not_split() -> None:
+    llm = FakeLlm({SLIDES: [LlmError("JSON")]})
+
+    with pytest.raises(LlmError, match="JSON"):
+        build(llm, sentences(20))
+    assert len(llm.calls) == 1
+
+
+class PieceLlm(WindowLlm):
+    """문장 범위(첫 위치, 개수)마다 정해 둔 오류를 차례로 냄. 없으면 정상 답."""
+
+    def __init__(self, errors: dict[tuple[int, int], list[LlmError]]) -> None:
+        super().__init__(every_third)
+        self.errors = errors
+
+    def call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: JsonObject,
+        name: str,
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+    ) -> JsonObject:
+        ids = [int(m) for m in re.findall(r"^\d+ \[\d+초\]: s(\d+)", user, re.MULTILINE)]
+        queue = self.errors.get((ids[0], len(ids))) if ids else None
+        if queue:
+            self.windows.append(ids)
+            raise queue.pop(0)
+        return super().call(
+            model, system, user, schema, name, max_tokens=max_tokens, temperature=temperature
+        )
+
+    @property
+    def asked(self) -> list[tuple[int, int]]:
+        return [(ids[0], len(ids)) for ids in self.windows]
+
+
+def test_split_keeps_left_answer_and_asks_only_right_again() -> None:
+    data = tagged_sentences(20)
+    llm = PieceLlm({(0, 20): [LlmCutError("JSON")], (10, 10): [LlmError("HTTP 503")]})
+
+    slides = build(llm, data)
+
+    assert llm.asked == [(0, 20), (0, 10), (10, 10), (10, 10)]
+    assert_covers_all(slides, 20)
+
+
+def test_split_fails_when_right_fails_twice_after_asking_left_once() -> None:
+    data = tagged_sentences(20)
+    llm = PieceLlm({(0, 20): [LlmCutError("JSON")], (10, 10): [LlmError("HTTP 503")] * 2})
+
+    with pytest.raises(LlmError, match="HTTP 503"):
+        build(llm, data)
+
+    assert llm.asked == [(0, 20), (0, 10), (10, 10), (10, 10)]
+
+
+def test_split_does_not_ask_right_when_left_fails() -> None:
+    data = tagged_sentences(20)
+    llm = PieceLlm({(0, 20): [LlmCutError("JSON")], (0, 10): [LlmError("HTTP 503")]})
+
+    with pytest.raises(LlmError, match="HTTP 503"):
+        build(llm, data)
+
+    assert llm.asked == [(0, 20), (0, 10)]
+
+
+def test_nested_split_does_not_ask_finished_piece_again() -> None:
+    data = tagged_sentences(20)
+    llm = PieceLlm(
+        {
+            (0, 20): [LlmCutError("JSON")],
+            (10, 10): [LlmCutError("JSON")],
+            (15, 5): [LlmError("HTTP 503")] * 2,
+        }
+    )
+
+    with pytest.raises(LlmError, match="HTTP 503"):
+        build(llm, data)
+
+    # 바깥에서 오른쪽 전체를 다시 물으면 끝난 (10, 5)까지 다시 부르게 됨
+    assert llm.asked == [(0, 20), (0, 10), (10, 10), (10, 5), (15, 5), (15, 5)]
+
+
+def test_nested_cut_keeps_all_finished_pieces_and_covers_everything() -> None:
+    data = tagged_sentences(20)
+    llm = PieceLlm(
+        {
+            (0, 20): [LlmCutError("JSON")],
+            (10, 10): [LlmCutError("JSON")],
+            (15, 5): [LlmError("HTTP 503")],
+        }
+    )
+
+    slides = build(llm, data)
+
+    assert llm.asked == [(0, 20), (0, 10), (10, 10), (10, 5), (15, 5), (15, 5)]
+    assert_covers_all(slides, 20)
+
+
+# ---------- 창마다 부르기 · 멈추기 ----------
+
+
+def test_on_window_is_called_after_each_window() -> None:
+    data = tagged_sentences(100)
+    seen: list[tuple[int, int]] = []
+
+    organize(WindowLlm(every_third), data, 1000, on_window=lambda done, n: seen.append((done, n)))
+
+    total = len(slide_windows(data))
+    assert total > 1
+    assert seen == [(i, total) for i in range(1, total + 1)]
+
+
+def test_should_stop_keeps_finished_windows_and_all_sentences() -> None:
+    data = tagged_sentences(100)
+    llm = WindowLlm(every_third)
+
+    result = organize(llm, data, 1000, should_stop=lambda: len(llm.windows) >= 1)
+
+    assert len(llm.windows) == 1
+    assert result["sentences"] == data
+    assert result["slides"][-1]["sentenceEnd"] == llm.windows[0][-1] + 1
+    assert result.get("warnings") == [{"code": "PARTIAL", "untilMs": result["slides"][-1]["endMs"]}]
+
+
+def test_finishing_every_window_has_no_warning() -> None:
+    result = organize(
+        WindowLlm(every_third), tagged_sentences(100), 1000, should_stop=lambda: False
+    )
+
+    assert "warnings" not in result
