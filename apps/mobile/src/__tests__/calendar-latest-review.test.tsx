@@ -324,6 +324,13 @@ it.each([
   await renderScreen(<RecordScreen />, client());
   expect(await screen.findByText(label)).toBeTruthy();
 });
+it('공부 기록이 없어 주요 공부 시간이 -1이면 -로 표시한다', async () => {
+  const data = await api.study.stats('all');
+  jest.spyOn(api.study, 'stats').mockResolvedValue({ ...data, peakHour: -1 });
+  await renderScreen(<RecordScreen />, client());
+  expect(await screen.findByText('주로 공부한 시간')).toBeTruthy();
+  expect(screen.queryByText(/오[전후] -?\d+시/)).toBeNull();
+});
 it('주간 보기도 07시와 23시 수업을 시간 범위 안에 표시한다', async () => {
   jest.spyOn(api.timetable, 'get').mockResolvedValue({
     _id: 'tt',

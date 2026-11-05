@@ -101,7 +101,7 @@ export function SummaryScreen() {
           </View>
         ))}
       </Card>
-      {goalMin && pct !== null && (
+      {!!goalMin && pct !== null && (
         <>
           <View className="mt-4 flex-row justify-between">
             <Text className="text-subhead font-semibold text-ink">
