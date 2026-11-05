@@ -8,7 +8,13 @@ global.mockParams = {};
 // 닫히는 Modal을 기다리지 않는다. 기다림은 modal-navigation-sim-review 테스트에서만 켠다
 global.MODAL_CLOSE_MS = 0;
 jest.mock('expo-router', () => ({
-  router: { push: jest.fn(), replace: jest.fn(), back: jest.fn(), dismissAll: jest.fn() },
+  router: {
+    push: jest.fn(),
+    replace: jest.fn(),
+    back: jest.fn(),
+    canGoBack: jest.fn(() => true),
+    dismissAll: jest.fn(),
+  },
   useRouter: () => ({ push: jest.fn(), replace: jest.fn(), back: jest.fn() }),
   useSegments: () => [],
   useSitemap: jest.fn(() => null),

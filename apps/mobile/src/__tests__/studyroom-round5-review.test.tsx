@@ -167,7 +167,7 @@ describe('RoomCreateScreen', () => {
       }),
     );
     await waitFor(() =>
-      expect(router.replace).toHaveBeenCalledWith({
+      expect(router.push).toHaveBeenCalledWith({
         pathname: '/room/[id]',
         params: { id: 'created-room' },
       }),
@@ -184,7 +184,7 @@ describe('RoomCreateScreen', () => {
     await waitFor(() => expect(mockApi.rooms.create).toHaveBeenCalled());
     await waitFor(() => expect(useToast.getState().msg).toBeTruthy());
     expect(screen.getByPlaceholderText('예) 파이썬 기초 스터디').props.value).toBe('  새 수학방  ');
-    expect(router.replace).not.toHaveBeenCalled();
+    expect(router.push).not.toHaveBeenCalled();
     expect(qc.getQueryState(['rooms', 'mine'])?.isInvalidated).toBe(false);
   });
 });

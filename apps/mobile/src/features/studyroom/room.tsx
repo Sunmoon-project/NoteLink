@@ -225,6 +225,9 @@ export function RoomListScreen() {
   );
 }
 
+/** 딥링크 · 알림으로 바로 들어오면 뒤로 갈 화면이 없다 — 그때는 스터디룸 탭으로 */
+const leaveRoom = () => (router.canGoBack() ? router.back() : router.replace('/(tabs)/studyroom'));
+
 export function RoomCreateScreen() {
   const qc = useQueryClient();
   const [name, setName] = useState('');
@@ -235,7 +238,9 @@ export function RoomCreateScreen() {
     onError: () => toast('스터디룸을 만들지 못했어요. 다시 시도해주세요'),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ['rooms'] });
-      router.replace({ pathname: '/room/[id]', params: { id: r._id } });
+      // 만들기 화면은 스터디룸 탭 안, 방은 바깥 스택이다. replace하면 탭까지 바뀌어 나갈 곳이 없어진다
+      router.back();
+      router.push({ pathname: '/room/[id]', params: { id: r._id } });
       toast(`스터디룸을 만들었어요 · 코드 ${r.inviteCode}`);
     },
   });
@@ -526,7 +531,7 @@ export function RoomScreen() {
         <Btn className="mt-4" onPress={() => void room.refetch()}>
           다시 시도
         </Btn>
-        <Btn kind="outline" className="mt-2" onPress={() => router.back()}>
+        <Btn kind="outline" className="mt-2" onPress={leaveRoom}>
           돌아가기
         </Btn>
       </Screen>
@@ -571,7 +576,7 @@ export function RoomScreen() {
       {!chat && (
         <View className="px-5">
           <View className="h-11 flex-row items-center justify-between">
-            <Pressable accessibilityLabel="나가기" onPress={() => router.back()} hitSlop={10}>
+            <Pressable accessibilityLabel="나가기" onPress={leaveRoom} hitSlop={10}>
               <ArrowLeft size={ICON.lg} color={C.ink} />
             </Pressable>
             <Pressable

@@ -1,11 +1,12 @@
 import { useAuth } from '../stores/auth';
 import { useMockFlags } from '../lib/mock/flags';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { router } from 'expo-router';
 import { QueryClient } from '@tanstack/react-query';
 import * as Calendar from 'expo-calendar';
 import type { Message } from '@notelink/shared';
 import { api } from '../lib/api';
-import { RoomScreen } from '../features/studyroom/room';
+import { RoomCreateScreen, RoomScreen } from '../features/studyroom/room';
 import { TimerScreen, ScheduleScreen } from '../features/studyroom/tools';
 import { socket, mockServer } from '../lib/socket';
 import { useNet } from '../stores/net';
@@ -217,4 +218,30 @@ it('서울 자정 뒤 오늘 시간은 전날 입장 경과 시간을 포함하�
   now.mockReturnValue(before + 5000);
   await waitFor(() => expect(screen.getByText('00:00:03')).toBeTruthy(), { timeout: 2500 });
   await ui.unmount();
+});
+
+it('방을 만들면 만들기 화면을 닫고 방을 위에 연다 (탭 스택을 갈아 끼우지 않는다)', async () => {
+  await renderScreen(<RoomCreateScreen />, client());
+  await fireEvent.changeText(screen.getByPlaceholderText('예) 파이썬 기초 스터디'), '토익 스터디');
+  const buttons = screen.getAllByText('스터디룸 만들기');
+  await fireEvent.press(buttons[buttons.length - 1]!);
+  await waitFor(() =>
+    expect(router.push).toHaveBeenCalledWith(expect.objectContaining({ pathname: '/room/[id]' })),
+  );
+  expect(router.back).toHaveBeenCalled();
+  expect(jest.mocked(router.back).mock.invocationCallOrder[0]).toBeLessThan(
+    jest.mocked(router.push).mock.invocationCallOrder[0]!,
+  );
+  expect(router.replace).not.toHaveBeenCalled();
+});
+
+it('뒤로 갈 화면이 없을 때 방에서 나가면 스터디룸 탭으로 간다', async () => {
+  const [brief] = await api.rooms.recommended();
+  setParams({ id: brief!._id });
+  jest.mocked(router.canGoBack).mockReturnValueOnce(false);
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText(brief!.title);
+  await fireEvent.press(screen.getByLabelText('나가기'));
+  expect(router.replace).toHaveBeenCalledWith('/(tabs)/studyroom');
+  expect(router.back).not.toHaveBeenCalled();
 });
