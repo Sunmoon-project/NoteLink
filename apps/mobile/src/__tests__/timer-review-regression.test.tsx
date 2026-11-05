@@ -147,6 +147,20 @@ it.each([
   },
 );
 
+it('주간 목표가 0분이면 종료 요약에 목표 줄도 맨 숫자 0도 그리지 않는다', async () => {
+  const goal = await api.study.weeklyGoal();
+  jest.spyOn(api.study, 'weeklyGoal').mockResolvedValue({ ...goal, targetMin: 0 });
+  await renderScreen(<SummaryScreen />, client());
+  await screen.findByText(/수고했어요/);
+  expect(screen.queryByText(/이번주 목표/)).toBeNull();
+  type Node = { type: string; children?: (Node | string)[] | null };
+  const bare = (n: Node | string): boolean =>
+    typeof n !== 'string' &&
+    n.type !== 'Text' &&
+    (n.children ?? []).some((c) => typeof c === 'string' || bare(c));
+  expect(bare(screen.toJSON() as Node)).toBe(false);
+});
+
 it('홈은 전주보다 줄어든 시간을 양수와 감소 안내로 표시한다', async () => {
   const weekly = await api.study.weekly();
   jest.spyOn(api.study, 'weekly').mockResolvedValue({ ...weekly, diffFromLastWeekSec: -5400 });

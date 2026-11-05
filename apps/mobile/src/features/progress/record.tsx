@@ -315,7 +315,7 @@ export function RecordScreen() {
                 ['최장 연속', stats.data ? `${stats.data.longestStreak}일` : '-'],
                 [
                   '주로 공부한 시간',
-                  stats.data?.peakHour == null
+                  stats.data?.peakHour == null || stats.data.peakHour < 0
                     ? '-'
                     : `${stats.data.peakHour < 12 ? '오전' : '오후'} ${stats.data.peakHour % 12 || 12}시`,
                 ],
