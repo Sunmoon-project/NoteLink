@@ -217,7 +217,7 @@ export const mockApi: Api = {
     emailSignup: (email) =>
       email === db.user.email
         ? fail(ERROR_CODES.EMAIL_TAKEN, '이미 가입한 이메일이에요', 409)
-        : ok({ accessToken: 'mock-access', refreshToken: 'mock-refresh', user: db.user }, 700),
+        : ok(undefined, 700),
     agreeTerms: () => ok(undefined),
     logout: () => ok(undefined),
   },

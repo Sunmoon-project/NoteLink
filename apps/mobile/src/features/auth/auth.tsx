@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Linking, Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
 import Animated, { FadeIn } from 'react-native-reanimated';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, Check, Sparkles } from 'lucide-react-native';
 import { ERROR_CODES, type LearnerType, type SocialProvider } from '@notelink/shared';
@@ -81,16 +81,49 @@ function useFinishSignIn() {
   };
 }
 
-export function LoginScreen() {
-  const [emailOpen, setEmailOpen] = useState(false);
-  const [email, setEmail] = useState('');
-  const [pw, setPw] = useState('');
+/** 카카오 · 네이버 · Google 간편 로그인 버튼. 처음 쓰는 계정은 서버가 만들고 초기 설정으로 이어진다 */
+function SocialButtons() {
   const done = useFinishSignIn();
   const social = useMutation({
     mutationFn: async (p: SocialProvider) => api.auth.socialLogin(p, await getProviderToken(p)),
     onSuccess: done,
     onError: (e) => toast(e instanceof Error ? e.message : '로그인하지 못했어요'),
   });
+  return (
+    <View className="gap-2.5">
+      {(
+        [
+          ['kakao', 'sun', '카카오로 시작하기'],
+          ['naver', 'outline', '네이버로 시작하기'],
+          ['google', 'outline', 'Google로 시작하기'],
+        ] as const
+      ).map(([p, kind, label]) => (
+        <Btn
+          key={p}
+          kind={kind}
+          disabled={!socialLoginReady}
+          loading={social.isPending && social.variables === p}
+          onPress={() => social.mutate(p)}
+        >
+          {label}
+        </Btn>
+      ))}
+      {!socialLoginReady && (
+        <Text className="text-center text-caption text-sub">
+          간편 로그인은 준비 중이에요. 이메일로 시작해 주세요
+        </Text>
+      )}
+    </View>
+  );
+}
+
+export function LoginScreen() {
+  // 가입을 마치고 오면 가입한 이메일이 채워진 로그인 창을 바로 연다
+  const { email: joined } = useLocalSearchParams<{ email?: string }>();
+  const [emailOpen, setEmailOpen] = useState(!!joined);
+  const [email, setEmail] = useState(joined ?? '');
+  const [pw, setPw] = useState('');
+  const done = useFinishSignIn();
   const byEmail = useMutation({
     mutationFn: () => api.auth.emailLogin(email.trim(), pw),
     onSuccess: done,
@@ -98,7 +131,7 @@ export function LoginScreen() {
   });
   return (
     <Screen>
-      <View className="items-center pt-40">
+      <View className="items-center pt-32">
         <View className="h-16 w-16 items-center justify-center rounded-2xl bg-brand">
           <BookOpen size={30} color="#fff" />
         </View>
@@ -107,37 +140,18 @@ export function LoginScreen() {
           수기 대신 스마트하게, AI와 함께 배우는 노트 앱
         </Text>
       </View>
-      <View className="mt-24 gap-2.5">
-        <Btn
-          kind="sun"
-          disabled={!socialLoginReady}
-          loading={social.isPending && social.variables === 'kakao'}
-          onPress={() => social.mutate('kakao')}
+      <View className="mt-16 gap-2.5">
+        <SocialButtons />
+        <Btn onPress={() => setEmailOpen(true)}>이메일로 로그인</Btn>
+        <Pressable
+          accessibilityRole="button"
+          className="mt-1 self-center py-2"
+          onPress={() => router.push('/(auth)/signup')}
         >
-          카카오로 시작하기
-        </Btn>
-        <Btn
-          kind="outline"
-          disabled={!socialLoginReady}
-          loading={social.isPending && social.variables === 'naver'}
-          onPress={() => social.mutate('naver')}
-        >
-          네이버로 시작하기
-        </Btn>
-        <Btn
-          kind="outline"
-          disabled={!socialLoginReady}
-          loading={social.isPending && social.variables === 'google'}
-          onPress={() => social.mutate('google')}
-        >
-          Google로 시작하기
-        </Btn>
-        <Btn onPress={() => setEmailOpen(true)}>이메일로 시작하기</Btn>
-        {!socialLoginReady && (
-          <Text className="text-center text-caption text-sub">
-            소셜 로그인은 준비 중이에요. 이메일로 시작해 주세요
+          <Text className="text-footnote text-sub">
+            계정이 없나요? <Text className="font-semibold text-brand">회원가입</Text>
           </Text>
-        )}
+        </Pressable>
       </View>
       <Sheet open={emailOpen} onClose={() => setEmailOpen(false)} title="이메일로 로그인">
         <Label>이메일</Label>
@@ -165,18 +179,6 @@ export function LoginScreen() {
         >
           로그인
         </Btn>
-        <Pressable
-          accessibilityRole="button"
-          className="mt-3 self-center py-2"
-          onPress={() => {
-            setEmailOpen(false);
-            router.push('/(auth)/signup');
-          }}
-        >
-          <Text className="text-footnote text-sub">
-            계정이 없나요? <Text className="font-semibold text-brand">회원가입</Text>
-          </Text>
-        </Pressable>
       </Sheet>
     </Screen>
   );
@@ -196,11 +198,15 @@ export function SignupScreen() {
   const [pw, setPw] = useState('');
   const [confirm, setConfirm] = useState('');
   const [taken, setTaken] = useState(false);
-  const finish = useFinishSignIn();
   const error = signupError(email, pw, confirm);
+  const toLogin = () =>
+    router.replace({ pathname: '/(auth)/login', params: { email: email.trim() } });
   const signup = useMutation({
     mutationFn: () => api.auth.emailSignup(email.trim(), pw),
-    onSuccess: finish,
+    onSuccess: () => {
+      toast('가입했어요. 로그인해 주세요');
+      toLogin();
+    },
     onError: (e) => {
       if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
       else toast(e instanceof ApiError ? e.message : '가입하지 못했어요. 다시 시도해 주세요');
@@ -218,8 +224,8 @@ export function SignupScreen() {
         </Btn>
       }
     >
-      <Header title="회원가입" sub="이메일과 비밀번호로 시작해요" />
-      <Label>이메일</Label>
+      <Header title="회원가입" sub="아이디로 쓸 이메일과 비밀번호를 정해 주세요" />
+      <Label>이메일 (아이디)</Label>
       <Input
         value={email}
         onChangeText={(v) => {
@@ -251,11 +257,13 @@ export function SignupScreen() {
       {taken && (
         <View className="mt-3 flex-row items-center gap-2">
           <Text className="text-footnote text-danger">이미 가입한 이메일이에요</Text>
-          <Pressable accessibilityRole="button" onPress={() => router.back()}>
+          <Pressable accessibilityRole="button" onPress={toLogin}>
             <Text className="text-footnote font-semibold text-brand">로그인하기</Text>
           </Pressable>
         </View>
       )}
+      <Text className="mt-8 mb-3 text-center text-caption text-sub">또는 간편하게 시작</Text>
+      <SocialButtons />
     </Screen>
   );
 }
@@ -342,18 +350,18 @@ const INTERESTS = ['자격증', '수능', '어학', '전공', '코딩', '공무�
 export function ProfileSetupScreen() {
   const qc = useQueryClient();
   const [nick, setNick] = useState('');
-  const [type, setType] = useState<LearnerType>('university');
-  const [interests, setInterests] = useState<string[]>(['자격증', '수능']);
+  const [type, setType] = useState<LearnerType | null>(null);
+  const [interests, setInterests] = useState<string[]>([]);
   const save = useMutation({
     mutationFn: () =>
-      api.me.update({ nickname: nick.trim(), learnerType: type, interestCategoryIds: interests }),
+      api.me.update({ nickname: nick.trim(), learnerType: type!, interestCategoryIds: interests }),
     onSuccess: async (u) => {
       qc.setQueryData(['me'], u);
       await useAuth.getState().finishOnboarding();
       router.replace('/');
     },
   });
-  const ok = nick.trim().length >= 2 && nick.trim().length <= 10;
+  const ok = nick.trim().length >= 2 && nick.trim().length <= 10 && !!type;
   return (
     <Screen
       footer={
