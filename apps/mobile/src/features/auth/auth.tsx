@@ -9,6 +9,13 @@ import { ERROR_CODES, type LearnerType, type SocialProvider } from '@notelink/sh
 import { api, ApiError } from '@/lib/api';
 import { getProviderToken, socialLoginReady } from '@/lib/social-auth';
 import { clearAccountState } from '@/lib/account';
+import {
+  confirmError,
+  emailError,
+  looksLikeEmail,
+  nicknameError,
+  passwordError,
+} from '@/lib/validation';
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
@@ -183,7 +190,7 @@ export function LoginScreen() {
         {!!loginError && <Text className="mt-3 text-footnote text-danger">{loginError}</Text>}
         <Btn
           className="mt-6"
-          disabled={!/^\S+@\S+\.\S+$/.test(email) || pw.length < 8}
+          disabled={!looksLikeEmail(email) || pw.length < 8}
           loading={byEmail.isPending}
           onPress={() => byEmail.mutate()}
         >
@@ -194,21 +201,37 @@ export function LoginScreen() {
   );
 }
 
-/** 가입 입력 검사. 문제가 없으면 null (아직 안 쓴 칸은 탓하지 않는다) */
-export function signupError(email: string, pw: string, confirm: string): string | null {
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
-    return '이메일 형식을 확인해 주세요';
-  if (pw && pw.length < 8) return '비밀번호는 8자 이상이어야 해요';
-  if (confirm && pw !== confirm) return '비밀번호가 서로 달라요';
-  return null;
-}
+/** 칸 아래 안내 (없으면 그리지 않는다) */
+const FieldError = ({ msg }: { msg: string | null }) =>
+  msg ? <Text className="mt-1.5 text-caption text-danger">{msg}</Text> : null;
+
+type SignupField = 'email' | 'pw' | 'confirm';
 
 export function SignupScreen() {
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [confirm, setConfirm] = useState('');
   const [taken, setTaken] = useState(false);
-  const error = signupError(email, pw, confirm);
+  // 안내는 칸을 벗어나거나 가입하기를 누른 뒤부터 보여 준다 (쓰는 중인 칸을 탓하지 않는다)
+  const [touched, setTouched] = useState<Record<SignupField, boolean>>({
+    email: false,
+    pw: false,
+    confirm: false,
+  });
+  const touch = (f: SignupField) => () => setTouched((t) => ({ ...t, [f]: true }));
+  const errors = {
+    email: emailError(email),
+    pw: passwordError(pw),
+    confirm: confirmError(pw, confirm),
+  };
+  const shown = (f: SignupField) => (touched[f] ? errors[f] : null);
+  // 확인 칸은 마지막 칸이라 벗어나지 않고 가입하기를 누르기 쉽다 — 다 쓴 만큼 입력하면 바로 비교한다
+  const confirmShown =
+    shown('confirm') ?? (confirm.length >= pw.length && confirm ? errors.confirm : null);
+  const submit = () => {
+    setTouched({ email: true, pw: true, confirm: true });
+    if (!errors.email && !errors.pw && !errors.confirm) signup.mutate();
+  };
   const toLogin = () =>
     router.replace({ pathname: '/(auth)/login', params: { email: email.trim() } });
   const signup = useMutation({
@@ -225,11 +248,7 @@ export function SignupScreen() {
   return (
     <Screen
       footer={
-        <Btn
-          disabled={!email || !pw || !confirm || !!error}
-          loading={signup.isPending}
-          onPress={() => signup.mutate()}
-        >
+        <Btn loading={signup.isPending} onPress={submit}>
           가입하기
         </Btn>
       }
@@ -242,28 +261,42 @@ export function SignupScreen() {
           setEmail(v);
           setTaken(false);
         }}
+        onBlur={touch('email')}
+        invalid={!!shown('email')}
         placeholder="you@example.com"
         keyboardType="email-address"
         autoCapitalize="none"
+        autoCorrect={false}
         autoComplete="email"
+        maxLength={254}
       />
+      <FieldError msg={shown('email')} />
       <Label>비밀번호</Label>
       <Input
         value={pw}
         onChangeText={setPw}
-        placeholder="8자 이상"
+        onBlur={touch('pw')}
+        invalid={!!shown('pw')}
+        placeholder="영문 · 숫자 포함 8자 이상"
         secureTextEntry
+        autoCapitalize="none"
         autoComplete="new-password"
+        maxLength={64}
       />
+      <FieldError msg={shown('pw')} />
       <Label>비밀번호 확인</Label>
       <Input
         value={confirm}
         onChangeText={setConfirm}
+        onBlur={touch('confirm')}
+        invalid={!!confirmShown}
         placeholder="한 번 더 입력해 주세요"
         secureTextEntry
+        autoCapitalize="none"
         autoComplete="new-password"
+        maxLength={64}
       />
-      {!!error && <Text className="mt-3 text-footnote text-danger">{error}</Text>}
+      <FieldError msg={confirmShown} />
       {taken && (
         <View className="mt-3 flex-row items-center gap-2">
           <Text className="text-footnote text-danger">이미 가입한 이메일이에요</Text>
@@ -371,11 +404,18 @@ export function ProfileSetupScreen() {
       router.replace('/');
     },
   });
-  const ok = nick.trim().length >= 2 && nick.trim().length <= 10 && !!type;
+  const [tried, setTried] = useState(false);
+  const nickErr = nicknameError(nick);
+  // 닉네임은 쓰기 시작하면 바로, 학습자 유형은 시작하기를 누른 뒤에 안내한다
+  const nickShown = nick || tried ? nickErr : null;
+  const start = () => {
+    setTried(true);
+    if (!nickErr && type) save.mutate();
+  };
   return (
     <Screen
       footer={
-        <Btn disabled={!ok} loading={save.isPending} onPress={() => save.mutate()}>
+        <Btn loading={save.isPending} onPress={start}>
           시작하기
         </Btn>
       }
@@ -387,8 +427,10 @@ export function ProfileSetupScreen() {
         onChangeText={(v) => setNick(v.slice(0, 10))}
         placeholder="노트러버"
         autoFocus
+        invalid={!!nickShown}
         right={`${nick.length}/10`}
       />
+      <FieldError msg={nickShown} />
       <Label>학습자 유형</Label>
       <View className="flex-row gap-2">
         {TYPES.map(([k, l]) => (
@@ -397,6 +439,7 @@ export function ProfileSetupScreen() {
           </Chip>
         ))}
       </View>
+      <FieldError msg={tried && !type ? '학습자 유형을 골라 주세요' : null} />
       <Label>관심 분야</Label>
       <View className="flex-row flex-wrap gap-2">
         {INTERESTS.map((x) => (
