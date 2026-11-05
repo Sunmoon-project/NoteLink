@@ -86,10 +86,13 @@ export function LoginScreen() {
     onSuccess: done,
     onError: (e) => toast(e instanceof Error ? e.message : '로그인하지 못했어요'),
   });
+  // 토스트는 시트 뒤에 가려지므로 로그인 실패는 시트 안에 적는다
+  const [loginError, setLoginError] = useState<string | null>(null);
   const byEmail = useMutation({
     mutationFn: () => api.auth.emailLogin(email.trim(), pw),
+    onMutate: () => setLoginError(null),
     onSuccess: done,
-    onError: (e) => toast(e instanceof ApiError ? e.message : '로그인하지 못했어요'),
+    onError: (e) => setLoginError(e instanceof ApiError ? e.message : '로그인하지 못했어요'),
   });
   return (
     <Screen>
@@ -138,7 +141,10 @@ export function LoginScreen() {
         <Label>이메일</Label>
         <Input
           value={email}
-          onChangeText={setEmail}
+          onChangeText={(v) => {
+            setEmail(v);
+            setLoginError(null);
+          }}
           placeholder="you@example.com"
           keyboardType="email-address"
           autoCapitalize="none"
@@ -147,11 +153,15 @@ export function LoginScreen() {
         <Label>비밀번호</Label>
         <Input
           value={pw}
-          onChangeText={setPw}
+          onChangeText={(v) => {
+            setPw(v);
+            setLoginError(null);
+          }}
           placeholder="8자 이상"
           secureTextEntry
           autoComplete="password"
         />
+        {!!loginError && <Text className="mt-3 text-footnote text-danger">{loginError}</Text>}
         <Btn
           className="mt-6"
           disabled={!/^\S+@\S+\.\S+$/.test(email) || pw.length < 8}
