@@ -3,14 +3,15 @@ import re
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
 
 from app.clients.llm import JsonObject, LlmError
-from app.services.quiz import generate
+from app.services.quiz import generate, srs
 from app.services.quiz.generate import Chunk, PageInfo
-from app.services.quiz.review import InputError
+from app.services.quiz.review import InputError, seoul_midnight
 
 PAGE1 = """Ⅰ. 근족충류
 1. 이질 아메바
@@ -608,6 +609,30 @@ def test_a_concept_stopped_after_five_wrong_answers_is_not_mastered() -> None:
         0,
         [],
     )
+
+
+def test_the_weight_does_not_drop_when_the_fifth_wrong_answer_stops_a_question() -> None:
+    # srs.update로 오답을 하나씩 적용: 다섯 번째 오답에 stopped가 되어도 그 쪽 가중치가 이어서
+    # 오름(빼면 7.0 → 0.3, Codex 재리뷰 3차 · 4차 #94)
+    learned = stored("q3", "이질 아메바", "이질 아메바", "mastered")
+    old = {**attempt("q3", True), "id": "a-q3", "finishedAt": "2026-10-25T06:00:00Z"}
+    st: srs.Srs | None = None
+    answers: list[JsonObject] = []
+    weights, states = [], []
+    for i in range(1, srs.MAX_REVIEWS + 1):
+        today = seoul_midnight(date(2026, 11, i))  # review.run과 같은 '오늘'(서울 자정, UTC)
+        st = srs.update(st, False, today)
+        done = (today + timedelta(hours=10)).isoformat()  # 그날 서울 오전 10시에 푼 풀이
+        answers.append({**attempt("q5", False), "id": f"a-q5-{i}", "finishedAt": done})
+        q5 = {**stored("q5", "이질 아메바", "이질 아메바"), "srs": st}
+        sets = [{"id": "s1", "materialId": "m1", "questions": [learned, q5]}]
+        g = generate.parse(job(sets=sets, attempts=[old, *answers]))
+        pages = generate.note_pages(g.material)
+        per = generate.history(g.sets, g.attempts, "m1", {"m1": pages})
+        weights.append(generate.allocate(pages, per, 2)[0][1])
+        states.append(st["state"])
+    assert states[-2:] == ["active", "stopped"]  # 마지막 오답에 멈춤(횟수는 srs가 정함)
+    assert weights == [1 + 1.5 * n for n in range(1, srs.MAX_REVIEWS + 1)]  # 오답마다 오름
 
 
 def test_a_concept_learned_again_after_it_stopped_is_mastered() -> None:
