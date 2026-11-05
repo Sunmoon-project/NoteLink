@@ -1,4 +1,4 @@
-"""작업 종류(ai_jobs.type) → 처리 함수. 8번 PR(맞춤 퀴즈)에서 더 채웁니다.
+"""작업 종류(ai_jobs.type) → 처리 함수.
 
 처리기는 여기 등록된 종류만 가져가므로, 아직 만들지 않은 종류의 작업은 queued로 남습니다.
 """
@@ -7,7 +7,7 @@ from collections.abc import Callable
 from functools import cache
 
 from app.clients.llm import JsonObject, Llm, SchoolLlm, school_llm
-from app.services.quiz import review, today
+from app.services.quiz import generate, review, today
 from app.worker.runner import Handler, JobInputError, Report
 
 
@@ -34,5 +34,10 @@ def _handler(run: _Run) -> Handler:
 
 similar_quiz = _handler(review.run)  # 오답 복습
 today_review = _handler(today.run)  # 오늘의 복습
+quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
 
-HANDLERS: dict[str, Handler] = {review.TYPE: similar_quiz, today.TYPE: today_review}
+HANDLERS: dict[str, Handler] = {
+    review.TYPE: similar_quiz,
+    today.TYPE: today_review,
+    generate.TYPE: quiz_generate,
+}

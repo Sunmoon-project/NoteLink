@@ -239,18 +239,23 @@ def parse_notes(notes_raw: dict[str, Any]) -> Notes:
         w = f"input.notes.{mid}"
         if not isinstance(pages, list):
             raise InputError(w)
-        checked: list[Page] = []
-        for j, p in enumerate(pages):
-            text = p.get("ocrText") if isinstance(p, dict) else None
-            if text is not None and not isinstance(text, str):
-                raise InputError(f"{w}[{j}].ocrText")
-            # 녹음 정리 시제품(10/25)이 쪽 번호를 '1'처럼 글로 저장한 노트가 있음
-            no = need(p, "pageNo", (int, str), f"{w}[{j}]")
-            if isinstance(no, str) and not (no.isascii() and no.isdigit()):  # "²"는 int()가 못 읽음
-                raise InputError(f"{w}[{j}].pageNo")
-            checked.append({"pageNo": int(no), "ocrText": text})
-        notes[str(mid)] = clean_pages(checked)
+        notes[str(mid)] = clean_pages(parse_pages(pages, w))
     return notes
+
+
+def parse_pages(pages: list[Any], w: str) -> list[Page]:
+    """[{pageNo, ocrText}] 확인. 맞춤 퀴즈(generate.py)의 material.pages도 씁니다."""
+    checked: list[Page] = []
+    for j, p in enumerate(pages):
+        text = p.get("ocrText") if isinstance(p, dict) else None
+        if text is not None and not isinstance(text, str):
+            raise InputError(f"{w}[{j}].ocrText")
+        # 녹음 정리 시제품(10/25)이 쪽 번호를 '1'처럼 글로 저장한 노트가 있음
+        no = need(p, "pageNo", (int, str), f"{w}[{j}]")
+        if isinstance(no, str) and not (no.isascii() and no.isdigit()):  # "²"는 int()가 못 읽음
+            raise InputError(f"{w}[{j}].pageNo")
+        checked.append({"pageNo": int(no), "ocrText": text})
+    return checked
 
 
 # ---------------------------------------------------------------- code: judgment

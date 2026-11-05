@@ -11,6 +11,7 @@ from typing import Literal, NotRequired, TypedDict
 
 from app.services.quiz.models import CHOICES, Draft, Question
 from app.services.quiz.text import (
+    BLANK,
     VALUE,
     norm,
     number_values,
@@ -170,10 +171,18 @@ def code_check(
     p = d["passage"].strip()
     if ty == "빈칸" and "____" not in p:
         why.append("빈칸 문장 없음")
+    # 정답 하나는 빈칸 하나를 채움: '방법은 ____, ____, ____ 등이 있습니다'에 정답 도말법이
+    # 모든 검사를 통과함(기생충, 11/01). 코드의 빈 ()·[](useState() · () => · [])는 text.BLANK가
+    # 빈칸으로 보지 않아 유형과 상관없이 봄(/code-review #94)
+    if len(BLANK.findall(p)) > 1:
+        why.append("빈칸이 여러 개")
     # 요청한 유형이 아니라 모양으로 판단: '어휘' 초안이 빈칸 문장으로 오기도 함
     # ('The rope was ____ to the post'에 fastened와 -ing 낱말 넷, 10/26)
     if "____" in p and form_giveaway(d):
         why.append("형태만 보고 정답이 보임(오답 보기를 정답과 같은 형태로)")
+    # 분류 문제를 끝 글자로 가리는 검사는 두지 않음: 기생충에서 본 이름(편모충류 · 대변 검사)에
+    # 맞춘 규칙이라 '표고버섯 → 균류'(동물 · 식물 · 원생생물 · 원핵생물)도 버렸음(Codex 재리뷰 #94).
+    # 정답만 분류 이름인 보기는 과목과 상관없이 품질 검사에서 볼 일(퀴즈 속도 개선 작업)
     # 토익 유형만: 한국어 문장의 빈칸은 정상적인 정의 문제 (React Native 강의, 10/25)
     if "____" in p and ty not in KO_TYPES and _KO.search(p):
         why.append("빈칸 문장에 한국어 뜻 노출")
@@ -185,7 +194,8 @@ def code_check(
         why.append("물을 뜻 없음")
     if ty == "정의" and len(re.findall(r"[가-힣]", p)) < 10:
         why.append("설명 문장 없음")
-    if ty in ("특징", "분류") and not (1 <= len(p) <= 40):
+    # passage가 '____'뿐이어도 용어가 아님: 미생 초안 9개가 지식 검사에 '용어: ____'로 감(10/29)
+    if ty in ("특징", "분류") and not (1 <= len(BLANK.sub("", p).strip()) <= 40):
         why.append("물을 용어 없음")
     if ty == "정의" and p and norm(d["answer"]) in norm(p):
         why.append("설명에 정답 용어 노출")

@@ -101,3 +101,8 @@ def test_today_review_job_is_processed_and_its_result_saved(
 def test_bad_today_review_input_fails_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     doc = run_job(monkeypatch, FakeLlm(), {"day": "오늘"}, "today_review")
     assert (doc["status"], doc["error"]) == ("failed", "입력 오류: input.day")
+
+
+def test_quiz_generate_is_registered(monkeypatch: pytest.MonkeyPatch) -> None:
+    doc = run_job(monkeypatch, FakeLlm(), {"day": "2026-11-04"}, "quiz_generate")
+    assert (doc["status"], doc["error"]) == ("failed", "입력 오류: input.material.pages")

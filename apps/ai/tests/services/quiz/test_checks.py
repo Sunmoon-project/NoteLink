@@ -13,6 +13,7 @@ from app.services.quiz.checks import (
     too_close,
 )
 from app.services.quiz.models import Draft
+from app.services.quiz.text import tidy
 
 PAGE = "쌓다 = stack\nfasten - 고정하다\nThe rope was fastened to the post.\norganize = arrange"
 NEW = Target("new")
@@ -275,3 +276,66 @@ def test_option_key_keeps_sign_and_decimal_but_ignores_spacing() -> None:
         )[1]
         == 0
     )
+
+
+def test_a_bare_blank_is_no_term() -> None:
+    assert "물을 용어 없음" in why(draft(passage="____"), "특징")  # 미생 초안 9개(10/29)
+
+
+def test_one_answer_fills_one_blank() -> None:
+    d = draft(passage="The boxes are ____ and ____ in the corner.")
+    assert "빈칸이 여러 개" in why(d)
+    assert "빈칸이 여러 개" not in why(draft())
+
+
+def test_code_parentheses_are_not_several_blanks() -> None:
+    d = draft(passage="useState()와 useEffect()를 함께 쓴다", answer="stacked")
+    assert "빈칸이 여러 개" not in why(tidy(d), "규칙")
+
+
+def test_class_questions_are_not_judged_by_the_last_syllable() -> None:
+    # 끝 글자로 분류 이름을 가리던 검사는 기생충에 맞춘 규칙이라 뺌(Codex 재리뷰 #94)
+    for passage, answer, wrong in [
+        ("표고버섯", "균류", ["동물", "식물", "원생생물", "원핵생물"]),
+        ("포도당", "탄수화물", ["지방", "단백질", "비타민", "무기질"]),
+    ]:
+        d = draft(
+            stem="다음 용어가 속하는 분류는?",
+            passage=passage,
+            answer=answer,
+            options=[answer, *wrong],
+        )
+        assert not any("분류 이름" in w for w in why(d, "분류"))
+
+
+def test_code_calls_and_indexes_are_not_blanks() -> None:
+    # 코드의 ()·[]를 빈칸으로 바꾸면 정의 · 빈칸 문제가 '빈칸이 여러 개'로 버려짐(/code-review #94)
+    for code in [
+        "useState()로 만든 값을 useEffect()에서 읽고 arr[]와 f(x)[]도 쓴다",
+        "useEffect(() => {}, [])는 마운트할 때 한 번 실행되고 useState([])는 빈 목록",
+        "const list = []로 시작해 () => list.length를 넘긴다",
+    ]:
+        d = tidy(draft(passage=code, answer="stacked"))
+        assert d["passage"] == code
+        for ty in ("정의", "빈칸", "어휘"):
+            assert "빈칸이 여러 개" not in why(d, ty)
+
+
+def test_spaced_brackets_are_blanks_wherever_they_are() -> None:
+    # 숫자 · 로마자 바로 뒤의 '( )'도 빈칸이고, 이어 쓴 빈칸 둘은 둘로 셈
+    assert tidy(draft(passage="정상 혈당은 70~100( )이다, Na[ ] 이온"))["passage"] == (
+        "정상 혈당은 70~100____이다, Na____ 이온"
+    )
+    # 붙어 있던 빈칸 둘은 tidy 뒤에도 둘(검사는 tidy 뒤에 돎)
+    d = tidy(draft(passage="( )( )는 짝을 이룬다"))
+    assert d["passage"] == "____ ____는 짝을 이룬다"
+    assert "빈칸이 여러 개" in why(d, "정의")
+    # 빈 ()·[]는 어디서든 코드로 봄(생성 안내는 빈칸을 ____로 쓰게 함)
+    for code in ["함수는 ()를 붙여 부르고 return ()로 끝낸다", "x = []와 f ()"]:
+        assert tidy(draft(passage=code))["passage"] == code
+
+
+def test_a_rule_question_with_two_blanks_is_caught() -> None:
+    # 규칙 유형을 빼고 보던 것은 코드의 ()가 빈칸으로 바뀌던 때문이라 이제는 모든 유형
+    # (/code-review #94)
+    assert "빈칸이 여러 개" in why(draft(passage="The boxes are ____ and ____"), "규칙")
