@@ -6,8 +6,6 @@
 필기 사진, PDF, 강의 녹음을 올리면 AI가 요약·퀴즈·아바타 설명으로 바꿔 줍니다.
 
 > **현재 상태**: 초기 세팅까지 끝난 단계입니다. 세 앱 모두 lint · typecheck · test가 돌아가는 최소 뼈대(앱 하단 탭 5개 빈 화면, `GET /api/v1/health`, `GET /internal/v1/health`)만 있고 기능 코드는 아직 없습니다.
-> `infra/docker-compose.yml`(로컬 MongoDB · Azurite)은 아직 없어 아래 `docker compose` 명령은 나중에 사용할 수 있습니다.
-
 ---
 
 ## 1. 기술 스택
