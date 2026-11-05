@@ -89,14 +89,15 @@ export function dropFile(uri: string) {
   }
 }
 
-/** 탈퇴: 그 계정의 DB 파일을 지운다 (자료 파일은 dropFile로 하나씩 지운다) */
+/** 탈퇴: 그 계정의 DB 파일과 백업 · 임시 파일을 지운다 (자료 파일은 dropFile로 하나씩 지운다) */
 export function dropDb(name: string) {
-  try {
-    const f = new File(Paths.document, dbFile(name));
-    if (f.exists) f.delete();
-  } catch {
-    // 없으면 그만
-  }
+  for (const suffix of ['', '.bak', '.tmp'])
+    try {
+      const f = new File(Paths.document, `${dbFile(name)}${suffix}`);
+      if (f.exists) f.delete();
+    } catch {
+      // 없으면 그만
+    }
 }
 
 /** 복사해 둔 파일의 원래 이름 · 크기 */

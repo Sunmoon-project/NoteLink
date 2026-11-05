@@ -316,3 +316,28 @@ it('탈퇴하면 자료 원본과 프로필 사진을 모두 지운다', async (
     'file:///doc/files/p.jpg',
   ]);
 });
+
+it('키체인 삭제가 실패해도 탈퇴를 마치고 파일을 지운다', async () => {
+  await signup('a@test.com');
+  const f = await addFolder();
+  await api.content.createMaterial(material(f._id));
+  const SecureStore = jest.requireMock<typeof import('expo-secure-store')>('expo-secure-store');
+  jest.mocked(SecureStore.deleteItemAsync).mockRejectedValueOnce(new Error('keychain'));
+  await expect(api.me.withdraw()).resolves.toBeUndefined();
+  expect(mockDropFile).toHaveBeenCalledWith('file:///doc/files/a.pdf');
+  await expect(api.auth.emailLogin('a@test.com', 'pw12345678')).rejects.toThrow('맞지 않아요');
+});
+
+it('프로필 생성 요청이 실패하면 방금 복사한 사진을 지운다', async () => {
+  await signup('a@test.com');
+  useNet.setState({ state: 'offline' });
+  await expect(
+    api.me.generateProfile({
+      photoBlobUrl: 'file:///doc/files/p.jpg',
+      prompt: '',
+      style: '수채화',
+    }),
+  ).rejects.toThrow('offline');
+  useNet.setState({ state: 'ok' });
+  expect(mockDropFile).toHaveBeenCalledWith('file:///doc/files/p.jpg');
+});

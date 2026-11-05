@@ -36,7 +36,7 @@ jest.mock('expo-file-system', () => {
   return { File, Directory: class {}, Paths: { document: { uri: 'file:///doc/' } } };
 });
 jest.unmock('../lib/local/storage');
-const { keptFilesIn, readDb, writeDb } =
+const { dropDb, keptFilesIn, readDb, writeDb } =
   jest.requireActual<typeof import('../lib/local/storage')>('../lib/local/storage');
 
 beforeEach(() => {
@@ -80,6 +80,17 @@ it('새 내용으로 바꾼 뒤 백업을 못 지워도 저장 실패로 알리�
   writeDb('u', { v: 3 });
   expect(readDb('u')).toEqual({ v: 3 });
   expect([...mockDisk.keys()]).toEqual(['file:///doc/notelink-u.json']);
+});
+
+it('탈퇴하면 남아 있던 백업 · 임시 파일까지 지워 다시 읽히지 않는다', () => {
+  writeDb('u', { v: 1 });
+  mockFailDelete = (uri) => uri.endsWith('.bak');
+  writeDb('u', { v: 2 });
+  mockFailDelete = null;
+  mockDisk.set('file:///doc/notelink-u.json.tmp', '{}');
+  dropDb('u');
+  expect([...mockDisk.keys()]).toEqual([]);
+  expect(readDb('u')).toBeNull();
 });
 
 it('DB에 적힌 값에서 앱 저장 공간의 파일만 모은다', () => {

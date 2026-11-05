@@ -425,11 +425,21 @@ const api: Api = {
       loaded.delete(id);
       savedJson.delete(id);
       dropDb(`user-${id}`);
-      await SecureStore.deleteItemAsync(pwKey(id));
       // 자료 원본 · 프로필 사진 등 이 계정이 기기에 복사해 둔 파일을 모두 지운다
       for (const uri of keptFilesIn(d)) dropFile(uri);
+      // 계정이 이미 없어 재시도할 수 없으므로 비밀번호 삭제 실패로 탈퇴를 막지 않는다
+      // (남은 비밀번호는 어떤 계정과도 이어지지 않는다)
+      await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
     },
-    generateProfile: (p) => ok(queueJob('avatar_profile', 'user', p.photoBlobUrl)),
+    generateProfile: async (p) => {
+      try {
+        return await ok(queueJob('avatar_profile', 'user', p.photoBlobUrl));
+      } catch (e) {
+        // 요청이 실패하면 DB에 남지 않으므로 방금 복사한 사진도 지운다 (다시 시도하면 새로 복사한다)
+        dropFile(p.photoBlobUrl);
+        throw e;
+      }
+    },
     saveAvatar: (p) => ok(void (db().avatar = p)),
   },
   upload: {
