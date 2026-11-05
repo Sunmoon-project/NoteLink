@@ -122,6 +122,28 @@ describe('PR36 편집 및 공유 회귀', () => {
       ]),
     );
   });
+  it('새 섹션은 안내 문구만 보여 주고, 쓴 내용만 저장한다', async () => {
+    setParams({ id: 'mat1' });
+    mockApi.content.material.mockResolvedValue(material('mat1', 'folder2', '노트'));
+    await renderScreen(<EditScreen />, client());
+    await waitFor(() =>
+      expect(screen.getByLabelText('노트 내용').props.value).toContain('지우면 안 되는 본문'),
+    );
+    await fireEvent.press(screen.getByText('+ 섹션 추가'));
+    await fireEvent.press(screen.getByText('+ 섹션 추가'));
+    const heading = screen.getByLabelText('섹션 2 제목');
+    expect(heading.props.value).toBe('');
+    expect(heading.props.placeholder).toBe('섹션 제목');
+    expect(screen.getByLabelText('섹션 2 본문').props.value).toBe('');
+    await fireEvent.changeText(heading, '핵심 단어');
+    await fireEvent.press(screen.getAllByText('저장')[0]!);
+    await waitFor(() =>
+      expect(mockApi.content.updateSummary).toHaveBeenCalledWith('mat1', [
+        { heading: '기존 제목', body: '지우면 안 되는 본문' },
+        { heading: '핵심 단어', body: '' },
+      ]),
+    );
+  });
   it('공유 목록은 현재 폴더의 자료를 읽는다', async () => {
     setParams({ folderId: 'folder2' });
     await renderScreen(<ShareScreen />, client());
