@@ -7,7 +7,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, Check, Sparkles } from 'lucide-react-native';
 import { ERROR_CODES, type LearnerType, type SocialProvider } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
-import { getProviderToken, socialLoginReady } from '@/lib/social-auth';
+import { getProviderToken, SocialLoginCanceled, socialLoginReady } from '@/lib/social-auth';
 import { clearAccountState } from '@/lib/account';
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
@@ -87,7 +87,10 @@ function SocialButtons() {
   const social = useMutation({
     mutationFn: async (p: SocialProvider) => api.auth.socialLogin(p, await getProviderToken(p)),
     onSuccess: done,
-    onError: (e) => toast(e instanceof Error ? e.message : '로그인하지 못했어요'),
+    onError: (e) => {
+      if (!(e instanceof SocialLoginCanceled))
+        toast(e instanceof Error ? e.message : '로그인하지 못했어요');
+    },
   });
   return (
     <View className="gap-2.5">
@@ -110,7 +113,7 @@ function SocialButtons() {
       ))}
       {!socialLoginReady && (
         <Text className="text-center text-caption text-sub">
-          간편 로그인은 준비 중이에요. 이메일로 시작해 주세요
+          간편 로그인은 서버 연결 후 쓸 수 있어요. 이메일로 시작해 주세요
         </Text>
       )}
     </View>

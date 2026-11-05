@@ -1,12 +1,23 @@
-import type { SocialProvider } from '@notelink/shared';
+import { PATHS, type SocialProvider } from '@notelink/shared';
 import { env } from './env';
+import { loadBrowser } from './web-browser-loader';
 
-// 카카오 · 네이버 · Google SDK에서 토큰을 받아 온다. 서버는 이 토큰을 직접 검증한 뒤에만 로그인시킨다.
-// TODO(인증 담당): 개발용 테스트 키로 각 SDK를 붙인다 (README 6장: 소셜 로그인은 테스트 키부터)
-/** 소셜 SDK를 붙이기 전(실서버 모드)에는 버튼을 막는다 */
-export const socialLoginReady = env.useMock;
+// 카카오 · 네이버 · Google 키와 시크릿은 서버에만 둔다(README 5장). 앱은 서버의 시작 주소를 시스템 브라우저로 열고,
+// 서버가 제공자 인증을 마친 뒤 notelink://auth/callback?code=… 로 돌려준 1회용 코드를 POST /auth/social/:provider로 보낸다.
+const REDIRECT = 'notelink://auth/callback';
+
+/** 간편 로그인은 서버가 있어야 동작한다 */
+export const socialLoginReady = !env.useMock;
+
+/** 사용자가 브라우저를 닫은 경우. 오류 안내를 띄우지 않는다 */
+export class SocialLoginCanceled extends Error {}
 
 export async function getProviderToken(provider: SocialProvider): Promise<string> {
-  if (env.useMock) return `mock-${provider}-token`;
-  throw new Error(`${provider} 로그인은 아직 연결되지 않았어요. 이메일로 시작해 주세요.`);
+  const { openAuthSessionAsync } = await loadBrowser();
+  const start = `${env.apiUrl}${PATHS.socialStart(provider)}?redirect=${encodeURIComponent(REDIRECT)}`;
+  const r = await openAuthSessionAsync(start, REDIRECT);
+  if (r.type !== 'success') throw new SocialLoginCanceled();
+  const code = new URL(r.url).searchParams.get('code');
+  if (!code) throw new Error('간편 로그인을 마치지 못했어요. 다시 시도해 주세요');
+  return code;
 }
