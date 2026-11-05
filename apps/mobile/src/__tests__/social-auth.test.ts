@@ -1,4 +1,4 @@
-import { getProviderToken, socialLoginReady } from '../lib/social-auth';
+import { getProviderToken } from '../lib/social-auth';
 
 const mockOpen = jest.fn();
 let mockRandom = 1;
@@ -15,7 +15,28 @@ jest.mock('../lib/env', () => ({ env: { useMock: false, apiUrl: 'https://api.tes
 
 afterEach(() => mockOpen.mockReset());
 
-it('서버가 있으면 켜진다', () => expect(socialLoginReady).toBe(true));
+describe('socialLoginReady', () => {
+  const load = (flag?: string) => {
+    if (flag === undefined) delete process.env.EXPO_PUBLIC_SOCIAL_LOGIN;
+    else process.env.EXPO_PUBLIC_SOCIAL_LOGIN = flag;
+    let ready = false;
+    jest.isolateModules(() => {
+      ready =
+        jest.requireActual<typeof import('../lib/social-auth')>(
+          '../lib/social-auth',
+        ).socialLoginReady;
+    });
+    return ready;
+  };
+  afterAll(() => {
+    delete process.env.EXPO_PUBLIC_SOCIAL_LOGIN;
+  });
+  it('서버 주소가 준비됐다고 켜기 전에는 막혀 있다', () => {
+    expect(load()).toBe(false);
+    expect(load('false')).toBe(false);
+  });
+  it('켜면 버튼이 동작한다', () => expect(load('true')).toBe(true));
+});
 
 /** 서버처럼 시작 주소의 state를 그대로 돌려준다 */
 const back = (url: string, extra = 'code=one-time') => {
