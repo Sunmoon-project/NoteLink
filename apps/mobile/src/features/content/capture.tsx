@@ -1,3 +1,4 @@
+import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import { Image, Linking, Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
@@ -106,6 +107,7 @@ export function CameraScreen() {
       className="flex-1 bg-black"
       style={{ paddingTop: insets.top, paddingBottom: insets.bottom + 16 }}
     >
+      <StatusBar style="light" />
       <CameraView
         ref={cam}
         style={{ position: 'absolute', inset: 0 }}
@@ -645,8 +647,14 @@ export function RecLiveScreen() {
       className="flex-1 bg-night px-5"
       style={{ paddingTop: insets.top + 8, paddingBottom: insets.bottom + 24 }}
     >
+      <StatusBar style="light" />
       {keepAwake && <RecordingAwake />}
-      <Pressable accessibilityLabel="닫기" onPress={() => setConfirmClose(true)} hitSlop={10}>
+      <Pressable
+        accessibilityLabel="닫기"
+        className="self-start"
+        onPress={() => setConfirmClose(true)}
+        hitSlop={10}
+      >
         <X size={ICON.lg} color="#fff" />
       </Pressable>
       <Alert
