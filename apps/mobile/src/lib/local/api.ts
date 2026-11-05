@@ -46,7 +46,7 @@ import {
 } from './stats';
 import * as SecureStore from 'expo-secure-store';
 import { roomTimerState } from './timer';
-import { dropDb, dropFile, fileInfo, readDb, writeDb } from './storage';
+import { dropDb, dropFile, fileInfo, keptFilesIn, readDb, writeDb } from './storage';
 import { AI_WAITING_STEP } from '../ai';
 
 // 기기 저장 백엔드 — 서버(NestJS · MongoDB · Blob)가 붙기 전까지 실서버와 같은 Api를 기기 안에서 구현한다.
@@ -208,6 +208,11 @@ function save() {
 const createdMaterials = new Map<
   string,
   { payload: string; result: { material: Material; job: AiJob } }
+>();
+
+const creatingMaterials = new Map<
+  string,
+  { payload: string; promise: Promise<{ material: Material; job: AiJob }> }
 >();
 
 async function ok<T>(v: T): Promise<T> {
@@ -421,7 +426,8 @@ const api: Api = {
       savedJson.delete(id);
       dropDb(`user-${id}`);
       await SecureStore.deleteItemAsync(pwKey(id));
-      for (const m of d.materials) for (const f of m.files) dropFile(f.uri);
+      // 자료 원본 · 프로필 사진 등 이 계정이 기기에 복사해 둔 파일을 모두 지운다
+      for (const uri of keptFilesIn(d)) dropFile(uri);
     },
     generateProfile: (p) => ok(queueJob('avatar_profile', 'user', p.photoBlobUrl)),
     saveAvatar: (p) => ok(void (db().avatar = p)),
@@ -784,67 +790,77 @@ const api: Api = {
           .materials.filter((m) => m.folderId === folderId)
           .map(({ files: _f, ...m }) => m),
       ),
-    createMaterial: async (p) => {
+    createMaterial: (p) => {
       const { requestId, ...payload } = p;
       const key = requestId ? `${useAuth.getState().userId}:${requestId}` : null;
       const fingerprint = JSON.stringify(payload);
-      await ok(undefined);
-      const previous = key ? createdMaterials.get(key) : undefined;
-      if (previous) {
-        if (previous.payload !== fingerprint)
-          throw new ApiError(
-            'IDEMPOTENCY_CONFLICT',
-            '같은 등록 키에 다른 자료를 보낼 수 없어요',
-            409,
-          );
-        return structuredClone(previous.result);
+      const conflict = () =>
+        new ApiError('IDEMPOTENCY_CONFLICT', '같은 등록 키에 다른 자료를 보낼 수 없어요', 409);
+      // 같은 키의 등록이 진행 중이면 새로 만들지 않고 그 결과를 함께 받는다
+      const pending = key ? creatingMaterials.get(key) : undefined;
+      if (pending) {
+        if (pending.payload !== fingerprint) return Promise.reject(conflict());
+        return pending.promise.then((r) => structuredClone(r));
       }
-      const d = db();
-      const files: LocalFile[] = p.blobUrls.map((uri) => {
-        const info = fileInfo(uri);
-        return { uri, name: info.name, sizeBytes: info.size };
-      });
-      const images = p.kind === 'handwriting' || p.source === 'scan';
-      const type = (
-        {
-          handwriting: 'handwriting_summary',
-          recording: 'recording_summary',
-          document: 'document_summary',
-        } as const
-      )[p.kind];
-      const m: LocalMaterial = {
-        _id: uid('mat'),
-        folderId: p.folderId,
-        kind: p.kind,
-        source: p.source,
-        title: p.title,
-        description: p.description ?? null,
-        avatarItemId: p.avatarItemId ?? null,
-        processing: { status: 'queued', progress: 0, jobId: null },
-        summary: null,
-        keywords: [],
-        bookmarks: [],
-        pages: images
-          ? files.map((f, i) => ({
-              pageNo: i + 1,
-              imageUrl: f.uri,
-              sizeBytes: f.sizeBytes,
-              ocrText: null,
-              takenAt: now(),
-            }))
-          : undefined,
-        createdAt: now(),
-        files,
+      const register = async () => {
+        await ok(undefined);
+        const previous = key ? createdMaterials.get(key) : undefined;
+        if (previous) {
+          if (previous.payload !== fingerprint) throw conflict();
+          return structuredClone(previous.result);
+        }
+        const d = db();
+        const files: LocalFile[] = p.blobUrls.map((uri) => {
+          const info = fileInfo(uri);
+          return { uri, name: info.name, sizeBytes: info.size };
+        });
+        const images = p.kind === 'handwriting' || p.source === 'scan';
+        const type = (
+          {
+            handwriting: 'handwriting_summary',
+            recording: 'recording_summary',
+            document: 'document_summary',
+          } as const
+        )[p.kind];
+        const m: LocalMaterial = {
+          _id: uid('mat'),
+          folderId: p.folderId,
+          kind: p.kind,
+          source: p.source,
+          title: p.title,
+          description: p.description ?? null,
+          avatarItemId: p.avatarItemId ?? null,
+          processing: { status: 'queued', progress: 0, jobId: null },
+          summary: null,
+          keywords: [],
+          bookmarks: [],
+          pages: images
+            ? files.map((f, i) => ({
+                pageNo: i + 1,
+                imageUrl: f.uri,
+                sizeBytes: f.sizeBytes,
+                ocrText: null,
+                takenAt: now(),
+              }))
+            : undefined,
+          createdAt: now(),
+          files,
+        };
+        d.materials.push(m);
+        const job = queueJob(type, 'material', m._id);
+        m.processing.jobId = job._id;
+        Object.assign(d.folders.find((f) => f._id === p.folderId) ?? {}, { updatedAt: now() });
+        const result = { material: { ...m, files: undefined } as unknown as Material, job };
+        const saved = await ok(result);
+        // 저장에 성공한 뒤에만 기억한다. 실패한 등록을 재시도하면 다시 만든다
+        if (key)
+          createdMaterials.set(key, { payload: fingerprint, result: structuredClone(saved) });
+        return saved;
       };
-      d.materials.push(m);
-      const job = queueJob(type, 'material', m._id);
-      m.processing.jobId = job._id;
-      Object.assign(d.folders.find((f) => f._id === p.folderId) ?? {}, { updatedAt: now() });
-      const result = { material: { ...m, files: undefined } as unknown as Material, job };
-      const saved = await ok(result);
-      // 저장에 성공한 뒤에만 기억한다. 실패한 등록을 재시도하면 다시 만든다
-      if (key) createdMaterials.set(key, { payload: fingerprint, result: structuredClone(saved) });
-      return saved;
+      if (!key) return register();
+      const promise = register().finally(() => creatingMaterials.delete(key));
+      creatingMaterials.set(key, { payload: fingerprint, promise });
+      return promise.then((r) => structuredClone(r));
     },
     material: (id) => {
       const m = db().materials.find((x) => x._id === id);
@@ -1103,20 +1119,22 @@ const api: Api = {
       d.rooms = d.rooms.filter((r) => r._id !== id);
       return ok(undefined);
     },
-    setTimer: (id, rule) => {
+    setTimer: async (id, rule) => {
       const r = db().rooms.find((x) => x._id === id);
       if (!r) return fail(ERROR_CODES.NOT_FOUND, '스터디룸을 찾을 수 없어요', 404);
       const d = db();
       r.timerRule = rule;
       (d.timerStartedAt ??= {})[id] = Date.now();
       r.timerState = roomTimerState(rule, d.timerStartedAt[id]);
+      const saved = await ok(r);
+      // 저장에 성공한 뒤에만 알린다. 실패한 설정을 화면이 적용하지 않게
       localSocket.push('room:timer', {
         roomId: id,
         rule,
         phase: r.timerState?.phase ?? 'focus',
         endsAt: r.timerState?.endsAt ?? null,
       });
-      return ok(r);
+      return saved;
     },
     schedule: () => {
       // 멤버 시간표: 지금은 내 시간표로 바쁜 시간만 칠한다 (다른 멤버는 서버 연결 후)

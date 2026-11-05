@@ -46,8 +46,12 @@ export function writeDb(name: string, data: unknown) {
     throw e;
   }
   // bak은 이동으로 경로가 바뀌었을 수 있어 새로 만든다
-  const leftover = new File(Paths.document, `${dbFile(name)}.bak`);
-  if (leftover.exists) leftover.delete();
+  try {
+    const leftover = new File(Paths.document, `${dbFile(name)}.bak`);
+    if (leftover.exists) leftover.delete();
+  } catch {
+    // 새 내용은 이미 저장됐다. 남은 백업은 다음 저장에서 지운다
+  }
 }
 
 const filesDir = () => {
@@ -55,6 +59,13 @@ const filesDir = () => {
   if (!d.exists) d.create({ intermediates: true });
   return d;
 };
+
+/** DB에 적힌 값 중 앱 저장 공간에 복사해 둔 파일 주소를 모은다 */
+export function keptFilesIn(data: unknown): string[] {
+  const prefix = `${Paths.document.uri}${FILES_DIR}/`;
+  const uris = JSON.stringify(data).match(/"file:[^"]+"/g) ?? [];
+  return [...new Set(uris.map((q) => q.slice(1, -1)))].filter((u) => u.startsWith(prefix));
+}
 
 /** 고른 파일(갤러리 · 파일 앱 · 카메라 · 녹음)을 앱 저장 공간에 복사하고 주소 · 크기를 돌려준다 */
 export function keepFile(uri: string, name: string): { uri: string; size: number } {

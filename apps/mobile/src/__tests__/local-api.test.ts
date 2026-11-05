@@ -13,6 +13,9 @@ jest.mock('../lib/local/storage', () => ({
   },
   dropDb: (n: string) => void mockFiles.delete(n),
   dropFile: (...a: unknown[]) => mockDropFile(...a),
+  keptFilesIn: (d: unknown) => [
+    ...new Set(JSON.stringify(d).match(/file:\/\/\/doc\/files\/[^"]+/g) ?? []),
+  ],
   fileInfo: () => ({ name: 'a.pdf', size: 10 }),
   keepFile: (uri: string) => ({ uri, size: 10 }),
 }));
@@ -255,4 +258,61 @@ it('방 타이머를 정하면 끝나는 시각을 계산해 소켓과 방 정�
   expect(heard[0]?.phase).toBe('focus');
   expect(Date.parse(heard[0]!.endsAt!)).toBeGreaterThan(Date.now());
   expect((await api.rooms.get(room._id)).timerState?.phase).toBe('focus');
+});
+
+it('같은 키로 동시에 등록해도 자료는 하나만 만들고, 다른 내용이면 거절한다', async () => {
+  await signup('a@test.com');
+  const f = await addFolder();
+  const [a, b] = await Promise.all([
+    api.content.createMaterial(material(f._id)),
+    api.content.createMaterial(material(f._id)),
+  ]);
+  expect(b.material._id).toBe(a.material._id);
+  expect(await api.content.materials(f._id)).toHaveLength(1);
+  const other = api.content.createMaterial({ ...material(f._id, 'r2'), title: '가' });
+  await expect(
+    api.content.createMaterial({ ...material(f._id, 'r2'), title: '나' }),
+  ).rejects.toThrow('다른 자료');
+  await other;
+});
+
+it('방 타이머 저장이 실패하면 참여자에게 알리지 않는다', async () => {
+  await signup('a@test.com');
+  const room = await api.rooms.create({ title: '방', categoryName: '수학', isPublic: true });
+  const { localSocket } = jest.requireActual<typeof import('../lib/socket')>('../lib/socket');
+  const push = jest.spyOn(localSocket, 'push').mockImplementation(() => {});
+  const rule = {
+    enabled: true,
+    type: 'pomodoro' as const,
+    focusMin: 25,
+    breakMin: 5,
+    repeat: 4,
+    periods: [],
+  };
+  mockWriteFails = true;
+  await expect(api.rooms.setTimer(room._id, rule)).rejects.toThrow('저장하지 못했어요');
+  mockWriteFails = false;
+  useNet.setState({ state: 'offline' });
+  await expect(api.rooms.setTimer(room._id, rule)).rejects.toThrow('offline');
+  useNet.setState({ state: 'ok' });
+  expect(push).not.toHaveBeenCalled();
+  await api.rooms.setTimer(room._id, rule);
+  expect(push).toHaveBeenCalledTimes(1);
+  push.mockRestore();
+});
+
+it('탈퇴하면 자료 원본과 프로필 사진을 모두 지운다', async () => {
+  await signup('a@test.com');
+  const f = await addFolder();
+  await api.content.createMaterial(material(f._id));
+  await api.me.generateProfile({
+    photoBlobUrl: 'file:///doc/files/p.jpg',
+    prompt: '사진',
+    style: '수채화',
+  });
+  await api.me.withdraw();
+  expect(mockDropFile.mock.calls.map(([u]) => u).sort()).toEqual([
+    'file:///doc/files/a.pdf',
+    'file:///doc/files/p.jpg',
+  ]);
 });

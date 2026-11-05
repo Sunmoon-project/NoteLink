@@ -1,6 +1,7 @@
 // 실제 저장 계층을 메모리 파일 시스템으로 돌려 파일 교체 실패를 재현한다
 const mockDisk = new Map<string, string>();
 let mockFailMove: ((to: string) => boolean) | null = null;
+let mockFailDelete: ((uri: string) => boolean) | null = null;
 jest.mock('expo-file-system', () => {
   class File {
     uri: string;
@@ -14,6 +15,7 @@ jest.mock('expo-file-system', () => {
       mockDisk.set(this.uri, '');
     }
     delete() {
+      if (mockFailDelete?.(this.uri)) throw new Error('delete failed');
       mockDisk.delete(this.uri);
     }
     write(v: string) {
@@ -34,12 +36,13 @@ jest.mock('expo-file-system', () => {
   return { File, Directory: class {}, Paths: { document: { uri: 'file:///doc/' } } };
 });
 jest.unmock('../lib/local/storage');
-const { readDb, writeDb } =
+const { keptFilesIn, readDb, writeDb } =
   jest.requireActual<typeof import('../lib/local/storage')>('../lib/local/storage');
 
 beforeEach(() => {
   mockDisk.clear();
   mockFailMove = null;
+  mockFailDelete = null;
 });
 
 it('새 파일로 바꿔 끼우지 못하면 실패를 알리고 이전 내용을 지키며, 임시 · 백업을 정리한다', () => {
@@ -66,6 +69,27 @@ it('같은 DB를 여러 번 저장해도 마지막 내용이 남고 백업 · �
   writeDb('u', { v: 3 });
   expect(readDb('u')).toEqual({ v: 3 });
   expect([...mockDisk.keys()]).toEqual(['file:///doc/notelink-u.json']);
+});
+
+it('새 내용으로 바꾼 뒤 백업을 못 지워도 저장 실패로 알리지 않는다', () => {
+  writeDb('u', { v: 1 });
+  mockFailDelete = (uri) => uri.endsWith('.bak');
+  expect(() => writeDb('u', { v: 2 })).not.toThrow();
+  mockFailDelete = null;
+  expect(readDb('u')).toEqual({ v: 2 });
+  writeDb('u', { v: 3 });
+  expect(readDb('u')).toEqual({ v: 3 });
+  expect([...mockDisk.keys()]).toEqual(['file:///doc/notelink-u.json']);
+});
+
+it('DB에 적힌 값에서 앱 저장 공간의 파일만 모은다', () => {
+  expect(
+    keptFilesIn({
+      materials: [{ files: [{ uri: 'file:///doc/files/a.pdf' }] }],
+      jobs: [{ targetId: 'file:///doc/files/p.jpg' }, { targetId: 'file:///doc/files/a.pdf' }],
+      other: 'file:///tmp/x.jpg',
+    }),
+  ).toEqual(['file:///doc/files/a.pdf', 'file:///doc/files/p.jpg']);
 });
 
 it('임시 파일에 쓰다 실패해도 이전 파일을 건드리지 않는다', () => {

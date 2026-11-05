@@ -20,7 +20,7 @@ import { useAuth } from '@/stores/auth';
 import { useMockFlags } from './flags';
 import * as S from './seed';
 import { mockUploadSource } from './uploads';
-import { roomTimerState } from './timer';
+import { roomTimerState } from '../../lib/local/timer';
 
 // 목업 백엔드. 실서버와 같은 Api 인터페이스를 구현하고, AI 작업 진행률은 소켓 이벤트로 흘려보낸다.
 
