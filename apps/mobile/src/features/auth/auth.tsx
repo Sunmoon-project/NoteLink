@@ -9,7 +9,13 @@ import { ERROR_CODES, type LearnerType, type SocialProvider } from '@notelink/sh
 import { api, ApiError } from '@/lib/api';
 import { getProviderToken, socialLoginReady } from '@/lib/social-auth';
 import { clearAccountState } from '@/lib/account';
-import { confirmError, emailError, nicknameError, passwordError } from '@/lib/validation';
+import {
+  confirmError,
+  emailError,
+  looksLikeEmail,
+  nicknameError,
+  passwordError,
+} from '@/lib/validation';
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
@@ -184,7 +190,7 @@ export function LoginScreen() {
         {!!loginError && <Text className="mt-3 text-footnote text-danger">{loginError}</Text>}
         <Btn
           className="mt-6"
-          disabled={!!emailError(email) || pw.length < 8}
+          disabled={!looksLikeEmail(email) || pw.length < 8}
           loading={byEmail.isPending}
           onPress={() => byEmail.mutate()}
         >

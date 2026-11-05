@@ -36,6 +36,7 @@ describe('입력 검사', () => {
     ['a b@test.com', '이메일 형식을 확인해 주세요 (예: you@example.com)'],
     [`${'a'.repeat(250)}@b.co`, '이메일이 너무 길어요'],
     [' a@b.co ', null],
+    ['user@example.xn--p1ai', null],
   ])('이메일 %s', (v, expected) => expect(emailError(v)).toBe(expected));
   it.each([
     ['', '비밀번호를 입력해 주세요'],
@@ -190,4 +191,20 @@ it('초기 설정은 닉네임 규칙과 빠진 학습자 유형을 칸 아래�
   await fireEvent.press(screen.getByText('시작하기'));
   expect(screen.getByText('학습자 유형을 골라 주세요')).toBeTruthy();
   expect(update).not.toHaveBeenCalled();
+});
+
+it('로그인은 가입 규칙과 별개로 기존 계정 주소(퓨니코드 최상위 도메인 등)를 막지 않는다', async () => {
+  const user = await api.me.get();
+  const login = jest
+    .spyOn(api.auth, 'emailLogin')
+    .mockResolvedValue({ accessToken: 'a', refreshToken: 'r', user });
+  await renderScreen(<LoginScreen />);
+  await fireEvent.press(screen.getByText('이메일로 로그인'));
+  await fireEvent.changeText(
+    await screen.findByPlaceholderText('you@example.com'),
+    'user@example.xn--p1ai',
+  );
+  await fireEvent.changeText(screen.getByPlaceholderText('8자 이상'), 'oldpass1');
+  await fireEvent.press(screen.getByText('로그인'));
+  await waitFor(() => expect(login).toHaveBeenCalledWith('user@example.xn--p1ai', 'oldpass1'));
 });

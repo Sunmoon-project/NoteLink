@@ -1,11 +1,11 @@
 // 가입 · 프로필 입력 검사. 문제가 없으면 null, 있으면 칸 아래에 보여 줄 안내를 돌려준다
 
-/** 아이디@도메인.최상위(영문 2자 이상) · 공백 · 연속 점 없이 · 254자 이하 */
+/** 아이디@도메인.최상위(영문 2자 이상 · 퓨니코드 xn--) · 공백 · 연속 점 없이 · 254자 이하 */
 export function emailError(email: string): string | null {
   const v = email.trim();
   if (!v) return '이메일을 입력해 주세요';
   if (v.length > 254) return '이메일이 너무 길어요';
-  if (!/^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/.test(v) || v.includes('..'))
+  if (!/^[^\s@]+@[^\s@]+\.(?:[A-Za-z]{2,}|xn--[A-Za-z0-9-]+)$/.test(v) || v.includes('..'))
     return '이메일 형식을 확인해 주세요 (예: you@example.com)';
   return null;
 }
@@ -32,3 +32,6 @@ export function nicknameError(nick: string): string | null {
   if (!/^[가-힣A-Za-z0-9]+$/.test(v)) return '닉네임은 한글 · 영문 · 숫자만 쓸 수 있어요';
   return null;
 }
+
+/** 로그인은 이미 있는 계정을 막지 않도록 느슨하게만 본다 (가입 규칙이 바뀌어도 옛 계정이 들어올 수 있게) */
+export const looksLikeEmail = (email: string) => /^\S+@\S+\.\S+$/.test(email.trim());
