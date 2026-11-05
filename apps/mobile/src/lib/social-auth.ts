@@ -8,7 +8,7 @@ import { loadBrowser, loadCrypto } from './web-browser-loader';
 const REDIRECT = 'notelink://auth/callback';
 
 /** 간편 로그인은 서버가 있어야 동작한다 */
-export const socialLoginReady = !env.useMock;
+export const socialLoginReady = !env.localData;
 
 /** 사용자가 브라우저를 닫은 경우. 오류 안내를 띄우지 않는다 */
 export class SocialLoginCanceled extends Error {}
