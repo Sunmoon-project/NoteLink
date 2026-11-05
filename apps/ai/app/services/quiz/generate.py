@@ -274,14 +274,21 @@ def _hangul(w: str) -> str:
 
 
 def _jamo(syllable: str) -> set[int]:
-    """한 음절의 (초성, 중성, 종성) 번호. 자리가 섞이지 않게 0 · 100 · 200을 더함."""
+    """한 음절의 (초성, 중성, 종성) 번호. 자리가 섞이지 않게 0 · 100 · 200을 더함.
+
+    받침이 없으면 종성은 넣지 않습니다: 넣으면 받침 없는 음절끼리 늘 같아 '개요' → 모기가
+    오타 꼴이 됐습니다(/code-review #94).
+    """
     n = ord(syllable) - 0xAC00
-    return {n // 588, 100 + n % 588 // 28, 200 + n % 28}
+    out = {n // 588, 100 + n % 588 // 28}
+    return out | {200 + n % 28} if n % 28 else out
 
 
 def typo_shape(word: str, term: str) -> bool:
     """OCR 오타 꼴: 한글 글자 수가 같고, 같은 자리 글자끼리 자모가 하나 이상 같음(노트 정리
-    tagging.py의 auto 기준). '최통' → 회충은 맞고, '개요' → 회충 · 'Summary' → 영어 태그는 아님."""
+    tagging.py의 auto 기준에서 받침 없음끼리는 같다고 보지 않음, _jamo). '최통' → 회충은 맞고,
+    '개요' → 회충 · 모기 · 'Summary' → 영어 태그는 아님. auto 태그 자체는 그대로 씁니다
+    (제목만 안 바꿈)."""
     a, b = _hangul(word), _hangul(term)
     return (
         bool(a) and len(a) == len(b) and all(_jamo(x) & _jamo(y) for x, y in zip(a, b, strict=True))
@@ -331,14 +338,19 @@ def note_pages(m: Material) -> dict[int, str]:
 
 
 def history(
-    sets: list[QuizSet], attempts: list[Attempt], material_id: str, notes: Notes
+    sets: list[QuizSet],
+    attempts: list[Attempt],
+    material_id: str,
+    notes: Notes,
+    where: dict[str, tuple[str, int]] | None = None,
 ) -> defaultdict[int, PageInfo]:
     """쪽마다: 아직 못 익힌 개념의 틀린 답 수 · 다 익힌 개념.
 
-    저장된 문제에는 출처 쪽이 없어 낱말로 쪽에 놓습니다(text.locate).
+    저장된 문제에는 출처 쪽이 없어 낱말로 쪽에 놓습니다(text.locate). where는 문제마다 놓인
+    (materialId, pageNo)를 담아 두는 곳이라, 넘기면 run의 겹침 검사가 같은 자리를 다시 씁니다.
     """
     by_id = {s.id: s for s in sets}
-    where: dict[str, tuple[str, int]] = {}
+    where = {} if where is None else where
 
     def home(s: QuizSet, q: Question) -> tuple[str, int]:
         if q["id"] not in where:
@@ -586,14 +598,23 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         names_all = new_names = _concept_names(llm, m, pages)
         report(10, "개념 이름 뽑기")
 
-    per_page = history(inp.sets, inp.attempts, m.id, notes)
+    where: dict[str, tuple[str, int]] = {}
+    per_page = history(inp.sets, inp.attempts, m.id, notes, where)
     korean = is_korean_subject(pages)
     weight, share, plain = allocate(pages, per_page, n)
     report(15, "쪽마다 문제 수 나누기")
 
-    seen: list[Seen] = [
-        seen_question(q) for s in inp.sets if s.material_id == m.id for q in s.questions
-    ]
+    # 겹침 검사는 이 노트 세트의 문제와, 다른 세트에서 낱말로 이 노트에 놓이는 문제(여러 노트를
+    # 섞는 오늘의 복습 세트 · /code-review #94). 자리는 history가 담아 둔 where를 다시 씀. 다른 노트
+    # 문제까지 넣으면 passage 없는 '다음 중 요충의 특징은?'에 회충 문제가 '거의 같음'으로 걸림
+    def here(s: QuizSet, q: Question) -> bool:
+        if s.material_id == m.id:
+            return True
+        if q["id"] not in where:
+            where[q["id"]] = locate(q, notes, s.material_id)
+        return where[q["id"]][0] == m.id
+
+    seen: list[Seen] = [seen_question(q) for s in inp.sets for q in s.questions if here(s, q)]
     subject = concepts.subject_words(m.title)
     used: list[str] = []
     made: list[tuple[int, Made]] = []

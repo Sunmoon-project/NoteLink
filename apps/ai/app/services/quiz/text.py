@@ -7,7 +7,13 @@ from decimal import Decimal, InvalidOperation
 
 from app.services.quiz.models import CHOICES, Draft, Notes, Page, Question
 
-BLANK = re.compile(r"_{3,}|\(\s*\)|\(\s{2,}\)|\[\s*\]")
+# 빈칸은 ____와 안이 띄어진 ( ) · [ ]만. 빈 ()·[]는 어디서든 빈칸이 아님: 코드(useState() ·
+# useEffect(() => {}, []) · return ())를 빈칸으로 바꾸면 코드 노트 문제가 '빈칸이 여러 개'로
+# 버려지거나 유형이 빈칸으로 저장됨. 앞 글자로 코드를 가리는 예외는 끝이 없어 두지 않음
+# (/code-review #94). 생성 안내는 빈칸을 ____로 쓰게 함(similar.GEN_SYS)
+BLANK = re.compile(r"_{3,}|\(\s+\)|\[\s+\]")
+# 붙어 있던 빈칸 둘('( )( )')이 ____ 하나로 보이지 않게 띄움
+_JOINED = re.compile(r"____(?=____)")
 _PUNCT = re.compile(r"[\s\-_.·:()\[\]'\"~/,!?]+")
 _LABEL = re.compile(r"^\s*[\(\[]?([A-Ea-e])[\)\]\.:]\s*")
 _KO_GLOSS = re.compile(r"\s*\([^()]*[가-힣][^()]*\)\s*$")
@@ -163,10 +169,10 @@ def short_answer(a: str | None) -> bool:
 
 def tidy(d: Draft) -> Draft:
     """빈칸 표시를 ____로 통일하고 보기 앞 기호(A. (b) 등)를 뗍니다."""
-    passage = BLANK.sub("____", d["passage"].strip())
+    passage = _JOINED.sub("____ ", BLANK.sub("____", d["passage"].strip()))
     if "____" in passage:  # 영어 빈칸 문장 뒤에 괄호로 붙은 한국어 뜻풀이는 정답을 알려 줌
         passage = _KO_GLOSS.sub("", passage)
-    stem = BLANK.sub("____", d["stem"])
+    stem = _JOINED.sub("____ ", BLANK.sub("____", d["stem"]))
     if "____" in passage and "뜻" in stem:  # 빈칸 문장인데 '한국어 뜻에 알맞은…'으로 물음
         stem = "다음 빈칸에 들어갈 가장 알맞은 표현을 고르시오."
     options = strip_labels(d["options"])

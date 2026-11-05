@@ -472,6 +472,10 @@ def test_only_the_typo_shape_title_is_replaced() -> None:
     assert generate.chunk_text(generic) == "1. 개요\n- 기생충이란"
     assert generate.typo_shape("최통", "회충") and generate.typo_shape("부구조통", "무구조충")
     assert not generate.typo_shape("개요", "회충")
+    # 받침 없는 음절끼리 늘 같다고 보면 '개요'가 모기로 바뀜(/code-review #94)
+    assert not generate.typo_shape("개요", "모기") and generate.typo_shape("보기", "모기")
+    mosquito = chunk(1, "1. 개요\n- 흡혈 곤충", 1, "1. 개요", concept="모기")
+    assert generate.chunk_text(mosquito) == "1. 개요\n- 흡혈 곤충"
 
 
 def test_mastered_concepts_count_without_wrong_answers_and_untagged_ones_do_not() -> None:
@@ -552,3 +556,29 @@ def test_a_concept_still_in_review_is_not_mastered() -> None:
     g = generate.parse(inp)
     per = generate.history(g.sets, g.attempts, "m1", {"m1": generate.note_pages(g.material)})
     assert (per[1].wrong, per[1].weak, per[1].mastered) == (2, ["이질 아메바"], 0)
+
+
+def test_a_question_in_a_set_of_other_notes_is_not_made_again() -> None:
+    # 오늘의 복습 세트는 노트를 섞어 materialId가 이 노트가 아님(/code-review #94)
+    copied = stored("q1", "이질 아메바", "이질 아메바")
+    copied["passage"] = GOOD["이질 아메바"]["question"]["passage"]
+    inp = job(size=1, sets=[{"id": "t1", "materialId": "today", "questions": [copied]}])
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"]])
+    result, _ = run(llm, inp)
+    assert [q["answer"] for q in result["questions"]] == ["대장 아메바"]
+    assert "이미 있는 문제와 거의 같음" in llm.named("Quiz")[1]
+
+
+def test_a_question_of_another_note_is_not_in_the_overlap_check() -> None:
+    # 다른 노트 문제까지 겹침 검사에 넣으면 글이 비슷한 다른 노트 문제에 걸림(/code-review #94)
+    other = stored("q1", "회충", "회충")
+    other["passage"] = GOOD["이질 아메바"]["question"]["passage"]
+    inp = job(
+        size=1,
+        sets=[{"id": "s2", "materialId": "m2", "questions": [other]}],
+        notes={"m2": [{"pageNo": 1, "ocrText": "Ⅰ. 선충류\n1. 회충\n- 소장\n- 충란\n- 흔하다"}]},
+    )
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    result, _ = run(happy([GOOD["이질 아메바"]]), inp)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]

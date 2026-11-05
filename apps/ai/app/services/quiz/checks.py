@@ -172,9 +172,9 @@ def code_check(
     if ty == "빈칸" and "____" not in p:
         why.append("빈칸 문장 없음")
     # 정답 하나는 빈칸 하나를 채움: '방법은 ____, ____, ____ 등이 있습니다'에 정답 도말법이
-    # 모든 검사를 통과함(기생충, 11/01). 규칙 · 묘사는 빼고 봄: tidy가 코드의 '()'도 빈칸으로
-    # 바꿔 'useState()와 useEffect()'가 빈칸 둘이 됨(/code-review 11/04)
-    if ty not in ("규칙", "묘사") and len(BLANK.findall(p)) > 1:
+    # 모든 검사를 통과함(기생충, 11/01). 코드의 빈 ()·[](useState() · () => · [])는 text.BLANK가
+    # 빈칸으로 보지 않아 유형과 상관없이 봄(/code-review #94)
+    if len(BLANK.findall(p)) > 1:
         why.append("빈칸이 여러 개")
     # 요청한 유형이 아니라 모양으로 판단: '어휘' 초안이 빈칸 문장으로 오기도 함
     # ('The rope was ____ to the post'에 fastened와 -ing 낱말 넷, 10/26)
