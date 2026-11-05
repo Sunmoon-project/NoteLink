@@ -29,10 +29,10 @@ export class Flashcard {
   @Prop({ type: Object })
   srs?: Record<string, unknown> | null;
 
-  @Prop()
+  @Prop({ type: String, default: null })
   lastResult?: string | null;
 
-  @Prop()
+  @Prop({ type: Date, default: null })
   deletedAt?: Date | null;
 }
 

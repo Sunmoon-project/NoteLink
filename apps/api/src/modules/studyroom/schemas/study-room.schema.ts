@@ -10,7 +10,7 @@ export class RoomMember {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId; // users 참조
 
-  @Prop({ required: true, type: Number, default: 'member' })
+  @Prop({ required: true, type: String, default: 'member' })
   role: string; // host, member 등
 
   @Prop({ required: true, type: String, default: 'joined' })
