@@ -7,13 +7,13 @@ export class Question {
   @Prop({ type: Types.ObjectId, auto: true })
   _id: Types.ObjectId;
 
-  @Prop({ required: true, default: 0 })
+  @Prop({ required: true, type: Number, default: 0 })
   order: number;
 
-  @Prop({ required: true, enum: ['multiple_choice', 'short_answer', 'ox'] })
+  @Prop({ required: true, type: String, enum: ['multiple_choice', 'short_answer', 'ox'] })
   type: string;
 
-  @Prop({ required: true })
+  @Prop({ required: true, type: String })
   prompt: string;
 
   // 객관식이 아니면 null
