@@ -1,8 +1,10 @@
 import { useAuth } from '../stores/auth';
+import { useNet } from '../stores/net';
 
 // 실제 기기 저장 계층을 메모리 파일로 돌린다 (앱을 다시 켜도 남는지까지 확인)
 const mockFiles = new Map<string, string>();
 let mockWriteFails = false;
+const mockDropFile = jest.fn();
 jest.mock('../lib/local/storage', () => ({
   readDb: (n: string) => (mockFiles.has(n) ? JSON.parse(mockFiles.get(n)!) : null),
   writeDb: (n: string, d: unknown) => {
@@ -10,7 +12,7 @@ jest.mock('../lib/local/storage', () => ({
     mockFiles.set(n, JSON.stringify(d));
   },
   dropDb: (n: string) => void mockFiles.delete(n),
-  dropFile: jest.fn(),
+  dropFile: (...a: unknown[]) => mockDropFile(...a),
   fileInfo: () => ({ name: 'a.pdf', size: 10 }),
   keepFile: (uri: string) => ({ uri, size: 10 }),
 }));
@@ -36,6 +38,8 @@ async function signup(email: string) {
 beforeEach(() => {
   mockFiles.clear();
   mockWriteFails = false;
+  mockDropFile.mockClear();
+  useNet.setState({ state: 'ok' });
   mockKeychain.clear();
   resetLocalForTests();
 });
@@ -152,4 +156,103 @@ it('서버 없이는 캘린더 공유 링크를 만들지 않는다', async () =
     }),
   ).rejects.toThrow('서버 연결 후');
   expect(await api.calendar.shares()).toEqual([]);
+});
+
+const addFolder = () => api.content.createFolder({ title: '수학', subjectName: '수학' } as never);
+const material = (folderId: string, requestId = 'r1') => ({
+  requestId,
+  folderId,
+  kind: 'document' as const,
+  source: 'file' as const,
+  title: '자료',
+  blobUrls: ['file:///doc/files/a.pdf'],
+});
+
+describe('자료 저장 · 삭제 실패', () => {
+  it('저장에 실패한 등록을 같은 키로 재시도하면 실제로 다시 만든다', async () => {
+    await signup('a@test.com');
+    const f = await addFolder();
+    mockWriteFails = true;
+    await expect(api.content.createMaterial(material(f._id))).rejects.toThrow('저장하지 못했어요');
+    mockWriteFails = false;
+    expect(await api.content.materials(f._id)).toEqual([]);
+    const { material: created } = await api.content.createMaterial(material(f._id));
+    expect((await api.content.materials(f._id)).map((m) => m._id)).toEqual([created._id]);
+  });
+
+  it('같은 키로 다시 보내면 자료를 또 만들지 않는다', async () => {
+    await signup('a@test.com');
+    const f = await addFolder();
+    const first = await api.content.createMaterial(material(f._id));
+    const again = await api.content.createMaterial(material(f._id));
+    expect(again.material._id).toBe(first.material._id);
+    expect(await api.content.materials(f._id)).toHaveLength(1);
+  });
+
+  it.each(['자료', '폴더'])('%s 삭제 저장이 실패하면 원본 파일을 지우지 않는다', async (what) => {
+    await signup('a@test.com');
+    const f = await addFolder();
+    const { material: m } = await api.content.createMaterial(material(f._id));
+    const remove = () =>
+      what === '자료' ? api.content.deleteMaterial(m._id) : api.content.deleteFolder(f._id);
+    mockWriteFails = true;
+    await expect(remove()).rejects.toThrow('저장하지 못했어요');
+    mockWriteFails = false;
+    expect(mockDropFile).not.toHaveBeenCalled();
+    expect(await api.content.materials(f._id)).toHaveLength(1);
+    await remove();
+    expect(mockDropFile).toHaveBeenCalledTimes(1);
+  });
+});
+
+it('오프라인으로 실패한 변경은 연결이 돌아와도 남지 않는다', async () => {
+  await signup('a@test.com');
+  useNet.setState({ state: 'offline' });
+  await expect(
+    api.study.addItem({ title: '수학', subjectName: '수학', goalMin: null }),
+  ).rejects.toThrow('offline');
+  useNet.setState({ state: 'ok' });
+  expect((await api.study.today()).items).toEqual([]);
+});
+
+it('같은 세션을 다시 끝내도 처음 정산을 돌려주고 포인트를 다시 주지 않는다', async () => {
+  jest.useFakeTimers({
+    now: Date.parse('2026-11-04T10:00:00+09:00'),
+    doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask', 'setTimeout', 'clearTimeout'],
+  });
+  await signup('a@test.com');
+  const item = await api.study.addItem({ title: '수학', subjectName: '수학', goalMin: null });
+  const s = await api.study.startSession({ studyItemId: item._id, mode: 'personal' });
+  jest.setSystemTime(Date.parse('2026-11-04T11:00:00+09:00'));
+  const first = await api.study.endSession(s._id, { clientDurationSec: 0, endReason: 'manual' });
+  const balance = (await api.me.get()).pointBalance;
+  expect(first.pointsEarned).toBeGreaterThan(0);
+  jest.setSystemTime(Date.parse('2026-11-04T12:00:00+09:00'));
+  const again = await api.study.endSession(s._id, { clientDurationSec: 0, endReason: 'manual' });
+  expect(again).toEqual(first);
+  expect((await api.me.get()).pointBalance).toBe(balance);
+  expect((await api.study.today()).totalSec).toBe(3600);
+  jest.useRealTimers();
+});
+
+it('방 타이머를 정하면 끝나는 시각을 계산해 소켓과 방 정보로 준다', async () => {
+  await signup('a@test.com');
+  const room = await api.rooms.create({ title: '방', categoryName: '수학', isPublic: true });
+  const heard: { endsAt: string | null; phase: string }[] = [];
+  const { localSocket } = jest.requireActual<typeof import('../lib/socket')>('../lib/socket');
+  const push = jest
+    .spyOn(localSocket, 'push')
+    .mockImplementation((_ev: unknown, payload: unknown) => void heard.push(payload as never));
+  await api.rooms.setTimer(room._id, {
+    enabled: true,
+    type: 'pomodoro',
+    focusMin: 25,
+    breakMin: 5,
+    repeat: 4,
+    periods: [],
+  });
+  push.mockRestore();
+  expect(heard[0]?.phase).toBe('focus');
+  expect(Date.parse(heard[0]!.endsAt!)).toBeGreaterThan(Date.now());
+  expect((await api.rooms.get(room._id)).timerState?.phase).toBe('focus');
 });

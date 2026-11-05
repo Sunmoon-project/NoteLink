@@ -45,6 +45,7 @@ import {
   weekStart,
 } from './stats';
 import * as SecureStore from 'expo-secure-store';
+import { roomTimerState } from './timer';
 import { dropDb, dropFile, fileInfo, readDb, writeDb } from './storage';
 import { AI_WAITING_STEP } from '../ai';
 
@@ -78,6 +79,10 @@ type Db = {
   quizSets: QuizSet[];
   attempts: QuizAttempt[];
   quizBox: Question[];
+  /** 끝난 세션의 정산 결과 (같은 종료 요청이 다시 와도 그대로 돌려준다) */
+  settled?: Record<string, { durationSec: number; pointsEarned: number }>;
+  /** 방 타이머를 켠 시각 (모든 참여자의 공통 기준) */
+  timerStartedAt?: Record<string, number>;
   flashcards: Flashcard[];
   rooms: StudyRoom[];
   roomShared: RoomSharedItem[];
@@ -206,8 +211,12 @@ const createdMaterials = new Map<
 >();
 
 async function ok<T>(v: T): Promise<T> {
-  // 오프라인이면 서버를 쓸 때와 같은 연결 오류를 낸다
-  if (useNet.getState().state === 'offline') throw new NetworkError('offline');
+  // 오프라인이면 서버를 쓸 때와 같은 연결 오류를 낸다. 실패한 요청의 변경은 메모리에도 남기지 않는다
+  if (useNet.getState().state === 'offline') {
+    const id = useAuth.getState().userId;
+    if (id) loaded.delete(id);
+    throw new NetworkError('offline');
+  }
   save();
   return v === undefined ? v : structuredClone(v);
 }
@@ -403,14 +412,16 @@ const api: Api = {
     withdraw: async () => {
       // 탈퇴: 이 계정의 기록과 기기에 복사해 둔 파일을 모두 지운다 (FR-03-08)
       const d = db();
-      for (const m of d.materials) for (const f of m.files) dropFile(f.uri);
       const id = d.user._id;
+      // 계정 목록을 먼저 고친다. 실패하면 아무것도 지우지 않아 다시 시도할 수 있다
+      const next = Object.fromEntries(Object.entries(accounts).filter(([, v]) => v !== id));
+      writeDb('accounts', next);
+      accounts = next;
       loaded.delete(id);
       savedJson.delete(id);
       dropDb(`user-${id}`);
       await SecureStore.deleteItemAsync(pwKey(id));
-      accounts = Object.fromEntries(Object.entries(accounts).filter(([, v]) => v !== id));
-      writeDb('accounts', accounts);
+      for (const m of d.materials) for (const f of m.files) dropFile(f.uri);
     },
     generateProfile: (p) => ok(queueJob('avatar_profile', 'user', p.photoBlobUrl)),
     saveAvatar: (p) => ok(void (db().avatar = p)),
@@ -490,6 +501,9 @@ const api: Api = {
       const d = db();
       const s = d.sessions.find((x) => x._id === id);
       if (!s) return ok({ durationSec: 0, pointsEarned: 0 });
+      // 이미 끝난 세션은 다시 정산하지 않고 처음 결과를 돌려준다
+      const settled = d.settled?.[id];
+      if (s.status === 'ended' && settled) return ok(settled);
       // 시간은 기기가 보낸 값이 아니라 저장된 시작 · 일시정지 시각으로 계산한다
       const endMs = Date.now();
       const days = secondsBySeoulDay(
@@ -526,6 +540,7 @@ const api: Api = {
         Object.assign(s, { status: 'ended', endedAt: now(), endReason: p.endReason, isAbuse });
       const pts = !isAbuse && durationSec >= STREAK_MIN_SEC ? 30 : 0;
       if (pts) addPoints(d, pts, 'session_complete', '순공 세션 완료');
+      (d.settled ??= {})[id] = { durationSec, pointsEarned: pts };
       return ok({ durationSec, pointsEarned: pts });
     },
     weekly: () => {
@@ -754,13 +769,14 @@ const api: Api = {
       d.folders.push(f);
       return ok(f);
     },
-    deleteFolder: (id) => {
+    deleteFolder: async (id) => {
       const d = db();
-      for (const m of d.materials.filter((x) => x.folderId === id))
-        for (const f of m.files) dropFile(f.uri);
+      const files = d.materials.filter((x) => x.folderId === id).flatMap((m) => m.files);
       d.materials = d.materials.filter((m) => m.folderId !== id);
       d.folders = d.folders.filter((f) => f._id !== id);
-      return ok(undefined);
+      // 기록을 저장한 뒤에 원본을 지운다. 저장이 실패하면 자료와 원본이 그대로 남는다
+      await ok(undefined);
+      for (const f of files) dropFile(f.uri);
     },
     materials: (folderId) =>
       ok(
@@ -825,8 +841,10 @@ const api: Api = {
       m.processing.jobId = job._id;
       Object.assign(d.folders.find((f) => f._id === p.folderId) ?? {}, { updatedAt: now() });
       const result = { material: { ...m, files: undefined } as unknown as Material, job };
-      if (key) createdMaterials.set(key, { payload: fingerprint, result: structuredClone(result) });
-      return ok(result);
+      const saved = await ok(result);
+      // 저장에 성공한 뒤에만 기억한다. 실패한 등록을 재시도하면 다시 만든다
+      if (key) createdMaterials.set(key, { payload: fingerprint, result: structuredClone(saved) });
+      return saved;
     },
     material: (id) => {
       const m = db().materials.find((x) => x._id === id);
@@ -842,13 +860,14 @@ const api: Api = {
       const { files: _f, ...rest } = m;
       return ok(rest as Material);
     },
-    deleteMaterial: (id) => {
+    deleteMaterial: async (id) => {
       const d = db();
       const m = d.materials.find((x) => x._id === id);
-      for (const f of m?.files ?? []) dropFile(f.uri);
       d.materials = d.materials.filter((x) => x._id !== id);
       d.jobs = d.jobs.filter((j) => j.targetId !== id);
-      return ok(undefined);
+      // 기록을 저장한 뒤에 원본을 지운다. 저장이 실패하면 자료와 원본이 그대로 남는다
+      await ok(undefined);
+      for (const f of m?.files ?? []) dropFile(f.uri);
     },
     recording: (id) => {
       const m = db().materials.find((x) => x._id === id);
@@ -1072,6 +1091,8 @@ const api: Api = {
       const mine = dailyTotals(d.sessions).get(today()) ?? 0;
       return ok({
         ...r,
+        // 단계는 지금 시각으로 다시 계산한다 (나갔다 들어와도 같은 박자)
+        timerState: roomTimerState(r.timerRule, d.timerStartedAt?.[id] ?? Date.now()),
         members: r.members.map((m) =>
           m.userId === d.user._id ? { ...m, nickname: me(d).nickname, todaySec: mine } : m,
         ),
@@ -1085,7 +1106,10 @@ const api: Api = {
     setTimer: (id, rule) => {
       const r = db().rooms.find((x) => x._id === id);
       if (!r) return fail(ERROR_CODES.NOT_FOUND, '스터디룸을 찾을 수 없어요', 404);
+      const d = db();
       r.timerRule = rule;
+      (d.timerStartedAt ??= {})[id] = Date.now();
+      r.timerState = roomTimerState(rule, d.timerStartedAt[id]);
       localSocket.push('room:timer', {
         roomId: id,
         rule,

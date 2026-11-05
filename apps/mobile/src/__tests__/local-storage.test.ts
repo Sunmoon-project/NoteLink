@@ -24,8 +24,11 @@ jest.mock('expo-file-system', () => {
     }
     move(to: File) {
       if (mockFailMove?.(to.uri)) throw new Error('move failed');
+      // 실제 expo-file-system처럼 대상이 있으면 실패하고, 옮긴 뒤 객체의 경로도 바뀐다
+      if (mockDisk.has(to.uri)) throw new Error('destination exists');
       mockDisk.set(to.uri, mockDisk.get(this.uri)!);
       mockDisk.delete(this.uri);
+      this.uri = to.uri;
     }
   }
   return { File, Directory: class {}, Paths: { document: { uri: 'file:///doc/' } } };
@@ -55,6 +58,14 @@ it('새 파일로 바꿔 끼우지 못하면 실패를 알리고 이전 내용�
   expect(() => writeDb('u', { v: 2 })).toThrow('move failed');
   mockFailMove = null;
   expect(readDb('u')).toEqual({ v: 1 });
+});
+
+it('같은 DB를 여러 번 저장해도 마지막 내용이 남고 백업 · 임시 파일이 남지 않는다', () => {
+  writeDb('u', { v: 1 });
+  writeDb('u', { v: 2 });
+  writeDb('u', { v: 3 });
+  expect(readDb('u')).toEqual({ v: 3 });
+  expect([...mockDisk.keys()]).toEqual(['file:///doc/notelink-u.json']);
 });
 
 it('임시 파일에 쓰다 실패해도 이전 파일을 건드리지 않는다', () => {

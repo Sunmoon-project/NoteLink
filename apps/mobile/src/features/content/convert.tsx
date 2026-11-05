@@ -87,6 +87,8 @@ function SavedForLater({ kind, materialId }: { kind: keyof typeof DETAIL; materi
 
 export function ConvertScreen() {
   const draft = useDraft();
+  // 저장을 마치면 초안이 비워지므로 자료 종류는 처음 값을 기억한다
+  const [kind] = useState(draft.kind);
   const qc = useQueryClient();
   const net = useNet((s) => s.state);
   const [phase, setPhase] = useState<'upload' | 'paused' | 'ai' | 'failed' | 'uncertain'>('upload');
@@ -292,7 +294,7 @@ export function ConvertScreen() {
   const steps = STEPS[draft.kind];
   // AI 서버가 없으면(기기 저장 모드) 원본만 저장하고 정리는 서버 연결 후에 한다 (FR-65-05)
   if (phase === 'ai' && aiWaiting(job) && materialId)
-    return <SavedForLater kind={draft.kind} materialId={materialId} />;
+    return <SavedForLater kind={kind} materialId={materialId} />;
   return (
     <View className="flex-1 bg-white">
       <Screen>

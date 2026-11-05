@@ -3,6 +3,9 @@ import { scanPages } from '../features/content/capture';
 import { ConvertScreen } from '../features/content/convert';
 import { useMockFlags } from './fixtures/flags';
 import { socket } from '../lib/socket';
+import { router } from 'expo-router';
+import { api } from '../lib/api';
+import { AI_WAITING_STEP } from '../lib/ai';
 import { useDraft } from '../stores/draft';
 import { renderScreen } from '../test-utils';
 
@@ -68,4 +71,28 @@ describe('AI 변환 다시 시도', () => {
     await waitFor(() => expect(subs()).toHaveLength(2), { timeout: 5000 });
     expect(subs()[1]).not.toBe(subs()[0]);
   }, 30000);
+});
+
+const audio = { uri: 'file:///a.m4a', name: 'a.m4a', mimeType: 'audio/mp4', size: 1000 };
+
+describe('서버 없이 저장한 자료', () => {
+  it('자료 보기는 초안이 비워져도 처음 고른 종류의 상세로 간다', async () => {
+    jest.spyOn(api.content, 'createMaterial').mockResolvedValue({
+      material: { _id: 'm1' },
+      job: { _id: 'j1', status: 'queued', step: AI_WAITING_STEP, progress: 0 },
+    } as never);
+    jest.spyOn(api.ai, 'job').mockResolvedValue({
+      _id: 'j1',
+      status: 'queued',
+      step: AI_WAITING_STEP,
+      progress: 0,
+    } as never);
+    useDraft.getState().set({ folderId: 'fo1', kind: 'recording', files: [audio], title: '강의' });
+    await renderScreen(<ConvertScreen />);
+    await fireEvent.press(await screen.findByText('자료 보기', {}, { timeout: 5000 }));
+    expect(router.replace).toHaveBeenCalledWith({
+      pathname: '/(tabs)/note/rec/[id]',
+      params: { id: 'm1' },
+    });
+  });
 });

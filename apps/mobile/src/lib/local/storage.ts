@@ -27,23 +27,27 @@ export function readDb(name: string): unknown | null {
  * 마지막 정상 파일이 남는다. 실패는 호출한 쪽으로 던진다.
  */
 export function writeDb(name: string, data: unknown) {
-  const target = new File(Paths.document, dbFile(name));
+  // File.move()는 객체의 경로까지 바꾼다. 원래 경로로 쓸 때마다 새 객체를 만든다
+  const targetFile = () => new File(Paths.document, dbFile(name));
   const tmp = new File(Paths.document, `${dbFile(name)}.tmp`);
   const bak = new File(Paths.document, `${dbFile(name)}.bak`);
   if (tmp.exists) tmp.delete();
   tmp.create();
   tmp.write(JSON.stringify(data).replaceAll(Paths.document.uri, DOC_TOKEN));
-  if (target.exists) {
+  const current = targetFile();
+  if (current.exists) {
     if (bak.exists) bak.delete();
-    target.move(bak);
+    current.move(bak);
   }
   try {
-    tmp.move(target);
+    tmp.move(targetFile());
   } catch (e) {
-    if (bak.exists) bak.move(target);
+    if (bak.exists) bak.move(targetFile());
     throw e;
   }
-  if (bak.exists) bak.delete();
+  // bak은 이동으로 경로가 바뀌었을 수 있어 새로 만든다
+  const leftover = new File(Paths.document, `${dbFile(name)}.bak`);
+  if (leftover.exists) leftover.delete();
 }
 
 const filesDir = () => {
