@@ -1,6 +1,4 @@
 import { PATHS, type SocialProvider } from '@notelink/shared';
-import { api } from './api';
-import { httpApi } from './api/http-api';
 import { env } from './env';
 import { loadBrowser, loadCrypto } from './web-browser-loader';
 
@@ -9,8 +7,8 @@ import { loadBrowser, loadCrypto } from './web-browser-loader';
 // 사용자 지정 주소는 다른 앱이 가로챌 수 있어 state와 PKCE로 이번 시도에 묶는다.
 const REDIRECT = 'notelink://auth/callback';
 
-/** 간편 로그인은 서버 API를 쓸 때만 동작한다 */
-export const socialLoginReady = api === httpApi;
+/** 서버의 시작 · 콜백 · 코드 교환 주소가 준비된 빌드에서만 켠다. 없으면 버튼을 막는다 */
+export const socialLoginReady = process.env.EXPO_PUBLIC_SOCIAL_LOGIN === 'true';
 
 const FAILED = '간편 로그인을 마치지 못했어요. 다시 시도해 주세요';
 const base64url = (b64: string) => b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');

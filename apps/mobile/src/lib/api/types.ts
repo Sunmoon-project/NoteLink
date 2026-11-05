@@ -57,7 +57,7 @@ export type RoomSchedule = {
 
 export interface Api {
   auth: {
-    /** providerToken: 카카오 · 네이버 · Google SDK가 준 토큰. 서버가 서명 · 대상 · 만료를 검증한 뒤 자체 토큰을 발급한다 */
+    /** 서버가 돌려준 1회용 코드와 PKCE 검증값을 보내 토큰으로 바꾼다 */
     socialLogin(
       provider: SocialProvider,
       proof: { token: string; codeVerifier: string },
