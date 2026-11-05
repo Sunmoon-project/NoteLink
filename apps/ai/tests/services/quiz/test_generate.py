@@ -186,14 +186,30 @@ def test_a_page_with_wrong_answers_does_not_give_its_question_to_a_learned_page(
     per[12] = PageInfo(mastered=1, done=["말라리아"])
     _, share, _ = generate.allocate(pages_of(12), per, 6)
     assert share[1] == 1 and share[12] == 1 and sum(share.values()) == 6
-    # 틀린 답과 다 익힌 개념이 함께 있어 가중치가 가장 작은 쪽(0.4)도 빼지 않음: 7쪽 · 6문제면
-    # 1쪽이 반올림으로 한 문제를 받고 몫이 모두 0 · 1
+    # 틀린 답과 다 익힌 개념이 함께 있어 한 문제를 받은 쪽 중 가중치가 가장 작은 쪽(0.4)도 빼지
+    # 않음: 7쪽 · 6문제면 1쪽이 반올림으로 한 문제를 받고 몫이 모두 0 · 1
     per = defaultdict(PageInfo)
     per[1] = PageInfo(wrong=1, mastered=3, weak=["이질 아메바"], done=["a", "b", "c"])
     per[7] = PageInfo(mastered=1, done=["말라리아"])
     weight, share, _ = generate.allocate(pages_of(7), per, 6)
     assert weight[1] == pytest.approx(0.4) and max(share.values()) == 1
     assert share[1] == 1 and share[7] == 1 and sum(share.values()) == 6
+
+
+def test_a_learned_page_is_not_checked_again_at_the_cost_of_a_page_still_wrong() -> None:
+    # 한 문제씩 받은 쪽이 모두 틀린 답이 있으면 다시 확인을 건너뜀(/code-review #94)
+    per = defaultdict(PageInfo)
+    for p in range(1, 7):
+        per[p] = PageInfo(wrong=1, weak=[f"c{p}"])
+    per[7] = PageInfo(mastered=1, done=["말라리아"])
+    _, share, _ = generate.allocate(pages_of(7), per, 6)
+    assert share == {1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 0}
+    # 다 익힌 쪽끼리 한 문제를 주고받지 않음: 0문제인 쪽은 그대로 0, 나머지 여섯 쪽은 한 문제씩
+    per = defaultdict(PageInfo, {p: PageInfo(mastered=1, done=[f"c{p}"]) for p in range(1, 8)})
+    _, share, _ = generate.allocate(pages_of(7), per, 6)
+    plain = generate.allocate(pages_of(7), defaultdict(PageInfo), 6)[1]
+    zero = [p for p in plain if plain[p] == 0]
+    assert len(zero) == 1 and share == plain  # 0문제인 쪽은 그대로 0(다시 확인을 건너뜀)
 
 
 def test_short_pages_are_not_asked() -> None:
@@ -574,6 +590,61 @@ def test_a_concept_still_in_review_is_not_mastered() -> None:
     g = generate.parse(inp)
     per = generate.history(g.sets, g.attempts, "m1", {"m1": generate.note_pages(g.material)})
     assert (per[1].wrong, per[1].weak, per[1].mastered) == (2, ["이질 아메바"], 0)
+
+
+def test_a_concept_stopped_after_five_wrong_answers_is_not_mastered() -> None:
+    # 5번 풀어도 못 익혀 멈춘(stopped) 문제도 복습 중처럼 약한 개념(Codex 재리뷰 3차 #94)
+    stopped = stored("q5", "이질 아메바", "이질 아메바", "stopped")
+    qs = [stored("q3", "이질 아메바", "이질 아메바", "mastered"), stopped]
+    inp = job(
+        sets=[{"id": "s1", "materialId": "m1", "questions": qs}],
+        attempts=[attempt("q5", False) for _ in range(5)],
+    )
+    g = generate.parse(inp)
+    per = generate.history(g.sets, g.attempts, "m1", {"m1": generate.note_pages(g.material)})
+    assert (per[1].wrong, per[1].weak, per[1].mastered, per[1].done) == (
+        5,
+        ["이질 아메바"],
+        0,
+        [],
+    )
+
+
+def test_a_concept_learned_again_after_it_stopped_is_mastered() -> None:
+    # 멈춘 뒤 새 문제를 익히면 다시 다 익힌 개념: 멈춘 문제는 다시 풀 수 없어 늘 약하다고 보면
+    # 가중치가 내려가지 않음(/code-review #94). 가장 최근에 푼 문제의 상태로 봄
+    qs = [
+        stored("q5", "이질 아메바", "이질 아메바", "stopped"),
+        stored("q7", "이질 아메바", "이질 아메바", "mastered"),
+    ]
+    wrong = [attempt("q5", False) for _ in range(5)]
+    later = {**attempt("q7", True), "id": "a-q7-later", "finishedAt": "2026-11-03T06:00:00Z"}
+    inp = job(sets=[{"id": "s1", "materialId": "m1", "questions": qs}], attempts=[*wrong, later])
+    g = generate.parse(inp)
+    per = generate.history(g.sets, g.attempts, "m1", {"m1": generate.note_pages(g.material)})
+    assert (per[1].wrong, per[1].mastered, per[1].done) == (0, 1, ["이질 아메바"])
+    # 같은 풀이에서 멈춘 문제와 익힌 문제가 함께 끝나도 다 익힌 개념(늘 약하게 남지 않음)
+    same = {**attempt("q7", True), "id": "a-q7-same"}  # 멈춘 문제의 풀이와 같은 시각
+    inp = job(sets=[{"id": "s1", "materialId": "m1", "questions": qs}], attempts=[*wrong, same])
+    g = generate.parse(inp)
+    per = generate.history(g.sets, g.attempts, "m1", {"m1": generate.note_pages(g.material)})
+    assert (per[1].wrong, per[1].mastered) == (0, 1)
+
+
+def test_a_concept_still_in_review_is_not_mastered_by_a_question_learned_later() -> None:
+    # 복습 중인 문제가 있으면 다른 문제를 나중에 익혀도 약한 개념(/code-review #94)
+    qs = [
+        stored("q3", "이질 아메바", "이질 아메바", "mastered"),
+        stored("q5", "이질 아메바", "이질 아메바", "active"),
+    ]
+    later = {**attempt("q3", True), "id": "a-q3-later", "finishedAt": "2026-11-03T06:00:00Z"}
+    inp = job(
+        sets=[{"id": "s1", "materialId": "m1", "questions": qs}],
+        attempts=[attempt("q5", False), {**attempt("q5", False), "id": "a2"}, later],
+    )
+    g = generate.parse(inp)
+    per = generate.history(g.sets, g.attempts, "m1", {"m1": generate.note_pages(g.material)})
+    assert (per[1].wrong, per[1].mastered) == (2, 0)
 
 
 def test_a_question_in_a_set_of_other_notes_is_not_made_again() -> None:

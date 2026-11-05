@@ -11,7 +11,9 @@ ai_jobs.type = 'quiz_generate' (공용 계약 AiJobType).
   가중치 = 1 + 1.5 × (그 쪽에서 아직 못 익힌 개념의 틀린 답 수) − 0.7 × (그 쪽의 다 익힌
   개념 수)(0.3 이상), 그다음 큰 나머지 순으로 반올림. 배운 것이 없는 쪽은 가중치 1이라
   새 내용도 나옵니다.
-  다 익힌 개념이 있는 쪽이 0문제가 되면 한 문제로 다시 확인합니다(6문제 이상일 때).
+  다 익힌 개념이 있는 쪽이 0문제가 되면 한 문제로 다시 확인합니다(6문제 이상일 때). 그 한
+  문제는 문제 수가 가장 많은 쪽에서 빼고, 그 쪽이 한 문제뿐인데 틀린 답이나 다 익힌 개념이
+  있으면 다시 확인을 건너뜁니다(아직 틀리는 쪽이 0문제가 되지 않게).
   5줄보다 짧은 쪽은 묻지 않습니다.
 
 노트 조각(희재님 노트 정리 결과 ④ chunks, #52 · #59)이 있으면 쪽 글을 조각 글로 다시 묶어 씁니다.
@@ -140,6 +142,7 @@ class QuizSet:
 @dataclass(frozen=True)
 class Attempt:
     quiz_set_id: str
+    finished_at: datetime  # UTC (tzinfo 없음). 개념마다 가장 최근에 푼 문제를 고를 때 씀
     answers: list[tuple[str, bool, bool]]  # (questionId, correct, void)
 
 
@@ -247,7 +250,7 @@ def parse(raw: JsonObject) -> GenerateInput:
     for i, a in enumerate(need_list(raw, "attempts", "input")):
         w = f"input.attempts[{i}]"
         need(a, "id", str, w)
-        utc_date(need(a, "finishedAt", (str, datetime), w), f"{w}.finishedAt")
+        at = utc_date(need(a, "finishedAt", (str, datetime), w), f"{w}.finishedAt")
         answers = []
         for j, x in enumerate(need_list(a, "answers", w)):
             wx = f"{w}.answers[{j}]"
@@ -255,7 +258,7 @@ def parse(raw: JsonObject) -> GenerateInput:
             answers.append(
                 (need(x, "questionId", str, wx), need(x, "correct", bool, wx), is_void(void))
             )
-        attempts.append(Attempt(need(a, "quizSetId", str, w), answers))
+        attempts.append(Attempt(need(a, "quizSetId", str, w), at, answers))
     notes = parse_notes(need(raw, "notes", dict, "input"))
     return GenerateInput(day, size, material, sets, attempts, notes)
 
@@ -358,9 +361,20 @@ def history(
         return where[q["id"]]
 
     # 개념 이름이 없는 문제(OTHER)는 셈에서 뺌: 여러 쪽의 문제가 '기타' 하나로 모여 첫 쪽에 몰림
-    # 같은 개념의 문제가 아직 복습 중(active)이면 다 익힌 개념이 아님: 예전 문제 하나를 익혔어도
-    # 새 문제를 계속 틀리면 그 틀린 답을 셈(Codex 리뷰 #94)
-    mastered: set[str] = set()
+    # 다 익힌 개념이 아닌 것(틀린 답을 셈):
+    # - 같은 개념의 문제가 아직 복습 중(active): 예전 문제를 익혔어도 새 문제를 계속 틀림
+    #   (Codex 리뷰 #94)
+    # - 5번 풀어도 못 익혀 멈춘(stopped) 문제를 익힌 문제보다 나중에 풀었음: 빼면 다섯 번째 오답에
+    #   가중치가 7.0 → 0.3(Codex 재리뷰 3차). 멈춘 뒤 새 문제를 익히면(같은 풀이에서 함께 끝나도)
+    #   다시 다 익힌 개념: 멈춘 문제는 다시 풀 수 없어 늘 약하다고 보면 가중치가 내려가지 않음
+    #   (/code-review). 풀이 시각은 문제마다 마지막으로 푼 때, 풀이가 없으면 가장 오래된 것으로 봄
+    last: dict[str, datetime] = {}
+    for a in attempts:
+        for qid, _, void in a.answers:
+            if not void and a.finished_at > last.get(qid, datetime.min):
+                last[qid] = a.finished_at
+    learned: dict[str, datetime] = {}  # 개념: 익힌 문제를 마지막으로 푼 때
+    stopped: dict[str, datetime] = {}  # 개념: 멈춘 문제를 마지막으로 푼 때
     active: set[str] = set()
     page_of: dict[str, int] = {}
     for s in sets:
@@ -368,12 +382,20 @@ def history(
             st = q.get("srs")
             state = st.get("state") if st else None
             c = concept_of(q)
-            if state not in ("mastered", "active") or c == OTHER or home(s, q)[0] != material_id:
+            unknown = state not in ("mastered", "active", "stopped")
+            if unknown or c == OTHER or home(s, q)[0] != material_id:
                 continue
-            (mastered if state == "mastered" else active).add(c)
+            at = last.get(q["id"], datetime.min)
+            if state == "active":
+                active.add(c)
+            else:
+                when = learned if state == "mastered" else stopped
+                when[c] = max(when.get(c, at), at)
             if state == "mastered":
                 page_of.setdefault(c, home(s, q)[1])
-    mastered -= active
+    mastered = {
+        c for c, at in learned.items() if c not in active and stopped.get(c, datetime.min) <= at
+    }
     wrong: Counter[str] = Counter()
     for a in attempts:
         qset = by_id.get(a.quiz_set_id)
@@ -434,8 +456,12 @@ def allocate(
             info = per_page[k]
             return share[k], not info.wrong, not info.mastered, -weight[k], spread[k]
 
-        share[max(share, key=give)] -= 1
-        share[p] = 1
+        # 뺄 쪽이 한 문제뿐인데 틀린 답이나 다 익힌 개념이 있으면 다시 확인을 건너뜀: 아직 틀리는
+        # 쪽이 0문제가 되거나, 다 익힌 쪽끼리 한 문제를 주고받기만 함(/code-review #94)
+        k = max(share, key=give)
+        if share[k] > 1 or not (per_page[k].wrong or per_page[k].mastered):
+            share[k] -= 1
+            share[p] = 1
     return weight, share, plain
 
 
