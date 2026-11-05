@@ -28,10 +28,7 @@ async function login(email: string) {
   useAuth.setState({ userId: r.user._id });
   return r.user;
 }
-async function signup(email: string) {
-  await api.auth.emailSignup(email, 'pw12345678');
-  return login(email);
-}
+const signup = login;
 
 beforeEach(() => {
   mockFiles.clear();
@@ -58,12 +55,10 @@ it('계정끼리 데이터가 섞이지 않고 다시 켜도 남는다', async (
   expect((await api.study.today()).items.map((i) => i.title)).toEqual(['수학']);
 });
 
-it('가입한 적 없거나 비밀번호가 다르면 로그인할 수 없고, 같은 이메일로 다시 가입할 수 없다', async () => {
-  await expect(api.auth.emailLogin('none@test.com', 'pw12345678')).rejects.toThrow(/맞지 않아요/);
+it('처음 쓰는 이메일은 계정이 만들어지고, 다음부터는 그 비밀번호가 맞아야 한다', async () => {
   await signup('a@test.com');
   await expect(api.auth.emailLogin('a@test.com', 'wrong-password')).rejects.toThrow(/맞지 않아요/);
-  await expect(api.auth.emailSignup('A@test.com ', 'pw12345678')).rejects.toThrow(/이미 가입/);
-  await expect(login('a@test.com')).resolves.toBeTruthy();
+  await expect(login('A@test.com ')).resolves.toBeTruthy();
 });
 
 it('성공 응답을 받은 변경은 곧바로 앱을 다시 켜도 남는다', async () => {
@@ -84,21 +79,16 @@ it('파일에 쓰지 못하면 실패로 알리고, 그 변경을 남기지 않�
   expect((await api.study.today()).items).toEqual([]);
 });
 
-it('키체인 저장이 실패하면 계정을 남기지 않아 같은 이메일로 다시 가입할 수 있다', async () => {
+it('키체인 저장이 실패하면 계정을 남기지 않아 같은 이메일로 다시 시도할 수 있다', async () => {
   const SecureStore = jest.requireMock<typeof import('expo-secure-store')>('expo-secure-store');
   jest.mocked(SecureStore.setItemAsync).mockRejectedValueOnce(new Error('keychain'));
-  await expect(api.auth.emailSignup('a@test.com', 'pw12345678')).rejects.toThrow(
-    '저장하지 못했어요',
-  );
-  await expect(api.auth.emailLogin('a@test.com', 'pw12345678')).rejects.toThrow('맞지 않아요');
+  await expect(login('a@test.com')).rejects.toThrow('저장하지 못했어요');
   await expect(signup('a@test.com')).resolves.toBeTruthy();
 });
 
 it('DB 저장이 실패해도 계정과 비밀번호를 남기지 않는다', async () => {
   mockWriteFails = true;
-  await expect(api.auth.emailSignup('a@test.com', 'pw12345678')).rejects.toThrow(
-    '저장하지 못했어요',
-  );
+  await expect(login('a@test.com')).rejects.toThrow('저장하지 못했어요');
   mockWriteFails = false;
   expect(mockKeychain.size).toBe(0);
   await expect(signup('a@test.com')).resolves.toBeTruthy();

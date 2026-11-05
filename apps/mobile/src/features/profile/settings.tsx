@@ -88,7 +88,7 @@ export function SettingsScreen() {
     }
   };
   // 내 정보를 못 불러와도 다시 시도 · 로그아웃은 할 수 있게 한다
-  if (me.isError && !me.data)
+  if (me.isError)
     return (
       <Screen>
         <Title>설정</Title>
@@ -165,16 +165,11 @@ export function SettingsScreen() {
           <View className="mt-3 flex-row justify-between">
             <Text className="text-caption text-sub">AI 크레딧</Text>
             <Text className="text-caption text-sub">
-              {u.usage?.aiCredits ?? 0}
-              {u.usage?.aiCreditLimit ? ` / ${u.usage.aiCreditLimit}` : ''}
+              {u.usage?.aiCredits ?? 0} / {u.usage?.aiCreditLimit ?? 800}
             </Text>
           </View>
           <Progress
-            value={
-              u.usage?.aiCreditLimit
-                ? Math.max(2, ((u.usage.aiCredits ?? 0) / u.usage.aiCreditLimit) * 100)
-                : 0
-            }
+            value={Math.max(2, ((u.usage?.aiCredits ?? 0) / (u.usage?.aiCreditLimit || 1)) * 100)}
             className="mt-1.5"
           />
         </Card>

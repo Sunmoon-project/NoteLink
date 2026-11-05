@@ -352,30 +352,27 @@ function signInAs(id: string) {
 const api: Api = {
   auth: {
     socialLogin: () => needServer('소셜 로그인'),
+    // 가입 화면이 없는 동안에는 처음 쓰는 이메일로 로그인하면 그 비밀번호로 계정을 만든다
     emailLogin: async (email, password) => {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
         return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
       if (!password) return fail(ERROR_CODES.VALIDATION, '비밀번호를 입력해 주세요');
-      const id = accountOf(email);
-      if (!id || (await SecureStore.getItemAsync(pwKey(id))) !== password)
-        return fail(ERROR_CODES.VALIDATION, '이메일 또는 비밀번호가 맞지 않아요');
-      return signInAs(id);
-    },
-    emailSignup: async (email, password) => {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
-        return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
-      if (password.length < 8)
-        return fail(ERROR_CODES.VALIDATION, '비밀번호는 8자 이상이어야 해요');
-      if (accountOf(email)) return fail(ERROR_CODES.EMAIL_TAKEN, '이미 가입한 이메일이에요', 409);
-      const id = uid('user');
-      try {
-        await SecureStore.setItemAsync(pwKey(id), password);
-        createAccount(email, id);
-      } catch {
-        // 비밀번호 없는 계정이나 계정 없는 비밀번호를 남기지 않아 같은 이메일로 다시 가입할 수 있다
-        await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
-        return fail('STORAGE_FAILED', '가입 정보를 저장하지 못했어요. 다시 시도해 주세요', 507);
+      let id = accountOf(email);
+      if (id) {
+        if ((await SecureStore.getItemAsync(pwKey(id))) !== password)
+          return fail(ERROR_CODES.VALIDATION, '이메일 또는 비밀번호가 맞지 않아요');
+      } else {
+        id = uid('user');
+        try {
+          await SecureStore.setItemAsync(pwKey(id), password);
+          createAccount(email, id);
+        } catch {
+          // 비밀번호 없는 계정이나 계정 없는 비밀번호를 남기지 않아 같은 이메일로 다시 시도할 수 있다
+          await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
+          return fail('STORAGE_FAILED', '계정 정보를 저장하지 못했어요. 다시 시도해 주세요', 507);
+        }
       }
+      return signInAs(id);
     },
     agreeTerms: (codes) => {
       db().terms = codes;
