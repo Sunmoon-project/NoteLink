@@ -140,7 +140,7 @@ export function HomeScreen() {
   return (
     <View className="flex-1 bg-white">
       {running && <KeepAwake />}
-      {s.itemId && <TiltWatcher />}
+      <TiltWatcher />
       <Screen>
         <NetBanner />
         <View className="flex-row items-start justify-between pt-4">
@@ -359,9 +359,12 @@ function TiltWatcher() {
       pushed.current = false;
       Accelerometer.setUpdateInterval(400);
       const sub = Accelerometer.addListener(({ x, y }) => {
+        // 다시 세우면 다음 기울임을 받는다
+        if (Math.abs(y) > 0.8) pushed.current = false;
         if (!pushed.current && Math.abs(x) > 0.8 && Math.abs(y) < 0.35) {
           pushed.current = true;
-          router.push('/landscape');
+          if (useSession.getState().itemId) router.push('/landscape');
+          else toast('공부할 항목을 시작한 뒤 가로로 돌려 주세요');
         }
       });
       return () => sub.remove();

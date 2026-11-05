@@ -315,3 +315,18 @@ it('큰 타이머는 지금 공부하는 항목의 시간만 보여 주고 전�
   expect(await screen.findByText('오늘 전체 00:01:50')).toBeTruthy();
   expect(screen.getAllByText('00:00:10')).toHaveLength(2);
 });
+
+it('측정 중이 아닐 때 가로로 돌리면 이동하지 않고 안내하며, 다시 세우면 다시 받는다', async () => {
+  await renderScreen(<HomeScreen />, client());
+  await waitFor(() => expect(Accelerometer.addListener).toHaveBeenCalled());
+  const listener = jest.mocked(Accelerometer.addListener).mock.calls[0]![0];
+  await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).not.toHaveBeenCalledWith('/landscape');
+  expect(useToast.getState().msg).toContain('가로로 돌려 주세요');
+  useSession.setState({ itemId: 'item', since: null, pausedAt: mockNow });
+  await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).not.toHaveBeenCalledWith('/landscape');
+  await act(async () => listener({ x: 0, y: 1, z: 0, timestamp: 0 }));
+  await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).toHaveBeenCalledWith('/landscape');
+});
