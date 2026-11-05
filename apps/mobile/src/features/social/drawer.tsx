@@ -93,6 +93,14 @@ export function SocialDrawer({ open, onClose }: { open: boolean; onClose: () => 
           <ChevronRight size={ICON.sm} color={C.sub} />
         </Pressable>
         <Text className="mt-4 mb-2 text-caption text-sub">친구 {friends.data?.length ?? 0}</Text>
+        {friends.isError && !friends.data && (
+          <View className="gap-2 pb-3">
+            <Text className="text-footnote text-sub">친구 목록을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void friends.refetch()}>
+              친구 목록 다시 시도
+            </Btn>
+          </View>
+        )}
         <ScrollView className="flex-1" contentContainerClassName="gap-2 pb-6">
           {friends.data?.map((f) => (
             <Pressable

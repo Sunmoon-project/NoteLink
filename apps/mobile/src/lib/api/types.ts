@@ -63,6 +63,8 @@ export interface Api {
       proof: { token: string; codeVerifier: string },
     ): Promise<AuthTokens>;
     emailLogin(email: string, password: string): Promise<AuthTokens>;
+    /** 이메일을 아이디로 가입한다. 토큰은 주지 않고 로그인으로 이어진다. 이미 있으면 409 EMAIL_TAKEN */
+    emailSignup(email: string, password: string): Promise<void>;
     agreeTerms(termCodes: string[]): Promise<void>;
     logout(): Promise<void>;
   };
