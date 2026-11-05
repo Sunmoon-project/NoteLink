@@ -178,6 +178,24 @@ def test_pages_with_unlearned_wrong_answers_get_more_and_learned_ones_still_one(
     assert sum(share.values()) == 10
 
 
+def test_a_page_with_wrong_answers_does_not_give_its_question_to_a_learned_page() -> None:
+    # 쪽이 문제 수보다 많아 몫이 모두 0 · 1이면 쪽 순서로 첫 쪽(틀린 답이 있는 1쪽)에서 뺐음
+    # (/code-review #94)
+    per = defaultdict(PageInfo)
+    per[1] = PageInfo(wrong=1, weak=["이질 아메바"])
+    per[12] = PageInfo(mastered=1, done=["말라리아"])
+    _, share, _ = generate.allocate(pages_of(12), per, 6)
+    assert share[1] == 1 and share[12] == 1 and sum(share.values()) == 6
+    # 틀린 답과 다 익힌 개념이 함께 있어 가중치가 가장 작은 쪽(0.4)도 빼지 않음: 7쪽 · 6문제면
+    # 1쪽이 반올림으로 한 문제를 받고 몫이 모두 0 · 1
+    per = defaultdict(PageInfo)
+    per[1] = PageInfo(wrong=1, mastered=3, weak=["이질 아메바"], done=["a", "b", "c"])
+    per[7] = PageInfo(mastered=1, done=["말라리아"])
+    weight, share, _ = generate.allocate(pages_of(7), per, 6)
+    assert weight[1] == pytest.approx(0.4) and max(share.values()) == 1
+    assert share[1] == 1 and share[7] == 1 and sum(share.values()) == 6
+
+
 def test_short_pages_are_not_asked() -> None:
     pages = {1: pages_of(1)[1], 2: "짧은 쪽\n두 줄"}
     weight, share, _ = generate.allocate(pages, defaultdict(PageInfo), 4)

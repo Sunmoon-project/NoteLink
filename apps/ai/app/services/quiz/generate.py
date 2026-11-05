@@ -426,7 +426,15 @@ def allocate(
     keep = [p for p in usable if per_page[p].mastered and share[p] == 0]
     if keep and n >= 6:
         p = max(keep, key=lambda p: per_page[p].mastered)
-        share[max(share, key=lambda k: share[k])] -= 1
+
+        # 뺄 쪽: 문제 수가 가장 많은 쪽 중 틀린 답 · 다 익힌 개념이 없는 쪽 → 틀린 답이 없는 쪽 →
+        # 가중치가 작은 쪽 → 흩어 놓은 순서. 몫이 모두 0 · 1이면 쪽 순서로 골라 틀린 답이 있는 쪽이
+        # 0문제가 됐음(/code-review #94)
+        def give(k: int) -> tuple[int, bool, bool, float, float]:
+            info = per_page[k]
+            return share[k], not info.wrong, not info.mastered, -weight[k], spread[k]
+
+        share[max(share, key=give)] -= 1
         share[p] = 1
     return weight, share, plain
 
