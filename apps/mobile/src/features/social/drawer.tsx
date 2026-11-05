@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Modal, Pressable, ScrollView, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 import { Text } from '@/components/text';
 import Animated, { SlideInRight } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -45,98 +45,90 @@ export function SocialDrawer({ open, onClose }: { open: boolean; onClose: () => 
     enabled: open,
   });
   const [statusOpen, setStatusOpen] = useState(false);
-  const go = (href: Parameters<typeof router.push>[0]) => {
-    onClose();
-    router.push(href);
-  };
+  // 드로어를 닫았다가 여는 대신 그 자리를 바꿔, 사이에 홈 화면이 비치지 않게 한다
+  const go = (href: Parameters<typeof router.replace>[0]) => router.replace(href);
+  if (!open) return null;
   return (
-    <Modal
-      visible={open}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-      statusBarTranslucent
-    >
-      <View className="flex-1">
+    // /friends가 이미 투명 화면이다. Modal을 쓰면 다음 화면으로 갈 때 Modal이 먼저 사라지며 빈 화면이 비친다
+    <View className="flex-1">
+      <Pressable
+        accessibilityLabel="닫기"
+        className="absolute inset-0 bg-black/45"
+        onPress={onClose}
+      />
+      <Animated.View
+        entering={SlideInRight.duration(240)}
+        className="absolute top-0 right-0 bottom-0 w-[80%] bg-white px-4"
+        style={{ paddingTop: insets.top + 16 }}
+      >
         <Pressable
-          accessibilityLabel="닫기"
-          className="absolute inset-0 bg-black/45"
-          onPress={onClose}
-        />
-        <Animated.View
-          entering={SlideInRight.duration(240)}
-          className="absolute top-0 right-0 bottom-0 w-[80%] bg-white px-4"
-          style={{ paddingTop: insets.top + 16 }}
+          onPress={() => setStatusOpen(true)}
+          className="flex-row items-center gap-3 rounded-2xl bg-mint/60 px-3 py-3"
         >
-          <Pressable
-            onPress={() => setStatusOpen(true)}
-            className="flex-row items-center gap-3 rounded-2xl bg-mint/60 px-3 py-3"
-          >
-            <Avatar name={me.data?.nickname} uri={me.data?.avatarUrl} size={36} tone="mint" />
-            <View className="flex-1">
-              <Text className="text-subhead font-semibold text-ink">{me.data?.nickname}</Text>
-              {me.data && (
-                <View className="flex-row items-center">
-                  <StatusText status={me.data.status} />
-                  <Text className="text-caption2 text-sub"> · 눌러서 변경</Text>
-                </View>
-              )}
-            </View>
-            <ChevronRight size={ICON.sm} color={C.sub} />
-          </Pressable>
-          <Btn small className="mt-3" onPress={() => go('/friend-add')}>
-            + 친구 추가
-          </Btn>
-          <Pressable
-            onPress={() => go('/requests')}
-            className="mt-2 flex-row items-center rounded-xl bg-cream px-3 py-3"
-          >
-            <Text className="flex-1 text-subhead text-ink">받은 친구 요청</Text>
-            {!!requests.data?.length && (
-              <View className="h-5 w-5 items-center justify-center rounded-full bg-danger">
-                <Text className="text-caption2 text-white">{requests.data.length}</Text>
+          <Avatar name={me.data?.nickname} uri={me.data?.avatarUrl} size={36} tone="mint" />
+          <View className="flex-1">
+            <Text className="text-subhead font-semibold text-ink">{me.data?.nickname}</Text>
+            {me.data && (
+              <View className="flex-row items-center">
+                <StatusText status={me.data.status} />
+                <Text className="text-caption2 text-sub"> · 눌러서 변경</Text>
               </View>
             )}
-            <ChevronRight size={ICON.sm} color={C.sub} />
-          </Pressable>
-          <Text className="mt-4 mb-2 text-caption text-sub">친구 {friends.data?.length ?? 0}</Text>
-          {friends.isError && !friends.data && (
-            <View className="gap-2 pb-3">
-              <Text className="text-footnote text-sub">친구 목록을 불러오지 못했어요</Text>
-              <Btn small onPress={() => void friends.refetch()}>
-                친구 목록 다시 시도
-              </Btn>
+          </View>
+          <ChevronRight size={ICON.sm} color={C.sub} />
+        </Pressable>
+        <Btn small className="mt-3" onPress={() => go('/friend-add')}>
+          + 친구 추가
+        </Btn>
+        <Pressable
+          onPress={() => go('/requests')}
+          className="mt-2 flex-row items-center rounded-xl bg-cream px-3 py-3"
+        >
+          <Text className="flex-1 text-subhead text-ink">받은 친구 요청</Text>
+          {!!requests.data?.length && (
+            <View className="h-5 w-5 items-center justify-center rounded-full bg-danger">
+              <Text className="text-caption2 text-white">{requests.data.length}</Text>
             </View>
           )}
-          <ScrollView className="flex-1" contentContainerClassName="gap-2 pb-6">
-            {friends.data?.map((f) => (
-              <Pressable
-                key={f._id}
-                onPress={() =>
-                  go({
-                    pathname: '/chat/[id]',
-                    params: { id: f.userId, name: f.nickname, status: f.status },
-                  })
-                }
-                className="flex-row items-center gap-3 rounded-2xl bg-cream px-3 py-3"
-              >
-                <Avatar name={f.nickname} size={32} tone="mint" />
-                <View className="flex-1">
-                  <Text className="text-subhead font-semibold text-ink">{f.nickname}</Text>
-                  <StatusText status={f.status} />
-                </View>
-                <MoreHorizontal size={ICON.sm} color={C.sub} />
-              </Pressable>
-            ))}
-          </ScrollView>
-        </Animated.View>
-        <StatusSheet
-          open={statusOpen}
-          onClose={() => setStatusOpen(false)}
-          current={me.data?.status ?? 'active'}
-        />
-      </View>
-    </Modal>
+          <ChevronRight size={ICON.sm} color={C.sub} />
+        </Pressable>
+        <Text className="mt-4 mb-2 text-caption text-sub">친구 {friends.data?.length ?? 0}</Text>
+        {friends.isError && !friends.data && (
+          <View className="gap-2 pb-3">
+            <Text className="text-footnote text-sub">친구 목록을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void friends.refetch()}>
+              친구 목록 다시 시도
+            </Btn>
+          </View>
+        )}
+        <ScrollView className="flex-1" contentContainerClassName="gap-2 pb-6">
+          {friends.data?.map((f) => (
+            <Pressable
+              key={f._id}
+              onPress={() =>
+                go({
+                  pathname: '/chat/[id]',
+                  params: { id: f.userId, name: f.nickname, status: f.status },
+                })
+              }
+              className="flex-row items-center gap-3 rounded-2xl bg-cream px-3 py-3"
+            >
+              <Avatar name={f.nickname} size={32} tone="mint" />
+              <View className="flex-1">
+                <Text className="text-subhead font-semibold text-ink">{f.nickname}</Text>
+                <StatusText status={f.status} />
+              </View>
+              <MoreHorizontal size={ICON.sm} color={C.sub} />
+            </Pressable>
+          ))}
+        </ScrollView>
+      </Animated.View>
+      <StatusSheet
+        open={statusOpen}
+        onClose={() => setStatusOpen(false)}
+        current={me.data?.status ?? 'active'}
+      />
+    </View>
   );
 }
 

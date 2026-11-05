@@ -46,6 +46,10 @@ export function HomeScreen() {
   const dayLive = s.itemId ? s.elapsedSince(midnight, now) : 0;
   const live = (id: string, base: number) => base + (id === s.itemId ? dayLive : 0);
   const todaySec = items.reduce((a, i) => a + i.accumulatedSec, 0) + dayLive;
+  // 큰 타이머는 지금 공부하는 항목의 시간만 보여 준다 (다른 항목 시간이 이어 붙지 않게)
+  const activeSec = s.itemId
+    ? live(s.itemId, items.find((i) => i._id === s.itemId)?.accumulatedSec ?? 0)
+    : null;
   const weekSec = (weekly.data?.totalSec ?? 0) + (s.itemId ? s.elapsedSince(monday, now) : 0);
   // 목표를 읽지 못했으면 임의의 목표로 계산하지 않는다
   const goalMin = goal.data?.targetMin;
@@ -73,6 +77,16 @@ export function HomeScreen() {
     }
   };
   const ending = useRef(false);
+  // 다른 화면을 보는 중이면 자동 종료로 화면을 끌고 가지 않는다
+  const focused = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      focused.current = true;
+      return () => {
+        focused.current = false;
+      };
+    }, []),
+  );
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -102,10 +116,13 @@ export function HomeScreen() {
       if (!current()) return;
       await qc.invalidateQueries({ queryKey: ['study'] });
       if (!current()) return;
-      router.push({
-        pathname: '/summary',
-        params: { sec: String(r.sec), points: String(r.pointsEarned) },
-      });
+      if (reason === 'auto_pause_timeout' && !focused.current)
+        toast('쉬는 시간이 길어져 공부 측정을 자동으로 끝냈어요');
+      else
+        router.push({
+          pathname: '/summary',
+          params: { sec: String(r.sec), points: String(r.pointsEarned) },
+        });
     } catch {
       if (valid && mounted.current) toast('종료하지 못했어요. 연결을 확인하고 다시 종료해주세요');
     } finally {
@@ -173,7 +190,9 @@ export function HomeScreen() {
         {/* 순공시간 카드 */}
         <View className="mt-3 rounded-3xl bg-night p-5">
           <View className="flex-row items-center justify-between">
-            <Text className="text-caption text-white/70">오늘 순공시간</Text>
+            <Text className="text-caption text-white/70">
+              {active ? '이 항목 오늘 공부 시간' : '오늘 순공시간'}
+            </Text>
             <View className="flex-row items-center gap-1">
               <View
                 className={cx('h-1.5 w-1.5 rounded-full', running ? 'bg-sun' : 'bg-white/50')}
@@ -194,8 +213,9 @@ export function HomeScreen() {
             className="mt-1 tabular-nums text-display font-bold text-white"
             style={{ fontVariant: ['tabular-nums'] }}
           >
-            {hms(active || todaySec ? todaySec : 0)}
+            {hms(activeSec ?? todaySec)}
           </Text>
+          {active && <Text className="text-caption text-white/60">오늘 전체 {hms(todaySec)}</Text>}
           <Pressable accessibilityLabel="주간 목표 설정" onPress={() => setSheet('goal')}>
             <Text className="text-footnote text-white/80">
               {running

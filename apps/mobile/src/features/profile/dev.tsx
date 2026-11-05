@@ -1,4 +1,5 @@
-import { Text, View } from 'react-native';
+import { View } from 'react-native';
+import { Text } from '@/components/text';
 import { useQueryClient } from '@tanstack/react-query';
 import { mockDemo } from '@/lib/mock/api';
 import { useMockFlags, type MockFlags } from '@/lib/mock/flags';
@@ -79,7 +80,7 @@ export function DevScreen() {
       >
         모두 끄기
       </Btn>
-      <Text className="mt-4 text-[12px] leading-5 text-sub">
+      <Text className="mt-4 text-caption leading-5 text-sub">
         이미지 검사(p.102)는 갤러리에서 고른 사진의 형식 · 용량을 기기에서 먼저 확인하고, 파일
         이름에 ‘풍경’이나 ‘단어장’이 들어간 사진은 목업 AI가 필기 아님 · 읽기 어려움으로 판별해요.
       </Text>

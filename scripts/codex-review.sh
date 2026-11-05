@@ -11,6 +11,22 @@
 # - 게시 전 HEAD가 바뀌었으면 오래된 결과를 올리지 않습니다. 같은 SHA의 실패는 기존 댓글을 갱신합니다.
 # - --dry-run: 댓글을 올리거나 갱신하지 않고 결과만 보여 줍니다.
 #
+# 언제 Codex를 돌리는지 (CODEX_TRIGGER, codex-review.yml이 넣음. 직접 실행하면 request로 봄):
+# - auto(PR 열림 · 커밋 push · 다시 열림 · Ready for review): 이 계정의 Codex 리뷰가 아직 없을 때만 첫 리뷰를 합니다.
+#   문서(*.md · *.mdx · LICENSE · 루트 docs/의 그림 · PDF, 리뷰 기준인 루트 README.md · AGENTS.md · CLAUDE.md 제외)만
+#   바뀐 PR은 건너뜁니다.
+# - request(PR에 codex-review 라벨 · 첫 줄이 "/codex review"인 댓글 · Actions의 Run workflow): 재리뷰를 합니다
+#   (문서만 바뀌었어도 함). 요청한 사람(CODEX_REQUESTER)에게 저장소 쓰기 권한이 있어야 받습니다. 댓글 요청은
+#   리뷰를 시작할 때 👀, 받은 요청을 건너뛸 때(같은 커밋 등) 😕를 답니다.
+#   라벨은 codex-review.yml의 unlabel job이 바로 뗍니다. 같은 커밋을 다시 요청하면 건너뜁니다.
+# - 건너뛸 때는 CI를 기다리지 않고 바로 끝냅니다. 다만 이 계정의 해결되지 않은 CI 실패 안내가 있으면
+#   CI를 확인해 통과했으면 해결 표시를 한 뒤 끝냅니다. 이때 CI가 실패했거나 확인하지 못해도 새 실패 안내는
+#   달지 않고 건너뜀으로 끝냅니다(Codex는 돌리지 않음).
+# - 요청 리뷰 도중 새 커밋이 올라와 결과를 버릴 때, 새 커밋의 자동 실행이 건너뛸 PR(첫 리뷰가 있거나 문서만 바뀜)이면
+#   workflow_dispatch로 새 커밋을 다시 요청합니다.
+# - 워크플로에서 돌 때(CODEX_TRIGGER가 있을 때)는 포크 · 초안 · Dependabot PR과 develop · main이 아닌 대상은 건너뜁니다.
+#   댓글(issue_comment)로 온 요청은 워크플로가 PR 정보를 모르므로 여기서 확인합니다.
+#
 # 필요한 것: git, gh(로그인), codex(로그인). 현재 작업 폴더는 건드리지 않고
 # 임시 worktree에서 리뷰합니다. 리뷰 기준은 AGENTS.md의 Code Review Rules입니다.
 #
@@ -38,6 +54,10 @@ CI_WAIT_TRIES="${CI_WAIT_TRIES:-90}"      # 20초 × 90 = 최대 30분
 CI_WAIT_SECONDS="${CI_WAIT_SECONDS:-20}"
 EX=( ':(exclude).env' ':(exclude).env.*' ':(exclude)**/.env' ':(exclude)**/.env.*'
      ':(exclude)package-lock.json' ':(exclude)**/package-lock.json' )
+REQUEST_LABEL="codex-review"      # codex-review.yml의 라벨 이름과 같아야 함
+REQUEST_COMMAND="/codex review"   # codex-review.yml의 댓글 명령과 같아야 함
+REVIEW_WORKFLOW_FILE="codex-review.yml"  # 다시 요청할 때 workflow_dispatch로 돌릴 워크플로
+REVIEW_BASES="develop main"       # 리뷰하는 PR 대상 브랜치
 
 # gh --jq 필터 (테스트에서 jq로 같은 필터를 검증합니다)
 # 내 댓글 중 Codex 리뷰 표시가 있는 것: created_at \t id   ($me, $marker는 --arg 대신 문자열로 끼움)
@@ -48,6 +68,143 @@ prev_review_jq() {  # $1 = 내 로그인
 RUNS_JQ='[.workflow_runs[] | select(.name == "'"$CI_WORKFLOW"'")] | sort_by(.created_at) | last // empty | [.id, .status] | @tsv'
 # 실행의 job 목록: conclusion \t name \t job id \t url
 JOBS_JQ='.jobs[] | [(.conclusion // "none"), .name, .id, .html_url] | @tsv'
+# PR에서 바뀐 파일 (이름을 바꾼 파일은 옛 이름도): 한 줄에 경로 하나
+PR_FILES_JQ='.[] | .filename, (.previous_filename // empty)'
+
+# ---------- 언제 리뷰할지 ----------
+
+# 문서로 치는 경로면 0: 마크다운(.md · .mdx) · LICENSE · 루트 docs/ 아래의 그림 · PDF
+# 리뷰 기준 문서는 문서로 치지 않습니다: 루트 README.md(5장 개발 규칙, Codex 프롬프트가 기준으로 씀) ·
+# AGENTS.md · CLAUDE.md(에이전트 · 리뷰 규칙). docs 폴더라도 코드는 문서가 아닙니다.
+is_doc_path() {  # $1 = 저장소 기준 경로
+  case "$1" in
+    README.md | AGENTS.md | */AGENTS.md | CLAUDE.md | */CLAUDE.md) return 1 ;;
+    *.md | *.MD | *.mdx | LICENSE | LICENSE.*) return 0 ;;
+    docs/*.png | docs/*.jpg | docs/*.jpeg | docs/*.gif | docs/*.svg | docs/*.webp | docs/*.pdf) return 0 ;;
+  esac
+  return 1
+}
+
+# 입력(한 줄에 경로 하나)이 모두 문서면 0. 문서가 아닌 파일이 하나라도 있거나 목록이 비었으면 1
+docs_only() {
+  local f any=false
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    is_doc_path "$f" || return 1
+    any=true
+  done
+  $any
+}
+
+# 자동 실행(auto)에서 Codex를 돌리지 않을 이유를 출력 (돌리면 빈 출력). PREV_ID가 채워진 뒤 부름
+# 바뀐 파일 목록을 못 읽으면 리뷰합니다(건너뛸 근거가 없으므로).
+auto_skip_reason() {
+  if [ -n "$PREV_ID" ]; then
+    echo "첫 리뷰가 이미 있어 자동으로는 다시 리뷰하지 않습니다. 재리뷰는 PR에 \`$REQUEST_LABEL\` 라벨을 붙이거나 \`$REQUEST_COMMAND\` 댓글을 남기세요."
+    return 0
+  fi
+  local files
+  files=$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq "$PR_FILES_JQ" 2> /dev/null) || return 0
+  if docs_only <<< "$files"; then
+    echo "문서만 바뀐 PR이라 자동 리뷰를 건너뜁니다. 리뷰가 필요하면 PR에 \`$REQUEST_LABEL\` 라벨을 붙이거나 \`$REQUEST_COMMAND\` 댓글을 남기세요."
+  fi
+}
+
+# 댓글 본문이 리뷰 요청 명령이면 0: 본문 전체가 REQUEST_COMMAND이거나 명령 바로 뒤에 줄바꿈(LF · CR)이 옴.
+# 대소문자는 가리지 않고, 끝 공백은 허용하지 않음. codex-review.yml의 job if · 동시 실행 그룹과 같은 기준입니다
+# (워크플로가 먼저 거르므로, 어긋나면 받을 댓글이 워크플로에서 걸러지거나 그 반대가 됨).
+is_request_command() {  # $1 = 댓글 본문
+  local first="${1%%[$'\r\n']*}"
+  [ "${first,,}" = "${REQUEST_COMMAND,,}" ]
+}
+
+# 요청(request)을 받아들이면 0. 댓글 요청은 댓글 본문을 API로 읽어 명령인지 먼저 봄(본문 전체를 env로 넘기면
+# Windows 환경 변수 길이 한도에 걸릴 수 있음). 요청한 사람(라벨 · 댓글 · Run workflow)의 쓰기 권한
+# (admin · maintain · write)을 확인함. 👀 · 😕는 리뷰를 시작하거나 건너뛸 때 답니다(react_request).
+# 라벨은 codex-review.yml의 unlabel job이 뗍니다. 직접 실행(요청 정보 없음)이면 그냥 받음
+accept_request() {
+  if [ -n "${CODEX_REQUEST_COMMENT:-}" ]; then
+    local body
+    if ! [[ "$CODEX_REQUEST_COMMENT" =~ ^[0-9]+$ ]]; then
+      echo "댓글 번호($CODEX_REQUEST_COMMENT)가 이상해 리뷰 요청으로 보지 않습니다."
+      return 1
+    fi
+    body=$(gh api "repos/$REPO/issues/comments/$CODEX_REQUEST_COMMENT" --jq .body 2> /dev/null) || body=""
+    if ! is_request_command "$body"; then
+      echo "댓글 첫 줄이 \`$REQUEST_COMMAND\`가 아니어서(또는 댓글을 읽지 못해) 리뷰 요청으로 보지 않습니다."
+      return 1
+    fi
+  fi
+  if [ -z "${CODEX_REQUESTER:-}" ]; then
+    if [ -n "${CODEX_REQUEST_LABEL:-}${CODEX_REQUEST_COMMENT:-}" ]; then
+      echo "요청한 사람을 알 수 없어 리뷰 요청을 받지 않습니다."
+      return 1
+    fi
+    return 0
+  fi
+  if ! [[ "$CODEX_REQUESTER" =~ ^[A-Za-z0-9-]+$ ]]; then
+    echo "요청한 사람($CODEX_REQUESTER)을 확인할 수 없습니다."
+    return 1
+  fi
+  local perm
+  perm=$(gh api "repos/$REPO/collaborators/$CODEX_REQUESTER/permission" --jq .permission 2> /dev/null) || perm=""
+  case "$perm" in
+    admin | maintain | write) ;;
+    *) echo "$CODEX_REQUESTER 님은 저장소 쓰기 권한이 없어 리뷰 요청을 받지 않습니다(${perm:-확인 실패})."; return 1 ;;
+  esac
+}
+
+# 받은 댓글 요청에 반응을 닮: eyes(리뷰 시작) · confused(건너뜀). 한 번만 달고, 실패해도 그대로 진행
+# REQUEST_PENDING은 main이 댓글 요청을 받았을 때 true로 둠
+react_request() {  # $1 = 반응(eyes · confused)
+  [ "${REQUEST_PENDING:-false}" = true ] || return 0
+  REQUEST_PENDING=false
+  ${DRY_RUN:-false} && return 0
+  gh api --method POST "repos/$REPO/issues/comments/$CODEX_REQUEST_COMMENT/reactions" -f "content=$1" > /dev/null 2>&1 || true
+}
+
+# Codex를 돌리지 않고 끝냄: PR 댓글 없이 실행 화면(알림 annotation · 작업 요약)에만 이유를 남김
+skip_review() {  # $1 = 이유
+  react_request confused  # 받은 댓글 요청을 건너뛰면 😕 (요청을 받기 전이면 아무것도 안 함)
+  echo "::notice title=Codex 리뷰 건너뜀::PR #$PR: $1"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf '### Codex 리뷰 건너뜀\n\n%s\n' "$1" >> "$GITHUB_STEP_SUMMARY" || true
+  fi
+  exit 0
+}
+
+# 워크플로에서 돌 때 리뷰하지 않을 PR이면 이유를 출력 (리뷰하면 빈 출력)
+workflow_skip_reason() {  # $1 = 포크 여부, $2 = 초안 여부, $3 = 대상 브랜치, $4 = 작성자 로그인
+  if [ "$1" = true ]; then echo "포크에서 온 PR은 리뷰 컴퓨터에서 리뷰하지 않습니다."
+  elif [ "$2" = true ]; then echo "초안 PR입니다. Ready for review로 바꾸면 리뷰합니다."
+  elif [[ " $REVIEW_BASES " != *" $3 "* ]]; then echo "$3 브랜치로 가는 PR은 리뷰하지 않습니다(develop · main만)."
+  else
+    case "$4" in
+      app/dependabot | dependabot | 'dependabot[bot]') echo "Dependabot PR은 리뷰하지 않습니다." ;;
+    esac
+  fi
+}
+
+# 이 계정의 해결되지 않은 CI 실패 안내가 있으면 0 (조회에 실패하면 없는 것으로 봄)
+has_open_ci_failures() {
+  local ids
+  ids=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq "$(ci_comments_jq "$ME")" 2> /dev/null) || return 1
+  [ -n "$ids" ]
+}
+
+# 게시 직전에 PR에 새 커밋이 올라와 결과를 버리고 끝냄. 요청 리뷰인데 새 커밋의 자동 실행이 건너뛸 PR
+# (첫 리뷰가 있거나 문서만 바뀜, auto_skip_reason)이면 workflow_dispatch로 새 커밋을 다시 요청함.
+# 라벨 대신 workflow_dispatch를 쓰는 것은, 실행마다 그룹이 달라 지금 실행을 취소하지 않기 때문(codex-review.yml)
+head_moved() {
+  if [ "$TRIGGER" = request ] && [ -n "${CODEX_TRIGGER:-}" ] && ! $DRY_RUN && [ -n "$(auto_skip_reason)" ]; then
+    if gh workflow run "$REVIEW_WORKFLOW_FILE" -R "$REPO" -f "pr=$PR" > /dev/null 2>&1; then
+      echo "::notice title=Codex 재리뷰 다시 요청::PR #$PR: 리뷰하는 동안 새 커밋이 올라와 새 커밋으로 다시 요청했습니다."
+    else
+      echo "::warning title=Codex 재리뷰 다시 요청 실패::PR #$PR: 리뷰하는 동안 새 커밋이 올라왔습니다. \`$REQUEST_LABEL\` 라벨을 붙이거나 \`$REQUEST_COMMAND\` 댓글로 다시 요청하세요."
+    fi
+  fi
+  exit 0
+}
 
 # 댓글 본문 끝의 <!-- codex-review sha=... round=... --> 에서 "sha round"를 꺼냄 (없으면 빈 출력)
 parse_marker() {  # $1 = 댓글 본문
@@ -263,14 +420,30 @@ main() {
   REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
   ME=$(gh api user --jq .login)
 
-  read -r STATE BASE HEAD_SHA < <(gh pr view "$PR" --json state,baseRefName,headRefOid \
-    --jq '[.state, .baseRefName, .headRefOid] | @tsv')
+  local draft cross author
+  IFS=$'\t' read -r STATE BASE HEAD_SHA draft cross author < <(gh pr view "$PR" \
+    --json state,baseRefName,headRefOid,isDraft,isCrossRepository,author \
+    --jq '[.state, .baseRefName, .headRefOid, (.isDraft // false | tostring), (.isCrossRepository // false | tostring), (.author.login // "-")] | @tsv')
   TITLE=$(gh pr view "$PR" --json title --jq .title)
   if [ "$STATE" != "OPEN" ]; then
+    # 워크플로에서 돌 때(라벨 · 댓글 · Run workflow로 닫힌 PR을 요청)는 실패로 남기지 않고 건너뜀
+    [ -z "${CODEX_TRIGGER:-}" ] || skip_review "PR이 열려 있지 않습니다($STATE)."
     echo "PR #$PR 은(는) 열려 있지 않습니다 ($STATE)." >&2
     exit 1
   fi
   echo "▶ PR #$PR \"$TITLE\" ($BASE ← ${HEAD_SHA:0:7})"
+
+  # ---------- 언제 리뷰할지 (워크플로에서 돌 때) ----------
+  TRIGGER="${CODEX_TRIGGER:-request}"
+  if [ -n "${CODEX_TRIGGER:-}" ]; then
+    reason=$(workflow_skip_reason "$cross" "$draft" "$BASE" "$author")
+    [ -z "$reason" ] || skip_review "$reason"
+  fi
+  if [ "$TRIGGER" = request ]; then
+    reason=$(accept_request) || skip_review "$reason"
+    [[ ! "${CODEX_REQUEST_COMMENT:-}" =~ ^[0-9]+$ ]] || REQUEST_PENDING=true
+    echo "▶ 리뷰 요청을 받았습니다."
+  fi
 
   # ---------- 지난 Codex 리뷰 ----------
   PREV_ID=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq "$(prev_review_jq "$ME")" \
@@ -282,6 +455,26 @@ main() {
     ROUND=$(( ${PREV_ROUND:-1} + 1 ))
   fi
 
+  # ---------- 건너뛸지 (CI를 기다리기 전에) ----------
+  # 자동 실행은 첫 리뷰만 · 문서만 바뀌면 건너뜀. 워크플로의 요청이 같은 커밋이면 건너뜀.
+  # 해결되지 않은 CI 실패 안내가 있으면 CI를 확인해 안내 · 해결 표시를 한 뒤 건너뜀(DEFER_SKIP)
+  SKIP_REASON=""; DEFER_SKIP=""
+  if [ "$TRIGGER" = auto ]; then
+    SKIP_REASON=$(auto_skip_reason)
+  elif [ -n "${CODEX_TRIGGER:-}" ] && [ -n "$PREV_SHA" ] && [ "$PREV_SHA" = "$HEAD_SHA" ]; then
+    SKIP_REASON="마지막 Codex 리뷰(${PREV_SHA:0:7}) 이후 새 커밋이 없습니다."
+  fi
+  if [ -n "$SKIP_REASON" ]; then
+    if has_open_ci_failures; then
+      DEFER_SKIP=$SKIP_REASON
+      echo "▶ 해결되지 않은 CI 실패 안내가 있어 CI 결과만 확인합니다(Codex는 돌리지 않음)."
+    else
+      skip_review "$SKIP_REASON"
+    fi
+  else
+    react_request eyes  # 받은 댓글 요청: 리뷰를 시작함
+  fi
+
   WORK=$(mktemp -d)
   WT="$WORK/pr-$PR"
   trap 'git worktree remove --force "$WT" >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
@@ -289,7 +482,7 @@ main() {
   post() {  # 변경된 HEAD는 정상 생략하고, 게시 오류는 실패로 전달한다.
     local result=0
     publish_review_comment "$1" || result=$?
-    [ "$result" -ne 2 ] || exit 0
+    [ "$result" -ne 2 ] || head_moved
     return "$result"
   }
 
@@ -301,6 +494,7 @@ main() {
 
   # ---------- CI 결과 확인 (PR 최신 커밋에 pull_request 이벤트로 돈 CI 워크플로 기준) ----------
   if ! ci_wait || [ -z "$RUN_ID" ]; then
+    [ -z "$DEFER_SKIP" ] || skip_review "$DEFER_SKIP (CI 상태를 확인하지 못해 지난 실패 안내는 그대로 둡니다)"
     echo "CI 상태를 확인하지 못했습니다(${RUN_STATUS:-CI 실행 없음}). 댓글을 남기지 않고 멈춥니다." >&2
     echo "PR 화면의 Checks 탭을 확인한 뒤 다시 실행하세요." >&2
     exit 1
@@ -309,13 +503,16 @@ main() {
   gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --jq "$JOBS_JQ" > "$JOBS"
   CI_RESULT=$(ci_result "$JOBS")
   if [ -z "$CI_RESULT" ]; then
+    [ -z "$DEFER_SKIP" ] || skip_review "$DEFER_SKIP (CI 결과를 찾지 못해 지난 실패 안내는 그대로 둡니다)"
     echo "CI 실행 $RUN_ID 에서 '$CI_RESULT_JOB' job을 찾지 못했습니다. 댓글을 남기지 않고 멈춥니다." >&2
     exit 1
   fi
 
-  current_review_head || { result=$?; [ "$result" -ne 2 ] || exit 0; exit "$result"; }
+  current_review_head || { result=$?; [ "$result" -ne 2 ] || head_moved; exit "$result"; }
 
   if [ "$CI_RESULT" != "success" ]; then
+    # 건너뛸 실행(지난 실패 안내를 정리하려고 CI만 확인함)은 새 실패 안내를 달지 않음
+    [ -z "$DEFER_SKIP" ] || skip_review "$DEFER_SKIP (CI 결과: $CI_RESULT, 새 실패 안내는 달지 않습니다)"
     echo "▶ CI 결과: $CI_RESULT — Codex 리뷰 대신 실패 내용을 남깁니다."
     BODY_FILE="$WORK/body.md"
     {
@@ -349,19 +546,19 @@ main() {
       echo
       echo "<!-- $MARKER-ci sha=$HEAD_SHA -->"
     } > "$BODY_FILE"
-    post_ci_failure "$BODY_FILE" || { result=$?; [ "$result" -ne 2 ] || exit 0; exit "$result"; }
+    post_ci_failure "$BODY_FILE" || { result=$?; [ "$result" -ne 2 ] || head_moved; exit "$result"; }
     exit 0
   fi
   echo "▶ CI 통과 ✅"
   # 같은 커밋의 코드 리뷰가 이미 있어도, 성공한 CI의 과거 실패 안내는 먼저 정리한다.
   resolve_ci_failures || {
     result=$?
-    [ "$result" -ne 2 ] || exit 0
+    [ "$result" -ne 2 ] || head_moved
     echo "::warning::과거 CI 댓글 정리에 실패했습니다. 코드 리뷰는 계속합니다."
   }
+  [ -z "$DEFER_SKIP" ] || skip_review "$DEFER_SKIP"
   if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" = "$HEAD_SHA" ]; then
-    echo "마지막 Codex 리뷰(${PREV_SHA:0:7}) 이후 새 커밋이 없습니다."
-    exit 0
+    skip_review "마지막 Codex 리뷰(${PREV_SHA:0:7}) 이후 새 커밋이 없습니다."
   fi
 
   # ---------- Codex 사용량 보호 (PR 댓글 없이 실행 화면에만 알림) ----------

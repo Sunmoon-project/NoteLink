@@ -1,7 +1,15 @@
-# develop · main으로 가는 PR에 Codex 리뷰를 자동으로 남깁니다 (scripts/codex-review.sh).
+# develop · main으로 가는 PR에 Codex 리뷰를 남깁니다 (scripts/codex-review.sh).
+# Codex 사용량을 아끼려고 자동으로는 첫 리뷰만 합니다.
+# - 자동(PR 열림 · 커밋 push · 다시 열림 · Ready for review): 이 계정의 Codex 리뷰가 아직 없을 때만 리뷰합니다.
+#   문서(*.md · *.mdx · LICENSE · 루트 docs/의 그림 · PDF, 리뷰 기준인 루트 README.md · AGENTS.md · CLAUDE.md 제외)만
+#   바뀐 PR은 건너뜁니다.
+#   이미 리뷰했으면 CI를 기다리지 않고 바로 끝납니다.
+# - 재리뷰는 요청할 때만: PR에 codex-review 라벨을 붙이거나(아래 unlabel job이 바로 떼므로 다시 붙이면 또 요청),
+#   PR에 "/codex review"만 쓴 댓글(다음 줄부터는 설명을 써도 됨)을 남기거나, Actions 탭의 Run workflow(main)에 PR 번호를 넣습니다.
+#   모두 저장소 쓰기 권한이 있는 사람만 되고, 댓글은 리뷰를 시작하면 👀 · 건너뛰면 😕.
 # 리뷰 전용 컴퓨터(self-hosted runner, 라벨 codex)에서 돌고, 댓글은 그 컴퓨터의 gh에 로그인한 계정으로 남습니다.
 # GITHUB_TOKEN은 넘기지 않습니다. 넘기면 댓글 작성자가 봇이 되어 지난 리뷰를 찾지 못합니다(재리뷰가 깨짐).
-# pull_request_target: 이 파일과 스크립트는 PR의 대상 브랜치와 상관없이 기본 브랜치(main)의 것을 씁니다.
+# pull_request_target · issue_comment · workflow_dispatch: 이 파일과 스크립트는 PR의 대상 브랜치와 상관없이 기본 브랜치(main)의 것을 씁니다.
 # 이 파일이 main에 있어야 develop으로 가는 PR에서도 돌고, 고친 내용도 main에 들어가야 적용됩니다.
 # PR이 이 워크플로나 스크립트를 바꿔도 리뷰 컴퓨터에서는 실행되지 않습니다.
 # PR 코드(AGENTS.md 포함)는 Codex가 읽기 전용으로 보지만 Codex의 입력이
@@ -11,26 +19,100 @@ name: Codex 리뷰
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
     branches: [develop, main]
+  # 댓글은 대상 브랜치로 거를 수 없어 스크립트가 develop · main인지 확인합니다.
+  issue_comment:
+    types: [created]
+  # 직접 요청(Actions 탭 Run workflow)과, 요청 리뷰 도중 새 커밋이 와서 리뷰 컴퓨터가 다시 요청할 때 씁니다.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 리뷰할 PR 번호
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-# 같은 PR에 push가 이어지면 앞 리뷰를 멈추고 마지막 커밋만 리뷰합니다.
-concurrency:
-  group: codex-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
+  # codex-review 라벨은 받는 즉시 뗍니다. 리뷰 job이 건너뛰거나(초안 · 닫힌 PR) 취소되거나 실패해도 라벨이 남지 않아,
+  # 다음에 다시 붙이면 또 요청이 됩니다(이미 붙은 라벨은 다시 붙여도 이벤트가 생기지 않음).
+  # PR 코드는 받지 않고 라벨만 떼므로 GitHub 클라우드 러너에서 GITHUB_TOKEN으로 돕니다(뗀 이벤트는 워크플로를 깨우지 않음).
+  unlabel:
+    name: 리뷰 요청 라벨 떼기
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'codex-review'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: 라벨 떼기
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        # 이미 떼어진 경우(404)만 넘어가고, 다른 오류(권한 등)는 실패로 남깁니다(라벨이 남으면 다시 붙여도 요청이 안 됨)
+        run: |
+          if ! err=$(gh api --method DELETE "repos/$REPO/issues/$PR/labels/codex-review" 2>&1 > /dev/null); then
+            case "$err" in
+              *"HTTP 404"*) echo "라벨이 이미 떼어져 있습니다." ;;
+              *) echo "::error::codex-review 라벨을 떼지 못했습니다: $err"; exit 1 ;;
+            esac
+          fi
+
   review:
     name: Codex 리뷰
-    # 포크 PR(외부인) · 초안 · Dependabot은 건너뜁니다.
+    # 포크 PR(외부인) · 초안 · 닫힌 PR · Dependabot은 건너뜁니다. 라벨은 codex-review만, 댓글은 열린 PR에 단
+    # "/codex review"(본문 전체가 명령이거나 명령 바로 뒤에 줄바꿈)만 받습니다. 대소문자는 가리지 않습니다.
     # pull_request_target에는 "외부 기여자 승인" 설정이 적용되지 않으므로 포크는 여기서 막습니다.
+    # 댓글은 저장소와 관계있는 사람(OWNER · MEMBER · COLLABORATOR)의 것만 리뷰 컴퓨터로 보냅니다(외부인 댓글로
+    # 리뷰 컴퓨터가 잡히지 않게). 비공개 조직 멤버도 MEMBER로 옵니다(2026-11 확인). 쓰기 권한은 스크립트가 다시 확인합니다.
+    # 댓글 · 직접 요청은 이벤트에 PR 정보가 없어, 포크 · 초안 · Dependabot · 대상 브랜치는 스크립트가 확인합니다.
+    # 요청한 사람(라벨을 붙인 사람 · 댓글 쓴 사람 · Run workflow를 누른 사람)의 쓰기 권한도 스크립트가 확인합니다.
+    # Run workflow는 기본 브랜치(main)에서 돌린 것만 받습니다. 다른 브랜치를 고르면 그 브랜치의 워크플로 · 스크립트가
+    # 로그인된 리뷰 컴퓨터에서 돌게 되기 때문입니다(아래 checkout도 기본 브랜치로 고정).
     if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      !github.event.pull_request.draft &&
-      github.event.pull_request.user.login != 'dependabot[bot]'
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.state == 'open' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       !github.event.pull_request.draft &&
+       github.event.pull_request.user.login != 'dependabot[bot]' &&
+       (github.event.action != 'labeled' || github.event.label.name == 'codex-review')) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       github.event.issue.state == 'open' &&
+       github.event.comment.user.type != 'Bot' &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+       (github.event.comment.body == '/codex review' ||
+        startsWith(github.event.comment.body, format('/codex review{0}', fromJSON('"\n"'))) ||
+        startsWith(github.event.comment.body, format('/codex review{0}', fromJSON('"\r"'))))) ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    # 같은 PR의 자동 실행끼리는 앞 실행을 멈추고 마지막 것만 돌립니다(새 push가 앞 커밋을 대신함).
+    # 같은 사람의 요청끼리는 앞 실행을 멈추지 않고 뒤에 줄을 세웁니다(같은 커밋이면 뒤 실행은 Codex 없이 건너뜀).
+    # 자동과 요청은 그룹을 나눠, 재리뷰 요청이 뒤이은 push(자동은 이미 리뷰했으면 바로 끝남)에 취소되지 않게 합니다.
+    # 요청 그룹에는 요청한 사람을 넣어, 다른 사람의 댓글 · 라벨이 진행 중인 요청을 취소하지 못하게 합니다.
+    # 직접 요청(workflow_dispatch)은 실행마다 그룹이 달라, 리뷰 컴퓨터가 다시 요청해도 지금 실행을 취소하지 않습니다.
+    # 위 if에서 걸러지는 댓글 · 라벨은 실행마다 따로인 그룹에 넣어, 혹시라도 진행 중인 리뷰를 취소하지 않게 합니다.
+    # 거르는 조건(라벨 이름 · 댓글 명령)은 위 if와 같아야 합니다(scripts/tests/codex-review-workflow.bats가 확인).
+    concurrency:
+      group: >-
+        ${{
+        ((github.event_name == 'issue_comment' &&
+        !(github.event.comment.body == '/codex review' ||
+        startsWith(github.event.comment.body, format('/codex review{0}', fromJSON('"\n"'))) ||
+        startsWith(github.event.comment.body, format('/codex review{0}', fromJSON('"\r"'))))) ||
+        (github.event.action == 'labeled' && github.event.label.name != 'codex-review'))
+        && format('codex-review-ignore-{0}', github.run_id)
+        || github.event_name == 'workflow_dispatch' && format('codex-review-{0}-dispatch-{1}', inputs.pr, github.run_id)
+        || format('codex-review-{0}-{1}', github.event.pull_request.number || github.event.issue.number,
+        (github.event_name == 'issue_comment' || github.event.action == 'labeled')
+        && format('request-{0}', github.event.comment.user.login || github.event.sender.login) || 'auto')
+        }}
+      cancel-in-progress: ${{ !(github.event_name == 'issue_comment' || github.event.action == 'labeled') }}
     runs-on: [self-hosted, codex]
     timeout-minutes: 60
     defaults:
@@ -38,9 +120,11 @@ jobs:
         shell: bash
     steps:
       # 기본 브랜치(main)를 받습니다. 리뷰할 PR과 대상 브랜치는 스크립트가 직접 받습니다.
+      # 이벤트와 상관없이 기본 브랜치의 스크립트만 돌도록 ref를 고정합니다(Run workflow는 고른 브랜치가 기본값).
       # 재리뷰 때 지난 리뷰 커밋과 비교하도록 기록 전체를 받습니다.
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -70,7 +154,15 @@ jobs:
 
       - name: 리뷰
         env:
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
+          # auto: 첫 리뷰만 · 문서만 바뀌면 건너뜀 / request: 라벨 · 댓글 · Run workflow로 요청한 재리뷰 (scripts/codex-review.sh)
+          CODEX_TRIGGER: ${{ (github.event_name == 'issue_comment' || github.event_name == 'workflow_dispatch' || github.event.action == 'labeled') && 'request' || 'auto' }}
+          CODEX_REQUEST_LABEL: ${{ github.event.action == 'labeled' && github.event.label.name || '' }}
+          # 요청한 사람: 댓글이면 쓴 사람, 라벨이면 붙인 사람, Run workflow면 누른 사람.
+          # 이벤트 값은 env로만 넘깁니다(명령 주입 방지)
+          CODEX_REQUESTER: ${{ github.event.comment.user.login || github.event.sender.login }}
+          # 댓글 본문은 넘기지 않고 스크립트가 이 번호로 읽습니다(Windows 환경 변수 길이 한도)
+          CODEX_REQUEST_COMMENT: ${{ github.event.comment.id }}
           # 스크립트의 임시 폴더(mktemp)를 러너 작업용 임시 폴더에 둡니다. 러너가 작업마다 비우므로
           # 취소된 실행이 남긴 폴더도 쌓이지 않습니다.
           TMPDIR: ${{ runner.temp }}

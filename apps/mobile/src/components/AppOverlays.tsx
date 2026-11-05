@@ -1,4 +1,5 @@
-import { Text, View } from 'react-native';
+import { View } from 'react-native';
+import { Text } from '@/components/text';
 import Animated, { FadeInUp, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -54,7 +55,7 @@ function Toast() {
         exiting={FadeOut}
         className="rounded-2xl bg-ink/90 px-4 py-3"
       >
-        <Text className="text-center text-[13px] font-medium text-white">{msg}</Text>
+        <Text className="text-center text-footnote font-medium text-white">{msg}</Text>
       </Animated.View>
     </View>
   );

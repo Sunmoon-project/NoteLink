@@ -184,6 +184,26 @@ def test_wrong_target_must_ask_the_same_word_again() -> None:
     assert not any("틀린 낱말" in r for r in why(draft(), t=t))
 
 
+@pytest.mark.parametrize(
+    ("original", "concept"),
+    [
+        ("stack", "stack의 뜻"),  # 굴절형(stacked)도 다른 답: 새 문제가 이 낱말의 복습을 이어 감
+        ("tacked", "tack의 뜻"),  # 한쪽이 다른 쪽 안에 있음(port ~ report)
+        ("organizing", "divide, separate, stacked의 유의어"),  # 개념 이름의 다른 낱말도 안 됨
+    ],
+)
+def test_keep_answer_asks_the_very_same_answer(original: str, concept: str) -> None:
+    t = Target("right", answer=original, concept=concept, keep_answer=True)
+    assert f"원래 낱말('{original}')을 다시 묻지 않음" in why(draft(), t=t)
+
+
+def test_keep_answer_takes_the_same_answer() -> None:
+    t = Target("right", answer="stacked", concept="stack의 뜻", keep_answer=True)
+    assert not any("원래 낱말" in r for r in why(draft(), t=t))
+    t = Target("right", answer="stacked", concept="stack의 뜻")  # 오답 복습: 맞힌 문제는 보지 않음
+    assert not any("낱말(" in r for r in why(draft(answer="folded"), t=t))
+
+
 def test_wrong_target_without_answer_does_not_reject_every_draft() -> None:
     assert not any("틀린 낱말" in r for r in why(draft(), t=Target("wrong", concept="x")))
 
