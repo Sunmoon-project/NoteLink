@@ -17,13 +17,18 @@ jest.mock('../lib/local/storage', () => ({
     mockFiles.delete(n);
   },
   dropFile: (...a: unknown[]) => mockDropFile(...a),
-  rememberOrphans: (uris: string[]) => {
+  rememberOrphans: (owner: string, uris: string[]) => {
     if (mockWriteFails) throw new Error('disk full');
-    mockFiles.set('orphans', JSON.stringify(uris));
+    mockFiles.set('orphans', JSON.stringify(uris.map((uri) => ({ uri, owner }))));
   },
-  dropFiles: (uris: string[]) => {
-    for (const u of uris) mockDropFile(u);
-    return [];
+  // 계정 DB가 없어진 항목만 지운다 (실제 동작은 local-storage · local-withdraw 테스트가 본다)
+  dropFiles: () => {
+    const list: { uri: string; owner: string }[] = JSON.parse(mockFiles.get('orphans') ?? '[]');
+    const left = list.filter((o) => mockFiles.has(o.owner));
+    for (const o of list) if (!mockFiles.has(o.owner)) mockDropFile(o.uri);
+    if (left.length) mockFiles.set('orphans', JSON.stringify(left));
+    else mockFiles.delete('orphans');
+    return left.map((o) => o.uri);
   },
   keptFilesIn: (d: unknown) => [
     ...new Set(JSON.stringify(d).match(/file:\/\/\/doc\/files\/[^"]+/g) ?? []),
@@ -436,7 +441,6 @@ it('지울 파일 목록을 적지 못하면 계정을 지우지 않고, 다시 
   expect(mockDropFile).not.toHaveBeenCalled();
   expect(await api.content.materials(f._id)).toHaveLength(1);
   await api.me.withdraw();
-  expect(JSON.parse(mockFiles.get('orphans')!)).toEqual(['file:///doc/files/a.pdf']);
   expect(mockDropFile).toHaveBeenCalledWith('file:///doc/files/a.pdf');
 });
 

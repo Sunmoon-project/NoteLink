@@ -143,22 +143,21 @@ it('앱 폴더 경로가 바뀌어도 파일 주소를 현재 경로로 읽는�
 it('탈퇴 때 지우지 못한 파일은 기기 목록에 남겼다가 다음 실행 때 로그인 없이 지운다', () => {
   mockDisk.set('file:///doc/files/a.pdf', 'a');
   mockDisk.set('file:///doc/files/b.jpg', 'b');
+  rememberOrphans('user-x', ['file:///doc/files/a.pdf', 'file:///doc/files/b.jpg']);
   mockFailDelete = (uri) => uri.endsWith('b.jpg');
-  expect(dropFiles(['file:///doc/files/a.pdf', 'file:///doc/files/b.jpg'])).toEqual([
-    'file:///doc/files/b.jpg',
-  ]);
+  expect(dropFiles()).toEqual(['file:///doc/files/b.jpg']);
   expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(false);
-  expect(readDb('orphans')).toEqual(['file:///doc/files/b.jpg']);
+  expect(readDb('orphans')).toEqual([{ uri: 'file:///doc/files/b.jpg', owner: 'user-x' }]);
   // 다음 실행: 계정 없이 목록만으로 다시 지우고, 다 지우면 목록도 없앤다
   mockFailDelete = null;
-  expect(dropFiles([])).toEqual([]);
+  expect(dropFiles()).toEqual([]);
   expect(mockDisk.has('file:///doc/files/b.jpg')).toBe(false);
   expect(readDb('orphans')).toBeNull();
 });
 
 it('파일 삭제와 목록 갱신이 함께 실패해도, 먼저 적어 둔 목록으로 다음 실행 때 지운다', () => {
   mockDisk.set('file:///doc/files/a.pdf', 'a');
-  rememberOrphans(['file:///doc/files/a.pdf']);
+  rememberOrphans('user-x', ['file:///doc/files/a.pdf']);
   const proto = jest.requireMock<{ File: { prototype: { write: unknown } } }>('expo-file-system')
     .File.prototype;
   const write = proto.write;
@@ -166,10 +165,29 @@ it('파일 삭제와 목록 갱신이 함께 실패해도, 먼저 적어 둔 목
     throw new Error('disk full');
   };
   mockFailDelete = (uri) => uri.endsWith('a.pdf');
-  expect(dropFiles(['file:///doc/files/a.pdf'])).toEqual(['file:///doc/files/a.pdf']);
+  expect(dropFiles()).toEqual(['file:///doc/files/a.pdf']);
   proto.write = write;
   mockFailDelete = null;
-  expect(readDb('orphans')).toEqual(['file:///doc/files/a.pdf']);
-  expect(dropFiles([])).toEqual([]);
+  expect(readDb('orphans')).toEqual([{ uri: 'file:///doc/files/a.pdf', owner: 'user-x' }]);
+  expect(dropFiles()).toEqual([]);
+  expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(false);
+});
+
+it('목록의 파일이라도 그 계정 DB가 남아 있으면(탈퇴 실패) 지우지 않는다', () => {
+  writeDb('user-x', { v: 1 });
+  mockDisk.set('file:///doc/files/a.pdf', 'a');
+  rememberOrphans('user-x', ['file:///doc/files/a.pdf']);
+  expect(dropFiles()).toEqual(['file:///doc/files/a.pdf']);
+  expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(true);
+  // 나중에 탈퇴를 마쳐 DB가 없어지면 그때 지운다
+  dropDb('user-x');
+  expect(dropFiles()).toEqual([]);
+  expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(false);
+});
+
+it('예전 형식(주소만 적힌) 목록도 읽어 지운다', () => {
+  mockDisk.set('file:///doc/files/a.pdf', 'a');
+  writeDb('orphans', ['file:///doc/files/a.pdf']);
+  expect(dropFiles()).toEqual([]);
   expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(false);
 });

@@ -90,30 +90,43 @@ export function dropFile(uri: string) {
   }
 }
 
-const orphans = () => (readDb('orphans') as string[] | null) ?? [];
+/** 지울 파일 하나와 그 파일을 가진 계정 DB 이름 (계정 DB가 남아 있으면 지우지 않는다) */
+type Orphan = { uri: string; owner?: string };
+const orphans = (): Orphan[] =>
+  ((readDb('orphans') as (Orphan | string)[] | null) ?? []).map((o) =>
+    typeof o === 'string' ? { uri: o } : o,
+  );
+/** 계정 DB가 아직 있는지 (본 파일이나, 읽을 때 되살아나는 백업) */
+const dbAlive = (name: string) =>
+  ['', '.bak'].some((suffix) => new File(Paths.document, `${dbFile(name)}${suffix}`).exists);
 
 /**
- * 계정을 지우기 전에 지울 파일을 기기 목록(orphans)에 먼저 적는다. 못 적으면 던진다 —
- * 그때는 계정을 지우지 않아야 다시 시도할 수 있다.
+ * 계정 DB를 지우기 전에 지울 파일을 그 계정 이름과 함께 기기 목록(orphans)에 먼저 적는다.
+ * 못 적으면 던진다 — 그때는 계정을 지우지 않아야 다시 시도할 수 있다.
  */
-export function rememberOrphans(uris: string[]) {
-  if (uris.length) writeDb('orphans', [...new Set([...orphans(), ...uris])]);
+export function rememberOrphans(owner: string, uris: string[]) {
+  if (!uris.length) return;
+  const known = new Set(orphans().map((o) => o.uri));
+  writeDb('orphans', [
+    ...orphans(),
+    ...uris.filter((u) => !known.has(u)).map((uri) => ({ uri, owner })),
+  ]);
 }
 
 /**
- * 기기 목록(orphans)과 넘긴 파일을 지운다. 탈퇴 뒤 · 앱을 켤 때 로그인 없이 부른다. 남은 주소를 돌려준다.
- * 목록 갱신에 실패해도 이전 목록(지울 파일을 모두 담고 있다)이 남아 다음 실행 때 다시 지운다.
+ * 기기 목록(orphans)의 파일을 지운다. 탈퇴 뒤 · 앱을 켤 때 로그인 없이 부른다. 남은 주소를 돌려준다.
+ * - 그 계정 DB가 아직 있으면(탈퇴가 중간에 실패) 살아 있는 계정의 자료라 지우지 않고 목록에만 둔다
+ * - 목록 갱신에 실패해도 이전 목록(지울 파일을 모두 담고 있다)이 남아 다음 실행 때 다시 지운다
  */
-export function dropFiles(uris: string[]) {
-  const pending = [...new Set([...orphans(), ...uris])];
-  const left = pending.filter((u) => !dropFile(u));
+export function dropFiles() {
+  const left = orphans().filter((o) => (o.owner && dbAlive(o.owner)) || !dropFile(o.uri));
   try {
     if (left.length) writeDb('orphans', left);
     else dropDb('orphans');
   } catch {
     // 위 설명대로 이전 목록이 남는다
   }
-  return left;
+  return left.map((o) => o.uri);
 }
 
 /**
