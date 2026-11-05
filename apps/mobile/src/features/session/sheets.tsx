@@ -40,10 +40,10 @@ export function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => 
   const qc = useQueryClient();
   const subjects = useQuery({ queryKey: ['subjects'], queryFn: api.study.subjects });
   const [title, setTitle] = useState('');
-  const [subject, setSubject] = useState('수학');
+  const [subject, setSubject] = useState('');
   const [newSubject, setNewSubject] = useState('');
   // 목표 시간은 생략할 수 있다 (FR-06-01) — 같은 칩을 다시 누르면 해제
-  const [goal, setGoal] = useState<keyof typeof GOALS | null>('1시간');
+  const [goal, setGoal] = useState<keyof typeof GOALS | null>(null);
   const [customMin, setCustomMin] = useState('');
   const input = itemInput({ title, subject, newSubject, goal, customMin });
   const add = useMutation({

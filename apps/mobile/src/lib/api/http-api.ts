@@ -59,6 +59,7 @@ export const httpApi: Api = {
     socialLogin: (provider, providerToken) =>
       http.post(P.socialLogin(provider), { token: providerToken }),
     emailLogin: (email, password) => http.post(P.emailLogin, { email, password }),
+    emailSignup: (email, password) => http.post(P.emailSignup, { email, password }),
     agreeTerms: (termCodes) => http.post(P.terms, { termCodes }),
     // 서버가 폐기할 토큰. 토큰 갱신 뒤 재시도하면 그때의 토큰을 보낸다
     logout: () =>
