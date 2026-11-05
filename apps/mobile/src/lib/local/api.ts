@@ -47,7 +47,7 @@ import {
 import * as SecureStore from 'expo-secure-store';
 import { roomTimerState } from './timer';
 import { dropDb, dropFile, fileInfo, keptFilesIn, readDb, writeDb } from './storage';
-import { AI_WAITING_STEP } from '../ai';
+import { AI_WAITING_STEP, withTopic } from '../ai';
 
 // 기기 저장 백엔드 — 서버(NestJS · MongoDB · Blob)가 붙기 전까지 실서버와 같은 Api를 기기 안에서 구현한다.
 // 예시 데이터는 없다. 처음엔 비어 있고, 사용자가 만든 것만 계정별 파일(notelink-user-<id>.json)에 저장된다.
@@ -229,7 +229,7 @@ const fail = (code: string, message: string, status = 400): Promise<never> =>
   Promise.reject(new ApiError(code, message, status));
 /** 서버가 있어야 하는 기능 */
 const needServer = (what: string) =>
-  fail(ERROR_CODES.AI_MAINTENANCE, `${what}은(는) 서버 연결 후 쓸 수 있어요`, 503);
+  fail(ERROR_CODES.AI_MAINTENANCE, `${withTopic(what)} 서버 연결 후 쓸 수 있어요`, 503);
 
 /* ── AI 작업: 서버가 붙을 때까지 대기열에 둔다 (FR-65-05 'AI 점검 중'과 같은 동작) ── */
 
