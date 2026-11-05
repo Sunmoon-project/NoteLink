@@ -46,7 +46,16 @@ import {
 } from './stats';
 import * as SecureStore from 'expo-secure-store';
 import { roomTimerState } from './timer';
-import { dropDb, dropFile, dropFiles, fileInfo, keptFilesIn, readDb, writeDb } from './storage';
+import {
+  dropDb,
+  dropFile,
+  dropFiles,
+  fileInfo,
+  keptFilesIn,
+  readDb,
+  rememberOrphans,
+  writeDb,
+} from './storage';
 import { avatarFace } from '../avatar-styles';
 import { AI_WAITING_STEP, withTopic } from '../ai';
 
@@ -422,8 +431,10 @@ const api: Api = {
       const d = db();
       const id = d.user._id;
       const files = keptFilesIn(d);
-      // DB(백업 포함)를 먼저 지운다. 실패하면 계정이 그대로라 로그인한 채 다시 시도할 수 있다
+      // 지울 파일 목록을 먼저 기기에 적고, DB(백업 포함)를 지운다.
+      // 둘 중 하나라도 실패하면 계정이 그대로라 로그인한 채 다시 시도할 수 있다
       try {
+        rememberOrphans(files);
         dropDb(`user-${id}`);
       } catch {
         return fail('STORAGE_FAILED', '탈퇴를 마치지 못했어요. 다시 시도해 주세요', 507);
@@ -693,7 +704,7 @@ const api: Api = {
         todoType: p.todoType,
         isDday: p.todoType !== 'general',
         timeSlot: p.timeSlot,
-        dueTime: null,
+        dueTime: p.dueTime ?? null,
         subjectId: p.subjectName ? subjectId(d, p.subjectName) : null,
         subjectName: p.subjectName ?? undefined,
         done: false,

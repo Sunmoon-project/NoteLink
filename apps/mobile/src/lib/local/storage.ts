@@ -90,18 +90,28 @@ export function dropFile(uri: string) {
   }
 }
 
+const orphans = () => (readDb('orphans') as string[] | null) ?? [];
+
 /**
- * 탈퇴처럼 계정이 사라진 뒤라 다시 시도할 수 없는 파일 삭제.
- * 지우지 못한 파일은 기기 목록(orphans)에 남겨 다음 실행 때 로그인 없이 다시 지운다. 남은 주소를 돌려준다.
+ * 계정을 지우기 전에 지울 파일을 기기 목록(orphans)에 먼저 적는다. 못 적으면 던진다 —
+ * 그때는 계정을 지우지 않아야 다시 시도할 수 있다.
+ */
+export function rememberOrphans(uris: string[]) {
+  if (uris.length) writeDb('orphans', [...new Set([...orphans(), ...uris])]);
+}
+
+/**
+ * 기기 목록(orphans)과 넘긴 파일을 지운다. 탈퇴 뒤 · 앱을 켤 때 로그인 없이 부른다. 남은 주소를 돌려준다.
+ * 목록 갱신에 실패해도 이전 목록(지울 파일을 모두 담고 있다)이 남아 다음 실행 때 다시 지운다.
  */
 export function dropFiles(uris: string[]) {
-  const pending = [...new Set([...((readDb('orphans') as string[] | null) ?? []), ...uris])];
+  const pending = [...new Set([...orphans(), ...uris])];
   const left = pending.filter((u) => !dropFile(u));
   try {
     if (left.length) writeDb('orphans', left);
     else dropDb('orphans');
   } catch {
-    // 목록을 못 쓰면 이번에 지운 것만 남는다 — 다음 탈퇴 · 실행 때 다시 모은다
+    // 위 설명대로 이전 목록이 남는다
   }
   return left;
 }

@@ -17,6 +17,10 @@ jest.mock('../lib/local/storage', () => ({
     mockFiles.delete(n);
   },
   dropFile: (...a: unknown[]) => mockDropFile(...a),
+  rememberOrphans: (uris: string[]) => {
+    if (mockWriteFails) throw new Error('disk full');
+    mockFiles.set('orphans', JSON.stringify(uris));
+  },
   dropFiles: (uris: string[]) => {
     for (const u of uris) mockDropFile(u);
     return [];
@@ -420,4 +424,37 @@ it('저장한 아바타가 프로필에 보이고, 다시 켜도 남는다', asy
   resetLocalForTests();
   await login('a@test.com');
   expect((await api.me.get()).avatarUrl).toBe('👨🏼‍🦱');
+});
+
+it('지울 파일 목록을 적지 못하면 계정을 지우지 않고, 다시 탈퇴할 수 있다', async () => {
+  await signup('a@test.com');
+  const f = await addFolder();
+  await api.content.createMaterial(material(f._id));
+  mockWriteFails = true;
+  await expect(api.me.withdraw()).rejects.toThrow('탈퇴를 마치지 못했어요');
+  mockWriteFails = false;
+  expect(mockDropFile).not.toHaveBeenCalled();
+  expect(await api.content.materials(f._id)).toHaveLength(1);
+  await api.me.withdraw();
+  expect(JSON.parse(mockFiles.get('orphans')!)).toEqual(['file:///doc/files/a.pdf']);
+  expect(mockDropFile).toHaveBeenCalledWith('file:///doc/files/a.pdf');
+});
+
+it('할 일에 지정한 시각이 생성 · 조회 · 다시 켠 뒤에도 남는다', async () => {
+  await signup('a@test.com');
+  const t = await api.calendar.addTodo({
+    content: '영어 단어',
+    todoType: 'general',
+    dueDate: '2026-11-10',
+    timeSlot: 'custom',
+    dueTime: '19:30',
+    subjectName: null,
+  });
+  expect(t.dueTime).toBe('19:30');
+  const pick = async () =>
+    (await api.calendar.todos('2026-11-10')).find((x) => x.content === '영어 단어')?.dueTime;
+  expect(await pick()).toBe('19:30');
+  resetLocalForTests();
+  await login('a@test.com');
+  expect(await pick()).toBe('19:30');
 });

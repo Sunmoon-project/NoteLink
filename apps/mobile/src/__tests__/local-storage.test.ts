@@ -36,7 +36,7 @@ jest.mock('expo-file-system', () => {
   return { File, Directory: class {}, Paths: { document: { uri: 'file:///doc/' } } };
 });
 jest.unmock('../lib/local/storage');
-const { dropDb, dropFiles, keptFilesIn, readDb, writeDb } =
+const { dropDb, dropFiles, keptFilesIn, readDb, rememberOrphans, writeDb } =
   jest.requireActual<typeof import('../lib/local/storage')>('../lib/local/storage');
 
 beforeEach(() => {
@@ -154,4 +154,22 @@ it('탈퇴 때 지우지 못한 파일은 기기 목록에 남겼다가 다음 �
   expect(dropFiles([])).toEqual([]);
   expect(mockDisk.has('file:///doc/files/b.jpg')).toBe(false);
   expect(readDb('orphans')).toBeNull();
+});
+
+it('파일 삭제와 목록 갱신이 함께 실패해도, 먼저 적어 둔 목록으로 다음 실행 때 지운다', () => {
+  mockDisk.set('file:///doc/files/a.pdf', 'a');
+  rememberOrphans(['file:///doc/files/a.pdf']);
+  const proto = jest.requireMock<{ File: { prototype: { write: unknown } } }>('expo-file-system')
+    .File.prototype;
+  const write = proto.write;
+  proto.write = () => {
+    throw new Error('disk full');
+  };
+  mockFailDelete = (uri) => uri.endsWith('a.pdf');
+  expect(dropFiles(['file:///doc/files/a.pdf'])).toEqual(['file:///doc/files/a.pdf']);
+  proto.write = write;
+  mockFailDelete = null;
+  expect(readDb('orphans')).toEqual(['file:///doc/files/a.pdf']);
+  expect(dropFiles([])).toEqual([]);
+  expect(mockDisk.has('file:///doc/files/a.pdf')).toBe(false);
 });
