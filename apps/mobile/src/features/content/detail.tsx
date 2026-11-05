@@ -277,7 +277,11 @@ export function EditScreen() {
   const save = useMutation({
     mutationFn: () => {
       if (!m || loaded !== id) throw new Error('자료를 먼저 불러와 주세요');
-      return api.content.updateSummary(id, sections);
+      // 아무것도 쓰지 않은 섹션은 저장하지 않는다
+      return api.content.updateSummary(
+        id,
+        sections.filter((s) => s.heading.trim() || s.body.trim()),
+      );
     },
     onError: () => toast('노트를 저장하지 못했어요. 다시 시도해주세요'),
     onSuccess: () => {
@@ -343,6 +347,8 @@ export function EditScreen() {
           <View key={index}>
             <TextInput
               accessibilityLabel={`섹션 ${index + 1} 제목`}
+              placeholder="섹션 제목"
+              placeholderTextColor={C.sub}
               value={section.heading}
               onChangeText={(heading) =>
                 setSections((all) => all.map((s, i) => (i === index ? { ...s, heading } : s)))
@@ -353,6 +359,8 @@ export function EditScreen() {
             <TextInput
               accessibilityLabel={index === 0 ? '노트 내용' : `섹션 ${index + 1} 본문`}
               multiline
+              placeholder="내용을 입력하세요"
+              placeholderTextColor={C.sub}
               value={section.body}
               onChangeText={(body) =>
                 setSections((all) => all.map((s, i) => (i === index ? { ...s, body } : s)))
@@ -366,9 +374,7 @@ export function EditScreen() {
         ))}
       </View>
       <Pressable
-        onPress={() =>
-          setSections((s) => [...s, { heading: '새 섹션', body: '내용을 입력하세요' }])
-        }
+        onPress={() => setSections((s) => [...s, { heading: '', body: '' }])}
         className="mt-3 self-start rounded-full border border-brand/40 px-3 py-1"
       >
         <Text className="text-caption text-brand">+ 섹션 추가</Text>
