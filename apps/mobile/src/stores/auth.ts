@@ -7,7 +7,6 @@ const KEY = 'notelink.auth';
 // 이 기기에서 초기 설정(약관 · 프로필)을 마친 계정. 로그아웃해도 남겨, 다시 로그인하면 설정을 건너뛴다
 // ponytail: 기기 단위 기록 — 서버가 계정의 설정 완료 여부를 내려주면 그 값으로 바꾼다
 const ONBOARDED_KEY = 'notelink.onboarded';
-let onboardedIds: string[] = [];
 const readOnboardedIds = async () => {
   try {
     const v = JSON.parse((await SecureStore.getItemAsync(ONBOARDED_KEY)) ?? '[]');
@@ -61,7 +60,6 @@ export const useAuth = create<Auth>((set, get) => {
     onboarded: false,
     expired: false,
     load: async () => {
-      onboardedIds = await readOnboardedIds();
       const raw = await SecureStore.getItemAsync(KEY);
       let saved: (Partial<Saved> & { onboarded?: boolean; userId?: string }) | null = null;
       try {
@@ -83,7 +81,8 @@ export const useAuth = create<Auth>((set, get) => {
     signIn: async (tokens, user) => {
       // 온보딩 완료 여부는 같은 계정일 때만 이어 간다 (로그아웃 뒤에도 이 기기에서 마친 계정이면 이어 간다)
       const onboarded =
-        (get().userId === user._id && get().onboarded) || onboardedIds.includes(user._id);
+        (get().userId === user._id && get().onboarded) ||
+        (await readOnboardedIds()).includes(user._id);
       set({ tokens, user, userId: user._id, onboarded, expired: false });
       await persist();
     },
@@ -106,9 +105,9 @@ export const useAuth = create<Auth>((set, get) => {
       await persist();
       const id = get().userId;
       if (id) {
-        onboardedIds = [...new Set([...onboardedIds, id])];
+        const ids = [...new Set([...(await readOnboardedIds()), id])];
         // 못 적으면 다음 로그인 때 설정을 한 번 더 할 뿐이라 설정 완료를 막지 않는다
-        await SecureStore.setItemAsync(ONBOARDED_KEY, JSON.stringify(onboardedIds)).catch(() => {});
+        await SecureStore.setItemAsync(ONBOARDED_KEY, JSON.stringify(ids)).catch(() => {});
       }
     },
     signOut: async () => {
