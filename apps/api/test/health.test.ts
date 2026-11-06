@@ -3,13 +3,13 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { configureApp } from '../src/app.setup.js';
-import { createAppModuleBuilder } from './support/app-module.js';
+import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 
 describe('GET /api/v1/health', () => {
   let app: INestApplication;
 
   beforeAll(async () => {
-    vi.stubEnv('MONGODB_URI', 'mongodb://localhost:27017/notelink-test');
+    stubAppEnv();
     // AppModule 전체를 조립한다(실제 DB 연결만 가짜)
     const moduleRef = await createAppModuleBuilder().compile();
     app = moduleRef.createNestApplication();

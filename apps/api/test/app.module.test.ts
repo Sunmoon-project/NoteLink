@@ -1,18 +1,19 @@
 import type { MongooseModuleOptions } from '@nestjs/mongoose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createAppModuleBuilder } from './support/app-module.js';
+import { JWT_CONFIG, TokenService } from '../src/modules/auth/token.service.js';
+import { TEST_ENV, createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 
 // @nestjs/mongoose가 내부에서 쓰는 설정 provider 이름(공개 상수가 아님)
 const MONGOOSE_MODULE_OPTIONS = 'MongooseModuleOptions';
 
-describe('AppModule의 MongoDB 설정', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
+describe('AppModule의 MongoDB 설정', () => {
   it('환경변수 MONGODB_URI를 MongoDB 설정의 uri로 넘긴다', async () => {
-    vi.stubEnv('MONGODB_URI', 'mongodb://localhost:27017/notelink-test');
+    stubAppEnv();
     const moduleRef = await createAppModuleBuilder().compile();
 
     const options = moduleRef.get<MongooseModuleOptions>(MONGOOSE_MODULE_OPTIONS, {
@@ -20,13 +21,41 @@ describe('AppModule의 MongoDB 설정', () => {
     });
     await moduleRef.close();
 
-    expect(options).toEqual({ uri: 'mongodb://localhost:27017/notelink-test' });
+    expect(options).toEqual({ uri: TEST_ENV.MONGODB_URI });
   });
 
   it('MONGODB_URI가 비어 있으면 DB 연결 전에 조립 단계에서 실패한다', async () => {
     // 빈 값으로 두면 로컬 .env 파일의 값이 덮어쓰지 않는다(이미 설정된 환경변수가 우선)
-    vi.stubEnv('MONGODB_URI', '');
+    stubAppEnv({ MONGODB_URI: '' });
 
     await expect(createAppModuleBuilder().compile()).rejects.toThrow('MONGODB_URI');
   });
+});
+
+describe('AppModule의 JWT 설정', () => {
+  it('JWT_* 환경변수를 읽어 TokenService가 쓸 설정으로 만든다', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const config = moduleRef.get(JWT_CONFIG, { strict: false });
+    const tokenService = moduleRef.get(TokenService, { strict: false });
+    await moduleRef.close();
+
+    expect(config).toEqual({
+      accessSecret: TEST_ENV.JWT_ACCESS_SECRET,
+      refreshSecret: TEST_ENV.JWT_REFRESH_SECRET,
+      accessTTL: '15m',
+      refreshTTL: '14d',
+    });
+    expect(tokenService).toBeInstanceOf(TokenService);
+  });
+
+  it.each(['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'JWT_ACCESS_TTL', 'JWT_REFRESH_TTL'])(
+    '%s가 비어 있으면 서버 조립 단계에서 실패한다',
+    async (key) => {
+      stubAppEnv({ [key]: '' });
+
+      await expect(createAppModuleBuilder().compile()).rejects.toThrow(key);
+    },
+  );
 });
