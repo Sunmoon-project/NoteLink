@@ -359,6 +359,8 @@ def test_an_option_joining_other_options_fails() -> None:
         options=["stacked", "extended", "fastened", "docked", "stacked, fastened, extended, docked"]
     )
     assert "다른 보기를 이어 붙인 보기" in why(english)
+    numbers = draft(options=["1,000", "2,000", "3,000", "4,000", "1,000, 2,000, 3,000"])
+    assert "다른 보기를 이어 붙인 보기" in why(numbers)  # 천 단위 쉼표는 나누지 않음
 
 
 @pytest.mark.parametrize(
@@ -371,6 +373,8 @@ def test_an_option_joining_other_options_fails() -> None:
         ["ㄱ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄴ, ㄷ", "ㄱ, ㄴ, ㄷ"],
         ["ㄱ", "ㄴ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄴ, ㄷ"],
         ["ㄱ", "ㄴ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄴ, ㄷ."],  # 문장부호가 붙어도 조합 (Codex #136)
+        ["I", "II", "III", "I, II", "I, II, III"],  # 여러 글자 조합 (/code-review #136)
+        ["산소", "질소", "수소", "산소, 질소", "산소, 질소, 수소"],
         ["물", "물질의 상태 변화를 나타낸다", "기체", "액체", "고체"],
         ["map", "flatMap()", "filter", "reduce", "forEach"],
         ["의사의 지시사항을 확인한다", "혈압을 잰다", "체온을 잰다", "맥박을 잰다", "호흡을 센다"],

@@ -24,6 +24,7 @@ from app.services.quiz.text import (
 NEGATIVE = re.compile(r"아닌|않은|틀린|옳지\s?않|잘못된|거리가 먼")
 KO_TYPES = ("정의", "특징", "분류")  # 한국어 용어 과목 유형 (임상병리, 10/22)
 _KO = re.compile(r"[가-힣]{2,}")
+_PIECE = re.compile(r",\s+")  # 이어 붙인 보기의 조각 사이
 
 
 class Seen(TypedDict):
@@ -153,14 +154,18 @@ def form_giveaway(d: Draft) -> bool:
     return sum(form(o) == form(d["answer"]) for o in opts) < 2
 
 
-def _joined(i: int, opts: list[str]) -> bool:
-    """보기 i가 다른 보기 셋 이상을 쉼표로 이어 붙인 것. 조각이 모두 한 글자인 조합 보기
-    (ㄱ, ㄴ, ㄷ · A, B, C)는 정상적인 문제 모양이라 뺌."""
-    parts = [x.strip() for x in opts[i].split(",")]
-    if len(parts) < 3 or all(len(norm(x)) <= 1 for x in parts):  # ㄱ, ㄴ, ㄷ. (Codex #136)
+def _joined(i: int, opts: list[str], keys: list[tuple[str, tuple[Decimal, ...]]]) -> bool:
+    """보기 i가 다른 보기 셋 이상을 쉼표로 이어 붙인 것. keys는 보기마다 option_key.
+
+    쉼표 뒤에 띄어쓰기가 있을 때만 나눔(1,000 · 2,000은 한 조각). 쉼표로 나뉘는 보기가 둘
+    이상이면 조합 문제(ㄱ, ㄴ · I, II, III · 산소, 질소, 수소)라 뺌(/code-review #136)."""
+    if sum(len(_PIECE.split(o)) > 1 for o in opts) > 1:
         return False
-    others = {option_key(o) for j, o in enumerate(opts) if j != i}
-    return sum(option_key(x) in others for x in parts) >= 3
+    parts = _PIECE.split(opts[i])
+    if len(parts) < 3:
+        return False
+    others = {k for j, k in enumerate(keys) if j != i}
+    return sum(option_key(x.strip()) in others for x in parts) >= 3
 
 
 def code_check(
@@ -169,12 +174,13 @@ def code_check(
     """(탈락 이유, 정답 보기 위치). 이유가 비어 있으면 통과."""
     why: list[str] = []
     opts = d["options"]
-    if len(opts) != CHOICES or len({option_key(o) for o in opts}) != CHOICES:
+    keys = [option_key(o) for o in opts]
+    if len(opts) != CHOICES or len(set(keys)) != CHOICES:
         why.append(f"보기 {CHOICES}개가 아니거나 겹침")
     # 다섯째 보기가 나머지를 이어 붙인 'TXY 다이어그램, 에탄올 상태 변화, …'(화공양론, 11/06),
     # 'stacked, fastened, extended, docked'(토익)가 모든 검사를 통과함. 조각이 다른 보기와
     # 똑같을 때만 봄: 글자가 안에 들어 있기만 한 H2O · H2O2, 15 · 1.5, ㄱ · ㄱ, ㄴ은 좋은 보기
-    if any(_joined(i, opts) for i in range(len(opts))):
+    if any(_joined(i, opts, keys) for i in range(len(opts))):
         why.append("다른 보기를 이어 붙인 보기")
     parsed = [number_values(o) for o in opts]
     if any(_same_parsed(a, b) for i, a in enumerate(parsed) for b in parsed[i + 1 :]):

@@ -288,6 +288,9 @@ def test_checked_keeps_the_first_reasons_when_the_repair_fails_again() -> None:
     "new",
     [
         "stock (그대로 둠: 지시사항에 따라 기존 보기에 포함됨)",  # 요청의 말 (화공양론, 11/06)
+        "lift (그대로 둠: 지시사항에 따라 바꿈)",  # 새 낱말에 요청의 말 (/code-review #136)
+        "lift (그대로둘 보기와 겹치지 않음)",
+        "lift (오답보기)",
         "fasten: 노트에 있는 낱말이라 오답이 맞음",  # 남은 보기 뒤에 설명
         "stack (정답)",
         "Fasten: 노트에 있는 낱말이라 오답이 맞음",  # 대소문자만 다름 (Codex #136)
@@ -297,6 +300,17 @@ def test_repair_drops_a_new_option_with_notes(new: str) -> None:
     d = draft(SCENE, ["stack", "stock", "fasten", "order", "move"], "stack")
     llm = FakeLlm({"Repair": [{"options": [new]}]})
     assert qa.repair(llm, d, {"order"}, ["x"], PAGE) is None
+
+
+@pytest.mark.parametrize(
+    "new",
+    ["fasten(ed)", "stack[2]", "상처를 그대로 둘 경우 감염 위험이 줄어든다"],
+)
+def test_repair_keeps_a_new_option_that_only_looks_like_a_note(new: str) -> None:
+    # 붙여 쓴 괄호(Fe(OH)3 · map())와 이름표가 아닌 '그대로 둘'은 좋은 보기 (/code-review #136)
+    d = draft(SCENE, ["stack", "stock", "fasten", "order", "move"], "stack")
+    fixed = qa.repair(FakeLlm({"Repair": [{"options": [new]}]}), d, {"order"}, ["x"], PAGE)
+    assert fixed is not None and fixed["options"][3] == new
 
 
 def test_repair_keeps_a_new_option_that_only_contains_the_answer() -> None:
