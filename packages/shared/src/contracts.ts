@@ -21,6 +21,8 @@ export const ERROR_CODES = {
   FILE_NOT_ALLOWED: 'FILE_NOT_ALLOWED',
   ROOM_CODE_INVALID: 'ROOM_CODE_INVALID',
   NOT_FOUND: 'NOT_FOUND',
+  /** 입력 형식 오류 (이메일 · 필수 값 등) */
+  VALIDATION: 'VALIDATION_FAILED',
   EMAIL_TAKEN: 'EMAIL_TAKEN',
 } as const;
 

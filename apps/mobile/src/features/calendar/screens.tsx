@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Clipboard from 'expo-clipboard';
 import { Check, ChevronRight, Pin, Users, X } from 'lucide-react-native';
 import type { TimetableClass } from '@notelink/shared';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { useHolidayPreference } from '@/lib/holiday-preference';
 import { timeAgo, today, ymd, seoul } from '@/lib/dates';
 import { toast } from '@/stores/toast';
@@ -167,7 +167,12 @@ export function CalShareScreen() {
   const create = useMutation({
     mutationFn: () =>
       api.calendar.createShare({ rangeStart: start, rangeEnd: end, expiresInDays: period }),
-    onError: () => toast('공유 링크를 생성하지 못했어요. 다시 시도해주세요'),
+    onError: (e) =>
+      toast(
+        e instanceof ApiError && e.status === 503
+          ? e.message
+          : '공유 링크를 생성하지 못했어요. 다시 시도해주세요',
+      ),
     onSuccess: (share) => {
       setCreatedShare({ id: share._id, url: share.url });
       return qc.invalidateQueries({ queryKey: ['calendar-shares'] });

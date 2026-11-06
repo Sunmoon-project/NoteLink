@@ -1,4 +1,4 @@
-import { mockApi } from '../lib/mock/api';
+import { mockApi } from './fixtures/api';
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(),
   setItemAsync: jest.fn(),

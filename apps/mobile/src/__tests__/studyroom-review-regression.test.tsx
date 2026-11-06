@@ -1,5 +1,4 @@
 import { useAuth } from '../stores/auth';
-import { useMockFlags } from '../lib/mock/flags';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import { QueryClient } from '@tanstack/react-query';
@@ -8,11 +7,11 @@ import type { Message } from '@notelink/shared';
 import { api } from '../lib/api';
 import { RoomCreateScreen, RoomScreen } from '../features/studyroom/room';
 import { TimerScreen, ScheduleScreen } from '../features/studyroom/tools';
-import { socket, mockServer } from '../lib/socket';
+import { socket, localSocket } from '../lib/socket';
 import { useNet } from '../stores/net';
 import { renderScreen, setParams } from '../test-utils';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),
@@ -33,12 +32,20 @@ jest.mock('expo-haptics', () => ({
 const client = () => new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 beforeEach(() => {
   useNet.setState({ state: 'ok' });
-  useMockFlags.setState({ roomDisconnect: false, roomKick: false });
 });
 afterEach(() => {
   jest.restoreAllMocks();
   jest.clearAllMocks();
 });
+/** 연결이 5분 넘게 끊겨 자동 퇴장될 때까지 시간을 돌린다 */
+async function kickOut() {
+  jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+  await act(async () => useNet.getState().set('unstable'));
+  await act(async () => void jest.advanceTimersByTime(5 * 60 * 1000));
+  jest.useRealTimers();
+  await act(async () => useNet.getState().set('ok'));
+}
+
 it('타이머 활성화만 바꿔도 기존 반복과 교시표를 보존한다', async () => {
   const [brief] = await api.rooms.recommended();
   const full = await api.rooms.get(brief!._id);
@@ -168,7 +175,7 @@ it('재연결은 방과 기록을 다시 조회하고 소켓 누락 기록을 ID
   const acknowledge = rejoin[2] as (response: { ok: boolean; missed: Message[] }) => void;
   await act(async () => {
     acknowledge({ ok: true, missed: [existing, missed, missed] });
-    mockServer.push('chat:message', missed);
+    localSocket.push('chat:message', missed);
   });
   expect(screen.getAllByText(existing.text!)).toHaveLength(1);
   expect(screen.getAllByText(missed.text!)).toHaveLength(1);
@@ -198,7 +205,7 @@ it('자동 퇴장 후 다시 입장하면 방 구독과 기록을 다시 동기�
   await screen.findByText(brief!.title);
   await waitFor(() => expect(qc.getQueryState(['messages', chatId])?.status).toBe('success'));
   const before = messages.mock.calls.length;
-  await act(async () => useMockFlags.setState({ roomKick: true }));
+  await kickOut();
   await fireEvent.press(await screen.findByText('다시 입장'));
   await waitFor(() => expect(messages.mock.calls.length).toBeGreaterThan(before));
   expect(join.mock.calls.filter(([event]) => event === 'room:join').length).toBeGreaterThan(1);

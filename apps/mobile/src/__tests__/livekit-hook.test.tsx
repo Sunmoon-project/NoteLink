@@ -8,7 +8,7 @@ const mockConnectMedia = jest.fn();
 const mockEmit = jest.fn();
 jest.mock('../lib/env', () => ({
   env: {
-    get useMock() {
+    get localData() {
       return mockUseMock;
     },
   },
@@ -45,7 +45,7 @@ beforeEach(() => {
   useToast.setState({ msg: null });
 });
 
-it('목업에서는 가짜 미디어 연결·송출 상태를 만들지 않는다', async () => {
+it('기기 저장 모드에서는 가짜 미디어 연결·송출 상태를 만들지 않는다', async () => {
   mockUseMock = true;
   const { result } = await renderHook(() => useLiveRoom('room-1'));
   expect(result.current).toEqual(

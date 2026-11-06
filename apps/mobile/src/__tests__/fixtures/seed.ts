@@ -20,7 +20,7 @@ import type {
   User,
   UserItem,
 } from '@notelink/shared';
-import { addDays, seoul, today, ymd } from '../dates';
+import { addDays, seoul, today, ymd } from '../../lib/dates';
 
 // 발표 자료 화면에 나온 데이터를 그대로 옮긴 목업 DB. 날짜는 실행하는 날 기준으로 맞춘다.
 
@@ -814,7 +814,7 @@ export const SHOP: ShopItem[] = [
     isDefault: false,
   },
 ];
-export { BASE_AVATAR } from '../shop-items';
+export { BASE_AVATAR } from '../../lib/shop-items';
 
 export const seedUserItems = (): UserItem[] => [
   {

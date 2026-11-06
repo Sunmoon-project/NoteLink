@@ -21,7 +21,7 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0, toda
   useEffect(() => {
     let alive = true;
     let activeRoom: MediaConnection | null = null;
-    if (enabled && !env.useMock) {
+    if (enabled && !env.localData) {
       loadMedia()
         .then(({ connectMedia }) => connectMedia(roomId, () => alive && update((n) => n + 1)))
         .then(async (room) => {
@@ -54,7 +54,7 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0, toda
   const control = async (action: 'toggleMic' | 'toggleCam' | 'toggleHearing') => {
     if (!room?.connected)
       return toast(
-        env.useMock
+        env.localData
           ? '캠·음성은 실제 서버 연결에서 사용할 수 있어요'
           : '캠·음성 연결을 확인해 주세요',
       );

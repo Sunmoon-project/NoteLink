@@ -44,6 +44,8 @@ import {
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON } from '@/theme';
 import { seoul } from '@/lib/dates';
+import { aiWaiting } from '@/lib/ai';
+import { AiPending } from '@/components/AiPending';
 
 // p.85~89 퀴즈 · 플래시카드 · 퀴즈 보관함
 
@@ -67,10 +69,19 @@ export function QuizHomeScreen() {
         questionCount: 0,
       })
     : sets.data?.find((s) => s.status === 'ready');
+  const waiting = sets.data?.filter((s) => s.status === 'generating') ?? [];
   return (
     <Screen>
       <NetBanner />
       <Text className="pt-4 text-title2 font-bold text-ink">학습 퀴즈</Text>
+      {waiting.length > 0 && (
+        <View className="mt-4">
+          <AiPending
+            what={`퀴즈 ${waiting.length}개 생성`}
+            hint={waiting.map((w) => w.title).join(' · ')}
+          />
+        </View>
+      )}
       {latest ? (
         <>
           <Card
@@ -382,6 +393,29 @@ export function QuizGenScreen() {
   });
   const count = credit && setId ? (partial.data?.questions.length ?? 0) : 0;
   const pct = job?.progress ?? 0;
+  // AI 서버가 없으면 생성을 대기열에 두고 돌아간다 (FR-65-05)
+  if (aiWaiting(job))
+    return (
+      <Screen
+        footer={
+          <Btn
+            onPress={() => {
+              qc.invalidateQueries({ queryKey: ['quiz-sets'] });
+              router.dismissTo('/(tabs)/quiz');
+            }}
+          >
+            퀴즈 탭으로
+          </Btn>
+        }
+      >
+        <View className="pt-24">
+          <AiPending
+            what={`'${title}' 퀴즈 생성`}
+            hint="노트 내용을 분석해 5문제를 만드는 일은 AI 서버가 해요. 연결되면 자동으로 만들어져요."
+          />
+        </View>
+      </Screen>
+    );
   return (
     <View className="flex-1">
       <Screen>
@@ -1025,7 +1059,9 @@ export function QuizExplainScreen() {
           <Text className="text-subhead text-ink">{q?.prompt}</Text>
         </View>
         <View className="p-3 pt-6">
-          {ex.isError ? (
+          {ex.isError && ex.error instanceof ApiError && ex.error.status === 503 ? (
+            <AiPending what="AI 풀이 설명" />
+          ) : ex.isError ? (
             <View>
               <Text>설명을 불러오지 못했어요</Text>
               <Btn loading={ex.isFetching} onPress={() => void ex.refetch()}>

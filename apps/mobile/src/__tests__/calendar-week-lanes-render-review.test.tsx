@@ -6,7 +6,7 @@ import { TimetableScreen } from '../features/calendar/screens';
 import { api } from '../lib/api';
 import { renderScreen, setParams } from '../test-utils';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'https://api.example' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'https://api.example' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(),

@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import { AppOverlays } from '../components/AppOverlays';
 import { LoginScreen } from '../features/auth/auth';
 import { QuizSolveScreen } from '../features/quiz/quiz';
-import { seedUser } from '../lib/mock/seed';
+import { seedUser } from './fixtures/seed';
 import { useAuth } from '../stores/auth';
 import { useQuizProgress } from '../stores/quiz-progress';
 import { useToast } from '../stores/toast';
@@ -32,7 +32,7 @@ jest.mock('../lib/api', () => ({
   ApiError: class ApiError extends Error {},
   NetworkError: class NetworkError extends Error {},
 }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('../lib/socket', () => ({ disconnectSocket: jest.fn(), socket: { emit: jest.fn() } }));
 jest.mock('expo-speech', () => ({ speak: jest.fn(), stop: jest.fn() }));
 jest.mock('expo-haptics', () => ({
