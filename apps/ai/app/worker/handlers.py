@@ -11,7 +11,7 @@ from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
 from app.services.quiz import generate, review, today
 from app.services.recording import job as recording_job
-from app.worker.runner import Handler, JobInputError, Report
+from app.worker.runner import Handler, JobInputError, JobReport, Report
 
 
 @cache
@@ -50,7 +50,7 @@ today_review = _handler(today.run)  # 오늘의 복습
 quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
 
 
-def recording_summary(inp: JsonObject, report: Report) -> JsonObject:
+def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
     """녹음 정리(recording_job.run). 일시 오류는 LlmError로 바꿔 시도 한도 안에서 다시 시도합니다.
 
     설정 누락 · 음성 외 영구 오류는 그 밖의 예외로 두어 바로 실패합니다(자세한 내용은 로그에만).
@@ -60,7 +60,7 @@ def recording_summary(inp: JsonObject, report: Report) -> JsonObject:
     except LlmError as e:
         raise RuntimeError(str(e)) from e  # runner가 LlmError를 다시 시도하지 않게
     try:
-        return recording_job.run(llm, _speech, _voyage(), inp, report)
+        return recording_job.run(llm, _speech, _voyage(), inp, report, checkpoint=report)
     except recording_job.InputError as e:
         raise JobInputError(str(e), code=e.code) from e
     except SpeechUnavailableError as e:

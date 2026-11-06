@@ -251,3 +251,90 @@ def test_fail_without_retry_ends_at_once_keeping_progress(col: Any, clock: Clock
     assert s.fail(job, "입력 오류: questions 없음", retry=False) == "failed"
     doc = col.find_one({"_id": "j1"})
     assert (doc["status"], doc["progress"], doc["attempts"]) == ("failed", 60, 1)
+
+
+# ---------- 처리기 내부 저장(checkpoint) ----------
+
+
+def test_jobs_have_no_checkpoint_until_one_is_saved(col: Any, clock: Clock) -> None:
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None and job.checkpoint is None
+    s.succeed(job, {"x": 1})
+    assert "checkpoint" not in col.find_one({"_id": "j1"})
+
+
+def test_saved_checkpoint_extends_lock_and_comes_back_on_the_next_claim(
+    col: Any, clock: Clock
+) -> None:
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    clock.tick(50)
+    s.save_checkpoint(job, {"durationMs": 1})
+    doc = col.find_one({"_id": "j1"})
+    assert doc["checkpoint"] == {"durationMs": 1}
+    assert doc["lockedUntil"] == T0 + timedelta(seconds=110)
+    assert s.fail(job, "AI 응답을 받지 못함(HTTP 503)", retry=True) == "queued"
+    clock.tick(30)
+    again = s.claim(["quiz_generate"])
+    assert again is not None and again.checkpoint == {"durationMs": 1}
+
+
+def test_success_removes_the_checkpoint(col: Any, clock: Clock) -> None:
+    add(col, "j1", checkpoint={"durationMs": 1})
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    s.succeed(job, {"x": 1})
+    assert "checkpoint" not in col.find_one({"_id": "j1"})
+
+
+@pytest.mark.parametrize("retry", [True, False])
+def test_failure_keeps_the_checkpoint(col: Any, clock: Clock, retry: bool) -> None:
+    add(col, "j1", checkpoint={"durationMs": 1})
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    s.fail(job, "오류", retry=retry)
+    assert col.find_one({"_id": "j1"})["checkpoint"] == {"durationMs": 1}
+
+
+def test_giving_up_a_stalled_job_keeps_the_checkpoint(col: Any, clock: Clock) -> None:
+    add(
+        col,
+        "j1",
+        status="running",
+        attempts=3,
+        lockedBy="w0",
+        lockedUntil=T0 - timedelta(1),
+        checkpoint={"durationMs": 1},
+    )
+    assert store(col, clock).claim(["quiz_generate"]) is None
+    doc = col.find_one({"_id": "j1"})
+    assert (doc["status"], doc["checkpoint"]) == ("failed", {"durationMs": 1})
+
+
+def test_canceled_job_gets_no_checkpoint(col: Any, clock: Clock) -> None:
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})
+    with pytest.raises(JobGoneError):
+        s.save_checkpoint(job, {"durationMs": 1})
+    assert "checkpoint" not in col.find_one({"_id": "j1"})
+
+
+def test_worker_that_lost_its_lock_cannot_save_a_checkpoint(col: Any, clock: Clock) -> None:
+    add(col, "j1")
+    slow = store(col, clock, "w1")
+    job = slow.claim(["quiz_generate"])
+    assert job is not None
+    clock.tick(61)
+    store(col, clock, "w2").claim(["quiz_generate"])
+    with pytest.raises(JobGoneError):
+        slow.save_checkpoint(job, {"durationMs": 1})
+    assert "checkpoint" not in col.find_one({"_id": "j1"})

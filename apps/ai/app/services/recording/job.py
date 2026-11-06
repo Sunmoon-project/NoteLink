@@ -3,8 +3,11 @@
 진행률 단계: stt 0→20, organize 20→90(창이 끝날 때마다), embed 90→100.
 거절은 InputError(코드가 있으면 앱이 구분), 일시 오류(LlmError · SpeechUnavailableError ·
 EmbedUnavailableError)는 그대로 올립니다. 오류 문구에 녹음 주소(SAS)를 넣지 않습니다.
+STT가 끝나면 다시 정리하기 input과 같은 모양 {sentences, durationMs}을 checkpoint에 저장하고,
+다시 시도할 때 값이 검사를 통과하면 STT를 건너뜁니다(과금 · SAS 만료를 피함).
 """
 
+import logging
 import time
 from collections.abc import Callable
 from typing import Protocol, TypeIs
@@ -15,6 +18,8 @@ from app.clients.voyage import InputType
 from app.core.config import settings
 from app.services.recording.models import Chunk, Sentence, SentenceWord, Slide
 from app.services.recording.pipeline import organize, sentences_from
+
+log = logging.getLogger(__name__)
 
 TYPE = "recording_summary"
 RECORDING_MAX_MS = 2 * 60 * 60 * 1000  # 처리하는 녹음의 최대 길이(2시간)
@@ -39,6 +44,12 @@ class Report(Protocol):
     def __call__(self, value: int, step: str | None = None) -> None: ...
 
 
+class Checkpoint(Protocol):
+    def load_checkpoint(self) -> object: ...
+
+    def save_checkpoint(self, value: JsonObject) -> None: ...
+
+
 class Transcriber(Protocol):
     def transcribe(self, audio_url: str) -> Transcript: ...
 
@@ -54,6 +65,7 @@ def run(
     inp: JsonObject,
     report: Report,
     *,
+    checkpoint: Checkpoint | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> JsonObject:
     """speech는 STT를 할 때만 만듭니다. 다시 정리하기에는 음성 설정이 필요 없게."""
@@ -62,7 +74,7 @@ def run(
         raise InputError("input에 audioUrl과 sentences 중 하나만 있어야 함")
     deadline = clock() + settings.recording_job_max_sec
     if audio_url is not None:
-        sentences, duration_ms = _from_audio(speech, audio_url, inp, report)
+        sentences, duration_ms = _from_audio(speech, audio_url, inp, report, checkpoint)
     else:
         sentences, duration_ms = _from_saved(saved, inp)
     report(ORGANIZE_START, "organize")
@@ -85,7 +97,11 @@ def run(
 
 
 def _from_audio(
-    speech: Callable[[], Transcriber], audio_url: object, inp: JsonObject, report: Report
+    speech: Callable[[], Transcriber],
+    audio_url: object,
+    inp: JsonObject,
+    report: Report,
+    checkpoint: Checkpoint | None,
 ) -> tuple[list[Sentence], int]:
     if not isinstance(audio_url, str) or not audio_url.strip():
         raise InputError("input.audioUrl이 글자가 아님")
@@ -95,6 +111,8 @@ def _from_audio(
         _check_size(size_bytes)
     if duration_ms is not None:
         _check_duration(duration_ms)
+    if checkpoint is not None and (reused := _from_checkpoint(checkpoint.load_checkpoint())):
+        return reused
     client = speech()  # 설정 누락은 파일 문제가 아니므로 아래 except 밖에서
     report(0, "stt")
     try:
@@ -110,7 +128,23 @@ def _from_audio(
     actual_ms = max(transcript.duration_ms, *(s["endMs"] for s in sentences))
     _check_duration(actual_ms)
     _check_chars(sentences)
+    if checkpoint is not None:
+        checkpoint.save_checkpoint({"sentences": sentences, "durationMs": actual_ms})
     return sentences, actual_ms
+
+
+def _from_checkpoint(saved: object) -> tuple[list[Sentence], int] | None:
+    """다시 정리하기 input과 같은 검사를 합니다. 없거나 깨져 있으면 None(STT부터 다시)."""
+    if saved is None:
+        return None
+    if not isinstance(saved, dict):
+        log.warning("저장된 인식 결과가 객체가 아니라 STT부터 다시 함")
+        return None
+    try:
+        return _from_saved(saved.get("sentences"), saved)
+    except InputError as e:
+        log.warning("저장된 인식 결과가 깨져 STT부터 다시 함: %s", e)
+        return None
 
 
 def _from_saved(saved: object, inp: JsonObject) -> tuple[list[Sentence], int]:

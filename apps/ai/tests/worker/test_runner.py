@@ -8,7 +8,7 @@ from pymongo.errors import AutoReconnect
 
 from app.clients.llm import JsonObject, LlmError
 from app.worker.jobs import JobStore
-from app.worker.runner import Handler, JobInputError, Report, run_forever, run_once
+from app.worker.runner import Handler, JobInputError, JobReport, Report, run_forever, run_once
 
 T0 = datetime(2026, 10, 28, 9, 0, tzinfo=UTC)
 
@@ -176,6 +176,43 @@ def test_db_error_while_running_is_retried_after_the_lock_ends(col: Any, broken:
     assert run_once(s, {"quiz_generate": handler})
     doc = col.find_one({"_id": "j1"})
     assert (doc["status"], doc["result"], doc["attempts"]) == ("succeeded", {"questions": 2}, 2)
+
+
+def test_handler_gets_back_what_it_saved_on_the_next_attempt(col: Any) -> None:
+    now = [T0]
+    s = JobStore(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30, now=lambda: now[0])
+    loaded: list[object] = []
+
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        loaded.append(report.load_checkpoint())
+        if len(loaded) == 1:
+            report.save_checkpoint({"step": "stt"})
+            raise LlmError("HTTP 503")
+        return {"ok": True}
+
+    assert run_once(s, {"quiz_generate": handler})
+    assert col.find_one({"_id": "j1"})["checkpoint"] == {"step": "stt"}
+    now[0] += timedelta(seconds=31)
+    assert run_once(s, {"quiz_generate": handler})
+    doc = col.find_one({"_id": "j1"})
+    assert loaded == [None, {"step": "stt"}]
+    assert doc["status"] == "succeeded"
+    assert "checkpoint" not in doc
+
+
+def test_canceled_while_saving_a_checkpoint_stops_the_handler(col: Any) -> None:
+    after: list[bool] = []
+
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})
+        report.save_checkpoint({"step": "stt"})
+        after.append(True)
+        return {}
+
+    doc = run(col, handler)
+    assert after == []
+    assert doc["status"] == "canceled"
+    assert "checkpoint" not in doc
 
 
 def test_heartbeat_extends_lock_while_handler_is_quiet(col: Any) -> None:

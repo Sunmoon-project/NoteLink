@@ -1,6 +1,7 @@
 import json
+import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import bson
@@ -96,14 +97,13 @@ def run_direct(
     def make_speech() -> Transcriber:
         return speech if speech is not None else FakeSpeech()
 
-    kwargs = {} if clock is None else {"clock": clock}
     return run(
         llm if llm is not None else WindowLlm(all_starts),
         make_speech,
         voyage if voyage is not None else FakeVoyage(),
         inp,
         on_report,
-        **kwargs,
+        clock=clock if clock is not None else time.monotonic,
     )
 
 
@@ -122,7 +122,7 @@ def run_job(
     return queued_job_result(inp)
 
 
-def queued_job_result(inp: object) -> dict[str, Any]:
+def queued_job(inp: object) -> Any:
     col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
     col.insert_one(
         {
@@ -137,6 +137,11 @@ def queued_job_result(inp: object) -> dict[str, Any]:
             "createdAt": T0,
         }
     )
+    return col
+
+
+def queued_job_result(inp: object) -> dict[str, Any]:
+    col = queued_job(inp)
     store = JobStore(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30, now=lambda: T0)
     assert run_once(store, HANDLERS)
     doc: dict[str, Any] = col.find_one({"_id": "j1"})
@@ -722,6 +727,242 @@ def test_cancel_stops_at_the_next_window() -> None:
     assert len(llm.windows) == 1
 
 
+# ---------- 다시 시도 때 인식 결과 재사용 ----------
+
+
+class ProgressStore(JobStore):
+    """쓴 진행률을 모아 둡니다."""
+
+    seen: list[tuple[int, str | None]]
+
+    def progress(self, job: Any, value: int, step: str | None = None) -> None:
+        self.seen.append((value, step))
+        super().progress(job, value, step)
+
+
+def attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    col: Any,
+    *,
+    llm: Any = None,
+    speech: FakeSpeech | None = None,
+    voyage: FakeVoyage | None = None,
+    seen: list[tuple[int, str | None]] | None = None,
+) -> dict[str, Any]:
+    """같은 문서로 시도를 하나 더 합니다. 시계는 다시 시도 대기를 넘긴 때로 둠."""
+    monkeypatch.setattr(handlers, "_llm", lambda: llm if llm is not None else WindowLlm(all_starts))
+    monkeypatch.setattr(handlers, "_speech", lambda: speech if speech is not None else FakeSpeech())
+    monkeypatch.setattr(handlers, "_voyage", lambda: voyage if voyage is not None else FakeVoyage())
+    later = T0 + timedelta(hours=col.find_one({"_id": "j1"})["attempts"])
+    store = ProgressStore(
+        col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30, now=lambda: later
+    )
+    store.seen = seen if seen is not None else []
+    assert run_once(store, HANDLERS)
+    doc: dict[str, Any] = col.find_one({"_id": "j1"})
+    return doc
+
+
+def llm_down() -> FakeLlm:
+    return FakeLlm({SLIDES: [LlmError("HTTP 429")]})
+
+
+def expired_sas() -> FakeSpeech:
+    """다시 부르면 바로 실패로 끝나는 STT(읽기 주소 만료)."""
+    return FakeSpeech(SpeechError("HTTP 403"))
+
+
+def test_stt_result_is_saved_when_the_llm_fails_after_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job({"audioUrl": AUDIO_URL})
+    speech = FakeSpeech()
+
+    doc = attempt(monkeypatch, col, llm=llm_down(), speech=speech)
+
+    assert (doc["status"], doc["attempts"]) == ("queued", 1)
+    assert speech.urls == [AUDIO_URL]
+    assert set(doc["checkpoint"]) == {"sentences", "durationMs"}
+    assert doc["checkpoint"]["durationMs"] == DURATION_MS
+    assert [s["text"] for s in doc["checkpoint"]["sentences"]] == [f"s{i} 문장" for i in range(4)]
+    assert "secret-sas" not in json.dumps(doc["checkpoint"])
+
+
+def test_retry_skips_stt_and_starts_at_organize(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job({"audioUrl": AUDIO_URL})
+    saved = attempt(monkeypatch, col, llm=llm_down())["checkpoint"]
+    speech = expired_sas()
+    seen: list[tuple[int, str | None]] = []
+
+    doc = attempt(monkeypatch, col, speech=speech, seen=seen)
+
+    assert (doc["status"], doc["attempts"], doc["error"]) == ("succeeded", 2, None)
+    assert speech.urls == []
+    assert doc["result"]["sentences"] == saved["sentences"]
+    assert doc["result"]["durationMs"] == saved["durationMs"]
+    assert seen[0] == (20, "organize")
+    assert "stt" not in [s for _, s in seen]
+    values = [v for v, _ in seen]
+    assert values == sorted(values)
+    assert seen[-1] == (100, "embed")
+    assert "checkpoint" not in doc
+
+
+def test_retry_after_voyage_failure_also_skips_stt(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job({"audioUrl": AUDIO_URL})
+    down = FakeVoyage(EmbedUnavailableError("HTTP 503"))
+    assert attempt(monkeypatch, col, voyage=down)["status"] == "queued"
+    speech = expired_sas()
+
+    doc = attempt(monkeypatch, col, speech=speech)
+
+    assert doc["status"] == "succeeded"
+    assert speech.urls == []
+
+
+def test_stalled_job_taken_again_reuses_the_stt_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job({"audioUrl": AUDIO_URL})
+    col.update_one(
+        {"_id": "j1"},
+        {
+            "$set": {
+                "status": "running",
+                "attempts": 1,
+                "lockedBy": "w0",
+                "lockedUntil": T0,
+                "checkpoint": again_input(saved_sentence(0), saved_sentence(1)),
+            }
+        },
+    )
+    speech = expired_sas()
+
+    doc = attempt(monkeypatch, col, speech=speech)
+
+    assert (doc["status"], doc["attempts"]) == ("succeeded", 2)
+    assert speech.urls == []
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        "글",
+        {},
+        {"durationMs": DURATION_MS},
+        {"sentences": [saved_sentence()]},
+        {"sentences": [], "durationMs": DURATION_MS},
+        {"sentences": "글", "durationMs": DURATION_MS},
+        {"sentences": [{"text": "빠진 필드"}], "durationMs": DURATION_MS},
+        {"sentences": [saved_sentence(2), saved_sentence(1)], "durationMs": DURATION_MS},
+        {"sentences": [saved_sentence()], "durationMs": "1"},
+        {"sentences": [saved_sentence()], "durationMs": RECORDING_MAX_MS + 1},
+        {"sentences": [saved_sentence(100)], "durationMs": DURATION_MS},
+    ],
+)
+def test_broken_checkpoint_is_ignored_and_stt_runs_again(
+    monkeypatch: pytest.MonkeyPatch, broken: object
+) -> None:
+    col = queued_job({"audioUrl": AUDIO_URL})
+    col.update_one({"_id": "j1"}, {"$set": {"checkpoint": broken}})
+    speech = FakeSpeech()
+    seen: list[tuple[int, str | None]] = []
+
+    doc = attempt(monkeypatch, col, speech=speech, seen=seen)
+
+    assert (doc["status"], doc["error"]) == ("succeeded", None)
+    assert speech.urls == [AUDIO_URL]
+    assert seen[0] == (0, "stt")
+    assert "checkpoint" not in doc
+
+
+def test_broken_checkpoint_is_replaced_by_the_new_stt_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    col = queued_job({"audioUrl": AUDIO_URL})
+    col.update_one({"_id": "j1"}, {"$set": {"checkpoint": {"durationMs": DURATION_MS}}})
+
+    doc = attempt(monkeypatch, col, llm=llm_down())
+
+    assert len(doc["checkpoint"]["sentences"]) == 4
+
+
+def test_nothing_is_saved_when_canceled_during_stt(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job({"audioUrl": AUDIO_URL})
+    llm = WindowLlm(all_starts)
+
+    class CanceledSpeech(FakeSpeech):
+        def transcribe(self, audio_url: str) -> Transcript:
+            col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})
+            return super().transcribe(audio_url)
+
+    doc = attempt(monkeypatch, col, llm=llm, speech=CanceledSpeech())
+
+    assert doc["status"] == "canceled"
+    assert "checkpoint" not in doc
+    assert llm.windows == []
+
+
+def test_nothing_is_saved_when_another_worker_took_the_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    col = queued_job({"audioUrl": AUDIO_URL})
+    llm = WindowLlm(all_starts)
+
+    class SlowSpeech(FakeSpeech):
+        def transcribe(self, audio_url: str) -> Transcript:
+            col.update_one({"_id": "j1"}, {"$set": {"lockedBy": "w2"}})
+            return super().transcribe(audio_url)
+
+    doc = attempt(monkeypatch, col, llm=llm, speech=SlowSpeech())
+
+    assert (doc["status"], doc["lockedBy"]) == ("running", "w2")
+    assert "checkpoint" not in doc
+    assert llm.windows == []
+
+
+def test_rejected_stt_result_is_not_saved(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job({"audioUrl": AUDIO_URL})
+
+    doc = attempt(monkeypatch, col, speech=FakeSpeech(transcript(duration_ms=RECORDING_MIN_MS - 1)))
+
+    assert doc["status"] == "failed"
+    assert "checkpoint" not in doc
+
+
+def test_checkpoint_stays_after_the_last_attempt_and_app_retry_reuses_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    col = queued_job({"audioUrl": AUDIO_URL})
+    for _ in range(3):
+        doc = attempt(monkeypatch, col, llm=llm_down())
+    assert (doc["status"], doc["attempts"]) == ("failed", 3)
+    assert len(doc["checkpoint"]["sentences"]) == 4
+    # 앱의 '다시 시도'(NestJS)
+    col.update_one({"_id": "j1"}, {"$set": {"status": "queued", "attempts": 0, "retryAt": None}})
+    speech = expired_sas()
+
+    doc = attempt(monkeypatch, col, speech=speech)
+
+    assert (doc["status"], doc["attempts"]) == ("succeeded", 1)
+    assert speech.urls == []
+    assert "checkpoint" not in doc
+
+
+def test_permanent_failure_keeps_the_checkpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job({"audioUrl": AUDIO_URL})
+
+    doc = attempt(monkeypatch, col, voyage=FakeVoyage(EmbedError("HTTP 401")))
+
+    assert doc["status"] == "failed"
+    assert len(doc["checkpoint"]["sentences"]) == 4
+
+
+def test_organizing_again_saves_no_checkpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job(again_input(saved_sentence(0), saved_sentence(1)))
+
+    doc = attempt(monkeypatch, col, llm=llm_down())
+
+    assert doc["status"] == "queued"
+    assert "checkpoint" not in doc
+
+
 # ---------- PARTIAL ----------
 
 
@@ -890,3 +1131,10 @@ def test_two_hour_result_fits_in_a_mongo_document() -> None:
     assert len(result["slides"]) == 479  # 마지막 슬라이드는 최소 길이가 안 돼 앞에 붙음
     # 다시 정리하기는 input에도 sentences가 들어가므로 함께 잼
     assert len(bson.encode({"result": result, "input": inp})) < MONGO_DOC_LIMIT
+
+
+def test_two_hour_checkpoint_fits_in_a_mongo_document() -> None:
+    _, checkpoint = two_hour_result()
+
+    # 실패한 작업 문서에는 input(주소 · 크기)과 함께 남음. 결과와 함께 있는 때는 없음(성공 때 지움)
+    assert len(bson.encode({"checkpoint": checkpoint})) < MONGO_DOC_LIMIT

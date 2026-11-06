@@ -11,12 +11,14 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
 주고받는 필드
   NestJS가 넣음  type · targetType · targetId · userId · createdAt · input
                  status='queued' · progress=0 · attempts=0 · result=None · error=None
-  처리기가 씀    status · progress · step · attempts · result · error
+  처리기가 씀    status · progress · step · attempts · result · error · checkpoint
                  lockedBy · lockedUntil · retryAt · updatedAt
   - input: 처리기는 다른 컬렉션을 읽지 않으므로, 처리에 필요한 자료(퀴즈 · 풀이 기록 · 노트 글 등)는
     NestJS가 작업을 만들 때 input에 모두 담습니다. 작업별 내용은 6~8번 PR에서 정합니다.
   - result: NestJS가 읽어 quiz_sets 등에 반영합니다. 처리기는 다른 컬렉션에 쓰지 않습니다.
   - 앱의 '다시 시도'는 NestJS가 attempts=0 · status='queued' · retryAt=None으로 되돌려 넣습니다.
+  - checkpoint: 처리기 내부용. 시도 사이에 다시 쓸 중간 결과입니다. 처리 함수가 저장하고, 성공할 때
+    지웁니다. 실패로 끝나도 남겨 앱의 '다시 시도'에서 다시 씁니다. NestJS는 읽지 않습니다.
   - 색인(NestJS가 관리): {status: 1, type: 1, createdAt: 1}
 
 잠금
@@ -54,6 +56,7 @@ class Job:
     type: str
     input: object  # 처리 전에 객체인지 확인함(runner)
     attempts: int  # 이번 시도 포함
+    checkpoint: object = None  # 지난 시도가 저장한 값. 쓰기 전에 처리 함수가 확인함
 
 
 def _utcnow() -> datetime:
@@ -122,7 +125,9 @@ class JobStore:
         )
         if doc is None:
             return None
-        return Job(doc["_id"], doc["type"], doc.get("input"), int(doc["attempts"]))
+        return Job(
+            doc["_id"], doc["type"], doc.get("input"), int(doc["attempts"]), doc.get("checkpoint")
+        )
 
     def _give_up_stalled(self, kinds: list[str], now: datetime) -> None:
         """시도 한도만큼 처리기가 멈춘 작업은 다시 가져가지 않고 실패로 둡니다."""
@@ -162,6 +167,14 @@ class JobStore:
             fields["step"] = step
         self._write(job, {"$set": fields})
 
+    def save_checkpoint(self, job: Job, value: JsonObject) -> None:
+        """다음 시도에 다시 쓸 중간 결과를 저장하고 잠금을 늘립니다."""
+        now = self._now()
+        self._write(
+            job,
+            {"$set": {"checkpoint": value, "lockedUntil": now + self._lock, "updatedAt": now}},
+        )
+
     def succeed(self, job: Job, result: JsonObject) -> None:
         now = self._now()
         self._write(
@@ -176,7 +189,7 @@ class JobStore:
                     "lockedUntil": None,
                     "updatedAt": now,
                 },
-                "$unset": {"step": ""},
+                "$unset": {"step": "", "checkpoint": ""},
             },
         )
 
