@@ -4,7 +4,7 @@ result = note_result([{"pageNo": 1, "read": ocr_json, "image": img}, ...])
 result["pages"]        # ① 쪽별 원본 글자
 result["lineResults"]  # ② 쪽별 OCR 줄 결과
 chunks = split_with_llm(llm, model, result["chunks"])   # ④ 노트 조각
-chunks, new_seeds = refine_note(llm, model, web_search(), chunks, subject, input_seeds)
+chunks = refine_note(llm, model, chunks, subject, input_seeds)
                                                         # 시드 → 오타 · 개념 태그 (설정으로 켬)
 vectors = voyage().embed(embed_texts(chunks), "document")
 """
@@ -12,7 +12,6 @@ vectors = voyage().embed(embed_texts(chunks), "document")
 from typing import Any, NotRequired, TypedDict
 
 from app.clients.llm import JsonObject, Llm, LlmError
-from app.clients.web_search import Searcher
 from app.core.config import settings
 from app.services.note.chunking import split_rows
 from app.services.note.emphasis import Image, annotate_colors, merge_marks
@@ -185,21 +184,18 @@ def refine_chunks(
 def refine_note(
     llm: Llm,
     model: str,
-    searcher: Searcher | None,
     chunks: list[Chunk],
     subject: str,
     seeds: list[TopicSeed],
     *,
     enabled: bool | None = None,
-) -> tuple[list[Chunk], list[TopicSeed]]:
-    """시드 준비 → 오타 · 개념 태그. (고친 조각, result.newSeeds로 돌려줄 새 시드)."""
+) -> list[Chunk]:
+    """시드에서 사전 고르기 → 오타 · 개념 태그. 꺼져 있거나 쓸 시드가 없으면 그대로 돌려줌."""
     on = settings.note_refine_enabled if enabled is None else enabled
     if not on:
-        return chunks, []
-    terms, new = seed_terms(
-        llm, model, searcher, chunks, subject, seeds, settings.seed_search_domains
-    )
-    return refine_chunks(llm, model, chunks, terms, enabled=True), new
+        return chunks
+    terms = seed_terms(llm, model, chunks, subject, seeds)
+    return refine_chunks(llm, model, chunks, terms, enabled=True)
 
 
 def embed_texts(chunks: list[Chunk]) -> list[str]:

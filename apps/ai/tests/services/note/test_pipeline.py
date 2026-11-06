@@ -166,21 +166,46 @@ def test_refine_chunks_fixes_then_tags() -> None:
 def test_refine_note_off_makes_no_calls() -> None:
     cs = split_rows(rows("1. 최통", "- 포남형"))
     llm = FakeLlm()
-    assert refine_note(llm, "m", None, cs, "기생충학", [], enabled=False) == (cs, [])
+    assert refine_note(llm, "m", cs, "기생충학", [], enabled=False) == cs
     assert llm.calls == []
 
 
-def test_refine_note_uses_input_seeds() -> None:
+def test_refine_note_without_seeds_returns_chunks_without_llm() -> None:
+    cs = split_rows(rows("1. 최통", "- 포남형"))
+    llm = FakeLlm()
+    assert refine_note(llm, "m", cs, "기생충학", [], enabled=True) == cs
+    assert llm.calls == []
+
+
+def test_refine_note_with_topic_outside_the_seed_book_keeps_text() -> None:
+    cs = split_rows(rows("1. 최통", "- 포남형"))
+    seeds: list[TopicSeed] = [{"topic": "선충류", "terms": [{"term": "회충"}, {"term": "포낭형"}]}]
+    llm = FakeLlm({"note_topics": [{"topics": [{"choice": 0, "name": "원충류"}]}]})
+    assert refine_note(llm, "m", cs, "기생충학", seeds, enabled=True) == cs
+    assert [x.name for x in llm.calls] == ["note_topics"]
+
+
+def test_refine_note_with_empty_topic_answer_keeps_text() -> None:
+    cs = split_rows(rows("1. 최통", "- 포남형"))
+    seeds: list[TopicSeed] = [{"topic": "선충류", "terms": [{"term": "회충"}, {"term": "포낭형"}]}]
+    llm = FakeLlm({"note_topics": [{"topics": []}]})
+    assert refine_note(llm, "m", cs, "기생충학", seeds, enabled=True) == cs
+    assert [x.name for x in llm.calls] == ["note_topics"]
+
+
+def test_refine_note_uses_input_seeds_without_urls_and_returns_chunks_only() -> None:
     cs = split_rows(rows("1. 최통", "- 포남형 : 인체 감염형"))
-    seeds: list[TopicSeed] = [
-        {"topic": "선충류", "terms": [{"term": "회충", "url": "u"}, {"term": "포낭형", "url": "u"}]}
-    ]
+    seeds: list[TopicSeed] = [{"topic": "선충류", "terms": [{"term": "회충"}, {"term": "포낭형"}]}]
     llm = FakeLlm(
         {
-            "note_topics": [{"topics": [{"choice": 1, "name": ""}]}],
+            "note_topics": [{"topics": [{"choice": 1}]}],
             "note_typos": [{"picks": [{"id": 1, "choice": 1}]}],
             "note_concepts": [{"items": [{"order": 1, "choice": 1}]}],
         }
     )
-    (c,), new = refine_note(llm, "m", None, cs, "기생충학", seeds, enabled=True)
-    assert c["text"].endswith("포낭형 : 인체 감염형") and new == []
+    out = refine_note(llm, "m", cs, "기생충학", seeds, enabled=True)
+    assert isinstance(out, list)  # 새 시드를 함께 돌려주지 않음
+    (c,) = out
+    assert c["text"] == "1. 최통\n- 포낭형 : 인체 감염형"
+    assert c["concept"] == "회충" and c["conceptStatus"] == "auto"
+    assert [x.name for x in llm.calls] == ["note_topics", "note_typos", "note_concepts"]

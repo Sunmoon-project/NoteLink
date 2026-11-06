@@ -11,5 +11,3 @@ opencv-python-headless==5.0.0.93
 numpy==2.5.4
 kiwipiepy==0.24.1
 kiwipiepy_model==0.24.0
-anthropic==2.3.0
-google-genai==2.31.0
