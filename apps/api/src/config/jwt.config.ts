@@ -12,8 +12,9 @@ export interface JwtConfig {
 }
 
 const MIN_SECRET_LENGTH = 32;
-// 숫자 + 단위(ms s m h d w y). "900"처럼 단위가 없는 값은 밀리초로 읽혀 15분이 0.9초가 되는걸 방지
-const TTL_PATTERN = /^[1-9]\d*(ms|s|m|h|d|w|y)$/;
+// 숫자 + 단위(s m h d w y). 밀리초(ms)는 받지 않는다: JWT 만료는 초 단위로 내림되어 1ms · 999ms는 발급 즉시 만료된다.
+// "900"처럼 단위가 없는 값도 밀리초로 읽혀 15분이 0.9초가 되는걸 방지
+const TTL_PATTERN = /^[1-9]\d*(s|m|h|d|w|y)$/;
 
 function required(config: ConfigReader, key: string): string {
   const value = config.get(key)?.trim();
@@ -34,7 +35,7 @@ function secret(config: ConfigReader, key: string): string {
 function ttl(config: ConfigReader, key: string): TTL {
   const value = required(config, key);
   if (!TTL_PATTERN.test(value)) {
-    throw new Error(`${key} 형식이 올바르지 않습니다 (예: 15m 14d)`);
+    throw new Error(`${key} 형식이 올바르지 않습니다 (예: 15m, 14d. 초 단위 이상만 가능)`);
   }
   return value as TTL;
 }

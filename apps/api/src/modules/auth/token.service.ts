@@ -31,6 +31,59 @@ export class TokenService {
 
   /** 로그인할 때마다 호출한다. 기기마다 자기 refresh 토큰 한 줄이 생긴다 */
   async issue(userId: string, device?: DeviceInfo): Promise<IssuedTokens> {
+    const { tokens } = await this.mint(userId, device);
+    return tokens;
+  }
+
+  /**
+   * refresh 토큰을 새 토큰 한 쌍으로 바꾼다. 쓴 토큰은 폐기한다.
+   *
+   * 순서가 중요하다: 새 토큰을 먼저 저장하고, 성공하면 기존 토큰을 폐기한다.
+   * 저장이 실패해도 기존 토큰은 그대로 살아 있어 앱이 다시 시도할 수 있다(세션을 잃지 않음).
+   * MongoDB 트랜잭션은 레플리카셋이 필요해 로컬 단독 서버(mongod)에서 쓸 수 없어 이 방식을 쓴다.
+   */
+  async rotate(refreshToken: string): Promise<IssuedTokens> {
+    const payload = await this.verifyRefresh(refreshToken);
+    const tokenHash = hashToken(refreshToken);
+    const current = await this.refreshTokens.findOne({
+      tokenHash,
+      revokedAt: null,
+      expiresAt: { $gt: new Date() },
+    });
+    if (!current) throw invalidToken();
+
+    const next = await this.mint(payload.sub, current.device);
+
+    // 조회와 폐기를 한 번에 해서, 같은 토큰으로 동시에 두 번 요청해도 한쪽만 이긴다
+    const claimed = await this.refreshTokens.findOneAndUpdate(
+      { tokenHash, revokedAt: null },
+      { revokedAt: new Date() },
+    );
+    if (!claimed) {
+      // 동시 요청에 졌다. 앱에 돌려주지 않은 새 토큰의 줄을 지운다.
+      // 못 지워도 그 토큰을 가진 쪽이 없어서 쓰일 수 없다.
+      try {
+        await this.refreshTokens.deleteOne({ _id: next.rowId });
+      } catch {
+        // 정리 실패는 무시한다
+      }
+      throw invalidToken();
+    }
+    return next.tokens;
+  }
+
+  /** 로그아웃. 이미 폐기됐거나 없는 토큰이어도 오류 없이 끝낸다 */
+  async revoke(refreshToken: string): Promise<void> {
+    await this.refreshTokens.updateOne(
+      { tokenHash: hashToken(refreshToken), revokedAt: null },
+      { revokedAt: new Date() },
+    );
+  }
+
+  private async mint(
+    userId: string,
+    device?: DeviceInfo,
+  ): Promise<{ tokens: IssuedTokens; rowId: Types.ObjectId }> {
     const accessToken = await this.jwt.signAsync(
       { sub: userId },
       { secret: this.config.accessSecret, expiresIn: this.config.accessTTL },
@@ -41,33 +94,13 @@ export class TokenService {
       { secret: this.config.refreshSecret, expiresIn: this.config.refreshTTL },
     );
     const { exp } = this.jwt.decode<{ exp: number }>(refreshToken);
-    await this.refreshTokens.create({
+    const row = await this.refreshTokens.create({
       userId: new Types.ObjectId(userId),
       tokenHash: hashToken(refreshToken),
       device,
       expiresAt: new Date(exp * 1000),
     });
-    return { accessToken, refreshToken };
-  }
-
-  /** refresh 토큰을 새 토큰 한 쌍으로 바꾼다. 쓴 토큰은 바로 폐기한다 */
-  async rotate(refreshToken: string): Promise<IssuedTokens> {
-    const payload = await this.verifyRefresh(refreshToken);
-    // 조회와 폐기를 한 번에 해서, 같은 토큰으로 동시에 두 번 요청해도 한 번만 성공한다
-    const used = await this.refreshTokens.findOneAndUpdate(
-      { tokenHash: hashToken(refreshToken), revokedAt: null, expiresAt: { $gt: new Date() } },
-      { revokedAt: new Date() },
-    );
-    if (!used) throw invalidToken();
-    return this.issue(payload.sub, used.device);
-  }
-
-  /** 로그아웃. 이미 폐기됐거나 없는 토큰이어도 오류 없이 끝낸다 */
-  async revoke(refreshToken: string): Promise<void> {
-    await this.refreshTokens.updateOne(
-      { tokenHash: hashToken(refreshToken), revokedAt: null },
-      { revokedAt: new Date() },
-    );
+    return { tokens: { accessToken, refreshToken }, rowId: row._id };
   }
 
   private async verifyRefresh(refreshToken: string): Promise<{ sub: string }> {

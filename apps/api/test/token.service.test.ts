@@ -18,6 +18,7 @@ const CONFIG: JwtConfig = {
 };
 
 interface Row {
+  _id: Types.ObjectId;
   userId: Types.ObjectId;
   tokenHash: string;
   device?: Record<string, unknown>;
@@ -25,50 +26,66 @@ interface Row {
   revokedAt: Date | null;
 }
 
+type Filter = { tokenHash: string; revokedAt?: null; expiresAt?: { $gt: Date } };
+
 /**
- * refresh_tokens 컬렉션을 메모리로 흉내 낸다. TokenService가 쓰는 세 가지(create · findOneAndUpdate · updateOne)만 만든다.
+ * refresh_tokens 컬렉션을 메모리로 흉내 낸다. TokenService가 쓰는 것(create · findOne · findOneAndUpdate · updateOne · deleteOne)만 만든다.
  * findOneAndUpdate는 실제 Mongoose처럼 "바뀌기 전" 문서를 돌려주고, 찾기와 고치기를 한 번에 한다.
+ * `failures`로 다음 저장(create) 또는 정리(deleteOne)를 실패시킬 수 있다.
  */
 function createFakeModel() {
   const rows: Row[] = [];
+  const failures = { create: 0, deleteOne: 0 };
   // 서비스가 넘긴 조건만 그대로 적용한다. 조건이 빠지면 그만큼 더 많이 걸려서 테스트가 잡아낸다
-  const matches = (
-    row: Row,
-    f: { tokenHash: string; revokedAt?: null; expiresAt?: { $gt: Date } },
-  ) =>
+  const matches = (row: Row, f: Filter) =>
     row.tokenHash === f.tokenHash &&
     (!('revokedAt' in f) || row.revokedAt === f.revokedAt) &&
     (!f.expiresAt || row.expiresAt > f.expiresAt.$gt);
 
   const model = {
-    create: (data: Omit<Row, 'revokedAt'>) => {
+    create: (data: Omit<Row, 'revokedAt' | '_id'>) => {
+      if (failures.create > 0) {
+        failures.create -= 1;
+        return Promise.reject(new Error('DB 쓰기 실패'));
+      }
       if (rows.some((r) => r.tokenHash === data.tokenHash)) {
         return Promise.reject(new Error('E11000 duplicate key (tokenHash)'));
       }
-      rows.push({ ...data, revokedAt: null });
-      return Promise.resolve(data);
+      const row: Row = { ...data, _id: new Types.ObjectId(), revokedAt: null };
+      rows.push(row);
+      return Promise.resolve(row);
     },
-    findOneAndUpdate: (filter: Parameters<typeof matches>[1], update: { revokedAt: Date }) => {
+    findOne: (filter: Filter) => Promise.resolve(rows.find((r) => matches(r, filter)) ?? null),
+    findOneAndUpdate: (filter: Filter, update: { revokedAt: Date }) => {
       const row = rows.find((r) => matches(r, filter));
       if (!row) return Promise.resolve(null);
       const before = { ...row };
       row.revokedAt = update.revokedAt;
       return Promise.resolve(before);
     },
-    updateOne: (filter: Parameters<typeof matches>[1], update: { revokedAt: Date }) => {
+    updateOne: (filter: Filter, update: { revokedAt: Date }) => {
       const row = rows.find((r) => matches(r, filter));
       if (row) row.revokedAt = update.revokedAt;
       return Promise.resolve({ modifiedCount: row ? 1 : 0 });
     },
+    deleteOne: (filter: { _id: Types.ObjectId }) => {
+      if (failures.deleteOne > 0) {
+        failures.deleteOne -= 1;
+        return Promise.reject(new Error('DB 삭제 실패'));
+      }
+      const i = rows.findIndex((r) => r._id.equals(filter._id));
+      if (i >= 0) rows.splice(i, 1);
+      return Promise.resolve({ deletedCount: i >= 0 ? 1 : 0 });
+    },
   };
-  return { rows, model: model as unknown as Model<RefreshTokenDocument> };
+  return { rows, failures, model: model as unknown as Model<RefreshTokenDocument> };
 }
 
 function setup() {
   const fake = createFakeModel();
   const jwt = new JwtService();
   const service = new TokenService(jwt, CONFIG, fake.model);
-  return { service, jwt, rows: fake.rows };
+  return { service, jwt, rows: fake.rows, failures: fake.failures };
 }
 
 const newUserId = () => new Types.ObjectId().toHexString();
@@ -189,6 +206,47 @@ describe('TokenService.rotate', () => {
 
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+  });
+
+  it('새 토큰을 저장하지 못하면 갱신은 실패하지만 기존 토큰은 그대로 쓸 수 있다', async () => {
+    const { service, rows, failures } = setup();
+    const first = await service.issue(newUserId());
+    failures.create = 1; // 다음 저장 한 번을 실패시킨다
+
+    await expect(service.rotate(first.refreshToken)).rejects.toThrow('DB 쓰기 실패');
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.revokedAt).toBeNull(); // 기존 토큰이 폐기되지 않았다
+    await expect(service.rotate(first.refreshToken)).resolves.toHaveProperty('refreshToken'); // 다시 시도하면 된다
+  });
+
+  it('동시 요청에 져서 버려지는 새 토큰의 줄은 지운다', async () => {
+    const { service, rows } = setup();
+    const first = await service.issue(newUserId());
+
+    await Promise.allSettled([
+      service.rotate(first.refreshToken),
+      service.rotate(first.refreshToken),
+    ]);
+
+    // 처음 토큰 1줄 + 이긴 쪽의 새 토큰 1줄. 진 쪽의 새 토큰 줄은 남지 않는다
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((r) => r.revokedAt === null)).toHaveLength(1);
+  });
+
+  it('동시 요청에 졌을 때 정리(삭제)가 실패해도 요청은 거부로 끝난다', async () => {
+    const { service, failures } = setup();
+    const first = await service.issue(newUserId());
+    failures.deleteOne = 1;
+
+    const results = await Promise.allSettled([
+      service.rotate(first.refreshToken),
+      service.rotate(first.refreshToken),
+    ]);
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const lost = results.find((r) => r.status === 'rejected');
+    expect(lost).toMatchObject({ reason: { response: { code: 'AUTH_TOKEN_EXPIRED' } } });
   });
 
   it('형식이 깨진 토큰은 거부한다', async () => {

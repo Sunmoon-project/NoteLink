@@ -67,11 +67,16 @@ describe('createJwtConfig', () => {
       expect(createJwtConfig(configOf({ JWT_ACCESS_TTL: ttl })).accessTTL).toBe(ttl);
     });
 
-    // 900: 단위가 없으면 밀리초로 읽혀 0.9초 만에 만료된다
-    it.each(['900', 'abc', '0m', '-5m', '15 m', '15M'])('%j는 거부한다', (ttl) => {
-      expect(() => createJwtConfig(configOf({ JWT_ACCESS_TTL: ttl }))).toThrow('JWT_ACCESS_TTL');
-      expect(() => createJwtConfig(configOf({ JWT_REFRESH_TTL: ttl }))).toThrow('JWT_REFRESH_TTL');
-    });
+    // 900: 단위가 없으면 밀리초로 읽혀 0.9초 만에 만료된다. 1ms · 999ms: 초 단위로 내림되어 발급 즉시 만료된다
+    it.each(['900', 'abc', '0m', '-5m', '15 m', '15M', '1ms', '999ms', '1000ms'])(
+      '%j는 거부한다',
+      (ttl) => {
+        expect(() => createJwtConfig(configOf({ JWT_ACCESS_TTL: ttl }))).toThrow('JWT_ACCESS_TTL');
+        expect(() => createJwtConfig(configOf({ JWT_REFRESH_TTL: ttl }))).toThrow(
+          'JWT_REFRESH_TTL',
+        );
+      },
+    );
   });
 
   it('오류 문구에 시크릿 값을 넣지 않는다', () => {
