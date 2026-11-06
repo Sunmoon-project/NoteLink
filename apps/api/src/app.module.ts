@@ -12,11 +12,11 @@ import { HealthController } from './health/health.controller.js';
     MongooseModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        uri: config.get<string>('MONGODB_URI'),
+        // 값이 없으면 DB 연결을 시도하기 전에 바로 오류를 낸다
+        uri: config.getOrThrow<string>('MONGODB_URI'),
       }),
     }),
   ],
   controllers: [HealthController],
 })
-
 export class AppModule {}
