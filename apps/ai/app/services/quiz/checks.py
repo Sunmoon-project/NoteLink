@@ -158,11 +158,12 @@ def _joined(i: int, opts: list[str], keys: list[tuple[str, tuple[Decimal, ...]]]
     """보기 i가 다른 보기 셋 이상을 쉼표로 이어 붙인 것. keys는 보기마다 option_key.
 
     쉼표 뒤에 띄어쓰기가 있을 때만 나눔(1,000 · 2,000은 한 조각). 쉼표로 나뉘는 보기가 둘
-    이상이면 조합 문제(ㄱ, ㄴ · I, II, III · 산소, 질소, 수소)라 뺌(/code-review #136)."""
+    이상이거나 조각이 모두 한 글자면 조합 문제(ㄱ, ㄴ · I, II, III · 산소, 질소, 수소)라 뺌."""
     if sum(len(_PIECE.split(o)) > 1 for o in opts) > 1:
         return False
     parts = _PIECE.split(opts[i])
-    if len(parts) < 3:
+    # 조각이 모두 한 글자면 조합 보기가 하나여도 문제 모양(ㄱ, ㄴ, ㄷ. · Codex #136)
+    if len(parts) < 3 or all(len(norm(x)) <= 1 for x in parts):
         return False
     others = {k for j, k in enumerate(keys) if j != i}
     return sum(option_key(x.strip()) in others for x in parts) >= 3
