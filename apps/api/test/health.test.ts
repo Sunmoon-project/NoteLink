@@ -3,14 +3,15 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/app.setup.js';
+import { HealthController } from '../src/health/health.controller.js';
 
 describe('GET /api/v1/health', () => {
   let app: INestApplication;
 
   beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    // DB 연결 없이 컨트롤러만 검사한다(AppModule은 MongoDB에 연결하므로 CI에서 쓸 수 없음)
+    const moduleRef = await Test.createTestingModule({ controllers: [HealthController] }).compile();
     app = moduleRef.createNestApplication();
     configureApp(app);
     await app.init();
