@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -41,6 +49,23 @@ import { C, ICON, MOTION } from '@/theme';
 // 공통 UI. 웹 프로토타입(ui.tsx)과 같은 이름 · 같은 모양으로 맞췄다.
 
 export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ');
+
+// ── 면 ───────────────────────────────────────────────
+// 같은 카드 · 칩 · 입력도 놓인 면에 따라 바탕색이 다르다 (DESIGN.md 색 · 면).
+// canvas: 회색 화면 바탕 → 그 위는 흰 카드 · 흰 칩
+// white: 흰 카드 · 시트 · 다이얼로그 안 → 채움(fill) 바탕
+// legacy: 아직 개편 전 흰 화면 → 이전처럼 크림 (화면 PR에서 Screen canvas로 옮기면 사라진다)
+type Surface = 'canvas' | 'white' | 'legacy';
+const SurfaceCtx = createContext<Surface>('legacy');
+export const useSurface = () => useContext(SurfaceCtx);
+/** 면에 놓인 카드 · 칩 · 입력의 바탕 */
+const FILL: Record<Surface, string> = { canvas: 'bg-white', white: 'bg-fill', legacy: 'bg-cream' };
+/** 흰 면(카드 · 시트) 안의 내용 — 칩 · 입력이 채움 바탕이 된다. 개편 전 화면에서는 그대로 둔다 */
+export const OnWhite = ({ children }: { children: ReactNode }) => {
+  const surface = useSurface();
+  if (surface === 'legacy') return <>{children}</>;
+  return <SurfaceCtx.Provider value="white">{children}</SurfaceCtx.Provider>;
+};
 
 // ── 모션 ─────────────────────────────────────────────
 // 모든 움직임은 MOTION 토큰을 쓴다. Reanimated는 기본으로 시스템의 '동작 줄이기'를 따른다.
@@ -126,10 +151,13 @@ export function Screen({
   top = true,
   scrollRef,
   onScroll,
+  canvas,
 }: {
   children: ReactNode;
   footer?: ReactNode;
   dark?: boolean;
+  /** 회색 캔버스 바탕 + 흰 카드 (개편된 화면) */
+  canvas?: boolean;
   className?: string;
   pad?: boolean;
   scroll?: boolean;
@@ -156,18 +184,20 @@ export function Screen({
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      className={cx('flex-1', dark ? 'bg-black' : 'bg-white')}
+      className={cx('flex-1', dark ? 'bg-black' : canvas ? 'bg-canvas' : 'bg-white')}
       style={{ paddingTop: top ? insets.top : 0 }}
     >
-      <View className="flex-1">{body}</View>
-      {footer && (
-        <View
-          className="px-5 pt-2"
-          style={{ paddingBottom: inTabs ? 12 : Math.max(insets.bottom, 16) }}
-        >
-          {footer}
-        </View>
-      )}
+      <SurfaceCtx.Provider value={canvas ? 'canvas' : 'legacy'}>
+        <View className="flex-1">{body}</View>
+        {footer && (
+          <View
+            className="px-5 pt-2"
+            style={{ paddingBottom: inTabs ? 12 : Math.max(insets.bottom, 16) }}
+          >
+            {footer}
+          </View>
+        )}
+      </SurfaceCtx.Provider>
     </KeyboardAvoidingView>
   );
 }
@@ -246,7 +276,7 @@ export function Title({
   return (
     <View className="flex-row items-end justify-between pt-4 pb-3">
       <View>
-        <Text className="text-title1 font-bold text-ink">{children}</Text>
+        <Text className="text-page font-bold text-ink">{children}</Text>
         {sub ? <Text className="mt-1 text-footnote text-sub">{sub}</Text> : null}
       </View>
       {right}
@@ -269,7 +299,7 @@ type BtnKind = 'primary' | 'outline' | 'cream' | 'dark' | 'sun' | 'danger' | 'gh
 const BTN: Record<BtnKind, [string, string]> = {
   primary: ['bg-brand', 'text-white'],
   outline: ['border border-brand/40 bg-white', 'text-ink'],
-  cream: ['bg-cream', 'text-ink'],
+  cream: ['', 'text-ink'], // 바탕은 면에 따라 (FILL)
   dark: ['bg-ink', 'text-white'],
   sun: ['bg-sun', 'text-ink'],
   danger: ['bg-danger', 'text-white'],
@@ -295,7 +325,9 @@ export function Btn({
   loading?: boolean;
   icon?: ReactNode;
 }) {
-  const [bg, fg] = BTN[kind];
+  const surface = useSurface();
+  const [base, fg] = BTN[kind];
+  const bg = kind === 'cream' ? FILL[surface] : base;
   return (
     <Tap
       accessibilityRole="button"
@@ -344,18 +376,24 @@ export function Card({
   children: ReactNode;
   className?: string;
   onPress?: () => void;
+  /** cream: 면에 맞춘 기본 카드 (캔버스 위 흰 카드 · 흰 면 안 채움 · 개편 전 크림) */
   tone?: 'cream' | 'white' | 'mint' | 'night';
 }) {
+  const surface = useSurface();
+  const canvas = surface === 'canvas';
   const t = {
-    cream: 'bg-cream',
-    white: 'bg-white border border-line',
+    cream: FILL[surface],
+    // 캔버스 위 흰 카드는 테두리 없이 바탕과의 밝기 차이로 나눈다
+    white: canvas ? 'bg-white' : 'bg-white border border-line',
     mint: 'bg-mint',
     night: 'bg-night',
   }[tone];
-  if (!onPress) return <View className={cx('rounded-2xl', t, className)}>{children}</View>;
+  const shape = cx(canvas ? 'rounded-card' : 'rounded-2xl', t, className);
+  const body = tone === 'night' ? children : <OnWhite>{children}</OnWhite>;
+  if (!onPress) return <View className={shape}>{body}</View>;
   return (
-    <Tap scaleTo={0.98} onPress={onPress} className={cx('rounded-2xl', t, className)}>
-      {children}
+    <Tap scaleTo={0.98} onPress={onPress} className={shape}>
+      {body}
     </Tap>
   );
 }
@@ -410,14 +448,29 @@ export function Row({
 }
 
 export const Group = ({ children, className }: { children: ReactNode; className?: string }) => {
+  const surface = useSurface();
+  const canvas = surface === 'canvas';
   const items = (Array.isArray(children) ? children : [children]).flat().filter(Boolean);
   return (
-    <View className={cx('overflow-hidden rounded-2xl bg-cream', className)}>
-      {items.map((c, i) => (
-        <Appear key={i} index={i} className={i ? 'border-t border-line' : ''}>
-          {c}
-        </Appear>
-      ))}
+    <View
+      className={cx(
+        'overflow-hidden',
+        canvas ? 'rounded-card' : 'rounded-2xl',
+        FILL[surface],
+        className,
+      )}
+    >
+      <OnWhite>
+        {items.map((c, i) => (
+          <Appear
+            key={i}
+            index={i}
+            className={i ? cx('border-t', canvas ? 'border-fill' : 'border-line') : ''}
+          >
+            {c}
+          </Appear>
+        ))}
+      </OnWhite>
     </View>
   );
 };
@@ -456,6 +509,7 @@ export function Chip({
   className?: string;
   small?: boolean;
 }) {
+  const surface = useSurface();
   return (
     <Tap
       accessibilityRole="button"
@@ -465,7 +519,7 @@ export function Chip({
       className={cx(
         'items-center justify-center rounded-full',
         small ? 'h-8 px-3' : 'h-control-sm px-4',
-        on ? 'bg-brand' : 'bg-cream',
+        on ? 'bg-brand' : FILL[surface],
         className,
       )}
     >
@@ -497,8 +551,9 @@ export function Segment<T extends string>({
   onChange: (v: T) => void;
   className?: string;
 }) {
+  const surface = useSurface();
   return (
-    <View className={cx('flex-row rounded-xl bg-cream p-1', className)}>
+    <View className={cx('flex-row rounded-xl p-1', FILL[surface], className)}>
       {items.map((it) => (
         <Pressable
           key={it}
@@ -532,11 +587,13 @@ export function Input({
   invalid,
   ...rest
 }: TextInputProps & { right?: ReactNode; invalid?: boolean }) {
+  const surface = useSurface();
   return (
     <View
       className={cx(
-        'flex-row items-center rounded-xl border bg-white px-4',
-        invalid ? 'border-danger' : 'border-line',
+        'flex-row items-center rounded-xl border px-4',
+        surface === 'white' ? 'bg-fill' : 'bg-white',
+        invalid ? 'border-danger' : surface === 'legacy' ? 'border-line' : 'border-transparent',
         className,
       )}
     >
@@ -567,8 +624,9 @@ export function Search({
   placeholder: string;
   onSubmit?: () => void;
 }) {
+  const surface = useSurface();
   return (
-    <View className="h-control flex-row items-center rounded-xl bg-cream px-4">
+    <View className={cx('h-control flex-row items-center rounded-xl px-4', FILL[surface])}>
       <SearchIcon size={ICON.sm} color={C.sub} />
       <TextInput
         value={value}
@@ -665,10 +723,10 @@ export function Sheet({
             entering={SlideInDown.duration(MOTION.enter).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(MOTION.exit).easing(Easing.in(Easing.cubic))}
             accessibilityViewIsModal
-            className="max-h-[88%] rounded-t-3xl bg-white px-5 pt-2"
+            className="max-h-[88%] rounded-t-sheet bg-white px-5 pt-2"
             style={{ paddingBottom: Math.max(insets.bottom, 20) }}
           >
-            <View className="mb-3 h-1 w-10 self-center rounded-full bg-cream-2" />
+            <View className="mb-3 h-1 w-10 self-center rounded-full bg-fill" />
             {(title || right) && (
               <View className="mb-3 flex-row items-center justify-between">
                 <Text className="text-headline font-bold text-ink">{title}</Text>
@@ -684,7 +742,7 @@ export function Sheet({
               </View>
             )}
             <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-              {children}
+              <OnWhite>{children}</OnWhite>
             </ScrollView>
           </Animated.View>
         )}
@@ -726,9 +784,9 @@ export function Dialog({
             entering={FadeInDown.duration(MOTION.enter).easing(Easing.out(Easing.cubic))}
             exiting={FadeOut.duration(MOTION.exit)}
             accessibilityViewIsModal
-            className="w-full items-center rounded-3xl bg-white p-6"
+            className="w-full items-center rounded-sheet bg-white p-6"
           >
-            {children}
+            <OnWhite>{children}</OnWhite>
           </Animated.View>
         )}
       </View>
