@@ -3,7 +3,8 @@
 ai_jobs.type = 'quiz_generate' (공용 계약 AiJobType).
 ai_jobs.type = 'quiz_pregen': 노트를 만들 때 NestJS가 넣는 첫 맞춤 퀴즈 미리 만들기(#134). input ·
   result는 quiz_generate와 같고, 처리기는 사용자가 기다리는 작업이 없을 때만 가져갑니다
-  (worker/jobs.py). 새 노트는 개념 뽑기가 더해져 3분 가까이 걸려서 미리 만들어 둡니다
+  (worker/jobs.py). 새 노트는 개념 뽑기가 더해져 3분 가까이 걸려서 미리 만들어 둡니다.
+
   코드  쪽마다 문제 수 나누기 · 과목 판단(영어 문장 과목 / 용어 과목) · 쪽마다 유형 돌리기 ·
         세트 안에서 개념 · 정답 겹치지 않게 · 못 만든 자리는 다른 쪽으로 넘기기
   LLM   문제 1개씩 만들기(생성 모델) → 코드 검사(checks.code_check) → '정답 둘' 검사

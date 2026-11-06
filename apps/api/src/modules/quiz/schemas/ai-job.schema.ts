@@ -16,6 +16,7 @@ export class AiJob {
       'quiz_generate',
       'quiz_pregen',
       'similar_quiz',
+      'today_review',
       'explain',
       'avatar_profile',
       'image_check',
