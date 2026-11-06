@@ -157,7 +157,7 @@ def _joined(i: int, opts: list[str]) -> bool:
     """보기 i가 다른 보기 셋 이상을 쉼표로 이어 붙인 것. 조각이 모두 한 글자인 조합 보기
     (ㄱ, ㄴ, ㄷ · A, B, C)는 정상적인 문제 모양이라 뺌."""
     parts = [x.strip() for x in opts[i].split(",")]
-    if len(parts) < 3 or all(len(x) <= 1 for x in parts):
+    if len(parts) < 3 or all(len(norm(x)) <= 1 for x in parts):  # ㄱ, ㄴ, ㄷ. (Codex #136)
         return False
     others = {option_key(o) for j, o in enumerate(opts) if j != i}
     return sum(option_key(x) in others for x in parts) >= 3

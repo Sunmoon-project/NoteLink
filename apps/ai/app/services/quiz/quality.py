@@ -375,7 +375,10 @@ def repair(
     # 요청에만 있는 말이라 code_check가 아니라 여기서 봄(/code-review: 지시사항 · 그대로 둘
     # 경우는 간호 · 임상 보기에도 나옴)
     if any(_REPAIR_NOTE.search(o) for o in new) or any(
-        re.match(rf"{re.escape(k)}\s*[(:\[]", o) for o in new for k in [*keep, d["answer"]] if k
+        re.match(rf"{re.escape(k)}\s*[(:\[]", o, re.IGNORECASE)  # Fasten: … (Codex #136)
+        for o in new
+        for k in [*keep, d["answer"]]
+        if k
     ):
         return None
     swap = dict(zip(bad, new, strict=True))
