@@ -339,3 +339,49 @@ def test_a_rule_question_with_two_blanks_is_caught() -> None:
     # 규칙 유형을 빼고 보던 것은 코드의 ()가 빈칸으로 바뀌던 때문이라 이제는 모든 유형
     # (/code-review #94)
     assert "빈칸이 여러 개" in why(draft(passage="The boxes are ____ and ____"), "규칙")
+
+
+def test_an_option_joining_other_options_fails() -> None:
+    joined = draft(
+        stem="다음 설명이 나타내는 용어는 무엇입니까?",
+        passage="일정 압력 조건에서 온도의 변화에 따른 binary system을 나타내는 그래프입니다.",
+        options=[
+            "TXY 다이어그램",
+            "에탄올 상태 변화",
+            "압력과 끓는점 관계",
+            "물과 에탄올 예시",
+            "TXY 다이어그램, 에탄올 상태 변화, 압력과 끓는점 관계, 물과 에탄올 예시, 기체 분율",
+        ],
+        answer="TXY 다이어그램",
+    )
+    assert "다른 보기를 이어 붙인 보기" in why(joined, "정의")
+    english = draft(
+        options=["stacked", "extended", "fastened", "docked", "stacked, fastened, extended, docked"]
+    )
+    assert "다른 보기를 이어 붙인 보기" in why(english)
+    numbers = draft(options=["1,000", "2,000", "3,000", "4,000", "1,000, 2,000, 3,000"])
+    assert "다른 보기를 이어 붙인 보기" in why(numbers)  # 천 단위 쉼표는 나누지 않음
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["분율", "몰 분율", "질량 분율", "부피 분율", "기상 조성"],
+        ["deliver", "delivering", "delivered", "delivery", "deliverable"],
+        ["H2O", "H2O2 (과산화수소)", "CO2 (이산화탄소)", "NH3", "CH4"],
+        ["15", "1.5 (반감기)", "150", "10", "1,000"],
+        ["ㄱ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄴ, ㄷ", "ㄱ, ㄴ, ㄷ"],
+        ["ㄱ", "ㄴ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄴ, ㄷ"],
+        ["ㄱ", "ㄴ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄴ, ㄷ."],  # 문장부호가 붙어도 조합 (Codex #136)
+        ["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㄱ, ㄴ, ㄷ"],  # 조합 보기가 하나뿐 (Codex #136 3차)
+        ["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㄱ, ㄴ, ㄷ."],
+        ["I", "II", "III", "I, II", "I, II, III"],  # 여러 글자 조합 (/code-review #136)
+        ["산소", "질소", "수소", "산소, 질소", "산소, 질소, 수소"],
+        ["물", "물질의 상태 변화를 나타낸다", "기체", "액체", "고체"],
+        ["map", "flatMap()", "filter", "reduce", "forEach"],
+        ["의사의 지시사항을 확인한다", "혈압을 잰다", "체온을 잰다", "맥박을 잰다", "호흡을 센다"],
+    ],
+)
+def test_options_that_only_contain_other_options_pass(options: list[str]) -> None:
+    d = draft(options=options, answer=options[0])
+    assert "다른 보기를 이어 붙인 보기" not in why(d, "특징")
