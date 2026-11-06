@@ -353,3 +353,23 @@ it('측정 중이 아닐 때 가로로 돌리면 이동하지 않고 안내하�
   await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
   expect(router.push).toHaveBeenCalledWith('/landscape');
 });
+
+it('공부 목록의 목표는 "목표 30분" · "목표 없음"으로, 목표를 두 번 적지 않는다', async () => {
+  const base = await api.study.today();
+  const item = (id: string, goalMin: number | null) => ({
+    ...(base.items[0] ?? {}),
+    _id: id,
+    title: id,
+    subjectName: '영어',
+    goalMin,
+    accumulatedSec: 0,
+  });
+  jest.spyOn(api.study, 'today').mockResolvedValue({
+    ...base,
+    items: [item('a', 30), item('b', null)],
+  } as never);
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('영어 · 목표 30분')).toBeTruthy();
+  expect(screen.getByText('영어 · 목표 없음')).toBeTruthy();
+  expect(screen.queryByText(/목표 목표/)).toBeNull();
+});
