@@ -341,7 +341,7 @@ def test_a_rule_question_with_two_blanks_is_caught() -> None:
     assert "빈칸이 여러 개" in why(draft(passage="The boxes are ____ and ____"), "규칙")
 
 
-def test_an_option_holding_other_options_fails() -> None:
+def test_an_option_joining_other_options_fails() -> None:
     joined = draft(
         stem="다음 설명이 나타내는 용어는 무엇입니까?",
         passage="일정 압력 조건에서 온도의 변화에 따른 binary system을 나타내는 그래프입니다.",
@@ -354,29 +354,11 @@ def test_an_option_holding_other_options_fails() -> None:
         ],
         answer="TXY 다이어그램",
     )
-    assert "다른 보기를 품은 보기" in why(joined, "정의")
+    assert "다른 보기를 이어 붙인 보기" in why(joined, "정의")
     english = draft(
         options=["stacked", "extended", "fastened", "docked", "stacked, fastened, extended, docked"]
     )
-    assert "다른 보기를 품은 보기" in why(english)
-
-
-def test_repair_notes_in_an_option_fail() -> None:
-    d = draft(
-        stem="다음 설명에 해당하는 용어는 무엇입니까?",
-        passage="온도를 높이면 ____의 성분 비율이 커집니다.",
-        options=[
-            "액상 분율",
-            "액상 조성",
-            "기상 내 에탄올 분율",
-            "액상 분율 (그대로 둠: 액상 분율은 오답이 맞음, 하지만 지시사항에 따라)",
-            "상평형의 이해",
-        ],
-        answer="기상 내 에탄올 분율",
-    )
-    reasons = why(d, "정의")
-    assert "다른 보기를 품은 보기" in reasons
-    assert "보기에 고친 이유가 섞임" in reasons
+    assert "다른 보기를 이어 붙인 보기" in why(english)
 
 
 @pytest.mark.parametrize(
@@ -384,17 +366,15 @@ def test_repair_notes_in_an_option_fail() -> None:
     [
         ["분율", "몰 분율", "질량 분율", "부피 분율", "기상 조성"],
         ["deliver", "delivering", "delivered", "delivery", "deliverable"],
-        [
-            "x축은 액체의 분율을 나타낸다",
-            "x축은 기체의 분율을 나타낸다",
-            "y축은 압력을 나타낸다",
-            "y축은 액체의 분율을 나타낸다",
-            "x축은 온도를 나타낸다",
-        ],
+        ["H2O", "H2O2 (과산화수소)", "CO2 (이산화탄소)", "NH3", "CH4"],
+        ["15", "1.5 (반감기)", "150", "10", "1,000"],
+        ["ㄱ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄴ, ㄷ", "ㄱ, ㄴ, ㄷ"],
+        ["ㄱ", "ㄴ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄴ, ㄷ"],
+        ["물", "물질의 상태 변화를 나타낸다", "기체", "액체", "고체"],
+        ["map", "flatMap()", "filter", "reduce", "forEach"],
+        ["의사의 지시사항을 확인한다", "혈압을 잰다", "체온을 잰다", "맥박을 잰다", "호흡을 센다"],
     ],
 )
-def test_close_but_fair_options_pass(options: list[str]) -> None:
+def test_options_that_only_contain_other_options_pass(options: list[str]) -> None:
     d = draft(options=options, answer=options[0])
-    reasons = why(d, "특징")
-    assert "다른 보기를 품은 보기" not in reasons
-    assert "보기에 고친 이유가 섞임" not in reasons
+    assert "다른 보기를 이어 붙인 보기" not in why(d, "특징")

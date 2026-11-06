@@ -284,6 +284,20 @@ def test_checked_keeps_the_first_reasons_when_the_repair_fails_again() -> None:
     assert out == (d, ["노트에서 정답과 같은 묶음인 보기: stock"], None, False, False)
 
 
+@pytest.mark.parametrize(
+    "new",
+    [
+        "stock (그대로 둠: 지시사항에 따라 기존 보기에 포함됨)",  # 요청의 말 (화공양론, 11/06)
+        "fasten: 노트에 있는 낱말이라 오답이 맞음",  # 남은 보기 뒤에 설명
+        "stack (정답)",
+    ],
+)
+def test_repair_drops_a_new_option_with_notes(new: str) -> None:
+    d = draft(SCENE, ["stack", "stock", "fasten", "order", "move"], "stack")
+    llm = FakeLlm({"Repair": [{"options": [new]}]})
+    assert qa.repair(llm, d, {"order"}, ["x"], PAGE) is None
+
+
 def test_repair_keeps_a_new_option_that_only_contains_the_answer() -> None:
     # same_item은 안에 들어 있으면 같다고 봄: 정답 'be'와 비교하면 'became'까지 버리게 됨
     d = draft(SCENE, ["be", "is", "are", "was", "been"], "be")

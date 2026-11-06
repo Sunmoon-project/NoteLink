@@ -24,8 +24,6 @@ from app.services.quiz.text import (
 NEGATIVE = re.compile(r"아닌|않은|틀린|옳지\s?않|잘못된|거리가 먼")
 KO_TYPES = ("정의", "특징", "분류")  # 한국어 용어 과목 유형 (임상병리, 10/22)
 _KO = re.compile(r"[가-힣]{2,}")
-# 오답 보기 고치기(quality.repair)에 보낸 요청의 말이 보기로 돌아온 것 (화공양론, 11/06)
-_META = re.compile(r"그대로\s?둠|그대로 둘|바꿀 오답|오답 보기|지시\s?사항")
 
 
 class Seen(TypedDict):
@@ -155,10 +153,14 @@ def form_giveaway(d: Draft) -> bool:
     return sum(form(o) == form(d["answer"]) for o in opts) < 2
 
 
-def _holds(w: str, o: str) -> bool:
-    """보기 w가 다른 보기 o를 목록 · 괄호 · 덧붙인 글 속에 품고 있음."""
-    k = norm(o)
-    return bool(k) and k in norm(w) and ("," in w or "(" in w or len(w) > 2 * len(o) + 10)
+def _joined(i: int, opts: list[str]) -> bool:
+    """보기 i가 다른 보기 셋 이상을 쉼표로 이어 붙인 것. 조각이 모두 한 글자인 조합 보기
+    (ㄱ, ㄴ, ㄷ · A, B, C)는 정상적인 문제 모양이라 뺌."""
+    parts = [x.strip() for x in opts[i].split(",")]
+    if len(parts) < 3 or all(len(x) <= 1 for x in parts):
+        return False
+    others = {option_key(o) for j, o in enumerate(opts) if j != i}
+    return sum(option_key(x) in others for x in parts) >= 3
 
 
 def code_check(
@@ -169,13 +171,11 @@ def code_check(
     opts = d["options"]
     if len(opts) != CHOICES or len({option_key(o) for o in opts}) != CHOICES:
         why.append(f"보기 {CHOICES}개가 아니거나 겹침")
-    # 다른 보기를 안에 품은 보기: 보기 넷을 이어 붙인 'TXY 다이어그램, 에탄올 상태 변화, …',
-    # 오답 고치기가 돌려준 '액상 분율 (그대로 둠: …)'이 모든 검사를 통과함(화공양론, 11/06).
-    # 긴 쪽이 목록 · 괄호이거나 훨씬 길 때만: 분율 · 몰 분율, deliver · delivering은 좋은 보기
-    if any(_holds(w, o) for o in opts for w in opts if o is not w):
-        why.append("다른 보기를 품은 보기")
-    if any(_META.search(o) for o in opts):
-        why.append("보기에 고친 이유가 섞임")
+    # 다섯째 보기가 나머지를 이어 붙인 'TXY 다이어그램, 에탄올 상태 변화, …'(화공양론, 11/06),
+    # 'stacked, fastened, extended, docked'(토익)가 모든 검사를 통과함. 조각이 다른 보기와
+    # 똑같을 때만 봄: 글자가 안에 들어 있기만 한 H2O · H2O2, 15 · 1.5, ㄱ · ㄱ, ㄴ은 좋은 보기
+    if any(_joined(i, opts) for i in range(len(opts))):
+        why.append("다른 보기를 이어 붙인 보기")
     parsed = [number_values(o) for o in opts]
     if any(_same_parsed(a, b) for i, a in enumerate(parsed) for b in parsed[i + 1 :]):
         why.append("값이 같은 숫자 보기")
