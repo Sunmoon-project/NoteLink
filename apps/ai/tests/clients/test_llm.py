@@ -1,11 +1,13 @@
 import json
+import re
 import threading
+import time
 from collections.abc import Callable
 
 import httpx2
 import pytest
 
-from app.clients.llm import LlmError, SchoolLlm, repair
+from app.clients.llm import STOPPED, LlmError, SchoolLlm, repair, stop_on
 
 SCHEMA = {"type": "object"}
 
@@ -182,16 +184,68 @@ def test_unreadable_answer_is_retried_then_raises() -> None:
 
 def test_calls_keep_the_minimum_gap_from_the_previous_send() -> None:
     server = Server(reply("{}"), reply("{}"))
-    now = [100.0]
+    c = Clock(server, gap=2.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    c.now += 0.5
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.slept == [pytest.approx(1.7)] and c.sent == [100.0, pytest.approx(102.2)]
+
+
+def test_a_call_stopped_while_waiting_for_its_turn_is_not_sent() -> None:
+    # 맞춤 퀴즈가 세트를 돌려주는 동안 차례(102.2)를 기다리던 호출: 보내지 않음(Codex 리뷰 #125)
+    server = Server(reply("{}"), reply("{}"))
+    c = Clock(server, gap=2.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    stop = threading.Event()
+    c.on_sleep.append(stop.set)
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [100.0]
+    # 멈춘 호출은 차례를 가져가지 않음: 다음 호출이 그 빈 차례 뒤로 밀리지 않음(/code-review #125)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [100.0, pytest.approx(102.2)]
+
+
+def test_a_stop_wakes_a_call_waiting_for_its_turn() -> None:
+    # 실제 대기(time.sleep)일 때: 429로 10초를 기다리던 호출이 멈춤 신호에 바로 깨어남
+    server = Server(reply("{}"))
     llm = SchoolLlm(
-        "https://llm.test",
-        "key",
-        gap_sec=2.2,
-        transport=httpx2.MockTransport(server.handle),
-        sleep=server.slept.append,
-        clock=lambda: now[0],
+        "https://llm.test", "key", gap_sec=0, transport=httpx2.MockTransport(server.handle)
     )
-    llm.call("gemma", "s", "u", SCHEMA, "X")
-    now[0] += 0.5
-    llm.call("gemma", "s", "u", SCHEMA, "X")
-    assert server.slept == [pytest.approx(1.7)]
+    llm._hold(10)
+    stop = threading.Event()
+    threading.Timer(0.1, stop.set).start()
+    start = time.monotonic()
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert time.monotonic() - start < 2 and server.requests == []
+
+
+def test_a_stop_during_the_last_backoff_is_a_stop_not_a_server_error() -> None:
+    # 마지막 시도의 503 뒤 대기 중에 멈춤: 'HTTP 503'(서버 실패)이 아니라 멈춤(/code-review #125)
+    server = Server(reply("", 503), reply("", 503), reply("", 503))
+    c = Clock(server, gap=0)
+    stop = threading.Event()
+    c.on_sleep += [lambda: None, lambda: None, stop.set]  # 세 번째(마지막) 대기 중에
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert len(c.sent) == 3
+
+
+def test_a_retry_is_not_sent_after_a_stop() -> None:
+    server = Server(reply("", 503), reply("{}"))
+    c = Clock(server, gap=0)
+    stop = threading.Event()
+    c.on_sleep.append(stop.set)  # 503 뒤 다시 보내기 전에 기다리는 사이 멈춤
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [100.0]
+
+
+def test_stop_on_only_covers_its_own_block() -> None:
+    server = Server(reply("{}"))
+    stop = threading.Event()
+    stop.set()
+    with stop_on(stop):
+        pass
+    assert server.client().call("gemma", "s", "u", SCHEMA, "X") == {}  # 블록 밖에서는 보냄

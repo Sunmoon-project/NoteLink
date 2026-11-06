@@ -70,12 +70,12 @@ import threading
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
-from app.clients.llm import JsonObject, Llm, LlmError
+from app.clients.llm import STOPPED, JsonObject, Llm, LlmError, check_stop, stop_on
 from app.core.config import settings
 from app.services.quiz import concepts, quality, similar
 from app.services.quiz.checks import (
@@ -575,15 +575,14 @@ def _take(seen: list[Seen], used: list[str]) -> Accept:
     return accept
 
 
-STOPPED = "멈춤(다 모았거나 시간 상한)"
-
-
 @dataclass(frozen=True)
 class _Until:
-    """stop이 켜진 뒤의 호출은 보내지 않고 LlmError.
+    """stop이 켜진 뒤의 호출은 보내지 않고 LlmError(STOPPED).
 
     다 모았거나 돌려준 뒤에도 남은 자리 스레드는 검사 · 풀기 호출을 몇 번 더 하는데, 학교 LLM
     클라이언트는 프로세스에 하나라 그 호출이 다음 작업의 차례를 밀어냄(/code-review #95).
+    이미 SchoolLlm 안에서 차례를 기다리거나 다시 보내려는 호출도 stop_on으로 멈춤(Codex 리뷰
+    #125). 보낸 뒤 응답을 기다리는 호출은 끝까지 기다림.
     """
 
     llm: Llm
@@ -600,11 +599,11 @@ class _Until:
         max_tokens: int = 1500,
         temperature: float = 0.0,
     ) -> JsonObject:
-        if self.stop.is_set():
-            raise LlmError(STOPPED)
-        return self.llm.call(
-            model, system, user, schema, name, max_tokens=max_tokens, temperature=temperature
-        )
+        with stop_on(self.stop):
+            check_stop()  # 가짜 LLM처럼 stop_on을 보지 않는 클라이언트에도
+            return self.llm.call(
+                model, system, user, schema, name, max_tokens=max_tokens, temperature=temperature
+            )
 
 
 def gen_one(
@@ -728,12 +727,18 @@ def _concept_names(llm: Llm, m: Material, pages: dict[int, str]) -> list[str]:
     texts = [t for _, t in sorted(pages.items()) if len(t.split("\n")) >= MIN_LINES]
     names: list[str] = []
     # 한 쪽이 LlmError면 작업 처리기가 다시 시도하므로 다른 쪽도 더 호출하지 않음: 시작하지 않은
-    # 쪽은 취소하고, 도는 쪽은 다음 호출에서 멈춤(_Until)
+    # 쪽은 취소하고, 도는 쪽은 다음 호출에서 멈춤(_Until). 끝나는 차례로 기다려 앞쪽이 느려도
+    # 뒤쪽 실패를 바로 알아챔(쪽 순서로 기다리면 앞쪽이 끝날 때까지 호출이 이어짐, Codex #125)
     failed = threading.Event()
     until = _Until(llm, failed)
     pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="concepts")
     try:
-        found = list(pool.map(lambda t: concepts.for_page(until, t, m.title)[0], texts))
+        futures = [pool.submit(concepts.for_page, until, t, m.title) for t in texts]
+        done, _ = wait(futures, return_when=FIRST_EXCEPTION)  # 모두 끝나거나 하나가 실패할 때까지
+        for f in futures:  # 기다림을 끝낸 실패(그 뒤에 끝난 쪽이 아니라)
+            if f in done and (e := f.exception()) is not None:
+                raise e
+        found = [f.result()[0] for f in futures]
     except BaseException:
         failed.set()
         raise

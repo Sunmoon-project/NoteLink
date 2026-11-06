@@ -728,6 +728,15 @@ def test_a_question_of_another_note_is_not_in_the_overlap_check() -> None:
 
 # ---------- 동시에 만들기 (#95) ----------
 
+
+def join_threads(prefix: str) -> None:
+    """돌려준 뒤 남은 스레드(이름이 prefix로 시작)가 끝나기를 기다림."""
+    for t in threading.enumerate():
+        if t.name.startswith(prefix):
+            t.join(5)
+            assert not t.is_alive()
+
+
 ANSWER_OF = {d["question"]["passage"]: a for a, d in GOOD.items()}
 
 
@@ -858,7 +867,7 @@ def test_the_set_goes_back_at_the_hard_limit_without_waiting_for_a_slot(
     assert time.monotonic() - start < 3
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
     assert result["failed"] == [{"pageNo": 2, "why": [generate.TIMEOUT]}]
-    time.sleep(0.3)  # 늦은 자리가 다음 단계까지 가도록
+    join_threads("quiz-slot")  # 늦은 자리가 끝까지 가도록(시간이 아니라 스레드가 끝나기를)
     late = GOOD["람블편모충"]["question"]["passage"]  # 2쪽 초안의 제시문
     assert not any(late in u for u in llm.named("Naturals") + llm.named("Check"))
 
@@ -938,3 +947,33 @@ def test_concept_names_of_pages_are_made_at_the_same_time(
     result, _ = run(llm, inp)
     assert result["concepts"] == NAMES  # 쪽 순서대로 합침
     assert len(result["questions"]) == 1
+
+
+def test_a_later_page_failing_stops_concept_names_without_waiting_for_an_earlier_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1쪽은 느리고 2쪽이 먼저 실패: 1쪽이 끝나기를 기다리지 않고 바로 다시 시도로, 늦게 끝난 1쪽은
+    # 검사(Names) 호출을 더 하지 않음(Codex 리뷰 #125)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    inp = job(size=1)
+    inp["material"]["concepts"] = []
+    release = threading.Event()
+
+    def names(user: str) -> JsonObject | LlmError:
+        if "람블편모충" in user:
+            return LlmError("HTTP 503")
+        release.wait(10)
+        return {"concepts": ["이질 아메바", "대장 아메바"]}
+
+    llm = parallel_llm(by_page)
+    llm.answers["Concepts"] = names
+    llm.answers["Names"] = lambda u: {"items": []}
+    start = time.monotonic()
+    try:
+        with pytest.raises(LlmError):
+            run(llm, inp)
+    finally:
+        release.set()
+    assert time.monotonic() - start < 3
+    join_threads("concepts")  # 늦은 1쪽이 끝까지 가도록
+    assert llm.named("Names") == []
