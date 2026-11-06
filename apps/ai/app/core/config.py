@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     quiz_check_model: str = "qwen-27b"  # 만든 문제를 직접 풀어 보는 검사
     llm_call_gap_sec: float = 2.2  # 분당 30회 한도 아래로 유지
     note_split_model: str = "gemma-4-26b"  # 노트 문단 경계 고르기 (글자는 고치지 않음)
+    # 노트 후처리(오타 고치기 · 개념 태그). 과목 용어 사전이 준비될 때까지 꺼 둠
+    note_refine_enabled: bool = False
+    note_refine_model: str = "gemma-4-26b"  # qwen은 호출 1~3분이라 쓰지 않음(10/30 실험)
 
     # ai_jobs 작업 처리기. FastAPI는 이 컬렉션만 읽고 씁니다(DB · 색인 관리는 NestJS).
     mongodb_uri: SecretStr = SecretStr("")

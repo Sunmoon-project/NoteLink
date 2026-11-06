@@ -110,6 +110,14 @@ def _chunk(order: int, part: _Part, max_chars: int) -> Chunk:
     }
 
 
+def by_page(chunks: list[Chunk]) -> list[list[Chunk]]:
+    """조각을 첫 줄의 쪽 번호로 묶음 (LLM을 쪽마다 1번 부를 때)."""
+    pages: dict[int, list[Chunk]] = {}
+    for c in chunks:
+        pages.setdefault(c["lines"][0]["pageNo"] if c["lines"] else 0, []).append(c)
+    return [pages[k] for k in sorted(pages)]
+
+
 def pages_of(chunk: Chunk) -> list[PageRef]:
     """조각이 걸친 쪽과 OCR 줄 번호."""
     out: dict[int, list[int]] = {}
