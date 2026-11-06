@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 
 import { createMongooseOptions } from './config/mongo.config.js';
 import { HealthController } from './health/health.controller.js';
+import { AuthModule } from './modules/auth/auth.module.js';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { HealthController } from './health/health.controller.js';
       // MONGODB_URI가 없으면 DB 연결을 시도하기 전에 바로 오류를 낸다
       useFactory: createMongooseOptions,
     }),
+    AuthModule,
   ],
   controllers: [HealthController],
 })
