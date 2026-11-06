@@ -4,17 +4,24 @@ result = note_result([{"pageNo": 1, "read": ocr_json, "image": img}, ...])
 result["pages"]        # ① 쪽별 원본 글자
 result["lineResults"]  # ② 쪽별 OCR 줄 결과
 chunks = split_with_llm(llm, model, result["chunks"])   # ④ 노트 조각
+chunks = refine_note(llm, model, chunks, subject, input_seeds)
+                                                        # 시드 → 오타 · 개념 태그 (설정으로 켬)
 vectors = voyage().embed(embed_texts(chunks), "document")
 """
 
 from typing import Any, NotRequired, TypedDict
 
 from app.clients.llm import JsonObject, Llm, LlmError
+from app.core.config import settings
 from app.services.note.chunking import split_rows
 from app.services.note.emphasis import Image, annotate_colors, merge_marks
 from app.services.note.handoff import line_results, page_texts
 from app.services.note.layout import layout_pages, lines_from_read
 from app.services.note.models import Chunk, Line, Mark, PageLayout, PageLines, PageText
+from app.services.note.seeds import TopicSeed, seed_terms
+from app.services.note.tagging import tag_concepts
+from app.services.note.terms import TermDict
+from app.services.note.typos import apply_fixes, find_typos
 from app.services.note.uncertain import UNCERTAIN_MEAN, mark_uncertain
 
 SPLIT_SYSTEM = (
@@ -161,6 +168,34 @@ def cut_chunk(chunk: Chunk, starts: list[int]) -> list[Chunk]:
 
 def _clip(m: Mark, lo: int, hi: int) -> Mark:
     return {**m, "start": max(m["start"], lo) - lo, "end": min(m["end"], hi) - lo}
+
+
+def refine_chunks(
+    llm: Llm, model: str, chunks: list[Chunk], terms: TermDict, *, enabled: bool | None = None
+) -> list[Chunk]:
+    """오타 고치기 → 개념 태그. 꺼져 있거나 사전이 비면 그대로 돌려줌(쪽마다 LLM 최대 2번)."""
+    on = settings.note_refine_enabled if enabled is None else enabled
+    if not on or not len(terms):
+        return chunks
+    fixed = apply_fixes(chunks, find_typos(llm, model, chunks, terms))
+    return tag_concepts(llm, model, fixed, terms)
+
+
+def refine_note(
+    llm: Llm,
+    model: str,
+    chunks: list[Chunk],
+    subject: str,
+    seeds: list[TopicSeed],
+    *,
+    enabled: bool | None = None,
+) -> list[Chunk]:
+    """시드에서 사전 고르기 → 오타 · 개념 태그. 꺼져 있거나 쓸 시드가 없으면 그대로 돌려줌."""
+    on = settings.note_refine_enabled if enabled is None else enabled
+    if not on:
+        return chunks
+    terms = seed_terms(llm, model, chunks, subject, seeds)
+    return refine_chunks(llm, model, chunks, terms, enabled=True)
 
 
 def embed_texts(chunks: list[Chunk]) -> list[str]:

@@ -3,10 +3,10 @@ import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { QuizNotesScreen, QuizSimilarScreen } from '../features/quiz/quiz';
 import { api } from '../lib/api';
-import { mockDemo } from '../lib/mock/api';
+import { mockDemo } from './fixtures/api';
 import { renderScreen, setParams } from '../test-utils';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),

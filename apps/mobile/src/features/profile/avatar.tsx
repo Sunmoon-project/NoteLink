@@ -11,6 +11,7 @@ import { uploadToBlob, type LocalFile } from '@/lib/upload';
 import { socket } from '@/lib/socket';
 import { useSocket } from '@/hooks';
 import { toast } from '@/stores/toast';
+import { AV_STYLES } from '@/lib/avatar-styles';
 import { useNet } from '@/stores/net';
 import {
   Avatar,
@@ -29,6 +30,8 @@ import {
   cx,
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
+import { aiWaiting } from '@/lib/ai';
+import { AiPending } from '@/components/AiPending';
 
 // p.82 프로필 변경 (사진 → AI 서버 아바타 생성) / p.83 아바타 설정
 
@@ -246,6 +249,21 @@ export function PhotoGenScreen() {
   useEffect(() => {
     if (job.data) finish(job.data.status);
   }, [job.data?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+  // AI 서버가 없으면 생성을 대기열에 두고 돌아간다 (FR-65-05)
+  if (aiWaiting(job.data))
+    return (
+      <Screen
+        footer={<Btn onPress={() => router.dismissTo('/(tabs)/profile')}>프로필로 돌아가기</Btn>}
+      >
+        <Header title="프로필 생성" back={false} />
+        <View className="pt-10">
+          <AiPending
+            what="프로필 이미지 생성"
+            hint="사진은 저장했어요. AI 서버가 연결되면 고른 스타일로 만들어져요."
+          />
+        </View>
+      </Screen>
+    );
   return (
     <Screen>
       <Header title="프로필 생성" back={false} />
@@ -276,26 +294,6 @@ export function PhotoGenScreen() {
     </Screen>
   );
 }
-
-const AV_STYLES = [
-  {
-    id: 'nice',
-    name: 'Nice Avatar',
-    sub: '2D 플랫 스타일',
-    face: '👩🏻',
-    maleFace: '👨🏻',
-    bg: '#f6e3d8',
-  },
-  {
-    id: '3d',
-    name: '3D Avatar Creator',
-    sub: '3D 리얼리즘',
-    face: '👩🏽',
-    maleFace: '👨🏽',
-    bg: '#d9dcd6',
-  },
-  { id: 'toon', name: 'Cartoon 3D', sub: '3D 카툰', face: '👩🏼‍🦱', maleFace: '👨🏼‍🦱', bg: '#f3e6d6' },
-];
 
 /** p.83 #26 아바타 스타일 선택 */
 export function AvatarStyleScreen() {

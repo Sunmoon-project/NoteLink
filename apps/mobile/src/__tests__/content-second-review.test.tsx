@@ -28,7 +28,7 @@ jest.mock('../lib/upload', () => ({
     `https://blob.example/${file.name}`,
 }));
 jest.mock('../lib/image-edit', () => ({ editPhoto: jest.fn() }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'https://api.example' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'https://api.example' } }));
 jest.mock('expo-router', () => ({
   router: {
     push: jest.fn(),

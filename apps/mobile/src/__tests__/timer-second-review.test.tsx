@@ -47,7 +47,7 @@ jest.mock('../lib/api', () => ({
   },
 }));
 jest.mock('../stores/toast', () => ({ toast: (...args: unknown[]) => mockToast(...args) }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'https://api.example' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'https://api.example' } }));
 jest.mock('../lib/feature-navigation', () => ({ useFeatureNavigation: () => jest.fn() }));
 jest.mock('../hooks', () => ({ ...jest.requireActual('../hooks'), useNow: () => mockNow }));
 jest.mock('expo-secure-store', () => ({

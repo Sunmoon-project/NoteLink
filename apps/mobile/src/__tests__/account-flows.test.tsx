@@ -32,7 +32,7 @@ jest.mock('../lib/api', () => ({
     return mockApi;
   },
 }));
-jest.mock('../lib/env', () => ({ env: { useMock: false, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: false, apiUrl: 'http://api' } }));
 
 const A = { accessToken: 'a', refreshToken: 'a-r' };
 const B = { accessToken: 'b', refreshToken: 'b-r' };

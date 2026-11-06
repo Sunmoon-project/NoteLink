@@ -1,7 +1,7 @@
 import { api } from '../lib/api';
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
-jest.mock('../lib/mock/seed', () => {
-  const actual = jest.requireActual('../lib/mock/seed');
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
+jest.mock('./fixtures/seed', () => {
+  const actual = jest.requireActual('./fixtures/seed');
   return { ...actual, seedUser: () => ({ ...actual.seedUser(), pointBalance: 100000 }) };
 });
 jest.mock('expo-secure-store', () => ({

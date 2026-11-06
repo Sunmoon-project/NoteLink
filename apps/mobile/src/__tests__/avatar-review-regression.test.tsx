@@ -11,12 +11,12 @@ import {
 } from '../features/profile/avatar';
 import { api } from '../lib/api';
 import { SettingsScreen } from '../features/profile/settings';
-import { seedUser } from '../lib/mock/seed';
-import { mockServer } from '../lib/socket';
+import { seedUser } from './fixtures/seed';
+import { localSocket } from '../lib/socket';
 import { uploadToBlob } from '../lib/upload';
 import { renderScreen, setParams } from '../test-utils';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(),
@@ -136,7 +136,7 @@ it('프로필 생성 소켓과 상태 조회가 함께 성공해도 복귀와 �
   await renderScreen(<PhotoGenScreen />, client);
   await waitFor(() => expect(job).toHaveBeenCalledWith(done._id));
   await act(async () => {
-    mockServer.push('ai:done', { jobId: done._id, job: done });
+    localSocket.push('ai:done', { jobId: done._id, job: done });
     resolve(done);
     await pending;
   });

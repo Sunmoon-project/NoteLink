@@ -18,7 +18,7 @@ import { useAuth } from '../stores/auth';
 import { renderScreen, setParams } from '../test-utils';
 
 const mockStored = new Map<string, string>();
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'https://api.example' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'https://api.example' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async (key: string) => mockStored.get(key) ?? null),
   setItemAsync: jest.fn(async (key: string, value: string) => {

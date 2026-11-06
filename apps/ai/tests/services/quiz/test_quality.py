@@ -4,7 +4,7 @@ from app.clients.llm import JsonObject, LlmError
 from app.core.config import settings
 from app.services.quiz import quality as qa
 from app.services.quiz.models import Draft
-from tests.fakes import FakeLlm
+from tests.fakes import FakeLlm, fits
 
 PAGE = """쌓다 = stack
 # stock
@@ -31,7 +31,13 @@ def draft(passage: str, options: list[str], answer: str) -> Draft:
 
 
 def natural(*values: bool | LlmError) -> list[JsonObject | LlmError]:
+    """보기 하나씩 묻는 판정(Natural, 묶은 판정의 답 모양이 틀렸을 때)."""
     return [v if isinstance(v, LlmError) else {"natural": v} for v in values]
+
+
+def verdicts(*values: bool) -> JsonObject:
+    """묶은 판정(Naturals) 한 번의 답: 보기 순서대로."""
+    return {"natural": list(values)}
 
 
 # ---------- 노트 묶음 (코드) ----------
@@ -94,7 +100,7 @@ def test_contrasts_are_gloss_pairs_near_the_answer() -> None:
 def test_same_gloss_is_a_synonym_not_a_contrast() -> None:
     assert qa.contrasts("begin", "begin - 시작하다\nstart - 시작하다") == []
     d = draft("The meeting will ____ at noon.", ["begin", "start", "a", "b", "c"], "begin")
-    llm = FakeLlm({"Natural": natural(True, False, False, False)})
+    llm = FakeLlm({"Naturals": fits("start", "begin")})
     assert reasons(llm, d, "begin - 시작하다\nstart - 시작하다", "빈칸") == [
         "빈칸에 넣어도 말이 되는 오답 보기: start"
     ]
@@ -111,37 +117,62 @@ def test_group_conflict_flags_wrong_option_in_answers_group() -> None:
 
 def test_blank_option_that_also_fits_is_rejected_and_collected() -> None:
     d = draft("The rope was ____ to the post.", ["fastened", "secured", "a", "b", "c"], "fastened")
-    llm = FakeLlm({"Natural": natural(True, False, False, False)})
+    llm = FakeLlm({"Naturals": fits("secured", "fastened")})
     hits: list[str] = []
     assert reasons(llm, d, PAGE, "빈칸", hits) == ["빈칸에 넣어도 말이 되는 오답 보기: secured"]
     assert hits == ["secured"]
     assert {c.model for c in llm.calls} == {settings.quiz_check_model}
 
 
+def test_all_options_and_the_answer_are_judged_in_one_call_per_model() -> None:
+    d = draft("The rope was ____ to the post.", ROPE_OPTIONS, "fastened")
+    llm = FakeLlm({"Naturals": fits("fastened")})
+    assert qa.screen(llm, d, PAGE, "빈칸") == ([], False)
+    # 검사 모델 한 번 · 생성 모델(2차 판정) 한 번. 정답 판정은 검사 모델의 호출에서
+    assert [(c.name, c.model) for c in llm.calls] == [
+        ("Naturals", settings.quiz_check_model),
+        ("Naturals", settings.quiz_gen_model),
+    ]
+    assert llm.calls[0].user == (
+        "문장: The rope was ____ to the post.\n빈칸에 넣을 표현 후보:\n"
+        "1. fastened\n2. secured\n3. extended\n4. displayed\n5. stacked"
+    )
+    assert llm.calls[0].schema["properties"]["natural"]["minItems"] == 5
+    assert "후보마다 따로 판단한다" in llm.calls[0].system
+
+
 def test_second_judge_runs_when_check_model_finds_nothing() -> None:
     d = draft("The rope was ____ to the post.", ["fastened", "extended", "a", "b", "c"], "fastened")
-    # 검사 모델 4번 모두 false → 생성 모델이 extended를 잡음
-    llm = FakeLlm({"Natural": natural(*[False] * 4, True, False, False, False)})
+    # 검사 모델은 모두 false → 생성 모델이 extended를 잡음
+    llm = FakeLlm(
+        {
+            "Naturals": [
+                verdicts(True, False, False, False, False),
+                verdicts(False, True, *[False] * 3),
+            ]
+        }
+    )
     assert reasons(llm, d, PAGE, "빈칸") == ["빈칸에 넣어도 말이 되는 오답 보기: extended"]
-    assert llm.calls[4].model == settings.quiz_gen_model
+    assert llm.calls[1].model == settings.quiz_gen_model
 
 
 def test_answer_itself_must_fit_the_blank() -> None:
     d = draft("The team will ____ the road.", ["resurfacing", "a", "b", "c", "d"], "resurfacing")
-    llm = FakeLlm({"Natural": natural(*[False] * 8, False)})  # 오답 8번 + 정답 1번
+    llm = FakeLlm({"Naturals": fits()})  # 정답도 빈칸에 맞지 않음
     assert reasons(llm, d, PAGE, "빈칸") == ["정답을 빈칸에 넣으면 문장이 틀림"]
+    assert len(llm.calls) == 2  # 정답을 따로 묻지 않음
 
 
 def test_note_contrast_pair_is_not_checked() -> None:
     d = draft("We paid the ____.", ["installation", "instalment", "a", "b", "c"], "installation")
-    llm = FakeLlm({"Natural": natural(*[False] * 6, True)})
+    llm = FakeLlm({"Naturals": fits("installation")})
     assert reasons(llm, d, PAGE, "빈칸") == []
     assert all("instalment" not in c.user for c in llm.calls)
 
 
 def test_note_group_conflict_is_reported_with_llm_result() -> None:
     d = draft("The boxes are ____.", ["stacked", "stock", "a", "b", "c"], "stacked")
-    llm = FakeLlm({"Natural": natural(*[False] * 8)})
+    llm = FakeLlm({"Naturals": fits()})
     assert reasons(llm, d, PAGE, "빈칸") == ["노트에서 정답과 같은 묶음인 보기: stock"]
 
 
@@ -149,10 +180,21 @@ def test_answer_option_with_different_case_is_not_a_wrong_option() -> None:
     opts = ["Stacked", "stock", "folded", "painted", "cleared"]
     assert qa.group_conflict("stacked", opts, PAGE) == ["stock"]
     d = draft("The rope was ____ to the post.", ["Fastened", "tied", "a", "b", "c"], "fastened")
-    # 오답 4개 × 두 모델 = 8번, 마지막 1번은 정답이 빈칸에 맞는지 확인
-    llm = FakeLlm({"Natural": natural(*[False] * 8, True)})
-    assert reasons(llm, d, PAGE, "빈칸") == []
-    assert all("Fastened" not in c.user for c in llm.calls[:8])
+    # 'Fastened'가 자연스럽다는 판정은 정답 판정: 걸린 오답 보기가 아님
+    llm = FakeLlm({"Naturals": fits("Fastened")})
+    hits: list[str] = []
+    assert reasons(llm, d, PAGE, "빈칸", hits) == []
+    assert hits == []
+
+
+def test_a_malformed_batch_verdict_asks_each_option() -> None:
+    d = draft("The rope was ____ to the post.", ROPE_OPTIONS, "fastened")
+    # 검사 모델의 묶은 답이 보기 수와 다름 → 보기마다(정답 포함) 따로 물어 secured를 잡음
+    llm = FakeLlm(
+        {"Naturals": [verdicts(False, True)], "Natural": natural(True, True, False, False, False)}
+    )
+    assert reasons(llm, d, PAGE, "빈칸") == ["빈칸에 넣어도 말이 되는 오답 보기: secured"]
+    assert [c.user.rsplit(": ", 1)[-1] for c in llm.named("Natural")] == ROPE_OPTIONS
 
 
 def test_reason_matches_the_check_type() -> None:
@@ -160,13 +202,13 @@ def test_reason_matches_the_check_type() -> None:
     d = draft(
         "산소 없이 증식하는 세균", ["무산소성 세균", "통성 세균", "a", "b", "c"], "무산소성 세균"
     )
-    llm = FakeLlm({"Natural": natural(True, False, False, False)})
+    llm = FakeLlm({"Naturals": fits("통성 세균")})
     assert reasons(llm, d, PAGE, "정의") == ["설명에 함께 해당하는 오답 보기: 통성 세균"]
     d = draft("쌓다", ["stack", "pile", "a", "b", "c"], "stack")
-    llm = FakeLlm({"Natural": natural(True, False, False, False)})
+    llm = FakeLlm({"Naturals": fits("pile")})
     assert reasons(llm, d, "", "어휘") == ["같은 뜻으로 쓰이는 오답 보기: pile"]
     d = draft("황색포도알균", ["그람양성균", "구균", "a", "b", "c"], "그람양성균")
-    llm = FakeLlm({"Natural": natural(True, False, False, False)})
+    llm = FakeLlm({"Naturals": fits("구균")})
     assert reasons(llm, d, "", "분류") == ["용어가 함께 속하는 오답 분류: 구균"]
 
 
@@ -176,11 +218,12 @@ def test_term_subject_checks_the_right_answer_too() -> None:
         ["보통 염색으로 쉽게 염색된다", "a", "b", "c", "d"],
         "보통 염색으로 쉽게 염색된다",
     )
-    llm = FakeLlm({"Natural": natural(False, False, False, False, False)})
+    llm = FakeLlm({"Naturals": fits()})
     assert reasons(llm, d, PAGE, "특징") == [
         "정답이 일반 전공 지식과 맞지 않음(노트 OCR 오류 가능)"
     ]
-    assert llm.calls[0].user == "용어: 항산성균\n문장: a"
+    assert len(llm.calls) == 1  # 용어 과목은 2차 판정이 없고, 정답도 같은 호출에서
+    assert llm.calls[0].user.startswith("용어: 항산성균\n문장 후보:\n1. 보통 염색으로")
 
 
 def test_scene_questions_skip_the_llm_check() -> None:
@@ -194,8 +237,9 @@ def test_scene_questions_skip_the_llm_check() -> None:
 
 def test_failed_llm_calls_do_not_flag_options() -> None:
     d = draft("The rope was ____ to the post.", ["fastened", "secured", "a", "b", "c"], "fastened")
-    llm = FakeLlm({"Natural": natural(*[LlmError("HTTP 503")] * 9)})
+    llm = FakeLlm({"Naturals": [LlmError("HTTP 503")] * 2})
     assert reasons(llm, d, PAGE, "빈칸") == []
+    assert len(llm.calls) == 2  # 장애에 보기마다 다시 보내지 않음
 
 
 # ---------- 걸린 오답 보기만 바꾸기 (repair · checked) ----------
@@ -297,13 +341,14 @@ ROPE_OPTIONS = ["fastened", "secured", "extended", "displayed", "stacked"]
 
 def test_screen_reports_an_unchecked_draft_when_calls_fail() -> None:
     d = draft(ROPE, ROPE_OPTIONS, "fastened")
-    llm = FakeLlm({"Natural": [LlmError("HTTP 503")] * 9})
+    llm = FakeLlm({"Naturals": [LlmError("HTTP 503")] * 2})
     assert qa.screen(llm, d, PAGE, "빈칸") == ([], True)
 
 
 def test_screen_with_a_flagged_option_is_a_real_rejection_even_with_a_failed_call() -> None:
     d = draft(ROPE, ROPE_OPTIONS, "fastened")
-    llm = FakeLlm({"Natural": natural(True, LlmError("HTTP 503"), False, False)})
+    # 검사 모델 호출은 실패, 생성 모델이 secured를 잡음
+    llm = FakeLlm({"Naturals": [LlmError("HTTP 503"), verdicts(True, True, False, False, False)]})
     assert qa.screen(llm, d, PAGE, "빈칸") == (
         ["빈칸에 넣어도 말이 되는 오답 보기: secured"],
         False,
@@ -311,12 +356,12 @@ def test_screen_with_a_flagged_option_is_a_real_rejection_even_with_a_failed_cal
 
 
 def test_checked_uses_the_recheck_after_a_first_check_with_a_failed_call() -> None:
-    # 처음 검사: secured가 걸리고 한 보기는 판정 못 받음 → secured만 고침 → 재검사가 모두 통과
+    # 처음 검사에서 판정을 못 받은 호출이 있어도 secured만 고치고 → 재검사가 모두 통과
     d = draft(ROPE, ROPE_OPTIONS, "fastened")
-    first = natural(True, LlmError("HTTP 503"), False, False)
-    llm = FakeLlm(
-        {"Natural": first + natural(*[False] * 8, True), "Repair": [{"options": ["lifted"]}]}
-    )
+    # 처음 검사: 검사 모델 호출 실패 · 생성 모델이 secured를 잡음. 재검사: 정답만 맞음(두 모델)
+    first = [LlmError("HTTP 503"), verdicts(True, True, False, False, False)]
+    clean = verdicts(True, False, False, False, False)
+    llm = FakeLlm({"Naturals": [*first, clean, clean], "Repair": [{"options": ["lifted"]}]})
     fixed, why, _, repaired, unchecked = qa.checked(llm, d, no_conflict, PAGE, "빈칸")
     assert (why, repaired, unchecked) == ([], True, False)
     assert "lifted" in fixed["options"]
@@ -324,9 +369,9 @@ def test_checked_uses_the_recheck_after_a_first_check_with_a_failed_call() -> No
 
 def test_checked_reports_unchecked_when_the_recheck_fails() -> None:
     d = draft(ROPE, ROPE_OPTIONS, "fastened")
-    first = natural(True, False, False, False)
+    first = [verdicts(True, True, False, False, False)]
     llm = FakeLlm(
-        {"Natural": first + [LlmError("HTTP 503")] * 9, "Repair": [{"options": ["lifted"]}]}
+        {"Naturals": first + [LlmError("HTTP 503")] * 2, "Repair": [{"options": ["lifted"]}]}
     )
     _, why, _, repaired, unchecked = qa.checked(llm, d, no_conflict, PAGE, "빈칸")
     assert (why, repaired, unchecked) == ([], True, True)
@@ -334,5 +379,6 @@ def test_checked_reports_unchecked_when_the_recheck_fails() -> None:
 
 def test_screen_does_not_count_malformed_verdicts_as_unchecked() -> None:
     d = draft(ROPE, ROPE_OPTIONS, "fastened")
-    llm = FakeLlm({"Natural": [{"natural": "yes"}] * 9})  # 모양이 틀린 판정: 걸리지 않음
+    # 모양이 틀린 판정: 묶은 판정 → 보기마다 → 정답 한 번 더도 모두 모양이 틀려 걸리지 않음
+    llm = FakeLlm({"Naturals": [{"natural": "yes"}] * 2, "Natural": [{"natural": "yes"}] * 11})
     assert qa.screen(llm, d, PAGE, "빈칸") == ([], False)

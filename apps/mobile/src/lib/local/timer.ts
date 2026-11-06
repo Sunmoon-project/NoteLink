@@ -1,6 +1,6 @@
 import type { StudyRoom, TimerRule } from '@notelink/shared';
 
-/** 목업 서버의 공통 시작 시각으로 현재 단계를 계산한다. 참여자의 입장 시각은 사용하지 않는다. */
+/** 방의 공통 시작 시각으로 현재 단계를 계산한다. 참여자의 입장 시각은 사용하지 않는다. */
 export function roomTimerState(
   rule: TimerRule | null,
   startedAt: number,

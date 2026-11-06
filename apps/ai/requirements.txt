@@ -9,3 +9,5 @@ azure-ai-documentintelligence==1.0.2
 azure-storage-blob==12.31.0
 opencv-python-headless==5.0.0.93
 numpy==2.5.4
+kiwipiepy==0.24.1
+kiwipiepy_model==0.24.0

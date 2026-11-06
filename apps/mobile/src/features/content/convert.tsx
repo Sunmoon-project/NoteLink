@@ -7,6 +7,7 @@ import { Check, ChevronRight, FileText, Image, Pin } from 'lucide-react-native';
 import { ERROR_CODES, type AiJob } from '@notelink/shared';
 import { api, NetworkError } from '@/lib/api';
 import { uploadToBlob } from '@/lib/upload';
+import { aiWaiting } from '@/lib/ai';
 import { notifyLocal } from '@/lib/push';
 import { socket } from '@/lib/socket';
 import { useSocket } from '@/hooks';
@@ -26,6 +27,7 @@ import {
   Progress,
   Screen,
   Sheet,
+  Success,
   Toggle,
   cx,
 } from '@/components/ui';
@@ -45,8 +47,48 @@ const STEPS = {
   document: ['문서 업로드', '문서 읽기', '핵심 요약', '키워드 추출'],
 };
 
+const DETAIL = { handwriting: 'hand', recording: 'rec', document: 'doc' } as const;
+
+/** 원본은 저장됐고 AI 정리는 서버를 기다리는 상태 */
+function SavedForLater({ kind, materialId }: { kind: keyof typeof DETAIL; materialId: string }) {
+  const qc = useQueryClient();
+  useEffect(() => {
+    qc.invalidateQueries({ queryKey: ['folders'] });
+    qc.invalidateQueries({ queryKey: ['materials'] });
+    useDraft.getState().reset();
+  }, [qc]);
+  return (
+    <Screen
+      footer={
+        <>
+          <Btn
+            onPress={() =>
+              router.replace({
+                pathname: `/(tabs)/note/${DETAIL[kind]}/[id]`,
+                params: { id: materialId },
+              })
+            }
+          >
+            자료 보기
+          </Btn>
+          <Btn kind="ghost" className="mt-2" onPress={() => router.dismissTo('/(tabs)/note')}>
+            노트로 돌아가기
+          </Btn>
+        </>
+      }
+    >
+      <Success
+        title="자료를 저장했어요"
+        body={'원본은 이 기기에 저장됐어요.\nAI 정리는 서버가 연결되면 이어서 진행돼요.'}
+      />
+    </Screen>
+  );
+}
+
 export function ConvertScreen() {
   const draft = useDraft();
+  // 저장을 마치면 초안이 비워지므로 자료 종류는 처음 값을 기억한다
+  const [kind] = useState(draft.kind);
   const qc = useQueryClient();
   const net = useNet((s) => s.state);
   const [phase, setPhase] = useState<'upload' | 'paused' | 'ai' | 'failed' | 'uncertain'>('upload');
@@ -250,6 +292,9 @@ export function ConvertScreen() {
         : (job?.progress ?? 0);
   const step = phase === 'upload' ? 0 : pct < 50 ? 1 : pct < 85 ? 2 : 3;
   const steps = STEPS[draft.kind];
+  // AI 서버가 없으면(기기 저장 모드) 원본만 저장하고 정리는 서버 연결 후에 한다 (FR-65-05)
+  if (phase === 'ai' && aiWaiting(job) && materialId)
+    return <SavedForLater kind={kind} materialId={materialId} />;
   return (
     <View className="flex-1 bg-white">
       <Screen>

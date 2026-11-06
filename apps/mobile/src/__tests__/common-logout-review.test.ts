@@ -2,7 +2,7 @@ import { PATHS } from '@notelink/shared';
 import { httpApi } from '../lib/api/http-api';
 import { useAuth } from '../stores/auth';
 
-jest.mock('../lib/env', () => ({ env: { useMock: false, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: false, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(),

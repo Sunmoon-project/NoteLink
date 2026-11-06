@@ -1,9 +1,13 @@
 import json
+import re
+import threading
+import time
+from collections.abc import Callable
 
 import httpx2
 import pytest
 
-from app.clients.llm import LlmCutError, LlmError, SchoolLlm, repair
+from app.clients.llm import STOPPED, LlmCutError, LlmError, SchoolLlm, repair, stop_on
 
 SCHEMA = {"type": "object"}
 
@@ -87,10 +91,81 @@ def test_qwen_calls_turn_thinking_off() -> None:
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
 
 
+class Clock:
+    """자면 시각이 흐르는 가짜 시계. 보낸 시각을 sent에 남김."""
+
+    def __init__(self, server: Server, gap: float) -> None:
+        self.now = 100.0
+        self.sent: list[float] = []
+        self.on_sleep: list[Callable[[], None]] = []  # 다음 잠에 들기 전에 할 일(다른 스레드 흉내)
+        handle = server.handle
+
+        def record(request: httpx2.Request) -> httpx2.Response:
+            self.sent.append(self.now)
+            return handle(request)
+
+        self.slept = server.slept
+        self.llm = SchoolLlm(
+            "https://llm.test",
+            "key",
+            gap_sec=gap,
+            transport=httpx2.MockTransport(record),
+            sleep=self.sleep,
+            clock=lambda: self.now,
+        )
+
+    def sleep(self, sec: float) -> None:
+        if self.on_sleep:
+            self.on_sleep.pop(0)()
+        self.slept.append(sec)
+        self.now += sec
+
+
 def test_rate_limit_waits_retry_after_then_succeeds() -> None:
     server = Server(reply("", 429, {"Retry-After": "7"}), reply('{"ok": true}'))
-    assert server.client().call("gemma", "s", "u", SCHEMA, "X") == {"ok": True}
-    assert server.slept == [7.0]
+    c = Clock(server, gap=0)
+    assert c.llm.call("gemma", "s", "u", SCHEMA, "X") == {"ok": True}
+    assert c.slept == [7.0] and c.sent == [100.0, 107.0]
+
+
+def test_a_rate_limit_holds_calls_of_other_threads_too() -> None:
+    server = Server(reply("", 429, {"Retry-After": "7"}), reply("{}"), reply("{}"))
+    c = Clock(server, gap=2.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")  # 429 → 7초 뒤 다시(107)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")  # 다른 호출도 다시 보낸 호출 뒤 2.2초
+    assert c.sent == [100.0, 107.0, pytest.approx(109.2)]
+
+
+def test_a_turn_taken_before_a_rate_limit_waits_for_it() -> None:
+    # 두 번째 호출이 차례(102.2)를 기다리는 사이 다른 스레드가 429(Retry-After 7)를 받음:
+    # 잡아 둔 차례에 보내지 않고 대기가 끝난 107에 보냄(/code-review #95)
+    server = Server(reply("{}"), reply("{}"))
+    c = Clock(server, gap=2.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    c.on_sleep.append(lambda: c.llm._hold(7))
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [100.0, 107.0]
+
+
+def test_answers_are_awaited_together() -> None:
+    """앞 호출의 응답을 기다리는 동안 다음 호출을 보냄: 첫 응답은 두 번째 요청이 와야 돌아감."""
+    both = threading.Barrier(2, timeout=5)
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        both.wait()  # 잠금을 잡은 채 기다리면 두 번째 요청이 오지 않아 시간 초과
+        return reply("{}")
+
+    llm = SchoolLlm("https://llm.test", "key", gap_sec=0, transport=httpx2.MockTransport(handle))
+    out: list[object] = []
+    threads = [
+        threading.Thread(target=lambda: out.append(llm.call("gemma", "s", "u", SCHEMA, "X")))
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert out == [{}, {}]
 
 
 def test_server_errors_back_off_then_raise() -> None:
@@ -120,18 +195,94 @@ def test_server_error_is_not_a_cut_error() -> None:
     assert not isinstance(e.value, LlmCutError)
 
 
-def test_calls_keep_the_minimum_gap() -> None:
+def test_calls_keep_the_minimum_gap_from_the_previous_send() -> None:
     server = Server(reply("{}"), reply("{}"))
-    now = [100.0]
+    c = Clock(server, gap=2.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    c.now += 0.5
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.slept == [pytest.approx(1.7)] and c.sent == [100.0, pytest.approx(102.2)]
+
+
+def test_a_call_stopped_while_waiting_for_its_turn_is_not_sent() -> None:
+    # 맞춤 퀴즈가 세트를 돌려주는 동안 차례(102.2)를 기다리던 호출: 보내지 않음(Codex 리뷰 #125)
+    server = Server(reply("{}"), reply("{}"))
+    c = Clock(server, gap=2.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    stop = threading.Event()
+    c.on_sleep.append(stop.set)
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [100.0]
+    # 멈춘 호출은 차례를 가져가지 않음: 다음 호출이 그 빈 차례 뒤로 밀리지 않음(/code-review #125)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [100.0, pytest.approx(102.2)]
+
+
+def test_a_stop_wakes_a_call_waiting_for_its_turn() -> None:
+    # 실제 대기(time.sleep)일 때: 429로 10초를 기다리던 호출이 멈춤 신호에 바로 깨어남
+    server = Server(reply("{}"))
+    llm = SchoolLlm(
+        "https://llm.test", "key", gap_sec=0, transport=httpx2.MockTransport(server.handle)
+    )
+    llm._hold(10)
+    stop = threading.Event()
+    threading.Timer(0.1, stop.set).start()
+    start = time.monotonic()
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert time.monotonic() - start < 2 and server.requests == []
+
+
+def test_a_stop_during_the_last_backoff_is_a_stop_not_a_server_error() -> None:
+    # 마지막 시도의 503 뒤 대기 중에 멈춤: 'HTTP 503'(서버 실패)이 아니라 멈춤(/code-review #125)
+    server = Server(reply("", 503), reply("", 503), reply("", 503))
+    c = Clock(server, gap=0)
+    stop = threading.Event()
+    c.on_sleep += [lambda: None, lambda: None, stop.set]  # 세 번째(마지막) 대기 중에
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert len(c.sent) == 3
+
+
+def test_a_stop_during_the_last_unreadable_answer_is_a_stop_not_a_cut() -> None:
+    # 마지막 시도의 답이 JSON이 아닌데 그 사이 멈춤: 답 잘림(LlmCutError)이 아니라 멈춤
+    stop = threading.Event()
+    server = Server()
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        server.requests.append(request)
+        stop.set()  # 응답을 기다리는 사이 다른 스레드가 멈춤 신호를 켬
+        return reply("모르겠습니다")
+
     llm = SchoolLlm(
         "https://llm.test",
         "key",
-        gap_sec=2.2,
-        transport=httpx2.MockTransport(server.handle),
+        gap_sec=0,
+        retries=0,
+        transport=httpx2.MockTransport(handle),
         sleep=server.slept.append,
-        clock=lambda: now[0],
     )
-    llm.call("gemma", "s", "u", SCHEMA, "X")
-    now[0] += 0.5
-    llm.call("gemma", "s", "u", SCHEMA, "X")
-    assert server.slept == [pytest.approx(1.7)]
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)) as e:
+        llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert not isinstance(e.value, LlmCutError)
+    assert len(server.requests) == 1
+
+
+def test_a_retry_is_not_sent_after_a_stop() -> None:
+    server = Server(reply("", 503), reply("{}"))
+    c = Clock(server, gap=0)
+    stop = threading.Event()
+    c.on_sleep.append(stop.set)  # 503 뒤 다시 보내기 전에 기다리는 사이 멈춤
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [100.0]
+
+
+def test_stop_on_only_covers_its_own_block() -> None:
+    server = Server(reply("{}"))
+    stop = threading.Event()
+    stop.set()
+    with stop_on(stop):
+        pass
+    assert server.client().call("gemma", "s", "u", SCHEMA, "X") == {}  # 블록 밖에서는 보냄

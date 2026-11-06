@@ -11,7 +11,7 @@ import { useToast } from '../stores/toast';
 import { useSession } from '../stores/session';
 import { renderScreen } from '../test-utils';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),
@@ -80,6 +80,15 @@ it('직접 입력한 주간 목표를 실제 입력값으로 저장한다', asyn
   await waitFor(() =>
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ targetMin: 1950 })),
   );
+});
+it('주간 목표를 정하지 않은 새 계정은 NaN% 없이 이번주 시간만 보여 준다', async () => {
+  const goal = await api.study.weeklyGoal();
+  const week = await api.study.weekly();
+  jest.spyOn(api.study, 'weeklyGoal').mockResolvedValue({ ...goal, targetMin: 0 });
+  jest.spyOn(api.study, 'weekly').mockResolvedValue({ ...week, totalSec: 0 });
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('이번주 0시간 0분 ›')).toBeTruthy();
+  expect(screen.queryByText(/NaN/)).toBeNull();
 });
 it('10분 쉬면 종료 요청을 한 번만 보낸다', async () => {
   mockNow = Date.now();
@@ -343,4 +352,24 @@ it('측정 중이 아닐 때 가로로 돌리면 이동하지 않고 안내하�
   await act(async () => listener({ x: 0, y: 1, z: 0, timestamp: 0 }));
   await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
   expect(router.push).toHaveBeenCalledWith('/landscape');
+});
+
+it('공부 목록의 목표는 "목표 30분" · "목표 없음"으로, 목표를 두 번 적지 않는다', async () => {
+  const base = await api.study.today();
+  const item = (id: string, goalMin: number | null) => ({
+    ...(base.items[0] ?? {}),
+    _id: id,
+    title: id,
+    subjectName: '영어',
+    goalMin,
+    accumulatedSec: 0,
+  });
+  jest.spyOn(api.study, 'today').mockResolvedValue({
+    ...base,
+    items: [item('a', 30), item('b', null)],
+  } as never);
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('영어 · 목표 30분')).toBeTruthy();
+  expect(screen.getByText('영어 · 목표 없음')).toBeTruthy();
+  expect(screen.queryByText(/목표 목표/)).toBeNull();
 });

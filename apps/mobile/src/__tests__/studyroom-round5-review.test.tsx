@@ -4,7 +4,6 @@ import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { RoomCreateScreen, RoomScreen } from '../features/studyroom/room';
 import { InviteScreen, RoomSettingsScreen, TimerScreen } from '../features/studyroom/tools';
-import { useMockFlags } from '../lib/mock/flags';
 import { useNet } from '../stores/net';
 import { useToast } from '../stores/toast';
 import { renderScreen, setParams } from '../test-utils';
@@ -28,7 +27,7 @@ jest.mock('../lib/api', () => ({
   },
   ApiError: class ApiError extends Error {},
 }));
-jest.mock('../lib/env', () => ({ env: { useMock: false, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: false, apiUrl: 'http://api' } }));
 jest.mock('../lib/livekit-loader', () => ({
   loadMedia: async () => ({ connectMedia: (...args: unknown[]) => mockConnectMedia(...args) }),
 }));
@@ -98,7 +97,6 @@ beforeEach(() => {
   mockApi.rooms.chatRoomId.mockResolvedValue('chat-1');
   mockApi.social.messages.mockResolvedValue([]);
   mockApi.social.friends.mockResolvedValue([friend]);
-  useMockFlags.getState().reset();
   useNet.setState({ state: 'ok' });
   useToast.setState({ msg: null });
   setParams({ id: room._id });
@@ -107,13 +105,22 @@ afterEach(() => {
   clients.splice(0).forEach((qc) => qc.clear());
 });
 
+/** 연결이 5분 넘게 끊겨 자동 퇴장될 때까지 시간을 돌린다 */
+async function kickOut() {
+  jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+  await act(async () => useNet.getState().set('unstable'));
+  await act(async () => void jest.advanceTimersByTime(5 * 60 * 1000));
+  jest.useRealTimers();
+  await act(async () => useNet.getState().set('ok'));
+}
+
 it('RoomScreen이 강제 퇴장 상태가 되면 확인 버튼을 기다리지 않고 미디어를 닫는다', async () => {
   const connection = media();
   mockConnectMedia.mockResolvedValue(connection);
   await renderScreen(<RoomScreen />, client());
   await screen.findByText(room.title);
   await waitFor(() => expect(screen.getByText('듣기 켜짐')).toBeTruthy());
-  await act(async () => useMockFlags.setState({ roomKick: true }));
+  await kickOut();
   expect(await screen.findByText('스터디룸에서 나갔어요')).toBeTruthy();
   await waitFor(() => expect(connection.close).toHaveBeenCalledTimes(1));
 });
@@ -124,7 +131,7 @@ it('같은 방의 미디어 접속 실패 뒤 다시 입장하면 새 연결을 
     .mockResolvedValueOnce(media());
   await renderScreen(<RoomScreen />, client());
   await screen.findByText(/캠·음성을 연결하지 못했어요/);
-  await act(async () => useMockFlags.setState({ roomKick: true }));
+  await kickOut();
   await fireEvent.press(await screen.findByText('다시 입장'));
   await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(screen.queryByText(/캠·음성을 연결하지 못했어요/)).toBeNull());
@@ -138,7 +145,7 @@ it('퇴장 후 늦게 완료된 미디어 연결은 활성화하지 않고 정�
   await renderScreen(<RoomScreen />, client());
   await screen.findByText(room.title);
   await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(1));
-  await act(async () => useMockFlags.setState({ roomKick: true }));
+  await kickOut();
   await screen.findByText('스터디룸에서 나갔어요');
   await act(async () => pending.resolve(connection));
   await waitFor(() => expect(connection.close).toHaveBeenCalledTimes(1));
@@ -250,7 +257,6 @@ it('강제 퇴장 없이 최초 미디어 연결 실패를 화면에서 재시�
     .mockReturnValueOnce(pending.promise);
   await renderScreen(<RoomScreen />, client());
   await screen.findByText(/캠·음성을 연결하지 못했어요/);
-  expect(useMockFlags.getState().roomKick).toBe(false);
   expect(screen.queryByText('스터디룸에서 나갔어요')).toBeNull();
   await fireEvent.press(await screen.findByRole('button', { name: '미디어 다시 연결' }));
   await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(2));

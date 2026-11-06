@@ -311,7 +311,8 @@ export function HomeScreen() {
                 <View className="flex-1">
                   <Text className="text-callout font-semibold text-ink">{it.title}</Text>
                   <Text className="text-caption text-sub">
-                    {it.subjectName} · 목표 {goalLabel(it.goalMin)}
+                    {it.subjectName} ·{' '}
+                    {it.goalMin ? `목표 ${goalLabel(it.goalMin)}` : goalLabel(null)}
                   </Text>
                 </View>
                 <Text className="tabular-nums text-subhead font-semibold text-ink/80">

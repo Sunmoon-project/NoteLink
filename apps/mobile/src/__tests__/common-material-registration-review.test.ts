@@ -1,10 +1,10 @@
-import { mockApi as api } from '../lib/mock/api';
+import { mockApi as api } from './fixtures/api';
 import { httpApi } from '../lib/api/http-api';
 import { PATHS } from '@notelink/shared';
 import { useAuth } from '../stores/auth';
 import { useNet } from '../stores/net';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(),

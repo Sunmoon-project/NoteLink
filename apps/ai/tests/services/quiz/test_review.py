@@ -277,11 +277,11 @@ def test_reused_question_that_could_not_be_checked_is_asked_without_checked() ->
     near = gen("be", ["be", "is", "are", "was", "been"])
     near["question"]["passage"] = blank
     llm = FakeLlm(
-        {"Review": [near] * 3, "Natural": [LlmError("HTTP 503")] * 9, "Line": [{"line": "x"}]}
+        {"Review": [near] * 3, "Naturals": [LlmError("HTTP 503")] * 2, "Line": [{"line": "x"}]}
     )
     result, _ = run(llm, inp)
     assert result["targets"][0]["reusedFrom"] == "q7"
-    assert llm.named("Natural")  # 검사 안 한 옛 문제라 '정답 둘' 검사를 함
+    assert llm.named("Naturals")  # 검사 안 한 옛 문제라 '정답 둘' 검사를 함
     [new] = result["reviewQuestions"]
     assert "checked" not in new["srs"]  # 검사 못 함: 오늘의 복습이 나중에 다시 검사
 

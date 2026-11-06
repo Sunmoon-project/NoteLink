@@ -136,9 +136,9 @@ def test_checker_failure_next_to_a_real_rejection_is_not_llm_down() -> None:
 
 
 def test_two_answers_check_failing_keeps_the_draft_out() -> None:
-    # 어휘 문제의 '같은 뜻' 검사(Natural)가 모두 실패: 걸린 보기가 없어도 검사하지 못한 초안
+    # 어휘 문제의 '같은 뜻' 검사(Naturals)가 모두 실패: 걸린 보기가 없어도 검사하지 못한 초안
     review = [gen(GOOD), LlmError("HTTP 503"), gen(GOOD)]
-    llm = FakeLlm({"Review": review, "Natural": [LlmError("HTTP 503")] * 40})
+    llm = FakeLlm({"Review": review, "Naturals": [LlmError("HTTP 503")] * 40})
     m = similar.make_similar(llm, question(qtype="어휘"), target(), 1, PAGE, 0, [])
     assert m.question is None and m.llm_down
     assert m.why == ["정답 둘 검사 호출이 실패함"]
