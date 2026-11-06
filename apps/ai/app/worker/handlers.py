@@ -34,13 +34,15 @@ def _handler(run: _Run) -> Handler:
 
 similar_quiz = _handler(review.run)  # 오답 복습
 today_review = _handler(today.run)  # 오늘의 복습
-quiz_generate = _handler(generate.run)  # 맞춤 퀴즈 · 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134)
+quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
 
 HANDLERS: dict[str, Handler] = {
     review.TYPE: similar_quiz,
     today.TYPE: today_review,
     generate.TYPE: quiz_generate,
-    generate.PREGEN_TYPE: quiz_generate,  # 처리는 같고 가져가는 순서만 나중(LATER)
 }
+# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 처리는 맞춤 퀴즈와 같고 가져가는 순서만 나중입니다.
+# 목록 밖에서 더해 녹음 정리(#118) 등 다른 종류 추가와 줄이 겹치지 않게 둡니다.
+HANDLERS[generate.PREGEN_TYPE] = quiz_generate
 # 사용자가 기다리는 작업이 없을 때만 가져가는 종류(jobs.JobStore.claim)
 LATER: frozenset[str] = frozenset({generate.PREGEN_TYPE})
