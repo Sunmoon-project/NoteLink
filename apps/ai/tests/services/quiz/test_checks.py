@@ -339,3 +339,62 @@ def test_a_rule_question_with_two_blanks_is_caught() -> None:
     # 규칙 유형을 빼고 보던 것은 코드의 ()가 빈칸으로 바뀌던 때문이라 이제는 모든 유형
     # (/code-review #94)
     assert "빈칸이 여러 개" in why(draft(passage="The boxes are ____ and ____"), "규칙")
+
+
+def test_an_option_holding_other_options_fails() -> None:
+    joined = draft(
+        stem="다음 설명이 나타내는 용어는 무엇입니까?",
+        passage="일정 압력 조건에서 온도의 변화에 따른 binary system을 나타내는 그래프입니다.",
+        options=[
+            "TXY 다이어그램",
+            "에탄올 상태 변화",
+            "압력과 끓는점 관계",
+            "물과 에탄올 예시",
+            "TXY 다이어그램, 에탄올 상태 변화, 압력과 끓는점 관계, 물과 에탄올 예시, 기체 분율",
+        ],
+        answer="TXY 다이어그램",
+    )
+    assert "다른 보기를 품은 보기" in why(joined, "정의")
+    english = draft(
+        options=["stacked", "extended", "fastened", "docked", "stacked, fastened, extended, docked"]
+    )
+    assert "다른 보기를 품은 보기" in why(english)
+
+
+def test_repair_notes_in_an_option_fail() -> None:
+    d = draft(
+        stem="다음 설명에 해당하는 용어는 무엇입니까?",
+        passage="온도를 높이면 ____의 성분 비율이 커집니다.",
+        options=[
+            "액상 분율",
+            "액상 조성",
+            "기상 내 에탄올 분율",
+            "액상 분율 (그대로 둠: 액상 분율은 오답이 맞음, 하지만 지시사항에 따라)",
+            "상평형의 이해",
+        ],
+        answer="기상 내 에탄올 분율",
+    )
+    reasons = why(d, "정의")
+    assert "다른 보기를 품은 보기" in reasons
+    assert "보기에 고친 이유가 섞임" in reasons
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["분율", "몰 분율", "질량 분율", "부피 분율", "기상 조성"],
+        ["deliver", "delivering", "delivered", "delivery", "deliverable"],
+        [
+            "x축은 액체의 분율을 나타낸다",
+            "x축은 기체의 분율을 나타낸다",
+            "y축은 압력을 나타낸다",
+            "y축은 액체의 분율을 나타낸다",
+            "x축은 온도를 나타낸다",
+        ],
+    ],
+)
+def test_close_but_fair_options_pass(options: list[str]) -> None:
+    d = draft(options=options, answer=options[0])
+    reasons = why(d, "특징")
+    assert "다른 보기를 품은 보기" not in reasons
+    assert "보기에 고친 이유가 섞임" not in reasons
