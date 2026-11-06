@@ -115,7 +115,9 @@ def parse_items(answer: JsonObject, opts: dict[int, list[str]]) -> dict[int, str
         if not isinstance(it, dict):
             continue
         order, k = it.get("order"), it.get("choice")
-        if not isinstance(order, int) or not isinstance(k, int) or isinstance(k, bool):
+        if not isinstance(order, int) or isinstance(order, bool):
+            continue
+        if not isinstance(k, int) or isinstance(k, bool):
             continue
         if order in opts and 1 <= k <= len(opts[order]):
             out[order] = opts[order][k - 1]

@@ -99,11 +99,21 @@ def cand(word: str, *options: str) -> list[dict[str, object]]:
         [{"id": 1, "choice": True}],  # 불리언
         [{"id": 1, "choice": "1"}],  # 문자열
         [{"id": 7, "choice": 1}],  # 없는 물음
+        [{"id": [], "choice": 1}],  # 배열 번호
+        [{"id": {}, "choice": 1}],  # 객체 번호
+        [{"id": True, "choice": 1}],  # 불리언 번호
+        [{"id": 1.0, "choice": 1}],  # 실수 번호
         ["1"],
     ],
 )
 def test_bad_or_zero_picks_are_ignored(picks: list[object]) -> None:
     assert parse_picks({"picks": picks}, cand("포남형", "포낭형")) == []  # type: ignore[arg-type]
+
+
+def test_good_pick_after_a_bad_id_survives() -> None:
+    picks = [{"id": [], "choice": 1}, {"id": True, "choice": 1}, {"id": 1, "choice": 1}]
+    (f,) = parse_picks({"picks": picks}, cand("포남형", "포낭형"))  # type: ignore[arg-type]
+    assert (f["word"], f["term"]) == ("포남형", "포낭형")
 
 
 def test_missing_picks_raise() -> None:

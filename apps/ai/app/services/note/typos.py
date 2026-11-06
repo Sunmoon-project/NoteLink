@@ -152,7 +152,10 @@ def parse_picks(answer: JsonObject, cands: list[Candidate]) -> list[TypoFix]:
     for p in picks:
         if not isinstance(p, dict):
             continue
-        c, k = by_id.get(p.get("id")), p.get("choice")  # type: ignore[arg-type]
+        i, k = p.get("id"), p.get("choice")
+        if not isinstance(i, int) or isinstance(i, bool):
+            continue
+        c = by_id.get(i)
         if (
             c is None
             or not isinstance(k, int)

@@ -72,10 +72,23 @@ def test_tag_concepts_one_call_and_untagged_without_options() -> None:
 
 @pytest.mark.parametrize(
     "items",
-    [[{"order": 1, "choice": 0}], [{"order": 1, "choice": 5}], [{"order": 9, "choice": 1}], ["x"]],
+    [
+        [{"order": 1, "choice": 0}],
+        [{"order": 1, "choice": 5}],
+        [{"order": 9, "choice": 1}],
+        [{"order": True, "choice": 1}],  # 불리언 번호
+        ["x"],
+    ],
 )
 def test_bad_items_are_ignored(items: list[object]) -> None:
     assert parse_items({"items": items}, {1: ["회충"]}) == {}
+
+
+def test_good_item_after_a_bad_order_survives() -> None:
+    items = [{"order": True, "choice": 1}, {"order": 1, "choice": 1}]
+    got = parse_items({"items": items}, {1: ["회충"]})
+    assert got == {1: "회충"}
+    assert all(type(order) is int for order in got)  # True == 1이라 키 타입까지 확인
 
 
 def test_missing_items_raise() -> None:
