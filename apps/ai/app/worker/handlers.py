@@ -35,9 +35,13 @@ def _handler(run: _Run) -> Handler:
 similar_quiz = _handler(review.run)  # 오답 복습
 today_review = _handler(today.run)  # 오늘의 복습
 quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
+quiz_pregen = _handler(generate.run)  # 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134)
 
 HANDLERS: dict[str, Handler] = {
     review.TYPE: similar_quiz,
     today.TYPE: today_review,
     generate.TYPE: quiz_generate,
+    generate.PREGEN_TYPE: quiz_pregen,
 }
+# 사용자가 기다리는 작업이 없을 때만 가져가는 종류(jobs.JobStore.claim)
+LATER: frozenset[str] = frozenset({generate.PREGEN_TYPE})

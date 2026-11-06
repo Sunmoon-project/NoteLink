@@ -13,7 +13,7 @@
 
 import logging
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from typing import Protocol
 
 from pymongo.errors import PyMongoError
@@ -61,10 +61,17 @@ class _Heartbeat:
 
 
 def run_once(
-    store: JobStore, handlers: Mapping[str, Handler], *, heartbeat_sec: float | None = None
+    store: JobStore,
+    handlers: Mapping[str, Handler],
+    *,
+    later: Collection[str] = (),
+    heartbeat_sec: float | None = None,
 ) -> bool:
-    """작업 하나를 가져와 처리합니다. 할 일이 없었으면 False."""
-    job = store.claim(handlers)
+    """작업 하나를 가져와 처리합니다. 할 일이 없었으면 False.
+
+    later에 든 종류는 다른 종류의 작업이 없을 때만 가져갑니다(JobStore.claim).
+    """
+    job = store.claim([t for t in handlers if t not in later], [t for t in handlers if t in later])
     if job is None:
         return False
 
@@ -107,11 +114,12 @@ def run_forever(
     *,
     poll_sec: float,
     stop: threading.Event,
+    later: Collection[str] = (),
 ) -> None:
     """stop이 켜질 때까지 반복합니다. 처리 중인 작업은 끝까지 처리한 뒤 멈춥니다."""
     while not stop.is_set():
         try:
-            busy = run_once(store, handlers)
+            busy = run_once(store, handlers, later=later)
         except PyMongoError:
             # DB 연결이 끊김: 쓰지 못한 작업은 잠금이 끝나면 다시 가져가므로 기다렸다 계속
             log.exception("ai_jobs 처리 중 DB 오류")

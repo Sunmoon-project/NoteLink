@@ -14,6 +14,7 @@ export class AiJob {
       'recording_summary',
       'document_summary',
       'quiz_generate',
+      'quiz_pregen',
       'similar_quiz',
       'explain',
       'avatar_profile',
