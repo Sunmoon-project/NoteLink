@@ -63,12 +63,15 @@ describe('createJwtConfig', () => {
   });
 
   describe('만료 시간 형식', () => {
-    it.each(['30s', '15m', '1h', '14d', '2w'])('%s는 허용한다', (ttl) => {
+    // 1s가 허용되는 가장 짧은 수명이다(경계값)
+    it.each(['1s', '30s', '15m', '1h', '14d', '2w'])('%s는 허용한다', (ttl) => {
       expect(createJwtConfig(configOf({ JWT_ACCESS_TTL: ttl })).accessTTL).toBe(ttl);
+      expect(createJwtConfig(configOf({ JWT_REFRESH_TTL: ttl })).refreshTTL).toBe(ttl);
     });
 
     // 900: 단위가 없으면 밀리초로 읽혀 0.9초 만에 만료된다. 1ms · 999ms: 초 단위로 내림되어 발급 즉시 만료된다
-    it.each(['900', 'abc', '0m', '-5m', '15 m', '15M', '1ms', '999ms', '1000ms'])(
+    // 0s · 0m: 수명이 0이다(경계값). 1000ms는 1초와 같지만 밀리초 단위는 받지 않는다
+    it.each(['900', 'abc', '0s', '0m', '-5m', '15 m', '15M', '1ms', '999ms', '1000ms'])(
       '%j는 거부한다',
       (ttl) => {
         expect(() => createJwtConfig(configOf({ JWT_ACCESS_TTL: ttl }))).toThrow('JWT_ACCESS_TTL');
