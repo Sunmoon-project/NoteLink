@@ -31,6 +31,8 @@ PAGE_BYTES = 1_000_000  # 페이지 하나에서 받는 최대 바이트(넘으�
 REDIRECTS_MAX = 5
 PAGE_SECONDS = 30  # 페이지 하나(리디렉트 포함)를 받는 전체 시간 상한
 READ_TIMEOUT = 20.0
+# 출처 페이지 받기용. 연락처가 없으면 위키백과 등이 막음
+PAGE_USER_AGENT = f"{USER_AGENT} (+https://github.com/teamNoteLink/NoteLink)"
 
 
 class SearchError(Exception):
@@ -140,7 +142,7 @@ class GeminiSearch:
         self._model = model
         # 리디렉트는 직접 따라가며 주소마다 검사(내부망 요청 막기)
         self._http = httpx2.Client(
-            headers={"User-Agent": USER_AGENT}, timeout=READ_TIMEOUT, transport=transport
+            headers={"User-Agent": PAGE_USER_AGENT}, timeout=READ_TIMEOUT, transport=transport
         )
         self._resolve = resolve or _resolve
         self._clock = clock or time.monotonic

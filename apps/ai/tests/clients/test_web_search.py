@@ -453,3 +453,19 @@ def test_gemini_reads_hangul_domains() -> None:
     (page,) = s.search("sys", "q", domains=[])["evidence"]
     assert page == {"url": "https://한글.test/용어", "text": "간흡충"}
     assert hosts == [IDN]
+
+
+def test_gemini_page_requests_carry_contact_user_agent() -> None:
+    agents: list[str] = []
+
+    def spy(req: httpx2.Request) -> httpx2.Response:
+        agents.append(req.headers["user-agent"])
+        return web(req)
+
+    s, _ = gemini(
+        gemini_res("- 간흡충", REDIRECT + "https://a.test/glossary"),
+        transport=httpx2.MockTransport(spy),
+    )
+    s.search("sys", "q", domains=[])
+    assert len(agents) == 2  # 리디렉트와 목적지 페이지 모두
+    assert all("https://github.com/teamNoteLink/NoteLink" in a for a in agents)
