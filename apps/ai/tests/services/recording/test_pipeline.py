@@ -23,6 +23,8 @@ from app.services.recording.pipeline import (
     TOKENS_PER_SLIDE,
     WINDOW_CHARS,
     WINDOW_MAX_MS,
+    SlideBody,
+    WindowAnswer,
     assemble_slides,
     organize,
     read_window,
@@ -438,7 +440,7 @@ def test_two_hour_recording_needs_few_llm_calls() -> None:
 
 
 def test_very_long_sentence_is_shortened_in_listing() -> None:
-    llm = FakeLlm({SLIDES: [{"slides": [item()]}]})
+    llm = FakeLlm({SLIDES: [{"slides": [item()]}], FILL: [{"slides": [fill_item()]}]})
 
     build(llm, [sentence(0, "가" * (LINE_CHARS + 100))])
 
@@ -1046,4 +1048,159 @@ def test_finishing_every_window_has_no_warning() -> None:
         WindowLlm(every_third), tagged_sentences(100), 1000, should_stop=lambda: False
     )
 
+    assert "warnings" not in result
+
+
+# ---------- 창 목록에서 잘린 긴 문장 ----------
+
+
+TAIL = "꼬리글"
+
+
+def long_text(chars: int = LINE_CHARS + 20) -> str:
+    return "가" * (chars - len(TAIL)) + TAIL
+
+
+def test_tail_of_long_sentence_reaches_fill_and_its_answer_becomes_the_slide() -> None:
+    llm = FakeLlm({SLIDES: [{"slides": [item(1, "창 글")]}], FILL: [{"slides": [fill_item()]}]})
+
+    (slide,) = build(llm, [sentence(0, long_text())])
+
+    (window,), (fill,) = llm.named(SLIDES), llm.named(FILL)
+    assert TAIL not in window.user
+    assert TAIL in fill.user
+    assert slide["title"] == "채움"
+
+
+def test_sentence_on_the_listing_limit_is_not_filled() -> None:
+    llm = FakeLlm({SLIDES: [{"slides": [item(1, "창 글")]}]})
+
+    (slide,) = build(llm, [sentence(0, long_text(LINE_CHARS))])
+
+    assert TAIL in llm.calls[0].user
+    assert [c.name for c in llm.calls] == [SLIDES]
+    assert slide["title"] == "창 글"
+
+
+def test_only_the_slide_with_long_sentence_is_filled_and_boundaries_stay() -> None:
+    data = [sentence(0, long_text()), sentence(1, "짧은 문장"), sentence(2), sentence(3)]
+    llm = FakeLlm(
+        {
+            SLIDES: [{"slides": [item(1, "앞"), item(3, "뒤")]}],
+            FILL: [{"slides": [fill_item()]}],
+        }
+    )
+
+    slides = build(llm, data)
+
+    assert starts_of(slides) == [0, 2]
+    assert [s["title"] for s in slides] == ["채움", "뒤"]
+    assert len(llm.named(SLIDES)) == 1  # 창을 다시 묻지 않음
+    (fill,) = llm.named(FILL)
+    assert TAIL in fill.user
+    assert "짧은 문장" in fill.user
+    assert "문장2" not in fill.user
+
+
+def test_fill_prompt_keeps_the_window_chars_limit() -> None:
+    llm = FakeLlm({SLIDES: [{"slides": [item()]}], FILL: [{"slides": [fill_item()]}]})
+
+    build(llm, [sentence(0, long_text(WINDOW_CHARS + 20))])
+
+    (fill,) = llm.named(FILL)
+    assert "가" * WINDOW_CHARS in fill.user
+    assert TAIL not in fill.user
+
+
+# ---------- 글 다시 받기 중 멈추기 ----------
+
+
+def all_starts(ids: list[int]) -> list[int]:
+    return list(range(1, len(ids) + 1))
+
+
+def long_slides(n: int) -> list[Sentence]:
+    """글자 상한으로 문장마다 슬라이드 한 장. 다시 받을 때 2장씩 묶임."""
+    return [
+        sentence(i, f"s{i} ".ljust(WINDOW_CHARS // 2, "가"), gap_ms=SLIDE_MAX_MS) for i in range(n)
+    ]
+
+
+def test_stop_during_fill_keeps_filled_slides_and_all_sentences() -> None:
+    data = long_slides(5)
+    assert slide_windows(data) == [(0, 5)]
+    llm = WindowLlm(all_starts)
+
+    result = organize(llm, data, 1000, should_stop=lambda: len(llm.fills) >= 2)
+
+    assert llm.fills == [2, 2]
+    slides = result["slides"]
+    assert starts_of(slides) == [0, 1, 2, 3]
+    assert {s["title"] for s in slides} == {"채움"}
+    # 모든 창을 끝냈어도 PARTIAL
+    assert result.get("warnings") == [{"code": "PARTIAL", "untilMs": slides[-1]["endMs"]}]
+    assert result["sentences"] == data
+    assert result["transcript"] == "\n".join(s["text"] for s in data)
+
+
+def test_first_batch_is_called_even_when_time_is_already_over() -> None:
+    llm = WindowLlm(all_starts)
+
+    result = organize(llm, long_slides(3), 1000, should_stop=lambda: True)
+
+    assert llm.fills == [2]
+    assert starts_of(result["slides"]) == [0, 1]
+    assert result.get("warnings") == [{"code": "PARTIAL", "untilMs": result["slides"][-1]["endMs"]}]
+
+
+def test_stop_during_fill_after_stop_between_windows() -> None:
+    data = [sentence(i, f"s{i} ".ljust(WINDOW_CHARS // 2, "가")) for i in range(30)]
+    assert len(slide_windows(data)) > 1
+    llm = WindowLlm(all_starts)
+
+    result = organize(llm, data, 1000, should_stop=lambda: True)
+
+    assert len(llm.windows) == 1
+    assert llm.fills == [2]
+    assert starts_of(result["slides"]) == [0, 1]
+    assert result["sentences"] == data
+    assert result.get("warnings") == [{"code": "PARTIAL", "untilMs": result["slides"][-1]["endMs"]}]
+
+
+def test_slide_after_unfilled_gap_is_dropped() -> None:
+    n = FILL_BATCH_SLIDES * 2 + 2
+    data = sentences(n, gap_ms=SLIDE_MIN_MS + 1000)
+    given = SlideBody("받음", "받은 글이다.", None)
+    answer = WindowAnswer(list(range(n)), {(0, 1): given, (n - 1, n): given})
+    llm = WindowLlm(lambda ids: [])
+
+    slides = assemble_slides(llm, data, [(0, n)], [answer], should_stop=lambda: True)
+
+    assert llm.fills == [FILL_BATCH_SLIDES]
+    assert starts_of(slides) == list(range(FILL_BATCH_SLIDES + 1))
+    assert [s["title"] for s in slides] == ["받음", *["채움"] * FILL_BATCH_SLIDES]
+
+
+def test_first_slide_without_text_still_fails_when_time_is_over() -> None:
+    llm = FakeLlm(
+        {
+            SLIDES: [{"slides": [item(1), item(2), item(3)]}],
+            FILL: [{}, {"slides": [fill_item(9)]}],
+        }
+    )
+
+    with pytest.raises(LlmError, match="recording_fill"):
+        organize(llm, long_slides(3), 1000, should_stop=lambda: True)
+    assert len(llm.named(FILL)) == 2
+
+
+@pytest.mark.parametrize("should_stop", [None, lambda: False], ids=["none", "false"])
+def test_all_batches_are_filled_when_not_stopped(should_stop: Callable[[], bool] | None) -> None:
+    data = long_slides(3)
+    llm = WindowLlm(all_starts)
+
+    result = organize(llm, data, 1000, should_stop=should_stop)
+
+    assert llm.fills == [2, 1]
+    assert starts_of(result["slides"]) == [0, 1, 2]
     assert "warnings" not in result

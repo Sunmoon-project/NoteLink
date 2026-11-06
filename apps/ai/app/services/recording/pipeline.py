@@ -9,12 +9,14 @@ again = organize(llm, result["sentences"], result["durationMs"])  # 다시 정�
 답을 쓸 수 없으면 온도를 올려 한 번 더 묻습니다. 답이 잘리면 같은 양을 다시 묻지 않고,
 예상 슬라이드가 많은 창은 반으로 나눠 묻습니다. 그래도 안 되면 LlmError(처리기가 다시 시도).
 잘못된 번호와 도식은 그것만 버립니다. 경계를 합치거나 잘라 범위가 달라진 슬라이드는 받은 글의
-근거가 맞지 않으므로 그 슬라이드의 글만 다시 받습니다.
+근거가 맞지 않으므로 그 슬라이드의 글만 다시 받습니다. 창 목록에서 잘린 문장이 든 슬라이드도
+같습니다.
 """
 
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import takewhile
 
 from app.clients.llm import JsonObject, Llm, LlmCutError, LlmError
 from app.clients.speech import NoSpeechError, Phrase, Transcript
@@ -326,8 +328,14 @@ def assemble_slides(
     sentences: list[Sentence],
     windows: list[SentenceRange],
     answers: list[WindowAnswer],
+    *,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[Slide]:
-    """창별 답을 합쳐 슬라이드 목록으로. 범위와 맞는 글이 없는 슬라이드만 다시 받습니다."""
+    """창별 답을 합쳐 슬라이드 목록으로. 범위와 맞는 글이 없는 슬라이드만 다시 받습니다.
+
+    묶음 사이에 should_stop이 참이면 남은 묶음을 부르지 않고, 앞에서부터 글이 끊기지 않는
+    슬라이드까지만 돌려줍니다(묶음 하나는 항상 부름).
+    """
     picked: set[int] = set()
     bodies: dict[SentenceRange, SlideBody] = {}
     for i, ((start, end), answer) in enumerate(zip(windows, answers, strict=True)):
@@ -336,12 +344,15 @@ def assemble_slides(
         hi = (windows[i + 1][0] + end) // 2 if i + 1 < len(windows) else len(sentences)
         picked.update(at for at in answer.starts if lo <= at < hi)
         for at, body in answer.bodies.items():
-            bodies.setdefault(at, body)
+            if all(len(s["text"]) <= LINE_CHARS for s in sentences[at[0] : at[1]]):
+                bodies.setdefault(at, body)  # 목록에서 잘린 문장이 있으면 끝까지 읽은 글이 아님
     ranges = _ranges(_limit_slides(sentences, picked), len(sentences))
     missing = [r for r in ranges if r not in bodies]
-    for batch in _fill_batches(sentences, missing):
+    for i, batch in enumerate(_fill_batches(sentences, missing)):
+        if i and should_stop is not None and should_stop():
+            break
         bodies.update(_fill_batch(llm, sentences, batch))
-    return [_slide(sentences, r, bodies[r]) for r in ranges]
+    return [_slide(sentences, r, bodies[r]) for r in takewhile(lambda r: r in bodies, ranges)]
 
 
 def _ranges(starts: list[int], end: int) -> list[SentenceRange]:
@@ -469,6 +480,7 @@ def organize(
 
     on_window(끝난 창 수, 전체 창 수)는 창이 끝날 때마다 부릅니다. 창 사이에 should_stop이 참이면
     남은 창을 부르지 않고, 끝난 창까지의 슬라이드에 PARTIAL 경고를 답니다(창 하나는 항상 처리).
+    글을 다시 받는 묶음 사이에 멈춰도 같습니다. sentences · transcript는 언제나 전체입니다.
     """
     windows = slide_windows(sentences)
     answers: list[WindowAnswer] = []
@@ -479,9 +491,9 @@ def organize(
         if on_window is not None:
             on_window(len(answers), len(windows))
     done = windows[: len(answers)]
-    slides = assemble_slides(llm, sentences[: done[-1][1]], done, answers)
+    slides = assemble_slides(llm, sentences[: done[-1][1]], done, answers, should_stop=should_stop)
     result = result_from(sentences, slides, duration_ms)
-    if len(done) < len(windows):
+    if slides[-1]["sentenceEnd"] < len(sentences):
         result["warnings"] = [{"code": "PARTIAL", "untilMs": slides[-1]["endMs"]}]
     return result
 

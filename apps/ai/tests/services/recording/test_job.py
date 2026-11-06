@@ -31,6 +31,7 @@ from app.services.recording.job import (
     run,
 )
 from app.services.recording.models import Sentence
+from app.services.recording.pipeline import WINDOW_CHARS
 from app.worker import handlers
 from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobGoneError, JobStore
@@ -1018,6 +1019,38 @@ def test_time_limit_stops_between_windows_with_warning(monkeypatch: pytest.Monke
     assert result["transcript"].count("\n") == len(data.phrases) - 1
     # 끝난 슬라이드만 임베딩
     assert len(result["chunks"]) == len(slides) == len(voyage.texts)
+
+
+def test_time_limit_during_fill_keeps_chunks_matching_slides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "recording_job_max_sec", 100)
+    now = [0.0]
+    llm = TickingLlm(now, 60.0)  # 창 60초, 첫 묶음 120초: 다음 묶음 전에 기한이 지남
+    voyage = FakeVoyage()
+    data = Transcript(
+        DURATION_MS,
+        tuple(
+            Phrase(f"s{i} ".ljust(WINDOW_CHARS // 2, "가"), i * 60_000, 59_900, ())
+            for i in range(3)
+        ),
+    )
+
+    result = run_direct(
+        {"audioUrl": AUDIO_URL},
+        llm=llm,
+        speech=FakeSpeech(data),
+        voyage=voyage,
+        clock=lambda: now[0],
+    )
+
+    assert llm.fills == [2]
+    slides = result["slides"]
+    assert [s["sentenceStart"] for s in slides] == [0, 1]
+    assert result["warnings"] == [{"code": "PARTIAL", "untilMs": slides[-1]["endMs"]}]
+    assert len(result["sentences"]) == 3
+    assert len(result["chunks"]) == len(voyage.texts) == 2
+    assert [c["slideIndex"] for c in result["chunks"]] == [0, 1]
 
 
 def test_at_least_one_window_runs_even_when_stt_used_all_the_time(
