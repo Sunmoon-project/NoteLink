@@ -18,7 +18,7 @@ from pymongo import MongoClient
 
 from app.clients.llm import JsonObject
 from app.core.config import settings
-from app.worker.handlers import HANDLERS
+from app.worker.handlers import HANDLERS, LATER
 from app.worker.jobs import JobStore
 from app.worker.runner import run_forever
 
@@ -63,7 +63,7 @@ def main() -> None:
     stop_on_signal(stop)
     log.info("ai_jobs 처리기 시작: %s", ", ".join(HANDLERS) or "-")
     try:
-        run_forever(store, HANDLERS, poll_sec=settings.ai_job_poll_sec, stop=stop)
+        run_forever(store, HANDLERS, poll_sec=settings.ai_job_poll_sec, stop=stop, later=LATER)
     finally:
         client.close()
 

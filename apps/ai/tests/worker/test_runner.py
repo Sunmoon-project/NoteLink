@@ -56,6 +56,33 @@ def test_handler_gets_input_reports_progress_and_result_is_saved(col: Any) -> No
     assert (doc["status"], doc["result"], doc["progress"]) == ("succeeded", {"questions": 2}, 100)
 
 
+def test_later_types_wait_for_the_others(col: Any) -> None:
+    # j1(quiz_generate)보다 먼저 들어온 미리 만들기: 처리기는 j1부터(#134)
+    col.insert_one(
+        {
+            **col.find_one({"_id": "j1"}),
+            "_id": "p1",
+            "type": "quiz_pregen",
+            "createdAt": T0 - timedelta(minutes=5),
+        }
+    )
+    order: list[str] = []
+
+    def handler(kind: str) -> Handler:
+        def handle(inp: JsonObject, report: Report) -> JsonObject:
+            order.append(kind)
+            return {}
+
+        return handle
+
+    handlers = {"quiz_generate": handler("quiz_generate"), "quiz_pregen": handler("quiz_pregen")}
+    s = store(col)
+    assert run_once(s, handlers, later={"quiz_pregen"})
+    assert run_once(s, handlers, later={"quiz_pregen"})
+    assert not run_once(s, handlers, later={"quiz_pregen"})
+    assert order == ["quiz_generate", "quiz_pregen"]
+
+
 def test_nothing_to_do_returns_false(col: Any) -> None:
     assert not run_once(store(col), {"explain": lambda inp, report: {}})
 
@@ -238,12 +265,12 @@ def test_run_forever_keeps_going_after_db_error_and_stops_on_request(col: Any) -
     calls: list[str] = []
 
     class FlakyStore(JobStore):
-        def claim(self, types: Any) -> Any:
+        def claim(self, types: Any, later: Any = ()) -> Any:
             calls.append("claim")
             if len(calls) == 1:
                 raise AutoReconnect("연결 끊김")
             stop.set()
-            return super().claim(types)
+            return super().claim(types, later)
 
     flaky = FlakyStore(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30, now=lambda: T0)
     run_forever(flaky, {"quiz_generate": lambda inp, report: {"ok": True}}, poll_sec=0, stop=stop)

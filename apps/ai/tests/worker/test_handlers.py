@@ -105,6 +105,14 @@ def test_bad_today_review_input_fails_without_retry(monkeypatch: pytest.MonkeyPa
     assert (doc["status"], doc["error"]) == ("failed", "입력 오류: input.day")
 
 
-def test_quiz_generate_is_registered(monkeypatch: pytest.MonkeyPatch) -> None:
-    doc = run_job(monkeypatch, FakeLlm(), {"day": "2026-11-04"}, "quiz_generate")
+@pytest.mark.parametrize("kind", ["quiz_generate", "quiz_pregen"])
+def test_quiz_generate_and_pregen_are_registered(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    doc = run_job(monkeypatch, FakeLlm(), {"day": "2026-11-04"}, kind)
     assert (doc["status"], doc["error"]) == ("failed", "입력 오류: input.material.pages")
+
+
+def test_only_pregen_waits_for_other_jobs() -> None:
+    assert handlers.LATER == {"quiz_pregen"}
+    assert handlers.LATER <= HANDLERS.keys()
