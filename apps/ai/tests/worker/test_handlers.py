@@ -46,6 +46,7 @@ def test_similar_quiz_job_is_processed_and_its_result_saved(
     doc = run_job(monkeypatch, happy_llm(), job_input())
     assert (doc["status"], doc["progress"], doc["error"]) == ("succeeded", 100, None)
     assert [x["answer"] for x in doc["result"]["reviewQuestions"]] == ["stack", "be"]
+    assert "checkpoint" not in doc
 
 
 def test_bad_similar_quiz_input_fails_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -64,6 +65,7 @@ def test_similar_quiz_job_is_retried_later_when_the_llm_is_down(
     assert (doc["status"], doc["attempts"], doc["result"]) == ("queued", 1, None)
     assert doc["error"] == "AI 응답을 받지 못함(문제 만들기 호출이 모두 실패)"
     assert doc["retryAt"] > T0  # 기다렸다가 다시 가져감
+    assert "checkpoint" not in doc
 
 
 def test_today_review_job_is_processed_and_its_result_saved(

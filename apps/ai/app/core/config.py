@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     voyage_api_key: SecretStr = SecretStr("")
     voyage_model: str = "voyage-4"  # 1,024차원
 
+    # 녹음 쪽: 음성 인식(Azure AI Speech). 키는 .env에만.
+    azure_speech_endpoint: str = ""
+    azure_speech_key: SecretStr = SecretStr("")
+    recording_model: str = "gemma-4-26b"  # 녹음 슬라이드 만들기 (경계 · 제목 · 요약 · 도식)
+    # 2시간 녹음: LLM 약 39번 × (간격 2.2초 + 응답 약 75초) ≈ 50분 + STT 약 10분
+    recording_job_max_sec: int = 3600
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"

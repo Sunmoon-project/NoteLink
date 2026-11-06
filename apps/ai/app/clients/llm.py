@@ -30,6 +30,10 @@ class LlmError(Exception):
     """다시 보내도 답을 받지 못함. 메시지는 짧은 원인(예: 'HTTP 503', 'JSON')."""
 
 
+class LlmCutError(LlmError):
+    """답을 JSON으로 읽지 못함(주로 응답 잘림)."""
+
+
 STOPPED = "멈춤(다 모았거나 시간 상한)"
 _local = threading.local()
 
@@ -218,6 +222,8 @@ class SchoolLlm:
                 continue
             return parsed
         check_stop()  # 마지막 대기 중에 멈췄으면 서버 실패가 아니라 멈춤
+        if err == "JSON":
+            raise LlmCutError(err)
         raise LlmError(err)
 
 

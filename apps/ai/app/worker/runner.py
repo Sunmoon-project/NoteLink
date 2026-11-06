@@ -1,8 +1,9 @@
 """ai_jobs 처리 반복: 처리 함수가 등록된 작업 종류만 가져와 처리합니다.
 
 처리 함수(Handler)는 input을 받아 result를 돌려주고, 진행률은 report(값, 단계)로 알립니다.
+시도 사이에 다시 쓸 중간 결과는 report.save_checkpoint · load_checkpoint로 저장하고 읽습니다.
   - LlmError        일시 오류 → 시도 한도까지 기다렸다가 다시 시도
-  - JobInputError   input이 작업에 맞지 않음 → 바로 실패(다시 해도 같음)
+  - JobInputError   input이 작업에 맞지 않음 → 바로 실패(다시 해도 같음). 오류 문구는 code로 시작
   - 그 밖의 예외    코드 오류 → 바로 실패. 오류 문구는 앱에 보이므로 자세한 내용은 로그에만 남김
   - JobGoneError    취소됐거나 잠금을 잃음 → 아무것도 쓰지 않고 다음 작업으로
   - PyMongoError    DB 연결 문제 → 쓰지 않고 둠. 잠금이 끝나면 다시 가져감(시도 한도 안에서)
@@ -25,14 +26,43 @@ log = logging.getLogger(__name__)
 
 
 class JobInputError(ValueError):
-    """input이 작업에 맞지 않음(빠진 필드 · 잘못된 형식). 메시지는 앱에 보이는 짧은 원인."""
+    """input이 작업에 맞지 않음(빠진 필드 · 잘못된 형식). 메시지는 앱에 보이는 짧은 원인.
+
+    code가 있으면 앱이 구분할 수 있게 ai_jobs.error를 '<code>: <원인>'으로 씁니다.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class Report(Protocol):
     def __call__(self, value: int, step: str | None = None) -> None: ...
 
 
-type Handler = Callable[[JsonObject, Report], JsonObject]
+class JobReport(Report, Protocol):
+    """Report에 중간 결과 저장을 더한 것. Report만 받는 처리 함수도 그대로 Handler가 됩니다."""
+
+    def load_checkpoint(self) -> object: ...
+
+    def save_checkpoint(self, value: JsonObject) -> None: ...
+
+
+type Handler = Callable[[JsonObject, JobReport], JsonObject]
+
+
+class _StoreReport:
+    def __init__(self, store: JobStore, job: Job) -> None:
+        self._store, self._job = store, job
+
+    def __call__(self, value: int, step: str | None = None) -> None:
+        self._store.progress(self._job, value, step)
+
+    def load_checkpoint(self) -> object:
+        return self._job.checkpoint
+
+    def save_checkpoint(self, value: JsonObject) -> None:
+        self._store.save_checkpoint(self._job, value)
 
 
 class _Heartbeat:
@@ -68,14 +98,11 @@ def run_once(
     if job is None:
         return False
 
-    def report(value: int, step: str | None = None) -> None:
-        store.progress(job, value, step)
-
     try:
         if not isinstance(job.input, dict):
             raise JobInputError("input이 객체가 아님")
         with _Heartbeat(store, job, heartbeat_sec or store.lock_sec / 3):
-            result = handlers[job.type](job.input, report)
+            result = handlers[job.type](job.input, _StoreReport(store, job))
         store.succeed(job, result)
         log.info("작업 완료 %s (%s)", job.id, job.type)
     except JobGoneError:
@@ -85,7 +112,7 @@ def run_once(
         _fail(store, job, f"AI 응답을 받지 못함({e})", retry=True)
     except JobInputError as e:
         log.warning("작업 %s: 입력 오류 %s", job.id, e)
-        _fail(store, job, f"입력 오류: {e}", retry=False)
+        _fail(store, job, f"{e.code}: {e}" if e.code else f"입력 오류: {e}", retry=False)
     except PyMongoError:
         raise  # 실패로 쓰지 않음: run_forever가 기록하고, 잠금이 끝나면 다시 가져감
     except Exception:

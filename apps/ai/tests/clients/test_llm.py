@@ -7,7 +7,7 @@ from collections.abc import Callable
 import httpx2
 import pytest
 
-from app.clients.llm import STOPPED, LlmError, SchoolLlm, repair, stop_on
+from app.clients.llm import STOPPED, LlmCutError, LlmError, SchoolLlm, repair, stop_on
 
 SCHEMA = {"type": "object"}
 
@@ -182,6 +182,19 @@ def test_unreadable_answer_is_retried_then_raises() -> None:
     assert len(server.requests) == 2
 
 
+def test_unreadable_answer_raises_cut_error_with_same_message() -> None:
+    server = Server(reply("모르겠습니다"), reply("[1, 2]"))
+    with pytest.raises(LlmCutError, match="^JSON$"):
+        server.client(retries=1).call("gemma", "s", "u", SCHEMA, "X")
+
+
+def test_server_error_is_not_a_cut_error() -> None:
+    server = Server(reply("", 503))
+    with pytest.raises(LlmError) as e:
+        server.client(retries=0).call("gemma", "s", "u", SCHEMA, "X")
+    assert not isinstance(e.value, LlmCutError)
+
+
 def test_calls_keep_the_minimum_gap_from_the_previous_send() -> None:
     server = Server(reply("{}"), reply("{}"))
     c = Clock(server, gap=2.2)
@@ -230,6 +243,30 @@ def test_a_stop_during_the_last_backoff_is_a_stop_not_a_server_error() -> None:
     with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
         c.llm.call("gemma", "s", "u", SCHEMA, "X")
     assert len(c.sent) == 3
+
+
+def test_a_stop_during_the_last_unreadable_answer_is_a_stop_not_a_cut() -> None:
+    # 마지막 시도의 답이 JSON이 아닌데 그 사이 멈춤: 답 잘림(LlmCutError)이 아니라 멈춤
+    stop = threading.Event()
+    server = Server()
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        server.requests.append(request)
+        stop.set()  # 응답을 기다리는 사이 다른 스레드가 멈춤 신호를 켬
+        return reply("모르겠습니다")
+
+    llm = SchoolLlm(
+        "https://llm.test",
+        "key",
+        gap_sec=0,
+        retries=0,
+        transport=httpx2.MockTransport(handle),
+        sleep=server.slept.append,
+    )
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)) as e:
+        llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert not isinstance(e.value, LlmCutError)
+    assert len(server.requests) == 1
 
 
 def test_a_retry_is_not_sent_after_a_stop() -> None:
