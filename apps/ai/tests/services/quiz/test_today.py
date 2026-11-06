@@ -8,7 +8,7 @@ import pytest
 from app.clients.llm import JsonObject, LlmError
 from app.services.quiz import today
 from app.services.quiz.review import InputError, seoul_midnight
-from tests.fakes import FakeLlm
+from tests.fakes import FakeLlm, fits
 
 DAY = "2026-10-30"  # 서울 날짜
 TOMORROW = datetime(2026, 10, 30, 15)  # 서울 10/31 0시를 UTC로
@@ -280,8 +280,7 @@ def blank_q(srs: JsonObject, **more: Any) -> JsonObject:
     )
 
 
-def natural(*values: bool) -> list[JsonObject | LlmError]:
-    return [{"natural": v} for v in values]
+SECURED = fits("secured", "fastened")  # 정답 둘 검사: secured도 빈칸에 맞음(정답도 맞음)
 
 
 def flawed_input(srs: JsonObject) -> JsonObject:
@@ -303,8 +302,8 @@ def unchecked(**more: Any) -> JsonObject:
 
 
 def test_unchecked_question_that_passes_is_marked_checked() -> None:
-    # 오답 보기 4개(검사 모델) · 같은 4개(생성 모델 2차 판정) · 정답을 넣은 빈칸 문장
-    llm = FakeLlm({"Natural": natural(*[False] * 8, True)})
+    # 보기를 한꺼번에(검사 모델 · 생성 모델 2차 판정): 걸린 오답 없음 · 정답은 빈칸에 맞음
+    llm = FakeLlm({"Naturals": fits("fastened")})
     result = run(llm, flawed_input(unchecked()))
     assert [x["answer"] for x in result["questions"]] == ["fastened"]
     assert result["questions"][0]["srs"]["checked"] is True
@@ -312,7 +311,7 @@ def test_unchecked_question_that_passes_is_marked_checked() -> None:
 
 
 def test_question_put_off_that_passes_the_next_day_loses_its_flaw_mark() -> None:
-    llm = FakeLlm({"Natural": natural(*[False] * 8, True)})
+    llm = FakeLlm({"Naturals": fits("fastened")})
     result = run(llm, flawed_input(unchecked(flaw="정답 둘", flawTries=1)))
     [x] = result["questions"]
     assert x["srs"]["checked"] is True
@@ -324,7 +323,7 @@ def test_question_put_off_that_passes_the_next_day_loses_its_flaw_mark() -> None
 
 def test_second_right_answer_voids_those_answers_and_waits_a_day_for_a_new_question() -> None:
     # secured도 빈칸에 맞음 → 무효. 새 문제는 세 번 다 모양이 틀려 못 만듦
-    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
     result = run(llm, flawed_input(unchecked()))
     assert result["questions"] == []
     assert result["voidAnswers"] == [
@@ -349,7 +348,7 @@ def test_second_right_answer_voids_those_answers_and_waits_a_day_for_a_new_quest
 
 
 def test_voided_wrong_answer_is_taken_off_the_wrong_count() -> None:
-    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
     result = run(llm, flawed_input(unchecked()))
     [p] = result["progress"]
     assert (p["concept"], p["wrong"]) == ("fasten의 뜻", 0)
@@ -365,7 +364,7 @@ def test_right_then_voided_wrong_then_right_is_mastered() -> None:
             "answers": [{"questionId": "q1", "answer": "fastened", "correct": True}],
         }
     )
-    llm = FakeLlm({"Natural": natural(True, False, False, False)})  # 새 문제는 만들지 않음
+    llm = FakeLlm({"Naturals": SECURED})  # 새 문제는 만들지 않음
     result = run(llm, inp)
     assert result["questions"] == [] and len(result["voidAnswers"]) == 1
     s = updates(result)["q1"]
@@ -383,7 +382,7 @@ def test_voiding_the_first_wrong_answer_counts_the_step_again() -> None:
     right, wrong_one = inp["attempts"]
     right["finishedAt"], wrong_one["finishedAt"] = "2026-10-20T06:00:00Z", "2026-10-10T06:00:00Z"
     inp["attempts"] = [wrong_one, right]
-    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
     s = updates(run(llm, inp))["q1"]
     assert (s["reviews"], s["lastResult"], s["streak"], s["step"]) == (1, "right", 1, 0)
 
@@ -392,7 +391,7 @@ def test_all_answers_voided_start_the_streak_and_step_from_zero() -> None:
     # 맞힘은 오답 복습이 무효로(void: true), secured 오답은 이번에 무효로: 남은 풀이가 없음
     inp = flawed_input(unchecked(streak=1, step=1))
     inp["attempts"][0]["answers"][0]["void"] = True
-    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
     s = updates(run(llm, inp))["q1"]
     assert (s["reviews"], s["lastResult"], s["streak"], s["step"]) == (0, None, 0, 0)
 
@@ -412,7 +411,7 @@ def test_answers_on_another_question_of_the_same_word_do_not_restore_the_streak(
         inp["attempts"].append(
             {"id": f"z{i}", "quizSetId": "s2", "finishedAt": f"{day}T06:00:00Z", "answers": [right]}
         )
-    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
     s = updates(run(llm, inp))["q1"]
     # q1은 맞힘 1번 · 무효 오답 1번뿐: qz의 맞힘 2번으로 다 익힘이 되지 않음
     assert (s["state"], s["streak"], s["reviews"], s["flawTries"]) == ("active", 1, 1, 1)
@@ -421,7 +420,7 @@ def test_answers_on_another_question_of_the_same_word_do_not_restore_the_streak(
 def test_restoring_starts_from_the_carried_reviews() -> None:
     # 다시 보기 새 문제: 옛 문제의 2번을 이어받고 이 문제를 맞힘 1번 · secured 오답 1번
     inp = flawed_input(unchecked(reviews=4, step=2))
-    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
     s = updates(run(llm, inp))["q1"]
     # 이어받은 2번 + 남은 1번, step은 저장값 2(다시 세면 1)보다 낮아지지 않음
     assert (s["reviews"], s["streak"], s["step"], s["lastResult"]) == (3, 1, 2, "right")
@@ -431,7 +430,7 @@ def test_answers_voided_before_still_restore_the_review_state() -> None:
     # 예전에 무효로 한 secured 오답: 그때 되살리지 않아 연속 정답이 0으로 남은 상태
     inp = flawed_input(unchecked())
     inp["attempts"][1]["answers"][0]["void"] = "문제 오류: 정답 둘(secured도 맞음)"
-    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
     result = run(llm, inp)
     assert result["voidAnswers"] == []  # 새로 무효로 한 것은 없음
     s = updates(result)["q1"]
@@ -454,7 +453,7 @@ def test_restoring_twice_gives_the_same_state() -> None:
 
 
 def test_flawed_question_is_dropped_after_three_days() -> None:
-    llm = FakeLlm({"Natural": natural(True, False, False, False), "Review": [{}, {}, {}]})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
     result = run(llm, flawed_input(unchecked(flawTries=2)))
     s = updates(result)["q1"]
     assert (s["state"], s["dueAt"]) == ("flawed", None)
@@ -472,13 +471,12 @@ FASTENED = {
     }
 }
 CHECK_A = {"answer": "A", "only_one": True, "supported": True}
-# FakeLlm은 받은 목록에서 답을 꺼내 쓰므로 시험마다 새 목록을 만듦(+로 합치거나 list())
-SECURED = natural(True, False, False, False)  # 저장된 문제: secured도 빈칸에 맞음
-CLEAN = natural(*[False] * 8, True)  # 새 문제: 걸린 보기 없음 · 정답이 빈칸에 맞음
+# SECURED: 저장된 문제는 secured도 빈칸에 맞음. 새 문제(FASTENED)의 보기에는 secured가 없어
+# 걸린 보기가 없고 정답은 빈칸에 맞음
 
 
 def test_flawed_question_is_replaced_by_a_new_one() -> None:
-    llm = FakeLlm({"Natural": SECURED + CLEAN, "Review": [FASTENED], "Check": [CHECK_A]})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [FASTENED], "Check": [CHECK_A]})
     result = run(llm, flawed_input(unchecked()))
     [new] = result["questions"]
     assert (new["answer"], new["choices"][0], len(new["choices"])) == ("fastened", "fastened", 5)
@@ -505,7 +503,7 @@ def test_question_answered_right_is_replaced_on_the_same_word() -> None:
     }
     srs = st(TOMORROW - timedelta(days=1), "right")
     del srs["checked"]
-    llm = FakeLlm({"Natural": SECURED + CLEAN, "Review": [request, FASTENED], "Check": [CHECK_A]})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [request, FASTENED], "Check": [CHECK_A]})
     [new] = run(llm, flawed_input(srs))["questions"]
     assert new["answer"] == "fastened"
     assert "정답은 원래 정답과 같은 'fastened'" in llm.named("Review")[0].user
@@ -533,9 +531,10 @@ def test_two_new_questions_made_in_one_run_do_not_overlap() -> None:
         }
     }
     check_b = {**CHECK_A, "answer": "B"}  # 세트의 두 번째 문제
-    natural_ = SECURED + CLEAN + natural(True, False, False, False) + CLEAN
     review = [FASTENED, same, {}, {}]  # q3의 2 · 3번째 시도는 모양이 틀려 못 만듦
-    llm = FakeLlm({"Natural": natural_, "Review": review, "Check": [CHECK_A, check_b]})
+    # q3는 inform도 맞음(결함). 새 문제들은 걸린 보기 없음
+    judge = fits("secured", "fastened", "inform", "request")
+    llm = FakeLlm({"Naturals": judge, "Review": review, "Check": [CHECK_A, check_b]})
     result = run(llm, inp)
     assert [x["answer"] for x in result["questions"]] == ["fastened"]
     assert [(d["questionId"], d["replacedBy"] is None) for d in result["dropped"]] == [
@@ -557,7 +556,7 @@ def test_sentence_answer_does_not_avoid_note_group_words() -> None:
 
 
 def test_new_question_counts_its_own_flaw_tries() -> None:
-    llm = FakeLlm({"Natural": SECURED + CLEAN, "Review": [FASTENED], "Check": [CHECK_A]})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [FASTENED], "Check": [CHECK_A]})
     [new] = run(llm, flawed_input(unchecked(flawTries=1)))["questions"]
     assert "flawTries" not in new["srs"]
 
@@ -566,7 +565,7 @@ def test_llm_down_while_replacing_puts_only_that_question_off_a_day() -> None:
     inp = flawed_input(unchecked())
     other = q("q2", "stack", "stack의 뜻", st(TOMORROW - timedelta(days=1)))
     inp["sets"][0]["questions"].append(other)
-    llm = FakeLlm({"Natural": list(SECURED), "Review": [LlmError("HTTP 503")] * 3})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [LlmError("HTTP 503")] * 3})
     result = run(llm, inp)
     assert [x["answer"] for x in result["questions"]] == ["stack"]  # 다른 문제는 그대로 냄
     s = updates(result)["q1"]
@@ -576,8 +575,7 @@ def test_llm_down_while_replacing_puts_only_that_question_off_a_day() -> None:
 def test_checker_down_while_replacing_does_not_use_up_a_day() -> None:
     # 1 · 3번째 시도는 검사 모델 호출 실패, 2번째는 생성 호출 실패
     review = [FASTENED, LlmError("HTTP 503"), FASTENED]
-    natural_ = SECURED + CLEAN + CLEAN
-    llm = FakeLlm({"Natural": natural_, "Review": review, "Check": [LlmError("HTTP 503")] * 2})
+    llm = FakeLlm({"Naturals": SECURED, "Review": review, "Check": [LlmError("HTTP 503")] * 2})
     result = run(llm, flawed_input(unchecked()))
     assert result["questions"] == []
     s = updates(result)["q1"]
@@ -589,7 +587,7 @@ def test_question_put_off_to_tomorrow_is_not_handed_to_a_same_word_copy() -> Non
     inp = flawed_input(unchecked())
     other = q("q2", "fastened", "fasten의 뜻", st(TOMORROW - timedelta(days=1)))
     inp["sets"].append({"id": "s2", "materialId": "m1", "questions": [other]})
-    llm = FakeLlm({"Natural": list(SECURED), "Review": [LlmError("HTTP 503")] * 3})
+    llm = FakeLlm({"Naturals": SECURED, "Review": [LlmError("HTTP 503")] * 3})
     result = run(llm, inp)
     assert [x["answer"] for x in result["questions"]] == ["fastened"]  # q2의 사본
     up = updates(result)
@@ -599,7 +597,7 @@ def test_question_put_off_to_tomorrow_is_not_handed_to_a_same_word_copy() -> Non
 
 
 def test_question_put_off_is_not_asked_when_the_check_call_fails() -> None:
-    llm = FakeLlm({"Natural": [LlmError("HTTP 503")] * 9})
+    llm = FakeLlm({"Naturals": [LlmError("HTTP 503")] * 2})
     result = run(
         llm, flawed_input(unchecked(flaw="빈칸에 넣어도 말이 되는 오답 보기: secured", flawTries=1))
     )
@@ -614,7 +612,7 @@ def test_question_put_off_is_not_handed_to_a_copy_when_the_check_call_fails() ->
     inp = flawed_input(unchecked(flaw=flaw, flawTries=1))
     other = q("q2", "fastened", "fasten의 뜻", st(TOMORROW - timedelta(days=1)))
     inp["sets"].append({"id": "s2", "materialId": "m1", "questions": [other]})
-    result = run(FakeLlm({"Natural": [LlmError("HTTP 503")] * 9}), inp)
+    result = run(FakeLlm({"Naturals": [LlmError("HTTP 503")] * 2}), inp)
     assert [x["answer"] for x in result["questions"]] == ["fastened"]  # q2의 사본
     up = updates(result)
     assert (up["q1"]["state"], up["q1"]["dueAt"]) == ("active", TOMORROW)
@@ -636,7 +634,7 @@ def test_question_put_off_the_day_before_is_not_handed_to_a_same_word_copy() -> 
 
 
 def test_check_call_failing_leaves_the_question_unchecked() -> None:
-    llm = FakeLlm({"Natural": [LlmError("HTTP 503")] * 9})
+    llm = FakeLlm({"Naturals": [LlmError("HTTP 503")] * 2})
     result = run(llm, flawed_input(unchecked()))
     [x] = result["questions"]
     assert x["answer"] == "fastened" and "checked" not in x["srs"]  # 다음에 다시 검사

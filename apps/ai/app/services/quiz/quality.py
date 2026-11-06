@@ -7,6 +7,8 @@
   natural_options  LLM: 오답 보기를 넣어도 자연스러운 문장 · 같은 뜻이 되는지.
                    노트가 아니라 일반 실력으로 묻습니다.
                    '노트상 정답인가'로 물으면 결함 2개 중 0개를 잡았습니다.
+                   보기 다섯 개(정답 포함)를 한 호출로 판정하고(Naturals), 정답이 맞는지도 같은
+                   호출에서 봅니다. 답 모양이 틀리면 보기마다 따로 묻습니다(Natural).
 
 LLM 판정을 받지 못하면(호출 실패 · 답 모양 오류) 그 보기는 걸리지 않은 것으로 넘어갑니다(로컬
 원본과 같은 동작). 호출이 실패했고 걸린 보기가 없으면 '검사 못 함'(screen의 두 번째 값)으로
@@ -17,6 +19,7 @@ LLM 판정을 받지 못하면(호출 실패 · 답 모양 오류) 그 보기는
 
 import re
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import TypedDict
 
 from app.clients.llm import JsonObject, Llm, LlmError
@@ -205,42 +208,113 @@ BLANK_REASON = "빈칸에 넣어도 말이 되는 오답 보기"
 MEAN_REASON = "같은 뜻으로 쓰이는 오답 보기"
 
 
-def _mode(item: _Item) -> tuple[str, Callable[[str], str], str] | None:
-    """(검사 지시, 질문 만들기, 탈락 이유). 이 검사를 하지 않는 유형(장면 · 규칙)이면 None."""
+@dataclass(frozen=True)
+class _Mode:
+    system: str  # 보기 하나를 묻는 검사 지시
+    make: Callable[[str], str]  # 보기 하나를 묻는 글
+    head: str  # 보기를 한꺼번에 묻는 글의 머리
+    reason: str  # 탈락 이유
+
+
+def _mode(item: _Item) -> _Mode | None:
+    """이 초안의 검사 방식. 이 검사를 하지 않는 유형(장면 · 규칙)이면 None."""
     p = item["passage"].strip()
     ty = item["type"]
     if ty in KO_SYS:  # 한국어 용어 과목: 같은 생각을 일반 전공 지식으로
-        return KO_SYS[ty], _ko_make(ty, p), _KO_REASON[ty]
+        first, second = _KO_LABELS[ty]
+        return _Mode(KO_SYS[ty], _ko_make(ty, p), f"{first}: {p}\n{second} 후보:", _KO_REASON[ty])
     if "____" in p or re.search(r"_{3,}", p):
-        return BLANK_SYS, (lambda o: f"문장: {p}\n빈칸에 넣을 표현: {o}"), BLANK_REASON
+        return _Mode(
+            BLANK_SYS,
+            lambda o: f"문장: {p}\n빈칸에 넣을 표현: {o}",
+            f"문장: {p}\n빈칸에 넣을 표현 후보:",
+            BLANK_REASON,
+        )
     if re.search(r"[가-힣]", p) and short_answer(item["answer"]) and ty == "어휘":
-        return MEAN_SYS, (lambda o: f"한국어 뜻: {p}\n영어 표현: {o}"), MEAN_REASON
+        return _Mode(
+            MEAN_SYS,
+            lambda o: f"한국어 뜻: {p}\n영어 표현: {o}",
+            f"한국어 뜻: {p}\n영어 표현 후보:",
+            MEAN_REASON,
+        )
     return None
+
+
+_EACH = (
+    " 후보마다 따로 판단한다. 여러 개가 true여도 되고 모두 false여도 된다. "
+    "natural에 후보 순서대로 true/false를 넣는다."
+)
+
+
+def _batch_system(system: str) -> str:
+    return system.removesuffix(_JSON) + _EACH + _JSON
+
+
+def _verdicts(
+    llm: Llm, model: str, mode: _Mode, choices: list[str], failed: list[str]
+) -> list[bool | None]:
+    """보기마다 판정(True · False, 받지 못하면 None). 보기를 모두 한 호출로 묻습니다.
+
+    보기마다 따로 묻던 것(오답 4개 + 정답 1개)을 한 호출로(11/05 로컬 측정, 초안 27개 · 일부러
+    맞는 오답을 넣은 10개 포함): 검사 모델은 넣은 오답 10/10을 똑같이 잡고 좋은 초안의 오답
+    68개 중 0개를 걸러 511초 → 163초, 생성 모델은 4/4를 똑같이 잡고 좋은 초안을 잘못 거른 것이
+    3/24 → 0/24, 147초 → 34초. 정답을 틀렸다고 본 것은 27개 중 2개(따로 물을 때 1개).
+    답 모양이 틀리면 보기마다 따로 묻고, 호출이 실패하면 모든 보기를 failed에 더합니다(장애에
+    보기마다 다시 보내지 않음).
+    """
+    schema: JsonObject = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["natural"],
+        "properties": {
+            "natural": {
+                "type": "array",
+                "minItems": len(choices),
+                "maxItems": len(choices),
+                "items": {"type": "boolean"},
+            }
+        },
+    }
+    user = mode.head + "\n" + "\n".join(f"{i}. {o}" for i, o in enumerate(choices, 1))
+    try:
+        r = llm.call(
+            model,
+            _batch_system(mode.system),
+            user,
+            schema,
+            "Naturals",
+            max_tokens=40 + 12 * len(choices),
+        )
+    except LlmError:
+        failed.extend(choices)
+        return [None] * len(choices)
+    v = r.get("natural")
+    if isinstance(v, list) and len(v) == len(choices) and all(isinstance(x, bool) for x in v):
+        return list(v)
+    return [_natural(llm, model, mode.system, mode.make(o), failed, o) for o in choices]
 
 
 def natural_options(
     llm: Llm,
     item: _Item,
     model: str,
-    mode: tuple[str, Callable[[str], str], str] | None,
+    mode: _Mode | None,
     failed: list[str] | None = None,
-) -> list[str] | None:
-    """모델이 자연스럽다고 본 오답 보기. 이 검사를 하지 않는 유형(mode가 None)이면 None.
+) -> tuple[list[str] | None, bool | None]:
+    """(모델이 자연스럽다고 본 오답 보기, 정답 판정). 이 검사를 하지 않는 유형(mode가 None)이면
+    (None, None). 정답 판정은 정답 보기가 없거나 판정을 받지 못하면 None.
 
-    정답 보기는 대소문자 · 공백만 달라도 빼고 봅니다(code_check와 같은 기준).
+    정답 보기는 대소문자 · 공백만 달라도 정답으로 봅니다(code_check와 같은 기준).
     failed에는 호출이 실패한 보기를 모읍니다(답 모양 오류는 넣지 않음).
     """
     if mode is None:
-        return None
-    system, make, _ = mode
-    answer_key = option_key(item["answer"])
-    wrong = [o for o in item["choices"] if option_key(o) != answer_key]
-    found = []
-    for o in wrong:
-        v = _natural(llm, model, system, make(o), failed, o)
-        if v is True:
-            found.append(o)
-    return found
+        return None, None
+    choices = list(item["choices"])
+    key = option_key(item["answer"])
+    v = _verdicts(llm, model, mode, choices, [] if failed is None else failed)
+    found = [o for o, x in zip(choices, v, strict=True) if x is True and option_key(o) != key]
+    answer = [x for o, x in zip(choices, v, strict=True) if option_key(o) == key]
+    return found, (answer[0] if answer else None)
 
 
 def screen(
@@ -275,33 +349,33 @@ def screen(
     item["choices"] = [o for o in item["choices"] if o.strip().lower() not in pair]
     mode = _mode(item)
     failed: list[str] = []
-    n = natural_options(llm, item, settings.quiz_check_model, mode, failed)
+    # 정답 판정은 검사 모델의 같은 호출에서 받음(따로 한 번 더 묻던 것)
+    n, answer_ok = natural_options(llm, item, settings.quiz_check_model, mode, failed)
     if n == [] and qtype not in KO_SYS:
         # 검사 모델 혼자서는 'extended'를 두 번 놓침. 생성 모델을 2차 판정으로:
         # 빈칸 39문제(10/22 채점) 나쁜 것 10/14 → 13/14, 좋은 것 버림 3/25 → 8/25
         # (좋은 초안을 버려도 재시도 한 번 비용)
-        n = natural_options(llm, item, settings.quiz_gen_model, mode, failed)
+        n, _ = natural_options(llm, item, settings.quiz_gen_model, mode, failed)
     if n and mode:
-        why.append(f"{mode[2]}: {', '.join(n)}")
+        why.append(f"{mode.reason}: {', '.join(n)}")
     if hits is not None:
         hits.extend(g + (n or []))
     p = item["passage"].strip()
-    if not why and qtype not in KO_SYS and "____" in p:
+    blank = qtype not in KO_SYS and "____" in p
+    if not why and mode and (blank or qtype in KO_SYS) and answer_ok is None and not failed:
+        # 정답이 검사한 보기에 없을 때(보기 모양이 다름 등)만 정답을 따로 물음
+        answer_ok = _natural(
+            llm, settings.quiz_check_model, mode.system, mode.make(item["answer"]), failed,
+            item["answer"],
+        )  # fmt: skip
+    if not why and blank and answer_ok is False:
         # 정답 자체도 맞아야 함: 'The construction team will ____ the road'에
         # 정답 'resurfacing' (10/26)
-        user = f"문장: {p}\n빈칸에 넣을 표현: {item['answer']}"
-        fits = _natural(llm, settings.quiz_check_model, BLANK_SYS, user, failed, item["answer"])
-        if fits is False:
-            why.append("정답을 빈칸에 넣으면 문장이 틀림")
-    if qtype in KO_SYS and not why:
+        why.append("정답을 빈칸에 넣으면 문장이 틀림")
+    if not why and qtype in KO_SYS and answer_ok is False:
         # 용어 과목: 정답도 맞아야 함 — OCR 오류로 노트 자체가 틀릴 수 있음
         # (미생 시험의 '항산성균은 보통 염색으로 쉽게 염색되며')
-        user = _ko_make(qtype, p)(item["answer"])
-        right = _natural(
-            llm, settings.quiz_check_model, KO_SYS[qtype], user, failed, item["answer"]
-        )
-        if right is False:
-            why.append("정답이 일반 전공 지식과 맞지 않음(노트 OCR 오류 가능)")
+        why.append("정답이 일반 전공 지식과 맞지 않음(노트 OCR 오류 가능)")
     return why, bool(failed) and not why
 
 

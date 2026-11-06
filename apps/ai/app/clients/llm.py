@@ -5,6 +5,8 @@
   - qwen은 생각(thinking)을 꺼야 구조화 출력이 제때 끝남
   - JSON을 닫지 않고 빈 줄로 채운 채 멈출 때가 있음 → repair()
   - 429(분당 한도)는 Retry-After만큼 기다리고, 5xx는 조금씩 늘려 기다린 뒤 다시 보냄
+  - 동시 요청을 받음: gemma 4개를 한꺼번에 보내면 16초, 하나씩이면 약 32초(11/05). 그래서 보내는
+    간격(gap_sec, 보낸 시각부터 다음 보낸 시각까지)만 지키고 응답은 여러 스레드가 함께 기다림
 """
 
 import json
@@ -92,8 +94,11 @@ class SchoolLlm:
         self._retries = retries
         self._sleep = sleep
         self._clock = clock
-        self._last = float("-inf")
-        # 한 프로세스 안의 호출이 한도를 같이 쓰므로 순서대로 보냄
+        # 다음 호출을 보낼 수 있는 가장 이른 시각. 한 프로세스 안의 호출이 분당 한도를 같이 쓰므로
+        # 보낼 차례만 잠금으로 정하고 응답은 잠금 밖에서 기다림. 응답을 받을 때까지 잠그면 호출이
+        # 하나씩만 나가서 맞춤 퀴즈 5문제에 7분이 걸렸음(#95)
+        self._next = float("-inf")
+        self._held = float("-inf")  # 429를 받아 이 시각까지는 아무도 보내지 않음
         self._lock = threading.Lock()
 
     def call(
@@ -122,25 +127,43 @@ class SchoolLlm:
         }
         if model.startswith("qwen"):
             body["chat_template_kwargs"] = {"enable_thinking": False}
+        return self._send(body)
+
+    def _turn(self) -> None:
+        """이 호출의 차례(앞 호출을 보낸 뒤 gap_sec, 어느 스레드든)까지 기다립니다.
+
+        기다리는 사이 다른 스레드가 429를 받았으면 그 대기가 끝난 뒤의 차례를 다시 잡습니다
+        (미리 잡아 둔 차례대로 보내면 한도 안에서 다시 429를 받음, /code-review #95).
+        """
+        while True:
+            with self._lock:
+                at = max(self._clock(), self._next)
+                self._next = at + self._gap
+            wait = at - self._clock()
+            if wait > 0:
+                self._sleep(wait)
+            with self._lock:
+                if self._clock() >= self._held:
+                    return
+
+    def _hold(self, sec: float) -> None:
+        """429: 모든 스레드가 sec초 동안 보내지 않음."""
         with self._lock:
-            return self._send(body)
+            self._held = max(self._held, self._clock() + sec)
+            self._next = max(self._next, self._held)
 
     def _send(self, body: JsonObject) -> JsonObject:
         err = "retries"
         for attempt in range(self._retries + 1):
-            wait = self._gap - (self._clock() - self._last)
-            if wait > 0:
-                self._sleep(wait)
+            self._turn()
             try:
                 res = self._client.post("/chat/completions", json=body)
             except httpx2.TransportError as e:
                 err = type(e).__name__
-                self._last = self._clock()
                 self._sleep(4 * (attempt + 1))
                 continue
-            self._last = self._clock()
             if res.status_code == 429:
-                self._sleep(float(res.headers.get("retry-after") or 20))
+                self._hold(float(res.headers.get("retry-after") or 20))
                 err = "HTTP 429"
                 continue
             if res.status_code != 200:
