@@ -54,13 +54,14 @@ export class TokenService {
 
     const next = await this.mint(payload.sub, current.device);
 
-    // 조회와 폐기를 한 번에 해서, 같은 토큰으로 동시에 두 번 요청해도 한쪽만 이긴다
+    // 조회와 폐기를 한 번에 해서, 같은 토큰으로 동시에 두 번 요청해도 한쪽만 이긴다.
+    // 위에서 확인한 뒤 새 토큰을 만드는 사이에 기존 토큰이 만료될 수 있어 만료 조건도 다시 건다
     const claimed = await this.refreshTokens.findOneAndUpdate(
-      { tokenHash, revokedAt: null },
+      { tokenHash, revokedAt: null, expiresAt: { $gt: new Date() } },
       { revokedAt: new Date() },
     );
     if (!claimed) {
-      // 동시 요청에 졌다. 앱에 돌려주지 않은 새 토큰의 줄을 지운다.
+      // 동시 요청에 졌거나 그사이 만료됐다. 앱에 돌려주지 않은 새 토큰의 줄을 지운다.
       // 못 지워도 그 토큰을 가진 쪽이 없어서 쓰일 수 없다.
       try {
         await this.refreshTokens.deleteOne({ _id: next.rowId });

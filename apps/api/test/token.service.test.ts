@@ -32,10 +32,12 @@ type Filter = { tokenHash: string; revokedAt?: null; expiresAt?: { $gt: Date } }
  * refresh_tokens 컬렉션을 메모리로 흉내 낸다. TokenService가 쓰는 것(create · findOne · findOneAndUpdate · updateOne · deleteOne)만 만든다.
  * findOneAndUpdate는 실제 Mongoose처럼 "바뀌기 전" 문서를 돌려주고, 찾기와 고치기를 한 번에 한다.
  * `failures`로 다음 저장(create) 또는 정리(deleteOne)를 실패시킬 수 있다.
+ * `hooks.afterCreate`는 문서가 저장된 직후 한 번 호출된다(저장하는 사이에 시간이 흐르는 상황을 만들 때 쓴다).
  */
 function createFakeModel() {
   const rows: Row[] = [];
   const failures = { create: 0, deleteOne: 0 };
+  const hooks: { afterCreate?: () => void } = {};
   // 서비스가 넘긴 조건만 그대로 적용한다. 조건이 빠지면 그만큼 더 많이 걸려서 테스트가 잡아낸다
   const matches = (row: Row, f: Filter) =>
     row.tokenHash === f.tokenHash &&
@@ -53,6 +55,9 @@ function createFakeModel() {
       }
       const row: Row = { ...data, _id: new Types.ObjectId(), revokedAt: null };
       rows.push(row);
+      const afterCreate = hooks.afterCreate;
+      hooks.afterCreate = undefined;
+      afterCreate?.();
       return Promise.resolve(row);
     },
     findOne: (filter: Filter) => Promise.resolve(rows.find((r) => matches(r, filter)) ?? null),
@@ -78,14 +83,14 @@ function createFakeModel() {
       return Promise.resolve({ deletedCount: i >= 0 ? 1 : 0 });
     },
   };
-  return { rows, failures, model: model as unknown as Model<RefreshTokenDocument> };
+  return { rows, failures, hooks, model: model as unknown as Model<RefreshTokenDocument> };
 }
 
 function setup() {
   const fake = createFakeModel();
   const jwt = new JwtService();
   const service = new TokenService(jwt, CONFIG, fake.model);
-  return { service, jwt, rows: fake.rows, failures: fake.failures };
+  return { service, jwt, rows: fake.rows, failures: fake.failures, hooks: fake.hooks };
 }
 
 const newUserId = () => new Types.ObjectId().toHexString();
@@ -247,6 +252,20 @@ describe('TokenService.rotate', () => {
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     const lost = results.find((r) => r.status === 'rejected');
     expect(lost).toMatchObject({ reason: { response: { code: 'AUTH_TOKEN_EXPIRED' } } });
+  });
+
+  it('새 토큰을 만드는 사이에 기존 토큰이 만료되면 거부하고 새로 만든 줄을 지운다', async () => {
+    const { service, rows, hooks } = setup();
+    const first = await service.issue(newUserId());
+    // 새 토큰이 저장되는 순간 기존 토큰의 만료 시각이 지난 것으로 만든다
+    hooks.afterCreate = () => {
+      rows[0]!.expiresAt = new Date(Date.now() - 1000);
+    };
+
+    await expectUnauthorized(service.rotate(first.refreshToken));
+
+    expect(rows).toHaveLength(1); // 새로 만든 줄이 남지 않았다
+    expect(rows[0]!.revokedAt).toBeNull(); // 만료된 토큰을 폐기 처리하며 성공시키지도 않았다
   });
 
   it('형식이 깨진 토큰은 거부한다', async () => {
