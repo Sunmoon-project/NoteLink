@@ -488,55 +488,57 @@ export function PointsScreen() {
   if (shop.error || (ledger.isError && !ledger.data))
     return <ShopError retry={() => Promise.all([shop.retry(), ledger.refetch()])} />;
   return (
-    <ScrollView
-      className="flex-1 bg-white"
-      contentContainerClassName="px-5 pb-8"
-      style={{ paddingTop: insets.top }}
-    >
-      <Pressable onPress={() => router.back()} className="h-12 flex-row items-center pt-2">
-        <ChevronLeft size={ICON.md} color={C.ink} />
-        <Text className="text-callout font-bold text-ink">포인트 내역</Text>
-      </Pressable>
-      <View className="mt-2 flex-row items-center justify-between rounded-2xl bg-mint px-4 py-3">
-        <Text className="text-caption text-sub">보유 포인트</Text>
-        <Text className="font-bold text-ink">{points.toLocaleString()} P</Text>
-      </View>
-      <View className="mt-3 flex-row gap-1">
-        {(['전체', '적립', '사용'] as const).map((t) => (
-          <Pressable
-            key={t}
-            onPress={() => setTab(t)}
-            className={cx('rounded-lg px-3 py-1.5', tab === t && 'bg-mint')}
-          >
-            <Text
-              className={cx('text-footnote', tab === t ? 'font-semibold text-brand' : 'text-sub')}
+    <Canvas>
+      <ScrollView
+        className="flex-1"
+        contentContainerClassName="px-5 pb-8"
+        style={{ paddingTop: insets.top }}
+      >
+        <Pressable onPress={() => router.back()} className="h-12 flex-row items-center pt-2">
+          <ChevronLeft size={ICON.md} color={C.ink} />
+          <Text className="text-callout font-bold text-ink">포인트 내역</Text>
+        </Pressable>
+        <View className="mt-2 flex-row items-center justify-between rounded-2xl bg-mint px-4 py-3">
+          <Text className="text-caption text-sub">보유 포인트</Text>
+          <Text className="font-bold text-ink">{points.toLocaleString()} P</Text>
+        </View>
+        <View className="mt-3 flex-row gap-1">
+          {(['전체', '적립', '사용'] as const).map((t) => (
+            <Pressable
+              key={t}
+              onPress={() => setTab(t)}
+              className={cx('rounded-lg px-3 py-1.5', tab === t && 'bg-mint')}
             >
-              {t}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-      <View className="mt-2">
-        {(ledger.isPending || shop.pending) && <Loading />}
-        {ledger.data?.map((l) => (
-          <View key={l._id} className="flex-row items-center border-b border-line py-3">
-            <View className="flex-1">
-              <Text className="text-subhead text-ink">{l.description}</Text>
-              <Text className="text-caption2 text-sub">{clock(l.createdAt)}</Text>
+              <Text
+                className={cx('text-footnote', tab === t ? 'font-semibold text-brand' : 'text-sub')}
+              >
+                {t}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <View className="mt-2">
+          {(ledger.isPending || shop.pending) && <Loading />}
+          {ledger.data?.map((l) => (
+            <View key={l._id} className="flex-row items-center border-b border-fill py-4">
+              <View className="flex-1">
+                <Text className="text-subhead text-ink">{l.description}</Text>
+                <Text className="text-caption2 text-sub">{clock(l.createdAt)}</Text>
+              </View>
+              <Text
+                className={cx(
+                  'text-subhead font-semibold',
+                  l.amount < 0 ? 'text-danger' : 'text-brand',
+                )}
+              >
+                {l.amount > 0 ? '+' : ''}
+                {l.amount} P
+              </Text>
             </View>
-            <Text
-              className={cx(
-                'text-subhead font-semibold',
-                l.amount < 0 ? 'text-danger' : 'text-brand',
-              )}
-            >
-              {l.amount > 0 ? '+' : ''}
-              {l.amount} P
-            </Text>
-          </View>
-        ))}
-      </View>
-    </ScrollView>
+          ))}
+        </View>
+      </ScrollView>
+    </Canvas>
   );
 }
 
@@ -579,96 +581,101 @@ export function BoxScreen() {
     return <ShopError retry={() => Promise.all([shop.retry(), all.refetch()])} />;
   if (shop.pending || all.isPending) return <Loading />;
   return (
-    <View className="flex-1 bg-white px-5" style={{ paddingTop: insets.top }}>
-      <ScrollView className="flex-1" contentContainerClassName="pb-8">
-        {msg ? (
-          <Toast msg={msg} onClose={() => setMsg(null)} />
-        ) : (
-          <Pressable onPress={() => router.back()} className="h-12 flex-row items-center pt-2">
-            <ChevronLeft size={ICON.md} color={C.ink} />
-            <Text className="text-callout font-bold text-ink">보관함</Text>
-          </Pressable>
-        )}
-        <View className="mt-3 h-32 items-center justify-center rounded-2xl bg-cream">
-          <ItemPreview item={cur} large />
-          <View className="absolute right-3 bottom-3 rounded-full bg-white px-2 py-0.5">
-            <Text className="text-caption2 text-ink">현재 아바타</Text>
-          </View>
-        </View>
-        <View className="mt-3 flex-row gap-1">
-          {(['전체', '아바타', '테마'] as const).map((t) => (
-            <Pressable
-              key={t}
-              onPress={() => setTab(t)}
-              className={cx('rounded-lg px-3 py-1.5', tab === t && 'bg-mint')}
-            >
-              <Text
-                className={cx('text-footnote', tab === t ? 'font-semibold text-brand' : 'text-sub')}
-              >
-                {t}
-              </Text>
+    <Canvas>
+      <View className="flex-1 px-5" style={{ paddingTop: insets.top }}>
+        <ScrollView className="flex-1" contentContainerClassName="pb-8">
+          {msg ? (
+            <Toast msg={msg} onClose={() => setMsg(null)} />
+          ) : (
+            <Pressable onPress={() => router.back()} className="h-12 flex-row items-center pt-2">
+              <ChevronLeft size={ICON.md} color={C.ink} />
+              <Text className="text-callout font-bold text-ink">보관함</Text>
             </Pressable>
-          ))}
-        </View>
-        {owned.size === 0 ? (
-          <View className="mt-14 items-center">
-            <Package size={ICON.xl} color={C.brand} />
-            <Text className="mt-2 text-subhead font-semibold text-ink">
-              아직 보유한 아이템이 없어요
-            </Text>
-            <Pressable
-              onPress={() => router.replace('/shop')}
-              className="mt-3 rounded-full bg-ink px-4 py-1.5"
-            >
-              <Text className="text-footnote text-white">상점 둘러보기</Text>
-            </Pressable>
+          )}
+          <View className="mt-3 h-32 items-center justify-center rounded-2xl bg-cream">
+            <ItemPreview item={cur} large />
+            <View className="absolute right-3 bottom-3 rounded-full bg-white px-2 py-0.5">
+              <Text className="text-caption2 text-ink">현재 아바타</Text>
+            </View>
           </View>
-        ) : (
-          <View className="mt-2 flex-row flex-wrap justify-between gap-y-2.5">
-            {items.map((it) => (
+          <View className="mt-3 flex-row gap-1">
+            {(['전체', '아바타', '테마'] as const).map((t) => (
               <Pressable
-                key={it._id}
-                onPress={() => !isEquipped(it) && setPick(it)}
-                className="w-[48.5%] rounded-2xl bg-cream p-2"
+                key={t}
+                onPress={() => setTab(t)}
+                className={cx('rounded-lg px-3 py-1.5', tab === t && 'bg-mint')}
               >
-                <View className="h-24 items-center justify-center rounded-xl bg-white">
-                  <ItemPreview item={it} />
-                </View>
-                <Text className="mt-2 px-1 text-footnote font-semibold text-ink">{it.name}</Text>
-                <View
+                <Text
                   className={cx(
-                    'ml-1 mt-0.5 self-start rounded-full px-2 py-0.5',
-                    isEquipped(it) ? 'bg-brand' : 'bg-mint',
+                    'text-footnote',
+                    tab === t ? 'font-semibold text-brand' : 'text-sub',
                   )}
                 >
-                  <Text
-                    className={cx('text-caption2', isEquipped(it) ? 'text-white' : 'text-brand')}
-                  >
-                    {isEquipped(it) ? '장착중' : '보유중'}
-                  </Text>
-                </View>
+                  {t}
+                </Text>
               </Pressable>
             ))}
           </View>
-        )}
-      </ScrollView>
-      <Sheet open={!!pick} onClose={() => setPick(null)}>
-        {pick && (
-          <>
-            <View className="h-36 items-center justify-center rounded-2xl bg-cream">
-              <ItemPreview item={pick} large />
+          {owned.size === 0 ? (
+            <View className="mt-14 items-center">
+              <Package size={ICON.xl} color={C.brand} />
+              <Text className="mt-2 text-subhead font-semibold text-ink">
+                아직 보유한 아이템이 없어요
+              </Text>
+              <Pressable
+                onPress={() => router.replace('/shop')}
+                className="mt-3 rounded-full bg-ink px-4 py-1.5"
+              >
+                <Text className="text-footnote text-white">상점 둘러보기</Text>
+              </Pressable>
             </View>
-            <View className="mt-3 flex-row items-center justify-between">
-              <Text className="text-body font-bold text-ink">{pick.name}</Text>
-              <Badge>보유중</Badge>
+          ) : (
+            <View className="mt-2 flex-row flex-wrap justify-between gap-y-2.5">
+              {items.map((it) => (
+                <Pressable
+                  key={it._id}
+                  onPress={() => !isEquipped(it) && setPick(it)}
+                  className="w-[47.5%] rounded-card bg-white p-2.5"
+                >
+                  <View className="h-24 items-center justify-center rounded-xl bg-white">
+                    <ItemPreview item={it} />
+                  </View>
+                  <Text className="mt-2 px-1 text-footnote font-semibold text-ink">{it.name}</Text>
+                  <View
+                    className={cx(
+                      'ml-1 mt-0.5 self-start rounded-full px-2 py-0.5',
+                      isEquipped(it) ? 'bg-brand' : 'bg-mint',
+                    )}
+                  >
+                    <Text
+                      className={cx('text-caption2', isEquipped(it) ? 'text-white' : 'text-brand')}
+                    >
+                      {isEquipped(it) ? '장착중' : '보유중'}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))}
             </View>
-            <Text className="mt-1 text-caption text-sub">{pick.description}</Text>
-            <Btn className="mt-4" loading={equip.isPending} onPress={() => equip.mutate(pick)}>
-              장착하기
-            </Btn>
-          </>
-        )}
-      </Sheet>
-    </View>
+          )}
+        </ScrollView>
+        <Sheet open={!!pick} onClose={() => setPick(null)}>
+          {pick && (
+            <>
+              <View className="h-36 items-center justify-center rounded-2xl bg-fill">
+                <ItemPreview item={pick} large />
+              </View>
+              <View className="mt-3 flex-row items-center justify-between">
+                <Text className="text-body font-bold text-ink">{pick.name}</Text>
+                <Badge>보유중</Badge>
+              </View>
+              <Text className="mt-1 text-caption text-sub">{pick.description}</Text>
+              <Btn className="mt-4" loading={equip.isPending} onPress={() => equip.mutate(pick)}>
+                장착하기
+              </Btn>
+            </>
+          )}
+        </Sheet>
+      </View>
+    </Canvas>
   );
 }
