@@ -351,7 +351,7 @@ export function SettingsScreen() {
         </Group>
       </Sheet>
       <Sheet open={sheet === 'biz'} onClose={() => setSheet(null)} title="사업자 정보">
-        <View className="gap-2 rounded-2xl bg-fill p-4">
+        <View className="gap-2 rounded-2xl bg-cream p-4">
           {[
             '상호 · 노트링크 (5조)',
             '대표 · 노트링크 팀',

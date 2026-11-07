@@ -8,9 +8,9 @@ import { C, ICON } from '@/theme';
 // 연결 · 점검 안내 배너 (p.97, p.99, p.101)
 const MSG = {
   unstable: ['연결이 불안정해요', '자동으로 다시 연결하는 중이에요', 'bg-sun/25'],
-  offline: ['오프라인 모드로 사용 중이에요', '연결되면 자동으로 동기화돼요', 'bg-white'],
-  maintenance: ['서비스 점검 중이에요', '오전 3~4시 · 보기와 타이머는 그대로 써요', 'bg-white'],
-  aiMaintenance: ['AI 기능 점검 중이에요', '요청은 순서대로 처리돼요', 'bg-white'],
+  offline: ['오프라인 모드로 사용 중이에요', '연결되면 자동으로 동기화돼요', 'bg-cream'],
+  maintenance: ['서비스 점검 중이에요', '오전 3~4시 · 보기와 타이머는 그대로 써요', 'bg-cream'],
+  aiMaintenance: ['AI 기능 점검 중이에요', '요청은 순서대로 처리돼요', 'bg-cream'],
 } as const;
 
 export function NetBanner() {

@@ -12,7 +12,7 @@ import { diffLabel, goalLabel, hm, hms, seoul, ymd, today as seoulToday } from '
 import { useNow } from '@/hooks';
 import { useSession } from '@/stores/session';
 import { toast } from '@/stores/toast';
-import { Btn, Canvas, Card, Progress, RollUp, Screen } from '@/components/ui';
+import { Btn, Canvas, Card, Progress, Roll, Screen } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
 // p.48 #6 공부 종료 요약
@@ -66,11 +66,7 @@ export function SummaryScreen() {
             오늘 순공시간{sec ? ` · 이번 세션 ${hm(Number(sec))}` : ''}
           </Text>
           <View className="mt-2">
-            <RollUp
-              value={hms(total)}
-              from="00:00:00"
-              className="text-large font-bold text-brand"
-            />
+            <Roll value={hms(total)} className="text-large font-bold text-brand" />
           </View>
         </View>
         {today.isError && !today.data && (
