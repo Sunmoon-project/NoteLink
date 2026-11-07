@@ -3,17 +3,30 @@ import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { MongooseModule } from '@nestjs/mongoose';
 
+import { createGoogleConfig } from '../../config/google.config.js';
 import { createJwtConfig } from '../../config/jwt.config.js';
 import { RefreshToken, RefreshTokenSchema } from './schemas/refresh-token.schema.js';
+import {
+  SocialLoginAttempt,
+  SocialLoginAttemptSchema,
+} from './schemas/social-login-attempt.schema.js';
+import { SocialLoginController } from './social-login/social-login.controller.js';
+import { GOOGLE_CONFIG } from './social-login/social-login.constants.js';
+import { SocialLoginService } from './social-login/social-login.service.js';
 import { JWT_CONFIG, TokenService } from './token.service.js';
 
 @Module({
   imports: [
     // 시크릿과 수명은 토큰마다(access · refresh) 다르므로 기본값 없이 등록하고, TokenService가 호출할 때 넘긴다
     JwtModule.register({}),
-    // refresh_tokens 컬렉션
-    MongooseModule.forFeature([{ name: RefreshToken.name, schema: RefreshTokenSchema }]),
+    MongooseModule.forFeature([
+      // refresh_tokens 컬렉션
+      { name: RefreshToken.name, schema: RefreshTokenSchema },
+      // social_login_attempts 컬렉션(소셜 로그인 진행 상태)
+      { name: SocialLoginAttempt.name, schema: SocialLoginAttemptSchema },
+    ]),
   ],
+  controllers: [SocialLoginController],
   providers: [
     // JWT_* 환경변수를 읽고 검증한다. 없거나 잘못되면 서버가 시작할 때 바로 실패한다
     {
@@ -21,7 +34,14 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       inject: [ConfigService],
       useFactory: createJwtConfig,
     },
+    // GOOGLE_* 환경변수를 읽고 검증한다. 마찬가지로 서버가 시작할 때 바로 실패한다
+    {
+      provide: GOOGLE_CONFIG,
+      inject: [ConfigService],
+      useFactory: createGoogleConfig,
+    },
     TokenService,
+    SocialLoginService,
   ],
   // 이메일 · 소셜 로그인이 같은 토큰 발급 로직을 쓰도록 내보낸다
   exports: [TokenService],
