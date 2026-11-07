@@ -39,7 +39,8 @@ export class AiJob {
   @Prop({ required: true, type: String })
   targetType: string;
 
-  @Prop({ type: Types.ObjectId, required: true, ref: 'QuizSet' })
+  // 가리키는 문서는 targetType에 따라 다르다(quiz_set · material · user 등)
+  @Prop({ type: Types.ObjectId, required: true })
   targetId: Types.ObjectId;
 
   // 처리에 필요한 자료를 NestJS가 넣는다(처리기는 다른 컬렉션을 읽지 않음).
@@ -58,7 +59,8 @@ export class AiJob {
   @Prop({ type: Boolean, default: false })
   awaited?: boolean;
 
-  @Prop({ required: true, type: Number, })
+  // 처리기가 가져갈 때마다 1 늘린다. 앱의 '다시 시도'는 NestJS가 0으로 되돌린다
+  @Prop({ required: true, type: Number, default: 0 })
   attempts: number;
 
   // 공용 스키마에서 '없거나 문자열'. 처리기는 None 대신 필드를 지운다.
@@ -77,7 +79,11 @@ export class AiJob {
 
   @Prop({ type: Date, default: null })
   retryAt?: Date | null; // 예: "2026-01-01 12:00:00" 이후 재시도
-
 }
 
 export const AiJobSchema = SchemaFactory.createForClass(AiJob);
+
+// 처리기가 상태 · 종류별로 가장 먼저 들어온 작업을 가져간다(apps/ai jobs.py)
+AiJobSchema.index({ status: 1, type: 1, createdAt: 1 });
+// 같은 대상의 작업 찾기(미리 만들기 이어받기 · 앱의 진행 상태)
+AiJobSchema.index({ userId: 1, targetType: 1, targetId: 1, createdAt: -1 });

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 
+import { AiJobsModule } from './ai-jobs/ai-jobs.module.js';
 import { createMongooseOptions } from './config/mongo.config.js';
 import { HealthController } from './health/health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
@@ -17,6 +18,8 @@ import { AuthModule } from './modules/auth/auth.module.js';
       useFactory: createMongooseOptions,
     }),
     AuthModule,
+    // ai_jobs 작업 넣기 · 진행 상태 · 취소 · 다시 시도(#175)
+    AiJobsModule,
   ],
   controllers: [HealthController],
 })
