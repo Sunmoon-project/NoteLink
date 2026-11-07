@@ -122,7 +122,6 @@ it('새 계정은 로그인하면 약관을 거쳐 초기 설정으로 간다', 
     .spyOn(api.auth, 'emailLogin')
     .mockResolvedValue({ accessToken: 'a', refreshToken: 'r', user: { ...user, _id: 'new' } });
   await renderScreen(<LoginScreen />);
-  await fireEvent.press(screen.getByText('이메일로 로그인'));
   await fireEvent.changeText(await screen.findByPlaceholderText('you@example.com'), 'n@test.com');
   await fireEvent.changeText(screen.getByPlaceholderText('8자 이상'), 'abcd1234');
   await fireEvent.press(screen.getByText('로그인'));
@@ -199,7 +198,6 @@ it('로그인은 가입 규칙과 별개로 기존 계정 주소(퓨니코드 �
     .spyOn(api.auth, 'emailLogin')
     .mockResolvedValue({ accessToken: 'a', refreshToken: 'r', user });
   await renderScreen(<LoginScreen />);
-  await fireEvent.press(screen.getByText('이메일로 로그인'));
   await fireEvent.changeText(
     await screen.findByPlaceholderText('you@example.com'),
     'user@example.xn--p1ai',

@@ -22,6 +22,9 @@ const colors = {
   correct: '#5b74d6', // 퀴즈 정답 (FR-50-03)
   'correct-soft': '#9aa6dd',
   peach: '#eecaa6', // 퀴즈 아바타 배경
+  // 간편 로그인 버튼 — 각 회사 로그인 버튼 규격의 바탕색
+  kakao: '#fee500',
+  naver: '#03c75a',
 };
 
 /** 글자 크기 [크기, 줄높이] — iOS 텍스트 스타일 이름을 따른다 */

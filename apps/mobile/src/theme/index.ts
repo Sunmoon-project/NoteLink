@@ -18,6 +18,8 @@ const tokens = require('./tokens') as {
     | 'danger'
     | 'blue'
     | 'orange'
+    | 'kakao'
+    | 'naver'
     | 'correct'
     | 'correct-soft'
     | 'peach',
