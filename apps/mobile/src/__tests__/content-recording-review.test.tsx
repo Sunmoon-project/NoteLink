@@ -51,6 +51,7 @@ const deferred = <T,>() => {
 };
 beforeEach(() => {
   jest.clearAllMocks();
+  mockRecorderState.durationMillis = 5200;
   for (const fn of [
     mockPermission,
     mockAudioMode,
@@ -114,6 +115,7 @@ describe('PR36 실제 녹음 수명주기', () => {
     expect(router.replace).not.toHaveBeenCalledWith('/convert');
   });
   it('실제 녹음 파일이 있어야 녹음 초안을 저장하고 변환으로 이동한다', async () => {
+    mockRecorderState.durationMillis = 5 * 60 * 1000; // 별 내용 없는 녹음으로 걸리지 않는 길이
     const rendered = await renderScreen(<RecLiveScreen />, client());
     await waitFor(() => expect(mockRecorder.record).toHaveBeenCalledTimes(1));
     await fireEvent.press(screen.getByText('변환 시작'));
@@ -134,6 +136,16 @@ describe('PR36 실제 녹음 수명주기', () => {
         expect.objectContaining({ allowsRecording: false }),
       ),
     );
+  });
+  it('30초보다 짧은 녹음은 적절하지 않다고 알리고, 그래도 올리면 변환으로 간다', async () => {
+    mockRecorderState.durationMillis = 5200;
+    await renderScreen(<RecLiveScreen />, client());
+    await waitFor(() => expect(mockRecorder.record).toHaveBeenCalledTimes(1));
+    await fireEvent.press(screen.getByText('변환 시작'));
+    expect(await screen.findByText('정리하기에 적절하지 않은 녹음이에요')).toBeTruthy();
+    expect(router.replace).not.toHaveBeenCalledWith('/convert');
+    await fireEvent.press(screen.getByText('그래도 올리기'));
+    expect(router.replace).toHaveBeenCalledWith('/convert');
   });
   it('녹음 종료 후 파일 주소가 없으면 빈 변환 작업을 시작하지 않는다', async () => {
     await renderScreen(<RecLiveScreen />, client());
