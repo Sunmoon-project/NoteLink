@@ -559,13 +559,18 @@ export function RecUploadScreen() {
 const METER_MS = 120;
 /** 파형 막대 한 칸(막대 6 + 사이 4) */
 const BAR_STEP = 10;
+/**
+ * 막대 수. 줄 폭(48 × 10 = 480)이 가장 넓은 폰의 상자(440 - 양옆 여백)보다 넓어야
+ * 막대가 상자 안에서 생기고 사라지지 않고 양 끝 바깥에서 들고 난다
+ */
+export const BAR_COUNT = 48;
 
 /**
  * 녹음 파형. 새 소리 크기가 들어올 때마다 막대를 한 칸씩 밀되, 칸이 뚝 바뀌지 않게
  * 줄 전체를 한 칸 오른쪽에서 제자리로 METER_MS 동안 일정한 속도로 흘린다(UI 스레드).
  * 그래서 다음 값이 들어올 때까지 쉬지 않고 왼쪽으로 흐르는 것처럼 보인다
  */
-function Waveform({ bars, live }: { bars: number[]; live: boolean }) {
+export function Waveform({ bars, live }: { bars: number[]; live: boolean }) {
   const x = useSharedValue(0);
   useEffect(() => {
     if (!live) return;
@@ -603,7 +608,7 @@ export function RecLiveScreen() {
   const insets = useSafeAreaInsets();
   const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
   const st = useAudioRecorderState(recorder, METER_MS);
-  const [bars, setBars] = useState<number[]>(Array(26).fill(6));
+  const [bars, setBars] = useState<number[]>(Array(BAR_COUNT).fill(6));
   const [denied, setDenied] = useState(false);
   const alive = useRef(true);
   const ready = useRef(false);
