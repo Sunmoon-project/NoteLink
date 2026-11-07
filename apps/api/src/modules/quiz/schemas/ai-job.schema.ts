@@ -48,7 +48,7 @@ export class AiJob {
   input: Record<string, unknown>;
 
   // 처리기가 쓴 결과를 NestJS가 읽어 quiz_sets 등에 반영한다.
-  @Prop({ type: Object, default: {} })
+  @Prop({ type: Object, default: null })
   result?: Record<string, unknown> | null;
 
   @Prop({ type: Number, default: 0 }) // 0 ~ 100%
@@ -85,5 +85,5 @@ export const AiJobSchema = SchemaFactory.createForClass(AiJob);
 
 // 처리기가 상태 · 종류별로 가장 먼저 들어온 작업을 가져간다(apps/ai jobs.py)
 AiJobSchema.index({ status: 1, type: 1, createdAt: 1 });
-// 같은 대상의 작업 찾기(미리 만들기 이어받기 · 앱의 진행 상태)
-AiJobSchema.index({ userId: 1, targetType: 1, targetId: 1, createdAt: -1 });
+// 같은 노트의 끝나지 않은 미리 만들기 찾기(AiJobsService.takeOverPregen)
+AiJobSchema.index({ userId: 1, type: 1, targetType: 1, targetId: 1, status: 1, createdAt: -1 });

@@ -4,7 +4,7 @@ import { Types } from 'mongoose';
 import { describe, expect, it } from 'vitest';
 
 import { AiJobsService, toAppJob } from '../src/ai-jobs/ai-jobs.service.js';
-import type { AiJobDocument } from '../src/modules/quiz/schemas/ai-job.schema.js';
+import { type AiJobDocument, AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
 
 type Row = Record<string, unknown> & { _id: Types.ObjectId; createdAt: Date; updatedAt: Date };
 type Filter = Record<string, unknown>;
@@ -17,13 +17,30 @@ const same = (a: unknown, b: unknown) =>
 /** Mongoose 질의처럼 `.lean()`으로 결과를 받는다 */
 const query = <T>(value: T) => ({ lean: () => Promise.resolve(value) });
 
-/** 서비스가 넘긴 조건을 그대로 적용한다(같음 · $in). 조건이 빠지면 테스트가 잡아낸다 */
-const matches = (row: Row, filter: Filter) =>
-  Object.entries(filter).every(([key, want]) =>
-    want !== null && typeof want === 'object' && '$in' in want
-      ? (want.$in as unknown[]).some((w) => same(row[key], w))
-      : same(row[key], want),
-  );
+type Ops = { $in?: unknown[]; $lte?: Date; $gt?: Date };
+const isOps = (want: unknown): want is Ops =>
+  want !== null && typeof want === 'object' && !(want instanceof Types.ObjectId);
+const time = (v: unknown) => (v instanceof Date ? v.getTime() : NaN);
+
+/**
+ * 서비스가 넘긴 조건을 그대로 적용한다(같음 · $in · $lte · $gt · $or). 조건이 빠지면 테스트가 잡아낸다.
+ * MongoDB처럼 `null` 조건은 필드가 없는 문서에도 맞는다
+ */
+function matches(row: Row, filter: Filter): boolean {
+  return Object.entries(filter).every(([key, want]) => {
+    if (key === '$or') return (want as Filter[]).some((f) => matches(row, f));
+    const value = row[key];
+    if (want === null) return value === null || value === undefined;
+    if (!isOps(want)) return same(value, want);
+    if (want.$in) return want.$in.some((w) => same(value, w));
+    if (want.$lte) return time(value) <= want.$lte.getTime();
+    if (want.$gt) return time(value) > want.$gt.getTime();
+    return false;
+  });
+}
+
+const PAST = new Date(Date.now() - 60_000);
+const LATER = new Date(Date.now() + 10 * 60_000);
 
 /** ai_jobs 컬렉션을 메모리로 흉내 낸다. 서비스가 쓰는 create · findOne · findOneAndUpdate · exists만 만든다 */
 function createFakeJobs() {
@@ -101,6 +118,16 @@ describe('AiJobsService.enqueue', () => {
     expect(job).not.toHaveProperty('input');
     expect(job).not.toHaveProperty('userId');
   });
+
+  it('서버 안에서 넘긴 id가 틀리면 404가 아니라 서버 오류로 올린다', async () => {
+    const failed = setup().add({ targetId: '' });
+    await expect(failed).rejects.toThrow('ai_jobs: targetId');
+    await expect(failed).rejects.not.toHaveProperty('status');
+  });
+
+  it('result의 기본값은 공용 계약처럼 null', () => {
+    expect(AiJobSchema.path('result').options.default).toBeNull();
+  });
 });
 
 describe('AiJobsService.findMine', () => {
@@ -171,7 +198,7 @@ describe('AiJobsService.retry', () => {
         error: 'TimeoutError: 시간 초과',
         retryAt: new Date(),
         lockedBy: 'w0',
-        lockedUntil: new Date(),
+        lockedUntil: PAST,
         checkpoint: { slots: [1] },
       });
       const job = await service.retry(ME, _id);
@@ -203,6 +230,18 @@ describe('AiJobsService.retry', () => {
     },
   );
 
+  it('처리 중에 취소해 처리기가 아직 잡고 있으면 다시 넣지 않는다(같은 작업을 두 번 만들지 않게)', async () => {
+    const { service, add, row } = setup();
+    const { _id } = await add();
+    Object.assign(row(_id), { status: 'canceled', lockedBy: 'w0', lockedUntil: LATER });
+    const job = await service.retry(ME, _id);
+    expect(job.status).toBe('canceled');
+    expect(row(_id)).toMatchObject({ status: 'canceled', lockedBy: 'w0' });
+    // 잠금이 풀리면 다시 넣는다
+    row(_id)['lockedUntil'] = PAST;
+    expect((await service.retry(ME, _id)).status).toBe('queued');
+  });
+
   it('남의 작업은 404', async () => {
     const { service, add, row } = setup();
     const { _id } = await add();
@@ -215,17 +254,17 @@ describe('AiJobsService.retry', () => {
 describe('AiJobsService.takeOverPregen', () => {
   const pregen = { type: 'quiz_pregen', targetType: 'material', targetId: NOTE };
 
-  it.each(['queued', 'running'])(
-    '끝나지 않은(%s) 미리 만들기는 awaited로 이어받는다',
-    async (status) => {
-      const { service, add, row } = setup();
-      const { _id } = await add(pregen);
-      row(_id)['status'] = status;
-      const job = await service.takeOverPregen(ME, 'material', NOTE);
-      expect(job).toMatchObject({ _id, awaited: true });
-      expect(row(_id)['awaited']).toBe(true);
-    },
-  );
+  it.each([
+    ['queued', null],
+    ['running', LATER],
+  ])('끝나지 않은(%s) 미리 만들기는 awaited로 이어받는다', async (status, lockedUntil) => {
+    const { service, add, row } = setup();
+    const { _id } = await add(pregen);
+    Object.assign(row(_id), { status, lockedUntil });
+    const job = await service.takeOverPregen(ME, 'material', NOTE);
+    expect(job).toMatchObject({ _id, awaited: true });
+    expect(row(_id)['awaited']).toBe(true);
+  });
 
   it('같은 노트에 둘이면 가장 나중 것을 이어받는다', async () => {
     const { service, add, row } = setup();
@@ -244,6 +283,14 @@ describe('AiJobsService.takeOverPregen', () => {
     await add({ ...pregen, userId: OTHER });
     await add({ type: 'quiz_generate', targetType: 'material', targetId: NOTE });
     expect(await service.takeOverPregen(ME, 'material', NOTE)).toBeNull();
+  });
+
+  it('잠금이 지난 running(처리기가 멈춤 · 곧 시도 한도로 실패)은 이어받지 않는다', async () => {
+    const { service, add, row } = setup();
+    const { _id } = await add(pregen);
+    Object.assign(row(_id), { status: 'running', attempts: 3, lockedUntil: PAST });
+    expect(await service.takeOverPregen(ME, 'material', NOTE)).toBeNull();
+    expect(row(_id)['awaited']).toBe(false);
   });
 });
 

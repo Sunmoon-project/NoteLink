@@ -81,11 +81,22 @@ export function toAppJob(row: AiJobRow): AppAiJob {
 
 const notFound = () => new NotFoundException({ code: NOT_FOUND, message: '작업을 찾을 수 없어요' });
 
-/** 문자열 id를 ObjectId로. 형식이 틀리면 없는 작업과 같게 404 */
+const OBJECT_ID = /^[0-9a-f]{24}$/i;
+
+/** 앱이 보낸 id를 ObjectId로. 형식이 틀리면 없는 작업과 같게 404 */
 function objectId(id: string): Types.ObjectId {
-  if (!/^[0-9a-f]{24}$/i.test(id)) throw notFound();
+  if (!OBJECT_ID.test(id)) throw notFound();
   return new Types.ObjectId(id);
 }
+
+/** 서버 안에서 넘긴 id(작업을 넣는 모듈). 틀리면 서버 코드 문제라 404가 아니라 오류로 올린다 */
+function serverObjectId(id: string, name: string): Types.ObjectId {
+  if (!OBJECT_ID.test(id)) throw new Error(`ai_jobs: ${name}가 ObjectId 형식이 아님`);
+  return new Types.ObjectId(id);
+}
+
+/** 처리기가 아직 잡고 있지 않음: 잠금이 없거나 지났다(apps/ai jobs.py 잠금) */
+const unlocked = (now: Date) => [{ lockedUntil: null }, { lockedUntil: { $lte: now } }];
 
 /**
  * ai_jobs에 작업을 넣고, 앱이 진행 상태를 보거나 취소 · 다시 시도할 수 있게 한다(#175).
@@ -101,9 +112,9 @@ export class AiJobsService {
   async enqueue(job: NewAiJob): Promise<AppAiJob> {
     const created = await this.jobs.create({
       type: job.type,
-      userId: objectId(job.userId),
+      userId: serverObjectId(job.userId, 'userId'),
       targetType: job.targetType,
-      targetId: objectId(job.targetId),
+      targetId: serverObjectId(job.targetId, 'targetId'),
       input: job.input,
       status: 'queued',
       progress: 0,
@@ -144,12 +155,15 @@ export class AiJobsService {
    * 실패하거나 취소한 작업을 다시 넣는다. 처리기 규칙대로 attempts=0 · retryAt=null로 되돌리고
    * 지난 오류 · 결과를 지운다(중간 결과 checkpoint는 남겨 처리기가 다시 쓴다).
    * 아직 처리 중이거나 이미 성공한 작업은 바꾸지 않고 지금 상태를 돌려준다.
+   * 처리 중에 취소한 작업은 처리기가 다음에 쓸 때까지(LLM 호출 중이면 몇 분) 계속 돌기 때문에,
+   * 잠금이 풀릴 때까지는 다시 넣지 않는다. 바로 넣으면 같은 작업을 두 처리기가 함께 만든다
+   * (/code-review #175). 그동안은 canceled 그대로 돌려주고, 앱이 잠시 뒤 다시 누르면 된다.
    */
   async retry(userId: string, jobId: string): Promise<AppAiJob> {
     const filter = { _id: objectId(jobId), userId: objectId(userId) };
     const row = await this.jobs
       .findOneAndUpdate(
-        { ...filter, status: { $in: RETRYABLE } },
+        { ...filter, status: { $in: RETRYABLE }, $or: unlocked(new Date()) },
         {
           $set: {
             status: 'queued',
@@ -173,6 +187,11 @@ export class AiJobsService {
    * 같은 대상의 미리 만들기(quiz_pregen)가 아직 끝나지 않았으면 이어받는다: 새 작업을 넣지 않고
    * awaited=true를 켜서 처리기가 사용자 작업처럼 먼저 처리하게 한다(#134 · #138).
    * 넣으면 같은 퀴즈를 두 번 만들기 때문이다. 이어받을 작업이 없으면 null(호출하는 쪽이 새로 넣는다).
+   * running인데 잠금이 지난 작업은 처리기가 멈춘 것이라(시도 한도면 곧 failed) 이어받지 않는다.
+   *
+   * 알려진 한계: 이 확인과 호출하는 쪽의 enqueue는 따로라서, 같은 노트에 퀴즈 요청이 거의 동시에
+   * 두 번 오면 둘 다 null을 받고 두 번 넣을 수 있다. 퀴즈 세트를 만드는 쪽(quiz-sets)에서 노트마다
+   * 만드는 중인 세트를 하나로 막는다(#175 다음 단계).
    */
   async takeOverPregen(
     userId: string,
@@ -186,7 +205,7 @@ export class AiJobsService {
           type: PREGEN_TYPE,
           targetType,
           targetId: objectId(targetId),
-          status: { $in: ACTIVE },
+          $or: [{ status: 'queued' }, { status: 'running', lockedUntil: { $gt: new Date() } }],
         },
         { $set: { awaited: true } },
         { returnDocument: 'after', sort: { createdAt: -1 } },
