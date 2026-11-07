@@ -13,7 +13,12 @@ import { type AppRedirectError, buildAppRedirect } from './app-redirect.js';
 import { buildGoogleAuthUrl } from './google-auth-url.js';
 import type { GoogleCallbackParams } from './google-callback-query.js';
 import { GoogleOAuthClient } from './google-oauth.client.js';
-import { ATTEMPT_TTL_MS, CODE_TTL_MS, GOOGLE_CONFIG } from './social-login.constants.js';
+import {
+  ATTEMPT_TTL_MS,
+  CALLBACK_PROCESSING_MARGIN_MS,
+  CODE_TTL_MS,
+  GOOGLE_CONFIG,
+} from './social-login.constants.js';
 import { SocialProviderError } from './social-provider.js';
 import { VALIDATION_FAILED } from './social-start-query.js';
 import type { SocialStartParams } from './social-start-query.js';
@@ -67,7 +72,8 @@ export class SocialLoginService {
         provider: 'google',
         oauthState: params.oauthState,
         codeHash: null,
-        expiresAt: { $gt: new Date() },
+        // 점유한 뒤 구글 호출과 사용자 처리를 하는 동안 만료되지 않도록 여유를 두고 점유한다
+        expiresAt: { $gt: new Date(Date.now() + CALLBACK_PROCESSING_MARGIN_MS) },
       },
       { codeHash: hashCode(code) },
     );
@@ -78,7 +84,8 @@ export class SocialLoginService {
       });
     }
     const appState = attempt.appState;
-    const back = (error: AppRedirectError) => this.fail(attempt._id, appState, error);
+    const back = (error: AppRedirectError) =>
+      this.fail({ _id: attempt._id, codeHash: hashCode(code) }, appState, error);
 
     // 2. 사용자가 구글 화면에서 취소했거나 코드를 받지 못했다
     if (params.error !== null)
@@ -91,14 +98,20 @@ export class SocialLoginService {
       const result = await this.users.findOrCreate('google', profile);
 
       // 4. 결과를 기록하고 코드의 수명을 짧게 줄인다. 이제부터 앱이 코드를 교환할 수 있다
-      await this.attempts.updateOne(
-        { _id: attempt._id },
+      //    내가 점유한 문서(codeHash가 내 코드의 해시)에만 쓰고, 실제로 반영됐는지 확인한다.
+      //    그사이 문서가 사라졌다면(만료 · 삭제) 앱이 교환할 수 없는 코드를 내주지 않는다
+      const saved = await this.attempts.updateOne(
+        { _id: attempt._id, codeHash: hashCode(code) },
         {
           outcome: result.kind,
           userId: result.kind === 'signed_in' ? result.userId : null,
           expiresAt: new Date(Date.now() + CODE_TTL_MS),
         },
       );
+      if (saved.matchedCount !== 1) {
+        this.logger.warn('구글 콜백: 결과를 저장하려는 로그인 시도가 사라졌습니다(만료 또는 삭제)');
+        return back('invalid_code');
+      }
       return buildAppRedirect({ code, state: appState });
     } catch (error) {
       if (error instanceof SocialProviderError) {
@@ -118,12 +131,13 @@ export class SocialLoginService {
 
   /** 실패한 시도는 지워서 점유해 둔 코드가 쓰이지 못하게 하고, 앱에는 오류를 돌려준다 */
   private async fail(
-    attemptId: Types.ObjectId,
+    mine: { _id: Types.ObjectId; codeHash: string },
     appState: string,
     error: AppRedirectError,
   ): Promise<string> {
     try {
-      await this.attempts.deleteOne({ _id: attemptId });
+      // 내가 점유한 문서(코드 해시가 내 것)만 지운다. 점유가 다른 쪽으로 넘어간 문서는 건드리지 않는다
+      await this.attempts.deleteOne({ _id: mine._id, codeHash: mine.codeHash });
     } catch {
       // 지우지 못해도 코드는 앱에 내주지 않았으므로 쓰일 수 없고, 만료되면 사라진다
     }

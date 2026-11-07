@@ -103,15 +103,18 @@ describe('구글 로그인 전체 흐름: 시작 → 콜백 → 코드 교환 (�
         row.codeHash = update.codeHash;
         return Promise.resolve(before);
       },
-      updateOne: (f: { _id: Types.ObjectId }, update: Partial<Attempt>) => {
-        Object.assign(
-          attempts.find((a) => a._id.equals(f._id))!,
-          update,
+      updateOne: (f: { _id: Types.ObjectId; codeHash?: string }, update: Partial<Attempt>) => {
+        // 실제 Mongoose처럼 조건(_id, 점유한 코드 해시)에 맞는 문서에만 쓰고, 맞은 개수(matchedCount)를 돌려준다
+        const row = attempts.find(
+          (a) => a._id.equals(f._id) && (!('codeHash' in f) || a.codeHash === f.codeHash),
         );
-        return Promise.resolve({});
+        if (row) Object.assign(row, update);
+        return Promise.resolve({ matchedCount: row ? 1 : 0, modifiedCount: row ? 1 : 0 });
       },
-      deleteOne: (f: { _id: Types.ObjectId }) => {
-        const i = attempts.findIndex((a) => a._id.equals(f._id));
+      deleteOne: (f: { _id: Types.ObjectId; codeHash?: string }) => {
+        const i = attempts.findIndex(
+          (a) => a._id.equals(f._id) && (!('codeHash' in f) || a.codeHash === f.codeHash),
+        );
         if (i >= 0) attempts.splice(i, 1);
         return Promise.resolve({});
       },

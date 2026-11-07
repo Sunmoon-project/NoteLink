@@ -8,6 +8,7 @@ import type { SocialLoginAttemptDocument } from '../src/modules/auth/schemas/soc
 import type { GoogleOAuthClient } from '../src/modules/auth/social-login/google-oauth.client.js';
 import {
   ATTEMPT_TTL_MS,
+  CALLBACK_PROCESSING_MARGIN_MS,
   CODE_TTL_MS,
 } from '../src/modules/auth/social-login/social-login.constants.js';
 import {
@@ -63,6 +64,8 @@ type ClaimFilter = {
 function createFakeAttempts() {
   const rows: Attempt[] = [];
   const failures = { create: 0, deleteOne: 0, updateOne: 0 };
+  // 결과를 저장하기 직전에 한 번 호출된다(처리하는 사이에 문서가 지워지거나 바뀌는 상황을 만든다)
+  const hooks: { beforeUpdate?: () => void } = {};
   const model = {
     create: (data: Omit<Attempt, '_id' | 'userId' | 'codeHash' | 'outcome'>) => {
       if (failures.create > 0) {
@@ -95,26 +98,35 @@ function createFakeAttempts() {
       row.codeHash = update.codeHash;
       return Promise.resolve(before);
     },
-    updateOne: (filter: { _id: Types.ObjectId }, update: Partial<Attempt>) => {
+    updateOne: (filter: { _id: Types.ObjectId; codeHash?: string }, update: Partial<Attempt>) => {
+      hooks.beforeUpdate?.();
+      hooks.beforeUpdate = undefined;
       if (failures.updateOne > 0) {
         failures.updateOne -= 1;
         return Promise.reject(new Error('DB 갱신 실패'));
       }
-      const row = rows.find((r) => r._id.equals(filter._id));
+      // 실제 Mongoose처럼 조건(_id, 점유한 코드 해시)에 맞는 문서에만 쓰고, 맞은 개수(matchedCount)를 돌려준다
+      const row = rows.find(
+        (r) =>
+          r._id.equals(filter._id) && (!('codeHash' in filter) || r.codeHash === filter.codeHash),
+      );
       if (row) Object.assign(row, update);
-      return Promise.resolve({ modifiedCount: row ? 1 : 0 });
+      return Promise.resolve({ matchedCount: row ? 1 : 0, modifiedCount: row ? 1 : 0 });
     },
-    deleteOne: (filter: { _id: Types.ObjectId }) => {
+    deleteOne: (filter: { _id: Types.ObjectId; codeHash?: string }) => {
       if (failures.deleteOne > 0) {
         failures.deleteOne -= 1;
         return Promise.reject(new Error('DB 삭제 실패'));
       }
-      const i = rows.findIndex((r) => r._id.equals(filter._id));
+      const i = rows.findIndex(
+        (r) =>
+          r._id.equals(filter._id) && (!('codeHash' in filter) || r.codeHash === filter.codeHash),
+      );
       if (i >= 0) rows.splice(i, 1);
       return Promise.resolve({ deletedCount: i >= 0 ? 1 : 0 });
     },
   } as unknown as Model<SocialLoginAttemptDocument>;
-  return { rows, failures, model };
+  return { rows, failures, hooks, model };
 }
 
 function setup(
@@ -389,16 +401,49 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       expect(s.googleClient.fetchProfile).not.toHaveBeenCalled();
     });
 
-    it('만료 직전(10분 이내)에는 정상 처리한다', async () => {
+    // 처리(구글 호출 최대 5초 x 2 + 사용자 처리)를 마칠 시간이 남아 있을 때만 점유한다
+    it('만료까지 처리 여유(30초)보다 많이 남았으면 정상 처리한다', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const s = setup();
+      const { oauthState } = await started(s); // 만료: 00:10:00
+      vi.setSystemTime(new Date('2026-01-01T00:09:29Z')); // 31초 남음
+
+      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+
+      expect(CALLBACK_PROCESSING_MARGIN_MS).toBe(30 * 1000);
+      expect(parse(href).params.get('code')).not.toBeNull();
+    });
+
+    it('만료까지 정확히 30초 남았으면 점유하지 않는다 (경계값)', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
       const s = setup();
       const { oauthState } = await started(s);
-      vi.setSystemTime(new Date('2026-01-01T00:09:59Z'));
+      vi.setSystemTime(new Date('2026-01-01T00:09:30Z')); // 정확히 30초 남음
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const error = await s.service
+        .handleGoogleCallback(callbackOf(oauthState))
+        .catch((e: unknown) => e);
 
-      expect(parse(href).params.get('code')).not.toBeNull();
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(s.googleClient.fetchProfile).not.toHaveBeenCalled();
+    });
+
+    it('만료까지 30초가 안 남았으면 처리를 시작하지 않는다 (사용자를 만들지 않고, 구글에 묻지 않는다)', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const s = setup();
+      const { oauthState } = await started(s);
+      vi.setSystemTime(new Date('2026-01-01T00:09:59Z')); // 1초 남음
+
+      const error = await s.service
+        .handleGoogleCallback(callbackOf(oauthState))
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(s.googleClient.fetchProfile).not.toHaveBeenCalled();
+      expect(s.users.findOrCreate).not.toHaveBeenCalled();
     });
 
     it('오류 응답에 받은 state를 되돌려 주지 않는다', async () => {
@@ -594,6 +639,82 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       expect(parse(href).params.get('error')).toBe('server_error');
       expect(parse(href).params.get('code')).toBeNull();
       expect(s.rows).toHaveLength(0);
+    });
+
+    describe('결과를 저장하는 사이에 로그인 시도가 사라지거나 바뀐 경우 (matchedCount 확인)', () => {
+      const warnSpy = () => vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      it('처리하는 사이에 문서가 지워지면(만료 · TTL 삭제) 코드를 내주지 않고 invalid_code를 돌려준다', async () => {
+        const warn = warnSpy();
+        const s = setup();
+        const { oauthState } = await started(s);
+        s.hooks.beforeUpdate = () => s.rows.splice(0, s.rows.length); // 구글 호출 후 저장 직전에 문서가 사라짐
+
+        const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+
+        const { params } = parse(href);
+        expect(params.get('error')).toBe('invalid_code');
+        expect(params.get('state')).toBe(PARAMS.appState);
+        expect(params.get('code')).toBeNull();
+        warn.mockRestore();
+      });
+
+      it('저장 대상이 없으면(matchedCount 0) 서버 로그에 남긴다', async () => {
+        const warn = warnSpy();
+        const s = setup();
+        const { oauthState } = await started(s);
+        s.hooks.beforeUpdate = () => s.rows.splice(0, s.rows.length);
+
+        await s.service.handleGoogleCallback(callbackOf(oauthState));
+
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0]![0])).toContain('사라졌');
+        warn.mockRestore();
+      });
+
+      it('내가 점유한 코드가 아니게 바뀐 문서에는 결과를 쓰지 않고, 남의 문서를 지우지도 않는다', async () => {
+        const warn = warnSpy();
+        const s = setup();
+        const { oauthState } = await started(s);
+        s.hooks.beforeUpdate = () => {
+          s.rows[0]!.codeHash = 'somebody-elses-hash'; // 점유가 다른 쪽으로 넘어간 상황
+        };
+
+        const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+
+        expect(parse(href).params.get('code')).toBeNull();
+        expect(parse(href).params.get('error')).toBe('invalid_code');
+        // 결과가 쓰이지 않았고, 남이 점유한 문서가 그대로 남아 있다
+        expect(s.rows).toHaveLength(1);
+        expect(s.rows[0]).toMatchObject({
+          codeHash: 'somebody-elses-hash',
+          outcome: null,
+          userId: null,
+        });
+        warn.mockRestore();
+      });
+
+      it('문서가 사라졌어도 앱에는 오류만 돌려주고 예외를 던지지 않는다', async () => {
+        const warn = warnSpy();
+        const s = setup();
+        const { oauthState } = await started(s);
+        s.hooks.beforeUpdate = () => s.rows.splice(0, s.rows.length);
+
+        await expect(s.service.handleGoogleCallback(callbackOf(oauthState))).resolves.toContain(
+          'error=',
+        );
+        warn.mockRestore();
+      });
+
+      it('정상일 때는 matchedCount가 1이라 코드를 내준다', async () => {
+        const s = setup();
+        const { oauthState } = await started(s);
+
+        const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+
+        expect(parse(href).params.get('code')).not.toBeNull();
+        expect(s.rows[0]!.outcome).toBe('signed_in');
+      });
     });
 
     it('시도를 지우지 못해도(DB 삭제 실패) 앱에는 오류를 돌려준다', async () => {

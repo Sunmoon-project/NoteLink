@@ -96,15 +96,20 @@ describe('구글 로그인: 시작 → 콜백 (구글만 가짜, 나머지는 �
         row.codeHash = update.codeHash;
         return Promise.resolve(before);
       },
-      updateOne: (filter: { _id: Types.ObjectId }, update: Partial<Attempt>) => {
-        Object.assign(
-          attempts.find((a) => a._id.equals(filter._id))!,
-          update,
+      updateOne: (filter: { _id: Types.ObjectId; codeHash?: string }, update: Partial<Attempt>) => {
+        // 실제 Mongoose처럼 조건(_id, 점유한 코드 해시)에 맞는 문서에만 쓰고, 맞은 개수(matchedCount)를 돌려준다
+        const row = attempts.find(
+          (a) =>
+            a._id.equals(filter._id) && (!('codeHash' in filter) || a.codeHash === filter.codeHash),
         );
-        return Promise.resolve({});
+        if (row) Object.assign(row, update);
+        return Promise.resolve({ matchedCount: row ? 1 : 0, modifiedCount: row ? 1 : 0 });
       },
-      deleteOne: (filter: { _id: Types.ObjectId }) => {
-        const i = attempts.findIndex((a) => a._id.equals(filter._id));
+      deleteOne: (filter: { _id: Types.ObjectId; codeHash?: string }) => {
+        const i = attempts.findIndex(
+          (a) =>
+            a._id.equals(filter._id) && (!('codeHash' in filter) || a.codeHash === filter.codeHash),
+        );
         if (i >= 0) attempts.splice(i, 1);
         return Promise.resolve({});
       },
