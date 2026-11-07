@@ -98,7 +98,7 @@ export function RoomListScreen() {
               <Card
                 key={r._id}
                 onPress={() => router.push({ pathname: '/room/[id]', params: { id: r._id } })}
-                className="mb-2 flex-row items-center gap-3 p-4"
+                className="mb-4 flex-row items-center gap-3 p-6"
               >
                 <View className="flex-1">
                   <View className="flex-row items-center gap-2">
@@ -112,7 +112,7 @@ export function RoomListScreen() {
                 <Faces members={r.members} />
               </Card>
             ))}
-            <View className="mt-1 flex-row gap-2">
+            <View className="mt-2 flex-row gap-2.5">
               <View className="flex-1">
                 <Btn small kind="outline" onPress={() => router.push('/(tabs)/studyroom/create')}>
                   스터디룸 만들기
@@ -161,19 +161,19 @@ export function RoomListScreen() {
             {q ? `‘${q}’에 맞는 스터디룸이 없어요` : '지금 추천할 스터디룸이 없어요'}
           </Text>
         )}
-        <View className="gap-2">
+        <View className="gap-4">
           {recList.map((r) => (
-            <Card key={r._id} onPress={() => join.mutate(r.inviteCode)} className="p-4">
+            <Card key={r._id} onPress={() => join.mutate(r.inviteCode)} className="p-6">
               <View className="flex-row items-center justify-between">
                 <Text className="text-subhead font-bold text-ink">{r.title}</Text>
                 <Badge>{`${r.memberCount}명 참여`}</Badge>
               </View>
-              <View className="mt-1.5 flex-row gap-1">
+              <View className="mt-2.5 flex-row gap-1">
                 {r.tags?.map((t) => (
                   <Badge key={t}>{t}</Badge>
                 ))}
               </View>
-              <Text className="mt-1.5 text-caption text-sub">{r.description}</Text>
+              <Text className="mt-2.5 text-caption text-sub">{r.description}</Text>
             </Card>
           ))}
         </View>

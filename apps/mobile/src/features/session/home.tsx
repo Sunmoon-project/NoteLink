@@ -162,7 +162,7 @@ export function HomeScreen() {
       <TiltWatcher />
       <Screen>
         <NetBanner />
-        <View className="flex-row items-start justify-between pt-4">
+        <View className="flex-row items-start justify-between pt-5">
           <View className="flex-1">
             {has && <Text className="text-caption text-sub">안녕하세요</Text>}
             <View className="flex-row items-center gap-2">
@@ -194,7 +194,7 @@ export function HomeScreen() {
         {has && nextDday && (
           <Pressable
             onPress={() => openFeature('/dday')}
-            className="mt-3 flex-row items-center gap-3 px-1 py-2"
+            className="mt-4 flex-row items-center gap-3 px-1 py-2"
           >
             <View className="h-9 w-9 items-center justify-center rounded-full bg-white">
               <Target size={ICON.md} color={C.brand} />
@@ -212,7 +212,7 @@ export function HomeScreen() {
         {/* 집중 카드: 화면에서 그림자를 쓰는 하나뿐인 면. 측정을 시작하면 버튼 줄이 열리며 아래가 함께 밀린다 */}
         <Animated.View
           layout={LIST_LAYOUT}
-          className="mt-3 rounded-card bg-night p-5"
+          className="mt-6 rounded-card bg-night p-6"
           style={{ boxShadow: SHADOW.focus }}
         >
           <View className="flex-row items-center justify-between">
@@ -250,7 +250,7 @@ export function HomeScreen() {
           <Pressable
             accessibilityLabel="주간 목표 설정"
             onPress={() => setSheet('goal')}
-            className="mt-3"
+            className="mt-4"
           >
             <Text className="text-footnote text-white/80">
               {running
@@ -268,14 +268,14 @@ export function HomeScreen() {
             >
               <Pressable
                 onPress={() => router.push('/landscape')}
-                className="mt-2 flex-row items-center gap-1"
+                className="mt-3 flex-row items-center gap-1"
               >
                 <RotateCw size={ICON.xs} color={C.sub} />
                 <Text className="text-caption2 text-white/45">
                   가로로 돌리면 자동 측정 · 세로로 세우면 정지
                 </Text>
               </Pressable>
-              <View className="mt-4 flex-row gap-2">
+              <View className="mt-6 flex-row gap-3">
                 <View className="flex-1">
                   <Swap k={running ? 'pause' : 'resume'}>
                     {running ? (
@@ -315,7 +315,7 @@ export function HomeScreen() {
         </Animated.View>
 
         <Animated.View layout={LIST_LAYOUT}>
-          <View className="mt-6 mb-2 flex-row items-center justify-between">
+          <View className="mt-10 mb-4 flex-row items-center justify-between px-1">
             <Text className="text-headline font-bold text-ink">오늘 공부할 목록</Text>
             <Text className="text-caption text-sub">{items.length}개</Text>
           </View>
@@ -328,7 +328,7 @@ export function HomeScreen() {
             </View>
           )}
           {today.isSuccess && !has && (
-            <View className="mb-2 items-center rounded-card bg-cream py-5">
+            <View className="mb-3 items-center rounded-card bg-cream py-6">
               <Text className="text-footnote text-sub">아직 공부할 목록이 없어요</Text>
               <Text className="text-caption2 text-sub">
                 과목이나 할 일을 추가하면 항목별로 시간을 따로 재요
@@ -347,7 +347,7 @@ export function HomeScreen() {
                   entering={FadeIn.duration(MOTION.enter)}
                   exiting={FadeOut.duration(MOTION.exit)}
                   className={cx(
-                    'flex-row items-center gap-3 px-4 py-3',
+                    'flex-row items-center gap-3.5 px-5 py-4',
                     i > 0 && 'border-t border-fill',
                     on && 'bg-mint',
                   )}
@@ -390,18 +390,15 @@ export function HomeScreen() {
             <Tap
               accessibilityRole="button"
               onPress={() => setSheet('add')}
-              className={cx(
-                'flex-row items-center gap-3 px-4 py-3.5',
-                has && 'border-t border-fill',
-              )}
+              className={cx('flex-row items-center gap-3 px-5 py-4', has && 'border-t border-fill')}
             >
               <Plus size={ICON.md} color={C.brand} />
               <Text className="text-subhead font-semibold text-brand">공부할 항목 추가</Text>
             </Tap>
           </View>
 
-          <Text className="mt-6 mb-2 text-headline font-bold text-ink">학습 기록</Text>
-          <Card className="p-4" onPress={() => openFeature('/record')}>
+          <Text className="mt-10 mb-4 px-1 text-headline font-bold text-ink">학습 기록</Text>
+          <Card className="p-6" onPress={() => openFeature('/record')}>
             <View className="flex-row justify-between">
               <Text className="text-caption text-sub">이번주 순공시간</Text>
               <Text className="text-caption font-semibold text-brand">기록 · 캘린더 ›</Text>

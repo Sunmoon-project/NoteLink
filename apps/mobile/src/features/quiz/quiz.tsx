@@ -113,7 +113,7 @@ export function QuizHomeScreen() {
               onPress={() =>
                 router.push({ pathname: '/play/solve', params: { setId: latest._id } })
               }
-              className="mt-1 p-4"
+              className="mt-1 p-6"
             >
               <Text className="text-caption text-sub">
                 {progress ? '이어서 풀기' : '퀴즈 풀기'}
@@ -129,7 +129,7 @@ export function QuizHomeScreen() {
                 />
               )}
             </Card>
-            <View className="mt-3 flex-row flex-wrap justify-between gap-y-2">
+            <View className="mt-5 flex-row flex-wrap justify-between gap-y-4">
               {(
                 [
                   [PenLine, '퀴즈 만들기', '/(tabs)/quiz/notes'],
@@ -143,7 +143,7 @@ export function QuizHomeScreen() {
                   onPress={() =>
                     router.push({ pathname: href as never, params: { setId: latest._id } })
                   }
-                  className="w-[48.5%] gap-3 p-4"
+                  className="w-[47.5%] gap-4 p-6"
                 >
                   <View className="h-10 w-10 items-center justify-center rounded-xl bg-mint">
                     <Ic size={ICON.md} color={C.brand} />
@@ -804,7 +804,7 @@ export function QuizSolveScreen() {
             <Text className="text-footnote text-ink">스터디룸으로</Text>
           </Pressable>
         )}
-        <Progress value={((i + (right === null ? 0 : 1)) / qs.length) * 100} className="mt-4" />
+        <Progress value={((i + (right === null ? 0 : 1)) / qs.length) * 100} className="mt-5" />
         <Text className="pt-4 text-center text-caption text-sub">
           복습 퀴즈 {i + 1} / {qs.length}
         </Text>
@@ -813,8 +813,8 @@ export function QuizSolveScreen() {
         </View>
         {pick === null || right === null ? (
           <Animated.View entering={FadeIn}>
-            <Text className="mt-5 text-callout leading-6 font-bold text-ink">{q.prompt}</Text>
-            <View className="mt-4 gap-2.5">
+            <Text className="mt-7 text-callout leading-6 font-bold text-ink">{q.prompt}</Text>
+            <View className="mt-6 gap-3.5">
               {(!q.choices || q.choices.length === 0) && (
                 <>
                   <TextInput
@@ -839,7 +839,7 @@ export function QuizSolveScreen() {
                   key={c}
                   onPress={() => choose(c)}
                   className={cx(
-                    'min-h-14 justify-center rounded-2xl px-4 py-3',
+                    'min-h-14 justify-center rounded-2xl px-5 py-4',
                     pick === c ? 'bg-mint' : 'bg-white',
                   )}
                 >

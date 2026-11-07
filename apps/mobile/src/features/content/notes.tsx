@@ -146,27 +146,27 @@ export function NoteListScreen() {
           </View>
         ) : (
           <>
-            <View className="mt-3 flex-row gap-2">
+            <View className="mt-4 flex-row gap-2">
               {tags.map((t) => (
                 <Chip key={t} small on={tag === t} onPress={() => setTag(t)}>
                   {t}
                 </Chip>
               ))}
             </View>
-            <View className="mt-4 flex-row flex-wrap justify-between gap-y-3">
+            <View className="mt-6 flex-row flex-wrap justify-between gap-y-5">
               {list.map((f) => (
                 <Card
                   key={f._id}
                   onPress={() =>
                     router.push({ pathname: '/(tabs)/note/folder/[id]', params: { id: f._id } })
                   }
-                  className="w-[48.5%] p-2.5"
+                  className="w-[47.5%] p-3.5"
                 >
                   <View className="h-20 items-center justify-center rounded-xl bg-mint">
                     <Folder size={ICON.xl} color={C.brand} />
                   </View>
-                  <Text className="mt-2 px-1 text-subhead font-semibold text-ink">{f.title}</Text>
-                  <Text className="px-1 text-caption2 text-sub">
+                  <Text className="mt-3 px-1 text-subhead font-semibold text-ink">{f.title}</Text>
+                  <Text className="mt-0.5 px-1 pb-1 text-caption2 text-sub">
                     {f.subjectName} · {seoul(f.createdAt).getMonth() + 1}/
                     {seoul(f.createdAt).getDate()} · 자료 {f.materialCount}개
                   </Text>
@@ -391,7 +391,9 @@ export function FolderScreen() {
         ) : (
           <>
             {mats.data && (
-              <Text className="mt-4 mb-2 text-caption text-sub">자료 {mats.data.length}개</Text>
+              <Text className="mt-7 mb-3 px-1 text-caption text-sub">
+                자료 {mats.data.length}개
+              </Text>
             )}
             <View className="overflow-hidden rounded-card bg-white">
               {items.map((m, i) => {
@@ -411,7 +413,7 @@ export function FolderScreen() {
                     <Tap
                       scaleTo={0.99}
                       onPress={() => open(m)}
-                      className="flex-row items-center gap-3 px-4 py-3"
+                      className="flex-row items-center gap-3.5 px-5 py-4"
                     >
                       <View
                         className={cx('h-10 w-10 items-center justify-center rounded-xl', tile)}

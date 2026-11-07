@@ -115,7 +115,7 @@ export function SettingsScreen() {
       <Screen scrollRef={scroll}>
         <Title>설정</Title>
         {/* 프로필: 큰 아바타와 이름이 맨 위. 누르면 계정 정보 */}
-        <View className="flex-row items-center gap-4 py-2">
+        <View className="flex-row items-center gap-4 py-3">
           <Pressable
             accessibilityLabel="프로필 사진 변경"
             onPress={() => openFeature('/(tabs)/profile/photo')}
@@ -148,7 +148,7 @@ export function SettingsScreen() {
           </Row>
         </Group>
         {/* 쓰는 양은 따로 카드 — 남은 양이 한눈에 */}
-        <Card className="mt-2 p-4">
+        <Card className="mt-4 p-6">
           <View className="flex-row justify-between">
             <Text className="text-caption text-sub">저장 공간</Text>
             <Text className="text-caption text-sub">
@@ -162,7 +162,7 @@ export function SettingsScreen() {
             )}
             className="mt-1.5"
           />
-          <View className="mt-3 flex-row justify-between">
+          <View className="mt-4 flex-row justify-between">
             <Text className="text-caption text-sub">AI 크레딧</Text>
             <Text className="text-caption text-sub">
               {u.usage?.aiCredits ?? 0}
