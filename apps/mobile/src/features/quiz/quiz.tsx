@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, TextInput, View } from 'react-native';
 import { Text } from '@/components/text';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, {
+  FadeIn,
+  FadeInDown,
+  ReduceMotion,
+  useAnimatedStyle,
+  useSharedValue,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Speech from 'expo-speech';
@@ -34,11 +42,14 @@ import {
   Alert,
   Badge,
   Btn,
+  Canvas,
   Card,
   Loading,
   Progress,
   Screen,
   Search,
+  Tap,
+  Title,
   cx,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
@@ -48,6 +59,18 @@ import { aiWaiting } from '@/lib/ai';
 import { AiPending } from '@/components/AiPending';
 
 // p.85~89 퀴즈 · 플래시카드 · 퀴즈 보관함
+
+/** 오답 표시를 좌우로 두 번 살짝 흔든다. 동작 줄이기면 흔들지 않는다 */
+function Shake({ on, children }: { on: boolean; children: React.ReactNode }) {
+  const x = useSharedValue(0);
+  useEffect(() => {
+    if (!on) return;
+    const t = { duration: 60, reduceMotion: ReduceMotion.System };
+    x.set(withSequence(withTiming(4, t), withTiming(-4, t), withTiming(4, t), withTiming(0, t)));
+  }, [on, x]);
+  const style = useAnimatedStyle(() => ({ transform: [{ translateX: x.get() }] }));
+  return <Animated.View style={style}>{children}</Animated.View>;
+}
 
 const Tutor = ({ size = 76 }: { size?: number }) => (
   <View
@@ -71,78 +94,84 @@ export function QuizHomeScreen() {
     : sets.data?.find((s) => s.status === 'ready');
   const waiting = sets.data?.filter((s) => s.status === 'generating') ?? [];
   return (
-    <Screen>
-      <NetBanner />
-      <Text className="pt-4 text-title2 font-bold text-ink">학습 퀴즈</Text>
-      {waiting.length > 0 && (
-        <View className="mt-4">
-          <AiPending
-            what={`퀴즈 ${waiting.length}개 생성`}
-            hint={waiting.map((w) => w.title).join(' · ')}
-          />
-        </View>
-      )}
-      {latest ? (
-        <>
-          <Card
-            tone="mint"
-            onPress={() => router.push({ pathname: '/play/solve', params: { setId: latest._id } })}
-            className="mt-4 p-4"
-          >
-            <Text className="text-caption text-sub">{progress ? '이어서 풀기' : '퀴즈 풀기'}</Text>
-            <Text className="text-body font-bold text-ink">
-              {latest.title}
-              {latest.questionCount > 0 ? ` · ${latest.questionCount}문제` : ''}
-            </Text>
-            {!!progress && latest.questionCount > 0 && (
-              <Progress
-                value={Math.round((progress.index / latest.questionCount) * 100)}
-                className="mt-2"
-              />
-            )}
-          </Card>
-          <View className="mt-3 flex-row flex-wrap justify-between gap-y-2">
-            {(
-              [
-                [PenLine, '퀴즈 만들기', '/(tabs)/quiz/notes'],
-                [Layers, '플래시 카드', '/play/flash'],
-                [Archive, '퀴즈 보관함', '/play/box'],
-                [Sparkles, '유사 퀴즈', '/play/similar'],
-              ] as const
-            ).map(([Ic, l, href]) => (
-              <Card
-                key={l}
-                onPress={() =>
-                  router.push({ pathname: href as never, params: { setId: latest._id } })
-                }
-                className="w-[48.5%] p-4"
-              >
-                <Ic size={ICON.lg} color={C.brand} />
-                <Text className="text-subhead font-semibold text-ink">{l}</Text>
-              </Card>
-            ))}
+    <Canvas>
+      <Screen>
+        <NetBanner />
+        <Title>학습 퀴즈</Title>
+        {waiting.length > 0 && (
+          <View className="mt-4">
+            <AiPending
+              what={`퀴즈 ${waiting.length}개 생성`}
+              hint={waiting.map((w) => w.title).join(' · ')}
+            />
           </View>
-        </>
-      ) : (
-        sets.isSuccess && (
-          <View className="items-center pt-32">
-            <View className="h-14 w-14 items-center justify-center rounded-full bg-sun/25">
-              <Brain size={ICON.xl} color={C.brand} />
+        )}
+        {latest ? (
+          <>
+            <Card
+              tone="mint"
+              onPress={() =>
+                router.push({ pathname: '/play/solve', params: { setId: latest._id } })
+              }
+              className="mt-1 p-4"
+            >
+              <Text className="text-caption text-sub">
+                {progress ? '이어서 풀기' : '퀴즈 풀기'}
+              </Text>
+              <Text className="text-body font-bold text-ink">
+                {latest.title}
+                {latest.questionCount > 0 ? ` · ${latest.questionCount}문제` : ''}
+              </Text>
+              {!!progress && latest.questionCount > 0 && (
+                <Progress
+                  value={Math.round((progress.index / latest.questionCount) * 100)}
+                  className="mt-2"
+                />
+              )}
+            </Card>
+            <View className="mt-3 flex-row flex-wrap justify-between gap-y-2">
+              {(
+                [
+                  [PenLine, '퀴즈 만들기', '/(tabs)/quiz/notes'],
+                  [Layers, '플래시 카드', '/play/flash'],
+                  [Archive, '퀴즈 보관함', '/play/box'],
+                  [Sparkles, '유사 퀴즈', '/play/similar'],
+                ] as const
+              ).map(([Ic, l, href]) => (
+                <Card
+                  key={l}
+                  onPress={() =>
+                    router.push({ pathname: href as never, params: { setId: latest._id } })
+                  }
+                  className="w-[48.5%] gap-3 p-4"
+                >
+                  <View className="h-10 w-10 items-center justify-center rounded-xl bg-mint">
+                    <Ic size={ICON.md} color={C.brand} />
+                  </View>
+                  <Text className="text-subhead font-semibold text-ink">{l}</Text>
+                </Card>
+              ))}
             </View>
-            <Text className="mt-4 text-callout font-bold text-ink">
-              아직 만들어진 퀴즈가 없어요
-            </Text>
-            <Text className="text-caption text-sub">
-              노트를 업로드하면 자동으로 퀴즈가 생성돼요
-            </Text>
-            <Btn small className="mt-5 w-56" onPress={() => router.push('/(tabs)/quiz/notes')}>
-              노트 업로드하고 퀴즈 만들기
-            </Btn>
-          </View>
-        )
-      )}
-      {sets.isError && <ErrorAlert retry={() => sets.refetch()} />}
-    </Screen>
+          </>
+        ) : (
+          sets.isSuccess && (
+            <View className="items-center pt-24">
+              <View className="h-24 w-24 items-center justify-center rounded-full bg-cream">
+                <Brain size={ICON.xl} color={C.brand} />
+              </View>
+              <Text className="mt-5 text-body font-bold text-ink">아직 만들어진 퀴즈가 없어요</Text>
+              <Text className="text-caption text-sub">
+                노트를 업로드하면 자동으로 퀴즈가 생성돼요
+              </Text>
+              <Btn small className="mt-5 w-56" onPress={() => router.push('/(tabs)/quiz/notes')}>
+                노트 업로드하고 퀴즈 만들기
+              </Btn>
+            </View>
+          )
+        )}
+        {sets.isError && <ErrorAlert retry={() => sets.refetch()} />}
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -730,7 +759,7 @@ export function QuizSolveScreen() {
     setResults((r) => r.slice(0, -1));
   };
   return (
-    <View className="flex-1">
+    <Canvas>
       <Screen
         footer={
           pick === null ? (
@@ -775,7 +804,8 @@ export function QuizSolveScreen() {
             <Text className="text-footnote text-ink">스터디룸으로</Text>
           </Pressable>
         )}
-        <Text className="pt-8 text-center text-caption text-sub">
+        <Progress value={((i + (right === null ? 0 : 1)) / qs.length) * 100} className="mt-4" />
+        <Text className="pt-4 text-center text-caption text-sub">
           복습 퀴즈 {i + 1} / {qs.length}
         </Text>
         <View className="mt-4">
@@ -794,7 +824,7 @@ export function QuizSolveScreen() {
                     }}
                     placeholder="답을 입력해주세요"
                     editable={!!attemptId && pick === null}
-                    className="rounded-xl border border-line p-3"
+                    className="rounded-xl bg-white p-3"
                   />
                   <Btn
                     disabled={!attemptId || !answerText.trim() || pick !== null}
@@ -805,35 +835,46 @@ export function QuizSolveScreen() {
                 </>
               )}
               {(q.choices ?? []).map((c, n) => (
-                <Pressable
+                <Tap
                   key={c}
                   onPress={() => choose(c)}
                   className={cx(
-                    'h-12 items-center justify-center rounded-xl border',
-                    pick === c ? 'border-brand bg-mint' : 'border-line active:bg-mint',
+                    'min-h-14 justify-center rounded-2xl px-4 py-3',
+                    pick === c ? 'bg-mint' : 'bg-white',
                   )}
                 >
                   <Text className="text-subhead text-ink">
                     {'①②③④⑤'[n]} {c}
                   </Text>
-                </Pressable>
+                </Tap>
               ))}
             </View>
           </Animated.View>
         ) : (
           <Animated.View entering={FadeIn}>
-            <View
-              className={cx('mt-8 rounded-xl py-2.5', right ? 'bg-correct-soft' : 'bg-danger/10')}
-            >
-              <Text
+            {/* 정답은 채워지며 체크, 오답은 좌우로 살짝 흔들림 (240ms · 4px × 2) */}
+            <Shake on={!right}>
+              <View
                 className={cx(
-                  'text-center text-footnote font-semibold',
-                  right ? 'text-white' : 'text-danger',
+                  'mt-8 flex-row items-center justify-center gap-1.5 rounded-xl py-2.5',
+                  right ? 'bg-correct-soft' : 'bg-danger/10',
                 )}
               >
-                {right ? 'O 정답이에요' : '✕ 오답이에요, 다시 풀어보세요'}
-              </Text>
-            </View>
+                {right ? (
+                  <CircleCheck size={ICON.sm} color="#fff" />
+                ) : (
+                  <X size={ICON.sm} color={C.danger} />
+                )}
+                <Text
+                  className={cx(
+                    'text-footnote font-semibold',
+                    right ? 'text-white' : 'text-danger',
+                  )}
+                >
+                  {right ? '정답이에요' : '오답이에요, 다시 풀어보세요'}
+                </Text>
+              </View>
+            </Shake>
             {!right && (
               <Text className="mt-3 text-center text-caption text-sub">내가 고른 답: {pick}</Text>
             )}
@@ -864,7 +905,7 @@ export function QuizSolveScreen() {
           router.push('/(auth)/login');
         }}
       />
-    </View>
+    </Canvas>
   );
 }
 

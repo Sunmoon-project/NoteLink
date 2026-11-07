@@ -167,7 +167,7 @@ it('이전 화면의 늦은 채점 응답은 새 화면에서 저장한 다른 �
   });
   expect(useQuizProgress.getState().progress).toEqual(newerProgress);
   expect(screen.getByPlaceholderText('답을 입력해주세요').props.value).toBe('새 화면에서 쓰는 답');
-  expect(screen.queryByText('O 정답이에요')).toBeNull();
+  expect(screen.queryByText('정답이에요')).toBeNull();
 });
 
 it('세트 생성 전 크레딧 부족으로 거절되면 가짜 생성 결과나 빈 세트 이동을 제공하지 않는다', async () => {
