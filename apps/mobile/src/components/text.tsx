@@ -18,11 +18,21 @@ export const Text = forwardRef<RNText, TextProps>(function Text({ style, ...prop
   return <RNText ref={ref} maxFontSizeMultiplier={MAX_SCALE} {...props} style={[base, style]} />;
 });
 
+// 간격을 따로 주지 않은 입력칸은 글자 간격을 0으로 못 박는다. iOS는 네이티브 입력칸을 재사용하는데,
+// 간격을 준 칸(스터디룸 코드 입력 tracking-[6px])을 닫은 뒤 다른 입력칸이 그 간격을 물려받아
+// 안내 문구가 벌어졌다. className의 tracking-이 있으면 그 값을 쓴다(이 기본값이 className보다 앞선다)
+const inputBase = StyleSheet.create({ input: { fontFamily: FONT, letterSpacing: 0 } }).input;
+
 export const TextInput = forwardRef<RNTextInput, TextInputProps>(function TextInput(
   { style, ...props },
   ref,
 ) {
   return (
-    <RNTextInput ref={ref} maxFontSizeMultiplier={MAX_SCALE} {...props} style={[base, style]} />
+    <RNTextInput
+      ref={ref}
+      maxFontSizeMultiplier={MAX_SCALE}
+      {...props}
+      style={[props.className?.includes('tracking-') ? base : inputBase, style]}
+    />
   );
 });
