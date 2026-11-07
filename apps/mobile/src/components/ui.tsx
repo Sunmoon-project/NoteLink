@@ -62,6 +62,15 @@ const SurfaceCtx = createContext<Surface>('legacy');
 export const useSurface = () => useContext(SurfaceCtx);
 /** 면에 놓인 카드 · 칩 · 입력의 바탕 */
 const FILL: Record<Surface, string> = { canvas: 'bg-white', white: 'bg-fill', legacy: 'bg-cream' };
+/**
+ * 개편된 화면의 바깥 틀: 회색 바탕 + 그 안 전부(Screen 밖에 붙는 Sheet · Dialog 포함)를 캔버스 면으로.
+ * 시트를 Screen 밖에 두는 화면은 Screen canvas 대신 이것으로 감싼다
+ */
+export const Canvas = ({ children }: { children: ReactNode }) => (
+  <SurfaceCtx.Provider value="canvas">
+    <View className="flex-1 bg-canvas">{children}</View>
+  </SurfaceCtx.Provider>
+);
 /** 흰 면(카드 · 시트) 안의 내용 — 칩 · 입력이 채움 바탕이 된다. 개편 전 화면에서는 그대로 둔다 */
 export const OnWhite = ({ children }: { children: ReactNode }) => {
   const surface = useSurface();
@@ -269,6 +278,9 @@ export function Screen({
 }) {
   const insets = useSafeAreaInsets();
   const inTabs = useInTabs();
+  // Canvas 안의 Screen은 canvas를 따로 주지 않아도 회색 바탕
+  const outer = useSurface();
+  const onCanvas = canvas || outer === 'canvas';
   const body = scroll ? (
     <ScrollView
       ref={scrollRef}
@@ -286,10 +298,10 @@ export function Screen({
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      className={cx('flex-1', dark ? 'bg-black' : canvas ? 'bg-canvas' : 'bg-white')}
+      className={cx('flex-1', dark ? 'bg-black' : onCanvas ? 'bg-canvas' : 'bg-white')}
       style={{ paddingTop: top ? insets.top : 0 }}
     >
-      <SurfaceCtx.Provider value={canvas ? 'canvas' : 'legacy'}>
+      <SurfaceCtx.Provider value={onCanvas ? 'canvas' : 'legacy'}>
         <View className="flex-1">{body}</View>
         {footer && (
           <View
