@@ -282,9 +282,9 @@ export function ShopScreen() {
               </Text>
             </View>
           ) : (
-            <View className="mt-4 flex-row flex-wrap justify-between gap-y-4">
+            <View className="mt-5 flex-row flex-wrap justify-between gap-y-5">
               {list.map((it) => (
-                <View key={it._id} className="w-[48%] rounded-card bg-white p-2.5">
+                <View key={it._id} className="w-[47.5%] rounded-card bg-white p-3">
                   <Pressable onPress={() => setDetail(it)}>
                     <View className="h-24 items-center justify-center rounded-xl bg-fill">
                       <ItemPreview item={it} />

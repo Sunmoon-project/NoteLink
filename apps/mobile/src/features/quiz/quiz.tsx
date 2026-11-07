@@ -113,7 +113,7 @@ export function QuizHomeScreen() {
               onPress={() =>
                 router.push({ pathname: '/play/solve', params: { setId: latest._id } })
               }
-              className="mt-1 p-5"
+              className="mt-1 p-6"
             >
               <Text className="text-caption text-sub">
                 {progress ? '이어서 풀기' : '퀴즈 풀기'}
@@ -129,7 +129,7 @@ export function QuizHomeScreen() {
                 />
               )}
             </Card>
-            <View className="mt-4 flex-row flex-wrap justify-between gap-y-3">
+            <View className="mt-5 flex-row flex-wrap justify-between gap-y-4">
               {(
                 [
                   [PenLine, '퀴즈 만들기', '/(tabs)/quiz/notes'],
@@ -143,7 +143,7 @@ export function QuizHomeScreen() {
                   onPress={() =>
                     router.push({ pathname: href as never, params: { setId: latest._id } })
                   }
-                  className="w-[48%] gap-4 p-5"
+                  className="w-[47.5%] gap-4 p-6"
                 >
                   <View className="h-10 w-10 items-center justify-center rounded-xl bg-mint">
                     <Ic size={ICON.md} color={C.brand} />
@@ -814,7 +814,7 @@ export function QuizSolveScreen() {
         {pick === null || right === null ? (
           <Animated.View entering={FadeIn}>
             <Text className="mt-7 text-callout leading-6 font-bold text-ink">{q.prompt}</Text>
-            <View className="mt-5 gap-3">
+            <View className="mt-6 gap-3.5">
               {(!q.choices || q.choices.length === 0) && (
                 <>
                   <TextInput

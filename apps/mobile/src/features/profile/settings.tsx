@@ -148,7 +148,7 @@ export function SettingsScreen() {
           </Row>
         </Group>
         {/* 쓰는 양은 따로 카드 — 남은 양이 한눈에 */}
-        <Card className="mt-3 p-5">
+        <Card className="mt-4 p-6">
           <View className="flex-row justify-between">
             <Text className="text-caption text-sub">저장 공간</Text>
             <Text className="text-caption text-sub">

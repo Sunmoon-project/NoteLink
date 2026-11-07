@@ -212,7 +212,7 @@ export function HomeScreen() {
         {/* 집중 카드: 화면에서 그림자를 쓰는 하나뿐인 면. 측정을 시작하면 버튼 줄이 열리며 아래가 함께 밀린다 */}
         <Animated.View
           layout={LIST_LAYOUT}
-          className="mt-5 rounded-card bg-night p-6"
+          className="mt-6 rounded-card bg-night p-6"
           style={{ boxShadow: SHADOW.focus }}
         >
           <View className="flex-row items-center justify-between">
@@ -275,7 +275,7 @@ export function HomeScreen() {
                   가로로 돌리면 자동 측정 · 세로로 세우면 정지
                 </Text>
               </Pressable>
-              <View className="mt-5 flex-row gap-2.5">
+              <View className="mt-6 flex-row gap-3">
                 <View className="flex-1">
                   <Swap k={running ? 'pause' : 'resume'}>
                     {running ? (
@@ -315,7 +315,7 @@ export function HomeScreen() {
         </Animated.View>
 
         <Animated.View layout={LIST_LAYOUT}>
-          <View className="mt-9 mb-3 flex-row items-center justify-between px-1">
+          <View className="mt-10 mb-4 flex-row items-center justify-between px-1">
             <Text className="text-headline font-bold text-ink">오늘 공부할 목록</Text>
             <Text className="text-caption text-sub">{items.length}개</Text>
           </View>
@@ -397,8 +397,8 @@ export function HomeScreen() {
             </Tap>
           </View>
 
-          <Text className="mt-9 mb-3 px-1 text-headline font-bold text-ink">학습 기록</Text>
-          <Card className="p-5" onPress={() => openFeature('/record')}>
+          <Text className="mt-10 mb-4 px-1 text-headline font-bold text-ink">학습 기록</Text>
+          <Card className="p-6" onPress={() => openFeature('/record')}>
             <View className="flex-row justify-between">
               <Text className="text-caption text-sub">이번주 순공시간</Text>
               <Text className="text-caption font-semibold text-brand">기록 · 캘린더 ›</Text>

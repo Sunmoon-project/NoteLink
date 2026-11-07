@@ -288,13 +288,13 @@ export function Screen({
       onScroll={onScroll}
       scrollEventThrottle={32}
       keyboardShouldPersistTaps="handled"
-      contentContainerClassName={cx(pad && 'px-5 pb-12', className)}
+      contentContainerClassName={cx(pad && 'px-6 pb-14', className)}
       showsVerticalScrollIndicator={false}
     >
       {children}
     </ScrollView>
   ) : (
-    <View className={cx('flex-1', pad && 'px-5', className)}>{children}</View>
+    <View className={cx('flex-1', pad && 'px-6', className)}>{children}</View>
   );
   return (
     <KeyboardAvoidingView
@@ -315,7 +315,7 @@ export function Screen({
         <View className="flex-1">{body}</View>
         {footer && (
           <View
-            className="px-5 pt-2"
+            className="px-6 pt-3"
             style={{ paddingBottom: inTabs ? 12 : Math.max(insets.bottom, 16) }}
           >
             {footer}
@@ -398,7 +398,7 @@ export function Title({
   right?: ReactNode;
 }) {
   return (
-    <View className="flex-row items-end justify-between pt-5 pb-5">
+    <View className="flex-row items-end justify-between pt-6 pb-6">
       <View>
         <Text className="text-page font-bold text-ink">{children}</Text>
         {sub ? <Text className="mt-1 text-footnote text-sub">{sub}</Text> : null}
@@ -409,7 +409,7 @@ export function Title({
 }
 
 export const Label = ({ children, right }: { children: ReactNode; right?: ReactNode }) => (
-  <View className="mt-7 mb-2.5 flex-row items-center justify-between px-1">
+  <View className="mt-8 mb-3 flex-row items-center justify-between px-1">
     {typeof children === 'string' ? (
       <Text className="text-footnote text-sub">{children}</Text>
     ) : (
@@ -557,7 +557,7 @@ export function Row({
       {chevron && <ChevronRight size={ICON.md} color={C.sub} />}
     </>
   );
-  const cls = 'min-h-14 flex-row items-center gap-3.5 px-5 py-3.5';
+  const cls = 'min-h-14 flex-row items-center gap-3.5 px-5 py-4';
   return onPress ? (
     <Pressable
       accessibilityRole="button"
@@ -847,7 +847,7 @@ export function Sheet({
             entering={SlideInDown.duration(MOTION.enter).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(MOTION.exit).easing(Easing.in(Easing.cubic))}
             accessibilityViewIsModal
-            className="max-h-[88%] rounded-t-sheet bg-white px-5 pt-2"
+            className="max-h-[88%] rounded-t-sheet bg-white px-6 pt-2"
             style={{ paddingBottom: Math.max(insets.bottom, 20) }}
           >
             <View className="mb-3 h-1 w-10 self-center rounded-full bg-fill" />

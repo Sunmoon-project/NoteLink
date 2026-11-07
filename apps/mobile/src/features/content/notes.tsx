@@ -153,14 +153,14 @@ export function NoteListScreen() {
                 </Chip>
               ))}
             </View>
-            <View className="mt-5 flex-row flex-wrap justify-between gap-y-4">
+            <View className="mt-6 flex-row flex-wrap justify-between gap-y-5">
               {list.map((f) => (
                 <Card
                   key={f._id}
                   onPress={() =>
                     router.push({ pathname: '/(tabs)/note/folder/[id]', params: { id: f._id } })
                   }
-                  className="w-[48%] p-3"
+                  className="w-[47.5%] p-3.5"
                 >
                   <View className="h-20 items-center justify-center rounded-xl bg-mint">
                     <Folder size={ICON.xl} color={C.brand} />
@@ -391,7 +391,7 @@ export function FolderScreen() {
         ) : (
           <>
             {mats.data && (
-              <Text className="mt-6 mb-3 px-1 text-caption text-sub">
+              <Text className="mt-7 mb-3 px-1 text-caption text-sub">
                 자료 {mats.data.length}개
               </Text>
             )}
