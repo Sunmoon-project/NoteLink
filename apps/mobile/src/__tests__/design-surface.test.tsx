@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react-native';
-import { Card, Chip, Input, Screen } from '../components/ui';
+import { Canvas, Card, Chip, Input, Screen } from '../components/ui';
 
 jest.mock('expo-router', () => ({ router: { back: jest.fn() }, useSegments: () => [] }));
 jest.mock('react-native-safe-area-context', () => ({
@@ -42,4 +42,15 @@ it('캔버스 화면 위는 흰 칩, 흰 카드 안은 채움 칩이다', async 
   expect(inner).toContain('bg-fill');
   expect(inputBox('메모')).toContain('bg-fill');
   expect(inputBox('메모')).not.toContain('border-line');
+});
+
+it('Canvas 안이면 Screen 밖(시트 자리)도 캔버스 면이다', async () => {
+  await render(
+    <Canvas>
+      <Card>
+        <Chip>과목</Chip>
+      </Card>
+    </Canvas>,
+  );
+  expect(chipClass()).toContain('bg-fill');
 });
