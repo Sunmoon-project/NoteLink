@@ -88,7 +88,7 @@ function Fab({ onPress, open }: { onPress: () => void; open?: boolean }) {
       onPress={onPress}
       className={cx(
         'absolute right-5 bottom-5 z-30 h-14 w-14 items-center justify-center rounded-full shadow-lg',
-        open ? 'bg-ink' : 'bg-brand',
+        'bg-brand',
       )}
     >
       {open ? <X size={ICON.lg} color="#fff" /> : <Plus size={ICON.lg} color="#fff" />}

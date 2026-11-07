@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, View } from 'react-native';
 import { Text } from '@/components/text';
-import Animated, { FadeIn, FadeInUp, FadeOut } from 'react-native-reanimated';
+import Animated, { FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -23,20 +23,8 @@ import { api, ApiError, NetworkError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { clock } from '@/lib/dates';
 import { BASE_AVATAR } from '@/lib/shop-items';
-import {
-  Alert,
-  Badge,
-  Btn,
-  Canvas,
-  Dialog,
-  LIST_LAYOUT,
-  Loading,
-  Roll,
-  Sheet,
-  Two,
-  cx,
-} from '@/components/ui';
-import { C, ICON, MOTION } from '@/theme';
+import { Alert, Badge, Btn, Canvas, Dialog, Loading, Sheet, Two, cx } from '@/components/ui';
+import { C, ICON } from '@/theme';
 
 // p.91~95 상점 · 정렬 · 상세 · 구매 · 포인트 내역 · 보관함 / p.101 구매 중 연결 끊김
 
@@ -253,15 +241,9 @@ export function ShopScreen() {
             className="mt-2 rounded-2xl bg-mint px-4 py-3"
           >
             <Text className="text-caption2 text-sub">보유 포인트</Text>
-            {/* 사고 나면 잔액이 자리별로 굴러 내려간다 */}
-            {shop.pending ? (
-              <Text className="text-headline font-bold text-ink">확인 중…</Text>
-            ) : (
-              <Roll
-                value={`${points.toLocaleString()} P`}
-                className="text-headline font-bold text-ink"
-              />
-            )}
+            <Text className="text-headline font-bold text-ink">
+              {shop.pending ? '확인 중…' : `${points.toLocaleString()} P`}
+            </Text>
           </Pressable>
           {(shop.pending || items.isPending) && <Loading />}
           <View className="mt-4 flex-row gap-1">
@@ -538,28 +520,21 @@ export function PointsScreen() {
         <View className="mt-2">
           {(ledger.isPending || shop.pending) && <Loading />}
           {ledger.data?.map((l) => (
-            <Animated.View
-              key={l._id}
-              layout={LIST_LAYOUT}
-              entering={FadeIn.duration(MOTION.enter)}
-              exiting={FadeOut.duration(MOTION.exit)}
-            >
-              <View key={l._id} className="flex-row items-center border-b border-fill py-4">
-                <View className="flex-1">
-                  <Text className="text-subhead text-ink">{l.description}</Text>
-                  <Text className="text-caption2 text-sub">{clock(l.createdAt)}</Text>
-                </View>
-                <Text
-                  className={cx(
-                    'text-subhead font-semibold',
-                    l.amount < 0 ? 'text-danger' : 'text-brand',
-                  )}
-                >
-                  {l.amount > 0 ? '+' : ''}
-                  {l.amount} P
-                </Text>
+            <View key={l._id} className="flex-row items-center border-b border-fill py-4">
+              <View className="flex-1">
+                <Text className="text-subhead text-ink">{l.description}</Text>
+                <Text className="text-caption2 text-sub">{clock(l.createdAt)}</Text>
               </View>
-            </Animated.View>
+              <Text
+                className={cx(
+                  'text-subhead font-semibold',
+                  l.amount < 0 ? 'text-danger' : 'text-brand',
+                )}
+              >
+                {l.amount > 0 ? '+' : ''}
+                {l.amount} P
+              </Text>
+            </View>
           ))}
         </View>
       </ScrollView>
@@ -617,7 +592,7 @@ export function BoxScreen() {
               <Text className="text-callout font-bold text-ink">보관함</Text>
             </Pressable>
           )}
-          <View className="mt-3 h-32 items-center justify-center rounded-2xl bg-mint">
+          <View className="mt-3 h-32 items-center justify-center rounded-2xl bg-cream">
             <ItemPreview item={cur} large />
             <View className="absolute right-3 bottom-3 rounded-full bg-white px-2 py-0.5">
               <Text className="text-caption2 text-ink">현재 아바타</Text>
@@ -649,7 +624,7 @@ export function BoxScreen() {
               </Text>
               <Pressable
                 onPress={() => router.replace('/shop')}
-                className="mt-3 rounded-full bg-ink px-4 py-1.5"
+                className="mt-3 rounded-full bg-brand px-4 py-1.5"
               >
                 <Text className="text-footnote text-white">상점 둘러보기</Text>
               </Pressable>

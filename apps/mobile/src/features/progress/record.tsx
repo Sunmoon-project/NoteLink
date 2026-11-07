@@ -294,7 +294,7 @@ export function RecordScreen() {
                       onPress={() => setRange(x)}
                       className={cx(
                         'rounded-full px-2 py-0.5',
-                        range === x ? 'bg-ink' : 'bg-white',
+                        range === x ? 'bg-brand' : 'bg-white',
                       )}
                     >
                       <Text
@@ -499,7 +499,7 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
             <View
               className={cx(
                 'mt-1 h-7 w-7 items-center justify-center rounded-full',
-                ymd(d) === today() && 'bg-ink',
+                ymd(d) === today() && 'bg-brand',
               )}
             >
               <Text
