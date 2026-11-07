@@ -6,6 +6,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { createGoogleConfig } from '../../config/google.config.js';
 import { createJwtConfig } from '../../config/jwt.config.js';
 import { createKakaoConfig } from '../../config/kakao.config.js';
+import { createNaverConfig } from '../../config/naver.config.js';
 import { AuthTokenController } from './auth-token.controller.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { RefreshToken, RefreshTokenSchema } from './schemas/refresh-token.schema.js';
@@ -16,11 +17,13 @@ import {
 import { User, UserSchema } from './schemas/user.schema.js';
 import { GoogleOAuthClient } from './social-login/google-oauth.client.js';
 import { KakaoOAuthClient } from './social-login/kakao-oauth.client.js';
+import { NaverOAuthClient } from './social-login/naver-oauth.client.js';
 import { SocialExchangeService } from './social-login/social-exchange.service.js';
 import { SocialLoginController } from './social-login/social-login.controller.js';
 import {
   GOOGLE_CONFIG,
   KAKAO_CONFIG,
+  NAVER_CONFIG,
   SOCIAL_PROVIDER_ADAPTERS,
 } from './social-login/social-login.constants.js';
 import { SocialLoginService } from './social-login/social-login.service.js';
@@ -61,15 +64,26 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       inject: [ConfigService],
       useFactory: createKakaoConfig,
     },
+    // NAVER_* 환경변수도 같은 방식으로 읽고 검증한다
+    {
+      provide: NAVER_CONFIG,
+      inject: [ConfigService],
+      useFactory: createNaverConfig,
+    },
     TokenService,
     JwtAuthGuard,
     GoogleOAuthClient,
     KakaoOAuthClient,
-    // 지원하는 소셜 로그인 제공자 목록. 네이버는 여기에 추가한다
+    NaverOAuthClient,
+    // 지원하는 소셜 로그인 제공자 목록
     {
       provide: SOCIAL_PROVIDER_ADAPTERS,
-      inject: [GoogleOAuthClient, KakaoOAuthClient],
-      useFactory: (google: GoogleOAuthClient, kakao: KakaoOAuthClient) => [google, kakao],
+      inject: [GoogleOAuthClient, KakaoOAuthClient, NaverOAuthClient],
+      useFactory: (google: GoogleOAuthClient, kakao: KakaoOAuthClient, naver: NaverOAuthClient) => [
+        google,
+        kakao,
+        naver,
+      ],
     },
     SocialProviderRegistry,
     SocialUserService,

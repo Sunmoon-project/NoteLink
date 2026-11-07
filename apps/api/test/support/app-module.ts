@@ -17,6 +17,9 @@ export const TEST_ENV: Record<string, string> = {
   KAKAO_REST_API_KEY: 'test-kakao-rest-api-key',
   KAKAO_CLIENT_SECRET: 'test-kakao-client-secret',
   KAKAO_REDIRECT_URI: 'http://localhost:3000/api/v1/auth/social/kakao/callback',
+  NAVER_CLIENT_ID: 'test-naver-client-id',
+  NAVER_CLIENT_SECRET: 'test-naver-client-secret',
+  NAVER_REDIRECT_URI: 'http://localhost:3000/api/v1/auth/social/naver/callback',
 };
 
 /** `TEST_ENV`를 환경변수로 넣는다. 일부만 바꾸려면 overrides를 쓴다. 끝나면 `vi.unstubAllEnvs()`로 되돌린다 */

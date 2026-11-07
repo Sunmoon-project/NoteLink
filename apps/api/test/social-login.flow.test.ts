@@ -514,7 +514,7 @@ describe('구글 로그인 전체 흐름: 시작 → 콜백 → 코드 교환 (�
       expect(res.body).toEqual({ code: 'VALIDATION_FAILED', message: expect.any(String) });
     });
 
-    it.each(['naver', 'facebook', 'Google', 'KAKAO'])(
+    it.each(['twitter', 'facebook', 'Google', 'KAKAO', 'NAVER'])(
       '%s는 404 NOT_FOUND 이다',
       async (provider) => {
         const res = await request(app.getHttpServer())

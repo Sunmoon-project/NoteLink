@@ -3,9 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { GoogleOAuthClient } from '../src/modules/auth/social-login/google-oauth.client.js';
 import { KakaoOAuthClient } from '../src/modules/auth/social-login/kakao-oauth.client.js';
+import { NaverOAuthClient } from '../src/modules/auth/social-login/naver-oauth.client.js';
 import {
   GOOGLE_CONFIG,
   KAKAO_CONFIG,
+  NAVER_CONFIG,
 } from '../src/modules/auth/social-login/social-login.constants.js';
 import { SocialLoginService } from '../src/modules/auth/social-login/social-login.service.js';
 import { SocialProviderRegistry } from '../src/modules/auth/social-login/social-provider-registry.js';
@@ -95,7 +97,7 @@ describe('AppModule의 구글 로그인 설정', () => {
   );
 
   it('리디렉션 주소가 구글 콜백 경로가 아니면 서버 조립 단계에서 실패한다', async () => {
-    stubAppEnv({ GOOGLE_REDIRECT_URI: 'https://notelink.app/api/v1/auth/social/naver/callback' });
+    stubAppEnv({ GOOGLE_REDIRECT_URI: 'https://notelink.app/api/v1/auth/social/twitter/callback' });
 
     await expect(createAppModuleBuilder().compile()).rejects.toThrow('GOOGLE_REDIRECT_URI');
   });
@@ -132,5 +134,40 @@ describe('AppModule의 카카오 로그인 설정', () => {
     stubAppEnv({ KAKAO_REDIRECT_URI: 'https://notelink.app/api/v1/auth/social/google/callback' });
 
     await expect(createAppModuleBuilder().compile()).rejects.toThrow('KAKAO_REDIRECT_URI');
+  });
+});
+
+describe('AppModule의 네이버 로그인 설정', () => {
+  it('NAVER_* 환경변수를 읽어 어댑터가 쓸 설정으로 만든다', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const config = moduleRef.get(NAVER_CONFIG, { strict: false });
+    const registry = moduleRef.get(SocialProviderRegistry, { strict: false });
+    await moduleRef.close();
+
+    expect(config).toEqual({
+      clientId: TEST_ENV.NAVER_CLIENT_ID,
+      clientSecret: TEST_ENV.NAVER_CLIENT_SECRET,
+      redirectUri: TEST_ENV.NAVER_REDIRECT_URI,
+    });
+    expect(registry.find('naver')).toBeInstanceOf(NaverOAuthClient);
+    expect(registry.find('kakao')).toBeInstanceOf(KakaoOAuthClient);
+    expect(registry.find('google')).toBeInstanceOf(GoogleOAuthClient);
+  });
+
+  it.each(['NAVER_CLIENT_ID', 'NAVER_CLIENT_SECRET', 'NAVER_REDIRECT_URI'])(
+    '%s가 비어 있으면 서버 조립 단계에서 실패한다',
+    async (key) => {
+      stubAppEnv({ [key]: '' });
+
+      await expect(createAppModuleBuilder().compile()).rejects.toThrow(key);
+    },
+  );
+
+  it('리다이렉트 주소가 네이버 콜백 경로가 아니면 서버 조립 단계에서 실패한다', async () => {
+    stubAppEnv({ NAVER_REDIRECT_URI: 'https://notelink.app/api/v1/auth/social/google/callback' });
+
+    await expect(createAppModuleBuilder().compile()).rejects.toThrow('NAVER_REDIRECT_URI');
   });
 });

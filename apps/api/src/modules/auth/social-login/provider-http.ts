@@ -94,6 +94,11 @@ function safeMessage(value: unknown): string {
   return text;
 }
 
+/** 오류 식별자(예: invalid_request)로 안전하게 쓸 수 있는 모양이면 그 값을, 아니면 빈 문자열을 돌려준다 */
+export function safeIdentifier(value: unknown): string {
+  return typeof value === 'string' && SAFE_ID.test(value) ? value : '';
+}
+
 export function cleanText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const text = value.trim();

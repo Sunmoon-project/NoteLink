@@ -14,6 +14,9 @@ export const GOOGLE_CONFIG = 'GOOGLE_CONFIG';
 /** `createKakaoConfig`로 만든 설정을 이 이름으로 넣어 둔다(auth.module에서 연결) */
 export const KAKAO_CONFIG = 'KAKAO_CONFIG';
 
+/** `createNaverConfig`로 만든 설정을 이 이름으로 넣어 둔다(auth.module에서 연결) */
+export const NAVER_CONFIG = 'NAVER_CONFIG';
+
 /** 요청한 로그인 방식이 없을 때의 오류 코드(packages/shared ERROR_CODES.NOT_FOUND 와 같은 값) */
 export const NOT_FOUND = 'NOT_FOUND';
 
