@@ -4,14 +4,14 @@
 """
 
 from collections.abc import Callable
-from functools import cache, partial
+from functools import cache
 
 from app.clients.llm import JsonObject, Llm, LlmError, SchoolLlm, school_llm
 from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
 from app.services.quiz import generate, review, today
 from app.services.recording import job as recording_job
-from app.worker.runner import Handler, JobInputError, JobReport, Report
+from app.worker.runner import Handler, JobInputError, JobReport
 
 
 @cache
@@ -30,7 +30,7 @@ def _voyage() -> Voyage:
     return voyage()
 
 
-type _Run = Callable[[Llm, JsonObject, Report], JsonObject]
+type _Run = Callable[[Llm, JsonObject, JobReport], JsonObject]
 
 
 def _handler(run: _Run, *, background: bool = False) -> Handler:
@@ -53,9 +53,16 @@ def _handler(run: _Run, *, background: bool = False) -> Handler:
 similar_quiz = _handler(review.run)  # 오답 복습
 today_review = _handler(today.run)  # 오늘의 복습
 quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
-# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 처리는 맞춤 퀴즈와 같고, LLM 차례를 양보하는
-# 대신 시간 상한이 넉넉함(기다리는 사용자가 없음, #138)
-quiz_pregen = _handler(partial(generate.run, patient=True), background=True)
+
+
+def _pregen(llm: Llm, inp: JsonObject, report: JobReport) -> JsonObject:
+    # 기다리는 사용자가 없어 시간 상한이 넉넉함. 이어받은 채 시작하면(사용자 작업 반복) 사용자가
+    # 기다리므로 보통 상한: 넉넉한 상한으로 그 반복을 오래 막지 않게(/code-review #138)
+    return generate.run(llm, inp, report, patient=not report.awaited())
+
+
+# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 처리는 맞춤 퀴즈와 같고 LLM 차례를 양보(#138)
+quiz_pregen = _handler(_pregen, background=True)
 
 
 def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:

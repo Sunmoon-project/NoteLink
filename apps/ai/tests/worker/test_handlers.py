@@ -120,3 +120,37 @@ def test_quiz_generate_and_pregen_are_registered(
 def test_only_pregen_runs_in_the_background_lane() -> None:
     assert handlers.BACKGROUND == {"quiz_pregen"}
     assert handlers.BACKGROUND <= HANDLERS.keys()
+
+
+class StubReport:
+    def __init__(self, awaited: bool) -> None:
+        self._awaited = awaited
+
+    def __call__(self, value: int, step: str | None = None) -> None:
+        pass
+
+    def load_checkpoint(self) -> object:
+        return None
+
+    def save_checkpoint(self, value: dict[str, Any]) -> None:
+        pass
+
+    def awaited(self) -> bool:
+        return self._awaited
+
+
+@pytest.mark.parametrize(("awaited", "patient"), [(False, True), (True, False)])
+def test_a_pregen_taken_over_before_it_starts_gets_the_usual_time_limit(
+    monkeypatch: pytest.MonkeyPatch, awaited: bool, patient: bool
+) -> None:
+    # 이어받은 채 시작하면 사용자가 기다리므로 보통 상한: 사용자 작업 반복을 오래 막지 않게(#138)
+    seen: list[bool] = []
+
+    def fake_run(llm: Any, inp: Any, report: Any, *, patient: bool = False) -> dict[str, Any]:
+        seen.append(patient)
+        return {}
+
+    monkeypatch.setattr(handlers, "_llm", lambda: FakeLlm())
+    monkeypatch.setattr(handlers.generate, "run", fake_run)
+    handlers.quiz_pregen({}, StubReport(awaited))
+    assert seen == [patient]

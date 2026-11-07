@@ -81,16 +81,24 @@ class _StoreReport:
         self._store.save_checkpoint(self._job, value)
 
     def awaited(self) -> bool:
-        """한 번 참이면 계속 참. DB는 AWAITED_CHECK_SEC에 한 번만 읽고, 못 읽으면 지난 값."""
-        with self._lock:
-            if self._awaited or self._clock() - self._checked < AWAITED_CHECK_SEC:
-                return self._awaited
-            self._checked = self._clock()
-            try:
-                self._awaited = self._store.awaited(self._job)
-            except PyMongoError:
-                log.warning("작업 %s: awaited 읽기 실패, 다음에 다시", self._job.id)
+        """한 번 참이면 계속 참. DB는 AWAITED_CHECK_SEC에 한 번만 읽고, 못 읽으면 지난 값.
+
+        읽는 동안 다른 스레드는 기다리지 않고 지난 값을 씁니다: DB가 느리면 퀴즈 자리 스레드가
+        모두 멈춰 멈춤 신호 · 시간 상한을 보지 못함(/code-review #138).
+        """
+        if self._awaited or self._clock() - self._checked < AWAITED_CHECK_SEC:
             return self._awaited
+        if not self._lock.acquire(blocking=False):
+            return self._awaited  # 다른 스레드가 읽는 중
+        try:
+            if self._clock() - self._checked >= AWAITED_CHECK_SEC:
+                self._checked = self._clock()
+                self._awaited = self._store.awaited(self._job)
+        except PyMongoError:
+            log.warning("작업 %s: awaited 읽기 실패, 다음에 다시", self._job.id)
+        finally:
+            self._lock.release()
+        return self._awaited
 
 
 class _Heartbeat:

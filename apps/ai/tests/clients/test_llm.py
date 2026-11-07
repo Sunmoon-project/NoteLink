@@ -321,10 +321,10 @@ def test_a_background_call_waits_while_a_user_call_is_answered() -> None:
     # 사용자 호출이 답을 기다리는 동안(차례는 이미 가져감)에도 보내지 않음
     server = Server(reply("{}"))
     c = Clock(server, gap=2.2)
-    c.llm._inflight = 1
+    c.llm._active = 1
 
     def answered() -> None:  # 가짜 시계는 한 스레드라 다른 스레드가 답을 받은 것을 흉내
-        c.llm._inflight = 0
+        c.llm._active = 0
 
     c.on_sleep.extend([lambda: None, answered])
     c.llm.background().call("gemma", "s", "u", SCHEMA, "X")
@@ -335,10 +335,10 @@ def test_a_background_call_waits_while_a_user_call_is_answered() -> None:
 def test_a_background_call_yielding_with_no_gap_does_not_spin() -> None:
     server = Server(reply("{}"))
     c = Clock(server, gap=0)
-    c.llm._waiting = 1
+    c.llm._active = 1
 
     def user_went() -> None:
-        c.llm._waiting = 0
+        c.llm._active = 0
 
     c.on_sleep.append(user_went)
     c.llm.background().call("gemma", "s", "u", SCHEMA, "X")
@@ -354,7 +354,7 @@ def test_a_user_call_that_stops_or_fails_is_not_counted_as_running() -> None:
     c.on_sleep.append(stop.set)
     with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
         c.llm.call("gemma", "s", "u", SCHEMA, "X")
-    assert (c.llm._waiting, c.llm._inflight) == (0, 0)
+    assert c.llm._active == 0
 
     def broken(request: httpx2.Request) -> httpx2.Response:
         raise httpx2.ConnectError("끊김")
@@ -369,7 +369,7 @@ def test_a_user_call_that_stops_or_fails_is_not_counted_as_running() -> None:
     )
     with pytest.raises(LlmError):
         llm.call("gemma", "s", "u", SCHEMA, "X")
-    assert (llm._waiting, llm._inflight) == (0, 0)
+    assert llm._active == 0
 
 
 def test_user_calls_go_first_with_real_threads() -> None:
@@ -401,26 +401,43 @@ def test_user_calls_go_first_with_real_threads() -> None:
 
 
 def test_a_waiting_background_call_stops_yielding_once_the_job_is_awaited() -> None:
-    # 사용자 호출이 답을 기다리는 중이라 양보하던 미리 만들기 호출: 사용자가 이 작업을 이어받으면
-    # 다음에 깨어날 때 바로 보내고, 그때부터 사용자 작업 호출로 셈(#138)
-    server = Server(reply("{}"))
-    c = Clock(server, gap=2.2)
-    c.llm._inflight = 1  # 다른 사용자의 호출이 답을 기다리는 중(끝나지 않음)
+    # 다른 사용자 호출이 도는 중이라 양보하던 미리 만들기 호출: 사용자가 이 작업을 이어받으면
+    # 다음에 깨어날 때 바로 보내고, 보내는 동안 사용자 작업 호출로 셈(#138)
     awaited = [False]
-    seen: list[tuple[int, int]] = []
+    active: list[int] = []
+    server = Server(reply("{}"))
+    handle = server.handle
 
-    def taken_over() -> None:
-        awaited[0] = True
+    def record(request: httpx2.Request) -> httpx2.Response:
+        active.append(c.llm._active)
+        return handle(request)
 
-    c.on_sleep.append(taken_over)
-    real_sent = c.llm._sent
-
-    def sent(background: bool) -> None:
-        seen.append((c.llm._waiting, c.llm._inflight))
-        real_sent(background)
-
-    c.llm._sent = sent  # type: ignore[method-assign]
+    server.handle = record  # type: ignore[method-assign]
+    c = Clock(server, gap=2.2)
+    c.llm._active = 1  # 다른 사용자의 호출이 도는 중(끝나지 않음)
+    c.on_sleep.append(lambda: awaited.__setitem__(0, True))
     c.llm.background(lambda: awaited[0]).call("gemma", "s", "u", SCHEMA, "X")
     assert c.sent == [pytest.approx(102.2)]  # 다른 사용자 호출이 끝나기를 기다리지 않음
-    assert seen == [(0, 2)]  # 보낼 때는 사용자 호출로 셈(기다리는 수는 보낸 뒤 뺌)
-    assert (c.llm._waiting, c.llm._inflight) == (0, 1)
+    assert active == [2] and c.llm._active == 1  # 보내는 동안만 셈
+
+
+def test_a_user_call_backing_off_before_a_retry_still_holds_background_calls() -> None:
+    # 사용자 호출이 연결 오류 뒤 다시 보내기 전에 기다리는 동안(4초)도 도는 중: 미리 만들기는
+    # 그 사이 보내지 않음(/code-review #138)
+    server = Server(reply("{}"))
+    handle = server.handle
+    calls = [0]
+
+    def flaky(request: httpx2.Request) -> httpx2.Response:
+        calls[0] += 1
+        if calls[0] == 1:
+            raise httpx2.ConnectError("끊김")
+        return handle(request)
+
+    server.handle = flaky  # type: ignore[method-assign]
+    c = Clock(server, gap=0)
+    seen: list[int] = []
+    c.on_sleep.append(lambda: seen.append(c.llm._active))
+    assert c.llm.call("gemma", "s", "u", SCHEMA, "X") == {}
+    assert c.slept == [4] and seen == [1]  # 다시 보내기 전 4초 동안 도는 중
+    assert c.llm._active == 0

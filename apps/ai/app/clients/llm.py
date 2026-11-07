@@ -114,6 +114,11 @@ def repair(text: str | None) -> Any:
     return None
 
 
+def _never() -> bool:
+    """양보하지 않음(사용자 작업 호출) · 이어받지 않음(background 기본값)."""
+    return False
+
+
 class SchoolLlm:
     def __init__(
         self,
@@ -142,14 +147,14 @@ class SchoolLlm:
         # 응답을 받을 때까지 잠그면 호출이 하나씩만 나가서 맞춤 퀴즈 5문제에 7분이 걸렸음(#95)
         self._next = float("-inf")
         self._held = float("-inf")  # 429를 받아 이 시각까지는 아무도 보내지 않음
-        # 사용자 작업 호출: 차례를 기다리는 수 · 보내고 답을 기다리는 수 · 마지막으로 보내거나
-        # 답을 받은 시각. 하나라도 있으면(QUIET_GAPS 안이어도) background 호출은 보내지 않음(#138)
-        self._waiting = 0
-        self._inflight = 0
+        # 도는 사용자 작업 호출 수(차례 기다림 · 답 기다림 · 다시 보내기 전 대기 모두)와 마지막
+        # 사용자 호출이 끝난 시각. 도는 호출이 있거나 끝난 지 QUIET_GAPS 안이면 background 호출은
+        # 보내지 않음(#138)
+        self._active = 0
         self._last = float("-inf")
         self._lock = threading.Lock()
 
-    def background(self, awaited: Callable[[], bool] = lambda: False) -> "Llm":
+    def background(self, awaited: Callable[[], bool] = _never) -> "Llm":
         """같은 호출 간격 · 429 대기를 쓰되, 사용자 작업 호출이 도는 동안은 보내지 않는 연결.
 
         노트를 만들 때 미리 만드는 퀴즈(quiz_pregen)가 씁니다(#138). 분당 한도를 같이 쓰므로
@@ -171,7 +176,7 @@ class SchoolLlm:
         max_tokens: int = 1500,
         temperature: float = 0.0,
     ) -> JsonObject:
-        return self._call(model, system, user, schema, name, max_tokens, temperature, _user)
+        return self._call(model, system, user, schema, name, max_tokens, temperature, _never)
 
     def _call(
         self,
@@ -209,67 +214,61 @@ class SchoolLlm:
         else:
             self._sleep(sec)
 
-    def _turn(self, background: Callable[[], bool]) -> bool:
+    def _turn(self, yields: Callable[[], bool], mine: list[bool]) -> None:
         """보낼 수 있을 때(앞 호출을 보낸 뒤 gap_sec, 429 대기 뒤)까지 기다려 차례를 가져갑니다.
 
         차례는 실제로 보낼 때만 가져갑니다. 미리 잡아 두면 기다리다 멈춘 호출의 빈 차례만큼
         다음 작업이 밀리고(/code-review #125), 429가 온 사이에 잡아 둔 차례대로 보내면 한도 안에서
         다시 429를 받음(/code-review #95). 깨어날 때마다 멈춤 신호를 봅니다.
-        background()가 참인 호출은 사용자 작업 호출이 도는 동안(_user_busy) 보내지 않습니다
-        (#138). 깨어날 때마다 다시 보고, 거짓이 되면 그때부터 사용자 작업 호출로 셉니다.
-        돌려주는 값은 보낼 때의 background 여부(_sent에 넘김).
+        yields()가 참인 호출(background)은 사용자 작업 호출이 도는 동안(_user_busy) 보내지
+        않습니다(#138). 깨어날 때마다 다시 보고, 거짓이 되면(사용자가 이어받음) 그때부터 사용자
+        작업 호출로 셉니다(mine[0], _send가 끝날 때 뺌).
         """
-        counted = False  # _waiting에 셌는지
-        try:
-            while True:
-                check_stop()
-                bg = background()  # 잠금 밖에서(DB를 읽을 수 있음)
-                with self._lock:
-                    if not bg and not counted:
-                        self._waiting += 1
-                        counted = True
-                    now = self._clock()
-                    ready = max(self._next, self._held)
-                    if now >= ready and not (bg and self._user_busy(now)):
-                        self._next = now + self._gap
-                        if not bg:
-                            self._inflight += 1
-                            self._last = now
-                        return bg
-                    # 양보한 background 호출은 간격만큼 뒤에 다시 봄
-                    wait = ready - now if now < ready else max(self._gap, MIN_YIELD_SEC)
-                self._pause(wait)
-        finally:
-            if counted:
-                with self._lock:
-                    self._waiting -= 1
+        while True:
+            check_stop()
+            bg = yields()  # 잠금 밖에서(DB를 읽을 수 있음)
+            with self._lock:
+                if not bg and not mine[0]:
+                    self._active += 1
+                    mine[0] = True
+                now = self._clock()
+                ready = max(self._next, self._held)
+                if now >= ready and not (bg and self._user_busy(now)):
+                    self._next = now + self._gap
+                    return
+                # 양보한 background 호출은 간격만큼 뒤에 다시 봄
+                wait = ready - now if now < ready else max(self._gap, MIN_YIELD_SEC)
+            self._pause(wait)
 
     def _user_busy(self, now: float) -> bool:
-        """잠금 안에서: 사용자 작업 호출이 기다리거나 · 답을 기다리거나 · 방금 끝났음."""
-        quiet = self._last + self._gap * QUIET_GAPS
-        return bool(self._waiting or self._inflight) or now < quiet
-
-    def _sent(self, background: bool) -> None:
-        """보낸 호출의 답(또는 연결 오류)을 받음."""
-        if not background:
-            with self._lock:
-                self._inflight -= 1
-                self._last = self._clock()
+        """잠금 안에서: 사용자 작업 호출이 도는 중이거나 방금 끝났음."""
+        return self._active > 0 or now < self._last + self._gap * QUIET_GAPS
 
     def _hold(self, sec: float) -> None:
         """429: 모든 스레드가 sec초 동안 보내지 않음."""
         with self._lock:
             self._held = max(self._held, self._clock() + sec)
 
-    def _send(self, body: JsonObject, background: Callable[[], bool] = lambda: False) -> JsonObject:
+    def _send(self, body: JsonObject, yields: Callable[[], bool] = _never) -> JsonObject:
+        # 사용자 작업 호출로 셌는지. 다시 보내기 전 대기 중에도 세어 두어야 background 호출이
+        # 그 사이 차례를 가져가지 않음(/code-review #138)
+        mine = [False]
+        try:
+            return self._attempts(body, yields, mine)
+        finally:
+            if mine[0]:
+                with self._lock:
+                    self._active -= 1
+                    self._last = self._clock()
+
+    def _attempts(
+        self, body: JsonObject, yields: Callable[[], bool], mine: list[bool]
+    ) -> JsonObject:
         err = "retries"
         for attempt in range(self._retries + 1):
-            bg = self._turn(background)  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
+            self._turn(yields, mine)  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
             try:
-                try:
-                    res = self._client.post("/chat/completions", json=body)
-                finally:
-                    self._sent(bg)
+                res = self._client.post("/chat/completions", json=body)
             except httpx2.TransportError as e:
                 err = type(e).__name__
                 self._pause(4 * (attempt + 1))
@@ -291,10 +290,6 @@ class SchoolLlm:
         if err == "JSON":
             raise LlmCutError(err)
         raise LlmError(err)
-
-
-def _user() -> bool:
-    return False  # 사용자 작업 호출(양보하지 않음)
 
 
 class _Background:

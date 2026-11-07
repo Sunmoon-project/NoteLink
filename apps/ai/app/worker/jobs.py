@@ -33,7 +33,8 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
     - queued면 사용자 작업 반복도 가져갑니다(claim의 awaited_types). 다른 미리 만들기 뒤에서
       기다리지 않게
     - 처리 중이면 처리기가 AWAITED_CHECK_SEC마다 읽어(awaited) LLM 호출 차례를 양보하지
-      않습니다. 시간 상한은 처음 정한 미리 만들기 상한 그대로입니다
+      않습니다. 시간 상한은 시작할 때 정해서, 처리 중에 이어받으면 미리 만들기 상한 그대로입니다
+    - 아직 NestJS는 awaited를 쓰지 않습니다(#134 NestJS 할 일)
   - 알려진 한계(/code-review #134)
     - 사용자 작업이 끊이지 않으면 미리 해 두는 작업은 queued로 남습니다. 오래된 것은 NestJS가
       canceled로 바꿉니다(처리 중이면 처리기가 결과를 버림)
@@ -107,20 +108,23 @@ class JobStore:
     def claim(self, types: Iterable[str], awaited_types: Iterable[str] = ()) -> Job | None:
         """작업 하나를 잠그고 가져옵니다. 없으면 None.
 
-        types 중, 또는 awaited_types 중 사용자가 이어받은(awaited) 작업 중 가장 먼저 들어온 것.
+        awaited_types 중 사용자가 이어받은(awaited) 작업이 있으면 그중 가장 먼저 들어온 것(노트를
+        만들 때부터 기다린 사용자), 없으면 types 중 가장 먼저 들어온 것. 질의를 나눠 각각
+        색인({status, type, createdAt})을 그대로 탐(/code-review #138).
         """
         kinds = list(types)
         awaited = [t for t in awaited_types if t not in kinds]
         if not kinds and not awaited:
             return None
         now = self._now()
-        if kinds and (self._next_sweep is None or now >= self._next_sweep):
-            self._give_up_stalled(kinds, now)  # awaited_types는 그 종류의 반복이 정리함
+        if self._next_sweep is None or now >= self._next_sweep:
+            self._give_up_stalled(kinds + awaited, now)
             self._next_sweep = now + SWEEP_EVERY
-        which: JsonObject = {"type": {"$in": kinds}}
         if awaited:
-            which = {"$or": [which, {"type": {"$in": awaited}, "awaited": True}]}
-        return self._claim(which, now)
+            job = self._claim({"type": {"$in": awaited}, "awaited": True}, now)
+            if job is not None:
+                return job
+        return self._claim({"type": {"$in": kinds}}, now) if kinds else None
 
     def awaited(self, job: Job) -> bool:
         """처리 중인 작업을 사용자가 이어받았는지(NestJS가 awaited=true를 씀)."""
@@ -129,22 +133,15 @@ class JobStore:
     def _claim(self, which: JsonObject, now: datetime) -> Job | None:
         doc = self._col.find_one_and_update(
             {
-                "$and": [  # 종류 조건(which)에도 $or가 있을 수 있어 묶음(/code-review #138)
-                    which,
+                **which,  # 종류 조건(type · awaited). $or는 아래 상태 조건만 씀
+                "$or": [
+                    {"status": "queued", "$or": [{"retryAt": None}, {"retryAt": {"$lte": now}}]},
                     {
-                        "$or": [
-                            {
-                                "status": "queued",
-                                "$or": [{"retryAt": None}, {"retryAt": {"$lte": now}}],
-                            },
-                            {
-                                "status": "running",
-                                "lockedUntil": {"$lte": now},
-                                "attempts": {"$lt": self._max},
-                            },
-                        ]
+                        "status": "running",
+                        "lockedUntil": {"$lte": now},
+                        "attempts": {"$lt": self._max},
                     },
-                ]
+                ],
             },
             {
                 "$set": {

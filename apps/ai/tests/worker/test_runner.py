@@ -381,3 +381,14 @@ def test_the_user_lane_runs_a_taken_over_pregen(col: Any) -> None:
     s = store(col)
     assert run_once(s, {"quiz_pregen": handler}, awaited_only={"quiz_pregen"})
     assert seen == [True] and col.find_one({"_id": "j1"})["status"] == "succeeded"
+
+
+def test_report_does_not_wait_while_another_thread_reads_awaited(col: Any) -> None:
+    # DB가 느려도 다른 퀴즈 자리 스레드는 기다리지 않고 지난 값(/code-review #138)
+    now = [0.0]
+    s = AwaitedStore(col, [True])
+    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1), clock=lambda: now[0])
+    now[0] += runner.AWAITED_CHECK_SEC
+    with report._lock:  # 다른 스레드가 읽는 중
+        assert report.awaited() is False and s.reads == 0
+    assert report.awaited() is True and s.reads == 1
