@@ -202,23 +202,25 @@ const Steps = ({ n }: { n: 0 | 1 }) => (
 export function NoteTagScreen() {
   const [tag, setTag] = useState('수학');
   return (
-    <Screen
-      footer={
-        <Btn onPress={() => router.push({ pathname: '/note-new/title', params: { tag } })}>
-          다음
-        </Btn>
-      }
-    >
-      <Header title="태그 설정" right={<Steps n={0} />} />
-      <Text className="mt-4 mb-3 text-subhead font-semibold text-ink">과목을 선택해주세요</Text>
-      <View className="flex-row flex-wrap gap-2">
-        {TAGS.map((t) => (
-          <Chip key={t} on={tag === t} onPress={() => setTag(t)}>
-            {t}
-          </Chip>
-        ))}
-      </View>
-    </Screen>
+    <Canvas>
+      <Screen
+        footer={
+          <Btn onPress={() => router.push({ pathname: '/note-new/title', params: { tag } })}>
+            다음
+          </Btn>
+        }
+      >
+        <Header title="태그 설정" right={<Steps n={0} />} />
+        <Text className="mt-4 mb-3 text-subhead font-semibold text-ink">과목을 선택해주세요</Text>
+        <View className="flex-row flex-wrap gap-2">
+          {TAGS.map((t) => (
+            <Chip key={t} on={tag === t} onPress={() => setTag(t)}>
+              {t}
+            </Chip>
+          ))}
+        </View>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -236,33 +238,35 @@ export function NoteTitleScreen() {
     },
   });
   return (
-    <Screen
-      footer={
-        <Btn disabled={!title.trim()} loading={create.isPending} onPress={() => create.mutate()}>
-          완료
-        </Btn>
-      }
-    >
-      <Header title="폴더 이름" right={<Steps n={1} />} />
-      <Label>이름</Label>
-      <Input
-        value={title}
-        onChangeText={setTitle}
-        placeholder="폴더 이름을 입력해 주세요"
-        autoFocus
-      />
-      <Pressable
-        onPress={() => setTitle(`${d.getMonth() + 1}월 ${d.getDate()}일 ${tag}`)}
-        className="mt-2"
+    <Canvas>
+      <Screen
+        footer={
+          <Btn disabled={!title.trim()} loading={create.isPending} onPress={() => create.mutate()}>
+            완료
+          </Btn>
+        }
       >
-        <View className="flex-row items-center gap-1.5">
-          <Lightbulb size={ICON.xs} color={C.brand} />
-          <Text className="text-caption text-brand">
-            추천: {d.getMonth() + 1}월 {d.getDate()}일 {tag}
-          </Text>
-        </View>
-      </Pressable>
-    </Screen>
+        <Header title="폴더 이름" right={<Steps n={1} />} />
+        <Label>이름</Label>
+        <Input
+          value={title}
+          onChangeText={setTitle}
+          placeholder="폴더 이름을 입력해 주세요"
+          autoFocus
+        />
+        <Pressable
+          onPress={() => setTitle(`${d.getMonth() + 1}월 ${d.getDate()}일 ${tag}`)}
+          className="mt-2"
+        >
+          <View className="flex-row items-center gap-1.5">
+            <Lightbulb size={ICON.xs} color={C.brand} />
+            <Text className="text-caption text-brand">
+              추천: {d.getMonth() + 1}월 {d.getDate()}일 {tag}
+            </Text>
+          </View>
+        </Pressable>
+      </Screen>
+    </Canvas>
   );
 }
 
