@@ -66,7 +66,7 @@ it('주관식 문제에 답을 입력하고 서버에 제출한다', async () =>
   await fireEvent.changeText(await screen.findByPlaceholderText('답을 입력해주세요'), '광합성');
   await fireEvent.press(screen.getByText('답 제출'));
   await waitFor(() => expect(answer).toHaveBeenCalledWith(attempt._id, question._id, '광합성'));
-  expect(await screen.findByText('O 정답이에요')).toBeTruthy();
+  expect(await screen.findByText('정답이에요')).toBeTruthy();
 });
 
 it('풀이 시작 실패 후 같은 화면에서 재시도할 수 있다', async () => {
