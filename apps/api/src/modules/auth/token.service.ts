@@ -14,6 +14,8 @@ export const JWT_CONFIG = 'JWT_CONFIG';
 /** 앱이 401 + 이 코드를 받으면 refresh 토큰으로 새 토큰을 받아 온다(packages/shared ERROR_CODES.TOKEN_EXPIRED) */
 export const TOKEN_EXPIRED = 'AUTH_TOKEN_EXPIRED';
 
+const OBJECT_ID_PATTERN = /^[0-9a-f]{24}$/;
+
 export interface IssuedTokens {
   accessToken: string;
   refreshToken: string;
@@ -102,6 +104,28 @@ export class TokenService {
       expiresAt: new Date(exp * 1000),
     });
     return { tokens: { accessToken, refreshToken }, rowId: row._id };
+  }
+
+  /**
+   * access 토큰을 검증해 사용자 id를 돌려준다(요청을 인증할 때 쓴다). DB를 읽지 않고 서명 · 만료만 본다.
+   * 만료 · 위조 · 형식 오류를 구분하지 않고 모두 401 + AUTH_TOKEN_EXPIRED로 돌려준다:
+   * 앱은 이 코드를 받으면 refresh 토큰으로 갱신을 시도하고, 갱신도 안 되면 로그인 화면으로 보낸다.
+   * refresh 토큰은 다른 시크릿으로 서명하므로 access 자리에 내밀어도 통과하지 못한다.
+   */
+  async verifyAccess(accessToken: string): Promise<{ userId: string }> {
+    let payload: { sub?: unknown };
+    try {
+      payload = await this.jwt.verifyAsync<{ sub?: unknown }>(accessToken, {
+        secret: this.config.accessSecret,
+      });
+    } catch {
+      throw invalidToken();
+    }
+    // 서버가 발급한 토큰의 sub는 항상 사용자 id(ObjectId 16진수 24자리)다
+    if (typeof payload.sub !== 'string' || !OBJECT_ID_PATTERN.test(payload.sub)) {
+      throw invalidToken();
+    }
+    return { userId: payload.sub };
   }
 
   private async verifyRefresh(refreshToken: string): Promise<{ sub: string }> {

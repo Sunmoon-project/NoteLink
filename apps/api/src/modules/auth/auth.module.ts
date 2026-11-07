@@ -5,6 +5,8 @@ import { MongooseModule } from '@nestjs/mongoose';
 
 import { createGoogleConfig } from '../../config/google.config.js';
 import { createJwtConfig } from '../../config/jwt.config.js';
+import { AuthTokenController } from './auth-token.controller.js';
+import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { RefreshToken, RefreshTokenSchema } from './schemas/refresh-token.schema.js';
 import {
   SocialLoginAttempt,
@@ -32,7 +34,7 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       { name: User.name, schema: UserSchema },
     ]),
   ],
-  controllers: [SocialLoginController],
+  controllers: [AuthTokenController, SocialLoginController],
   providers: [
     // JWT_* 환경변수를 읽고 검증한다. 없거나 잘못되면 서버가 시작할 때 바로 실패한다
     {
@@ -47,12 +49,13 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       useFactory: createGoogleConfig,
     },
     TokenService,
+    JwtAuthGuard,
     GoogleOAuthClient,
     SocialUserService,
     SocialLoginService,
     SocialExchangeService,
   ],
-  // 이메일 · 소셜 로그인이 같은 토큰 발급 로직을 쓰도록 내보낸다
-  exports: [TokenService],
+  // 이메일 · 소셜 로그인이 같은 토큰 발급 로직을 쓰고, 다른 모듈이 JwtAuthGuard로 요청을 인증할 수 있도록 내보낸다
+  exports: [TokenService, JwtAuthGuard],
 })
 export class AuthModule {}
