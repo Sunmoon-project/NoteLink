@@ -310,7 +310,9 @@ describe('카카오 로그인 전체 흐름 (구글과 함께 등록된 상태, 
       const step = await loginUntilCode('kakao');
       expect(step.base).toBe(APP_REDIRECT_URI);
       expect(step.state).toBe(step.app_.state);
-      expect(kakao.fetchProfile).toHaveBeenCalledWith('kakao-code');
+      expect(kakao.fetchProfile).toHaveBeenCalledWith('kakao-code', {
+        oauthState: step.oauthState,
+      });
 
       const res = await exchange('kakao', step.code, step.app_.codeVerifier);
 

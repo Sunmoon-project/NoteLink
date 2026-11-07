@@ -295,7 +295,9 @@ describe('SocialLoginService.handleGoogleCallback', () => {
 
       await s.service.handleCallback('google', callbackOf(oauthState, 'the-google-code'));
 
-      expect(s.googleClient.fetchProfile).toHaveBeenCalledExactlyOnceWith('the-google-code');
+      expect(s.googleClient.fetchProfile).toHaveBeenCalledExactlyOnceWith('the-google-code', {
+        oauthState,
+      });
       expect(s.users.findOrCreate).toHaveBeenCalledExactlyOnceWith('google', PROFILE);
     });
 

@@ -31,6 +31,12 @@ export class SocialProviderError extends Error {
  * 소셜 로그인 제공자마다 다른 두 가지만 구현한다. 나머지 흐름(시도 저장 · 점유 · 1회용 코드 · PKCE · 토큰 발급)은
  * 제공자와 상관없이 같아서 `SocialLoginService`와 `SocialExchangeService`가 공통으로 처리한다.
  */
+/** 제공자 서버 호출에 필요한 로그인 시도 정보. 제공자마다 쓰는 값이 다르다(예: 네이버는 토큰 교환에 state가 필요하다) */
+export interface SocialProviderContext {
+  /** 우리가 제공자에 보냈다가 콜백으로 돌려받은 state(`buildAuthUrl`의 인자와 같은 값) */
+  oauthState: string;
+}
+
 export interface SocialProviderAdapter {
   readonly name: SocialProviderName;
   /** 사용자를 보낼 제공자 로그인 주소를 만든다. `oauthState`는 제공자가 콜백에 그대로 돌려주는 값이다 */
@@ -39,5 +45,5 @@ export interface SocialProviderAdapter {
    * 콜백으로 받은 코드를 사용자 정보로 바꾼다.
    * @throws SocialProviderError 코드가 잘못됐으면 `invalid_code`, 그 밖의 실패는 `unavailable`
    */
-  fetchProfile(code: string): Promise<SocialProfile>;
+  fetchProfile(code: string, context: SocialProviderContext): Promise<SocialProfile>;
 }

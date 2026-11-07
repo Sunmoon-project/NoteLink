@@ -102,7 +102,7 @@ export class SocialLoginService {
 
     try {
       // 3. 제공자에서 사용자 정보를 받고, 우리 사용자를 찾거나 만든다
-      const profile = await provider.fetchProfile(params.code);
+      const profile = await provider.fetchProfile(params.code, { oauthState: params.oauthState });
       const result = await this.users.findOrCreate(provider.name, profile);
 
       // 4. 결과를 기록하고 코드의 수명을 짧게 줄인다. 이제부터 앱이 코드를 교환할 수 있다
