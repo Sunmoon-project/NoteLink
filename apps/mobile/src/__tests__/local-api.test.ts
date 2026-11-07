@@ -462,3 +462,24 @@ it('할 일에 지정한 시각이 생성 · 조회 · 다시 켠 뒤에도 남�
   await login('a@test.com');
   expect(await pick()).toBe('19:30');
 });
+
+it('세션 포인트는 하루 2번까지만 준다 (포인트 기준)', async () => {
+  jest.useFakeTimers({
+    now: Date.parse('2026-11-04T09:00:00+09:00'),
+    doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask', 'setTimeout', 'clearTimeout'],
+  });
+  await signup('a@test.com');
+  const item = await api.study.addItem({ title: '수학', subjectName: '수학', goalMin: null });
+  const earned: number[] = [];
+  for (let h = 0; h < 3; h++) {
+    const s = await api.study.startSession({ studyItemId: item._id, mode: 'personal' });
+    jest.setSystemTime(Date.parse(`2026-11-04T${String(10 + h * 2).padStart(2, '0')}:00:00+09:00`));
+    earned.push(
+      (await api.study.endSession(s._id, { clientDurationSec: 0, endReason: 'manual' }))
+        .pointsEarned,
+    );
+    jest.setSystemTime(Date.parse(`2026-11-04T${String(11 + h * 2).padStart(2, '0')}:00:00+09:00`));
+  }
+  expect(earned).toEqual([20, 20, 0]);
+  jest.useRealTimers();
+});

@@ -58,6 +58,7 @@ import {
 } from './storage';
 import { avatarFace } from '../avatar-styles';
 import { AI_WAITING_STEP, withTopic } from '../ai';
+import { quizPoints, sessionPoints } from '../points';
 
 // 기기 저장 백엔드 — 서버(NestJS · MongoDB · Blob)가 붙기 전까지 실서버와 같은 Api를 기기 안에서 구현한다.
 // 예시 데이터는 없다. 처음엔 비어 있고, 사용자가 만든 것만 계정별 파일(notelink-user-<id>.json)에 저장된다.
@@ -341,6 +342,13 @@ function ddays(d: Db): DDay[] {
   ].sort((a, b) => (a.daysLeft < 0 ? 1 : b.daysLeft < 0 ? -1 : a.daysLeft - b.daysLeft));
 }
 
+/** 오늘(서울) 이 사유로 받은 포인트 내역 */
+const paidToday = (d: Db, reasonType: string) =>
+  d.ledger.filter(
+    (l) =>
+      l.reasonType === reasonType && l.amount > 0 && ymd(seoul(new Date(l.createdAt))) === today(),
+  );
+
 function addPoints(d: Db, amount: number, reasonType: string, description: string) {
   d.user.pointBalance += amount;
   d.ledger.unshift({
@@ -610,7 +618,10 @@ const api: Api = {
       // 시작 날짜에 공부한 시간이 없어도(바로 일시정지 등) 세션은 끝낸다
       if (s.status !== 'ended')
         Object.assign(s, { status: 'ended', endedAt: now(), endReason: p.endReason, isAbuse });
-      const pts = !isAbuse && durationSec >= STREAK_MIN_SEC ? 30 : 0;
+      const pts = sessionPoints(
+        !isAbuse && durationSec >= STREAK_MIN_SEC,
+        paidToday(d, 'session_complete').length,
+      );
       if (pts) addPoints(d, pts, 'session_complete', '순공 세션 완료');
       (d.settled ??= {})[id] = { durationSec, pointsEarned: pts };
       return ok({ durationSec, pointsEarned: pts });
@@ -1084,7 +1095,8 @@ const api: Api = {
       const d = db();
       const a = d.attempts.find((x) => x._id === attemptId);
       if (!a) return fail(ERROR_CODES.NOT_FOUND, '풀이 기록이 없어요', 404);
-      const pts = a.finishedAt ? 0 : a.correctCount * 24;
+      const quizToday = paidToday(d, 'quiz_correct').reduce((n, l) => n + l.amount, 0);
+      const pts = a.finishedAt ? 0 : quizPoints(a.correctCount, quizToday);
       if (pts) addPoints(d, pts, 'quiz_correct', `퀴즈 정답 ${a.correctCount}개`);
       Object.assign(a, { finishedAt: a.finishedAt ?? now(), pointsEarned: a.pointsEarned || pts });
       return ok({ pointsEarned: pts, balance: d.user.pointBalance });
