@@ -2,7 +2,12 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import type { GoogleConfig } from '../../../config/google.config.js';
 import { GOOGLE_CONFIG } from './social-login.constants.js';
-import { type SocialProfile, SocialProviderError } from './social-provider.js';
+import { buildGoogleAuthUrl } from './google-auth-url.js';
+import {
+  type SocialProfile,
+  type SocialProviderAdapter,
+  SocialProviderError,
+} from './social-provider.js';
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const USERINFO_ENDPOINT = 'https://openidconnect.googleapis.com/v1/userinfo';
@@ -14,8 +19,14 @@ type Json = Record<string, unknown>;
 
 /** 구글과 직접 통신해 콜백으로 받은 코드를 사용자 정보로 바꾼다 */
 @Injectable()
-export class GoogleOAuthClient {
+export class GoogleOAuthClient implements SocialProviderAdapter {
+  readonly name = 'google' as const;
+
   constructor(@Inject(GOOGLE_CONFIG) private readonly config: GoogleConfig) {}
+
+  buildAuthUrl(oauthState: string): string {
+    return buildGoogleAuthUrl(this.config, oauthState);
+  }
 
   /**
    * 코드를 access 토큰으로 교환하고, 그 토큰으로 사용자 정보를 가져온다.

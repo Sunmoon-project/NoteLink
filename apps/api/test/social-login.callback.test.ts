@@ -60,11 +60,25 @@ interface UserRow {
   lastLoginAt: Date | null;
 }
 
+/** 가짜 어댑터가 실제 구글 로그인 주소를 만들 수 있도록 서버가 읽는 것과 같은 테스트 환경값으로 설정을 만든다 */
+function googleConfig() {
+  return {
+    clientId: TEST_ENV.GOOGLE_CLIENT_ID!,
+    clientSecret: TEST_ENV.GOOGLE_CLIENT_SECRET!,
+    redirectUri: TEST_ENV.GOOGLE_REDIRECT_URI!,
+  };
+}
+
 describe('구글 로그인: 시작 → 콜백 (구글만 가짜, 나머지는 실제 코드)', () => {
   let app: INestApplication;
   const attempts: Attempt[] = [];
   const users: UserRow[] = [];
-  const google = { fetchProfile: vi.fn<(code: string) => Promise<SocialProfile>>() };
+  // 구글과 통신하는 fetchProfile만 가짜로 바꾼다. 로그인 주소 만들기(buildAuthUrl)는 실제 구글 어댑터가 그대로 쓰인다
+  const google = {
+    name: 'google' as const,
+    buildAuthUrl: (state: string) => new GoogleOAuthClient(googleConfig()).buildAuthUrl(state),
+    fetchProfile: vi.fn<(code: string) => Promise<SocialProfile>>(),
+  };
 
   beforeAll(async () => {
     stubAppEnv();
@@ -408,6 +422,36 @@ describe('구글 로그인: 시작 → 콜백 (구글만 가짜, 나머지는 �
   describe('주소와 메서드', () => {
     it('구글 콘솔에 등록한 주소(GOOGLE_REDIRECT_URI)와 경로가 같다', async () => {
       expect(new URL(TEST_ENV.GOOGLE_REDIRECT_URI!).pathname).toBe(CALLBACK);
+    });
+
+    // 알 수 없는 제공자에게 쿼리 검증 오류 문구를 노출하지 않도록, 제공자 확인이 쿼리 검증보다 먼저다
+    it.each([
+      ['쿼리가 전혀 없어도', ''],
+      ['잘못된 state여도', '?state=short'],
+      ['올바른 쿼리여도', `?state=${'a'.repeat(43)}&code=c`],
+    ])('지원하지 않는 제공자는 %s 404이다', async (_reason, query) => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/auth/social/kakao/callback${query}`)
+        .redirects(0);
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ code: 'NOT_FOUND', message: expect.any(String) });
+    });
+
+    it('지원하지 않는 제공자의 시작도 쿼리가 틀려도 404이다', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/auth/social/kakao/start?state=bad')
+        .redirects(0);
+
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('NOT_FOUND');
+    });
+
+    it('지원하지 않는 제공자의 코드 교환도 본문이 틀려도 404이다', async () => {
+      const res = await request(app.getHttpServer()).post('/api/v1/auth/social/kakao').send({});
+
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('NOT_FOUND');
     });
 
     it('POST는 받지 않는다 (콜백은 구글이 브라우저로 여는 GET이다)', async () => {

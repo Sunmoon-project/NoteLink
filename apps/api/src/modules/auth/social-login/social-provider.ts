@@ -1,3 +1,5 @@
+import type { SocialProviderName } from '../schemas/social-login-attempt.schema.js';
+
 /** 제공자(구글 · 카카오 · 네이버)가 달라도 서버가 받는 사용자 정보의 모양은 같다 */
 export interface SocialProfile {
   /** 제공자가 정해 준 고유 번호. 이메일이 바뀌어도 변하지 않아 사용자를 찾는 기준으로 쓴다 */
@@ -23,4 +25,19 @@ export class SocialProviderError extends Error {
     super(message);
     this.name = 'SocialProviderError';
   }
+}
+
+/**
+ * 소셜 로그인 제공자마다 다른 두 가지만 구현한다. 나머지 흐름(시도 저장 · 점유 · 1회용 코드 · PKCE · 토큰 발급)은
+ * 제공자와 상관없이 같아서 `SocialLoginService`와 `SocialExchangeService`가 공통으로 처리한다.
+ */
+export interface SocialProviderAdapter {
+  readonly name: SocialProviderName;
+  /** 사용자를 보낼 제공자 로그인 주소를 만든다. `oauthState`는 제공자가 콜백에 그대로 돌려주는 값이다 */
+  buildAuthUrl(oauthState: string): string;
+  /**
+   * 콜백으로 받은 코드를 사용자 정보로 바꾼다.
+   * @throws SocialProviderError 코드가 잘못됐으면 `invalid_code`, 그 밖의 실패는 `unavailable`
+   */
+  fetchProfile(code: string): Promise<SocialProfile>;
 }

@@ -16,8 +16,9 @@ import { User, UserSchema } from './schemas/user.schema.js';
 import { GoogleOAuthClient } from './social-login/google-oauth.client.js';
 import { SocialExchangeService } from './social-login/social-exchange.service.js';
 import { SocialLoginController } from './social-login/social-login.controller.js';
-import { GOOGLE_CONFIG } from './social-login/social-login.constants.js';
+import { GOOGLE_CONFIG, SOCIAL_PROVIDER_ADAPTERS } from './social-login/social-login.constants.js';
 import { SocialLoginService } from './social-login/social-login.service.js';
+import { SocialProviderRegistry } from './social-login/social-provider-registry.js';
 import { SocialUserService } from './social-login/social-user.service.js';
 import { JWT_CONFIG, TokenService } from './token.service.js';
 
@@ -51,6 +52,13 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
     TokenService,
     JwtAuthGuard,
     GoogleOAuthClient,
+    // 지원하는 소셜 로그인 제공자 목록. 카카오 · 네이버는 여기에 추가한다
+    {
+      provide: SOCIAL_PROVIDER_ADAPTERS,
+      inject: [GoogleOAuthClient],
+      useFactory: (google: GoogleOAuthClient) => [google],
+    },
+    SocialProviderRegistry,
     SocialUserService,
     SocialLoginService,
     SocialExchangeService,

@@ -15,6 +15,8 @@ import {
   SocialExchangeService,
 } from '../src/modules/auth/social-login/social-exchange.service.js';
 import { hashCode } from '../src/modules/auth/social-login/social-login.service.js';
+import { SocialProviderRegistry } from '../src/modules/auth/social-login/social-provider-registry.js';
+import type { SocialProviderAdapter } from '../src/modules/auth/social-login/social-provider.js';
 import type { TokenService } from '../src/modules/auth/token.service.js';
 
 // 앱이 만드는 값과 같은 방식: codeVerifier = hex(32바이트), code_challenge = base64url(SHA-256(verifier))
@@ -40,6 +42,16 @@ interface UserRow {
   socialAccounts: unknown[];
   deletedAt: Date | null;
   createdAt: Date;
+}
+
+/** 구글만 등록된 레지스트리. 교환 서비스는 제공자 이름만 확인하므로 어댑터의 내용은 쓰이지 않는다 */
+function googleOnlyRegistry(): SocialProviderRegistry {
+  const google = {
+    name: 'google',
+    buildAuthUrl: () => '',
+    fetchProfile: () => Promise.reject(new Error('unused')),
+  };
+  return new SocialProviderRegistry([google as SocialProviderAdapter]);
 }
 
 type DeleteFilter = { provider: string; codeHash: string; expiresAt: { $gt: Date } };
@@ -92,7 +104,12 @@ function setup() {
     ),
   } as unknown as TokenService & { issue: ReturnType<typeof vi.fn> };
 
-  const service = new SocialExchangeService(attemptsModel, usersModel, tokens);
+  const service = new SocialExchangeService(
+    googleOnlyRegistry(),
+    attemptsModel,
+    usersModel,
+    tokens,
+  );
 
   /** 콜백이 끝난 뒤의 시도(코드가 발급된 상태)를 만든다 */
   const issued = (overrides: Partial<Attempt> = {}): Attempt => {
@@ -158,7 +175,7 @@ describe('SocialExchangeService.exchange', () => {
       const s = setup();
       s.issued();
 
-      const result = await s.service.exchange(body);
+      const result = await s.service.exchange('google', body);
 
       expect(result.accessToken).toBe(`access-for-${s.userId}`);
       expect(result.refreshToken).toBe(`refresh-for-${s.userId}`);
@@ -173,7 +190,7 @@ describe('SocialExchangeService.exchange', () => {
       const s = setup();
       s.issued();
 
-      await s.service.exchange(body);
+      await s.service.exchange('google', body);
 
       expect(s.tokens.issue).toHaveBeenCalledExactlyOnceWith(String(s.userId));
     });
@@ -182,7 +199,7 @@ describe('SocialExchangeService.exchange', () => {
       const s = setup();
       s.issued();
 
-      const result = await s.service.exchange(body);
+      const result = await s.service.exchange('google', body);
 
       expect(AuthTokens.safeParse(JSON.parse(JSON.stringify(result))).success).toBe(true);
     });
@@ -191,7 +208,7 @@ describe('SocialExchangeService.exchange', () => {
       const s = setup();
       s.issued();
 
-      const json = JSON.stringify(await s.service.exchange(body));
+      const json = JSON.stringify(await s.service.exchange('google', body));
 
       expect(json).not.toContain('secret-hash-value');
       expect(json).not.toContain('secret-uid');
@@ -204,9 +221,9 @@ describe('SocialExchangeService.exchange', () => {
     it('성공하면 코드가 소모되어 같은 코드로 다시 교환할 수 없다', async () => {
       const s = setup();
       s.issued();
-      await s.service.exchange(body);
+      await s.service.exchange('google', body);
 
-      const error = await failure(s.service.exchange(body));
+      const error = await failure(s.service.exchange('google', body));
 
       expect(error).toBeInstanceOf(BadRequestException);
       expect(s.tokens.issue).toHaveBeenCalledTimes(1);
@@ -217,8 +234,8 @@ describe('SocialExchangeService.exchange', () => {
       s.issued();
 
       const results = await Promise.allSettled([
-        s.service.exchange(body),
-        s.service.exchange(body),
+        s.service.exchange('google', body),
+        s.service.exchange('google', body),
       ]);
 
       expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
@@ -230,7 +247,7 @@ describe('SocialExchangeService.exchange', () => {
       s.issued();
 
       const results = await Promise.allSettled(
-        Array.from({ length: 20 }, () => s.service.exchange(body)),
+        Array.from({ length: 20 }, () => s.service.exchange('google', body)),
       );
 
       expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
@@ -242,7 +259,7 @@ describe('SocialExchangeService.exchange', () => {
       s.issued();
 
       const error = await failure(
-        s.service.exchange({ code: randomBytes(32).toString('base64url'), codeVerifier }),
+        s.service.exchange('google', { code: randomBytes(32).toString('base64url'), codeVerifier }),
       );
 
       expect(error).toBeInstanceOf(BadRequestException);
@@ -256,7 +273,7 @@ describe('SocialExchangeService.exchange', () => {
       s.issued({ expiresAt: new Date('2026-01-01T00:02:00Z') });
       vi.setSystemTime(new Date('2026-01-01T00:02:01Z')); // 2분 + 1초 뒤
 
-      const error = await failure(s.service.exchange(body));
+      const error = await failure(s.service.exchange('google', body));
 
       expect(error).toBeInstanceOf(BadRequestException);
       expect(s.tokens.issue).not.toHaveBeenCalled();
@@ -269,14 +286,14 @@ describe('SocialExchangeService.exchange', () => {
       s.issued({ expiresAt: new Date('2026-01-01T00:02:00Z') });
       vi.setSystemTime(new Date('2026-01-01T00:01:59Z'));
 
-      await expect(s.service.exchange(body)).resolves.toHaveProperty('accessToken');
+      await expect(s.service.exchange('google', body)).resolves.toHaveProperty('accessToken');
     });
 
     it('다른 제공자의 시도에 걸린 코드는 구글 교환에서 쓸 수 없다', async () => {
       const s = setup();
       s.issued({ provider: 'kakao' });
 
-      const error = await failure(s.service.exchange(body));
+      const error = await failure(s.service.exchange('google', body));
 
       expect(error).toBeInstanceOf(BadRequestException);
     });
@@ -285,7 +302,7 @@ describe('SocialExchangeService.exchange', () => {
       const s = setup();
       s.issued({ codeHash: null, outcome: null, userId: null });
 
-      const error = await failure(s.service.exchange(body));
+      const error = await failure(s.service.exchange('google', body));
 
       expect(error).toBeInstanceOf(BadRequestException);
     });
@@ -294,7 +311,7 @@ describe('SocialExchangeService.exchange', () => {
       const s = setup();
       const attempt = s.issued();
 
-      await s.service.exchange(body);
+      await s.service.exchange('google', body);
 
       expect(attempt.codeHash).toBe(hashCode(code));
       expect(attempt.codeHash).not.toBe(code);
@@ -307,7 +324,7 @@ describe('SocialExchangeService.exchange', () => {
       s.issued();
 
       const error = await failure(
-        s.service.exchange({ code, codeVerifier: randomBytes(32).toString('hex') }),
+        s.service.exchange('google', { code, codeVerifier: randomBytes(32).toString('hex') }),
       );
 
       expect(error).toBeInstanceOf(BadRequestException);
@@ -317,10 +334,12 @@ describe('SocialExchangeService.exchange', () => {
     it('PKCE가 틀려도 코드는 소모된다 (가로챈 쪽이 verifier를 여러 번 추측할 수 없다)', async () => {
       const s = setup();
       s.issued();
-      await failure(s.service.exchange({ code, codeVerifier: randomBytes(32).toString('hex') }));
+      await failure(
+        s.service.exchange('google', { code, codeVerifier: randomBytes(32).toString('hex') }),
+      );
 
       // 이제 올바른 verifier로도 같은 코드를 쓸 수 없다
-      const error = await failure(s.service.exchange(body));
+      const error = await failure(s.service.exchange('google', body));
 
       expect(error).toBeInstanceOf(BadRequestException);
       expect(s.tokens.issue).not.toHaveBeenCalled();
@@ -332,7 +351,9 @@ describe('SocialExchangeService.exchange', () => {
       s.issued();
 
       for (let i = 0; i < 100; i++) {
-        await failure(s.service.exchange({ code, codeVerifier: randomBytes(32).toString('hex') }));
+        await failure(
+          s.service.exchange('google', { code, codeVerifier: randomBytes(32).toString('hex') }),
+        );
       }
 
       expect(s.calls.findOneAndDelete).toBe(100);
@@ -344,7 +365,9 @@ describe('SocialExchangeService.exchange', () => {
 
       const none = setup();
       responses.push(
-        ((await failure(none.service.exchange(body))) as BadRequestException).getResponse(),
+        (
+          (await failure(none.service.exchange('google', body))) as BadRequestException
+        ).getResponse(),
       );
 
       const wrong = setup();
@@ -352,7 +375,10 @@ describe('SocialExchangeService.exchange', () => {
       responses.push(
         (
           (await failure(
-            wrong.service.exchange({ code, codeVerifier: randomBytes(32).toString('hex') }),
+            wrong.service.exchange('google', {
+              code,
+              codeVerifier: randomBytes(32).toString('hex'),
+            }),
           )) as BadRequestException
         ).getResponse(),
       );
@@ -360,7 +386,9 @@ describe('SocialExchangeService.exchange', () => {
       const expired = setup();
       expired.issued({ expiresAt: new Date(Date.now() - 1000) });
       responses.push(
-        ((await failure(expired.service.exchange(body))) as BadRequestException).getResponse(),
+        (
+          (await failure(expired.service.exchange('google', body))) as BadRequestException
+        ).getResponse(),
       );
 
       expect(new Set(responses.map((r) => JSON.stringify(r))).size).toBe(1);
@@ -372,7 +400,7 @@ describe('SocialExchangeService.exchange', () => {
       const s = setup();
       s.issued({ outcome: 'account_exists', userId: null });
 
-      const error = await failure(s.service.exchange(body));
+      const error = await failure(s.service.exchange('google', body));
 
       expect(error).toBeInstanceOf(ConflictException);
       expect((error as ConflictException).getStatus()).toBe(409);
@@ -394,7 +422,7 @@ describe('SocialExchangeService.exchange', () => {
       s.issued({ outcome: 'account_exists', userId: null });
 
       const error = await failure(
-        s.service.exchange({ code, codeVerifier: randomBytes(32).toString('hex') }),
+        s.service.exchange('google', { code, codeVerifier: randomBytes(32).toString('hex') }),
       );
 
       expect(error).toBeInstanceOf(BadRequestException);
@@ -404,9 +432,9 @@ describe('SocialExchangeService.exchange', () => {
     it('코드는 소모된다 (같은 코드로 다시 안내를 받지 않는다)', async () => {
       const s = setup();
       s.issued({ outcome: 'account_exists', userId: null });
-      await failure(s.service.exchange(body));
+      await failure(s.service.exchange('google', body));
 
-      const error = await failure(s.service.exchange(body));
+      const error = await failure(s.service.exchange('google', body));
 
       expect(error).toBeInstanceOf(BadRequestException);
     });
@@ -421,7 +449,7 @@ describe('SocialExchangeService.exchange', () => {
       const s = setup();
       s.issued(overrides as Partial<Attempt>);
 
-      const error = await failure(s.service.exchange(body));
+      const error = await failure(s.service.exchange('google', body));
 
       expect(error).toBeInstanceOf(BadRequestException);
       expect(s.tokens.issue).not.toHaveBeenCalled();
@@ -432,7 +460,7 @@ describe('SocialExchangeService.exchange', () => {
       s.issued();
       s.users[0]!.deletedAt = new Date();
 
-      const error = await failure(s.service.exchange(body));
+      const error = await failure(s.service.exchange('google', body));
 
       expect(error).toBeInstanceOf(BadRequestException);
       expect(s.tokens.issue).not.toHaveBeenCalled();
@@ -442,7 +470,7 @@ describe('SocialExchangeService.exchange', () => {
       const s = setup();
       s.issued({ userId: new Types.ObjectId() });
 
-      const error = await failure(s.service.exchange(body));
+      const error = await failure(s.service.exchange('google', body));
 
       expect(error).toBeInstanceOf(BadRequestException);
       expect(s.tokens.issue).not.toHaveBeenCalled();
@@ -453,7 +481,7 @@ describe('SocialExchangeService.exchange', () => {
       s.issued();
       s.tokens.issue.mockRejectedValueOnce(new Error('DB 쓰기 실패'));
 
-      await expect(s.service.exchange(body)).rejects.toThrow('DB 쓰기 실패');
+      await expect(s.service.exchange('google', body)).rejects.toThrow('DB 쓰기 실패');
 
       expect(s.attempts).toHaveLength(0);
     });

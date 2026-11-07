@@ -1,6 +1,11 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 
@@ -12,7 +17,9 @@ import { User, type UserDocument } from '../schemas/user.schema.js';
 import { type AppUser, toAppUser } from '../to-app-user.js';
 import { TokenService } from '../token.service.js';
 import type { SocialExchangeParams } from './social-exchange-body.js';
+import { NOT_FOUND } from './social-login.constants.js';
 import { hashCode } from './social-login.service.js';
+import { SocialProviderRegistry } from './social-provider-registry.js';
 import { VALIDATION_FAILED } from './social-start-query.js';
 
 /** 이메일이 겹쳐 합치지 못할 때의 오류 코드. 앱이 다음 단계(합칠까요?)에서 이 코드로 분기한다 */
@@ -47,17 +54,22 @@ export function matchesChallenge(codeVerifier: string, codeChallenge: string): b
 @Injectable()
 export class SocialExchangeService {
   constructor(
+    private readonly providers: SocialProviderRegistry,
     @InjectModel(SocialLoginAttempt.name)
     private readonly attempts: Model<SocialLoginAttemptDocument>,
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
     private readonly tokens: TokenService,
   ) {}
 
-  async exchange(params: SocialExchangeParams): Promise<SocialLoginResult> {
+  async exchange(providerName: string, params: SocialExchangeParams): Promise<SocialLoginResult> {
+    const provider = this.providers.find(providerName);
+    if (!provider) {
+      throw new NotFoundException({ code: NOT_FOUND, message: '지원하지 않는 로그인 방식이에요' });
+    }
     // 1. 코드를 찾으면서 동시에 지운다. 코드는 한 번만 쓸 수 있고, 아래에서 PKCE가 틀려도 이미 소모되어
     //    코드를 가로챈 쪽이 codeVerifier를 여러 번 추측해 볼 수 없다. 만료된 코드는 찾지 못한다
     const attempt = await this.attempts.findOneAndDelete({
-      provider: 'google',
+      provider: provider.name,
       codeHash: hashCode(params.code),
       expiresAt: { $gt: new Date() },
     });
