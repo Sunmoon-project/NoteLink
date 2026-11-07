@@ -121,12 +121,18 @@ describe('카카오 로그인 전체 흐름 (구글과 함께 등록된 상태, 
         return Promise.resolve(row);
       },
       findOneAndUpdate: (
-        f: { provider: string; oauthState: string; codeHash: null; expiresAt: { $gt: Date } },
+        f: {
+          provider?: string;
+          oauthState: string;
+          codeHash: null;
+          expiresAt: { $gt: Date };
+        },
         update: { codeHash: string },
       ) => {
+        // 실제 Mongo처럼 조건에 있는 항목만 따진다(조건에서 provider를 빼면 어느 제공자의 시도든 찾는다)
         const row = attempts.find(
           (a) =>
-            a.provider === f.provider &&
+            (f.provider === undefined || a.provider === f.provider) &&
             a.oauthState === f.oauthState &&
             a.codeHash === null &&
             a.expiresAt > f.expiresAt.$gt,
@@ -265,6 +271,20 @@ describe('카카오 로그인 전체 흐름 (구글과 함께 등록된 상태, 
       code: params.get('code'),
       error: params.get('error'),
     };
+  }
+
+  /** 로그인을 시작만 하고(콜백 전) 제공자에 보낸 oauthState를 돌려준다 */
+  async function startOnly(provider: Provider) {
+    const started = await request(app.getHttpServer())
+      .get(path(provider).start)
+      .query({
+        redirect: APP_REDIRECT_URI,
+        state: appSide().state,
+        code_challenge: appSide().challenge,
+        code_challenge_method: 'S256',
+      })
+      .redirects(0);
+    return new URL(started.headers['location'] as string).searchParams.get('state')!;
   }
 
   const exchange = (provider: Provider, token: string | null, codeVerifier: string) =>
@@ -408,27 +428,64 @@ describe('카카오 로그인 전체 흐름 (구글과 함께 등록된 상태, 
       expect(refreshTokens).toHaveLength(0);
     });
 
-    it('카카오 시작에서 받은 state를 구글 콜백에 넣어도 로그인 시도를 찾지 못한다', async () => {
-      const started = await request(app.getHttpServer())
-        .get(path('kakao').start)
-        .query({
-          redirect: APP_REDIRECT_URI,
-          state: appSide().state,
-          code_challenge: appSide().challenge,
-          code_challenge_method: 'S256',
-        })
-        .redirects(0);
-      const kakaoState = new URL(started.headers['location'] as string).searchParams.get('state')!;
-      google.fetchProfile.mockClear();
+    // 한 제공자에서 시작한 로그인의 state를 다른 제공자의 콜백에 넣어도 시도를 찾지 못해야 한다(제공자까지 같아야 같은 시도)
+    describe.each([
+      ['kakao', 'google'],
+      ['google', 'kakao'],
+    ] as const)('%s에서 시작한 state를 %s 콜백에 넣으면', (from, to) => {
+      const fetchOf = (p: Provider) => (p === 'kakao' ? kakao : google).fetchProfile;
 
-      const res = await request(app.getHttpServer())
-        .get(path('google').callback)
-        .query({ state: kakaoState, code: 'c' })
-        .redirects(0);
+      it('400 VALIDATION_FAILED로 거부하고 앱으로 돌려보내지 않는다', async () => {
+        const oauthState = await startOnly(from);
 
-      expect(google.fetchProfile).not.toHaveBeenCalled();
-      expect(res.status).toBeLessThan(500);
-      expect(attempts.find((a) => a.oauthState === kakaoState)?.codeHash).toBeNull();
+        const res = await request(app.getHttpServer())
+          .get(path(to).callback)
+          .query({ state: oauthState, code: 'c' })
+          .redirects(0);
+
+        expect(res.status).toBe(400);
+        expect(res.body).toEqual({ code: 'VALIDATION_FAILED', message: expect.any(String) });
+        // 앱으로 가는 리다이렉트(code · error 포함)가 아니다
+        expect(res.headers['location']).toBeUndefined();
+      });
+
+      it('어느 제공자에도 묻지 않고, 시도는 점유되지 않은 채 남는다', async () => {
+        const oauthState = await startOnly(from);
+        fetchOf(from).mockClear();
+        fetchOf(to).mockClear();
+
+        await request(app.getHttpServer())
+          .get(path(to).callback)
+          .query({ state: oauthState, code: 'c' })
+          .redirects(0);
+
+        expect(fetchOf(from)).not.toHaveBeenCalled();
+        expect(fetchOf(to)).not.toHaveBeenCalled();
+        const attempt = attempts.find((a) => a.oauthState === oauthState);
+        expect(attempt).toBeDefined();
+        expect(attempt!.provider).toBe(from);
+        expect(attempt!.codeHash).toBeNull();
+      });
+
+      it('잘못된 콜백 뒤에도 원래 제공자의 콜백으로는 정상 처리된다 (거부가 시도를 망가뜨리지 않는다)', async () => {
+        const oauthState = await startOnly(from);
+        await request(app.getHttpServer())
+          .get(path(to).callback)
+          .query({ state: oauthState, code: 'c' })
+          .redirects(0);
+
+        const ok = await request(app.getHttpServer())
+          .get(path(from).callback)
+          .query({ state: oauthState, code: `${from}-code` })
+          .redirects(0);
+
+        expect(ok.status).toBe(302);
+        const location = new URL(
+          (ok.headers['location'] as string).replace('notelink://', 'http://app/'),
+        );
+        expect(location.searchParams.get('code')).toBeTruthy();
+        expect(location.searchParams.has('error')).toBe(false);
+      });
     });
   });
 
