@@ -3,6 +3,12 @@ import { SocialProviderError } from './social-provider.js';
 /** 제공자가 이 시간 안에 답하지 않으면 포기한다(로그인 화면이 멈춘 채 기다리지 않게) */
 const REQUEST_TIMEOUT_MS = 5_000;
 
+/** 오류 식별자로 인정하는 모양: 영문 · 숫자 · _ 만, 짧게 */
+const SAFE_ID = /^[A-Za-z0-9_]{1,40}$/;
+const MAX_MESSAGE_LENGTH = 120;
+/** 인가 코드 · 토큰은 영문 · 숫자 · - _ 가 30자 넘게 이어진다 */
+const LONG_TOKEN_LIKE = /[A-Za-z0-9_-]{30,}/;
+
 export type Json = Record<string, unknown>;
 
 /**
@@ -31,7 +37,11 @@ export async function requestJson(
   }
   if (!res.ok) {
     const reason = res.status === invalidCodeStatus ? 'invalid_code' : 'unavailable';
-    throw new SocialProviderError(reason, `${providerLabel} ${what} 응답 상태: ${res.status}`);
+    const detail = await readErrorDetail(res);
+    throw new SocialProviderError(
+      reason,
+      `${providerLabel} ${what} 응답 상태: ${res.status}${detail ? ` (${detail})` : ''}`,
+    );
   }
   let body: unknown;
   try {
@@ -46,6 +56,42 @@ export async function requestJson(
     );
   }
   return body as Json;
+}
+
+/**
+ * 제공자의 오류 응답에서 원인을 알 수 있는 짧은 식별자만 꺼낸다(예: KOE320, -401, invalid_grant).
+ * 코드 · 토큰이 섞일 수 있는 다른 필드(`msg`, `error_description`, 문자열 `code` 등)는 읽지 않는다.
+ */
+async function readErrorDetail(res: Response): Promise<string> {
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return '';
+  }
+  if (typeof body !== 'object' || body === null) return '';
+  const record = body as Json;
+  const parts: string[] = [];
+  const errorCode = record['error_code'];
+  const error = record['error'];
+  const code = record['code'];
+  if (typeof errorCode === 'string' && SAFE_ID.test(errorCode)) parts.push(errorCode);
+  if (typeof error === 'string' && SAFE_ID.test(error)) parts.push(error);
+  if (typeof code === 'number' && Number.isInteger(code)) parts.push(String(code));
+  const msg = safeMessage(record['msg']);
+  if (msg) parts.push(msg);
+  return parts.join(', ');
+}
+
+/**
+ * 카카오 REST 오류의 `msg`(예: "ip mismatched! callerIp=…")는 원인을 바로 알려 준다.
+ * 인가 코드 · 토큰이 섞여 들어올 수 있으므로, 짧고 긴 토큰 모양의 문자열이 없을 때만 쓴다.
+ */
+function safeMessage(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const text = value.trim();
+  if (text === '' || text.length > MAX_MESSAGE_LENGTH || LONG_TOKEN_LIKE.test(text)) return '';
+  return text;
 }
 
 export function cleanText(value: unknown): string | null {

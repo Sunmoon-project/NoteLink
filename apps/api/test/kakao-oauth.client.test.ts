@@ -385,6 +385,70 @@ describe('KakaoOAuthClient.fetchProfile', () => {
     });
   });
 
+  describe('오류 원인을 로그에서 알 수 있다 (비밀값은 제외)', () => {
+    it('카카오 오류 번호와 설명(msg)을 오류 문구에 남긴다 (IP 제한 같은 콘솔 설정 문제를 바로 알 수 있다)', async () => {
+      stubFetch({
+        ...normal(),
+        [USER_ME_URL]: () =>
+          json(
+            { msg: 'ip mismatched! callerIp=1.2.3.4. check out registered ips.', code: -401 },
+            401,
+          ),
+      });
+
+      const error = await failure(client().fetchProfile(CODE));
+
+      expect(error.message).toContain('401');
+      expect(error.message).toContain('-401');
+      expect(error.message).toContain('ip mismatched! callerIp=1.2.3.4');
+    });
+
+    it('토큰 · 코드 모양의 긴 문자열이 든 msg는 남기지 않는다', async () => {
+      stubFetch({
+        ...normal(),
+        [TOKEN_URL]: () =>
+          json(
+            {
+              error: 'invalid_grant',
+              error_code: 'KOE320',
+              msg: `code not found for code=${'a'.repeat(60)}`,
+            },
+            400,
+          ),
+      });
+
+      const error = await failure(client().fetchProfile(CODE));
+
+      expect(error.message).toContain('KOE320');
+      expect(error.message).not.toContain('aaaaaaaaaa');
+      expect(error.message).not.toContain('code not found');
+    });
+
+    it('너무 긴 msg는 남기지 않는다', async () => {
+      stubFetch({
+        ...normal(),
+        [USER_ME_URL]: () => json({ msg: 'x '.repeat(100), code: -2 }, 400),
+      });
+
+      const error = await failure(client().fetchProfile(CODE));
+
+      expect(error.message).toContain('-2');
+      expect(error.message).not.toContain('x x x');
+    });
+
+    it('문자열이 아닌 msg와 식별자 모양이 아닌 error는 무시한다', async () => {
+      stubFetch({
+        ...normal(),
+        [USER_ME_URL]: () =>
+          json({ msg: { a: 1 }, error: 'has space and (symbols)', code: 'str' }, 500),
+      });
+
+      const error = await failure(client().fetchProfile(CODE));
+
+      expect(error.message).toBe('카카오 사용자 정보 조회 응답 상태: 500');
+    });
+  });
+
   describe('오류에 비밀값을 남기지 않는다', () => {
     const secrets = [CODE, ACCESS_TOKEN, CONFIG.clientSecret];
 
