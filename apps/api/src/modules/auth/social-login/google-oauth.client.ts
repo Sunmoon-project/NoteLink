@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { GoogleConfig } from '../../../config/google.config.js';
 import { GOOGLE_CONFIG } from './social-login.constants.js';
 import { buildGoogleAuthUrl } from './google-auth-url.js';
+import { cleanEmail, cleanText, requestJson } from './provider-http.js';
 import {
   type SocialProfile,
   type SocialProviderAdapter,
@@ -11,11 +12,6 @@ import {
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const USERINFO_ENDPOINT = 'https://openidconnect.googleapis.com/v1/userinfo';
-
-/** 구글이 이 시간 안에 답하지 않으면 포기한다(로그인 화면이 멈춘 채 기다리지 않게) */
-const REQUEST_TIMEOUT_MS = 5_000;
-
-type Json = Record<string, unknown>;
 
 /** 구글과 직접 통신해 콜백으로 받은 코드를 사용자 정보로 바꾼다 */
 @Injectable()
@@ -40,7 +36,8 @@ export class GoogleOAuthClient implements SocialProviderAdapter {
   }
 
   private async exchangeCode(code: string): Promise<string> {
-    const body = await this.request(
+    const body = await requestJson(
+      '구글',
       TOKEN_ENDPOINT,
       {
         method: 'POST',
@@ -68,7 +65,8 @@ export class GoogleOAuthClient implements SocialProviderAdapter {
   }
 
   private async fetchUserInfo(accessToken: string): Promise<SocialProfile> {
-    const body = await this.request(
+    const body = await requestJson(
+      '구글',
       USERINFO_ENDPOINT,
       { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } },
       '사용자 정보 조회',
@@ -84,50 +82,4 @@ export class GoogleOAuthClient implements SocialProviderAdapter {
       name: cleanText(body['name']),
     };
   }
-
-  /** 구글에 요청을 보내고 JSON 본문을 돌려준다. 실패는 모두 SocialProviderError로 바꾼다 */
-  private async request(
-    url: string,
-    init: RequestInit,
-    what: string,
-    invalidCodeStatus?: number,
-  ): Promise<Json> {
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        ...init,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        // 비밀값이 든 요청을 다른 주소로 따라가지 않는다
-        redirect: 'error',
-      });
-    } catch {
-      throw new SocialProviderError('unavailable', `구글 ${what} 요청에 실패했습니다`);
-    }
-    if (!res.ok) {
-      const reason = res.status === invalidCodeStatus ? 'invalid_code' : 'unavailable';
-      throw new SocialProviderError(reason, `구글 ${what} 응답 상태: ${res.status}`);
-    }
-    let body: unknown;
-    try {
-      body = await res.json();
-    } catch {
-      throw new SocialProviderError('unavailable', `구글 ${what} 응답을 읽지 못했습니다`);
-    }
-    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-      throw new SocialProviderError('unavailable', `구글 ${what} 응답 형식이 올바르지 않습니다`);
-    }
-    return body as Json;
-  }
-}
-
-function cleanText(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const text = value.trim();
-  return text === '' ? null : text;
-}
-
-/** 이메일은 users.email 규칙(소문자 · 공백 제거)에 맞춘다 */
-function cleanEmail(value: unknown): string | null {
-  const email = cleanText(value);
-  return email === null ? null : email.toLowerCase();
 }
