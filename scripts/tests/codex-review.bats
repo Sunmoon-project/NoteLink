@@ -591,6 +591,8 @@ fake_gh_request() {
   done
   [ -z "$(workflow_skip_reason false false develop alice)" ]
   [ -z "$(workflow_skip_reason false false main -)" ]
+  [ -z "$(workflow_skip_reason false false design/redesign alice)" ]
+  [[ "$(workflow_skip_reason false false design/other alice)" == "design/other 브랜치로 가는 PR은"* ]]
 }
 
 @test "has_open_ci_failures: 내 해결되지 않은 CI 실패 안내가 있으면 0, 없거나 조회 실패면 1" {
