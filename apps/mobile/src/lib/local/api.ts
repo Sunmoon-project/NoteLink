@@ -1374,6 +1374,35 @@ localSocket.onClient = (ev, args) => {
   setTimeout(() => (ack ? ack(m) : localSocket.push('chat:message', m)), 0);
 };
 
+/** 테스트용: 문제가 다 만들어진 퀴즈를 넣는다 (기기 저장 모드는 퀴즈 생성을 AI 서버에 맡겨 직접 만들 수 없다) */
+export const seedQuizForTests = (answers: string[]) => {
+  const d = db();
+  const qs: QuizSet = {
+    _id: uid('qs'),
+    materialId: 'm-test',
+    folderId: 'f-test',
+    sourceSetId: null,
+    title: '테스트 퀴즈',
+    status: 'ready',
+    progress: 100,
+    questionCount: answers.length,
+    questions: answers.map((answer, i) => ({
+      _id: uid('q'),
+      order: i,
+      type: 'short_answer',
+      prompt: `문제 ${i + 1}`,
+      choices: null,
+      answer,
+      explanation: null,
+      conceptTags: [],
+    })),
+    createdAt: now(),
+  };
+  d.quizSets.unshift(qs);
+  save();
+  return qs;
+};
+
 /** 테스트용: 앱을 다시 켠 것처럼 메모리를 비우고 파일에서 다시 읽는다 */
 export const resetLocalForTests = () => {
   accounts = readAccounts();
