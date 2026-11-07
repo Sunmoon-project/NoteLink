@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Linking, Pressable, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -19,7 +19,8 @@ import {
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
-import { Btn, Canvas, Chip, Header, Input, Label, Screen, Sheet, Title, cx } from '@/components/ui';
+import { Btn, Canvas, Chip, Header, Input, Label, Screen, Tap, Title, cx } from '@/components/ui';
+import { GoogleLogo, KakaoLogo, NaverLogo } from '@/components/brand-logos';
 import { C, ICON } from '@/theme';
 
 // p.104 가입부터 홈까지 — 온보딩 · 로그인 · 약관 동의 · 프로필 설정 (스플래시는 네이티브 스플래시 화면)
@@ -90,7 +91,14 @@ function useFinishSignIn() {
   };
 }
 
-/** 카카오 · 네이버 · Google 간편 로그인 버튼. 처음 쓰는 계정은 서버가 만들고 초기 설정으로 이어진다 */
+/** 간편 로그인 버튼: 회사마다 규격 바탕색과 로고 */
+const SOCIAL = [
+  ['kakao', '카카오로 시작하기', 'bg-kakao', 'text-ink', KakaoLogo],
+  ['google', 'Google로 시작하기', 'bg-white', 'text-ink', GoogleLogo],
+  ['naver', '네이버로 시작하기', 'bg-naver', 'text-white', NaverLogo],
+] as const;
+
+/** 카카오 · Google · 네이버 간편 로그인 버튼. 처음 쓰는 계정은 서버가 만들고 초기 설정으로 이어진다 */
 function SocialButtons() {
   const done = useFinishSignIn();
   const social = useMutation({
@@ -99,24 +107,31 @@ function SocialButtons() {
     onError: (e) => toast(e instanceof Error ? e.message : '로그인하지 못했어요'),
   });
   return (
-    <View className="gap-2.5">
-      {(
-        [
-          ['kakao', 'sun', '카카오로 시작하기'],
-          ['naver', 'outline', '네이버로 시작하기'],
-          ['google', 'outline', 'Google로 시작하기'],
-        ] as const
-      ).map(([p, kind, label]) => (
-        <Btn
-          key={p}
-          kind={kind}
-          disabled={!socialLoginReady}
-          loading={social.isPending && social.variables === p}
-          onPress={() => social.mutate(p)}
-        >
-          {label}
-        </Btn>
-      ))}
+    <View className="gap-3">
+      {SOCIAL.map(([p, label, bg, fg, Logo]) => {
+        const busy = social.isPending && social.variables === p;
+        return (
+          <Tap
+            key={p}
+            accessibilityRole="button"
+            accessibilityLabel={label}
+            accessibilityState={{ disabled: !socialLoginReady || social.isPending }}
+            disabled={!socialLoginReady || social.isPending}
+            onPress={() => social.mutate(p)}
+            className={cx(
+              'h-control-lg flex-row items-center justify-center rounded-2xl px-5',
+              bg,
+              !socialLoginReady && 'opacity-50',
+            )}
+          >
+            {/* 로고는 왼쪽 끝에 두고 글자는 가운데 */}
+            <View className="absolute left-5">
+              {busy ? <ActivityIndicator size="small" color={C.sub} /> : <Logo />}
+            </View>
+            <Text className={cx('text-callout font-semibold', fg)}>{label}</Text>
+          </Tap>
+        );
+      })}
       {!socialLoginReady && (
         <Text className="text-center text-caption text-sub">
           간편 로그인은 준비 중이에요. 이메일로 시작해 주세요
@@ -126,14 +141,21 @@ function SocialButtons() {
   );
 }
 
+/** 이메일 로그인과 간편 로그인 사이 구분선 */
+const OrLine = ({ children }: { children: string }) => (
+  <View className="my-8 flex-row items-center gap-3">
+    <View className="h-px flex-1 bg-sub/20" />
+    <Text className="text-caption text-sub">{children}</Text>
+    <View className="h-px flex-1 bg-sub/20" />
+  </View>
+);
+
 export function LoginScreen() {
-  // 가입을 마치고 오면 가입한 이메일이 채워진 로그인 창을 바로 연다
+  // 가입을 마치고 오면 가입한 이메일이 채워져 있다
   const { email: joined } = useLocalSearchParams<{ email?: string }>();
-  const [emailOpen, setEmailOpen] = useState(!!joined);
   const [email, setEmail] = useState(joined ?? '');
   const [pw, setPw] = useState('');
   const done = useFinishSignIn();
-  // 토스트는 시트 뒤에 가려지므로 로그인 실패는 시트 안에 적는다
   const [loginError, setLoginError] = useState<string | null>(null);
   const byEmail = useMutation({
     mutationFn: () => api.auth.emailLogin(email.trim(), pw),
@@ -144,7 +166,7 @@ export function LoginScreen() {
   return (
     <Canvas cream>
       <Screen>
-        <View className="items-center pt-32">
+        <View className="items-center pt-16">
           <View className="h-16 w-16 items-center justify-center rounded-2xl bg-brand">
             <BookOpen size={30} color="#fff" />
           </View>
@@ -153,20 +175,9 @@ export function LoginScreen() {
             수기 대신 스마트하게, AI와 함께 배우는 노트 앱
           </Text>
         </View>
-        <View className="mt-16 gap-2.5">
-          <SocialButtons />
-          <Btn onPress={() => setEmailOpen(true)}>이메일로 로그인</Btn>
-          <Pressable
-            accessibilityRole="button"
-            className="mt-1 self-center py-2"
-            onPress={() => router.push('/(auth)/signup')}
-          >
-            <Text className="text-footnote text-sub">
-              계정이 없나요? <Text className="font-semibold text-brand">회원가입</Text>
-            </Text>
-          </Pressable>
-        </View>
-        <Sheet open={emailOpen} onClose={() => setEmailOpen(false)} title="이메일로 로그인">
+
+        {/* 1. 이메일 · 비밀번호 로그인이 맨 먼저 */}
+        <View className="mt-8">
           <Label>이메일</Label>
           <Input
             value={email}
@@ -199,7 +210,22 @@ export function LoginScreen() {
           >
             로그인
           </Btn>
-        </Sheet>
+        </View>
+
+        {/* 2. 그 아래 간편 로그인 */}
+        <OrLine>간편 로그인</OrLine>
+        <SocialButtons />
+
+        {/* 3. 맨 아래 회원가입 */}
+        <Pressable
+          accessibilityRole="button"
+          className="mt-8 self-center py-3"
+          onPress={() => router.push('/(auth)/signup')}
+        >
+          <Text className="text-footnote text-sub">
+            계정이 없나요? <Text className="font-semibold text-brand">회원가입</Text>
+          </Text>
+        </Pressable>
       </Screen>
     </Canvas>
   );
