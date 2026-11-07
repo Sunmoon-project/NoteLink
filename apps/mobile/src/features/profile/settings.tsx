@@ -147,8 +147,8 @@ export function SettingsScreen() {
             {`${tier} 플랜`}
           </Row>
         </Group>
-        {/* 쓰는 양은 따로 카드 — 남은 양이 한눈에 */}
-        <Card className="mt-4 p-6">
+        {/* 쓰는 양은 구획으로 — 눌러서 하는 일이 없어 카드로 감싸지 않는다 */}
+        <View className="mt-5 px-1">
           <View className="flex-row justify-between">
             <Text className="text-caption text-sub">저장 공간</Text>
             <Text className="text-caption text-sub">
@@ -177,7 +177,7 @@ export function SettingsScreen() {
             }
             className="mt-1.5"
           />
-        </Card>
+        </View>
 
         <Label>학습</Label>
         <Group>

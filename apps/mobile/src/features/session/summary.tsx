@@ -77,9 +77,10 @@ export function SummaryScreen() {
             </Btn>
           </View>
         )}
-        <Card className="mt-8 p-6">
+        {/* 눌러서 하는 일이 없어 카드가 아니라 구획으로 (디자인 점검: 카드는 누르는 단위만) */}
+        <View className="mt-10 px-1">
           <View className="flex-row justify-between">
-            <Text className="text-footnote font-semibold text-ink">항목별 목표</Text>
+            <Text className="text-subhead font-semibold text-ink">항목별 목표</Text>
             <Text className="text-footnote text-brand">
               {items.length}개 중 {done}개 달성
             </Text>
@@ -105,7 +106,7 @@ export function SummaryScreen() {
               />
             </View>
           ))}
-        </Card>
+        </View>
         {!!goalMin && pct !== null && (
           <>
             <View className="mt-8 flex-row justify-between px-1">
