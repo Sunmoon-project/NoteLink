@@ -25,6 +25,7 @@ import {
   Avatar,
   Badge,
   Btn,
+  Canvas,
   Card,
   Group,
   Header,
@@ -108,49 +109,47 @@ export function SettingsScreen() {
   const u = me.data;
   const s = u.settings;
   const set = (k: keyof UserSettings) => (v: boolean) => update.mutate({ [k]: v });
+  const tier = { free: 'Free', pro: 'Pro', max: 'MAX' }[u.subscription?.tier ?? 'free'];
   return (
-    <View className="flex-1">
+    <Canvas>
       <Screen scrollRef={scroll}>
         <Title>설정</Title>
-        <Label>내 계정</Label>
-        <Card className="p-4">
-          <View className="flex-row items-center gap-3">
-            <Pressable
-              accessibilityLabel="프로필 사진 변경"
-              onPress={() => openFeature('/(tabs)/profile/photo')}
-            >
-              <Avatar name={u.nickname} uri={u.avatarUrl} size={48} />
-            </Pressable>
-            <Pressable
-              className="flex-1 flex-row items-center"
-              onPress={() => router.push('/(tabs)/profile/account')}
-            >
-              <View className="flex-1">
-                <Text className="text-body font-bold text-ink">{u.nickname}</Text>
-                <Text className="text-caption text-sub">
-                  {u.school?.replace('등학교', '')} {u.grade} · {u.email}
-                </Text>
-              </View>
-              <ChevronRight size={ICON.md} color={C.sub} />
-            </Pressable>
-          </View>
-          <View className="my-4 h-px bg-line" />
+        {/* 프로필: 큰 아바타와 이름이 맨 위. 누르면 계정 정보 */}
+        <View className="flex-row items-center gap-4 py-2">
           <Pressable
-            onPress={() => router.push('/(tabs)/profile/plan')}
-            className="flex-row items-center gap-3"
+            accessibilityLabel="프로필 사진 변경"
+            onPress={() => openFeature('/(tabs)/profile/photo')}
           >
-            <View className="h-10 w-10 items-center justify-center rounded-xl bg-white">
-              <Zap size={ICON.md} color={C.sun} />
-            </View>
+            <Avatar name={u.nickname} uri={u.avatarUrl} size={64} />
+          </Pressable>
+          <Pressable
+            className="flex-1 flex-row items-center"
+            onPress={() => router.push('/(tabs)/profile/account')}
+          >
             <View className="flex-1">
-              <Text className="text-callout font-semibold text-ink">
-                {{ free: 'Free', pro: 'Pro', max: 'MAX' }[u.subscription?.tier ?? 'free']} 플랜
+              <Text className="text-title3 font-bold text-ink">{u.nickname}</Text>
+              <Text className="text-caption text-sub">
+                {u.school?.replace('등학교', '')} {u.grade} · {u.email}
               </Text>
-              <Text className="text-caption text-sub">더 많은 기능을 사용해보세요</Text>
             </View>
             <ChevronRight size={ICON.md} color={C.sub} />
           </Pressable>
-          <View className="mt-4 flex-row justify-between">
+        </View>
+
+        <Label>내 계정</Label>
+        <Group>
+          <Row
+            icon={Zap}
+            chevron
+            sub="더 많은 기능을 사용해보세요"
+            onPress={() => router.push('/(tabs)/profile/plan')}
+          >
+            {`${tier} 플랜`}
+          </Row>
+        </Group>
+        {/* 쓰는 양은 따로 카드 — 남은 양이 한눈에 */}
+        <Card className="mt-2 p-4">
+          <View className="flex-row justify-between">
             <Text className="text-caption text-sub">저장 공간</Text>
             <Text className="text-caption text-sub">
               {gb(u.usage?.storageBytes ?? 0)} / {gb(u.usage?.storageLimitBytes ?? 0)}
@@ -215,7 +214,7 @@ export function SettingsScreen() {
           <Row
             onPress={() => setSheet('lang')}
             right={
-              <View className="rounded-full border border-line bg-white px-3 py-1">
+              <View className="rounded-full bg-fill px-3 py-1">
                 <Text className="text-caption text-sub">{s.subtitleLanguage} ›</Text>
               </View>
             }
@@ -391,7 +390,7 @@ export function SettingsScreen() {
           signOut(true);
         }}
       />
-    </View>
+    </Canvas>
   );
 }
 

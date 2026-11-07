@@ -22,7 +22,7 @@ import { api, ApiError, NetworkError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { clock } from '@/lib/dates';
 import { BASE_AVATAR } from '@/lib/shop-items';
-import { Alert, Badge, Btn, Dialog, Loading, Sheet, Two, cx } from '@/components/ui';
+import { Alert, Badge, Btn, Canvas, Dialog, Loading, Sheet, Two, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
 // p.91~95 상점 · 정렬 · 상세 · 구매 · 포인트 내역 · 보관함 / p.101 구매 중 연결 끊김
@@ -217,251 +217,260 @@ export function ShopScreen() {
   if (shop.error || (items.isError && !items.data))
     return <ShopError retry={() => Promise.all([shop.retry(), items.refetch()])} />;
   return (
-    <View className="flex-1 bg-white" style={{ paddingTop: insets.top }}>
-      <ScrollView className="flex-1" contentContainerClassName="px-5 pb-8">
-        {msg ? (
-          <Toast msg={msg} onClose={() => setMsg(null)} />
-        ) : (
-          <View className="h-12 flex-row items-center justify-between pt-2">
-            <Pressable onPress={() => router.back()} className="flex-row items-center">
-              <ChevronLeft size={ICON.md} color={C.ink} />
-              <Text className="text-callout font-bold text-ink">상점</Text>
-            </Pressable>
-            <Pressable onPress={() => router.push('/shop/box')} className="flex-row items-center">
-              <Text className="text-subhead font-semibold text-ink">보관함</Text>
-              <ChevronRight size={ICON.sm} color={C.ink} />
-            </Pressable>
-          </View>
-        )}
-        <Pressable
-          onPress={() => router.push('/shop/points')}
-          className="mt-2 rounded-2xl bg-mint px-4 py-3"
-        >
-          <Text className="text-caption2 text-sub">보유 포인트</Text>
-          <Text className="text-headline font-bold text-ink">
-            {shop.pending ? '확인 중…' : `${points.toLocaleString()} P`}
-          </Text>
-        </Pressable>
-        {(shop.pending || items.isPending) && <Loading />}
-        <View className="mt-4 flex-row gap-1">
-          {(['전체', '아바타', '테마', '찜'] as const).map((t) => (
-            <Pressable
-              key={t}
-              onPress={() => setTab(t)}
-              className={cx('rounded-lg px-3 py-1.5', tab === t && 'bg-mint')}
-            >
-              <Text
-                className={cx('text-footnote', tab === t ? 'font-semibold text-brand' : 'text-sub')}
+    <Canvas>
+      <View className="flex-1" style={{ paddingTop: insets.top }}>
+        <ScrollView className="flex-1" contentContainerClassName="px-5 pb-8">
+          {msg ? (
+            <Toast msg={msg} onClose={() => setMsg(null)} />
+          ) : (
+            <View className="h-12 flex-row items-center justify-between pt-2">
+              <Pressable onPress={() => router.back()} className="flex-row items-center">
+                <ChevronLeft size={ICON.md} color={C.ink} />
+                <Text className="text-callout font-bold text-ink">상점</Text>
+              </Pressable>
+              <Pressable onPress={() => router.push('/shop/box')} className="flex-row items-center">
+                <Text className="text-subhead font-semibold text-ink">보관함</Text>
+                <ChevronRight size={ICON.sm} color={C.ink} />
+              </Pressable>
+            </View>
+          )}
+          <Pressable
+            onPress={() => router.push('/shop/points')}
+            className="mt-2 rounded-2xl bg-mint px-4 py-3"
+          >
+            <Text className="text-caption2 text-sub">보유 포인트</Text>
+            <Text className="text-headline font-bold text-ink">
+              {shop.pending ? '확인 중…' : `${points.toLocaleString()} P`}
+            </Text>
+          </Pressable>
+          {(shop.pending || items.isPending) && <Loading />}
+          <View className="mt-4 flex-row gap-1">
+            {(['전체', '아바타', '테마', '찜'] as const).map((t) => (
+              <Pressable
+                key={t}
+                onPress={() => setTab(t)}
+                className={cx('rounded-lg px-3 py-1.5', tab === t && 'bg-mint')}
               >
-                {t}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-        <Pressable
-          onPress={() => setSortOpen(true)}
-          className="mt-1 flex-row items-center gap-1 self-end"
-        >
-          <Text className="text-caption text-sub">{SORT_LABEL[sort]}</Text>
-          <ArrowUpDown size={ICON.xs} color={C.sub} />
-        </Pressable>
-        {list.length === 0 && (items.isSuccess || tab === '찜') ? (
-          <View className="mt-3 items-center rounded-2xl border border-line py-12">
-            <ShoppingBasket size={ICON.xl} color={C.brand} />
-            <Text className="mt-2 text-subhead font-semibold text-ink">
-              {tab === '찜' ? '찜한 아이템이 없어요' : '준비 중인 아이템이에요'}
-            </Text>
-            <Text className="text-caption text-sub">
-              {tab === '찜'
-                ? '♡를 눌러 마음에 드는 아이템을 모아보세요'
-                : '곧 새로운 아이템이 추가될 예정이에요'}
-            </Text>
-          </View>
-        ) : (
-          <View className="mt-2 flex-row flex-wrap justify-between gap-y-2.5">
-            {list.map((it) => (
-              <View key={it._id} className="w-[48.5%] rounded-2xl bg-cream p-2">
-                <Pressable onPress={() => setDetail(it)}>
-                  <View className="h-24 items-center justify-center rounded-xl bg-white">
-                    <ItemPreview item={it} />
-                    {it.badge && (
-                      <View
-                        className={cx(
-                          'absolute top-1.5 left-1.5 rounded-md px-1.5',
-                          it.badge === 'NEW' ? 'bg-sun' : 'bg-orange',
-                        )}
-                      >
-                        <Text className="text-caption2 font-bold text-white">{it.badge}</Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text className="mt-2 px-1 text-footnote font-semibold text-ink">{it.name}</Text>
-                  <Text className="px-1 text-caption2 text-sub">
-                    {owned.has(it._id) ? '보유중' : `${it.price.toLocaleString()} P`}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  accessibilityLabel={wished.has(it._id) ? '찜 해제' : '찜'}
-                  onPress={() => wish.mutate(it._id)}
-                  hitSlop={8}
-                  className="absolute top-3.5 right-3.5"
+                <Text
+                  className={cx(
+                    'text-footnote',
+                    tab === t ? 'font-semibold text-brand' : 'text-sub',
+                  )}
                 >
-                  <Heart
-                    size={ICON.sm}
-                    color={wished.has(it._id) ? C.danger : C.sub}
-                    fill={wished.has(it._id) ? C.danger : 'transparent'}
-                  />
-                </Pressable>
-              </View>
+                  {t}
+                </Text>
+              </Pressable>
             ))}
           </View>
-        )}
-      </ScrollView>
+          <Pressable
+            onPress={() => setSortOpen(true)}
+            className="mt-1 flex-row items-center gap-1 self-end"
+          >
+            <Text className="text-caption text-sub">{SORT_LABEL[sort]}</Text>
+            <ArrowUpDown size={ICON.xs} color={C.sub} />
+          </Pressable>
+          {list.length === 0 && (items.isSuccess || tab === '찜') ? (
+            <View className="mt-3 items-center rounded-card bg-cream py-12">
+              <ShoppingBasket size={ICON.xl} color={C.brand} />
+              <Text className="mt-2 text-subhead font-semibold text-ink">
+                {tab === '찜' ? '찜한 아이템이 없어요' : '준비 중인 아이템이에요'}
+              </Text>
+              <Text className="text-caption text-sub">
+                {tab === '찜'
+                  ? '♡를 눌러 마음에 드는 아이템을 모아보세요'
+                  : '곧 새로운 아이템이 추가될 예정이에요'}
+              </Text>
+            </View>
+          ) : (
+            <View className="mt-2 flex-row flex-wrap justify-between gap-y-2.5">
+              {list.map((it) => (
+                <View key={it._id} className="w-[48.5%] rounded-card bg-white p-2">
+                  <Pressable onPress={() => setDetail(it)}>
+                    <View className="h-24 items-center justify-center rounded-xl bg-fill">
+                      <ItemPreview item={it} />
+                      {it.badge && (
+                        <View
+                          className={cx(
+                            'absolute top-1.5 left-1.5 rounded-md px-1.5',
+                            it.badge === 'NEW' ? 'bg-sun' : 'bg-orange',
+                          )}
+                        >
+                          <Text className="text-caption2 font-bold text-white">{it.badge}</Text>
+                        </View>
+                      )}
+                    </View>
+                    <Text className="mt-2 px-1 text-footnote font-semibold text-ink">
+                      {it.name}
+                    </Text>
+                    <Text className="px-1 text-caption2 text-sub">
+                      {owned.has(it._id) ? '보유중' : `${it.price.toLocaleString()} P`}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityLabel={wished.has(it._id) ? '찜 해제' : '찜'}
+                    onPress={() => wish.mutate(it._id)}
+                    hitSlop={8}
+                    className="absolute top-3.5 right-3.5"
+                  >
+                    <Heart
+                      size={ICON.sm}
+                      color={wished.has(it._id) ? C.danger : C.sub}
+                      fill={wished.has(it._id) ? C.danger : 'transparent'}
+                    />
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          )}
+        </ScrollView>
 
-      <Sheet open={sortOpen} onClose={() => setSortOpen(false)} title="정렬">
-        <View className="gap-1.5">
-          {(Object.keys(SORT_LABEL) as Sort[]).map((o) => (
-            <Pressable
-              key={o}
-              onPress={() => {
-                setSort(o);
-                setSortOpen(false);
-              }}
-              className={cx(
-                'h-11 flex-row items-center rounded-xl px-4',
-                sort === o ? 'bg-mint' : 'bg-cream',
-              )}
-            >
-              <Text className="flex-1 text-subhead text-ink">{SORT_LABEL[o]}</Text>
-              {sort === o && <Check size={ICON.sm} color={C.brand} />}
-            </Pressable>
-          ))}
-        </View>
-      </Sheet>
-      <Sheet open={!!detail} onClose={() => setDetail(null)}>
-        {detail && (
-          <>
-            <View className="h-36 items-center justify-center rounded-2xl bg-cream">
-              <ItemPreview item={detail} large />
-            </View>
-            <View className="mt-3 flex-row items-center justify-between">
-              <Text className="text-body font-bold text-ink">{detail.name}</Text>
-              {owned.has(detail._id) ? (
-                <Badge>보유중</Badge>
-              ) : (
-                <Pressable
-                  accessibilityLabel="찜"
-                  onPress={() => wish.mutate(detail._id)}
-                  className="h-8 w-8 items-center justify-center rounded-full border border-line"
-                >
-                  <Heart
-                    size={ICON.sm}
-                    color={wished.has(detail._id) ? C.danger : C.sub}
-                    fill={wished.has(detail._id) ? C.danger : 'transparent'}
-                  />
-                </Pressable>
-              )}
-            </View>
-            {!owned.has(detail._id) && (
-              <Text className="text-footnote text-sub">{detail.price.toLocaleString()} P</Text>
-            )}
-            <Text className="mt-1 text-caption text-sub">{detail.description}</Text>
-            {owned.has(detail._id) ? (
-              <Btn
-                className="mt-4"
+        <Sheet open={sortOpen} onClose={() => setSortOpen(false)} title="정렬">
+          <View className="gap-1.5">
+            {(Object.keys(SORT_LABEL) as Sort[]).map((o) => (
+              <Pressable
+                key={o}
                 onPress={() => {
-                  setDetail(null);
-                  router.push({ pathname: '/shop/box', params: { equip: detail._id } });
+                  setSort(o);
+                  setSortOpen(false);
                 }}
+                className={cx(
+                  'h-11 flex-row items-center rounded-xl px-4',
+                  sort === o ? 'bg-mint' : 'bg-fill',
+                )}
               >
-                장착하러 가기
-              </Btn>
-            ) : (
-              <Btn className="mt-4" onPress={() => tryBuy(detail)}>
-                구매
-              </Btn>
-            )}
-          </>
-        )}
-      </Sheet>
-      <Dialog open={!!confirm} onClose={() => setConfirm(null)}>
-        {confirm && (
-          <>
-            <Text className="text-callout font-bold text-ink">{confirm.name}를 구매할까요?</Text>
-            <View className="mt-4 w-full gap-1.5 rounded-xl bg-cream p-3">
-              <View className="flex-row justify-between">
-                <Text className="text-footnote text-sub">차감 포인트</Text>
-                <Text className="text-footnote font-bold text-ink">{confirm.price} P</Text>
+                <Text className="flex-1 text-subhead text-ink">{SORT_LABEL[o]}</Text>
+                {sort === o && <Check size={ICON.sm} color={C.brand} />}
+              </Pressable>
+            ))}
+          </View>
+        </Sheet>
+        <Sheet open={!!detail} onClose={() => setDetail(null)}>
+          {detail && (
+            <>
+              <View className="h-36 items-center justify-center rounded-2xl bg-fill">
+                <ItemPreview item={detail} large />
               </View>
-              <View className="flex-row justify-between">
-                <Text className="text-footnote text-sub">구매 후 잔액</Text>
-                <Text className="text-footnote font-bold text-ink">{points - confirm.price} P</Text>
+              <View className="mt-3 flex-row items-center justify-between">
+                <Text className="text-body font-bold text-ink">{detail.name}</Text>
+                {owned.has(detail._id) ? (
+                  <Badge>보유중</Badge>
+                ) : (
+                  <Pressable
+                    accessibilityLabel="찜"
+                    onPress={() => wish.mutate(detail._id)}
+                    className="h-8 w-8 items-center justify-center rounded-full bg-fill"
+                  >
+                    <Heart
+                      size={ICON.sm}
+                      color={wished.has(detail._id) ? C.danger : C.sub}
+                      fill={wished.has(detail._id) ? C.danger : 'transparent'}
+                    />
+                  </Pressable>
+                )}
               </View>
-            </View>
-            <View className="mt-4 w-full">
-              <Two>
-                <Btn small kind="outline" onPress={() => setConfirm(null)}>
-                  취소
-                </Btn>
+              {!owned.has(detail._id) && (
+                <Text className="text-footnote text-sub">{detail.price.toLocaleString()} P</Text>
+              )}
+              <Text className="mt-1 text-caption text-sub">{detail.description}</Text>
+              {owned.has(detail._id) ? (
                 <Btn
-                  small
-                  loading={buy.isPending}
+                  className="mt-4"
                   onPress={() => {
-                    const it = confirm;
-                    setConfirm(null);
-                    const mine = qc.getQueryData<Awaited<ReturnType<typeof api.shop.myItems>>>([
-                      'my-items',
-                    ]);
-                    if (
-                      buying.current ||
-                      purchased.current.has(it._id) ||
-                      mine?.some((u) => u.itemId === it._id && u.isOwned)
-                    )
-                      return;
-                    buying.current = true;
-                    buy.mutate(it);
+                    setDetail(null);
+                    router.push({ pathname: '/shop/box', params: { equip: detail._id } });
                   }}
                 >
+                  장착하러 가기
+                </Btn>
+              ) : (
+                <Btn className="mt-4" onPress={() => tryBuy(detail)}>
                   구매
                 </Btn>
-              </Two>
-            </View>
-          </>
-        )}
-      </Dialog>
-      <Dialog open={!!poor} onClose={() => setPoor(null)}>
-        {poor && (
-          <>
-            <Frown size={ICON.xl} color={C.brand} />
-            <Text className="text-callout font-bold text-ink">포인트가 부족해요</Text>
-            <Text className="mt-1 text-caption text-sub">
-              {poor.name} 구매까지 {poor.price - points} P 더 필요해요
-            </Text>
-            <Btn
-              small
-              className="mt-4 w-full"
-              onPress={() => {
-                if (openFeature('/(tabs)/quiz', 'navigate', '/play/solve')) setPoor(null);
-              }}
-            >
-              포인트 모으러 가기
-            </Btn>
-            <Btn small kind="outline" className="mt-2 w-full" onPress={() => setPoor(null)}>
-              닫기
-            </Btn>
-          </>
-        )}
-      </Dialog>
-      <Alert
-        open={fail}
-        title="구매 결과를 확인해주세요"
-        body="응답을 받지 못해 구매 여부를 확인할 수 없어요. 다시 구매하기 전에 잔액과 보유 아이템, 내역을 확인해주세요."
-        secondary="닫기"
-        onSecondary={() => setFail(false)}
-        primary={checking ? '확인 중…' : '구매 결과 확인'}
-        onPrimary={checkPurchase}
-      />
-    </View>
+              )}
+            </>
+          )}
+        </Sheet>
+        <Dialog open={!!confirm} onClose={() => setConfirm(null)}>
+          {confirm && (
+            <>
+              <Text className="text-callout font-bold text-ink">{confirm.name}를 구매할까요?</Text>
+              <View className="mt-4 w-full gap-1.5 rounded-xl bg-fill p-3">
+                <View className="flex-row justify-between">
+                  <Text className="text-footnote text-sub">차감 포인트</Text>
+                  <Text className="text-footnote font-bold text-ink">{confirm.price} P</Text>
+                </View>
+                <View className="flex-row justify-between">
+                  <Text className="text-footnote text-sub">구매 후 잔액</Text>
+                  <Text className="text-footnote font-bold text-ink">
+                    {points - confirm.price} P
+                  </Text>
+                </View>
+              </View>
+              <View className="mt-4 w-full">
+                <Two>
+                  <Btn small kind="outline" onPress={() => setConfirm(null)}>
+                    취소
+                  </Btn>
+                  <Btn
+                    small
+                    loading={buy.isPending}
+                    onPress={() => {
+                      const it = confirm;
+                      setConfirm(null);
+                      const mine = qc.getQueryData<Awaited<ReturnType<typeof api.shop.myItems>>>([
+                        'my-items',
+                      ]);
+                      if (
+                        buying.current ||
+                        purchased.current.has(it._id) ||
+                        mine?.some((u) => u.itemId === it._id && u.isOwned)
+                      )
+                        return;
+                      buying.current = true;
+                      buy.mutate(it);
+                    }}
+                  >
+                    구매
+                  </Btn>
+                </Two>
+              </View>
+            </>
+          )}
+        </Dialog>
+        <Dialog open={!!poor} onClose={() => setPoor(null)}>
+          {poor && (
+            <>
+              <Frown size={ICON.xl} color={C.brand} />
+              <Text className="text-callout font-bold text-ink">포인트가 부족해요</Text>
+              <Text className="mt-1 text-caption text-sub">
+                {poor.name} 구매까지 {poor.price - points} P 더 필요해요
+              </Text>
+              <Btn
+                small
+                className="mt-4 w-full"
+                onPress={() => {
+                  if (openFeature('/(tabs)/quiz', 'navigate', '/play/solve')) setPoor(null);
+                }}
+              >
+                포인트 모으러 가기
+              </Btn>
+              <Btn small kind="outline" className="mt-2 w-full" onPress={() => setPoor(null)}>
+                닫기
+              </Btn>
+            </>
+          )}
+        </Dialog>
+        <Alert
+          open={fail}
+          title="구매 결과를 확인해주세요"
+          body="응답을 받지 못해 구매 여부를 확인할 수 없어요. 다시 구매하기 전에 잔액과 보유 아이템, 내역을 확인해주세요."
+          secondary="닫기"
+          onSecondary={() => setFail(false)}
+          primary={checking ? '확인 중…' : '구매 결과 확인'}
+          onPrimary={checkPurchase}
+        />
+      </View>
+    </Canvas>
   );
 }
 
