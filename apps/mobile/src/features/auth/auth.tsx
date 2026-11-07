@@ -19,7 +19,7 @@ import {
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
-import { Btn, Chip, Header, Input, Label, Screen, Sheet, Title, cx } from '@/components/ui';
+import { Btn, Canvas, Chip, Header, Input, Label, Screen, Sheet, Title, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
 // p.104 가입부터 홈까지 — 온보딩 · 로그인 · 약관 동의 · 프로필 설정 (스플래시는 네이티브 스플래시 화면)
@@ -33,35 +33,37 @@ const SLIDES = [
 export function OnboardingScreen() {
   const [i, setI] = useState(0);
   return (
-    <Screen
-      footer={
-        <Btn
-          onPress={() => (i < SLIDES.length - 1 ? setI(i + 1) : router.replace('/(auth)/login'))}
-        >
-          {i < SLIDES.length - 1 ? '다음' : '시작하기'}
-        </Btn>
-      }
-    >
-      <View className="items-center pt-28">
-        <Animated.View key={i} entering={FadeIn} className="items-center">
-          <View className="h-40 w-40 items-center justify-center rounded-full bg-mint">
-            <Sparkles size={56} color={C.brand} />
+    <Canvas cream>
+      <Screen
+        footer={
+          <Btn
+            onPress={() => (i < SLIDES.length - 1 ? setI(i + 1) : router.replace('/(auth)/login'))}
+          >
+            {i < SLIDES.length - 1 ? '다음' : '시작하기'}
+          </Btn>
+        }
+      >
+        <View className="items-center pt-28">
+          <Animated.View key={i} entering={FadeIn} className="items-center">
+            <View className="h-40 w-40 items-center justify-center rounded-full bg-white">
+              <Sparkles size={56} color={C.brand} />
+            </View>
+            <Text className="mt-10 text-center text-title3 font-bold leading-7 text-ink">
+              {SLIDES[i]?.[0]}
+            </Text>
+            <Text className="mt-2 text-center text-footnote text-sub">{SLIDES[i]?.[1]}</Text>
+          </Animated.View>
+          <View className="mt-8 flex-row gap-1.5">
+            {SLIDES.map((_, n) => (
+              <View
+                key={n}
+                className={cx('h-1.5 rounded-full', n === i ? 'w-5 bg-brand' : 'w-1.5 bg-sub/30')}
+              />
+            ))}
           </View>
-          <Text className="mt-10 text-center text-title3 font-bold leading-7 text-ink">
-            {SLIDES[i]?.[0]}
-          </Text>
-          <Text className="mt-2 text-center text-footnote text-sub">{SLIDES[i]?.[1]}</Text>
-        </Animated.View>
-        <View className="mt-8 flex-row gap-1.5">
-          {SLIDES.map((_, n) => (
-            <View
-              key={n}
-              className={cx('h-1.5 rounded-full', n === i ? 'w-5 bg-brand' : 'w-1.5 bg-cream-2')}
-            />
-          ))}
         </View>
-      </View>
-    </Screen>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -140,64 +142,66 @@ export function LoginScreen() {
     onError: (e) => setLoginError(e instanceof ApiError ? e.message : '로그인하지 못했어요'),
   });
   return (
-    <Screen>
-      <View className="items-center pt-32">
-        <View className="h-16 w-16 items-center justify-center rounded-2xl bg-brand">
-          <BookOpen size={30} color="#fff" />
-        </View>
-        <Text className="mt-4 text-title3 font-bold text-ink">노트링크</Text>
-        <Text className="mt-1 text-caption text-sub">
-          수기 대신 스마트하게, AI와 함께 배우는 노트 앱
-        </Text>
-      </View>
-      <View className="mt-16 gap-2.5">
-        <SocialButtons />
-        <Btn onPress={() => setEmailOpen(true)}>이메일로 로그인</Btn>
-        <Pressable
-          accessibilityRole="button"
-          className="mt-1 self-center py-2"
-          onPress={() => router.push('/(auth)/signup')}
-        >
-          <Text className="text-footnote text-sub">
-            계정이 없나요? <Text className="font-semibold text-brand">회원가입</Text>
+    <Canvas cream>
+      <Screen>
+        <View className="items-center pt-32">
+          <View className="h-16 w-16 items-center justify-center rounded-2xl bg-brand">
+            <BookOpen size={30} color="#fff" />
+          </View>
+          <Text className="mt-4 text-title3 font-bold text-ink">노트링크</Text>
+          <Text className="mt-1 text-caption text-sub">
+            수기 대신 스마트하게, AI와 함께 배우는 노트 앱
           </Text>
-        </Pressable>
-      </View>
-      <Sheet open={emailOpen} onClose={() => setEmailOpen(false)} title="이메일로 로그인">
-        <Label>이메일</Label>
-        <Input
-          value={email}
-          onChangeText={(v) => {
-            setEmail(v);
-            setLoginError(null);
-          }}
-          placeholder="you@example.com"
-          keyboardType="email-address"
-          autoCapitalize="none"
-          autoComplete="email"
-        />
-        <Label>비밀번호</Label>
-        <Input
-          value={pw}
-          onChangeText={(v) => {
-            setPw(v);
-            setLoginError(null);
-          }}
-          placeholder="8자 이상"
-          secureTextEntry
-          autoComplete="password"
-        />
-        {!!loginError && <Text className="mt-3 text-footnote text-danger">{loginError}</Text>}
-        <Btn
-          className="mt-6"
-          disabled={!looksLikeEmail(email) || pw.length < 8}
-          loading={byEmail.isPending}
-          onPress={() => byEmail.mutate()}
-        >
-          로그인
-        </Btn>
-      </Sheet>
-    </Screen>
+        </View>
+        <View className="mt-16 gap-2.5">
+          <SocialButtons />
+          <Btn onPress={() => setEmailOpen(true)}>이메일로 로그인</Btn>
+          <Pressable
+            accessibilityRole="button"
+            className="mt-1 self-center py-2"
+            onPress={() => router.push('/(auth)/signup')}
+          >
+            <Text className="text-footnote text-sub">
+              계정이 없나요? <Text className="font-semibold text-brand">회원가입</Text>
+            </Text>
+          </Pressable>
+        </View>
+        <Sheet open={emailOpen} onClose={() => setEmailOpen(false)} title="이메일로 로그인">
+          <Label>이메일</Label>
+          <Input
+            value={email}
+            onChangeText={(v) => {
+              setEmail(v);
+              setLoginError(null);
+            }}
+            placeholder="you@example.com"
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoComplete="email"
+          />
+          <Label>비밀번호</Label>
+          <Input
+            value={pw}
+            onChangeText={(v) => {
+              setPw(v);
+              setLoginError(null);
+            }}
+            placeholder="8자 이상"
+            secureTextEntry
+            autoComplete="password"
+          />
+          {!!loginError && <Text className="mt-3 text-footnote text-danger">{loginError}</Text>}
+          <Btn
+            className="mt-6"
+            disabled={!looksLikeEmail(email) || pw.length < 8}
+            loading={byEmail.isPending}
+            onPress={() => byEmail.mutate()}
+          >
+            로그인
+          </Btn>
+        </Sheet>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -246,68 +250,70 @@ export function SignupScreen() {
     },
   });
   return (
-    <Screen
-      footer={
-        <Btn loading={signup.isPending} onPress={submit}>
-          가입하기
-        </Btn>
-      }
-    >
-      <Header title="회원가입" sub="아이디로 쓸 이메일과 비밀번호를 정해 주세요" />
-      <Label>이메일 (아이디)</Label>
-      <Input
-        value={email}
-        onChangeText={(v) => {
-          setEmail(v);
-          setTaken(false);
-        }}
-        onBlur={touch('email')}
-        invalid={!!shown('email')}
-        placeholder="you@example.com"
-        keyboardType="email-address"
-        autoCapitalize="none"
-        autoCorrect={false}
-        autoComplete="email"
-        maxLength={254}
-      />
-      <FieldError msg={shown('email')} />
-      <Label>비밀번호</Label>
-      <Input
-        value={pw}
-        onChangeText={setPw}
-        onBlur={touch('pw')}
-        invalid={!!shown('pw')}
-        placeholder="영문 · 숫자 포함 8자 이상"
-        secureTextEntry
-        autoCapitalize="none"
-        autoComplete="new-password"
-        maxLength={64}
-      />
-      <FieldError msg={shown('pw')} />
-      <Label>비밀번호 확인</Label>
-      <Input
-        value={confirm}
-        onChangeText={setConfirm}
-        onBlur={touch('confirm')}
-        invalid={!!confirmShown}
-        placeholder="한 번 더 입력해 주세요"
-        secureTextEntry
-        autoCapitalize="none"
-        autoComplete="new-password"
-        maxLength={64}
-      />
-      <FieldError msg={confirmShown} />
-      {taken && (
-        <View className="mt-3 flex-row items-center gap-2">
-          <Text className="text-footnote text-danger">이미 가입한 이메일이에요</Text>
-          <Pressable accessibilityRole="button" onPress={toLogin}>
-            <Text className="text-footnote font-semibold text-brand">로그인하기</Text>
-          </Pressable>
-        </View>
-      )}
-      <Text className="mt-8 mb-3 text-center text-caption text-sub">또는 간편하게 시작</Text>
-      <SocialButtons />
-    </Screen>
+    <Canvas cream>
+      <Screen
+        footer={
+          <Btn loading={signup.isPending} onPress={submit}>
+            가입하기
+          </Btn>
+        }
+      >
+        <Header title="회원가입" sub="아이디로 쓸 이메일과 비밀번호를 정해 주세요" />
+        <Label>이메일 (아이디)</Label>
+        <Input
+          value={email}
+          onChangeText={(v) => {
+            setEmail(v);
+            setTaken(false);
+          }}
+          onBlur={touch('email')}
+          invalid={!!shown('email')}
+          placeholder="you@example.com"
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="email"
+          maxLength={254}
+        />
+        <FieldError msg={shown('email')} />
+        <Label>비밀번호</Label>
+        <Input
+          value={pw}
+          onChangeText={setPw}
+          onBlur={touch('pw')}
+          invalid={!!shown('pw')}
+          placeholder="영문 · 숫자 포함 8자 이상"
+          secureTextEntry
+          autoCapitalize="none"
+          autoComplete="new-password"
+          maxLength={64}
+        />
+        <FieldError msg={shown('pw')} />
+        <Label>비밀번호 확인</Label>
+        <Input
+          value={confirm}
+          onChangeText={setConfirm}
+          onBlur={touch('confirm')}
+          invalid={!!confirmShown}
+          placeholder="한 번 더 입력해 주세요"
+          secureTextEntry
+          autoCapitalize="none"
+          autoComplete="new-password"
+          maxLength={64}
+        />
+        <FieldError msg={confirmShown} />
+        {taken && (
+          <View className="mt-3 flex-row items-center gap-2">
+            <Text className="text-footnote text-danger">이미 가입한 이메일이에요</Text>
+            <Pressable accessibilityRole="button" onPress={toLogin}>
+              <Text className="text-footnote font-semibold text-brand">로그인하기</Text>
+            </Pressable>
+          </View>
+        )}
+        <Text className="mt-8 mb-3 text-center text-caption text-sub">또는 간편하게 시작</Text>
+        <SocialButtons />
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -337,49 +343,51 @@ export function TermsScreen() {
     onSuccess: () => router.replace('/(auth)/profile-setup'),
   });
   return (
-    <Screen
-      footer={
-        <Btn disabled={!required} loading={save.isPending} onPress={() => save.mutate()}>
-          동의하고 계속
-        </Btn>
-      }
-    >
-      <Title>약관 동의</Title>
-      <Pressable
-        onPress={() => setAgreed(all ? [] : TERMS.map((t) => t[0]))}
-        className="flex-row items-center gap-3 rounded-2xl bg-mint px-4 py-4"
+    <Canvas cream>
+      <Screen
+        footer={
+          <Btn disabled={!required} loading={save.isPending} onPress={() => save.mutate()}>
+            동의하고 계속
+          </Btn>
+        }
       >
-        <Box on={all} />
-        <Text className="text-callout font-bold text-ink">전체 동의</Text>
-      </Pressable>
-      <View className="mt-2 gap-2">
-        {TERMS.map(([k, l, , url]) => {
-          const on = agreed.includes(k);
-          // 동의 체크와 '보기'(전문 열기)는 따로 누른다
-          return (
-            <View key={k} className="flex-row items-center rounded-2xl border border-line pr-2">
-              <Pressable
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: on }}
-                onPress={() => setAgreed((p) => (on ? p.filter((x) => x !== k) : [...p, k]))}
-                className="flex-1 flex-row items-center gap-3 py-3.5 pl-4"
-              >
-                <Box on={on} />
-                <Text className="flex-1 text-subhead text-ink">{l}</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="link"
-                accessibilityLabel={`${l} 전문 보기`}
-                onPress={() => Linking.openURL(url)}
-                className="px-2 py-3.5"
-              >
-                <Text className="text-caption text-sub">보기</Text>
-              </Pressable>
-            </View>
-          );
-        })}
-      </View>
-    </Screen>
+        <Title>약관 동의</Title>
+        <Pressable
+          onPress={() => setAgreed(all ? [] : TERMS.map((t) => t[0]))}
+          className="flex-row items-center gap-3 rounded-2xl bg-mint px-4 py-4"
+        >
+          <Box on={all} />
+          <Text className="text-callout font-bold text-ink">전체 동의</Text>
+        </Pressable>
+        <View className="mt-2 gap-2">
+          {TERMS.map(([k, l, , url]) => {
+            const on = agreed.includes(k);
+            // 동의 체크와 '보기'(전문 열기)는 따로 누른다
+            return (
+              <View key={k} className="flex-row items-center rounded-2xl bg-white pr-2">
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: on }}
+                  onPress={() => setAgreed((p) => (on ? p.filter((x) => x !== k) : [...p, k]))}
+                  className="flex-1 flex-row items-center gap-3 py-3.5 pl-4"
+                >
+                  <Box on={on} />
+                  <Text className="flex-1 text-subhead text-ink">{l}</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="link"
+                  accessibilityLabel={`${l} 전문 보기`}
+                  onPress={() => Linking.openURL(url)}
+                  className="px-2 py-3.5"
+                >
+                  <Text className="text-caption text-sub">보기</Text>
+                </Pressable>
+              </View>
+            );
+          })}
+        </View>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -413,47 +421,49 @@ export function ProfileSetupScreen() {
     if (!nickErr && type) save.mutate();
   };
   return (
-    <Screen
-      footer={
-        <Btn loading={save.isPending} onPress={start}>
-          시작하기
-        </Btn>
-      }
-    >
-      <Title>프로필 설정</Title>
-      <Label>닉네임</Label>
-      <Input
-        value={nick}
-        onChangeText={(v) => setNick(v.slice(0, 10))}
-        placeholder="노트러버"
-        autoFocus
-        invalid={!!nickShown}
-        right={`${nick.length}/10`}
-      />
-      <FieldError msg={nickShown} />
-      <Label>학습자 유형</Label>
-      <View className="flex-row gap-2">
-        {TYPES.map(([k, l]) => (
-          <Chip key={k} on={type === k} onPress={() => setType(k)}>
-            {l}
-          </Chip>
-        ))}
-      </View>
-      <FieldError msg={tried && !type ? '학습자 유형을 골라 주세요' : null} />
-      <Label>관심 분야</Label>
-      <View className="flex-row flex-wrap gap-2">
-        {INTERESTS.map((x) => (
-          <Chip
-            key={x}
-            on={interests.includes(x)}
-            onPress={() =>
-              setInterests((p) => (p.includes(x) ? p.filter((y) => y !== x) : [...p, x]))
-            }
-          >
-            {x}
-          </Chip>
-        ))}
-      </View>
-    </Screen>
+    <Canvas cream>
+      <Screen
+        footer={
+          <Btn loading={save.isPending} onPress={start}>
+            시작하기
+          </Btn>
+        }
+      >
+        <Title>프로필 설정</Title>
+        <Label>닉네임</Label>
+        <Input
+          value={nick}
+          onChangeText={(v) => setNick(v.slice(0, 10))}
+          placeholder="노트러버"
+          autoFocus
+          invalid={!!nickShown}
+          right={`${nick.length}/10`}
+        />
+        <FieldError msg={nickShown} />
+        <Label>학습자 유형</Label>
+        <View className="flex-row gap-2">
+          {TYPES.map(([k, l]) => (
+            <Chip key={k} on={type === k} onPress={() => setType(k)}>
+              {l}
+            </Chip>
+          ))}
+        </View>
+        <FieldError msg={tried && !type ? '학습자 유형을 골라 주세요' : null} />
+        <Label>관심 분야</Label>
+        <View className="flex-row flex-wrap gap-2">
+          {INTERESTS.map((x) => (
+            <Chip
+              key={x}
+              on={interests.includes(x)}
+              onPress={() =>
+                setInterests((p) => (p.includes(x) ? p.filter((y) => y !== x) : [...p, x]))
+              }
+            >
+              {x}
+            </Chip>
+          ))}
+        </View>
+      </Screen>
+    </Canvas>
   );
 }

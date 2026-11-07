@@ -66,9 +66,10 @@ const FILL: Record<Surface, string> = { canvas: 'bg-white', white: 'bg-fill', le
  * 개편된 화면의 바깥 틀: 회색 바탕 + 그 안 전부(Screen 밖에 붙는 Sheet · Dialog 포함)를 캔버스 면으로.
  * 시트를 Screen 밖에 두는 화면은 Screen canvas 대신 이것으로 감싼다
  */
-export const Canvas = ({ children }: { children: ReactNode }) => (
+export const Canvas = ({ children, cream }: { children: ReactNode; cream?: boolean }) => (
   <SurfaceCtx.Provider value="canvas">
-    <View className="flex-1 bg-canvas">{children}</View>
+    {/* cream: 온보딩 · 로그인처럼 브랜드 인상을 남기는 화면 (그 위 칸 · 버튼은 캔버스와 같은 흰색) */}
+    <View className={cx('flex-1', cream ? 'bg-cream' : 'bg-canvas')}>{children}</View>
   </SurfaceCtx.Provider>
 );
 /** 흰 면(카드 · 시트) 안의 내용 — 칩 · 입력이 채움 바탕이 된다. 개편 전 화면에서는 그대로 둔다 */
@@ -298,7 +299,16 @@ export function Screen({
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      className={cx('flex-1', dark ? 'bg-black' : onCanvas ? 'bg-canvas' : 'bg-white')}
+      className={cx(
+        'flex-1',
+        dark
+          ? 'bg-black'
+          : canvas
+            ? 'bg-canvas'
+            : outer === 'canvas'
+              ? 'bg-transparent' // Canvas가 바탕을 칠한다
+              : 'bg-white',
+      )}
       style={{ paddingTop: top ? insets.top : 0 }}
     >
       <SurfaceCtx.Provider value={onCanvas ? 'canvas' : 'legacy'}>
