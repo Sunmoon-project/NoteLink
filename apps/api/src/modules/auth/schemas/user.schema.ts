@@ -129,3 +129,11 @@ UserSchema.index(
   { email: 1 },
   { unique: true, partialFilterExpression: { email: { $type: 'string' } } },
 );
+
+// 같은 소셜 계정(제공자 + 제공자 고유 번호)은 한 사용자에게만 연결된다.
+// 소셜 계정이 없는 사용자(빈 배열)는 인덱스에서 빼야 서로 겹쳐도 되므로 문자열인 문서만 검사한다.
+// 동시에 같은 구글 계정으로 두 번 로그인해도 사용자가 둘 만들어지지 않게 하는 마지막 방어선이다.
+UserSchema.index(
+  { 'socialAccounts.provider': 1, 'socialAccounts.providerUid': 1 },
+  { unique: true, partialFilterExpression: { 'socialAccounts.providerUid': { $type: 'string' } } },
+);

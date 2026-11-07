@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
+import { createGoogleConfig } from '../src/config/google.config.js';
 import { createJwtConfig } from '../src/config/jwt.config.js';
 import { type ConfigReader, createMongooseOptions } from '../src/config/mongo.config.js';
 
@@ -25,6 +26,10 @@ describe('.env.example', () => {
 
   it('그대로 복사해 쓰면 JWT 설정 검증을 통과한다', () => {
     expect(() => createJwtConfig(readEnvExample())).not.toThrow();
+  });
+
+  it('그대로 복사해 쓰면 구글 로그인 설정 검증을 통과한다', () => {
+    expect(() => createGoogleConfig(readEnvExample())).not.toThrow();
   });
 
   it('PORT 예시가 있다', () => {
