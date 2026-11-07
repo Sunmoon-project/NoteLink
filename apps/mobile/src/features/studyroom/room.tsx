@@ -740,9 +740,12 @@ export function RoomScreen() {
               />
             </View>
             <View className="mt-3 flex-row items-center rounded-2xl bg-white px-4 py-3">
-              <Pressable onPress={() => setChat(true)} className="flex-1">
-                <Text numberOfLines={1} className="text-caption text-sub">
-                  💬{' '}
+              <Pressable
+                onPress={() => setChat(true)}
+                className="flex-1 flex-row items-center gap-2"
+              >
+                <MessageCircle size={ICON.sm} color={C.sub} />
+                <Text numberOfLines={1} className="flex-1 text-caption text-sub">
                   {last
                     ? `${last.senderId === myId ? '나' : (last.senderNickname ?? '멤버')}: ${last.text ?? '공유 자료'}`
                     : '채팅을 시작해 보세요'}

@@ -20,6 +20,7 @@ import {
   Brain,
   CircleCheck,
   FileText,
+  GraduationCap,
   Layers,
   PartyPopper,
   PenLine,
@@ -72,13 +73,14 @@ function Shake({ on, children }: { on: boolean; children: React.ReactNode }) {
   return <Animated.View style={style}>{children}</Animated.View>;
 }
 
+/** AI 튜터 — 이모지 대신 학사모 아이콘 (이모지 아이콘 금지, DESIGN.md) */
 const Tutor = ({ size = 76 }: { size?: number }) => (
   <View
     accessibilityLabel="AI 튜터"
-    className="items-center justify-center self-center rounded-full bg-peach"
+    className="items-center justify-center self-center rounded-full bg-mint"
     style={{ width: size, height: size }}
   >
-    <Text style={{ fontSize: size * 0.58 }}>🧑🏻</Text>
+    <GraduationCap size={Math.round(size * 0.46)} color={C.brand} strokeWidth={1.8} />
   </View>
 );
 

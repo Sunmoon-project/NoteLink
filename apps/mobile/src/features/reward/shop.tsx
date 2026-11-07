@@ -11,6 +11,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  CircleCheck,
   Frown,
   Heart,
   Package,
@@ -44,7 +45,8 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
       entering={FadeInUp}
       className="mt-2 flex-row items-center rounded-xl bg-ink px-4 py-2.5"
     >
-      <Text className="flex-1 text-footnote font-semibold text-white">{msg}</Text>
+      <CircleCheck size={ICON.sm} color="#fff" />
+      <Text className="ml-2 flex-1 text-footnote font-semibold text-white">{msg}</Text>
       <Pressable accessibilityLabel="닫기" onPress={onClose} hitSlop={10}>
         <X size={ICON.sm} color="#fff" />
       </Pressable>
@@ -156,7 +158,7 @@ export function ShopScreen() {
       qc.invalidateQueries({ queryKey: ['my-items'] });
       // 포인트 내역을 열어 둔 적이 있어도 새 구매 내역이 바로 보이게
       qc.invalidateQueries({ queryKey: ['ledger'] });
-      setMsg(`🎉 구매 완료 · ${it.name}`);
+      setMsg(`구매 완료 · ${it.name}`);
     },
     onSettled: () => {
       buying.current = false;
@@ -570,7 +572,7 @@ export function BoxScreen() {
     onSuccess: (_, it) => {
       qc.invalidateQueries({ queryKey: ['my-items'] });
       setPick(null);
-      setMsg(`✓ 장착 완료 · ${it.name}`);
+      setMsg(`장착 완료 · ${it.name}`);
     },
   });
   if (shop.error || (all.isError && !all.data))

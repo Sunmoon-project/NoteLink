@@ -46,6 +46,7 @@ import {
   Search,
   Sheet,
   Tap,
+  Title,
   cx,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
@@ -127,7 +128,8 @@ export function NoteListScreen() {
     <Canvas>
       <Screen>
         <NetBanner />
-        <View className="pt-4">
+        <Title>노트</Title>
+        <View>
           <Search value={q} onChangeText={setQ} placeholder="학습 폴더 검색" />
         </View>
         {folders.isError && !folders.data && (
