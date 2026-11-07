@@ -296,7 +296,7 @@ export function Player({
                 p.seek(m);
                 setSheet(false);
               }}
-              className="flex-row items-center gap-3 rounded-xl border border-line px-4 py-3"
+              className="flex-row items-center gap-3 rounded-xl bg-fill px-4 py-3"
             >
               <View className="h-3 w-3 rounded-sm bg-brand" />
               <Text className="flex-1 tabular-nums text-footnote text-ink">{hhmmss(m)}</Text>
