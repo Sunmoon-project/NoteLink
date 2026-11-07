@@ -1,4 +1,4 @@
-# develop · main으로 가는 PR과 develop · main에 들어온 커밋마다 lint · typecheck · build · test를 돌립니다.
+# develop · main · design/redesign(디자인 개편 통합 브랜치)으로 가는 PR과 develop · main에 들어온 커밋마다 lint · typecheck · build · test를 돌립니다.
 # (기능 브랜치의 push에는 돌리지 않습니다. PR을 열면 PR에서 돌고, 커밋을 더 올리면 다시 돕니다.
 #  push와 PR 양쪽에서 같은 커밋을 두 번 검사하던 것을 없앴습니다.)
 # scripts/ 의 셸 스크립트는 bats 테스트(scripts/tests)로 검사합니다.
@@ -10,7 +10,7 @@ on:
   push:
     branches: [develop, main]
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, design/redesign]
 
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
