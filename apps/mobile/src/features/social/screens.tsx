@@ -1,3 +1,4 @@
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useRef, useState } from 'react';
 import { FlatList, Pressable, View } from 'react-native';
 import { Text, TextInput } from '@/components/text';
@@ -11,13 +12,14 @@ import { timeAgo } from '@/lib/dates';
 import { useSocket } from '@/hooks';
 import { toast } from '@/stores/toast';
 import {
-  Canvas,
   Avatar,
   Btn,
+  Canvas,
   Card,
   Dialog,
   Group,
   Header,
+  LIST_LAYOUT,
   Row,
   Screen,
   Search,
@@ -26,7 +28,7 @@ import {
   cx,
 } from '@/components/ui';
 import { useAuth } from '@/stores/auth';
-import { C, ICON } from '@/theme';
+import { C, ICON, MOTION } from '@/theme';
 import { StatusText } from './drawer';
 
 // p.53~55 친구 추가 · 요청 · 채팅 · 삭제
@@ -142,40 +144,47 @@ export function RequestsScreen() {
         )}
         <View className="gap-5">
           {reqs.data?.map((r) => (
-            <View key={r._id}>
-              <View className="flex-row items-center gap-3">
-                <Avatar name={r.requester.nickname} size={36} tone="mint" />
-                <View>
-                  <Text className="text-callout font-semibold text-ink">
-                    {r.requester.nickname}
-                  </Text>
-                  <Text className="text-caption text-sub">
-                    {r.requester.handle} · {timeAgo(r.requestedAt)} 요청
-                  </Text>
+            <Animated.View
+              key={r._id}
+              layout={LIST_LAYOUT}
+              entering={FadeIn.duration(MOTION.enter)}
+              exiting={FadeOut.duration(MOTION.exit)}
+            >
+              <View key={r._id}>
+                <View className="flex-row items-center gap-3">
+                  <Avatar name={r.requester.nickname} size={36} tone="mint" />
+                  <View>
+                    <Text className="text-callout font-semibold text-ink">
+                      {r.requester.nickname}
+                    </Text>
+                    <Text className="text-caption text-sub">
+                      {r.requester.handle} · {timeAgo(r.requestedAt)} 요청
+                    </Text>
+                  </View>
+                </View>
+                <View className="mt-2">
+                  <Two>
+                    <Btn
+                      small
+                      onPress={() =>
+                        respond.mutate({ id: r._id, ok: true, name: r.requester.nickname })
+                      }
+                    >
+                      수락
+                    </Btn>
+                    <Btn
+                      small
+                      kind="outline"
+                      onPress={() =>
+                        respond.mutate({ id: r._id, ok: false, name: r.requester.nickname })
+                      }
+                    >
+                      거절
+                    </Btn>
+                  </Two>
                 </View>
               </View>
-              <View className="mt-2">
-                <Two>
-                  <Btn
-                    small
-                    onPress={() =>
-                      respond.mutate({ id: r._id, ok: true, name: r.requester.nickname })
-                    }
-                  >
-                    수락
-                  </Btn>
-                  <Btn
-                    small
-                    kind="outline"
-                    onPress={() =>
-                      respond.mutate({ id: r._id, ok: false, name: r.requester.nickname })
-                    }
-                  >
-                    거절
-                  </Btn>
-                </Two>
-              </View>
-            </View>
+            </Animated.View>
           ))}
         </View>
       </Screen>

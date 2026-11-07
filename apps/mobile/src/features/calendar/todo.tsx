@@ -1,3 +1,4 @@
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
@@ -7,8 +8,8 @@ import type { Todo, TodoType } from '@notelink/shared';
 import { api } from '@/lib/api';
 import { md, today } from '@/lib/dates';
 import { toast } from '@/stores/toast';
-import { Badge, Btn, Chip, Dashed, Input, Label, Sheet, cx } from '@/components/ui';
-import { ICON, C } from '@/theme';
+import { Badge, Btn, Chip, Dashed, Input, LIST_LAYOUT, Label, Sheet, cx } from '@/components/ui';
+import { C, ICON, MOTION } from '@/theme';
 import { LoadError } from '../progress/load-error';
 
 // p.50 #11 날짜별 할 일 / p.51 #12 할 일 추가
@@ -62,29 +63,36 @@ export function TodoSheet({
           <Text className="py-6 text-center text-footnote text-sub">이 날은 할 일이 없어요</Text>
         )}
         {list.map((t) => (
-          <Pressable
+          <Animated.View
             key={t._id}
-            disabled={toggle.isPending}
-            onPress={() => toggle.mutate(t)}
-            className="flex-row items-center gap-3 rounded-2xl bg-fill px-4 py-3"
+            layout={LIST_LAYOUT}
+            entering={FadeIn.duration(MOTION.enter)}
+            exiting={FadeOut.duration(MOTION.exit)}
           >
-            <View
-              className={cx(
-                'h-6 w-6 items-center justify-center rounded-md border',
-                t.done ? 'border-brand bg-brand' : 'border-cream-2',
-              )}
+            <Pressable
+              key={t._id}
+              disabled={toggle.isPending}
+              onPress={() => toggle.mutate(t)}
+              className="flex-row items-center gap-3 rounded-2xl bg-fill px-4 py-3"
             >
-              {t.done && <Check size={ICON.xs} color="#fff" />}
-            </View>
-            <View>
-              <Text className={cx('text-subhead', t.done ? 'text-sub line-through' : 'text-ink')}>
-                {t.content}
-              </Text>
-              <Text className="text-caption2 text-sub">
-                {t.subjectName ?? '일반'} · {slotLabel(t)}
-              </Text>
-            </View>
-          </Pressable>
+              <View
+                className={cx(
+                  'h-6 w-6 items-center justify-center rounded-md border',
+                  t.done ? 'border-brand bg-brand' : 'border-cream-2',
+                )}
+              >
+                {t.done && <Check size={ICON.xs} color="#fff" />}
+              </View>
+              <View>
+                <Text className={cx('text-subhead', t.done ? 'text-sub line-through' : 'text-ink')}>
+                  {t.content}
+                </Text>
+                <Text className="text-caption2 text-sub">
+                  {t.subjectName ?? '일반'} · {slotLabel(t)}
+                </Text>
+              </View>
+            </Pressable>
+          </Animated.View>
         ))}
       </View>
       <Dashed onPress={onAdd}>+ 할 일 추가</Dashed>
