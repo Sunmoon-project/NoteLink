@@ -315,8 +315,9 @@ export function Screen({
         <View className="flex-1">{body}</View>
         {footer && (
           <View
-            className="px-6 pt-3"
-            style={{ paddingBottom: inTabs ? 12 : Math.max(insets.bottom, 16) }}
+            className="px-6 pt-4"
+            // 아래 버튼이 탭 막대 · 홈 표시줄에 붙어 보이지 않게 (탭 안 20, 밖은 홈 표시줄 + 12)
+            style={{ paddingBottom: inTabs ? 20 : Math.max(insets.bottom + 12, 24) }}
           >
             {footer}
           </View>
@@ -848,7 +849,7 @@ export function Sheet({
             exiting={SlideOutDown.duration(MOTION.exit).easing(Easing.in(Easing.cubic))}
             accessibilityViewIsModal
             className="max-h-[88%] rounded-t-sheet bg-white px-6 pt-2"
-            style={{ paddingBottom: Math.max(insets.bottom, 20) }}
+            style={{ paddingBottom: Math.max(insets.bottom + 12, 28) }}
           >
             <View className="mb-3 h-1 w-10 self-center rounded-full bg-fill" />
             {(title || right) && (
