@@ -132,8 +132,11 @@ def test_a_lane_that_breaks_stops_the_others_and_raises(col: Any) -> None:
     assert stop.is_set()
 
 
-def test_no_lane_with_handlers_returns_at_once(col: Any) -> None:
-    run_lanes([Lane("background", store(col), {})], poll_sec=0, stop=threading.Event())
+def test_no_lane_with_handlers_waits_for_the_stop(col: Any) -> None:
+    stop = threading.Event()
+    threading.Timer(0.05, stop.set).start()
+    run_lanes([Lane("background", store(col), {})], poll_sec=0.01, stop=stop)
+    assert stop.is_set()
 
 
 def test_nothing_to_do_returns_false(col: Any) -> None:

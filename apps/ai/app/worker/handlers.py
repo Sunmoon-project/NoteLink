@@ -4,7 +4,7 @@
 """
 
 from collections.abc import Callable
-from functools import cache
+from functools import cache, partial
 
 from app.clients.llm import JsonObject, Llm, LlmError, SchoolLlm, school_llm
 from app.clients.speech import Speech, SpeechUnavailableError, speech
@@ -52,8 +52,9 @@ def _handler(run: _Run, *, background: bool = False) -> Handler:
 similar_quiz = _handler(review.run)  # 오답 복습
 today_review = _handler(today.run)  # 오늘의 복습
 quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
-# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 처리는 맞춤 퀴즈와 같고 LLM 차례만 양보
-quiz_pregen = _handler(generate.run, background=True)
+# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 처리는 맞춤 퀴즈와 같고, LLM 차례를 양보하는
+# 대신 시간 상한이 넉넉함(기다리는 사용자가 없음, #138)
+quiz_pregen = _handler(partial(generate.run, patient=True), background=True)
 
 
 def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:

@@ -128,6 +128,9 @@ EXTRA = 0.6
 # 90초까지만 두면 다 채운 세트가 9번 중 6번 → 2번(11/05 로컬)
 SEC_PER_QUESTION = 20
 HARD_SEC_PER_QUESTION = 23
+# 미리 만들기(patient): 기다리는 사용자가 없고, 사용자 작업이 도는 동안 LLM 차례를 양보하므로
+# 시간 상한을 이만큼 늘림(/code-review #138). 상한을 그대로 두면 바쁠 때 문제를 덜 만듦
+PATIENT = 10
 CLASH = "동시에 만든 문제와 겹침"  # 다른 자리가 그사이 받은 문제와 겹침: 쪽을 닫지 않음
 FULL = "이미 다 모음"
 TIMEOUT = "시간 상한"
@@ -755,8 +758,8 @@ def _concept_names(llm: Llm, m: Material, pages: dict[int, str]) -> list[str]:
     return concepts.dedupe(tags + names, subject) if tags else names
 
 
-def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
-    """quiz_generate · quiz_pregen 작업 하나."""
+def run(llm: Llm, raw: JsonObject, report: Progress, *, patient: bool = False) -> JsonObject:
+    """quiz_generate · quiz_pregen 작업 하나. patient면 시간 상한을 PATIENT배로(미리 만들기)."""
     inp = parse(raw)
     m = inp.material
     n = inp.size
@@ -791,7 +794,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     seen: list[Seen] = [seen_question(q) for s in inp.sets for q in s.questions if here(s, q)]
     subject = concepts.subject_words(m.title)
     made, failed, down, tried_calls = _make_all(
-        llm, pages, names_all, subject, per_page, weight, share, korean, seen, n, report
+        llm, pages, names_all, subject, per_page, weight, share, korean, seen, n, report, patient
     )
     if not made and tried_calls and down == tried_calls:
         raise LlmError("문제 만들기 호출이 모두 실패함")
@@ -826,6 +829,7 @@ def _make_all(
     seen: list[Seen],
     n: int,
     report: Progress,
+    patient: bool = False,
 ) -> tuple[list[tuple[int, Made]], list[JsonObject], int, int]:
     """자리마다 동시에 문제를 만들어 (만든 문제(세트 순서), 못 만든 자리, 실패한 시도, 시도).
 
@@ -844,8 +848,9 @@ def _make_all(
     # 여분 자리는 가장 무거운 쪽부터(못 만든 자리가 넘어가는 순서와 같음)
     spare = [backups[i % len(backups)] for i in range(int(n * EXTRA + 0.5))] if backups else []
     t0 = _clock()
-    deadline = t0 + SEC_PER_QUESTION * max(n, 1)
-    hard = t0 + HARD_SEC_PER_QUESTION * max(n, 1)
+    budget = max(n, 1) * (PATIENT if patient else 1)
+    deadline = t0 + SEC_PER_QUESTION * budget
+    hard = t0 + HARD_SEC_PER_QUESTION * budget
 
     def accept(page: int, r: Made) -> list[str]:
         """잠금 안에서 그사이 다른 자리가 받은 문제와 겹침을 다시 보고, 받으면 세트에 바로 넣음

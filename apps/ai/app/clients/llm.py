@@ -35,6 +35,11 @@ class LlmCutError(LlmError):
 
 
 STOPPED = "멈춤(다 모았거나 시간 상한)"
+# 마지막 사용자 작업 호출 뒤 이만큼(호출 간격의 배수)은 background 호출을 보내지 않음(#138).
+# 사용자 맞춤 퀴즈는 혼자서도 간격을 거의 다 씀(36회/81초): 응답을 기다리는 사이 빈 차례를
+# 미리 만들기가 가져가면 사용자 5문제가 2분 상한에 걸려 3문제로 끝났음(11/07 학교 LLM)
+QUIET_GAPS = 3
+MIN_YIELD_SEC = 0.2  # 양보한 background 호출이 다시 볼 때까지 최소 대기(간격 0일 때 헛돌지 않게)
 _local = threading.local()
 
 
@@ -137,16 +142,19 @@ class SchoolLlm:
         # 응답을 받을 때까지 잠그면 호출이 하나씩만 나가서 맞춤 퀴즈 5문제에 7분이 걸렸음(#95)
         self._next = float("-inf")
         self._held = float("-inf")  # 429를 받아 이 시각까지는 아무도 보내지 않음
-        # 차례를 기다리는 사용자 작업 호출 수. 0이 아니면 미리 해 두는 작업(background)은 양보(#138)
+        # 사용자 작업 호출: 차례를 기다리는 수 · 보내고 답을 기다리는 수 · 마지막으로 보내거나
+        # 답을 받은 시각. 하나라도 있으면(QUIET_GAPS 안이어도) background 호출은 보내지 않음(#138)
         self._waiting = 0
+        self._inflight = 0
+        self._last = float("-inf")
         self._lock = threading.Lock()
 
     def background(self) -> "Llm":
-        """같은 호출 간격 · 429 대기를 쓰되, 사용자 작업 호출이 차례를 기다리면 양보하는 연결.
+        """같은 호출 간격 · 429 대기를 쓰되, 사용자 작업 호출이 도는 동안은 보내지 않는 연결.
 
         노트를 만들 때 미리 만드는 퀴즈(quiz_pregen)가 씁니다(#138). 분당 한도를 같이 쓰므로
-        따로 돌리기만 하면 사용자 작업이 차례를 반만 얻어 느려짐. 미리 만들기는 안에서 여러
-        스레드로 호출하므로 스레드 변수가 아니라 연결 객체로 넘깁니다.
+        따로 돌리기만 하면 사용자 작업이 느려짐. 미리 만들기는 안에서 여러 스레드로 호출하므로
+        스레드 변수가 아니라 연결 객체로 넘깁니다. 이미 보낸 background 호출은 그대로 둡니다.
         """
         return _Background(self)
 
@@ -160,7 +168,19 @@ class SchoolLlm:
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
-        background: bool = False,
+    ) -> JsonObject:
+        return self._call(model, system, user, schema, name, max_tokens, temperature, False)
+
+    def _call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: JsonObject,
+        name: str,
+        max_tokens: int,
+        temperature: float,
+        background: bool,
     ) -> JsonObject:
         body: JsonObject = {
             "model": model,
@@ -193,7 +213,7 @@ class SchoolLlm:
         차례는 실제로 보낼 때만 가져갑니다. 미리 잡아 두면 기다리다 멈춘 호출의 빈 차례만큼
         다음 작업이 밀리고(/code-review #125), 429가 온 사이에 잡아 둔 차례대로 보내면 한도 안에서
         다시 429를 받음(/code-review #95). 깨어날 때마다 멈춤 신호를 봅니다.
-        background 호출은 사용자 작업 호출이 차례를 기다리는 동안 보내지 않습니다(#138).
+        background 호출은 사용자 작업 호출이 도는 동안(_user_busy) 보내지 않습니다(#138).
         """
         if not background:
             with self._lock:
@@ -204,16 +224,31 @@ class SchoolLlm:
                 with self._lock:
                     now = self._clock()
                     ready = max(self._next, self._held)
-                    if now >= ready and not (background and self._waiting):
+                    if now >= ready and not (background and self._user_busy(now)):
                         self._next = now + self._gap
+                        if not background:
+                            self._inflight += 1
+                            self._last = now
                         return
-                    # 양보한 background 호출은 사용자 호출이 차례를 가져간 뒤(gap 뒤) 다시 봄
-                    wait = ready - now if now < ready else self._gap
+                    # 양보한 background 호출은 간격만큼 뒤에 다시 봄
+                    wait = ready - now if now < ready else max(self._gap, MIN_YIELD_SEC)
                 self._pause(wait)
         finally:
             if not background:
                 with self._lock:
                     self._waiting -= 1
+
+    def _user_busy(self, now: float) -> bool:
+        """잠금 안에서: 사용자 작업 호출이 기다리거나 · 답을 기다리거나 · 방금 끝났음."""
+        quiet = self._last + self._gap * QUIET_GAPS
+        return bool(self._waiting or self._inflight) or now < quiet
+
+    def _sent(self, background: bool) -> None:
+        """보낸 호출의 답(또는 연결 오류)을 받음."""
+        if not background:
+            with self._lock:
+                self._inflight -= 1
+                self._last = self._clock()
 
     def _hold(self, sec: float) -> None:
         """429: 모든 스레드가 sec초 동안 보내지 않음."""
@@ -225,7 +260,10 @@ class SchoolLlm:
         for attempt in range(self._retries + 1):
             self._turn(background)  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
             try:
-                res = self._client.post("/chat/completions", json=body)
+                try:
+                    res = self._client.post("/chat/completions", json=body)
+                finally:
+                    self._sent(background)
             except httpx2.TransportError as e:
                 err = type(e).__name__
                 self._pause(4 * (attempt + 1))
@@ -266,16 +304,7 @@ class _Background:
         max_tokens: int = 1500,
         temperature: float = 0.0,
     ) -> JsonObject:
-        return self._llm.call(
-            model,
-            system,
-            user,
-            schema,
-            name,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            background=True,
-        )
+        return self._llm._call(model, system, user, schema, name, max_tokens, temperature, True)
 
 
 def _content(res: httpx2.Response) -> str | None:

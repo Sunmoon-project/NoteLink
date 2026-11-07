@@ -182,7 +182,9 @@ def run_lanes(lanes: Sequence[Lane], *, poll_sec: float, stop: threading.Event) 
             stop.set()  # 한 반복이 끝나면 나머지도 지금 작업을 끝낸 뒤 멈춤
 
     active = [lane for lane in lanes if lane.handlers]
-    if not active:
+    if not active:  # 등록된 종류가 없음: 바로 끝나 다시 띄우기를 되풀이하지 않게 멈춤 신호까지 둠
+        while not stop.wait(poll_sec):
+            pass
         return
     *others, last = active
     threads = [
