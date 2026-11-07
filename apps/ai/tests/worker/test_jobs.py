@@ -83,40 +83,32 @@ def test_no_types_or_no_jobs_claims_nothing(col: Any, clock: Clock) -> None:
     assert store(col, clock).claim([]) is None
 
 
-# ---------- 미리 해 두는 작업은 나중에(#134) ----------
+# ---------- 미리 해 두는 작업은 따로 도는 반복이(#138) ----------
 
 WAITING = ["quiz_generate", "similar_quiz"]
-LATER = ["quiz_pregen"]
+PREGEN = ["quiz_pregen"]
 
 
-def test_a_waiting_job_goes_before_an_older_pregen(col: Any, clock: Clock) -> None:
-    # 노트를 만들 때 넣은 미리 만들기가 먼저 들어왔어도, 지금 퀴즈를 기다리는 사용자가 먼저
+def test_each_lane_takes_only_its_own_types(col: Any, clock: Clock) -> None:
+    # 먼저 들어온 미리 만들기는 사용자 작업 반복이 가져가지 않음: 사용자 작업은 그대로 먼저
     add(col, "pregen", "quiz_pregen", age_sec=99)
     add(col, "asked", "similar_quiz", age_sec=1)
-    s = store(col, clock)
-    first = s.claim(WAITING, LATER)
-    assert first is not None and first.id == "asked"
-    second = s.claim(WAITING, LATER)
-    assert second is not None and (second.id, second.type) == ("pregen", "quiz_pregen")
-    assert s.claim(WAITING, LATER) is None
+    asked = store(col, clock).claim(WAITING)
+    assert asked is not None and asked.id == "asked"
+    assert store(col, clock).claim(WAITING) is None
+    pregen = store(col, clock, "w1:bg").claim(PREGEN)
+    assert pregen is not None and (pregen.id, pregen.type) == ("pregen", "quiz_pregen")
 
 
-def test_pregens_are_taken_oldest_first_when_nothing_waits(col: Any, clock: Clock) -> None:
+def test_pregens_are_taken_oldest_first(col: Any, clock: Clock) -> None:
     add(col, "new", "quiz_pregen", age_sec=1)
     add(col, "old", "quiz_pregen", age_sec=9)
-    job = store(col, clock).claim([], LATER)
+    job = store(col, clock).claim(PREGEN)
     assert job is not None and job.id == "old"
 
 
-def test_a_type_in_both_lists_is_not_taken_later(col: Any, clock: Clock) -> None:
-    add(col, "j1", "quiz_generate")
-    job = store(col, clock).claim(["quiz_generate"], ["quiz_generate"])
-    assert job is not None and job.id == "j1"
-    assert store(col, clock).claim(["quiz_generate"], ["quiz_generate"]) is None
-
-
-def test_a_pregen_stalled_up_to_the_limit_fails_too(col: Any, clock: Clock) -> None:
-    # 멈춘 작업 정리는 나중에 가져가는 종류도 봄(가져가기 전에 한 번)
+def test_a_pregen_stalled_up_to_the_limit_fails_in_its_own_lane(col: Any, clock: Clock) -> None:
+    # 멈춘 작업 정리는 반복마다 자기 종류를 봄(가져가기 전에 한 번)
     add(
         col,
         "j1",
@@ -126,7 +118,9 @@ def test_a_pregen_stalled_up_to_the_limit_fails_too(col: Any, clock: Clock) -> N
         lockedBy="w0",
         lockedUntil=T0 - timedelta(1),
     )
-    assert store(col, clock).claim(WAITING, LATER) is None
+    assert store(col, clock).claim(WAITING) is None
+    assert col.find_one({"_id": "j1"})["status"] == "running"  # 사용자 작업 반복은 손대지 않음
+    assert store(col, clock, "w1:bg").claim(PREGEN) is None
     assert col.find_one({"_id": "j1"})["status"] == "failed"
 
 

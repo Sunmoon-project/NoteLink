@@ -33,12 +33,16 @@ def _voyage() -> Voyage:
 type _Run = Callable[[Llm, JsonObject, Report], JsonObject]
 
 
-def _handler(run: _Run) -> Handler:
-    """퀴즈 서비스의 run을 처리 함수로. input 오류는 다시 해도 같으므로 바로 실패시킵니다."""
+def _handler(run: _Run, *, background: bool = False) -> Handler:
+    """퀴즈 서비스의 run을 처리 함수로. input 오류는 다시 해도 같으므로 바로 실패시킵니다.
+
+    background면 학교 LLM 호출 차례를 사용자 작업에 양보합니다(SchoolLlm.background, #138).
+    """
 
     def handle(inp: JsonObject, report: Report) -> JsonObject:
+        llm = _llm()
         try:
-            return run(_llm(), inp, report)
+            return run(llm.background() if background else llm, inp, report)
         except review.InputError as e:
             raise JobInputError(str(e)) from e
 
@@ -48,6 +52,8 @@ def _handler(run: _Run) -> Handler:
 similar_quiz = _handler(review.run)  # 오답 복습
 today_review = _handler(today.run)  # 오늘의 복습
 quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
+# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 처리는 맞춤 퀴즈와 같고 LLM 차례만 양보
+quiz_pregen = _handler(generate.run, background=True)
 
 
 def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
@@ -75,8 +81,7 @@ HANDLERS: dict[str, Handler] = {
     generate.TYPE: quiz_generate,
     recording_job.TYPE: recording_summary,
 }
-# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 처리는 맞춤 퀴즈와 같고 가져가는 순서만 나중입니다.
-# 목록 밖에서 더해 녹음 정리(#118) 등 다른 종류 추가와 줄이 겹치지 않게 둡니다.
-HANDLERS[generate.PREGEN_TYPE] = quiz_generate
-# 사용자가 기다리는 작업이 없을 때만 가져가는 종류(jobs.JobStore.claim)
-LATER: frozenset[str] = frozenset({generate.PREGEN_TYPE})
+# 목록 밖에서 더해 다른 종류 추가와 줄이 겹치지 않게 둡니다.
+HANDLERS[generate.PREGEN_TYPE] = quiz_pregen
+# 사용자 작업과 따로 도는 반복이 하나씩 처리하는 종류(__main__ · runner.run_lanes, #138)
+BACKGROUND: frozenset[str] = frozenset({generate.PREGEN_TYPE})

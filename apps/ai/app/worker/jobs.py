@@ -22,20 +22,17 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
   - 색인(NestJS가 관리): {status: 1, type: 1, createdAt: 1}
 
 가져오는 순서
-  - 사용자가 기다리는 작업(types)을 들어온 순서대로 먼저 가져가고, 없을 때만 미리 해 두는
-    작업(later, 예: 노트를 만들 때 넣는 퀴즈 미리 만들기 quiz_pregen)을 가져갑니다(#134).
-    학교 LLM은 분당 한도를 모두가 같이 쓰므로, 미리 만들기가 먼저 들어왔다고 지금 퀴즈를
-    기다리는 사용자가 그 뒤로 밀리지 않게
+  - 가져올 종류(types) 중 들어온 순서대로 가져갑니다.
+  - 미리 해 두는 작업(노트를 만들 때 넣는 퀴즈 미리 만들기 quiz_pregen)은 사용자가 기다리는
+    작업과 따로 도는 반복이 가져갑니다(runner.run_lanes, #138). 미리 만들기를 처리하는 중에도
+    사용자 작업은 바로 시작하고, 학교 LLM 호출 차례는 사용자 작업이 먼저 가져갑니다
+    (SchoolLlm.background). 그래서 미리 만들기가 먼저 들어왔어도 사용자가 그 뒤로 밀리지 않음
   - 알려진 한계(/code-review #134)
-    - 처리기는 작업을 하나씩 처리합니다. 미리 만들기를 이미 처리 중이면 그사이 들어온 사용자
-      작업은 그 작업이 끝날 때까지(새 노트는 3분 가까이) 기다립니다. 순서만 바꿔서는 막지 못해
-      미리 만들기를 따로 돌리는 방식은 따로 다룹니다
     - 같은 노트의 미리 만들기가 아직 끝나지 않았을 때 사용자가 퀴즈를 요청하면, NestJS가 새
       작업을 넣지 않고 그 작업을 이어받습니다(넣으면 같은 퀴즈를 두 번 만듦). 처리기는 작업끼리
       합치지 않습니다
     - 사용자 작업이 끊이지 않으면 미리 해 두는 작업은 queued로 남습니다. 오래된 것은 NestJS가
       canceled로 바꿉니다(처리 중이면 처리기가 결과를 버림)
-    - 처리할 작업이 없을 때는 가져오기 질의를 종류 묶음마다 한 번씩(두 번) 보냅니다
 
 잠금
   - 가져오기는 find_one_and_update 한 번이라, 처리기가 여럿이어도 같은 작업을 함께 가져가지
@@ -102,25 +99,16 @@ class JobStore:
     def lock_sec(self) -> float:
         return self._lock.total_seconds()
 
-    def claim(self, types: Iterable[str], later: Iterable[str] = ()) -> Job | None:
-        """작업 하나를 잠그고 가져옵니다. 없으면 None.
-
-        types 중 가장 먼저 들어온 작업, 없으면 later 중 가장 먼저 들어온 작업.
-        """
-        first = list(types)
-        then = [t for t in later if t not in first]
-        if not first and not then:
+    def claim(self, types: Iterable[str]) -> Job | None:
+        """types 중 가장 먼저 들어온 작업 하나를 잠그고 가져옵니다. 없으면 None."""
+        kinds = list(types)
+        if not kinds:
             return None
         now = self._now()
         if self._next_sweep is None or now >= self._next_sweep:
-            self._give_up_stalled(first + then, now)
+            self._give_up_stalled(kinds, now)
             self._next_sweep = now + SWEEP_EVERY
-        for kinds in (first, then):
-            if kinds:
-                job = self._claim(kinds, now)
-                if job is not None:
-                    return job
-        return None
+        return self._claim(kinds, now)
 
     def _claim(self, kinds: list[str], now: datetime) -> Job | None:
         doc = self._col.find_one_and_update(

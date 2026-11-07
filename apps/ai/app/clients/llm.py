@@ -137,7 +137,18 @@ class SchoolLlm:
         # 응답을 받을 때까지 잠그면 호출이 하나씩만 나가서 맞춤 퀴즈 5문제에 7분이 걸렸음(#95)
         self._next = float("-inf")
         self._held = float("-inf")  # 429를 받아 이 시각까지는 아무도 보내지 않음
+        # 차례를 기다리는 사용자 작업 호출 수. 0이 아니면 미리 해 두는 작업(background)은 양보(#138)
+        self._waiting = 0
         self._lock = threading.Lock()
+
+    def background(self) -> "Llm":
+        """같은 호출 간격 · 429 대기를 쓰되, 사용자 작업 호출이 차례를 기다리면 양보하는 연결.
+
+        노트를 만들 때 미리 만드는 퀴즈(quiz_pregen)가 씁니다(#138). 분당 한도를 같이 쓰므로
+        따로 돌리기만 하면 사용자 작업이 차례를 반만 얻어 느려짐. 미리 만들기는 안에서 여러
+        스레드로 호출하므로 스레드 변수가 아니라 연결 객체로 넘깁니다.
+        """
+        return _Background(self)
 
     def call(
         self,
@@ -149,6 +160,7 @@ class SchoolLlm:
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        background: bool = False,
     ) -> JsonObject:
         body: JsonObject = {
             "model": model,
@@ -165,7 +177,7 @@ class SchoolLlm:
         }
         if model.startswith("qwen"):
             body["chat_template_kwargs"] = {"enable_thinking": False}
-        return self._send(body)
+        return self._send(body, background)
 
     def _pause(self, sec: float) -> None:
         """sec초 기다림. stop_on으로 건 신호가 있으면 켜질 때 바로 깨어남."""
@@ -175,33 +187,43 @@ class SchoolLlm:
         else:
             self._sleep(sec)
 
-    def _turn(self) -> None:
+    def _turn(self, background: bool = False) -> None:
         """보낼 수 있을 때(앞 호출을 보낸 뒤 gap_sec, 429 대기 뒤)까지 기다려 차례를 가져갑니다.
 
         차례는 실제로 보낼 때만 가져갑니다. 미리 잡아 두면 기다리다 멈춘 호출의 빈 차례만큼
         다음 작업이 밀리고(/code-review #125), 429가 온 사이에 잡아 둔 차례대로 보내면 한도 안에서
         다시 429를 받음(/code-review #95). 깨어날 때마다 멈춤 신호를 봅니다.
+        background 호출은 사용자 작업 호출이 차례를 기다리는 동안 보내지 않습니다(#138).
         """
-        while True:
-            check_stop()
+        if not background:
             with self._lock:
-                now = self._clock()
-                ready = max(self._next, self._held)
-                if now >= ready:
-                    self._next = now + self._gap
-                    return
-                wait = ready - now
-            self._pause(wait)
+                self._waiting += 1
+        try:
+            while True:
+                check_stop()
+                with self._lock:
+                    now = self._clock()
+                    ready = max(self._next, self._held)
+                    if now >= ready and not (background and self._waiting):
+                        self._next = now + self._gap
+                        return
+                    # 양보한 background 호출은 사용자 호출이 차례를 가져간 뒤(gap 뒤) 다시 봄
+                    wait = ready - now if now < ready else self._gap
+                self._pause(wait)
+        finally:
+            if not background:
+                with self._lock:
+                    self._waiting -= 1
 
     def _hold(self, sec: float) -> None:
         """429: 모든 스레드가 sec초 동안 보내지 않음."""
         with self._lock:
             self._held = max(self._held, self._clock() + sec)
 
-    def _send(self, body: JsonObject) -> JsonObject:
+    def _send(self, body: JsonObject, background: bool = False) -> JsonObject:
         err = "retries"
         for attempt in range(self._retries + 1):
-            self._turn()  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
+            self._turn(background)  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
             try:
                 res = self._client.post("/chat/completions", json=body)
             except httpx2.TransportError as e:
@@ -225,6 +247,35 @@ class SchoolLlm:
         if err == "JSON":
             raise LlmCutError(err)
         raise LlmError(err)
+
+
+class _Background:
+    """SchoolLlm.background(): 사용자 작업 호출에 차례를 양보하는 연결(#138)."""
+
+    def __init__(self, llm: SchoolLlm) -> None:
+        self._llm = llm
+
+    def call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: JsonObject,
+        name: str,
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+    ) -> JsonObject:
+        return self._llm.call(
+            model,
+            system,
+            user,
+            schema,
+            name,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            background=True,
+        )
 
 
 def _content(res: httpx2.Response) -> str | None:

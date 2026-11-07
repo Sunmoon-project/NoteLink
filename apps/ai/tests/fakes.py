@@ -25,6 +25,11 @@ class FakeLlm:
     # 이름별 답. LlmError를 넣으면 그 차례에 예외를 던짐
     answers: dict[str, Answers] = field(default_factory=dict)
     calls: list[Call] = field(default_factory=list)
+    backgrounded: bool = False  # background()로 받아 갔는지(SchoolLlm.background, #138)
+
+    def background(self) -> "FakeLlm":
+        self.backgrounded = True
+        return self
 
     def call(
         self,

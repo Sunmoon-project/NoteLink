@@ -105,14 +105,16 @@ def test_bad_today_review_input_fails_without_retry(monkeypatch: pytest.MonkeyPa
     assert (doc["status"], doc["error"]) == ("failed", "입력 오류: input.day")
 
 
-@pytest.mark.parametrize("kind", ["quiz_generate", "quiz_pregen"])
+@pytest.mark.parametrize(("kind", "background"), [("quiz_generate", False), ("quiz_pregen", True)])
 def test_quiz_generate_and_pregen_are_registered(
-    monkeypatch: pytest.MonkeyPatch, kind: str
+    monkeypatch: pytest.MonkeyPatch, kind: str, background: bool
 ) -> None:
-    doc = run_job(monkeypatch, FakeLlm(), {"day": "2026-11-04"}, kind)
+    llm = FakeLlm()
+    doc = run_job(monkeypatch, llm, {"day": "2026-11-04"}, kind)
     assert (doc["status"], doc["error"]) == ("failed", "입력 오류: input.material.pages")
+    assert llm.backgrounded is background  # 미리 만들기만 LLM 차례를 양보(#138)
 
 
-def test_only_pregen_waits_for_other_jobs() -> None:
-    assert handlers.LATER == {"quiz_pregen"}
-    assert handlers.LATER <= HANDLERS.keys()
+def test_only_pregen_runs_in_the_background_lane() -> None:
+    assert handlers.BACKGROUND == {"quiz_pregen"}
+    assert handlers.BACKGROUND <= HANDLERS.keys()

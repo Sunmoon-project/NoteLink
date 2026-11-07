@@ -10,11 +10,15 @@
 
 처리 함수가 도는 동안 따로 도는 스레드가 잠금을 늘립니다(잠금 시간의 1/3마다). 진행률을 한동안
 쓰지 않는 긴 LLM 호출 중에도 다른 처리기가 같은 작업을 가져가지 않게 합니다.
+
+반복(Lane)은 여럿 둘 수 있습니다(run_lanes). 한 반복은 작업을 하나씩 처리하므로, 오래 걸리는
+미리 만들기(quiz_pregen)는 따로 돌려 사용자 작업을 막지 않게 합니다(#138).
 """
 
 import logging
 import threading
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from pymongo.errors import PyMongoError
@@ -94,14 +98,10 @@ def run_once(
     store: JobStore,
     handlers: Mapping[str, Handler],
     *,
-    later: Collection[str] = (),
     heartbeat_sec: float | None = None,
 ) -> bool:
-    """작업 하나를 가져와 처리합니다. 할 일이 없었으면 False.
-
-    later에 든 종류는 다른 종류의 작업이 없을 때만 가져갑니다(JobStore.claim).
-    """
-    job = store.claim([t for t in handlers if t not in later], [t for t in handlers if t in later])
+    """작업 하나를 가져와 처리합니다. 할 일이 없었으면 False."""
+    job = store.claim(handlers)
     if job is None:
         return False
 
@@ -141,15 +141,60 @@ def run_forever(
     *,
     poll_sec: float,
     stop: threading.Event,
-    later: Collection[str] = (),
 ) -> None:
     """stop이 켜질 때까지 반복합니다. 처리 중인 작업은 끝까지 처리한 뒤 멈춥니다."""
     while not stop.is_set():
         try:
-            busy = run_once(store, handlers, later=later)
+            busy = run_once(store, handlers)
         except PyMongoError:
             # DB 연결이 끊김: 쓰지 못한 작업은 잠금이 끝나면 다시 가져가므로 기다렸다 계속
             log.exception("ai_jobs 처리 중 DB 오류")
             busy = False
         if not busy:
             stop.wait(poll_sec)
+
+
+@dataclass(frozen=True)
+class Lane:
+    """따로 도는 처리 반복 하나: 이 store로 handlers에 든 종류만 가져가 하나씩 처리합니다."""
+
+    name: str
+    store: JobStore
+    handlers: Mapping[str, Handler]
+
+
+def run_lanes(lanes: Sequence[Lane], *, poll_sec: float, stop: threading.Event) -> None:
+    """반복마다 run_forever를 따로 돌리고, 모두 멈출 때까지 기다립니다.
+
+    마지막 반복은 이 스레드에서 돌려 멈춤 신호를 지금처럼 받습니다. 한 반복이 뜻밖의 오류로
+    끝나면 stop을 켜 나머지도 지금 작업을 끝낸 뒤 멈추게 하고, 그 오류를 올립니다(처리기를
+    다시 띄우게).
+    """
+    errors: list[BaseException] = []
+
+    def lane_loop(lane: Lane) -> None:
+        try:
+            run_forever(lane.store, lane.handlers, poll_sec=poll_sec, stop=stop)
+        except BaseException as e:
+            log.exception("처리 반복 %s이 멈춤", lane.name)
+            errors.append(e)
+        finally:
+            stop.set()  # 한 반복이 끝나면 나머지도 지금 작업을 끝낸 뒤 멈춤
+
+    active = [lane for lane in lanes if lane.handlers]
+    if not active:
+        return
+    *others, last = active
+    threads = [
+        threading.Thread(target=lane_loop, args=(lane,), name=f"lane-{lane.name}", daemon=True)
+        for lane in others
+    ]
+    for t in threads:
+        t.start()
+    try:
+        lane_loop(last)
+    finally:
+        for t in threads:
+            t.join()
+    if errors:
+        raise errors[0]

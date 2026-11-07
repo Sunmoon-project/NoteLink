@@ -286,3 +286,76 @@ def test_stop_on_only_covers_its_own_block() -> None:
     with stop_on(stop):
         pass
     assert server.client().call("gemma", "s", "u", SCHEMA, "X") == {}  # 블록 밖에서는 보냄
+
+
+# ---------- 미리 해 두는 작업은 차례를 양보(#138) ----------
+
+
+def test_a_background_call_yields_while_a_user_call_waits() -> None:
+    # 미리 만들기 호출이 차례(102.2)를 기다리는 사이 사용자 호출도 기다림: 그 차례는 사용자 호출이
+    # 가져가고(102.2), 미리 만들기는 그다음 차례(104.4)에 보냄
+    server = Server(reply("{}"), reply("{}"))
+    c = Clock(server, gap=2.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")  # 100
+
+    def user_takes_its_turn() -> None:  # 가짜 시계는 한 스레드라 다른 스레드의 차례를 흉내
+        with c.llm._lock:
+            c.llm._waiting -= 1
+            c.llm._next = c.now + 2.2
+        c.sent.append(c.now)
+
+    c.llm._waiting += 1  # 사용자 호출이 차례를 기다리는 중
+    c.on_sleep.extend([lambda: None, user_takes_its_turn])
+    c.llm.background().call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [100.0, pytest.approx(102.2), pytest.approx(104.4)]
+    assert c.slept == [pytest.approx(2.2), pytest.approx(2.2)]
+
+
+def test_a_background_call_goes_at_once_when_no_user_call_waits() -> None:
+    server = Server(reply("{}"), reply("{}"))
+    c = Clock(server, gap=2.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.llm.background().call("gemma", "s", "u", SCHEMA, "X") == {}
+    assert c.sent == [100.0, pytest.approx(102.2)]  # 간격만 지킴
+
+
+def test_a_user_call_is_not_counted_as_waiting_after_it_stops() -> None:
+    # 차례를 기다리다 멈춘 사용자 호출이 기다리는 수에 남으면 미리 만들기가 영영 못 보냄
+    server = Server(reply("{}"), reply("{}"))
+    c = Clock(server, gap=2.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    stop = threading.Event()
+    c.on_sleep.append(stop.set)
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.llm._waiting == 0
+    c.llm.background().call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [100.0, pytest.approx(102.2)]
+
+
+def test_user_calls_go_first_with_real_threads() -> None:
+    """실제 스레드: 미리 만들기 호출 여럿이 기다려도, 나중에 온 사용자 호출이 다음 차례를 가져감."""
+    sent: list[str] = []
+    lock = threading.Lock()
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        with lock:
+            sent.append(json.loads(request.content)["messages"][1]["content"])
+        return reply("{}")
+
+    llm = SchoolLlm("https://llm.test", "key", gap_sec=0.1, transport=httpx2.MockTransport(handle))
+    bg = llm.background()
+    llm.call("gemma", "s", "first", SCHEMA, "X")
+    threads = [
+        threading.Thread(target=bg.call, args=("gemma", "s", f"bg{i}", SCHEMA, "X"))
+        for i in range(3)
+    ]
+    for t in threads:
+        t.start()
+    time.sleep(0.02)  # 미리 만들기 호출이 모두 차례를 기다리는 중
+    user = threading.Thread(target=llm.call, args=("gemma", "s", "user", SCHEMA, "X"))
+    user.start()
+    for t in [*threads, user]:
+        t.join(5)
+    assert sent[0] == "first" and sent[1] == "user"
+    assert sorted(sent[2:]) == ["bg0", "bg1", "bg2"]
