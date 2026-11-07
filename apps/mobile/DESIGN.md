@@ -9,21 +9,28 @@
 - 굵기: 제목 `font-bold`, 강조 `font-semibold`, 라벨 `font-medium`, 본문은 지정하지 않음
 - 숫자(타이머 · 시간): `tabular-nums`
 
-| 클래스 | 크기/줄높이 | 쓰는 곳 |
-| --- | --- | --- |
-| `text-caption2` | 11/14 | 배지 |
-| `text-caption` | 12/16 | 보조 설명 · 날짜 |
-| `text-footnote` | 13/18 | 목록 보조 줄 · 안내 |
-| `text-subhead` | 14/20 | 목록 본문 · 칩 |
-| `text-callout` | 15/22 | 버튼 · 입력 |
-| `text-body` | 16/24 | 본문 |
-| `text-headline` | 17/24 | 카드 · 시트 제목 |
-| `text-title3` | 20/26 | 섹션 제목 |
-| `text-title2` | 22/28 | 화면 제목(스택 화면) |
-| `text-page` | 26/32 | 탭 화면 제목 |
-| `text-title1` | 28/34 | 큰 화면 제목 · 강조 숫자 |
-| `text-large` | 34/40 | 결과 화면 큰 숫자 |
-| `text-display` · `display-lg` · `timer` · `timer-xl` | 44 · 64 · 84 · 120 | 타이머 전용 |
+- 위계는 네 단계로 씁니다. 한 화면에서 단계를 건너뛰며 크기 차이를 1px씩 쌓지 않습니다
+  1. 숫자 · 화면 제목: `display`~`page` (타이머 · 탭 제목)
+  2. 구획 제목: `title3` · `headline`
+  3. 본문: `body` · `callout` · `subhead`
+  4. 보조: `footnote` · `caption` · `caption2`
+- 자간은 클래스에 들어 있습니다(따로 `tracking-`을 붙이지 않음). 작은 글자는 뭉치지 않게 벌리고, 제목 · 큰 숫자는 조입니다. 입력칸은 0
+
+| 클래스 | 크기/줄높이 | 자간 | 쓰는 곳 |
+| --- | --- | --- | --- |
+| `text-caption2` | 11/14 | +0.2px | 배지 |
+| `text-caption` | 12/16 | +0.2px | 보조 설명 · 날짜 |
+| `text-footnote` | 13/18 | +0.1px | 목록 보조 줄 · 안내 |
+| `text-subhead` | 14/20 | 0 | 목록 본문 · 칩 |
+| `text-callout` | 15/22 | 0 | 버튼 · 입력 |
+| `text-body` | 16/24 | 0 | 본문 |
+| `text-headline` | 17/24 | -0.1px | 카드 · 시트 제목 |
+| `text-title3` | 20/26 | -0.2px | 섹션 제목 |
+| `text-title2` | 22/28 | -0.3px | 화면 제목(스택 화면) |
+| `text-page` | 26/32 | -0.5px | 탭 화면 제목 |
+| `text-title1` | 28/34 | -0.5px | 큰 화면 제목 · 강조 숫자 |
+| `text-large` | 34/40 | -0.7px | 결과 화면 큰 숫자 |
+| `text-display` · `display-lg` · `timer` · `timer-xl` | 44 · 64 · 84 · 120 | -1 · -1.5 · -2 · -3px | 타이머 전용 |
 
 ## 크기 · 간격
 
