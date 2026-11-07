@@ -16,7 +16,6 @@ import {
   MicOff,
   NotebookPen,
   Plus,
-  Search as SearchIcon,
   Send,
   Settings,
   Siren,
@@ -37,6 +36,7 @@ import {
   Alert,
   Badge,
   Btn,
+  Canvas,
   Card,
   Chip,
   Dialog,
@@ -46,6 +46,8 @@ import {
   Loading,
   Avatar,
   Screen,
+  Search,
+  Title,
   Two,
   cx,
 } from '@/components/ui';
@@ -77,20 +79,14 @@ export function RoomListScreen() {
     onError: (e) => toast(e instanceof ApiError ? e.message : '입장하지 못했어요'),
   });
   const joined = mine.data ?? [];
+  const recList = (rec.data ?? []).filter(
+    (r) => r.title.includes(q) && !joined.some((j) => j._id === r._id),
+  );
   return (
-    <View className="flex-1 bg-white">
+    <Canvas>
       <Screen>
-        <Text className="pt-4 pb-3 text-title2 font-bold text-ink">스터디룸</Text>
-        <View className="h-11 flex-row items-center rounded-xl bg-cream px-4">
-          <SearchIcon size={ICON.sm} color={C.sub} />
-          <TextInput
-            value={q}
-            onChangeText={setQ}
-            placeholder="스터디룸 검색"
-            placeholderTextColor={C.sub}
-            className="ml-2 h-11 flex-1 text-subhead text-ink"
-          />
-        </View>
+        <Title>스터디룸</Title>
+        <Search value={q} onChangeText={setQ} placeholder="스터디룸 검색" />
         {mine.isPending ? (
           <Loading />
         ) : mine.isError && !mine.data ? (
@@ -101,17 +97,19 @@ export function RoomListScreen() {
             {joined.map((r) => (
               <Card
                 key={r._id}
-                tone="mint"
                 onPress={() => router.push({ pathname: '/room/[id]', params: { id: r._id } })}
                 className="mb-2 flex-row items-center gap-3 p-4"
               >
-                <Users size={ICON.lg} color={C.brand} />
                 <View className="flex-1">
-                  <Text className="text-callout font-bold text-ink">{r.title}</Text>
+                  <View className="flex-row items-center gap-2">
+                    <Text className="text-callout font-bold text-ink">{r.title}</Text>
+                    {r.timerState?.phase === 'focus' && <Badge tone="sun">집중 중</Badge>}
+                  </View>
                   <Text className="text-caption text-sub">
                     {r.memberCount}명 · 코드 {r.inviteCode}
                   </Text>
                 </View>
+                <Faces members={r.members} />
               </Card>
             ))}
             <View className="mt-1 flex-row gap-2">
@@ -129,7 +127,7 @@ export function RoomListScreen() {
           </>
         ) : (
           <View className="items-center py-10">
-            <View className="h-14 w-14 items-center justify-center rounded-full bg-mint">
+            <View className="h-20 w-20 items-center justify-center rounded-full bg-cream">
               <Users size={ICON.xl} color={C.brand} />
             </View>
             <Text className="mt-3 text-callout font-bold text-ink">
@@ -146,7 +144,7 @@ export function RoomListScreen() {
             <Text className="mt-2 text-caption2 text-sub">또는</Text>
             <Pressable
               onPress={() => setCode(true)}
-              className="mt-1 rounded-full border border-brand/40 px-4 py-1.5"
+              className="mt-1 rounded-full bg-white px-4 py-2"
             >
               <Text className="text-footnote text-brand">코드로 참여하기</Text>
             </Pressable>
@@ -158,28 +156,26 @@ export function RoomListScreen() {
         {rec.isError && !rec.data && (
           <LoadError message="추천 스터디룸을 불러오지 못했어요" retry={rec.refetch} />
         )}
+        {rec.isSuccess && !recList.length && (
+          <Text className="py-6 text-center text-footnote text-sub">
+            {q ? `‘${q}’에 맞는 스터디룸이 없어요` : '지금 추천할 스터디룸이 없어요'}
+          </Text>
+        )}
         <View className="gap-2">
-          {rec.data
-            ?.filter((r) => r.title.includes(q) && !joined.some((j) => j._id === r._id))
-            .map((r) => (
-              <Card
-                key={r._id}
-                tone="white"
-                onPress={() => join.mutate(r.inviteCode)}
-                className="p-4"
-              >
-                <View className="flex-row items-center justify-between">
-                  <Text className="text-subhead font-bold text-ink">{r.title}</Text>
-                  <Badge>{`${r.memberCount}명 참여`}</Badge>
-                </View>
-                <View className="mt-1.5 flex-row gap-1">
-                  {r.tags?.map((t) => (
-                    <Badge key={t}>{t}</Badge>
-                  ))}
-                </View>
-                <Text className="mt-1.5 text-caption text-sub">{r.description}</Text>
-              </Card>
-            ))}
+          {recList.map((r) => (
+            <Card key={r._id} onPress={() => join.mutate(r.inviteCode)} className="p-4">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-subhead font-bold text-ink">{r.title}</Text>
+                <Badge>{`${r.memberCount}명 참여`}</Badge>
+              </View>
+              <View className="mt-1.5 flex-row gap-1">
+                {r.tags?.map((t) => (
+                  <Badge key={t}>{t}</Badge>
+                ))}
+              </View>
+              <Text className="mt-1.5 text-caption text-sub">{r.description}</Text>
+            </Card>
+          ))}
         </View>
       </Screen>
       <Dialog open={code} onClose={() => setCode(false)}>
@@ -220,6 +216,22 @@ export function RoomListScreen() {
           </Two>
         </View>
       </Dialog>
+    </Canvas>
+  );
+}
+
+/** 참여 중인 방의 참여자 얼굴을 겹쳐 보인다 (3명까지, 나머지는 +n) */
+function Faces({ members }: { members: RoomMember[] }) {
+  const on = members.filter((m) => m.status === 'joined');
+  if (!on.length) return null;
+  return (
+    <View className="flex-row items-center">
+      {on.slice(0, 3).map((m, i) => (
+        <View key={m.userId} className={cx('rounded-full border-2 border-white', i > 0 && '-ml-2')}>
+          <Avatar name={m.nickname} uri={m.avatarUrl} size={28} />
+        </View>
+      ))}
+      {on.length > 3 && <Text className="ml-1 text-caption text-sub">+{on.length - 3}</Text>}
     </View>
   );
 }
