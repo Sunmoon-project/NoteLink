@@ -212,7 +212,8 @@ const TABULAR = { fontVariant: ['tabular-nums' as const] };
  */
 export function Roll({ value, className }: { value: string | number; className?: string }) {
   const s = String(value);
-  // 글자 크기를 키운 설정에서도 맞도록 한 자리 높이를 재서 쓴다
+  // 글자 크기를 키운 설정에서도 맞도록 한 줄 높이를 재서 쓴다. 잴 때 쓰는 보이지 않는 글자는 값 전체라
+  // 화면 테스트도 Text처럼 getByText(값)으로 찾는다
   const [h, setH] = useState(0);
   return (
     <View className="flex-row" accessible accessibilityLabel={s}>
@@ -222,7 +223,7 @@ export function Roll({ value, className }: { value: string | number; className?:
         onLayout={(e) => setH(e.nativeEvent.layout.height)}
         importantForAccessibility="no"
       >
-        0
+        {s}
       </Text>
       {s.split('').map((c, i) => {
         // 오른쪽에서 센 자리를 key로 — 자릿수가 늘어도 1의 자리는 1의 자리로 굴러간다

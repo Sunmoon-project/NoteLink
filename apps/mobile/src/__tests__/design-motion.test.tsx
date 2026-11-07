@@ -20,8 +20,9 @@ it('Swap은 키가 바뀌면 옛 내용을 잠깐 두었다가 새 내용으로 
   jest.useRealTimers();
 });
 
-it('Roll은 값 전체를 한 번에 읽히고 숫자 아닌 글자는 그대로 둔다', async () => {
+it('Roll은 값 전체를 한 번에 읽히고 Text처럼 찾을 수 있으며, 숫자 아닌 글자는 그대로 둔다', async () => {
   await render(<Roll value="1,240" />);
   expect(screen.getByLabelText('1,240')).toBeTruthy();
+  expect(screen.getByText('1,240')).toBeTruthy();
   expect(screen.getByText(',')).toBeTruthy();
 });
