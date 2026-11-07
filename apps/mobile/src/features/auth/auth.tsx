@@ -99,7 +99,7 @@ function SocialButtons() {
     onError: (e) => toast(e instanceof Error ? e.message : '로그인하지 못했어요'),
   });
   return (
-    <View className="gap-2.5">
+    <View className="gap-3">
       {(
         [
           ['kakao', 'sun', '카카오로 시작하기'],
@@ -153,7 +153,7 @@ export function LoginScreen() {
             수기 대신 스마트하게, AI와 함께 배우는 노트 앱
           </Text>
         </View>
-        <View className="mt-16 gap-2.5">
+        <View className="mt-16 gap-3">
           <SocialButtons />
           <Btn onPress={() => setEmailOpen(true)}>이메일로 로그인</Btn>
           <Pressable
