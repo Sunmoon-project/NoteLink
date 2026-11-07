@@ -154,3 +154,27 @@ def test_a_pregen_taken_over_before_it_starts_gets_the_usual_time_limit(
     monkeypatch.setattr(handlers.generate, "run", fake_run)
     handlers.quiz_pregen({}, StubReport(awaited))
     assert seen == [patient]
+
+
+def test_lanes_starting_together_share_one_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 두 반복이 처음 함께 불러도 SchoolLlm은 하나: 호출 간격 · 사용자 우선을 같이 씀(Codex #149)
+    import threading
+    import time
+
+    made: list[object] = []
+
+    def slow() -> object:
+        time.sleep(0.05)  # 만드는 사이 다른 스레드가 들어옴
+        made.append(object())
+        return made[-1]
+
+    once = handlers._Once(slow)
+    got: list[object] = []
+    threads = [threading.Thread(target=lambda: got.append(once())) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert len(made) == 1 and got == [made[0], made[0]]
+    once.cache_clear()
+    assert once() is not made[0]

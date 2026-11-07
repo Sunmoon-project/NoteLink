@@ -227,6 +227,7 @@ class SchoolLlm:
         while True:
             check_stop()
             bg = yields()  # 잠금 밖에서(DB를 읽을 수 있음)
+            check_stop()  # 읽는 동안 켜진 멈춤 신호(Codex 리뷰 #149)
             with self._lock:
                 if not bg and not mine[0]:
                     self._active += 1

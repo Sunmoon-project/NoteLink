@@ -3,8 +3,8 @@
 처리기는 여기 등록된 종류만 가져가므로, 아직 만들지 않은 종류의 작업은 queued로 남습니다.
 """
 
+import threading
 from collections.abc import Callable
-from functools import cache
 
 from app.clients.llm import JsonObject, Llm, LlmError, SchoolLlm, school_llm
 from app.clients.speech import Speech, SpeechUnavailableError, speech
@@ -14,18 +14,41 @@ from app.services.recording import job as recording_job
 from app.worker.runner import Handler, JobInputError, JobReport
 
 
-@cache
+class _Once[T]:
+    """처음 한 번 만든 것을 계속 돌려줍니다. 두 반복(스레드)이 처음 함께 불러도 하나만 만듦.
+
+    functools.cache는 만들기를 잠그지 않아, 두 반복이 동시에 처음 부르면 SchoolLlm이 둘 생겨
+    호출 간격 · 429 대기 · 사용자 우선이 나뉨(Codex 리뷰 #149). 만들다 실패하면 남기지 않습니다.
+    """
+
+    def __init__(self, make: Callable[[], T]) -> None:
+        self._make = make
+        self._made: list[T] = []
+        self._lock = threading.Lock()
+
+    def __call__(self) -> T:
+        with self._lock:
+            if not self._made:
+                self._made.append(self._make())
+            return self._made[0]
+
+    def cache_clear(self) -> None:
+        with self._lock:
+            self._made.clear()
+
+
+@_Once
 def _llm() -> SchoolLlm:
     """프로세스에 하나만 둡니다. 학교 LLM 호출 간격(llm_call_gap_sec)을 작업 사이에도 지키게."""
     return school_llm()
 
 
-@cache
+@_Once
 def _speech() -> Speech:
     return speech()
 
 
-@cache
+@_Once
 def _voyage() -> Voyage:
     return voyage()
 

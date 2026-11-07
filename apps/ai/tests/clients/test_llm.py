@@ -441,3 +441,18 @@ def test_a_user_call_backing_off_before_a_retry_still_holds_background_calls() -
     assert c.llm.call("gemma", "s", "u", SCHEMA, "X") == {}
     assert c.slept == [4] and seen == [1]  # 다시 보내기 전 4초 동안 도는 중
     assert c.llm._active == 0
+
+
+def test_a_stop_while_reading_awaited_sends_nothing() -> None:
+    # awaited를 읽는 사이 맞춤 퀴즈가 세트를 돌려줌(멈춤): 읽은 뒤 보내지 않음(Codex 리뷰 #149)
+    server = Server(reply("{}"))
+    c = Clock(server, gap=0)
+    stop = threading.Event()
+
+    def awaited() -> bool:
+        stop.set()
+        return True
+
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        c.llm.background(awaited).call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [] and c.llm._active == 0
