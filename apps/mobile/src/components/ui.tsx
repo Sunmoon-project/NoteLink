@@ -26,9 +26,11 @@ import Animated, {
   FadeIn,
   FadeInDown,
   FadeOut,
+  LinearTransition,
   SlideInDown,
   SlideOutDown,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withSpring,
   withTiming,
@@ -118,6 +120,10 @@ export function Tap({
   );
 }
 
+const EASE = Easing.out(Easing.cubic);
+/** 목록에서 행이 빠지거나 들어올 때 남은 행이 자리를 메우며 움직인다 (화면에서 직접 만든 목록도 layout에 쓴다) */
+export const LIST_LAYOUT = LinearTransition.duration(MOTION.enter).easing(EASE);
+
 /** 목록 항목이 차례로 떠오르며 나타난다 (index마다 MOTION.stagger, 8번째부터는 같이) */
 export const Appear = ({
   index = 0,
@@ -131,12 +137,107 @@ export const Appear = ({
   <Animated.View
     entering={FadeInDown.duration(MOTION.enter)
       .delay(Math.min(index, 8) * MOTION.stagger)
-      .easing(Easing.out(Easing.cubic))}
+      .easing(EASE)}
+    layout={LIST_LAYOUT}
     className={className}
   >
     {children}
   </Animated.View>
 );
+
+/**
+ * 자리를 그대로 두고 내용만 바꾼다: 상태가 바뀌는 글자 · 아이콘 (재생 ↔ 일시정지 등).
+ * k가 바뀌면 MOTION.exit 동안 반쯤 사라졌다가 새 내용으로 돌아온다. 동작 줄이기면 바로 바꾼다
+ */
+export function Swap({
+  k,
+  children,
+  className,
+}: {
+  k: string | number;
+  children: ReactNode;
+  className?: string;
+}) {
+  const reduced = useReducedMotion();
+  // shown: 지금 보이는 키와 그 키의 마지막 내용 (바뀌는 동안 옛 내용을 보여 주려고)
+  const [shown, setShown] = useState({ k, node: children });
+  const current = shown.k === k || reduced;
+  if (current && (shown.k !== k || shown.node !== children)) setShown({ k, node: children });
+  const opacity = useSharedValue(1);
+  const style = useAnimatedStyle(() => ({ opacity: opacity.get() }));
+  useEffect(() => {
+    const half = MOTION.exit / 2;
+    // 바뀌는 도중 원래 키로 돌아오면 흐려진 채 남지 않게 되살린다
+    if (current) return void opacity.set(withTiming(1, { duration: half, easing: EASE }));
+    opacity.set(withTiming(0, { duration: half, easing: EASE }));
+    // ponytail: 바꾸는 순간은 JS 타이머 — 바쁠 때 몇 프레임 늦을 수 있지만 페이드 자체는 UI 스레드
+    const t = setTimeout(() => {
+      setShown((s) => ({ ...s, k }));
+      opacity.set(withTiming(1, { duration: half, easing: EASE }));
+    }, half);
+    return () => clearTimeout(t);
+  }, [current, k, opacity]);
+  return (
+    <Animated.View className={className} style={style}>
+      {current ? children : shown.node}
+    </Animated.View>
+  );
+}
+
+/** 굴리는 숫자의 한 자리: 0~9를 세로로 쌓아 두고 transform으로 옮긴다 */
+function Digit({ d, h, className }: { d: number; h: number; className?: string }) {
+  const y = useSharedValue(-d * h);
+  useEffect(() => {
+    y.set(withTiming(-d * h, { duration: MOTION.enter, easing: EASE }));
+  }, [d, h, y]);
+  const style = useAnimatedStyle(() => ({ transform: [{ translateY: y.get() }] }));
+  return (
+    <View style={{ height: h, overflow: 'hidden' }}>
+      <Animated.View style={style}>
+        {DIGITS.map((n) => (
+          <Text key={n} className={className} style={TABULAR}>
+            {n}
+          </Text>
+        ))}
+      </Animated.View>
+    </View>
+  );
+}
+const DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+const TABULAR = { fontVariant: ['tabular-nums' as const] };
+
+/**
+ * 바뀌는 숫자를 자리별로 굴린다 (점수 · 횟수 · 시간). 숫자가 아닌 글자(, : %)는 그대로 둔다.
+ * className은 글자 크기 · 색 (Text와 같게). 읽기 도구에는 값 전체를 한 번에 읽힌다
+ */
+export function Roll({ value, className }: { value: string | number; className?: string }) {
+  const s = String(value);
+  // 글자 크기를 키운 설정에서도 맞도록 한 자리 높이를 재서 쓴다
+  const [h, setH] = useState(0);
+  return (
+    <View className="flex-row" accessible accessibilityLabel={s}>
+      <Text
+        className={className}
+        style={[TABULAR, { position: 'absolute', opacity: 0 }]}
+        onLayout={(e) => setH(e.nativeEvent.layout.height)}
+        importantForAccessibility="no"
+      >
+        0
+      </Text>
+      {s.split('').map((c, i) => {
+        // 오른쪽에서 센 자리를 key로 — 자릿수가 늘어도 1의 자리는 1의 자리로 굴러간다
+        const key = s.length - i;
+        return /\d/.test(c) && h > 0 ? (
+          <Digit key={key} d={Number(c)} h={h} className={className} />
+        ) : (
+          <Text key={key} className={className} style={TABULAR}>
+            {c}
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
 
 /** 탭 안의 화면인지 (하단 여백 계산용) */
 const useInTabs = () => useSegments()[0] === '(tabs)';
