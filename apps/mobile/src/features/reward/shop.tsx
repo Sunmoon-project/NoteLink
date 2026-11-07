@@ -617,7 +617,7 @@ export function BoxScreen() {
               <Text className="text-callout font-bold text-ink">보관함</Text>
             </Pressable>
           )}
-          <View className="mt-3 h-32 items-center justify-center rounded-2xl bg-cream">
+          <View className="mt-3 h-32 items-center justify-center rounded-2xl bg-mint">
             <ItemPreview item={cur} large />
             <View className="absolute right-3 bottom-3 rounded-full bg-white px-2 py-0.5">
               <Text className="text-caption2 text-ink">현재 아바타</Text>
