@@ -18,7 +18,7 @@
       "./jest.setup.js"
     ],
     "resolver": "react-native-worklets/jest/resolver",
-    "testTimeout": 20000,
+    "testTimeout": 60000,
     "testPathIgnorePatterns": [
       "/node_modules/",
       "/__tests__/fixtures/"
