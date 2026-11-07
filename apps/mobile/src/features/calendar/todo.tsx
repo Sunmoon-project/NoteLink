@@ -66,7 +66,7 @@ export function TodoSheet({
             key={t._id}
             disabled={toggle.isPending}
             onPress={() => toggle.mutate(t)}
-            className="flex-row items-center gap-3 rounded-2xl border border-line px-4 py-3"
+            className="flex-row items-center gap-3 rounded-2xl bg-fill px-4 py-3"
           >
             <View
               className={cx(
@@ -171,7 +171,7 @@ export function AddTodoSheet({
         ))}
       </View>
       <Label>날짜</Label>
-      <View className="h-12 flex-row items-center rounded-xl border border-line px-4">
+      <View className="h-12 flex-row items-center rounded-xl bg-fill px-4">
         <View className="flex-1 flex-row items-center gap-1.5">
           <CalendarDays size={ICON.sm} color={C.sub} />
           <Text className="text-subhead text-ink">{md(date)}</Text>
