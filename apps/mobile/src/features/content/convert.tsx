@@ -543,14 +543,14 @@ export function ResultScreen() {
 }
 
 export const NoteBody = ({ sections }: { sections: { heading: string; body: string }[] }) => (
-  <View className="gap-5 rounded-2xl bg-cream p-4">
+  <Card className="gap-5 p-5">
     {sections.map((s) => (
       <View key={s.heading}>
         <Text className="text-subhead font-bold text-ink">{s.heading}</Text>
         <Text className="mt-0.5 text-caption text-ink/70">{s.body}</Text>
       </View>
     ))}
-  </View>
+  </Card>
 );
 
 export function DocSummary({
@@ -567,7 +567,7 @@ export function DocSummary({
   return (
     <>
       {file && (
-        <View className="flex-row items-center gap-3 rounded-2xl bg-cream p-3">
+        <Card className="flex-row items-center gap-3 p-4">
           <View className="h-11 w-11 items-center justify-center rounded-lg bg-mint">
             <FileText size={ICON.md} color={C.sub} />
           </View>
@@ -575,20 +575,20 @@ export function DocSummary({
             <Text className="text-callout font-bold text-ink">{file.name}</Text>
             <Text className="text-caption text-sub">{file.meta}</Text>
           </View>
-        </View>
+        </Card>
       )}
       <View className="flex-row items-center gap-1.5 mt-5 mb-2">
         <Pin size={ICON.sm} color={C.sub} />
         <Text className="text-subhead font-bold text-ink">핵심 요약</Text>
       </View>
-      <View className="gap-3 rounded-2xl bg-cream p-4">
+      <Card className="gap-3 p-5">
         {points.map((p) => (
           <View key={p} className="flex-row gap-2">
             <Text className="text-brand">•</Text>
             <Text className="flex-1 text-footnote text-ink">{p}</Text>
           </View>
         ))}
-      </View>
+      </Card>
       <Label>키워드</Label>
       <View className="flex-row flex-wrap gap-2">
         {keywords.map((k) => (
