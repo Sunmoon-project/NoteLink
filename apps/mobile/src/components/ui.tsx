@@ -1111,10 +1111,13 @@ export function Progress({
   value,
   className,
   tone = 'brand',
+  onDark,
 }: {
   value: number;
   className?: string;
   tone?: 'brand' | 'sun' | 'danger';
+  /** 어두운 카드 위 (홈 집중 카드) */
+  onDark?: boolean;
 }) {
   const v = Math.max(0, Math.min(100, value)) / 100;
   const scale = useSharedValue(v);
@@ -1126,7 +1129,11 @@ export function Progress({
     <View
       accessibilityRole="progressbar"
       accessibilityValue={{ min: 0, max: 100, now: Math.round(v * 100) }}
-      className={cx('h-1.5 overflow-hidden rounded-full bg-cream-2', className)}
+      className={cx(
+        'h-1.5 overflow-hidden rounded-full',
+        onDark ? 'bg-white/10' : 'bg-cream-2',
+        className,
+      )}
     >
       <Animated.View
         className={cx(

@@ -30,6 +30,7 @@ const tokens = require('./tokens') as {
     exit: number;
     stagger: number;
   };
+  shadow: { focus: string };
   fontFamily: string;
 };
 
@@ -38,3 +39,5 @@ export const C = tokens.colors;
 export const ICON = tokens.icon;
 export const MOTION = tokens.motion;
 export const FONT = tokens.fontFamily;
+/** 그림자 — style={{ boxShadow: SHADOW.focus }}, 화면마다 하나만 */
+export const SHADOW = tokens.shadow;

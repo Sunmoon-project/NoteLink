@@ -69,6 +69,9 @@ const motion = {
   stagger: 40,
 };
 
+// 그림자는 화면마다 주인공 하나에만 (홈 집중 카드). React Native boxShadow 값
+const shadow = { focus: '0px 8px 24px rgba(31, 35, 40, 0.16)' };
+
 const fontFamily = 'Pretendard';
 
-module.exports = { colors, fontSize, spacing, borderRadius, icon, motion, fontFamily };
+module.exports = { colors, fontSize, spacing, borderRadius, icon, motion, shadow, fontFamily };
