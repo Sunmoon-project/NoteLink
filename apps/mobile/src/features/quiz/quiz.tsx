@@ -44,8 +44,11 @@ import {
   Btn,
   Canvas,
   Card,
+  Group,
+  Label,
   Loading,
   Progress,
+  Row,
   Screen,
   Search,
   Tap,
@@ -129,29 +132,30 @@ export function QuizHomeScreen() {
                 />
               )}
             </Card>
-            <View className="mt-5 flex-row flex-wrap justify-between gap-y-4">
+            {/* 바로가기는 같은 모양 카드 격자 대신 한 그룹의 목록 행 (디자인 점검: 찍어 낸 카드 격자) */}
+            <Label>바로가기</Label>
+            <Group>
               {(
                 [
-                  [PenLine, '퀴즈 만들기', '/(tabs)/quiz/notes'],
-                  [Layers, '플래시 카드', '/play/flash'],
-                  [Archive, '퀴즈 보관함', '/play/box'],
-                  [Sparkles, '유사 퀴즈', '/play/similar'],
+                  [PenLine, '퀴즈 만들기', '노트를 골라 새 퀴즈를 만들어요', '/(tabs)/quiz/notes'],
+                  [Layers, '플래시 카드', '외울 내용을 넘겨 보며 복습해요', '/play/flash'],
+                  [Archive, '퀴즈 보관함', '저장한 문제를 다시 풀어요', '/play/box'],
+                  [Sparkles, '유사 퀴즈', '틀린 문제와 비슷한 문제를 풀어요', '/play/similar'],
                 ] as const
-              ).map(([Ic, l, href]) => (
-                <Card
+              ).map(([Ic, l, sub, href]) => (
+                <Row
                   key={l}
+                  icon={Ic}
+                  sub={sub}
+                  chevron
                   onPress={() =>
                     router.push({ pathname: href as never, params: { setId: latest._id } })
                   }
-                  className="w-[47.5%] gap-4 p-6"
                 >
-                  <View className="h-10 w-10 items-center justify-center rounded-xl bg-mint">
-                    <Ic size={ICON.md} color={C.brand} />
-                  </View>
-                  <Text className="text-subhead font-semibold text-ink">{l}</Text>
-                </Card>
+                  {l}
+                </Row>
               ))}
-            </View>
+            </Group>
           </>
         ) : (
           sets.isSuccess && (
