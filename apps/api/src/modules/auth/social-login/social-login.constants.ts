@@ -4,3 +4,9 @@
  * (apps/mobile/src/lib/social-auth.ts 의 REDIRECT 와 같아야 한다)
  */
 export const APP_REDIRECT_URI = 'notelink://auth/callback';
+
+/** `createGoogleConfig`로 만든 설정을 이 이름으로 넣어 둔다(auth.module에서 연결) */
+export const GOOGLE_CONFIG = 'GOOGLE_CONFIG';
+
+/** 로그인을 시작한 뒤 구글 로그인을 마칠 때까지 기다려 주는 시간 */
+export const ATTEMPT_TTL_MS = 10 * 60 * 1000;
