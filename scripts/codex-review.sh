@@ -404,6 +404,16 @@ strip_prefix() {
   P="$1" awk 'BEGIN { p = ENVIRON["P"] } p != "" { while ((i = index($0, p)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(p)) } { print }'
 }
 
+# 리뷰 글에서 작업 폴더(WT) 경로를 지워 저장소 기준 경로만 남김. Codex는 같은 폴더를
+# 역슬래시(C:\...\) · 슬래시(C:/.../, cygpath -m) · POSIX(/tmp/...) 꼴 중 아무거나로 씀(#30).
+# Linux에는 cygpath가 없어 POSIX 꼴만 지움
+strip_worktree() {
+  local wt="$1" win mixed
+  win=$(cygpath -w "$wt" 2>/dev/null || true)
+  mixed=$(cygpath -m "$wt" 2>/dev/null || true)
+  strip_prefix "${win:+$win\\}" | strip_prefix "${mixed:+$mixed/}" | strip_prefix "$wt/"
+}
+
 main() {
   set -euo pipefail
 
@@ -664,7 +674,6 @@ EOF
     exit 1
   fi
 
-  WIN_WT=$(cygpath -w "$WT" 2>/dev/null || true)
   BODY_FILE="$WORK/body.md"
   {
     echo "$HEADING"
@@ -677,7 +686,7 @@ EOF
     echo
     echo "---"
     echo
-    strip_prefix "${WIN_WT:+$WIN_WT\\}" < "$REVIEW" | strip_prefix "$WT/"
+    strip_worktree "$WT" < "$REVIEW"
     echo
     echo "<!-- $MARKER sha=$HEAD_SHA round=$ROUND -->"
   } > "$BODY_FILE"
