@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { GOOGLE_CALLBACK_PATH, type GoogleConfig } from '../src/config/google.config.js';
 import type { SocialLoginAttemptDocument } from '../src/modules/auth/schemas/social-login-attempt.schema.js';
-import type { GoogleOAuthClient } from '../src/modules/auth/social-login/google-oauth.client.js';
+import { GoogleOAuthClient } from '../src/modules/auth/social-login/google-oauth.client.js';
 import {
   ATTEMPT_TTL_MS,
   CALLBACK_PROCESSING_MARGIN_MS,
@@ -15,6 +15,7 @@ import {
   hashCode,
   SocialLoginService,
 } from '../src/modules/auth/social-login/social-login.service.js';
+import { SocialProviderRegistry } from '../src/modules/auth/social-login/social-provider-registry.js';
 import {
   type SocialProfile,
   SocialProviderError,
@@ -134,22 +135,27 @@ function setup(
 ) {
   const fake = createFakeAttempts();
   const userId = new Types.ObjectId();
+  // 실제 구글 어댑터의 로그인 주소 만들기(buildAuthUrl)는 그대로 쓰고, 구글과 통신하는 fetchProfile만 가짜로 바꾼다
+  const realGoogle = new GoogleOAuthClient(CONFIG);
   const googleClient = {
+    name: 'google' as const,
+    buildAuthUrl: (state: string) => realGoogle.buildAuthUrl(state),
     fetchProfile: vi.fn(options.profile ?? (() => Promise.resolve(PROFILE))),
-  } as unknown as GoogleOAuthClient & { fetchProfile: ReturnType<typeof vi.fn> };
+  };
   const users = {
     findOrCreate: vi.fn(
       options.user ??
         (() => Promise.resolve({ kind: 'signed_in', userId, created: true } as SocialUserResult)),
     ),
   } as unknown as SocialUserService & { findOrCreate: ReturnType<typeof vi.fn> };
-  const service = new SocialLoginService(CONFIG, fake.model, googleClient, users);
+  const registry = new SocialProviderRegistry([googleClient]);
+  const service = new SocialLoginService(registry, fake.model, users);
   return { service, ...fake, googleClient, users, userId };
 }
 
 /** 시작 → 구글이 돌려준 state를 꺼낸다 */
 async function started(s: ReturnType<typeof setup>) {
-  const href = await s.service.startGoogle(PARAMS);
+  const href = await s.service.start('google', PARAMS);
   const oauthState = new URL(href).searchParams.get('state')!;
   return { href, oauthState };
 }
@@ -177,7 +183,7 @@ describe('SocialLoginService.startGoogle', () => {
   it('로그인 시도를 저장한다', async () => {
     const { service, rows } = setup();
 
-    await service.startGoogle(PARAMS);
+    await service.start('google', PARAMS);
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -215,7 +221,7 @@ describe('SocialLoginService.startGoogle', () => {
   it('oauthState는 추측할 수 없는 32바이트 base64url(43자)이다', async () => {
     const { service, rows } = setup();
 
-    await service.startGoogle(PARAMS);
+    await service.start('google', PARAMS);
 
     expect(rows[0]!.oauthState).toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
@@ -223,7 +229,7 @@ describe('SocialLoginService.startGoogle', () => {
   it('시작할 때마다 다른 oauthState를 만든다', async () => {
     const { service, rows } = setup();
 
-    await Promise.all(Array.from({ length: 20 }, () => service.startGoogle(PARAMS)));
+    await Promise.all(Array.from({ length: 20 }, () => service.start('google', PARAMS)));
 
     expect(new Set(rows.map((a) => a.oauthState)).size).toBe(20);
   });
@@ -233,7 +239,7 @@ describe('SocialLoginService.startGoogle', () => {
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const { service, rows } = setup();
 
-    await service.startGoogle(PARAMS);
+    await service.start('google', PARAMS);
 
     expect(ATTEMPT_TTL_MS).toBe(10 * 60 * 1000);
     expect(rows[0]!.expiresAt.toISOString()).toBe('2026-01-01T00:10:00.000Z');
@@ -252,7 +258,7 @@ describe('SocialLoginService.startGoogle', () => {
     const { service, rows, failures } = setup();
     failures.create = 1;
 
-    await expect(service.startGoogle(PARAMS)).rejects.toThrow('DB 쓰기 실패');
+    await expect(service.start('google', PARAMS)).rejects.toThrow('DB 쓰기 실패');
 
     expect(rows).toHaveLength(0);
   });
@@ -264,7 +270,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup();
       const { oauthState } = await started(s);
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
       const { base, params } = parse(href);
       expect(base).toBe('notelink://auth/callback');
@@ -277,7 +283,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup();
       const { oauthState } = await started(s);
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
       expect(href).not.toContain(oauthState);
       expect(parse(href).params.get('state')).toBe(PARAMS.appState);
@@ -287,9 +293,11 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup();
       const { oauthState } = await started(s);
 
-      await s.service.handleGoogleCallback(callbackOf(oauthState, 'the-google-code'));
+      await s.service.handleCallback('google', callbackOf(oauthState, 'the-google-code'));
 
-      expect(s.googleClient.fetchProfile).toHaveBeenCalledExactlyOnceWith('the-google-code');
+      expect(s.googleClient.fetchProfile).toHaveBeenCalledExactlyOnceWith('the-google-code', {
+        oauthState,
+      });
       expect(s.users.findOrCreate).toHaveBeenCalledExactlyOnceWith('google', PROFILE);
     });
 
@@ -297,7 +305,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup();
       const { oauthState } = await started(s);
 
-      await s.service.handleGoogleCallback(callbackOf(oauthState));
+      await s.service.handleCallback('google', callbackOf(oauthState));
 
       expect(s.rows[0]).toMatchObject({ outcome: 'signed_in', userId: s.userId });
     });
@@ -306,7 +314,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup();
       const { oauthState } = await started(s);
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
       const code = parse(href).params.get('code')!;
       expect(s.rows[0]!.codeHash).toBe(hashCode(code));
@@ -321,7 +329,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const { oauthState } = await started(s);
       vi.setSystemTime(new Date('2026-01-01T00:03:00Z')); // 로그인 시작 3분 뒤 구글에서 돌아옴
 
-      await s.service.handleGoogleCallback(callbackOf(oauthState));
+      await s.service.handleCallback('google', callbackOf(oauthState));
 
       expect(CODE_TTL_MS).toBe(2 * 60 * 1000);
       expect(s.rows[0]!.expiresAt.toISOString()).toBe('2026-01-01T00:05:00.000Z');
@@ -333,7 +341,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
 
       for (let i = 0; i < 20; i++) {
         const { oauthState } = await started(s);
-        const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+        const href = await s.service.handleCallback('google', callbackOf(oauthState));
         codes.add(parse(href).params.get('code')!);
       }
 
@@ -344,7 +352,10 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup();
       const { oauthState } = await started(s);
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState, 'the-google-code'));
+      const href = await s.service.handleCallback(
+        'google',
+        callbackOf(oauthState, 'the-google-code'),
+      );
 
       expect(href).not.toContain(CONFIG.clientSecret);
       expect(href).not.toContain('the-google-code');
@@ -358,7 +369,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup({ user: exists });
       const { oauthState } = await started(s);
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
       expect(parse(href).params.get('code')).not.toBeNull();
       expect(parse(href).params.get('state')).toBe(PARAMS.appState);
@@ -374,7 +385,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
         await started(s);
 
         const error = await s.service
-          .handleGoogleCallback(callbackOf(stateOf()))
+          .handleCallback('google', callbackOf(stateOf()))
           .catch((e: unknown) => e);
 
         expect(error).toBeInstanceOf(BadRequestException);
@@ -394,7 +405,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       vi.setSystemTime(new Date('2026-01-01T00:10:01Z')); // 10분 + 1초 뒤
 
       const error = await s.service
-        .handleGoogleCallback(callbackOf(oauthState))
+        .handleCallback('google', callbackOf(oauthState))
         .catch((e: unknown) => e);
 
       expect(error).toBeInstanceOf(BadRequestException);
@@ -409,7 +420,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const { oauthState } = await started(s); // 만료: 00:10:00
       vi.setSystemTime(new Date('2026-01-01T00:09:29Z')); // 31초 남음
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
       expect(CALLBACK_PROCESSING_MARGIN_MS).toBe(30 * 1000);
       expect(parse(href).params.get('code')).not.toBeNull();
@@ -423,7 +434,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       vi.setSystemTime(new Date('2026-01-01T00:09:30Z')); // 정확히 30초 남음
 
       const error = await s.service
-        .handleGoogleCallback(callbackOf(oauthState))
+        .handleCallback('google', callbackOf(oauthState))
         .catch((e: unknown) => e);
 
       expect(error).toBeInstanceOf(BadRequestException);
@@ -438,7 +449,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       vi.setSystemTime(new Date('2026-01-01T00:09:59Z')); // 1초 남음
 
       const error = await s.service
-        .handleGoogleCallback(callbackOf(oauthState))
+        .handleCallback('google', callbackOf(oauthState))
         .catch((e: unknown) => e);
 
       expect(error).toBeInstanceOf(BadRequestException);
@@ -451,7 +462,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const state = 'z'.repeat(43);
 
       const error = (await s.service
-        .handleGoogleCallback(callbackOf(state))
+        .handleCallback('google', callbackOf(state))
         .catch((e: unknown) => e)) as BadRequestException;
 
       expect(JSON.stringify(error.getResponse())).not.toContain(state);
@@ -462,10 +473,10 @@ describe('SocialLoginService.handleGoogleCallback', () => {
     it('이미 처리된 state로 다시 오면 400이고 구글에 다시 묻지 않는다', async () => {
       const s = setup();
       const { oauthState } = await started(s);
-      await s.service.handleGoogleCallback(callbackOf(oauthState));
+      await s.service.handleCallback('google', callbackOf(oauthState));
 
       const error = await s.service
-        .handleGoogleCallback(callbackOf(oauthState))
+        .handleCallback('google', callbackOf(oauthState))
         .catch((e: unknown) => e);
 
       expect(error).toBeInstanceOf(BadRequestException);
@@ -478,8 +489,8 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const { oauthState } = await started(s);
 
       const results = await Promise.allSettled([
-        s.service.handleGoogleCallback(callbackOf(oauthState)),
-        s.service.handleGoogleCallback(callbackOf(oauthState)),
+        s.service.handleCallback('google', callbackOf(oauthState)),
+        s.service.handleCallback('google', callbackOf(oauthState)),
       ]);
 
       expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
@@ -492,7 +503,9 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const { oauthState } = await started(s);
 
       const results = await Promise.allSettled(
-        Array.from({ length: 20 }, () => s.service.handleGoogleCallback(callbackOf(oauthState))),
+        Array.from({ length: 20 }, () =>
+          s.service.handleCallback('google', callbackOf(oauthState)),
+        ),
       );
 
       expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
@@ -502,10 +515,10 @@ describe('SocialLoginService.handleGoogleCallback', () => {
     it('실패한 시도(취소)로 다시 와도 처리되지 않는다 (지워졌다)', async () => {
       const s = setup();
       const { oauthState } = await started(s);
-      await s.service.handleGoogleCallback(callbackOf(oauthState, null, 'access_denied'));
+      await s.service.handleCallback('google', callbackOf(oauthState, null, 'access_denied'));
 
       const error = await s.service
-        .handleGoogleCallback(callbackOf(oauthState))
+        .handleCallback('google', callbackOf(oauthState))
         .catch((e: unknown) => e);
 
       expect(error).toBeInstanceOf(BadRequestException);
@@ -518,7 +531,8 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup();
       const { oauthState } = await started(s);
 
-      const href = await s.service.handleGoogleCallback(
+      const href = await s.service.handleCallback(
+        'google',
         callbackOf(oauthState, null, 'access_denied'),
       );
 
@@ -533,7 +547,8 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup();
       const { oauthState } = await started(s);
 
-      const href = await s.service.handleGoogleCallback(
+      const href = await s.service.handleCallback(
+        'google',
         callbackOf(oauthState, null, '<script>alert(1)</script>'),
       );
 
@@ -545,7 +560,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup();
       const { oauthState } = await started(s);
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState, null, null));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState, null, null));
 
       expect(parse(href).params.get('error')).toBe('invalid_code');
     });
@@ -554,7 +569,10 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup();
       const { oauthState } = await started(s);
 
-      await s.service.handleGoogleCallback(callbackOf(oauthState, 'some-code', 'access_denied'));
+      await s.service.handleCallback(
+        'google',
+        callbackOf(oauthState, 'some-code', 'access_denied'),
+      );
 
       expect(s.googleClient.fetchProfile).not.toHaveBeenCalled();
     });
@@ -563,7 +581,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup();
       const { oauthState } = await started(s);
 
-      await s.service.handleGoogleCallback(callbackOf(oauthState, null, 'access_denied'));
+      await s.service.handleCallback('google', callbackOf(oauthState, null, 'access_denied'));
 
       expect(s.rows).toHaveLength(0);
     });
@@ -581,7 +599,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup({ profile: () => Promise.reject(failure) });
       const { oauthState } = await started(s);
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
       expect(parse(href).params.get('error')).toBe(expected);
       expect(parse(href).params.get('state')).toBe(PARAMS.appState);
@@ -598,7 +616,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       });
       const { oauthState } = await started(s);
 
-      await s.service.handleGoogleCallback(callbackOf(oauthState, 'google-code-xyz'));
+      await s.service.handleCallback('google', callbackOf(oauthState, 'google-code-xyz'));
 
       expect(warn).toHaveBeenCalledTimes(1);
       const logged = String(warn.mock.calls[0]![0]);
@@ -613,7 +631,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup({ user: () => Promise.reject(new Error('DB 연결 끊김')) });
       const { oauthState } = await started(s);
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
       expect(parse(href).params.get('error')).toBe('server_error');
       expect(s.rows).toHaveLength(0);
@@ -624,7 +642,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const s = setup({ user: () => Promise.reject(new Error(secret)) });
       const { oauthState } = await started(s);
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
       expect(href).not.toContain(secret);
     });
@@ -634,7 +652,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const { oauthState } = await started(s);
       s.failures.updateOne = 1;
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
       expect(parse(href).params.get('error')).toBe('server_error');
       expect(parse(href).params.get('code')).toBeNull();
@@ -650,7 +668,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
         const { oauthState } = await started(s);
         s.hooks.beforeUpdate = () => s.rows.splice(0, s.rows.length); // 구글 호출 후 저장 직전에 문서가 사라짐
 
-        const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+        const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
         const { params } = parse(href);
         expect(params.get('error')).toBe('invalid_code');
@@ -665,7 +683,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
         const { oauthState } = await started(s);
         s.hooks.beforeUpdate = () => s.rows.splice(0, s.rows.length);
 
-        await s.service.handleGoogleCallback(callbackOf(oauthState));
+        await s.service.handleCallback('google', callbackOf(oauthState));
 
         expect(warn).toHaveBeenCalledTimes(1);
         expect(String(warn.mock.calls[0]![0])).toContain('사라졌');
@@ -680,7 +698,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
           s.rows[0]!.codeHash = 'somebody-elses-hash'; // 점유가 다른 쪽으로 넘어간 상황
         };
 
-        const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+        const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
         expect(parse(href).params.get('code')).toBeNull();
         expect(parse(href).params.get('error')).toBe('invalid_code');
@@ -700,7 +718,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
         const { oauthState } = await started(s);
         s.hooks.beforeUpdate = () => s.rows.splice(0, s.rows.length);
 
-        await expect(s.service.handleGoogleCallback(callbackOf(oauthState))).resolves.toContain(
+        await expect(s.service.handleCallback('google', callbackOf(oauthState))).resolves.toContain(
           'error=',
         );
         warn.mockRestore();
@@ -710,7 +728,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
         const s = setup();
         const { oauthState } = await started(s);
 
-        const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+        const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
         expect(parse(href).params.get('code')).not.toBeNull();
         expect(s.rows[0]!.outcome).toBe('signed_in');
@@ -724,7 +742,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const { oauthState } = await started(s);
       s.failures.deleteOne = 1;
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
       expect(parse(href).params.get('error')).toBe('unavailable');
     });
@@ -736,7 +754,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       const { oauthState } = await started(s);
       s.failures.deleteOne = 1;
 
-      const href = await s.service.handleGoogleCallback(callbackOf(oauthState));
+      const href = await s.service.handleCallback('google', callbackOf(oauthState));
 
       expect(parse(href).params.get('code')).toBeNull();
       expect(s.rows[0]!.userId).toBeNull(); // 사용자와 연결되지 않은 채 점유 상태로만 남는다

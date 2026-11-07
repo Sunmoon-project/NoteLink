@@ -184,7 +184,7 @@ describe('GET /api/v1/auth/social/:provider/start', () => {
   });
 
   describe('지원하지 않는 로그인 방식', () => {
-    it.each(['kakao', 'naver', 'facebook', 'Google', 'GOOGLE'])(
+    it.each(['twitter', 'facebook', 'Google', 'GOOGLE', 'KAKAO', 'NAVER'])(
       '%s는 404 { code, message } 이고 아무것도 저장하지 않는다',
       async (provider) => {
         const res = await request(app.getHttpServer())

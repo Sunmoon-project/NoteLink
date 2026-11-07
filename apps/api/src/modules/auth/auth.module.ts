@@ -5,6 +5,10 @@ import { MongooseModule } from '@nestjs/mongoose';
 
 import { createGoogleConfig } from '../../config/google.config.js';
 import { createJwtConfig } from '../../config/jwt.config.js';
+import { createKakaoConfig } from '../../config/kakao.config.js';
+import { createNaverConfig } from '../../config/naver.config.js';
+import { AuthTokenController } from './auth-token.controller.js';
+import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { RefreshToken, RefreshTokenSchema } from './schemas/refresh-token.schema.js';
 import {
   SocialLoginAttempt,
@@ -12,10 +16,18 @@ import {
 } from './schemas/social-login-attempt.schema.js';
 import { User, UserSchema } from './schemas/user.schema.js';
 import { GoogleOAuthClient } from './social-login/google-oauth.client.js';
+import { KakaoOAuthClient } from './social-login/kakao-oauth.client.js';
+import { NaverOAuthClient } from './social-login/naver-oauth.client.js';
 import { SocialExchangeService } from './social-login/social-exchange.service.js';
 import { SocialLoginController } from './social-login/social-login.controller.js';
-import { GOOGLE_CONFIG } from './social-login/social-login.constants.js';
+import {
+  GOOGLE_CONFIG,
+  KAKAO_CONFIG,
+  NAVER_CONFIG,
+  SOCIAL_PROVIDER_ADAPTERS,
+} from './social-login/social-login.constants.js';
 import { SocialLoginService } from './social-login/social-login.service.js';
+import { SocialProviderRegistry } from './social-login/social-provider-registry.js';
 import { SocialUserService } from './social-login/social-user.service.js';
 import { JWT_CONFIG, TokenService } from './token.service.js';
 
@@ -32,7 +44,7 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       { name: User.name, schema: UserSchema },
     ]),
   ],
-  controllers: [SocialLoginController],
+  controllers: [AuthTokenController, SocialLoginController],
   providers: [
     // JWT_* 환경변수를 읽고 검증한다. 없거나 잘못되면 서버가 시작할 때 바로 실패한다
     {
@@ -46,13 +58,39 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       inject: [ConfigService],
       useFactory: createGoogleConfig,
     },
+    // KAKAO_* 환경변수도 같은 방식으로 읽고 검증한다
+    {
+      provide: KAKAO_CONFIG,
+      inject: [ConfigService],
+      useFactory: createKakaoConfig,
+    },
+    // NAVER_* 환경변수도 같은 방식으로 읽고 검증한다
+    {
+      provide: NAVER_CONFIG,
+      inject: [ConfigService],
+      useFactory: createNaverConfig,
+    },
     TokenService,
+    JwtAuthGuard,
     GoogleOAuthClient,
+    KakaoOAuthClient,
+    NaverOAuthClient,
+    // 지원하는 소셜 로그인 제공자 목록
+    {
+      provide: SOCIAL_PROVIDER_ADAPTERS,
+      inject: [GoogleOAuthClient, KakaoOAuthClient, NaverOAuthClient],
+      useFactory: (google: GoogleOAuthClient, kakao: KakaoOAuthClient, naver: NaverOAuthClient) => [
+        google,
+        kakao,
+        naver,
+      ],
+    },
+    SocialProviderRegistry,
     SocialUserService,
     SocialLoginService,
     SocialExchangeService,
   ],
-  // 이메일 · 소셜 로그인이 같은 토큰 발급 로직을 쓰도록 내보낸다
-  exports: [TokenService],
+  // 이메일 · 소셜 로그인이 같은 토큰 발급 로직을 쓰고, 다른 모듈이 JwtAuthGuard로 요청을 인증할 수 있도록 내보낸다
+  exports: [TokenService, JwtAuthGuard],
 })
 export class AuthModule {}

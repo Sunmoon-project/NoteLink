@@ -65,13 +65,27 @@ interface TokenRow {
   revokedAt: Date | null;
 }
 
+/** 가짜 어댑터가 실제 구글 로그인 주소를 만들 수 있도록 서버가 읽는 것과 같은 테스트 환경값으로 설정을 만든다 */
+function googleConfig() {
+  return {
+    clientId: TEST_ENV.GOOGLE_CLIENT_ID!,
+    clientSecret: TEST_ENV.GOOGLE_CLIENT_SECRET!,
+    redirectUri: TEST_ENV.GOOGLE_REDIRECT_URI!,
+  };
+}
+
 describe('구글 로그인 전체 흐름: 시작 → 콜백 → 코드 교환 (구글만 가짜, 나머지는 실제 코드)', () => {
   let app: INestApplication;
   let jwt: JwtService;
   const attempts: Attempt[] = [];
   const users: UserRow[] = [];
   const refreshTokens: TokenRow[] = [];
-  const google = { fetchProfile: vi.fn<(code: string) => Promise<SocialProfile>>() };
+  // 구글과 통신하는 fetchProfile만 가짜로 바꾼다. 로그인 주소 만들기(buildAuthUrl)는 실제 구글 어댑터가 그대로 쓰인다
+  const google = {
+    name: 'google' as const,
+    buildAuthUrl: (state: string) => new GoogleOAuthClient(googleConfig()).buildAuthUrl(state),
+    fetchProfile: vi.fn<(code: string) => Promise<SocialProfile>>(),
+  };
 
   beforeAll(async () => {
     stubAppEnv();
@@ -500,7 +514,7 @@ describe('구글 로그인 전체 흐름: 시작 → 콜백 → 코드 교환 (�
       expect(res.body).toEqual({ code: 'VALIDATION_FAILED', message: expect.any(String) });
     });
 
-    it.each(['kakao', 'naver', 'facebook', 'Google'])(
+    it.each(['twitter', 'facebook', 'Google', 'KAKAO', 'NAVER'])(
       '%s는 404 NOT_FOUND 이다',
       async (provider) => {
         const res = await request(app.getHttpServer())

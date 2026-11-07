@@ -5,17 +5,15 @@ import {
   Header,
   HttpCode,
   HttpStatus,
-  NotFoundException,
   Param,
   Post,
   Query,
   Redirect,
 } from '@nestjs/common';
 
-import { parseGoogleCallbackQuery } from './google-callback-query.js';
+import { parseSocialCallbackQuery } from './social-callback-query.js';
 import { parseSocialExchangeBody } from './social-exchange-body.js';
 import { type SocialLoginResult, SocialExchangeService } from './social-exchange.service.js';
-import { NOT_FOUND } from './social-login.constants.js';
 import { SocialLoginService } from './social-login.service.js';
 import { parseSocialStartQuery } from './social-start-query.js';
 
@@ -28,24 +26,25 @@ export class SocialLoginController {
   ) {}
 
   /**
-   * 구글이 로그인을 마친 사용자를 돌려보내는 주소. 구글 콘솔의 "승인된 리디렉션 URI"와 같은 경로다
-   * (`GOOGLE_CALLBACK_PATH`). 1회용 코드를 만들어 브라우저를 앱(notelink://auth/callback)으로 돌려보낸다.
-   * 구글에서만 오는 주소라서 provider를 받지 않고 `google`로 고정한다.
+   * 제공자가 로그인을 마친 사용자를 돌려보내는 주소. 각 제공자 콘솔의 "승인된 리디렉션 URI"와 같은 경로다
+   * (예: 구글 `GOOGLE_CALLBACK_PATH`). 1회용 코드를 만들어 브라우저를 앱(notelink://auth/callback)으로 돌려보낸다.
    */
-  @Get('google/callback')
+  @Get(':provider/callback')
   @Redirect()
   // 앱 주소에 1회용 코드가 들어 있으므로 브라우저나 중간 서버가 저장해 두지 않게 한다
   @Header('Cache-Control', 'no-store')
-  async googleCallback(
+  async callback(
+    @Param('provider') provider: string,
     @Query() query: Record<string, unknown>,
   ): Promise<{ url: string; statusCode: number }> {
-    const url = await this.socialLogin.handleGoogleCallback(parseGoogleCallbackQuery(query));
+    // 지원하지 않는 제공자는 쿼리 검증 전에 404로 돌려보낸다(시작 · 교환과 같은 순서)
+    this.socialLogin.provider(provider);
+    const url = await this.socialLogin.handleCallback(provider, parseSocialCallbackQuery(query));
     return { url, statusCode: HttpStatus.FOUND };
   }
 
   /**
    * 앱이 시스템 브라우저로 여는 주소. 로그인 시도를 저장하고 브라우저를 제공자 로그인 화면으로 보낸다.
-   * 아직 구글만 지원한다. 카카오 · 네이버는 구글과 같은 구조로 뒤에 추가한다.
    */
   @Get(':provider/start')
   @Redirect()
@@ -55,10 +54,9 @@ export class SocialLoginController {
     @Param('provider') provider: string,
     @Query() query: Record<string, unknown>,
   ): Promise<{ url: string; statusCode: number }> {
-    if (provider !== 'google') {
-      throw new NotFoundException({ code: NOT_FOUND, message: '지원하지 않는 로그인 방식이에요' });
-    }
-    const url = await this.socialLogin.startGoogle(parseSocialStartQuery(query));
+    // 지원하지 않는 제공자는 쿼리 검증 전에 404로 돌려보낸다
+    this.socialLogin.provider(provider);
+    const url = await this.socialLogin.start(provider, parseSocialStartQuery(query));
     return { url, statusCode: HttpStatus.FOUND };
   }
 
@@ -75,9 +73,8 @@ export class SocialLoginController {
     @Param('provider') provider: string,
     @Body() body: unknown,
   ): Promise<{ data: SocialLoginResult }> {
-    if (provider !== 'google') {
-      throw new NotFoundException({ code: NOT_FOUND, message: '지원하지 않는 로그인 방식이에요' });
-    }
-    return { data: await this.exchange.exchange(parseSocialExchangeBody(body)) };
+    // 지원하지 않는 제공자는 본문 검증 전에 404로 돌려보낸다
+    this.socialLogin.provider(provider);
+    return { data: await this.exchange.exchange(provider, parseSocialExchangeBody(body)) };
   }
 }
