@@ -45,12 +45,19 @@ describe('토큰 갱신 · 로그아웃 · 인증 가드 (로그인 방식과 �
 
   beforeAll(async () => {
     stubAppEnv();
-    // refresh_tokens: 서비스가 넘긴 조건(해시 · 폐기 여부 · 만료)을 그대로 해석한다
+    // refresh_tokens: 서비스가 넘긴 조건(해시 · 사용자 · 폐기 여부 · 만료)을 있는 그대로 해석한다.
+    // 조건에 없는 항목은 따지지 않으므로, 서비스가 `userId`만으로 폐기하는 식으로 잘못 구현돼도 그대로 드러난다
     const matches = (
       r: TokenRow,
-      f: { tokenHash: string; revokedAt?: null; expiresAt?: { $gt: Date } },
+      f: {
+        tokenHash?: string;
+        userId?: Types.ObjectId;
+        revokedAt?: null;
+        expiresAt?: { $gt: Date };
+      },
     ) =>
-      r.tokenHash === f.tokenHash &&
+      (f.tokenHash === undefined || r.tokenHash === f.tokenHash) &&
+      (f.userId === undefined || r.userId.equals(f.userId)) &&
       (!('revokedAt' in f) || r.revokedAt === f.revokedAt) &&
       (!f.expiresAt || r.expiresAt > f.expiresAt.$gt);
     const refreshModel = {
@@ -103,9 +110,11 @@ describe('토큰 갱신 · 로그아웃 · 인증 가드 (로그인 방식과 �
     tokens.length = 0;
   });
 
-  /** 로그인한 것처럼 토큰을 발급한다(어떤 방식으로 로그인했든 서버가 하는 일은 같다) */
-  async function signIn() {
-    const userId = new Types.ObjectId().toHexString();
+  /**
+   * 로그인한 것처럼 토큰을 발급한다(어떤 방식으로 로그인했든 서버가 하는 일은 같다).
+   * 같은 사용자가 여러 기기에서 로그인한 상황은 같은 `userId`를 넘겨 여러 번 호출해서 만든다.
+   */
+  async function signIn(userId: string = new Types.ObjectId().toHexString()) {
     const issued = await tokenService.issue(userId);
     return { ...issued, user: { _id: userId } };
   }
@@ -303,16 +312,52 @@ describe('토큰 갱신 · 로그아웃 · 인증 가드 (로그인 방식과 �
       expect(res.body.code).toBe('AUTH_TOKEN_EXPIRED');
     });
 
-    it('다른 기기의 토큰은 그대로 쓸 수 있다 (그 기기만 로그아웃)', async () => {
-      const phone = await signIn();
-      const tablet = await signIn();
+    it('같은 사용자의 다른 기기 토큰은 그대로 쓸 수 있다 (로그아웃한 기기의 토큰만 갱신에 실패한다)', async () => {
+      const userId = new Types.ObjectId().toHexString();
+      const phone = await signIn(userId);
+      const tablet = await signIn(userId);
+      // 같은 사용자의 서로 다른 두 기기 토큰이어야 이 시험이 의미가 있다
+      expect(phone.user._id).toBe(tablet.user._id);
+      expect(phone.refreshToken).not.toBe(tablet.refreshToken);
+
       await logout(phone.refreshToken);
+
+      // 로그아웃 직후, 폐기된 것은 로그아웃한 기기의 행 하나뿐이다(갱신은 쓴 토큰도 폐기하므로 갱신 전에 확인한다)
+      const rows = tokens.filter((t) => t.userId.toHexString() === userId);
+      expect(rows).toHaveLength(2);
+      expect(rows.filter((t) => t.revokedAt !== null)).toHaveLength(1);
 
       const phoneRefresh = await refresh(phone.refreshToken);
       const tabletRefresh = await refresh(tablet.refreshToken);
-
       expect(phoneRefresh.status).toBe(401);
+      expect(phoneRefresh.body.code).toBe('AUTH_TOKEN_EXPIRED');
       expect(tabletRefresh.status).toBe(200);
+    });
+
+    it('로그아웃하지 않은 기기는 로그아웃한 뒤에도 계속 갱신할 수 있다', async () => {
+      const userId = new Types.ObjectId().toHexString();
+      const phone = await signIn(userId);
+      const tablet = await signIn(userId);
+      await logout(phone.refreshToken);
+
+      const first = await refresh(tablet.refreshToken);
+      const second = await refresh(first.body.data.refreshToken);
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect((await refresh(phone.refreshToken)).status).toBe(401);
+    });
+
+    it('두 기기 모두 로그아웃하면 둘 다 갱신할 수 없다', async () => {
+      const userId = new Types.ObjectId().toHexString();
+      const phone = await signIn(userId);
+      const tablet = await signIn(userId);
+
+      await logout(phone.refreshToken);
+      await logout(tablet.refreshToken);
+
+      expect((await refresh(phone.refreshToken)).status).toBe(401);
+      expect((await refresh(tablet.refreshToken)).status).toBe(401);
     });
 
     it('로그아웃해도 이미 발급된 access 토큰은 만료(15분)까지 유효하다 (access는 서버가 상태를 갖지 않는다)', async () => {
