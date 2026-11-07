@@ -288,7 +288,7 @@ export function Screen({
       onScroll={onScroll}
       scrollEventThrottle={32}
       keyboardShouldPersistTaps="handled"
-      contentContainerClassName={cx(pad && 'px-5 pb-8', className)}
+      contentContainerClassName={cx(pad && 'px-5 pb-12', className)}
       showsVerticalScrollIndicator={false}
     >
       {children}
@@ -398,7 +398,7 @@ export function Title({
   right?: ReactNode;
 }) {
   return (
-    <View className="flex-row items-end justify-between pt-4 pb-3">
+    <View className="flex-row items-end justify-between pt-5 pb-5">
       <View>
         <Text className="text-page font-bold text-ink">{children}</Text>
         {sub ? <Text className="mt-1 text-footnote text-sub">{sub}</Text> : null}
@@ -409,7 +409,7 @@ export function Title({
 }
 
 export const Label = ({ children, right }: { children: ReactNode; right?: ReactNode }) => (
-  <View className="mt-5 mb-2 flex-row items-center justify-between">
+  <View className="mt-7 mb-2.5 flex-row items-center justify-between px-1">
     {typeof children === 'string' ? (
       <Text className="text-footnote text-sub">{children}</Text>
     ) : (
@@ -557,7 +557,7 @@ export function Row({
       {chevron && <ChevronRight size={ICON.md} color={C.sub} />}
     </>
   );
-  const cls = 'min-h-14 flex-row items-center gap-3 px-4 py-3';
+  const cls = 'min-h-14 flex-row items-center gap-3.5 px-5 py-3.5';
   return onPress ? (
     <Pressable
       accessibilityRole="button"
