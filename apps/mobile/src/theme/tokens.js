@@ -1,9 +1,11 @@
 // 디자인 규격 (tailwind.config.js와 앱 코드가 같이 쓴다)
 // 화면에서는 임의 값(text-[13px], h-[50px], 색 hex) 대신 아래 이름만 쓴다.
 
-/** 색 — 글자색은 흰 · 크림 · 민트 배경에서 4.5:1 이상 (sub · danger · blue 조정) */
+/** 색 — 글자색은 흰 · 캔버스 · 채움 · 크림 · 민트 배경에서 4.5:1 이상 (sub · danger · blue 조정) */
 const colors = {
-  cream: '#f1ede1',
+  canvas: '#f3f4f1', // 화면 바탕. 그 위에 테두리 없는 흰 카드를 올린다
+  fill: '#eceee9', // 흰 카드 안의 입력 · 세그먼트 · 진행 막대 바탕
+  cream: '#f1ede1', // 온보딩 · 빈 화면에만
   'cream-2': '#e8e2d1',
   line: '#e7e3d7',
   brand: '#3b6e5b',
@@ -33,6 +35,7 @@ const fontSize = {
   headline: ['17px', '24px'], // 카드 · 시트 제목
   title3: ['20px', '26px'], // 섹션 제목
   title2: ['22px', '28px'], // 화면 제목
+  page: ['26px', '32px'], // 탭 화면 제목
   title1: ['28px', '34px'], // 큰 화면 제목 · 강조 숫자
   large: ['34px', '40px'], // 결과 화면 큰 숫자
   display: ['44px', '52px'], // 타이머
@@ -46,6 +49,12 @@ const spacing = {
   'control-lg': '52px',
   control: '44px',
   'control-sm': '36px',
+};
+
+/** 모서리: 카드 20 / 시트 · 다이얼로그 28 (입력 12 · 버튼 16은 rounded-xl · rounded-2xl) */
+const borderRadius = {
+  card: '20px',
+  sheet: '28px',
 };
 
 /** 아이콘 크기 (lucide size) */
@@ -62,4 +71,4 @@ const motion = {
 
 const fontFamily = 'Pretendard';
 
-module.exports = { colors, fontSize, spacing, icon, motion, fontFamily };
+module.exports = { colors, fontSize, spacing, borderRadius, icon, motion, fontFamily };

@@ -2,6 +2,8 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const tokens = require('./tokens') as {
   colors: Record<
+    | 'canvas'
+    | 'fill'
     | 'cream'
     | 'cream-2'
     | 'line'
