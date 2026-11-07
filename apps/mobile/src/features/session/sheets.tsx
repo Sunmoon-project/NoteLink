@@ -127,7 +127,7 @@ const Step = ({ label, d, onPress }: { label: string; d: number; onPress: () => 
   <Pressable
     accessibilityLabel={label}
     onPress={onPress}
-    className="h-10 w-10 items-center justify-center rounded-xl bg-cream"
+    className="h-10 w-10 items-center justify-center rounded-xl bg-fill"
   >
     <Text className="text-title3 text-ink">{d < 0 ? '−' : '+'}</Text>
   </Pressable>
