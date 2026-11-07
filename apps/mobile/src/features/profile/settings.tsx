@@ -406,34 +406,36 @@ export function AccountScreen() {
     ['학년', u?.grade, null],
   ];
   return (
-    <Screen>
-      <Header title="계정 정보" />
-      <Card
-        onPress={() => openFeature('/(tabs)/profile/avatar-style')}
-        className="flex-row items-center px-4 py-3"
-      >
-        <View className="flex-1">
-          <Text className="text-caption2 text-sub">아바타</Text>
-          <Text className="text-callout text-ink">아바타 설정하기</Text>
+    <Canvas>
+      <Screen>
+        <Header title="계정 정보" />
+        <Card
+          onPress={() => openFeature('/(tabs)/profile/avatar-style')}
+          className="flex-row items-center px-5 py-4"
+        >
+          <View className="flex-1">
+            <Text className="text-caption2 text-sub">아바타</Text>
+            <Text className="text-callout text-ink">아바타 설정하기</Text>
+          </View>
+          <ChevronRight size={ICON.md} color={C.sub} />
+        </Card>
+        <View className="mt-4 overflow-hidden rounded-card bg-white">
+          {rows.map(([k, v, go], i) => (
+            <Pressable
+              key={k}
+              onPress={go ?? (() => toast(`${k} 변경은 본인 인증 후 가능해요`))}
+              className={cx('flex-row items-center px-5 py-4', i > 0 && 'border-t border-fill')}
+            >
+              <View className="flex-1">
+                <Text className="text-caption2 text-sub">{k}</Text>
+                <Text className="text-callout text-ink">{v}</Text>
+              </View>
+              <ChevronRight size={ICON.md} color={C.sub} />
+            </Pressable>
+          ))}
         </View>
-        <ChevronRight size={ICON.md} color={C.sub} />
-      </Card>
-      <View className="mt-3 overflow-hidden rounded-2xl bg-cream">
-        {rows.map(([k, v, go], i) => (
-          <Pressable
-            key={k}
-            onPress={go ?? (() => toast(`${k} 변경은 본인 인증 후 가능해요`))}
-            className={cx('flex-row items-center px-4 py-3', i > 0 && 'border-t border-line')}
-          >
-            <View className="flex-1">
-              <Text className="text-caption2 text-sub">{k}</Text>
-              <Text className="text-callout text-ink">{v}</Text>
-            </View>
-            <ChevronRight size={ICON.md} color={C.sub} />
-          </Pressable>
-        ))}
-      </View>
-    </Screen>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -452,23 +454,30 @@ export function NicknameScreen() {
     },
   });
   return (
-    <Screen
-      footer={
-        <Btn disabled={!ok} loading={save.isPending} onPress={() => save.mutate()}>
-          저장
-        </Btn>
-      }
-    >
-      <Header title="닉네임 변경" />
-      <Label>닉네임</Label>
-      <Input value={v} onChangeText={(x) => setV(x.slice(0, 10))} autoFocus invalid={!ok && !!v} />
-      <View className="mt-2 flex-row justify-between">
-        <Text className={cx('text-caption', !ok ? 'text-danger' : 'text-sub')}>
-          {err ?? '한글 · 영문 · 숫자 2~10자'}
-        </Text>
-        <Text className="text-caption text-sub">{v.length}/10</Text>
-      </View>
-    </Screen>
+    <Canvas>
+      <Screen
+        footer={
+          <Btn disabled={!ok} loading={save.isPending} onPress={() => save.mutate()}>
+            저장
+          </Btn>
+        }
+      >
+        <Header title="닉네임 변경" />
+        <Label>닉네임</Label>
+        <Input
+          value={v}
+          onChangeText={(x) => setV(x.slice(0, 10))}
+          autoFocus
+          invalid={!ok && !!v}
+        />
+        <View className="mt-2 flex-row justify-between">
+          <Text className={cx('text-caption', !ok ? 'text-danger' : 'text-sub')}>
+            {err ?? '한글 · 영문 · 숫자 2~10자'}
+          </Text>
+          <Text className="text-caption text-sub">{v.length}/10</Text>
+        </View>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -512,57 +521,59 @@ export function PlanScreen() {
     },
   });
   return (
-    <Screen>
-      <Header title="요금제" sub="나에게 맞는 플랜을 선택하세요" />
-      <View className="gap-3">
-        {PLANS.map((p) => (
-          <Card key={p.id} className="p-4">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-headline font-bold text-ink">{p.name}</Text>
-              {p.hot && <Badge tone="dark">인기</Badge>}
-            </View>
-            <Text
-              className={cx(
-                'mt-1 text-callout font-semibold',
-                p.id === 'free' ? 'text-sub' : 'text-brand',
-              )}
-            >
-              {p.price}
-            </Text>
-            {p.desc.map((d) => (
-              <Text key={d} className="text-caption text-sub">
-                {d}
+    <Canvas>
+      <Screen>
+        <Header title="요금제" sub="나에게 맞는 플랜을 선택하세요" />
+        <View className="gap-4">
+          {PLANS.map((p) => (
+            <Card key={p.id} className="p-6">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-headline font-bold text-ink">{p.name}</Text>
+                {p.hot && <Badge tone="dark">인기</Badge>}
+              </View>
+              <Text
+                className={cx(
+                  'mt-1 text-callout font-semibold',
+                  p.id === 'free' ? 'text-sub' : 'text-brand',
+                )}
+              >
+                {p.price}
               </Text>
-            ))}
-            <Btn
-              small
-              className="mt-3"
-              kind={cur === p.id ? 'outline' : p.id === 'max' ? 'dark' : 'primary'}
-              disabled={cur === p.id}
-              onPress={() =>
-                canChangePlan(p.id) ? setPick(p.id) : toast('결제는 준비 중이에요. 곧 열려요')
-              }
-            >
-              {cur === p.id
-                ? '현재 플랜'
-                : p.id === 'free'
-                  ? 'Free로 변경'
-                  : `${p.name}로 업그레이드`}
-            </Btn>
-          </Card>
-        ))}
-      </View>
-      <Alert
-        open={!!pick}
-        tone="brand"
-        icon={<Zap size={ICON.lg} color={C.brand} />}
-        title={`${PLANS.find((p) => p.id === pick)?.name} 플랜으로 바꿀까요?`}
-        body="결제는 앱 마켓 계정으로 진행돼요. 언제든 해지할 수 있어요."
-        secondary="취소"
-        onSecondary={() => setPick(null)}
-        primary="변경하기"
-        onPrimary={() => pick && change.mutate(pick)}
-      />
-    </Screen>
+              {p.desc.map((d) => (
+                <Text key={d} className="text-caption text-sub">
+                  {d}
+                </Text>
+              ))}
+              <Btn
+                small
+                className="mt-3"
+                kind={cur === p.id ? 'outline' : p.id === 'max' ? 'dark' : 'primary'}
+                disabled={cur === p.id}
+                onPress={() =>
+                  canChangePlan(p.id) ? setPick(p.id) : toast('결제는 준비 중이에요. 곧 열려요')
+                }
+              >
+                {cur === p.id
+                  ? '현재 플랜'
+                  : p.id === 'free'
+                    ? 'Free로 변경'
+                    : `${p.name}로 업그레이드`}
+              </Btn>
+            </Card>
+          ))}
+        </View>
+        <Alert
+          open={!!pick}
+          tone="brand"
+          icon={<Zap size={ICON.lg} color={C.brand} />}
+          title={`${PLANS.find((p) => p.id === pick)?.name} 플랜으로 바꿀까요?`}
+          body="결제는 앱 마켓 계정으로 진행돼요. 언제든 해지할 수 있어요."
+          secondary="취소"
+          onSecondary={() => setPick(null)}
+          primary="변경하기"
+          onPrimary={() => pick && change.mutate(pick)}
+        />
+      </Screen>
+    </Canvas>
   );
 }
