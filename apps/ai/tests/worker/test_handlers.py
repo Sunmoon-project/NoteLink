@@ -105,14 +105,76 @@ def test_bad_today_review_input_fails_without_retry(monkeypatch: pytest.MonkeyPa
     assert (doc["status"], doc["error"]) == ("failed", "입력 오류: input.day")
 
 
-@pytest.mark.parametrize("kind", ["quiz_generate", "quiz_pregen"])
+@pytest.mark.parametrize(("kind", "background"), [("quiz_generate", False), ("quiz_pregen", True)])
 def test_quiz_generate_and_pregen_are_registered(
-    monkeypatch: pytest.MonkeyPatch, kind: str
+    monkeypatch: pytest.MonkeyPatch, kind: str, background: bool
 ) -> None:
-    doc = run_job(monkeypatch, FakeLlm(), {"day": "2026-11-04"}, kind)
+    llm = FakeLlm()
+    doc = run_job(monkeypatch, llm, {"day": "2026-11-04"}, kind)
     assert (doc["status"], doc["error"]) == ("failed", "입력 오류: input.material.pages")
+    assert llm.backgrounded is background  # 미리 만들기만 LLM 차례를 양보(#138)
+    if background:  # 사용자가 이어받았는지는 그 작업의 report로 봄
+        assert llm.awaited is not None and llm.awaited() is False
 
 
-def test_only_pregen_waits_for_other_jobs() -> None:
-    assert handlers.LATER == {"quiz_pregen"}
-    assert handlers.LATER <= HANDLERS.keys()
+def test_only_pregen_runs_in_the_background_lane() -> None:
+    assert handlers.BACKGROUND == {"quiz_pregen"}
+    assert handlers.BACKGROUND <= HANDLERS.keys()
+
+
+class StubReport:
+    def __init__(self, awaited: bool) -> None:
+        self._awaited = awaited
+
+    def __call__(self, value: int, step: str | None = None) -> None:
+        pass
+
+    def load_checkpoint(self) -> object:
+        return None
+
+    def save_checkpoint(self, value: dict[str, Any]) -> None:
+        pass
+
+    def awaited(self) -> bool:
+        return self._awaited
+
+
+@pytest.mark.parametrize(("awaited", "patient"), [(False, True), (True, False)])
+def test_a_pregen_taken_over_before_it_starts_gets_the_usual_time_limit(
+    monkeypatch: pytest.MonkeyPatch, awaited: bool, patient: bool
+) -> None:
+    # 이어받은 채 시작하면 사용자가 기다리므로 보통 상한: 사용자 작업 반복을 오래 막지 않게(#138)
+    seen: list[bool] = []
+
+    def fake_run(llm: Any, inp: Any, report: Any, *, patient: bool = False) -> dict[str, Any]:
+        seen.append(patient)
+        return {}
+
+    monkeypatch.setattr(handlers, "_llm", lambda: FakeLlm())
+    monkeypatch.setattr(handlers.generate, "run", fake_run)
+    handlers.quiz_pregen({}, StubReport(awaited))
+    assert seen == [patient]
+
+
+def test_lanes_starting_together_share_one_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 두 반복이 처음 함께 불러도 SchoolLlm은 하나: 호출 간격 · 사용자 우선을 같이 씀(Codex #149)
+    import threading
+    import time
+
+    made: list[object] = []
+
+    def slow() -> object:
+        time.sleep(0.05)  # 만드는 사이 다른 스레드가 들어옴
+        made.append(object())
+        return made[-1]
+
+    once = handlers._Once(slow)
+    got: list[object] = []
+    threads = [threading.Thread(target=lambda: got.append(once())) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert len(made) == 1 and got == [made[0], made[0]]
+    once.cache_clear()
+    assert once() is not made[0]

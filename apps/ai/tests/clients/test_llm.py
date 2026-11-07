@@ -7,7 +7,16 @@ from collections.abc import Callable
 import httpx2
 import pytest
 
-from app.clients.llm import STOPPED, LlmCutError, LlmError, SchoolLlm, repair, stop_on
+from app.clients.llm import (
+    MIN_YIELD_SEC,
+    QUIET_GAPS,
+    STOPPED,
+    LlmCutError,
+    LlmError,
+    SchoolLlm,
+    repair,
+    stop_on,
+)
 
 SCHEMA = {"type": "object"}
 
@@ -286,3 +295,164 @@ def test_stop_on_only_covers_its_own_block() -> None:
     with stop_on(stop):
         pass
     assert server.client().call("gemma", "s", "u", SCHEMA, "X") == {}  # 블록 밖에서는 보냄
+
+
+# ---------- 미리 해 두는 작업은 사용자 작업 호출에 양보(#138) ----------
+
+
+def test_a_background_call_goes_at_once_when_no_user_call_runs() -> None:
+    server = Server(reply("{}"))
+    c = Clock(server, gap=2.2)
+    assert c.llm.background().call("gemma", "s", "u", SCHEMA, "X") == {}
+    assert c.sent == [100.0]
+
+
+def test_a_background_call_waits_a_quiet_time_after_a_user_call() -> None:
+    # 사용자 호출(100)이 답을 받은 뒤 간격 × QUIET_GAPS가 지나야 보냄: 다음 사용자 호출이 곧 옴
+    server = Server(reply("{}"), reply("{}"))
+    c = Clock(server, gap=2.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    c.llm.background().call("gemma", "s", "u", SCHEMA, "X")
+    quiet = 100 + 2.2 * QUIET_GAPS
+    assert c.sent[0] == 100.0 and quiet - 1e-9 <= c.sent[1] < quiet + 2.2
+
+
+def test_a_background_call_waits_while_a_user_call_is_answered() -> None:
+    # 사용자 호출이 답을 기다리는 동안(차례는 이미 가져감)에도 보내지 않음
+    server = Server(reply("{}"))
+    c = Clock(server, gap=2.2)
+    c.llm._active = 1
+
+    def answered() -> None:  # 가짜 시계는 한 스레드라 다른 스레드가 답을 받은 것을 흉내
+        c.llm._active = 0
+
+    c.on_sleep.extend([lambda: None, answered])
+    c.llm.background().call("gemma", "s", "u", SCHEMA, "X")
+    assert c.slept == [pytest.approx(2.2), pytest.approx(2.2)]
+    assert c.sent == [pytest.approx(104.4)]
+
+
+def test_a_background_call_yielding_with_no_gap_does_not_spin() -> None:
+    server = Server(reply("{}"))
+    c = Clock(server, gap=0)
+    c.llm._active = 1
+
+    def user_went() -> None:
+        c.llm._active = 0
+
+    c.on_sleep.append(user_went)
+    c.llm.background().call("gemma", "s", "u", SCHEMA, "X")
+    assert c.slept == [MIN_YIELD_SEC]
+
+
+def test_a_user_call_that_stops_or_fails_is_not_counted_as_running() -> None:
+    # 기다리다 멈춘 호출 · 연결 오류가 난 호출이 수에 남으면 미리 만들기가 영영 못 보냄
+    server = Server(reply("{}"))
+    c = Clock(server, gap=2.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    stop = threading.Event()
+    c.on_sleep.append(stop.set)
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert c.llm._active == 0
+
+    def broken(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("끊김")
+
+    llm = SchoolLlm(
+        "https://llm.test",
+        "key",
+        gap_sec=0,
+        retries=0,
+        transport=httpx2.MockTransport(broken),
+        sleep=lambda sec: None,
+    )
+    with pytest.raises(LlmError):
+        llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert llm._active == 0
+
+
+def test_user_calls_go_first_with_real_threads() -> None:
+    """실제 스레드: 미리 만들기 호출 여럿이 기다려도, 나중에 온 사용자 호출이 다음 차례를 가져감."""
+    sent: list[str] = []
+    lock = threading.Lock()
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        with lock:
+            sent.append(json.loads(request.content)["messages"][1]["content"])
+        return reply("{}")
+
+    llm = SchoolLlm("https://llm.test", "key", gap_sec=0.05, transport=httpx2.MockTransport(handle))
+    bg = llm.background()
+    bg.call("gemma", "s", "first", SCHEMA, "X")
+    threads = [
+        threading.Thread(target=bg.call, args=("gemma", "s", f"bg{i}", SCHEMA, "X"))
+        for i in range(3)
+    ]
+    for t in threads:
+        t.start()
+    time.sleep(0.01)  # 미리 만들기 호출이 모두 차례를 기다리는 중
+    user = threading.Thread(target=llm.call, args=("gemma", "s", "user", SCHEMA, "X"))
+    user.start()
+    for t in [*threads, user]:
+        t.join(5)
+    assert sent[0] == "first" and sent[1] == "user"
+    assert sorted(sent[2:]) == ["bg0", "bg1", "bg2"]
+
+
+def test_a_waiting_background_call_stops_yielding_once_the_job_is_awaited() -> None:
+    # 다른 사용자 호출이 도는 중이라 양보하던 미리 만들기 호출: 사용자가 이 작업을 이어받으면
+    # 다음에 깨어날 때 바로 보내고, 보내는 동안 사용자 작업 호출로 셈(#138)
+    awaited = [False]
+    active: list[int] = []
+    server = Server(reply("{}"))
+    handle = server.handle
+
+    def record(request: httpx2.Request) -> httpx2.Response:
+        active.append(c.llm._active)
+        return handle(request)
+
+    server.handle = record  # type: ignore[method-assign]
+    c = Clock(server, gap=2.2)
+    c.llm._active = 1  # 다른 사용자의 호출이 도는 중(끝나지 않음)
+    c.on_sleep.append(lambda: awaited.__setitem__(0, True))
+    c.llm.background(lambda: awaited[0]).call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [pytest.approx(102.2)]  # 다른 사용자 호출이 끝나기를 기다리지 않음
+    assert active == [2] and c.llm._active == 1  # 보내는 동안만 셈
+
+
+def test_a_user_call_backing_off_before_a_retry_still_holds_background_calls() -> None:
+    # 사용자 호출이 연결 오류 뒤 다시 보내기 전에 기다리는 동안(4초)도 도는 중: 미리 만들기는
+    # 그 사이 보내지 않음(/code-review #138)
+    server = Server(reply("{}"))
+    handle = server.handle
+    calls = [0]
+
+    def flaky(request: httpx2.Request) -> httpx2.Response:
+        calls[0] += 1
+        if calls[0] == 1:
+            raise httpx2.ConnectError("끊김")
+        return handle(request)
+
+    server.handle = flaky  # type: ignore[method-assign]
+    c = Clock(server, gap=0)
+    seen: list[int] = []
+    c.on_sleep.append(lambda: seen.append(c.llm._active))
+    assert c.llm.call("gemma", "s", "u", SCHEMA, "X") == {}
+    assert c.slept == [4] and seen == [1]  # 다시 보내기 전 4초 동안 도는 중
+    assert c.llm._active == 0
+
+
+def test_a_stop_while_reading_awaited_sends_nothing() -> None:
+    # awaited를 읽는 사이 맞춤 퀴즈가 세트를 돌려줌(멈춤): 읽은 뒤 보내지 않음(Codex 리뷰 #149)
+    server = Server(reply("{}"))
+    c = Clock(server, gap=0)
+    stop = threading.Event()
+
+    def awaited() -> bool:
+        stop.set()
+        return True
+
+    with stop_on(stop), pytest.raises(LlmError, match=re.escape(STOPPED)):
+        c.llm.background(awaited).call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [] and c.llm._active == 0

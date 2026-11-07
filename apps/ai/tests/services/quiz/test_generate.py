@@ -843,6 +843,28 @@ def test_no_new_draft_is_started_after_the_time_limit(monkeypatch: pytest.Monkey
     assert len(llm.named("Quiz")) == 1  # 두 번째 유형 · 다른 쪽으로 넘기지 않음
 
 
+def test_a_pregen_gets_a_longer_time_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 미리 만들기는 LLM 차례를 양보하므로 상한이 PATIENT배: 같은 느린 호출에도 문제를 만듦(#138)
+    now = [0.0]
+    monkeypatch.setattr(generate, "_clock", lambda: now[0])
+
+    def made(patient: bool) -> JsonObject:
+        bad = draft("이질 아메바", "위족으로 운동하는 이질 아메바의 특징")  # 설명에 정답 용어
+        llm = happy([bad, GOOD["이질 아메바"]])
+        quiz = llm.answers["Quiz"]
+
+        def slow(user: str) -> Any:
+            now[0] += generate.SEC_PER_QUESTION * 2  # 보통 상한(1문제 20초)은 지나지만 10배 안
+            return quiz(user)
+
+        llm.answers["Quiz"] = slow
+        return generate.run(llm, job(size=1), lambda v, step=None: None, patient=patient)
+
+    assert [q["answer"] for q in made(patient=True)["questions"]] == ["이질 아메바"]
+    # 보통 상한이면 첫 초안이 걸린 뒤 다시 만들지 않음
+    assert made(patient=False)["questions"] == []
+
+
 def test_the_set_goes_back_at_the_hard_limit_without_waiting_for_a_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

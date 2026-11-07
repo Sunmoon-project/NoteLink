@@ -7,8 +7,18 @@ import pytest
 from pymongo.errors import AutoReconnect
 
 from app.clients.llm import JsonObject, LlmError
-from app.worker.jobs import JobStore
-from app.worker.runner import Handler, JobInputError, JobReport, Report, run_forever, run_once
+from app.worker import runner
+from app.worker.jobs import Job, JobStore
+from app.worker.runner import (
+    Handler,
+    JobInputError,
+    JobReport,
+    Lane,
+    Report,
+    run_forever,
+    run_lanes,
+    run_once,
+)
 
 T0 = datetime(2026, 10, 28, 9, 0, tzinfo=UTC)
 
@@ -56,8 +66,12 @@ def test_handler_gets_input_reports_progress_and_result_is_saved(col: Any) -> No
     assert (doc["status"], doc["result"], doc["progress"]) == ("succeeded", {"questions": 2}, 100)
 
 
-def test_later_types_wait_for_the_others(col: Any) -> None:
-    # j1(quiz_generate)보다 먼저 들어온 미리 만들기: 처리기는 j1부터(#134)
+def lane_store(col: Any, worker: str) -> JobStore:
+    return JobStore(col, worker, lock_sec=60, max_attempts=3, retry_delay_sec=30)
+
+
+def test_a_user_job_starts_while_a_pregen_is_running(col: Any) -> None:
+    # 미리 만들기(p1)가 먼저 들어와 처리 중: j1은 그 작업이 끝나기를 기다리지 않고 시작(#138)
     col.insert_one(
         {
             **col.find_one({"_id": "j1"}),
@@ -66,21 +80,64 @@ def test_later_types_wait_for_the_others(col: Any) -> None:
             "createdAt": T0 - timedelta(minutes=5),
         }
     )
-    order: list[str] = []
+    pregen_started, user_done, stop = threading.Event(), threading.Event(), threading.Event()
 
-    def handler(kind: str) -> Handler:
-        def handle(inp: JsonObject, report: Report) -> JsonObject:
-            order.append(kind)
-            return {}
+    def pregen(inp: JsonObject, report: Report) -> JsonObject:
+        pregen_started.set()
+        assert user_done.wait(5), "사용자 작업이 미리 만들기 뒤로 밀림"
+        return {"pregen": True}
 
-        return handle
+    def user(inp: JsonObject, report: Report) -> JsonObject:
+        assert pregen_started.wait(5)
+        user_done.set()
+        return {"user": True}
 
-    handlers = {"quiz_generate": handler("quiz_generate"), "quiz_pregen": handler("quiz_pregen")}
-    s = store(col)
-    assert run_once(s, handlers, later={"quiz_pregen"})
-    assert run_once(s, handlers, later={"quiz_pregen"})
-    assert not run_once(s, handlers, later={"quiz_pregen"})
-    assert order == ["quiz_generate", "quiz_pregen"]
+    def stop_when_both_done() -> None:
+        while col.count_documents({"status": "succeeded"}) < 2:
+            if stop.wait(0.01):
+                return
+        stop.set()
+
+    watcher = threading.Thread(target=stop_when_both_done, daemon=True)
+    watcher.start()
+    lanes = [
+        Lane("background", lane_store(col, "w1:bg"), {"quiz_pregen": pregen}),
+        Lane("user", lane_store(col, "w1"), {"quiz_generate": user}),
+    ]
+    run_lanes(lanes, poll_sec=0.01, stop=stop)
+    watcher.join(5)
+    assert col.find_one({"_id": "j1"})["result"] == {"user": True}
+    assert col.find_one({"_id": "p1"})["result"] == {"pregen": True}
+    assert (col.find_one({"_id": "p1"})["lockedBy"], col.find_one({"_id": "j1"})["lockedBy"]) == (
+        None,
+        None,
+    )
+
+
+def test_a_lane_that_breaks_stops_the_others_and_raises(col: Any) -> None:
+    class Broken(JobStore):
+        def claim(self, types: Any, awaited_types: Any = ()) -> Any:
+            raise RuntimeError("고장")
+
+    stop = threading.Event()
+    lanes = [
+        Lane(
+            "background",
+            Broken(col, "w1:bg", lock_sec=60, max_attempts=3, retry_delay_sec=30),
+            {"quiz_pregen": lambda inp, report: {}},
+        ),
+        Lane("user", lane_store(col, "w1"), {"quiz_generate": lambda inp, report: {}}),
+    ]
+    with pytest.raises(RuntimeError, match="고장"):
+        run_lanes(lanes, poll_sec=0.01, stop=stop)
+    assert stop.is_set()
+
+
+def test_no_lane_with_handlers_waits_for_the_stop(col: Any) -> None:
+    stop = threading.Event()
+    threading.Timer(0.05, stop.set).start()
+    run_lanes([Lane("background", store(col), {})], poll_sec=0.01, stop=stop)
+    assert stop.is_set()
 
 
 def test_nothing_to_do_returns_false(col: Any) -> None:
@@ -265,14 +322,73 @@ def test_run_forever_keeps_going_after_db_error_and_stops_on_request(col: Any) -
     calls: list[str] = []
 
     class FlakyStore(JobStore):
-        def claim(self, types: Any, later: Any = ()) -> Any:
+        def claim(self, types: Any, awaited_types: Any = ()) -> Any:
             calls.append("claim")
             if len(calls) == 1:
                 raise AutoReconnect("연결 끊김")
             stop.set()
-            return super().claim(types, later)
+            return super().claim(types, awaited_types)
 
     flaky = FlakyStore(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30, now=lambda: T0)
     run_forever(flaky, {"quiz_generate": lambda inp, report: {"ok": True}}, poll_sec=0, stop=stop)
     assert calls == ["claim", "claim"]
     assert col.find_one({"_id": "j1"})["status"] == "succeeded"
+
+
+class AwaitedStore(JobStore):
+    def __init__(self, col: Any, answers: list[Any]) -> None:
+        super().__init__(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30)
+        self.answers, self.reads = answers, 0
+
+    def awaited(self, job: Job) -> bool:
+        self.reads += 1
+        a = self.answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return bool(a)
+
+
+def test_report_reads_awaited_at_most_every_few_seconds_and_keeps_it(col: Any) -> None:
+    now = [0.0]
+    s = AwaitedStore(col, [False, AutoReconnect("끊김"), True])
+    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1), clock=lambda: now[0])
+    assert report.awaited() is False and s.reads == 0  # 막 가져온 작업은 가져올 때 값(False)
+    now[0] += runner.AWAITED_CHECK_SEC
+    assert report.awaited() is False and s.reads == 1
+    assert report.awaited() is False and s.reads == 1  # 간격 안에서는 다시 읽지 않음
+    now[0] += runner.AWAITED_CHECK_SEC
+    assert report.awaited() is False and s.reads == 2  # 못 읽으면 지난 값
+    now[0] += runner.AWAITED_CHECK_SEC
+    assert report.awaited() is True and s.reads == 3
+    now[0] += runner.AWAITED_CHECK_SEC
+    assert report.awaited() is True and s.reads == 3  # 한 번 참이면 더 읽지 않음
+
+
+def test_report_of_a_job_taken_over_before_it_started_is_awaited(col: Any) -> None:
+    s = AwaitedStore(col, [])
+    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1, awaited=True))
+    assert report.awaited() is True and s.reads == 0
+
+
+def test_the_user_lane_runs_a_taken_over_pregen(col: Any) -> None:
+    col.update_one({"_id": "j1"}, {"$set": {"type": "quiz_pregen", "awaited": True}})
+    seen: list[bool] = []
+
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        seen.append(report.awaited())
+        return {}
+
+    s = store(col)
+    assert run_once(s, {"quiz_pregen": handler}, awaited_only={"quiz_pregen"})
+    assert seen == [True] and col.find_one({"_id": "j1"})["status"] == "succeeded"
+
+
+def test_report_does_not_wait_while_another_thread_reads_awaited(col: Any) -> None:
+    # DB가 느려도 다른 퀴즈 자리 스레드는 기다리지 않고 지난 값(/code-review #138)
+    now = [0.0]
+    s = AwaitedStore(col, [True])
+    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1), clock=lambda: now[0])
+    now[0] += runner.AWAITED_CHECK_SEC
+    with report._lock:  # 다른 스레드가 읽는 중
+        assert report.awaited() is False and s.reads == 0
+    assert report.awaited() is True and s.reads == 1

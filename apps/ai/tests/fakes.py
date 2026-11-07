@@ -25,6 +25,13 @@ class FakeLlm:
     # 이름별 답. LlmError를 넣으면 그 차례에 예외를 던짐
     answers: dict[str, Answers] = field(default_factory=dict)
     calls: list[Call] = field(default_factory=list)
+    backgrounded: bool = False  # background()로 받아 갔는지(SchoolLlm.background, #138)
+
+    awaited: Callable[[], bool] | None = None  # background()에 넘긴 것
+
+    def background(self, awaited: Callable[[], bool] = lambda: False) -> "FakeLlm":
+        self.backgrounded, self.awaited = True, awaited
+        return self
 
     def call(
         self,

@@ -276,6 +276,8 @@ export const AiJob = z.object({
   progress: z.number(),
   attempts: z.number(),
   step: z.string().optional(),
+  // 미리 해 두는 작업(quiz_pregen)을 사용자가 이어받으면 NestJS가 true로(처리기가 우선 처리)
+  awaited: z.boolean().optional(),
   result: z.record(z.string(), z.unknown()).nullable(),
   error: z.string().nullable(),
   createdAt: date,

@@ -11,6 +11,7 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
 주고받는 필드
   NestJS가 넣음  type · targetType · targetId · userId · createdAt · input
                  status='queued' · progress=0 · attempts=0 · result=None · error=None
+                 awaited(미리 해 두는 작업을 사용자가 이어받을 때 true, #138)
   처리기가 씀    status · progress · step · attempts · result · error · checkpoint
                  lockedBy · lockedUntil · retryAt · updatedAt
   - input: 처리기는 다른 컬렉션을 읽지 않으므로, 처리에 필요한 자료(퀴즈 · 풀이 기록 · 노트 글 등)는
@@ -22,20 +23,21 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
   - 색인(NestJS가 관리): {status: 1, type: 1, createdAt: 1}
 
 가져오는 순서
-  - 사용자가 기다리는 작업(types)을 들어온 순서대로 먼저 가져가고, 없을 때만 미리 해 두는
-    작업(later, 예: 노트를 만들 때 넣는 퀴즈 미리 만들기 quiz_pregen)을 가져갑니다(#134).
-    학교 LLM은 분당 한도를 모두가 같이 쓰므로, 미리 만들기가 먼저 들어왔다고 지금 퀴즈를
-    기다리는 사용자가 그 뒤로 밀리지 않게
+  - 가져올 종류(types) 중 들어온 순서대로 가져갑니다.
+  - 미리 해 두는 작업(노트를 만들 때 넣는 퀴즈 미리 만들기 quiz_pregen)은 사용자가 기다리는
+    작업과 따로 도는 반복이 가져갑니다(runner.run_lanes, #138). 미리 만들기를 처리하는 중에도
+    사용자 작업은 바로 시작하고, 학교 LLM 호출 차례는 사용자 작업이 먼저 가져갑니다
+    (SchoolLlm.background). 그래서 미리 만들기가 먼저 들어왔어도 사용자가 그 뒤로 밀리지 않음
+  - 같은 노트의 미리 만들기가 아직 끝나지 않았을 때 사용자가 퀴즈를 요청하면, NestJS는 새 작업을
+    넣지 않고(넣으면 같은 퀴즈를 두 번 만듦) 그 작업에 awaited=true를 씁니다(#138).
+    - queued면 사용자 작업 반복도 가져갑니다(claim의 awaited_types). 다른 미리 만들기 뒤에서
+      기다리지 않게
+    - 처리 중이면 처리기가 AWAITED_CHECK_SEC마다 읽어(awaited) LLM 호출 차례를 양보하지
+      않습니다. 시간 상한은 시작할 때 정해서, 처리 중에 이어받으면 미리 만들기 상한 그대로입니다
+    - 아직 NestJS는 awaited를 쓰지 않습니다(#134 NestJS 할 일)
   - 알려진 한계(/code-review #134)
-    - 처리기는 작업을 하나씩 처리합니다. 미리 만들기를 이미 처리 중이면 그사이 들어온 사용자
-      작업은 그 작업이 끝날 때까지(새 노트는 3분 가까이) 기다립니다. 순서만 바꿔서는 막지 못해
-      미리 만들기를 따로 돌리는 방식은 따로 다룹니다
-    - 같은 노트의 미리 만들기가 아직 끝나지 않았을 때 사용자가 퀴즈를 요청하면, NestJS가 새
-      작업을 넣지 않고 그 작업을 이어받습니다(넣으면 같은 퀴즈를 두 번 만듦). 처리기는 작업끼리
-      합치지 않습니다
     - 사용자 작업이 끊이지 않으면 미리 해 두는 작업은 queued로 남습니다. 오래된 것은 NestJS가
       canceled로 바꿉니다(처리 중이면 처리기가 결과를 버림)
-    - 처리할 작업이 없을 때는 가져오기 질의를 종류 묶음마다 한 번씩(두 번) 보냅니다
 
 잠금
   - 가져오기는 find_one_and_update 한 번이라, 처리기가 여럿이어도 같은 작업을 함께 가져가지
@@ -73,6 +75,7 @@ class Job:
     input: object  # 처리 전에 객체인지 확인함(runner)
     attempts: int  # 이번 시도 포함
     checkpoint: object = None  # 지난 시도가 저장한 값. 쓰기 전에 처리 함수가 확인함
+    awaited: bool = False  # 가져갈 때 이미 사용자가 이어받았음(#138)
 
 
 def _utcnow() -> datetime:
@@ -102,30 +105,35 @@ class JobStore:
     def lock_sec(self) -> float:
         return self._lock.total_seconds()
 
-    def claim(self, types: Iterable[str], later: Iterable[str] = ()) -> Job | None:
+    def claim(self, types: Iterable[str], awaited_types: Iterable[str] = ()) -> Job | None:
         """작업 하나를 잠그고 가져옵니다. 없으면 None.
 
-        types 중 가장 먼저 들어온 작업, 없으면 later 중 가장 먼저 들어온 작업.
+        awaited_types 중 사용자가 이어받은(awaited) 작업이 있으면 그중 가장 먼저 들어온 것(노트를
+        만들 때부터 기다린 사용자), 없으면 types 중 가장 먼저 들어온 것. 질의를 나눠 각각
+        색인({status, type, createdAt})을 그대로 탐(/code-review #138).
         """
-        first = list(types)
-        then = [t for t in later if t not in first]
-        if not first and not then:
+        kinds = list(types)
+        awaited = [t for t in awaited_types if t not in kinds]
+        if not kinds and not awaited:
             return None
         now = self._now()
         if self._next_sweep is None or now >= self._next_sweep:
-            self._give_up_stalled(first + then, now)
+            self._give_up_stalled(kinds + awaited, now)
             self._next_sweep = now + SWEEP_EVERY
-        for kinds in (first, then):
-            if kinds:
-                job = self._claim(kinds, now)
-                if job is not None:
-                    return job
-        return None
+        if awaited:
+            job = self._claim({"type": {"$in": awaited}, "awaited": True}, now)
+            if job is not None:
+                return job
+        return self._claim({"type": {"$in": kinds}}, now) if kinds else None
 
-    def _claim(self, kinds: list[str], now: datetime) -> Job | None:
+    def awaited(self, job: Job) -> bool:
+        """처리 중인 작업을 사용자가 이어받았는지(NestJS가 awaited=true를 씀)."""
+        return self._col.find_one({"_id": job.id, "awaited": True}, {"_id": 1}) is not None
+
+    def _claim(self, which: JsonObject, now: datetime) -> Job | None:
         doc = self._col.find_one_and_update(
             {
-                "type": {"$in": kinds},
+                **which,  # 종류 조건(type · awaited). $or는 아래 상태 조건만 씀
                 "$or": [
                     {"status": "queued", "$or": [{"retryAt": None}, {"retryAt": {"$lte": now}}]},
                     {
@@ -154,7 +162,12 @@ class JobStore:
         if doc is None:
             return None
         return Job(
-            doc["_id"], doc["type"], doc.get("input"), int(doc["attempts"]), doc.get("checkpoint")
+            doc["_id"],
+            doc["type"],
+            doc.get("input"),
+            int(doc["attempts"]),
+            doc.get("checkpoint"),
+            doc.get("awaited") is True,
         )
 
     def _give_up_stalled(self, kinds: list[str], now: datetime) -> None:
