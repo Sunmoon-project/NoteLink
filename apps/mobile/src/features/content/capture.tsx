@@ -2,6 +2,13 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import { Image, Linking, Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  ReduceMotion,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
@@ -548,6 +555,42 @@ export function RecUploadScreen() {
   );
 }
 
+/** 소리 크기를 읽는 간격 — 파형이 이 간격마다 한 칸씩 흐른다 */
+const METER_MS = 120;
+/** 파형 막대 한 칸(막대 6 + 사이 4) */
+const BAR_STEP = 10;
+
+/**
+ * 녹음 파형. 새 소리 크기가 들어올 때마다 막대를 한 칸씩 밀되, 칸이 뚝 바뀌지 않게
+ * 줄 전체를 한 칸 오른쪽에서 제자리로 METER_MS 동안 일정한 속도로 흘린다(UI 스레드).
+ * 그래서 다음 값이 들어올 때까지 쉬지 않고 왼쪽으로 흐르는 것처럼 보인다
+ */
+function Waveform({ bars, live }: { bars: number[]; live: boolean }) {
+  const x = useSharedValue(0);
+  useEffect(() => {
+    if (!live) return;
+    x.set(BAR_STEP);
+    // 동작 줄이기면 흐르지 않고 바로 제자리(시스템 설정을 따른다)
+    x.set(
+      withTiming(0, {
+        duration: METER_MS,
+        easing: Easing.linear,
+        reduceMotion: ReduceMotion.System,
+      }),
+    );
+  }, [bars, live, x]);
+  const style = useAnimatedStyle(() => ({ transform: [{ translateX: x.get() }] }));
+  return (
+    <View className="mt-4 h-20 items-center justify-center overflow-hidden rounded-lg bg-black/30">
+      <Animated.View className="flex-row items-center gap-1" style={style}>
+        {bars.map((h, i) => (
+          <View key={i} className="w-1.5 rounded-full bg-orange" style={{ height: live ? h : 6 }} />
+        ))}
+      </Animated.View>
+    </View>
+  );
+}
+
 function RecordingAwake() {
   useKeepAwake('recording');
   return null;
@@ -559,7 +602,7 @@ export function RecLiveScreen() {
   const keepAwake = me.data?.settings.keepScreenOnWhileRecording ?? false;
   const insets = useSafeAreaInsets();
   const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
-  const st = useAudioRecorderState(recorder, 120);
+  const st = useAudioRecorderState(recorder, METER_MS);
   const [bars, setBars] = useState<number[]>(Array(26).fill(6));
   const [denied, setDenied] = useState(false);
   const alive = useRef(true);
@@ -669,15 +712,7 @@ export function RecLiveScreen() {
       <View className="mt-24 self-center rounded-full border border-white/50 px-5 py-1">
         <Text className="tabular-nums text-title1 text-white">{t}</Text>
       </View>
-      <View className="mt-4 h-20 flex-row items-center justify-center gap-1 rounded-lg bg-black/30">
-        {bars.map((h, i) => (
-          <View
-            key={i}
-            className="w-1.5 rounded-full bg-orange"
-            style={{ height: st.isRecording ? h : 6 }}
-          />
-        ))}
-      </View>
+      <Waveform bars={bars} live={st.isRecording} />
       <View className="mt-auto flex-row items-center justify-center gap-10">
         <Pressable
           accessibilityLabel={st.isRecording ? '녹음 일시정지' : '녹음 재개'}
