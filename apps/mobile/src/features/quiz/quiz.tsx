@@ -865,14 +865,14 @@ export function QuizSolveScreen() {
                 )}
               >
                 {right ? (
-                  <CircleCheck size={ICON.sm} color="#fff" />
+                  <CircleCheck size={ICON.sm} color={C.correct} />
                 ) : (
                   <X size={ICON.sm} color={C.danger} />
                 )}
                 <Text
                   className={cx(
                     'text-footnote font-semibold',
-                    right ? 'text-white' : 'text-danger',
+                    right ? 'text-correct' : 'text-danger',
                   )}
                 >
                   {right ? '정답이에요' : '오답이에요, 다시 풀어보세요'}

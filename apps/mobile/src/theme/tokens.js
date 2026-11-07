@@ -19,8 +19,9 @@ const colors = {
   danger: '#b8403a',
   blue: '#2a62c4',
   orange: '#e8902c', // 가로 자동 측정 타이머 · 녹음 파형
-  correct: '#5b74d6', // 퀴즈 정답 (FR-50-03)
-  'correct-soft': '#9aa6dd',
+  // 퀴즈 정답 (FR-50-03) — 오답 danger(빨강)와 짝인 초록. 브랜드 초록보다 선명해 구분된다
+  correct: '#1f7a4a', // 흰 바탕 5.33 · correct-soft 위 4.63
+  'correct-soft': '#e6f2ea', // 정답 표시줄 바탕 (글자는 correct)
   peach: '#eecaa6', // 퀴즈 아바타 배경
   // 간편 로그인 버튼 — 각 회사 로그인 버튼 규격의 바탕색
   kakao: '#fee500',
