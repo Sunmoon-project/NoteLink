@@ -271,7 +271,7 @@ export function HomeScreen() {
                 className="mt-3 flex-row items-center gap-1"
               >
                 <RotateCw size={ICON.xs} color={C.sub} />
-                <Text className="text-caption2 text-white/45">
+                <Text className="text-caption2 text-white/60">
                   가로로 돌리면 자동 측정 · 세로로 세우면 정지
                 </Text>
               </Pressable>
@@ -352,7 +352,10 @@ export function HomeScreen() {
                     on && 'bg-mint',
                   )}
                 >
-                  <View className={cx('h-8 w-1 rounded-full', on ? 'bg-brand' : 'bg-fill')} />
+                  {/* 세로 줄은 지금 재는 항목 표시일 때만 — 자리는 남겨 글자 줄을 맞춘다 */}
+                  <View
+                    className={cx('h-8 w-1 rounded-full', on ? 'bg-brand' : 'bg-transparent')}
+                  />
                   <View className="flex-1">
                     <Text className="text-callout font-semibold text-ink">{it.title}</Text>
                     <Text className="text-caption text-sub">

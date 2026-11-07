@@ -69,7 +69,7 @@ export function PhotoScreen() {
     <Screen>
       <Header title="프로필" sub="프로필을 만들어 보세요" />
       <View className="aspect-square items-center justify-center rounded-2xl bg-night">
-        <Text className="absolute top-3 text-caption text-white/50">1/2</Text>
+        <Text className="absolute top-3 text-caption text-white/60">1/2</Text>
         <Camera size={40} color="rgba(255,255,255,.5)" />
       </View>
       <View className="mt-4 gap-2">

@@ -234,7 +234,7 @@ export function CalShareScreen() {
             kind="sun"
             disabled={revokingCreated}
             className="mt-2"
-            onPress={() => Share.share({ message: `내 학습 캘린더를 공유해요 👉 https://${link}` })}
+            onPress={() => Share.share({ message: `내 학습 캘린더를 공유해요: https://${link}` })}
           >
             카카오톡으로 공유
           </Btn>
