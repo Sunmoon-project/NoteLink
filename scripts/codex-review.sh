@@ -24,7 +24,7 @@
 #   달지 않고 건너뜀으로 끝냅니다(Codex는 돌리지 않음).
 # - 요청 리뷰 도중 새 커밋이 올라와 결과를 버릴 때, 새 커밋의 자동 실행이 건너뛸 PR(첫 리뷰가 있거나 문서만 바뀜)이면
 #   workflow_dispatch로 새 커밋을 다시 요청합니다.
-# - 워크플로에서 돌 때(CODEX_TRIGGER가 있을 때)는 포크 · 초안 · Dependabot PR과 develop · main이 아닌 대상은 건너뜁니다.
+# - 워크플로에서 돌 때(CODEX_TRIGGER가 있을 때)는 포크 · 초안 · Dependabot PR과 develop · main · design/redesign이 아닌 대상은 건너뜁니다.
 #   댓글(issue_comment)로 온 요청은 워크플로가 PR 정보를 모르므로 여기서 확인합니다.
 #
 # 필요한 것: git, gh(로그인), codex(로그인). 현재 작업 폴더는 건드리지 않고
@@ -57,7 +57,7 @@ EX=( ':(exclude).env' ':(exclude).env.*' ':(exclude)**/.env' ':(exclude)**/.env.
 REQUEST_LABEL="codex-review"      # codex-review.yml의 라벨 이름과 같아야 함
 REQUEST_COMMAND="/codex review"   # codex-review.yml의 댓글 명령과 같아야 함
 REVIEW_WORKFLOW_FILE="codex-review.yml"  # 다시 요청할 때 workflow_dispatch로 돌릴 워크플로
-REVIEW_BASES="develop main"       # 리뷰하는 PR 대상 브랜치
+REVIEW_BASES="develop main design/redesign"  # 리뷰하는 PR 대상 브랜치 (design/redesign: 디자인 개편 통합 브랜치)
 
 # gh --jq 필터 (테스트에서 jq로 같은 필터를 검증합니다)
 # 내 댓글 중 Codex 리뷰 표시가 있는 것: created_at \t id   ($me, $marker는 --arg 대신 문자열로 끼움)
@@ -177,7 +177,7 @@ skip_review() {  # $1 = 이유
 workflow_skip_reason() {  # $1 = 포크 여부, $2 = 초안 여부, $3 = 대상 브랜치, $4 = 작성자 로그인
   if [ "$1" = true ]; then echo "포크에서 온 PR은 리뷰 컴퓨터에서 리뷰하지 않습니다."
   elif [ "$2" = true ]; then echo "초안 PR입니다. Ready for review로 바꾸면 리뷰합니다."
-  elif [[ " $REVIEW_BASES " != *" $3 "* ]]; then echo "$3 브랜치로 가는 PR은 리뷰하지 않습니다(develop · main만)."
+  elif [[ " $REVIEW_BASES " != *" $3 "* ]]; then echo "$3 브랜치로 가는 PR은 리뷰하지 않습니다(develop · main · design/redesign만)."
   else
     case "$4" in
       app/dependabot | dependabot | 'dependabot[bot]') echo "Dependabot PR은 리뷰하지 않습니다." ;;
