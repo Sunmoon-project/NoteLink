@@ -22,7 +22,19 @@ import { editPhoto } from '@/lib/image-edit';
 import { toast } from '@/stores/toast';
 import { checkFile, uploadToBlob, type LocalFile } from '@/lib/upload';
 import { useDraft } from '@/stores/draft';
-import { Alert, Badge, Btn, Chip, Header, Input, Label, Screen, Two, cx } from '@/components/ui';
+import {
+  Alert,
+  Badge,
+  Btn,
+  Canvas,
+  Chip,
+  Header,
+  Input,
+  Label,
+  Screen,
+  Two,
+  cx,
+} from '@/components/ui';
 import { C, ICON } from '@/theme';
 
 // p.61~65 필기 · 녹음 · 학습 자료 올리기 / p.102 이미지 검사
@@ -245,53 +257,55 @@ export function PhotoCheckScreen() {
     }
   };
   return (
-    <Screen
-      footer={
-        <Two>
-          <Btn kind="outline" onPress={() => router.replace('/capture/camera')}>
-            다시 촬영
-          </Btn>
-          <Btn disabled={!file || !previewReady} loading={saving} onPress={apply}>
-            다음
-          </Btn>
-        </Two>
-      }
-    >
-      <Header title="사진 확인" back={false} />
-      <View
-        className={cx(
-          'aspect-square items-center justify-center self-center overflow-hidden rounded-xl bg-cream',
-          'w-full',
-        )}
+    <Canvas>
+      <Screen
+        footer={
+          <Two>
+            <Btn kind="outline" onPress={() => router.replace('/capture/camera')}>
+              다시 촬영
+            </Btn>
+            <Btn disabled={!file || !previewReady} loading={saving} onPress={apply}>
+              다음
+            </Btn>
+          </Two>
+        }
       >
-        {file ? (
-          <Image
-            source={{ uri: (preview ?? file).uri }}
-            className="h-full w-full"
-            resizeMode="contain"
-          />
-        ) : (
-          <View className="flex-row items-center gap-1.5">
-            <Camera size={ICON.xs} color={C.sub} />
-            <Text className="text-footnote text-sub">촬영된 필기 이미지</Text>
-          </View>
-        )}
-      </View>
-      <View className="mt-4 flex-row gap-2">
-        <Chip small onPress={() => setRot((r) => r + 90)}>
-          <View className="flex-row items-center gap-1">
-            <RotateCw size={ICON.xs} color={C.ink} />
-            <Text className="text-caption text-ink">회전</Text>
-          </View>
-        </Chip>
-        <Chip small on={crop} onPress={() => setCrop((c) => !c)}>
-          <View className="flex-row items-center gap-1">
-            <Crop size={ICON.xs} color={crop ? '#fff' : C.ink} />
-            <Text className={cx('text-caption', crop ? 'text-white' : 'text-ink')}>자르기</Text>
-          </View>
-        </Chip>
-      </View>
-    </Screen>
+        <Header title="사진 확인" back={false} />
+        <View
+          className={cx(
+            'aspect-square items-center justify-center self-center overflow-hidden rounded-card bg-white',
+            'w-full',
+          )}
+        >
+          {file ? (
+            <Image
+              source={{ uri: (preview ?? file).uri }}
+              className="h-full w-full"
+              resizeMode="contain"
+            />
+          ) : (
+            <View className="flex-row items-center gap-1.5">
+              <Camera size={ICON.xs} color={C.sub} />
+              <Text className="text-footnote text-sub">촬영된 필기 이미지</Text>
+            </View>
+          )}
+        </View>
+        <View className="mt-4 flex-row gap-2">
+          <Chip small onPress={() => setRot((r) => r + 90)}>
+            <View className="flex-row items-center gap-1">
+              <RotateCw size={ICON.xs} color={C.ink} />
+              <Text className="text-caption text-ink">회전</Text>
+            </View>
+          </Chip>
+          <Chip small on={crop} onPress={() => setCrop((c) => !c)}>
+            <View className="flex-row items-center gap-1">
+              <Crop size={ICON.xs} color={crop ? '#fff' : C.ink} />
+              <Text className={cx('text-caption', crop ? 'text-white' : 'text-ink')}>자르기</Text>
+            </View>
+          </Chip>
+        </View>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -399,103 +413,107 @@ export function PickedScreen() {
     );
   };
   return (
-    <Screen
-      footer={
-        notHand.length && !bad.length ? (
-          <View className="gap-2">
-            <Btn
-              onPress={() => set({ files: files.filter((f) => v(f) !== 'not_handwriting') })}
-            >{`필기 사진 ${files.length - notHand.length}장만 올리기`}</Btn>
-            <Btn kind="outline" onPress={reselect}>
-              사진 다시 선택
-            </Btn>
-          </View>
-        ) : (
-          <Btn
-            disabled={!files.length || !!prohibited.length || check.isFetching || !check.isSuccess}
-            onPress={next}
-          >
-            다음
-          </Btn>
-        )
-      }
-    >
-      {notHand.length > 0 && !bad.length && (
-        <View className="mt-3 rounded-2xl bg-sun/20 px-4 py-3">
-          <Text className="text-footnote font-semibold text-ink">
-            ● 필기가 아닌 사진이 {notHand.length}장 있어요
-          </Text>
-          <Text className="text-caption text-sub">제외하고 올리거나 다시 선택해요</Text>
-        </View>
-      )}
-      <Header title={`선택한 사진 (${files.length}장)`} />
-      {check.isError && (
-        <View>
-          <Text>사진 검사에 실패했어요. 다시 시도해 주세요.</Text>
-          <Btn onPress={() => check.refetch()}>다시 검사</Btn>
-        </View>
-      )}
-      <View className="gap-2">
-        {files.map((f) => (
-          <View
-            key={f.uri}
-            className={cx(
-              'flex-row items-center gap-3 rounded-2xl p-3',
-              v(f) === 'not_handwriting' ? 'border border-danger/40 bg-white' : 'bg-cream',
-            )}
-          >
-            <Image source={{ uri: f.uri }} className="h-12 w-12 rounded-lg bg-mint" />
-            <View className="flex-1">
-              <Text className="text-subhead font-semibold text-ink" numberOfLines={1}>
-                {f.name}
-              </Text>
-              <Text className="text-caption2 text-sub">
-                {f.size ? `${(f.size / 1024 / 1024).toFixed(1)}MB` : ''}
-              </Text>
-              <View className="mt-1">{tag(f)}</View>
+    <Canvas>
+      <Screen
+        footer={
+          notHand.length && !bad.length ? (
+            <View className="gap-2">
+              <Btn
+                onPress={() => set({ files: files.filter((f) => v(f) !== 'not_handwriting') })}
+              >{`필기 사진 ${files.length - notHand.length}장만 올리기`}</Btn>
+              <Btn kind="outline" onPress={reselect}>
+                사진 다시 선택
+              </Btn>
             </View>
-            <Pressable
-              accessibilityLabel="삭제"
-              onPress={() => remove(f.uri)}
-              className="h-7 w-7 items-center justify-center rounded-full bg-white"
+          ) : (
+            <Btn
+              disabled={
+                !files.length || !!prohibited.length || check.isFetching || !check.isSuccess
+              }
+              onPress={next}
             >
-              <X size={ICON.xs} color={C.ink} />
-            </Pressable>
-          </View>
-        ))}
-      </View>
-      <Pressable
-        onPress={addPhotos}
-        className="mt-2 h-12 items-center justify-center rounded-2xl border border-brand/40"
+              다음
+            </Btn>
+          )
+        }
       >
-        <Text className="text-subhead text-sub">+ 사진 추가</Text>
-      </Pressable>
-      <Alert
-        open={dlg === 'bad'}
-        title="올릴 수 없는 파일이에요"
-        body={`JPG · PNG · HEIC, 20MB 이하만\n올릴 수 있어요.`}
-        secondary="닫기"
-        onSecondary={() => {
-          setDlg(null);
-          set({ files: files.filter((f) => local[f.uri]?.ok) });
-        }}
-        primary="다시 선택"
-        onPrimary={() => {
-          setDlg(null);
-          reselect();
-        }}
-      />
-      <Alert
-        open={dlg === 'blurry'}
-        tone="sun"
-        title="글씨를 읽기 어려워요"
-        body={`사진이 흐리거나 어두워요.\n다시 찍으면 더 정확히 정리돼요.`}
-        secondary="그대로 올리기"
-        onSecondary={() => router.replace('/convert')}
-        primary="다시 촬영"
-        onPrimary={() => router.replace('/capture/camera')}
-      />
-    </Screen>
+        {notHand.length > 0 && !bad.length && (
+          <View className="mt-3 rounded-2xl bg-sun/20 px-4 py-3">
+            <Text className="text-footnote font-semibold text-ink">
+              ● 필기가 아닌 사진이 {notHand.length}장 있어요
+            </Text>
+            <Text className="text-caption text-sub">제외하고 올리거나 다시 선택해요</Text>
+          </View>
+        )}
+        <Header title={`선택한 사진 (${files.length}장)`} />
+        {check.isError && (
+          <View>
+            <Text>사진 검사에 실패했어요. 다시 시도해 주세요.</Text>
+            <Btn onPress={() => check.refetch()}>다시 검사</Btn>
+          </View>
+        )}
+        <View className="gap-2">
+          {files.map((f) => (
+            <View
+              key={f.uri}
+              className={cx(
+                'flex-row items-center gap-3 rounded-2xl p-3',
+                v(f) === 'not_handwriting' ? 'border border-danger/40 bg-white' : 'bg-white',
+              )}
+            >
+              <Image source={{ uri: f.uri }} className="h-12 w-12 rounded-lg bg-mint" />
+              <View className="flex-1">
+                <Text className="text-subhead font-semibold text-ink" numberOfLines={1}>
+                  {f.name}
+                </Text>
+                <Text className="text-caption2 text-sub">
+                  {f.size ? `${(f.size / 1024 / 1024).toFixed(1)}MB` : ''}
+                </Text>
+                <View className="mt-1">{tag(f)}</View>
+              </View>
+              <Pressable
+                accessibilityLabel="삭제"
+                onPress={() => remove(f.uri)}
+                className="h-7 w-7 items-center justify-center rounded-full bg-white"
+              >
+                <X size={ICON.xs} color={C.ink} />
+              </Pressable>
+            </View>
+          ))}
+        </View>
+        <Pressable
+          onPress={addPhotos}
+          className="mt-2 h-12 items-center justify-center rounded-2xl border border-brand/40"
+        >
+          <Text className="text-subhead text-sub">+ 사진 추가</Text>
+        </Pressable>
+        <Alert
+          open={dlg === 'bad'}
+          title="올릴 수 없는 파일이에요"
+          body={`JPG · PNG · HEIC, 20MB 이하만\n올릴 수 있어요.`}
+          secondary="닫기"
+          onSecondary={() => {
+            setDlg(null);
+            set({ files: files.filter((f) => local[f.uri]?.ok) });
+          }}
+          primary="다시 선택"
+          onPrimary={() => {
+            setDlg(null);
+            reselect();
+          }}
+        />
+        <Alert
+          open={dlg === 'blurry'}
+          tone="sun"
+          title="글씨를 읽기 어려워요"
+          body={`사진이 흐리거나 어두워요.\n다시 찍으면 더 정확히 정리돼요.`}
+          secondary="그대로 올리기"
+          onSecondary={() => router.replace('/convert')}
+          primary="다시 촬영"
+          onPrimary={() => router.replace('/capture/camera')}
+        />
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -517,34 +535,40 @@ export function RecUploadScreen() {
     });
   };
   return (
-    <Screen
-      footer={
-        <Btn
-          disabled={!file}
-          onPress={() => {
-            router.replace('/convert');
-          }}
-        >
-          다음
-        </Btn>
-      }
-    >
-      <Header title="녹음 올리기" center />
-      <Pressable
-        onPress={pick}
-        className="mt-2 items-center rounded-2xl border-2 border-dashed border-brand/40 bg-mint/60 py-6"
+    <Canvas>
+      <Screen
+        footer={
+          <Btn
+            disabled={!file}
+            onPress={() => {
+              router.replace('/convert');
+            }}
+          >
+            다음
+          </Btn>
+        }
       >
-        <View className="h-10 w-10 items-center justify-center rounded-full border-2 border-brand/40">
-          {file ? <Check size={ICON.md} color={C.brand} /> : <Mic size={ICON.md} color={C.brand} />}
-        </View>
-        <Text className="mt-2 text-footnote font-semibold text-ink">
-          {file?.name ?? '탭해서 녹음 파일 선택'}
-        </Text>
-        <Text className="text-caption2 text-sub">
-          {file?.size ? `${(file.size / 1024 / 1024).toFixed(1)}MB` : 'mp3 · m4a · wav'}
-        </Text>
-      </Pressable>
-    </Screen>
+        <Header title="녹음 올리기" center />
+        <Pressable
+          onPress={pick}
+          className="mt-2 items-center rounded-2xl border-2 border-dashed border-brand/40 bg-mint/60 py-6"
+        >
+          <View className="h-10 w-10 items-center justify-center rounded-full border-2 border-brand/40">
+            {file ? (
+              <Check size={ICON.md} color={C.brand} />
+            ) : (
+              <Mic size={ICON.md} color={C.brand} />
+            )}
+          </View>
+          <Text className="mt-2 text-footnote font-semibold text-ink">
+            {file?.name ?? '탭해서 녹음 파일 선택'}
+          </Text>
+          <Text className="text-caption2 text-sub">
+            {file?.size ? `${(file.size / 1024 / 1024).toFixed(1)}MB` : 'mp3 · m4a · wav'}
+          </Text>
+        </Pressable>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -710,57 +734,59 @@ export function PickedFileScreen() {
     if (a) set({ files: [{ uri: a.uri, name: a.name, mimeType: a.mimeType, size: a.size }] });
   };
   return (
-    <Screen
-      footer={
-        <Btn disabled={!f || !ok?.ok} onPress={() => router.replace('/convert')}>
-          다음
-        </Btn>
-      }
-    >
-      <Header title="선택한 파일 (1개)" large={false} />
-      {f ? (
-        <View className="flex-row items-center gap-3 rounded-2xl bg-cream p-3">
-          <View className="h-11 w-11 items-center justify-center rounded-lg bg-mint">
-            <FileText size={ICON.md} color={C.sub} />
+    <Canvas>
+      <Screen
+        footer={
+          <Btn disabled={!f || !ok?.ok} onPress={() => router.replace('/convert')}>
+            다음
+          </Btn>
+        }
+      >
+        <Header title="선택한 파일 (1개)" large={false} />
+        {f ? (
+          <View className="flex-row items-center gap-3 rounded-card bg-white p-4">
+            <View className="h-11 w-11 items-center justify-center rounded-lg bg-mint">
+              <FileText size={ICON.md} color={C.sub} />
+            </View>
+            <View className="flex-1">
+              <Text className="text-subhead font-semibold text-ink" numberOfLines={1}>
+                {f.name}
+              </Text>
+              <Text className={cx('text-caption2', ok?.ok ? 'text-sub' : 'text-danger')}>
+                {ok?.ok
+                  ? `${((f.size ?? 0) / 1024 / 1024).toFixed(1)}MB · ${f.name.endsWith('.pdf') ? 'PDF 문서' : '이미지'}`
+                  : !ok?.ok && 'reason' in ok!
+                    ? ok.reason
+                    : ''}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityLabel="삭제"
+              onPress={() => set({ files: [] })}
+              className="h-7 w-7 items-center justify-center rounded-full bg-white"
+            >
+              <X size={ICON.xs} color={C.ink} />
+            </Pressable>
           </View>
-          <View className="flex-1">
-            <Text className="text-subhead font-semibold text-ink" numberOfLines={1}>
-              {f.name}
-            </Text>
-            <Text className={cx('text-caption2', ok?.ok ? 'text-sub' : 'text-danger')}>
-              {ok?.ok
-                ? `${((f.size ?? 0) / 1024 / 1024).toFixed(1)}MB · ${f.name.endsWith('.pdf') ? 'PDF 문서' : '이미지'}`
-                : !ok?.ok && 'reason' in ok!
-                  ? ok.reason
-                  : ''}
-            </Text>
-          </View>
+        ) : (
           <Pressable
-            accessibilityLabel="삭제"
-            onPress={() => set({ files: [] })}
-            className="h-7 w-7 items-center justify-center rounded-full bg-white"
+            onPress={pickAgain}
+            className="h-14 items-center justify-center rounded-2xl border border-dashed border-brand/40"
           >
-            <X size={ICON.xs} color={C.ink} />
+            <Text className="text-subhead text-sub">+ 파일 다시 선택</Text>
           </Pressable>
-        </View>
-      ) : (
-        <Pressable
-          onPress={pickAgain}
-          className="h-14 items-center justify-center rounded-2xl border border-dashed border-brand/40"
-        >
-          <Text className="text-subhead text-sub">+ 파일 다시 선택</Text>
-        </Pressable>
-      )}
-      <Label>노트 제목</Label>
-      <Input value={title} onChangeText={(t) => set({ title: t })} />
-      <Input
-        className="mt-3"
-        multiline
-        value={description}
-        onChangeText={(t) => set({ description: t })}
-        placeholder="해당 파일에 대한 설명"
-      />
-    </Screen>
+        )}
+        <Label>노트 제목</Label>
+        <Input value={title} onChangeText={(t) => set({ title: t })} />
+        <Input
+          className="mt-3"
+          multiline
+          value={description}
+          onChangeText={(t) => set({ description: t })}
+          placeholder="해당 파일에 대한 설명"
+        />
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -769,57 +795,63 @@ export function ScanCheckScreen() {
   const files = useDraft((s) => s.files);
   const [cur, setCur] = useState(0);
   return (
-    <Screen
-      footer={
-        <Two>
-          <Btn
-            kind="outline"
-            onPress={() =>
-              router.replace({ pathname: '/capture/camera', params: { mode: 'scan' } })
-            }
-          >
-            다시 스캔
-          </Btn>
-          <Btn onPress={() => router.replace('/convert')}>다음</Btn>
-        </Two>
-      }
-    >
-      <Header title={`문서 스캔 확인 (${files.length}페이지)`} large={false} />
-      <View className="flex-row gap-2">
-        {files.map((f, i) => (
+    <Canvas>
+      <Screen
+        footer={
+          <Two>
+            <Btn
+              kind="outline"
+              onPress={() =>
+                router.replace({ pathname: '/capture/camera', params: { mode: 'scan' } })
+              }
+            >
+              다시 스캔
+            </Btn>
+            <Btn onPress={() => router.replace('/convert')}>다음</Btn>
+          </Two>
+        }
+      >
+        <Header title={`문서 스캔 확인 (${files.length}페이지)`} large={false} />
+        <View className="flex-row gap-2">
+          {files.map((f, i) => (
+            <Pressable
+              key={f.uri}
+              onPress={() => setCur(i)}
+              className={cx(
+                'h-20 w-14 overflow-hidden rounded-lg bg-white',
+                cur === i && 'border-2 border-brand',
+              )}
+            >
+              <Image source={{ uri: f.uri }} className="h-full w-full" />
+              <View className="absolute top-1 left-1 h-4 w-4 items-center justify-center rounded-full bg-ink">
+                <Text className="text-caption2 text-white">{i + 1}</Text>
+              </View>
+            </Pressable>
+          ))}
           <Pressable
-            key={f.uri}
-            onPress={() => setCur(i)}
-            className={cx(
-              'h-20 w-14 overflow-hidden rounded-lg bg-cream',
-              cur === i && 'border-2 border-brand',
-            )}
+            onPress={() =>
+              router.replace({ pathname: '/capture/camera', params: { mode: 'scan', append: '1' } })
+            }
+            className="h-20 w-14 items-center justify-center rounded-lg border border-brand/40"
           >
-            <Image source={{ uri: f.uri }} className="h-full w-full" />
-            <View className="absolute top-1 left-1 h-4 w-4 items-center justify-center rounded-full bg-ink">
-              <Text className="text-caption2 text-white">{i + 1}</Text>
-            </View>
+            <Text className="text-caption2 text-sub">+ 추가</Text>
           </Pressable>
-        ))}
-        <Pressable
-          onPress={() =>
-            router.replace({ pathname: '/capture/camera', params: { mode: 'scan', append: '1' } })
-          }
-          className="h-20 w-14 items-center justify-center rounded-lg border border-brand/40"
-        >
-          <Text className="text-caption2 text-sub">+ 추가</Text>
-        </Pressable>
-      </View>
-      <View className="mt-4 aspect-[4/3.6] items-center justify-center overflow-hidden rounded-2xl bg-cream">
-        {files[cur] ? (
-          <Image source={{ uri: files[cur].uri }} className="h-full w-full" resizeMode="contain" />
-        ) : (
-          <View className="flex-row items-center gap-1.5">
-            <FileText size={ICON.xs} color={C.sub} />
-            <Text className="text-footnote text-sub">{cur + 1}페이지 미리보기</Text>
-          </View>
-        )}
-      </View>
-    </Screen>
+        </View>
+        <View className="mt-4 aspect-[4/3.6] items-center justify-center overflow-hidden rounded-card bg-white">
+          {files[cur] ? (
+            <Image
+              source={{ uri: files[cur].uri }}
+              className="h-full w-full"
+              resizeMode="contain"
+            />
+          ) : (
+            <View className="flex-row items-center gap-1.5">
+              <FileText size={ICON.xs} color={C.sub} />
+              <Text className="text-footnote text-sub">{cur + 1}페이지 미리보기</Text>
+            </View>
+          )}
+        </View>
+      </Screen>
+    </Canvas>
   );
 }
