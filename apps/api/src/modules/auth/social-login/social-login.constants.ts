@@ -13,3 +13,6 @@ export const NOT_FOUND = 'NOT_FOUND';
 
 /** 로그인을 시작한 뒤 구글 로그인을 마칠 때까지 기다려 주는 시간 */
 export const ATTEMPT_TTL_MS = 10 * 60 * 1000;
+
+/** 앱에 1회용 코드를 내준 뒤 앱이 코드를 교환할 때까지 기다려 주는 시간. 코드는 짧게 살아야 한다 */
+export const CODE_TTL_MS = 2 * 60 * 1000;

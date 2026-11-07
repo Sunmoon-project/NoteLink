@@ -10,9 +10,12 @@ import {
   SocialLoginAttempt,
   SocialLoginAttemptSchema,
 } from './schemas/social-login-attempt.schema.js';
+import { User, UserSchema } from './schemas/user.schema.js';
+import { GoogleOAuthClient } from './social-login/google-oauth.client.js';
 import { SocialLoginController } from './social-login/social-login.controller.js';
 import { GOOGLE_CONFIG } from './social-login/social-login.constants.js';
 import { SocialLoginService } from './social-login/social-login.service.js';
+import { SocialUserService } from './social-login/social-user.service.js';
 import { JWT_CONFIG, TokenService } from './token.service.js';
 
 @Module({
@@ -24,6 +27,8 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       { name: RefreshToken.name, schema: RefreshTokenSchema },
       // social_login_attempts 컬렉션(소셜 로그인 진행 상태)
       { name: SocialLoginAttempt.name, schema: SocialLoginAttemptSchema },
+      // users 컬렉션(소셜 로그인으로 사용자를 찾거나 만든다)
+      { name: User.name, schema: UserSchema },
     ]),
   ],
   controllers: [SocialLoginController],
@@ -41,6 +46,8 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       useFactory: createGoogleConfig,
     },
     TokenService,
+    GoogleOAuthClient,
+    SocialUserService,
     SocialLoginService,
   ],
   // 이메일 · 소셜 로그인이 같은 토큰 발급 로직을 쓰도록 내보낸다

@@ -4,6 +4,10 @@ import { type HydratedDocument, Types } from 'mongoose';
 export const SOCIAL_PROVIDERS = ['google', 'kakao', 'naver'] as const;
 export type SocialProviderName = (typeof SOCIAL_PROVIDERS)[number];
 
+/** 제공자 인증이 끝난 뒤의 결과. 코드 교환 때 이 값으로 로그인(토큰 발급)할지 `409`로 안내할지 정한다 */
+export const SOCIAL_LOGIN_OUTCOMES = ['signed_in', 'account_exists'] as const;
+export type SocialLoginOutcome = (typeof SOCIAL_LOGIN_OUTCOMES)[number];
+
 export type SocialLoginAttemptDocument = HydratedDocument<SocialLoginAttempt>;
 
 /**
@@ -34,6 +38,10 @@ export class SocialLoginAttempt {
   /** 앱에 넘겨준 1회용 코드의 SHA-256 해시(원문은 저장하지 않는다). 제공자 인증이 끝나면 채운다 */
   @Prop({ type: String, default: null })
   codeHash: string | null;
+
+  /** 제공자 인증이 끝나면 채운다. signed_in이면 userId가 있고, account_exists(이메일 겹침)면 userId는 null이다 */
+  @Prop({ type: String, enum: SOCIAL_LOGIN_OUTCOMES, default: null })
+  outcome: SocialLoginOutcome | null;
 
   /** 이 시각이 지나면 쓸 수 없다. 시작 직후에는 길게, 코드를 내준 뒤에는 짧게 줄인다 */
   @Prop({ required: true, type: Date })

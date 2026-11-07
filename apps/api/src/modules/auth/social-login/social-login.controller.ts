@@ -9,6 +9,7 @@ import {
   Redirect,
 } from '@nestjs/common';
 
+import { parseGoogleCallbackQuery } from './google-callback-query.js';
 import { NOT_FOUND } from './social-login.constants.js';
 import { SocialLoginService } from './social-login.service.js';
 import { parseSocialStartQuery } from './social-start-query.js';
@@ -17,6 +18,22 @@ import { parseSocialStartQuery } from './social-start-query.js';
 @Controller('auth/social')
 export class SocialLoginController {
   constructor(private readonly socialLogin: SocialLoginService) {}
+
+  /**
+   * 구글이 로그인을 마친 사용자를 돌려보내는 주소. 구글 콘솔의 "승인된 리디렉션 URI"와 같은 경로다
+   * (`GOOGLE_CALLBACK_PATH`). 1회용 코드를 만들어 브라우저를 앱(notelink://auth/callback)으로 돌려보낸다.
+   * 구글에서만 오는 주소라서 provider를 받지 않고 `google`로 고정한다.
+   */
+  @Get('google/callback')
+  @Redirect()
+  // 앱 주소에 1회용 코드가 들어 있으므로 브라우저나 중간 서버가 저장해 두지 않게 한다
+  @Header('Cache-Control', 'no-store')
+  async googleCallback(
+    @Query() query: Record<string, unknown>,
+  ): Promise<{ url: string; statusCode: number }> {
+    const url = await this.socialLogin.handleGoogleCallback(parseGoogleCallbackQuery(query));
+    return { url, statusCode: HttpStatus.FOUND };
+  }
 
   /**
    * 앱이 시스템 브라우저로 여는 주소. 로그인 시도를 저장하고 브라우저를 제공자 로그인 화면으로 보낸다.
