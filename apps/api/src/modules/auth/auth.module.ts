@@ -5,6 +5,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 
 import { createGoogleConfig } from '../../config/google.config.js';
 import { createJwtConfig } from '../../config/jwt.config.js';
+import { createKakaoConfig } from '../../config/kakao.config.js';
 import { AuthTokenController } from './auth-token.controller.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { RefreshToken, RefreshTokenSchema } from './schemas/refresh-token.schema.js';
@@ -14,9 +15,14 @@ import {
 } from './schemas/social-login-attempt.schema.js';
 import { User, UserSchema } from './schemas/user.schema.js';
 import { GoogleOAuthClient } from './social-login/google-oauth.client.js';
+import { KakaoOAuthClient } from './social-login/kakao-oauth.client.js';
 import { SocialExchangeService } from './social-login/social-exchange.service.js';
 import { SocialLoginController } from './social-login/social-login.controller.js';
-import { GOOGLE_CONFIG, SOCIAL_PROVIDER_ADAPTERS } from './social-login/social-login.constants.js';
+import {
+  GOOGLE_CONFIG,
+  KAKAO_CONFIG,
+  SOCIAL_PROVIDER_ADAPTERS,
+} from './social-login/social-login.constants.js';
 import { SocialLoginService } from './social-login/social-login.service.js';
 import { SocialProviderRegistry } from './social-login/social-provider-registry.js';
 import { SocialUserService } from './social-login/social-user.service.js';
@@ -49,14 +55,21 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       inject: [ConfigService],
       useFactory: createGoogleConfig,
     },
+    // KAKAO_* 환경변수도 같은 방식으로 읽고 검증한다
+    {
+      provide: KAKAO_CONFIG,
+      inject: [ConfigService],
+      useFactory: createKakaoConfig,
+    },
     TokenService,
     JwtAuthGuard,
     GoogleOAuthClient,
-    // 지원하는 소셜 로그인 제공자 목록. 카카오 · 네이버는 여기에 추가한다
+    KakaoOAuthClient,
+    // 지원하는 소셜 로그인 제공자 목록. 네이버는 여기에 추가한다
     {
       provide: SOCIAL_PROVIDER_ADAPTERS,
-      inject: [GoogleOAuthClient],
-      useFactory: (google: GoogleOAuthClient) => [google],
+      inject: [GoogleOAuthClient, KakaoOAuthClient],
+      useFactory: (google: GoogleOAuthClient, kakao: KakaoOAuthClient) => [google, kakao],
     },
     SocialProviderRegistry,
     SocialUserService,

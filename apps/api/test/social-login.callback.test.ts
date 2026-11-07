@@ -431,7 +431,7 @@ describe('구글 로그인: 시작 → 콜백 (구글만 가짜, 나머지는 �
       ['올바른 쿼리여도', `?state=${'a'.repeat(43)}&code=c`],
     ])('지원하지 않는 제공자는 %s 404이다', async (_reason, query) => {
       const res = await request(app.getHttpServer())
-        .get(`/api/v1/auth/social/kakao/callback${query}`)
+        .get(`/api/v1/auth/social/naver/callback${query}`)
         .redirects(0);
 
       expect(res.status).toBe(404);
@@ -440,7 +440,7 @@ describe('구글 로그인: 시작 → 콜백 (구글만 가짜, 나머지는 �
 
     it('지원하지 않는 제공자의 시작도 쿼리가 틀려도 404이다', async () => {
       const res = await request(app.getHttpServer())
-        .get('/api/v1/auth/social/kakao/start?state=bad')
+        .get('/api/v1/auth/social/naver/start?state=bad')
         .redirects(0);
 
       expect(res.status).toBe(404);
@@ -448,7 +448,7 @@ describe('구글 로그인: 시작 → 콜백 (구글만 가짜, 나머지는 �
     });
 
     it('지원하지 않는 제공자의 코드 교환도 본문이 틀려도 404이다', async () => {
-      const res = await request(app.getHttpServer()).post('/api/v1/auth/social/kakao').send({});
+      const res = await request(app.getHttpServer()).post('/api/v1/auth/social/naver').send({});
 
       expect(res.status).toBe(404);
       expect(res.body.code).toBe('NOT_FOUND');
@@ -467,7 +467,7 @@ describe('구글 로그인: 시작 → 콜백 (구글만 가짜, 나머지는 �
 
     it('다른 제공자의 콜백 주소는 아직 없다', async () => {
       const res = await request(app.getHttpServer())
-        .get('/api/v1/auth/social/kakao/callback')
+        .get('/api/v1/auth/social/naver/callback')
         .redirects(0);
 
       expect(res.status).toBe(404);

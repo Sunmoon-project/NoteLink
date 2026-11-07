@@ -1,8 +1,14 @@
 import type { MongooseModuleOptions } from '@nestjs/mongoose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { GOOGLE_CONFIG } from '../src/modules/auth/social-login/social-login.constants.js';
+import { GoogleOAuthClient } from '../src/modules/auth/social-login/google-oauth.client.js';
+import { KakaoOAuthClient } from '../src/modules/auth/social-login/kakao-oauth.client.js';
+import {
+  GOOGLE_CONFIG,
+  KAKAO_CONFIG,
+} from '../src/modules/auth/social-login/social-login.constants.js';
 import { SocialLoginService } from '../src/modules/auth/social-login/social-login.service.js';
+import { SocialProviderRegistry } from '../src/modules/auth/social-login/social-provider-registry.js';
 import { JWT_CONFIG, TokenService } from '../src/modules/auth/token.service.js';
 import { TEST_ENV, createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 
@@ -89,8 +95,42 @@ describe('AppModule의 구글 로그인 설정', () => {
   );
 
   it('리디렉션 주소가 구글 콜백 경로가 아니면 서버 조립 단계에서 실패한다', async () => {
-    stubAppEnv({ GOOGLE_REDIRECT_URI: 'https://notelink.app/api/v1/auth/social/kakao/callback' });
+    stubAppEnv({ GOOGLE_REDIRECT_URI: 'https://notelink.app/api/v1/auth/social/naver/callback' });
 
     await expect(createAppModuleBuilder().compile()).rejects.toThrow('GOOGLE_REDIRECT_URI');
+  });
+});
+
+describe('AppModule의 카카오 로그인 설정', () => {
+  it('KAKAO_* 환경변수를 읽어 어댑터가 쓸 설정으로 만든다', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const config = moduleRef.get(KAKAO_CONFIG, { strict: false });
+    const registry = moduleRef.get(SocialProviderRegistry, { strict: false });
+    await moduleRef.close();
+
+    expect(config).toEqual({
+      restApiKey: TEST_ENV.KAKAO_REST_API_KEY,
+      clientSecret: TEST_ENV.KAKAO_CLIENT_SECRET,
+      redirectUri: TEST_ENV.KAKAO_REDIRECT_URI,
+    });
+    expect(registry.find('kakao')).toBeInstanceOf(KakaoOAuthClient);
+    expect(registry.find('google')).toBeInstanceOf(GoogleOAuthClient);
+  });
+
+  it.each(['KAKAO_REST_API_KEY', 'KAKAO_CLIENT_SECRET', 'KAKAO_REDIRECT_URI'])(
+    '%s가 비어 있으면 서버 조립 단계에서 실패한다',
+    async (key) => {
+      stubAppEnv({ [key]: '' });
+
+      await expect(createAppModuleBuilder().compile()).rejects.toThrow(key);
+    },
+  );
+
+  it('리다이렉트 주소가 카카오 콜백 경로가 아니면 서버 조립 단계에서 실패한다', async () => {
+    stubAppEnv({ KAKAO_REDIRECT_URI: 'https://notelink.app/api/v1/auth/social/google/callback' });
+
+    await expect(createAppModuleBuilder().compile()).rejects.toThrow('KAKAO_REDIRECT_URI');
   });
 });
