@@ -16,7 +16,7 @@ import {
 import { useKeepAwake } from 'expo-keep-awake';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
-import { Camera, Check, Crop, FileText, Mic, RotateCw, X, Zap } from 'lucide-react-native';
+import { Camera, Check, Crop, FileText, Mic, Pause, RotateCw, X, Zap } from 'lucide-react-native';
 import { api, type ImageVerdict } from '@/lib/api';
 import { editPhoto } from '@/lib/image-edit';
 import { toast } from '@/stores/toast';
@@ -32,6 +32,7 @@ import {
   Input,
   Label,
   Screen,
+  Swap,
   Two,
   cx,
 } from '@/components/ui';
@@ -667,56 +668,81 @@ export function RecLiveScreen() {
   const sec = Math.floor(st.durationMillis / 1000);
   const t = `${String(Math.floor(sec / 3600)).padStart(2, '0')}:${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
   return (
-    <View
-      className="flex-1 bg-night px-5"
-      style={{ paddingTop: insets.top + 8, paddingBottom: insets.bottom + 24 }}
-    >
-      <StatusBar style="light" />
-      {keepAwake && <RecordingAwake />}
-      <Pressable
-        accessibilityLabel="닫기"
-        className="self-start"
-        onPress={() => setConfirmClose(true)}
-        hitSlop={10}
+    <Canvas>
+      <View
+        className="flex-1 px-6"
+        style={{ paddingTop: insets.top + 8, paddingBottom: Math.max(insets.bottom + 12, 24) }}
       >
-        <X size={ICON.lg} color="#fff" />
-      </Pressable>
-      <Alert
-        open={confirmClose}
-        title="녹음을 그만둘까요?"
-        body="지금까지 녹음한 내용은 저장되지 않아요."
-        secondary="계속 녹음"
-        onSecondary={() => setConfirmClose(false)}
-        primary="그만두기"
-        onPrimary={() => router.back()}
-      />
-      <View className="mt-24 self-center rounded-full border border-white/50 px-5 py-1">
-        <Text className="tabular-nums text-title1 text-white">{t}</Text>
+        <StatusBar style="dark" />
+        {keepAwake && <RecordingAwake />}
+        <View className="h-control-lg flex-row items-center justify-between">
+          <Pressable
+            accessibilityLabel="닫기"
+            className="h-control w-control -ml-2 items-center justify-center"
+            onPress={() => setConfirmClose(true)}
+            hitSlop={10}
+          >
+            <X size={ICON.lg} color={C.ink} />
+          </Pressable>
+          <Text className="text-headline font-semibold text-ink">실시간 녹음</Text>
+          <View className="w-control" />
+        </View>
+        <Alert
+          open={confirmClose}
+          title="녹음을 그만둘까요?"
+          body="지금까지 녹음한 내용은 저장되지 않아요."
+          secondary="계속 녹음"
+          onSecondary={() => setConfirmClose(false)}
+          primary="그만두기"
+          onPrimary={() => router.back()}
+        />
+        <View className="flex-1 justify-center">
+          <View className="items-center">
+            {/* 녹음 중이면 빨간 점, 멈추면 회색 — 상태 글자는 자리를 지키며 교차한다 */}
+            <View className="flex-row items-center gap-2">
+              <View
+                className={cx('h-2 w-2 rounded-full', st.isRecording ? 'bg-danger' : 'bg-sub/40')}
+              />
+              <Swap k={st.isRecording ? 'on' : 'off'}>
+                <Text className="text-footnote font-semibold text-sub">
+                  {st.isRecording ? '녹음 중' : '일시정지됨'}
+                </Text>
+              </Swap>
+            </View>
+            <Text className="mt-3 tabular-nums text-display font-bold text-ink">{t}</Text>
+          </View>
+          <View className="mt-8 h-20 flex-row items-center justify-center gap-1 rounded-card bg-white">
+            {bars.map((h, i) => (
+              <View
+                key={i}
+                className="w-1.5 rounded-full bg-brand"
+                style={{ height: st.isRecording ? h : 6 }}
+              />
+            ))}
+          </View>
+          <Text className="mt-3 text-center text-caption text-sub">
+            녹음하는 동안 화면이 꺼지지 않아요. 끝나면 변환 시작을 눌러주세요
+          </Text>
+        </View>
+        <View className="gap-6">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={st.isRecording ? '녹음 일시정지' : '녹음 재개'}
+            onPress={toggle}
+            className="h-20 w-20 items-center justify-center self-center rounded-full bg-danger"
+          >
+            <Swap k={st.isRecording ? 'pause' : 'play'}>
+              {st.isRecording ? (
+                <Pause size={ICON.lg} color="#fff" fill="#fff" />
+              ) : (
+                <Mic size={ICON.lg} color="#fff" />
+              )}
+            </Swap>
+          </Pressable>
+          <Btn onPress={finish}>변환 시작</Btn>
+        </View>
       </View>
-      <View className="mt-4 h-20 flex-row items-center justify-center gap-1 rounded-lg bg-black/30">
-        {bars.map((h, i) => (
-          <View
-            key={i}
-            className="w-1.5 rounded-full bg-orange"
-            style={{ height: st.isRecording ? h : 6 }}
-          />
-        ))}
-      </View>
-      <View className="mt-auto flex-row items-center justify-center gap-10">
-        <Pressable
-          accessibilityLabel={st.isRecording ? '녹음 일시정지' : '녹음 재개'}
-          onPress={toggle}
-          className="h-14 w-14 items-center justify-center rounded-full border-2 border-white/60"
-        >
-          <View
-            className={cx('h-5 w-5 bg-danger', st.isRecording ? 'rounded-sm' : 'rounded-full')}
-          />
-        </Pressable>
-        <Pressable onPress={finish} className="rounded-full bg-white/20 px-4 py-1.5">
-          <Text className="text-footnote font-semibold text-white">변환 시작</Text>
-        </Pressable>
-      </View>
-    </View>
+    </Canvas>
   );
 }
 
