@@ -194,6 +194,28 @@ export function Swap({
   );
 }
 
+/**
+ * 처음 나타날 때 시작값에서 값까지 굴러 올라간다 (결과 화면의 포인트 · 공부 시간).
+ * from은 같은 모양의 시작값(예: '+0P', '00:00:00'). 이후 값이 바뀌면 Roll처럼 자리별로 굴린다
+ */
+export function RollUp({
+  value,
+  from,
+  className,
+}: {
+  value: string;
+  from: string;
+  className?: string;
+}) {
+  const [shown, setShown] = useState(from);
+  useEffect(() => {
+    // 화면이 뜬 뒤 한 박자 쉬고 굴려야 굴러 올라가는 것이 보인다
+    const t = setTimeout(() => setShown(value), MOTION.enter);
+    return () => clearTimeout(t);
+  }, [value]);
+  return <Roll value={shown} className={className} />;
+}
+
 /** 굴리는 숫자의 한 자리: 0~9를 세로로 쌓아 두고 transform으로 옮긴다 */
 function Digit({ d, h, className }: { d: number; h: number; className?: string }) {
   const y = useSharedValue(-d * h);
@@ -642,12 +664,13 @@ export function Chip({
       onPress={onPress}
       hitSlop={small ? 8 : 4}
       className={cx(
-        'items-center justify-center rounded-full',
+        'items-center justify-center overflow-hidden rounded-full',
         small ? 'h-8 px-3' : 'h-control-sm px-4',
-        on ? 'bg-brand' : FILL[surface],
+        FILL[surface],
         className,
       )}
     >
+      <OnFill on={!!on} />
       {typeof children === 'string' ? (
         <Text
           className={cx(
@@ -677,8 +700,27 @@ export function Segment<T extends string>({
   className?: string;
 }) {
   const surface = useSurface();
+  // 고른 칸의 브랜드색 판이 옆 칸으로 미끄러진다 (위치가 이어져 어느 칸으로 옮겼는지 보인다)
+  const [w, setW] = useState(0);
+  const at = Math.max(0, items.indexOf(value));
+  const x = useSharedValue(0);
+  useEffect(() => {
+    x.set(withTiming(at * w, { duration: MOTION.exit, easing: EASE }));
+  }, [at, w, x]);
+  const thumb = useAnimatedStyle(() => ({ transform: [{ translateX: x.get() }] }));
   return (
-    <View className={cx('flex-row rounded-xl p-1', FILL[surface], className)}>
+    <View
+      className={cx('flex-row rounded-xl p-1', FILL[surface], className)}
+      // 칸 폭 = (전체 - 양옆 p-1) / 칸 수. Pressable의 onLayout은 앱에서 불리지 않아 바깥 상자로 잰다
+      onLayout={(e) => setW((e.nativeEvent.layout.width - 8) / items.length)}
+    >
+      {w > 0 && (
+        <Animated.View
+          pointerEvents="none"
+          className="h-control-sm absolute top-1 left-1 rounded-lg bg-brand"
+          style={[{ width: w }, thumb]}
+        />
+      )}
       {items.map((it) => (
         <Pressable
           key={it}
@@ -687,7 +729,8 @@ export function Segment<T extends string>({
           onPress={() => onChange(it)}
           className={cx(
             'h-control-sm flex-1 items-center justify-center rounded-lg',
-            value === it && 'bg-brand',
+            // 폭을 재기 전(첫 그림)에는 판 대신 칸 자체를 칠한다
+            w === 0 && value === it && 'bg-brand',
           )}
         >
           <Text
@@ -698,6 +741,18 @@ export function Segment<T extends string>({
         </Pressable>
       ))}
     </View>
+  );
+}
+
+/** 고르면 채움색이 바탕 위로 부드럽게 차오른다 (칩 · 퀴즈 보기 같은 선택 칸, MOTION.exit). 부모는 overflow-hidden */
+export function OnFill({ on, fill = 'bg-brand' }: { on: boolean; fill?: string }) {
+  const v = useSharedValue(on ? 1 : 0);
+  useEffect(() => {
+    v.set(withTiming(on ? 1 : 0, { duration: MOTION.exit, easing: EASE }));
+  }, [on, v]);
+  const style = useAnimatedStyle(() => ({ opacity: v.get() }));
+  return (
+    <Animated.View pointerEvents="none" className={cx('absolute inset-0', fill)} style={style} />
   );
 }
 
