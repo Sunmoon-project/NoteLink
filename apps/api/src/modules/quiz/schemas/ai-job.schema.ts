@@ -53,6 +53,11 @@ export class AiJob {
   @Prop({ type: Number, default: 0 }) // 0 ~ 100%
   progress: number;
 
+  // 미리 해 두는 작업(quiz_pregen)이 끝나기 전에 사용자가 퀴즈를 요청하면, 새 작업을 넣지 않고
+  // 이 값을 true로 바꾼다. 처리기가 사용자 작업처럼 먼저 처리한다(apps/ai jobs.py).
+  @Prop({ type: Boolean, default: false })
+  awaited?: boolean;
+
   @Prop({ required: true, type: Number, })
   attempts: number;
 

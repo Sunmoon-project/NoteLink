@@ -68,7 +68,8 @@ def main() -> None:
 
     lanes = [
         Lane("background", store(":bg"), {t: h for t, h in HANDLERS.items() if t in BACKGROUND}),
-        Lane("user", store(""), {t: h for t, h in HANDLERS.items() if t not in BACKGROUND}),
+        # 사용자가 이어받은(awaited) 미리 만들기도 가져감: 다른 미리 만들기 뒤에서 기다리지 않게
+        Lane("user", store(""), HANDLERS, awaited_only=BACKGROUND),
     ]
     stop = threading.Event()
     stop_on_signal(stop)

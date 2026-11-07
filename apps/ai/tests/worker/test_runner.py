@@ -7,7 +7,8 @@ import pytest
 from pymongo.errors import AutoReconnect
 
 from app.clients.llm import JsonObject, LlmError
-from app.worker.jobs import JobStore
+from app.worker import runner
+from app.worker.jobs import Job, JobStore
 from app.worker.runner import (
     Handler,
     JobInputError,
@@ -115,7 +116,7 @@ def test_a_user_job_starts_while_a_pregen_is_running(col: Any) -> None:
 
 def test_a_lane_that_breaks_stops_the_others_and_raises(col: Any) -> None:
     class Broken(JobStore):
-        def claim(self, types: Any) -> Any:
+        def claim(self, types: Any, awaited_types: Any = ()) -> Any:
             raise RuntimeError("고장")
 
     stop = threading.Event()
@@ -321,14 +322,62 @@ def test_run_forever_keeps_going_after_db_error_and_stops_on_request(col: Any) -
     calls: list[str] = []
 
     class FlakyStore(JobStore):
-        def claim(self, types: Any) -> Any:
+        def claim(self, types: Any, awaited_types: Any = ()) -> Any:
             calls.append("claim")
             if len(calls) == 1:
                 raise AutoReconnect("연결 끊김")
             stop.set()
-            return super().claim(types)
+            return super().claim(types, awaited_types)
 
     flaky = FlakyStore(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30, now=lambda: T0)
     run_forever(flaky, {"quiz_generate": lambda inp, report: {"ok": True}}, poll_sec=0, stop=stop)
     assert calls == ["claim", "claim"]
     assert col.find_one({"_id": "j1"})["status"] == "succeeded"
+
+
+class AwaitedStore(JobStore):
+    def __init__(self, col: Any, answers: list[Any]) -> None:
+        super().__init__(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30)
+        self.answers, self.reads = answers, 0
+
+    def awaited(self, job: Job) -> bool:
+        self.reads += 1
+        a = self.answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return bool(a)
+
+
+def test_report_reads_awaited_at_most_every_few_seconds_and_keeps_it(col: Any) -> None:
+    now = [0.0]
+    s = AwaitedStore(col, [False, AutoReconnect("끊김"), True])
+    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1), clock=lambda: now[0])
+    assert report.awaited() is False and s.reads == 0  # 막 가져온 작업은 가져올 때 값(False)
+    now[0] += runner.AWAITED_CHECK_SEC
+    assert report.awaited() is False and s.reads == 1
+    assert report.awaited() is False and s.reads == 1  # 간격 안에서는 다시 읽지 않음
+    now[0] += runner.AWAITED_CHECK_SEC
+    assert report.awaited() is False and s.reads == 2  # 못 읽으면 지난 값
+    now[0] += runner.AWAITED_CHECK_SEC
+    assert report.awaited() is True and s.reads == 3
+    now[0] += runner.AWAITED_CHECK_SEC
+    assert report.awaited() is True and s.reads == 3  # 한 번 참이면 더 읽지 않음
+
+
+def test_report_of_a_job_taken_over_before_it_started_is_awaited(col: Any) -> None:
+    s = AwaitedStore(col, [])
+    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1, awaited=True))
+    assert report.awaited() is True and s.reads == 0
+
+
+def test_the_user_lane_runs_a_taken_over_pregen(col: Any) -> None:
+    col.update_one({"_id": "j1"}, {"$set": {"type": "quiz_pregen", "awaited": True}})
+    seen: list[bool] = []
+
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        seen.append(report.awaited())
+        return {}
+
+    s = store(col)
+    assert run_once(s, {"quiz_pregen": handler}, awaited_only={"quiz_pregen"})
+    assert seen == [True] and col.find_one({"_id": "j1"})["status"] == "succeeded"

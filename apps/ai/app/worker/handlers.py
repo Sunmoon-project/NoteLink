@@ -37,12 +37,13 @@ def _handler(run: _Run, *, background: bool = False) -> Handler:
     """퀴즈 서비스의 run을 처리 함수로. input 오류는 다시 해도 같으므로 바로 실패시킵니다.
 
     background면 학교 LLM 호출 차례를 사용자 작업에 양보합니다(SchoolLlm.background, #138).
+    사용자가 이 작업을 이어받으면(report.awaited) 그때부터 양보하지 않습니다.
     """
 
-    def handle(inp: JsonObject, report: Report) -> JsonObject:
+    def handle(inp: JsonObject, report: JobReport) -> JsonObject:
         llm = _llm()
         try:
-            return run(llm.background() if background else llm, inp, report)
+            return run(llm.background(report.awaited) if background else llm, inp, report)
         except review.InputError as e:
             raise JobInputError(str(e)) from e
 

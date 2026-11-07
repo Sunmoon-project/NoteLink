@@ -398,3 +398,29 @@ def test_user_calls_go_first_with_real_threads() -> None:
         t.join(5)
     assert sent[0] == "first" and sent[1] == "user"
     assert sorted(sent[2:]) == ["bg0", "bg1", "bg2"]
+
+
+def test_a_waiting_background_call_stops_yielding_once_the_job_is_awaited() -> None:
+    # 사용자 호출이 답을 기다리는 중이라 양보하던 미리 만들기 호출: 사용자가 이 작업을 이어받으면
+    # 다음에 깨어날 때 바로 보내고, 그때부터 사용자 작업 호출로 셈(#138)
+    server = Server(reply("{}"))
+    c = Clock(server, gap=2.2)
+    c.llm._inflight = 1  # 다른 사용자의 호출이 답을 기다리는 중(끝나지 않음)
+    awaited = [False]
+    seen: list[tuple[int, int]] = []
+
+    def taken_over() -> None:
+        awaited[0] = True
+
+    c.on_sleep.append(taken_over)
+    real_sent = c.llm._sent
+
+    def sent(background: bool) -> None:
+        seen.append((c.llm._waiting, c.llm._inflight))
+        real_sent(background)
+
+    c.llm._sent = sent  # type: ignore[method-assign]
+    c.llm.background(lambda: awaited[0]).call("gemma", "s", "u", SCHEMA, "X")
+    assert c.sent == [pytest.approx(102.2)]  # 다른 사용자 호출이 끝나기를 기다리지 않음
+    assert seen == [(0, 2)]  # 보낼 때는 사용자 호출로 셈(기다리는 수는 보낸 뒤 뺌)
+    assert (c.llm._waiting, c.llm._inflight) == (0, 1)

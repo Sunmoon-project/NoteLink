@@ -149,14 +149,16 @@ class SchoolLlm:
         self._last = float("-inf")
         self._lock = threading.Lock()
 
-    def background(self) -> "Llm":
+    def background(self, awaited: Callable[[], bool] = lambda: False) -> "Llm":
         """같은 호출 간격 · 429 대기를 쓰되, 사용자 작업 호출이 도는 동안은 보내지 않는 연결.
 
         노트를 만들 때 미리 만드는 퀴즈(quiz_pregen)가 씁니다(#138). 분당 한도를 같이 쓰므로
         따로 돌리기만 하면 사용자 작업이 느려짐. 미리 만들기는 안에서 여러 스레드로 호출하므로
         스레드 변수가 아니라 연결 객체로 넘깁니다. 이미 보낸 background 호출은 그대로 둡니다.
+        awaited()가 참이 되면(사용자가 이 작업을 이어받음) 차례를 기다리던 호출부터 사용자 작업
+        호출처럼 보냅니다.
         """
-        return _Background(self)
+        return _Background(self, awaited)
 
     def call(
         self,
@@ -169,7 +171,7 @@ class SchoolLlm:
         max_tokens: int = 1500,
         temperature: float = 0.0,
     ) -> JsonObject:
-        return self._call(model, system, user, schema, name, max_tokens, temperature, False)
+        return self._call(model, system, user, schema, name, max_tokens, temperature, _user)
 
     def _call(
         self,
@@ -180,7 +182,7 @@ class SchoolLlm:
         name: str,
         max_tokens: int,
         temperature: float,
-        background: bool,
+        background: Callable[[], bool],
     ) -> JsonObject:
         body: JsonObject = {
             "model": model,
@@ -207,34 +209,38 @@ class SchoolLlm:
         else:
             self._sleep(sec)
 
-    def _turn(self, background: bool = False) -> None:
+    def _turn(self, background: Callable[[], bool]) -> bool:
         """보낼 수 있을 때(앞 호출을 보낸 뒤 gap_sec, 429 대기 뒤)까지 기다려 차례를 가져갑니다.
 
         차례는 실제로 보낼 때만 가져갑니다. 미리 잡아 두면 기다리다 멈춘 호출의 빈 차례만큼
         다음 작업이 밀리고(/code-review #125), 429가 온 사이에 잡아 둔 차례대로 보내면 한도 안에서
         다시 429를 받음(/code-review #95). 깨어날 때마다 멈춤 신호를 봅니다.
-        background 호출은 사용자 작업 호출이 도는 동안(_user_busy) 보내지 않습니다(#138).
+        background()가 참인 호출은 사용자 작업 호출이 도는 동안(_user_busy) 보내지 않습니다
+        (#138). 깨어날 때마다 다시 보고, 거짓이 되면 그때부터 사용자 작업 호출로 셉니다.
+        돌려주는 값은 보낼 때의 background 여부(_sent에 넘김).
         """
-        if not background:
-            with self._lock:
-                self._waiting += 1
+        counted = False  # _waiting에 셌는지
         try:
             while True:
                 check_stop()
+                bg = background()  # 잠금 밖에서(DB를 읽을 수 있음)
                 with self._lock:
+                    if not bg and not counted:
+                        self._waiting += 1
+                        counted = True
                     now = self._clock()
                     ready = max(self._next, self._held)
-                    if now >= ready and not (background and self._user_busy(now)):
+                    if now >= ready and not (bg and self._user_busy(now)):
                         self._next = now + self._gap
-                        if not background:
+                        if not bg:
                             self._inflight += 1
                             self._last = now
-                        return
+                        return bg
                     # 양보한 background 호출은 간격만큼 뒤에 다시 봄
                     wait = ready - now if now < ready else max(self._gap, MIN_YIELD_SEC)
                 self._pause(wait)
         finally:
-            if not background:
+            if counted:
                 with self._lock:
                     self._waiting -= 1
 
@@ -255,15 +261,15 @@ class SchoolLlm:
         with self._lock:
             self._held = max(self._held, self._clock() + sec)
 
-    def _send(self, body: JsonObject, background: bool = False) -> JsonObject:
+    def _send(self, body: JsonObject, background: Callable[[], bool] = lambda: False) -> JsonObject:
         err = "retries"
         for attempt in range(self._retries + 1):
-            self._turn(background)  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
+            bg = self._turn(background)  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
             try:
                 try:
                     res = self._client.post("/chat/completions", json=body)
                 finally:
-                    self._sent(background)
+                    self._sent(bg)
             except httpx2.TransportError as e:
                 err = type(e).__name__
                 self._pause(4 * (attempt + 1))
@@ -287,11 +293,19 @@ class SchoolLlm:
         raise LlmError(err)
 
 
+def _user() -> bool:
+    return False  # 사용자 작업 호출(양보하지 않음)
+
+
 class _Background:
     """SchoolLlm.background(): 사용자 작업 호출에 차례를 양보하는 연결(#138)."""
 
-    def __init__(self, llm: SchoolLlm) -> None:
+    def __init__(self, llm: SchoolLlm, awaited: Callable[[], bool]) -> None:
         self._llm = llm
+        self._awaited = awaited
+
+    def _yields(self) -> bool:
+        return not self._awaited()
 
     def call(
         self,
@@ -304,7 +318,9 @@ class _Background:
         max_tokens: int = 1500,
         temperature: float = 0.0,
     ) -> JsonObject:
-        return self._llm._call(model, system, user, schema, name, max_tokens, temperature, True)
+        return self._llm._call(
+            model, system, user, schema, name, max_tokens, temperature, self._yields
+        )
 
 
 def _content(res: httpx2.Response) -> str | None:

@@ -11,6 +11,7 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
 주고받는 필드
   NestJS가 넣음  type · targetType · targetId · userId · createdAt · input
                  status='queued' · progress=0 · attempts=0 · result=None · error=None
+                 awaited(미리 해 두는 작업을 사용자가 이어받을 때 true, #138)
   처리기가 씀    status · progress · step · attempts · result · error · checkpoint
                  lockedBy · lockedUntil · retryAt · updatedAt
   - input: 처리기는 다른 컬렉션을 읽지 않으므로, 처리에 필요한 자료(퀴즈 · 풀이 기록 · 노트 글 등)는
@@ -27,10 +28,13 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
     작업과 따로 도는 반복이 가져갑니다(runner.run_lanes, #138). 미리 만들기를 처리하는 중에도
     사용자 작업은 바로 시작하고, 학교 LLM 호출 차례는 사용자 작업이 먼저 가져갑니다
     (SchoolLlm.background). 그래서 미리 만들기가 먼저 들어왔어도 사용자가 그 뒤로 밀리지 않음
+  - 같은 노트의 미리 만들기가 아직 끝나지 않았을 때 사용자가 퀴즈를 요청하면, NestJS는 새 작업을
+    넣지 않고(넣으면 같은 퀴즈를 두 번 만듦) 그 작업에 awaited=true를 씁니다(#138).
+    - queued면 사용자 작업 반복도 가져갑니다(claim의 awaited_types). 다른 미리 만들기 뒤에서
+      기다리지 않게
+    - 처리 중이면 처리기가 AWAITED_CHECK_SEC마다 읽어(awaited) LLM 호출 차례를 양보하지
+      않습니다. 시간 상한은 처음 정한 미리 만들기 상한 그대로입니다
   - 알려진 한계(/code-review #134)
-    - 같은 노트의 미리 만들기가 아직 끝나지 않았을 때 사용자가 퀴즈를 요청하면, NestJS가 새
-      작업을 넣지 않고 그 작업을 이어받습니다(넣으면 같은 퀴즈를 두 번 만듦). 처리기는 작업끼리
-      합치지 않습니다
     - 사용자 작업이 끊이지 않으면 미리 해 두는 작업은 queued로 남습니다. 오래된 것은 NestJS가
       canceled로 바꿉니다(처리 중이면 처리기가 결과를 버림)
 
@@ -70,6 +74,7 @@ class Job:
     input: object  # 처리 전에 객체인지 확인함(runner)
     attempts: int  # 이번 시도 포함
     checkpoint: object = None  # 지난 시도가 저장한 값. 쓰기 전에 처리 함수가 확인함
+    awaited: bool = False  # 가져갈 때 이미 사용자가 이어받았음(#138)
 
 
 def _utcnow() -> datetime:
@@ -99,29 +104,47 @@ class JobStore:
     def lock_sec(self) -> float:
         return self._lock.total_seconds()
 
-    def claim(self, types: Iterable[str]) -> Job | None:
-        """types 중 가장 먼저 들어온 작업 하나를 잠그고 가져옵니다. 없으면 None."""
+    def claim(self, types: Iterable[str], awaited_types: Iterable[str] = ()) -> Job | None:
+        """작업 하나를 잠그고 가져옵니다. 없으면 None.
+
+        types 중, 또는 awaited_types 중 사용자가 이어받은(awaited) 작업 중 가장 먼저 들어온 것.
+        """
         kinds = list(types)
-        if not kinds:
+        awaited = [t for t in awaited_types if t not in kinds]
+        if not kinds and not awaited:
             return None
         now = self._now()
-        if self._next_sweep is None or now >= self._next_sweep:
-            self._give_up_stalled(kinds, now)
+        if kinds and (self._next_sweep is None or now >= self._next_sweep):
+            self._give_up_stalled(kinds, now)  # awaited_types는 그 종류의 반복이 정리함
             self._next_sweep = now + SWEEP_EVERY
-        return self._claim(kinds, now)
+        which: JsonObject = {"type": {"$in": kinds}}
+        if awaited:
+            which = {"$or": [which, {"type": {"$in": awaited}, "awaited": True}]}
+        return self._claim(which, now)
 
-    def _claim(self, kinds: list[str], now: datetime) -> Job | None:
+    def awaited(self, job: Job) -> bool:
+        """처리 중인 작업을 사용자가 이어받았는지(NestJS가 awaited=true를 씀)."""
+        return self._col.find_one({"_id": job.id, "awaited": True}, {"_id": 1}) is not None
+
+    def _claim(self, which: JsonObject, now: datetime) -> Job | None:
         doc = self._col.find_one_and_update(
             {
-                "type": {"$in": kinds},
-                "$or": [
-                    {"status": "queued", "$or": [{"retryAt": None}, {"retryAt": {"$lte": now}}]},
+                "$and": [  # 종류 조건(which)에도 $or가 있을 수 있어 묶음(/code-review #138)
+                    which,
                     {
-                        "status": "running",
-                        "lockedUntil": {"$lte": now},
-                        "attempts": {"$lt": self._max},
+                        "$or": [
+                            {
+                                "status": "queued",
+                                "$or": [{"retryAt": None}, {"retryAt": {"$lte": now}}],
+                            },
+                            {
+                                "status": "running",
+                                "lockedUntil": {"$lte": now},
+                                "attempts": {"$lt": self._max},
+                            },
+                        ]
                     },
-                ],
+                ]
             },
             {
                 "$set": {
@@ -142,7 +165,12 @@ class JobStore:
         if doc is None:
             return None
         return Job(
-            doc["_id"], doc["type"], doc.get("input"), int(doc["attempts"]), doc.get("checkpoint")
+            doc["_id"],
+            doc["type"],
+            doc.get("input"),
+            int(doc["attempts"]),
+            doc.get("checkpoint"),
+            doc.get("awaited") is True,
         )
 
     def _give_up_stalled(self, kinds: list[str], now: datetime) -> None:

@@ -113,6 +113,8 @@ def test_quiz_generate_and_pregen_are_registered(
     doc = run_job(monkeypatch, llm, {"day": "2026-11-04"}, kind)
     assert (doc["status"], doc["error"]) == ("failed", "입력 오류: input.material.pages")
     assert llm.backgrounded is background  # 미리 만들기만 LLM 차례를 양보(#138)
+    if background:  # 사용자가 이어받았는지는 그 작업의 report로 봄
+        assert llm.awaited is not None and llm.awaited() is False
 
 
 def test_only_pregen_runs_in_the_background_lane() -> None:

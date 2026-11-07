@@ -17,7 +17,8 @@
 
 import logging
 import threading
-from collections.abc import Callable, Mapping, Sequence
+import time
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -51,13 +52,24 @@ class JobReport(Report, Protocol):
 
     def save_checkpoint(self, value: JsonObject) -> None: ...
 
+    def awaited(self) -> bool:
+        """사용자가 이 작업을 이어받았는지(미리 해 두는 작업, #138)."""
+        ...
+
+
+AWAITED_CHECK_SEC = 5.0  # 처리 중인 작업의 awaited를 DB에서 다시 읽는 간격
 
 type Handler = Callable[[JsonObject, JobReport], JsonObject]
 
 
 class _StoreReport:
-    def __init__(self, store: JobStore, job: Job) -> None:
-        self._store, self._job = store, job
+    def __init__(
+        self, store: JobStore, job: Job, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self._store, self._job, self._clock = store, job, clock
+        self._awaited = job.awaited
+        self._checked = clock()
+        self._lock = threading.Lock()  # 미리 만들기는 여러 스레드에서 부름
 
     def __call__(self, value: int, step: str | None = None) -> None:
         self._store.progress(self._job, value, step)
@@ -67,6 +79,18 @@ class _StoreReport:
 
     def save_checkpoint(self, value: JsonObject) -> None:
         self._store.save_checkpoint(self._job, value)
+
+    def awaited(self) -> bool:
+        """한 번 참이면 계속 참. DB는 AWAITED_CHECK_SEC에 한 번만 읽고, 못 읽으면 지난 값."""
+        with self._lock:
+            if self._awaited or self._clock() - self._checked < AWAITED_CHECK_SEC:
+                return self._awaited
+            self._checked = self._clock()
+            try:
+                self._awaited = self._store.awaited(self._job)
+            except PyMongoError:
+                log.warning("작업 %s: awaited 읽기 실패, 다음에 다시", self._job.id)
+            return self._awaited
 
 
 class _Heartbeat:
@@ -98,10 +122,14 @@ def run_once(
     store: JobStore,
     handlers: Mapping[str, Handler],
     *,
+    awaited_only: Collection[str] = (),
     heartbeat_sec: float | None = None,
 ) -> bool:
-    """작업 하나를 가져와 처리합니다. 할 일이 없었으면 False."""
-    job = store.claim(handlers)
+    """작업 하나를 가져와 처리합니다. 할 일이 없었으면 False.
+
+    awaited_only에 든 종류는 사용자가 이어받은(awaited) 작업만 가져갑니다(#138).
+    """
+    job = store.claim([t for t in handlers if t not in awaited_only], awaited_only)
     if job is None:
         return False
 
@@ -141,11 +169,12 @@ def run_forever(
     *,
     poll_sec: float,
     stop: threading.Event,
+    awaited_only: Collection[str] = (),
 ) -> None:
     """stop이 켜질 때까지 반복합니다. 처리 중인 작업은 끝까지 처리한 뒤 멈춥니다."""
     while not stop.is_set():
         try:
-            busy = run_once(store, handlers)
+            busy = run_once(store, handlers, awaited_only=awaited_only)
         except PyMongoError:
             # DB 연결이 끊김: 쓰지 못한 작업은 잠금이 끝나면 다시 가져가므로 기다렸다 계속
             log.exception("ai_jobs 처리 중 DB 오류")
@@ -156,11 +185,15 @@ def run_forever(
 
 @dataclass(frozen=True)
 class Lane:
-    """따로 도는 처리 반복 하나: 이 store로 handlers에 든 종류만 가져가 하나씩 처리합니다."""
+    """따로 도는 처리 반복 하나: 이 store로 handlers에 든 종류만 가져가 하나씩 처리합니다.
+
+    awaited_only에 든 종류는 사용자가 이어받은 작업만 가져갑니다(#138).
+    """
 
     name: str
     store: JobStore
     handlers: Mapping[str, Handler]
+    awaited_only: frozenset[str] = frozenset()
 
 
 def run_lanes(lanes: Sequence[Lane], *, poll_sec: float, stop: threading.Event) -> None:
@@ -174,7 +207,13 @@ def run_lanes(lanes: Sequence[Lane], *, poll_sec: float, stop: threading.Event) 
 
     def lane_loop(lane: Lane) -> None:
         try:
-            run_forever(lane.store, lane.handlers, poll_sec=poll_sec, stop=stop)
+            run_forever(
+                lane.store,
+                lane.handlers,
+                poll_sec=poll_sec,
+                stop=stop,
+                awaited_only=lane.awaited_only,
+            )
         except BaseException as e:
             log.exception("처리 반복 %s이 멈춤", lane.name)
             errors.append(e)

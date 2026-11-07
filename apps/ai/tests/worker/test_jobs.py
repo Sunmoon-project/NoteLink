@@ -379,3 +379,35 @@ def test_worker_that_lost_its_lock_cannot_save_a_checkpoint(col: Any, clock: Clo
     with pytest.raises(JobGoneError):
         slow.save_checkpoint(job, {"durationMs": 1})
     assert "checkpoint" not in col.find_one({"_id": "j1"})
+
+
+def test_the_user_lane_also_takes_a_pregen_a_user_took_over(col: Any, clock: Clock) -> None:
+    # 다른 미리 만들기가 처리 중이어도 기다리지 않게: 이어받은(awaited) 미리 만들기는 사용자 작업
+    # 반복도 가져감. 이어받지 않은 것은 가져가지 않음(#138)
+    add(col, "plain", "quiz_pregen", age_sec=99)
+    add(col, "taken", "quiz_pregen", age_sec=1, awaited=True)
+    s = store(col, clock)
+    job = s.claim(WAITING, PREGEN)
+    assert job is not None and (job.id, job.awaited) == ("taken", True)
+    assert s.claim(WAITING, PREGEN) is None
+    assert col.find_one({"_id": "plain"})["status"] == "queued"
+
+
+def test_a_user_job_and_a_taken_over_pregen_go_in_order(col: Any, clock: Clock) -> None:
+    add(col, "taken", "quiz_pregen", age_sec=9, awaited=True)
+    add(col, "asked", "similar_quiz", age_sec=1)
+    s = store(col, clock)
+    assert [getattr(s.claim(WAITING, PREGEN), "id", None) for _ in range(3)] == [
+        "taken",
+        "asked",
+        None,
+    ]
+
+
+def test_awaited_reads_whether_a_user_took_the_job_over(col: Any, clock: Clock) -> None:
+    add(col, "j1", "quiz_pregen")
+    s = store(col, clock, "w1:bg")
+    job = s.claim(PREGEN)
+    assert job is not None and job.awaited is False and s.awaited(job) is False
+    col.update_one({"_id": "j1"}, {"$set": {"awaited": True}})
+    assert s.awaited(job) is True

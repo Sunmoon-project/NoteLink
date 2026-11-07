@@ -27,8 +27,10 @@ class FakeLlm:
     calls: list[Call] = field(default_factory=list)
     backgrounded: bool = False  # background()로 받아 갔는지(SchoolLlm.background, #138)
 
-    def background(self) -> "FakeLlm":
-        self.backgrounded = True
+    awaited: Callable[[], bool] | None = None  # background()에 넘긴 것
+
+    def background(self, awaited: Callable[[], bool] = lambda: False) -> "FakeLlm":
+        self.backgrounded, self.awaited = True, awaited
         return self
 
     def call(
