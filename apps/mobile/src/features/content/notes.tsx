@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, View } from 'react-native';
+import { ActivityIndicator, Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, FadeOut } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
@@ -33,20 +33,23 @@ import {
   afterSheetClosed,
   Alert,
   Btn,
+  Canvas,
   Card,
   Chip,
   Group,
   Header,
   Input,
   Label,
+  LIST_LAYOUT,
   Row,
   Screen,
   Search,
   Sheet,
+  Tap,
   cx,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
-import { C, ICON } from '@/theme';
+import { C, ICON, MOTION } from '@/theme';
 import { seoul } from '@/lib/dates';
 
 // p.58~60 노트 목록 · 새 자료 · 강의 상세 · 올리기 방식 선택
@@ -56,6 +59,12 @@ const KIND = {
   recording: [Mic, '녹음'],
   handwriting: [PenLine, '필기'],
   document: [FileText, '문서'],
+} as const;
+/** 자료 종류마다 다른 색 타일 — 목록에서 종류를 글자 없이도 알아본다 */
+const TILE = {
+  recording: ['bg-sun/20', C.ink],
+  handwriting: ['bg-mint', C.brand],
+  document: ['bg-blue/10', C.blue],
 } as const;
 
 const EmptyNote = ({ children }: { children?: React.ReactNode }) => (
@@ -78,10 +87,10 @@ function Fab({ onPress, open }: { onPress: () => void; open?: boolean }) {
       onPress={onPress}
       className={cx(
         'absolute right-5 bottom-5 z-30 h-14 w-14 items-center justify-center rounded-full shadow-lg',
-        open ? 'bg-ink' : 'border border-line bg-white',
+        open ? 'bg-ink' : 'bg-brand',
       )}
     >
-      {open ? <X size={ICON.lg} color="#fff" /> : <Plus size={ICON.lg} color={C.ink} />}
+      {open ? <X size={ICON.lg} color="#fff" /> : <Plus size={ICON.lg} color="#fff" />}
     </Pressable>
   );
 }
@@ -115,7 +124,7 @@ export function NoteListScreen() {
   }, [upload, folders.data]);
 
   return (
-    <View className="flex-1 bg-white">
+    <Canvas>
       <Screen>
         <NetBanner />
         <View className="pt-4">
@@ -148,13 +157,12 @@ export function NoteListScreen() {
               {list.map((f) => (
                 <Card
                   key={f._id}
-                  tone="mint"
                   onPress={() =>
                     router.push({ pathname: '/(tabs)/note/folder/[id]', params: { id: f._id } })
                   }
                   className="w-[48.5%] p-2.5"
                 >
-                  <View className="h-20 items-center justify-center rounded-xl bg-white">
+                  <View className="h-20 items-center justify-center rounded-xl bg-mint">
                     <Folder size={ICON.xl} color={C.brand} />
                   </View>
                   <Text className="mt-2 px-1 text-subhead font-semibold text-ink">{f.title}</Text>
@@ -174,7 +182,7 @@ export function NoteListScreen() {
         )}
       </Screen>
       {!!folders.data?.length && <Fab onPress={() => router.push('/note-new/tag')} />}
-    </View>
+    </Canvas>
   );
 }
 
@@ -342,7 +350,7 @@ export function FolderScreen() {
   };
 
   return (
-    <View className="flex-1 bg-white">
+    <Canvas>
       <Screen>
         <Header
           title={folder?.title}
@@ -355,7 +363,7 @@ export function FolderScreen() {
             <Pressable
               accessibilityLabel="폴더 옵션"
               onPress={() => setSheet('more')}
-              className="h-9 w-9 items-center justify-center rounded-full border border-line"
+              className="h-11 w-11 items-center justify-center rounded-full bg-white"
             >
               <MoreHorizontal size={ICON.md} color={C.ink} />
             </Pressable>
@@ -385,31 +393,49 @@ export function FolderScreen() {
             {mats.data && (
               <Text className="mt-4 mb-2 text-caption text-sub">자료 {mats.data.length}개</Text>
             )}
-            <View className="gap-2">
-              {items.map((m) => (
-                <Card
-                  key={m._id}
-                  tone="white"
-                  onPress={() => open(m)}
-                  className="flex-row items-center gap-3 px-4 py-3"
-                >
-                  <View className="h-10 w-10 items-center justify-center rounded-full bg-cream">
-                    {(() => {
-                      const KindIcon = KIND[m.kind][0];
-                      return <KindIcon size={ICON.md} color={C.brand} />;
-                    })()}
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-subhead font-semibold text-ink">{m.title}</Text>
-                    <Text className="text-caption2 text-sub">
-                      {KIND[m.kind][1]} · {seoul(m.createdAt).getMonth() + 1}/
-                      {seoul(m.createdAt).getDate()} 업로드
-                      {m.kind === 'recording' && ` · ${summaryState(m)}`}
-                    </Text>
-                  </View>
-                  <ChevronRight size={ICON.sm} color={C.sub} />
-                </Card>
-              ))}
+            <View className="overflow-hidden rounded-card bg-white">
+              {items.map((m, i) => {
+                const KindIcon = KIND[m.kind][0];
+                const [tile, tint] = TILE[m.kind];
+                // 서버가 처리 정보를 아직 안 붙인 자료도 있다 (등록 직후)
+                const st = m.processing?.status;
+                const busy = !!st && st !== 'done' && st !== 'failed';
+                return (
+                  <Animated.View
+                    key={m._id}
+                    layout={LIST_LAYOUT}
+                    entering={FadeIn.duration(MOTION.enter)}
+                    exiting={FadeOut.duration(MOTION.exit)}
+                    className={cx(i > 0 && 'border-t border-fill')}
+                  >
+                    <Tap
+                      scaleTo={0.99}
+                      onPress={() => open(m)}
+                      className="flex-row items-center gap-3 px-4 py-3"
+                    >
+                      <View
+                        className={cx('h-10 w-10 items-center justify-center rounded-xl', tile)}
+                      >
+                        <KindIcon size={ICON.md} color={tint} />
+                      </View>
+                      <View className="flex-1">
+                        <Text className="text-subhead font-semibold text-ink">{m.title}</Text>
+                        <Text className="text-caption2 text-sub">
+                          {KIND[m.kind][1]} · {seoul(m.createdAt).getMonth() + 1}/
+                          {seoul(m.createdAt).getDate()} 업로드
+                          {m.kind === 'recording' && ` · ${summaryState(m)}`}
+                        </Text>
+                      </View>
+                      {/* AI가 아직 처리 중인 자료는 화살표 대신 진행 표시 */}
+                      {busy ? (
+                        <ActivityIndicator size="small" color={C.brand} />
+                      ) : (
+                        <ChevronRight size={ICON.sm} color={C.sub} />
+                      )}
+                    </Tap>
+                  </Animated.View>
+                );
+              })}
             </View>
           </>
         )}
@@ -534,7 +560,7 @@ export function FolderScreen() {
           del.mutate();
         }}
       />
-    </View>
+    </Canvas>
   );
 }
 
