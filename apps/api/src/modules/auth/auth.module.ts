@@ -12,6 +12,7 @@ import {
 } from './schemas/social-login-attempt.schema.js';
 import { User, UserSchema } from './schemas/user.schema.js';
 import { GoogleOAuthClient } from './social-login/google-oauth.client.js';
+import { SocialExchangeService } from './social-login/social-exchange.service.js';
 import { SocialLoginController } from './social-login/social-login.controller.js';
 import { GOOGLE_CONFIG } from './social-login/social-login.constants.js';
 import { SocialLoginService } from './social-login/social-login.service.js';
@@ -49,6 +50,7 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
     GoogleOAuthClient,
     SocialUserService,
     SocialLoginService,
+    SocialExchangeService,
   ],
   // 이메일 · 소셜 로그인이 같은 토큰 발급 로직을 쓰도록 내보낸다
   exports: [TokenService],
