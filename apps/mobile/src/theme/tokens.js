@@ -28,24 +28,31 @@ const colors = {
   naver: '#03c75a',
 };
 
-/** 글자 크기 [크기, 줄높이] — iOS 텍스트 스타일 이름을 따른다 */
+/**
+ * 글자 크기 [크기, { 줄높이, 자간 }] — iOS 텍스트 스타일 이름을 따른다.
+ * 자간: 작은 글자(11~13)는 +0.2px로 뭉치지 않게, 제목(20~)은 조금씩 좁히고
+ * 큰 숫자(44~)는 -2% 안팎으로 조인다 (디자인 점검 · Refero 글자 규칙).
+ * 위계는 네 단계로 쓴다: 숫자 · 화면 제목(display~page) / 구획 제목(title3 · headline) /
+ * 본문(body · callout · subhead) / 보조(footnote · caption · caption2).
+ */
+const t = (size, lineHeight, letterSpacing = '0px') => [size, { lineHeight, letterSpacing }];
 const fontSize = {
-  caption2: ['11px', '14px'], // 배지 · 아주 작은 표시
-  caption: ['12px', '16px'], // 보조 설명 · 날짜
-  footnote: ['13px', '18px'], // 목록 보조 줄 · 안내
-  subhead: ['14px', '20px'], // 목록 본문 · 칩
-  callout: ['15px', '22px'], // 버튼 · 입력
-  body: ['16px', '24px'], // 본문
-  headline: ['17px', '24px'], // 카드 · 시트 제목
-  title3: ['20px', '26px'], // 섹션 제목
-  title2: ['22px', '28px'], // 화면 제목
-  page: ['26px', '32px'], // 탭 화면 제목
-  title1: ['28px', '34px'], // 큰 화면 제목 · 강조 숫자
-  large: ['34px', '40px'], // 결과 화면 큰 숫자
-  display: ['44px', '52px'], // 타이머
-  'display-lg': ['64px', '72px'], // 홈 타이머
-  timer: ['84px', '92px'], // 가로 측정 타이머
-  'timer-xl': ['120px', '128px'],
+  caption2: t('11px', '14px', '0.2px'), // 배지 · 아주 작은 표시
+  caption: t('12px', '16px', '0.2px'), // 보조 설명 · 날짜
+  footnote: t('13px', '18px', '0.1px'), // 목록 보조 줄 · 안내
+  subhead: t('14px', '20px'), // 목록 본문 · 칩
+  callout: t('15px', '22px'), // 버튼 · 입력
+  body: t('16px', '24px'), // 본문
+  headline: t('17px', '24px', '-0.1px'), // 카드 · 시트 제목
+  title3: t('20px', '26px', '-0.2px'), // 섹션 제목
+  title2: t('22px', '28px', '-0.3px'), // 화면 제목
+  page: t('26px', '32px', '-0.5px'), // 탭 화면 제목
+  title1: t('28px', '34px', '-0.5px'), // 큰 화면 제목 · 강조 숫자
+  large: t('34px', '40px', '-0.7px'), // 결과 화면 큰 숫자
+  display: t('44px', '52px', '-1px'), // 타이머
+  'display-lg': t('64px', '72px', '-1.5px'), // 홈 타이머
+  timer: t('84px', '92px', '-2px'), // 가로 측정 타이머
+  'timer-xl': t('120px', '128px', '-3px'),
 };
 
 /** 컨트롤 높이: 주요 버튼 · 입력 52 / 작은 버튼 · 검색 44 / 칩 36 (터치 영역은 44로 넓힌다) */
