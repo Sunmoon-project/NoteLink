@@ -542,6 +542,7 @@ export function RecUploadScreen() {
           setWarn(false);
           router.replace('/convert');
         }}
+        onClose={() => setWarn(false)}
       />
       <Pressable
         onPress={pick}
@@ -623,11 +624,14 @@ export function RecLiveScreen() {
     const db = st.metering ?? -60; // -160(무음) ~ 0
     const h = Math.max(6, Math.min(48, ((db + 60) / 60) * 48));
     setBars((b) => [...b.slice(1), h]);
-    // 소리가 있던 순간의 비율 — 거의 무음인 녹음을 끝낼 때 알린다
-    setVoice((v) => ({
-      frames: v.frames + 1,
-      voiced: v.voiced + (db > CONTENT_MIN.voicedDb ? 1 : 0),
-    }));
+    // 소리가 있던 순간의 비율 — 거의 무음인 녹음을 끝낼 때 알린다.
+    // 소리 크기를 실제로 잰 칸만 센다(못 잰 칸을 무음으로 세면 정상 녹음도 무음으로 걸린다)
+    const measured = st.metering;
+    if (measured != null)
+      setVoice((v) => ({
+        frames: v.frames + 1,
+        voiced: v.voiced + (measured > CONTENT_MIN.voicedDb ? 1 : 0),
+      }));
   }
   const toggle = () => {
     if (!ready.current || finishing.current) return;
@@ -694,6 +698,7 @@ export function RecLiveScreen() {
         retry="다시 녹음"
         onRetry={() => router.replace('/capture/rec-live')}
         onContinue={() => unfit && toConvert(unfit.uri)}
+        onClose={() => router.replace('/capture/rec-live')}
       />
       <Alert
         open={confirmClose}
@@ -774,6 +779,7 @@ export function PickedFileScreen() {
           setWarn(false);
           router.replace('/convert');
         }}
+        onClose={() => setWarn(false)}
       />
       {f ? (
         <View className="flex-row items-center gap-3 rounded-2xl bg-cream p-3">
@@ -831,6 +837,7 @@ function UnfitAlert({
   retry,
   onRetry,
   onContinue,
+  onClose,
 }: {
   open: boolean;
   what: '녹음' | '문서';
@@ -838,6 +845,8 @@ function UnfitAlert({
   retry: string;
   onRetry: () => void;
   onContinue: () => void;
+  /** 배경 · 뒤로가기로 닫을 때 — 절대 올리기로 이어지지 않게 */
+  onClose: () => void;
 }) {
   return (
     <Alert
@@ -846,6 +855,7 @@ function UnfitAlert({
       body={`${reason ?? ''}\n그래도 올리면 AI 정리 결과가 비어 있을 수 있어요.`}
       secondary="그래도 올리기"
       onSecondary={onContinue}
+      onClose={onClose}
       primary={retry}
       onPrimary={onRetry}
     />

@@ -55,4 +55,19 @@ describe('올린 자료 내용 검사', () => {
     await fireEvent.press(screen.getByText('다음'));
     expect(await screen.findByText('정리하기에 적절하지 않은 문서예요')).toBeTruthy();
   });
+  it('경고를 배경 · 뒤로가기로 닫으면 올리지 않고 그 자리에 남는다', async () => {
+    useDraft.getState().set({
+      kind: 'recording',
+      files: [
+        { uri: 'file:///short.m4a', name: 'short.m4a', mimeType: 'audio/mp4', size: 12 * 1024 },
+      ],
+    });
+    await renderScreen(<RecUploadScreen />);
+    await fireEvent.press(screen.getByText('다음'));
+    await screen.findByText('정리하기에 적절하지 않은 녹음이에요');
+    // 배경 터치 (Android 뒤로가기도 같은 onClose)
+    await fireEvent.press(screen.getByLabelText('대화상자 닫기', { includeHiddenElements: true }));
+    expect(router.replace).not.toHaveBeenCalledWith('/convert');
+    expect(useDraft.getState().files).toHaveLength(1);
+  });
 });
