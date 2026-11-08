@@ -5,7 +5,7 @@ import type { ConfigReader } from './mongo.config.js';
 export function requiredEnv(config: ConfigReader, key: string): string {
   const value = config.get(key)?.trim();
   if (!value) {
-    throw new Error(`${key} 환경변수가 필요합니다 (apps/api/.env.example 참고)`);
+    throw new Error(`${key} 환경변수가 필요합니다 (apps/api/.env.production 참고)`);
   }
   return value;
 }

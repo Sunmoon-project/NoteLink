@@ -217,7 +217,7 @@ npm run dev:mobile   # 앱 개발 서버
 
 - 모든 패키지는 정확한 버전으로 고정하고, lock 파일은 커밋합니다.
 - Expo 패키지는 `npx expo install`로 설치합니다.
-- `.env`는 커밋하지 않습니다 (`.env.example`만 커밋). API 키 같은 비밀값이 들어간 커밋은 GitHub push protection이 push 단계에서 막습니다.
+- `.env`는 커밋하지 않습니다. 커밋하는 것은 배포 기준 예시 `.env.production`뿐이고, 실제 값은 넣지 않습니다(배포 값은 Azure App Service 앱 설정 · EAS에). API 키 같은 비밀값이 들어간 커밋은 GitHub push protection이 push 단계에서 막습니다.
 - 소셜 로그인 시크릿 같은 비밀값은 **서버에만** 두고 앱에는 넣지 않습니다.
 
 ---
