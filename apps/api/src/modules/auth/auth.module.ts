@@ -7,8 +7,10 @@ import { createGoogleConfig } from '../../config/google.config.js';
 import { createJwtConfig } from '../../config/jwt.config.js';
 import { createKakaoConfig } from '../../config/kakao.config.js';
 import { createNaverConfig } from '../../config/naver.config.js';
+import { AppSignupService } from './app-login/app-signup.service.js';
 import { EmailCodeService } from './app-login/email-code.service.js';
 import { EmailProofService } from './app-login/email-proof.service.js';
+import { createMailSender, MAIL_SENDER } from './app-login/mail-sender.js';
 import { AuthTokenController } from './auth-token.controller.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { AuthCode, AuthCodeSchema } from './schemas/auth-code.schema.js';
@@ -76,8 +78,15 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       useFactory: createNaverConfig,
     },
     TokenService,
+    // 인증번호 메일 발송 수단. MAIL_TRANSPORT=log(개발 전용)일 때만 로그로 남기고, 그 밖에는 발송을 거부한다
+    {
+      provide: MAIL_SENDER,
+      inject: [ConfigService],
+      useFactory: createMailSender,
+    },
     EmailCodeService,
     EmailProofService,
+    AppSignupService,
     JwtAuthGuard,
     GoogleOAuthClient,
     KakaoOAuthClient,

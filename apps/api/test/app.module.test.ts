@@ -1,7 +1,13 @@
 import type { MongooseModuleOptions } from '@nestjs/mongoose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { AppSignupService } from '../src/modules/auth/app-login/app-signup.service.js';
 import { EmailCodeService } from '../src/modules/auth/app-login/email-code.service.js';
+import {
+  MAIL_SENDER,
+  type MailSender,
+  MailUnavailableError,
+} from '../src/modules/auth/app-login/mail-sender.js';
 import { EmailProofService } from '../src/modules/auth/app-login/email-proof.service.js';
 import { GoogleOAuthClient } from '../src/modules/auth/social-login/google-oauth.client.js';
 import { KakaoOAuthClient } from '../src/modules/auth/social-login/kakao-oauth.client.js';
@@ -183,6 +189,36 @@ describe('AppModule의 앱 로그인(이메일 인증번호)', () => {
     await moduleRef.close();
 
     expect(service).toBeInstanceOf(EmailCodeService);
+  });
+
+  it('서버를 조립하면 AppSignupService가 만들어진다 (메일 발송 · 비밀번호 비용 등 모든 의존성을 Nest가 해결한다)', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const service = moduleRef.get(AppSignupService, { strict: false });
+    await moduleRef.close();
+
+    expect(service).toBeInstanceOf(AppSignupService);
+  });
+
+  it('MAIL_TRANSPORT가 없으면 서버는 뜨지만 메일 발송 수단은 발송을 거부한다 (운영 기본값)', async () => {
+    stubAppEnv({ MAIL_TRANSPORT: '' });
+    const moduleRef = await createAppModuleBuilder().compile();
+    const mail = moduleRef.get<MailSender>(MAIL_SENDER, { strict: false });
+    await moduleRef.close();
+
+    await expect(mail.sendVerificationCode('a@b.com', '123456')).rejects.toThrow(
+      MailUnavailableError,
+    );
+  });
+
+  it('MAIL_TRANSPORT=log이면 메일 발송 수단이 개발용 로그 발송이 된다', async () => {
+    stubAppEnv({ MAIL_TRANSPORT: 'log' });
+    const moduleRef = await createAppModuleBuilder().compile();
+    const mail = moduleRef.get<MailSender>(MAIL_SENDER, { strict: false });
+    await moduleRef.close();
+
+    await expect(mail.sendVerificationCode('a@b.com', '123456')).resolves.toBeUndefined();
   });
 
   it('서버를 조립하면 EmailProofService도 만들어지고, 실제 비밀값으로 증표를 발급 · 검증한다', async () => {
