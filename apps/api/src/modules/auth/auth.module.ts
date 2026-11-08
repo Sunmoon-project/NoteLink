@@ -7,6 +7,7 @@ import { createGoogleConfig } from '../../config/google.config.js';
 import { createJwtConfig } from '../../config/jwt.config.js';
 import { createKakaoConfig } from '../../config/kakao.config.js';
 import { createNaverConfig } from '../../config/naver.config.js';
+import { AppLoginController } from './app-login/app-login.controller.js';
 import { AppLoginService } from './app-login/app-login.service.js';
 import { AppSignupService } from './app-login/app-signup.service.js';
 import { EmailCodeService } from './app-login/email-code.service.js';
@@ -56,7 +57,7 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       { name: User.name, schema: UserSchema },
     ]),
   ],
-  controllers: [AuthTokenController, SocialLoginController],
+  controllers: [AuthTokenController, SocialLoginController, AppLoginController],
   providers: [
     // JWT_* 환경변수를 읽고 검증한다. 없거나 잘못되면 서버가 시작할 때 바로 실패한다
     {

@@ -12,6 +12,7 @@ import { type AuthenticatedRequest, JwtAuthGuard } from '../src/modules/auth/jwt
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
 import { stubAppEnv } from './support/app-module.js';
+import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
 
 const REFRESH = '/api/v1/auth/refresh';
 const LOGOUT = '/api/v1/auth/logout';
@@ -29,63 +30,15 @@ class ProtectedController {
   }
 }
 
-interface TokenRow {
-  _id: Types.ObjectId;
-  userId: Types.ObjectId;
-  tokenHash: string;
-  device?: unknown;
-  expiresAt: Date;
-  revokedAt: Date | null;
-}
-
 describe('토큰 갱신 · 로그아웃 · 인증 가드 (로그인 방식과 무관: TokenService로 발급한 토큰으로 시험)', () => {
   let app: INestApplication;
   let tokenService: TokenService;
-  const tokens: TokenRow[] = [];
+  const fakeRefresh = createFakeRefreshTokens();
+  const tokens = fakeRefresh.rows;
 
   beforeAll(async () => {
     stubAppEnv();
-    // refresh_tokens: 서비스가 넘긴 조건(해시 · 사용자 · 폐기 여부 · 만료)을 있는 그대로 해석한다.
-    // 조건에 없는 항목은 따지지 않으므로, 서비스가 `userId`만으로 폐기하는 식으로 잘못 구현돼도 그대로 드러난다
-    const matches = (
-      r: TokenRow,
-      f: {
-        tokenHash?: string;
-        userId?: Types.ObjectId;
-        revokedAt?: null;
-        expiresAt?: { $gt: Date };
-      },
-    ) =>
-      (f.tokenHash === undefined || r.tokenHash === f.tokenHash) &&
-      (f.userId === undefined || r.userId.equals(f.userId)) &&
-      (!('revokedAt' in f) || r.revokedAt === f.revokedAt) &&
-      (!f.expiresAt || r.expiresAt > f.expiresAt.$gt);
-    const refreshModel = {
-      create: (data: Omit<TokenRow, '_id' | 'revokedAt'>) => {
-        const row: TokenRow = { ...data, _id: new Types.ObjectId(), revokedAt: null };
-        tokens.push(row);
-        return Promise.resolve(row);
-      },
-      findOne: (f: Parameters<typeof matches>[1]) =>
-        Promise.resolve(tokens.find((r) => matches(r, f)) ?? null),
-      findOneAndUpdate: (f: Parameters<typeof matches>[1], update: { revokedAt: Date }) => {
-        const row = tokens.find((r) => matches(r, f));
-        if (!row) return Promise.resolve(null);
-        const before = { ...row };
-        row.revokedAt = update.revokedAt;
-        return Promise.resolve(before);
-      },
-      updateOne: (f: Parameters<typeof matches>[1], update: { revokedAt: Date }) => {
-        const row = tokens.find((r) => matches(r, f));
-        if (row) row.revokedAt = update.revokedAt;
-        return Promise.resolve({ matchedCount: row ? 1 : 0, modifiedCount: row ? 1 : 0 });
-      },
-      deleteOne: (f: { _id: Types.ObjectId }) => {
-        const i = tokens.findIndex((r) => r._id.equals(f._id));
-        if (i >= 0) tokens.splice(i, 1);
-        return Promise.resolve({});
-      },
-    };
+    const refreshModel = fakeRefresh.model;
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule, AuthModule],
       controllers: [ProtectedController],
