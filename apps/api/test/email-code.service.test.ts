@@ -2,7 +2,7 @@ import { getModelToken } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AuthCode } from '../src/modules/auth/schemas/auth-code.schema.js';
+import { AuthCode, AuthCodeSchema } from '../src/modules/auth/schemas/auth-code.schema.js';
 import { JWT_CONFIG as JWT_CONFIG_TOKEN } from '../src/modules/auth/token.service.js';
 import {
   EMAIL_PROOF_TTL_MS,
@@ -14,7 +14,7 @@ import {
   EMAIL_CODE_TTL_MS,
   EmailCodeService,
 } from '../src/modules/auth/app-login/email-code.service.js';
-import { createFakeAuthCodes } from './support/fake-auth-codes.js';
+import { createFakeAuthCodes, type CodeRow } from './support/fake-auth-codes.js';
 
 const JWT_CONFIG = {
   accessSecret: 'test-access-secret-0123456789abcdef',
@@ -175,7 +175,9 @@ describe('EmailCodeService.issue (인증번호 만들기)', () => {
         lastSentAt: START,
         expiresAt: new Date(START.getTime() + EMAIL_CODE_TTL_MS),
         windowEndsAt: new Date(START.getTime() + EMAIL_CODE_SEND_WINDOW_MS),
+        retainUntil: new Date(START.getTime() + EMAIL_CODE_SEND_WINDOW_MS),
       });
+      expect(rows[0]!.issueId).toEqual(expect.any(String));
       expect(EMAIL_CODE_TTL_MS).toBe(10 * 60 * 1000);
     });
 
@@ -361,17 +363,17 @@ describe('EmailCodeService.verify 성공 시 기록 보관', () => {
 
     await service.verify(EMAIL, 'signup', code);
 
-    expect(rows[0]!.windowEndsAt).toEqual(new Date(at.getTime() + EMAIL_PROOF_TTL_MS));
+    expect(rows[0]!.retainUntil).toEqual(new Date(at.getTime() + EMAIL_PROOF_TTL_MS));
   });
 
   it('보관 기한이 이미 충분히 길면 줄이지 않는다 ($max: 더 늦은 쪽만 반영)', async () => {
     const { service, rows } = setup();
     const code = await issued(service);
-    const originalEnd = rows[0]!.windowEndsAt;
+    const originalEnd = rows[0]!.retainUntil;
 
     await service.verify(EMAIL, 'signup', code);
 
-    expect(rows[0]!.windowEndsAt).toEqual(originalEnd);
+    expect(rows[0]!.retainUntil).toEqual(originalEnd);
   });
 
   it('증표 수명은 10분이다 (상수 자체를 못박는다)', () => {
@@ -381,13 +383,13 @@ describe('EmailCodeService.verify 성공 시 기록 보관', () => {
   it('틀린 입력에서는 보관 기한을 늘리지 않는다 (실패로 기록을 오래 붙잡을 수 없다)', async () => {
     const { service, rows } = setup();
     const code = await issued(service);
-    const originalEnd = rows[0]!.windowEndsAt;
+    const originalEnd = rows[0]!.retainUntil;
     vi.setSystemTime(new Date(START.getTime() + EMAIL_CODE_SEND_WINDOW_MS - 60_000));
     rows[0]!.expiresAt = new Date(START.getTime() + EMAIL_CODE_SEND_WINDOW_MS);
 
     await service.verify(EMAIL, 'signup', wrongOf(code));
 
-    expect(rows[0]!.windowEndsAt).toEqual(originalEnd);
+    expect(rows[0]!.retainUntil).toEqual(originalEnd);
   });
 });
 
@@ -759,6 +761,267 @@ describe('보안', () => {
 
     expect(JSON.stringify(results)).not.toContain(code);
     expect(JSON.stringify(results)).not.toMatch(/[0-9a-f]{64}/);
+  });
+});
+
+describe('검증과 재발급이 교차 실행될 때', () => {
+  type Model = ReturnType<typeof setup>['model'];
+
+  /** verify가 번호를 비교한 직후, "쓴 것으로 표시"하기 직전에 멈춰 세운다(그 틈에 다른 요청을 끼워 넣기 위함) */
+  function pauseBeforeMarkUsed(model: Model) {
+    const original = model.updateOne;
+    let release!: () => void;
+    let reached!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const atGate = new Promise<void>((resolve) => (reached = resolve));
+    model.updateOne = async (filter, update) => {
+      if ('_id' in filter) {
+        reached();
+        await gate;
+      }
+      return original(filter, update);
+    };
+    return { atGate, release };
+  }
+
+  it('확인하는 동안 새 번호가 발급되면, 이전 번호의 확인은 실패하고 새 번호는 쓰지 않은 채로 남는다', async () => {
+    const { service, rows, model } = setup();
+    const oldCode = await issued(service);
+    const pause = pauseBeforeMarkUsed(model);
+
+    const pending = service.verify(EMAIL, 'signup', oldCode);
+    await pause.atGate; // 이전 번호가 맞다고 비교까지 끝난 상태
+    vi.setSystemTime(new Date(START.getTime() + EMAIL_CODE_RESEND_COOLDOWN_MS));
+    const newCode = await issued(service); // 이 사이에 새 번호가 발급된다
+    pause.release();
+
+    expect(await pending).toEqual({ ok: false, reason: 'invalid' });
+    expect(rows[0]).toMatchObject({ usedAt: null, attempts: 0 });
+    // 새 번호는 사용자가 받은 그대로 여전히 쓸 수 있다
+    expect((await service.verify(EMAIL, 'signup', newCode)).ok).toBe(true);
+  });
+
+  it('새 번호가 우연히 이전 번호와 같은 값이어도 이전 발급의 확인은 인정하지 않는다 (번호가 아니라 발급 단위로 지킨다)', async () => {
+    const { service, rows, model } = setup({ random: () => 424242 });
+    const oldCode = await issued(service);
+    const pause = pauseBeforeMarkUsed(model);
+
+    const pending = service.verify(EMAIL, 'signup', oldCode);
+    await pause.atGate;
+    vi.setSystemTime(new Date(START.getTime() + EMAIL_CODE_RESEND_COOLDOWN_MS));
+    expect(await issued(service)).toBe(oldCode);
+    pause.release();
+
+    expect(await pending).toEqual({ ok: false, reason: 'invalid' });
+    expect(rows[0]!.usedAt).toBeNull();
+  });
+
+  it('끼어든 재발급은 보관 기한도 이전 확인으로 늘어나지 않는다', async () => {
+    const { service, rows, model } = setup();
+    const oldCode = await issued(service);
+    const pause = pauseBeforeMarkUsed(model);
+
+    const pending = service.verify(EMAIL, 'signup', oldCode);
+    await pause.atGate;
+    vi.setSystemTime(new Date(START.getTime() + EMAIL_CODE_RESEND_COOLDOWN_MS));
+    await issued(service);
+    const retainBefore = rows[0]!.retainUntil;
+    pause.release();
+    await pending;
+
+    expect(rows[0]!.retainUntil).toEqual(retainBefore);
+  });
+
+  it('발급할 때마다 발급 식별자가 바뀐다', async () => {
+    const { service, rows } = setup();
+    await issued(service);
+    const first = rows[0]!.issueId;
+    vi.setSystemTime(new Date(START.getTime() + EMAIL_CODE_RESEND_COOLDOWN_MS));
+
+    await issued(service);
+
+    expect(rows[0]!.issueId).not.toBe(first);
+  });
+
+  it('간격에 걸려 거부된 요청은 발급 식별자를 바꾸지 않는다 (진행 중인 확인이 깨지지 않는다)', async () => {
+    const { service, rows } = setup();
+    await issued(service);
+    const first = rows[0]!.issueId;
+
+    expect((await service.issue(EMAIL, 'signup')).ok).toBe(false);
+
+    expect(rows[0]!.issueId).toBe(first);
+  });
+});
+
+describe('보관 기한(TTL)과 발송 제한 구간', () => {
+  const MIN = 60_000;
+  const at = (ms: number) => new Date(START.getTime() + ms);
+
+  /** 스키마에 실제로 걸린 TTL 인덱스의 필드(MongoDB가 이 필드 시각이 지난 문서를 지운다) */
+  const ttlField = (() => {
+    const [fields] = AuthCodeSchema.indexes().find(
+      ([, options]) => options?.expireAfterSeconds !== undefined,
+    )!;
+    return Object.keys(fields)[0] as 'retainUntil' | 'windowEndsAt' | 'expiresAt';
+  })();
+
+  /** MongoDB의 TTL 삭제를 흉내 낸다: TTL 필드 시각이 지난 문서를 지운다 */
+  function sweep(rows: CodeRow[], now: Date) {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i]![ttlField].getTime() <= now.getTime()) rows.splice(i, 1);
+    }
+  }
+
+  it('TTL 인덱스는 발송 제한 구간(windowEndsAt)이 아니라 보관 기한(retainUntil)에 걸려 있다', () => {
+    expect(ttlField).toBe('retainUntil');
+  });
+
+  it('구간 말미(59분)에 다시 받은 번호는 유효한 69분까지 지워지지 않아 인증에 성공한다', async () => {
+    const { service, rows } = setup();
+    await issued(service);
+    vi.setSystemTime(at(59 * MIN));
+    const code = await issued(service); // 최초 발송 59분 뒤 재발급 → 69분까지 유효
+
+    for (const minute of [60, 64, 68]) {
+      vi.setSystemTime(at(minute * MIN));
+      sweep(rows, at(minute * MIN));
+      expect(rows).toHaveLength(1);
+    }
+    vi.setSystemTime(at(68 * MIN));
+    expect((await service.verify(EMAIL, 'signup', code)).ok).toBe(true);
+  });
+
+  it('번호가 만료되고 제한 구간도 끝나면 문서를 지울 수 있다 (영원히 남기지 않는다)', async () => {
+    const { service, rows } = setup();
+    await issued(service);
+    vi.setSystemTime(at(59 * MIN));
+    await issued(service);
+
+    sweep(rows, at(69 * MIN));
+
+    expect(rows).toHaveLength(0);
+  });
+
+  it('제한 구간이 끝나기 전에는 번호가 만료됐어도 지우지 않는다 (발송 횟수 기록을 유지한다)', async () => {
+    const { service, rows } = setup();
+    await issued(service);
+
+    sweep(rows, at(30 * MIN)); // 번호는 10분에 이미 만료됐다
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.sendCount).toBe(1);
+  });
+
+  it('구간 끝(60분)에 문서가 지워지지 않고, 구간 안에서 보낸 한도 기록이 그대로 남는다', async () => {
+    const { service, rows } = setup();
+    for (let i = 0; i < EMAIL_CODE_MAX_SENDS_PER_WINDOW; i++) {
+      vi.setSystemTime(at(i * MIN));
+      await issued(service);
+    }
+
+    sweep(rows, at(60 * MIN - 1));
+
+    expect(rows).toHaveLength(1);
+    vi.setSystemTime(at(60 * MIN - 1));
+    expect(await service.issue(EMAIL, 'signup')).toMatchObject({ ok: false, reason: 'limit' });
+  });
+
+  it('인증에 성공하면 증표가 유효한 10분 동안은 문서가 지워지지 않아 가입을 끝낼 수 있다', async () => {
+    const { service, rows } = setup();
+    await issued(service);
+    vi.setSystemTime(at(58 * MIN + 30_000));
+    const code = await issued(service);
+    vi.setSystemTime(at(59 * MIN));
+    const verified = await service.verify(EMAIL, 'signup', code);
+    if (!verified.ok) throw new Error('인증에 실패했다');
+
+    sweep(rows, at(68 * MIN + 59_000)); // 인증 + 10분 직전
+
+    expect(rows).toHaveLength(1);
+    vi.setSystemTime(at(68 * MIN + 59_000));
+    expect(await service.consume(EMAIL, 'signup', verified.verifiedAt)).toBe(true);
+  });
+
+  it('보관 기한은 번호 만료 · 제한 구간 끝 중 늦은 쪽보다 앞서지 않는다 (재발송 · 새 구간 모두)', async () => {
+    const { service, rows } = setup();
+    await issued(service);
+
+    vi.setSystemTime(at(59 * MIN));
+    await issued(service); // 같은 구간 안 재발송
+    expect(rows[0]!.retainUntil.getTime()).toBe(
+      Math.max(rows[0]!.windowEndsAt.getTime(), rows[0]!.expiresAt.getTime()),
+    );
+
+    vi.setSystemTime(at(61 * MIN));
+    await issued(service); // 구간이 끝난 뒤 새 구간
+    expect(rows[0]!.retainUntil.getTime()).toBe(
+      Math.max(rows[0]!.windowEndsAt.getTime(), rows[0]!.expiresAt.getTime()),
+    );
+    expect(rows[0]!.windowEndsAt).toEqual(at(61 * MIN + EMAIL_CODE_SEND_WINDOW_MS));
+  });
+});
+
+describe('제한 구간 경계의 재발송 간격', () => {
+  const MIN = 60_000;
+  const at = (ms: number) => new Date(START.getTime() + ms);
+
+  it('구간이 끝나는 순간이어도 마지막 발송 뒤 60초가 지나지 않았으면 거부한다', async () => {
+    const { service, rows } = setup();
+    await issued(service);
+    vi.setSystemTime(at(59 * MIN + 30_000));
+    await issued(service); // 구간 끝(60분)까지 30초 남은 때 발송
+    const before = { ...rows[0]! };
+
+    vi.setSystemTime(at(60 * MIN)); // 구간은 끝났지만 마지막 발송 뒤 30초뿐
+    const result = await service.issue(EMAIL, 'signup');
+
+    expect(result).toEqual({ ok: false, reason: 'cooldown', retryAfterMs: 30_000 });
+    expect(rows[0]).toEqual(before); // 거부된 요청은 아무것도 바꾸지 않는다
+  });
+
+  it('간격이 지나면(60초 뒤) 새 구간으로 다시 센다', async () => {
+    const { service, rows } = setup();
+    await issued(service);
+    vi.setSystemTime(at(59 * MIN + 30_000));
+    await issued(service);
+
+    vi.setSystemTime(at(60 * MIN + 29_999));
+    expect(await service.issue(EMAIL, 'signup')).toMatchObject({ ok: false, reason: 'cooldown' });
+
+    vi.setSystemTime(at(60 * MIN + 30_000)); // 정확히 60초 (경계)
+    expect((await service.issue(EMAIL, 'signup')).ok).toBe(true);
+    expect(rows[0]!.sendCount).toBe(1);
+  });
+
+  it('발송 한도를 다 쓴 직후 구간이 끝나도 간격이 남았으면 한도(limit 0ms)가 아니라 간격으로 알린다', async () => {
+    const { service } = setup();
+    for (const minute of [0, 1, 2, 3]) {
+      vi.setSystemTime(at(minute * MIN));
+      await issued(service);
+    }
+    vi.setSystemTime(at(59 * MIN + 30_000));
+    await issued(service); // 5번째: 한도를 다 썼다
+
+    vi.setSystemTime(at(60 * MIN));
+    const result = await service.issue(EMAIL, 'signup');
+
+    expect(result).toEqual({ ok: false, reason: 'cooldown', retryAfterMs: 30_000 });
+  });
+
+  it('구간 안에서 한도를 다 쓴 경우는 구간이 끝날 때까지 남은 시간을 알린다 (기존 동작 유지)', async () => {
+    const { service } = setup();
+    for (let i = 0; i < EMAIL_CODE_MAX_SENDS_PER_WINDOW; i++) {
+      vi.setSystemTime(at(i * MIN));
+      await issued(service);
+    }
+
+    vi.setSystemTime(at(10 * MIN));
+    expect(await service.issue(EMAIL, 'signup')).toEqual({
+      ok: false,
+      reason: 'limit',
+      retryAfterMs: 50 * MIN,
+    });
   });
 });
 

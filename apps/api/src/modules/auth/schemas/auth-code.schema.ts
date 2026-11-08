@@ -54,9 +54,24 @@ export class AuthCode {
   @Prop({ required: true, type: Number, default: 1, min: 1 })
   sendCount: number;
 
-  /** 이 시각까지가 현재 제한 구간이다. 지나면 횟수를 처음부터 센다 */
+  /** 이 시각까지가 현재 제한 구간이다. 지나면 횟수를 처음부터 센다. 문서를 지우는 기준이 아니다(`retainUntil` 참고) */
   @Prop({ required: true, type: Date })
   windowEndsAt: Date;
+
+  /**
+   * 발송(발급)마다 새로 정해지는 식별자. 확인이 "이 발급의 번호를 썼다"고 표시할 때 조건으로 걸어,
+   * 비교하는 사이에 재발급된 새 번호를 이전 번호의 확인이 쓴 것으로 만들지 못하게 한다.
+   */
+  @Prop({ required: true, type: String })
+  issueId: string;
+
+  /**
+   * 이 시각이 지나면 MongoDB가 문서를 지운다(TTL 인덱스). 발송 제한 구간 끝(`windowEndsAt`), 인증번호 만료(`expiresAt`),
+   * 인증 성공 후 증표 수명 중 가장 늦은 때와 같거나 늦어야 한다. 제한 구간만 기준으로 삼으면
+   * 구간 끝 무렵에 재발급한 번호가 유효 시간이 남았는데도 지워진다.
+   */
+  @Prop({ required: true, type: Date })
+  retainUntil: Date;
 }
 
 export const AuthCodeSchema = SchemaFactory.createForClass(AuthCode);
@@ -64,5 +79,5 @@ export const AuthCodeSchema = SchemaFactory.createForClass(AuthCode);
 // 이메일 + 목적당 하나. 동시에 처음 보내는 요청이 문서를 둘 만들지 못하게 하는 마지막 방어선이다
 AuthCodeSchema.index({ email: 1, purpose: 1 }, { unique: true });
 
-// 제한 구간이 끝나면 MongoDB가 문서를 지운다(삭제는 최대 1분쯤 늦을 수 있어, 구간이 끝났는지는 코드에서도 확인한다)
-AuthCodeSchema.index({ windowEndsAt: 1 }, { expireAfterSeconds: 0 });
+// 보관 기한이 지나면 MongoDB가 문서를 지운다(삭제는 최대 1분쯤 늦을 수 있어, 만료 · 구간 종료는 코드에서도 확인한다)
+AuthCodeSchema.index({ retainUntil: 1 }, { expireAfterSeconds: 0 });

@@ -13,6 +13,8 @@ export interface CodeRow {
   lastSentAt: Date;
   sendCount: number;
   windowEndsAt: Date;
+  issueId: string;
+  retainUntil: Date;
 }
 
 type Cond = { $lt?: number | Date; $lte?: number | Date; $gt?: number | Date };

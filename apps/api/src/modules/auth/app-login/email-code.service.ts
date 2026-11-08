@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -25,7 +25,7 @@ export const EMAIL_CODE_SEND_WINDOW_MS = 60 * 60 * 1000;
 export const EMAIL_CODE_MAX_SENDS_PER_WINDOW = 5;
 /**
  * 인증에 성공한 뒤 가입을 끝낼 수 있는 시간(인증 증표의 수명). 이 시간 동안은 인증번호 기록이 남아 있어야 하므로,
- * 인증에 성공하면 기록의 보관 기한(windowEndsAt)이 이보다 일찍 끝나지 않게 늘린다.
+ * 인증에 성공하면 기록의 보관 기한(retainUntil)이 이보다 일찍 끝나지 않게 늘린다.
  */
 export const EMAIL_PROOF_TTL_MS = 10 * 60 * 1000;
 
@@ -56,6 +56,14 @@ export const EMAIL_CODE_RANDOM = 'EMAIL_CODE_RANDOM';
 /**
  * 이메일 인증번호를 만들고 확인한다. 메일 발송은 하지 않는다(발송은 호출하는 쪽의 몫이다).
  *
+ * 문서에는 서로 다른 시각이 세 개 있다. 섞어 쓰면 안 된다.
+ * - `expiresAt`: 인증번호를 쓸 수 있는 마지막 시각(발송 + 10분)
+ * - `windowEndsAt`: 발송 횟수를 세는 제한 구간의 끝(구간 시작 + 1시간). 재발송해도 늘어나지 않는다
+ * - `retainUntil`: MongoDB가 문서를 지우는 시각. 위 둘과 인증 증표 수명 중 가장 늦은 때까지 문서를 남긴다
+ *
+ * 발송할 때마다 `issueId`가 새로 정해진다. 확인(verify)이 비교를 끝내고 "썼다"고 표시하기 전에
+ * 재발급이 끼어들면, 표시 조건의 `issueId`가 달라져 이전 발급의 확인이 새 발급을 쓴 것으로 만들지 못한다.
+ *
  * 동시에 요청이 몰려도 한도가 지켜지도록, 모든 제한은 "조건이 걸린 한 번의 업데이트"로 처리한다.
  * (읽고 → 판단하고 → 쓰는 식으로 나누면 그 사이에 다른 요청이 끼어들어 한도를 넘길 수 있다)
  */
@@ -80,6 +88,7 @@ export class EmailCodeService {
     const now = new Date();
     const code = generateNumericCode(EMAIL_CODE_LENGTH, this.random);
     const fresh = {
+      issueId: randomUUID(),
       codeHash: this.hash(email, purpose, code),
       attempts: 0,
       expiresAt: new Date(now.getTime() + EMAIL_CODE_TTL_MS),
@@ -88,29 +97,35 @@ export class EmailCodeService {
       lastSentAt: now,
     };
     const key = { email, purpose };
+    const cooledDown = { $lte: new Date(now.getTime() - EMAIL_CODE_RESEND_COOLDOWN_MS) };
+    const newWindowEnd = new Date(now.getTime() + EMAIL_CODE_SEND_WINDOW_MS);
 
-    // 1. 제한 구간이 끝났으면 횟수를 처음부터 센다
+    // 1. 제한 구간이 끝났으면 횟수를 처음부터 센다. 구간이 끝났어도 마지막 발송 뒤 간격은 지켜야 한다
+    //    (구간 끝 직전에 보낸 직후 새 구간으로 넘어가며 간격 제한을 피하지 못하게 한다)
     const restarted = await this.codes.updateOne(
-      { ...key, windowEndsAt: { $lte: now } },
+      { ...key, windowEndsAt: { $lte: now }, lastSentAt: cooledDown },
       {
         $set: {
           ...fresh,
           sendCount: 1,
-          windowEndsAt: new Date(now.getTime() + EMAIL_CODE_SEND_WINDOW_MS),
+          windowEndsAt: newWindowEnd,
+          // 새 구간의 끝이 번호 만료(10분 뒤)보다 늦으므로 보관 기한은 구간 끝과 같다
+          retainUntil: newWindowEnd,
         },
       },
     );
     if (restarted.matchedCount === 1) return { ok: true, code };
 
     // 2. 구간 안이면, 간격과 횟수 한도를 지켰을 때만 횟수를 올리며 덮어쓴다(한 번의 조건부 업데이트)
+    //    구간 끝(windowEndsAt)은 그대로 두고, 늘어난 번호 만료 시각까지 문서가 남도록 보관 기한만 늘린다
     const resent = await this.codes.updateOne(
       {
         ...key,
         windowEndsAt: { $gt: now },
-        lastSentAt: { $lte: new Date(now.getTime() - EMAIL_CODE_RESEND_COOLDOWN_MS) },
+        lastSentAt: cooledDown,
         sendCount: { $lt: EMAIL_CODE_MAX_SENDS_PER_WINDOW },
       },
-      { $set: fresh, $inc: { sendCount: 1 } },
+      { $set: fresh, $inc: { sendCount: 1 }, $max: { retainUntil: fresh.expiresAt } },
     );
     if (resent.matchedCount === 1) return { ok: true, code };
 
@@ -122,7 +137,8 @@ export class EmailCodeService {
           ...key,
           ...fresh,
           sendCount: 1,
-          windowEndsAt: new Date(now.getTime() + EMAIL_CODE_SEND_WINDOW_MS),
+          windowEndsAt: newWindowEnd,
+          retainUntil: newWindowEnd,
         });
         return { ok: true, code };
       } catch (error) {
@@ -179,12 +195,14 @@ export class EmailCodeService {
     }
 
     // 맞았다. 쓴 것으로 표시한다. 같은 인증번호로 동시에 두 번 성공하더라도 한 요청만 통과한다
+    // 비교한 그 발급(issueId)일 때만 표시한다: 비교와 표시 사이에 재발급이 끼어들었다면 이미 새 발급이므로
+    // 이전 번호의 성공이 새 번호를 쓴 것으로 만들면 안 된다
     // 가입을 끝낼 때까지 기록이 지워지지 않도록 보관 기한도 함께 늘린다($max: 더 늦은 쪽만 반영)
     const used = await this.codes.updateOne(
-      { _id: claimed._id, usedAt: null },
+      { _id: claimed._id, issueId: claimed.issueId, usedAt: null },
       {
         $set: { usedAt: now },
-        $max: { windowEndsAt: new Date(now.getTime() + EMAIL_PROOF_TTL_MS) },
+        $max: { retainUntil: new Date(now.getTime() + EMAIL_PROOF_TTL_MS) },
       },
     );
     return used.matchedCount === 1
@@ -210,7 +228,9 @@ export class EmailCodeService {
     now: Date,
   ): IssueResult {
     const cooldownEndsAt = existing.lastSentAt.getTime() + EMAIL_CODE_RESEND_COOLDOWN_MS;
-    if (existing.sendCount >= EMAIL_CODE_MAX_SENDS_PER_WINDOW) {
+    // 구간이 이미 끝났다면 횟수 한도는 더 이상 적용되지 않는다. 남은 건 마지막 발송 뒤 간격뿐이다
+    const windowActive = existing.windowEndsAt.getTime() > now.getTime();
+    if (windowActive && existing.sendCount >= EMAIL_CODE_MAX_SENDS_PER_WINDOW) {
       return {
         ok: false,
         reason: 'limit',
