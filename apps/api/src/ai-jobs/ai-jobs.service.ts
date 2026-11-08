@@ -10,13 +10,6 @@ export const NOT_FOUND = 'NOT_FOUND';
 /** 노트를 만들 때 넣는 첫 맞춤 퀴즈 미리 만들기(#134). 처리기는 사용자 작업과 따로 처리한다 */
 export const PREGEN_TYPE = 'quiz_pregen';
 
-/**
- * 처리기의 최대 시도 횟수(apps/ai/app/core/config.py `ai_job_max_attempts`, 기본 3)와 같은 값.
- * 잠금이 지난 running 작업은 이보다 적게 시도했으면 처리기가 다시 가져가고, 다 썼으면 failed로 바꾼다.
- * 처리기 설정을 바꾸면 이 값도 같이 바꾼다.
- */
-export const MAX_ATTEMPTS = 3;
-
 /** 처리기가 아직 끝내지 않은 상태. 취소할 수 있고, 미리 만들기를 이어받을 수 있다 */
 const ACTIVE = ['queued', 'running'];
 /** 앱의 '다시 시도'로 다시 넣을 수 있는 상태 */
@@ -194,8 +187,11 @@ export class AiJobsService {
    * 같은 대상의 미리 만들기(quiz_pregen)가 아직 끝나지 않았으면 이어받는다: 새 작업을 넣지 않고
    * awaited=true를 켜서 처리기가 사용자 작업처럼 먼저 처리하게 한다(#134 · #138).
    * 넣으면 같은 퀴즈를 두 번 만들기 때문이다. 이어받을 작업이 없으면 null(호출하는 쪽이 새로 넣는다).
-   * running인데 잠금이 지난 작업(처리기가 멈춤)은 시도가 남았으면 처리기가 다시 가져가므로 이어받고
-   * (새로 넣으면 둘 다 처리됨, Codex #188), 다 썼으면 곧 failed가 되므로 이어받지 않는다.
+   *
+   * running이면 잠금이 지났어도(처리기가 멈춤) 이어받고, 처리기 상태는 바꾸지 않는다. 처리기는
+   * 시도가 남았으면 다시 가져가므로 새로 넣으면 둘 다 처리된다(Codex #188). 시도를 다 썼으면 처리기가
+   * failed로 바꾸고, 앱은 실패를 보여 주어 사용자가 다시 시도한다(다시 시도는 awaited를 남긴다).
+   * 시도 한도 · 잠금 시각은 처리기 설정 · 시계라 NestJS는 판단에 쓰지 않는다.
    *
    * 알려진 한계: 이 확인과 호출하는 쪽의 enqueue는 따로라서, 같은 노트에 퀴즈 요청이 거의 동시에
    * 두 번 오면 둘 다 null을 받고 두 번 넣을 수 있다. 퀴즈 세트를 만드는 쪽(quiz-sets)에서 노트마다
@@ -213,11 +209,7 @@ export class AiJobsService {
           type: PREGEN_TYPE,
           targetType,
           targetId: objectId(targetId),
-          $or: [
-            { status: 'queued' },
-            { status: 'running', lockedUntil: { $gt: new Date() } },
-            { status: 'running', attempts: { $lt: MAX_ATTEMPTS } },
-          ],
+          status: { $in: ACTIVE },
         },
         { $set: { awaited: true } },
         { returnDocument: 'after', sort: { createdAt: -1 } },

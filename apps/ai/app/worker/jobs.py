@@ -14,6 +14,7 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
                  awaited(미리 해 두는 작업을 사용자가 이어받을 때 true, #138)
   처리기가 씀    status · progress · step · attempts · result · error · checkpoint
                  lockedBy · lockedUntil · retryAt · updatedAt
+                 (NestJS도 바꿈: 취소 · 다시 시도. 이어받기는 awaited만, 아래 「가져오는 순서」)
   - input: 처리기는 다른 컬렉션을 읽지 않으므로, 처리에 필요한 자료(퀴즈 · 풀이 기록 · 노트 글 등)는
     NestJS가 작업을 만들 때 input에 모두 담습니다. 작업별 내용은 6~8번 PR에서 정합니다.
   - result: NestJS가 읽어 quiz_sets 등에 반영합니다. 처리기는 다른 컬렉션에 쓰지 않습니다.
@@ -34,7 +35,9 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
       기다리지 않게
     - 처리 중이면 처리기가 AWAITED_CHECK_SEC마다 읽어(awaited) LLM 호출 차례를 양보하지
       않습니다. 시간 상한은 시작할 때 정해서, 처리 중에 이어받으면 미리 만들기 상한 그대로입니다
-    - 아직 NestJS는 awaited를 쓰지 않습니다(#134 NestJS 할 일)
+    - NestJS는 AiJobsService.takeOverPregen(apps/api, #175)에서 awaited만 씁니다. 잠금이 지난
+      running(처리기 멈춤)도 이어받고 처리기 상태는 바꾸지 않습니다. 시도가 남았으면 처리기가
+      다시 가져가고, 다 썼으면 failed가 되어 앱의 '다시 시도'로 다시 넣습니다
   - 알려진 한계(/code-review #134)
     - 사용자 작업이 끊이지 않으면 미리 해 두는 작업은 queued로 남습니다. 오래된 것은 NestJS가
       canceled로 바꿉니다(처리 중이면 처리기가 결과를 버림)

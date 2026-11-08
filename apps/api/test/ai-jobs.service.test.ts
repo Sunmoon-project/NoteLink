@@ -1,12 +1,9 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-
 import { AiJob } from '@notelink/shared';
 import type { Model } from 'mongoose';
 import { Types } from 'mongoose';
 import { describe, expect, it } from 'vitest';
 
-import { AiJobsService, MAX_ATTEMPTS, toAppJob } from '../src/ai-jobs/ai-jobs.service.js';
+import { AiJobsService, toAppJob } from '../src/ai-jobs/ai-jobs.service.js';
 import { type AiJobDocument, AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
 
 type Row = Record<string, unknown> & { _id: Types.ObjectId; createdAt: Date; updatedAt: Date };
@@ -289,23 +286,40 @@ describe('AiJobsService.takeOverPregen', () => {
     expect(await service.takeOverPregen(ME, 'material', NOTE)).toBeNull();
   });
 
-  it('잠금이 지난 running이라도 시도가 남았으면 처리기가 다시 가져가므로 이어받는다(Codex #188)', async () => {
+  it.each([0, 2, 3, 5])(
+    '잠금이 지난 running(처리기 멈춤)도 시도 횟수(%i)와 상관없이 이어받고 처리기 상태는 그대로 둔다',
+    async (attempts) => {
+      // 처리기가 다시 가져가면 새로 넣은 작업과 둘 다 처리된다(Codex #188). 시도 한도는 처리기 설정이라 보지 않는다
+      const { service, add, row } = setup();
+      const { _id } = await add(pregen);
+      Object.assign(row(_id), { status: 'running', attempts, lockedBy: 'w1', lockedUntil: PAST });
+      expect(await service.takeOverPregen(ME, 'material', NOTE)).toMatchObject({
+        _id,
+        awaited: true,
+      });
+      expect(row(_id)).toMatchObject({ status: 'running', attempts, lockedBy: 'w1' });
+    },
+  );
+
+  it('이어받은 작업이 시도 한도로 failed가 되면 다시 시도로 awaited 그대로 다시 넣는다', async () => {
     const { service, add, row } = setup();
     const { _id } = await add(pregen);
-    Object.assign(row(_id), { status: 'running', attempts: MAX_ATTEMPTS - 1, lockedUntil: PAST });
-    expect(await service.takeOverPregen(ME, 'material', NOTE)).toMatchObject({
+    Object.assign(row(_id), { status: 'running', attempts: 3, lockedUntil: PAST });
+    await service.takeOverPregen(ME, 'material', NOTE);
+    // 처리기 _give_up_stalled가 쓰는 모양(apps/ai jobs.py)
+    Object.assign(row(_id), {
+      status: 'failed',
+      error: '처리가 끝나지 않음(시도 한도)',
+      lockedBy: null,
+      lockedUntil: null,
+    });
+    expect(await service.retry(ME, _id)).toMatchObject({
       _id,
+      status: 'queued',
+      attempts: 0,
+      error: null,
       awaited: true,
     });
-    expect(row(_id)['awaited']).toBe(true);
-  });
-
-  it('잠금이 지난 running이 시도를 다 썼으면(곧 failed) 이어받지 않는다', async () => {
-    const { service, add, row } = setup();
-    const { _id } = await add(pregen);
-    Object.assign(row(_id), { status: 'running', attempts: MAX_ATTEMPTS, lockedUntil: PAST });
-    expect(await service.takeOverPregen(ME, 'material', NOTE)).toBeNull();
-    expect(row(_id)['awaited']).toBe(false);
   });
 });
 
@@ -325,16 +339,5 @@ describe('toAppJob', () => {
     expect(job).not.toHaveProperty('step');
     expect(job).toMatchObject({ progress: 0, attempts: 0, result: null, error: null });
     expect(AiJob.parse(job)).toEqual(job);
-  });
-});
-
-describe('MAX_ATTEMPTS', () => {
-  it('처리기 설정(apps/ai config.py ai_job_max_attempts) 기본값과 같다', () => {
-    const config = readFileSync(
-      fileURLToPath(new URL('../../ai/app/core/config.py', import.meta.url)),
-      'utf8',
-    );
-    const found = /ai_job_max_attempts: int = (\d+)/.exec(config);
-    expect(Number(found?.[1])).toBe(MAX_ATTEMPTS);
   });
 });
