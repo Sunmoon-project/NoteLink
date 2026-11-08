@@ -1,49 +1,53 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { Schema as MongooseSchema, Types, type HydratedDocument } from 'mongoose';
 
-// 공용 스키마 PointLedger.reasonType
 export const POINT_REASON_TYPES = [
-  'session_complete',
-  'quiz_correct',
-  'review_complete',
-  'session_abuse',
-  'purchase',
-  'mission',
-  'admin',
+    'session_complete',
+    'quiz_correct',
+    'review_complete',
+    'session_abuse',
+    'purchase',
+    'mission',
+    'admin',
 ] as const;
+export type PointReasonType = (typeof POINT_REASON_TYPES)[number];
 
 export type PointLedgerDocument = HydratedDocument<PointLedger>;
 
-// updatedAt은 필요 없으므로 createdAt만 자동 기록합니다.
-@Schema({ collection: 'point_ledgers', timestamps: { createdAt: true, updatedAt: false } })
+// 포인트가 늘거나 줄 때마다 한 줄씩 쌓는 장부 (수정·삭제 없이 쌓기만 한다)
+// amount가 양수면 적립(earn), 음수면 사용(spend)
+@Schema({ collection: 'point_ledgers', timestamps: true })
 export class PointLedger {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
-  userId: Types.ObjectId;
+    @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'User', required: true })
+    userId: Types.ObjectId; // users 참조
 
-  @Prop({ required: true, type: Number })
-  amount: number; // 양수(+): 적립, 음수(-): 차감
+    @Prop({ type: Number, required: true })
+    amount: number;
 
-  @Prop({ required: true, type: Number })
-  balanceAfter: number; // 거래 후 잔액
+    @Prop({ type: Number, required: true })
+    balanceAfter: number; // 이 내역이 반영된 뒤의 잔액
 
-  @Prop({ required: true, type: String, enum: POINT_REASON_TYPES })
-  reasonType: string; // 공용 스키마 reasonType 7종(POINT_REASON_TYPES)
+    @Prop({ type: String, required: true, enum: POINT_REASON_TYPES })
+    reasonType: PointReasonType;
 
-  // 연관된 대상 ID들 (선택적 참조)
-  @Prop({ type: Types.ObjectId, ref: 'ShopItem' })
-  itemId?: Types.ObjectId;
+    // 어떤 일로 생긴 내역인지 가리키는 선택 참조 (구매 · 퀴즈 · 공부 세션)
+    @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'ShopItem' })
+    itemId?: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'QuizAttempt' })
-  attemptId?: Types.ObjectId;
+    @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'QuizAttempt' })
+    attemptId?: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'StudySession' })
-  sessionId?: Types.ObjectId;
+    @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'StudySession' })
+    sessionId?: Types.ObjectId;
 
-  @Prop({ type: String, default: null})
-  studyDate?: string | null;
+    @Prop({ type: String, default: null })
+    studyDate?: string | null; // 서울 기준 'YYYY-MM-DD' (하루 적립 한도 계산용)
 
-  @Prop({ type: String, default: null})
-  description?: string | null;
+    @Prop({ type: String, default: null })
+    description: string | null;
 }
 
 export const PointLedgerSchema = SchemaFactory.createForClass(PointLedger);
+
+// "내 내역을 최신순으로" 가 가장 흔한 조회라서 이 순서로 인덱스를 만든다
+PointLedgerSchema.index({ userId: 1, _id: -1 });
