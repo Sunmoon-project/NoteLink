@@ -1,3 +1,4 @@
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useEffect, useRef, useState } from 'react';
 import { FlatList, Pressable, View } from 'react-native';
@@ -35,6 +36,7 @@ import { useNow, useSocket } from '@/hooks';
 import { toast } from '@/stores/toast';
 import {
   Alert,
+  Avatar,
   Badge,
   Btn,
   Canvas,
@@ -43,9 +45,9 @@ import {
   Dialog,
   Header,
   Input,
+  LIST_LAYOUT,
   Label,
   Loading,
-  Avatar,
   Screen,
   Search,
   Title,
@@ -54,7 +56,7 @@ import {
 } from '@/components/ui';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
-import { C, ICON } from '@/theme';
+import { C, ICON, MOTION } from '@/theme';
 import { useLiveRoom } from '@/lib/livekit';
 import { LoadError } from './tools';
 
@@ -96,22 +98,29 @@ export function RoomListScreen() {
           <>
             <Label>참여 중인 스터디룸</Label>
             {joined.map((r) => (
-              <Card
+              <Animated.View
                 key={r._id}
-                onPress={() => router.push({ pathname: '/room/[id]', params: { id: r._id } })}
-                className="mb-4 flex-row items-center gap-3 p-6"
+                layout={LIST_LAYOUT}
+                entering={FadeIn.duration(MOTION.enter)}
+                exiting={FadeOut.duration(MOTION.exit)}
               >
-                <View className="flex-1">
-                  <View className="flex-row items-center gap-2">
-                    <Text className="text-callout font-bold text-ink">{r.title}</Text>
-                    {r.timerState?.phase === 'focus' && <Badge tone="sun">집중 중</Badge>}
+                <Card
+                  key={r._id}
+                  onPress={() => router.push({ pathname: '/room/[id]', params: { id: r._id } })}
+                  className="mb-4 flex-row items-center gap-3 p-6"
+                >
+                  <View className="flex-1">
+                    <View className="flex-row items-center gap-2">
+                      <Text className="text-callout font-bold text-ink">{r.title}</Text>
+                      {r.timerState?.phase === 'focus' && <Badge tone="sun">집중 중</Badge>}
+                    </View>
+                    <Text className="text-caption text-sub">
+                      {r.memberCount}명 · 코드 {r.inviteCode}
+                    </Text>
                   </View>
-                  <Text className="text-caption text-sub">
-                    {r.memberCount}명 · 코드 {r.inviteCode}
-                  </Text>
-                </View>
-                <Faces members={r.members} />
-              </Card>
+                  <Faces members={r.members} />
+                </Card>
+              </Animated.View>
             ))}
             <View className="mt-2 flex-row gap-2.5">
               <View className="flex-1">
@@ -164,18 +173,25 @@ export function RoomListScreen() {
         )}
         <View className="gap-4">
           {recList.map((r) => (
-            <Card key={r._id} onPress={() => join.mutate(r.inviteCode)} className="p-6">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-subhead font-bold text-ink">{r.title}</Text>
-                <Badge>{`${r.memberCount}명 참여`}</Badge>
-              </View>
-              <View className="mt-2.5 flex-row gap-1">
-                {r.tags?.map((t) => (
-                  <Badge key={t}>{t}</Badge>
-                ))}
-              </View>
-              <Text className="mt-2.5 text-caption text-sub">{r.description}</Text>
-            </Card>
+            <Animated.View
+              key={r._id}
+              layout={LIST_LAYOUT}
+              entering={FadeIn.duration(MOTION.enter)}
+              exiting={FadeOut.duration(MOTION.exit)}
+            >
+              <Card key={r._id} onPress={() => join.mutate(r.inviteCode)} className="p-6">
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-subhead font-bold text-ink">{r.title}</Text>
+                  <Badge>{`${r.memberCount}명 참여`}</Badge>
+                </View>
+                <View className="mt-2.5 flex-row gap-1">
+                  {r.tags?.map((t) => (
+                    <Badge key={t}>{t}</Badge>
+                  ))}
+                </View>
+                <Text className="mt-2.5 text-caption text-sub">{r.description}</Text>
+              </Card>
+            </Animated.View>
           ))}
         </View>
       </Screen>
