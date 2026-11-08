@@ -47,12 +47,12 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     uri = settings.mongodb_uri.get_secret_value()
     if not uri:
-        raise SystemExit("MONGODB_URI가 비어 있습니다(.env.example 참고)")
+        raise SystemExit("MONGODB_URI가 비어 있습니다(.env.production 참고)")
     if not HANDLERS:
         log.warning("등록된 작업 종류가 없습니다. 6~8번 PR에서 app/worker/handlers.py에 추가합니다")
     elif not settings.school_llm_base_url:
         # 설정이 없으면 작업마다 다시 시도를 거쳐 실패하므로 시작할 때 막음
-        raise SystemExit("SCHOOL_LLM_BASE_URL이 비어 있습니다(.env.example 참고)")
+        raise SystemExit("SCHOOL_LLM_BASE_URL이 비어 있습니다(.env.production 참고)")
     client: MongoClient[JsonObject] = MongoClient(uri, tz_aware=True)
     worker = f"{socket.gethostname()}:{os.getpid()}"
 

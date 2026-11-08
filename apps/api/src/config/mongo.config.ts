@@ -13,7 +13,7 @@ export interface ConfigReader {
 export function createMongooseOptions(config: ConfigReader): MongooseModuleOptions {
   const uri = config.get('MONGODB_URI')?.trim();
   if (!uri) {
-    throw new Error('MONGODB_URI 환경변수가 필요합니다 (apps/api/.env.example 참고)');
+    throw new Error('MONGODB_URI 환경변수가 필요합니다 (apps/api/.env.production 참고)');
   }
   return { uri };
 }
