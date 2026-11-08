@@ -564,6 +564,12 @@ const BAR_STEP = 10;
  * 막대가 상자 안에서 생기고 사라지지 않고 양 끝 바깥에서 들고 난다
  */
 export const BAR_COUNT = 48;
+/**
+ * 파형 상자의 최대 폭. 줄(476 = 48 × 6 + 47 × 4)이 가운데에 놓이고 한 칸(10) 밀리므로,
+ * 상자 폭의 절반이 476/2 - 10 - 6(막대) = 222 이하여야 양 끝 막대가 늘 상자 밖에 있다.
+ * 태블릿 등 더 넓은 화면에서도 상자를 이 폭으로 묶어 둔다
+ */
+export const WAVE_MAX_W = 440;
 
 /**
  * 녹음 파형. 새 소리 크기가 들어올 때마다 막대를 한 칸씩 밀되, 칸이 뚝 바뀌지 않게
@@ -586,7 +592,10 @@ export function Waveform({ bars, live }: { bars: number[]; live: boolean }) {
   }, [bars, live, x]);
   const style = useAnimatedStyle(() => ({ transform: [{ translateX: x.get() }] }));
   return (
-    <View className="mt-4 h-20 items-center justify-center overflow-hidden rounded-lg bg-black/30">
+    <View
+      className="mt-4 h-20 w-full items-center justify-center self-center overflow-hidden rounded-lg bg-black/30"
+      style={{ maxWidth: WAVE_MAX_W }}
+    >
       <Animated.View className="flex-row items-center gap-1" style={style}>
         {bars.map((h, i) => (
           <View key={i} className="w-1.5 rounded-full bg-orange" style={{ height: live ? h : 6 }} />
