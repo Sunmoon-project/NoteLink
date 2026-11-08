@@ -1,4 +1,4 @@
-import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -10,6 +10,7 @@ import {
   AuthCode,
 } from '../schemas/auth-code.schema.js';
 import { JWT_CONFIG } from '../token.service.js';
+import { generateNumericCode, type RandomInt } from '../../../common/numeric-code.js';
 import { type JwtConfig } from '../../../config/jwt.config.js';
 import { EMAIL_CODE_LENGTH } from './app-login-input.js';
 
@@ -43,10 +44,7 @@ export type VerifyResult =
   /** 인증번호가 없거나, 만료됐거나, 이미 썼다(셋을 구분해서 알려 주지 않는다) */
   | { ok: false; reason: 'invalid' };
 
-/** 0 이상 max 미만의 정수를 암호학적 난수로 뽑는다. 시험에서는 값을 고정하려고 바꿔 끼운다 */
-export type RandomInt = (max: number) => number;
-
-/** 난수 생성기를 바꿔 끼울 때 쓰는 주입 이름. 서버에서는 등록하지 않으므로 기본 구현(randomInt)이 쓰인다 */
+/** 난수 생성기를 바꿔 끼울 때 쓰는 주입 이름. 서버에서는 등록하지 않으므로 공통 기본 구현이 쓰인다 */
 export const EMAIL_CODE_RANDOM = 'EMAIL_CODE_RANDOM';
 
 /**
@@ -65,7 +63,7 @@ export class EmailCodeService {
     // 함수 타입은 Nest가 주입 대상으로 알 수 없으므로 이름표를 달고, 등록하지 않아도 되게(Optional) 한다
     @Optional()
     @Inject(EMAIL_CODE_RANDOM)
-    private readonly random: RandomInt = (max) => randomInt(0, max),
+    private readonly random?: RandomInt,
   ) {
     // JWT 서명 비밀값에서 인증번호 전용 키를 따로 만든다(용도를 섞어 쓰지 않는다)
     this.key = createHmac('sha256', config.accessSecret).update('notelink:email-code:v1').digest();
@@ -74,7 +72,7 @@ export class EmailCodeService {
   /** 인증번호를 새로 만들어 저장한다. 이전 인증번호는 즉시 무효가 된다 */
   async issue(email: string, purpose: AuthCodePurpose): Promise<IssueResult> {
     const now = new Date();
-    const code = this.generateCode();
+    const code = generateNumericCode(EMAIL_CODE_LENGTH, this.random);
     const fresh = {
       codeHash: this.hash(email, purpose, code),
       attempts: 0,
@@ -198,13 +196,6 @@ export class EmailCodeService {
       reason: 'cooldown',
       retryAfterMs: Math.max(0, cooldownEndsAt - now.getTime()),
     };
-  }
-
-  /** 6자리 숫자 인증번호(앞자리가 0이어도 6자리를 유지한다) */
-  private generateCode(): string {
-    return this.random(10 ** EMAIL_CODE_LENGTH)
-      .toString()
-      .padStart(EMAIL_CODE_LENGTH, '0');
   }
 
   /** 이메일과 목적까지 묶어 서명한다: 다른 사람의 인증번호 해시를 내 계정에 옮겨 놓아도 통하지 않는다 */
