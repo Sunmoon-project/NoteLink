@@ -16,6 +16,14 @@ export class Question {
   @Prop({ required: true, type: String })
   prompt: string;
 
+  // 빈칸 · 문장 문제의 지문(처리기 결과 passage). 공용 스키마에는 없어 앱에는 prompt 뒤에 붙여 보낸다
+  @Prop({ type: String, default: null })
+  passage?: string | null;
+
+  // 처리기가 정한 문제 갈래('빈칸' · '어휘' · '정의' 등). 다음 퀴즈를 만들 때 처리기에 다시 넘긴다
+  @Prop({ type: String, default: null })
+  category?: string | null;
+
   // 객관식이 아니면 null
   @Prop({ type: [String], default: null })
   choices?: string[] | null;
@@ -61,20 +69,36 @@ export class QuizSet {
   title: string;
 
   // 공용 스키마의 status는 'generating' | 'ready' | 'failed' 문자열이다.
-  @Prop({ required: true, type: String, enum: ['generating', 'ready', 'failed'], default: 'generating' })
+  @Prop({
+    required: true,
+    type: String,
+    enum: ['generating', 'ready', 'failed'],
+    default: 'generating',
+  })
   status: string;
 
   @Prop({ required: true, type: Number, default: 0 })
   progress: number;
 
-  @Prop({ required: true, type: Number,default: 0 })
+  @Prop({ required: true, type: Number, default: 0 })
   questionCount: number;
 
   @Prop({ type: [QuestionSchema], default: [] })
   questions: Question[];
+
+  // 문제를 만드는 AI 작업(ai_jobs). 미리 만들기를 이어받으면 그 작업(targetType 'material')을 가리킨다(#175)
+  @Prop({ type: Types.ObjectId, ref: 'AiJob', default: null })
+  jobId?: Types.ObjectId | null;
 
   @Prop({ type: Date, default: null })
   deletedAt?: Date | null;
 }
 
 export const QuizSetSchema = SchemaFactory.createForClass(QuizSet);
+// 노트마다 만드는 중인 세트는 하나(#175). 퀴즈를 거의 동시에 두 번 요청해도 같은 퀴즈를 두 번 만들지 않는다
+QuizSetSchema.index(
+  { ownerId: 1, materialId: 1 },
+  { unique: true, partialFilterExpression: { status: 'generating' } },
+);
+// 내 퀴즈 세트 목록(최근 것부터)
+QuizSetSchema.index({ ownerId: 1, createdAt: -1 });

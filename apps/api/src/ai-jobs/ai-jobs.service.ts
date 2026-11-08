@@ -163,9 +163,20 @@ export class AiJobsService {
   /**
    * 아직 끝나지 않은 작업을 canceled로 바꾼다. 처리 중이면 처리기가 다음에 쓸 때 알아채고 결과를 버린다.
    * 이미 끝난 작업(succeeded · failed · canceled)은 그대로 둔다(앱이 두 번 눌러도 같은 결과).
+   * 이어받은 미리 만들기(quiz_pregen)는 지우지 않고 이어받기만 푼다(awaited=false): 사용자가 기다리기를
+   * 그만둔 것이라, 처리기가 뒤에서 마저 만들어 두면 그 노트의 퀴즈 세트가 나중에 ready가 된다.
+   * 이어받지 않은(awaited=false) 미리 만들기는 다른 작업처럼 canceled로 바꾼다.
    */
   async cancel(userId: string, jobId: string): Promise<void> {
     const filter = { _id: objectId(jobId), userId: objectId(userId) };
+    const pregen = await this.jobs
+      .findOneAndUpdate(
+        { ...filter, type: PREGEN_TYPE, status: { $in: ACTIVE }, awaited: true },
+        { $set: { awaited: false } },
+        { projection: { _id: 1 } },
+      )
+      .lean();
+    if (pregen) return;
     const row = await this.jobs
       .findOneAndUpdate(
         { ...filter, status: { $in: ACTIVE } },

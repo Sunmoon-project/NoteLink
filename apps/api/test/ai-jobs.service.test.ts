@@ -115,6 +115,18 @@ describe('AiJobsService.cancel', () => {
     expect(row(_id)['status']).toBe(status);
   });
 
+  it('이어받지 않은 미리 만들기는 canceled로, 이어받은 것은 이어받기만 푼다', async () => {
+    const { service, add, row } = setup();
+    const pregen = { type: 'quiz_pregen', targetType: 'material', targetId: NOTE };
+    const idle = await add(pregen);
+    await service.cancel(ME, idle._id);
+    expect(row(idle._id)['status']).toBe('canceled');
+    const waited = await add(pregen);
+    row(waited._id)['awaited'] = true;
+    await service.cancel(ME, waited._id);
+    expect(row(waited._id)).toMatchObject({ status: 'queued', awaited: false });
+  });
+
   it('남의 작업은 바꾸지 않고 404', async () => {
     const { service, add, row } = setup();
     const { _id } = await add();
