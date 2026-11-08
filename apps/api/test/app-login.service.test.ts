@@ -39,6 +39,10 @@ beforeAll(async () => {
   goodHash = await hash(PASSWORD, TEST_COST);
 });
 
+/** 항상 시도를 쓸 수 있게 하는 대역: 기존 로그인 동작 시험은 시도 제한과 무관하게 보려고 쓴다 */
+const openThrottle = () =>
+  ({ reserve: () => Promise.resolve({ ok: true }), clear: () => Promise.resolve() }) as never;
+
 function userRow(overrides: Partial<UserRow> = {}): UserRow {
   return {
     _id: new Types.ObjectId(),
@@ -84,7 +88,7 @@ function setup(rows: UserRow[] = []) {
       return Promise.resolve({ matchedCount: row ? 1 : 0 });
     },
   };
-  const service = new AppLoginService(model as never, tokens as never, TEST_COST);
+  const service = new AppLoginService(model as never, tokens as never, openThrottle(), TEST_COST);
   return { service, rows, issued };
 }
 
@@ -265,6 +269,7 @@ describe('응답 시간 평준화: 어떤 경우에도 bcrypt 비교를 한 번 
     const service = new AppLoginService(
       { findOne: () => ({ lean: () => Promise.resolve(null) }) } as never,
       {} as never,
+      openThrottle(),
       5,
     );
 
@@ -418,6 +423,7 @@ describe('저장소 오류', () => {
     const service = new AppLoginService(
       { findOne: () => ({ lean: () => Promise.reject(new Error('DB 읽기 실패')) }) } as never,
       {} as never,
+      openThrottle(),
       TEST_COST,
     );
 
@@ -432,6 +438,7 @@ describe('저장소 오류', () => {
         updateOne: () => Promise.resolve({}),
       } as never,
       { issue: () => Promise.reject(new Error('토큰 발급 실패')) } as never,
+      openThrottle(),
       TEST_COST,
     );
 

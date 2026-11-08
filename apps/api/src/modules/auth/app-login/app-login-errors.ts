@@ -20,4 +20,9 @@ export const APP_LOGIN_ERRORS = {
    * 토큰 만료 코드(AUTH_TOKEN_EXPIRED)와 달라서, 앱은 이 응답을 받아도 토큰 갱신을 시도하지 않는다.
    */
   INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',
+  /**
+   * 로그인을 너무 많이 시도해 잠겼다(이메일 기준 5번). 그 이메일의 계정이 있는지와 상관없이 같은 응답이다.
+   * 잠긴 동안은 맞는 비밀번호도 받지 않는다. 본문의 `retryAfterSeconds` 뒤에 다시 시도할 수 있다.
+   */
+  LOGIN_LOCKED: 'LOGIN_LOCKED',
 } as const;

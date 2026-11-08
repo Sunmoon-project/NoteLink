@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AppLoginService } from '../src/modules/auth/app-login/app-login.service.js';
 import { AppSignupService } from '../src/modules/auth/app-login/app-signup.service.js';
+import { LoginThrottleService } from '../src/modules/auth/app-login/login-throttle.service.js';
 import { EmailCodeService } from '../src/modules/auth/app-login/email-code.service.js';
 import {
   MAIL_SENDER,
@@ -210,6 +211,18 @@ describe('AppModule의 앱 로그인(이메일 인증번호)', () => {
     await moduleRef.close();
 
     expect(service).toBeInstanceOf(AppLoginService);
+  });
+
+  it('서버를 조립하면 LoginThrottleService가 만들어지고 AppLoginService가 이를 받아 쓴다', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const throttle = moduleRef.get(LoginThrottleService, { strict: false });
+    const login = moduleRef.get(AppLoginService, { strict: false });
+    await moduleRef.close();
+
+    expect(throttle).toBeInstanceOf(LoginThrottleService);
+    expect((login as unknown as { throttle: unknown }).throttle).toBe(throttle);
   });
 
   it('MAIL_TRANSPORT가 없으면 서버는 뜨지만 메일 발송 수단은 발송을 거부한다 (운영 기본값)', async () => {
