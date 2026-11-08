@@ -15,7 +15,13 @@ const mockRecorder = {
   pause: jest.fn(),
   stop: jest.fn(),
 };
-const mockRecorderState = { durationMillis: 5200, isRecording: false, metering: -30 };
+const mockRecorderState = {
+  durationMillis: 5200,
+  isRecording: false,
+  metering: -30 as number | undefined,
+};
+// 녹음 시간이 흐를 때 화면이 다시 그려지도록 상태 훅을 구독형으로 둔다
+const mockListeners = new Set<() => void>();
 jest.mock('../lib/api', () => ({
   api: { me: { get: async () => ({ settings: { keepScreenOnWhileRecording: false } }) } },
 }));
@@ -34,7 +40,15 @@ jest.mock('expo-audio', () => ({
   RecordingPresets: { HIGH_QUALITY: {} },
   setAudioModeAsync: (...args: unknown[]) => mockAudioMode(...args),
   useAudioRecorder: () => mockRecorder,
-  useAudioRecorderState: () => mockRecorderState,
+  useAudioRecorderState: () => {
+    const React = jest.requireActual<typeof import('react')>('react');
+    const [, rerender] = React.useReducer((n: number) => n + 1, 0);
+    React.useEffect(() => {
+      mockListeners.add(rerender);
+      return () => void mockListeners.delete(rerender);
+    }, []);
+    return { ...mockRecorderState };
+  },
 }));
 const clients: QueryClient[] = [];
 const client = () => {
@@ -52,6 +66,7 @@ const deferred = <T,>() => {
 beforeEach(() => {
   jest.clearAllMocks();
   mockRecorderState.durationMillis = 5200;
+  mockRecorderState.metering = -30;
   for (const fn of [
     mockPermission,
     mockAudioMode,
@@ -146,6 +161,32 @@ describe('PR36 실제 녹음 수명주기', () => {
     expect(router.replace).not.toHaveBeenCalledWith('/convert');
     await fireEvent.press(screen.getByText('그래도 올리기'));
     expect(router.replace).toHaveBeenCalledWith('/convert');
+  });
+  /** 녹음 시간을 1초씩 흘리며 그때마다 소리 크기를 알린다 */
+  const record = async (seconds: number, metering: number | undefined) => {
+    for (let i = 1; i <= seconds; i++) {
+      mockRecorderState.durationMillis = i * 1000;
+      mockRecorderState.metering = metering;
+      await act(async () => mockListeners.forEach((f) => f()));
+    }
+  };
+  it('30초 넘게 녹음하는 동안 소리 크기를 못 재도 무음으로 보지 않고 변환으로 간다', async () => {
+    mockRecorderState.durationMillis = 0;
+    await renderScreen(<RecLiveScreen />, client());
+    await waitFor(() => expect(mockRecorder.record).toHaveBeenCalledTimes(1));
+    await record(40, undefined);
+    await fireEvent.press(screen.getByText('변환 시작'));
+    expect(screen.queryByText('정리하기에 적절하지 않은 녹음이에요')).toBeNull();
+    expect(router.replace).toHaveBeenCalledWith('/convert');
+  });
+  it('30초 넘게 녹음해도 잰 소리 크기가 계속 무음이면 적절하지 않다고 알린다', async () => {
+    mockRecorderState.durationMillis = 0;
+    await renderScreen(<RecLiveScreen />, client());
+    await waitFor(() => expect(mockRecorder.record).toHaveBeenCalledTimes(1));
+    await record(40, -80);
+    await fireEvent.press(screen.getByText('변환 시작'));
+    expect(await screen.findByText(/소리가 거의 녹음되지 않았어요/)).toBeTruthy();
+    expect(router.replace).not.toHaveBeenCalledWith('/convert');
   });
   it('녹음 종료 후 파일 주소가 없으면 빈 변환 작업을 시작하지 않는다', async () => {
     await renderScreen(<RecLiveScreen />, client());
