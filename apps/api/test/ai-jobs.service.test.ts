@@ -1,9 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { AiJob } from '@notelink/shared';
 import type { Model } from 'mongoose';
 import { Types } from 'mongoose';
 import { describe, expect, it } from 'vitest';
 
-import { AiJobsService, toAppJob } from '../src/ai-jobs/ai-jobs.service.js';
+import { AiJobsService, MAX_ATTEMPTS, toAppJob } from '../src/ai-jobs/ai-jobs.service.js';
 import { type AiJobDocument, AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
 
 type Row = Record<string, unknown> & { _id: Types.ObjectId; createdAt: Date; updatedAt: Date };
@@ -17,7 +20,7 @@ const same = (a: unknown, b: unknown) =>
 /** Mongoose 질의처럼 `.lean()`으로 결과를 받는다 */
 const query = <T>(value: T) => ({ lean: () => Promise.resolve(value) });
 
-type Ops = { $in?: unknown[]; $lte?: Date; $gt?: Date };
+type Ops = { $in?: unknown[]; $lte?: Date; $gt?: Date; $lt?: number };
 const isOps = (want: unknown): want is Ops =>
   want !== null && typeof want === 'object' && !(want instanceof Types.ObjectId);
 const time = (v: unknown) => (v instanceof Date ? v.getTime() : NaN);
@@ -35,6 +38,7 @@ function matches(row: Row, filter: Filter): boolean {
     if (want.$in) return want.$in.some((w) => same(value, w));
     if (want.$lte) return time(value) <= want.$lte.getTime();
     if (want.$gt) return time(value) > want.$gt.getTime();
+    if (want.$lt !== undefined) return typeof value === 'number' && value < want.$lt;
     return false;
   });
 }
@@ -285,10 +289,21 @@ describe('AiJobsService.takeOverPregen', () => {
     expect(await service.takeOverPregen(ME, 'material', NOTE)).toBeNull();
   });
 
-  it('잠금이 지난 running(처리기가 멈춤 · 곧 시도 한도로 실패)은 이어받지 않는다', async () => {
+  it('잠금이 지난 running이라도 시도가 남았으면 처리기가 다시 가져가므로 이어받는다(Codex #188)', async () => {
     const { service, add, row } = setup();
     const { _id } = await add(pregen);
-    Object.assign(row(_id), { status: 'running', attempts: 3, lockedUntil: PAST });
+    Object.assign(row(_id), { status: 'running', attempts: MAX_ATTEMPTS - 1, lockedUntil: PAST });
+    expect(await service.takeOverPregen(ME, 'material', NOTE)).toMatchObject({
+      _id,
+      awaited: true,
+    });
+    expect(row(_id)['awaited']).toBe(true);
+  });
+
+  it('잠금이 지난 running이 시도를 다 썼으면(곧 failed) 이어받지 않는다', async () => {
+    const { service, add, row } = setup();
+    const { _id } = await add(pregen);
+    Object.assign(row(_id), { status: 'running', attempts: MAX_ATTEMPTS, lockedUntil: PAST });
     expect(await service.takeOverPregen(ME, 'material', NOTE)).toBeNull();
     expect(row(_id)['awaited']).toBe(false);
   });
@@ -310,5 +325,16 @@ describe('toAppJob', () => {
     expect(job).not.toHaveProperty('step');
     expect(job).toMatchObject({ progress: 0, attempts: 0, result: null, error: null });
     expect(AiJob.parse(job)).toEqual(job);
+  });
+});
+
+describe('MAX_ATTEMPTS', () => {
+  it('처리기 설정(apps/ai config.py ai_job_max_attempts) 기본값과 같다', () => {
+    const config = readFileSync(
+      fileURLToPath(new URL('../../ai/app/core/config.py', import.meta.url)),
+      'utf8',
+    );
+    const found = /ai_job_max_attempts: int = (\d+)/.exec(config);
+    expect(Number(found?.[1])).toBe(MAX_ATTEMPTS);
   });
 });
