@@ -13,6 +13,9 @@ import {
 } from '../schemas/shop-item.schema.js';
 import { UserItem, type UserItemDocument } from '../schemas/user-item.schema.js';
 
+/** 장착이 겹쳐서 실패했을 때 다시 시도하는 최대 횟수 */
+const EQUIP_MAX_ATTEMPTS = 3;
+
 /** 앱에 내려주는 아이템 한 건 (공유 계약 ShopItem과 같은 모양) */
 export interface ShopItemView {
     _id: string;
@@ -112,7 +115,19 @@ export class ShopService {
         const owner = new Types.ObjectId(userId);
         const itemObjectId = new Types.ObjectId(itemId);
 
-        // "다른 것 해제"와 "이것 장착"을 한 묶음(트랜잭션)으로: 거의 동시에 눌러도 장착이 둘이 되거나 하나도 없게 되지 않는다
+        // "다른 것 해제"와 "이것 장착"을 한 묶음(트랜잭션)으로 처리한다.
+        // 그래도 두 요청이 동시에 오면 둘 다 장착될 수 있어서, DB 인덱스(종류별 장착 1개)가 막고
+        // 막힌 쪽(중복 키 에러 11000)은 다시 시도한다. 다시 하면 상대방이 이미 반영돼 있어서 정상 처리된다.
+        for (let attempt = 1; ; attempt++) {
+            try {
+                return await this.equipOnce(owner, itemObjectId);
+            } catch (err) {
+                if (!isDuplicateKeyError(err) || attempt >= EQUIP_MAX_ATTEMPTS) throw err;
+            }
+        }
+    }
+
+    private equipOnce(owner: Types.ObjectId, itemObjectId: Types.ObjectId): Promise<boolean> {
         return this.connection.transaction(async (session) => {
             const target = await this.userItemModel
                 .findOne({ userId: owner, itemId: itemObjectId, isOwned: true }, null, { session })

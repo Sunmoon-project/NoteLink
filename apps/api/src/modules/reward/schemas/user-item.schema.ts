@@ -41,3 +41,8 @@ export const UserItemSchema = SchemaFactory.createForClass(UserItem);
 
 // 한 사람이 같은 아이템 행을 두 개 가질 수 없게 (조회도 빨라짐)
 UserItemSchema.index({ userId: 1, itemId: 1 }, { unique: true });
+// 같은 종류(아바타·테마)에서 장착 중인 아이템은 한 사람당 1개만. 동시에 장착 요청이 와도 DB가 막아 준다
+UserItemSchema.index(
+    { userId: 1, itemCategory: 1 },
+    { unique: true, partialFilterExpression: { isEquipped: true } },
+);

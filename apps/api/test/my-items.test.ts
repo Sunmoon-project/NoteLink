@@ -99,6 +99,25 @@ describe('/api/v1/users/me/items', () => {
         );
     });
 
+    it('다른 요청과 장착이 겹쳐 중복 키 에러(11000)가 나면 한 번 더 시도해서 204', async () => {
+        connection.transaction.mockImplementationOnce(() => Promise.reject(Object.assign(new Error('E11000'), { code: 11000 })));
+        const res = await request(app.getHttpServer())
+            .post(`/api/v1/users/me/items/${owned.itemId.toString()}/equip`)
+            .set(AUTH);
+        expect(res.status).toBe(204);
+        expect(connection.transaction).toHaveBeenCalledTimes(2);
+    });
+
+    it('중복 키 에러가 계속되면 3번까지만 시도하고 500', async () => {
+        connection.transaction.mockImplementation(() => Promise.reject(Object.assign(new Error('E11000'), { code: 11000 })));
+        const res = await request(app.getHttpServer())
+            .post(`/api/v1/users/me/items/${owned.itemId.toString()}/equip`)
+            .set(AUTH);
+        expect(res.status).toBe(500);
+        expect(connection.transaction).toHaveBeenCalledTimes(3);
+        connection.transaction.mockImplementation((work: (s: typeof session) => Promise<unknown>) => work(session));
+    });
+
     it('기본 아바타(base)를 장착하면 204, 장착 중인 아바타만 모두 해제하고 테마는 건드리지 않는다', async () => {
         const res = await request(app.getHttpServer())
             .post('/api/v1/users/me/items/base/equip')
