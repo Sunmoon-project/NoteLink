@@ -7,7 +7,7 @@ import { getConnectionToken, MongooseModule } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
 import { Types, type Connection } from 'mongoose';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { configureApp } from '../src/app.setup.js';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
@@ -38,6 +38,7 @@ describe.skipIf(!uri)('진짜 DB 구매·장착 확인', () => {
     const itemC = new Types.ObjectId(); // 200P
     const itemD = new Types.ObjectId(); // 200P
     const themeE = new Types.ObjectId();
+    const itemF = new Types.ObjectId(); // 50P
 
     beforeAll(async () => {
         if (!isLocal) throw new Error('localhost 주소가 아니라서 실행하지 않습니다');
@@ -82,7 +83,7 @@ describe.skipIf(!uri)('진짜 DB 구매·장착 확인', () => {
             _id, category: 'avatar', name, price, assetUrl: 'x', purchaseCount: 0,
             isActive: true, isDefault: false, badge: null, createdAt: new Date(), updatedAt: new Date(),
         });
-        await col('shop_items').insertMany([mk(itemA, 'A', 700), mk(itemB, 'B', 800), mk(itemC, 'C', 200), mk(itemD, 'D', 200)]);
+        await col('shop_items').insertMany([mk(itemA, 'A', 700), mk(itemB, 'B', 800), mk(itemC, 'C', 200), mk(itemD, 'D', 200), mk(itemF, 'F', 50)]);
     }, 30000);
 
     afterAll(async () => {
@@ -115,7 +116,7 @@ describe.skipIf(!uri)('진짜 DB 구매·장착 확인', () => {
         expect(await col('point_ledgers').countDocuments({ userId })).toBe(1);
     });
 
-    it('3) 포인트가 모자라면 400이고 중간에 쓴 기록이 전부 취소된다 (롤백)', async () => {
+    it('3) 포인트가 모자라면 400이고 아무것도 바뀌지 않는다', async () => {
         const res = await buy(itemB);
         expect(res.status).toBe(400);
         expect(await balance()).toBe(300);
@@ -157,5 +158,26 @@ describe.skipIf(!uri)('진짜 DB 구매·장착 확인', () => {
         expect(a.status).toBe(204);
         expect(await col('user_items').countDocuments({ userId, itemCategory: 'theme', isEquipped: true })).toBe(1);
         expect(await col('user_items').countDocuments({ userId, itemCategory: 'avatar', isEquipped: true })).toBe(1);
+    });
+
+    it('7) 포인트를 차감하고 장부를 쓴 뒤 보유 처리가 실패하면 전부 구매 전으로 돌아간다 (롤백)', async () => {
+        const before = await balance(); // 100
+        const ledgerBefore = await col('point_ledgers').countDocuments({ userId });
+        // 차감·장부 기록 다음 단계인 보유 처리(user_items 쓰기)를 한 번 일부러 실패시킨다
+        const spy = vi.spyOn(conn.model(UserItem.name), 'updateOne').mockRejectedValueOnce(new Error('일부러 낸 오류'));
+        const res = await buy(itemF);
+        const failedCalls = spy.mock.calls.length; // mockRestore()가 호출 기록을 지우므로 먼저 저장
+        spy.mockRestore();
+        expect(res.status).toBe(500);
+        expect(failedCalls).toBe(1); // 차감·장부 기록 뒤 단계까지 실제로 갔다는 증거
+        expect(await balance()).toBe(before);
+        expect(await col('point_ledgers').countDocuments({ userId })).toBe(ledgerBefore);
+        expect(await col('user_items').countDocuments({ userId, itemId: itemF })).toBe(0);
+        expect(await col('shop_items').findOne({ _id: itemF })).toMatchObject({ purchaseCount: 0 });
+
+        // 실패가 흔적을 남기지 않았으니 같은 구매가 다시 정상으로 된다
+        const again = await buy(itemF);
+        expect(again.status).toBe(201);
+        expect(await balance()).toBe(before - 50);
     });
 });
