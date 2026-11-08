@@ -1,6 +1,7 @@
 import type { MongooseModuleOptions } from '@nestjs/mongoose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { EmailCodeService } from '../src/modules/auth/app-login/email-code.service.js';
 import { GoogleOAuthClient } from '../src/modules/auth/social-login/google-oauth.client.js';
 import { KakaoOAuthClient } from '../src/modules/auth/social-login/kakao-oauth.client.js';
 import { NaverOAuthClient } from '../src/modules/auth/social-login/naver-oauth.client.js';
@@ -169,5 +170,17 @@ describe('AppModule의 네이버 로그인 설정', () => {
     stubAppEnv({ NAVER_REDIRECT_URI: 'https://notelink.app/api/v1/auth/social/google/callback' });
 
     await expect(createAppModuleBuilder().compile()).rejects.toThrow('NAVER_REDIRECT_URI');
+  });
+});
+
+describe('AppModule의 앱 로그인(이메일 인증번호)', () => {
+  it('서버를 조립하면 EmailCodeService가 만들어진다 (생성자 인자를 Nest가 모두 해결할 수 있다)', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const service = moduleRef.get(EmailCodeService, { strict: false });
+    await moduleRef.close();
+
+    expect(service).toBeInstanceOf(EmailCodeService);
   });
 });

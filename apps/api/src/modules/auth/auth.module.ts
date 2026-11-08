@@ -7,8 +7,10 @@ import { createGoogleConfig } from '../../config/google.config.js';
 import { createJwtConfig } from '../../config/jwt.config.js';
 import { createKakaoConfig } from '../../config/kakao.config.js';
 import { createNaverConfig } from '../../config/naver.config.js';
+import { EmailCodeService } from './app-login/email-code.service.js';
 import { AuthTokenController } from './auth-token.controller.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
+import { AuthCode, AuthCodeSchema } from './schemas/auth-code.schema.js';
 import { RefreshToken, RefreshTokenSchema } from './schemas/refresh-token.schema.js';
 import {
   SocialLoginAttempt,
@@ -38,6 +40,8 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
     MongooseModule.forFeature([
       // refresh_tokens 컬렉션
       { name: RefreshToken.name, schema: RefreshTokenSchema },
+      // auth_codes 컬렉션(이메일로 보낸 6자리 인증번호)
+      { name: AuthCode.name, schema: AuthCodeSchema },
       // social_login_attempts 컬렉션(소셜 로그인 진행 상태)
       { name: SocialLoginAttempt.name, schema: SocialLoginAttemptSchema },
       // users 컬렉션(소셜 로그인으로 사용자를 찾거나 만든다)
@@ -71,6 +75,7 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       useFactory: createNaverConfig,
     },
     TokenService,
+    EmailCodeService,
     JwtAuthGuard,
     GoogleOAuthClient,
     KakaoOAuthClient,
