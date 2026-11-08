@@ -7,6 +7,7 @@ import { createGoogleConfig } from '../../config/google.config.js';
 import { createJwtConfig } from '../../config/jwt.config.js';
 import { createKakaoConfig } from '../../config/kakao.config.js';
 import { createNaverConfig } from '../../config/naver.config.js';
+import { AppLoginService } from './app-login/app-login.service.js';
 import { AppSignupService } from './app-login/app-signup.service.js';
 import { EmailCodeService } from './app-login/email-code.service.js';
 import { EmailProofService } from './app-login/email-proof.service.js';
@@ -87,6 +88,7 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
     EmailCodeService,
     EmailProofService,
     AppSignupService,
+    AppLoginService,
     JwtAuthGuard,
     GoogleOAuthClient,
     KakaoOAuthClient,

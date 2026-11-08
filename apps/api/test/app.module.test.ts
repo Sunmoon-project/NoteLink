@@ -1,6 +1,7 @@
 import type { MongooseModuleOptions } from '@nestjs/mongoose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { AppLoginService } from '../src/modules/auth/app-login/app-login.service.js';
 import { AppSignupService } from '../src/modules/auth/app-login/app-signup.service.js';
 import { EmailCodeService } from '../src/modules/auth/app-login/email-code.service.js';
 import {
@@ -199,6 +200,16 @@ describe('AppModule의 앱 로그인(이메일 인증번호)', () => {
     await moduleRef.close();
 
     expect(service).toBeInstanceOf(AppSignupService);
+  });
+
+  it('서버를 조립하면 AppLoginService가 만들어진다 (비밀번호 비용을 등록하지 않아도 기본값으로 동작)', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const service = moduleRef.get(AppLoginService, { strict: false });
+    await moduleRef.close();
+
+    expect(service).toBeInstanceOf(AppLoginService);
   });
 
   it('MAIL_TRANSPORT가 없으면 서버는 뜨지만 메일 발송 수단은 발송을 거부한다 (운영 기본값)', async () => {
