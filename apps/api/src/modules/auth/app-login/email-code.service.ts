@@ -23,6 +23,11 @@ export const EMAIL_CODE_RESEND_COOLDOWN_MS = 60 * 1000;
 /** 발송 횟수를 세는 구간과, 그 구간에 보낼 수 있는 횟수 */
 export const EMAIL_CODE_SEND_WINDOW_MS = 60 * 60 * 1000;
 export const EMAIL_CODE_MAX_SENDS_PER_WINDOW = 5;
+/**
+ * 인증에 성공한 뒤 가입을 끝낼 수 있는 시간(인증 증표의 수명). 이 시간 동안은 인증번호 기록이 남아 있어야 하므로,
+ * 인증에 성공하면 기록의 보관 기한(windowEndsAt)이 이보다 일찍 끝나지 않게 늘린다.
+ */
+export const EMAIL_PROOF_TTL_MS = 10 * 60 * 1000;
 
 /** Mongo 중복 키 오류 코드(이메일 + 목적 유일 인덱스) */
 const DUPLICATE_KEY = 11000;
@@ -36,7 +41,8 @@ export type IssueResult =
   | { ok: false; reason: 'limit'; retryAfterMs: number };
 
 export type VerifyResult =
-  | { ok: true }
+  /** 성공. `verifiedAt`은 인증에 성공한 시각이며, 인증 증표에 담겨 가입 때 이 인증을 특정하는 데 쓰인다 */
+  | { ok: true; verifiedAt: Date }
   /** 인증번호가 틀렸다. 남은 시도 횟수를 알려 준다 */
   | { ok: false; reason: 'wrong'; attemptsLeft: number }
   /** 틀리게 입력할 수 있는 횟수를 모두 썼다. 새 인증번호를 받아야 한다 */
@@ -78,6 +84,7 @@ export class EmailCodeService {
       attempts: 0,
       expiresAt: new Date(now.getTime() + EMAIL_CODE_TTL_MS),
       usedAt: null,
+      consumedAt: null,
       lastSentAt: now,
     };
     const key = { email, purpose };
@@ -172,11 +179,30 @@ export class EmailCodeService {
     }
 
     // 맞았다. 쓴 것으로 표시한다. 같은 인증번호로 동시에 두 번 성공하더라도 한 요청만 통과한다
+    // 가입을 끝낼 때까지 기록이 지워지지 않도록 보관 기한도 함께 늘린다($max: 더 늦은 쪽만 반영)
     const used = await this.codes.updateOne(
       { _id: claimed._id, usedAt: null },
-      { $set: { usedAt: now } },
+      {
+        $set: { usedAt: now },
+        $max: { windowEndsAt: new Date(now.getTime() + EMAIL_PROOF_TTL_MS) },
+      },
     );
-    return used.matchedCount === 1 ? { ok: true } : { ok: false, reason: 'invalid' };
+    return used.matchedCount === 1
+      ? { ok: true, verifiedAt: now }
+      : { ok: false, reason: 'invalid' };
+  }
+
+  /**
+   * 인증 증표를 써서 가입을 끝낸 것으로 표시한다. 한 인증에 대해 한 번만 성공한다.
+   * 증표가 가리키는 인증(`verifiedAt`)이 가장 최근의 인증이고 아직 쓰지 않았을 때만 성공하므로,
+   * 인증번호를 다시 받았다면(새 인증으로 덮어쓰임) 이전 증표는 쓸 수 없다.
+   */
+  async consume(email: string, purpose: AuthCodePurpose, verifiedAt: Date): Promise<boolean> {
+    const result = await this.codes.updateOne(
+      { email, purpose, usedAt: verifiedAt, consumedAt: null },
+      { $set: { consumedAt: new Date() } },
+    );
+    return result.matchedCount === 1;
   }
 
   private blocked(

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthCode } from '../src/modules/auth/schemas/auth-code.schema.js';
 import { JWT_CONFIG as JWT_CONFIG_TOKEN } from '../src/modules/auth/token.service.js';
 import {
+  EMAIL_PROOF_TTL_MS,
   EMAIL_CODE_MAX_ATTEMPTS,
   EMAIL_CODE_MAX_SENDS_PER_WINDOW,
   EMAIL_CODE_RESEND_COOLDOWN_MS,
@@ -349,6 +350,129 @@ describe('EmailCodeService.issue (인증번호 만들기)', () => {
   });
 });
 
+describe('EmailCodeService.verify 성공 시 기록 보관', () => {
+  it('인증 성공 후 증표 수명(10분) 동안 기록이 지워지지 않도록 보관 기한을 늘린다', async () => {
+    const { service, rows } = setup();
+    const code = await issued(service);
+    // 제한 구간이 끝나기 직전에 인증하는 상황: 구간 끝까지 1분 남음
+    const at = new Date(START.getTime() + EMAIL_CODE_SEND_WINDOW_MS - 60_000);
+    vi.setSystemTime(at);
+    rows[0]!.expiresAt = new Date(at.getTime() + 60_000); // 인증번호 자체는 아직 유효하게 맞춘다
+
+    await service.verify(EMAIL, 'signup', code);
+
+    expect(rows[0]!.windowEndsAt).toEqual(new Date(at.getTime() + EMAIL_PROOF_TTL_MS));
+  });
+
+  it('보관 기한이 이미 충분히 길면 줄이지 않는다 ($max: 더 늦은 쪽만 반영)', async () => {
+    const { service, rows } = setup();
+    const code = await issued(service);
+    const originalEnd = rows[0]!.windowEndsAt;
+
+    await service.verify(EMAIL, 'signup', code);
+
+    expect(rows[0]!.windowEndsAt).toEqual(originalEnd);
+  });
+
+  it('증표 수명은 10분이다 (상수 자체를 못박는다)', () => {
+    expect(EMAIL_PROOF_TTL_MS).toBe(10 * 60 * 1000);
+  });
+
+  it('틀린 입력에서는 보관 기한을 늘리지 않는다 (실패로 기록을 오래 붙잡을 수 없다)', async () => {
+    const { service, rows } = setup();
+    const code = await issued(service);
+    const originalEnd = rows[0]!.windowEndsAt;
+    vi.setSystemTime(new Date(START.getTime() + EMAIL_CODE_SEND_WINDOW_MS - 60_000));
+    rows[0]!.expiresAt = new Date(START.getTime() + EMAIL_CODE_SEND_WINDOW_MS);
+
+    await service.verify(EMAIL, 'signup', wrongOf(code));
+
+    expect(rows[0]!.windowEndsAt).toEqual(originalEnd);
+  });
+});
+
+describe('EmailCodeService.consume (증표 소비)', () => {
+  async function verified() {
+    const ctx = setup();
+    const code = await issued(ctx.service);
+    const result = await ctx.service.verify(EMAIL, 'signup', code);
+    if (!result.ok) throw new Error('인증 실패');
+    return { ...ctx, code, verifiedAt: result.verifiedAt };
+  }
+
+  it('인증한 시각과 일치하면 성공하고 소비 시각을 기록한다', async () => {
+    const { service, rows, verifiedAt } = await verified();
+
+    expect(await service.consume(EMAIL, 'signup', verifiedAt)).toBe(true);
+    expect(rows[0]!.consumedAt).toEqual(START);
+  });
+
+  it('한 인증은 한 번만 소비할 수 있다', async () => {
+    const { service, verifiedAt } = await verified();
+    await service.consume(EMAIL, 'signup', verifiedAt);
+
+    expect(await service.consume(EMAIL, 'signup', verifiedAt)).toBe(false);
+  });
+
+  it('같은 증표로 동시에 소비해도 한 번만 성공한다', async () => {
+    const { service, verifiedAt } = await verified();
+
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => service.consume(EMAIL, 'signup', verifiedAt)),
+    );
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('인증 시각이 다르면 소비할 수 없다 (엉뚱한 증표)', async () => {
+    const { service } = await verified();
+
+    expect(await service.consume(EMAIL, 'signup', new Date(START.getTime() + 1))).toBe(false);
+  });
+
+  it('인증번호를 다시 받으면 이전 증표로는 소비할 수 없다 (새 발송이 이전 인증을 무효로 만든다)', async () => {
+    const { service, verifiedAt } = await verified();
+    vi.setSystemTime(new Date(START.getTime() + EMAIL_CODE_RESEND_COOLDOWN_MS));
+    await issued(service);
+
+    expect(await service.consume(EMAIL, 'signup', verifiedAt)).toBe(false);
+  });
+
+  it('다시 받은 인증번호로 새로 인증하면 새 증표로 소비할 수 있고, 이전 증표는 여전히 안 된다', async () => {
+    const { service, verifiedAt: first } = await verified();
+    vi.setSystemTime(new Date(START.getTime() + EMAIL_CODE_RESEND_COOLDOWN_MS));
+    const code = await issued(service);
+    const second = await service.verify(EMAIL, 'signup', code);
+    if (!second.ok) throw new Error('인증 실패');
+
+    expect(await service.consume(EMAIL, 'signup', first)).toBe(false);
+    expect(await service.consume(EMAIL, 'signup', second.verifiedAt)).toBe(true);
+  });
+
+  it('소비한 뒤 인증번호를 다시 받으면 소비 표시가 초기화된다', async () => {
+    const { service, rows, verifiedAt } = await verified();
+    await service.consume(EMAIL, 'signup', verifiedAt);
+    vi.setSystemTime(new Date(START.getTime() + EMAIL_CODE_RESEND_COOLDOWN_MS));
+
+    await issued(service);
+
+    expect(rows[0]!.consumedAt).toBeNull();
+  });
+
+  it('다른 이메일의 인증으로는 소비할 수 없다', async () => {
+    const { service, verifiedAt } = await verified();
+
+    expect(await service.consume('other@example.com', 'signup', verifiedAt)).toBe(false);
+  });
+
+  it('인증하지 않은(쓰지 않은) 인증번호는 소비할 수 없다', async () => {
+    const { service } = setup();
+    await issued(service);
+
+    expect(await service.consume(EMAIL, 'signup', START)).toBe(false);
+  });
+});
+
 describe('발송 중 저장소 오류', () => {
   it('새 문서를 만들다 중복 키가 아닌 오류가 나면 그대로 던진다 (DB 장애를 "간격 제한"으로 숨기지 않는다)', async () => {
     const { service, model } = (() => {
@@ -388,7 +512,19 @@ describe('EmailCodeService.verify (인증번호 확인)', () => {
       const { service } = setup();
       const code = await issued(service);
 
-      expect(await service.verify(EMAIL, 'signup', code)).toEqual({ ok: true });
+      expect(await service.verify(EMAIL, 'signup', code)).toEqual({ ok: true, verifiedAt: START });
+    });
+
+    it('성공 결과의 verifiedAt은 인증에 성공한 시각이다 (증표가 이 인증을 특정하는 데 쓴다)', async () => {
+      const { service, rows } = setup();
+      const code = await issued(service);
+      const at = new Date(START.getTime() + 30_000);
+      vi.setSystemTime(at);
+
+      const result = await service.verify(EMAIL, 'signup', code);
+
+      expect(result).toEqual({ ok: true, verifiedAt: at });
+      expect(rows[0]!.usedAt).toEqual(at);
     });
 
     it('성공하면 쓴 것으로 표시한다', async () => {

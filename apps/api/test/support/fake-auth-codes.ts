@@ -9,6 +9,7 @@ export interface CodeRow {
   attempts: number;
   expiresAt: Date;
   usedAt: Date | null;
+  consumedAt: Date | null;
   lastSentAt: Date;
   sendCount: number;
   windowEndsAt: Date;
@@ -37,15 +38,26 @@ function matches(row: CodeRow, filter: Filter): boolean {
     }
     if (want === null) return have === null;
     if (want instanceof Types.ObjectId) return (have as Types.ObjectId).equals(want);
-    if (want instanceof Date) return (have as Date).getTime() === want.getTime();
+    if (want instanceof Date) return have instanceof Date && have.getTime() === want.getTime();
     return have === want;
   });
 }
 
-type Update = { $set?: Partial<CodeRow>; $inc?: Partial<Record<keyof CodeRow, number>> };
+type Update = {
+  $set?: Partial<CodeRow>;
+  $inc?: Partial<Record<keyof CodeRow, number>>;
+  /** 더 큰(늦은) 값만 반영한다 */
+  $max?: Partial<Record<keyof CodeRow, Date | number>>;
+};
 
 function apply(row: CodeRow, update: Update): void {
   Object.assign(row, update.$set ?? {});
+  for (const [k, value] of Object.entries(update.$max ?? {})) {
+    const current = (row as unknown as Record<string, Date | number>)[k]!;
+    if (num(value as Date | number) > num(current)) {
+      (row as unknown as Record<string, Date | number>)[k] = value as Date | number;
+    }
+  }
   for (const [k, by] of Object.entries(update.$inc ?? {})) {
     (row as unknown as Record<string, number>)[k] =
       (row as unknown as Record<string, number>)[k]! + (by as number);

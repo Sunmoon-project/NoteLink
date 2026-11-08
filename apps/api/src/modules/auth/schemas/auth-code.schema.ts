@@ -39,6 +39,13 @@ export class AuthCode {
   @Prop({ type: Date, default: null })
   usedAt: Date | null;
 
+  /**
+   * 인증을 마친 이메일로 가입을 끝낸(증표를 쓴) 시각. 채워지면 같은 증표로 다시 가입할 수 없다.
+   * 새로 보내면 다시 null이 된다.
+   */
+  @Prop({ type: Date, default: null })
+  consumedAt: Date | null;
+
   /** 마지막으로 보낸 시각. 너무 빨리 다시 보내는 것을 막는 데 쓴다 */
   @Prop({ required: true, type: Date })
   lastSentAt: Date;

@@ -2,6 +2,7 @@ import type { MongooseModuleOptions } from '@nestjs/mongoose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { EmailCodeService } from '../src/modules/auth/app-login/email-code.service.js';
+import { EmailProofService } from '../src/modules/auth/app-login/email-proof.service.js';
 import { GoogleOAuthClient } from '../src/modules/auth/social-login/google-oauth.client.js';
 import { KakaoOAuthClient } from '../src/modules/auth/social-login/kakao-oauth.client.js';
 import { NaverOAuthClient } from '../src/modules/auth/social-login/naver-oauth.client.js';
@@ -182,5 +183,17 @@ describe('AppModule의 앱 로그인(이메일 인증번호)', () => {
     await moduleRef.close();
 
     expect(service).toBeInstanceOf(EmailCodeService);
+  });
+
+  it('서버를 조립하면 EmailProofService도 만들어지고, 실제 비밀값으로 증표를 발급 · 검증한다', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+    const proof = moduleRef.get(EmailProofService, { strict: false });
+    await moduleRef.close();
+
+    const claims = { email: 'a@b.com', purpose: 'signup' as const, verifiedAt: new Date() };
+    const { token } = await proof.issue(claims);
+
+    expect(await proof.verify(token)).toMatchObject({ ok: true, email: 'a@b.com' });
   });
 });
