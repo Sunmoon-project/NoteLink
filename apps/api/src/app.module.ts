@@ -7,6 +7,7 @@ import { createMongooseOptions } from './config/mongo.config.js';
 import { HealthController } from './health/health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
+import { TimetableModule } from './modules/timetable/timetable.module.js';
 
 @Module({
   imports: [
@@ -23,6 +24,8 @@ import { RewardModule } from './modules/reward/reward.module.js';
     AiJobsModule,
     // 상점 · 포인트(FR-59~63)
     RewardModule,
+    // 시간표 · 수업 · 친구 공유(FR-14)
+    TimetableModule,
   ],
   controllers: [HealthController],
 })
