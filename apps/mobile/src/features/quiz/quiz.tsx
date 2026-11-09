@@ -265,19 +265,20 @@ export function QuizNotesScreen() {
           {list.map((f) => (
             <Animated.View
               key={f._id}
+              // 2열 폭은 목록 기준으로 이 래퍼가 갖고, 카드는 래퍼를 채운다
+              className="w-[48.5%]"
               layout={LIST_LAYOUT}
               entering={FadeIn.duration(MOTION.enter)}
               exiting={FadeOut.duration(MOTION.exit)}
             >
               <Card
-                key={f._id}
                 tone="mint"
                 onPress={() =>
                   offline
                     ? toast('연결되면 퀴즈를 만들 수 있어요 · 노트는 그대로 볼 수 있어요')
                     : setPicked(f._id)
                 }
-                className={cx('w-[48.5%] p-2.5', picked === f._id && 'border-2 border-blue')}
+                className={cx('w-full p-2.5', picked === f._id && 'border-2 border-blue')}
               >
                 <View className="h-16 items-center justify-center rounded-xl bg-white">
                   <FileText size={ICON.lg} color={C.brand} />
