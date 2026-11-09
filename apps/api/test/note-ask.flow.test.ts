@@ -16,6 +16,7 @@ import {
 import { Material } from '../src/modules/content/schemas/material.schema.js';
 import { Recording } from '../src/modules/content/schemas/recording.schema.js';
 import { AiJob } from '../src/modules/quiz/schemas/ai-job.schema.js';
+import { QuizSet } from '../src/modules/quiz/schemas/quiz-set.schema.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
 import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
@@ -24,17 +25,13 @@ const api = (path: string) => `/api/v1${path}`;
 type Row = Record<string, unknown>;
 const same = (a: unknown, b: unknown) => String(a) === String(b);
 
-/** findOne(조건).lean()만 쓰는 컬렉션. null 조건은 필드가 없거나 null인 문서에 맞는다 */
+/** findOne · find(조건).lean()만 쓰는 컬렉션. null 조건은 필드가 없거나 null인 문서에 맞는다 */
 function fakeCollection(rows: Row[]) {
+  const match = (filter: Row) => (r: Row) =>
+    Object.entries(filter).every(([k, v]) => (v === null ? r[k] == null : same(r[k], v)));
   return {
-    findOne: (filter: Row) => ({
-      lean: () =>
-        Promise.resolve(
-          rows.find((r) =>
-            Object.entries(filter).every(([k, v]) => (v === null ? r[k] == null : same(r[k], v))),
-          ) ?? null,
-        ),
-    }),
+    findOne: (filter: Row) => ({ lean: () => Promise.resolve(rows.find(match(filter)) ?? null) }),
+    find: (filter: Row) => ({ lean: () => Promise.resolve(rows.filter(match(filter))) }),
   };
 }
 
@@ -43,6 +40,7 @@ describe('아바타에게 노트 묻기 (POST /api/v1/materials/:id/ask)', () =>
   const jobs = createFakeJobs();
   const materials: Row[] = [];
   const recordings: Row[] = [];
+  const quizSets: Row[] = [];
   const me = new Types.ObjectId();
   const other = new Types.ObjectId();
   let token: string;
@@ -58,6 +56,8 @@ describe('아바타에게 노트 묻기 (POST /api/v1/materials/:id/ask)', () =>
       .useValue(fakeCollection(materials))
       .overrideProvider(getModelToken(Recording.name))
       .useValue(fakeCollection(recordings))
+      .overrideProvider(getModelToken(QuizSet.name))
+      .useValue(fakeCollection(quizSets))
       .compile();
     app = ref.createNestApplication();
     configureApp(app);
@@ -74,6 +74,7 @@ describe('아바타에게 노트 묻기 (POST /api/v1/materials/:id/ask)', () =>
     jobs.rows.length = 0;
     materials.length = 0;
     recordings.length = 0;
+    quizSets.length = 0;
   });
 
   const note = (over: Row = {}) => {
@@ -122,6 +123,49 @@ describe('아바타에게 노트 묻기 (POST /api/v1/materials/:id/ask)', () =>
     const ctx = (jobs.rows[0]!.input as { context: string }).context;
     expect(ctx.startsWith('## 녹음 원문\n가')).toBe(true);
     expect(ctx).toHaveLength(MAX_CONTEXT);
+  });
+
+  it('이 노트로 만든 퀴즈(문제 · 정답 · 해설)도 학습 자료로 넘기고, 남의 · 지운 · 만드는 중인 퀴즈는 뺀다', async () => {
+    const id = note();
+    const mid = new Types.ObjectId(id);
+    const q = (prompt: string) => ({ prompt, answer: '상호 배제', explanation: '자원을 혼자 씀' });
+    quizSets.push(
+      {
+        materialId: mid,
+        ownerId: me,
+        status: 'ready',
+        deletedAt: null,
+        questions: [q('조건 하나는?')],
+      },
+      {
+        materialId: mid,
+        ownerId: other,
+        status: 'ready',
+        deletedAt: null,
+        questions: [q('남의 것')],
+      },
+      {
+        materialId: mid,
+        ownerId: me,
+        status: 'ready',
+        deletedAt: new Date(),
+        questions: [q('지움')],
+      },
+      {
+        materialId: mid,
+        ownerId: me,
+        status: 'generating',
+        deletedAt: null,
+        questions: [q('만드는 중')],
+      },
+    );
+    await ask(id).expect(202);
+    const ctx = (jobs.rows[0]!.input as { context: string }).context;
+    expect(ctx).toContain('## 퀴즈\nQ. 조건 하나는?\n정답: 상호 배제\n해설: 자원을 혼자 씀');
+    expect(ctx).not.toMatch(/남의 것|지움|만드는 중/);
+    // 정리된 내용 → 퀴즈 → 쪽 글 순서
+    expect(ctx.indexOf('## 핵심')).toBeLessThan(ctx.indexOf('## 퀴즈'));
+    expect(ctx.indexOf('## 퀴즈')).toBeLessThan(ctx.indexOf('[1쪽]'));
   });
 
   it('남의 노트 · 지운 노트 · 잘못된 id는 없는 노트와 같게 404', async () => {

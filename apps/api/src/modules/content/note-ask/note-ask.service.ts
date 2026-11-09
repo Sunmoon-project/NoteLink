@@ -10,6 +10,7 @@ import { Model, Types } from 'mongoose';
 
 import { type AppAiJob, AiJobsService, PENDING_LIMIT } from '../../../ai-jobs/ai-jobs.service.js';
 import { Material } from '../schemas/material.schema.js';
+import { QuizSet } from '../../quiz/schemas/quiz-set.schema.js';
 import { Recording } from '../schemas/recording.schema.js';
 
 /** 처리기에 넘기는 노트 글 최대 길이(apps/ai note/ask.py MAX_CONTEXT와 같음) */
@@ -29,12 +30,34 @@ interface MaterialRow {
   pages?: { pageNo: number; ocrText?: string | null }[];
 }
 
-/** 요약 → 핵심 → 쪽 글(OCR) → 녹음 대본 순으로 이어 붙여 자른다. 요약이 앞이라 잘려도 뼈대는 남는다 */
-export function noteContext(m: MaterialRow, transcript: string | null): string {
+interface QuizRow {
+  prompt: string;
+  answer: string;
+  explanation?: string | null;
+}
+
+/**
+ * 아바타가 답할 근거(학습 자료): 요약 → 핵심 → 퀴즈 → 쪽 글(OCR) → 녹음 대본 순으로 이어 붙여 자른다.
+ * 정리된 내용이 앞이라 잘려도 뼈대는 남는다. 처리기는 이 글로만 답한다(apps/ai note/ask.py)
+ */
+export function noteContext(
+  m: MaterialRow,
+  transcript: string | null,
+  quiz: QuizRow[] = [],
+): string {
   const parts: string[] = [];
   for (const s of m.summary?.sections ?? []) parts.push(`## ${s.heading}\n${s.body}`);
   if (m.summary?.points?.length)
     parts.push(`## 핵심\n${m.summary.points.map((p) => `- ${p}`).join('\n')}`);
+  if (quiz.length)
+    parts.push(
+      `## 퀴즈\n${quiz
+        .map(
+          (q) =>
+            `Q. ${q.prompt}\n정답: ${q.answer}${q.explanation ? `\n해설: ${q.explanation}` : ''}`,
+        )
+        .join('\n')}`,
+    );
   for (const p of m.pages ?? [])
     if (p.ocrText?.trim()) parts.push(`[${p.pageNo}쪽]\n${p.ocrText.trim()}`);
   if (transcript?.trim()) parts.push(`## 녹음 원문\n${transcript.trim()}`);
@@ -50,6 +73,7 @@ export class NoteAskService {
   constructor(
     @InjectModel(Material.name) private readonly materials: Model<Material>,
     @InjectModel(Recording.name) private readonly recordings: Model<Recording>,
+    @InjectModel(QuizSet.name) private readonly quizSets: Model<QuizSet>,
     private readonly jobs: AiJobsService,
   ) {}
 
@@ -77,7 +101,12 @@ export class NoteAskService {
             .lean<{ transcript?: { text?: unknown } }>()
         : null;
     const text = rec?.transcript?.text;
-    const context = noteContext(m, typeof text === 'string' ? text : null);
+    // 이 노트로 만든 퀴즈(문제 · 정답 · 해설)도 학습 자료로 함께 넘긴다
+    const sets = await this.quizSets
+      .find({ materialId: _id, ownerId: owner, deletedAt: null, status: 'ready' }, { questions: 1 })
+      .lean<{ questions?: QuizRow[] }[]>();
+    const quiz = sets.flatMap((q) => q.questions ?? []);
+    const context = noteContext(m, typeof text === 'string' ? text : null, quiz);
     if (!context)
       throw new ConflictException({
         code: ERROR_CODES.NOTE_NOT_READY,
