@@ -325,6 +325,38 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
             expect(closedAt).toBeLessThan(createdAt);
         });
 
+        it('동시 시작으로 중복 키 오류(11000)가 나면 트랜잭션을 한 번 다시 실행해 성공한다 (먼저 생긴 세션은 replaced로 정산)', async () => {
+            const firstId = new Types.ObjectId();
+            const leanOf = (rows: Record<string, unknown>[]) => ({ lean: vi.fn(() => Promise.resolve(rows)) });
+            // 처음 실행에서는 열린 세션이 안 보이고, 다시 실행하면 동시에 시작한 세션이 보인다
+            sessionModel.find
+                .mockReturnValueOnce(leanOf([]))
+                .mockReturnValueOnce(leanOf([makeRow({ _id: firstId, startedAt: secondsAgo(700) })]));
+            sessionModel.create.mockRejectedValueOnce(Object.assign(new Error('E11000 duplicate key'), { code: 11000 }));
+
+            const res = await start({ studyItemId: itemId.toString(), mode: 'personal' });
+
+            expect(res.status).toBe(201);
+            expect(connection.transaction).toHaveBeenCalledTimes(2);
+            expect(sessionModel.create).toHaveBeenCalledTimes(2);
+            expect(sessionModel.updateOne).toHaveBeenCalledWith(
+                { _id: firstId, status: { $ne: 'ended' } },
+                { $set: expect.objectContaining({ status: 'ended', endReason: 'replaced' }) },
+                expect.anything(),
+            );
+        });
+
+        it('다시 실행해도 중복 키 오류가 나면 오류를 그대로 던진다 (두 번만 시도)', async () => {
+            const duplicate = () => Object.assign(new Error('E11000 duplicate key'), { code: 11000 });
+            sessionModel.create.mockRejectedValueOnce(duplicate()).mockRejectedValueOnce(duplicate());
+
+            const res = await start({ studyItemId: itemId.toString(), mode: 'personal' });
+
+            expect(res.status).toBe(500);
+            expect(connection.transaction).toHaveBeenCalledTimes(2);
+            expect(sessionModel.create).toHaveBeenCalledTimes(2);
+        });
+
         it('오늘 기록에 없는 항목이면 404 { code, message }, 세션을 만들지 않는다', async () => {
             record = null;
             const res = await start({ studyItemId: new Types.ObjectId().toString(), mode: 'personal' });

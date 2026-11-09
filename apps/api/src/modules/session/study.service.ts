@@ -133,7 +133,7 @@ export class StudyService {
         if (!record) return undefined;
 
         // 열린 세션 정산 + 새 세션 만들기를 한 묶음으로. 트랜잭션 안이라 await를 순서대로 쓴다
-        return this.connection.transaction(async (tx) => {
+        const run = (): Promise<StudySessionView> => this.connection.transaction(async (tx) => {
             const open = await this.sessionModel
                 .find({ userId: owner, status: { $ne: 'ended' } }, null, { session: tx })
                 .lean<StudySessionLean[]>();
@@ -161,6 +161,16 @@ export class StudyService {
             await this.sessionModel.create([session], { session: tx });
             return toSessionView(session);
         });
+
+        try {
+            return await run();
+        } catch (error) {
+            if (!isDuplicateKeyError(error)) throw error;
+            // 동시에 시작한 다른 요청이 먼저 세션을 만들어 DB의 "열린 세션은 하나" 규칙에 걸린 경우:
+            // 전체를 한 번만 다시 실행한다. 이번에는 먼저 생긴 세션이 열린 세션으로 보여 'replaced'로 정산된다.
+            // 두 번째도 실패하면 오류를 그대로 던진다
+            return run();
+        }
     }
 
     /**

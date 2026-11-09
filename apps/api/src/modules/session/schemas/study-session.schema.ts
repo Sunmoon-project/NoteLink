@@ -76,3 +76,9 @@ StudySessionSchema.index({ userId: 1, studyDate: 1 });
 
 // 새 세션을 시작할 때 "이 사람의 열려 있는 세션"을 찾는다
 StudySessionSchema.index({ userId: 1, status: 1 });
+
+// 사용자당 열린 세션(running·paused)은 하나. 동시 시작 중복을 DB가 막는다
+StudySessionSchema.index(
+    { userId: 1 },
+    { unique: true, partialFilterExpression: { status: { $in: ['running', 'paused'] } } },
+);
