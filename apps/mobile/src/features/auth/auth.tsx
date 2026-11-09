@@ -278,8 +278,8 @@ export function SignupScreen() {
     setTouched({ email: true, pw: true, confirm: true });
     return !errors.email && !errors.pw && !errors.confirm;
   };
-  const toLogin = () =>
-    router.replace({ pathname: '/(auth)/login', params: { email: email.trim() } });
+  const toLogin = (to = email.trim()) =>
+    router.replace({ pathname: '/(auth)/login', params: { email: to } });
   const failed = (e: unknown, fallback: string) =>
     toast(e instanceof ApiError ? e.message : fallback);
   const send = useMutation({
@@ -287,6 +287,8 @@ export function SignupScreen() {
     onSuccess: (_, to) => {
       // 보내는 사이 이메일을 고쳤으면 옛 주소의 응답은 버린다
       if (to !== emailNow.current) return;
+      // 새로 보내면 서버가 앞서 받은 증표를 무효로 한다 — 새 번호로 다시 확인하게 버린다
+      proof.current = null;
       setSentTo(to);
       setCode('');
       setCodeMsg(null);
@@ -300,11 +302,16 @@ export function SignupScreen() {
         const { verificationToken } = await api.auth.emailVerifyCode(to, code);
         proof.current = { email: to, token: verificationToken };
       }
+      // 확인을 기다리는 사이 이메일을 고쳤으면 옛 주소로 가입하지 않는다(증표는 남겨 둔다)
+      if (to !== emailNow.current) return false;
       await api.auth.emailSignup(proof.current.token, pw);
+      return true;
     },
-    onSuccess: () => {
+    onSuccess: (done, to) => {
+      if (!done) return;
       toast('가입했어요. 로그인해 주세요');
-      toLogin();
+      // 실제로 가입한 이메일로 로그인을 채운다
+      toLogin(to);
     },
     onError: (e) => {
       if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
@@ -424,7 +431,7 @@ export function SignupScreen() {
         {taken && (
           <View className="mt-3 flex-row items-center gap-2">
             <Text className="text-footnote text-danger">이미 가입한 이메일이에요</Text>
-            <Pressable accessibilityRole="button" onPress={toLogin}>
+            <Pressable accessibilityRole="button" onPress={() => toLogin()}>
               <Text className="text-footnote font-semibold text-brand">로그인하기</Text>
             </Pressable>
           </View>
