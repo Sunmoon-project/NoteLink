@@ -184,10 +184,12 @@ export function RepeatGoalScreen() {
   // 고칠 목표를 못 읽었으면 새 목표 화면으로 넘어가 중복을 만들지 않게 한다
   if (id && goals.isError && !goals.data)
     return (
-      <Screen>
-        <Header title="반복 목표 설정" />
-        <LoadError message="반복 목표를 불러오지 못했어요" retry={goals.refetch} />
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Header title="반복 목표 설정" />
+          <LoadError message="반복 목표를 불러오지 못했어요" retry={goals.refetch} />
+        </Screen>
+      </Canvas>
     );
   return (
     <Canvas>

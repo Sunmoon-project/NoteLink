@@ -335,10 +335,12 @@ export function TimerScreen() {
   });
   if (room.isError && !room.data)
     return (
-      <Screen>
-        <Header title="방 시간 규칙" center />
-        <LoadError message="방 설정을 불러오지 못했어요" retry={room.refetch} />
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Header title="방 시간 규칙" center />
+          <LoadError message="방 설정을 불러오지 못했어요" retry={room.refetch} />
+        </Screen>
+      </Canvas>
     );
   return (
     <Canvas>
@@ -604,10 +606,12 @@ export function ScheduleScreen() {
   const s = sch.data;
   if (sch.isError && !sch.data)
     return (
-      <Screen>
-        <Header title="시간표" center />
-        <LoadError message="멤버 일정을 불러오지 못했어요" retry={sch.refetch} />
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Header title="시간표" center />
+          <LoadError message="멤버 일정을 불러오지 못했어요" retry={sch.refetch} />
+        </Screen>
+      </Canvas>
     );
   return (
     <Canvas>
@@ -833,10 +837,12 @@ export function InviteScreen() {
   const list = (friends.data ?? []).filter((f) => f.nickname.includes(q));
   if (room.isError && !room.data)
     return (
-      <Screen footer={<Btn onPress={() => router.back()}>스터디룸으로 돌아가기</Btn>}>
-        <Header title="친구 초대" center />
-        <LoadError message="방 정보를 불러오지 못했어요" retry={room.refetch} />
-      </Screen>
+      <Canvas>
+        <Screen footer={<Btn onPress={() => router.back()}>스터디룸으로 돌아가기</Btn>}>
+          <Header title="친구 초대" center />
+          <LoadError message="방 정보를 불러오지 못했어요" retry={room.refetch} />
+        </Screen>
+      </Canvas>
     );
   return (
     <Canvas>

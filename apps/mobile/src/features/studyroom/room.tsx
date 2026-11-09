@@ -542,16 +542,18 @@ export function RoomScreen() {
   };
   if (!room.data && room.isError)
     return (
-      <Screen>
-        <Header title="스터디룸" />
-        <Text className="mt-8 text-center text-body">스터디룸 정보를 불러오지 못했어요</Text>
-        <Btn className="mt-4" onPress={() => void room.refetch()}>
-          다시 시도
-        </Btn>
-        <Btn kind="outline" className="mt-2" onPress={leaveRoom}>
-          돌아가기
-        </Btn>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Header title="스터디룸" />
+          <Text className="mt-8 text-center text-body">스터디룸 정보를 불러오지 못했어요</Text>
+          <Btn className="mt-4" onPress={() => void room.refetch()}>
+            다시 시도
+          </Btn>
+          <Btn kind="outline" className="mt-2" onPress={leaveRoom}>
+            돌아가기
+          </Btn>
+        </Screen>
+      </Canvas>
     );
   if (!room.data) return <Loading />;
   const last = msgs[msgs.length - 1];
