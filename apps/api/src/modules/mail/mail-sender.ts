@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import { type ConfigReader } from '../../../config/mongo.config.js';
-
-/** `MailSender` 구현을 이 이름으로 넣어 둔다(auth.module에서 연결) */
+/** `MailSender` 구현을 이 이름으로 넣어 둔다(MailModule에서 연결) */
 export const MAIL_SENDER = 'MAIL_SENDER';
 
 /** 메일을 보낼 수 없는 상태(발송 수단이 설정되지 않았거나, 보내다 실패했다) */
@@ -54,10 +52,4 @@ export class LogMailSender implements MailSender {
       throw new MailUnavailableError('메일 발송 수단이 설정되지 않았습니다 (MAIL_TRANSPORT)');
     }
   }
-}
-
-/** 설정에 따라 발송 수단을 고른다. 설정이 없거나 알 수 없는 값이면 발송을 거부하는 쪽(안전)으로 만든다 */
-export function createMailSender(config: ConfigReader): MailSender {
-  const transport = config.get('MAIL_TRANSPORT')?.trim();
-  return new LogMailSender(transport === 'log');
 }
