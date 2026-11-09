@@ -7,6 +7,7 @@ import {
   fitInput,
   INPUT_ATTEMPT_LIMIT,
   INPUT_BYTE_LIMIT,
+  QUIZ_SET_SIZE,
   QuizSetsService,
   seoulDay,
   type WorkerInput,
@@ -41,6 +42,9 @@ const workerQuestion = (order: number, over: Record<string, unknown> = {}) => ({
   srs: null,
   ...over,
 });
+/** 처리기가 QUIZ_SET_SIZE개를 다 만든 결과의 문제들(order from부터) */
+const fullSet = (from = 1) =>
+  Array.from({ length: QUIZ_SET_SIZE }, (_, i) => workerQuestion(from + i));
 
 // quiz-set.schema.ts 고유 색인: 만드는 중 · 지우지 않은 세트만
 const live = (r: Row) => r['status'] === 'generating' && (r['deletedAt'] ?? null) === null;
@@ -112,7 +116,7 @@ describe('QuizSetsService.create', () => {
       title: '세포 생물학',
       pages: [{ pageNo: 1, ocrText: '세포막은 세포를 둘러싼다.' }],
     });
-    expect(input).toMatchObject({ sets: [], attempts: [], notes: {} });
+    expect(input).toMatchObject({ size: QUIZ_SET_SIZE, sets: [], attempts: [], notes: {} });
   });
 
   it.each([
@@ -261,7 +265,7 @@ describe('QuizSetsService 작업 결과 반영', () => {
     const q1 = workerQuestion(1);
     const q2 = workerQuestion(2, { type: '정의', passage: null, choices: null, answer: '세포막' });
     finish(job._id, {
-      questions: [q1, q2],
+      questions: [q1, q2, ...fullSet(3).slice(0, QUIZ_SET_SIZE - 2)],
       title: '세포 생물학 맞춤 퀴즈 · 11-08',
       concepts: null,
     });
@@ -271,7 +275,7 @@ describe('QuizSetsService 작업 결과 반영', () => {
     expect(ready).toMatchObject({
       status: 'ready',
       progress: 100,
-      questionCount: 2,
+      questionCount: QUIZ_SET_SIZE,
       title: '세포 생물학 맞춤 퀴즈 · 11-08',
     });
     expect(ready.questions[0]).toEqual({
@@ -334,24 +338,44 @@ describe('QuizSetsService 작업 결과 반영', () => {
     const { service, addNote, finish, sets } = setup();
     const materialId = await addNote();
     const { quizSet, job } = await service.create(ME.toHexString(), materialId);
-    finish(job._id, { questions: [workerQuestion(1)], title: 't' });
+    finish(job._id, { questions: fullSet(), title: 't' });
     await Promise.all([
       service.findMine(ME.toHexString(), quizSet._id),
       service.findMine(ME.toHexString(), quizSet._id),
     ]);
     expect(sets.rows).toHaveLength(1);
-    expect(sets.rows[0]!['questionCount']).toBe(1);
+    expect(sets.rows[0]!['questionCount']).toBe(QUIZ_SET_SIZE);
   });
 });
 
 describe('QuizSetsService 리뷰 반영(/code-review)', () => {
-  it('모양이 틀린 문제만 빼고 나머지로 ready', async () => {
+  it('모양이 틀린 문제만 빼고 나머지로 ready, 번호는 1부터 다시 매긴다', async () => {
     const { service, addNote, finish } = setup();
     const { quizSet, job } = await service.create(ME.toHexString(), await addNote());
-    finish(job._id, { questions: [{ id: 'x', prompt: 'p' }, workerQuestion(2)], title: 't' });
+    const good = fullSet(2);
+    finish(job._id, { questions: [{ id: 'x', prompt: 'p' }, ...good], title: 't' });
+    const ready = await service.findMine(ME.toHexString(), quizSet._id);
+    expect(ready).toMatchObject({ status: 'ready', questionCount: QUIZ_SET_SIZE });
+    expect(ready.questions.map((q) => q._id)).toEqual(good.map((q) => q.id));
+    expect(ready.questions.map((q) => q.order)).toEqual(good.map((_, i) => i + 1));
+  });
+
+  it('번호는 처리기의 order 차례대로 다시 매긴다(배열 차례가 달라도)', async () => {
+    const { service, addNote, finish } = setup();
+    const { quizSet, job } = await service.create(ME.toHexString(), await addNote());
+    const good = fullSet();
+    finish(job._id, { questions: [...good].reverse(), title: 't' });
+    const ready = await service.findMine(ME.toHexString(), quizSet._id);
+    expect(ready.questions.map((q) => q._id)).toEqual(good.map((q) => q.id));
+  });
+
+  it('처리기가 다 채우지 못해도(아직 처리기 이슈 전) 만든 만큼 ready로 둔다', async () => {
+    const { service, addNote, finish } = setup();
+    const { quizSet, job } = await service.create(ME.toHexString(), await addNote());
+    finish(job._id, { questions: fullSet().slice(0, 2), title: 't' });
     expect(await service.findMine(ME.toHexString(), quizSet._id)).toMatchObject({
       status: 'ready',
-      questionCount: 1,
+      questionCount: 2,
     });
   });
 
@@ -361,10 +385,10 @@ describe('QuizSetsService 리뷰 반영(/code-review)', () => {
     Object.assign(job(created._id), { status: 'failed', error: '처리 중 오류' });
     expect((await service.findMine(ME.toHexString(), quizSet._id)).status).toBe('failed');
     await aiJobs.retry(ME.toHexString(), created._id);
-    finish(created._id, { questions: [workerQuestion(1)], title: 't' });
+    finish(created._id, { questions: fullSet(), title: 't' });
     expect(await service.findMine(ME.toHexString(), quizSet._id)).toMatchObject({
       status: 'ready',
-      questionCount: 1,
+      questionCount: QUIZ_SET_SIZE,
     });
   });
 
@@ -398,11 +422,11 @@ describe('QuizSetsService 리뷰 반영(/code-review)', () => {
   it('order가 정수가 아닌 문제는 뺀다(처리기 parse_question은 정수만 받는다)', async () => {
     const { service, addNote, finish } = setup();
     const { quizSet, job } = await service.create(ME.toHexString(), await addNote());
-    finish(job._id, { questions: [workerQuestion(1.5), workerQuestion(2)], title: 't' });
-    expect(await service.findMine(ME.toHexString(), quizSet._id)).toMatchObject({
-      status: 'ready',
-      questionCount: 1,
-    });
+    const good = fullSet(2);
+    finish(job._id, { questions: [workerQuestion(1.5), ...good], title: 't' });
+    const ready = await service.findMine(ME.toHexString(), quizSet._id);
+    expect(ready).toMatchObject({ status: 'ready', questionCount: QUIZ_SET_SIZE });
+    expect(ready.questions.map((q) => q._id)).toEqual(good.map((q) => q.id));
   });
 
   it('미리 만들기를 이어받을 때 거의 동시에 두 번 와도 늦은 쪽이 이어받기를 풀지 않는다', async () => {
@@ -527,7 +551,7 @@ describe('QuizSetsService 조회', () => {
     const a = await service.create(ME.toHexString(), await addNote());
     const b = await service.create(ME.toHexString(), await addNote({ title: '두 번째' }));
     await service.create(OTHER.toHexString(), await addNote({ ownerId: OTHER }));
-    finish(a.job._id, { questions: [workerQuestion(1)], title: '첫 번째 퀴즈' });
+    finish(a.job._id, { questions: fullSet(), title: '첫 번째 퀴즈' });
     const list = await service.list(ME.toHexString());
     expect(list.map((s) => s._id)).toEqual([b.quizSet._id, a.quizSet._id]);
     expect(list[1]).toMatchObject({ status: 'ready', title: '첫 번째 퀴즈' });
@@ -546,6 +570,7 @@ describe('fitInput (처리기 입력 크기 한도)', () => {
   const page = (size: number) => [{ pageNo: 1, ocrText: 'x'.repeat(size) }];
   const input = (): WorkerInput => ({
     day: '2026-11-09',
+    size: QUIZ_SET_SIZE,
     material: { id: 'm0', title: '이번 노트', pages: page(100) },
     // 최근 것부터: s1(긴 노트 m2) · s2(노트 m1) · s3(노트 m1)
     sets: [

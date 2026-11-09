@@ -17,6 +17,13 @@ export const VALIDATION_FAILED = 'VALIDATION_FAILED';
 
 /** 맞춤 퀴즈 작업(apps/ai services/quiz/generate.py TYPE) */
 export const GENERATE_TYPE = 'quiz_generate';
+/**
+ * 세트 하나의 문제 수. 처리기 입력 size로 보낸다(보내지 않으면 처리기 기본 10문제).
+ * 아직 처리기는 다 채우지 못하면 만든 만큼 돌려주고, 여기서는 그대로 ready로 둔다. 모자랄 때 작업을
+ * 실패로 끝내는 일은 처리기가 맡는다: 앱은 작업 상태로 성공 · 다시 시도를 고르므로 여기서 세트만
+ * failed로 두면 빈 성공 화면이 된다(/code-review)
+ */
+export const QUIZ_SET_SIZE = 5;
 const DUPLICATE_KEY = 11000;
 /**
  * 처리기 입력에 넣는 지난 세트 수(최근 것부터). 세트 · 풀이가 쌓여도 ai_jobs 문서가 커지지 않게 한다
@@ -428,6 +435,7 @@ export class QuizSetsService {
       : [];
     return fitInput({
       day: seoulDay(new Date()),
+      size: QUIZ_SET_SIZE,
       material: { id: material._id.toString(), title: material.title, pages },
       sets: withNote.map((s) => ({
         id: s._id.toString(),
@@ -453,6 +461,7 @@ type WorkerPage = { pageNo: number; ocrText: string };
 /** 처리기 입력(apps/ai services/quiz/generate.py 「input」) */
 export interface WorkerInput extends Record<string, unknown> {
   day: string;
+  size: number;
   material: { id: string; title: string; pages: WorkerPage[] };
   /** 최근 것부터 */
   sets: { id: string; materialId: string; questions: Record<string, unknown>[] }[];
@@ -531,9 +540,16 @@ function workerQuestions(raw: unknown): QuestionRow[] {
   return raw.map(fromWorkerQuestion).filter((q): q is QuestionRow => q !== null);
 }
 
-/** 성공한 작업의 결과로 세트를 ready로 바꾸는 값. 쓸 문제가 없으면 null(세트를 failed로) */
+/**
+ * 성공한 작업의 결과로 세트를 ready로 바꾸는 값. 쓸 문제가 없으면 null(세트를 failed로).
+ * 모양이 틀린 문제를 빼면 번호가 비므로 처리기의 order 차례대로 1부터 다시 매긴다(/code-review)
+ */
 function readyUpdate(job: AppAiJob): Record<string, unknown> | null {
-  const questions = workerQuestions(job.result?.['questions']);
+  const sorted = workerQuestions(job.result?.['questions']).sort((a, b) => a.order - b.order);
+  const questions = sorted.map((q, i) => ({
+    ...q,
+    order: i + 1,
+  }));
   if (questions.length === 0) return null;
   const title = job.result?.['title'];
   return {
