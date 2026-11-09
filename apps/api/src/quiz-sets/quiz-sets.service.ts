@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { Model, mongo, Types } from 'mongoose';
 
 import { type AppAiJob, AiJobsService, PREGEN_TYPE } from '../ai-jobs/ai-jobs.service.js';
 import { Material, type MaterialDocument } from '../modules/content/schemas/material.schema.js';
@@ -23,11 +23,14 @@ const DUPLICATE_KEY = 11000;
  * (MongoDB 문서 16MB 한도). 처리기는 이 세트들의 풀이로 아직 틀리는 쪽을 고른다
  */
 export const INPUT_SET_LIMIT = 50;
-/**
- * 처리기 입력에 넣는 끝낸 풀이 수(최근 것부터). 세트 수와 함께 입력 크기를 묶는다(Codex 리뷰 #236).
- * 노트 글은 처리기가 문제의 출처 쪽을 찾는 데 써서(text.locate) 줄이지 않는다
- */
+/** 처리기 입력에 넣는 끝낸 풀이 수(최근 것부터). 세트 수와 함께 읽는 양을 묶는다(Codex 리뷰 #236) */
 export const INPUT_ATTEMPT_LIMIT = 500;
+/**
+ * 처리기 입력 전체의 크기 한도(BSON 바이트). ai_jobs 문서는 MongoDB 16MB 한도 안이어야 하고, 처리기가
+ * 같은 문서에 중간 결과(checkpoint) · 결과(result)도 쓰므로 절반만 입력에 쓴다(Codex 재리뷰 #236).
+ * 넘으면 fitInput이 들어가지 않는 세트를 그 풀이 · 노트 글과 함께 뺀다
+ */
+export const INPUT_BYTE_LIMIT = 8 * 1024 * 1024;
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 
 /** 앱에 보내는 문제(packages/shared Question) */
@@ -392,7 +395,7 @@ export class QuizSetsService {
     owner: Types.ObjectId,
     material: MaterialRow,
     pages: { pageNo: number; ocrText: string }[],
-  ): Promise<Record<string, unknown>> {
+  ): Promise<WorkerInput> {
     const sets = await this.sets
       .find({ ownerId: owner, deletedAt: null, status: 'ready' })
       .sort({ createdAt: -1 })
@@ -423,7 +426,7 @@ export class QuizSetsService {
           })
           .lean<MaterialRow[]>()
       : [];
-    return {
+    return fitInput({
       day: seoulDay(new Date()),
       material: { id: material._id.toString(), title: material.title, pages },
       sets: withNote.map((s) => ({
@@ -441,8 +444,62 @@ export class QuizSetsService {
         })),
       })),
       notes: Object.fromEntries(others.map((m) => [m._id.toString(), textPages(m.pages)])),
-    };
+    });
   }
+}
+
+type WorkerPage = { pageNo: number; ocrText: string };
+
+/** 처리기 입력(apps/ai services/quiz/generate.py 「input」) */
+export interface WorkerInput extends Record<string, unknown> {
+  day: string;
+  material: { id: string; title: string; pages: WorkerPage[] };
+  /** 최근 것부터 */
+  sets: { id: string; materialId: string; questions: Record<string, unknown>[] }[];
+  attempts: { quizSetId: string }[];
+  notes: Record<string, WorkerPage[]>;
+}
+
+/** 키 하나 아래에 둔 값의 BSON 크기. 키는 노트 id(24자)나 배열 번호(3자리까지)라 실제보다 조금 크게 잰다 */
+const bsonBytes = (key: string, value: unknown) => mongo.BSON.calculateObjectSize({ [key]: value });
+const ITEM_KEY = '999';
+
+/**
+ * 처리기 입력을 limit 바이트(BSON) 안으로 줄인다. 최근 세트부터 넣고, 그 세트의 풀이와 가리키는 노트 글이
+ * 함께 들어가지 않으면 그 세트만 건너뛴다(처리기는 세트의 문제를 노트 글에서 찾고, 풀이는 세트의 문제를
+ * 가리켜 셋을 같이 넣거나 같이 뺀다). 크기는 조금 크게 재므로 결과는 늘 limit 안이다.
+ * 이번 노트만으로 넘으면 퀴즈를 만들 수 없어 400
+ */
+export function fitInput(input: WorkerInput, limit = INPUT_BYTE_LIMIT): WorkerInput {
+  let total = mongo.BSON.calculateObjectSize({ ...input, sets: [], attempts: [], notes: {} });
+  if (total > limit) {
+    throw new BadRequestException({
+      code: VALIDATION_FAILED,
+      message: '노트가 너무 길어 퀴즈를 만들 수 없어요. 노트를 나눠 올려 주세요',
+    });
+  }
+  const attemptBytes = new Map<string, number>();
+  for (const a of input.attempts) {
+    attemptBytes.set(a.quizSetId, (attemptBytes.get(a.quizSetId) ?? 0) + bsonBytes(ITEM_KEY, a));
+  }
+  const setIds = new Set<string>();
+  const noteIds = new Set<string>();
+  for (const set of input.sets) {
+    const note = input.notes[set.materialId];
+    const noteSize = note && !noteIds.has(set.materialId) ? bsonBytes(set.materialId, note) : 0;
+    const size = bsonBytes(ITEM_KEY, set) + (attemptBytes.get(set.id) ?? 0) + noteSize;
+    if (total + size > limit) continue;
+    total += size;
+    setIds.add(set.id);
+    if (note) noteIds.add(set.materialId);
+  }
+  if (setIds.size === input.sets.length) return input;
+  return {
+    ...input,
+    sets: input.sets.filter((x) => setIds.has(x.id)),
+    attempts: input.attempts.filter((x) => setIds.has(x.quizSetId)),
+    notes: Object.fromEntries(Object.entries(input.notes).filter(([id]) => noteIds.has(id))),
+  };
 }
 
 /** 글이 있는 쪽만(정리 전 · 빈 쪽은 처리기가 문제를 낼 수 없다) */

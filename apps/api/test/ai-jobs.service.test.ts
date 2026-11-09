@@ -122,6 +122,10 @@ describe('AiJobsService.cancel', () => {
     await service.cancel(ME, _id);
     await service.cancel(ME, _id);
     expect(row(_id)).toMatchObject({ status: 'queued', awaited: false });
+    // 두 요청이 겹쳐도 같다(가짜 DB라 실제 MongoDB의 경쟁까지는 보지 않는다. 두 단계 모두 조건부 갱신)
+    row(_id)['awaited'] = true;
+    await Promise.all([service.cancel(ME, _id), service.cancel(ME, _id)]);
+    expect(row(_id)).toMatchObject({ status: 'queued', awaited: false });
   });
 
   it('남의 작업은 바꾸지 않고 404', async () => {

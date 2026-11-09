@@ -1,12 +1,15 @@
 import { AiJob, QuizSet } from '@notelink/shared';
-import { Types } from 'mongoose';
+import { mongo, Types } from 'mongoose';
 import { describe, expect, it } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import {
+  fitInput,
   INPUT_ATTEMPT_LIMIT,
+  INPUT_BYTE_LIMIT,
   QuizSetsService,
   seoulDay,
+  type WorkerInput,
 } from '../src/quiz-sets/quiz-sets.service.js';
 import type { MaterialDocument } from '../src/modules/content/schemas/material.schema.js';
 import {
@@ -536,6 +539,69 @@ describe('QuizSetsService 조회', () => {
     for (const id of [theirs.quizSet._id, new Types.ObjectId().toHexString(), 'abc']) {
       await expect(service.findMine(ME.toHexString(), id)).rejects.toMatchObject(notFound);
     }
+  });
+});
+
+describe('fitInput (처리기 입력 크기 한도)', () => {
+  const page = (size: number) => [{ pageNo: 1, ocrText: 'x'.repeat(size) }];
+  const input = (): WorkerInput => ({
+    day: '2026-11-09',
+    material: { id: 'm0', title: '이번 노트', pages: page(100) },
+    // 최근 것부터: s1(긴 노트 m2) · s2(노트 m1) · s3(노트 m1)
+    sets: [
+      { id: 's1', materialId: 'm2', questions: [] },
+      { id: 's2', materialId: 'm1', questions: [] },
+      { id: 's3', materialId: 'm1', questions: [] },
+    ],
+    attempts: [{ quizSetId: 's1' }, { quizSetId: 's2' }, { quizSetId: 's3' }],
+    notes: { m1: page(1000), m2: page(5000) },
+  });
+  // MongoDB가 세는 크기
+  const size = (v: object) => mongo.BSON.calculateObjectSize(v);
+
+  it('한도 안이면 그대로', () => {
+    const all = input();
+    expect(fitInput(all)).toBe(all);
+  });
+
+  it('들어가지 않는 세트만 그 풀이 · 노트 글과 함께 건너뛰고 다음 세트를 넣는다', () => {
+    const all = input();
+    const limit = size(all) - 3000;
+    const fitted = fitInput(all, limit);
+    expect(fitted.sets.map((s) => s.id)).toEqual(['s2', 's3']);
+    expect(fitted.attempts).toEqual([{ quizSetId: 's2' }, { quizSetId: 's3' }]);
+    expect(Object.keys(fitted.notes)).toEqual(['m1']);
+  });
+
+  it('줄인 결과는 실제 BSON 크기로 늘 한도 안', () => {
+    const all = input();
+    const base = size({ ...all, sets: [], attempts: [], notes: {} });
+    for (let limit = base; limit <= size(all) + 100; limit += 37) {
+      expect(size(fitInput(all, limit))).toBeLessThanOrEqual(limit);
+    }
+  });
+
+  it('지난 세트를 모두 빼도 넘으면(이번 노트가 너무 김) 400 VALIDATION_FAILED', () => {
+    const all = input();
+    const base = size({ ...all, sets: [], attempts: [], notes: {} });
+    expect(fitInput(all, base).sets).toEqual([]);
+    expect(() => fitInput(all, base - 1)).toThrow(
+      expect.objectContaining({
+        status: 400,
+        response: expect.objectContaining({ code: 'VALIDATION_FAILED' }),
+      }),
+    );
+  });
+
+  it('만들 때 노트가 너무 길면 400이고 작업 · 세트를 남기지 않는다', async () => {
+    const { service, addNote, jobs, sets } = setup();
+    const materialId = await addNote({ pages: page(INPUT_BYTE_LIMIT) });
+    await expect(service.create(ME.toHexString(), materialId)).rejects.toMatchObject({
+      status: 400,
+      response: { code: 'VALIDATION_FAILED' },
+    });
+    expect(jobs.rows).toHaveLength(0);
+    expect(sets.rows).toHaveLength(0);
   });
 });
 
