@@ -1,6 +1,16 @@
 import type { MongooseModuleOptions } from '@nestjs/mongoose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { AppLoginService } from '../src/modules/auth/app-login/app-login.service.js';
+import { AppSignupService } from '../src/modules/auth/app-login/app-signup.service.js';
+import { LoginThrottleService } from '../src/modules/auth/app-login/login-throttle.service.js';
+import { EmailCodeService } from '../src/modules/auth/app-login/email-code.service.js';
+import {
+  MAIL_SENDER,
+  type MailSender,
+  MailUnavailableError,
+} from '../src/modules/auth/app-login/mail-sender.js';
+import { EmailProofService } from '../src/modules/auth/app-login/email-proof.service.js';
 import { GoogleOAuthClient } from '../src/modules/auth/social-login/google-oauth.client.js';
 import { KakaoOAuthClient } from '../src/modules/auth/social-login/kakao-oauth.client.js';
 import { NaverOAuthClient } from '../src/modules/auth/social-login/naver-oauth.client.js';
@@ -169,5 +179,81 @@ describe('AppModule의 네이버 로그인 설정', () => {
     stubAppEnv({ NAVER_REDIRECT_URI: 'https://notelink.app/api/v1/auth/social/google/callback' });
 
     await expect(createAppModuleBuilder().compile()).rejects.toThrow('NAVER_REDIRECT_URI');
+  });
+});
+
+describe('AppModule의 앱 로그인(이메일 인증번호)', () => {
+  it('서버를 조립하면 EmailCodeService가 만들어진다 (생성자 인자를 Nest가 모두 해결할 수 있다)', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const service = moduleRef.get(EmailCodeService, { strict: false });
+    await moduleRef.close();
+
+    expect(service).toBeInstanceOf(EmailCodeService);
+  });
+
+  it('서버를 조립하면 AppSignupService가 만들어진다 (메일 발송 · 비밀번호 비용 등 모든 의존성을 Nest가 해결한다)', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const service = moduleRef.get(AppSignupService, { strict: false });
+    await moduleRef.close();
+
+    expect(service).toBeInstanceOf(AppSignupService);
+  });
+
+  it('서버를 조립하면 AppLoginService가 만들어진다 (비밀번호 비용을 등록하지 않아도 기본값으로 동작)', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const service = moduleRef.get(AppLoginService, { strict: false });
+    await moduleRef.close();
+
+    expect(service).toBeInstanceOf(AppLoginService);
+  });
+
+  it('서버를 조립하면 LoginThrottleService가 만들어지고 AppLoginService가 이를 받아 쓴다', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const throttle = moduleRef.get(LoginThrottleService, { strict: false });
+    const login = moduleRef.get(AppLoginService, { strict: false });
+    await moduleRef.close();
+
+    expect(throttle).toBeInstanceOf(LoginThrottleService);
+    expect((login as unknown as { throttle: unknown }).throttle).toBe(throttle);
+  });
+
+  it('MAIL_TRANSPORT가 없으면 서버는 뜨지만 메일 발송 수단은 발송을 거부한다 (운영 기본값)', async () => {
+    stubAppEnv({ MAIL_TRANSPORT: '' });
+    const moduleRef = await createAppModuleBuilder().compile();
+    const mail = moduleRef.get<MailSender>(MAIL_SENDER, { strict: false });
+    await moduleRef.close();
+
+    await expect(mail.sendVerificationCode('a@b.com', '123456')).rejects.toThrow(
+      MailUnavailableError,
+    );
+  });
+
+  it('MAIL_TRANSPORT=log이면 메일 발송 수단이 개발용 로그 발송이 된다', async () => {
+    stubAppEnv({ MAIL_TRANSPORT: 'log' });
+    const moduleRef = await createAppModuleBuilder().compile();
+    const mail = moduleRef.get<MailSender>(MAIL_SENDER, { strict: false });
+    await moduleRef.close();
+
+    await expect(mail.sendVerificationCode('a@b.com', '123456')).resolves.toBeUndefined();
+  });
+
+  it('서버를 조립하면 EmailProofService도 만들어지고, 실제 비밀값으로 증표를 발급 · 검증한다', async () => {
+    stubAppEnv();
+    const moduleRef = await createAppModuleBuilder().compile();
+    const proof = moduleRef.get(EmailProofService, { strict: false });
+    await moduleRef.close();
+
+    const claims = { email: 'a@b.com', purpose: 'signup' as const, verifiedAt: new Date() };
+    const { token } = await proof.issue(claims);
+
+    expect(await proof.verify(token)).toMatchObject({ ok: true, email: 'a@b.com' });
   });
 });
