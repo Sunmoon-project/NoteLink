@@ -1,12 +1,12 @@
 import { Logger } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createMailSender } from '../src/modules/mail/create-mail-sender.js';
 import {
-  createMailSender,
   LogMailSender,
   MAIL_SENDER,
   MailUnavailableError,
-} from '../src/modules/auth/app-login/mail-sender.js';
+} from '../src/modules/mail/mail-sender.js';
 
 const config = (values: Record<string, string | undefined>) => ({ get: (k: string) => values[k] });
 

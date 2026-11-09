@@ -9,7 +9,7 @@ import {
   MAIL_SENDER,
   type MailSender,
   MailUnavailableError,
-} from '../src/modules/auth/app-login/mail-sender.js';
+} from '../src/modules/mail/mail-sender.js';
 import { EmailProofService } from '../src/modules/auth/app-login/email-proof.service.js';
 import { GoogleOAuthClient } from '../src/modules/auth/social-login/google-oauth.client.js';
 import { KakaoOAuthClient } from '../src/modules/auth/social-login/kakao-oauth.client.js';
