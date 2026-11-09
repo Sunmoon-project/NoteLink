@@ -287,6 +287,8 @@ export function SignupScreen() {
     onSuccess: (_, to) => {
       // 보내는 사이 이메일을 고쳤으면 옛 주소의 응답은 버린다
       if (to !== emailNow.current) return;
+      // 새로 보내면 서버가 앞서 받은 증표를 무효로 한다 — 새 번호로 다시 확인하게 버린다
+      proof.current = null;
       setSentTo(to);
       setCode('');
       setCodeMsg(null);
