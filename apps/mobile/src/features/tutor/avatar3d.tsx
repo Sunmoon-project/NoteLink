@@ -182,7 +182,9 @@ export function Avatar3D({
   useEffect(() => {
     ready.current = onReady;
   });
-  const [failed, setFailed] = useState(false);
+  // 실패한 모델 id. 다른 아바타로 바꾸면 그 모델은 다시 3D로 그려 본다
+  const [failedId, setFailedId] = useState<string | null>(null);
+  const failed = failedId === id;
   const [model, setModel] = useState<{ id: string; root: THREE.Group } | null>(null);
   const reduce = useRef(false);
   // 그리기 반복을 멈추는 정리 함수(모델이 바뀌거나 화면을 떠날 때)
@@ -204,7 +206,7 @@ export function Avatar3D({
       .then((g) => live && setModel({ id, root: g.scene }))
       .catch(() => {
         if (!live) return;
-        setFailed(true);
+        setFailedId(id);
         ready.current?.();
       });
     return () => {
@@ -297,7 +299,7 @@ export function Avatar3D({
       };
       render();
     } catch {
-      setFailed(true);
+      setFailedId(id);
       ready.current?.();
     }
   };
