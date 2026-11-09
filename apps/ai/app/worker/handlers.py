@@ -3,42 +3,70 @@
 처리기는 여기 등록된 종류만 가져가므로, 아직 만들지 않은 종류의 작업은 queued로 남습니다.
 """
 
+import threading
 from collections.abc import Callable
-from functools import cache
 
 from app.clients.llm import JsonObject, Llm, LlmError, SchoolLlm, school_llm
 from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
 from app.services.quiz import generate, review, today
 from app.services.recording import job as recording_job
-from app.worker.runner import Handler, JobInputError, JobReport, Report
+from app.worker.runner import Handler, JobInputError, JobReport
 
 
-@cache
+class _Once[T]:
+    """처음 한 번 만든 것을 계속 돌려줍니다. 두 반복(스레드)이 처음 함께 불러도 하나만 만듦.
+
+    functools.cache는 만들기를 잠그지 않아, 두 반복이 동시에 처음 부르면 SchoolLlm이 둘 생겨
+    호출 간격 · 429 대기 · 사용자 우선이 나뉨(Codex 리뷰 #149). 만들다 실패하면 남기지 않습니다.
+    """
+
+    def __init__(self, make: Callable[[], T]) -> None:
+        self._make = make
+        self._made: list[T] = []
+        self._lock = threading.Lock()
+
+    def __call__(self) -> T:
+        with self._lock:
+            if not self._made:
+                self._made.append(self._make())
+            return self._made[0]
+
+    def cache_clear(self) -> None:
+        with self._lock:
+            self._made.clear()
+
+
+@_Once
 def _llm() -> SchoolLlm:
     """프로세스에 하나만 둡니다. 학교 LLM 호출 간격(llm_call_gap_sec)을 작업 사이에도 지키게."""
     return school_llm()
 
 
-@cache
+@_Once
 def _speech() -> Speech:
     return speech()
 
 
-@cache
+@_Once
 def _voyage() -> Voyage:
     return voyage()
 
 
-type _Run = Callable[[Llm, JsonObject, Report], JsonObject]
+type _Run = Callable[[Llm, JsonObject, JobReport], JsonObject]
 
 
-def _handler(run: _Run) -> Handler:
-    """퀴즈 서비스의 run을 처리 함수로. input 오류는 다시 해도 같으므로 바로 실패시킵니다."""
+def _handler(run: _Run, *, background: bool = False) -> Handler:
+    """퀴즈 서비스의 run을 처리 함수로. input 오류는 다시 해도 같으므로 바로 실패시킵니다.
 
-    def handle(inp: JsonObject, report: Report) -> JsonObject:
+    background면 학교 LLM 호출 차례를 사용자 작업에 양보합니다(SchoolLlm.background, #138).
+    사용자가 이 작업을 이어받으면(report.awaited) 그때부터 양보하지 않습니다.
+    """
+
+    def handle(inp: JsonObject, report: JobReport) -> JsonObject:
+        llm = _llm()
         try:
-            return run(_llm(), inp, report)
+            return run(llm.background(report.awaited) if background else llm, inp, report)
         except review.InputError as e:
             raise JobInputError(str(e)) from e
 
@@ -48,6 +76,16 @@ def _handler(run: _Run) -> Handler:
 similar_quiz = _handler(review.run)  # 오답 복습
 today_review = _handler(today.run)  # 오늘의 복습
 quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
+
+
+def _pregen(llm: Llm, inp: JsonObject, report: JobReport) -> JsonObject:
+    # 기다리는 사용자가 없어 시간 상한이 넉넉함. 이어받은 채 시작하면(사용자 작업 반복) 사용자가
+    # 기다리므로 보통 상한: 넉넉한 상한으로 그 반복을 오래 막지 않게(/code-review #138)
+    return generate.run(llm, inp, report, patient=not report.awaited())
+
+
+# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 처리는 맞춤 퀴즈와 같고 LLM 차례를 양보(#138)
+quiz_pregen = _handler(_pregen, background=True)
 
 
 def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
@@ -75,8 +113,7 @@ HANDLERS: dict[str, Handler] = {
     generate.TYPE: quiz_generate,
     recording_job.TYPE: recording_summary,
 }
-# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 처리는 맞춤 퀴즈와 같고 가져가는 순서만 나중입니다.
-# 목록 밖에서 더해 녹음 정리(#118) 등 다른 종류 추가와 줄이 겹치지 않게 둡니다.
-HANDLERS[generate.PREGEN_TYPE] = quiz_generate
-# 사용자가 기다리는 작업이 없을 때만 가져가는 종류(jobs.JobStore.claim)
-LATER: frozenset[str] = frozenset({generate.PREGEN_TYPE})
+# 목록 밖에서 더해 다른 종류 추가와 줄이 겹치지 않게 둡니다.
+HANDLERS[generate.PREGEN_TYPE] = quiz_pregen
+# 사용자 작업과 따로 도는 반복이 하나씩 처리하는 종류(__main__ · runner.run_lanes, #138)
+BACKGROUND: frozenset[str] = frozenset({generate.PREGEN_TYPE})

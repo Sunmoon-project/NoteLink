@@ -956,7 +956,11 @@ export function Dialog({
             exiting={FadeOut.duration(MOTION.exit)}
             className="absolute inset-0"
           >
-            <Pressable className="flex-1 bg-black/45" onPress={onClose} />
+            <Pressable
+              accessibilityLabel="대화상자 닫기"
+              className="flex-1 bg-black/45"
+              onPress={onClose}
+            />
           </Animated.View>
         )}
         {open && (
@@ -985,6 +989,7 @@ export function Alert({
   secondary,
   onPrimary,
   onSecondary,
+  onClose,
   extra,
 }: {
   open: boolean;
@@ -996,6 +1001,8 @@ export function Alert({
   secondary?: string;
   onPrimary: () => void;
   onSecondary?: () => void;
+  /** 배경 · 뒤로가기로 닫을 때. 없으면 onSecondary (두 번째 버튼이 위험한 동작이면 따로 준다) */
+  onClose?: () => void;
   extra?: ReactNode;
 }) {
   const [bg, fg] = {
@@ -1004,7 +1011,7 @@ export function Alert({
     brand: ['bg-mint', 'text-brand'],
   }[tone];
   return (
-    <Dialog open={open} onClose={onSecondary}>
+    <Dialog open={open} onClose={onClose ?? onSecondary}>
       <View className={cx('mb-3 h-12 w-12 items-center justify-center rounded-full', bg)}>
         {typeof icon === 'string' ? (
           <Text className={cx('text-title2 font-bold', fg)}>{icon}</Text>

@@ -42,8 +42,11 @@ jest.mock('expo-secure-store', () => ({
   setItemAsync: jest.fn(async (k: string, v: string) => void mockKeychain.set(k, v)),
   deleteItemAsync: jest.fn(async (k: string) => void mockKeychain.delete(k)),
 }));
-const { localApi: api, resetLocalForTests } =
-  jest.requireActual<typeof import('../lib/local/api')>('../lib/local/api');
+const {
+  localApi: api,
+  resetLocalForTests,
+  seedQuizForTests,
+} = jest.requireActual<typeof import('../lib/local/api')>('../lib/local/api');
 
 async function login(email: string) {
   const r = await api.auth.emailLogin(email, 'pw12345678');
@@ -461,4 +464,58 @@ it('할 일에 지정한 시각이 생성 · 조회 · 다시 켠 뒤에도 남�
   resetLocalForTests();
   await login('a@test.com');
   expect(await pick()).toBe('19:30');
+});
+
+it('세션 포인트는 하루 2번까지만 준다 (포인트 기준)', async () => {
+  jest.useFakeTimers({
+    now: Date.parse('2026-11-04T09:00:00+09:00'),
+    doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask', 'setTimeout', 'clearTimeout'],
+  });
+  await signup('a@test.com');
+  const item = await api.study.addItem({ title: '수학', subjectName: '수학', goalMin: null });
+  const earned: number[] = [];
+  for (let h = 0; h < 3; h++) {
+    const s = await api.study.startSession({ studyItemId: item._id, mode: 'personal' });
+    jest.setSystemTime(Date.parse(`2026-11-04T${String(10 + h * 2).padStart(2, '0')}:00:00+09:00`));
+    earned.push(
+      (await api.study.endSession(s._id, { clientDurationSec: 0, endReason: 'manual' }))
+        .pointsEarned,
+    );
+    jest.setSystemTime(Date.parse(`2026-11-04T${String(11 + h * 2).padStart(2, '0')}:00:00+09:00`));
+  }
+  expect(earned).toEqual([20, 20, 0]);
+  jest.useRealTimers();
+});
+
+it('퀴즈 포인트는 하루 40P까지 쌓이고(28 → 12 → 0), 서울 자정이 지나면 세션 · 퀴즈 한도가 다시 열린다', async () => {
+  jest.useFakeTimers({
+    now: Date.parse('2026-11-04T20:00:00+09:00'),
+    doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask', 'setTimeout', 'clearTimeout'],
+  });
+  await signup('a@test.com');
+  const set = seedQuizForTests(Array.from({ length: 10 }, (_, i) => `답${i}`));
+  // 10문제 중 7개 맞히는 풀이 한 번의 포인트
+  const solve = async () => {
+    const a = await api.quiz.startAttempt(set._id);
+    for (const [i, q] of set.questions.entries())
+      await api.quiz.answer(a._id, q._id, i < 7 ? q.answer : '오답');
+    return (await api.quiz.finish(a._id)).pointsEarned;
+  };
+  expect([await solve(), await solve(), await solve()]).toEqual([28, 12, 0]);
+
+  const item = await api.study.addItem({ title: '수학', subjectName: '수학', goalMin: null });
+  const session = async (startIso: string, endIso: string) => {
+    jest.setSystemTime(Date.parse(startIso));
+    const s = await api.study.startSession({ studyItemId: item._id, mode: 'personal' });
+    jest.setSystemTime(Date.parse(endIso));
+    return (await api.study.endSession(s._id, { clientDurationSec: 0, endReason: 'manual' }))
+      .pointsEarned;
+  };
+  await session('2026-11-04T21:00:00+09:00', '2026-11-04T21:30:00+09:00');
+  await session('2026-11-04T22:00:00+09:00', '2026-11-04T22:30:00+09:00');
+  expect(await session('2026-11-04T23:00:00+09:00', '2026-11-04T23:30:00+09:00')).toBe(0);
+  // 서울 자정 직후(00:10~00:40) — UTC로는 아직 11월 4일이라 서울 날짜 기준으로 한도가 열리는지 본다
+  expect(await session('2026-11-05T00:10:00+09:00', '2026-11-05T00:40:00+09:00')).toBe(20);
+  expect(await solve()).toBe(28);
+  jest.useRealTimers();
 });

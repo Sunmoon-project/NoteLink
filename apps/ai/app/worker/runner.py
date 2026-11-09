@@ -10,11 +10,16 @@
 
 처리 함수가 도는 동안 따로 도는 스레드가 잠금을 늘립니다(잠금 시간의 1/3마다). 진행률을 한동안
 쓰지 않는 긴 LLM 호출 중에도 다른 처리기가 같은 작업을 가져가지 않게 합니다.
+
+반복(Lane)은 여럿 둘 수 있습니다(run_lanes). 한 반복은 작업을 하나씩 처리하므로, 오래 걸리는
+미리 만들기(quiz_pregen)는 따로 돌려 사용자 작업을 막지 않게 합니다(#138).
 """
 
 import logging
 import threading
-from collections.abc import Callable, Collection, Mapping
+import time
+from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from pymongo.errors import PyMongoError
@@ -47,13 +52,24 @@ class JobReport(Report, Protocol):
 
     def save_checkpoint(self, value: JsonObject) -> None: ...
 
+    def awaited(self) -> bool:
+        """사용자가 이 작업을 이어받았는지(미리 해 두는 작업, #138)."""
+        ...
+
+
+AWAITED_CHECK_SEC = 5.0  # 처리 중인 작업의 awaited를 DB에서 다시 읽는 간격
 
 type Handler = Callable[[JsonObject, JobReport], JsonObject]
 
 
 class _StoreReport:
-    def __init__(self, store: JobStore, job: Job) -> None:
-        self._store, self._job = store, job
+    def __init__(
+        self, store: JobStore, job: Job, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self._store, self._job, self._clock = store, job, clock
+        self._awaited = job.awaited
+        self._checked = clock()
+        self._lock = threading.Lock()  # 미리 만들기는 여러 스레드에서 부름
 
     def __call__(self, value: int, step: str | None = None) -> None:
         self._store.progress(self._job, value, step)
@@ -63,6 +79,26 @@ class _StoreReport:
 
     def save_checkpoint(self, value: JsonObject) -> None:
         self._store.save_checkpoint(self._job, value)
+
+    def awaited(self) -> bool:
+        """한 번 참이면 계속 참. DB는 AWAITED_CHECK_SEC에 한 번만 읽고, 못 읽으면 지난 값.
+
+        읽는 동안 다른 스레드는 기다리지 않고 지난 값을 씁니다: DB가 느리면 퀴즈 자리 스레드가
+        모두 멈춰 멈춤 신호 · 시간 상한을 보지 못함(/code-review #138).
+        """
+        if self._awaited or self._clock() - self._checked < AWAITED_CHECK_SEC:
+            return self._awaited
+        if not self._lock.acquire(blocking=False):
+            return self._awaited  # 다른 스레드가 읽는 중
+        try:
+            if self._clock() - self._checked >= AWAITED_CHECK_SEC:
+                self._checked = self._clock()
+                self._awaited = self._store.awaited(self._job)
+        except PyMongoError:
+            log.warning("작업 %s: awaited 읽기 실패, 다음에 다시", self._job.id)
+        finally:
+            self._lock.release()
+        return self._awaited
 
 
 class _Heartbeat:
@@ -94,14 +130,14 @@ def run_once(
     store: JobStore,
     handlers: Mapping[str, Handler],
     *,
-    later: Collection[str] = (),
+    awaited_only: Collection[str] = (),
     heartbeat_sec: float | None = None,
 ) -> bool:
     """작업 하나를 가져와 처리합니다. 할 일이 없었으면 False.
 
-    later에 든 종류는 다른 종류의 작업이 없을 때만 가져갑니다(JobStore.claim).
+    awaited_only에 든 종류는 사용자가 이어받은(awaited) 작업만 가져갑니다(#138).
     """
-    job = store.claim([t for t in handlers if t not in later], [t for t in handlers if t in later])
+    job = store.claim([t for t in handlers if t not in awaited_only], awaited_only)
     if job is None:
         return False
 
@@ -141,15 +177,73 @@ def run_forever(
     *,
     poll_sec: float,
     stop: threading.Event,
-    later: Collection[str] = (),
+    awaited_only: Collection[str] = (),
 ) -> None:
     """stop이 켜질 때까지 반복합니다. 처리 중인 작업은 끝까지 처리한 뒤 멈춥니다."""
     while not stop.is_set():
         try:
-            busy = run_once(store, handlers, later=later)
+            busy = run_once(store, handlers, awaited_only=awaited_only)
         except PyMongoError:
             # DB 연결이 끊김: 쓰지 못한 작업은 잠금이 끝나면 다시 가져가므로 기다렸다 계속
             log.exception("ai_jobs 처리 중 DB 오류")
             busy = False
         if not busy:
             stop.wait(poll_sec)
+
+
+@dataclass(frozen=True)
+class Lane:
+    """따로 도는 처리 반복 하나: 이 store로 handlers에 든 종류만 가져가 하나씩 처리합니다.
+
+    awaited_only에 든 종류는 사용자가 이어받은 작업만 가져갑니다(#138).
+    """
+
+    name: str
+    store: JobStore
+    handlers: Mapping[str, Handler]
+    awaited_only: frozenset[str] = frozenset()
+
+
+def run_lanes(lanes: Sequence[Lane], *, poll_sec: float, stop: threading.Event) -> None:
+    """반복마다 run_forever를 따로 돌리고, 모두 멈출 때까지 기다립니다.
+
+    마지막 반복은 이 스레드에서 돌려 멈춤 신호를 지금처럼 받습니다. 한 반복이 뜻밖의 오류로
+    끝나면 stop을 켜 나머지도 지금 작업을 끝낸 뒤 멈추게 하고, 그 오류를 올립니다(처리기를
+    다시 띄우게).
+    """
+    errors: list[BaseException] = []
+
+    def lane_loop(lane: Lane) -> None:
+        try:
+            run_forever(
+                lane.store,
+                lane.handlers,
+                poll_sec=poll_sec,
+                stop=stop,
+                awaited_only=lane.awaited_only,
+            )
+        except BaseException as e:
+            log.exception("처리 반복 %s이 멈춤", lane.name)
+            errors.append(e)
+        finally:
+            stop.set()  # 한 반복이 끝나면 나머지도 지금 작업을 끝낸 뒤 멈춤
+
+    active = [lane for lane in lanes if lane.handlers]
+    if not active:  # 등록된 종류가 없음: 바로 끝나 다시 띄우기를 되풀이하지 않게 멈춤 신호까지 둠
+        while not stop.wait(poll_sec):
+            pass
+        return
+    *others, last = active
+    threads = [
+        threading.Thread(target=lane_loop, args=(lane,), name=f"lane-{lane.name}", daemon=True)
+        for lane in others
+    ]
+    for t in threads:
+        t.start()
+    try:
+        lane_loop(last)
+    finally:
+        for t in threads:
+            t.join()
+    if errors:
+        raise errors[0]
