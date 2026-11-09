@@ -14,7 +14,9 @@ export type ServerMode =
   /** 연결은 받지만 인사(220)조차 보내지 않는다 */
   | 'silent'
   /** 인사는 하지만 DATA 이후 마지막 응답을 보내지 않는다(메일 본문까지 받아 놓고 끝을 알리지 않는다) */
-  | 'hang-after-data';
+  | 'hang-after-data'
+  /** STARTTLS를 광고하고 `220 ready`까지 답한 뒤 TLS 협상에 응하지 않는다(암호화로 올라가는 도중에 멈춘다) */
+  | 'hang-at-starttls';
 
 /**
  * 실제 SMTP 프로토콜(EHLO · MAIL · RCPT · DATA · QUIT)을 말하는 가짜 서버. 평문이다(암호화를 광고하지 않는다).
@@ -36,7 +38,12 @@ export async function startFakeSmtpServer(mode: ServerMode = 'accept') {
     socket.on('error', () => undefined);
 
     const thisMode = modes.get(socket)!;
-    if (thisMode === 'silent') return; // 아무 말도 하지 않는다
+    if (thisMode === 'silent') {
+      // 아무 말도 하지 않는다. 다만 받은 데이터는 읽어서 버린다: 읽지 않으면 스트림이 멈춰 있어
+      // 클라이언트가 연결을 끊어도(FIN) 서버가 그 신호를 처리하지 못하고 계속 열린 것으로 남는다(실제 서버는 읽는다)
+      socket.resume();
+      return;
+    }
 
     socket.write('220 fake-smtp ready\r\n');
 
@@ -66,7 +73,16 @@ export async function startFakeSmtpServer(mode: ServerMode = 'accept') {
         const upper = line.toUpperCase();
 
         if (upper.startsWith('EHLO') || upper.startsWith('HELO')) {
-          socket.write('250-fake-smtp\r\n250 8BITMIME\r\n');
+          socket.write(
+            thisMode === 'hang-at-starttls'
+              ? '250-fake-smtp\r\n250-STARTTLS\r\n250 8BITMIME\r\n'
+              : '250-fake-smtp\r\n250 8BITMIME\r\n',
+          );
+        } else if (upper === 'STARTTLS' && thisMode === 'hang-at-starttls') {
+          socket.write('220 ready to start TLS\r\n');
+          // 이후 클라이언트가 보내는 TLS 핸드셰이크에는 응하지 않는다
+          socket.removeAllListeners('data');
+          return;
         } else if (upper.startsWith('MAIL FROM')) {
           current.mailFrom =
             line

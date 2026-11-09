@@ -21,7 +21,9 @@
     "@types/express": "5.0.6",
     "@types/node": "24.19.2",
     "@types/nodemailer": "8.0.2",
+    "@types/smtp-server": "3.5.13",
     "@types/supertest": "7.2.1",
+    "smtp-server": "3.21.3",
     "supertest": "7.3.1",
     "unplugin-swc": "2.0.0",
     "vitest": "5.0.3"
