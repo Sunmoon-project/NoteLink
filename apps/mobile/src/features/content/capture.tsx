@@ -557,19 +557,27 @@ export function RecUploadScreen() {
 
 /** 소리 크기를 읽는 간격 — 파형이 이 간격마다 한 칸씩 흐른다 */
 const METER_MS = 120;
-/** 파형 막대 한 칸(막대 6 + 사이 4) */
-const BAR_STEP = 10;
 /**
- * 막대 수. 줄 폭(48 × 10 = 480)이 가장 넓은 폰의 상자(440 - 양옆 여백)보다 넓어야
+ * 파형 막대 폭 · 사이 간격(pt). 클래스(w-1.5 · gap-1)는 NativeWind의 rem(14) 기준이라 실제 크기가
+ * 5.25 · 3.5로 달라지므로, 아래 계산과 화면이 어긋나지 않게 숫자로 직접 넣는다
+ */
+export const BAR_W = 6;
+export const BAR_GAP = 4;
+/** 파형이 한 번에 흐르는 거리(막대 한 칸) */
+export const BAR_STEP = BAR_W + BAR_GAP;
+/**
+ * 막대 수. 줄 폭(48 × 6 + 47 × 4 = 476)이 가장 넓은 폰의 상자(440 - 양옆 여백 = 400)보다 넓어야
  * 막대가 상자 안에서 생기고 사라지지 않고 양 끝 바깥에서 들고 난다
  */
 export const BAR_COUNT = 48;
+/** 줄 전체 폭 */
+export const ROW_W = BAR_COUNT * BAR_W + (BAR_COUNT - 1) * BAR_GAP;
 /**
- * 파형 상자의 최대 폭. 줄(476 = 48 × 6 + 47 × 4)이 가운데에 놓이고 한 칸(10) 밀리므로,
- * 상자 폭의 절반이 476/2 - 10 - 6(막대) = 222 이하여야 양 끝 막대가 늘 상자 밖에 있다.
+ * 파형 상자의 최대 폭. 가운데 놓인 줄이 한 칸(BAR_STEP) 밀려도 끝 막대(BAR_W) 안쪽 모서리가
+ * 상자 밖에 있으려면 상자 폭의 절반이 ROW_W/2 - BAR_STEP - BAR_W 이하여야 한다(= 444).
  * 태블릿 등 더 넓은 화면에서도 상자를 이 폭으로 묶어 둔다
  */
-export const WAVE_MAX_W = 440;
+export const WAVE_MAX_W = ROW_W - 2 * (BAR_STEP + BAR_W);
 
 /**
  * 녹음 파형. 새 소리 크기가 들어올 때마다 막대를 한 칸씩 밀되, 칸이 뚝 바뀌지 않게
@@ -596,9 +604,13 @@ export function Waveform({ bars, live }: { bars: number[]; live: boolean }) {
       className="mt-4 h-20 w-full items-center justify-center self-center overflow-hidden rounded-lg bg-black/30"
       style={{ maxWidth: WAVE_MAX_W }}
     >
-      <Animated.View className="flex-row items-center gap-1" style={style}>
+      <Animated.View className="flex-row items-center" style={[{ gap: BAR_GAP }, style]}>
         {bars.map((h, i) => (
-          <View key={i} className="w-1.5 rounded-full bg-orange" style={{ height: live ? h : 6 }} />
+          <View
+            key={i}
+            className="rounded-full bg-orange"
+            style={{ width: BAR_W, height: live ? h : 6 }}
+          />
         ))}
       </Animated.View>
     </View>

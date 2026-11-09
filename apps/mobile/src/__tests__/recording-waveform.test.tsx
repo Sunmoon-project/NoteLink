@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react-native';
+import { StyleSheet, type ViewStyle } from 'react-native';
 import { Easing, ReduceMotion, withTiming } from 'react-native-reanimated';
-import { BAR_COUNT, WAVE_MAX_W, Waveform } from '@/features/content/capture';
+import { BAR_COUNT, BAR_STEP, WAVE_MAX_W, Waveform } from '@/features/content/capture';
 
 // 줄을 흘리는 애니메이션 호출을 세기 위해 withTiming만 감싼다
 jest.mock('react-native-reanimated', () => {
@@ -36,14 +37,26 @@ const heights = () =>
 
 beforeEach(() => jest.mocked(withTiming).mockClear());
 
-it('상자 폭이 아무리 넓어도 양 끝 막대는 늘 상자 밖에 있다', async () => {
-  // 가운데 놓인 줄(막대 6 · 사이 4)이 한 칸(10) 밀려도, 맨 끝 막대 안쪽 모서리가 상자 밖이어야 한다
-  const row = BAR_COUNT * 6 + (BAR_COUNT - 1) * 4;
-  expect(WAVE_MAX_W / 2).toBeLessThanOrEqual(row / 2 - 10 - 6);
-  // 가장 넓은 폰(440pt - 양옆 여백 40)도 최대 폭 안에 들어 상자가 줄어들지 않는다
-  expect(WAVE_MAX_W).toBeGreaterThanOrEqual(400);
+it('상자 폭이 아무리 넓어도 양 끝 막대는 늘 상자 밖에 있다 (화면에 실제로 적용된 크기로 계산)', async () => {
   await render(<Waveform bars={Array(BAR_COUNT).fill(6)} live />);
-  expect(screen.toJSON()).toHaveStyle({ maxWidth: WAVE_MAX_W });
+  type StyledNode = { children?: StyledNode[]; props: { style?: unknown } };
+  const flat = (n: StyledNode): ViewStyle => StyleSheet.flatten(n.props.style as ViewStyle) ?? {};
+  const box = screen.toJSON() as unknown as StyledNode;
+  const row = box.children![0]!;
+  const bars = row.children!;
+  // 클래스(rem 기준)가 아니라 숫자로 적용된 막대 폭 · 간격 · 상자 최대 폭을 읽는다
+  const barW = flat(bars[0]!).width as number;
+  const gap = flat(row).gap as number;
+  const maxW = flat(box).maxWidth as number;
+  expect(bars.every((b) => flat(b).width === barW)).toBe(true);
+  const rowW = bars.length * barW + (bars.length - 1) * gap;
+  // 한 번에 흐르는 거리가 실제 한 칸과 같아야 갱신마다 위치가 튀지 않는다
+  expect(BAR_STEP).toBe(barW + gap);
+  // 가운데 놓인 줄이 한 칸 밀려도 맨 끝 막대 안쪽 모서리가 상자 밖이어야 한다
+  expect(maxW).toBe(WAVE_MAX_W);
+  expect(maxW / 2).toBeLessThanOrEqual(rowW / 2 - BAR_STEP - barW);
+  // 가장 넓은 폰(440pt - 양옆 여백 40)은 최대 폭 안에 들어 상자가 줄어들지 않는다
+  expect(maxW).toBeGreaterThanOrEqual(400);
 });
 
 it('새 소리 크기가 들어올 때마다 한 칸 거리를 일정한 속도로 다시 흘리고, 멈춘 동안은 흘리지 않는다', async () => {
