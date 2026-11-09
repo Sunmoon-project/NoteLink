@@ -124,7 +124,7 @@ describe('createMailSender (설정에서 발송 수단 고르기)', () => {
     ['설정 없음', undefined],
     ['빈 문자열', ''],
     ['공백뿐', '   '],
-    ['알 수 없는 값', 'smtp'],
+    ['알 수 없는 값', 'sendgrid'],
     ['대소문자가 다름(LOG)', 'LOG'],
     ['비슷한 값(logs)', 'logs'],
     ['true', 'true'],

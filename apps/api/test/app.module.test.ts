@@ -1,6 +1,7 @@
 import type { MongooseModuleOptions } from '@nestjs/mongoose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { SmtpMailSender } from '../src/modules/mail/smtp-mail-sender.js';
 import { AppLoginService } from '../src/modules/auth/app-login/app-login.service.js';
 import { AppSignupService } from '../src/modules/auth/app-login/app-signup.service.js';
 import { LoginThrottleService } from '../src/modules/auth/app-login/login-throttle.service.js';
@@ -30,6 +31,16 @@ const MONGOOSE_MODULE_OPTIONS = 'MongooseModuleOptions';
 afterEach(() => {
   vi.unstubAllEnvs();
 });
+
+/** 메일을 SMTP로 보내는 설정(값은 전부 가짜). 조립만 확인하므로 실제 서버에 접속하지 않는다 */
+const SMTP_ENV = {
+  MAIL_TRANSPORT: 'smtp',
+  SMTP_HOST: 'smtp.example.com',
+  SMTP_PORT: '587',
+  SMTP_USER: 'noreply@example.com',
+  SMTP_PASS: 'fake-app-password',
+  MAIL_FROM: 'noreply@example.com',
+};
 
 describe('AppModule의 MongoDB 설정', () => {
   it('환경변수 MONGODB_URI를 MongoDB 설정의 uri로 넘긴다', async () => {
@@ -244,6 +255,24 @@ describe('AppModule의 앱 로그인(이메일 인증번호)', () => {
 
     await expect(mail.sendVerificationCode('a@b.com', '123456')).resolves.toBeUndefined();
   });
+
+  it('MAIL_TRANSPORT=smtp이면 메일 발송 수단이 SMTP 발송이 된다 (접속 없이 조립만 확인)', async () => {
+    stubAppEnv(SMTP_ENV);
+    const moduleRef = await createAppModuleBuilder().compile();
+    const mail = moduleRef.get<MailSender>(MAIL_SENDER, { strict: false });
+    await moduleRef.close();
+
+    expect(mail).toBeInstanceOf(SmtpMailSender);
+  });
+
+  it.each(['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'MAIL_FROM'])(
+    'MAIL_TRANSPORT=smtp인데 %s가 비어 있으면 서버 조립 단계에서 실패한다',
+    async (key) => {
+      stubAppEnv({ ...SMTP_ENV, [key]: '' });
+
+      await expect(createAppModuleBuilder().compile()).rejects.toThrow(key);
+    },
+  );
 
   it('서버를 조립하면 EmailProofService도 만들어지고, 실제 비밀값으로 증표를 발급 · 검증한다', async () => {
     stubAppEnv();
