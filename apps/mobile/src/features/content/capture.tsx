@@ -21,6 +21,7 @@ import { api, type ImageVerdict } from '@/lib/api';
 import { editPhoto } from '@/lib/image-edit';
 import { toast } from '@/stores/toast';
 import { checkFile, uploadToBlob, type LocalFile } from '@/lib/upload';
+import { audioFileIssue, CONTENT_MIN, documentIssue, recordingIssue } from '@/lib/content-check';
 import { useDraft } from '@/stores/draft';
 import { Alert, Badge, Btn, Chip, Header, Input, Label, Screen, Two, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
@@ -503,6 +504,9 @@ export function PickedScreen() {
 export function RecUploadScreen() {
   const { files, set } = useDraft();
   const file = files[0];
+  // 별 내용 없는 녹음이면 알리고, 그래도 올릴지 고르게 한다
+  const issue = file ? audioFileIssue(file.size) : null;
+  const [warn, setWarn] = useState(false);
   const pick = async () => {
     const r = await DocumentPicker.getDocumentAsync({
       type: ['audio/*'],
@@ -519,17 +523,27 @@ export function RecUploadScreen() {
   return (
     <Screen
       footer={
-        <Btn
-          disabled={!file}
-          onPress={() => {
-            router.replace('/convert');
-          }}
-        >
+        <Btn disabled={!file} onPress={() => (issue ? setWarn(true) : router.replace('/convert'))}>
           다음
         </Btn>
       }
     >
       <Header title="녹음 올리기" center />
+      <UnfitAlert
+        open={warn}
+        what="녹음"
+        reason={issue}
+        retry="다른 파일 고르기"
+        onRetry={() => {
+          setWarn(false);
+          set({ files: [] });
+        }}
+        onContinue={() => {
+          setWarn(false);
+          router.replace('/convert');
+        }}
+        onClose={() => setWarn(false)}
+      />
       <Pressable
         onPress={pick}
         className="mt-2 items-center rounded-2xl border-2 border-dashed border-brand/40 bg-mint/60 py-6"
@@ -540,8 +554,8 @@ export function RecUploadScreen() {
         <Text className="mt-2 text-footnote font-semibold text-ink">
           {file?.name ?? '탭해서 녹음 파일 선택'}
         </Text>
-        <Text className="text-caption2 text-sub">
-          {file?.size ? `${(file.size / 1024 / 1024).toFixed(1)}MB` : 'mp3 · m4a · wav'}
+        <Text className={cx('text-caption2', issue ? 'text-danger' : 'text-sub')}>
+          {issue ?? (file?.size ? `${(file.size / 1024 / 1024).toFixed(1)}MB` : 'mp3 · m4a · wav')}
         </Text>
       </Pressable>
     </Screen>
@@ -561,6 +575,9 @@ export function RecLiveScreen() {
   const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
   const st = useAudioRecorderState(recorder, 120);
   const [bars, setBars] = useState<number[]>(Array(26).fill(6));
+  const [voice, setVoice] = useState({ frames: 0, voiced: 0 });
+  // 별 내용 없는 녹음이면 이유 · 저장한 파일을 들고 알린다
+  const [unfit, setUnfit] = useState<{ reason: string; uri: string } | null>(null);
   const [denied, setDenied] = useState(false);
   const alive = useRef(true);
   const ready = useRef(false);
@@ -607,6 +624,14 @@ export function RecLiveScreen() {
     const db = st.metering ?? -60; // -160(무음) ~ 0
     const h = Math.max(6, Math.min(48, ((db + 60) / 60) * 48));
     setBars((b) => [...b.slice(1), h]);
+    // 소리가 있던 순간의 비율 — 거의 무음인 녹음을 끝낼 때 알린다.
+    // 소리 크기를 실제로 잰 칸만 센다(못 잰 칸을 무음으로 세면 정상 녹음도 무음으로 걸린다)
+    const measured = st.metering;
+    if (measured != null)
+      setVoice((v) => ({
+        frames: v.frames + 1,
+        voiced: v.voiced + (measured > CONTENT_MIN.voicedDb ? 1 : 0),
+      }));
   }
   const toggle = () => {
     if (!ready.current || finishing.current) return;
@@ -617,6 +642,15 @@ export function RecLiveScreen() {
       toast('녹음 상태를 바꾸지 못했어요');
     }
   };
+  const toConvert = (uri: string) => {
+    useDraft.getState().set({
+      kind: 'recording',
+      source: 'live_recording',
+      files: [{ uri, name: `강의녹음_${Date.now()}.m4a`, mimeType: 'audio/mp4' }],
+      title: '실시간 강의 녹음',
+    });
+    router.replace('/convert');
+  };
   const finish = async () => {
     if (!ready.current || finishing.current) return;
     finishing.current = true;
@@ -626,13 +660,13 @@ export function RecLiveScreen() {
       if (!recorder.uri) throw new Error('녹음 파일이 없어요');
       await setAudioModeAsync({ allowsRecording: false });
       if (!alive.current) return;
-      useDraft.getState().set({
-        kind: 'recording',
-        source: 'live_recording',
-        files: [{ uri: recorder.uri, name: `강의녹음_${Date.now()}.m4a`, mimeType: 'audio/mp4' }],
-        title: '실시간 강의 녹음',
-      });
-      router.replace('/convert');
+      const issue = recordingIssue(
+        Math.floor(st.durationMillis / 1000),
+        // 소리 크기를 한 번도 못 쟀으면(측정 불가) 무음으로 보지 않는다
+        voice.frames ? voice.voiced / voice.frames : 1,
+      );
+      if (issue) return setUnfit({ reason: issue, uri: recorder.uri });
+      toConvert(recorder.uri);
     } catch {
       if (alive.current) toast('녹음 파일을 저장하지 못했어요. 다시 시도해주세요');
     } finally {
@@ -657,6 +691,15 @@ export function RecLiveScreen() {
       >
         <X size={ICON.lg} color="#fff" />
       </Pressable>
+      <UnfitAlert
+        open={!!unfit}
+        what="녹음"
+        reason={unfit?.reason ?? null}
+        retry="다시 녹음"
+        onRetry={() => router.replace('/capture/rec-live')}
+        onContinue={() => unfit && toConvert(unfit.uri)}
+        onClose={() => router.replace('/capture/rec-live')}
+      />
       <Alert
         open={confirmClose}
         title="녹음을 그만둘까요?"
@@ -701,6 +744,8 @@ export function PickedFileScreen() {
   const { files, title, description, set } = useDraft();
   const f = files[0];
   const ok = f ? checkFile('document', f) : null;
+  const issue = f && ok?.ok ? documentIssue(f) : null;
+  const [warn, setWarn] = useState(false);
   const pickAgain = async () => {
     const r = await DocumentPicker.getDocumentAsync({
       type: ['application/pdf', 'image/*'],
@@ -712,12 +757,30 @@ export function PickedFileScreen() {
   return (
     <Screen
       footer={
-        <Btn disabled={!f || !ok?.ok} onPress={() => router.replace('/convert')}>
+        <Btn
+          disabled={!f || !ok?.ok}
+          onPress={() => (issue ? setWarn(true) : router.replace('/convert'))}
+        >
           다음
         </Btn>
       }
     >
       <Header title="선택한 파일 (1개)" large={false} />
+      <UnfitAlert
+        open={warn}
+        what="문서"
+        reason={issue}
+        retry="다른 파일 고르기"
+        onRetry={() => {
+          setWarn(false);
+          set({ files: [] });
+        }}
+        onContinue={() => {
+          setWarn(false);
+          router.replace('/convert');
+        }}
+        onClose={() => setWarn(false)}
+      />
       {f ? (
         <View className="flex-row items-center gap-3 rounded-2xl bg-cream p-3">
           <View className="h-11 w-11 items-center justify-center rounded-lg bg-mint">
@@ -727,12 +790,14 @@ export function PickedFileScreen() {
             <Text className="text-subhead font-semibold text-ink" numberOfLines={1}>
               {f.name}
             </Text>
-            <Text className={cx('text-caption2', ok?.ok ? 'text-sub' : 'text-danger')}>
-              {ok?.ok
-                ? `${((f.size ?? 0) / 1024 / 1024).toFixed(1)}MB · ${f.name.endsWith('.pdf') ? 'PDF 문서' : '이미지'}`
-                : !ok?.ok && 'reason' in ok!
-                  ? ok.reason
-                  : ''}
+            <Text className={cx('text-caption2', ok?.ok && !issue ? 'text-sub' : 'text-danger')}>
+              {issue
+                ? issue
+                : ok?.ok
+                  ? `${((f.size ?? 0) / 1024 / 1024).toFixed(1)}MB · ${f.name.endsWith('.pdf') ? 'PDF 문서' : '이미지'}`
+                  : !ok?.ok && 'reason' in ok!
+                    ? ok.reason
+                    : ''}
             </Text>
           </View>
           <Pressable
@@ -761,6 +826,39 @@ export function PickedFileScreen() {
         placeholder="해당 파일에 대한 설명"
       />
     </Screen>
+  );
+}
+
+/** 별 내용 없는 자료를 올리려 할 때: 이유를 알리고 다시 고르거나 그래도 올리게 한다 */
+function UnfitAlert({
+  open,
+  what,
+  reason,
+  retry,
+  onRetry,
+  onContinue,
+  onClose,
+}: {
+  open: boolean;
+  what: '녹음' | '문서';
+  reason: string | null;
+  retry: string;
+  onRetry: () => void;
+  onContinue: () => void;
+  /** 배경 · 뒤로가기로 닫을 때 — 절대 올리기로 이어지지 않게 */
+  onClose: () => void;
+}) {
+  return (
+    <Alert
+      open={open}
+      title={`정리하기에 적절하지 않은 ${what === '녹음' ? '녹음이에요' : '문서예요'}`}
+      body={`${reason ?? ''}\n그래도 올리면 AI 정리 결과가 비어 있을 수 있어요.`}
+      secondary="그래도 올리기"
+      onSecondary={onContinue}
+      onClose={onClose}
+      primary={retry}
+      onPrimary={onRetry}
+    />
   );
 }
 
