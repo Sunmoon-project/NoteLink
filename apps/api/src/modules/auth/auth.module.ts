@@ -38,6 +38,8 @@ import {
 import { SocialLoginService } from './social-login/social-login.service.js';
 import { SocialProviderRegistry } from './social-login/social-provider-registry.js';
 import { SocialUserService } from './social-login/social-user.service.js';
+import { TermsController } from './terms/terms.controller.js';
+import { TermsService } from './terms/terms.service.js';
 import { JWT_CONFIG, TokenService } from './token.service.js';
 
 @Module({
@@ -57,7 +59,7 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       { name: User.name, schema: UserSchema },
     ]),
   ],
-  controllers: [AuthTokenController, SocialLoginController, AppLoginController],
+  controllers: [AuthTokenController, SocialLoginController, AppLoginController, TermsController],
   providers: [
     // JWT_* 환경변수를 읽고 검증한다. 없거나 잘못되면 서버가 시작할 때 바로 실패한다
     {
@@ -96,6 +98,8 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
     LoginThrottleService,
     AppLoginService,
     JwtAuthGuard,
+    // 약관 동의 저장(FR-01-05)
+    TermsService,
     GoogleOAuthClient,
     KakaoOAuthClient,
     NaverOAuthClient,
