@@ -59,6 +59,29 @@ export interface AiJobRow {
   updatedAt: Date;
 }
 
+/** 처리기가 정한 원인 코드가 없는 실패(LLM 응답 없음 · 처리 중 오류 · 시도 한도). 앱은 공통 실패 화면을 보인다 */
+export const AI_JOB_FAILED = 'AI_JOB_FAILED';
+
+/**
+ * 처리기가 원인 코드를 붙인 오류: '<코드>: <원인>'(apps/ai runner.py JobInputError).
+ * 앱이 아는 코드만 그대로 보낸다(지금은 녹음 정리 apps/ai services/recording/job.py). 새 코드를
+ * 처리기에 더하면 여기에도 더한다. 원인 문구는 처리기 내부 내용이 섞일 수 있어 보내지 않는다
+ */
+const APP_ERROR_CODES = new Set(['NO_SPEECH', 'INVALID_FILE']);
+const CODED_ERROR = /^([A-Z][A-Z0-9_]*): /;
+
+/**
+ * 처리기가 쓴 오류를 앱에 보낼 코드로 바꾼다. 앱은 error를 원인 문구가 아니라 코드로 읽는다
+ * (apps/mobile features/quiz/quiz.tsx acceptJob · ERROR_CODES와 비교).
+ * 처리기 문구에는 예외 내용(LLM 서버 주소 · 응답 일부 등)이 섞일 수 있어 그대로 보내지 않는다.
+ * 원래 문구는 ai_jobs에 그대로 남아 서버에서 원인을 볼 수 있다.
+ */
+export function toAppError(error: string | null | undefined): string | null {
+  if (error === null || error === undefined) return null;
+  const code = CODED_ERROR.exec(error)?.[1];
+  return code !== undefined && APP_ERROR_CODES.has(code) ? code : AI_JOB_FAILED;
+}
+
 export function toAppJob(row: AiJobRow): AppAiJob {
   const job: AppAiJob = {
     _id: row._id.toString(),
@@ -69,7 +92,7 @@ export function toAppJob(row: AiJobRow): AppAiJob {
     progress: row.progress ?? 0,
     attempts: row.attempts ?? 0,
     result: row.result ?? null,
-    error: row.error ?? null,
+    error: toAppError(row.error),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -78,6 +101,9 @@ export function toAppJob(row: AiJobRow): AppAiJob {
   if (typeof row.awaited === 'boolean') job.awaited = row.awaited;
   return job;
 }
+
+/** 앱에 보내지 않는 큰 필드(노트 · 대본 전문, 중간 결과). 앱이 몇 초마다 조회하므로 DB에서부터 읽지 않는다 */
+const APP_PROJECTION = { input: 0, checkpoint: 0 };
 
 const notFound = () => new NotFoundException({ code: NOT_FOUND, message: '작업을 찾을 수 없어요' });
 
@@ -128,7 +154,7 @@ export class AiJobsService {
   /** 앱의 진행 상태 조회. 본인 작업만 */
   async findMine(userId: string, jobId: string): Promise<AppAiJob> {
     const row = await this.jobs
-      .findOne({ _id: objectId(jobId), userId: objectId(userId) })
+      .findOne({ _id: objectId(jobId), userId: objectId(userId) }, APP_PROJECTION)
       .lean<AiJobRow>();
     if (!row) throw notFound();
     return toAppJob(row);
@@ -154,7 +180,8 @@ export class AiJobsService {
   /**
    * 실패하거나 취소한 작업을 다시 넣는다. 처리기 규칙대로 attempts=0 · retryAt=null로 되돌리고
    * 지난 오류 · 결과를 지운다(중간 결과 checkpoint는 남겨 처리기가 다시 쓴다).
-   * 아직 처리 중이거나 이미 성공한 작업은 바꾸지 않고 지금 상태를 돌려준다.
+   * 아직 처리 중이거나 이미 성공한 작업은 바꾸지 않고 지금 상태를 돌려준다(앱의 '다시 시도'는
+   * 실패 화면에만 있고, 처리기가 failed로 바꾼 작업은 잠금이 비어 있어 지금 앱에서는 늘 다시 넣는다).
    * 처리 중에 취소한 작업은 처리기가 다음에 쓸 때까지(LLM 호출 중이면 몇 분) 계속 돌기 때문에,
    * 잠금이 풀릴 때까지는 다시 넣지 않는다. 바로 넣으면 같은 작업을 두 처리기가 함께 만든다
    * (/code-review #175). 그동안은 canceled 그대로 돌려주고, 앱이 잠시 뒤 다시 누르면 된다.
@@ -176,7 +203,7 @@ export class AiJobsService {
           },
           $unset: { step: '', lockedBy: '' },
         },
-        { returnDocument: 'after' },
+        { returnDocument: 'after', projection: APP_PROJECTION },
       )
       .lean<AiJobRow>();
     if (row) return toAppJob(row);
@@ -212,7 +239,7 @@ export class AiJobsService {
           status: { $in: ACTIVE },
         },
         { $set: { awaited: true } },
-        { returnDocument: 'after', sort: { createdAt: -1 } },
+        { returnDocument: 'after', sort: { createdAt: -1 }, projection: APP_PROJECTION },
       )
       .lean<AiJobRow>();
     return row ? toAppJob(row) : null;

@@ -1,77 +1,15 @@
 import { AiJob } from '@notelink/shared';
-import type { Model } from 'mongoose';
 import { Types } from 'mongoose';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { AiJobsService, toAppJob } from '../src/ai-jobs/ai-jobs.service.js';
-import { type AiJobDocument, AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
-
-type Row = Record<string, unknown> & { _id: Types.ObjectId; createdAt: Date; updatedAt: Date };
-type Filter = Record<string, unknown>;
-type Update = { $set?: Record<string, unknown>; $unset?: Record<string, unknown> };
-type Options = { returnDocument?: 'after'; sort?: { createdAt: -1 } };
-
-const same = (a: unknown, b: unknown) =>
-  a instanceof Types.ObjectId || b instanceof Types.ObjectId ? String(a) === String(b) : a === b;
-
-/** Mongoose 질의처럼 `.lean()`으로 결과를 받는다 */
-const query = <T>(value: T) => ({ lean: () => Promise.resolve(value) });
-
-type Ops = { $in?: unknown[]; $lte?: Date; $gt?: Date; $lt?: number };
-const isOps = (want: unknown): want is Ops =>
-  want !== null && typeof want === 'object' && !(want instanceof Types.ObjectId);
-const time = (v: unknown) => (v instanceof Date ? v.getTime() : NaN);
-
-/**
- * 서비스가 넘긴 조건을 그대로 적용한다(같음 · $in · $lte · $gt · $or). 조건이 빠지면 테스트가 잡아낸다.
- * MongoDB처럼 `null` 조건은 필드가 없는 문서에도 맞는다
- */
-function matches(row: Row, filter: Filter): boolean {
-  return Object.entries(filter).every(([key, want]) => {
-    if (key === '$or') return (want as Filter[]).some((f) => matches(row, f));
-    const value = row[key];
-    if (want === null) return value === null || value === undefined;
-    if (!isOps(want)) return same(value, want);
-    if (want.$in) return want.$in.some((w) => same(value, w));
-    if (want.$lte) return time(value) <= want.$lte.getTime();
-    if (want.$gt) return time(value) > want.$gt.getTime();
-    if (want.$lt !== undefined) return typeof value === 'number' && value < want.$lt;
-    return false;
-  });
-}
-
-const PAST = new Date(Date.now() - 60_000);
-const LATER = new Date(Date.now() + 10 * 60_000);
-
-/** ai_jobs 컬렉션을 메모리로 흉내 낸다. 서비스가 쓰는 create · findOne · findOneAndUpdate · exists만 만든다 */
-function createFakeJobs() {
-  const rows: Row[] = [];
-  let clock = 0;
-  const model = {
-    create: (data: Record<string, unknown>) => {
-      const at = new Date(Date.UTC(2026, 10, 7, 0, 0, clock++));
-      const row: Row = { ...data, _id: new Types.ObjectId(), createdAt: at, updatedAt: at };
-      rows.push(row);
-      return Promise.resolve({ toObject: () => ({ ...row }) });
-    },
-    findOne: (filter: Filter) => query(rows.find((r) => matches(r, filter)) ?? null),
-    exists: (filter: Filter) => {
-      const row = rows.find((r) => matches(r, filter));
-      return Promise.resolve(row ? { _id: row._id } : null);
-    },
-    findOneAndUpdate: (filter: Filter, update: Update, options: Options = {}) => {
-      const found = rows.filter((r) => matches(r, filter));
-      if (options.sort) found.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-      const row = found[0];
-      if (!row) return query(null);
-      const before = { ...row };
-      Object.assign(row, update.$set);
-      for (const key of Object.keys(update.$unset ?? {})) delete row[key];
-      return query(options.returnDocument === 'after' ? { ...row } : before);
-    },
-  };
-  return { rows, model: model as unknown as Model<AiJobDocument> };
-}
+import {
+  AI_JOB_FAILED,
+  AiJobsService,
+  toAppError,
+  toAppJob,
+} from '../src/ai-jobs/ai-jobs.service.js';
+import { AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
+import { createFakeJobs, LATER, PAST } from './support/fake-ai-jobs.js';
 
 const ME = new Types.ObjectId().toString();
 const OTHER = new Types.ObjectId().toString();
@@ -339,5 +277,53 @@ describe('toAppJob', () => {
     expect(job).not.toHaveProperty('step');
     expect(job).toMatchObject({ progress: 0, attempts: 0, result: null, error: null });
     expect(AiJob.parse(job)).toEqual(job);
+  });
+});
+
+describe('toAppError', () => {
+  it.each([
+    // apps/ai runner.py가 쓰는 문구들
+    ['AI 응답을 받지 못함(Connection refused: http://10.0.0.5:8000/v1)', AI_JOB_FAILED],
+    ['처리 중 오류', AI_JOB_FAILED],
+    ['처리가 끝나지 않음(시도 한도)', AI_JOB_FAILED],
+    ['입력 오류: input이 객체가 아님', AI_JOB_FAILED],
+    ['NO_SPEECH: 말소리를 찾지 못함', 'NO_SPEECH'],
+    ['INVALID_FILE: 녹음이 3분보다 짧음', 'INVALID_FILE'],
+    // 앱이 모르는 코드 모양 문구(예외 이름 등)는 내보내지 않는다
+    ['HTTP: 502 Bad Gateway', AI_JOB_FAILED],
+    ['', AI_JOB_FAILED],
+  ])('%j → %s (처리기 문구는 앱에 보내지 않는다)', (error, code) => {
+    expect(toAppError(error)).toBe(code);
+  });
+
+  it('오류가 없으면 null', () => {
+    expect(toAppError(null)).toBeNull();
+    expect(toAppError(undefined)).toBeNull();
+  });
+
+  it('조회 응답에도 코드만 담긴다', async () => {
+    const { service, add, row } = setup();
+    const { _id } = await add();
+    Object.assign(row(_id), { status: 'failed', error: 'AI 응답을 받지 못함(timeout)' });
+    expect((await service.findMine(ME, _id)).error).toBe(AI_JOB_FAILED);
+    expect(row(_id)['error']).toBe('AI 응답을 받지 못함(timeout)');
+  });
+
+  it('조회 · 다시 시도 · 이어받기는 앱에 보내지 않는 input · checkpoint를 DB에서 읽지 않는다', async () => {
+    const { service, add, model } = setup();
+    const { _id } = await add({ type: 'quiz_pregen', targetType: 'material', targetId: NOTE });
+    const findOne = vi.spyOn(model, 'findOne');
+    const update = vi.spyOn(model, 'findOneAndUpdate');
+    await service.findMine(ME, _id);
+    await service.retry(ME, _id);
+    await service.takeOverPregen(ME, 'material', NOTE);
+    const hidden = { input: 0, checkpoint: 0 };
+    // findMine 두 번(직접 · retry가 다시 넣지 않아 지금 상태를 읽음), retry · takeOverPregen 변경 한 번씩
+    expect(findOne).toHaveBeenCalledTimes(2);
+    for (const call of findOne.mock.calls) expect(call[1]).toEqual(hidden);
+    expect(update).toHaveBeenCalledTimes(2);
+    for (const call of update.mock.calls) {
+      expect((call[2] as { projection?: unknown }).projection).toEqual(hidden);
+    }
   });
 });
