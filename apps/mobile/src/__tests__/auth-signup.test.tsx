@@ -165,6 +165,69 @@ it('인증번호를 보낸 뒤 이메일을 고치면 인증번호 받기 단계
   expect(screen.getByText('인증번호 받기')).toBeTruthy();
 });
 
+it('보내는 사이 이메일을 고치면 늦게 온 옛 주소의 발송 응답을 버린다', async () => {
+  let done!: () => void;
+  jest
+    .spyOn(api.auth, 'emailSendCode')
+    .mockImplementationOnce(() => new Promise<void>((r) => (done = r)));
+  useToast.setState({ msg: null });
+  await fill('a@test.com', 'abcd1234');
+  await fireEvent.press(screen.getByText('인증번호 받기'));
+  await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'b@test.com');
+  done();
+  await waitFor(() => expect(screen.getByText('인증번호 받기')).toBeTruthy());
+  expect(screen.queryByPlaceholderText('메일로 받은 숫자 6자리')).toBeNull();
+  expect(useToast.getState().msg).not.toBe('인증번호를 보냈어요. 메일을 확인해 주세요');
+});
+
+it('인증은 됐는데 가입 요청만 실패하면 다시 누를 때 받아 둔 증표로 가입만 다시 한다', async () => {
+  jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
+  const verify = jest
+    .spyOn(api.auth, 'emailVerifyCode')
+    .mockResolvedValue({ verificationToken: 'proof-1', expiresInSeconds: 600 });
+  const signup = jest
+    .spyOn(api.auth, 'emailSignup')
+    .mockRejectedValueOnce(new Error('network'))
+    .mockResolvedValueOnce(undefined);
+  await fireEvent.changeText(await toCode('new@test.com', 'abcd1234'), '123456');
+  await fireEvent.press(screen.getByText('가입하기'));
+  await waitFor(() =>
+    expect(useToast.getState().msg).toBe('가입하지 못했어요. 다시 시도해 주세요'),
+  );
+  await fireEvent.press(screen.getByText('가입하기'));
+  await waitFor(() => expect(router.replace).toHaveBeenCalled());
+  expect(verify).toHaveBeenCalledTimes(1);
+  expect(signup).toHaveBeenNthCalledWith(2, 'proof-1', 'abcd1234');
+});
+
+it.each([ERROR_CODES.EMAIL_PROOF_EXPIRED, ERROR_CODES.EMAIL_PROOF_INVALID])(
+  '증표가 %s 이면 알리고 인증번호 받기 단계로 돌아가 새로 인증한다',
+  async (code) => {
+    jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
+    const verify = jest
+      .spyOn(api.auth, 'emailVerifyCode')
+      .mockResolvedValueOnce({ verificationToken: 'proof-1', expiresInSeconds: 600 })
+      .mockResolvedValueOnce({ verificationToken: 'proof-2', expiresInSeconds: 600 });
+    const signup = jest
+      .spyOn(api.auth, 'emailSignup')
+      .mockRejectedValueOnce(new ApiError(code, '인증을 다시 해 주세요', 400))
+      .mockResolvedValueOnce(undefined);
+    await fireEvent.changeText(await toCode('new@test.com', 'abcd1234'), '123456');
+    await fireEvent.press(screen.getByText('가입하기'));
+    await waitFor(() => expect(useToast.getState().msg).toBe('인증을 다시 해 주세요'));
+    expect(screen.queryByPlaceholderText('메일로 받은 숫자 6자리')).toBeNull();
+    await fireEvent.press(screen.getByText('인증번호 받기'));
+    await fireEvent.changeText(
+      await screen.findByPlaceholderText('메일로 받은 숫자 6자리'),
+      '654321',
+    );
+    await fireEvent.press(screen.getByText('가입하기'));
+    await waitFor(() => expect(router.replace).toHaveBeenCalled());
+    expect(verify).toHaveBeenLastCalledWith('new@test.com', '654321');
+    expect(signup).toHaveBeenLastCalledWith('proof-2', 'abcd1234');
+  },
+);
+
 it('인증번호를 너무 빨리 다시 받으면 서버 안내를 보여 준다', async () => {
   const send = jest
     .spyOn(api.auth, 'emailSendCode')

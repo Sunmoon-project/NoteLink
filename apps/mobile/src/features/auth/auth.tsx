@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
 import Animated, { FadeIn } from 'react-native-reanimated';
@@ -254,6 +254,10 @@ export function SignupScreen() {
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [codeMsg, setCodeMsg] = useState<string | null>(null);
+  // 확인을 마친 증표. 서버는 맞힌 인증번호를 바로 써 버리므로, 가입만 실패하면 이 증표로 가입만 다시 한다
+  const proof = useRef<{ email: string; token: string } | null>(null);
+  // 발송 응답이 늦게 와도 지금 칸의 이메일과 비교하려고 최신 값을 둔다
+  const emailNow = useRef('');
   // 안내는 칸을 벗어나거나 버튼을 누른 뒤부터 보여 준다 (쓰는 중인 칸을 탓하지 않는다)
   const [touched, setTouched] = useState<Record<SignupField, boolean>>({
     email: false,
@@ -281,6 +285,8 @@ export function SignupScreen() {
   const send = useMutation({
     mutationFn: (to: string) => api.auth.emailSendCode(to),
     onSuccess: (_, to) => {
+      // 보내는 사이 이메일을 고쳤으면 옛 주소의 응답은 버린다
+      if (to !== emailNow.current) return;
       setSentTo(to);
       setCode('');
       setCodeMsg(null);
@@ -289,9 +295,12 @@ export function SignupScreen() {
     onError: (e) => failed(e, '인증번호를 보내지 못했어요. 다시 시도해 주세요'),
   });
   const signup = useMutation({
-    mutationFn: async () => {
-      const { verificationToken } = await api.auth.emailVerifyCode(sentTo!, code);
-      await api.auth.emailSignup(verificationToken, pw);
+    mutationFn: async (to: string) => {
+      if (proof.current?.email !== to) {
+        const { verificationToken } = await api.auth.emailVerifyCode(to, code);
+        proof.current = { email: to, token: verificationToken };
+      }
+      await api.auth.emailSignup(proof.current.token, pw);
     },
     onSuccess: () => {
       toast('가입했어요. 로그인해 주세요');
@@ -301,8 +310,14 @@ export function SignupScreen() {
       if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
       else if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_CODE_INVALID)
         setCodeMsg(e.message);
-      else if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_CODE_LOCKED) {
-        // 이 인증번호는 더 쓸 수 없다 — 새로 받게 처음 단계로
+      else if (
+        e instanceof ApiError &&
+        (e.code === ERROR_CODES.EMAIL_CODE_LOCKED ||
+          e.code === ERROR_CODES.EMAIL_PROOF_EXPIRED ||
+          e.code === ERROR_CODES.EMAIL_PROOF_INVALID)
+      ) {
+        // 이 인증번호 · 증표는 더 쓸 수 없다 — 새로 받게 처음 단계로
+        proof.current = null;
         setSentTo(null);
         toast(e.message);
       } else failed(e, '가입하지 못했어요. 다시 시도해 주세요');
@@ -315,7 +330,7 @@ export function SignupScreen() {
     if (!formOk()) return;
     if (!CODE.test(code)) return setCodeMsg('인증번호 6자리를 입력해 주세요');
     setCodeMsg(null);
-    signup.mutate();
+    if (sentTo) signup.mutate(sentTo);
   };
   return (
     <Canvas cream>
@@ -338,6 +353,7 @@ export function SignupScreen() {
           value={email}
           onChangeText={(v) => {
             setEmail(v);
+            emailNow.current = v.trim();
             setTaken(false);
             // 보낸 이메일과 달라지면 그 인증번호는 맞지 않는다
             if (sentTo !== null && v.trim() !== sentTo) setSentTo(null);
