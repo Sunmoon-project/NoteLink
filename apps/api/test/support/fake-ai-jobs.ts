@@ -14,7 +14,7 @@ const same = (a: unknown, b: unknown) =>
 /** Mongoose 질의처럼 `.lean()`으로 결과를 받는다 */
 const query = <T>(value: T) => ({ lean: () => Promise.resolve(value) });
 
-type Ops = { $in?: unknown[]; $lte?: Date | Types.ObjectId; $gt?: Date; $lt?: number };
+type Ops = { $in?: unknown[]; $lte?: Date; $gt?: Date; $lt?: number };
 const isOps = (want: unknown): want is Ops =>
   want !== null && typeof want === 'object' && !(want instanceof Types.ObjectId);
 const time = (v: unknown) => (v instanceof Date ? v.getTime() : NaN);
@@ -30,8 +30,6 @@ function matches(row: Row, filter: Filter): boolean {
     if (want === null) return value === null || value === undefined;
     if (!isOps(want)) return same(value, want);
     if (want.$in) return want.$in.some((w) => same(value, w));
-    // ObjectId는 MongoDB처럼 만든 순서(16진 문자열 순)로 비교한다
-    if (want.$lte instanceof Types.ObjectId) return String(value) <= String(want.$lte);
     if (want.$lte) return time(value) <= want.$lte.getTime();
     if (want.$gt) return time(value) > want.$gt.getTime();
     if (want.$lt !== undefined) return typeof value === 'number' && value < want.$lt;

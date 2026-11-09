@@ -156,8 +156,9 @@ export class AiJobsService {
   /**
    * 처리기가 가져갈 수 있게 queued로 넣는다. PENDING_LIMIT에 있는 종류는 넣은 뒤에 센다:
    * 세고 나서 넣으면 동시에 온 요청이 같은 수를 읽고 함께 넘친다(Codex #244).
-   * 나보다 먼저 들어온(_id가 작거나 같은) 처리 대기 작업만 세므로, 동시에 와도 먼저 들어온 한도 수만 남고
-   * 나머지는 canceled로 돌리고 429. 처리기가 그 사이 가져갔어도 canceled면 결과를 버린다.
+   * 자기를 포함한 대기 작업 전체를 세고 넘으면 내 작업을 canceled로 돌리고 429. 순서(_id)로 세면
+   * 서버가 여러 대일 때 _id가 들어온 순서와 달라 둘 다 통과할 수 있다. 전체를 세면 동시에 온 요청이
+   * 함께 거절될 수는 있어도(앱은 잠시 뒤 다시) 한도는 넘지 않는다. 처리기가 그 사이 가져갔어도 canceled면 결과를 버린다.
    */
   async enqueue(job: NewAiJob): Promise<AppAiJob> {
     const userId = serverObjectId(job.userId, 'userId');
@@ -174,25 +175,24 @@ export class AiJobsService {
       awaited: false,
     });
     const row = created.toObject<AiJobRow>();
-    const limit = limitOf(job.type);
-    if (limit !== undefined) {
-      const ahead = await this.jobs.countDocuments({
-        userId,
-        type: job.type,
-        status: { $in: ACTIVE },
-        _id: { $lte: row._id },
-      });
-      if (ahead > limit) {
-        await this.jobs
-          .findOneAndUpdate(
-            { _id: row._id, status: { $in: ACTIVE } },
-            { $set: { status: 'canceled' } },
-          )
-          .lean();
-        throw tooMany();
-      }
+    if (await this.overLimit(userId, job.type)) {
+      await this.jobs
+        .findOneAndUpdate(
+          { _id: row._id, status: { $in: ACTIVE } },
+          { $set: { status: 'canceled' } },
+        )
+        .lean();
+      throw tooMany();
     }
     return toAppJob(row);
+  }
+
+  /** 이미 넣은 작업을 포함해 이 종류의 대기 작업(queued · running)이 한도를 넘었는지 */
+  private async overLimit(userId: Types.ObjectId, type: string): Promise<boolean> {
+    const limit = limitOf(type);
+    if (limit === undefined) return false;
+    const pending = await this.jobs.countDocuments({ userId, type, status: { $in: ACTIVE } });
+    return pending > limit;
   }
 
   /** 앱의 진행 상태 조회. 본인 작업만 */
@@ -250,17 +250,8 @@ export class AiJobsService {
       )
       .lean<AiJobRow & { userId: Types.ObjectId }>();
     if (!before) return this.findMine(userId, jobId);
-    const limit = limitOf(before.type);
-    // 다시 넣은 작업은 _id가 오래돼 앞 순서로 세면 새 작업보다 먼저가 되므로, 자기를 포함한 전체를 센다.
-    // 동시에 다시 시도하면 함께 거절될 수 있지만 한도는 넘지 않는다
-    if (
-      limit !== undefined &&
-      (await this.jobs.countDocuments({
-        userId: before.userId,
-        type: before.type,
-        status: { $in: ACTIVE },
-      })) > limit
-    ) {
+    // 넣을 때와 같이 다시 넣은 뒤 전체를 센다. 동시에 다시 시도하면 함께 거절될 수 있지만 한도는 넘지 않는다
+    if (await this.overLimit(before.userId, before.type)) {
       const restore = {
         status: before.status,
         attempts: before.attempts ?? 0,

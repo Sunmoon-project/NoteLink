@@ -160,7 +160,7 @@ describe('아바타에게 노트 묻기 (POST /api/v1/materials/:id/ask)', () =>
       (r) => r.type === 'note_ask' && ['queued', 'running'].includes(r.status as string),
     ).length;
 
-  it('질문 세 개가 동시에 와도 먼저 들어온 두 개만 받고 나머지는 429', async () => {
+  it('질문 세 개가 동시에 와도 기다리는 질문은 두 개를 넘지 않고, 넘친 요청은 429 · 취소로 남는다', async () => {
     const id = note();
     // 서비스를 직접 동시에 부르고 개수 조회를 늦춰, 한 요청이 세는 동안 다른 요청이 끼어드는 상황을 만든다
     const service = app.get(NoteAskService);
@@ -178,11 +178,14 @@ describe('아바타에게 노트 묻기 (POST /api/v1/materials/:id/ask)', () =>
     // 늦춘 조회를 실제로 거쳤는지 (되돌리면 호출 기록도 지워지므로 먼저 본다)
     expect(slow).toHaveBeenCalled();
     slow.mockRestore();
-    expect(res.filter((r) => r.status === 'fulfilled')).toHaveLength(MAX_PENDING);
-    const rejected = res.filter((r) => r.status === 'rejected');
-    expect(rejected).toHaveLength(1);
-    expect((rejected[0] as PromiseRejectedResult).reason.getStatus()).toBe(429);
-    expect(active()).toBe(MAX_PENDING);
+    // 동시에 온 요청은 함께 거절될 수는 있어도(앱은 잠시 뒤 다시) 한도를 넘지는 않는다
+    const accepted = res.filter((r) => r.status === 'fulfilled');
+    expect(accepted.length).toBeLessThanOrEqual(MAX_PENDING);
+    for (const r of res.filter((x) => x.status === 'rejected'))
+      expect((r as PromiseRejectedResult).reason.getStatus()).toBe(429);
+    expect(active()).toBe(accepted.length);
+    // 거절된 작업은 처리기가 가져가지 않게 canceled로 남는다
+    expect(jobs.rows.filter((r) => r.status === 'canceled')).toHaveLength(3 - accepted.length);
   });
 
   it('취소한 질문을 다시 시도해도 기다리는 질문이 두 개면 429이고, 취소 상태 그대로 남는다', async () => {
