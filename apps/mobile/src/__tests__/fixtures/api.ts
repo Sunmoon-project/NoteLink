@@ -214,8 +214,10 @@ export const mockApi: Api = {
       ok({ accessToken: 'mock-access', refreshToken: 'mock-refresh', user: db.user }, 600),
     emailLogin: () =>
       ok({ accessToken: 'mock-access', refreshToken: 'mock-refresh', user: db.user }, 600),
-    emailSignup: (email) =>
-      email === db.user.email
+    emailSendCode: () => ok(undefined),
+    emailVerifyCode: (email) => ok({ verificationToken: `proof:${email}`, expiresInSeconds: 600 }),
+    emailSignup: (proof) =>
+      proof === `proof:${db.user.email}`
         ? fail(ERROR_CODES.EMAIL_TAKEN, '이미 가입한 이메일이에요', 409)
         : ok(undefined, 700),
     agreeTerms: () => ok(undefined),

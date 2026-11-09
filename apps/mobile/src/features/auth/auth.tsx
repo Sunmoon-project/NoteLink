@@ -237,12 +237,24 @@ const FieldError = ({ msg }: { msg: string | null }) =>
 
 type SignupField = 'email' | 'pw' | 'confirm';
 
+/** 가입 인증번호: 숫자 6자리 */
+const CODE = /^\d{6}$/;
+
+/**
+ * 이메일 가입. 서버 계약대로 세 단계를 한 화면에서 잇는다:
+ * ① 인증번호 받기(send-code) → ② 인증번호 확인으로 가입 증표 받기(verify-code) → ③ 증표 + 비밀번호로 가입(signup).
+ * 인증번호를 보낸 뒤 이메일을 고치면 처음 단계로 돌아간다(증표는 보낸 이메일에만 맞다)
+ */
 export function SignupScreen() {
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [confirm, setConfirm] = useState('');
   const [taken, setTaken] = useState(false);
-  // 안내는 칸을 벗어나거나 가입하기를 누른 뒤부터 보여 준다 (쓰는 중인 칸을 탓하지 않는다)
+  // 인증번호를 보낸 이메일(보내기 전 null) · 입력한 인증번호 · 인증번호 칸 안내
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [code, setCode] = useState('');
+  const [codeMsg, setCodeMsg] = useState<string | null>(null);
+  // 안내는 칸을 벗어나거나 버튼을 누른 뒤부터 보여 준다 (쓰는 중인 칸을 탓하지 않는다)
   const [touched, setTouched] = useState<Record<SignupField, boolean>>({
     email: false,
     pw: false,
@@ -255,33 +267,69 @@ export function SignupScreen() {
     confirm: confirmError(pw, confirm),
   };
   const shown = (f: SignupField) => (touched[f] ? errors[f] : null);
-  // 확인 칸은 마지막 칸이라 벗어나지 않고 가입하기를 누르기 쉽다 — 다 쓴 만큼 입력하면 바로 비교한다
+  // 확인 칸은 마지막 칸이라 벗어나지 않고 버튼을 누르기 쉽다 — 다 쓴 만큼 입력하면 바로 비교한다
   const confirmShown =
     shown('confirm') ?? (confirm.length >= pw.length && confirm ? errors.confirm : null);
-  const submit = () => {
+  const formOk = () => {
     setTouched({ email: true, pw: true, confirm: true });
-    if (!errors.email && !errors.pw && !errors.confirm) signup.mutate();
+    return !errors.email && !errors.pw && !errors.confirm;
   };
   const toLogin = () =>
     router.replace({ pathname: '/(auth)/login', params: { email: email.trim() } });
+  const failed = (e: unknown, fallback: string) =>
+    toast(e instanceof ApiError ? e.message : fallback);
+  const send = useMutation({
+    mutationFn: (to: string) => api.auth.emailSendCode(to),
+    onSuccess: (_, to) => {
+      setSentTo(to);
+      setCode('');
+      setCodeMsg(null);
+      toast('인증번호를 보냈어요. 메일을 확인해 주세요');
+    },
+    onError: (e) => failed(e, '인증번호를 보내지 못했어요. 다시 시도해 주세요'),
+  });
   const signup = useMutation({
-    mutationFn: () => api.auth.emailSignup(email.trim(), pw),
+    mutationFn: async () => {
+      const { verificationToken } = await api.auth.emailVerifyCode(sentTo!, code);
+      await api.auth.emailSignup(verificationToken, pw);
+    },
     onSuccess: () => {
       toast('가입했어요. 로그인해 주세요');
       toLogin();
     },
     onError: (e) => {
       if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
-      else toast(e instanceof ApiError ? e.message : '가입하지 못했어요. 다시 시도해 주세요');
+      else if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_CODE_INVALID)
+        setCodeMsg(e.message);
+      else if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_CODE_LOCKED) {
+        // 이 인증번호는 더 쓸 수 없다 — 새로 받게 처음 단계로
+        setSentTo(null);
+        toast(e.message);
+      } else failed(e, '가입하지 못했어요. 다시 시도해 주세요');
     },
   });
+  const sendCode = () => {
+    if (formOk()) send.mutate(email.trim());
+  };
+  const submit = () => {
+    if (!formOk()) return;
+    if (!CODE.test(code)) return setCodeMsg('인증번호 6자리를 입력해 주세요');
+    setCodeMsg(null);
+    signup.mutate();
+  };
   return (
     <Canvas cream>
       <Screen
         footer={
-          <Btn loading={signup.isPending} onPress={submit}>
-            가입하기
-          </Btn>
+          sentTo ? (
+            <Btn loading={signup.isPending} onPress={submit}>
+              가입하기
+            </Btn>
+          ) : (
+            <Btn loading={send.isPending} onPress={sendCode}>
+              인증번호 받기
+            </Btn>
+          )
         }
       >
         <Header title="회원가입" sub="아이디로 쓸 이메일과 비밀번호를 정해 주세요" />
@@ -291,6 +339,8 @@ export function SignupScreen() {
           onChangeText={(v) => {
             setEmail(v);
             setTaken(false);
+            // 보낸 이메일과 달라지면 그 인증번호는 맞지 않는다
+            if (sentTo !== null && v.trim() !== sentTo) setSentTo(null);
           }}
           onBlur={touch('email')}
           invalid={!!shown('email')}
@@ -328,6 +378,33 @@ export function SignupScreen() {
           maxLength={64}
         />
         <FieldError msg={confirmShown} />
+        {sentTo && (
+          <>
+            <Label>인증번호</Label>
+            <Input
+              value={code}
+              onChangeText={(v) => {
+                setCode(v.replace(/\D/g, ''));
+                setCodeMsg(null);
+              }}
+              invalid={!!codeMsg}
+              placeholder="메일로 받은 숫자 6자리"
+              keyboardType="number-pad"
+              textContentType="oneTimeCode"
+              autoComplete="one-time-code"
+              maxLength={6}
+            />
+            <FieldError msg={codeMsg} />
+            <Pressable
+              accessibilityRole="button"
+              disabled={send.isPending}
+              onPress={() => send.mutate(sentTo)}
+              className="mt-2 self-start"
+            >
+              <Text className="text-footnote font-semibold text-brand">인증번호 다시 받기</Text>
+            </Pressable>
+          </>
+        )}
         {taken && (
           <View className="mt-3 flex-row items-center gap-2">
             <Text className="text-footnote text-danger">이미 가입한 이메일이에요</Text>
