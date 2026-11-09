@@ -1,8 +1,6 @@
 import {
   BadRequestException,
   ConflictException,
-  HttpException,
-  HttpStatus,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -10,15 +8,14 @@ import { InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES, NoteAskBody } from '@notelink/shared';
 import { Model, Types } from 'mongoose';
 
-import { type AppAiJob, AiJobsService } from '../../../ai-jobs/ai-jobs.service.js';
-import { AiJob, type AiJobDocument } from '../../quiz/schemas/ai-job.schema.js';
+import { type AppAiJob, AiJobsService, PENDING_LIMIT } from '../../../ai-jobs/ai-jobs.service.js';
 import { Material } from '../schemas/material.schema.js';
 import { Recording } from '../schemas/recording.schema.js';
 
 /** 처리기에 넘기는 노트 글 최대 길이(apps/ai note/ask.py MAX_CONTEXT와 같음) */
 export const MAX_CONTEXT = 12_000;
-/** 한 사용자가 동시에 기다릴 수 있는 질문 수. 학교 LLM 분당 한도를 함께 쓰므로 몰아 보내지 못하게 */
-export const MAX_PENDING = 2;
+/** 한 사용자가 동시에 기다릴 수 있는 질문 수(AiJobsService PENDING_LIMIT) */
+export const MAX_PENDING = PENDING_LIMIT.note_ask;
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const notFound = () =>
@@ -53,7 +50,6 @@ export class NoteAskService {
   constructor(
     @InjectModel(Material.name) private readonly materials: Model<Material>,
     @InjectModel(Recording.name) private readonly recordings: Model<Recording>,
-    @InjectModel(AiJob.name) private readonly jobRows: Model<AiJobDocument>,
     private readonly jobs: AiJobsService,
   ) {}
 
@@ -87,20 +83,7 @@ export class NoteAskService {
         code: ERROR_CODES.NOTE_NOT_READY,
         message: '노트 정리가 끝나면 물어볼 수 있어요',
       });
-    const pending = await this.jobRows.countDocuments({
-      userId: owner,
-      type: 'note_ask',
-      status: { $in: ['queued', 'running'] },
-    });
-    if (pending >= MAX_PENDING)
-      throw new HttpException(
-        {
-          code: ERROR_CODES.RATE_LIMITED,
-          message: '앞의 질문에 답하는 중이에요',
-          retryAfterSeconds: 10,
-        },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
+    // 사용자별 대기 한도(MAX_PENDING)는 AiJobsService가 넣을 때 · 다시 시도할 때 함께 지킨다
     return this.jobs.enqueue({
       type: 'note_ask',
       userId,

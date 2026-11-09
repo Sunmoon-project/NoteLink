@@ -103,5 +103,9 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     answer = out.get("answer")
     if not isinstance(answer, str) or not answer.strip():
         raise LlmError("빈 답")  # 일시 오류처럼 시도 한도 안에서 다시
-    refs = [r.strip() for r in out.get("refs") or [] if isinstance(r, str) and r.strip()]
+    # 답은 멀쩡한데 refs만 배열이 아니면(문자열 · 숫자) 근거 없이 답만 쓴다.
+    # 문자열을 그대로 돌면 글자별 참조가 되고, 숫자는 TypeError로 작업이 실패한다
+    raw_refs = out.get("refs")
+    items = raw_refs if isinstance(raw_refs, list) else []
+    refs = [r.strip() for r in items if isinstance(r, str) and r.strip()]
     return {"answer": answer.strip(), "refs": refs[:MAX_REFS]}

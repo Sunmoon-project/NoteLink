@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
+import { ERROR_CODES } from '@notelink/shared';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
@@ -14,6 +15,24 @@ export const PREGEN_TYPE = 'quiz_pregen';
 const ACTIVE = ['queued', 'running'];
 /** 앱의 '다시 시도'로 다시 넣을 수 있는 상태 */
 const RETRYABLE = ['failed', 'canceled'];
+
+/**
+ * 사용자마다 동시에 기다릴 수 있는 작업 수(종류별). 학교 LLM 분당 한도를 함께 쓰는 작업을 몰아 보내지 못하게 한다.
+ * 새로 넣을 때와 다시 시도할 때 모두 이 서비스가 지킨다(호출하는 쪽에서 따로 세지 않는다).
+ */
+export const PENDING_LIMIT = { note_ask: 2 } as const satisfies Record<string, number>;
+const limitOf = (type: string): number | undefined =>
+  (PENDING_LIMIT as Record<string, number | undefined>)[type];
+
+const tooMany = () =>
+  new HttpException(
+    {
+      code: ERROR_CODES.RATE_LIMITED,
+      message: '앞의 요청을 처리하는 중이에요',
+      retryAfterSeconds: 10,
+    },
+    HttpStatus.TOO_MANY_REQUESTS,
+  );
 
 /** 작업을 넣을 때 NestJS가 정하는 값. 나머지(상태 · 시도 · 결과)는 서비스가 처음 값으로 채운다 */
 export interface NewAiJob {
@@ -134,11 +153,17 @@ const unlocked = (now: Date) => [{ lockedUntil: null }, { lockedUntil: { $lte: n
 export class AiJobsService {
   constructor(@InjectModel(AiJob.name) private readonly jobs: Model<AiJobDocument>) {}
 
-  /** 처리기가 가져갈 수 있게 queued로 넣는다 */
+  /**
+   * 처리기가 가져갈 수 있게 queued로 넣는다. PENDING_LIMIT에 있는 종류는 넣은 뒤에 센다:
+   * 세고 나서 넣으면 동시에 온 요청이 같은 수를 읽고 함께 넘친다(Codex #244).
+   * 나보다 먼저 들어온(_id가 작거나 같은) 처리 대기 작업만 세므로, 동시에 와도 먼저 들어온 한도 수만 남고
+   * 나머지는 canceled로 돌리고 429. 처리기가 그 사이 가져갔어도 canceled면 결과를 버린다.
+   */
   async enqueue(job: NewAiJob): Promise<AppAiJob> {
+    const userId = serverObjectId(job.userId, 'userId');
     const created = await this.jobs.create({
       type: job.type,
-      userId: serverObjectId(job.userId, 'userId'),
+      userId,
       targetType: job.targetType,
       targetId: serverObjectId(job.targetId, 'targetId'),
       input: job.input,
@@ -148,7 +173,26 @@ export class AiJobsService {
       result: null,
       awaited: false,
     });
-    return toAppJob(created.toObject<AiJobRow>());
+    const row = created.toObject<AiJobRow>();
+    const limit = limitOf(job.type);
+    if (limit !== undefined) {
+      const ahead = await this.jobs.countDocuments({
+        userId,
+        type: job.type,
+        status: { $in: ACTIVE },
+        _id: { $lte: row._id },
+      });
+      if (ahead > limit) {
+        await this.jobs
+          .findOneAndUpdate(
+            { _id: row._id, status: { $in: ACTIVE } },
+            { $set: { status: 'canceled' } },
+          )
+          .lean();
+        throw tooMany();
+      }
+    }
+    return toAppJob(row);
   }
 
   /** 앱의 진행 상태 조회. 본인 작업만 */
@@ -188,26 +232,57 @@ export class AiJobsService {
    */
   async retry(userId: string, jobId: string): Promise<AppAiJob> {
     const filter = { _id: objectId(jobId), userId: objectId(userId) };
-    const row = await this.jobs
+    const reset = {
+      status: 'queued',
+      attempts: 0,
+      progress: 0,
+      retryAt: null,
+      lockedUntil: null,
+      result: null,
+      error: null,
+    };
+    // 한도를 넘으면 되돌려야 하므로 바꾸기 전 값을 받는다
+    const before = await this.jobs
       .findOneAndUpdate(
         { ...filter, status: { $in: RETRYABLE }, $or: unlocked(new Date()) },
-        {
-          $set: {
-            status: 'queued',
-            attempts: 0,
-            progress: 0,
-            retryAt: null,
-            lockedUntil: null,
-            result: null,
-            error: null,
-          },
-          $unset: { step: '', lockedBy: '' },
-        },
-        { returnDocument: 'after', projection: APP_PROJECTION },
+        { $set: reset, $unset: { step: '', lockedBy: '' } },
+        { projection: APP_PROJECTION },
       )
-      .lean<AiJobRow>();
-    if (row) return toAppJob(row);
-    return this.findMine(userId, jobId);
+      .lean<AiJobRow & { userId: Types.ObjectId }>();
+    if (!before) return this.findMine(userId, jobId);
+    const limit = limitOf(before.type);
+    // 다시 넣은 작업은 _id가 오래돼 앞 순서로 세면 새 작업보다 먼저가 되므로, 자기를 포함한 전체를 센다.
+    // 동시에 다시 시도하면 함께 거절될 수 있지만 한도는 넘지 않는다
+    if (
+      limit !== undefined &&
+      (await this.jobs.countDocuments({
+        userId: before.userId,
+        type: before.type,
+        status: { $in: ACTIVE },
+      })) > limit
+    ) {
+      const restore = {
+        status: before.status,
+        attempts: before.attempts ?? 0,
+        progress: before.progress ?? 0,
+        result: before.result ?? null,
+        error: before.error ?? null,
+      };
+      const back = await this.jobs
+        .findOneAndUpdate({ _id: before._id, status: 'queued' }, { $set: restore })
+        .lean();
+      // 그 사이 처리기가 가져갔으면 취소로 표시해 결과를 버리게 한다
+      if (!back)
+        await this.jobs
+          .findOneAndUpdate(
+            { _id: before._id, status: 'running' },
+            { $set: { status: 'canceled' } },
+          )
+          .lean();
+      throw tooMany();
+    }
+    const { step: _step, ...rest } = before;
+    return toAppJob({ ...rest, ...reset });
   }
 
   /**

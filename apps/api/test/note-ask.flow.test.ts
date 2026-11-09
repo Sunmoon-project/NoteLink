@@ -8,7 +8,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { configureApp } from '../src/app.setup.js';
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
-import { MAX_CONTEXT } from '../src/modules/content/note-ask/note-ask.service.js';
+import {
+  MAX_CONTEXT,
+  MAX_PENDING,
+  NoteAskService,
+} from '../src/modules/content/note-ask/note-ask.service.js';
 import { Material } from '../src/modules/content/schemas/material.schema.js';
 import { Recording } from '../src/modules/content/schemas/recording.schema.js';
 import { AiJob } from '../src/modules/quiz/schemas/ai-job.schema.js';
@@ -149,6 +153,68 @@ describe('아바타에게 노트 묻기 (POST /api/v1/materials/:id/ask)', () =>
     await ask(id).expect(202);
     const res = await ask(id).expect(429);
     expect(res.body).toMatchObject({ code: ERROR_CODES.RATE_LIMITED, retryAfterSeconds: 10 });
+  });
+
+  const active = () =>
+    jobs.rows.filter(
+      (r) => r.type === 'note_ask' && ['queued', 'running'].includes(r.status as string),
+    ).length;
+
+  it('질문 세 개가 동시에 와도 먼저 들어온 두 개만 받고 나머지는 429', async () => {
+    const id = note();
+    // 서비스를 직접 동시에 부르고 개수 조회를 늦춰, 한 요청이 세는 동안 다른 요청이 끼어드는 상황을 만든다
+    const service = app.get(NoteAskService);
+    const count = jobs.model.countDocuments.bind(jobs.model);
+    const slow = vi
+      .spyOn(jobs.model, 'countDocuments')
+      // 부를 때의 개수를 세고 답만 늦춘다(그동안 다른 요청이 넣어도 이 요청은 옛 개수를 받는다)
+      .mockImplementation(((filter: never) => {
+        const seen = count(filter);
+        return new Promise((done) => setTimeout(() => done(seen), 20));
+      }) as never);
+    const res = await Promise.allSettled(
+      [1, 2, 3].map(() => service.ask(me.toHexString(), id, { question: '뭐예요?' })),
+    );
+    // 늦춘 조회를 실제로 거쳤는지 (되돌리면 호출 기록도 지워지므로 먼저 본다)
+    expect(slow).toHaveBeenCalled();
+    slow.mockRestore();
+    expect(res.filter((r) => r.status === 'fulfilled')).toHaveLength(MAX_PENDING);
+    const rejected = res.filter((r) => r.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason.getStatus()).toBe(429);
+    expect(active()).toBe(MAX_PENDING);
+  });
+
+  it('취소한 질문을 다시 시도해도 기다리는 질문이 두 개면 429이고, 취소 상태 그대로 남는다', async () => {
+    const id = note();
+    const first = (await ask(id).expect(202)).body.data as { _id: string };
+    await ask(id).expect(202);
+    await request(app.getHttpServer())
+      .post(api(PATHS.aiJobCancel(first._id)))
+      .set('Authorization', `Bearer ${token}`)
+      .expect((r) => expect(r.status).toBeLessThan(300));
+    await ask(id).expect(202);
+    const retried = await request(app.getHttpServer())
+      .post(api(PATHS.aiJobRetry(first._id)))
+      .set('Authorization', `Bearer ${token}`)
+      .expect(429);
+    expect(retried.body).toMatchObject({ code: ERROR_CODES.RATE_LIMITED });
+    expect(active()).toBe(MAX_PENDING);
+    expect(jobs.rows.find((r) => String(r._id) === first._id)?.status).toBe('canceled');
+  });
+
+  it('기다리는 질문이 한도 아래면 취소한 질문을 다시 시도할 수 있다', async () => {
+    const id = note();
+    const first = (await ask(id).expect(202)).body.data as { _id: string };
+    await request(app.getHttpServer())
+      .post(api(PATHS.aiJobCancel(first._id)))
+      .set('Authorization', `Bearer ${token}`)
+      .expect((r) => expect(r.status).toBeLessThan(300));
+    const retried = await request(app.getHttpServer())
+      .post(api(PATHS.aiJobRetry(first._id)))
+      .set('Authorization', `Bearer ${token}`);
+    expect(retried.status).toBeLessThan(300);
+    expect(retried.body.data).toMatchObject({ _id: first._id, status: 'queued' });
   });
 
   it('로그인하지 않으면 401', async () => {

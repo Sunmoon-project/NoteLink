@@ -68,3 +68,10 @@ def test_empty_answer_is_retried_as_llm_error() -> None:
     llm = FakeLlm({"note_ask": [{"answer": " ", "refs": []}]})
     with pytest.raises(LlmError):
         ask.run(llm, job_input(), noop)
+
+
+@pytest.mark.parametrize("refs", ["교착 상태", 3, None, {"a": 1}])
+def test_refs_that_are_not_a_list_are_dropped_and_answer_kept(refs: object) -> None:
+    llm = FakeLlm({"note_ask": [{"answer": "네 가지예요.", "refs": refs}]})
+    out = ask.run(llm, job_input(), noop)
+    assert out == {"answer": "네 가지예요.", "refs": []}
