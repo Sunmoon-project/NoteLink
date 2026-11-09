@@ -127,7 +127,7 @@ describe('PointService.earn', () => {
         expect(ledgerModel.create).not.toHaveBeenCalled();
     });
 
-    // 잔액 롤백은 DB 트랜잭션이 보장한다(실제 DB에서 확인)
+    // 잔액 롤백은 point-earn-real-db.test.ts에서 실제 DB로 확인한다
     it('장부 저장 실패 시 오류를 그대로 던진다', async () => {
         ledgerModel.create.mockRejectedValueOnce(new Error('ledger down'));
         await expect(points.earn(userId.toString(), 30, 'admin', null)).rejects.toThrow('ledger down');
