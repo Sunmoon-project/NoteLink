@@ -7,13 +7,13 @@ import { OFF_TOPIC, UNSAFE, localAnswer } from '../lib/local/tutor';
 import * as SecureStore from 'expo-secure-store';
 import { TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
 import { AvatarCheer, ENCOURAGE, PRAISE } from '../features/tutor/cheer';
-import { STEPS, TourScreen, useTourOnce } from '../features/tutor/tour';
+import { STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
 import { useAuth } from '../stores/auth';
 import { TutorScreen } from '../features/tutor/tutor';
 import { renderScreen, setParams } from '../test-utils';
 
 jest.mock('expo-router', () => ({
-  router: { push: jest.fn(), back: jest.fn(), replace: jest.fn() },
+  router: { push: jest.fn(), back: jest.fn(), replace: jest.fn(), navigate: jest.fn() },
   useLocalSearchParams: () => globalThis.mockParams,
   useSegments: () => [],
   useFocusEffect: () => {},
@@ -138,7 +138,7 @@ describe('아바타 선생님 대화', () => {
   it('답을 만들지 못한 작업은 다시 물어보라고 안내한다', async () => {
     mockApi.content.ask.mockResolvedValue(job({ status: 'failed', result: null }));
     await renderScreen(<TutorScreen />);
-    await fireEvent.press(await screen.findByText('시험에 나올 만한 건요?'));
+    await fireEvent.press(await screen.findByText('시험에 나올 만한 내용은 뭐예요?'));
     expect(
       await screen.findByText('답을 만들지 못했어요. 연결을 확인하고 다시 물어봐 주세요.'),
     ).toBeTruthy();
@@ -150,7 +150,7 @@ describe('아바타 선생님 대화', () => {
       .mockResolvedValueOnce(job({ result: { answer: long, refs: [] } }))
       .mockResolvedValueOnce(job());
     await renderScreen(<TutorScreen />);
-    await fireEvent.press(await screen.findByText('시험에 나올 만한 건요?'));
+    await fireEvent.press(await screen.findByText('시험에 나올 만한 내용은 뭐예요?'));
     await screen.findByText(long);
     await fireEvent.changeText(screen.getByPlaceholderText('노트에 대해 물어보기'), '더 짧게요');
     await fireEvent.press(screen.getByLabelText('질문 보내기'));
@@ -163,7 +163,7 @@ describe('아바타 선생님 대화', () => {
   it('서버에 묻기 경로가 아직 없으면(404) 준비 중이라고 안내한다', async () => {
     mockApi.content.ask.mockRejectedValue(new ApiError(ERROR_CODES.NOT_FOUND, 'Cannot POST', 404));
     await renderScreen(<TutorScreen />);
-    await fireEvent.press(await screen.findByText('시험에 나올 만한 건요?'));
+    await fireEvent.press(await screen.findByText('시험에 나올 만한 내용은 뭐예요?'));
     expect(await screen.findByText('아바타에게 묻기는 준비 중이에요. 곧 열려요.')).toBeTruthy();
   });
 
@@ -181,7 +181,7 @@ describe('노트 상세에 떠 있는 아바타 선생님', () => {
   it('누르면 아바타 선생님 화면을 열고, 처음에 할 일을 말풍선으로 알려 준다', async () => {
     await renderScreen(<TutorBuddy id="m1" tucked={false} />);
     expect(await screen.findByText('3D:base')).toBeTruthy();
-    expect(await screen.findByText('노트를 물어보세요', {}, { timeout: 3000 })).toBeTruthy();
+    expect(await screen.findByText('노트에 대해 물어보세요', {}, { timeout: 3000 })).toBeTruthy();
     await fireEvent.press(screen.getByLabelText('아바타 선생님에게 물어보기'));
     expect(router.push).toHaveBeenCalledWith({ pathname: '/tutor/[id]', params: { id: 'm1' } });
   });
@@ -280,45 +280,60 @@ describe('퀴즈 · 복습 문제의 아바타 한마디', () => {
 });
 
 describe('처음 안내', () => {
-  it('정리 → 학습 → 복습을 차례로 설명하고, 끝나면 다시 보여 주지 않게 남긴다', async () => {
+  beforeEach(() => {
     useAuth.setState({ userId: 'u1' });
-    await renderScreen(<TourScreen />);
+    useTour.setState({ step: 0 });
+  });
+
+  it('실제 화면(홈 → 노트 → 퀴즈 → 홈)을 옮겨 다니며 단계마다 설명하고, 끝나면 기록한다', async () => {
+    await renderScreen(<TourCoach />);
     expect(screen.getByText(STEPS[0]!.title)).toBeTruthy();
+    expect(router.navigate).toHaveBeenLastCalledWith('/');
     for (const s of STEPS.slice(1)) {
       await fireEvent.press(screen.getByText('다음'));
       expect(await screen.findByText(s.title)).toBeTruthy();
+      expect(router.navigate).toHaveBeenLastCalledWith(s.route);
     }
-    await fireEvent.press(screen.getByText('첫 노트 만들러 가기'));
+    expect(STEPS.map((s) => s.route)).toEqual([
+      '/',
+      '/note',
+      '/note',
+      '/note',
+      '/quiz',
+      '/quiz',
+      '/',
+    ]);
+    await fireEvent.press(screen.getByText('첫 학습 폴더 만들기'));
     await waitFor(() =>
       expect(SecureStore.setItemAsync).toHaveBeenCalledWith('notelink.toured', '["u1"]'),
     );
-    expect(router.back).toHaveBeenCalled();
-    expect(router.push).toHaveBeenCalledWith('/note');
+    expect(router.navigate).toHaveBeenLastCalledWith('/note');
+    expect(useTour.getState().step).toBe(-1);
   });
 
   it('건너뛰기는 한 번 더 묻고, 계속 보기를 고르면 안내에 남는다', async () => {
-    useAuth.setState({ userId: 'u1' });
-    await renderScreen(<TourScreen />);
+    await renderScreen(<TourCoach />);
     await fireEvent.press(screen.getByText('건너뛰기'));
     expect(await screen.findByText('안내를 건너뛰시겠습니까?')).toBeTruthy();
     await fireEvent.press(screen.getByText('계속 보기'));
-    expect(router.back).not.toHaveBeenCalled();
+    expect(useTour.getState().step).toBe(0);
     await fireEvent.press(screen.getByText('건너뛰기'));
     const confirm = await screen.findAllByText('건너뛰기');
     await fireEvent.press(confirm[confirm.length - 1]!);
-    await waitFor(() => expect(router.back).toHaveBeenCalled());
+    await waitFor(() => expect(useTour.getState().step).toBe(-1));
     expect(SecureStore.setItemAsync).toHaveBeenCalledWith('notelink.toured', '["u1"]');
   });
 
   it('가입을 마친 계정이 처음 들어오면 한 번만 연다', async () => {
+    useTour.setState({ step: -1 });
     useAuth.setState({ userId: 'u2' });
     (SecureStore.getItemAsync as jest.Mock).mockResolvedValueOnce('["u1"]');
     await renderHook(() => useTourOnce(true));
-    await waitFor(() => expect(router.push).toHaveBeenCalledWith('/tour'));
-    jest.clearAllMocks();
+    await waitFor(() => expect(useTour.getState().step).toBe(0));
+    useTour.setState({ step: -1 });
     (SecureStore.getItemAsync as jest.Mock).mockResolvedValueOnce('["u2"]');
     await renderHook(() => useTourOnce(true));
     await act(async () => {});
-    expect(router.push).not.toHaveBeenCalled();
+    expect(useTour.getState().step).toBe(-1);
   });
 });

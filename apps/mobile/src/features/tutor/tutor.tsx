@@ -34,7 +34,7 @@ type Msg = {
 const SUGGEST = [
   '이 노트 핵심만 알려 주세요',
   '어려운 개념을 쉽게 설명해 주세요',
-  '시험에 나올 만한 건요?',
+  '시험에 나올 만한 내용은 뭐예요?',
 ];
 const STATUS: Record<Mood, string> = {
   idle: '노트에서 궁금한 걸 물어보세요',

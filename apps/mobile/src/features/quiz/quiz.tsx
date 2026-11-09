@@ -63,6 +63,7 @@ import {
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
 import { AvatarCheer } from '@/features/tutor/cheer';
+import { useTourTarget } from '@/features/tutor/tour';
 import { seoul } from '@/lib/dates';
 import { aiWaiting } from '@/lib/ai';
 import { AiPending } from '@/components/AiPending';
@@ -93,6 +94,8 @@ const Tutor = ({ size = 76 }: { size?: number }) => (
 );
 
 export function QuizHomeScreen() {
+  // 처음 안내의 '퀴즈 만들기'가 짚는 자리
+  const makeTarget = useTourTarget('quiz-make');
   const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
   const progress = useQuizProgress((s) => s.progress);
   const latest = progress
@@ -150,17 +153,22 @@ export function QuizHomeScreen() {
                   [Sparkles, '유사 퀴즈', '틀린 문제와 비슷한 문제를 풀어요', '/play/similar'],
                 ] as const
               ).map(([Ic, l, sub, href]) => (
-                <Row
+                <View
                   key={l}
-                  icon={Ic}
-                  sub={sub}
-                  chevron
-                  onPress={() =>
-                    router.push({ pathname: href as never, params: { setId: latest._id } })
-                  }
+                  ref={l === '퀴즈 만들기' ? makeTarget : undefined}
+                  collapsable={false}
                 >
-                  {l}
-                </Row>
+                  <Row
+                    icon={Ic}
+                    sub={sub}
+                    chevron
+                    onPress={() =>
+                      router.push({ pathname: href as never, params: { setId: latest._id } })
+                    }
+                  >
+                    {l}
+                  </Row>
+                </View>
               ))}
             </Group>
           </>
@@ -174,9 +182,11 @@ export function QuizHomeScreen() {
               <Text className="text-caption text-sub">
                 노트를 업로드하면 자동으로 퀴즈가 생성돼요
               </Text>
-              <Btn small className="mt-5 w-56" onPress={() => router.push('/(tabs)/quiz/notes')}>
-                노트 업로드하고 퀴즈 만들기
-              </Btn>
+              <View ref={makeTarget} collapsable={false}>
+                <Btn small className="mt-5 w-56" onPress={() => router.push('/(tabs)/quiz/notes')}>
+                  노트 업로드하고 퀴즈 만들기
+                </Btn>
+              </View>
             </View>
           )
         )}

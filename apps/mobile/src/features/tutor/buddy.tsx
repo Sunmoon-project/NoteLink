@@ -139,7 +139,7 @@ export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
           className="mr-2 rounded-full bg-ink px-3 py-1.5"
           pointerEvents="none"
         >
-          <Text className="text-caption font-semibold text-white">노트를 물어보세요</Text>
+          <Text className="text-caption font-semibold text-white">노트에 대해 물어보세요</Text>
         </Animated.View>
       )}
       <Animated.View style={style}>
