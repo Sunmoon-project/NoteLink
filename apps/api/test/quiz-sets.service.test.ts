@@ -7,6 +7,7 @@ import {
   fitInput,
   INPUT_ATTEMPT_LIMIT,
   INPUT_BYTE_LIMIT,
+  QUIZ_MIN_LINES,
   QUIZ_SET_SIZE,
   QuizSetsService,
   seoulDay,
@@ -23,6 +24,10 @@ import {
 } from '../src/modules/quiz/schemas/quiz-set.schema.js';
 import { createFakeCollection, type Row } from './support/fake-collection.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
+
+/** 처리기가 물을 수 있는 쪽 글(QUIZ_MIN_LINES줄) */
+const NOTE_TEXT =
+  '세포막은 세포를 둘러싼다.\n핵에는 DNA가 있다.\n리보솜은 단백질을 만든다.\n미토콘드리아는 에너지를 만든다.\n골지체는 단백질을 포장한다.';
 
 const ME = new Types.ObjectId();
 const OTHER = new Types.ObjectId();
@@ -68,7 +73,7 @@ function setup() {
       title: '세포 생물학',
       deletedAt: null,
       pages: [
-        { pageNo: 1, ocrText: '세포막은 세포를 둘러싼다.' },
+        { pageNo: 1, ocrText: NOTE_TEXT },
         { pageNo: 2, ocrText: '   ' },
         { pageNo: 3, ocrText: null },
       ],
@@ -114,7 +119,7 @@ describe('QuizSetsService.create', () => {
     expect(input['material']).toEqual({
       id: materialId,
       title: '세포 생물학',
-      pages: [{ pageNo: 1, ocrText: '세포막은 세포를 둘러싼다.' }],
+      pages: [{ pageNo: 1, ocrText: NOTE_TEXT }],
     });
     expect(input).toMatchObject({ size: QUIZ_SET_SIZE, sets: [], attempts: [], notes: {} });
   });
@@ -146,6 +151,56 @@ describe('QuizSetsService.create', () => {
     });
     expect(jobs.rows).toHaveLength(0);
     expect(sets.rows).toHaveLength(0);
+  });
+
+  it.each([
+    ['줄이 적음', ['가', '나', '다', '라'].join('\n')],
+    ['[?] 줄을 빼면 적음', ['가', '나 [?]', '다', '라', '마 [?]', '', '바'].join('\n')],
+    // Python strip()은 지우고 JS trim()은 남기는 글자만 있는 줄(처리기는 빈 줄로 뺀다)
+    ['빈 줄로 보는 글자', ['가', '나', '다', '라', '\x1c\x85'].join('\n')],
+  ])(
+    '물을 수 있는 쪽이 없으면(%s) 400 VALIDATION_FAILED이고 작업을 넣지 않는다',
+    async (_name, text) => {
+      const { service, addNote, jobs, sets } = setup();
+      const materialId = await addNote({ pages: [{ pageNo: 1, ocrText: text }] });
+      await expect(service.create(ME.toHexString(), materialId)).rejects.toMatchObject({
+        status: 400,
+        response: {
+          code: 'VALIDATION_FAILED',
+          message: expect.stringContaining(`${QUIZ_MIN_LINES}줄 이상`),
+        },
+      });
+      expect(jobs.rows).toHaveLength(0);
+      expect(sets.rows).toHaveLength(0);
+    },
+  );
+
+  it('[?] 줄을 빼고도 QUIZ_MIN_LINES줄 남는 쪽이 하나라도 있으면 만든다(글은 그대로 보냄)', async () => {
+    const { service, addNote, job } = setup();
+    const text = [...Array.from({ length: QUIZ_MIN_LINES }, (_, i) => `줄 ${i}`), '흐림 [?]'].join(
+      '\n',
+    );
+    const materialId = await addNote({
+      pages: [
+        { pageNo: 1, ocrText: '짧은 쪽' },
+        { pageNo: 2, ocrText: text },
+      ],
+    });
+    const { job: created } = await service.create(ME.toHexString(), materialId);
+    const input = job(created._id)['input'] as { material: { pages: unknown[] } };
+    expect(input.material.pages).toEqual([
+      { pageNo: 1, ocrText: '짧은 쪽' },
+      { pageNo: 2, ocrText: text },
+    ]);
+  });
+
+  it('만드는 중인 세트가 있으면 그사이 노트 글이 줄어도 400이 아니라 그 세트를 돌려준다', async () => {
+    const { service, addNote, materials } = setup();
+    const materialId = await addNote();
+    const first = await service.create(ME.toHexString(), materialId);
+    Object.assign(materials.rows[0]!, { pages: [{ pageNo: 1, ocrText: '짧은 쪽' }] });
+    const again = await service.create(ME.toHexString(), materialId);
+    expect(again.quizSet._id).toBe(first.quizSet._id);
   });
 
   it('같은 노트에 만드는 중인 세트가 있으면 새로 만들지 않고 그 세트 · 작업을 돌려준다', async () => {
@@ -620,10 +675,12 @@ describe('fitInput (처리기 입력 크기 한도)', () => {
 
   it('만들 때 노트가 너무 길면 400이고 작업 · 세트를 남기지 않는다', async () => {
     const { service, addNote, jobs, sets } = setup();
-    const materialId = await addNote({ pages: page(INPUT_BYTE_LIMIT) });
+    const line = 'x'.repeat(INPUT_BYTE_LIMIT / QUIZ_MIN_LINES);
+    const long = [{ pageNo: 1, ocrText: Array(QUIZ_MIN_LINES).fill(line).join('\n') }];
+    const materialId = await addNote({ pages: long });
     await expect(service.create(ME.toHexString(), materialId)).rejects.toMatchObject({
       status: 400,
-      response: { code: 'VALIDATION_FAILED' },
+      response: { code: 'VALIDATION_FAILED', message: expect.stringContaining('너무 길어') },
     });
     expect(jobs.rows).toHaveLength(0);
     expect(sets.rows).toHaveLength(0);

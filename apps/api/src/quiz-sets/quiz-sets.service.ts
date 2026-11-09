@@ -270,6 +270,12 @@ export class QuizSetsService {
         message: '노트 글이 아직 없어요. 노트 정리가 끝난 뒤 다시 시도해 주세요',
       });
     }
+    if (!pages.some(askable)) {
+      throw new BadRequestException({
+        code: VALIDATION_FAILED,
+        message: `문제를 낼 만큼 읽은 글이 없어요. 읽은 글이 ${QUIZ_MIN_LINES}줄 이상인 쪽이 있어야 해요`,
+      });
+    }
 
     const setId = new Types.ObjectId();
     const job =
@@ -510,6 +516,28 @@ export function fitInput(input: WorkerInput, limit = INPUT_BYTE_LIMIT): WorkerIn
     notes: Object.fromEntries(Object.entries(input.notes).filter(([id]) => noteIds.has(id))),
   };
 }
+
+/** 처리기가 문제를 내는 쪽의 최소 줄 수(apps/ai services/quiz/generate.py MIN_LINES) */
+export const QUIZ_MIN_LINES = 5;
+
+/**
+ * 처리기가 문제를 낼 수 있는 쪽인지. 처리기는 빈 줄 · 확실하지 않은 [?] 낱말이 있는 줄을 빼고
+ * (apps/ai services/quiz/text.py clean_pages) QUIZ_MIN_LINES줄 이상 남은 쪽에서만 묻는다(allocate).
+ * 그런 쪽이 없으면 처리기가 0문제로 작업을 성공으로 끝내, 앱이 빈 성공 화면을 보여 준다(Codex 재리뷰 #236).
+ * 노트 조각(chunks)은 아직 보내지 않아 처리기도 쪽 글만 쓴다. 조각을 보내면 처리기 note_pages와 맞춘다.
+ * 이것은 앞에서 거르는 것이고, 그 밖의 0문제 결과(초안이 모두 탈락)를 실패로 끝내는 일은 처리기(#247)
+ */
+function askable(page: WorkerPage): boolean {
+  const lines = page.ocrText
+    .split('\n')
+    .filter((ln) => !PY_SPACE_ONLY.test(ln) && !ln.includes('[?]'));
+  return lines.length >= QUIZ_MIN_LINES;
+}
+
+/** Python str.strip()이 지우는 글자(str.isspace)만으로 된 줄. JS trim()과는 몇 글자가 달라 따로 둔다 */
+const PY_SPACE_ONLY =
+  // eslint-disable-next-line no-control-regex -- Python isspace가 공백으로 보는 제어 글자 0x1C~0x1F
+  /^[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/;
 
 /** 글이 있는 쪽만(정리 전 · 빈 쪽은 처리기가 문제를 낼 수 없다) */
 function textPages(pages: PageRow[] | undefined): { pageNo: number; ocrText: string }[] {

@@ -66,7 +66,13 @@ describe('퀴즈 세트 주소 (/api/v1/quiz-sets)', () => {
       folderId: new Types.ObjectId(),
       title: '세포 생물학',
       deletedAt: null,
-      pages: [{ pageNo: 1, ocrText: '세포막은 세포를 둘러싼다.' }],
+      pages: [
+        {
+          pageNo: 1,
+          ocrText:
+            '세포막은 세포를 둘러싼다.\n핵에는 DNA가 있다.\n리보솜은 단백질을 만든다.\n미토콘드리아는 에너지를 만든다.\n골지체는 단백질을 포장한다.',
+        },
+      ],
     } as never)) as unknown as { _id: Types.ObjectId };
     return created._id.toHexString();
   };
