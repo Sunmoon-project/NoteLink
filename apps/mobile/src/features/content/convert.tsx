@@ -470,16 +470,18 @@ export function ResultScreen() {
   });
   if (m.isError && !m.data)
     return (
-      <Screen>
-        <Header title="변환 결과" />
-        <Text>변환 결과를 불러오지 못했어요</Text>
-        <Btn loading={m.isFetching} onPress={() => void m.refetch()}>
-          다시 시도
-        </Btn>
-        <Btn kind="outline" onPress={() => router.back()}>
-          뒤로
-        </Btn>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Header title="변환 결과" />
+          <Text>변환 결과를 불러오지 못했어요</Text>
+          <Btn loading={m.isFetching} onPress={() => void m.refetch()}>
+            다시 시도
+          </Btn>
+          <Btn kind="outline" onPress={() => router.back()}>
+            뒤로
+          </Btn>
+        </Screen>
+      </Canvas>
     );
   if (!m.data) return <Loading />;
   const mat = m.data;

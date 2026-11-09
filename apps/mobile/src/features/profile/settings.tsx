@@ -92,18 +92,20 @@ export function SettingsScreen() {
   // 내 정보를 못 불러와도 다시 시도 · 로그아웃은 할 수 있게 한다
   if (me.isError && !me.data)
     return (
-      <Screen>
-        <Title>설정</Title>
-        <Empty
-          icon={<CircleAlert size={32} color={C.danger} />}
-          title="내 정보를 불러오지 못했어요"
-        >
-          <Btn onPress={() => me.refetch()}>다시 시도</Btn>
-          <Btn kind="cream" className="mt-2" onPress={() => signOut(false)}>
-            로그아웃
-          </Btn>
-        </Empty>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Title>설정</Title>
+          <Empty
+            icon={<CircleAlert size={32} color={C.danger} />}
+            title="내 정보를 불러오지 못했어요"
+          >
+            <Btn onPress={() => me.refetch()}>다시 시도</Btn>
+            <Btn kind="cream" className="mt-2" onPress={() => signOut(false)}>
+              로그아웃
+            </Btn>
+          </Empty>
+        </Screen>
+      </Canvas>
     );
   if (!me.data) return <Loading />;
   const u = me.data;

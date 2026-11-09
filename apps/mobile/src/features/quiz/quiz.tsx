@@ -687,10 +687,12 @@ export function QuizSolveScreen() {
   }, [completed, attemptId, completedSetId, ownsProgress]);
   if (set.isError && !set.data)
     return (
-      <Screen>
-        <Text>퀴즈를 불러오지 못했어요</Text>
-        <Btn onPress={() => set.refetch()}>다시 시도</Btn>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Text>퀴즈를 불러오지 못했어요</Text>
+          <Btn onPress={() => set.refetch()}>다시 시도</Btn>
+        </Screen>
+      </Canvas>
     );
   if (!set.data) return <Loading />;
   const qs = set.data.questions;
@@ -698,18 +700,20 @@ export function QuizSolveScreen() {
   // 문제가 없거나 저장된 위치가 어긋나면 로딩에 갇히지 않게 나갈 길을 준다
   if (!q)
     return (
-      <Screen>
-        <Text className="pt-8 text-center text-body text-ink">풀 수 있는 문제가 없어요</Text>
-        <Btn
-          className="mt-4"
-          onPress={() => {
-            if (ownsProgress()) useQuizProgress.getState().reset();
-            router.back();
-          }}
-        >
-          돌아가기
-        </Btn>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Text className="pt-8 text-center text-body text-ink">풀 수 있는 문제가 없어요</Text>
+          <Btn
+            className="mt-4"
+            onPress={() => {
+              if (ownsProgress()) useQuizProgress.getState().reset();
+              router.back();
+            }}
+          >
+            돌아가기
+          </Btn>
+        </Screen>
+      </Canvas>
     );
   const speak = () => {
     if (speaking) {
@@ -954,15 +958,17 @@ export function QuizReviewScreen() {
   const qs = set.data?.questions ?? [];
   if (set.isError && !set.data)
     return (
-      <Screen>
-        <Text>완료한 퀴즈를 불러오지 못했어요</Text>
-        <Btn loading={set.isFetching} onPress={() => void set.refetch()}>
-          다시 시도
-        </Btn>
-        <Btn kind="outline" onPress={() => router.back()}>
-          뒤로
-        </Btn>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Text>완료한 퀴즈를 불러오지 못했어요</Text>
+          <Btn loading={set.isFetching} onPress={() => void set.refetch()}>
+            다시 시도
+          </Btn>
+          <Btn kind="outline" onPress={() => router.back()}>
+            뒤로
+          </Btn>
+        </Screen>
+      </Canvas>
     );
   if (!set.data) return <Loading />;
   return (
@@ -1091,21 +1097,25 @@ export function QuizExplainScreen() {
   const query = setId ? source : box;
   if (query.isError && !query.data)
     return (
-      <Screen>
-        <Text>설명할 문제를 불러오지 못했어요</Text>
-        <Btn onPress={() => void query.refetch()}>문제 다시 시도</Btn>
-        <Btn kind="outline" onPress={() => router.back()}>
-          뒤로 가기
-        </Btn>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Text>설명할 문제를 불러오지 못했어요</Text>
+          <Btn onPress={() => void query.refetch()}>문제 다시 시도</Btn>
+          <Btn kind="outline" onPress={() => router.back()}>
+            뒤로 가기
+          </Btn>
+        </Screen>
+      </Canvas>
     );
   if (query.isPending) return <Loading />;
   if (!q)
     return (
-      <Screen>
-        <Text>문제를 찾을 수 없어요</Text>
-        <Btn onPress={() => router.back()}>뒤로 가기</Btn>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Text>문제를 찾을 수 없어요</Text>
+          <Btn onPress={() => router.back()}>뒤로 가기</Btn>
+        </Screen>
+      </Canvas>
     );
   return (
     <Canvas>
@@ -1421,15 +1431,17 @@ export function QuizBoxScreen() {
   }
   if (box.isError && !box.data)
     return (
-      <Screen>
-        <Text>보관함을 불러오지 못했어요</Text>
-        <Btn loading={box.isFetching} onPress={() => void box.refetch()}>
-          다시 시도
-        </Btn>
-        <Btn kind="outline" onPress={() => router.back()}>
-          뒤로
-        </Btn>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Text>보관함을 불러오지 못했어요</Text>
+          <Btn loading={box.isFetching} onPress={() => void box.refetch()}>
+            다시 시도
+          </Btn>
+          <Btn kind="outline" onPress={() => router.back()}>
+            뒤로
+          </Btn>
+        </Screen>
+      </Canvas>
     );
   if (!box.data) return <Loading />;
   return (

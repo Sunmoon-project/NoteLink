@@ -254,13 +254,15 @@ export function ChatScreen() {
 
   if (room.isError && !room.data)
     return (
-      <Screen>
-        <Header title={name} />
-        <Text className="mt-8 text-center text-body">대화를 불러오지 못했어요</Text>
-        <Btn className="mt-4" onPress={() => void room.refetch()}>
-          다시 시도
-        </Btn>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Header title={name} />
+          <Text className="mt-8 text-center text-body">대화를 불러오지 못했어요</Text>
+          <Btn className="mt-4" onPress={() => void room.refetch()}>
+            다시 시도
+          </Btn>
+        </Screen>
+      </Canvas>
     );
   return (
     <Canvas>
