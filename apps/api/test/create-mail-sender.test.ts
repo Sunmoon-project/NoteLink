@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createMailSender, createSmtpTransport } from '../src/modules/mail/create-mail-sender.js';
+import { baseOptions, createMailSender } from '../src/modules/mail/create-mail-sender.js';
 import { LogMailSender } from '../src/modules/mail/mail-sender.js';
 import { SmtpMailSender, type SmtpTransport } from '../src/modules/mail/smtp-mail-sender.js';
 
@@ -26,7 +26,7 @@ afterEach(() => {
 
 function fakeFactory() {
   const sendMail = vi.fn((_m: unknown) => Promise.resolve({}));
-  const createFor = vi.fn((_c: unknown): SmtpTransport => ({ sendMail }));
+  const createFor = vi.fn((_c: unknown): SmtpTransport => ({ sendMail, abort: () => undefined }));
   return { sendMail, createFor };
 }
 
@@ -50,8 +50,27 @@ describe('createMailSender MAIL_TRANSPORT=smtp', () => {
     });
     expect(sendMail.mock.calls[0]![0]).toMatchObject({
       from: 'noreply@example.com',
-      to: 'a@b.com',
+      to: { address: 'a@b.com' },
     });
+  });
+
+  it('발송할 때마다 새 전송 수단을 만든다 (시간 초과로 한 발송의 연결을 끊어도 다른 발송과 무관하게)', async () => {
+    const { createFor } = fakeFactory();
+    const sender = createMailSender(config(SMTP), createFor);
+
+    await sender.sendVerificationCode('a@b.com', '111111');
+    await sender.sendVerificationCode('c@d.com', '222222');
+
+    expect(createFor).toHaveBeenCalledTimes(2);
+    expect(createFor.mock.results[0]!.value).not.toBe(createFor.mock.results[1]!.value);
+  });
+
+  it('createMailSender를 만드는 것만으로는 전송 수단을 만들지 않는다 (발송할 때 만든다)', () => {
+    const { createFor } = fakeFactory();
+
+    createMailSender(config(SMTP), createFor);
+
+    expect(createFor).not.toHaveBeenCalled();
   });
 
   it('값 앞뒤 공백 · 줄바꿈을 지운 뒤 쓴다', async () => {
@@ -155,10 +174,13 @@ describe('createMailSender MAIL_TRANSPORT=smtp', () => {
     ['587', 587],
     ['2525', 2525],
     ['65535', 65535],
-  ])('SMTP_PORT %s는 통과한다', (port, expected) => {
+  ])('SMTP_PORT %s는 통과한다', async (port, expected) => {
     const { createFor } = fakeFactory();
 
-    createMailSender(config({ ...SMTP, SMTP_PORT: port }), createFor);
+    await createMailSender(config({ ...SMTP, SMTP_PORT: port }), createFor).sendVerificationCode(
+      'a@b.com',
+      '123456',
+    );
 
     expect(createFor.mock.calls[0]![0]).toMatchObject({ port: expected });
   });
@@ -247,12 +269,12 @@ describe('createMailSender 다른 값', () => {
   });
 });
 
-describe('createSmtpTransport (실제 nodemailer 설정)', () => {
-  /** nodemailer가 받은 설정을 확인하려고 만든 전송 수단의 옵션을 읽는다 */
-  const optionsOf = (port: number) => {
-    const transport = createSmtpTransport({ host: 'smtp.example.com', port, user: 'u', pass: 'p' });
-    return (transport as unknown as { options: Record<string, unknown> }).options;
-  };
+describe('SMTP 연결 설정 (서비스가 실제로 쓰는 nodemailer 옵션)', () => {
+  const optionsOf = (port: number) =>
+    baseOptions({ host: 'smtp.example.com', port, user: 'u', pass: 'p' }) as Record<
+      string,
+      unknown
+    >;
 
   it('465는 연결하자마자 암호화(SMTPS)한다', () => {
     const options = optionsOf(465);

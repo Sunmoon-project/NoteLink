@@ -7,17 +7,26 @@ import {
   MAIL_SEND_FAILED_MESSAGE,
   SMTP_SEND_TIMEOUT_MS,
   SmtpMailSender,
+  type SmtpOutgoingMail,
   type SmtpTransport,
 } from '../src/modules/mail/smtp-mail-sender.js';
 
 const FROM = 'noreply@example.com';
 const SECRET = 'SUPER-SECRET-SMTP-PASSWORD';
 
-type Sent = Parameters<SmtpTransport['sendMail']>[0];
+type Sent = SmtpOutgoingMail;
+
+/** 발송마다 새 전송 수단을 돌려주는 팩토리. 만들어진 전송 수단과 끊김 기록을 확인할 수 있다 */
+function factoryOf(sendMail: SmtpTransport['sendMail']) {
+  const abort = vi.fn();
+  const open = vi.fn((): SmtpTransport => ({ sendMail, abort }));
+  return { open, abort };
+}
 
 function okTransport() {
   const sendMail = vi.fn((_message: Sent) => Promise.resolve({ accepted: ['x'] }));
-  return { transport: { sendMail } as SmtpTransport, sendMail };
+  const { open, abort } = factoryOf(sendMail);
+  return { transport: open, sendMail, open, abort };
 }
 
 let errorLog: ReturnType<typeof vi.spyOn>;
@@ -40,7 +49,7 @@ describe('SmtpMailSender 인증번호 메일', () => {
     expect(sendMail).toHaveBeenCalledOnce();
     const message = sendMail.mock.calls[0]![0];
     expect(message.from).toBe(FROM);
-    expect(message.to).toBe('user@example.com');
+    expect(message.to).toEqual({ address: 'user@example.com' });
     expect(message.text).toContain('012345');
   });
 
@@ -75,7 +84,7 @@ describe('SmtpMailSender 인증번호 메일', () => {
 
     expect(sendMail.mock.calls[0]![0]).toEqual({
       from: FROM,
-      to: 'a@example.com',
+      to: { address: 'a@example.com' },
       subject: expect.any(String),
       text: expect.any(String),
     });
@@ -109,7 +118,7 @@ describe('SmtpMailSender 이미 가입한 이메일 안내', () => {
     await new SmtpMailSender(transport, FROM).sendAlreadyRegistered('user@example.com');
 
     const message = sendMail.mock.calls[0]![0];
-    expect(message).toMatchObject({ from: FROM, to: 'user@example.com' });
+    expect(message).toMatchObject({ from: FROM, to: { address: 'user@example.com' } });
     expect(message.text).not.toMatch(/\d{6}/);
   });
 
@@ -149,7 +158,7 @@ describe('SmtpMailSender 실패 처리', () => {
   ];
 
   it.each(failures)('%s MailUnavailableError로 바꿔 던진다', async (_name, fail) => {
-    const sender = new SmtpMailSender({ sendMail: fail } as SmtpTransport, FROM);
+    const sender = new SmtpMailSender(factoryOf(fail as never).open, FROM);
 
     await expect(sender.sendVerificationCode('user@example.com', '123456')).rejects.toBeInstanceOf(
       MailUnavailableError,
@@ -162,7 +171,7 @@ describe('SmtpMailSender 실패 처리', () => {
   it.each(failures)(
     '%s 오류 문구는 고정 문구뿐이다 (원인을 이어 붙이지 않는다)',
     async (_name, fail) => {
-      const sender = new SmtpMailSender({ sendMail: fail } as SmtpTransport, FROM);
+      const sender = new SmtpMailSender(factoryOf(fail as never).open, FROM);
 
       const error = (await sender
         .sendVerificationCode('user@example.com', '123456')
@@ -176,7 +185,7 @@ describe('SmtpMailSender 실패 처리', () => {
   it.each(failures)(
     '%s 로그에 비밀번호 · 받는 사람 · 인증번호를 남기지 않는다',
     async (_name, fail) => {
-      const sender = new SmtpMailSender({ sendMail: fail } as SmtpTransport, FROM);
+      const sender = new SmtpMailSender(factoryOf(fail as never).open, FROM);
 
       await sender.sendVerificationCode('user@example.com', '123456').catch(() => {});
 
@@ -193,10 +202,7 @@ describe('SmtpMailSender 실패 처리', () => {
       responseCode: 535,
       command: 'AUTH PLAIN',
     });
-    const sender = new SmtpMailSender(
-      { sendMail: () => Promise.reject(error) } as SmtpTransport,
-      FROM,
-    );
+    const sender = new SmtpMailSender(factoryOf(() => Promise.reject(error)).open, FROM);
 
     await sender.sendVerificationCode('a@example.com', '123456').catch(() => {});
 
@@ -209,10 +215,7 @@ describe('SmtpMailSender 실패 처리', () => {
       code: 'Evil\n[FAKE] injected line',
       command: 'RCPT',
     });
-    const sender = new SmtpMailSender(
-      { sendMail: () => Promise.reject(error) } as SmtpTransport,
-      FROM,
-    );
+    const sender = new SmtpMailSender(factoryOf(() => Promise.reject(error)).open, FROM);
 
     await sender.sendVerificationCode('a@example.com', '123456').catch(() => {});
 
@@ -222,14 +225,93 @@ describe('SmtpMailSender 실패 처리', () => {
   });
 
   it('알 수 없는 오류는 unknown으로 남긴다', async () => {
-    const sender = new SmtpMailSender(
-      { sendMail: () => Promise.reject(null) } as SmtpTransport,
-      FROM,
-    );
+    const sender = new SmtpMailSender(factoryOf(() => Promise.reject(null)).open, FROM);
 
     await sender.sendVerificationCode('a@example.com', '123456').catch(() => {});
 
     expect(loggedText()).toContain('unknown');
+  });
+});
+
+describe('SmtpMailSender 연결 종료와 전송 수단', () => {
+  it('발송마다 새 전송 수단을 만든다 (한 발송의 연결 종료가 다른 발송에 번지지 않는다)', async () => {
+    const { open } = okTransport();
+    const sender = new SmtpMailSender(open, FROM);
+
+    await sender.sendVerificationCode('a@example.com', '111111');
+    await sender.sendVerificationCode('b@example.com', '222222');
+    await sender.sendAlreadyRegistered('c@example.com');
+
+    expect(open).toHaveBeenCalledTimes(3);
+  });
+
+  it('성공한 발송은 연결을 끊지 않는다', async () => {
+    const { open, abort } = okTransport();
+
+    await new SmtpMailSender(open, FROM).sendVerificationCode('a@example.com', '111111');
+
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('실패한 발송은 그 발송의 연결을 끊는다', async () => {
+    const { open, abort } = factoryOf(() => Promise.reject(new Error('x')));
+
+    await new SmtpMailSender(open, FROM)
+      .sendVerificationCode('a@example.com', '111111')
+      .catch(() => {});
+
+    expect(abort).toHaveBeenCalledOnce();
+  });
+
+  it('시간 초과로 포기한 발송은 그 발송의 연결을 끊는다', async () => {
+    const { open, abort } = factoryOf(() => new Promise(() => undefined));
+
+    await new SmtpMailSender(open, FROM, 20)
+      .sendVerificationCode('a@example.com', '111111')
+      .catch(() => {});
+
+    expect(abort).toHaveBeenCalledOnce();
+  });
+
+  it('연결을 끊다가 오류가 나도 원래 실패(MailUnavailableError)를 그대로 돌려준다', async () => {
+    const transport: SmtpTransport = {
+      sendMail: () => Promise.reject(new Error('원래 실패')),
+      abort: () => {
+        throw new Error('abort 중 오류');
+      },
+    };
+
+    const error = await new SmtpMailSender(() => transport, FROM)
+      .sendVerificationCode('a@example.com', '111111')
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(MailUnavailableError);
+    expect((error as Error).message).toBe(MAIL_SEND_FAILED_MESSAGE);
+  });
+
+  it('수신자가 올바르지 않으면 전송 수단을 만들지도 연결을 끊지도 않는다', async () => {
+    const { open, abort } = okTransport();
+
+    await new SmtpMailSender(open, FROM)
+      .sendVerificationCode('x1,victim@example.com', '111111')
+      .catch(() => {});
+
+    expect(open).not.toHaveBeenCalled();
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('받는 사람 길이는 254자까지 허용하고 255자부터 거부한다 (경계)', async () => {
+    const at = (n: number) => `${'a'.repeat(n - '@example.com'.length)}@example.com`;
+    const { open, sendMail } = okTransport();
+    const sender = new SmtpMailSender(open, FROM);
+
+    await sender.sendVerificationCode(at(254), '111111');
+    expect(sendMail).toHaveBeenCalledOnce();
+
+    await expect(sender.sendVerificationCode(at(255), '111111')).rejects.toBeInstanceOf(
+      MailUnavailableError,
+    );
+    expect(sendMail).toHaveBeenCalledOnce();
   });
 });
 
@@ -239,7 +321,7 @@ describe('SmtpMailSender 시간 제한', () => {
   });
 
   it('서버가 응답하지 않으면 제한 시간 뒤에 포기하고 MailUnavailableError를 던진다', async () => {
-    const hanging: SmtpTransport = { sendMail: () => new Promise(() => undefined) };
+    const hanging = factoryOf(() => new Promise(() => undefined)).open;
     const started = Date.now();
 
     await expect(
@@ -250,7 +332,7 @@ describe('SmtpMailSender 시간 제한', () => {
   });
 
   it('시간 초과는 로그에 ETIMEDOUT으로 남는다', async () => {
-    const hanging: SmtpTransport = { sendMail: () => new Promise(() => undefined) };
+    const hanging = factoryOf(() => new Promise(() => undefined)).open;
 
     await new SmtpMailSender(hanging, FROM, 20)
       .sendVerificationCode('a@example.com', '123456')
@@ -273,7 +355,7 @@ describe('SmtpMailSender 시간 제한', () => {
 
   it('실패해도 타이머가 남지 않는다', async () => {
     vi.useFakeTimers();
-    const failing: SmtpTransport = { sendMail: () => Promise.reject(new Error('x')) };
+    const failing = factoryOf(() => Promise.reject(new Error('x'))).open;
 
     await new SmtpMailSender(failing, FROM, 5_000)
       .sendVerificationCode('a@example.com', '123456')
@@ -287,12 +369,12 @@ describe('SmtpMailSender 시간 제한', () => {
     const onUnhandled = (reason: unknown) => unhandled.push(reason);
     process.on('unhandledRejection', onUnhandled);
     let rejectLate!: (e: Error) => void;
-    const slow: SmtpTransport = {
-      sendMail: () =>
+    const slow = factoryOf(
+      () =>
         new Promise((_resolve, reject) => {
           rejectLate = reject;
         }),
-    };
+    ).open;
 
     await new SmtpMailSender(slow, FROM, 10)
       .sendVerificationCode('a@example.com', '123456')

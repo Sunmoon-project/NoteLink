@@ -47,6 +47,7 @@ describe('.env.production', () => {
   it('그대로 복사해 쓰면 메일(SMTP) 설정 검증을 통과한다 (접속은 하지 않는다)', () => {
     const sender = createMailSender(readEnvExample(), () => ({
       sendMail: () => Promise.resolve({}),
+      abort: () => undefined,
     }));
 
     expect(sender).toBeInstanceOf(SmtpMailSender);
