@@ -10,7 +10,7 @@ import type { StartStudySessionDto } from './dto/start-study-session.dto.js';
 import { DailyRecord, type StudyItem } from '../progress/schemas/daily-record.schema.js';
 import { StudySession, type SessionMode, type SessionStatus } from './schemas/study-session.schema.js';
 import { Subject } from './schemas/subject.schema.js';
-import { ABUSE_SEC, DAILY_CAP_SEC, secondsBySeoulDay, seoulDate, STREAK_MIN_SEC } from './study-time.js';
+import { ABUSE_SEC, DAILY_CAP_SEC, netDurationSec, secondsBySeoulDay, seoulDate, STREAK_MIN_SEC } from './study-time.js';
 
 /** 앱에 내려주는 공부 항목 (공유 계약 StudyItem과 같은 모양) */
 export interface StudyItemView {
@@ -243,9 +243,9 @@ export class StudyService {
     ): Promise<EndResult> {
         const endedAt = new Date();
         const days = secondsBySeoulDay(row.startedAt, endedAt, row.pauses);
-        const netSec = [...days.values()].reduce((sum, sec) => sum + sec, 0);
-        // 24시간 넘게 이어진 세션은 방치로 본다 (FR-06-16). 지우지 않고 표시만 하고 통계·포인트에서 뺀다
-        const isAbuse = netSec >= ABUSE_SEC;
+        // 24시간 넘게 이어진 세션은 방치로 본다 (FR-06-16). 지우지 않고 표시만 하고 통계·포인트에서 뺀다.
+        // 날짜별로 나누면 날짜마다 초 아래가 버려져 합계가 모자라므로, 방치 판정은 전체 순공 시간으로 한다
+        const isAbuse = netDurationSec(row.startedAt, row.pauses, endedAt) >= ABUSE_SEC;
 
         // 날짜마다 하루 상한(16시간)까지만 쌓는다 (FR-06-15). 트랜잭션 안이라 await를 순서대로 쓴다
         let durationSec = 0;

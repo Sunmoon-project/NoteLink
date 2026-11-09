@@ -640,6 +640,35 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
             expect(points.earn).not.toHaveBeenCalled();
         });
 
+        it('방치 판정은 날짜별 버림 전 전체 시간으로 한다: 서울 12:00:00.500부터 정확히 24시간이면 방치, 1초 모자라면 아니다', async () => {
+            // 날짜별로 따로 버리면 (43199 + 43200 = 86399초) 정확히 24시간인데도 방치로 안 잡힌다
+            vi.setSystemTime(new Date('2026-11-05T03:00:00.500Z')); // 서울 다음 날 12:00:00.500
+            row = makeRow({ startedAt: new Date('2026-11-04T03:00:00.500Z') }); // 서울 12:00:00.500
+            const abuse = await end(sessionId.toString());
+
+            expect(abuse.body).toEqual({ data: { durationSec: 0, pointsEarned: 0 } });
+            expect(sessionModel.updateOne).toHaveBeenCalledWith(
+                { _id: sessionId, status: { $ne: 'ended' } },
+                { $set: expect.objectContaining({ isAbuse: true, durationSec: 0, pointsEarned: 0 }) },
+                expect.anything(),
+            );
+            expect(dailyModel.updateOne).not.toHaveBeenCalled();
+            expect(points.earn).not.toHaveBeenCalled();
+
+            vi.clearAllMocks();
+            row = makeRow({ startedAt: new Date('2026-11-04T03:00:01.500Z') }); // 24시간에서 1초 모자람
+            const normal = await end(sessionId.toString());
+
+            expect(normal.body.data.durationSec).toBeGreaterThan(0);
+            expect(normal.body.data.pointsEarned).toBe(20);
+            expect(sessionModel.updateOne).toHaveBeenCalledWith(
+                { _id: sessionId, status: { $ne: 'ended' } },
+                { $set: expect.objectContaining({ isAbuse: false }) },
+                expect.anything(),
+            );
+            expect(points.earn).toHaveBeenCalledTimes(1);
+        });
+
         it('이미 끝난 세션이면 처음 결과를 그대로 돌려주고 아무것도 다시 쓰지 않는다 (중복 적립 없음)', async () => {
             row = makeRow({ status: 'ended', endedAt: secondsAgo(10), durationSec: 690, pointsEarned: 20 });
             const res = await end(sessionId.toString());
