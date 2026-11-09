@@ -40,7 +40,7 @@ function matches(row: Row, filter: Filter): boolean {
 export const PAST = new Date(Date.now() - 60_000);
 export const LATER = new Date(Date.now() + 10 * 60_000);
 
-/** ai_jobs 컬렉션을 메모리로 흉내 낸다. 서비스가 쓰는 create · findOne · findOneAndUpdate · exists만 만든다 */
+/** ai_jobs 컬렉션을 메모리로 흉내 낸다. 서비스가 쓰는 create · findOne · countDocuments · findOneAndUpdate · exists만 만든다 */
 export function createFakeJobs() {
   const rows: Row[] = [];
   let clock = 0;
@@ -52,6 +52,8 @@ export function createFakeJobs() {
       return Promise.resolve({ toObject: () => ({ ...row }) });
     },
     findOne: (filter: Filter) => query(rows.find((r) => matches(r, filter)) ?? null),
+    countDocuments: (filter: Filter) =>
+      Promise.resolve(rows.filter((r) => matches(r, filter)).length),
     exists: (filter: Filter) => {
       const row = rows.find((r) => matches(r, filter));
       return Promise.resolve(row ? { _id: row._id } : null);

@@ -178,3 +178,11 @@ def test_lanes_starting_together_share_one_llm(monkeypatch: pytest.MonkeyPatch) 
     assert len(made) == 1 and got == [made[0], made[0]]
     once.cache_clear()
     assert once() is not made[0]
+
+
+def test_note_ask_job_saves_the_avatar_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm = FakeLlm({"note_ask": [{"answer": "네 가지 조건이 있어요.", "refs": ["교착 상태"]}]})
+    inp = {"title": "운영체제", "context": "교착 상태", "history": [], "question": "뭐예요?"}
+    doc = run_job(monkeypatch, llm, inp, kind="note_ask")
+    assert doc["status"] == "succeeded"
+    assert doc["result"] == {"answer": "네 가지 조건이 있어요.", "refs": ["교착 상태"]}

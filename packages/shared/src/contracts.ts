@@ -21,6 +21,8 @@ export const ERROR_CODES = {
   FILE_NOT_ALLOWED: 'FILE_NOT_ALLOWED',
   ROOM_CODE_INVALID: 'ROOM_CODE_INVALID',
   NOT_FOUND: 'NOT_FOUND',
+  /** 아직 정리되지 않았거나 글이 없는 노트라 아바타가 설명할 수 없다 (409) */
+  NOTE_NOT_READY: 'NOTE_NOT_READY',
   /** 입력 형식 오류 (이메일 · 필수 값 등) */
   VALIDATION: 'VALIDATION_FAILED',
   EMAIL_TAKEN: 'EMAIL_TAKEN',
@@ -135,6 +137,8 @@ export const PATHS = {
   materialBookmarks: (id: string) => `/materials/${seg(id)}/bookmarks`,
   materialDownloadUrl: (id: string) => `/materials/${seg(id)}/download-url`,
   materialShare: '/materials/share',
+  /** 아바타에게 노트 묻기 → note_ask 작업(AiJob)을 돌려준다. 답은 aiJob으로 받아 result(NoteAskResult)에서 읽는다 */
+  materialAsk: (id: string) => `/materials/${seg(id)}/ask`,
   imageCheck: '/images/check',
   // AI 작업
   aiJob: (id: string) => `/ai-jobs/${seg(id)}`,
