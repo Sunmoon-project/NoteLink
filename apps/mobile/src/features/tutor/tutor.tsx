@@ -9,7 +9,7 @@ import Animated, {
   useSharedValue,
   withSpring,
 } from 'react-native-reanimated';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { ERROR_CODES, NoteAskResult, type AiJob, NoteAskTurn } from '@notelink/shared';
 import { ArrowUp } from 'lucide-react-native';
@@ -27,6 +27,8 @@ type Msg = {
   text: string;
   refs?: string[];
   error?: boolean;
+  /** 학습 자료 밖 · 위험한 질문이라 답하지 않음(정해 둔 안내) */
+  refused?: boolean;
 };
 
 const SUGGEST = [
@@ -190,6 +192,12 @@ function Typing({ text, onDone }: { text: string; onDone: () => void }) {
   );
 }
 
+/** 마지막 답이 학습 자료로 한 답이면 다음 학습을 권한다 */
+const nextStep = (msgs: Msg[]) => {
+  const last = msgs[msgs.length - 1];
+  return !!last && last.role === 'avatar' && !last.error && !last.refused;
+};
+
 /** 아바타 선생님: 정리된 노트(녹음 · 문서 · 필기)를 옆에서 설명한다 */
 export function TutorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -237,7 +245,8 @@ export function TutorScreen() {
       if (!alive.current) return;
       const result = job.status === 'succeeded' ? NoteAskResult.safeParse(job.result) : null;
       if (!result?.success) throw new Error(job.status);
-      setLive(say({ role: 'avatar', text: result.data.answer, refs: result.data.refs }));
+      const { answer, refs, answerable } = result.data;
+      setLive(say({ role: 'avatar', text: answer, refs, refused: !answerable }));
       setMood('talking');
     } catch (e) {
       if (!alive.current) return;
@@ -286,6 +295,27 @@ export function TutorScreen() {
           keyExtractor={(m) => String(m.id)}
           onContentSizeChange={() => list.current?.scrollToEnd({ animated: true })}
           contentContainerClassName="gap-3 pb-4"
+          // 에이전트처럼 다음 학습으로 잇는다: 자료로 답한 뒤 퀴즈(학습 확인) · 복습으로
+          ListFooterComponent={
+            nextStep(msgs) && live === null ? (
+              <Animated.View entering={FadeIn.duration(220)} className="flex-row flex-wrap gap-2">
+                <Chip
+                  small
+                  onPress={() =>
+                    router.push({
+                      pathname: '/play/gen',
+                      params: { materialId: id, title: mat.data?.title ?? '' },
+                    })
+                  }
+                >
+                  이 노트로 퀴즈 풀기
+                </Chip>
+                <Chip small onPress={() => router.push('/quiz')}>
+                  복습하러 가기
+                </Chip>
+              </Animated.View>
+            ) : null
+          }
           ListEmptyComponent={
             <View className="flex-row flex-wrap gap-2">
               {SUGGEST.map((q) => (
@@ -317,7 +347,9 @@ export function TutorScreen() {
                     }}
                   />
                 ) : (
-                  <Text className={cx('text-footnote', m.error ? 'text-sub' : 'text-ink')}>
+                  <Text
+                    className={cx('text-footnote', m.error || m.refused ? 'text-sub' : 'text-ink')}
+                  >
                     {m.text}
                   </Text>
                 )}

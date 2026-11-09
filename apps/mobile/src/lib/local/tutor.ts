@@ -19,6 +19,31 @@ function hit(text: string, w: string) {
   return false;
 }
 
+// 서버(apps/ai note/ask.py)와 같은 안내 · 위험한 질문 검사(기기 저장 모드에서도 같은 규칙)
+export const OFF_TOPIC =
+  '그 질문은 학습 자료에 없어서 대답할 수 없어요. 이 노트나 퀴즈에 대해 물어봐 주세요.';
+export const UNSAFE =
+  '그 질문에는 대답할 수 없어요. 해킹이나 보안 공격처럼 위험한 내용은 도와드리지 않아요. 노트 내용으로 다시 물어봐 주세요.';
+const UNSAFE_PATTERN = new RegExp(
+  [
+    '해킹|해커|크래킹|침투\\s*테스트|모의\\s*해킹|익스플로잇|exploit|취약점\\s*(공격|이용|찾)',
+    '악성\\s*코드|멀웨어|malware|랜섬웨어|ransomware|트로이|바이러스\\s*(만들|제작|퍼뜨)',
+    '피싱|phishing|스미싱|디도스|ddos|백도어|backdoor|키로거|keylogger|루트킷|rootkit',
+    '(sql|에스큐엘)\\s*(인젝션|injection)|xss',
+    '(비밀번호|패스워드|계정|인증)\\s*\\S{0,4}\\s*(뚫|탈취|훔치|훔쳐|크랙|우회|해제|도용|알아내)',
+    '개인\\s*정보\\s*(빼|탈취|유출)|도청|스파이웨어',
+    '탈옥|jailbreak|(이전|위|앞의?)\\s*지시\\S*\\s*무시|ignore\\s+(all|previous|the)|시스템\\s*프롬프트',
+    '폭탄|폭발물|마약|무기\\s*(만들|제작)',
+  ].join('|'),
+  'i',
+);
+const refuse = (reason: 'off_topic' | 'unsafe'): NoteAskResult => ({
+  answerable: false,
+  reason,
+  answer: reason === 'unsafe' ? UNSAFE : OFF_TOPIC,
+  refs: [],
+});
+
 const OVERVIEW = /핵심|요약|정리|설명|뭐|무엇|알려/;
 const sentences = (t: string, n: number) =>
   (t.match(/[^.!?。]+[.!?。]?/g) ?? [t])
@@ -36,17 +61,19 @@ export function localAnswer(
 ): NoteAskResult | null {
   const all = parts(m);
   if (!all.length) return null;
+  if (UNSAFE_PATTERN.test(question)) return refuse('unsafe');
   const ws = words(question);
   const scored = all.map((p) => {
     const text = `${p.heading}${p.body}`.replace(/\s+/g, '');
     return { p, score: ws.filter((w) => hit(text, w)).length };
   });
   const best = scored.reduce((a, b) => (b.score > a.score ? b : a));
-  if (!best.score && !OVERVIEW.test(question))
-    return {
-      answer: '노트에는 없는 내용이에요. 서버에 연결되면 더 자세히 설명해 드릴게요.',
-      refs: [],
-    };
+  if (!best.score && !OVERVIEW.test(question)) return refuse('off_topic');
   const { heading, body } = best.score ? best.p : all[0]!;
-  return { answer: `노트의 '${heading}' 부분을 보면, ${sentences(body, 2)}`, refs: [heading] };
+  return {
+    answerable: true,
+    reason: null,
+    answer: `노트의 '${heading}' 부분을 보면, ${sentences(body, 2)} 이어서 퀴즈로 확인해 볼까요?`,
+    refs: [heading],
+  };
 }

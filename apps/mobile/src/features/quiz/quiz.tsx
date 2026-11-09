@@ -62,6 +62,7 @@ import {
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
+import { AvatarCheer } from '@/features/tutor/cheer';
 import { seoul } from '@/lib/dates';
 import { aiWaiting } from '@/lib/ai';
 import { AiPending } from '@/components/AiPending';
@@ -901,6 +902,8 @@ export function QuizSolveScreen() {
             {!right && (
               <Text className="mt-3 text-center text-caption text-sub">내가 고른 답: {pick}</Text>
             )}
+            {/* 아바타 선생님: 맞히면 칭찬, 틀리면 격려 */}
+            <AvatarCheer right={!!right} index={i} />
             <View className="mt-6 flex-row items-center justify-center gap-2">
               <Text className="text-footnote text-sub">결과</Text>
               {qs.map((_, n) => (

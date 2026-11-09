@@ -1,5 +1,6 @@
 import { Redirect, Tabs } from 'expo-router';
 import { BookOpen, Home, NotebookPen, User, Users, type LucideIcon } from 'lucide-react-native';
+import { useTourOnce } from '@/features/tutor/tour';
 import { useAuth } from '@/stores/auth';
 import { C, ICON } from '@/theme';
 
@@ -15,6 +16,8 @@ const TABS: [string, string, LucideIcon][] = [
 export default function TabsLayout() {
   const tokens = useAuth((s) => s.tokens);
   const onboarded = useAuth((s) => s.onboarded);
+  // 가입을 마치고 처음 들어오면 아바타 선생님이 앱 사용법을 안내한다
+  useTourOnce(!!tokens && onboarded);
   // 로그인 전이면 온보딩, 가입 절차가 남았으면 약관 동의로 (p.104)
   if (!tokens) return <Redirect href="/onboarding" />;
   if (!onboarded) return <Redirect href="/terms" />;
