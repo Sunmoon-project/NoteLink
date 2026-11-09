@@ -18,7 +18,7 @@ export interface PointReward {
 
 /** 순공 세션이 끝났을 때의 보상. 10분이 안 되면 undefined(적립 없음). 하루 횟수 한도는 부르는 쪽이 확인한다 */
 export function sessionReward(durationSec: number): PointReward | undefined {
-    if (durationSec < SESSION_COMPLETE_MIN_SEC) return undefined;
+    if (!Number.isFinite(durationSec) || durationSec < SESSION_COMPLETE_MIN_SEC) return undefined;
     return { amount: SESSION_COMPLETE_POINTS, reasonType: 'session_complete', description: '순공 세션 완료' };
 }
 

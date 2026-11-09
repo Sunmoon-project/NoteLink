@@ -127,7 +127,8 @@ describe('PointService.earn', () => {
         expect(ledgerModel.create).not.toHaveBeenCalled();
     });
 
-    it('장부 기록이 실패하면 오류를 그대로 던진다 (트랜잭션이 잔액 증가도 취소)', async () => {
+    // 잔액 롤백은 DB 트랜잭션이 보장한다(실제 DB에서 확인)
+    it('장부 저장 실패 시 오류를 그대로 던진다', async () => {
         ledgerModel.create.mockRejectedValueOnce(new Error('ledger down'));
         await expect(points.earn(userId.toString(), 30, 'admin', null)).rejects.toThrow('ledger down');
     });
@@ -145,6 +146,12 @@ describe('적립 규칙', () => {
         expect(sessionReward(599)).toBeUndefined();
         expect(sessionReward(600)).toEqual({ amount: 20, reasonType: 'session_complete', description: '순공 세션 완료' });
         expect(sessionReward(3600)?.amount).toBe(20);
+    });
+
+    it('시간이 NaN · Infinity · -Infinity면 적립이 없다', () => {
+        expect(sessionReward(Number.NaN)).toBeUndefined();
+        expect(sessionReward(Number.POSITIVE_INFINITY)).toBeUndefined();
+        expect(sessionReward(Number.NEGATIVE_INFINITY)).toBeUndefined();
     });
 
     it('퀴즈는 정답 하나당 4포인트이고, 맞힌 게 없으면 적립이 없다', () => {
