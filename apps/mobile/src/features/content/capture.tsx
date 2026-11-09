@@ -2,6 +2,13 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import { Image, Linking, Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  ReduceMotion,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
@@ -562,6 +569,68 @@ export function RecUploadScreen() {
   );
 }
 
+/** 소리 크기를 읽는 간격 — 파형이 이 간격마다 한 칸씩 흐른다 */
+const METER_MS = 120;
+/**
+ * 파형 막대 폭 · 사이 간격(pt). 클래스(w-1.5 · gap-1)는 NativeWind의 rem(14) 기준이라 실제 크기가
+ * 5.25 · 3.5로 달라지므로, 아래 계산과 화면이 어긋나지 않게 숫자로 직접 넣는다
+ */
+export const BAR_W = 6;
+export const BAR_GAP = 4;
+/** 파형이 한 번에 흐르는 거리(막대 한 칸) */
+export const BAR_STEP = BAR_W + BAR_GAP;
+/**
+ * 막대 수. 줄 폭(48 × 6 + 47 × 4 = 476)이 가장 넓은 폰의 상자(440 - 양옆 여백 = 400)보다 넓어야
+ * 막대가 상자 안에서 생기고 사라지지 않고 양 끝 바깥에서 들고 난다
+ */
+export const BAR_COUNT = 48;
+/** 줄 전체 폭 */
+export const ROW_W = BAR_COUNT * BAR_W + (BAR_COUNT - 1) * BAR_GAP;
+/**
+ * 파형 상자의 최대 폭. 가운데 놓인 줄이 한 칸(BAR_STEP) 밀려도 끝 막대(BAR_W) 안쪽 모서리가
+ * 상자 밖에 있으려면 상자 폭의 절반이 ROW_W/2 - BAR_STEP - BAR_W 이하여야 한다(= 444).
+ * 태블릿 등 더 넓은 화면에서도 상자를 이 폭으로 묶어 둔다
+ */
+export const WAVE_MAX_W = ROW_W - 2 * (BAR_STEP + BAR_W);
+
+/**
+ * 녹음 파형. 새 소리 크기가 들어올 때마다 막대를 한 칸씩 밀되, 칸이 뚝 바뀌지 않게
+ * 줄 전체를 한 칸 오른쪽에서 제자리로 METER_MS 동안 일정한 속도로 흘린다(UI 스레드).
+ * 그래서 다음 값이 들어올 때까지 쉬지 않고 왼쪽으로 흐르는 것처럼 보인다
+ */
+export function Waveform({ bars, live }: { bars: number[]; live: boolean }) {
+  const x = useSharedValue(0);
+  useEffect(() => {
+    if (!live) return;
+    x.set(BAR_STEP);
+    // 동작 줄이기면 흐르지 않고 바로 제자리(시스템 설정을 따른다)
+    x.set(
+      withTiming(0, {
+        duration: METER_MS,
+        easing: Easing.linear,
+        reduceMotion: ReduceMotion.System,
+      }),
+    );
+  }, [bars, live, x]);
+  const style = useAnimatedStyle(() => ({ transform: [{ translateX: x.get() }] }));
+  return (
+    <View
+      className="mt-4 h-20 w-full items-center justify-center self-center overflow-hidden rounded-lg bg-black/30"
+      style={{ maxWidth: WAVE_MAX_W }}
+    >
+      <Animated.View className="flex-row items-center" style={[{ gap: BAR_GAP }, style]}>
+        {bars.map((h, i) => (
+          <View
+            key={i}
+            className="rounded-full bg-orange"
+            style={{ width: BAR_W, height: live ? h : 6 }}
+          />
+        ))}
+      </Animated.View>
+    </View>
+  );
+}
+
 function RecordingAwake() {
   useKeepAwake('recording');
   return null;
@@ -573,8 +642,8 @@ export function RecLiveScreen() {
   const keepAwake = me.data?.settings.keepScreenOnWhileRecording ?? false;
   const insets = useSafeAreaInsets();
   const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
-  const st = useAudioRecorderState(recorder, 120);
-  const [bars, setBars] = useState<number[]>(Array(26).fill(6));
+  const st = useAudioRecorderState(recorder, METER_MS);
+  const [bars, setBars] = useState<number[]>(Array(BAR_COUNT).fill(6));
   const [voice, setVoice] = useState({ frames: 0, voiced: 0 });
   // 별 내용 없는 녹음이면 이유 · 저장한 파일을 들고 알린다
   const [unfit, setUnfit] = useState<{ reason: string; uri: string } | null>(null);
@@ -712,15 +781,7 @@ export function RecLiveScreen() {
       <View className="mt-24 self-center rounded-full border border-white/50 px-5 py-1">
         <Text className="tabular-nums text-title1 text-white">{t}</Text>
       </View>
-      <View className="mt-4 h-20 flex-row items-center justify-center gap-1 rounded-lg bg-black/30">
-        {bars.map((h, i) => (
-          <View
-            key={i}
-            className="w-1.5 rounded-full bg-orange"
-            style={{ height: st.isRecording ? h : 6 }}
-          />
-        ))}
-      </View>
+      <Waveform bars={bars} live={st.isRecording} />
       <View className="mt-auto flex-row items-center justify-center gap-10">
         <Pressable
           accessibilityLabel={st.isRecording ? '녹음 일시정지' : '녹음 재개'}
