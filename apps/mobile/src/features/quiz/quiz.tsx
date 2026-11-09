@@ -4,6 +4,7 @@ import { Text } from '@/components/text';
 import Animated, {
   FadeIn,
   FadeInDown,
+  FadeOut,
   ReduceMotion,
   useAnimatedStyle,
   useSharedValue,
@@ -39,16 +40,19 @@ import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
 import { toast } from '@/stores/toast';
 import {
-  Header,
   Alert,
   Badge,
   Btn,
   Canvas,
   Card,
   Group,
+  Header,
+  LIST_LAYOUT,
   Label,
   Loading,
+  OnFill,
   Progress,
+  RollUp,
   Row,
   Screen,
   Search,
@@ -57,7 +61,7 @@ import {
   cx,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
-import { C, ICON } from '@/theme';
+import { C, ICON, MOTION } from '@/theme';
 import { seoul } from '@/lib/dates';
 import { aiWaiting } from '@/lib/ai';
 import { AiPending } from '@/components/AiPending';
@@ -259,24 +263,32 @@ export function QuizNotesScreen() {
         )}
         <View className="mt-3 flex-row flex-wrap justify-between gap-y-3">
           {list.map((f) => (
-            <Card
+            <Animated.View
               key={f._id}
-              tone="mint"
-              onPress={() =>
-                offline
-                  ? toast('연결되면 퀴즈를 만들 수 있어요 · 노트는 그대로 볼 수 있어요')
-                  : setPicked(f._id)
-              }
-              className={cx('w-[48.5%] p-2.5', picked === f._id && 'border-2 border-blue')}
+              layout={LIST_LAYOUT}
+              entering={FadeIn.duration(MOTION.enter)}
+              exiting={FadeOut.duration(MOTION.exit)}
             >
-              <View className="h-16 items-center justify-center rounded-xl bg-white">
-                <FileText size={ICON.lg} color={C.brand} />
-              </View>
-              <Text className="mt-2 px-1 text-footnote font-semibold text-ink">{f.title}</Text>
-              <Text className="px-1 text-caption2 text-sub">
-                {f.subjectName} · {seoul(f.createdAt).getMonth() + 1}/{seoul(f.createdAt).getDate()}
-              </Text>
-            </Card>
+              <Card
+                key={f._id}
+                tone="mint"
+                onPress={() =>
+                  offline
+                    ? toast('연결되면 퀴즈를 만들 수 있어요 · 노트는 그대로 볼 수 있어요')
+                    : setPicked(f._id)
+                }
+                className={cx('w-[48.5%] p-2.5', picked === f._id && 'border-2 border-blue')}
+              >
+                <View className="h-16 items-center justify-center rounded-xl bg-white">
+                  <FileText size={ICON.lg} color={C.brand} />
+                </View>
+                <Text className="mt-2 px-1 text-footnote font-semibold text-ink">{f.title}</Text>
+                <Text className="px-1 text-caption2 text-sub">
+                  {f.subjectName} · {seoul(f.createdAt).getMonth() + 1}/
+                  {seoul(f.createdAt).getDate()}
+                </Text>
+              </Card>
+            </Animated.View>
           ))}
         </View>
         {offline && (
@@ -846,11 +858,9 @@ export function QuizSolveScreen() {
                 <Tap
                   key={c}
                   onPress={() => choose(c)}
-                  className={cx(
-                    'min-h-14 justify-center rounded-2xl px-5 py-4',
-                    pick === c ? 'bg-mint' : 'bg-white',
-                  )}
+                  className="min-h-14 justify-center overflow-hidden rounded-2xl bg-white px-5 py-4"
                 >
+                  <OnFill on={pick === c} fill="bg-mint" />
                   <Text className="text-subhead text-ink">
                     {'①②③④⑤'[n]} {c}
                   </Text>
@@ -1051,7 +1061,11 @@ export function QuizReviewScreen() {
           <Tutor size={96} />
           <Text className="mt-4 text-headline font-bold text-white">퀴즈 풀기 성공!</Text>
           <Animated.View entering={FadeIn} className="mt-3 rounded-2xl bg-white px-10 py-3">
-            <Text className="text-headline font-bold text-brand">+{points}P</Text>
+            <RollUp
+              value={`+${points}P`}
+              from="+0P"
+              className="text-headline font-bold text-brand"
+            />
           </Animated.View>
           <Text className="mt-6 text-caption2 text-white/60">탭해서 닫기</Text>
         </Pressable>
@@ -1452,50 +1466,59 @@ export function QuizBoxScreen() {
         {!box.data.length && <Text>보관한 퀴즈가 없어요</Text>}
         <View className="mt-3 gap-2">
           {box.data?.map((q, n) => (
-            <View key={q._id} className="rounded-card bg-white p-4">
-              <View className="flex-row items-start gap-2">
-                <View className="h-5 w-5 items-center justify-center rounded-full bg-brand">
-                  <Text className="text-caption2 text-white">{n + 1}</Text>
+            <Animated.View
+              key={q._id}
+              layout={LIST_LAYOUT}
+              entering={FadeIn.duration(MOTION.enter)}
+              exiting={FadeOut.duration(MOTION.exit)}
+            >
+              <View key={q._id} className="rounded-card bg-white p-4">
+                <View className="flex-row items-start gap-2">
+                  <View className="h-5 w-5 items-center justify-center rounded-full bg-brand">
+                    <Text className="text-caption2 text-white">{n + 1}</Text>
+                  </View>
+                  <Text className="flex-1 text-footnote text-ink">Q. {q.prompt}</Text>
                 </View>
-                <Text className="flex-1 text-footnote text-ink">Q. {q.prompt}</Text>
-              </View>
-              {shown.includes(q._id) && (
-                <Animated.View entering={FadeIn} className="mt-2 rounded-lg bg-mint px-3 py-2">
-                  <Text className="text-caption text-brand">A. {q.answer}</Text>
-                </Animated.View>
-              )}
-              <View className="mt-2 flex-row gap-1.5 pl-7">
-                {!shown.includes(q._id) && (
+                {shown.includes(q._id) && (
+                  <Animated.View entering={FadeIn} className="mt-2 rounded-lg bg-mint px-3 py-2">
+                    <Text className="text-caption text-brand">A. {q.answer}</Text>
+                  </Animated.View>
+                )}
+                <View className="mt-2 flex-row gap-1.5 pl-7">
+                  {!shown.includes(q._id) && (
+                    <Pressable
+                      onPress={() => setShown((p) => [...p, q._id])}
+                      className="rounded-full bg-mint px-2.5 py-1"
+                    >
+                      <Text className="text-caption2 text-brand">정답 보기</Text>
+                    </Pressable>
+                  )}
                   <Pressable
-                    onPress={() => setShown((p) => [...p, q._id])}
+                    onPress={() =>
+                      router.push({ pathname: '/play/explain', params: { qid: q._id } })
+                    }
                     className="rounded-full bg-mint px-2.5 py-1"
                   >
-                    <Text className="text-caption2 text-brand">정답 보기</Text>
+                    <Text className="text-caption2 text-brand">AI 설명 보기</Text>
                   </Pressable>
-                )}
-                <Pressable
-                  onPress={() => router.push({ pathname: '/play/explain', params: { qid: q._id } })}
-                  className="rounded-full bg-mint px-2.5 py-1"
-                >
-                  <Text className="text-caption2 text-brand">AI 설명 보기</Text>
-                </Pressable>
-                {select && (
-                  <Pressable
-                    accessibilityRole="checkbox"
-                    accessibilityLabel={`보관함 선택 ${q._id}`}
-                    accessibilityState={{ checked: selected.includes(q._id) }}
-                    disabled={remove.isPending}
-                    onPress={() =>
-                      setSelected((ids) =>
-                        ids.includes(q._id) ? ids.filter((id) => id !== q._id) : [...ids, q._id],
-                      )
-                    }
-                  >
-                    <Badge tone="gray">{selected.includes(q._id) ? '선택됨' : '선택'}</Badge>
-                  </Pressable>
-                )}
+                  {select && (
+                    <Pressable
+                      accessibilityRole="checkbox"
+                      accessibilityLabel={`보관함 선택 ${q._id}`}
+                      accessibilityState={{ checked: selected.includes(q._id) }}
+                      disabled={remove.isPending}
+                      onPress={() =>
+                        setSelected((ids) =>
+                          ids.includes(q._id) ? ids.filter((id) => id !== q._id) : [...ids, q._id],
+                        )
+                      }
+                    >
+                      <Badge tone="gray">{selected.includes(q._id) ? '선택됨' : '선택'}</Badge>
+                    </Pressable>
+                  )}
+                </View>
               </View>
-            </View>
+            </Animated.View>
           ))}
         </View>
       </Screen>
