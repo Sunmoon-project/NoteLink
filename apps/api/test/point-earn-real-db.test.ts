@@ -1,6 +1,6 @@
 // 진짜 MongoDB(replica set)에서 포인트 적립 트랜잭션이 되는지 보는 테스트.
 // 확인하는 것: 적립이 성공하면 잔액과 장부가 함께 바뀌고, 장부 저장이 실패하면(자체 트랜잭션이든 바깥 트랜잭션이든) 잔액도 원래대로 돌아가고 장부가 안 생긴다.
-// MONGODB_VERIFY_URI가 있을 때만 돌고(없으면 건너뜀), localhost가 아니면 거부한다. 전용 DB(notelink_verify_tmp)만 쓰고 끝나면 지운다.
+// MONGODB_VERIFY_URI가 있을 때만 돌고(없으면 건너뜀), localhost가 아니면 거부한다. 파일·실행마다 고유한 전용 DB(notelink_verify_point_<pid>_<시각>)만 쓰고 끝나면 그 DB만 지운다(다른 실제 DB 테스트 파일과 병렬로 돌아도 서로 지우지 않는다).
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/point-earn-real-db.test.ts
 import { getConnectionToken, MongooseModule } from '@nestjs/mongoose';
 import { Test, type TestingModule } from '@nestjs/testing';
@@ -13,6 +13,8 @@ import { PointLedger, PointLedgerSchema } from '../src/modules/reward/schemas/po
 
 const uri = process.env.MONGODB_VERIFY_URI;
 const isLocal = !!uri && /^mongodb:\/\/([^@/]*@)?(localhost|127\.0\.0\.1)[:/]/.test(uri);
+// 이 파일이 이번 실행에서만 쓰는 DB 이름 (다른 파일 · 다른 실행과 겹치지 않는다)
+const dbName = `notelink_verify_point_${process.pid}_${Date.now()}`;
 
 describe.skipIf(!uri)('진짜 DB 포인트 적립 롤백 확인', () => {
     let moduleRef: TestingModule;
@@ -35,7 +37,7 @@ describe.skipIf(!uri)('진짜 DB 포인트 적립 롤백 확인', () => {
         moduleRef = await Test.createTestingModule({
             imports: [
                 // 접속이 안 되면 30초 기다리지 않고 5초 뒤에 이유와 함께 실패하게 한다
-                MongooseModule.forRoot(uri!, { dbName: 'notelink_verify_tmp', serverSelectionTimeoutMS: 5000 }),
+                MongooseModule.forRoot(uri!, { dbName, serverSelectionTimeoutMS: 5000 }),
                 MongooseModule.forFeature([
                     { name: PointLedger.name, schema: PointLedgerSchema },
                     { name: User.name, schema: UserSchema },
