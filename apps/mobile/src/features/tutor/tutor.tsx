@@ -11,7 +11,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useLocalSearchParams } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
-import { ERROR_CODES, NoteAskResult, type AiJob, type NoteAskTurn } from '@notelink/shared';
+import { ERROR_CODES, NoteAskResult, type AiJob, NoteAskTurn } from '@notelink/shared';
 import { ArrowUp } from 'lucide-react-native';
 import { Text } from '@/components/text';
 import { Canvas, Chip, Header, Screen, Swap, cx } from '@/components/ui';
@@ -42,12 +42,16 @@ const STATUS: Record<Mood, string> = {
 const POLL_MS = 1500;
 const WAIT_MS = 120_000; // 학교 LLM이 붐비면 길어짐. 넘으면 다시 물어보게
 const HISTORY = 6; // 서버(apps/ai note/ask.py HISTORY_TURNS)와 같은 수만 보낸다
+// 서버 계약(NoteAskTurn.text)의 한 턴 길이. 긴 답은 앞부분만 이력으로 보낸다
+const TURN_MAX = NoteAskTurn.shape.text.maxLength ?? 600;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const active = (j: AiJob) => j.status === 'queued' || j.status === 'running';
 
 function failText(e: unknown) {
   if (e instanceof ApiError) {
     if (e.code === ERROR_CODES.NOTE_NOT_READY) return '노트 정리가 끝나면 설명해 드릴게요.';
+    // 서버에 아직 묻기 경로가 없다(#244 병합 전). 경로가 생기면 이 안내는 저절로 사라진다
+    if (e.status === 404) return '아바타에게 묻기는 준비 중이에요. 곧 열려요.';
     if (e.status === 429) return '앞의 질문에 답하는 중이에요. 잠시 뒤에 물어봐 주세요.';
   }
   return '답을 만들지 못했어요. 연결을 확인하고 다시 물어봐 주세요.';
@@ -220,7 +224,7 @@ export function TutorScreen() {
     const history = msgs
       .filter((m) => !m.error)
       .slice(-HISTORY)
-      .map(({ role, text }) => ({ role, text }));
+      .map(({ role, text }) => ({ role, text: text.slice(0, TURN_MAX) }));
     say({ role: 'user', text: question });
     setMood('thinking');
     try {

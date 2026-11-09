@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AccessibilityInfo, View } from 'react-native';
 import { Asset } from 'expo-asset';
 import { File } from 'expo-file-system';
@@ -193,8 +193,10 @@ export function Avatar3D({
   }, [mood]);
   useEffect(() => {
     void AccessibilityInfo.isReduceMotionEnabled().then((v) => (reduce.current = v));
-    return () => stop.current?.();
   }, []);
+  // 아바타 · 구도가 바뀌어 옛 GL 화면을 내리거나 화면을 떠나면 그리기 반복을 바로 멈춘다.
+  // 커밋 중에 도는 layout 정리라, 새 GL 화면의 onContextCreate보다 늦게 돌아 새 반복을 멈추는 일이 없다
+  useLayoutEffect(() => () => stop.current?.(), [id, framing]);
   useEffect(() => {
     let live = true;
     loadModel(id)

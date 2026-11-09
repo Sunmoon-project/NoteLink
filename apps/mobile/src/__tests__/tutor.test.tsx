@@ -1,7 +1,7 @@
 import { AccessibilityInfo } from 'react-native';
 import { act, fireEvent, renderHook, screen, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
-import { ERROR_CODES, type AiJob } from '@notelink/shared';
+import { ERROR_CODES, NoteAskBody, type AiJob } from '@notelink/shared';
 import { ApiError } from '../lib/api/http';
 import { localAnswer } from '../lib/local/tutor';
 import { TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
@@ -110,6 +110,29 @@ describe('아바타 선생님 대화', () => {
     expect(
       await screen.findByText('답을 만들지 못했어요. 연결을 확인하고 다시 물어봐 주세요.'),
     ).toBeTruthy();
+  });
+
+  it('긴 답은 서버 계약(한 턴 600자)에 맞게 앞부분만 이력으로 보낸다', async () => {
+    const long = '가'.repeat(900);
+    mockApi.content.ask
+      .mockResolvedValueOnce(job({ result: { answer: long, refs: [] } }))
+      .mockResolvedValueOnce(job());
+    await renderScreen(<TutorScreen />);
+    await fireEvent.press(await screen.findByText('시험에 나올 만한 건요?'));
+    await screen.findByText(long);
+    await fireEvent.changeText(screen.getByPlaceholderText('노트에 대해 물어보기'), '더 짧게요');
+    await fireEvent.press(screen.getByLabelText('질문 보내기'));
+    await waitFor(() => expect(mockApi.content.ask).toHaveBeenCalledTimes(2));
+    const body = mockApi.content.ask.mock.calls[1]![1];
+    expect(body.history[1]).toEqual({ role: 'avatar', text: '가'.repeat(600) });
+    expect(NoteAskBody.safeParse(body).success).toBe(true);
+  });
+
+  it('서버에 묻기 경로가 아직 없으면(404) 준비 중이라고 안내한다', async () => {
+    mockApi.content.ask.mockRejectedValue(new ApiError(ERROR_CODES.NOT_FOUND, 'Cannot POST', 404));
+    await renderScreen(<TutorScreen />);
+    await fireEvent.press(await screen.findByText('시험에 나올 만한 건요?'));
+    expect(await screen.findByText('아바타에게 묻기는 준비 중이에요. 곧 열려요.')).toBeTruthy();
   });
 
   it('장착한 상점 아바타의 3D 모델을 쓰고, 없으면 기본 아바타', async () => {
