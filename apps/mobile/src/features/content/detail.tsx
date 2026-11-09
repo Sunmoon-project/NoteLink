@@ -46,9 +46,17 @@ import {
 import { C, ICON } from '@/theme';
 import { DocSummary, NoteBody } from './convert';
 import { Player } from './player';
+import { TutorBuddy, useTuckOnScroll } from '@/features/tutor/buddy';
 import { seoul } from '@/lib/dates';
 
 // p.67~73 필기 · 녹음 · 문서 상세 / 편집 / 다운로드 / 공유 / 삭제
+
+/** 아바타가 설명할 글이 있는 노트: 정리가 끝났거나 요약 · 쪽 글이 있음(서버 NOTE_NOT_READY 전에 숨김) */
+const canAsk = (m: Material) =>
+  m.processing?.status === 'done' ||
+  !!m.summary?.sections.length ||
+  !!m.summary?.points.length ||
+  !!m.pages?.some((p) => p.ocrText?.trim());
 
 function useMaterial() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -257,11 +265,14 @@ export function HandDetailScreen() {
   const [tab, setTab] = useState<'정리된 노트' | '원본 이미지'>(t ?? '정리된 노트');
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
+  const buddy = useTuckOnScroll();
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
     <Canvas>
       <Screen
+        onScroll={buddy.onScroll}
+        overlay={canAsk(m) && <TutorBuddy id={id} tucked={buddy.tucked} />}
         footer={
           <Two>
             <Btn
@@ -449,11 +460,15 @@ export function RecDetailScreen() {
   const { id, m, isError, refetch } = useMaterial();
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
+  const buddy = useTuckOnScroll();
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
     <Canvas>
-      <Screen>
+      <Screen
+        onScroll={buddy.onScroll}
+        overlay={canAsk(m) && <TutorBuddy id={id} tucked={buddy.tucked} />}
+      >
         <Header
           title={view === 'text' ? '원문 텍스트 보기' : m.title}
           sub={dateLabel(m, '녹음')}
@@ -484,6 +499,7 @@ export function DocDetailScreen() {
   const [tab, setTab] = useState<'요약' | '원본 문서'>(t ?? '요약');
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
+  const buddy = useTuckOnScroll();
   const download = useMutation({
     mutationFn: async () => {
       const { url, fileName } = await api.content.downloadUrl(id);
@@ -507,6 +523,8 @@ export function DocDetailScreen() {
   return (
     <Canvas>
       <Screen
+        onScroll={buddy.onScroll}
+        overlay={canAsk(m) && <TutorBuddy id={id} tucked={buddy.tucked} />}
         footer={
           <Two>
             <Btn
