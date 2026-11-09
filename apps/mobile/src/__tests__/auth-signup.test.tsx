@@ -224,6 +224,23 @@ it('가입 요청만 실패한 뒤 인증번호를 다시 받으면, 받아 둔 
   expect(signup).toHaveBeenLastCalledWith('proof-2', 'abcd1234');
 });
 
+it('인증번호를 확인하는 사이 이메일을 고치면 옛 주소로 가입하지 않는다', async () => {
+  jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
+  let done!: (v: { verificationToken: string; expiresInSeconds: number }) => void;
+  jest
+    .spyOn(api.auth, 'emailVerifyCode')
+    .mockImplementationOnce(() => new Promise((r) => (done = r)));
+  const signup = jest.spyOn(api.auth, 'emailSignup').mockResolvedValue(undefined);
+  await fireEvent.changeText(await toCode('a@test.com', 'abcd1234'), '123456');
+  await fireEvent.press(screen.getByText('가입하기'));
+  await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'b@test.com');
+  done({ verificationToken: 'proof-a', expiresInSeconds: 600 });
+  await waitFor(() => expect(screen.getByText('인증번호 받기')).toBeTruthy());
+  await new Promise((r) => setTimeout(r, 20));
+  expect(signup).not.toHaveBeenCalled();
+  expect(router.replace).not.toHaveBeenCalled();
+});
+
 it.each([ERROR_CODES.EMAIL_PROOF_EXPIRED, ERROR_CODES.EMAIL_PROOF_INVALID])(
   '증표가 %s 이면 알리고 인증번호 받기 단계로 돌아가 새로 인증한다',
   async (code) => {
