@@ -3,10 +3,20 @@ import { Types } from 'mongoose';
 import { describe, expect, it } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
-import { QuizSetsService, seoulDay } from '../src/quiz-sets/quiz-sets.service.js';
+import {
+  INPUT_ATTEMPT_LIMIT,
+  QuizSetsService,
+  seoulDay,
+} from '../src/quiz-sets/quiz-sets.service.js';
 import type { MaterialDocument } from '../src/modules/content/schemas/material.schema.js';
-import type { QuizAttemptDocument } from '../src/modules/quiz/schemas/quiz-attempt.schema.js';
-import type { QuizSetDocument } from '../src/modules/quiz/schemas/quiz-set.schema.js';
+import {
+  QuizAttemptSchema,
+  type QuizAttemptDocument,
+} from '../src/modules/quiz/schemas/quiz-attempt.schema.js';
+import {
+  QuizSetSchema,
+  type QuizSetDocument,
+} from '../src/modules/quiz/schemas/quiz-set.schema.js';
 import { createFakeCollection, type Row } from './support/fake-collection.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
 
@@ -29,9 +39,11 @@ const workerQuestion = (order: number, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+// quiz-set.schema.ts 고유 색인: 만드는 중 · 지우지 않은 세트만
+const live = (r: Row) => r['status'] === 'generating' && (r['deletedAt'] ?? null) === null;
 const sameGenerating = (a: Row, b: Row) =>
-  a['status'] === 'generating' &&
-  b['status'] === 'generating' &&
+  live(a) &&
+  live(b) &&
   String(a['ownerId']) === String(b['ownerId']) &&
   String(a['materialId']) === String(b['materialId']);
 
@@ -445,6 +457,64 @@ describe('QuizSetsService 리뷰 반영(/code-review)', () => {
     } as never);
     const { job: created } = await service.create(ME.toHexString(), await addNote());
     expect((job(created._id)['input'] as Record<string, unknown>)['attempts']).toEqual([]);
+  });
+
+  it('고유 색인은 만드는 중 · 지우지 않은 세트만 센다(위 가짜 sameGenerating과 같은 조건)', () => {
+    expect(QuizSetSchema.indexes()).toContainEqual([
+      { ownerId: 1, materialId: 1 },
+      expect.objectContaining({
+        unique: true,
+        partialFilterExpression: { status: 'generating', deletedAt: { $type: 'null' } },
+      }),
+    ]);
+  });
+
+  it('처리기 입력의 풀이를 읽는 색인(내 풀이 · 최근 것부터)', () => {
+    expect(QuizAttemptSchema.indexes()).toContainEqual([
+      { userId: 1, finishedAt: -1 },
+      expect.anything(),
+    ]);
+  });
+
+  it('지운 만드는 중 세트는 같은 노트의 새 세트를 막지 않는다', async () => {
+    const { service, addNote, sets } = setup();
+    const materialId = await addNote();
+    const first = await service.create(ME.toHexString(), materialId);
+    // 고유 색인의 $type: 'null'은 필드가 없는 문서를 세지 않아 만들 때 null을 넣는다
+    expect(sets.rows[0]).toHaveProperty('deletedAt', null);
+    sets.rows[0]!['deletedAt'] = new Date();
+    const again = await service.create(ME.toHexString(), materialId);
+    expect(again.quizSet._id).not.toBe(first.quizSet._id);
+    expect(again.quizSet.status).toBe('generating');
+  });
+
+  it(`처리기 입력의 풀이는 최근 ${INPUT_ATTEMPT_LIMIT}개까지`, async () => {
+    const { service, addNote, sets, attempts, job } = setup();
+    const ready = (await sets.model.create({
+      ownerId: ME,
+      materialId: new Types.ObjectId(),
+      title: '지난 세트',
+      status: 'ready',
+      deletedAt: null,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      questions: [],
+    } as never)) as unknown as { _id: Types.ObjectId };
+    const start = Date.parse('2026-01-01T00:00:00Z');
+    for (let i = 0; i <= INPUT_ATTEMPT_LIMIT; i += 1) {
+      await attempts.model.create({
+        userId: ME,
+        quizSetId: ready._id,
+        finishedAt: new Date(start + i * 60_000),
+        answers: [],
+      } as never);
+    }
+    const { job: created } = await service.create(ME.toHexString(), await addNote());
+    const sent = (job(created._id)['input'] as Record<string, unknown>)['attempts'] as {
+      finishedAt: string;
+    }[];
+    expect(sent).toHaveLength(INPUT_ATTEMPT_LIMIT);
+    // 가장 오래된 풀이(i = 0)가 빠진다
+    expect(sent.map((a) => Date.parse(a.finishedAt))).not.toContain(start);
   });
 });
 

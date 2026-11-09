@@ -95,10 +95,16 @@ export class QuizSet {
 }
 
 export const QuizSetSchema = SchemaFactory.createForClass(QuizSet);
-// 노트마다 만드는 중인 세트는 하나(#175). 퀴즈를 거의 동시에 두 번 요청해도 같은 퀴즈를 두 번 만들지 않는다
+// 노트마다 만드는 중인 세트는 하나(#175). 퀴즈를 거의 동시에 두 번 요청해도 같은 퀴즈를 두 번 만들지 않는다.
+// 지운 세트는 세지 않는다(QuizSetsService.generatingSet의 deletedAt: null). 부분 색인 조건은 { $ne: null }을
+// 받지 않아 $type으로 쓴다. $type은 deletedAt 필드가 없는 문서는 세지 않으므로, 세트를 만들 때 deletedAt을
+// null로 꼭 넣는다(QuizSetsService.createOnce · 스키마 기본값)
 QuizSetSchema.index(
   { ownerId: 1, materialId: 1 },
-  { unique: true, partialFilterExpression: { status: 'generating' } },
+  {
+    unique: true,
+    partialFilterExpression: { status: 'generating', deletedAt: { $type: 'null' } },
+  },
 );
 // 내 퀴즈 세트 목록(최근 것부터)
 QuizSetSchema.index({ ownerId: 1, createdAt: -1 });

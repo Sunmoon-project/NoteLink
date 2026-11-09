@@ -23,6 +23,11 @@ const DUPLICATE_KEY = 11000;
  * (MongoDB 문서 16MB 한도). 처리기는 이 세트들의 풀이로 아직 틀리는 쪽을 고른다
  */
 export const INPUT_SET_LIMIT = 50;
+/**
+ * 처리기 입력에 넣는 끝낸 풀이 수(최근 것부터). 세트 수와 함께 입력 크기를 묶는다(Codex 리뷰 #236).
+ * 노트 글은 처리기가 문제의 출처 쪽을 찾는 데 써서(text.locate) 줄이지 않는다
+ */
+export const INPUT_ATTEMPT_LIMIT = 500;
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 
 /** 앱에 보내는 문제(packages/shared Question) */
@@ -280,6 +285,8 @@ export class QuizSetsService {
         questionCount: 0,
         questions: [],
         jobId: new Types.ObjectId(job._id),
+        // 고유 색인(quiz-set.schema.ts)이 deletedAt이 null인 세트만 센다
+        deletedAt: null,
       });
       return { quizSet: toAppSet(created.toObject<QuizSetRow>(), job.progress), job };
     } catch (e) {
@@ -400,6 +407,8 @@ export class QuizSetsService {
             quizSetId: { $in: withNote.map((s) => s._id) },
             finishedAt: { $ne: null },
           })
+          .sort({ finishedAt: -1 })
+          .limit(INPUT_ATTEMPT_LIMIT)
           .lean<AttemptRow[]>()
       : [];
     const otherIds = [...new Set(withNote.map((s) => s.materialId!.toString()))].filter(
