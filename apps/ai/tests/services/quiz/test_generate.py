@@ -591,6 +591,86 @@ def test_a_slot_error_after_the_set_is_full_keeps_the_set(monkeypatch: pytest.Mo
     join_threads("quiz-slot")
 
 
+def test_an_llm_error_out_of_a_slot_is_raised_unless_the_set_is_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 자리 밖으로 나온 LlmError(gen_one이 잡지 못한 장애): 세트가 모자라면 그대로 올려 작업을 다시
+    # 시도하고, 다 모은 뒤에 나왔으면 만든 세트를 돌려줌(Codex 5차 리뷰 #269)
+    real = generate.gen_one
+
+    def broken(*a: Any, **k: Any) -> Any:
+        raise LlmError("자리 밖 장애")
+
+    monkeypatch.setattr(generate, "gen_one", broken)
+    with pytest.raises(LlmError, match="자리 밖 장애"):  # 모자람: 그 오류 그대로
+        run(happy([]), job(size=1))
+
+    # 1문제 + 여분 자리 1: 첫 자리가 세트를 다 채운 뒤 여분 자리가 LlmError로 끝남
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "EXTRA", 0.6)
+    second, full, raised = threading.Event(), threading.Event(), threading.Event()
+    lock = threading.Lock()
+    calls = [0]
+
+    def ordered(*a: Any, **k: Any) -> Any:
+        with lock:
+            calls[0] += 1
+            first = calls[0] == 1
+        if first:
+            second.wait(10)
+            return real(*a, **k)
+        second.set()
+        full.wait(10)
+        raised.set()
+        raise LlmError("자리 밖 장애")
+
+    def report(value: int, step: str | None = None) -> None:
+        if value == 100:  # 다 모음: 여분 자리가 오류로 끝날 때까지 기다림
+            full.set()
+            raised.wait(10)
+            time.sleep(1.0)
+
+    monkeypatch.setattr(generate, "gen_one", ordered)
+    result = generate.run(parallel_llm(by_page), job(size=1), report)
+    assert len(result["questions"]) == 1 and calls[0] == 2
+    join_threads("quiz-slot")
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_a_server_that_answered_is_not_an_outage_when_a_later_round_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1판: 생성은 답했지만 초안이 탈락(받은 문제 없음). 2판: 상한까지 답이 없음. 앞 판에서 서버가
+    # 답했으므로 응답 없는 장애(LlmError, 작업 다시 시도)가 아니라 모자란 세트로 실패
+    # (Codex 5차 리뷰 #269)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.1)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.15)
+    monkeypatch.setattr(generate, "FILL_SEC_PER_QUESTION", 0.5)
+    bad = draft("이질 아메바", "위족으로 운동하는 이질 아메바의 특징")  # 설명에 정답 용어
+    release = threading.Event()
+    lock = threading.Lock()
+    calls = [0]
+
+    def quiz(user: str) -> JsonObject:
+        with lock:
+            calls[0] += 1
+            first_round = calls[0] <= 2  # 1판 한 자리의 유형 두 번
+        if not first_round:
+            release.wait(10)
+        return bad
+
+    inp = job(size=1)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    try:
+        with pytest.raises(generate.NoQuestionsError):
+            run(parallel_llm(quiz), inp)
+    finally:
+        release.set()
+    assert calls[0] > 2  # 2판이 돌다 상한에 걸림
+    join_threads("quiz-slot")
+
+
 def test_some_calls_failing_is_not_an_outage() -> None:
     llm = happy([LlmError("503"), GOOD["이질 아메바"]])
     result, _ = run(llm, job(size=1))
