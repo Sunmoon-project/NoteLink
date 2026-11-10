@@ -1114,6 +1114,10 @@ def test_a_stable_slot_tries_three_drafts_and_a_fast_slot_two() -> None:
     assert len(llm.named("Quiz")) == 2
 
 
+# 한 자리가 정의 · 특징 · 분류를 다 써 보는 모드(안정적 모드에서 부정설명 · 조합 유형을 뺌, #268)
+THREE_TRIES = replace(generate.STABLE, name="three", extra=())
+
+
 def test_a_classification_prompt_says_not_to_pick_a_term_of_a_used_category() -> None:
     # 분류 유형의 정답은 용어의 분류(묶음 이름): 이미 쓴 정답이 분류가 되는 용어를 고르지 않게(#282)
     line = "분류 문제: 정답(분류 이름)이 이미 정답으로 쓴 것이 되는 용어는 고르지 않는다"
@@ -1130,7 +1134,7 @@ def test_a_classification_prompt_says_not_to_pick_a_term_of_a_used_category() ->
 
 @pytest.mark.usefixtures("fill_rounds")
 def test_classification_is_left_out_after_two_answer_clashes_in_the_set() -> None:
-    # 1쪽 2문제(안정적 모드, 한 자리가 세 유형을 다 써 봄). 분류 초안은 늘 이미 받은 정답
+    # 1쪽 2문제(THREE_TRIES: 한 자리가 세 유형을 다 써 봄). 분류 초안은 늘 이미 받은 정답
     # (이질 아메바)을 내 정답 겹침으로 떨어짐. 1판 둘째 자리 · 2판 자리에서 두 번 떨어진 뒤 3판
     # 자리는 분류 유형을 빼고 정의 · 특징만으로 세 번 시도해 채움. 빼지 않으면 3판의 세 번째 시도가
     # 분류라 못 채움(#282)
@@ -1142,7 +1146,7 @@ def test_classification_is_left_out_after_two_answer_clashes_in_the_set() -> Non
         kinds.append(ty)
         return BAD if ty == "분류" else rest.pop(0)  # BAD의 정답은 이질 아메바(정답 겹침)
 
-    result = make(parallel_llm(quiz), page1_job(size=2), mode=generate.STABLE)
+    result = make(parallel_llm(quiz), page1_job(size=2), mode=THREE_TRIES)
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바"]
     assert kinds == [
         "정의",  # 1판 첫 자리: 이질 아메바
@@ -1154,7 +1158,7 @@ def test_classification_is_left_out_after_two_answer_clashes_in_the_set() -> Non
 
 @pytest.mark.usefixtures("fill_rounds")
 def test_classification_is_left_out_only_on_the_page_where_it_clashed() -> None:
-    # 2쪽 2문제(안정적 모드): 1쪽의 분류 초안은 이미 받은 정답(이질 아메바)을 내 정답 겹침으로
+    # 2쪽 2문제(THREE_TRIES): 1쪽의 분류 초안은 이미 받은 정답(이질 아메바)을 내 정답 겹침으로
     # 떨어지고, 나머지 초안은 다른 이유로 떨어져 채우지 못함. 1쪽은 분류 겹침 두 번 뒤로 분류를 쓰지
     # 않지만, 2쪽은 묶음 이름이 다르므로 그 뒤에도 분류를 씀(/code-review #282)
     calls: list[tuple[int, str, int]] = []  # (쪽, 유형, 그때까지 1쪽 분류 호출 수)
@@ -1170,7 +1174,7 @@ def test_classification_is_left_out_only_on_the_page_where_it_clashed() -> None:
         return BAD  # 정답이 이질 아메바: 정답 겹침(분류면 셈) · 설명에 정답 용어
 
     with pytest.raises(generate.NoQuestionsError):
-        make(parallel_llm(quiz), job(size=2), mode=generate.STABLE)
+        make(parallel_llm(quiz), job(size=2), mode=THREE_TRIES)
     assert sum(p == 1 and t == "분류" for p, t, _ in calls) == 2  # 1쪽: 두 번 뒤로 뺌
     assert any(p == 2 and t == "분류" and before == 2 for p, t, before in calls)  # 2쪽은 그대로
 
