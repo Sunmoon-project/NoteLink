@@ -19,12 +19,18 @@ def statements(*texts: str, concept: str = "이질 아메바") -> JsonObject:
         "question": {
             "concept": concept,
             "statements": list(texts),
-            "explanation": "ㄱ은 옳다. ㄴ은 포낭형이 4핵이라 틀리다. ㄷ은 옳다.",
+            "reasons": ["노트에 적힌 운동 방법이다", "포낭형은 4핵이다", "노트에 적힌 먹이다"],
         }
     }
 
 
 GOOD = statements("위족으로 운동한다.", "포낭형은 8핵이다.", "영양형은 적혈구를 먹는다.")
+
+
+@pytest.fixture(autouse=True)
+def keep_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """문장 순서를 섞지 않음(섞기는 test_statements_are_shuffled_and_the_answer_follows가 봄)."""
+    monkeypatch.setattr(combo, "order_for", lambda: [0, 1, 2])
 
 
 def verdict(*values: bool) -> JsonObject:
@@ -96,7 +102,10 @@ def test_the_model_writes_statements_and_the_code_builds_the_question() -> None:
     )
     assert b.draft["answer"] == "ㄱ, ㄷ" and b.draft["answer"] in b.draft["options"]
     assert is_combo(b.draft["options"])
-    assert b.draft.get("explanation", "").startswith("ㄱ은 옳다")
+    assert b.draft.get("explanation") == (
+        "ㄱ: 옳음. 노트에 적힌 운동 방법이다 ㄴ: 틀림. 포낭형은 4핵이다 "
+        "ㄷ: 옳음. 노트에 적힌 먹이다"
+    )
     gen, check = llm.named("Combo")[0], llm.named("Verify")[0]
     assert gen.model == settings.quiz_gen_model and check.model == settings.quiz_check_model
     assert "문장 3개를 이 순서로 만든다: ㄱ 옳음, ㄴ 틀림, ㄷ 옳음" in gen.user
@@ -136,7 +145,8 @@ def test_a_concept_outside_the_list_is_the_drafts_fault() -> None:
 @pytest.mark.parametrize(
     "bad",
     [
-        {"question": {"concept": "이질 아메바", "statements": ["가", "나"], "explanation": ""}},
+        {"question": {"concept": "이질 아메바", "statements": ["가", "나"], "reasons": []}},
+        {"question": {"concept": "이질 아메바", "statements": ["가", "나", "다"]}},  # 근거 없음
         statements("가", "", "다"),
         statements("가", "ㄴ.", "다"),  # 기호만 있던 문장
         {},
@@ -183,3 +193,26 @@ def test_the_prompt_carries_the_hint_and_the_previous_problem() -> None:
     user = llm.named("Combo")[0].user
     assert "이미 익힌 개념(피한다): 대장 아메바" in user and "앞서 만든 문제" in user
     assert re.search(r"ㄱ 옳음, ㄴ 틀림, ㄷ 틀림$", user)
+
+
+def test_statements_are_shuffled_and_the_answer_follows(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 생성 모델은 첫 문장을 옳게 · 마지막 문장을 틀리게 쓰는 버릇이 있어 판정을 통과한 뒤 섞음
+    monkeypatch.setattr(combo, "order_for", lambda: [2, 0, 1])
+    llm = FakeLlm({"Combo": [GOOD], "Verify": [verdict(True, False, True)]})
+    b = build(llm, truth="ㄱ, ㄷ")
+    assert b.draft is not None
+    assert b.draft["passage"] == (
+        "ㄱ. 영양형은 적혈구를 먹는다.\nㄴ. 위족으로 운동한다.\nㄷ. 포낭형은 8핵이다."
+    )
+    assert b.draft["answer"] == "ㄱ, ㄴ" and "ㄱ, ㄴ" in b.draft["options"]
+    assert b.draft.get("explanation", "").startswith("ㄱ: 옳음. 노트에 적힌 먹이다 ㄴ: 옳음.")
+    # 검사 모델은 요청한 순서로 판정(섞기 전)
+    assert "ㄴ. 포낭형은 8핵이다." in llm.named("Verify")[0].user
+
+
+def test_every_order_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    import random
+
+    monkeypatch.undo()  # keep_order를 풀고 진짜 섞기로
+    monkeypatch.setattr(combo, "_rng", random.Random(3))
+    assert len({tuple(combo.order_for()) for _ in range(100)}) == 6

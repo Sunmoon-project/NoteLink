@@ -43,6 +43,13 @@ def one_slot_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(generate, "MAX_ROUNDS", 1)
 
 
+@pytest.fixture(autouse=True)
+def keep_combo_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """조합형 문장 순서를 섞지 않음: 가짜 검사 모델이 요청한 묶음을 정답으로 알고 풂(섞기는
+    test_combo가 봄)."""
+    monkeypatch.setattr(generate.combo, "order_for", lambda: [0, 1, 2])
+
+
 @pytest.fixture
 def fill_rounds(monkeypatch: pytest.MonkeyPatch) -> None:
     """모자란 자리를 다시 돌림(#247). 판은 3개까지, 시험의 짧은 상한에서도 새 판을 띄우게."""
@@ -1850,7 +1857,7 @@ def typed_llm() -> ScriptLlm:
             "question": {
                 "concept": concept,
                 "statements": st,
-                "explanation": "ㄱ · ㄷ은 노트와 같고 ㄴ은 4핵이다.",
+                "reasons": ["노트와 같다", "포낭형은 4핵이다", "노트와 같다"],
             }
         }
 
