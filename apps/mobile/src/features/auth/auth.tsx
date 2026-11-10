@@ -1,6 +1,13 @@
-import { useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, View } from 'react-native';
-import { Text } from '@/components/text';
+import { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Linking,
+  Pressable,
+  View,
+  type TextInput as RNTextInput,
+} from 'react-native';
+import { create } from 'zustand';
+import { Text, TextInput } from '@/components/text';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -241,21 +248,35 @@ type SignupField = 'email' | 'pw' | 'confirm';
 const CODE = /^\d{6}$/;
 
 /**
- * 이메일 가입. 서버 계약대로 세 단계를 한 화면에서 잇는다:
- * ① 인증번호 받기(send-code) → ② 인증번호 확인으로 가입 증표 받기(verify-code) → ③ 증표 + 비밀번호로 가입(signup).
- * 인증번호를 보낸 뒤 이메일을 고치면 처음 단계로 돌아간다(증표는 보낸 이메일에만 맞다)
+ * 가입 중인 정보 — 가입 화면과 인증번호 화면이 함께 쓴다. 메모리에만 둔다(비밀번호를 주소에 싣지 않음).
+ * sentTo: 인증번호를 보낸 이메일, proof: 인증번호 확인으로 받은 증표(서버는 맞힌 번호를 바로 써 버리므로,
+ * 가입만 실패하면 이 증표로 가입만 다시 한다)
+ */
+export const useSignup = create<{
+  email: string;
+  pw: string;
+  sentTo: string | null;
+  /** 마지막으로 인증번호를 보낸 시각(다시 받기 대기 계산) */
+  sentAt: number;
+  proof: { email: string; token: string } | null;
+  reset: () => void;
+}>((set) => ({
+  email: '',
+  pw: '',
+  sentTo: null,
+  sentAt: 0,
+  proof: null,
+  reset: () => set({ email: '', pw: '', sentTo: null, sentAt: 0, proof: null }),
+}));
+
+/**
+ * 이메일 가입 ① 정보 입력. 서버 계약: ① 인증번호 받기(send-code) → ② 인증번호 확인으로 가입 증표 받기
+ * (verify-code) → ③ 증표 + 비밀번호로 가입(signup). 이 화면은 ①까지 하고 인증번호 화면으로 넘긴다
  */
 export function SignupScreen() {
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [taken, setTaken] = useState(false);
-  // 인증번호를 보낸 이메일(보내기 전 null) · 입력한 인증번호 · 인증번호 칸 안내
-  const [sentTo, setSentTo] = useState<string | null>(null);
-  const [code, setCode] = useState('');
-  const [codeMsg, setCodeMsg] = useState<string | null>(null);
-  // 확인을 마친 증표. 서버는 맞힌 인증번호를 바로 써 버리므로, 가입만 실패하면 이 증표로 가입만 다시 한다
-  const proof = useRef<{ email: string; token: string } | null>(null);
   // 발송 응답이 늦게 와도 지금 칸의 이메일과 비교하려고 최신 값을 둔다
   const emailNow = useRef('');
   // 안내는 칸을 벗어나거나 버튼을 누른 뒤부터 보여 준다 (쓰는 중인 칸을 탓하지 않는다)
@@ -278,87 +299,31 @@ export function SignupScreen() {
     setTouched({ email: true, pw: true, confirm: true });
     return !errors.email && !errors.pw && !errors.confirm;
   };
-  const toLogin = (to = email.trim()) =>
-    router.replace({ pathname: '/(auth)/login', params: { email: to } });
-  const failed = (e: unknown, fallback: string) =>
-    toast(e instanceof ApiError ? e.message : fallback);
   const send = useMutation({
     // 서버는 메일을 보내기 전에 번호를 새로 내며 앞서 받은 증표를 무효로 한다 —
     // 메일 발송이 실패해도 그 증표는 못 쓰니 요청을 보내는 순간 버린다
-    onMutate: () => {
-      proof.current = null;
-    },
+    onMutate: () => useSignup.setState({ proof: null }),
     mutationFn: (to: string) => api.auth.emailSendCode(to),
     onSuccess: (_, to) => {
       // 보내는 사이 이메일을 고쳤으면 옛 주소의 응답은 버린다
       if (to !== emailNow.current) return;
-      setSentTo(to);
-      setCode('');
-      setCodeMsg(null);
+      useSignup.setState({ email: to, pw, sentTo: to, sentAt: Date.now() });
       toast('인증번호를 보냈어요. 메일을 확인해 주세요');
+      router.push({ pathname: '/(auth)/signup-code', params: { email: to } });
     },
-    onError: (e) => failed(e, '인증번호를 보내지 못했어요. 다시 시도해 주세요'),
+    onError: (e) =>
+      toast(e instanceof ApiError ? e.message : '인증번호를 보내지 못했어요. 다시 시도해 주세요'),
   });
-  const signup = useMutation({
-    mutationFn: async (to: string) => {
-      if (proof.current?.email !== to) {
-        const { verificationToken } = await api.auth.emailVerifyCode(to, code);
-        proof.current = { email: to, token: verificationToken };
-      }
-      // 확인을 기다리는 사이 이메일을 고쳤으면 옛 주소로 가입하지 않는다(증표는 남겨 둔다)
-      if (to !== emailNow.current) return false;
-      await api.auth.emailSignup(proof.current.token, pw);
-      return true;
-    },
-    onSuccess: (done, to) => {
-      if (!done) return;
-      toast('가입했어요. 로그인해 주세요');
-      // 실제로 가입한 이메일로 로그인을 채운다
-      toLogin(to);
-    },
-    onError: (e, to) => {
-      // 그사이 이메일을 고쳤으면 옛 주소의 실패가 지금 단계를 건드리지 않게 버린다
-      if (to !== emailNow.current) return;
-      if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
-      else if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_CODE_INVALID)
-        setCodeMsg(e.message);
-      else if (
-        e instanceof ApiError &&
-        (e.code === ERROR_CODES.EMAIL_CODE_LOCKED ||
-          e.code === ERROR_CODES.EMAIL_PROOF_EXPIRED ||
-          e.code === ERROR_CODES.EMAIL_PROOF_INVALID)
-      ) {
-        // 이 인증번호 · 증표는 더 쓸 수 없다 — 새로 받게 처음 단계로
-        proof.current = null;
-        setSentTo(null);
-        toast(e.message);
-      } else failed(e, '가입하지 못했어요. 다시 시도해 주세요');
-    },
-  });
-  // 발송과 가입이 겹치면 가입이 옛 증표를 내고, 그 실패가 새 번호 단계를 지운다 — 하나씩만 보낸다
-  const busy = send.isPending || signup.isPending;
   const sendCode = () => {
-    if (!busy && formOk()) send.mutate(email.trim());
-  };
-  const submit = () => {
-    if (busy || !formOk()) return;
-    if (!CODE.test(code)) return setCodeMsg('인증번호 6자리를 입력해 주세요');
-    setCodeMsg(null);
-    if (sentTo) signup.mutate(sentTo);
+    if (!send.isPending && formOk()) send.mutate(email.trim());
   };
   return (
     <Canvas cream>
       <Screen
         footer={
-          sentTo ? (
-            <Btn loading={signup.isPending} onPress={submit}>
-              가입하기
-            </Btn>
-          ) : (
-            <Btn loading={send.isPending} onPress={sendCode}>
-              인증번호 받기
-            </Btn>
-          )
+          <Btn loading={send.isPending} onPress={sendCode}>
+            인증번호 받기
+          </Btn>
         }
       >
         <Header title="회원가입" sub="아이디로 쓸 이메일과 비밀번호를 정해 주세요" />
@@ -368,9 +333,9 @@ export function SignupScreen() {
           onChangeText={(v) => {
             setEmail(v);
             emailNow.current = v.trim();
-            setTaken(false);
-            // 보낸 이메일과 달라지면 그 인증번호는 맞지 않는다
-            if (sentTo !== null && v.trim() !== sentTo) setSentTo(null);
+            // 보낸 이메일과 달라지면 그 인증번호 · 증표는 맞지 않는다
+            const { sentTo } = useSignup.getState();
+            if (sentTo !== null && v.trim() !== sentTo) useSignup.getState().reset();
           }}
           onBlur={touch('email')}
           invalid={!!shown('email')}
@@ -408,43 +373,227 @@ export function SignupScreen() {
           maxLength={64}
         />
         <FieldError msg={confirmShown} />
-        {sentTo && (
-          <>
-            <Label>인증번호</Label>
-            <Input
-              value={code}
-              onChangeText={(v) => {
-                setCode(v.replace(/\D/g, ''));
-                setCodeMsg(null);
-              }}
-              invalid={!!codeMsg}
-              placeholder="메일로 받은 숫자 6자리"
-              keyboardType="number-pad"
-              textContentType="oneTimeCode"
-              autoComplete="one-time-code"
-              maxLength={6}
-            />
-            <FieldError msg={codeMsg} />
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy}
-              onPress={() => send.mutate(sentTo)}
-              className="mt-2 self-start"
-            >
-              <Text className="text-footnote font-semibold text-brand">인증번호 다시 받기</Text>
-            </Pressable>
-          </>
-        )}
+        <Text className="mt-8 mb-3 text-center text-caption text-sub">또는 간편하게 시작</Text>
+        <SocialButtons />
+      </Screen>
+    </Canvas>
+  );
+}
+
+const CODE_LEN = 6;
+const RESEND_SEC = 60; // 다시 받기를 너무 빨리 누르지 않게(서버도 RATE_LIMITED로 막는다)
+
+/** 인증번호 6칸. 보이지 않는 입력 하나를 받아 칸마다 한 자리씩 보여 준다(문자 자동 채우기 지원) */
+function CodeBoxes({
+  value,
+  onChange,
+  invalid,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  invalid: boolean;
+}) {
+  const input = useRef<RNTextInput>(null);
+  const [focused, setFocused] = useState(true);
+  return (
+    <Pressable
+      accessibilityLabel="인증번호 입력"
+      onPress={() => input.current?.focus()}
+      className="mt-6 flex-row justify-between"
+    >
+      {Array.from({ length: CODE_LEN }, (_, i) => {
+        const on = focused && i === Math.min(value.length, CODE_LEN - 1);
+        return (
+          <View
+            key={i}
+            className={cx(
+              'h-14 w-[14.5%] items-center justify-center rounded-xl border-2 bg-white',
+              invalid ? 'border-danger' : on ? 'border-brand' : 'border-transparent',
+            )}
+          >
+            <Text className="text-title2 font-bold tabular-nums text-ink">{value[i] ?? ''}</Text>
+          </View>
+        );
+      })}
+      <TextInput
+        ref={input}
+        value={value}
+        onChangeText={(v) => onChange(v.replace(/\D/g, '').slice(0, CODE_LEN))}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        autoFocus
+        placeholder="메일로 받은 숫자 6자리"
+        keyboardType="number-pad"
+        textContentType="oneTimeCode"
+        autoComplete="one-time-code"
+        maxLength={CODE_LEN}
+        // 칸 위에 겹쳐 두고 보이지 않게 한다(눌러서 포커스 · 붙여넣기는 그대로)
+        className="absolute inset-0 text-transparent"
+        style={{ opacity: 0.02 }}
+        caretHidden
+      />
+    </Pressable>
+  );
+}
+
+/**
+ * 이메일 가입 ② 인증번호 입력. 메일로 받은 6자리를 확인해 증표를 받고(verify-code), 증표 + 비밀번호로 가입한다.
+ * 다시 받기 · 이메일 바꾸기(앞 화면으로)를 함께 둔다
+ */
+export function SignupCodeScreen() {
+  const { email: param } = useLocalSearchParams<{ email?: string }>();
+  const sentTo = useSignup((s) => s.sentTo);
+  const [code, setCode] = useState('');
+  const [codeMsg, setCodeMsg] = useState<string | null>(null);
+  const [taken, setTaken] = useState(false);
+  // 다시 받기 대기: 보낸 시각부터 RESEND_SEC초. 남아 있는 동안 1초마다 다시 센다
+  const sentAt = useSignup((s) => s.sentAt);
+  const [now, setNow] = useState(() => Date.now());
+  const wait = Math.max(0, Math.ceil(RESEND_SEC - (now - sentAt) / 1000));
+  useEffect(() => {
+    if (wait <= 0) return;
+    const t = setTimeout(() => setNow(Date.now()), 1000);
+    return () => clearTimeout(t);
+  }, [wait, now]);
+
+  const toLogin = (to: string) =>
+    router.replace({ pathname: '/(auth)/login', params: { email: to } });
+  const failed = (e: unknown, fallback: string) =>
+    toast(e instanceof ApiError ? e.message : fallback);
+
+  const resend = useMutation({
+    onMutate: () => useSignup.setState({ proof: null }),
+    mutationFn: (to: string) => api.auth.emailSendCode(to),
+    onSuccess: () => {
+      setCode('');
+      setCodeMsg(null);
+      useSignup.setState({ sentAt: Date.now() });
+      setNow(Date.now());
+      toast('인증번호를 보냈어요. 메일을 확인해 주세요');
+    },
+    onError: (e) => failed(e, '인증번호를 보내지 못했어요. 다시 시도해 주세요'),
+  });
+  const signup = useMutation({
+    mutationFn: async ({ to, digits }: { to: string; digits: string }) => {
+      if (useSignup.getState().proof?.email !== to) {
+        const { verificationToken } = await api.auth.emailVerifyCode(to, digits);
+        useSignup.setState({ proof: { email: to, token: verificationToken } });
+      }
+      // 확인을 기다리는 사이 다른 이메일로 바꿨으면 옛 주소로 가입하지 않는다(증표는 남겨 둔다)
+      const s = useSignup.getState();
+      if (s.sentTo !== to || !s.proof) return false;
+      await api.auth.emailSignup(s.proof.token, s.pw);
+      return true;
+    },
+    onSuccess: (done, { to }) => {
+      if (!done) return;
+      useSignup.getState().reset();
+      toast('가입했어요. 로그인해 주세요');
+      // 실제로 가입한 이메일로 로그인을 채운다
+      toLogin(to);
+    },
+    onError: (e) => {
+      if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
+      else if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_CODE_INVALID)
+        setCodeMsg(e.message);
+      else if (
+        e instanceof ApiError &&
+        (e.code === ERROR_CODES.EMAIL_CODE_LOCKED ||
+          e.code === ERROR_CODES.EMAIL_PROOF_EXPIRED ||
+          e.code === ERROR_CODES.EMAIL_PROOF_INVALID)
+      ) {
+        // 이 인증번호 · 증표는 더 쓸 수 없다 — 새로 받게 바로 다시 받을 수 있게 한다
+        useSignup.setState({ proof: null });
+        setCode('');
+        setCodeMsg(`${e.message} 인증번호를 다시 받아 주세요`);
+        // 새로 받아야 하니 대기 없이 바로 다시 받을 수 있게
+        useSignup.setState({ sentAt: 0 });
+        toast(e.message);
+      } else failed(e, '가입하지 못했어요. 다시 시도해 주세요');
+    },
+  });
+  // 다시 받기와 가입이 겹치면 가입이 옛 증표를 내고, 그 실패가 새 번호를 지운다 — 하나씩만 보낸다
+  const busy = resend.isPending || signup.isPending;
+  const submit = () => {
+    const digits = code;
+    if (busy || !sentTo) return;
+    if (!CODE.test(digits)) return setCodeMsg('인증번호 6자리를 입력해 주세요');
+    setCodeMsg(null);
+    signup.mutate({ to: sentTo, digits });
+  };
+
+  // 앱을 다시 켜서 가입 정보가 없으면 처음부터
+  if (!sentTo || (param && param !== sentTo))
+    return (
+      <Canvas cream>
+        <Screen>
+          <Header title="이메일 인증" />
+          <Text className="text-body leading-6 text-sub">
+            가입 정보가 없어요. 이메일과 비밀번호를 다시 입력해 주세요.
+          </Text>
+          <Btn className="mt-6" onPress={() => router.replace('/(auth)/signup')}>
+            처음부터 하기
+          </Btn>
+        </Screen>
+      </Canvas>
+    );
+  return (
+    <Canvas cream>
+      <Screen
+        footer={
+          <Btn loading={signup.isPending} onPress={() => submit()}>
+            가입하기
+          </Btn>
+        }
+      >
+        <Header title="이메일 인증" sub={`${sentTo}로 보낸 인증번호 6자리를 입력해 주세요`} />
+        <CodeBoxes
+          value={code}
+          invalid={!!codeMsg}
+          onChange={(v) => {
+            setCode(v);
+            setCodeMsg(null);
+          }}
+        />
+        <FieldError msg={codeMsg} />
         {taken && (
           <View className="mt-3 flex-row items-center gap-2">
             <Text className="text-footnote text-danger">이미 가입한 이메일이에요</Text>
-            <Pressable accessibilityRole="button" onPress={() => toLogin()}>
+            <Pressable accessibilityRole="button" onPress={() => toLogin(sentTo)}>
               <Text className="text-footnote font-semibold text-brand">로그인하기</Text>
             </Pressable>
           </View>
         )}
-        <Text className="mt-8 mb-3 text-center text-caption text-sub">또는 간편하게 시작</Text>
-        <SocialButtons />
+        <View className="mt-6 flex-row items-center justify-between">
+          <Text className="text-footnote text-sub">메일이 오지 않았나요?</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="인증번호 다시 받기"
+            disabled={busy || wait > 0}
+            onPress={() => resend.mutate(sentTo)}
+            hitSlop={8}
+          >
+            <Text
+              className={cx(
+                'text-footnote font-semibold',
+                busy || wait > 0 ? 'text-sub' : 'text-brand',
+              )}
+            >
+              {wait > 0 ? `다시 받기 (${wait}초)` : '인증번호 다시 받기'}
+            </Text>
+          </Pressable>
+        </View>
+        <Text className="mt-2 text-caption leading-5 text-sub">
+          스팸함도 확인해 주세요. 인증번호는 10분 동안 쓸 수 있어요.
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => router.back()}
+          className="mt-6 self-start"
+          hitSlop={8}
+        >
+          <Text className="text-footnote font-semibold text-sub underline">이메일 바꾸기</Text>
+        </Pressable>
       </Screen>
     </Canvas>
   );
