@@ -255,10 +255,13 @@ export class StudyService {
             }
         }
         let reward = isAbuse ? undefined : sessionReward(durationSec);
+        // 보상은 끝낸 날(서울) 기준으로 센다. 앱(#203)도 오늘 받은 포인트로 한도를 센다
+        const rewardDate = seoulDate(endedAt);
         if (reward) {
-            // 세션 보상은 하루 2번까지 (#194). 같은 날 세션 둘이 동시에 끝나도 위에서 같은 하루 기록을 고치기 때문에
-            // 한쪽이 충돌로 다시 시도되고, 그때 센 횟수가 맞게 나온다
-            const rewarded = await this.points.countEarned(userId, reward.reasonType, row.studyDate, tx);
+            // 세션 보상은 하루 2번까지 (#194). 같은 날 세션 둘이 동시에 끝나도 끝낸 날의 하루 기록을 반드시 한 번 쓰기 때문에
+            // (위 addToDay가 상한 때문에 아무것도 안 쓴 경우도 포함) 한쪽이 충돌로 다시 시도되고, 그때 센 횟수가 맞게 나온다
+            await this.touchDailyRecord(owner, rewardDate, endedAt, tx);
+            const rewarded = await this.points.countEarned(userId, reward.reasonType, rewardDate, tx);
             if (rewarded >= SESSION_DAILY_REWARD_LIMIT) reward = undefined;
         }
         const pointsEarned = reward?.amount ?? 0;
@@ -283,10 +286,25 @@ export class StudyService {
         if (reward) {
             await this.points.earn(userId, reward.amount, reward.reasonType, reward.description, tx, {
                 sessionId: row._id,
-                studyDate: row.studyDate,
+                studyDate: rewardDate,
             });
         }
         return { durationSec, pointsEarned };
+    }
+
+    /**
+     * 그 날짜 하루 기록을 트랜잭션 안에서 반드시 한 번 쓴다 (없으면 만들고, 있으면 updatedAt만 갱신).
+     * 같은 날 동시에 끝나는 세션끼리 쓰기 충돌이 나게 해서 보상 횟수 검사가 어긋나지 않게 한다
+     */
+    private async touchDailyRecord(owner: Types.ObjectId, studyDate: string, at: Date, tx: ClientSession): Promise<void> {
+        await this.dailyModel.updateOne(
+            { userId: owner, studyDate },
+            {
+                $set: { updatedAt: at },
+                $setOnInsert: { totalSec: 0, personalSec: 0, roomSec: 0, streakOk: false, items: [] },
+            },
+            { upsert: true, session: tx },
+        );
     }
 
     /**

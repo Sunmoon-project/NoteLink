@@ -602,6 +602,46 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
             );
         });
 
+        it('자정을 넘긴 세션의 보상은 끝낸 날(서울) 기준으로 횟수를 세고 장부에 적는다', async () => {
+            // 서울 11-04 23:50에 시작해 11-05 00:30에 끝남. 시작일은 11-04, 끝낸 날은 11-05
+            vi.setSystemTime(new Date('2026-11-04T15:30:00.000Z'));
+            row = makeRow({ startedAt: new Date('2026-11-04T14:50:00.000Z') });
+
+            const res = await end(sessionId.toString());
+
+            expect(res.body).toEqual({ data: { durationSec: 2400, pointsEarned: 20 } });
+            expect(points.countEarned).toHaveBeenCalledWith(TEST_USER_ID, 'session_complete', '2026-11-05', tx);
+            expect(points.earn).toHaveBeenCalledWith(TEST_USER_ID, 20, 'session_complete', '순공 세션 완료', tx, {
+                sessionId,
+                studyDate: '2026-11-05',
+            });
+            // 보상 날짜의 하루 기록을 트랜잭션 안에서 한 번 쓴다 (동시 종료 충돌용)
+            expect(dailyModel.updateOne).toHaveBeenCalledWith(
+                { userId: owner, studyDate: '2026-11-05' },
+                {
+                    $set: { updatedAt: new Date('2026-11-04T15:30:00.000Z') },
+                    $setOnInsert: { totalSec: 0, personalSec: 0, roomSec: 0, streakOk: false, items: [] },
+                },
+                { upsert: true, session: tx },
+            );
+        });
+
+        it('끝낸 날(서울)에 이미 2번 받았다면 자정을 넘긴 세션도 0P', async () => {
+            vi.setSystemTime(new Date('2026-11-04T15:30:00.000Z')); // 서울 11-05 00:30
+            row = makeRow({ startedAt: new Date('2026-11-04T14:50:00.000Z') }); // 시작일은 11-04
+            // 끝낸 날(11-05)에 이미 2번 받았고, 시작일(11-04)에는 0번
+            points.countEarned.mockImplementation((_user: string, _reason: string, date: string) =>
+                Promise.resolve(date === '2026-11-05' ? 2 : 0),
+            );
+
+            const res = await end(sessionId.toString());
+
+            expect(res.body).toEqual({ data: { durationSec: 2400, pointsEarned: 0 } });
+            expect(points.countEarned).toHaveBeenCalledWith(TEST_USER_ID, 'session_complete', '2026-11-05', tx);
+            expect(points.earn).not.toHaveBeenCalled();
+            points.countEarned.mockReset().mockResolvedValue(0);
+        });
+
         it('하루 16시간을 넘는 부분은 세지 않는다 (FR-06-15)', async () => {
             // 이미 15시간 쌓인 날에 2시간 공부 → 1시간만 센다
             record = { ...makeRecord(), totalSec: 15 * 3600, streakOk: true };
