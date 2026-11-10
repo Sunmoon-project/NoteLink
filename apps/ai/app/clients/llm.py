@@ -79,36 +79,73 @@ STOPPED = "멈춤(다 모았거나 시간 상한)"
 # 미리 만들기가 가져가면 사용자 5문제가 2분 상한에 걸려 3문제로 끝났음(11/07 학교 LLM)
 QUIET_GAPS = 3
 MIN_YIELD_SEC = 0.2  # 양보한 background 호출이 다시 볼 때까지 최소 대기(간격 0일 때 헛돌지 않게)
+SIGNAL_POLL_SEC = 0.25  # 멈춤 신호가 여럿일 때 기다리며 다시 보는 간격
 _local = threading.local()
 
 
+CANCELED = "멈춤(작업이 취소됨)"
+type _Signal = tuple[threading.Event, str]
+
+
 @contextmanager
-def stop_on(event: threading.Event) -> Iterator[None]:
-    """이 스레드의 호출은 event가 켜지면 보내지 않고 LlmError(STOPPED).
+def stop_on(event: threading.Event, why: str = STOPPED) -> Iterator[None]:
+    """이 스레드의 호출은 event가 켜지면 보내지 않고 LlmError(why).
 
     차례를 기다리거나 다시 보내기 전에 기다리는 동안에도 event로 깨어나 멈춥니다. 맞춤 퀴즈가
     세트를 돌려준 뒤 남은 스레드가 차례를 기다리던 호출이나 재시도를 보내지 않게(Codex 리뷰
     #125). 신호는 이 스레드에만 걸리므로(threading.local) 블록 안에서 다른 스레드로 넘긴 호출은
-    멈추지 않습니다. 지금은 _Until(generate.py)이 호출하는 스레드에서 감쌉니다.
+    멈추지 않습니다. 여러 스레드로 넘기는 호출은 연결 객체로 감쌉니다(Stopping).
+    겹쳐 걸면 모두 봅니다: 작업 취소 안에서 맞춤 퀴즈 자리 멈춤(generate._until)을 걸어도 둘 다
+    (#263).
     """
-    before = getattr(_local, "stop", None)
-    _local.stop = event
+    before: tuple[_Signal, ...] = getattr(_local, "stops", ())
+    _local.stops = (*before, (event, why))
     try:
         yield
     finally:
-        _local.stop = before
+        _local.stops = before
 
 
-def _stop_event() -> threading.Event | None:
-    event: threading.Event | None = getattr(_local, "stop", None)
-    return event
+def _signals() -> tuple[_Signal, ...]:
+    signals: tuple[_Signal, ...] = getattr(_local, "stops", ())
+    return signals
 
 
 def check_stop() -> None:
-    """stop_on으로 건 신호가 켜졌으면 LlmError(STOPPED)."""
-    event = _stop_event()
-    if event is not None and event.is_set():
-        raise LlmError(STOPPED)
+    """stop_on으로 건 신호 중 켜진 것이 있으면 LlmError(그 신호의 이유)."""
+    for event, why in _signals():
+        if event.is_set():
+            raise LlmError(why)
+
+
+class Stopping:
+    """event가 켜지면 이 연결로 하는 호출을 멈춥니다(LlmError(why)). 여러 스레드에서 불러도 됨.
+
+    작업 처리기가 취소를 알아채면 그 작업의 남은 호출을 보내지 않게(#263): 처리 함수는 자리마다
+    스레드를 따로 두므로 스레드 신호(stop_on)가 아니라 연결 객체로 넘깁니다. 호출할 때마다 그
+    스레드에서 stop_on을 걸어, 차례를 기다리거나 다시 보내기 전 대기 중인 호출도 깨어나 멈춥니다.
+    이미 보낸 호출은 응답을 기다립니다.
+    """
+
+    def __init__(self, llm: "Llm", event: threading.Event, why: str = CANCELED) -> None:
+        self._llm, self._event, self._why = llm, event, why
+
+    def call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: "JsonObject",
+        name: str,
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+    ) -> "JsonObject":
+        with stop_on(self._event, self._why):
+            check_stop()  # 가짜 LLM처럼 stop_on을 보지 않는 클라이언트에도
+            return self._llm.call(
+                model, system, user, schema, name, max_tokens=max_tokens, temperature=temperature
+            )
 
 
 class Llm(Protocol):
@@ -270,11 +307,15 @@ class SchoolLlm:
 
     def _pause(self, sec: float) -> None:
         """sec초 기다림. stop_on으로 건 신호가 있으면 켜질 때 바로 깨어남."""
-        event = _stop_event()
-        if event is not None and self._sleep is time.sleep:
-            event.wait(sec)
-        else:
+        events = [event for event, _ in _signals()]
+        if not events or self._sleep is not time.sleep:
             self._sleep(sec)
+        elif len(events) == 1:
+            events[0].wait(sec)
+        else:  # 신호 여럿(작업 취소 · 자리 멈춤): 짧게 나눠 기다리며 모두 봄
+            end = time.monotonic() + sec
+            while not any(e.is_set() for e in events) and (left := end - time.monotonic()) > 0:
+                events[-1].wait(min(left, SIGNAL_POLL_SEC))
 
     def _turn(self, yields: Callable[[], bool], mine: list[bool]) -> None:
         """보낼 수 있을 때(앞 호출을 보낸 뒤 gap_sec, 429 대기 뒤)까지 기다려 차례를 가져갑니다.

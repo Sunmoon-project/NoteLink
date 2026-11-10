@@ -162,7 +162,8 @@ export class AiJobsService {
   }
 
   /**
-   * 아직 끝나지 않은 작업을 canceled로 바꾼다. 처리 중이면 처리기가 다음에 쓸 때 알아채고 결과를 버린다.
+   * 아직 끝나지 않은 작업을 canceled로 바꾼다. 처리 중이면 처리기가 몇 초 안에 알아채 남은 LLM 호출을
+   * 멈추고 결과를 버린다(apps/ai runner, #263).
    * 이미 끝난 작업(succeeded · failed · canceled)은 그대로 둔다(앱이 두 번 눌러도 같은 결과).
    * 미리 만들기(quiz_pregen)는 지우지 않고 이어받기만 푼다(awaited=false): 사용자가 기다리기를
    * 그만둔 것이라, 처리기가 뒤에서 마저 만들어 두면 그 노트의 퀴즈 세트가 나중에 ready가 된다.
@@ -194,9 +195,10 @@ export class AiJobsService {
    * 지난 오류 · 결과를 지운다(중간 결과 checkpoint는 남겨 처리기가 다시 쓴다).
    * 아직 처리 중이거나 이미 성공한 작업은 바꾸지 않고 지금 상태를 돌려준다(앱의 '다시 시도'는
    * 실패 화면에만 있고, 처리기가 failed로 바꾼 작업은 잠금이 비어 있어 지금 앱에서는 늘 다시 넣는다).
-   * 처리 중에 취소한 작업은 처리기가 다음에 쓸 때까지(LLM 호출 중이면 몇 분) 계속 돌기 때문에,
-   * 잠금이 풀릴 때까지는 다시 넣지 않는다. 바로 넣으면 같은 작업을 두 처리기가 함께 만든다
-   * (/code-review #175). 그동안은 canceled 그대로 돌려주고, 앱이 잠시 뒤 다시 누르면 된다.
+   * 처리 중에 취소한 작업은 처리기가 처리를 끝낼 때까지 잠금이 남아 있으므로, 잠금이 풀릴 때까지는
+   * 다시 넣지 않는다. 바로 넣으면 같은 작업을 두 처리기가 함께 만든다(/code-review #175). 처리기는
+   * 몇 초 안에 취소를 알아채 멈추고 잠금을 푼다(이미 보낸 LLM 호출이 있으면 그 응답까지, #263).
+   * 그동안은 canceled 그대로 돌려주고, 앱이 잠시 뒤 다시 누르면 된다.
    */
   async retry(userId: string, jobId: string): Promise<AppAiJob> {
     const filter = { _id: objectId(jobId), userId: objectId(userId) };
