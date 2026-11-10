@@ -424,7 +424,7 @@ describe('QuizSetsService 리뷰 반영(/code-review)', () => {
     expect(ready.questions.map((q) => q._id)).toEqual(good.map((q) => q.id));
   });
 
-  it('처리기가 다 채우지 못해도(1문제 이상, #247 전) 만든 만큼 ready로 둔다', async () => {
+  it('처리기 결과가 모자라도(처리기는 #247부터 실패로 끝냄) 받은 만큼 ready로 둔다', async () => {
     const { service, addNote, finish } = setup();
     const { quizSet, job } = await service.create(ME.toHexString(), await addNote());
     finish(job._id, { questions: fullSet().slice(0, 2), title: 't' });

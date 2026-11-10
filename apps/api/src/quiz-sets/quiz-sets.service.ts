@@ -19,10 +19,10 @@ export const VALIDATION_FAILED = 'VALIDATION_FAILED';
 export const GENERATE_TYPE = 'quiz_generate';
 /**
  * 세트 하나의 문제 수. 처리기 입력 size로 보낸다(보내지 않으면 처리기 기본 10문제).
- * 처리기는 한 문제도 못 만들면 작업을 실패로 끝낸다(generate.py run). 1문제 이상이면 모자라도 지금은
- * 작업이 성공하고 여기서도 만든 만큼 ready로 둔다. 모자란 결과를 채우거나 실패로 끝내는 일은 처리기
- * 몫이다(#247): 앱은 작업 상태로 성공 · 다시 시도를 고르므로 여기서 세트만 failed로 두면 빈 성공
- * 화면이 된다(/code-review)
+ * 처리기는 size개를 다 만들지 못하면 모자란 자리를 다시 돌리고, 그래도 모자라면 작업을 실패로
+ * 끝낸다(generate.py _make_all · run, #247). 모자란 결과를 실패로 끝내는 일은 처리기 몫이다: 앱은
+ * 작업 상태로 성공 · 다시 시도를 고르므로 여기서 세트만 failed로 두면 빈 성공 화면이 된다
+ * (/code-review). 그래서 여기서는 받은 만큼 ready로 둔다
  */
 export const QUIZ_SET_SIZE = 5;
 const DUPLICATE_KEY = 11000;
