@@ -6,13 +6,16 @@ from typing import Any
 import mongomock
 import pytest
 
+from app.clients.docint import OcrUnavailableError
 from app.clients.llm import LlmError
 from app.worker import handlers
 from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobStore
 from app.worker.runner import JobInputError, run_once
 from tests.fakes import FakeLlm
+from tests.services.note.test_job import FakeFetch, FakeOcr, note_read
 from tests.services.quiz.test_review import happy_llm, job_input
+from tests.services.recording.test_job import FakeVoyage
 
 T0 = datetime(2026, 10, 29, 7, 0, tzinfo=UTC)
 
@@ -137,6 +140,62 @@ def test_a_canceled_job_sends_no_llm_call(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(handlers, "_llm", lambda: llm)
     with pytest.raises(LlmError):
         handlers.similar_quiz(job_input(), report)
+    assert llm.calls == []
+
+
+def note_input() -> dict[str, Any]:
+    return {
+        "pages": [{"pageNo": 1, "imageUrl": "https://blob.example.test/1.jpg?sig=secret-sas"}],
+        "seeds": [{"topic": "원충류", "terms": [{"term": "이질 아메바"}]}],
+    }
+
+
+def note_fakes(monkeypatch: pytest.MonkeyPatch, llm: FakeLlm, ocr: Any) -> None:
+    monkeypatch.setattr(handlers, "_llm", lambda: llm)
+    monkeypatch.setattr(handlers, "_ocr", lambda: ocr)
+    monkeypatch.setattr(handlers, "_voyage", lambda: FakeVoyage())
+    monkeypatch.setattr(handlers, "download", FakeFetch())
+
+
+def test_handwriting_summary_is_registered(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert HANDLERS["handwriting_summary"] is handlers.handwriting_summary
+    note_fakes(monkeypatch, FakeLlm(), FakeOcr({note_input()["pages"][0]["imageUrl"]: note_read()}))
+    doc = run_job(monkeypatch, FakeLlm(), note_input(), "handwriting_summary")
+    assert (doc["status"], doc["error"]) == ("succeeded", None)
+    assert [c["title"] for c in doc["result"]["chunks"]] == ["1. 이질 아메바"]
+
+
+def test_bad_handwriting_input_fails_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm, ocr = FakeLlm(), FakeOcr({})
+    note_fakes(monkeypatch, llm, ocr)
+    doc = run_job(monkeypatch, llm, {"pages": []}, "handwriting_summary")
+    assert (doc["status"], doc["error"]) == (
+        "failed",
+        "입력 오류: input.pages가 비어 있거나 목록이 아님",
+    )
+    assert doc["attempts"] == 1 and not llm.calls and not ocr.urls
+
+
+def test_handwriting_job_is_retried_later_when_ocr_is_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = note_input()["pages"][0]["imageUrl"]
+    note_fakes(monkeypatch, FakeLlm(), FakeOcr({url: OcrUnavailableError("HTTP 503")}))
+    doc = run_job(monkeypatch, FakeLlm(), note_input(), "handwriting_summary")
+    assert (doc["status"], doc["attempts"], doc["result"]) == ("queued", 1, None)
+    assert doc["error"] == "AI 응답을 받지 못함(OCR HTTP 503)"
+    assert doc["retryAt"] > T0
+
+
+def test_a_canceled_handwriting_job_sends_no_llm_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(handlers.note_job.settings, "note_refine_enabled", True)
+    llm = FakeLlm({"note_topics": [{"topics": []}]})  # 취소되지 않았으면 주제 고르기를 부름
+    url = note_input()["pages"][0]["imageUrl"]
+    note_fakes(monkeypatch, llm, FakeOcr({url: note_read()}))
+    report = StubReport(awaited=False)
+    report.canceled().set()
+    with pytest.raises(LlmError):
+        handlers.handwriting_summary(note_input(), report)
     assert llm.calls == []
 
 
