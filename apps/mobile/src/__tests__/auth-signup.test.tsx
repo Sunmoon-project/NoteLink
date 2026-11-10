@@ -448,6 +448,30 @@ it('발송을 기다리다 화면을 나가 다른 이메일로 새로 가입 �
   expect(useToast.getState().msg).toBeNull();
 });
 
+it.each(['성공', '실패'] as const)(
+  '다시 받는 사이 같은 이메일로 새 흐름이 시작되면 옛 다시 받기 %s 응답은 새 흐름을 건드리지 않는다',
+  async (result) => {
+    const send = jest.spyOn(api.auth, 'emailSendCode').mockResolvedValueOnce(undefined);
+    let settle!: () => void;
+    send.mockImplementationOnce(
+      () =>
+        new Promise<void>((ok, no) => {
+          settle = result === '성공' ? ok : () => no(new Error('smtp'));
+        }),
+    );
+    await toCode('a@test.com', 'abcd1234');
+    await fireEvent.press(screen.getByRole('button', { name: '인증번호 다시 받기' }));
+    // 앞 화면에서 같은 a로 다시 보내 새 흐름이 됐다 — 이메일만 보면 구분되지 않는다
+    useSignup.getState().next();
+    useSignup.setState({ sentAt: 123 });
+    useToast.setState({ msg: null });
+    settle();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(useSignup.getState()).toMatchObject({ sentTo: 'a@test.com', sentAt: 123 });
+    expect(useToast.getState().msg).toBeNull();
+  },
+);
+
 it('보내는 사이 비밀번호를 고쳐도 누를 때 검사한 비밀번호로 가입한다', async () => {
   let sent!: () => void;
   jest
