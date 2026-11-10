@@ -386,6 +386,31 @@ describe('한도 확인 중(held) 작업 (Codex #244 · #249)', () => {
     expect(row(_id)).toMatchObject({ status: 'canceled' });
   });
 
+  it('확인이 늦어 지난 사이 다른 다시 시도가 같은 작업을 새로 잡으면, 늦은 요청은 그 held를 열지 않는다', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { service, add, row, model } = setup();
+      const x = await add(ask);
+      Object.assign(row(x._id), { status: 'failed' });
+      const count = model.countDocuments.bind(model);
+      let otherHold: Date | undefined;
+      // 요청 A가 세는 동안 61초가 지나고, 다른 작업 둘이 한도를 채운 뒤 요청 B가 X를 새로 잡는다
+      vi.spyOn(model, 'countDocuments').mockImplementationOnce((async (f: never) => {
+        const n = await count(f);
+        vi.setSystemTime(Date.now() + 61_000);
+        for (let i = 0; i < 2; i++) Object.assign(row((await add(ask))._id), { status: 'queued' });
+        otherHold = new Date();
+        Object.assign(row(x._id), { status: 'held', heldAt: otherHold });
+        return n;
+      }) as never);
+      await service.retry(ME, x._id);
+      // B의 확인은 그대로 남아 B가 한도를 넘겼다고 보고 되돌릴 수 있다(A가 대신 열어 3개가 되지 않음)
+      expect(row(x._id)).toMatchObject({ status: 'held', heldAt: otherHold });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('확인이 늦어 held가 지나면(다른 요청의 한도 계산에서 빠짐) 열지 않고 429', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {

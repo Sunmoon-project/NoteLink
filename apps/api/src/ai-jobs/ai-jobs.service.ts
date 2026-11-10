@@ -192,13 +192,15 @@ export class AiJobsService {
     const userId = serverObjectId(job.userId, 'userId');
     const limit = limitOf(job.type);
     if (limit !== undefined && (await this.pending(userId, job.type)) >= limit) throw tooMany();
+    // 이 요청의 held 표시. 확인이 늦어 지난 뒤 다시 시도가 같은 문서를 새로 잡았으면 그 held는 건드리지 않는다
+    const mine = new Date();
     const created = await this.jobs.create({
       type: job.type,
       userId,
       targetType: job.targetType,
       targetId: serverObjectId(job.targetId, 'targetId'),
       input: job.input,
-      ...(limit === undefined ? { status: 'queued' } : { status: HELD, heldAt: new Date() }),
+      ...(limit === undefined ? { status: 'queued' } : { status: HELD, heldAt: mine }),
       progress: 0,
       attempts: 0,
       result: null,
@@ -207,12 +209,12 @@ export class AiJobsService {
     const row = created.toObject<AiJobRow>();
     if (limit === undefined) return toAppJob(row);
     if ((await this.pending(userId, job.type)) > limit) {
-      await this.jobs.deleteOne({ _id: row._id, status: HELD });
+      await this.jobs.deleteOne({ _id: row._id, status: HELD, heldAt: mine });
       throw tooMany();
     }
-    if (!(await this.release(row._id))) {
+    if (!(await this.release(row._id, mine))) {
       // 확인이 늦어 held가 지났다 — 그사이 한도가 찼을 수 있어 열지 않는다
-      await this.jobs.deleteOne({ _id: row._id, status: HELD });
+      await this.jobs.deleteOne({ _id: row._id, status: HELD, heldAt: mine });
       throw tooMany();
     }
     const { heldAt: _heldAt, ...rest } = row as AiJobRow & { heldAt?: Date };
@@ -231,12 +233,14 @@ export class AiJobsService {
 
   /**
    * 한도 확인을 마친 held 작업을 처리기가 가져갈 수 있게 연다. 아직 held이고 지나지 않았을 때만 연다:
-   * 그사이 취소했거나(canceled) 시간이 지나 다른 요청의 한도 계산에서 빠졌으면 false
+   * 그사이 취소했거나(canceled) 시간이 지나 다른 요청의 한도 계산에서 빠졌으면 false.
+   * 자기가 잡은 held(heldAt이 같음)만 연다: 지난 뒤 다른 다시 시도가 새로 잡은 held를 대신 열지 않게
    */
-  private async release(id: Types.ObjectId): Promise<boolean> {
+  private async release(id: Types.ObjectId, mine: Date): Promise<boolean> {
+    if (mine <= heldSince()) return false;
     const row = await this.jobs
       .findOneAndUpdate(
-        { _id: id, status: HELD, heldAt: { $gt: heldSince() } },
+        { _id: id, status: HELD, heldAt: mine },
         { $set: { status: 'queued' }, $unset: { heldAt: '' } },
         { projection: { _id: 1 } },
       )
@@ -310,7 +314,8 @@ export class AiJobsService {
     if (!current) throw notFound();
     const limit = limitOf(current.type);
     // 한도 있는 종류만 처리기가 잡지 못하는 held로 바꾸고 한도를 센다(넘으면 되돌리므로 바꾸기 전 값을 받는다).
-    // 확인 도중 멈춰 지난 held도 다시 넣을 수 있다
+    // 확인 도중 멈춰 지난 held도 다시 넣을 수 있다. mine은 이 요청의 held 표시(release · giveBack이 확인)
+    const mine = new Date();
     const before = await this.jobs
       .findOneAndUpdate(
         {
@@ -322,7 +327,7 @@ export class AiJobsService {
           ],
         },
         {
-          $set: limit === undefined ? reset : { ...reset, status: HELD, heldAt: new Date() },
+          $set: limit === undefined ? reset : { ...reset, status: HELD, heldAt: mine },
           $unset: { step: '', lockedBy: '' },
         },
         { projection: APP_PROJECTION },
@@ -332,11 +337,12 @@ export class AiJobsService {
     const { step: _step, ...rest } = before;
     if (limit === undefined) return toAppJob({ ...rest, ...reset });
     // 한도를 넘었거나 확인이 늦어 held가 지났으면 바꾸기 전으로 되돌리고 429. 지난 held에서 왔으면 canceled로
-    // 되돌린다(다시 누를 수 있게). 되돌릴 held가 없으면 그사이 취소한 것 — 지금 상태(canceled)를 돌려준다
+    // 되돌린다(다시 누를 수 있게). 되돌릴 내 held가 없으면 그사이 취소했거나 다른 다시 시도가 새로 잡은 것 —
+    // 지금 상태를 돌려준다
     const giveBack = async () => {
       const reverted = await this.jobs
         .findOneAndUpdate(
-          { _id: before._id, status: HELD },
+          { _id: before._id, status: HELD, heldAt: mine },
           {
             $set: {
               status: before.status === HELD ? 'canceled' : before.status,
@@ -354,7 +360,7 @@ export class AiJobsService {
       return this.findMine(userId, jobId);
     };
     if ((await this.pending(before.userId, before.type)) > limit) return giveBack();
-    if (!(await this.release(before._id))) return giveBack();
+    if (!(await this.release(before._id, mine))) return giveBack();
     return toAppJob({ ...rest, ...reset });
   }
 
