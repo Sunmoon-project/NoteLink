@@ -5,6 +5,12 @@ ai_jobs.type = 'quiz_pregen': 노트를 만들 때 NestJS가 넣는 첫 맞춤 �
   result는 quiz_generate와 같고, 처리기는 사용자가 기다리는 작업이 없을 때만 가져갑니다
   (worker/jobs.py). 새 노트는 개념 뽑기가 더해져 3분 가까이 걸려서 미리 만들어 둡니다.
 
+모드(#274): 바로 요청(quiz_generate)은 빠른 모드(FAST), 미리 만들기는 안정적 모드(STABLE).
+  안정적 모드는 시간 상한 PATIENT배 · 한 자리 시도 3번(빠름 2번) · 검사 모델이 맞힌 뒤 생성
+  모델도 풀어 같은 답이어야 통과. 정답 둘 검사 · 검사 모델 풀기는 두 모드 모두 거칩니다.
+  미리 만들기를 사용자가 이어받으면(report.awaited) 그때부터 빠른 모드 · 남은 자리 × 보통 상한으로
+  마저 만듭니다(이미 만든 문제는 그대로).
+
   코드  쪽마다 문제 수 나누기 · 과목 판단(영어 문장 과목 / 용어 과목) · 쪽마다 유형 돌리기 ·
         세트 안에서 개념 · 정답 겹치지 않게 · 못 만든 자리는 다른 쪽으로 넘기기
   LLM   문제 1개씩 만들기(생성 모델) → 코드 검사(checks.code_check) → '정답 둘' 검사
@@ -82,6 +88,7 @@ size개를 다 만들지 못하면 짧은 결과로 끝내지 않습니다(앱�
 복습이 '정답 둘' 검사를 한 번 더 합니다.
 """
 
+import logging
 import re
 import threading
 import time
@@ -129,6 +136,8 @@ from app.services.quiz.review import (
 )
 from app.services.quiz.text import clean_pages, locate, norm, place, same_item, tidy
 
+log = logging.getLogger(__name__)
+
 TYPE = "quiz_generate"
 PREGEN_TYPE = "quiz_pregen"
 SET_SIZE = 10
@@ -162,9 +171,34 @@ EXTRA = 0.6
 # 90초까지만 두면 다 채운 세트가 9번 중 6번 → 2번(11/05 로컬)
 SEC_PER_QUESTION = 20
 HARD_SEC_PER_QUESTION = 23
-# 미리 만들기(patient): 기다리는 사용자가 없고, 사용자 작업이 도는 동안 LLM 차례를 양보하므로
+# 미리 만들기(안정적 모드): 기다리는 사용자가 없고, 사용자 작업이 도는 동안 LLM 차례를 양보하므로
 # 시간 상한을 이만큼 늘림(/code-review #138). 상한을 그대로 두면 바쁠 때 문제를 덜 만듦
 PATIENT = 10
+
+
+@dataclass(frozen=True)
+class Mode:
+    """문제를 만드는 방식(#274). 정답 둘 검사 · 검사 모델 풀기는 두 모드 모두 거칩니다.
+
+    patience  시간 상한 배수(새 초안 · 판 · 전체 상한)
+    tries     한 자리가 한 쪽에서 만들어 보는 초안 수(유형을 돌림)
+    recheck   검사 모델이 맞힌 뒤 생성 모델도 노트만 보고 풀어 같은 답이어야 통과. 오답 보기도
+              틀린 설명이라 정답이 둘인 문제가 검사 모델 풀기를 통과한 일이 있었음(#268 실험 2)
+    """
+
+    name: str
+    patience: int
+    tries: int
+    recheck: bool
+
+
+# 바로 요청(quiz_generate): 사용자가 기다리므로 지금 단계만
+FAST = Mode("fast", 1, 2, False)
+# 미리 만들기(quiz_pregen): 기다리는 사용자가 없어 오래 걸려도 단계를 더함. 사용자가 이어받으면
+# 그때부터 FAST(_make_all의 hurry). 새 유형(부정설명 · 조합, #268)은 여기에 붙임
+STABLE = Mode("stable", PATIENT, 3, True)
+MAX_TRIES = max(FAST.tries, STABLE.tries)
+RECHECK = "Recheck"  # 생성 모델 2차 풀기 호출 이름(검사 모델 풀기 'Check'와 구분)
 CLASH = "동시에 만든 문제와 겹침"  # 다른 자리가 그사이 받은 문제와 겹침: 쪽을 닫지 않음
 FULL = "이미 다 모음"
 TIMEOUT = "시간 상한"
@@ -259,6 +293,14 @@ class PageInfo:
     weak: list[str] = field(default_factory=list)
     done: list[str] = field(default_factory=list)
     angle: list[str] = field(default_factory=list)  # 마지막 단계: 이미 물은 개념(다른 각도로, #247)
+
+
+@dataclass
+class _Limits:
+    """판 하나의 상한(_clock 값): 새 초안을 시작하는 끝 · 판을 끝내는 끝. 이어받으면 줄어듦."""
+
+    draft: float
+    hard: float
 
 
 @dataclass
@@ -661,8 +703,12 @@ def gen_one(
     slot: int,
     accept: Accept | None = None,
     stop: Callable[[bool], str | None] | None = None,
+    mode: Callable[[], Mode] | None = None,
 ) -> Made:
-    """한 쪽에서 문제 1개. 처음 두 유형으로 한 번씩(2번까지).
+    """한 쪽에서 문제 1개. 유형을 돌려 가며 모드의 tries번까지(빠름 2번 · 안정적 3번).
+
+    mode() → 지금 모드: 시도마다 · 검사마다 다시 봐서, 도중에 이어받으면(빠른 모드로 바뀜) 남은
+    시도 수와 생성 모델 2차 풀기가 바로 빠른 모드를 따름(#274). 없으면 빠른 모드.
 
     통과한 문제는 결과(Made)째 accept에 넘깁니다. accept가 돌려준 겹침 이유가 없으면 받아들여진
     것이고(seen · used · 세트에 더하는 것도 accept), 있으면 다음 유형으로 다시 만듭니다. accept가
@@ -672,8 +718,12 @@ def gen_one(
     """
     out = Made()
     accept = accept or _take(seen, used)
+    now_mode = mode or (lambda: FAST)
     notes = ""
-    for ty in types[:2]:
+    for i in range(MAX_TRIES):
+        if i >= now_mode().tries:
+            break
+        ty = types[i % len(types)]  # 유형이 둘뿐인 쪽(묘사 · 어휘)은 세 번째에 처음 유형으로
         if stop and (halt := stop(True)):
             out.why = out.why or [halt]
             break
@@ -742,6 +792,15 @@ def gen_one(
             d = similar.answer_as_option(d, k)
             options, pos = place(d["options"], k, slot)
             verdict, said = similar.solved(llm, d, options, pos, text[:CHECK_CAP])
+            who = "검수자"
+            if verdict == "pass" and now_mode().recheck:  # 안정적 모드: 생성 모델도 풀어 봄
+                verdict, said = similar.solved(
+                    llm, d, options, pos, text[:CHECK_CAP],
+                    model=settings.quiz_gen_model, name=RECHECK,
+                )  # fmt: skip
+                who = "생성 모델"
+                if verdict == "bad":
+                    said = "생성 모델 2차 풀기의 답 모양이 맞지 않음"
             if verdict == "pass":
                 out.question, out.concept = {**d, "options": options}, str(concept)
                 out.type, out.why = ("빈칸" if "____" in d["passage"] else ty), []
@@ -761,7 +820,7 @@ def gen_one(
             if verdict == "bad":  # 답 모양 오류: 재시도 지시에 문제점으로 넣지 않음
                 out.why = [said]
                 continue
-            why = [f"검사 탈락(검수자 답 {said})"]
+            why = [f"검사 탈락({who} 답 {said})"]
         out.why = why
         notes = f"\n앞서 만든 문제의 문제점: {'; '.join(why)} — 다른 문장으로 새로 만든다. "
     return out
@@ -803,8 +862,19 @@ def _concept_names(llm: Llm, m: Material, pages: dict[int, str]) -> list[str]:
     return concepts.dedupe(tags + names, subject) if tags else names
 
 
-def run(llm: Llm, raw: JsonObject, report: Progress, *, patient: bool = False) -> JsonObject:
-    """quiz_generate · quiz_pregen 작업 하나. patient면 시간 상한을 PATIENT배로(미리 만들기)."""
+def run(
+    llm: Llm,
+    raw: JsonObject,
+    report: Progress,
+    *,
+    mode: Mode = FAST,
+    hurry: Callable[[], bool] | None = None,
+) -> JsonObject:
+    """quiz_generate(빠름) · quiz_pregen(안정적) 작업 하나(#274).
+
+    hurry() → 사용자가 이 작업을 이어받았는지(report.awaited). 참이 되면 그때부터 빠른 모드 ·
+    보통 시간 상한으로 남은 자리를 만듭니다(이미 만든 문제는 그대로).
+    """
     inp = parse(raw)
     m = inp.material
     n = inp.size
@@ -840,8 +910,9 @@ def run(llm: Llm, raw: JsonObject, report: Progress, *, patient: bool = False) -
     seen: list[Seen] = [seen_question(q) for s in inp.sets for q in s.questions if here(s, q)]
     subject = concepts.subject_words(m.title)
     made, failed, down, tried_calls, rejected = _make_all(
-        llm, pages, names_all, subject, per_page, weight, share, korean, seen, n, report, patient
-    )
+        llm, pages, names_all, subject, per_page, weight, share, korean, seen, n, report,
+        mode, hurry,
+    )  # fmt: skip
     if len(made) < n:  # 모자란 세트는 돌려주지 않음(앱은 작업 상태로 성공 화면을 고름, #247)
         if not made and tried_calls and down == tried_calls:
             if rejected == down:  # 모두 서버가 거절: 다시 해도 같아 다시 넣지 않게(Codex #264)
@@ -900,7 +971,8 @@ def _make_all(
     seen: list[Seen],
     n: int,
     report: Progress,
-    patient: bool = False,
+    mode: Mode = FAST,
+    hurry: Callable[[], bool] | None = None,
 ) -> tuple[list[tuple[int, Made]], list[JsonObject], int, int, int]:
     """자리마다 동시에 문제를 만들어 (만든 문제(세트 순서), 못 만든 자리, 실패한 시도, 시도,
     실패 중 서버가 거절한 생성 호출).
@@ -912,6 +984,9 @@ def _make_all(
     시도 수는 마지막 판 것이고, 못 만든 자리는 모든 판 것(마지막 판 먼저)입니다.
     시간 상한에 아직 호출 중인 자리는 실패한 시도로 셉니다: 학교 LLM이 연결만 받고 답하지
     않으면 끝난 자리가 없어, 다시 시도하지 않고 0문제 세트로 끝났음(/code-review #95).
+    시간 상한은 mode.patience배입니다. hurry()가 참이 되면(미리 만들기를 사용자가 이어받음) 그때부터
+    빠른 모드로 바꾸고 상한을 바로 요청한 것처럼 남은 자리 × 보통 상한으로 줄입니다(#274). 새
+    초안 · 검사 앞(stop)과 판을 기다리는 동안 1초마다 봅니다.
     """
     used: list[str] = []
     asked: Counter[str] = Counter()  # 세트에서 개념마다 물은 수
@@ -927,12 +1002,33 @@ def _make_all(
     backups = sorted(weight, key=lambda p: -weight[p])  # 못 만든 자리가 넘어갈 쪽
     slots = [p for p in sorted(share, key=lambda p: -share[p]) for _ in range(share[p])]
     t0 = _clock()
-    mult = PATIENT if patient else 1
-    budget = max(n, 1) * mult
-    deadline = t0 + SEC_PER_QUESTION * budget
-    hard = t0 + HARD_SEC_PER_QUESTION * budget
-    total = max(hard, t0 + min(FILL_SEC_PER_QUESTION * max(n, 1), FILL_MAX_SEC))
+    cur = mode
+    budget = max(n, 1) * cur.patience
+    lim = _Limits(t0 + SEC_PER_QUESTION * budget, t0 + HARD_SEC_PER_QUESTION * budget)
+    total = max(lim.hard, t0 + min(FILL_SEC_PER_QUESTION * max(n, 1), FILL_MAX_SEC))
     min_round = min(MIN_ROUND_SEC, HARD_SEC_PER_QUESTION * budget)
+
+    def to_fast() -> None:
+        """이어받았으면 빠른 모드로: 남은 자리를 지금 바로 요청한 것처럼(상한 = 지금 + 남은 자리 ×
+        보통 상한, 전체 상한도 같은 식). 늘리지는 않음(이미 짧으면 그대로)."""
+        nonlocal cur, budget, total, min_round
+        if cur is FAST or hurry is None or not hurry():
+            return
+        with lock:
+            if cur is FAST:
+                return
+            now = _clock()
+            left = max(n - len(taken), 1)
+            cur, budget = FAST, left * FAST.patience
+            fill = max(
+                HARD_SEC_PER_QUESTION * budget, min(FILL_SEC_PER_QUESTION * left, FILL_MAX_SEC)
+            )
+            total = min(total, now + fill)
+            min_round = min(MIN_ROUND_SEC, HARD_SEC_PER_QUESTION * budget)
+            lim.draft = min(lim.draft, now + SEC_PER_QUESTION * budget)
+            lim.hard = min(lim.hard, now + HARD_SEC_PER_QUESTION * budget)
+            made_now = len(taken)
+        log.info("맞춤 퀴즈: 이어받아 빠른 모드로(%d/%d문제, %.0f초 지남)", made_now, n, now - t0)
 
     def spare_of(k: int, order: list[int]) -> list[int]:
         # 여분 자리는 가장 무거운 쪽부터(못 만든 자리가 넘어가는 순서와 같음)
@@ -968,16 +1064,18 @@ def _make_all(
                 done.set()
             return []
 
-    def stop_of(halt: threading.Event, draft_until: float) -> Callable[[bool], str | None]:
+    def stop_of(halt: threading.Event, at: _Limits) -> Callable[[bool], str | None]:
         """판마다 멈춤 판단: 지난 판에 남아 도는 자리가 다음 판의 늦춰진 상한을 보고 새 초안을
-        시작하지 않게 그 판의 상한 · halt를 붙잡아 둠(/code-review #247)."""
+        시작하지 않게 그 판의 상한 · halt를 붙잡아 둠(/code-review #247). 이어받았는지도 여기서
+        봄(to_fast): 그 판의 상한이 줄면 바로 따름."""
 
         def stop(new_draft: bool) -> str | None:
+            to_fast()
             if done.is_set():
                 return FULL
             if halt.is_set():
                 return TIMEOUT
-            return TIMEOUT if new_draft and _clock() > draft_until else None
+            return TIMEOUT if new_draft and _clock() > at.draft else None
 
         return stop
 
@@ -1024,7 +1122,7 @@ def _make_all(
 
             r = gen_one(
                 until, page, pages[page], types[k:] + types[:k], names, info,
-                seen, used, slot, here, stop,
+                seen, used, slot, here, stop, lambda: cur,
             )  # fmt: skip
             down, tries, rejected = down + r.down, tries + r.tries, rejected + r.rejected
             replied = replied or r.answered
@@ -1072,20 +1170,21 @@ def _make_all(
     pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="quiz-slot")
 
     def one_round(
-        at: list[int], draft_until: float, until_time: float
+        at: list[int], limits: _Limits
     ) -> tuple[list[tuple[int, Made]], list[tuple[int, Made]], int]:
         """자리들을 동시에 돌려 (끝난 자리, 못 만든 자리(시간 상한에 도는 중 · 시작하지 못함),
         시작한 자리 수)."""
         halt = threading.Event()  # 이 판이 끝나면 남은 자리는 호출하지 않음
         until = _until(llm, halt)
-        stop = stop_of(halt, draft_until)
+        stop = stop_of(halt, limits)
         futures: list[Future[tuple[int, Made]]] = []
         try:
             futures = [pool.submit(guarded, k, p, until, stop) for k, p in enumerate(at)]
             pending: set[Future[tuple[int, Made]]] = set(futures)
-            while pending and not done.is_set() and (left := until_time - _clock()) > 0:
-                # 자리 하나가 끝날 때마다 깨어남(늦어도 1초마다 시간 상한을 봄)
+            while pending and not done.is_set() and (left := limits.hard - _clock()) > 0:
+                # 자리 하나가 끝날 때마다 깨어남(늦어도 1초마다 시간 상한 · 이어받았는지를 봄)
                 _, pending = wait(pending, timeout=min(1.0, left), return_when=FIRST_COMPLETED)
+                to_fast()
                 show()
             show()  # 마지막 자리가 끝나며 다 모은 것
         finally:
@@ -1126,7 +1225,8 @@ def _make_all(
     answered = False  # 학교 LLM이 한 번이라도 답함(어느 판에서든 실패하지 않은 호출이 있음)
     try:
         while True:
-            finished, cut, started = one_round(at, deadline, hard)
+            finished, cut, started = one_round(at, lim)
+            to_fast()  # 아래 남은 시간 판단이 이어받은 뒤의 전체 상한을 보게
             answered = answered or any(r.answered for _, r in finished)
             rounds += 1
             missing = n - len(taken)
@@ -1170,8 +1270,11 @@ def _make_all(
             # 판 하나의 상한은 첫 판과 같게: 자리는 동시에 돌아 한 자리에 드는 시간(생성 · 검사 ·
             # 풀기)이 모자란 문제 수에 비례하지 않음. 1문제 × 23초로 두면 다시 돌린 자리가 거의 늘
             # 상한에 걸림(/code-review #247)
-            deadline = min(total, now + SEC_PER_QUESTION * budget)
-            hard = min(total, now + HARD_SEC_PER_QUESTION * budget)
+            with lock:  # to_fast가 그사이 상한을 줄여도 새 판이 옛 상한을 쓰지 않게
+                lim = _Limits(
+                    min(total, now + SEC_PER_QUESTION * budget),
+                    min(total, now + HARD_SEC_PER_QUESTION * budget),
+                )
     finally:
         with lock:
             done.set()

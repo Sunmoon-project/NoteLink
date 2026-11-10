@@ -81,12 +81,13 @@ quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
 
 
 def _pregen(llm: Llm, inp: JsonObject, report: JobReport) -> JsonObject:
-    # 기다리는 사용자가 없어 시간 상한이 넉넉함. 이어받은 채 시작하면(사용자 작업 반복) 사용자가
-    # 기다리므로 보통 상한: 넉넉한 상한으로 그 반복을 오래 막지 않게(/code-review #138)
-    return generate.run(llm, inp, report, patient=not report.awaited())
+    # 기다리는 사용자가 없어 안정적 모드(시간 상한 넉넉 · 단계를 더함, #274). 사용자가 이어받으면
+    # (report.awaited) 그때부터 빠른 모드 · 보통 상한: 이어받은 채 시작해도 처음부터 빠른 모드라
+    # 사용자 작업 반복을 오래 막지 않음(/code-review #138)
+    return generate.run(llm, inp, report, mode=generate.STABLE, hurry=report.awaited)
 
 
-# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 처리는 맞춤 퀴즈와 같고 LLM 차례를 양보(#138)
+# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 안정적 모드로 만들고 LLM 차례를 양보(#138)
 quiz_pregen = _handler(_pregen, background=True)
 
 

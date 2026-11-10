@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from app.clients.llm import JsonObject, LlmError, LlmRejectedError, LlmSetupError
+from app.core.config import settings
 from app.services.quiz import generate, srs
 from app.services.quiz.generate import Chunk, PageInfo
 from app.services.quiz.review import InputError, seoul_midnight
@@ -55,6 +56,7 @@ class ScriptLlm:
 
     answers: dict[str, Callable[[str], JsonObject | LlmError]]
     calls: list[tuple[str, str]] = field(default_factory=list)
+    models: list[tuple[str, str]] = field(default_factory=list)  # (호출 이름, 모델)
 
     def call(
         self,
@@ -68,6 +70,7 @@ class ScriptLlm:
         temperature: float = 0.0,
     ) -> JsonObject:
         self.calls.append((name, user))
+        self.models.append((name, model))
         if name not in self.answers:
             raise AssertionError(f"준비하지 않은 LLM 호출: {name}")
         a = self.answers[name](user)
@@ -152,6 +155,8 @@ def happy(
             "Quiz": quiz,
             "Naturals": natural_fn or nat,
             "Check": checker(lambda u: made[-1] if made else None),
+            # 안정적 모드의 생성 모델 2차 풀기(#274): 검사 모델과 같은 답
+            generate.RECHECK: checker(lambda u: made[-1] if made else None),
         }
     )
 
@@ -948,6 +953,7 @@ def parallel_llm(quiz: Callable[[str], JsonObject | LlmError]) -> ScriptLlm:
             "Quiz": quiz,
             "Naturals": lambda u: {"natural": [o == answer_in(u) for o in candidates(u)]},
             "Check": checker(answer_in),
+            generate.RECHECK: checker(answer_in),
         }
     )
 
@@ -1040,11 +1046,12 @@ def test_no_new_draft_is_started_after_the_time_limit(monkeypatch: pytest.Monkey
 
 
 def test_a_pregen_gets_a_longer_time_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 미리 만들기는 LLM 차례를 양보하므로 상한이 PATIENT배: 같은 느린 호출에도 문제를 만듦(#138)
+    # 미리 만들기(안정적 모드)는 LLM 차례를 양보하므로 상한이 PATIENT배: 같은 느린 호출에도 문제를
+    # 만듦(#138 · #274)
     now = [0.0]
     monkeypatch.setattr(generate, "_clock", lambda: now[0])
 
-    def made(patient: bool) -> JsonObject:
+    def made(mode: generate.Mode) -> JsonObject:
         bad = draft("이질 아메바", "위족으로 운동하는 이질 아메바의 특징")  # 설명에 정답 용어
         llm = happy([bad, GOOD["이질 아메바"]])
         quiz = llm.answers["Quiz"]
@@ -1054,12 +1061,173 @@ def test_a_pregen_gets_a_longer_time_limit(monkeypatch: pytest.MonkeyPatch) -> N
             return quiz(user)
 
         llm.answers["Quiz"] = slow
-        return generate.run(llm, job(size=1), lambda v, step=None: None, patient=patient)
+        return generate.run(llm, job(size=1), lambda v, step=None: None, mode=mode)
 
-    assert [q["answer"] for q in made(patient=True)["questions"]] == ["이질 아메바"]
+    assert [q["answer"] for q in made(generate.STABLE)["questions"]] == ["이질 아메바"]
     # 보통 상한이면 첫 초안이 걸린 뒤 다시 만들지 않음: 0문제 대신 작업을 실패로
     with pytest.raises(generate.NoQuestionsError):
-        made(patient=False)
+        made(generate.FAST)
+
+
+# ---------- 모드: 안정적 · 빠름 · 이어받으면 빠르게 (#274) ----------
+
+BAD = draft(
+    "이질 아메바", "위족으로 운동하는 이질 아메바의 특징"
+)  # 설명에 정답 용어: 코드 검사 탈락
+
+
+def page1_job(**more: Any) -> JsonObject:
+    """1쪽만 있는 노트(못 만든 자리가 다른 쪽으로 넘어가지 않음)."""
+    inp = job(**more)
+    inp["material"] = {**inp["material"], "pages": [{"pageNo": 1, "ocrText": PAGE1}]}
+    return inp
+
+
+def make(llm: ScriptLlm, inp: JsonObject, **more: Any) -> JsonObject:
+    return generate.run(llm, inp, lambda v, step=None: None, **more)
+
+
+def test_a_stable_slot_tries_three_drafts_and_a_fast_slot_two() -> None:
+    # 안정적 모드는 한 자리 시도 3번: 빠른 모드라면 버렸을 자리를 세 번째 초안으로 채움
+    llm = happy([BAD, BAD, GOOD["이질 아메바"]])
+    result = make(llm, page1_job(size=1), mode=generate.STABLE)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
+    quiz = llm.named("Quiz")
+    assert len(quiz) == 3
+    assert "문제 유형: 분류" in quiz[2]  # 세 번째 시도는 세 번째 유형
+
+    llm = happy([BAD, BAD, GOOD["이질 아메바"]])
+    with pytest.raises(generate.NoQuestionsError):
+        make(llm, page1_job(size=1))  # 기본은 빠른 모드
+    assert len(llm.named("Quiz")) == 2
+
+
+def test_a_two_type_page_goes_back_to_its_first_type_on_the_third_try() -> None:
+    def seen_types(mode: generate.Mode) -> list[str]:
+        llm = happy([BAD, BAD, BAD])
+        gen = generate.gen_one(
+            llm, 1, PAGE1, ["묘사", "어휘"], NAMES, PageInfo(), [], [], 0, mode=lambda: mode
+        )
+        assert gen.question is None and gen.tries == mode.tries
+        return [re.findall(r"문제 유형: (\S+)", u)[0] for u in llm.named("Quiz")]
+
+    assert seen_types(generate.STABLE) == ["묘사", "어휘", "묘사"]
+    assert seen_types(generate.FAST) == ["묘사", "어휘"]
+
+
+def test_a_stable_draft_must_also_be_solved_by_the_generator_model() -> None:
+    # 안정적 모드: 검사 모델이 맞혀도 생성 모델이 다른 답을 고르면 탈락하고 다시 만듦
+    llm = happy([GOOD["이질 아메바"], GOOD["이질 아메바"]])
+    agree = llm.answers[generate.RECHECK]
+    first = [True]
+
+    def recheck(user: str) -> JsonObject:
+        if first[0]:  # 첫 초안: 생성 모델은 다른 보기를 고름(정답 둘)
+            first[0] = False
+            other = "B" if "A. 이질 아메바" in user else "A"
+            return {"answer": other, "only_one": False, "supported": True}
+        return agree(user)
+
+    llm.answers[generate.RECHECK] = recheck
+    result = make(llm, page1_job(size=1), mode=generate.STABLE)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
+    assert len(llm.named("Quiz")) == 2 and len(llm.named(generate.RECHECK)) == 2
+    assert "검사 탈락(생성 모델 답" in llm.named("Quiz")[1]  # 다시 만들 때 문제점으로 알림
+    models = dict(llm.models)
+    assert models["Check"] == settings.quiz_check_model
+    assert models[generate.RECHECK] == settings.quiz_gen_model
+
+
+def test_a_stable_draft_is_not_used_when_the_recheck_call_fails() -> None:
+    llm = happy([GOOD["이질 아메바"]] * 3)
+    llm.answers[generate.RECHECK] = lambda u: LlmError("응답 없음")
+    # 호출 실패로 센 시도뿐이라 학교 LLM 장애: 작업 처리기가 나중에 다시 시도(검사 모델 실패와 같음)
+    with pytest.raises(LlmError, match="모두 실패함"):
+        make(llm, page1_job(size=1), mode=generate.STABLE)
+    assert len(llm.named(generate.RECHECK)) == 3  # 세 초안 모두 2차 풀기에서 멈춤
+
+
+def test_the_fast_mode_still_checks_two_answers_and_the_checker_solve() -> None:
+    # 빠르게 하려고 빼는 것은 추가 시도와 생성 모델 2차 풀기뿐: 정답 둘 검사 · 검사 모델
+    # 풀기는 그대로
+    llm = happy([GOOD["이질 아메바"]])
+    result = make(llm, page1_job(size=1))
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
+    assert llm.named("Naturals") and llm.named("Check")
+    assert llm.named(generate.RECHECK) == []
+
+
+def test_a_pregen_taken_over_mid_slot_finishes_in_fast_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 첫 초안 뒤에 사용자가 이어받음: 그 자리의 남은 시도는 빠른 모드(2번)이고, 상한이 남은 자리 ×
+    # 보통 상한(지금 + 20초)으로 줄어 다른 쪽으로 넘긴 새 초안은 시작하지 않음
+    now = [0.0]
+    monkeypatch.setattr(generate, "_clock", lambda: now[0])
+
+    def made(taken_over: bool) -> tuple[ScriptLlm, JsonObject | Exception]:
+        awaited = [False]
+        calls = [0]
+
+        def quiz(user: str) -> JsonObject:
+            now[0] += 30  # 한 초안에 30초: 안정적 모드 상한(1문제 200초) 안
+            calls[0] += 1
+            if taken_over:
+                awaited[0] = True  # 첫 초안을 만드는 사이 사용자가 퀴즈를 누름
+            return BAD if calls[0] <= 2 else by_page(user)
+
+        llm = parallel_llm(quiz)
+        out: JsonObject | Exception
+        try:
+            out = make(llm, job(size=1), mode=generate.STABLE, hurry=lambda: awaited[0])
+        except generate.NoQuestionsError as e:
+            out = e
+        return llm, out
+
+    llm, out = made(taken_over=False)  # 그대로 안정적 모드: 세 번째 초안으로 채움
+    assert isinstance(out, dict) and len(out["questions"]) == 1
+    assert len(llm.named("Quiz")) == 3 and len(llm.named(generate.RECHECK)) == 1
+
+    now[0] = 0.0
+    llm, out = made(taken_over=True)
+    assert isinstance(out, generate.NoQuestionsError) and generate.TIMEOUT in str(out)
+    assert len(llm.named("Quiz")) == 2  # 세 번째 시도도, 다른 쪽(60초 > 30 + 20초)도 없음
+
+
+def test_questions_made_before_the_take_over_are_kept() -> None:
+    # 이어받기 전에 안정적 모드로 만든 문제는 그대로 두고, 남은 자리만 빠른 모드로(2차 풀기 없음)
+    awaited = [False]
+    llm = parallel_llm(by_page)
+    recheck = llm.answers[generate.RECHECK]
+
+    def first_then_take_over(user: str) -> JsonObject:
+        awaited[0] = True  # 첫 문제의 2차 풀기 뒤에 이어받음
+        return recheck(user)
+
+    llm.answers[generate.RECHECK] = first_then_take_over
+    result = make(llm, job(size=2), mode=generate.STABLE, hurry=lambda: awaited[0])
+    assert sorted(q["answer"] for q in result["questions"]) == ["람블편모충", "이질 아메바"]
+    assert len(llm.named(generate.RECHECK)) == 1
+
+
+def test_a_pregen_taken_over_before_it_starts_is_fast_from_the_first_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 이어받은 채 시작한 미리 만들기: 첫 자리부터 빠른 모드 · 보통 상한(사용자 작업 반복을 오래
+    # 막지 않게, /code-review #138)
+    now = [0.0]
+    monkeypatch.setattr(generate, "_clock", lambda: now[0])
+    llm = happy([BAD, GOOD["이질 아메바"]])
+    quiz = llm.answers["Quiz"]
+
+    def slow(user: str) -> Any:
+        now[0] += generate.SEC_PER_QUESTION * 2  # 보통 상한은 지나지만 안정적 모드 상한 안
+        return quiz(user)
+
+    llm.answers["Quiz"] = slow
+    with pytest.raises(generate.NoQuestionsError):
+        make(llm, job(size=1), mode=generate.STABLE, hurry=lambda: True)
+    assert len(llm.named("Quiz")) == 1
 
 
 def test_the_set_goes_back_at_the_hard_limit_without_waiting_for_a_slot(
