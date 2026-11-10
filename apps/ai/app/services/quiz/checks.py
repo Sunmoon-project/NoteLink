@@ -13,7 +13,6 @@ from app.services.quiz.models import CHOICES, Draft, Question
 from app.services.quiz.text import (
     BLANK,
     VALUE,
-    combo_answer,
     is_combo,
     norm,
     number_values,
@@ -41,15 +40,22 @@ class Seen(TypedDict):
     passage: str  # norm(제시문)
     answer: NotRequired[str]  # norm(정답)
     q: NotRequired[Question | None]
-    sentences: NotRequired[list[str]]  # norm(문장 보기) (too_close)
+    sentences: NotRequired[list[str]]  # norm(설명 문장) (too_close)
 
 
-def sentence_options(options: list[str] | None) -> list[str]:
-    """문장인 보기만 norm으로. 낱말 · 용어 보기는 같은 노트의 문제끼리 겹치는 것이 보통이고,
-    조합형 보기(ㄱ, ㄴ)는 묶음 이름이라 뺌."""
-    return [
-        norm(o) for o in options or [] if not short_answer(o) and not combo_answer(o) and norm(o)
-    ]
+_COMBO_MARK = re.compile(r"^[ㄱㄴㄷ]\.\s*")
+
+
+def sentences_of(options: list[str] | None, passage: str | None) -> list[str]:
+    """설명 문장을 norm으로: 문장인 보기, 조합형이면 제시문의 ㄱ · ㄴ · ㄷ 문장.
+
+    낱말 · 용어 보기는 같은 노트의 문제끼리 겹치는 것이 보통이라 뺌. 조합형은 같은 설명이 보기가
+    아니라 제시문에 있어, 같은 내용의 특징 · 부정설명 문제와 겹쳐도 보이게 함(#268).
+    """
+    if options and is_combo(options):
+        lines = (passage or "").split("\n")
+        return [x for ln in lines if (x := norm(_COMBO_MARK.sub("", ln.strip())))]
+    return [norm(o) for o in options or [] if not short_answer(o) and norm(o)]
 
 
 def seen_question(q: Question) -> Seen:
@@ -57,7 +63,7 @@ def seen_question(q: Question) -> Seen:
         "all": norm(q["prompt"] + (q.get("passage") or "")),
         "passage": norm(q.get("passage")),
         "q": q,
-        "sentences": sentence_options(q.get("choices")),
+        "sentences": sentences_of(q.get("choices"), q.get("passage")),
     }
 
 
@@ -67,7 +73,7 @@ def seen_draft(d: Draft) -> Seen:
         "all": norm(d["stem"] + d["passage"]),
         "passage": norm(d["passage"]),
         "answer": "" if is_combo(d["options"]) else norm(d["answer"]),
-        "sentences": sentence_options(d["options"]),
+        "sentences": sentences_of(d["options"], d["passage"]),
     }
 
 
@@ -97,7 +103,7 @@ def too_close(d: Draft, seen: list[Seen]) -> bool:
     """
     me = norm(d["stem"] + d["passage"])
     mp = norm(d["passage"])
-    mine = sentence_options(d["options"])
+    mine = sentences_of(d["options"], d["passage"])
     for s in seen:
         if mp and s["passage"]:
             if difflib.SequenceMatcher(None, mp, s["passage"]).ratio() >= 0.85:

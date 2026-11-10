@@ -485,3 +485,13 @@ def test_shared_term_or_combination_options_are_not_too_close() -> None:
     assert not too_close(b, [seen_draft(a)])
     other = combo_draft(passage="ㄱ. 포낭형이 있다.\nㄴ. 섬모가 있다.\nㄷ. 원충이다.")
     assert not too_close(other, [seen_draft(combo_draft())])
+
+
+def test_a_combination_shares_its_statements_with_sentence_options() -> None:
+    # 조합형 설명은 제시문에 있음: 같은 설명을 보기로 쓴 특징 · 부정설명과 겹침
+    c = combo_draft()
+    same = negative(
+        options=["위족으로 운동한다.", "포낭형은 8핵이다.", "적혈구를 먹는다.", "원충이다", "가다"]
+    )
+    assert too_close(same, [seen_draft(c)])
+    assert too_close(c, [seen_draft(same)])
