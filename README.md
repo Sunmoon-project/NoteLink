@@ -215,20 +215,6 @@ npm run dev:mobile   # 앱 개발 서버
 
 ---
 
-## 6. 결정 사항
-
-| 항목 | 결정 |
-| --- | --- |
-| 실시간 통신 | Socket.IO 직접 (App Service에서 WebSocket 켜기) |
-| 캠 · 음성 스터디 | 이번 학기 개발 (LiveKit Cloud) |
-| 앱 차단 | Android 먼저, iOS는 Apple 승인 후 |
-| 소셜 로그인 | 개발용 테스트 키부터 (카카오 · 네이버 · Google) |
-| 결제 | 나중에 개발 (포인트 충전 · 요금제 결제만 미룸) |
-
-## 7. 남은 일
-
-- [ ] 요금제별 AI 사용 한도 — 요금제 기능 개발 때
-- [ ] 필기 인식 비교 테스트 (Claude만 vs Document Intelligence + Claude) — 노트 개발 첫 주
 - [ ] 캠 · 음성 스터디 화면 설계 — 스터디룸 담당
 - [ ] 요구사항 FR-24의 하루 기준 시각을 자정으로 수정
 - [ ] viseme ↔ FR-56 입 모양 연결표 — 아바타 담당
