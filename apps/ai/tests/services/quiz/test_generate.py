@@ -983,6 +983,55 @@ def test_rounds_stop_at_the_total_time_limit(monkeypatch: pytest.MonkeyPatch) ->
     assert len(llm.named("Quiz")) == 1  # 다음 판을 돌리지 않음
 
 
+def slow_bad_llm(now: list[float], step: float) -> ScriptLlm:
+    """초안이 늘 탈락하고 생성 호출마다 가짜 시계가 step초 가는 LLM."""
+    bad = draft("이질 아메바", "위족으로 운동하는 이질 아메바의 특징")  # 설명에 정답 용어
+
+    def quiz(user: str) -> JsonObject:
+        now[0] += step
+        return bad
+
+    llm = happy([])
+    llm.answers["Quiz"] = quiz
+    return llm
+
+
+@pytest.mark.usefixtures("fill_rounds")
+@pytest.mark.parametrize("capped", [True, False])
+def test_the_total_limit_is_five_minutes_even_for_ten_questions(
+    monkeypatch: pytest.MonkeyPatch, capped: bool
+) -> None:
+    # 10문제: 60초 × 10 = 600초지만 전체 상한은 FILL_MAX_SEC(300초). 1판(새 초안 200초까지)이
+    # 300초에 끝나면 다음 판을 띄우지 않음. 상한을 풀면(cap 크게) 2판이 돎
+    now = [0.0]
+    monkeypatch.setattr(generate, "_clock", lambda: now[0])
+    if not capped:
+        monkeypatch.setattr(generate, "FILL_MAX_SEC", 10**6)
+    llm = slow_bad_llm(now, 100)
+    with pytest.raises(generate.NoQuestionsError):
+        run(llm, job(size=10))
+    if capped:
+        assert len(llm.named("Quiz")) == 3  # 1판만(0 · 100 · 200초에 시작)
+    else:
+        assert len(llm.named("Quiz")) > 3
+
+
+@pytest.mark.usefixtures("fill_rounds")
+@pytest.mark.parametrize(("min_round", "calls"), [(45, 2), (43, 3)])
+def test_a_new_round_needs_min_round_sec_left(
+    monkeypatch: pytest.MonkeyPatch, min_round: float, calls: int
+) -> None:
+    # 5문제(전체 300초), 생성 호출마다 128초: 1판 128초 · 2판 256초에 끝나 44초 남음.
+    # MIN_ROUND_SEC 45초면 3판을 띄우지 않고, 43초면 띄움
+    now = [0.0]
+    monkeypatch.setattr(generate, "_clock", lambda: now[0])
+    monkeypatch.setattr(generate, "MIN_ROUND_SEC", min_round)
+    llm = slow_bad_llm(now, 128)
+    with pytest.raises(generate.NoQuestionsError):
+        run(llm, job(size=5))
+    assert len(llm.named("Quiz")) == calls
+
+
 @pytest.mark.usefixtures("fill_rounds")
 def test_rounds_stop_after_max_rounds() -> None:
     bad = draft("이질 아메바", "위족으로 운동하는 이질 아메바의 특징")  # 설명에 정답 용어

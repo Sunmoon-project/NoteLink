@@ -165,7 +165,9 @@ BAD_SHAPE = "문제 모양이 맞지 않음"  # 서버 모양 검사(fromWorkerQ
 # 모자란 자리를 다시 돌리는 전체 상한(문제 하나에): 5문제 300초(#247). 미리 만들기는 첫 판 상한
 # (HARD_SEC_PER_QUESTION × PATIENT)이 더 길어 그것을 씀
 FILL_SEC_PER_QUESTION = 60
-FILL_MAX_SEC = 300  # 사용자가 기다리는 전체 상한(10문제도 5분, 이슈 #247 '예: 5분')
+# 사용자가 기다리는 전체 상한(10문제도 5분, 이슈 #247 '예: 5분'). 첫 판 상한(23초 × n)이 더 길면
+# (14문제부터) 첫 판 상한까지
+FILL_MAX_SEC = 300
 MAX_ROUNDS = 5  # 판 수 상한: 초안이 빨리 탈락하는 노트에서 상한 시간 내내 학교 LLM을 두드리지 않게
 # 새 판을 띄울 최소 남은 시간: 한 자리(생성 · 검사 · 풀기)가 끝날 만큼. 이보다 짧으면 판이 거의 늘
 # 상한에 걸려 호출만 버림(/code-review #247)
@@ -721,9 +723,13 @@ def gen_one(
         why, k = code_check(d, t, text, ty, list(seen))
         if concept not in names:  # 개념 목록이 길면 모델이 이 필드를 빠뜨리기도 함
             why.append("개념 이름 없음")
-        if not d["stem"].strip() or not d["answer"].strip():
-            # 서버가 빼는 모양(빈 질문 · 빈 답): 검사 호출을 쓰기 전에 거름. 보기 수는 code_check가
-            # 보고, 정답이 보기에 있는지는 보기를 놓은 뒤 accept(_shape_ok)가 봄(/code-review #247)
+        if (
+            not d["stem"].strip()
+            or not d["answer"].strip()
+            or not all(o.strip() for o in d["options"])
+        ):
+            # 빈 질문 · 답 · 보기: 검사 호출을 쓰기 전에 거름. 보기 수는 code_check가 보고, 보기를
+            # 놓은 뒤의 모양은 accept(_shape_ok)가 다시 봄(/code-review #247)
             why.append(BAD_SHAPE)
         if not why and stop and (full := stop(False)):
             out.why = [full]
@@ -918,6 +924,7 @@ def _make_all(
     taken: list[tuple[int, Made]] = []  # 받아들인 차례대로
     visits: Counter[int] = Counter()
     dry: set[int] = set()
+    drained: set[int] = set()  # dry 가운데 물을 개념이 남지 않아 닫은 쪽(마지막 단계에서 다시 엶)
     lock = threading.Lock()
     done = threading.Event()  # n개를 다 모았거나 돌려줌: 남은 자리는 다음 단계에서 멈춤
     relaxed = False  # 마지막 단계: 이미 물은 개념도 다른 각도로(#247)
@@ -1005,6 +1012,7 @@ def _make_all(
                 ]
                 if not names:
                     dry.add(page)
+                    drained.add(page)
                     continue
                 types = page_types(pages[page], korean)
                 k = visits[page] % len(types)
@@ -1127,9 +1135,11 @@ def _make_all(
             with lock:
                 open_pages = [b for b in backups if b not in dry]
                 if not open_pages and not relaxed:  # 개념이 모자람: 마지막 단계
+                    # 개념이 바닥나 닫은 쪽만 다시 엶. 겹침(DRY_REASONS)으로 닫은 쪽은 마지막
+                    # 단계에서도 같은 겹침 검사에 걸리므로 그대로(/code-review #247)
                     relaxed = True
-                    dry.clear()
-                    open_pages = list(backups)
+                    dry -= drained
+                    open_pages = [b for b in backups if b not in dry]
             if not open_pages:
                 break  # 마지막 단계에서도 물을 것이 없음
             earlier += not_made(finished, cut)
