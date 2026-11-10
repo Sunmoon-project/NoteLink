@@ -484,8 +484,8 @@ def test_a_setup_error_ends_the_job_without_the_other_slots_calling() -> None:
     llm = parallel_llm(quiz)
     with pytest.raises(LlmSetupError):
         run(llm, job(size=4))
-    # 자리 4개가 하나씩 돎(WORKERS=1): 첫 자리 뒤 다음 자리가 이미 시작했을 수는 있음
-    assert len(llm.named("Quiz")) <= 2
+    # 자리 4개가 하나씩 돎(WORKERS=1): 첫 자리가 멈춤 신호를 켜서 다음 자리는 부르지 않음
+    assert len(llm.named("Quiz")) == 1
 
 
 def test_some_calls_failing_is_not_an_outage() -> None:

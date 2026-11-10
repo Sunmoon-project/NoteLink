@@ -925,11 +925,23 @@ def _make_all(
         r.down, r.tries = down, tries
         return page, r
 
+    def guarded(slot: int, p: int) -> tuple[int, Made]:
+        """자리가 LlmError가 아닌 오류(학교 LLM 설정 오류 · 코드 오류)로 끝나면 그 자리에서 바로
+        멈춤 신호를 켬: 남은 자리도 같으므로 주 스레드가 알아채기 전에 다음 자리가 호출하지 않게
+        (Codex 리뷰 #264)."""
+        try:
+            return one_slot(slot, p)
+        except LlmError:
+            raise
+        except BaseException:
+            done.set()
+            raise
+
     until = _Until(llm, done)  # 돌려준 뒤 남은 자리는 호출하지 않음
     pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="quiz-slot")
     futures: list[Future[tuple[int, Made]]] = []
     try:
-        futures = [pool.submit(one_slot, k, p) for k, p in enumerate(slots + spare)]
+        futures = [pool.submit(guarded, k, p) for k, p in enumerate(slots + spare)]
         shown = 0
         pending: set[Future[tuple[int, Made]]] = set(futures)
         while pending and not done.is_set() and (left := hard - _clock()) > 0:
