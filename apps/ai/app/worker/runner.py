@@ -83,11 +83,11 @@ class _StoreReport:
         store: JobStore,
         job: Job,
         *,
-        canceled: threading.Event | None = None,
+        canceled: threading.Event,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._store, self._job, self._clock = store, job, clock
-        self._canceled = canceled or threading.Event()
+        self._canceled = canceled  # 하트비트와 같은 Event여야 취소가 처리 함수에 닿음
         self._awaited = job.awaited
         self._checked = clock()
         self._lock = threading.Lock()  # 미리 만들기는 여러 스레드에서 부름
@@ -142,7 +142,7 @@ class _Heartbeat:
         check: float | None = None,
     ) -> None:
         self._store, self._job, self._every = store, job, every
-        self._check = check or CANCEL_CHECK_SEC
+        self._check = CANCEL_CHECK_SEC if check is None else check
         self._canceled = canceled
         self._done = threading.Event()
         self._thread = threading.Thread(target=self._run, name=f"heartbeat-{job.id}", daemon=True)
@@ -213,7 +213,10 @@ def run_once(
         log.warning("작업 %s: 학교 LLM이 요청을 거절함 %s", job.id, e)
         _fail(store, job, f"AI가 요청을 거절함({e})", retry=False)
     except LlmError as e:
-        log.warning("작업 %s: LLM 오류 %s", job.id, e)
+        if canceled.is_set():  # 취소로 남은 호출을 멈춘 것: 장애가 아님(쓰기는 _fail에서 막힘)
+            log.info("작업 %s: 취소되어 LLM 호출을 멈춤 (%s)", job.id, e)
+        else:
+            log.warning("작업 %s: LLM 오류 %s", job.id, e)
         _fail(store, job, f"AI 응답을 받지 못함({e})", retry=True)
     except LlmSetupError as e:
         log.error("작업 %s: 학교 LLM 설정 오류 %s — 키 · 주소 · 모델 이름 확인", job.id, e)

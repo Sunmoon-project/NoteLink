@@ -428,7 +428,7 @@ def test_a_failing_lock_extension_waits_before_trying_again(col: Any) -> None:
     job = s.claim(["quiz_generate"])
     assert job is not None
     with runner._Heartbeat(s, job, 0.01, canceled, check=check):
-        handler({}, runner._StoreReport(s, job))
+        handler({}, runner._StoreReport(s, job, canceled=canceled))
     # 0.5초 동안 첫 연장(0.01초) 뒤 check(0.05초)마다: 대기 없이 되풀이하면 수천 번
     assert 3 <= len(tries) <= 0.5 / check + 2
     gaps = [b - a for a, b in zip(tries, tries[1:], strict=False)]
@@ -470,7 +470,9 @@ class AwaitedStore(JobStore):
 def test_report_reads_awaited_at_most_every_few_seconds_and_keeps_it(col: Any) -> None:
     now = [0.0]
     s = AwaitedStore(col, [False, AutoReconnect("끊김"), True])
-    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1), clock=lambda: now[0])
+    report = runner._StoreReport(
+        s, Job("j1", "quiz_pregen", {}, 1), canceled=threading.Event(), clock=lambda: now[0]
+    )
     assert report.awaited() is False and s.reads == 0  # 막 가져온 작업은 가져올 때 값(False)
     now[0] += runner.AWAITED_CHECK_SEC
     assert report.awaited() is False and s.reads == 1
@@ -485,7 +487,9 @@ def test_report_reads_awaited_at_most_every_few_seconds_and_keeps_it(col: Any) -
 
 def test_report_of_a_job_taken_over_before_it_started_is_awaited(col: Any) -> None:
     s = AwaitedStore(col, [])
-    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1, awaited=True))
+    report = runner._StoreReport(
+        s, Job("j1", "quiz_pregen", {}, 1, awaited=True), canceled=threading.Event()
+    )
     assert report.awaited() is True and s.reads == 0
 
 
@@ -506,7 +510,9 @@ def test_report_does_not_wait_while_another_thread_reads_awaited(col: Any) -> No
     # DB가 느려도 다른 퀴즈 자리 스레드는 기다리지 않고 지난 값(/code-review #138)
     now = [0.0]
     s = AwaitedStore(col, [True])
-    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1), clock=lambda: now[0])
+    report = runner._StoreReport(
+        s, Job("j1", "quiz_pregen", {}, 1), canceled=threading.Event(), clock=lambda: now[0]
+    )
     now[0] += runner.AWAITED_CHECK_SEC
     with report._lock:  # 다른 스레드가 읽는 중
         assert report.awaited() is False and s.reads == 0
