@@ -13,7 +13,7 @@ import { toast } from '@/stores/toast';
 import { LoadError } from '../progress/load-error';
 import { C, ICON } from '@/theme';
 import { Avatar3D, type Mood } from './avatar3d';
-import { avatarModel, useEquippedItem } from './buddy';
+import { LOCAL_AVATARS, avatarModel, readKnown, useEquippedItem } from './buddy';
 
 /**
  * 아바타 선생님 고르기(프로필 > 계정 정보). 기본 · 보유한 상점 아바타 중 하나를 장착하면 노트를
@@ -25,9 +25,22 @@ export function AvatarTeacherScreen() {
   const mine = useQuery({ queryKey: ['my-items'], queryFn: () => api.shop.myItems() });
   const all = useQuery({ queryKey: ['shop', 'all'], queryFn: () => api.shop.items({}) });
   const owned = new Set((mine.data ?? []).filter((u) => u.isOwned).map((u) => u.itemId));
+  const listed = new Set((all.data ?? []).map((i) => i._id));
+  // 판매가 끝난 보유 아바타는 판매 목록에 없다: 전에 본 모델(기기에 적어 둠)의 그림으로 보여 주고 장착도 된다
+  const known = useQuery({ queryKey: ['avatar-models'], queryFn: readKnown });
+  const retired = (mine.data ?? [])
+    .filter((u) => u.isOwned && u.itemCategory === 'avatar' && !listed.has(u.itemId))
+    .filter((u) => !LOCAL_AVATARS.some((a) => a._id === u.itemId))
+    .map((u): ShopItem => {
+      const seen = LOCAL_AVATARS.find((a) => a._id === known.data?.[u.itemId]);
+      return seen
+        ? { ...seen, _id: u.itemId }
+        : { ...BASE_AVATAR, _id: u.itemId, name: '판매가 끝난 아바타' };
+    });
   const avatars = [
     BASE_AVATAR,
     ...(all.data ?? []).filter((i) => i.category === 'avatar' && owned.has(i._id)),
+    ...retired,
   ];
   const more = (all.data ?? []).filter((i) => i.category === 'avatar' && !owned.has(i._id));
 

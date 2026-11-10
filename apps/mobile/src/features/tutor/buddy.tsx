@@ -30,7 +30,7 @@ export function useEquippedItem() {
   return mine.data?.find((u) => u.isEquipped && u.itemCategory === 'avatar')?.itemId ?? 'base';
 }
 
-const LOCAL_AVATARS = [BASE_AVATAR, ...SHOP.filter((i) => i.category === 'avatar')];
+export const LOCAL_AVATARS = [BASE_AVATAR, ...SHOP.filter((i) => i.category === 'avatar')];
 /**
  * 상품 id → 앱에 든 3D 모델 이름. 서버 상품은 id가 ObjectId라, 같은 이름이나 같은 그림(assetUrl)의
  * 앱 상품으로 찾는다. 못 찾으면 기본 얼굴
@@ -48,7 +48,7 @@ export function avatarModel(itemId: string, items?: Pick<ShopItem, '_id' | 'name
 /** 상품 id → 3D 모델 이름을 기기에 적어 둔다. 판매가 끝난 상품은 상품 목록에서 빠져도 같은 얼굴을 쓰게 */
 const KNOWN_KEY = 'notelink.avatar-models';
 type Known = Record<string, string>;
-async function readKnown(): Promise<Known> {
+export async function readKnown(): Promise<Known> {
   try {
     const raw = await SecureStore.getItemAsync(KNOWN_KEY);
     const v: unknown = raw ? JSON.parse(raw) : {};

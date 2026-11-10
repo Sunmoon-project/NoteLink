@@ -463,6 +463,17 @@ describe('아바타 선생님 고르기', () => {
     expect(router.push).toHaveBeenCalledWith('/shop');
   });
 
+  it('판매가 끝난 보유 아바타도 목록에 남아 다시 장착할 수 있다', async () => {
+    const seen = '6650a1b2c3d4e5f6012345a1';
+    const unseen = '6650a1b2c3d4e5f6012345a2';
+    mockSecure.set('notelink.avatar-models', JSON.stringify({ [seen]: 'jihoo' }));
+    mockApi.shop.myItems.mockResolvedValue([own('bora', true), own(seen), own(unseen)]);
+    await renderScreen(<AvatarTeacherScreen />);
+    await fireEvent.press(await screen.findByLabelText('지후 아바타'));
+    await waitFor(() => expect(mockApi.shop.equip).toHaveBeenCalledWith(seen));
+    expect(screen.getByLabelText('판매가 끝난 아바타')).toBeTruthy();
+  });
+
   it('그림 주소인 상품은 주소 글자 대신 그림으로 보여 준다', async () => {
     const url = 'https://cdn.example.com/bora.png';
     mockApi.shop.items.mockResolvedValue([item('bora', '보라 아바타', url)]);
