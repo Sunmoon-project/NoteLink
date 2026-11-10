@@ -170,6 +170,24 @@ def test_schema_cache_keeps_only_the_recent_ones() -> None:
     assert s.bodies[-1]["output_config"] == s.bodies[0]["output_config"]
 
 
+def test_schema_cache_drops_the_least_recently_used_one() -> None:
+    # 넣은 순서가 아니라 마지막으로 쓴 순서로 버림(Codex 재리뷰 #279)
+    s = Server(*(message("{}") for _ in range(SCHEMA_CACHE_MAX + 2)))
+    llm = s.client()
+
+    def schema(i: int) -> dict[str, Any]:
+        return {"type": "object", "properties": {"k": {"type": "string", "enum": [str(i)]}}}
+
+    for i in range(SCHEMA_CACHE_MAX):
+        llm.call("claude-sonnet-5-5", "s", "u", schema(i), "Pick")
+    llm.call("claude-sonnet-5-5", "s", "u", schema(0), "Pick")  # 가장 먼저 넣은 것을 다시 씀
+    llm.call("claude-sonnet-5-5", "s", "u", schema(SCHEMA_CACHE_MAX), "Pick")
+
+    kept = {json.loads(k)["properties"]["k"]["enum"][0] for k in llm._schemas}
+    assert "0" in kept and "1" not in kept  # 다시 쓴 0은 남고, 그다음 오래된 1을 버림
+    assert len(kept) == SCHEMA_CACHE_MAX
+
+
 def test_every_service_schema_can_be_sent_to_claude() -> None:
     # SDK 변환이 받지 않는 스키마(type 없음 등)는 호출 전에 ValueError로 작업을 끝냄
     import app.services
