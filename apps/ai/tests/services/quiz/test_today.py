@@ -704,3 +704,40 @@ def broken(change: str) -> JsonObject:
 def test_bad_input_fails_at_once(change: str) -> None:
     with pytest.raises(InputError):
         run(FakeLlm(), broken(change))
+
+
+def test_combinations_with_the_same_answer_are_each_reviewed() -> None:
+    # 조합형 정답('ㄱ, ㄷ')은 묶음 이름: 같은 낱말로 묶어 넘기면 다른 조합 문제의 복습이
+    # 사라짐(#268)
+    due = TOMORROW - timedelta(days=1)
+    later = TOMORROW + timedelta(days=3)
+    combos = ["ㄱ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄱ, ㄴ, ㄷ"]
+    s1 = {
+        "id": "s1",
+        "materialId": "m1",
+        "questions": [
+            q("q1", "ㄱ, ㄷ", "C1", st(due), type="조합", choices=combos),
+            q("q2", "ㄱ, ㄷ", "C2", st(due), type="조합", choices=combos),
+            q("q3", "ㄱ, ㄷ", "C3", st(later), type="조합", choices=combos),  # 아직 아님
+        ],
+    }
+    result = run(FakeLlm(), {**job(s1), "size": 5})
+    assert [x["conceptTags"] for x in result["questions"]] == [["C1"], ["C2"]]
+    up = updates(result)
+    assert "q3" not in up and result["merged"] == 0
+
+
+def test_a_copy_keeps_the_difficulty() -> None:
+    # 오늘의 복습 사본이 원래 문제의 난이도를 가져감. 하 · 중 · 상이 아닌 값은 버림(Codex 리뷰 #288)
+    due = TOMORROW - timedelta(days=1)
+    s1 = {
+        "id": "s1",
+        "materialId": "m1",
+        "questions": [
+            q("q1", "be", "C1", st(due), difficulty="중"),
+            q("q2", "stack", "C2", st(due), difficulty="어려움"),
+        ],
+    }
+    result = run(FakeLlm(), {**job(s1), "size": 5})
+    got = {x["answer"]: x.get("difficulty") for x in result["questions"]}
+    assert got == {"be": "중", "stack": None}

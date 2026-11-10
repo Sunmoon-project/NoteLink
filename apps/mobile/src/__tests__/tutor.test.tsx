@@ -1,4 +1,4 @@
-import { AccessibilityInfo } from 'react-native';
+import { AccessibilityInfo, Keyboard, Platform } from 'react-native';
 import { act, fireEvent, renderHook, screen, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import { ERROR_CODES, NoteAskBody, type AiJob } from '@notelink/shared';
@@ -221,6 +221,24 @@ describe('아바타 선생님 대화', () => {
     await blur();
     expect(screen.queryByText('3D:base')).toBeNull();
   });
+});
+
+// 안드로이드에는 Will 이벤트가 오지 않는다 — Did를 들어야 첫 질문을 쓸 때 큰 무대가 접힌다(Codex #252)
+it('안드로이드에서는 keyboardDidShow · keyboardDidHide로 키보드를 본다', async () => {
+  const was = Platform.OS;
+  Platform.OS = 'android';
+  const listen = jest.spyOn(Keyboard, 'addListener');
+  try {
+    await renderScreen(<TutorScreen />);
+    await screen.findByText('운영체제 3주차');
+    const events = listen.mock.calls.map((c) => c[0]);
+    expect(events).toEqual(expect.arrayContaining(['keyboardDidShow', 'keyboardDidHide']));
+    expect(events).not.toContain('keyboardWillShow');
+    expect(events).not.toContain('keyboardWillHide');
+  } finally {
+    Platform.OS = was;
+    listen.mockRestore();
+  }
 });
 
 describe('노트 상세에 떠 있는 아바타 선생님', () => {

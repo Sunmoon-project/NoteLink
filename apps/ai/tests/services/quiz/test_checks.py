@@ -385,3 +385,160 @@ def test_an_option_joining_other_options_fails() -> None:
 def test_options_that_only_contain_other_options_pass(options: list[str]) -> None:
     d = draft(options=options, answer=options[0])
     assert "다른 보기를 이어 붙인 보기" not in why(d, "특징")
+
+
+# ---------- 부정설명 · 조합 (#268) ----------
+
+KO_PAGE = "1. 이질 아메바\n- 영양형: 위족으로 운동하고 적혈구를 먹는다\n- 포낭형: 4핵, 인체 감염형"
+
+
+def negative(**extra: object) -> Draft:
+    d: Draft = {
+        "stem": "다음 중 이질 아메바에 대한 설명으로 옳지 않은 것은?",
+        "passage": "이질 아메바",
+        "options": [
+            "포낭형은 8핵이다",
+            "위족으로 운동한다",
+            "적혈구를 먹는다",
+            "포낭형이 인체 감염형이다",
+            "영양형과 포낭형이 있다",
+        ],
+        "answer": "포낭형은 8핵이다",
+    }
+    d.update(extra)  # type: ignore[typeddict-item]
+    return d
+
+
+def ko_why(d: Draft, ty: str, t: Target = NEW) -> list[str]:
+    return code_check(d, t, KO_PAGE, ty, [])[0]
+
+
+def test_a_negative_question_is_asked_only_as_its_own_type() -> None:
+    assert ko_why(negative(), "부정설명") == []
+    assert "부정 질문" in ko_why(negative(), "특징")
+    positive = negative(stem="다음 중 이질 아메바에 대한 설명으로 옳은 것은?")
+    assert "부정 질문이 아님" in ko_why(positive, "부정설명")
+
+
+def test_a_negative_question_needs_the_term() -> None:
+    assert "물을 용어 없음" in ko_why(negative(passage=""), "부정설명")
+
+
+def test_an_overstated_wrong_statement_is_rejected() -> None:
+    d = negative(answer="모든 원충은 포낭형이 8핵이다")
+    d["options"][0] = d["answer"]
+    assert any(w.startswith("과장으로 틀린 티") for w in ko_why(d, "부정설명"))
+    # 옳은 보기에도 같은 말이 있으면 티가 나지 않음
+    d["options"][1] = "모든 영양형은 위족으로 운동한다"
+    assert not any(w.startswith("과장으로 틀린 티") for w in ko_why(d, "부정설명"))
+
+
+def combo_draft(**extra: object) -> Draft:
+    d: Draft = {
+        "stem": "다음 중 이질 아메바에 대한 설명으로 옳은 것을 모두 고른 것은?",
+        "passage": "ㄱ. 위족으로 운동한다.\nㄴ. 포낭형은 8핵이다.\nㄷ. 적혈구를 먹는다.",
+        "options": ["ㄱ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄱ, ㄴ, ㄷ"],
+        "answer": "ㄱ, ㄷ",
+    }
+    d.update(extra)  # type: ignore[typeddict-item]
+    return d
+
+
+def test_a_combination_answer_may_repeat_in_the_set_and_is_not_a_note_word() -> None:
+    t = Target("new", used_answers=["ㄱ, ㄷ", "ㄱ"])
+    assert code_check(combo_draft(), t, KO_PAGE, "조합", []) == ([], 3)
+
+
+def test_a_combination_needs_its_options_and_three_lines() -> None:
+    bad = combo_draft(options=["ㄱ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄷ", "이질 아메바"])
+    assert "조합 보기 모양이 아님" in ko_why(bad, "조합")
+    one_line = combo_draft(passage="ㄱ. 위족으로 운동한다. ㄴ. 8핵이다. ㄷ. 적혈구를 먹는다.")
+    assert "ㄱ · ㄴ · ㄷ 문장 없음" in ko_why(one_line, "조합")
+
+
+def test_a_combination_answer_is_not_compared_as_a_reversed_question() -> None:
+    assert seen_draft(combo_draft())["answer"] == ""
+    assert seen_draft(draft())["answer"] == "stacked"
+
+
+def test_three_shared_sentence_options_are_too_close() -> None:
+    # 개념 이름만 다르고 옳은 설명 보기 넷이 같은 두 부정설명(0928 학습 노트 실행)
+    first = negative(passage="액티브 인디케이터 제어")
+    again = negative(passage="ActivityIndicator와 서버 통신 제어")
+    assert too_close(again, [seen_draft(first)])
+    stored = seen_question(
+        {"id": "q1", "order": 1, "prompt": "?", "choices": first["options"], "answer": "x"}
+    )
+    assert too_close(again, [stored])
+    # 둘만 같으면 다른 문제
+    two = negative(
+        passage="ActivityIndicator", options=[*first["options"][:2], "가다", "나다", "다다"]
+    )
+    assert not too_close(two, [seen_draft(first)])
+
+
+def test_shared_term_or_combination_options_are_not_too_close() -> None:
+    # 같은 노트의 용어 보기 · 조합 보기는 겹치는 것이 보통
+    a = draft(passage="위족으로 운동하고 적혈구를 먹는 원충", options=["이질 아메바", "대장 아메바",
+              "람블편모충", "질편모충", "말라리아"], answer="이질 아메바")  # fmt: skip
+    b = draft(passage="포낭형의 핵이 8개인 원충", options=a["options"], answer="대장 아메바")
+    assert not too_close(b, [seen_draft(a)])
+    other = combo_draft(passage="ㄱ. 포낭형이 있다.\nㄴ. 섬모가 있다.\nㄷ. 원충이다.")
+    assert not too_close(other, [seen_draft(combo_draft())])
+
+
+def test_a_combination_shares_its_statements_with_sentence_options() -> None:
+    # 조합형 설명은 제시문에 있음: 같은 설명을 보기로 쓴 특징 · 부정설명과 겹침
+    c = combo_draft()
+    same = negative(
+        options=["위족으로 운동한다.", "포낭형은 8핵이다.", "적혈구를 먹는다.", "원충이다", "가다"]
+    )
+    assert too_close(same, [seen_draft(c)])
+    assert too_close(c, [seen_draft(same)])
+
+
+def test_many_options_like_one_sentence_count_once() -> None:
+    # 온도만 다른 새 보기 셋이 기존 온도 설명 하나에 모두 걸려도 한 쌍(Codex 리뷰 #288)
+    old = negative(
+        passage="황색포도알균",
+        options=[
+            "37℃에서 24시간 배양한다",
+            "혈액 한천에서 자란다",
+            "그람 양성이다",
+            "가다",
+            "나다",
+        ],
+    )
+    new = negative(
+        passage="대장균",
+        options=[
+            "35℃에서 24시간 배양한다",
+            "36℃에서 24시간 배양한다",
+            "38℃에서 24시간 배양한다",
+            "포자를 만든다",
+            "운동성이 있다",
+        ],
+    )
+    assert not too_close(new, [seen_draft(old)])
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_sentence_pairs_are_counted_whatever_the_order(swap: bool) -> None:
+    # 먼저 걸린 짝을 확정하면 '37℃ 24시간'이 '37℃ 60시간'을 가져가 두 쌍만 셌음. 짝을 바꿔
+    # 세 쌍을 찾음(Codex 재리뷰 #288)
+    theirs = ["37℃에서 60시간 동안 배양한다", "35℃에서 24시간 동안 배양한다"]
+    old = negative(
+        passage="황색포도알균",
+        options=[*(theirs[::-1] if swap else theirs), "그람 양성으로 염색된다", "가다", "나다"],
+    )
+    new = negative(
+        passage="대장균",
+        options=[
+            "37℃에서 24시간 동안 배양한다",
+            "37℃에서 60시간 동안 배양한다",
+            "그람 양성으로 염색된다",
+            "포자를 만든다",
+            "운동성이 있다",
+        ],
+    )
+    assert too_close(new, [seen_draft(old)])

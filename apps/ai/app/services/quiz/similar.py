@@ -51,7 +51,48 @@ TYPES: dict[str, tuple[str, str]] = {
         "용어를 주고 그 용어가 속하는 분류(상위 개념)를 고르는 문제",
         "분류를 물을 용어 이름 하나를 그대로 쓴다. ____로 비우지 않는다",
     ),
+    # 맞춤 퀴즈 안정적 모드(#268 실험 2: 정답이 하나로 정해짐 8/9). 정답은 틀린 설명 하나
+    "부정설명": (
+        "용어 하나를 주고, 그 용어에 대한 설명 5개 중 맞지 않는 설명 하나를 고르는 문제. stem은 "
+        "'다음 중 (용어)에 대한 설명으로 옳지 않은 것은?' 꼴. 오답 보기 4개는 모두 노트로 확인되는 "
+        "옳은 설명이고, 정답은 노트 내용에서 한 곳만 어긋나게 바꾼 틀린 설명이다. answer에는 "
+        "그 틀린 설명을 쓴다",
+        "설명을 물을 용어 이름 하나를 그대로 쓴다. ____로 비우지 않는다",
+    ),
+    # 맞춤 퀴즈 안정적 모드. 모델은 문장 3개만 쓰고 제시문 · 보기 · 정답은 코드가 조립(combo.py).
+    # 모델이 문제 전체를 쓰면 줄바꿈이 깨지고 정답이 모두 'ㄱ, ㄴ'이었음(#268 실험 2 · 3)
+    "조합": (
+        "같은 개념에 대한 설명 ㄱ, ㄴ, ㄷ 중 옳은 것을 모두 고르는 문제",
+        "ㄱ · ㄴ · ㄷ 세 문장",
+    ),
 }
+# 맞춤 퀴즈 안정적 모드에만 쓰는 유형(#268 · #274). 빠른 모드는 쓰지 않음
+STABLE_TYPES = ("부정설명", "조합")
+# 다시 보기(make_similar · 오늘의 복습)가 이 유형의 문제를 다시 낼 때 쓰는 유형. 틀린 문제는 '노트의
+# 설명을 그대로 확인하는 쉬운 문제'로 내므로 옳은 설명을 고르는 특징 문제로: 부정설명의 정답은 틀린
+# 설명이라 그대로 다시 물을 것이 아니고, 조합은 코드가 조립해야 함(모델이 문제 전체를 쓰면 줄바꿈이
+# 깨짐)
+REVIEW_AS = {"부정설명": "특징", "조합": "특징"}
+# 유형으로 정한 처음 난이도(#268 실험 1: 모델이 매긴 난이도는 요청과 거의 맞지 않음). 사용자의
+# 정답률이 쌓이면 고침(#268)
+DIFFICULTY = {
+    "정의": "하",
+    "분류": "하",
+    "빈칸": "하",
+    "어휘": "하",
+    "특징": "중",
+    "부정설명": "중",
+    "묘사": "중",
+    "규칙": "상",
+    "조합": "상",
+}
+
+
+def difficulty_of(ty: str | None) -> str:
+    """문제 유형의 처음 난이도(하 · 중 · 상). 모르는 유형은 중."""
+    return DIFFICULTY.get(ty or "", "중")
+
+
 # 두 번째 시도는 다른 유형으로
 SWITCH = {
     "빈칸": "어휘",
@@ -61,6 +102,8 @@ SWITCH = {
     "정의": "특징",
     "특징": "정의",
     "분류": "정의",
+    "부정설명": "특징",
+    "조합": "특징",
 }
 BLANK_TYPES = ("빈칸", "어휘")
 TOO_CLOSE = "이미 있는 문제와 거의 같음"  # checks.code_check의 탈락 이유
@@ -82,7 +125,7 @@ GEN_SYS = (
     "⑤ 문제를 푸는 데 필요한 장면 설명, 빈칸 문장, 한국어 뜻은 passage에 쓴다. "
     "passage에 정답 보기의 글을 그대로 쓰지 않는다. "
     "빈칸 자리는 ____로 쓰고, 빈칸 문장에 한국어 번역이나 뜻풀이를 붙이지 않는다. "
-    '⑥ "아닌 것·틀린 것"을 고르는 부정 질문은 내지 않는다. '
+    '⑥ "아닌 것·틀린 것"을 고르는 부정 질문은 문제 유형이 부정설명일 때만 낸다. '
     "⑦ 원래 문제와 같은 문장, 같은 보기 조합을 쓰지 않는다. "
     "⑧ 문제 글(stem)과 해설은 한국어로 쓴다. 영어는 제시문과 보기에만 쓴다. "
     + LEVEL
@@ -161,6 +204,11 @@ OPTION_TIP = {
     "용어, 정답의 한 종류인 하위 용어를 쓰지 않는다. ",
     "분류": "오답 보기도 정답과 같은 수준의 다른 분류 이름으로 만든다. 그 분류에 속하는 용어 "
     "이름이나 특징 문장을 보기로 쓰지 않는다. ",
+    # 헷갈리는 개념을 바꿔 넣은 문제(URI ↔ 파일 방식)는 어려웠고 '반드시 · 모든'처럼 과장한 틀린
+    # 설명은 쉬웠음(#268 실험 2)
+    "부정설명": "정답(틀린 설명)은 노트의 옳은 설명에서 한 곳만 헷갈리기 쉬운 다른 개념 · 값 · "
+    "시점으로 바꿔 만든다. '반드시', '절대', '모든'처럼 과장해서 티 나게 틀리게 만들지 않는다. "
+    "오답 보기 넷은 모두 노트로 확인되는 옳은 설명이다. ",
 }
 OPTION_TIP["어휘"] = OPTION_TIP["빈칸"]
 
@@ -244,8 +292,19 @@ def _draft(r: JsonObject) -> Draft | None:
     return d
 
 
-def solved(llm: Llm, d: Draft, options: list[str], pos: int, page_text: str) -> tuple[Solved, str]:
+def solved(
+    llm: Llm,
+    d: Draft,
+    options: list[str],
+    pos: int,
+    page_text: str,
+    *,
+    model: str | None = None,
+    name: str = "Check",
+) -> tuple[Solved, str]:
     """검사 모델이 노트만 보고 풀어 봄. (결과, 검수자 답 또는 호출 오류).
+
+    model을 주면 그 모델이 풉니다(맞춤 퀴즈 안정적 모드의 생성 모델 2차 풀기, #274).
 
     결과: pass(통과) · fail(정상 탈락: 다른 답 · 정답이 둘 · 노트로 못 정함) · down(호출 실패:
     LLM 장애, make_similar가 llm_down에 셈) · bad(답 모양이 틀림: 스키마 밖 · 잘린 JSON, 초안 탓도
@@ -256,7 +315,9 @@ def solved(llm: Llm, d: Draft, options: list[str], pos: int, page_text: str) -> 
         f"{LETTERS[i]}. {o}" for i, o in enumerate(options)
     )
     try:
-        c = llm.call(settings.quiz_check_model, CHK_SYS, user, CHK_SCHEMA, "Check", max_tokens=200)
+        c = llm.call(
+            model or settings.quiz_check_model, CHK_SYS, user, CHK_SCHEMA, name, max_tokens=200
+        )
     except LlmError as e:
         return "down", str(e)
     said = c.get("answer")
@@ -295,6 +356,7 @@ def make_similar(
     """
     orig = q["prompt"] + (f"\n제시문: {q['passage']}" if q.get("passage") else "")
     first = q.get("type") or "규칙"
+    first = REVIEW_AS.get(first, first)
     if first not in TYPES:  # 이 유형 목록 밖(단답형 등): 규칙 적용 문제로
         first = "규칙"
     avoid = list(avoid or [])

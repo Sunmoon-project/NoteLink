@@ -280,6 +280,17 @@ export const useSignup = create<{
     set((s) => ({ email: '', pw: '', sentTo: null, sentAt: 0, proof: null, flow: s.flow + 1 })),
 }));
 
+/** 인증번호를 새로 보내기 시작한다: 흐름을 올리고 증표를 버린다. 발송 제한에 걸리면 되돌릴 수 있게 앞의 증표도 돌려준다 */
+function startSend() {
+  const prev = useSignup.getState().proof;
+  return { flow: useSignup.getState().next(), prev };
+}
+/** 발송 제한(RATE_LIMITED)이면 서버는 번호를 새로 내지 않아 앞의 증표가 그대로 유효하다 — 되살린다 */
+function keepProofIfLimited(e: unknown, prev: { email: string; token: string } | null) {
+  if (e instanceof ApiError && e.code === ERROR_CODES.RATE_LIMITED)
+    useSignup.setState({ proof: prev });
+}
+
 /**
  * 이메일 가입 ① 정보 입력. 서버 계약: ① 인증번호 받기(send-code) → ② 인증번호 확인으로 가입 증표 받기
  * (verify-code) → ③ 증표 + 비밀번호로 가입(signup). 이 화면은 ①까지 하고 인증번호 화면으로 넘긴다
@@ -312,19 +323,20 @@ export function SignupScreen() {
   };
   const send = useMutation({
     // 서버는 메일을 보내기 전에 번호를 새로 내며 앞서 받은 증표를 무효로 한다 —
-    // 메일 발송이 실패해도 그 증표는 못 쓰니 요청을 보내는 순간 버린다
-    onMutate: () => useSignup.getState().next(),
+    // 메일 발송이 실패해도 그 증표는 못 쓰니 요청을 보내는 순간 버린다(발송 제한만 되살린다)
+    onMutate: startSend,
     // 비밀번호는 누를 때 검사한 값으로 고정한다(보내는 사이 고쳐도 검사 안 한 값이 넘어가지 않게)
     mutationFn: ({ to }: { to: string; pw: string }) => api.auth.emailSendCode(to),
-    onSuccess: (_, { to, pw: checked }, flow) => {
+    onSuccess: (_, { to, pw: checked }, sent) => {
       // 보내는 사이 이메일을 고쳤거나, 화면을 나갔다 와 새 흐름이 시작됐으면 옛 응답은 버린다
-      if (to !== emailNow.current || useSignup.getState().flow !== flow) return;
+      if (to !== emailNow.current || useSignup.getState().flow !== sent.flow) return;
       useSignup.setState({ email: to, pw: checked, sentTo: to, sentAt: Date.now() });
       toast('인증번호를 보냈어요. 메일을 확인해 주세요');
       router.push({ pathname: '/(auth)/signup-code', params: { email: to } });
     },
-    onError: (e, _, flow) => {
-      if (useSignup.getState().flow !== flow) return;
+    onError: (e, _, sent) => {
+      if (!sent || useSignup.getState().flow !== sent.flow) return;
+      keepProofIfLimited(e, sent.prev);
       toast(e instanceof ApiError ? e.message : '인증번호를 보내지 못했어요. 다시 시도해 주세요');
     },
   });
@@ -476,19 +488,21 @@ export function SignupCodeScreen() {
     toast(e instanceof ApiError ? e.message : fallback);
 
   const resend = useMutation({
-    onMutate: () => useSignup.getState().next(),
+    onMutate: startSend,
     mutationFn: (to: string) => api.auth.emailSendCode(to),
-    onSuccess: (_, to, flow) => {
+    onSuccess: (_, to, sent) => {
       // 그사이 앞 화면에서 새로 보냈거나 다른 이메일로 바꿨으면 옛 응답은 버린다
-      if (useSignup.getState().flow !== flow || useSignup.getState().sentTo !== to) return;
+      if (useSignup.getState().flow !== sent.flow || useSignup.getState().sentTo !== to) return;
       setCode('');
       setCodeMsg(null);
       useSignup.setState({ sentAt: Date.now() });
       setNow(Date.now());
       toast('인증번호를 보냈어요. 메일을 확인해 주세요');
     },
-    onError: (e, to, flow) => {
-      if (useSignup.getState().flow !== flow || useSignup.getState().sentTo !== to) return;
+    onError: (e, to, sent) => {
+      if (!sent || useSignup.getState().flow !== sent.flow || useSignup.getState().sentTo !== to)
+        return;
+      keepProofIfLimited(e, sent.prev);
       failed(e, '인증번호를 보내지 못했어요. 다시 시도해 주세요');
     },
   });
