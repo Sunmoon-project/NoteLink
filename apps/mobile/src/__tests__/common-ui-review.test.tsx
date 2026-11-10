@@ -2,18 +2,18 @@ import { useState } from 'react';
 import { act, render, screen } from '@testing-library/react-native';
 import { Text } from 'react-native';
 import { Chip, Sheet, Tap } from '../components/ui';
-import { mockApi as mockTimetableApi } from '../lib/mock/api';
+import { mockApi as mockTimetableApi } from './fixtures/api';
 import { renderScreen } from '../test-utils';
 import { MOTION } from '../theme';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),
   deleteItemAsync: jest.fn(async () => {}),
 }));
 jest.mock('../lib/socket', () => ({
-  mockServer: { emit: jest.fn() },
+  localSocket: { emit: jest.fn() },
   socket: { on: jest.fn(() => () => {}), emit: jest.fn() },
 }));
 afterEach(() => {

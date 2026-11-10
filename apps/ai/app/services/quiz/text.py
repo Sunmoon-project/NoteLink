@@ -7,7 +7,13 @@ from decimal import Decimal, InvalidOperation
 
 from app.services.quiz.models import CHOICES, Draft, Notes, Page, Question
 
-BLANK = re.compile(r"_{3,}|\(\s*\)|\(\s{2,}\)|\[\s*\]")
+# 빈칸은 ____와 안이 띄어진 ( ) · [ ]만. 빈 ()·[]는 어디서든 빈칸이 아님: 코드(useState() ·
+# useEffect(() => {}, []) · return ())를 빈칸으로 바꾸면 코드 노트 문제가 '빈칸이 여러 개'로
+# 버려지거나 유형이 빈칸으로 저장됨. 앞 글자로 코드를 가리는 예외는 끝이 없어 두지 않음
+# (/code-review #94). 생성 안내는 빈칸을 ____로 쓰게 함(similar.GEN_SYS)
+BLANK = re.compile(r"_{3,}|\(\s+\)|\[\s+\]")
+# 붙어 있던 빈칸 둘('( )( )')이 ____ 하나로 보이지 않게 띄움
+_JOINED = re.compile(r"____(?=____)")
 _PUNCT = re.compile(r"[\s\-_.·:()\[\]'\"~/,!?]+")
 _LABEL = re.compile(r"^\s*[\(\[]?([A-Ea-e])[\)\]\.:]\s*")
 _KO_GLOSS = re.compile(r"\s*\([^()]*[가-힣][^()]*\)\s*$")
@@ -137,10 +143,11 @@ def same_word(a: str | None, b: str | None) -> bool:
     전립선염, CO ~ Co, Cl- ~ Cl: Codex 리뷰 · /code-review 11/02), NFC로 맞추고 띄어쓰기만 뺀 글이
     같아야 같은 낱말입니다(1.5 mL ~ 1.5mL, 대립 유전자 ~ 대립유전자). 같은 말을 다르게 보면 한
     세트에 함께 나올 뿐입니다(fasten ~ fastened, IL-6 ~ IL6, alpha ~ Alpha). 빈 답은 어떤 답과도
-    다릅니다(관계없는 빈 답 문제끼리 묶지 않음).
+    다릅니다(관계없는 빈 답 문제끼리 묶지 않음). 조합형 정답('ㄱ, ㄷ', #268)도 묶음 이름일 뿐이라
+    다른 문제와 같은 낱말이 아닙니다: 같게 보면 정답이 같은 다른 조합 문제의 복습을 넘겨 지움.
     """
     x = _spaceless(a)
-    return bool(x) and x == _spaceless(b)
+    return bool(x) and x == _spaceless(b) and not combo_answer(a)
 
 
 def _spaceless(s: str | None) -> str:
@@ -151,10 +158,12 @@ def short_answer(a: str | None) -> bool:
     """문장이 아닌 낱말 · 짧은 표현(그대로 다시 물을 수 있는 것).
 
     한국어 용어(위상역전, 원충류)는 포함, 한국어 문장(…한다, …이다)은 제외. 빈 글은 답이 아님.
+    조합형 정답('ㄱ, ㄷ', #268)은 다시 물을 낱말이 아님: 오답 복습이 '같은 정답으로' 다시 묻거나
+    정답이 같은 다른 조합 문제를 다시 내지 않게.
     알려진 한계: '결함' · '람다'처럼 문장 끝과 같은 글자로 끝나는 용어도 문장으로 봅니다(#9).
     """
     s = (a or "").strip()
-    if not s or len(s.split()) > 4:
+    if not s or len(s.split()) > 4 or combo_answer(s):
         return False
     if _KO_WORD.search(s):
         return len(s) <= 15 and not _KO_SENTENCE_END.search(s)
@@ -163,10 +172,10 @@ def short_answer(a: str | None) -> bool:
 
 def tidy(d: Draft) -> Draft:
     """빈칸 표시를 ____로 통일하고 보기 앞 기호(A. (b) 등)를 뗍니다."""
-    passage = BLANK.sub("____", d["passage"].strip())
+    passage = _JOINED.sub("____ ", BLANK.sub("____", d["passage"].strip()))
     if "____" in passage:  # 영어 빈칸 문장 뒤에 괄호로 붙은 한국어 뜻풀이는 정답을 알려 줌
         passage = _KO_GLOSS.sub("", passage)
-    stem = BLANK.sub("____", d["stem"])
+    stem = _JOINED.sub("____ ", BLANK.sub("____", d["stem"]))
     if "____" in passage and "뜻" in stem:  # 빈칸 문장인데 '한국어 뜻에 알맞은…'으로 물음
         stem = "다음 빈칸에 들어갈 가장 알맞은 표현을 고르시오."
     options = strip_labels(d["options"])
@@ -189,11 +198,34 @@ def strip_labels(options: list[str]) -> list[str]:
     return [_LABEL.sub("", o).strip() for o in options]
 
 
+# 조합형(#268) 보기: 옳은 문장 묶음. 보기는 이 순서로 고정(place가 섞지 않음)
+COMBOS = ["ㄱ", "ㄴ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄴ, ㄷ", "ㄱ, ㄴ, ㄷ"]
+_COMBO_KEYS = [norm(c) for c in COMBOS]
+
+
+def combo_answer(a: str | None) -> bool:
+    """조합형 정답 꼴('ㄱ, ㄷ' · 'ㄱ,ㄴ,ㄷ')인지."""
+    return norm(a) in _COMBO_KEYS
+
+
+def is_combo(opts: list[str]) -> bool:
+    """조합형 보기인지: 서로 다른 COMBOS 묶음 CHOICES개."""
+    keys = [norm(o) for o in opts]
+    return (
+        len(opts) == CHOICES and len(set(keys)) == CHOICES and all(k in _COMBO_KEYS for k in keys)
+    )
+
+
 def place(opts: list[str], k: int, slot: int) -> tuple[list[str], int]:
     """정답(opts[k])을 모델이 둔 자리 대신 slot 번호에 따라 A~E에 고르게 놓습니다.
 
     보기가 5개보다 적으면 그 개수로 나눠 고르게 놓고, 실제로 놓인 자리를 돌려줍니다.
+    조합형 보기(ㄱ · ㄴ · ㄱ, ㄴ …)는 섞지 않고 COMBOS 순서로 둡니다: 묶음이 뒤섞이면 읽기 어렵고,
+    정답 자리는 코드가 고른 옳은 문장 묶음을 돌려 고르게 합니다(combo.truth_for).
     """
+    if is_combo(opts):
+        fixed = sorted(opts, key=lambda o: _COMBO_KEYS.index(norm(o)))
+        return fixed, fixed.index(opts[k])
     rest = [o for i, o in enumerate(opts) if i != k]
     target = slot % min(CHOICES, len(opts))
     return [*rest[:target], opts[k], *rest[target:]], target

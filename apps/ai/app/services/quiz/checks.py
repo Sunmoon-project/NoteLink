@@ -11,7 +11,9 @@ from typing import Literal, NotRequired, TypedDict
 
 from app.services.quiz.models import CHOICES, Draft, Question
 from app.services.quiz.text import (
+    BLANK,
     VALUE,
+    is_combo,
     norm,
     number_values,
     same_item,
@@ -21,8 +23,14 @@ from app.services.quiz.text import (
 )
 
 NEGATIVE = re.compile(r"아닌|않은|틀린|옳지\s?않|잘못된|거리가 먼")
-KO_TYPES = ("정의", "특징", "분류")  # 한국어 용어 과목 유형 (임상병리, 10/22)
+# 한국어 용어 과목 유형 (임상병리, 10/22). 부정설명 · 조합은 맞춤 퀴즈 안정적 모드(#268)
+KO_TYPES = ("정의", "특징", "분류", "부정설명", "조합")
+# 과장으로 틀리게 만든 설명: 노트를 몰라도 틀린 줄 보여 쉬움(#268 실험 2)
+OVERSTATED = re.compile(r"반드시|절대|모든|항상|오직|전혀|무조건")
+# 조합형 제시문: 줄마다 'ㄱ. …'(combo.py가 조립)
+_COMBO_LINES = re.compile(r"ㄱ\. [^\n]+\nㄴ\. [^\n]+\nㄷ\. [^\n]+")
 _KO = re.compile(r"[가-힣]{2,}")
+_PIECE = re.compile(r",\s+")  # 이어 붙인 보기의 조각 사이
 
 
 class Seen(TypedDict):
@@ -32,6 +40,22 @@ class Seen(TypedDict):
     passage: str  # norm(제시문)
     answer: NotRequired[str]  # norm(정답)
     q: NotRequired[Question | None]
+    sentences: NotRequired[list[str]]  # norm(설명 문장) (too_close)
+
+
+_COMBO_MARK = re.compile(r"^[ㄱㄴㄷ]\.\s*")
+
+
+def sentences_of(options: list[str] | None, passage: str | None) -> list[str]:
+    """설명 문장을 norm으로: 문장인 보기, 조합형이면 제시문의 ㄱ · ㄴ · ㄷ 문장.
+
+    낱말 · 용어 보기는 같은 노트의 문제끼리 겹치는 것이 보통이라 뺌. 조합형은 같은 설명이 보기가
+    아니라 제시문에 있어, 같은 내용의 특징 · 부정설명 문제와 겹쳐도 보이게 함(#268).
+    """
+    if options and is_combo(options):
+        lines = (passage or "").split("\n")
+        return [x for ln in lines if (x := norm(_COMBO_MARK.sub("", ln.strip())))]
+    return [norm(o) for o in options or [] if not short_answer(o) and norm(o)]
 
 
 def seen_question(q: Question) -> Seen:
@@ -39,14 +63,17 @@ def seen_question(q: Question) -> Seen:
         "all": norm(q["prompt"] + (q.get("passage") or "")),
         "passage": norm(q.get("passage")),
         "q": q,
+        "sentences": sentences_of(q.get("choices"), q.get("passage")),
     }
 
 
 def seen_draft(d: Draft) -> Seen:
+    """조합형의 정답(ㄱ, ㄴ)은 문장이 아니라 거꾸로 묻기(reversed_of) 비교에 넣지 않음."""
     return {
         "all": norm(d["stem"] + d["passage"]),
         "passage": norm(d["passage"]),
-        "answer": norm(d["answer"]),
+        "answer": "" if is_combo(d["options"]) else norm(d["answer"]),
+        "sentences": sentences_of(d["options"], d["passage"]),
     }
 
 
@@ -70,16 +97,54 @@ def too_close(d: Draft, seen: list[Seen]) -> bool:
     둘 다 제시문이 있으면 제시문끼리만 비교합니다. 문제 글은 tidy가 같은 문장으로 맞추기도 해서,
     문제 글까지 합쳐 비교하면 제시문이 짧은 다른 문제('쌓다' / '계약을 성공하다')도 같다고 봤습니다
     (로컬 DB 116문제에서 바뀐 판정은 이 1쌍, 10/27 측정).
+    문장 보기 셋 이상이 같은 문제도 거의 같음(#268): 특징 · 부정설명은 제시문이 용어 이름뿐이라,
+    개념 이름만 다른 같은 내용('액티브 인디케이터 제어' / 'ActivityIndicator와 서버 통신 제어')에서
+    옳은 설명 보기 넷이 똑같은 두 문제가 한 세트에 들어감(0928 학습 노트, 부정설명 5문제).
     """
     me = norm(d["stem"] + d["passage"])
     mp = norm(d["passage"])
+    mine = sentences_of(d["options"], d["passage"])
     for s in seen:
         if mp and s["passage"]:
             if difflib.SequenceMatcher(None, mp, s["passage"]).ratio() >= 0.85:
                 return True
         elif difflib.SequenceMatcher(None, me, s["all"]).ratio() >= 0.85:
             return True
+        if len(mine) >= SAME_SENTENCES and _shared(mine, s.get("sentences") or []):
+            return True
     return False
+
+
+SAME_SENTENCES = 3  # 이만큼 문장 보기가 같으면 거의 같은 문제(too_close)
+
+
+def _shared(mine: list[str], theirs: list[str]) -> bool:
+    """서로 다른 문장끼리 일대일로 SAME_SENTENCES쌍 이상 같음(가장 많이 짝지을 수 있는 수).
+
+    기존 문장 하나에 새 문장 여럿이 걸리면(온도만 다른 보기 셋이 기존 온도 설명 하나와) 한
+    쌍으로만 셉니다(Codex 리뷰 #288). 먼저 걸린 짝을 확정하면 짝을 바꿔 세 쌍이 되는 경우를
+    두 쌍으로 세어 보기 순서에 따라 결과가 달라져서, 짝을 바꿔 가며 늘리는 이분 매칭으로 셉니다
+    (Codex 재리뷰 #288). 보기는 5개뿐이라 짝 후보를 모두 봐도 됩니다.
+    """
+    if len(mine) < SAME_SENTENCES or len(theirs) < SAME_SENTENCES:
+        return False
+    like = [
+        [j for j, y in enumerate(theirs) if difflib.SequenceMatcher(None, x, y).ratio() >= 0.85]
+        for x in mine
+    ]
+    owner: dict[int, int] = {}  # 기존 문장 j → 짝지은 새 문장 i
+
+    def take(i: int, tried: set[int]) -> bool:
+        for j in like[i]:
+            if j in tried:
+                continue
+            tried.add(j)
+            if j not in owner or take(owner[j], tried):
+                owner[j] = i
+                return True
+        return False
+
+    return sum(take(i, set()) for i in range(len(mine))) >= SAME_SENTENCES
 
 
 def reversed_of(d: Draft, seen: list[Seen]) -> bool:
@@ -152,14 +217,35 @@ def form_giveaway(d: Draft) -> bool:
     return sum(form(o) == form(d["answer"]) for o in opts) < 2
 
 
+def _joined(i: int, opts: list[str], keys: list[tuple[str, tuple[Decimal, ...]]]) -> bool:
+    """보기 i가 다른 보기 셋 이상을 쉼표로 이어 붙인 것. keys는 보기마다 option_key.
+
+    쉼표 뒤에 띄어쓰기가 있을 때만 나눔(1,000 · 2,000은 한 조각). 쉼표로 나뉘는 보기가 둘
+    이상이거나 조각이 모두 한 글자면 조합 문제(ㄱ, ㄴ · I, II, III · 산소, 질소, 수소)라 뺌."""
+    if sum(len(_PIECE.split(o)) > 1 for o in opts) > 1:
+        return False
+    parts = _PIECE.split(opts[i])
+    # 조각이 모두 한 글자면 조합 보기가 하나여도 문제 모양(ㄱ, ㄴ, ㄷ. · Codex #136)
+    if len(parts) < 3 or all(len(norm(x)) <= 1 for x in parts):
+        return False
+    others = {k for j, k in enumerate(keys) if j != i}
+    return sum(option_key(x.strip()) in others for x in parts) >= 3
+
+
 def code_check(
     d: Draft, t: Target, page_text: str, ty: str, seen: list[Seen]
 ) -> tuple[list[str], int | None]:
     """(탈락 이유, 정답 보기 위치). 이유가 비어 있으면 통과."""
     why: list[str] = []
     opts = d["options"]
-    if len(opts) != CHOICES or len({option_key(o) for o in opts}) != CHOICES:
+    keys = [option_key(o) for o in opts]
+    if len(opts) != CHOICES or len(set(keys)) != CHOICES:
         why.append(f"보기 {CHOICES}개가 아니거나 겹침")
+    # 다섯째 보기가 나머지를 이어 붙인 'TXY 다이어그램, 에탄올 상태 변화, …'(화공양론, 11/06),
+    # 'stacked, fastened, extended, docked'(토익)가 모든 검사를 통과함. 조각이 다른 보기와
+    # 똑같을 때만 봄: 글자가 안에 들어 있기만 한 H2O · H2O2, 15 · 1.5, ㄱ · ㄱ, ㄴ은 좋은 보기
+    if any(_joined(i, opts, keys) for i in range(len(opts))):
+        why.append("다른 보기를 이어 붙인 보기")
     parsed = [number_values(o) for o in opts]
     if any(_same_parsed(a, b) for i, a in enumerate(parsed) for b in parsed[i + 1 :]):
         why.append("값이 같은 숫자 보기")
@@ -170,10 +256,18 @@ def code_check(
     p = d["passage"].strip()
     if ty == "빈칸" and "____" not in p:
         why.append("빈칸 문장 없음")
+    # 정답 하나는 빈칸 하나를 채움: '방법은 ____, ____, ____ 등이 있습니다'에 정답 도말법이
+    # 모든 검사를 통과함(기생충, 11/01). 코드의 빈 ()·[](useState() · () => · [])는 text.BLANK가
+    # 빈칸으로 보지 않아 유형과 상관없이 봄(/code-review #94)
+    if len(BLANK.findall(p)) > 1:
+        why.append("빈칸이 여러 개")
     # 요청한 유형이 아니라 모양으로 판단: '어휘' 초안이 빈칸 문장으로 오기도 함
     # ('The rope was ____ to the post'에 fastened와 -ing 낱말 넷, 10/26)
     if "____" in p and form_giveaway(d):
         why.append("형태만 보고 정답이 보임(오답 보기를 정답과 같은 형태로)")
+    # 분류 문제를 끝 글자로 가리는 검사는 두지 않음: 기생충에서 본 이름(편모충류 · 대변 검사)에
+    # 맞춘 규칙이라 '표고버섯 → 균류'(동물 · 식물 · 원생생물 · 원핵생물)도 버렸음(Codex 재리뷰 #94).
+    # 정답만 분류 이름인 보기는 과목과 상관없이 품질 검사에서 볼 일(퀴즈 속도 개선 작업)
     # 토익 유형만: 한국어 문장의 빈칸은 정상적인 정의 문제 (React Native 강의, 10/25)
     if "____" in p and ty not in KO_TYPES and _KO.search(p):
         why.append("빈칸 문장에 한국어 뜻 노출")
@@ -185,12 +279,25 @@ def code_check(
         why.append("물을 뜻 없음")
     if ty == "정의" and len(re.findall(r"[가-힣]", p)) < 10:
         why.append("설명 문장 없음")
-    if ty in ("특징", "분류") and not (1 <= len(p) <= 40):
+    # passage가 '____'뿐이어도 용어가 아님: 미생 초안 9개가 지식 검사에 '용어: ____'로 감(10/29)
+    if ty in ("특징", "분류", "부정설명") and not (1 <= len(BLANK.sub("", p).strip()) <= 40):
         why.append("물을 용어 없음")
     if ty == "정의" and p and norm(d["answer"]) in norm(p):
         why.append("설명에 정답 용어 노출")
-    if NEGATIVE.search(d["stem"]):
+    # 부정 질문은 부정설명 유형만(#268): 그 유형은 거꾸로 부정 질문이어야 함
+    if ty == "부정설명":
+        if not NEGATIVE.search(d["stem"]):
+            why.append("부정 질문이 아님")
+        others = [o for o, k in zip(opts, keys, strict=True) if k != answer_key]
+        if OVERSTATED.search(d["answer"]) and not any(OVERSTATED.search(o) for o in others):
+            why.append("과장으로 틀린 티가 나는 정답('반드시 · 모든' 없이 한 곳만 바꾼다)")
+    elif NEGATIVE.search(d["stem"]):
         why.append("부정 질문")
+    if ty == "조합":
+        if not is_combo(opts):
+            why.append("조합 보기 모양이 아님")
+        if not _COMBO_LINES.fullmatch(p):
+            why.append("ㄱ · ㄴ · ㄷ 문장 없음")
     if not _KO.search(d["stem"]):
         why.append("문제 글이 한국어가 아님")
     # 특징 · 분류도: '____는 산소가 없는 환경에서 살아가는 세균'에
@@ -224,7 +331,8 @@ def code_check(
     if (t.reason == "wrong" or t.keep_answer) and short_answer(t.answer) and not same:
         kind = "틀린" if t.reason == "wrong" else "원래"
         why.append(f"{kind} 낱말('{t.answer}')을 다시 묻지 않음")
-    if any(same_item(d["answer"], u) for u in t.used_answers):
+    # 조합형 정답(ㄱ, ㄴ)은 묶음 이름이라 세트 안에서 겹쳐도 됨
+    if ty != "조합" and any(same_item(d["answer"], u) for u in t.used_answers):
         why.append("세트 안에서 정답이 겹침")
     if too_close(d, seen):
         why.append("이미 있는 문제와 거의 같음")

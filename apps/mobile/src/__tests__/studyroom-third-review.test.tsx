@@ -5,8 +5,8 @@ import { Pressable, Text, View } from 'react-native';
 import * as Calendar from 'expo-calendar';
 import { RoomScreen } from '../features/studyroom/room';
 import { ScheduleScreen } from '../features/studyroom/tools';
-import { mockApi as realMockApi } from '../lib/mock/api';
-import { useMockFlags } from '../lib/mock/flags';
+import { mockApi as realMockApi } from './fixtures/api';
+import { useMockFlags } from './fixtures/flags';
 import { useAuth } from '../stores/auth';
 import { useNet } from '../stores/net';
 import { renderScreen, setParams } from '../test-utils';
@@ -23,7 +23,7 @@ jest.mock('../lib/api', () => ({
   },
   ApiError: class ApiError extends Error {},
 }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('../lib/livekit', () => ({
   useLiveRoom: () => ({
     connected: false,
@@ -46,7 +46,7 @@ jest.mock('../lib/socket', () => ({
       return () => mockHandlers.delete(event);
     },
   },
-  mockServer: { push: jest.fn(), onClient: undefined },
+  localSocket: { push: jest.fn(), onClient: undefined },
 }));
 jest.mock('../hooks', () => ({ ...jest.requireActual('../hooks'), useNow: () => mockNow }));
 jest.mock('expo-secure-store', () => ({

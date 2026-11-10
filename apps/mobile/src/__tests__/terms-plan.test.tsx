@@ -4,7 +4,7 @@ import { renderScreen } from '../test-utils';
 import { TermsScreen } from '../features/auth/auth';
 import { canChangePlan } from '../features/profile/settings';
 
-jest.mock('../lib/env', () => ({ env: { useMock: false, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: false, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),

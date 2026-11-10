@@ -3,7 +3,7 @@ import { NoteTitleScreen } from '../features/content/notes';
 import { api } from '../lib/api';
 import { renderScreen, setParams } from '../test-utils';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(),

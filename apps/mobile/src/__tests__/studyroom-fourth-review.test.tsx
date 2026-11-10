@@ -8,7 +8,7 @@ import { RoomScreen } from '../features/studyroom/room';
 import { TimerScreen } from '../features/studyroom/tools';
 import { useAuth } from '../stores/auth';
 import { useNet } from '../stores/net';
-import { useMockFlags } from '../lib/mock/flags';
+import { useMockFlags } from './fixtures/flags';
 import { renderScreen, setParams } from '../test-utils';
 
 const mockApi = {
@@ -22,7 +22,7 @@ jest.mock('../lib/api', () => ({
   },
   ApiError: class ApiError extends Error {},
 }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('../lib/livekit', () => ({
   useLiveRoom: jest.fn(() => ({
     connected: false,

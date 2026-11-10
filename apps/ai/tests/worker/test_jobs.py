@@ -83,6 +83,47 @@ def test_no_types_or_no_jobs_claims_nothing(col: Any, clock: Clock) -> None:
     assert store(col, clock).claim([]) is None
 
 
+# ---------- 미리 해 두는 작업은 따로 도는 반복이(#138) ----------
+
+WAITING = ["quiz_generate", "similar_quiz"]
+PREGEN = ["quiz_pregen"]
+
+
+def test_each_lane_takes_only_its_own_types(col: Any, clock: Clock) -> None:
+    # 먼저 들어온 미리 만들기는 사용자 작업 반복이 가져가지 않음: 사용자 작업은 그대로 먼저
+    add(col, "pregen", "quiz_pregen", age_sec=99)
+    add(col, "asked", "similar_quiz", age_sec=1)
+    asked = store(col, clock).claim(WAITING)
+    assert asked is not None and asked.id == "asked"
+    assert store(col, clock).claim(WAITING) is None
+    pregen = store(col, clock, "w1:bg").claim(PREGEN)
+    assert pregen is not None and (pregen.id, pregen.type) == ("pregen", "quiz_pregen")
+
+
+def test_pregens_are_taken_oldest_first(col: Any, clock: Clock) -> None:
+    add(col, "new", "quiz_pregen", age_sec=1)
+    add(col, "old", "quiz_pregen", age_sec=9)
+    job = store(col, clock).claim(PREGEN)
+    assert job is not None and job.id == "old"
+
+
+def test_a_pregen_stalled_up_to_the_limit_fails_in_its_own_lane(col: Any, clock: Clock) -> None:
+    # 멈춘 작업 정리는 반복마다 자기 종류를 봄(가져가기 전에 한 번)
+    add(
+        col,
+        "j1",
+        "quiz_pregen",
+        status="running",
+        attempts=3,
+        lockedBy="w0",
+        lockedUntil=T0 - timedelta(1),
+    )
+    assert store(col, clock).claim(WAITING) is None
+    assert col.find_one({"_id": "j1"})["status"] == "running"  # 사용자 작업 반복은 손대지 않음
+    assert store(col, clock, "w1:bg").claim(PREGEN) is None
+    assert col.find_one({"_id": "j1"})["status"] == "failed"
+
+
 def test_stalled_job_is_taken_again_after_its_lock_ends(col: Any, clock: Clock) -> None:
     add(col, "j1")
     store(col, clock, "w1").claim(["quiz_generate"])  # w1이 멈춤
@@ -215,6 +256,42 @@ def test_worker_that_lost_its_lock_cannot_write(col: Any, clock: Clock) -> None:
     assert col.find_one({"_id": "j1"})["lockedBy"] == "w2"
 
 
+def test_holds_is_true_only_while_the_job_is_running_with_my_lock(col: Any, clock: Clock) -> None:
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    assert s.holds(job)
+    assert not store(col, clock, "w2").holds(job)  # 다른 처리기
+    col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})  # 앱에서 취소
+    assert not s.holds(job)
+
+
+def test_release_unlocks_only_my_canceled_job(col: Any, clock: Clock) -> None:
+    # 처리 함수가 끝난 뒤 잠금을 풀어 NestJS '다시 시도'가 잠금이 끝나기를 기다리지 않게(#263)
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    assert not s.release(job)  # 처리 중(취소 안 됨)이면 그대로
+    assert col.find_one({"_id": "j1"})["lockedBy"] == "w1"
+    col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})
+    assert not store(col, clock, "w2").release(job)  # 내 잠금이 아니면 그대로
+    assert s.release(job)
+    doc = col.find_one({"_id": "j1"})
+    assert (doc["status"], doc["lockedBy"], doc["lockedUntil"]) == ("canceled", None, None)
+
+
+def test_release_leaves_a_job_put_back_by_nestjs(col: Any, clock: Clock) -> None:
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    col.update_one({"_id": "j1"}, {"$set": {"status": "queued", "lockedUntil": None}})
+    assert not s.release(job)
+    assert col.find_one({"_id": "j1"})["status"] == "queued"
+
+
 # ---------- 실패 · 다시 시도 ----------
 
 
@@ -251,3 +328,122 @@ def test_fail_without_retry_ends_at_once_keeping_progress(col: Any, clock: Clock
     assert s.fail(job, "입력 오류: questions 없음", retry=False) == "failed"
     doc = col.find_one({"_id": "j1"})
     assert (doc["status"], doc["progress"], doc["attempts"]) == ("failed", 60, 1)
+
+
+# ---------- 처리기 내부 저장(checkpoint) ----------
+
+
+def test_jobs_have_no_checkpoint_until_one_is_saved(col: Any, clock: Clock) -> None:
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None and job.checkpoint is None
+    s.succeed(job, {"x": 1})
+    assert "checkpoint" not in col.find_one({"_id": "j1"})
+
+
+def test_saved_checkpoint_extends_lock_and_comes_back_on_the_next_claim(
+    col: Any, clock: Clock
+) -> None:
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    clock.tick(50)
+    s.save_checkpoint(job, {"durationMs": 1})
+    doc = col.find_one({"_id": "j1"})
+    assert doc["checkpoint"] == {"durationMs": 1}
+    assert doc["lockedUntil"] == T0 + timedelta(seconds=110)
+    assert s.fail(job, "AI 응답을 받지 못함(HTTP 503)", retry=True) == "queued"
+    clock.tick(30)
+    again = s.claim(["quiz_generate"])
+    assert again is not None and again.checkpoint == {"durationMs": 1}
+
+
+def test_success_removes_the_checkpoint(col: Any, clock: Clock) -> None:
+    add(col, "j1", checkpoint={"durationMs": 1})
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    s.succeed(job, {"x": 1})
+    assert "checkpoint" not in col.find_one({"_id": "j1"})
+
+
+@pytest.mark.parametrize("retry", [True, False])
+def test_failure_keeps_the_checkpoint(col: Any, clock: Clock, retry: bool) -> None:
+    add(col, "j1", checkpoint={"durationMs": 1})
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    s.fail(job, "오류", retry=retry)
+    assert col.find_one({"_id": "j1"})["checkpoint"] == {"durationMs": 1}
+
+
+def test_giving_up_a_stalled_job_keeps_the_checkpoint(col: Any, clock: Clock) -> None:
+    add(
+        col,
+        "j1",
+        status="running",
+        attempts=3,
+        lockedBy="w0",
+        lockedUntil=T0 - timedelta(1),
+        checkpoint={"durationMs": 1},
+    )
+    assert store(col, clock).claim(["quiz_generate"]) is None
+    doc = col.find_one({"_id": "j1"})
+    assert (doc["status"], doc["checkpoint"]) == ("failed", {"durationMs": 1})
+
+
+def test_canceled_job_gets_no_checkpoint(col: Any, clock: Clock) -> None:
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})
+    with pytest.raises(JobGoneError):
+        s.save_checkpoint(job, {"durationMs": 1})
+    assert "checkpoint" not in col.find_one({"_id": "j1"})
+
+
+def test_worker_that_lost_its_lock_cannot_save_a_checkpoint(col: Any, clock: Clock) -> None:
+    add(col, "j1")
+    slow = store(col, clock, "w1")
+    job = slow.claim(["quiz_generate"])
+    assert job is not None
+    clock.tick(61)
+    store(col, clock, "w2").claim(["quiz_generate"])
+    with pytest.raises(JobGoneError):
+        slow.save_checkpoint(job, {"durationMs": 1})
+    assert "checkpoint" not in col.find_one({"_id": "j1"})
+
+
+def test_the_user_lane_also_takes_a_pregen_a_user_took_over(col: Any, clock: Clock) -> None:
+    # 다른 미리 만들기가 처리 중이어도 기다리지 않게: 이어받은(awaited) 미리 만들기는 사용자 작업
+    # 반복도 가져감. 이어받지 않은 것은 가져가지 않음(#138)
+    add(col, "plain", "quiz_pregen", age_sec=99)
+    add(col, "taken", "quiz_pregen", age_sec=1, awaited=True)
+    s = store(col, clock)
+    job = s.claim(WAITING, PREGEN)
+    assert job is not None and (job.id, job.awaited) == ("taken", True)
+    assert s.claim(WAITING, PREGEN) is None
+    assert col.find_one({"_id": "plain"})["status"] == "queued"
+
+
+def test_a_user_job_and_a_taken_over_pregen_go_in_order(col: Any, clock: Clock) -> None:
+    add(col, "taken", "quiz_pregen", age_sec=9, awaited=True)
+    add(col, "asked", "similar_quiz", age_sec=1)
+    s = store(col, clock)
+    assert [getattr(s.claim(WAITING, PREGEN), "id", None) for _ in range(3)] == [
+        "taken",
+        "asked",
+        None,
+    ]
+
+
+def test_awaited_reads_whether_a_user_took_the_job_over(col: Any, clock: Clock) -> None:
+    add(col, "j1", "quiz_pregen")
+    s = store(col, clock, "w1:bg")
+    job = s.claim(PREGEN)
+    assert job is not None and job.awaited is False and s.awaited(job) is False
+    col.update_one({"_id": "j1"}, {"$set": {"awaited": True}})
+    assert s.awaited(job) is True

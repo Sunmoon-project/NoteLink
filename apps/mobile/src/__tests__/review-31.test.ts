@@ -24,7 +24,7 @@ jest.mock('../lib/api', () => ({
     return mockApi;
   },
 }));
-jest.mock('../lib/env', () => ({ env: { apiUrl: 'http://api', useMock: false } }));
+jest.mock('../lib/env', () => ({ env: { apiUrl: 'http://api', localData: false } }));
 jest.mock('expo-file-system', () => ({
   UploadType: { BINARY_CONTENT: 0 },
   File: jest.fn().mockImplementation(() => ({

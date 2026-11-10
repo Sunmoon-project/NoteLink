@@ -259,11 +259,13 @@ export const AiJobType = z.enum([
   'recording_summary',
   'document_summary',
   'quiz_generate',
+  'quiz_pregen',
   'similar_quiz',
   'today_review',
   'explain',
   'avatar_profile',
   'image_check',
+  'note_ask',
 ]);
 export const AiJobStatus = z.enum(['queued', 'running', 'succeeded', 'failed', 'canceled']);
 export const AiJob = z.object({
@@ -275,10 +277,27 @@ export const AiJob = z.object({
   progress: z.number(),
   attempts: z.number(),
   step: z.string().optional(),
+  // 미리 해 두는 작업(quiz_pregen)을 사용자가 이어받으면 NestJS가 true로(처리기가 우선 처리)
+  awaited: z.boolean().optional(),
   result: z.record(z.string(), z.unknown()).nullable(),
   error: z.string().nullable(),
   createdAt: date,
   updatedAt: date,
+});
+
+/** 아바타 노트 묻고 답하기 — POST /materials/:id/ask 본문. history는 앞선 대화(오래된 순) */
+export const NoteAskTurn = z.object({
+  role: z.enum(['user', 'avatar']),
+  text: z.string().max(600),
+});
+export const NoteAskBody = z.object({
+  question: z.string().trim().min(1).max(500),
+  history: z.array(NoteAskTurn).max(20).default([]),
+});
+/** note_ask 작업이 끝나면 AiJob.result에 담긴다 */
+export const NoteAskResult = z.object({
+  answer: z.string(),
+  refs: z.array(z.string()),
 });
 
 /* ── 4. 학습 기록 · 목표 ────────────────────────── */
@@ -572,6 +591,9 @@ export type Material = z.infer<typeof Material>;
 export type Recording = z.infer<typeof Recording>;
 export type Slide = z.infer<typeof Slide>;
 export type Question = z.infer<typeof Question>;
+export type NoteAskTurn = z.infer<typeof NoteAskTurn>;
+export type NoteAskBody = z.input<typeof NoteAskBody>;
+export type NoteAskResult = z.infer<typeof NoteAskResult>;
 export type QuizSet = z.infer<typeof QuizSet>;
 export type QuizAttempt = z.infer<typeof QuizAttempt>;
 export type Flashcard = z.infer<typeof Flashcard>;

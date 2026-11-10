@@ -18,6 +18,10 @@ class EmbedError(Exception):
     """다시 보내도 임베딩을 받지 못함."""
 
 
+class EmbedUnavailableError(EmbedError):
+    """일시 오류가 다시 보내도 풀리지 않음."""
+
+
 class Voyage:
     def __init__(
         self,
@@ -64,7 +68,7 @@ class Voyage:
             if res.status_code != 200:
                 raise EmbedError(f"HTTP {res.status_code}")  # 키 · 입력 오류는 다시 보내도 같음
             return _vectors(res, len(texts))
-        raise EmbedError(err)
+        raise EmbedUnavailableError(err)
 
 
 def _vectors(res: httpx2.Response, n: int) -> list[list[float]]:

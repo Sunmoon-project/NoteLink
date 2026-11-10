@@ -47,7 +47,7 @@ jest.mock('../lib/upload', () => ({
 }));
 jest.mock('../lib/image-edit', () => ({ editPhoto: (...args: unknown[]) => mockEdit(...args) }));
 jest.mock('../stores/toast', () => ({ toast: (...args: unknown[]) => mockToast(...args) }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'https://api.example' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'https://api.example' } }));
 jest.mock('../lib/push', () => ({ notifyLocal: jest.fn() }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),

@@ -30,7 +30,7 @@ jest.mock('../lib/api', () => ({
   },
   ApiError: class ApiError extends Error {},
 }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(),
@@ -166,19 +166,19 @@ it('보관함 선택 모드에서 실제 선택 항목만 삭제하고 실패하
   mockApi.quiz.deleteFromBox.mockRejectedValueOnce(new Error('삭제 실패'));
   const qc = client();
   await renderScreen(<QuizBoxScreen />, qc);
-  await screen.findByText(`Q. ${question.prompt}`);
+  await screen.findByText(question.prompt);
   await fireEvent.press(screen.getByText('선택'));
   expect(screen.getByRole('button', { name: '선택 삭제' })).toBeDisabled();
   await fireEvent.press(screen.getByLabelText(`보관함 선택 ${question._id}`));
   await fireEvent.press(screen.getByRole('button', { name: '선택 삭제' }));
   await waitFor(() => expect(useToast.getState().msg).toContain('삭제하지 못'));
-  expect(screen.getByText(`Q. ${question.prompt}`)).toBeTruthy();
+  expect(screen.getByText(question.prompt)).toBeTruthy();
   mockApi.quiz.box.mockResolvedValueOnce([]);
   await fireEvent.press(screen.getByRole('button', { name: '선택 삭제' }));
   await waitFor(() =>
     expect(mockApi.quiz.deleteFromBox).toHaveBeenNthCalledWith(2, [question._id]),
   );
-  await waitFor(() => expect(screen.queryByText(`Q. ${question.prompt}`)).toBeNull());
+  await waitFor(() => expect(screen.queryByText(question.prompt)).toBeNull());
 });
 
 it.each([
@@ -195,7 +195,8 @@ it.each([
     await renderScreen(<Screen />, client());
     expect(await screen.findByText(message)).toBeTruthy();
     await fireEvent.press(screen.getByRole('button', { name: '다시 시도' }));
-    expect(await screen.findByText(`Q. ${question.prompt}`)).toBeTruthy();
+    // 보관함은 문제만, 풀이 결과는 'Q. 문제'로 보인다
+    expect(await screen.findByText(new RegExp(question.prompt))).toBeTruthy();
   },
 );
 

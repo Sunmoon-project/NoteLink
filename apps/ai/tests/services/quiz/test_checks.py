@@ -13,6 +13,7 @@ from app.services.quiz.checks import (
     too_close,
 )
 from app.services.quiz.models import Draft
+from app.services.quiz.text import tidy
 
 PAGE = "쌓다 = stack\nfasten - 고정하다\nThe rope was fastened to the post.\norganize = arrange"
 NEW = Target("new")
@@ -275,3 +276,269 @@ def test_option_key_keeps_sign_and_decimal_but_ignores_spacing() -> None:
         )[1]
         == 0
     )
+
+
+def test_a_bare_blank_is_no_term() -> None:
+    assert "물을 용어 없음" in why(draft(passage="____"), "특징")  # 미생 초안 9개(10/29)
+
+
+def test_one_answer_fills_one_blank() -> None:
+    d = draft(passage="The boxes are ____ and ____ in the corner.")
+    assert "빈칸이 여러 개" in why(d)
+    assert "빈칸이 여러 개" not in why(draft())
+
+
+def test_code_parentheses_are_not_several_blanks() -> None:
+    d = draft(passage="useState()와 useEffect()를 함께 쓴다", answer="stacked")
+    assert "빈칸이 여러 개" not in why(tidy(d), "규칙")
+
+
+def test_class_questions_are_not_judged_by_the_last_syllable() -> None:
+    # 끝 글자로 분류 이름을 가리던 검사는 기생충에 맞춘 규칙이라 뺌(Codex 재리뷰 #94)
+    for passage, answer, wrong in [
+        ("표고버섯", "균류", ["동물", "식물", "원생생물", "원핵생물"]),
+        ("포도당", "탄수화물", ["지방", "단백질", "비타민", "무기질"]),
+    ]:
+        d = draft(
+            stem="다음 용어가 속하는 분류는?",
+            passage=passage,
+            answer=answer,
+            options=[answer, *wrong],
+        )
+        assert not any("분류 이름" in w for w in why(d, "분류"))
+
+
+def test_code_calls_and_indexes_are_not_blanks() -> None:
+    # 코드의 ()·[]를 빈칸으로 바꾸면 정의 · 빈칸 문제가 '빈칸이 여러 개'로 버려짐(/code-review #94)
+    for code in [
+        "useState()로 만든 값을 useEffect()에서 읽고 arr[]와 f(x)[]도 쓴다",
+        "useEffect(() => {}, [])는 마운트할 때 한 번 실행되고 useState([])는 빈 목록",
+        "const list = []로 시작해 () => list.length를 넘긴다",
+    ]:
+        d = tidy(draft(passage=code, answer="stacked"))
+        assert d["passage"] == code
+        for ty in ("정의", "빈칸", "어휘"):
+            assert "빈칸이 여러 개" not in why(d, ty)
+
+
+def test_spaced_brackets_are_blanks_wherever_they_are() -> None:
+    # 숫자 · 로마자 바로 뒤의 '( )'도 빈칸이고, 이어 쓴 빈칸 둘은 둘로 셈
+    assert tidy(draft(passage="정상 혈당은 70~100( )이다, Na[ ] 이온"))["passage"] == (
+        "정상 혈당은 70~100____이다, Na____ 이온"
+    )
+    # 붙어 있던 빈칸 둘은 tidy 뒤에도 둘(검사는 tidy 뒤에 돎)
+    d = tidy(draft(passage="( )( )는 짝을 이룬다"))
+    assert d["passage"] == "____ ____는 짝을 이룬다"
+    assert "빈칸이 여러 개" in why(d, "정의")
+    # 빈 ()·[]는 어디서든 코드로 봄(생성 안내는 빈칸을 ____로 쓰게 함)
+    for code in ["함수는 ()를 붙여 부르고 return ()로 끝낸다", "x = []와 f ()"]:
+        assert tidy(draft(passage=code))["passage"] == code
+
+
+def test_a_rule_question_with_two_blanks_is_caught() -> None:
+    # 규칙 유형을 빼고 보던 것은 코드의 ()가 빈칸으로 바뀌던 때문이라 이제는 모든 유형
+    # (/code-review #94)
+    assert "빈칸이 여러 개" in why(draft(passage="The boxes are ____ and ____"), "규칙")
+
+
+def test_an_option_joining_other_options_fails() -> None:
+    joined = draft(
+        stem="다음 설명이 나타내는 용어는 무엇입니까?",
+        passage="일정 압력 조건에서 온도의 변화에 따른 binary system을 나타내는 그래프입니다.",
+        options=[
+            "TXY 다이어그램",
+            "에탄올 상태 변화",
+            "압력과 끓는점 관계",
+            "물과 에탄올 예시",
+            "TXY 다이어그램, 에탄올 상태 변화, 압력과 끓는점 관계, 물과 에탄올 예시, 기체 분율",
+        ],
+        answer="TXY 다이어그램",
+    )
+    assert "다른 보기를 이어 붙인 보기" in why(joined, "정의")
+    english = draft(
+        options=["stacked", "extended", "fastened", "docked", "stacked, fastened, extended, docked"]
+    )
+    assert "다른 보기를 이어 붙인 보기" in why(english)
+    numbers = draft(options=["1,000", "2,000", "3,000", "4,000", "1,000, 2,000, 3,000"])
+    assert "다른 보기를 이어 붙인 보기" in why(numbers)  # 천 단위 쉼표는 나누지 않음
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["분율", "몰 분율", "질량 분율", "부피 분율", "기상 조성"],
+        ["deliver", "delivering", "delivered", "delivery", "deliverable"],
+        ["H2O", "H2O2 (과산화수소)", "CO2 (이산화탄소)", "NH3", "CH4"],
+        ["15", "1.5 (반감기)", "150", "10", "1,000"],
+        ["ㄱ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄴ, ㄷ", "ㄱ, ㄴ, ㄷ"],
+        ["ㄱ", "ㄴ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄴ, ㄷ"],
+        ["ㄱ", "ㄴ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄴ, ㄷ."],  # 문장부호가 붙어도 조합 (Codex #136)
+        ["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㄱ, ㄴ, ㄷ"],  # 조합 보기가 하나뿐 (Codex #136 3차)
+        ["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㄱ, ㄴ, ㄷ."],
+        ["I", "II", "III", "I, II", "I, II, III"],  # 여러 글자 조합 (/code-review #136)
+        ["산소", "질소", "수소", "산소, 질소", "산소, 질소, 수소"],
+        ["물", "물질의 상태 변화를 나타낸다", "기체", "액체", "고체"],
+        ["map", "flatMap()", "filter", "reduce", "forEach"],
+        ["의사의 지시사항을 확인한다", "혈압을 잰다", "체온을 잰다", "맥박을 잰다", "호흡을 센다"],
+    ],
+)
+def test_options_that_only_contain_other_options_pass(options: list[str]) -> None:
+    d = draft(options=options, answer=options[0])
+    assert "다른 보기를 이어 붙인 보기" not in why(d, "특징")
+
+
+# ---------- 부정설명 · 조합 (#268) ----------
+
+KO_PAGE = "1. 이질 아메바\n- 영양형: 위족으로 운동하고 적혈구를 먹는다\n- 포낭형: 4핵, 인체 감염형"
+
+
+def negative(**extra: object) -> Draft:
+    d: Draft = {
+        "stem": "다음 중 이질 아메바에 대한 설명으로 옳지 않은 것은?",
+        "passage": "이질 아메바",
+        "options": [
+            "포낭형은 8핵이다",
+            "위족으로 운동한다",
+            "적혈구를 먹는다",
+            "포낭형이 인체 감염형이다",
+            "영양형과 포낭형이 있다",
+        ],
+        "answer": "포낭형은 8핵이다",
+    }
+    d.update(extra)  # type: ignore[typeddict-item]
+    return d
+
+
+def ko_why(d: Draft, ty: str, t: Target = NEW) -> list[str]:
+    return code_check(d, t, KO_PAGE, ty, [])[0]
+
+
+def test_a_negative_question_is_asked_only_as_its_own_type() -> None:
+    assert ko_why(negative(), "부정설명") == []
+    assert "부정 질문" in ko_why(negative(), "특징")
+    positive = negative(stem="다음 중 이질 아메바에 대한 설명으로 옳은 것은?")
+    assert "부정 질문이 아님" in ko_why(positive, "부정설명")
+
+
+def test_a_negative_question_needs_the_term() -> None:
+    assert "물을 용어 없음" in ko_why(negative(passage=""), "부정설명")
+
+
+def test_an_overstated_wrong_statement_is_rejected() -> None:
+    d = negative(answer="모든 원충은 포낭형이 8핵이다")
+    d["options"][0] = d["answer"]
+    assert any(w.startswith("과장으로 틀린 티") for w in ko_why(d, "부정설명"))
+    # 옳은 보기에도 같은 말이 있으면 티가 나지 않음
+    d["options"][1] = "모든 영양형은 위족으로 운동한다"
+    assert not any(w.startswith("과장으로 틀린 티") for w in ko_why(d, "부정설명"))
+
+
+def combo_draft(**extra: object) -> Draft:
+    d: Draft = {
+        "stem": "다음 중 이질 아메바에 대한 설명으로 옳은 것을 모두 고른 것은?",
+        "passage": "ㄱ. 위족으로 운동한다.\nㄴ. 포낭형은 8핵이다.\nㄷ. 적혈구를 먹는다.",
+        "options": ["ㄱ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄱ, ㄴ, ㄷ"],
+        "answer": "ㄱ, ㄷ",
+    }
+    d.update(extra)  # type: ignore[typeddict-item]
+    return d
+
+
+def test_a_combination_answer_may_repeat_in_the_set_and_is_not_a_note_word() -> None:
+    t = Target("new", used_answers=["ㄱ, ㄷ", "ㄱ"])
+    assert code_check(combo_draft(), t, KO_PAGE, "조합", []) == ([], 3)
+
+
+def test_a_combination_needs_its_options_and_three_lines() -> None:
+    bad = combo_draft(options=["ㄱ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄷ", "이질 아메바"])
+    assert "조합 보기 모양이 아님" in ko_why(bad, "조합")
+    one_line = combo_draft(passage="ㄱ. 위족으로 운동한다. ㄴ. 8핵이다. ㄷ. 적혈구를 먹는다.")
+    assert "ㄱ · ㄴ · ㄷ 문장 없음" in ko_why(one_line, "조합")
+
+
+def test_a_combination_answer_is_not_compared_as_a_reversed_question() -> None:
+    assert seen_draft(combo_draft())["answer"] == ""
+    assert seen_draft(draft())["answer"] == "stacked"
+
+
+def test_three_shared_sentence_options_are_too_close() -> None:
+    # 개념 이름만 다르고 옳은 설명 보기 넷이 같은 두 부정설명(0928 학습 노트 실행)
+    first = negative(passage="액티브 인디케이터 제어")
+    again = negative(passage="ActivityIndicator와 서버 통신 제어")
+    assert too_close(again, [seen_draft(first)])
+    stored = seen_question(
+        {"id": "q1", "order": 1, "prompt": "?", "choices": first["options"], "answer": "x"}
+    )
+    assert too_close(again, [stored])
+    # 둘만 같으면 다른 문제
+    two = negative(
+        passage="ActivityIndicator", options=[*first["options"][:2], "가다", "나다", "다다"]
+    )
+    assert not too_close(two, [seen_draft(first)])
+
+
+def test_shared_term_or_combination_options_are_not_too_close() -> None:
+    # 같은 노트의 용어 보기 · 조합 보기는 겹치는 것이 보통
+    a = draft(passage="위족으로 운동하고 적혈구를 먹는 원충", options=["이질 아메바", "대장 아메바",
+              "람블편모충", "질편모충", "말라리아"], answer="이질 아메바")  # fmt: skip
+    b = draft(passage="포낭형의 핵이 8개인 원충", options=a["options"], answer="대장 아메바")
+    assert not too_close(b, [seen_draft(a)])
+    other = combo_draft(passage="ㄱ. 포낭형이 있다.\nㄴ. 섬모가 있다.\nㄷ. 원충이다.")
+    assert not too_close(other, [seen_draft(combo_draft())])
+
+
+def test_a_combination_shares_its_statements_with_sentence_options() -> None:
+    # 조합형 설명은 제시문에 있음: 같은 설명을 보기로 쓴 특징 · 부정설명과 겹침
+    c = combo_draft()
+    same = negative(
+        options=["위족으로 운동한다.", "포낭형은 8핵이다.", "적혈구를 먹는다.", "원충이다", "가다"]
+    )
+    assert too_close(same, [seen_draft(c)])
+    assert too_close(c, [seen_draft(same)])
+
+
+def test_many_options_like_one_sentence_count_once() -> None:
+    # 온도만 다른 새 보기 셋이 기존 온도 설명 하나에 모두 걸려도 한 쌍(Codex 리뷰 #288)
+    old = negative(
+        passage="황색포도알균",
+        options=[
+            "37℃에서 24시간 배양한다",
+            "혈액 한천에서 자란다",
+            "그람 양성이다",
+            "가다",
+            "나다",
+        ],
+    )
+    new = negative(
+        passage="대장균",
+        options=[
+            "35℃에서 24시간 배양한다",
+            "36℃에서 24시간 배양한다",
+            "38℃에서 24시간 배양한다",
+            "포자를 만든다",
+            "운동성이 있다",
+        ],
+    )
+    assert not too_close(new, [seen_draft(old)])
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_sentence_pairs_are_counted_whatever_the_order(swap: bool) -> None:
+    # 먼저 걸린 짝을 확정하면 '37℃ 24시간'이 '37℃ 60시간'을 가져가 두 쌍만 셌음. 짝을 바꿔
+    # 세 쌍을 찾음(Codex 재리뷰 #288)
+    theirs = ["37℃에서 60시간 동안 배양한다", "35℃에서 24시간 동안 배양한다"]
+    old = negative(
+        passage="황색포도알균",
+        options=[*(theirs[::-1] if swap else theirs), "그람 양성으로 염색된다", "가다", "나다"],
+    )
+    new = negative(
+        passage="대장균",
+        options=[
+            "37℃에서 24시간 동안 배양한다",
+            "37℃에서 60시간 동안 배양한다",
+            "그람 양성으로 염색된다",
+            "포자를 만든다",
+            "운동성이 있다",
+        ],
+    )
+    assert too_close(new, [seen_draft(old)])

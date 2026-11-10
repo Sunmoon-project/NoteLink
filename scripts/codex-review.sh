@@ -24,7 +24,7 @@
 #   달지 않고 건너뜀으로 끝냅니다(Codex는 돌리지 않음).
 # - 요청 리뷰 도중 새 커밋이 올라와 결과를 버릴 때, 새 커밋의 자동 실행이 건너뛸 PR(첫 리뷰가 있거나 문서만 바뀜)이면
 #   workflow_dispatch로 새 커밋을 다시 요청합니다.
-# - 워크플로에서 돌 때(CODEX_TRIGGER가 있을 때)는 포크 · 초안 · Dependabot PR과 develop · main이 아닌 대상은 건너뜁니다.
+# - 워크플로에서 돌 때(CODEX_TRIGGER가 있을 때)는 포크 · 초안 · Dependabot PR과 develop · main · design/redesign이 아닌 대상은 건너뜁니다.
 #   댓글(issue_comment)로 온 요청은 워크플로가 PR 정보를 모르므로 여기서 확인합니다.
 #
 # 필요한 것: git, gh(로그인), codex(로그인). 현재 작업 폴더는 건드리지 않고
@@ -57,7 +57,7 @@ EX=( ':(exclude).env' ':(exclude).env.*' ':(exclude)**/.env' ':(exclude)**/.env.
 REQUEST_LABEL="codex-review"      # codex-review.yml의 라벨 이름과 같아야 함
 REQUEST_COMMAND="/codex review"   # codex-review.yml의 댓글 명령과 같아야 함
 REVIEW_WORKFLOW_FILE="codex-review.yml"  # 다시 요청할 때 workflow_dispatch로 돌릴 워크플로
-REVIEW_BASES="develop main"       # 리뷰하는 PR 대상 브랜치
+REVIEW_BASES="develop main design/redesign"  # 리뷰하는 PR 대상 브랜치 (design/redesign: 디자인 개편 통합 브랜치)
 
 # gh --jq 필터 (테스트에서 jq로 같은 필터를 검증합니다)
 # 내 댓글 중 Codex 리뷰 표시가 있는 것: created_at \t id   ($me, $marker는 --arg 대신 문자열로 끼움)
@@ -177,7 +177,7 @@ skip_review() {  # $1 = 이유
 workflow_skip_reason() {  # $1 = 포크 여부, $2 = 초안 여부, $3 = 대상 브랜치, $4 = 작성자 로그인
   if [ "$1" = true ]; then echo "포크에서 온 PR은 리뷰 컴퓨터에서 리뷰하지 않습니다."
   elif [ "$2" = true ]; then echo "초안 PR입니다. Ready for review로 바꾸면 리뷰합니다."
-  elif [[ " $REVIEW_BASES " != *" $3 "* ]]; then echo "$3 브랜치로 가는 PR은 리뷰하지 않습니다(develop · main만)."
+  elif [[ " $REVIEW_BASES " != *" $3 "* ]]; then echo "$3 브랜치로 가는 PR은 리뷰하지 않습니다(develop · main · design/redesign만)."
   else
     case "$4" in
       app/dependabot | dependabot | 'dependabot[bot]') echo "Dependabot PR은 리뷰하지 않습니다." ;;
@@ -402,6 +402,16 @@ pause_review() {
 strip_prefix() {
   # -v는 역슬래시를 이스케이프로 읽어 Windows 경로가 깨지므로 환경 변수로 넘김
   P="$1" awk 'BEGIN { p = ENVIRON["P"] } p != "" { while ((i = index($0, p)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(p)) } { print }'
+}
+
+# 리뷰 글에서 작업 폴더(WT) 경로를 지워 저장소 기준 경로만 남김. Codex는 같은 폴더를
+# 역슬래시(C:\...\) · 슬래시(C:/.../, cygpath -m) · POSIX(/tmp/...) 꼴 중 아무거나로 씀(#30).
+# Linux에는 cygpath가 없어 POSIX 꼴만 지움
+strip_worktree() {
+  local wt="$1" win mixed
+  win=$(cygpath -w "$wt" 2>/dev/null || true)
+  mixed=$(cygpath -m "$wt" 2>/dev/null || true)
+  strip_prefix "${win:+$win\\}" | strip_prefix "${mixed:+$mixed/}" | strip_prefix "$wt/"
 }
 
 main() {
@@ -664,7 +674,6 @@ EOF
     exit 1
   fi
 
-  WIN_WT=$(cygpath -w "$WT" 2>/dev/null || true)
   BODY_FILE="$WORK/body.md"
   {
     echo "$HEADING"
@@ -677,7 +686,7 @@ EOF
     echo
     echo "---"
     echo
-    strip_prefix "${WIN_WT:+$WIN_WT\\}" < "$REVIEW" | strip_prefix "$WT/"
+    strip_worktree "$WT" < "$REVIEW"
     echo
     echo "<!-- $MARKER sha=$HEAD_SHA round=$ROUND -->"
   } > "$BODY_FILE"

@@ -10,12 +10,12 @@ import {
   ChevronRight,
   CircleAlert,
   ExternalLink,
-  FlaskConical,
   Gift,
   Zap,
 } from 'lucide-react-native';
 import type { PlanTier, UserSettings } from '@notelink/shared';
 import { api } from '@/lib/api';
+import { nicknameError } from '@/lib/validation';
 import { env } from '@/lib/env';
 import { clearAccountState } from '@/lib/account';
 import { useAuth } from '@/stores/auth';
@@ -25,6 +25,7 @@ import {
   Avatar,
   Badge,
   Btn,
+  Canvas,
   Card,
   Group,
   Header,
@@ -89,68 +90,68 @@ export function SettingsScreen() {
     }
   };
   // 내 정보를 못 불러와도 다시 시도 · 로그아웃은 할 수 있게 한다
-  if (me.isError)
+  if (me.isError && !me.data)
     return (
-      <Screen>
-        <Title>설정</Title>
-        <Empty
-          icon={<CircleAlert size={32} color={C.danger} />}
-          title="내 정보를 불러오지 못했어요"
-        >
-          <Btn onPress={() => me.refetch()}>다시 시도</Btn>
-          <Btn kind="cream" className="mt-2" onPress={() => signOut(false)}>
-            로그아웃
-          </Btn>
-        </Empty>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Title>설정</Title>
+          <Empty
+            icon={<CircleAlert size={32} color={C.danger} />}
+            title="내 정보를 불러오지 못했어요"
+          >
+            <Btn onPress={() => me.refetch()}>다시 시도</Btn>
+            <Btn kind="cream" className="mt-2" onPress={() => signOut(false)}>
+              로그아웃
+            </Btn>
+          </Empty>
+        </Screen>
+      </Canvas>
     );
   if (!me.data) return <Loading />;
   const u = me.data;
   const s = u.settings;
   const set = (k: keyof UserSettings) => (v: boolean) => update.mutate({ [k]: v });
+  const tier = { free: 'Free', pro: 'Pro', max: 'MAX' }[u.subscription?.tier ?? 'free'];
   return (
-    <View className="flex-1">
+    <Canvas>
       <Screen scrollRef={scroll}>
         <Title>설정</Title>
-        <Label>내 계정</Label>
-        <Card className="p-4">
-          <View className="flex-row items-center gap-3">
-            <Pressable
-              accessibilityLabel="프로필 사진 변경"
-              onPress={() => openFeature('/(tabs)/profile/photo')}
-            >
-              <Avatar name={u.nickname} uri={u.avatarUrl} size={48} />
-            </Pressable>
-            <Pressable
-              className="flex-1 flex-row items-center"
-              onPress={() => router.push('/(tabs)/profile/account')}
-            >
-              <View className="flex-1">
-                <Text className="text-body font-bold text-ink">{u.nickname}</Text>
-                <Text className="text-caption text-sub">
-                  {u.school?.replace('등학교', '')} {u.grade} · {u.email}
-                </Text>
-              </View>
-              <ChevronRight size={ICON.md} color={C.sub} />
-            </Pressable>
-          </View>
-          <View className="my-4 h-px bg-line" />
+        {/* 프로필: 큰 아바타와 이름이 맨 위. 누르면 계정 정보 */}
+        <View className="flex-row items-center gap-4 py-3">
           <Pressable
-            onPress={() => router.push('/(tabs)/profile/plan')}
-            className="flex-row items-center gap-3"
+            accessibilityLabel="프로필 사진 변경"
+            onPress={() => openFeature('/(tabs)/profile/photo')}
           >
-            <View className="h-10 w-10 items-center justify-center rounded-xl bg-white">
-              <Zap size={ICON.md} color={C.sun} />
-            </View>
+            <Avatar name={u.nickname} uri={u.avatarUrl} size={64} />
+          </Pressable>
+          <Pressable
+            className="flex-1 flex-row items-center"
+            onPress={() => router.push('/(tabs)/profile/account')}
+          >
             <View className="flex-1">
-              <Text className="text-callout font-semibold text-ink">
-                {{ free: 'Free', pro: 'Pro', max: 'MAX' }[u.subscription?.tier ?? 'free']} 플랜
+              <Text className="text-title3 font-bold text-ink">{u.nickname}</Text>
+              <Text className="text-caption text-sub">
+                {u.school?.replace('등학교', '')} {u.grade} · {u.email}
               </Text>
-              <Text className="text-caption text-sub">더 많은 기능을 사용해보세요</Text>
             </View>
             <ChevronRight size={ICON.md} color={C.sub} />
           </Pressable>
-          <View className="mt-4 flex-row justify-between">
+        </View>
+
+        <Label>내 계정</Label>
+        <Group>
+          <Row
+            icon={Zap}
+            chevron
+            sub="더 많은 기능을 사용해보세요"
+            onPress={() => router.push('/(tabs)/profile/plan')}
+          >
+            {`${tier} 플랜`}
+          </Row>
+        </Group>
+        {/* 쓰는 양은 구획으로 — 눌러서 하는 일이 없어 카드로 감싸지 않는다 */}
+        <View className="mt-5 px-1">
+          <View className="flex-row justify-between">
             <Text className="text-caption text-sub">저장 공간</Text>
             <Text className="text-caption text-sub">
               {gb(u.usage?.storageBytes ?? 0)} / {gb(u.usage?.storageLimitBytes ?? 0)}
@@ -163,17 +164,22 @@ export function SettingsScreen() {
             )}
             className="mt-1.5"
           />
-          <View className="mt-3 flex-row justify-between">
+          <View className="mt-4 flex-row justify-between">
             <Text className="text-caption text-sub">AI 크레딧</Text>
             <Text className="text-caption text-sub">
-              {u.usage?.aiCredits ?? 0} / {u.usage?.aiCreditLimit ?? 800}
+              {u.usage?.aiCredits ?? 0}
+              {u.usage?.aiCreditLimit ? ` / ${u.usage.aiCreditLimit}` : ''}
             </Text>
           </View>
           <Progress
-            value={Math.max(2, ((u.usage?.aiCredits ?? 0) / (u.usage?.aiCreditLimit || 1)) * 100)}
+            value={
+              u.usage?.aiCreditLimit
+                ? Math.max(2, ((u.usage.aiCredits ?? 0) / u.usage.aiCreditLimit) * 100)
+                : 0
+            }
             className="mt-1.5"
           />
-        </Card>
+        </View>
 
         <Label>학습</Label>
         <Group>
@@ -210,7 +216,7 @@ export function SettingsScreen() {
           <Row
             onPress={() => setSheet('lang')}
             right={
-              <View className="rounded-full border border-line bg-white px-3 py-1">
+              <View className="rounded-full bg-fill px-3 py-1">
                 <Text className="text-caption text-sub">{s.subtitleLanguage} ›</Text>
               </View>
             }
@@ -286,11 +292,6 @@ export function SettingsScreen() {
             사업자 정보
           </Row>
           <Row right={<Text className="text-footnote text-sub">{APP_VERSION}</Text>}>앱 버전</Row>
-          {env.useMock && (
-            <Row icon={FlaskConical} chevron onPress={() => router.push('/(tabs)/profile/dev')}>
-              예외 시나리오 (목업 전용)
-            </Row>
-          )}
         </Group>
         <Btn kind="cream" className="mt-6" onPress={() => setDlg('logout')}>
           로그아웃
@@ -352,7 +353,7 @@ export function SettingsScreen() {
         </Group>
       </Sheet>
       <Sheet open={sheet === 'biz'} onClose={() => setSheet(null)} title="사업자 정보">
-        <View className="gap-2 rounded-2xl bg-cream p-4">
+        <View className="gap-2 rounded-2xl bg-fill p-4">
           {[
             '상호 · 노트링크 (5조)',
             '대표 · 노트링크 팀',
@@ -391,7 +392,7 @@ export function SettingsScreen() {
           signOut(true);
         }}
       />
-    </View>
+    </Canvas>
   );
 }
 
@@ -407,34 +408,36 @@ export function AccountScreen() {
     ['학년', u?.grade, null],
   ];
   return (
-    <Screen>
-      <Header title="계정 정보" />
-      <Card
-        onPress={() => openFeature('/(tabs)/profile/avatar-style')}
-        className="flex-row items-center px-4 py-3"
-      >
-        <View className="flex-1">
-          <Text className="text-caption2 text-sub">아바타</Text>
-          <Text className="text-callout text-ink">아바타 설정하기</Text>
+    <Canvas>
+      <Screen>
+        <Header title="계정 정보" />
+        <Card
+          onPress={() => openFeature('/(tabs)/profile/avatar-style')}
+          className="flex-row items-center px-5 py-4"
+        >
+          <View className="flex-1">
+            <Text className="text-caption2 text-sub">아바타</Text>
+            <Text className="text-callout text-ink">아바타 설정하기</Text>
+          </View>
+          <ChevronRight size={ICON.md} color={C.sub} />
+        </Card>
+        <View className="mt-4 overflow-hidden rounded-card bg-white">
+          {rows.map(([k, v, go], i) => (
+            <Pressable
+              key={k}
+              onPress={go ?? (() => toast(`${k} 변경은 본인 인증 후 가능해요`))}
+              className={cx('flex-row items-center px-5 py-4', i > 0 && 'border-t border-fill')}
+            >
+              <View className="flex-1">
+                <Text className="text-caption2 text-sub">{k}</Text>
+                <Text className="text-callout text-ink">{v}</Text>
+              </View>
+              <ChevronRight size={ICON.md} color={C.sub} />
+            </Pressable>
+          ))}
         </View>
-        <ChevronRight size={ICON.md} color={C.sub} />
-      </Card>
-      <View className="mt-3 overflow-hidden rounded-2xl bg-cream">
-        {rows.map(([k, v, go], i) => (
-          <Pressable
-            key={k}
-            onPress={go ?? (() => toast(`${k} 변경은 본인 인증 후 가능해요`))}
-            className={cx('flex-row items-center px-4 py-3', i > 0 && 'border-t border-line')}
-          >
-            <View className="flex-1">
-              <Text className="text-caption2 text-sub">{k}</Text>
-              <Text className="text-callout text-ink">{v}</Text>
-            </View>
-            <ChevronRight size={ICON.md} color={C.sub} />
-          </Pressable>
-        ))}
-      </View>
-    </Screen>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -442,7 +445,8 @@ export function NicknameScreen() {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
   const [v, setV] = useState(me.data?.nickname ?? '');
-  const ok = v.trim().length >= 2 && v.trim().length <= 10;
+  const err = nicknameError(v);
+  const ok = !err;
   const save = useMutation({
     mutationFn: () => api.me.update({ nickname: v.trim() }),
     onSuccess: () => {
@@ -452,23 +456,30 @@ export function NicknameScreen() {
     },
   });
   return (
-    <Screen
-      footer={
-        <Btn disabled={!ok} loading={save.isPending} onPress={() => save.mutate()}>
-          저장
-        </Btn>
-      }
-    >
-      <Header title="닉네임 변경" />
-      <Label>닉네임</Label>
-      <Input value={v} onChangeText={(x) => setV(x.slice(0, 10))} autoFocus invalid={!ok && !!v} />
-      <View className="mt-2 flex-row justify-between">
-        <Text className={cx('text-caption', !ok ? 'text-danger' : 'text-sub')}>
-          2~10자로 입력해주세요
-        </Text>
-        <Text className="text-caption text-sub">{v.length}/10</Text>
-      </View>
-    </Screen>
+    <Canvas>
+      <Screen
+        footer={
+          <Btn disabled={!ok} loading={save.isPending} onPress={() => save.mutate()}>
+            저장
+          </Btn>
+        }
+      >
+        <Header title="닉네임 변경" />
+        <Label>닉네임</Label>
+        <Input
+          value={v}
+          onChangeText={(x) => setV(x.slice(0, 10))}
+          autoFocus
+          invalid={!ok && !!v}
+        />
+        <View className="mt-2 flex-row justify-between">
+          <Text className={cx('text-caption', !ok ? 'text-danger' : 'text-sub')}>
+            {err ?? '한글 · 영문 · 숫자 2~10자'}
+          </Text>
+          <Text className="text-caption text-sub">{v.length}/10</Text>
+        </View>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -494,8 +505,8 @@ const PLANS: { id: PlanTier; name: string; price: string; desc: string[]; hot?: 
   },
 ];
 
-/** 결제 연동 전: 무료 플랜으로만 바꿀 수 있다 (목업은 화면 확인용으로 모두 허용) */
-export const canChangePlan = (t: PlanTier) => t === 'free' || env.useMock;
+/** 결제 연동 전: 무료 플랜으로만 바꿀 수 있다 (기기 저장 모드는 화면 확인용으로 모두 허용) */
+export const canChangePlan = (t: PlanTier) => t === 'free' || env.localData;
 
 export function PlanScreen() {
   const qc = useQueryClient();
@@ -512,57 +523,59 @@ export function PlanScreen() {
     },
   });
   return (
-    <Screen>
-      <Header title="요금제" sub="나에게 맞는 플랜을 선택하세요" />
-      <View className="gap-3">
-        {PLANS.map((p) => (
-          <Card key={p.id} className="p-4">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-headline font-bold text-ink">{p.name}</Text>
-              {p.hot && <Badge tone="dark">인기</Badge>}
-            </View>
-            <Text
-              className={cx(
-                'mt-1 text-callout font-semibold',
-                p.id === 'free' ? 'text-sub' : 'text-brand',
-              )}
-            >
-              {p.price}
-            </Text>
-            {p.desc.map((d) => (
-              <Text key={d} className="text-caption text-sub">
-                {d}
+    <Canvas>
+      <Screen>
+        <Header title="요금제" sub="나에게 맞는 플랜을 선택하세요" />
+        <View className="gap-4">
+          {PLANS.map((p) => (
+            <Card key={p.id} className="p-6">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-headline font-bold text-ink">{p.name}</Text>
+                {p.hot && <Badge tone="dark">인기</Badge>}
+              </View>
+              <Text
+                className={cx(
+                  'mt-1 text-callout font-semibold',
+                  p.id === 'free' ? 'text-sub' : 'text-brand',
+                )}
+              >
+                {p.price}
               </Text>
-            ))}
-            <Btn
-              small
-              className="mt-3"
-              kind={cur === p.id ? 'outline' : p.id === 'max' ? 'dark' : 'primary'}
-              disabled={cur === p.id}
-              onPress={() =>
-                canChangePlan(p.id) ? setPick(p.id) : toast('결제는 준비 중이에요. 곧 열려요')
-              }
-            >
-              {cur === p.id
-                ? '현재 플랜'
-                : p.id === 'free'
-                  ? 'Free로 변경'
-                  : `${p.name}로 업그레이드`}
-            </Btn>
-          </Card>
-        ))}
-      </View>
-      <Alert
-        open={!!pick}
-        tone="brand"
-        icon={<Zap size={ICON.lg} color={C.brand} />}
-        title={`${PLANS.find((p) => p.id === pick)?.name} 플랜으로 바꿀까요?`}
-        body="결제는 앱 마켓 계정으로 진행돼요. 언제든 해지할 수 있어요."
-        secondary="취소"
-        onSecondary={() => setPick(null)}
-        primary="변경하기"
-        onPrimary={() => pick && change.mutate(pick)}
-      />
-    </Screen>
+              {p.desc.map((d) => (
+                <Text key={d} className="text-caption text-sub">
+                  {d}
+                </Text>
+              ))}
+              <Btn
+                small
+                className="mt-3"
+                kind={cur === p.id ? 'outline' : p.id === 'max' ? 'dark' : 'primary'}
+                disabled={cur === p.id}
+                onPress={() =>
+                  canChangePlan(p.id) ? setPick(p.id) : toast('결제는 준비 중이에요. 곧 열려요')
+                }
+              >
+                {cur === p.id
+                  ? '현재 플랜'
+                  : p.id === 'free'
+                    ? 'Free로 변경'
+                    : `${p.name}로 업그레이드`}
+              </Btn>
+            </Card>
+          ))}
+        </View>
+        <Alert
+          open={!!pick}
+          tone="brand"
+          icon={<Zap size={ICON.lg} color={C.brand} />}
+          title={`${PLANS.find((p) => p.id === pick)?.name} 플랜으로 바꿀까요?`}
+          body="결제는 앱 마켓 계정으로 진행돼요. 언제든 해지할 수 있어요."
+          secondary="취소"
+          onSecondary={() => setPick(null)}
+          primary="변경하기"
+          onPrimary={() => pick && change.mutate(pick)}
+        />
+      </Screen>
+    </Canvas>
   );
 }

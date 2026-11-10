@@ -1,5 +1,6 @@
 import type {
   AiJob,
+  NoteAskBody,
   AuthTokens,
   CalendarShare,
   ChatRoom,
@@ -43,7 +44,7 @@ import type {
   WeeklySummary,
 } from '@notelink/shared';
 
-// 화면이 쓰는 API 전체. http-api.ts(실서버)와 mock/api.ts(목업)가 같은 모양으로 구현한다.
+// 화면이 쓰는 API 전체. http-api.ts(실서버)와 local/api.ts(기기 저장)가 같은 모양으로 구현한다.
 
 export type MonthDay = { studyDate: string; level: number; hasTodo: boolean };
 export type ImageVerdict = 'ok' | 'not_allowed' | 'not_handwriting' | 'blurry';
@@ -57,9 +58,24 @@ export type RoomSchedule = {
 
 export interface Api {
   auth: {
-    /** providerToken: 카카오 · 네이버 · Google SDK가 준 토큰. 서버가 서명 · 대상 · 만료를 검증한 뒤 자체 토큰을 발급한다 */
-    socialLogin(provider: SocialProvider, providerToken: string): Promise<AuthTokens>;
+    /** 서버가 돌려준 1회용 코드와 PKCE 검증값을 보내 토큰으로 바꾼다 */
+    socialLogin(
+      provider: SocialProvider,
+      proof: { token: string; codeVerifier: string },
+    ): Promise<AuthTokens>;
     emailLogin(email: string, password: string): Promise<AuthTokens>;
+    /** 가입 ① 인증번호를 메일로 보낸다. 가입한 이메일이어도 응답은 같다. 너무 빨리 다시 보내면 429 RATE_LIMITED */
+    emailSendCode(email: string): Promise<void>;
+    /** 가입 ② 인증번호를 확인하고 가입 증표를 받는다. 틀리면 400 EMAIL_CODE_INVALID, 횟수를 다 쓰면 429 EMAIL_CODE_LOCKED */
+    emailVerifyCode(
+      email: string,
+      code: string,
+    ): Promise<{ verificationToken: string; expiresInSeconds: number }>;
+    /**
+     * 가입 ③ 증표와 비밀번호로 계정을 만든다(이메일은 증표 안의 값). 토큰은 주지 않고 로그인으로 이어진다.
+     * 이미 있으면 409 EMAIL_TAKEN
+     */
+    emailSignup(verificationToken: string, password: string): Promise<void>;
     agreeTerms(termCodes: string[]): Promise<void>;
     logout(): Promise<void>;
   };
@@ -190,6 +206,8 @@ export interface Api {
     checkImages(
       files: { name: string; sizeBytes: number; uri: string }[],
     ): Promise<{ name: string; verdict: ImageVerdict }[]>;
+    /** 아바타에게 노트 묻기 → note_ask 작업. 답은 ai.job으로 기다려 result(NoteAskResult)에서 읽는다 */
+    ask(materialId: string, body: NoteAskBody): Promise<AiJob>;
   };
   ai: {
     job(id: string): Promise<AiJob>;

@@ -21,6 +21,28 @@ export const ERROR_CODES = {
   FILE_NOT_ALLOWED: 'FILE_NOT_ALLOWED',
   ROOM_CODE_INVALID: 'ROOM_CODE_INVALID',
   NOT_FOUND: 'NOT_FOUND',
+  /** 아직 정리되지 않았거나 글이 없는 노트라 아바타가 설명할 수 없다 (409) */
+  NOTE_NOT_READY: 'NOTE_NOT_READY',
+  /** 입력 형식 오류 (이메일 · 필수 값 등) */
+  VALIDATION: 'VALIDATION_FAILED',
+  EMAIL_TAKEN: 'EMAIL_TAKEN',
+  // 이메일 가입 · 로그인 (서버 apps/api/src/modules/auth/app-login/app-login-errors.ts 와 같은 값)
+  /** 너무 빨리 다시 요청했거나 한도를 넘었다. 본문의 retryAfterSeconds 뒤에 다시 시도한다 (429) */
+  RATE_LIMITED: 'RATE_LIMITED',
+  /** 인증번호가 틀렸거나 없거나 만료됐거나 이미 썼다. 틀린 경우에만 attemptsLeft(남은 횟수)가 함께 온다 (400) */
+  EMAIL_CODE_INVALID: 'EMAIL_CODE_INVALID',
+  /** 인증번호를 틀리게 입력할 수 있는 횟수를 모두 썼다. 인증번호를 다시 받아야 한다 (429) */
+  EMAIL_CODE_LOCKED: 'EMAIL_CODE_LOCKED',
+  /** 이메일 인증 후 가입을 끝내기까지의 시간(10분)이 지났다. 이메일 인증을 다시 한다 (401) */
+  EMAIL_PROOF_EXPIRED: 'EMAIL_PROOF_EXPIRED',
+  /** 이메일 인증 증표를 쓸 수 없다(위조 · 이미 사용 · 인증번호를 다시 받아 무효). 이메일 인증을 다시 한다 (401) */
+  EMAIL_PROOF_INVALID: 'EMAIL_PROOF_INVALID',
+  /** 인증 메일을 보내지 못했다 (503) */
+  MAIL_UNAVAILABLE: 'MAIL_UNAVAILABLE',
+  /** 이메일 또는 비밀번호가 맞지 않다. 어느 쪽이 틀렸는지 · 가입 여부는 알려 주지 않는다 (401, 토큰 갱신을 시도하지 않는다) */
+  INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',
+  /** 로그인을 너무 많이 시도해 잠겼다. 본문의 retryAfterSeconds 뒤에 다시 시도한다 (429) */
+  LOGIN_LOCKED: 'LOGIN_LOCKED',
 } as const;
 
 /** 업로드 허용 규칙 — 앱이 올리기 전에 먼저 검사한다 (p.102) */
@@ -49,7 +71,13 @@ const seg = (v: string) => encodeURIComponent(v);
 export const PATHS = {
   // 인증 · 회원
   socialLogin: (provider: string) => `/auth/social/${seg(provider)}`,
+  socialStart: (provider: string) => `/auth/social/${seg(provider)}/start`,
+  /** 가입용 인증번호를 메일로 보낸다. 응답 204. 가입한 이메일이어도 응답은 같다 */
+  emailSendCode: '/auth/email/send-code',
+  /** 인증번호를 확인하고 가입 증표를 받는다. 응답 { data: { verificationToken, expiresInSeconds } } */
+  emailVerifyCode: '/auth/email/verify-code',
   emailLogin: '/auth/email/login',
+  emailSignup: '/auth/email/signup',
   refresh: '/auth/refresh',
   logout: '/auth/logout',
   terms: '/auth/terms',
@@ -109,6 +137,8 @@ export const PATHS = {
   materialBookmarks: (id: string) => `/materials/${seg(id)}/bookmarks`,
   materialDownloadUrl: (id: string) => `/materials/${seg(id)}/download-url`,
   materialShare: '/materials/share',
+  /** 아바타에게 노트 묻기 → note_ask 작업(AiJob)을 돌려준다. 답은 aiJob으로 받아 result(NoteAskResult)에서 읽는다 */
+  materialAsk: (id: string) => `/materials/${seg(id)}/ask`,
   imageCheck: '/images/check',
   // AI 작업
   aiJob: (id: string) => `/ai-jobs/${seg(id)}`,

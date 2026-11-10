@@ -1,4 +1,4 @@
-# develop · main으로 가는 PR에 Codex 리뷰를 남깁니다 (scripts/codex-review.sh).
+# develop · main · design/redesign(디자인 개편 통합 브랜치)으로 가는 PR에 Codex 리뷰를 남깁니다 (scripts/codex-review.sh).
 # Codex 사용량을 아끼려고 자동으로는 첫 리뷰만 합니다.
 # - 자동(PR 열림 · 커밋 push · 다시 열림 · Ready for review): 이 계정의 Codex 리뷰가 아직 없을 때만 리뷰합니다.
 #   문서(*.md · *.mdx · LICENSE · 루트 docs/의 그림 · PDF, 리뷰 기준인 루트 README.md · AGENTS.md · CLAUDE.md 제외)만
@@ -20,8 +20,8 @@ name: Codex 리뷰
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
-    branches: [develop, main]
-  # 댓글은 대상 브랜치로 거를 수 없어 스크립트가 develop · main인지 확인합니다.
+    branches: [develop, main, design/redesign]
+  # 댓글은 대상 브랜치로 거를 수 없어 스크립트가 대상 브랜치를 확인합니다.
   issue_comment:
     types: [created]
   # 직접 요청(Actions 탭 Run workflow)과, 요청 리뷰 도중 새 커밋이 와서 리뷰 컴퓨터가 다시 요청할 때 씁니다.

@@ -1,4 +1,3 @@
-import { View } from 'react-native';
 import { Redirect, Tabs } from 'expo-router';
 import { BookOpen, Home, NotebookPen, User, Users, type LucideIcon } from 'lucide-react-native';
 import { useAuth } from '@/stores/auth';
@@ -26,9 +25,9 @@ export default function TabsLayout() {
         // 탭을 바꾸면 화면이 살짝 밀리며 바뀐다
         animation: 'shift',
         tabBarActiveTintColor: C.brand,
-        tabBarInactiveTintColor: '#a3a8ae',
-        tabBarStyle: { borderTopColor: C.line },
-        tabBarLabelStyle: { fontSize: 10, fontWeight: '500' },
+        tabBarInactiveTintColor: C.sub,
+        tabBarStyle: { backgroundColor: '#fff', borderTopColor: C.fill },
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
       }}
     >
       {TABS.map(([name, title, Icon]) => (
@@ -37,13 +36,9 @@ export default function TabsLayout() {
           name={name}
           options={{
             title,
-            tabBarIcon: ({ focused }) => (
-              <View
-                className="h-7 w-7 items-center justify-center rounded-lg"
-                style={{ backgroundColor: focused ? C.brand : '#e6e8eb' }}
-              >
-                <Icon size={ICON.sm} color={focused ? '#fff' : '#a3a8ae'} />
-              </View>
+            // 색 칸 없이 아이콘만. 고른 탭은 브랜드색 · 굵은 선
+            tabBarIcon: ({ focused, color }) => (
+              <Icon size={ICON.lg} color={color} strokeWidth={focused ? 2.4 : 2} />
             ),
           }}
         />

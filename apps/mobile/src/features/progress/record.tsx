@@ -20,6 +20,7 @@ import { addDays, diffLabel, dLabel, hm, md, parse, today, ymd, WD, seoul } from
 import {
   Badge,
   Btn,
+  Canvas,
   Card,
   Group,
   Header,
@@ -98,7 +99,7 @@ export function Month({
                           ? 'bg-brand/25'
                           : shared?.has(d)
                             ? 'bg-mint'
-                            : 'bg-cream/60',
+                            : 'bg-white',
                 )}
               >
                 <Text
@@ -165,7 +166,7 @@ export function RecordScreen() {
     ...(custom.data ?? []).map((h) => [h.date, h.name]),
   ]);
   return (
-    <View className="flex-1">
+    <Canvas>
       <Screen>
         <Header
           title="학습 기록"
@@ -173,7 +174,7 @@ export function RecordScreen() {
             <Pressable
               accessibilityLabel="캘린더 설정"
               onPress={() => setSheet('cal')}
-              className="h-9 w-9 items-center justify-center rounded-full bg-cream"
+              className="h-11 w-11 items-center justify-center rounded-full bg-white"
             >
               <Settings2 size={ICON.md} color={C.ink} />
             </Pressable>
@@ -293,7 +294,7 @@ export function RecordScreen() {
                       onPress={() => setRange(x)}
                       className={cx(
                         'rounded-full px-2 py-0.5',
-                        range === x ? 'bg-ink' : 'bg-cream',
+                        range === x ? 'bg-brand' : 'bg-white',
                       )}
                     >
                       <Text
@@ -315,7 +316,7 @@ export function RecordScreen() {
                 ['최장 연속', stats.data ? `${stats.data.longestStreak}일` : '-'],
                 [
                   '주로 공부한 시간',
-                  stats.data?.peakHour == null
+                  stats.data?.peakHour == null || stats.data.peakHour < 0
                     ? '-'
                     : `${stats.data.peakHour < 12 ? '오전' : '오후'} ${stats.data.peakHour % 12 || 12}시`,
                 ],
@@ -334,7 +335,7 @@ export function RecordScreen() {
                 </Btn>
               </View>
             )}
-            <View className="mt-3 flex-row flex-wrap gap-[3px] rounded-2xl border border-line p-3">
+            <View className="mt-3 flex-row flex-wrap gap-[3px] rounded-card bg-white p-4">
               {(stats.data?.heatmap ?? []).map((h) => (
                 <View
                   key={h.studyDate}
@@ -399,7 +400,7 @@ export function RecordScreen() {
           </Row>
         </Group>
       </Sheet>
-    </View>
+    </Canvas>
   );
 }
 
@@ -498,7 +499,7 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
             <View
               className={cx(
                 'mt-1 h-7 w-7 items-center justify-center rounded-full',
-                ymd(d) === today() && 'bg-ink',
+                ymd(d) === today() && 'bg-brand',
               )}
             >
               <Text
@@ -520,7 +521,7 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
         ).map((t, i) => (
           <View
             key={t}
-            className="absolute left-0 right-0 border-t border-line"
+            className="absolute left-0 right-0 border-t border-fill"
             style={{ top: i * H }}
           >
             <Text className="text-caption2 text-sub">{t}</Text>

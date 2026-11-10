@@ -3,7 +3,7 @@ import json
 import httpx2
 import pytest
 
-from app.clients.voyage import BATCH, EmbedError, Voyage
+from app.clients.voyage import BATCH, EmbedError, EmbedUnavailableError, Voyage
 
 
 class Server:
@@ -59,6 +59,43 @@ def test_embed_does_not_retry_bad_key() -> None:
     with pytest.raises(EmbedError, match="401"):
         s.client().embed(["글"], "document")
     assert len(s.requests) == 1
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_embed_gives_up_on_temporary_error_as_unavailable(status: int) -> None:
+    s = Server(*(httpx2.Response(status) for _ in range(3)))
+    with pytest.raises(EmbedUnavailableError, match=str(status)):
+        s.client().embed(["글"], "document")
+
+
+def test_embed_gives_up_on_connection_error_as_unavailable() -> None:
+    def refuse(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("끊김")
+
+    client = Voyage(
+        "https://example.test",
+        "key",
+        "voyage-4",
+        transport=httpx2.MockTransport(refuse),
+        sleep=lambda _: None,
+    )
+    with pytest.raises(EmbedUnavailableError):
+        client.embed(["글"], "document")
+
+
+@pytest.mark.parametrize("status", [400, 401, 403])
+def test_permanent_error_is_not_unavailable(status: int) -> None:
+    s = Server(httpx2.Response(status))
+    with pytest.raises(EmbedError) as e:
+        s.client().embed(["글"], "document")
+    assert not isinstance(e.value, EmbedUnavailableError)
+
+
+def test_bad_response_shape_is_not_unavailable() -> None:
+    s = Server(httpx2.Response(200, json={"data": "글"}))
+    with pytest.raises(EmbedError) as e:
+        s.client().embed(["글"], "document")
+    assert not isinstance(e.value, EmbedUnavailableError)
 
 
 def test_embed_rejects_wrong_vector_count() -> None:

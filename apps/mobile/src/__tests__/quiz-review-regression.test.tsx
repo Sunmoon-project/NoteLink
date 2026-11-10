@@ -11,7 +11,7 @@ import {
 import { api } from '../lib/api';
 import { renderScreen, setParams } from '../test-utils';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),
@@ -66,7 +66,7 @@ it('주관식 문제에 답을 입력하고 서버에 제출한다', async () =>
   await fireEvent.changeText(await screen.findByPlaceholderText('답을 입력해주세요'), '광합성');
   await fireEvent.press(screen.getByText('답 제출'));
   await waitFor(() => expect(answer).toHaveBeenCalledWith(attempt._id, question._id, '광합성'));
-  expect(await screen.findByText('O 정답이에요')).toBeTruthy();
+  expect(await screen.findByText('정답이에요')).toBeTruthy();
 });
 
 it('풀이 시작 실패 후 같은 화면에서 재시도할 수 있다', async () => {
@@ -156,7 +156,7 @@ it('카드가 모두 삭제되면 빈 상태를 표시하고 위치를 1 / 0으�
   await act(async () => {
     qc.setQueryData(['flashcards'], []);
   });
-  expect(await screen.findByText('저장한 플래시카드가 없어요')).toBeTruthy();
+  expect(await screen.findByText('저장한 플래시 카드가 없어요')).toBeTruthy();
   expect(screen.queryByText('1 / 0')).toBeNull();
 });
 

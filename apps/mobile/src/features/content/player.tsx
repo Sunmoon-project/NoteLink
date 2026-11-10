@@ -13,7 +13,6 @@ import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import { Bookmark, Pause, Play, Repeat, Sparkles } from 'lucide-react-native';
 import { api } from '@/lib/api';
-import { env } from '@/lib/env';
 import { toast } from '@/stores/toast';
 import { Btn, Chip, Loading, Sheet, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
@@ -25,56 +24,24 @@ const mmss = (s: number) =>
 const hhmmss = (s: number) => new Date(Math.max(0, s) * 1000).toISOString().slice(11, 19);
 const SPEEDS = [1, 1.25, 1.5, 2];
 
-/** 재생 위치 소스: 오디오 주소가 있으면 expo-audio, 없으면(목업) 시계로 흉내 */
-function usePlayback(url: string | undefined, duration: number) {
+/** 실제 녹음 파일을 expo-audio로 재생한다. 길이는 서버 값이 없으면 파일에서 읽는다 */
+function usePlayback(url: string | undefined, knownDuration: number) {
   const player = useAudioPlayer(url ? { uri: url } : null);
   const status = useAudioPlayerStatus(player);
-  // 시뮬레이션은 목업 전용이다. 실서버에서 주소가 없으면 재생 중인 척하지 않는다
-  const [sim, setSim] = useState({
-    pos: env.useMock ? 134 : 0,
-    playing: env.useMock,
-    rate: 1,
-    loop: false,
-  });
-  useEffect(() => {
-    if (url || !sim.playing || !env.useMock) return;
-    const id = setInterval(
-      () =>
-        setSim((s) => {
-          const n = s.pos + s.rate;
-          return n >= duration
-            ? s.loop
-              ? { ...s, pos: 0 }
-              : { ...s, pos: duration, playing: false }
-            : { ...s, pos: n };
-        }),
-      1000,
-    );
-    return () => clearInterval(id);
-  }, [url, sim.playing, sim.rate, duration]);
-  if (url) {
-    return {
-      pos: status.currentTime,
-      playing: status.playing,
-      rate: status.playbackRate,
-      loop: player.loop,
-      toggle: () => (status.playing ? player.pause() : player.play()),
-      seek: (s: number) => player.seekTo(Math.max(0, Math.min(duration, s))),
-      setRate: (r: number) => player.setPlaybackRate(r),
-      // expo-audio는 loop를 속성으로만 바꾼다
-      // eslint-disable-next-line react-hooks/immutability
-      setLoop: (l: boolean) => (player.loop = l),
-    };
-  }
+  const duration = knownDuration || status.duration || 0;
   return {
-    ...sim,
-    toggle: () =>
-      env.useMock
-        ? setSim((s) => ({ ...s, playing: !s.playing }))
-        : toast('재생할 오디오가 아직 없어요'),
-    seek: (p: number) => setSim((s) => ({ ...s, pos: Math.max(0, Math.min(duration, p)) })),
-    setRate: (rate: number) => setSim((s) => ({ ...s, rate })),
-    setLoop: (loop: boolean) => setSim((s) => ({ ...s, loop })),
+    ready: !!url,
+    duration,
+    pos: status.currentTime,
+    playing: status.playing,
+    rate: status.playbackRate || 1,
+    loop: player.loop,
+    toggle: () => (status.playing ? player.pause() : player.play()),
+    seek: (s: number) => player.seekTo(Math.max(0, Math.min(duration, s))),
+    setRate: (r: number) => player.setPlaybackRate(r),
+    // expo-audio는 loop를 속성으로만 바꾼다
+    // eslint-disable-next-line react-hooks/immutability
+    setLoop: (l: boolean) => (player.loop = l),
   };
 }
 
@@ -121,9 +88,9 @@ export function Player({
     queryKey: ['material', materialId],
     queryFn: () => api.content.material(materialId),
   });
-  const duration = rec.data?.durationSec || 0;
+  const p = usePlayback(rec.data?.audioUrl || undefined, rec.data?.durationSec ?? 0);
+  const duration = p.duration;
   const percent = (sec: number) => `${duration ? (sec / duration) * 100 : 0}%` as const;
-  const p = usePlayback(rec.data?.audioUrl || undefined, duration);
   const [view, setView] = useState(initialView);
   const [sheet, setSheet] = useState(openBookmarks);
   const [marks, setMarks] = useState<number[]>([]);
@@ -190,7 +157,7 @@ export function Player({
             <View className="relative rounded-2xl bg-white/5 p-4">
               {slide ? (
                 <>
-                  <Text className="text-caption2 text-white/50">
+                  <Text className="text-caption2 text-white/60">
                     슬라이드 {slide.index + 1} / {rec.data.slides.length}
                   </Text>
                   <Text className="mt-1 text-callout font-bold text-white">{slide.title}</Text>
@@ -218,12 +185,14 @@ export function Player({
                   {p.playing ? '아바타 립싱크 재생 중' : '아바타 립싱크 일시정지'}
                 </Text>
               </View>
-              <Text className="mt-1 text-caption leading-5 text-white/50">
-                {segs.map((s, i) => (
-                  <Text key={i} className={cx(i === cap && 'font-bold text-white')}>
-                    {s.text}{' '}
-                  </Text>
-                ))}
+              <Text className="mt-1 text-caption leading-5 text-white/60">
+                {segs.length
+                  ? segs.map((s, i) => (
+                      <Text key={i} className={cx(i === cap && 'font-bold text-white')}>
+                        {s.text}{' '}
+                      </Text>
+                    ))
+                  : '대본은 AI 서버가 연결되면 음성 인식으로 만들어져요. 원본 녹음은 지금 들을 수 있어요.'}
               </Text>
             </View>
           </>
@@ -231,7 +200,7 @@ export function Player({
           <ScrollView className="max-h-64 p-3" nestedScrollEnabled>
             <Text className="text-footnote font-bold text-white">전체 대본</Text>
             <Text className="mt-2 text-caption leading-5 text-white/80">
-              {rec.data?.transcript.text}
+              {rec.data?.transcript.text || '아직 대본이 없어요 · AI 서버 연결 후 만들어져요'}
             </Text>
           </ScrollView>
         )}
@@ -327,7 +296,7 @@ export function Player({
                 p.seek(m);
                 setSheet(false);
               }}
-              className="flex-row items-center gap-3 rounded-xl border border-line px-4 py-3"
+              className="flex-row items-center gap-3 rounded-xl bg-fill px-4 py-3"
             >
               <View className="h-3 w-3 rounded-sm bg-brand" />
               <Text className="flex-1 tabular-nums text-footnote text-ink">{hhmmss(m)}</Text>

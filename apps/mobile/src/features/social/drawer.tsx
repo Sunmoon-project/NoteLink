@@ -82,7 +82,7 @@ export function SocialDrawer({ open, onClose }: { open: boolean; onClose: () => 
         </Btn>
         <Pressable
           onPress={() => go('/requests')}
-          className="mt-2 flex-row items-center rounded-xl bg-cream px-3 py-3"
+          className="mt-2 flex-row items-center rounded-xl bg-fill px-4 py-3"
         >
           <Text className="flex-1 text-subhead text-ink">받은 친구 요청</Text>
           {!!requests.data?.length && (
@@ -93,6 +93,14 @@ export function SocialDrawer({ open, onClose }: { open: boolean; onClose: () => 
           <ChevronRight size={ICON.sm} color={C.sub} />
         </Pressable>
         <Text className="mt-4 mb-2 text-caption text-sub">친구 {friends.data?.length ?? 0}</Text>
+        {friends.isError && !friends.data && (
+          <View className="gap-2 pb-3">
+            <Text className="text-footnote text-sub">친구 목록을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void friends.refetch()}>
+              친구 목록 다시 시도
+            </Btn>
+          </View>
+        )}
         <ScrollView className="flex-1" contentContainerClassName="gap-2 pb-6">
           {friends.data?.map((f) => (
             <Pressable
@@ -103,7 +111,7 @@ export function SocialDrawer({ open, onClose }: { open: boolean; onClose: () => 
                   params: { id: f.userId, name: f.nickname, status: f.status },
                 })
               }
-              className="flex-row items-center gap-3 rounded-2xl bg-cream px-3 py-3"
+              className="flex-row items-center gap-3 rounded-2xl bg-fill px-4 py-3"
             >
               <Avatar name={f.nickname} size={32} tone="mint" />
               <View className="flex-1">
@@ -151,7 +159,7 @@ function StatusSheet({
             onPress={() => set.mutate(st)}
             className={cx(
               'flex-row items-center rounded-xl px-4 py-3.5',
-              current === st ? 'bg-mint' : 'bg-cream',
+              current === st ? 'bg-mint' : 'bg-fill',
             )}
           >
             <View className={cx('mr-2 h-2 w-2 rounded-full', STATUS[st].dot)} />

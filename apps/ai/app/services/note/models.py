@@ -3,6 +3,8 @@
 from typing import Literal, NotRequired, TypedDict
 
 type MarkKind = Literal["color", "highlight", "symbol", "keyword"]
+type FixStatus = Literal["auto", "review"]  # auto = 글에 넣음, review = 학생 확인 필요
+type ConceptStatus = Literal["auto", "review"]
 
 
 class Word(TypedDict):
@@ -120,3 +122,16 @@ class Chunk(TypedDict):
     emphasis: Emphasis
     uncertainCount: int  # [?] 개수
     needsLlm: bool  # 코드로 못 나눈 긴 문단
+    fixes: NotRequired[list["TypoFix"]]  # 오타 고침(후처리를 켰을 때만)
+    concept: NotRequired[str | None]  # 개념 태그(사전 용어)
+    conceptStatus: NotRequired[ConceptStatus | None]
+
+
+class TypoFix(TypedDict):
+    """OCR 오타 고침 하나. ① ocrText는 그대로 두고 ④ 조각 글에만 넣음."""
+
+    order: int  # 조각 order
+    word: str  # OCR 글자
+    term: str  # 사전 용어
+    sim: float  # 자모 유사도
+    status: FixStatus

@@ -11,7 +11,7 @@ import { useToast } from '../stores/toast';
 import { useSession } from '../stores/session';
 import { renderScreen } from '../test-utils';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),
@@ -81,6 +81,15 @@ it('직접 입력한 주간 목표를 실제 입력값으로 저장한다', asyn
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ targetMin: 1950 })),
   );
 });
+it('주간 목표를 정하지 않은 새 계정은 NaN% 없이 이번주 시간만 보여 준다', async () => {
+  const goal = await api.study.weeklyGoal();
+  const week = await api.study.weekly();
+  jest.spyOn(api.study, 'weeklyGoal').mockResolvedValue({ ...goal, targetMin: 0 });
+  jest.spyOn(api.study, 'weekly').mockResolvedValue({ ...week, totalSec: 0 });
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('이번주 0시간 0분 ›')).toBeTruthy();
+  expect(screen.queryByText(/NaN/)).toBeNull();
+});
 it('10분 쉬면 종료 요청을 한 번만 보낸다', async () => {
   mockNow = Date.now();
   useSession.setState({
@@ -146,6 +155,20 @@ it.each([
     ).toBeTruthy();
   },
 );
+
+it('주간 목표가 0분이면 종료 요약에 목표 줄도 맨 숫자 0도 그리지 않는다', async () => {
+  const goal = await api.study.weeklyGoal();
+  jest.spyOn(api.study, 'weeklyGoal').mockResolvedValue({ ...goal, targetMin: 0 });
+  await renderScreen(<SummaryScreen />, client());
+  await screen.findByText(/수고했어요/);
+  expect(screen.queryByText(/이번주 목표/)).toBeNull();
+  type Node = { type: string; children?: (Node | string)[] | null };
+  const bare = (n: Node | string): boolean =>
+    typeof n !== 'string' &&
+    n.type !== 'Text' &&
+    (n.children ?? []).some((c) => typeof c === 'string' || bare(c));
+  expect(bare(screen.toJSON() as Node)).toBe(false);
+});
 
 it('홈은 전주보다 줄어든 시간을 양수와 감소 안내로 표시한다', async () => {
   const weekly = await api.study.weekly();
@@ -314,4 +337,39 @@ it('큰 타이머는 지금 공부하는 항목의 시간만 보여 주고 전�
   await renderScreen(<HomeScreen />, client());
   expect(await screen.findByText('오늘 전체 00:01:50')).toBeTruthy();
   expect(screen.getAllByText('00:00:10')).toHaveLength(2);
+});
+
+it('측정 중이 아닐 때 가로로 돌리면 이동하지 않고 안내하며, 다시 세우면 다시 받는다', async () => {
+  await renderScreen(<HomeScreen />, client());
+  await waitFor(() => expect(Accelerometer.addListener).toHaveBeenCalled());
+  const listener = jest.mocked(Accelerometer.addListener).mock.calls[0]![0];
+  await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).not.toHaveBeenCalledWith('/landscape');
+  expect(useToast.getState().msg).toContain('가로로 돌려 주세요');
+  useSession.setState({ itemId: 'item', since: null, pausedAt: mockNow });
+  await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).not.toHaveBeenCalledWith('/landscape');
+  await act(async () => listener({ x: 0, y: 1, z: 0, timestamp: 0 }));
+  await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).toHaveBeenCalledWith('/landscape');
+});
+
+it('공부 목록의 목표는 "목표 30분" · "목표 없음"으로, 목표를 두 번 적지 않는다', async () => {
+  const base = await api.study.today();
+  const item = (id: string, goalMin: number | null) => ({
+    ...(base.items[0] ?? {}),
+    _id: id,
+    title: id,
+    subjectName: '영어',
+    goalMin,
+    accumulatedSec: 0,
+  });
+  jest.spyOn(api.study, 'today').mockResolvedValue({
+    ...base,
+    items: [item('a', 30), item('b', null)],
+  } as never);
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('영어 · 목표 30분')).toBeTruthy();
+  expect(screen.getByText('영어 · 목표 없음')).toBeTruthy();
+  expect(screen.queryByText(/목표 목표/)).toBeNull();
 });

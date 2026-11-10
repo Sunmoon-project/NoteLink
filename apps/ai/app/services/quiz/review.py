@@ -64,7 +64,12 @@ type Reason = Literal["wrong"]
 
 
 class InputError(ValueError):
-    """input이 작업에 맞지 않음. 메시지는 짧은 원인(어느 필드인지)."""
+    """input이 작업에 맞지 않음. 메시지는 짧은 원인(어느 필드인지).
+
+    code가 있으면 작업 오류를 '<code>: <원인>'으로 써 앱이 구분합니다(generate.NoQuestionsError).
+    """
+
+    code: str | None = None
 
 
 class Progress(Protocol):
@@ -186,6 +191,10 @@ def parse_question(raw: object, where: str) -> Question:
         if not (isinstance(tags, list) and all(isinstance(t, str) for t in tags)):
             raise InputError(f"{where}.conceptTags")
         q["conceptTags"] = tags
+    # 유형으로 정한 처음 난이도(#268): 오늘의 복습 사본이 그대로 가져가게 보존. 하 · 중 · 상이
+    # 아닌 값은 버림(난이도 하나 때문에 복습 작업 전체를 실패시키지 않게)
+    if raw.get("difficulty") in ("하", "중", "상"):
+        q["difficulty"] = raw["difficulty"]
     q["srs"] = parse_srs(raw.get("srs"), f"{where}.srs")
     return q
 
@@ -239,18 +248,23 @@ def parse_notes(notes_raw: dict[str, Any]) -> Notes:
         w = f"input.notes.{mid}"
         if not isinstance(pages, list):
             raise InputError(w)
-        checked: list[Page] = []
-        for j, p in enumerate(pages):
-            text = p.get("ocrText") if isinstance(p, dict) else None
-            if text is not None and not isinstance(text, str):
-                raise InputError(f"{w}[{j}].ocrText")
-            # 녹음 정리 시제품(10/25)이 쪽 번호를 '1'처럼 글로 저장한 노트가 있음
-            no = need(p, "pageNo", (int, str), f"{w}[{j}]")
-            if isinstance(no, str) and not (no.isascii() and no.isdigit()):  # "²"는 int()가 못 읽음
-                raise InputError(f"{w}[{j}].pageNo")
-            checked.append({"pageNo": int(no), "ocrText": text})
-        notes[str(mid)] = clean_pages(checked)
+        notes[str(mid)] = clean_pages(parse_pages(pages, w))
     return notes
+
+
+def parse_pages(pages: list[Any], w: str) -> list[Page]:
+    """[{pageNo, ocrText}] 확인. 맞춤 퀴즈(generate.py)의 material.pages도 씁니다."""
+    checked: list[Page] = []
+    for j, p in enumerate(pages):
+        text = p.get("ocrText") if isinstance(p, dict) else None
+        if text is not None and not isinstance(text, str):
+            raise InputError(f"{w}[{j}].ocrText")
+        # 녹음 정리 시제품(10/25)이 쪽 번호를 '1'처럼 글로 저장한 노트가 있음
+        no = need(p, "pageNo", (int, str), f"{w}[{j}]")
+        if isinstance(no, str) and not (no.isascii() and no.isdigit()):  # "²"는 int()가 못 읽음
+            raise InputError(f"{w}[{j}].pageNo")
+        checked.append({"pageNo": int(no), "ocrText": text})
+    return checked
 
 
 # ---------------------------------------------------------------- code: judgment
@@ -571,7 +585,8 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
             {
                 "id": qid,
                 "order": len(new_qs) + 1,  # 못 만든 문제는 건너뛰고 1부터 차례로
-                "type": "빈칸" if "____" in g["passage"] else m.type,  # 보이는 모양대로 저장
+                "type": (ty := "빈칸" if "____" in g["passage"] else m.type),  # 보이는 모양대로
+                "difficulty": similar.difficulty_of(ty),  # 유형으로 정한 처음 난이도(#268)
                 "prompt": g["stem"],
                 "passage": g["passage"] or None,
                 "choices": g["options"],

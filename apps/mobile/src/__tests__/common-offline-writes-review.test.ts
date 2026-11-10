@@ -1,10 +1,10 @@
-import { mockApi as api } from '../lib/mock/api';
+import { mockApi as api } from './fixtures/api';
 import { NetworkError } from '../lib/api/http';
 import { useNet } from '../stores/net';
-import { useMockFlags } from '../lib/mock/flags';
+import { useMockFlags } from './fixtures/flags';
 import type { TimerRule } from '@notelink/shared';
 
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'http://api' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(),

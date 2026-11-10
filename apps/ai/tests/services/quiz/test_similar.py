@@ -136,9 +136,9 @@ def test_checker_failure_next_to_a_real_rejection_is_not_llm_down() -> None:
 
 
 def test_two_answers_check_failing_keeps_the_draft_out() -> None:
-    # 어휘 문제의 '같은 뜻' 검사(Natural)가 모두 실패: 걸린 보기가 없어도 검사하지 못한 초안
+    # 어휘 문제의 '같은 뜻' 검사(Naturals)가 모두 실패: 걸린 보기가 없어도 검사하지 못한 초안
     review = [gen(GOOD), LlmError("HTTP 503"), gen(GOOD)]
-    llm = FakeLlm({"Review": review, "Natural": [LlmError("HTTP 503")] * 40})
+    llm = FakeLlm({"Review": review, "Naturals": [LlmError("HTTP 503")] * 40})
     m = similar.make_similar(llm, question(qtype="어휘"), target(), 1, PAGE, 0, [])
     assert m.question is None and m.llm_down
     assert m.why == ["정답 둘 검사 호출이 실패함"]
@@ -299,3 +299,36 @@ def test_reuse_leaves_out_what_the_caller_skips() -> None:
     q = question(qid="q1")
     seen = [seen_question(q)]
     assert similar.reuse_existing(q, [draft("새 문제")], seen, [], skip={"q1"}) is None
+
+
+# ---------- 새 유형 · 난이도 (#268) ----------
+
+
+@pytest.mark.parametrize("qtype", ["부정설명", "조합"])
+def test_a_new_type_question_is_reviewed_as_a_feature_question(qtype: str) -> None:
+    # 틀린 문제는 옳은 설명을 고르는 쉬운 문제로: 부정설명의 정답(틀린 설명)을 다시 묻지 않고,
+    # 조합은 모델이 문제 전체를 쓰면 줄바꿈이 깨짐
+    llm = FakeLlm({"Review": [gen(FOUR), gen(FOUR), gen(FOUR)]})
+    similar.make_similar(llm, question(qtype=qtype), target(), 1, PAGE, 0, [])
+    assert "문제 유형: 특징" in llm.calls[0].user
+
+
+def test_negative_questions_are_allowed_only_for_their_type() -> None:
+    assert "부정 질문은 문제 유형이 부정설명일 때만 낸다" in similar.GEN_SYS
+
+
+@pytest.mark.parametrize(
+    ("qtype", "level"),
+    [
+        ("정의", "하"),
+        ("빈칸", "하"),
+        ("특징", "중"),
+        ("부정설명", "중"),
+        ("조합", "상"),
+        ("규칙", "상"),
+        (None, "중"),
+        ("단답형", "중"),
+    ],
+)
+def test_difficulty_comes_from_the_type(qtype: str | None, level: str) -> None:
+    assert similar.difficulty_of(qtype) == level

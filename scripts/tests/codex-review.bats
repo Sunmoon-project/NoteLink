@@ -199,6 +199,29 @@ make_repo() {
   [ "$(echo 'a/b' | strip_prefix '')" = "a/b" ]
 }
 
+@test "strip_worktree: 같은 작업 폴더를 역슬래시 · 슬래시 · POSIX 꼴로 써도 모두 지운다 (#30)" {
+  cygpath() {
+    case "$1" in
+      -w) echo 'C:\Users\a\Temp\tmp.X\pr-2' ;;
+      -m) echo 'C:/Users/a/Temp/tmp.X/pr-2' ;;
+    esac
+  }
+  out=$(printf '%s\n' \
+    'P1 — C:\Users\a\Temp\tmp.X\pr-2\scripts\x.sh:3' \
+    'P2 — [b.py](C:/Users/a/Temp/tmp.X/pr-2/apps/ai/b.py:7)' \
+    'P3 — /tmp/tmp.X/pr-2/apps/api/c.ts:9' | strip_worktree /tmp/tmp.X/pr-2)
+  [ "$out" = 'P1 — scripts\x.sh:3
+P2 — [b.py](apps/ai/b.py:7)
+P3 — apps/api/c.ts:9' ]
+}
+
+@test "strip_worktree: cygpath가 없으면(Linux) POSIX 꼴만 지운다" {
+  cygpath() { return 127; }
+  out=$(printf '%s\n' '/tmp/tmp.X/pr-2/a.sh:1' 'C:/x/a.sh:2' | strip_worktree /tmp/tmp.X/pr-2)
+  [ "$out" = 'a.sh:1
+C:/x/a.sh:2' ]
+}
+
 # ---------- gh --jq 필터 (jq로 같은 필터 검증) ----------
 
 need_jq() { command -v jq >/dev/null || skip "jq 없음"; }
@@ -591,6 +614,8 @@ fake_gh_request() {
   done
   [ -z "$(workflow_skip_reason false false develop alice)" ]
   [ -z "$(workflow_skip_reason false false main -)" ]
+  [ -z "$(workflow_skip_reason false false design/redesign alice)" ]
+  [[ "$(workflow_skip_reason false false design/other alice)" == "design/other 브랜치로 가는 PR은"* ]]
 }
 
 @test "has_open_ci_failures: 내 해결되지 않은 CI 실패 안내가 있으면 0, 없거나 조회 실패면 1" {

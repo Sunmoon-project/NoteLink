@@ -4,6 +4,23 @@ import type { User } from '@notelink/shared';
 
 // 토큰은 SecureStore(키체인 · 키스토어)에만 둔다
 const KEY = 'notelink.auth';
+// 이 기기에서 초기 설정(약관 · 프로필)을 마친 계정. 로그아웃해도 남겨, 다시 로그인하면 설정을 건너뛴다
+// ponytail: 기기 단위 기록 — 서버가 계정의 설정 완료 여부를 내려주면 그 값으로 바꾼다
+const ONBOARDED_KEY = 'notelink.onboarded';
+const readOnboardedIds = async () => {
+  try {
+    const v = JSON.parse((await SecureStore.getItemAsync(ONBOARDED_KEY)) ?? '[]');
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+};
+// 못 적으면 다음 로그인 때 설정을 한 번 더 할 뿐이라 설정 완료를 막지 않는다
+const rememberOnboarded = async (id: string) => {
+  const ids = await readOnboardedIds();
+  if (!ids.includes(id))
+    await SecureStore.setItemAsync(ONBOARDED_KEY, JSON.stringify([...ids, id])).catch(() => {});
+};
 
 type Saved = { accessToken: string; refreshToken: string };
 type Auth = {
@@ -66,10 +83,14 @@ export const useAuth = create<Auth>((set, get) => {
         userId: saved?.userId ?? null,
         onboarded: !!saved?.onboarded,
       });
+      // 이 기록이 생기기 전 버전에서 설정을 마친 계정도 로그아웃 뒤 다시 로그인할 때 건너뛰게 옮겨 둔다
+      if (saved?.onboarded && saved.userId) await rememberOnboarded(saved.userId);
     },
     signIn: async (tokens, user) => {
-      // 온보딩 완료 여부는 같은 계정일 때만 이어 간다
-      const onboarded = get().userId === user._id && get().onboarded;
+      // 온보딩 완료 여부는 같은 계정일 때만 이어 간다 (로그아웃 뒤에도 이 기기에서 마친 계정이면 이어 간다)
+      const onboarded =
+        (get().userId === user._id && get().onboarded) ||
+        (await readOnboardedIds()).includes(user._id);
       set({ tokens, user, userId: user._id, onboarded, expired: false });
       await persist();
     },
@@ -88,8 +109,11 @@ export const useAuth = create<Auth>((set, get) => {
       await persist();
     },
     finishOnboarding: async () => {
+      // 저장을 기다리는 사이 다른 계정으로 바뀌어도 설정을 마친 그 계정만 적는다
+      const id = get().userId;
       set({ onboarded: true });
       await persist();
+      if (id) await rememberOnboarded(id);
     },
     signOut: async () => {
       const identity = get().userId;

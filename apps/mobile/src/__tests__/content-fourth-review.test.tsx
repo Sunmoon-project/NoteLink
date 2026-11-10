@@ -19,7 +19,7 @@ jest.mock('../lib/api', () => ({
   NetworkError: class NetworkError extends Error {},
 }));
 jest.mock('../lib/push', () => ({ notifyLocal: jest.fn() }));
-jest.mock('../lib/env', () => ({ env: { useMock: true, apiUrl: 'https://api.example' } }));
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'https://api.example' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(),
   setItemAsync: jest.fn(),
@@ -119,7 +119,8 @@ it.each(cases)(
     expect(screen.queryByLabelText('파일 옵션')).toBeNull();
     expect(mockApi.content.material).toHaveBeenCalledWith(id);
     const back =
-      screen.queryByRole('button', { name: /뒤로|돌아가기|목록/ }) ?? screen.getByLabelText('뒤로');
+      screen.queryAllByRole('button', { name: /뒤로|돌아가기|목록/ })[0] ??
+      screen.getByLabelText('뒤로');
     await fireEvent.press(back);
     expect(router.back).toHaveBeenCalledTimes(1);
   },

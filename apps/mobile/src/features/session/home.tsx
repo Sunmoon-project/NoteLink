@@ -6,15 +6,28 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useKeepAwake } from 'expo-keep-awake';
 import { Accelerometer } from 'expo-sensors';
 import * as Haptics from 'expo-haptics';
-import { Pause, Play, Square, Target, Users } from 'lucide-react-native';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import { Flame, Pause, Play, Plus, RotateCw, Square, Target, Users } from 'lucide-react-native';
 import { api } from '@/lib/api';
 import { dLabel, goalLabel, hm, hms, seoul, ymd } from '@/lib/dates';
 import { useNow } from '@/hooks';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { AUTO_END_MS, useSession } from '@/stores/session';
-import { Badge, Btn, Card, Dashed, Screen, cx } from '@/components/ui';
-import { C, ICON } from '@/theme';
+import {
+  Badge,
+  Btn,
+  Canvas,
+  Card,
+  LIST_LAYOUT,
+  Progress,
+  Roll,
+  Screen,
+  Swap,
+  Tap,
+  cx,
+} from '@/components/ui';
+import { C, ICON, MOTION, SHADOW } from '@/theme';
 import { AddItemSheet, WeekGoalSheet } from './sheets';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { NetBanner } from '@/components/NetBanner';
@@ -51,8 +64,13 @@ export function HomeScreen() {
     ? live(s.itemId, items.find((i) => i._id === s.itemId)?.accumulatedSec ?? 0)
     : null;
   const weekSec = (weekly.data?.totalSec ?? 0) + (s.itemId ? s.elapsedSince(monday, now) : 0);
-  const goalMin = goal.data?.targetMin ?? 21 * 60;
-  const pct = Math.round((weekSec / 60 / goalMin) * 100);
+  // 목표를 읽지 못했으면 임의의 목표로 계산하지 않는다
+  const goalMin = goal.data?.targetMin;
+  // 주간 기록을 못 읽었으면 0시간이나 0%로 표시하지 않는다
+  const pct = goalMin && weekly.data ? Math.round((weekSec / 60 / goalMin) * 100) : null;
+  const weekLabel = weekly.data
+    ? `이번주 ${hm(weekSec)}${goalMin ? ` / 목표 ${goalMin / 60}시간 (${pct}%)` : ''} ›`
+    : '주간 목표 설정 ›';
   const nextDday = ddays.data?.find((d) => d.daysLeft >= 0);
 
   const toggle = async (id: string) => {
@@ -137,20 +155,29 @@ export function HomeScreen() {
     void finish('auto_pause_timeout');
   }, [now, s.pausedAt, s.sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const status = running ? '측정 중' : active ? '일시정지' : '측정 대기';
   return (
-    <View className="flex-1 bg-white">
+    <Canvas>
       {running && <KeepAwake />}
-      {s.itemId && <TiltWatcher />}
+      <TiltWatcher />
       <Screen>
         <NetBanner />
-        <View className="flex-row items-start justify-between pt-4">
-          <View>
+        <View className="flex-row items-start justify-between pt-5">
+          <View className="flex-1">
             {has && <Text className="text-caption text-sub">안녕하세요</Text>}
-            <Text className="text-title2 font-bold text-ink">
-              {has
-                ? `${me.data?.nickname ?? ''} 님 🔥 ${me.data?.streakDays ?? 0}일째`
-                : '안녕하세요👋'}
-            </Text>
+            <View className="flex-row items-center gap-2">
+              <Text className="text-title2 font-bold text-ink">
+                {has ? `${me.data?.nickname ?? ''} 님` : '안녕하세요'}
+              </Text>
+              {has && (
+                <View className="flex-row items-center gap-1 rounded-full bg-sun/20 px-2 py-0.5">
+                  <Flame size={ICON.xs} color={C.ink} />
+                  <Text className="text-caption font-semibold text-ink">
+                    {me.data?.streakDays ?? 0}일째
+                  </Text>
+                </View>
+              )}
+            </View>
             {!has && (
               <Text className="text-caption text-sub">노트링크와 함께 학습을 시작해보세요</Text>
             )}
@@ -158,7 +185,7 @@ export function HomeScreen() {
           <Pressable
             accessibilityLabel="친구"
             onPress={() => openFeature('/friends')}
-            className="h-9 w-9 items-center justify-center rounded-full bg-mint"
+            className="h-11 w-11 items-center justify-center rounded-full bg-white"
           >
             <Users size={ICON.md} color={C.brand} />
           </Pressable>
@@ -167,9 +194,9 @@ export function HomeScreen() {
         {has && nextDday && (
           <Pressable
             onPress={() => openFeature('/dday')}
-            className="mt-3 flex-row items-center gap-3 px-1 py-2"
+            className="mt-4 flex-row items-center gap-3 px-1 py-2"
           >
-            <View className="h-9 w-9 items-center justify-center rounded-full bg-cream">
+            <View className="h-9 w-9 items-center justify-center rounded-full bg-white">
               <Target size={ICON.md} color={C.brand} />
             </View>
             <View className="flex-1">
@@ -182,167 +209,228 @@ export function HomeScreen() {
           </Pressable>
         )}
 
-        {/* 순공시간 카드 */}
-        <View className="mt-3 rounded-3xl bg-night p-5">
+        {/* 집중 카드: 화면에서 그림자를 쓰는 하나뿐인 면. 측정을 시작하면 버튼 줄이 열리며 아래가 함께 밀린다 */}
+        <Animated.View
+          layout={LIST_LAYOUT}
+          className="mt-6 rounded-card bg-night p-6"
+          style={{ boxShadow: SHADOW.focus }}
+        >
           <View className="flex-row items-center justify-between">
             <Text className="text-caption text-white/70">
               {active ? '이 항목 오늘 공부 시간' : '오늘 순공시간'}
             </Text>
-            <View className="flex-row items-center gap-1">
+            <View className="flex-row items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1">
               <View
                 className={cx('h-1.5 w-1.5 rounded-full', running ? 'bg-sun' : 'bg-white/50')}
               />
-              <Text className="text-caption text-white/70">
-                {running ? '측정 중' : active ? '일시정지' : '측정 대기'}
-              </Text>
+              <Swap k={status}>
+                <Text className={cx('text-caption', running ? 'text-sun' : 'text-white/70')}>
+                  {status}
+                </Text>
+              </Swap>
             </View>
           </View>
-          <Text className={cx('mt-1 text-footnote', running ? 'text-sun' : 'text-white/60')}>
-            {active
-              ? `${running ? '▶ ' : ''}${active.title} · ${active.subjectName}`
-              : has
-                ? '오늘 공부할 목록에서 항목을 고르세요'
+          {(active || !has) && (
+            <Text className={cx('mt-1 text-footnote', running ? 'text-sun' : 'text-white/60')}>
+              {active
+                ? `${active.title} · ${active.subjectName}`
                 : '먼저 공부할 항목을 추가해 주세요'}
-          </Text>
-          <Text
-            className="mt-1 tabular-nums text-display font-bold text-white"
-            style={{ fontVariant: ['tabular-nums'] }}
-          >
-            {hms(activeSec ?? todaySec)}
-          </Text>
+            </Text>
+          )}
+          <View className="mt-1">
+            <Roll
+              value={hms(activeSec ?? todaySec)}
+              className={cx(
+                'text-display font-bold',
+                active && !running ? 'text-white/50' : 'text-white',
+              )}
+            />
+          </View>
           {active && <Text className="text-caption text-white/60">오늘 전체 {hms(todaySec)}</Text>}
-          <Pressable accessibilityLabel="주간 목표 설정" onPress={() => setSheet('goal')}>
+          <Pressable
+            accessibilityLabel="주간 목표 설정"
+            onPress={() => setSheet('goal')}
+            className="mt-4"
+          >
             <Text className="text-footnote text-white/80">
               {running
-                ? `책상 앞이에요 · 이번주 목표 ${pct}%`
+                ? `책상 앞이에요${pct === null ? '' : ` · 이번주 목표 ${pct}%`}`
                 : active
                   ? '쉬는 중 · 10분이 지나면 자동으로 종료돼요'
-                  : has
-                    ? `이번주 ${hm(weekSec)} / 목표 ${goalMin / 60}시간 (${pct}%) ›`
-                    : `이번주 ${hm(weekSec)} / 목표 ${goalMin / 60}시간 (${pct}%) ›`}
+                  : weekLabel}
             </Text>
+            {pct !== null && <Progress value={pct} tone="sun" onDark className="mt-2" />}
           </Pressable>
-          <Pressable onPress={() => active && router.push('/landscape')}>
-            <Text className="mt-0.5 text-caption2 text-white/45">
-              ⟳ 가로로 돌리면 자동 측정 · 세로로 세우면 정지
-            </Text>
-          </Pressable>
-          {active ? (
-            <View className="mt-4 flex-row gap-2">
-              <View className="flex-1">
-                {running ? (
+          {active && (
+            <Animated.View
+              entering={FadeIn.duration(MOTION.enter)}
+              exiting={FadeOut.duration(MOTION.exit)}
+            >
+              <Pressable
+                onPress={() => router.push('/landscape')}
+                className="mt-3 flex-row items-center gap-1"
+              >
+                <RotateCw size={ICON.xs} color={C.sub} />
+                <Text className="text-caption2 text-white/60">
+                  가로로 돌리면 자동 측정 · 세로로 세우면 정지
+                </Text>
+              </Pressable>
+              <View className="mt-6 flex-row gap-3">
+                <View className="flex-1">
+                  <Swap k={running ? 'pause' : 'resume'}>
+                    {running ? (
+                      <Btn
+                        kind="gray"
+                        small
+                        icon={<Pause size={ICON.sm} color="#fff" />}
+                        onPress={() => s.pause()}
+                      >
+                        일시정지
+                      </Btn>
+                    ) : (
+                      <Btn
+                        kind="sun"
+                        small
+                        icon={<Play size={ICON.sm} color={C.ink} />}
+                        onPress={() => s.resume()}
+                      >
+                        계속하기
+                      </Btn>
+                    )}
+                  </Swap>
+                </View>
+                <View className="flex-1">
                   <Btn
-                    kind="gray"
+                    kind={running ? 'sun' : 'gray'}
                     small
-                    icon={<Pause size={ICON.sm} color="#fff" />}
-                    onPress={() => s.pause()}
+                    icon={<Square size={ICON.xs} color={running ? C.ink : '#fff'} />}
+                    onPress={() => finish()}
                   >
-                    일시정지
+                    종료
                   </Btn>
-                ) : (
-                  <Btn
-                    kind="sun"
-                    small
-                    icon={<Play size={ICON.sm} color={C.ink} />}
-                    onPress={() => s.resume()}
-                  >
-                    계속하기
-                  </Btn>
-                )}
+                </View>
               </View>
-              <View className="flex-1">
-                <Btn
-                  kind={running ? 'sun' : 'gray'}
-                  small
-                  icon={<Square size={ICON.xs} color={running ? C.ink : '#fff'} />}
-                  onPress={() => finish()}
-                >
-                  종료
-                </Btn>
-              </View>
+            </Animated.View>
+          )}
+        </Animated.View>
+
+        <Animated.View layout={LIST_LAYOUT}>
+          <View className="mt-10 mb-4 flex-row items-center justify-between px-1">
+            <Text className="text-headline font-bold text-ink">오늘 공부할 목록</Text>
+            <Text className="text-caption text-sub">{items.length}개</Text>
+          </View>
+          {today.isError && !today.data && (
+            <View className="gap-2 py-3">
+              <Text className="text-footnote text-sub">오늘 목록을 불러오지 못했어요</Text>
+              <Btn small onPress={() => void today.refetch()}>
+                오늘 목록 다시 시도
+              </Btn>
             </View>
-          ) : (
-            <View className="mt-4 rounded-xl bg-white/5 py-2.5">
-              <Text className="text-center text-caption text-white/70">
-                {has
-                  ? '아래 목록에서 ▶을 눌러 공부를 시작하세요'
-                  : '항목을 추가하면 ▶로 바로 시작할 수 있어요'}
+          )}
+          {today.isSuccess && !has && (
+            <View className="mb-3 items-center rounded-card bg-cream py-6">
+              <Text className="text-footnote text-sub">아직 공부할 목록이 없어요</Text>
+              <Text className="text-caption2 text-sub">
+                과목이나 할 일을 추가하면 항목별로 시간을 따로 재요
               </Text>
             </View>
           )}
-        </View>
-
-        <View className="mt-6 mb-2 flex-row items-center justify-between">
-          <Text className="text-headline font-bold text-ink">오늘 공부할 목록</Text>
-          <Text className="text-caption text-sub">{items.length}개</Text>
-        </View>
-        {!has && (
-          <View className="items-center rounded-2xl border border-dashed border-cream-2 py-5">
-            <Text className="text-footnote text-sub">아직 공부할 목록이 없어요</Text>
-            <Text className="text-caption2 text-sub/80">
-              과목이나 할 일을 추가하면 항목별로 시간을 따로 재요
-            </Text>
-          </View>
-        )}
-        <View className="gap-2">
-          {items.map((it) => {
-            const on = it._id === s.itemId;
-            const play = on && running;
-            return (
-              <View
-                key={it._id}
-                className={cx(
-                  'flex-row items-center gap-3 rounded-2xl border px-4 py-3',
-                  on ? 'border-brand/40 bg-mint' : 'border-line bg-white',
-                )}
-              >
-                <View className={cx('h-8 w-1 rounded-full', on ? 'bg-brand' : 'bg-cream-2')} />
-                <View className="flex-1">
-                  <Text className="text-callout font-semibold text-ink">{it.title}</Text>
-                  <Text className="text-caption text-sub">
-                    {it.subjectName} · 목표 {goalLabel(it.goalMin)}
-                  </Text>
-                </View>
-                <Text className="tabular-nums text-subhead font-semibold text-ink/80">
-                  {hms(live(it._id, it.accumulatedSec))}
-                </Text>
-                <Pressable
-                  accessibilityLabel={`${it.title} ${play ? '일시정지' : '시작'}`}
-                  onPress={() => toggle(it._id)}
+          {/* 목록은 흰 그룹 하나 — 항목을 더하거나 지우면 남은 행이 자리를 메운다 */}
+          <View className="overflow-hidden rounded-card bg-white">
+            {items.map((it, i) => {
+              const on = it._id === s.itemId;
+              const play = on && running;
+              return (
+                <Animated.View
+                  key={it._id}
+                  layout={LIST_LAYOUT}
+                  entering={FadeIn.duration(MOTION.enter)}
+                  exiting={FadeOut.duration(MOTION.exit)}
                   className={cx(
-                    'h-9 w-9 items-center justify-center rounded-full',
-                    on ? 'bg-brand' : 'bg-mint',
+                    'flex-row items-center gap-3.5 px-5 py-4',
+                    i > 0 && 'border-t border-fill',
+                    on && 'bg-mint',
                   )}
                 >
-                  {play ? (
-                    <Pause size={ICON.sm} color="#fff" />
-                  ) : (
-                    <Play size={ICON.sm} color={on ? '#fff' : C.brand} />
-                  )}
-                </Pressable>
-              </View>
-            );
-          })}
-        </View>
-        <Dashed onPress={() => setSheet('add')}>+ 공부할 항목 추가</Dashed>
-
-        <Text className="mt-6 mb-2 text-headline font-bold text-ink">학습 기록</Text>
-        <Card className="p-4" onPress={() => openFeature('/record')}>
-          <View className="flex-row justify-between">
-            <Text className="text-caption text-sub">이번주 순공시간</Text>
-            <Text className="text-caption font-semibold text-brand">기록 · 캘린더 ›</Text>
+                  {/* 세로 줄은 지금 재는 항목 표시일 때만 — 자리는 남겨 글자 줄을 맞춘다 */}
+                  <View
+                    className={cx('h-8 w-1 rounded-full', on ? 'bg-brand' : 'bg-transparent')}
+                  />
+                  <View className="flex-1">
+                    <Text className="text-callout font-semibold text-ink">{it.title}</Text>
+                    <Text className="text-caption text-sub">
+                      {it.subjectName} ·{' '}
+                      {it.goalMin ? `목표 ${goalLabel(it.goalMin)}` : goalLabel(null)}
+                    </Text>
+                  </View>
+                  <Text
+                    className={cx(
+                      'tabular-nums text-subhead font-semibold',
+                      on ? 'text-brand' : 'text-ink/80',
+                    )}
+                  >
+                    {hms(live(it._id, it.accumulatedSec))}
+                  </Text>
+                  <Pressable
+                    accessibilityLabel={`${it.title} ${play ? '일시정지' : '시작'}`}
+                    onPress={() => toggle(it._id)}
+                    className={cx(
+                      'h-11 w-11 items-center justify-center rounded-full',
+                      on ? 'bg-brand' : 'bg-mint',
+                    )}
+                  >
+                    <Swap k={play ? 'pause' : 'play'}>
+                      {play ? (
+                        <Pause size={ICON.sm} color="#fff" />
+                      ) : (
+                        <Play size={ICON.sm} color={on ? '#fff' : C.brand} />
+                      )}
+                    </Swap>
+                  </Pressable>
+                </Animated.View>
+              );
+            })}
+            <Tap
+              accessibilityRole="button"
+              onPress={() => setSheet('add')}
+              className={cx('flex-row items-center gap-3 px-5 py-4', has && 'border-t border-fill')}
+            >
+              <Plus size={ICON.md} color={C.brand} />
+              <Text className="text-subhead font-semibold text-brand">공부할 항목 추가</Text>
+            </Tap>
           </View>
-          <Text className="mt-1 text-title2 font-bold text-ink">{hm(weekSec)}</Text>
-          <Text className="text-caption text-sub">
-            {has
-              ? `지난주보다 ${hm(Math.abs(weekly.data?.diffFromLastWeekSec ?? 0)).replace('0시간 ', '')} ${(weekly.data?.diffFromLastWeekSec ?? 0) < 0 ? '줄었어요' : '늘었어요'}`
-              : '학습 기록이 쌓이면 스트릭이 시작돼요'}
-          </Text>
-        </Card>
+
+          <Text className="mt-10 mb-4 px-1 text-headline font-bold text-ink">학습 기록</Text>
+          <Card className="p-6" onPress={() => openFeature('/record')}>
+            <View className="flex-row justify-between">
+              <Text className="text-caption text-sub">이번주 순공시간</Text>
+              <Text className="text-caption font-semibold text-brand">기록 · 캘린더 ›</Text>
+            </View>
+            <View className="mt-1">
+              {weekly.data ? (
+                <Roll value={hm(weekSec)} className="text-title2 font-bold text-ink" />
+              ) : (
+                <Text className="text-title2 font-bold text-ink">-</Text>
+              )}
+            </View>
+            <Text className="text-caption text-sub">
+              {weekly.isError && !weekly.data
+                ? '이번주 기록을 불러오지 못했어요'
+                : has
+                  ? `지난주보다 ${hm(Math.abs(weekly.data?.diffFromLastWeekSec ?? 0)).replace('0시간 ', '')} ${(weekly.data?.diffFromLastWeekSec ?? 0) < 0 ? '줄었어요' : '늘었어요'}`
+                  : '학습 기록이 쌓이면 스트릭이 시작돼요'}
+            </Text>
+            {weekly.isError && !weekly.data && (
+              <Btn small className="mt-2" onPress={() => void weekly.refetch()}>
+                이번주 기록 다시 시도
+              </Btn>
+            )}
+          </Card>
+        </Animated.View>
       </Screen>
       <AddItemSheet open={sheet === 'add'} onClose={() => setSheet(null)} />
       <WeekGoalSheet open={sheet === 'goal'} onClose={() => setSheet(null)} />
-    </View>
+    </Canvas>
   );
 }
 
@@ -359,9 +447,12 @@ function TiltWatcher() {
       pushed.current = false;
       Accelerometer.setUpdateInterval(400);
       const sub = Accelerometer.addListener(({ x, y }) => {
+        // 다시 세우면 다음 기울임을 받는다
+        if (Math.abs(y) > 0.8) pushed.current = false;
         if (!pushed.current && Math.abs(x) > 0.8 && Math.abs(y) < 0.35) {
           pushed.current = true;
-          router.push('/landscape');
+          if (useSession.getState().itemId) router.push('/landscape');
+          else toast('공부할 항목을 시작한 뒤 가로로 돌려 주세요');
         }
       });
       return () => sub.remove();
