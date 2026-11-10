@@ -372,6 +372,7 @@ export function Header({
       <View className="-mx-5 mb-3 h-control-lg flex-row items-center justify-center border-b border-line px-5">
         {back && (
           <Pressable
+            accessibilityRole="button"
             accessibilityLabel="뒤로"
             onPress={goBack}
             hitSlop={10}
@@ -389,6 +390,7 @@ export function Header({
       <View className="h-control flex-row items-center justify-between">
         {back ? (
           <Pressable
+            accessibilityRole="button"
             accessibilityLabel="뒤로"
             onPress={goBack}
             hitSlop={10}
