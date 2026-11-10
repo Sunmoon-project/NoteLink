@@ -7,6 +7,7 @@ import { createMongooseOptions } from './config/mongo.config.js';
 import { HealthController } from './health/health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
+import { UsersModule } from './modules/users/users.module.js';
 
 @Module({
   imports: [
@@ -19,6 +20,10 @@ import { RewardModule } from './modules/reward/reward.module.js';
       useFactory: createMongooseOptions,
     }),
     AuthModule,
+
+    // 내 프로필 조회, 수정 등 사용자 API
+    UsersModule,
+
     // ai_jobs 작업 넣기 · 진행 상태 · 취소 · 다시 시도(#175)
     AiJobsModule,
     // 상점 · 포인트(FR-59~63)
