@@ -8,7 +8,17 @@ export const SESSION_COMPLETE_MIN_SEC = 600; // 순공 10분 이상이면 적립
 export const SESSION_COMPLETE_POINTS = 20;
 export const SESSION_DAILY_REWARD_LIMIT = 2; // 세션 보상은 하루(서울 기준) 2번까지
 export const QUIZ_CORRECT_POINTS = 4; // 정답 하나당
-export const QUIZ_DAILY_POINT_LIMIT = 40; // 퀴즈 보상은 하루 40포인트까지 (한도를 적용하는 곳은 퀴즈 API)
+export const QUIZ_DAILY_POINT_LIMIT = 40; // 퀴즈 보상은 하루 40포인트까지 (한도는 PointService.earnQuiz가 적용한다)
+
+/** 오늘(서울 날짜, DAY_RESET_HOUR=0이라 자정에 바뀜) YYYY-MM-DD. 하루 한도를 셀 날짜 키로 쓴다 */
+export function seoulDay(now: Date): string {
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Seoul',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).format(now);
+}
 
 export interface PointReward {
     amount: number;
