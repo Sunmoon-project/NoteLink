@@ -50,11 +50,9 @@ def main() -> None:
         raise SystemExit("MONGODB_URI가 비어 있습니다(.env.production 참고)")
     if not HANDLERS:
         log.warning("등록된 작업 종류가 없습니다. 6~8번 PR에서 app/worker/handlers.py에 추가합니다")
-    elif missing := llm_setup_problem():
-        # 설정이 없으면 작업마다 실패하므로 시작할 때 막음
-        raise SystemExit(
-            f"{missing}가 비어 있습니다(LLM_PROVIDER={settings.llm_provider}, .env.production 참고)"
-        )
+    elif problem := llm_setup_problem():
+        # 설정이 틀리면 작업마다 실패하므로 시작할 때 막음
+        raise SystemExit(f"LLM 설정 오류: {problem} (.env.production 참고)")
     client: MongoClient[JsonObject] = MongoClient(uri, tz_aware=True)
     worker = f"{socket.gethostname()}:{os.getpid()}"
 

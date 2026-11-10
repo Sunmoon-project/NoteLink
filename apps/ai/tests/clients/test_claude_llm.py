@@ -11,6 +11,7 @@ from pydantic import SecretStr
 from app.clients.llm import (
     CLAUDE_THINK_ROOM,
     CLAUDE_TOKEN_SCALE,
+    MODEL_FIELDS,
     ClaudeLlm,
     LlmCutError,
     LlmError,
@@ -135,6 +136,12 @@ def test_haiku_keeps_default_thinking_and_gets_room_for_it() -> None:
     assert body["max_tokens"] == 100 * CLAUDE_TOKEN_SCALE + CLAUDE_THINK_ROOM
 
 
+def test_dated_sonnet_id_also_turns_thinking_off() -> None:
+    s = Server(message("{}"))
+    call(s.client(), model="claude-sonnet-5-5-20260928")
+    assert s.bodies[0]["thinking"] == {"type": "between_tools"}
+
+
 def test_same_schema_is_transformed_once() -> None:
     s = Server(message("{}"), message("{}"))
     llm = s.client()
@@ -157,6 +164,12 @@ def test_unreadable_answer_is_retried_then_cut_error() -> None:
     with pytest.raises(LlmCutError):
         call(s.client())
     assert len(s.bodies) == 3
+
+
+def test_malformed_200_body_is_retried_like_an_unreadable_answer() -> None:
+    s = Server(httpx2.Response(200, text="not json"), message('{"natural": []}'))
+    assert call(s.client()) == {"natural": []}
+    assert len(s.bodies) == 2
 
 
 def test_refusal_is_rejected_without_resending() -> None:
@@ -256,7 +269,7 @@ def provider(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
 
 def test_claude_without_key_is_setup_error(provider: Callable[..., None]) -> None:
     provider("claude", anthropic_api_key=SecretStr(""))
-    assert llm_setup_problem() == "ANTHROPIC_API_KEY"
+    assert llm_setup_problem() == "ANTHROPIC_API_KEY가 비어 있음"
     with pytest.raises(LlmSetupError, match="ANTHROPIC_API_KEY") as e:
         claude_llm()
     assert e.value.retry is False
@@ -266,9 +279,24 @@ def test_provider_picks_the_client(provider: Callable[..., None]) -> None:
     provider("claude", anthropic_api_key=SecretStr("k"))
     assert isinstance(make_llm(), ClaudeLlm)
     assert llm_setup_problem() is None
-    provider("school", school_llm_base_url="https://llm.test")
+    school = {f: "gemma-4-26b" for f in MODEL_FIELDS}
+    provider("school", school_llm_base_url="https://llm.test", **school)
     assert isinstance(make_llm(), SchoolLlm)
     assert llm_setup_problem() is None
+
+
+def test_model_of_the_other_provider_is_setup_error(provider: Callable[..., None]) -> None:
+    # 예전 .env의 학교 LLM 모델 이름이 남은 채 Claude로 바뀜: 모든 호출이 404로 돌지 않게 막음
+    provider("claude", anthropic_api_key=SecretStr("k"), quiz_check_model="qwen-27b")
+    assert llm_setup_problem() == "QUIZ_CHECK_MODEL=qwen-27b가 LLM_PROVIDER=claude의 모델이 아님"
+    with pytest.raises(LlmSetupError, match="QUIZ_CHECK_MODEL") as e:
+        make_llm()
+    assert e.value.retry is False
+
+
+def test_blank_gap_in_env_uses_the_default() -> None:
+    s = Settings(_env_file=None, llm_provider="claude", llm_call_gap_sec="")  # type: ignore[call-arg]
+    assert s.call_gap_sec == 1.2
 
 
 def test_models_and_gap_follow_the_provider() -> None:

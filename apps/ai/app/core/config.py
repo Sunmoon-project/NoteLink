@@ -1,6 +1,6 @@
 from typing import Literal, Self
 
-from pydantic import SecretStr, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # LLM_PROVIDER마다 모델 · 호출 간격의 기본값. 환경 변수로 넣은 값이 있으면 그 값을 씁니다(#278)
@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     recording_model: str = ""  # 녹음 슬라이드 만들기 (경계 · 제목 · 요약 · 도식)
     # 2시간 녹음: LLM 약 39번 × (간격 2.2초 + 응답 약 75초) ≈ 50분 + STT 약 10분
     recording_job_max_sec: int = 3600
+
+    @field_validator("llm_call_gap_sec", mode="before")
+    @classmethod
+    def _blank_gap_is_default(cls, value: object) -> object:
+        """LLM_CALL_GAP_SEC= 처럼 비워 두면 제공자 기본값(.env.production 예시대로 써도 되게)."""
+        return None if isinstance(value, str) and not value.strip() else value
 
     @model_validator(mode="after")
     def _fill_llm_defaults(self) -> Self:

@@ -481,9 +481,10 @@ class SchoolLlm(PacedLlm):
 # Claude: 학교 LLM에 맞춰 둔 max_tokens를 이만큼 늘림. 같은 한국어도 토큰이 더 많고, 쓰지 않은
 # 몫은 청구되지 않음
 CLAUDE_TOKEN_SCALE = 2
-# 생각을 끌 수 없는 모델(Haiku 5.5 등)에 더 주는 max_tokens: 생각도 max_tokens 안에서 씀
-CLAUDE_THINK_ROOM = 2000
-# 생각을 끌 수 있는 모델: 이 모델들만 thinking.type between_tools를 받음(다른 모델은 400)
+# 생각을 끌 수 없는 모델(Haiku 5.5 등)에 더 주는 max_tokens: 생각도 max_tokens 안에서 씀.
+# effort low라 대개 짧지만, 생각만 하다 끝나면(빈 답) 같은 요청을 다시 보내게 되므로 넉넉히
+CLAUDE_THINK_ROOM = 4000
+# 생각을 끌 수 있는 모델(이름 앞부분): 이 모델만 thinking.type between_tools를 받음(다른 모델은 400)
 CLAUDE_NO_THINK = ("claude-sonnet-5-5",)
 USAGE_LIMIT_HINTS = ("usage limit", "credit balance")
 
@@ -535,7 +536,7 @@ class ClaudeLlm(PacedLlm):
         temperature: float,  # Claude에는 보내지 않음(모듈 설명)
         background: Callable[[], bool],
     ) -> JsonObject:
-        no_think = model in CLAUDE_NO_THINK
+        no_think = model.startswith(CLAUDE_NO_THINK)
         body: JsonObject = {
             "model": model,
             "max_tokens": max_tokens * CLAUDE_TOKEN_SCALE + (0 if no_think else CLAUDE_THINK_ROOM),
@@ -555,11 +556,15 @@ class ClaudeLlm(PacedLlm):
             msg = self._sdk.messages.create(**body)
         except anthropic.APIConnectionError as e:  # 시간 초과 포함
             raise _TransportError(type(e).__name__) from e
+        except anthropic.APIResponseValidationError:  # 200인데 응답 모양이 틀림: 못 읽은 답처럼
+            return 200, None, None
         except anthropic.APIStatusError as e:
             status = e.status_code
             if status == 402 or (status == 400 and _usage_limited(e)):
                 raise LlmSetupError(f"HTTP {status} 사용 한도", retry=False) from e
             return status, e.response.headers.get("retry-after"), None
+        if not isinstance(msg, anthropic.types.Message):  # 200인데 JSON이 아니면 SDK가 글자로 줌
+            return 200, None, None
         if msg.stop_reason == "refusal":
             raise LlmRejectedError("거절(refusal)")
         text = "".join(b.text for b in msg.content if b.type == "text")
@@ -607,9 +612,43 @@ def _content(res: httpx2.Response) -> str | None:
     return content if isinstance(content, str) else None
 
 
+# 제공자에 맞는 모델 이름인지 볼 설정(환경 변수 이름은 대문자)
+MODEL_FIELDS = (
+    "quiz_gen_model",
+    "quiz_check_model",
+    "note_split_model",
+    "note_refine_model",
+    "recording_model",
+)
+
+
+def llm_setup_problem(provider: str | None = None) -> str | None:
+    """LLM_PROVIDER에 필요한 설정이 비었거나 모델 이름이 다른 제공자 것이면 그 이유.
+
+    처리기가 시작할 때 보고(__main__), 클라이언트를 만들 때도 봅니다. 예전 .env에 학교 LLM
+    모델 이름(QUIZ_CHECK_MODEL=qwen-27b 등)이 남은 채 Claude로 바뀌면 모든 호출이 404로
+    시도 한도까지 돌다 실패했음(/code-review #278).
+    """
+    provider = provider or settings.llm_provider
+    claude = provider == "claude"
+    if claude and not settings.anthropic_api_key.get_secret_value():
+        return "ANTHROPIC_API_KEY가 비어 있음"
+    if not claude and not settings.school_llm_base_url:
+        return "SCHOOL_LLM_BASE_URL이 비어 있음"
+    for field in MODEL_FIELDS:
+        model = getattr(settings, field)
+        if model.startswith("claude-") != claude:
+            return f"{field.upper()}={model}가 LLM_PROVIDER={provider}의 모델이 아님"
+    return None
+
+
+def _check_setup(provider: str) -> None:
+    if problem := llm_setup_problem(provider):
+        raise LlmSetupError(problem, retry=False)
+
+
 def school_llm() -> SchoolLlm:
-    if not settings.school_llm_base_url:
-        raise LlmSetupError("SCHOOL_LLM_BASE_URL이 비어 있음", retry=False)
+    _check_setup("school")
     return SchoolLlm(
         settings.school_llm_base_url,
         settings.school_llm_api_key.get_secret_value(),
@@ -618,17 +657,12 @@ def school_llm() -> SchoolLlm:
 
 
 def claude_llm() -> ClaudeLlm:
-    key = settings.anthropic_api_key.get_secret_value()
-    if not key:
-        raise LlmSetupError("ANTHROPIC_API_KEY가 비어 있음", retry=False)
-    return ClaudeLlm(key, effort=settings.llm_effort, gap_sec=settings.call_gap_sec)
-
-
-def llm_setup_problem() -> str | None:
-    """LLM_PROVIDER에 필요한 설정이 비어 있으면 그 이름. 처리기가 시작할 때 봅니다."""
-    if settings.llm_provider == "school":
-        return None if settings.school_llm_base_url else "SCHOOL_LLM_BASE_URL"
-    return None if settings.anthropic_api_key.get_secret_value() else "ANTHROPIC_API_KEY"
+    _check_setup("claude")
+    return ClaudeLlm(
+        settings.anthropic_api_key.get_secret_value(),
+        effort=settings.llm_effort,
+        gap_sec=settings.call_gap_sec,
+    )
 
 
 def make_llm() -> PacedLlm:
