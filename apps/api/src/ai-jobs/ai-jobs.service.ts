@@ -17,8 +17,12 @@ const ACTIVE = ['queued', 'running'];
 const RETRYABLE = ['failed', 'canceled'];
 /** 대기 한도를 확인하는 동안의 상태. 처리기는 queued만 가져가므로 이 상태의 작업은 잡히지 않는다 */
 const HELD = 'held';
-/** 확인 도중 서버가 멈춰 남은 held는 이 시간이 지나면 한도 계산에서 뺀다(그 사용자가 막히지 않게) */
+/**
+ * held는 이 시간 안에만 유효하다. 지나면 한도 계산에서 빼고(그 사용자가 막히지 않게), 열지도 않는다
+ * (빠진 사이 다른 요청이 한도 안으로 들어왔을 수 있다). 확인 도중 서버가 멈춰 남은 held는 다시 시도 · 취소로 되살린다
+ */
 const HELD_TTL_MS = 60_000;
+const heldSince = () => new Date(Date.now() - HELD_TTL_MS);
 
 /**
  * 사용자마다 동시에 기다릴 수 있는 작업 수(종류별). 학교 LLM 분당 한도를 함께 쓰는 작업을 몰아 보내지 못하게 한다.
@@ -187,7 +191,11 @@ export class AiJobsService {
       await this.jobs.deleteOne({ _id: row._id, status: HELD });
       throw tooMany();
     }
-    await this.release(row._id);
+    if (!(await this.release(row._id))) {
+      // 확인이 늦어 held가 지났다 — 그사이 한도가 찼을 수 있어 열지 않는다
+      await this.jobs.deleteOne({ _id: row._id, status: HELD });
+      throw tooMany();
+    }
     const { heldAt: _heldAt, ...rest } = row as AiJobRow & { heldAt?: Date };
     return toAppJob({ ...rest, status: 'queued' });
   }
@@ -198,21 +206,23 @@ export class AiJobsService {
     return this.jobs.countDocuments({
       userId,
       type,
-      $or: [
-        { status: { $in: ACTIVE } },
-        { status: HELD, heldAt: { $gt: new Date(Date.now() - HELD_TTL_MS) } },
-      ],
+      $or: [{ status: { $in: ACTIVE } }, { status: HELD, heldAt: { $gt: heldSince() } }],
     });
   }
 
-  /** 한도 확인을 마친 held 작업을 처리기가 가져갈 수 있게 연다 */
-  private async release(id: Types.ObjectId): Promise<void> {
-    await this.jobs
+  /**
+   * 한도 확인을 마친 held 작업을 처리기가 가져갈 수 있게 연다. 아직 held이고 지나지 않았을 때만 연다:
+   * 그사이 취소했거나(canceled) 시간이 지나 다른 요청의 한도 계산에서 빠졌으면 false
+   */
+  private async release(id: Types.ObjectId): Promise<boolean> {
+    const row = await this.jobs
       .findOneAndUpdate(
-        { _id: id, status: HELD },
+        { _id: id, status: HELD, heldAt: { $gt: heldSince() } },
         { $set: { status: 'queued' }, $unset: { heldAt: '' } },
+        { projection: { _id: 1 } },
       )
       .lean();
+    return row !== null;
   }
 
   /** 앱의 진행 상태 조회. 본인 작업만 */
@@ -242,10 +252,11 @@ export class AiJobsService {
       )
       .lean();
     if (pregen) return;
+    // held(다시 시도의 한도 확인 중 · 확인 도중 멈춤)도 취소한다. 취소하면 release가 열지 않는다
     const row = await this.jobs
       .findOneAndUpdate(
-        { ...filter, status: { $in: ACTIVE } },
-        { $set: { status: 'canceled' } },
+        { ...filter, status: { $in: [...ACTIVE, HELD] } },
+        { $set: { status: 'canceled' }, $unset: { heldAt: '' } },
         { projection: { _id: 1 } },
       )
       .lean();
@@ -276,26 +287,40 @@ export class AiJobsService {
       result: null,
       error: null,
     };
-    // 처리기가 잡지 못하는 held로 바꾸고 한도를 센다. 넘으면 바꾸기 전 값으로 되돌리므로 그 값을 받는다
+    const current = await this.jobs.findOne(filter, { type: 1 }).lean<{ type: string }>();
+    if (!current) throw notFound();
+    const limit = limitOf(current.type);
+    // 한도 있는 종류만 처리기가 잡지 못하는 held로 바꾸고 한도를 센다(넘으면 되돌리므로 바꾸기 전 값을 받는다).
+    // 확인 도중 멈춰 지난 held도 다시 넣을 수 있다
     const before = await this.jobs
       .findOneAndUpdate(
-        { ...filter, status: { $in: RETRYABLE }, $or: unlocked(new Date()) },
         {
-          $set: { ...reset, status: HELD, heldAt: new Date() },
+          ...filter,
+          type: current.type,
+          $or: [
+            { status: { $in: RETRYABLE }, $or: unlocked(new Date()) },
+            ...(limit === undefined ? [] : [{ status: HELD, heldAt: { $lte: heldSince() } }]),
+          ],
+        },
+        {
+          $set: limit === undefined ? reset : { ...reset, status: HELD, heldAt: new Date() },
           $unset: { step: '', lockedBy: '' },
         },
         { projection: APP_PROJECTION },
       )
       .lean<AiJobRow & { userId: Types.ObjectId }>();
     if (!before) return this.findMine(userId, jobId);
-    const limit = limitOf(before.type);
-    if (limit !== undefined && (await this.pending(before.userId, before.type)) > limit) {
-      await this.jobs
+    const { step: _step, ...rest } = before;
+    if (limit === undefined) return toAppJob({ ...rest, ...reset });
+    // 한도를 넘었거나 확인이 늦어 held가 지났으면 바꾸기 전으로 되돌리고 429. 지난 held에서 왔으면 canceled로
+    // 되돌린다(다시 누를 수 있게). 되돌릴 held가 없으면 그사이 취소한 것 — 지금 상태(canceled)를 돌려준다
+    const giveBack = async () => {
+      const reverted = await this.jobs
         .findOneAndUpdate(
           { _id: before._id, status: HELD },
           {
             $set: {
-              status: before.status,
+              status: before.status === HELD ? 'canceled' : before.status,
               attempts: before.attempts ?? 0,
               progress: before.progress ?? 0,
               result: before.result ?? null,
@@ -303,12 +328,14 @@ export class AiJobsService {
             },
             $unset: { heldAt: '' },
           },
+          { projection: { _id: 1 } },
         )
         .lean();
-      throw tooMany();
-    }
-    await this.release(before._id);
-    const { step: _step, ...rest } = before;
+      if (reverted) throw tooMany();
+      return this.findMine(userId, jobId);
+    };
+    if ((await this.pending(before.userId, before.type)) > limit) return giveBack();
+    if (!(await this.release(before._id))) return giveBack();
     return toAppJob({ ...rest, ...reset });
   }
 
