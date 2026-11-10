@@ -1,4 +1,5 @@
 import copy
+import threading
 from datetime import UTC, datetime
 from typing import Any
 
@@ -128,6 +129,17 @@ def test_no_questions_fails_with_a_code_and_without_retry(monkeypatch: pytest.Mo
     assert (e.value.code, str(e.value)) == ("NO_QUESTIONS", "만든 문제가 없음(검사 탈락)")
 
 
+def test_a_canceled_job_sends_no_llm_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 처리기가 취소를 알아채면(report.canceled) 처리 함수의 호출이 나가지 않음(#263)
+    llm = happy_llm()
+    report = StubReport(awaited=False)
+    report.canceled().set()
+    monkeypatch.setattr(handlers, "_llm", lambda: llm)
+    with pytest.raises(LlmError):
+        handlers.similar_quiz(job_input(), report)
+    assert llm.calls == []
+
+
 def test_only_pregen_runs_in_the_background_lane() -> None:
     assert handlers.BACKGROUND == {"quiz_pregen"}
     assert handlers.BACKGROUND <= HANDLERS.keys()
@@ -136,6 +148,7 @@ def test_only_pregen_runs_in_the_background_lane() -> None:
 class StubReport:
     def __init__(self, awaited: bool) -> None:
         self._awaited = awaited
+        self._canceled = threading.Event()
 
     def __call__(self, value: int, step: str | None = None) -> None:
         pass
@@ -148,6 +161,9 @@ class StubReport:
 
     def awaited(self) -> bool:
         return self._awaited
+
+    def canceled(self) -> threading.Event:
+        return self._canceled
 
 
 @pytest.mark.parametrize(("awaited", "patient"), [(False, True), (True, False)])

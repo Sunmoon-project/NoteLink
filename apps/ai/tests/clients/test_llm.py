@@ -10,6 +10,7 @@ import httpx2
 import pytest
 
 from app.clients.llm import (
+    CANCELED,
     HOLD_SEC,
     MAX_HOLD_SEC,
     MAX_HOLDS,
@@ -21,6 +22,7 @@ from app.clients.llm import (
     LlmRejectedError,
     LlmSetupError,
     SchoolLlm,
+    Stopping,
     repair,
     retry_after,
     school_llm,
@@ -399,6 +401,89 @@ def test_stop_on_only_covers_its_own_block() -> None:
     with stop_on(stop):
         pass
     assert server.client().call("gemma", "s", "u", SCHEMA, "X") == {}  # 블록 밖에서는 보냄
+
+
+# ---------- 작업 취소(Stopping, #263) ----------
+
+
+def real_llm(server: Server) -> SchoolLlm:
+    """실제 대기(time.sleep)로 기다리는 연결: 신호로 깨어나는지 봄."""
+    return SchoolLlm(
+        "https://llm.test", "key", gap_sec=0, transport=httpx2.MockTransport(server.handle)
+    )
+
+
+def test_a_canceled_connection_sends_nothing() -> None:
+    server = Server(reply("{}"))
+    canceled = threading.Event()
+    conn = Stopping(server.client(), canceled)
+    canceled.set()
+    with pytest.raises(LlmError, match=re.escape(CANCELED)):
+        conn.call("gemma", "s", "u", SCHEMA, "X")
+    assert server.requests == []
+
+
+def test_a_cancel_wakes_calls_of_other_threads_waiting_for_their_turn() -> None:
+    # 처리 함수가 자리마다 스레드를 따로 둬도 연결 객체로 넘기므로 모두 멈춤
+    server = Server(reply("{}"))
+    llm = real_llm(server)
+    llm._hold(10)
+    canceled = threading.Event()
+    conn = Stopping(llm, canceled)
+    errors: list[str] = []
+
+    def call() -> None:
+        try:
+            conn.call("gemma", "s", "u", SCHEMA, "X")
+        except LlmError as e:
+            errors.append(str(e))
+
+    threads = [threading.Thread(target=call) for _ in range(3)]
+    for t in threads:
+        t.start()
+    threading.Timer(0.1, canceled.set).start()
+    start = time.monotonic()
+    for t in threads:
+        t.join(5)
+    assert time.monotonic() - start < 2
+    assert errors == [CANCELED] * 3 and server.requests == []
+
+
+def test_a_cancel_wakes_a_call_that_also_has_its_own_stop() -> None:
+    # 맞춤 퀴즈 자리(generate._until의 stop_on) 안에서도 작업 취소에 깨어남: 신호 둘을 함께 봄
+    server = Server(reply("{}"))
+    llm = real_llm(server)
+    llm._hold(10)
+    canceled, done = threading.Event(), threading.Event()
+    conn = Stopping(llm, canceled)
+    threading.Timer(0.1, canceled.set).start()
+    start = time.monotonic()
+    with stop_on(done), pytest.raises(LlmError, match=re.escape(CANCELED)):
+        conn.call("gemma", "s", "u", SCHEMA, "X")
+    assert time.monotonic() - start < 2 and server.requests == []
+
+
+def test_an_inner_stop_still_works_under_a_cancel_signal() -> None:
+    server = Server(reply("{}"))
+    llm = real_llm(server)
+    llm._hold(10)
+    canceled, done = threading.Event(), threading.Event()
+    with stop_on(canceled, CANCELED), stop_on(done):
+        threading.Timer(0.1, done.set).start()
+        with pytest.raises(LlmError, match=re.escape(STOPPED)):
+            llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert server.requests == []
+
+
+def test_a_call_already_sent_is_answered_after_a_cancel() -> None:
+    canceled = threading.Event()
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        canceled.set()  # 보낸 뒤 취소: 응답은 그대로 받음
+        return reply('{"ok": true}')
+
+    llm = SchoolLlm("https://llm.test", "key", gap_sec=0, transport=httpx2.MockTransport(handle))
+    assert Stopping(llm, canceled).call("gemma", "s", "u", SCHEMA, "X") == {"ok": True}
 
 
 # ---------- 미리 해 두는 작업은 사용자 작업 호출에 양보(#138) ----------

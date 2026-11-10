@@ -91,8 +91,7 @@ from app.clients.llm import (
     Llm,
     LlmError,
     LlmRejectedError,
-    check_stop,
-    stop_on,
+    Stopping,
 )
 from app.core.config import settings
 from app.services.quiz import concepts, quality, similar
@@ -612,35 +611,15 @@ def _take(seen: list[Seen], used: list[str]) -> Accept:
     return accept
 
 
-@dataclass(frozen=True)
-class _Until:
+def _until(llm: Llm, stop: threading.Event) -> Llm:
     """stop이 켜진 뒤의 호출은 보내지 않고 LlmError(STOPPED).
 
     다 모았거나 돌려준 뒤에도 남은 자리 스레드는 검사 · 풀기 호출을 몇 번 더 하는데, 학교 LLM
     클라이언트는 프로세스에 하나라 그 호출이 다음 작업의 차례를 밀어냄(/code-review #95).
     이미 SchoolLlm 안에서 차례를 기다리거나 다시 보내려는 호출도 stop_on으로 멈춤(Codex 리뷰
-    #125). 보낸 뒤 응답을 기다리는 호출은 끝까지 기다림.
+    #125). 보낸 뒤 응답을 기다리는 호출은 끝까지 기다림. 작업 취소와 같은 Stopping을 씀(#263).
     """
-
-    llm: Llm
-    stop: threading.Event
-
-    def call(
-        self,
-        model: str,
-        system: str,
-        user: str,
-        schema: JsonObject,
-        name: str,
-        *,
-        max_tokens: int = 1500,
-        temperature: float = 0.0,
-    ) -> JsonObject:
-        with stop_on(self.stop):
-            check_stop()  # 가짜 LLM처럼 stop_on을 보지 않는 클라이언트에도
-            return self.llm.call(
-                model, system, user, schema, name, max_tokens=max_tokens, temperature=temperature
-            )
+    return Stopping(llm, stop, STOPPED)
 
 
 def gen_one(
@@ -765,10 +744,10 @@ def _concept_names(llm: Llm, m: Material, pages: dict[int, str]) -> list[str]:
     texts = [t for _, t in sorted(pages.items()) if askable(t)]
     names: list[str] = []
     # 한 쪽이 LlmError면 작업 처리기가 다시 시도하므로 다른 쪽도 더 호출하지 않음: 시작하지 않은
-    # 쪽은 취소하고, 도는 쪽은 다음 호출에서 멈춤(_Until). 끝나는 차례로 기다려 앞쪽이 느려도
+    # 쪽은 취소하고, 도는 쪽은 다음 호출에서 멈춤(_until). 끝나는 차례로 기다려 앞쪽이 느려도
     # 뒤쪽 실패를 바로 알아챔(쪽 순서로 기다리면 앞쪽이 끝날 때까지 호출이 이어짐, Codex #125)
     failed = threading.Event()
-    until = _Until(llm, failed)
+    until = _until(llm, failed)
     pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="concepts")
     try:
         futures = [pool.submit(concepts.for_page, until, t, m.title) for t in texts]
@@ -978,7 +957,7 @@ def _make_all(
             done.set()
             raise
 
-    until = _Until(llm, done)  # 돌려준 뒤 남은 자리는 호출하지 않음
+    until = _until(llm, done)  # 돌려준 뒤 남은 자리는 호출하지 않음
     pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="quiz-slot")
     futures: list[Future[tuple[int, Made]]] = []
     try:
@@ -999,7 +978,7 @@ def _make_all(
             made = list(taken)
             # 돌려줄 때 아직 도는 자리(시작하지 않은 자리는 아래에서 취소)
             running = {f for f in futures if f.running()}
-        # 도는 자리는 기다리지 않음: 다음 호출(_Until) · 단계(stop)에서 멈춤
+        # 도는 자리는 기다리지 않음: 다음 호출(_until) · 단계(stop)에서 멈춤
         pool.shutdown(wait=False, cancel_futures=True)
     if (
         errors
