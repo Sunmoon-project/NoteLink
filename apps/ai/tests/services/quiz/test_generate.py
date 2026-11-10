@@ -1152,6 +1152,29 @@ def test_classification_is_left_out_after_two_answer_clashes_in_the_set() -> Non
     ]  # fmt: skip
 
 
+@pytest.mark.usefixtures("fill_rounds")
+def test_classification_is_left_out_only_on_the_page_where_it_clashed() -> None:
+    # 2쪽 2문제(안정적 모드): 1쪽의 분류 초안은 이미 받은 정답(이질 아메바)을 내 정답 겹침으로
+    # 떨어지고, 나머지 초안은 다른 이유로 떨어져 채우지 못함. 1쪽은 분류 겹침 두 번 뒤로 분류를 쓰지
+    # 않지만, 2쪽은 묶음 이름이 다르므로 그 뒤에도 분류를 씀(/code-review #282)
+    calls: list[tuple[int, str, int]] = []  # (쪽, 유형, 그때까지 1쪽 분류 호출 수)
+    first = [True]
+
+    def quiz(user: str) -> JsonObject:
+        page = 1 if '<노트 쪽="1">' in user else 2
+        ty = re.findall(r"문제 유형: (\S+)", user)[0]
+        calls.append((page, ty, sum(p == 1 and t == "분류" for p, t, _ in calls)))
+        if page == 1 and ty == "정의" and first[0]:
+            first[0] = False
+            return GOOD["이질 아메바"]
+        return BAD  # 정답이 이질 아메바: 정답 겹침(분류면 셈) · 설명에 정답 용어
+
+    with pytest.raises(generate.NoQuestionsError):
+        make(parallel_llm(quiz), job(size=2), mode=generate.STABLE)
+    assert sum(p == 1 and t == "분류" for p, t, _ in calls) == 2  # 1쪽: 두 번 뒤로 뺌
+    assert any(p == 2 and t == "분류" and before == 2 for p, t, before in calls)  # 2쪽은 그대로
+
+
 def test_other_types_clashing_on_an_answer_do_not_leave_out_classification() -> None:
     # 정의 · 특징 초안의 정답 겹침은 세지 않음: 용어가 정답이라 노트에 많음(#282)
     r = generate.gen_one(

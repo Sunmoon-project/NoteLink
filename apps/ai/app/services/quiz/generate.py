@@ -117,6 +117,7 @@ from app.clients.llm import (
 from app.core.config import settings
 from app.services.quiz import combo, concepts, quality, similar
 from app.services.quiz.checks import (
+    SAME_ANSWER,
     Seen,
     Target,
     code_check,
@@ -237,7 +238,6 @@ _clock = time.monotonic  # 시험에서 바꿔 끼움
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 # 이 쪽에서 새로 물을 것이 남지 않았다는 탈락 이유(checks.code_check). '보기 5개가 아니거나 겹침'은
 # 초안 잘못이라 넣지 않음: '겹침'이 든 이유를 모두 보면 그 쪽이 닫혔음(/code-review 11/04)
-SAME_ANSWER = "세트 안에서 정답이 겹침"  # checks.code_check
 DRY_REASONS = {
     "이미 있는 문제와 거의 같음",
     "앞 문제를 거꾸로 물음(겹침)",
@@ -245,8 +245,9 @@ DRY_REASONS = {
 }
 # 분류 유형: 정답이 묶음 이름(편모충류 · 포자충류 · 조충류)이라 노트마다 몇 개 없어 세트 안에서 곧
 # 바닥남. 이미 쓴 정답 목록을 주어도 같은 묶음 이름을 계속 냄(11/10 학교 LLM 기생충 원충류: 정답
-# 겹침으로 떨어진 초안 10개 중 8개가 묶음 이름, 4/5로 실패, #282). 세트에서 분류 초안이
-# GROUP_CLASH_LIMIT번 정답 겹침으로 떨어지면 남은 자리는 분류 유형을 쓰지 않음
+# 겹침으로 떨어진 초안 10개 중 8개가 묶음 이름, 4/5로 실패, #282). 한 쪽에서 분류 초안이
+# GROUP_CLASH_LIMIT번 정답 겹침으로 떨어지면 그 쪽의 남은 자리는 분류 유형을 쓰지 않음(묶음
+# 이름은 쪽마다 다름: 원충류 쪽이 바닥나도 연충류 쪽은 그대로, /code-review #282)
 GROUP_TYPE = "분류"
 GROUP_CLASH_LIMIT = 2
 
@@ -829,7 +830,8 @@ def gen_one(
             q = r.get("question")
             concept = q.get("concept") if isinstance(q, dict) else None
         why, k = code_check(d, t, text, ty, list(seen))
-        out.group_clash += ty == GROUP_TYPE and SAME_ANSWER in why
+        if ty == GROUP_TYPE and SAME_ANSWER in why:
+            out.group_clash += 1
         if concept not in names:  # 개념 목록이 길면 모델이 이 필드를 빠뜨리기도 함
             why.append("개념 이름 없음")
         if (
@@ -1076,7 +1078,8 @@ def _make_all(
     # 닫음. 그 전에 시작해 아직 돌던 자리의 초안으로는 닫지 않음, /code-review #247)
     reopened: dict[int, int] = {}
     rounds = 0  # 끝난 판 수(자리가 시작할 때 보면 그 자리의 판 번호 - 1)
-    group_clash = 0  # 세트에서 분류 초안이 정답 겹침으로 떨어진 수(GROUP_CLASH_LIMIT, #282)
+    # 쪽마다 분류 초안이 정답 겹침으로 떨어진 수(GROUP_CLASH_LIMIT, #282)
+    group_clash: Counter[int] = Counter()
     lock = threading.Lock()
     done = threading.Event()  # n개를 다 모았거나 돌려줌: 남은 자리는 다음 단계에서 멈춤
     relaxed = False  # 마지막 단계: 이미 물은 개념도 다른 각도로(#247)
@@ -1174,7 +1177,7 @@ def _make_all(
     def one_slot(
         slot: int, p: int, until: Llm, stop: Callable[[bool], str | None]
     ) -> tuple[int, Made]:
-        nonlocal turns, group_clash
+        nonlocal turns
         with lock:
             tried = [p] + [b for b in backups if b != p and b not in dry][:BACKUPS]
             # 이 자리가 시작할 때의 단계: 지난 판에 남아 도는 자리가 뒤늦게 켜진 마지막 단계를 따라
@@ -1205,7 +1208,7 @@ def _make_all(
                         drained.add(page)
                     continue
                 types = page_types(pages[page], korean, cur.extra)
-                if group_clash >= GROUP_CLASH_LIMIT and GROUP_TYPE in types:  # #282
+                if group_clash[page] >= GROUP_CLASH_LIMIT and GROUP_TYPE in types:  # #282
                     types = [x for x in types if x != GROUP_TYPE]
                 # 쪽마다 돌리면 한 쪽에 한 자리인 노트는 모든 자리가 정의로 시작해 새 유형이
                 # 세 번째 시도에서야 나옴. 빠른 모드는 지금처럼 쪽마다
@@ -1227,7 +1230,7 @@ def _make_all(
             replied = replied or r.answered
             if r.group_clash:
                 with lock:
-                    group_clash += r.group_clash
+                    group_clash[page] += r.group_clash
             last = (page, r)
             if r.question:  # accept가 세트에 넣음
                 break
