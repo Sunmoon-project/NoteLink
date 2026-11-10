@@ -5,12 +5,25 @@ export type Row = Record<string, unknown> & { _id: Types.ObjectId };
 type Filter = Record<string, unknown>;
 
 const same = (a: unknown, b: unknown) =>
-  a instanceof Types.ObjectId || b instanceof Types.ObjectId ? String(a) === String(b) : a === b;
+  a instanceof Types.ObjectId || b instanceof Types.ObjectId
+    ? String(a) === String(b)
+    : a instanceof Date && b instanceof Date
+      ? a.getTime() === b.getTime()
+      : a === b;
 
 type Ops = { $in?: unknown[]; $ne?: unknown; $lte?: Date; $gt?: Date; $lt?: number };
 const isOps = (v: unknown): v is Ops =>
   v !== null && typeof v === 'object' && !(v instanceof Types.ObjectId) && !(v instanceof Date);
 const time = (v: unknown) => (v instanceof Date ? v.getTime() : NaN);
+
+/** 서비스가 쓰는 $expr 하나만: { $gt: ['$필드', { $subtract: ['$$NOW', ms] }] }(DB 시각 기준 만료). 다른 꼴은 맞지 않음 */
+type Expr = { $gt?: [string, { $subtract?: [string, number] }] };
+function expr(row: Record<string, unknown>, e: Expr): boolean {
+  const [field, rhs] = e.$gt ?? [];
+  const [now, ms] = rhs?.$subtract ?? [];
+  if (!field?.startsWith('$') || now !== '$$NOW' || typeof ms !== 'number') return false;
+  return time(row[field.slice(1)]) > Date.now() - ms;
+}
 
 /**
  * 서비스가 넘긴 조건을 그대로 적용한다(같음 · $in · $ne · $lte · $gt · $lt · $or). ObjectId는 문자열로 비교하고,
@@ -19,6 +32,7 @@ const time = (v: unknown) => (v instanceof Date ? v.getTime() : NaN);
 export function matches(row: Record<string, unknown>, filter: Filter): boolean {
   return Object.entries(filter).every(([key, want]) => {
     if (key === '$or') return (want as Filter[]).some((f) => matches(row, f));
+    if (key === '$expr') return expr(row, want as Expr);
     const value = row[key];
     if (want === null) return value === null || value === undefined;
     if (!isOps(want)) return same(value, want);

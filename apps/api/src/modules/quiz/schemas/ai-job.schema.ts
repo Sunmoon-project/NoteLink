@@ -20,6 +20,7 @@ export class AiJob {
       'explain',
       'avatar_profile',
       'image_check',
+      'note_ask',
     ],
     type: String,
   })
@@ -28,10 +29,19 @@ export class AiJob {
   @Prop({
     required: true,
     type: String,
-    enum: ['queued', 'running', 'succeeded', 'failed', 'canceled'],
+    // held: 대기 한도를 확인하는 잠깐 동안만 쓴다(AiJobsService). 처리기는 queued만 가져가므로 잡히지 않는다
+    enum: ['held', 'queued', 'running', 'succeeded', 'failed', 'canceled'],
     default: 'queued',
   })
   status: string;
+
+  // held로 둔 시각. 확인 도중 서버가 멈춰 남은 held는 잠시 뒤 한도 계산에서 빠진다
+  @Prop({ type: Date })
+  heldAt?: Date;
+
+  // held를 잡은 요청의 표시(요청마다 다른 값). 자기가 잡은 held만 열거나 되돌린다
+  @Prop({ type: String })
+  holdId?: string;
 
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;

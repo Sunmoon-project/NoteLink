@@ -9,6 +9,7 @@ from collections.abc import Callable
 from app.clients.llm import JsonObject, Llm, LlmError, PacedLlm, Stopping, make_llm
 from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
+from app.services.note import ask
 from app.services.quiz import generate, review, today
 from app.services.recording import job as recording_job
 from app.worker.runner import Handler, JobInputError, JobReport
@@ -78,6 +79,7 @@ def _handler(run: _Run, *, background: bool = False) -> Handler:
 similar_quiz = _handler(review.run)  # 오답 복습
 today_review = _handler(today.run)  # 오늘의 복습
 quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
+note_ask = _handler(ask.run)  # 아바타 노트 묻고 답하기
 
 
 def _pregen(llm: Llm, inp: JsonObject, report: JobReport) -> JsonObject:
@@ -118,5 +120,6 @@ HANDLERS: dict[str, Handler] = {
 }
 # 목록 밖에서 더해 다른 종류 추가와 줄이 겹치지 않게 둡니다.
 HANDLERS[generate.PREGEN_TYPE] = quiz_pregen
+HANDLERS[ask.TYPE] = note_ask
 # 사용자 작업과 따로 도는 반복이 하나씩 처리하는 종류(__main__ · runner.run_lanes, #138)
 BACKGROUND: frozenset[str] = frozenset({generate.PREGEN_TYPE})
