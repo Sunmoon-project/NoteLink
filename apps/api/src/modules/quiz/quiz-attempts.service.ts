@@ -101,6 +101,8 @@ export class QuizAttemptsService {
     async answer(userId: string, attemptId: string, questionId: string, answer: string): Promise<AnswerResult> {
         const owner = objectId(userId, '사용자');
         const attemptOid = objectId(attemptId, '풀이 기록');
+        // IsMongoId는 대문자 16진수도 받으므로 소문자 표준형으로 바꿔 비교한다(Codex #287)
+        const questionKey = objectId(questionId, '문제').toHexString();
         return this.connection.transaction(async (session) => {
             const row = await this.attempts
                 .findOne({ _id: attemptOid, userId: owner }, null, { session })
@@ -111,13 +113,13 @@ export class QuizAttemptsService {
             const set = await this.sets
                 .findOne({ _id: row.quizSetId, ownerId: owner, deletedAt: null }, null, { session })
                 .lean<SetRow>();
-            const question = set?.questions?.find((q) => q._id.toString() === questionId);
+            const question = set?.questions?.find((q) => q._id.toString() === questionKey);
             if (!question) throw notFound('문제');
 
             const correct = question.answer === answer;
             const questionOid = question._id;
             const before = row.answers ?? [];
-            const found = before.find((a) => a.questionId.toString() === questionId);
+            const found = before.find((a) => a.questionId.toString() === questionKey);
             const entry = { questionId: questionOid, answer, correct, tries: (found?.tries ?? 0) + 1 };
             const answers = found
                 ? before.map((a) => (a === found ? entry : a))

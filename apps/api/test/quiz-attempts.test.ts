@@ -193,6 +193,26 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       expect(stored().correctCount).toBe(1);
     });
 
+    it('대문자 16진수 questionId로 처음 내도 200이고 정답으로 채점한다 (Codex #287)', async () => {
+      const attempt = await start(await addSet());
+      const res = await submit(attempt._id, { questionId: q1.toHexString().toUpperCase(), answer: 'DNA' }).expect(200);
+
+      expect(res.body).toEqual({ data: { correct: true, correctAnswer: 'DNA' } });
+      expect(stored().answers).toHaveLength(1);
+      expect(String(stored().answers[0]!.questionId)).toBe(q1.toHexString());
+    });
+
+    it('같은 문제를 대문자로 한 번 · 소문자로 한 번 내도 답은 하나만 남고 tries가 오른다 (Codex #287)', async () => {
+      const attempt = await start(await addSet());
+      await submit(attempt._id, { questionId: q1.toHexString().toUpperCase(), answer: 'RNA' }).expect(200);
+      await submit(attempt._id, { questionId: q1.toHexString(), answer: 'DNA' }).expect(200);
+
+      expect(stored().answers).toHaveLength(1);
+      expect(stored().answers[0]).toMatchObject({ answer: 'DNA', correct: true, tries: 2 });
+      expect(String(stored().answers[0]!.questionId)).toBe(q1.toHexString());
+      expect(stored().correctCount).toBe(1);
+    });
+
     it('그 세트에 없는 문제는 404 NOT_FOUND이고 아무것도 저장하지 않는다', async () => {
       const attempt = await start(await addSet());
       const res = await submit(attempt._id, { questionId: hex(), answer: 'DNA' }).expect(404);
