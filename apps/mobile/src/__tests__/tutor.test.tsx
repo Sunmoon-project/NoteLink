@@ -268,6 +268,15 @@ describe('기기 저장 모드의 아바타 답', () => {
     // 앞 글자만 요약 말과 같은 낱말("해외여행"의 "해")도 자료 밖 질문
     expect(localAnswer(note, '해외여행 알려줘')?.reason).toBe('off_topic');
     expect(localAnswer(note, '해물라면 설명해 주세요')?.reason).toBe('off_topic');
+    // 한 글자 주제어도 자료 밖이면 거절(Codex #260)
+    expect(localAnswer(note, '달 설명해 주세요')?.reason).toBe('off_topic');
+    // 기본 추천 질문 "핵심만"은 핵심이 없는 노트에서도 첫 부분을 읽어 준다(Codex #252)
+    expect(
+      localAnswer(
+        { ...note, summary: { ...note.summary!, points: [] } },
+        '이 노트 핵심만 알려 주세요',
+      )?.answerable,
+    ).toBe(true);
     for (const q of ['요약해줘', '이거 뭐야?', '무엇인가요', '간단히 정리해 주세요', '내용 알려줘'])
       expect(localAnswer(note, q)?.answerable).toBe(true);
     expect(localAnswer(note, '양자역학')).toEqual({
