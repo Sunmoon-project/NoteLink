@@ -5,7 +5,11 @@ export type Row = Record<string, unknown> & { _id: Types.ObjectId };
 type Filter = Record<string, unknown>;
 
 const same = (a: unknown, b: unknown) =>
-  a instanceof Types.ObjectId || b instanceof Types.ObjectId ? String(a) === String(b) : a === b;
+  a instanceof Types.ObjectId || b instanceof Types.ObjectId
+    ? String(a) === String(b)
+    : a instanceof Date && b instanceof Date
+      ? a.getTime() === b.getTime()
+      : a === b;
 
 type Ops = { $in?: unknown[]; $ne?: unknown; $lte?: Date; $gt?: Date; $lt?: number };
 const isOps = (v: unknown): v is Ops =>
