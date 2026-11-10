@@ -7,6 +7,7 @@ import { createMongooseOptions } from './config/mongo.config.js';
 import { HealthController } from './health/health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
+import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 
 @Module({
   imports: [
@@ -23,6 +24,8 @@ import { RewardModule } from './modules/reward/reward.module.js';
     AiJobsModule,
     // 상점 · 포인트(FR-59~63)
     RewardModule,
+    // 맞춤 퀴즈 세트 만들기 · 조회 · 작업 결과 반영(#175)
+    QuizSetsModule,
   ],
   controllers: [HealthController],
 })

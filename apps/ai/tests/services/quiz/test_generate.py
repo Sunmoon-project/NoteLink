@@ -2,6 +2,7 @@ import copy
 import re
 import threading
 import time
+import types
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -10,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmRejectedError, LlmSetupError
 from app.services.quiz import generate, srs
 from app.services.quiz.generate import Chunk, PageInfo
 from app.services.quiz.review import InputError, seoul_midnight
@@ -418,17 +419,24 @@ def test_a_failed_slot_moves_to_another_page() -> None:
 def test_a_draft_the_check_model_cannot_solve_is_not_used() -> None:
     llm = happy([GOOD["이질 아메바"]] * 2 + [GOOD["람블편모충"]] * 2)  # 1쪽 두 번, 2쪽 두 번
     llm.answers["Check"] = lambda u: {"answer": "E", "only_one": True, "supported": True}
-    result, _ = run(llm, job(size=1))
-    assert result["questions"] == []
-    assert result["failed"][0]["why"] == ["검사 탈락(검수자 답 E)"]
+    # 0문제 결과로 끝내지 않고 작업을 실패로(앱은 작업 상태로 성공 화면을 고름, #175)
+    why = "만든 문제가 없음(검사 탈락(검수자 답 E))"
+    with pytest.raises(generate.NoQuestionsError, match=re.escape(why)):
+        run(llm, job(size=1))
+
+
+def test_some_calls_failing_and_the_rest_rejected_is_not_an_outage() -> None:
+    llm = happy([LlmError("503"), GOOD["이질 아메바"], GOOD["람블편모충"], GOOD["람블편모충"]])
+    llm.answers["Check"] = lambda u: {"answer": "E", "only_one": True, "supported": True}
+    with pytest.raises(generate.NoQuestionsError, match="검사 탈락"):  # LlmError(다시 시도)가 아님
+        run(llm, job(size=1))
 
 
 def test_wrong_options_that_also_fit_are_caught() -> None:
     drafts = [GOOD["이질 아메바"]] * 2 + [GOOD["람블편모충"]] * 2
     llm = happy(drafts, natural_fn=lambda u: {"natural": [True] * len(candidates(u))})
-    result, _ = run(llm, job(size=1))
-    assert result["questions"] == []
-    assert "오답 보기: " in result["failed"][0]["why"][0]  # 정의 · 특징 모두 같은 검사로 걸림
+    with pytest.raises(generate.NoQuestionsError, match=r"만든 문제가 없음\(.*오답 보기: "):
+        run(llm, job(size=1))  # 정의 · 특징 모두 같은 검사로 걸림
 
 
 def test_a_draft_with_one_flagged_wrong_option_gets_only_that_option_replaced() -> None:
@@ -459,14 +467,26 @@ def test_concept_names_are_made_when_the_note_has_none() -> None:
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
 
 
-def test_a_note_without_text_makes_no_questions() -> None:
+def test_a_note_without_text_fails_without_a_retry() -> None:
     inp = job()
     inp["material"]["pages"] = [
         {"pageNo": 1, "ocrText": "[?]흐린 줄"},
         {"pageNo": 2, "ocrText": None},
     ]
-    result, _ = run(ScriptLlm({}), inp)
-    assert (result["questions"], result["pages"], result["failed"]) == ([], [], [])
+    llm = ScriptLlm({})
+    with pytest.raises(InputError, match=re.escape(generate.NO_TEXT)):
+        run(llm, inp)
+    assert llm.calls == []
+
+
+def test_a_note_without_a_page_long_enough_fails_without_a_retry() -> None:
+    inp = job()
+    short = "\n".join(f"줄 {i}" for i in range(generate.MIN_LINES - 1))
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": short}, {"pageNo": 2, "ocrText": short}]
+    llm = happy([GOOD["이질 아메바"]])
+    with pytest.raises(InputError, match=re.escape(generate.NO_TEXT)):
+        run(llm, inp)
+    assert llm.calls == []  # 개념 뽑기도 부르지 않음
 
 
 def test_the_job_is_retried_when_every_generation_call_fails() -> None:
@@ -474,6 +494,54 @@ def test_the_job_is_retried_when_every_generation_call_fails() -> None:
     llm = happy([down] * 6)
     with pytest.raises(LlmError):
         run(llm, job(size=1))
+
+
+def test_a_setup_error_ends_the_job_without_the_other_slots_calling() -> None:
+    # 학교 LLM 키 · 주소 · 모델 이름이 틀림: 남은 자리도 같으므로 기다리지 않고 올림(#262)
+    def quiz(user: str) -> JsonObject:
+        raise LlmSetupError("HTTP 401")
+
+    llm = parallel_llm(quiz)
+    with pytest.raises(LlmSetupError):
+        run(llm, job(size=4))
+    # 자리 4개가 하나씩 돎(WORKERS=1): 첫 자리가 멈춤 신호를 켜서 다음 자리는 부르지 않음
+    assert len(llm.named("Quiz")) == 1
+
+
+def test_every_generation_call_rejected_ends_the_job_without_retry() -> None:
+    # 서버가 모두 거절(400 · 413 · 422)하면 다시 해도 같음: 일반 장애로 바꾸지 않음(Codex #264)
+    llm = happy([LlmRejectedError("HTTP 413")] * 6)
+    with pytest.raises(LlmRejectedError):
+        run(llm, job(size=1))
+
+
+def test_rejections_mixed_with_outages_are_retried() -> None:
+    llm = happy([LlmRejectedError("HTTP 413"), LlmError("HTTP 503")] * 3)
+    with pytest.raises(LlmError) as e:
+        run(llm, job(size=1))
+    assert not isinstance(e.value, LlmRejectedError)
+
+
+def test_a_slot_error_is_kept_even_if_the_main_thread_leaves_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 자리가 멈춤 신호를 켠 뒤 끝나기 전에 주 스레드가 신호를 보고 빠져나와도(그 자리는 '아직
+    # 도는 자리'로 빠짐) 오류를 잃지 않음. 자리 스레드의 set()을 1.5초 늦춰 이 순서를 만듦
+    class LateEvent(threading.Event):
+        def set(self) -> None:
+            super().set()
+            if threading.current_thread() is not threading.main_thread():
+                time.sleep(1.5)  # 주 스레드의 wait(1초)가 먼저 끝남
+
+    monkeypatch.setattr(
+        generate, "threading", types.SimpleNamespace(Event=LateEvent, Lock=threading.Lock)
+    )
+
+    def quiz(user: str) -> JsonObject:
+        raise LlmSetupError("HTTP 401")
+
+    with pytest.raises(LlmSetupError):
+        run(parallel_llm(quiz), job(size=1))
 
 
 def test_some_calls_failing_is_not_an_outage() -> None:
@@ -837,9 +905,8 @@ def test_no_new_draft_is_started_after_the_time_limit(monkeypatch: pytest.Monkey
 
     llm = happy([])
     llm.answers["Quiz"] = quiz
-    result, _ = run(llm, job(size=1))
-    assert result["questions"] == []
-    assert result["failed"] == [{"pageNo": 1, "why": [generate.TIMEOUT]}]
+    with pytest.raises(generate.NoQuestionsError, match=re.escape(f"({generate.TIMEOUT})")):
+        run(llm, job(size=1))
     assert len(llm.named("Quiz")) == 1  # 두 번째 유형 · 다른 쪽으로 넘기지 않음
 
 
@@ -861,8 +928,9 @@ def test_a_pregen_gets_a_longer_time_limit(monkeypatch: pytest.MonkeyPatch) -> N
         return generate.run(llm, job(size=1), lambda v, step=None: None, patient=patient)
 
     assert [q["answer"] for q in made(patient=True)["questions"]] == ["이질 아메바"]
-    # 보통 상한이면 첫 초안이 걸린 뒤 다시 만들지 않음
-    assert made(patient=False)["questions"] == []
+    # 보통 상한이면 첫 초안이 걸린 뒤 다시 만들지 않음: 0문제 대신 작업을 실패로
+    with pytest.raises(generate.NoQuestionsError):
+        made(patient=False)
 
 
 def test_the_set_goes_back_at_the_hard_limit_without_waiting_for_a_slot(

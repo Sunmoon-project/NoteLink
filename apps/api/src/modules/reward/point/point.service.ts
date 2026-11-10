@@ -1,6 +1,6 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { type ClientSession, Model, Types } from 'mongoose';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { type ClientSession, type Connection, Model, Types } from 'mongoose';
 
 import { User, type UserDocument } from '../../auth/schemas/user.schema.js';
 
@@ -22,6 +22,12 @@ export interface PointLedgerView {
 
 type PointLedgerLean = PointLedger & { _id: Types.ObjectId; createdAt: Date };
 
+/** 적립이 어떤 일로 생겼는지 장부에 남기는 선택 정보 (하루 한도를 셀 때 쓴다) */
+export interface EarnRef {
+    sessionId?: Types.ObjectId;
+    studyDate?: string; // 서울 기준 'YYYY-MM-DD'
+}
+
 export interface ListLedgerOptions {
     type?: LedgerType;
     cursor?: string;
@@ -33,6 +39,7 @@ export class PointService {
     constructor(
         @InjectModel(PointLedger.name) private readonly ledgerModel: Model<PointLedger>,
         @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+        @InjectConnection() private readonly connection: Connection,
     ) { }
 
     /** 내 포인트 내역, 최신순 */
@@ -94,6 +101,63 @@ export class PointService {
             );
         }
         return user.pointBalance;
+    }
+
+    /**
+     * 포인트 적립: 잔액을 늘리고 장부에 한 줄 남긴다. 늘린 뒤의 잔액을 돌려준다.
+     * - 다른 작업(예: 세션 종료)과 한 묶음으로 처리하려면 그 트랜잭션의 session을 넘긴다.
+     * - session을 안 넘기면 여기서 트랜잭션을 열어 "잔액 + 장부"가 함께 반영되거나 함께 취소된다.
+     * 같은 일로 두 번 적립되지 않게 막는 건 호출하는 쪽의 몫이다 (예: 이미 끝난 세션이면 다시 부르지 않기)
+     */
+    async earn(
+        userId: string,
+        amount: number,
+        reasonType: PointReasonType,
+        description: string | null,
+        session?: ClientSession,
+        ref?: EarnRef,
+    ): Promise<number> {
+        // 서버 안에서 부르는 함수라서, 잘못된 값은 요청 오류(400)가 아니라 코드의 버그로 본다
+        if (!Number.isInteger(amount) || amount <= 0) {
+            throw new RangeError(`적립 포인트는 1 이상의 정수여야 합니다: ${amount}`);
+        }
+        if (session) return this.applyEarn(userId, amount, reasonType, description, session, ref);
+        return this.connection.transaction((own) => this.applyEarn(userId, amount, reasonType, description, own, ref));
+    }
+
+    private async applyEarn(
+        userId: string,
+        amount: number,
+        reasonType: PointReasonType,
+        description: string | null,
+        session: ClientSession,
+        ref?: EarnRef,
+    ): Promise<number> {
+        const owner = new Types.ObjectId(userId);
+
+        // $inc는 읽고 더하는 사이에 다른 요청이 끼어도 값이 어긋나지 않는다
+        const user = await this.userModel
+            .findOneAndUpdate({ _id: owner }, { $inc: { pointBalance: amount } }, { returnDocument: 'after', session })
+            .lean<{ pointBalance: number }>();
+        if (!user) {
+            throw new NotFoundException({ code: 'NOT_FOUND', message: '존재하지 않는 사용자입니다.' });
+        }
+
+        await this.ledgerModel.create(
+            [{ userId: owner, amount, balanceAfter: user.pointBalance, reasonType, description, ...ref }],
+            { session },
+        );
+        return user.pointBalance;
+    }
+
+    /**
+     * 그 날짜(서울 기준)에 이 이유로 적립받은 횟수. 하루 적립 한도를 확인할 때 쓴다.
+     * 한도를 넘는 적립을 막으려면 적립과 같은 트랜잭션의 session을 넘긴다
+     */
+    countEarned(userId: string, reasonType: PointReasonType, studyDate: string, session: ClientSession): Promise<number> {
+        return this.ledgerModel
+            .countDocuments({ userId: new Types.ObjectId(userId), reasonType, studyDate }, { session })
+            .exec();
     }
 }
 

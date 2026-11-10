@@ -1,5 +1,5 @@
 // 진짜 MongoDB(replica set)에서 구매·장착 트랜잭션이 되는지 보는 테스트.
-// MONGODB_VERIFY_URI가 있을 때만 돌고(없으면 건너뜀), localhost가 아니면 거부한다. 전용 DB(notelink_verify_tmp)만 쓰고 끝나면 지운다.
+// MONGODB_VERIFY_URI가 있을 때만 돌고(없으면 건너뜀), localhost가 아니면 거부한다. 파일·실행마다 고유한 전용 DB(notelink_verify_shop_<pid>_<시각>)만 쓰고 끝나면 그 DB만 지운다(다른 실제 DB 테스트 파일과 병렬로 돌아도 서로 지우지 않는다).
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/shop-real-db.test.ts
 import type { INestApplication } from '@nestjs/common';
 import { UnauthorizedException } from '@nestjs/common';
@@ -24,6 +24,8 @@ import { ShopService } from '../src/modules/reward/shop/shop.service.js';
 
 const uri = process.env.MONGODB_VERIFY_URI;
 const isLocal = !!uri && /^mongodb:\/\/([^@/]*@)?(localhost|127\.0\.0\.1)[:/]/.test(uri);
+// 이 파일이 이번 실행에서만 쓰는 DB 이름 (다른 파일 · 다른 실행과 겹치지 않는다)
+const dbName = `notelink_verify_shop_${process.pid}_${Date.now()}`;
 
 describe.skipIf(!uri)('진짜 DB 구매·장착 확인', () => {
     const userId = new Types.ObjectId();
@@ -45,7 +47,7 @@ describe.skipIf(!uri)('진짜 DB 구매·장착 확인', () => {
         const moduleRef = await Test.createTestingModule({
             imports: [
                 // 접속이 안 되면 30초 기다리지 않고 5초 뒤에 이유와 함께 실패하게 한다
-                MongooseModule.forRoot(uri!, { dbName: 'notelink_verify_tmp', serverSelectionTimeoutMS: 5000 }),
+                MongooseModule.forRoot(uri!, { dbName, serverSelectionTimeoutMS: 5000 }),
                 MongooseModule.forFeature([
                     { name: ShopItem.name, schema: ShopItemSchema },
                     { name: UserItem.name, schema: UserItemSchema },
