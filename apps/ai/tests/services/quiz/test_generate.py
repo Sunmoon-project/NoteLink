@@ -1567,9 +1567,98 @@ def test_rounds_with_spare_slots_never_run_more_than_workers_at_once(
 
 
 @pytest.mark.usefixtures("fill_rounds")
-def test_the_last_stage_reopens_only_pages_closed_for_no_concept() -> None:
+def test_a_page_closed_for_an_overlap_is_reopened_once_in_the_next_round() -> None:
+    # 1쪽뿐인 노트 2문제: 둘째 자리가 두 번 모두 이미 있는 문제와 거의 같은 초안을 만들어 1쪽이
+    # 겹침으로 닫힘. 다음 판에 1쪽을 한 번 다시 열어 다른 문장으로 채움(11/10 학교 LLM 기생충
+    # 원충류: 세 쪽이 겹침으로 닫혀 상한 전에 3/5로 끝남, #247)
+    old = stored("q1", "대장 아메바", "대장 아메바")
+    old["passage"] = GOOD["대장 아메바"]["question"]["passage"]
+    inp = job(size=2, sets=[{"id": "s1", "materialId": "m1", "questions": [old]}])
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    fresh = draft(
+        "대장 아메바",
+        "핵이 8개인 포낭을 만들고 비병원성으로 적힌 원충",
+        stem="노트의 원충 가운데 알맞은 것은?",
+    )
+    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"], GOOD["대장 아메바"], fresh])
+    result, _ = run(llm, inp)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바"]
+    assert len(llm.named("Quiz")) == 4
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_a_slot_started_before_a_page_was_reopened_does_not_close_it_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 2문제, 1쪽(틀린 기록이 있어 무거움)에 두 자리 + 여분 자리 둘(1쪽 · 2쪽). 2쪽은 늘 다른 이유로
+    # 떨어져 열린 채라 마지막 단계로 가지 않음. 1판: 1쪽의 한 자리가 이질 아메바를 받고, 한 자리가
+    # 겹침으로 1쪽을 닫고, 한 자리는 판 상한까지 답을 기다림. 2판: 1쪽을 다시 열고 두 자리가 다른
+    # 이유로 떨어지는 동안 1판의 기다리던 자리가 겹침으로 끝남. 다시 열기 전에 시작한 자리라 1쪽을
+    # 닫지 않아 3판에 채움(/code-review #247)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "EXTRA", 1.0)
+    monkeypatch.setattr(generate, "BACKUPS", 0)  # 자리마다 한 쪽만(호출 차례를 쪽으로 정함)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.1)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.15)
+    monkeypatch.setattr(generate, "FILL_SEC_PER_QUESTION", 2)
+    real = generate.gen_one
+    lock = threading.Lock()
+    on1 = [0]  # 1쪽 호출 차례
+    second_round, stale_done = threading.Event(), threading.Event()
+    started = threading.Barrier(4, timeout=5)  # 1판 네 자리
+    overlap = ["세트 안에서 정답이 겹침"]  # DRY_REASONS
+    other = ["정답이 노트에 없음"]  # 쪽을 닫지 않는 이유
+
+    def scripted(*a: Any, **k: Any) -> Any:
+        page = a[1]
+        with lock:
+            on1[0] += page == 1
+            i = on1[0] if page == 1 else 0
+        if page == 2:
+            if not second_round.is_set():
+                started.wait()
+            return generate.Made(why=list(other))
+        if i <= 3:  # 1판 네 자리가 모두 쪽을 연 채 시작한 뒤에 끝나게
+            started.wait()
+        if i == 1:
+            return real(*a, **k)  # 이질 아메바
+        if i == 2:
+            return generate.Made(why=list(overlap))  # 1판: 1쪽을 겹침으로 닫음
+        if i == 3:  # 1판에 기다리는 자리: 2판이 1쪽을 다시 연 뒤에 겹침으로 끝남
+            second_round.wait(10)
+            time.sleep(0.05)  # 2판 두 자리가 모두 시작할 때까지
+            stale_done.set()
+            return generate.Made(why=list(overlap))
+        if i in (4, 5):  # 2판의 두 1쪽 자리: 늦게 끝난 1판 자리를 기다렸다가 다른 이유로 떨어짐
+            second_round.set()
+            stale_done.wait(10)
+            return generate.Made(why=list(other))
+        return real(*a, **k)  # 3판: 대장 아메바
+
+    monkeypatch.setattr(generate, "gen_one", scripted)
+    inp = job(
+        size=2,
+        sets=[
+            {"id": "s1", "materialId": "m1", "questions": [stored("q1", "말라리아", "이질 아메바")]}
+        ],
+        attempts=[attempt("q1", False), attempt("q1", False)],
+    )
+    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"]])
+    result, _ = run(llm, inp)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바"]
+    assert on1[0] >= 6  # 3판의 1쪽 자리가 채움
+    join_threads("quiz-slot")
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_the_last_stage_reopens_only_pages_closed_for_no_concept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # 2쪽(틀린 기록이 있어 더 무거움)은 이미 있는 문제와 거의 같아 겹침으로 닫히고, 1쪽은 개념
-    # 둘을 다 물어 닫힘. 마지막 단계는 1쪽만 다시 엶: 2쪽은 같은 겹침 검사에 또 걸리므로 부르지 않음
+    # 둘을 다 물어 닫힘. 둘째 판은 마지막 단계로 1쪽을 다시 열고, 겹침으로 처음 닫힌 2쪽도 한 번
+    # 다시 엶. 2쪽은 또 겹쳐 닫힌 뒤로는 부르지 않음. 판은 둘뿐: 열린 쪽이 다시 열 쪽뿐이어도 마지막
+    # 단계로 가야 둘째 판에 채움(다시 연 쪽만 도는 판을 먼저 두면 셋째 판이 필요, /code-review #247)
+    monkeypatch.setattr(generate, "MAX_ROUNDS", 2)
     old = stored("q1", "람블편모충", "람블편모충")
     old["passage"] = GOOD["람블편모충"]["question"]["passage"]
     inp = job(
@@ -1602,11 +1691,25 @@ def test_the_last_stage_reopens_only_pages_closed_for_no_concept() -> None:
     )
     result, _ = run(llm, inp)
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바", "4핵"]
-    # 2쪽은 첫 단계의 한 자리(gen_one이 유형마다 한 번)에서 겹침으로 닫힌 뒤 다시 부르지 않음(다시
-    # 열면 마지막 단계 판의 첫 자리가 무거운 2쪽으로 가 그만큼 더 부름)
+    # 2쪽은 첫 판의 한 자리(gen_one이 유형마다 한 번)에서 겹침으로 닫히고, 둘째 판에 한 번 다시
+    # 열렸다가 또 겹쳐 닫힘(#247)
     once = len(generate.page_types(PAGE2, generate.is_korean_subject({1: PAGE1, 2: PAGE2}))[:2])
-    assert [page for page, _ in calls].count(2) == once
+    assert [page for page, _ in calls].count(2) == 2 * once
+    assert not any(angled for page, angled in calls if page == 2)  # 마지막 단계에서는 부르지 않음
     assert calls[-1] == (1, True)  # 마지막 단계는 1쪽에서 이미 물은 개념을 다른 각도로
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_a_page_closed_for_an_overlap_in_the_last_stage_is_not_reopened() -> None:
+    # 1쪽 개념 둘로 3문제: 1판에 둘을 받고 1쪽은 개념이 바닥나 닫힘. 2판(마지막 단계)에 1쪽을 다시
+    # 열었지만 두 번 모두 같은 정답이라 겹침으로 닫힘. 마지막 단계에서 처음 겹친 쪽은 다시 열지
+    # 않아 3판을 띄우지 않음(/code-review #247)
+    inp = job(size=3)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"], *[GOOD["이질 아메바"]] * 4])
+    with pytest.raises(generate.NoQuestionsError, match=re.escape("2/3문제만 만듦")):
+        run(llm, inp)
+    assert len(llm.named("Quiz")) == 4  # 1판 둘 · 2판 한 자리의 두 유형
 
 
 @pytest.mark.usefixtures("fill_rounds")
