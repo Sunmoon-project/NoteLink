@@ -1025,8 +1025,9 @@ def _make_all(
                     if asked[c] < per_concept(again_ok)
                 ]
                 if not names:
-                    dry.add(page)
-                    drained.add(page)
+                    if again_ok == relaxed:  # 지난 단계 자리가 다시 연 쪽을 닫지 않게(/code-review)
+                        dry.add(page)
+                        drained.add(page)
                     continue
                 types = page_types(pages[page], korean)
                 k = visits[page] % len(types)
@@ -1116,7 +1117,10 @@ def _make_all(
         finished = [
             f.result()
             for f in futures
-            if f.done() and not f.cancelled() and f not in running and f.exception() is None
+            if f.done()
+            and not f.cancelled()
+            and f not in running
+            and not ((e := f.exception()) is not None and not isinstance(e, LlmError))
         ]
         cut = [(p, Made(why=[TIMEOUT])) for f, p in zip(futures, at, strict=True)
                if f in running or f.cancelled()]  # fmt: skip
@@ -1138,9 +1142,11 @@ def _make_all(
     cut: list[tuple[int, Made]] = []
     earlier: list[tuple[int, Made]] = []  # 앞 판에서 못 만든 자리(오류 글에 이유를 모두 담음)
     rounds = 0
+    answered = False  # 학교 LLM이 한 번이라도 답함(어느 판에서든 실패하지 않은 호출이 있음)
     try:
         while True:
             finished, cut, started = one_round(at, deadline, hard)
+            answered = answered or any(r.tries > r.down for _, r in finished)
             rounds += 1
             missing = n - len(taken)
             now = _clock()
@@ -1210,7 +1216,8 @@ def _make_all(
     )
     # 한 문제도 못 만들었을 때만 시간 상한에 호출 중이던 · 시작하지 못한 자리를 실패한 시도로
     # (응답하지 않는 서버). 만든 문제가 있으면 서버는 답하고 있으므로 장애가 아님(/code-review #247)
-    stuck = len(cut) if not made else 0
+    # 앞 판에서 서버가 답했으면 마지막 판이 전체 상한에 잘린 것도 장애가 아님(/code-review #269)
+    stuck = len(cut) if not made and not answered else 0
     down = sum(r.down for _, r in finished) + stuck
     tries = sum(r.tries for _, r in finished) + stuck
     return out, failed, down, tries, sum(r.rejected for _, r in finished)

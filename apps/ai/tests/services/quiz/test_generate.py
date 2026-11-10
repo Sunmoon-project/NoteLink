@@ -555,6 +555,42 @@ def test_a_slot_error_is_kept_even_if_the_main_thread_leaves_first(
         run(parallel_llm(quiz), job(size=1))
 
 
+def test_a_slot_error_after_the_set_is_full_keeps_the_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 1문제 + 여분 자리 1: 첫 자리가 문제를 받아 다 모은 뒤에야 여분 자리가 설정 오류
+    # (LlmSetupError)로 끝남. 오류는 남지만 만든 세트를 버리지 않고 돌려줌(Codex 4차 리뷰 #269).
+    # 주 스레드는 다 모은 진행률 알림(report 100)에서 여분 자리가 오류를 남길 때까지 기다림
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "EXTRA", 0.6)
+    second = threading.Event()  # 여분 자리의 생성 호출이 시작됨(첫 자리가 다 모으기 전에)
+    full = threading.Event()  # 첫 자리의 문제가 세트에 들어감
+    raised = threading.Event()  # 여분 자리가 오류를 냄
+    lock = threading.Lock()
+    calls = [0]
+
+    def quiz(user: str) -> JsonObject:
+        with lock:
+            calls[0] += 1
+            first = calls[0] == 1
+        if first:
+            second.wait(10)
+            return by_page(user)
+        second.set()
+        full.wait(10)
+        raised.set()
+        raise LlmSetupError("HTTP 401")
+
+    def report(value: int, step: str | None = None) -> None:
+        if value == 100:  # 다 모음: 여분 자리가 오류를 남길 때까지 기다림
+            full.set()
+            raised.wait(10)
+            time.sleep(1.0)  # guarded가 errors에 남기고 멈춤 신호를 켤 때까지(느린 CI 여유)
+
+    result = generate.run(parallel_llm(quiz), job(size=1), report)
+    assert len(result["questions"]) == 1
+    assert calls[0] == 2  # 여분 자리가 실제로 돌다 오류를 냄
+    join_threads("quiz-slot")
+
+
 def test_some_calls_failing_is_not_an_outage() -> None:
     llm = happy([LlmError("503"), GOOD["이질 아메바"]])
     result, _ = run(llm, job(size=1))
