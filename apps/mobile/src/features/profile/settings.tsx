@@ -20,6 +20,7 @@ import { env } from '@/lib/env';
 import { clearAccountState } from '@/lib/account';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
+import { INTERESTS } from '../auth/auth';
 import {
   Alert,
   Avatar,
@@ -27,6 +28,7 @@ import {
   Btn,
   Canvas,
   Card,
+  Chip,
   Group,
   Header,
   Input,
@@ -402,6 +404,11 @@ export function AccountScreen() {
   const u = me.data;
   const rows: [string, string | undefined, (() => void) | null][] = [
     ['닉네임', u?.nickname, () => router.push('/(tabs)/profile/nickname')],
+    [
+      '관심 분야',
+      u?.interestCategoryIds?.length ? u.interestCategoryIds.join(' · ') : '선택 안 함',
+      () => router.push('/(tabs)/profile/interests'),
+    ],
     ['이메일', u?.email ?? undefined, null],
     ['전화번호', u?.phone, null],
     ['학교', u?.school, null],
@@ -478,6 +485,51 @@ export function NicknameScreen() {
           </Text>
           <Text className="text-caption text-sub">{v.length}/10</Text>
         </View>
+      </Screen>
+    </Canvas>
+  );
+}
+
+/** 관심 분야 다시 고르기(프로필 > 계정 정보). 온보딩과 같은 칩, 여러 개 고를 수 있고 비워 둬도 된다 */
+export function InterestsScreen() {
+  const qc = useQueryClient();
+  const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
+  const saved = me.data?.interestCategoryIds ?? [];
+  // 건드리기 전에는 저장된 값을 보여 준다(돌아와 다시 읽혀도 고르던 것이 덮이지 않게, 고른 뒤에는 내 값)
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const now = picked ?? saved;
+  const changed = now.length !== saved.length || now.some((x) => !saved.includes(x));
+  const toggle = (x: string) =>
+    setPicked(now.includes(x) ? now.filter((y) => y !== x) : [...now, x]);
+  const save = useMutation({
+    mutationFn: () => api.me.update({ interestCategoryIds: now }),
+    onSuccess: (u) => {
+      qc.setQueryData(['me'], u);
+      router.back();
+      toast('관심 분야를 바꿨어요');
+    },
+  });
+  if (me.isPending) return <Loading />;
+  return (
+    <Canvas>
+      <Screen
+        footer={
+          <Btn disabled={!changed} loading={save.isPending} onPress={() => save.mutate()}>
+            저장
+          </Btn>
+        }
+      >
+        <Header title="관심 분야" sub="공부하고 있는 분야를 골라 주세요. 여러 개 골라도 돼요" />
+        <View className="mt-2 flex-row flex-wrap gap-2">
+          {INTERESTS.map((x) => (
+            <Chip key={x} on={now.includes(x)} onPress={() => toggle(x)}>
+              {x}
+            </Chip>
+          ))}
+        </View>
+        <Text className="mt-4 text-caption text-sub">
+          {now.length ? `${now.length}개 골랐어요` : '고르지 않아도 괜찮아요'}
+        </Text>
       </Screen>
     </Canvas>
   );
