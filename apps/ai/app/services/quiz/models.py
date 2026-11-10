@@ -34,6 +34,7 @@ class Question(TypedDict):
     answer: str
     explanation: NotRequired[str | None]
     conceptTags: NotRequired[list[str]]
+    difficulty: NotRequired[str | None]  # 하 · 중 · 상(유형으로 정함, similar.difficulty_of, #268)
     srs: NotRequired[Srs | None]
 
 
