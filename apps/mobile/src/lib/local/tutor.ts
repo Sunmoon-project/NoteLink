@@ -44,9 +44,16 @@ export function localAnswer(
   const best = scored.reduce((a, b) => (b.score > a.score ? b : a));
   if (!best.score && !OVERVIEW.test(question))
     return {
+      answerable: false,
+      reason: 'off_topic',
       answer: '노트에는 없는 내용이에요. 서버에 연결되면 더 자세히 설명해 드릴게요.',
       refs: [],
     };
   const { heading, body } = best.score ? best.p : all[0]!;
-  return { answer: `노트의 '${heading}' 부분을 보면, ${sentences(body, 2)}`, refs: [heading] };
+  return {
+    answerable: true,
+    reason: null,
+    answer: `노트의 '${heading}' 부분을 보면, ${sentences(body, 2)}`,
+    refs: [heading],
+  };
 }

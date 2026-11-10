@@ -246,6 +246,8 @@ describe('기기 저장 모드의 아바타 답', () => {
 
   it('질문 낱말이 가장 많이 겹치는 부분을 두 문장까지 읽어 준다', () => {
     expect(localAnswer(note, '라운드로빈 스케줄링은요?')).toEqual({
+      answerable: true,
+      reason: null,
       answer: "노트의 '스케줄링' 부분을 보면, 라운드 로빈은 시간 조각으로 돌린다.",
       refs: ['스케줄링'],
     });
@@ -259,6 +261,8 @@ describe('기기 저장 모드의 아바타 답', () => {
     expect(localAnswer(note, '핵심 알려 주세요')!.refs).toEqual(['핵심']);
     expect(localAnswer(note, '설명해 주세요')!.refs).toEqual(['교착 상태']);
     expect(localAnswer(note, '양자역학')).toEqual({
+      answerable: false,
+      reason: 'off_topic',
       answer: '노트에는 없는 내용이에요. 서버에 연결되면 더 자세히 설명해 드릴게요.',
       refs: [],
     });
