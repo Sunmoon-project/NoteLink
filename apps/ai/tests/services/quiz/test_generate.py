@@ -1598,9 +1598,11 @@ def test_a_slot_started_before_a_page_was_reopened_does_not_close_it_again(
     monkeypatch.setattr(generate, "WORKERS", 8)
     monkeypatch.setattr(generate, "EXTRA", 1.0)
     monkeypatch.setattr(generate, "BACKUPS", 0)  # 자리마다 한 쪽만(호출 차례를 쪽으로 정함)
-    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.1)
-    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.15)
-    monkeypatch.setattr(generate, "FILL_SEC_PER_QUESTION", 2)
+    # 판 상한 0.8초(1판의 기다리는 자리를 끊음) · 새 초안 0.6초: 느린 CI에서도 가짜 LLM 호출이
+    # 상한 안에 끝나게 넉넉히(/code-review #247)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.3)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.4)
+    monkeypatch.setattr(generate, "FILL_SEC_PER_QUESTION", 4)
     real = generate.gen_one
     lock = threading.Lock()
     on1 = [0]  # 1쪽 호출 차례
