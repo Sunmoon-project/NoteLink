@@ -1,5 +1,6 @@
 import type {
   AiJob,
+  NoteAskBody,
   AuthTokens,
   CalendarShare,
   ChatRoom,
@@ -205,6 +206,8 @@ export interface Api {
     checkImages(
       files: { name: string; sizeBytes: number; uri: string }[],
     ): Promise<{ name: string; verdict: ImageVerdict }[]>;
+    /** 아바타에게 노트 묻기 → note_ask 작업. 답은 ai.job으로 기다려 result(NoteAskResult)에서 읽는다 */
+    ask(materialId: string, body: NoteAskBody): Promise<AiJob>;
   };
   ai: {
     job(id: string): Promise<AiJob>;

@@ -5,7 +5,7 @@ import time
 import types
 from collections import defaultdict
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Any
 
@@ -41,6 +41,13 @@ def one_slot_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(generate, "WORKERS", 1)
     monkeypatch.setattr(generate, "EXTRA", 0)
     monkeypatch.setattr(generate, "MAX_ROUNDS", 1)
+
+
+@pytest.fixture(autouse=True)
+def keep_combo_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """조합형 문장 순서를 섞지 않음: 가짜 검사 모델이 요청한 묶음을 정답으로 알고 풂(섞기는
+    test_combo가 봄)."""
+    monkeypatch.setattr(generate.combo, "order_for", lambda: [0, 1, 2])
 
 
 @pytest.fixture
@@ -1087,10 +1094,15 @@ def make(llm: ScriptLlm, inp: JsonObject, **more: Any) -> JsonObject:
     return generate.run(llm, inp, lambda v, step=None: None, **more)
 
 
+# 안정적 모드의 단계(시도 수 · 2차 풀기 · 이어받기)만 보는 시험: 새 유형(#268)이 끼면 초안 순서를
+# 유형마다 맞춰야 해서 뺌. 새 유형은 아래 「새 유형」 시험이 봄
+STEPS = replace(generate.STABLE, extra=())
+
+
 def test_a_stable_slot_tries_three_drafts_and_a_fast_slot_two() -> None:
     # 안정적 모드는 한 자리 시도 3번: 빠른 모드라면 버렸을 자리를 세 번째 초안으로 채움
     llm = happy([BAD, BAD, GOOD["이질 아메바"]])
-    result = make(llm, page1_job(size=1), mode=generate.STABLE)
+    result = make(llm, page1_job(size=1), mode=STEPS)
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
     quiz = llm.named("Quiz")
     assert len(quiz) == 3
@@ -1129,7 +1141,7 @@ def test_a_stable_draft_must_also_be_solved_by_the_generator_model() -> None:
         return agree(user)
 
     llm.answers[generate.RECHECK] = recheck
-    result = make(llm, page1_job(size=1), mode=generate.STABLE)
+    result = make(llm, page1_job(size=1), mode=STEPS)
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
     assert len(llm.named("Quiz")) == 2 and len(llm.named(generate.RECHECK)) == 2
     assert "검사 탈락(생성 모델 답" in llm.named("Quiz")[1]  # 다시 만들 때 문제점으로 알림
@@ -1143,7 +1155,7 @@ def test_a_stable_draft_is_not_used_when_the_recheck_call_fails() -> None:
     llm.answers[generate.RECHECK] = lambda u: LlmError("응답 없음")
     # 호출 실패로 센 시도뿐이라 학교 LLM 장애: 작업 처리기가 나중에 다시 시도(검사 모델 실패와 같음)
     with pytest.raises(LlmError, match="모두 실패함"):
-        make(llm, page1_job(size=1), mode=generate.STABLE)
+        make(llm, page1_job(size=1), mode=STEPS)
     assert len(llm.named(generate.RECHECK)) == 3  # 세 초안 모두 2차 풀기에서 멈춤
 
 
@@ -1179,7 +1191,7 @@ def test_a_pregen_taken_over_mid_slot_finishes_in_fast_mode(
         llm = parallel_llm(quiz)
         out: JsonObject | Exception
         try:
-            out = make(llm, job(size=1), mode=generate.STABLE, hurry=lambda: awaited[0])
+            out = make(llm, job(size=1), mode=STEPS, hurry=lambda: awaited[0])
         except generate.NoQuestionsError as e:
             out = e
         return llm, out
@@ -1208,7 +1220,7 @@ def test_a_take_over_during_the_second_draft_stops_before_a_third_try() -> None:
 
     llm.answers["Quiz"] = take_over_on_second
     with pytest.raises(generate.NoQuestionsError):
-        make(llm, page1_job(size=1), mode=generate.STABLE, hurry=lambda: awaited[0])
+        make(llm, page1_job(size=1), mode=STEPS, hurry=lambda: awaited[0])
     assert len(llm.named("Quiz")) == 2
 
 
@@ -1223,7 +1235,7 @@ def test_a_take_over_during_the_checker_solve_skips_the_recheck() -> None:
         return check(user)
 
     llm.answers["Check"] = take_over_while_checking
-    result = make(llm, page1_job(size=1), mode=generate.STABLE, hurry=lambda: awaited[0])
+    result = make(llm, page1_job(size=1), mode=STEPS, hurry=lambda: awaited[0])
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
     assert llm.named(generate.RECHECK) == []
 
@@ -1239,7 +1251,7 @@ def test_questions_made_before_the_take_over_are_kept() -> None:
         return recheck(user)
 
     llm.answers[generate.RECHECK] = first_then_take_over
-    result = make(llm, job(size=2), mode=generate.STABLE, hurry=lambda: awaited[0])
+    result = make(llm, job(size=2), mode=STEPS, hurry=lambda: awaited[0])
     assert sorted(q["answer"] for q in result["questions"]) == ["람블편모충", "이질 아메바"]
     assert len(llm.named(generate.RECHECK)) == 1
 
@@ -1567,9 +1579,100 @@ def test_rounds_with_spare_slots_never_run_more_than_workers_at_once(
 
 
 @pytest.mark.usefixtures("fill_rounds")
-def test_the_last_stage_reopens_only_pages_closed_for_no_concept() -> None:
+def test_a_page_closed_for_an_overlap_is_reopened_once_in_the_next_round() -> None:
+    # 1쪽뿐인 노트 2문제: 둘째 자리가 두 번 모두 이미 있는 문제와 거의 같은 초안을 만들어 1쪽이
+    # 겹침으로 닫힘. 다음 판에 1쪽을 한 번 다시 열어 다른 문장으로 채움(11/10 학교 LLM 기생충
+    # 원충류: 세 쪽이 겹침으로 닫혀 상한 전에 3/5로 끝남, #247)
+    old = stored("q1", "대장 아메바", "대장 아메바")
+    old["passage"] = GOOD["대장 아메바"]["question"]["passage"]
+    inp = job(size=2, sets=[{"id": "s1", "materialId": "m1", "questions": [old]}])
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    fresh = draft(
+        "대장 아메바",
+        "핵이 8개인 포낭을 만들고 비병원성으로 적힌 원충",
+        stem="노트의 원충 가운데 알맞은 것은?",
+    )
+    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"], GOOD["대장 아메바"], fresh])
+    result, _ = run(llm, inp)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바"]
+    assert len(llm.named("Quiz")) == 4
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_a_slot_started_before_a_page_was_reopened_does_not_close_it_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 2문제, 1쪽(틀린 기록이 있어 무거움)에 두 자리 + 여분 자리 둘(1쪽 · 2쪽). 2쪽은 늘 다른 이유로
+    # 떨어져 열린 채라 마지막 단계로 가지 않음. 1판: 1쪽의 한 자리가 이질 아메바를 받고, 한 자리가
+    # 겹침으로 1쪽을 닫고, 한 자리는 판 상한까지 답을 기다림. 2판: 1쪽을 다시 열고 두 자리가 다른
+    # 이유로 떨어지는 동안 1판의 기다리던 자리가 겹침으로 끝남. 다시 열기 전에 시작한 자리라 1쪽을
+    # 닫지 않아 3판에 채움(/code-review #247)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "EXTRA", 1.0)
+    monkeypatch.setattr(generate, "BACKUPS", 0)  # 자리마다 한 쪽만(호출 차례를 쪽으로 정함)
+    # 판 상한 0.8초(1판의 기다리는 자리를 끊음) · 새 초안 0.6초: 느린 CI에서도 가짜 LLM 호출이
+    # 상한 안에 끝나게 넉넉히(/code-review #247)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.3)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.4)
+    monkeypatch.setattr(generate, "FILL_SEC_PER_QUESTION", 4)
+    real = generate.gen_one
+    lock = threading.Lock()
+    on1 = [0]  # 1쪽 호출 차례
+    second_round, stale_done = threading.Event(), threading.Event()
+    started = threading.Barrier(4, timeout=5)  # 1판 네 자리
+    overlap = ["세트 안에서 정답이 겹침"]  # DRY_REASONS
+    other = ["정답이 노트에 없음"]  # 쪽을 닫지 않는 이유
+
+    def scripted(*a: Any, **k: Any) -> Any:
+        page = a[1]
+        with lock:
+            on1[0] += page == 1
+            i = on1[0] if page == 1 else 0
+        if page == 2:
+            if not second_round.is_set():
+                started.wait()
+            return generate.Made(why=list(other))
+        if i <= 3:  # 1판 네 자리가 모두 쪽을 연 채 시작한 뒤에 끝나게
+            started.wait()
+        if i == 1:
+            return real(*a, **k)  # 이질 아메바
+        if i == 2:
+            return generate.Made(why=list(overlap))  # 1판: 1쪽을 겹침으로 닫음
+        if i == 3:  # 1판에 기다리는 자리: 2판이 1쪽을 다시 연 뒤에 겹침으로 끝남
+            second_round.wait(10)
+            time.sleep(0.05)  # 2판 두 자리가 모두 시작할 때까지
+            stale_done.set()
+            return generate.Made(why=list(overlap))
+        if i in (4, 5):  # 2판의 두 1쪽 자리: 늦게 끝난 1판 자리를 기다렸다가 다른 이유로 떨어짐
+            second_round.set()
+            stale_done.wait(10)
+            return generate.Made(why=list(other))
+        return real(*a, **k)  # 3판: 대장 아메바
+
+    monkeypatch.setattr(generate, "gen_one", scripted)
+    inp = job(
+        size=2,
+        sets=[
+            {"id": "s1", "materialId": "m1", "questions": [stored("q1", "말라리아", "이질 아메바")]}
+        ],
+        attempts=[attempt("q1", False), attempt("q1", False)],
+    )
+    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"]])
+    result, _ = run(llm, inp)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바"]
+    assert on1[0] >= 6  # 3판의 1쪽 자리가 채움
+    join_threads("quiz-slot")
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_the_last_stage_reopens_only_pages_closed_for_no_concept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # 2쪽(틀린 기록이 있어 더 무거움)은 이미 있는 문제와 거의 같아 겹침으로 닫히고, 1쪽은 개념
-    # 둘을 다 물어 닫힘. 마지막 단계는 1쪽만 다시 엶: 2쪽은 같은 겹침 검사에 또 걸리므로 부르지 않음
+    # 둘을 다 물어 닫힘. 둘째 판은 마지막 단계로 1쪽을 다시 열고, 겹침으로 처음 닫힌 2쪽도 한 번
+    # 다시 엶. 2쪽은 또 겹쳐 닫힌 뒤로는 부르지 않음. 판은 둘뿐: 열린 쪽이 다시 열 쪽뿐이어도 마지막
+    # 단계로 가야 둘째 판에 채움(다시 연 쪽만 도는 판을 먼저 두면 셋째 판이 필요, /code-review #247)
+    monkeypatch.setattr(generate, "MAX_ROUNDS", 2)
     old = stored("q1", "람블편모충", "람블편모충")
     old["passage"] = GOOD["람블편모충"]["question"]["passage"]
     inp = job(
@@ -1602,11 +1705,25 @@ def test_the_last_stage_reopens_only_pages_closed_for_no_concept() -> None:
     )
     result, _ = run(llm, inp)
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바", "4핵"]
-    # 2쪽은 첫 단계의 한 자리(gen_one이 유형마다 한 번)에서 겹침으로 닫힌 뒤 다시 부르지 않음(다시
-    # 열면 마지막 단계 판의 첫 자리가 무거운 2쪽으로 가 그만큼 더 부름)
+    # 2쪽은 첫 판의 한 자리(gen_one이 유형마다 한 번)에서 겹침으로 닫히고, 둘째 판에 한 번 다시
+    # 열렸다가 또 겹쳐 닫힘(#247)
     once = len(generate.page_types(PAGE2, generate.is_korean_subject({1: PAGE1, 2: PAGE2}))[:2])
-    assert [page for page, _ in calls].count(2) == once
+    assert [page for page, _ in calls].count(2) == 2 * once
+    assert not any(angled for page, angled in calls if page == 2)  # 마지막 단계에서는 부르지 않음
     assert calls[-1] == (1, True)  # 마지막 단계는 1쪽에서 이미 물은 개념을 다른 각도로
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_a_page_closed_for_an_overlap_in_the_last_stage_is_not_reopened() -> None:
+    # 1쪽 개념 둘로 3문제: 1판에 둘을 받고 1쪽은 개념이 바닥나 닫힘. 2판(마지막 단계)에 1쪽을 다시
+    # 열었지만 두 번 모두 같은 정답이라 겹침으로 닫힘. 마지막 단계에서 처음 겹친 쪽은 다시 열지
+    # 않아 3판을 띄우지 않음(/code-review #247)
+    inp = job(size=3)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"], *[GOOD["이질 아메바"]] * 4])
+    with pytest.raises(generate.NoQuestionsError, match=re.escape("2/3문제만 만듦")):
+        run(llm, inp)
+    assert len(llm.named("Quiz")) == 4  # 1판 둘 · 2판 한 자리의 두 유형
 
 
 @pytest.mark.usefixtures("fill_rounds")
@@ -1750,3 +1867,226 @@ def test_a_later_page_failing_stops_concept_names_without_waiting_for_an_earlier
     assert time.monotonic() - start < 3
     join_threads("concepts")  # 늦은 1쪽이 끝까지 가도록
     assert llm.named("Names") == []
+
+
+# ---------- 새 유형 · 난이도 (#268) ----------
+
+FEATURES = {  # 특징 · 부정설명 보기: 노트로 확인되는 옳은 설명(이름은 넣지 않음: 정답 겹침 검사)
+    "이질 아메바": [
+        "위족으로 운동한다",
+        "적혈구를 먹는다",
+        "포낭형은 4핵이다",
+        "인체 감염형이 있다",
+    ],
+    "대장 아메바": ["포낭형은 8핵이다", "병을 일으키지 않는다", "근족충류이다", "포낭형이 있다"],
+    "람블편모충": ["서양배 모양이다", "흡착원판이 있다", "포낭형은 타원형이다", "포낭형은 4핵이다"],
+    "질편모충": ["성 접촉으로 감염된다", "편모충류이다", "원충이다", "편모로 움직인다"],
+}
+GROUP = {"이질 아메바": "근족충류", "대장 아메바": "근족충류", "람블편모충": "편모충류"}
+GROUP["질편모충"] = "편모충류"
+
+
+def typed_draft(ty: str, concept: str) -> JsonObject:
+    """요청한 유형에 맞는 초안(모든 검사를 통과하는 모양)."""
+    true4 = FEATURES[concept]
+    if ty == "정의":
+        return GOOD[concept]
+    if ty == "특징":
+        stem, options, answer = (
+            f"다음 중 {concept}에 대한 설명으로 옳은 것은?",
+            # 오답 보기도 개념마다 다른 문장(같으면 too_close의 '문장 보기 셋이 같음')
+            [
+                true4[0],
+                "섬모로 움직인다",
+                f"{concept}는 세균이다",
+                f"{concept}는 곰팡이다",
+                f"{concept}는 바이러스다",
+            ],  # fmt: skip
+            true4[0],
+        )
+    elif ty == "부정설명":
+        stem, options, answer = (
+            f"다음 중 {concept}에 대한 설명으로 옳지 않은 것은?",
+            ["섬모로 움직인다", *true4],
+            "섬모로 움직인다",
+        )
+    elif ty == "분류":
+        stem, options, answer = (
+            f"{concept}가 속하는 분류는?",
+            ["근족충류", "편모충류", "섬모충류", "포자충류", "흡충류"],
+            GROUP[concept],
+        )
+    else:
+        raise AssertionError(f"이 시험이 준비하지 않은 유형: {ty}")
+    return {
+        "question": {
+            "stem": stem,
+            "passage": concept,
+            "options": options,
+            "answer": answer,
+            "explanation": "노트에 적힌 내용입니다.",
+            "difficulty": "보통",
+            "concept": concept,
+        }
+    }
+
+
+def first_name(user: str) -> str:
+    m = re.search(r"^개념 목록\(이 안에서 고른다\): ([^,\n]+)", user, re.M)
+    assert m
+    return m.group(1)
+
+
+def typed_llm() -> ScriptLlm:
+    """유형마다 알맞은 초안을 쓰고, 조합형은 요청한 묶음대로 문장을 쓰는 가짜 LLM(차례로 답함)."""
+    made: list[str] = []
+    asked: list[list[bool]] = []
+
+    def quiz(user: str) -> JsonObject:
+        ty = re.search(r"^문제 유형: (\S+)", user, re.M)
+        assert ty
+        d = typed_draft(ty.group(1), first_name(user))
+        made.append(d["question"]["answer"])
+        return d
+
+    def statements(user: str) -> JsonObject:
+        m = re.search(r"이 순서로 만든다: (.+)$", user, re.M)
+        assert m
+        asked.append(["옳음" in x for x in m.group(1).split(", ")])
+        made.append(", ".join(c for c, w in zip("ㄱㄴㄷ", asked[-1], strict=True) if w))
+        concept = first_name(user)
+        # 개념마다 다른 문장(같으면 '이미 있는 문제와 거의 같음')
+        st = ["위족으로 운동한다.", "포낭형은 8핵이다.", "적혈구를 먹는다."]
+        st = st if concept == "이질 아메바" else [f"{concept}: {x}" for x in FEATURES[concept][:3]]
+        return {
+            "question": {
+                "concept": concept,
+                "statements": st,
+                "reasons": ["노트와 같다", "포낭형은 4핵이다", "노트와 같다"],
+            }
+        }
+
+    def nat(user: str) -> JsonObject:
+        return {"natural": [o == made[-1] for o in candidates(user)]}
+
+    return ScriptLlm(
+        {
+            "Quiz": quiz,
+            "Naturals": nat,
+            "Check": checker(lambda u: made[-1]),
+            generate.RECHECK: checker(lambda u: made[-1]),
+            "Combo": statements,
+            "Verify": lambda u: {"correct": asked[-1]},
+        }
+    )
+
+
+def asked_types(llm: ScriptLlm) -> list[str]:
+    out = []
+    for name, user in llm.calls:
+        if name == "Quiz" and (m := re.search(r"^문제 유형: (\S+)", user, re.M)):
+            out.append(m.group(1))
+        elif name == "Combo":
+            out.append("조합")
+    return out
+
+
+def test_the_new_types_are_added_only_in_stable_mode_and_only_to_term_pages() -> None:
+    assert generate.page_types(PAGE1, True) == ["정의", "특징", "분류"]
+    assert generate.page_types(PAGE1, True, generate.STABLE.extra) == [
+        "정의", "특징", "부정설명", "분류", "조합",
+    ]  # fmt: skip
+    assert generate.page_types("The box is ____.", False, generate.STABLE.extra) == [
+        "빈칸", "어휘", "규칙",
+    ]  # fmt: skip
+    assert generate.FAST.extra == ()
+
+
+def test_a_stable_set_turns_the_first_type_slot_by_slot_and_tags_difficulty() -> None:
+    # 쪽마다 돌리면 쪽마다 정의부터: 세트 전체에서 자리마다 돌려 유형 · 난이도가 섞임
+    llm = typed_llm()
+    result = make(llm, job(size=4), mode=generate.STABLE)
+    qs = result["questions"]
+    assert [q["type"] for q in qs] == ["정의", "특징", "부정설명", "분류"]
+    assert [q["difficulty"] for q in qs] == ["하", "중", "중", "하"]
+    neg = qs[2]
+    assert neg["prompt"].endswith("옳지 않은 것은?") and neg["answer"] == "섬모로 움직인다"
+    # 부정설명의 정답(틀린 설명)은 '이미 정답으로 쓴 것'으로 다음 초안 지시에 싣지 않음
+    last = llm.named("Quiz")[-1]
+    assert "이미 정답으로 쓴 것" in last and "섬모로 움직인다" not in last
+
+    llm = typed_llm()
+    result = make(llm, job(size=4))  # 빠른 모드는 지금처럼 쪽마다 정의부터
+    assert [q["type"] for q in result["questions"]] == ["정의", "특징", "정의", "특징"]
+    assert [q["difficulty"] for q in result["questions"]] == ["하", "중", "하", "중"]
+
+
+def test_a_combination_is_built_by_code_and_checked_statement_by_statement() -> None:
+    llm = typed_llm()
+    r = generate.gen_one(
+        llm, 1, PAGE1, ["조합"], NAMES[:2], PageInfo(), [], [], 2, mode=lambda: generate.STABLE
+    )
+    q = r.question
+    assert q is not None and r.type == "조합" and r.concept == "이질 아메바"
+    assert q["passage"] == "ㄱ. 위족으로 운동한다.\nㄴ. 포낭형은 8핵이다.\nㄷ. 적혈구를 먹는다."
+    assert q["options"] == sorted(q["options"], key=generate.combo.COMBOS.index)
+    assert q["answer"] in q["options"]
+    # 정답 둘 검사(Naturals) 대신 문장 판정, 그 뒤 검사 모델 풀기 · 생성 모델 2차 풀기
+    assert [n for n, _ in llm.calls] == ["Combo", "Verify", "Check", generate.RECHECK]
+
+
+def test_a_combination_judged_otherwise_is_retried_with_the_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(generate.combo, "truth_for", lambda: "ㄱ")
+    llm = typed_llm()
+    llm.answers["Verify"] = lambda u: {"correct": [True, True, True]}
+    r = generate.gen_one(
+        llm, 1, PAGE1, ["조합"], NAMES[:2], PageInfo(), [], [], 0, mode=lambda: generate.STABLE
+    )
+    assert r.question is None and r.tries == 3
+    combos = llm.named("Combo")
+    assert "문장 판정이 요청과 다름" in combos[1] and "문장 판정이 요청과 다름" not in combos[0]
+
+
+def test_fast_mode_skips_the_new_types() -> None:
+    llm = typed_llm()
+    r = generate.gen_one(
+        llm, 1, PAGE1, ["조합", "부정설명", "정의"], NAMES[:2], PageInfo(), [], [], 0,
+        mode=lambda: generate.FAST,
+    )  # fmt: skip
+    assert r.type == "정의" and asked_types(llm) == ["정의"]
+
+
+def test_a_take_over_mid_slot_drops_the_new_types_for_the_remaining_tries() -> None:
+    llm = typed_llm()
+    llm.answers["Quiz"] = lambda u: BAD
+    modes = iter([generate.STABLE])  # 첫 시도(시도 수 · 유형)까지만 안정적
+
+    def mode() -> generate.Mode:
+        return next(modes, generate.FAST)
+
+    generate.gen_one(
+        llm, 1, PAGE1, ["부정설명", "정의", "조합", "특징"], NAMES[:2], PageInfo(), [], [], 0,
+        mode=mode,
+    )  # fmt: skip
+    # 이어받지 않았으면 두 번째 시도는 정의 · 세 번째는 조합. 빠른 모드로 바뀌어 [정의, 특징] 중
+    # 두 번째(특징)이고 시도는 2번에서 끝남
+    assert asked_types(llm) == ["부정설명", "특징"]
+
+
+def test_combinations_may_share_an_answer_and_keep_their_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(generate, "page_types", lambda text, korean, extra=(): ["조합"])
+    monkeypatch.setattr(generate.combo, "truth_for", lambda: "ㄱ, ㄷ")
+    llm = typed_llm()
+    result = make(llm, job(size=3), mode=generate.STABLE)
+    qs = result["questions"]
+    assert [q["answer"] for q in qs] == ["ㄱ, ㄷ"] * 3  # 묶음 이름이라 겹쳐도 됨
+    # 세트 순서로 정답 자리를 다시 놓을 때도(_make_all) 묶음 순서 그대로
+    order = generate.combo.COMBOS.index
+    assert all(q["choices"] == sorted(q["choices"], key=order) for q in qs)
+    assert all(q["answer"] in q["choices"] for q in qs)
+    assert [q["difficulty"] for q in qs] == ["상"] * 3
+    assert "ㄱ, ㄷ" not in "".join(llm.named("Combo"))  # 이미 쓴 정답 목록에 넣지 않음

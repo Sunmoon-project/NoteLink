@@ -12,7 +12,7 @@ type Options = { returnDocument?: 'after'; sort?: { createdAt: -1 } };
 export const PAST = new Date(Date.now() - 60_000);
 export const LATER = new Date(Date.now() + 10 * 60_000);
 
-/** ai_jobs 컬렉션을 메모리로 흉내 낸다. 서비스가 쓰는 create · findOne · findOneAndUpdate · exists만 만든다 */
+/** ai_jobs 컬렉션을 메모리로 흉내 낸다. 서비스가 쓰는 create · findOne · countDocuments · findOneAndUpdate · deleteOne · exists만 만든다 */
 export function createFakeJobs() {
   const rows: Row[] = [];
   let clock = 0;
@@ -28,6 +28,13 @@ export function createFakeJobs() {
       const found = rows.filter((r) => matches(r, filter));
       if (options.sort) found.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
       return query(found[0] ?? null);
+    },
+    countDocuments: (filter: Filter) =>
+      Promise.resolve(rows.filter((r) => matches(r, filter)).length),
+    deleteOne: (filter: Filter) => {
+      const i = rows.findIndex((r) => matches(r, filter));
+      if (i >= 0) rows.splice(i, 1);
+      return Promise.resolve({ deletedCount: i >= 0 ? 1 : 0 });
     },
     exists: (filter: Filter) => {
       const row = rows.find((r) => matches(r, filter));

@@ -3,6 +3,8 @@ import pytest
 from app.services.quiz.models import Draft, Notes, Question
 from app.services.quiz.text import (
     clean_pages,
+    combo_answer,
+    is_combo,
     locate,
     norm,
     place,
@@ -212,3 +214,27 @@ def test_place_moves_answer_to_slot_position() -> None:
 )
 def test_same_word_is_narrower_than_same_item(a: str, b: str, same: bool) -> None:
     assert same_word(a, b) is same and same_word(b, a) is same
+
+
+# ---------- 조합형 보기 (#268) ----------
+
+
+def test_combo_options_are_five_different_combinations() -> None:
+    assert is_combo(["ㄱ", "ㄴ", "ㄱ, ㄴ", "ㄴ, ㄷ", "ㄱ, ㄴ, ㄷ"])
+    assert is_combo(["ㄱ", "ㄴ", "ㄱ,ㄴ", "ㄴ,ㄷ", "ㄱ,ㄴ,ㄷ"])  # 띄어쓰기는 상관없음
+    assert not is_combo(["ㄱ", "ㄴ", "ㄱ, ㄴ", "ㄴ, ㄷ"])
+    assert not is_combo(["ㄱ", "ㄱ", "ㄱ, ㄴ", "ㄴ, ㄷ", "ㄱ, ㄴ, ㄷ"])
+    assert not is_combo(["ㄱ", "ㄴ", "ㄱ, ㄴ", "ㄴ, ㄷ", "이질 아메바"])
+
+
+def test_combo_options_keep_the_fixed_order_whatever_the_slot() -> None:
+    opts = ["ㄱ, ㄴ", "ㄱ, ㄴ, ㄷ", "ㄷ", "ㄱ", "ㄴ, ㄷ"]
+    fixed = ["ㄱ", "ㄷ", "ㄱ, ㄴ", "ㄴ, ㄷ", "ㄱ, ㄴ, ㄷ"]
+    for slot in range(5):
+        assert place(opts, 0, slot) == (fixed, 2)
+
+
+def test_a_combination_answer_is_not_a_word_to_ask_again() -> None:
+    assert combo_answer("ㄱ, ㄷ") and combo_answer("ㄱ,ㄴ,ㄷ") and not combo_answer("ㄱㄹ")
+    assert not short_answer("ㄱ, ㄷ") and short_answer("ㄱ말")
+    assert not same_word("ㄱ, ㄷ", "ㄱ, ㄷ") and same_word("대립 유전자", "대립유전자")

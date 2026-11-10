@@ -629,6 +629,7 @@ MODEL_FIELDS = (
     "note_split_model",
     "note_refine_model",
     "recording_model",
+    "note_ask_model",
 )
 
 

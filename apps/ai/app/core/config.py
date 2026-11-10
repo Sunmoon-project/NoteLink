@@ -11,6 +11,7 @@ LLM_DEFAULTS: dict[str, dict[str, str]] = {
         "note_split_model": "claude-sonnet-5-5",
         "note_refine_model": "claude-sonnet-5-5",
         "recording_model": "claude-sonnet-5-5",
+        "note_ask_model": "claude-sonnet-5-5",
     },
     "school": {
         "quiz_gen_model": "gemma-4-26b",
@@ -18,6 +19,7 @@ LLM_DEFAULTS: dict[str, dict[str, str]] = {
         "note_split_model": "gemma-4-26b",
         "note_refine_model": "gemma-4-26b",  # qwen은 호출 1~3분이라 쓰지 않음(10/30 실험)
         "recording_model": "gemma-4-26b",
+        "note_ask_model": "gemma-4-26b",
     },
 }
 # 보내는 간격(초). 학교 LLM은 분당 30회 한도 아래로. Claude는 분당 50회(가장 낮은 등급)
@@ -44,6 +46,7 @@ class Settings(BaseSettings):
     # 노트 후처리(오타 고치기 · 개념 태그). 과목 용어 사전이 준비될 때까지 꺼 둠
     note_refine_enabled: bool = False
     note_refine_model: str = ""
+    note_ask_model: str = ""  # 아바타 노트 묻고 답하기(사용자가 기다림)
 
     # ai_jobs 작업 처리기. FastAPI는 이 컬렉션만 읽고 씁니다(DB · 색인 관리는 NestJS).
     mongodb_uri: SecretStr = SecretStr("")
