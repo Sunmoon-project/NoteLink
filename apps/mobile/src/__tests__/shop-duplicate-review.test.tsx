@@ -67,7 +67,7 @@ it('느린 구매 중 같은 상품을 다시 열어도 첫 성공 뒤 남은 �
   if (reopenBuy) await fireEvent.press(reopenBuy);
   purchased = true;
   await act(async () => pending.resolve({ balance: 100000 - item.price }));
-  await screen.findByText(`🎉 구매 완료 · ${item.name}`);
+  await screen.findByText(`구매 완료 · ${item.name}`);
   await waitFor(() => expect(myItems.mock.calls.length).toBeGreaterThan(1));
   await waitFor(() => expect(screen.getAllByText('보유중').length).toBeGreaterThan(0));
 

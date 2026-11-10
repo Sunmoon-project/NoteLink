@@ -115,6 +115,19 @@ describe('AiJobsService.cancel', () => {
     expect(row(_id)['status']).toBe(status);
   });
 
+  it('미리 만들기는 몇 번 취소해도 지우지 않고 이어받기만 푼다', async () => {
+    const { service, add, row } = setup();
+    const { _id } = await add({ type: 'quiz_pregen', targetType: 'material', targetId: NOTE });
+    row(_id)['awaited'] = true;
+    await service.cancel(ME, _id);
+    await service.cancel(ME, _id);
+    expect(row(_id)).toMatchObject({ status: 'queued', awaited: false });
+    // 두 요청이 겹쳐도 같다(가짜 DB라 실제 MongoDB의 경쟁까지는 보지 않는다. 두 단계 모두 조건부 갱신)
+    row(_id)['awaited'] = true;
+    await Promise.all([service.cancel(ME, _id), service.cancel(ME, _id)]);
+    expect(row(_id)).toMatchObject({ status: 'queued', awaited: false });
+  });
+
   it('남의 작업은 바꾸지 않고 404', async () => {
     const { service, add, row } = setup();
     const { _id } = await add();
@@ -289,6 +302,7 @@ describe('toAppError', () => {
     ['입력 오류: input이 객체가 아님', AI_JOB_FAILED],
     ['NO_SPEECH: 말소리를 찾지 못함', 'NO_SPEECH'],
     ['INVALID_FILE: 녹음이 3분보다 짧음', 'INVALID_FILE'],
+    ['NO_QUESTIONS: 만든 문제가 없음(검사 탈락(검수자 답 E))', 'NO_QUESTIONS'],
     // 앱이 모르는 코드 모양 문구(예외 이름 등)는 내보내지 않는다
     ['HTTP: 502 Bad Gateway', AI_JOB_FAILED],
     ['', AI_JOB_FAILED],

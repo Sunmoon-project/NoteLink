@@ -87,10 +87,11 @@ export const AI_JOB_FAILED = 'AI_JOB_FAILED';
 
 /**
  * 처리기가 원인 코드를 붙인 오류: '<코드>: <원인>'(apps/ai runner.py JobInputError).
- * 앱이 아는 코드만 그대로 보낸다(지금은 녹음 정리 apps/ai services/recording/job.py). 새 코드를
+ * 앱이 아는 코드만 그대로 보낸다(녹음 정리 apps/ai services/recording/job.py, 맞춤 퀴즈를 한 문제도
+ * 만들지 못함 services/quiz/generate.py NoQuestionsError). 새 코드를
  * 처리기에 더하면 여기에도 더한다. 원인 문구는 처리기 내부 내용이 섞일 수 있어 보내지 않는다
  */
-const APP_ERROR_CODES = new Set(['NO_SPEECH', 'INVALID_FILE']);
+const APP_ERROR_CODES = new Set(['NO_SPEECH', 'INVALID_FILE', 'NO_QUESTIONS']);
 const CODED_ERROR = /^([A-Z][A-Z0-9_]*): /;
 
 /**
@@ -224,11 +225,23 @@ export class AiJobsService {
   }
 
   /**
-   * 아직 끝나지 않은 작업을 canceled로 바꾼다. 처리 중이면 처리기가 다음에 쓸 때 알아채고 결과를 버린다.
+   * 아직 끝나지 않은 작업을 canceled로 바꾼다. 처리 중이면 처리기가 몇 초 안에 알아채 남은 LLM 호출을
+   * 멈추고 결과를 버린다(apps/ai runner, #263).
    * 이미 끝난 작업(succeeded · failed · canceled)은 그대로 둔다(앱이 두 번 눌러도 같은 결과).
+   * 미리 만들기(quiz_pregen)는 지우지 않고 이어받기만 푼다(awaited=false): 사용자가 기다리기를
+   * 그만둔 것이라, 처리기가 뒤에서 마저 만들어 두면 그 노트의 퀴즈 세트가 나중에 ready가 된다.
+   * 여러 번 불러도 같다(앱이 두 번 취소해도 뒤에서 만들던 작업은 남는다, Codex 리뷰 #236).
    */
   async cancel(userId: string, jobId: string): Promise<void> {
     const filter = { _id: objectId(jobId), userId: objectId(userId) };
+    const pregen = await this.jobs
+      .findOneAndUpdate(
+        { ...filter, type: PREGEN_TYPE, status: { $in: ACTIVE } },
+        { $set: { awaited: false } },
+        { projection: { _id: 1 } },
+      )
+      .lean();
+    if (pregen) return;
     const row = await this.jobs
       .findOneAndUpdate(
         { ...filter, status: { $in: ACTIVE } },
@@ -245,9 +258,12 @@ export class AiJobsService {
    * 지난 오류 · 결과를 지운다(중간 결과 checkpoint는 남겨 처리기가 다시 쓴다).
    * 아직 처리 중이거나 이미 성공한 작업은 바꾸지 않고 지금 상태를 돌려준다(앱의 '다시 시도'는
    * 실패 화면에만 있고, 처리기가 failed로 바꾼 작업은 잠금이 비어 있어 지금 앱에서는 늘 다시 넣는다).
-   * 처리 중에 취소한 작업은 처리기가 다음에 쓸 때까지(LLM 호출 중이면 몇 분) 계속 돌기 때문에,
-   * 잠금이 풀릴 때까지는 다시 넣지 않는다. 바로 넣으면 같은 작업을 두 처리기가 함께 만든다
-   * (/code-review #175). 그동안은 canceled 그대로 돌려주고, 앱이 잠시 뒤 다시 누르면 된다.
+   * 처리 중에 취소한 작업은 처리기가 처리를 끝낼 때까지 잠금이 남아 있으므로, 잠금이 풀릴 때까지는
+   * 다시 넣지 않는다. 바로 넣으면 같은 작업을 두 처리기가 함께 만든다(/code-review #175). 처리기는
+   * 몇 초 안에 취소를 알아채 멈추고 잠금을 푼다(이미 보낸 LLM 호출이 있으면 그 응답까지, #263).
+   * 녹음 정리의 음성 인식처럼 멈출 수 없는 긴 호출 중이면 그 호출이 끝난 뒤에 풀린다(잠금 연장은
+   * 멈추므로 늦어도 잠금 시간이 지나면 풀림).
+   * 그동안은 canceled 그대로 돌려주고, 앱이 잠시 뒤 다시 누르면 된다.
    */
   async retry(userId: string, jobId: string): Promise<AppAiJob> {
     const filter = { _id: objectId(jobId), userId: objectId(userId) };

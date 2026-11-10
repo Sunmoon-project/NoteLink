@@ -62,6 +62,12 @@ describe('readEmail', () => {
     ['중간 공백', 'a b@example.com'],
     ['연속 점', 'a..b@example.com'],
     ['도메인에 연속 점', 'a@example..com'],
+    ['쉼표로 다른 사람을 끼워 넣음', 'x1,victim@example.com'],
+    ['쉼표로 두 주소', 'a@example.com,b@example.com'],
+    ['세미콜론으로 두 주소', 'a@example.com;b@example.com'],
+    ['이름이 붙은 형식', 'Name <a@example.com>'],
+    ['따옴표 아이디', '"x,y"@example.com'],
+    ['줄바꿈으로 헤더 끼워 넣기', 'a@example.com\r\nBcc: evil@example.com'],
   ])('%s이면 400 VALIDATION_FAILED이다', (_reason, email) => {
     expect(rejection(() => readEmail({ email })).code).toBe('VALIDATION_FAILED');
   });

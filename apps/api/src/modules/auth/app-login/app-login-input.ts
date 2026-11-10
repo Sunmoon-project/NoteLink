@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 
+import { isSingleEmailAddress } from '../../../common/email-address.js';
 import { VALIDATION_FAILED } from '../social-login/social-start-query.js';
 
 /**
@@ -52,7 +53,7 @@ export function readEmail(body: Record<string, unknown>, field = 'email'): strin
   const email = text(body, field).trim();
   if (email === '') throw invalid(field, '가 필요합니다');
   if (email.length > EMAIL_MAX_LENGTH) throw invalid(field, '가 너무 깁니다');
-  if (!EMAIL_PATTERN.test(email) || email.includes('..')) {
+  if (!EMAIL_PATTERN.test(email) || email.includes('..') || !isSingleEmailAddress(email)) {
     throw invalid(field, '형식이 올바르지 않습니다');
   }
   return email.toLowerCase();
