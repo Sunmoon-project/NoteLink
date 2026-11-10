@@ -7,6 +7,7 @@ import { OFF_TOPIC, UNSAFE, localAnswer } from '../lib/local/tutor';
 import * as SecureStore from 'expo-secure-store';
 import { TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
 import { AvatarCheer, ENCOURAGE, PRAISE } from '../features/tutor/cheer';
+import { AvatarTeacherScreen } from '../features/tutor/teacher';
 import { STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
 import { useAuth } from '../stores/auth';
 import { TutorScreen } from '../features/tutor/tutor';
@@ -33,7 +34,7 @@ jest.mock('expo-secure-store', () => ({
 const mockApi = {
   content: { material: jest.fn(), ask: jest.fn() },
   ai: { job: jest.fn() },
-  shop: { myItems: jest.fn() },
+  shop: { myItems: jest.fn(), items: jest.fn(), equip: jest.fn() },
 };
 jest.mock('../lib/api', () => ({
   get api() {
@@ -335,5 +336,58 @@ describe('처음 안내', () => {
     await renderHook(() => useTourOnce(true));
     await act(async () => {});
     expect(useTour.getState().step).toBe(-1);
+  });
+});
+
+describe('아바타 선생님 고르기', () => {
+  const item = (id: string, name: string, face: string) => ({
+    _id: id,
+    category: 'avatar',
+    name,
+    description: '',
+    price: 500,
+    avatarStyle: 'nice',
+    thumbnailUrl: face,
+    assetUrl: face,
+    purchaseCount: 0,
+    isActive: true,
+    isDefault: false,
+  });
+  const own = (itemId: string, isEquipped = false) => ({
+    _id: `ui-${itemId}`,
+    itemId,
+    itemCategory: 'avatar',
+    isOwned: true,
+    isWished: false,
+    isEquipped,
+    acquiredAt: null,
+  });
+  beforeEach(() => {
+    mockApi.shop.items.mockResolvedValue([
+      item('bora', '보라 아바타', '👧🏻'),
+      item('jihoo', '지후 아바타', '👨🏻'),
+      { ...item('sea', '바다 테마', '🌊'), category: 'theme' },
+    ]);
+    mockApi.shop.myItems.mockResolvedValue([own('bora', true)]);
+    mockApi.shop.equip.mockResolvedValue(undefined);
+  });
+
+  it('기본 · 보유 아바타만 고를 수 있고, 장착한 아바타가 선생님 3D로 보인다', async () => {
+    await renderScreen(<AvatarTeacherScreen />);
+    expect(await screen.findByText('3D:bora')).toBeTruthy();
+    expect(screen.getByLabelText('보라 아바타, 장착 중')).toBeTruthy();
+    expect(screen.getByLabelText('기본 아바타')).toBeTruthy();
+    expect(screen.queryByLabelText('지후 아바타')).toBeNull();
+    expect(screen.getByText('다른 아바타 1개가 상점에 있어요')).toBeTruthy();
+    await fireEvent.press(screen.getByText('상점'));
+    expect(router.push).toHaveBeenCalledWith('/shop');
+  });
+
+  it('고르면 장착하고 선생님 얼굴을 새로 고친다', async () => {
+    await renderScreen(<AvatarTeacherScreen />);
+    mockApi.shop.myItems.mockResolvedValue([own('bora')]);
+    await fireEvent.press(await screen.findByLabelText('기본 아바타'));
+    await waitFor(() => expect(mockApi.shop.equip).toHaveBeenCalledWith('base'));
+    expect(await screen.findByText('3D:base')).toBeTruthy();
   });
 });

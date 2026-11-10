@@ -412,12 +412,12 @@ export function AccountScreen() {
       <Screen>
         <Header title="계정 정보" />
         <Card
-          onPress={() => openFeature('/(tabs)/profile/avatar-style')}
+          onPress={() => openFeature('/(tabs)/profile/avatar-teacher')}
           className="flex-row items-center px-5 py-4"
         >
           <View className="flex-1">
-            <Text className="text-caption2 text-sub">아바타</Text>
-            <Text className="text-callout text-ink">아바타 설정하기</Text>
+            <Text className="text-callout text-ink">아바타 선생님</Text>
+            <Text className="text-caption text-sub">노트를 설명해 주는 선생님 얼굴을 골라요</Text>
           </View>
           <ChevronRight size={ICON.md} color={C.sub} />
         </Card>
