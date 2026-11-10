@@ -1030,6 +1030,13 @@ def _make_all(
             made_now = len(taken)
         log.info("맞춤 퀴즈: 이어받아 빠른 모드로(%d/%d문제, %.0f초 지남)", made_now, n, now - t0)
 
+    def mode_now() -> Mode:
+        """gen_one이 시도 수 · 2차 풀기를 정하기 직전에 부름: 이어받았는지 먼저 보고 지금 모드를
+        돌려줌. stop만 보면 두 번째 초안 도중 이어받아도 세 번째 시도를 셌고, 검사 모델 풀기 도중
+        이어받아도 생성 모델 2차 풀기를 보냈음(Codex 리뷰 #280)."""
+        to_fast()
+        return cur
+
     def spare_of(k: int, order: list[int]) -> list[int]:
         # 여분 자리는 가장 무거운 쪽부터(못 만든 자리가 넘어가는 순서와 같음)
         return [order[i % len(order)] for i in range(int(k * EXTRA + 0.5))] if order else []
@@ -1122,7 +1129,7 @@ def _make_all(
 
             r = gen_one(
                 until, page, pages[page], types[k:] + types[:k], names, info,
-                seen, used, slot, here, stop, lambda: cur,
+                seen, used, slot, here, stop, mode_now,
             )  # fmt: skip
             down, tries, rejected = down + r.down, tries + r.tries, rejected + r.rejected
             replied = replied or r.answered

@@ -1194,6 +1194,40 @@ def test_a_pregen_taken_over_mid_slot_finishes_in_fast_mode(
     assert len(llm.named("Quiz")) == 2  # 세 번째 시도도, 다른 쪽(60초 > 30 + 20초)도 없음
 
 
+def test_a_take_over_during_the_second_draft_stops_before_a_third_try() -> None:
+    # 두 번째 초안을 만드는 사이 이어받음: 시도 수를 셀 때 이어받았는지 먼저 봐서 세 번째 초안을
+    # 시작하지 않음(Codex 리뷰 #280)
+    awaited = [False]
+    llm = happy([BAD, BAD, GOOD["이질 아메바"]])
+    quiz = llm.answers["Quiz"]
+
+    def take_over_on_second(user: str) -> Any:
+        if len(llm.named("Quiz")) == 2:
+            awaited[0] = True
+        return quiz(user)
+
+    llm.answers["Quiz"] = take_over_on_second
+    with pytest.raises(generate.NoQuestionsError):
+        make(llm, page1_job(size=1), mode=generate.STABLE, hurry=lambda: awaited[0])
+    assert len(llm.named("Quiz")) == 2
+
+
+def test_a_take_over_during_the_checker_solve_skips_the_recheck() -> None:
+    # 검사 모델이 푸는 사이 이어받음: 생성 모델 2차 풀기를 보내지 않고 그 문제를 씀(Codex 리뷰 #280)
+    awaited = [False]
+    llm = happy([GOOD["이질 아메바"]])
+    check = llm.answers["Check"]
+
+    def take_over_while_checking(user: str) -> JsonObject:
+        awaited[0] = True
+        return check(user)
+
+    llm.answers["Check"] = take_over_while_checking
+    result = make(llm, page1_job(size=1), mode=generate.STABLE, hurry=lambda: awaited[0])
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
+    assert llm.named(generate.RECHECK) == []
+
+
 def test_questions_made_before_the_take_over_are_kept() -> None:
     # 이어받기 전에 안정적 모드로 만든 문제는 그대로 두고, 남은 자리만 빠른 모드로(2차 풀기 없음)
     awaited = [False]
