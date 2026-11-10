@@ -1,5 +1,7 @@
+import threading
+import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -281,7 +283,8 @@ def test_download_only_takes_http_addresses(url: str) -> None:
 
 def assert_no_address_in_traceback(error: BaseException) -> None:
     assert error.__cause__ is None
-    assert error.__suppress_context__  # from None: 처리 중이던 원본 예외를 traceback에 넣지 않음
+    # from None으로 원본을 숨기거나(OCR), 원본 없이 새로 올림(내려받기는 스레드 밖에서 올림)
+    assert error.__suppress_context__ or error.__context__ is None
     assert "secret-sas" not in "".join(traceback.format_exception(error))
 
 
@@ -331,4 +334,82 @@ def test_download_reads_with_a_short_timeout_under_the_overall_deadline(
 
     assert download(SAS_URL, transport=transport) == b"png"
     assert seen == [DOWNLOAD_READ_TIMEOUT_SEC] == [10.0]
-    assert DOWNLOAD_TIMEOUT_SEC == 60.0  # 전체 마감은 그대로: 최악 약 70초
+    assert DOWNLOAD_TIMEOUT_SEC == 60.0  # 전체 마감: 기다리는 중에도 이 안에 돌아옴
+
+
+# ---------- 기다리는 동안에도 전체 마감 ----------
+
+DEADLINE = 0.3  # 시험용 전체 마감(초)
+SLACK = 1.5  # 마감 뒤 돌아오기까지 허용하는 여유(느린 CI에서도 흔들리지 않게 넉넉히)
+STUCK = 10.0  # 멈춘 서버가 기다리는 시간. 시험 끝에 풀어 줌
+
+
+def download_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == "image-download"]
+
+
+def timed_download(transport: httpx2.MockTransport) -> tuple[DownloadError, float]:
+    start = time.monotonic()
+    with pytest.raises(DownloadError) as e:
+        download(SAS_URL, timeout=DEADLINE, transport=transport)
+    return e.value, time.monotonic() - start
+
+
+def test_download_stops_at_the_deadline_while_waiting_for_headers() -> None:
+    release = threading.Event()
+
+    def never_answers(request: httpx2.Request) -> httpx2.Response:
+        release.wait(STUCK)
+        return httpx2.Response(200, content=b"late")
+
+    try:
+        error, took = timed_download(httpx2.MockTransport(never_answers))
+        assert str(error) == "시간 초과"
+        assert DEADLINE * 0.9 <= took < DEADLINE + SLACK
+        assert error.__cause__ is None and error.__context__ is None
+    finally:
+        release.set()
+    for t in download_threads():  # 풀어 주면 스레드도 끝남(남아 있지 않음)
+        t.join(5)
+    assert download_threads() == []
+
+
+def test_download_stops_at_the_deadline_while_waiting_for_the_next_chunk() -> None:
+    release = threading.Event()
+    sent: list[int] = []
+
+    def stalls_after_first_chunk() -> Iterator[bytes]:
+        sent.append(1)
+        yield b"a"
+        release.wait(STUCK)
+        for _ in range(100):  # 풀린 뒤 더 보내도 스레드는 받지 않고 끝남
+            sent.append(1)
+            yield b"b" * 1024
+
+    transport = httpx2.MockTransport(
+        lambda request: httpx2.Response(200, content=stalls_after_first_chunk())
+    )
+    try:
+        error, took = timed_download(transport)
+        assert str(error) == "시간 초과"
+        assert DEADLINE * 0.9 <= took < DEADLINE + SLACK
+        assert sent == [1]  # 첫 조각 뒤 멈춘 동안 돌아옴
+    finally:
+        release.set()
+    for t in download_threads():
+        t.join(5)
+    assert download_threads() == []
+    assert len(sent) <= 2  # 닫힌 뒤에는 조각을 더 읽지 않음
+
+
+def test_fast_download_is_not_affected_by_the_thread() -> None:
+    _, transport = serve(httpx2.Response(200, content=iter([b"a", b"b"])))
+    assert download(SAS_URL, timeout=DEADLINE, transport=transport) == b"ab"
+
+
+def test_unexpected_error_in_the_download_thread_is_raised_as_is() -> None:
+    def broken(request: httpx2.Request) -> httpx2.Response:
+        raise ZeroDivisionError("코드 오류")
+
+    with pytest.raises(ZeroDivisionError):
+        download(SAS_URL, transport=httpx2.MockTransport(broken))
