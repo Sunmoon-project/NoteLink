@@ -255,11 +255,13 @@ def void_flawed(
 
 
 def _copy_of(oq: Question, q: Question) -> bool:
-    """oq가 q 자신이나 그 사본인지: 문제 글 · 제시문 · 답이 같음(오늘의 복습 사본은 셋 다 같음)."""
+    """oq가 q 자신이나 그 사본인지: 문제 글 · 제시문 · 답이 같음(오늘의 복습 사본은 셋 다 같음).
+
+    조합형 정답('ㄱ, ㄷ')은 same_word가 같은 낱말로 보지 않으므로 글이 똑같은지로 봄(#268)."""
     return (
         oq["prompt"] == q["prompt"]
         and oq.get("passage") == q.get("passage")
-        and same_word(oq["answer"], q["answer"])
+        and (same_word(oq["answer"], q["answer"]) or oq["answer"] == q["answer"])
     )
 
 
@@ -350,7 +352,8 @@ def replace_flawed(
     new: Question = {
         **q,
         "id": new_id(),
-        "type": "빈칸" if "____" in g["passage"] else m.type,
+        "type": (ty := "빈칸" if "____" in g["passage"] else m.type),
+        "difficulty": similar.difficulty_of(ty),  # 유형으로 정한 처음 난이도(#268)
         "prompt": g["stem"],
         "passage": g["passage"] or None,
         "choices": g["options"],

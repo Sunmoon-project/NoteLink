@@ -145,6 +145,7 @@ export const httpApi: Api = {
     downloadUrl: (id) => http.get(P.materialDownloadUrl(id)),
     share: (p) => http.post(P.materialShare, p),
     checkImages: (files) => http.post(P.imageCheck, { files }),
+    ask: (id, body) => http.post(P.materialAsk(id), body),
   },
   ai: {
     job: (id) => http.get(P.aiJob(id)),
