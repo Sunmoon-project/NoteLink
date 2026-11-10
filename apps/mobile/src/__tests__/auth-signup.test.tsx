@@ -358,6 +358,7 @@ it.each([ERROR_CODES.EMAIL_TAKEN, ERROR_CODES.EMAIL_PROOF_INVALID])(
     await fireEvent.press(screen.getByText('가입하기'));
     await waitFor(() => expect(api.auth.emailSignup).toHaveBeenCalled());
     // 앞 화면에서 b로 바꿔 새 번호를 받았다
+    useSignup.getState().next();
     const sentAt = Date.now();
     useSignup.setState({
       sentTo: 'b@test.com',
@@ -376,6 +377,62 @@ it.each([ERROR_CODES.EMAIL_TAKEN, ERROR_CODES.EMAIL_PROOF_INVALID])(
     expect(screen.queryByText('이미 가입한 이메일이에요')).toBeNull();
   },
 );
+
+/** 앞 화면으로 돌아가 b로 새 번호를 받은 것처럼 (보내기 → 새 흐름) */
+const switchToB = (proof: { email: string; token: string } | null = null) => {
+  useSignup.getState().next();
+  useSignup.setState({ email: 'b@test.com', sentTo: 'b@test.com', sentAt: 123, proof });
+};
+
+it('옛 주소의 인증 응답이 늦게 와도 새 흐름의 증표를 덮어쓰지 않고 가입하지 않는다', async () => {
+  jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
+  let done!: (v: { verificationToken: string; expiresInSeconds: number }) => void;
+  jest
+    .spyOn(api.auth, 'emailVerifyCode')
+    .mockImplementationOnce(() => new Promise((r) => (done = r)));
+  const signup = jest.spyOn(api.auth, 'emailSignup').mockResolvedValue(undefined);
+  await fireEvent.changeText(await toCode('a@test.com', 'abcd1234'), '123456');
+  await fireEvent.press(screen.getByText('가입하기'));
+  switchToB({ email: 'b@test.com', token: 'proof-b' });
+  done({ verificationToken: 'proof-a', expiresInSeconds: 600 });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(useSignup.getState().proof).toEqual({ email: 'b@test.com', token: 'proof-b' });
+  expect(signup).not.toHaveBeenCalled();
+});
+
+it('옛 주소의 가입이 늦게 성공해도 새 가입 정보를 지우거나 화면을 떠나지 않는다', async () => {
+  jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
+  jest
+    .spyOn(api.auth, 'emailVerifyCode')
+    .mockResolvedValue({ verificationToken: 'proof-a', expiresInSeconds: 600 });
+  let ok!: () => void;
+  jest
+    .spyOn(api.auth, 'emailSignup')
+    .mockImplementationOnce(() => new Promise<void>((r) => (ok = r)));
+  await fireEvent.changeText(await toCode('a@test.com', 'abcd1234'), '123456');
+  await fireEvent.press(screen.getByText('가입하기'));
+  await waitFor(() => expect(api.auth.emailSignup).toHaveBeenCalled());
+  switchToB();
+  useToast.setState({ msg: null });
+  ok();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(useSignup.getState()).toMatchObject({ sentTo: 'b@test.com', email: 'b@test.com' });
+  expect(router.replace).not.toHaveBeenCalled();
+  expect(useToast.getState().msg).toBeNull();
+});
+
+it('보내는 사이 비밀번호를 고쳐도 누를 때 검사한 비밀번호로 가입한다', async () => {
+  let sent!: () => void;
+  jest
+    .spyOn(api.auth, 'emailSendCode')
+    .mockImplementationOnce(() => new Promise<void>((r) => (sent = r)));
+  await fill('new@test.com', 'abcd1234');
+  await fireEvent.press(screen.getByText('인증번호 받기'));
+  await fireEvent.changeText(screen.getByPlaceholderText('영문 · 숫자 포함 8자 이상'), '');
+  sent();
+  await waitFor(() => expect(router.push).toHaveBeenCalled());
+  expect(useSignup.getState().pw).toBe('abcd1234');
+});
 
 it('다시 받는 사이 다른 이메일로 바꾸면 옛 주소의 발송 응답이 새 주소의 대기를 건드리지 않는다', async () => {
   const send = jest.spyOn(api.auth, 'emailSendCode').mockResolvedValueOnce(undefined);

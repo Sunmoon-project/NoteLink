@@ -259,6 +259,11 @@ export const useSignup = create<{
   /** 마지막으로 인증번호를 보낸 시각(다시 받기 대기 계산) */
   sentAt: number;
   proof: { email: string; token: string } | null;
+  /** 가입 흐름 번호. 새로 보내거나 처음부터 하면 올린다 — 서버가 옛 번호 · 증표를 무효로 하니
+   * 그 전에 보낸 확인 · 가입 응답은 지금 흐름이 아니다 */
+  flow: number;
+  /** 새로 보낸다: 흐름을 올리고 옛 증표를 버린다 */
+  next: () => void;
   reset: () => void;
 }>((set) => ({
   email: '',
@@ -266,7 +271,10 @@ export const useSignup = create<{
   sentTo: null,
   sentAt: 0,
   proof: null,
-  reset: () => set({ email: '', pw: '', sentTo: null, sentAt: 0, proof: null }),
+  flow: 0,
+  next: () => set((s) => ({ flow: s.flow + 1, proof: null })),
+  reset: () =>
+    set((s) => ({ email: '', pw: '', sentTo: null, sentAt: 0, proof: null, flow: s.flow + 1 })),
 }));
 
 /**
@@ -302,12 +310,13 @@ export function SignupScreen() {
   const send = useMutation({
     // 서버는 메일을 보내기 전에 번호를 새로 내며 앞서 받은 증표를 무효로 한다 —
     // 메일 발송이 실패해도 그 증표는 못 쓰니 요청을 보내는 순간 버린다
-    onMutate: () => useSignup.setState({ proof: null }),
-    mutationFn: (to: string) => api.auth.emailSendCode(to),
-    onSuccess: (_, to) => {
+    onMutate: () => useSignup.getState().next(),
+    // 비밀번호는 누를 때 검사한 값으로 고정한다(보내는 사이 고쳐도 검사 안 한 값이 넘어가지 않게)
+    mutationFn: ({ to }: { to: string; pw: string }) => api.auth.emailSendCode(to),
+    onSuccess: (_, { to, pw: checked }) => {
       // 보내는 사이 이메일을 고쳤으면 옛 주소의 응답은 버린다
       if (to !== emailNow.current) return;
-      useSignup.setState({ email: to, pw, sentTo: to, sentAt: Date.now() });
+      useSignup.setState({ email: to, pw: checked, sentTo: to, sentAt: Date.now() });
       toast('인증번호를 보냈어요. 메일을 확인해 주세요');
       router.push({ pathname: '/(auth)/signup-code', params: { email: to } });
     },
@@ -315,7 +324,7 @@ export function SignupScreen() {
       toast(e instanceof ApiError ? e.message : '인증번호를 보내지 못했어요. 다시 시도해 주세요'),
   });
   const sendCode = () => {
-    if (!send.isPending && formOk()) send.mutate(email.trim());
+    if (!send.isPending && formOk()) send.mutate({ to: email.trim(), pw });
   };
   return (
     <Canvas cream>
@@ -462,7 +471,7 @@ export function SignupCodeScreen() {
     toast(e instanceof ApiError ? e.message : fallback);
 
   const resend = useMutation({
-    onMutate: () => useSignup.setState({ proof: null }),
+    onMutate: () => useSignup.getState().next(),
     mutationFn: (to: string) => api.auth.emailSendCode(to),
     onSuccess: (_, to) => {
       // 그사이 앞 화면에서 다른 이메일로 바꿨으면 옛 주소의 응답은 버린다
@@ -479,27 +488,29 @@ export function SignupCodeScreen() {
     },
   });
   const signup = useMutation({
-    mutationFn: async ({ to, digits }: { to: string; digits: string }) => {
+    mutationFn: async ({ to, digits, flow }: { to: string; digits: string; flow: number }) => {
       if (useSignup.getState().proof?.email !== to) {
         const { verificationToken } = await api.auth.emailVerifyCode(to, digits);
+        // 확인을 기다리는 사이 새 흐름(다른 이메일 · 새 번호)이 시작됐으면 옛 증표로 덮어쓰지 않는다
+        if (useSignup.getState().flow !== flow) return false;
         useSignup.setState({ proof: { email: to, token: verificationToken } });
       }
-      // 확인을 기다리는 사이 다른 이메일로 바꿨으면 옛 주소로 가입하지 않는다(증표는 남겨 둔다)
       const s = useSignup.getState();
-      if (s.sentTo !== to || !s.proof) return false;
+      if (s.flow !== flow || !s.proof) return false;
       await api.auth.emailSignup(s.proof.token, s.pw);
       return true;
     },
-    onSuccess: (done, { to }) => {
-      if (!done) return;
+    onSuccess: (done, { to, flow }) => {
+      // 옛 흐름의 가입이 늦게 끝났으면 지금 가입 정보를 지우거나 화면을 떠나지 않는다
+      if (!done || useSignup.getState().flow !== flow) return;
       useSignup.getState().reset();
       toast('가입했어요. 로그인해 주세요');
       // 실제로 가입한 이메일로 로그인을 채운다
       toLogin(to);
     },
-    onError: (e, { to }) => {
-      // 그사이 다른 이메일로 바꿨으면 옛 주소의 실패가 새 주소의 증표 · 다시 받기 대기를 건드리지 않게 버린다
-      if (useSignup.getState().sentTo !== to) return;
+    onError: (e, { flow }) => {
+      // 그사이 새 흐름이 시작됐으면 옛 실패가 새 증표 · 다시 받기 대기를 건드리지 않게 버린다
+      if (useSignup.getState().flow !== flow) return;
       if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
       else if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_CODE_INVALID)
         setCodeMsg(e.message);
@@ -526,7 +537,7 @@ export function SignupCodeScreen() {
     if (busy || !sentTo) return;
     if (!CODE.test(digits)) return setCodeMsg('인증번호 6자리를 입력해 주세요');
     setCodeMsg(null);
-    signup.mutate({ to: sentTo, digits });
+    signup.mutate({ to: sentTo, digits, flow: useSignup.getState().flow });
   };
 
   // 앱을 다시 켜서 가입 정보가 없으면 처음부터
