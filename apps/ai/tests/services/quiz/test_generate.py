@@ -33,9 +33,20 @@ NAMES = ["이질 아메바", "대장 아메바", "람블편모충", "질편모�
 
 @pytest.fixture(autouse=True)
 def one_slot_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    """가짜 LLM이 차례로 답하므로 자리를 하나씩, 여분 자리 없이(동시 실행 시험은 따로 바꿈)."""
+    """가짜 LLM이 차례로 답하므로 자리를 하나씩, 여분 자리 없이(동시 실행 시험은 따로 바꿈).
+
+    판도 하나만: 모자란 자리를 다시 돌리는 것은 그 시험에서만 켬(fill_rounds).
+    """
     monkeypatch.setattr(generate, "WORKERS", 1)
     monkeypatch.setattr(generate, "EXTRA", 0)
+    monkeypatch.setattr(generate, "MAX_ROUNDS", 1)
+
+
+@pytest.fixture
+def fill_rounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """모자란 자리를 다시 돌림(#247). 판은 3개까지, 시험의 짧은 상한에서도 새 판을 띄우게."""
+    monkeypatch.setattr(generate, "MAX_ROUNDS", 3)
+    monkeypatch.setattr(generate, "MIN_ROUND_SEC", 0.05)
 
 
 @dataclass
@@ -397,11 +408,11 @@ def test_a_concept_already_asked_is_not_offered_again() -> None:
     inp = job(size=3)
     inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
     llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"], GOOD["이질 아메바"]])
-    result, _ = run(llm, inp)
+    # 모자란 세트는 돌려주지 않음(#247)
+    with pytest.raises(generate.NoQuestionsError, match=re.escape("2/3문제만 만듦(물을 개념이")):
+        run(llm, inp)
     gen = llm.named("Quiz")
     assert "고른다): 대장 아메바\n" in gen[1]  # 이미 물은 이질 아메바는 목록에서 뺌
-    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바"]
-    assert result["failed"] == [{"pageNo": 1, "why": ["물을 개념이 남지 않음"]}]
 
 
 def test_a_failed_slot_moves_to_another_page() -> None:
@@ -544,6 +555,122 @@ def test_a_slot_error_is_kept_even_if_the_main_thread_leaves_first(
         run(parallel_llm(quiz), job(size=1))
 
 
+def test_a_slot_error_after_the_set_is_full_keeps_the_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 1문제 + 여분 자리 1: 첫 자리가 문제를 받아 다 모은 뒤에야 여분 자리가 설정 오류
+    # (LlmSetupError)로 끝남. 오류는 남지만 만든 세트를 버리지 않고 돌려줌(Codex 4차 리뷰 #269).
+    # 주 스레드는 다 모은 진행률 알림(report 100)에서 여분 자리가 오류를 남길 때까지 기다림
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "EXTRA", 0.6)
+    second = threading.Event()  # 여분 자리의 생성 호출이 시작됨(첫 자리가 다 모으기 전에)
+    full = threading.Event()  # 첫 자리의 문제가 세트에 들어감
+    raised = threading.Event()  # 여분 자리가 오류를 냄
+    lock = threading.Lock()
+    calls = [0]
+
+    def quiz(user: str) -> JsonObject:
+        with lock:
+            calls[0] += 1
+            first = calls[0] == 1
+        if first:
+            second.wait(10)
+            return by_page(user)
+        second.set()
+        full.wait(10)
+        raised.set()
+        raise LlmSetupError("HTTP 401")
+
+    def report(value: int, step: str | None = None) -> None:
+        if value == 100:  # 다 모음: 여분 자리가 오류를 남길 때까지 기다림
+            full.set()
+            raised.wait(10)
+            time.sleep(1.0)  # guarded가 errors에 남기고 멈춤 신호를 켤 때까지(느린 CI 여유)
+
+    result = generate.run(parallel_llm(quiz), job(size=1), report)
+    assert len(result["questions"]) == 1
+    assert calls[0] == 2  # 여분 자리가 실제로 돌다 오류를 냄
+    join_threads("quiz-slot")
+
+
+def test_an_llm_error_out_of_a_slot_is_raised_unless_the_set_is_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 자리 밖으로 나온 LlmError(gen_one이 잡지 못한 장애): 세트가 모자라면 그대로 올려 작업을 다시
+    # 시도하고, 다 모은 뒤에 나왔으면 만든 세트를 돌려줌(Codex 5차 리뷰 #269)
+    real = generate.gen_one
+
+    def broken(*a: Any, **k: Any) -> Any:
+        raise LlmError("자리 밖 장애")
+
+    monkeypatch.setattr(generate, "gen_one", broken)
+    with pytest.raises(LlmError, match="자리 밖 장애"):  # 모자람: 그 오류 그대로
+        run(happy([]), job(size=1))
+
+    # 1문제 + 여분 자리 1: 첫 자리가 세트를 다 채운 뒤 여분 자리가 LlmError로 끝남
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "EXTRA", 0.6)
+    second, full, raised = threading.Event(), threading.Event(), threading.Event()
+    lock = threading.Lock()
+    calls = [0]
+
+    def ordered(*a: Any, **k: Any) -> Any:
+        with lock:
+            calls[0] += 1
+            first = calls[0] == 1
+        if first:
+            second.wait(10)
+            return real(*a, **k)
+        second.set()
+        full.wait(10)
+        raised.set()
+        raise LlmError("자리 밖 장애")
+
+    def report(value: int, step: str | None = None) -> None:
+        if value == 100:  # 다 모음: 여분 자리가 오류로 끝날 때까지 기다림
+            full.set()
+            raised.wait(10)
+            time.sleep(1.0)
+
+    monkeypatch.setattr(generate, "gen_one", ordered)
+    result = generate.run(parallel_llm(by_page), job(size=1), report)
+    assert len(result["questions"]) == 1 and calls[0] == 2
+    join_threads("quiz-slot")
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_a_server_that_answered_is_not_an_outage_when_a_later_round_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1판: 생성은 답했지만 초안이 탈락(받은 문제 없음). 2판: 상한까지 답이 없음. 앞 판에서 서버가
+    # 답했으므로 응답 없는 장애(LlmError, 작업 다시 시도)가 아니라 모자란 세트로 실패
+    # (Codex 5차 리뷰 #269)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.1)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.15)
+    monkeypatch.setattr(generate, "FILL_SEC_PER_QUESTION", 0.5)
+    bad = draft("이질 아메바", "위족으로 운동하는 이질 아메바의 특징")  # 설명에 정답 용어
+    release = threading.Event()
+    lock = threading.Lock()
+    calls = [0]
+
+    def quiz(user: str) -> JsonObject:
+        with lock:
+            calls[0] += 1
+            first_round = calls[0] <= 2  # 1판 한 자리의 유형 두 번
+        if not first_round:
+            release.wait(10)
+        return bad
+
+    inp = job(size=1)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    try:
+        with pytest.raises(generate.NoQuestionsError):
+            run(parallel_llm(quiz), inp)
+    finally:
+        release.set()
+    assert calls[0] > 2  # 2판이 돌다 상한에 걸림
+    join_threads("quiz-slot")
+
+
 def test_some_calls_failing_is_not_an_outage() -> None:
     llm = happy([LlmError("503"), GOOD["이질 아메바"]])
     result, _ = run(llm, job(size=1))
@@ -651,8 +778,10 @@ def test_a_broken_draft_that_repeats_an_answer_does_not_close_the_page() -> None
     inp = job(size=3)
     inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
     llm = happy([GOOD["이질 아메바"], again, again, GOOD["대장 아메바"]])
-    result, _ = run(llm, inp)
-    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바"]
+    # 셋째 자리가 1쪽에서 대장 아메바를 만듦(쪽이 닫히지 않음). 세 번째 개념은 없어 모자람
+    with pytest.raises(generate.NoQuestionsError, match="2/3문제만 만듦"):
+        run(llm, inp)
+    assert len(llm.named("Quiz")) == 4
 
 
 def test_the_answer_is_stored_as_the_option_it_matched() -> None:
@@ -950,13 +1079,12 @@ def test_the_set_goes_back_at_the_hard_limit_without_waiting_for_a_slot(
 
     llm = parallel_llm(quiz)
     start = time.monotonic()
-    try:
-        result, _ = run(llm, job(size=2))
+    try:  # 1문제뿐인 세트는 돌려주지 않음(#247)
+        with pytest.raises(generate.NoQuestionsError, match=re.escape("1/2문제만 만듦(시간 상한)")):
+            run(llm, job(size=2))
     finally:
         release.set()
     assert time.monotonic() - start < 3
-    assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
-    assert result["failed"] == [{"pageNo": 2, "why": [generate.TIMEOUT]}]
     join_threads("quiz-slot")  # 늦은 자리가 끝까지 가도록(시간이 아니라 스레드가 끝나기를)
     late = GOOD["람블편모충"]["question"]["passage"]  # 2쪽 초안의 제시문
     assert not any(late in u for u in llm.named("Naturals") + llm.named("Check"))
@@ -979,6 +1107,360 @@ def test_no_answer_from_the_server_by_the_hard_limit_is_an_outage(
             run(parallel_llm(quiz), job(size=1))
     finally:
         release.set()
+
+
+# ---------- 모자란 자리 다시 돌리기 (#247) ----------
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_a_missing_slot_is_made_again_in_the_next_round() -> None:
+    # 1판: 1쪽은 바로 통과, 2쪽 자리는 2쪽 초안 둘이 탈락하고 1쪽으로 넘겨도 겹침 → 1/2.
+    # 2판: 받은 문제는 둔 채 모자란 한 자리만 다시 돌려 2쪽에서 채움
+    bad = draft("람블편모충", "서양배 모양의 람블편모충 영양형의 특징")  # 설명에 정답 용어
+    page2 = [bad, bad]
+
+    def quiz(user: str) -> JsonObject:
+        if '<노트 쪽="2">' in user and page2:
+            return page2.pop(0)
+        return by_page(user)
+
+    llm = parallel_llm(quiz)
+    result, steps = run(llm, job(size=2))
+    assert sorted(q["answer"] for q in result["questions"]) == ["람블편모충", "이질 아메바"]
+    assert [q["order"] for q in result["questions"]] == [1, 2]
+    assert result["failed"] == [] and steps[-1][0] == 100
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_rounds_stop_at_the_total_time_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [0.0]
+    monkeypatch.setattr(generate, "_clock", lambda: now[0])
+    bad = draft("이질 아메바", "위족으로 운동하는 이질 아메바의 특징")  # 설명에 정답 용어
+
+    def quiz(user: str) -> JsonObject:
+        now[0] += generate.FILL_SEC_PER_QUESTION * 2  # 첫 초안에 전체 상한(1문제 60초)이 지남
+        return bad
+
+    llm = happy([])
+    llm.answers["Quiz"] = quiz
+    with pytest.raises(generate.NoQuestionsError, match=re.escape("만든 문제가 없음")):
+        run(llm, job(size=1))
+    assert len(llm.named("Quiz")) == 1  # 다음 판을 돌리지 않음
+
+
+def slow_bad_llm(now: list[float], step: float) -> ScriptLlm:
+    """초안이 늘 탈락하고 생성 호출마다 가짜 시계가 step초 가는 LLM."""
+    bad = draft("이질 아메바", "위족으로 운동하는 이질 아메바의 특징")  # 설명에 정답 용어
+
+    def quiz(user: str) -> JsonObject:
+        now[0] += step
+        return bad
+
+    llm = happy([])
+    llm.answers["Quiz"] = quiz
+    return llm
+
+
+@pytest.mark.usefixtures("fill_rounds")
+@pytest.mark.parametrize("capped", [True, False])
+def test_the_total_limit_is_five_minutes_even_for_ten_questions(
+    monkeypatch: pytest.MonkeyPatch, capped: bool
+) -> None:
+    # 10문제: 60초 × 10 = 600초지만 전체 상한은 FILL_MAX_SEC(300초). 1판(새 초안 200초까지)이
+    # 300초에 끝나면 다음 판을 띄우지 않음. 상한을 풀면(cap 크게) 2판이 돎
+    now = [0.0]
+    monkeypatch.setattr(generate, "_clock", lambda: now[0])
+    if not capped:
+        monkeypatch.setattr(generate, "FILL_MAX_SEC", 10**6)
+    llm = slow_bad_llm(now, 100)
+    with pytest.raises(generate.NoQuestionsError):
+        run(llm, job(size=10))
+    if capped:
+        assert len(llm.named("Quiz")) == 3  # 1판만(0 · 100 · 200초에 시작)
+    else:
+        assert len(llm.named("Quiz")) > 3
+
+
+@pytest.mark.usefixtures("fill_rounds")
+@pytest.mark.parametrize(("min_round", "calls"), [(45, 2), (44, 3), (43, 3)])
+def test_a_new_round_needs_min_round_sec_left(
+    monkeypatch: pytest.MonkeyPatch, min_round: float, calls: int
+) -> None:
+    # 5문제(전체 300초), 생성 호출마다 128초: 1판 128초 · 2판 256초에 끝나 44초 남음.
+    # MIN_ROUND_SEC 45초면 3판을 띄우지 않고, 44초(남은 시간과 같음) · 43초면 띄움
+    now = [0.0]
+    monkeypatch.setattr(generate, "_clock", lambda: now[0])
+    monkeypatch.setattr(generate, "MIN_ROUND_SEC", min_round)
+    llm = slow_bad_llm(now, 128)
+    with pytest.raises(generate.NoQuestionsError):
+        run(llm, job(size=5))
+    assert len(llm.named("Quiz")) == calls
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_rounds_stop_after_max_rounds() -> None:
+    bad = draft("이질 아메바", "위족으로 운동하는 이질 아메바의 특징")  # 설명에 정답 용어
+    llm = happy([])
+    llm.answers["Quiz"] = lambda u: bad
+    inp = job(size=1)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    with pytest.raises(generate.NoQuestionsError, match="설명에 정답 용어 노출"):
+        run(llm, inp)
+    assert len(llm.named("Quiz")) == 2 * 3  # 판마다 한 자리 · 유형 두 번, 3판
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_an_outage_round_stops_the_rounds_and_retries_the_job() -> None:
+    llm = happy([])
+    llm.answers["Quiz"] = lambda u: LlmError("학교 LLM 503")
+    with pytest.raises(LlmError, match="모두 실패"):
+        run(llm, job(size=1))
+    assert len(llm.named("Quiz")) == 4  # 한 판(자리 하나 · 쪽 둘 · 유형 두 번)에서 멈춤
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_the_last_stage_asks_an_asked_concept_from_another_angle() -> None:
+    # 1쪽 개념 둘(이질 · 대장 아메바)로 3문제: 2판에서 열린 쪽이 없어 마지막 단계로 이미 물은
+    # 개념을 다른 각도로(정답 겹침 검사는 그대로)
+    angle = draft(
+        "4핵",
+        "이질 아메바 포낭형의 핵 수",
+        concept="이질 아메바",
+        options=["4핵", "8핵", "2핵", "1핵", "6핵"],
+    )
+    inp = job(size=3)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"], angle])
+    result, _ = run(llm, inp)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바", "4핵"]
+    assert [q["conceptTags"] for q in result["questions"]][2] == ["이질 아메바"]
+    last = llm.named("Quiz")[2]
+    assert "이 퀴즈에서 이미 물은 개념: 이질 아메바, 대장 아메바" in last
+    assert "이 퀴즈에서 이미 물은 개념" not in llm.named("Quiz")[1]  # 첫 단계에는 없음
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_a_round_with_no_answer_stops_the_rounds_as_an_outage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1판의 자리가 모두 상한까지 답을 받지 못함(응답하지 않는 서버): 판을 더 돌리지 않고 LlmError로
+    # 작업을 다시 시도(#95). 여러 판을 돌려도 0문제 NoQuestionsError로 끝나지 않음
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.1)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.15)
+    monkeypatch.setattr(generate, "FILL_SEC_PER_QUESTION", 2)
+    release = threading.Event()
+    calls: list[str] = []
+
+    def quiz(user: str) -> JsonObject:
+        calls.append(user)
+        release.wait(10)
+        return by_page(user)
+
+    try:
+        with pytest.raises(LlmError, match="모두 실패"):
+            run(parallel_llm(quiz), job(size=2))
+    finally:
+        release.set()
+    assert len(calls) == 2  # 1판의 두 자리만
+    join_threads("quiz-slot")
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_an_outage_after_some_questions_is_a_short_set_not_a_retry() -> None:
+    # 1판에서 1문제를 만든 뒤 2판의 호출이 모두 503: 받아 둔 문제를 버리고 작업을 처음부터 다시
+    # 돌리지 않고(LlmError) 모자란 세트로 실패. 1판의 탈락 이유(2쪽 자리가 1쪽으로 넘어가 겹침)도
+    # 오류 글에 남음(2판은 503뿐)
+    bad = draft("람블편모충", "서양배 모양의 람블편모충 영양형의 특징")  # 설명에 정답 용어
+    page2 = [bad, bad]
+    first_round = [True]
+
+    def quiz(user: str) -> JsonObject | LlmError:
+        if '<노트 쪽="2">' in user and page2:
+            return page2.pop(0)
+        if not first_round[0]:
+            return LlmError("학교 LLM 503")
+        if '<노트 쪽="1">' in user:
+            return GOOD["이질 아메바"]
+        first_round[0] = False  # 2쪽 자리가 1쪽으로 넘어감(겹침) 뒤로는 503
+        return LlmError("학교 LLM 503")
+
+    def answer(user: str) -> JsonObject:
+        r = quiz(user)
+        if isinstance(r, LlmError):
+            raise r
+        return r
+
+    llm = parallel_llm(answer)
+    with pytest.raises(generate.NoQuestionsError, match="1/2문제만 만듦") as e:
+        run(llm, job(size=2))
+    assert "학교 LLM 503" in str(e.value) and "세트 안에서 정답이 겹침" in str(e.value)
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_slow_refill_rounds_end_as_a_short_set_not_an_outage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1쪽은 만들고 2쪽은 판마다 상한에 걸림: 만든 문제가 있으면 서버는 답하고 있으므로 LlmError
+    # (작업 다시 시도)가 아니라 모자란 세트로 실패
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.1)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.15)
+    monkeypatch.setattr(generate, "FILL_SEC_PER_QUESTION", 0.3)
+    release = threading.Event()
+    page2: list[str] = []
+
+    def quiz(user: str) -> JsonObject:
+        if '<노트 쪽="2">' in user:
+            page2.append(user)
+            release.wait(10)
+        return by_page(user)
+
+    try:
+        with pytest.raises(generate.NoQuestionsError, match=re.escape("1/2문제만 만듦(시간 상한)")):
+            run(parallel_llm(quiz), job(size=2))
+    finally:
+        release.set()
+    assert len(page2) >= 2  # 2판에서도 2쪽을 다시 돌림
+    join_threads("quiz-slot")
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_rounds_with_spare_slots_never_run_more_than_workers_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 여분 자리와 여러 판을 함께: 지난 판에 남아 응답을 기다리는 자리가 있어도 동시에 도는 생성
+    # 호출이 WORKERS를 넘지 않음(판마다 풀을 새로 만들면 넘음, Codex 리뷰 #269)
+    monkeypatch.setattr(generate, "WORKERS", 3)
+    monkeypatch.setattr(generate, "EXTRA", 0.6)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.1)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.15)
+    monkeypatch.setattr(generate, "FILL_SEC_PER_QUESTION", 1)
+    bad = draft("람블편모충", "서양배 모양의 람블편모충 영양형의 특징")  # 설명에 정답 용어
+    lock = threading.Lock()
+    active = [0]
+    peak = [0]
+    calls = [0]
+
+    def quiz(user: str) -> JsonObject:
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+            calls[0] += 1
+            slow = calls[0] <= 2  # 1판의 두 자리는 상한을 넘겨 다음 판까지 워커를 잡음
+        try:
+            time.sleep(0.4 if slow else 0.01)
+            return bad if '<노트 쪽="2">' in user else by_page(user)
+        finally:
+            with lock:
+                active[0] -= 1
+
+    try:
+        run(parallel_llm(quiz), job(size=2))
+    except (generate.NoQuestionsError, LlmError):
+        pass  # 채웠는지가 아니라 동시에 도는 호출 수를 봄
+    join_threads("quiz-slot")
+    assert calls[0] > 3  # 1판(자리 3개) 뒤에 다음 판이 돌았음
+    assert peak[0] <= 3
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_the_last_stage_reopens_only_pages_closed_for_no_concept() -> None:
+    # 2쪽(틀린 기록이 있어 더 무거움)은 이미 있는 문제와 거의 같아 겹침으로 닫히고, 1쪽은 개념
+    # 둘을 다 물어 닫힘. 마지막 단계는 1쪽만 다시 엶: 2쪽은 같은 겹침 검사에 또 걸리므로 부르지 않음
+    old = stored("q1", "람블편모충", "람블편모충")
+    old["passage"] = GOOD["람블편모충"]["question"]["passage"]
+    inp = job(
+        size=3,
+        sets=[{"id": "s1", "materialId": "m1", "questions": [old]}],
+        attempts=[attempt("q1", False)],
+    )
+    angle = draft(
+        "4핵", "이질 아메바 포낭형의 핵 수", concept="이질 아메바",
+        options=["4핵", "8핵", "2핵", "1핵", "6핵"],
+    )  # fmt: skip
+    page1 = quiz_from([GOOD["이질 아메바"], GOOD["대장 아메바"], angle])
+    calls: list[tuple[int, bool]] = []  # (쪽, 마지막 단계 안내가 있는지)
+    last_answer = [""]
+
+    def quiz(user: str) -> JsonObject:
+        on2 = '<노트 쪽="2">' in user
+        calls.append((2 if on2 else 1, "이 퀴즈에서 이미 물은 개념" in user))
+        r = GOOD["람블편모충"] if on2 else page1(user)
+        assert not isinstance(r, LlmError)
+        last_answer[0] = r["question"]["answer"]
+        return r
+
+    llm = ScriptLlm(
+        {
+            "Quiz": quiz,
+            "Naturals": lambda u: {"natural": [o == last_answer[0] for o in candidates(u)]},
+            "Check": checker(lambda u: last_answer[0]),
+        }
+    )
+    result, _ = run(llm, inp)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바", "4핵"]
+    # 2쪽은 첫 단계의 한 자리(gen_one이 유형마다 한 번)에서 겹침으로 닫힌 뒤 다시 부르지 않음(다시
+    # 열면 마지막 단계 판의 첫 자리가 무거운 2쪽으로 가 그만큼 더 부름)
+    once = len(generate.page_types(PAGE2, generate.is_korean_subject({1: PAGE1, 2: PAGE2}))[:2])
+    assert [page for page, _ in calls].count(2) == once
+    assert calls[-1] == (1, True)  # 마지막 단계는 1쪽에서 이미 물은 개념을 다른 각도로
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_the_last_stage_asks_a_concept_at_most_twice() -> None:
+    # 1쪽 개념 둘로 5문제: 마지막 단계에서도 한 개념은 두 문제까지라 4문제에서 더 물을 개념이 없음
+    def angle(answer: str, concept: str, options: list[str]) -> JsonObject:
+        return draft(answer, f"{concept} 포낭형의 핵 수", concept=concept, options=options)
+
+    nuclei = ["4핵", "8핵", "2핵", "1핵", "6핵"]
+    inp = job(size=5)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    llm = happy(
+        [
+            GOOD["이질 아메바"],
+            GOOD["대장 아메바"],
+            angle("4핵", "이질 아메바", nuclei),
+            angle("8핵", "대장 아메바", [nuclei[1], nuclei[0], *nuclei[2:]]),
+        ]
+    )
+    with pytest.raises(generate.NoQuestionsError, match=re.escape("4/5문제만 만듦")):
+        run(llm, inp)
+    assert len(llm.named("Quiz")) == 4  # 두 번씩 물은 뒤로는 고를 개념이 없어 부르지 않음
+
+
+def test_a_question_the_server_would_drop_is_not_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 서버 모양 검사(fromWorkerQuestion)에 걸릴 문제는 받지 않고 그 자리가 다시 만듦
+    checks: list[bool] = []
+    shape_ok = generate._shape_ok
+
+    def first_bad(d: Any) -> bool:
+        checks.append(shape_ok(d))
+        return len(checks) > 1
+
+    monkeypatch.setattr(generate, "_shape_ok", first_bad)
+    llm = happy([GOOD["이질 아메바"], GOOD["이질 아메바"]])
+    result, _ = run(llm, job(size=1))
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
+    gen = llm.named("Quiz")
+    assert len(gen) == 2 and f"앞서 만든 문제의 문제점: {generate.BAD_SHAPE}" in gen[1]
+
+
+@pytest.mark.parametrize(
+    ("change", "ok"),
+    [
+        ({}, True),
+        ({"stem": "  "}, False),
+        ({"answer": ""}, False),
+        ({"answer": "없는 보기"}, False),
+        ({"options": ["이질 아메바", "대장 아메바", "람블편모충", "질편모충"]}, False),
+        ({"options": ["이질 아메바", "대장 아메바", "람블편모충", "질편모충", " "]}, False),
+        ({"options": ["이질 아메바", "대장 아메바", "람블편모충", "질편모충", 3]}, False),
+    ],
+)
+def test_shape_matches_the_server_check(change: dict[str, Any], ok: bool) -> None:
+    d = {**GOOD["이질 아메바"]["question"], **change}
+    assert generate._shape_ok(d) is ok
 
 
 def test_slots_never_started_are_reported_as_not_made(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1009,12 +1491,11 @@ def test_slots_never_started_are_reported_as_not_made(monkeypatch: pytest.Monkey
 
     inp = job(size=3)
     inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
-    try:
-        result, _ = run(parallel_llm(quiz2), inp)
+    try:  # 도는 자리 1 + 시작하지 못한 자리 1: 모자란 세트는 돌려주지 않음(#247)
+        with pytest.raises(generate.NoQuestionsError, match=re.escape("1/3문제만 만듦(시간 상한)")):
+            run(parallel_llm(quiz2), inp)
     finally:
         release2.set()
-    assert len(result["questions"]) == 1
-    assert len(result["failed"]) == 2  # 도는 자리 1 + 시작하지 못한 자리 1
 
 
 def test_concept_names_of_pages_are_made_at_the_same_time(
