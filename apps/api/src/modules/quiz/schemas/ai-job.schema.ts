@@ -29,10 +29,15 @@ export class AiJob {
   @Prop({
     required: true,
     type: String,
-    enum: ['queued', 'running', 'succeeded', 'failed', 'canceled'],
+    // held: 대기 한도를 확인하는 잠깐 동안만 쓴다(AiJobsService). 처리기는 queued만 가져가므로 잡히지 않는다
+    enum: ['held', 'queued', 'running', 'succeeded', 'failed', 'canceled'],
     default: 'queued',
   })
   status: string;
+
+  // held로 둔 시각. 확인 도중 서버가 멈춰 남은 held는 잠시 뒤 한도 계산에서 빠진다
+  @Prop({ type: Date })
+  heldAt?: Date;
 
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
