@@ -23,7 +23,12 @@ export function createFakeJobs() {
       rows.push(row);
       return Promise.resolve({ toObject: () => ({ ...row }) });
     },
-    findOne: (filter: Filter) => query(rows.find((r) => matches(r, filter)) ?? null),
+    // 두 번째 인자(projection)는 무시하고, sort는 createdAt 내림차순만(서비스가 쓰는 것)
+    findOne: (filter: Filter, _projection?: unknown, options: Options = {}) => {
+      const found = rows.filter((r) => matches(r, filter));
+      if (options.sort) found.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return query(found[0] ?? null);
+    },
     countDocuments: (filter: Filter) =>
       Promise.resolve(rows.filter((r) => matches(r, filter)).length),
     deleteOne: (filter: Filter) => {
