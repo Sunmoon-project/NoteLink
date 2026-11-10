@@ -404,4 +404,16 @@ describe('아바타 선생님 고르기', () => {
     await waitFor(() => expect(mockApi.shop.equip).toHaveBeenCalledWith('base'));
     expect(await screen.findByText('3D:base')).toBeTruthy();
   });
+
+  it.each(['myItems', 'items'] as const)(
+    '%s 조회가 실패하면 기본만 있는 화면 대신 안내하고, 다시 시도하면 목록을 보인다',
+    async (fn) => {
+      mockApi.shop[fn].mockRejectedValueOnce(new Error('network'));
+      await renderScreen(<AvatarTeacherScreen />);
+      expect(await screen.findByText('아바타 목록을 불러오지 못했어요')).toBeTruthy();
+      expect(screen.queryByLabelText('기본 아바타, 장착 중')).toBeNull();
+      await fireEvent.press(screen.getByText('다시 시도'));
+      expect(await screen.findByLabelText('보라 아바타, 장착 중')).toBeTruthy();
+    },
+  );
 });

@@ -9,6 +9,7 @@ import { Btn, Canvas, Header, Label, Loading, Screen, cx } from '@/components/ui
 import { api } from '@/lib/api';
 import { BASE_AVATAR } from '@/lib/local/catalog';
 import { toast } from '@/stores/toast';
+import { LoadError } from '../progress/load-error';
 import { C, ICON } from '@/theme';
 import { Avatar3D, type Mood } from './avatar3d';
 import { useEquippedAvatar } from './buddy';
@@ -46,6 +47,19 @@ export function AvatarTeacherScreen() {
     onError: () => toast('장착하지 못했어요. 다시 시도해 주세요'),
   });
 
+  // 못 읽었으면 "보유 아바타 없음 · 기본 장착 중"처럼 보이지 않게 안내하고 다시 읽는다
+  if ((mine.isError && !mine.data) || (all.isError && !all.data))
+    return (
+      <Canvas>
+        <Screen>
+          <Header title="아바타 선생님" large={false} />
+          <LoadError
+            message="아바타 목록을 불러오지 못했어요"
+            retry={() => Promise.all([mine.isError && mine.refetch(), all.isError && all.refetch()])}
+          />
+        </Screen>
+      </Canvas>
+    );
   if (mine.isPending || all.isPending) return <Loading />;
   return (
     <Canvas>
