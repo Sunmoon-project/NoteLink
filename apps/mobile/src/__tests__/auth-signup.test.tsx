@@ -421,6 +421,33 @@ it('옛 주소의 가입이 늦게 성공해도 새 가입 정보를 지우거�
   expect(useToast.getState().msg).toBeNull();
 });
 
+it('발송을 기다리다 화면을 나가 다른 이메일로 새로 가입 중이면, 옛 발송 응답이 새 정보를 덮어쓰지 않는다', async () => {
+  let sentA!: () => void;
+  jest
+    .spyOn(api.auth, 'emailSendCode')
+    .mockImplementationOnce(() => new Promise<void>((r) => (sentA = r)))
+    .mockResolvedValueOnce(undefined);
+  await fill('a@test.com', 'abcd1234');
+  await fireEvent.press(screen.getByText('인증번호 받기'));
+  // 다시 들어온 새 가입 화면에서 b로 보내고 인증 화면까지 갔다(옛 화면의 발송은 아직 대기 중)
+  await toCode('b@test.com', 'bbbb1234');
+  useSignup.setState({ proof: { email: 'b@test.com', token: 'proof-b' } });
+  const before = useSignup.getState();
+  jest.mocked(router.push).mockClear();
+  useToast.setState({ msg: null });
+  sentA();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(useSignup.getState()).toMatchObject({
+    email: 'b@test.com',
+    pw: 'bbbb1234',
+    sentTo: 'b@test.com',
+    sentAt: before.sentAt,
+    proof: { email: 'b@test.com', token: 'proof-b' },
+  });
+  expect(router.push).not.toHaveBeenCalled();
+  expect(useToast.getState().msg).toBeNull();
+});
+
 it('보내는 사이 비밀번호를 고쳐도 누를 때 검사한 비밀번호로 가입한다', async () => {
   let sent!: () => void;
   jest

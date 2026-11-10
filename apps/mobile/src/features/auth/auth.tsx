@@ -262,17 +262,20 @@ export const useSignup = create<{
   /** 가입 흐름 번호. 새로 보내거나 처음부터 하면 올린다 — 서버가 옛 번호 · 증표를 무효로 하니
    * 그 전에 보낸 확인 · 가입 응답은 지금 흐름이 아니다 */
   flow: number;
-  /** 새로 보낸다: 흐름을 올리고 옛 증표를 버린다 */
-  next: () => void;
+  /** 새로 보낸다: 흐름을 올리고 옛 증표를 버린다. 새 흐름 번호를 돌려준다 */
+  next: () => number;
   reset: () => void;
-}>((set) => ({
+}>((set, get) => ({
   email: '',
   pw: '',
   sentTo: null,
   sentAt: 0,
   proof: null,
   flow: 0,
-  next: () => set((s) => ({ flow: s.flow + 1, proof: null })),
+  next: () => {
+    set((s) => ({ flow: s.flow + 1, proof: null }));
+    return get().flow;
+  },
   reset: () =>
     set((s) => ({ email: '', pw: '', sentTo: null, sentAt: 0, proof: null, flow: s.flow + 1 })),
 }));
@@ -313,15 +316,17 @@ export function SignupScreen() {
     onMutate: () => useSignup.getState().next(),
     // 비밀번호는 누를 때 검사한 값으로 고정한다(보내는 사이 고쳐도 검사 안 한 값이 넘어가지 않게)
     mutationFn: ({ to }: { to: string; pw: string }) => api.auth.emailSendCode(to),
-    onSuccess: (_, { to, pw: checked }) => {
-      // 보내는 사이 이메일을 고쳤으면 옛 주소의 응답은 버린다
-      if (to !== emailNow.current) return;
+    onSuccess: (_, { to, pw: checked }, flow) => {
+      // 보내는 사이 이메일을 고쳤거나, 화면을 나갔다 와 새 흐름이 시작됐으면 옛 응답은 버린다
+      if (to !== emailNow.current || useSignup.getState().flow !== flow) return;
       useSignup.setState({ email: to, pw: checked, sentTo: to, sentAt: Date.now() });
       toast('인증번호를 보냈어요. 메일을 확인해 주세요');
       router.push({ pathname: '/(auth)/signup-code', params: { email: to } });
     },
-    onError: (e) =>
-      toast(e instanceof ApiError ? e.message : '인증번호를 보내지 못했어요. 다시 시도해 주세요'),
+    onError: (e, _, flow) => {
+      if (useSignup.getState().flow !== flow) return;
+      toast(e instanceof ApiError ? e.message : '인증번호를 보내지 못했어요. 다시 시도해 주세요');
+    },
   });
   const sendCode = () => {
     if (!send.isPending && formOk()) send.mutate({ to: email.trim(), pw });
@@ -473,17 +478,17 @@ export function SignupCodeScreen() {
   const resend = useMutation({
     onMutate: () => useSignup.getState().next(),
     mutationFn: (to: string) => api.auth.emailSendCode(to),
-    onSuccess: (_, to) => {
-      // 그사이 앞 화면에서 다른 이메일로 바꿨으면 옛 주소의 응답은 버린다
-      if (useSignup.getState().sentTo !== to) return;
+    onSuccess: (_, to, flow) => {
+      // 그사이 앞 화면에서 새로 보냈거나 다른 이메일로 바꿨으면 옛 응답은 버린다
+      if (useSignup.getState().flow !== flow || useSignup.getState().sentTo !== to) return;
       setCode('');
       setCodeMsg(null);
       useSignup.setState({ sentAt: Date.now() });
       setNow(Date.now());
       toast('인증번호를 보냈어요. 메일을 확인해 주세요');
     },
-    onError: (e, to) => {
-      if (useSignup.getState().sentTo !== to) return;
+    onError: (e, to, flow) => {
+      if (useSignup.getState().flow !== flow || useSignup.getState().sentTo !== to) return;
       failed(e, '인증번호를 보내지 못했어요. 다시 시도해 주세요');
     },
   });
