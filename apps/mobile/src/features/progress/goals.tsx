@@ -11,6 +11,7 @@ import {
   Alert,
   Badge,
   Btn,
+  Canvas,
   Card,
   Dashed,
   Header,
@@ -54,8 +55,8 @@ export function DDayScreen() {
     },
   });
   const row = (d: DDay) => (
-    <View key={d._id} className="flex-row items-center gap-3 border-b border-line py-3">
-      <View className="h-9 w-9 items-center justify-center rounded-full bg-cream">
+    <View key={d._id} className="flex-row items-center gap-3 border-b border-fill py-4">
+      <View className="h-10 w-10 items-center justify-center rounded-full bg-white">
         {(() => {
           const Ic =
             d.source === 'todo'
@@ -82,47 +83,49 @@ export function DDayScreen() {
     </View>
   );
   return (
-    <Screen>
-      <Header title="D-day 관리" sub="과제 · 시험으로 등록한 할 일이 자동으로 올라옵니다." />
-      {ddays.isError && !ddays.data && (
-        <LoadError message="D-day를 불러오지 못했어요" retry={ddays.refetch} />
-      )}
-      <Label>할 일에서 자동</Label>
-      {ddays.data?.filter((d) => d.source === 'todo').map(row)}
-      <Label>직접 등록</Label>
-      {ddays.data?.filter((d) => d.source === 'manual').map(row)}
-      {adding ? (
-        <View className="mt-3 gap-2">
-          <Input value={title} onChangeText={setTitle} placeholder="예) 기말고사" autoFocus />
-          <View className="flex-row gap-2">
-            <Input
-              className="flex-1"
-              value={date}
-              onChangeText={setDate}
-              placeholder="YYYY-MM-DD"
-              keyboardType="numbers-and-punctuation"
-              maxLength={10}
-              invalid={!!date && !validYmd(date)}
-              accessibilityLabel="D-day 날짜"
-            />
-            <Btn
-              small
-              className="w-20"
-              disabled={!title.trim() || !validYmd(date)}
-              loading={add.isPending}
-              onPress={() => add.mutate()}
-            >
-              추가
-            </Btn>
+    <Canvas>
+      <Screen>
+        <Header title="D-day 관리" sub="과제 · 시험으로 등록한 할 일이 자동으로 올라옵니다." />
+        {ddays.isError && !ddays.data && (
+          <LoadError message="D-day를 불러오지 못했어요" retry={ddays.refetch} />
+        )}
+        <Label>할 일에서 자동</Label>
+        {ddays.data?.filter((d) => d.source === 'todo').map(row)}
+        <Label>직접 등록</Label>
+        {ddays.data?.filter((d) => d.source === 'manual').map(row)}
+        {adding ? (
+          <View className="mt-3 gap-2">
+            <Input value={title} onChangeText={setTitle} placeholder="예) 기말고사" autoFocus />
+            <View className="flex-row gap-2">
+              <Input
+                className="flex-1"
+                value={date}
+                onChangeText={setDate}
+                placeholder="YYYY-MM-DD"
+                keyboardType="numbers-and-punctuation"
+                maxLength={10}
+                invalid={!!date && !validYmd(date)}
+                accessibilityLabel="D-day 날짜"
+              />
+              <Btn
+                small
+                className="w-20"
+                disabled={!title.trim() || !validYmd(date)}
+                loading={add.isPending}
+                onPress={() => add.mutate()}
+              >
+                추가
+              </Btn>
+            </View>
+            {!!date && !validYmd(date) && (
+              <Text className="text-caption text-danger">날짜를 2026-12-24처럼 입력해 주세요</Text>
+            )}
           </View>
-          {!!date && !validYmd(date) && (
-            <Text className="text-caption text-danger">날짜를 2026-12-24처럼 입력해 주세요</Text>
-          )}
-        </View>
-      ) : (
-        <Dashed onPress={() => setAdding(true)}>+ D-day 추가</Dashed>
-      )}
-    </Screen>
+        ) : (
+          <Dashed onPress={() => setAdding(true)}>+ D-day 추가</Dashed>
+        )}
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -181,103 +184,107 @@ export function RepeatGoalScreen() {
   // 고칠 목표를 못 읽었으면 새 목표 화면으로 넘어가 중복을 만들지 않게 한다
   if (id && goals.isError && !goals.data)
     return (
-      <Screen>
-        <Header title="반복 목표 설정" />
-        <LoadError message="반복 목표를 불러오지 못했어요" retry={goals.refetch} />
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Header title="반복 목표 설정" />
+          <LoadError message="반복 목표를 불러오지 못했어요" retry={goals.refetch} />
+        </Screen>
+      </Canvas>
     );
   return (
-    <Screen
-      footer={
-        <>
-          {noDays && (
-            <Text className="mb-2 text-center text-caption text-danger">요일을 선택해주세요</Text>
-          )}
-          <Btn
-            disabled={noDays || !name.trim()}
-            loading={save.isPending}
-            onPress={() => save.mutate()}
-          >
-            저장하기
-          </Btn>
-          {g && (
-            <Pressable onPress={() => setDel(true)} className="mt-3">
-              <Text className="text-center text-footnote text-danger">목표 삭제</Text>
-            </Pressable>
-          )}
-        </>
-      }
-    >
-      <Header title="반복 목표 설정" />
-      <Label>목표명</Label>
-      <Input value={name} onChangeText={setName} placeholder="매일 30분 영어 단어 암기" />
-      <Label>반복 요일</Label>
-      <View className="flex-row gap-2">
-        {DAYS.map((d, i) => {
-          const on = days.includes(dayNum(i));
-          return (
-            <Pressable
-              key={d}
-              accessibilityRole="checkbox"
-              accessibilityLabel={`${d}요일`}
-              accessibilityState={{ checked: on }}
-              onPress={() =>
-                setDays((p) => (on ? p.filter((x) => x !== dayNum(i)) : [...p, dayNum(i)]))
-              }
-              className={cx(
-                'h-10 w-10 items-center justify-center rounded-full',
-                on ? 'bg-brand' : 'bg-cream',
-              )}
+    <Canvas>
+      <Screen
+        footer={
+          <>
+            {noDays && (
+              <Text className="mb-2 text-center text-caption text-danger">요일을 선택해주세요</Text>
+            )}
+            <Btn
+              disabled={noDays || !name.trim()}
+              loading={save.isPending}
+              onPress={() => save.mutate()}
             >
-              <Text className={cx('text-footnote font-semibold', on ? 'text-white' : 'text-sub')}>
-                {d}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-      <Label>목표 시간</Label>
-      <View className="flex-row items-center rounded-2xl border border-line p-2">
-        <Pressable
-          accessibilityLabel="줄이기"
-          onPress={() => setMin((m) => Math.max(10, m - 10))}
-          className="h-10 w-10 items-center justify-center rounded-xl bg-cream"
-        >
-          <Text className="text-title3">−</Text>
-        </Pressable>
-        <Text className="flex-1 text-center text-headline font-bold text-ink">{min}분</Text>
-        <Pressable
-          accessibilityLabel="늘리기"
-          onPress={() => setMin((m) => m + 10)}
-          className="h-10 w-10 items-center justify-center rounded-xl bg-cream"
-        >
-          <Text className="text-title3">+</Text>
-        </Pressable>
-      </View>
-      <Card tone="white" className="mt-3 flex-row items-center px-4 py-3">
-        <View className="flex-1">
-          <Text className="text-subhead font-semibold text-ink">리마인드 알림</Text>
-          <Text className="text-caption text-sub">고른 요일 20:00에 알려드려요</Text>
+              저장하기
+            </Btn>
+            {g && (
+              <Pressable onPress={() => setDel(true)} className="mt-3">
+                <Text className="text-center text-footnote text-danger">목표 삭제</Text>
+              </Pressable>
+            )}
+          </>
+        }
+      >
+        <Header title="반복 목표 설정" />
+        <Label>목표명</Label>
+        <Input value={name} onChangeText={setName} placeholder="매일 30분 영어 단어 암기" />
+        <Label>반복 요일</Label>
+        <View className="flex-row gap-2">
+          {DAYS.map((d, i) => {
+            const on = days.includes(dayNum(i));
+            return (
+              <Pressable
+                key={d}
+                accessibilityRole="checkbox"
+                accessibilityLabel={`${d}요일`}
+                accessibilityState={{ checked: on }}
+                onPress={() =>
+                  setDays((p) => (on ? p.filter((x) => x !== dayNum(i)) : [...p, dayNum(i)]))
+                }
+                className={cx(
+                  'h-10 w-10 items-center justify-center rounded-full',
+                  on ? 'bg-brand' : 'bg-white',
+                )}
+              >
+                <Text className={cx('text-footnote font-semibold', on ? 'text-white' : 'text-sub')}>
+                  {d}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
-        <Toggle label="리마인드 알림" on={remind} onChange={setRemind} />
-      </Card>
-      {g && (
-        <View className="mt-3 rounded-xl bg-sun/15 px-3 py-2.5">
-          <View className="flex-row items-center gap-1.5">
-            <Flame size={ICON.xs} color={C.brand} />
-            <Text className="text-footnote text-ink">연속 {g.streak}일 달성 중</Text>
+        <Label>목표 시간</Label>
+        <View className="flex-row items-center rounded-2xl bg-white p-2">
+          <Pressable
+            accessibilityLabel="줄이기"
+            onPress={() => setMin((m) => Math.max(10, m - 10))}
+            className="h-10 w-10 items-center justify-center rounded-xl bg-fill"
+          >
+            <Text className="text-title3">−</Text>
+          </Pressable>
+          <Text className="flex-1 text-center text-headline font-bold text-ink">{min}분</Text>
+          <Pressable
+            accessibilityLabel="늘리기"
+            onPress={() => setMin((m) => m + 10)}
+            className="h-10 w-10 items-center justify-center rounded-xl bg-fill"
+          >
+            <Text className="text-title3">+</Text>
+          </Pressable>
+        </View>
+        <Card tone="white" className="mt-3 flex-row items-center px-4 py-3">
+          <View className="flex-1">
+            <Text className="text-subhead font-semibold text-ink">리마인드 알림</Text>
+            <Text className="text-caption text-sub">고른 요일 20:00에 알려드려요</Text>
           </View>
-        </View>
-      )}
-      <Alert
-        open={del}
-        title="반복 목표를 삭제할까요?"
-        body="연속 달성 기록도 함께 사라져요."
-        secondary="취소"
-        onSecondary={() => setDel(false)}
-        primary="삭제"
-        onPrimary={() => remove.mutate()}
-      />
-    </Screen>
+          <Toggle label="리마인드 알림" on={remind} onChange={setRemind} />
+        </Card>
+        {g && (
+          <View className="mt-3 rounded-xl bg-sun/15 px-3 py-2.5">
+            <View className="flex-row items-center gap-1.5">
+              <Flame size={ICON.xs} color={C.brand} />
+              <Text className="text-footnote text-ink">연속 {g.streak}일 달성 중</Text>
+            </View>
+          </View>
+        )}
+        <Alert
+          open={del}
+          title="반복 목표를 삭제할까요?"
+          body="연속 달성 기록도 함께 사라져요."
+          secondary="취소"
+          onSecondary={() => setDel(false)}
+          primary="삭제"
+          onPrimary={() => remove.mutate()}
+        />
+      </Screen>
+    </Canvas>
   );
 }

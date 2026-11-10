@@ -58,6 +58,7 @@ import {
 } from './storage';
 import { avatarFace } from '../avatar-styles';
 import { AI_WAITING_STEP, withTopic } from '../ai';
+import { quizPoints, sessionPoints } from '../points';
 
 // 기기 저장 백엔드 — 서버(NestJS · MongoDB · Blob)가 붙기 전까지 실서버와 같은 Api를 기기 안에서 구현한다.
 // 예시 데이터는 없다. 처음엔 비어 있고, 사용자가 만든 것만 계정별 파일(notelink-user-<id>.json)에 저장된다.
@@ -341,6 +342,13 @@ function ddays(d: Db): DDay[] {
   ].sort((a, b) => (a.daysLeft < 0 ? 1 : b.daysLeft < 0 ? -1 : a.daysLeft - b.daysLeft));
 }
 
+/** 오늘(서울) 이 사유로 받은 포인트 내역 */
+const paidToday = (d: Db, reasonType: string) =>
+  d.ledger.filter(
+    (l) =>
+      l.reasonType === reasonType && l.amount > 0 && ymd(seoul(new Date(l.createdAt))) === today(),
+  );
+
 function addPoints(d: Db, amount: number, reasonType: string, description: string) {
   d.user.pointBalance += amount;
   d.ledger.unshift({
@@ -412,7 +420,18 @@ const api: Api = {
         return fail(ERROR_CODES.VALIDATION, '이메일 또는 비밀번호가 맞지 않아요');
       return signInAs(id);
     },
-    emailSignup: async (email, password) => {
+    // 기기 저장 모드는 메일을 보낼 수 없어, 인증번호는 6자리 숫자면 통과하고 증표 자리에 이메일을 그대로 쓴다
+    emailSendCode: async (email) => {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+        return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
+    },
+    emailVerifyCode: async (email, code) => {
+      if (!/^\d{6}$/.test(code))
+        return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요', 400);
+      return { verificationToken: email.trim(), expiresInSeconds: 600 };
+    },
+    emailSignup: async (proof, password) => {
+      const email = proof;
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
         return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
       if (password.length < 8)
@@ -610,7 +629,10 @@ const api: Api = {
       // 시작 날짜에 공부한 시간이 없어도(바로 일시정지 등) 세션은 끝낸다
       if (s.status !== 'ended')
         Object.assign(s, { status: 'ended', endedAt: now(), endReason: p.endReason, isAbuse });
-      const pts = !isAbuse && durationSec >= STREAK_MIN_SEC ? 30 : 0;
+      const pts = sessionPoints(
+        !isAbuse && durationSec >= STREAK_MIN_SEC,
+        paidToday(d, 'session_complete').length,
+      );
       if (pts) addPoints(d, pts, 'session_complete', '순공 세션 완료');
       (d.settled ??= {})[id] = { durationSec, pointsEarned: pts };
       return ok({ durationSec, pointsEarned: pts });
@@ -1084,7 +1106,8 @@ const api: Api = {
       const d = db();
       const a = d.attempts.find((x) => x._id === attemptId);
       if (!a) return fail(ERROR_CODES.NOT_FOUND, '풀이 기록이 없어요', 404);
-      const pts = a.finishedAt ? 0 : a.correctCount * 24;
+      const quizToday = paidToday(d, 'quiz_correct').reduce((n, l) => n + l.amount, 0);
+      const pts = a.finishedAt ? 0 : quizPoints(a.correctCount, quizToday);
       if (pts) addPoints(d, pts, 'quiz_correct', `퀴즈 정답 ${a.correctCount}개`);
       Object.assign(a, { finishedAt: a.finishedAt ?? now(), pointsEarned: a.pointsEarned || pts });
       return ok({ pointsEarned: pts, balance: d.user.pointBalance });
@@ -1360,6 +1383,35 @@ localSocket.onClient = (ev, args) => {
     return; // 확인 응답을 보내지 않아 화면이 전송 실패로 안내하고 다시 보내게 한다
   }
   setTimeout(() => (ack ? ack(m) : localSocket.push('chat:message', m)), 0);
+};
+
+/** 테스트용: 문제가 다 만들어진 퀴즈를 넣는다 (기기 저장 모드는 퀴즈 생성을 AI 서버에 맡겨 직접 만들 수 없다) */
+export const seedQuizForTests = (answers: string[]) => {
+  const d = db();
+  const qs: QuizSet = {
+    _id: uid('qs'),
+    materialId: 'm-test',
+    folderId: 'f-test',
+    sourceSetId: null,
+    title: '테스트 퀴즈',
+    status: 'ready',
+    progress: 100,
+    questionCount: answers.length,
+    questions: answers.map((answer, i) => ({
+      _id: uid('q'),
+      order: i,
+      type: 'short_answer',
+      prompt: `문제 ${i + 1}`,
+      choices: null,
+      answer,
+      explanation: null,
+      conceptTags: [],
+    })),
+    createdAt: now(),
+  };
+  d.quizSets.unshift(qs);
+  save();
+  return qs;
 };
 
 /** 테스트용: 앱을 다시 켠 것처럼 메모리를 비우고 파일에서 다시 읽는다 */

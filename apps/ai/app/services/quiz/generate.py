@@ -55,15 +55,21 @@ input — NestJS가 작업을 만들 때 담습니다. ObjectId는 문자열, �
             이 노트는 material로 넣으므로 없어도 됩니다
 
 result — NestJS가 quiz_sets에 새 세트로 저장합니다(materialId · folderId는 노트에서)
-  questions  새 세트 문제(order 1부터, srs는 null: 아직 풀지 않음). []이면 세트를 만들지 않음
+  questions  새 세트 문제(order 1부터, srs는 null: 아직 풀지 않음). 한 문제 이상
   title      '<노트 제목> 맞춤 퀴즈 · MM-DD'
   concepts   새로 뽑은 개념 이름(materials.concepts에 저장). 노트에 이름이 있었으면 null
   pages      [{pageNo, weight, plain, share, wrong, mastered}] 쪽마다 배분(앱 안내 · 확인용).
              plain은 기록 없이 고르게 나눴을 때, share는 실제로 나눈 문제 수
   failed     [{pageNo, why}] 못 만든 자리(마지막으로 시도한 쪽과 탈락 이유)
 
-LLM 장애: 끝난 자리의 생성 호출이 모두 실패해 한 문제도 못 만들면 LlmError를 올려 작업 처리기가
-나중에 다시 시도하게 합니다. '정답 둘' 검사나 검사 모델 호출이 실패한 초안은 쓰지 않습니다.
+한 문제도 못 만들면 0문제 결과로 끝내지 않습니다(앱은 작업 상태로 성공 화면을 고름, #175).
+  - 물을 글이 없음: 글이 없거나 MIN_LINES줄 이상인 쪽이 없음. LLM을 부르기 전에 InputError
+    (바로 실패)
+  - LLM 장애: 끝난 자리의 생성 호출이 모두 실패함. LlmError로 작업 처리기가 나중에 다시 시도
+  - 그 밖(초안이 모두 탈락 · 물을 개념이 없음 · 시간 상한): NoQuestionsError(바로 실패, 코드
+    NO_QUESTIONS). 작업을 다시 시도하면 같은 노트에서 같은 탈락이 되풀이되기 쉽고 기다림만 몇 배로
+    길어지므로(미리 만들기는 상한이 PATIENT배), 다시 할지는 앱의 '다시 시도'에 맡김
+'정답 둘' 검사나 검사 모델 호출이 실패한 초안은 쓰지 않습니다.
 오답 보기 한두 개만 걸린 초안은 그 보기만 바꿔 다시 검사합니다(quality.checked, 로컬과 같음, #95).
 알려진 한계(로컬과 같음): 새 문제의 srs는 null이라, 처음 푼 뒤 복습 상태에 checked가 없어 오늘의
 복습이 '정답 둘' 검사를 한 번 더 합니다.
@@ -79,7 +85,14 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
-from app.clients.llm import STOPPED, JsonObject, Llm, LlmError, check_stop, stop_on
+from app.clients.llm import (
+    STOPPED,
+    JsonObject,
+    Llm,
+    LlmError,
+    LlmRejectedError,
+    Stopping,
+)
 from app.core.config import settings
 from app.services.quiz import concepts, quality, similar
 from app.services.quiz.checks import (
@@ -116,6 +129,20 @@ MAX_SIZE = (
     30  # 한 자리에 LLM 호출이 최대 3쪽 × 2번 × (생성 · 검사 · 풀기): 학교 LLM 하나를 오래 잡지 않게
 )
 MIN_LINES = 5  # 이보다 짧은 쪽은 묻지 않음
+NO_TEXT = f"노트에 문제를 낼 글이 없음({MIN_LINES}줄 이상인 쪽 없음)"
+
+
+def askable(text: str) -> bool:
+    """문제를 낼 수 있는 쪽 글인지(정리한 글이 MIN_LINES줄 이상). NestJS askable과 같은 기준."""
+    return len(text.split("\n")) >= MIN_LINES
+
+
+class NoQuestionsError(InputError):
+    """물을 글은 있는데 한 문제도 만들지 못함. 작업은 다시 시도하지 않고 code로 실패합니다."""
+
+    code = "NO_QUESTIONS"
+
+
 TEXT_CAP = 2500  # 생성 모델에 보여 주는 쪽 글
 CHECK_CAP = 3000  # 검사 모델에 보여 주는 쪽 글(similar.solved와 같음)
 BACKUPS = 2  # 못 만든 자리를 넘겨 볼 다른 쪽 수
@@ -223,6 +250,7 @@ class Made:
     why: list[str] = field(default_factory=list)
     down: int = 0  # 호출이 실패한 시도 수
     tries: int = 0
+    rejected: int = 0  # down 중 서버가 요청을 거절한 생성 호출(LlmRejectedError, #262)
 
 
 # ---------------------------------------------------------------- input
@@ -477,7 +505,7 @@ def allocate(
     pages: dict[int, str], per_page: defaultdict[int, PageInfo], n: int
 ) -> tuple[dict[int, float], dict[int, int], dict[int, int]]:
     """(가중치, 나눈 문제 수, 고르게 나눴을 때). 5줄 이상인 쪽만."""
-    usable = [p for p, t in pages.items() if len(t.split("\n")) >= MIN_LINES]
+    usable = [p for p, t in pages.items() if askable(t)]
     if not usable:
         return {}, {}, {}
     weight = {p: max(0.3, 1 + 1.5 * per_page[p].wrong - 0.7 * per_page[p].mastered) for p in usable}
@@ -583,35 +611,15 @@ def _take(seen: list[Seen], used: list[str]) -> Accept:
     return accept
 
 
-@dataclass(frozen=True)
-class _Until:
+def _until(llm: Llm, stop: threading.Event) -> Llm:
     """stop이 켜진 뒤의 호출은 보내지 않고 LlmError(STOPPED).
 
     다 모았거나 돌려준 뒤에도 남은 자리 스레드는 검사 · 풀기 호출을 몇 번 더 하는데, 학교 LLM
     클라이언트는 프로세스에 하나라 그 호출이 다음 작업의 차례를 밀어냄(/code-review #95).
     이미 SchoolLlm 안에서 차례를 기다리거나 다시 보내려는 호출도 stop_on으로 멈춤(Codex 리뷰
-    #125). 보낸 뒤 응답을 기다리는 호출은 끝까지 기다림.
+    #125). 보낸 뒤 응답을 기다리는 호출은 끝까지 기다림. 작업 취소와 같은 Stopping을 씀(#263).
     """
-
-    llm: Llm
-    stop: threading.Event
-
-    def call(
-        self,
-        model: str,
-        system: str,
-        user: str,
-        schema: JsonObject,
-        name: str,
-        *,
-        max_tokens: int = 1500,
-        temperature: float = 0.0,
-    ) -> JsonObject:
-        with stop_on(self.stop):
-            check_stop()  # 가짜 LLM처럼 stop_on을 보지 않는 클라이언트에도
-            return self.llm.call(
-                model, system, user, schema, name, max_tokens=max_tokens, temperature=temperature
-            )
+    return Stopping(llm, stop, STOPPED)
 
 
 def gen_one(
@@ -666,6 +674,7 @@ def gen_one(
             )
         except LlmError as e:
             out.down += 1
+            out.rejected += isinstance(e, LlmRejectedError)
             out.why = [str(e)]
             continue
         raw = similar._draft(r)
@@ -732,13 +741,13 @@ def _concept_names(llm: Llm, m: Material, pages: dict[int, str]) -> list[str]:
     차례로 뽑으면 쪽 수만큼 퀴즈 요청이 길어졌음(#95). 합치는 순서는 쪽 순서 그대로.
     """
     subject = concepts.subject_words(m.title)
-    texts = [t for _, t in sorted(pages.items()) if len(t.split("\n")) >= MIN_LINES]
+    texts = [t for _, t in sorted(pages.items()) if askable(t)]
     names: list[str] = []
     # 한 쪽이 LlmError면 작업 처리기가 다시 시도하므로 다른 쪽도 더 호출하지 않음: 시작하지 않은
-    # 쪽은 취소하고, 도는 쪽은 다음 호출에서 멈춤(_Until). 끝나는 차례로 기다려 앞쪽이 느려도
+    # 쪽은 취소하고, 도는 쪽은 다음 호출에서 멈춤(_until). 끝나는 차례로 기다려 앞쪽이 느려도
     # 뒤쪽 실패를 바로 알아챔(쪽 순서로 기다리면 앞쪽이 끝날 때까지 호출이 이어짐, Codex #125)
     failed = threading.Event()
-    until = _Until(llm, failed)
+    until = _until(llm, failed)
     pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="concepts")
     try:
         futures = [pool.submit(concepts.for_page, until, t, m.title) for t in texts]
@@ -766,8 +775,9 @@ def run(llm: Llm, raw: JsonObject, report: Progress, *, patient: bool = False) -
     pages = note_pages(m)
     notes: Notes = {**inp.notes, m.id: pages}
     title = f"{m.title} 맞춤 퀴즈 · {inp.day:%m-%d}"
-    if not pages:  # 글이 없는 노트(사진만 · 모든 줄이 [?])
-        return _result([], title, None, {}, {}, {}, defaultdict(PageInfo), [])
+    # 글이 없는 노트(사진만 · 모든 줄이 [?]) · 짧은 쪽뿐인 노트(allocate가 묻지 않음)
+    if not any(askable(t) for t in pages.values()):
+        raise InputError(NO_TEXT)
 
     new_names = None
     names_all = m.concepts
@@ -793,11 +803,17 @@ def run(llm: Llm, raw: JsonObject, report: Progress, *, patient: bool = False) -
 
     seen: list[Seen] = [seen_question(q) for s in inp.sets for q in s.questions if here(s, q)]
     subject = concepts.subject_words(m.title)
-    made, failed, down, tried_calls = _make_all(
+    made, failed, down, tried_calls, rejected = _make_all(
         llm, pages, names_all, subject, per_page, weight, share, korean, seen, n, report, patient
     )
-    if not made and tried_calls and down == tried_calls:
-        raise LlmError("문제 만들기 호출이 모두 실패함")
+    if not made:
+        if tried_calls and down == tried_calls:
+            if rejected == down:  # 모두 서버가 거절: 다시 해도 같아 다시 넣지 않게(Codex #264)
+                raise LlmRejectedError("문제 만들기 요청을 모두 거절함")
+            raise LlmError("문제 만들기 호출이 모두 실패함")
+        # 자리마다 이유가 다를 수 있어(시간 상한 · 검사 탈락) 모두 담음(겹치면 한 번)
+        why = "; ".join(dict.fromkeys(w for f in failed for w in f["why"]))
+        raise NoQuestionsError(f"만든 문제가 없음({why})" if why else "만든 문제가 없음")
     qs = [
         {
             "id": new_id(),
@@ -830,8 +846,9 @@ def _make_all(
     n: int,
     report: Progress,
     patient: bool = False,
-) -> tuple[list[tuple[int, Made]], list[JsonObject], int, int]:
-    """자리마다 동시에 문제를 만들어 (만든 문제(세트 순서), 못 만든 자리, 실패한 시도, 시도).
+) -> tuple[list[tuple[int, Made]], list[JsonObject], int, int, int]:
+    """자리마다 동시에 문제를 만들어 (만든 문제(세트 순서), 못 만든 자리, 실패한 시도, 시도,
+    실패 중 서버가 거절한 생성 호출).
 
     시간 상한에 아직 호출 중인 자리는 실패한 시도로 셉니다: 학교 LLM이 연결만 받고 답하지
     않으면 끝난 자리가 없어, 다시 시도하지 않고 0문제 세트로 끝났음(/code-review #95).
@@ -843,6 +860,7 @@ def _make_all(
     dry: set[int] = set()
     lock = threading.Lock()
     done = threading.Event()  # n개를 다 모았거나 돌려줌: 남은 자리는 다음 단계에서 멈춤
+    errors: list[BaseException] = []  # LlmError가 아닌 오류로 끝난 자리(guarded)
     backups = sorted(weight, key=lambda p: -weight[p])  # 못 만든 자리가 넘어갈 쪽
     slots = [p for p in sorted(share, key=lambda p: -share[p]) for _ in range(share[p])]
     # 여분 자리는 가장 무거운 쪽부터(못 만든 자리가 넘어가는 순서와 같음)
@@ -884,7 +902,7 @@ def _make_all(
         with lock:
             tried = [p] + [b for b in backups if b != p and b not in dry][:BACKUPS]
         last = (p, Made(why=["물을 개념이 남지 않음"]))
-        down = tries = 0
+        down = tries = rejected = 0
         for page in tried:
             if halt := stop(True):
                 last = (last[0], Made(why=[halt]))
@@ -912,7 +930,7 @@ def _make_all(
                 until, page, pages[page], types[k:] + types[:k], names, per_page[page],
                 seen, used, slot, here, stop,
             )  # fmt: skip
-            down, tries = down + r.down, tries + r.tries
+            down, tries, rejected = down + r.down, tries + r.tries, rejected + r.rejected
             last = (page, r)
             if r.question:  # accept가 세트에 넣음
                 break
@@ -922,14 +940,28 @@ def _make_all(
                 with lock:
                     dry.add(page)
         page, r = last
-        r.down, r.tries = down, tries
+        r.down, r.tries, r.rejected = down, tries, rejected
         return page, r
 
-    until = _Until(llm, done)  # 돌려준 뒤 남은 자리는 호출하지 않음
+    def guarded(slot: int, p: int) -> tuple[int, Made]:
+        """자리가 LlmError가 아닌 오류(학교 LLM 설정 오류 · 코드 오류)로 끝나면 그 자리에서 바로
+        멈춤 신호를 켬: 남은 자리도 같으므로 주 스레드가 알아채기 전에 다음 자리가 호출하지 않게
+        (Codex 리뷰 #264). 신호를 켜기 전에 오류를 남겨 둠: 주 스레드가 신호를 보고 먼저 빠져나오면
+        이 자리는 아직 도는 자리로 빠져 오류를 잃고 시간 상한으로 셈(Codex 재리뷰 #264)."""
+        try:
+            return one_slot(slot, p)
+        except LlmError:
+            raise
+        except BaseException as e:
+            errors.append(e)
+            done.set()
+            raise
+
+    until = _until(llm, done)  # 돌려준 뒤 남은 자리는 호출하지 않음
     pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="quiz-slot")
     futures: list[Future[tuple[int, Made]]] = []
     try:
-        futures = [pool.submit(one_slot, k, p) for k, p in enumerate(slots + spare)]
+        futures = [pool.submit(guarded, k, p) for k, p in enumerate(slots + spare)]
         shown = 0
         pending: set[Future[tuple[int, Made]]] = set(futures)
         while pending and not done.is_set() and (left := hard - _clock()) > 0:
@@ -946,8 +978,12 @@ def _make_all(
             made = list(taken)
             # 돌려줄 때 아직 도는 자리(시작하지 않은 자리는 아래에서 취소)
             running = {f for f in futures if f.running()}
-        # 도는 자리는 기다리지 않음: 다음 호출(_Until) · 단계(stop)에서 멈춤
+        # 도는 자리는 기다리지 않음: 다음 호출(_until) · 단계(stop)에서 멈춤
         pool.shutdown(wait=False, cancel_futures=True)
+    if (
+        errors
+    ):  # 자리가 LlmError가 아닌 오류로 끝남(guarded): 남은 자리도 같으므로 그대로 올림(#262)
+        raise errors[0]
     finished = [f.result() for f in futures if f.done() and not f.cancelled() and f not in running]
     ended = []
     for page, r in finished:
@@ -976,7 +1012,7 @@ def _make_all(
     stuck = len(running) if not made else 0
     down = sum(r.down for _, r in finished) + stuck
     tries = sum(r.tries for _, r in finished) + stuck
-    return out, failed, down, tries
+    return out, failed, down, tries, sum(r.rejected for _, r in finished)
 
 
 def _result(
