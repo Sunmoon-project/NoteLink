@@ -203,7 +203,12 @@ export function Avatar3D({
     let live = true;
     loadModel(id)
       .then((buf) => new GLTFLoader().parseAsync(buf, ''))
-      .then((g) => live && setModel({ id, root: g.scene }))
+      .then((g) => {
+        if (!live) return;
+        setModel({ id, root: g.scene });
+        // 전에 실패했던 모델을 다시 골라 이번에 읽었으면 2D에서 3D로 돌아온다
+        setFailedId((f) => (f === id ? null : f));
+      })
       .catch(() => {
         if (!live) return;
         setFailedId(id);
