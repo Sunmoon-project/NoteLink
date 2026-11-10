@@ -23,7 +23,7 @@ jest.mock('../features/tutor/avatar3d', () => {
 const mockApi = {
   content: { material: jest.fn(), ask: jest.fn() },
   ai: { job: jest.fn() },
-  shop: { myItems: jest.fn() },
+  shop: { myItems: jest.fn(), items: jest.fn() },
 };
 jest.mock('../lib/api', () => ({
   get api() {
@@ -139,6 +139,18 @@ describe('아바타 선생님 대화', () => {
     mockApi.shop.myItems.mockResolvedValue([
       { itemId: 'jihoo', itemCategory: 'avatar', isOwned: true, isEquipped: false },
       { itemId: 'bora', itemCategory: 'avatar', isOwned: true, isEquipped: true },
+    ]);
+    await renderScreen(<TutorScreen />);
+    expect(await screen.findByText('3D:bora')).toBeTruthy();
+  });
+
+  it('서버 상품 id(ObjectId)로 장착해도 같은 이름의 3D 모델을 쓴다', async () => {
+    const oid = '6650a1b2c3d4e5f601234567';
+    mockApi.shop.myItems.mockResolvedValue([
+      { itemId: oid, itemCategory: 'avatar', isOwned: true, isEquipped: true },
+    ]);
+    mockApi.shop.items.mockResolvedValue([
+      { _id: oid, category: 'avatar', name: '보라 아바타', assetUrl: 'https://cdn/x.png' },
     ]);
     await renderScreen(<TutorScreen />);
     expect(await screen.findByText('3D:bora')).toBeTruthy();
