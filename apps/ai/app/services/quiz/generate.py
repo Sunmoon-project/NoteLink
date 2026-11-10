@@ -272,6 +272,7 @@ class Made:
     down: int = 0  # 호출이 실패한 시도 수
     tries: int = 0
     rejected: int = 0  # down 중 서버가 요청을 거절한 생성 호출(LlmRejectedError, #262)
+    answered: bool = False  # 생성 호출이 한 번이라도 답을 받음(학교 LLM이 답함, #247)
 
 
 # ---------------------------------------------------------------- input
@@ -703,6 +704,7 @@ def gen_one(
             out.rejected += isinstance(e, LlmRejectedError)
             out.why = [str(e)]
             continue
+        out.answered = True
         raw = similar._draft(r)
         if raw is None:
             out.why = ["답 모양이 맞지 않음"]
@@ -921,6 +923,7 @@ def _make_all(
     done = threading.Event()  # n개를 다 모았거나 돌려줌: 남은 자리는 다음 단계에서 멈춤
     relaxed = False  # 마지막 단계: 이미 물은 개념도 다른 각도로(#247)
     errors: list[BaseException] = []  # LlmError가 아닌 오류로 끝난 자리(guarded)
+    slot_down: list[LlmError] = []  # 자리 밖으로 나온 LlmError(장애: 작업 처리기가 다시 시도)
     backups = sorted(weight, key=lambda p: -weight[p])  # 못 만든 자리가 넘어갈 쪽
     slots = [p for p in sorted(share, key=lambda p: -share[p]) for _ in range(share[p])]
     t0 = _clock()
@@ -988,6 +991,7 @@ def _make_all(
             again_ok = relaxed
         last = (p, Made(why=["물을 개념이 남지 않음"]))
         down = tries = rejected = 0
+        replied = False
         for page in tried:
             if halt := stop(True):
                 last = (last[0], Made(why=[halt]))
@@ -1023,6 +1027,7 @@ def _make_all(
                 seen, used, slot, here, stop,
             )  # fmt: skip
             down, tries, rejected = down + r.down, tries + r.tries, rejected + r.rejected
+            replied = replied or r.answered
             last = (page, r)
             if r.question:  # accept가 세트에 넣음
                 break
@@ -1035,7 +1040,7 @@ def _make_all(
                     if again_ok == relaxed:
                         dry.add(page)
         page, r = last
-        r.down, r.tries, r.rejected = down, tries, rejected
+        r.down, r.tries, r.rejected, r.answered = down, tries, rejected, replied
         return page, r
 
     shown = 0
@@ -1092,18 +1097,15 @@ def _make_all(
             for f in futures:
                 f.cancel()
             running = {f for f in futures if not f.done()}
-        # 오류로 끝난 자리는 guarded가 errors에 남겨 아래에서 한 곳으로 올림(/code-review #269)
-        finished = [
-            f.result()
-            for f in futures
-            if f.done()
-            and not f.cancelled()
-            and f not in running
-            and not ((e := f.exception()) is not None and not isinstance(e, LlmError))
-        ]
+        # 오류로 끝난 자리는 결과에서 빼고 아래에서 한 곳으로 올림: 설정 · 코드 오류는 guarded가
+        # errors에, 자리 밖으로 나온 LlmError는 slot_down에 남김. 그사이 n개를 다 모았으면 세트를
+        # 버리지 않음(/code-review #269)
+        ended = [f for f in futures if f.done() and not f.cancelled() and f not in running]
+        slot_down.extend(e for f in ended if isinstance(e := f.exception(), LlmError))
+        finished = [f.result() for f in ended if f.exception() is None]
         cut = [(p, Made(why=[TIMEOUT])) for f, p in zip(futures, at, strict=True)
                if f in running or f.cancelled()]  # fmt: skip
-        return finished, cut, len(finished) + len(running)
+        return finished, cut, len(ended) + len(running)
 
     def not_made(
         finished: list[tuple[int, Made]], cut: list[tuple[int, Made]]
@@ -1125,11 +1127,11 @@ def _make_all(
     try:
         while True:
             finished, cut, started = one_round(at, deadline, hard)
-            answered = answered or any(r.tries > r.down for _, r in finished)
+            answered = answered or any(r.answered for _, r in finished)
             rounds += 1
             missing = n - len(taken)
             now = _clock()
-            if errors:  # 설정 · 코드 오류: 다음 판도 같음(아래에서 그대로 올림)
+            if errors or slot_down:  # 설정 · 코드 오류 · 장애: 다음 판도 같음(아래에서 올림)
                 break
             # 남은 시간이 한 자리(생성 · 검사 · 풀기)에 모자라면 새 판을 띄우지 않음. 문제 수가
             # 적으면 첫 판 상한이 기준(1문제: 23초)
@@ -1179,6 +1181,8 @@ def _make_all(
     # 다른 자리가 n개를 다 모았으면 만든 세트를 버리지 않음(/code-review #269)
     if errors and len(made) < n:
         raise errors[0]
+    if slot_down and len(made) < n:
+        raise slot_down[0]
     out: list[tuple[int, Made]] = []
     for i, (page, r) in enumerate(made):
         # 정답 자리는 세트 안 순서로(여분 자리 번호로 두면 몰림)
