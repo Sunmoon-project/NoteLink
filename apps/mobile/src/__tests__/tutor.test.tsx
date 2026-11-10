@@ -27,11 +27,14 @@ jest.mock('../features/tutor/avatar3d', () => {
   return { Avatar3D: ({ avatarId }: { avatarId: string }) => <T>{`3D:${avatarId}`}</T> };
 });
 
+// 기기 저장소는 메모리로(테스트마다 비움)
+const mockSecure = new Map<string, string>();
 jest.mock('expo-secure-store', () => ({
-  getItemAsync: jest.fn(async () => null),
-  setItemAsync: jest.fn(async () => undefined),
+  getItemAsync: jest.fn(async (k: string) => mockSecure.get(k) ?? null),
+  setItemAsync: jest.fn(async (k: string, v: string) => void mockSecure.set(k, v)),
   deleteItemAsync: jest.fn(),
 }));
+beforeEach(() => mockSecure.clear());
 
 const mockApi = {
   content: { material: jest.fn(), ask: jest.fn() },
@@ -190,6 +193,25 @@ describe('아바타 선생님 대화', () => {
     ]);
     await renderScreen(<TutorScreen />);
     expect(await screen.findByText('3D:bora')).toBeTruthy();
+  });
+
+  it('판매가 끝나 상품 목록에서 빠진 보유 아바타도 전에 본 3D 모델을 쓴다', async () => {
+    mockSecure.clear();
+    const oid = '6650a1b2c3d4e5f601234568';
+    mockApi.shop.myItems.mockResolvedValue([
+      { itemId: oid, itemCategory: 'avatar', isOwned: true, isEquipped: true },
+    ]);
+    mockApi.shop.items.mockResolvedValue([
+      { _id: oid, category: 'avatar', name: '지후 아바타', assetUrl: 'https://cdn/j.png' },
+    ]);
+    const first = await renderScreen(<TutorScreen />);
+    expect(await screen.findByText('3D:jihoo')).toBeTruthy();
+    await waitFor(() => expect(mockSecure.size).toBe(1));
+    await first.unmount();
+    // 판매 중지: 서버 상품 목록(판매 중인 것만)에 없다
+    mockApi.shop.items.mockResolvedValue([]);
+    await renderScreen(<TutorScreen />);
+    expect(await screen.findByText('3D:jihoo')).toBeTruthy();
   });
 
   it('퀴즈처럼 다른 화면이 위에 쌓이면 보이지 않는 3D 아바타를 내린다', async () => {
