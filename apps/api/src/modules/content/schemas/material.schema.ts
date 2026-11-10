@@ -120,6 +120,14 @@ export class Material {
   @Prop({ type: [String], default: [] })
   keywords: string[];
 
+  /**
+   * 퀴즈 처리기가 뽑은 개념 이름(apps/ai services/quiz/generate.py 결과 concepts). 다음 퀴즈 입력에 넣어
+   * 처리기가 개념을 다시 뽑지 않게 한다(#134 · #274). 앱 계약(packages/shared Material)에는 없는 서버 값.
+   * 노트 글을 고치는 곳(노트 API)이 생기면 그때 비운다
+   */
+  @Prop({ type: [String], default: [] })
+  concepts: string[];
+
   @Prop({ type: [BookmarkSchema], default: [] })
   bookmarks: Bookmark[];
 

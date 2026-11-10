@@ -19,7 +19,7 @@ import { api } from '@/lib/api';
 import { ApiError } from '@/lib/api/http';
 import { C, ICON } from '@/theme';
 import { Avatar3D, type Mood } from './avatar3d';
-import { useEquippedAvatar } from './buddy';
+import { useEquippedAvatar, useFocused } from './buddy';
 
 type Msg = {
   id: number;
@@ -92,6 +92,7 @@ function TutorStage({
   compact: boolean;
 }) {
   const [w, setW] = useState(0);
+  const focused = useFocused();
   const p = useSharedValue(compact ? 1 : 0);
   useEffect(() => {
     p.set(
@@ -137,7 +138,8 @@ function TutorStage({
       onLayout={(e) => setW(e.nativeEvent.layout.width)}
     >
       <Animated.View className="absolute top-2" style={[{ left: (w - BIG) / 2 }, fly]}>
-        <Avatar3D mood={mood} avatarId={avatarId} size={BIG} />
+        {/* 퀴즈처럼 다른 화면이 위에 쌓이면 3D를 내려 그리기 반복을 멈춘다 */}
+        {focused && <Avatar3D mood={mood} avatarId={avatarId} size={BIG} />}
       </Animated.View>
       <Animated.View className="absolute inset-x-0 bottom-2.5 items-center" style={bigText}>
         <Swap k={mood}>

@@ -44,7 +44,10 @@ const refuse = (reason: 'off_topic' | 'unsafe'): NoteAskResult => ({
   refs: [],
 });
 
-const OVERVIEW = /핵심|요약|정리|설명|뭐|무엇|알려/;
+// 낱말이 하나도 안 겹쳐도 "핵심 알려 줘"처럼 노트 전체를 묻는 말뿐이면 첫 부분을 읽어 준다.
+// "오늘 날씨 알려 줘"처럼 다른 낱말이 섞이면 자료 밖 질문으로 거절한다
+const OVERVIEW = /^(핵심|요약|정리|설명|뭐|무엇|무슨|알려|노트|자료|내용|전체|전부|이거|이것|그거|좀|간단|주세요|줘|해)/;
+const overview = (ws: string[]) => ws.length > 0 && ws.every((w) => OVERVIEW.test(w));
 const sentences = (t: string, n: number) =>
   (t.match(/[^.!?。]+[.!?。]?/g) ?? [t])
     .slice(0, n)
@@ -68,7 +71,7 @@ export function localAnswer(
     return { p, score: ws.filter((w) => hit(text, w)).length };
   });
   const best = scored.reduce((a, b) => (b.score > a.score ? b : a));
-  if (!best.score && !OVERVIEW.test(question)) return refuse('off_topic');
+  if (!best.score && !overview(ws)) return refuse('off_topic');
   const { heading, body } = best.score ? best.p : all[0]!;
   return {
     answerable: true,
