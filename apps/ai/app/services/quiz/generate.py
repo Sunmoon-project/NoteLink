@@ -1112,8 +1112,11 @@ def _make_all(
             for f in futures:
                 f.cancel()
             running = {f for f in futures if not f.done()}
+        # 오류로 끝난 자리는 guarded가 errors에 남겨 아래에서 한 곳으로 올림(/code-review #269)
         finished = [
-            f.result() for f in futures if f.done() and not f.cancelled() and f not in running
+            f.result()
+            for f in futures
+            if f.done() and not f.cancelled() and f not in running and f.exception() is None
         ]
         cut = [(p, Made(why=[TIMEOUT])) for f, p in zip(futures, at, strict=True)
                if f in running or f.cancelled()]  # fmt: skip
@@ -1187,9 +1190,9 @@ def _make_all(
             done.set()
             made = list(taken)
         pool.shutdown(wait=False, cancel_futures=True)
-    if (
-        errors
-    ):  # 자리가 LlmError가 아닌 오류로 끝남(guarded): 남은 자리도 같으므로 그대로 올림(#262)
+    # 자리가 LlmError가 아닌 오류로 끝남(guarded): 남은 자리도 같으므로 그대로 올림(#262). 그사이
+    # 다른 자리가 n개를 다 모았으면 만든 세트를 버리지 않음(/code-review #269)
+    if errors and len(made) < n:
         raise errors[0]
     out: list[tuple[int, Made]] = []
     for i, (page, r) in enumerate(made):
