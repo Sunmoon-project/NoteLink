@@ -150,6 +150,25 @@ function serverObjectId(id: string, name: string): Types.ObjectId {
   return new Types.ObjectId(id);
 }
 
+/** 끝난 미리 만들기와 그때 넣은 노트 글(같은 글일 때만 결과를 퀴즈로 쓴다) */
+export interface FinishedPregen {
+  job: AppAiJob;
+  pages: { pageNo: number; ocrText: string }[];
+}
+
+/** 미리 만들기 입력의 노트 글(input.material.pages). 모양이 다른 쪽은 뺀다 */
+function inputPages(input: unknown): { pageNo: number; ocrText: string }[] {
+  const material = (input as { material?: { pages?: unknown } } | null | undefined)?.material;
+  if (!Array.isArray(material?.pages)) return [];
+  return material.pages.filter(
+    (p): p is { pageNo: number; ocrText: string } =>
+      typeof p === 'object' &&
+      p !== null &&
+      typeof (p as { pageNo?: unknown }).pageNo === 'number' &&
+      typeof (p as { ocrText?: unknown }).ocrText === 'string',
+  );
+}
+
 /** 처리기가 아직 잡고 있지 않음: 잠금이 없거나 지났다(apps/ai jobs.py 잠금) */
 const unlocked = (now: Date) => [{ lockedUntil: null }, { lockedUntil: { $lte: now } }];
 
@@ -372,5 +391,53 @@ export class AiJobsService {
       )
       .lean<AiJobRow>();
     return row ? toAppJob(row) : null;
+  }
+
+  /** 같은 대상의 아직 끝나지 않은 미리 만들기(가장 최근 것). 바꾸지 않고 읽기만 한다. 없으면 null */
+  async activePregen(
+    userId: string,
+    targetType: string,
+    targetId: string,
+  ): Promise<AppAiJob | null> {
+    const row = await this.jobs
+      .findOne(
+        {
+          userId: serverObjectId(userId, 'userId'),
+          type: PREGEN_TYPE,
+          targetType,
+          targetId: serverObjectId(targetId, 'targetId'),
+          status: { $in: ACTIVE },
+        },
+        APP_PROJECTION,
+        { sort: { createdAt: -1 } },
+      )
+      .lean<AiJobRow>();
+    return row ? toAppJob(row) : null;
+  }
+
+  /**
+   * 같은 대상의 가장 최근 미리 만들기가 성공으로 끝났으면 그 작업과 넣었던 노트 글(#274).
+   * 퀴즈 세트를 만드는 쪽이 노트 글이 그대로인지 · 이미 세트로 썼는지 보고 결과를 바로 쓴다.
+   * 가장 최근 것만 본다: 그보다 오래된 결과는 그 사이 새로 넣은 미리 만들기보다 낡았다
+   */
+  async finishedPregen(
+    userId: string,
+    targetType: string,
+    targetId: string,
+  ): Promise<FinishedPregen | null> {
+    const row = await this.jobs
+      .findOne(
+        {
+          userId: serverObjectId(userId, 'userId'),
+          type: PREGEN_TYPE,
+          targetType,
+          targetId: serverObjectId(targetId, 'targetId'),
+        },
+        { checkpoint: 0 },
+        { sort: { createdAt: -1 } },
+      )
+      .lean<AiJobRow & { input?: unknown }>();
+    if (!row || row.status !== 'succeeded') return null;
+    return { job: toAppJob(row), pages: inputPages(row.input) };
   }
 }

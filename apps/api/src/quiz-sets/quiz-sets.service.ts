@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, mongo, Types } from 'mongoose';
@@ -19,10 +21,10 @@ export const VALIDATION_FAILED = 'VALIDATION_FAILED';
 export const GENERATE_TYPE = 'quiz_generate';
 /**
  * 세트 하나의 문제 수. 처리기 입력 size로 보낸다(보내지 않으면 처리기 기본 10문제).
- * 처리기는 한 문제도 못 만들면 작업을 실패로 끝낸다(generate.py run). 1문제 이상이면 모자라도 지금은
- * 작업이 성공하고 여기서도 만든 만큼 ready로 둔다. 모자란 결과를 채우거나 실패로 끝내는 일은 처리기
- * 몫이다(#247): 앱은 작업 상태로 성공 · 다시 시도를 고르므로 여기서 세트만 failed로 두면 빈 성공
- * 화면이 된다(/code-review)
+ * 처리기는 size개를 다 만들지 못하면 모자란 자리를 다시 돌리고, 그래도 모자라면 작업을 실패로
+ * 끝낸다(generate.py _make_all · run, #247). 모자란 결과를 실패로 끝내는 일은 처리기 몫이다: 앱은
+ * 작업 상태로 성공 · 다시 시도를 고르므로 여기서 세트만 failed로 두면 빈 성공 화면이 된다
+ * (/code-review). 그래서 여기서는 받은 만큼 ready로 둔다
  */
 export const QUIZ_SET_SIZE = 5;
 const DUPLICATE_KEY = 11000;
@@ -95,6 +97,7 @@ export interface QuizSetRow {
   questionCount?: number;
   questions?: QuestionRow[];
   jobId?: Types.ObjectId | null;
+  deletedAt?: Date | null;
   createdAt: Date;
 }
 
@@ -108,6 +111,7 @@ interface MaterialRow {
   folderId: Types.ObjectId;
   title: string;
   pages?: PageRow[];
+  concepts?: string[];
 }
 
 interface AttemptRow {
@@ -210,6 +214,15 @@ function objectId(id: string, what: string): Types.ObjectId {
   return new Types.ObjectId(id);
 }
 
+/**
+ * 미리 만들기로 만든 세트를 지웠을 때 이어받는 새 세트의 id(setIdFor). 지운 세트의 id에서 늘 같은 값이
+ * 나와 동시에 이어받는 요청들이 같은 id를 쓴다
+ */
+export function nextSetId(id: Types.ObjectId): Types.ObjectId {
+  const digest = createHash('sha256').update(`quiz-set-after:${id.toHexString()}`).digest();
+  return new Types.ObjectId(digest.subarray(0, 12).toString('hex'));
+}
+
 const isDuplicateKey = (e: unknown) =>
   typeof e === 'object' && e !== null && (e as { code?: unknown }).code === DUPLICATE_KEY;
 
@@ -232,6 +245,8 @@ export class QuizSetsService {
    * - 같은 노트에 만드는 중인 세트가 있으면 새로 만들지 않고 그 세트를 돌려준다(두 번 눌러도 한 번만 만듦).
    *   거의 동시에 두 번 와도 「노트마다 만드는 중인 세트 하나」 색인이 둘째를 막는다
    * - 노트의 미리 만들기(quiz_pregen)가 아직 끝나지 않았으면 새 작업 대신 이어받는다(#134 · #138)
+   * - 미리 만들기가 이미 끝났고 아직 세트로 쓰지 않았으면 새 작업 없이 그 결과로 바로 ready 세트를
+   *   만든다(#274). 응답의 작업은 그 미리 만들기(succeeded)라 앱은 첫 조회에서 바로 퀴즈로 간다
    */
   async create(
     userId: string,
@@ -278,9 +293,12 @@ export class QuizSetsService {
       });
     }
 
-    const setId = new Types.ObjectId();
+    const takenOver = await this.jobs.takeOverPregen(userId, 'material', material._id.toString());
+    const reused = takenOver ? null : await this.unusedPregen(userId, owner, material, pages);
+    const setId = await this.setIdFor(takenOver ?? reused);
     const job =
-      (await this.jobs.takeOverPregen(userId, 'material', material._id.toString())) ??
+      takenOver ??
+      reused ??
       (await this.jobs.enqueue({
         type: GENERATE_TYPE,
         userId,
@@ -305,16 +323,115 @@ export class QuizSetsService {
         // 고유 색인(quiz-set.schema.ts)이 deletedAt이 null인 세트만 센다
         deletedAt: null,
       });
-      return { quizSet: toAppSet(created.toObject<QuizSetRow>(), job.progress), job };
+      const row = created.toObject<QuizSetRow>();
+      if (!reused) return { quizSet: toAppSet(row, job.progress), job };
+      // 끝난 작업이라 결과를 바로 옮겨 ready로(만드는 중으로 넣어 같은 노트의 고유 색인도 거친다)
+      const synced = await this.sync(row);
+      return { quizSet: synced.quizSet, job: synced.job ?? job };
     } catch (e) {
       // 세트를 저장하지 못했으면 넣은 작업은 거둔다(이어받은 미리 만들기는 이어받기만 풀린다).
       // 같은 노트의 세트를 다른 요청이 먼저 만들었으면 그 세트를 돌려준다. 이때 이어받은 미리 만들기는
-      // 먼저 만든 세트도 같은 작업을 이어받았으니 그대로 둔다
+      // 먼저 만든 세트도 같은 작업을 이어받았으니 그대로 둔다. 끝난 미리 만들기는 거둘 것이 없다
       const duplicate = isDuplicateKey(e);
-      if (!(duplicate && job.type === PREGEN_TYPE)) await this.jobs.cancel(userId, job._id);
+      if (!reused && !(duplicate && job.type === PREGEN_TYPE)) {
+        await this.jobs.cancel(userId, job._id);
+      }
       if (!duplicate) throw e;
+      if (job.type === PREGEN_TYPE) {
+        // 같은 미리 만들기로 다른 요청이 먼저 세트를 만들었으면(이어받기 · 끝난 결과 쓰기 어느 쪽이든 같은
+        // id) 그 세트를 돌려준다. 그 사이 작업이 끝났으면 결과를 옮긴 ready 세트다(Codex 리뷰 #276)
+        const first = await this.sets
+          .findOne({ _id: setId, ownerId: owner, deletedAt: null })
+          .lean<QuizSetRow>();
+        if (first) {
+          const synced = await this.sync(first);
+          return { quizSet: synced.quizSet, job: synced.job ?? job };
+        }
+      }
       return this.generatingSet(owner, material._id);
     }
+  }
+
+  /**
+   * 새 세트의 id. 미리 만들기로 만드는 세트는(이어받기든 끝난 결과 쓰기든) 그 작업 id를 쓴다: 한 미리
+   * 만들기로 세트가 둘 생기지 않게 _id 고유 색인이 막는다. 이어받은 요청이 세트를 넣기 전에 작업이 끝나
+   * 다른 요청이 그 결과로 세트를 먼저 만들어도, 늦은 쪽은 같은 id에 막혀 먼저 만든 세트를 돌려준다
+   * (Codex 리뷰 #276). 그 id의 세트를 지웠으면 그 id에서 정해지는 다음 id(nextSetId): 지운 세트는
+   * 되살리지 않고, 다시 도는 미리 만들기를 새 세트가 이어받는다. 다음 id도 요청마다 같아서, 지운 뒤
+   * 이어받는 요청들도 같은 id에 막혀 세트 하나를 같이 쓴다(Codex 재리뷰 #276). 지우지 않은 세트가
+   * 있으면 그 id로 넣어 막히게 둔다(먼저 만든 세트를 돌려줌)
+   */
+  private async setIdFor(pregen: AppAiJob | null): Promise<Types.ObjectId> {
+    if (!pregen) return new Types.ObjectId();
+    let id = new Types.ObjectId(pregen._id);
+    // 지운 세트마다 한 칸씩 간다. 칸마다 세트가 있어야 넘어가므로 지운 세트 수만큼만 돈다
+    while ((await this.sets.findOne({ _id: id }).lean<QuizSetRow>())?.deletedAt) {
+      id = nextSetId(id);
+    }
+    return id;
+  }
+
+  /**
+   * 아직 세트로 쓰지 않은 끝난 미리 만들기(#274). 넣었던 노트 글이 지금과 같고, 쓸 문제가 있고,
+   * 그 작업을 가리키는 세트가 없을 때만(지운 세트 포함: 지운 퀴즈를 되살리지 않는다).
+   * 이어받아 만든 세트도 jobId로 그 작업을 가리키므로 같은 결과를 두 번 쓰지 않는다
+   */
+  private async unusedPregen(
+    userId: string,
+    owner: Types.ObjectId,
+    material: MaterialRow,
+    pages: WorkerPage[],
+  ): Promise<AppAiJob | null> {
+    const found = await this.jobs.finishedPregen(userId, 'material', material._id.toString());
+    if (!found || !samePages(found.pages, pages) || !readyUpdate(found.job)) return null;
+    const jobId = new Types.ObjectId(found.job._id);
+    const used = await this.sets
+      .findOne({ ownerId: owner, $or: [{ _id: jobId }, { jobId }] })
+      .lean<QuizSetRow>();
+    return used ? null : found.job;
+  }
+
+  /**
+   * 노트의 첫 맞춤 퀴즈를 미리 만드는 작업(quiz_pregen)을 넣는다(#134 · #274). 노트 정리가 끝나면
+   * 노트 API가 부른다(아직 NestJS에 노트 API가 없어 부르는 곳은 그때 붙인다).
+   * 처리기는 사용자 작업에 LLM 차례를 양보하며 안정적으로 만들고, 사용자가 그 사이 퀴즈를 요청하면
+   * create가 이어받거나(도는 중) 결과를 바로 쓴다(끝남).
+   * 넣지 않을 때: 물을 수 있는 쪽이 없음(null) · 도는 미리 만들기나 아직 쓰지 않은 결과가 있음(그 작업) ·
+   * 이 노트에 세트가 이미 있음(null, 첫 세트만 미리 만든다).
+   * 알려진 한계: 확인과 넣기가 따로라 같은 노트에 거의 동시에 두 번 부르면 둘 다 넣을 수 있다
+   * (노트 API는 정리가 끝날 때 한 번 부른다)
+   */
+  async pregenerate(userId: string, materialId: string): Promise<AppAiJob | null> {
+    const owner = objectId(userId, '노트');
+    const material = await this.materials
+      .findOne({ _id: objectId(materialId, '노트'), ownerId: owner, deletedAt: null })
+      .lean<MaterialRow>();
+    if (!material) throw notFound('노트');
+    const pages = textPages(material.pages);
+    if (!pages.some(askable)) return null;
+    const pending =
+      (await this.jobs.activePregen(userId, 'material', materialId)) ??
+      (await this.unusedPregen(userId, owner, material, pages));
+    if (pending) return pending;
+    const hasSet = await this.sets
+      .findOne({ ownerId: owner, materialId: material._id, deletedAt: null })
+      .lean<QuizSetRow>();
+    if (hasSet) return null;
+    return this.jobs.enqueue({
+      type: PREGEN_TYPE,
+      userId,
+      targetType: 'material',
+      targetId: materialId,
+      // 첫 세트는 노트 내용만으로 만든다(지난 세트 · 풀이가 없는 새 노트, #134)
+      input: fitInput({
+        day: seoulDay(new Date()),
+        size: QUIZ_SET_SIZE,
+        material: materialInput(material, pages),
+        sets: [],
+        attempts: [],
+        notes: {},
+      }),
+    });
   }
 
   /** 내 퀴즈 세트(최근 것부터). 만드는 중인 세트는 작업 결과를 먼저 옮긴다 */
@@ -378,6 +495,9 @@ export class QuizSetsService {
     update: Record<string, unknown>,
     job: AppAiJob | null,
   ): Promise<{ quizSet: AppQuizSet; job: AppAiJob | null }> {
+    // 처리기가 뽑은 개념 이름은 세트를 ready로 바꾸기 전에 노트에 남긴다: 저장이 실패하면 세트도 그대로라
+    // 다음 조회가 다시 옮기며 다시 저장한다(Codex 리뷰 #276). 같이 옮기는 요청이 모두 저장해도 같은 값
+    if (update['status'] === 'ready' && job) await this.saveConcepts(row, job);
     const updated = await this.sets
       .findOneAndUpdate(
         { _id: row._id, status: row.status },
@@ -388,6 +508,23 @@ export class QuizSetsService {
     const current =
       updated ?? (await this.sets.findOne({ _id: row._id }).lean<QuizSetRow>()) ?? row;
     return { quizSet: toAppSet(current), job };
+  }
+
+  /**
+   * 처리기가 이번에 뽑은 개념 이름(result.concepts)을 노트에 저장한다(#134 · #274). 다음 퀴즈 입력에
+   * 넣으면 처리기가 개념 뽑기(쪽마다 LLM 호출, 70~90초)를 건너뛴다. 처리기는 입력에 개념이 있으면
+   * 새로 뽑지 않고 concepts를 null로 돌려주므로(generate.py run의 new_names), 그때는 노트 값을 그대로 둔다
+   */
+  private async saveConcepts(row: QuizSetRow, job: AppAiJob): Promise<void> {
+    const names = job.result?.['concepts'];
+    if (!row.materialId || !Array.isArray(names) || names.length === 0) return;
+    if (!names.every((n): n is string => typeof n === 'string' && n.trim() !== '')) return;
+    await this.materials
+      .findOneAndUpdate(
+        { _id: row.materialId, ownerId: row.ownerId, deletedAt: null },
+        { $set: { concepts: names } },
+      )
+      .lean();
   }
 
   private async findJob(row: QuizSetRow): Promise<AppAiJob | null> {
@@ -402,8 +539,8 @@ export class QuizSetsService {
   /**
    * 처리기 입력(apps/ai services/quiz/generate.py 「input」). 처리기는 다른 컬렉션을 읽지 않으므로
    * 이 노트 글 · 사용자의 다른 세트와 풀이 · 그 세트가 가리키는 노트 글을 모두 담는다.
-   * 노트의 개념 이름(concepts) · 노트 조각(chunks)은 아직 저장하는 곳이 없어 넣지 않는다
-   * (처리기가 개념을 새로 뽑는다).
+   * 노트의 개념 이름(concepts)은 지난 퀴즈 · 미리 만들기가 저장했으면 넣는다(처리기가 다시 뽑지 않음).
+   * 노트 조각(chunks)은 아직 저장하는 곳이 없어 넣지 않는다.
    */
   private async generateInput(
     owner: Types.ObjectId,
@@ -440,10 +577,18 @@ export class QuizSetsService {
           })
           .lean<MaterialRow[]>()
       : [];
+    // 개념 이름은 다시 읽는다: create가 노트를 읽은 뒤 같은 노트의 직전 세트를 옮기며(generatingSet)
+    // 개념을 저장했을 수 있다(Codex 리뷰 #276)
+    const fresh = await this.materials
+      .findOne({ _id: material._id, ownerId: owner }, { concepts: 1 })
+      .lean<Pick<MaterialRow, 'concepts'>>();
     return fitInput({
       day: seoulDay(new Date()),
       size: QUIZ_SET_SIZE,
-      material: { id: material._id.toString(), title: material.title, pages },
+      material: materialInput(
+        { ...material, concepts: fresh?.concepts ?? material.concepts },
+        pages,
+      ),
       sets: withNote.map((s) => ({
         id: s._id.toString(),
         materialId: s.materialId!.toString(),
@@ -464,12 +609,32 @@ export class QuizSetsService {
 }
 
 type WorkerPage = { pageNo: number; ocrText: string };
+type WorkerMaterial = { id: string; title: string; pages: WorkerPage[]; concepts?: string[] };
+
+/** 처리기 입력의 노트(generate.py _material). 개념 이름은 저장된 것이 있을 때만 */
+function materialInput(material: MaterialRow, pages: WorkerPage[]): WorkerMaterial {
+  const concepts = (material.concepts ?? []).filter((c) => typeof c === 'string' && c.trim());
+  return {
+    id: material._id.toString(),
+    title: material.title,
+    pages,
+    ...(concepts.length > 0 ? { concepts } : {}),
+  };
+}
+
+/** 미리 만들기에 넣었던 노트 글이 지금과 같은지(쪽 번호 · 글이 모두 같음) */
+function samePages(a: WorkerPage[], b: WorkerPage[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((p, i) => p.pageNo === b[i]!.pageNo && p.ocrText === b[i]!.ocrText)
+  );
+}
 
 /** 처리기 입력(apps/ai services/quiz/generate.py 「input」) */
 export interface WorkerInput extends Record<string, unknown> {
   day: string;
   size: number;
-  material: { id: string; title: string; pages: WorkerPage[] };
+  material: WorkerMaterial;
   /** 최근 것부터 */
   sets: { id: string; materialId: string; questions: Record<string, unknown>[] }[];
   attempts: { quizSetId: string }[];
