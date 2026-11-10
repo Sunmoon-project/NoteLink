@@ -2,40 +2,12 @@ import type { Model } from 'mongoose';
 import { Types } from 'mongoose';
 
 import type { AiJobDocument } from '../../src/modules/quiz/schemas/ai-job.schema.js';
+import { matches, query } from './fake-collection.js';
 
 type Row = Record<string, unknown> & { _id: Types.ObjectId; createdAt: Date; updatedAt: Date };
 type Filter = Record<string, unknown>;
 type Update = { $set?: Record<string, unknown>; $unset?: Record<string, unknown> };
 type Options = { returnDocument?: 'after'; sort?: { createdAt: -1 } };
-
-const same = (a: unknown, b: unknown) =>
-  a instanceof Types.ObjectId || b instanceof Types.ObjectId ? String(a) === String(b) : a === b;
-
-/** Mongoose 질의처럼 `.lean()`으로 결과를 받는다 */
-const query = <T>(value: T) => ({ lean: () => Promise.resolve(value) });
-
-type Ops = { $in?: unknown[]; $lte?: Date; $gt?: Date; $lt?: number };
-const isOps = (want: unknown): want is Ops =>
-  want !== null && typeof want === 'object' && !(want instanceof Types.ObjectId);
-const time = (v: unknown) => (v instanceof Date ? v.getTime() : NaN);
-
-/**
- * 서비스가 넘긴 조건을 그대로 적용한다(같음 · $in · $lte · $gt · $or). 조건이 빠지면 테스트가 잡아낸다.
- * MongoDB처럼 `null` 조건은 필드가 없는 문서에도 맞는다
- */
-function matches(row: Row, filter: Filter): boolean {
-  return Object.entries(filter).every(([key, want]) => {
-    if (key === '$or') return (want as Filter[]).some((f) => matches(row, f));
-    const value = row[key];
-    if (want === null) return value === null || value === undefined;
-    if (!isOps(want)) return same(value, want);
-    if (want.$in) return want.$in.some((w) => same(value, w));
-    if (want.$lte) return time(value) <= want.$lte.getTime();
-    if (want.$gt) return time(value) > want.$gt.getTime();
-    if (want.$lt !== undefined) return typeof value === 'number' && value < want.$lt;
-    return false;
-  });
-}
 
 export const PAST = new Date(Date.now() - 60_000);
 export const LATER = new Date(Date.now() + 10 * 60_000);

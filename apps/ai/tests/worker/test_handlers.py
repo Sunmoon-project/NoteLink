@@ -9,7 +9,7 @@ from app.clients.llm import LlmError
 from app.worker import handlers
 from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobStore
-from app.worker.runner import run_once
+from app.worker.runner import JobInputError, run_once
 from tests.fakes import FakeLlm
 from tests.services.quiz.test_review import happy_llm, job_input
 
@@ -115,6 +115,17 @@ def test_quiz_generate_and_pregen_are_registered(
     assert llm.backgrounded is background  # 미리 만들기만 LLM 차례를 양보(#138)
     if background:  # 사용자가 이어받았는지는 그 작업의 report로 봄
         assert llm.awaited is not None and llm.awaited() is False
+
+
+def test_no_questions_fails_with_a_code_and_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 0문제 결과로 성공하지 않고 코드를 붙여 바로 실패(#175). 일반 입력 오류는 코드 없음
+    def fake_run(llm: Any, inp: Any, report: Any) -> dict[str, Any]:
+        raise handlers.generate.NoQuestionsError("만든 문제가 없음(검사 탈락)")
+
+    monkeypatch.setattr(handlers, "_llm", lambda: FakeLlm())
+    with pytest.raises(JobInputError) as e:
+        handlers._handler(fake_run)({}, StubReport(False))
+    assert (e.value.code, str(e.value)) == ("NO_QUESTIONS", "만든 문제가 없음(검사 탈락)")
 
 
 def test_only_pregen_runs_in_the_background_lane() -> None:

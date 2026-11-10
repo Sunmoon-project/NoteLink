@@ -64,10 +64,11 @@ export const AI_JOB_FAILED = 'AI_JOB_FAILED';
 
 /**
  * 처리기가 원인 코드를 붙인 오류: '<코드>: <원인>'(apps/ai runner.py JobInputError).
- * 앱이 아는 코드만 그대로 보낸다(지금은 녹음 정리 apps/ai services/recording/job.py). 새 코드를
+ * 앱이 아는 코드만 그대로 보낸다(녹음 정리 apps/ai services/recording/job.py, 맞춤 퀴즈를 한 문제도
+ * 만들지 못함 services/quiz/generate.py NoQuestionsError). 새 코드를
  * 처리기에 더하면 여기에도 더한다. 원인 문구는 처리기 내부 내용이 섞일 수 있어 보내지 않는다
  */
-const APP_ERROR_CODES = new Set(['NO_SPEECH', 'INVALID_FILE']);
+const APP_ERROR_CODES = new Set(['NO_SPEECH', 'INVALID_FILE', 'NO_QUESTIONS']);
 const CODED_ERROR = /^([A-Z][A-Z0-9_]*): /;
 
 /**
@@ -163,9 +164,20 @@ export class AiJobsService {
   /**
    * 아직 끝나지 않은 작업을 canceled로 바꾼다. 처리 중이면 처리기가 다음에 쓸 때 알아채고 결과를 버린다.
    * 이미 끝난 작업(succeeded · failed · canceled)은 그대로 둔다(앱이 두 번 눌러도 같은 결과).
+   * 미리 만들기(quiz_pregen)는 지우지 않고 이어받기만 푼다(awaited=false): 사용자가 기다리기를
+   * 그만둔 것이라, 처리기가 뒤에서 마저 만들어 두면 그 노트의 퀴즈 세트가 나중에 ready가 된다.
+   * 여러 번 불러도 같다(앱이 두 번 취소해도 뒤에서 만들던 작업은 남는다, Codex 리뷰 #236).
    */
   async cancel(userId: string, jobId: string): Promise<void> {
     const filter = { _id: objectId(jobId), userId: objectId(userId) };
+    const pregen = await this.jobs
+      .findOneAndUpdate(
+        { ...filter, type: PREGEN_TYPE, status: { $in: ACTIVE } },
+        { $set: { awaited: false } },
+        { projection: { _id: 1 } },
+      )
+      .lean();
+    if (pregen) return;
     const row = await this.jobs
       .findOneAndUpdate(
         { ...filter, status: { $in: ACTIVE } },
