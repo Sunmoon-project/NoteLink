@@ -69,7 +69,9 @@ size개를 다 만들지 못하면 짧은 결과로 끝내지 않습니다(앱�
 #175 · #247).
   - 물을 글이 없음: 글이 없거나 MIN_LINES줄 이상인 쪽이 없음. LLM을 부르기 전에 InputError
     (바로 실패)
-  - LLM 장애: 마지막 판의 생성 호출이 모두 실패함. LlmError로 작업 처리기가 나중에 다시 시도
+  - LLM 장애: 한 문제도 못 만들었고 마지막 판의 생성 호출이 모두 실패함(응답 없음 포함). LlmError로
+    작업 처리기가 나중에 다시 시도. 문제를 만든 뒤의 장애는 받은 문제를 버리고 처음부터 다시 돌리지
+    않게 아래 NoQuestionsError로
   - 그 밖(초안이 탈락 · 물을 개념이 모자람 · 시간 상한): NoQuestionsError(바로 실패, 코드
     NO_QUESTIONS, 'k/n문제만 만듦(이유)'). 모자란 자리는 이미 판을 나눠 다시 돌렸으므로 작업을
     다시 시도하면 기다림만 몇 배로 길어짐(미리 만들기는 상한이 PATIENT배). 다시 할지는 앱의
@@ -163,7 +165,13 @@ BAD_SHAPE = "문제 모양이 맞지 않음"  # 서버 모양 검사(fromWorkerQ
 # 모자란 자리를 다시 돌리는 전체 상한(문제 하나에): 5문제 300초(#247). 미리 만들기는 첫 판 상한
 # (HARD_SEC_PER_QUESTION × PATIENT)이 더 길어 그것을 씀
 FILL_SEC_PER_QUESTION = 60
+FILL_MAX_SEC = 300  # 사용자가 기다리는 전체 상한(10문제도 5분, 이슈 #247 '예: 5분')
 MAX_ROUNDS = 5  # 판 수 상한: 초안이 빨리 탈락하는 노트에서 상한 시간 내내 학교 LLM을 두드리지 않게
+# 새 판을 띄울 최소 남은 시간: 한 자리(생성 · 검사 · 풀기)가 끝날 만큼. 이보다 짧으면 판이 거의 늘
+# 상한에 걸려 호출만 버림(/code-review #247)
+MIN_ROUND_SEC = 45
+AGAIN_PER_CONCEPT = 2  # 마지막 단계에서 한 개념을 물을 수 있는 문제 수
+WHY_SHOWN = 5  # 오류 글에 담는 탈락 이유 수(판 · 자리가 많아도 ai_jobs.error가 길어지지 않게)
 _clock = time.monotonic  # 시험에서 바꿔 끼움
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 # 이 쪽에서 새로 물을 것이 남지 않았다는 탈락 이유(checks.code_check). '보기 5개가 아니거나 겹침'은
@@ -841,7 +849,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress, *, patient: bool = False) -
         if not made and tried_calls and down == tried_calls:
             raise LlmError("문제 만들기 호출이 모두 실패함")
         # 자리마다 이유가 다를 수 있어(시간 상한 · 검사 탈락) 모두 담음(겹치면 한 번)
-        why = "; ".join(dict.fromkeys(w for f in failed for w in f["why"]))
+        why = "; ".join(list(dict.fromkeys(w for f in failed for w in f["why"]))[:WHY_SHOWN])
         got = f"{len(made)}/{n}문제만 만듦" if made else "만든 문제가 없음"
         raise NoQuestionsError(f"{got}({why})" if why else got)
     qs = [
@@ -901,12 +909,12 @@ def _make_all(
     다시 돌립니다(전체 상한 FILL_SEC_PER_QUESTION × n초, 미리 만들기는 첫 판 상한, #247). 열린
     쪽(물을 개념이 남은 쪽)이 없으면 마지막 단계로 이미 물은 개념도 다른 각도로 묻게 합니다(정답 ·
     문장 겹침 검사는 그대로). 판의 생성 호출이 모두 실패하면(학교 LLM 장애) 더 돌리지 않습니다.
-    못 만든 자리 · 시도 수는 마지막 판 것입니다.
+    시도 수는 마지막 판 것이고, 못 만든 자리는 모든 판 것(마지막 판 먼저)입니다.
     시간 상한에 아직 호출 중인 자리는 실패한 시도로 셉니다: 학교 LLM이 연결만 받고 답하지
     않으면 끝난 자리가 없어, 다시 시도하지 않고 0문제 세트로 끝났음(/code-review #95).
     """
     used: list[str] = []
-    asked: set[str] = set()  # 세트에서 이미 물은 개념
+    asked: Counter[str] = Counter()  # 세트에서 개념마다 물은 수
     taken: list[tuple[int, Made]] = []  # 받아들인 차례대로
     visits: Counter[int] = Counter()
     dry: set[int] = set()
@@ -920,13 +928,18 @@ def _make_all(
     budget = max(n, 1) * mult
     deadline = t0 + SEC_PER_QUESTION * budget
     hard = t0 + HARD_SEC_PER_QUESTION * budget
-    total = max(hard, t0 + FILL_SEC_PER_QUESTION * max(n, 1))
+    total = max(hard, t0 + min(FILL_SEC_PER_QUESTION * max(n, 1), FILL_MAX_SEC))
+    min_round = min(MIN_ROUND_SEC, HARD_SEC_PER_QUESTION * budget)
 
     def spare_of(k: int, order: list[int]) -> list[int]:
         # 여분 자리는 가장 무거운 쪽부터(못 만든 자리가 넘어가는 순서와 같음)
         return [order[i % len(order)] for i in range(int(k * EXTRA + 0.5))] if order else []
 
-    def accept(page: int, r: Made) -> list[str]:
+    def per_concept(again_ok: bool) -> int:
+        """한 개념을 물을 수 있는 문제 수: 마지막 단계에서만 AGAIN_PER_CONCEPT."""
+        return AGAIN_PER_CONCEPT if again_ok else 1
+
+    def accept(page: int, r: Made, again_ok: bool) -> list[str]:
         """잠금 안에서 그사이 다른 자리가 받은 문제와 겹침을 다시 보고, 받으면 세트에 바로 넣음
         (받은 뒤 세트에 넣기 전에 돌려주면 그 문제를 잃고 개념만 막힘, /code-review #95)."""
         d = r.question
@@ -937,13 +950,14 @@ def _make_all(
             if done.is_set() or len(taken) >= n:
                 return [FULL]
             if (
-                (r.concept in asked and not relaxed)
+                # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
+                asked[r.concept] >= per_concept(again_ok)
                 or any(same_item(d["answer"], u) for u in used)
                 or too_close(d, seen)
                 or reversed_of(d, seen)
             ):
                 return [CLASH]
-            asked.add(r.concept)
+            asked[r.concept] += 1
             seen.append(seen_draft(d))
             used.append(d["answer"])
             taken.append((page, r))
@@ -969,6 +983,9 @@ def _make_all(
     ) -> tuple[int, Made]:
         with lock:
             tried = [p] + [b for b in backups if b != p and b not in dry][:BACKUPS]
+            # 이 자리가 시작할 때의 단계: 지난 판에 남아 도는 자리가 뒤늦게 켜진 마지막 단계를 따라
+            # 이미 물은 개념(다른 각도 안내 없이 만든 초안)을 받지 않게(/code-review #247)
+            again_ok = relaxed
         last = (p, Made(why=["물을 개념이 남지 않음"]))
         down = tries = 0
         for page in tried:
@@ -984,7 +1001,7 @@ def _make_all(
                 names = [
                     c
                     for c in concepts.for_text(names_all, pages[page], subject)
-                    if relaxed or c not in asked
+                    if asked[c] < per_concept(again_ok)
                 ]
                 if not names:
                     dry.add(page)
@@ -993,11 +1010,11 @@ def _make_all(
                 k = visits[page] % len(types)
                 visits[page] += 1
                 info = per_page[page]
-                if relaxed and (again := [c for c in names if c in asked]):
+                if again_ok and (again := [c for c in names if c in asked]):
                     info = replace(info, angle=again)
 
             def here(x: Made, page: int = page) -> list[str]:
-                return accept(page, x)
+                return accept(page, x, again_ok)
 
             r = gen_one(
                 until, page, pages[page], types[k:] + types[:k], names, info,
@@ -1011,7 +1028,10 @@ def _make_all(
             # '정답이 겹침'에 1쪽이 닫혀 0문제가 됨(기생충 3 실제 실행, 11/04)
             if r.why and all(w in DRY_REASONS for w in r.why):
                 with lock:
-                    dry.add(page)
+                    # 지난 단계의 자리가 마지막 단계에서 막 연 쪽을 다시 닫지 않게
+                    # (/code-review #247)
+                    if again_ok == relaxed:
+                        dry.add(page)
         page, r = last
         r.down, r.tries = down, tries
         return page, r
@@ -1031,7 +1051,8 @@ def _make_all(
     def one_round(
         at: list[int], draft_until: float, until_time: float
     ) -> tuple[list[tuple[int, Made]], list[tuple[int, Made]], int]:
-        """자리들을 동시에 돌려 (끝난 자리, 못 만든 자리(시간 상한 · 취소), 호출 중이던 자리 수)."""
+        """자리들을 동시에 돌려 (끝난 자리, 못 만든 자리(시간 상한에 도는 중 · 시작하지 못함),
+        시작한 자리 수)."""
         halt = threading.Event()  # 이 판이 끝나면 남은 자리는 호출하지 않음
         until = _Until(llm, halt)
         stop = stop_of(halt, draft_until)
@@ -1047,17 +1068,18 @@ def _make_all(
         finally:
             with lock:
                 halt.set()
-                # 끝날 때 아직 도는 자리. 시작하지 않은 자리는 취소(도는 자리는 기다리지 않음:
-                # 다음 호출(_Until) · 단계(stop)에서 멈춤)
-                running = {f for f in futures if f.running()}
+            # 시작하지 않은 자리는 취소하고, 취소되지 않고 끝나지도 않은 자리는 도는 자리로 셈
+            # (그사이 워커를 얻은 자리도 빠지지 않게, /code-review #247). 도는 자리는 기다리지
+            # 않음: 다음 호출(_Until) · 단계(stop)에서 멈춤
             for f in futures:
                 f.cancel()
+            running = {f for f in futures if not f.done()}
         finished = [
             f.result() for f in futures if f.done() and not f.cancelled() and f not in running
         ]
         cut = [(p, Made(why=[TIMEOUT])) for f, p in zip(futures, at, strict=True)
                if f in running or f.cancelled()]  # fmt: skip
-        return finished, cut, len(running)
+        return finished, cut, len(finished) + len(running)
 
     def not_made(
         finished: list[tuple[int, Made]], cut: list[tuple[int, Made]]
@@ -1074,16 +1096,16 @@ def _make_all(
     finished: list[tuple[int, Made]] = []
     cut: list[tuple[int, Made]] = []
     earlier: list[tuple[int, Made]] = []  # 앞 판에서 못 만든 자리(오류 글에 이유를 모두 담음)
-    stuck = rounds = 0
+    rounds = 0
     try:
         while True:
-            before = len(taken)
-            finished, cut, stuck = one_round(at, deadline, hard)
+            finished, cut, started = one_round(at, deadline, hard)
             rounds += 1
             missing = n - len(taken)
             now = _clock()
-            # 남은 시간이 한 문제 상한보다 짧으면 새 판을 띄우지 않음: 바로 끝나 호출만 버림
-            if missing <= 0 or total - now < HARD_SEC_PER_QUESTION or rounds >= MAX_ROUNDS:
+            # 남은 시간이 한 자리(생성 · 검사 · 풀기)에 모자라면 새 판을 띄우지 않음. 문제 수가
+            # 적으면 첫 판 상한이 기준(1문제: 23초)
+            if missing <= 0 or total - now < min_round or rounds >= MAX_ROUNDS:
                 break
             # 학교 LLM 장애: 다음 판도 같으므로 작업 처리기에 맡김. 끝난 자리의 호출이 모두
             # 실패했거나, 끝난 자리가 하나도 없음(모두 상한까지 응답을 기다림 · 지난 판 자리가
@@ -1091,8 +1113,15 @@ def _make_all(
             # (#95 · /code-review #247)
             round_down = sum(r.down for _, r in finished)
             round_tries = sum(r.tries for _, r in finished)
-            if len(taken) == before and (
-                not finished or (round_tries and round_down == round_tries)
+            # 이번 판 자리가 만든 문제만 성과로 셈: 지난 판에 남은 자리가 뒤늦게 받아들여져도
+            # 장애 중인 학교 LLM을 다음 판에서 다시 두드리지 않게(/code-review #247)
+            # 끝난 자리가 없는 판은 한 문제도 못 만들었을 때만 장애: 만든 문제가 있으면 서버는
+            # 답하고 있음. 다만 한 자리도 시작하지 못한 판(지난 판 자리가 워커를 모두 잡음)은 다음
+            # 판도 같으므로 멈춤
+            if not any(r.question for _, r in finished) and (
+                (not finished and not taken)
+                or not started
+                or (round_tries and round_down == round_tries)
             ):
                 break
             with lock:

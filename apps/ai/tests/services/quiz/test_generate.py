@@ -43,8 +43,9 @@ def one_slot_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def fill_rounds(monkeypatch: pytest.MonkeyPatch) -> None:
-    """모자란 자리를 다시 돌림(#247). 판은 3개까지."""
+    """모자란 자리를 다시 돌림(#247). 판은 3개까지, 시험의 짧은 상한에서도 새 판을 띄우게."""
     monkeypatch.setattr(generate, "MAX_ROUNDS", 3)
+    monkeypatch.setattr(generate, "MIN_ROUND_SEC", 0.05)
 
 
 @dataclass
@@ -1108,6 +1109,67 @@ def test_slow_refill_rounds_end_as_a_short_set_not_an_outage(
         release.set()
     assert len(page2) >= 2  # 2판에서도 2쪽을 다시 돌림
     join_threads("quiz-slot")
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_rounds_with_spare_slots_never_run_more_than_workers_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 여분 자리와 여러 판을 함께: 지난 판에 남아 응답을 기다리는 자리가 있어도 동시에 도는 생성
+    # 호출이 WORKERS를 넘지 않음(판마다 풀을 새로 만들면 넘음, Codex 리뷰 #269)
+    monkeypatch.setattr(generate, "WORKERS", 3)
+    monkeypatch.setattr(generate, "EXTRA", 0.6)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.1)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.15)
+    monkeypatch.setattr(generate, "FILL_SEC_PER_QUESTION", 1)
+    bad = draft("람블편모충", "서양배 모양의 람블편모충 영양형의 특징")  # 설명에 정답 용어
+    lock = threading.Lock()
+    active = [0]
+    peak = [0]
+    calls = [0]
+
+    def quiz(user: str) -> JsonObject:
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+            calls[0] += 1
+            slow = calls[0] <= 2  # 1판의 두 자리는 상한을 넘겨 다음 판까지 워커를 잡음
+        try:
+            time.sleep(0.4 if slow else 0.01)
+            return bad if '<노트 쪽="2">' in user else by_page(user)
+        finally:
+            with lock:
+                active[0] -= 1
+
+    try:
+        run(parallel_llm(quiz), job(size=2))
+    except (generate.NoQuestionsError, LlmError):
+        pass  # 채웠는지가 아니라 동시에 도는 호출 수를 봄
+    join_threads("quiz-slot")
+    assert calls[0] > 3  # 1판(자리 3개) 뒤에 다음 판이 돌았음
+    assert peak[0] <= 3
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_the_last_stage_asks_a_concept_at_most_twice() -> None:
+    # 1쪽 개념 둘로 5문제: 마지막 단계에서도 한 개념은 두 문제까지라 4문제에서 더 물을 개념이 없음
+    def angle(answer: str, concept: str, options: list[str]) -> JsonObject:
+        return draft(answer, f"{concept} 포낭형의 핵 수", concept=concept, options=options)
+
+    nuclei = ["4핵", "8핵", "2핵", "1핵", "6핵"]
+    inp = job(size=5)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    llm = happy(
+        [
+            GOOD["이질 아메바"],
+            GOOD["대장 아메바"],
+            angle("4핵", "이질 아메바", nuclei),
+            angle("8핵", "대장 아메바", [nuclei[1], nuclei[0], *nuclei[2:]]),
+        ]
+    )
+    with pytest.raises(generate.NoQuestionsError, match=re.escape("4/5문제만 만듦")):
+        run(llm, inp)
+    assert len(llm.named("Quiz")) == 4  # 두 번씩 물은 뒤로는 고를 개념이 없어 부르지 않음
 
 
 def test_a_question_the_server_would_drop_is_not_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
