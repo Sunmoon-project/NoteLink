@@ -302,6 +302,7 @@ describe('toAppError', () => {
     ['입력 오류: input이 객체가 아님', AI_JOB_FAILED],
     ['NO_SPEECH: 말소리를 찾지 못함', 'NO_SPEECH'],
     ['INVALID_FILE: 녹음이 3분보다 짧음', 'INVALID_FILE'],
+    ['NO_QUESTIONS: 만든 문제가 없음(검사 탈락(검수자 답 E))', 'NO_QUESTIONS'],
     // 앱이 모르는 코드 모양 문구(예외 이름 등)는 내보내지 않는다
     ['HTTP: 502 Bad Gateway', AI_JOB_FAILED],
     ['', AI_JOB_FAILED],

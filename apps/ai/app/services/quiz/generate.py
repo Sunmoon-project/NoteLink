@@ -125,6 +125,11 @@ MIN_LINES = 5  # 이보다 짧은 쪽은 묻지 않음
 NO_TEXT = f"노트에 문제를 낼 글이 없음({MIN_LINES}줄 이상인 쪽 없음)"
 
 
+def askable(text: str) -> bool:
+    """문제를 낼 수 있는 쪽 글인지(정리한 글이 MIN_LINES줄 이상). NestJS askable과 같은 기준."""
+    return len(text.split("\n")) >= MIN_LINES
+
+
 class NoQuestionsError(InputError):
     """물을 글은 있는데 한 문제도 만들지 못함. 작업은 다시 시도하지 않고 code로 실패합니다."""
 
@@ -492,7 +497,7 @@ def allocate(
     pages: dict[int, str], per_page: defaultdict[int, PageInfo], n: int
 ) -> tuple[dict[int, float], dict[int, int], dict[int, int]]:
     """(가중치, 나눈 문제 수, 고르게 나눴을 때). 5줄 이상인 쪽만."""
-    usable = [p for p, t in pages.items() if len(t.split("\n")) >= MIN_LINES]
+    usable = [p for p, t in pages.items() if askable(t)]
     if not usable:
         return {}, {}, {}
     weight = {p: max(0.3, 1 + 1.5 * per_page[p].wrong - 0.7 * per_page[p].mastered) for p in usable}
@@ -747,7 +752,7 @@ def _concept_names(llm: Llm, m: Material, pages: dict[int, str]) -> list[str]:
     차례로 뽑으면 쪽 수만큼 퀴즈 요청이 길어졌음(#95). 합치는 순서는 쪽 순서 그대로.
     """
     subject = concepts.subject_words(m.title)
-    texts = [t for _, t in sorted(pages.items()) if len(t.split("\n")) >= MIN_LINES]
+    texts = [t for _, t in sorted(pages.items()) if askable(t)]
     names: list[str] = []
     # 한 쪽이 LlmError면 작업 처리기가 다시 시도하므로 다른 쪽도 더 호출하지 않음: 시작하지 않은
     # 쪽은 취소하고, 도는 쪽은 다음 호출에서 멈춤(_Until). 끝나는 차례로 기다려 앞쪽이 느려도
@@ -782,7 +787,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress, *, patient: bool = False) -
     notes: Notes = {**inp.notes, m.id: pages}
     title = f"{m.title} 맞춤 퀴즈 · {inp.day:%m-%d}"
     # 글이 없는 노트(사진만 · 모든 줄이 [?]) · 짧은 쪽뿐인 노트(allocate가 묻지 않음)
-    if not any(len(t.split("\n")) >= MIN_LINES for t in pages.values()):
+    if not any(askable(t) for t in pages.values()):
         raise InputError(NO_TEXT)
 
     new_names = None
@@ -815,7 +820,8 @@ def run(llm: Llm, raw: JsonObject, report: Progress, *, patient: bool = False) -
     if not made:
         if tried_calls and down == tried_calls:
             raise LlmError("문제 만들기 호출이 모두 실패함")
-        why = "; ".join(failed[0]["why"]) if failed else ""
+        # 자리마다 이유가 다를 수 있어(시간 상한 · 검사 탈락) 모두 담음(겹치면 한 번)
+        why = "; ".join(dict.fromkeys(w for f in failed for w in f["why"]))
         raise NoQuestionsError(f"만든 문제가 없음({why})" if why else "만든 문제가 없음")
     qs = [
         {

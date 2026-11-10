@@ -526,7 +526,8 @@ export const QUIZ_MIN_LINES = 5;
  * (apps/ai services/quiz/text.py clean_pages) QUIZ_MIN_LINES줄 이상 남은 쪽에서만 묻는다(allocate).
  * 그런 쪽이 없으면 처리기는 작업을 실패로 끝내므로(generate.py NO_TEXT), 작업을 넣기 전에 400으로 알린다.
  * 노트 조각(chunks)은 아직 보내지 않아 처리기도 쪽 글만 쓴다. 조각을 보내면 처리기 note_pages와 맞춘다.
- * 그 밖의 0문제(초안이 모두 탈락 · 시간 상한)는 처리기가 작업을 다시 시도하고, 한도를 넘으면 실패로 끝낸다
+ * 그 밖의 0문제(초안이 모두 탈락 · 시간 상한)도 처리기가 다시 시도하지 않고 작업을 실패로 끝낸다
+ * (NO_QUESTIONS). LLM 장애로 한 문제도 못 만들 때만 처리기가 작업을 다시 시도한다
  */
 function askable(page: WorkerPage): boolean {
   const lines = page.ocrText

@@ -68,7 +68,7 @@ def _handler(run: _Run, *, background: bool = False) -> Handler:
         try:
             return run(llm.background(report.awaited) if background else llm, inp, report)
         except review.InputError as e:  # generate.NoQuestionsError는 code를 붙여 앱이 구분
-            raise JobInputError(str(e), code=getattr(e, "code", None)) from e
+            raise JobInputError(str(e), code=e.code) from e
 
     return handle
 

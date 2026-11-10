@@ -64,7 +64,12 @@ type Reason = Literal["wrong"]
 
 
 class InputError(ValueError):
-    """input이 작업에 맞지 않음. 메시지는 짧은 원인(어느 필드인지)."""
+    """input이 작업에 맞지 않음. 메시지는 짧은 원인(어느 필드인지).
+
+    code가 있으면 작업 오류를 '<code>: <원인>'으로 써 앱이 구분합니다(generate.NoQuestionsError).
+    """
+
+    code: str | None = None
 
 
 class Progress(Protocol):

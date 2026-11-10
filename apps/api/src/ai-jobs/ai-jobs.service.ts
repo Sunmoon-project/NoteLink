@@ -64,10 +64,11 @@ export const AI_JOB_FAILED = 'AI_JOB_FAILED';
 
 /**
  * 처리기가 원인 코드를 붙인 오류: '<코드>: <원인>'(apps/ai runner.py JobInputError).
- * 앱이 아는 코드만 그대로 보낸다(지금은 녹음 정리 apps/ai services/recording/job.py). 새 코드를
+ * 앱이 아는 코드만 그대로 보낸다(녹음 정리 apps/ai services/recording/job.py, 맞춤 퀴즈를 한 문제도
+ * 만들지 못함 services/quiz/generate.py NoQuestionsError). 새 코드를
  * 처리기에 더하면 여기에도 더한다. 원인 문구는 처리기 내부 내용이 섞일 수 있어 보내지 않는다
  */
-const APP_ERROR_CODES = new Set(['NO_SPEECH', 'INVALID_FILE']);
+const APP_ERROR_CODES = new Set(['NO_SPEECH', 'INVALID_FILE', 'NO_QUESTIONS']);
 const CODED_ERROR = /^([A-Z][A-Z0-9_]*): /;
 
 /**
