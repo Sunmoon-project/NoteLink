@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import { Timetable } from '@notelink/shared';
 import { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -136,6 +137,15 @@ describe('시간표 API (/timetable)', () => {
         expect(res.body.data.location).toBe('');
     });
 
+    it('source가 없는 예전 형식 수업도 source=manual로 내려가고 공유 계약(Timetable)을 통과한다', async () => {
+        const { source: _omit, ...legacy } = { _id: new Types.ObjectId(), ...MATH, source: 'manual' };
+        tts.push({ _id: new Types.ObjectId(), userId: ME, classes: [legacy as ClassRow], updatedAt: new Date() });
+        const res = await http().get(url()).set(AUTH);
+        expect(res.status).toBe(200);
+        expect(res.body.data.classes[0].source).toBe('manual');
+        expect(Timetable.safeParse(res.body.data).success).toBe(true);
+    });
+
     it.each([
         ['과목명 없음', { ...MATH, subjectName: '' }],
         ['요일 없음', { ...MATH, days: [] }],
@@ -196,6 +206,20 @@ describe('시간표 API (/timetable)', () => {
             expect(list.body.data.map((s: { friendId: string }) => s.friendId).sort()).toEqual([friend.toString(), friend2.toString()].sort());
             expect(list.body.data[0]).toMatchObject({ mode: 'free_only' });
             expect(typeof list.body.data[0].sharedAt).toBe('string');
+        });
+
+        it('친구 ID를 대문자로 보내도 204로 공유된다', async () => {
+            const res = await shareWith([friend.toString().toUpperCase()]);
+            expect(res.status).toBe(204);
+            expect(shares).toHaveLength(1);
+            expect(shares[0]?.friendId.equals(friend)).toBe(true);
+        });
+
+        it('같은 ID를 대문자·소문자로 함께 보내도 공유는 한 건만 저장된다', async () => {
+            const res = await shareWith([friend.toString(), friend.toString().toUpperCase()]);
+            expect(res.status).toBe(204);
+            expect(shares).toHaveLength(1);
+            expect(shareModel.bulkWrite.mock.calls[0]![0]).toHaveLength(1);
         });
 
         it('이미 공유 중인 친구에게 다시 공유하면 한 건 그대로 방식만 바뀐다', async () => {

@@ -87,13 +87,15 @@ export class TimetableService {
     /** 친구들에게 시간표를 공유한다. 이미 공유 중이면 방식만 바꾼다. 친구가 아닌 사람이 섞여 있으면 하나도 공유하지 않는다 */
     async share(userId: string, dto: ShareTimetableDto, now = new Date()): Promise<void> {
         const owner = new Types.ObjectId(userId);
-        const friends = await this.friendIds(owner, dto.friendIds);
-        const strangers = dto.friendIds.filter((id) => !friends.has(id));
+        // 대문자 등 표기가 달라도 같은 ID로 보도록 소문자 표준형으로 바꾸고 중복을 없앤다
+        const requested = [...new Set(dto.friendIds.map((id) => new Types.ObjectId(id).toHexString()))];
+        const friends = await this.friendIds(owner, requested);
+        const strangers = requested.filter((id) => !friends.has(id));
         if (strangers.length > 0) {
             throw new BadRequestException({ code: 'NOT_FRIEND', message: '친구가 아닌 사용자에게는 시간표를 공유할 수 없습니다.' });
         }
         await this.shareModel.bulkWrite(
-            dto.friendIds.map((friendId) => ({
+            requested.map((friendId) => ({
                 updateOne: {
                     filter: { ownerId: owner, friendId: new Types.ObjectId(friendId) },
                     update: { $set: { mode: dto.mode, sharedAt: now } },
@@ -137,6 +139,6 @@ function toClassView(cls: TimetableClass): ClassView {
         endTime: cls.endTime,
         location: cls.location ?? '', // develop 스키마는 location이 없거나 null일 수 있어 앱에는 항상 문자열로 준다
         color: cls.color,
-        source: cls.source,
+        source: cls.source ?? 'manual', // 예전 형식으로 저장된 수업에는 source가 없을 수 있어 기본값을 채운다
     };
 }
