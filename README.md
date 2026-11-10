@@ -160,8 +160,10 @@ AI 서버용 가상환경 (Windows는 `py -3.13`, `apps\ai\.venv\Scripts\pip`)
 
 ```bash
 python3.13 -m venv apps/ai/.venv
-apps/ai/.venv/bin/pip install -r apps/ai/requirements-dev.txt
+apps/ai/.venv/bin/pip install -r apps/ai/requirements-dev.lock
 ```
+
+AI 서버 패키지를 더하거나 버전을 바꿀 때는 `apps/ai/requirements.txt`(운영) · `requirements-dev.txt`(개발)를 고친 뒤 `bash apps/ai/lock.sh`로 lock 파일(`requirements.lock` · `requirements-dev.lock`, 간접 의존성까지 고정)을 다시 만들어 함께 커밋합니다. 이 명령에는 `uv`(`pip install uv==0.13.6`)가 필요합니다. 배포 환경은 `requirements.lock`으로 설치합니다.
 
 터미널 3개에서 각각 실행합니다.
 

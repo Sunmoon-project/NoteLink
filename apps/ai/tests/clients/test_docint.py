@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 import traceback
@@ -268,6 +269,30 @@ def test_download_failures_become_download_error(
         download(SAS_URL, max_bytes=10, transport=transport)
     assert str(e.value) == why
     assert "secret-sas" not in str(e.value)
+
+
+FAKE_SAS_URL = "https://blob.example.test/notes/a.jpg?sv=2025-01-01&sp=r&sig=FAKESIG"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [httpx2.Response(200, content=b"png"), httpx2.Response(404), httpx2.Response(500)],
+)
+def test_download_does_not_log_the_sas(
+    response: httpx2.Response, caplog: pytest.LogCaptureFixture
+) -> None:
+    # httpx2는 요청마다 INFO로 전체 주소를 남김: 처리기가 INFO로 켜도 SAS가 남지 않아야 함(#277)
+    caplog.set_level(logging.DEBUG)
+    _, transport = serve(response)
+    try:
+        download(FAKE_SAS_URL, transport=transport)
+    except DownloadError:
+        pass
+    requests = [r for r in caplog.records if r.name == "httpx2"]
+    assert requests, "httpx2 요청 로그가 남아야 함(가린 주소로)"
+    assert "https://blob.example.test/notes/a.jpg?REDACTED" in requests[0].getMessage()
+    assert "FAKESIG" not in caplog.text
+    assert all("FAKESIG" not in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://x/a.jpg", "주소", ""])

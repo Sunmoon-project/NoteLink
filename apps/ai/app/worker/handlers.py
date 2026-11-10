@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable
 
 from app.clients.docint import Ocr, OcrUnavailableError, docint, download
-from app.clients.llm import JsonObject, Llm, LlmError, SchoolLlm, Stopping, school_llm
+from app.clients.llm import JsonObject, Llm, LlmError, PacedLlm, Stopping, make_llm
 from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
 from app.services.note import job as note_job
@@ -19,7 +19,7 @@ from app.worker.runner import Handler, JobInputError, JobReport
 class _Once[T]:
     """처음 한 번 만든 것을 계속 돌려줍니다. 두 반복(스레드)이 처음 함께 불러도 하나만 만듦.
 
-    functools.cache는 만들기를 잠그지 않아, 두 반복이 동시에 처음 부르면 SchoolLlm이 둘 생겨
+    functools.cache는 만들기를 잠그지 않아, 두 반복이 동시에 처음 부르면 LLM 클라이언트가 둘 생겨
     호출 간격 · 429 대기 · 사용자 우선이 나뉨(Codex 리뷰 #149). 만들다 실패하면 남기지 않습니다.
     """
 
@@ -40,9 +40,9 @@ class _Once[T]:
 
 
 @_Once
-def _llm() -> SchoolLlm:
-    """프로세스에 하나만 둡니다. 학교 LLM 호출 간격(llm_call_gap_sec)을 작업 사이에도 지키게."""
-    return school_llm()
+def _llm() -> PacedLlm:
+    """프로세스에 하나만 둡니다. LLM 호출 간격(LLM_CALL_GAP_SEC)을 작업 사이에도 지키게."""
+    return make_llm()
 
 
 @_Once
@@ -66,7 +66,7 @@ type _Run = Callable[[Llm, JsonObject, JobReport], JsonObject]
 def _handler(run: _Run, *, background: bool = False) -> Handler:
     """퀴즈 서비스의 run을 처리 함수로. input 오류는 다시 해도 같으므로 바로 실패시킵니다.
 
-    background면 학교 LLM 호출 차례를 사용자 작업에 양보합니다(SchoolLlm.background, #138).
+    background면 LLM 호출 차례를 사용자 작업에 양보합니다(PacedLlm.background, #138).
     사용자가 이 작업을 이어받으면(report.awaited) 그때부터 양보하지 않습니다.
     작업이 취소되면(report.canceled) 남은 호출을 보내지 않습니다(Stopping, #263).
     """
@@ -88,12 +88,13 @@ quiz_generate = _handler(generate.run)  # 맞춤 퀴즈
 
 
 def _pregen(llm: Llm, inp: JsonObject, report: JobReport) -> JsonObject:
-    # 기다리는 사용자가 없어 시간 상한이 넉넉함. 이어받은 채 시작하면(사용자 작업 반복) 사용자가
-    # 기다리므로 보통 상한: 넉넉한 상한으로 그 반복을 오래 막지 않게(/code-review #138)
-    return generate.run(llm, inp, report, patient=not report.awaited())
+    # 기다리는 사용자가 없어 안정적 모드(시간 상한 넉넉 · 단계를 더함, #274). 사용자가 이어받으면
+    # (report.awaited) 그때부터 빠른 모드 · 보통 상한: 이어받은 채 시작해도 처음부터 빠른 모드라
+    # 사용자 작업 반복을 오래 막지 않음(/code-review #138)
+    return generate.run(llm, inp, report, mode=generate.STABLE, hurry=report.awaited)
 
 
-# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 처리는 맞춤 퀴즈와 같고 LLM 차례를 양보(#138)
+# 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 안정적 모드로 만들고 LLM 차례를 양보(#138)
 quiz_pregen = _handler(_pregen, background=True)
 
 
@@ -101,8 +102,8 @@ def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
     """녹음 정리(recording_job.run). 일시 오류는 LlmError로 바꿔 시도 한도 안에서 다시 시도합니다.
 
     설정 누락 · 음성 외 영구 오류는 그 밖의 예외로 두어 바로 실패합니다(자세한 내용은 로그에만).
-    학교 LLM 주소가 비어 있으면 _llm()이 LlmSetupError(retry=False)로 바로 실패시킵니다(#262).
-    작업이 취소되면 남은 학교 LLM 호출을 보내지 않습니다(#263). 음성 인식은 한 번의 긴 호출이라
+    LLM 설정(키 · 주소)이 비어 있으면 _llm()이 LlmSetupError(retry=False)로 바로 실패시킵니다(#262).
+    작업이 취소되면 남은 LLM 호출을 보내지 않습니다(#263). 음성 인식은 한 번의 긴 호출이라
     보낸 뒤에는 멈추지 못합니다.
     """
     llm = Stopping(_llm(), report.canceled())
@@ -121,7 +122,7 @@ def handwriting_summary(inp: JsonObject, report: JobReport) -> JsonObject:
 
     OCR 설정 오류(OcrSetupError: 설정 누락 · 키 · 권한 401 · 403)와 그 밖의 영구 오류는 그대로
     올려 다시 시도 없이 바로 실패합니다(자세한 내용은 로그에만).
-    작업이 취소되면 남은 학교 LLM 호출을 보내지 않고, OCR은 쪽마다 진행률을 쓸 때 멈춥니다.
+    작업이 취소되면 남은 LLM 호출을 보내지 않고, OCR은 쪽마다 진행률을 쓸 때 멈춥니다.
     """
     llm = Stopping(_llm(), report.canceled())
     try:

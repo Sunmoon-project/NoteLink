@@ -27,6 +27,9 @@ export class TimetableClass {
 
   @Prop({ required: true, type: String, default: '#000000' }) // hex color code
   color: string;
+
+  @Prop({ type: String, required: true, default: 'manual' })
+  source: string; // 수업 출처 (직접 추가는 'manual')
 }
 export const TimetableClassSchema = SchemaFactory.createForClass(TimetableClass);
 
@@ -35,8 +38,8 @@ export type TimetableDocument = HydratedDocument<Timetable>;
 
 @Schema({ collection: 'timetables', timestamps: true })
 export class Timetable {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
-  userId: Types.ObjectId;
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true, unique: true })
+  userId: Types.ObjectId; // 사용자 한 명당 시간표 한 건
 
   @Prop({ type: [TimetableClassSchema], default: [] })
   classes: TimetableClass[]; // 내장된 수업 목록 배열
