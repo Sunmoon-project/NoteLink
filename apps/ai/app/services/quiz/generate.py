@@ -28,6 +28,9 @@ ai_jobs.type = 'quiz_pregen': 노트를 만들 때 NestJS가 넣는 첫 맞춤 �
   - n개가 안 되면 통과한 문제는 둔 채 모자란 자리만 다음 판에 다시 돌립니다(MAX_ROUNDS판 ·
     FILL_SEC_PER_QUESTION × n초까지, #247). 열린 쪽이 없으면 마지막 단계로 이미 물은 개념도 다른
     각도로 묻습니다. 그래도 모자라면 짧은 세트 대신 NoQuestionsError(앱은 '다시 시도')
+  - 한 자리가 겹침(DRY_REASONS)으로만 떨어져 닫은 쪽은 다음 판에 한 번 다시 엽니다. 학교 LLM은
+    같은 쪽에서도 다음 시도에 다른 정답을 고름(11/10 기생충 원충류: 세 쪽이 차례로 닫혀 상한 전에
+    3/5로 끝남)
   - 11/05 학교 LLM 5문제: 미생 85초 5/5 · 토익 1일차 109초 5/5 · 기생충 1 110초 4/5(차례로 만들 때
     미생 10문제 714초). 1분에 보낸 호출은 많아야 28번
   알려진 한계: 개념 이름이 없는 새 노트는 첫 퀴즈에서 개념 뽑기(쪽마다 동시에, 미생 7쪽 87초 ·
@@ -980,7 +983,10 @@ def _make_all(
     판(round)마다 자리를 동시에 돌리고, n개가 안 되면 통과한 문제는 둔 채 모자란 자리만 다음 판에
     다시 돌립니다(전체 상한 FILL_SEC_PER_QUESTION × n초, 미리 만들기는 첫 판 상한, #247). 열린
     쪽(물을 개념이 남은 쪽)이 없으면 마지막 단계로 이미 물은 개념도 다른 각도로 묻게 합니다(정답 ·
-    문장 겹침 검사는 그대로). 판의 생성 호출이 모두 실패하면(학교 LLM 장애) 더 돌리지 않습니다.
+    문장 겹침 검사는 그대로). 한 자리가 겹침(DRY_REASONS)으로만 떨어져 닫은 쪽은 다음 판에 한 번
+    다시 엽니다(첫 단계에서 처음 닫힌 쪽만, 다시 연 뒤 시작한 자리가 또 겹치면 그대로 닫음). 열린
+    쪽이 다시 열 쪽뿐이어도 마지막 단계로 갑니다. 판의 생성 호출이 모두 실패하면(학교 LLM 장애) 더
+    돌리지 않습니다.
     시도 수는 마지막 판 것이고, 못 만든 자리는 모든 판 것(마지막 판 먼저)입니다.
     시간 상한에 아직 호출 중인 자리는 실패한 시도로 셉니다: 학교 LLM이 연결만 받고 답하지
     않으면 끝난 자리가 없어, 다시 시도하지 않고 0문제 세트로 끝났음(/code-review #95).
@@ -994,6 +1000,14 @@ def _make_all(
     visits: Counter[int] = Counter()
     dry: set[int] = set()
     drained: set[int] = set()  # dry 가운데 물을 개념이 남지 않아 닫은 쪽(마지막 단계에서 다시 엶)
+    # dry 가운데 이번 판에 겹침(DRY_REASONS)으로 처음 닫은 쪽: 다음 판에 한 번 다시 엶. 학교 LLM은
+    # 같은 쪽에서도 다음 시도에 다른 정답을 고름: 기생충 원충류(3쪽) 5문제에서 세 쪽이 겹침으로
+    # 차례로 닫혀 상한 300초 중 154초 만에 3/5로 끝남(11/10 학교 LLM, #247)
+    crowded: set[int] = set()
+    # 겹침으로 닫았다가 다시 연 쪽 → 다시 연 뒤 첫 판 번호(그 판부터 시작한 자리가 또 겹치면 그대로
+    # 닫음. 그 전에 시작해 아직 돌던 자리의 초안으로는 닫지 않음, /code-review #247)
+    reopened: dict[int, int] = {}
+    rounds = 0  # 끝난 판 수(자리가 시작할 때 보면 그 자리의 판 번호 - 1)
     lock = threading.Lock()
     done = threading.Event()  # n개를 다 모았거나 돌려줌: 남은 자리는 다음 단계에서 멈춤
     relaxed = False  # 마지막 단계: 이미 물은 개념도 다른 각도로(#247)
@@ -1094,6 +1108,7 @@ def _make_all(
             # 이 자리가 시작할 때의 단계: 지난 판에 남아 도는 자리가 뒤늦게 켜진 마지막 단계를 따라
             # 이미 물은 개념(다른 각도 안내 없이 만든 초안)을 받지 않게(/code-review #247)
             again_ok = relaxed
+            born = rounds
         last = (p, Made(why=["물을 개념이 남지 않음"]))
         down = tries = rejected = 0
         replied = False
@@ -1142,8 +1157,13 @@ def _make_all(
                 with lock:
                     # 지난 단계의 자리가 마지막 단계에서 막 연 쪽을 다시 닫지 않게
                     # (/code-review #247)
-                    if again_ok == relaxed:
+                    # 다시 연 쪽은 다시 연 뒤에 시작한 자리만 닫음(/code-review #247)
+                    if again_ok == relaxed and born >= reopened.get(page, 0):
                         dry.add(page)
+                        # 첫 단계에서 처음 겹친 쪽만 다음 판에 다시 엶. 마지막 단계는 판을 더
+                        # 늘리지 않음(/code-review #247)
+                        if page not in reopened and not again_ok:
+                            crowded.add(page)
         page, r = last
         r.down, r.tries, r.rejected, r.answered = down, tries, rejected, replied
         return page, r
@@ -1228,7 +1248,6 @@ def _make_all(
     finished: list[tuple[int, Made]] = []
     cut: list[tuple[int, Made]] = []
     earlier: list[tuple[int, Made]] = []  # 앞 판에서 못 만든 자리(오류 글에 이유를 모두 담음)
-    rounds = 0
     answered = False  # 학교 LLM이 한 번이라도 답함(어느 판에서든 실패하지 않은 호출이 있음)
     try:
         while True:
@@ -1264,11 +1283,18 @@ def _make_all(
             with lock:
                 open_pages = [b for b in backups if b not in dry]
                 if not open_pages and not relaxed:  # 개념이 모자람: 마지막 단계
-                    # 개념이 바닥나 닫은 쪽만 다시 엶. 겹침(DRY_REASONS)으로 닫은 쪽은 마지막
-                    # 단계에서도 같은 겹침 검사에 걸리므로 그대로(/code-review #247)
+                    # 개념이 바닥나 닫은 쪽을 다시 엶. 이번 판에 겹침으로 처음 닫은 쪽만 남았어도
+                    # 마지막 단계로: 다시 연 쪽만 도는 판이 이어져 판 상한 전에 마지막 단계에 닿지
+                    # 못하지 않게(/code-review #247). 다시 열고도 겹침으로 닫힌 쪽은 마지막 단계
+                    # 에서도 같은 겹침 검사에 걸리기 쉬우므로 그대로
                     relaxed = True
                     dry -= drained
-                    open_pages = [b for b in backups if b not in dry]
+                # 이번 판에 첫 단계에서 겹침으로 처음 닫은 쪽은 다음 판에 한 번 다시 엶
+                for b in crowded:
+                    reopened[b] = rounds
+                dry -= crowded
+                crowded.clear()
+                open_pages = [b for b in backups if b not in dry]
             if not open_pages:
                 break  # 마지막 단계에서도 물을 것이 없음
             earlier += not_made(finished, cut)
