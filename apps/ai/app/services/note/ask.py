@@ -45,7 +45,7 @@ UNSAFE = (
 # 걸러지지 않은 것은 SYSTEM이 한 번 더 막는다
 UNSAFE_PATTERN = re.compile(
     r"해킹|해커|크래킹|침투\s*테스트|모의\s*해킹|익스플로잇|exploit|취약점\s*(공격|이용|찾)|"
-    r"악성\s*코드|멀웨어|malware|랜섬웨어|ransomware|트로이|바이러스\s*(만들|제작|퍼뜨)|"
+    r"악성\s*코드|멀웨어|malware|랜섬웨어|ransomware|트로이\s*(목마\s*)?(바이러스|악성|프로그램|만들|제작|퍼뜨)|트로이안|trojan|바이러스\s*(만들|제작|퍼뜨)|"
     r"피싱|phishing|스미싱|디도스|ddos|백도어|backdoor|키로거|keylogger|루트킷|rootkit|"
     r"(sql|에스큐엘)\s*(인젝션|injection)|xss|"
     r"(비밀번호|패스워드|계정|인증)\s*\S{0,4}\s*(뚫|탈취|훔치|훔쳐|크랙|우회|해제|도용|알아내)|"
@@ -136,8 +136,12 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         max_tokens=700,
         temperature=0.3,
     )
+    # 판정이 참/거짓이 아니면(빠짐 · "false" 글자) 답할지 알 수 없어 시도 한도 안에서 다시 묻는다
+    answerable = out.get("answerable")
+    if not isinstance(answerable, bool):
+        raise LlmError("answerable가 참/거짓이 아님")
     # 학습 자료로 답할 수 없다고 판정하면 모델이 쓴 글 대신 정해 둔 안내만 보낸다
-    if out.get("answerable") is False:
+    if not answerable:
         return refusal("off_topic")
     answer = out.get("answer")
     if not isinstance(answer, str) or not answer.strip():

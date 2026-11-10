@@ -32,12 +32,13 @@ interface MaterialRow {
 
 interface QuizRow {
   prompt: string;
+  choices?: string[] | null;
   answer: string;
   explanation?: string | null;
 }
 
 /**
- * 아바타가 답할 근거(학습 자료): 요약 → 핵심 → 퀴즈 → 쪽 글(OCR) → 녹음 대본 순으로 이어 붙여 자른다.
+ * 아바타가 답할 근거(학습 자료): 요약 → 핵심 → 퀴즈(보기 포함) → 쪽 글(OCR) → 녹음 대본 순으로 이어 붙여 자른다.
  * 정리된 내용이 앞이라 잘려도 뼈대는 남는다. 처리기는 이 글로만 답한다(apps/ai note/ask.py)
  */
 export function noteContext(
@@ -54,7 +55,9 @@ export function noteContext(
       `## 퀴즈\n${quiz
         .map(
           (q) =>
-            `Q. ${q.prompt}\n정답: ${q.answer}${q.explanation ? `\n해설: ${q.explanation}` : ''}`,
+            // 객관식은 보기를 번호와 함께 넣어 "2번은 왜 틀려요?" 같은 질문에도 답할 수 있게
+            `Q. ${q.prompt}${(q.choices ?? []).map((c, i) => `\n${i + 1}) ${c}`).join('')}` +
+            `\n정답: ${q.answer}${q.explanation ? `\n해설: ${q.explanation}` : ''}`,
         )
         .join('\n')}`,
     );

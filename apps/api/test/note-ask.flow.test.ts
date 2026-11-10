@@ -136,7 +136,7 @@ describe('아바타에게 노트 묻기 (POST /api/v1/materials/:id/ask)', () =>
         ownerId: me,
         status: 'ready',
         deletedAt: null,
-        questions: [q('조건 하나는?')],
+        questions: [q('조건 하나는?'), { ...q('객관식'), choices: ['상호 배제', '선점'] }],
       },
       {
         materialId: mid,
@@ -163,6 +163,8 @@ describe('아바타에게 노트 묻기 (POST /api/v1/materials/:id/ask)', () =>
     await ask(id).expect(202);
     const ctx = (jobs.rows[0]!.input as { context: string }).context;
     expect(ctx).toContain('## 퀴즈\nQ. 조건 하나는?\n정답: 상호 배제\n해설: 자원을 혼자 씀');
+    // 객관식 보기는 번호와 함께
+    expect(ctx).toContain('Q. 객관식\n1) 상호 배제\n2) 선점\n정답: 상호 배제');
     expect(ctx).not.toMatch(/남의 것|지움|만드는 중/);
     // 정리된 내용 → 퀴즈 → 쪽 글 순서
     expect(ctx.indexOf('## 핵심')).toBeLessThan(ctx.indexOf('## 퀴즈'));
