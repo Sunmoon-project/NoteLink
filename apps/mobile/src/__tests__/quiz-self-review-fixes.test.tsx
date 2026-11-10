@@ -60,7 +60,7 @@ it('유사 퀴즈는 만들기 전에 완료로 안내하지 않는다', async (
   setParams({ setId: 'set-1' });
   await renderScreen(<QuizSimilarScreen />, client());
   expect(screen.queryByText(/문제를 새로 만들었어요/)).toBeNull();
-  expect(await screen.findByText('원본과 같은 난이도로 새 문제를 만들어요')).toBeTruthy();
+  expect(await screen.findByText('틀린 문제와 비슷한 문제를 만들어요')).toBeTruthy();
 });
 
 it('홈의 진행 막대는 진행 정보가 없으면 100%로 표시하지 않는다', async () => {
