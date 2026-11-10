@@ -32,7 +32,7 @@ from app.services.recording.job import (
 )
 from app.services.recording.models import Sentence
 from app.services.recording.pipeline import WINDOW_CHARS
-from app.worker import handlers
+from app.worker import handlers, runner
 from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobGoneError, JobStore
 from app.worker.runner import run_once
@@ -737,6 +737,40 @@ def test_cancel_stops_at_the_next_window() -> None:
             report=cancel,
         )
     assert len(llm.windows) == 1
+
+
+def test_a_cancel_stops_the_next_llm_call_before_any_progress_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 같은 창을 다른 온도로 다시 묻는 사이에는 진행률을 쓰지 않음: 처리기가 몇 초마다 상태를 읽어
+    # 취소를 알아채고(report.canceled), 학교 LLM 연결(Stopping)이 다음 호출을 보내지 않아야 함.
+    # 실제 runner · JobStore를 거쳐, 처리가 끝난 뒤 잠금이 풀리는지도 봄(Codex 리뷰 #273, #263)
+    monkeypatch.setattr(runner, "CANCEL_CHECK_SEC", 0.01)
+    col = queued_job({"audioUrl": AUDIO_URL})
+    calls: list[str] = []
+
+    class CancelOnFirst:
+        def call(self, model: str, system: str, user: str, schema: Any, name: str, **_: Any) -> Any:
+            calls.append(name)
+            col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})  # 앱에서 취소
+            time.sleep(0.3)  # 처리기가 상태를 읽어 알아챌 때까지
+            return {}  # 쓸 내용이 없어 같은 창을 다른 온도로 다시 물으려 함
+
+    monkeypatch.setattr(handlers, "_llm", lambda: CancelOnFirst())
+    monkeypatch.setattr(handlers, "_speech", lambda: FakeSpeech())
+    monkeypatch.setattr(handlers, "_voyage", lambda: FakeVoyage())
+    store = JobStore(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30, now=lambda: T0)
+
+    assert run_once(store, HANDLERS)
+
+    doc = col.find_one({"_id": "j1"})
+    assert calls == [SLIDES]  # 다시 묻는 호출은 보내지 않음
+    assert (doc["status"], doc["result"], doc["lockedBy"], doc["lockedUntil"]) == (
+        "canceled",
+        None,
+        None,
+        None,
+    )
 
 
 # ---------- 다시 시도 때 인식 결과 재사용 ----------
