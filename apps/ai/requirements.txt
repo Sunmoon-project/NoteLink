@@ -4,6 +4,7 @@ uvicorn==0.54.0
 pydantic==2.13.5
 pydantic-settings==2.15.0
 httpx2==2.13.1
+anthropic==2.3.0
 pymongo==4.19.0
 azure-ai-documentintelligence==1.0.2
 azure-storage-blob==12.31.0

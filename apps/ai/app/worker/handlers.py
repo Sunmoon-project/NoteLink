@@ -6,7 +6,7 @@
 import threading
 from collections.abc import Callable
 
-from app.clients.llm import JsonObject, Llm, LlmError, SchoolLlm, Stopping, school_llm
+from app.clients.llm import JsonObject, Llm, LlmError, PacedLlm, Stopping, make_llm
 from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
 from app.services.quiz import generate, review, today
@@ -17,7 +17,7 @@ from app.worker.runner import Handler, JobInputError, JobReport
 class _Once[T]:
     """처음 한 번 만든 것을 계속 돌려줍니다. 두 반복(스레드)이 처음 함께 불러도 하나만 만듦.
 
-    functools.cache는 만들기를 잠그지 않아, 두 반복이 동시에 처음 부르면 SchoolLlm이 둘 생겨
+    functools.cache는 만들기를 잠그지 않아, 두 반복이 동시에 처음 부르면 LLM 클라이언트가 둘 생겨
     호출 간격 · 429 대기 · 사용자 우선이 나뉨(Codex 리뷰 #149). 만들다 실패하면 남기지 않습니다.
     """
 
@@ -38,9 +38,9 @@ class _Once[T]:
 
 
 @_Once
-def _llm() -> SchoolLlm:
-    """프로세스에 하나만 둡니다. 학교 LLM 호출 간격(llm_call_gap_sec)을 작업 사이에도 지키게."""
-    return school_llm()
+def _llm() -> PacedLlm:
+    """프로세스에 하나만 둡니다. LLM 호출 간격(LLM_CALL_GAP_SEC)을 작업 사이에도 지키게."""
+    return make_llm()
 
 
 @_Once
@@ -59,7 +59,7 @@ type _Run = Callable[[Llm, JsonObject, JobReport], JsonObject]
 def _handler(run: _Run, *, background: bool = False) -> Handler:
     """퀴즈 서비스의 run을 처리 함수로. input 오류는 다시 해도 같으므로 바로 실패시킵니다.
 
-    background면 학교 LLM 호출 차례를 사용자 작업에 양보합니다(SchoolLlm.background, #138).
+    background면 LLM 호출 차례를 사용자 작업에 양보합니다(PacedLlm.background, #138).
     사용자가 이 작업을 이어받으면(report.awaited) 그때부터 양보하지 않습니다.
     작업이 취소되면(report.canceled) 남은 호출을 보내지 않습니다(Stopping, #263).
     """
@@ -94,8 +94,8 @@ def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
     """녹음 정리(recording_job.run). 일시 오류는 LlmError로 바꿔 시도 한도 안에서 다시 시도합니다.
 
     설정 누락 · 음성 외 영구 오류는 그 밖의 예외로 두어 바로 실패합니다(자세한 내용은 로그에만).
-    학교 LLM 주소가 비어 있으면 _llm()이 LlmSetupError(retry=False)로 바로 실패시킵니다(#262).
-    작업이 취소되면 남은 학교 LLM 호출을 보내지 않습니다(#263). 음성 인식은 한 번의 긴 호출이라
+    LLM 설정(키 · 주소)이 비어 있으면 _llm()이 LlmSetupError(retry=False)로 바로 실패시킵니다(#262).
+    작업이 취소되면 남은 LLM 호출을 보내지 않습니다(#263). 음성 인식은 한 번의 긴 호출이라
     보낸 뒤에는 멈추지 못합니다.
     """
     llm = Stopping(_llm(), report.canceled())
