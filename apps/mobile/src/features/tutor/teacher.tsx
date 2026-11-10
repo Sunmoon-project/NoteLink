@@ -8,6 +8,7 @@ import { Text } from '@/components/text';
 import { Btn, Canvas, Header, Label, Loading, Screen, cx } from '@/components/ui';
 import { api } from '@/lib/api';
 import { BASE_AVATAR } from '@/lib/local/catalog';
+import { ItemPreview } from '@/features/reward/shop';
 import { toast } from '@/stores/toast';
 import { LoadError } from '../progress/load-error';
 import { C, ICON } from '@/theme';
@@ -55,7 +56,9 @@ export function AvatarTeacherScreen() {
           <Header title="아바타 선생님" large={false} />
           <LoadError
             message="아바타 목록을 불러오지 못했어요"
-            retry={() => Promise.all([mine.isError && mine.refetch(), all.isError && all.refetch()])}
+            retry={() =>
+              Promise.all([mine.isError && mine.refetch(), all.isError && all.refetch()])
+            }
           />
         </Screen>
       </Canvas>
@@ -90,7 +93,7 @@ export function AvatarTeacherScreen() {
                   on ? 'border-brand' : 'border-transparent',
                 )}
               >
-                <Text className="text-title1">{it.thumbnailUrl}</Text>
+                <ItemPreview item={it} small />
                 <Text className="text-caption font-semibold text-ink" numberOfLines={1}>
                   {it.name.replace(/ 아바타$/, '')}
                 </Text>

@@ -445,6 +445,15 @@ describe('아바타 선생님 고르기', () => {
     expect(router.push).toHaveBeenCalledWith('/shop');
   });
 
+  it('그림 주소인 상품은 주소 글자 대신 그림으로 보여 준다', async () => {
+    const url = 'https://cdn.example.com/bora.png';
+    mockApi.shop.items.mockResolvedValue([item('bora', '보라 아바타', url)]);
+    await renderScreen(<AvatarTeacherScreen />);
+    const pic = await screen.findByLabelText('보라 아바타 미리보기');
+    expect(pic.props.source).toEqual({ uri: url });
+    expect(screen.queryByText(url)).toBeNull();
+  });
+
   it('고르면 장착하고 선생님 얼굴을 새로 고친다', async () => {
     await renderScreen(<AvatarTeacherScreen />);
     mockApi.shop.myItems.mockResolvedValue([own('bora')]);
