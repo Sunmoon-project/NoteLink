@@ -6,7 +6,7 @@ import mongomock
 import pytest
 from pymongo.errors import AutoReconnect
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmRejectedError, LlmSetupError
 from app.worker import runner
 from app.worker.jobs import Job, JobStore
 from app.worker.runner import (
@@ -150,6 +150,35 @@ def test_llm_error_is_retried_later(col: Any) -> None:
 
     doc = run(col, handler)
     assert (doc["status"], doc["error"]) == ("queued", "AI 응답을 받지 못함(HTTP 503)")
+
+
+def test_a_setup_error_from_the_server_is_retried_later(col: Any) -> None:
+    # 게이트웨이가 잠깐 403 · 404를 줄 수도 있어 시도 한도 안에서 다시(#262)
+    def handler(inp: JsonObject, report: Report) -> JsonObject:
+        raise LlmSetupError("HTTP 401")
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["error"]) == ("queued", "AI 설정 오류(HTTP 401)")
+
+
+def test_a_missing_setting_fails_without_retry(col: Any) -> None:
+    def handler(inp: JsonObject, report: Report) -> JsonObject:
+        raise LlmSetupError("SCHOOL_LLM_BASE_URL이 비어 있음", retry=False)
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["error"]) == (
+        "failed",
+        "AI 설정 오류(SCHOOL_LLM_BASE_URL이 비어 있음)",
+    )
+
+
+def test_a_rejected_request_fails_without_retry(col: Any) -> None:
+    # 같은 요청을 다시 보내도 같음: 작업을 다시 넣지 않음(/code-review #262)
+    def handler(inp: JsonObject, report: Report) -> JsonObject:
+        raise LlmRejectedError("HTTP 413")
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["error"]) == ("failed", "AI가 요청을 거절함(HTTP 413)")
 
 
 def test_bad_input_fails_without_retry(col: Any) -> None:
