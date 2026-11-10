@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo, FlatList, Keyboard, Pressable, TextInput, View } from 'react-native';
+import {
+  AccessibilityInfo,
+  FlatList,
+  Keyboard,
+  Platform,
+  Pressable,
+  TextInput,
+  View,
+} from 'react-native';
 import Animated, {
   Extrapolation,
   FadeIn,
@@ -57,12 +65,18 @@ function failText(e: unknown) {
   return '답을 만들지 못했어요. 연결을 확인하고 다시 물어봐 주세요.';
 }
 
-/** 키보드가 올라와 있는지(올라오기 시작할 때 바로 바꿔 무대가 함께 비켜 서게) */
+/** 키보드가 올라와 있는지(iOS는 올라오기 시작할 때 바로 바꿔 무대가 함께 비켜 서게).
+ * 안드로이드에는 Will 이벤트가 없어 Did로 받는다 */
 function useKeyboardShown() {
   const [shown, setShown] = useState(false);
   useEffect(() => {
-    const on = Keyboard.addListener('keyboardWillShow', () => setShown(true));
-    const off = Keyboard.addListener('keyboardWillHide', () => setShown(false));
+    const IOS = Platform.OS === 'ios';
+    const on = Keyboard.addListener(IOS ? 'keyboardWillShow' : 'keyboardDidShow', () =>
+      setShown(true),
+    );
+    const off = Keyboard.addListener(IOS ? 'keyboardWillHide' : 'keyboardDidHide', () =>
+      setShown(false),
+    );
     return () => {
       on.remove();
       off.remove();
