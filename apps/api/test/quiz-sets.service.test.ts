@@ -7,6 +7,7 @@ import {
   fitInput,
   INPUT_ATTEMPT_LIMIT,
   INPUT_BYTE_LIMIT,
+  nextSetId,
   QUIZ_MIN_LINES,
   QUIZ_SET_SIZE,
   QuizSetsService,
@@ -918,7 +919,52 @@ describe('QuizSetsService 리뷰 반영(Codex #276)', () => {
     const again = await t.service.create(ME.toHexString(), materialId);
 
     expect(again.quizSet._id).not.toBe(p._id);
+    expect(again.quizSet._id).toBe(nextSetId(new Types.ObjectId(p._id)).toHexString());
     expect(again.job).toMatchObject({ _id: p._id, awaited: true });
+  });
+
+  it('지운 뒤 이어받는 두 요청 중 늦은 쪽이 다른 세트가 ready가 된 뒤 넣어도 세트는 하나(Codex 재리뷰)', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await t.aiJobs.enqueue({
+      type: 'quiz_pregen',
+      userId: ME.toHexString(),
+      targetType: 'material',
+      targetId: materialId,
+      input: { material: { pages: [{ pageNo: 1, ocrText: NOTE_TEXT }] } },
+    });
+    const deleted = await t.service.create(ME.toHexString(), materialId);
+    Object.assign(t.set(deleted.quizSet._id), { deletedAt: new Date() });
+    // 다음 요청(이어받음)의 세트 넣기를 붙잡아 둔다
+    const create = t.sets.model.create.bind(t.sets.model);
+    let release!: () => void;
+    let held!: () => void;
+    const holding = new Promise<void>((r) => (held = r));
+    const gate = new Promise<void>((r) => (release = r));
+    let first = true;
+    (t.sets.model as unknown as { create: typeof create }).create = (async (
+      ...args: Parameters<typeof create>
+    ) => {
+      if (first) {
+        first = false;
+        held();
+        await gate;
+      }
+      return create(...args);
+    }) as typeof create;
+
+    const a = t.service.create(ME.toHexString(), materialId);
+    await holding;
+    const b = await t.service.create(ME.toHexString(), materialId);
+    t.finish(p._id, result);
+    const shown = await t.service.findMine(ME.toHexString(), b.quizSet._id);
+    release();
+    const late = await a;
+
+    expect(shown).toMatchObject({ status: 'ready' });
+    expect(late.quizSet).toMatchObject({ _id: b.quizSet._id, status: 'ready' });
+    expect(t.sets.rows.filter((r) => !r['deletedAt'])).toHaveLength(1);
+    expect(t.jobs.rows).toHaveLength(1);
   });
 
   it('개념 저장이 실패하면 세트도 그대로 두어 다음 조회가 다시 옮기며 저장한다', async () => {

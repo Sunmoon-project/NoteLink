@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, mongo, Types } from 'mongoose';
@@ -212,6 +214,15 @@ function objectId(id: string, what: string): Types.ObjectId {
   return new Types.ObjectId(id);
 }
 
+/**
+ * 미리 만들기로 만든 세트를 지웠을 때 이어받는 새 세트의 id(setIdFor). 지운 세트의 id에서 늘 같은 값이
+ * 나와 동시에 이어받는 요청들이 같은 id를 쓴다
+ */
+export function nextSetId(id: Types.ObjectId): Types.ObjectId {
+  const digest = createHash('sha256').update(`quiz-set-after:${id.toHexString()}`).digest();
+  return new Types.ObjectId(digest.subarray(0, 12).toString('hex'));
+}
+
 const isDuplicateKey = (e: unknown) =>
   typeof e === 'object' && e !== null && (e as { code?: unknown }).code === DUPLICATE_KEY;
 
@@ -345,14 +356,19 @@ export class QuizSetsService {
    * 새 세트의 id. 미리 만들기로 만드는 세트는(이어받기든 끝난 결과 쓰기든) 그 작업 id를 쓴다: 한 미리
    * 만들기로 세트가 둘 생기지 않게 _id 고유 색인이 막는다. 이어받은 요청이 세트를 넣기 전에 작업이 끝나
    * 다른 요청이 그 결과로 세트를 먼저 만들어도, 늦은 쪽은 같은 id에 막혀 먼저 만든 세트를 돌려준다
-   * (Codex 리뷰 #276). 그 id의 세트를 지웠으면 새 id: 지운 세트는 되살리지 않고, 다시 도는 미리 만들기를
-   * 새 세트가 이어받는다. 지우지 않은 세트가 있으면 같은 id로 넣어 막히게 둔다(먼저 만든 세트를 돌려줌)
+   * (Codex 리뷰 #276). 그 id의 세트를 지웠으면 그 id에서 정해지는 다음 id(nextSetId): 지운 세트는
+   * 되살리지 않고, 다시 도는 미리 만들기를 새 세트가 이어받는다. 다음 id도 요청마다 같아서, 지운 뒤
+   * 이어받는 요청들도 같은 id에 막혀 세트 하나를 같이 쓴다(Codex 재리뷰 #276). 지우지 않은 세트가
+   * 있으면 그 id로 넣어 막히게 둔다(먼저 만든 세트를 돌려줌)
    */
   private async setIdFor(pregen: AppAiJob | null): Promise<Types.ObjectId> {
     if (!pregen) return new Types.ObjectId();
-    const id = new Types.ObjectId(pregen._id);
-    const same = await this.sets.findOne({ _id: id }).lean<QuizSetRow>();
-    return same?.deletedAt ? new Types.ObjectId() : id;
+    let id = new Types.ObjectId(pregen._id);
+    // 지운 세트마다 한 칸씩 간다. 칸마다 세트가 있어야 넘어가므로 지운 세트 수만큼만 돈다
+    while ((await this.sets.findOne({ _id: id }).lean<QuizSetRow>())?.deletedAt) {
+      id = nextSetId(id);
+    }
+    return id;
   }
 
   /**
