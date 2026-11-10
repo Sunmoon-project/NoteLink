@@ -1066,12 +1066,12 @@ def test_the_total_limit_is_five_minutes_even_for_ten_questions(
 
 
 @pytest.mark.usefixtures("fill_rounds")
-@pytest.mark.parametrize(("min_round", "calls"), [(45, 2), (43, 3)])
+@pytest.mark.parametrize(("min_round", "calls"), [(45, 2), (44, 3), (43, 3)])
 def test_a_new_round_needs_min_round_sec_left(
     monkeypatch: pytest.MonkeyPatch, min_round: float, calls: int
 ) -> None:
     # 5문제(전체 300초), 생성 호출마다 128초: 1판 128초 · 2판 256초에 끝나 44초 남음.
-    # MIN_ROUND_SEC 45초면 3판을 띄우지 않고, 43초면 띄움
+    # MIN_ROUND_SEC 45초면 3판을 띄우지 않고, 44초(남은 시간과 같음) · 43초면 띄움
     now = [0.0]
     monkeypatch.setattr(generate, "_clock", lambda: now[0])
     monkeypatch.setattr(generate, "MIN_ROUND_SEC", min_round)
@@ -1246,6 +1246,49 @@ def test_rounds_with_spare_slots_never_run_more_than_workers_at_once(
     join_threads("quiz-slot")
     assert calls[0] > 3  # 1판(자리 3개) 뒤에 다음 판이 돌았음
     assert peak[0] <= 3
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_the_last_stage_reopens_only_pages_closed_for_no_concept() -> None:
+    # 2쪽(틀린 기록이 있어 더 무거움)은 이미 있는 문제와 거의 같아 겹침으로 닫히고, 1쪽은 개념
+    # 둘을 다 물어 닫힘. 마지막 단계는 1쪽만 다시 엶: 2쪽은 같은 겹침 검사에 또 걸리므로 부르지 않음
+    old = stored("q1", "람블편모충", "람블편모충")
+    old["passage"] = GOOD["람블편모충"]["question"]["passage"]
+    inp = job(
+        size=3,
+        sets=[{"id": "s1", "materialId": "m1", "questions": [old]}],
+        attempts=[attempt("q1", False)],
+    )
+    angle = draft(
+        "4핵", "이질 아메바 포낭형의 핵 수", concept="이질 아메바",
+        options=["4핵", "8핵", "2핵", "1핵", "6핵"],
+    )  # fmt: skip
+    page1 = quiz_from([GOOD["이질 아메바"], GOOD["대장 아메바"], angle])
+    calls: list[tuple[int, bool]] = []  # (쪽, 마지막 단계 안내가 있는지)
+    last_answer = [""]
+
+    def quiz(user: str) -> JsonObject:
+        on2 = '<노트 쪽="2">' in user
+        calls.append((2 if on2 else 1, "이 퀴즈에서 이미 물은 개념" in user))
+        r = GOOD["람블편모충"] if on2 else page1(user)
+        assert not isinstance(r, LlmError)
+        last_answer[0] = r["question"]["answer"]
+        return r
+
+    llm = ScriptLlm(
+        {
+            "Quiz": quiz,
+            "Naturals": lambda u: {"natural": [o == last_answer[0] for o in candidates(u)]},
+            "Check": checker(lambda u: last_answer[0]),
+        }
+    )
+    result, _ = run(llm, inp)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바", "4핵"]
+    # 2쪽은 첫 단계의 한 자리(gen_one이 유형마다 한 번)에서 겹침으로 닫힌 뒤 다시 부르지 않음(다시
+    # 열면 마지막 단계 판의 첫 자리가 무거운 2쪽으로 가 그만큼 더 부름)
+    once = len(generate.page_types(PAGE2, generate.is_korean_subject({1: PAGE1, 2: PAGE2}))[:2])
+    assert [page for page, _ in calls].count(2) == once
+    assert calls[-1] == (1, True)  # 마지막 단계는 1쪽에서 이미 물은 개념을 다른 각도로
 
 
 @pytest.mark.usefixtures("fill_rounds")
