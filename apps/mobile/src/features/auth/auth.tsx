@@ -464,14 +464,19 @@ export function SignupCodeScreen() {
   const resend = useMutation({
     onMutate: () => useSignup.setState({ proof: null }),
     mutationFn: (to: string) => api.auth.emailSendCode(to),
-    onSuccess: () => {
+    onSuccess: (_, to) => {
+      // 그사이 앞 화면에서 다른 이메일로 바꿨으면 옛 주소의 응답은 버린다
+      if (useSignup.getState().sentTo !== to) return;
       setCode('');
       setCodeMsg(null);
       useSignup.setState({ sentAt: Date.now() });
       setNow(Date.now());
       toast('인증번호를 보냈어요. 메일을 확인해 주세요');
     },
-    onError: (e) => failed(e, '인증번호를 보내지 못했어요. 다시 시도해 주세요'),
+    onError: (e, to) => {
+      if (useSignup.getState().sentTo !== to) return;
+      failed(e, '인증번호를 보내지 못했어요. 다시 시도해 주세요');
+    },
   });
   const signup = useMutation({
     mutationFn: async ({ to, digits }: { to: string; digits: string }) => {
@@ -492,7 +497,9 @@ export function SignupCodeScreen() {
       // 실제로 가입한 이메일로 로그인을 채운다
       toLogin(to);
     },
-    onError: (e) => {
+    onError: (e, { to }) => {
+      // 그사이 다른 이메일로 바꿨으면 옛 주소의 실패가 새 주소의 증표 · 다시 받기 대기를 건드리지 않게 버린다
+      if (useSignup.getState().sentTo !== to) return;
       if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
       else if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_CODE_INVALID)
         setCodeMsg(e.message);

@@ -343,6 +343,54 @@ it('인증번호를 확인하는 사이 가입 정보가 바뀌면(앞 화면에
   expect(router.replace).not.toHaveBeenCalled();
 });
 
+it.each([ERROR_CODES.EMAIL_TAKEN, ERROR_CODES.EMAIL_PROOF_INVALID])(
+  '이메일을 바꿔 새 번호를 받은 뒤 옛 주소의 가입이 늦게 %s 로 실패해도 지금 단계를 건드리지 않는다',
+  async (code) => {
+    jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
+    jest
+      .spyOn(api.auth, 'emailVerifyCode')
+      .mockResolvedValue({ verificationToken: 'proof-a', expiresInSeconds: 600 });
+    let fail!: (e: unknown) => void;
+    jest
+      .spyOn(api.auth, 'emailSignup')
+      .mockImplementationOnce(() => new Promise((_, no) => (fail = no)));
+    await fireEvent.changeText(await toCode('a@test.com', 'abcd1234'), '123456');
+    await fireEvent.press(screen.getByText('가입하기'));
+    await waitFor(() => expect(api.auth.emailSignup).toHaveBeenCalled());
+    // 앞 화면에서 b로 바꿔 새 번호를 받았다
+    const sentAt = Date.now();
+    useSignup.setState({
+      sentTo: 'b@test.com',
+      sentAt,
+      proof: { email: 'b@test.com', token: 'proof-b' },
+    });
+    useToast.setState({ msg: null });
+    fail(new ApiError(code, '옛 주소 실패', 409));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(useSignup.getState()).toMatchObject({
+      sentTo: 'b@test.com',
+      sentAt,
+      proof: { email: 'b@test.com', token: 'proof-b' },
+    });
+    expect(useToast.getState().msg).toBeNull();
+    expect(screen.queryByText('이미 가입한 이메일이에요')).toBeNull();
+  },
+);
+
+it('다시 받는 사이 다른 이메일로 바꾸면 옛 주소의 발송 응답이 새 주소의 대기를 건드리지 않는다', async () => {
+  const send = jest.spyOn(api.auth, 'emailSendCode').mockResolvedValueOnce(undefined);
+  let sent!: () => void;
+  send.mockImplementationOnce(() => new Promise<void>((r) => (sent = r)));
+  await toCode('a@test.com', 'abcd1234');
+  await fireEvent.press(screen.getByRole('button', { name: '인증번호 다시 받기' }));
+  useSignup.setState({ sentTo: 'b@test.com', sentAt: 123 });
+  useToast.setState({ msg: null });
+  sent();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(useSignup.getState().sentAt).toBe(123);
+  expect(useToast.getState().msg).toBeNull();
+});
+
 it.each([ERROR_CODES.EMAIL_PROOF_EXPIRED, ERROR_CODES.EMAIL_PROOF_INVALID])(
   '증표가 %s 이면 알리고, 인증번호를 다시 받아 새로 인증한다',
   async (code) => {
