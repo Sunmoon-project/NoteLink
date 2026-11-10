@@ -1,22 +1,34 @@
+import email.utils
 import json
 import re
 import threading
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 
 import httpx2
 import pytest
 
 from app.clients.llm import (
+    CANCELED,
+    HOLD_SEC,
+    MAX_HOLD_SEC,
+    MAX_HOLDS,
     MIN_YIELD_SEC,
     QUIET_GAPS,
     STOPPED,
     LlmCutError,
     LlmError,
+    LlmRejectedError,
+    LlmSetupError,
     SchoolLlm,
+    Stopping,
     repair,
+    retry_after,
+    school_llm,
     stop_on,
 )
+from app.core.config import settings
 
 SCHEMA = {"type": "object"}
 
@@ -184,6 +196,100 @@ def test_server_errors_back_off_then_raise() -> None:
     assert server.slept == [4, 8, 12]
 
 
+@pytest.mark.parametrize("status", [400, 413, 422])
+def test_a_rejected_request_is_not_sent_again(status: int) -> None:
+    # 다시 보내도 같은 요청: 기다리지도 다시 보내지도 않고 이 호출만 실패(#262)
+    server = Server(reply("", status))
+    with pytest.raises(LlmRejectedError, match=f"HTTP {status}") as e:
+        server.client(retries=2).call("gemma", "s", "u", SCHEMA, "X")
+    assert isinstance(e.value, LlmError)  # 서비스는 지금처럼 그 초안만 버림
+    assert len(server.requests) == 1 and server.slept == []
+
+
+@pytest.mark.parametrize("status", [301, 308, 401, 403, 404])
+def test_a_setup_error_is_not_an_llm_error(status: int) -> None:
+    # 키 · 주소 · 모델 이름: 모든 호출이 같으므로 서비스의 except LlmError를 지나 작업 처리기까지
+    server = Server(reply("", status))
+    with pytest.raises(LlmSetupError, match=f"HTTP {status}") as e:
+        server.client(retries=2).call("gemma", "s", "u", SCHEMA, "X")
+    assert not isinstance(e.value, LlmError)
+    assert e.value.retry  # 게이트웨이가 잠깐 그럴 수 있어 작업은 시도 한도 안에서 다시
+    assert len(server.requests) == 1
+
+
+def test_a_missing_address_is_a_setup_error_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "school_llm_base_url", "")
+    with pytest.raises(LlmSetupError, match="SCHOOL_LLM_BASE_URL") as e:
+        school_llm()
+    assert not e.value.retry
+
+
+@pytest.mark.parametrize("status", [408, 409, 425, 502])
+def test_passing_errors_are_sent_again(status: int) -> None:
+    server = Server(reply("", status), reply('{"ok": true}'))
+    assert server.client(retries=1).call("gemma", "s", "u", SCHEMA, "X") == {"ok": True}
+    assert server.slept == [4]
+
+
+def test_rate_limits_do_not_use_up_the_retries() -> None:
+    # retries=0이어도 429 두 번 뒤 답을 받음: 분당 한도는 기다리면 풀림(#262)
+    server = Server(reply("", 429), reply("", 429), reply('{"ok": true}'))
+    c = Clock(server, gap=0)
+    c.llm._retries = 0
+    assert c.llm.call("gemma", "s", "u", SCHEMA, "X") == {"ok": True}
+    assert c.slept == [HOLD_SEC, HOLD_SEC]
+
+
+def test_rate_limits_give_up_after_max_holds() -> None:
+    server = Server(*(reply("", 429, {"Retry-After": "3"}) for _ in range(MAX_HOLDS + 1)))
+    c = Clock(server, gap=0)
+    with pytest.raises(LlmError, match="HTTP 429"):
+        c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert len(c.sent) == MAX_HOLDS + 1
+    assert c.llm._held == pytest.approx(c.now + 3)  # 그만둔 뒤에도 다른 호출은 쉼
+
+
+def test_a_long_rate_limit_gives_up_at_once() -> None:
+    # 한 시간 뒤에 보내라면 120초 뒤 다시 보내도 429: 그만두고 작업은 처리기가 나중에(/code-review)
+    server = Server(reply("", 429, {"Retry-After": "3600"}))
+    c = Clock(server, gap=0)
+    with pytest.raises(LlmError, match="HTTP 429"):
+        c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert len(c.sent) == 1 and c.slept == []
+    assert c.llm._held == pytest.approx(c.now + MAX_HOLD_SEC)  # 다른 호출은 그만큼만 쉼
+
+
+def test_a_rate_limit_with_a_date_waits_until_then() -> None:
+    # 날짜 형식 Retry-After가 ValueError로 작업을 실패시키지 않음(#262)
+    when = email.utils.format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
+    server = Server(reply("", 429, {"Retry-After": when}), reply('{"ok": true}'))
+    c = Clock(server, gap=0)
+    assert c.llm.call("gemma", "s", "u", SCHEMA, "X") == {"ok": True}
+    assert c.slept == [pytest.approx(30, abs=2)]
+
+
+NOW = datetime(2026, 11, 10, 9, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("value", "sec"),
+    [
+        ("7", 7.0),
+        ("0", 1.0),  # 바로 다시 보내지 않고 1초는 쉼
+        ("3600", 3600.0),  # 길면 그대로: 그만둘지는 호출이 정함
+        ("Tue, 10 Nov 2026 09:00:45 GMT", 45.0),
+        ("Tue, 10 Nov 2026 08:59:00 GMT", 1.0),  # 지난 시각
+        ("Tue, 10 Nov 2026 09:00:45 -0000", 45.0),  # 시간대 없음 → UTC
+        ("nan", HOLD_SEC),
+        ("곧", HOLD_SEC),
+        ("", HOLD_SEC),
+        (None, HOLD_SEC),
+    ],
+)
+def test_retry_after_reads_seconds_and_dates(value: str | None, sec: float) -> None:
+    assert retry_after(value, NOW) == sec
+
+
 def test_unreadable_answer_is_retried_then_raises() -> None:
     server = Server(reply("모르겠습니다"), reply("[1, 2]"))
     with pytest.raises(LlmError, match="JSON"):
@@ -295,6 +401,89 @@ def test_stop_on_only_covers_its_own_block() -> None:
     with stop_on(stop):
         pass
     assert server.client().call("gemma", "s", "u", SCHEMA, "X") == {}  # 블록 밖에서는 보냄
+
+
+# ---------- 작업 취소(Stopping, #263) ----------
+
+
+def real_llm(server: Server) -> SchoolLlm:
+    """실제 대기(time.sleep)로 기다리는 연결: 신호로 깨어나는지 봄."""
+    return SchoolLlm(
+        "https://llm.test", "key", gap_sec=0, transport=httpx2.MockTransport(server.handle)
+    )
+
+
+def test_a_canceled_connection_sends_nothing() -> None:
+    server = Server(reply("{}"))
+    canceled = threading.Event()
+    conn = Stopping(server.client(), canceled)
+    canceled.set()
+    with pytest.raises(LlmError, match=re.escape(CANCELED)):
+        conn.call("gemma", "s", "u", SCHEMA, "X")
+    assert server.requests == []
+
+
+def test_a_cancel_wakes_calls_of_other_threads_waiting_for_their_turn() -> None:
+    # 처리 함수가 자리마다 스레드를 따로 둬도 연결 객체로 넘기므로 모두 멈춤
+    server = Server(reply("{}"))
+    llm = real_llm(server)
+    llm._hold(10)
+    canceled = threading.Event()
+    conn = Stopping(llm, canceled)
+    errors: list[str] = []
+
+    def call() -> None:
+        try:
+            conn.call("gemma", "s", "u", SCHEMA, "X")
+        except LlmError as e:
+            errors.append(str(e))
+
+    threads = [threading.Thread(target=call) for _ in range(3)]
+    for t in threads:
+        t.start()
+    threading.Timer(0.1, canceled.set).start()
+    start = time.monotonic()
+    for t in threads:
+        t.join(5)
+    assert time.monotonic() - start < 2
+    assert errors == [CANCELED] * 3 and server.requests == []
+
+
+def test_a_cancel_wakes_a_call_that_also_has_its_own_stop() -> None:
+    # 맞춤 퀴즈 자리(generate._until의 stop_on) 안에서도 작업 취소에 깨어남: 신호 둘을 함께 봄
+    server = Server(reply("{}"))
+    llm = real_llm(server)
+    llm._hold(10)
+    canceled, done = threading.Event(), threading.Event()
+    conn = Stopping(llm, canceled)
+    threading.Timer(0.1, canceled.set).start()
+    start = time.monotonic()
+    with stop_on(done), pytest.raises(LlmError, match=re.escape(CANCELED)):
+        conn.call("gemma", "s", "u", SCHEMA, "X")
+    assert time.monotonic() - start < 2 and server.requests == []
+
+
+def test_an_inner_stop_still_works_under_a_cancel_signal() -> None:
+    server = Server(reply("{}"))
+    llm = real_llm(server)
+    llm._hold(10)
+    canceled, done = threading.Event(), threading.Event()
+    with stop_on(canceled, CANCELED), stop_on(done):
+        threading.Timer(0.1, done.set).start()
+        with pytest.raises(LlmError, match=re.escape(STOPPED)):
+            llm.call("gemma", "s", "u", SCHEMA, "X")
+    assert server.requests == []
+
+
+def test_a_call_already_sent_is_answered_after_a_cancel() -> None:
+    canceled = threading.Event()
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        canceled.set()  # 보낸 뒤 취소: 응답은 그대로 받음
+        return reply('{"ok": true}')
+
+    llm = SchoolLlm("https://llm.test", "key", gap_sec=0, transport=httpx2.MockTransport(handle))
+    assert Stopping(llm, canceled).call("gemma", "s", "u", SCHEMA, "X") == {"ok": True}
 
 
 # ---------- 미리 해 두는 작업은 사용자 작업 호출에 양보(#138) ----------

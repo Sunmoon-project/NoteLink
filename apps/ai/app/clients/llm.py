@@ -4,17 +4,30 @@
   - User-Agent 헤더가 없으면 거절됨
   - qwen은 생각(thinking)을 꺼야 구조화 출력이 제때 끝남
   - JSON을 닫지 않고 빈 줄로 채운 채 멈출 때가 있음 → repair()
-  - 429(분당 한도)는 Retry-After만큼 기다리고, 5xx는 조금씩 늘려 기다린 뒤 다시 보냄
   - 동시 요청을 받음: gemma 4개를 한꺼번에 보내면 16초, 하나씩이면 약 32초(11/05). 그래서 보내는
     간격(gap_sec, 보낸 시각부터 다음 보낸 시각까지)만 지키고 응답은 여러 스레드가 함께 기다림
+
+200이 아닌 응답(#262)
+  - 429(분당 한도)  Retry-After(초 · HTTP 날짜)만큼 모든 스레드가 멈췄다가 다시 보냄. 일반 재시도
+                    횟수와 따로 MAX_HOLDS번까지. MAX_HOLD_SEC보다 길게 쉬라면 기다리지 않고 그만둠
+  - 3xx · 401 · 403 · 404  키 · 주소 · 모델 이름이 틀림. 모든 호출이 같으므로 LlmSetupError
+                    (LlmError 아님) → 서비스가 초안 하나만 버리고 다른 자리를 계속 부르지 않고 작업
+                    처리기까지 올라감. 게이트웨이가 잠깐 403 · 404를 줄 수도 있어 작업은 시도 한도
+                    안에서 다시(/code-review #262)
+  - 그 밖의 4xx     이 요청 탓(형식 · 길이). 다시 보내도 같아 바로 LlmRejectedError. 서비스는 그
+                    초안만 버리고, 작업 처리기까지 올라오면 작업을 다시 넣지 않음
+  - 408 · 409 · 425 · 5xx · 연결 오류  조금씩 늘려 기다린 뒤 다시 보냄(retries번까지)
 """
 
+import email.utils
 import json
+import math
 import re
 import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx2
@@ -34,42 +47,105 @@ class LlmCutError(LlmError):
     """답을 JSON으로 읽지 못함(주로 응답 잘림)."""
 
 
+class LlmRejectedError(LlmError):
+    """서버가 이 요청을 거절함(400 · 413 · 422 등). 다시 보내도 같아 보내지 않음(#262)."""
+
+
+class LlmSetupError(Exception):
+    """학교 LLM 설정이 틀리거나 비어 있음. 모든 호출이 같음(#262).
+
+    LlmError가 아님: 서비스는 LlmError를 초안 하나의 실패로 보고 다른 자리를 계속 부름. 이 오류는
+    그대로 작업 처리기까지 올라가 작업을 끝냅니다(runner). retry가 참이면(서버가 거절: 3xx · 401 ·
+    403 · 404) 시도 한도 안에서 다시, 거짓이면(설정 값이 비어 있음) 다시 해도 같아 바로 실패.
+    """
+
+    def __init__(self, message: str, *, retry: bool = True) -> None:
+        super().__init__(message)
+        self.retry = retry
+
+
+SETUP_STATUSES = frozenset({401, 403, 404})
+RESEND_4XX = frozenset({408, 409, 425})  # 4xx지만 잠깐 뒤 다시 보내면 되는 응답
+MAX_HOLDS = 5  # 한 호출이 429를 받고 다시 보내는 횟수(일반 재시도와 따로)
+HOLD_SEC = 20.0  # Retry-After가 없거나 읽지 못할 때
+# 이보다 길게 쉬라면(시간 · 하루 한도) 기다렸다 보내도 다시 429라 그만둠: 작업은 처리기가 나중에
+# 다시. 그만둘 때도 다른 호출은 이만큼 쉼(/code-review #262)
+MAX_HOLD_SEC = 120.0
+
+
 STOPPED = "멈춤(다 모았거나 시간 상한)"
 # 마지막 사용자 작업 호출 뒤 이만큼(호출 간격의 배수)은 background 호출을 보내지 않음(#138).
 # 사용자 맞춤 퀴즈는 혼자서도 간격을 거의 다 씀(36회/81초): 응답을 기다리는 사이 빈 차례를
 # 미리 만들기가 가져가면 사용자 5문제가 2분 상한에 걸려 3문제로 끝났음(11/07 학교 LLM)
 QUIET_GAPS = 3
 MIN_YIELD_SEC = 0.2  # 양보한 background 호출이 다시 볼 때까지 최소 대기(간격 0일 때 헛돌지 않게)
+SIGNAL_POLL_SEC = 0.25  # 멈춤 신호가 여럿일 때 기다리며 다시 보는 간격
 _local = threading.local()
 
 
+CANCELED = "멈춤(작업이 취소됨)"
+type _Signal = tuple[threading.Event, str]
+
+
 @contextmanager
-def stop_on(event: threading.Event) -> Iterator[None]:
-    """이 스레드의 호출은 event가 켜지면 보내지 않고 LlmError(STOPPED).
+def stop_on(event: threading.Event, why: str = STOPPED) -> Iterator[None]:
+    """이 스레드의 호출은 event가 켜지면 보내지 않고 LlmError(why).
 
     차례를 기다리거나 다시 보내기 전에 기다리는 동안에도 event로 깨어나 멈춥니다. 맞춤 퀴즈가
     세트를 돌려준 뒤 남은 스레드가 차례를 기다리던 호출이나 재시도를 보내지 않게(Codex 리뷰
     #125). 신호는 이 스레드에만 걸리므로(threading.local) 블록 안에서 다른 스레드로 넘긴 호출은
-    멈추지 않습니다. 지금은 _Until(generate.py)이 호출하는 스레드에서 감쌉니다.
+    멈추지 않습니다. 여러 스레드로 넘기는 호출은 연결 객체로 감쌉니다(Stopping).
+    겹쳐 걸면 모두 봅니다: 작업 취소 안에서 맞춤 퀴즈 자리 멈춤(generate._until)을 걸어도 둘 다
+    (#263).
     """
-    before = getattr(_local, "stop", None)
-    _local.stop = event
+    before: tuple[_Signal, ...] = getattr(_local, "stops", ())
+    _local.stops = (*before, (event, why))
     try:
         yield
     finally:
-        _local.stop = before
+        _local.stops = before
 
 
-def _stop_event() -> threading.Event | None:
-    event: threading.Event | None = getattr(_local, "stop", None)
-    return event
+def _signals() -> tuple[_Signal, ...]:
+    signals: tuple[_Signal, ...] = getattr(_local, "stops", ())
+    return signals
 
 
 def check_stop() -> None:
-    """stop_on으로 건 신호가 켜졌으면 LlmError(STOPPED)."""
-    event = _stop_event()
-    if event is not None and event.is_set():
-        raise LlmError(STOPPED)
+    """stop_on으로 건 신호 중 켜진 것이 있으면 LlmError(그 신호의 이유)."""
+    for event, why in _signals():
+        if event.is_set():
+            raise LlmError(why)
+
+
+class Stopping:
+    """event가 켜지면 이 연결로 하는 호출을 멈춥니다(LlmError(why)). 여러 스레드에서 불러도 됨.
+
+    작업 처리기가 취소를 알아채면 그 작업의 남은 호출을 보내지 않게(#263): 처리 함수는 자리마다
+    스레드를 따로 두므로 스레드 신호(stop_on)가 아니라 연결 객체로 넘깁니다. 호출할 때마다 그
+    스레드에서 stop_on을 걸어, 차례를 기다리거나 다시 보내기 전 대기 중인 호출도 깨어나 멈춥니다.
+    이미 보낸 호출은 응답을 기다립니다.
+    """
+
+    def __init__(self, llm: "Llm", event: threading.Event, why: str = CANCELED) -> None:
+        self._llm, self._event, self._why = llm, event, why
+
+    def call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: "JsonObject",
+        name: str,
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+    ) -> "JsonObject":
+        with stop_on(self._event, self._why):
+            check_stop()  # 가짜 LLM처럼 stop_on을 보지 않는 클라이언트에도
+            return self._llm.call(
+                model, system, user, schema, name, max_tokens=max_tokens, temperature=temperature
+            )
 
 
 class Llm(Protocol):
@@ -112,6 +188,29 @@ def repair(text: str | None) -> Any:
                 if not t:
                     return None
     return None
+
+
+def retry_after(value: str | None, now: datetime | None = None) -> float:
+    """429의 Retry-After(초 또는 HTTP 날짜)를 기다릴 초로. 최소 1초, 못 읽으면 HOLD_SEC.
+
+    날짜 형식을 float()로만 읽으면 ValueError가 작업 처리기까지 올라가 작업이 '처리 중 오류'로
+    다시 시도 없이 실패했음(#262).
+    """
+    if not value:
+        return HOLD_SEC
+    try:
+        sec = float(value)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return HOLD_SEC
+        if when.tzinfo is None:  # '-0000'처럼 시간대가 없으면 UTC
+            when = when.replace(tzinfo=UTC)
+        sec = (when - (now or datetime.now(UTC))).total_seconds()
+    if math.isnan(sec):
+        return HOLD_SEC
+    return max(sec, 1.0)
 
 
 def _never() -> bool:
@@ -208,11 +307,15 @@ class SchoolLlm:
 
     def _pause(self, sec: float) -> None:
         """sec초 기다림. stop_on으로 건 신호가 있으면 켜질 때 바로 깨어남."""
-        event = _stop_event()
-        if event is not None and self._sleep is time.sleep:
-            event.wait(sec)
-        else:
+        events = [event for event, _ in _signals()]
+        if not events or self._sleep is not time.sleep:
             self._sleep(sec)
+        elif len(events) == 1:
+            events[0].wait(sec)
+        else:  # 신호 여럿(작업 취소 · 자리 멈춤): 짧게 나눠 기다리며 모두 봄
+            end = time.monotonic() + sec
+            while not any(e.is_set() for e in events) and (left := end - time.monotonic()) > 0:
+                events[-1].wait(min(left, SIGNAL_POLL_SEC))
 
     def _turn(self, yields: Callable[[], bool], mine: list[bool]) -> None:
         """보낼 수 있을 때(앞 호출을 보낸 뒤 gap_sec, 429 대기 뒤)까지 기다려 차례를 가져갑니다.
@@ -266,25 +369,38 @@ class SchoolLlm:
         self, body: JsonObject, yields: Callable[[], bool], mine: list[bool]
     ) -> JsonObject:
         err = "retries"
-        for attempt in range(self._retries + 1):
+        tries = holds = 0  # 다시 보낸 횟수: 일반(retries까지) · 429(MAX_HOLDS까지) 따로
+        while tries <= self._retries:
             self._turn(yields, mine)  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
             try:
                 res = self._client.post("/chat/completions", json=body)
             except httpx2.TransportError as e:
                 err = type(e).__name__
-                self._pause(4 * (attempt + 1))
+                tries += 1
+                self._pause(4 * tries)
                 continue
-            if res.status_code == 429:
-                self._hold(float(res.headers.get("retry-after") or 20))
+            status = res.status_code
+            if status == 429:
                 err = "HTTP 429"
+                wait = retry_after(res.headers.get("retry-after"))
+                self._hold(min(wait, MAX_HOLD_SEC))  # 그만둬도 남은 호출은 쉼
+                holds += 1
+                if holds > MAX_HOLDS or wait > MAX_HOLD_SEC:
+                    break
                 continue
-            if res.status_code != 200:
-                err = f"HTTP {res.status_code}"
-                self._pause(4 * (attempt + 1))
+            if 300 <= status < 400 or status in SETUP_STATUSES:  # 3xx: 주소가 틀림(따라가지 않음)
+                raise LlmSetupError(f"HTTP {status}")
+            if 400 <= status < 500 and status not in RESEND_4XX:
+                raise LlmRejectedError(f"HTTP {status}")
+            if status != 200:
+                err = f"HTTP {status}"
+                tries += 1
+                self._pause(4 * tries)
                 continue
             parsed = repair(_content(res))
             if not isinstance(parsed, dict):
                 err = "JSON"
+                tries += 1
                 continue
             return parsed
         check_stop()  # 마지막 대기 중에 멈췄으면 서버 실패가 아니라 멈춤
@@ -329,7 +445,7 @@ def _content(res: httpx2.Response) -> str | None:
 
 def school_llm() -> SchoolLlm:
     if not settings.school_llm_base_url:
-        raise LlmError("SCHOOL_LLM_BASE_URL이 비어 있음")
+        raise LlmSetupError("SCHOOL_LLM_BASE_URL이 비어 있음", retry=False)
     return SchoolLlm(
         settings.school_llm_base_url,
         settings.school_llm_api_key.get_secret_value(),
