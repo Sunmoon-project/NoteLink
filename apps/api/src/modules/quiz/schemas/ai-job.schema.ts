@@ -39,6 +39,10 @@ export class AiJob {
   @Prop({ type: Date })
   heldAt?: Date;
 
+  // held를 잡은 요청의 표시(요청마다 다른 값). 자기가 잡은 held만 열거나 되돌린다
+  @Prop({ type: String })
+  holdId?: string;
+
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
 
