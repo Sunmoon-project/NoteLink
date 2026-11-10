@@ -138,6 +138,7 @@ def test_wrong_answers_become_similar_questions() -> None:
         (2, "be", 1),
     ]
     assert new[0]["conceptTags"] == ["stack의 뜻"] and new[0]["type"] == "규칙"
+    assert new[0]["difficulty"] == "상"  # 유형으로 정한 처음 난이도(#268)
     assert all(re.fullmatch(r"[0-9a-f]{24}", x["id"]) for x in new)
     assert result["nextReview"] == "2026-10-30"
     assert [v for v, _ in steps] == [15, 25, 52, 80, 90]

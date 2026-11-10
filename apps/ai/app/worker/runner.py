@@ -3,9 +3,9 @@
 처리 함수(Handler)는 input을 받아 result를 돌려주고, 진행률은 report(값, 단계)로 알립니다.
 시도 사이에 다시 쓸 중간 결과는 report.save_checkpoint · load_checkpoint로 저장하고 읽습니다.
   - LlmError        일시 오류 → 시도 한도까지 기다렸다가 다시 시도
-  - LlmRejectedError  학교 LLM이 이 요청을 거절함(400 등) → 바로 실패(다시 보내도 같음, #262)
-  - LlmSetupError   학교 LLM 설정 오류 → e.retry면 시도 한도까지 다시(서버가 거절), 아니면 바로 실패
-                    (설정 값이 비어 있음, #262)
+  - LlmRejectedError  LLM이 이 요청을 거절함(400 등) → 바로 실패(다시 보내도 같음, #262)
+  - LlmSetupError   LLM 설정 오류 → e.retry면 시도 한도까지 다시(서버가 거절), 아니면 바로 실패
+                    (설정 값이 비어 있음 · 사용 한도 초과, #262 · #278)
   - JobInputError   input이 작업에 맞지 않음 → 바로 실패(다시 해도 같음). 오류 문구는 code로 시작
   - 그 밖의 예외    코드 오류 → 바로 실패. 오류 문구는 앱에 보이므로 자세한 내용은 로그에만 남김
   - JobGoneError    취소됐거나 잠금을 잃음 → 아무것도 쓰지 않고 다음 작업으로
@@ -16,7 +16,7 @@
 
 취소(#263): 같은 스레드가 CANCEL_CHECK_SEC마다 작업이 아직 내 것(running · lockedBy 나)인지
 읽습니다. 아니면(NestJS가 canceled로 바꿈 · 다른 처리기가 가져감) report.canceled()를 켜고,
-처리 함수는 그 신호로 남은 학교 LLM 호출을 보내지 않습니다(llm.Stopping). 처리 함수가 끝난 뒤
+처리 함수는 그 신호로 남은 LLM 호출을 보내지 않습니다(llm.Stopping). 처리 함수가 끝난 뒤
 취소된 작업의 내 잠금을 풀어 앱의 '다시 시도'가 잠금이 끝나기를 기다리지 않게 합니다
 (JobStore.release). 처리 중에는 풀지 않습니다: 다시 넣은 작업을 다른 처리기가 가져가 같은 작업을
 둘이 함께 만들지 않게.
@@ -210,7 +210,7 @@ def run_once(
         log.info("작업이 취소됐거나 다른 처리기로 넘어감 %s", job.id)
         _release(store, job)
     except LlmRejectedError as e:
-        log.warning("작업 %s: 학교 LLM이 요청을 거절함 %s", job.id, e)
+        log.warning("작업 %s: LLM이 요청을 거절함 %s", job.id, e)
         _fail(store, job, f"AI가 요청을 거절함({e})", retry=False)
     except LlmError as e:
         if canceled.is_set():  # 취소로 남은 호출을 멈춘 것: 장애가 아님(쓰기는 _fail에서 막힘)
@@ -219,7 +219,7 @@ def run_once(
             log.warning("작업 %s: LLM 오류 %s", job.id, e)
         _fail(store, job, f"AI 응답을 받지 못함({e})", retry=True)
     except LlmSetupError as e:
-        log.error("작업 %s: 학교 LLM 설정 오류 %s — 키 · 주소 · 모델 이름 확인", job.id, e)
+        log.error("작업 %s: LLM 설정 오류 %s — 키 · 주소 · 모델 이름 · 사용 한도 확인", job.id, e)
         _fail(store, job, f"AI 설정 오류({e})", retry=e.retry)
     except JobInputError as e:
         log.warning("작업 %s: 입력 오류 %s", job.id, e)

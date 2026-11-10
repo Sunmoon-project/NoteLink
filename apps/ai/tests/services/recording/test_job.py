@@ -616,7 +616,8 @@ def real_clients(monkeypatch: pytest.MonkeyPatch) -> Any:
     """설정 누락을 보려고 실제 만들기 함수를 씁니다. 캐시는 앞뒤로 비움."""
     for make in (handlers._llm, handlers._speech, handlers._voyage):
         make.cache_clear()
-    monkeypatch.setattr(settings, "school_llm_base_url", "http://llm.test")
+    monkeypatch.setattr(settings, "llm_provider", "claude")
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr("k"))
     monkeypatch.setattr(settings, "azure_speech_endpoint", "http://speech.test")
     monkeypatch.setattr(settings, "azure_speech_key", SecretStr("k"))
     monkeypatch.setattr(settings, "voyage_api_key", SecretStr("k"))
@@ -628,8 +629,8 @@ def real_clients(monkeypatch: pytest.MonkeyPatch) -> Any:
 @pytest.mark.parametrize(
     ("name", "blank", "error"),
     [
-        # 학교 LLM 설정은 LlmSetupError(retry=False)로 이유를 남김(#262)
-        ("school_llm_base_url", "", "AI 설정 오류(SCHOOL_LLM_BASE_URL이 비어 있음)"),
+        # LLM 설정은 LlmSetupError(retry=False)로 이유를 남김(#262 · #278)
+        ("anthropic_api_key", SecretStr(""), "AI 설정 오류(ANTHROPIC_API_KEY가 비어 있음)"),
         ("azure_speech_endpoint", "", "처리 중 오류"),
         ("voyage_api_key", SecretStr(""), "처리 중 오류"),
     ],

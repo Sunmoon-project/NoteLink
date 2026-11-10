@@ -59,6 +59,7 @@ import {
 import { avatarFace } from '../avatar-styles';
 import { AI_WAITING_STEP, withTopic } from '../ai';
 import { quizPoints, sessionPoints } from '../points';
+import { localAnswer } from './tutor';
 
 // 기기 저장 백엔드 — 서버(NestJS · MongoDB · Blob)가 붙기 전까지 실서버와 같은 Api를 기기 안에서 구현한다.
 // 예시 데이터는 없다. 처음엔 비어 있고, 사용자가 만든 것만 계정별 파일(notelink-user-<id>.json)에 저장된다.
@@ -1025,6 +1026,17 @@ const api: Api = {
     },
     // 필기 여부 · 흐림 판별은 AI 서버가 한다. 기기에서는 형식 · 용량만 확인하고 통과시킨다
     checkImages: (files) => ok(files.map((f) => ({ name: f.name, verdict: 'ok' as const }))),
+    // 서버 AI 대신 노트에서 질문과 가장 많이 겹치는 부분을 골라 바로 답한다(완료된 작업으로)
+    ask: (id, body) => {
+      const m = db().materials.find((x) => x._id === id);
+      if (!m) return fail(ERROR_CODES.NOT_FOUND, '노트를 찾을 수 없어요', 404);
+      const result = localAnswer(m, body.question);
+      if (!result)
+        return fail(ERROR_CODES.NOTE_NOT_READY, '노트 정리가 끝나면 물어볼 수 있어요', 409);
+      const job = queueJob('note_ask', 'material', id);
+      Object.assign(job, { status: 'succeeded', progress: 100, step: undefined, result });
+      return ok(job);
+    },
   },
   ai: {
     job: (id) => {
