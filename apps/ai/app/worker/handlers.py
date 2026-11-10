@@ -6,7 +6,7 @@
 import threading
 from collections.abc import Callable
 
-from app.clients.llm import JsonObject, Llm, LlmError, SchoolLlm, school_llm
+from app.clients.llm import JsonObject, Llm, LlmError, SchoolLlm, Stopping, school_llm
 from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
 from app.services.quiz import generate, review, today
@@ -61,12 +61,14 @@ def _handler(run: _Run, *, background: bool = False) -> Handler:
 
     background면 학교 LLM 호출 차례를 사용자 작업에 양보합니다(SchoolLlm.background, #138).
     사용자가 이 작업을 이어받으면(report.awaited) 그때부터 양보하지 않습니다.
+    작업이 취소되면(report.canceled) 남은 호출을 보내지 않습니다(Stopping, #263).
     """
 
     def handle(inp: JsonObject, report: JobReport) -> JsonObject:
         llm = _llm()
+        conn: Llm = llm.background(report.awaited) if background else llm
         try:
-            return run(llm.background(report.awaited) if background else llm, inp, report)
+            return run(Stopping(conn, report.canceled()), inp, report)
         except review.InputError as e:
             raise JobInputError(str(e)) from e
 
@@ -93,9 +95,12 @@ def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
 
     설정 누락 · 음성 외 영구 오류는 그 밖의 예외로 두어 바로 실패합니다(자세한 내용은 로그에만).
     학교 LLM 주소가 비어 있으면 _llm()이 LlmSetupError(retry=False)로 바로 실패시킵니다(#262).
+    작업이 취소되면 남은 학교 LLM 호출을 보내지 않습니다(#263). 음성 인식은 한 번의 긴 호출이라
+    보낸 뒤에는 멈추지 못합니다.
     """
+    llm = Stopping(_llm(), report.canceled())
     try:
-        return recording_job.run(_llm(), _speech, _voyage(), inp, report, checkpoint=report)
+        return recording_job.run(llm, _speech, _voyage(), inp, report, checkpoint=report)
     except recording_job.InputError as e:
         raise JobInputError(str(e), code=e.code) from e
     except SpeechUnavailableError as e:

@@ -346,6 +346,67 @@ def test_heartbeat_extends_lock_while_handler_is_quiet(col: Any) -> None:
     assert col.find_one({"_id": "j1"})["status"] == "succeeded"
 
 
+@pytest.fixture
+def quick_cancel_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner, "CANCEL_CHECK_SEC", 0.01)
+
+
+@pytest.mark.usefixtures("quick_cancel_check")
+def test_a_cancel_is_noticed_while_the_handler_is_quiet_and_the_lock_is_released(
+    col: Any,
+) -> None:
+    # 잠금 연장(기본 300초)을 기다리지 않고 몇 초 안에 알아채 처리 함수에 알림(#263)
+    noticed: list[bool] = []
+
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})  # 앱에서 취소
+        noticed.append(report.canceled().wait(2))
+        return {"late": True}
+
+    assert run_once(store(col), {"quiz_generate": handler}, heartbeat_sec=60)
+    doc = col.find_one({"_id": "j1"})
+    assert noticed == [True]
+    # 결과는 버리고, 처리 함수가 끝났으니 잠금을 풂: '다시 시도'가 바로 됨
+    assert (doc["status"], doc["result"], doc["lockedBy"], doc["lockedUntil"]) == (
+        "canceled",
+        None,
+        None,
+        None,
+    )
+
+
+@pytest.mark.usefixtures("quick_cancel_check")
+def test_a_cancel_seen_while_failing_also_releases_the_lock(col: Any) -> None:
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})
+        report.canceled().wait(2)
+        raise LlmError("멈춤(작업이 취소됨)")
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["error"], doc["lockedBy"]) == ("canceled", None, None)
+
+
+@pytest.mark.usefixtures("quick_cancel_check")
+def test_a_job_that_is_not_canceled_is_not_signaled(col: Any) -> None:
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        assert not report.canceled().wait(0.1)  # 상태를 여러 번 읽는 동안
+        return {"ok": True}
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["result"]) == ("succeeded", {"ok": True})
+
+
+@pytest.mark.usefixtures("quick_cancel_check")
+def test_a_job_taken_by_another_worker_is_signaled_but_left_locked(col: Any) -> None:
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        col.update_one({"_id": "j1"}, {"$set": {"lockedBy": "w2"}})  # 잠금이 끝나 w2가 가져감
+        assert report.canceled().wait(2)
+        return {"late": True}
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["lockedBy"]) == ("running", "w2")
+
+
 def test_run_forever_keeps_going_after_db_error_and_stops_on_request(col: Any) -> None:
     stop = threading.Event()
     calls: list[str] = []
