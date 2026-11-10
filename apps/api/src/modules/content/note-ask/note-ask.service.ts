@@ -32,6 +32,8 @@ interface MaterialRow {
 
 interface QuizRow {
   prompt: string;
+  /** 빈칸 · 문장 문제의 지문. 앱처럼 문제 아래에 붙인다(quiz-sets toAppQuestion) */
+  passage?: string | null;
   choices?: string[] | null;
   answer: string;
   explanation?: string | null;
@@ -56,7 +58,7 @@ export function noteContext(
         .map(
           (q) =>
             // 객관식은 보기를 번호와 함께 넣어 "2번은 왜 틀려요?" 같은 질문에도 답할 수 있게
-            `Q. ${q.prompt}${(q.choices ?? []).map((c, i) => `\n${i + 1}) ${c}`).join('')}` +
+            `Q. ${q.passage ? `${q.prompt}\n\n${q.passage}` : q.prompt}${(q.choices ?? []).map((c, i) => `\n${i + 1}) ${c}`).join('')}` +
             `\n정답: ${q.answer}${q.explanation ? `\n해설: ${q.explanation}` : ''}`,
         )
         .join('\n')}`,
