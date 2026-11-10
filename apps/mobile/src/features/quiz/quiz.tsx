@@ -18,6 +18,8 @@ import * as Haptics from 'expo-haptics';
 import {
   Archive,
   ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
   Brain,
   CircleCheck,
   FileText,
@@ -45,6 +47,8 @@ import {
   Btn,
   Canvas,
   Card,
+  Chip,
+  Empty,
   Group,
   Header,
   LIST_LAYOUT,
@@ -1113,11 +1117,16 @@ export function QuizExplainScreen() {
     return (
       <Canvas>
         <Screen>
-          <Text>설명할 문제를 불러오지 못했어요</Text>
-          <Btn onPress={() => void query.refetch()}>문제 다시 시도</Btn>
-          <Btn kind="outline" onPress={() => router.back()}>
-            뒤로 가기
-          </Btn>
+          <Header title="AI 설명" large={false} />
+          <Empty
+            icon={<Brain size={ICON.lg} color={C.brand} />}
+            title="설명할 문제를 불러오지 못했어요"
+            body="연결을 확인하고 다시 시도해 주세요."
+          >
+            <Btn small onPress={() => void query.refetch()}>
+              문제 다시 시도
+            </Btn>
+          </Empty>
         </Screen>
       </Canvas>
     );
@@ -1126,34 +1135,35 @@ export function QuizExplainScreen() {
     return (
       <Canvas>
         <Screen>
-          <Text>문제를 찾을 수 없어요</Text>
-          <Btn onPress={() => router.back()}>뒤로 가기</Btn>
+          <Header title="AI 설명" large={false} />
+          <Empty
+            icon={<Brain size={ICON.lg} color={C.brand} />}
+            title="문제를 찾을 수 없어요"
+            body="보관함에서 지웠거나 다른 기기에서 바뀐 문제예요."
+          >
+            <Btn small onPress={() => router.back()}>
+              돌아가기
+            </Btn>
+          </Empty>
         </Screen>
       </Canvas>
     );
   return (
     <Canvas>
       <Screen>
-        <Pressable
-          onPress={() => router.back()}
-          className="mt-3 flex-row items-center gap-2 self-start rounded-full bg-white px-3 py-1.5"
-        >
-          <ArrowLeft size={ICON.sm} color={C.ink} />
-          <Text className="text-footnote text-ink">뒤로 가기</Text>
-        </Pressable>
-        <Text className="mt-4 text-body font-bold text-ink">AI 설명</Text>
-        <View className="mt-2 rounded-card bg-white">
-          <View className="border-b border-ink/80 p-3">
+        <Header title="AI 설명" large={false} />
+        <View className="rounded-card bg-white">
+          <View className="border-b border-line p-4">
             <Text className="text-caption font-semibold text-brand">문제 {q?.order ?? 1}</Text>
-            <Text className="text-subhead text-ink">{q?.prompt}</Text>
+            <Text className="mt-1 text-subhead leading-6 text-ink">{q?.prompt}</Text>
           </View>
-          <View className="p-3 pt-6">
+          <View className="p-4">
             {ex.isError && ex.error instanceof ApiError && ex.error.status === 503 ? (
               <AiPending what="AI 풀이 설명" />
             ) : ex.isError ? (
-              <View>
-                <Text>설명을 불러오지 못했어요</Text>
-                <Btn loading={ex.isFetching} onPress={() => void ex.refetch()}>
+              <View className="items-center gap-3 py-4">
+                <Text className="text-footnote text-sub">설명을 불러오지 못했어요</Text>
+                <Btn small loading={ex.isFetching} onPress={() => void ex.refetch()}>
                   설명 다시 시도
                 </Btn>
               </View>
@@ -1161,7 +1171,7 @@ export function QuizExplainScreen() {
               ex.data.text.split('\n').map((l) => (
                 <Text
                   key={l}
-                  className={cx('text-footnote leading-6 text-ink', l.startsWith('•') && 'pl-2')}
+                  className={cx('text-subhead leading-7 text-ink', l.startsWith('•') && 'pl-2')}
                 >
                   {l}
                 </Text>
@@ -1220,55 +1230,68 @@ export function QuizSimilarScreen() {
   }
   return (
     <Canvas>
-      <Screen footer={<Btn onPress={() => router.back()}>확인</Btn>}>
-        <Text className="pt-5 text-body font-bold text-ink">유사 퀴즈 생성</Text>
-        <Text className="text-caption text-sub">
-          {sim.data
-            ? `원본과 같은 난이도로 ${sim.data.questionCount}문제를 새로 만들었어요`
-            : '원본과 같은 난이도로 새 문제를 만들어요'}
-        </Text>
+      <Screen
+        footer={
+          sim.data ? (
+            <Btn onPress={() => router.back()}>확인</Btn>
+          ) : (
+            <Btn loading={generate.isPending} onPress={() => generate.mutate()}>
+              {generate.isError ? '다시 시도' : '유사 퀴즈 만들기'}
+            </Btn>
+          )
+        }
+      >
+        <Header
+          title="유사 퀴즈"
+          sub={
+            sim.data
+              ? `원본과 같은 난이도로 ${sim.data.questionCount}문제를 새로 만들었어요`
+              : undefined
+          }
+          large={false}
+        />
         {!sim.data && (
-          <Btn loading={generate.isPending} onPress={() => generate.mutate()}>
-            {generate.isError ? '다시 시도' : '유사 퀴즈 만들기'}
-          </Btn>
+          <Empty
+            icon={<Sparkles size={ICON.lg} color={C.brand} />}
+            title="틀린 문제와 비슷한 문제를 만들어요"
+            body="원본과 같은 난이도로 새 문제를 만들어요. 다시 풀면서 헷갈린 개념을 확인해 보세요."
+          />
         )}
         {generate.isError && (
-          <Text>생성 결과를 받지 못했어요. 다시 시도하면 새 생성 요청을 보내요.</Text>
+          <Text className="text-center text-footnote leading-5 text-danger">
+            생성 결과를 받지 못했어요. 다시 시도하면 새로 만들어요.
+          </Text>
         )}
-        <View className="mt-3 gap-2">
+        <View className="gap-2">
           {sim.data?.questions.map((q, i) => (
             <View key={q._id} className="rounded-card bg-white p-4">
-              <Text className="text-caption font-semibold text-ink">문제 {i + 1}</Text>
-              <Text className="text-footnote text-ink">{q.prompt}</Text>
+              <Text className="text-caption font-semibold text-brand">문제 {i + 1}</Text>
+              <Text className="mt-1 text-subhead leading-6 text-ink">{q.prompt}</Text>
               {open.includes(q._id) && (
                 <Animated.View entering={FadeIn} className="mt-2 rounded-xl bg-sun/25 px-3 py-2">
                   <Text className="text-caption font-semibold text-ink">문제 {i + 1} 정답</Text>
                   <Text className="text-caption text-ink">{q.answer}</Text>
                 </Animated.View>
               )}
-              <View className="mt-2 flex-row gap-1.5">
+              <View className="mt-3 flex-row gap-2">
                 {!open.includes(q._id) && (
-                  <Pressable
-                    onPress={() => setOpen((p) => [...p, q._id])}
-                    className="rounded-full bg-mint px-2.5 py-1"
-                  >
-                    <Text className="text-caption2 text-brand">정답 보기</Text>
-                  </Pressable>
+                  <Chip small onPress={() => setOpen((p) => [...p, q._id])}>
+                    정답 보기
+                  </Chip>
                 )}
-                <Pressable
-                  disabled={saved.includes(q._id) || pendingIds.includes(q._id)}
+                <Chip
+                  small
+                  on={saved.includes(q._id)}
                   onPress={() => {
                     if (saving.current.has(q._id) || saved.includes(q._id)) return;
+                    if (pendingIds.includes(q._id)) return;
                     saving.current.add(q._id);
                     setPendingIds([...saving.current]);
                     save.mutate(q);
                   }}
-                  className="rounded-full bg-mint px-2.5 py-1"
                 >
-                  <Text className="text-caption2 text-brand">
-                    {saved.includes(q._id) ? '저장됨' : '플래시카드 저장'}
-                  </Text>
-                </Pressable>
+                  {saved.includes(q._id) ? '저장됨' : '플래시카드 저장'}
+                </Chip>
               </View>
             </View>
           ))}
@@ -1294,58 +1317,91 @@ export function FlashScreen() {
   const c = list[index];
   return (
     <Canvas>
-      <Screen footer={<Btn onPress={() => router.push('/play/cards')}>펼쳐보기</Btn>}>
-        <Pressable
-          onPress={() => router.back()}
-          className="mt-3 flex-row items-center gap-2 self-start rounded-full bg-white px-3 py-1.5"
-        >
-          <ArrowLeft size={ICON.sm} color={C.ink} />
-          <Text className="text-footnote text-ink">뒤로 가기</Text>
-        </Pressable>
+      <Screen
+        footer={
+          list.length > 0 ? (
+            <Btn kind="outline" onPress={() => router.push('/play/cards')}>
+              모아보기
+            </Btn>
+          ) : undefined
+        }
+      >
+        <Header
+          title="플래시 카드"
+          sub={list.length ? `${list.length}장` : undefined}
+          large={false}
+        />
         {cards.isError && !cards.data && <ErrorAlert retry={() => cards.refetch()} />}
-        {cards.isSuccess && list.length === 0 && <Text>저장한 플래시카드가 없어요</Text>}
+        {cards.isSuccess && list.length === 0 && (
+          <Empty
+            icon={<Layers size={ICON.lg} color={C.brand} />}
+            title="저장한 플래시 카드가 없어요"
+            body="유사 퀴즈에서 ‘플래시카드 저장’을 누르면 외울 내용이 여기에 모여요."
+          >
+            <Btn small onPress={() => router.back()}>
+              퀴즈로 돌아가기
+            </Btn>
+          </Empty>
+        )}
         {c && (
-          <View className="-mx-5 mt-10 bg-mint/70 px-8 py-1">
+          <View className="mt-2">
             <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="카드 뒤집기"
               onPress={() => setBack((b) => !b)}
-              className="h-72 items-center justify-center rounded-2xl border border-brand/30 bg-white px-6"
+              className="h-80 items-center justify-center rounded-card bg-white px-6"
             >
               <Animated.Text
                 key={`${i}-${back}`}
                 entering={FadeIn}
-                className="text-center text-body leading-6 font-bold text-ink"
+                className="text-center text-title3 leading-8 font-bold text-ink"
               >
                 {back ? c.back : c.front}
               </Animated.Text>
-              <Text className="absolute bottom-4 text-caption2 text-sub">탭하여 뒤집기</Text>
+              <Text className="absolute top-4 text-caption font-semibold text-brand">
+                {back ? '정답' : '문제'}
+              </Text>
+              <Text className="absolute bottom-4 text-caption2 text-sub">눌러서 뒤집기</Text>
             </Pressable>
           </View>
         )}
-        <View className="mt-4 flex-row items-center justify-center gap-4">
-          <Pressable
-            disabled={i === 0}
-            onPress={() => {
-              setI((x) => x - 1);
-              setBack(true);
-            }}
-            className={i === 0 ? 'opacity-30' : ''}
-          >
-            <Text className="text-footnote text-sub">‹ 이전</Text>
-          </Pressable>
-          <Text className="text-footnote text-sub">
-            {list.length ? i + 1 : 0} / {list.length}
-          </Text>
-          <Pressable
-            disabled={i >= list.length - 1}
-            onPress={() => {
-              setI((x) => x + 1);
-              setBack(true);
-            }}
-            className={i >= list.length - 1 ? 'opacity-30' : ''}
-          >
-            <Text className="text-footnote text-sub">다음 ›</Text>
-          </Pressable>
-        </View>
+        {list.length > 0 && (
+          <View className="mt-5 flex-row items-center justify-center gap-6">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="이전 카드"
+              disabled={i === 0}
+              onPress={() => {
+                setI((x) => x - 1);
+                setBack(true);
+              }}
+              className={cx(
+                'h-11 w-11 items-center justify-center rounded-full bg-white',
+                i === 0 && 'opacity-30',
+              )}
+            >
+              <ChevronLeft size={ICON.md} color={C.ink} />
+            </Pressable>
+            <Text className="min-w-14 text-center text-subhead font-semibold tabular-nums text-ink">
+              {i + 1} / {list.length}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="다음 카드"
+              disabled={i >= list.length - 1}
+              onPress={() => {
+                setI((x) => x + 1);
+                setBack(true);
+              }}
+              className={cx(
+                'h-11 w-11 items-center justify-center rounded-full bg-white',
+                i >= list.length - 1 && 'opacity-30',
+              )}
+            >
+              <ChevronRight size={ICON.md} color={C.ink} />
+            </Pressable>
+          </View>
+        )}
       </Screen>
     </Canvas>
   );
@@ -1379,25 +1435,27 @@ export function CardsScreen() {
           )
         }
       >
-        <View className="mt-3 flex-row items-center justify-between">
-          <Pressable
-            onPress={() => router.back()}
-            className="flex-row items-center gap-2 rounded-full bg-white px-3 py-1.5"
-          >
-            <ArrowLeft size={ICON.sm} color={C.ink} />
-            <Text className="text-footnote text-ink">뒤로 가기</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setSelect((x) => !x)}
-            className={cx('rounded-full px-3 py-1', select ? 'bg-brand' : 'bg-white')}
-          >
-            <Text className={cx('text-caption', select ? 'text-white' : 'text-ink')}>
-              {select ? '취소' : '선택'}
-            </Text>
-          </Pressable>
-        </View>
+        <Header
+          title="플래시 카드 모아보기"
+          sub={cards.data?.length ? `${cards.data.length}장` : undefined}
+          large={false}
+          right={
+            !!cards.data?.length && (
+              <Chip small on={select} onPress={() => setSelect((x) => !x)}>
+                {select ? '취소' : '선택'}
+              </Chip>
+            )
+          }
+        />
         {cards.isError && !cards.data && <ErrorAlert retry={() => cards.refetch()} />}
-        <View className="mt-4 flex-row flex-wrap justify-between gap-y-3">
+        {cards.isSuccess && cards.data.length === 0 && (
+          <Empty
+            icon={<Layers size={ICON.lg} color={C.brand} />}
+            title="저장한 플래시 카드가 없어요"
+            body="유사 퀴즈에서 ‘플래시카드 저장’을 누르면 외울 내용이 여기에 모여요."
+          />
+        )}
+        <View className="flex-row flex-wrap justify-between gap-y-3">
           {cards.data?.map((c, i) => (
             <Pressable
               key={c._id}
@@ -1409,7 +1467,7 @@ export function CardsScreen() {
                   : router.replace({ pathname: '/play/flash', params: { i: String(i) } })
               }
               className={cx(
-                'h-36 w-[48.5%] items-center justify-center rounded-2xl border bg-mint p-3',
+                'h-36 w-[48.5%] items-center justify-center rounded-card border bg-white p-3',
                 sel.includes(c._id) ? 'border-2 border-brand' : 'border-transparent',
               )}
             >
@@ -1447,13 +1505,16 @@ export function QuizBoxScreen() {
     return (
       <Canvas>
         <Screen>
-          <Text>보관함을 불러오지 못했어요</Text>
-          <Btn loading={box.isFetching} onPress={() => void box.refetch()}>
-            다시 시도
-          </Btn>
-          <Btn kind="outline" onPress={() => router.back()}>
-            뒤로
-          </Btn>
+          <Header title="퀴즈 보관함" large={false} />
+          <Empty
+            icon={<Archive size={ICON.lg} color={C.brand} />}
+            title="보관함을 불러오지 못했어요"
+            body="연결을 확인하고 다시 시도해 주세요."
+          >
+            <Btn small loading={box.isFetching} onPress={() => void box.refetch()}>
+              다시 시도
+            </Btn>
+          </Empty>
         </Screen>
       </Canvas>
     );
@@ -1475,22 +1536,33 @@ export function QuizBoxScreen() {
           )
         }
       >
-        <View className="flex-row items-center justify-between pt-5">
-          <Text className="text-body font-bold text-ink">퀴즈 보관함</Text>
-          <Pressable
-            onPress={() => {
-              setSelect((x) => !x);
-              setSelected([]);
-            }}
-            className={cx('rounded-full px-3 py-1', select ? 'bg-brand' : 'bg-white')}
-          >
-            <Text className={cx('text-caption', select ? 'text-white' : 'text-ink')}>
-              {select ? '완료' : '선택'}
-            </Text>
-          </Pressable>
-        </View>
-        {!box.data.length && <Text>보관한 퀴즈가 없어요</Text>}
-        <View className="mt-3 gap-2">
+        <Header
+          title="퀴즈 보관함"
+          sub={box.data.length ? `${box.data.length}문제` : undefined}
+          large={false}
+          right={
+            box.data.length > 0 && (
+              <Chip
+                small
+                on={select}
+                onPress={() => {
+                  setSelect((x) => !x);
+                  setSelected([]);
+                }}
+              >
+                {select ? '완료' : '선택'}
+              </Chip>
+            )
+          }
+        />
+        {!box.data.length && (
+          <Empty
+            icon={<Archive size={ICON.lg} color={C.brand} />}
+            title="보관한 퀴즈가 없어요"
+            body="퀴즈를 풀고 다시 보고 싶은 문제를 보관하면 여기에 모여요."
+          />
+        )}
+        <View className="gap-2">
           {box.data?.map((q, n) => (
             <Animated.View
               key={q._id}
@@ -1503,30 +1575,29 @@ export function QuizBoxScreen() {
                   <View className="h-5 w-5 items-center justify-center rounded-full bg-brand">
                     <Text className="text-caption2 text-white">{n + 1}</Text>
                   </View>
-                  <Text className="flex-1 text-footnote text-ink">Q. {q.prompt}</Text>
+                  <Text className="flex-1 text-subhead leading-6 text-ink">{q.prompt}</Text>
                 </View>
                 {shown.includes(q._id) && (
                   <Animated.View entering={FadeIn} className="mt-2 rounded-lg bg-mint px-3 py-2">
-                    <Text className="text-caption text-brand">A. {q.answer}</Text>
+                    <Text className="text-footnote font-semibold text-brand">
+                      정답 · {q.answer}
+                    </Text>
                   </Animated.View>
                 )}
-                <View className="mt-2 flex-row gap-1.5 pl-7">
+                <View className="mt-3 flex-row gap-2 pl-7">
                   {!shown.includes(q._id) && (
-                    <Pressable
-                      onPress={() => setShown((p) => [...p, q._id])}
-                      className="rounded-full bg-mint px-2.5 py-1"
-                    >
-                      <Text className="text-caption2 text-brand">정답 보기</Text>
-                    </Pressable>
+                    <Chip small onPress={() => setShown((p) => [...p, q._id])}>
+                      정답 보기
+                    </Chip>
                   )}
-                  <Pressable
+                  <Chip
+                    small
                     onPress={() =>
                       router.push({ pathname: '/play/explain', params: { qid: q._id } })
                     }
-                    className="rounded-full bg-mint px-2.5 py-1"
                   >
-                    <Text className="text-caption2 text-brand">AI 설명 보기</Text>
-                  </Pressable>
+                    AI 설명 보기
+                  </Chip>
                   {select && (
                     <Pressable
                       accessibilityRole="checkbox"
