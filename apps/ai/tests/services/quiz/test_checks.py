@@ -520,3 +520,25 @@ def test_many_options_like_one_sentence_count_once() -> None:
         ],
     )
     assert not too_close(new, [seen_draft(old)])
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_sentence_pairs_are_counted_whatever_the_order(swap: bool) -> None:
+    # 먼저 걸린 짝을 확정하면 '37℃ 24시간'이 '37℃ 60시간'을 가져가 두 쌍만 셌음. 짝을 바꿔
+    # 세 쌍을 찾음(Codex 재리뷰 #288)
+    theirs = ["37℃에서 60시간 동안 배양한다", "35℃에서 24시간 동안 배양한다"]
+    old = negative(
+        passage="황색포도알균",
+        options=[*(theirs[::-1] if swap else theirs), "그람 양성으로 염색된다", "가다", "나다"],
+    )
+    new = negative(
+        passage="대장균",
+        options=[
+            "37℃에서 24시간 동안 배양한다",
+            "37℃에서 60시간 동안 배양한다",
+            "그람 양성으로 염색된다",
+            "포자를 만든다",
+            "운동성이 있다",
+        ],
+    )
+    assert too_close(new, [seen_draft(old)])

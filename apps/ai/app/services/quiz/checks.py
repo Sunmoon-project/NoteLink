@@ -119,21 +119,32 @@ SAME_SENTENCES = 3  # 이만큼 문장 보기가 같으면 거의 같은 문제(
 
 
 def _shared(mine: list[str], theirs: list[str]) -> bool:
-    """서로 다른 문장끼리 일대일로 SAME_SENTENCES쌍 이상 같음. 기존 문장 하나에 새 문장 여럿이
-    걸리면(온도만 다른 보기 셋이 기존 온도 설명 하나와) 한 쌍으로만 셈(Codex 리뷰 #288)."""
-    if len(theirs) < SAME_SENTENCES:
+    """서로 다른 문장끼리 일대일로 SAME_SENTENCES쌍 이상 같음(가장 많이 짝지을 수 있는 수).
+
+    기존 문장 하나에 새 문장 여럿이 걸리면(온도만 다른 보기 셋이 기존 온도 설명 하나와) 한
+    쌍으로만 셉니다(Codex 리뷰 #288). 먼저 걸린 짝을 확정하면 짝을 바꿔 세 쌍이 되는 경우를
+    두 쌍으로 세어 보기 순서에 따라 결과가 달라져서, 짝을 바꿔 가며 늘리는 이분 매칭으로 셉니다
+    (Codex 재리뷰 #288). 보기는 5개뿐이라 짝 후보를 모두 봐도 됩니다.
+    """
+    if len(mine) < SAME_SENTENCES or len(theirs) < SAME_SENTENCES:
         return False
-    left = list(theirs)
-    hits = 0
-    for x in mine:
-        k = next(
-            (i for i, y in enumerate(left) if difflib.SequenceMatcher(None, x, y).ratio() >= 0.85),
-            None,
-        )
-        if k is not None:
-            hits += 1
-            del left[k]
-    return hits >= SAME_SENTENCES
+    like = [
+        [j for j, y in enumerate(theirs) if difflib.SequenceMatcher(None, x, y).ratio() >= 0.85]
+        for x in mine
+    ]
+    owner: dict[int, int] = {}  # 기존 문장 j → 짝지은 새 문장 i
+
+    def take(i: int, tried: set[int]) -> bool:
+        for j in like[i]:
+            if j in tried:
+                continue
+            tried.add(j)
+            if j not in owner or take(owner[j], tried):
+                owner[j] = i
+                return True
+        return False
+
+    return sum(take(i, set()) for i in range(len(mine))) >= SAME_SENTENCES
 
 
 def reversed_of(d: Draft, seen: list[Seen]) -> bool:
