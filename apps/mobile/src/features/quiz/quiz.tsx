@@ -36,7 +36,7 @@ import { ERROR_CODES, type AiJob, type Question } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { socket } from '@/lib/socket';
-import { useSocket } from '@/hooks';
+import { useSocket, useTabRefresh } from '@/hooks';
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
@@ -97,6 +97,7 @@ const Tutor = ({ size = 76 }: { size?: number }) => (
 
 export function QuizHomeScreen() {
   const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
+  const refresh = useTabRefresh(sets);
   const progress = useQuizProgress((s) => s.progress);
   const latest = progress
     ? (sets.data?.find((s) => s._id === progress.setId) ?? {
@@ -108,7 +109,7 @@ export function QuizHomeScreen() {
   const waiting = sets.data?.filter((s) => s.status === 'generating') ?? [];
   return (
     <Canvas>
-      <Screen>
+      <Screen refresh={refresh}>
         <NetBanner />
         <Title>학습 퀴즈</Title>
         {waiting.length > 0 && (

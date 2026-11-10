@@ -50,6 +50,7 @@ import {
   cx,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
+import { useTabRefresh } from '@/hooks';
 import { C, ICON, MOTION } from '@/theme';
 import { seoul } from '@/lib/dates';
 
@@ -99,6 +100,7 @@ function Fab({ onPress, open }: { onPress: () => void; open?: boolean }) {
 export function NoteListScreen() {
   const { upload } = useLocalSearchParams<{ upload?: 'hand' | 'rec' }>();
   const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
+  const refresh = useTabRefresh(folders);
   const [q, setQ] = useState('');
   const [tag, setTag] = useState('전체');
   const list = (folders.data ?? []).filter(
@@ -126,7 +128,7 @@ export function NoteListScreen() {
 
   return (
     <Canvas>
-      <Screen>
+      <Screen refresh={refresh}>
         <NetBanner />
         <Title>노트</Title>
         <View>

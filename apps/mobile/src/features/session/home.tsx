@@ -10,7 +10,7 @@ import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { Flame, Pause, Play, Plus, RotateCw, Square, Target, Users } from 'lucide-react-native';
 import { api } from '@/lib/api';
 import { dLabel, goalLabel, hm, hms, seoul, ymd } from '@/lib/dates';
-import { useNow } from '@/hooks';
+import { useNow, useTabRefresh } from '@/hooks';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { AUTO_END_MS, useSession } from '@/stores/session';
@@ -44,6 +44,7 @@ export function HomeScreen() {
   const goal = useQuery({ queryKey: ['goal', 'weekly', day], queryFn: api.study.weeklyGoal });
   const ddays = useQuery({ queryKey: ['ddays'], queryFn: api.calendar.ddays });
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
+  const refresh = useTabRefresh(today, weekly, goal, ddays, me);
   const s = useSession();
   const running = !!s.since;
   const [sheet, setSheet] = useState<null | 'add' | 'goal'>(null);
@@ -160,7 +161,7 @@ export function HomeScreen() {
     <Canvas>
       {running && <KeepAwake />}
       <TiltWatcher />
-      <Screen>
+      <Screen refresh={refresh}>
         <NetBanner />
         <View className="flex-row items-start justify-between pt-5">
           <View className="flex-1">

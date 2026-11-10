@@ -43,6 +43,7 @@ import {
   Empty,
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
+import { useTabRefresh } from '@/hooks';
 import Constants from 'expo-constants';
 
 // p.43~45 프로필 · 설정 · 계정 정보 · 닉네임 · 요금제
@@ -58,6 +59,8 @@ export function SettingsScreen() {
   const openFeature = useFeatureNavigation();
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
+  // 목록이 아니라 당겨서 새로 고침은 두지 않고, 돌아올 때 오래됐으면만 다시 읽는다
+  useTabRefresh(me);
   const [sheet, setSheet] = useState<null | 'lang' | 'page' | 'help' | 'biz'>(null);
   const [dlg, setDlg] = useState<null | 'logout' | 'withdraw'>(null);
   const scroll = useRef<ScrollView>(null);
