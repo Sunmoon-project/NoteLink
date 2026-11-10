@@ -581,7 +581,8 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
             {
                 "id": qid,
                 "order": len(new_qs) + 1,  # 못 만든 문제는 건너뛰고 1부터 차례로
-                "type": "빈칸" if "____" in g["passage"] else m.type,  # 보이는 모양대로 저장
+                "type": (ty := "빈칸" if "____" in g["passage"] else m.type),  # 보이는 모양대로
+                "difficulty": similar.difficulty_of(ty),  # 유형으로 정한 처음 난이도(#268)
                 "prompt": g["stem"],
                 "passage": g["passage"] or None,
                 "choices": g["options"],

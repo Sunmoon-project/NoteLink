@@ -195,11 +195,29 @@ def strip_labels(options: list[str]) -> list[str]:
     return [_LABEL.sub("", o).strip() for o in options]
 
 
+# 조합형(#268) 보기: 옳은 문장 묶음. 보기는 이 순서로 고정(place가 섞지 않음)
+COMBOS = ["ㄱ", "ㄴ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄴ, ㄷ", "ㄱ, ㄴ, ㄷ"]
+_COMBO_KEYS = [norm(c) for c in COMBOS]
+
+
+def is_combo(opts: list[str]) -> bool:
+    """조합형 보기인지: 서로 다른 COMBOS 묶음 CHOICES개."""
+    keys = [norm(o) for o in opts]
+    return (
+        len(opts) == CHOICES and len(set(keys)) == CHOICES and all(k in _COMBO_KEYS for k in keys)
+    )
+
+
 def place(opts: list[str], k: int, slot: int) -> tuple[list[str], int]:
     """정답(opts[k])을 모델이 둔 자리 대신 slot 번호에 따라 A~E에 고르게 놓습니다.
 
     보기가 5개보다 적으면 그 개수로 나눠 고르게 놓고, 실제로 놓인 자리를 돌려줍니다.
+    조합형 보기(ㄱ · ㄴ · ㄱ, ㄴ …)는 섞지 않고 COMBOS 순서로 둡니다: 묶음이 뒤섞이면 읽기 어렵고,
+    정답 자리는 코드가 고른 옳은 문장 묶음을 돌려 고르게 합니다(combo.truth_for).
     """
+    if is_combo(opts):
+        fixed = sorted(opts, key=lambda o: _COMBO_KEYS.index(norm(o)))
+        return fixed, fixed.index(opts[k])
     rest = [o for i, o in enumerate(opts) if i != k]
     target = slot % min(CHOICES, len(opts))
     return [*rest[:target], opts[k], *rest[target:]], target

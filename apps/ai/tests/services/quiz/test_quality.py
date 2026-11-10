@@ -411,3 +411,42 @@ def test_screen_does_not_count_malformed_verdicts_as_unchecked() -> None:
     # 모양이 틀린 판정: 묶은 판정 → 보기마다 → 정답 한 번 더도 모두 모양이 틀려 걸리지 않음
     llm = FakeLlm({"Naturals": [{"natural": "yes"}] * 2, "Natural": [{"natural": "yes"}] * 11})
     assert qa.screen(llm, d, PAGE, "빈칸") == ([], False)
+
+
+# ---------- 부정설명 (#268) ----------
+
+NEG_OPTIONS = [
+    "포낭형은 8핵이다",
+    "위족으로 운동한다",
+    "적혈구를 먹는다",
+    "4핵 포낭이 있다",
+    "원충이다",
+]
+
+
+def test_a_negative_question_flags_wrong_options_that_are_false_too() -> None:
+    # 정답이 틀린 설명이라 특징과 거꾸로: 틀린 설명인 오답 보기가 있으면 정답이 둘
+    d = draft("이질 아메바", NEG_OPTIONS, "포낭형은 8핵이다")
+    llm = FakeLlm({"Naturals": fits("포낭형은 8핵이다", "원충이다")})
+    assert reasons(llm, d, PAGE, "부정설명") == [
+        "그 용어에 대해 틀린 오답 보기(옳은 설명이어야 함): 원충이다"
+    ]
+    assert "틀린 내용이면 natural=true" in llm.calls[0].system
+
+
+def test_a_negative_question_whose_answer_is_actually_true_is_rejected() -> None:
+    d = draft("이질 아메바", NEG_OPTIONS, "포낭형은 8핵이다")
+    llm = FakeLlm({"Naturals": fits()})  # 정답(틀린 설명)도 사실이라고 봄
+    assert reasons(llm, d, PAGE, "부정설명") == [
+        "정답으로 낸 틀린 설명이 일반 전공 지식으로는 맞음"
+    ]
+
+
+def test_a_repair_for_a_negative_question_asks_for_true_statements() -> None:
+    assert qa.R_WRONG in qa.R_SYS  # 바꿔 끼울 문장이 그대로 있음
+    assert qa.R_SYS_NEGATIVE != qa.R_SYS and "옳은 설명이어야 한다" in qa.R_SYS_NEGATIVE
+    d = draft("이질 아메바", NEG_OPTIONS, "포낭형은 8핵이다")
+    for qtype, system in (("부정설명", qa.R_SYS_NEGATIVE), ("특징", qa.R_SYS)):
+        llm = FakeLlm({"Repair": [{"options": ["영양형이 있다"]}]})
+        assert qa.repair(llm, d, {"원충이다"}, ["틀린 오답"], PAGE, qtype=qtype) is not None
+        assert llm.calls[0].system == system

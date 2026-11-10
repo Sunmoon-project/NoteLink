@@ -13,6 +13,7 @@ from app.services.quiz.models import CHOICES, Draft, Question
 from app.services.quiz.text import (
     BLANK,
     VALUE,
+    is_combo,
     norm,
     number_values,
     same_item,
@@ -22,7 +23,12 @@ from app.services.quiz.text import (
 )
 
 NEGATIVE = re.compile(r"아닌|않은|틀린|옳지\s?않|잘못된|거리가 먼")
-KO_TYPES = ("정의", "특징", "분류")  # 한국어 용어 과목 유형 (임상병리, 10/22)
+# 한국어 용어 과목 유형 (임상병리, 10/22). 부정설명 · 조합은 맞춤 퀴즈 안정적 모드(#268)
+KO_TYPES = ("정의", "특징", "분류", "부정설명", "조합")
+# 과장으로 틀리게 만든 설명: 노트를 몰라도 틀린 줄 보여 쉬움(#268 실험 2)
+OVERSTATED = re.compile(r"반드시|절대|모든|항상|오직|전혀|무조건")
+# 조합형 제시문: 줄마다 'ㄱ. …'(combo.py가 조립)
+_COMBO_LINES = re.compile(r"ㄱ\. [^\n]+\nㄴ\. [^\n]+\nㄷ\. [^\n]+")
 _KO = re.compile(r"[가-힣]{2,}")
 _PIECE = re.compile(r",\s+")  # 이어 붙인 보기의 조각 사이
 
@@ -45,10 +51,11 @@ def seen_question(q: Question) -> Seen:
 
 
 def seen_draft(d: Draft) -> Seen:
+    """조합형의 정답(ㄱ, ㄴ)은 문장이 아니라 거꾸로 묻기(reversed_of) 비교에 넣지 않음."""
     return {
         "all": norm(d["stem"] + d["passage"]),
         "passage": norm(d["passage"]),
-        "answer": norm(d["answer"]),
+        "answer": "" if is_combo(d["options"]) else norm(d["answer"]),
     }
 
 
@@ -217,12 +224,24 @@ def code_check(
     if ty == "정의" and len(re.findall(r"[가-힣]", p)) < 10:
         why.append("설명 문장 없음")
     # passage가 '____'뿐이어도 용어가 아님: 미생 초안 9개가 지식 검사에 '용어: ____'로 감(10/29)
-    if ty in ("특징", "분류") and not (1 <= len(BLANK.sub("", p).strip()) <= 40):
+    if ty in ("특징", "분류", "부정설명") and not (1 <= len(BLANK.sub("", p).strip()) <= 40):
         why.append("물을 용어 없음")
     if ty == "정의" and p and norm(d["answer"]) in norm(p):
         why.append("설명에 정답 용어 노출")
-    if NEGATIVE.search(d["stem"]):
+    # 부정 질문은 부정설명 유형만(#268): 그 유형은 거꾸로 부정 질문이어야 함
+    if ty == "부정설명":
+        if not NEGATIVE.search(d["stem"]):
+            why.append("부정 질문이 아님")
+        others = [o for o, k in zip(opts, keys, strict=True) if k != answer_key]
+        if OVERSTATED.search(d["answer"]) and not any(OVERSTATED.search(o) for o in others):
+            why.append("과장으로 틀린 티가 나는 정답('반드시 · 모든' 없이 한 곳만 바꾼다)")
+    elif NEGATIVE.search(d["stem"]):
         why.append("부정 질문")
+    if ty == "조합":
+        if not is_combo(opts):
+            why.append("조합 보기 모양이 아님")
+        if not _COMBO_LINES.fullmatch(p):
+            why.append("ㄱ · ㄴ · ㄷ 문장 없음")
     if not _KO.search(d["stem"]):
         why.append("문제 글이 한국어가 아님")
     # 특징 · 분류도: '____는 산소가 없는 환경에서 살아가는 세균'에
@@ -256,7 +275,8 @@ def code_check(
     if (t.reason == "wrong" or t.keep_answer) and short_answer(t.answer) and not same:
         kind = "틀린" if t.reason == "wrong" else "원래"
         why.append(f"{kind} 낱말('{t.answer}')을 다시 묻지 않음")
-    if any(same_item(d["answer"], u) for u in t.used_answers):
+    # 조합형 정답(ㄱ, ㄴ)은 묶음 이름이라 세트 안에서 겹쳐도 됨
+    if ty != "조합" and any(same_item(d["answer"], u) for u in t.used_answers):
         why.append("세트 안에서 정답이 겹침")
     if too_close(d, seen):
         why.append("이미 있는 문제와 거의 같음")

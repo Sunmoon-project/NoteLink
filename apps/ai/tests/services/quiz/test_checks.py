@@ -385,3 +385,77 @@ def test_an_option_joining_other_options_fails() -> None:
 def test_options_that_only_contain_other_options_pass(options: list[str]) -> None:
     d = draft(options=options, answer=options[0])
     assert "다른 보기를 이어 붙인 보기" not in why(d, "특징")
+
+
+# ---------- 부정설명 · 조합 (#268) ----------
+
+KO_PAGE = "1. 이질 아메바\n- 영양형: 위족으로 운동하고 적혈구를 먹는다\n- 포낭형: 4핵, 인체 감염형"
+
+
+def negative(**extra: object) -> Draft:
+    d: Draft = {
+        "stem": "다음 중 이질 아메바에 대한 설명으로 옳지 않은 것은?",
+        "passage": "이질 아메바",
+        "options": [
+            "포낭형은 8핵이다",
+            "위족으로 운동한다",
+            "적혈구를 먹는다",
+            "포낭형이 인체 감염형이다",
+            "영양형과 포낭형이 있다",
+        ],
+        "answer": "포낭형은 8핵이다",
+    }
+    d.update(extra)  # type: ignore[typeddict-item]
+    return d
+
+
+def ko_why(d: Draft, ty: str, t: Target = NEW) -> list[str]:
+    return code_check(d, t, KO_PAGE, ty, [])[0]
+
+
+def test_a_negative_question_is_asked_only_as_its_own_type() -> None:
+    assert ko_why(negative(), "부정설명") == []
+    assert "부정 질문" in ko_why(negative(), "특징")
+    positive = negative(stem="다음 중 이질 아메바에 대한 설명으로 옳은 것은?")
+    assert "부정 질문이 아님" in ko_why(positive, "부정설명")
+
+
+def test_a_negative_question_needs_the_term() -> None:
+    assert "물을 용어 없음" in ko_why(negative(passage=""), "부정설명")
+
+
+def test_an_overstated_wrong_statement_is_rejected() -> None:
+    d = negative(answer="모든 원충은 포낭형이 8핵이다")
+    d["options"][0] = d["answer"]
+    assert any(w.startswith("과장으로 틀린 티") for w in ko_why(d, "부정설명"))
+    # 옳은 보기에도 같은 말이 있으면 티가 나지 않음
+    d["options"][1] = "모든 영양형은 위족으로 운동한다"
+    assert not any(w.startswith("과장으로 틀린 티") for w in ko_why(d, "부정설명"))
+
+
+def combo_draft(**extra: object) -> Draft:
+    d: Draft = {
+        "stem": "다음 중 이질 아메바에 대한 설명으로 옳은 것을 모두 고른 것은?",
+        "passage": "ㄱ. 위족으로 운동한다.\nㄴ. 포낭형은 8핵이다.\nㄷ. 적혈구를 먹는다.",
+        "options": ["ㄱ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄱ, ㄴ, ㄷ"],
+        "answer": "ㄱ, ㄷ",
+    }
+    d.update(extra)  # type: ignore[typeddict-item]
+    return d
+
+
+def test_a_combination_answer_may_repeat_in_the_set_and_is_not_a_note_word() -> None:
+    t = Target("new", used_answers=["ㄱ, ㄷ", "ㄱ"])
+    assert code_check(combo_draft(), t, KO_PAGE, "조합", []) == ([], 3)
+
+
+def test_a_combination_needs_its_options_and_three_lines() -> None:
+    bad = combo_draft(options=["ㄱ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄷ", "이질 아메바"])
+    assert "조합 보기 모양이 아님" in ko_why(bad, "조합")
+    one_line = combo_draft(passage="ㄱ. 위족으로 운동한다. ㄴ. 8핵이다. ㄷ. 적혈구를 먹는다.")
+    assert "ㄱ · ㄴ · ㄷ 문장 없음" in ko_why(one_line, "조합")
+
+
+def test_a_combination_answer_is_not_compared_as_a_reversed_question() -> None:
+    assert seen_draft(combo_draft())["answer"] == ""
+    assert seen_draft(draft())["answer"] == "stacked"
