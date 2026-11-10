@@ -10,6 +10,9 @@ ai_jobs.type = 'quiz_pregen': 노트를 만들 때 NestJS가 넣는 첫 맞춤 �
   모델도 풀어 같은 답이어야 통과. 정답 둘 검사 · 검사 모델 풀기는 두 모드 모두 거칩니다.
   미리 만들기를 사용자가 이어받으면(report.awaited) 그때부터 빠른 모드 · 남은 자리 × 보통 상한으로
   마저 만듭니다(이미 만든 문제는 그대로).
+  안정적 모드는 한국어 용어 과목 쪽에 유형 둘을 더합니다(#268): 부정설명('옳지 않은 것은?', 정답이
+  틀린 설명)과 조합(ㄱ · ㄴ · ㄷ 중 옳은 것을 모두, combo.py가 조립). 첫 유형은 세트 전체에서
+  자리마다 돌려 한 세트에 유형 · 난이도가 섞이게 합니다.
 
   코드  쪽마다 문제 수 나누기 · 과목 판단(영어 문장 과목 / 용어 과목) · 쪽마다 유형 돌리기 ·
         세트 안에서 개념 · 정답 겹치지 않게 · 못 만든 자리는 다른 쪽으로 넘기기
@@ -67,7 +70,8 @@ input — NestJS가 작업을 만들 때 담습니다. ObjectId는 문자열, �
             이 노트는 material로 넣으므로 없어도 됩니다
 
 result — NestJS가 quiz_sets에 새 세트로 저장합니다(materialId · folderId는 노트에서)
-  questions  새 세트 문제(order 1부터, srs는 null: 아직 풀지 않음). 늘 size개
+  questions  새 세트 문제(order 1부터, srs는 null: 아직 풀지 않음). 늘 size개. difficulty(하 · 중 ·
+             상)는 유형으로 정한 처음 난이도(similar.difficulty_of, #268). 저장은 NestJS와 맞춘 뒤
   title      '<노트 제목> 맞춤 퀴즈 · MM-DD'
   concepts   새로 뽑은 개념 이름(materials.concepts에 저장). 노트에 이름이 있었으면 null
   pages      [{pageNo, weight, plain, share, wrong, mastered}] 쪽마다 배분(앱 안내 · 확인용).
@@ -111,7 +115,7 @@ from app.clients.llm import (
     Stopping,
 )
 from app.core.config import settings
-from app.services.quiz import concepts, quality, similar
+from app.services.quiz import combo, concepts, quality, similar
 from app.services.quiz.checks import (
     Seen,
     Target,
@@ -137,7 +141,15 @@ from app.services.quiz.review import (
     parse_question,
     utc_date,
 )
-from app.services.quiz.text import clean_pages, locate, norm, place, same_item, tidy
+from app.services.quiz.text import (
+    clean_pages,
+    is_combo,
+    locate,
+    norm,
+    place,
+    same_item,
+    tidy,
+)
 
 log = logging.getLogger(__name__)
 
@@ -187,19 +199,22 @@ class Mode:
     tries     한 자리가 한 쪽에서 만들어 보는 초안 수(유형을 돌림)
     recheck   검사 모델이 맞힌 뒤 생성 모델도 노트만 보고 풀어 같은 답이어야 통과. 오답 보기도
               틀린 설명이라 정답이 둘인 문제가 검사 모델 풀기를 통과한 일이 있었음(#268 실험 2)
+    extra     더 쓰는 유형(similar.STABLE_TYPES 중). 한국어 용어 과목 쪽에만 붙음(page_types)
     """
 
     name: str
     patience: int
     tries: int
     recheck: bool
+    extra: tuple[str, ...] = ()
 
 
-# 바로 요청(quiz_generate): 사용자가 기다리므로 지금 단계만
+# 바로 요청(quiz_generate): 사용자가 기다리므로 지금 단계 · 지금 유형만
 FAST = Mode("fast", 1, 2, False)
 # 미리 만들기(quiz_pregen): 기다리는 사용자가 없어 오래 걸려도 단계를 더함. 사용자가 이어받으면
-# 그때부터 FAST(_make_all의 hurry). 새 유형(부정설명 · 조합, #268)은 여기에 붙임
-STABLE = Mode("stable", PATIENT, 3, True)
+# 그때부터 FAST(_make_all의 hurry). 새 유형 부정설명 · 조합(#268): 조합은 5문제에 199~533초라
+# 빠른 모드에 넣지 않음(#274)
+STABLE = Mode("stable", PATIENT, 3, True, similar.STABLE_TYPES)
 MAX_TRIES = max(FAST.tries, STABLE.tries)
 RECHECK = "Recheck"  # 생성 모델 2차 풀기 호출 이름(검사 모델 풀기 'Check'와 구분)
 CLASH = "동시에 만든 문제와 겹침"  # 다른 자리가 그사이 받은 문제와 겹침: 쪽을 닫지 않음
@@ -607,15 +622,22 @@ def allocate(
     return weight, share, plain
 
 
-def page_types(text: str, korean_subject: bool) -> list[str]:
+# 한국어 용어 과목 쪽의 유형 순서(page_types). 부정설명 · 조합은 안정적 모드에서만
+KO_ORDER = ("정의", "특징", "부정설명", "분류", "조합")
+
+
+def page_types(text: str, korean_subject: bool, extra: tuple[str, ...] = ()) -> list[str]:
     """'(A) … is/are …ing' 사진 묘사 보기가 가득한 쪽은 장면 문제, 나머지는 유형을 돌림.
 
     '(A)' 줄 수만 세면 RC Part 5/6 쪽도 걸렸습니다(2일차 시험).
+    extra(안정적 모드의 부정설명 · 조합)는 한국어 용어 과목 쪽에만: 둘 다 용어에 대한 한국어 설명
+    문장을 묻는 유형입니다. 시도는 이 순서로 이어지므로(gen_one) 어느 유형에서 시작해도 세 번의
+    시도에 쉬운 유형이 섞이게 사이사이에 둡니다.
     """
     if len(_PHOTO.findall(text)) >= 3:
         return ["묘사", "어휘"]
     if korean_subject:
-        return ["정의", "특징", "분류"]
+        return [t for t in KO_ORDER if t in ("정의", "특징", "분류") or t in extra]
     return ["빈칸", "어휘", "규칙"]
 
 
@@ -671,13 +693,21 @@ def _hint(info: PageInfo, used: list[str]) -> str:
 type Accept = Callable[[Made], list[str]]
 
 
+def _listed(m: Made) -> bool:
+    """받은 문제의 정답을 '이미 쓴 정답'(used)에 넣을지(#268). 조합형 정답(ㄱ, ㄴ)은 묶음 이름이라
+    겹쳐도 되고, 부정설명의 정답은 틀린 설명이라 다음 초안 지시(_hint)에 사실처럼 실리지 않게 뺌."""
+    assert m.question is not None
+    return not is_combo(m.question["options"]) and m.type != "부정설명"
+
+
 def _take(seen: list[Seen], used: list[str]) -> Accept:
     """차례로 만들 때: 겹침은 code_check가 이미 봤으니 seen · used에 더하기만."""
 
     def accept(m: Made) -> list[str]:
         assert m.question is not None
         seen.append(seen_draft(m.question))
-        used.append(m.question["answer"])
+        if _listed(m):
+            used.append(m.question["answer"])
         return []
 
     return accept
@@ -711,7 +741,9 @@ def gen_one(
     """한 쪽에서 문제 1개. 유형을 돌려 가며 모드의 tries번까지(빠름 2번 · 안정적 3번).
 
     mode() → 지금 모드: 시도마다 · 검사마다 다시 봐서, 도중에 이어받으면(빠른 모드로 바뀜) 남은
-    시도 수와 생성 모델 2차 풀기가 바로 빠른 모드를 따름(#274). 없으면 빠른 모드.
+    시도 수 · 유형(부정설명 · 조합은 안정적 모드에만)과 생성 모델 2차 풀기가 바로 빠른 모드를
+    따름(#274). 없으면 빠른 모드.
+    조합형은 모델이 문장만 쓰고 코드가 조립하며(combo.build), 문장 판정이 정답 둘 검사를 대신함.
 
     통과한 문제는 결과(Made)째 accept에 넘깁니다. accept가 돌려준 겹침 이유가 없으면 받아들여진
     것이고(seen · used · 세트에 더하는 것도 accept), 있으면 다음 유형으로 다시 만듭니다. accept가
@@ -724,9 +756,13 @@ def gen_one(
     now_mode = mode or (lambda: FAST)
     notes = ""
     for i in range(MAX_TRIES):
-        if i >= now_mode().tries:
+        m = now_mode()
+        if i >= m.tries:
             break
-        ty = types[i % len(types)]  # 유형이 둘뿐인 쪽(묘사 · 어휘)은 세 번째에 처음 유형으로
+        # 빠른 모드로 바뀌면 안정적 모드 유형을 건너뜀. 유형이 둘뿐인 쪽(묘사 · 어휘)은 세 번째에
+        # 처음 유형으로
+        kinds = [x for x in types if x not in similar.STABLE_TYPES or x in m.extra] or types
+        ty = kinds[i % len(kinds)]
         if stop and (halt := stop(True)):
             out.why = out.why or [halt]
             break
@@ -734,36 +770,54 @@ def gen_one(
         t = Target("new", used_answers=used_now)
         hint = _hint(info, used_now)
         out.tries += 1
-        tip = similar.first_tip(ty)
-        user = (
-            f'<노트 쪽="{page_no}">\n{text[:TEXT_CAP]}\n</노트>\n\n'
-            f"개념 목록(이 안에서 고른다): {', '.join(names)}{hint}\n"
-            f"문제 유형: {ty} — {similar.TYPES[ty][0]}\npassage: {similar.TYPES[ty][1]}"
-            f"{notes}{chr(10) + tip if tip else ''}\n\n"
-            f"이 노트로 {CHOICES}지선다 문제 1개를 만들어라. 난이도는 중·고등학교 내신 보통 수준."
-        )
-        try:
-            r = llm.call(
-                settings.quiz_gen_model,
-                GEN_SYS,
-                user,
-                _schema(names),
-                "Quiz",
-                max_tokens=1400,
-                temperature=0.7,
+        concept: object
+        if ty == "조합":
+            b = combo.build(llm, page_no, text, names, hint, notes, combo.truth_for())
+            out.down += b.down
+            out.rejected += b.rejected
+            out.answered = out.answered or b.answered
+            if b.draft is None:
+                out.why = b.why
+                if b.fault:
+                    notes = (
+                        f"\n앞서 만든 문제의 문제점: {'; '.join(b.why)} — "
+                        "다른 문장으로 새로 만든다. "
+                    )
+                continue
+            d, concept = b.draft, b.concept
+        else:
+            tip = similar.first_tip(ty)
+            user = (
+                f'<노트 쪽="{page_no}">\n{text[:TEXT_CAP]}\n</노트>\n\n'
+                f"개념 목록(이 안에서 고른다): {', '.join(names)}{hint}\n"
+                f"문제 유형: {ty} — {similar.TYPES[ty][0]}\npassage: {similar.TYPES[ty][1]}"
+                f"{notes}{chr(10) + tip if tip else ''}\n\n"
+                f"이 노트로 {CHOICES}지선다 문제 1개를 만들어라. 난이도는 중·고등학교 내신 보통 "
+                "수준."
             )
-        except LlmError as e:
-            out.down += 1
-            out.rejected += isinstance(e, LlmRejectedError)
-            out.why = [str(e)]
-            continue
-        out.answered = True
-        raw = similar._draft(r)
-        if raw is None:
-            out.why = ["답 모양이 맞지 않음"]
-            continue
-        d = tidy(raw)
-        concept = r["question"].get("concept") if isinstance(r.get("question"), dict) else None
+            try:
+                r = llm.call(
+                    settings.quiz_gen_model,
+                    GEN_SYS,
+                    user,
+                    _schema(names),
+                    "Quiz",
+                    max_tokens=1400,
+                    temperature=0.7,
+                )
+            except LlmError as e:
+                out.down += 1
+                out.rejected += isinstance(e, LlmRejectedError)
+                out.why = [str(e)]
+                continue
+            out.answered = True
+            raw = similar._draft(r)
+            if raw is None:
+                out.why = ["답 모양이 맞지 않음"]
+                continue
+            d = tidy(raw)
+            q = r.get("question")
+            concept = q.get("concept") if isinstance(q, dict) else None
         why, k = code_check(d, t, text, ty, list(seen))
         if concept not in names:  # 개념 목록이 길면 모델이 이 필드를 빠뜨리기도 함
             why.append("개념 이름 없음")
@@ -778,7 +832,7 @@ def gen_one(
         if not why and stop and (full := stop(False)):
             out.why = [full]
             break
-        if not why:
+        if not why and ty != "조합":  # 조합형은 문장 판정(combo.build)이 정답 둘 검사를 대신함
             # 오답 보기 한두 개만 걸린 초안은 새로 만들지 않고 그 보기만 바꿔 다시 검사(로컬과
             # 같음): 11/05 동시 실행에서 못 만든 자리 둘이 모두 이런 초안이었음(미생 '항산성균의
             # 염색 보조' · 'AFB stain'). 새 초안(생성 · 검사 · 풀기) 대신 생성 모델 한 번
@@ -936,6 +990,8 @@ def run(
             "answer": r.question["answer"],
             "explanation": r.question.get("explanation"),
             "conceptTags": [r.concept],
+            # 유형으로 정한 처음 난이도(#268). 모델이 붙인 difficulty는 쓰지 않음(실험 1)
+            "difficulty": similar.difficulty_of(r.type),
             "srs": None,
         }
         for i, (_, r) in enumerate(made, 1)
@@ -998,6 +1054,7 @@ def _make_all(
     asked: Counter[str] = Counter()  # 세트에서 개념마다 물은 수
     taken: list[tuple[int, Made]] = []  # 받아들인 차례대로
     visits: Counter[int] = Counter()
+    turns = 0  # 안정적 모드: 세트 전체에서 자리마다 첫 유형을 돌림(유형 · 난이도가 섞이게, #268)
     dry: set[int] = set()
     drained: set[int] = set()  # dry 가운데 물을 개념이 남지 않아 닫은 쪽(마지막 단계에서 다시 엶)
     # dry 가운데 이번 판에 겹침(DRY_REASONS)으로 처음 닫은 쪽: 다음 판에 한 번 다시 엶. 학교 LLM은
@@ -1066,20 +1123,22 @@ def _make_all(
         assert d is not None and r.concept is not None
         if not _shape_ok(d):  # 서버가 빼는 모양이면 받지 않고 그 자리가 다시 만듦(#247)
             return [BAD_SHAPE]
+        combo_q = is_combo(d["options"])
         with lock:
             if done.is_set() or len(taken) >= n:
                 return [FULL]
             if (
                 # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
                 asked[r.concept] >= per_concept(again_ok)
-                or any(same_item(d["answer"], u) for u in used)
+                or (not combo_q and any(same_item(d["answer"], u) for u in used))
                 or too_close(d, seen)
                 or reversed_of(d, seen)
             ):
                 return [CLASH]
             asked[r.concept] += 1
             seen.append(seen_draft(d))
-            used.append(d["answer"])
+            if _listed(r):
+                used.append(d["answer"])
             taken.append((page, r))
             if len(taken) >= n:
                 done.set()
@@ -1103,6 +1162,7 @@ def _make_all(
     def one_slot(
         slot: int, p: int, until: Llm, stop: Callable[[bool], str | None]
     ) -> tuple[int, Made]:
+        nonlocal turns
         with lock:
             tried = [p] + [b for b in backups if b != p and b not in dry][:BACKUPS]
             # 이 자리가 시작할 때의 단계: 지난 판에 남아 도는 자리가 뒤늦게 켜진 마지막 단계를 따라
@@ -1132,9 +1192,12 @@ def _make_all(
                         dry.add(page)
                         drained.add(page)
                     continue
-                types = page_types(pages[page], korean)
-                k = visits[page] % len(types)
+                types = page_types(pages[page], korean, cur.extra)
+                # 쪽마다 돌리면 한 쪽에 한 자리인 노트는 모든 자리가 정의로 시작해 새 유형이
+                # 세 번째 시도에서야 나옴. 빠른 모드는 지금처럼 쪽마다
+                k = (turns if cur.extra else visits[page]) % len(types)
                 visits[page] += 1
+                turns += 1
                 info = per_page[page]
                 if again_ok and (again := [c for c in names if c in asked]):
                     info = replace(info, angle=again)
