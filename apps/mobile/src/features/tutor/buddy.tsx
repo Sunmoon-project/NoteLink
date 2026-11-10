@@ -13,7 +13,8 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { router, useFocusEffect } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import * as SecureStore from 'expo-secure-store';
 import { Text } from '@/components/text';
 import type { ShopItem } from '@notelink/shared';
 import { api } from '@/lib/api';
@@ -44,8 +45,26 @@ export function avatarModel(itemId: string, items?: Pick<ShopItem, '_id' | 'name
   );
 }
 
-/** 장착한 아바타의 3D 모델 이름 */
+/** 상품 id → 3D 모델 이름을 기기에 적어 둔다. 판매가 끝난 상품은 상품 목록에서 빠져도 같은 얼굴을 쓰게 */
+const KNOWN_KEY = 'notelink.avatar-models';
+type Known = Record<string, string>;
+async function readKnown(): Promise<Known> {
+  try {
+    const raw = await SecureStore.getItemAsync(KNOWN_KEY);
+    const v: unknown = raw ? JSON.parse(raw) : {};
+    return v && typeof v === 'object' ? (v as Known) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 장착한 아바타의 3D 모델 이름. 서버 상품 목록은 판매 중인 것만 오므로, 목록에서 찾은 모델을 기기에
+ * 적어 두고 목록에 없으면(판매 중지된 보유 아바타) 적어 둔 모델을 쓴다.
+ * ponytail: 이 기기에서 한 번도 못 본 판매 중지 상품은 기본 얼굴. my-items가 상품 이름을 주면 그걸로 바꿀 것
+ */
 export function useEquippedAvatar() {
+  const qc = useQueryClient();
   const id = useEquippedItem();
   const local = LOCAL_AVATARS.some((a) => a._id === id);
   // 서버 상품이면 상품 정보로 모델을 찾는다(아바타 선생님 고르기 화면과 같은 캐시)
@@ -54,7 +73,16 @@ export function useEquippedAvatar() {
     queryFn: () => api.shop.items({}),
     enabled: !local,
   });
-  return avatarModel(id, all.data);
+  const known = useQuery({ queryKey: ['avatar-models'], queryFn: readKnown, enabled: !local });
+  const listed = all.data?.some((i) => i._id === id);
+  const model = local || listed ? avatarModel(id, all.data) : (known.data?.[id] ?? BASE_AVATAR._id);
+  useEffect(() => {
+    if (local || !listed || !known.data || known.data[id] === model) return;
+    const next = { ...known.data, [id]: model };
+    qc.setQueryData(['avatar-models'], next);
+    SecureStore.setItemAsync(KNOWN_KEY, JSON.stringify(next)).catch(() => {});
+  }, [qc, local, listed, known.data, id, model]);
+  return model;
 }
 
 /**
