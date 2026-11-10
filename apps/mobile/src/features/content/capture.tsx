@@ -23,7 +23,18 @@ import {
 import { useKeepAwake } from 'expo-keep-awake';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
-import { Camera, Check, Crop, FileText, Mic, Pause, RotateCw, X, Zap } from 'lucide-react-native';
+import {
+  Camera,
+  Check,
+  Crop,
+  FileText,
+  Mic,
+  Pause,
+  Plus,
+  RotateCw,
+  X,
+  Zap,
+} from 'lucide-react-native';
 import { api, type ImageVerdict } from '@/lib/api';
 import { editPhoto } from '@/lib/image-edit';
 import { toast } from '@/stores/toast';
@@ -279,7 +290,7 @@ export function PhotoCheckScreen() {
           </Two>
         }
       >
-        <Header title="사진 확인" back={false} />
+        <Header title="사진 확인" large={false} />
         <View
           className={cx(
             'aspect-square items-center justify-center self-center overflow-hidden rounded-card bg-white',
@@ -456,9 +467,13 @@ export function PickedScreen() {
         )}
         <Header title={`선택한 사진 (${files.length}장)`} />
         {check.isError && (
-          <View>
-            <Text>사진 검사에 실패했어요. 다시 시도해 주세요.</Text>
-            <Btn onPress={() => check.refetch()}>다시 검사</Btn>
+          <View className="mb-3 items-center gap-3 rounded-card bg-white p-4">
+            <Text className="text-center text-footnote leading-5 text-sub">
+              사진 검사에 실패했어요. 다시 시도해 주세요.
+            </Text>
+            <Btn small onPress={() => check.refetch()}>
+              다시 검사
+            </Btn>
           </View>
         )}
         <View className="gap-2">
@@ -934,8 +949,8 @@ export function PickedFileScreen() {
         )}
         <Label>노트 제목</Label>
         <Input value={title} onChangeText={(t) => set({ title: t })} />
+        <Label>설명 (선택)</Label>
         <Input
-          className="mt-3"
           multiline
           value={description}
           onChangeText={(t) => set({ description: t })}
@@ -1021,9 +1036,11 @@ export function ScanCheckScreen() {
             onPress={() =>
               router.replace({ pathname: '/capture/camera', params: { mode: 'scan', append: '1' } })
             }
-            className="h-20 w-14 items-center justify-center rounded-lg border border-brand/40"
+            accessibilityLabel="페이지 추가"
+            className="h-20 w-14 items-center justify-center gap-1 rounded-lg border border-dashed border-brand/40 bg-white"
           >
-            <Text className="text-caption2 text-sub">+ 추가</Text>
+            <Plus size={ICON.sm} color={C.brand} />
+            <Text className="text-caption2 font-semibold text-brand">추가</Text>
           </Pressable>
         </View>
         <View className="mt-4 aspect-[4/3.6] items-center justify-center overflow-hidden rounded-card bg-white">
