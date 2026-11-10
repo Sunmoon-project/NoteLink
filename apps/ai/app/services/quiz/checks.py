@@ -119,11 +119,20 @@ SAME_SENTENCES = 3  # 이만큼 문장 보기가 같으면 거의 같은 문제(
 
 
 def _shared(mine: list[str], theirs: list[str]) -> bool:
+    """서로 다른 문장끼리 일대일로 SAME_SENTENCES쌍 이상 같음. 기존 문장 하나에 새 문장 여럿이
+    걸리면(온도만 다른 보기 셋이 기존 온도 설명 하나와) 한 쌍으로만 셈(Codex 리뷰 #288)."""
     if len(theirs) < SAME_SENTENCES:
         return False
-    hits = sum(
-        any(difflib.SequenceMatcher(None, x, y).ratio() >= 0.85 for y in theirs) for x in mine
-    )
+    left = list(theirs)
+    hits = 0
+    for x in mine:
+        k = next(
+            (i for i, y in enumerate(left) if difflib.SequenceMatcher(None, x, y).ratio() >= 0.85),
+            None,
+        )
+        if k is not None:
+            hits += 1
+            del left[k]
     return hits >= SAME_SENTENCES
 
 

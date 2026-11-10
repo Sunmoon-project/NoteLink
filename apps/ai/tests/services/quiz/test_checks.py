@@ -495,3 +495,28 @@ def test_a_combination_shares_its_statements_with_sentence_options() -> None:
     )
     assert too_close(same, [seen_draft(c)])
     assert too_close(c, [seen_draft(same)])
+
+
+def test_many_options_like_one_sentence_count_once() -> None:
+    # 온도만 다른 새 보기 셋이 기존 온도 설명 하나에 모두 걸려도 한 쌍(Codex 리뷰 #288)
+    old = negative(
+        passage="황색포도알균",
+        options=[
+            "37℃에서 24시간 배양한다",
+            "혈액 한천에서 자란다",
+            "그람 양성이다",
+            "가다",
+            "나다",
+        ],
+    )
+    new = negative(
+        passage="대장균",
+        options=[
+            "35℃에서 24시간 배양한다",
+            "36℃에서 24시간 배양한다",
+            "38℃에서 24시간 배양한다",
+            "포자를 만든다",
+            "운동성이 있다",
+        ],
+    )
+    assert not too_close(new, [seen_draft(old)])

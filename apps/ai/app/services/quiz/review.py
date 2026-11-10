@@ -191,6 +191,10 @@ def parse_question(raw: object, where: str) -> Question:
         if not (isinstance(tags, list) and all(isinstance(t, str) for t in tags)):
             raise InputError(f"{where}.conceptTags")
         q["conceptTags"] = tags
+    # 유형으로 정한 처음 난이도(#268): 오늘의 복습 사본이 그대로 가져가게 보존. 하 · 중 · 상이
+    # 아닌 값은 버림(난이도 하나 때문에 복습 작업 전체를 실패시키지 않게)
+    if raw.get("difficulty") in ("하", "중", "상"):
+        q["difficulty"] = raw["difficulty"]
     q["srs"] = parse_srs(raw.get("srs"), f"{where}.srs")
     return q
 
