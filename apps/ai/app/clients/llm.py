@@ -1,6 +1,22 @@
-"""학교 LLM(OpenAI 호환) 클라이언트.
+"""LLM 클라이언트: Claude API(기본, #278) · 학교 LLM(OpenAI 호환). LLM_PROVIDER로 고릅니다.
 
-10/21 시험에서 확인한 서버 특성을 여기서 처리합니다.
+둘 다 PacedLlm 위에서 돕니다: 보내는 간격 · 429 대기 · 사용자 작업 우선(background) · 멈춤 신호
+(stop_on) · 오류 구분이 같고, 요청 모양과 응답 읽기만 다릅니다(_call · _exchange).
+
+Claude(ClaudeLlm, 공식 SDK anthropic)
+  - JSON 모양은 structured outputs(output_config.format)로 강제. 지원하지 않는 제약(maxItems ·
+    maxLength · 2 이상의 minItems)은 SDK의 transform_schema가 설명으로 옮김. 그래서 개수 · 길이는
+    서비스가 받은 뒤 다시 확인함(지금도 확인하고 있음)
+  - temperature는 보내지 않음: SDK 2.x(API 버전 2026-10-21)에서 받지 않음
+  - Sonnet 5.5는 생각을 끔(between_tools), Haiku 5.5는 끌 수 없어 effort를 낮추고 그만큼
+    max_tokens를 더 줌. 한국어는 학교 LLM보다 토큰이 많아 max_tokens에 CLAUDE_TOKEN_SCALE을 곱함
+  - 워크스페이스 사용 한도 초과(400) · 결제 오류(402)는 설정 문제: 모든 호출이 같으므로
+    LlmSetupError(retry=False)로 작업을 바로 끝냄. 400을 LlmRejectedError로 두면 서비스가 자리마다
+    계속 다시 불렀음
+  - 거절(stop_reason refusal)은 이 요청 탓이라 LlmRejectedError
+  - SDK 자체 재시도는 끔(max_retries=0): 다시 보내기는 아래 규칙대로 여기서 함
+
+학교 LLM: 10/21 시험에서 확인한 서버 특성을 여기서 처리합니다.
   - User-Agent 헤더가 없으면 거절됨
   - qwen은 생각(thinking)을 꺼야 구조화 출력이 제때 끝남
   - JSON을 닫지 않고 빈 줄로 채운 채 멈출 때가 있음 → repair()
@@ -25,11 +41,13 @@ import math
 import re
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+import anthropic
 import httpx2
 
 from app.core.config import settings
@@ -52,7 +70,7 @@ class LlmRejectedError(LlmError):
 
 
 class LlmSetupError(Exception):
-    """학교 LLM 설정이 틀리거나 비어 있음. 모든 호출이 같음(#262).
+    """LLM 설정이 틀리거나 비어 있음(사용 한도 초과 포함). 모든 호출이 같음(#262).
 
     LlmError가 아님: 서비스는 LlmError를 초안 하나의 실패로 보고 다른 자리를 계속 부름. 이 오류는
     그대로 작업 처리기까지 올라가 작업을 끝냅니다(runner). retry가 참이면(서버가 거절: 3xx · 401 ·
@@ -218,25 +236,24 @@ def _never() -> bool:
     return False
 
 
-class SchoolLlm:
+class _TransportError(Exception):
+    """보내지 못했거나 응답을 받지 못함(연결 · 시간 초과). 메시지는 오류 종류 이름."""
+
+
+class PacedLlm:
+    """호출 간격 · 429 대기 · 사용자 작업 우선 · 멈춤 신호 · 다시 보내기를 맡는 바탕.
+
+    제공자마다 _call(요청 모양)과 _exchange(보내고 응답 읽기)만 다릅니다.
+    """
+
     def __init__(
         self,
-        base_url: str,
-        api_key: str,
         *,
-        gap_sec: float = 2.2,
-        retries: int = 2,
-        timeout: float = 180.0,
-        transport: httpx2.BaseTransport | None = None,
-        sleep: Callable[[float], None] = time.sleep,
-        clock: Callable[[], float] = time.monotonic,
+        gap_sec: float,
+        retries: int,
+        sleep: Callable[[float], None],
+        clock: Callable[[], float],
     ) -> None:
-        self._client = httpx2.Client(
-            base_url=base_url.rstrip("/"),
-            headers={"Authorization": f"Bearer {api_key}", "User-Agent": USER_AGENT},
-            timeout=timeout,
-            transport=transport,
-        )
         self._gap = gap_sec
         self._retries = retries
         self._sleep = sleep
@@ -288,22 +305,16 @@ class SchoolLlm:
         temperature: float,
         background: Callable[[], bool],
     ) -> JsonObject:
-        body: JsonObject = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": name, "strict": True, "schema": schema},
-            },
-        }
-        if model.startswith("qwen"):
-            body["chat_template_kwargs"] = {"enable_thinking": False}
-        return self._send(body, background)
+        """요청 본문을 만들어 self._send(body, background)."""
+        raise NotImplementedError
+
+    def _exchange(self, body: JsonObject) -> tuple[int, str | None, str | None]:
+        """한 번 보내고 (HTTP 상태, Retry-After, 200이면 답 글자).
+
+        보내지 못하면 _TransportError. 제공자만 아는 판정(사용 한도 · 거절)은 여기서
+        LlmSetupError · LlmRejectedError로 바로 올림.
+        """
+        raise NotImplementedError
 
     def _pause(self, sec: float) -> None:
         """sec초 기다림. stop_on으로 건 신호가 있으면 켜질 때 바로 깨어남."""
@@ -373,16 +384,15 @@ class SchoolLlm:
         while tries <= self._retries:
             self._turn(yields, mine)  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
             try:
-                res = self._client.post("/chat/completions", json=body)
-            except httpx2.TransportError as e:
-                err = type(e).__name__
+                status, after, text = self._exchange(body)
+            except _TransportError as e:
+                err = str(e)
                 tries += 1
                 self._pause(4 * tries)
                 continue
-            status = res.status_code
             if status == 429:
                 err = "HTTP 429"
-                wait = retry_after(res.headers.get("retry-after"))
+                wait = retry_after(after)
                 self._hold(min(wait, MAX_HOLD_SEC))  # 그만둬도 남은 호출은 쉼
                 holds += 1
                 if holds > MAX_HOLDS or wait > MAX_HOLD_SEC:
@@ -397,7 +407,7 @@ class SchoolLlm:
                 tries += 1
                 self._pause(4 * tries)
                 continue
-            parsed = repair(_content(res))
+            parsed = repair(text)
             if not isinstance(parsed, dict):
                 err = "JSON"
                 tries += 1
@@ -409,10 +419,179 @@ class SchoolLlm:
         raise LlmError(err)
 
 
-class _Background:
-    """SchoolLlm.background(): 사용자 작업 호출에 차례를 양보하는 연결(#138)."""
+class SchoolLlm(PacedLlm):
+    """학교 LLM(OpenAI 호환, /chat/completions)."""
 
-    def __init__(self, llm: SchoolLlm, awaited: Callable[[], bool]) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        *,
+        gap_sec: float = 2.2,
+        retries: int = 2,
+        timeout: float = 180.0,
+        transport: httpx2.BaseTransport | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        super().__init__(gap_sec=gap_sec, retries=retries, sleep=sleep, clock=clock)
+        self._client = httpx2.Client(
+            base_url=base_url.rstrip("/"),
+            headers={"Authorization": f"Bearer {api_key}", "User-Agent": USER_AGENT},
+            timeout=timeout,
+            transport=transport,
+        )
+
+    def _call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: JsonObject,
+        name: str,
+        max_tokens: int,
+        temperature: float,
+        background: Callable[[], bool],
+    ) -> JsonObject:
+        body: JsonObject = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": name, "strict": True, "schema": schema},
+            },
+        }
+        if model.startswith("qwen"):
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        return self._send(body, background)
+
+    def _exchange(self, body: JsonObject) -> tuple[int, str | None, str | None]:
+        try:
+            res = self._client.post("/chat/completions", json=body)
+        except httpx2.TransportError as e:
+            raise _TransportError(type(e).__name__) from e
+        text = _content(res) if res.status_code == 200 else None
+        return res.status_code, res.headers.get("retry-after"), text
+
+
+# Claude: 학교 LLM에 맞춰 둔 max_tokens를 이만큼 늘림. 같은 한국어도 토큰이 더 많고, 쓰지 않은
+# 몫은 청구되지 않음
+CLAUDE_TOKEN_SCALE = 2
+# 생각을 끌 수 없는 모델(Haiku 5.5 등)에 더 주는 max_tokens: 생각도 max_tokens 안에서 씀.
+# effort low라 대개 짧지만, 생각만 하다 끝나면(빈 답) 같은 요청을 다시 보내게 되므로 넉넉히
+CLAUDE_THINK_ROOM = 4000
+# 생각을 끌 수 있는 모델(이름 앞부분): 이 모델만 thinking.type between_tools를 받음(다른 모델은 400)
+CLAUDE_NO_THINK = ("claude-sonnet-5-5",)
+USAGE_LIMIT_HINTS = ("usage limit", "credit balance")
+# 바꾼 스키마를 기억해 두는 수. 개념 고르기(concepts._pick_schema)처럼 내용마다 다른 스키마도 있어
+# 오래 쓰지 않은 것부터 버림(Codex 리뷰 #279)
+SCHEMA_CACHE_MAX = 128
+
+
+class ClaudeLlm(PacedLlm):
+    """Claude API(공식 SDK). 요청 모양은 Messages API + structured outputs(#278)."""
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        effort: str = "low",
+        gap_sec: float = 1.2,
+        retries: int = 2,
+        timeout: float = 180.0,
+        base_url: str | None = None,
+        transport: httpx2.BaseTransport | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        super().__init__(gap_sec=gap_sec, retries=retries, sleep=sleep, clock=clock)
+        self._effort = effort
+        self._sdk = anthropic.Anthropic(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=0,  # 다시 보내기는 PacedLlm이(간격 · 429 대기를 지키며)
+            timeout=timeout,
+            default_headers={"User-Agent": USER_AGENT},
+            http_client=anthropic.DefaultHttpxClient(transport=transport) if transport else None,
+        )
+        self._schemas: OrderedDict[str, JsonObject] = (
+            OrderedDict()
+        )  # 같은 스키마를 매번 바꾸지 않게
+        self._schemas_lock = threading.Lock()
+
+    def _wire_schema(self, schema: JsonObject) -> JsonObject:
+        key = json.dumps(schema, sort_keys=True, ensure_ascii=False)
+        with self._schemas_lock:
+            if key in self._schemas:
+                self._schemas.move_to_end(key)
+                return self._schemas[key]
+            wire = self._schemas[key] = anthropic.transform_schema(schema)
+            while len(self._schemas) > SCHEMA_CACHE_MAX:
+                self._schemas.popitem(last=False)
+            return wire
+
+    def _call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: JsonObject,
+        name: str,
+        max_tokens: int,
+        temperature: float,  # Claude에는 보내지 않음(모듈 설명)
+        background: Callable[[], bool],
+    ) -> JsonObject:
+        no_think = model.startswith(CLAUDE_NO_THINK)
+        body: JsonObject = {
+            "model": model,
+            "max_tokens": max_tokens * CLAUDE_TOKEN_SCALE + (0 if no_think else CLAUDE_THINK_ROOM),
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+            "output_config": {
+                "effort": self._effort,
+                "format": {"type": "json_schema", "schema": self._wire_schema(schema)},
+            },
+        }
+        if no_think:
+            body["thinking"] = {"type": "between_tools"}
+        return self._send(body, background)
+
+    def _exchange(self, body: JsonObject) -> tuple[int, str | None, str | None]:
+        try:
+            msg = self._sdk.messages.create(**body)
+        except anthropic.APIConnectionError as e:  # 시간 초과 포함
+            raise _TransportError(type(e).__name__) from e
+        except anthropic.APIResponseValidationError:  # 200인데 응답 모양이 틀림: 못 읽은 답처럼
+            return 200, None, None
+        except anthropic.APIStatusError as e:
+            status = e.status_code
+            if status == 402 or (status == 400 and _usage_limited(e)):
+                raise LlmSetupError(f"HTTP {status} 사용 한도", retry=False) from e
+            return status, e.response.headers.get("retry-after"), None
+        if not isinstance(msg, anthropic.types.Message):  # 200인데 JSON이 아니면 SDK가 글자로 줌
+            return 200, None, None
+        if msg.stop_reason == "refusal":
+            raise LlmRejectedError("거절(refusal)")
+        text = "".join(b.text for b in msg.content if b.type == "text")
+        return 200, None, text
+
+
+def _usage_limited(e: anthropic.APIStatusError) -> bool:
+    """워크스페이스 · 조직 사용 한도에 닿은 400(11/10 받은 응답: 'You have reached your
+    specified workspace API usage limits')."""
+    message = str(e.message).lower()
+    return any(hint in message for hint in USAGE_LIMIT_HINTS)
+
+
+class _Background:
+    """PacedLlm.background(): 사용자 작업 호출에 차례를 양보하는 연결(#138)."""
+
+    def __init__(self, llm: PacedLlm, awaited: Callable[[], bool]) -> None:
         self._llm = llm
         self._awaited = awaited
 
@@ -443,11 +622,60 @@ def _content(res: httpx2.Response) -> str | None:
     return content if isinstance(content, str) else None
 
 
+# 제공자에 맞는 모델 이름인지 볼 설정(환경 변수 이름은 대문자)
+MODEL_FIELDS = (
+    "quiz_gen_model",
+    "quiz_check_model",
+    "note_split_model",
+    "note_refine_model",
+    "recording_model",
+    "note_ask_model",
+)
+
+
+def llm_setup_problem(provider: str | None = None) -> str | None:
+    """LLM_PROVIDER에 필요한 설정이 비었거나 모델 이름이 다른 제공자 것이면 그 이유.
+
+    처리기가 시작할 때 보고(__main__), 클라이언트를 만들 때도 봅니다. 예전 .env에 학교 LLM
+    모델 이름(QUIZ_CHECK_MODEL=qwen-27b 등)이 남은 채 Claude로 바뀌면 모든 호출이 404로
+    시도 한도까지 돌다 실패했음(/code-review #278).
+    """
+    provider = provider or settings.llm_provider
+    claude = provider == "claude"
+    if claude and not settings.anthropic_api_key.get_secret_value():
+        return "ANTHROPIC_API_KEY가 비어 있음"
+    if not claude and not settings.school_llm_base_url:
+        return "SCHOOL_LLM_BASE_URL이 비어 있음"
+    for field in MODEL_FIELDS:
+        model = getattr(settings, field)
+        if model.startswith("claude-") != claude:
+            return f"{field.upper()}={model}가 LLM_PROVIDER={provider}의 모델이 아님"
+    return None
+
+
+def _check_setup(provider: str) -> None:
+    if problem := llm_setup_problem(provider):
+        raise LlmSetupError(problem, retry=False)
+
+
 def school_llm() -> SchoolLlm:
-    if not settings.school_llm_base_url:
-        raise LlmSetupError("SCHOOL_LLM_BASE_URL이 비어 있음", retry=False)
+    _check_setup("school")
     return SchoolLlm(
         settings.school_llm_base_url,
         settings.school_llm_api_key.get_secret_value(),
-        gap_sec=settings.llm_call_gap_sec,
+        gap_sec=settings.call_gap_sec,
     )
+
+
+def claude_llm() -> ClaudeLlm:
+    _check_setup("claude")
+    return ClaudeLlm(
+        settings.anthropic_api_key.get_secret_value(),
+        effort=settings.llm_effort,
+        gap_sec=settings.call_gap_sec,
+    )
+
+
+def make_llm() -> PacedLlm:
+    """LLM_PROVIDER(claude · school)에 맞는 클라이언트."""
+    return school_llm() if settings.llm_provider == "school" else claude_llm()
