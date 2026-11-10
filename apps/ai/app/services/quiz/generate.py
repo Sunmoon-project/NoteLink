@@ -55,15 +55,21 @@ input — NestJS가 작업을 만들 때 담습니다. ObjectId는 문자열, �
             이 노트는 material로 넣으므로 없어도 됩니다
 
 result — NestJS가 quiz_sets에 새 세트로 저장합니다(materialId · folderId는 노트에서)
-  questions  새 세트 문제(order 1부터, srs는 null: 아직 풀지 않음). []이면 세트를 만들지 않음
+  questions  새 세트 문제(order 1부터, srs는 null: 아직 풀지 않음). 한 문제 이상
   title      '<노트 제목> 맞춤 퀴즈 · MM-DD'
   concepts   새로 뽑은 개념 이름(materials.concepts에 저장). 노트에 이름이 있었으면 null
   pages      [{pageNo, weight, plain, share, wrong, mastered}] 쪽마다 배분(앱 안내 · 확인용).
              plain은 기록 없이 고르게 나눴을 때, share는 실제로 나눈 문제 수
   failed     [{pageNo, why}] 못 만든 자리(마지막으로 시도한 쪽과 탈락 이유)
 
-LLM 장애: 끝난 자리의 생성 호출이 모두 실패해 한 문제도 못 만들면 LlmError를 올려 작업 처리기가
-나중에 다시 시도하게 합니다. '정답 둘' 검사나 검사 모델 호출이 실패한 초안은 쓰지 않습니다.
+한 문제도 못 만들면 0문제 결과로 끝내지 않습니다(앱은 작업 상태로 성공 화면을 고름, #175).
+  - 물을 글이 없음: 글이 없거나 MIN_LINES줄 이상인 쪽이 없음. LLM을 부르기 전에 InputError
+    (바로 실패)
+  - LLM 장애: 끝난 자리의 생성 호출이 모두 실패함. LlmError로 작업 처리기가 나중에 다시 시도
+  - 그 밖(초안이 모두 탈락 · 물을 개념이 없음 · 시간 상한): NoQuestionsError(바로 실패, 코드
+    NO_QUESTIONS). 작업을 다시 시도하면 같은 노트에서 같은 탈락이 되풀이되기 쉽고 기다림만 몇 배로
+    길어지므로(미리 만들기는 상한이 PATIENT배), 다시 할지는 앱의 '다시 시도'에 맡김
+'정답 둘' 검사나 검사 모델 호출이 실패한 초안은 쓰지 않습니다.
 오답 보기 한두 개만 걸린 초안은 그 보기만 바꿔 다시 검사합니다(quality.checked, 로컬과 같음, #95).
 알려진 한계(로컬과 같음): 새 문제의 srs는 null이라, 처음 푼 뒤 복습 상태에 checked가 없어 오늘의
 복습이 '정답 둘' 검사를 한 번 더 합니다.
@@ -116,6 +122,15 @@ MAX_SIZE = (
     30  # 한 자리에 LLM 호출이 최대 3쪽 × 2번 × (생성 · 검사 · 풀기): 학교 LLM 하나를 오래 잡지 않게
 )
 MIN_LINES = 5  # 이보다 짧은 쪽은 묻지 않음
+NO_TEXT = f"노트에 문제를 낼 글이 없음({MIN_LINES}줄 이상인 쪽 없음)"
+
+
+class NoQuestionsError(InputError):
+    """물을 글은 있는데 한 문제도 만들지 못함. 작업은 다시 시도하지 않고 code로 실패합니다."""
+
+    code = "NO_QUESTIONS"
+
+
 TEXT_CAP = 2500  # 생성 모델에 보여 주는 쪽 글
 CHECK_CAP = 3000  # 검사 모델에 보여 주는 쪽 글(similar.solved와 같음)
 BACKUPS = 2  # 못 만든 자리를 넘겨 볼 다른 쪽 수
@@ -766,8 +781,9 @@ def run(llm: Llm, raw: JsonObject, report: Progress, *, patient: bool = False) -
     pages = note_pages(m)
     notes: Notes = {**inp.notes, m.id: pages}
     title = f"{m.title} 맞춤 퀴즈 · {inp.day:%m-%d}"
-    if not pages:  # 글이 없는 노트(사진만 · 모든 줄이 [?])
-        return _result([], title, None, {}, {}, {}, defaultdict(PageInfo), [])
+    # 글이 없는 노트(사진만 · 모든 줄이 [?]) · 짧은 쪽뿐인 노트(allocate가 묻지 않음)
+    if not any(len(t.split("\n")) >= MIN_LINES for t in pages.values()):
+        raise InputError(NO_TEXT)
 
     new_names = None
     names_all = m.concepts
@@ -796,8 +812,11 @@ def run(llm: Llm, raw: JsonObject, report: Progress, *, patient: bool = False) -
     made, failed, down, tried_calls = _make_all(
         llm, pages, names_all, subject, per_page, weight, share, korean, seen, n, report, patient
     )
-    if not made and tried_calls and down == tried_calls:
-        raise LlmError("문제 만들기 호출이 모두 실패함")
+    if not made:
+        if tried_calls and down == tried_calls:
+            raise LlmError("문제 만들기 호출이 모두 실패함")
+        why = "; ".join(failed[0]["why"]) if failed else ""
+        raise NoQuestionsError(f"만든 문제가 없음({why})" if why else "만든 문제가 없음")
     qs = [
         {
             "id": new_id(),

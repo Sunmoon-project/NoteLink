@@ -19,9 +19,10 @@ export const VALIDATION_FAILED = 'VALIDATION_FAILED';
 export const GENERATE_TYPE = 'quiz_generate';
 /**
  * 세트 하나의 문제 수. 처리기 입력 size로 보낸다(보내지 않으면 처리기 기본 10문제).
- * 아직 처리기는 다 채우지 못하면 만든 만큼 돌려주고, 여기서는 그대로 ready로 둔다. 모자랄 때 작업을
- * 실패로 끝내는 일은 처리기가 맡는다: 앱은 작업 상태로 성공 · 다시 시도를 고르므로 여기서 세트만
- * failed로 두면 빈 성공 화면이 된다(/code-review)
+ * 처리기는 한 문제도 못 만들면 작업을 실패로 끝낸다(generate.py run). 1문제 이상이면 모자라도 지금은
+ * 작업이 성공하고 여기서도 만든 만큼 ready로 둔다. 모자란 결과를 채우거나 실패로 끝내는 일은 처리기
+ * 몫이다(#247): 앱은 작업 상태로 성공 · 다시 시도를 고르므로 여기서 세트만 failed로 두면 빈 성공
+ * 화면이 된다(/code-review)
  */
 export const QUIZ_SET_SIZE = 5;
 const DUPLICATE_KEY = 11000;
@@ -523,9 +524,9 @@ export const QUIZ_MIN_LINES = 5;
 /**
  * 처리기가 문제를 낼 수 있는 쪽인지. 처리기는 빈 줄 · 확실하지 않은 [?] 낱말이 있는 줄을 빼고
  * (apps/ai services/quiz/text.py clean_pages) QUIZ_MIN_LINES줄 이상 남은 쪽에서만 묻는다(allocate).
- * 그런 쪽이 없으면 처리기가 0문제로 작업을 성공으로 끝내, 앱이 빈 성공 화면을 보여 준다(Codex 재리뷰 #236).
+ * 그런 쪽이 없으면 처리기는 작업을 실패로 끝내므로(generate.py NO_TEXT), 작업을 넣기 전에 400으로 알린다.
  * 노트 조각(chunks)은 아직 보내지 않아 처리기도 쪽 글만 쓴다. 조각을 보내면 처리기 note_pages와 맞춘다.
- * 이것은 앞에서 거르는 것이고, 그 밖의 0문제 결과(초안이 모두 탈락)를 실패로 끝내는 일은 처리기(#247)
+ * 그 밖의 0문제(초안이 모두 탈락 · 시간 상한)는 처리기가 작업을 다시 시도하고, 한도를 넘으면 실패로 끝낸다
  */
 function askable(page: WorkerPage): boolean {
   const lines = page.ocrText
