@@ -41,6 +41,7 @@ import math
 import re
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -487,6 +488,9 @@ CLAUDE_THINK_ROOM = 4000
 # 생각을 끌 수 있는 모델(이름 앞부분): 이 모델만 thinking.type between_tools를 받음(다른 모델은 400)
 CLAUDE_NO_THINK = ("claude-sonnet-5-5",)
 USAGE_LIMIT_HINTS = ("usage limit", "credit balance")
+# 바꾼 스키마를 기억해 두는 수. 개념 고르기(concepts._pick_schema)처럼 내용마다 다른 스키마도 있어
+# 오래 쓰지 않은 것부터 버림(Codex 리뷰 #279)
+SCHEMA_CACHE_MAX = 128
 
 
 class ClaudeLlm(PacedLlm):
@@ -515,15 +519,21 @@ class ClaudeLlm(PacedLlm):
             default_headers={"User-Agent": USER_AGENT},
             http_client=anthropic.DefaultHttpxClient(transport=transport) if transport else None,
         )
-        self._schemas: dict[str, JsonObject] = {}  # 같은 스키마를 매번 바꾸지 않게
+        self._schemas: OrderedDict[str, JsonObject] = (
+            OrderedDict()
+        )  # 같은 스키마를 매번 바꾸지 않게
         self._schemas_lock = threading.Lock()
 
     def _wire_schema(self, schema: JsonObject) -> JsonObject:
         key = json.dumps(schema, sort_keys=True, ensure_ascii=False)
         with self._schemas_lock:
-            if key not in self._schemas:
-                self._schemas[key] = anthropic.transform_schema(schema)
-            return self._schemas[key]
+            if key in self._schemas:
+                self._schemas.move_to_end(key)
+                return self._schemas[key]
+            wire = self._schemas[key] = anthropic.transform_schema(schema)
+            while len(self._schemas) > SCHEMA_CACHE_MAX:
+                self._schemas.popitem(last=False)
+            return wire
 
     def _call(
         self,

@@ -1,9 +1,12 @@
 """ClaudeLlm(#278): 실제 호출 없이 가짜 응답(MockTransport)으로 요청 모양 · 오류 구분을 봅니다."""
 
+import importlib
 import json
+import pkgutil
 from collections.abc import Callable
 from typing import Any
 
+import anthropic
 import httpx2
 import pytest
 from pydantic import SecretStr
@@ -12,6 +15,7 @@ from app.clients.llm import (
     CLAUDE_THINK_ROOM,
     CLAUDE_TOKEN_SCALE,
     MODEL_FIELDS,
+    SCHEMA_CACHE_MAX,
     ClaudeLlm,
     LlmCutError,
     LlmError,
@@ -149,6 +153,37 @@ def test_same_schema_is_transformed_once() -> None:
     call(llm)
     assert s.bodies[0]["output_config"] == s.bodies[1]["output_config"]
     assert len(llm._schemas) == 1
+
+
+def test_schema_cache_keeps_only_the_recent_ones() -> None:
+    # 개념 고르기처럼 내용마다 다른 스키마가 처리기에 쌓이지 않게(Codex 리뷰 #279)
+    n = SCHEMA_CACHE_MAX + 5
+    s = Server(*(message("{}") for _ in range(n + 1)))
+    llm = s.client()
+    first = {"type": "object", "properties": {"k": {"type": "string", "enum": ["0"]}}}
+    llm.call("claude-sonnet-5-5", "s", "u", first, "Pick")
+    for i in range(1, n):
+        schema = {"type": "object", "properties": {"k": {"type": "string", "enum": [str(i)]}}}
+        llm.call("claude-sonnet-5-5", "s", "u", schema, "Pick")
+    assert len(llm._schemas) == SCHEMA_CACHE_MAX
+    llm.call("claude-sonnet-5-5", "s", "u", first, "Pick")  # 버린 뒤에도 다시 바꿔 보냄
+    assert s.bodies[-1]["output_config"] == s.bodies[0]["output_config"]
+
+
+def test_every_service_schema_can_be_sent_to_claude() -> None:
+    # SDK 변환이 받지 않는 스키마(type 없음 등)는 호출 전에 ValueError로 작업을 끝냄
+    import app.services
+
+    names = [m.name for m in pkgutil.walk_packages(app.services.__path__, "app.services.")]
+    schemas = [
+        (name, key, value)
+        for name in names
+        for key, value in vars(importlib.import_module(name)).items()
+        if "SCHEMA" in key and isinstance(value, dict)
+    ]
+    assert len(schemas) >= 10
+    for _, _, schema in schemas:
+        anthropic.transform_schema(schema)
 
 
 # ---------- 응답 · 오류 ----------
