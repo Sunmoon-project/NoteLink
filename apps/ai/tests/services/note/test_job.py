@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -9,7 +10,7 @@ import mongomock
 import numpy as np
 import pytest
 
-from app.clients.docint import DownloadError, OcrError, OcrSetupError, OcrUnavailableError
+from app.clients.docint import DownloadError, Ocr, OcrError, OcrSetupError, OcrUnavailableError
 from app.clients.llm import JsonObject, LlmError
 from app.clients.voyage import EmbedUnavailableError
 from app.core.config import settings
@@ -27,6 +28,7 @@ from app.worker import handlers
 from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobGoneError, JobStore
 from app.worker.runner import run_once
+from tests.clients.test_docint import _Failing, http_error
 from tests.fakes import FakeLlm
 from tests.services.recording.test_job import FakeVoyage
 
@@ -545,6 +547,23 @@ def test_ocr_key_error_fails_without_retry_and_without_invalid_file(
     assert (doc["status"], doc["attempts"], doc["error"]) == ("failed", 1, "처리 중 오류")
     assert ocr.urls == [URL1] and llm.calls == []
     assert "checkpoint" not in doc
+
+
+def test_ocr_key_error_log_has_no_address(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Azure 원본 예외 문구에 주소(SAS)가 들어 있어도 처리기 로그(traceback 포함)에는 나오지 않음
+    caplog.set_level(logging.DEBUG)
+    original = http_error(401)
+    assert "secret-sas" in str(original)
+    reader = Ocr(_Failing(original))  # type: ignore[arg-type]
+
+    doc = attempt(monkeypatch, queued_job(two_pages()), ocr=reader)  # type: ignore[arg-type]
+
+    assert (doc["status"], doc["attempts"], doc["error"]) == ("failed", 1, "처리 중 오류")
+    assert "OcrSetupError: HTTP 401" in caplog.text  # traceback은 남음
+    assert "secret-sas" not in caplog.text
+    assert "Could not download" not in caplog.text
 
 
 def test_missing_ocr_setting_fails_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,3 +1,4 @@
+import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -17,6 +18,8 @@ from azure.storage.blob import BlobServiceClient
 from pydantic import SecretStr
 
 from app.clients.docint import (
+    DOWNLOAD_READ_TIMEOUT_SEC,
+    DOWNLOAD_TIMEOUT_SEC,
     SAS_MINUTES,
     DownloadError,
     Ocr,
@@ -271,3 +274,61 @@ def test_download_only_takes_http_addresses(url: str) -> None:
     with pytest.raises(DownloadError):
         download(url, transport=transport)
     assert seen == []
+
+
+# ---------- 원본 예외(주소)를 잇지 않음 ----------
+
+
+def assert_no_address_in_traceback(error: BaseException) -> None:
+    assert error.__cause__ is None
+    assert error.__suppress_context__  # from None: 처리 중이던 원본 예외를 traceback에 넣지 않음
+    assert "secret-sas" not in "".join(traceback.format_exception(error))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx2.ConnectError(f"연결 실패 {SAS_URL}"),
+        httpx2.ReadTimeout(f"시간 초과 {SAS_URL}"),
+        httpx2.InvalidURL(f"잘못된 주소 {SAS_URL}"),
+    ],
+)
+def test_download_error_does_not_chain_the_original(error: Exception) -> None:
+    _, transport = serve(error)
+    with pytest.raises(DownloadError) as e:
+        download(SAS_URL, transport=transport)
+    assert_no_address_in_traceback(e.value)
+
+
+@pytest.mark.parametrize(
+    ("error", "kind"),
+    [
+        (http_error(401), OcrSetupError),
+        (http_error(400, "InvalidRequest"), OcrError),
+        (http_error(503), OcrUnavailableError),
+        (ServiceRequestError(f"연결 실패 {SAS_URL}"), OcrUnavailableError),
+    ],
+)
+def test_ocr_error_does_not_chain_the_original(error: Exception, kind: type[Exception]) -> None:
+    assert "secret-sas" in str(error)  # 원본에는 주소가 있음
+    with pytest.raises(kind) as e:
+        ocr(_Failing(error), SAS_URL)  # type: ignore[arg-type]
+    assert_no_address_in_traceback(e.value)
+
+
+def test_download_reads_with_a_short_timeout_under_the_overall_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[object] = []
+    real = httpx2.Client
+
+    def spy(*args: Any, **kwargs: Any) -> httpx2.Client:
+        seen.append(kwargs.get("timeout"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(httpx2, "Client", spy)
+    _, transport = serve(httpx2.Response(200, content=b"png"))
+
+    assert download(SAS_URL, transport=transport) == b"png"
+    assert seen == [DOWNLOAD_READ_TIMEOUT_SEC] == [10.0]
+    assert DOWNLOAD_TIMEOUT_SEC == 60.0  # 전체 마감은 그대로: 최악 약 70초

@@ -23,7 +23,8 @@ type OcrModel = Literal["prebuilt-read", "prebuilt-layout"]
 
 SAS_MINUTES = 15
 IMAGE_MAX_BYTES = 20 * 1024 * 1024  # 색 찾기용으로 내려받는 사진의 최대 크기(20MB)
-DOWNLOAD_TIMEOUT_SEC = 60.0  # 읽기 한 번의 상한이자 내려받기 전체 마감
+DOWNLOAD_TIMEOUT_SEC = 60.0  # 내려받기 전체 마감
+DOWNLOAD_READ_TIMEOUT_SEC = 10.0  # 연결 · 읽기 한 번의 상한(httpx2 timeout)
 # 분석이 끝난 뒤(HTTP 200) 실패로 알려 오는 오류 중 다시 하면 풀릴 수 있는 것
 _TRANSIENT_CODES = frozenset(
     {"InternalServerError", "ServiceUnavailable", "Timeout", "TooManyRequests"}
@@ -70,22 +71,23 @@ def ocr(
 
     일시 오류는 OcrUnavailableError, 키 · 권한 오류(401 · 403)는 OcrSetupError,
     그 밖의 거절(4xx · 분석 실패)은 OcrError. 429 · 5xx는 SDK가 먼저 몇 번 다시 보낸 뒤에
-    올라옵니다.
+    올라옵니다. 원본 예외는 주소(SAS)를 담을 수 있어 잇지 않습니다(from None): 처리기가
+    traceback을 로그에 남겨도 주소가 나오지 않게.
     """
     try:
         poller = client.begin_analyze_document(model, AnalyzeDocumentRequest(url_source=url))
         result: dict[str, Any] = poller.result().as_dict()
     except (ServiceRequestError, ServiceResponseError) as e:  # 연결 실패 · 시간 초과
-        raise OcrUnavailableError(type(e).__name__) from e
+        raise OcrUnavailableError(type(e).__name__) from None
     except HttpResponseError as e:
         status = e.status_code
         code = getattr(e.error, "code", None) if e.error is not None else None
         why = f"HTTP {status}" + (f" {code}" if code else "")  # 서버 문구는 주소를 담을 수 있어 뺌
         if status is None or status == 429 or status >= 500 or code in _TRANSIENT_CODES:
-            raise OcrUnavailableError(why) from e
+            raise OcrUnavailableError(why) from None
         if status in (401, 403):
-            raise OcrSetupError(why) from e
-        raise OcrError(why) from e
+            raise OcrSetupError(why) from None
+        raise OcrError(why) from None
     return result
 
 
@@ -106,13 +108,15 @@ def download(
     *,
     max_bytes: int = IMAGE_MAX_BYTES,
     timeout: float = DOWNLOAD_TIMEOUT_SEC,
+    read_timeout: float = DOWNLOAD_READ_TIMEOUT_SEC,
     transport: httpx2.BaseTransport | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> bytes:
-    """주소의 파일을 내려받음. 실패는 DownloadError.
+    """주소의 파일을 내려받음. 실패는 DownloadError(원본 예외는 주소를 담을 수 있어 잇지 않음).
 
-    max_bytes를 넘거나 시작부터 timeout초가 지나면 다 받기 전에 멈춤. httpx2의 timeout은 읽기
-    한 번의 상한이라, 조금씩 느리게 오는 응답도 전체 마감으로 끊음.
+    max_bytes를 넘거나 시작부터 timeout초가 지나면 다 받기 전에 멈춤. 전체 마감은 조각을 받을
+    때마다 보므로, 연결 · 읽기 한 번은 read_timeout초로 따로 끊음. 최악의 경우 걸리는 시간은
+    timeout + read_timeout(기본 60 + 10 = 약 70초).
     """
     if urlsplit(url).scheme not in ("http", "https"):
         raise DownloadError("http(s) 주소가 아님")
@@ -120,7 +124,7 @@ def download(
     try:
         with (
             httpx2.Client(
-                timeout=timeout, transport=transport, headers={"User-Agent": USER_AGENT}
+                timeout=read_timeout, transport=transport, headers={"User-Agent": USER_AGENT}
             ) as client,
             client.stream("GET", url) as res,
         ):
@@ -137,7 +141,7 @@ def download(
                 if clock() > deadline:
                     raise DownloadError("시간 초과")
     except (httpx2.HTTPError, httpx2.InvalidURL) as e:
-        raise DownloadError(type(e).__name__) from e
+        raise DownloadError(type(e).__name__) from None
     return bytes(data)
 
 
