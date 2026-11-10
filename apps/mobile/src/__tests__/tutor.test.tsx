@@ -16,8 +16,11 @@ jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn(), replace: jest.fn(), navigate: jest.fn() },
   useLocalSearchParams: () => globalThis.mockParams,
   useSegments: () => [],
-  useFocusEffect: () => {},
+  // 포커스 콜백을 모아 두고, 테스트에서 다른 화면이 위에 쌓인 것처럼 블러를 부른다
+  useFocusEffect: (cb: () => (() => void) | void) => mockFocus.add(cb),
 }));
+const mockFocus = new Set<() => (() => void) | void>();
+const blur = () => act(() => [...mockFocus].forEach((cb) => (cb() as () => void)()));
 // GL · 3D 모델은 기기에서만. 화면 테스트는 어떤 아바타를 그리는지와 대화 흐름을 본다
 jest.mock('../features/tutor/avatar3d', () => {
   const { Text: T } = jest.requireActual('react-native');
@@ -57,6 +60,7 @@ const job = (over: Partial<AiJob> = {}): AiJob => ({
 });
 
 beforeEach(() => {
+  mockFocus.clear();
   jest.clearAllMocks();
   // 동작 줄이기: 답을 한 번에 보여 준다(글자 흘리기 타이머 없이)
   jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(true);
@@ -175,6 +179,13 @@ describe('아바타 선생님 대화', () => {
     await renderScreen(<TutorScreen />);
     expect(await screen.findByText('3D:bora')).toBeTruthy();
   });
+
+  it('퀴즈처럼 다른 화면이 위에 쌓이면 보이지 않는 3D 아바타를 내린다', async () => {
+    await renderScreen(<TutorScreen />);
+    expect(await screen.findByText('3D:base')).toBeTruthy();
+    await blur();
+    expect(screen.queryByText('3D:base')).toBeNull();
+  });
 });
 
 describe('노트 상세에 떠 있는 아바타 선생님', () => {
@@ -239,6 +250,9 @@ describe('기기 저장 모드의 아바타 답', () => {
   it('겹치는 곳이 없으면 요약 질문은 첫 부분을, 학습 자료 밖 질문은 대답할 수 없다고 한다', () => {
     expect(localAnswer(note, '핵심 알려 주세요')!.refs).toEqual(['핵심']);
     expect(localAnswer(note, '설명해 주세요')!.refs).toEqual(['교착 상태']);
+    expect(localAnswer(note, '이 노트 내용 요약해 줘')!.answerable).toBe(true);
+    // 요약 말("알려")이 붙어도 노트와 상관없는 낱말이 있으면 자료 밖 질문
+    expect(localAnswer(note, '오늘 날씨 알려 주세요')?.reason).toBe('off_topic');
     expect(localAnswer(note, '양자역학')).toEqual({
       answerable: false,
       reason: 'off_topic',

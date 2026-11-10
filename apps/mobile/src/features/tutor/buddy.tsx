@@ -58,12 +58,8 @@ const R = ReduceMotion.System;
 const TRAVEL = { duration: 460, dampingRatio: 0.62, reduceMotion: R };
 const SNAP = Easing.bezier(0.3, 0.75, 0.1, 1);
 
-/**
- * 노트 상세에 떠 있는 아바타 선생님. 화면 오른쪽 아래(아래 버튼 위)에 있다가, 읽는 동안에는
- * 가장자리로 "슉" 비켜 서고, 누르면 대화 화면을 연다. 다른 화면이 위에 있으면 3D를 그리지 않는다.
- */
-export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
-  const avatar = useEquippedAvatar();
+/** 이 화면이 맨 위에 있는지. 다른 화면이 위에 쌓이면 false(보이지 않는 3D를 그리지 않게) */
+export function useFocused() {
   const [focused, setFocused] = useState(true);
   useFocusEffect(
     useCallback(() => {
@@ -71,6 +67,16 @@ export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
       return () => setFocused(false);
     }, []),
   );
+  return focused;
+}
+
+/**
+ * 노트 상세에 떠 있는 아바타 선생님. 화면 오른쪽 아래(아래 버튼 위)에 있다가, 읽는 동안에는
+ * 가장자리로 "슉" 비켜 서고, 누르면 대화 화면을 연다. 다른 화면이 위에 있으면 3D를 그리지 않는다.
+ */
+export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
+  const avatar = useEquippedAvatar();
+  const focused = useFocused();
   const [hint, setHint] = useState(true);
 
   const x = useSharedValue(OFF);
