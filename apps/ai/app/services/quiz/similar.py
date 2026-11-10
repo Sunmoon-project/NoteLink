@@ -244,8 +244,19 @@ def _draft(r: JsonObject) -> Draft | None:
     return d
 
 
-def solved(llm: Llm, d: Draft, options: list[str], pos: int, page_text: str) -> tuple[Solved, str]:
+def solved(
+    llm: Llm,
+    d: Draft,
+    options: list[str],
+    pos: int,
+    page_text: str,
+    *,
+    model: str | None = None,
+    name: str = "Check",
+) -> tuple[Solved, str]:
     """검사 모델이 노트만 보고 풀어 봄. (결과, 검수자 답 또는 호출 오류).
+
+    model을 주면 그 모델이 풉니다(맞춤 퀴즈 안정적 모드의 생성 모델 2차 풀기, #274).
 
     결과: pass(통과) · fail(정상 탈락: 다른 답 · 정답이 둘 · 노트로 못 정함) · down(호출 실패:
     LLM 장애, make_similar가 llm_down에 셈) · bad(답 모양이 틀림: 스키마 밖 · 잘린 JSON, 초안 탓도
@@ -256,7 +267,9 @@ def solved(llm: Llm, d: Draft, options: list[str], pos: int, page_text: str) -> 
         f"{LETTERS[i]}. {o}" for i, o in enumerate(options)
     )
     try:
-        c = llm.call(settings.quiz_check_model, CHK_SYS, user, CHK_SCHEMA, "Check", max_tokens=200)
+        c = llm.call(
+            model or settings.quiz_check_model, CHK_SYS, user, CHK_SCHEMA, name, max_tokens=200
+        )
     except LlmError as e:
         return "down", str(e)
     said = c.get("answer")
