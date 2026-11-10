@@ -13,6 +13,7 @@ from app.services.quiz.models import CHOICES, Draft, Question
 from app.services.quiz.text import (
     BLANK,
     VALUE,
+    combo_answer,
     is_combo,
     norm,
     number_values,
@@ -40,6 +41,15 @@ class Seen(TypedDict):
     passage: str  # norm(제시문)
     answer: NotRequired[str]  # norm(정답)
     q: NotRequired[Question | None]
+    sentences: NotRequired[list[str]]  # norm(문장 보기) (too_close)
+
+
+def sentence_options(options: list[str] | None) -> list[str]:
+    """문장인 보기만 norm으로. 낱말 · 용어 보기는 같은 노트의 문제끼리 겹치는 것이 보통이고,
+    조합형 보기(ㄱ, ㄴ)는 묶음 이름이라 뺌."""
+    return [
+        norm(o) for o in options or [] if not short_answer(o) and not combo_answer(o) and norm(o)
+    ]
 
 
 def seen_question(q: Question) -> Seen:
@@ -47,6 +57,7 @@ def seen_question(q: Question) -> Seen:
         "all": norm(q["prompt"] + (q.get("passage") or "")),
         "passage": norm(q.get("passage")),
         "q": q,
+        "sentences": sentence_options(q.get("choices")),
     }
 
 
@@ -56,6 +67,7 @@ def seen_draft(d: Draft) -> Seen:
         "all": norm(d["stem"] + d["passage"]),
         "passage": norm(d["passage"]),
         "answer": "" if is_combo(d["options"]) else norm(d["answer"]),
+        "sentences": sentence_options(d["options"]),
     }
 
 
@@ -79,16 +91,34 @@ def too_close(d: Draft, seen: list[Seen]) -> bool:
     둘 다 제시문이 있으면 제시문끼리만 비교합니다. 문제 글은 tidy가 같은 문장으로 맞추기도 해서,
     문제 글까지 합쳐 비교하면 제시문이 짧은 다른 문제('쌓다' / '계약을 성공하다')도 같다고 봤습니다
     (로컬 DB 116문제에서 바뀐 판정은 이 1쌍, 10/27 측정).
+    문장 보기 셋 이상이 같은 문제도 거의 같음(#268): 특징 · 부정설명은 제시문이 용어 이름뿐이라,
+    개념 이름만 다른 같은 내용('액티브 인디케이터 제어' / 'ActivityIndicator와 서버 통신 제어')에서
+    옳은 설명 보기 넷이 똑같은 두 문제가 한 세트에 들어감(0928 학습 노트, 부정설명 5문제).
     """
     me = norm(d["stem"] + d["passage"])
     mp = norm(d["passage"])
+    mine = sentence_options(d["options"])
     for s in seen:
         if mp and s["passage"]:
             if difflib.SequenceMatcher(None, mp, s["passage"]).ratio() >= 0.85:
                 return True
         elif difflib.SequenceMatcher(None, me, s["all"]).ratio() >= 0.85:
             return True
+        if len(mine) >= SAME_SENTENCES and _shared(mine, s.get("sentences") or []):
+            return True
     return False
+
+
+SAME_SENTENCES = 3  # 이만큼 문장 보기가 같으면 거의 같은 문제(too_close)
+
+
+def _shared(mine: list[str], theirs: list[str]) -> bool:
+    if len(theirs) < SAME_SENTENCES:
+        return False
+    hits = sum(
+        any(difflib.SequenceMatcher(None, x, y).ratio() >= 0.85 for y in theirs) for x in mine
+    )
+    return hits >= SAME_SENTENCES
 
 
 def reversed_of(d: Draft, seen: list[Seen]) -> bool:

@@ -459,3 +459,29 @@ def test_a_combination_needs_its_options_and_three_lines() -> None:
 def test_a_combination_answer_is_not_compared_as_a_reversed_question() -> None:
     assert seen_draft(combo_draft())["answer"] == ""
     assert seen_draft(draft())["answer"] == "stacked"
+
+
+def test_three_shared_sentence_options_are_too_close() -> None:
+    # 개념 이름만 다르고 옳은 설명 보기 넷이 같은 두 부정설명(0928 학습 노트 실행)
+    first = negative(passage="액티브 인디케이터 제어")
+    again = negative(passage="ActivityIndicator와 서버 통신 제어")
+    assert too_close(again, [seen_draft(first)])
+    stored = seen_question(
+        {"id": "q1", "order": 1, "prompt": "?", "choices": first["options"], "answer": "x"}
+    )
+    assert too_close(again, [stored])
+    # 둘만 같으면 다른 문제
+    two = negative(
+        passage="ActivityIndicator", options=[*first["options"][:2], "가다", "나다", "다다"]
+    )
+    assert not too_close(two, [seen_draft(first)])
+
+
+def test_shared_term_or_combination_options_are_not_too_close() -> None:
+    # 같은 노트의 용어 보기 · 조합 보기는 겹치는 것이 보통
+    a = draft(passage="위족으로 운동하고 적혈구를 먹는 원충", options=["이질 아메바", "대장 아메바",
+              "람블편모충", "질편모충", "말라리아"], answer="이질 아메바")  # fmt: skip
+    b = draft(passage="포낭형의 핵이 8개인 원충", options=a["options"], answer="대장 아메바")
+    assert not too_close(b, [seen_draft(a)])
+    other = combo_draft(passage="ㄱ. 포낭형이 있다.\nㄴ. 섬모가 있다.\nㄷ. 원충이다.")
+    assert not too_close(other, [seen_draft(combo_draft())])

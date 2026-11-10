@@ -1782,7 +1782,14 @@ def typed_draft(ty: str, concept: str) -> JsonObject:
     if ty == "특징":
         stem, options, answer = (
             f"다음 중 {concept}에 대한 설명으로 옳은 것은?",
-            [true4[0], "섬모로 움직인다", "세균이다", "곰팡이다", "바이러스다"],
+            # 오답 보기도 개념마다 다른 문장(같으면 too_close의 '문장 보기 셋이 같음')
+            [
+                true4[0],
+                "섬모로 움직인다",
+                f"{concept}는 세균이다",
+                f"{concept}는 곰팡이다",
+                f"{concept}는 바이러스다",
+            ],  # fmt: skip
             true4[0],
         )
     elif ty == "부정설명":
