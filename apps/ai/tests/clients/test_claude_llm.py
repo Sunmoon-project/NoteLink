@@ -49,7 +49,7 @@ USAGE_LIMIT = (
 
 def message(text: str, *, stop: str = "end_turn", thinking: bool = False) -> dict[str, Any]:
     content: list[dict[str, Any]] = []
-    if thinking:  # 생각을 끌 수 없는 모델은 답 앞에 thinking 블록이 올 수 있음
+    if thinking:  # 생각을 켜 둔 모델(Haiku 5.5)은 답 앞에 thinking 블록이 올 수 있음
         content.append({"type": "thinking", "thinking": "", "signature": "sig"})
     content.append({"type": "text", "text": text})
     return {
