@@ -9,6 +9,7 @@ import { AuthModule } from './modules/auth/auth.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
+import { TimetableModule } from './modules/timetable/timetable.module.js';
 
 @Module({
   imports: [
@@ -29,6 +30,8 @@ import { SessionModule } from './modules/session/session.module.js';
     QuizSetsModule,
     // 공부 시간 · 타이머(FR-06~08)
     SessionModule,
+    // 시간표 · 수업 · 친구 공유(FR-14)
+    TimetableModule,
   ],
   controllers: [HealthController],
 })

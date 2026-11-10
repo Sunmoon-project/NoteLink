@@ -420,7 +420,18 @@ const api: Api = {
         return fail(ERROR_CODES.VALIDATION, '이메일 또는 비밀번호가 맞지 않아요');
       return signInAs(id);
     },
-    emailSignup: async (email, password) => {
+    // 기기 저장 모드는 메일을 보낼 수 없어, 인증번호는 6자리 숫자면 통과하고 증표 자리에 이메일을 그대로 쓴다
+    emailSendCode: async (email) => {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+        return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
+    },
+    emailVerifyCode: async (email, code) => {
+      if (!/^\d{6}$/.test(code))
+        return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요', 400);
+      return { verificationToken: email.trim(), expiresInSeconds: 600 };
+    },
+    emailSignup: async (proof, password) => {
+      const email = proof;
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
         return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
       if (password.length < 8)

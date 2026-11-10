@@ -63,8 +63,18 @@ export interface Api {
       proof: { token: string; codeVerifier: string },
     ): Promise<AuthTokens>;
     emailLogin(email: string, password: string): Promise<AuthTokens>;
-    /** 이메일을 아이디로 가입한다. 토큰은 주지 않고 로그인으로 이어진다. 이미 있으면 409 EMAIL_TAKEN */
-    emailSignup(email: string, password: string): Promise<void>;
+    /** 가입 ① 인증번호를 메일로 보낸다. 가입한 이메일이어도 응답은 같다. 너무 빨리 다시 보내면 429 RATE_LIMITED */
+    emailSendCode(email: string): Promise<void>;
+    /** 가입 ② 인증번호를 확인하고 가입 증표를 받는다. 틀리면 400 EMAIL_CODE_INVALID, 횟수를 다 쓰면 429 EMAIL_CODE_LOCKED */
+    emailVerifyCode(
+      email: string,
+      code: string,
+    ): Promise<{ verificationToken: string; expiresInSeconds: number }>;
+    /**
+     * 가입 ③ 증표와 비밀번호로 계정을 만든다(이메일은 증표 안의 값). 토큰은 주지 않고 로그인으로 이어진다.
+     * 이미 있으면 409 EMAIL_TAKEN
+     */
+    emailSignup(verificationToken: string, password: string): Promise<void>;
     agreeTerms(termCodes: string[]): Promise<void>;
     logout(): Promise<void>;
   };
