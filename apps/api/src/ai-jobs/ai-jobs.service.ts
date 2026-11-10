@@ -15,6 +15,10 @@ export const PREGEN_TYPE = 'quiz_pregen';
 const ACTIVE = ['queued', 'running'];
 /** 앱의 '다시 시도'로 다시 넣을 수 있는 상태 */
 const RETRYABLE = ['failed', 'canceled'];
+/** 대기 한도를 확인하는 동안의 상태. 처리기는 queued만 가져가므로 이 상태의 작업은 잡히지 않는다 */
+const HELD = 'held';
+/** 확인 도중 서버가 멈춰 남은 held는 이 시간이 지나면 한도 계산에서 뺀다(그 사용자가 막히지 않게) */
+const HELD_TTL_MS = 60_000;
 
 /**
  * 사용자마다 동시에 기다릴 수 있는 작업 수(종류별). 학교 LLM 분당 한도를 함께 쓰는 작업을 몰아 보내지 못하게 한다.
@@ -105,7 +109,8 @@ export function toAppJob(row: AiJobRow): AppAiJob {
   const job: AppAiJob = {
     _id: row._id.toString(),
     type: row.type,
-    status: row.status,
+    // 다시 시도의 한도 확인 중(held)에 조회하면 queued로 보인다(공용 스키마에 held가 없음)
+    status: row.status === HELD ? 'queued' : row.status,
     targetType: row.targetType,
     targetId: row.targetId.toString(),
     progress: row.progress ?? 0,
@@ -154,45 +159,59 @@ export class AiJobsService {
   constructor(@InjectModel(AiJob.name) private readonly jobs: Model<AiJobDocument>) {}
 
   /**
-   * 처리기가 가져갈 수 있게 queued로 넣는다. PENDING_LIMIT에 있는 종류는 넣은 뒤에 센다:
-   * 세고 나서 넣으면 동시에 온 요청이 같은 수를 읽고 함께 넘친다(Codex #244).
-   * 자기를 포함한 대기 작업 전체를 세고 넘으면 내 작업을 canceled로 돌리고 429. 순서(_id)로 세면
-   * 서버가 여러 대일 때 _id가 들어온 순서와 달라 둘 다 통과할 수 있다. 전체를 세면 동시에 온 요청이
-   * 함께 거절될 수는 있어도(앱은 잠시 뒤 다시) 한도는 넘지 않는다. 처리기가 그 사이 가져갔어도 canceled면 결과를 버린다.
+   * 처리기가 가져갈 수 있게 queued로 넣는다. PENDING_LIMIT에 있는 종류는 처리기가 잡지 못하는 held로
+   * 넣고, 자기를 포함한 대기 작업을 센 뒤 한도 안이면 queued로 연다(Codex #244). 넘으면 문서를 지우고 429:
+   * 거절한 요청이 LLM을 쓰거나 본문 복사본을 남기지 않는다. 넣은 뒤에 세므로 동시에 온 요청은 함께
+   * 거절될 수는 있어도(앱은 잠시 뒤 다시) 한도를 넘지 않는다. 이미 한도면 넣기 전에 바로 거절한다.
    */
   async enqueue(job: NewAiJob): Promise<AppAiJob> {
     const userId = serverObjectId(job.userId, 'userId');
+    const limit = limitOf(job.type);
+    if (limit !== undefined && (await this.pending(userId, job.type)) >= limit) throw tooMany();
     const created = await this.jobs.create({
       type: job.type,
       userId,
       targetType: job.targetType,
       targetId: serverObjectId(job.targetId, 'targetId'),
       input: job.input,
-      status: 'queued',
+      ...(limit === undefined ? { status: 'queued' } : { status: HELD, heldAt: new Date() }),
       progress: 0,
       attempts: 0,
       result: null,
       awaited: false,
     });
     const row = created.toObject<AiJobRow>();
-    if (await this.overLimit(userId, job.type)) {
-      await this.jobs
-        .findOneAndUpdate(
-          { _id: row._id, status: { $in: ACTIVE } },
-          { $set: { status: 'canceled' } },
-        )
-        .lean();
+    if (limit === undefined) return toAppJob(row);
+    if ((await this.pending(userId, job.type)) > limit) {
+      await this.jobs.deleteOne({ _id: row._id, status: HELD });
       throw tooMany();
     }
-    return toAppJob(row);
+    await this.release(row._id);
+    const { heldAt: _heldAt, ...rest } = row as AiJobRow & { heldAt?: Date };
+    return toAppJob({ ...rest, status: 'queued' });
   }
 
-  /** 이미 넣은 작업을 포함해 이 종류의 대기 작업(queued · running)이 한도를 넘었는지 */
-  private async overLimit(userId: Types.ObjectId, type: string): Promise<boolean> {
-    const limit = limitOf(type);
-    if (limit === undefined) return false;
-    const pending = await this.jobs.countDocuments({ userId, type, status: { $in: ACTIVE } });
-    return pending > limit;
+  /** 이 종류의 대기 작업 수(queued · running · 확인 중인 held). 한도 없는 종류는 세지 않는다 */
+  private async pending(userId: Types.ObjectId, type: string): Promise<number> {
+    if (limitOf(type) === undefined) return 0;
+    return this.jobs.countDocuments({
+      userId,
+      type,
+      $or: [
+        { status: { $in: ACTIVE } },
+        { status: HELD, heldAt: { $gt: new Date(Date.now() - HELD_TTL_MS) } },
+      ],
+    });
+  }
+
+  /** 한도 확인을 마친 held 작업을 처리기가 가져갈 수 있게 연다 */
+  private async release(id: Types.ObjectId): Promise<void> {
+    await this.jobs
+      .findOneAndUpdate(
+        { _id: id, status: HELD },
+        { $set: { status: 'queued' }, $unset: { heldAt: '' } },
+      )
+      .lean();
   }
 
   /** 앱의 진행 상태 조회. 본인 작업만 */
@@ -241,37 +260,38 @@ export class AiJobsService {
       result: null,
       error: null,
     };
-    // 한도를 넘으면 되돌려야 하므로 바꾸기 전 값을 받는다
+    // 처리기가 잡지 못하는 held로 바꾸고 한도를 센다. 넘으면 바꾸기 전 값으로 되돌리므로 그 값을 받는다
     const before = await this.jobs
       .findOneAndUpdate(
         { ...filter, status: { $in: RETRYABLE }, $or: unlocked(new Date()) },
-        { $set: reset, $unset: { step: '', lockedBy: '' } },
+        {
+          $set: { ...reset, status: HELD, heldAt: new Date() },
+          $unset: { step: '', lockedBy: '' },
+        },
         { projection: APP_PROJECTION },
       )
       .lean<AiJobRow & { userId: Types.ObjectId }>();
     if (!before) return this.findMine(userId, jobId);
-    // 넣을 때와 같이 다시 넣은 뒤 전체를 센다. 동시에 다시 시도하면 함께 거절될 수 있지만 한도는 넘지 않는다
-    if (await this.overLimit(before.userId, before.type)) {
-      const restore = {
-        status: before.status,
-        attempts: before.attempts ?? 0,
-        progress: before.progress ?? 0,
-        result: before.result ?? null,
-        error: before.error ?? null,
-      };
-      const back = await this.jobs
-        .findOneAndUpdate({ _id: before._id, status: 'queued' }, { $set: restore })
+    const limit = limitOf(before.type);
+    if (limit !== undefined && (await this.pending(before.userId, before.type)) > limit) {
+      await this.jobs
+        .findOneAndUpdate(
+          { _id: before._id, status: HELD },
+          {
+            $set: {
+              status: before.status,
+              attempts: before.attempts ?? 0,
+              progress: before.progress ?? 0,
+              result: before.result ?? null,
+              error: before.error ?? null,
+            },
+            $unset: { heldAt: '' },
+          },
+        )
         .lean();
-      // 그 사이 처리기가 가져갔으면 취소로 표시해 결과를 버리게 한다
-      if (!back)
-        await this.jobs
-          .findOneAndUpdate(
-            { _id: before._id, status: 'running' },
-            { $set: { status: 'canceled' } },
-          )
-          .lean();
       throw tooMany();
     }
+    await this.release(before._id);
     const { step: _step, ...rest } = before;
     return toAppJob({ ...rest, ...reset });
   }

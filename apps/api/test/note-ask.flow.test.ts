@@ -16,6 +16,7 @@ import {
 import { Material } from '../src/modules/content/schemas/material.schema.js';
 import { Recording } from '../src/modules/content/schemas/recording.schema.js';
 import { AiJob } from '../src/modules/quiz/schemas/ai-job.schema.js';
+import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
 import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
@@ -160,32 +161,68 @@ describe('아바타에게 노트 묻기 (POST /api/v1/materials/:id/ask)', () =>
       (r) => r.type === 'note_ask' && ['queued', 'running'].includes(r.status as string),
     ).length;
 
-  it('질문 세 개가 동시에 와도 기다리는 질문은 두 개를 넘지 않고, 넘친 요청은 429 · 취소로 남는다', async () => {
-    const id = note();
-    // 서비스를 직접 동시에 부르고 개수 조회를 늦춰, 한 요청이 세는 동안 다른 요청이 끼어드는 상황을 만든다
-    const service = app.get(NoteAskService);
+  /** 개수 조회를 늦춰 한 요청이 세는 동안 다른 요청이 끼어들게 하고, 그때마다 처리기가 가져갈 수 있는(queued) 수를 적는다 */
+  const slowCount = () => {
     const count = jobs.model.countDocuments.bind(jobs.model);
-    const slow = vi
-      .spyOn(jobs.model, 'countDocuments')
-      // 부를 때의 개수를 세고 답만 늦춘다(그동안 다른 요청이 넣어도 이 요청은 옛 개수를 받는다)
-      .mockImplementation(((filter: never) => {
-        const seen = count(filter);
-        return new Promise((done) => setTimeout(() => done(seen), 20));
-      }) as never);
+    const claimable: number[] = [];
+    const spy = vi.spyOn(jobs.model, 'countDocuments').mockImplementation(((filter: never) => {
+      const seen = count(filter);
+      claimable.push(jobs.rows.filter((r) => r.status === 'queued').length);
+      return new Promise((done) => setTimeout(() => done(seen), 20));
+    }) as never);
+    return { spy, claimable };
+  };
+  const rejectedAll429 = (res: PromiseSettledResult<unknown>[]) => {
+    for (const r of res.filter((x) => x.status === 'rejected'))
+      expect((r as PromiseRejectedResult).reason.getStatus()).toBe(429);
+    return res.filter((r) => r.status === 'fulfilled').length;
+  };
+
+  it('질문 세 개가 동시에 와도 기다리는 질문은 두 개를 넘지 않고, 넘친 요청은 처리기가 가져갈 수 없고 남지도 않는다', async () => {
+    const id = note();
+    const service = app.get(NoteAskService);
+    const { spy, claimable } = slowCount();
     const res = await Promise.allSettled(
       [1, 2, 3].map(() => service.ask(me.toHexString(), id, { question: '뭐예요?' })),
     );
-    // 늦춘 조회를 실제로 거쳤는지 (되돌리면 호출 기록도 지워지므로 먼저 본다)
-    expect(slow).toHaveBeenCalled();
-    slow.mockRestore();
-    // 동시에 온 요청은 함께 거절될 수는 있어도(앱은 잠시 뒤 다시) 한도를 넘지는 않는다
-    const accepted = res.filter((r) => r.status === 'fulfilled');
-    expect(accepted.length).toBeLessThanOrEqual(MAX_PENDING);
-    for (const r of res.filter((x) => x.status === 'rejected'))
-      expect((r as PromiseRejectedResult).reason.getStatus()).toBe(429);
-    expect(active()).toBe(accepted.length);
-    // 거절된 작업은 처리기가 가져가지 않게 canceled로 남는다
-    expect(jobs.rows.filter((r) => r.status === 'canceled')).toHaveLength(3 - accepted.length);
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+    const accepted = rejectedAll429(res);
+    expect(accepted).toBeLessThanOrEqual(MAX_PENDING);
+    expect(active()).toBe(accepted);
+    // 한도를 세는 동안에도 처리기가 가져갈 수 있는 질문은 한도를 넘은 적이 없다
+    expect(Math.max(...claimable)).toBeLessThanOrEqual(MAX_PENDING);
+    // 거절한 요청은 문서를 남기지 않는다
+    expect(jobs.rows).toHaveLength(accepted);
+  });
+
+  it('한도에 닿은 뒤 계속 물어도 429만 돌려주고 저장 문서는 늘지 않는다', async () => {
+    const id = note();
+    await ask(id).expect(202);
+    await ask(id).expect(202);
+    for (let i = 0; i < 5; i++) await ask(id).expect(429);
+    expect(jobs.rows).toHaveLength(MAX_PENDING);
+  });
+
+  it('취소한 질문 셋을 동시에 다시 시도해도 기다리는 질문은 두 개를 넘지 않는다', async () => {
+    const id = note();
+    const service = app.get(NoteAskService);
+    const jobsSvc = app.get(AiJobsService);
+    const ids: string[] = [];
+    for (let i = 0; i < 2; i++)
+      ids.push(((await ask(id).expect(202)).body.data as { _id: string })._id);
+    for (const j of ids) await jobsSvc.cancel(me.toHexString(), j);
+    ids.push((await service.ask(me.toHexString(), id, { question: '뭐예요?' }))._id);
+    await jobsSvc.cancel(me.toHexString(), ids[2]!);
+    const { spy, claimable } = slowCount();
+    const res = await Promise.allSettled(ids.map((j) => jobsSvc.retry(me.toHexString(), j)));
+    spy.mockRestore();
+    const accepted = rejectedAll429(res);
+    expect(accepted).toBeLessThanOrEqual(MAX_PENDING);
+    expect(active()).toBe(accepted);
+    expect(Math.max(...claimable)).toBeLessThanOrEqual(MAX_PENDING);
+    // 거절한 다시 시도는 취소 상태로 돌아간다
+    expect(jobs.rows.filter((r) => r.status === 'canceled')).toHaveLength(3 - accepted);
   });
 
   it('취소한 질문을 다시 시도해도 기다리는 질문이 두 개면 429이고, 취소 상태 그대로 남는다', async () => {
