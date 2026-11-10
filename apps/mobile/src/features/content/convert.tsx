@@ -21,6 +21,7 @@ import {
   Canvas,
   Card,
   Chip,
+  Empty,
   Header,
   Label,
   Loading,
@@ -472,14 +473,16 @@ export function ResultScreen() {
     return (
       <Canvas>
         <Screen>
-          <Header title="변환 결과" />
-          <Text>변환 결과를 불러오지 못했어요</Text>
-          <Btn loading={m.isFetching} onPress={() => void m.refetch()}>
-            다시 시도
-          </Btn>
-          <Btn kind="outline" onPress={() => router.back()}>
-            뒤로
-          </Btn>
+          <Header title="변환 결과" large={false} />
+          <Empty
+            icon={<FileText size={ICON.lg} color={C.brand} />}
+            title="변환 결과를 불러오지 못했어요"
+            body="연결을 확인하고 다시 시도해 주세요. 원본은 그대로 있어요."
+          >
+            <Btn small loading={m.isFetching} onPress={() => void m.refetch()}>
+              다시 시도
+            </Btn>
+          </Empty>
         </Screen>
       </Canvas>
     );
