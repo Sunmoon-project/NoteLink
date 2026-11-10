@@ -7,6 +7,7 @@ import {
   fitInput,
   INPUT_ATTEMPT_LIMIT,
   INPUT_BYTE_LIMIT,
+  nextSetId,
   QUIZ_MIN_LINES,
   QUIZ_SET_SIZE,
   QuizSetsService,
@@ -59,8 +60,13 @@ const sameGenerating = (a: Row, b: Row) =>
   String(a['ownerId']) === String(b['ownerId']) &&
   String(a['materialId']) === String(b['materialId']);
 
+// MongoDB는 _id도 늘 고유 색인이다(끝난 미리 만들기로 만드는 세트는 그 작업과 같은 id를 쓴다)
+const sameId = (a: Row, b: Row) => String(a._id) === String(b._id);
+
 function setup() {
-  const sets = createFakeCollection<QuizSetDocument>(sameGenerating);
+  const sets = createFakeCollection<QuizSetDocument>(
+    (a, b) => sameId(a, b) || sameGenerating(a, b),
+  );
   const materials = createFakeCollection<MaterialDocument>();
   const attempts = createFakeCollection<QuizAttemptDocument>();
   const jobs = createFakeJobs();
@@ -684,6 +690,400 @@ describe('fitInput (처리기 입력 크기 한도)', () => {
     });
     expect(jobs.rows).toHaveLength(0);
     expect(sets.rows).toHaveLength(0);
+  });
+});
+
+describe('QuizSetsService 끝난 미리 만들기 바로 쓰기(#274)', () => {
+  /** 노트 정리 뒤 넣은 미리 만들기. 입력의 노트 글은 addNote의 글이 있는 쪽과 같다 */
+  async function pregen(
+    t: ReturnType<typeof setup>,
+    materialId: string,
+    pages = [{ pageNo: 1, ocrText: NOTE_TEXT }],
+  ) {
+    return t.aiJobs.enqueue({
+      type: 'quiz_pregen',
+      userId: ME.toHexString(),
+      targetType: 'material',
+      targetId: materialId,
+      input: {
+        day: '2026-11-10',
+        size: QUIZ_SET_SIZE,
+        material: { id: materialId, title: '세포 생물학', pages },
+      },
+    });
+  }
+  const result = (over: Record<string, unknown> = {}) => ({
+    questions: fullSet(),
+    title: '세포 생물학 퀴즈',
+    concepts: ['세포막', '핵', '리보솜'],
+    ...over,
+  });
+
+  it('새 작업 없이 그 결과로 바로 ready 세트를 만들고, 개념 이름을 노트에 저장한다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    t.finish(p._id, result());
+
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+
+    expect(QuizSet.parse(quizSet)).toEqual(quizSet);
+    expect(AiJob.parse(job)).toEqual(job);
+    expect(t.jobs.rows).toHaveLength(1);
+    expect(job).toMatchObject({ _id: p._id, type: 'quiz_pregen', status: 'succeeded' });
+    expect(quizSet).toMatchObject({
+      _id: p._id,
+      status: 'ready',
+      questionCount: QUIZ_SET_SIZE,
+      title: '세포 생물학 퀴즈',
+    });
+    expect(String(t.set(quizSet._id)['jobId'])).toBe(p._id);
+    expect(t.materials.rows[0]!['concepts']).toEqual(['세포막', '핵', '리보솜']);
+  });
+
+  it('같은 결과는 한 번만 쓴다: 다음 요청은 저장한 개념 이름을 넣어 새로 만든다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    t.finish(p._id, result());
+    const first = await t.service.create(ME.toHexString(), materialId);
+
+    const second = await t.service.create(ME.toHexString(), materialId);
+
+    expect(second.quizSet._id).not.toBe(first.quizSet._id);
+    expect(second.job).toMatchObject({ type: 'quiz_generate', status: 'queued' });
+    const input = t.job(second.job._id)['input'] as WorkerInput;
+    expect(input.material.concepts).toEqual(['세포막', '핵', '리보솜']);
+  });
+
+  it('거의 동시에 두 번 와도 세트는 하나(같은 id)이고 새 작업을 넣지 않는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    t.finish(p._id, result());
+
+    const [a, b] = await Promise.all([
+      t.service.create(ME.toHexString(), materialId),
+      t.service.create(ME.toHexString(), materialId),
+    ]);
+
+    expect(a.quizSet._id).toBe(p._id);
+    expect(b.quizSet._id).toBe(p._id);
+    expect(b.quizSet.status).toBe('ready');
+    expect(t.sets.rows).toHaveLength(1);
+    expect(t.jobs.rows).toHaveLength(1);
+  });
+
+  it('이어받아 만든 세트가 그 작업을 가리키면 끝난 뒤 다시 쓰지 않는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    const taken = await t.service.create(ME.toHexString(), materialId);
+    expect(taken.job._id).toBe(p._id);
+    t.finish(p._id, result());
+    await t.service.findMine(ME.toHexString(), taken.quizSet._id);
+
+    const next = await t.service.create(ME.toHexString(), materialId);
+
+    expect(next.job.type).toBe('quiz_generate');
+    expect(t.sets.rows).toHaveLength(2);
+  });
+
+  it('지운 세트로 쓴 결과도 되살리지 않는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    t.finish(p._id, result());
+    const first = await t.service.create(ME.toHexString(), materialId);
+    Object.assign(t.set(first.quizSet._id), { deletedAt: new Date() });
+
+    const next = await t.service.create(ME.toHexString(), materialId);
+
+    expect(next.job.type).toBe('quiz_generate');
+  });
+
+  it.each([
+    [
+      '노트 글이 그 사이 바뀜',
+      [{ pageNo: 1, ocrText: `${NOTE_TEXT}\n세포벽은 식물에 있다.` }],
+      result(),
+    ],
+    ['쓸 문제가 없음', [{ pageNo: 1, ocrText: NOTE_TEXT }], result({ questions: [] })],
+  ])('%s이면 쓰지 않고 새로 만든다', async (_name, pages, res) => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId, pages);
+    t.finish(p._id, res);
+
+    const { job } = await t.service.create(ME.toHexString(), materialId);
+
+    expect(job.type).toBe('quiz_generate');
+    expect(t.job(p._id)['status']).toBe('succeeded');
+  });
+
+  it('실패한 미리 만들기는 쓰지 않고 새로 만든다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    Object.assign(t.job(p._id), { status: 'failed', error: 'NO_QUESTIONS: 만든 문제가 없음' });
+
+    const { job } = await t.service.create(ME.toHexString(), materialId);
+
+    expect(job.type).toBe('quiz_generate');
+  });
+
+  it('가장 최근 미리 만들기만 본다(그 전 결과는 낡음)', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const old = await pregen(t, materialId);
+    t.finish(old._id, result());
+    const latest = await pregen(t, materialId);
+    Object.assign(t.job(latest._id), { status: 'failed' });
+
+    const { job } = await t.service.create(ME.toHexString(), materialId);
+
+    expect(job.type).toBe('quiz_generate');
+  });
+
+  it('처리기가 개념을 새로 뽑지 않은 결과(concepts null)는 노트의 개념 이름을 그대로 둔다', async () => {
+    const t = setup();
+    const materialId = await t.addNote({ concepts: ['세포막'] });
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    expect((t.job(job._id)['input'] as WorkerInput).material.concepts).toEqual(['세포막']);
+    t.finish(job._id, { questions: fullSet(), concepts: null });
+
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+
+    expect(t.materials.rows[0]!['concepts']).toEqual(['세포막']);
+  });
+});
+
+describe('QuizSetsService 리뷰 반영(Codex #276)', () => {
+  const result = { questions: fullSet(), concepts: ['세포막', '핵'] };
+
+  it('이어받은 요청이 세트를 넣기 전에 작업이 끝나 다른 요청이 결과로 세트를 만들어도 세트는 하나', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await t.aiJobs.enqueue({
+      type: 'quiz_pregen',
+      userId: ME.toHexString(),
+      targetType: 'material',
+      targetId: materialId,
+      input: { material: { pages: [{ pageNo: 1, ocrText: NOTE_TEXT }] } },
+    });
+    // 첫 요청(이어받음)의 세트 넣기를 붙잡아 둔다
+    const create = t.sets.model.create.bind(t.sets.model);
+    let release!: () => void;
+    let held!: () => void;
+    const holding = new Promise<void>((r) => (held = r));
+    const gate = new Promise<void>((r) => (release = r));
+    let first = true;
+    (t.sets.model as unknown as { create: typeof create }).create = (async (
+      ...args: Parameters<typeof create>
+    ) => {
+      if (first) {
+        first = false;
+        held();
+        await gate;
+      }
+      return create(...args);
+    }) as typeof create;
+
+    const a = t.service.create(ME.toHexString(), materialId);
+    await holding;
+    t.finish(p._id, result);
+    const b = await t.service.create(ME.toHexString(), materialId);
+    release();
+    const late = await a;
+
+    expect(b.quizSet).toMatchObject({ _id: p._id, status: 'ready' });
+    expect(late.quizSet).toMatchObject({ _id: p._id, status: 'ready' });
+    expect(t.sets.rows).toHaveLength(1);
+    expect(t.jobs.rows).toHaveLength(1);
+  });
+
+  it('지운 세트가 그 미리 만들기 id를 쓰고 있으면 이어받는 새 세트는 새 id로 만든다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await t.aiJobs.enqueue({
+      type: 'quiz_pregen',
+      userId: ME.toHexString(),
+      targetType: 'material',
+      targetId: materialId,
+      input: {},
+    });
+    const first = await t.service.create(ME.toHexString(), materialId);
+    expect(first.quizSet._id).toBe(p._id);
+    Object.assign(t.set(first.quizSet._id), { deletedAt: new Date() });
+
+    const again = await t.service.create(ME.toHexString(), materialId);
+
+    expect(again.quizSet._id).not.toBe(p._id);
+    expect(again.quizSet._id).toBe(nextSetId(new Types.ObjectId(p._id)).toHexString());
+    expect(again.job).toMatchObject({ _id: p._id, awaited: true });
+  });
+
+  it('지운 뒤 이어받는 두 요청 중 늦은 쪽이 다른 세트가 ready가 된 뒤 넣어도 세트는 하나(Codex 재리뷰)', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await t.aiJobs.enqueue({
+      type: 'quiz_pregen',
+      userId: ME.toHexString(),
+      targetType: 'material',
+      targetId: materialId,
+      input: { material: { pages: [{ pageNo: 1, ocrText: NOTE_TEXT }] } },
+    });
+    const deleted = await t.service.create(ME.toHexString(), materialId);
+    Object.assign(t.set(deleted.quizSet._id), { deletedAt: new Date() });
+    // 다음 요청(이어받음)의 세트 넣기를 붙잡아 둔다
+    const create = t.sets.model.create.bind(t.sets.model);
+    let release!: () => void;
+    let held!: () => void;
+    const holding = new Promise<void>((r) => (held = r));
+    const gate = new Promise<void>((r) => (release = r));
+    let first = true;
+    (t.sets.model as unknown as { create: typeof create }).create = (async (
+      ...args: Parameters<typeof create>
+    ) => {
+      if (first) {
+        first = false;
+        held();
+        await gate;
+      }
+      return create(...args);
+    }) as typeof create;
+
+    const a = t.service.create(ME.toHexString(), materialId);
+    await holding;
+    const b = await t.service.create(ME.toHexString(), materialId);
+    t.finish(p._id, result);
+    const shown = await t.service.findMine(ME.toHexString(), b.quizSet._id);
+    release();
+    const late = await a;
+
+    expect(shown).toMatchObject({ status: 'ready' });
+    expect(late.quizSet).toMatchObject({ _id: b.quizSet._id, status: 'ready' });
+    expect(t.sets.rows.filter((r) => !r['deletedAt'])).toHaveLength(1);
+    expect(t.jobs.rows).toHaveLength(1);
+  });
+
+  it('개념 저장이 실패하면 세트도 그대로 두어 다음 조회가 다시 옮기며 저장한다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    t.finish(job._id, result);
+    const update = t.materials.model.findOneAndUpdate.bind(t.materials.model);
+    (t.materials.model as unknown as { findOneAndUpdate: unknown }).findOneAndUpdate = () => {
+      throw new Error('DB 연결 끊김');
+    };
+
+    await expect(t.service.findMine(ME.toHexString(), quizSet._id)).rejects.toThrow('DB 연결 끊김');
+    expect(t.set(quizSet._id)['status']).toBe('generating');
+
+    (t.materials.model as unknown as { findOneAndUpdate: unknown }).findOneAndUpdate = update;
+    const again = await t.service.findMine(ME.toHexString(), quizSet._id);
+    expect(again.status).toBe('ready');
+    expect(t.materials.rows[0]!['concepts']).toEqual(['세포막', '핵']);
+  });
+
+  it('직전 세트를 옮기며 저장한 개념 이름을 같은 요청이 만드는 다음 세트 입력에 넣는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const prev = await t.service.create(ME.toHexString(), materialId);
+    t.finish(prev.job._id, result);
+
+    // 조회 없이 바로 다시 요청: 만드는 중인 직전 세트를 이 요청이 옮긴다
+    const next = await t.service.create(ME.toHexString(), materialId);
+
+    expect(next.quizSet._id).not.toBe(prev.quizSet._id);
+    expect(t.set(prev.quizSet._id)['status']).toBe('ready');
+    expect((t.job(next.job._id)['input'] as WorkerInput).material.concepts).toEqual([
+      '세포막',
+      '핵',
+    ]);
+  });
+});
+
+describe('QuizSetsService.pregenerate (#134 · #274)', () => {
+  it('노트 내용만으로 첫 세트를 만드는 quiz_pregen을 넣는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+
+    const job = await t.service.pregenerate(ME.toHexString(), materialId);
+
+    expect(job).toMatchObject({
+      type: 'quiz_pregen',
+      status: 'queued',
+      targetType: 'material',
+      targetId: materialId,
+    });
+    const input = t.job(job!._id)['input'] as WorkerInput;
+    expect(input).toMatchObject({ size: QUIZ_SET_SIZE, sets: [], attempts: [], notes: {} });
+    expect(input.day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(input.material).toEqual({
+      id: materialId,
+      title: '세포 생물학',
+      pages: [{ pageNo: 1, ocrText: NOTE_TEXT }],
+    });
+  });
+
+  it('넣은 미리 만들기를 퀴즈 요청이 이어받는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await t.service.pregenerate(ME.toHexString(), materialId);
+
+    const { job } = await t.service.create(ME.toHexString(), materialId);
+
+    expect(job).toMatchObject({ _id: p!._id, awaited: true });
+  });
+
+  it('도는 미리 만들기 · 아직 쓰지 않은 결과가 있으면 새로 넣지 않고 그 작업을 돌려준다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const first = await t.service.pregenerate(ME.toHexString(), materialId);
+    expect(await t.service.pregenerate(ME.toHexString(), materialId)).toMatchObject({
+      _id: first!._id,
+    });
+    t.finish(first!._id, { questions: fullSet() });
+    expect(await t.service.pregenerate(ME.toHexString(), materialId)).toMatchObject({
+      _id: first!._id,
+    });
+    expect(t.jobs.rows).toHaveLength(1);
+  });
+
+  it('이 노트에 세트가 이미 있으면 넣지 않는다(첫 세트만 미리 만든다)', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    await t.service.create(ME.toHexString(), materialId);
+
+    expect(await t.service.pregenerate(ME.toHexString(), materialId)).toBeNull();
+    expect(t.jobs.rows).toHaveLength(1);
+  });
+
+  it('물을 수 있는 쪽이 없으면 넣지 않는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote({ pages: [{ pageNo: 1, ocrText: '한 줄뿐' }] });
+
+    expect(await t.service.pregenerate(ME.toHexString(), materialId)).toBeNull();
+    expect(t.jobs.rows).toHaveLength(0);
+  });
+
+  it('저장된 개념 이름이 있으면 입력에 넣는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote({ concepts: ['세포막', '핵'] });
+
+    const job = await t.service.pregenerate(ME.toHexString(), materialId);
+
+    expect((t.job(job!._id)['input'] as WorkerInput).material.concepts).toEqual(['세포막', '핵']);
+  });
+
+  it('남의 노트는 404', async () => {
+    const t = setup();
+    const materialId = await t.addNote({ ownerId: OTHER });
+
+    await expect(t.service.pregenerate(ME.toHexString(), materialId)).rejects.toMatchObject(
+      notFound,
+    );
   });
 });
 
