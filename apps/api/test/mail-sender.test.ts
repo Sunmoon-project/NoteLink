@@ -1,12 +1,12 @@
 import { Logger } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createMailSender } from '../src/modules/mail/create-mail-sender.js';
 import {
-  createMailSender,
   LogMailSender,
   MAIL_SENDER,
   MailUnavailableError,
-} from '../src/modules/auth/app-login/mail-sender.js';
+} from '../src/modules/mail/mail-sender.js';
 
 const config = (values: Record<string, string | undefined>) => ({ get: (k: string) => values[k] });
 
@@ -124,7 +124,7 @@ describe('createMailSender (설정에서 발송 수단 고르기)', () => {
     ['설정 없음', undefined],
     ['빈 문자열', ''],
     ['공백뿐', '   '],
-    ['알 수 없는 값', 'smtp'],
+    ['알 수 없는 값', 'sendgrid'],
     ['대소문자가 다름(LOG)', 'LOG'],
     ['비슷한 값(logs)', 'logs'],
     ['true', 'true'],

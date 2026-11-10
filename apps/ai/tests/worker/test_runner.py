@@ -1,4 +1,5 @@
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -6,7 +7,7 @@ import mongomock
 import pytest
 from pymongo.errors import AutoReconnect
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmRejectedError, LlmSetupError
 from app.worker import runner
 from app.worker.jobs import Job, JobStore
 from app.worker.runner import (
@@ -150,6 +151,35 @@ def test_llm_error_is_retried_later(col: Any) -> None:
 
     doc = run(col, handler)
     assert (doc["status"], doc["error"]) == ("queued", "AI 응답을 받지 못함(HTTP 503)")
+
+
+def test_a_setup_error_from_the_server_is_retried_later(col: Any) -> None:
+    # 게이트웨이가 잠깐 403 · 404를 줄 수도 있어 시도 한도 안에서 다시(#262)
+    def handler(inp: JsonObject, report: Report) -> JsonObject:
+        raise LlmSetupError("HTTP 401")
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["error"]) == ("queued", "AI 설정 오류(HTTP 401)")
+
+
+def test_a_missing_setting_fails_without_retry(col: Any) -> None:
+    def handler(inp: JsonObject, report: Report) -> JsonObject:
+        raise LlmSetupError("SCHOOL_LLM_BASE_URL이 비어 있음", retry=False)
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["error"]) == (
+        "failed",
+        "AI 설정 오류(SCHOOL_LLM_BASE_URL이 비어 있음)",
+    )
+
+
+def test_a_rejected_request_fails_without_retry(col: Any) -> None:
+    # 같은 요청을 다시 보내도 같음: 작업을 다시 넣지 않음(/code-review #262)
+    def handler(inp: JsonObject, report: Report) -> JsonObject:
+        raise LlmRejectedError("HTTP 413")
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["error"]) == ("failed", "AI가 요청을 거절함(HTTP 413)")
 
 
 def test_bad_input_fails_without_retry(col: Any) -> None:
@@ -317,6 +347,95 @@ def test_heartbeat_extends_lock_while_handler_is_quiet(col: Any) -> None:
     assert col.find_one({"_id": "j1"})["status"] == "succeeded"
 
 
+@pytest.fixture
+def quick_cancel_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner, "CANCEL_CHECK_SEC", 0.01)
+
+
+@pytest.mark.usefixtures("quick_cancel_check")
+def test_a_cancel_is_noticed_while_the_handler_is_quiet_and_the_lock_is_released(
+    col: Any,
+) -> None:
+    # 잠금 연장(기본 300초)을 기다리지 않고 몇 초 안에 알아채 처리 함수에 알림(#263)
+    noticed: list[bool] = []
+
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})  # 앱에서 취소
+        noticed.append(report.canceled().wait(2))
+        return {"late": True}
+
+    assert run_once(store(col), {"quiz_generate": handler}, heartbeat_sec=60)
+    doc = col.find_one({"_id": "j1"})
+    assert noticed == [True]
+    # 결과는 버리고, 처리 함수가 끝났으니 잠금을 풂: '다시 시도'가 바로 됨
+    assert (doc["status"], doc["result"], doc["lockedBy"], doc["lockedUntil"]) == (
+        "canceled",
+        None,
+        None,
+        None,
+    )
+
+
+@pytest.mark.usefixtures("quick_cancel_check")
+def test_a_cancel_seen_while_failing_also_releases_the_lock(col: Any) -> None:
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})
+        report.canceled().wait(2)
+        raise LlmError("멈춤(작업이 취소됨)")
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["error"], doc["lockedBy"]) == ("canceled", None, None)
+
+
+@pytest.mark.usefixtures("quick_cancel_check")
+def test_a_job_that_is_not_canceled_is_not_signaled(col: Any) -> None:
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        assert not report.canceled().wait(0.1)  # 상태를 여러 번 읽는 동안
+        return {"ok": True}
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["result"]) == ("succeeded", {"ok": True})
+
+
+@pytest.mark.usefixtures("quick_cancel_check")
+def test_a_job_taken_by_another_worker_is_signaled_but_left_locked(col: Any) -> None:
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        col.update_one({"_id": "j1"}, {"$set": {"lockedBy": "w2"}})  # 잠금이 끝나 w2가 가져감
+        assert report.canceled().wait(2)
+        return {"late": True}
+
+    doc = run(col, handler)
+    assert (doc["status"], doc["lockedBy"]) == ("running", "w2")
+
+
+def test_a_failing_lock_extension_waits_before_trying_again(col: Any) -> None:
+    # DB 오류가 바로 돌아와도 잠금 연장을 기다리지 않고 되풀이하지 않음(Codex 리뷰 #265)
+    tries: list[float] = []
+
+    class Down(JobStore):
+        def touch(self, job: Any) -> None:
+            tries.append(time.monotonic())
+            raise AutoReconnect("연결 끊김")
+
+    s = Down(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30, now=lambda: T0)
+    check = 0.05
+
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        time.sleep(0.5)
+        return {"ok": True}
+
+    canceled = threading.Event()
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    with runner._Heartbeat(s, job, 0.01, canceled, check=check):
+        handler({}, runner._StoreReport(s, job, canceled=canceled))
+    # 0.5초 동안 첫 연장(0.01초) 뒤 check(0.05초)마다: 대기 없이 되풀이하면 수천 번
+    assert 3 <= len(tries) <= 0.5 / check + 2
+    gaps = [b - a for a, b in zip(tries, tries[1:], strict=False)]
+    assert min(gaps) >= check * 0.8
+    assert not canceled.is_set()
+
+
 def test_run_forever_keeps_going_after_db_error_and_stops_on_request(col: Any) -> None:
     stop = threading.Event()
     calls: list[str] = []
@@ -351,7 +470,9 @@ class AwaitedStore(JobStore):
 def test_report_reads_awaited_at_most_every_few_seconds_and_keeps_it(col: Any) -> None:
     now = [0.0]
     s = AwaitedStore(col, [False, AutoReconnect("끊김"), True])
-    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1), clock=lambda: now[0])
+    report = runner._StoreReport(
+        s, Job("j1", "quiz_pregen", {}, 1), canceled=threading.Event(), clock=lambda: now[0]
+    )
     assert report.awaited() is False and s.reads == 0  # 막 가져온 작업은 가져올 때 값(False)
     now[0] += runner.AWAITED_CHECK_SEC
     assert report.awaited() is False and s.reads == 1
@@ -366,7 +487,9 @@ def test_report_reads_awaited_at_most_every_few_seconds_and_keeps_it(col: Any) -
 
 def test_report_of_a_job_taken_over_before_it_started_is_awaited(col: Any) -> None:
     s = AwaitedStore(col, [])
-    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1, awaited=True))
+    report = runner._StoreReport(
+        s, Job("j1", "quiz_pregen", {}, 1, awaited=True), canceled=threading.Event()
+    )
     assert report.awaited() is True and s.reads == 0
 
 
@@ -387,7 +510,9 @@ def test_report_does_not_wait_while_another_thread_reads_awaited(col: Any) -> No
     # DB가 느려도 다른 퀴즈 자리 스레드는 기다리지 않고 지난 값(/code-review #138)
     now = [0.0]
     s = AwaitedStore(col, [True])
-    report = runner._StoreReport(s, Job("j1", "quiz_pregen", {}, 1), clock=lambda: now[0])
+    report = runner._StoreReport(
+        s, Job("j1", "quiz_pregen", {}, 1), canceled=threading.Event(), clock=lambda: now[0]
+    )
     now[0] += runner.AWAITED_CHECK_SEC
     with report._lock:  # 다른 스레드가 읽는 중
         assert report.awaited() is False and s.reads == 0

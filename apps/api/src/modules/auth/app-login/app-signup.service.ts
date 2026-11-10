@@ -23,7 +23,7 @@ import {
 } from './email-code.service.js';
 import { APP_LOGIN_ERRORS } from './app-login-errors.js';
 import { EmailProofService } from './email-proof.service.js';
-import { MAIL_SENDER, MailUnavailableError, type MailSender } from './mail-sender.js';
+import { MAIL_SENDER, MailUnavailableError, type MailSender } from '../../mail/mail-sender.js';
 
 /** bcrypt 비용. 2^12번 반복 */
 export const PASSWORD_HASH_COST = 12;

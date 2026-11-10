@@ -5,7 +5,7 @@ from collections.abc import Callable, Sequence
 import httpx2
 import pytest
 
-from app.clients.llm import JsonObject, Llm, LlmCutError, LlmError, SchoolLlm
+from app.clients.llm import JsonObject, Llm, LlmCutError, LlmError, LlmRejectedError, SchoolLlm
 from app.clients.speech import NoSpeechError, Phrase, Transcript, Word
 from app.core.config import settings
 from app.services.recording.models import Sentence, Slide
@@ -972,6 +972,15 @@ def test_split_fails_when_right_fails_twice_after_asking_left_once() -> None:
         build(llm, data)
 
     assert llm.asked == [(0, 20), (0, 10), (10, 10), (10, 10)]
+
+
+def test_split_does_not_ask_a_rejected_right_half_again() -> None:
+    # 서버가 거절한 요청은 다시 물어도 같음: 그대로 올려 작업 처리기가 다시 넣지 않게(Codex #264)
+    data = tagged_sentences(20)
+    llm = PieceLlm({(0, 20): [LlmCutError("JSON")], (10, 10): [LlmRejectedError("HTTP 413")]})
+    with pytest.raises(LlmRejectedError, match="HTTP 413"):
+        build(llm, data)
+    assert llm.asked == [(0, 20), (0, 10), (10, 10)]
 
 
 def test_split_does_not_ask_right_when_left_fails() -> None:
