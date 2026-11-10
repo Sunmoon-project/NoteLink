@@ -28,11 +28,14 @@ jest.mock('../features/tutor/avatar3d', () => {
   return { Avatar3D: ({ avatarId }: { avatarId: string }) => <T>{`3D:${avatarId}`}</T> };
 });
 
+// 기기 저장소는 메모리로(테스트마다 비움)
+const mockSecure = new Map<string, string>();
 jest.mock('expo-secure-store', () => ({
-  getItemAsync: jest.fn(async () => null),
-  setItemAsync: jest.fn(async () => undefined),
+  getItemAsync: jest.fn(async (k: string) => mockSecure.get(k) ?? null),
+  setItemAsync: jest.fn(async (k: string, v: string) => void mockSecure.set(k, v)),
   deleteItemAsync: jest.fn(),
 }));
+beforeEach(() => mockSecure.clear());
 
 const mockApi = {
   content: { material: jest.fn(), ask: jest.fn() },
@@ -193,6 +196,25 @@ describe('아바타 선생님 대화', () => {
     expect(await screen.findByText('3D:bora')).toBeTruthy();
   });
 
+  it('판매가 끝나 상품 목록에서 빠진 보유 아바타도 전에 본 3D 모델을 쓴다', async () => {
+    mockSecure.clear();
+    const oid = '6650a1b2c3d4e5f601234568';
+    mockApi.shop.myItems.mockResolvedValue([
+      { itemId: oid, itemCategory: 'avatar', isOwned: true, isEquipped: true },
+    ]);
+    mockApi.shop.items.mockResolvedValue([
+      { _id: oid, category: 'avatar', name: '지후 아바타', assetUrl: 'https://cdn/j.png' },
+    ]);
+    const first = await renderScreen(<TutorScreen />);
+    expect(await screen.findByText('3D:jihoo')).toBeTruthy();
+    await waitFor(() => expect(mockSecure.size).toBe(1));
+    await first.unmount();
+    // 판매 중지: 서버 상품 목록(판매 중인 것만)에 없다
+    mockApi.shop.items.mockResolvedValue([]);
+    await renderScreen(<TutorScreen />);
+    expect(await screen.findByText('3D:jihoo')).toBeTruthy();
+  });
+
   it('퀴즈처럼 다른 화면이 위에 쌓이면 보이지 않는 3D 아바타를 내린다', async () => {
     await renderScreen(<TutorScreen />);
     expect(await screen.findByText('3D:base')).toBeTruthy();
@@ -269,6 +291,15 @@ describe('기기 저장 모드의 아바타 답', () => {
     // 앞 글자만 요약 말과 같은 낱말("해외여행"의 "해")도 자료 밖 질문
     expect(localAnswer(note, '해외여행 알려줘')?.reason).toBe('off_topic');
     expect(localAnswer(note, '해물라면 설명해 주세요')?.reason).toBe('off_topic');
+    // 한 글자 주제어도 자료 밖이면 거절(Codex #260)
+    expect(localAnswer(note, '달 설명해 주세요')?.reason).toBe('off_topic');
+    // 기본 추천 질문 "핵심만"은 핵심이 없는 노트에서도 첫 부분을 읽어 준다(Codex #252)
+    expect(
+      localAnswer(
+        { ...note, summary: { ...note.summary!, points: [] } },
+        '이 노트 핵심만 알려 주세요',
+      )?.answerable,
+    ).toBe(true);
     for (const q of ['요약해줘', '이거 뭐야?', '무엇인가요', '간단히 정리해 주세요', '내용 알려줘'])
       expect(localAnswer(note, q)?.answerable).toBe(true);
     expect(localAnswer(note, '양자역학')).toEqual({
