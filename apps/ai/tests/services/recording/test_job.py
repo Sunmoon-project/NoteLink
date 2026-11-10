@@ -9,7 +9,7 @@ import mongomock
 import pytest
 from pydantic import SecretStr
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmRejectedError
 from app.clients.speech import (
     NoSpeechError,
     Phrase,
@@ -590,6 +590,16 @@ def test_llm_unavailable_is_retried_later(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert (doc["status"], doc["attempts"]) == ("queued", 1)
     assert doc["error"] == "AI 응답을 받지 못함(HTTP 503)"
+
+
+def test_llm_rejection_fails_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 서버가 거절한 요청(413 등)은 다시 넣어도 같음: 작업 처리기까지 와서 바로 실패(Codex #264)
+    llm = FakeLlm({SLIDES: [LlmRejectedError("HTTP 413")]})
+
+    doc = run_job(monkeypatch, {"audioUrl": AUDIO_URL}, llm=llm)
+
+    assert (doc["status"], doc["attempts"]) == ("failed", 1)
+    assert doc["error"] == "AI가 요청을 거절함(HTTP 413)"
 
 
 @pytest.mark.parametrize("error", ["HTTP 401", "응답 모양"])
