@@ -1,4 +1,5 @@
 import copy
+import inspect
 import threading
 from datetime import UTC, datetime
 from typing import Any
@@ -166,21 +167,29 @@ class StubReport:
         return self._canceled
 
 
-@pytest.mark.parametrize(("awaited", "patient"), [(False, True), (True, False)])
-def test_a_pregen_taken_over_before_it_starts_gets_the_usual_time_limit(
-    monkeypatch: pytest.MonkeyPatch, awaited: bool, patient: bool
+def test_a_pregen_runs_in_stable_mode_and_hurries_when_taken_over(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # 이어받은 채 시작하면 사용자가 기다리므로 보통 상한: 사용자 작업 반복을 오래 막지 않게(#138)
-    seen: list[bool] = []
+    # 미리 만들기는 안정적 모드, 이어받았는지는 그 작업의 report.awaited로 봄(#274). 이어받은 채
+    # 시작해도 같음: run이 첫 자리부터 빠른 모드로 바꿈
+    seen: list[tuple[object, bool]] = []
 
-    def fake_run(llm: Any, inp: Any, report: Any, *, patient: bool = False) -> dict[str, Any]:
-        seen.append(patient)
+    def fake_run(llm: Any, inp: Any, report: Any, *, mode: Any, hurry: Any) -> dict[str, Any]:
+        seen.append((mode, hurry()))
         return {}
 
     monkeypatch.setattr(handlers, "_llm", lambda: FakeLlm())
     monkeypatch.setattr(handlers.generate, "run", fake_run)
-    handlers.quiz_pregen({}, StubReport(awaited))
-    assert seen == [patient]
+    handlers.quiz_pregen({}, StubReport(False))
+    handlers.quiz_pregen({}, StubReport(True))
+    assert seen == [(handlers.generate.STABLE, False), (handlers.generate.STABLE, True)]
+
+
+def test_a_quiz_request_runs_in_fast_mode() -> None:
+    # 바로 요청(quiz_generate)은 run의 기본 모드(빠름)
+    params = inspect.signature(handlers.generate.run).parameters
+    assert params["mode"].default is handlers.generate.FAST
+    assert params["hurry"].default is None
 
 
 def test_lanes_starting_together_share_one_llm(monkeypatch: pytest.MonkeyPatch) -> None:
