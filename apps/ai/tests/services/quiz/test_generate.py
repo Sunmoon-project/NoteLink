@@ -1892,6 +1892,9 @@ def test_a_stable_set_turns_the_first_type_slot_by_slot_and_tags_difficulty() ->
     assert [q["difficulty"] for q in qs] == ["하", "중", "중", "하"]
     neg = qs[2]
     assert neg["prompt"].endswith("옳지 않은 것은?") and neg["answer"] == "섬모로 움직인다"
+    # 부정설명의 정답(틀린 설명)은 '이미 정답으로 쓴 것'으로 다음 초안 지시에 싣지 않음
+    last = llm.named("Quiz")[-1]
+    assert "이미 정답으로 쓴 것" in last and "섬모로 움직인다" not in last
 
     llm = typed_llm()
     result = make(llm, job(size=4))  # 빠른 모드는 지금처럼 쪽마다 정의부터

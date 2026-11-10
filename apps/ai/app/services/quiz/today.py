@@ -255,11 +255,13 @@ def void_flawed(
 
 
 def _copy_of(oq: Question, q: Question) -> bool:
-    """oq가 q 자신이나 그 사본인지: 문제 글 · 제시문 · 답이 같음(오늘의 복습 사본은 셋 다 같음)."""
+    """oq가 q 자신이나 그 사본인지: 문제 글 · 제시문 · 답이 같음(오늘의 복습 사본은 셋 다 같음).
+
+    조합형 정답('ㄱ, ㄷ')은 same_word가 같은 낱말로 보지 않으므로 글이 똑같은지로 봄(#268)."""
     return (
         oq["prompt"] == q["prompt"]
         and oq.get("passage") == q.get("passage")
-        and same_word(oq["answer"], q["answer"])
+        and (same_word(oq["answer"], q["answer"]) or oq["answer"] == q["answer"])
     )
 
 

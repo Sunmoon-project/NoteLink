@@ -3,6 +3,7 @@ import pytest
 from app.services.quiz.models import Draft, Notes, Question
 from app.services.quiz.text import (
     clean_pages,
+    combo_answer,
     is_combo,
     locate,
     norm,
@@ -231,3 +232,9 @@ def test_combo_options_keep_the_fixed_order_whatever_the_slot() -> None:
     fixed = ["ㄱ", "ㄷ", "ㄱ, ㄴ", "ㄴ, ㄷ", "ㄱ, ㄴ, ㄷ"]
     for slot in range(5):
         assert place(opts, 0, slot) == (fixed, 2)
+
+
+def test_a_combination_answer_is_not_a_word_to_ask_again() -> None:
+    assert combo_answer("ㄱ, ㄷ") and combo_answer("ㄱ,ㄴ,ㄷ") and not combo_answer("ㄱㄹ")
+    assert not short_answer("ㄱ, ㄷ") and short_answer("ㄱ말")
+    assert not same_word("ㄱ, ㄷ", "ㄱ, ㄷ") and same_word("대립 유전자", "대립유전자")

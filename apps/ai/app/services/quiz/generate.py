@@ -690,13 +690,20 @@ def _hint(info: PageInfo, used: list[str]) -> str:
 type Accept = Callable[[Made], list[str]]
 
 
+def _listed(m: Made) -> bool:
+    """받은 문제의 정답을 '이미 쓴 정답'(used)에 넣을지(#268). 조합형 정답(ㄱ, ㄴ)은 묶음 이름이라
+    겹쳐도 되고, 부정설명의 정답은 틀린 설명이라 다음 초안 지시(_hint)에 사실처럼 실리지 않게 뺌."""
+    assert m.question is not None
+    return not is_combo(m.question["options"]) and m.type != "부정설명"
+
+
 def _take(seen: list[Seen], used: list[str]) -> Accept:
     """차례로 만들 때: 겹침은 code_check가 이미 봤으니 seen · used에 더하기만."""
 
     def accept(m: Made) -> list[str]:
         assert m.question is not None
         seen.append(seen_draft(m.question))
-        if not is_combo(m.question["options"]):  # 조합형 정답(ㄱ, ㄴ)은 겹쳐도 됨
+        if _listed(m):
             used.append(m.question["answer"])
         return []
 
@@ -1116,7 +1123,7 @@ def _make_all(
                 return [CLASH]
             asked[r.concept] += 1
             seen.append(seen_draft(d))
-            if not combo_q:  # 조합형 정답(ㄱ, ㄴ)은 묶음 이름이라 겹쳐도 됨
+            if _listed(r):
                 used.append(d["answer"])
             taken.append((page, r))
             if len(taken) >= n:
