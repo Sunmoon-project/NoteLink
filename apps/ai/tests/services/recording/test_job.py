@@ -616,21 +616,22 @@ def real_clients(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 @pytest.mark.parametrize(
-    ("name", "blank"),
+    ("name", "blank", "error"),
     [
-        ("school_llm_base_url", ""),
-        ("azure_speech_endpoint", ""),
-        ("voyage_api_key", SecretStr("")),
+        # 학교 LLM 설정은 LlmSetupError(retry=False)로 이유를 남김(#262)
+        ("school_llm_base_url", "", "AI 설정 오류(SCHOOL_LLM_BASE_URL이 비어 있음)"),
+        ("azure_speech_endpoint", "", "처리 중 오류"),
+        ("voyage_api_key", SecretStr(""), "처리 중 오류"),
     ],
 )
 def test_missing_setting_fails_without_retry(
-    real_clients: pytest.MonkeyPatch, name: str, blank: object
+    real_clients: pytest.MonkeyPatch, name: str, blank: object, error: str
 ) -> None:
     real_clients.setattr(settings, name, blank)
 
     doc = queued_job_result({"audioUrl": AUDIO_URL})
 
-    assert (doc["status"], doc["attempts"], doc["error"]) == ("failed", 1, "처리 중 오류")
+    assert (doc["status"], doc["attempts"], doc["error"]) == ("failed", 1, error)
 
 
 # ---------- 진행률 ----------

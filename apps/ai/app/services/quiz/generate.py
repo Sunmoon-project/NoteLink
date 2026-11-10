@@ -934,7 +934,12 @@ def _make_all(
         pending: set[Future[tuple[int, Made]]] = set(futures)
         while pending and not done.is_set() and (left := hard - _clock()) > 0:
             # 자리 하나가 끝날 때마다 깨어남(늦어도 1초마다 시간 상한을 봄)
-            _, pending = wait(pending, timeout=min(1.0, left), return_when=FIRST_COMPLETED)
+            ended_now, pending = wait(pending, timeout=min(1.0, left), return_when=FIRST_COMPLETED)
+            # 자리가 LlmError가 아닌 오류(학교 LLM 설정 오류 LlmSetupError · 코드 오류)로 끝나면
+            # 남은 자리도 같으므로 기다리지 않고 올림: 자리마다 한 번씩 더 보내지 않게(#262)
+            for f in ended_now:
+                if (e := f.exception()) is not None and not isinstance(e, LlmError):
+                    raise e
             if len(taken) != shown:
                 shown = len(taken)
                 report(15 + 85 * shown // max(n, 1), "문제 만들기")

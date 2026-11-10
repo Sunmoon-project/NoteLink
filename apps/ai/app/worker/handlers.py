@@ -92,13 +92,10 @@ def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
     """녹음 정리(recording_job.run). 일시 오류는 LlmError로 바꿔 시도 한도 안에서 다시 시도합니다.
 
     설정 누락 · 음성 외 영구 오류는 그 밖의 예외로 두어 바로 실패합니다(자세한 내용은 로그에만).
+    학교 LLM 주소가 비어 있으면 _llm()이 LlmSetupError(retry=False)로 바로 실패시킵니다(#262).
     """
     try:
-        llm = _llm()
-    except LlmError as e:
-        raise RuntimeError(str(e)) from e  # runner가 LlmError를 다시 시도하지 않게
-    try:
-        return recording_job.run(llm, _speech, _voyage(), inp, report, checkpoint=report)
+        return recording_job.run(_llm(), _speech, _voyage(), inp, report, checkpoint=report)
     except recording_job.InputError as e:
         raise JobInputError(str(e), code=e.code) from e
     except SpeechUnavailableError as e:

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmSetupError
 from app.services.quiz import generate, srs
 from app.services.quiz.generate import Chunk, PageInfo
 from app.services.quiz.review import InputError, seoul_midnight
@@ -474,6 +474,18 @@ def test_the_job_is_retried_when_every_generation_call_fails() -> None:
     llm = happy([down] * 6)
     with pytest.raises(LlmError):
         run(llm, job(size=1))
+
+
+def test_a_setup_error_ends_the_job_without_the_other_slots_calling() -> None:
+    # 학교 LLM 키 · 주소 · 모델 이름이 틀림: 남은 자리도 같으므로 기다리지 않고 올림(#262)
+    def quiz(user: str) -> JsonObject:
+        raise LlmSetupError("HTTP 401")
+
+    llm = parallel_llm(quiz)
+    with pytest.raises(LlmSetupError):
+        run(llm, job(size=4))
+    # 자리 4개가 하나씩 돎(WORKERS=1): 첫 자리 뒤 다음 자리가 이미 시작했을 수는 있음
+    assert len(llm.named("Quiz")) <= 2
 
 
 def test_some_calls_failing_is_not_an_outage() -> None:

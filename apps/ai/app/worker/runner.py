@@ -3,6 +3,9 @@
 처리 함수(Handler)는 input을 받아 result를 돌려주고, 진행률은 report(값, 단계)로 알립니다.
 시도 사이에 다시 쓸 중간 결과는 report.save_checkpoint · load_checkpoint로 저장하고 읽습니다.
   - LlmError        일시 오류 → 시도 한도까지 기다렸다가 다시 시도
+  - LlmRejectedError  학교 LLM이 이 요청을 거절함(400 등) → 바로 실패(다시 보내도 같음, #262)
+  - LlmSetupError   학교 LLM 설정 오류 → e.retry면 시도 한도까지 다시(서버가 거절), 아니면 바로 실패
+                    (설정 값이 비어 있음, #262)
   - JobInputError   input이 작업에 맞지 않음 → 바로 실패(다시 해도 같음). 오류 문구는 code로 시작
   - 그 밖의 예외    코드 오류 → 바로 실패. 오류 문구는 앱에 보이므로 자세한 내용은 로그에만 남김
   - JobGoneError    취소됐거나 잠금을 잃음 → 아무것도 쓰지 않고 다음 작업으로
@@ -24,7 +27,7 @@ from typing import Protocol
 
 from pymongo.errors import PyMongoError
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmRejectedError, LlmSetupError
 from app.worker.jobs import Job, JobGoneError, JobStore
 
 log = logging.getLogger(__name__)
@@ -150,9 +153,15 @@ def run_once(
         log.info("작업 완료 %s (%s)", job.id, job.type)
     except JobGoneError:
         log.info("작업이 취소됐거나 다른 처리기로 넘어감 %s", job.id)
+    except LlmRejectedError as e:
+        log.warning("작업 %s: 학교 LLM이 요청을 거절함 %s", job.id, e)
+        _fail(store, job, f"AI가 요청을 거절함({e})", retry=False)
     except LlmError as e:
         log.warning("작업 %s: LLM 오류 %s", job.id, e)
         _fail(store, job, f"AI 응답을 받지 못함({e})", retry=True)
+    except LlmSetupError as e:
+        log.error("작업 %s: 학교 LLM 설정 오류 %s — 키 · 주소 · 모델 이름 확인", job.id, e)
+        _fail(store, job, f"AI 설정 오류({e})", retry=e.retry)
     except JobInputError as e:
         log.warning("작업 %s: 입력 오류 %s", job.id, e)
         _fail(store, job, f"{e.code}: {e}" if e.code else f"입력 오류: {e}", retry=False)
