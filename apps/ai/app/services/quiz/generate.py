@@ -20,7 +20,7 @@ ai_jobs.type = 'quiz_pregen': 노트를 만들 때 NestJS가 넣는 첫 맞춤 �
 시간(#95): 앱이 퀴즈를 빨리 받아야 해서 5문제를 2분 안에 만듭니다. 차례로 만들면 10문제에
   11~12분, 5문제에 7분이 걸렸습니다(11/05 학교 LLM).
   - 자리(문제 수만큼)와 여분 자리(문제 수 × EXTRA)를 WORKERS개씩 동시에 만들고, 먼저 통과한 n개를
-    씁니다. 학교 LLM은 동시 요청을 받고, 호출 간격은 SchoolLlm이 지킵니다
+    씁니다. 학교 LLM은 동시 요청을 받고, 호출 간격은 PacedLlm이 지킵니다
   - 통과한 문제는 받아들일 때(accept) 잠금 안에서 그사이 다른 자리가 받은 문제와 개념 · 정답 ·
     문장 겹침을 다시 봅니다
   - 새 초안은 SEC_PER_QUESTION × n초 안에만 시작하고, HARD_SEC_PER_QUESTION × n초에는 그 판을
@@ -162,7 +162,7 @@ class NoQuestionsError(InputError):
 TEXT_CAP = 2500  # 생성 모델에 보여 주는 쪽 글
 CHECK_CAP = 3000  # 검사 모델에 보여 주는 쪽 글(similar.solved와 같음)
 BACKUPS = 2  # 못 만든 자리를 넘겨 볼 다른 쪽 수
-WORKERS = 8  # 동시에 만드는 자리 · 동시에 개념을 뽑는 쪽(호출 간격은 SchoolLlm이 지킴)
+WORKERS = 8  # 동시에 만드는 자리 · 동시에 개념을 뽑는 쪽(호출 간격은 PacedLlm이 지킴)
 # 여분 자리: 5문제에 자리 5개면 1~2개가 비었고(11/05 미생 3~4/5 · 기생충 1~3/5) 110초에 보낼 수
 # 있는 호출 약 50번 중 23~30번만 썼음. 먼저 통과한 n개를 쓰고 나머지는 멈춤
 EXTRA = 0.6
@@ -685,7 +685,7 @@ def _until(llm: Llm, stop: threading.Event) -> Llm:
 
     다 모았거나 돌려준 뒤에도 남은 자리 스레드는 검사 · 풀기 호출을 몇 번 더 하는데, 학교 LLM
     클라이언트는 프로세스에 하나라 그 호출이 다음 작업의 차례를 밀어냄(/code-review #95).
-    이미 SchoolLlm 안에서 차례를 기다리거나 다시 보내려는 호출도 stop_on으로 멈춤(Codex 리뷰
+    이미 PacedLlm 안에서 차례를 기다리거나 다시 보내려는 호출도 stop_on으로 멈춤(Codex 리뷰
     #125). 보낸 뒤 응답을 기다리는 호출은 끝까지 기다림. 작업 취소와 같은 Stopping을 씀(#263).
     """
     return Stopping(llm, stop, STOPPED)

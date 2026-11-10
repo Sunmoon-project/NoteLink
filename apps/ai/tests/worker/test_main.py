@@ -19,9 +19,21 @@ def test_worker_with_jobs_refuses_to_start_without_llm_address(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "mongodb_uri", SecretStr("mongodb://127.0.0.1:27017"))
+    monkeypatch.setattr(settings, "llm_provider", "school")
     monkeypatch.setattr(settings, "school_llm_base_url", "")
     monkeypatch.setitem(entry.HANDLERS, "quiz_generate", lambda inp, report: {})
     with pytest.raises(SystemExit, match="SCHOOL_LLM_BASE_URL"):
+        entry.main()
+
+
+def test_worker_with_jobs_refuses_to_start_without_claude_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "mongodb_uri", SecretStr("mongodb://127.0.0.1:27017"))
+    monkeypatch.setattr(settings, "llm_provider", "claude")
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr(""))
+    monkeypatch.setitem(entry.HANDLERS, "quiz_generate", lambda inp, report: {})
+    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY"):
         entry.main()
 
 
