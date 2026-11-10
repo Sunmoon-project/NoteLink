@@ -15,15 +15,46 @@ import Animated, {
 import { router, useFocusEffect } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { Text } from '@/components/text';
+import type { ShopItem } from '@notelink/shared';
 import { api } from '@/lib/api';
+import { BASE_AVATAR, SHOP } from '@/lib/local/catalog';
 import { C } from '@/theme';
 import { Avatar3D } from './avatar3d';
 
 /** 장착한 상점 아바타 id(없으면 기본). 상점에서 장착을 바꾸면 ['my-items']가 새로 고쳐져 모양이 바뀐다 */
-export function useEquippedAvatar() {
+/** 장착한 아바타 상품 id(기본은 'base'). 서버는 ObjectId, 기기 저장 모드는 'bora' 같은 이름 */
+export function useEquippedItem() {
   // 상점을 못 불러와도 기본 아바타로 그린다(조회 안에서 읽어 렌더링을 막지 않게)
   const mine = useQuery({ queryKey: ['my-items'], queryFn: () => api.shop.myItems() });
   return mine.data?.find((u) => u.isEquipped && u.itemCategory === 'avatar')?.itemId ?? 'base';
+}
+
+const LOCAL_AVATARS = [BASE_AVATAR, ...SHOP.filter((i) => i.category === 'avatar')];
+/**
+ * 상품 id → 앱에 든 3D 모델 이름. 서버 상품은 id가 ObjectId라, 같은 이름이나 같은 그림(assetUrl)의
+ * 앱 상품으로 찾는다. 못 찾으면 기본 얼굴
+ */
+export function avatarModel(itemId: string, items?: Pick<ShopItem, '_id' | 'name' | 'assetUrl'>[]) {
+  if (LOCAL_AVATARS.some((a) => a._id === itemId)) return itemId;
+  const it = items?.find((i) => i._id === itemId);
+  if (!it) return BASE_AVATAR._id;
+  return (
+    LOCAL_AVATARS.find((a) => a.name === it.name || a.assetUrl === it.assetUrl)?._id ??
+    BASE_AVATAR._id
+  );
+}
+
+/** 장착한 아바타의 3D 모델 이름 */
+export function useEquippedAvatar() {
+  const id = useEquippedItem();
+  const local = LOCAL_AVATARS.some((a) => a._id === id);
+  // 서버 상품이면 상품 정보로 모델을 찾는다(아바타 선생님 고르기 화면과 같은 캐시)
+  const all = useQuery({
+    queryKey: ['shop', 'all'],
+    queryFn: () => api.shop.items({}),
+    enabled: !local,
+  });
+  return avatarModel(id, all.data);
 }
 
 /**

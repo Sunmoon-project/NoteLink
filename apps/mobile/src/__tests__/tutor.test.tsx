@@ -181,6 +181,18 @@ describe('아바타 선생님 대화', () => {
     expect(await screen.findByText('3D:bora')).toBeTruthy();
   });
 
+  it('서버 상품 id(ObjectId)로 장착해도 같은 이름의 3D 모델을 쓴다', async () => {
+    const oid = '6650a1b2c3d4e5f601234567';
+    mockApi.shop.myItems.mockResolvedValue([
+      { itemId: oid, itemCategory: 'avatar', isOwned: true, isEquipped: true },
+    ]);
+    mockApi.shop.items.mockResolvedValue([
+      { _id: oid, category: 'avatar', name: '보라 아바타', assetUrl: 'https://cdn/x.png' },
+    ]);
+    await renderScreen(<TutorScreen />);
+    expect(await screen.findByText('3D:bora')).toBeTruthy();
+  });
+
   it('퀴즈처럼 다른 화면이 위에 쌓이면 보이지 않는 3D 아바타를 내린다', async () => {
     await renderScreen(<TutorScreen />);
     expect(await screen.findByText('3D:base')).toBeTruthy();
