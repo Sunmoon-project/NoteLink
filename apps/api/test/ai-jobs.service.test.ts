@@ -400,12 +400,12 @@ describe('한도 확인 중(held) 작업 (Codex #244 · #249)', () => {
         vi.setSystemTime(Date.now() + 61_000);
         for (let i = 0; i < 2; i++) Object.assign(row((await add(ask))._id), { status: 'queued' });
         otherHold = new Date();
-        Object.assign(row(x._id), { status: 'held', heldAt: otherHold });
+        Object.assign(row(x._id), { status: 'held', heldAt: otherHold, holdId: 'B' });
         return n;
       }) as never);
       await service.retry(ME, x._id);
       // B의 확인은 그대로 남아 B가 한도를 넘겼다고 보고 되돌릴 수 있다(A가 대신 열어 3개가 되지 않음)
-      expect(row(x._id)).toMatchObject({ status: 'held', heldAt: otherHold });
+      expect(row(x._id)).toMatchObject({ status: 'held', heldAt: otherHold, holdId: 'B' });
     } finally {
       vi.useRealTimers();
     }
@@ -428,6 +428,87 @@ describe('한도 확인 중(held) 작업 (Codex #244 · #249)', () => {
         status: 429,
       });
       expect(rows).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  const queued = (rows: Record<string, unknown>[]) =>
+    rows.filter((r) => r.type === 'note_ask' && r.status === 'queued').length;
+
+  it('같은 밀리초에 다른 요청이 같은 작업을 새로 잡아도, 늦은 요청은 그 held를 열지 않는다', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { service, add, row, rows, model } = setup();
+      const x = await add(ask);
+      Object.assign(row(x._id), { status: 'failed' });
+      const count = model.countDocuments.bind(model);
+      // 시계가 멈춘 채(같은 밀리초): A가 세는 동안 취소 → 다른 작업 둘 → B가 X를 다시 잡는다
+      vi.spyOn(model, 'countDocuments').mockImplementationOnce((async (f: never) => {
+        const n = await count(f);
+        await service.cancel(ME, x._id);
+        for (let i = 0; i < 2; i++) await add(ask);
+        Object.assign(row(x._id), { status: 'held', heldAt: new Date(), holdId: 'B' });
+        return n;
+      }) as never);
+      await service.retry(ME, x._id);
+      expect(row(x._id)).toMatchObject({ status: 'held', holdId: 'B' });
+      expect(queued(rows)).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('열기 직전 확인은 통과했어도 DB 갱신이 늦어 그사이 held가 지나면 열지 않는다', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { service, add, rows, model } = setup();
+      const update = model.findOneAndUpdate.bind(model);
+      // X를 여는 갱신이 61초 늦게 닿고, 그사이 다른 작업 둘이 한도를 채운다
+      vi.spyOn(model, 'findOneAndUpdate').mockImplementationOnce(((...args: never[]) => ({
+        lean: async () => {
+          vi.setSystemTime(Date.now() + 61_000);
+          for (let i = 0; i < 2; i++) await add(ask);
+          return (update as (...a: never[]) => { lean: () => Promise<unknown> })(...args).lean();
+        },
+      })) as never);
+      await expect(service.enqueue({ ...ask, userId: ME, input: {} })).rejects.toMatchObject({
+        status: 429,
+      });
+      expect(queued(rows)).toBe(2);
+      expect(rows.filter((r) => r.status === 'held')).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('held를 남긴 뒤 한도 조회가 실패해도, 지나면 한도에서 빠지고 취소 · 다시 시도로 되살린다', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { service, add, row, rows, model } = setup();
+      const count = model.countDocuments.bind(model);
+      const down = () => Promise.reject(new Error('db down'));
+      // 넣기: 넣기 전 확인은 되고, 넣은 뒤 세다가 실패
+      vi.spyOn(model, 'countDocuments')
+        .mockImplementationOnce(count as never)
+        .mockImplementationOnce(down as never);
+      await expect(service.enqueue({ ...ask, userId: ME, input: {} })).rejects.toThrow('db down');
+      const a = rows.find((r) => r.status === 'held')!;
+      // 다시 시도: 잡은 뒤 세다가 실패
+      const b = await add(ask);
+      Object.assign(row(b._id), { status: 'failed' });
+      vi.spyOn(model, 'countDocuments').mockImplementationOnce(down as never);
+      await expect(service.retry(ME, b._id)).rejects.toThrow('db down');
+      expect(row(b._id)).toMatchObject({ status: 'held' });
+
+      // 지나기 전에는 둘 다 한도에 들어 새 질문은 429
+      await expect(add(ask)).rejects.toMatchObject({ status: 429 });
+      vi.setSystemTime(Date.now() + 61_000);
+      // 지나면 한도에서 빠지고, 남은 held는 취소 · 다시 시도할 수 있다
+      await service.cancel(ME, a._id.toString());
+      expect(row(a._id.toString())).toMatchObject({ status: 'canceled' });
+      expect(await service.retry(ME, b._id)).toMatchObject({ status: 'queued' });
+      expect(row(b._id)).not.toHaveProperty('holdId');
+      expect(await add(ask)).toMatchObject({ status: 'queued' });
     } finally {
       vi.useRealTimers();
     }
