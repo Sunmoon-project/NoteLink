@@ -157,7 +157,7 @@ export function Player({
             <View className="relative rounded-2xl bg-white/5 p-4">
               {slide ? (
                 <>
-                  <Text className="text-caption2 text-white/50">
+                  <Text className="text-caption2 text-white/60">
                     슬라이드 {slide.index + 1} / {rec.data.slides.length}
                   </Text>
                   <Text className="mt-1 text-callout font-bold text-white">{slide.title}</Text>
@@ -185,7 +185,7 @@ export function Player({
                   {p.playing ? '아바타 립싱크 재생 중' : '아바타 립싱크 일시정지'}
                 </Text>
               </View>
-              <Text className="mt-1 text-caption leading-5 text-white/50">
+              <Text className="mt-1 text-caption leading-5 text-white/60">
                 {segs.length
                   ? segs.map((s, i) => (
                       <Text key={i} className={cx(i === cap && 'font-bold text-white')}>
@@ -296,7 +296,7 @@ export function Player({
                 p.seek(m);
                 setSheet(false);
               }}
-              className="flex-row items-center gap-3 rounded-xl border border-line px-4 py-3"
+              className="flex-row items-center gap-3 rounded-xl bg-fill px-4 py-3"
             >
               <View className="h-3 w-3 rounded-sm bg-brand" />
               <Text className="flex-1 tabular-nums text-footnote text-ink">{hhmmss(m)}</Text>

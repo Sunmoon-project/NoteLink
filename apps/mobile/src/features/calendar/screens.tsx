@@ -14,6 +14,7 @@ import {
   Avatar,
   Badge,
   Btn,
+  Canvas,
   Card,
   Chip,
   Dashed,
@@ -71,89 +72,91 @@ export function HolidayScreen() {
   });
   const upcoming = (hol.data ?? []).filter((h) => h._id >= today()).slice(0, 3);
   return (
-    <Screen>
-      <Header title="공휴일 설정" />
-      <Card tone="white" className="flex-row items-center px-4 py-3">
-        <View className="flex-1">
-          <Text className="text-subhead font-semibold text-ink">공휴일 자동 연동</Text>
-          <Text className="text-caption text-sub">
-            대한민국 공휴일을 캘린더에 자동으로 표시해요
-          </Text>
+    <Canvas>
+      <Screen>
+        <Header title="공휴일 설정" />
+        <Card tone="white" className="flex-row items-center px-4 py-3">
+          <View className="flex-1">
+            <Text className="text-subhead font-semibold text-ink">공휴일 자동 연동</Text>
+            <Text className="text-caption text-sub">
+              대한민국 공휴일을 캘린더에 자동으로 표시해요
+            </Text>
+          </View>
+          <Toggle label="공휴일 자동 연동" on={auto} onChange={setAuto} />
+        </Card>
+        <Label>다가오는 공휴일</Label>
+        {hol.isError && !hol.data && (
+          <LoadError message="공휴일을 불러오지 못했어요" retry={hol.refetch} />
+        )}
+        <View className={cx('gap-2', !auto && 'opacity-40')}>
+          {upcoming.map((h) => (
+            <Card key={h._id} tone="white" className="flex-row items-center px-4 py-3">
+              <View className="flex-1">
+                <Text className="text-caption2 text-sub">
+                  {Number(h._id.slice(5, 7))}월 {Number(h._id.slice(8))}일
+                </Text>
+                <Text className="text-callout font-semibold text-ink">{h.name}</Text>
+              </View>
+              <Pressable
+                disabled={!auto}
+                onPress={() => hide.mutate({ date: h._id, hidden: !h.hidden })}
+              >
+                <Badge tone={h.hidden ? 'gray' : 'mint'}>{h.hidden ? '숨김' : '표시중'}</Badge>
+              </Pressable>
+            </Card>
+          ))}
         </View>
-        <Toggle label="공휴일 자동 연동" on={auto} onChange={setAuto} />
-      </Card>
-      <Label>다가오는 공휴일</Label>
-      {hol.isError && !hol.data && (
-        <LoadError message="공휴일을 불러오지 못했어요" retry={hol.refetch} />
-      )}
-      <View className={cx('gap-2', !auto && 'opacity-40')}>
-        {upcoming.map((h) => (
-          <Card key={h._id} tone="white" className="flex-row items-center px-4 py-3">
-            <View className="flex-1">
-              <Text className="text-caption2 text-sub">
-                {Number(h._id.slice(5, 7))}월 {Number(h._id.slice(8))}일
+        <Label>사용자 정의 휴일</Label>
+        {custom.isError && !custom.data && (
+          <LoadError message="사용자 정의 휴일을 불러오지 못했어요" retry={custom.refetch} />
+        )}
+        {custom.data?.map((c) => (
+          <Card key={c._id} tone="mint" className="mb-2 flex-row items-center px-4 py-3">
+            <View className="flex-1 flex-row items-center gap-1.5">
+              <Pin size={ICON.sm} color={C.sub} />
+              <Text className="text-subhead text-ink">
+                {c.name} ({Number(c.date.slice(5, 7))}/{Number(c.date.slice(8))})
               </Text>
-              <Text className="text-callout font-semibold text-ink">{h.name}</Text>
             </View>
             <Pressable
-              disabled={!auto}
-              onPress={() => hide.mutate({ date: h._id, hidden: !h.hidden })}
+              accessibilityLabel="삭제"
+              onPress={() => removeCustom.mutate(c._id)}
+              hitSlop={10}
             >
-              <Badge tone={h.hidden ? 'gray' : 'mint'}>{h.hidden ? '숨김' : '표시중'}</Badge>
+              <X size={ICON.sm} color={C.sub} />
             </Pressable>
           </Card>
         ))}
-      </View>
-      <Label>사용자 정의 휴일</Label>
-      {custom.isError && !custom.data && (
-        <LoadError message="사용자 정의 휴일을 불러오지 못했어요" retry={custom.refetch} />
-      )}
-      {custom.data?.map((c) => (
-        <Card key={c._id} tone="mint" className="mb-2 flex-row items-center px-4 py-3">
-          <View className="flex-1 flex-row items-center gap-1.5">
-            <Pin size={ICON.sm} color={C.sub} />
-            <Text className="text-subhead text-ink">
-              {c.name} ({Number(c.date.slice(5, 7))}/{Number(c.date.slice(8))})
-            </Text>
+        {adding ? (
+          <View className="gap-2">
+            <Input value={v} onChangeText={setV} placeholder="예) 학교 개교기념일" autoFocus />
+            <View className="flex-row gap-2">
+              <Input
+                className="flex-1"
+                value={date}
+                onChangeText={setDate}
+                placeholder="쉬는 날 YYYY-MM-DD"
+                keyboardType="numbers-and-punctuation"
+                maxLength={10}
+                invalid={!!date && !validYmd(date)}
+                accessibilityLabel="휴일 날짜"
+              />
+              <Btn
+                small
+                className="w-20"
+                disabled={!v.trim() || !validYmd(date)}
+                loading={addCustom.isPending}
+                onPress={() => addCustom.mutate()}
+              >
+                추가
+              </Btn>
+            </View>
           </View>
-          <Pressable
-            accessibilityLabel="삭제"
-            onPress={() => removeCustom.mutate(c._id)}
-            hitSlop={10}
-          >
-            <X size={ICON.sm} color={C.sub} />
-          </Pressable>
-        </Card>
-      ))}
-      {adding ? (
-        <View className="gap-2">
-          <Input value={v} onChangeText={setV} placeholder="예) 학교 개교기념일" autoFocus />
-          <View className="flex-row gap-2">
-            <Input
-              className="flex-1"
-              value={date}
-              onChangeText={setDate}
-              placeholder="쉬는 날 YYYY-MM-DD"
-              keyboardType="numbers-and-punctuation"
-              maxLength={10}
-              invalid={!!date && !validYmd(date)}
-              accessibilityLabel="휴일 날짜"
-            />
-            <Btn
-              small
-              className="w-20"
-              disabled={!v.trim() || !validYmd(date)}
-              loading={addCustom.isPending}
-              onPress={() => addCustom.mutate()}
-            >
-              추가
-            </Btn>
-          </View>
-        </View>
-      ) : (
-        <Dashed onPress={() => setAdding(true)}>+ 휴일 추가</Dashed>
-      )}
-    </Screen>
+        ) : (
+          <Dashed onPress={() => setAdding(true)}>+ 휴일 추가</Dashed>
+        )}
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -189,100 +192,102 @@ export function CalShareScreen() {
   const link = createdShare?.url;
   const revokingCreated = revoke.isPending && revoke.variables === createdShare?.id;
   return (
-    <Screen>
-      <Header title="캘린더 공유" />
-      <Label>공유 범위 선택</Label>
-      <Card tone="white" className="flex-row items-center px-4 py-3">
-        <Text className="flex-1 text-subhead text-ink">
-          {start.replaceAll('-', '.')} ~ {end.replaceAll('-', '.')}
-        </Text>
-      </Card>
-      <Label>유효기간</Label>
-      <View className="flex-row gap-2">
-        {(
-          [
-            [7, '7일'],
-            [30, '30일'],
-            [null, '무제한'],
-          ] as const
-        ).map(([v, l]) => (
-          <Chip key={l} on={period === v} onPress={() => setPeriod(v)}>
-            {l}
-          </Chip>
-        ))}
-      </View>
-      <Btn className="mt-4" loading={create.isPending} onPress={() => create.mutate()}>
-        공유 링크 생성
-      </Btn>
-      {link && (
-        <>
-          <View className="mt-3 flex-row items-center rounded-xl bg-cream px-4 py-3">
-            <Text className="flex-1 text-footnote text-sub">{link}</Text>
-            <Pressable
-              disabled={revokingCreated}
-              accessibilityState={{ disabled: revokingCreated }}
-              onPress={async () => {
-                await Clipboard.setStringAsync(`https://${link}`);
-                toast('링크를 복사했어요');
-              }}
-            >
-              <Text className="text-footnote font-semibold text-brand">복사</Text>
-            </Pressable>
-          </View>
-          {/* 카카오톡 SDK 연동 전까지 OS 공유 시트로 카카오톡을 고를 수 있다 */}
-          <Btn
-            kind="sun"
-            disabled={revokingCreated}
-            className="mt-2"
-            onPress={() => Share.share({ message: `내 학습 캘린더를 공유해요 👉 https://${link}` })}
-          >
-            카카오톡으로 공유
-          </Btn>
-        </>
-      )}
-      <Label>공유한 링크 관리</Label>
-      {shares.isPending && (
-        <Text className="py-3 text-caption text-sub">공유 목록을 불러오고 있어요</Text>
-      )}
-      {shares.isError && (
-        <View className="gap-2 py-3">
-          <Text>공유 목록을 불러오지 못했어요</Text>
-          <Btn onPress={() => void shares.refetch()}>공유 목록 다시 시도</Btn>
+    <Canvas>
+      <Screen>
+        <Header title="캘린더 공유" />
+        <Label>공유 범위 선택</Label>
+        <Card tone="white" className="flex-row items-center px-4 py-3">
+          <Text className="flex-1 text-subhead text-ink">
+            {start.replaceAll('-', '.')} ~ {end.replaceAll('-', '.')}
+          </Text>
+        </Card>
+        <Label>유효기간</Label>
+        <View className="flex-row gap-2">
+          {(
+            [
+              [7, '7일'],
+              [30, '30일'],
+              [null, '무제한'],
+            ] as const
+          ).map(([v, l]) => (
+            <Chip key={l} on={period === v} onPress={() => setPeriod(v)}>
+              {l}
+            </Chip>
+          ))}
         </View>
-      )}
-      <View className="gap-2">
-        {shares.data?.map((s) => (
-          <Card key={s._id} tone="white" className="flex-row items-center px-4 py-3">
-            <View className="flex-1">
-              <Text className="text-subhead text-ink">
-                {s.rangeStart.replaceAll('-', '.')} ~ {s.rangeEnd.slice(5).replace('-', '.')}
-              </Text>
-              <Text className="text-caption2 text-sub">{timeAgo(s.createdAt)} 생성</Text>
+        <Btn className="mt-4" loading={create.isPending} onPress={() => create.mutate()}>
+          공유 링크 생성
+        </Btn>
+        {link && (
+          <>
+            <View className="mt-3 flex-row items-center rounded-xl bg-white px-4 py-3">
+              <Text className="flex-1 text-footnote text-sub">{link}</Text>
+              <Pressable
+                disabled={revokingCreated}
+                accessibilityState={{ disabled: revokingCreated }}
+                onPress={async () => {
+                  await Clipboard.setStringAsync(`https://${link}`);
+                  toast('링크를 복사했어요');
+                }}
+              >
+                <Text className="text-footnote font-semibold text-brand">복사</Text>
+              </Pressable>
             </View>
-            <Pressable
-              accessibilityRole="button"
-              disabled={revoke.isPending}
-              accessibilityState={{ disabled: revoke.isPending }}
-              onPress={() => revoke.mutate(s._id)}
-              hitSlop={8}
+            {/* 카카오톡 SDK 연동 전까지 OS 공유 시트로 카카오톡을 고를 수 있다 */}
+            <Btn
+              kind="sun"
+              disabled={revokingCreated}
+              className="mt-2"
+              onPress={() => Share.share({ message: `내 학습 캘린더를 공유해요: https://${link}` })}
             >
-              <Text className="text-footnote text-danger">삭제</Text>
-            </Pressable>
-          </Card>
-        ))}
-      </View>
-      <Card
-        tone="mint"
-        onPress={() => router.push('/cal-shared')}
-        className="mt-3 flex-row items-center px-4 py-3.5"
-      >
-        <View className="flex-1 flex-row items-center gap-1.5">
-          <Users size={ICON.sm} color={C.sub} />
-          <Text className="text-subhead font-semibold text-ink">공유받은 캘린더 보기</Text>
+              카카오톡으로 공유
+            </Btn>
+          </>
+        )}
+        <Label>공유한 링크 관리</Label>
+        {shares.isPending && (
+          <Text className="py-3 text-caption text-sub">공유 목록을 불러오고 있어요</Text>
+        )}
+        {shares.isError && (
+          <View className="gap-2 py-3">
+            <Text>공유 목록을 불러오지 못했어요</Text>
+            <Btn onPress={() => void shares.refetch()}>공유 목록 다시 시도</Btn>
+          </View>
+        )}
+        <View className="gap-2">
+          {shares.data?.map((s) => (
+            <Card key={s._id} tone="white" className="flex-row items-center px-4 py-3">
+              <View className="flex-1">
+                <Text className="text-subhead text-ink">
+                  {s.rangeStart.replaceAll('-', '.')} ~ {s.rangeEnd.slice(5).replace('-', '.')}
+                </Text>
+                <Text className="text-caption2 text-sub">{timeAgo(s.createdAt)} 생성</Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                disabled={revoke.isPending}
+                accessibilityState={{ disabled: revoke.isPending }}
+                onPress={() => revoke.mutate(s._id)}
+                hitSlop={8}
+              >
+                <Text className="text-footnote text-danger">삭제</Text>
+              </Pressable>
+            </Card>
+          ))}
         </View>
-        <ChevronRight size={ICON.sm} color={C.sub} />
-      </Card>
-    </Screen>
+        <Card
+          tone="mint"
+          onPress={() => router.push('/cal-shared')}
+          className="mt-3 flex-row items-center px-4 py-3.5"
+        >
+          <View className="flex-1 flex-row items-center gap-1.5">
+            <Users size={ICON.sm} color={C.sub} />
+            <Text className="text-subhead font-semibold text-ink">공유받은 캘린더 보기</Text>
+          </View>
+          <ChevronRight size={ICON.sm} color={C.sub} />
+        </Card>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -308,63 +313,66 @@ export function CalSharedScreen() {
     setMonth(ymd(d).slice(0, 7));
   };
   return (
-    <Screen
-      footer={
-        s && (
-          <Btn loading={sub.isPending} onPress={() => sub.mutate(s._id)}>
-            내 캘린더에 추가
+    <Canvas>
+      <Screen
+        footer={
+          s && (
+            <Btn loading={sub.isPending} onPress={() => sub.mutate(s._id)}>
+              내 캘린더에 추가
+            </Btn>
+          )
+        }
+      >
+        <Header title="공유받은 캘린더" />
+        {recv.isError && !recv.data && (
+          <LoadError message="공유받은 캘린더를 불러오지 못했어요" retry={recv.refetch} />
+        )}
+        <View className="flex-row flex-wrap gap-2">
+          {recv.data?.map((c) => (
+            <Chip
+              key={c._id}
+              on={c._id === s?._id}
+              onPress={() => {
+                setSelected(c._id);
+                setMonth(c.rangeStart.slice(0, 7));
+              }}
+            >
+              {c.ownerNickname}
+            </Chip>
+          ))}
+        </View>
+        <View className="flex-row justify-between">
+          <Btn small onPress={() => shift(-1)}>
+            이전 달
           </Btn>
-        )
-      }
-    >
-      <Header title="공유받은 캘린더" />
-      {recv.isError && !recv.data && (
-        <LoadError message="공유받은 캘린더를 불러오지 못했어요" retry={recv.refetch} />
-      )}
-      <View className="flex-row flex-wrap gap-2">
-        {recv.data?.map((c) => (
-          <Chip
-            key={c._id}
-            on={c._id === s?._id}
-            onPress={() => {
-              setSelected(c._id);
-              setMonth(c.rangeStart.slice(0, 7));
-            }}
-          >
-            {c.ownerNickname}
-          </Chip>
-        ))}
-      </View>
-      <View className="flex-row justify-between">
-        <Btn small onPress={() => shift(-1)}>
-          이전 달
-        </Btn>
-        <Btn small onPress={() => shift(1)}>
-          다음 달
-        </Btn>
-      </View>
-      {s && (
-        <>
-          <Card tone="white" className="flex-row items-center gap-3 px-4 py-3">
-            <Avatar name={s.ownerNickname} size={34} tone="mint" />
-            <View className="flex-1">
-              <Text className="text-subhead font-semibold text-ink">
-                {s.ownerNickname}님이 공유한 캘린더
-              </Text>
-              <Text className="text-caption2 text-sub">
-                {s.rangeStart.replaceAll('-', '.')} ~ {s.rangeEnd.slice(5).replace('-', '.')} 공유됨
-              </Text>
-            </View>
-            <Badge tone="gray">읽기 전용</Badge>
-          </Card>
-          <Text className="mt-5 mb-3 text-center text-callout font-bold text-ink">
-            {ym.slice(0, 4)}년 {Number(ym.slice(5))}월
-          </Text>
-          <Month ym={ym} shared={new Set(s.days)} />
-          <Text className="mt-3 text-caption2 text-sub">● 공유자의 일정 ● 내 일정</Text>
-        </>
-      )}
-    </Screen>
+          <Btn small onPress={() => shift(1)}>
+            다음 달
+          </Btn>
+        </View>
+        {s && (
+          <>
+            <Card tone="white" className="flex-row items-center gap-3 px-4 py-3">
+              <Avatar name={s.ownerNickname} size={34} tone="mint" />
+              <View className="flex-1">
+                <Text className="text-subhead font-semibold text-ink">
+                  {s.ownerNickname}님이 공유한 캘린더
+                </Text>
+                <Text className="text-caption2 text-sub">
+                  {s.rangeStart.replaceAll('-', '.')} ~ {s.rangeEnd.slice(5).replace('-', '.')}{' '}
+                  공유됨
+                </Text>
+              </View>
+              <Badge tone="gray">읽기 전용</Badge>
+            </Card>
+            <Text className="mt-5 mb-3 text-center text-callout font-bold text-ink">
+              {ym.slice(0, 4)}년 {Number(ym.slice(5))}월
+            </Text>
+            <Month ym={ym} shared={new Set(s.days)} />
+            <Text className="mt-3 text-caption2 text-sub">● 공유자의 일정 ● 내 일정</Text>
+          </>
+        )}
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -392,7 +400,7 @@ export function TimetableScreen() {
   const firstHour = Math.min(9, ...classes.map((c) => Math.floor(toH(c.startTime))));
   const lastHour = Math.max(19, ...classes.map((c) => Math.ceil(toH(c.endTime))));
   return (
-    <View className="flex-1">
+    <Canvas>
       <Screen>
         <Header
           title="내 시간표"
@@ -423,7 +431,7 @@ export function TimetableScreen() {
           {Array.from({ length: lastHour - firstHour }, (_, i) => (
             <View
               key={i}
-              className="absolute left-0 right-0 border-t border-line"
+              className="absolute left-0 right-0 border-t border-fill"
               style={{ top: i * H }}
             >
               <Text className="text-caption2 text-sub">
@@ -468,7 +476,7 @@ export function TimetableScreen() {
           </View>
         </View>
         <Dashed onPress={() => setSheet('add')}>+ 수업 추가</Dashed>
-        <View className="mt-3 rounded-xl bg-cream px-3 py-2.5">
+        <View className="mt-3 rounded-xl bg-white px-4 py-3">
           <Text className="text-caption text-sub">
             시간표를 넣으면 학습 기록 주간 보기에 자동으로 표시돼요
           </Text>
@@ -490,7 +498,7 @@ export function TimetableScreen() {
           수업 삭제
         </Btn>
       </Sheet>
-    </View>
+    </Canvas>
   );
 }
 
@@ -544,7 +552,7 @@ function AddClassSheet({ open, onClose }: { open: boolean; onClose: () => void }
               onPress={() => setDays((p) => (on ? p.filter((x) => x !== i + 1) : [...p, i + 1]))}
               className={cx(
                 'h-10 w-10 items-center justify-center rounded-full',
-                on ? 'bg-brand' : 'bg-cream',
+                on ? 'bg-brand' : 'bg-fill',
               )}
             >
               <Text className={cx('text-footnote font-semibold', on ? 'text-white' : 'text-sub')}>
@@ -584,7 +592,7 @@ function AddClassSheet({ open, onClose }: { open: boolean; onClose: () => void }
             accessibilityLabel="색상"
             onPress={() => setColor(c)}
             className={cx(
-              'h-9 w-9 items-center justify-center rounded-full border border-line',
+              'h-9 w-9 items-center justify-center rounded-full bg-fill',
               color === c && 'border-2 border-brand',
             )}
             style={{ backgroundColor: c }}
@@ -649,7 +657,7 @@ function ShareTimetableSheet({ open, onClose }: { open: boolean; onClose: () => 
               }
               className={cx(
                 'flex-row items-center gap-3 rounded-2xl border px-4 py-3',
-                on ? 'border-brand/40 bg-mint' : 'border-transparent bg-cream',
+                on ? 'border-brand/40 bg-mint' : 'border-transparent bg-fill',
               )}
             >
               <Avatar name={f.nickname} size={30} tone="mint" />

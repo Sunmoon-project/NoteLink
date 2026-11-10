@@ -18,8 +18,10 @@ import { toast } from '@/stores/toast';
 import {
   Alert,
   Btn,
+  Canvas,
   Card,
   Chip,
+  Empty,
   Header,
   Label,
   Loading,
@@ -58,30 +60,32 @@ function SavedForLater({ kind, materialId }: { kind: keyof typeof DETAIL; materi
     useDraft.getState().reset();
   }, [qc]);
   return (
-    <Screen
-      footer={
-        <>
-          <Btn
-            onPress={() =>
-              router.replace({
-                pathname: `/(tabs)/note/${DETAIL[kind]}/[id]`,
-                params: { id: materialId },
-              })
-            }
-          >
-            자료 보기
-          </Btn>
-          <Btn kind="ghost" className="mt-2" onPress={() => router.dismissTo('/(tabs)/note')}>
-            노트로 돌아가기
-          </Btn>
-        </>
-      }
-    >
-      <Success
-        title="자료를 저장했어요"
-        body={'원본은 이 기기에 저장됐어요.\nAI 정리는 서버가 연결되면 이어서 진행돼요.'}
-      />
-    </Screen>
+    <Canvas>
+      <Screen
+        footer={
+          <>
+            <Btn
+              onPress={() =>
+                router.replace({
+                  pathname: `/(tabs)/note/${DETAIL[kind]}/[id]`,
+                  params: { id: materialId },
+                })
+              }
+            >
+              자료 보기
+            </Btn>
+            <Btn kind="ghost" className="mt-2" onPress={() => router.dismissTo('/(tabs)/note')}>
+              노트로 돌아가기
+            </Btn>
+          </>
+        }
+      >
+        <Success
+          title="자료를 저장했어요"
+          body={'원본은 이 기기에 저장됐어요.\nAI 정리는 서버가 연결되면 이어서 진행돼요.'}
+        />
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -296,7 +300,7 @@ export function ConvertScreen() {
   if (phase === 'ai' && aiWaiting(job) && materialId)
     return <SavedForLater kind={kind} materialId={materialId} />;
   return (
-    <View className="flex-1 bg-white">
+    <Canvas>
       <Screen>
         {phase === 'ai' && net !== 'ok' && (
           <View className="mt-3 rounded-xl border border-brand/30 bg-mint px-4 py-2.5">
@@ -371,7 +375,7 @@ export function ConvertScreen() {
         }}
       />
       <Sheet open={phase === 'paused'} onClose={() => router.back()}>
-        <View className="rounded-xl border border-line p-3">
+        <View className="rounded-xl bg-white p-4">
           <View className="flex-row justify-between">
             <Text className="text-callout font-bold text-ink">업로드가 잠시 멈췄어요</Text>
             <Text className="text-caption text-sub">
@@ -441,7 +445,7 @@ export function ConvertScreen() {
         primary="취소하기"
         onPrimary={doCancel}
       />
-    </View>
+    </Canvas>
   );
 }
 
@@ -467,90 +471,96 @@ export function ResultScreen() {
   });
   if (m.isError && !m.data)
     return (
-      <Screen>
-        <Header title="변환 결과" />
-        <Text>변환 결과를 불러오지 못했어요</Text>
-        <Btn loading={m.isFetching} onPress={() => void m.refetch()}>
-          다시 시도
-        </Btn>
-        <Btn kind="outline" onPress={() => router.back()}>
-          뒤로
-        </Btn>
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Header title="변환 결과" large={false} />
+          <Empty
+            icon={<FileText size={ICON.lg} color={C.brand} />}
+            title="변환 결과를 불러오지 못했어요"
+            body="연결을 확인하고 다시 시도해 주세요. 원본은 그대로 있어요."
+          >
+            <Btn small loading={m.isFetching} onPress={() => void m.refetch()}>
+              다시 시도
+            </Btn>
+          </Empty>
+        </Screen>
+      </Canvas>
     );
   if (!m.data) return <Loading />;
   const mat = m.data;
   return (
-    <Screen
-      footer={
-        <Btn loading={save.isPending} onPress={() => save.mutate()}>
-          학습자료에 저장
-        </Btn>
-      }
-    >
-      {mat.kind === 'handwriting' && (
-        <>
-          <Header title="노트 정리 완료" large={false} />
-          <View className="mb-3 flex-row items-center gap-2">
-            <Text className="text-title3 font-bold text-ink">{mat.title}</Text>
-          </View>
-          <NoteBody sections={mat.summary?.sections ?? []} />
-          <Card
-            tone="white"
-            onPress={() =>
-              router.push({
-                pathname: '/result/hand/[id]',
-                params: { id, tab: '원본 이미지' },
-              })
-            }
-            className="mt-3 flex-row items-center px-4 py-3"
-          >
-            <View className="flex-1 flex-row items-center gap-1.5">
-              <Image size={ICON.xs} color={C.brand} />
-              <Text className="text-footnote text-ink">원본 필기 보기</Text>
+    <Canvas>
+      <Screen
+        footer={
+          <Btn loading={save.isPending} onPress={() => save.mutate()}>
+            학습자료에 저장
+          </Btn>
+        }
+      >
+        {mat.kind === 'handwriting' && (
+          <>
+            <Header title="노트 정리 완료" large={false} />
+            <View className="mb-3 flex-row items-center gap-2">
+              <Text className="text-title3 font-bold text-ink">{mat.title}</Text>
             </View>
-            <ChevronRight size={ICON.sm} color={C.sub} />
-          </Card>
-        </>
-      )}
-      {mat.kind === 'recording' && (
-        <>
-          <Header title="녹음 요약 정리" />
-          <View className="-mt-2 mb-3 flex-row items-center gap-2">
-            <Text className="text-footnote font-semibold text-sub">{mat.title}</Text>
-          </View>
-          <Player materialId={id} />
-        </>
-      )}
-      {mat.kind === 'document' && (
-        <>
-          <Header title="문서 요약 완료" />
-          <DocSummary
-            points={mat.summary?.points ?? []}
-            keywords={mat.keywords}
-            file={{
-              name: mat.title,
-              meta: mat.pages?.length ? `${mat.pages.length}페이지` : '원본 문서',
-            }}
-            onOriginal={() =>
-              router.push({ pathname: '/result/doc/[id]', params: { id, tab: '원본 문서' } })
-            }
-          />
-        </>
-      )}
-    </Screen>
+            <NoteBody sections={mat.summary?.sections ?? []} />
+            <Card
+              tone="white"
+              onPress={() =>
+                router.push({
+                  pathname: '/result/hand/[id]',
+                  params: { id, tab: '원본 이미지' },
+                })
+              }
+              className="mt-3 flex-row items-center px-4 py-3"
+            >
+              <View className="flex-1 flex-row items-center gap-1.5">
+                <Image size={ICON.xs} color={C.brand} />
+                <Text className="text-footnote text-ink">원본 필기 보기</Text>
+              </View>
+              <ChevronRight size={ICON.sm} color={C.sub} />
+            </Card>
+          </>
+        )}
+        {mat.kind === 'recording' && (
+          <>
+            <Header title="녹음 요약 정리" />
+            <View className="-mt-2 mb-3 flex-row items-center gap-2">
+              <Text className="text-footnote font-semibold text-sub">{mat.title}</Text>
+            </View>
+            <Player materialId={id} />
+          </>
+        )}
+        {mat.kind === 'document' && (
+          <>
+            <Header title="문서 요약 완료" />
+            <DocSummary
+              points={mat.summary?.points ?? []}
+              keywords={mat.keywords}
+              file={{
+                name: mat.title,
+                meta: mat.pages?.length ? `${mat.pages.length}페이지` : '원본 문서',
+              }}
+              onOriginal={() =>
+                router.push({ pathname: '/result/doc/[id]', params: { id, tab: '원본 문서' } })
+              }
+            />
+          </>
+        )}
+      </Screen>
+    </Canvas>
   );
 }
 
 export const NoteBody = ({ sections }: { sections: { heading: string; body: string }[] }) => (
-  <View className="gap-5 rounded-2xl bg-cream p-4">
+  <Card className="gap-5 p-5">
     {sections.map((s) => (
       <View key={s.heading}>
         <Text className="text-subhead font-bold text-ink">{s.heading}</Text>
         <Text className="mt-0.5 text-caption text-ink/70">{s.body}</Text>
       </View>
     ))}
-  </View>
+  </Card>
 );
 
 export function DocSummary({
@@ -567,7 +577,7 @@ export function DocSummary({
   return (
     <>
       {file && (
-        <View className="flex-row items-center gap-3 rounded-2xl bg-cream p-3">
+        <Card className="flex-row items-center gap-3 p-4">
           <View className="h-11 w-11 items-center justify-center rounded-lg bg-mint">
             <FileText size={ICON.md} color={C.sub} />
           </View>
@@ -575,20 +585,20 @@ export function DocSummary({
             <Text className="text-callout font-bold text-ink">{file.name}</Text>
             <Text className="text-caption text-sub">{file.meta}</Text>
           </View>
-        </View>
+        </Card>
       )}
       <View className="flex-row items-center gap-1.5 mt-5 mb-2">
         <Pin size={ICON.sm} color={C.sub} />
         <Text className="text-subhead font-bold text-ink">핵심 요약</Text>
       </View>
-      <View className="gap-3 rounded-2xl bg-cream p-4">
+      <Card className="gap-3 p-5">
         {points.map((p) => (
           <View key={p} className="flex-row gap-2">
             <Text className="text-brand">•</Text>
             <Text className="flex-1 text-footnote text-ink">{p}</Text>
           </View>
         ))}
-      </View>
+      </Card>
       <Label>키워드</Label>
       <View className="flex-row flex-wrap gap-2">
         {keywords.map((k) => (

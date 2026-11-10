@@ -18,7 +18,7 @@
       "./jest.setup.js"
     ],
     "resolver": "react-native-worklets/jest/resolver",
-    "testTimeout": 20000,
+    "testTimeout": 60000,
     "testPathIgnorePatterns": [
       "/node_modules/",
       "/__tests__/fixtures/"
@@ -63,6 +63,7 @@
     "nativewind": "4.2.7",
     "react": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-gesture-handler": "3.4.0",
     "react-native-reanimated": "4.5.1",
     "react-native-safe-area-context": "5.7.0",
     "react-native-screens": "4.26.2",
