@@ -32,13 +32,15 @@ DEV = "# 머리말\nanthropic==2.3.0\n    # via\n    #   -c requirements.lock\np
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     shutil.copy(LOCK_SH, tmp_path / "lock.sh")
-    (tmp_path / "requirements.txt").write_text("anthropic==2.3.0\n")
-    (tmp_path / "requirements-dev.txt").write_text("-r requirements.txt\npytest==9.1.1\n")
-    (tmp_path / "fake-uv").write_text(FAKE_UV, newline="\n")
+    (tmp_path / "requirements.txt").write_text("anthropic==2.3.0\n", encoding="utf-8")
+    (tmp_path / "requirements-dev.txt").write_text(
+        "-r requirements.txt\npytest==9.1.1\n", encoding="utf-8"
+    )
+    (tmp_path / "fake-uv").write_text(FAKE_UV, encoding="utf-8", newline="\n")
     (tmp_path / "fake-uv").chmod(0o755)
     for name, text in (("requirements.lock", PROD), ("requirements-dev.lock", DEV)):
-        (tmp_path / name).write_text(text, newline="\n")
-        (tmp_path / f"next-{name}").write_text(text, newline="\n")
+        (tmp_path / name).write_text(text, encoding="utf-8", newline="\n")
+        (tmp_path / f"next-{name}").write_text(text, encoding="utf-8", newline="\n")
     return tmp_path
 
 
@@ -67,7 +69,9 @@ def test_check_passes_when_the_locks_are_current(repo: Path) -> None:
 def test_check_ignores_annotation_differences(repo: Path) -> None:
     # --check는 임시 폴더에 만들어 'via -c <임시 경로>' 주석이 달라짐: 버전 줄만 비교
     (repo / "next-requirements-dev.lock").write_text(
-        DEV.replace("-c requirements.lock", "-c /tmp/x/requirements.lock"), newline="\n"
+        DEV.replace("-c requirements.lock", "-c /tmp/x/requirements.lock"),
+        encoding="utf-8",
+        newline="\n",
     )
     assert run(repo, "--check").returncode == 0
 
@@ -82,35 +86,37 @@ def test_check_ignores_annotation_differences(repo: Path) -> None:
     ],
 )
 def test_check_fails_when_a_lock_is_stale(repo: Path, name: str, changed: str) -> None:
-    (repo / f"next-{name}").write_text(changed, newline="\n")
+    (repo / f"next-{name}").write_text(changed, encoding="utf-8", newline="\n")
     r = run(repo, "--check")
     assert r.returncode == 1
     assert f"::error::apps/ai/{name}" in r.stdout
 
 
 def test_check_keeps_the_committed_locks(repo: Path) -> None:
-    (repo / "next-requirements.lock").write_text(PROD.replace("2.13.1", "2.14.0"), newline="\n")
+    (repo / "next-requirements.lock").write_text(
+        PROD.replace("2.13.1", "2.14.0"), encoding="utf-8", newline="\n"
+    )
     run(repo, "--check")
-    assert (repo / "requirements.lock").read_text() == PROD
-    assert (repo / "requirements-dev.lock").read_text() == DEV
+    assert (repo / "requirements.lock").read_text(encoding="utf-8") == PROD
+    assert (repo / "requirements-dev.lock").read_text(encoding="utf-8") == DEV
 
 
 def test_a_uv_failure_fails_the_check(repo: Path) -> None:
     r = run(repo, "--check", fail=True)
     assert r.returncode == 3
     assert "lock 파일 최신" not in r.stdout
-    assert (repo / "requirements.lock").read_text() == PROD
+    assert (repo / "requirements.lock").read_text(encoding="utf-8") == PROD
 
 
 def test_without_check_the_locks_are_rewritten(repo: Path) -> None:
     new = PROD.replace("2.13.1", "2.14.0")
-    (repo / "next-requirements.lock").write_text(new, newline="\n")
+    (repo / "next-requirements.lock").write_text(new, encoding="utf-8", newline="\n")
     r = run(repo)
     assert r.returncode == 0, r.stderr
-    assert (repo / "requirements.lock").read_text() == new
+    assert (repo / "requirements.lock").read_text(encoding="utf-8") == new
 
 
 def test_a_uv_failure_stops_the_rewrite(repo: Path) -> None:
     r = run(repo, fail=True)
     assert r.returncode == 3
-    assert (repo / "requirements-dev.lock").read_text() == DEV
+    assert (repo / "requirements-dev.lock").read_text(encoding="utf-8") == DEV
