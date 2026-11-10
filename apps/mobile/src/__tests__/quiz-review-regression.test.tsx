@@ -156,7 +156,7 @@ it('카드가 모두 삭제되면 빈 상태를 표시하고 위치를 1 / 0으�
   await act(async () => {
     qc.setQueryData(['flashcards'], []);
   });
-  expect(await screen.findByText('저장한 플래시카드가 없어요')).toBeTruthy();
+  expect(await screen.findByText('저장한 플래시 카드가 없어요')).toBeTruthy();
   expect(screen.queryByText('1 / 0')).toBeNull();
 });
 

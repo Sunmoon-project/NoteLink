@@ -224,6 +224,63 @@ it('가입 요청만 실패한 뒤 인증번호를 다시 받으면, 받아 둔 
   expect(signup).toHaveBeenLastCalledWith('proof-2', 'abcd1234');
 });
 
+it('인증번호를 다시 받다 메일 발송이 실패해도, 서버가 무효로 한 옛 증표는 버리고 새로 확인한다', async () => {
+  jest
+    .spyOn(api.auth, 'emailSendCode')
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error('smtp'));
+  const verify = jest
+    .spyOn(api.auth, 'emailVerifyCode')
+    .mockResolvedValue({ verificationToken: 'proof-2', expiresInSeconds: 600 });
+  const signup = jest
+    .spyOn(api.auth, 'emailSignup')
+    .mockRejectedValueOnce(new Error('network'))
+    .mockResolvedValueOnce(undefined);
+  await fireEvent.changeText(await toCode('new@test.com', 'abcd1234'), '123456');
+  await fireEvent.press(screen.getByText('가입하기'));
+  await waitFor(() => expect(signup).toHaveBeenCalledTimes(1));
+  await fireEvent.press(screen.getByText('인증번호 다시 받기'));
+  await waitFor(() =>
+    expect(useToast.getState().msg).toBe('인증번호를 보내지 못했어요. 다시 시도해 주세요'),
+  );
+  await fireEvent.press(screen.getByText('가입하기'));
+  await waitFor(() => expect(router.replace).toHaveBeenCalled());
+  expect(verify).toHaveBeenCalledTimes(2);
+});
+
+it('인증번호를 다시 받는 중에는 가입을, 가입하는 중에는 다시 받기를 보내지 않는다', async () => {
+  const send = jest.spyOn(api.auth, 'emailSendCode').mockResolvedValueOnce(undefined);
+  let sent!: () => void;
+  send.mockImplementationOnce(() => new Promise<void>((r) => (sent = r)));
+  jest
+    .spyOn(api.auth, 'emailVerifyCode')
+    .mockResolvedValue({ verificationToken: 'proof-1', expiresInSeconds: 600 });
+  let signed!: () => void;
+  const signup = jest
+    .spyOn(api.auth, 'emailSignup')
+    .mockImplementation(() => new Promise<void>((r) => (signed = r)));
+  await fireEvent.changeText(await toCode('new@test.com', 'abcd1234'), '123456');
+  // 다시 받기 응답을 기다리는 동안 가입을 누른다
+  const resend = () => screen.getByRole('button', { name: '인증번호 다시 받기' });
+  await fireEvent.press(resend());
+  await waitFor(() => expect(resend()).toBeDisabled());
+  await fireEvent.press(screen.getByText('가입하기'));
+  expect(api.auth.emailVerifyCode).not.toHaveBeenCalled();
+  sent();
+  await waitFor(() =>
+    expect(useToast.getState().msg).toBe('인증번호를 보냈어요. 메일을 확인해 주세요'),
+  );
+  // 새 번호로 가입 응답을 기다리는 동안 다시 받기를 누른다
+  await fireEvent.changeText(screen.getByPlaceholderText('메일로 받은 숫자 6자리'), '654321');
+  await fireEvent.press(screen.getByText('가입하기'));
+  await waitFor(() => expect(signup).toHaveBeenCalledTimes(1));
+  expect(resend()).toBeDisabled();
+  await fireEvent.press(resend());
+  expect(send).toHaveBeenCalledTimes(2);
+  signed();
+  await waitFor(() => expect(router.replace).toHaveBeenCalled());
+});
+
 it('인증번호를 확인하는 사이 이메일을 고치면 옛 주소로 가입하지 않는다', async () => {
   jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
   let done!: (v: { verificationToken: string; expiresInSeconds: number }) => void;

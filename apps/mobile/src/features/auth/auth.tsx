@@ -283,12 +283,15 @@ export function SignupScreen() {
   const failed = (e: unknown, fallback: string) =>
     toast(e instanceof ApiError ? e.message : fallback);
   const send = useMutation({
+    // 서버는 메일을 보내기 전에 번호를 새로 내며 앞서 받은 증표를 무효로 한다 —
+    // 메일 발송이 실패해도 그 증표는 못 쓰니 요청을 보내는 순간 버린다
+    onMutate: () => {
+      proof.current = null;
+    },
     mutationFn: (to: string) => api.auth.emailSendCode(to),
     onSuccess: (_, to) => {
       // 보내는 사이 이메일을 고쳤으면 옛 주소의 응답은 버린다
       if (to !== emailNow.current) return;
-      // 새로 보내면 서버가 앞서 받은 증표를 무효로 한다 — 새 번호로 다시 확인하게 버린다
-      proof.current = null;
       setSentTo(to);
       setCode('');
       setCodeMsg(null);
@@ -313,7 +316,9 @@ export function SignupScreen() {
       // 실제로 가입한 이메일로 로그인을 채운다
       toLogin(to);
     },
-    onError: (e) => {
+    onError: (e, to) => {
+      // 그사이 이메일을 고쳤으면 옛 주소의 실패가 지금 단계를 건드리지 않게 버린다
+      if (to !== emailNow.current) return;
       if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
       else if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_CODE_INVALID)
         setCodeMsg(e.message);
@@ -330,11 +335,13 @@ export function SignupScreen() {
       } else failed(e, '가입하지 못했어요. 다시 시도해 주세요');
     },
   });
+  // 발송과 가입이 겹치면 가입이 옛 증표를 내고, 그 실패가 새 번호 단계를 지운다 — 하나씩만 보낸다
+  const busy = send.isPending || signup.isPending;
   const sendCode = () => {
-    if (formOk()) send.mutate(email.trim());
+    if (!busy && formOk()) send.mutate(email.trim());
   };
   const submit = () => {
-    if (!formOk()) return;
+    if (busy || !formOk()) return;
     if (!CODE.test(code)) return setCodeMsg('인증번호 6자리를 입력해 주세요');
     setCodeMsg(null);
     if (sentTo) signup.mutate(sentTo);
@@ -420,7 +427,7 @@ export function SignupScreen() {
             <FieldError msg={codeMsg} />
             <Pressable
               accessibilityRole="button"
-              disabled={send.isPending}
+              disabled={busy}
               onPress={() => send.mutate(sentTo)}
               className="mt-2 self-start"
             >
