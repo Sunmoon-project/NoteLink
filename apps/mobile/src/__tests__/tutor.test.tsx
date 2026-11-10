@@ -487,6 +487,22 @@ describe('아바타 선생님 고르기', () => {
     expect(screen.getByLabelText('판매가 끝난 아바타')).toBeTruthy();
   });
 
+  it.each([
+    ['전에 본', 'jihoo', '지후 아바타'],
+    ['처음 보는', 'base', '판매가 끝난 아바타'],
+  ])(
+    '%s 판매 종료 아바타를 장착하면 목록 표시와 위 미리보기가 같은 얼굴이다',
+    async (_, face, name) => {
+      const oid = '6650a1b2c3d4e5f6012345b1';
+      if (face !== 'base')
+        mockSecure.set('notelink.avatar-models', JSON.stringify({ [oid]: face }));
+      mockApi.shop.myItems.mockResolvedValue([own(oid, true)]);
+      await renderScreen(<AvatarTeacherScreen />);
+      expect(await screen.findByLabelText(`${name}, 장착 중`)).toBeTruthy();
+      expect(await screen.findByText(`3D:${face}`)).toBeTruthy();
+    },
+  );
+
   it('그림 주소인 상품은 주소 글자 대신 그림으로 보여 준다', async () => {
     const url = 'https://cdn.example.com/bora.png';
     mockApi.shop.items.mockResolvedValue([item('bora', '보라 아바타', url)]);
