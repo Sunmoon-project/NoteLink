@@ -7,6 +7,8 @@ import { User, type UserDocument } from '../../auth/schemas/user.schema.js';
 import type { LedgerType } from '../dto/list-point-ledger.dto.js';
 import { PointLedger, type PointReasonType } from '../schemas/point-ledger.schema.js';
 
+import { QUIZ_DAILY_POINT_LIMIT, quizReward, seoulDay } from './point-rules.js';
+
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
@@ -158,6 +160,42 @@ export class PointService {
         return this.ledgerModel
             .countDocuments({ userId: new Types.ObjectId(userId), reasonType, studyDate }, { session })
             .exec();
+    }
+
+    /** 그 날짜(서울 기준)에 이 이유로 적립받은 포인트 합계. 없으면 0 */
+    async sumEarned(userId: string, reasonType: PointReasonType, studyDate: string, session?: ClientSession): Promise<number> {
+        const rows = await this.ledgerModel
+            .aggregate<{ total: number }>(
+                [
+                    { $match: { userId: new Types.ObjectId(userId), reasonType, studyDate } },
+                    { $group: { _id: null, total: { $sum: '$amount' } } },
+                ],
+                { session },
+            )
+            .exec();
+        return rows[0]?.total ?? 0;
+    }
+
+    /**
+     * 퀴즈 정답 포인트 적립: 하루 한도(40P)를 넘지 않는 만큼만 주고, 실제로 준 포인트를 돌려준다.
+     * 하루 한도는 서울 날짜의 quiz_correct 합계로 센다(#193·#194).
+     * 같은 사용자의 동시 지급은 earn이 같은 users 문서를 고쳐 한쪽이 충돌로 다시 시도된다.
+     * 같은 풀이에 두 번 주지 않게 막는 건 부르는 쪽(퀴즈 풀이 API) 몫이다.
+     */
+    async earnQuiz(userId: string, correctCount: number, session?: ClientSession): Promise<number> {
+        if (session) return this.applyEarnQuiz(userId, correctCount, session);
+        return this.connection.transaction((own) => this.applyEarnQuiz(userId, correctCount, own));
+    }
+
+    private async applyEarnQuiz(userId: string, correctCount: number, session: ClientSession): Promise<number> {
+        const today = seoulDay(new Date());
+        const paid = await this.sumEarned(userId, 'quiz_correct', today, session);
+        const reward = quizReward(correctCount);
+        const pts = Math.max(0, Math.min(reward?.amount ?? 0, QUIZ_DAILY_POINT_LIMIT - paid));
+        if (pts > 0) {
+            await this.earn(userId, pts, 'quiz_correct', `퀴즈 정답 ${correctCount}개`, session, { studyDate: today });
+        }
+        return pts;
     }
 }
 
