@@ -11,7 +11,11 @@ jest.mock('react-native-reanimated', () => ({
 jest.mock('./src/lib/local/api', () => ({
   localApi: require('./src/__tests__/fixtures/api').mockApi,
 }));
-jest.mock('./src/lib/local/storage', () => ({ keepFile: (uri) => ({ uri, size: 0 }) }));
+jest.mock('./src/lib/local/storage', () => ({
+  keepFile: (uri) => ({ uri, size: 0 }),
+  readDb: () => null,
+  writeDb: () => {},
+}));
 // lucide 아이콘은 ESM이라 jest가 변환하지 않는다 — 이름만 맞는 빈 컴포넌트로 바꾼다
 jest.mock('lucide-react-native', () => new Proxy({}, { get: () => () => null }));
 // 화면 테스트는 라우터 없이 그린다. 파라미터가 필요한 테스트는 mockParams를 바꾼다

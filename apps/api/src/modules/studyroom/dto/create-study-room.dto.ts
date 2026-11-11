@@ -1,7 +1,6 @@
 import {
   IsBoolean,
   IsInt,
-  IsMongoId,
   IsOptional,
   IsString,
   Max,
@@ -12,7 +11,7 @@ import {
 
 /**
  * 스터디룸 만들기 요청 (발표자료 p.75 "3. 스터디룸 만들기")
- * 사용자 입력: 이름(title) · 카테고리(categoryId) · 공개여부(isPublic)
+ * 사용자 입력: 이름(title) · 카테고리 이름(categoryName) · 공개여부(isPublic)
  * hostId·inviteCode·memberCount 등은 서버가 채웁니다.
  */
 export class CreateStudyRoomDto {
@@ -21,9 +20,10 @@ export class CreateStudyRoomDto {
   @MaxLength(30)
   title: string;
 
-  // 카테고리는 ObjectId 문자열로 받습니다(Category 컬렉션 참조).
-  @IsMongoId()
-  categoryId: string;
+  @IsString()
+  @MinLength(1)
+  @MaxLength(30)
+  categoryName: string;
 
   @IsBoolean()
   isPublic: boolean;

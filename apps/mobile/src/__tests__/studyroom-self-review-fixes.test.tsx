@@ -1,4 +1,4 @@
-import { act, fireEvent, screen } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { RoomListScreen, RoomScreen } from '../features/studyroom/room';
 import { TimerScreen } from '../features/studyroom/tools';
@@ -11,6 +11,28 @@ const mockApi = {
   social: { messages: jest.fn() },
 };
 const mockEmit = jest.fn();
+const mockOutbox = new Map<
+  string,
+  { clientId: string; chatRoomId: string; text: string; createdAt: string }[]
+>();
+jest.mock('../lib/chat-outbox', () => ({
+  readChatOutbox: (user: string, room: string) => mockOutbox.get(`${user}:${room}`) ?? [],
+  addChatOutbox: (
+    user: string,
+    room: string,
+    entry: { clientId: string; chatRoomId: string; text: string; createdAt: string },
+  ) => {
+    const key = `${user}:${room}`;
+    mockOutbox.set(key, [...(mockOutbox.get(key) ?? []), entry]);
+  },
+  removeChatOutbox: (user: string, room: string, id: string) => {
+    const key = `${user}:${room}`;
+    mockOutbox.set(
+      key,
+      (mockOutbox.get(key) ?? []).filter((entry) => entry.clientId !== id),
+    );
+  },
+}));
 jest.mock('../lib/api', () => ({
   get api() {
     return mockApi;
@@ -63,6 +85,7 @@ const client = () => new QueryClient({ defaultOptions: { queries: { retry: false
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockOutbox.clear();
   useAuth.setState({ userId: 'me' });
   useNet.setState({ state: 'ok' });
   setParams({ id: 'r1' });
@@ -70,6 +93,9 @@ beforeEach(() => {
   mockApi.rooms.chatRoomId.mockResolvedValue('c1');
   mockApi.social.messages.mockResolvedValue([]);
   mockApi.rooms.recommended.mockResolvedValue([]);
+  mockEmit.mockImplementation((event, _payload, ack) => {
+    if (event === 'room:join' && typeof ack === 'function') ack({ ok: true });
+  });
 });
 afterEach(() => jest.useRealTimers());
 
@@ -93,6 +119,7 @@ it('확인 응답이 없으면 메시지를 남기고 실패를 알린 뒤 다�
   jest.useFakeTimers();
   await sendMessage('안녕');
   expect(screen.getByText('안녕')).toBeTruthy();
+  expect(screen.getByText('전송 중')).toBeTruthy();
   await act(async () => {
     jest.advanceTimersByTime(8000);
   });
@@ -120,6 +147,55 @@ it('확인 응답을 받으면 임시 메시지를 저장본으로 바꾼다', a
     });
   });
   expect(screen.getAllByText('안녕')).toHaveLength(1);
+  expect(screen.queryByText('전송 중')).toBeNull();
+  expect(mockOutbox.get('me:r1')).toEqual([]);
+});
+
+it('화면을 다시 열면 저장된 대기 메시지를 같은 ID로 다시 전송한다', async () => {
+  const firstClient = client();
+  firstClient.setQueryData(['room-chat', 'r1'], 'c1');
+  const first = await renderScreen(<RoomScreen />, firstClient);
+  await screen.findByText('방');
+  await act(async () => {});
+  await sendMessage('이어 보낼 메시지');
+  expect(mockOutbox.size).toBe(1);
+  const firstPayload = mockEmit.mock.calls.find(([event]) => event === 'chat:send')?.[1];
+  await act(async () => {
+    first.unmount();
+  });
+  mockEmit.mockClear();
+  const secondClient = client();
+  secondClient.setQueryData(['room-chat', 'r1'], 'c1');
+  await renderScreen(<RoomScreen />, secondClient);
+  await screen.findByText('방');
+  await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+  await screen.findByText('이어 보낼 메시지');
+  const retried = mockEmit.mock.calls.find(([event]) => event === 'chat:send')?.[1];
+  expect(retried).toEqual(firstPayload);
+});
+
+it('방 연결 후 50개가 넘는 이전 메시지를 페이지별로 모두 읽는다', async () => {
+  const items = Array.from({ length: 125 }, (_, i) => ({
+    _id: String(i),
+    chatRoomId: 'c1',
+    senderId: 'friend',
+    type: 'text',
+    text: `기록 ${i}`,
+    sharedItemId: null,
+    createdAt: new Date(1700000000000 + i * 1000).toISOString(),
+  }));
+  mockApi.social.messages.mockImplementation(async (_id: string, before?: string) => {
+    const end = before === undefined ? items.length : Number(before);
+    return items.slice(Math.max(0, end - 50), end);
+  });
+  const qc = client();
+  await renderScreen(<RoomScreen />, qc);
+  await waitFor(() => expect(qc.getQueryData<unknown[]>(['messages', 'c1'])).toHaveLength(125));
+  expect(mockApi.social.messages.mock.calls.map((call) => call[1])).toEqual([
+    undefined,
+    '75',
+    '25',
+  ]);
 });
 
 it('끊김 상태에서는 방 정보를 주기적으로 다시 읽어 복구를 확인한다', async () => {

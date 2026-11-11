@@ -618,7 +618,16 @@ export const mockApi: Api = {
         updatedAt: now(),
       });
     },
-    messages: (id) => ok(db.messages.get(id) ?? []),
+    messages: (id, before) => {
+      const items = db.messages.get(id) ?? [];
+      const end = before
+        ? Math.max(
+            0,
+            items.findIndex((item) => item._id === before),
+          )
+        : items.length;
+      return ok(items.slice(Math.max(0, end - 50), end));
+    },
   },
   content: {
     folders: () =>
@@ -1122,6 +1131,11 @@ export const mockApi: Api = {
 
 /** 채팅 전송을 목업 서버가 받아 되돌려준다 */
 localSocket.onClient = (ev, args) => {
+  if (ev === 'room:join') {
+    const ack = args[1] as ((result: { ok: boolean }) => void) | undefined;
+    ack?.({ ok: true });
+    return;
+  }
   if (ev !== 'chat:send') return;
   const [p, ack] = args as [
     { chatRoomId: string; text: string; clientId: string },

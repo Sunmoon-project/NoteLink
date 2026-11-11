@@ -1,0 +1,135 @@
+import { type INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import { io, type Socket } from 'socket.io-client';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TokenService } from '../src/modules/auth/token.service.js';
+import { StudyChatGateway } from '../src/modules/studyroom/study-chat.gateway.js';
+import { StudyChatService } from '../src/modules/studyroom/study-chat.service.js';
+
+const message = {
+  _id: 'msg',
+  chatRoomId: 'chat',
+  senderId: 'a',
+  type: 'text',
+  text: '안녕',
+  sharedItemId: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  clientId: 'client1',
+};
+const chat = { getChat: vi.fn(), requireChat: vi.fn(), history: vi.fn(), send: vi.fn() };
+const tokens = { verifyAccess: vi.fn() };
+let app: INestApplication;
+let a: Socket;
+let b: Socket;
+let serverUrl: string;
+beforeAll(async () => {
+  const module = await Test.createTestingModule({
+    providers: [
+      StudyChatGateway,
+      { provide: StudyChatService, useValue: chat },
+      { provide: TokenService, useValue: tokens },
+    ],
+  }).compile();
+  app = module.createNestApplication();
+  await app.listen(0, '127.0.0.1');
+  tokens.verifyAccess.mockImplementation(async (token: string) => ({ userId: token }));
+  const address = app.getHttpServer().address();
+  const url = `http://127.0.0.1:${address.port}`;
+  serverUrl = url;
+  a = io(url, { transports: ['websocket'], auth: { token: 'a' } });
+  b = io(url, { transports: ['websocket'], auth: { token: 'b' } });
+  await Promise.all(
+    [a, b].map(
+      (socket) =>
+        new Promise<void>((resolve, reject) => {
+          socket.once('connect', resolve);
+          socket.once('connect_error', reject);
+        }),
+    ),
+  );
+});
+afterAll(async () => {
+  a?.disconnect();
+  b?.disconnect();
+  await app?.close();
+});
+beforeEach(async () => {
+  vi.resetAllMocks();
+  tokens.verifyAccess.mockImplementation(async (token: string) => ({ userId: token }));
+  chat.getChat.mockResolvedValue({ _id: 'chat' });
+  chat.history.mockResolvedValue([]);
+  chat.requireChat.mockResolvedValue({});
+  chat.send.mockResolvedValue(message);
+  await Promise.all(
+    [a, b].map((socket) => socket.timeout(1000).emitWithAck('room:join', { roomId: 'room' })),
+  );
+});
+describe('스터디룸 Socket.IO', () => {
+  it('유효하지 않은 토큰으로 연결할 수 없다', async () => {
+    tokens.verifyAccess.mockRejectedValueOnce(new Error('invalid token'));
+    const invalid = io(serverUrl, {
+      transports: ['websocket'],
+      auth: { token: 'invalid' },
+      reconnection: false,
+    });
+    const error = await new Promise<Error>((resolve) => invalid.once('connect_error', resolve));
+    expect(error.message).toBe('unauthorized');
+    invalid.disconnect();
+  });
+  it('저장이 완료된 후 참여자에게 전달하고 보낸 사람에게 확인한다', async () => {
+    let finish!: (value: typeof message) => void;
+    chat.send.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const onMessage = vi.fn();
+    b.on('chat:message', onMessage);
+    const ack = a
+      .timeout(1000)
+      .emitWithAck('chat:send', { chatRoomId: 'chat', text: '안녕', clientId: 'client1' });
+    await vi.waitFor(() => expect(chat.send).toHaveBeenCalledOnce());
+    expect(onMessage).not.toHaveBeenCalled();
+    finish(message);
+    expect(await ack).toEqual(message);
+    await vi.waitFor(() => expect(onMessage).toHaveBeenCalledWith(message));
+    b.off('chat:message', onMessage);
+  });
+  it('퇴장한 참여자는 방송에서 제외한다', async () => {
+    chat.requireChat.mockImplementation(async (_chatId: string, userId: string) => {
+      if (userId === 'b') throw new Error('not a member');
+      return {};
+    });
+    const onMessage = vi.fn();
+    b.on('chat:message', onMessage);
+    await a
+      .timeout(1000)
+      .emitWithAck('chat:send', { chatRoomId: 'chat', text: '안녕', clientId: 'client1' });
+    expect(onMessage).not.toHaveBeenCalled();
+    b.off('chat:message', onMessage);
+  });
+  it('강퇴된 사용자의 방 구독을 제거한다', async () => {
+    const receive = vi.fn();
+    b.on('chat:message', receive);
+    await app.get(StudyChatGateway).evict('room', 'b');
+    await a.timeout(1000).emitWithAck('chat:send', {
+      chatRoomId: 'chat', text: '안녕', clientId: 'client1',
+    });
+    expect(receive).not.toHaveBeenCalled();
+    b.off('chat:message', receive);
+  });
+  it('DB 저장이 실패하면 성공 확인과 방송을 보내지 않는다', async () => {
+    chat.send.mockRejectedValue(new Error('DB unavailable'));
+    const receive = vi.fn();
+    b.on('chat:message', receive);
+    await expect(
+      a.timeout(150).emitWithAck('chat:send', {
+        chatRoomId: 'chat',
+        text: '안녕',
+        clientId: 'client1',
+      }),
+    ).rejects.toThrow();
+    expect(receive).not.toHaveBeenCalled();
+    b.off('chat:message', receive);
+  });
+});

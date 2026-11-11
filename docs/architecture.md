@@ -1,0 +1,3 @@
+- 캠·음성: LiveKit Cloud
+- 방 타이머·친구 상태·AI 진행률: NestJS의 Socket.IO
+- 텍스트 채팅: 문서에는 앱이 Firestore를 직접 읽고 쓰는 방식으로 표시됨
