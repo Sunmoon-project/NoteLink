@@ -542,3 +542,75 @@ def test_sentence_pairs_are_counted_whatever_the_order(swap: bool) -> None:
         ],
     )
     assert too_close(new, [seen_draft(old)])
+
+
+# ---------- 같은 개념을 다른 유형으로 다시 묻기 (#268) ----------
+
+
+def tagged(d: Draft, concept: str, ty: str) -> Seen:
+    s = seen_draft(d)
+    s["concept"], s["type"] = concept, ty
+    return s
+
+
+def test_the_same_concept_asked_with_another_type_is_not_too_close_by_its_passage() -> None:
+    # 마지막 단계: 이질 아메바를 특징으로 물은 뒤 부정설명으로 다시 물음. 둘 다 제시문이 용어
+    # 이름뿐이라 제시문 비교로는 늘 '거의 같음'이었음(개념 3개 노트, 11/12 학교 LLM)
+    feature = negative(
+        stem="다음 중 이질 아메바에 대한 설명으로 옳은 것은?",
+        options=["위족으로 운동한다", "섬모로 움직인다", "세균이다", "곰팡이다", "바이러스다"],
+        answer="위족으로 운동한다",
+    )
+    before = [tagged(feature, "이질 아메바", "특징")]
+    again = negative()
+    assert not too_close(again, before, "이질 아메바", "부정설명")
+    assert too_close(again, before)  # 개념 · 유형을 모르면 전과 같이 제시문으로 봄
+    assert too_close(again, before, "이질 아메바", "특징")  # 같은 유형
+    assert too_close(again, before, "대장 아메바", "부정설명")  # 다른 개념인데 제시문이 같음
+    # 개념을 모르는 앞 문제(저장된 문제 · 다른 퀴즈)는 전과 같이 제시문으로 봄
+    assert too_close(again, [seen_draft(feature)], "이질 아메바", "부정설명")
+
+
+def test_the_same_concept_with_another_type_still_may_not_repeat_three_sentences() -> None:
+    # 같은 사실을 늘어놓은 두 문제(부정설명 · 조합)는 유형이 달라도 거의 같은 문제
+    first = negative()
+    combo = combo_draft(
+        passage="ㄱ. 포낭형은 8핵이다.\nㄴ. 위족으로 운동한다.\nㄷ. 적혈구를 먹는다.",
+    )
+    assert too_close(combo, [tagged(first, "이질 아메바", "부정설명")], "이질 아메바", "조합")
+
+
+def test_a_term_shown_again_for_the_same_concept_with_another_type_is_not_reversed() -> None:
+    # 정의(설명 → 이질 아메바) 뒤 같은 개념의 특징(이질 아메바 → 설명): 앞 문제의 정답(용어)이
+    # 새 문제의 제시문이라 늘 '거꾸로'였음. 용어가 보인다고 정답이 보이지는 않음(#268)
+    definition = draft(
+        stem="다음 설명에 해당하는 원충은?",
+        passage="위족으로 운동하고 적혈구를 먹는 원충",
+        options=["이질 아메바", "대장 아메바", "람블편모충", "질편모충", "말라리아"],
+        answer="이질 아메바",
+    )
+    before = [tagged(definition, "이질 아메바", "정의")]
+    feature = negative(stem="다음 중 이질 아메바에 대한 설명으로 옳은 것은?")
+    assert not reversed_of(feature, before, "이질 아메바", "특징")
+    assert reversed_of(feature, before)  # 개념 · 유형을 모르면 전과 같음
+    # 차례가 반대(특징 뒤 정의)여도 용어끼리는 보지 않음
+    after = [tagged(feature, "이질 아메바", "특징")]
+    assert not reversed_of(definition, after, "이질 아메바", "정의")
+    assert reversed_of(definition, after, "이질 아메바", "특징")  # 같은 유형이면 전과 같음
+
+
+def test_a_description_giving_away_the_answer_is_reversed_even_with_another_type() -> None:
+    # 앞 정의 문제의 설명이 새 문제의 정답: 앞 문제를 보면 답이 보임
+    definition = draft(
+        stem="다음 설명에 해당하는 원충은?",
+        passage="위족으로 운동하고 적혈구를 먹는 원충",
+        options=["이질 아메바", "대장 아메바", "람블편모충", "질편모충", "말라리아"],
+        answer="이질 아메바",
+    )
+    giveaway = negative(
+        stem="다음 중 이질 아메바에 대한 설명으로 옳은 것은?",
+        options=["위족으로 운동하고 적혈구를 먹는다", "섬모로 움직인다", "세균이다", "곰팡이다",
+                 "바이러스다"],
+        answer="위족으로 운동하고 적혈구를 먹는다",
+    )  # fmt: skip
+    assert reversed_of(giveaway, [tagged(definition, "이질 아메바", "정의")], "이질 아메바", "특징")
