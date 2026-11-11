@@ -57,15 +57,81 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
   - step은 공용 스키마에서 '없거나 문자열'이라, None을 쓰지 않고 필드를 지웁니다.
 """
 
+import json
+import logging
+import os
+import threading
+import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from bson import ObjectId
 from pymongo import ReturnDocument
 from pymongo.collection import Collection
+from pymongo.errors import PyMongoError
 
 from app.clients.llm import JsonObject
+
+# 작업마다 쓴 Claude 비용(달러). 공용 스키마 밖 필드: 처리기만 쓰고 읽음(checkpoint처럼, #298)
+log = logging.getLogger(__name__)
+
+COST_FIELD = "llmUsd"
+# 더한 비용마다 붙인 id: 응답만 끊겨 다시 적어도 두 번 더하지 않게(Codex 재리뷰 #299)
+COST_IDS_FIELD = "llmCostIds"
+# 아직 DB에 적혔다고 확인하지 못한 비용: 비용 id → (컬렉션, 작업 id, 달러). 적는 중인 것(_writing)도
+# 확인될 때까지 남겨 파일이 늘 전부를 담게 함(Codex 재리뷰 4차 #299). 처리기 안의 JobStore가
+# 함께 씀: 어느 반복이 적든, 비용 합계를 읽을 때든(claude_spent) 먼저 다시 적음
+_unrecorded: dict[str, tuple[Any, Any, float]] = {}
+_writing: set[str] = set()  # 지금 어느 스레드가 적고 있는 비용 id
+_spooled = [False]  # 파일에 남긴 비용이 있음: 다 적으면 파일도 지워야 함
+_unrecorded_lock = threading.Lock()
+# 모아 둔 비용을 처리기 작업 폴더의 파일에도 남김: DB가 끊긴 채 처리기가 다시 시작해도 읽어서
+# 다시 적게(Codex 재리뷰 #299). 팀 규칙상 FastAPI는 ai_jobs만 쓰므로 DB 대신 파일.
+# 처리기 밖(시험 등)에서는 비어 있음(파일을 쓰지 않음)
+_spool: list[str] = []
+
+
+def use_spool(path: str, col: Collection[JsonObject]) -> int:
+    """처리기가 시작할 때 부름: 지난번에 남긴 비용을 읽어 모아 두고(다음에 적힘) 앞으로도 path에
+    남김. 읽은 수를 돌려줌. 파일이 없으면 0."""
+    _spool[:] = [path]
+    try:
+        with open(path, encoding="utf-8") as f:
+            rows = json.load(f)
+    except FileNotFoundError:
+        return 0
+    except (OSError, ValueError):
+        log.warning("남긴 Claude 비용 파일 %s를 읽지 못함", path, exc_info=True)
+        return 0
+    with _unrecorded_lock:
+        for r in rows:
+            _unrecorded[r["id"]] = (col, ObjectId(r["job"]), float(r["usd"]))
+        _spooled[0] = bool(rows)
+    return len(rows)
+
+
+def _save_spool() -> None:
+    """잠금 안에서: 확인하지 못한 비용 전부(적는 중인 것 포함)를 파일에(없으면 지움).
+
+    실패해도 로그만."""
+    if not _spool:
+        return
+    path = _spool[0]
+    try:
+        _spooled[0] = bool(_unrecorded)
+        if not _unrecorded:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        rows = [{"job": str(j), "id": c, "usd": u} for c, (_, j, u) in _unrecorded.items()]
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(rows, f)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        log.warning("Claude 비용을 파일 %s에 남기지 못함", path, exc_info=True)
+
 
 SWEEP_EVERY = timedelta(seconds=60)  # 시도 한도를 넘긴 멈춘 작업 정리 간격(가져오기마다 하지 않음)
 
@@ -276,6 +342,69 @@ class JobStore:
             fields["progress"] = 0  # 실패로 끝나면 멈춘 곳의 진행률을 그대로 둠
         self._write(job, {"$set": fields, "$unset": {"step": ""}})
         return str(fields["status"])
+
+    def add_cost(self, job: Job, usd: float) -> None:
+        """이 작업이 쓴 Claude 비용을 llmUsd에 더함(#298). 잠금과 상관없이: 이미 쓴 돈이라
+        작업을 다른 처리기가 가져갔거나 취소된 뒤에 끝난 호출도 셈.
+
+        적지 못한 비용은 모아 두었다가 다음에 적을 때나 합계를 읽을 때 먼저 적음: DB가 잠깐
+        끊겨도 합계에서 빠지지 않게(Codex 리뷰 #299). 비용마다 id를 붙여, 반영됐는데 응답만 끊긴
+        비용을 다시 적어도 두 번 더하지 않음. 그래도 실패하면 예외(호출한 쪽이 로그).
+        """
+        self._write_costs({uuid.uuid4().hex: (self._col, job.id, usd)})
+
+    def flush_costs(self) -> None:
+        """모아 둔(적지 못한) 비용을 다시 적음. 실패하면 그대로 두고 예외."""
+        self._write_costs({})
+
+    @staticmethod
+    def _write_costs(new: dict[str, tuple[Any, Any, float]]) -> None:
+        with _unrecorded_lock:
+            _unrecorded.update(new)
+            batch = [(c, *_unrecorded[c]) for c in _unrecorded if c not in _writing]
+            _writing.update(c for c, *_ in batch)
+        for i, (cost_id, col, job_id, cost) in enumerate(batch):
+            try:
+                col.update_one(
+                    {"_id": job_id, COST_IDS_FIELD: {"$ne": cost_id}},
+                    {"$inc": {COST_FIELD: cost}, "$push": {COST_IDS_FIELD: cost_id}},
+                )
+            except PyMongoError:
+                with _unrecorded_lock:
+                    _writing.difference_update(c for c, *_ in batch[i:])
+                    _save_spool()
+                raise
+            with _unrecorded_lock:
+                _unrecorded.pop(cost_id, None)
+                _writing.discard(cost_id)
+        with _unrecorded_lock:
+            if _spooled[0]:  # 파일에 남긴 것이 있었음: 남은 것으로 다시 쓰거나 지움
+                _save_spool()
+
+    @staticmethod
+    def unwritten_usd() -> float:
+        """적지 못한 비용(달러): 적는 중이 아닌데 아직 확인하지 못한 것. 응답만 끊겨 실제로는
+        반영됐을 수도 있어 많게 셀 수 있음(예산은 적게 세지 않는 쪽)."""
+        with _unrecorded_lock:
+            return sum(u for c, (_, _, u) in _unrecorded.items() if c not in _writing)
+
+    def claude_spent(self) -> float:
+        """모든 작업의 llmUsd 합계(달러, #298) + 아직 적지 못한 비용. 모아 둔 비용을 먼저 적어 봄
+        (학교 LLM으로 넘긴 뒤에도 다시 적을 기회가 있게). 적기는 실패하고 읽기만 되면, 적지 못한
+        비용을 더해 예산을 적게 세지 않음(Codex 재리뷰 4차 #299)."""
+        try:
+            self.flush_costs()
+        except PyMongoError:
+            log.warning("적지 못한 Claude 비용을 다시 적지 못함, 다음에 다시")
+        rows = list(
+            self._col.aggregate(
+                [
+                    {"$match": {COST_FIELD: {"$gt": 0}}},
+                    {"$group": {"_id": None, "usd": {"$sum": f"${COST_FIELD}"}}},
+                ]
+            )
+        )
+        return (float(rows[0]["usd"]) if rows else 0.0) + self.unwritten_usd()
 
     def _write(self, job: Job, update: JsonObject) -> None:
         r = self._col.update_one(

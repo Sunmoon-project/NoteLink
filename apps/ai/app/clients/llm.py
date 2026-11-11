@@ -17,6 +17,8 @@ Claude(ClaudeLlm, 공식 SDK anthropic)
     계속 다시 불렀음
   - 거절(stop_reason refusal)은 이 요청 탓이라 LlmRejectedError
   - SDK 자체 재시도는 끔(max_retries=0): 다시 보내기는 아래 규칙대로 여기서 함
+  - 응답의 토큰 수로 비용을 셈(claude_cost). 작업마다 ai_jobs.llmUsd에 쌓고(Metered), 합계가
+    CLAUDE_BUDGET_USD에 닿으면 다음 호출부터 학교 LLM으로 넘김(Budgeted, #298)
 
 학교 LLM: 10/21 시험에서 확인한 서버 특성을 여기서 처리합니다.
   - User-Agent 헤더가 없으면 거절됨
@@ -39,6 +41,7 @@ Claude(ClaudeLlm, 공식 SDK anthropic)
 
 import email.utils
 import json
+import logging
 import math
 import re
 import threading
@@ -52,7 +55,9 @@ from typing import Any, Protocol
 import anthropic
 import httpx2
 
-from app.core.config import GAP_DEFAULTS, settings
+from app.core.config import GAP_DEFAULTS, LLM_DEFAULTS, settings
+
+log = logging.getLogger(__name__)
 
 type JsonObject = dict[str, Any]
 
@@ -82,6 +87,14 @@ class LlmSetupError(Exception):
     def __init__(self, message: str, *, retry: bool = True) -> None:
         super().__init__(message)
         self.retry = retry
+
+
+class LlmUsageLimitError(LlmSetupError):
+    """Claude 워크스페이스 사용 한도 · 결제 한도에 닿음(400 usage limit · 402). Budgeted는 이것을
+    받으면 학교 LLM으로 넘김: Console 한도가 코드에서 센 비용보다 먼저 닿을 수 있음(#298)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, retry=False)
 
 
 SETUP_STATUSES = frozenset({401, 403, 404})
@@ -277,6 +290,12 @@ class PacedLlm:
         self._active = 0
         self._last = float("-inf")
         self._lock = threading.Lock()
+        # 보내기 직전에 볼 예산(Budgeted.over, #298): 차례를 기다리는 사이 다른 호출이 한도를
+        # 넘겼으면 보내지 않음(Codex 리뷰 #299)
+        self._gate: Callable[[], bool] | None = None
+        # 응답마다 비용을 바로 넘길 곳(Budgeted의 Spend.add): 같은 호출의 다시 보내기도 앞 응답의
+        # 비용을 보고 멈추게(Codex 재리뷰 #299)
+        self._cost_hook: Callable[[float], None] | None = None
 
     def background(self, awaited: Callable[[], bool] = _never) -> "Llm":
         """같은 호출 간격 · 429 대기를 쓰되, 사용자 작업 호출이 도는 동안은 보내지 않는 연결.
@@ -384,6 +403,14 @@ class PacedLlm:
                     self._active -= 1
                     self._last = self._clock()
 
+    def set_cost_hook(self, hook: Callable[[float], None]) -> None:
+        """Claude 응답마다 그 비용(달러)으로 hook을 부름(#298)."""
+        self._cost_hook = hook
+
+    def set_gate(self, over: Callable[[], bool]) -> None:
+        """over()가 참이면 보내기 직전(처음 · 다시 보내기마다) LlmUsageLimitError(#298)."""
+        self._gate = over
+
     def _attempts(
         self, body: JsonObject, yields: Callable[[], bool], mine: list[bool]
     ) -> JsonObject:
@@ -391,6 +418,8 @@ class PacedLlm:
         tries = holds = 0  # 다시 보낸 횟수: 일반(retries까지) · 429(MAX_HOLDS까지) 따로
         while tries <= self._retries:
             self._turn(yields, mine)  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
+            if self._gate is not None and self._gate():
+                raise LlmUsageLimitError("Claude 비용 한도에 닿음(보내기 직전 확인)")
             try:
                 status, after, text = self._exchange(body)
             except _TransportError as e:
@@ -507,6 +536,68 @@ USAGE_LIMIT_HINTS = ("usage limit", "credit balance")
 SCHEMA_CACHE_MAX = 128
 
 
+# 100만 토큰당 (입력, 출력) 달러, 모델 이름 앞부분으로 찾음(공식 가격, 2026-11). 값을 모르는
+# 모델은 아는 모델 중 가장 비싼 값으로 셈: 예산을 적게 세지 않게(#298)
+CLAUDE_PRICES: dict[str, tuple[float, float]] = {
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-haiku-5-5": (0.10, 0.50),
+}
+# 입력이 이 토큰 수를 넘으면 더 비싼 값을 받는 모델(Haiku 5.5: $0.50 · $2.50)
+CLAUDE_LONG_PROMPT = 100_000
+CLAUDE_LONG_PRICES: dict[str, tuple[float, float]] = {"claude-haiku-5-5": (0.50, 2.50)}
+
+
+def claude_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """응답 하나의 비용(달러). 출력 토큰에는 생각(thinking)도 들어 있음."""
+
+    def find(table: dict[str, tuple[float, float]]) -> tuple[float, float] | None:
+        return next((p for name, p in table.items() if model.startswith(name)), None)
+
+    price = find(CLAUDE_PRICES) or (
+        max(p[0] for p in CLAUDE_PRICES.values()),
+        max(p[1] for p in CLAUDE_PRICES.values()),
+    )
+    if input_tokens > CLAUDE_LONG_PROMPT and (long := find(CLAUDE_LONG_PRICES)):
+        price = long
+    return (input_tokens * price[0] + output_tokens * price[1]) / 1_000_000
+
+
+class _Meter:
+    usd = 0.0
+
+
+_meters = threading.local()  # 스레드마다 지금 열려 있는 계량기들(metering이 겹칠 수 있음)
+
+
+def _open_meters() -> list[_Meter]:
+    stack: list[_Meter] | None = getattr(_meters, "stack", None)
+    if stack is None:
+        stack = _meters.stack = []
+    return stack
+
+
+@contextmanager
+def metering() -> Iterator[_Meter]:
+    """이 스레드에서 with 블록 안에 한 Claude 호출의 비용을 셈(다시 보내기 포함).
+
+    호출 간격 · 다시 보내기는 PacedLlm이 부른 스레드 안에서 하므로, 퀴즈 자리처럼 스레드를 여럿
+    써도 자리마다 따로 셈.
+    """
+    meter = _Meter()
+    stack = _open_meters()
+    stack.append(meter)
+    try:
+        yield meter
+    finally:
+        stack.remove(meter)
+
+
+def charge(usd: float) -> None:
+    """이 스레드에 열린 계량기 모두에 더함. ClaudeLlm이 응답마다 부름."""
+    for meter in _open_meters():
+        meter.usd += usd
+
+
 class ClaudeLlm(PacedLlm):
     """Claude API(공식 SDK). 요청 모양은 Messages API + structured outputs(#278)."""
 
@@ -585,10 +676,15 @@ class ClaudeLlm(PacedLlm):
         except anthropic.APIStatusError as e:
             status = e.status_code
             if status == 402 or (status == 400 and _usage_limited(e)):
-                raise LlmSetupError(f"HTTP {status} 사용 한도", retry=False) from e
+                raise LlmUsageLimitError(f"HTTP {status} 사용 한도") from e
             return status, e.response.headers.get("retry-after"), None
         if not isinstance(msg, anthropic.types.Message):  # 200인데 JSON이 아니면 SDK가 글자로 줌
             return 200, None, None
+        # 잘린 답 · 거절 · 못 읽는 답도 청구됨: 답을 읽기 전에 셈(#298)
+        usd = claude_cost(str(body["model"]), msg.usage.input_tokens, msg.usage.output_tokens)
+        charge(usd)
+        if self._cost_hook is not None:
+            self._cost_hook(usd)
         if msg.stop_reason == "refusal":
             raise LlmRejectedError("거절(refusal)")
         text = "".join(b.text for b in msg.content if b.type == "text")
@@ -636,6 +732,245 @@ def _content(res: httpx2.Response) -> str | None:
     return content if isinstance(content, str) else None
 
 
+class Paced(Protocol):
+    """처리기가 프로세스에 하나 두는 연결: 호출과, 사용자 작업에 양보하는 연결(#138)."""
+
+    def call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: JsonObject,
+        name: str,
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+    ) -> JsonObject: ...
+
+    def background(self, awaited: Callable[[], bool] = _never) -> Llm: ...
+
+
+class Metered:
+    """이 연결로 한 호출의 Claude 비용을 on_cost에 넘김(작업 문서 ai_jobs.llmUsd에 쌓게, #298).
+
+    호출이 실패해도(잘린 답 · 다시 보내기 끝에 실패) 그때까지 쓴 비용은 넘김. on_cost가 실패해도
+    호출 결과는 그대로 돌려줌(비용 기록 때문에 작업을 실패시키지 않음).
+    """
+
+    def __init__(self, llm: Llm, on_cost: Callable[[float], None]) -> None:
+        self._llm, self._on_cost = llm, on_cost
+
+    def call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: JsonObject,
+        name: str,
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+    ) -> JsonObject:
+        with metering() as meter:
+            try:
+                return self._llm.call(
+                    model,
+                    system,
+                    user,
+                    schema,
+                    name,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            finally:
+                if meter.usd:
+                    try:
+                        self._on_cost(meter.usd)
+                    except Exception:
+                        log.warning(
+                            "Claude 비용 %.4f달러를 작업에 적지 못함", meter.usd, exc_info=True
+                        )
+
+
+# 지금까지 쓴 비용 합계(ai_jobs 전체)를 다시 읽는 간격. 이 프로세스가 쓴 것은 따로 바로 세므로
+# 다른 처리기가 쓴 것만 늦게 보임(처리기는 하나만 띄움, __main__). 한 번도 못 읽었으면 짧게 다시
+SPEND_TTL_SEC = 300.0
+SPEND_RETRY_SEC = 5.0
+
+
+class Spend:
+    """지금까지 쓴 Claude 비용(달러, #298).
+
+    total = max(DB 합계, 처음 읽은 DB 합계 + 그 뒤 이 프로세스가 쓴 것). 이 프로세스가 쓴 것은
+    DB에 적혔는지와 상관없이 세므로, 작업 문서에 적기를 실패하거나 다시 읽기 전이어도 빠지지 않음.
+    DB 합계는 처음과 ttl마다 읽음: 잠금 밖에서 한 스레드만 읽고 나머지는 지난 값을 씀(느린 DB가
+    LLM 호출을 막지 않게). 한 번도 못 읽었으면 inf(모르면 한도에 닿은 것으로, 학교 LLM).
+    """
+
+    def __init__(
+        self,
+        read_total: Callable[[], float],
+        *,
+        ttl: float = SPEND_TTL_SEC,
+        retry: float = SPEND_RETRY_SEC,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._read, self._ttl, self._retry, self._clock = read_total, ttl, retry, clock
+        self._db: float | None = None  # 마지막으로 읽은 DB 합계
+        self._base: float | None = None  # 처음 읽은 DB 합계
+        self._local = 0.0  # 이 프로세스가 쓴 것(시작부터)
+        self._local_at_base = 0.0
+        self._at: float | None = None  # 마지막으로 읽기를 시작한 시각
+        self._reading = False
+        self._lock = threading.Lock()
+
+    def add(self, usd: float) -> None:
+        with self._lock:
+            self._local += usd
+
+    def total(self) -> float:
+        with self._lock:
+            now = self._clock()
+            wait = self._ttl if self._db is not None else self._retry
+            due = not self._reading and (self._at is None or now - self._at >= wait)
+            if due:
+                self._reading, self._at = True, now
+        if due:
+            value: float | None = None
+            try:
+                value = float(self._read())
+            except Exception:
+                log.warning("Claude 비용 합계를 읽지 못함, 지난 값을 씀", exc_info=True)
+            with self._lock:
+                self._reading = False
+                if value is not None:
+                    self._db = value
+                    if self._base is None:
+                        self._base, self._local_at_base = value, self._local
+        with self._lock:
+            if self._db is None or self._base is None:
+                return math.inf
+            return max(self._db, self._base + self._local - self._local_at_base)
+
+
+class _Routed:
+    """비용이 한도 아래면 Claude 연결, 닿으면 학교 LLM 연결로 보냄(Budgeted · 그 background)."""
+
+    def __init__(self, budget: "Budgeted", claude: Llm, school: Callable[[], Llm]) -> None:
+        self._budget, self._claude, self._school = budget, claude, school
+
+    def call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: JsonObject,
+        name: str,
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+    ) -> JsonObject:
+        if self._budget.over():
+            return self._school().call(
+                self._budget.school_model(model), system, user, schema, name,
+                max_tokens=max_tokens, temperature=temperature,
+            )  # fmt: skip
+        with metering() as meter:
+            try:
+                return self._claude.call(
+                    model,
+                    system,
+                    user,
+                    schema,
+                    name,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            except LlmUsageLimitError:
+                self._budget.exhaust()  # Console 한도가 먼저 닿음: 이 호출부터 학교 LLM
+            finally:
+                if not self._budget.hooked:  # 응답마다 이미 넘긴 클라이언트는 다시 더하지 않음
+                    self._budget.spend.add(meter.usd)
+        return self._school().call(
+            self._budget.school_model(model), system, user, schema, name,
+            max_tokens=max_tokens, temperature=temperature,
+        )  # fmt: skip
+
+
+class Budgeted:
+    """Claude를 쓰다가 지금까지 쓴 비용이 limit 달러에 닿으면 다음 호출부터 학교 LLM으로(#298).
+
+    서비스는 설정의 Claude 모델 이름으로 부르므로, 넘길 때 설정 항목별 학교 LLM 기본 모델로
+    바꿈(생성 · 노트 · 녹음 → gemma, 검사 → qwen). 학교 LLM 클라이언트는 처음 넘길 때 만들고(호출
+    간격은 학교 LLM 값), 설정이 없으면 LlmSetupError(다시 해도 같음). 이미 보낸 Claude 호출은
+    끝까지 기다림.
+    """
+
+    def __init__(
+        self,
+        claude: Paced,
+        school: Callable[[], Paced],
+        spend: Spend,
+        limit: float,
+        models: dict[str, str],
+    ) -> None:
+        self._claude, self._make_school = claude, school
+        self.spend, self._limit, self._models = spend, limit, models
+        self._school: Paced | None = None
+        self._lock = threading.Lock()
+        self._told = False
+        self._exhausted = False  # Claude가 사용 한도 오류를 돌려줌: 다시 Claude로 가지 않음
+        self._routed = _Routed(self, claude, self._school_llm)
+        # 차례를 기다리는 동안 한도를 넘기면 보내기 직전에 멈추고 학교 LLM으로(Codex 리뷰 #299)
+        self.hooked = isinstance(claude, PacedLlm)
+        if isinstance(claude, PacedLlm):
+            claude.set_gate(self.over)
+            claude.set_cost_hook(self.spend.add)
+
+    def exhaust(self) -> None:
+        self._exhausted = True
+
+    def over(self) -> bool:
+        # 넘긴 뒤에도 합계를 읽음: 읽을 때 모아 둔 비용을 다시 적으므로(Codex 재리뷰 #299)
+        total = self.spend.total()
+        over = self._exhausted or total >= self._limit
+        if over and not self._told:
+            self._told = True
+            log.warning(
+                "Claude 비용이 한도 %.2f달러에 닿았거나 사용 한도 오류: 학교 LLM으로", self._limit
+            )
+        return over
+
+    def school_model(self, model: str) -> str:
+        return self._models.get(model, model)
+
+    def _school_llm(self) -> Paced:
+        with self._lock:
+            if self._school is None:
+                self._school = self._make_school()
+            return self._school
+
+    def call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: JsonObject,
+        name: str,
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+    ) -> JsonObject:
+        return self._routed.call(
+            model, system, user, schema, name, max_tokens=max_tokens, temperature=temperature
+        )
+
+    def background(self, awaited: Callable[[], bool] = _never) -> Llm:
+        return _Routed(
+            self, self._claude.background(awaited), lambda: self._school_llm().background(awaited)
+        )
+
+
 # 제공자에 맞는 모델 이름인지 볼 설정(환경 변수 이름은 대문자)
 MODEL_FIELDS = (
     "quiz_gen_model",
@@ -672,13 +1007,17 @@ def _check_setup(provider: str) -> None:
         raise LlmSetupError(problem, retry=False)
 
 
-def school_llm() -> SchoolLlm:
-    _check_setup("school")
+def _school_client(gap_sec: float) -> SchoolLlm:
     return SchoolLlm(
         settings.school_llm_base_url,
         settings.school_llm_api_key.get_secret_value(),
-        gap_sec=settings.call_gap_sec,
+        gap_sec=gap_sec,
     )
+
+
+def school_llm() -> SchoolLlm:
+    _check_setup("school")
+    return _school_client(settings.call_gap_sec)
 
 
 def claude_llm() -> ClaudeLlm:
@@ -690,6 +1029,39 @@ def claude_llm() -> ClaudeLlm:
     )
 
 
-def make_llm() -> PacedLlm:
-    """LLM_PROVIDER(claude · school)에 맞는 클라이언트."""
-    return school_llm() if settings.llm_provider == "school" else claude_llm()
+def fallback_school_llm() -> SchoolLlm:
+    """Claude 예산을 다 쓴 뒤 넘길 학교 LLM(#298). 호출 간격은 학교 LLM 값."""
+    if not settings.school_llm_base_url:
+        raise LlmSetupError(
+            f"Claude 비용이 한도 {settings.claude_budget_usd:g}달러에 닿았지만 "
+            "SCHOOL_LLM_BASE_URL이 비어 있음",
+            retry=False,
+        )
+    # 모델 이름 확인(_check_setup)은 하지 않음: 설정은 Claude 모델이고 school_models()로 바꿔 부름
+    return _school_client(GAP_DEFAULTS["school"])
+
+
+def school_models() -> dict[str, str]:
+    """설정의 Claude 모델 이름 → 같은 설정 항목의 학교 LLM 기본 모델.
+
+    서비스는 모델 이름만 넘기므로, 여러 설정 항목이 같은 Claude 모델을 쓰면(예: QUIZ_CHECK_MODEL도
+    Sonnet) 그 항목들의 학교 모델 중 가장 많은 것(같으면 MODEL_FIELDS 앞쪽)으로(/code-review #298).
+    """
+    picks: dict[str, list[str]] = {}
+    for f in MODEL_FIELDS:
+        picks.setdefault(getattr(settings, f), []).append(LLM_DEFAULTS["school"][f])
+    return {model: max(names, key=names.count) for model, names in picks.items()}
+
+
+def make_llm(spend: Spend | None = None) -> Paced:
+    """LLM_PROVIDER(claude · school)에 맞는 클라이언트.
+
+    Claude이고 spend(지금까지 쓴 비용)가 있으면 CLAUDE_BUDGET_USD(0이면 제한 없음)에 닿은 뒤
+    학교 LLM으로 넘김(#298).
+    """
+    if settings.llm_provider == "school":
+        return school_llm()
+    claude = claude_llm()
+    if spend is None or settings.claude_budget_usd <= 0:
+        return claude
+    return Budgeted(claude, fallback_school_llm, spend, settings.claude_budget_usd, school_models())
