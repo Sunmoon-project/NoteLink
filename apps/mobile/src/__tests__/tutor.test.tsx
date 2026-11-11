@@ -88,6 +88,25 @@ describe('아바타 선생님 대화', () => {
     });
   });
 
+  it('추천 질문 하나에 답한 뒤 남은 추천 질문을 다음 질문으로 보여 주고, 누르면 이어서 묻는다', async () => {
+    mockApi.content.ask.mockResolvedValue(job());
+    await renderScreen(<TutorScreen />);
+    await fireEvent.press(await screen.findByText('이 노트 핵심만 알려 주세요'));
+    expect(await screen.findByText('어려운 개념을 쉽게 설명해 주세요')).toBeTruthy();
+    expect(screen.getByText('시험에 나올 만한 내용은 뭐예요?')).toBeTruthy();
+    // 이미 물은 질문은 다시 권하지 않는다(사용자 말풍선 하나만 남는다)
+    expect(screen.getAllByText('이 노트 핵심만 알려 주세요')).toHaveLength(1);
+    await fireEvent.press(screen.getByText('시험에 나올 만한 내용은 뭐예요?'));
+    await waitFor(() =>
+      expect(mockApi.content.ask).toHaveBeenLastCalledWith('m1', {
+        question: '시험에 나올 만한 내용은 뭐예요?',
+        history: expect.any(Array),
+      }),
+    );
+    expect(await screen.findByText('어려운 개념을 쉽게 설명해 주세요')).toBeTruthy();
+    expect(screen.getAllByText('시험에 나올 만한 내용은 뭐예요?')).toHaveLength(1);
+  });
+
   it('자료로 답하면 다음 학습(퀴즈 · 복습)으로 잇고, 답하지 못한 질문 뒤에는 권하지 않는다', async () => {
     mockApi.content.ask.mockResolvedValueOnce(job()).mockResolvedValueOnce(
       job({

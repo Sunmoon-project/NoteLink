@@ -220,6 +220,13 @@ const nextStep = (msgs: Msg[]) => {
   return !!last && last.role === 'avatar' && !last.error && !last.refused;
 };
 
+/** 답을 받은 뒤 이어서 물어볼 추천 질문: 아직 묻지 않은 것만 */
+const nextSuggest = (msgs: Msg[]) => {
+  if (msgs[msgs.length - 1]?.role !== 'avatar') return [];
+  const asked = new Set(msgs.filter((m) => m.role === 'user').map((m) => m.text));
+  return SUGGEST.filter((q) => !asked.has(q));
+};
+
 /** 아바타 선생님: 정리된 노트(녹음 · 문서 · 필기)를 옆에서 설명한다 */
 export function TutorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -319,22 +326,32 @@ export function TutorScreen() {
           contentContainerClassName="gap-3 pb-4"
           // 에이전트처럼 다음 학습으로 잇는다: 자료로 답한 뒤 퀴즈(학습 확인) · 복습으로
           ListFooterComponent={
-            nextStep(msgs) && live === null ? (
+            live === null && (nextStep(msgs) || nextSuggest(msgs).length > 0) ? (
               <Animated.View entering={FadeIn.duration(220)} className="flex-row flex-wrap gap-2">
-                <Chip
-                  small
-                  onPress={() =>
-                    router.push({
-                      pathname: '/play/gen',
-                      params: { materialId: id, title: mat.data?.title ?? '' },
-                    })
-                  }
-                >
-                  이 노트로 퀴즈 풀기
-                </Chip>
-                <Chip small onPress={() => router.push('/quiz')}>
-                  복습하러 가기
-                </Chip>
+                {/* 하나를 물은 뒤에도 남은 추천 질문을 다음 질문으로 이어 준다 */}
+                {nextSuggest(msgs).map((q) => (
+                  <Chip key={q} small disabled={busy} onPress={() => void ask(q)}>
+                    {q}
+                  </Chip>
+                ))}
+                {nextStep(msgs) && (
+                  <>
+                    <Chip
+                      small
+                      onPress={() =>
+                        router.push({
+                          pathname: '/play/gen',
+                          params: { materialId: id, title: mat.data?.title ?? '' },
+                        })
+                      }
+                    >
+                      이 노트로 퀴즈 풀기
+                    </Chip>
+                    <Chip small onPress={() => router.push('/quiz')}>
+                      복습하러 가기
+                    </Chip>
+                  </>
+                )}
               </Animated.View>
             ) : null
           }
