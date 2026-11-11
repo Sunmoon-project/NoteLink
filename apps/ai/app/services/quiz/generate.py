@@ -250,6 +250,10 @@ DRY_REASONS = {
 # 이름은 쪽마다 다름: 원충류 쪽이 바닥나도 연충류 쪽은 그대로, /code-review #282)
 GROUP_TYPE = "분류"
 GROUP_CLASH_LIMIT = 2
+# 분류 초안의 정답 겹침: 묶음 이름이 바닥났을 뿐 그 쪽의 용어는 남아 있으므로 쪽을 닫지 않음
+# (DRY_REASONS에 넣지 않음). 닫으면 한도에 닿기 전에 쪽이 닫혀 정의 · 특징도 못 만듦
+# (/code-review #282)
+GROUP_SAME = "분류 이름이 세트 안에서 겹침"
 
 # 영어 기능어: 영어 문장 과목(토익)인지 용어만 영어인 과목인지 가름
 FUNC = {
@@ -832,6 +836,7 @@ def gen_one(
         why, k = code_check(d, t, text, ty, list(seen))
         if ty == GROUP_TYPE and SAME_ANSWER in why:
             out.group_clash += 1
+            why = [GROUP_SAME if w == SAME_ANSWER else w for w in why]
         if concept not in names:  # 개념 목록이 길면 모델이 이 필드를 빠뜨리기도 함
             why.append("개념 이름 없음")
         if (

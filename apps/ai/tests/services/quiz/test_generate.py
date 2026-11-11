@@ -1191,6 +1191,23 @@ def test_other_types_clashing_on_an_answer_do_not_leave_out_classification() -> 
     assert r.group_clash == 2
 
 
+def test_a_classification_answer_clash_does_not_close_the_page() -> None:
+    # 분류 초안이 정답 겹침으로만 떨어져도 쪽을 닫지 않음: 묶음 이름이 바닥났을 뿐 정의 · 특징은
+    # 남음. 쪽 닫기 이유(DRY_REASONS)가 아닌 다른 이유로 바꿈(/code-review #282)
+    group = draft(
+        "근족충류",
+        "대장 아메바",
+        concept="대장 아메바",
+        options=["근족충류", "편모충류", "섬모충류", "포자충류", "흡충류"],
+    )
+    group["question"]["stem"] = "다음 원충이 속하는 분류는?"
+    r = generate.gen_one(
+        happy([group, group]), 1, PAGE1, ["분류"], NAMES, PageInfo(), [], ["근족충류"], 0
+    )
+    assert r.why == [generate.GROUP_SAME] and r.group_clash == 2
+    assert not all(w in generate.DRY_REASONS for w in r.why)  # one_slot이 쪽을 닫지 않음
+
+
 def test_a_two_type_page_goes_back_to_its_first_type_on_the_third_try() -> None:
     def seen_types(mode: generate.Mode) -> list[str]:
         llm = happy([BAD, BAD, BAD])
@@ -1585,7 +1602,8 @@ def test_an_outage_after_some_questions_is_a_short_set_not_a_retry() -> None:
     llm = parallel_llm(answer)
     with pytest.raises(generate.NoQuestionsError, match="1/2문제만 만듦") as e:
         run(llm, job(size=2))
-    assert "학교 LLM 503" in str(e.value) and "세트 안에서 정답이 겹침" in str(e.value)
+    # 1판의 겹침은 1쪽으로 넘어간 자리의 분류 시도: 분류 정답 겹침으로 적힘(#282)
+    assert "학교 LLM 503" in str(e.value) and generate.GROUP_SAME in str(e.value)
 
 
 @pytest.mark.usefixtures("fill_rounds")
