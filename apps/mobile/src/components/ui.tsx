@@ -926,6 +926,9 @@ export function Sheet({
           <Animated.View
             entering={SlideInDown.duration(MOTION.enter).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(MOTION.exit).easing(Easing.in(Easing.cubic))}
+            // 올라오는 동안 내용(불러온 목록 등)이 늘어나면 새 높이로 자리를 옮긴다.
+            // 없으면 처음 높이에 머물러 늘어난 만큼 아래가 화면 밖으로 잘린다(날짜별 할 일)
+            layout={LIST_LAYOUT}
             accessibilityViewIsModal
             className="max-h-[88%] rounded-t-sheet bg-white px-6 pt-2"
             style={{ paddingBottom: Math.max(insets.bottom + 12, 28) }}
