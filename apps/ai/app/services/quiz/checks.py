@@ -30,6 +30,10 @@ OVERSTATED = re.compile(r"반드시|절대|모든|항상|오직|전혀|무조건
 # 조합형 제시문: 줄마다 'ㄱ. …'(combo.py가 조립)
 _COMBO_LINES = re.compile(r"ㄱ\. [^\n]+\nㄴ\. [^\n]+\nㄷ\. [^\n]+")
 _KO = re.compile(r"[가-힣]{2,}")
+# 보기가 문제 풀이의 판단 자체('정답인 문장이다' · '오답인 문장이다'): 노트 규칙을 문장에 적용하지
+# 않은 메타 문제. 토익 규칙 초안이 코드 · 정답 둘 · 검수자 검사를 모두 통과함(11/11, #291)
+_JUDGED = re.compile(r"정답|오답")
+META = "보기가 정답 · 오답 판단 자체(규칙을 적용한 문장 · 표현을 보기로)"
 _PIECE = re.compile(r",\s+")  # 이어 붙인 보기의 조각 사이
 SAME_ANSWER = "세트 안에서 정답이 겹침"  # generate가 쪽 닫기 · 분류 유형 빼기에 씀(#282)
 
@@ -247,6 +251,8 @@ def code_check(
     # 똑같을 때만 봄: 글자가 안에 들어 있기만 한 H2O · H2O2, 15 · 1.5, ㄱ · ㄱ, ㄴ은 좋은 보기
     if any(_joined(i, opts, keys) for i in range(len(opts))):
         why.append("다른 보기를 이어 붙인 보기")
+    if sum(bool(_JUDGED.search(o)) for o in opts) >= 2:
+        why.append(META)
     parsed = [number_values(o) for o in opts]
     if any(_same_parsed(a, b) for i, a in enumerate(parsed) for b in parsed[i + 1 :]):
         why.append("값이 같은 숫자 보기")

@@ -1,6 +1,7 @@
 import pytest
 
 from app.services.quiz.checks import (
+    META,
     Seen,
     Target,
     code_check,
@@ -35,6 +36,28 @@ def why(d: Draft, ty: str = "빈칸", t: Target = NEW, seen: list[Seen] | None =
 
 
 # ---------- 통과 · 정답 위치 ----------
+
+
+def test_options_judging_right_or_wrong_are_a_meta_question() -> None:
+    # 토익 규칙 초안(11/11, #291): 보기가 규칙을 적용한 문장이 아니라 정답 · 오답 판단 자체
+    meta = draft(
+        stem="다음 상황에서 사진을 보고 들리는 문장이 정답인지 판단할 때, 가장 적절한 것은?",
+        passage="사람이 없는 사진에서 be being p.p.가 들린다.",
+        options=[
+            "정답인 문장이다",
+            "오답인 문장이다",
+            "사람의 동작을 나타낸다",
+            "사람의 상태를 나타낸다",
+            "사람이 있는 사진이다",
+        ],
+        answer="오답인 문장이다",
+    )
+    assert META in why(meta, "규칙")
+    assert META in why(meta, "정의")  # 유형과 상관없이
+    # 정답 · 오답이라는 말이 보기 하나에만 있으면 판단 자체가 아님
+    one = draft(options=["stacked", "folded", "painted", "cleared", "정답 단서"])
+    assert META not in why(one)
+    assert META not in why(draft())
 
 
 def test_good_draft_passes_and_returns_answer_position() -> None:
