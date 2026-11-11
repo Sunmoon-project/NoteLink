@@ -8,12 +8,15 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { Mic, PartyPopper, PenLine, X } from 'lucide-react-native';
 import { api } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
-import { diffLabel, goalLabel, hm, hms, seoul, ymd, today as seoulToday } from '@/lib/dates';
+import { WD, diffLabel, goalLabel, hm, hms, seoul, ymd, today as seoulToday } from '@/lib/dates';
+
 import { useNow } from '@/hooks';
 import { useSession } from '@/stores/session';
 import { toast } from '@/stores/toast';
 import { Btn, Canvas, Card, Progress, RollUp, Screen } from '@/components/ui';
 import { C, ICON } from '@/theme';
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
 
 // p.48 #6 공부 종료 요약
 
@@ -195,7 +198,7 @@ export function LandscapeScreen() {
   const exit = () => {
     if (leaving.current) return;
     leaving.current = true;
-    s.pause();
+    if (s.itemId) s.pause(); // 탁상 시계(측정 없음)는 멈출 것이 없다
     router.back();
   };
   useEffect(() => {
@@ -209,6 +212,31 @@ export function LandscapeScreen() {
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // 측정 중이 아니면 탁상 시계: 지금 시각 · 날짜와 오늘 순공시간
+  if (!s.itemId) {
+    const t = seoul(now);
+    return (
+      <Pressable
+        onPress={exit}
+        accessibilityLabel="탁상 시계, 누르면 돌아가요"
+        className="flex-1 items-center justify-center bg-black px-10"
+      >
+        <Text className="text-body font-semibold text-white/70">
+          {`${t.getMonth() + 1}월 ${t.getDate()}일 (${WD[t.getDay()]})`}
+        </Text>
+        <Text
+          className="tabular-nums text-timer font-bold text-white"
+          style={{ fontVariant: ['tabular-nums'] }}
+        >
+          {`${pad2(t.getHours())}:${pad2(t.getMinutes())}`}
+        </Text>
+        <Text className="text-footnote text-orange">
+          {`오늘 순공시간 ${hms(today.data?.totalSec ?? 0)}`}
+        </Text>
+        <Text className="absolute bottom-8 text-caption text-white/60">세로로 돌리면 돌아가요</Text>
+      </Pressable>
+    );
+  }
   return (
     <Pressable onPress={exit} className="flex-1 items-center justify-center bg-black px-10">
       <View className="absolute top-8 left-10 flex-row items-center gap-1.5">

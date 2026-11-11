@@ -14,6 +14,7 @@ import { useNow, useTabRefresh } from '@/hooks';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { AUTO_END_MS, useSession } from '@/stores/session';
+import { useDevicePrefs } from '@/stores/device-prefs';
 import {
   Badge,
   Btn,
@@ -440,11 +441,18 @@ function KeepAwake() {
   return null;
 }
 
-/** 기기를 가로로 눕히면 자동 측정 화면으로 (p.49 #8, 기기 기울기 센서) */
+/**
+ * 기기를 가로로 눕히면 탁상 모드로 (p.49 #8, 기기 기울기 센서): 측정 중이면 타이머, 아니면 시계.
+ * 설정 > 탁상 모드로 이 기기에서 끌 수 있다
+ */
 function TiltWatcher() {
   const pushed = useRef(false);
+  // 저장된 설정을 읽기 전에는 듣지 않는다(끈 사람이 앱을 켜자마자 넘어가지 않게)
+  const on = useDevicePrefs((p) => p.loaded && p.deskMode);
+  useEffect(() => void useDevicePrefs.getState().load(), []);
   useFocusEffect(
     useCallback(() => {
+      if (!on) return;
       pushed.current = false;
       Accelerometer.setUpdateInterval(400);
       const sub = Accelerometer.addListener(({ x, y }) => {
@@ -452,12 +460,11 @@ function TiltWatcher() {
         if (Math.abs(y) > 0.8) pushed.current = false;
         if (!pushed.current && Math.abs(x) > 0.8 && Math.abs(y) < 0.35) {
           pushed.current = true;
-          if (useSession.getState().itemId) router.push('/landscape');
-          else toast('공부할 항목을 시작한 뒤 가로로 돌려 주세요');
+          router.push('/landscape');
         }
       });
       return () => sub.remove();
-    }, []),
+    }, [on]),
   );
   return null;
 }

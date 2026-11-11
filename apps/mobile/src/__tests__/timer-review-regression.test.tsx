@@ -9,6 +9,7 @@ import { WeekGoalSheet } from '../features/session/sheets';
 import { LandscapeScreen, SummaryScreen } from '../features/session/summary';
 import { useToast } from '../stores/toast';
 import { useSession } from '../stores/session';
+import { useDevicePrefs } from '../stores/device-prefs';
 import { renderScreen } from '../test-utils';
 
 jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
@@ -49,6 +50,42 @@ afterEach(() => {
   jest.clearAllMocks();
   useSession.getState().reset();
 });
+describe('탁상 모드', () => {
+  beforeEach(() => useDevicePrefs.setState({ deskMode: true, loaded: true }));
+
+  it('측정 중이 아니어도 가로로 눕히면 탁상 시계로 간다', async () => {
+    await renderScreen(<HomeScreen />, client());
+    await waitFor(() => expect(Accelerometer.addListener).toHaveBeenCalled());
+    const listener = jest.mocked(Accelerometer.addListener).mock.calls.at(-1)![0];
+    await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
+    expect(router.push).toHaveBeenCalledWith('/landscape');
+  });
+
+  it('설정에서 끄면 가로로 눕혀도 탁상 모드로 가지 않는다', async () => {
+    useDevicePrefs.setState({ deskMode: false });
+    await renderScreen(<HomeScreen />, client());
+    await screen.findByText('오늘 공부할 목록');
+    expect(Accelerometer.addListener).not.toHaveBeenCalled();
+  });
+
+  it('측정 중이 아니면 시각 · 날짜 · 오늘 순공시간을 크게 보여 주고, 측정은 건드리지 않는다', async () => {
+    // 2026-10-31T14:59:59Z = 서울 11월 1일 일요일 0시 전 23:59
+    jest.spyOn(api.study, 'today').mockResolvedValue({ items: [], totalSec: 3600 } as never);
+    const resume = jest.spyOn(api.study, 'resumeSession');
+    const pause = jest.spyOn(useSession.getState(), 'pause');
+    await renderScreen(<LandscapeScreen />, client());
+    expect(screen.getByText('23:59')).toBeTruthy();
+    expect(screen.getByText('10월 31일 (토)')).toBeTruthy();
+    expect(await screen.findByText('오늘 순공시간 01:00:00')).toBeTruthy();
+    expect(screen.queryByText('자동 측정 중')).toBeNull();
+    const portrait = jest.mocked(Accelerometer.addListener).mock.calls.at(-1)![0];
+    await act(async () => portrait({ x: 0, y: 1, z: 0, timestamp: 0 }));
+    expect(router.back).toHaveBeenCalledTimes(1);
+    expect(resume).not.toHaveBeenCalled();
+    expect(pause).not.toHaveBeenCalled();
+  });
+});
+
 it('일시정지해도 가로 전환 센서가 살아 있다', async () => {
   useSession.setState({ itemId: 'item', since: null, pausedAt: mockNow });
   await renderScreen(<HomeScreen />, client());
@@ -339,19 +376,20 @@ it('큰 타이머는 지금 공부하는 항목의 시간만 보여 주고 전�
   expect(screen.getAllByText('00:00:10')).toHaveLength(2);
 });
 
-it('측정 중이 아닐 때 가로로 돌리면 이동하지 않고 안내하며, 다시 세우면 다시 받는다', async () => {
+// 측정 중이 아니면 탁상 시계로 간다(예전에는 안내만 했다). 한 번 간 뒤에는 다시 세워야 다음 기울임을 받는다
+it('가로로 눕혀 한 번 탁상 모드로 가면, 다시 세우기 전에는 또 가지 않는다', async () => {
+  useDevicePrefs.setState({ deskMode: true, loaded: true });
   await renderScreen(<HomeScreen />, client());
   await waitFor(() => expect(Accelerometer.addListener).toHaveBeenCalled());
   const listener = jest.mocked(Accelerometer.addListener).mock.calls[0]![0];
   await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
-  expect(router.push).not.toHaveBeenCalledWith('/landscape');
-  expect(useToast.getState().msg).toContain('가로로 돌려 주세요');
-  useSession.setState({ itemId: 'item', since: null, pausedAt: mockNow });
+  expect(router.push).toHaveBeenCalledTimes(1);
   await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
-  expect(router.push).not.toHaveBeenCalledWith('/landscape');
+  expect(router.push).toHaveBeenCalledTimes(1);
   await act(async () => listener({ x: 0, y: 1, z: 0, timestamp: 0 }));
   await act(async () => listener({ x: 1, y: 0, z: 0, timestamp: 0 }));
-  expect(router.push).toHaveBeenCalledWith('/landscape');
+  expect(router.push).toHaveBeenCalledTimes(2);
+  expect(router.push).toHaveBeenLastCalledWith('/landscape');
 });
 
 it('공부 목록의 목표는 "목표 30분" · "목표 없음"으로, 목표를 두 번 적지 않는다', async () => {

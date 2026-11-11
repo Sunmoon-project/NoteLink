@@ -1,10 +1,12 @@
-import { act, screen } from '@testing-library/react-native';
+import { act, fireEvent, screen } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { HomeScreen } from '../features/session/home';
 import { SettingsScreen } from '../features/profile/settings';
 import { ChatScreen, RequestsScreen } from '../features/social/screens';
 import { api } from '../lib/api';
 import { renderScreen, setParams } from '../test-utils';
+import { useDevicePrefs } from '../stores/device-prefs';
+import * as SecureStore from 'expo-secure-store';
 
 jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
@@ -61,4 +63,17 @@ it('1:1 대화 기록을 못 읽으면 빈 대화로 두지 않는다', async ()
   setParams({ id: 'u1', name: '친구' });
   await renderScreen(<ChatScreen />, client());
   expect(await screen.findByText('대화 기록을 불러오지 못했어요')).toBeTruthy();
+});
+
+it('설정에서 탁상 모드를 끄면 이 기기에 저장한다', async () => {
+  useDevicePrefs.setState({ deskMode: true, loaded: true });
+  setParams({});
+  await renderScreen(<SettingsScreen />, client());
+  const toggle = await screen.findByLabelText('탁상 모드');
+  await fireEvent(toggle, 'valueChange', false);
+  expect(useDevicePrefs.getState().deskMode).toBe(false);
+  expect(SecureStore.setItemAsync).toHaveBeenCalledWith(
+    'notelink.device-prefs',
+    JSON.stringify({ deskMode: false }),
+  );
 });

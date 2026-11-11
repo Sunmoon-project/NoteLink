@@ -19,6 +19,7 @@ import { nicknameError } from '@/lib/validation';
 import { env } from '@/lib/env';
 import { clearAccountState } from '@/lib/account';
 import { useAuth } from '@/stores/auth';
+import { useDevicePrefs } from '@/stores/device-prefs';
 import { toast } from '@/stores/toast';
 import { INTERESTS } from '../auth/auth';
 import { LoadError } from '../progress/load-error';
@@ -59,6 +60,9 @@ const gb = (b: number) =>
 /** 앱 버전은 app.config.ts의 version을 읽는다 */
 const APP_VERSION = Constants.expoConfig?.version ?? '-';
 export function SettingsScreen() {
+  // 탁상 모드는 기기마다 따로(서버 사용자 설정이 아니라 이 기기에 저장)
+  const deskMode = useDevicePrefs((p) => p.deskMode);
+  useEffect(() => void useDevicePrefs.getState().load(), []);
   const openFeature = useFeatureNavigation();
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
@@ -197,6 +201,21 @@ export function SettingsScreen() {
         <Group>
           <Row icon={Gift} chevron onPress={() => openFeature('/shop')}>
             상점 바로가기
+          </Row>
+        </Group>
+        <Label>탁상 모드</Label>
+        <Group>
+          <Row
+            sub="홈에서 가로로 눕히면 측정 중에는 타이머, 아니면 시계를 크게 보여 줘요"
+            right={
+              <Toggle
+                label="탁상 모드"
+                on={deskMode}
+                onChange={(v) => useDevicePrefs.getState().set({ deskMode: v })}
+              />
+            }
+          >
+            가로로 눕히면 탁상 모드
           </Row>
         </Group>
         <Label>녹음·재생</Label>
