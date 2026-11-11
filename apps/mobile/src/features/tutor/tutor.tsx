@@ -183,7 +183,10 @@ function Typing({ text, onDone }: { text: string; onDone: () => void }) {
   });
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
+    // 접근성 설정을 읽는 사이 화면을 떠났으면 타이머를 만들지도, 끝났다고 알리지도 않는다
+    let alive = true;
     void AccessibilityInfo.isReduceMotionEnabled().then((reduce) => {
+      if (!alive) return;
       if (reduce) {
         setN(text.length);
         done.current();
@@ -199,7 +202,10 @@ function Typing({ text, onDone }: { text: string; onDone: () => void }) {
         }
       }, 45);
     });
-    return () => clearInterval(timer);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
   }, [text]);
   return (
     <Text className="text-footnote text-ink" accessibilityLabel={text}>

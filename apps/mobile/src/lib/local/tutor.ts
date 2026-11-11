@@ -26,7 +26,7 @@ export const UNSAFE =
   '그 질문에는 대답할 수 없어요. 해킹이나 보안 공격처럼 위험한 내용은 도와드리지 않아요. 노트 내용으로 다시 물어봐 주세요.';
 const UNSAFE_PATTERN = new RegExp(
   [
-    '해킹|해커|크래킹|침투\\s*테스트|모의\\s*해킹|익스플로잇|exploit|취약점\\s*(공격|이용|찾)',
+    '해킹|해커|(?<![a-z])hack(s|ed|ing|ers?)?(?![a-z])|크래킹|침투\\s*테스트|모의\\s*해킹|익스플로잇|exploit|취약점\\s*(공격|이용|찾)',
     '악성\\s*코드|멀웨어|malware|랜섬웨어|ransomware|트로이\\s*(목마\\s*)?(바이러스|악성|프로그램|만들|만드|제작|퍼뜨|심)|트로이안|trojan\\s*(horse\\s*)?(virus|malware|바이러스|악성|프로그램|만들|만드|제작|퍼뜨|심)|바이러스\\s*(만들|만드|제작|퍼뜨)',
     '피싱|phishing|스미싱|디도스|ddos|백도어|backdoor|키로거|keylogger|루트킷|rootkit',
     '(sql|에스큐엘)\\s*(인젝션|injection)|xss',

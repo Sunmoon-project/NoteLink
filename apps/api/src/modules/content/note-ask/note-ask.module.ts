@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 
 import { AiJobsModule } from '../../../ai-jobs/ai-jobs.module.js';
 import { AuthModule } from '../../auth/auth.module.js';
+import { QuizSet, QuizSetSchema } from '../../quiz/schemas/quiz-set.schema.js';
 import { Material, MaterialSchema } from '../schemas/material.schema.js';
 import { Recording, RecordingSchema } from '../schemas/recording.schema.js';
 import { NoteAskController } from './note-ask.controller.js';
@@ -14,6 +15,7 @@ import { NoteAskService } from './note-ask.service.js';
     MongooseModule.forFeature([
       { name: Material.name, schema: MaterialSchema },
       { name: Recording.name, schema: RecordingSchema },
+      { name: QuizSet.name, schema: QuizSetSchema },
     ]),
     AuthModule,
     AiJobsModule,
