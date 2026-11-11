@@ -46,6 +46,7 @@ import {
   Empty,
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
+import { useTabRefresh } from '@/hooks';
 import Constants from 'expo-constants';
 
 // p.43~45 프로필 · 설정 · 계정 정보 · 닉네임 · 요금제
@@ -61,6 +62,8 @@ export function SettingsScreen() {
   const openFeature = useFeatureNavigation();
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
+  // 목록이 아니라 당겨서 새로 고침은 두지 않고, 돌아올 때 오래됐으면만 다시 읽는다
+  useTabRefresh(me);
   const [sheet, setSheet] = useState<null | 'lang' | 'page' | 'help' | 'biz'>(null);
   const [dlg, setDlg] = useState<null | 'logout' | 'withdraw'>(null);
   const scroll = useRef<ScrollView>(null);
@@ -420,12 +423,12 @@ export function AccountScreen() {
       <Screen>
         <Header title="계정 정보" />
         <Card
-          onPress={() => openFeature('/(tabs)/profile/avatar-style')}
+          onPress={() => openFeature('/(tabs)/profile/avatar-teacher')}
           className="flex-row items-center px-5 py-4"
         >
           <View className="flex-1">
-            <Text className="text-caption2 text-sub">아바타</Text>
-            <Text className="text-callout text-ink">아바타 설정하기</Text>
+            <Text className="text-callout text-ink">아바타 선생님</Text>
+            <Text className="text-caption text-sub">노트를 설명해 주는 선생님 얼굴을 골라요</Text>
           </View>
           <ChevronRight size={ICON.md} color={C.sub} />
         </Card>

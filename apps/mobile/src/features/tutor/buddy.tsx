@@ -30,7 +30,7 @@ export function useEquippedItem() {
   return mine.data?.find((u) => u.isEquipped && u.itemCategory === 'avatar')?.itemId ?? 'base';
 }
 
-const LOCAL_AVATARS = [BASE_AVATAR, ...SHOP.filter((i) => i.category === 'avatar')];
+export const LOCAL_AVATARS = [BASE_AVATAR, ...SHOP.filter((i) => i.category === 'avatar')];
 /**
  * 상품 id → 앱에 든 3D 모델 이름. 서버 상품은 id가 ObjectId라, 같은 이름이나 같은 그림(assetUrl)의
  * 앱 상품으로 찾는다. 못 찾으면 기본 얼굴
@@ -48,7 +48,7 @@ export function avatarModel(itemId: string, items?: Pick<ShopItem, '_id' | 'name
 /** 상품 id → 3D 모델 이름을 기기에 적어 둔다. 판매가 끝난 상품은 상품 목록에서 빠져도 같은 얼굴을 쓰게 */
 const KNOWN_KEY = 'notelink.avatar-models';
 type Known = Record<string, string>;
-async function readKnown(): Promise<Known> {
+export async function readKnown(): Promise<Known> {
   try {
     const raw = await SecureStore.getItemAsync(KNOWN_KEY);
     const v: unknown = raw ? JSON.parse(raw) : {};
@@ -117,12 +117,8 @@ const R = ReduceMotion.System;
 const TRAVEL = { duration: 460, dampingRatio: 0.62, reduceMotion: R };
 const SNAP = Easing.bezier(0.3, 0.75, 0.1, 1);
 
-/**
- * 노트 상세에 떠 있는 아바타 선생님. 화면 오른쪽 아래(아래 버튼 위)에 있다가, 읽는 동안에는
- * 가장자리로 "슉" 비켜 서고, 누르면 대화 화면을 연다. 다른 화면이 위에 있으면 3D를 그리지 않는다.
- */
-export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
-  const avatar = useEquippedAvatar();
+/** 이 화면이 맨 위에 있는지. 다른 화면이 위에 쌓이면 false(보이지 않는 3D를 그리지 않게) */
+export function useFocused() {
   const [focused, setFocused] = useState(true);
   useFocusEffect(
     useCallback(() => {
@@ -130,6 +126,16 @@ export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
       return () => setFocused(false);
     }, []),
   );
+  return focused;
+}
+
+/**
+ * 노트 상세에 떠 있는 아바타 선생님. 화면 오른쪽 아래(아래 버튼 위)에 있다가, 읽는 동안에는
+ * 가장자리로 "슉" 비켜 서고, 누르면 대화 화면을 연다. 다른 화면이 위에 있으면 3D를 그리지 않는다.
+ */
+export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
+  const avatar = useEquippedAvatar();
+  const focused = useFocused();
   const [hint, setHint] = useState(true);
 
   const x = useSharedValue(OFF);
@@ -198,7 +204,7 @@ export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
           className="mr-2 rounded-full bg-ink px-3 py-1.5"
           pointerEvents="none"
         >
-          <Text className="text-caption font-semibold text-white">노트를 물어보세요</Text>
+          <Text className="text-caption font-semibold text-white">노트에 대해 물어보세요</Text>
         </Animated.View>
       )}
       <Animated.View style={style}>

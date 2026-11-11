@@ -182,7 +182,7 @@ export function Avatar3D({
   useEffect(() => {
     ready.current = onReady;
   });
-  // 실패한 모델 id. 다른 아바타로 바꾸면 그 모델은 다시 3D로 그려 본다
+  // 실패는 그 모델에만: 다른 아바타로 바꾸면 다시 3D로 읽어 본다
   const [failedId, setFailedId] = useState<string | null>(null);
   const failed = failedId === id;
   const [model, setModel] = useState<{ id: string; root: THREE.Group } | null>(null);
@@ -203,7 +203,12 @@ export function Avatar3D({
     let live = true;
     loadModel(id)
       .then((buf) => new GLTFLoader().parseAsync(buf, ''))
-      .then((g) => live && setModel({ id, root: g.scene }))
+      .then((g) => {
+        if (!live) return;
+        setModel({ id, root: g.scene });
+        // 전에 실패했던 모델을 다시 골라 이번에 읽었으면 2D에서 3D로 돌아온다
+        setFailedId((f) => (f === id ? null : f));
+      })
       .catch(() => {
         if (!live) return;
         setFailedId(id);

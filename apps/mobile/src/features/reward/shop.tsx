@@ -66,8 +66,17 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
   );
 }
 
-function ItemPreview({ item, large = false }: { item: ShopItem; large?: boolean }) {
-  const size = large ? 96 : 64;
+/** 상품 그림: 이미지 주소면 그림으로, 아니면 이모지 글자로(small은 아바타 선생님 고르기 칸 크기) */
+export function ItemPreview({
+  item,
+  large = false,
+  small = false,
+}: {
+  item: ShopItem;
+  large?: boolean;
+  small?: boolean;
+}) {
+  const size = small ? 32 : large ? 96 : 64;
   const label = `${item.name} 미리보기`;
   if (item.thumbnailUrl && /^(https?:|file:|data:)/.test(item.thumbnailUrl))
     return (
@@ -82,7 +91,9 @@ function ItemPreview({ item, large = false }: { item: ShopItem; large?: boolean 
   return (
     <View accessibilityLabel={label}>
       {item.thumbnailUrl ? (
-        <Text className={large ? 'text-display-lg' : 'text-display'}>{item.thumbnailUrl}</Text>
+        <Text className={small ? 'text-title1' : large ? 'text-display-lg' : 'text-display'}>
+          {item.thumbnailUrl}
+        </Text>
       ) : (
         <Package size={size} color={C.brand} />
       )}
