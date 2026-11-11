@@ -74,6 +74,22 @@ describe('아바타 선생님 대화', () => {
     });
   });
 
+  it('답을 쓰기 시작하기 전(접근성 설정을 읽는 중)에 화면을 떠나면 타이머를 만들지 않는다', async () => {
+    let answer: (v: boolean) => void = () => {};
+    jest
+      .spyOn(AccessibilityInfo, 'isReduceMotionEnabled')
+      .mockImplementation(() => new Promise<boolean>((r) => (answer = r)));
+    mockApi.content.ask.mockResolvedValue(job());
+    const view = await renderScreen(<TutorScreen />);
+    await fireEvent.press(await screen.findByText('이 노트 핵심만 알려 주세요'));
+    await screen.findByLabelText('네 가지 조건이 있어요.');
+    await view.unmount();
+    const interval = jest.spyOn(globalThis, 'setInterval');
+    await act(async () => answer(false));
+    expect(interval).not.toHaveBeenCalled();
+    interval.mockRestore();
+  });
+
   it('처리 중인 작업은 끝날 때까지 기다린다', async () => {
     mockApi.content.ask.mockResolvedValue(job({ status: 'queued', result: null }));
     mockApi.ai.job.mockResolvedValue(job());
