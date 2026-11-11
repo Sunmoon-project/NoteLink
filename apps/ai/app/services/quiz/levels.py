@@ -29,8 +29,12 @@
    난이도에서 뺌(틀린 비율이 낮은 난이도부터, 문제가 많은 쪽부터). 다른 난이도도 1문제는 남김
    (n이 쓸 수 있는 난이도 수보다 적으면 예외).
    자리마다 난이도를 하 · 중 · 상 차례로 돌려 정하고(slot_levels), 그 자리는 그 난이도의 유형부터
-   만들며 실패하면 가까운 난이도의 유형으로 넘어감(order_types). 그래서 비율은 목표이고, 초안이
-   떨어지면 조금 어긋날 수 있음. 다음 판은 모자란 난이도부터 채움(generate._make_all).
+   만들며 실패하면 가까운 난이도의 유형으로 넘어감(order_types). 같은 난이도 안의 유형은 난이도마다
+   돌림(빠른 모드는 쪽마다, 안정적 모드는 세트 전체에서). 그래서 비율은 목표이고, 초안이 떨어지면
+   조금 어긋날 수 있음. 다음 판은 모자란 난이도부터 채움(generate._make_all).
+   여분 자리는 먼저 끝난 문제부터 채택되므로, 목표를 이미 채운 난이도의 문제는 남은 자리가 아직
+   도는 모자란 난이도 자리의 몫보다 많을 때만 받음(held, Codex 리뷰 #300): 느린 난이도(조합)가
+   여분 문제에 밀려 0문제가 되지 않게.
 """
 
 import math
@@ -175,3 +179,27 @@ def order_types(types: list[str], want: str, levels: Mapping[str, str], turn: in
         k = turn % len(g)
         out += g[k:] + g[:k]
     return out
+
+
+def held(
+    level: str,
+    got: Mapping[str, int],
+    target: Mapping[str, int],
+    running: Mapping[str, int],
+    left: int,
+) -> bool:
+    """이 난이도의 문제를 받지 않고 자리를 비워 둘지(Codex 리뷰 #300).
+
+    여분 자리는 먼저 끝난 문제부터 채택되므로, 느린 난이도(조합)의 자리가 아직 도는 사이 다른
+    난이도의 여분 문제가 남은 자리를 다 차지하면 목표 난이도가 0문제가 됨. 그래서 이 난이도가 이미
+    목표만큼 있고, 남은 자리(left)가 아직 도는 자리가 채울 모자란 난이도의 몫보다 많지 않으면 받지
+    않음. running은 지금 도는 자리의 목표 난이도별 수(받으려는 자리 자신은 빼고).
+    """
+    if got.get(level, 0) < target.get(level, 0):
+        return False
+    owed = sum(
+        min(target[lv] - got.get(lv, 0), running.get(lv, 0))
+        for lv in target
+        if lv != level and target[lv] > got.get(lv, 0)
+    )
+    return left <= owed

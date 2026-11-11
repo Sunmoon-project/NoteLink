@@ -150,3 +150,21 @@ def test_corrected_type_levels_change_the_order() -> None:
     lv = levels.type_levels({"조합": Tally(40, 38)})  # 조합이 중으로
     assert levels.order_types(KO, "중", lv, 0)[:3] == ["특징", "부정설명", "조합"]
     assert levels.order_types(["빈칸", "어휘", "규칙"], "상", lv, 0)[0] == "규칙"
+
+
+# ---------- 다른 난이도 자리에 비워 두기 (Codex 리뷰 #300) ----------
+
+
+def test_a_seat_is_held_for_a_lacking_level_still_running() -> None:
+    target = {"하": 2, "중": 2, "상": 1}
+    got = {"하": 2, "중": 2}
+    # 남은 1자리를 아직 도는 상 자리에 비워 둠: 하 여분 문제는 받지 않음
+    assert levels.held("하", got, target, {"상": 1}, 1)
+    # 상 자리가 끝났거나(도는 자리 없음) 자리가 남으면 받음
+    assert not levels.held("하", got, target, {}, 1)
+    assert not levels.held("하", got, target, {"상": 1}, 2)
+    # 그 난이도가 아직 모자라면 늘 받음
+    assert not levels.held("상", got, target, {"상": 1}, 1)
+    # 목표에 없는 난이도(옆 난이도로 넘어간 문제)도 같은 기준
+    assert levels.held("중", {"하": 1}, {"하": 2}, {"하": 1}, 1)
+    assert not levels.held("중", {"하": 1}, {"하": 2}, {}, 1)
