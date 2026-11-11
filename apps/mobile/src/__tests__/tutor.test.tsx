@@ -308,18 +308,45 @@ describe('기기 저장 모드의 아바타 답', () => {
       answerable: true,
       reason: null,
       answer:
-        "노트의 '스케줄링' 부분을 보면, 라운드 로빈은 시간 조각으로 돌린다. 이어서 퀴즈로 확인해 볼까요?",
+        "노트의 '스케줄링' 부분을 보면, 라운드 로빈은 시간 조각으로 돌린다.\n\n이어서 퀴즈로 확인해 볼까요?",
       refs: ['스케줄링'],
     });
     expect(localAnswer(note, '교착상태 조건')!.answer).toBe(
-      "노트의 '교착 상태' 부분을 보면, 네 가지 조건이 모두 있어야 생긴다. 하나를 깨면 막는다. 이어서 퀴즈로 확인해 볼까요?",
+      "노트의 '교착 상태' 부분을 보면, 네 가지 조건이 모두 있어야 생긴다. 하나를 깨면 막는다.\n\n이어서 퀴즈로 확인해 볼까요?",
     );
     expect(localAnswer(note, '페이지 교체')!.refs).toEqual(['2쪽']);
   });
 
+  // 추천 질문 3개는 모두 답해야 한다(시뮬레이터에서 "어려운 개념"·"시험" 질문이 자료 밖으로 거절됐다)
+  it('추천 질문 3개에 각각 맞는 답을 하고, 항목은 줄을 바꿔 보여 준다', () => {
+    const rich = { ...note, keywords: ['교착', '스케줄링'] };
+    const core = localAnswer(rich, '이 노트 핵심만 알려 주세요')!;
+    expect(core.answer).toBe('이 노트의 핵심이에요.\n• 상호 배제\n\n이어서 퀴즈로 확인해 볼까요?');
+    const easy = localAnswer(rich, '어려운 개념을 쉽게 설명해 주세요')!;
+    expect(easy).toMatchObject({ answerable: true, refs: ['교착 상태', '스케줄링'] });
+    expect(easy.answer).toContain('• 교착 상태: 네 가지 조건이 모두 있어야 생긴다.');
+    expect(easy.answer).toContain('• 스케줄링: 라운드 로빈은 시간 조각으로 돌린다.');
+    const exam = localAnswer(rich, '시험에 나올 만한 내용은 뭐예요?')!;
+    expect(exam).toMatchObject({ answerable: true, refs: ['핵심'] });
+    expect(exam.answer).toContain('• 상호 배제');
+    expect(exam.answer).toContain('키워드: 교착 · 스케줄링');
+    // 핵심 항목이 여럿이면 쉼표 없이 이어 붙지 않는다
+    const many = {
+      ...note,
+      summary: { ...note.summary, points: ['빛 → 화학', '명반응: 틸라코이드'] },
+    };
+    expect(localAnswer(many, '핵심 알려 주세요')!.answer).toContain(
+      '• 빛 → 화학\n• 명반응: 틸라코이드',
+    );
+    // 쉬운 설명 · 시험 낱말이 있어도 노트와 상관없는 주제가 섞이면 거절
+    expect(localAnswer(rich, '어려운 수학 문제 쉽게 설명해 주세요')?.reason).toBe('off_topic');
+    expect(localAnswer(rich, '시험 일정 알려 주세요')?.reason).toBe('off_topic');
+  });
+
   it('겹치는 곳이 없으면 요약 질문은 첫 부분을, 학습 자료 밖 질문은 대답할 수 없다고 한다', () => {
     expect(localAnswer(note, '핵심 알려 주세요')!.refs).toEqual(['핵심']);
-    expect(localAnswer(note, '설명해 주세요')!.refs).toEqual(['교착 상태']);
+    // 노트 전체를 묻는 말은 핵심 목록으로 답한다
+    expect(localAnswer(note, '설명해 주세요')!.refs).toEqual(['핵심']);
     expect(localAnswer(note, '이 노트 내용 요약해 줘')!.answerable).toBe(true);
     // 요약 말("알려")이 붙어도 노트와 상관없는 낱말이 있으면 자료 밖 질문
     expect(localAnswer(note, '오늘 날씨 알려 주세요')?.reason).toBe('off_topic');
