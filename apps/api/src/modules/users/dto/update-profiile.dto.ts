@@ -1,30 +1,58 @@
+import { Type } from 'class-transformer';
 import {
-    ArrayUnique,
-    IsArray,
-    IsIn,
-    IsMongoId,
-    IsString,
-    Matches,
-    MaxLength,
-    MinLength
+  ArrayUnique,
+  IsArray,
+  IsBoolean,
+  IsIn,
+  IsMongoId,
+  IsObject,
+  IsString,
+  ValidateIf,
+  Matches,
+  MaxLength,
+  MinLength,
+  ValidateNested,
 } from 'class-validator';
 
-const LEARNER_TYPES = ['middle_high', 'university', 'worker'] as const;
+class UpdateSettingsDto {
+  @ValidateIf((_object, value) => value !== undefined) @IsBoolean() resumePlayback?: boolean;
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsBoolean()
+  keepScreenOnWhileRecording?: boolean;
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsString()
+  @MaxLength(50)
+  subtitleLanguage?: string;
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsIn(['swipe', 'scroll', 'tap'])
+  pageTurn?: string;
+  @ValidateIf((_object, value) => value !== undefined) @IsBoolean() offlineCache?: boolean;
+  @ValidateIf((_object, value) => value !== undefined) @IsIn(['light', 'dark']) theme?: string;
+  @ValidateIf((_object, value) => value !== undefined) @IsBoolean() doubleTapEraser?: boolean;
+  @ValidateIf((_object, value) => value !== undefined) @IsBoolean() leftHanded?: boolean;
+}
 
 export class UpdateProfileDto {
-    @IsString()
-    @MinLength(2)
-    @MaxLength(10)
-    @Matches(/^[가-힣a-zA-Z0-9]+$/, {
-        message: '닉네임은 한글, 영문, 숫자만 사용할 수 있습니다.',
-    })
-    nickname: string;
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsString()
+  @MinLength(2)
+  @MaxLength(10)
+  @Matches(/^[가-힣a-zA-Z0-9]+$/)
+  nickname?: string;
 
-    @IsIn(LEARNER_TYPES)
-    learnerType: (typeof LEARNER_TYPES)[number];
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsIn(['middle_high', 'university', 'worker'])
+  learnerType?: string;
 
-    @IsArray()
-    @ArrayUnique()
-    @IsMongoId({ each: true })
-    interestCategoryIds: string[];
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsArray()
+  @ArrayUnique()
+  @IsMongoId({ each: true })
+  interestCategoryIds?: string[];
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsObject()
+  @ValidateNested()
+  @Type(() => UpdateSettingsDto)
+  settings?: UpdateSettingsDto;
 }
