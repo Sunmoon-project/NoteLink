@@ -282,6 +282,9 @@ class PacedLlm:
         self._active = 0
         self._last = float("-inf")
         self._lock = threading.Lock()
+        # 보내기 직전에 볼 예산(Budgeted.over, #298): 차례를 기다리는 사이 다른 호출이 한도를
+        # 넘겼으면 보내지 않음(Codex 리뷰 #299)
+        self._gate: Callable[[], bool] | None = None
 
     def background(self, awaited: Callable[[], bool] = _never) -> "Llm":
         """같은 호출 간격 · 429 대기를 쓰되, 사용자 작업 호출이 도는 동안은 보내지 않는 연결.
@@ -389,6 +392,10 @@ class PacedLlm:
                     self._active -= 1
                     self._last = self._clock()
 
+    def set_gate(self, over: Callable[[], bool]) -> None:
+        """over()가 참이면 보내기 직전(처음 · 다시 보내기마다) LlmUsageLimitError(#298)."""
+        self._gate = over
+
     def _attempts(
         self, body: JsonObject, yields: Callable[[], bool], mine: list[bool]
     ) -> JsonObject:
@@ -396,6 +403,8 @@ class PacedLlm:
         tries = holds = 0  # 다시 보낸 횟수: 일반(retries까지) · 429(MAX_HOLDS까지) 따로
         while tries <= self._retries:
             self._turn(yields, mine)  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
+            if self._gate is not None and self._gate():
+                raise LlmUsageLimitError("Claude 비용 한도에 닿음(보내기 직전 확인)")
             try:
                 status, after, text = self._exchange(body)
             except _TransportError as e:
@@ -887,6 +896,9 @@ class Budgeted:
         self._told = False
         self._exhausted = False  # Claude가 사용 한도 오류를 돌려줌: 다시 Claude로 가지 않음
         self._routed = _Routed(self, claude, self._school_llm)
+        # 차례를 기다리는 동안 한도를 넘기면 보내기 직전에 멈추고 학교 LLM으로(Codex 리뷰 #299)
+        if isinstance(claude, PacedLlm):
+            claude.set_gate(self.over)
 
     def exhaust(self) -> None:
         self._exhausted = True

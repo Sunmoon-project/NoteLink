@@ -57,6 +57,7 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
   - step은 공용 스키마에서 '없거나 문자열'이라, None을 쓰지 않고 필드를 지웁니다.
 """
 
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -64,6 +65,7 @@ from typing import Any
 
 from pymongo import ReturnDocument
 from pymongo.collection import Collection
+from pymongo.errors import PyMongoError
 
 from app.clients.llm import JsonObject
 
@@ -109,6 +111,8 @@ class JobStore:
         self._delay = timedelta(seconds=retry_delay_sec)
         self._now = now
         self._next_sweep: datetime | None = None
+        self._unrecorded: list[tuple[Any, float]] = []  # 적지 못한 Claude 비용(작업 id, 달러)
+        self._cost_lock = threading.Lock()
 
     @property
     def lock_sec(self) -> float:
@@ -282,8 +286,20 @@ class JobStore:
 
     def add_cost(self, job: Job, usd: float) -> None:
         """이 작업이 쓴 Claude 비용을 llmUsd에 더함(#298). 잠금과 상관없이: 이미 쓴 돈이라
-        작업을 다른 처리기가 가져갔거나 취소된 뒤에 끝난 호출도 셈."""
-        self._col.update_one({"_id": job.id}, {"$inc": {COST_FIELD: usd}})
+        작업을 다른 처리기가 가져갔거나 취소된 뒤에 끝난 호출도 셈.
+
+        적지 못한 비용은 모아 두었다가 다음에 적을 때 먼저 적음: DB가 잠깐 끊겨도 합계에서 빠지지
+        않고, 처리기를 다시 시작해도 남게(Codex 리뷰 #299). 그래도 실패하면 예외(호출한 쪽이 로그).
+        """
+        with self._cost_lock:
+            todo, self._unrecorded = [*self._unrecorded, (job.id, usd)], []
+        for i, (job_id, cost) in enumerate(todo):
+            try:
+                self._col.update_one({"_id": job_id}, {"$inc": {COST_FIELD: cost}})
+            except PyMongoError:
+                with self._cost_lock:
+                    self._unrecorded[:0] = todo[i:]
+                raise
 
     def claude_spent(self) -> float:
         """모든 작업의 llmUsd 합계(달러, #298)."""

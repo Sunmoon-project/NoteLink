@@ -10,6 +10,7 @@ from typing import Any
 import mongomock
 import pytest
 from pydantic import SecretStr
+from pymongo.errors import AutoReconnect
 
 from app.clients.llm import (
     Budgeted,
@@ -425,3 +426,75 @@ def test_a_real_claude_answer_is_metered_end_to_end() -> None:
     costs: list[float] = []
     Metered(s.client(), costs.append).call("claude-haiku-5-5", "s", "u", SCHEMA, "X")
     assert costs == [pytest.approx((10 * 0.10 + 5 * 0.50) / 1_000_000)]
+
+
+# ---------- Codex 리뷰 #299 ----------
+
+
+class StepSpend(Spend):
+    """total()이 차례로 값을 돌려주는 가짜(마지막 값은 계속)."""
+
+    def __init__(self, *totals: float) -> None:
+        super().__init__(lambda: 0.0)
+        self.totals = list(totals)
+
+    def total(self) -> float:
+        return self.totals.pop(0) if len(self.totals) > 1 else self.totals[0]
+
+
+def test_a_call_that_waited_past_the_limit_is_not_sent_to_claude() -> None:
+    # 고를 때는 한도 아래(10)였지만 차례를 기다리는 사이 다른 호출이 넘김(80): 보내기 직전에 멈춤
+    s = Server(message('{"natural": ["a"]}'))
+    school = FakeLlm(answers={"X": [{"school": True}]})
+    b = Budgeted(s.client(), lambda: school, StepSpend(10.0, 80.0), 70.0, school_models())
+    assert b.call("claude-sonnet-5-5", "s", "u", SCHEMA, "X") == {"school": True}
+    assert s.bodies == []  # Claude에는 아무것도 보내지 않음
+    assert [c.model for c in school.calls] == ["gemma-4-26b"]
+
+
+def test_the_gate_is_checked_before_each_resend() -> None:
+    # 첫 답을 못 읽어 다시 보내기 전에 한도에 닿음: 다시 보내지 않음
+    s = Server(message("..."), message('{"natural": ["a"]}'))
+    school = FakeLlm(answers={"X": [{"school": True}]})
+    b = Budgeted(s.client(), lambda: school, StepSpend(10.0, 10.0, 80.0), 70.0, {})
+    assert b.call("claude-sonnet-5-5", "s", "u", SCHEMA, "X") == {"school": True}
+    assert len(s.bodies) == 1
+
+
+class FlakyCol:
+    """update_one이 처음 fail번은 실패하는 컬렉션."""
+
+    def __init__(self, col: Any, fail: int) -> None:
+        self.col, self.fail = col, fail
+
+    def update_one(self, *a: Any, **kw: Any) -> Any:
+        if self.fail:
+            self.fail -= 1
+            raise AutoReconnect("DB down")
+        return self.col.update_one(*a, **kw)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.col, name)
+
+
+def test_a_cost_that_failed_to_write_is_written_with_the_next_one() -> None:
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    a, b = col.insert_one({"type": "x"}).inserted_id, col.insert_one({"type": "x"}).inserted_id
+    store = JobStore(FlakyCol(col, 1), "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30)  # type: ignore[arg-type]
+    with pytest.raises(AutoReconnect):
+        store.add_cost(Job(a, "x", {}, 1), 1.0)
+    store.add_cost(Job(b, "x", {}, 1), 0.5)
+    # 다시 시작해도 남음: 새 Spend가 DB 합계를 읽음
+    assert col.find_one({"_id": a})[COST_FIELD] == 1.0
+    assert Spend(store.claude_spent).total() == pytest.approx(1.5)
+
+
+def test_unwritten_costs_stay_queued_while_the_db_is_down() -> None:
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    a = col.insert_one({"type": "x"}).inserted_id
+    store = JobStore(FlakyCol(col, 2), "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30)  # type: ignore[arg-type]
+    for usd in (1.0, 2.0):
+        with pytest.raises(AutoReconnect):
+            store.add_cost(Job(a, "x", {}, 1), usd)
+    store.add_cost(Job(a, "x", {}, 1), 4.0)
+    assert col.find_one({"_id": a})[COST_FIELD] == 7.0
