@@ -38,7 +38,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal, Protocol, cast
 
-from app.clients.llm import JsonObject, Llm, LlmError
+from app.clients.llm import JsonObject, Llm, LlmError, LlmRejectedError
 from app.core.config import settings
 from app.services.quiz import quality, similar, srs
 from app.services.quiz.checks import (
@@ -462,7 +462,8 @@ def _similar_for(
     if not (was and was.get("checked")):
         # '정답 둘' 검사(10/22) 전에 만든 문제가 이 검사에 떨어지면 다시 내지 않음. 검사 못 함
         # (LLM 장애)이면 다시 내되 checked를 붙이지 않음: 오늘의 복습이 나중에 다시 검사
-        why, unchecked = quality.screen(llm, d, text, old.get("type"))
+        why, not_checked = quality.screen(llm, d, text, old.get("type"))
+        unchecked = bool(not_checked)
         if why:
             return m
     return similar.Made(
@@ -555,6 +556,9 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         made.append(m)
         report(25 + 55 * (i + 1) // len(targets), "비슷한 문제 만들기")
     if made and all(m.llm_down for m in made):
+        # 모두 서버가 거절: 다시 해도 같아 다시 넣지 않게(#272)
+        if all(m.llm_refused for m in made):
+            raise LlmRejectedError("문제 만들기 요청을 모두 거절함")
         raise LlmError("문제 만들기 호출이 모두 실패")
 
     # 4. LLM: 약한 개념(상위 3개)마다 노트 줄, 코드가 노트에 있는지 확인
