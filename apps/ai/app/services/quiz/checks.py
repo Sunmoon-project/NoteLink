@@ -13,6 +13,7 @@ from app.services.quiz.models import CHOICES, Draft, Question
 from app.services.quiz.text import (
     BLANK,
     VALUE,
+    is_combo,
     norm,
     number_values,
     same_item,
@@ -22,9 +23,15 @@ from app.services.quiz.text import (
 )
 
 NEGATIVE = re.compile(r"아닌|않은|틀린|옳지\s?않|잘못된|거리가 먼")
-KO_TYPES = ("정의", "특징", "분류")  # 한국어 용어 과목 유형 (임상병리, 10/22)
+# 한국어 용어 과목 유형 (임상병리, 10/22). 부정설명 · 조합은 맞춤 퀴즈 안정적 모드(#268)
+KO_TYPES = ("정의", "특징", "분류", "부정설명", "조합")
+# 과장으로 틀리게 만든 설명: 노트를 몰라도 틀린 줄 보여 쉬움(#268 실험 2)
+OVERSTATED = re.compile(r"반드시|절대|모든|항상|오직|전혀|무조건")
+# 조합형 제시문: 줄마다 'ㄱ. …'(combo.py가 조립)
+_COMBO_LINES = re.compile(r"ㄱ\. [^\n]+\nㄴ\. [^\n]+\nㄷ\. [^\n]+")
 _KO = re.compile(r"[가-힣]{2,}")
 _PIECE = re.compile(r",\s+")  # 이어 붙인 보기의 조각 사이
+SAME_ANSWER = "세트 안에서 정답이 겹침"  # generate가 쪽 닫기 · 분류 유형 빼기에 씀(#282)
 
 
 class Seen(TypedDict):
@@ -34,6 +41,22 @@ class Seen(TypedDict):
     passage: str  # norm(제시문)
     answer: NotRequired[str]  # norm(정답)
     q: NotRequired[Question | None]
+    sentences: NotRequired[list[str]]  # norm(설명 문장) (too_close)
+
+
+_COMBO_MARK = re.compile(r"^[ㄱㄴㄷ]\.\s*")
+
+
+def sentences_of(options: list[str] | None, passage: str | None) -> list[str]:
+    """설명 문장을 norm으로: 문장인 보기, 조합형이면 제시문의 ㄱ · ㄴ · ㄷ 문장.
+
+    낱말 · 용어 보기는 같은 노트의 문제끼리 겹치는 것이 보통이라 뺌. 조합형은 같은 설명이 보기가
+    아니라 제시문에 있어, 같은 내용의 특징 · 부정설명 문제와 겹쳐도 보이게 함(#268).
+    """
+    if options and is_combo(options):
+        lines = (passage or "").split("\n")
+        return [x for ln in lines if (x := norm(_COMBO_MARK.sub("", ln.strip())))]
+    return [norm(o) for o in options or [] if not short_answer(o) and norm(o)]
 
 
 def seen_question(q: Question) -> Seen:
@@ -41,14 +64,17 @@ def seen_question(q: Question) -> Seen:
         "all": norm(q["prompt"] + (q.get("passage") or "")),
         "passage": norm(q.get("passage")),
         "q": q,
+        "sentences": sentences_of(q.get("choices"), q.get("passage")),
     }
 
 
 def seen_draft(d: Draft) -> Seen:
+    """조합형의 정답(ㄱ, ㄴ)은 문장이 아니라 거꾸로 묻기(reversed_of) 비교에 넣지 않음."""
     return {
         "all": norm(d["stem"] + d["passage"]),
         "passage": norm(d["passage"]),
-        "answer": norm(d["answer"]),
+        "answer": "" if is_combo(d["options"]) else norm(d["answer"]),
+        "sentences": sentences_of(d["options"], d["passage"]),
     }
 
 
@@ -72,16 +98,54 @@ def too_close(d: Draft, seen: list[Seen]) -> bool:
     둘 다 제시문이 있으면 제시문끼리만 비교합니다. 문제 글은 tidy가 같은 문장으로 맞추기도 해서,
     문제 글까지 합쳐 비교하면 제시문이 짧은 다른 문제('쌓다' / '계약을 성공하다')도 같다고 봤습니다
     (로컬 DB 116문제에서 바뀐 판정은 이 1쌍, 10/27 측정).
+    문장 보기 셋 이상이 같은 문제도 거의 같음(#268): 특징 · 부정설명은 제시문이 용어 이름뿐이라,
+    개념 이름만 다른 같은 내용('액티브 인디케이터 제어' / 'ActivityIndicator와 서버 통신 제어')에서
+    옳은 설명 보기 넷이 똑같은 두 문제가 한 세트에 들어감(0928 학습 노트, 부정설명 5문제).
     """
     me = norm(d["stem"] + d["passage"])
     mp = norm(d["passage"])
+    mine = sentences_of(d["options"], d["passage"])
     for s in seen:
         if mp and s["passage"]:
             if difflib.SequenceMatcher(None, mp, s["passage"]).ratio() >= 0.85:
                 return True
         elif difflib.SequenceMatcher(None, me, s["all"]).ratio() >= 0.85:
             return True
+        if len(mine) >= SAME_SENTENCES and _shared(mine, s.get("sentences") or []):
+            return True
     return False
+
+
+SAME_SENTENCES = 3  # 이만큼 문장 보기가 같으면 거의 같은 문제(too_close)
+
+
+def _shared(mine: list[str], theirs: list[str]) -> bool:
+    """서로 다른 문장끼리 일대일로 SAME_SENTENCES쌍 이상 같음(가장 많이 짝지을 수 있는 수).
+
+    기존 문장 하나에 새 문장 여럿이 걸리면(온도만 다른 보기 셋이 기존 온도 설명 하나와) 한
+    쌍으로만 셉니다(Codex 리뷰 #288). 먼저 걸린 짝을 확정하면 짝을 바꿔 세 쌍이 되는 경우를
+    두 쌍으로 세어 보기 순서에 따라 결과가 달라져서, 짝을 바꿔 가며 늘리는 이분 매칭으로 셉니다
+    (Codex 재리뷰 #288). 보기는 5개뿐이라 짝 후보를 모두 봐도 됩니다.
+    """
+    if len(mine) < SAME_SENTENCES or len(theirs) < SAME_SENTENCES:
+        return False
+    like = [
+        [j for j, y in enumerate(theirs) if difflib.SequenceMatcher(None, x, y).ratio() >= 0.85]
+        for x in mine
+    ]
+    owner: dict[int, int] = {}  # 기존 문장 j → 짝지은 새 문장 i
+
+    def take(i: int, tried: set[int]) -> bool:
+        for j in like[i]:
+            if j in tried:
+                continue
+            tried.add(j)
+            if j not in owner or take(owner[j], tried):
+                owner[j] = i
+                return True
+        return False
+
+    return sum(take(i, set()) for i in range(len(mine))) >= SAME_SENTENCES
 
 
 def reversed_of(d: Draft, seen: list[Seen]) -> bool:
@@ -217,12 +281,24 @@ def code_check(
     if ty == "정의" and len(re.findall(r"[가-힣]", p)) < 10:
         why.append("설명 문장 없음")
     # passage가 '____'뿐이어도 용어가 아님: 미생 초안 9개가 지식 검사에 '용어: ____'로 감(10/29)
-    if ty in ("특징", "분류") and not (1 <= len(BLANK.sub("", p).strip()) <= 40):
+    if ty in ("특징", "분류", "부정설명") and not (1 <= len(BLANK.sub("", p).strip()) <= 40):
         why.append("물을 용어 없음")
     if ty == "정의" and p and norm(d["answer"]) in norm(p):
         why.append("설명에 정답 용어 노출")
-    if NEGATIVE.search(d["stem"]):
+    # 부정 질문은 부정설명 유형만(#268): 그 유형은 거꾸로 부정 질문이어야 함
+    if ty == "부정설명":
+        if not NEGATIVE.search(d["stem"]):
+            why.append("부정 질문이 아님")
+        others = [o for o, k in zip(opts, keys, strict=True) if k != answer_key]
+        if OVERSTATED.search(d["answer"]) and not any(OVERSTATED.search(o) for o in others):
+            why.append("과장으로 틀린 티가 나는 정답('반드시 · 모든' 없이 한 곳만 바꾼다)")
+    elif NEGATIVE.search(d["stem"]):
         why.append("부정 질문")
+    if ty == "조합":
+        if not is_combo(opts):
+            why.append("조합 보기 모양이 아님")
+        if not _COMBO_LINES.fullmatch(p):
+            why.append("ㄱ · ㄴ · ㄷ 문장 없음")
     if not _KO.search(d["stem"]):
         why.append("문제 글이 한국어가 아님")
     # 특징 · 분류도: '____는 산소가 없는 환경에서 살아가는 세균'에
@@ -256,8 +332,9 @@ def code_check(
     if (t.reason == "wrong" or t.keep_answer) and short_answer(t.answer) and not same:
         kind = "틀린" if t.reason == "wrong" else "원래"
         why.append(f"{kind} 낱말('{t.answer}')을 다시 묻지 않음")
-    if any(same_item(d["answer"], u) for u in t.used_answers):
-        why.append("세트 안에서 정답이 겹침")
+    # 조합형 정답(ㄱ, ㄴ)은 묶음 이름이라 세트 안에서 겹쳐도 됨
+    if ty != "조합" and any(same_item(d["answer"], u) for u in t.used_answers):
+        why.append(SAME_ANSWER)
     if too_close(d, seen):
         why.append("이미 있는 문제와 거의 같음")
     if reversed_of(d, seen):

@@ -5,12 +5,37 @@ export type Row = Record<string, unknown> & { _id: Types.ObjectId };
 type Filter = Record<string, unknown>;
 
 const same = (a: unknown, b: unknown) =>
-  a instanceof Types.ObjectId || b instanceof Types.ObjectId ? String(a) === String(b) : a === b;
+  a instanceof Types.ObjectId || b instanceof Types.ObjectId
+    ? String(a) === String(b)
+    : a instanceof Date && b instanceof Date
+      ? a.getTime() === b.getTime()
+      : a === b;
 
 type Ops = { $in?: unknown[]; $ne?: unknown; $lte?: Date; $gt?: Date; $lt?: number };
 const isOps = (v: unknown): v is Ops =>
   v !== null && typeof v === 'object' && !(v instanceof Types.ObjectId) && !(v instanceof Date);
 const time = (v: unknown) => (v instanceof Date ? v.getTime() : NaN);
+
+/** DB 시계가 API 서버 시계보다 얼마나 앞서는지(ms). 음수면 DB가 늦다. 시계 차이 테스트에서만 바꾼다 */
+let dbClockOffset = 0;
+export const setDbClockOffset = (ms: number) => {
+  dbClockOffset = ms;
+};
+
+/**
+ * 서비스가 쓰는 $expr 꼴만: { $gt | $lte: ['$필드', { $subtract: ['$$NOW', ms] }] }(DB 시각 기준 만료).
+ * $$NOW는 DB 시계(setDbClockOffset). 다른 꼴은 맞지 않음
+ */
+type Cmp = [string, { $subtract?: [string, number] }];
+type Expr = { $gt?: Cmp; $lte?: Cmp };
+function expr(row: Record<string, unknown>, e: Expr): boolean {
+  const [field, rhs] = e.$gt ?? e.$lte ?? [];
+  const [now, ms] = rhs?.$subtract ?? [];
+  if (!field?.startsWith('$') || now !== '$$NOW' || typeof ms !== 'number') return false;
+  const v = time(row[field.slice(1)]);
+  const edge = Date.now() + dbClockOffset - ms;
+  return e.$gt ? v > edge : v <= edge;
+}
 
 /**
  * 서비스가 넘긴 조건을 그대로 적용한다(같음 · $in · $ne · $lte · $gt · $lt · $or). ObjectId는 문자열로 비교하고,
@@ -19,6 +44,7 @@ const time = (v: unknown) => (v instanceof Date ? v.getTime() : NaN);
 export function matches(row: Record<string, unknown>, filter: Filter): boolean {
   return Object.entries(filter).every(([key, want]) => {
     if (key === '$or') return (want as Filter[]).some((f) => matches(row, f));
+    if (key === '$expr') return expr(row, want as Expr);
     const value = row[key];
     if (want === null) return value === null || value === undefined;
     if (!isOps(want)) return same(value, want);

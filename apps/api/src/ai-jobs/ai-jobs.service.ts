@@ -1,4 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+
+import { HttpException, HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
+import { ERROR_CODES } from '@notelink/shared';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
@@ -14,6 +17,35 @@ export const PREGEN_TYPE = 'quiz_pregen';
 const ACTIVE = ['queued', 'running'];
 /** 앱의 '다시 시도'로 다시 넣을 수 있는 상태 */
 const RETRYABLE = ['failed', 'canceled'];
+/** 대기 한도를 확인하는 동안의 상태. 처리기는 queued만 가져가므로 이 상태의 작업은 잡히지 않는다 */
+const HELD = 'held';
+/**
+ * held는 이 시간 안에만 유효하다. 지나면 한도 계산에서 빼고(그 사용자가 막히지 않게), 열지도 않는다
+ * (빠진 사이 다른 요청이 한도 안으로 들어왔을 수 있다). 확인 도중 서버가 멈춰 남은 held는 다시 시도 · 취소로 되살린다
+ */
+const HELD_TTL_MS = 60_000;
+/** DB가 갱신하는 그 순간의 시각($$NOW)으로 held가 아직 지나지 않았는지 본다(앱에서 미리 본 뒤 갱신이 늦어도 맞게) */
+const heldLive = () => ({ $expr: { $gt: ['$heldAt', { $subtract: ['$$NOW', HELD_TTL_MS] }] } });
+/** 지난 held(DB 시각 기준). 세기 · 다시 잡기 · 열기가 모두 같은 시계(DB)로 판단해야 한도를 넘지 않는다 */
+const heldStale = () => ({ $expr: { $lte: ['$heldAt', { $subtract: ['$$NOW', HELD_TTL_MS] }] } });
+
+/**
+ * 사용자마다 동시에 기다릴 수 있는 작업 수(종류별). 학교 LLM 분당 한도를 함께 쓰는 작업을 몰아 보내지 못하게 한다.
+ * 새로 넣을 때와 다시 시도할 때 모두 이 서비스가 지킨다(호출하는 쪽에서 따로 세지 않는다).
+ */
+export const PENDING_LIMIT = { note_ask: 2 } as const satisfies Record<string, number>;
+const limitOf = (type: string): number | undefined =>
+  (PENDING_LIMIT as Record<string, number | undefined>)[type];
+
+const tooMany = () =>
+  new HttpException(
+    {
+      code: ERROR_CODES.RATE_LIMITED,
+      message: '앞의 요청을 처리하는 중이에요',
+      retryAfterSeconds: 10,
+    },
+    HttpStatus.TOO_MANY_REQUESTS,
+  );
 
 /** 작업을 넣을 때 NestJS가 정하는 값. 나머지(상태 · 시도 · 결과)는 서비스가 처음 값으로 채운다 */
 export interface NewAiJob {
@@ -87,7 +119,8 @@ export function toAppJob(row: AiJobRow): AppAiJob {
   const job: AppAiJob = {
     _id: row._id.toString(),
     type: row.type,
-    status: row.status,
+    // 다시 시도의 한도 확인 중(held)에 조회하면 queued로 보인다(공용 스키마에 held가 없음)
+    status: row.status === HELD ? 'queued' : row.status,
     targetType: row.targetType,
     targetId: row.targetId.toString(),
     progress: row.progress ?? 0,
@@ -154,21 +187,79 @@ const unlocked = (now: Date) => [{ lockedUntil: null }, { lockedUntil: { $lte: n
 export class AiJobsService {
   constructor(@InjectModel(AiJob.name) private readonly jobs: Model<AiJobDocument>) {}
 
-  /** 처리기가 가져갈 수 있게 queued로 넣는다 */
+  /**
+   * 처리기가 가져갈 수 있게 queued로 넣는다. PENDING_LIMIT에 있는 종류는 처리기가 잡지 못하는 held로
+   * 넣고, 자기를 포함한 대기 작업을 센 뒤 한도 안이면 queued로 연다(Codex #244). 넘으면 문서를 지우고 429:
+   * 거절한 요청이 LLM을 쓰거나 본문 복사본을 남기지 않는다. 넣은 뒤에 세므로 동시에 온 요청은 함께
+   * 거절될 수는 있어도(앱은 잠시 뒤 다시) 한도를 넘지 않는다. 이미 한도면 넣기 전에 바로 거절한다.
+   */
   async enqueue(job: NewAiJob): Promise<AppAiJob> {
+    const userId = serverObjectId(job.userId, 'userId');
+    const limit = limitOf(job.type);
+    if (limit !== undefined && (await this.pending(userId, job.type)) >= limit) throw tooMany();
+    // 이 요청의 held 표시(요청마다 다른 값). 확인이 늦어 지난 뒤 다시 시도가 같은 문서를 새로 잡았으면 그 held는 건드리지 않는다
+    const mine = randomUUID();
     const created = await this.jobs.create({
       type: job.type,
-      userId: serverObjectId(job.userId, 'userId'),
+      userId,
       targetType: job.targetType,
       targetId: serverObjectId(job.targetId, 'targetId'),
       input: job.input,
-      status: 'queued',
+      ...(limit === undefined
+        ? { status: 'queued' }
+        : { status: HELD, heldAt: new Date(), holdId: mine }),
       progress: 0,
       attempts: 0,
       result: null,
       awaited: false,
     });
-    return toAppJob(created.toObject<AiJobRow>());
+    const row = created.toObject<AiJobRow>();
+    if (limit === undefined) return toAppJob(row);
+    if ((await this.pending(userId, job.type)) > limit) {
+      await this.jobs.deleteOne({ _id: row._id, status: HELD, holdId: mine });
+      throw tooMany();
+    }
+    if (!(await this.release(row._id, mine))) {
+      // 확인이 늦어 held가 지났다 — 그사이 한도가 찼을 수 있어 열지 않는다
+      await this.jobs.deleteOne({ _id: row._id, status: HELD, holdId: mine });
+      throw tooMany();
+    }
+    const {
+      heldAt: _heldAt,
+      holdId: _holdId,
+      ...rest
+    } = row as AiJobRow & {
+      heldAt?: Date;
+      holdId?: string;
+    };
+    return toAppJob({ ...rest, status: 'queued' });
+  }
+
+  /** 이 종류의 대기 작업 수(queued · running · 확인 중인 held). 한도 없는 종류는 세지 않는다 */
+  private async pending(userId: Types.ObjectId, type: string): Promise<number> {
+    if (limitOf(type) === undefined) return 0;
+    return this.jobs.countDocuments({
+      userId,
+      type,
+      $or: [{ status: { $in: ACTIVE } }, { status: HELD, ...heldLive() }],
+    });
+  }
+
+  /**
+   * 한도 확인을 마친 held 작업을 처리기가 가져갈 수 있게 연다. 아직 held이고 지나지 않았을 때만 연다:
+   * 그사이 취소했거나(canceled) 시간이 지나 다른 요청의 한도 계산에서 빠졌으면 false.
+   * 자기가 잡은 held(holdId가 같음)만 연다: 지난 뒤 다른 다시 시도가 새로 잡은 held를 대신 열지 않게.
+   * 지났는지는 갱신하는 순간 DB 시각으로 본다(갱신이 늦어 그사이 지나면 열지 않음)
+   */
+  private async release(id: Types.ObjectId, mine: string): Promise<boolean> {
+    const row = await this.jobs
+      .findOneAndUpdate(
+        { _id: id, status: HELD, holdId: mine, ...heldLive() },
+        { $set: { status: 'queued' }, $unset: { heldAt: '', holdId: '' } },
+        { projection: { _id: 1 } },
+      )
+      .lean();
+    return row !== null;
   }
 
   /** 앱의 진행 상태 조회. 본인 작업만 */
@@ -198,10 +289,11 @@ export class AiJobsService {
       )
       .lean();
     if (pregen) return;
+    // held(다시 시도의 한도 확인 중 · 확인 도중 멈춤)도 취소한다. 취소하면 release가 열지 않는다
     const row = await this.jobs
       .findOneAndUpdate(
-        { ...filter, status: { $in: ACTIVE } },
-        { $set: { status: 'canceled' } },
+        { ...filter, status: { $in: [...ACTIVE, HELD] } },
+        { $set: { status: 'canceled' }, $unset: { heldAt: '', holdId: '' } },
         { projection: { _id: 1 } },
       )
       .lean();
@@ -223,26 +315,70 @@ export class AiJobsService {
    */
   async retry(userId: string, jobId: string): Promise<AppAiJob> {
     const filter = { _id: objectId(jobId), userId: objectId(userId) };
-    const row = await this.jobs
+    const reset = {
+      status: 'queued',
+      attempts: 0,
+      progress: 0,
+      retryAt: null,
+      lockedUntil: null,
+      result: null,
+      error: null,
+    };
+    const current = await this.jobs.findOne(filter, { type: 1 }).lean<{ type: string }>();
+    if (!current) throw notFound();
+    const limit = limitOf(current.type);
+    // 한도 있는 종류만 처리기가 잡지 못하는 held로 바꾸고 한도를 센다(넘으면 되돌리므로 바꾸기 전 값을 받는다).
+    // 확인 도중 멈춰 지난 held도 다시 넣을 수 있다. mine은 이 요청의 held 표시(release · giveBack이 확인)
+    const mine = randomUUID();
+    const before = await this.jobs
       .findOneAndUpdate(
-        { ...filter, status: { $in: RETRYABLE }, $or: unlocked(new Date()) },
         {
-          $set: {
-            status: 'queued',
-            attempts: 0,
-            progress: 0,
-            retryAt: null,
-            lockedUntil: null,
-            result: null,
-            error: null,
-          },
+          ...filter,
+          type: current.type,
+          $or: [
+            { status: { $in: RETRYABLE }, $or: unlocked(new Date()) },
+            ...(limit === undefined ? [] : [{ status: HELD, ...heldStale() }]),
+          ],
+        },
+        {
+          $set:
+            limit === undefined
+              ? reset
+              : { ...reset, status: HELD, heldAt: new Date(), holdId: mine },
           $unset: { step: '', lockedBy: '' },
         },
-        { returnDocument: 'after', projection: APP_PROJECTION },
+        { projection: APP_PROJECTION },
       )
-      .lean<AiJobRow>();
-    if (row) return toAppJob(row);
-    return this.findMine(userId, jobId);
+      .lean<AiJobRow & { userId: Types.ObjectId }>();
+    if (!before) return this.findMine(userId, jobId);
+    const { step: _step, ...rest } = before;
+    if (limit === undefined) return toAppJob({ ...rest, ...reset });
+    // 한도를 넘었거나 확인이 늦어 held가 지났으면 바꾸기 전으로 되돌리고 429. 지난 held에서 왔으면 canceled로
+    // 되돌린다(다시 누를 수 있게). 되돌릴 내 held가 없으면 그사이 취소했거나 다른 다시 시도가 새로 잡은 것 —
+    // 지금 상태를 돌려준다
+    const giveBack = async () => {
+      const reverted = await this.jobs
+        .findOneAndUpdate(
+          { _id: before._id, status: HELD, holdId: mine },
+          {
+            $set: {
+              status: before.status === HELD ? 'canceled' : before.status,
+              attempts: before.attempts ?? 0,
+              progress: before.progress ?? 0,
+              result: before.result ?? null,
+              error: before.error ?? null,
+            },
+            $unset: { heldAt: '', holdId: '' },
+          },
+          { projection: { _id: 1 } },
+        )
+        .lean();
+      if (reverted) throw tooMany();
+      return this.findMine(userId, jobId);
+    };
+    if ((await this.pending(before.userId, before.type)) > limit) return giveBack();
+    if (!(await this.release(before._id, mine))) return giveBack();
+    return toAppJob({ ...rest, ...reset });
   }
 
   /**

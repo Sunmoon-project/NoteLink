@@ -16,6 +16,7 @@ from app.clients.llm import (
     MAX_HOLDS,
     MIN_YIELD_SEC,
     QUIET_GAPS,
+    QUIET_MIN_SEC,
     STOPPED,
     LlmCutError,
     LlmError,
@@ -504,6 +505,21 @@ def test_a_background_call_waits_a_quiet_time_after_a_user_call() -> None:
     c.llm.background().call("gemma", "s", "u", SCHEMA, "X")
     quiet = 100 + 2.2 * QUIET_GAPS
     assert c.sent[0] == 100.0 and quiet - 1e-9 <= c.sent[1] < quiet + 2.2
+
+
+def test_the_quiet_time_keeps_its_floor_at_a_short_gap() -> None:
+    # Claude 간격 0.2초: 0.2 × QUIET_GAPS(0.6초)가 아니라 QUIET_MIN_SEC 뒤에 보냄(#289)
+    server = Server(reply("{}"), reply("{}"))
+    c = Clock(server, gap=0.2)
+    c.llm.call("gemma", "s", "u", SCHEMA, "X")
+    c.llm.background().call("gemma", "s", "u", SCHEMA, "X")
+    quiet = 100 + QUIET_MIN_SEC
+    assert 0.2 * QUIET_GAPS < QUIET_MIN_SEC
+    assert c.sent[0] == 100.0 and quiet - 1e-9 <= c.sent[1] < quiet + MIN_YIELD_SEC
+    # 처음은 간격 차례(0.2초), 그 뒤 양보하며 기다리는 동안은 MIN_YIELD_SEC마다만 깸
+    assert c.slept[0] == pytest.approx(0.2)
+    assert c.slept[1:] == [MIN_YIELD_SEC] * (len(c.slept) - 1)
+    assert len(c.slept) <= 5  # 3.6초를 기다리며 다섯 번 안쪽(0.2초마다면 열여덟 번)
 
 
 def test_a_background_call_waits_while_a_user_call_is_answered() -> None:

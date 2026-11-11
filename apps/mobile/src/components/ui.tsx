@@ -278,6 +278,7 @@ const useInTabs = () => useSegments()[0] === '(tabs)';
 export function Screen({
   children,
   footer,
+  overlay,
   dark,
   className,
   pad = true,
@@ -289,6 +290,8 @@ export function Screen({
 }: {
   children: ReactNode;
   footer?: ReactNode;
+  /** 본문 위에 떠 있는 것(스크롤하지 않고, 아래 버튼 위에서 끝난다). 예: 아바타 선생님 */
+  overlay?: ReactNode;
   dark?: boolean;
   /** 회색 캔버스 바탕 + 흰 카드 (개편된 화면) */
   canvas?: boolean;
@@ -334,7 +337,10 @@ export function Screen({
       style={{ paddingTop: top ? insets.top : 0 }}
     >
       <SurfaceCtx.Provider value={onCanvas ? 'canvas' : 'legacy'}>
-        <View className="flex-1">{body}</View>
+        <View className="flex-1">
+          {body}
+          {overlay}
+        </View>
         {footer && (
           <View
             className="px-6 pt-4"

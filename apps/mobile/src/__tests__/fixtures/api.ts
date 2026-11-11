@@ -749,6 +749,29 @@ export const mockApi: Api = {
         })),
         700,
       ),
+    // 화면 테스트용: 바로 끝난 note_ask 작업(답은 질문을 되풀이)
+    ask: (materialId, body) => {
+      const job: AiJob = {
+        _id: uid('job'),
+        type: 'note_ask',
+        status: 'succeeded',
+        targetType: 'material',
+        targetId: materialId,
+        progress: 100,
+        attempts: 1,
+        result: {
+          answerable: true,
+          reason: null,
+          answer: `'${body.question}'에 대한 설명이에요.`,
+          refs: ['요약'],
+        },
+        error: null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      db.jobs.set(job._id, job);
+      return ok(job);
+    },
   },
   ai: {
     job: (id) => {

@@ -37,6 +37,11 @@ export class Question {
   @Prop({ type: [String], default: [] })
   conceptTags: string[];
 
+  // 난이도 '하' · '중' · '상'(공용 스키마 QuestionDifficulty, #268). 처리기가 유형으로 정한 처음 값이고,
+  // 난이도를 붙이기 전에 만든 문제는 null. 다음 퀴즈를 만들 때 처리기에 다시 넘긴다
+  @Prop({ type: String, enum: ['하', '중', '상'], default: null })
+  difficulty?: '하' | '중' | '상' | null;
+
   // 복습 상태(step · dueAt · lastResult · streak · reviews · state 등). 형식은 처리기(apps/ai srs.py)가 정하고,
   // 오답 복습(similar_quiz)의 srsUpdates를 NestJS가 여기에 반영한다. 공용 스키마에는 아직 없다.
   @Prop({ type: Object, default: null })

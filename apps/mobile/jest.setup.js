@@ -34,3 +34,6 @@ jest.mock('expo-router', () => ({
   Redirect: () => null,
   Link: ({ children }) => children,
 }));
+
+// 아바타 선생님 3D(expo-gl · three · GLB)는 기기에서만 그린다. 화면 테스트는 자리만 둔다
+jest.mock('./src/features/tutor/avatar3d', () => ({ Avatar3D: () => null }));
