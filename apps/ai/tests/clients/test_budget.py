@@ -3,6 +3,7 @@
 실제 호출 없음(가짜 서버 · 가짜 LLM).
 """
 
+import json
 import threading
 from datetime import UTC, datetime
 from typing import Any
@@ -31,7 +32,7 @@ from app.clients.llm import (
 from app.core.config import settings
 from app.worker import handlers
 from app.worker import jobs as jobs_module
-from app.worker.jobs import COST_FIELD, Job, JobStore
+from app.worker.jobs import COST_FIELD, COST_IDS_FIELD, Job, JobStore
 from tests.clients.test_claude_llm import SCHEMA, USAGE_LIMIT, Server, call, error, message
 from tests.fakes import FakeLlm
 
@@ -507,9 +508,13 @@ def test_unwritten_costs_stay_queued_while_the_db_is_down() -> None:
 @pytest.fixture(autouse=True)
 def _no_leftover_costs() -> Any:
     jobs_module._unrecorded.clear()
+    jobs_module._writing.clear()
+    jobs_module._spooled[0] = False
     jobs_module._spool.clear()
     yield
     jobs_module._unrecorded.clear()
+    jobs_module._writing.clear()
+    jobs_module._spooled[0] = False
     jobs_module._spool.clear()
 
 
@@ -600,3 +605,66 @@ def test_the_total_is_still_read_after_switching_on_a_usage_limit() -> None:
     clock.now = 300
     assert b.over()
     assert len(reads) == 2
+
+
+# ---------- Codex 재리뷰(4차) #299 ----------
+
+
+def test_a_cost_being_rewritten_stays_in_the_spool_when_another_write_fails(tmp_path: Any) -> None:
+    # A가 지난번 비용을 다시 적는 동안(응답 대기) B의 기록이 실패: 파일에 둘 다 남아야 함
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    a, b = col.insert_one({"type": "x"}).inserted_id, col.insert_one({"type": "x"}).inserted_id
+    spool = tmp_path / "spool.json"
+    spool.write_text(json.dumps([{"job": str(a), "id": "old", "usd": 1.0}]), encoding="utf-8")
+    inside, release = threading.Event(), threading.Event()
+
+    class Col(FlakyCol):
+        def update_one(self, flt: Any, *a: Any, **kw: Any) -> Any:
+            if flt[COST_IDS_FIELD]["$ne"] == "old":
+                inside.set()
+                release.wait(5)
+                return self.col.update_one(flt, *a, **kw)
+            raise AutoReconnect("DB down")
+
+    assert jobs_module.use_spool(str(spool), Col(col, 0)) == 1
+    store = JobStore(Col(col, 0), "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30)  # type: ignore[arg-type]
+    flusher = threading.Thread(target=store.flush_costs)
+    flusher.start()
+    assert inside.wait(5)
+    with pytest.raises(AutoReconnect):
+        store.add_cost(Job(b, "x", {}, 1), 0.5)
+    assert sorted(r["usd"] for r in json.loads(spool.read_text(encoding="utf-8"))) == [0.5, 1.0]
+    release.set()
+    flusher.join(5)
+    assert [r["usd"] for r in json.loads(spool.read_text(encoding="utf-8"))] == [0.5]
+    assert col.find_one({"_id": a})[COST_FIELD] == 1.0
+
+
+def test_after_a_restart_unwritable_costs_still_count_in_the_total(tmp_path: Any) -> None:
+    # 다시 시작: DB 합계 69, 파일에 1. 적기는 실패하고 읽기만 됨 → 합계 70(한도에 닿음)
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    col.insert_one({"type": "x", COST_FIELD: 69.0})
+    a = col.insert_one({"type": "x"}).inserted_id
+    spool = tmp_path / "spool.json"
+    spool.write_text(json.dumps([{"job": str(a), "id": "c1", "usd": 1.0}]), encoding="utf-8")
+    down = FlakyCol(col, 99)
+    assert jobs_module.use_spool(str(spool), down) == 1
+    totals = JobStore(down, "w1:spend", lock_sec=60, max_attempts=3, retry_delay_sec=30)  # type: ignore[arg-type]
+    assert Spend(totals.claude_spent).total() == pytest.approx(70.0)
+
+
+def test_after_switching_a_recovered_db_gets_the_queued_cost() -> None:
+    # 사용 한도로 넘긴 뒤 DB가 돌아오면, 합계를 다시 읽을 때 모아 둔 비용이 실제로 적힘
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    a = col.insert_one({"type": "x"}).inserted_id
+    flaky = FlakyCol(col, 1)
+    store = JobStore(flaky, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30)  # type: ignore[arg-type]
+    with pytest.raises(AutoReconnect):
+        store.add_cost(Job(a, "x", {}, 1), 1.0)
+    clock = Clock()
+    b = Budgeted(FakeLlm(), FakeLlm, Spend(store.claude_spent, ttl=300, clock=clock), 70.0, {})
+    b.exhaust()
+    clock.now = 300
+    b.over()
+    assert col.find_one({"_id": a})[COST_FIELD] == 1.0
+    assert store.unwritten_usd() == 0.0
