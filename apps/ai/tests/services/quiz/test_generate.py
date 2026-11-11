@@ -29,6 +29,8 @@ PAGE2 = """Ⅱ. 편모충류
 - 포낭형: 타원형, 4핵
 2. 질편모충
 - 성 접촉으로 감염된다"""
+REAL_LEVEL_MIX = generate.levels.level_mix
+REAL_ORDER_TYPES = generate.levels.order_types
 NAMES = ["이질 아메바", "대장 아메바", "람블편모충", "질편모충"]
 
 
@@ -41,6 +43,27 @@ def one_slot_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(generate, "WORKERS", 1)
     monkeypatch.setattr(generate, "EXTRA", 0)
     monkeypatch.setattr(generate, "MAX_ROUNDS", 1)
+
+
+@pytest.fixture(autouse=True)
+def one_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    """난이도 비율(#268)을 끄고 #268 전 유형 순서로(쪽 유형 목록을 turn만큼 돌림): 이 파일의 시험은
+    대부분 정의 모양 초안을 차례로 내므로. 난이도 비율 · 유형 고르기는 「난이도 비율」 시험이 이
+    설정을 풀고 봄(mixed_levels)."""
+
+    def rotate(types: list[str], want: str, lv: object, turn: int) -> list[str]:
+        k = turn % len(types)
+        return types[k:] + types[:k]
+
+    monkeypatch.setattr(generate.levels, "level_mix", lambda n, usable, stats: {"하": n})
+    monkeypatch.setattr(generate.levels, "order_types", rotate)
+
+
+@pytest.fixture
+def mixed_levels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """one_level을 풀고 실제 난이도 비율 · 유형 고르기로."""
+    monkeypatch.setattr(generate.levels, "level_mix", REAL_LEVEL_MIX)
+    monkeypatch.setattr(generate.levels, "order_types", REAL_ORDER_TYPES)
 
 
 @pytest.fixture(autouse=True)
@@ -2312,3 +2335,92 @@ def test_combinations_may_share_an_answer_and_keep_their_order(
     assert all(q["answer"] in q["choices"] for q in qs)
     assert [q["difficulty"] for q in qs] == ["상"] * 3
     assert "ㄱ, ㄷ" not in "".join(llm.named("Combo"))  # 이미 쓴 정답 목록에 넣지 않음
+
+
+# ---------- 난이도 비율 (#268) ----------
+
+
+def kinds_of(made: JsonObject) -> list[tuple[str, str]]:
+    return [(q["type"], q["difficulty"]) for q in made["questions"]]
+
+
+@pytest.mark.usefixtures("mixed_levels")
+def test_a_set_follows_the_level_mix_slot_by_slot() -> None:
+    # 기록이 없으면 하 2 : 중 2 : 상 1. 4문제: 하 2 · 중 1 · 상 1, 자리마다 하 · 중 · 상 · 하
+    result = make(typed_llm(), job(size=4), mode=generate.STABLE)
+    assert result["levels"] == {"target": {"하": 2, "중": 1, "상": 1}, "weak": None, "user": {}}
+    assert kinds_of(result) == [("정의", "하"), ("부정설명", "중"), ("조합", "상"), ("분류", "하")]
+
+
+@pytest.mark.usefixtures("mixed_levels")
+def test_fast_mode_mixes_the_levels_it_has() -> None:
+    # 빠른 모드의 용어 과목은 하 · 중뿐: 쪽마다 정의 · 특징(#268 전과 같은 결과)
+    result = make(typed_llm(), job(size=4))
+    assert result["levels"]["target"] == {"하": 2, "중": 2}
+    assert kinds_of(result) == [("정의", "하"), ("특징", "중"), ("정의", "하"), ("특징", "중")]
+
+
+@pytest.mark.usefixtures("mixed_levels")
+def test_a_weak_level_gets_more_questions() -> None:
+    # 다른 노트에서 '상' 문제 5개 중 3개를 틀림: 다음 세트는 상을 하나 더
+    old = [
+        {**stored(f"o{i}", "편충", "편충"), "type": "조합", "difficulty": "상"} for i in range(5)
+    ]
+    attempts = [attempt(f"o{i}", i >= 3, set_id="old") for i in range(5)]
+    inp = job(size=4, sets=[{"id": "old", "materialId": "m2", "questions": old}], attempts=attempts)
+    result = make(typed_llm(), inp, mode=generate.STABLE)
+    assert result["levels"] == {
+        "target": {"하": 1, "중": 1, "상": 2},
+        "weak": "상",
+        "user": {"상": [5, 3]},
+    }
+    assert [d for _, d in kinds_of(result)].count("상") == 2
+
+
+@pytest.mark.usefixtures("mixed_levels")
+def test_everyones_rates_correct_the_type_levels() -> None:
+    # 모든 사용자가 조합을 90% 맞힘: 조합은 중. 그러면 이 노트에 '상' 유형이 없어 하 · 중으로만
+    inp = job(size=4, typeStats={"조합": {"answered": 40, "correct": 36}, "정의": "망가짐"})
+    result = make(typed_llm(), inp, mode=generate.STABLE)
+    assert result["levels"]["target"] == {"하": 2, "중": 2}
+    assert all(d == "중" for t, d in kinds_of(result) if t == "조합")
+
+
+@pytest.mark.parametrize(
+    "stats",
+    [
+        {"조합": {"answered": 40, "correct": 41}},  # 맞힌 수가 더 많음
+        {"조합": {"answered": -1, "correct": 0}},
+        {"조합": {"answered": True, "correct": 0}},
+        {"조합": [40, 36]},
+        "망가짐",
+    ],
+)
+def test_bad_type_stats_are_ignored(stats: object) -> None:
+    assert generate.parse(job(typeStats=stats)).type_stats == {}
+
+
+@pytest.mark.usefixtures("mixed_levels", "fill_rounds")
+def test_the_next_round_starts_with_the_level_still_lacking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 하 1 · 상 1인데 상 자리(조합)가 모두 떨어짐: 다음 판의 자리는 처음 차례(하)가 아니라
+    # 모자란 상부터
+    monkeypatch.setattr(generate.levels, "level_mix", lambda n, usable, stats: {"하": 1, "상": 1})
+    monkeypatch.setattr(generate.combo, "truth_for", lambda: "ㄱ")
+    llm = typed_llm()
+    llm.answers["Verify"] = lambda u: {"correct": [True, True, True]}  # 늘 요청과 다름
+    quiz = llm.answers["Quiz"]
+    llm.answers["Quiz"] = lambda u: quiz(u) if "문제 유형: 정의" in u else BAD
+    firsts: list[str] = []
+    gen_one = generate.gen_one
+
+    def spy(*a: Any, **k: Any) -> Any:
+        firsts.append(a[3][0])
+        return gen_one(*a, **k)
+
+    monkeypatch.setattr(generate, "gen_one", spy)
+    with pytest.raises(generate.NoQuestionsError):
+        make(llm, page1_job(size=2), mode=generate.STABLE)
+    assert firsts[0] == "정의" and firsts[1] == "조합"
+    assert len(firsts) > 2 and set(firsts[2:]) == {"조합"}  # 다음 판들도 상(조합)부터

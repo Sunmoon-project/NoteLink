@@ -11,8 +11,13 @@ ai_jobs.type = 'quiz_pregen': 노트를 만들 때 NestJS가 넣는 첫 맞춤 �
   미리 만들기를 사용자가 이어받으면(report.awaited) 그때부터 빠른 모드 · 남은 자리 × 보통 상한으로
   마저 만듭니다(이미 만든 문제는 그대로).
   안정적 모드는 한국어 용어 과목 쪽에 유형 둘을 더합니다(#268): 부정설명('옳지 않은 것은?', 정답이
-  틀린 설명)과 조합(ㄱ · ㄴ · ㄷ 중 옳은 것을 모두, combo.py가 조립). 첫 유형은 세트 전체에서
-  자리마다 돌려 한 세트에 유형 · 난이도가 섞이게 합니다.
+  틀린 설명)과 조합(ㄱ · ㄴ · ㄷ 중 옳은 것을 모두, combo.py가 조립).
+
+난이도(#268, 규칙은 levels.py): 세트의 하 · 중 · 상 비율을 이 사용자의 난이도별 정답률로 정합니다
+  (기본 2 : 2 : 1, 많이 틀린 난이도를 늘림). 자리마다 난이도를 정해 그 난이도의 유형부터 만들고
+  실패하면 가까운 난이도로 넘어가며, 다음 판은 모자란 난이도부터 채웁니다. 같은 난이도 안의 유형은
+  빠른 모드는 쪽마다, 안정적 모드는 세트 전체에서 돌립니다. 유형의 난이도는 모든 사용자의 정답률
+  (input.typeStats)로 고칩니다.
 
   코드  쪽마다 문제 수 나누기 · 과목 판단(영어 문장 과목 / 용어 과목) · 쪽마다 유형 돌리기 ·
         세트 안에서 개념 · 정답 겹치지 않게 · 못 만든 자리는 다른 쪽으로 넘기기
@@ -68,6 +73,8 @@ input — NestJS가 작업을 만들 때 담습니다. ObjectId는 문자열, �
             void(true 또는 무효 이유 글)는 없는 풀이로 봅니다
   notes     {materialId: [{pageNo, ocrText}]} 사용자의 다른 노트(세트가 가리키는 노트 포함).
             이 노트는 material로 넣으므로 없어도 됩니다
+  typeStats? {유형: {answered, correct}} 모든 사용자의 유형별 풀이 수 · 맞힌 수(levels.type_levels).
+            없으면 유형의 처음 난이도. 모양이 틀린 유형은 뺌(퀴즈를 실패시키지 않음)
 
 result — NestJS가 quiz_sets에 새 세트로 저장합니다(materialId · folderId는 노트에서)
   questions  새 세트 문제(order 1부터, srs는 null: 아직 풀지 않음). 늘 size개. difficulty(하 · 중 ·
@@ -77,6 +84,10 @@ result — NestJS가 quiz_sets에 새 세트로 저장합니다(materialId · fo
   pages      [{pageNo, weight, plain, share, wrong, mastered}] 쪽마다 배분(앱 안내 · 확인용).
              plain은 기록 없이 고르게 나눴을 때, share는 실제로 나눈 문제 수
   failed     [{pageNo, why}] 못 만든 자리(마지막으로 시도한 쪽과 탈락 이유). 다 채우므로 늘 []
+  levels     {target: {난이도: 문제 수}, weak: 약한 난이도 또는 null,
+             user: {난이도: [푼 수, 틀린 수]}}
+             세트의 난이도 비율과 그 근거(앱 안내 · 확인용, #268). 결과 문제의 실제 난이도는
+             초안이 떨어지면 target과 조금 다를 수 있음
 
 size개를 다 만들지 못하면 짧은 결과로 끝내지 않습니다(앱은 작업 상태로 성공 화면을 고름,
 #175 · #247).
@@ -115,7 +126,7 @@ from app.clients.llm import (
     Stopping,
 )
 from app.core.config import settings
-from app.services.quiz import combo, concepts, quality, similar
+from app.services.quiz import combo, concepts, levels, quality, similar
 from app.services.quiz.checks import (
     SAME_ANSWER,
     Seen,
@@ -315,6 +326,8 @@ class GenerateInput:
     sets: list[QuizSet]
     attempts: list[Attempt]
     notes: Notes
+    # 모든 사용자의 유형별 (푼 수, 맞힌 수): 유형 난이도를 고침(levels.type_levels, #268)
+    type_stats: dict[str, levels.Tally] = field(default_factory=dict)
 
 
 @dataclass
@@ -433,7 +446,23 @@ def parse(raw: JsonObject) -> GenerateInput:
             )
         attempts.append(Attempt(need(a, "quizSetId", str, w), at, answers))
     notes = parse_notes(need(raw, "notes", dict, "input"))
-    return GenerateInput(day, size, material, sets, attempts, notes)
+    return GenerateInput(day, size, material, sets, attempts, notes, _type_stats(raw))
+
+
+def _type_stats(raw: JsonObject) -> dict[str, levels.Tally]:
+    """input.typeStats {유형: {answered, correct}}(없어도 됨, #268). 모양이 틀린 유형은 뺌: 난이도를
+    고치는 참고값이라 이것 하나로 퀴즈를 실패시키지 않음."""
+    out: dict[str, levels.Tally] = {}
+    stats = raw.get("typeStats")
+    if not isinstance(stats, dict):
+        return out
+    for ty, v in stats.items():
+        a = v.get("answered") if isinstance(v, dict) else None
+        c = v.get("correct") if isinstance(v, dict) else None
+        ok = all(isinstance(x, int) and not isinstance(x, bool) for x in (a, c))
+        if ok and 0 <= c <= a:  # type: ignore[operator]
+            out[str(ty)] = levels.Tally(int(a), int(c))  # type: ignore[arg-type]
+    return out
 
 
 # ---------------------------------------------------------------- code: note text
@@ -999,9 +1028,26 @@ def run(
 
     seen: list[Seen] = [seen_question(q) for s in inp.sets for q in s.questions if here(s, q)]
     subject = concepts.subject_words(m.title)
+    # 난이도(#268): 유형 난이도는 모든 사용자의 정답률로 고치고, 세트 비율은 이 사용자의 난이도별
+    # 정답률로 정함(levels.py)
+    lv = levels.type_levels(inp.type_stats)
+    user = levels.level_stats(
+        {q["id"]: q for s in inp.sets for q in s.questions},
+        (x for a in inp.attempts for x in a.answers),
+        lv,
+    )
+    # 쓸 수 있는 난이도: 이 노트의 쪽 유형에 있는 난이도(빠른 모드의 용어 과목은 하 · 중뿐)
+    usable = {
+        lv[t]
+        for text in pages.values()
+        if askable(text)
+        for t in page_types(text, korean, mode.extra)
+        if t in lv
+    }
+    mix = levels.level_mix(n, usable, user)
     made, failed, down, tried_calls, rejected = _make_all(
         llm, pages, names_all, subject, per_page, weight, share, korean, seen, n, report,
-        mode, hurry,
+        mode, hurry, mix, lv,
     )  # fmt: skip
     if len(made) < n:  # 모자란 세트는 돌려주지 않음(앱은 작업 상태로 성공 화면을 고름, #247)
         if not made and tried_calls and down == tried_calls:
@@ -1023,14 +1069,22 @@ def run(
             "answer": r.question["answer"],
             "explanation": r.question.get("explanation"),
             "conceptTags": [r.concept],
-            # 유형으로 정한 처음 난이도(#268). 모델이 붙인 difficulty는 쓰지 않음(실험 1)
-            "difficulty": similar.difficulty_of(r.type),
+            # 유형으로 정하고 모든 사용자의 정답률로 고친 난이도(#268). 모델이 붙인 difficulty는
+            # 쓰지 않음(실험 1)
+            "difficulty": lv.get(r.type or "") or similar.difficulty_of(r.type),
             "srs": None,
         }
         for i, (_, r) in enumerate(made, 1)
         if r.question is not None
     ]
-    return _result(qs, title, new_names, weight, share, plain, per_page, failed)
+    out = _result(qs, title, new_names, weight, share, plain, per_page, failed)
+    # 앱 안내 · 확인용: 목표 비율, 약한 난이도, 이 사용자의 난이도별 (푼 수, 틀린 수)
+    out["levels"] = {
+        "target": mix,
+        "weak": levels.weak_level(user, usable),
+        "user": {k: [t.answered, t.count] for k, t in user.items()},
+    }
+    return out
 
 
 def _shape_ok(d: Draft) -> bool:
@@ -1065,6 +1119,8 @@ def _make_all(
     report: Progress,
     mode: Mode = FAST,
     hurry: Callable[[], bool] | None = None,
+    mix: dict[str, int] | None = None,
+    lv: dict[str, str] | None = None,
 ) -> tuple[list[tuple[int, Made]], list[JsonObject], int, int, int]:
     """자리마다 동시에 문제를 만들어 (만든 문제(세트 순서), 못 만든 자리, 실패한 시도, 시도,
     실패 중 서버가 거절한 생성 호출).
@@ -1082,12 +1138,17 @@ def _make_all(
     시간 상한은 mode.patience배입니다. hurry()가 참이 되면(미리 만들기를 사용자가 이어받음) 그때부터
     빠른 모드로 바꾸고 상한을 바로 요청한 것처럼 남은 자리 × 보통 상한으로 줄입니다(#274). 새
     초안 · 검사 앞(stop)과 판을 기다리는 동안 1초마다 봅니다.
+    난이도(#268): mix는 난이도마다 목표 문제 수, lv는 유형마다 난이도(levels.py). 자리마다 난이도를
+    정해 그 난이도의 유형부터 만들고(levels.order_types), 다음 판은 모자란 난이도부터 채웁니다.
     """
+    lv = lv or dict(similar.DIFFICULTY)
+    target = levels.slot_levels(mix or {}) or ["중"]  # 자리마다 난이도(첫 판의 차례)
     used: list[str] = []
     asked: Counter[str] = Counter()  # 세트에서 개념마다 물은 수
     taken: list[tuple[int, Made]] = []  # 받아들인 차례대로
     visits: Counter[int] = Counter()
-    turns = 0  # 안정적 모드: 세트 전체에서 자리마다 첫 유형을 돌림(유형 · 난이도가 섞이게, #268)
+    # 안정적 모드: 같은 난이도의 유형을 세트 전체에서 자리마다 돌림(유형이 섞이게, #268)
+    turns = 0
     dry: set[int] = set()
     drained: set[int] = set()  # dry 가운데 물을 개념이 남지 않아 닫은 쪽(마지막 단계에서 다시 엶)
     # dry 가운데 이번 판에 겹침(DRY_REASONS)으로 처음 닫은 쪽: 다음 판에 한 번 다시 엶. 학교 LLM은
@@ -1196,7 +1257,7 @@ def _make_all(
         return stop
 
     def one_slot(
-        slot: int, p: int, until: Llm, stop: Callable[[bool], str | None]
+        slot: int, p: int, level: str, until: Llm, stop: Callable[[bool], str | None]
     ) -> tuple[int, Made]:
         nonlocal turns
         with lock:
@@ -1231,9 +1292,11 @@ def _make_all(
                 types = page_types(pages[page], korean, cur.extra)
                 if group_clash[page] >= GROUP_CLASH_LIMIT and GROUP_TYPE in types:  # #282
                     types = [x for x in types if x != GROUP_TYPE]
-                # 쪽마다 돌리면 한 쪽에 한 자리인 노트는 모든 자리가 정의로 시작해 새 유형이
-                # 세 번째 시도에서야 나옴. 빠른 모드는 지금처럼 쪽마다
-                k = (turns if cur.extra else visits[page]) % len(types)
+                # 이 자리의 난이도 유형부터, 실패하면 가까운 난이도로(#268). 같은 난이도 안에서는
+                # 빠른 모드는 쪽마다, 안정적 모드는 세트 전체에서 돌림(한 쪽에 한 자리인 노트도
+                # 유형이 섞이게)
+                turn = turns if cur.extra else visits[page]
+                types = levels.order_types(types, level, lv, turn)
                 visits[page] += 1
                 turns += 1
                 info = per_page[page]
@@ -1244,7 +1307,7 @@ def _make_all(
                 return accept(page, x, again_ok)
 
             r = gen_one(
-                until, page, pages[page], types[k:] + types[:k], names, info,
+                until, page, pages[page], types, names, info,
                 seen, used, slot, here, stop, mode_now,
             )  # fmt: skip
             down, tries, rejected = down + r.down, tries + r.tries, rejected + r.rejected
@@ -1281,14 +1344,14 @@ def _make_all(
             report(15 + 85 * shown // max(n, 1), "문제 만들기")
 
     def guarded(
-        slot: int, p: int, until: Llm, stop: Callable[[bool], str | None]
+        slot: int, p: int, level: str, until: Llm, stop: Callable[[bool], str | None]
     ) -> tuple[int, Made]:
         """자리가 LlmError가 아닌 오류(학교 LLM 설정 오류 · 코드 오류)로 끝나면 그 자리에서 바로
         멈춤 신호를 켬: 남은 자리도 같으므로 주 스레드가 알아채기 전에 다음 자리가 호출하지 않게
         (Codex 리뷰 #264). 신호를 켜기 전에 오류를 남겨 둠: 주 스레드가 신호를 보고 먼저 빠져나오면
         이 자리는 아직 도는 자리로 빠져 오류를 잃고 시간 상한으로 셈(Codex 재리뷰 #264)."""
         try:
-            return one_slot(slot, p, until, stop)
+            return one_slot(slot, p, level, until, stop)
         except LlmError:
             raise
         except BaseException as e:
@@ -1301,7 +1364,7 @@ def _make_all(
     pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="quiz-slot")
 
     def one_round(
-        at: list[int], limits: _Limits
+        at: list[int], want: list[str], limits: _Limits
     ) -> tuple[list[tuple[int, Made]], list[tuple[int, Made]], int]:
         """자리들을 동시에 돌려 (끝난 자리, 못 만든 자리(시간 상한에 도는 중 · 시작하지 못함),
         시작한 자리 수)."""
@@ -1310,7 +1373,10 @@ def _make_all(
         stop = stop_of(halt, limits)
         futures: list[Future[tuple[int, Made]]] = []
         try:
-            futures = [pool.submit(guarded, k, p, until, stop) for k, p in enumerate(at)]
+            futures = [
+                pool.submit(guarded, k, p, w, until, stop)
+                for k, (p, w) in enumerate(zip(at, want, strict=True))
+            ]
             pending: set[Future[tuple[int, Made]]] = set(futures)
             while pending and not done.is_set() and (left := limits.hard - _clock()) > 0:
                 # 자리 하나가 끝날 때마다 깨어남(늦어도 1초마다 시간 상한 · 이어받았는지를 봄)
@@ -1348,14 +1414,26 @@ def _make_all(
             out.append((page, Made(why=[TIMEOUT]) if STOPPED in r.why else r))
         return out + cut
 
+    def levels_for(count: int, order: list[str]) -> list[str]:
+        """count자리의 난이도: order(모자란 난이도부터)를 앞에서부터 돌려 씀."""
+        return [order[i % len(order)] for i in range(count)] if order else ["중"] * count
+
+    def lacking() -> list[str]:
+        """다음 판의 난이도 차례: 목표보다 모자란 난이도부터(그다음 첫 판 차례)."""
+        with lock:
+            got = Counter(lv.get(r.type or "", "중") for _, r in taken)
+        short = {k: c - got[k] for k, c in (mix or {}).items() if c > got[k]}
+        return levels.slot_levels(short) + target
+
     at = slots + spare_of(n, backups)
+    want = levels_for(len(slots), target) + levels_for(len(at) - len(slots), target)
     finished: list[tuple[int, Made]] = []
     cut: list[tuple[int, Made]] = []
     earlier: list[tuple[int, Made]] = []  # 앞 판에서 못 만든 자리(오류 글에 이유를 모두 담음)
     answered = False  # 학교 LLM이 한 번이라도 답함(어느 판에서든 실패하지 않은 호출이 있음)
     try:
         while True:
-            finished, cut, started = one_round(at, lim)
+            finished, cut, started = one_round(at, want, lim)
             to_fast()  # 아래 남은 시간 판단이 이어받은 뒤의 전체 상한을 보게
             answered = answered or any(r.answered for _, r in finished)
             rounds += 1
@@ -1404,6 +1482,8 @@ def _make_all(
             earlier += not_made(finished, cut)
             at = [open_pages[i % len(open_pages)] for i in range(missing)]
             at += spare_of(missing, open_pages)
+            order = lacking()
+            want = levels_for(missing, order) + levels_for(len(at) - missing, order)
             # 판 하나의 상한은 첫 판과 같게: 자리는 동시에 돌아 한 자리에 드는 시간(생성 · 검사 ·
             # 풀기)이 모자란 문제 수에 비례하지 않음. 1문제 × 23초로 두면 다시 돌린 자리가 거의 늘
             # 상한에 걸림(/code-review #247)
