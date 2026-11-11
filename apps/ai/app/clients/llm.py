@@ -8,8 +8,10 @@ Claude(ClaudeLlm, 공식 SDK anthropic)
     maxLength · 2 이상의 minItems)은 SDK의 transform_schema가 설명으로 옮김. 그래서 개수 · 길이는
     서비스가 받은 뒤 다시 확인함(지금도 확인하고 있음)
   - temperature는 보내지 않음: SDK 2.x(API 버전 2026-10-21)에서 받지 않음
-  - Sonnet 5.5는 생각을 끔(between_tools), Haiku 5.5는 끌 수 없어 effort를 낮추고 그만큼
-    max_tokens를 더 줌. 한국어는 학교 LLM보다 토큰이 많아 max_tokens에 CLAUDE_TOKEN_SCALE을 곱함
+  - Sonnet 5.5는 생각을 끔(thinking.type between_tools, 이 모델만 받음). Haiku 5.5(검사)는
+    생각을 켜 둔 채 effort를 낮추고 그만큼 max_tokens를 더 줌: Haiku는 between_tools가 아니라
+    disabled로 끌 수 있지만(effort high 이하) 끄면 전공 판정이 틀어짐(#289). 한국어는 학교
+    LLM보다 토큰이 많아 max_tokens에 CLAUDE_TOKEN_SCALE을 곱함
   - 워크스페이스 사용 한도 초과(400) · 결제 오류(402)는 설정 문제: 모든 호출이 같으므로
     LlmSetupError(retry=False)로 작업을 바로 끝냄. 400을 LlmRejectedError로 두면 서비스가 자리마다
     계속 다시 불렀음
@@ -50,7 +52,7 @@ from typing import Any, Protocol
 import anthropic
 import httpx2
 
-from app.core.config import settings
+from app.core.config import GAP_DEFAULTS, settings
 
 type JsonObject = dict[str, Any]
 
@@ -96,7 +98,13 @@ STOPPED = "멈춤(다 모았거나 시간 상한)"
 # 사용자 맞춤 퀴즈는 혼자서도 간격을 거의 다 씀(36회/81초): 응답을 기다리는 사이 빈 차례를
 # 미리 만들기가 가져가면 사용자 5문제가 2분 상한에 걸려 3문제로 끝났음(11/07 학교 LLM)
 QUIET_GAPS = 3
-MIN_YIELD_SEC = 0.2  # 양보한 background 호출이 다시 볼 때까지 최소 대기(간격 0일 때 헛돌지 않게)
+# 그 시간의 하한(초): 사용자 작업이 다음 호출을 보내기까지(답 읽기 · 진행 기록 · 다음 단계)는
+# 간격과 상관없음. Claude 간격을 0.2초로 줄였을 때 0.6초로 줄지 않게(#289 /code-review),
+# 1.2초 간격 때 값(3.6초)을 그대로 둠
+QUIET_MIN_SEC = 3.6
+# 양보한 background 호출이 다시 볼 때까지 최소 대기: 간격이 짧아도(0 · Claude 0.2초) 기다리는
+# 스레드마다 초당 여러 번 깨어 멈춤 신호 · 잠금을 보지 않게(#289 /code-review)
+MIN_YIELD_SEC = 1.0
 SIGNAL_POLL_SEC = 0.25  # 멈춤 신호가 여럿일 때 기다리며 다시 보는 간격
 _local = threading.local()
 
@@ -357,7 +365,7 @@ class PacedLlm:
 
     def _user_busy(self, now: float) -> bool:
         """잠금 안에서: 사용자 작업 호출이 도는 중이거나 방금 끝났음."""
-        return self._active > 0 or now < self._last + self._gap * QUIET_GAPS
+        return self._active > 0 or now < self._last + max(self._gap * QUIET_GAPS, QUIET_MIN_SEC)
 
     def _hold(self, sec: float) -> None:
         """429: 모든 스레드가 sec초 동안 보내지 않음."""
@@ -482,10 +490,16 @@ class SchoolLlm(PacedLlm):
 # Claude: 학교 LLM에 맞춰 둔 max_tokens를 이만큼 늘림. 같은 한국어도 토큰이 더 많고, 쓰지 않은
 # 몫은 청구되지 않음
 CLAUDE_TOKEN_SCALE = 2
-# 생각을 끌 수 없는 모델(Haiku 5.5 등)에 더 주는 max_tokens: 생각도 max_tokens 안에서 씀.
-# effort low라 대개 짧지만, 생각만 하다 끝나면(빈 답) 같은 요청을 다시 보내게 되므로 넉넉히
+# 생각을 켜 두는 모델(Haiku 5.5 등)에 더 주는 max_tokens: 생각도 max_tokens 안에서 씀.
+# effort low라 대개 짧지만, 생각만 하다 끝나면(빈 답) 같은 요청을 다시 보내게 되므로 넉넉히.
+# Haiku 5.5도 끌 수는 있지만 넣지 않음(#289, 실제 검사 요청 100개를 켜고 · 끄고 다시 보냄):
+# 켬 ↔ 끔 일치 85(같은 조건 다시 보내기 96~97), 달라진 15건 중 전공 판정은 켬이 맞음 8 ·
+# 끔이 맞음 1('두비니 구충 → 조충류', 노트에 정의가 없는 문제를 '근거 있음'으로 통과).
+# 끄면 호출당 2.1 → 1.6초
 CLAUDE_THINK_ROOM = 4000
-# 생각을 끌 수 있는 모델(이름 앞부분): 이 모델만 thinking.type between_tools를 받음(다른 모델은 400)
+# 생각을 끄는 모델(이름 앞부분): 이 모델만 thinking.type between_tools를 받음(다른 모델은 400).
+# Haiku 5.5를 여기 넣으면 모든 검사 호출이 400: Haiku를 끄려면 disabled를 써야 하고, 그것도
+# 검사 정확도 때문에 쓰지 않음(CLAUDE_THINK_ROOM)
 CLAUDE_NO_THINK = ("claude-sonnet-5-5",)
 USAGE_LIMIT_HINTS = ("usage limit", "credit balance")
 # 바꾼 스키마를 기억해 두는 수. 개념 고르기(concepts._pick_schema)처럼 내용마다 다른 스키마도 있어
@@ -501,7 +515,7 @@ class ClaudeLlm(PacedLlm):
         api_key: str,
         *,
         effort: str = "low",
-        gap_sec: float = 1.2,
+        gap_sec: float = GAP_DEFAULTS["claude"],
         retries: int = 2,
         timeout: float = 180.0,
         base_url: str | None = None,
