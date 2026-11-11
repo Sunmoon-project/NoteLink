@@ -1253,6 +1253,46 @@ def test_a_classification_answer_taken_meanwhile_by_another_slot_counts_as_a_cla
     join_threads("quiz-slot")
 
 
+def test_an_answer_taken_meanwhile_is_its_own_reason_not_a_dry_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1쪽 2문제를 두 자리가 동시에(THREE_TRIES, 판 하나). 한 자리의 마지막 시도(정의, 정답 이질
+    # 아메바)를 만드는 동안 다른 자리가 이질 아메바를 받음: 받을 때 정답이 겹친 이유는 쪽 닫기
+    # 이유(세트 안에서 정답이 겹침)가 아니라 따로 적힘(/code-review #293)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    late = draft(
+        "이질 아메바", "포낭형의 핵이 4개이고 적혈구를 먹는 원충이다", concept="대장 아메바"
+    )
+    monkeypatch.setitem(ANSWER_OF, late["question"]["passage"], "이질 아메바")
+    lock = threading.Lock()
+    asking, taken = threading.Event(), threading.Event()
+    defines = [0]
+
+    def quiz(user: str) -> JsonObject:
+        ty = re.findall(r"문제 유형: (\S+)", user)[0]
+        with lock:
+            defines[0] += ty == "정의"
+            nth = defines[0] if ty == "정의" else 0
+        if nth == 1:  # 받는 자리: 다른 자리가 마지막 시도를 시작한 뒤에 끝남
+            assert asking.wait(10)
+            return GOOD["이질 아메바"]
+        if nth == 2:  # 다른 자리의 마지막 시도(특징 · 분류 다음)
+            asking.set()
+            assert taken.wait(10)
+            return late
+        return BAD
+
+    def report(value: int, step: str | None = None) -> None:
+        if value > 15:
+            taken.set()
+
+    with pytest.raises(generate.NoQuestionsError, match="1/2문제만 만듦") as e:
+        generate.run(parallel_llm(quiz), page1_job(size=2), report, mode=THREE_TRIES)
+    assert generate.CLASH_SAME in str(e.value)
+    assert generate.SAME_ANSWER not in str(e.value)
+    join_threads("quiz-slot")
+
+
 def test_a_blank_classification_draft_clashing_when_taken_still_counts() -> None:
     # 분류로 만들었지만 제시문에 ____가 있어 결과 유형이 빈칸으로 적히는 초안도, 받을 때 정답이
     # 겹치면 분류 겹침으로 셈: 결과 유형이 아니라 만든 유형으로 봄(/code-review #293)
@@ -1262,13 +1302,20 @@ def test_a_blank_classification_draft_clashing_when_taken_still_counts() -> None
 
     def taken_meanwhile(m: generate.Made) -> list[str]:
         kinds.append(m.type)
-        return [generate.CLASH, generate.SAME_ANSWER]
+        return [generate.CLASH_SAME]
 
     r = generate.gen_one(
         happy([blank, blank]), 1, PAGE1, ["분류"], NAMES, PageInfo(), [], [], 0, taken_meanwhile
     )
     assert kinds == ["빈칸", "빈칸"]  # 결과 유형은 빈칸
-    assert r.group_clash == 2 and r.why == [generate.CLASH, generate.GROUP_SAME]
+    assert r.group_clash == 2 and r.why == [generate.GROUP_SAME]
+    # 정의 초안이 받을 때 정답이 겹치면 세지 않고, 쪽도 닫지 않음(/code-review #293)
+    r = generate.gen_one(
+        happy([GOOD["이질 아메바"]] * 2), 1, PAGE1, ["정의"], NAMES, PageInfo(), [], [], 0,
+        taken_meanwhile,
+    )  # fmt: skip
+    assert r.group_clash == 0 and r.why == [generate.CLASH_SAME]
+    assert not all(w in generate.DRY_REASONS for w in r.why)
 
 
 def test_a_classification_answer_clash_does_not_close_the_page() -> None:

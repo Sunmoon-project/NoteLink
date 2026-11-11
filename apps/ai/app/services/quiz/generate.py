@@ -219,6 +219,9 @@ STABLE = Mode("stable", PATIENT, 3, True, similar.STABLE_TYPES)
 MAX_TRIES = max(FAST.tries, STABLE.tries)
 RECHECK = "Recheck"  # 생성 모델 2차 풀기 호출 이름(검사 모델 풀기 'Check'와 구분)
 CLASH = "동시에 만든 문제와 겹침"  # 다른 자리가 그사이 받은 문제와 겹침: 쪽을 닫지 않음
+# 그사이 다른 자리가 같은 정답을 받음: 쪽을 닫지 않음(DRY_REASONS의 SAME_ANSWER와 따로). 분류
+# 초안이면 분류 겹침으로 셈(Codex 리뷰 #293)
+CLASH_SAME = "동시에 만든 문제와 정답이 겹침"
 FULL = "이미 다 모음"
 TIMEOUT = "시간 상한"
 BAD_SHAPE = "문제 모양이 맞지 않음"  # 서버 모양 검사(fromWorkerQuestion)에 걸림
@@ -719,10 +722,11 @@ def _group_clash(ty: str, why: list[str], out: Made) -> list[str]:
     만든 유형(ty)으로 봄: 제시문에 ____가 있어 결과 유형이 빈칸으로 적혀도 분류로 셈. 만들 때
     (code_check)와 받을 때(accept) 겹침을 이 한 곳에서 셈(/code-review #293).
     """
-    if ty != GROUP_TYPE or SAME_ANSWER not in why:
+    same = (SAME_ANSWER, CLASH_SAME)
+    if ty != GROUP_TYPE or not any(w in same for w in why):
         return why
     out.group_clash += 1
-    return [GROUP_SAME if w == SAME_ANSWER else w for w in why]
+    return [GROUP_SAME if w in same else w for w in why]
 
 
 def _take(seen: list[Seen], used: list[str]) -> Accept:
@@ -1158,17 +1162,15 @@ def _make_all(
         with lock:
             if done.is_set() or len(taken) >= n:
                 return [FULL]
-            same = not combo_q and any(same_item(d["answer"], u) for u in used)
-            if (
-                # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
-                asked[r.concept] >= per_concept(again_ok)
-                or same
-                or too_close(d, seen)
-                or reversed_of(d, seen)
-            ):
-                # 정답이 겹쳤으면 그 이유도: 분류 초안이면 gen_one이 분류 겹침으로 셈. 동시에 만들면
-                # 묶음 이름은 대개 여기서 겹침(Codex 리뷰 #293)
-                return [CLASH, SAME_ANSWER] if same else [CLASH]
+            # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
+            if asked[r.concept] >= per_concept(again_ok):
+                return [CLASH]
+            if not combo_q and any(same_item(d["answer"], u) for u in used):
+                # 분류 초안이면 gen_one이 분류 겹침으로 셈: 동시에 만들면 묶음 이름은 대개 여기서
+                # 겹침(Codex 리뷰 #293). 개념이 먼저 겹친 초안은 세지 않음(/code-review #293)
+                return [CLASH_SAME]
+            if too_close(d, seen) or reversed_of(d, seen):
+                return [CLASH]
             asked[r.concept] += 1
             seen.append(seen_draft(d))
             if _listed(r):
