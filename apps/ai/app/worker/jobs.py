@@ -57,7 +57,9 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
   - step은 공용 스키마에서 '없거나 문자열'이라, None을 쓰지 않고 필드를 지웁니다.
 """
 
+import json
 import logging
+import os
 import threading
 import uuid
 from collections.abc import Callable, Iterable
@@ -65,6 +67,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from bson import ObjectId
 from pymongo import ReturnDocument
 from pymongo.collection import Collection
 from pymongo.errors import PyMongoError
@@ -81,6 +84,46 @@ COST_IDS_FIELD = "llmCostIds"
 # 적든, 비용 합계를 읽을 때든(claude_spent) 먼저 다시 적음
 _unrecorded: list[tuple[Any, Any, str, float]] = []
 _unrecorded_lock = threading.Lock()
+# 모아 둔 비용을 처리기 작업 폴더의 파일에도 남김: DB가 끊긴 채 처리기가 다시 시작해도 읽어서
+# 다시 적게(Codex 재리뷰 #299). 팀 규칙상 FastAPI는 ai_jobs만 쓰므로 DB 대신 파일.
+# 처리기 밖(시험 등)에서는 비어 있음(파일을 쓰지 않음)
+_spool: list[str] = []
+
+
+def use_spool(path: str, col: Collection[JsonObject]) -> int:
+    """처리기가 시작할 때 부름: 지난번에 남긴 비용을 읽어 모아 두고(다음에 적힘) 앞으로도 path에
+    남김. 읽은 수를 돌려줌. 파일이 없으면 0."""
+    _spool[:] = [path]
+    try:
+        with open(path, encoding="utf-8") as f:
+            rows = json.load(f)
+    except FileNotFoundError:
+        return 0
+    except (OSError, ValueError):
+        log.warning("남긴 Claude 비용 파일 %s를 읽지 못함", path, exc_info=True)
+        return 0
+    with _unrecorded_lock:
+        _unrecorded.extend((col, ObjectId(r["job"]), r["id"], float(r["usd"])) for r in rows)
+    return len(rows)
+
+
+def _save_spool() -> None:
+    """잠금 안에서: 모아 둔 비용을 파일에(없으면 지움). 실패해도 로그만."""
+    if not _spool:
+        return
+    path = _spool[0]
+    try:
+        if not _unrecorded:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        rows = [{"job": str(j), "id": c, "usd": u} for _, j, c, u in _unrecorded]
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(rows, f)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        log.warning("Claude 비용을 파일 %s에 남기지 못함", path, exc_info=True)
+
 
 SWEEP_EVERY = timedelta(seconds=60)  # 시도 한도를 넘긴 멈춘 작업 정리 간격(가져오기마다 하지 않음)
 
@@ -320,7 +363,11 @@ class JobStore:
             except PyMongoError:
                 with _unrecorded_lock:
                     _unrecorded[:0] = todo[i:]
+                    _save_spool()
                 raise
+        if len(todo) > len(new):  # 모아 둔 것을 다 적음: 파일도 비움
+            with _unrecorded_lock:
+                _save_spool()
 
     def claude_spent(self) -> float:
         """모든 작업의 llmUsd 합계(달러, #298). 모아 둔 비용을 먼저 적어 봄(학교 LLM으로 넘긴 뒤에도

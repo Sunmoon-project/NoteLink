@@ -21,7 +21,7 @@ from pymongo import MongoClient
 from app.clients.llm import JsonObject, llm_setup_problem
 from app.core.config import settings
 from app.worker.handlers import BACKGROUND, HANDLERS, use_spend
-from app.worker.jobs import JobStore
+from app.worker.jobs import JobStore, use_spool
 from app.worker.runner import Lane, run_lanes
 
 log = logging.getLogger("app.worker")
@@ -67,6 +67,8 @@ def main() -> None:
         )
 
     if settings.llm_provider == "claude" and settings.claude_budget_usd > 0:
+        if left := use_spool(settings.llm_cost_spool, client[settings.mongodb_db]["ai_jobs"]):
+            log.warning("지난번에 DB에 적지 못한 Claude 비용 %d건을 다시 적습니다", left)
         spend = use_spend(store(":spend").claude_spent)
         log.info(  # 못 읽으면 inf(그동안 학교 LLM, 곧 다시 읽음)
             "Claude 비용: 지금까지 %.2f달러 / 한도 %.2f달러(닿으면 학교 LLM으로)",

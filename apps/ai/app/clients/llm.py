@@ -931,7 +931,9 @@ class Budgeted:
         self._exhausted = True
 
     def over(self) -> bool:
-        over = self._exhausted or self.spend.total() >= self._limit
+        # 넘긴 뒤에도 합계를 읽음: 읽을 때 모아 둔 비용을 다시 적으므로(Codex 재리뷰 #299)
+        total = self.spend.total()
+        over = self._exhausted or total >= self._limit
         if over and not self._told:
             self._told = True
             log.warning(

@@ -507,8 +507,10 @@ def test_unwritten_costs_stay_queued_while_the_db_is_down() -> None:
 @pytest.fixture(autouse=True)
 def _no_leftover_costs() -> Any:
     jobs_module._unrecorded.clear()
+    jobs_module._spool.clear()
     yield
     jobs_module._unrecorded.clear()
+    jobs_module._spool.clear()
 
 
 def test_a_resend_sees_the_cost_of_the_answer_before_it() -> None:
@@ -555,3 +557,46 @@ def test_reading_the_total_writes_queued_costs_from_any_store() -> None:
     totals = JobStore(col, "w1:spend", lock_sec=60, max_attempts=3, retry_delay_sec=30)
     assert totals.claude_spent() == pytest.approx(1.0)
     assert col.find_one({"_id": a})[COST_FIELD] == 1.0
+
+
+# ---------- Codex 재리뷰(3차) #299 ----------
+
+
+def test_unwritten_costs_survive_a_restart_through_the_spool_file(tmp_path: Any) -> None:
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    a = col.insert_one({"type": "x"}).inserted_id
+    spool = str(tmp_path / "llm-cost-spool.json")
+    assert jobs_module.use_spool(spool, col) == 0  # 처음: 남긴 것 없음
+    lane = JobStore(FlakyCol(col, 1), "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30)  # type: ignore[arg-type]
+    with pytest.raises(AutoReconnect):
+        lane.add_cost(Job(a, "x", {}, 1), 1.0)
+    # 처리기가 다시 시작: 메모리는 비고 파일만 남음
+    jobs_module._unrecorded.clear()
+    assert jobs_module.use_spool(spool, col) == 1
+    totals = JobStore(col, "w1:spend", lock_sec=60, max_attempts=3, retry_delay_sec=30)
+    assert Spend(totals.claude_spent).total() == pytest.approx(1.0)
+    assert col.find_one({"_id": a})[COST_FIELD] == 1.0
+    assert not (tmp_path / "llm-cost-spool.json").exists()  # 다 적으면 파일도 지움
+
+
+def test_a_broken_spool_file_does_not_stop_the_worker(tmp_path: Any) -> None:
+    (tmp_path / "s.json").write_text("{", encoding="utf-8")
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    assert jobs_module.use_spool(str(tmp_path / "s.json"), col) == 0
+
+
+def test_the_total_is_still_read_after_switching_on_a_usage_limit() -> None:
+    # Console 한도 오류로 넘긴 뒤에도 합계를 읽음: 읽을 때 모아 둔 비용을 다시 적으므로
+    reads: list[int] = []
+    clock = Clock()
+
+    def read() -> float:
+        reads.append(1)
+        return 10.0
+
+    b = Budgeted(FakeLlm(), FakeLlm, Spend(read, ttl=300, clock=clock), 70.0, {})
+    b.exhaust()
+    assert b.over()
+    clock.now = 300
+    assert b.over()
+    assert len(reads) == 2
