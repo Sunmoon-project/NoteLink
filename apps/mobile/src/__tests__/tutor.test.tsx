@@ -5,7 +5,7 @@ import { ERROR_CODES, NoteAskBody, type AiJob } from '@notelink/shared';
 import { ApiError } from '../lib/api/http';
 import { OFF_TOPIC, UNSAFE, localAnswer } from '../lib/local/tutor';
 import * as SecureStore from 'expo-secure-store';
-import { TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
+import { BUDDY_LINES, TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
 import { AvatarCheer, ENCOURAGE, PRAISE } from '../features/tutor/cheer';
 import { AvatarTeacherScreen } from '../features/tutor/teacher';
 import { STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
@@ -26,7 +26,11 @@ const refocus = () => act(() => [...mockFocus].forEach((cb) => cb()));
 // GL · 3D 모델은 기기에서만. 화면 테스트는 어떤 아바타를 그리는지와 대화 흐름을 본다
 jest.mock('../features/tutor/avatar3d', () => {
   const { Text: T } = jest.requireActual('react-native');
-  return { Avatar3D: ({ avatarId }: { avatarId: string }) => <T>{`3D:${avatarId}`}</T> };
+  return {
+    Avatar3D: ({ avatarId, mood }: { avatarId: string; mood: string }) => (
+      <T accessibilityLabel={`표정:${mood}`}>{`3D:${avatarId}`}</T>
+    ),
+  };
 });
 
 // 기기 저장소는 메모리로(테스트마다 비움)
@@ -259,12 +263,43 @@ it('안드로이드에서는 keyboardDidShow · keyboardDidHide로 키보드를 
 });
 
 describe('노트 상세에 떠 있는 아바타 선생님', () => {
-  it('누르면 아바타 선생님 화면을 열고, 처음에 할 일을 말풍선으로 알려 준다', async () => {
+  it('처음에 할 일을 말풍선으로 알려 주고, 누르면 웃으며 한마디 한 뒤 한 번 더 누르면 대화를 연다', async () => {
     await renderScreen(<TutorBuddy id="m1" tucked={false} />);
     expect(await screen.findByText('3D:base')).toBeTruthy();
+    expect(screen.getByLabelText('표정:idle')).toBeTruthy();
     expect(await screen.findByText('노트에 대해 물어보세요', {}, { timeout: 3000 })).toBeTruthy();
-    await fireEvent.press(screen.getByLabelText('아바타 선생님에게 물어보기'));
+    const buddy = screen.getByLabelText('아바타 선생님에게 물어보기');
+    await fireEvent.press(buddy);
+    // 첫 누름은 반응만: 웃는 얼굴과 말풍선, 화면은 그대로
+    expect(screen.getByText(BUDDY_LINES[0]!)).toBeTruthy();
+    expect(screen.getByLabelText('표정:happy')).toBeTruthy();
+    expect(screen.queryByText('노트에 대해 물어보세요')).toBeNull();
+    expect(router.push).not.toHaveBeenCalled();
+    await fireEvent.press(buddy);
     expect(router.push).toHaveBeenCalledWith({ pathname: '/tutor/[id]', params: { id: 'm1' } });
+    expect(screen.queryByText(BUDDY_LINES[0]!)).toBeNull();
+  });
+
+  it('누를 때마다 다른 말을 하고, 말풍선을 누르거나 길게 누르면 바로 대화를 연다', async () => {
+    jest.useFakeTimers();
+    try {
+      await renderScreen(<TutorBuddy id="m1" tucked={false} />);
+      const buddy = screen.getByLabelText('아바타 선생님에게 물어보기');
+      await fireEvent.press(buddy);
+      expect(screen.getByText(BUDDY_LINES[0]!)).toBeTruthy();
+      // 말풍선이 사라지면 다시 웃는 얼굴이 아니고, 다음 누름은 다음 말
+      await act(async () => jest.advanceTimersByTime(3600));
+      expect(screen.queryByText(BUDDY_LINES[0]!)).toBeNull();
+      expect(screen.getByLabelText('표정:idle')).toBeTruthy();
+      await fireEvent.press(buddy);
+      expect(screen.getByText(BUDDY_LINES[1]!)).toBeTruthy();
+      await fireEvent.press(screen.getByLabelText(`${BUDDY_LINES[1]}. 대화 열기`));
+      expect(router.push).toHaveBeenCalledTimes(1);
+      await fireEvent(buddy, 'longPress');
+      expect(router.push).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('아래로 읽어 내려가면 비켜 서고, 위로 올리거나 잠시 멈추면 돌아온다', async () => {
