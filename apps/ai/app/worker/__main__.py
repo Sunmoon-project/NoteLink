@@ -67,11 +67,10 @@ def main() -> None:
         )
 
     if settings.llm_provider == "claude" and settings.claude_budget_usd > 0:
-        totals = store(":spend")
-        use_spend(totals.claude_spent)
-        log.info(
+        spend = use_spend(store(":spend").claude_spent)
+        log.info(  # 못 읽으면 inf(그동안 학교 LLM, 곧 다시 읽음)
             "Claude 비용: 지금까지 %.2f달러 / 한도 %.2f달러(닿으면 학교 LLM으로)",
-            totals.claude_spent(),
+            spend.total(),
             settings.claude_budget_usd,
         )
         if not settings.school_llm_base_url:

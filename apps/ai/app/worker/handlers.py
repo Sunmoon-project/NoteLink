@@ -41,12 +41,13 @@ class _Once[T]:
 _spend: list[Spend] = []  # use_spend로 정함: 지금까지 쓴 Claude 비용(#298)
 
 
-def use_spend(read_total: Callable[[], float]) -> None:
+def use_spend(read_total: Callable[[], float]) -> Spend:
     """처리기가 시작할 때 부름: Claude 비용 합계를 읽는 법(ai_jobs.llmUsd).
 
     부르지 않으면 예산 제한 없음(시험 · 처리기 밖)."""
     _spend[:] = [Spend(read_total)]
     _llm.cache_clear()
+    return _spend[0]
 
 
 @_Once

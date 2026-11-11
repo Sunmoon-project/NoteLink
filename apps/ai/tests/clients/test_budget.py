@@ -17,6 +17,7 @@ from app.clients.llm import (
     LlmCutError,
     LlmRejectedError,
     LlmSetupError,
+    LlmUsageLimitError,
     Metered,
     Spend,
     charge,
@@ -29,7 +30,7 @@ from app.clients.llm import (
 from app.core.config import settings
 from app.worker import handlers
 from app.worker.jobs import COST_FIELD, Job, JobStore
-from tests.clients.test_claude_llm import SCHEMA, Server, call, error, message
+from tests.clients.test_claude_llm import SCHEMA, USAGE_LIMIT, Server, call, error, message
 from tests.fakes import FakeLlm
 
 SONNET_10_5 = (10 * 2.0 + 5 * 10.0) / 1_000_000  # message()의 usage: 입력 10 · 출력 5
@@ -147,20 +148,52 @@ class Clock:
         return self.now
 
 
-def test_spend_rereads_the_total_after_ttl_and_adds_what_was_spent_since() -> None:
+def test_spend_counts_its_own_costs_and_rereads_the_db_after_ttl() -> None:
     db = [10.0]
     clock = Clock()
-    spend = Spend(lambda: db[0], ttl=30, clock=clock)
+    spend = Spend(lambda: db[0], ttl=300, clock=clock)
     assert spend.total() == 10.0
-    db[0] = 12.0
     spend.add(0.5)
-    clock.now = 29
-    assert spend.total() == 10.5  # 아직 다시 읽지 않음: 그사이 쓴 것만 더함
-    clock.now = 30
-    assert spend.total() == 12.0  # 다시 읽으면 DB 합계(그사이 쓴 것은 DB에 들어 있음)
+    db[0] = 10.5  # 작업 문서에 적힘
+    assert spend.total() == 10.5  # 다시 읽기 전에도 바로 셈
+    db[0] = 12.0  # 다른 처리기가 더 씀
+    clock.now = 299
+    assert spend.total() == 10.5
+    clock.now = 300
+    assert spend.total() == 12.0  # 큰 쪽: DB 합계
 
 
-def test_spend_keeps_the_last_total_when_reading_fails() -> None:
+def test_a_cost_that_never_reached_the_db_is_not_dropped() -> None:
+    # 작업 문서에 적기를 실패해도(Metered가 로그만 남김) 다시 읽은 뒤 사라지지 않음
+    clock = Clock()
+    spend = Spend(lambda: 10.0, ttl=300, clock=clock)
+    assert spend.total() == 10.0
+    spend.add(1.0)
+    clock.now = 600
+    assert spend.total() == 11.0
+
+
+def test_spend_is_unknown_until_the_first_read_works() -> None:
+    clock = Clock()
+    reads: list[Any] = [RuntimeError("DB down"), RuntimeError("DB down"), 7.0]
+
+    def read() -> float:
+        r = reads.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return float(r)
+
+    spend = Spend(read, ttl=300, retry=5, clock=clock)
+    assert spend.total() == float("inf")  # 모르면 한도에 닿은 것으로(학교 LLM)
+    clock.now = 4
+    assert spend.total() == float("inf") and len(reads) == 2  # retry 전에는 다시 읽지 않음
+    clock.now = 5
+    assert spend.total() == float("inf")
+    clock.now = 10
+    assert spend.total() == 7.0
+
+
+def test_spend_keeps_the_last_total_when_a_later_read_fails() -> None:
     clock = Clock()
     reads: list[Any] = [7.0, RuntimeError("DB down")]
 
@@ -170,11 +203,34 @@ def test_spend_keeps_the_last_total_when_reading_fails() -> None:
             raise r
         return float(r)
 
-    spend = Spend(read, ttl=30, clock=clock)
+    spend = Spend(read, ttl=300, clock=clock)
     assert spend.total() == 7.0
     spend.add(1.0)
-    clock.now = 31
+    clock.now = 301
     assert spend.total() == 8.0
+
+
+def test_only_one_thread_reads_and_the_others_use_the_last_total() -> None:
+    clock = Clock()
+    started, release = threading.Event(), threading.Event()
+    values = [5.0, 6.0]
+
+    def read() -> float:
+        if len(values) == 1:  # 두 번째 읽기: 다른 스레드가 기다리게 막음
+            started.set()
+            release.wait(5)
+        return values.pop(0)
+
+    spend = Spend(read, ttl=300, clock=clock)
+    assert spend.total() == 5.0
+    clock.now = 300
+    reader = threading.Thread(target=spend.total)
+    reader.start()
+    assert started.wait(5)
+    assert spend.total() == 5.0  # 읽는 중: 기다리지 않고 지난 값
+    release.set()
+    reader.join(5)
+    assert spend.total() == 6.0
 
 
 # ---------- Budgeted: 한도에 닿으면 학교 LLM ----------
@@ -244,6 +300,33 @@ def test_the_school_client_is_made_once_and_only_when_needed() -> None:
     assert len(made) == 1
 
 
+def test_a_usage_limit_answer_switches_to_the_school_llm_for_good() -> None:
+    # Console 한도가 코드에서 센 비용보다 먼저 닿음: 그 호출부터 학교 LLM, 다시 Claude로 가지 않음
+    class Limited(FakeLlm):
+        sent = 0
+
+        def call(self, *a: Any, **kw: Any) -> Any:
+            self.sent += 1
+            raise LlmUsageLimitError("HTTP 400 사용 한도")
+
+    claude, school = Limited(), FakeLlm(answers={"X": [{"a": 1}, {"b": 2}]})
+    b = budgeted(10.0, claude, school)
+    assert b.call("claude-haiku-5-5", "s", "u", SCHEMA, "X") == {"a": 1}
+    b.call("claude-sonnet-5-5", "s", "u", SCHEMA, "X")
+    assert claude.sent == 1
+    assert [c.model for c in school.calls] == ["qwen-27b", "gemma-4-26b"]
+
+
+def test_claude_usage_limit_answers_are_usage_limit_errors() -> None:
+    for reply in (
+        error(400, "invalid_request_error", USAGE_LIMIT),
+        error(402, "billing_error", "credit balance is too low"),
+    ):
+        with pytest.raises(LlmUsageLimitError) as e:
+            call(Server(reply).client())
+        assert isinstance(e.value, LlmSetupError) and e.value.retry is False
+
+
 def test_without_school_settings_the_switch_is_a_setup_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -260,6 +343,18 @@ def test_the_school_fallback_uses_the_school_gap(monkeypatch: pytest.MonkeyPatch
 
 def test_school_models_map_each_setting() -> None:
     assert school_models() == {"claude-sonnet-5-5": "gemma-4-26b", "claude-haiku-5-5": "qwen-27b"}
+
+
+def test_a_claude_model_shared_by_settings_maps_to_their_most_common_school_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 검사도 Sonnet이면: Sonnet을 쓰는 항목 6개 중 5개가 gemma
+    monkeypatch.setattr(settings, "quiz_check_model", "claude-sonnet-5-5")
+    assert school_models() == {"claude-sonnet-5-5": "gemma-4-26b"}
+    # 같은 수면 MODEL_FIELDS 앞쪽: Haiku를 검사(qwen)와 노트 묻기(gemma)가 함께 쓰면 qwen
+    monkeypatch.setattr(settings, "quiz_check_model", "claude-haiku-5-5")
+    monkeypatch.setattr(settings, "note_ask_model", "claude-haiku-5-5")
+    assert school_models()["claude-haiku-5-5"] == "qwen-27b"
 
 
 def test_make_llm_budgets_claude_only_with_a_spend_and_a_limit(

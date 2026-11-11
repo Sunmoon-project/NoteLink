@@ -87,6 +87,14 @@ class LlmSetupError(Exception):
         self.retry = retry
 
 
+class LlmUsageLimitError(LlmSetupError):
+    """Claude 워크스페이스 사용 한도 · 결제 한도에 닿음(400 usage limit · 402). Budgeted는 이것을
+    받으면 학교 LLM으로 넘김: Console 한도가 코드에서 센 비용보다 먼저 닿을 수 있음(#298)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, retry=False)
+
+
 SETUP_STATUSES = frozenset({401, 403, 404})
 RESEND_4XX = frozenset({408, 409, 425})  # 4xx지만 잠깐 뒤 다시 보내면 되는 응답
 MAX_HOLDS = 5  # 한 호출이 429를 받고 다시 보내는 횟수(일반 재시도와 따로)
@@ -638,7 +646,7 @@ class ClaudeLlm(PacedLlm):
         except anthropic.APIStatusError as e:
             status = e.status_code
             if status == 402 or (status == 400 and _usage_limited(e)):
-                raise LlmSetupError(f"HTTP {status} 사용 한도", retry=False) from e
+                raise LlmUsageLimitError(f"HTTP {status} 사용 한도") from e
             return status, e.response.headers.get("retry-after"), None
         if not isinstance(msg, anthropic.types.Message):  # 200인데 JSON이 아니면 SDK가 글자로 줌
             return 200, None, None
@@ -751,12 +759,19 @@ class Metered:
                         )
 
 
-SPEND_TTL_SEC = 30.0  # 지금까지 쓴 비용 합계(ai_jobs)를 다시 읽는 간격
+# 지금까지 쓴 비용 합계(ai_jobs 전체)를 다시 읽는 간격. 이 프로세스가 쓴 것은 따로 바로 세므로
+# 다른 처리기가 쓴 것만 늦게 보임(처리기는 하나만 띄움, __main__). 한 번도 못 읽었으면 짧게 다시
+SPEND_TTL_SEC = 300.0
+SPEND_RETRY_SEC = 5.0
 
 
 class Spend:
-    """지금까지 쓴 Claude 비용(달러): DB 합계(read_total)를 ttl초마다 다시 읽고, 그사이 이
-    프로세스가 쓴 것(add)을 더함. 못 읽으면 지난 값을 씀(예산 상한은 Console 한도가 한 번 더 막음).
+    """지금까지 쓴 Claude 비용(달러, #298).
+
+    total = max(DB 합계, 처음 읽은 DB 합계 + 그 뒤 이 프로세스가 쓴 것). 이 프로세스가 쓴 것은
+    DB에 적혔는지와 상관없이 세므로, 작업 문서에 적기를 실패하거나 다시 읽기 전이어도 빠지지 않음.
+    DB 합계는 처음과 ttl마다 읽음: 잠금 밖에서 한 스레드만 읽고 나머지는 지난 값을 씀(느린 DB가
+    LLM 호출을 막지 않게). 한 번도 못 읽었으면 inf(모르면 한도에 닿은 것으로, 학교 LLM).
     """
 
     def __init__(
@@ -764,28 +779,45 @@ class Spend:
         read_total: Callable[[], float],
         *,
         ttl: float = SPEND_TTL_SEC,
+        retry: float = SPEND_RETRY_SEC,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._read, self._ttl, self._clock = read_total, ttl, clock
-        self._db = 0.0
-        self._since = 0.0
-        self._at: float | None = None
+        self._read, self._ttl, self._retry, self._clock = read_total, ttl, retry, clock
+        self._db: float | None = None  # 마지막으로 읽은 DB 합계
+        self._base: float | None = None  # 처음 읽은 DB 합계
+        self._local = 0.0  # 이 프로세스가 쓴 것(시작부터)
+        self._local_at_base = 0.0
+        self._at: float | None = None  # 마지막으로 읽기를 시작한 시각
+        self._reading = False
         self._lock = threading.Lock()
 
     def add(self, usd: float) -> None:
         with self._lock:
-            self._since += usd
+            self._local += usd
 
     def total(self) -> float:
         with self._lock:
             now = self._clock()
-            if self._at is None or now - self._at >= self._ttl:
-                self._at = now
-                try:
-                    self._db, self._since = float(self._read()), 0.0
-                except Exception:
-                    log.warning("Claude 비용 합계를 읽지 못함, 지난 값을 씀", exc_info=True)
-            return self._db + self._since
+            wait = self._ttl if self._db is not None else self._retry
+            due = not self._reading and (self._at is None or now - self._at >= wait)
+            if due:
+                self._reading, self._at = True, now
+        if due:
+            value: float | None = None
+            try:
+                value = float(self._read())
+            except Exception:
+                log.warning("Claude 비용 합계를 읽지 못함, 지난 값을 씀", exc_info=True)
+            with self._lock:
+                self._reading = False
+                if value is not None:
+                    self._db = value
+                    if self._base is None:
+                        self._base, self._local_at_base = value, self._local
+        with self._lock:
+            if self._db is None or self._base is None:
+                return math.inf
+            return max(self._db, self._base + self._local - self._local_at_base)
 
 
 class _Routed:
@@ -821,8 +853,14 @@ class _Routed:
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
+            except LlmUsageLimitError:
+                self._budget.exhaust()  # Console 한도가 먼저 닿음: 이 호출부터 학교 LLM
             finally:
                 self._budget.spend.add(meter.usd)
+        return self._school().call(
+            self._budget.school_model(model), system, user, schema, name,
+            max_tokens=max_tokens, temperature=temperature,
+        )  # fmt: skip
 
 
 class Budgeted:
@@ -847,14 +885,18 @@ class Budgeted:
         self._school: Paced | None = None
         self._lock = threading.Lock()
         self._told = False
+        self._exhausted = False  # Claude가 사용 한도 오류를 돌려줌: 다시 Claude로 가지 않음
         self._routed = _Routed(self, claude, self._school_llm)
 
+    def exhaust(self) -> None:
+        self._exhausted = True
+
     def over(self) -> bool:
-        over = self.spend.total() >= self._limit
+        over = self._exhausted or self.spend.total() >= self._limit
         if over and not self._told:
             self._told = True
             log.warning(
-                "Claude 비용이 한도 %.2f달러에 닿음: 다음 호출부터 학교 LLM으로", self._limit
+                "Claude 비용이 한도 %.2f달러에 닿았거나 사용 한도 오류: 학교 LLM으로", self._limit
             )
         return over
 
@@ -924,13 +966,17 @@ def _check_setup(provider: str) -> None:
         raise LlmSetupError(problem, retry=False)
 
 
-def school_llm() -> SchoolLlm:
-    _check_setup("school")
+def _school_client(gap_sec: float) -> SchoolLlm:
     return SchoolLlm(
         settings.school_llm_base_url,
         settings.school_llm_api_key.get_secret_value(),
-        gap_sec=settings.call_gap_sec,
+        gap_sec=gap_sec,
     )
+
+
+def school_llm() -> SchoolLlm:
+    _check_setup("school")
+    return _school_client(settings.call_gap_sec)
 
 
 def claude_llm() -> ClaudeLlm:
@@ -950,16 +996,20 @@ def fallback_school_llm() -> SchoolLlm:
             "SCHOOL_LLM_BASE_URL이 비어 있음",
             retry=False,
         )
-    return SchoolLlm(
-        settings.school_llm_base_url,
-        settings.school_llm_api_key.get_secret_value(),
-        gap_sec=GAP_DEFAULTS["school"],
-    )
+    # 모델 이름 확인(_check_setup)은 하지 않음: 설정은 Claude 모델이고 school_models()로 바꿔 부름
+    return _school_client(GAP_DEFAULTS["school"])
 
 
 def school_models() -> dict[str, str]:
-    """설정의 Claude 모델 이름 → 같은 설정 항목의 학교 LLM 기본 모델."""
-    return {getattr(settings, f): LLM_DEFAULTS["school"][f] for f in MODEL_FIELDS}
+    """설정의 Claude 모델 이름 → 같은 설정 항목의 학교 LLM 기본 모델.
+
+    서비스는 모델 이름만 넘기므로, 여러 설정 항목이 같은 Claude 모델을 쓰면(예: QUIZ_CHECK_MODEL도
+    Sonnet) 그 항목들의 학교 모델 중 가장 많은 것(같으면 MODEL_FIELDS 앞쪽)으로(/code-review #298).
+    """
+    picks: dict[str, list[str]] = {}
+    for f in MODEL_FIELDS:
+        picks.setdefault(getattr(settings, f), []).append(LLM_DEFAULTS["school"][f])
+    return {model: max(names, key=names.count) for model, names in picks.items()}
 
 
 def make_llm(spend: Spend | None = None) -> Paced:
