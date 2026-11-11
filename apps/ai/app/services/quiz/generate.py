@@ -1159,6 +1159,8 @@ def _make_all(
     # 아니라 판에 넣을 때 셈: 느린 기계에서 그 자리 스레드가 시작하기 전에 다른 자리가 남은 자리를
     # 가져가지 않게(CI #300)
     in_flight: Counter[str] = Counter()
+    # 비워 두느라(HELD) 받지 않은 문제: (쪽, 결과, 마지막 단계였는지). take_reserve가 다시 받아 봄
+    reserve: list[tuple[int, Made, bool]] = []
     dry: set[int] = set()
     drained: set[int] = set()  # dry 가운데 물을 개념이 남지 않아 닫은 쪽(마지막 단계에서 다시 엶)
     # dry 가운데 이번 판에 겹침(DRY_REASONS)으로 처음 닫은 쪽: 다음 판에 한 번 다시 엶. 학교 LLM은
@@ -1222,42 +1224,77 @@ def _make_all(
         """한 개념을 물을 수 있는 문제 수: 마지막 단계에서만 AGAIN_PER_CONCEPT."""
         return AGAIN_PER_CONCEPT if again_ok else 1
 
+    def clash_of(r: Made, again_ok: bool) -> list[str]:
+        """(잠금 안에서) 그사이 다른 자리가 받은 문제와의 겹침. 없으면 []."""
+        d = r.question
+        assert d is not None and r.concept is not None
+        # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
+        if asked[r.concept] >= per_concept(again_ok):
+            return [CLASH]
+        if not is_combo(d["options"]) and any(same_item(d["answer"], u) for u in used):
+            # 분류 초안이면 gen_one이 분류 겹침으로 셈: 동시에 만들면 묶음 이름은 대개 여기서
+            # 겹침(Codex 리뷰 #293). 개념이 먼저 겹친 초안은 세지 않음(/code-review #293)
+            return [CLASH_SAME]
+        if too_close(d, seen) or reversed_of(d, seen):
+            return [CLASH]
+        return []
+
+    def admit(page: int, r: Made) -> None:
+        """(잠금 안에서) 세트에 넣음."""
+        d = r.question
+        assert d is not None and r.concept is not None
+        asked[r.concept] += 1
+        seen.append(seen_draft(d))
+        if _listed(r):
+            used.append(d["answer"])
+        taken.append((page, r))
+        if len(taken) >= n:
+            done.set()
+
+    def must_hold(r: Made, own: str | None) -> bool:
+        """(잠금 안에서) 아직 도는 다른 난이도 자리를 위해 이 문제를 받지 않을지(levels.held).
+        own은 받으려는 자리의 목표 난이도(도는 자리 수에서 자신은 뺌). 보관한 문제는 None."""
+        got = Counter(lv.get(x.type or "", "중") for _, x in taken)
+        others = in_flight.copy()
+        if own is not None:
+            others[own] -= 1
+        return levels.held(lv.get(r.type or "", "중"), got, mix or {}, others, n - len(taken))
+
     def accept(page: int, r: Made, again_ok: bool, own: str) -> list[str]:
         """잠금 안에서 그사이 다른 자리가 받은 문제와 겹침을 다시 보고, 받으면 세트에 바로 넣음
         (받은 뒤 세트에 넣기 전에 돌려주면 그 문제를 잃고 개념만 막힘, /code-review #95).
-        own은 이 자리의 목표 난이도: 다른 난이도 자리를 위해 비워 둘지(levels.held) 셀 때 자신은 뺌.
-        비워 두면 이 자리는 다 모은 것처럼 멈춤(HELD). 비워 둔 자리를 맡은 자리가 결국 못 만들면
-        다음 판이 모자란 난이도부터 채움."""
+        own은 이 자리의 목표 난이도. 다른 난이도 자리를 위해 비워 두면(levels.held) 이 문제는
+        버리지 않고 보관하고(reserve) 이 자리는 다 모은 것처럼 멈춤(HELD). 보관한 문제는 자리가
+        끝날 때마다 · 판이 끝날 때 다시 받아 봄(take_reserve): 비워 둔 자리를 맡은 자리가 상한
+        직전에 실패해도 세트가 모자라지 않게(Codex 재리뷰 #300)."""
         d = r.question
         assert d is not None and r.concept is not None
         if not _shape_ok(d):  # 서버가 빼는 모양이면 받지 않고 그 자리가 다시 만듦(#247)
             return [BAD_SHAPE]
-        combo_q = is_combo(d["options"])
         with lock:
             if done.is_set() or len(taken) >= n:
                 return [FULL]
-            # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
-            if asked[r.concept] >= per_concept(again_ok):
-                return [CLASH]
-            if not combo_q and any(same_item(d["answer"], u) for u in used):
-                # 분류 초안이면 gen_one이 분류 겹침으로 셈: 동시에 만들면 묶음 이름은 대개 여기서
-                # 겹침(Codex 리뷰 #293). 개념이 먼저 겹친 초안은 세지 않음(/code-review #293)
-                return [CLASH_SAME]
-            if too_close(d, seen) or reversed_of(d, seen):
-                return [CLASH]
-            got = Counter(lv.get(x.type or "", "중") for _, x in taken)
-            others = in_flight.copy()
-            others[own] -= 1
-            if levels.held(lv.get(r.type or "", "중"), got, mix or {}, others, n - len(taken)):
+            if why := clash_of(r, again_ok):
+                return why
+            if must_hold(r, own):
+                # gen_one이 돌려받은 뒤 r.question을 지우므로 사본을 보관
+                reserve.append((page, replace(r), again_ok))
                 return [HELD]
-            asked[r.concept] += 1
-            seen.append(seen_draft(d))
-            if _listed(r):
-                used.append(d["answer"])
-            taken.append((page, r))
-            if len(taken) >= n:
-                done.set()
+            admit(page, r)
             return []
+
+    def take_reserve(final: bool = False) -> None:
+        """(잠금 안에서) 보관한 문제를 보관한 차례대로 다시 받아 봄. 겹침은 다시 봄(그사이 받은
+        문제와 겹치면 버림). final이면 도는 자리를 기다리지 않음(판 · 세트를 끝낼 때)."""
+        for item in list(reserve):
+            if done.is_set() or len(taken) >= n:
+                return
+            page, r, again_ok = item
+            if not final and must_hold(r, None):
+                continue
+            reserve.remove(item)
+            if not clash_of(r, again_ok):
+                admit(page, r)
 
     def stop_of(halt: threading.Event, at: _Limits) -> Callable[[bool], str | None]:
         """판마다 멈춤 판단: 지난 판에 남아 도는 자리가 다음 판의 늦춰진 상한을 보고 새 초안을
@@ -1378,6 +1415,7 @@ def _make_all(
         finally:
             with lock:
                 in_flight[level] -= 1
+                take_reserve()  # 이 자리가 맡던 몫이 풀림: 보관한 문제를 다시 받아 봄
 
     # 판마다 새로 만들지 않음: 지난 판에 남아 응답을 기다리는 자리도 WORKERS 안에 들어, 동시에
     # 붙잡는 학교 LLM 연결이 판 수만큼 늘지 않게(/code-review #247)
@@ -1519,6 +1557,7 @@ def _make_all(
                 )
     finally:
         with lock:
+            take_reserve(final=True)  # 끝내기 전에 보관한 문제로 모자란 자리를 채움
             done.set()
             made = list(taken)
         pool.shutdown(wait=False, cancel_futures=True)

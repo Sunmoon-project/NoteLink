@@ -2427,7 +2427,7 @@ def test_the_next_round_starts_with_the_level_still_lacking(
     assert len(firsts) > 2 and set(firsts[2:]) == {"조합"}  # 다음 판들도 상(조합)부터
 
 
-def concurrent_llm(slow: str, gate: threading.Event) -> ScriptLlm:
+def concurrent_llm(slow: str, gate: threading.Event, fail_after: bool = False) -> ScriptLlm:
     """여러 자리가 동시에 불러도 되는 가짜 LLM: 제시문으로 정답을 찾음. slow 유형의 초안은 gate가
     켜질 때까지(늦어도 5초) 기다렸다가 오고, 늘 마지막 개념(질편모충)을 씀. 다른 유형은 앞의
     개념부터 자리마다 다르게 고름(스레드 차례에 기대지 않게)."""
@@ -2442,6 +2442,8 @@ def concurrent_llm(slow: str, gate: threading.Event) -> ScriptLlm:
         names = listed.group(1).split(", ")
         if ty.group(1) == slow:
             gate.wait(5)
+        if fail_after and gate.is_set():  # 비워 둔 뒤의 초안은 모두 탈락(맡은 자리가 끝내 실패)
+            return BAD
         with lock:
             if ty.group(1) == slow:
                 concept = names[-1]
@@ -2522,3 +2524,31 @@ def test_types_turn_within_each_level_even_when_levels_alternate_on_a_page(
     one_page["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1 + "\n" + PAGE2}]
     make(typed_llm(), one_page)
     assert firsts[:3] == ["정의", "특징", "분류"]
+
+
+@pytest.mark.usefixtures("mixed_levels")
+def test_a_held_spare_question_is_used_when_the_slot_it_waited_for_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 하 여분 문제를 중 자리에 비워 뒀는데 중 자리가 끝내 실패: 비워 둔 문제를 버리면 1/2문제로
+    # 세트가 실패했음. 보관했다가 그 자리가 끝날 때 다시 받음(Codex 재리뷰 #300)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "EXTRA", 0.5)
+    monkeypatch.setattr(generate, "page_types", lambda text, korean, extra=(): ["정의", "특징"])
+    monkeypatch.setattr(generate.levels, "level_mix", lambda n, usable, stats: {"하": 1, "중": 1})
+    gate = threading.Event()
+    real_held = generate.levels.held
+
+    def held(*a: Any, **k: Any) -> bool:
+        out = real_held(*a, **k)
+        if out:
+            gate.set()
+        return out
+
+    monkeypatch.setattr(generate.levels, "held", held)
+    one_page = job(size=2)
+    one_page["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1 + "\n" + PAGE2}]
+    result = make(concurrent_llm("특징", gate, fail_after=True), one_page)
+    join_threads("quiz-slot")
+    assert gate.is_set()
+    assert kinds_of(result) == [("정의", "하"), ("정의", "하")]
