@@ -439,6 +439,47 @@ describe('QuizSetsService 작업 결과 반영', () => {
   });
 });
 
+describe('QuizSetsService 난이도를 붙이기 전 문제(Codex 리뷰 #292)', () => {
+  it('difficulty가 없는 저장 문제는 앱에 null로 보내고, 처리기 입력에는 넣지 않는다', async () => {
+    const { service, addNote, sets, job } = setup();
+    const otherNote = await addNote({ title: '유전', pages: [{ pageNo: 4, ocrText: 'DNA' }] });
+    const qid = new Types.ObjectId();
+    // 난이도 필드가 생기기 전에 저장한 문서(필드 자체가 없음)
+    const old = (await sets.model.create({
+      ownerId: ME,
+      materialId: new Types.ObjectId(otherNote),
+      folderId: FOLDER,
+      title: '유전 퀴즈',
+      status: 'ready',
+      deletedAt: null,
+      questions: [
+        {
+          _id: qid,
+          order: 1,
+          type: 'multiple_choice',
+          category: '정의',
+          prompt: 'DNA는?',
+          passage: null,
+          choices: ['유전 물질', '단백질'],
+          answer: '유전 물질',
+          explanation: null,
+          conceptTags: ['DNA'],
+          srs: null,
+        },
+      ],
+    } as never)) as unknown as { _id: Types.ObjectId };
+
+    const shown = await service.findMine(ME.toHexString(), old._id.toHexString());
+    expect(QuizSet.parse(shown)).toEqual(shown);
+    expect(shown.questions[0]!.difficulty).toBeNull();
+
+    const { job: created } = await service.create(ME.toHexString(), await addNote());
+    const input = job(created._id)['input'] as { sets: { questions: Record<string, unknown>[] }[] };
+    const sent = input.sets.find((x) => x.questions[0]?.['id'] === qid.toHexString())!;
+    expect(sent.questions[0]).not.toHaveProperty('difficulty');
+  });
+});
+
 describe('QuizSetsService 리뷰 반영(/code-review)', () => {
   it('모양이 틀린 문제만 빼고 나머지로 ready, 번호는 1부터 다시 매긴다', async () => {
     const { service, addNote, finish } = setup();
