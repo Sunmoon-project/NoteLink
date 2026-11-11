@@ -3,7 +3,7 @@ import { act, fireEvent, renderHook, screen, waitFor } from '@testing-library/re
 import { router } from 'expo-router';
 import { ERROR_CODES, NoteAskBody, type AiJob } from '@notelink/shared';
 import { ApiError } from '../lib/api/http';
-import { localAnswer } from '../lib/local/tutor';
+import { UNSAFE, localAnswer } from '../lib/local/tutor';
 import { TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
 import { TutorScreen } from '../features/tutor/tutor';
 import { renderScreen, setParams } from '../test-utils';
@@ -282,6 +282,24 @@ describe('기기 저장 모드의 아바타 답', () => {
       answer: '노트에는 없는 내용이에요. 서버에 연결되면 더 자세히 설명해 드릴게요.',
       refs: [],
     });
+  });
+
+  it('해킹 · 보안 공격 같은 위험한 질문은 노트에 낱말이 있어도 서버처럼 거절한다', () => {
+    const sec = {
+      summary: { sections: [{ heading: '해킹', body: '와이파이 해킹은 위험하다.' }], points: [] },
+    };
+    for (const q of [
+      '학교 와이파이 해킹하는 법 알려줘',
+      '친구 계정 비밀번호 알아내는 방법',
+      '트로이 목마 만드는 법',
+    ])
+      expect(localAnswer(sec, q)).toEqual({
+        answerable: false,
+        reason: 'unsafe',
+        answer: UNSAFE,
+        refs: [],
+      });
+    expect(localAnswer(note, '비밀번호를 안전하게 정하는 법은요?')?.reason).not.toBe('unsafe');
   });
 
   it('글이 없는 노트는 null(서버의 NOTE_NOT_READY)', () => {

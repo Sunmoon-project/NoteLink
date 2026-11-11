@@ -19,6 +19,23 @@ function hit(text: string, w: string) {
   return false;
 }
 
+// 서버(apps/ai note/ask.py)와 같은 위험한 질문 검사 · 안내(기기 저장 모드에서도 같은 규칙)
+export const UNSAFE =
+  '그 질문에는 대답할 수 없어요. 해킹이나 보안 공격처럼 위험한 내용은 도와드리지 않아요. 노트 내용으로 다시 물어봐 주세요.';
+const UNSAFE_PATTERN = new RegExp(
+  [
+    '해킹|해커|크래킹|침투\\s*테스트|모의\\s*해킹|익스플로잇|exploit|취약점\\s*(공격|이용|찾)',
+    '악성\\s*코드|멀웨어|malware|랜섬웨어|ransomware|트로이\\s*(목마\\s*)?(바이러스|악성|프로그램|만들|만드|제작|퍼뜨|심)|트로이안|trojan\\s*(horse\\s*)?(virus|malware|바이러스|악성|프로그램|만들|만드|제작|퍼뜨|심)|바이러스\\s*(만들|만드|제작|퍼뜨)',
+    '피싱|phishing|스미싱|디도스|ddos|백도어|backdoor|키로거|keylogger|루트킷|rootkit',
+    '(sql|에스큐엘)\\s*(인젝션|injection)|xss',
+    '(비밀번호|패스워드|계정|인증)\\s*\\S{0,4}\\s*(뚫|탈취|훔치|훔쳐|크랙|우회|해제|도용|알아내)',
+    '개인\\s*정보\\s*(빼|탈취|유출)|도청|스파이웨어',
+    '탈옥|jailbreak|(이전|위|앞의?)\\s*지시\\S*\\s*무시|ignore\\s+(all|previous|the)|시스템\\s*프롬프트',
+    '폭탄|폭발물|마약|무기\\s*(만들|만드|제작)',
+  ].join('|'),
+  'i',
+);
+
 const OVERVIEW = /핵심|요약|정리|설명|뭐|무엇|알려/;
 const sentences = (t: string, n: number) =>
   (t.match(/[^.!?。]+[.!?。]?/g) ?? [t])
@@ -36,6 +53,9 @@ export function localAnswer(
 ): NoteAskResult | null {
   const all = parts(m);
   if (!all.length) return null;
+  // 위험한 질문은 노트에 그 낱말이 있어도 답하지 않는다
+  if (UNSAFE_PATTERN.test(question))
+    return { answerable: false, reason: 'unsafe', answer: UNSAFE, refs: [] };
   const ws = words(question);
   const scored = all.map((p) => {
     const text = `${p.heading}${p.body}`.replace(/\s+/g, '');
