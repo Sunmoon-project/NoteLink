@@ -16,6 +16,8 @@ from app.clients.voyage import EmbedUnavailableError
 from app.core.config import settings
 from app.services.note import job as note_job
 from app.services.note.job import (
+    CHECKPOINT_MAX_BYTES,
+    CHECKPOINT_VERSION,
     IMAGE_MAX_PIXELS,
     NOTE_MAX_PAGES,
     TYPE,
@@ -686,15 +688,19 @@ def test_ocr_result_is_saved_without_raw_ocr_or_word_boxes(monkeypatch: pytest.M
 
     assert (doc["status"], doc["attempts"]) == ("queued", 1)
     saved = doc["checkpoint"]
-    assert set(saved) == {"uploads", "warnings"}
+    assert set(saved) == {"version", "colors", "uploads", "warnings"}
+    assert saved["version"] == CHECKPOINT_VERSION
     assert [(u["pageNo"], u["pages"], len(u["lines"])) for u in saved["uploads"]] == [
         (1, 1, 3),
         (2, 1, 3),
     ]
     assert saved["warnings"] == [no_color(2, "download")]
-    words = [w for u in saved["uploads"] for ln in u["lines"] for w in ln["words"]]
-    assert words and all("polygon" not in w for w in words)
-    assert all("color" in w for w in saved["uploads"][0]["lines"][0]["words"])  # 색 찾기는 끝남
+    first = saved["uploads"][0]["lines"][0]
+    assert first[:3] == [1, 1, "1. 이질 아메바"] and first[7] is True
+    # 단어: [start, end, confidence, hand, colorDiff, color, baseColor, highlight], 상자 없음
+    words = json.loads(first[8])
+    assert words == [[0, 9, 0.99, 1, 0, 0, 0, -1]]  # 줄 글자와 같은 단어 글은 저장하지 않음
+    assert saved["colors"] == ["black"]  # 색 찾기는 끝남
     assert "secret-sas" not in json.dumps(saved, ensure_ascii=False)
 
 
@@ -757,28 +763,41 @@ def test_retry_progress_starts_at_split(monkeypatch: pytest.MonkeyPatch) -> None
     assert "ocr" not in [s for _, s in seen]
 
 
+LINE_KEYS = ("id", "page", "text", "x0", "x1", "y0", "y1", "hand")
+WORD_KEYS = ("start", "end", "confidence", "hand", "colorDiff", "color", "baseColor", "highlight")
+GOOD_WORD = {"start": 0, "end": 5, "confidence": 0.9, "hand": 1, "colorDiff": 0}
+GOOD_WORD |= {"color": 0, "baseColor": 0, "highlight": -1}
+
+
+def packed_line(words: object = None, **change: object) -> list[object]:
+    """저장 형식의 줄 [id, page, text, x0, x1, y0, y1, hand, 단어들 JSON]."""
+    line = {"id": 1, "page": 1, "text": "1. 개요", "x0": 0.1, "x1": 0.5, "y0": 0.1, "y1": 0.12}
+    line |= {"hand": True, **change}
+    if words is None:
+        words = json.dumps([[GOOD_WORD[k] for k in WORD_KEYS]])
+    return [*(line[k] for k in LINE_KEYS), words]
+
+
 def good_upload(page_no: int = 1, **change: object) -> dict[str, Any]:
-    line = {
-        "id": 1,
-        "page": page_no,
-        "text": "1. 개요",
-        "x0": 0.1,
-        "x1": 0.5,
-        "y0": 0.1,
-        "y1": 0.12,
-        "hand": True,
-        "words": [{"text": "1. 개요", "start": 0, "end": 5, "confidence": 0.9}],
-    }
-    return {"pageNo": page_no, "pages": 1, "lines": [line], **change}
+    return {"pageNo": page_no, "pages": 1, "lines": [packed_line(page=page_no)], **change}
 
 
-def bad_line(**change: object) -> dict[str, Any]:
-    return good_upload(lines=[{**good_upload()["lines"][0], **change}])
+def bad_line(*, words: object = None, **change: object) -> dict[str, Any]:
+    return good_upload(lines=[packed_line(words, **change)])
 
 
-def bad_word(**change: object) -> dict[str, Any]:
-    word = {**good_upload()["lines"][0]["words"][0], **change}
-    return bad_line(words=[word])
+def bad_word(*extra: object, **change: object) -> dict[str, Any]:
+    word = {**GOOD_WORD, **change}
+    return bad_line(words=json.dumps([[*(word[k] for k in WORD_KEYS), *extra]]))
+
+
+def saved(uploads: object, warnings: object = None, **change: object) -> dict[str, Any]:
+    """저장 형식의 checkpoint. 색 이름은 black 하나."""
+    value = {"version": CHECKPOINT_VERSION, "colors": ["black"], "uploads": uploads}
+    return {**value, "warnings": [] if warnings is None else warnings, **change}
+
+
+TWO = [good_upload(1), good_upload(2)]
 
 
 @pytest.mark.parametrize(
@@ -786,41 +805,53 @@ def bad_word(**change: object) -> dict[str, Any]:
     [
         "글",
         {},
-        {"uploads": [good_upload(1)]},  # warnings 없음
-        {"uploads": [good_upload(1)], "warnings": [1]},
-        {"uploads": [good_upload(1), good_upload(2)], "warnings": "글"},
-        {"uploads": [good_upload(1), good_upload(2)], "warnings": ["1쪽: 예전 글 경고"]},
-        {
-            "uploads": [good_upload(1), good_upload(2)],
-            "warnings": [{**no_color(1, "pdf"), "code": "X"}],
-        },
-        {"uploads": [good_upload(1), good_upload(2)], "warnings": [no_color(1, "blur")]},
-        {"uploads": [good_upload(1), good_upload(2)], "warnings": [no_color(3, "pdf")]},
-        {"uploads": [good_upload(1), good_upload(2)], "warnings": [no_color(0, "pdf")]},
-        {
-            "uploads": [good_upload(1), good_upload(2)],
-            "warnings": [{**no_color(1, "pdf"), "url": "x"}],
-        },
-        {"uploads": [good_upload(1), good_upload(2)], "warnings": [no_color(1, "pdf")] * 2},
-        {"uploads": [good_upload(1), good_upload(2), good_upload(3)], "warnings": []},
-        {"uploads": [good_upload(1), "글"], "warnings": []},
-        {"uploads": [good_upload(1), good_upload(5)], "warnings": []},  # 놓인 번호가 다름
-        {"uploads": [good_upload(1, pages=2), good_upload(2)], "warnings": []},
-        {"uploads": [good_upload(1, pages=0), good_upload(2)], "warnings": []},
-        {"uploads": [good_upload(1, pages=NOTE_MAX_PAGES + 1), good_upload(52)], "warnings": []},
-        {"uploads": [good_upload(1, lines="글"), good_upload(2)], "warnings": []},
-        {"uploads": [good_upload(1, lines=[]), good_upload(2, lines=[])], "warnings": []},
-        {"uploads": [bad_line(page=2), good_upload(2)], "warnings": []},
-        {"uploads": [bad_line(text=None), good_upload(2)], "warnings": []},
-        {"uploads": [bad_line(hand="예"), good_upload(2)], "warnings": []},
-        {"uploads": [bad_line(x0="0"), good_upload(2)], "warnings": []},
-        {"uploads": [bad_line(y1=float("nan")), good_upload(2)], "warnings": []},
-        {"uploads": [bad_line(id=-1), good_upload(2)], "warnings": []},
-        {"uploads": [bad_line(words="글"), good_upload(2)], "warnings": []},
-        {"uploads": [bad_word(end=99), good_upload(2)], "warnings": []},
-        {"uploads": [bad_word(confidence=None), good_upload(2)], "warnings": []},
-        {"uploads": [bad_word(colorDiff="예"), good_upload(2)], "warnings": []},
-        {"uploads": [bad_word(color=1), good_upload(2)], "warnings": []},
+        saved(TWO, version=None),
+        saved(TWO, version=1),
+        saved(TWO, colors="black"),
+        saved(TWO, colors=[1]),
+        {k: v for k, v in saved(TWO).items() if k != "warnings"},
+        saved([good_upload(1)], [1]),
+        saved(TWO, "글"),
+        saved(TWO, ["1쪽: 예전 글 경고"]),
+        saved(TWO, [{**no_color(1, "pdf"), "code": "X"}]),
+        saved(TWO, [no_color(1, "blur")]),
+        saved(TWO, [no_color(3, "pdf")]),
+        saved(TWO, [no_color(0, "pdf")]),
+        saved(TWO, [{**no_color(1, "pdf"), "url": "x"}]),
+        saved(TWO, [no_color(1, "pdf")] * 2),
+        saved([*TWO, good_upload(3)]),
+        saved([good_upload(1), "글"]),
+        saved([good_upload(1), good_upload(5)]),  # 놓인 번호가 다름
+        saved([good_upload(1, pages=2), good_upload(2)]),
+        saved([good_upload(1, pages=0), good_upload(2)]),
+        saved([good_upload(1, pages=NOTE_MAX_PAGES + 1), good_upload(52)]),
+        saved([good_upload(1, lines="글"), good_upload(2)]),
+        saved([good_upload(1, lines=[]), good_upload(2, lines=[])]),
+        saved([good_upload(1, lines=[{"id": 1}]), good_upload(2)]),  # 예전 형식의 줄(객체)
+        saved([good_upload(1, lines=[packed_line()[:8]]), good_upload(2)]),
+        saved([bad_line(page=2), good_upload(2)]),
+        saved([bad_line(text=None), good_upload(2)]),
+        saved([bad_line(hand="예"), good_upload(2)]),
+        saved([bad_line(x0="0"), good_upload(2)]),
+        saved([bad_line(y1=float("nan")), good_upload(2)]),
+        saved([bad_line(id=-1), good_upload(2)]),
+        saved([bad_line(words=["글"]), good_upload(2)]),
+        saved([bad_line(words="[1,"), good_upload(2)]),  # JSON이 아님
+        saved([bad_line(words="[" * 100_000 + "]" * 100_000), good_upload(2)]),  # 너무 깊음
+        saved([bad_line(words="{}"), good_upload(2)]),
+        saved([bad_line(words="[{}]"), good_upload(2)]),
+        saved([bad_word(end=99), good_upload(2)]),
+        saved([bad_word(start=3, end=2), good_upload(2)]),
+        saved([bad_word(confidence=None), good_upload(2)]),
+        saved([bad_word(confidence=float("nan")), good_upload(2)]),
+        saved([bad_word(hand=2), good_upload(2)]),
+        saved([bad_word(colorDiff=True), good_upload(2)]),
+        saved([bad_word(colorDiff=0.0), good_upload(2)]),
+        saved([bad_word(color=1), good_upload(2)]),  # colors에 없는 번호
+        saved([bad_word(highlight=-2), good_upload(2)]),
+        saved([bad_word(baseColor="black"), good_upload(2)]),
+        saved([bad_word(1), good_upload(2)]),  # 단어 글이 글자가 아님
+        saved([bad_word("가", "나"), good_upload(2)]),  # 원소가 너무 많음
     ],
 )
 def test_broken_checkpoint_is_ignored_and_ocr_runs_again(
@@ -839,11 +870,8 @@ def test_broken_checkpoint_is_ignored_and_ocr_runs_again(
 
 def test_good_hand_written_checkpoint_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
     col = queued_job(two_pages())
-    saved = {
-        "uploads": [good_upload(1), good_upload(2, lines=[])],
-        "warnings": [no_color(2, "size")],
-    }
-    col.update_one({"_id": "j1"}, {"$set": {"checkpoint": saved}})
+    value = saved([good_upload(1), good_upload(2, lines=[])], [no_color(2, "size")])
+    col.update_one({"_id": "j1"}, {"$set": {"checkpoint": value}})
     ocr = expired_sas()
 
     doc = attempt(monkeypatch, col, ocr=ocr)
@@ -855,6 +883,29 @@ def test_good_hand_written_checkpoint_is_used(monkeypatch: pytest.MonkeyPatch) -
         {"pageNo": 2, "ocrText": ""},
     ]
     assert doc["result"]["warnings"] == [no_color(2, "size")]
+
+
+def test_old_format_checkpoint_runs_ocr_again(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """이번 형식(version 2) 전의 checkpoint는 읽지 않고 OCR부터 다시 함(깨진 값과 같음)."""
+    old_line = {"id": 1, "page": 1, "text": "1. 개요", "x0": 0.1, "x1": 0.5, "y0": 0.1}
+    old_line |= {"y1": 0.12, "hand": True}
+    old_line["words"] = [{"text": "1. 개요", "start": 0, "end": 5, "confidence": 0.9}]
+    old = {
+        "uploads": [{"pageNo": n, "pages": 1, "lines": [{**old_line, "page": n}]} for n in (1, 2)],
+        "warnings": [],
+    }
+    col = queued_job(two_pages())
+    col.update_one({"_id": "j1"}, {"$set": {"checkpoint": old}})
+    ocr = FakeOcr()
+
+    with caplog.at_level(logging.WARNING):
+        doc = attempt(monkeypatch, col, ocr=ocr)
+
+    assert (doc["status"], doc["error"]) == ("succeeded", None)
+    assert ocr.urls == [URL1, URL2]
+    assert "형식이 달라 OCR부터 다시 함" in caplog.text
 
 
 def test_nothing_is_saved_when_canceled_during_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -888,9 +939,9 @@ def test_cancel_during_ocr_stops_before_the_next_page() -> None:
 # ---------- 크기 ----------
 
 
-def dense_read(page_no: int) -> JsonObject:
+def dense_read(page_no: int, lines: int = 40, syllables: int = 20) -> JsonObject:
     """빽빽한 쪽: 40줄 × 줄마다 20음절(한국어는 음절 하나가 단어 하나)."""
-    texts = [f"{page_no}-{i} " + "가나다라마" * 4 for i in range(40)]
+    texts = [f"{page_no}-{i} " + "가나다라마" * (syllables // 5) for i in range(lines)]
     page = ocr_page(*texts)
     words = []
     for ln, text in zip(page["lines"], texts, strict=True):
@@ -912,30 +963,138 @@ def dense_read(page_no: int) -> JsonObject:
     }
 
 
-def test_thirty_dense_pages_checkpoint_and_result_fit_in_a_mongo_document() -> None:
-    n = 30
+class Keep:
+    """checkpoint를 BSON으로 저장했다가 그대로 돌려줌(Mongo를 거친 것과 같게)."""
+
+    def __init__(self, value: object = None) -> None:
+        self.value = value
+        self.saved: list[JsonObject] = []
+
+    def load_checkpoint(self) -> object:
+        return self.value
+
+    def save_checkpoint(self, value: JsonObject) -> None:
+        self.saved.append(bson.decode(bson.encode(value)))
+
+
+def with_colors(monkeypatch: pytest.MonkeyPatch, other_text: bool = False) -> None:
+    """색 찾기가 끝난 것처럼 단어마다 색 · 바탕색 · 강조 · 형광펜을 붙임(사진 없이 크기를 키움)."""
+    original = note_job.page_lines
+
+    def colored(page: Any) -> Any:
+        lines = original(page)
+        for ln in lines:
+            for k, w in enumerate(ln["words"]):
+                w["color"] = "red" if k % 7 == 0 else "black"
+                w["baseColor"] = "black"
+                w["colorDiff"] = k % 7 == 0
+                if k % 5 == 0:
+                    w["highlight"] = "yellow"
+            if other_text and ln["words"]:
+                ln["words"][0]["text"] = "?"  # 줄 글자와 다른 단어 글도 그대로 되돌아오는지
+        return lines
+
+    monkeypatch.setattr(note_job, "page_lines", colored)
+
+
+def run_dense(n: int, keep: Keep, **size: int) -> JsonObject:
     urls = [f"https://blob.example.test/notes/{i}.jpg" for i in range(1, n + 1)]
-    ocr = FakeOcr({u: dense_read(i) for i, u in enumerate(urls, 1)})
-    saved: list[JsonObject] = []
 
-    class Keep:
-        def load_checkpoint(self) -> object:
-            return None
+    def make_ocr() -> Reader:
+        if keep.value is not None:
+            raise AssertionError("저장값을 쓰면 OCR을 만들면 안 됨")
+        return FakeOcr({u: dense_read(i, **size) for i, u in enumerate(urls, 1)})
 
-        def save_checkpoint(self, value: JsonObject) -> None:
-            saved.append(value)
-
-    result = run(
+    return run(
         FakeLlm({"note_split": lambda user: {"starts": [1]}}),
-        lambda: ocr,
+        make_ocr,
         FakeVoyage(dims=1024),
         {"pages": [{"pageNo": i, "imageUrl": u} for i, u in enumerate(urls, 1)]},
         lambda value, step=None: None,
-        checkpoint=Keep(),
+        checkpoint=keep,
         fetch=FakeFetch({u: DownloadError("시험") for u in urls}),
     )
 
-    checkpoint_bytes = len(bson.encode({"checkpoint": saved[0]}))
+
+def test_thirty_dense_pages_checkpoint_and_result_fit_in_a_mongo_document() -> None:
+    keep = Keep()
+    result = run_dense(30, keep)
+
+    checkpoint_bytes = len(bson.encode({"checkpoint": keep.saved[0]}))
     assert checkpoint_bytes < 4 * 1024 * 1024
     # 성공하면 checkpoint는 지워지지만, 마지막 저장과 결과가 함께 있는 때를 넉넉히 봄
-    assert len(bson.encode({"checkpoint": saved[0], "result": result})) < MONGO_DOC_LIMIT
+    assert len(bson.encode({"checkpoint": keep.saved[0], "result": result})) < MONGO_DOC_LIMIT
+
+
+def test_fifty_dense_colored_pages_checkpoint_and_result_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """상한 50쪽 × 60줄 × 50음절 + 색 정보. 예전 형식은 checkpoint만 약 21MB였음."""
+    with_colors(monkeypatch)
+    keep = Keep()
+    result = run_dense(NOTE_MAX_PAGES, keep, lines=60, syllables=50)
+
+    assert len(keep.saved) == 1
+    checkpoint_bytes = len(bson.encode({"checkpoint": keep.saved[0]}))
+    assert checkpoint_bytes < 8 * 1024 * 1024  # 상한(12MiB)보다 넉넉히 작음
+    assert len(bson.encode({"result": result})) < 8 * 1024 * 1024
+    assert len(bson.encode({"checkpoint": keep.saved[0], "result": result})) < MONGO_DOC_LIMIT
+
+
+def test_dense_colored_checkpoint_gives_the_same_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    with_colors(monkeypatch, other_text=True)
+    first = Keep()
+    fresh = run_dense(3, first, lines=60, syllables=50)
+    words = json.loads(first.saved[0]["uploads"][0]["lines"][0][8])
+    assert words[0][-1] == "?" and len(words[1]) == 8  # 다를 때만 단어 글을 저장
+    again = Keep(first.saved[0])
+
+    assert run_dense(3, again, lines=60, syllables=50) == fresh
+    assert again.saved == []
+
+
+def test_checkpoint_over_the_limit_is_not_saved_and_the_job_goes_on(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    keep = Keep()
+    expected = run_dense(2, keep)
+    size = len(bson.encode({"checkpoint": keep.saved[0]}))
+    assert size < CHECKPOINT_MAX_BYTES
+    monkeypatch.setattr(note_job, "CHECKPOINT_MAX_BYTES", size - 1)
+    keep = Keep()
+
+    with caplog.at_level(logging.WARNING):
+        result = run_dense(2, keep)
+
+    assert keep.saved == []
+    assert result == expected
+    assert f"{size}바이트로 저장 상한을 넘어 저장하지 않음" in caplog.text
+
+
+@pytest.mark.parametrize("over", [False, True])
+def test_checkpoint_limit_boundary(monkeypatch: pytest.MonkeyPatch, over: bool) -> None:
+    keep = Keep()
+    run_dense(1, keep)
+    size = len(bson.encode({"checkpoint": keep.saved[0]}))
+    monkeypatch.setattr(note_job, "CHECKPOINT_MAX_BYTES", size - 1 if over else size)
+    keep = Keep()
+
+    run_dense(1, keep)
+
+    assert len(keep.saved) == (0 if over else 1)
+
+
+def test_job_succeeds_when_checkpoint_is_too_big(monkeypatch: pytest.MonkeyPatch) -> None:
+    """처리기를 거쳐도 저장을 건너뛰고 끝까지 감. 다음 시도가 있으면 OCR부터."""
+    monkeypatch.setattr(note_job, "CHECKPOINT_MAX_BYTES", 10)
+    col = queued_job(two_pages())
+
+    doc = attempt(monkeypatch, col, voyage=voyage_down())
+    assert (doc["status"], doc["attempts"]) == ("queued", 1)
+    assert "checkpoint" not in doc
+    ocr = FakeOcr()
+
+    doc = attempt(monkeypatch, col, ocr=ocr)
+
+    assert (doc["status"], doc["error"]) == ("succeeded", None)
+    assert ocr.urls == [URL1, URL2]
