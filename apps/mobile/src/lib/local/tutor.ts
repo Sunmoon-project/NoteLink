@@ -19,7 +19,9 @@ function hit(text: string, w: string) {
   return false;
 }
 
-// 서버(apps/ai note/ask.py)와 같은 위험한 질문 검사 · 안내(기기 저장 모드에서도 같은 규칙)
+// 서버(apps/ai note/ask.py)와 같은 안내 · 위험한 질문 검사(기기 저장 모드에서도 같은 규칙)
+export const OFF_TOPIC =
+  '그 질문은 학습 자료에 없어서 대답할 수 없어요. 이 노트나 퀴즈에 대해 물어봐 주세요.';
 export const UNSAFE =
   '그 질문에는 대답할 수 없어요. 해킹이나 보안 공격처럼 위험한 내용은 도와드리지 않아요. 노트 내용으로 다시 물어봐 주세요.';
 const UNSAFE_PATTERN = new RegExp(
@@ -35,8 +37,23 @@ const UNSAFE_PATTERN = new RegExp(
   ].join('|'),
   'i',
 );
+const refuse = (reason: 'off_topic' | 'unsafe'): NoteAskResult => ({
+  answerable: false,
+  reason,
+  answer: reason === 'unsafe' ? UNSAFE : OFF_TOPIC,
+  refs: [],
+});
 
-const OVERVIEW = /핵심|요약|정리|설명|뭐|무엇|알려/;
+// 낱말이 하나도 안 겹쳐도 "핵심 알려 줘"처럼 노트 전체를 묻는 말뿐이면 첫 부분을 읽어 준다.
+// "오늘 날씨 알려 줘"처럼 다른 낱말이 섞이면 자료 밖 질문으로 거절한다
+// 낱말 전체가 "줄기 + 정해진 끝말"이어야 한다(해외여행 · 해물라면처럼 앞만 같은 낱말은 아님).
+// 한 글자 낱말도 본다("달 설명해 주세요"의 "달"은 자료 밖 주제)
+const OVERVIEW =
+  /^(이|그|이번|핵심|요약|정리|설명|뭐|무엇|무슨|알려|노트|자료|내용|전체|전부|이거|이것|그거|간단|좀|주세요|줘|해)(해|히|하게|해서)?(줘|주세요|줄래|줄래요|봐|봐요)?(야|이야|예요|에요|이에요|인가요|인지|요|은|는|을|를|이|가|의|만)?$/;
+const overview = (q: string) => {
+  const ws = q.split(/[^0-9A-Za-z가-힣]+/).filter(Boolean);
+  return ws.length > 0 && ws.every((w) => OVERVIEW.test(w));
+};
 const sentences = (t: string, n: number) =>
   (t.match(/[^.!?。]+[.!?。]?/g) ?? [t])
     .slice(0, n)
@@ -53,27 +70,19 @@ export function localAnswer(
 ): NoteAskResult | null {
   const all = parts(m);
   if (!all.length) return null;
-  // 위험한 질문은 노트에 그 낱말이 있어도 답하지 않는다
-  if (UNSAFE_PATTERN.test(question))
-    return { answerable: false, reason: 'unsafe', answer: UNSAFE, refs: [] };
+  if (UNSAFE_PATTERN.test(question)) return refuse('unsafe');
   const ws = words(question);
   const scored = all.map((p) => {
     const text = `${p.heading}${p.body}`.replace(/\s+/g, '');
     return { p, score: ws.filter((w) => hit(text, w)).length };
   });
   const best = scored.reduce((a, b) => (b.score > a.score ? b : a));
-  if (!best.score && !OVERVIEW.test(question))
-    return {
-      answerable: false,
-      reason: 'off_topic',
-      answer: '노트에는 없는 내용이에요. 서버에 연결되면 더 자세히 설명해 드릴게요.',
-      refs: [],
-    };
+  if (!best.score && !overview(question)) return refuse('off_topic');
   const { heading, body } = best.score ? best.p : all[0]!;
   return {
     answerable: true,
     reason: null,
-    answer: `노트의 '${heading}' 부분을 보면, ${sentences(body, 2)}`,
+    answer: `노트의 '${heading}' 부분을 보면, ${sentences(body, 2)} 이어서 퀴즈로 확인해 볼까요?`,
     refs: [heading],
   };
 }

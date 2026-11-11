@@ -110,4 +110,15 @@ describe.skipIf(!uri)('진짜 DB 포인트 적립 롤백 확인', () => {
         expect(await balanceOf(userId)).toBe(100);
         expect(await ledgerCount(userId)).toBe(0);
     });
+
+    it('d) 같은 사용자의 earnQuiz(10)가 동시에 두 번 불려도 오늘 quiz_correct 합계는 40P이고 잔액도 40만 늘어난다', async () => {
+        const userId = await newUser();
+
+        const results = await Promise.all([points.earnQuiz(userId.toString(), 10), points.earnQuiz(userId.toString(), 10)]);
+
+        expect(results.reduce((a, b) => a + b, 0)).toBe(40);
+        const ledger = await col('point_ledgers').find({ userId, reasonType: 'quiz_correct' }).toArray();
+        expect(ledger.reduce((sum, row) => sum + (row as unknown as { amount: number }).amount, 0)).toBe(40);
+        expect(await balanceOf(userId)).toBe(140);
+    });
 });
