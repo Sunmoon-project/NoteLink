@@ -10,7 +10,7 @@ import { create } from 'zustand';
 import { Text, TextInput } from '@/components/text';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, Check, Sparkles } from 'lucide-react-native';
 import { ERROR_CODES, type LearnerType, type SocialProvider } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
@@ -715,13 +715,15 @@ const TYPES: [LearnerType, string][] = [
   ['university', '대학생'],
   ['worker', '직장인'],
 ];
-const INTERESTS = ['자격증', '수능', '어학', '전공', '코딩', '공무원'];
-
 export function ProfileSetupScreen() {
   const qc = useQueryClient();
   const [nick, setNick] = useState('');
   const [type, setType] = useState<LearnerType | null>(null);
   const [interests, setInterests] = useState<string[]>([]);
+  const categories = useQuery({
+    queryKey: ['interest-categories'],
+    queryFn: api.me.interestCategories,
+  });
   const save = useMutation({
     mutationFn: () =>
       api.me.update({ nickname: nick.trim(), learnerType: type!, interestCategoryIds: interests }),
@@ -770,18 +772,28 @@ export function ProfileSetupScreen() {
         <FieldError msg={tried && !type ? '학습자 유형을 골라 주세요' : null} />
         <Label>관심 분야</Label>
         <View className="flex-row flex-wrap gap-2">
-          {INTERESTS.map((x) => (
+          {categories.data?.map((x) => (
             <Chip
-              key={x}
-              on={interests.includes(x)}
+              key={x._id}
+              on={interests.includes(x._id)}
               onPress={() =>
-                setInterests((p) => (p.includes(x) ? p.filter((y) => y !== x) : [...p, x]))
+                setInterests((p) =>
+                  p.includes(x._id) ? p.filter((y) => y !== x._id) : [...p, x._id],
+                )
               }
             >
-              {x}
+              {x.name}
             </Chip>
           ))}
         </View>
+        {categories.isLoading && <Text>관심 분야를 불러오는 중이에요</Text>}
+        {categories.isError && (
+          <Tap onPress={() => void categories.refetch()}>
+            <Text>관심 분야를 불러오지 못했어요. 다시 시도</Text>
+          </Tap>
+        )}
+        {categories.data?.length === 0 && <Text>선택할 관심 분야가 없어요</Text>}
+        {save.isError && <FieldError msg="프로필을 저장하지 못했어요. 다시 시도해 주세요" />}
       </Screen>
     </Canvas>
   );

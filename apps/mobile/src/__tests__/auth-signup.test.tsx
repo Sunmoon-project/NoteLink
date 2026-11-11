@@ -594,6 +594,23 @@ it('초기 설정은 미리 고른 값이 없고, 닉네임과 학습자 유형�
   );
 });
 
+it('관심 분야를 선택하면 이름 대신 서버 카테고리 ID를 전송한다', async () => {
+  jest
+    .spyOn(api.me, 'interestCategories')
+    .mockResolvedValue([{ _id: '507f1f77bcf86cd799439011', name: '수능' }]);
+  const update = jest.spyOn(api.me, 'update');
+  await renderScreen(<ProfileSetupScreen />);
+  await fireEvent.changeText(screen.getByPlaceholderText('노트러버'), '한결');
+  await fireEvent.press(screen.getByText('대학생'));
+  await fireEvent.press(await screen.findByText('수능'));
+  await fireEvent.press(screen.getByText('시작하기'));
+  await waitFor(() =>
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ interestCategoryIds: ['507f1f77bcf86cd799439011'] }),
+    ),
+  );
+});
+
 it('이미 있는 이메일이면 로그인으로 돌아갈 길을 보여 준다', async () => {
   jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
   jest

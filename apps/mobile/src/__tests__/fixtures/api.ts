@@ -224,6 +224,13 @@ export const mockApi: Api = {
     logout: () => ok(undefined),
   },
   me: {
+    interestCategories: () =>
+      ok(
+        ['자격증', '수능', '어학', '전공', '코딩', '공무원'].map((name, index) => ({
+          _id: String(index + 1).padStart(24, '0'),
+          name,
+        })),
+      ),
     get: () => {
       if (useMockFlags.getState().tokenExpired)
         return fail(ERROR_CODES.TOKEN_EXPIRED, '로그인이 만료됐어요', 401);

@@ -18,6 +18,15 @@ export class UsersService {
     private readonly userModel: Model<User>,
   ) {}
 
+  async interestCategories() {
+    const categories = await this.userModel.db
+      .collection('categories')
+      .find({ ownerId: null, isActive: true, deletedAt: null })
+      .sort({ sortOrder: 1, _id: 1 })
+      .toArray();
+    return categories.map((category) => ({ _id: String(category._id), name: category.name }));
+  }
+
   async getMe(userId: string) {
     if (!isValidObjectId(userId)) {
       throw new NotFoundException({

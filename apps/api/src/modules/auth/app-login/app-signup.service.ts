@@ -14,7 +14,11 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 
-import { initialNickname } from '../social-login/initial-nickname.js';
+import {
+  initialNickname,
+  isNicknameConflict,
+  NICKNAME_CREATE_ATTEMPTS,
+} from '../social-login/initial-nickname.js';
 import { User, type UserDocument } from '../schemas/user.schema.js';
 import {
   EMAIL_CODE_RESEND_COOLDOWN_MS,
@@ -142,17 +146,27 @@ export class AppSignupService {
     }
 
     const passwordHash = await hash(password, this.hashCost);
-    try {
-      await this.users.create({
-        email: proof.email,
-        passwordHash,
-        nickname: initialNickname(null),
-      });
-    } catch (error) {
-      // 이미 가입했거나, 같은 이메일을 가진 다른 계정(소셜 포함)이 있다. 유일 인덱스가 마지막 방어선이다
-      if (isDuplicateKey(error)) throw emailTaken();
-      throw error;
-    }
+    for (let attempt = 0; attempt < NICKNAME_CREATE_ATTEMPTS; attempt++)
+      try {
+        await this.users.create({
+          email: proof.email,
+          passwordHash,
+          nickname: initialNickname(null),
+        });
+        return;
+      } catch (error) {
+        if (isNicknameConflict(error)) {
+          if (attempt + 1 === NICKNAME_CREATE_ATTEMPTS) throw error;
+          continue;
+        }
+        // 이미 가입했거나, 같은 이메일을 가진 다른 계정(소셜 포함)이 있다. 유일 인덱스가 마지막 방어선이다
+        if (
+          isDuplicateKey(error) &&
+          (error as { keyPattern?: { email?: number } }).keyPattern?.email === 1
+        )
+          throw emailTaken();
+        throw error;
+      }
   }
 
   /** 탈퇴하지 않은 사용자 중 이 이메일을 가진 계정이 있는지(소셜로 가입한 계정 포함) */

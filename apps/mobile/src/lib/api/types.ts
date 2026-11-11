@@ -80,6 +80,7 @@ export interface Api {
     logout(): Promise<void>;
   };
   me: {
+    interestCategories(): Promise<{ _id: string; name: string }[]>;
     get(): Promise<User>;
     update(
       patch: Partial<
