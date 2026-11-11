@@ -502,10 +502,23 @@ export function InterestsScreen() {
   const changed = now.length !== saved.length || now.some((x) => !saved.includes(x));
   const toggle = (x: string) =>
     setPicked(now.includes(x) ? now.filter((y) => y !== x) : [...now, x]);
+  // 저장 응답이 늦게 와도 화면을 떠났으면 뒤로 가지 않고, 계정이 바뀌었으면 지금 계정 캐시에 넣지 않는다
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
   const save = useMutation({
-    mutationFn: () => api.me.update({ interestCategoryIds: now }),
-    onSuccess: (u) => {
+    mutationFn: async () => {
+      const who = useAuth.getState().userId;
+      return { who, u: await api.me.update({ interestCategoryIds: now }) };
+    },
+    onSuccess: ({ who, u }) => {
+      if (useAuth.getState().userId !== who) return;
       qc.setQueryData(['me'], u);
+      if (!alive.current) return;
       router.back();
       toast('관심 분야를 바꿨어요');
     },

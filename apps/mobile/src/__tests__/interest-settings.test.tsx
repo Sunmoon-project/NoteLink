@@ -1,8 +1,10 @@
 // 프로필 > 계정 정보 > 관심 분야 다시 고르기
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import type { User } from '@notelink/shared';
 import { AccountScreen, InterestsScreen } from '../features/profile/settings';
+import { QueryClient } from '@tanstack/react-query';
+import { useAuth } from '../stores/auth';
 import { useToast } from '../stores/toast';
 import { renderScreen } from '../test-utils';
 
@@ -77,4 +79,43 @@ it('내 정보를 못 읽으면 빈 목록 대신 안내하고, 다시 읽으면
   expect(screen.queryByText('저장')).toBeNull();
   await fireEvent.press(screen.getByText('다시 시도'));
   expect(await screen.findByText('1개 골랐어요')).toBeTruthy();
+});
+
+describe('저장 응답이 늦게 올 때', () => {
+  const later = () => {
+    let done: (u: User) => void = () => {};
+    mockApi.me.update.mockImplementation(() => new Promise<User>((r) => (done = r)));
+    return (ids: string[]) => done(user(ids));
+  };
+  beforeEach(() => useAuth.setState({ userId: 'u1' }));
+
+  it('화면을 떠났으면 한 번 더 뒤로 가지 않는다(내 정보는 고친다)', async () => {
+    mockApi.me.get.mockResolvedValue(user([]));
+    const finish = later();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = await renderScreen(<InterestsScreen />, qc);
+    await fireEvent.press(await screen.findByText('코딩'));
+    await fireEvent.press(screen.getByText('저장'));
+    await waitFor(() => expect(mockApi.me.update).toHaveBeenCalled());
+    await view.unmount();
+    await act(async () => finish(['코딩']));
+    expect(router.back).not.toHaveBeenCalled();
+    expect(qc.getQueryData<User>(['me'])?.interestCategoryIds).toEqual(['코딩']);
+  });
+
+  it('그사이 다른 계정으로 바뀌었으면 지금 계정의 내 정보에 넣지 않는다', async () => {
+    mockApi.me.get.mockResolvedValue(user([]));
+    const finish = later();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await renderScreen(<InterestsScreen />, qc);
+    await fireEvent.press(await screen.findByText('코딩'));
+    await fireEvent.press(screen.getByText('저장'));
+    await waitFor(() => expect(mockApi.me.update).toHaveBeenCalled());
+    const other = { ...user(['어학']), _id: 'u2' } as User;
+    qc.setQueryData(['me'], other);
+    useAuth.setState({ userId: 'u2' });
+    await act(async () => finish(['코딩']));
+    expect(qc.getQueryData(['me'])).toEqual(other);
+    expect(router.back).not.toHaveBeenCalled();
+  });
 });
