@@ -74,7 +74,13 @@ function DetailPreview({ item }: { item: ShopItem }) {
   if (item.category !== 'avatar') return <ItemPreview item={item} large />;
   return (
     <View accessibilityLabel={`${item.name} 3D 미리보기`}>
-      <Avatar3D mood="idle" avatarId={avatarModel(item._id, [item])} size={128} />
+      {/* 상자(bg-fill)와 같은 색으로 칠해 네모난 3D 바탕이 보이지 않게 */}
+      <Avatar3D
+        mood="idle"
+        avatarId={avatarModel(item._id, [item])}
+        size={128}
+        background={C.fill}
+      />
     </View>
   );
 }
