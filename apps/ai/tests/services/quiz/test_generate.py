@@ -1253,6 +1253,24 @@ def test_a_classification_answer_taken_meanwhile_by_another_slot_counts_as_a_cla
     join_threads("quiz-slot")
 
 
+def test_a_blank_classification_draft_clashing_when_taken_still_counts() -> None:
+    # 분류로 만들었지만 제시문에 ____가 있어 결과 유형이 빈칸으로 적히는 초안도, 받을 때 정답이
+    # 겹치면 분류 겹침으로 셈: 결과 유형이 아니라 만든 유형으로 봄(/code-review #293)
+    blank = draft("이질 아메바", "포낭형이 ____인 아메바", concept="대장 아메바")
+    blank["question"]["stem"] = "다음 원충이 속하는 분류는?"
+    kinds: list[str | None] = []
+
+    def taken_meanwhile(m: generate.Made) -> list[str]:
+        kinds.append(m.type)
+        return [generate.CLASH, generate.SAME_ANSWER]
+
+    r = generate.gen_one(
+        happy([blank, blank]), 1, PAGE1, ["분류"], NAMES, PageInfo(), [], [], 0, taken_meanwhile
+    )
+    assert kinds == ["빈칸", "빈칸"]  # 결과 유형은 빈칸
+    assert r.group_clash == 2 and r.why == [generate.CLASH, generate.GROUP_SAME]
+
+
 def test_a_classification_answer_clash_does_not_close_the_page() -> None:
     # 분류 초안이 정답 겹침으로만 떨어져도 쪽을 닫지 않음: 묶음 이름이 바닥났을 뿐 정의 · 특징은
     # 남음. 쪽 닫기 이유(DRY_REASONS)가 아닌 다른 이유로 바꿈(/code-review #282)

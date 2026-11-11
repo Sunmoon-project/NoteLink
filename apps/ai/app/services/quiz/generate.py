@@ -713,6 +713,18 @@ def _listed(m: Made) -> bool:
     return not is_combo(m.question["options"]) and m.type != "부정설명"
 
 
+def _group_clash(ty: str, why: list[str], out: Made) -> list[str]:
+    """분류 초안의 정답 겹침을 out.group_clash에 세고, 쪽을 닫지 않는 이유(GROUP_SAME)로 바꿈(#282).
+
+    만든 유형(ty)으로 봄: 제시문에 ____가 있어 결과 유형이 빈칸으로 적혀도 분류로 셈. 만들 때
+    (code_check)와 받을 때(accept) 겹침을 이 한 곳에서 셈(/code-review #293).
+    """
+    if ty != GROUP_TYPE or SAME_ANSWER not in why:
+        return why
+    out.group_clash += 1
+    return [GROUP_SAME if w == SAME_ANSWER else w for w in why]
+
+
 def _take(seen: list[Seen], used: list[str]) -> Accept:
     """차례로 만들 때: 겹침은 code_check가 이미 봤으니 seen · used에 더하기만."""
 
@@ -834,9 +846,7 @@ def gen_one(
             q = r.get("question")
             concept = q.get("concept") if isinstance(q, dict) else None
         why, k = code_check(d, t, text, ty, list(seen))
-        if ty == GROUP_TYPE and SAME_ANSWER in why:
-            out.group_clash += 1
-            why = [GROUP_SAME if w == SAME_ANSWER else w for w in why]
+        why = _group_clash(ty, why, out)
         if concept not in names:  # 개념 목록이 길면 모델이 이 필드를 빠뜨리기도 함
             why.append("개념 이름 없음")
         if (
@@ -882,6 +892,7 @@ def gen_one(
                 why = accept(out)
                 if not why:
                     return out
+                why = _group_clash(ty, why, out)  # 그사이 다른 자리가 같은 정답을 받음(Codex #293)
                 out.question = out.concept = out.type = None
                 out.why = why
                 if FULL in why:
@@ -1148,10 +1159,6 @@ def _make_all(
             if done.is_set() or len(taken) >= n:
                 return [FULL]
             same = not combo_q and any(same_item(d["answer"], u) for u in used)
-            if same and r.type == GROUP_TYPE:
-                # 그사이 다른 자리가 같은 묶음 이름을 받음: code_check의 정답 겹침처럼 셈. 동시에
-                # 만들면 묶음 이름은 대개 여기서 겹침(Codex 리뷰 #293)
-                group_clash[page] += 1
             if (
                 # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
                 asked[r.concept] >= per_concept(again_ok)
@@ -1159,7 +1166,9 @@ def _make_all(
                 or too_close(d, seen)
                 or reversed_of(d, seen)
             ):
-                return [CLASH]
+                # 정답이 겹쳤으면 그 이유도: 분류 초안이면 gen_one이 분류 겹침으로 셈. 동시에 만들면
+                # 묶음 이름은 대개 여기서 겹침(Codex 리뷰 #293)
+                return [CLASH, SAME_ANSWER] if same else [CLASH]
             asked[r.concept] += 1
             seen.append(seen_draft(d))
             if _listed(r):
