@@ -21,7 +21,8 @@ jest.mock('expo-secure-store', () => ({
 jest.mock('expo-sensors', () => ({
   Accelerometer: { addListener: jest.fn(() => ({ remove() {} })), setUpdateInterval: jest.fn() },
 }));
-jest.mock('expo-keep-awake', () => ({ useKeepAwake: () => {} }));
+const mockKeepAwake = jest.fn();
+jest.mock('expo-keep-awake', () => ({ useKeepAwake: (tag: string) => mockKeepAwake(tag) }));
 jest.mock('expo-screen-orientation', () => ({
   lockAsync: jest.fn(async () => {}),
   OrientationLock: { LANDSCAPE: 'landscape', PORTRAIT_UP: 'portrait' },
@@ -78,6 +79,11 @@ describe('탁상 모드', () => {
     expect(screen.getByText('10월 31일 (토)')).toBeTruthy();
     expect(await screen.findByText('오늘 순공시간 01:00:00')).toBeTruthy();
     expect(screen.queryByText('자동 측정 중')).toBeNull();
+    // 화면 읽기도 보이는 정보를 읽고, 시계로 세워 둔 동안 화면이 꺼지지 않는다
+    expect(
+      screen.getByLabelText('탁상 시계, 10월 31일 (토) 23:59, 오늘 순공시간 01:00:00'),
+    ).toBeTruthy();
+    expect(mockKeepAwake).toHaveBeenCalledWith('desk-clock');
     const portrait = jest.mocked(Accelerometer.addListener).mock.calls.at(-1)![0];
     await act(async () => portrait({ x: 0, y: 1, z: 0, timestamp: 0 }));
     expect(router.back).toHaveBeenCalledTimes(1);
