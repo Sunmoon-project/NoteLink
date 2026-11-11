@@ -42,6 +42,11 @@ export const INPUT_ATTEMPT_LIMIT = 500;
  */
 export const INPUT_BYTE_LIMIT = 8 * 1024 * 1024;
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
+/** 문제 난이도(packages/shared QuestionDifficulty, #268) */
+export type Difficulty = '하' | '중' | '상';
+const DIFFICULTIES: readonly string[] = ['하', '중', '상'];
+const difficultyOf = (v: unknown): Difficulty | null =>
+  typeof v === 'string' && DIFFICULTIES.includes(v) ? (v as Difficulty) : null;
 
 /** 앱에 보내는 문제(packages/shared Question) */
 export interface AppQuestion {
@@ -53,6 +58,7 @@ export interface AppQuestion {
   answer: string;
   explanation: string | null;
   conceptTags: string[];
+  difficulty: Difficulty | null;
 }
 
 /** 앱에 보내는 퀴즈 세트(packages/shared QuizSet) */
@@ -81,6 +87,7 @@ export interface QuestionRow {
   answer: string;
   explanation?: string | null;
   conceptTags?: string[];
+  difficulty?: Difficulty | null;
   srs?: Record<string, unknown> | null;
 }
 
@@ -134,6 +141,7 @@ export function toAppQuestion(q: QuestionRow): AppQuestion {
     answer: q.answer,
     explanation: q.explanation ?? null,
     conceptTags: q.conceptTags ?? [],
+    difficulty: q.difficulty ?? null,
   };
 }
 
@@ -201,6 +209,8 @@ export function fromWorkerQuestion(raw: unknown): QuestionRow | null {
     answer,
     explanation: str(q['explanation']),
     conceptTags,
+    // 하 · 중 · 상이 아니면 null(난이도 하나 때문에 문제를 빼지 않음)
+    difficulty: difficultyOf(q['difficulty']),
     srs: null,
   };
 }
@@ -725,6 +735,7 @@ function toWorkerQuestion(q: QuestionRow): Record<string, unknown> {
     ...(q.passage ? { passage: q.passage } : {}),
     ...(q.explanation ? { explanation: q.explanation } : {}),
     conceptTags: q.conceptTags ?? [],
+    ...(q.difficulty ? { difficulty: q.difficulty } : {}),
     srs: q.srs ?? null,
   };
 }
