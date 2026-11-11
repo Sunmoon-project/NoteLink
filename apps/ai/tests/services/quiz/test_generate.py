@@ -1191,6 +1191,68 @@ def test_other_types_clashing_on_an_answer_do_not_leave_out_classification() -> 
     assert r.group_clash == 2
 
 
+@pytest.mark.usefixtures("fill_rounds")
+@pytest.mark.parametrize(
+    ("answer", "concept", "counted"),
+    [
+        ("이질 아메바", "대장 아메바", True),  # 정답이 겹침: 셈
+        ("대장 아메바", "이질 아메바", False),  # 개념만 겹침: 세지 않음
+    ],
+)
+def test_a_classification_answer_taken_meanwhile_by_another_slot_counts_as_a_clash(
+    monkeypatch: pytest.MonkeyPatch, answer: str, concept: str, counted: bool
+) -> None:
+    # 1쪽 2문제를 두 자리가 동시에(THREE_TRIES). 한 자리의 분류 초안을 만드는 동안 다른 자리가
+    # 정의로 이질 아메바(개념도 이질 아메바)를 받음: 분류 초안은 만들 때 겹치지 않아 검사를
+    # 통과하고, 받을 때(accept) 겹침. 정답이 겹쳤으면 분류 정답 겹침으로 세어, 2판의 분류 겹침과
+    # 합쳐 두 번이 되면 3판은 분류를 빼고 채움. 개념만 겹쳤으면 세지 않아 3판의 세 번째 시도도
+    # 분류라 못 채움(Codex 리뷰 #293)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    group = draft(answer, "포낭형이 4핵인 아메바", concept=concept)
+    monkeypatch.setitem(ANSWER_OF, group["question"]["passage"], answer)
+    rest = [*[BAD] * 6, GOOD["대장 아메바"]]  # 첫 정의 뒤의 정의 · 특징 초안 차례
+    lock = threading.Lock()
+    asking = threading.Event()  # 분류 초안을 만드는 중(쓴 정답을 이미 봄)
+    taken = threading.Event()  # 이질 아메바를 받음(진행률이 15%를 넘음)
+    kinds: list[str] = []
+    first = [True]
+
+    def quiz(user: str) -> JsonObject:
+        ty = re.findall(r"문제 유형: (\S+)", user)[0]
+        with lock:
+            kinds.append(ty)
+            group_now = ty == "분류" and kinds.count("분류") == 1
+            define_now = ty == "정의" and first[0]
+            first[0] = first[0] and not define_now
+            if ty == "분류" and not group_now:
+                return BAD  # 2판 · 3판: 만들 때 이미 겹침(code_check)
+            if not (group_now or define_now):
+                return rest.pop(0)
+        if define_now:  # 다른 자리가 분류 초안을 만들기 시작한 뒤에 받음
+            assert asking.wait(10)
+            return GOOD["이질 아메바"]
+        asking.set()
+        assert taken.wait(10)
+        return group
+
+    def report(value: int, step: str | None = None) -> None:
+        if value > 15:
+            taken.set()
+
+    def make_set() -> JsonObject:
+        return generate.run(parallel_llm(quiz), page1_job(size=2), report, mode=THREE_TRIES)
+
+    if counted:
+        result = make_set()
+        assert sorted(q["answer"] for q in result["questions"]) == ["대장 아메바", "이질 아메바"]
+        assert kinds.count("분류") == 2 and kinds[-3:] == ["특징", "정의", "특징"]
+    else:
+        with pytest.raises(generate.NoQuestionsError, match="1/2문제만 만듦"):
+            make_set()
+        assert kinds.count("분류") == 3 and kinds[-1] == "분류"
+    join_threads("quiz-slot")
+
+
 def test_a_classification_answer_clash_does_not_close_the_page() -> None:
     # 분류 초안이 정답 겹침으로만 떨어져도 쪽을 닫지 않음: 묶음 이름이 바닥났을 뿐 정의 · 특징은
     # 남음. 쪽 닫기 이유(DRY_REASONS)가 아닌 다른 이유로 바꿈(/code-review #282)

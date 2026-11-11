@@ -1147,10 +1147,15 @@ def _make_all(
         with lock:
             if done.is_set() or len(taken) >= n:
                 return [FULL]
+            same = not combo_q and any(same_item(d["answer"], u) for u in used)
+            if same and r.type == GROUP_TYPE:
+                # 그사이 다른 자리가 같은 묶음 이름을 받음: code_check의 정답 겹침처럼 셈. 동시에
+                # 만들면 묶음 이름은 대개 여기서 겹침(Codex 리뷰 #293)
+                group_clash[page] += 1
             if (
                 # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
                 asked[r.concept] >= per_concept(again_ok)
-                or (not combo_q and any(same_item(d["answer"], u) for u in used))
+                or same
                 or too_close(d, seen)
                 or reversed_of(d, seen)
             ):
