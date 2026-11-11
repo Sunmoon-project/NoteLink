@@ -1,8 +1,8 @@
 import { useFeatureNavigation } from '@/lib/feature-navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Pressable, ScrollView, View } from 'react-native';
 import { Text } from '@/components/text';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CalendarDays,
@@ -505,11 +505,20 @@ export function InterestsScreen() {
   const changed = now.length !== saved.length || now.some((x) => !saved.includes(x));
   const toggle = (x: string) =>
     setPicked(now.includes(x) ? now.filter((y) => y !== x) : [...now, x]);
-  // 저장 응답이 늦게 와도 화면을 떠났으면 뒤로 가지 않고, 계정이 바뀌었으면 지금 계정 캐시에 넣지 않는다
-  const alive = useRef(true);
+  // 저장 응답이 늦게 와도 화면을 떠났거나(뒤로 · 다른 탭) 가려졌으면 뒤로 가지 않고,
+  // 계정이 바뀌었으면 지금 계정 캐시에 넣지 않는다
+  const here = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      here.current = true;
+      return () => {
+        here.current = false;
+      };
+    }, []),
+  );
   useEffect(
     () => () => {
-      alive.current = false;
+      here.current = false;
     },
     [],
   );
@@ -521,7 +530,7 @@ export function InterestsScreen() {
     onSuccess: ({ who, u }) => {
       if (useAuth.getState().userId !== who) return;
       qc.setQueryData(['me'], u);
-      if (!alive.current) return;
+      if (!here.current) return;
       router.back();
       toast('관심 분야를 바꿨어요');
     },
@@ -549,7 +558,8 @@ export function InterestsScreen() {
         <Header title="관심 분야" sub="공부하고 있는 분야를 골라 주세요. 여러 개 골라도 돼요" />
         <View className="mt-2 flex-row flex-wrap gap-2">
           {INTERESTS.map((x) => (
-            <Chip key={x} on={now.includes(x)} onPress={() => toggle(x)}>
+            // 저장 중에 바꾸면 요청에 안 들어간 채 돌아가 버리므로 잠근다
+            <Chip key={x} on={now.includes(x)} disabled={save.isPending} onPress={() => toggle(x)}>
               {x}
             </Chip>
           ))}

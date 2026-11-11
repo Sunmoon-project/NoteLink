@@ -17,8 +17,15 @@ jest.mock('../lib/api', () => ({
 const user = (interestCategoryIds: string[]) =>
   ({ _id: 'u1', nickname: '테스터', interestCategoryIds }) as unknown as User;
 
+// 포커스 콜백을 모아 두고, 테스트에서 다른 탭으로 옮긴 것처럼 블러를 부른다
+const mockFocus = new Set<() => (() => void) | void>();
+jest.requireMock('expo-router').useFocusEffect = (cb: () => (() => void) | void) =>
+  mockFocus.add(cb);
+const blur = () => act(() => [...mockFocus].forEach((cb) => (cb() as () => void)()));
+
 beforeEach(() => {
   jest.clearAllMocks();
+  mockFocus.clear();
   useToast.setState({ msg: null });
 });
 
@@ -61,6 +68,16 @@ it('켜고 끈 결과를 저장하고 돌아간다(모두 꺼도 된다)', async
   expect(useToast.getState().msg).toBe('관심 분야를 바꿨어요');
 });
 
+it('모두 끄고 저장하면 빈 목록을 보낸다', async () => {
+  mockApi.me.get.mockResolvedValue(user(['어학', '코딩']));
+  mockApi.me.update.mockResolvedValue(user([]));
+  await renderScreen(<InterestsScreen />);
+  await fireEvent.press(await screen.findByText('어학'));
+  await fireEvent.press(screen.getByText('코딩'));
+  await fireEvent.press(screen.getByText('저장'));
+  await waitFor(() => expect(mockApi.me.update).toHaveBeenCalledWith({ interestCategoryIds: [] }));
+});
+
 it('저장에 실패하면 화면에 남아 고른 것을 그대로 둔다', async () => {
   mockApi.me.get.mockResolvedValue(user([]));
   mockApi.me.update.mockRejectedValue(new Error('network'));
@@ -101,6 +118,34 @@ describe('저장 응답이 늦게 올 때', () => {
     await act(async () => finish(['코딩']));
     expect(router.back).not.toHaveBeenCalled();
     expect(qc.getQueryData<User>(['me'])?.interestCategoryIds).toEqual(['코딩']);
+  });
+
+  it('다른 탭으로 옮겼으면 그 화면에서 뒤로 가지 않는다(내 정보는 고친다)', async () => {
+    mockApi.me.get.mockResolvedValue(user([]));
+    const finish = later();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await renderScreen(<InterestsScreen />, qc);
+    await fireEvent.press(await screen.findByText('코딩'));
+    await fireEvent.press(screen.getByText('저장'));
+    await waitFor(() => expect(mockApi.me.update).toHaveBeenCalled());
+    await blur();
+    await act(async () => finish(['코딩']));
+    expect(router.back).not.toHaveBeenCalled();
+    expect(useToast.getState().msg).toBeNull();
+    expect(qc.getQueryData<User>(['me'])?.interestCategoryIds).toEqual(['코딩']);
+  });
+
+  it('저장하는 동안에는 고른 것을 바꿀 수 없다', async () => {
+    mockApi.me.get.mockResolvedValue(user([]));
+    const finish = later();
+    await renderScreen(<InterestsScreen />);
+    await fireEvent.press(await screen.findByText('코딩'));
+    await fireEvent.press(screen.getByText('저장'));
+    await waitFor(() => expect(mockApi.me.update).toHaveBeenCalled());
+    await fireEvent.press(screen.getByText('어학'));
+    expect(screen.getByText('1개 골랐어요')).toBeTruthy();
+    await act(async () => finish(['코딩']));
+    expect(mockApi.me.update).toHaveBeenCalledWith({ interestCategoryIds: ['코딩'] });
   });
 
   it('그사이 다른 계정으로 바뀌었으면 지금 계정의 내 정보에 넣지 않는다', async () => {

@@ -670,18 +670,21 @@ export function Chip({
   onPress,
   className,
   small,
+  disabled,
 }: {
   children: ReactNode;
   on?: boolean;
   onPress?: () => void;
   className?: string;
   small?: boolean;
+  disabled?: boolean;
 }) {
   const surface = useSurface();
   return (
     <Tap
       accessibilityRole="button"
-      accessibilityState={{ selected: !!on }}
+      accessibilityState={{ selected: !!on, disabled: !!disabled }}
+      disabled={disabled}
       onPress={onPress}
       hitSlop={small ? 8 : 4}
       className={cx(
