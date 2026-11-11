@@ -99,7 +99,9 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
         ),
       create: (data: Partial<UserRow>) => {
         if (data.email && users.some((u) => u.email === data.email)) {
-          return Promise.reject(Object.assign(new Error('E11000'), { code: 11000 }));
+          return Promise.reject(
+            Object.assign(new Error('E11000'), { code: 11000, keyPattern: { email: 1 } }),
+          );
         }
         const row: UserRow = {
           _id: new Types.ObjectId(),

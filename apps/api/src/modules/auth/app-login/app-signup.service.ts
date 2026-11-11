@@ -159,12 +159,10 @@ export class AppSignupService {
           if (attempt + 1 === NICKNAME_CREATE_ATTEMPTS) throw error;
           continue;
         }
-        // 이미 가입했거나, 같은 이메일을 가진 다른 계정(소셜 포함)이 있다. 유일 인덱스가 마지막 방어선이다
-        if (
-          isDuplicateKey(error) &&
-          (error as { keyPattern?: { email?: number } }).keyPattern?.email === 1
-        )
-          throw emailTaken();
+        // 닉네임 충돌은 위에서 걸렀으므로, 남은 중복 키 오류는 이메일 유일 인덱스 위반이다.
+        // 이미 가입했거나, 같은 이메일을 가진 다른 계정(소셜 포함)이 있다. 유일 인덱스가 마지막 방어선이다.
+        // keyPattern 유무에 기대지 않는다: 오류에 keyPattern이 없어도 409로 바꾼다.
+        if (isDuplicateKey(error)) throw emailTaken();
         throw error;
       }
   }
