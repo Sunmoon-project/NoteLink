@@ -1404,6 +1404,15 @@ def test_a_stable_draft_is_not_used_when_the_recheck_call_fails() -> None:
     assert len(llm.named(generate.RECHECK)) == 3  # 세 초안 모두 2차 풀기에서 멈춤
 
 
+def test_a_stable_draft_whose_recheck_is_always_rejected_ends_without_retry() -> None:
+    # 생성 모델 2차 풀기만 서버가 모두 거절: 다시 해도 같아 다시 넣지 않음(#272, Codex #302)
+    llm = happy([GOOD["이질 아메바"]] * 3)
+    llm.answers[generate.RECHECK] = lambda u: LlmRejectedError("HTTP 413")
+    with pytest.raises(LlmRejectedError, match="모두 거절함"):
+        make(llm, page1_job(size=1), mode=STEPS)
+    assert len(llm.named(generate.RECHECK)) == 3
+
+
 def test_the_fast_mode_still_checks_two_answers_and_the_checker_solve() -> None:
     # 빠르게 하려고 빼는 것은 추가 시도와 생성 모델 2차 풀기뿐: 정답 둘 검사 · 검사 모델
     # 풀기는 그대로
