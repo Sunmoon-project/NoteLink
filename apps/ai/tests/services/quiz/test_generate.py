@@ -2427,10 +2427,16 @@ def test_the_next_round_starts_with_the_level_still_lacking(
     assert len(firsts) > 2 and set(firsts[2:]) == {"조합"}  # 다음 판들도 상(조합)부터
 
 
-def concurrent_llm(slow: str, gate: threading.Event, fail_after: bool = False) -> ScriptLlm:
+def concurrent_llm(
+    slow: str,
+    gate: threading.Event,
+    fail_after: bool = False,
+    pick: Callable[[list[str]], str | None] | None = None,
+) -> ScriptLlm:
     """여러 자리가 동시에 불러도 되는 가짜 LLM: 제시문으로 정답을 찾음. slow 유형의 초안은 gate가
-    켜질 때까지(늦어도 5초) 기다렸다가 오고, 늘 마지막 개념(질편모충)을 씀. 다른 유형은 앞의
-    개념부터 자리마다 다르게 고름(스레드 차례에 기대지 않게)."""
+    켜질 때까지(늦어도 5초) 기다렸다가 오고, 늘 마지막 개념(질편모충)을 씀(pick이 있으면 pick이
+    고른 개념, None이면 탈락 초안). 다른 유형은 앞의 개념부터 자리마다 다르게 고름(스레드 차례에
+    기대지 않게)."""
     lock = threading.Lock()
     answer_of: dict[str, str] = {}
     handed: list[str] = []
@@ -2442,10 +2448,17 @@ def concurrent_llm(slow: str, gate: threading.Event, fail_after: bool = False) -
         names = listed.group(1).split(", ")
         if ty.group(1) == slow:
             gate.wait(5)
-        if fail_after and gate.is_set():  # 비워 둔 뒤의 초안은 모두 탈락(맡은 자리가 끝내 실패)
+        with lock:
+            picked = pick(names) if pick is not None and ty.group(1) == slow else None
+        if pick is not None and ty.group(1) == slow and picked is None:
+            return BAD
+        # 비워 둔 뒤의 초안은 모두 탈락(맡은 자리가 끝내 실패). pick이 고른 초안은 빼고
+        if fail_after and gate.is_set() and picked is None:
             return BAD
         with lock:
-            if ty.group(1) == slow:
+            if picked is not None:
+                concept = picked
+            elif ty.group(1) == slow:
                 concept = names[-1]
             else:
                 concept = next(c for c in names[:-1] if c not in handed)
@@ -2552,3 +2565,83 @@ def test_a_held_spare_question_is_used_when_the_slot_it_waited_for_fails(
     join_threads("quiz-slot")
     assert gate.is_set()
     assert kinds_of(result) == [("정의", "하"), ("정의", "하")]
+
+
+@pytest.mark.usefixtures("mixed_levels")
+def test_a_held_spare_question_is_used_when_the_round_hits_its_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 하 여분 문제를 중 자리에 비워 뒀는데 중 자리가 시간 상한까지 답을 받지 못함: 그 자리는
+    # 끝나지 않아 자리가 끝날 때 다시 받기(guarded)가 돌지 않음. 세트를 끝낼 때 도는 자리를
+    # 기다리지 않고 보관한 문제를 받음(take_reserve(final=True), Codex 3차 재리뷰 #300)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "EXTRA", 0.5)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.2)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.5)
+    monkeypatch.setattr(generate, "MAX_ROUNDS", 1)  # 다음 판 없이 첫 판 상한에 끝냄
+    monkeypatch.setattr(generate, "page_types", lambda text, korean, extra=(): ["정의", "특징"])
+    monkeypatch.setattr(generate.levels, "level_mix", lambda n, usable, stats: {"하": 1, "중": 1})
+    was_held = threading.Event()
+    real_held = generate.levels.held
+
+    def held(*a: Any, **k: Any) -> bool:
+        out = real_held(*a, **k)
+        if out:
+            was_held.set()
+        return out
+
+    monkeypatch.setattr(generate.levels, "held", held)
+    release = threading.Event()  # 특징 초안은 세트를 돌려준 뒤에야 옴
+    one_page = job(size=2)
+    one_page["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1 + "\n" + PAGE2}]
+    start = time.monotonic()
+    try:
+        result = make(concurrent_llm("특징", release), one_page)
+    finally:
+        release.set()
+    join_threads("quiz-slot")
+    assert was_held.is_set(), "하 여분 문제를 비워 두지 않음"
+    assert time.monotonic() - start < 3
+    assert kinds_of(result) == [("정의", "하"), ("정의", "하")]
+
+
+@pytest.mark.usefixtures("mixed_levels")
+def test_a_held_question_clashing_with_one_taken_later_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 하 1 · 중 2: 하 여분 문제(개념 C)를 중 자리에 비워 둔 사이 중 자리가 같은 개념 C의 특징
+    # 문제를 받고, 다른 중 자리는 실패. 보관한 문제를 다시 받을 때 겹침을 다시 봐 버림: 받으면 한
+    # 세트에 개념 C를 두 번 물음(Codex 3차 재리뷰 #300). 판이 하나뿐이라 2/3문제로 끝남
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "EXTRA", 0.5)  # 3문제에 자리 3 + 여분 2(하 · 중)
+    monkeypatch.setattr(generate, "MAX_ROUNDS", 1)
+    monkeypatch.setattr(generate, "page_types", lambda text, korean, extra=(): ["정의", "특징"])
+    monkeypatch.setattr(generate.levels, "level_mix", lambda n, usable, stats: {"하": 1, "중": 2})
+    gate = threading.Event()
+    kept: list[str] = []
+    real_replace = generate.replace
+
+    def keep(obj: Any, **k: Any) -> Any:
+        if isinstance(obj, generate.Made) and not k:  # accept가 보관하는 사본(개념 C)
+            assert obj.concept is not None
+            kept.append(obj.concept)
+            gate.set()
+        return real_replace(obj, **k)
+
+    monkeypatch.setattr(generate, "replace", keep)
+
+    def pick(names: list[str]) -> str | None:
+        # 첫 특징 초안만 보관한 개념으로, 나머지는 탈락
+        if kept and kept[0] not in handed_feature:
+            handed_feature.append(kept[0])
+            return kept[0]
+        return None
+
+    handed_feature: list[str] = []
+    one_page = job(size=3)
+    one_page["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1 + "\n" + PAGE2}]
+    llm = concurrent_llm("특징", gate, fail_after=True, pick=pick)
+    with pytest.raises(generate.NoQuestionsError, match=re.escape("2/3문제만 만듦")):
+        make(llm, one_page)
+    join_threads("quiz-slot")
+    assert len(kept) == 1 and handed_feature == kept
