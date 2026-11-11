@@ -7,6 +7,7 @@ import { OFF_TOPIC, UNSAFE, localAnswer } from '../lib/local/tutor';
 import * as SecureStore from 'expo-secure-store';
 import { TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
 import { AvatarCheer, ENCOURAGE, PRAISE } from '../features/tutor/cheer';
+import { AvatarTeacherScreen } from '../features/tutor/teacher';
 import { STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
 import { useAuth } from '../stores/auth';
 import { TutorScreen } from '../features/tutor/tutor';
@@ -21,6 +22,7 @@ jest.mock('expo-router', () => ({
 }));
 const mockFocus = new Set<() => (() => void) | void>();
 const blur = () => act(() => [...mockFocus].forEach((cb) => (cb() as () => void)()));
+const refocus = () => act(() => [...mockFocus].forEach((cb) => cb()));
 // GL · 3D 모델은 기기에서만. 화면 테스트는 어떤 아바타를 그리는지와 대화 흐름을 본다
 jest.mock('../features/tutor/avatar3d', () => {
   const { Text: T } = jest.requireActual('react-native');
@@ -39,7 +41,7 @@ beforeEach(() => mockSecure.clear());
 const mockApi = {
   content: { material: jest.fn(), ask: jest.fn() },
   ai: { job: jest.fn() },
-  shop: { myItems: jest.fn(), items: jest.fn() },
+  shop: { myItems: jest.fn(), items: jest.fn(), equip: jest.fn() },
 };
 jest.mock('../lib/api', () => ({
   get api() {
@@ -468,4 +470,114 @@ describe('처음 안내', () => {
     await act(async () => {});
     expect(useTour.getState().step).toBe(-1);
   });
+});
+
+describe('아바타 선생님 고르기', () => {
+  const item = (id: string, name: string, face: string) => ({
+    _id: id,
+    category: 'avatar',
+    name,
+    description: '',
+    price: 500,
+    avatarStyle: 'nice',
+    thumbnailUrl: face,
+    assetUrl: face,
+    purchaseCount: 0,
+    isActive: true,
+    isDefault: false,
+  });
+  const own = (itemId: string, isEquipped = false) => ({
+    _id: `ui-${itemId}`,
+    itemId,
+    itemCategory: 'avatar',
+    isOwned: true,
+    isWished: false,
+    isEquipped,
+    acquiredAt: null,
+  });
+  beforeEach(() => {
+    mockApi.shop.items.mockResolvedValue([
+      item('bora', '보라 아바타', '👧🏻'),
+      item('jihoo', '지후 아바타', '👨🏻'),
+      { ...item('sea', '바다 테마', '🌊'), category: 'theme' },
+    ]);
+    mockApi.shop.myItems.mockResolvedValue([own('bora', true)]);
+    mockApi.shop.equip.mockResolvedValue(undefined);
+  });
+
+  it('기본 · 보유 아바타만 고를 수 있고, 장착한 아바타가 선생님 3D로 보인다', async () => {
+    await renderScreen(<AvatarTeacherScreen />);
+    expect(await screen.findByText('3D:bora')).toBeTruthy();
+    expect(screen.getByLabelText('보라 아바타, 장착 중')).toBeTruthy();
+    expect(screen.getByLabelText('기본 아바타')).toBeTruthy();
+    expect(screen.queryByLabelText('지후 아바타')).toBeNull();
+    expect(screen.getByText('다른 아바타 1개가 상점에 있어요')).toBeTruthy();
+    await fireEvent.press(screen.getByText('상점'));
+    expect(router.push).toHaveBeenCalledWith('/shop');
+  });
+
+  it('상점으로 가면 보이지 않는 3D 선생님을 내리고, 돌아오면 다시 그린다', async () => {
+    await renderScreen(<AvatarTeacherScreen />);
+    expect(await screen.findByText('3D:bora')).toBeTruthy();
+    await blur();
+    expect(screen.queryByText('3D:bora')).toBeNull();
+    await refocus();
+    expect(screen.getByText('3D:bora')).toBeTruthy();
+  });
+
+  it('판매가 끝난 보유 아바타도 목록에 남아 다시 장착할 수 있다', async () => {
+    const seen = '6650a1b2c3d4e5f6012345a1';
+    const unseen = '6650a1b2c3d4e5f6012345a2';
+    mockSecure.set('notelink.avatar-models', JSON.stringify({ [seen]: 'jihoo' }));
+    mockApi.shop.myItems.mockResolvedValue([own('bora', true), own(seen), own(unseen)]);
+    await renderScreen(<AvatarTeacherScreen />);
+    await fireEvent.press(await screen.findByLabelText('지후 아바타'));
+    await waitFor(() => expect(mockApi.shop.equip).toHaveBeenCalledWith(seen));
+    expect(screen.getByLabelText('판매가 끝난 아바타')).toBeTruthy();
+  });
+
+  it.each([
+    ['전에 본', 'jihoo', '지후 아바타'],
+    ['처음 보는', 'base', '판매가 끝난 아바타'],
+  ])(
+    '%s 판매 종료 아바타를 장착하면 목록 표시와 위 미리보기가 같은 얼굴이다',
+    async (_, face, name) => {
+      const oid = '6650a1b2c3d4e5f6012345b1';
+      if (face !== 'base')
+        mockSecure.set('notelink.avatar-models', JSON.stringify({ [oid]: face }));
+      mockApi.shop.myItems.mockResolvedValue([own(oid, true)]);
+      await renderScreen(<AvatarTeacherScreen />);
+      expect(await screen.findByLabelText(`${name}, 장착 중`)).toBeTruthy();
+      expect(await screen.findByText(`3D:${face}`)).toBeTruthy();
+    },
+  );
+
+  it('그림 주소인 상품은 주소 글자 대신 그림으로 보여 준다', async () => {
+    const url = 'https://cdn.example.com/bora.png';
+    mockApi.shop.items.mockResolvedValue([item('bora', '보라 아바타', url)]);
+    await renderScreen(<AvatarTeacherScreen />);
+    const pic = await screen.findByLabelText('보라 아바타 미리보기');
+    expect(pic.props.source).toEqual({ uri: url });
+    expect(screen.queryByText(url)).toBeNull();
+  });
+
+  it('고르면 장착하고 선생님 얼굴을 새로 고친다', async () => {
+    await renderScreen(<AvatarTeacherScreen />);
+    mockApi.shop.myItems.mockResolvedValue([own('bora')]);
+    await fireEvent.press(await screen.findByLabelText('기본 아바타'));
+    await waitFor(() => expect(mockApi.shop.equip).toHaveBeenCalledWith('base'));
+    expect(await screen.findByText('3D:base')).toBeTruthy();
+  });
+
+  it.each(['myItems', 'items'] as const)(
+    '%s 조회가 실패하면 기본만 있는 화면 대신 안내하고, 다시 시도하면 목록을 보인다',
+    async (fn) => {
+      mockApi.shop[fn].mockRejectedValueOnce(new Error('network'));
+      await renderScreen(<AvatarTeacherScreen />);
+      expect(await screen.findByText('아바타 목록을 불러오지 못했어요')).toBeTruthy();
+      expect(screen.queryByLabelText('기본 아바타, 장착 중')).toBeNull();
+      await fireEvent.press(screen.getByText('다시 시도'));
+      expect(await screen.findByLabelText('보라 아바타, 장착 중')).toBeTruthy();
+    },
+  );
 });

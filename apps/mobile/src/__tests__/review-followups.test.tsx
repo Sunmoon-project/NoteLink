@@ -132,9 +132,9 @@ it('제공되지 않은 화면으로 이동하지 않는다', async () => {
 
 it('다른 PR의 화면이 등록되면 같은 진입점에서 이동할 수 있다', async () => {
   const avatar = {
-    contextKey: './(tabs)/profile/avatar-style.tsx',
-    filename: 'avatar-style.tsx',
-    href: '/(tabs)/profile/avatar-style',
+    contextKey: './(tabs)/profile/avatar-teacher.tsx',
+    filename: 'avatar-teacher.tsx',
+    href: '/(tabs)/profile/avatar-teacher',
     isInitial: false,
     isInternal: false,
     isGenerated: false,
@@ -142,8 +142,8 @@ it('다른 PR의 화면이 등록되면 같은 진입점에서 이동할 수 있
   };
   jest.mocked(useSitemap).mockReturnValue({ ...avatar, href: '/', children: [avatar] });
   await renderScreen(<AccountScreen />);
-  await fireEvent.press(await screen.findByText('아바타 설정하기'));
-  expect(router.push).toHaveBeenCalledWith('/(tabs)/profile/avatar-style');
+  await fireEvent.press(await screen.findByText('아바타 선생님'));
+  expect(router.push).toHaveBeenCalledWith('/(tabs)/profile/avatar-teacher');
 });
 
 it('회원 탈퇴 실패 시 로그인 상태를 유지하고 재시도를 안내한다', async () => {
