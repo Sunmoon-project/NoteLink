@@ -1114,6 +1114,227 @@ def test_a_stable_slot_tries_three_drafts_and_a_fast_slot_two() -> None:
     assert len(llm.named("Quiz")) == 2
 
 
+# 한 자리가 정의 · 특징 · 분류를 다 써 보는 모드(안정적 모드에서 부정설명 · 조합 유형을 뺌, #268)
+THREE_TRIES = replace(generate.STABLE, name="three", extra=())
+
+
+def test_a_classification_prompt_says_not_to_pick_a_term_of_a_used_category() -> None:
+    # 분류 유형의 정답은 용어의 분류(묶음 이름): 이미 쓴 정답이 분류가 되는 용어를 고르지 않게(#282)
+    line = "분류 문제: 정답(분류 이름)이 이미 정답으로 쓴 것이 되는 용어는 고르지 않는다"
+
+    def prompts(types: list[str], used: list[str]) -> list[str]:
+        llm = happy([BAD, BAD])
+        generate.gen_one(llm, 1, PAGE1, types, NAMES, PageInfo(), [], used, 0)
+        return llm.named("Quiz")
+
+    assert line in prompts(["분류", "정의"], ["근족충류"])[0]
+    assert all(line not in u for u in prompts(["정의", "특징"], ["근족충류"]))  # 다른 유형은 그대로
+    assert line not in prompts(["분류", "정의"], [])[0]  # 쓴 정답이 없으면 넣지 않음
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_classification_is_left_out_after_two_answer_clashes_in_the_set() -> None:
+    # 1쪽 2문제(THREE_TRIES: 한 자리가 세 유형을 다 써 봄). 분류 초안은 늘 이미 받은 정답
+    # (이질 아메바)을 내 정답 겹침으로 떨어짐. 1판 둘째 자리 · 2판 자리에서 두 번 떨어진 뒤 3판
+    # 자리는 분류 유형을 빼고 정의 · 특징만으로 세 번 시도해 채움. 빼지 않으면 3판의 세 번째 시도가
+    # 분류라 못 채움(#282)
+    rest = [GOOD["이질 아메바"], *[BAD] * 6, GOOD["대장 아메바"]]  # 정의 · 특징 초안 차례
+    kinds: list[str] = []
+
+    def quiz(user: str) -> JsonObject:
+        ty = re.findall(r"문제 유형: (\S+)", user)[0]
+        kinds.append(ty)
+        return BAD if ty == "분류" else rest.pop(0)  # BAD의 정답은 이질 아메바(정답 겹침)
+
+    result = make(parallel_llm(quiz), page1_job(size=2), mode=THREE_TRIES)
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바"]
+    assert kinds == [
+        "정의",  # 1판 첫 자리: 이질 아메바
+        "특징", "분류", "정의",  # 1판 둘째 자리: 분류 겹침 1번
+        "분류", "정의", "특징",  # 2판: 분류 겹침 2번
+        "특징", "정의", "특징",  # 3판: 분류를 뺀 두 유형을 돌림
+    ]  # fmt: skip
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_classification_is_left_out_only_on_the_page_where_it_clashed() -> None:
+    # 2쪽 2문제(THREE_TRIES): 1쪽의 분류 초안은 이미 받은 정답(이질 아메바)을 내 정답 겹침으로
+    # 떨어지고, 나머지 초안은 다른 이유로 떨어져 채우지 못함. 1쪽은 분류 겹침 두 번 뒤로 분류를 쓰지
+    # 않지만, 2쪽은 묶음 이름이 다르므로 그 뒤에도 분류를 씀(/code-review #282)
+    calls: list[tuple[int, str, int]] = []  # (쪽, 유형, 그때까지 1쪽 분류 호출 수)
+    first = [True]
+
+    def quiz(user: str) -> JsonObject:
+        page = 1 if '<노트 쪽="1">' in user else 2
+        ty = re.findall(r"문제 유형: (\S+)", user)[0]
+        calls.append((page, ty, sum(p == 1 and t == "분류" for p, t, _ in calls)))
+        if page == 1 and ty == "정의" and first[0]:
+            first[0] = False
+            return GOOD["이질 아메바"]
+        return BAD  # 정답이 이질 아메바: 정답 겹침(분류면 셈) · 설명에 정답 용어
+
+    with pytest.raises(generate.NoQuestionsError):
+        make(parallel_llm(quiz), job(size=2), mode=THREE_TRIES)
+    assert sum(p == 1 and t == "분류" for p, t, _ in calls) == 2  # 1쪽: 두 번 뒤로 뺌
+    assert any(p == 2 and t == "분류" and before == 2 for p, t, before in calls)  # 2쪽은 그대로
+
+
+def test_other_types_clashing_on_an_answer_do_not_leave_out_classification() -> None:
+    # 정의 · 특징 초안의 정답 겹침은 세지 않음: 용어가 정답이라 노트에 많음(#282)
+    r = generate.gen_one(
+        happy([BAD, BAD]), 1, PAGE1, ["정의", "특징"], NAMES, PageInfo(), [], ["이질 아메바"], 0
+    )
+    assert generate.SAME_ANSWER in r.why and r.group_clash == 0
+    r = generate.gen_one(
+        happy([BAD, BAD]), 1, PAGE1, ["분류", "분류"], NAMES, PageInfo(), [], ["이질 아메바"], 0
+    )
+    assert r.group_clash == 2
+
+
+@pytest.mark.usefixtures("fill_rounds")
+@pytest.mark.parametrize(
+    ("answer", "concept", "counted"),
+    [
+        ("이질 아메바", "대장 아메바", True),  # 정답이 겹침: 셈
+        ("대장 아메바", "이질 아메바", False),  # 개념만 겹침: 세지 않음
+    ],
+)
+def test_a_classification_answer_taken_meanwhile_by_another_slot_counts_as_a_clash(
+    monkeypatch: pytest.MonkeyPatch, answer: str, concept: str, counted: bool
+) -> None:
+    # 1쪽 2문제를 두 자리가 동시에(THREE_TRIES). 한 자리의 분류 초안을 만드는 동안 다른 자리가
+    # 정의로 이질 아메바(개념도 이질 아메바)를 받음: 분류 초안은 만들 때 겹치지 않아 검사를
+    # 통과하고, 받을 때(accept) 겹침. 정답이 겹쳤으면 분류 정답 겹침으로 세어, 2판의 분류 겹침과
+    # 합쳐 두 번이 되면 3판은 분류를 빼고 채움. 개념만 겹쳤으면 세지 않아 3판의 세 번째 시도도
+    # 분류라 못 채움(Codex 리뷰 #293)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    group = draft(answer, "포낭형이 4핵인 아메바", concept=concept)
+    monkeypatch.setitem(ANSWER_OF, group["question"]["passage"], answer)
+    rest = [*[BAD] * 6, GOOD["대장 아메바"]]  # 첫 정의 뒤의 정의 · 특징 초안 차례
+    lock = threading.Lock()
+    asking = threading.Event()  # 분류 초안을 만드는 중(쓴 정답을 이미 봄)
+    taken = threading.Event()  # 이질 아메바를 받음(진행률이 15%를 넘음)
+    kinds: list[str] = []
+    first = [True]
+
+    def quiz(user: str) -> JsonObject:
+        ty = re.findall(r"문제 유형: (\S+)", user)[0]
+        with lock:
+            kinds.append(ty)
+            group_now = ty == "분류" and kinds.count("분류") == 1
+            define_now = ty == "정의" and first[0]
+            first[0] = first[0] and not define_now
+            if ty == "분류" and not group_now:
+                return BAD  # 2판 · 3판: 만들 때 이미 겹침(code_check)
+            if not (group_now or define_now):
+                return rest.pop(0)
+        if define_now:  # 다른 자리가 분류 초안을 만들기 시작한 뒤에 받음
+            assert asking.wait(10)
+            return GOOD["이질 아메바"]
+        asking.set()
+        assert taken.wait(10)
+        return group
+
+    def report(value: int, step: str | None = None) -> None:
+        if value > 15:
+            taken.set()
+
+    def make_set() -> JsonObject:
+        return generate.run(parallel_llm(quiz), page1_job(size=2), report, mode=THREE_TRIES)
+
+    if counted:
+        result = make_set()
+        assert sorted(q["answer"] for q in result["questions"]) == ["대장 아메바", "이질 아메바"]
+        assert kinds.count("분류") == 2 and kinds[-3:] == ["특징", "정의", "특징"]
+    else:
+        with pytest.raises(generate.NoQuestionsError, match="1/2문제만 만듦"):
+            make_set()
+        assert kinds.count("분류") == 3 and kinds[-1] == "분류"
+    join_threads("quiz-slot")
+
+
+def test_an_answer_taken_meanwhile_is_its_own_reason_not_a_dry_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1쪽 2문제를 두 자리가 동시에(THREE_TRIES, 판 하나). 한 자리의 마지막 시도(정의, 정답 이질
+    # 아메바)를 만드는 동안 다른 자리가 이질 아메바를 받음: 받을 때 정답이 겹친 이유는 쪽 닫기
+    # 이유(세트 안에서 정답이 겹침)가 아니라 따로 적힘(/code-review #293)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    late = draft(
+        "이질 아메바", "포낭형의 핵이 4개이고 적혈구를 먹는 원충이다", concept="대장 아메바"
+    )
+    monkeypatch.setitem(ANSWER_OF, late["question"]["passage"], "이질 아메바")
+    lock = threading.Lock()
+    asking, taken = threading.Event(), threading.Event()
+    defines = [0]
+
+    def quiz(user: str) -> JsonObject:
+        ty = re.findall(r"문제 유형: (\S+)", user)[0]
+        with lock:
+            defines[0] += ty == "정의"
+            nth = defines[0] if ty == "정의" else 0
+        if nth == 1:  # 받는 자리: 다른 자리가 마지막 시도를 시작한 뒤에 끝남
+            assert asking.wait(10)
+            return GOOD["이질 아메바"]
+        if nth == 2:  # 다른 자리의 마지막 시도(특징 · 분류 다음)
+            asking.set()
+            assert taken.wait(10)
+            return late
+        return BAD
+
+    def report(value: int, step: str | None = None) -> None:
+        if value > 15:
+            taken.set()
+
+    with pytest.raises(generate.NoQuestionsError, match="1/2문제만 만듦") as e:
+        generate.run(parallel_llm(quiz), page1_job(size=2), report, mode=THREE_TRIES)
+    assert generate.CLASH_SAME in str(e.value)
+    assert generate.SAME_ANSWER not in str(e.value)
+    join_threads("quiz-slot")
+
+
+def test_a_blank_classification_draft_clashing_when_taken_still_counts() -> None:
+    # 분류로 만들었지만 제시문에 ____가 있어 결과 유형이 빈칸으로 적히는 초안도, 받을 때 정답이
+    # 겹치면 분류 겹침으로 셈: 결과 유형이 아니라 만든 유형으로 봄(/code-review #293)
+    blank = draft("이질 아메바", "포낭형이 ____인 아메바", concept="대장 아메바")
+    blank["question"]["stem"] = "다음 원충이 속하는 분류는?"
+    kinds: list[str | None] = []
+
+    def taken_meanwhile(m: generate.Made) -> list[str]:
+        kinds.append(m.type)
+        return [generate.CLASH_SAME]
+
+    r = generate.gen_one(
+        happy([blank, blank]), 1, PAGE1, ["분류"], NAMES, PageInfo(), [], [], 0, taken_meanwhile
+    )
+    assert kinds == ["빈칸", "빈칸"]  # 결과 유형은 빈칸
+    assert r.group_clash == 2 and r.why == [generate.GROUP_SAME]
+    # 정의 초안이 받을 때 정답이 겹치면 세지 않고, 쪽도 닫지 않음(/code-review #293)
+    r = generate.gen_one(
+        happy([GOOD["이질 아메바"]] * 2), 1, PAGE1, ["정의"], NAMES, PageInfo(), [], [], 0,
+        taken_meanwhile,
+    )  # fmt: skip
+    assert r.group_clash == 0 and r.why == [generate.CLASH_SAME]
+    assert not all(w in generate.DRY_REASONS for w in r.why)
+
+
+def test_a_classification_answer_clash_does_not_close_the_page() -> None:
+    # 분류 초안이 정답 겹침으로만 떨어져도 쪽을 닫지 않음: 묶음 이름이 바닥났을 뿐 정의 · 특징은
+    # 남음. 쪽 닫기 이유(DRY_REASONS)가 아닌 다른 이유로 바꿈(/code-review #282)
+    group = draft(
+        "근족충류",
+        "대장 아메바",
+        concept="대장 아메바",
+        options=["근족충류", "편모충류", "섬모충류", "포자충류", "흡충류"],
+    )
+    group["question"]["stem"] = "다음 원충이 속하는 분류는?"
+    r = generate.gen_one(
+        happy([group, group]), 1, PAGE1, ["분류"], NAMES, PageInfo(), [], ["근족충류"], 0
+    )
+    assert r.why == [generate.GROUP_SAME] and r.group_clash == 2
+    assert not all(w in generate.DRY_REASONS for w in r.why)  # one_slot이 쪽을 닫지 않음
+
+
 def test_a_two_type_page_goes_back_to_its_first_type_on_the_third_try() -> None:
     def seen_types(mode: generate.Mode) -> list[str]:
         llm = happy([BAD, BAD, BAD])
@@ -1508,7 +1729,8 @@ def test_an_outage_after_some_questions_is_a_short_set_not_a_retry() -> None:
     llm = parallel_llm(answer)
     with pytest.raises(generate.NoQuestionsError, match="1/2문제만 만듦") as e:
         run(llm, job(size=2))
-    assert "학교 LLM 503" in str(e.value) and "세트 안에서 정답이 겹침" in str(e.value)
+    # 1판의 겹침은 1쪽으로 넘어간 자리의 분류 시도: 분류 정답 겹침으로 적힘(#282)
+    assert "학교 LLM 503" in str(e.value) and generate.GROUP_SAME in str(e.value)
 
 
 @pytest.mark.usefixtures("fill_rounds")
