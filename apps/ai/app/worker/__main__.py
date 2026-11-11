@@ -20,7 +20,7 @@ from pymongo import MongoClient
 
 from app.clients.llm import JsonObject, llm_setup_problem
 from app.core.config import settings
-from app.worker.handlers import BACKGROUND, HANDLERS
+from app.worker.handlers import BACKGROUND, HANDLERS, use_spend
 from app.worker.jobs import JobStore
 from app.worker.runner import Lane, run_lanes
 
@@ -66,6 +66,18 @@ def main() -> None:
             retry_delay_sec=settings.ai_job_retry_delay_sec,
         )
 
+    if settings.llm_provider == "claude" and settings.claude_budget_usd > 0:
+        totals = store(":spend")
+        use_spend(totals.claude_spent)
+        log.info(
+            "Claude 비용: 지금까지 %.2f달러 / 한도 %.2f달러(닿으면 학교 LLM으로)",
+            totals.claude_spent(),
+            settings.claude_budget_usd,
+        )
+        if not settings.school_llm_base_url:
+            log.warning(
+                "SCHOOL_LLM_BASE_URL이 비어 있음: Claude 한도에 닿으면 작업이 설정 오류로 끝남"
+            )
     lanes = [
         Lane("background", store(":bg"), {t: h for t, h in HANDLERS.items() if t in BACKGROUND}),
         # 사용자가 이어받은(awaited) 미리 만들기도 가져감: 다른 미리 만들기 뒤에서 기다리지 않게

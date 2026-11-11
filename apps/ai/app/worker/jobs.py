@@ -67,6 +67,9 @@ from pymongo.collection import Collection
 
 from app.clients.llm import JsonObject
 
+# 작업마다 쓴 Claude 비용(달러). 공용 스키마 밖 필드: 처리기만 쓰고 읽음(checkpoint처럼, #298)
+COST_FIELD = "llmUsd"
+
 SWEEP_EVERY = timedelta(seconds=60)  # 시도 한도를 넘긴 멈춘 작업 정리 간격(가져오기마다 하지 않음)
 
 
@@ -276,6 +279,23 @@ class JobStore:
             fields["progress"] = 0  # 실패로 끝나면 멈춘 곳의 진행률을 그대로 둠
         self._write(job, {"$set": fields, "$unset": {"step": ""}})
         return str(fields["status"])
+
+    def add_cost(self, job: Job, usd: float) -> None:
+        """이 작업이 쓴 Claude 비용을 llmUsd에 더함(#298). 잠금과 상관없이: 이미 쓴 돈이라
+        작업을 다른 처리기가 가져갔거나 취소된 뒤에 끝난 호출도 셈."""
+        self._col.update_one({"_id": job.id}, {"$inc": {COST_FIELD: usd}})
+
+    def claude_spent(self) -> float:
+        """모든 작업의 llmUsd 합계(달러, #298)."""
+        rows = list(
+            self._col.aggregate(
+                [
+                    {"$match": {COST_FIELD: {"$gt": 0}}},
+                    {"$group": {"_id": None, "usd": {"$sum": f"${COST_FIELD}"}}},
+                ]
+            )
+        )
+        return float(rows[0]["usd"]) if rows else 0.0
 
     def _write(self, job: Job, update: JsonObject) -> None:
         r = self._col.update_one(
