@@ -1155,7 +1155,10 @@ def _make_all(
     # (Codex 리뷰 #300)
     visits: Counter[tuple[int, str]] = Counter()
     turns: Counter[str] = Counter()
-    running: Counter[str] = Counter()  # 지금 도는 자리의 목표 난이도별 수(levels.held)
+    # 판에 넣은 뒤 아직 끝나지 않은 자리의 목표 난이도별 수(levels.held). 스레드가 시작할 때가
+    # 아니라 판에 넣을 때 셈: 느린 기계에서 그 자리 스레드가 시작하기 전에 다른 자리가 남은 자리를
+    # 가져가지 않게(CI #300)
+    in_flight: Counter[str] = Counter()
     dry: set[int] = set()
     drained: set[int] = set()  # dry 가운데 물을 개념이 남지 않아 닫은 쪽(마지막 단계에서 다시 엶)
     # dry 가운데 이번 판에 겹침(DRY_REASONS)으로 처음 닫은 쪽: 다음 판에 한 번 다시 엶. 학교 LLM은
@@ -1243,7 +1246,7 @@ def _make_all(
             if too_close(d, seen) or reversed_of(d, seen):
                 return [CLASH]
             got = Counter(lv.get(x.type or "", "중") for _, x in taken)
-            others = running.copy()
+            others = in_flight.copy()
             others[own] -= 1
             if levels.held(lv.get(r.type or "", "중"), got, mix or {}, others, n - len(taken)):
                 return [HELD]
@@ -1364,8 +1367,6 @@ def _make_all(
         멈춤 신호를 켬: 남은 자리도 같으므로 주 스레드가 알아채기 전에 다음 자리가 호출하지 않게
         (Codex 리뷰 #264). 신호를 켜기 전에 오류를 남겨 둠: 주 스레드가 신호를 보고 먼저 빠져나오면
         이 자리는 아직 도는 자리로 빠져 오류를 잃고 시간 상한으로 셈(Codex 재리뷰 #264)."""
-        with lock:
-            running[level] += 1
         try:
             return one_slot(slot, p, level, until, stop)
         except LlmError:
@@ -1376,7 +1377,7 @@ def _make_all(
             raise
         finally:
             with lock:
-                running[level] -= 1
+                in_flight[level] -= 1
 
     # 판마다 새로 만들지 않음: 지난 판에 남아 응답을 기다리는 자리도 WORKERS 안에 들어, 동시에
     # 붙잡는 학교 LLM 연결이 판 수만큼 늘지 않게(/code-review #247)
@@ -1392,6 +1393,8 @@ def _make_all(
         stop = stop_of(halt, limits)
         futures: list[Future[tuple[int, Made]]] = []
         try:
+            with lock:
+                in_flight.update(want)
             futures = [
                 pool.submit(guarded, k, p, w, until, stop)
                 for k, (p, w) in enumerate(zip(at, want, strict=True))
@@ -1409,8 +1412,10 @@ def _make_all(
             # 시작하지 않은 자리는 취소하고, 취소되지 않고 끝나지도 않은 자리는 도는 자리로 셈
             # (그사이 워커를 얻은 자리도 빠지지 않게, /code-review #247). 도는 자리는 기다리지
             # 않음: 다음 호출(_until) · 단계(stop)에서 멈춤
-            for f in futures:
-                f.cancel()
+            for f, w in zip(futures, want, strict=False):
+                if f.cancel():  # 시작하지 않은 자리: 판에 넣을 때 센 것을 뺌
+                    with lock:
+                        in_flight[w] -= 1
             running = {f for f in futures if not f.done()}
         # 오류로 끝난 자리는 결과에서 빼고 아래에서 한 곳으로 올림: 설정 · 코드 오류는 guarded가
         # errors에, 자리 밖으로 나온 LlmError는 slot_down에 남김. 그사이 n개를 다 모았으면 세트를

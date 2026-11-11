@@ -2427,9 +2427,10 @@ def test_the_next_round_starts_with_the_level_still_lacking(
     assert len(firsts) > 2 and set(firsts[2:]) == {"조합"}  # 다음 판들도 상(조합)부터
 
 
-def concurrent_llm(slow: str) -> ScriptLlm:
-    """여러 자리가 동시에 불러도 되는 가짜 LLM: 제시문으로 정답을 찾고, 개념은 자리마다 다르게
-    고름. slow 유형의 초안은 늦게 옴."""
+def concurrent_llm(slow: str, gate: threading.Event) -> ScriptLlm:
+    """여러 자리가 동시에 불러도 되는 가짜 LLM: 제시문으로 정답을 찾음. slow 유형의 초안은 gate가
+    켜질 때까지(늦어도 5초) 기다렸다가 오고, 늘 마지막 개념(질편모충)을 씀. 다른 유형은 앞의
+    개념부터 자리마다 다르게 고름(스레드 차례에 기대지 않게)."""
     lock = threading.Lock()
     answer_of: dict[str, str] = {}
     handed: list[str] = []
@@ -2438,11 +2439,15 @@ def concurrent_llm(slow: str) -> ScriptLlm:
         ty = re.search(r"^문제 유형: (\S+)", user, re.M)
         listed = re.search(r"^개념 목록\(이 안에서 고른다\): (.+)$", user, re.M)
         assert ty and listed
+        names = listed.group(1).split(", ")
         if ty.group(1) == slow:
-            time.sleep(0.5)
+            gate.wait(5)
         with lock:
-            concept = next(c for c in listed.group(1).split(", ") if c not in handed)
-            handed.append(concept)
+            if ty.group(1) == slow:
+                concept = names[-1]
+            else:
+                concept = next(c for c in names[:-1] if c not in handed)
+                handed.append(concept)
             d = typed_draft(ty.group(1), concept)
             answer_of[d["question"]["passage"]] = d["question"]["answer"]
         return d
@@ -2474,16 +2479,28 @@ def test_a_spare_question_waits_for_a_slower_level_still_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # 하 1 · 중 1인데 중(특징) 초안이 늦음: 먼저 끝난 하 여분 문제가 남은 자리를 차지하면 중이
-    # 0문제였음. 아직 도는 중 자리에 자리를 비워 둠(Codex 리뷰 #300)
+    # 0문제였음. 아직 도는 중 자리에 자리를 비워 둠(Codex 리뷰 #300). 특징 초안은 하 여분 문제를
+    # 비워 둔 뒤에야 옴(gate)
     monkeypatch.setattr(generate, "WORKERS", 8)
     monkeypatch.setattr(generate, "EXTRA", 0.5)  # 2문제에 자리 2 + 여분 1(하)
     monkeypatch.setattr(generate, "page_types", lambda text, korean, extra=(): ["정의", "특징"])
     monkeypatch.setattr(generate.levels, "level_mix", lambda n, usable, stats: {"하": 1, "중": 1})
+    gate = threading.Event()
+    real_held = generate.levels.held
+
+    def held(*a: Any, **k: Any) -> bool:
+        out = real_held(*a, **k)
+        if out:
+            gate.set()
+        return out
+
+    monkeypatch.setattr(generate.levels, "held", held)
     one_page = job(size=2)
     one_page["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1 + "\n" + PAGE2}]
-    result = make(concurrent_llm("특징"), one_page)
+    result = make(concurrent_llm("특징", gate), one_page)
     join_threads("quiz-slot")
-    assert sorted(d for _, d in kinds_of(result)) == ["중", "하"]
+    assert gate.is_set(), "하 여분 문제를 비워 두지 않음"
+    assert sorted(kinds_of(result)) == [("정의", "하"), ("특징", "중")]
     assert result["failed"] == []
 
 
