@@ -22,6 +22,7 @@ jest.mock('expo-router', () => ({
 }));
 const mockFocus = new Set<() => (() => void) | void>();
 const blur = () => act(() => [...mockFocus].forEach((cb) => (cb() as () => void)()));
+const refocus = () => act(() => [...mockFocus].forEach((cb) => cb()));
 // GL · 3D 모델은 기기에서만. 화면 테스트는 어떤 아바타를 그리는지와 대화 흐름을 본다
 jest.mock('../features/tutor/avatar3d', () => {
   const { Text: T } = jest.requireActual('react-native');
@@ -487,6 +488,15 @@ describe('아바타 선생님 고르기', () => {
     expect(screen.getByText('다른 아바타 1개가 상점에 있어요')).toBeTruthy();
     await fireEvent.press(screen.getByText('상점'));
     expect(router.push).toHaveBeenCalledWith('/shop');
+  });
+
+  it('상점으로 가면 보이지 않는 3D 선생님을 내리고, 돌아오면 다시 그린다', async () => {
+    await renderScreen(<AvatarTeacherScreen />);
+    expect(await screen.findByText('3D:bora')).toBeTruthy();
+    await blur();
+    expect(screen.queryByText('3D:bora')).toBeNull();
+    await refocus();
+    expect(screen.getByText('3D:bora')).toBeTruthy();
   });
 
   it('판매가 끝난 보유 아바타도 목록에 남아 다시 장착할 수 있다', async () => {

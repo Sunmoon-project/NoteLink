@@ -13,7 +13,7 @@ import { toast } from '@/stores/toast';
 import { LoadError } from '../progress/load-error';
 import { C, ICON } from '@/theme';
 import { Avatar3D, type Mood } from './avatar3d';
-import { LOCAL_AVATARS, readKnown, useEquippedAvatar, useEquippedItem } from './buddy';
+import { LOCAL_AVATARS, readKnown, useEquippedAvatar, useEquippedItem, useFocused } from './buddy';
 
 /**
  * 아바타 선생님 고르기(프로필 > 계정 정보). 기본 · 보유한 상점 아바타 중 하나를 장착하면 노트를
@@ -24,6 +24,8 @@ export function AvatarTeacherScreen() {
   const equipped = useEquippedItem();
   // 미리보기도 다른 화면의 선생님과 같은 얼굴(판매가 끝난 상품은 기기에 적어 둔 모델)
   const face = useEquippedAvatar();
+  // 상점처럼 다른 화면이 위에 쌓이면 보이지 않는 3D를 그리지 않는다(TutorStage와 같게)
+  const focused = useFocused();
   const mine = useQuery({ queryKey: ['my-items'], queryFn: () => api.shop.myItems() });
   const all = useQuery({ queryKey: ['shop', 'all'], queryFn: () => api.shop.items({}) });
   const owned = new Set((mine.data ?? []).filter((u) => u.isOwned).map((u) => u.itemId));
@@ -88,7 +90,7 @@ export function AvatarTeacherScreen() {
           large={false}
         />
         <View className="items-center rounded-card bg-mint py-3">
-          <Avatar3D mood={mood} avatarId={face} size={180} />
+          {focused && <Avatar3D mood={mood} avatarId={face} size={180} />}
         </View>
 
         <Label>내 아바타</Label>
