@@ -14,6 +14,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   Switch,
   View,
@@ -287,6 +288,7 @@ export function Screen({
   scrollRef,
   onScroll,
   canvas,
+  refresh,
 }: {
   children: ReactNode;
   footer?: ReactNode;
@@ -301,6 +303,8 @@ export function Screen({
   top?: boolean;
   scrollRef?: React.Ref<ScrollView>;
   onScroll?: ScrollViewProps['onScroll'];
+  /** 아래로 당겨 새로 고침(useTabRefresh가 돌려준 값) */
+  refresh?: { refreshing: boolean; onRefresh: () => void };
 }) {
   const insets = useSafeAreaInsets();
   const inTabs = useInTabs();
@@ -315,6 +319,15 @@ export function Screen({
       keyboardShouldPersistTaps="handled"
       contentContainerClassName={cx(pad && 'px-6 pb-14', className)}
       showsVerticalScrollIndicator={false}
+      refreshControl={
+        refresh && (
+          <RefreshControl
+            refreshing={refresh.refreshing}
+            onRefresh={refresh.onRefresh}
+            tintColor={C.sub}
+          />
+        )
+      }
     >
       {children}
     </ScrollView>
@@ -657,18 +670,21 @@ export function Chip({
   onPress,
   className,
   small,
+  disabled,
 }: {
   children: ReactNode;
   on?: boolean;
   onPress?: () => void;
   className?: string;
   small?: boolean;
+  disabled?: boolean;
 }) {
   const surface = useSurface();
   return (
     <Tap
       accessibilityRole="button"
-      accessibilityState={{ selected: !!on }}
+      accessibilityState={{ selected: !!on, disabled: !!disabled }}
+      disabled={disabled}
       onPress={onPress}
       hitSlop={small ? 8 : 4}
       className={cx(

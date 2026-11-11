@@ -36,7 +36,7 @@ import { ERROR_CODES, type AiJob, type Question } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { socket } from '@/lib/socket';
-import { useSocket } from '@/hooks';
+import { useSocket, useTabRefresh } from '@/hooks';
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
@@ -66,6 +66,8 @@ import {
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
+import { AvatarCheer } from '@/features/tutor/cheer';
+import { useTourTarget } from '@/features/tutor/tour';
 import { seoul } from '@/lib/dates';
 import { aiWaiting } from '@/lib/ai';
 import { AiPending } from '@/components/AiPending';
@@ -96,7 +98,10 @@ const Tutor = ({ size = 76 }: { size?: number }) => (
 );
 
 export function QuizHomeScreen() {
+  // 처음 안내의 '퀴즈 만들기'가 짚는 자리
+  const makeTarget = useTourTarget('quiz-make');
   const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
+  const refresh = useTabRefresh(sets);
   const progress = useQuizProgress((s) => s.progress);
   const latest = progress
     ? (sets.data?.find((s) => s._id === progress.setId) ?? {
@@ -108,7 +113,7 @@ export function QuizHomeScreen() {
   const waiting = sets.data?.filter((s) => s.status === 'generating') ?? [];
   return (
     <Canvas>
-      <Screen>
+      <Screen refresh={refresh}>
         <NetBanner />
         <Title>학습 퀴즈</Title>
         {waiting.length > 0 && (
@@ -153,17 +158,22 @@ export function QuizHomeScreen() {
                   [Sparkles, '유사 퀴즈', '틀린 문제와 비슷한 문제를 풀어요', '/play/similar'],
                 ] as const
               ).map(([Ic, l, sub, href]) => (
-                <Row
+                <View
                   key={l}
-                  icon={Ic}
-                  sub={sub}
-                  chevron
-                  onPress={() =>
-                    router.push({ pathname: href as never, params: { setId: latest._id } })
-                  }
+                  ref={l === '퀴즈 만들기' ? makeTarget : undefined}
+                  collapsable={false}
                 >
-                  {l}
-                </Row>
+                  <Row
+                    icon={Ic}
+                    sub={sub}
+                    chevron
+                    onPress={() =>
+                      router.push({ pathname: href as never, params: { setId: latest._id } })
+                    }
+                  >
+                    {l}
+                  </Row>
+                </View>
               ))}
             </Group>
           </>
@@ -177,9 +187,11 @@ export function QuizHomeScreen() {
               <Text className="text-caption text-sub">
                 노트를 업로드하면 자동으로 퀴즈가 생성돼요
               </Text>
-              <Btn small className="mt-5 w-56" onPress={() => router.push('/(tabs)/quiz/notes')}>
-                노트 업로드하고 퀴즈 만들기
-              </Btn>
+              <View ref={makeTarget} collapsable={false}>
+                <Btn small className="mt-5 w-56" onPress={() => router.push('/(tabs)/quiz/notes')}>
+                  노트 업로드하고 퀴즈 만들기
+                </Btn>
+              </View>
             </View>
           )
         )}
@@ -836,6 +848,7 @@ export function QuizSolveScreen() {
         <Progress value={((i + (right === null ? 0 : 1)) / qs.length) * 100} className="mt-5" />
         <Text className="pt-4 text-center text-caption text-sub">
           복습 퀴즈 {i + 1} / {qs.length}
+          {q.difficulty ? ` · 난이도 ${q.difficulty}` : ''}
         </Text>
         <View className="mt-4">
           <Tutor size={pick === null ? 76 : 70} />
@@ -905,6 +918,8 @@ export function QuizSolveScreen() {
             {!right && (
               <Text className="mt-3 text-center text-caption text-sub">내가 고른 답: {pick}</Text>
             )}
+            {/* 아바타 선생님: 맞히면 칭찬, 틀리면 격려 */}
+            <AvatarCheer right={!!right} index={i} />
             <View className="mt-6 flex-row items-center justify-center gap-2">
               <Text className="text-footnote text-sub">결과</Text>
               {qs.map((_, n) => (

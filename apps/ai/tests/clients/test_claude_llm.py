@@ -49,7 +49,7 @@ USAGE_LIMIT = (
 
 def message(text: str, *, stop: str = "end_turn", thinking: bool = False) -> dict[str, Any]:
     content: list[dict[str, Any]] = []
-    if thinking:  # 생각을 끌 수 없는 모델은 답 앞에 thinking 블록이 올 수 있음
+    if thinking:  # 생각을 켜 둔 모델(Haiku 5.5)은 답 앞에 thinking 블록이 올 수 있음
         content.append({"type": "thinking", "thinking": "", "signature": "sig"})
     content.append({"type": "text", "text": text})
     return {
@@ -349,7 +349,7 @@ def test_model_of_the_other_provider_is_setup_error(provider: Callable[..., None
 
 def test_blank_gap_in_env_uses_the_default() -> None:
     s = Settings(_env_file=None, llm_provider="claude", llm_call_gap_sec="")  # type: ignore[call-arg]
-    assert s.call_gap_sec == 1.2
+    assert s.call_gap_sec == 0.2
 
 
 def test_models_and_gap_follow_the_provider() -> None:
@@ -359,7 +359,7 @@ def test_models_and_gap_follow_the_provider() -> None:
         "claude-haiku-5-5",
     )
     assert claude.recording_model == claude.note_split_model == "claude-sonnet-5-5"
-    assert claude.call_gap_sec == 1.2
+    assert claude.call_gap_sec == 0.2
 
     school = Settings(_env_file=None, llm_provider="school")  # type: ignore[call-arg]
     assert (school.quiz_gen_model, school.quiz_check_model) == ("gemma-4-26b", "qwen-27b")

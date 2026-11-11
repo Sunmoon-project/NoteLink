@@ -31,6 +31,7 @@ OVERSTATED = re.compile(r"반드시|절대|모든|항상|오직|전혀|무조건
 _COMBO_LINES = re.compile(r"ㄱ\. [^\n]+\nㄴ\. [^\n]+\nㄷ\. [^\n]+")
 _KO = re.compile(r"[가-힣]{2,}")
 _PIECE = re.compile(r",\s+")  # 이어 붙인 보기의 조각 사이
+SAME_ANSWER = "세트 안에서 정답이 겹침"  # generate가 쪽 닫기 · 분류 유형 빼기에 씀(#282)
 
 
 class Seen(TypedDict):
@@ -333,7 +334,7 @@ def code_check(
         why.append(f"{kind} 낱말('{t.answer}')을 다시 묻지 않음")
     # 조합형 정답(ㄱ, ㄴ)은 묶음 이름이라 세트 안에서 겹쳐도 됨
     if ty != "조합" and any(same_item(d["answer"], u) for u in t.used_answers):
-        why.append("세트 안에서 정답이 겹침")
+        why.append(SAME_ANSWER)
     if too_close(d, seen):
         why.append("이미 있는 문제와 거의 같음")
     if reversed_of(d, seen):

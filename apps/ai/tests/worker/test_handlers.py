@@ -150,6 +150,7 @@ class StubReport:
     def __init__(self, awaited: bool) -> None:
         self._awaited = awaited
         self._canceled = threading.Event()
+        self.costs: list[float] = []
 
     def __call__(self, value: int, step: str | None = None) -> None:
         pass
@@ -165,6 +166,9 @@ class StubReport:
 
     def canceled(self) -> threading.Event:
         return self._canceled
+
+    def add_cost(self, usd: float) -> None:
+        self.costs.append(usd)
 
 
 def test_a_pregen_runs_in_stable_mode_and_hurries_when_taken_over(
@@ -217,8 +221,19 @@ def test_lanes_starting_together_share_one_llm(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_note_ask_job_saves_the_avatar_answer(monkeypatch: pytest.MonkeyPatch) -> None:
-    llm = FakeLlm({"note_ask": [{"answer": "네 가지 조건이 있어요.", "refs": ["교착 상태"]}]})
+    llm = FakeLlm(
+        {
+            "note_ask": [
+                {"answerable": True, "answer": "네 가지 조건이 있어요.", "refs": ["교착 상태"]}
+            ]
+        }
+    )
     inp = {"title": "운영체제", "context": "교착 상태", "history": [], "question": "뭐예요?"}
     doc = run_job(monkeypatch, llm, inp, kind="note_ask")
     assert doc["status"] == "succeeded"
-    assert doc["result"] == {"answer": "네 가지 조건이 있어요.", "refs": ["교착 상태"]}
+    assert doc["result"] == {
+        "answerable": True,
+        "reason": None,
+        "answer": "네 가지 조건이 있어요.",
+        "refs": ["교착 상태"],
+    }
