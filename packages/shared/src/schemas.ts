@@ -294,8 +294,13 @@ export const NoteAskBody = z.object({
   question: z.string().trim().min(1).max(500),
   history: z.array(NoteAskTurn).max(20).default([]),
 });
-/** note_ask 작업이 끝나면 AiJob.result에 담긴다 */
+/**
+ * note_ask 작업이 끝나면 AiJob.result에 담긴다. answerable이 false면 answer는 정해 둔 안내:
+ * off_topic(학습 자료에 없는 질문) · unsafe(해킹 · 보안 공격 같은 위험한 질문)
+ */
 export const NoteAskResult = z.object({
+  answerable: z.boolean().default(true),
+  reason: z.enum(['off_topic', 'unsafe']).nullable().default(null),
   answer: z.string(),
   refs: z.array(z.string()),
 });

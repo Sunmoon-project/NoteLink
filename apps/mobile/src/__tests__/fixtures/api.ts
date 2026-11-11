@@ -759,7 +759,12 @@ export const mockApi: Api = {
         targetId: materialId,
         progress: 100,
         attempts: 1,
-        result: { answer: `'${body.question}'에 대한 설명이에요.`, refs: ['요약'] },
+        result: {
+          answerable: true,
+          reason: null,
+          answer: `'${body.question}'에 대한 설명이에요.`,
+          refs: ['요약'],
+        },
         error: null,
         createdAt: now(),
         updatedAt: now(),

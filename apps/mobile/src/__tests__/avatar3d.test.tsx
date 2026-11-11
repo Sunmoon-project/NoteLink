@@ -154,6 +154,19 @@ it('읽지 못한 모델 뒤에 다른 아바타로 바꾸면 2D에 머물지 �
   expect(screen.getByTestId('gl')).toBeTruthy();
 });
 
+it('실패한 모델을 다른 아바타 뒤에 다시 고르고 이번에 읽히면 3D로 돌아온다', async () => {
+  mockFail.add('haneul');
+  const view = await render(<Avatar3D mood="idle" avatarId="haneul" />);
+  await wait(60);
+  expect(screen.queryByTestId('gl')).toBeNull();
+  await view.rerender(<Avatar3D mood="idle" avatarId="narae" />);
+  await glReady(1);
+  mockFail.delete('haneul');
+  await view.rerender(<Avatar3D mood="idle" avatarId="haneul" />);
+  await glReady(2);
+  expect(screen.getByTestId('gl')).toBeTruthy();
+});
+
 it('화면을 떠나면 그리기 반복을 멈추고 GL 자원을 놓는다', async () => {
   const view = await render(<Avatar3D mood="idle" avatarId="base" />);
   await glReady(1);
