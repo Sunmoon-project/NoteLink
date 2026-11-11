@@ -715,7 +715,8 @@ const TYPES: [LearnerType, string][] = [
   ['university', '대학생'],
   ['worker', '직장인'],
 ];
-const INTERESTS = ['자격증', '수능', '어학', '전공', '코딩', '공무원'];
+/** 관심 분야(온보딩 · 프로필 > 계정 정보에서 고른다). 서버 카테고리 형식은 정해지면 맞춘다 */
+export const INTERESTS = ['자격증', '수능', '어학', '전공', '코딩', '공무원'];
 
 export function ProfileSetupScreen() {
   const qc = useQueryClient();
