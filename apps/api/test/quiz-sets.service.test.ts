@@ -45,6 +45,7 @@ const workerQuestion = (order: number, over: Record<string, unknown> = {}) => ({
   answer: '세포막',
   explanation: '세포막이 세포를 둘러싼다.',
   conceptTags: ['세포막'],
+  difficulty: '하',
   srs: null,
   ...over,
 });
@@ -272,6 +273,7 @@ describe('QuizSetsService.create', () => {
           answer: '유전 물질',
           explanation: null,
           conceptTags: ['DNA'],
+          difficulty: '중',
           srs: null,
         },
       ],
@@ -301,6 +303,7 @@ describe('QuizSetsService.create', () => {
             answer: '유전 물질',
             type: '정의',
             conceptTags: ['DNA'],
+            difficulty: '중', // 처리기가 정답률로 고칠 때 씀(#268)
             srs: null,
           },
         ],
@@ -348,10 +351,37 @@ describe('QuizSetsService 작업 결과 반영', () => {
       answer: '세포막',
       explanation: '세포막이 세포를 둘러싼다.',
       conceptTags: ['세포막'],
+      difficulty: '하',
     });
     expect(ready.questions[1]).toMatchObject({ type: 'short_answer', choices: null });
     const stored = (set(quizSet._id)['questions'] as Record<string, unknown>[])[0]!;
-    expect(stored).toMatchObject({ category: '빈칸', passage: '세포는 ____ 로 둘러싸여 있다.' });
+    expect(stored).toMatchObject({
+      category: '빈칸',
+      passage: '세포는 ____ 로 둘러싸여 있다.',
+      difficulty: '하',
+    });
+  });
+
+  it('난이도는 하 · 중 · 상만 저장하고, 없거나 다른 값이면 문제는 두고 null로(#268)', async () => {
+    const { service, addNote, finish, set } = setup();
+    const materialId = await addNote();
+    const { quizSet, job } = await service.create(ME.toHexString(), materialId);
+    finish(job._id, {
+      questions: [
+        workerQuestion(1, { difficulty: '상' }),
+        workerQuestion(2, { difficulty: '어려움' }),
+        workerQuestion(3, { difficulty: undefined }),
+        ...fullSet(4).slice(0, QUIZ_SET_SIZE - 3),
+      ],
+      title: '세포 생물학 맞춤 퀴즈 · 11-08',
+      concepts: null,
+    });
+
+    const ready = await service.findMine(ME.toHexString(), quizSet._id);
+    expect(QuizSet.parse(ready)).toEqual(ready);
+    expect(ready.questions.slice(0, 3).map((q) => q.difficulty)).toEqual(['상', null, null]);
+    const stored = set(quizSet._id)['questions'] as Record<string, unknown>[];
+    expect(stored.slice(0, 3).map((q) => q['difficulty'])).toEqual(['상', null, null]);
   });
 
   it('처리 중이면 작업 진행률을 담고 세트는 그대로 만드는 중', async () => {
@@ -406,6 +436,47 @@ describe('QuizSetsService 작업 결과 반영', () => {
     ]);
     expect(sets.rows).toHaveLength(1);
     expect(sets.rows[0]!['questionCount']).toBe(QUIZ_SET_SIZE);
+  });
+});
+
+describe('QuizSetsService 난이도를 붙이기 전 문제(Codex 리뷰 #292)', () => {
+  it('difficulty가 없는 저장 문제는 앱에 null로 보내고, 처리기 입력에는 넣지 않는다', async () => {
+    const { service, addNote, sets, job } = setup();
+    const otherNote = await addNote({ title: '유전', pages: [{ pageNo: 4, ocrText: 'DNA' }] });
+    const qid = new Types.ObjectId();
+    // 난이도 필드가 생기기 전에 저장한 문서(필드 자체가 없음)
+    const old = (await sets.model.create({
+      ownerId: ME,
+      materialId: new Types.ObjectId(otherNote),
+      folderId: FOLDER,
+      title: '유전 퀴즈',
+      status: 'ready',
+      deletedAt: null,
+      questions: [
+        {
+          _id: qid,
+          order: 1,
+          type: 'multiple_choice',
+          category: '정의',
+          prompt: 'DNA는?',
+          passage: null,
+          choices: ['유전 물질', '단백질'],
+          answer: '유전 물질',
+          explanation: null,
+          conceptTags: ['DNA'],
+          srs: null,
+        },
+      ],
+    } as never)) as unknown as { _id: Types.ObjectId };
+
+    const shown = await service.findMine(ME.toHexString(), old._id.toHexString());
+    expect(QuizSet.parse(shown)).toEqual(shown);
+    expect(shown.questions[0]!.difficulty).toBeNull();
+
+    const { job: created } = await service.create(ME.toHexString(), await addNote());
+    const input = job(created._id)['input'] as { sets: { questions: Record<string, unknown>[] }[] };
+    const sent = input.sets.find((x) => x.questions[0]?.['id'] === qid.toHexString())!;
+    expect(sent.questions[0]).not.toHaveProperty('difficulty');
   });
 });
 
