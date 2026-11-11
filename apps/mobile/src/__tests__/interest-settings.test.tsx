@@ -43,7 +43,9 @@ it('저장된 분야가 켜진 채로 열리고, 바꾸기 전에는 저장할 �
 
 it('켜고 끈 결과를 저장하고 돌아간다(모두 꺼도 된다)', async () => {
   mockApi.me.get.mockResolvedValue(user(['어학']));
-  mockApi.me.update.mockImplementation(async (p: { interestCategoryIds: string[] }) => user(p.interestCategoryIds));
+  mockApi.me.update.mockImplementation(async (p: { interestCategoryIds: string[] }) =>
+    user(p.interestCategoryIds),
+  );
   await renderScreen(<InterestsScreen />);
   await fireEvent.press(await screen.findByText('어학'));
   expect(screen.getByText('고르지 않아도 괜찮아요')).toBeTruthy();
@@ -66,4 +68,13 @@ it('저장에 실패하면 화면에 남아 고른 것을 그대로 둔다', asy
   await waitFor(() => expect(mockApi.me.update).toHaveBeenCalled());
   expect(router.back).not.toHaveBeenCalled();
   expect(screen.getByText('1개 골랐어요')).toBeTruthy();
+});
+
+it('내 정보를 못 읽으면 빈 목록 대신 안내하고, 다시 읽으면 저장된 분야로 연다', async () => {
+  mockApi.me.get.mockRejectedValueOnce(new Error('network')).mockResolvedValue(user(['어학']));
+  await renderScreen(<InterestsScreen />);
+  expect(await screen.findByText('관심 분야를 불러오지 못했어요')).toBeTruthy();
+  expect(screen.queryByText('저장')).toBeNull();
+  await fireEvent.press(screen.getByText('다시 시도'));
+  expect(await screen.findByText('1개 골랐어요')).toBeTruthy();
 });

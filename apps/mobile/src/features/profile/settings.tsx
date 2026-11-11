@@ -21,6 +21,7 @@ import { clearAccountState } from '@/lib/account';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { INTERESTS } from '../auth/auth';
+import { LoadError } from '../progress/load-error';
 import {
   Alert,
   Avatar,
@@ -510,6 +511,16 @@ export function InterestsScreen() {
     },
   });
   if (me.isPending) return <Loading />;
+  // 못 읽었으면 빈 목록으로 열어 저장된 관심 분야를 덮어쓰지 않게 다시 읽게 한다
+  if (!me.data)
+    return (
+      <Canvas>
+        <Screen>
+          <Header title="관심 분야" large={false} />
+          <LoadError message="관심 분야를 불러오지 못했어요" retry={() => me.refetch()} />
+        </Screen>
+      </Canvas>
+    );
   return (
     <Canvas>
       <Screen
