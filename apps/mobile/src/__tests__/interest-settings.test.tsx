@@ -141,7 +141,8 @@ describe('저장 응답이 늦게 올 때', () => {
     await renderScreen(<InterestsScreen />);
     await fireEvent.press(await screen.findByText('코딩'));
     await fireEvent.press(screen.getByText('저장'));
-    await waitFor(() => expect(mockApi.me.update).toHaveBeenCalled());
+    // 요청은 잠금이 그려지기 전에 나갈 수 있다(CI에서 먼저 눌려 2개가 됐음): 잠긴 뒤에 누른다
+    await waitFor(() => expect(screen.getByRole('button', { name: '어학' })).toBeDisabled());
     await fireEvent.press(screen.getByText('어학'));
     expect(screen.getByText('1개 골랐어요')).toBeTruthy();
     await act(async () => finish(['코딩']));
