@@ -293,6 +293,9 @@ class PacedLlm:
         # 보내기 직전에 볼 예산(Budgeted.over, #298): 차례를 기다리는 사이 다른 호출이 한도를
         # 넘겼으면 보내지 않음(Codex 리뷰 #299)
         self._gate: Callable[[], bool] | None = None
+        # 응답마다 비용을 바로 넘길 곳(Budgeted의 Spend.add): 같은 호출의 다시 보내기도 앞 응답의
+        # 비용을 보고 멈추게(Codex 재리뷰 #299)
+        self._cost_hook: Callable[[float], None] | None = None
 
     def background(self, awaited: Callable[[], bool] = _never) -> "Llm":
         """같은 호출 간격 · 429 대기를 쓰되, 사용자 작업 호출이 도는 동안은 보내지 않는 연결.
@@ -399,6 +402,10 @@ class PacedLlm:
                 with self._lock:
                     self._active -= 1
                     self._last = self._clock()
+
+    def set_cost_hook(self, hook: Callable[[float], None]) -> None:
+        """Claude 응답마다 그 비용(달러)으로 hook을 부름(#298)."""
+        self._cost_hook = hook
 
     def set_gate(self, over: Callable[[], bool]) -> None:
         """over()가 참이면 보내기 직전(처음 · 다시 보내기마다) LlmUsageLimitError(#298)."""
@@ -674,7 +681,10 @@ class ClaudeLlm(PacedLlm):
         if not isinstance(msg, anthropic.types.Message):  # 200인데 JSON이 아니면 SDK가 글자로 줌
             return 200, None, None
         # 잘린 답 · 거절 · 못 읽는 답도 청구됨: 답을 읽기 전에 셈(#298)
-        charge(claude_cost(str(body["model"]), msg.usage.input_tokens, msg.usage.output_tokens))
+        usd = claude_cost(str(body["model"]), msg.usage.input_tokens, msg.usage.output_tokens)
+        charge(usd)
+        if self._cost_hook is not None:
+            self._cost_hook(usd)
         if msg.stop_reason == "refusal":
             raise LlmRejectedError("거절(refusal)")
         text = "".join(b.text for b in msg.content if b.type == "text")
@@ -879,7 +889,8 @@ class _Routed:
             except LlmUsageLimitError:
                 self._budget.exhaust()  # Console 한도가 먼저 닿음: 이 호출부터 학교 LLM
             finally:
-                self._budget.spend.add(meter.usd)
+                if not self._budget.hooked:  # 응답마다 이미 넘긴 클라이언트는 다시 더하지 않음
+                    self._budget.spend.add(meter.usd)
         return self._school().call(
             self._budget.school_model(model), system, user, schema, name,
             max_tokens=max_tokens, temperature=temperature,
@@ -911,8 +922,10 @@ class Budgeted:
         self._exhausted = False  # Claude가 사용 한도 오류를 돌려줌: 다시 Claude로 가지 않음
         self._routed = _Routed(self, claude, self._school_llm)
         # 차례를 기다리는 동안 한도를 넘기면 보내기 직전에 멈추고 학교 LLM으로(Codex 리뷰 #299)
+        self.hooked = isinstance(claude, PacedLlm)
         if isinstance(claude, PacedLlm):
             claude.set_gate(self.over)
+            claude.set_cost_hook(self.spend.add)
 
     def exhaust(self) -> None:
         self._exhausted = True

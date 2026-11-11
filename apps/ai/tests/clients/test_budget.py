@@ -30,6 +30,7 @@ from app.clients.llm import (
 )
 from app.core.config import settings
 from app.worker import handlers
+from app.worker import jobs as jobs_module
 from app.worker.jobs import COST_FIELD, Job, JobStore
 from tests.clients.test_claude_llm import SCHEMA, USAGE_LIMIT, Server, call, error, message
 from tests.fakes import FakeLlm
@@ -498,3 +499,59 @@ def test_unwritten_costs_stay_queued_while_the_db_is_down() -> None:
             store.add_cost(Job(a, "x", {}, 1), usd)
     store.add_cost(Job(a, "x", {}, 1), 4.0)
     assert col.find_one({"_id": a})[COST_FIELD] == 7.0
+
+
+# ---------- Codex 재리뷰(2차) #299 ----------
+
+
+@pytest.fixture(autouse=True)
+def _no_leftover_costs() -> Any:
+    jobs_module._unrecorded.clear()
+    yield
+    jobs_module._unrecorded.clear()
+
+
+def test_a_resend_sees_the_cost_of_the_answer_before_it() -> None:
+    # 69.50에서 첫 응답(못 읽음)이 0.75: 같은 호출의 다시 보내기 직전에 한도를 넘긴 것을 봄
+    costly = message("...")
+    costly["usage"] = {"input_tokens": 0, "output_tokens": 75_000}  # Sonnet 0.75달러
+    s = Server(costly, message('{"natural": ["a"]}'))
+    school = FakeLlm(answers={"X": [{"school": True}]})
+    spend = Spend(lambda: 69.5)
+    b = Budgeted(s.client(), lambda: school, spend, 70.0, school_models())
+    assert b.call("claude-sonnet-5-5", "s", "u", SCHEMA, "X") == {"school": True}
+    assert len(s.bodies) == 1
+    assert spend.total() == pytest.approx(70.25)  # 응답마다 한 번만 셈
+
+
+class LostAckCol(FlakyCol):
+    """update_one을 반영한 뒤 처음 fail번은 응답이 끊긴 것처럼 예외."""
+
+    def update_one(self, *a: Any, **kw: Any) -> Any:
+        r = self.col.update_one(*a, **kw)
+        if self.fail:
+            self.fail -= 1
+            raise AutoReconnect("응답 끊김")
+        return r
+
+
+def test_a_cost_written_but_not_acknowledged_is_not_added_twice() -> None:
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    a = col.insert_one({"type": "x"}).inserted_id
+    store = JobStore(LostAckCol(col, 1), "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30)  # type: ignore[arg-type]
+    with pytest.raises(AutoReconnect):
+        store.add_cost(Job(a, "x", {}, 1), 0.25)
+    store.add_cost(Job(a, "x", {}, 1), 0.5)  # 끊긴 0.25를 다시 적어도 한 번만
+    assert col.find_one({"_id": a})[COST_FIELD] == pytest.approx(0.75)
+
+
+def test_reading_the_total_writes_queued_costs_from_any_store() -> None:
+    # 학교 LLM으로 넘긴 뒤 새 비용이 없어도, 합계를 읽는 쪽(다른 JobStore)이 모아 둔 비용을 적음
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    a = col.insert_one({"type": "x"}).inserted_id
+    lane = JobStore(FlakyCol(col, 1), "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30)  # type: ignore[arg-type]
+    with pytest.raises(AutoReconnect):
+        lane.add_cost(Job(a, "x", {}, 1), 1.0)
+    totals = JobStore(col, "w1:spend", lock_sec=60, max_attempts=3, retry_delay_sec=30)
+    assert totals.claude_spent() == pytest.approx(1.0)
+    assert col.find_one({"_id": a})[COST_FIELD] == 1.0

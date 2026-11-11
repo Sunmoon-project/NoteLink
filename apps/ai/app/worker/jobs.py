@@ -57,7 +57,9 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
   - step은 공용 스키마에서 '없거나 문자열'이라, None을 쓰지 않고 필드를 지웁니다.
 """
 
+import logging
 import threading
+import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -70,7 +72,15 @@ from pymongo.errors import PyMongoError
 from app.clients.llm import JsonObject
 
 # 작업마다 쓴 Claude 비용(달러). 공용 스키마 밖 필드: 처리기만 쓰고 읽음(checkpoint처럼, #298)
+log = logging.getLogger(__name__)
+
 COST_FIELD = "llmUsd"
+# 더한 비용마다 붙인 id: 응답만 끊겨 다시 적어도 두 번 더하지 않게(Codex 재리뷰 #299)
+COST_IDS_FIELD = "llmCostIds"
+# 적지 못한 비용(컬렉션, 작업 id, 비용 id, 달러). 처리기 안의 JobStore가 함께 씀: 어느 반복이
+# 적든, 비용 합계를 읽을 때든(claude_spent) 먼저 다시 적음
+_unrecorded: list[tuple[Any, Any, str, float]] = []
+_unrecorded_lock = threading.Lock()
 
 SWEEP_EVERY = timedelta(seconds=60)  # 시도 한도를 넘긴 멈춘 작업 정리 간격(가져오기마다 하지 않음)
 
@@ -111,8 +121,6 @@ class JobStore:
         self._delay = timedelta(seconds=retry_delay_sec)
         self._now = now
         self._next_sweep: datetime | None = None
-        self._unrecorded: list[tuple[Any, float]] = []  # 적지 못한 Claude 비용(작업 id, 달러)
-        self._cost_lock = threading.Lock()
 
     @property
     def lock_sec(self) -> float:
@@ -288,21 +296,39 @@ class JobStore:
         """이 작업이 쓴 Claude 비용을 llmUsd에 더함(#298). 잠금과 상관없이: 이미 쓴 돈이라
         작업을 다른 처리기가 가져갔거나 취소된 뒤에 끝난 호출도 셈.
 
-        적지 못한 비용은 모아 두었다가 다음에 적을 때 먼저 적음: DB가 잠깐 끊겨도 합계에서 빠지지
-        않고, 처리기를 다시 시작해도 남게(Codex 리뷰 #299). 그래도 실패하면 예외(호출한 쪽이 로그).
+        적지 못한 비용은 모아 두었다가 다음에 적을 때나 합계를 읽을 때 먼저 적음: DB가 잠깐
+        끊겨도 합계에서 빠지지 않게(Codex 리뷰 #299). 비용마다 id를 붙여, 반영됐는데 응답만 끊긴
+        비용을 다시 적어도 두 번 더하지 않음. 그래도 실패하면 예외(호출한 쪽이 로그).
         """
-        with self._cost_lock:
-            todo, self._unrecorded = [*self._unrecorded, (job.id, usd)], []
-        for i, (job_id, cost) in enumerate(todo):
+        self._write_costs([(self._col, job.id, uuid.uuid4().hex, usd)])
+
+    def flush_costs(self) -> None:
+        """모아 둔(적지 못한) 비용을 다시 적음. 실패하면 그대로 두고 예외."""
+        self._write_costs([])
+
+    @staticmethod
+    def _write_costs(new: list[tuple[Any, Any, str, float]]) -> None:
+        with _unrecorded_lock:
+            todo = [*_unrecorded, *new]
+            _unrecorded.clear()
+        for i, (col, job_id, cost_id, cost) in enumerate(todo):
             try:
-                self._col.update_one({"_id": job_id}, {"$inc": {COST_FIELD: cost}})
+                col.update_one(
+                    {"_id": job_id, COST_IDS_FIELD: {"$ne": cost_id}},
+                    {"$inc": {COST_FIELD: cost}, "$push": {COST_IDS_FIELD: cost_id}},
+                )
             except PyMongoError:
-                with self._cost_lock:
-                    self._unrecorded[:0] = todo[i:]
+                with _unrecorded_lock:
+                    _unrecorded[:0] = todo[i:]
                 raise
 
     def claude_spent(self) -> float:
-        """모든 작업의 llmUsd 합계(달러, #298)."""
+        """모든 작업의 llmUsd 합계(달러, #298). 모아 둔 비용을 먼저 적어 봄(학교 LLM으로 넘긴 뒤에도
+        다시 적을 기회가 있게)."""
+        try:
+            self.flush_costs()
+        except PyMongoError:
+            log.warning("적지 못한 Claude 비용을 다시 적지 못함, 다음에 다시")
         rows = list(
             self._col.aggregate(
                 [
