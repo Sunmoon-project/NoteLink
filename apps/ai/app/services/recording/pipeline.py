@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import takewhile
 
-from app.clients.llm import JsonObject, Llm, LlmCutError, LlmError
+from app.clients.llm import JsonObject, Llm, LlmCutError, LlmError, LlmRejectedError
 from app.clients.speech import NoSpeechError, Phrase, Transcript
 from app.core.config import settings
 from app.services.recording.models import (
@@ -240,15 +240,21 @@ def read_window(llm: Llm, sentences: list[Sentence], window: SentenceRange) -> W
 
 
 def _read_right_half(llm: Llm, sentences: list[Sentence], window: SentenceRange) -> WindowAnswer:
-    """왼쪽 답을 버리지 않으려고 오른쪽만 한 번 더 묻습니다. 그 안에서 이미 다시 물었으면 그대로."""
+    """왼쪽 답을 버리지 않으려고 오른쪽만 한 번 더 묻습니다. 그 안에서 이미 다시 물었으면 그대로.
+
+    서버가 요청을 거절했으면(LlmRejectedError) 같은 요청을 다시 묻지 않고 그대로 올립니다:
+    _HalfFailedError로 바꾸면 작업 처리기가 작업을 다시 넣음(Codex 리뷰 #264).
+    """
     try:
         return read_window(llm, sentences, window)
-    except _HalfFailedError:
+    except (_HalfFailedError, LlmRejectedError):
         raise
     except LlmError:
         pass
     try:
         return read_window(llm, sentences, window)
+    except LlmRejectedError:
+        raise
     except LlmError as e:
         raise _HalfFailedError(str(e)) from e
 

@@ -9,7 +9,7 @@ import mongomock
 import pytest
 from pydantic import SecretStr
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmRejectedError
 from app.clients.speech import (
     NoSpeechError,
     Phrase,
@@ -32,7 +32,7 @@ from app.services.recording.job import (
 )
 from app.services.recording.models import Sentence
 from app.services.recording.pipeline import WINDOW_CHARS
-from app.worker import handlers
+from app.worker import handlers, runner
 from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobGoneError, JobStore
 from app.worker.runner import run_once
@@ -592,6 +592,16 @@ def test_llm_unavailable_is_retried_later(monkeypatch: pytest.MonkeyPatch) -> No
     assert doc["error"] == "AI 응답을 받지 못함(HTTP 503)"
 
 
+def test_llm_rejection_fails_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 서버가 거절한 요청(413 등)은 다시 넣어도 같음: 작업 처리기까지 와서 바로 실패(Codex #264)
+    llm = FakeLlm({SLIDES: [LlmRejectedError("HTTP 413")]})
+
+    doc = run_job(monkeypatch, {"audioUrl": AUDIO_URL}, llm=llm)
+
+    assert (doc["status"], doc["attempts"]) == ("failed", 1)
+    assert doc["error"] == "AI가 요청을 거절함(HTTP 413)"
+
+
 @pytest.mark.parametrize("error", ["HTTP 401", "응답 모양"])
 def test_permanent_voyage_error_fails_without_retry(
     monkeypatch: pytest.MonkeyPatch, error: str
@@ -606,7 +616,8 @@ def real_clients(monkeypatch: pytest.MonkeyPatch) -> Any:
     """설정 누락을 보려고 실제 만들기 함수를 씁니다. 캐시는 앞뒤로 비움."""
     for make in (handlers._llm, handlers._speech, handlers._voyage):
         make.cache_clear()
-    monkeypatch.setattr(settings, "school_llm_base_url", "http://llm.test")
+    monkeypatch.setattr(settings, "llm_provider", "claude")
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr("k"))
     monkeypatch.setattr(settings, "azure_speech_endpoint", "http://speech.test")
     monkeypatch.setattr(settings, "azure_speech_key", SecretStr("k"))
     monkeypatch.setattr(settings, "voyage_api_key", SecretStr("k"))
@@ -616,21 +627,22 @@ def real_clients(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 @pytest.mark.parametrize(
-    ("name", "blank"),
+    ("name", "blank", "error"),
     [
-        ("school_llm_base_url", ""),
-        ("azure_speech_endpoint", ""),
-        ("voyage_api_key", SecretStr("")),
+        # LLM 설정은 LlmSetupError(retry=False)로 이유를 남김(#262 · #278)
+        ("anthropic_api_key", SecretStr(""), "AI 설정 오류(ANTHROPIC_API_KEY가 비어 있음)"),
+        ("azure_speech_endpoint", "", "처리 중 오류"),
+        ("voyage_api_key", SecretStr(""), "처리 중 오류"),
     ],
 )
 def test_missing_setting_fails_without_retry(
-    real_clients: pytest.MonkeyPatch, name: str, blank: object
+    real_clients: pytest.MonkeyPatch, name: str, blank: object, error: str
 ) -> None:
     real_clients.setattr(settings, name, blank)
 
     doc = queued_job_result({"audioUrl": AUDIO_URL})
 
-    assert (doc["status"], doc["attempts"], doc["error"]) == ("failed", 1, "처리 중 오류")
+    assert (doc["status"], doc["attempts"], doc["error"]) == ("failed", 1, error)
 
 
 # ---------- 진행률 ----------
@@ -726,6 +738,40 @@ def test_cancel_stops_at_the_next_window() -> None:
             report=cancel,
         )
     assert len(llm.windows) == 1
+
+
+def test_a_cancel_stops_the_next_llm_call_before_any_progress_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 같은 창을 다른 온도로 다시 묻는 사이에는 진행률을 쓰지 않음: 처리기가 몇 초마다 상태를 읽어
+    # 취소를 알아채고(report.canceled), 학교 LLM 연결(Stopping)이 다음 호출을 보내지 않아야 함.
+    # 실제 runner · JobStore를 거쳐, 처리가 끝난 뒤 잠금이 풀리는지도 봄(Codex 리뷰 #273, #263)
+    monkeypatch.setattr(runner, "CANCEL_CHECK_SEC", 0.01)
+    col = queued_job({"audioUrl": AUDIO_URL})
+    calls: list[str] = []
+
+    class CancelOnFirst:
+        def call(self, model: str, system: str, user: str, schema: Any, name: str, **_: Any) -> Any:
+            calls.append(name)
+            col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})  # 앱에서 취소
+            time.sleep(0.3)  # 처리기가 상태를 읽어 알아챌 때까지
+            return {}  # 쓸 내용이 없어 같은 창을 다른 온도로 다시 물으려 함
+
+    monkeypatch.setattr(handlers, "_llm", lambda: CancelOnFirst())
+    monkeypatch.setattr(handlers, "_speech", lambda: FakeSpeech())
+    monkeypatch.setattr(handlers, "_voyage", lambda: FakeVoyage())
+    store = JobStore(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30, now=lambda: T0)
+
+    assert run_once(store, HANDLERS)
+
+    doc = col.find_one({"_id": "j1"})
+    assert calls == [SLIDES]  # 다시 묻는 호출은 보내지 않음
+    assert (doc["status"], doc["result"], doc["lockedBy"], doc["lockedUntil"]) == (
+        "canceled",
+        None,
+        None,
+        None,
+    )
 
 
 # ---------- 다시 시도 때 인식 결과 재사용 ----------

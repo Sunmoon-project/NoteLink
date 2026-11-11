@@ -34,6 +34,7 @@ import {
   Avatar,
   Badge,
   Btn,
+  Canvas,
   Dialog,
   Group,
   Header,
@@ -122,7 +123,7 @@ export function ReportScreen() {
     onSuccess: () => setDone(true),
   });
   return (
-    <View className="flex-1">
+    <Canvas>
       <Screen
         footer={
           <Btn
@@ -138,11 +139,11 @@ export function ReportScreen() {
         {room.isError && !room.data && (
           <LoadError message="방 멤버를 불러오지 못했어요" retry={room.refetch} />
         )}
-        <View className="rounded-2xl border border-line p-4">
+        <View className="rounded-card bg-white p-5">
           <Text className="mb-1.5 text-caption text-sub">신고 대상</Text>
           <Pressable
             onPress={() => setSheet('target')}
-            className="flex-row items-center gap-3 rounded-xl bg-cream px-3 py-2.5"
+            className="flex-row items-center gap-3 rounded-xl bg-fill px-3 py-3"
           >
             {target ? (
               <>
@@ -157,7 +158,7 @@ export function ReportScreen() {
           <Text className="mt-4 mb-1.5 text-caption text-sub">신고 유형 선택</Text>
           <Pressable
             onPress={() => setSheet('type')}
-            className="h-11 flex-row items-center justify-between rounded-xl bg-cream px-3"
+            className="h-11 flex-row items-center justify-between rounded-xl bg-fill px-3"
           >
             <Text className={cx('text-footnote', type ? 'text-ink' : 'text-sub')}>
               {REPORT_TYPES.find((x) => x[0] === type)?.[1] ?? '신고 유형을 골라 주세요'}
@@ -171,7 +172,7 @@ export function ReportScreen() {
             onChangeText={setBody}
             placeholder="신고 사유를 자세히 입력해 주세요. (10자 이상)"
             placeholderTextColor={C.sub}
-            className="h-32 rounded-xl bg-cream p-3 text-footnote text-ink"
+            className="h-32 rounded-xl bg-fill p-3 text-footnote text-ink"
             style={{ textAlignVertical: 'top' }}
           />
           <Text
@@ -190,7 +191,7 @@ export function ReportScreen() {
             {photos.length < MAX_REPORT_PHOTOS && (
               <Pressable
                 onPress={addPhoto}
-                className="h-14 w-14 items-center justify-center rounded-xl border border-line"
+                className="h-14 w-14 items-center justify-center rounded-xl bg-fill"
               >
                 <Camera size={ICON.sm} color={C.sub} />
                 <Text className="text-caption2 text-sub">
@@ -260,7 +261,7 @@ export function ReportScreen() {
           확인
         </Btn>
       </Dialog>
-    </View>
+    </Canvas>
   );
 }
 
@@ -334,13 +335,15 @@ export function TimerScreen() {
   });
   if (room.isError && !room.data)
     return (
-      <Screen>
-        <Header title="방 시간 규칙" center />
-        <LoadError message="방 설정을 불러오지 못했어요" retry={room.refetch} />
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Header title="방 시간 규칙" center />
+          <LoadError message="방 설정을 불러오지 못했어요" retry={room.refetch} />
+        </Screen>
+      </Canvas>
     );
   return (
-    <View className="flex-1">
+    <Canvas>
       <Screen
         footer={
           <Btn disabled={!isHost} loading={save.isPending} onPress={() => save.mutate()}>
@@ -352,7 +355,7 @@ export function TimerScreen() {
           <Pressable
             accessibilityLabel="뒤로"
             onPress={() => router.back()}
-            className="h-9 w-9 items-center justify-center rounded-full bg-cream"
+            className="h-11 w-11 items-center justify-center rounded-full bg-white"
           >
             <ChevronLeft size={ICON.md} color={C.ink} />
           </Pressable>
@@ -389,7 +392,7 @@ export function TimerScreen() {
                 onPress={() => setType(k)}
                 className={cx(
                   'flex-1 flex-row items-center gap-2 rounded-xl border px-3 py-3',
-                  type === k ? 'border-brand/40 bg-mint' : 'border-line',
+                  type === k ? 'border-brand/40 bg-mint' : 'border-transparent bg-white',
                 )}
               >
                 <Ic size={ICON.md} color={C.brand} />
@@ -431,7 +434,7 @@ export function TimerScreen() {
                     }}
                     className={cx(
                       'flex-1 rounded-xl border px-3 py-2.5',
-                      preset === p ? 'border-brand/40 bg-mint' : 'border-line',
+                      preset === p ? 'border-brand/40 bg-mint' : 'border-transparent bg-white',
                     )}
                   >
                     <Text className="text-subhead font-bold text-ink">{p.replace('/', ' / ')}</Text>
@@ -439,7 +442,7 @@ export function TimerScreen() {
                   </Pressable>
                 ))}
               </View>
-              <View className="mt-3 rounded-xl bg-cream p-3">
+              <View className="mt-3 rounded-xl bg-white p-4">
                 <View className="flex-row justify-between">
                   <View className="flex-row items-center gap-1.5">
                     <Settings size={ICON.xs} color={C.brand} />
@@ -486,7 +489,7 @@ export function TimerScreen() {
               <Text className="text-caption2 text-sub">교시제로 전환할 때 사용할 시간표예요</Text>
             </View>
           </Label>
-          <View className="gap-1.5 rounded-2xl bg-cream p-2">
+          <View className="gap-2">
             {periods.map((p, i) => (
               <Pressable
                 key={i}
@@ -501,7 +504,7 @@ export function TimerScreen() {
                 <View
                   className={cx(
                     'h-7 w-7 items-center justify-center rounded-full',
-                    i === 0 ? 'bg-brand' : 'bg-cream',
+                    i === 0 ? 'bg-brand' : 'bg-fill',
                   )}
                 >
                   <Text
@@ -523,7 +526,7 @@ export function TimerScreen() {
           <Label>
             <Text className="text-footnote font-bold text-ink">적용 일정 미리보기</Text>
           </Label>
-          <View className="rounded-xl bg-cream px-3 py-2.5">
+          <View className="rounded-xl bg-white px-4 py-3">
             <Text className="text-caption text-sub">
               {type === 'pomodoro'
                 ? `집중 ${focus}분 → 휴식 ${rest}분 × ${repeat}회 · 총 ${(Number(focus) + Number(rest)) * repeat}분`
@@ -554,7 +557,7 @@ export function TimerScreen() {
                   onChangeText={(value) =>
                     setEditing((current) => (current ? { ...current, [field]: value } : current))
                   }
-                  className="mt-1 rounded-xl border border-line px-3 py-2 text-ink"
+                  className="mt-1 rounded-xl bg-fill px-3 py-2.5 text-ink"
                 />
               </View>
             ))}
@@ -574,7 +577,7 @@ export function TimerScreen() {
         primary="알겠어요"
         onPrimary={() => setHelp(false)}
       />
-    </View>
+    </Canvas>
   );
 }
 
@@ -603,115 +606,119 @@ export function ScheduleScreen() {
   const s = sch.data;
   if (sch.isError && !sch.data)
     return (
-      <Screen>
-        <Header title="시간표" center />
-        <LoadError message="멤버 일정을 불러오지 못했어요" retry={sch.refetch} />
-      </Screen>
+      <Canvas>
+        <Screen>
+          <Header title="시간표" center />
+          <LoadError message="멤버 일정을 불러오지 못했어요" retry={sch.refetch} />
+        </Screen>
+      </Canvas>
     );
   return (
-    <Screen>
-      <View className="h-12 flex-row items-center gap-2 pt-2">
-        <Pressable accessibilityLabel="뒤로" onPress={() => router.back()} hitSlop={10}>
-          <ArrowLeft size={ICON.lg} color={C.ink} />
-        </Pressable>
-        <Text className="flex-1 text-headline font-bold text-ink">시간표</Text>
-        <Pressable
-          onPress={() =>
-            s?.matches[0]
-              ? addToCalendar(s.matches[0].day, s.matches[0].start, s.matches[0].end)
-              : toast('아직 공통 가능 시간이 없어요')
-          }
-          className="rounded-full bg-mint px-3 py-1"
-        >
-          <Text className="text-caption2 font-semibold text-brand">캘린더</Text>
-        </Pressable>
-      </View>
-      <View className="mt-2 flex-row items-center rounded-2xl bg-mint p-4">
-        <View className="flex-1">
-          <Text className="text-caption2 text-sub">{room.data?.title}</Text>
-          <Text className="text-body font-bold text-ink">이번 주 공동 학습 가능 시간 조율</Text>
-        </View>
-        <Badge tone="gray">{`${s?.members.length ?? 0}명 연동중`}</Badge>
-      </View>
-      <Text className="mt-4 mb-2 text-caption text-sub">스터디룸 멤버 일정 현황</Text>
-      <View className="flex-row flex-wrap gap-1.5">
-        {s?.members.map((m) => (
-          <View key={m.nickname} className="rounded-full bg-cream px-2.5 py-1">
-            <Text className="text-caption2 text-ink">
-              {m.emoji} {m.nickname}
-            </Text>
-          </View>
-        ))}
-      </View>
-      <View className="mt-3 rounded-2xl border border-line p-3">
-        <View className="flex-row pl-9">
-          {['월', '화', '수', '목', '금', '토', '일'].map((d) => (
-            <Text key={d} className="flex-1 text-center text-caption2 text-sub">
-              {d}
-            </Text>
-          ))}
-        </View>
-        {s?.grid.map((row, r) => (
-          <View key={r} className="mt-1 flex-row items-center">
-            <Text className="w-9 text-caption2 text-sub">{s.startHour + r}:00</Text>
-            {row.map((c, i) => (
-              <Pressable
-                key={i}
-                accessibilityLabel={`${['월', '화', '수', '목', '금', '토', '일'][i]} ${s.startHour + r}:00 일정 추가`}
-                disabled={c !== 2}
-                onPress={() =>
-                  addToCalendar(
-                    ['월', '화', '수', '목', '금', '토', '일'][i]!,
-                    `${s.startHour + r}:00`,
-                    `${s.startHour + r + 1}:00`,
-                  )
-                }
-                className={cx(
-                  'mx-0.5 h-6 flex-1 items-center justify-center rounded-md',
-                  c === 2 ? 'border border-brand bg-mint' : c === 1 ? 'bg-cream-2' : 'bg-cream',
-                )}
-              >
-                {c === 2 && <Sparkles size={ICON.md} color={C.brand} />}
-              </Pressable>
-            ))}
-          </View>
-        ))}
-      </View>
-      <View className="mt-3 rounded-2xl border border-line p-3">
-        <View className="flex-row items-center gap-1.5">
-          <Sparkles size={ICON.xs} color={C.brand} />
-          <Text className="text-footnote font-bold text-ink">실시간 매칭된 공통 가능 시간</Text>
-        </View>
-        {s?.matches.length === 0 && (
-          <Text className="py-3 text-center text-caption text-sub">
-            아직 공통 가능 시간이 없어요
-          </Text>
-        )}
-        {s?.matches.map((m) => (
+    <Canvas>
+      <Screen>
+        <View className="h-12 flex-row items-center gap-2 pt-2">
+          <Pressable accessibilityLabel="뒤로" onPress={() => router.back()} hitSlop={10}>
+            <ArrowLeft size={ICON.lg} color={C.ink} />
+          </Pressable>
+          <Text className="flex-1 text-headline font-bold text-ink">시간표</Text>
           <Pressable
-            key={m.label}
-            onPress={() => addToCalendar(m.day, m.start, m.end)}
-            className={cx(
-              'mt-2 flex-row items-center rounded-xl px-3 py-2.5',
-              m.best ? 'bg-mint' : 'bg-cream',
-            )}
+            onPress={() =>
+              s?.matches[0]
+                ? addToCalendar(s.matches[0].day, s.matches[0].start, s.matches[0].end)
+                : toast('아직 공통 가능 시간이 없어요')
+            }
+            className="rounded-full bg-mint px-3 py-1"
           >
-            <View className="flex-1">
-              <Text
-                className={cx('text-footnote font-semibold', m.best ? 'text-brand' : 'text-ink')}
-              >
-                {m.label}
-              </Text>
-              <Text className="text-caption2 text-sub">
-                {m.start} - {m.end} ({Number(m.end.slice(0, 2)) - Number(m.start.slice(0, 2))}시간
-                {m.best ? ' 연속' : ''} 가능)
+            <Text className="text-caption2 font-semibold text-brand">캘린더</Text>
+          </Pressable>
+        </View>
+        <View className="mt-2 flex-row items-center rounded-2xl bg-mint p-4">
+          <View className="flex-1">
+            <Text className="text-caption2 text-sub">{room.data?.title}</Text>
+            <Text className="text-body font-bold text-ink">이번 주 공동 학습 가능 시간 조율</Text>
+          </View>
+          <Badge tone="gray">{`${s?.members.length ?? 0}명 연동중`}</Badge>
+        </View>
+        <Text className="mt-4 mb-2 text-caption text-sub">스터디룸 멤버 일정 현황</Text>
+        <View className="flex-row flex-wrap gap-1.5">
+          {s?.members.map((m) => (
+            <View key={m.nickname} className="rounded-full bg-white px-3 py-1">
+              <Text className="text-caption2 text-ink">
+                {m.emoji} {m.nickname}
               </Text>
             </View>
-            {m.best && <Text className="text-caption2 font-semibold text-brand">가장 추천</Text>}
-          </Pressable>
-        ))}
-      </View>
-    </Screen>
+          ))}
+        </View>
+        <View className="mt-3 rounded-card bg-white p-4">
+          <View className="flex-row pl-9">
+            {['월', '화', '수', '목', '금', '토', '일'].map((d) => (
+              <Text key={d} className="flex-1 text-center text-caption2 text-sub">
+                {d}
+              </Text>
+            ))}
+          </View>
+          {s?.grid.map((row, r) => (
+            <View key={r} className="mt-1 flex-row items-center">
+              <Text className="w-9 text-caption2 text-sub">{s.startHour + r}:00</Text>
+              {row.map((c, i) => (
+                <Pressable
+                  key={i}
+                  accessibilityLabel={`${['월', '화', '수', '목', '금', '토', '일'][i]} ${s.startHour + r}:00 일정 추가`}
+                  disabled={c !== 2}
+                  onPress={() =>
+                    addToCalendar(
+                      ['월', '화', '수', '목', '금', '토', '일'][i]!,
+                      `${s.startHour + r}:00`,
+                      `${s.startHour + r + 1}:00`,
+                    )
+                  }
+                  className={cx(
+                    'mx-0.5 h-6 flex-1 items-center justify-center rounded-md',
+                    c === 2 ? 'border border-brand bg-mint' : c === 1 ? 'bg-brand/15' : 'bg-fill',
+                  )}
+                >
+                  {c === 2 && <Sparkles size={ICON.md} color={C.brand} />}
+                </Pressable>
+              ))}
+            </View>
+          ))}
+        </View>
+        <View className="mt-3 rounded-card bg-white p-4">
+          <View className="flex-row items-center gap-1.5">
+            <Sparkles size={ICON.xs} color={C.brand} />
+            <Text className="text-footnote font-bold text-ink">실시간 매칭된 공통 가능 시간</Text>
+          </View>
+          {s?.matches.length === 0 && (
+            <Text className="py-3 text-center text-caption text-sub">
+              아직 공통 가능 시간이 없어요
+            </Text>
+          )}
+          {s?.matches.map((m) => (
+            <Pressable
+              key={m.label}
+              onPress={() => addToCalendar(m.day, m.start, m.end)}
+              className={cx(
+                'mt-2 flex-row items-center rounded-xl px-3 py-2.5',
+                m.best ? 'bg-mint' : 'bg-fill',
+              )}
+            >
+              <View className="flex-1">
+                <Text
+                  className={cx('text-footnote font-semibold', m.best ? 'text-brand' : 'text-ink')}
+                >
+                  {m.label}
+                </Text>
+                <Text className="text-caption2 text-sub">
+                  {m.start} - {m.end} ({Number(m.end.slice(0, 2)) - Number(m.start.slice(0, 2))}시간
+                  {m.best ? ' 연속' : ''} 가능)
+                </Text>
+              </View>
+              {m.best && <Text className="text-caption2 font-semibold text-brand">가장 추천</Text>}
+            </Pressable>
+          ))}
+        </View>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -732,28 +739,28 @@ export function RoomSettingsScreen() {
     },
   });
   return (
-    <View className="flex-1">
+    <Canvas>
       <Screen>
-        <Header title="" />
+        <Header title="방 설정" />
         {room.isError && !room.data && (
           <LoadError message="방 정보를 불러오지 못했어요" retry={room.refetch} />
         )}
-        <View className="gap-3 rounded-2xl border border-line p-3">
-          <View className="flex-row items-center gap-2 rounded-xl bg-cream px-4 py-4">
+        <View className="overflow-hidden rounded-card bg-white">
+          <View className="flex-row items-center gap-3 px-5 py-4">
             <Bell size={ICON.md} color={C.ink} />
             <Text className="flex-1 text-subhead font-semibold text-ink">알림</Text>
             <Text className="text-caption text-sub">알림 설정은 준비 중이에요</Text>
           </View>
           <Pressable
             onPress={() => router.push({ pathname: '/room/invite', params: { id } })}
-            className="flex-row items-center gap-2 rounded-xl bg-cream px-4 py-4"
+            className="flex-row items-center gap-3 border-t border-fill px-5 py-4"
           >
             <UserPlus size={ICON.md} color={C.ink} />
             <Text className="text-subhead font-semibold text-ink">친구 초대</Text>
           </Pressable>
           <Pressable
             onPress={() => setCode(true)}
-            className="flex-row items-center gap-2 rounded-xl bg-cream px-4 py-4"
+            className="flex-row items-center gap-3 border-t border-fill px-5 py-4"
           >
             <View className="flex-row items-center gap-1.5">
               <KeyRound size={ICON.sm} color={C.sub} />
@@ -762,7 +769,7 @@ export function RoomSettingsScreen() {
           </Pressable>
           <Pressable
             onPress={() => setLeave(true)}
-            className="flex-row items-center gap-2 rounded-xl bg-cream px-4 py-4"
+            className="flex-row items-center gap-3 border-t border-fill px-5 py-4"
           >
             <Text className="text-subhead font-semibold text-danger">채팅방 나가기</Text>
           </Pressable>
@@ -808,7 +815,7 @@ export function RoomSettingsScreen() {
           </Two>
         </View>
       </Dialog>
-    </View>
+    </Canvas>
   );
 }
 
@@ -830,95 +837,99 @@ export function InviteScreen() {
   const list = (friends.data ?? []).filter((f) => f.nickname.includes(q));
   if (room.isError && !room.data)
     return (
-      <Screen footer={<Btn onPress={() => router.back()}>스터디룸으로 돌아가기</Btn>}>
-        <Header title="친구 초대" center />
-        <LoadError message="방 정보를 불러오지 못했어요" retry={room.refetch} />
-      </Screen>
+      <Canvas>
+        <Screen footer={<Btn onPress={() => router.back()}>스터디룸으로 돌아가기</Btn>}>
+          <Header title="친구 초대" center />
+          <LoadError message="방 정보를 불러오지 못했어요" retry={room.refetch} />
+        </Screen>
+      </Canvas>
     );
   return (
-    <Screen footer={<Btn onPress={() => router.back()}>스터디룸으로 돌아가기</Btn>}>
-      <Header title="친구 초대" center />
-      <Text className="text-body font-bold text-ink">{room.data?.title}</Text>
-      <Text className="text-caption text-sub">함께 공부할 친구를 스터디룸에 초대해 보세요.</Text>
-      <View className="mt-3 rounded-2xl bg-mint p-4">
-        <Text className="text-caption2 text-sub">스터디룸 초대 코드</Text>
-        <View className="flex-row items-center justify-between">
-          <Text className="tabular-nums text-title3 font-bold text-ink">
-            {room.data?.inviteCode}
-          </Text>
-          <Pressable
-            onPress={async () => {
-              await Clipboard.setStringAsync(room.data?.inviteCode ?? '');
-              toast('코드를 복사했어요');
-            }}
-            className="flex-row items-center gap-1 rounded-full bg-brand px-3 py-1"
-          >
-            <Copy size={ICON.xs} color="#fff" />
-            <Text className="text-caption text-white">복사</Text>
-          </Pressable>
-        </View>
-      </View>
-      <Text className="mt-1.5 text-caption2 text-sub">
-        친구가 초대 코드를 입력하면 이 방에 참여할 수 있어요.
-      </Text>
-      <View className="mt-4 mb-2 flex-row justify-between">
-        <Text className="text-footnote font-bold text-ink">
-          내 친구 {friends.data?.length ?? 0}
-        </Text>
-        <Text className="text-footnote text-sub">{invited.length}명 초대됨</Text>
-      </View>
-      <Search value={q} onChangeText={setQ} placeholder="친구 이름으로 검색" />
-      {friends.isError && (
-        <LoadError message="친구 목록을 불러오지 못했어요" retry={friends.refetch} />
-      )}
-      {friends.isSuccess && friends.data.length === 0 && (
-        <Text className="py-6 text-center text-caption text-sub">
-          아직 친구가 없어요. 초대 코드를 공유해 보세요
-        </Text>
-      )}
-      <View className="mt-2 gap-2">
-        {list.map((f) => {
-          const st = inRoom.has(f.userId)
-            ? '참여 중'
-            : invited.includes(f.userId)
-              ? '초대됨'
-              : '초대하기';
-          return (
-            <View
-              key={f._id}
-              className="flex-row items-center gap-3 rounded-xl border border-line px-3 py-2.5"
+    <Canvas>
+      <Screen footer={<Btn onPress={() => router.back()}>스터디룸으로 돌아가기</Btn>}>
+        <Header title="친구 초대" center />
+        <Text className="text-body font-bold text-ink">{room.data?.title}</Text>
+        <Text className="text-caption text-sub">함께 공부할 친구를 스터디룸에 초대해 보세요.</Text>
+        <View className="mt-3 rounded-2xl bg-mint p-4">
+          <Text className="text-caption2 text-sub">스터디룸 초대 코드</Text>
+          <View className="flex-row items-center justify-between">
+            <Text className="tabular-nums text-title3 font-bold text-ink">
+              {room.data?.inviteCode}
+            </Text>
+            <Pressable
+              onPress={async () => {
+                await Clipboard.setStringAsync(room.data?.inviteCode ?? '');
+                toast('코드를 복사했어요');
+              }}
+              className="flex-row items-center gap-1 rounded-full bg-brand px-3 py-1"
             >
-              <Avatar name={f.nickname} size={30} tone="mint" />
-              <View className="flex-1">
-                <Text className="text-footnote font-semibold text-ink">{f.nickname}</Text>
-                <Text className="text-caption2 text-sub">
-                  {inRoom.has(f.userId) ? '이 스터디룸에서 함께 공부 중' : '친구'}
-                </Text>
-              </View>
-              <Pressable
-                disabled={st !== '초대하기'}
-                onPress={() => inv.mutate(f.userId)}
-                className={cx(
-                  'rounded-full px-3 py-1',
-                  st === '초대하기' ? 'bg-mint' : 'border border-line',
-                )}
+              <Copy size={ICON.xs} color="#fff" />
+              <Text className="text-caption text-white">복사</Text>
+            </Pressable>
+          </View>
+        </View>
+        <Text className="mt-1.5 text-caption2 text-sub">
+          친구가 초대 코드를 입력하면 이 방에 참여할 수 있어요.
+        </Text>
+        <View className="mt-4 mb-2 flex-row justify-between">
+          <Text className="text-footnote font-bold text-ink">
+            내 친구 {friends.data?.length ?? 0}
+          </Text>
+          <Text className="text-footnote text-sub">{invited.length}명 초대됨</Text>
+        </View>
+        <Search value={q} onChangeText={setQ} placeholder="친구 이름으로 검색" />
+        {friends.isError && (
+          <LoadError message="친구 목록을 불러오지 못했어요" retry={friends.refetch} />
+        )}
+        {friends.isSuccess && friends.data.length === 0 && (
+          <Text className="py-6 text-center text-caption text-sub">
+            아직 친구가 없어요. 초대 코드를 공유해 보세요
+          </Text>
+        )}
+        <View className="mt-2 gap-2">
+          {list.map((f) => {
+            const st = inRoom.has(f.userId)
+              ? '참여 중'
+              : invited.includes(f.userId)
+                ? '초대됨'
+                : '초대하기';
+            return (
+              <View
+                key={f._id}
+                className="flex-row items-center gap-3 rounded-xl bg-white px-4 py-3"
               >
-                <Text
+                <Avatar name={f.nickname} size={30} tone="mint" />
+                <View className="flex-1">
+                  <Text className="text-footnote font-semibold text-ink">{f.nickname}</Text>
+                  <Text className="text-caption2 text-sub">
+                    {inRoom.has(f.userId) ? '이 스터디룸에서 함께 공부 중' : '친구'}
+                  </Text>
+                </View>
+                <Pressable
+                  disabled={st !== '초대하기'}
+                  onPress={() => inv.mutate(f.userId)}
                   className={cx(
-                    'text-caption2 font-semibold',
-                    st === '초대하기' ? 'text-brand' : 'text-sub',
+                    'rounded-full px-3 py-1',
+                    st === '초대하기' ? 'bg-mint' : 'bg-fill',
                   )}
                 >
-                  {st}
-                </Text>
-              </Pressable>
-            </View>
-          );
-        })}
-      </View>
-      <Text className="mt-3 text-center text-caption2 text-sub">
-        초대한 친구에게 스터디룸 초대 알림이 전송돼요.
-      </Text>
-    </Screen>
+                  <Text
+                    className={cx(
+                      'text-caption2 font-semibold',
+                      st === '초대하기' ? 'text-brand' : 'text-sub',
+                    )}
+                  >
+                    {st}
+                  </Text>
+                </Pressable>
+              </View>
+            );
+          })}
+        </View>
+        <Text className="mt-3 text-center text-caption2 text-sub">
+          초대한 친구에게 스터디룸 초대 알림이 전송돼요.
+        </Text>
+      </Screen>
+    </Canvas>
   );
 }

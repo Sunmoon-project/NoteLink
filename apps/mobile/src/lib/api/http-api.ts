@@ -58,7 +58,10 @@ export const httpApi: Api = {
   auth: {
     socialLogin: (provider, proof) => http.post(P.socialLogin(provider), proof),
     emailLogin: (email, password) => http.post(P.emailLogin, { email, password }),
-    emailSignup: (email, password) => http.post(P.emailSignup, { email, password }),
+    emailSendCode: (email) => http.post(P.emailSendCode, { email }),
+    emailVerifyCode: (email, code) => http.post(P.emailVerifyCode, { email, code }),
+    emailSignup: (verificationToken, password) =>
+      http.post(P.emailSignup, { verificationToken, password }),
     agreeTerms: (termCodes) => http.post(P.terms, { termCodes }),
     // 서버가 폐기할 토큰. 토큰 갱신 뒤 재시도하면 그때의 토큰을 보낸다
     logout: () =>
@@ -142,6 +145,7 @@ export const httpApi: Api = {
     downloadUrl: (id) => http.get(P.materialDownloadUrl(id)),
     share: (p) => http.post(P.materialShare, p),
     checkImages: (files) => http.post(P.imageCheck, { files }),
+    ask: (id, body) => http.post(P.materialAsk(id), body),
   },
   ai: {
     job: (id) => http.get(P.aiJob(id)),

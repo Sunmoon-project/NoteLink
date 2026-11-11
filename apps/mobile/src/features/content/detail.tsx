@@ -27,6 +27,7 @@ import { AiPending } from '@/components/AiPending';
 import {
   Badge,
   Btn,
+  Canvas,
   Card,
   Dialog,
   Group,
@@ -45,9 +46,17 @@ import {
 import { C, ICON } from '@/theme';
 import { DocSummary, NoteBody } from './convert';
 import { Player } from './player';
+import { TutorBuddy, useTuckOnScroll } from '@/features/tutor/buddy';
 import { seoul } from '@/lib/dates';
 
 // p.67~73 필기 · 녹음 · 문서 상세 / 편집 / 다운로드 / 공유 / 삭제
+
+/** 아바타가 설명할 글이 있는 노트: 정리가 끝났거나 요약 · 쪽 글이 있음(서버 NOTE_NOT_READY 전에 숨김) */
+const canAsk = (m: Material) =>
+  m.processing?.status === 'done' ||
+  !!m.summary?.sections.length ||
+  !!m.summary?.points.length ||
+  !!m.pages?.some((p) => p.ocrText?.trim());
 
 function useMaterial() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -58,20 +67,22 @@ function useMaterial() {
 
 function MaterialError({ retry }: { retry: () => unknown }) {
   return (
-    <Screen>
-      <Header title="자료 조회" />
-      <Text>자료를 불러오지 못했어요. 삭제되었거나 연결을 확인해야 할 수 있어요.</Text>
-      <Btn
-        onPress={() => {
-          void retry();
-        }}
-      >
-        다시 시도
-      </Btn>
-      <Btn kind="outline" onPress={() => router.back()}>
-        뒤로
-      </Btn>
-    </Screen>
+    <Canvas>
+      <Screen>
+        <Header title="자료 조회" />
+        <Text>자료를 불러오지 못했어요. 삭제되었거나 연결을 확인해야 할 수 있어요.</Text>
+        <Btn
+          onPress={() => {
+            void retry();
+          }}
+        >
+          다시 시도
+        </Btn>
+        <Btn kind="outline" onPress={() => router.back()}>
+          뒤로
+        </Btn>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -121,7 +132,7 @@ function PageImages({ pages }: { pages: NonNullable<Material['pages']> }) {
   return (
     <View className="gap-3">
       {pages.map((p) => (
-        <View key={p.pageNo} className="overflow-hidden rounded-2xl bg-cream">
+        <View key={p.pageNo} className="overflow-hidden rounded-card bg-white">
           <ScrollView
             maximumZoomScale={4}
             minimumZoomScale={1}
@@ -173,7 +184,7 @@ function FileOptions({ m, open, onClose }: { m: Material; open: boolean; onClose
               onClose();
               router.push({ pathname: '/edit/[id]', params: { id: m._id } });
             }}
-            className="h-11 flex-row items-center gap-2 rounded-full border border-line px-4"
+            className="h-11 flex-row items-center gap-2 rounded-full bg-fill px-4"
           >
             <Pencil size={ICON.sm} color={C.ink} />
             <Text className="text-subhead text-ink">편집하기</Text>
@@ -183,7 +194,7 @@ function FileOptions({ m, open, onClose }: { m: Material; open: boolean; onClose
               onClose();
               router.push({ pathname: '/note-share', params: { id: m._id } });
             }}
-            className="h-11 flex-row items-center gap-2 rounded-full border border-line px-4"
+            className="h-11 flex-row items-center gap-2 rounded-full bg-fill px-4"
           >
             <Share2 size={ICON.sm} color={C.ink} />
             <Text className="text-subhead text-ink">공유하기</Text>
@@ -193,7 +204,7 @@ function FileOptions({ m, open, onClose }: { m: Material; open: boolean; onClose
               onClose();
               setStage('confirm');
             }}
-            className="h-11 flex-row items-center gap-2 rounded-full border border-line px-4"
+            className="h-11 flex-row items-center gap-2 rounded-full bg-fill px-4"
           >
             <Trash2 size={ICON.sm} color={C.danger} />
             <Text className="text-subhead text-danger">삭제하기</Text>
@@ -240,7 +251,7 @@ const More = ({ onPress }: { onPress: () => void }) => (
   <Pressable
     accessibilityLabel="파일 옵션"
     onPress={onPress}
-    className="h-9 w-9 items-center justify-center rounded-full border border-line"
+    className="h-11 w-11 items-center justify-center rounded-full bg-white"
   >
     <MoreHorizontal size={ICON.md} color={C.ink} />
   </Pressable>
@@ -254,11 +265,14 @@ export function HandDetailScreen() {
   const [tab, setTab] = useState<'정리된 노트' | '원본 이미지'>(t ?? '정리된 노트');
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
+  const buddy = useTuckOnScroll();
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
-    <View className="flex-1">
+    <Canvas>
       <Screen
+        onScroll={buddy.onScroll}
+        overlay={canAsk(m) && <TutorBuddy id={id} tucked={buddy.tucked} />}
         footer={
           <Two>
             <Btn
@@ -302,12 +316,12 @@ export function HandDetailScreen() {
         )}
       </Screen>
       <FileOptions m={m} open={opt} onClose={() => setOpt(false)} />
-    </View>
+    </Canvas>
   );
 }
 
 const Toolbar = () => (
-  <View className="flex-row items-center justify-center gap-6 rounded-xl border border-line py-2.5">
+  <View className="flex-row items-center justify-center gap-6 rounded-xl bg-white py-3">
     {[Bold, Heading1, List, ImageIcon, Link2].map((I, i) => (
       <I key={i} size={ICON.sm} color={C.ink} />
     ))}
@@ -343,99 +357,101 @@ export function EditScreen() {
   });
   if (isError) return <MaterialError retry={refetch} />;
   return (
-    <Screen
-      footer={
-        !editing && (
-          <>
-            <Toolbar />
-            <View className="mt-3">
-              <Two>
-                <Btn kind="outline" onPress={() => router.back()}>
-                  취소
-                </Btn>
-                <Btn
-                  disabled={!m || loaded !== id}
-                  loading={save.isPending}
-                  onPress={() => save.mutate()}
-                >
-                  저장
-                </Btn>
-              </Two>
-            </View>
-          </>
-        )
-      }
-    >
-      <Header
-        title="노트 편집"
-        large={false}
-        right={
-          <Pressable
-            disabled={!m || loaded !== id || save.isPending}
-            onPress={() => save.mutate()}
-            className={cx(
-              'rounded-full px-3 py-1',
-              editing ? 'bg-brand' : 'border border-brand/40',
-            )}
-          >
-            <Text
-              className={cx('text-footnote font-semibold', editing ? 'text-white' : 'text-brand')}
-            >
-              저장
-            </Text>
-          </Pressable>
+    <Canvas>
+      <Screen
+        footer={
+          !editing && (
+            <>
+              <Toolbar />
+              <View className="mt-3">
+                <Two>
+                  <Btn kind="outline" onPress={() => router.back()}>
+                    취소
+                  </Btn>
+                  <Btn
+                    disabled={!m || loaded !== id}
+                    loading={save.isPending}
+                    onPress={() => save.mutate()}
+                  >
+                    저장
+                  </Btn>
+                </Two>
+              </View>
+            </>
+          )
         }
-      />
-      <View className="-mt-2 mb-3 flex-row items-center gap-1">
-        <Text className="text-caption2 text-sub">필기 · 업로드 · 수정 중</Text>
-        {editing && <Badge tone="danger">● 편집 중</Badge>}
-      </View>
-      <View className="relative rounded-2xl border-2 border-brand/30 bg-cream p-4">
-        <View className="absolute top-3 right-3 h-6 w-6 items-center justify-center rounded-full bg-blue">
-          <Pencil size={ICON.xs} color="#fff" />
-        </View>
-        {sections.map((section, index) => (
-          <View key={index}>
-            <TextInput
-              accessibilityLabel={`섹션 ${index + 1} 제목`}
-              placeholder="섹션 제목"
-              placeholderTextColor={C.sub}
-              value={section.heading}
-              onChangeText={(heading) =>
-                setSections((all) => all.map((s, i) => (i === index ? { ...s, heading } : s)))
-              }
-              onFocus={() => setEditing(true)}
-              onBlur={() => setEditing(false)}
-            />
-            <TextInput
-              accessibilityLabel={index === 0 ? '노트 내용' : `섹션 ${index + 1} 본문`}
-              multiline
-              placeholder="내용을 입력하세요"
-              placeholderTextColor={C.sub}
-              value={section.body}
-              onChangeText={(body) =>
-                setSections((all) => all.map((s, i) => (i === index ? { ...s, body } : s)))
-              }
-              onFocus={() => setEditing(true)}
-              onBlur={() => setEditing(false)}
-              className="min-h-32 text-footnote leading-5 text-ink"
-              style={{ textAlignVertical: 'top' }}
-            />
-          </View>
-        ))}
-      </View>
-      <Pressable
-        onPress={() => setSections((s) => [...s, { heading: '', body: '' }])}
-        className="mt-3 self-start rounded-full border border-brand/40 px-3 py-1"
       >
-        <Text className="text-caption text-brand">+ 섹션 추가</Text>
-      </Pressable>
-      {editing && (
-        <View className="mt-4">
-          <Toolbar />
+        <Header
+          title="노트 편집"
+          large={false}
+          right={
+            <Pressable
+              disabled={!m || loaded !== id || save.isPending}
+              onPress={() => save.mutate()}
+              className={cx(
+                'rounded-full px-3 py-1',
+                editing ? 'bg-brand' : 'border border-brand/40',
+              )}
+            >
+              <Text
+                className={cx('text-footnote font-semibold', editing ? 'text-white' : 'text-brand')}
+              >
+                저장
+              </Text>
+            </Pressable>
+          }
+        />
+        <View className="-mt-2 mb-3 flex-row items-center gap-1">
+          <Text className="text-caption2 text-sub">필기 · 업로드 · 수정 중</Text>
+          {editing && <Badge tone="danger">● 편집 중</Badge>}
         </View>
-      )}
-    </Screen>
+        <View className="relative rounded-card border-2 border-brand/30 bg-white p-5">
+          <View className="absolute top-3 right-3 h-6 w-6 items-center justify-center rounded-full bg-blue">
+            <Pencil size={ICON.xs} color="#fff" />
+          </View>
+          {sections.map((section, index) => (
+            <View key={index}>
+              <TextInput
+                accessibilityLabel={`섹션 ${index + 1} 제목`}
+                placeholder="섹션 제목"
+                placeholderTextColor={C.sub}
+                value={section.heading}
+                onChangeText={(heading) =>
+                  setSections((all) => all.map((s, i) => (i === index ? { ...s, heading } : s)))
+                }
+                onFocus={() => setEditing(true)}
+                onBlur={() => setEditing(false)}
+              />
+              <TextInput
+                accessibilityLabel={index === 0 ? '노트 내용' : `섹션 ${index + 1} 본문`}
+                multiline
+                placeholder="내용을 입력하세요"
+                placeholderTextColor={C.sub}
+                value={section.body}
+                onChangeText={(body) =>
+                  setSections((all) => all.map((s, i) => (i === index ? { ...s, body } : s)))
+                }
+                onFocus={() => setEditing(true)}
+                onBlur={() => setEditing(false)}
+                className="min-h-32 text-footnote leading-5 text-ink"
+                style={{ textAlignVertical: 'top' }}
+              />
+            </View>
+          ))}
+        </View>
+        <Pressable
+          onPress={() => setSections((s) => [...s, { heading: '', body: '' }])}
+          className="mt-3 self-start rounded-full border border-brand/40 px-3 py-1"
+        >
+          <Text className="text-caption text-brand">+ 섹션 추가</Text>
+        </Pressable>
+        {editing && (
+          <View className="mt-4">
+            <Toolbar />
+          </View>
+        )}
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -444,11 +460,15 @@ export function RecDetailScreen() {
   const { id, m, isError, refetch } = useMaterial();
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
+  const buddy = useTuckOnScroll();
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
-    <View className="flex-1">
-      <Screen>
+    <Canvas>
+      <Screen
+        onScroll={buddy.onScroll}
+        overlay={canAsk(m) && <TutorBuddy id={id} tucked={buddy.tucked} />}
+      >
         <Header
           title={view === 'text' ? '원문 텍스트 보기' : m.title}
           sub={dateLabel(m, '녹음')}
@@ -469,7 +489,7 @@ export function RecDetailScreen() {
         />
       </Screen>
       <FileOptions m={m} open={opt} onClose={() => setOpt(false)} />
-    </View>
+    </Canvas>
   );
 }
 
@@ -479,6 +499,7 @@ export function DocDetailScreen() {
   const [tab, setTab] = useState<'요약' | '원본 문서'>(t ?? '요약');
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
+  const buddy = useTuckOnScroll();
   const download = useMutation({
     mutationFn: async () => {
       const { url, fileName } = await api.content.downloadUrl(id);
@@ -500,8 +521,10 @@ export function DocDetailScreen() {
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
-    <View className="flex-1">
+    <Canvas>
       <Screen
+        onScroll={buddy.onScroll}
+        overlay={canAsk(m) && <TutorBuddy id={id} tucked={buddy.tucked} />}
         footer={
           <Two>
             <Btn
@@ -545,37 +568,39 @@ export function DocDetailScreen() {
         )}
       </Screen>
       <FileOptions m={m} open={opt} onClose={() => setOpt(false)} />
-    </View>
+    </Canvas>
   );
 }
 
 export function DownloadedScreen() {
   const { name } = useLocalSearchParams<{ name?: string }>();
   return (
-    <Screen footer={<Btn onPress={() => router.back()}>확인</Btn>}>
-      <Success
-        title="다운로드가 완료됐어요!"
-        body={
-          name ? `${name} 파일이 다운로드 폴더에 저장됐어요` : '파일이 다운로드 폴더에 저장됐어요'
-        }
-        card={
-          <Card className="flex-row items-center gap-3 p-3">
-            <View className="h-10 w-10 items-center justify-center rounded-lg bg-mint">
-              <FileText size={ICON.sm} color={C.sub} />
-            </View>
-            <View>
-              <Text className="text-subhead font-semibold text-ink">
-                {name ?? '다운로드한 파일'}
-              </Text>
-              <View className="flex-row items-center gap-1.5">
-                <Folder size={ICON.xs} color={C.sub} />
-                <Text className="text-caption2 text-sub">다운로드 폴더에 저장됨</Text>
+    <Canvas>
+      <Screen footer={<Btn onPress={() => router.back()}>확인</Btn>}>
+        <Success
+          title="다운로드가 완료됐어요!"
+          body={
+            name ? `${name} 파일이 다운로드 폴더에 저장됐어요` : '파일이 다운로드 폴더에 저장됐어요'
+          }
+          card={
+            <Card className="flex-row items-center gap-3 p-3">
+              <View className="h-10 w-10 items-center justify-center rounded-lg bg-mint">
+                <FileText size={ICON.sm} color={C.sub} />
               </View>
-            </View>
-          </Card>
-        }
-      />
-    </Screen>
+              <View>
+                <Text className="text-subhead font-semibold text-ink">
+                  {name ?? '다운로드한 파일'}
+                </Text>
+                <View className="flex-row items-center gap-1.5">
+                  <Folder size={ICON.xs} color={C.sub} />
+                  <Text className="text-caption2 text-sub">다운로드 폴더에 저장됨</Text>
+                </View>
+              </View>
+            </Card>
+          }
+        />
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -640,92 +665,98 @@ export function ShareScreen() {
     })),
   ];
   return (
-    <Screen
-      footer={
-        <Btn
-          disabled={
-            !selectedIds.length || !to || !targets.some((t) => t.type === to.type && t.id === to.id)
-          }
-          loading={share.isPending}
-          onPress={() => share.mutate()}
-        >
-          공유하기
-        </Btn>
-      }
-    >
-      <Header title="공유하기" large={false} />
-      <Segment
-        items={Object.keys(TABS) as (keyof typeof TABS)[]}
-        value={tab}
-        onChange={(next) => {
-          setTab(next);
-          setSel([]);
-        }}
-      />
-      <View className="mt-3 gap-2">
-        {mats.isError && !mats.data && (
-          <View className="gap-2 py-3">
-            <Text className="text-footnote text-sub">자료 목록을 불러오지 못했어요</Text>
-            <Btn small onPress={() => void mats.refetch()}>
-              자료 목록 다시 시도
-            </Btn>
-          </View>
-        )}
-        {mats.isSuccess && list.length === 0 && (
-          <Text className="py-6 text-center text-footnote text-sub">
-            공유할 {tab} 자료가 없어요
-          </Text>
-        )}
-        {list.map((m) => {
-          const on = sel.includes(m._id);
-          return (
-            <Pressable
-              key={m._id}
-              onPress={() => setSel((p) => (on ? p.filter((x) => x !== m._id) : [...p, m._id]))}
-              className="flex-row items-center gap-3 rounded-xl bg-cream px-4 py-3.5"
-            >
-              <View
-                className={cx(
-                  'h-5 w-5 items-center justify-center rounded border',
-                  on ? 'border-brand bg-brand' : 'border-cream-2 bg-white',
-                )}
-              >
-                {on && <Check size={ICON.xs} color="#fff" />}
-              </View>
-              <Text className="text-subhead text-ink">{m.title}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
-      <Label>공유 대상</Label>
-      <Pressable
-        onPress={() => setPick(true)}
-        className="h-10 flex-row items-center self-start rounded-full border border-line px-4"
+    <Canvas>
+      <Screen
+        footer={
+          <Btn
+            disabled={
+              !selectedIds.length ||
+              !to ||
+              !targets.some((t) => t.type === to.type && t.id === to.id)
+            }
+            loading={share.isPending}
+            onPress={() => share.mutate()}
+          >
+            공유하기
+          </Btn>
+        }
       >
-        <View className="flex-row items-center gap-1.5">
-          <Users size={ICON.xs} color={C.brand} />
-          <Text className="text-footnote text-ink">{to?.name ?? '공유 대상을 선택해주세요'} ⌄</Text>
+        <Header title="공유하기" large={false} />
+        <Segment
+          items={Object.keys(TABS) as (keyof typeof TABS)[]}
+          value={tab}
+          onChange={(next) => {
+            setTab(next);
+            setSel([]);
+          }}
+        />
+        <View className="mt-3 gap-2">
+          {mats.isError && !mats.data && (
+            <View className="gap-2 py-3">
+              <Text className="text-footnote text-sub">자료 목록을 불러오지 못했어요</Text>
+              <Btn small onPress={() => void mats.refetch()}>
+                자료 목록 다시 시도
+              </Btn>
+            </View>
+          )}
+          {mats.isSuccess && list.length === 0 && (
+            <Text className="py-6 text-center text-footnote text-sub">
+              공유할 {tab} 자료가 없어요
+            </Text>
+          )}
+          {list.map((m) => {
+            const on = sel.includes(m._id);
+            return (
+              <Pressable
+                key={m._id}
+                onPress={() => setSel((p) => (on ? p.filter((x) => x !== m._id) : [...p, m._id]))}
+                className="flex-row items-center gap-3 rounded-xl bg-white px-4 py-4"
+              >
+                <View
+                  className={cx(
+                    'h-5 w-5 items-center justify-center rounded border',
+                    on ? 'border-brand bg-brand' : 'border-sub/30 bg-white',
+                  )}
+                >
+                  {on && <Check size={ICON.xs} color="#fff" />}
+                </View>
+                <Text className="text-subhead text-ink">{m.title}</Text>
+              </Pressable>
+            );
+          })}
         </View>
-      </Pressable>
-      <Sheet open={pick} onClose={() => setPick(false)} title="공유 대상">
-        <Group>
-          {targets.map((x) => (
-            <Row
-              key={x.type + x.id + x.name}
-              onPress={() => {
-                setTo(x);
-                setPick(false);
-              }}
-              right={
-                to?.id === x.id && to?.type === x.type && <Check size={ICON.sm} color={C.brand} />
-              }
-            >
-              {x.name}
-            </Row>
-          ))}
-        </Group>
-      </Sheet>
-    </Screen>
+        <Label>공유 대상</Label>
+        <Pressable
+          onPress={() => setPick(true)}
+          className="h-10 flex-row items-center self-start rounded-full bg-white px-4"
+        >
+          <View className="flex-row items-center gap-1.5">
+            <Users size={ICON.xs} color={C.brand} />
+            <Text className="text-footnote text-ink">
+              {to?.name ?? '공유 대상을 선택해주세요'} ⌄
+            </Text>
+          </View>
+        </Pressable>
+        <Sheet open={pick} onClose={() => setPick(false)} title="공유 대상">
+          <Group>
+            {targets.map((x) => (
+              <Row
+                key={x.type + x.id + x.name}
+                onPress={() => {
+                  setTo(x);
+                  setPick(false);
+                }}
+                right={
+                  to?.id === x.id && to?.type === x.type && <Check size={ICON.sm} color={C.brand} />
+                }
+              >
+                {x.name}
+              </Row>
+            ))}
+          </Group>
+        </Sheet>
+      </Screen>
+    </Canvas>
   );
 }
 
@@ -737,31 +768,35 @@ export function SharedScreen() {
     name,
   } = useLocalSearchParams<{ to?: string; n?: string; tab?: string; name?: string }>();
   return (
-    <Screen
-      footer={
-        <>
-          <Btn onPress={() => router.back()}>확인</Btn>
-        </>
-      }
-    >
-      <Success
-        title="공유가 완료됐어요!"
-        body={to ? `${to}에 ${tab} ${n}개를 공유했어요` : `${tab} ${n}개를 공유했어요`}
-        card={
-          <Card className="flex-row items-center gap-3 p-3">
-            <View className="h-10 w-10 items-center justify-center rounded-lg bg-mint">
-              <FileText size={ICON.sm} color={C.sub} />
-            </View>
-            <View>
-              <Text className="text-subhead font-semibold text-ink">{name ?? '공유한 자료'}</Text>
-              <View className="flex-row items-center gap-1.5">
-                <Users size={ICON.xs} color={C.sub} />
-                <Text className="text-caption2 text-sub">{to ? `${to}으로 전송됨` : '전송됨'}</Text>
-              </View>
-            </View>
-          </Card>
+    <Canvas>
+      <Screen
+        footer={
+          <>
+            <Btn onPress={() => router.back()}>확인</Btn>
+          </>
         }
-      />
-    </Screen>
+      >
+        <Success
+          title="공유가 완료됐어요!"
+          body={to ? `${to}에 ${tab} ${n}개를 공유했어요` : `${tab} ${n}개를 공유했어요`}
+          card={
+            <Card className="flex-row items-center gap-3 p-3">
+              <View className="h-10 w-10 items-center justify-center rounded-lg bg-mint">
+                <FileText size={ICON.sm} color={C.sub} />
+              </View>
+              <View>
+                <Text className="text-subhead font-semibold text-ink">{name ?? '공유한 자료'}</Text>
+                <View className="flex-row items-center gap-1.5">
+                  <Users size={ICON.xs} color={C.sub} />
+                  <Text className="text-caption2 text-sub">
+                    {to ? `${to}으로 전송됨` : '전송됨'}
+                  </Text>
+                </View>
+              </View>
+            </Card>
+          }
+        />
+      </Screen>
+    </Canvas>
   );
 }

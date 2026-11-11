@@ -27,8 +27,8 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
   - 가져올 종류(types) 중 들어온 순서대로 가져갑니다.
   - 미리 해 두는 작업(노트를 만들 때 넣는 퀴즈 미리 만들기 quiz_pregen)은 사용자가 기다리는
     작업과 따로 도는 반복이 가져갑니다(runner.run_lanes, #138). 미리 만들기를 처리하는 중에도
-    사용자 작업은 바로 시작하고, 학교 LLM 호출 차례는 사용자 작업이 먼저 가져갑니다
-    (SchoolLlm.background). 그래서 미리 만들기가 먼저 들어왔어도 사용자가 그 뒤로 밀리지 않음
+    사용자 작업은 바로 시작하고, LLM 호출 차례는 사용자 작업이 먼저 가져갑니다
+    (PacedLlm.background). 그래서 미리 만들기가 먼저 들어왔어도 사용자가 그 뒤로 밀리지 않음
   - 같은 노트의 미리 만들기가 아직 끝나지 않았을 때 사용자가 퀴즈를 요청하면, NestJS는 새 작업을
     넣지 않고(넣으면 같은 퀴즈를 두 번 만듦) 그 작업에 awaited=true를 씁니다(#138).
     - queued면 사용자 작업 반복도 가져갑니다(claim의 awaited_types). 다른 미리 만들기 뒤에서
@@ -51,6 +51,9 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
     작업에 남은 잠금 시간이 다시 시도를 막지 않게).
   - 진행률 · 완료 · 실패는 status='running'이고 lockedBy가 나일 때만 씁니다. 그 사이 취소됐거나
     다른 처리기가 가져갔으면 JobGoneError를 올려 처리를 멈춥니다.
+  - 처리하는 동안 runner가 몇 초마다 작업이 아직 내 것인지 읽어(holds) 취소를 알아채고, 처리 함수가
+    끝난 뒤 취소된 작업의 내 잠금을 풉니다(release, #263). NestJS의 '다시 시도'가 잠금이 끝나기를
+    기다리지 않게.
   - step은 공용 스키마에서 '없거나 문자열'이라, None을 쓰지 않고 필드를 지웁니다.
 """
 
@@ -193,6 +196,26 @@ class JobStore:
                 "$unset": {"step": ""},
             },
         )
+
+    def holds(self, job: Job) -> bool:
+        """작업이 아직 내 것인지(running이고 lockedBy가 나). 읽기만 함(runner가 취소를 봄, #263)."""
+        doc = self._col.find_one(
+            {"_id": job.id, "status": "running", "lockedBy": self._worker}, {"_id": 1}
+        )
+        return doc is not None
+
+    def release(self, job: Job) -> bool:
+        """취소된 작업의 내 잠금을 풉니다. 풀었으면 True(#263).
+
+        NestJS의 '다시 시도'는 잠금이 끝난 작업만 다시 넣으므로(처리 중 취소한 작업을 두 처리기가
+        함께 만들지 않게), 처리 함수가 끝난 뒤에 풀어 바로 다시 넣을 수 있게 합니다. 그사이 다시
+        넣었거나 다른 처리기가 가져갔으면 바꾸지 않습니다.
+        """
+        r = self._col.update_one(
+            {"_id": job.id, "status": "canceled", "lockedBy": self._worker},
+            {"$set": {"lockedBy": None, "lockedUntil": None, "updatedAt": self._now()}},
+        )
+        return r.modified_count > 0
 
     def touch(self, job: Job) -> None:
         """처리 중임을 알리고 잠금을 늘립니다(runner가 주기적으로 부름)."""

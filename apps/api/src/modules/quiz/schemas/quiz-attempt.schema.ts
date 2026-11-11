@@ -50,3 +50,5 @@ export class QuizAttempt {
 }
 
 export const QuizAttemptSchema = SchemaFactory.createForClass(QuizAttempt);
+// 퀴즈를 만들 때 처리기 입력에 넣는 내 끝낸 풀이(최근 것부터, QuizSetsService.generateInput)
+QuizAttemptSchema.index({ userId: 1, finishedAt: -1 });

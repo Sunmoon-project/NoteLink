@@ -214,8 +214,10 @@ export const mockApi: Api = {
       ok({ accessToken: 'mock-access', refreshToken: 'mock-refresh', user: db.user }, 600),
     emailLogin: () =>
       ok({ accessToken: 'mock-access', refreshToken: 'mock-refresh', user: db.user }, 600),
-    emailSignup: (email) =>
-      email === db.user.email
+    emailSendCode: () => ok(undefined),
+    emailVerifyCode: (email) => ok({ verificationToken: `proof:${email}`, expiresInSeconds: 600 }),
+    emailSignup: (proof) =>
+      proof === `proof:${db.user.email}`
         ? fail(ERROR_CODES.EMAIL_TAKEN, '이미 가입한 이메일이에요', 409)
         : ok(undefined, 700),
     agreeTerms: () => ok(undefined),
@@ -747,6 +749,24 @@ export const mockApi: Api = {
         })),
         700,
       ),
+    // 화면 테스트용: 바로 끝난 note_ask 작업(답은 질문을 되풀이)
+    ask: (materialId, body) => {
+      const job: AiJob = {
+        _id: uid('job'),
+        type: 'note_ask',
+        status: 'succeeded',
+        targetType: 'material',
+        targetId: materialId,
+        progress: 100,
+        attempts: 1,
+        result: { answer: `'${body.question}'에 대한 설명이에요.`, refs: ['요약'] },
+        error: null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      db.jobs.set(job._id, job);
+      return ok(job);
+    },
   },
   ai: {
     job: (id) => {

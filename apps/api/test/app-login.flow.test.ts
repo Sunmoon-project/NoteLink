@@ -15,7 +15,7 @@ import {
   MAIL_SENDER,
   type MailSender,
   MailUnavailableError,
-} from '../src/modules/auth/app-login/mail-sender.js';
+} from '../src/modules/mail/mail-sender.js';
 import { AuthCode } from '../src/modules/auth/schemas/auth-code.schema.js';
 import { LoginAttempt } from '../src/modules/auth/schemas/login-attempt.schema.js';
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';

@@ -2,7 +2,11 @@
 // 화면 테스트는 서버 없이 돈다. 서버 모드는 server-mode.test.ts가 따로 본다
 process.env.EXPO_PUBLIC_USE_LOCAL_DATA = 'true';
 // 화면 테스트용: 애니메이션 · 워클릿 네이티브 모듈 대신 목을 쓴다
-jest.mock('react-native-reanimated', () => require('react-native-reanimated/mock'));
+// 공식 mock에 없는 useReducedMotion은 '동작 줄이기 꺼짐'으로 둔다
+jest.mock('react-native-reanimated', () => ({
+  ...require('react-native-reanimated/mock'),
+  useReducedMotion: () => false,
+}));
 // 화면 테스트는 기기 저장소 대신 시드가 든 가짜 API를 쓴다 (앱 번들에는 들어가지 않는다)
 jest.mock('./src/lib/local/api', () => ({
   localApi: require('./src/__tests__/fixtures/api').mockApi,
@@ -30,3 +34,6 @@ jest.mock('expo-router', () => ({
   Redirect: () => null,
   Link: ({ children }) => children,
 }));
+
+// 아바타 선생님 3D(expo-gl · three · GLB)는 기기에서만 그린다. 화면 테스트는 자리만 둔다
+jest.mock('./src/features/tutor/avatar3d', () => ({ Avatar3D: () => null }));

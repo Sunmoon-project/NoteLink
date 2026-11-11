@@ -12,7 +12,7 @@ import { diffLabel, goalLabel, hm, hms, seoul, ymd, today as seoulToday } from '
 import { useNow } from '@/hooks';
 import { useSession } from '@/stores/session';
 import { toast } from '@/stores/toast';
-import { Btn, Card, Progress, Screen } from '@/components/ui';
+import { Btn, Canvas, Card, Progress, RollUp, Screen } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
 // p.48 #6 공부 종료 요약
@@ -41,130 +41,143 @@ export function SummaryScreen() {
   }, [points]);
   const home = () => router.dismissTo('/');
   return (
-    <Screen
-      footer={
-        <>
-          <Btn onPress={home}>홈으로</Btn>
-          <Pressable onPress={() => openFeature('/record', 'replace')} className="mt-2">
-            <Text className="text-center text-footnote text-brand">학습 기록 보기 ›</Text>
+    <Canvas>
+      <Screen
+        footer={
+          <>
+            <Btn onPress={home}>홈으로</Btn>
+            <Pressable onPress={() => openFeature('/record', 'replace')} className="mt-2">
+              <Text className="text-center text-footnote text-brand">학습 기록 보기 ›</Text>
+            </Pressable>
+          </>
+        }
+      >
+        <View className="items-end pt-3">
+          <Pressable accessibilityLabel="닫기" onPress={home} hitSlop={10}>
+            <X size={ICON.md} color={C.sub} />
           </Pressable>
-        </>
-      }
-    >
-      <View className="items-end pt-3">
-        <Pressable accessibilityLabel="닫기" onPress={home} hitSlop={10}>
-          <X size={ICON.md} color={C.sub} />
-        </Pressable>
-      </View>
-      <View className="items-center">
-        <PartyPopper size={ICON.xl} color={C.brand} />
-        <Text className="text-title3 font-bold text-ink">수고했어요, {me.data?.nickname} 님</Text>
-        <Text className="text-caption text-sub">
-          오늘 순공시간{sec ? ` · 이번 세션 ${hm(Number(sec))}` : ''}
-        </Text>
-        <Text className="tabular-nums text-large font-bold text-brand">{hms(total)}</Text>
-      </View>
-      {today.isError && !today.data && (
-        <View className="mt-4 gap-2">
-          <Text className="text-footnote text-sub">오늘 기록을 불러오지 못했어요</Text>
-          <Btn small onPress={() => void today.refetch()}>
-            오늘 기록 다시 시도
-          </Btn>
         </View>
-      )}
-      <Card className="mt-4 p-4">
-        <View className="flex-row justify-between">
-          <Text className="text-footnote font-semibold text-ink">항목별 목표</Text>
-          <Text className="text-footnote text-brand">
-            {items.length}개 중 {done}개 달성
+        <View className="items-center">
+          <View className="mb-3 h-16 w-16 items-center justify-center rounded-full bg-mint">
+            <PartyPopper size={ICON.xl} color={C.brand} />
+          </View>
+          <Text className="text-title3 font-bold text-ink">수고했어요, {me.data?.nickname} 님</Text>
+          <Text className="text-caption text-sub">
+            오늘 순공시간{sec ? ` · 이번 세션 ${hm(Number(sec))}` : ''}
           </Text>
-        </View>
-        {items.map((i) => (
-          <View key={i._id} className="mt-3">
-            <View className="flex-row justify-between">
-              <Text className="text-footnote text-ink">
-                {i.title} · {i.subjectName}
-              </Text>
-              <Text className="text-footnote text-ink">
-                <Text className="font-bold">{Math.floor(i.accumulatedSec / 60)}분</Text>
-                <Text className="text-sub">
-                  {' '}
-                  / {goalLabel(i.goalMin)}
-                  {i.goalMin && i.accumulatedSec >= i.goalMin * 60 ? ' ✓' : ''}
-                </Text>
-              </Text>
-            </View>
-            <Progress
-              value={i.goalMin ? (i.accumulatedSec / (i.goalMin * 60)) * 100 : 0}
-              className="mt-1.5"
+          <View className="mt-2">
+            <RollUp
+              value={hms(total)}
+              from="00:00:00"
+              className="text-large font-bold text-brand"
             />
           </View>
-        ))}
-      </Card>
-      {!!goalMin && pct !== null && (
-        <>
-          <View className="mt-4 flex-row justify-between">
-            <Text className="text-subhead font-semibold text-ink">
-              이번주 목표 {goalMin / 60}시간
-            </Text>
-            <Text className="text-subhead font-semibold text-brand">{pct}%</Text>
-          </View>
-          <Progress value={pct} className="mt-1.5" />
-        </>
-      )}
-      {weekly.data ? (
-        <Text className="mt-1 text-caption text-sub">
-          {hm(weekly.data.totalSec)} · {diffLabel(weekly.data.diffFromLastWeekSec)}
-        </Text>
-      ) : (
-        weekly.isError && (
-          <View className="mt-2 gap-2">
-            <Text className="text-caption text-sub">이번주 기록을 불러오지 못했어요</Text>
-            <Btn small onPress={() => void weekly.refetch()}>
-              이번주 기록 다시 시도
+        </View>
+        {today.isError && !today.data && (
+          <View className="mt-4 gap-2">
+            <Text className="text-footnote text-sub">오늘 기록을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void today.refetch()}>
+              오늘 기록 다시 시도
             </Btn>
           </View>
-        )
-      )}
-      <Card tone="white" className="mt-4 p-4">
-        <Text className="text-subhead font-semibold text-ink">오늘 공부를 노트로 남겨둘까요?</Text>
-        <Text className="text-caption text-sub">
-          올린 필기·녹음은 오늘 공부한 시간과 함께 기록돼요
-        </Text>
-        <View className="mt-3 flex-row gap-2">
-          <Card
-            tone="mint"
-            className="flex-1 items-center py-3"
-            onPress={() =>
-              openFeature(
-                { pathname: '/(tabs)/note', params: { upload: 'hand' } },
-                'navigate',
-                '/capture/camera',
-              )
-            }
-          >
-            <PenLine size={ICON.md} color={C.brand} />
-            <Text className="text-footnote font-semibold text-ink">필기 사진</Text>
-            <Text className="text-caption2 text-sub">촬영 · 갤러리</Text>
-          </Card>
-          <Card
-            tone="mint"
-            className="flex-1 items-center py-3"
-            onPress={() =>
-              openFeature(
-                { pathname: '/(tabs)/note', params: { upload: 'rec' } },
-                'navigate',
-                '/capture/rec-upload',
-              )
-            }
-          >
-            <Mic size={ICON.md} color={C.brand} />
-            <Text className="text-footnote font-semibold text-ink">녹음</Text>
-            <Text className="text-caption2 text-sub">파일 · 실시간</Text>
-          </Card>
+        )}
+        {/* 눌러서 하는 일이 없어 카드가 아니라 구획으로 (디자인 점검: 카드는 누르는 단위만) */}
+        <View className="mt-10 px-1">
+          <View className="flex-row justify-between">
+            <Text className="text-subhead font-semibold text-ink">항목별 목표</Text>
+            <Text className="text-footnote text-brand">
+              {items.length}개 중 {done}개 달성
+            </Text>
+          </View>
+          {items.map((i) => (
+            <View key={i._id} className="mt-4">
+              <View className="flex-row justify-between">
+                <Text className="text-footnote text-ink">
+                  {i.title} · {i.subjectName}
+                </Text>
+                <Text className="text-footnote text-ink">
+                  <Text className="font-bold">{Math.floor(i.accumulatedSec / 60)}분</Text>
+                  <Text className="text-sub">
+                    {' '}
+                    / {goalLabel(i.goalMin)}
+                    {i.goalMin && i.accumulatedSec >= i.goalMin * 60 ? ' ✓' : ''}
+                  </Text>
+                </Text>
+              </View>
+              <Progress
+                value={i.goalMin ? (i.accumulatedSec / (i.goalMin * 60)) * 100 : 0}
+                className="mt-1.5"
+              />
+            </View>
+          ))}
         </View>
-      </Card>
-    </Screen>
+        {!!goalMin && pct !== null && (
+          <>
+            <View className="mt-8 flex-row justify-between px-1">
+              <Text className="text-subhead font-semibold text-ink">
+                이번주 목표 {goalMin / 60}시간
+              </Text>
+              <Text className="text-subhead font-semibold text-brand">{pct}%</Text>
+            </View>
+            <Progress value={pct} className="mt-1.5" />
+          </>
+        )}
+        {weekly.data ? (
+          <Text className="mt-2 px-1 text-caption text-sub">
+            {hm(weekly.data.totalSec)} · {diffLabel(weekly.data.diffFromLastWeekSec)}
+          </Text>
+        ) : (
+          weekly.isError && (
+            <View className="mt-2 gap-2">
+              <Text className="text-caption text-sub">이번주 기록을 불러오지 못했어요</Text>
+              <Btn small onPress={() => void weekly.refetch()}>
+                이번주 기록 다시 시도
+              </Btn>
+            </View>
+          )
+        )}
+        <Card className="mt-8 p-6">
+          <Text className="text-subhead font-semibold text-ink">
+            오늘 공부를 노트로 남겨둘까요?
+          </Text>
+          <Text className="text-caption text-sub">
+            올린 필기·녹음은 오늘 공부한 시간과 함께 기록돼요
+          </Text>
+          <View className="mt-4 flex-row gap-3">
+            <Card
+              tone="mint"
+              className="flex-1 items-center gap-1 py-4"
+              onPress={() =>
+                openFeature(
+                  { pathname: '/(tabs)/note', params: { upload: 'hand' } },
+                  'navigate',
+                  '/capture/camera',
+                )
+              }
+            >
+              <PenLine size={ICON.md} color={C.brand} />
+              <Text className="text-footnote font-semibold text-ink">필기 사진</Text>
+              <Text className="text-caption2 text-sub">촬영 · 갤러리</Text>
+            </Card>
+            <Card
+              tone="mint"
+              className="flex-1 items-center gap-1 py-4"
+              onPress={() =>
+                openFeature(
+                  { pathname: '/(tabs)/note', params: { upload: 'rec' } },
+                  'navigate',
+                  '/capture/rec-upload',
+                )
+              }
+            >
+              <Mic size={ICON.md} color={C.brand} />
+              <Text className="text-footnote font-semibold text-ink">녹음</Text>
+              <Text className="text-caption2 text-sub">파일 · 실시간</Text>
+            </Card>
+          </View>
+        </Card>
+      </Screen>
+    </Canvas>
   );
 }
 

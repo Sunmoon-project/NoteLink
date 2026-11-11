@@ -19,7 +19,7 @@ import { EmailProofService } from '../src/modules/auth/app-login/email-proof.ser
 import {
   type MailSender,
   MailUnavailableError,
-} from '../src/modules/auth/app-login/mail-sender.js';
+} from '../src/modules/mail/mail-sender.js';
 import { createFakeAuthCodes } from './support/fake-auth-codes.js';
 
 const JWT_CONFIG = {

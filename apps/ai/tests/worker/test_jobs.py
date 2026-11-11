@@ -256,6 +256,42 @@ def test_worker_that_lost_its_lock_cannot_write(col: Any, clock: Clock) -> None:
     assert col.find_one({"_id": "j1"})["lockedBy"] == "w2"
 
 
+def test_holds_is_true_only_while_the_job_is_running_with_my_lock(col: Any, clock: Clock) -> None:
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    assert s.holds(job)
+    assert not store(col, clock, "w2").holds(job)  # 다른 처리기
+    col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})  # 앱에서 취소
+    assert not s.holds(job)
+
+
+def test_release_unlocks_only_my_canceled_job(col: Any, clock: Clock) -> None:
+    # 처리 함수가 끝난 뒤 잠금을 풀어 NestJS '다시 시도'가 잠금이 끝나기를 기다리지 않게(#263)
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    assert not s.release(job)  # 처리 중(취소 안 됨)이면 그대로
+    assert col.find_one({"_id": "j1"})["lockedBy"] == "w1"
+    col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})
+    assert not store(col, clock, "w2").release(job)  # 내 잠금이 아니면 그대로
+    assert s.release(job)
+    doc = col.find_one({"_id": "j1"})
+    assert (doc["status"], doc["lockedBy"], doc["lockedUntil"]) == ("canceled", None, None)
+
+
+def test_release_leaves_a_job_put_back_by_nestjs(col: Any, clock: Clock) -> None:
+    add(col, "j1")
+    s = store(col, clock)
+    job = s.claim(["quiz_generate"])
+    assert job is not None
+    col.update_one({"_id": "j1"}, {"$set": {"status": "queued", "lockedUntil": None}})
+    assert not s.release(job)
+    assert col.find_one({"_id": "j1"})["status"] == "queued"
+
+
 # ---------- 실패 · 다시 시도 ----------
 
 
