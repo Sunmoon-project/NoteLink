@@ -847,6 +847,7 @@ export function QuizSolveScreen() {
         <Progress value={((i + (right === null ? 0 : 1)) / qs.length) * 100} className="mt-5" />
         <Text className="pt-4 text-center text-caption text-sub">
           복습 퀴즈 {i + 1} / {qs.length}
+          {q.difficulty ? ` · 난이도 ${q.difficulty}` : ''}
         </Text>
         <View className="mt-4">
           <Tutor size={pick === null ? 76 : 70} />

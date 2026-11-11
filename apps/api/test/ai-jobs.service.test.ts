@@ -10,6 +10,7 @@ import {
 } from '../src/ai-jobs/ai-jobs.service.js';
 import { AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
 import { createFakeJobs, LATER, PAST } from './support/fake-ai-jobs.js';
+import { setDbClockOffset } from './support/fake-collection.js';
 
 const ME = new Types.ObjectId().toString();
 const OTHER = new Types.ObjectId().toString();
@@ -510,6 +511,29 @@ describe('한도 확인 중(held) 작업 (Codex #244 · #249)', () => {
       expect(row(b._id)).not.toHaveProperty('holdId');
       expect(await add(ask)).toMatchObject({ status: 'queued' });
     } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('API 서버 시계가 DB보다 빨라도, 세기와 열기가 같은 DB 시계로 판단해 한도를 넘지 않는다', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    setDbClockOffset(-1000); // DB가 1초 늦다
+    try {
+      const { service, add, rows, model } = setup();
+      const count = model.countDocuments.bind(model);
+      // A가 넣은 뒤 세는 동안 API 시계로 60.5초(DB로는 59.5초 — 아직 안 지남)가 지나고 B · C가 온다
+      vi.spyOn(model, 'countDocuments')
+        .mockImplementationOnce(count as never)
+        .mockImplementationOnce((async (f: never) => {
+          const n = await count(f);
+          vi.setSystemTime(Date.now() + 60_500);
+          await add(ask);
+          await expect(add(ask)).rejects.toMatchObject({ status: 429 });
+          return n;
+        }) as never);
+      await service.enqueue({ ...ask, userId: ME, input: {} });
+      expect(queued(rows)).toBe(2);
+    } finally {
+      setDbClockOffset(0);
       vi.useRealTimers();
     }
   });

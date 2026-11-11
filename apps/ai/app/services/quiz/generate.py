@@ -117,6 +117,7 @@ from app.clients.llm import (
 from app.core.config import settings
 from app.services.quiz import combo, concepts, quality, similar
 from app.services.quiz.checks import (
+    SAME_ANSWER,
     Seen,
     Target,
     code_check,
@@ -218,6 +219,9 @@ STABLE = Mode("stable", PATIENT, 3, True, similar.STABLE_TYPES)
 MAX_TRIES = max(FAST.tries, STABLE.tries)
 RECHECK = "Recheck"  # 생성 모델 2차 풀기 호출 이름(검사 모델 풀기 'Check'와 구분)
 CLASH = "동시에 만든 문제와 겹침"  # 다른 자리가 그사이 받은 문제와 겹침: 쪽을 닫지 않음
+# 그사이 다른 자리가 같은 정답을 받음: 쪽을 닫지 않음(DRY_REASONS의 SAME_ANSWER와 따로). 분류
+# 초안이면 분류 겹침으로 셈(Codex 리뷰 #293)
+CLASH_SAME = "동시에 만든 문제와 정답이 겹침"
 FULL = "이미 다 모음"
 TIMEOUT = "시간 상한"
 BAD_SHAPE = "문제 모양이 맞지 않음"  # 서버 모양 검사(fromWorkerQuestion)에 걸림
@@ -240,8 +244,19 @@ _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 DRY_REASONS = {
     "이미 있는 문제와 거의 같음",
     "앞 문제를 거꾸로 물음(겹침)",
-    "세트 안에서 정답이 겹침",
+    SAME_ANSWER,
 }
+# 분류 유형: 정답이 묶음 이름(편모충류 · 포자충류 · 조충류)이라 노트마다 몇 개 없어 세트 안에서 곧
+# 바닥남. 이미 쓴 정답 목록을 주어도 같은 묶음 이름을 계속 냄(11/10 학교 LLM 기생충 원충류: 정답
+# 겹침으로 떨어진 초안 10개 중 8개가 묶음 이름, 4/5로 실패, #282). 한 쪽에서 분류 초안이
+# GROUP_CLASH_LIMIT번 정답 겹침으로 떨어지면 그 쪽의 남은 자리는 분류 유형을 쓰지 않음(묶음
+# 이름은 쪽마다 다름: 원충류 쪽이 바닥나도 연충류 쪽은 그대로, /code-review #282)
+GROUP_TYPE = "분류"
+GROUP_CLASH_LIMIT = 2
+# 분류 초안의 정답 겹침: 묶음 이름이 바닥났을 뿐 그 쪽의 용어는 남아 있으므로 쪽을 닫지 않음
+# (DRY_REASONS에 넣지 않음). 닫으면 한도에 닿기 전에 쪽이 닫혀 정의 · 특징도 못 만듦
+# (/code-review #282)
+GROUP_SAME = "분류 이름이 세트 안에서 겹침"
 
 # 영어 기능어: 영어 문장 과목(토익)인지 용어만 영어인 과목인지 가름
 FUNC = {
@@ -333,6 +348,7 @@ class Made:
     tries: int = 0
     rejected: int = 0  # down 중 서버가 요청을 거절한 생성 호출(LlmRejectedError, #262)
     answered: bool = False  # 생성 호출이 한 번이라도 답을 받음(학교 LLM이 답함, #247)
+    group_clash: int = 0  # 분류 유형 초안이 세트 안 정답 겹침으로 떨어진 수(#282)
 
 
 # ---------------------------------------------------------------- input
@@ -700,6 +716,19 @@ def _listed(m: Made) -> bool:
     return not is_combo(m.question["options"]) and m.type != "부정설명"
 
 
+def _group_clash(ty: str, why: list[str], out: Made) -> list[str]:
+    """분류 초안의 정답 겹침을 out.group_clash에 세고, 쪽을 닫지 않는 이유(GROUP_SAME)로 바꿈(#282).
+
+    만든 유형(ty)으로 봄: 제시문에 ____가 있어 결과 유형이 빈칸으로 적혀도 분류로 셈. 만들 때
+    (code_check)와 받을 때(accept) 겹침을 이 한 곳에서 셈(/code-review #293).
+    """
+    same = (SAME_ANSWER, CLASH_SAME)
+    if ty != GROUP_TYPE or not any(w in same for w in why):
+        return why
+    out.group_clash += 1
+    return [GROUP_SAME if w in same else w for w in why]
+
+
 def _take(seen: list[Seen], used: list[str]) -> Accept:
     """차례로 만들 때: 겹침은 code_check가 이미 봤으니 seen · used에 더하기만."""
 
@@ -769,6 +798,8 @@ def gen_one(
         used_now = list(used)
         t = Target("new", used_answers=used_now)
         hint = _hint(info, used_now)
+        if ty == GROUP_TYPE and used_now:  # 정답은 용어가 아니라 그 용어의 분류(#282)
+            hint += "\n분류 문제: 정답(분류 이름)이 이미 정답으로 쓴 것이 되는 용어는 고르지 않는다"
         out.tries += 1
         concept: object
         if ty == "조합":
@@ -819,6 +850,7 @@ def gen_one(
             q = r.get("question")
             concept = q.get("concept") if isinstance(q, dict) else None
         why, k = code_check(d, t, text, ty, list(seen))
+        why = _group_clash(ty, why, out)
         if concept not in names:  # 개념 목록이 길면 모델이 이 필드를 빠뜨리기도 함
             why.append("개념 이름 없음")
         if (
@@ -864,6 +896,7 @@ def gen_one(
                 why = accept(out)
                 if not why:
                     return out
+                why = _group_clash(ty, why, out)  # 그사이 다른 자리가 같은 정답을 받음(Codex #293)
                 out.question = out.concept = out.type = None
                 out.why = why
                 if FULL in why:
@@ -1065,6 +1098,8 @@ def _make_all(
     # 닫음. 그 전에 시작해 아직 돌던 자리의 초안으로는 닫지 않음, /code-review #247)
     reopened: dict[int, int] = {}
     rounds = 0  # 끝난 판 수(자리가 시작할 때 보면 그 자리의 판 번호 - 1)
+    # 쪽마다 분류 초안이 정답 겹침으로 떨어진 수(GROUP_CLASH_LIMIT, #282)
+    group_clash: Counter[int] = Counter()
     lock = threading.Lock()
     done = threading.Event()  # n개를 다 모았거나 돌려줌: 남은 자리는 다음 단계에서 멈춤
     relaxed = False  # 마지막 단계: 이미 물은 개념도 다른 각도로(#247)
@@ -1127,13 +1162,14 @@ def _make_all(
         with lock:
             if done.is_set() or len(taken) >= n:
                 return [FULL]
-            if (
-                # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
-                asked[r.concept] >= per_concept(again_ok)
-                or (not combo_q and any(same_item(d["answer"], u) for u in used))
-                or too_close(d, seen)
-                or reversed_of(d, seen)
-            ):
+            # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
+            if asked[r.concept] >= per_concept(again_ok):
+                return [CLASH]
+            if not combo_q and any(same_item(d["answer"], u) for u in used):
+                # 분류 초안이면 gen_one이 분류 겹침으로 셈: 동시에 만들면 묶음 이름은 대개 여기서
+                # 겹침(Codex 리뷰 #293). 개념이 먼저 겹친 초안은 세지 않음(/code-review #293)
+                return [CLASH_SAME]
+            if too_close(d, seen) or reversed_of(d, seen):
                 return [CLASH]
             asked[r.concept] += 1
             seen.append(seen_draft(d))
@@ -1193,6 +1229,8 @@ def _make_all(
                         drained.add(page)
                     continue
                 types = page_types(pages[page], korean, cur.extra)
+                if group_clash[page] >= GROUP_CLASH_LIMIT and GROUP_TYPE in types:  # #282
+                    types = [x for x in types if x != GROUP_TYPE]
                 # 쪽마다 돌리면 한 쪽에 한 자리인 노트는 모든 자리가 정의로 시작해 새 유형이
                 # 세 번째 시도에서야 나옴. 빠른 모드는 지금처럼 쪽마다
                 k = (turns if cur.extra else visits[page]) % len(types)
@@ -1211,6 +1249,9 @@ def _make_all(
             )  # fmt: skip
             down, tries, rejected = down + r.down, tries + r.tries, rejected + r.rejected
             replied = replied or r.answered
+            if r.group_clash:
+                with lock:
+                    group_clash[page] += r.group_clash
             last = (page, r)
             if r.question:  # accept가 세트에 넣음
                 break

@@ -201,6 +201,9 @@ export const Recording = z.object({
 });
 
 export const QuestionType = z.enum(['multiple_choice', 'short_answer', 'ox']);
+// 문제 난이도(#268). 처리기가 문제 유형으로 정한 처음 값(정의 · 빈칸 하, 특징 · 부정설명 중, 조합 상)이고
+// 사용자의 정답률이 쌓이면 고친다. 난이도를 붙이기 전에 만든 문제 · 직접 만든 문제는 없다(null)
+export const QuestionDifficulty = z.enum(['하', '중', '상']);
 export const Question = z.object({
   _id: id,
   order: z.number(),
@@ -210,6 +213,7 @@ export const Question = z.object({
   answer: z.string(),
   explanation: z.string().nullable(),
   conceptTags: z.array(z.string()),
+  difficulty: QuestionDifficulty.nullable().optional(),
 });
 
 export const QuizSet = z.object({
@@ -596,6 +600,7 @@ export type Material = z.infer<typeof Material>;
 export type Recording = z.infer<typeof Recording>;
 export type Slide = z.infer<typeof Slide>;
 export type Question = z.infer<typeof Question>;
+export type QuestionDifficulty = z.infer<typeof QuestionDifficulty>;
 export type NoteAskTurn = z.infer<typeof NoteAskTurn>;
 export type NoteAskBody = z.input<typeof NoteAskBody>;
 export type NoteAskResult = z.infer<typeof NoteAskResult>;
