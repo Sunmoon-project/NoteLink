@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
-import { scanPages } from '../features/content/capture';
+import { ScanCheckScreen, scanPages } from '../features/content/capture';
+import { scanTitle } from '../lib/scan-title';
 import { ConvertScreen } from '../features/content/convert';
 import { useMockFlags } from './fixtures/flags';
 import { socket } from '../lib/socket';
@@ -94,5 +95,47 @@ describe('서버 없이 저장한 자료', () => {
       pathname: '/(tabs)/note/rec/[id]',
       params: { id: 'm1' },
     });
+  });
+});
+
+describe('스캔 제목', () => {
+  const scan = { uri: 'file:///scan_1794403254407.jpg', name: 'scan_1794403254407.jpg', size: 100 };
+  const created = () => {
+    const spy = jest.spyOn(api.content, 'createMaterial').mockResolvedValue({
+      material: { _id: 'm1' },
+      job: { _id: 'j1', status: 'queued', step: AI_WAITING_STEP, progress: 0 },
+    } as never);
+    jest.spyOn(api.ai, 'job').mockResolvedValue({
+      _id: 'j1',
+      status: 'queued',
+      step: AI_WAITING_STEP,
+      progress: 0,
+    } as never);
+    return spy;
+  };
+
+  it('서울 날짜로 "11월 12일 스캔"을 만든다', () => {
+    expect(scanTitle(Date.parse('2026-11-11T15:00:00Z'))).toBe('11월 12일 스캔');
+  });
+
+  it('제목을 정하지 않은 스캔은 기계식 파일 이름 대신 날짜 제목으로 올린다', async () => {
+    const spy = created();
+    useDraft.getState().reset();
+    useDraft.getState().set({ folderId: 'fo1', kind: 'document', source: 'scan', files: [scan] });
+    await renderScreen(<ConvertScreen />);
+    await waitFor(() => expect(spy).toHaveBeenCalled(), { timeout: 5000 });
+    expect(spy.mock.calls.at(-1)![0]).toMatchObject({ title: scanTitle() });
+  });
+
+  it('스캔 확인에서 고친 제목으로 올린다', async () => {
+    useDraft.getState().reset();
+    useDraft.getState().set({ folderId: 'fo1', kind: 'document', source: 'scan', files: [scan] });
+    await renderScreen(<ScanCheckScreen />);
+    await fireEvent.changeText(screen.getByPlaceholderText(scanTitle()), '광합성 프린트');
+    expect(useDraft.getState().title).toBe('광합성 프린트');
+    const spy = created();
+    await renderScreen(<ConvertScreen />);
+    await waitFor(() => expect(spy).toHaveBeenCalled(), { timeout: 5000 });
+    expect(spy.mock.calls.at(-1)![0]).toMatchObject({ title: '광합성 프린트' });
   });
 });
