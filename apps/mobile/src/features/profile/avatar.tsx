@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Image, Pressable, View } from 'react-native';
+import { Image, View } from 'react-native';
 import { Text } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -11,12 +11,10 @@ import { uploadToBlob, type LocalFile } from '@/lib/upload';
 import { socket } from '@/lib/socket';
 import { useSocket } from '@/hooks';
 import { toast } from '@/stores/toast';
-import { AV_STYLES } from '@/lib/avatar-styles';
 import { useNet } from '@/stores/net';
 import {
   Canvas,
   Avatar,
-  Badge,
   Btn,
   Card,
   Group,
@@ -26,9 +24,7 @@ import {
   Ring,
   Row,
   Screen,
-  Segment,
   Sheet,
-  cx,
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
 import { aiWaiting } from '@/lib/ai';
@@ -298,120 +294,6 @@ export function PhotoGenScreen() {
             <Text className="text-caption text-brand">● 프로필 정보 설정 중 · {pct}%</Text>
           </View>
           <Text className="mt-16 text-caption text-sub">완료되면 자동으로 이동해요</Text>
-        </View>
-      </Screen>
-    </Canvas>
-  );
-}
-
-/** p.83 #26 아바타 스타일 선택 */
-export function AvatarStyleScreen() {
-  const [pick, setPick] = useState('3d');
-  return (
-    <Canvas>
-      <Screen
-        footer={
-          <Btn
-            kind="cream"
-            onPress={() =>
-              router.push({ pathname: '/(tabs)/profile/avatar-custom', params: { style: pick } })
-            }
-          >
-            다음
-          </Btn>
-        }
-      >
-        <Header
-          title="아바타 스타일 선택"
-          large={false}
-          right={<Badge tone="gray">원본 사진</Badge>}
-        />
-        <View className="flex-row items-center justify-between">
-          <Text className="text-footnote font-semibold text-ink">스타일 비교</Text>
-          <Badge>3가지 미리보기</Badge>
-        </View>
-        <View className="mt-2 gap-3">
-          {AV_STYLES.map((s) => (
-            <Pressable
-              key={s.id}
-              onPress={() => setPick(s.id)}
-              className={cx(
-                'overflow-hidden rounded-2xl border-2',
-                pick === s.id ? 'border-brand' : 'border-transparent bg-white',
-              )}
-            >
-              <View className="h-28 items-center justify-center" style={{ backgroundColor: s.bg }}>
-                <Text className="text-display-lg">{s.face}</Text>
-              </View>
-              <View className="px-3 py-2">
-                <Text className="text-footnote font-semibold text-ink">{s.name}</Text>
-                <Text className="text-caption2 text-sub">{s.sub}</Text>
-              </View>
-            </Pressable>
-          ))}
-        </View>
-      </Screen>
-    </Canvas>
-  );
-}
-
-const COLORS = ['#d9363e', '#5f6b7a', '#e2b33c', '#3b6e5b', '#2f4f86'] as const;
-
-/** p.83 #27 아바타 캐릭터 색상 선택 */
-export function AvatarCustomScreen() {
-  const qc = useQueryClient();
-  const { style = '3d' } = useLocalSearchParams<{ style?: string }>();
-  const selectedStyle = AV_STYLES.find((s) => s.id === style) ?? AV_STYLES[1]!;
-  const [g, setG] = useState<'남자' | '여자'>('여자');
-  const [c, setC] = useState<string>(COLORS[3]);
-  const save = useMutation({
-    mutationFn: () =>
-      api.me.saveAvatar({
-        style: selectedStyle.id,
-        gender: g === '남자' ? 'male' : 'female',
-        color: c,
-      }),
-    onSuccess: () => {
-      router.dismissTo('/(tabs)/profile');
-      qc.invalidateQueries({ queryKey: ['me'] });
-      toast('아바타를 저장했어요');
-    },
-    onError: () => toast('아바타를 저장하지 못했어요. 다시 시도해 주세요'),
-  });
-  return (
-    <Canvas>
-      <Screen
-        footer={
-          <Btn kind="cream" loading={save.isPending} onPress={() => save.mutate()}>
-            아바타 선택하기
-          </Btn>
-        }
-      >
-        <Header
-          title="아바타 커스터마이징"
-          large={false}
-          right={<Badge tone="gray">원본 사진</Badge>}
-        />
-        <Segment items={['남자', '여자'] as const} value={g} onChange={setG} />
-        <View
-          className="mt-4 aspect-square items-center justify-center rounded-card bg-white"
-          style={{ backgroundColor: `${c}22` }}
-        >
-          <Text className="text-timer-xl">
-            {g === '여자' ? selectedStyle.face : selectedStyle.maleFace}
-          </Text>
-        </View>
-        <Text className="mt-2 text-center text-caption text-sub">{selectedStyle.name}</Text>
-        <View className="mt-4 flex-row gap-2 rounded-card bg-white p-2">
-          {COLORS.map((x) => (
-            <Pressable
-              key={x}
-              accessibilityLabel={`색상 ${x}`}
-              onPress={() => setC(x)}
-              className={cx('h-14 flex-1 rounded-xl', c === x && 'border-4 border-white')}
-              style={{ backgroundColor: x }}
-            />
-          ))}
         </View>
       </Screen>
     </Canvas>

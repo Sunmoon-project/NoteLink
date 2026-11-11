@@ -1,8 +1,8 @@
 import { useFeatureNavigation } from '@/lib/feature-navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Pressable, ScrollView, View } from 'react-native';
 import { Text } from '@/components/text';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CalendarDays,
@@ -20,6 +20,8 @@ import { env } from '@/lib/env';
 import { clearAccountState } from '@/lib/account';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
+import { INTERESTS } from '../auth/auth';
+import { LoadError } from '../progress/load-error';
 import {
   Alert,
   Avatar,
@@ -27,6 +29,7 @@ import {
   Btn,
   Canvas,
   Card,
+  Chip,
   Group,
   Header,
   Input,
@@ -43,6 +46,7 @@ import {
   Empty,
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
+import { useTabRefresh } from '@/hooks';
 import Constants from 'expo-constants';
 
 // p.43~45 프로필 · 설정 · 계정 정보 · 닉네임 · 요금제
@@ -58,6 +62,8 @@ export function SettingsScreen() {
   const openFeature = useFeatureNavigation();
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
+  // 목록이 아니라 당겨서 새로 고침은 두지 않고, 돌아올 때 오래됐으면만 다시 읽는다
+  useTabRefresh(me);
   const [sheet, setSheet] = useState<null | 'lang' | 'page' | 'help' | 'biz'>(null);
   const [dlg, setDlg] = useState<null | 'logout' | 'withdraw'>(null);
   const scroll = useRef<ScrollView>(null);
@@ -402,6 +408,11 @@ export function AccountScreen() {
   const u = me.data;
   const rows: [string, string | undefined, (() => void) | null][] = [
     ['닉네임', u?.nickname, () => router.push('/(tabs)/profile/nickname')],
+    [
+      '관심 분야',
+      u?.interestCategoryIds?.length ? u.interestCategoryIds.join(' · ') : '선택 안 함',
+      () => router.push('/(tabs)/profile/interests'),
+    ],
     ['이메일', u?.email ?? undefined, null],
     ['전화번호', u?.phone, null],
     ['학교', u?.school, null],
@@ -412,12 +423,12 @@ export function AccountScreen() {
       <Screen>
         <Header title="계정 정보" />
         <Card
-          onPress={() => openFeature('/(tabs)/profile/avatar-style')}
+          onPress={() => openFeature('/(tabs)/profile/avatar-teacher')}
           className="flex-row items-center px-5 py-4"
         >
           <View className="flex-1">
-            <Text className="text-caption2 text-sub">아바타</Text>
-            <Text className="text-callout text-ink">아바타 설정하기</Text>
+            <Text className="text-callout text-ink">아바타 선생님</Text>
+            <Text className="text-caption text-sub">노트를 설명해 주는 선생님 얼굴을 골라요</Text>
           </View>
           <ChevronRight size={ICON.md} color={C.sub} />
         </Card>
@@ -478,6 +489,84 @@ export function NicknameScreen() {
           </Text>
           <Text className="text-caption text-sub">{v.length}/10</Text>
         </View>
+      </Screen>
+    </Canvas>
+  );
+}
+
+/** 관심 분야 다시 고르기(프로필 > 계정 정보). 온보딩과 같은 칩, 여러 개 고를 수 있고 비워 둬도 된다 */
+export function InterestsScreen() {
+  const qc = useQueryClient();
+  const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
+  const saved = me.data?.interestCategoryIds ?? [];
+  // 건드리기 전에는 저장된 값을 보여 준다(돌아와 다시 읽혀도 고르던 것이 덮이지 않게, 고른 뒤에는 내 값)
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const now = picked ?? saved;
+  const changed = now.length !== saved.length || now.some((x) => !saved.includes(x));
+  const toggle = (x: string) =>
+    setPicked(now.includes(x) ? now.filter((y) => y !== x) : [...now, x]);
+  // 저장 응답이 늦게 와도 화면을 떠났거나(뒤로 · 다른 탭) 가려졌으면 뒤로 가지 않고,
+  // 계정이 바뀌었으면 지금 계정 캐시에 넣지 않는다
+  const here = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      here.current = true;
+      return () => {
+        here.current = false;
+      };
+    }, []),
+  );
+  useEffect(
+    () => () => {
+      here.current = false;
+    },
+    [],
+  );
+  const save = useMutation({
+    mutationFn: async () => {
+      const who = useAuth.getState().userId;
+      return { who, u: await api.me.update({ interestCategoryIds: now }) };
+    },
+    onSuccess: ({ who, u }) => {
+      if (useAuth.getState().userId !== who) return;
+      qc.setQueryData(['me'], u);
+      if (!here.current) return;
+      router.back();
+      toast('관심 분야를 바꿨어요');
+    },
+  });
+  if (me.isPending) return <Loading />;
+  // 못 읽었으면 빈 목록으로 열어 저장된 관심 분야를 덮어쓰지 않게 다시 읽게 한다
+  if (!me.data)
+    return (
+      <Canvas>
+        <Screen>
+          <Header title="관심 분야" large={false} />
+          <LoadError message="관심 분야를 불러오지 못했어요" retry={() => me.refetch()} />
+        </Screen>
+      </Canvas>
+    );
+  return (
+    <Canvas>
+      <Screen
+        footer={
+          <Btn disabled={!changed} loading={save.isPending} onPress={() => save.mutate()}>
+            저장
+          </Btn>
+        }
+      >
+        <Header title="관심 분야" sub="공부하고 있는 분야를 골라 주세요. 여러 개 골라도 돼요" />
+        <View className="mt-2 flex-row flex-wrap gap-2">
+          {INTERESTS.map((x) => (
+            // 저장 중에 바꾸면 요청에 안 들어간 채 돌아가 버리므로 잠근다
+            <Chip key={x} on={now.includes(x)} disabled={save.isPending} onPress={() => toggle(x)}>
+              {x}
+            </Chip>
+          ))}
+        </View>
+        <Text className="mt-4 text-caption text-sub">
+          {now.length ? `${now.length}개 골랐어요` : '고르지 않아도 괜찮아요'}
+        </Text>
       </Screen>
     </Canvas>
   );

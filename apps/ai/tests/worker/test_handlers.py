@@ -209,6 +209,7 @@ class StubReport:
     def __init__(self, awaited: bool) -> None:
         self._awaited = awaited
         self._canceled = threading.Event()
+        self.costs: list[float] = []
 
     def __call__(self, value: int, step: str | None = None) -> None:
         pass
@@ -224,6 +225,9 @@ class StubReport:
 
     def canceled(self) -> threading.Event:
         return self._canceled
+
+    def add_cost(self, usd: float) -> None:
+        self.costs.append(usd)
 
 
 def test_a_pregen_runs_in_stable_mode_and_hurries_when_taken_over(
