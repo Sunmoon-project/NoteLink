@@ -380,6 +380,16 @@ describe('기기 저장 모드의 아바타 답', () => {
         points: [],
       },
     };
+    // 영문 hack도 서버처럼 거절하고, hackathon 같은 다른 낱말은 그대로 둔다(Codex #249)
+    const wifi = {
+      summary: { sections: [{ heading: 'WiFi', body: 'WiFi는 무선 네트워크다.' }], points: [] },
+    };
+    expect(localAnswer(wifi, 'How do I hack WiFi?')).toMatchObject({
+      answerable: false,
+      reason: 'unsafe',
+    });
+    expect(localAnswer(wifi, '와이파이 hack하는 법')?.reason).toBe('unsafe');
+    expect(localAnswer(wifi, 'WiFi hackathon은 뭐예요?')?.reason).not.toBe('unsafe');
     expect(localAnswer(war, 'Trojan War는 무엇인가요?')).toMatchObject({
       answerable: true,
       refs: ['Trojan War'],

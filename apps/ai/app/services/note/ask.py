@@ -44,7 +44,7 @@ UNSAFE = (
 # LLM도 부르지 않는다(사용자 요청: 위험한 질문은 절대 답하지 않게).
 # 걸러지지 않은 것은 SYSTEM이 한 번 더 막는다
 UNSAFE_PATTERN = re.compile(
-    r"해킹|해커|크래킹|침투\s*테스트|모의\s*해킹|익스플로잇|exploit|취약점\s*(공격|이용|찾)|"
+    r"해킹|해커|(?<![a-z])hack(s|ed|ing|ers?)?(?![a-z])|크래킹|침투\s*테스트|모의\s*해킹|익스플로잇|exploit|취약점\s*(공격|이용|찾)|"
     r"악성\s*코드|멀웨어|malware|랜섬웨어|ransomware|트로이\s*(목마\s*)?(바이러스|악성|프로그램|만들|만드|제작|퍼뜨|심)|트로이안|"
     r"trojan\s*(horse\s*)?(virus|malware|바이러스|악성|프로그램|만들|만드|제작|퍼뜨|심)|바이러스\s*(만들|만드|제작|퍼뜨)|"
     r"피싱|phishing|스미싱|디도스|ddos|백도어|backdoor|키로거|keylogger|루트킷|rootkit|"
