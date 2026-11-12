@@ -29,7 +29,7 @@ import { C, ICON } from '@/theme';
 import { Avatar3D, type Mood } from './avatar3d';
 import { useEquippedAvatar, useFocused } from './buddy';
 
-type Msg = {
+export type Msg = {
   id: number;
   role: NoteAskTurn['role'];
   text: string;
@@ -221,6 +221,21 @@ const nextStep = (msgs: Msg[]) => {
   return !!last && last.role === 'avatar' && !last.error && !last.refused;
 };
 
+/**
+ * 답을 받은 뒤 이어서 물어볼 추천 질문: 아직 답을 받지 못한 것만. 오류로 끝난 질문(연결 · 정리 전 등)은
+ * 물은 것으로 치지 않아 칩으로 다시 보여 주고, 거절(자료 밖)은 정해 둔 답을 받은 것이라 뺀다
+ */
+export const nextSuggest = (msgs: Msg[]) => {
+  if (msgs[msgs.length - 1]?.role !== 'avatar') return [];
+  const answered = new Set(
+    msgs.flatMap((m, i) => {
+      const reply = msgs[i + 1];
+      return m.role === 'user' && reply?.role === 'avatar' && !reply.error ? [m.text] : [];
+    }),
+  );
+  return SUGGEST.filter((q) => !answered.has(q));
+};
+
 /** 아바타 선생님: 정리된 노트(녹음 · 문서 · 필기)를 옆에서 설명한다 */
 export function TutorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -323,22 +338,32 @@ export function TutorScreen() {
           contentContainerClassName="gap-3 pb-4"
           // 에이전트처럼 다음 학습으로 잇는다: 자료로 답한 뒤 퀴즈(학습 확인) · 복습으로
           ListFooterComponent={
-            nextStep(msgs) && live === null ? (
+            live === null && (nextStep(msgs) || nextSuggest(msgs).length > 0) ? (
               <Animated.View entering={FadeIn.duration(220)} className="flex-row flex-wrap gap-2">
-                <Chip
-                  small
-                  onPress={() =>
-                    router.push({
-                      pathname: '/play/gen',
-                      params: { materialId: id, title: mat.data?.title ?? '' },
-                    })
-                  }
-                >
-                  이 노트로 퀴즈 풀기
-                </Chip>
-                <Chip small onPress={() => router.push('/quiz')}>
-                  복습하러 가기
-                </Chip>
+                {/* 하나를 물은 뒤에도 남은 추천 질문을 다음 질문으로 이어 준다 */}
+                {nextSuggest(msgs).map((q) => (
+                  <Chip key={q} small disabled={busy} onPress={() => void ask(q)}>
+                    {q}
+                  </Chip>
+                ))}
+                {nextStep(msgs) && (
+                  <>
+                    <Chip
+                      small
+                      onPress={() =>
+                        router.push({
+                          pathname: '/play/gen',
+                          params: { materialId: id, title: mat.data?.title ?? '' },
+                        })
+                      }
+                    >
+                      이 노트로 퀴즈 풀기
+                    </Chip>
+                    <Chip small onPress={() => router.push('/quiz')}>
+                      복습하러 가기
+                    </Chip>
+                  </>
+                )}
               </Animated.View>
             ) : null
           }

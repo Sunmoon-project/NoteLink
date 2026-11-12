@@ -10,7 +10,7 @@ import { AvatarCheer, ENCOURAGE, PRAISE } from '../features/tutor/cheer';
 import { AvatarTeacherScreen } from '../features/tutor/teacher';
 import { STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
 import { useAuth } from '../stores/auth';
-import { TutorScreen } from '../features/tutor/tutor';
+import { TutorScreen, nextSuggest, type Msg } from '../features/tutor/tutor';
 import { renderScreen, setParams } from '../test-utils';
 
 jest.mock('expo-router', () => ({
@@ -90,6 +90,61 @@ describe('아바타 선생님 대화', () => {
       question: '이 노트 핵심만 알려 주세요',
       history: [],
     });
+  });
+
+  it('추천 질문 하나에 답한 뒤 남은 추천 질문을 다음 질문으로 보여 주고, 누르면 이어서 묻는다', async () => {
+    mockApi.content.ask.mockResolvedValue(job());
+    await renderScreen(<TutorScreen />);
+    await fireEvent.press(await screen.findByText('이 노트 핵심만 알려 주세요'));
+    expect(await screen.findByText('어려운 개념을 쉽게 설명해 주세요')).toBeTruthy();
+    expect(screen.getByText('시험에 나올 만한 내용은 뭐예요?')).toBeTruthy();
+    // 이미 물은 질문은 다시 권하지 않는다(사용자 말풍선 하나만 남는다)
+    expect(screen.getAllByText('이 노트 핵심만 알려 주세요')).toHaveLength(1);
+    await fireEvent.press(screen.getByText('시험에 나올 만한 내용은 뭐예요?'));
+    await waitFor(() =>
+      expect(mockApi.content.ask).toHaveBeenLastCalledWith('m1', {
+        question: '시험에 나올 만한 내용은 뭐예요?',
+        history: expect.any(Array),
+      }),
+    );
+    expect(await screen.findByText('어려운 개념을 쉽게 설명해 주세요')).toBeTruthy();
+    expect(screen.getAllByText('시험에 나올 만한 내용은 뭐예요?')).toHaveLength(1);
+  });
+
+  it('오류로 끝난 추천 질문은 다시 칩으로 보여 주고, 누르면 같은 질문을 다시 묻는다', async () => {
+    mockApi.content.ask
+      .mockRejectedValueOnce(new ApiError(ERROR_CODES.NOTE_NOT_READY, '정리 중', 409))
+      .mockResolvedValueOnce(job());
+    await renderScreen(<TutorScreen />);
+    await fireEvent.press(await screen.findByText('이 노트 핵심만 알려 주세요'));
+    expect(await screen.findByText('노트 정리가 끝나면 설명해 드릴게요.')).toBeTruthy();
+    // 사용자 말풍선 + 다시 묻기 칩
+    expect(screen.getAllByText('이 노트 핵심만 알려 주세요')).toHaveLength(2);
+    await fireEvent.press(screen.getAllByText('이 노트 핵심만 알려 주세요').at(-1)!);
+    expect(await screen.findByText('네 가지 조건이 있어요.')).toBeTruthy();
+    expect(mockApi.content.ask).toHaveBeenLastCalledWith('m1', {
+      question: '이 노트 핵심만 알려 주세요',
+      history: expect.any(Array),
+    });
+  });
+
+  it('다음 추천 질문: 답을 받은 질문(거절 포함)만 빼고, 오류로 끝난 질문은 남긴다', () => {
+    const m = (role: Msg['role'], text: string, extra: Partial<Msg> = {}): Msg => ({
+      id: 0,
+      role,
+      text,
+      ...extra,
+    });
+    expect(
+      nextSuggest([
+        m('user', '이 노트 핵심만 알려 주세요'),
+        m('avatar', '연결을 확인해 주세요', { error: true }),
+        m('user', '시험에 나올 만한 내용은 뭐예요?'),
+        m('avatar', '대답할 수 없어요', { refused: true }),
+      ]),
+    ).toEqual(['이 노트 핵심만 알려 주세요', '어려운 개념을 쉽게 설명해 주세요']);
+    // 아바타가 아직 답하지 않았으면 보이지 않는다
+    expect(nextSuggest([m('user', '이 노트 핵심만 알려 주세요')])).toEqual([]);
   });
 
   it('자료로 답하면 다음 학습(퀴즈 · 복습)으로 잇고, 답하지 못한 질문 뒤에는 권하지 않는다', async () => {
