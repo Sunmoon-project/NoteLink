@@ -45,7 +45,10 @@ export class UploadService {
       : null;
   }
 
-  /** 앱이 Blob에 바로 올릴 주소. 쓰기만 되고, 사용자 폴더 아래 새 이름으로만 올라간다 */
+  /**
+   * 앱이 Blob에 바로 올릴 주소. 쓰기만 되고, 사용자 폴더 아래 새 이름으로만 올라간다.
+   * sizeBytes는 앱이 알린 값이고 SAS로는 크기를 묶을 수 없다. 실제 크기는 자료를 등록할 때 Blob에서 다시 확인해야 한다
+   */
   createTarget(userId: string, raw: unknown, now: Date = new Date()): UploadTarget {
     const body = UploadSasBody.safeParse(raw);
     if (!body.success)
