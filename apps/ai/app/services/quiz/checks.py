@@ -160,6 +160,12 @@ def _shared(mine: list[str], theirs: list[str]) -> bool:
     return sum(take(i, set()) for i in range(len(mine))) >= SAME_SENTENCES
 
 
+# 용어가 어느 쪽에 오는지(유형으로 정해짐, reversed_of). 특징 · 분류 · 부정설명은 제시문이 용어
+# (code_check '물을 용어 없음'), 정의 · 빈칸 · 어휘는 정답이 용어
+TERM_PASSAGE_TYPES = frozenset({"특징", "분류", "부정설명"})
+TERM_ANSWER_TYPES = frozenset({"정의", "빈칸", "어휘"})
+
+
 def reversed_of(d: Draft, seen: list[Seen], concept: str = "", ty: str = "") -> bool:
     """이번에 만든 앞 문제를 거꾸로 물음 (미생 시험).
 
@@ -168,27 +174,28 @@ def reversed_of(d: Draft, seen: list[Seen], concept: str = "", ty: str = "") -> 
     같은 개념을 다른 유형으로 물은 앞 문제(concept · ty, too_close와 같음)와는 용어끼리 비교하지
     않습니다(#268): 정의 문제의 정답(용어)이 같은 개념의 특징 · 부정설명 · 분류 문제에서는
     제시문이라 늘 '거꾸로'였음. 용어가 보인다고 정답이 보이지는 않음. 설명끼리(앞 문제의 설명이 새
-    문제의 정답)는 그대로 봅니다.
+    문제의 정답)는 그대로 봅니다. 어느 쪽이 용어인지는 글 모양(short_answer)이 아니라 두 문제의
+    유형으로 정합니다: short_answer는 '람다' · 15자가 넘는 한국어 용어를 문장으로 봐 그런 개념은
+    여전히 '거꾸로'로 떨어졌음(Codex 리뷰 #303).
     """
     a, p = norm(d["answer"]), norm(d["passage"])
-    term_a, term_p = short_answer(d["answer"]), short_answer(d["passage"])
     for s in seen:
         if s.get("q") is not None or not s.get("answer"):
             continue
         other_angle = bool(concept) and s.get("concept") == concept and s.get("type") != ty
+        before = s.get("type", "")
+        # 새 정답(용어)과 앞 제시문(용어) · 새 제시문(용어)과 앞 정답(용어)
+        terms_a = other_angle and ty in TERM_ANSWER_TYPES and before in TERM_PASSAGE_TYPES
+        terms_p = other_angle and ty in TERM_PASSAGE_TYPES and before in TERM_ANSWER_TYPES
         sa = s.get("answer", "")
         if (
             a
             and s["passage"]
-            and not (other_angle and term_a)
+            and not terms_a
             and difflib.SequenceMatcher(None, a, s["passage"]).ratio() >= 0.8
         ):
             return True
-        if (
-            p
-            and not (other_angle and term_p)
-            and difflib.SequenceMatcher(None, p, sa).ratio() >= 0.8
-        ):
+        if p and not terms_p and difflib.SequenceMatcher(None, p, sa).ratio() >= 0.8:
             return True
     return False
 

@@ -614,3 +614,38 @@ def test_a_description_giving_away_the_answer_is_reversed_even_with_another_type
         answer="위족으로 운동하고 적혈구를 먹는다",
     )  # fmt: skip
     assert reversed_of(giveaway, [tagged(definition, "이질 아메바", "정의")], "이질 아메바", "특징")
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        "람다",  # 끝 글자가 '다'라 short_answer는 문장으로 봄
+        "액티비티 인디케이터 애니메이션 제어 속성",  # 15자가 넘는 한국어 용어
+    ],
+)
+def test_a_term_that_looks_like_a_sentence_is_still_a_term_by_its_type(term: str) -> None:
+    # 용어인지는 유형으로 정함: 정의는 정답이, 특징 · 분류는 제시문이 용어(Codex 리뷰 #303)
+    definition = draft(
+        stem="다음 설명에 해당하는 것은?",
+        passage="이름 없이 그 자리에서 정의해 쓰는 짧은 함수",
+        options=[term, "클로저", "콜백", "제너레이터", "데코레이터"],
+        answer=term,
+    )
+    feature = negative(
+        stem=f"다음 중 {term}에 대한 설명으로 옳은 것은?",
+        passage=term,
+        options=[
+            "이름 없이 쓴다",
+            "클래스를 만든다",
+            "모듈을 불러온다",
+            "값을 지운다",
+            "줄을 넘긴다",
+        ],
+        answer="이름 없이 쓴다",
+    )
+    assert not reversed_of(feature, [tagged(definition, term, "정의")], term, "특징")
+    assert not reversed_of(definition, [tagged(feature, term, "특징")], term, "정의")
+    assert not reversed_of(feature, [tagged(definition, term, "정의")], term, "분류")
+    # 같은 유형이거나 개념을 모르면 전과 같음
+    assert reversed_of(feature, [tagged(definition, term, "정의")])
+    assert reversed_of(definition, [tagged(feature, term, "특징")], term, "특징")
