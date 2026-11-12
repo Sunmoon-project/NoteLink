@@ -168,3 +168,16 @@ describe('설정 · 온보딩', () => {
     await waitFor(() => expect(useAuth.getState().userId).toBeNull());
   });
 });
+
+it('필기 편집기가 없어 더블 탭 지우개 · 왼손잡이 설정은 보이지 않는다', async () => {
+  await useAuth.getState().signIn(A, user('u-a'));
+  mockApi.me.get.mockResolvedValue({
+    ...user('u-a'),
+    settings: { subtitleLanguage: '한국어', pageTurn: 'swipe', theme: 'light' },
+    usage: { storageBytes: 0, storageLimitBytes: 1, aiCredits: 0, aiCreditLimit: 1 },
+  });
+  await renderScreen(<SettingsScreen />);
+  expect(await screen.findByText('회원 탈퇴', {}, { timeout: 8000 })).toBeTruthy();
+  expect(screen.queryByText('더블 탭으로 지우개 전환')).toBeNull();
+  expect(screen.queryByText('왼손잡이 모드')).toBeNull();
+});

@@ -282,25 +282,7 @@ export function SettingsScreen() {
             if (v === '다크') toast('다크 테마는 준비 중이에요 · 설정은 저장했어요');
           }}
         />
-        <Label>필기</Label>
-        <Group>
-          <Row
-            right={
-              <Toggle
-                label="더블 탭으로 지우개 전환"
-                on={s.doubleTapEraser}
-                onChange={set('doubleTapEraser')}
-              />
-            }
-          >
-            더블 탭으로 지우개 전환
-          </Row>
-          <Row
-            right={<Toggle label="왼손잡이 모드" on={s.leftHanded} onChange={set('leftHanded')} />}
-          >
-            왼손잡이 모드
-          </Row>
-        </Group>
+        {/* 필기(펜) 편집기가 아직 없어 더블 탭 지우개 · 왼손잡이 설정은 두지 않는다. 편집기가 생기면 다시 연다 */}
         <Label>정보</Label>
         <Group>
           <Row chevron onPress={() => setSheet('help')}>
