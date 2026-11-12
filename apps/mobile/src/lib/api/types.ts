@@ -76,6 +76,15 @@ export interface Api {
      * 이미 있으면 409 EMAIL_TAKEN
      */
     emailSignup(verificationToken: string, password: string): Promise<void>;
+    /** 아이디 · 비밀번호 찾기 ① 이메일로 인증번호를 보낸다. 가입하지 않은 이메일이어도 응답은 같다 */
+    recoverySendCode(email: string): Promise<void>;
+    /** 아이디 찾기 ② 이메일과 인증번호가 맞으면 그 이메일로 가입한 아이디(없으면 null). 틀리면 400 EMAIL_CODE_INVALID */
+    findId(email: string, code: string): Promise<{ id: string | null }>;
+    /**
+     * 비밀번호 찾기 ② 아이디 · 이메일이 같은 계정이고 인증번호가 맞으면 새 비밀번호로 바꾼다.
+     * 아이디와 이메일이 맞지 않으면 400 VALIDATION, 인증번호가 틀리면 400 EMAIL_CODE_INVALID
+     */
+    passwordReset(id: string, email: string, code: string, password: string): Promise<void>;
     agreeTerms(termCodes: string[]): Promise<void>;
     logout(): Promise<void>;
   };
