@@ -3,43 +3,77 @@ import { getModelToken } from '@nestjs/mongoose';
 import { ERROR_CODES, PATHS, UPLOAD_RULES, UploadTarget } from '@notelink/shared';
 import { Types } from 'mongoose';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureApp } from '../src/app.setup.js';
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
-import { UPLOAD_SAS_MINUTES } from '../src/modules/upload/upload.service.js';
+import { BLOB_STORE, type BlobStore } from '../src/modules/upload/blob-store.js';
+import { UploadTicket } from '../src/modules/upload/schemas/upload-ticket.schema.js';
+import { SETTLE_MS, UploadSweeper } from '../src/modules/upload/upload-sweeper.service.js';
+import {
+  ISSUE_LIMIT,
+  ISSUE_WINDOW_MS,
+  UPLOAD_SAS_MINUTES,
+} from '../src/modules/upload/upload.service.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
+import { createFakeUploadTickets } from './support/fake-upload-tickets.js';
 
 const api = (path: string) => `/api/v1${path}`;
 const KEY = 'ZmFrZS1zdG9yYWdlLWtleS1mb3ItdGVzdHM=';
 const CONNECTION = `DefaultEndpointsProtocol=https;AccountName=notelinktest;AccountKey=${KEY};EndpointSuffix=core.windows.net`;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
+/** 이름 → 크기만 가진 저장소(실제 Azure를 부르지 않는다) */
+function fakeBlobs() {
+  const sizes = new Map<string, number>();
+  const store: BlobStore = {
+    size: (name) => Promise.resolve(sizes.get(name) ?? null),
+    remove: (name) => {
+      sizes.delete(name);
+      return Promise.resolve();
+    },
+  };
+  return { store, sizes };
+}
+
 async function startApp(env: Record<string, string>) {
   stubAppEnv(env);
+  const tickets = createFakeUploadTickets();
+  const blobs = fakeBlobs();
   const ref = await createAppModuleBuilder()
     .overrideProvider(getModelToken(RefreshToken.name))
     .useValue(createFakeRefreshTokens().model)
+    .overrideProvider(getModelToken(UploadTicket.name))
+    .useValue(tickets.model)
+    .overrideProvider(BLOB_STORE)
+    .useValue(env.AZURE_STORAGE_CONNECTION_STRING ? blobs.store : null)
     .compile();
   const app = ref.createNestApplication();
   configureApp(app);
   await app.init();
-  return { app, tokens: ref.get(TokenService) };
+  return { app, tokens: ref.get(TokenService), tickets, blobs, sweeper: ref.get(UploadSweeper) };
 }
 
 const image = { kind: 'image', fileName: 'note.jpg', contentType: 'image/jpeg', sizeBytes: 1024 };
 
 describe('파일 올리기 주소 발급 (POST /api/v1/uploads/sas)', () => {
   let app: INestApplication;
+  let started: Awaited<ReturnType<typeof startApp>>;
   const me = new Types.ObjectId().toHexString();
   let token: string;
 
   beforeAll(async () => {
-    const started = await startApp({ AZURE_STORAGE_CONNECTION_STRING: CONNECTION });
+    started = await startApp({ AZURE_STORAGE_CONNECTION_STRING: CONNECTION });
     app = started.app;
     token = (await started.tokens.issue(me)).accessToken;
+  });
+
+  beforeEach(() => {
+    started.tickets.rows.length = 0;
+    started.tickets.failNextCreates(false);
+    started.blobs.sizes.clear();
   });
 
   afterAll(async () => {
@@ -147,6 +181,80 @@ describe('파일 올리기 주소 발급 (POST /api/v1/uploads/sas)', () => {
     expect(res.body.code).toBe(ERROR_CODES.VALIDATION);
   });
 
+  it('내준 주소를 기록한다 (주인 · Blob 이름 · 종류의 크기 상한 · 만료)', async () => {
+    const res = await sas({ ...image, sizeBytes: 1 }).expect(200);
+    const target = UploadTarget.parse(res.body.data);
+    expect(started.tickets.rows).toHaveLength(1);
+    const row = started.tickets.rows[0]!;
+    expect(String(row.ownerId)).toBe(me);
+    expect(target.blobUrl.endsWith(`/raw/${row.blobName}`)).toBe(true);
+    // 앱이 알린 크기가 아니라 종류의 상한을 기준으로 둔다
+    expect(row.maxBytes).toBe(UPLOAD_RULES.image.maxBytes);
+    expect(row.expiresAt.toISOString()).toBe(target.expiresAt);
+    expect(row.status).toBe('issued');
+  });
+
+  it('거절한 요청은 기록하지 않는다', async () => {
+    await sas({ ...image, fileName: 'a.gif' }).expect(400);
+    await sas({ ...image, sizeBytes: 0 }).expect(400);
+    expect(started.tickets.rows).toHaveLength(0);
+  });
+
+  it('기록을 남기지 못하면 주소를 내주지 않는다', async () => {
+    started.tickets.failNextCreates(true);
+    const res = await sas(image).expect(500);
+    expect(JSON.stringify(res.body)).not.toContain('sig=');
+  });
+
+  it('1로 알리고 상한을 넘겨 올린 파일은 주소가 만료된 뒤 확인해 지운다', async () => {
+    await sas({ ...image, sizeBytes: 1 }).expect(200);
+    const row = started.tickets.rows[0]!;
+    started.blobs.sizes.set(row.blobName, UPLOAD_RULES.image.maxBytes + 1);
+
+    const result = await started.sweeper.sweep(new Date(row.expiresAt.getTime() + SETTLE_MS));
+
+    expect(result.oversize).toBe(1);
+    expect(started.blobs.sizes.size).toBe(0);
+    expect(started.tickets.rows).toHaveLength(0);
+  });
+
+  it(`한 사용자가 ${ISSUE_LIMIT}개를 넘게 받으면 429 RATE_LIMITED, 다른 사용자 · 시간이 지난 뒤는 받는다`, async () => {
+    const mine = new Types.ObjectId(me);
+    const recent = new Date(Date.now() - ISSUE_WINDOW_MS + 60_000);
+    const fill = (createdAt: Date) => {
+      for (let i = 0; i < ISSUE_LIMIT - 1; i += 1)
+        started.tickets.rows.push({
+          _id: new Types.ObjectId(),
+          ownerId: mine,
+          blobName: `${me}/${i}.jpg`,
+          maxBytes: 1,
+          status: 'issued',
+          expiresAt: createdAt,
+          checkedAt: null,
+          createdAt,
+        });
+    };
+    fill(recent);
+    await sas(image).expect(200); // 100번째
+    const res = await sas(image).expect(429);
+    expect(res.body.code).toBe(ERROR_CODES.RATE_LIMITED);
+    expect(res.body.retryAfterSeconds).toBeGreaterThan(0);
+    expect(started.tickets.rows).toHaveLength(ISSUE_LIMIT);
+
+    const other = (await started.tokens.issue(new Types.ObjectId().toHexString())).accessToken;
+    await request(app.getHttpServer())
+      .post(api(PATHS.uploadSas))
+      .set('Authorization', `Bearer ${other}`)
+      .send(image)
+      .expect(200);
+
+    // 구간이 지난 기록은 세지 않는다
+    started.tickets.rows.length = 0;
+    fill(new Date(Date.now() - ISSUE_WINDOW_MS - 60_000));
+    started.tickets.rows.push({ ...started.tickets.rows[0]!, _id: new Types.ObjectId() });
+    await sas(image).expect(200);
+  });
+
   it('응답 · 오류 어디에도 스토리지 키가 없다', async () => {
     const ok = await sas(image).expect(200);
     const bad = await sas({ ...image, fileName: 'a.gif' }).expect(400);
@@ -160,9 +268,9 @@ describe('파일 저장소가 설정되지 않은 서버', () => {
   let token: string;
 
   beforeAll(async () => {
-    const started = await startApp({ AZURE_STORAGE_CONNECTION_STRING: '' });
-    app = started.app;
-    token = (await started.tokens.issue(new Types.ObjectId().toHexString())).accessToken;
+    const off = await startApp({ AZURE_STORAGE_CONNECTION_STRING: '' });
+    app = off.app;
+    token = (await off.tokens.issue(new Types.ObjectId().toHexString())).accessToken;
   });
 
   afterAll(async () => {
