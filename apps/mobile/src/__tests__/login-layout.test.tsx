@@ -24,4 +24,10 @@ it('로그인은 이메일 · 비밀번호 칸이 먼저, 그 아래 카카오 �
   ].map((t) => tree.indexOf(t));
   expect(order.every((at) => at >= 0)).toBe(true);
   expect([...order].sort((a, b) => a - b)).toEqual(order);
+  // 간편 로그인은 글자 없이 로고 버튼 한 줄
+  for (const l of ['카카오로 시작하기', 'Google로 시작하기', '네이버로 시작하기']) {
+    expect(screen.getByRole('button', { name: l })).toBeTruthy();
+    expect(screen.queryByText(l)).toBeNull();
+  }
+  expect(screen.getByText('또는 간편하게 시작')).toBeTruthy();
 });

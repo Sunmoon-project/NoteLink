@@ -106,7 +106,7 @@ const SOCIAL = [
 ] as const;
 
 /** 카카오 · Google · 네이버 간편 로그인 버튼. 처음 쓰는 계정은 서버가 만들고 초기 설정으로 이어진다 */
-function SocialButtons({ compact = false }: { compact?: boolean }) {
+function SocialButtons() {
   const done = useFinishSignIn();
   const social = useMutation({
     mutationFn: async (p: SocialProvider) => api.auth.socialLogin(p, await getProviderToken(p)),
@@ -115,29 +115,10 @@ function SocialButtons({ compact = false }: { compact?: boolean }) {
   });
   return (
     <View className="gap-3">
-      {/* 회원가입은 입력칸이 많아 로고만 있는 둥근 버튼 한 줄로 줄인다(한 화면 안에 들어가게) */}
-      <View className={compact ? 'flex-row justify-center gap-5' : 'gap-3'}>
-        {SOCIAL.map(([p, label, bg, fg, Logo]) => {
+      {/* 로고만 있는 둥근 버튼 한 줄(이름은 화면 읽기로 알린다) */}
+      <View className="flex-row justify-center gap-5">
+        {SOCIAL.map(([p, label, bg, , Logo]) => {
           const busy = social.isPending && social.variables === p;
-          if (compact)
-            return (
-              <Tap
-                key={p}
-                accessibilityRole="button"
-                accessibilityLabel={label}
-                accessibilityState={{ disabled: !socialLoginReady || social.isPending }}
-                disabled={!socialLoginReady || social.isPending}
-                onPress={() => social.mutate(p)}
-                className={cx(
-                  'h-control-lg w-control-lg items-center justify-center rounded-full',
-                  bg,
-                  p === 'google' && 'border border-line',
-                  !socialLoginReady && 'opacity-50',
-                )}
-              >
-                {busy ? <ActivityIndicator size="small" color={C.sub} /> : <Logo />}
-              </Tap>
-            );
           return (
             <Tap
               key={p}
@@ -147,16 +128,13 @@ function SocialButtons({ compact = false }: { compact?: boolean }) {
               disabled={!socialLoginReady || social.isPending}
               onPress={() => social.mutate(p)}
               className={cx(
-                'h-control-lg flex-row items-center justify-center rounded-2xl px-5',
+                'h-control-lg w-control-lg items-center justify-center rounded-full',
                 bg,
+                p === 'google' && 'border border-line',
                 !socialLoginReady && 'opacity-50',
               )}
             >
-              {/* 로고는 왼쪽 끝에 두고 글자는 가운데 */}
-              <View className="absolute left-5">
-                {busy ? <ActivityIndicator size="small" color={C.sub} /> : <Logo />}
-              </View>
-              <Text className={cx('text-callout font-semibold', fg)}>{label}</Text>
+              {busy ? <ActivityIndicator size="small" color={C.sub} /> : <Logo />}
             </Tap>
           );
         })}
@@ -169,15 +147,6 @@ function SocialButtons({ compact = false }: { compact?: boolean }) {
     </View>
   );
 }
-
-/** 이메일 로그인과 간편 로그인 사이 구분선 */
-const OrLine = ({ children }: { children: string }) => (
-  <View className="my-8 flex-row items-center gap-3">
-    <View className="h-px flex-1 bg-sub/20" />
-    <Text className="text-caption text-sub">{children}</Text>
-    <View className="h-px flex-1 bg-sub/20" />
-  </View>
-);
 
 export function LoginScreen() {
   // 가입을 마치고 오면 가입한 이메일이 채워져 있다
@@ -241,8 +210,8 @@ export function LoginScreen() {
           </Btn>
         </View>
 
-        {/* 2. 그 아래 간편 로그인 */}
-        <OrLine>간편 로그인</OrLine>
+        {/* 2. 그 아래 간편 로그인: 로고 버튼 한 줄 */}
+        <Text className="mt-8 mb-3 text-center text-caption text-sub">또는 간편하게 시작</Text>
         <SocialButtons />
 
         {/* 3. 맨 아래 회원가입 */}
@@ -426,8 +395,6 @@ export function SignupScreen() {
           maxLength={64}
         />
         <FieldError msg={confirmShown} />
-        <Text className="mt-6 mb-3 text-center text-caption text-sub">또는 간편하게 시작</Text>
-        <SocialButtons compact />
       </Screen>
     </Canvas>
   );
