@@ -80,6 +80,14 @@ describe('오답 노트 계산', () => {
   });
 });
 
+it('오답 노트 파일을 읽지 못하면 덮어쓰지 않고 그대로 둔다', () => {
+  mockFiles.set('wrong-u1', '{깨진 파일');
+  recordWrong('u1', q('a'));
+  expect(mockFiles.get('wrong-u1')).toBe('{깨진 파일');
+  // 화면에는 빈 노트로 보인다
+  expect(loadWrong('u1').items).toEqual([]);
+});
+
 it('회원 탈퇴하면 그 계정의 오답 노트만 지운다', () => {
   recordWrong('u1', q('a'));
   recordWrong('u2', q('b'));
@@ -110,21 +118,35 @@ describe('하루에 처음 열 때 오답 복습', () => {
     }
   });
 
-  it('오답이 없거나 처음 안내 중이면 띄우지 않는다', async () => {
+  it('처음 안내 중이면 기다렸다가, 안내가 끝나면 띄운다', async () => {
     jest.useFakeTimers();
     try {
-      await renderHook(() => useDailyWrongReview(true));
-      await act(async () => jest.advanceTimersByTime(700));
-      expect(router.push).not.toHaveBeenCalled();
       recordWrong('u1', q('a'));
       useTour.setState({ step: 2 });
       await renderHook(() => useDailyWrongReview(true));
       await act(async () => jest.advanceTimersByTime(700));
       expect(router.push).not.toHaveBeenCalled();
-      // 안내가 끝나면 연다
       await act(async () => useTour.setState({ step: -1 }));
       await act(async () => jest.advanceTimersByTime(700));
       expect(router.push).toHaveBeenCalledWith('/play/wrong');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('그날 처음 열 때 오답이 없었으면, 그날 늦게 틀린 문제는 다음 날 복습한다', async () => {
+    jest.useFakeTimers();
+    try {
+      const first = await renderHook(() => useDailyWrongReview(true));
+      await act(async () => jest.advanceTimersByTime(700));
+      expect(router.push).not.toHaveBeenCalled();
+      expect(loadWrong('u1').shownOn).toBe(today());
+      await first.unmount();
+      recordWrong('u1', q('a'));
+      await renderHook(() => useDailyWrongReview(true));
+      await act(async () => jest.advanceTimersByTime(700));
+      expect(router.push).not.toHaveBeenCalled();
+      expect(loadWrong('u1').items).toHaveLength(1);
     } finally {
       jest.useRealTimers();
     }

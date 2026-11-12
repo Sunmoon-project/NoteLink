@@ -45,10 +45,20 @@ export const sameAnswer = (a: string, b: string) =>
 
 /* ── 기기 저장 ── */
 
+/**
+ * 저장된 오답 노트. 파일이 없으면(처음) 빈 노트, 있는데 읽지 못하거나 모양이 깨졌으면 던진다.
+ * 읽기 실패를 빈 노트로 여기고 쓰면 그동안의 기록을 새 문제 하나로 덮어쓰기 때문이다(#341 리뷰)
+ */
+function readWrong(userId: string): WrongNotes {
+  const v = readDb(file(userId)) as WrongNotes | null;
+  if (v == null) return EMPTY;
+  if (!Array.isArray(v.items)) throw new Error('오답 노트 파일 모양이 깨졌어요');
+  return v;
+}
+/** 화면에 보여 줄 오답 노트. 읽지 못하면 빈 노트(파일은 건드리지 않는다) */
 export function loadWrong(userId: string): WrongNotes {
   try {
-    const v = readDb(file(userId)) as WrongNotes | null;
-    return v && Array.isArray(v.items) ? v : EMPTY;
+    return readWrong(userId);
   } catch {
     return EMPTY;
   }
@@ -56,7 +66,8 @@ export function loadWrong(userId: string): WrongNotes {
 /** 못 적어도 복습 목록이 빠질 뿐이라 풀이를 막지 않는다 */
 function save(userId: string, change: (n: WrongNotes) => WrongNotes) {
   try {
-    writeDb(file(userId), change(loadWrong(userId)));
+    // 읽지 못하면 여기서 던져 쓰지 않는다(남은 기록 보존)
+    writeDb(file(userId), change(readWrong(userId)));
   } catch {
     // 다음에 틀리거나 맞힐 때 다시 적는다
   }
@@ -100,9 +111,12 @@ export function useDailyWrongReview(ready: boolean) {
     // 탭 화면이 자리를 잡은 뒤에 올린다
     const t = setTimeout(() => {
       const day = today();
-      if (!dueOn(loadWrong(userId), day)) return;
+      const notes = loadWrong(userId);
+      if (notes.shownOn === day) return;
+      // 그날 처음 열었을 때 확인했다고 적는다. 오답이 없어 띄우지 않은 날도 적어서, 그날 늦게 틀린 문제는
+      // 다음 날 처음 열 때 복습한다(#341 리뷰)
       save(userId, (n) => ({ ...n, shownOn: day }));
-      router.push('/play/wrong');
+      if (dueOn(notes, day)) router.push('/play/wrong');
     }, 600);
     return () => clearTimeout(t);
   }, [ready, userId, touring, active]);
