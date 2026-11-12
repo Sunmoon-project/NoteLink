@@ -1,8 +1,9 @@
 # develop에 들어온 커밋을 Azure App Service(개발 환경)에 배포합니다. Actions 탭에서 직접 실행할 수도 있습니다.
+# develop으로 가는 PR에서는 배포 묶음 만들기 · 확인까지만 돌리고 Azure에는 올리지 않습니다.
 #   - API 서버(apps/api)  → notelink-api-dev (Node 24)
 #   - AI 서버(apps/ai)    → notelink-ai-dev  (Python 3.13)
 # Azure 로그인은 비밀값 없이 OIDC로 합니다. 저장소 Variables에 AZURE_CLIENT_ID · AZURE_TENANT_ID ·
-# AZURE_SUBSCRIPTION_ID가 있어야 하고, 없으면 배포를 건너뜁니다.
+# AZURE_SUBSCRIPTION_ID가 모두 있어야 하고, 하나라도 없으면 배포를 건너뜁니다.
 # 환경 변수(앱 설정)와 비밀값은 여기서 다루지 않습니다. App Service 앱 설정 · Key Vault에 둡니다.
 name: Deploy
 
@@ -15,13 +16,27 @@ on:
       - 'packages/shared/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'tsconfig.base.json'
+      - 'scripts/wait-http-ok.sh'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    branches: [develop]
+    paths: # push와 같게 둡니다
+      - 'apps/api/**'
+      - 'apps/ai/**'
+      - 'packages/shared/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.base.json'
+      - 'scripts/wait-http-ok.sh'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
 # 배포가 겹치지 않게 차례로 돌립니다. 진행 중인 배포는 끊지 않습니다.
+# PR 확인은 PR마다 따로 돌고, 새 커밋이 오면 앞의 것을 끊습니다.
 concurrency:
-  group: deploy-dev
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('deploy-check-{0}', github.ref) || 'deploy-dev' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -35,7 +50,9 @@ env:
 jobs:
   api:
     name: API 서버 (NestJS)
-    if: vars.AZURE_CLIENT_ID != ''
+    if: >-
+      github.event_name == 'pull_request' ||
+      (vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -87,27 +104,26 @@ jobs:
           du -sh deploy/node_modules
           cd deploy && zip -qr ../api.zip .
       - uses: azure/login@v3
+        if: github.event_name != 'pull_request'
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: 배포
+        if: github.event_name != 'pull_request'
         run: az webapp deploy --resource-group "$RESOURCE_GROUP" --name "$API_APP" --src-path api.zip --type zip
       - name: 응답 확인
+        if: github.event_name != 'pull_request'
         # 새 버전이 뜰 때까지 최대 5분 기다립니다.
         run: |
           host=$(az webapp show --resource-group "$RESOURCE_GROUP" --name "$API_APP" --query defaultHostName -o tsv)
-          for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$host/api/v1/health" || true)
-            echo "시도 $i: $code"
-            [ "$code" = "200" ] && exit 0
-            sleep 10
-          done
-          exit 1
+          bash scripts/wait-http-ok.sh "https://$host/api/v1/health" 30 10
 
   ai:
     name: AI 서버 (FastAPI)
-    if: vars.AZURE_CLIENT_ID != ''
+    if: >-
+      github.event_name == 'pull_request' ||
+      (vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -120,11 +136,13 @@ jobs:
           cp apps/ai/requirements.lock deploy/requirements.txt
           cd deploy && zip -qr ../ai.zip .
       - uses: azure/login@v3
+        if: github.event_name != 'pull_request'
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: 배포
+        if: github.event_name != 'pull_request'
         # AI 서버는 API 서버 IP만 받으므로 여기서 주소로 확인하지 못합니다.
         # 설치 · 시작 실패는 이 명령이 실패로 알려 줍니다.
         run: az webapp deploy --resource-group "$RESOURCE_GROUP" --name "$AI_APP" --src-path ai.zip --type zip --timeout 1800000
