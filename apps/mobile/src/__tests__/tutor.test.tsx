@@ -528,6 +528,14 @@ describe('처음 안내', () => {
     expect(router.push).not.toHaveBeenCalled();
   });
 
+  it('안내는 지금 있는 기능만 말한다: 노트 탭 + 는 폴더 만들기, 틀린 문제는 유사 퀴즈 · 보관함', () => {
+    const add = STEPS.find((s) => s.title === '정리: 자료 올리기')!;
+    expect(add.body).toMatch(/폴더를 먼저 만들어요.*폴더에 들어가 \+ 버튼/);
+    const make = STEPS.find((s) => s.title === '복습: 퀴즈 만들기')!;
+    expect(make.body).toMatch(/유사 퀴즈.*보관함/);
+    expect(STEPS.map((s) => s.body).join(' ')).not.toMatch(/오늘의 복습/);
+  });
+
   it('처음 안내 마지막 단계는 정리 · 학습 · 복습을 ①②③으로 요약한다', () => {
     expect(STEPS.at(-1)!.body).toMatch(/① .*② .*③ /);
   });
