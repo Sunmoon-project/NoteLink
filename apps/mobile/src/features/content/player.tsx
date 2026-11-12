@@ -62,6 +62,14 @@ export function useResume(
   const on = me.data?.settings.resumePlayback ?? false;
   const restored = useRef(false);
   const reading = useRef(false);
+  // 화면을 떠났으면 읽기 결과로 닫힌 플레이어를 옮기거나 알리지 않는다(#366 리뷰)
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
   const saved = useRef(-1);
   const latest = useRef({ on, pos: p.pos, duration: p.duration });
   useEffect(() => {
@@ -81,6 +89,7 @@ export function useResume(
     reading.current = true;
     void SecureStore.getItemAsync(posKey(materialId))
       .then((v) => {
+        if (!alive.current) return;
         const at = Number(v);
         if (at > RESUME_MARGIN && at < p.duration - RESUME_MARGIN) {
           saved.current = at;
@@ -90,7 +99,7 @@ export function useResume(
       })
       .catch(() => {})
       .finally(() => {
-        restored.current = true;
+        if (alive.current) restored.current = true;
       });
   }, [on, p.ready, p.duration]); // eslint-disable-line react-hooks/exhaustive-deps
   // 듣는 동안 5초마다, 화면을 떠날 때 한 번 더 적는다

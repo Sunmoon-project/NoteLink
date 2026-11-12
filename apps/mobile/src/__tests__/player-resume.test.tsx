@@ -79,10 +79,13 @@ it('지난 자리를 읽는 동안 화면을 닫으면 아무것도 적지 않�
   jest
     .mocked(SecureStore.getItemAsync)
     .mockImplementationOnce(() => new Promise((r) => (release = r)));
-  const { view } = await run();
+  const { seek, view } = await run();
   await waitFor(() => expect(SecureStore.getItemAsync).toHaveBeenCalled());
   await view.unmount();
   await act(async () => release('125'));
   expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
   expect(mockStore.get('notelink.playpos.m1')).toBe('125');
+  // 닫힌 플레이어를 옮기거나 알리지도 않는다
+  expect(seek).not.toHaveBeenCalled();
+  expect(mockToast).not.toHaveBeenCalled();
 });
