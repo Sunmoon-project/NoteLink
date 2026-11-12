@@ -265,6 +265,19 @@ describe('아바타 선생님 대화', () => {
     }
   });
 
+  it('말풍선을 띄운 뒤 질문하면 말풍선을 버려, 답이 일찍 끝나도 옛 말풍선이 다시 뜨지 않는다', async () => {
+    mockApi.content.ask.mockRejectedValueOnce(new Error('offline'));
+    await renderScreen(<TutorScreen />);
+    await fireEvent.press(await screen.findByLabelText('아바타 선생님에게 말 걸기'));
+    expect((await screen.findAllByText(STAGE_LINES[0]!.line)).length).toBeGreaterThan(0);
+    await fireEvent.press(screen.getByText('이 노트 핵심만 알려 주세요'));
+    expect(await screen.findByText(/답을 만들지 못했어요/)).toBeTruthy();
+    // 말풍선 타이머(3.5초)가 끝나기 전에, 사라지는 페이드(Swap)만 기다려도 옛 말풍선은 없다
+    await waitFor(() => expect(screen.queryAllByText(STAGE_LINES[0]!.line)).toHaveLength(0), {
+      timeout: 800,
+    });
+  });
+
   it('답하는 중에는 눌러도 말풍선을 띄우지 않는다', async () => {
     mockApi.content.ask.mockReturnValue(new Promise(() => {}));
     await renderScreen(<TutorScreen />);

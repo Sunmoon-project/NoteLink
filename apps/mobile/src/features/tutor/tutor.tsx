@@ -115,10 +115,13 @@ function TutorStage({
   mood,
   avatarId,
   compact,
+  turns,
 }: {
   mood: Mood;
   avatarId: string;
   compact: boolean;
+  /** 지금까지 대화 수 */
+  turns: number;
 }) {
   const [w, setW] = useState(0);
   const focused = useFocused();
@@ -132,6 +135,13 @@ function TutorStage({
     return () => clearTimeout(t);
   }, [said]);
   // 질문을 보내 생각 · 설명을 시작하면 말풍선을 거둔다
+  // 질문을 보내면(대화가 늘면) 말풍선을 버린다. 답이 일찍 끝나 idle로 돌아와도 옛 말풍선이 다시 뜨지 않게
+  // (생각 상태가 한 번도 그려지지 않을 만큼 빨리 실패해도 대화 수는 늘어난다, #344 리뷰)
+  const [seenTurns, setSeenTurns] = useState(turns);
+  if (turns !== seenTurns) {
+    setSeenTurns(turns);
+    setSaid(null);
+  }
   const reacting = said && mood === 'idle' ? said : null;
   const face = reacting?.mood ?? mood;
   const status = reacting?.line ?? STATUS[mood];
@@ -386,7 +396,12 @@ export function TutorScreen() {
         }
       >
         <Header title="아바타 선생님" sub={mat.data?.title} large={false} />
-        <TutorStage mood={mood} avatarId={avatar} compact={msgs.length > 0 || keyboard} />
+        <TutorStage
+          mood={mood}
+          avatarId={avatar}
+          compact={msgs.length > 0 || keyboard}
+          turns={msgs.length}
+        />
         <FlatList
           ref={list}
           className="mt-3 flex-1"

@@ -152,7 +152,18 @@ function patchGl(gl: ExpoWebGLRenderingContext, canvas: HTMLCanvasElement) {
 const FRAME_MS = 33;
 const approach = (from: number, to: number, k: number) => from + (to - from) * k;
 /** 표정별 입 너비(기본 1) */
-const MOUTH_WIDE: Partial<Record<Mood, number>> = { happy: 1.35, wink: 1.2, surprised: 0.6 };
+export const MOUTH_WIDE: Partial<Record<Mood, number>> = { happy: 1.35, wink: 1.2, surprised: 0.6 };
+/**
+ * 눈을 얼마나 뜰지(원래 높이 대비). 웃을 때는 가늘게(눈웃음), 생각할 때 조금 감고, 놀라면 크게,
+ * 윙크는 왼눈(n = 0)만 감는다. 그 밖에는 깜빡임 값(blink)을 따른다
+ */
+export function eyeOpen(mood: Mood, n: number, blink: number) {
+  if (mood === 'happy') return 0.35;
+  if (mood === 'thinking') return 0.7;
+  if (mood === 'surprised') return 1.35;
+  if (mood === 'wink') return n === 0 ? 0.1 : 1;
+  return blink;
+}
 const CAMERA: Record<Framing, { pos: [number, number, number]; at: number }> = {
   full: { pos: [0, 0.5, 3.5], at: 0.44 },
   head: { pos: [0, 0.56, 2.9], at: 0.5 },
@@ -319,22 +330,7 @@ export function Avatar3D({
           nextBlink = ms + 2800 + Math.random() * 2200;
         }
         const blink = ms < blinkEnd ? 0.12 : 1;
-        // 웃을 때는 눈을 가늘게(눈웃음), 놀라면 크게, 윙크는 한쪽(eyeL)만 감는다
-        eyes.forEach((e, n) => {
-          const k =
-            m === 'happy'
-              ? 0.35
-              : m === 'thinking'
-                ? 0.7
-                : m === 'surprised'
-                  ? 1.35
-                  : m === 'wink'
-                    ? n === 0
-                      ? 0.1
-                      : 1
-                    : blink;
-          e.scale.y = eyeY * k;
-        });
+        eyes.forEach((e, n) => (e.scale.y = eyeY * eyeOpen(m, n, blink)));
 
         renderer.render(scene, camera);
         renderer.resetState();
@@ -376,7 +372,7 @@ export function Avatar3D({
 }
 
 /** GL을 쓸 수 없을 때의 2D 얼굴 */
-function FlatFace({ mood, size }: { mood: Mood; size: number }) {
+export function FlatFace({ mood, size }: { mood: Mood; size: number }) {
   const d = size * 0.6;
   return (
     <View className="flex-1 items-center justify-center">
@@ -388,6 +384,7 @@ function FlatFace({ mood, size }: { mood: Mood; size: number }) {
           {[0, 1].map((n) => (
             <View
               key={n}
+              testID={`flat-eye-${n}`}
               className="w-3 rounded-full bg-white"
               style={{
                 height:
@@ -401,6 +398,7 @@ function FlatFace({ mood, size }: { mood: Mood; size: number }) {
           ))}
         </View>
         <View
+          testID="flat-mouth"
           className="mt-3 rounded-full bg-white"
           style={{
             width: mood === 'happy' ? 28 : mood === 'surprised' ? 12 : 22,
