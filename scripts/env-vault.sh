@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# 팀 개발용 .env를 Azure Key Vault 하나에서 받고 올립니다(#326).
+# 팀 개발용 .env를 Azure Key Vault에서 받고 올립니다(#326).
 #
-#   scripts/env-vault.sh pull <ai|api>   # Key Vault → apps/<앱>/.env
-#   scripts/env-vault.sh push <변수>      # 값 하나를 Key Vault에 넣거나 바꿈(값은 표준 입력)
-#   scripts/env-vault.sh list [ai|api]   # Key Vault에 있는 변수 이름만(값은 보이지 않음)
+#   scripts/env-vault.sh pull [--deploy] <ai|api>   # Key Vault → apps/<앱>/.env
+#   scripts/env-vault.sh push [--deploy] <변수>      # 값 하나를 넣거나 바꿈(값은 표준 입력)
+#   scripts/env-vault.sh list [--deploy] [ai|api]   # 변수 이름만(값은 보이지 않음)
 #
+# - Key Vault는 둘입니다. 각자 Azure 계정으로 열고, 팀 키 하나를 나눠 갖지 않습니다.
+#   - 팀(NOTELINK_VAULT, 기본 kv-notelink-team): 팀원이 봐도 되는 로컬 개발용 값. 모두 읽기 · 쓰기
+#     (Key Vault Secrets Officer). --deploy가 없으면 이쪽입니다.
+#   - 배포(NOTELINK_DEPLOY_VAULT, 기본 kv-notelink-dev, --deploy): 배포 App Service가 Key Vault 참조로
+#     읽는 값과 개인 키. 값을 보는 것은 완우 · 희재(Key Vault Secrets Officer)뿐이고, 나머지 팀원은
+#     이름 보기와 넣기 · 바꾸기만 합니다(사용자 지정 역할 NoteLink Secrets Writer: 값 읽기 없음).
+#     그래서 팀원의 pull --deploy는 Azure가 거부합니다.
 # - 먼저 Azure CLI를 설치하고 팀 디렉터리 계정으로 로그인합니다: az login --tenant <팀 테넌트 ID>
-#   권한은 Key Vault 역할로 정합니다. 읽기 · 쓰기(Key Vault Secrets Officer): 완우 · 희재,
-#   읽기(Key Vault Secrets User): 나머지. 팀 키 하나를 나눠 갖지 않고 각자 계정으로 엽니다.
-# - Key Vault 이름은 NOTELINK_VAULT(기본 kv-notelink-dev).
 # - secret 이름은 변수 이름에서 _만 -로 바꾼 것입니다(Key Vault 이름에는 _를 쓸 수 없음):
 #   ANTHROPIC-API-KEY ↔ ANTHROPIC_API_KEY. 배포(App Service)의 Key Vault 참조와 같은 secret을 씁니다.
 #   꺼 둔(disabled) secret은 받지 않습니다.
@@ -24,7 +28,8 @@
 #
 # 테스트: scripts/tests/env-vault.bats (source하면 main은 실행되지 않습니다)
 
-VAULT="${NOTELINK_VAULT:-kv-notelink-dev}"
+VAULT="${NOTELINK_VAULT:-kv-notelink-team}"
+DEPLOY_VAULT="${NOTELINK_DEPLOY_VAULT:-kv-notelink-dev}"
 ROOT="${ENV_VAULT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 APPS="ai api"
 VAR_RE='^[A-Z][A-Z0-9_]*$'
@@ -61,6 +66,17 @@ apps_of() {  # $1 = 변수
   printf '%s' "$out"
 }
 
+is_deploy() { [ "$VAULT" = "$DEPLOY_VAULT" ]; }
+
+# 이 Key Vault의 권한 안내
+role_hint() {
+  if is_deploy; then
+    echo "배포 Key Vault의 값은 완우 · 희재만 읽고, 나머지 팀원은 이름 보기와 push --deploy만 합니다(NoteLink Secrets Writer)"
+  else
+    echo "팀 Key Vault는 팀원 모두 Key Vault Secrets Officer입니다"
+  fi
+}
+
 need_az() {
   command -v az > /dev/null || die "Azure CLI(az)가 없습니다. 설치: https://learn.microsoft.com/cli/azure/install-azure-cli"
 }
@@ -78,7 +94,7 @@ vault_vars() {
   local names name var
   names=$(az_out keyvault secret list --vault-name "$VAULT" \
     --query "[?attributes.enabled].name" -o tsv) \
-    || die "Key Vault '$VAULT'를 읽지 못했습니다. az login(팀 디렉터리)과 읽기 권한(Key Vault Secrets User)을 확인하세요"
+    || die "Key Vault '$VAULT'의 이름 목록을 읽지 못했습니다. az login(팀 디렉터리)과 권한을 확인하세요. $(role_hint)"
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     var=$(var_name "$name")
@@ -139,7 +155,7 @@ pull() {  # $1 = 앱
       overridden=$((overridden + 1)); continue
     fi
     value=$(az_out keyvault secret show --vault-name "$VAULT" --name "$(secret_name "$var")" \
-      --query value -o tsv) || die "'$(secret_name "$var")'을 읽지 못했습니다"
+      --query value -o tsv) || die "'$(secret_name "$var")'의 값을 읽지 못했습니다. $(role_hint)"
     if ! env_line "$var" "$value" >> "$tmp"; then
       echo "env-vault: $var 값에 줄바꿈 · 작은따옴표 · 역슬래시가 있어 건너뜀(.env.local에 직접 넣으세요)" >&2
       skipped=$((skipped + 1)); continue
@@ -191,11 +207,16 @@ push() {  # $1 = 변수
   printf '%s' "$value" > "$tmp"
   az keyvault secret set --vault-name "$VAULT" --name "$(secret_name "$var")" \
     --file "$tmp" --encoding utf-8 --output none \
-    || die "Key Vault '$VAULT'에 쓰지 못했습니다. 쓰기 권한(Key Vault Secrets Officer)을 확인하세요"
+    || die "Key Vault '$VAULT'에 쓰지 못했습니다. 쓰기 권한을 확인하세요. $(role_hint)"
   rm -f "$tmp"
   trap - EXIT
-  echo "$(secret_name "$var") 저장함.${users:+ 쓰는 앱: ${users// / · }.} 팀원은 pull을 다시 하고," \
-    "배포 앱의 Key Vault 참조는 앱을 다시 시작하면(아니면 24시간 안에) 새 값을 씁니다"
+  if is_deploy; then
+    echo "$(secret_name "$var")를 배포 Key Vault '$VAULT'에 저장함.${users:+ 쓰는 앱: ${users// / · }.}" \
+      "배포 앱의 Key Vault 참조는 앱을 다시 시작하면(아니면 24시간 안에) 새 값을 씁니다"
+  else
+    echo "$(secret_name "$var")를 팀 Key Vault '$VAULT'에 저장함.${users:+ 쓰는 앱: ${users// / · }.}" \
+      "팀원은 pull을 다시 합니다(배포 값은 push --deploy)"
+  fi
 }
 
 list() {  # $1 = 앱(없으면 모두). 이름과 그 이름을 읽는 앱
@@ -217,11 +238,14 @@ list() {  # $1 = 앱(없으면 모두). 이름과 그 이름을 읽는 앱
 }
 
 main() {
-  case "${1:-}" in
-    pull) [ $# -eq 2 ] || die "사용법: $0 pull <ai|api>"; pull "$2" ;;
-    push) [ $# -eq 2 ] || die "사용법: $0 push <변수>"; push "$2" ;;
-    list) [ $# -le 2 ] || die "사용법: $0 list [ai|api]"; list "${2:-}" ;;
-    *) die "사용법: $0 pull <ai|api> · $0 push <변수> · $0 list [ai|api]" ;;
+  local cmd=${1:-}
+  [ $# -eq 0 ] || shift
+  if [ "${1:-}" = --deploy ]; then VAULT=$DEPLOY_VAULT; shift; fi
+  case "$cmd" in
+    pull) [ $# -eq 1 ] || die "사용법: $0 pull [--deploy] <ai|api>"; pull "$1" ;;
+    push) [ $# -eq 1 ] || die "사용법: $0 push [--deploy] <변수>"; push "$1" ;;
+    list) [ $# -le 1 ] || die "사용법: $0 list [--deploy] [ai|api]"; list "${1:-}" ;;
+    *) die "사용법: $0 pull|push|list [--deploy] … (pull <ai|api> · push <변수> · list [ai|api])" ;;
   esac
 }
 

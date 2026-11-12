@@ -2,27 +2,33 @@
 # scripts/env-vault.sh 테스트
 #   실행: npx --yes bats@1.13.0 scripts/tests
 # 중간 줄의 `! 명령`은 bats에서 실패로 잡히지 않아 `|| false`를 붙입니다.
-# az는 가짜 실행 파일(PATH 맨 앞)로 바꿉니다. 가짜 Key Vault는 $VAULT_DIR/<secret 이름> 파일 하나가
-# secret 하나이고, <이름>.disabled 파일이 있으면 꺼 둔 secret입니다. 받은 인자는 $AZ_LOG에 남깁니다.
+# az는 가짜 실행 파일(PATH 맨 앞)로 바꿉니다. 가짜 Key Vault는 $VAULTS/<Key Vault 이름>/<secret 이름>
+# 파일 하나가 secret 하나이고, <이름>.disabled 파일이 있으면 꺼 둔 secret입니다. 팀 Key Vault는 $VAULT_DIR,
+# 배포 Key Vault는 $DEPLOY_DIR. AZ_NO_READ=<Key Vault 이름>이면 그 Key Vault의 값 읽기(show)만 거부합니다
+# (이름 보기 · 넣기만 되는 NoteLink Secrets Writer). 받은 인자는 $AZ_LOG에 남깁니다.
 # 앱이 읽는 변수는 가짜 저장소의 apps/<앱>/.env.production(setup에서 만듦)입니다.
 
 setup() {
   TMP="$BATS_TEST_TMPDIR"
-  export ENV_VAULT_ROOT="$TMP/repo" NOTELINK_VAULT=kv-test
-  export VAULT_DIR="$TMP/vault" AZ_LOG="$TMP/az.log"
-  mkdir -p "$ENV_VAULT_ROOT/apps/ai" "$ENV_VAULT_ROOT/apps/api" "$VAULT_DIR" "$TMP/bin"
+  export ENV_VAULT_ROOT="$TMP/repo" NOTELINK_VAULT=kv-test NOTELINK_DEPLOY_VAULT=kv-deploy
+  export VAULTS="$TMP/vaults" AZ_LOG="$TMP/az.log"
+  export VAULT_DIR="$VAULTS/kv-test" DEPLOY_DIR="$VAULTS/kv-deploy"
+  mkdir -p "$ENV_VAULT_ROOT/apps/ai" "$ENV_VAULT_ROOT/apps/api" "$VAULT_DIR" "$DEPLOY_DIR" "$TMP/bin"
   cat > "$TMP/bin/az" <<'EOF'
 #!/usr/bin/env bash
 # 가짜 az: keyvault secret list · show · set만
 printf '%s\n' "$*" >> "$AZ_LOG"
 [ -n "${AZ_FAIL:-}" ] && { echo "ERROR: Forbidden" >&2; exit 1; }
-args=("$@"); name=""; file=""
+args=("$@"); name=""; file=""; vault=""
 for ((i = 0; i < ${#args[@]}; i++)); do
   case "${args[i]}" in
     --name) name=${args[i+1]} ;;
     --file) file=${args[i+1]} ;;
+    --vault-name) vault=${args[i+1]} ;;
   esac
 done
+[ -d "$VAULTS/$vault" ] || { echo "ERROR: vault not found" >&2; exit 4; }
+VAULT_DIR="$VAULTS/$vault"
 case "$1 $2 $3" in
   "keyvault secret list")
     for f in "$VAULT_DIR"/*; do
@@ -32,6 +38,7 @@ case "$1 $2 $3" in
       if [ ! -e "$f.disabled" ]; then printf '%s\r\n' "$n"; fi  # Windows az처럼 \r\n
     done ;;
   "keyvault secret show")
+    [ "${AZ_NO_READ:-}" = "$vault" ] && { echo "ERROR: Forbidden (getSecret)" >&2; exit 1; }
     [ -f "$VAULT_DIR/$name" ] || exit 3
     printf '%s\r\n' "$(cat "$VAULT_DIR/$name")" ;;
   "keyvault secret set")
@@ -287,7 +294,7 @@ ENV() { printf '%s' "$ENV_VAULT_ROOT/apps/$1/.env"; }
 
 @test "push: 쓰기 권한이 없으면 실패를 알린다" {
   run bash -c 'printf v | AZ_FAIL=1 "$1" push APP_ENV' _ "$SCRIPT"
-  [ "$status" -ne 0 ] && [[ "$output" == *"Key Vault Secrets Officer"* ]]
+  [ "$status" -ne 0 ] && [[ "$output" == *"쓰기 권한"* && "$output" == *"팀원 모두 Key Vault Secrets Officer"* ]]
 }
 
 # ---------- list ----------
@@ -314,5 +321,52 @@ ENV() { printf '%s' "$ENV_VAULT_ROOT/apps/$1/.env"; }
 
 @test "list: 읽지 못하면 로그인 · 권한 안내와 함께 실패한다" {
   AZ_FAIL=1 run bash "$SCRIPT" list ai
-  [ "$status" -ne 0 ] && [[ "$output" == *"Key Vault Secrets User"* ]]
+  [ "$status" -ne 0 ] && [[ "$output" == *"az login"* ]]
+}
+
+# ---------- 배포 Key Vault(--deploy) ----------
+
+@test "--deploy가 없으면 팀 Key Vault, 있으면 배포 Key Vault를 쓴다" {
+  put ANTHROPIC-API-KEY team-value
+  printf deploy-value > "$DEPLOY_DIR/ANTHROPIC-API-KEY"
+  run bash "$SCRIPT" pull ai
+  [ "$status" -eq 0 ] && grep -qx 'ANTHROPIC_API_KEY=team-value' "$(ENV ai)"
+  run bash "$SCRIPT" pull --deploy ai
+  [ "$status" -eq 0 ] && grep -qx 'ANTHROPIC_API_KEY=deploy-value' "$(ENV ai)"
+  grep -q "Key Vault 'kv-deploy'에서 받은" "$(ENV ai)"
+  run bash -c 'printf v2 | "$1" push --deploy VOYAGE_API_KEY' _ "$SCRIPT"
+  [ "$status" -eq 0 ] && [ "$(cat "$DEPLOY_DIR/VOYAGE-API-KEY")" = v2 ]
+  [ ! -e "$VAULT_DIR/VOYAGE-API-KEY" ]
+  [[ "$output" == *"배포 Key Vault 'kv-deploy'에 저장함"* && "$output" == *"다시 시작하면"* ]]
+  run bash -c 'printf v3 | "$1" push VOYAGE_API_KEY' _ "$SCRIPT"
+  [[ "$output" == *"팀 Key Vault 'kv-test'에 저장함"* && "$output" == *"pull을 다시"* ]]
+  run bash "$SCRIPT" list --deploy
+  [ "$output" = $'ANTHROPIC_API_KEY	ai
+VOYAGE_API_KEY	ai' ]
+}
+
+@test "--deploy: 값을 못 읽는 팀원(Writer)도 이름 보기 · 넣기는 되고, pull은 .env를 바꾸지 않고 실패한다" {
+  printf secret > "$DEPLOY_DIR/ANTHROPIC-API-KEY"
+  printf 'MINE=1
+' > "$(ENV ai)"
+  export AZ_NO_READ=kv-deploy
+  run bash "$SCRIPT" list --deploy ai
+  [ "$status" -eq 0 ] && [ "$output" = $'ANTHROPIC_API_KEY	ai' ]
+  run bash -c 'printf new | "$1" push --deploy ANTHROPIC_API_KEY' _ "$SCRIPT"
+  [ "$status" -eq 0 ] && [ "$(cat "$DEPLOY_DIR/ANTHROPIC-API-KEY")" = new ]
+  run bash "$SCRIPT" pull --deploy ai
+  [ "$status" -ne 0 ] && [[ "$output" == *"완우 · 희재만 읽고"* ]]
+  [[ "$output" != *new* ]]
+  [ "$(cat "$(ENV ai)")" = "MINE=1" ]
+  run bash "$SCRIPT" pull ai  # 팀 Key Vault는 그대로 읽힘(비어 있어 실패하지만 거부가 아님)
+  [[ "$output" != *"완우 · 희재만"* ]]
+}
+
+@test "--deploy: 사용법" {
+  run bash "$SCRIPT" pull --deploy
+  [ "$status" -ne 0 ] && [[ "$output" == *"pull [--deploy] <ai|api>"* ]]
+  run bash "$SCRIPT" list --deploy ai extra
+  [ "$status" -ne 0 ] && [[ "$output" == *"사용법"* ]]
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ] && [[ "$output" == *"사용법"* ]]
 }
