@@ -8,6 +8,7 @@ import { HealthController } from './health/health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
+import { UsersModule } from './modules/users/users.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
 import { TimetableModule } from './modules/timetable/timetable.module.js';
@@ -23,6 +24,10 @@ import { TimetableModule } from './modules/timetable/timetable.module.js';
       useFactory: createMongooseOptions,
     }),
     AuthModule,
+
+    // 내 프로필 조회, 수정 등 사용자 API
+    UsersModule,
+
     // ai_jobs 작업 넣기 · 진행 상태 · 취소 · 다시 시도(#175)
     AiJobsModule,
     // 상점 · 포인트(FR-59~63)

@@ -1,6 +1,6 @@
 import type { Model } from 'mongoose';
 import { Types } from 'mongoose';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { UserDocument } from '../src/modules/auth/schemas/user.schema.js';
 import type { SocialProfile } from '../src/modules/auth/social-login/social-provider.js';
@@ -46,7 +46,8 @@ function createFakeUsers() {
     );
   const notDeleted = (row: Row, f: { deletedAt?: null }) =>
     !('deletedAt' in f) || row.deletedAt === f.deletedAt;
-  const duplicate = () => Object.assign(new Error('E11000 duplicate key'), { code: 11000 });
+  const duplicate = (keyPattern: Record<string, number>) =>
+    Object.assign(new Error('E11000 duplicate key'), { code: 11000, keyPattern });
 
   const model = {
     findOneAndUpdate: (
@@ -80,7 +81,7 @@ function createFakeUsers() {
       }
       // 유일 인덱스: 이메일(문자열인 경우만), 소셜 계정(제공자 + 고유 번호)
       if (data.email !== null && rows.some((r) => r.email === data.email)) {
-        return Promise.reject(duplicate());
+        return Promise.reject(duplicate({ email: 1 }));
       }
       for (const s of data.socialAccounts) {
         const taken = rows.some((r) =>
@@ -88,7 +89,10 @@ function createFakeUsers() {
             (o) => o.provider === s.provider && o.providerUid === s.providerUid,
           ),
         );
-        if (taken) return Promise.reject(duplicate());
+        if (taken)
+          return Promise.reject(
+            duplicate({ 'socialAccounts.provider': 1, 'socialAccounts.providerUid': 1 }),
+          );
       }
       const row: Row = { ...data, _id: new Types.ObjectId(), deletedAt: null };
       rows.push(row);
@@ -132,6 +136,16 @@ function setup() {
 }
 
 describe('SocialUserService.findOrCreate', () => {
+  it('닉네임 중복이면 새 닉네임으로 재시도하여 가입한다', async () => {
+    const { service, model, rows } = setup();
+    const create = vi
+      .spyOn(model, 'create')
+      .mockRejectedValueOnce({ code: 11000, keyPattern: { nickname: 1 } });
+    const result = await service.findOrCreate('google', PROFILE);
+    expect(result.kind).toBe('signed_in');
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(rows[0]!.nickname).toMatch(/^사용자\d{4}$/);
+  });
   describe('처음 오는 사용자 (새 계정)', () => {
     it('새 사용자를 만들고 signed_in(created)을 돌려준다', async () => {
       const { service, rows } = setup();

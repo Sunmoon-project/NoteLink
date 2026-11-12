@@ -16,7 +16,12 @@ jest.mock('expo-secure-store', () => ({
   deleteItemAsync: jest.fn(async (k: string) => void mockDisk.delete(k)),
 }));
 const mockApi = {
-  me: { get: jest.fn(), update: jest.fn(), withdraw: jest.fn() },
+  me: {
+    get: jest.fn(),
+    update: jest.fn(),
+    withdraw: jest.fn(),
+    interestCategories: jest.fn(async () => []),
+  },
   study: {
     startSession: jest.fn(),
     pauseSession: jest.fn(async () => {}),

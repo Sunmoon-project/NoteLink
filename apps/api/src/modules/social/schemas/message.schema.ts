@@ -17,6 +17,9 @@ export class Message {
   @Prop({ type: String, default: null })
   text?: string | null;
 
+  @Prop({ type: String })
+  clientId?: string;
+
   @Prop({ type: Types.ObjectId, ref: 'Message' })
   chatMessageId?: Types.ObjectId;
 
@@ -35,3 +38,7 @@ export const MessageSchema = SchemaFactory.createForClass(Message);
 // 채팅 조회는 항상 "이 방의 메시지를 최신순(=_id 역순)"으로 하므로 복합 인덱스를 둡니다.
 // ObjectId(_id)는 생성 시각이 앞부분에 인코딩돼 있어 시간순 정렬·커서로 안전하게 쓸 수 있습니다.
 MessageSchema.index({ chatRoomId: 1, _id: -1 });
+MessageSchema.index(
+  { chatRoomId: 1, senderId: 1, clientId: 1 },
+  { unique: true, partialFilterExpression: { clientId: { $type: 'string' } } },
+);

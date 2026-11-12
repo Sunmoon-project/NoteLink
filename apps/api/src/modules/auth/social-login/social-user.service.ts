@@ -4,7 +4,11 @@ import { Model, type Types } from 'mongoose';
 
 import { User, type UserDocument } from '../schemas/user.schema.js';
 import type { SocialProviderName } from '../schemas/social-login-attempt.schema.js';
-import { initialNickname } from './initial-nickname.js';
+import {
+  initialNickname,
+  isNicknameConflict,
+  NICKNAME_CREATE_ATTEMPTS,
+} from './initial-nickname.js';
 import type { SocialProfile } from './social-provider.js';
 
 export type SocialUserResult =
@@ -43,28 +47,35 @@ export class SocialUserService {
     }
 
     // 3. 새 사용자
-    try {
-      const created = await this.users.create({
-        nickname: initialNickname(profile.name),
-        email: profile.email,
-        socialAccounts: [
-          {
-            provider,
-            providerUid: profile.providerUid,
-            email: profile.email,
-            linkedAt: new Date(),
-          },
-        ],
-        lastLoginAt: new Date(),
-      });
-      return { kind: 'signed_in', userId: created._id, created: true };
-    } catch (error) {
-      if (!isDuplicateKey(error)) throw error;
-      // 거의 동시에 들어온 다른 요청이 먼저 만들었다. 그 결과를 따른다
-      const winner = await this.signIn(provider, profile.providerUid);
-      if (winner) return { kind: 'signed_in', userId: winner, created: false };
-      return { kind: 'account_exists' }; // 같은 이메일을 가진 다른 계정과 겹쳤다
-    }
+    for (let attempt = 0; attempt < NICKNAME_CREATE_ATTEMPTS; attempt++)
+      try {
+        const created = await this.users.create({
+          nickname: initialNickname(attempt === 0 ? profile.name : null),
+          email: profile.email,
+          socialAccounts: [
+            {
+              provider,
+              providerUid: profile.providerUid,
+              email: profile.email,
+              linkedAt: new Date(),
+            },
+          ],
+          lastLoginAt: new Date(),
+        });
+        return { kind: 'signed_in', userId: created._id, created: true };
+      } catch (error) {
+        if (!isDuplicateKey(error)) throw error;
+        // 거의 동시에 들어온 다른 요청이 먼저 만들었다. 그 결과를 따른다
+        const winner = await this.signIn(provider, profile.providerUid);
+        if (winner) return { kind: 'signed_in', userId: winner, created: false };
+        if (isNicknameConflict(error)) {
+          if (attempt + 1 === NICKNAME_CREATE_ATTEMPTS) throw error;
+          continue;
+        }
+        if ((error as { keyPattern?: { email?: number } }).keyPattern?.email !== 1) throw error;
+        return { kind: 'account_exists' }; // 같은 이메일을 가진 다른 계정과 겹쳤다
+      }
+    throw new Error('닉네임을 생성하지 못했습니다');
   }
 
   /** 탈퇴하지 않은 사용자 중 이 소셜 계정을 가진 사람을 찾아 마지막 로그인 시각을 갱신한다 */

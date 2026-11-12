@@ -16,10 +16,7 @@ import {
   EmailCodeService,
 } from '../src/modules/auth/app-login/email-code.service.js';
 import { EmailProofService } from '../src/modules/auth/app-login/email-proof.service.js';
-import {
-  type MailSender,
-  MailUnavailableError,
-} from '../src/modules/mail/mail-sender.js';
+import { type MailSender, MailUnavailableError } from '../src/modules/mail/mail-sender.js';
 import { createFakeAuthCodes } from './support/fake-auth-codes.js';
 
 const JWT_CONFIG = {
@@ -72,7 +69,9 @@ function setup(options: { mailFails?: boolean; random?: (max: number) => number 
     create: (data: Partial<UserRow>) => {
       // 이메일 유일 인덱스: 탈퇴한 사용자도 포함해 같은 이메일이면 중복 키 오류
       if (data.email && users.some((u) => u.email === data.email)) {
-        return Promise.reject(Object.assign(new Error('E11000'), { code: 11000 }));
+        return Promise.reject(
+          Object.assign(new Error('E11000'), { code: 11000, keyPattern: { email: 1 } }),
+        );
       }
       const row: UserRow = {
         _id: new Types.ObjectId(),
@@ -89,7 +88,7 @@ function setup(options: { mailFails?: boolean; random?: (max: number) => number 
   const codes = new EmailCodeService(auth.model as never, JWT_CONFIG, options.random);
   const proofs = new EmailProofService(new JwtService(), JWT_CONFIG);
   const service = new AppSignupService(codes, proofs, mail, usersModel as never, TEST_COST);
-  return { service, codes, proofs, users, mails, auth };
+  return { service, codes, proofs, users, mails, auth, usersModel };
 }
 
 /** 오류가 나야 하는 호출에서 던져진 예외의 상태와 본문을 꺼낸다 */
@@ -499,6 +498,16 @@ describe('AppSignupService.verifyCode', () => {
 });
 
 describe('AppSignupService.signup', () => {
+  it('닉네임 중복 시 증표를 재사용하지 않고 새 닉네임으로 재시도한다', async () => {
+    const ctx = setup();
+    const token = await verifiedToken(ctx);
+    const create = vi
+      .spyOn(ctx.usersModel, 'create')
+      .mockRejectedValueOnce({ code: 11000, keyPattern: { nickname: 1 } });
+    await ctx.service.signup(token, PASSWORD);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(ctx.users).toHaveLength(1);
+  });
   describe('정상', () => {
     it('계정을 만든다 (이메일은 증표 안의 값이다)', async () => {
       const ctx = setup();

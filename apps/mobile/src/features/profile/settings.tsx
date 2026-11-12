@@ -20,7 +20,7 @@ import { env } from '@/lib/env';
 import { clearAccountState } from '@/lib/account';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
-import { INTERESTS } from '../auth/auth';
+import { interestLabels } from '@/lib/interest-categories';
 import { LoadError } from '../progress/load-error';
 import {
   Alert,
@@ -410,12 +410,23 @@ export function SettingsScreen() {
 export function AccountScreen() {
   const openFeature = useFeatureNavigation();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
+  const categories = useQuery({
+    queryKey: ['interest-categories'],
+    queryFn: api.me.interestCategories,
+  });
+  const labels = interestLabels(categories.data ?? []);
   const u = me.data;
   const rows: [string, string | undefined, (() => void) | null][] = [
     ['닉네임', u?.nickname, () => router.push('/(tabs)/profile/nickname')],
     [
       '관심 분야',
-      u?.interestCategoryIds?.length ? u.interestCategoryIds.join(' · ') : '선택 안 함',
+      u?.interestCategoryIds?.length
+        ? categories.data
+          ? u.interestCategoryIds.map((id) => labels.get(id) ?? '사용할 수 없는 분야').join(' · ')
+          : categories.isError
+            ? '관심 분야를 불러오지 못했어요'
+            : '불러오는 중…'
+        : '선택 안 함',
       () => router.push('/(tabs)/profile/interests'),
     ],
     ['이메일', u?.email ?? undefined, null],
@@ -503,13 +514,26 @@ export function NicknameScreen() {
 export function InterestsScreen() {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
+  const categories = useQuery({
+    queryKey: ['interest-categories'],
+    queryFn: api.me.interestCategories,
+  });
+  const labels = interestLabels(categories.data ?? []);
   const saved = me.data?.interestCategoryIds ?? [];
+  const topLevelCategories = categories.data?.filter((category) => category.parentId == null) ?? [];
+  const selectableIds = new Set(topLevelCategories.map((category) => category._id));
   // 건드리기 전에는 저장된 값을 보여 준다(돌아와 다시 읽혀도 고르던 것이 덮이지 않게, 고른 뒤에는 내 값)
-  const [picked, setPicked] = useState<string[] | null>(null);
-  const now = picked ?? saved;
+  const [picked, setPicked] = useState<{ userId: string; ids: string[] } | null>(null);
+  const now = picked && picked.userId === me.data?._id ? picked.ids : saved;
   const changed = now.length !== saved.length || now.some((x) => !saved.includes(x));
-  const toggle = (x: string) =>
-    setPicked(now.includes(x) ? now.filter((y) => y !== x) : [...now, x]);
+  const unavailable = categories.data ? now.filter((id) => !selectableIds.has(id)) : [];
+  const toggle = (x: string) => {
+    if (!me.data) return;
+    setPicked({
+      userId: me.data._id,
+      ids: now.includes(x) ? now.filter((y) => y !== x) : [...now, x],
+    });
+  };
   // 저장 응답이 늦게 와도 화면을 떠났거나(뒤로 · 다른 탭) 가려졌으면 뒤로 가지 않고,
   // 계정이 바뀌었으면 지금 계정 캐시에 넣지 않는다
   const here = useRef(true);
@@ -540,14 +564,20 @@ export function InterestsScreen() {
       toast('관심 분야를 바꿨어요');
     },
   });
-  if (me.isPending) return <Loading />;
+  if ((!me.data && me.isLoading) || (!categories.data && categories.isLoading)) return <Loading />;
   // 못 읽었으면 빈 목록으로 열어 저장된 관심 분야를 덮어쓰지 않게 다시 읽게 한다
-  if (!me.data)
+  if (!me.data || !categories.data)
     return (
       <Canvas>
         <Screen>
           <Header title="관심 분야" large={false} />
-          <LoadError message="관심 분야를 불러오지 못했어요" retry={() => me.refetch()} />
+          <LoadError
+            message="관심 분야를 불러오지 못했어요"
+            retry={() => {
+              void me.refetch();
+              void categories.refetch();
+            }}
+          />
         </Screen>
       </Canvas>
     );
@@ -555,23 +585,44 @@ export function InterestsScreen() {
     <Canvas>
       <Screen
         footer={
-          <Btn disabled={!changed} loading={save.isPending} onPress={() => save.mutate()}>
+          <Btn
+            disabled={!changed || unavailable.length > 0}
+            loading={save.isPending}
+            onPress={() => save.mutate()}
+          >
             저장
           </Btn>
         }
       >
         <Header title="관심 분야" sub="공부하고 있는 분야를 골라 주세요. 여러 개 골라도 돼요" />
         <View className="mt-2 flex-row flex-wrap gap-2">
-          {INTERESTS.map((x) => (
+          {topLevelCategories.map((x) => (
             // 저장 중에 바꾸면 요청에 안 들어간 채 돌아가 버리므로 잠근다
-            <Chip key={x} on={now.includes(x)} disabled={save.isPending} onPress={() => toggle(x)}>
-              {x}
+            <Chip
+              key={x._id}
+              on={now.includes(x._id)}
+              disabled={save.isPending}
+              onPress={() => toggle(x._id)}
+            >
+              {labels.get(x._id)}
+            </Chip>
+          ))}
+          {unavailable.map((id, index) => (
+            <Chip key={id} on disabled={save.isPending} onPress={() => toggle(id)}>
+              {labels.has(id)
+                ? `${labels.get(id)} · 제거`
+                : `사용할 수 없는 분야 ${index + 1} · 제거`}
             </Chip>
           ))}
         </View>
+        {topLevelCategories.length === 0 && <Text>선택할 수 있는 관심 분야가 없어요.</Text>}
+        {unavailable.length > 0 && (
+          <Text>현재 선택할 수 없는 관심 분야를 제거한 뒤 저장해 주세요.</Text>
+        )}
         <Text className="mt-4 text-caption text-sub">
           {now.length ? `${now.length}개 골랐어요` : '고르지 않아도 괜찮아요'}
         </Text>
+        {save.isError && <Text>저장하지 못했어요. 다시 시도해 주세요.</Text>}
       </Screen>
     </Canvas>
   );

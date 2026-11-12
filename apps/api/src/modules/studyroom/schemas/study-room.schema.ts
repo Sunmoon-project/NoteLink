@@ -38,7 +38,7 @@ export type StudyRoomDocument = HydratedDocument<StudyRoom>;
 
 @Schema({ collection: 'study_rooms', timestamps: true })
 export class StudyRoom {
-  @Prop({ required: true })
+  @Prop({ required: true, unique: true })
   title: string;
 
   @Prop({ type: Types.ObjectId, ref: 'Category', required: true })
