@@ -16,8 +16,29 @@ jest.mock('expo-haptics', () => ({
   NotificationFeedbackType: { Success: 'success' },
 }));
 
+// 3D(GL)는 기기에서만: 어떤 얼굴을 그리는지만 글로 본다
+jest.mock('../features/tutor/avatar3d', () => {
+  const { Text: T } = jest.requireActual('react-native');
+  return { Avatar3D: ({ avatarId }: { avatarId: string }) => <T>{`3D:${avatarId}`}</T> };
+});
+
 // PR #40 리뷰
 describe('상점', () => {
+  it('아바타를 누르면 선생님이 될 3D 얼굴을 미리 보여 주고, 테마는 그림을 보여 준다', async () => {
+    const items = await api.shop.items({});
+    const avatar = items.find((i) => i.category === 'avatar')!;
+    const theme = items.find((i) => i.category !== 'avatar')!;
+    const view = await renderScreen(<ShopScreen />);
+    await fireEvent.press((await screen.findAllByText(avatar.name))[0]!);
+    expect(await screen.findByLabelText(`${avatar.name} 3D 미리보기`)).toBeTruthy();
+    expect(screen.getByText(`3D:${avatar._id}`)).toBeTruthy();
+    await view.unmount();
+    await renderScreen(<ShopScreen />);
+    await fireEvent.press((await screen.findAllByText(theme.name))[0]!);
+    expect(await screen.findAllByLabelText(`${theme.name} 미리보기`)).not.toHaveLength(0);
+    expect(screen.queryByLabelText(`${theme.name} 3D 미리보기`)).toBeNull();
+  });
+
   it('찜 탭도 고른 정렬을 따른다', async () => {
     const all = await api.shop.items({ sort: 'price' });
     const wished = all

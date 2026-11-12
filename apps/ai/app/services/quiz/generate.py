@@ -372,7 +372,9 @@ class Made:
     why: list[str] = field(default_factory=list)
     down: int = 0  # 호출이 실패한 시도 수
     tries: int = 0
-    rejected: int = 0  # down 중 서버가 요청을 거절한 생성 호출(LlmRejectedError, #262)
+    # down 중 서버가 요청을 거절한 시도(LlmRejectedError, #262): 생성 호출뿐 아니라 검사 호출
+    # (정답 둘 검사 · 검사 모델 풀기)이 모두 거절된 시도도 셈(#272)
+    rejected: int = 0
     answered: bool = False  # 생성 호출이 한 번이라도 답을 받음(학교 LLM이 답함, #247)
     group_clash: int = 0  # 분류 유형 초안이 세트 안 정답 겹침으로 떨어진 수(#282)
 
@@ -937,6 +939,7 @@ def gen_one(
             k = k2 if k2 is not None else k
             if unchecked:  # 검사하지 못한 초안은 쓰지 않음
                 out.down += 1
+                out.rejected += unchecked == "refused"
                 out.why = ["정답 둘 검사 호출이 실패함"]
                 continue
         if not why and k is not None:
@@ -966,8 +969,9 @@ def gen_one(
                     break
                 notes = f"\n앞서 만든 문제의 문제점: {'; '.join(why)} — 다른 문장으로 새로 만든다. "
                 continue
-            if verdict == "down":
+            if verdict in ("down", "refused"):
                 out.down += 1
+                out.rejected += verdict == "refused"
                 out.why = [said]
                 continue
             if verdict == "bad":  # 답 모양 오류: 재시도 지시에 문제점으로 넣지 않음
