@@ -6,7 +6,7 @@ import { seoulDate } from '../session/study-time.js';
 import type { SetWeeklyGoalDto } from './dto/set-weekly-goal.dto.js';
 import { DailyRecord } from './schemas/daily-record.schema.js';
 import { WeeklyGoal } from './schemas/weekly-goal.schema.js';
-import { addDays, sumRange, weekStartOf } from './week.js';
+import { addDays, daysBetween, sumRange, weekStartOf } from './week.js';
 
 /** 앱에 내려주는 이번 주 목표 (공유 계약 WeeklyGoal) */
 export interface WeeklyGoalView {
@@ -15,6 +15,15 @@ export interface WeeklyGoalView {
     targetMin: number;
     notify80: boolean;
     recentAvgMin: number;
+}
+
+/** 앱에 내려주는 이번 주 요약 (공유 계약 WeeklySummary) */
+export interface WeeklySummaryView {
+    weekStart: string;
+    totalSec: number;
+    diffFromLastWeekSec: number;
+    goalMin: number;
+    days: { studyDate: string; totalSec: number }[];
 }
 
 type GoalLean = WeeklyGoal & { _id: Types.ObjectId };
@@ -32,6 +41,32 @@ export class ProgressService {
         @InjectModel(DailyRecord.name) private readonly dailyModel: Model<DailyRecord>,
         @InjectModel(WeeklyGoal.name) private readonly goalModel: Model<WeeklyGoal>,
     ) { }
+
+    /** 이번 주(월~일) 요약: 합계, 지난주 같은 요일까지와의 차이, 요일별 시간, 목표 */
+    async weekly(userId: string, now = new Date()): Promise<WeeklySummaryView> {
+        const owner = new Types.ObjectId(userId);
+        const today = seoulDate(now);
+        const weekStart = weekStartOf(today);
+        const lastStart = addDays(weekStart, -7);
+
+        const [totals, goal] = await Promise.all([
+            this.dayTotals(owner, lastStart, addDays(weekStart, 6)),
+            this.findGoal(owner, weekStart),
+        ]);
+
+        const passed = daysBetween(weekStart, today) + 1; // 월요일부터 오늘까지 며칠
+        return {
+            weekStart,
+            totalSec: sumRange(totals, weekStart, 7),
+            // 지난주 전체가 아니라 지난주 같은 요일까지와 비교한다
+            diffFromLastWeekSec: sumRange(totals, weekStart, passed) - sumRange(totals, lastStart, passed),
+            goalMin: goal?.targetMin ?? DEFAULT_TARGET_MIN,
+            days: Array.from({ length: 7 }, (_, i) => {
+                const studyDate = addDays(weekStart, i);
+                return { studyDate, totalSec: totals.get(studyDate) ?? 0 };
+            }),
+        };
+    }
 
     /** 이번 주 목표 (+ 목표를 정할 때 참고할 최근 4주 평균) */
     async getWeeklyGoal(userId: string, now = new Date()): Promise<WeeklyGoalView> {

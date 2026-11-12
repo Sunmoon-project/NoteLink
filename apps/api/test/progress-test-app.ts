@@ -9,6 +9,7 @@ import { GoalsController } from '../src/modules/progress/goals.controller.js';
 import { ProgressService } from '../src/modules/progress/progress.service.js';
 import { DailyRecord } from '../src/modules/progress/schemas/daily-record.schema.js';
 import { WeeklyGoal } from '../src/modules/progress/schemas/weekly-goal.schema.js';
+import { StudyProgressController } from '../src/modules/progress/study-progress.controller.js';
 import { TEST_USER_ID } from './shop-test-app.js';
 
 // shop-test-app.ts의 AUTH 헤더("Bearer test-token")와 같은 토큰만 통과시킨다
@@ -20,7 +21,7 @@ export async function createProgressTestApp(fakes: {
     weeklyGoal: object;
 }): Promise<INestApplication> {
     const moduleRef = await Test.createTestingModule({
-        controllers: [GoalsController],
+        controllers: [GoalsController, StudyProgressController],
         providers: [
             ProgressService,
             { provide: getModelToken(DailyRecord.name), useValue: fakes.dailyRecord },

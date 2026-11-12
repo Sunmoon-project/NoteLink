@@ -6,6 +6,7 @@ import { GoalsController } from './goals.controller.js';
 import { ProgressService } from './progress.service.js';
 import { DailyRecord, DailyRecordSchema } from './schemas/daily-record.schema.js';
 import { WeeklyGoal, WeeklyGoalSchema } from './schemas/weekly-goal.schema.js';
+import { StudyProgressController } from './study-progress.controller.js';
 
 @Module({
     imports: [
@@ -15,7 +16,7 @@ import { WeeklyGoal, WeeklyGoalSchema } from './schemas/weekly-goal.schema.js';
         ]),
         AuthModule, // 로그인 확인(JwtAuthGuard)에 필요한 도구를 가져온다
     ],
-    controllers: [GoalsController],
+    controllers: [GoalsController, StudyProgressController],
     providers: [ProgressService],
 })
 export class ProgressModule { }
