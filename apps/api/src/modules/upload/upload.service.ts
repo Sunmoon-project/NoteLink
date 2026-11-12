@@ -8,25 +8,22 @@ import {
 } from '@azure/storage-blob';
 import {
   BadRequestException,
-  HttpException,
-  HttpStatus,
   Inject,
   Injectable,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES, UPLOAD_RULES, UploadSasBody, type UploadTarget } from '@notelink/shared';
-import { Model, Types } from 'mongoose';
 
 import type { StorageConfig } from '../../config/storage.config.js';
-import { UploadTicket } from './schemas/upload-ticket.schema.js';
 
 export const STORAGE_CONFIG = Symbol('STORAGE_CONFIG');
 /** 올릴 주소가 유효한 시간 */
 export const UPLOAD_SAS_MINUTES = 15;
-/** 한 사용자가 ISSUE_WINDOW_MS 동안 받을 수 있는 주소 수. 노트 하나가 50장까지라 그보다 넉넉히 둔다 */
-export const ISSUE_LIMIT = 100;
-export const ISSUE_WINDOW_MS = 10 * 60_000;
+/**
+ * 올린 파일이 놓이는 임시 경로. 여기 있는 파일은 아직 확인되지 않은 것이라 그대로 쓰지 않는다.
+ * 자료를 등록할 때 서버가 실제 크기를 확인하고 보관 경로로 옮기며, 남은 파일은 스토리지 수명 주기 규칙이 지운다
+ */
+export const UPLOAD_PREFIX = 'incoming';
 
 /** 확장자의 표준 형식. 앱이 보낸 형식이 허용 목록에 없을 때 쓴다 */
 const TYPE_BY_EXT: Record<string, string> = {
@@ -47,21 +44,17 @@ const notAllowed = (message: string) =>
 export class UploadService {
   private readonly credential: StorageSharedKeyCredential | null;
 
-  constructor(
-    @Inject(STORAGE_CONFIG) private readonly storage: StorageConfig | null,
-    @InjectModel(UploadTicket.name) private readonly tickets: Model<UploadTicket>,
-  ) {
+  constructor(@Inject(STORAGE_CONFIG) private readonly storage: StorageConfig | null) {
     this.credential = storage
       ? new StorageSharedKeyCredential(storage.accountName, storage.accountKey)
       : null;
   }
 
   /**
-   * 앱이 Blob에 바로 올릴 주소. 쓰기만 되고, 사용자 폴더 아래 새 이름으로만 올라간다.
-   * sizeBytes는 앱이 알린 값이고 SAS로는 크기를 묶을 수 없다. 그래서 내준 주소를 기록해 두고(UploadTicket),
-   * 실제 크기는 주소가 만료된 뒤 UploadSweeper가 확인해 상한을 넘으면 지운다
+   * 앱이 Blob에 바로 올릴 주소. 임시 경로의 사용자 폴더 아래 새 이름으로 한 번만 올라간다.
+   * sizeBytes는 앱이 알린 값이고 SAS로는 크기를 묶을 수 없다. 실제 크기는 자료를 등록할 때 Blob에서 다시 확인해야 한다
    */
-  async createTarget(userId: string, raw: unknown, now: Date = new Date()): Promise<UploadTarget> {
+  createTarget(userId: string, raw: unknown, now: Date = new Date()): UploadTarget {
     const body = UploadSasBody.safeParse(raw);
     if (!body.success)
       throw new BadRequestException({
@@ -83,38 +76,21 @@ export class UploadService {
         message: '지금은 파일을 올릴 수 없어요',
       });
 
-    const ownerId = new Types.ObjectId(userId);
-    const recent = await this.tickets.countDocuments({
-      ownerId,
-      createdAt: { $gte: new Date(now.getTime() - ISSUE_WINDOW_MS) },
-    });
-    if (recent >= ISSUE_LIMIT)
-      throw new HttpException(
-        {
-          code: ERROR_CODES.RATE_LIMITED,
-          message: '파일을 너무 많이 올리고 있어요. 잠시 뒤에 다시 해 주세요',
-          retryAfterSeconds: 60,
-        },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-
     const sent = body.data.contentType.toLowerCase();
     const contentType = (rule.types as readonly string[]).includes(sent)
       ? sent
       : (TYPE_BY_EXT[ext] ?? 'application/octet-stream');
 
     // 원래 파일 이름은 경로에 넣지 않는다(이름 노출 · 인코딩 문제)
-    const blobName = `${userId}/${randomUUID()}.${ext}`;
+    const blobName = `${UPLOAD_PREFIX}/${userId}/${randomUUID()}.${ext}`;
     const expiresOn = new Date(now.getTime() + UPLOAD_SAS_MINUTES * 60_000);
-    // 기록을 남기지 못하면 주소도 내주지 않는다(확인 · 정리할 수 없는 파일이 생기지 않게)
-    await this.tickets.create({ ownerId, blobName, maxBytes: rule.maxBytes, expiresAt: expiresOn });
-
     const https = this.storage.blobEndpoint.startsWith('https://');
     const sas = generateBlobSASQueryParameters(
       {
         containerName: this.storage.container,
         blobName,
-        permissions: BlobSASPermissions.parse('cw'),
+        // 만들기만. 쓰기(w)를 주면 덮어쓰기 · lease(서버가 지우지 못하게 잠그기)까지 된다
+        permissions: BlobSASPermissions.parse('c'),
         expiresOn,
         // 로컬 에뮬레이터(http)에서도 쓸 수 있게 주소가 https일 때만 https로 묶는다
         protocol: https ? SASProtocol.Https : SASProtocol.HttpsAndHttp,

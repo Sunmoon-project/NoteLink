@@ -13,10 +13,7 @@ export class UploadController {
 
   @Post('sas')
   @HttpCode(HttpStatus.OK)
-  async sas(
-    @Req() req: AuthenticatedRequest,
-    @Body() body: unknown,
-  ): Promise<{ data: UploadTarget }> {
-    return { data: await this.uploads.createTarget(requireUserId(req), body) };
+  sas(@Req() req: AuthenticatedRequest, @Body() body: unknown): { data: UploadTarget } {
+    return { data: this.uploads.createTarget(requireUserId(req), body) };
   }
 }
