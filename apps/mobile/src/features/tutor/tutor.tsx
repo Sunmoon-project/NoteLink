@@ -200,7 +200,8 @@ function TutorStage({
           accessibilityHint="누를 때마다 표정을 바꾸며 한마디 해요"
           onPress={poke}
         >
-          <Animated.View style={hopStyle}>
+          {/* 3D(GL) 화면이 터치를 가져가 누르기가 빗나가지 않게, 얼굴은 터치를 받지 않는다 */}
+          <Animated.View style={hopStyle} pointerEvents="none">
             {/* 퀴즈처럼 다른 화면이 위에 쌓이면 3D를 내려 그리기 반복을 멈춘다 */}
             {focused && <Avatar3D mood={face} avatarId={avatarId} size={BIG} />}
           </Animated.View>
