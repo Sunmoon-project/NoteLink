@@ -8,7 +8,7 @@ import * as SecureStore from 'expo-secure-store';
 import { BUDDY_LINES, TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
 import { AvatarCheer, ENCOURAGE, PRAISE } from '../features/tutor/cheer';
 import { AvatarTeacherScreen } from '../features/tutor/teacher';
-import { STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
+import { FOLDER_STEPS, STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
 import { useAuth } from '../stores/auth';
 import { TutorScreen } from '../features/tutor/tutor';
 import { renderScreen, setParams } from '../test-utils';
@@ -478,10 +478,10 @@ describe('퀴즈 · 복습 문제의 아바타 한마디', () => {
 describe('처음 안내', () => {
   beforeEach(() => {
     useAuth.setState({ userId: 'u1' });
-    useTour.setState({ step: 0 });
+    useTour.setState({ step: 0, kind: 'main', afterFolder: false });
   });
 
-  it('실제 화면(홈 → 노트 → 퀴즈 → 홈)을 옮겨 다니며 + 버튼 · 퀴즈 만들기 · 오답 복습을 설명하고 요약한 뒤 기록한다', async () => {
+  it('실제 화면(홈 → 노트 → 퀴즈 → 홈)을 옮겨 다니며 단계마다 설명하고, 끝나면 기록한다', async () => {
     await renderScreen(<TourCoach />);
     expect(screen.getByText(STEPS[0]!.title)).toBeTruthy();
     expect(router.navigate).toHaveBeenLastCalledWith('/');
@@ -490,16 +490,18 @@ describe('처음 안내', () => {
       expect(await screen.findByText(s.title)).toBeTruthy();
       expect(router.navigate).toHaveBeenLastCalledWith(s.route);
     }
-    expect(STEPS.map((s) => s.route)).toEqual(['/', '/note', '/quiz', '/quiz', '/']);
-    // 짚는 자리: 노트 탭 + 버튼, 퀴즈 만들기
-    expect(STEPS.map((s) => (s.spot && 'target' in s.spot ? s.spot.target : null))).toEqual([
-      null,
-      'note-add',
-      'quiz-make',
-      null,
-      null,
+    expect(STEPS.map((s) => s.route)).toEqual([
+      '/',
+      '/note',
+      '/note',
+      '/note',
+      '/quiz',
+      '/quiz',
+      '/quiz',
+      '/',
     ]);
-    // 마지막은 세 가지 요약
+    // 기존 흐름에 더한 것: 틀린 문제 복습 단계, 마지막 ①②③ 요약
+    expect(STEPS.some((s) => s.title === '복습: 틀린 문제')).toBe(true);
     expect(STEPS.at(-1)!.body).toMatch(/① .*② .*③ /);
     await fireEvent.press(screen.getByText('첫 학습 폴더 만들기'));
     await waitFor(() =>
@@ -509,6 +511,25 @@ describe('처음 안내', () => {
     // 버튼 이름대로 폴더 만들기를 연다
     await waitFor(() => expect(router.push).toHaveBeenLastCalledWith('/note-new/tag'));
     expect(useTour.getState().step).toBe(-1);
+    // 폴더를 만들면 폴더 안 + 버튼 안내로 잇는다
+    expect(useTour.getState().afterFolder).toBe(true);
+  });
+
+  it('첫 폴더 안내: 폴더 안 + 버튼을 짚어 올리는 방법을 알려 주고, 화면은 옮기지 않는다', async () => {
+    useTour.setState({ step: 0, kind: 'folder' });
+    jest.mocked(router.navigate).mockClear();
+    jest.mocked(router.push).mockClear();
+    await renderScreen(<TourCoach />);
+    expect(screen.getByText(FOLDER_STEPS[0]!.title)).toBeTruthy();
+    expect(FOLDER_STEPS[0]!.spot).toEqual({ target: 'folder-add', tab: 1 });
+    expect(FOLDER_STEPS[0]!.body).toMatch(/학습 자료 .*녹음 .*필기/);
+    expect(screen.getByText(`1 / ${FOLDER_STEPS.length}`)).toBeTruthy();
+    await fireEvent.press(screen.getByText('다음'));
+    expect(await screen.findByText(FOLDER_STEPS[1]!.title)).toBeTruthy();
+    await fireEvent.press(screen.getByText('시작하기'));
+    await waitFor(() => expect(useTour.getState().step).toBe(-1));
+    expect(router.navigate).not.toHaveBeenCalled();
+    expect(router.push).not.toHaveBeenCalled();
   });
 
   it('건너뛰기는 한 번 더 묻고, 계속 보기를 고르면 안내에 남는다', async () => {

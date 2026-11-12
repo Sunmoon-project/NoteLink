@@ -38,10 +38,24 @@ export async function rememberToured(id: string) {
     await SecureStore.setItemAsync(TOURED_KEY, JSON.stringify([...ids, id])).catch(() => {});
 }
 
-/** 안내 진행 상태. step이 -1이면 닫혀 있다 */
-export const useTour = create<{ step: number; go: (step: number) => void }>((set) => ({
+/**
+ * 안내 진행 상태. step이 -1이면 닫혀 있다. kind: 처음 안내(main) · 첫 폴더를 만든 뒤 폴더 안 + 버튼 안내(folder).
+ * afterFolder: 처음 안내 끝에 「첫 학습 폴더 만들기」를 눌러, 폴더를 만들면 폴더 안내를 이어 연다
+ */
+export const useTour = create<{
+  step: number;
+  kind: 'main' | 'folder';
+  afterFolder: boolean;
+  go: (step: number) => void;
+  start: (kind: 'main' | 'folder') => void;
+  setAfterFolder: (v: boolean) => void;
+}>((set) => ({
   step: -1,
+  kind: 'main',
+  afterFolder: false,
   go: (step) => set({ step }),
+  start: (kind) => set({ kind, step: 0 }),
+  setAfterFolder: (afterFolder) => set({ afterFolder }),
 }));
 
 /** 가입을 마치고 처음 들어오면 한 번 안내를 연다(탭 화면에서 부름) */
@@ -51,7 +65,7 @@ export function useTourOnce(ready: boolean) {
     if (!ready || !userId) return;
     let live = true;
     void touredIds().then((ids) => {
-      if (live && !ids.includes(userId)) useTour.getState().go(0);
+      if (live && !ids.includes(userId)) useTour.getState().start('main');
     });
     return () => {
       live = false;
@@ -81,57 +95,91 @@ const measure = (name: string) =>
     view.measureInWindow((x, y, w, h) => resolve(w > 0 ? { x, y, w, h } : null));
   });
 
-type Spot = { tab: number } | { target: string; tab: number } | null;
+type Spot = { tab: number } | { target: string; tab: number } | { buddy: true } | null;
 type Step = {
-  route: Href;
+  /** 이 단계를 보여 줄 화면. 없으면 지금 화면 그대로(폴더 안내) */
+  route?: Href;
   spot: Spot;
-  /** 흐름(자료 올리기 0 · 퀴즈 만들기 1 · 오답 복습 2) 중 지금 단계 */
+  /** 흐름(정리 0 · 학습 1 · 복습 2) 중 지금 단계 */
   flow: number | null;
   title: string;
   body: string;
 };
-/**
- * 실제 화면을 옮겨 다니며 + 버튼으로 자료 올리기 → 퀴즈 만들기 → 틀린 문제 복습을 짚어 주고,
- * 마지막에 세 가지를 한 번에 요약한다
- */
+/** 실제 화면을 옮겨 다니며 정리 → 학습 → 복습에서 무엇을 누르는지 짚어 준다 */
 export const STEPS: Step[] = [
   {
     route: '/',
     spot: null,
     flow: null,
     title: '안녕하세요, 아바타 선생님이에요',
-    body: '자료 올리기, 퀴즈 만들기, 틀린 문제 복습을 실제 화면에서 차례로 알려 드릴게요.',
+    body: '공부를 정리, 학습, 복습 순서로 이어 갈 수 있도록 실제 화면을 하나씩 보여 드릴게요.',
+  },
+  {
+    route: '/note',
+    spot: { tab: 1 },
+    flow: 0,
+    title: '정리: 노트 탭',
+    body: '강의 녹음, 필기 사진, 문서를 과목별 학습 폴더에 모아 두는 곳이에요.',
   },
   {
     route: '/note',
     spot: { target: 'note-add', tab: 1 },
     flow: 0,
-    title: '자료 올리기: + 버튼',
-    body: '노트 탭의 + 버튼으로 과목별 학습 폴더를 만들어요. 폴더에 들어가 + 버튼을 한 번 더 누르면 학습 자료(PDF · 스캔), 녹음(파일 · 실시간), 필기(촬영 · 사진) 중 하나를 골라 올릴 수 있어요. 올린 자료는 제가 AI로 요약해 드려요.',
+    title: '정리: 자료 올리기',
+    body: '학습 폴더를 만든 뒤 여기를 눌러 실시간 녹음, 녹음 파일, 필기 촬영, 문서 중 하나를 올려 보세요. 올린 자료는 제가 AI로 요약하고 핵심을 정리해 드려요.',
   },
   {
-    route: '/quiz',
-    spot: { target: 'quiz-make', tab: 2 },
+    route: '/note',
+    spot: { buddy: true },
     flow: 1,
-    title: '퀴즈 만들기',
-    body: '퀴즈 탭에서 「퀴즈 만들기」를 누르고, 정리가 끝난 노트를 고른 뒤 만들기를 눌러요. 문제가 다 만들어지면 바로 풀 수 있어요.',
+    title: '학습: 저에게 물어보기',
+    body: '정리가 끝난 노트를 열면 이 자리에 제가 있어요. 저를 누르고 궁금한 걸 물어보세요. 노트와 퀴즈에 있는 내용으로만 설명해 드려요.',
   },
   {
     route: '/quiz',
     spot: { tab: 2 },
     flow: 2,
-    title: '틀린 문제 복습',
-    body: '퀴즈에서 틀린 문제는 오답 노트에 모아 둬요. 하루에 처음 앱을 열면 지난번에 틀린 문제가 나와서 다시 풀고, 맞힌 문제는 노트에서 빠져요. 결과 화면의 「유사 퀴즈」로 비슷한 문제도 더 풀 수 있어요.',
+    title: '복습: 퀴즈 탭',
+    body: '정리한 노트로 퀴즈를 풀며 복습하는 곳이에요. 맞히면 칭찬하고, 틀리면 해설과 함께 응원해 드릴게요.',
+  },
+  {
+    route: '/quiz',
+    spot: { target: 'quiz-make', tab: 2 },
+    flow: 2,
+    title: '복습: 퀴즈 만들기',
+    body: '여기서 노트를 골라 퀴즈를 만들어요. 틀린 문제는 유사 퀴즈와 오늘의 복습으로 다시 나와서 오래 기억할 수 있어요.',
+  },
+  {
+    route: '/quiz',
+    spot: { tab: 2 },
+    flow: 2,
+    title: '복습: 틀린 문제',
+    body: '퀴즈에서 틀린 문제는 오답 노트에 모아 둬요. 하루에 처음 앱을 열면 지난번에 틀린 문제가 나와 다시 풀고, 맞힌 문제는 노트에서 빠져요.',
   },
   {
     route: '/',
     spot: { tab: 0 },
     flow: null,
-    title: '한 번에 정리하면',
-    body: '① + 버튼으로 폴더를 만들고 자료를 올려요. ② 정리된 노트로 퀴즈를 만들어요. ③ 틀린 문제는 매일 처음 열 때 복습해요. 먼저 첫 학습 폴더를 만들어 볼까요?',
+    title: '이제 시작해 볼까요?',
+    body: '정리하면 ① 노트 탭에서 폴더를 만들고 자료를 올려요 ② 정리된 노트를 저에게 묻고 퀴즈로 확인해요 ③ 틀린 문제는 매일 복습해요. 먼저 첫 학습 폴더를 만들어 봐요.',
   },
 ];
-const FLOW = ['자료 올리기', '퀴즈 만들기', '오답 복습'];
+/** 첫 폴더를 만든 뒤 그 폴더 안에서 이어 가는 안내: + 버튼으로 올리는 방법과 그다음 */
+export const FOLDER_STEPS: Step[] = [
+  {
+    spot: { target: 'folder-add', tab: 1 },
+    flow: 0,
+    title: '폴더가 생겼어요! 이제 + 버튼',
+    body: '폴더 안의 + 버튼을 누르면 학습 자료 올리기(PDF · 사진 · 스캔), 녹음 올리기 · 실시간 녹음, 필기 올리기(촬영 · 갤러리)가 나와요. 하나를 골라 올리면 제가 AI로 요약하고 핵심을 정리해 드려요.',
+  },
+  {
+    spot: null,
+    flow: 1,
+    title: '올린 다음에는',
+    body: '정리가 끝난 자료를 열면 저에게 물어볼 수 있고, 퀴즈 탭에서 그 노트로 퀴즈를 만들 수 있어요. 틀린 문제는 다음 날 오답 복습으로 다시 나와요.',
+  },
+];
+const FLOW = ['정리', '학습', '복습'];
 
 const TAB_BAR = 49; // iOS 기본 탭 막대 높이(홈 표시줄 제외)
 const PAD = 8; // 밝힌 자리 둘레 여백
@@ -173,13 +221,15 @@ export function TourCoach() {
   const [spot, setSpot] = useState<Rect | null>(null);
   const [skip, setSkip] = useState(false);
   const on = step >= 0;
-  const s = STEPS[Math.max(0, step)]!;
-  const last = step === STEPS.length - 1;
+  const kind = useTour((t) => t.kind);
+  const steps = kind === 'folder' ? FOLDER_STEPS : STEPS;
+  const s = steps[Math.min(Math.max(0, step), steps.length - 1)]!;
+  const last = step === steps.length - 1;
 
   // 단계마다 그 화면으로 옮기고, 화면이 바뀐 뒤 짚을 자리를 잰다
   useEffect(() => {
     if (!on) return;
-    router.navigate(s.route);
+    if (s.route) router.navigate(s.route);
     let live = true;
     const tabRect = (i: number): Rect => {
       const cw = W / 5;
@@ -189,9 +239,11 @@ export function TourCoach() {
       const sp = s.spot;
       const rect = !sp
         ? null
-        : 'target' in sp
-          ? ((await measure(sp.target)) ?? tabRect(sp.tab))
-          : tabRect(sp.tab);
+        : 'buddy' in sp
+          ? { x: W - 16 - 64, y: H - insets.bottom - TAB_BAR - 16 - 64, w: 64, h: 64 }
+          : 'target' in sp
+            ? ((await measure(sp.target)) ?? tabRect(sp.tab))
+            : tabRect(sp.tab);
       if (live) setSpot(rect);
     }, 420);
     return () => {
@@ -270,7 +322,7 @@ export function TourCoach() {
             <Avatar3D mood={mood} avatarId={avatar} size={52} framing="head" />
           </View>
           <View className="flex-1">
-            {/* 자료 올리기 → 퀴즈 만들기 → 오답 복습: 지금 설명하는 단계가 채워진다 */}
+            {/* 정리 → 학습 → 복습: 지금 설명하는 단계가 채워진다 */}
             <View className="mb-1.5 flex-row items-center gap-1">
               {FLOW.map((f, n) => (
                 <View key={f} className="flex-row items-center gap-1">
@@ -303,7 +355,7 @@ export function TourCoach() {
         </View>
         <View className="mt-4 flex-row items-center gap-2">
           <Text className="flex-1 text-caption text-sub">
-            {step + 1} / {STEPS.length}
+            {step + 1} / {steps.length}
           </Text>
           {!last && (
             <Btn small kind="ghost" onPress={() => setSkip(true)}>
@@ -312,14 +364,15 @@ export function TourCoach() {
           )}
           <Btn
             small
-            onPress={() =>
-              last
-                ? // 노트 탭으로 간 뒤 폴더 만들기를 바로 연다(버튼 이름대로)
-                  void done('/note').then(() => router.push('/note-new/tag'))
-                : go(step + 1)
-            }
+            onPress={() => {
+              if (!last) return go(step + 1);
+              if (kind === 'folder') return void done();
+              // 노트 탭으로 간 뒤 폴더 만들기를 바로 연다(버튼 이름대로). 폴더를 만들면 폴더 안내로 잇는다
+              useTour.getState().setAfterFolder(true);
+              void done('/note').then(() => router.push('/note-new/tag'));
+            }}
           >
-            {last ? '첫 학습 폴더 만들기' : '다음'}
+            {!last ? '다음' : kind === 'folder' ? '시작하기' : '첫 학습 폴더 만들기'}
           </Btn>
         </View>
       </Animated.View>
