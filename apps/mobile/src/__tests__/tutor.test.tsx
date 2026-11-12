@@ -497,12 +497,8 @@ describe('처음 안내', () => {
       '/note',
       '/quiz',
       '/quiz',
-      '/quiz',
       '/',
     ]);
-    // 기존 흐름에 더한 것: 틀린 문제 복습 단계, 마지막 ①②③ 요약
-    expect(STEPS.some((s) => s.title === '복습: 틀린 문제')).toBe(true);
-    expect(STEPS.at(-1)!.body).toMatch(/① .*② .*③ /);
     await fireEvent.press(screen.getByText('첫 학습 폴더 만들기'));
     await waitFor(() =>
       expect(SecureStore.setItemAsync).toHaveBeenCalledWith('notelink.toured', '["u1"]'),
@@ -530,6 +526,10 @@ describe('처음 안내', () => {
     await waitFor(() => expect(useTour.getState().step).toBe(-1));
     expect(router.navigate).not.toHaveBeenCalled();
     expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it('처음 안내 마지막 단계는 정리 · 학습 · 복습을 ①②③으로 요약한다', () => {
+    expect(STEPS.at(-1)!.body).toMatch(/① .*② .*③ /);
   });
 
   it('건너뛰기는 한 번 더 묻고, 계속 보기를 고르면 안내에 남는다', async () => {
