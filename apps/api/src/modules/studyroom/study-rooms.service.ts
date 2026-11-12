@@ -341,11 +341,127 @@ export class StudyRoomsService {
       },
       { arrayFilters: [{ 'member.userId': memberId, 'member.status': 'joined' }] },
     );
-    if (!result.matchedCount)
+    if (!result.matchedCount) {
+      // 방장 퇴장과 다음 방장 선출은 하나의 문서 갱신으로 처리한다.
+      // 같은 시각 입장자는 userId 순으로 정해 결과가 항상 같도록 한다.
+      const nextHost = {
+        $arrayElemAt: [
+          {
+            $sortArray: {
+              input: {
+                $filter: {
+                  input: '$members',
+                  as: 'm',
+                  cond: {
+                    $and: [{ $eq: ['$$m.status', 'joined'] }, { $ne: ['$$m.userId', memberId] }],
+                  },
+                },
+              },
+              sortBy: { joinedAt: 1, userId: 1 },
+            },
+          },
+          0,
+        ],
+      };
+      const hostResult = await this.rooms.updateOne(
+        {
+          _id: new Types.ObjectId(roomId),
+          closedAt: null,
+          hostId: memberId,
+          memberCount: { $gt: 1 },
+          members: { $elemMatch: { userId: memberId, status: 'joined' } },
+          $expr: {
+            $and: [
+              {
+                $eq: [
+                  {
+                    $size: {
+                      $filter: {
+                        input: '$members',
+                        as: 'm',
+                        cond: { $eq: ['$$m.userId', memberId] },
+                      },
+                    },
+                  },
+                  1,
+                ],
+              },
+              {
+                $gt: [
+                  {
+                    $size: {
+                      $filter: {
+                        input: '$members',
+                        as: 'm',
+                        cond: {
+                          $and: [
+                            { $eq: ['$$m.status', 'joined'] },
+                            { $ne: ['$$m.userId', memberId] },
+                          ],
+                        },
+                      },
+                    },
+                  },
+                  0,
+                ],
+              },
+            ],
+          },
+        },
+        [
+          { $set: { __nextHost: nextHost } },
+          {
+            $set: {
+              hostId: '$__nextHost.userId',
+              memberCount: { $subtract: ['$memberCount', 1] },
+              members: {
+                $map: {
+                  input: '$members',
+                  as: 'm',
+                  in: {
+                    $cond: [
+                      { $eq: ['$$m.userId', memberId] },
+                      {
+                        $mergeObjects: [
+                          '$$m',
+                          {
+                            role: 'member',
+                            status: 'left',
+                            leaveReason: 'voluntary',
+                            leftAt: new Date(),
+                          },
+                        ],
+                      },
+                      {
+                        $cond: [
+                          { $eq: ['$$m.userId', '$__nextHost.userId'] },
+                          { $mergeObjects: ['$$m', { role: 'host' }] },
+                          '$$m',
+                        ],
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+          { $unset: '__nextHost' },
+        ],
+        { updatePipeline: true },
+      );
+      if (hostResult.matchedCount) return;
+      const alreadyLeft = await this.rooms.exists({
+        _id: new Types.ObjectId(roomId),
+        closedAt: null,
+        hostId: { $ne: memberId },
+        members: { $elemMatch: { userId: memberId, status: 'left', leaveReason: 'voluntary' } },
+      });
+      if (alreadyLeft) return;
       throw new ConflictException({
         code: 'ROOM_LEAVE_FAILED',
         message: '퇴장할 수 없는 방이거나 방장입니다.',
       });
+    }
   }
 
   async kickMember(hostUserId: string, roomId: string, targetUserId: string) {
@@ -391,10 +507,18 @@ export class StudyRoomsService {
       },
       { arrayFilters: [{ 'member.userId': targetId, 'member.status': 'joined' }] },
     );
-    if (!result.matchedCount)
+    if (!result.matchedCount) {
+      const alreadyKicked = await this.rooms.exists({
+        _id: new Types.ObjectId(roomId),
+        hostId,
+        closedAt: null,
+        members: { $elemMatch: { userId: targetId, status: 'kicked', leaveReason: 'host_kick' } },
+      });
+      if (alreadyKicked) return;
       throw new NotFoundException({
         code: 'NOT_FOUND',
         message: '방 또는 참여자를 찾을 수 없습니다.',
       });
+    }
   }
 }

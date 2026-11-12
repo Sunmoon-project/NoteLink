@@ -13,6 +13,11 @@ import { StudyChatService } from './study-chat.service.js';
 @Injectable()
 @WebSocketGateway()
 export class StudyChatGateway {
+  notifyMembersChanged(roomId: string) {
+    this.server.to(`study-room:${roomId}`).emit('room:members-changed', {
+      roomId,
+    });
+  }
   @WebSocketServer() private server: Server;
   constructor(
     private readonly tokens: TokenService,

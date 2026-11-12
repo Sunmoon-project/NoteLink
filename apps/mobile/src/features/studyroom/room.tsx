@@ -553,6 +553,17 @@ export function RoomScreen() {
     },
     [id],
   );
+
+  useSocket(
+    'room:members-changed',
+    (payload) => {
+      if (payload.roomId !== id) return;
+
+      void room.refetch();
+    },
+    [id],
+  );
+
   useSocket(
     'room:timer',
     (p) => {
@@ -733,7 +744,10 @@ export function RoomScreen() {
         <View className="flex-row flex-wrap justify-between gap-y-2.5 px-4 pt-3">
           {tiles.map((m) => {
             const me = m.userId === myId;
-            const camOn = me ? live.camOn : m.camOn;
+            const remote = me ? null : live.participantState?.(m.userId);
+            const camOn = me ? live.camOn : (remote?.camOn ?? false);
+            const micOn = me ? live.micOn : (remote?.micOn ?? false);
+            const video = live.video(m.userId);
             return (
               <View
                 key={m.userId}
@@ -743,11 +757,11 @@ export function RoomScreen() {
                   camOn ? 'bg-night' : 'bg-white',
                 )}
               >
-                {live.video(m.userId)}
+                {video}
                 {camOn && (
                   <View className="absolute top-2.5 right-2.5 h-1.5 w-1.5 rounded-full bg-sun" />
                 )}
-                {!camOn && <Avatar uri={m.avatarUrl} name={m.nickname} size={chat ? 28 : 44} />}
+                {!video && <Avatar uri={m.avatarUrl} name={m.nickname} size={chat ? 28 : 44} />}
                 <Text className={cx('text-footnote font-bold', camOn ? 'text-white' : 'text-ink')}>
                   {m.nickname}
                 </Text>
@@ -771,8 +785,11 @@ export function RoomScreen() {
                                   )),
                       )}
                 </Text>
-                {!chat && !(me ? live.micOn : m.micOn) && (
-                  <View className="absolute bottom-2.5 left-2.5">
+                {!chat && !micOn && (
+                  <View
+                    accessibilityLabel={`${m.nickname} 마이크 꺼짐`}
+                    className="absolute bottom-2.5 left-2.5"
+                  >
                     <MicOff size={ICON.xs} color={camOn ? 'rgba(255,255,255,.5)' : C.sub} />
                   </View>
                 )}

@@ -11,7 +11,7 @@ import { StudyRoomsService } from '../src/modules/studyroom/study-rooms.service.
 const userId = new Types.ObjectId();
 const roomId = new Types.ObjectId();
 const query = (value: unknown) => ({ lean: async () => value });
-const rooms = { findOneAndUpdate: vi.fn(), findOne: vi.fn(), updateOne: vi.fn() };
+const rooms = { findOneAndUpdate: vi.fn(), findOne: vi.fn(), updateOne: vi.fn(), exists: vi.fn() };
 const users = { findOne: vi.fn() };
 let service: StudyRoomsService;
 beforeEach(() => {
@@ -22,6 +22,25 @@ beforeEach(() => {
 });
 
 describe('스터디룸 퇴장', () => {
+  it('방장이 퇴장하면 원자적 갱신으로 남은 참가자에게 방장을 위임한다', async () => {
+    rooms.updateOne
+      .mockResolvedValueOnce({ matchedCount: 0 })
+      .mockResolvedValueOnce({ matchedCount: 1 });
+    await expect(service.leaveRoom(String(userId), String(roomId))).resolves.toBeUndefined();
+    expect(rooms.updateOne).toHaveBeenCalledTimes(2);
+    expect(rooms.updateOne.mock.calls[1]![0]).toMatchObject({
+      hostId: userId,
+      memberCount: { $gt: 1 },
+    });
+    expect(Array.isArray(rooms.updateOne.mock.calls[1]![1])).toBe(true);
+  });
+  it('위임할 참가자가 없는 방장의 퇴장 요청은 현재 정책대로 거절한다', async () => {
+    rooms.updateOne.mockResolvedValue({ matchedCount: 0 });
+    rooms.exists.mockResolvedValue(null);
+    await expect(service.leaveRoom(String(userId), String(roomId))).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+  });
   it('자진 퇴장은 상태 변경과 인원 감소를 함께 수행한다', async () => {
     rooms.updateOne.mockResolvedValue({ matchedCount: 1 });
     await service.leaveRoom(String(userId), String(roomId));
@@ -52,6 +71,23 @@ describe('스터디룸 퇴장', () => {
     await expect(
       service.kickMember(String(userId), String(roomId), String(userId)),
     ).rejects.toThrow();
+  });
+  it('이미 강퇴된 멤버의 라이브 종료를 방장만 재시도할 수 있다', async () => {
+    const target = new Types.ObjectId();
+    rooms.updateOne.mockResolvedValue({ matchedCount: 0 });
+    rooms.exists.mockResolvedValueOnce({ _id: roomId }).mockResolvedValueOnce(null);
+    await expect(
+      service.kickMember(String(userId), String(roomId), String(target)),
+    ).resolves.toBeUndefined();
+    expect(rooms.exists).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostId: userId,
+        members: { $elemMatch: { userId: target, status: 'kicked', leaveReason: 'host_kick' } },
+      }),
+    );
+    await expect(
+      service.kickMember(String(userId), String(roomId), String(target)),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 });
 

@@ -73,4 +73,67 @@ describe.skipIf(!local)('로컬 MongoDB 동시 참여', () => {
     expect(saved.memberCount).toBe(1);
     expect(saved.members[1]).toMatchObject({ status: 'kicked', leaveReason: 'host_kick' });
   });
+  it('방장 퇴장 시 현재 참가자 중 가장 먼저 입장한 사람에게 방장을 넘긴다', async () => {
+    const third = new Types.ObjectId();
+    const room = await model.create({
+      title: '방장 위임 테스트',
+      categoryId: new Types.ObjectId(),
+      hostId: ids[0],
+      inviteCode: 'HOST01',
+      isPublic: true,
+      memberCount: 3,
+      maxCapacity: 5,
+      members: [
+        { userId: ids[0], role: 'host', status: 'joined', joinedAt: new Date('2026-01-01') },
+        { userId: third, role: 'member', status: 'joined', joinedAt: new Date('2026-01-03') },
+        { userId: ids[1], role: 'member', status: 'joined', joinedAt: new Date('2026-01-02') },
+      ],
+    });
+    await service.leaveRoom(String(ids[0]), String(room._id));
+    const saved = await model.findById(room._id).lean().orFail();
+    expect(String(saved.hostId)).toBe(String(ids[1]));
+    expect(saved.memberCount).toBe(2);
+    expect(saved.members[0]).toMatchObject({
+      status: 'left',
+      role: 'member',
+      leaveReason: 'voluntary',
+    });
+    expect(saved.members[2]).toMatchObject({ status: 'joined', role: 'host' });
+    await service.leaveRoom(String(ids[0]), String(room._id));
+    expect((await model.findById(room._id).lean().orFail()).memberCount).toBe(2);
+    await service.joinRoom(String(ids[0]), 'HOST01');
+    const rejoined = await model.findById(room._id).lean().orFail();
+    expect(rejoined.members[0]).toMatchObject({ status: 'joined', role: 'member' });
+    expect(String(rejoined.hostId)).toBe(String(ids[1]));
+    await service.kickMember(String(ids[1]), String(room._id), String(third));
+    expect((await model.findById(room._id).lean().orFail()).members[1]).toMatchObject({
+      status: 'kicked',
+    });
+  });
+  it('방장과 다른 참가자가 동시에 퇴장해도 남은 방장은 참여 상태다', async () => {
+    const third = new Types.ObjectId();
+    const room = await model.create({
+      title: '방장 위임 동시성 테스트',
+      categoryId: new Types.ObjectId(),
+      hostId: ids[0],
+      inviteCode: 'HOST02',
+      isPublic: true,
+      memberCount: 3,
+      maxCapacity: 5,
+      members: [
+        { userId: ids[0], role: 'host', status: 'joined', joinedAt: new Date('2026-01-01') },
+        { userId: ids[1], role: 'member', status: 'joined', joinedAt: new Date('2026-01-02') },
+        { userId: third, role: 'member', status: 'joined', joinedAt: new Date('2026-01-03') },
+      ],
+    });
+    await Promise.allSettled([
+      service.leaveRoom(String(ids[0]), String(room._id)),
+      service.leaveRoom(String(ids[1]), String(room._id)),
+    ]);
+    const saved = await model.findById(room._id).lean().orFail();
+    const joined = saved.members.filter((member) => member.status === 'joined');
+    expect(saved.memberCount).toBe(joined.length);
+    expect(joined.filter((member) => member.role === 'host')).toHaveLength(1);
+    expect(joined.find((member) => member.role === 'host')?.userId.equals(saved.hostId)).toBe(true);
+  });
 });

@@ -84,6 +84,8 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0, toda
     toggleMic: () => control('toggleMic'),
     toggleCam: () => control('toggleCam'),
     toggleHearing: () => control('toggleHearing'),
-    video: (userId: string) => room?.video(userId) ?? null,
+    participantState: (userId: string) =>
+      room?.connected ? room.participantState(userId) : { camOn: false, micOn: false },
+    video: (userId: string) => (room?.connected ? room.video(userId) : null),
   };
 }

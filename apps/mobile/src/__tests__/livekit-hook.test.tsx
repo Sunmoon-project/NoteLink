@@ -35,6 +35,7 @@ function media() {
     toggleCam: jest.fn(async () => {}),
     toggleHearing: jest.fn(async () => {}),
     close: jest.fn(async () => {}),
+    participantState: jest.fn(() => ({ camOn: false, micOn: false })),
     video: jest.fn(() => null),
   };
 }
@@ -98,6 +99,20 @@ it('마이크 토글을 연결 객체에 전달하고 실제 결과를 읽는다
   });
   expect(connection.toggleMic).toHaveBeenCalledTimes(1);
   expect(result.current.micOn).toBe(true);
+});
+
+it('원격 참가자 미디어 상태가 변경되면 최신 상태를 화면에 제공한다', async () => {
+  const connection = media();
+  mockConnectMedia.mockResolvedValue(connection);
+  const { result } = await renderHook(() => useLiveRoom('room-1'));
+  await waitFor(() => expect(result.current.connected).toBe(true));
+  expect(result.current.participantState('friend')).toEqual({ camOn: false, micOn: false });
+  connection.participantState.mockReturnValue({ camOn: true, micOn: true });
+  await act(async () => mockConnectMedia.mock.calls[0]![1]());
+  expect(result.current.participantState('friend')).toEqual({ camOn: true, micOn: true });
+  connection.connected = false;
+  await act(async () => mockConnectMedia.mock.calls[0]![1]());
+  expect(result.current.participantState('friend')).toEqual({ camOn: false, micOn: false });
 });
 
 it.each(['toggleMic', 'toggleCam', 'toggleHearing'] as const)(

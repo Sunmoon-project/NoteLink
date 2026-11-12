@@ -65,6 +65,18 @@ beforeEach(async () => {
   );
 });
 describe('스터디룸 Socket.IO', () => {
+  it('참가자 변경 알림은 해당 방에만 전달하고 강퇴된 사용자는 제외한다', async () => {
+    const receivedA = vi.fn();
+    const receivedB = vi.fn();
+    a.on('room:members-changed', receivedA);
+    b.on('room:members-changed', receivedB);
+    await app.get(StudyChatGateway).evict('room', 'b');
+    app.get(StudyChatGateway).notifyMembersChanged('room');
+    await vi.waitFor(() => expect(receivedA).toHaveBeenCalledWith({ roomId: 'room' }));
+    expect(receivedB).not.toHaveBeenCalled();
+    a.off('room:members-changed', receivedA);
+    b.off('room:members-changed', receivedB);
+  });
   it('유효하지 않은 토큰으로 연결할 수 없다', async () => {
     tokens.verifyAccess.mockRejectedValueOnce(new Error('invalid token'));
     const invalid = io(serverUrl, {

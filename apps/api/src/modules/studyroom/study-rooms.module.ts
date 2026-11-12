@@ -11,6 +11,7 @@ import { Message, MessageSchema } from '../social/schemas/message.schema.js';
 import { StudyChatService } from './study-chat.service.js';
 import { StudyChatController } from './study-chat.controller.js';
 import { StudyChatGateway } from './study-chat.gateway.js';
+import { StudyLiveService } from './study-live.service.js';
 
 @Module({
   imports: [
@@ -24,6 +25,6 @@ import { StudyChatGateway } from './study-chat.gateway.js';
     ]),
   ],
   controllers: [StudyRoomsController, StudyChatController],
-  providers: [StudyRoomsService, StudyChatService, StudyChatGateway],
+  providers: [StudyRoomsService, StudyChatService, StudyChatGateway, StudyLiveService],
 })
 export class StudyRoomsModule {}

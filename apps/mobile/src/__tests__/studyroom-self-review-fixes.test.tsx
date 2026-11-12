@@ -11,6 +11,8 @@ const mockApi = {
   social: { messages: jest.fn() },
 };
 const mockEmit = jest.fn();
+const mockParticipantState = jest.fn((_userId: string) => ({ camOn: false, micOn: false }));
+const mockListeners = new Map<string, (payload: { roomId: string }) => void>();
 const mockOutbox = new Map<
   string,
   { clientId: string; chatRoomId: string; text: string; createdAt: string }[]
@@ -48,6 +50,7 @@ jest.mock('../lib/livekit', () => ({
     camOn: false,
     hearing: false,
     error: null,
+    participantState: (...args: [string]) => mockParticipantState(...args),
     video: () => null,
     toggleMic: jest.fn(),
     toggleCam: jest.fn(),
@@ -55,7 +58,13 @@ jest.mock('../lib/livekit', () => ({
   }),
 }));
 jest.mock('../lib/socket', () => ({
-  socket: { emit: (...args: unknown[]) => mockEmit(...args), on: () => () => {} },
+  socket: {
+    emit: (...args: unknown[]) => mockEmit(...args),
+    on: (event: string, handler: (payload: { roomId: string }) => void) => {
+      mockListeners.set(event, handler);
+      return () => mockListeners.delete(event);
+    },
+  },
 }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
@@ -85,6 +94,8 @@ const client = () => new QueryClient({ defaultOptions: { queries: { retry: false
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockParticipantState.mockReturnValue({ camOn: false, micOn: false });
+  mockListeners.clear();
   mockOutbox.clear();
   useAuth.setState({ userId: 'me' });
   useNet.setState({ state: 'ok' });
@@ -96,6 +107,32 @@ beforeEach(() => {
   mockEmit.mockImplementation((event, _payload, ack) => {
     if (event === 'room:join' && typeof ack === 'function') ack({ ok: true });
   });
+});
+
+it('현재 방의 참가자 변경 알림을 받으면 목록을 다시 조회한다', async () => {
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText('방');
+  const initialCalls = mockApi.rooms.get.mock.calls.length;
+  const onChanged = mockListeners.get('room:members-changed');
+  expect(onChanged).toBeDefined();
+  await act(async () => onChanged?.({ roomId: 'other' }));
+  expect(mockApi.rooms.get).toHaveBeenCalledTimes(initialCalls);
+  mockApi.rooms.get.mockResolvedValue({
+    ...room,
+    members: [{ userId: 'other', nickname: '새 참가자', role: 'member', status: 'joined' }],
+  });
+  await act(async () => onChanged?.({ roomId: 'r1' }));
+  expect(await screen.findByText('새 참가자')).toBeTruthy();
+  expect(mockApi.rooms.get.mock.calls.length).toBeGreaterThan(initialCalls);
+});
+
+it('다른 참가자의 마이크 표시는 방 정보가 아니라 라이브 연결 상태를 따른다', async () => {
+  mockApi.rooms.get.mockResolvedValue({
+    ...room,
+    members: [{ userId: 'friend', nickname: '친구', camOn: false, micOn: true }],
+  });
+  await renderScreen(<RoomScreen />, client());
+  expect(await screen.findByLabelText('친구 마이크 꺼짐')).toBeTruthy();
 });
 afterEach(() => jest.useRealTimers());
 

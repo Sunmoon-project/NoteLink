@@ -14,6 +14,7 @@ export type MediaConnection = {
   toggleCam(): Promise<void>;
   toggleHearing(): Promise<void>;
   close(): Promise<void>;
+  participantState(userId: string): { camOn: boolean; micOn: boolean };
   video(userId: string): ReactNode;
 };
 
@@ -49,6 +50,8 @@ export async function connectMedia(roomId: string, onChange: () => void): Promis
   const events = [
     RoomEvent.TrackSubscribed,
     RoomEvent.TrackUnsubscribed,
+    RoomEvent.TrackPublished,
+    RoomEvent.TrackUnpublished,
     RoomEvent.LocalTrackPublished,
     RoomEvent.LocalTrackUnpublished,
     RoomEvent.TrackMuted,
@@ -56,6 +59,7 @@ export async function connectMedia(roomId: string, onChange: () => void): Promis
     RoomEvent.ParticipantConnected,
     RoomEvent.ParticipantDisconnected,
     RoomEvent.Reconnected,
+    RoomEvent.Reconnecting,
     RoomEvent.Disconnected,
   ];
   events.forEach((event) => room.on(event, syncAudio));
@@ -106,7 +110,20 @@ export async function connectMedia(roomId: string, onChange: () => void): Promis
         await releaseAudio();
       }
     },
+    participantState(userId) {
+      const participant =
+        !closed && room.state === 'connected'
+          ? room.localParticipant.identity === userId
+            ? room.localParticipant
+            : room.remoteParticipants.get(userId)
+          : undefined;
+      return {
+        camOn: participant?.isCameraEnabled ?? false,
+        micOn: participant?.isMicrophoneEnabled ?? false,
+      };
+    },
     video(userId) {
+      if (closed || room.state !== 'connected') return null;
       const participant =
         room.localParticipant.identity === userId
           ? room.localParticipant

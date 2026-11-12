@@ -15,12 +15,14 @@ import { StudyChatService } from '../src/modules/studyroom/study-chat.service.js
 import { StudyChatGateway } from '../src/modules/studyroom/study-chat.gateway.js';
 import { StudyRoomsController } from '../src/modules/studyroom/study-rooms.controller.js';
 import { StudyRoomsService } from '../src/modules/studyroom/study-rooms.service.js';
+import { StudyLiveService } from '../src/modules/studyroom/study-live.service.js';
 
 const userId = new Types.ObjectId();
 const roomId = new Types.ObjectId();
 const chatId = new Types.ObjectId();
 const studyRooms = { findOne: vi.fn() };
 const chats = { findOneAndUpdate: vi.fn(), findOne: vi.fn() };
+const live = { issueToken: vi.fn(), disconnect: vi.fn() };
 const lean = (value: unknown) => ({ lean: () => Promise.resolve(value) });
 let app: INestApplication;
 
@@ -29,6 +31,7 @@ beforeAll(async () => {
     controllers: [StudyRoomsController],
     providers: [
       StudyChatService,
+      { provide: StudyLiveService, useValue: live },
       { provide: StudyChatGateway, useValue: { evict: vi.fn() } },
       { provide: StudyRoomsService, useValue: {} },
       { provide: getModelToken(StudyRoom.name), useValue: studyRooms },
@@ -109,5 +112,19 @@ describe('스터디룸 채팅방 접근', () => {
     const res = await request(app.getHttpServer()).get(url).set('Authorization', 'Bearer valid');
     expect(res.status).toBe(200);
     expect(res.body.data.chatRoomId).toBe(String(chatId));
+  });
+});
+
+describe('스터디 라이브 토큰 API', () => {
+  it('로그인한 사용자의 방 ID와 사용자 ID로 토큰을 발급한다', async () => {
+    live.issueToken.mockResolvedValue({ token: 'test-token', url: 'wss://example.test' });
+    const url = `/api/v1/study-rooms/${roomId}/livekit-token`;
+    expect((await request(app.getHttpServer()).post(url)).status).toBe(401);
+    const response = await request(app.getHttpServer())
+      .post(url)
+      .set('Authorization', 'Bearer valid');
+    expect(response.status).toBe(201);
+    expect(response.body.data).toEqual({ token: 'test-token', url: 'wss://example.test' });
+    expect(live.issueToken).toHaveBeenCalledWith(String(roomId), String(userId));
   });
 });

@@ -17,6 +17,7 @@ import { ListStudyRoomsDto } from './dto/list-study-rooms.dto.js';
 import { StudyRoomsService } from './study-rooms.service.js';
 import { StudyChatService } from './study-chat.service.js';
 import { StudyChatGateway } from './study-chat.gateway.js';
+import { StudyLiveService } from './study-live.service.js';
 
 @Controller('study-rooms')
 @UseGuards(JwtAuthGuard)
@@ -25,6 +26,7 @@ export class StudyRoomsController {
     private readonly rooms: StudyRoomsService,
     private readonly chat: StudyChatService,
     private readonly gateway: StudyChatGateway,
+    private readonly live: StudyLiveService,
   ) {}
 
   @Post()
@@ -34,7 +36,11 @@ export class StudyRoomsController {
 
   @Post('join')
   async join(@Req() req: AuthenticatedRequest, @Body() body: JoinStudyRoomDto) {
-    return { data: await this.rooms.joinRoom(requireUserId(req), body.inviteCode) };
+    const room = await this.rooms.joinRoom(requireUserId(req), body.inviteCode);
+
+    this.gateway.notifyMembersChanged(room._id);
+
+    return { data: room };
   }
 
   @Get()
@@ -61,6 +67,12 @@ export class StudyRoomsController {
     const userId = requireUserId(req);
     await this.rooms.leaveRoom(userId, id);
     await this.gateway.evict(id, userId);
+
+    // 남아 있는 참가자에게 목록이 변경됐다고 알림
+    this.gateway.notifyMembersChanged(id);
+
+    await this.live.disconnect(id, userId);
+
     return { data: null };
   }
 
@@ -72,6 +84,11 @@ export class StudyRoomsController {
   ) {
     await this.rooms.kickMember(requireUserId(req), id, userId);
     await this.gateway.evict(id, userId);
+
+    // 남아 있는 참가자에게 목록이 변경됐다고 알림
+    this.gateway.notifyMembersChanged(id);
+
+    await this.live.disconnect(id, userId);
     return { data: null };
   }
 
@@ -84,5 +101,10 @@ export class StudyRoomsController {
         chatRoomId: String(chatRoom._id),
       },
     };
+  }
+
+  @Post(':id/livekit-token')
+  async livekitToken(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
+    return { data: await this.live.issueToken(id, requireUserId(req)) };
   }
 }

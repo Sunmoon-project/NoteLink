@@ -75,6 +75,7 @@ function media() {
     toggleCam: jest.fn(async () => {}),
     toggleHearing: jest.fn(async () => {}),
     close: jest.fn(async () => {}),
+    participantState: jest.fn(() => ({ camOn: false, micOn: false })),
     video: jest.fn(() => null),
   };
 }
