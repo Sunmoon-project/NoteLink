@@ -17,6 +17,7 @@ import { TokenService } from '../src/modules/auth/token.service.js';
 import { RecurringGoalsController } from '../src/modules/progress/recurring-goals.controller.js';
 import { RecurringGoalsService } from '../src/modules/progress/recurring-goals.service.js';
 import { RecurringGoal, RecurringGoalSchema } from '../src/modules/progress/schemas/recurring-goal.schema.js';
+import { Subject, SubjectSchema } from '../src/modules/session/schemas/subject.schema.js';
 
 const uri = process.env.MONGODB_VERIFY_URI;
 const isLocal = !!uri && /^mongodb:\/\/([^@/]*@)?(localhost|127\.0\.0\.1)[:/]/.test(uri);
@@ -46,6 +47,7 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 확인', () => {
                 MongooseModule.forRoot(uri!, { dbName, serverSelectionTimeoutMS: 5000 }),
                 MongooseModule.forFeature([
                     { name: RecurringGoal.name, schema: RecurringGoalSchema },
+                    { name: Subject.name, schema: SubjectSchema },
                     { name: User.name, schema: UserSchema },
                 ]),
             ],
@@ -68,7 +70,7 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 확인', () => {
         await app.init();
         conn = moduleRef.get<Connection>(getConnectionToken());
         await conn.dropDatabase();
-        await Promise.all([conn.model(RecurringGoal.name).init(), conn.model(User.name).init()]);
+        await Promise.all([conn.model(RecurringGoal.name).init(), conn.model(User.name).init(), conn.model(Subject.name).init()]);
         // nickname에 유일 인덱스가 있어서 사람마다 다르게 넣는다
         await col('users').insertMany([
             { _id: me, nickname: `me_${process.pid}`, email: `me_${process.pid}@example.com` },
@@ -103,8 +105,10 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 확인', () => {
             .set(AUTH)
             .send({ name: '영어 단어 40분', targetMin: 40, remindEnabled: true, remindTime: '07:30', pausedUntil: '2026-12-01' });
         expect(res.status).toBe(200);
-        expect(res.body.data).toMatchObject({ name: '영어 단어 40분', targetMin: 40, remindEnabled: true, remindTime: '07:30', days: [1, 3], pausedUntil: '2026-12-01T00:00:00.000Z' });
-        expect(await col('recurring_goals').findOne({ _id: new Types.ObjectId(goal!._id) })).toMatchObject({ targetMin: 40, remindTime: '07:30' });
+        expect(res.body.data).toMatchObject({ name: '영어 단어 40분', targetMin: 40, remindEnabled: true, remindTime: '07:30', days: [1, 3], pausedUntil: '2026-11-30T15:00:00.000Z' }); // 서울 자정
+        const stored = await col('recurring_goals').findOne({ _id: new Types.ObjectId(goal!._id) });
+        expect(stored).toMatchObject({ targetMin: 40, remindTime: '07:30' });
+        expect(stored!['pausedUntil']).toEqual(new Date('2026-11-30T15:00:00.000Z'));
         // 앱이 보내는 모양(_id 포함)도 받는다
         const again = await http().patch(url(`/${goal!._id}`)).set(AUTH).send({ _id: goal!._id, name: '영어 단어', days: [2], targetMin: 30, remindEnabled: false, remindTime: '20:00' });
         expect(again.status).toBe(200);
@@ -168,7 +172,70 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 확인', () => {
         }
     });
 
-    it('7) 조회용 인덱스가 만들어져 있다', async () => {
+    it('7) 없는 과목 · 비활성 과목은 만들 때도 수정할 때도 400, 활성 과목은 저장된다', async () => {
+        const active = new Types.ObjectId();
+        const inactive = new Types.ObjectId();
+        const subject = { color: '#fff', sortOrder: 0, categoryId: null };
+        await col('subjects').insertMany([
+            { _id: active, name: '활성', isActive: true, ...subject },
+            { _id: inactive, name: '비활성', isActive: false, ...subject },
+        ]);
+        const missing = new Types.ObjectId().toString();
+        const before = await col('recurring_goals').countDocuments();
+
+        for (const subjectId of [missing, inactive.toString()]) {
+            const res = await create({ name: 'a', days: [1], subjectId });
+            expect(res.status).toBe(400);
+            expect(res.body.code).toBe('VALIDATION_FAILED');
+        }
+        expect(await col('recurring_goals').countDocuments()).toBe(before);
+
+        const ok = await create({ name: '과목 있는 목표', days: [1], subjectId: active.toString() });
+        expect(ok.status).toBe(201);
+        expect(ok.body.data.subjectId).toBe(active.toString());
+        expect(await col('recurring_goals').findOne({ _id: new Types.ObjectId(ok.body.data._id) })).toMatchObject({ subjectId: active });
+
+        const id = ok.body.data._id as string;
+        for (const subjectId of [missing, inactive.toString()]) {
+            expect((await http().patch(url(`/${id}`)).set(AUTH).send({ subjectId })).status).toBe(400);
+        }
+        expect(await col('recurring_goals').findOne({ _id: new Types.ObjectId(id) })).toMatchObject({ subjectId: active });
+        expect((await http().patch(url(`/${id}`)).set(AUTH).send({ subjectId: null })).body.data.subjectId).toBeNull();
+    });
+
+    it('8) pausedUntil: 날짜는 서울 자정, 시간대 붙은 일시는 같은 순간으로 저장되고, 시간대 없는 일시 · 없는 날짜는 400, null은 해제한다 (서버 TZ가 달라도 같다)', async () => {
+        const created = await create({ name: '쉬는 날짜', days: [2] });
+        const id = created.body.data._id as string;
+        const stored = async () => (await col('recurring_goals').findOne({ _id: new Types.ObjectId(id) }))!['pausedUntil'];
+        const before = process.env['TZ'];
+        try {
+            for (const tz of ['UTC', 'America/Los_Angeles', 'Asia/Seoul']) {
+                process.env['TZ'] = tz;
+                const date = await http().patch(url(`/${id}`)).set(AUTH).send({ pausedUntil: '2026-12-01' });
+                expect(date.body.data.pausedUntil, tz).toBe('2026-11-30T15:00:00.000Z');
+                expect(await stored()).toEqual(new Date('2026-11-30T15:00:00.000Z'));
+
+                for (const input of ['2026-12-01T03:00:00Z', '2026-12-01T12:00:00+09:00']) {
+                    const res = await http().patch(url(`/${id}`)).set(AUTH).send({ pausedUntil: input });
+                    expect(res.body.data.pausedUntil, `${tz} ${input}`).toBe('2026-12-01T03:00:00.000Z');
+                    expect(await stored()).toEqual(new Date('2026-12-01T03:00:00.000Z'));
+                }
+            }
+        } finally {
+            if (before === undefined) delete process.env['TZ'];
+            else process.env['TZ'] = before;
+        }
+
+        for (const input of ['2026-12-01T12:00:00', '2026-02-31']) {
+            expect((await http().patch(url(`/${id}`)).set(AUTH).send({ pausedUntil: input })).status, input).toBe(400);
+        }
+        expect(await stored()).toEqual(new Date('2026-12-01T03:00:00.000Z')); // 400이면 그대로
+        const cleared = await http().patch(url(`/${id}`)).set(AUTH).send({ pausedUntil: null });
+        expect(cleared.body.data.pausedUntil).toBeNull();
+        expect(await stored()).toBeNull();
+    });
+
+    it('9) 조회용 인덱스가 만들어져 있다', async () => {
         const keys = (await col('recurring_goals').indexes()).map((i) => JSON.stringify(i.key));
         expect(keys).toContain(JSON.stringify({ userId: 1, deletedAt: 1, createdAt: 1 }));
     });

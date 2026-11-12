@@ -17,6 +17,8 @@ import {
     ValidateIf,
 } from 'class-validator';
 
+const PAUSED_UNTIL = /^\d{4}-\d{2}-\d{2}(T([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d+)?)?(Z|[+-]([01]\d|2[0-3]):[0-5]\d))?$/;
+
 // 값이 아예 없을 때(undefined)만 검사를 건너뛴다. null은 건너뛰지 않고 검사해서 거부한다
 const whenSent = () => ValidateIf((_obj, value) => value !== undefined);
 
@@ -60,8 +62,9 @@ export class SaveRecurringGoalDto {
     @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
     remindTime?: string | null;
 
-    // 날짜(YYYY-MM-DD 또는 ISO 8601 일시) 또는 null. 이때까지 쉰다
+    // null, 'YYYY-MM-DD'(서울 자정), 또는 시간대가 붙은 ISO 일시(Z · +09:00). 시간대 없는 일시는 서버 시간대에 따라 달라지므로 거부한다
     @IsOptional()
+    @Matches(PAUSED_UNTIL)
     @IsISO8601({ strict: true })
     pausedUntil?: string | null;
 

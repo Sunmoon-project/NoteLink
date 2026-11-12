@@ -4,12 +4,14 @@ import { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { parsePausedUntil } from '../src/modules/progress/recurring-goals.service.js';
 import { createRecurringGoalsTestApp } from './recurring-goals-test-app.js';
 import { AUTH, TEST_USER_ID } from './shop-test-app.js';
 
 type Row = Record<string, unknown> & { _id: Types.ObjectId; userId: Types.ObjectId; deletedAt: Date | null };
 type Filter = { _id?: Types.ObjectId; userId: Types.ObjectId; deletedAt: null };
 let rows: Row[];
+let subjects: { _id: Types.ObjectId; isActive: boolean }[];
 
 const sameId = (a: unknown, b: unknown) => String(a) === String(b);
 const matches = (r: Row, f: Filter) =>
@@ -39,6 +41,13 @@ const goalModel = {
     }),
 };
 
+// 과목 모델의 가짜: _id가 같고 isActive 조건에 맞는 것만 찾는다
+const subjectModel = {
+    findOne: vi.fn((f: { _id: Types.ObjectId; isActive: boolean }) => ({
+        lean: vi.fn(() => Promise.resolve(subjects.find((s) => sameId(s._id, f._id) && s.isActive === f.isActive) ?? null)),
+    })),
+};
+
 describe('반복 목표 API (/goals/recurring)', () => {
     let app: INestApplication;
     const url = (p = '') => `/api/v1/goals/recurring${p}`;
@@ -46,13 +55,14 @@ describe('반복 목표 API (/goals/recurring)', () => {
     const create = (body: object) => http().post(url()).set(AUTH).send(body);
 
     beforeAll(async () => {
-        app = await createRecurringGoalsTestApp({ recurringGoal: goalModel });
+        app = await createRecurringGoalsTestApp({ recurringGoal: goalModel, subject: subjectModel });
     });
     afterAll(async () => {
         await app.close();
     });
     beforeEach(() => {
         rows = [];
+        subjects = [];
         vi.clearAllMocks();
     });
 
@@ -75,7 +85,9 @@ describe('반복 목표 API (/goals/recurring)', () => {
     });
 
     it('요일은 정렬되어 저장되고, 보낸 값(목표 시간 · 알림 · 과목)이 그대로 나온다', async () => {
-        const subjectId = new Types.ObjectId().toString();
+        const subjectOid = new Types.ObjectId();
+        subjects.push({ _id: subjectOid, isActive: true });
+        const subjectId = subjectOid.toString();
         const res = await create({ name: '운동', days: [5, 1, 3], targetMin: 45, remindEnabled: true, remindTime: '07:30', subjectId });
         expect(res.body.data).toMatchObject({ days: [1, 3, 5], targetMin: 45, remindEnabled: true, remindTime: '07:30', subjectId });
         expect(RecurringGoal.safeParse(res.body.data).success).toBe(true);
@@ -103,10 +115,106 @@ describe('반복 목표 API (/goals/recurring)', () => {
     it('일시정지 날짜(pausedUntil)와 과목은 값 또는 null로 바꾼다', async () => {
         const created = await create({ name: 'a', days: [1] });
         const id = created.body.data._id;
+        const subjectOid = new Types.ObjectId();
+        subjects.push({ _id: subjectOid, isActive: true });
+        const withSubject = await http().patch(url(`/${id}`)).set(AUTH).send({ subjectId: subjectOid.toString() });
+        expect(withSubject.body.data.subjectId).toBe(subjectOid.toString());
         const paused = await http().patch(url(`/${id}`)).set(AUTH).send({ pausedUntil: '2026-12-01' });
-        expect(paused.body.data.pausedUntil).toBe('2026-12-01T00:00:00.000Z');
+        expect(paused.body.data.pausedUntil).toBe('2026-11-30T15:00:00.000Z'); // 서울 자정
         const cleared = await http().patch(url(`/${id}`)).set(AUTH).send({ pausedUntil: null, subjectId: null });
         expect(cleared.body.data).toMatchObject({ pausedUntil: null, subjectId: null });
+    });
+
+    it('없는 과목 · 비활성 과목은 만들 때도 수정할 때도 400, 활성 과목은 저장된다', async () => {
+        const active = { _id: new Types.ObjectId(), isActive: true };
+        const inactive = { _id: new Types.ObjectId(), isActive: false };
+        subjects.push(active, inactive);
+        const missing = new Types.ObjectId().toString();
+
+        for (const subjectId of [missing, inactive._id.toString()]) {
+            const res = await create({ name: 'a', days: [1], subjectId });
+            expect(res.status).toBe(400);
+            expect(res.body).toEqual({ code: 'VALIDATION_FAILED', message: expect.any(String) });
+        }
+        expect(rows).toHaveLength(0);
+
+        const ok = await create({ name: 'a', days: [1], subjectId: active._id.toString() });
+        expect(ok.status).toBe(201);
+        expect(ok.body.data.subjectId).toBe(active._id.toString());
+
+        const id = ok.body.data._id;
+        for (const subjectId of [missing, inactive._id.toString()]) {
+            expect((await http().patch(url(`/${id}`)).set(AUTH).send({ subjectId })).status).toBe(400);
+        }
+        expect(String(rows[0]?.subjectId)).toBe(active._id.toString()); // 그대로
+        const cleared = await http().patch(url(`/${id}`)).set(AUTH).send({ subjectId: null });
+        expect(cleared.body.data.subjectId).toBeNull(); // null은 확인 없이 통과
+    });
+
+    describe('pausedUntil', () => {
+        const pause = async (pausedUntil: string | null) => {
+            const created = await create({ name: 'a', days: [1] });
+            return http().patch(url(`/${created.body.data._id}`)).set(AUTH).send({ pausedUntil });
+        };
+
+        it.each([
+            ['YYYY-MM-DD는 서울 자정', '2026-12-01', '2026-11-30T15:00:00.000Z'],
+            ['Z 일시는 그 순간 그대로', '2026-12-01T03:00:00Z', '2026-12-01T03:00:00.000Z'],
+            ['+09:00 일시는 같은 순간', '2026-12-01T12:00:00+09:00', '2026-12-01T03:00:00.000Z'],
+            ['-05:00 일시도 같은 순간', '2026-12-01T00:00:00-05:00', '2026-12-01T05:00:00.000Z'],
+            ['밀리초가 있는 Z 일시', '2026-12-01T03:00:00.500Z', '2026-12-01T03:00:00.500Z'],
+        ])('%s', async (_label, input, expected) => {
+            const res = await pause(input);
+            expect(res.status).toBe(200);
+            expect(res.body.data.pausedUntil).toBe(expected);
+            expect(RecurringGoal.safeParse(res.body.data).success).toBe(true);
+        });
+
+        it.each([
+            ['시간대 없는 일시', '2026-12-01T12:00:00'],
+            ['시간대 없는 일시(분까지)', '2026-12-01T12:00'],
+            ['없는 날짜', '2026-02-31'],
+            ['없는 날짜(일시)', '2026-02-31T00:00:00Z'],
+            ['없는 시각', '2026-12-01T25:00:00Z'],
+            ['슬래시 날짜', '2026/12/01'],
+            ['빈 문자열', ''],
+        ])('400: %s', async (_label, input) => {
+            const res = await pause(input);
+            expect(res.status).toBe(400);
+            expect(rows[0]?.pausedUntil).toBeNull();
+        });
+
+        it('null은 쉬는 날짜를 해제한다', async () => {
+            const created = await create({ name: 'a', days: [1] });
+            const id = created.body.data._id;
+            await http().patch(url(`/${id}`)).set(AUTH).send({ pausedUntil: '2026-12-01' });
+            const res = await http().patch(url(`/${id}`)).set(AUTH).send({ pausedUntil: null });
+            expect(res.body.data.pausedUntil).toBeNull();
+            expect(rows[0]?.pausedUntil).toBeNull();
+        });
+
+        it('만들 때도 같은 규칙이다', async () => {
+            expect((await create({ name: 'a', days: [1], pausedUntil: '2026-12-01T12:00:00' })).status).toBe(400);
+            const ok = await create({ name: 'a', days: [1], pausedUntil: '2026-12-01' });
+            expect(ok.body.data.pausedUntil).toBe('2026-11-30T15:00:00.000Z');
+        });
+
+        it('서버 시간대(TZ)가 달라도 저장되는 순간이 같다', async () => {
+            const before = process.env['TZ'];
+            const offsets: Record<string, number> = { UTC: 0, 'Asia/Seoul': -540, 'America/Los_Angeles': 480, 'Pacific/Kiritimati': -840 };
+            try {
+                for (const [tz, offset] of Object.entries(offsets)) {
+                    process.env['TZ'] = tz;
+                    expect(new Date(2026, 0, 1).getTimezoneOffset()).toBe(offset); // TZ 변경이 실제로 먹혔는지
+                    expect((await pause('2026-12-01')).body.data.pausedUntil, tz).toBe('2026-11-30T15:00:00.000Z');
+                    expect((await pause('2026-12-01T12:00:00+09:00')).body.data.pausedUntil, tz).toBe('2026-12-01T03:00:00.000Z');
+                    expect(parsePausedUntil('2026-12-01').toISOString(), tz).toBe('2026-11-30T15:00:00.000Z');
+                }
+            } finally {
+                if (before === undefined) delete process.env['TZ'];
+                else process.env['TZ'] = before;
+            }
+        });
     });
 
     it('삭제하면 204, 목록에서는 빠지지만 DB에는 deletedAt과 함께 남는다', async () => {
