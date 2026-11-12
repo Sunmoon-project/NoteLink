@@ -90,9 +90,15 @@ describe('서버 없이 저장한 자료', () => {
     useDraft.getState().set({ folderId: 'fo1', kind: 'recording', files: [audio], title: '강의' });
     await renderScreen(<ConvertScreen />);
     await fireEvent.press(await screen.findByText('자료 보기', {}, { timeout: 5000 }));
-    expect(router.replace).toHaveBeenCalledWith({
+    // 폴더까지 돌아간 뒤 상세를 연다: 뒤로 가면 홈이 아니라 폴더가 나온다
+    expect(router.dismissTo).toHaveBeenCalledWith({
+      pathname: '/(tabs)/note/folder/[id]',
+      params: { id: 'fo1' },
+    });
+    expect(router.push).toHaveBeenCalledWith({
       pathname: '/(tabs)/note/rec/[id]',
       params: { id: 'm1' },
     });
+    expect(router.replace).not.toHaveBeenCalled();
   });
 });
