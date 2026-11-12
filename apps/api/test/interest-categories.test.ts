@@ -43,6 +43,7 @@ it('여러 상위·하위 ID를 모두 검증하고 ObjectId 배열로 저장한
   });
   expect(countDocuments).toHaveBeenCalledWith({
     _id: { $in: [parent, child] },
+    ownerId: null,
     isActive: true,
     deletedAt: null,
   });

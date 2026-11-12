@@ -64,9 +64,15 @@ export class UsersService {
     if (dto.nickname !== undefined) changes.nickname = dto.nickname;
     if (dto.learnerType !== undefined) changes.learnerType = dto.learnerType;
     if (dto.interestCategoryIds !== undefined) {
-      const categoryIds = dto.interestCategoryIds.map((id) => new Types.ObjectId(id));
+      // 같은 ID가 두 번 와도 한 번만 검사하고 저장한다 (개수 비교가 어긋나지 않게)
+      // (대소문자만 다른 같은 ID도 합치려고 ObjectId 값 기준으로 비교한다)
+      const categoryIds = [
+        ...new Set(dto.interestCategoryIds.map((id) => new Types.ObjectId(id).toHexString())),
+      ].map((hex) => new Types.ObjectId(hex));
+      // interestCategories()와 같은 범위: 공용 카테고리(ownerId: null)만 허용한다
       const categoryCount = await this.userModel.db.collection('categories').countDocuments({
         _id: { $in: categoryIds },
+        ownerId: null,
         isActive: true,
         deletedAt: null,
       });
