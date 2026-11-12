@@ -220,6 +220,9 @@ export const mockApi: Api = {
       proof === `proof:${db.user.email}`
         ? fail(ERROR_CODES.EMAIL_TAKEN, '이미 가입한 이메일이에요', 409)
         : ok(undefined, 700),
+    findEmail: () => ok({ emails: ['e2***@example.com'] }),
+    passwordSendCode: () => ok(undefined),
+    passwordReset: () => ok(undefined),
     agreeTerms: () => ok(undefined),
     logout: () => ok(undefined),
   },

@@ -76,6 +76,12 @@ export interface Api {
      * 이미 있으면 409 EMAIL_TAKEN
      */
     emailSignup(verificationToken: string, password: string): Promise<void>;
+    /** 아이디(가입 이메일) 찾기: 닉네임이 같은 계정의 이메일을 가려서(ab***@example.com) 돌려준다. 없으면 [] */
+    findEmail(nickname: string): Promise<{ emails: string[] }>;
+    /** 비밀번호 재설정 ① 인증번호를 메일로 보낸다. 가입하지 않은 이메일이어도 응답은 같다 */
+    passwordSendCode(email: string): Promise<void>;
+    /** 비밀번호 재설정 ② 인증번호가 맞으면 새 비밀번호로 바꾼다. 틀리면 400 EMAIL_CODE_INVALID */
+    passwordReset(email: string, code: string, password: string): Promise<void>;
     agreeTerms(termCodes: string[]): Promise<void>;
     logout(): Promise<void>;
   };

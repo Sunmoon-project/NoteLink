@@ -557,3 +557,27 @@ it('기기 저장 모드 가입: 인증번호가 6자리 숫자가 아니면 EMA
     code: ERROR_CODES.VALIDATION,
   });
 });
+
+describe('아이디 · 비밀번호 찾기(기기 저장 모드)', () => {
+  it('닉네임으로 가입 이메일을 가려서 찾고, 인증번호 뒤 새 비밀번호로 로그인한다', async () => {
+    await signup('student@example.com');
+    await api.me.update({ nickname: '광합성왕' });
+    expect(await api.auth.findEmail('광합성왕')).toEqual({ emails: ['st*****@example.com'] });
+    expect(await api.auth.findEmail('없는사람')).toEqual({ emails: [] });
+
+    await api.auth.passwordSendCode('student@example.com');
+    await expect(
+      api.auth.passwordReset('student@example.com', '12', 'newpass123'),
+    ).rejects.toMatchObject({
+      code: ERROR_CODES.EMAIL_CODE_INVALID,
+    });
+    await api.auth.passwordReset('student@example.com', '123456', 'newpass123');
+    await expect(api.auth.emailLogin('student@example.com', 'pw12345678')).rejects.toBeTruthy();
+    expect((await api.auth.emailLogin('student@example.com', 'newpass123')).user.email).toBe(
+      'student@example.com',
+    );
+    await expect(
+      api.auth.passwordReset('nobody@example.com', '123456', 'newpass123'),
+    ).rejects.toBeTruthy();
+  });
+});

@@ -62,6 +62,12 @@ export const httpApi: Api = {
     emailVerifyCode: (email, code) => http.post(P.emailVerifyCode, { email, code }),
     emailSignup: (verificationToken, password) =>
       http.post(P.emailSignup, { verificationToken, password }),
+    // ponytail: 아이디 · 비밀번호 찾기 경로는 서버 · 공용 계약(@notelink/shared PATHS)에 아직 없다.
+    // 서버 담당이 만들면 PATHS로 옮긴다. 그 전에는 404가 와서 화면이 '준비 중'으로 안내한다
+    findEmail: (nickname) => http.post('/auth/find-email', { nickname }),
+    passwordSendCode: (email) => http.post('/auth/password/send-code', { email }),
+    passwordReset: (email, code, password) =>
+      http.post('/auth/password/reset', { email, code, password }),
     agreeTerms: (termCodes) => http.post(P.terms, { termCodes }),
     // 서버가 폐기할 토큰. 토큰 갱신 뒤 재시도하면 그때의 토큰을 보낸다
     logout: () =>
