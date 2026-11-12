@@ -39,7 +39,8 @@ describe('퀴즈 세트 주소 (/api/v1/quiz-sets)', () => {
       .overrideProvider(getModelToken(Material.name))
       .useValue(materials.model)
       .overrideProvider(getModelToken(QuizAttempt.name))
-      .useValue(createFakeCollection().model)
+      // 유형별 통계(QuizSetsService.readTypeStats)는 aggregate로 센다. 이 흐름 시험에서는 아무도 풀지 않은 상태
+      .useValue(Object.assign(createFakeCollection().model, { aggregate: async () => [] }))
       .compile();
     app = moduleRef.createNestApplication();
     configureApp(app);

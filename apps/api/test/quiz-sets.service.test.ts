@@ -1,6 +1,6 @@
 import { AiJob, QuizSet } from '@notelink/shared';
 import { mongo, Types } from 'mongoose';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import {
@@ -12,7 +12,6 @@ import {
   QUIZ_SET_SIZE,
   QuizSetsService,
   seoulDay,
-  TYPE_STATS_ATTEMPT_LIMIT,
   type WorkerInput,
 } from '../src/quiz-sets/quiz-sets.service.js';
 import type { MaterialDocument } from '../src/modules/content/schemas/material.schema.js';
@@ -71,6 +70,8 @@ function setup() {
   );
   const materials = createFakeCollection<MaterialDocument>();
   const attempts = createFakeCollection<QuizAttemptDocument>();
+  const aggregate = vi.fn().mockResolvedValue([]);
+  Object.assign(attempts.model, { aggregate });
   const jobs = createFakeJobs();
   const aiJobs = new AiJobsService(jobs.model);
   const service = new QuizSetsService(sets.model, materials.model, attempts.model, aiJobs);
@@ -93,12 +94,60 @@ function setup() {
   const set = (id: string) => sets.rows.find((r) => r._id.toString() === id)!;
   const finish = (id: string, result: Record<string, unknown>) =>
     Object.assign(job(id), { status: 'succeeded', progress: 100, result });
-  return { service, aiJobs, sets, materials, attempts, jobs, addNote, job, set, finish };
+  return { service, aiJobs, sets, materials, attempts, jobs, addNote, job, set, finish, aggregate };
 }
 
 const notFound = { status: 404, response: { code: 'NOT_FOUND' } };
 
 describe('QuizSetsService.create', () => {
+  it('일반 생성과 미리 만들기 모두 전체 유형별 통계를 AI 작업에 전달한다', async () => {
+    const { service, aggregate, addNote, job } = setup();
+    aggregate.mockResolvedValue([{ _id: '조합', answered: 40, correct: 36 }]);
+    const first = await service.create(ME.toHexString(), await addNote());
+    const second = await service.pregenerate(ME.toHexString(), await addNote());
+    expect((job(first.job._id).input as WorkerInput).typeStats).toEqual({
+      조합: { answered: 40, correct: 36 },
+    });
+    expect((job(second!._id).input as WorkerInput).typeStats).toEqual({
+      조합: { answered: 40, correct: 36 },
+    });
+    expect(aggregate).toHaveBeenCalledTimes(1);
+  });
+
+  it('전체 통계를 읽을 수 없으면 기본 난이도로 조용히 진행하지 않는다', async () => {
+    const { service, aggregate, addNote, jobs } = setup();
+    aggregate.mockRejectedValueOnce(new Error('statistics unavailable'));
+    await expect(service.create(ME.toHexString(), await addNote())).rejects.toThrow(
+      'statistics unavailable',
+    );
+    expect(jobs.rows).toHaveLength(0);
+  });
+
+  it('동시에 생성하면 통계 집계 하나를 공유하고 실패 후 재시도할 수 있다', async () => {
+    const { service, aggregate, addNote } = setup();
+    const first = await addNote();
+    const second = await addNote();
+    let resolve!: (rows: { _id: string; answered: number; correct: number }[]) => void;
+    aggregate.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const a = service.pregenerate(ME.toHexString(), first);
+    const b = service.pregenerate(ME.toHexString(), second);
+    await vi.waitFor(() => expect(aggregate).toHaveBeenCalledTimes(1));
+    resolve([{ _id: '규칙', answered: 30, correct: 20 }]);
+    await Promise.all([a, b]);
+    expect(aggregate).toHaveBeenCalledTimes(1);
+
+    const next = setup();
+    next.aggregate.mockRejectedValueOnce(new Error('통계 오류')).mockResolvedValueOnce([]);
+    const note = await next.addNote();
+    await expect(next.service.pregenerate(ME.toHexString(), note)).rejects.toThrow('통계 오류');
+    await expect(next.service.pregenerate(ME.toHexString(), note)).resolves.not.toBeNull();
+    expect(next.aggregate).toHaveBeenCalledTimes(2);
+  });
   it('만드는 중인 세트를 만들고 quiz_generate 작업을 넣어 { quizSet, job }을 돌려준다', async () => {
     const { service, addNote, job, set } = setup();
     const materialId = await addNote();
@@ -1130,58 +1179,6 @@ const addAttempt = (
     answers: answers.map(([questionId, correct]) => ({ questionId, correct, tries: 1 })),
   } as never);
 
-describe('QuizSetsService 유형별 정답률(typeStats, #268)', () => {
-  it('모든 사용자의 끝낸 풀이를 문제 유형마다 푼 수 · 맞힌 수로 센다', async () => {
-    const t = setup();
-    const materialId = await t.addNote();
-    const mine = await addTypedSet(t, ME, ['정의', '조합']);
-    const theirs = await addTypedSet(t, OTHER, ['조합', null]);
-    const gone = await addTypedSet(t, OTHER, ['특징'], { deletedAt: new Date() });
-    await addAttempt(t, ME, mine.setId, [
-      [mine.ids[0]!, true],
-      [mine.ids[1]!, false],
-    ]);
-    await addAttempt(t, OTHER, theirs.setId, [
-      [theirs.ids[0]!, true],
-      [theirs.ids[1]!, false], // 유형을 모름(직접 만든 문제): 빼고 셈
-    ]);
-    await addAttempt(t, OTHER, gone.setId, [[gone.ids[0]!, false]]); // 지운 세트의 풀이도 셈
-    await addAttempt(t, OTHER, theirs.setId, [[theirs.ids[0]!, false]], null); // 끝내지 않음
-    await addAttempt(t, OTHER, new Types.ObjectId(), [[new Types.ObjectId(), true]]); // 세트 없음
-
-    const { job } = await t.service.create(ME.toHexString(), materialId);
-
-    expect((t.job(job._id)['input'] as WorkerInput).typeStats).toEqual({
-      정의: { answered: 1, correct: 1 },
-      조합: { answered: 2, correct: 1 },
-      특징: { answered: 1, correct: 0 },
-    });
-  });
-
-  it(`최근 끝낸 풀이 ${TYPE_STATS_ATTEMPT_LIMIT}개만 센다`, async () => {
-    const t = setup();
-    const materialId = await t.addNote();
-    const s = await addTypedSet(t, OTHER, ['정의']);
-    // 가장 오래된 풀이 하나(틀림)는 빠지고 최근 것(모두 맞힘)만 셈
-    await addAttempt(t, OTHER, s.setId, [[s.ids[0]!, false]], new Date('2026-01-01T00:00:00Z'));
-    for (let i = 0; i < TYPE_STATS_ATTEMPT_LIMIT; i++) {
-      await addAttempt(
-        t,
-        OTHER,
-        s.setId,
-        [[s.ids[0]!, true]],
-        new Date(Date.UTC(2026, 5, 1, 0, i)),
-      );
-    }
-
-    const { job } = await t.service.create(ME.toHexString(), materialId);
-
-    expect((t.job(job._id)['input'] as WorkerInput).typeStats).toEqual({
-      정의: { answered: TYPE_STATS_ATTEMPT_LIMIT, correct: TYPE_STATS_ATTEMPT_LIMIT },
-    });
-  });
-});
-
 describe('QuizSetsService.pregenerate (#134 · #274)', () => {
   it('노트 내용으로 첫 세트를 만드는 quiz_pregen을 넣는다', async () => {
     const t = setup();
@@ -1218,6 +1215,8 @@ describe('QuizSetsService.pregenerate (#134 · #274)', () => {
     const otherNote = await t.addNote({ title: '유전', pages: [{ pageNo: 4, ocrText: 'DNA' }] });
     const past = await addTypedSet(t, ME, ['조합'], { materialId: new Types.ObjectId(otherNote) });
     await addAttempt(t, ME, past.setId, [[past.ids[0]!, false]]);
+    // 유형별 집계 자체는 quiz-type-stats-mongo.test.ts가 실제 Mongo로 확인한다. 여기서는 입력에 담기는지만 본다
+    t.aggregate.mockResolvedValue([{ _id: '조합', answered: 1, correct: 0 }]);
 
     const job = await t.service.pregenerate(ME.toHexString(), materialId);
     const input = t.job(job!._id)['input'] as WorkerInput;

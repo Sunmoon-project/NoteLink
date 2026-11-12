@@ -36,12 +36,6 @@ export const INPUT_SET_LIMIT = 50;
 /** 처리기 입력에 넣는 끝낸 풀이 수(최근 것부터). 세트 수와 함께 읽는 양을 묶는다(Codex 리뷰 #236) */
 export const INPUT_ATTEMPT_LIMIT = 500;
 /**
- * 유형별 정답률(typeStats)을 셀 때 읽는 모든 사용자의 끝낸 풀이 수(최근 것부터, #268). 처리기는 유형마다
- * 풀이가 30번 이상이면 정답률로 난이도를 한 단계 고친다(apps/ai services/quiz/levels.py type_levels).
- * 퀴즈를 만들 때마다 세므로 읽는 양을 묶는다: 최근 풀이로 세어 정답률이 바뀌면 따라간다
- */
-export const TYPE_STATS_ATTEMPT_LIMIT = 2000;
-/**
  * 처리기 입력 전체의 크기 한도(BSON 바이트). ai_jobs 문서는 MongoDB 16MB 한도 안이어야 하고, 처리기가
  * 같은 문서에 중간 결과(checkpoint) · 결과(result)도 쓰므로 절반만 입력에 쓴다(Codex 재리뷰 #236).
  * 넘으면 fitInput이 들어가지 않는 세트를 그 풀이 · 노트 글과 함께 뺀다
@@ -51,6 +45,19 @@ const OBJECT_ID = /^[0-9a-f]{24}$/i;
 /** 문제 난이도(packages/shared QuestionDifficulty, #268) */
 export type Difficulty = '하' | '중' | '상';
 const DIFFICULTIES: readonly string[] = ['하', '중', '상'];
+// apps/ai/app/services/quiz/similar.py의 유형만 집계해 작업 입력 크기를 제한한다.
+const QUESTION_CATEGORIES = [
+  '정의',
+  '분류',
+  '빈칸',
+  '어휘',
+  '특징',
+  '부정설명',
+  '묘사',
+  '규칙',
+  '조합',
+];
+const TYPE_STATS_TTL_MS = 60_000;
 const difficultyOf = (v: unknown): Difficulty | null =>
   typeof v === 'string' && DIFFICULTIES.includes(v) ? (v as Difficulty) : null;
 
@@ -249,6 +256,8 @@ const isDuplicateKey = (e: unknown) =>
  */
 @Injectable()
 export class QuizSetsService {
+  private typeStatsCache?: { expiresAt: number; value: TypeStats };
+  private typeStatsPending?: Promise<TypeStats>;
   constructor(
     @InjectModel(QuizSet.name) private readonly sets: Model<QuizSetDocument>,
     @InjectModel(Material.name) private readonly materials: Model<MaterialDocument>,
@@ -619,55 +628,76 @@ export class QuizSetsService {
     });
   }
 
-  /**
-   * 모든 사용자의 유형별 푼 수 · 맞힌 수(처리기 입력 typeStats, #268). 최근 끝낸 풀이
-   * TYPE_STATS_ATTEMPT_LIMIT개의 답마다 그 문제의 유형(저장한 category: 정의 · 특징 · 조합 …)으로 센다.
-   * 지운 세트의 풀이도 센다(이미 푼 답이라 유형의 정답률로는 그대로 맞다). 유형을 모르는 문제(직접 만든
-   * 세트 · 세트를 찾을 수 없음)는 뺀다. 세는 값만 보내 다른 사용자의 문제 · 답은 처리기에 가지 않는다
-   */
-  private async typeStats(): Promise<Record<string, TypeTally>> {
-    const rows = await this.attempts
-      .find({ finishedAt: { $ne: null } }, { quizSetId: 1, answers: 1 })
-      .sort({ finishedAt: -1 })
-      .limit(TYPE_STATS_ATTEMPT_LIMIT)
-      .lean<Pick<AttemptRow, 'quizSetId' | 'answers'>[]>();
-    const setIds = [...new Set(rows.map((a) => a.quizSetId.toString()))];
-    const sets = setIds.length
-      ? await this.sets
-          .find(
-            { _id: { $in: setIds.map((id) => new Types.ObjectId(id)) } },
-            { 'questions._id': 1, 'questions.category': 1 },
-          )
-          .lean<Pick<QuizSetRow, '_id' | 'questions'>[]>()
-      : [];
-    const typeOf = new Map<string, string>();
-    for (const s of sets) {
-      for (const q of s.questions ?? []) {
-        if (q.category) typeOf.set(q._id.toString(), q.category);
-      }
+  /** 모든 사용자의 완료된 풀이에서 문제 유형별 수치만 집계한다. 개인의 풀이 내용은 반환하지 않는다. */
+  private async typeStats(): Promise<TypeStats> {
+    if (this.typeStatsCache && this.typeStatsCache.expiresAt > Date.now())
+      return this.typeStatsCache.value;
+    if (this.typeStatsPending) return this.typeStatsPending;
+    const pending = this.readTypeStats();
+    this.typeStatsPending = pending;
+    try {
+      const value = await pending;
+      this.typeStatsCache = { value, expiresAt: Date.now() + TYPE_STATS_TTL_MS };
+      return value;
+    } finally {
+      if (this.typeStatsPending === pending) this.typeStatsPending = undefined;
     }
-    const out: Record<string, TypeTally> = {};
-    for (const a of rows) {
-      for (const x of a.answers ?? []) {
-        const ty = typeOf.get(x.questionId.toString());
-        if (!ty) continue;
-        const t = (out[ty] ??= { answered: 0, correct: 0 });
-        t.answered += 1;
-        if (x.correct) t.correct += 1;
-      }
-    }
-    return out;
   }
-}
 
-/** 유형 하나의 푼 수 · 맞힌 수(처리기 입력 typeStats) */
-export interface TypeTally {
-  answered: number;
-  correct: number;
+  private async readTypeStats(): Promise<TypeStats> {
+    const rows = await this.attempts.aggregate<{ _id: string; answered: number; correct: number }>([
+      { $match: { finishedAt: { $type: 'date' } } },
+      { $unwind: '$answers' },
+      {
+        $match: {
+          'answers.correct': { $type: 'bool' },
+          $nor: [{ 'answers.void': true }, { 'answers.void': { $type: 'string', $ne: '' } }],
+        },
+      },
+      // 같은 풀이에 같은 문제가 중복 기록돼도 한 번만 센다.
+      {
+        $group: {
+          _id: { attempt: '$_id', questionId: '$answers.questionId' },
+          quizSetId: { $first: '$quizSetId' },
+          correct: { $first: '$answers.correct' },
+        },
+      },
+      {
+        $lookup: {
+          from: 'quiz_sets',
+          let: { setId: '$quizSetId', questionId: '$_id.questionId' },
+          pipeline: [
+            { $match: { status: 'ready', deletedAt: null, $expr: { $eq: ['$_id', '$$setId'] } } },
+            { $unwind: '$questions' },
+            {
+              $match: {
+                $expr: { $eq: ['$questions._id', '$$questionId'] },
+                'questions.category': { $in: QUESTION_CATEGORIES },
+              },
+            },
+            { $project: { _id: 0, category: '$questions.category' } },
+          ],
+          as: 'question',
+        },
+      },
+      { $unwind: '$question' },
+      {
+        $group: {
+          _id: '$question.category',
+          answered: { $sum: 1 },
+          correct: { $sum: { $cond: ['$correct', 1, 0] } },
+        },
+      },
+    ]);
+    return Object.fromEntries(
+      rows.map((row) => [row._id, { answered: row.answered, correct: row.correct }]),
+    );
+  }
 }
 
 type WorkerPage = { pageNo: number; ocrText: string };
 type WorkerMaterial = { id: string; title: string; pages: WorkerPage[]; concepts?: string[] };
+type TypeStats = Record<string, { answered: number; correct: number }>;
 
 /** 처리기 입력의 노트(generate.py _material). 개념 이름은 저장된 것이 있을 때만 */
 function materialInput(material: MaterialRow, pages: WorkerPage[]): WorkerMaterial {
@@ -698,7 +728,7 @@ export interface WorkerInput extends Record<string, unknown> {
   attempts: { quizSetId: string }[];
   notes: Record<string, WorkerPage[]>;
   /** 모든 사용자의 유형별 푼 수 · 맞힌 수(#268). 없으면 처리기는 유형의 처음 난이도를 쓴다 */
-  typeStats?: Record<string, TypeTally>;
+  typeStats?: TypeStats;
 }
 
 /** 키 하나 아래에 둔 값의 BSON 크기. 키는 노트 id(24자)나 배열 번호(3자리까지)라 실제보다 조금 크게 잰다 */

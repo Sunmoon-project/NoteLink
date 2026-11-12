@@ -81,7 +81,7 @@ export class User {
   @Prop({ type: String, default: null })
   passwordHash?: string | null;
 
-  @Prop({ required: true, type: String })
+  @Prop({ required: true, unique: true, index: true, type: String })
   nickname: string;
 
   @Prop({ required: true, type: String, default: 'user' })

@@ -43,3 +43,7 @@ export class ChatRoom {
 }
 
 export const ChatRoomSchema = SchemaFactory.createForClass(ChatRoom);
+ChatRoomSchema.index(
+  { studyRoomId: 1 },
+  { unique: true, partialFilterExpression: { studyRoomId: { $type: 'objectId' } } },
+);
