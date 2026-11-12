@@ -504,6 +504,8 @@ describe('처음 안내', () => {
       expect(SecureStore.setItemAsync).toHaveBeenCalledWith('notelink.toured', '["u1"]'),
     );
     expect(router.navigate).toHaveBeenLastCalledWith('/note');
+    // 버튼 이름대로 폴더 만들기를 연다
+    await waitFor(() => expect(router.push).toHaveBeenLastCalledWith('/note-new/tag'));
     expect(useTour.getState().step).toBe(-1);
   });
 

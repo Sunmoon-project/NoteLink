@@ -323,7 +323,15 @@ export function TourCoach() {
               건너뛰기
             </Btn>
           )}
-          <Btn small onPress={() => (last ? void done('/note') : go(step + 1))}>
+          <Btn
+            small
+            onPress={() =>
+              last
+                ? // 노트 탭으로 간 뒤 폴더 만들기를 바로 연다(버튼 이름대로)
+                  void done('/note').then(() => router.push('/note-new/tag'))
+                : go(step + 1)
+            }
+          >
             {last ? '첫 학습 폴더 만들기' : '다음'}
           </Btn>
         </View>
