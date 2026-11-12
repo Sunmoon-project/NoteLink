@@ -12,6 +12,7 @@ import { notifyLocal } from '@/lib/push';
 import { socket } from '@/lib/socket';
 import { useSocket } from '@/hooks';
 import { useDraft } from '@/stores/draft';
+import { scanTitle } from '@/lib/scan-title';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
 import { toast } from '@/stores/toast';
@@ -52,11 +53,23 @@ const STEPS = {
 const DETAIL = { handwriting: 'hand', recording: 'rec', document: 'doc' } as const;
 
 /** 원본은 저장됐고 AI 정리는 서버를 기다리는 상태 */
-function SavedForLater({ kind, materialId }: { kind: keyof typeof DETAIL; materialId: string }) {
+function SavedForLater({
+  kind,
+  materialId,
+  folderId,
+}: {
+  kind: keyof typeof DETAIL;
+  materialId: string;
+  folderId: string | null | undefined;
+}) {
   const qc = useQueryClient();
+  // 아래에서 초안을 비우므로 처음 받은 폴더를 붙들어 둔다
+  const [folder] = useState(folderId);
   useEffect(() => {
     qc.invalidateQueries({ queryKey: ['folders'] });
     qc.invalidateQueries({ queryKey: ['materials'] });
+    // 올린 파일만큼 저장 공간이 늘었다
+    qc.invalidateQueries({ queryKey: ['me'] });
     useDraft.getState().reset();
   }, [qc]);
   return (
@@ -65,12 +78,19 @@ function SavedForLater({ kind, materialId }: { kind: keyof typeof DETAIL; materi
         footer={
           <>
             <Btn
-              onPress={() =>
-                router.replace({
+              onPress={() => {
+                // 모달을 상세로 바로 바꾸면 노트 탭에 상세 하나만 남아 뒤로 가기가 홈으로 간다.
+                // 자료를 넣은 폴더까지 돌아간 뒤 상세를 열어, 뒤로 가면 폴더가 나오게 한다
+                router.dismissTo(
+                  folder
+                    ? { pathname: '/(tabs)/note/folder/[id]', params: { id: folder } }
+                    : '/(tabs)/note',
+                );
+                router.push({
                   pathname: `/(tabs)/note/${DETAIL[kind]}/[id]`,
                   params: { id: materialId },
-                })
-              }
+                });
+              }}
             >
               자료 보기
             </Btn>
@@ -149,7 +169,7 @@ export function ConvertScreen() {
         folderId: requireFolder(),
         kind: draft.kind,
         source: draft.source,
-        title: draft.title || defaultTitle(draft.kind, draft.files[0]?.name),
+        title: draft.title.trim() || defaultTitle(draft.kind, draft.files[0]?.name, draft.source),
         description: draft.description,
         blobUrls: blobs.current,
         avatarItemId: draft.avatar,
@@ -278,7 +298,7 @@ export function ConvertScreen() {
       if (!active()) return;
       qc.setQueryData(['materials', folderId], materials);
       void qc.invalidateQueries({ queryKey: ['folders'] });
-      router.replace({ pathname: '/(tabs)/note/folder/[id]', params: { id: folderId } });
+      router.dismissTo({ pathname: '/(tabs)/note/folder/[id]', params: { id: folderId } });
       toast('목록에 없으면 저장을 마치지 못한 자료예요. 필요하면 다시 올려주세요');
     } catch {
       if (active()) toast('등록 여부를 확인하지 못했어요. 연결을 확인하고 다시 눌러주세요');
@@ -298,7 +318,7 @@ export function ConvertScreen() {
   const steps = STEPS[draft.kind];
   // AI 서버가 없으면(기기 저장 모드) 원본만 저장하고 정리는 서버 연결 후에 한다 (FR-65-05)
   if (phase === 'ai' && aiWaiting(job) && materialId)
-    return <SavedForLater kind={kind} materialId={materialId} />;
+    return <SavedForLater kind={kind} materialId={materialId} folderId={draft.folderId} />;
   return (
     <Canvas>
       <Screen>
@@ -449,8 +469,9 @@ export function ConvertScreen() {
   );
 }
 
-const defaultTitle = (kind: keyof typeof TITLE, name?: string) =>
-  name?.trim() ||
+const defaultTitle = (kind: keyof typeof TITLE, name?: string, source?: string) =>
+  // 스캔 · 촬영은 파일 이름이 기계식(scan_1794….jpg)이라 제목으로 쓰지 않는다
+  (source === 'scan' ? scanTitle() : name?.trim()) ||
   (kind === 'recording' ? '강의 녹음' : kind === 'handwriting' ? '필기 자료' : '학습 자료');
 
 /* ── 정리 완료 (p.66 #21~23) ─────────────────────── */
@@ -464,6 +485,7 @@ export function ResultScreen() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['materials'] });
       qc.invalidateQueries({ queryKey: ['folders'] });
+      qc.invalidateQueries({ queryKey: ['me'] });
       useDraft.getState().reset();
       router.dismissTo({ pathname: '/(tabs)/note/folder/[id]', params: { id: m.data!.folderId } });
       toast('학습자료에 저장했어요');

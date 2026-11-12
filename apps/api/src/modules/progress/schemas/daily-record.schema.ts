@@ -1,51 +1,54 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { Schema as MongooseSchema, Types, type HydratedDocument } from 'mongoose';
 
-// 임베디드 문서: StudyItem (오늘 할 항목)
+// 그날 공부할 항목 하나 (공유 계약 StudyItem). _id는 Mongoose가 자동으로 만든다
 @Schema()
 export class StudyItem {
-  @Prop({ type: Types.ObjectId, auto: true })
-  _id: Types.ObjectId;
+    @Prop({ required: true })
+    title: string;
 
-  @Prop({ required: true, type: String })
-  title: string; // 예: 이차방정식 풀이
+    @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'Subject', default: null })
+    subjectId: Types.ObjectId | null;
 
-  @Prop({ type: Types.ObjectId, ref: 'Subject' })
-  subjectId?: Types.ObjectId;
+    @Prop({ type: String, default: null })
+    subjectName: string | null;
 
-  @Prop({ type: Number, default: 0})
-  goalMin?: number;
+    @Prop({ type: Number, default: null })
+    goalMin: number | null;
 
-  @Prop({ required: true, default: 0 })
-  accumulatedSec: number; // 누적 측정 시간(초)
+    @Prop({ required: true, default: 0, min: 0 })
+    accumulatedSec: number; // 그날 이 항목에 쌓인 공부 시간
 }
 export const StudyItemSchema = SchemaFactory.createForClass(StudyItem);
 
-// 메인 스키마: daily_records
 export type DailyRecordDocument = HydratedDocument<DailyRecord>;
 
+// 하루치 공부 기록 (사용자 한 명 · 날짜 하나당 한 건). 그날의 공부 항목이 안에 들어 있다
 @Schema({ collection: 'daily_records', timestamps: true })
 export class DailyRecord {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
-  userId: Types.ObjectId;
+    @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'User', required: true })
+    userId: Types.ObjectId; // users 참조
 
-  @Prop({ required: true, type: String })
-  studyDate: string; // YYYY-MM-DD
+    @Prop({ type: String, required: true })
+    studyDate: string; // 서울 기준 'YYYY-MM-DD'
 
-  @Prop({ required: true, type: Number, default: 0 })
-  totalSec: number; // 오늘 총 순공 시간
+    @Prop({ required: true, default: 0, min: 0 })
+    totalSec: number;
 
-  @Prop({ required: true, type: Number, default: 0 })
-  personalSec: number; // 개인 공부 시간
+    @Prop({ required: true, default: 0, min: 0 })
+    personalSec: number;
 
-  @Prop({ required: true, type: Number, default: 0 })
-  roomSec: number; // 스터디룸 공부 시간
+    @Prop({ required: true, default: 0, min: 0 })
+    roomSec: number;
 
-  @Prop({ required: true, type: Boolean, default: false })
-  streakOk: boolean; // 스트릭(연속 공부) 달성 여부
+    @Prop({ required: true, default: false })
+    streakOk: boolean; // 연속 달성 여부. 판정 규칙은 통계(progress) 단계에서 정한다
 
-  @Prop({ type: [StudyItemSchema], default: [] })
-  items: StudyItem[]; // 항목별 공부 목록
+    @Prop({ type: [StudyItemSchema], default: [] })
+    items: StudyItem[];
 }
 
 export const DailyRecordSchema = SchemaFactory.createForClass(DailyRecord);
+
+// 한 사람이 같은 날짜 기록을 두 개 가질 수 없게 (오늘 기록을 동시에 만들려 해도 한 건만)
+DailyRecordSchema.index({ userId: 1, studyDate: 1 }, { unique: true });

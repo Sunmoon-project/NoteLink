@@ -12,6 +12,7 @@ import {
   QUIZ_SET_SIZE,
   QuizSetsService,
   seoulDay,
+  TYPE_STATS_ATTEMPT_LIMIT,
   type WorkerInput,
 } from '../src/quiz-sets/quiz-sets.service.js';
 import type { MaterialDocument } from '../src/modules/content/schemas/material.schema.js';
@@ -45,6 +46,7 @@ const workerQuestion = (order: number, over: Record<string, unknown> = {}) => ({
   answer: '세포막',
   explanation: '세포막이 세포를 둘러싼다.',
   conceptTags: ['세포막'],
+  difficulty: '하',
   srs: null,
   ...over,
 });
@@ -127,7 +129,13 @@ describe('QuizSetsService.create', () => {
       title: '세포 생물학',
       pages: [{ pageNo: 1, ocrText: NOTE_TEXT }],
     });
-    expect(input).toMatchObject({ size: QUIZ_SET_SIZE, sets: [], attempts: [], notes: {} });
+    expect(input).toMatchObject({
+      size: QUIZ_SET_SIZE,
+      sets: [],
+      attempts: [],
+      notes: {},
+      typeStats: {}, // 아직 아무도 풀지 않음: 처리기는 유형의 처음 난이도를 쓴다(#268)
+    });
   });
 
   it.each([
@@ -272,6 +280,7 @@ describe('QuizSetsService.create', () => {
           answer: '유전 물질',
           explanation: null,
           conceptTags: ['DNA'],
+          difficulty: '중',
           srs: null,
         },
       ],
@@ -301,6 +310,7 @@ describe('QuizSetsService.create', () => {
             answer: '유전 물질',
             type: '정의',
             conceptTags: ['DNA'],
+            difficulty: '중', // 처리기가 정답률로 고칠 때 씀(#268)
             srs: null,
           },
         ],
@@ -348,10 +358,37 @@ describe('QuizSetsService 작업 결과 반영', () => {
       answer: '세포막',
       explanation: '세포막이 세포를 둘러싼다.',
       conceptTags: ['세포막'],
+      difficulty: '하',
     });
     expect(ready.questions[1]).toMatchObject({ type: 'short_answer', choices: null });
     const stored = (set(quizSet._id)['questions'] as Record<string, unknown>[])[0]!;
-    expect(stored).toMatchObject({ category: '빈칸', passage: '세포는 ____ 로 둘러싸여 있다.' });
+    expect(stored).toMatchObject({
+      category: '빈칸',
+      passage: '세포는 ____ 로 둘러싸여 있다.',
+      difficulty: '하',
+    });
+  });
+
+  it('난이도는 하 · 중 · 상만 저장하고, 없거나 다른 값이면 문제는 두고 null로(#268)', async () => {
+    const { service, addNote, finish, set } = setup();
+    const materialId = await addNote();
+    const { quizSet, job } = await service.create(ME.toHexString(), materialId);
+    finish(job._id, {
+      questions: [
+        workerQuestion(1, { difficulty: '상' }),
+        workerQuestion(2, { difficulty: '어려움' }),
+        workerQuestion(3, { difficulty: undefined }),
+        ...fullSet(4).slice(0, QUIZ_SET_SIZE - 3),
+      ],
+      title: '세포 생물학 맞춤 퀴즈 · 11-08',
+      concepts: null,
+    });
+
+    const ready = await service.findMine(ME.toHexString(), quizSet._id);
+    expect(QuizSet.parse(ready)).toEqual(ready);
+    expect(ready.questions.slice(0, 3).map((q) => q.difficulty)).toEqual(['상', null, null]);
+    const stored = set(quizSet._id)['questions'] as Record<string, unknown>[];
+    expect(stored.slice(0, 3).map((q) => q['difficulty'])).toEqual(['상', null, null]);
   });
 
   it('처리 중이면 작업 진행률을 담고 세트는 그대로 만드는 중', async () => {
@@ -406,6 +443,47 @@ describe('QuizSetsService 작업 결과 반영', () => {
     ]);
     expect(sets.rows).toHaveLength(1);
     expect(sets.rows[0]!['questionCount']).toBe(QUIZ_SET_SIZE);
+  });
+});
+
+describe('QuizSetsService 난이도를 붙이기 전 문제(Codex 리뷰 #292)', () => {
+  it('difficulty가 없는 저장 문제는 앱에 null로 보내고, 처리기 입력에는 넣지 않는다', async () => {
+    const { service, addNote, sets, job } = setup();
+    const otherNote = await addNote({ title: '유전', pages: [{ pageNo: 4, ocrText: 'DNA' }] });
+    const qid = new Types.ObjectId();
+    // 난이도 필드가 생기기 전에 저장한 문서(필드 자체가 없음)
+    const old = (await sets.model.create({
+      ownerId: ME,
+      materialId: new Types.ObjectId(otherNote),
+      folderId: FOLDER,
+      title: '유전 퀴즈',
+      status: 'ready',
+      deletedAt: null,
+      questions: [
+        {
+          _id: qid,
+          order: 1,
+          type: 'multiple_choice',
+          category: '정의',
+          prompt: 'DNA는?',
+          passage: null,
+          choices: ['유전 물질', '단백질'],
+          answer: '유전 물질',
+          explanation: null,
+          conceptTags: ['DNA'],
+          srs: null,
+        },
+      ],
+    } as never)) as unknown as { _id: Types.ObjectId };
+
+    const shown = await service.findMine(ME.toHexString(), old._id.toHexString());
+    expect(QuizSet.parse(shown)).toEqual(shown);
+    expect(shown.questions[0]!.difficulty).toBeNull();
+
+    const { job: created } = await service.create(ME.toHexString(), await addNote());
+    const input = job(created._id)['input'] as { sets: { questions: Record<string, unknown>[] }[] };
+    const sent = input.sets.find((x) => x.questions[0]?.['id'] === qid.toHexString())!;
+    expect(sent.questions[0]).not.toHaveProperty('difficulty');
   });
 });
 
@@ -1004,8 +1082,108 @@ describe('QuizSetsService 리뷰 반영(Codex #276)', () => {
   });
 });
 
+/** 유형(category)이 붙은 문제들의 ready 세트를 넣고 문제 id를 돌려준다 */
+async function addTypedSet(
+  t: ReturnType<typeof setup>,
+  owner: Types.ObjectId,
+  categories: (string | null)[],
+  over: Record<string, unknown> = {},
+) {
+  const ids = categories.map(() => new Types.ObjectId());
+  const row = (await t.sets.model.create({
+    ownerId: owner,
+    materialId: new Types.ObjectId(),
+    folderId: FOLDER,
+    source: 'ai_generated',
+    title: '지난 퀴즈',
+    status: 'ready',
+    deletedAt: null,
+    questions: categories.map((category, i) => ({
+      _id: ids[i],
+      order: i + 1,
+      type: 'multiple_choice',
+      category,
+      prompt: `문제 ${i + 1}`,
+      choices: ['가', '나'],
+      answer: '가',
+      conceptTags: [],
+      srs: null,
+    })),
+    ...over,
+  } as never)) as unknown as { _id: Types.ObjectId };
+  return { setId: row._id, ids };
+}
+
+/** 끝낸 풀이 하나(answers는 [문제 id, 맞힘]) */
+const addAttempt = (
+  t: ReturnType<typeof setup>,
+  user: Types.ObjectId,
+  quizSetId: Types.ObjectId,
+  answers: [Types.ObjectId, boolean][],
+  finishedAt: Date | null = new Date('2026-11-07T03:00:00Z'),
+) =>
+  t.attempts.model.create({
+    userId: user,
+    quizSetId,
+    finishedAt,
+    startedAt: new Date('2026-11-07T02:50:00Z'),
+    answers: answers.map(([questionId, correct]) => ({ questionId, correct, tries: 1 })),
+  } as never);
+
+describe('QuizSetsService 유형별 정답률(typeStats, #268)', () => {
+  it('모든 사용자의 끝낸 풀이를 문제 유형마다 푼 수 · 맞힌 수로 센다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const mine = await addTypedSet(t, ME, ['정의', '조합']);
+    const theirs = await addTypedSet(t, OTHER, ['조합', null]);
+    const gone = await addTypedSet(t, OTHER, ['특징'], { deletedAt: new Date() });
+    await addAttempt(t, ME, mine.setId, [
+      [mine.ids[0]!, true],
+      [mine.ids[1]!, false],
+    ]);
+    await addAttempt(t, OTHER, theirs.setId, [
+      [theirs.ids[0]!, true],
+      [theirs.ids[1]!, false], // 유형을 모름(직접 만든 문제): 빼고 셈
+    ]);
+    await addAttempt(t, OTHER, gone.setId, [[gone.ids[0]!, false]]); // 지운 세트의 풀이도 셈
+    await addAttempt(t, OTHER, theirs.setId, [[theirs.ids[0]!, false]], null); // 끝내지 않음
+    await addAttempt(t, OTHER, new Types.ObjectId(), [[new Types.ObjectId(), true]]); // 세트 없음
+
+    const { job } = await t.service.create(ME.toHexString(), materialId);
+
+    expect((t.job(job._id)['input'] as WorkerInput).typeStats).toEqual({
+      정의: { answered: 1, correct: 1 },
+      조합: { answered: 2, correct: 1 },
+      특징: { answered: 1, correct: 0 },
+    });
+  });
+
+  it(`최근 끝낸 풀이 ${TYPE_STATS_ATTEMPT_LIMIT}개만 센다`, async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const s = await addTypedSet(t, OTHER, ['정의']);
+    // 가장 오래된 풀이 하나(틀림)는 빠지고 최근 것(모두 맞힘)만 셈
+    await addAttempt(t, OTHER, s.setId, [[s.ids[0]!, false]], new Date('2026-01-01T00:00:00Z'));
+    for (let i = 0; i < TYPE_STATS_ATTEMPT_LIMIT; i++) {
+      await addAttempt(
+        t,
+        OTHER,
+        s.setId,
+        [[s.ids[0]!, true]],
+        new Date(Date.UTC(2026, 5, 1, 0, i)),
+      );
+    }
+
+    const { job } = await t.service.create(ME.toHexString(), materialId);
+
+    expect((t.job(job._id)['input'] as WorkerInput).typeStats).toEqual({
+      정의: { answered: TYPE_STATS_ATTEMPT_LIMIT, correct: TYPE_STATS_ATTEMPT_LIMIT },
+    });
+  });
+});
+
 describe('QuizSetsService.pregenerate (#134 · #274)', () => {
-  it('노트 내용만으로 첫 세트를 만드는 quiz_pregen을 넣는다', async () => {
+  it('노트 내용으로 첫 세트를 만드는 quiz_pregen을 넣는다', async () => {
     const t = setup();
     const materialId = await t.addNote();
 
@@ -1018,13 +1196,46 @@ describe('QuizSetsService.pregenerate (#134 · #274)', () => {
       targetId: materialId,
     });
     const input = t.job(job!._id)['input'] as WorkerInput;
-    expect(input).toMatchObject({ size: QUIZ_SET_SIZE, sets: [], attempts: [], notes: {} });
+    expect(input).toMatchObject({
+      size: QUIZ_SET_SIZE,
+      sets: [],
+      attempts: [],
+      notes: {},
+      typeStats: {},
+    });
     expect(input.day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(input.material).toEqual({
       id: materialId,
       title: '세포 생물학',
       pages: [{ pageNo: 1, ocrText: NOTE_TEXT }],
     });
+  });
+
+  it('퀴즈 요청과 같이 사용자의 다른 세트 · 풀이와 유형별 정답률을 담는다(Codex 리뷰 #300)', async () => {
+    // 미리 만든 첫 세트에도 약한 난이도 · 고친 유형 난이도가 맞춰지게(전에는 sets · attempts가 늘 빈 배열)
+    const t = setup();
+    const materialId = await t.addNote();
+    const otherNote = await t.addNote({ title: '유전', pages: [{ pageNo: 4, ocrText: 'DNA' }] });
+    const past = await addTypedSet(t, ME, ['조합'], { materialId: new Types.ObjectId(otherNote) });
+    await addAttempt(t, ME, past.setId, [[past.ids[0]!, false]]);
+
+    const job = await t.service.pregenerate(ME.toHexString(), materialId);
+    const input = t.job(job!._id)['input'] as WorkerInput;
+    expect(input.sets).toEqual([
+      {
+        id: past.setId.toHexString(),
+        materialId: otherNote,
+        questions: [expect.objectContaining({ id: past.ids[0]!.toHexString(), type: '조합' })],
+      },
+    ]);
+    expect(input.attempts).toEqual([
+      expect.objectContaining({
+        quizSetId: past.setId.toHexString(),
+        answers: [{ questionId: past.ids[0]!.toHexString(), correct: false }],
+      }),
+    ]);
+    expect(input.notes).toEqual({ [otherNote]: [{ pageNo: 4, ocrText: 'DNA' }] });
+    expect(input.typeStats).toEqual({ 조합: { answered: 1, correct: 0 } });
   });
 
   it('넣은 미리 만들기를 퀴즈 요청이 이어받는다', async () => {

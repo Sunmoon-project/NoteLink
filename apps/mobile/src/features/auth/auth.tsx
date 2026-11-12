@@ -106,7 +106,7 @@ const SOCIAL = [
 ] as const;
 
 /** 카카오 · Google · 네이버 간편 로그인 버튼. 처음 쓰는 계정은 서버가 만들고 초기 설정으로 이어진다 */
-function SocialButtons() {
+function SocialButtons({ compact = false }: { compact?: boolean }) {
   const done = useFinishSignIn();
   const social = useMutation({
     mutationFn: async (p: SocialProvider) => api.auth.socialLogin(p, await getProviderToken(p)),
@@ -115,30 +115,52 @@ function SocialButtons() {
   });
   return (
     <View className="gap-3">
-      {SOCIAL.map(([p, label, bg, fg, Logo]) => {
-        const busy = social.isPending && social.variables === p;
-        return (
-          <Tap
-            key={p}
-            accessibilityRole="button"
-            accessibilityLabel={label}
-            accessibilityState={{ disabled: !socialLoginReady || social.isPending }}
-            disabled={!socialLoginReady || social.isPending}
-            onPress={() => social.mutate(p)}
-            className={cx(
-              'h-control-lg flex-row items-center justify-center rounded-2xl px-5',
-              bg,
-              !socialLoginReady && 'opacity-50',
-            )}
-          >
-            {/* 로고는 왼쪽 끝에 두고 글자는 가운데 */}
-            <View className="absolute left-5">
-              {busy ? <ActivityIndicator size="small" color={C.sub} /> : <Logo />}
-            </View>
-            <Text className={cx('text-callout font-semibold', fg)}>{label}</Text>
-          </Tap>
-        );
-      })}
+      {/* 회원가입은 입력칸이 많아 로고만 있는 둥근 버튼 한 줄로 줄인다(한 화면 안에 들어가게) */}
+      <View className={compact ? 'flex-row justify-center gap-5' : 'gap-3'}>
+        {SOCIAL.map(([p, label, bg, fg, Logo]) => {
+          const busy = social.isPending && social.variables === p;
+          if (compact)
+            return (
+              <Tap
+                key={p}
+                accessibilityRole="button"
+                accessibilityLabel={label}
+                accessibilityState={{ disabled: !socialLoginReady || social.isPending }}
+                disabled={!socialLoginReady || social.isPending}
+                onPress={() => social.mutate(p)}
+                className={cx(
+                  'h-control-lg w-control-lg items-center justify-center rounded-full',
+                  bg,
+                  p === 'google' && 'border border-line',
+                  !socialLoginReady && 'opacity-50',
+                )}
+              >
+                {busy ? <ActivityIndicator size="small" color={C.sub} /> : <Logo />}
+              </Tap>
+            );
+          return (
+            <Tap
+              key={p}
+              accessibilityRole="button"
+              accessibilityLabel={label}
+              accessibilityState={{ disabled: !socialLoginReady || social.isPending }}
+              disabled={!socialLoginReady || social.isPending}
+              onPress={() => social.mutate(p)}
+              className={cx(
+                'h-control-lg flex-row items-center justify-center rounded-2xl px-5',
+                bg,
+                !socialLoginReady && 'opacity-50',
+              )}
+            >
+              {/* 로고는 왼쪽 끝에 두고 글자는 가운데 */}
+              <View className="absolute left-5">
+                {busy ? <ActivityIndicator size="small" color={C.sub} /> : <Logo />}
+              </View>
+              <Text className={cx('text-callout font-semibold', fg)}>{label}</Text>
+            </Tap>
+          );
+        })}
+      </View>
       {!socialLoginReady && (
         <Text className="text-center text-caption text-sub">
           간편 로그인은 준비 중이에요. 이메일로 시작해 주세요
@@ -241,6 +263,11 @@ export function LoginScreen() {
 /** 칸 아래 안내 (없으면 그리지 않는다) */
 const FieldError = ({ msg }: { msg: string | null }) =>
   msg ? <Text className="mt-1.5 text-caption text-danger">{msg}</Text> : null;
+
+/** 회원가입 칸 이름. 공용 Label(위 여백 32px)보다 좁혀 작은 화면에서도 한 화면에 들어가게 한다 */
+const FormLabel = ({ children }: { children: string }) => (
+  <Text className="mt-4 mb-2 px-1 text-footnote text-sub">{children}</Text>
+);
 
 type SignupField = 'email' | 'pw' | 'confirm';
 
@@ -353,7 +380,7 @@ export function SignupScreen() {
         }
       >
         <Header title="회원가입" sub="아이디로 쓸 이메일과 비밀번호를 정해 주세요" />
-        <Label>이메일 (아이디)</Label>
+        <FormLabel>이메일 (아이디)</FormLabel>
         <Input
           value={email}
           onChangeText={(v) => {
@@ -373,7 +400,7 @@ export function SignupScreen() {
           maxLength={254}
         />
         <FieldError msg={shown('email')} />
-        <Label>비밀번호</Label>
+        <FormLabel>비밀번호</FormLabel>
         <Input
           value={pw}
           onChangeText={setPw}
@@ -386,7 +413,7 @@ export function SignupScreen() {
           maxLength={64}
         />
         <FieldError msg={shown('pw')} />
-        <Label>비밀번호 확인</Label>
+        <FormLabel>비밀번호 확인</FormLabel>
         <Input
           value={confirm}
           onChangeText={setConfirm}
@@ -399,8 +426,8 @@ export function SignupScreen() {
           maxLength={64}
         />
         <FieldError msg={confirmShown} />
-        <Text className="mt-8 mb-3 text-center text-caption text-sub">또는 간편하게 시작</Text>
-        <SocialButtons />
+        <Text className="mt-6 mb-3 text-center text-caption text-sub">또는 간편하게 시작</Text>
+        <SocialButtons compact />
       </Screen>
     </Canvas>
   );
@@ -715,7 +742,8 @@ const TYPES: [LearnerType, string][] = [
   ['university', '대학생'],
   ['worker', '직장인'],
 ];
-const INTERESTS = ['자격증', '수능', '어학', '전공', '코딩', '공무원'];
+/** 관심 분야(온보딩 · 프로필 > 계정 정보에서 고른다). 서버 카테고리 형식은 정해지면 맞춘다 */
+export const INTERESTS = ['자격증', '수능', '어학', '전공', '코딩', '공무원'];
 
 export function ProfileSetupScreen() {
   const qc = useQueryClient();

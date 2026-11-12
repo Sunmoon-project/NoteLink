@@ -1,3 +1,4 @@
+import { useTourTarget } from '@/features/tutor/tour';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
@@ -50,6 +51,7 @@ import {
   cx,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
+import { useTabRefresh } from '@/hooks';
 import { C, ICON, MOTION } from '@/theme';
 import { seoul } from '@/lib/dates';
 
@@ -81,9 +83,19 @@ const EmptyNote = ({ children }: { children?: React.ReactNode }) => (
   </View>
 );
 
-function Fab({ onPress, open }: { onPress: () => void; open?: boolean }) {
+function Fab({
+  onPress,
+  open,
+  tour,
+}: {
+  onPress: () => void;
+  open?: boolean;
+  /** 처음 안내가 짚을 자리 */
+  tour?: React.RefObject<View | null>;
+}) {
   return (
     <Pressable
+      ref={tour}
       accessibilityLabel={open ? '닫기' : '추가'}
       onPress={onPress}
       className={cx(
@@ -97,8 +109,11 @@ function Fab({ onPress, open }: { onPress: () => void; open?: boolean }) {
 }
 
 export function NoteListScreen() {
+  // 처음 안내의 '자료 올리기'가 짚는 자리(폴더가 없으면 폴더 만들기, 있으면 + 버튼)
+  const addTarget = useTourTarget('note-add');
   const { upload } = useLocalSearchParams<{ upload?: 'hand' | 'rec' }>();
   const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
+  const refresh = useTabRefresh(folders);
   const [q, setQ] = useState('');
   const [tag, setTag] = useState('전체');
   const list = (folders.data ?? []).filter(
@@ -126,7 +141,7 @@ export function NoteListScreen() {
 
   return (
     <Canvas>
-      <Screen>
+      <Screen refresh={refresh}>
         <NetBanner />
         <Title>노트</Title>
         <View>
@@ -143,7 +158,9 @@ export function NoteListScreen() {
         {folders.isSuccess && folders.data.length === 0 ? (
           <View className="pt-24">
             <EmptyNote>
-              <Btn onPress={() => router.push('/note-new/tag')}>학습 폴더 만들기</Btn>
+              <View ref={addTarget} collapsable={false}>
+                <Btn onPress={() => router.push('/note-new/tag')}>학습 폴더 만들기</Btn>
+              </View>
             </EmptyNote>
           </View>
         ) : (
@@ -183,7 +200,9 @@ export function NoteListScreen() {
           </>
         )}
       </Screen>
-      {!!folders.data?.length && <Fab onPress={() => router.push('/note-new/tag')} />}
+      {!!folders.data?.length && (
+        <Fab tour={addTarget} onPress={() => router.push('/note-new/tag')} />
+      )}
     </Canvas>
   );
 }

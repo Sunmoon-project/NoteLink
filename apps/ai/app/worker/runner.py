@@ -70,6 +70,10 @@ class JobReport(Report, Protocol):
         """작업이 취소됐거나 잠금을 잃은 것을 처리기가 알아채면 켜짐(#263)."""
         ...
 
+    def add_cost(self, usd: float) -> None:
+        """이 작업이 쓴 Claude 비용(달러)을 작업 문서에 더함(#298)."""
+        ...
+
 
 AWAITED_CHECK_SEC = 5.0  # 처리 중인 작업의 awaited를 DB에서 다시 읽는 간격
 CANCEL_CHECK_SEC = 5.0  # 처리 중인 작업이 취소됐는지 DB에서 다시 읽는 간격(#263)
@@ -123,6 +127,9 @@ class _StoreReport:
 
     def canceled(self) -> threading.Event:
         return self._canceled
+
+    def add_cost(self, usd: float) -> None:
+        self._store.add_cost(self._job, usd)
 
 
 class _Heartbeat:

@@ -1,6 +1,6 @@
 import pytest
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmRejectedError
 from app.core.config import settings
 from app.services.quiz import similar
 from app.services.quiz.checks import Seen, Target, seen_question
@@ -332,3 +332,50 @@ def test_negative_questions_are_allowed_only_for_their_type() -> None:
 )
 def test_difficulty_comes_from_the_type(qtype: str | None, level: str) -> None:
     assert similar.difficulty_of(qtype) == level
+
+
+def test_the_checker_rejecting_the_request_is_refused() -> None:
+    llm = FakeLlm({"Check": [LlmRejectedError("HTTP 413")]})
+    d: Draft = {"stem": "q", "passage": "", "options": ["a", "b", "c", "d", "e"], "answer": "a"}
+    assert similar.solved(llm, d, d["options"], 0, PAGE) == ("refused", "HTTP 413")
+
+
+@pytest.mark.parametrize(
+    ("review", "checks"),
+    [
+        # 생성이 모두 거절
+        ([LlmRejectedError("HTTP 413")] * 3, []),
+        # 생성 거절과 검사 거절이 섞임
+        ([gen(GOOD), LlmRejectedError("HTTP 422"), gen(GOOD)], [LlmRejectedError("HTTP 413")] * 2),
+    ],
+)
+def test_every_failed_call_rejected_is_llm_refused(
+    review: list[JsonObject | LlmError], checks: list[JsonObject | LlmError]
+) -> None:
+    llm = FakeLlm({"Review": review, "Check": checks})
+    m = similar.make_similar(llm, question(), target(), 1, PAGE, 0, [])
+    assert m.question is None and m.llm_down and m.llm_refused
+
+
+@pytest.mark.parametrize(
+    "middle",
+    [
+        LlmError("HTTP 503"),  # 다른 장애가 섞임
+        {},  # 답 모양 오류가 섞임: 다시 하면 될 수도 있음
+    ],
+)
+def test_a_rejection_mixed_with_another_failure_is_not_llm_refused(
+    middle: JsonObject | LlmError,
+) -> None:
+    review = [gen(GOOD), middle, gen(GOOD)]
+    llm = FakeLlm({"Review": review, "Check": [LlmRejectedError("HTTP 413")] * 2})
+    m = similar.make_similar(llm, question(), target(), 1, PAGE, 0, [])
+    assert m.question is None and m.llm_down and not m.llm_refused
+
+
+def test_a_refused_two_answers_check_is_llm_refused() -> None:
+    # 어휘 문제의 '같은 뜻' 검사(Naturals)를 서버가 모두 거절
+    review = [gen(GOOD), LlmRejectedError("HTTP 413"), gen(GOOD)]
+    llm = FakeLlm({"Review": review, "Naturals": [LlmRejectedError("HTTP 413")] * 40})
+    m = similar.make_similar(llm, question(qtype="어휘"), target(), 1, PAGE, 0, [])
+    assert m.question is None and m.llm_down and m.llm_refused

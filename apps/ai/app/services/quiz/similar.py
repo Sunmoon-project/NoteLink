@@ -14,7 +14,7 @@ from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Literal
 
-from app.clients.llm import JsonObject, Llm, LlmError
+from app.clients.llm import JsonObject, Llm, LlmError, LlmRejectedError
 from app.core.config import settings
 from app.services.quiz import quality
 from app.services.quiz.checks import Seen, Target, code_check, option_key, seen_draft
@@ -161,7 +161,7 @@ CHK_SYS = (
     "정답 기호, 정답이 하나뿐인지, 노트만으로 답을 확정할 수 있는지 답한다. JSON으로만 답한다."
 )
 CHK_ANSWERS = [*LETTERS, "없음"]
-Solved = Literal["pass", "fail", "down", "bad"]  # solved의 결과
+Solved = Literal["pass", "fail", "down", "refused", "bad"]  # solved의 결과
 CHK_SCHEMA: JsonObject = {
     "type": "object",
     "additionalProperties": False,
@@ -264,6 +264,8 @@ class Made:
     # '이미 있는 문제와 거의 같음'으로 떨어진 초안: reuse_existing이 가장 가까운 기존 문제를 고름
     drafts: list[Draft] = field(default_factory=list)
     llm_down: bool = False  # 정상 탈락 없이 호출 실패로 못 만듦(LLM 장애, make_similar 참고)
+    # 모든 시도가 서버 거절로 끝남: 다시 보내도 같음(#272)
+    llm_refused: bool = False
     reused_from: str | None = None  # 기존 문제를 다시 냈으면 그 문제 id
     # 다시 낸 기존 문제를 '정답 둘' 검사하지 못함(LLM 장애): 새 문제에 checked를 붙이지 않음
     unchecked: bool = False
@@ -307,8 +309,8 @@ def solved(
     model을 주면 그 모델이 풉니다(맞춤 퀴즈 안정적 모드의 생성 모델 2차 풀기, #274).
 
     결과: pass(통과) · fail(정상 탈락: 다른 답 · 정답이 둘 · 노트로 못 정함) · down(호출 실패:
-    LLM 장애, make_similar가 llm_down에 셈) · bad(답 모양이 틀림: 스키마 밖 · 잘린 JSON, 초안 탓도
-    장애도 아님).
+    LLM 장애, make_similar가 llm_down에 셈) · refused(서버가 요청을 거절함: down의 한 가지, 다시
+    보내도 같음, #272) · bad(답 모양이 틀림: 스키마 밖 · 잘린 JSON, 초안 탓도 장애도 아님).
     """
     shown = d["stem"] + (f"\n{d['passage']}" if d["passage"] else "")
     user = f"<노트>\n{page_text[:3000]}\n</노트>\n\n문제: {shown}\n" + "\n".join(
@@ -318,6 +320,8 @@ def solved(
         c = llm.call(
             model or settings.quiz_check_model, CHK_SYS, user, CHK_SCHEMA, name, max_tokens=200
         )
+    except LlmRejectedError as e:
+        return "refused", str(e)
     except LlmError as e:
         return "down", str(e)
     said = c.get("answer")
@@ -353,6 +357,8 @@ def make_similar(
     복습은 flawTries를 늘려 3일 뒤 문제를 빼고, 오답 복습은 기존 문제를 다시 냅니다(Codex 리뷰 ·
     /code-review 11/02). 정답 둘 검사가 '검사 못 함'(quality.checked)이면 그 초안은 쓰지 않습니다.
     실패한 시도 뒤에도 다음 시도 준비(LAST_TIP)는 같습니다.
+    llm_refused: 모든 시도가 서버 거절(생성 · 정답 둘 검사 · 검사 모델)로 끝남.
+    다시 보내도 같아 오답 복습이 작업을 다시 넣지 않습니다(#272).
     """
     orig = q["prompt"] + (f"\n제시문: {q['passage']}" if q.get("passage") else "")
     first = q.get("type") or "규칙"
@@ -363,6 +369,7 @@ def make_similar(
     out = Made()
     notes = ""
     down = 0  # 호출이 실패한 시도 수
+    refused = 0  # down 중 서버가 거절한 시도 수(#272)
     rejected = False  # 초안이 정상으로 떨어진 시도가 있었는지
     for attempt, ty in enumerate((first, SWITCH.get(first, "빈칸"), first)):
         out.tries = attempt + 1
@@ -386,6 +393,7 @@ def make_similar(
         except LlmError as e:
             r = None
             down, out.why = down + 1, [str(e)]
+            refused += isinstance(e, LlmRejectedError)
         # 호출 실패 · 답 모양 오류(failed): 초안 잘못이 아니므로 재시도 지시(문제점)는 더하지 않음
         failed = r is None
         raw = None if r is None else _draft(r)
@@ -407,6 +415,7 @@ def make_similar(
                 avoid += [h for h in hits if h not in avoid]
                 if unchecked:  # 검사하지 못한 초안은 쓰지 않음
                     down, failed, out.why = down + 1, True, ["정답 둘 검사 호출이 실패함"]
+                    refused += unchecked == "refused"
             if not failed and not why and k is not None:
                 d = answer_as_option(d, k)
                 options, pos = place(d["options"], k, slot)
@@ -416,8 +425,9 @@ def make_similar(
                     out.question, out.answer_pos = {**d, "options": options}, LETTERS[pos]
                     out.type, out.why = ty, []
                     return out
-                if verdict == "down":
+                if verdict in ("down", "refused"):
                     down, failed, out.why = down + 1, True, [said]
+                    refused += verdict == "refused"
                 elif verdict == "bad":  # 답 모양 오류: 재시도 지시에 문제점으로 넣지 않음
                     failed, out.why = True, [said]
                 else:
@@ -434,6 +444,8 @@ def make_similar(
         if attempt == 1 and first in BLANK_TYPES:  # 실패한 시도 뒤에도 마지막 시도는 똑같이 준비
             notes += LAST_TIP
     out.llm_down = not rejected and 2 * down > out.tries
+    # 시도마다 거절된 것만: 답 모양 오류가 섞이면 다시 하면 될 수도 있음(맞춤 퀴즈와 같은 기준)
+    out.llm_refused = out.llm_down and refused == out.tries
     return out
 
 

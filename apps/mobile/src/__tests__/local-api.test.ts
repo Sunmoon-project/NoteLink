@@ -196,6 +196,30 @@ const material = (folderId: string, requestId = 'r1') => ({
   blobUrls: ['file:///doc/files/a.pdf'],
 });
 
+describe('사용량', () => {
+  it('자료를 올리면 파일 크기만큼 저장 공간이, 아바타에게 물을 때마다 AI 크레딧이 는다', async () => {
+    const me = await signup('a@test.com');
+    const f = await addFolder();
+    const { material: m } = await api.content.createMaterial(material(f._id));
+    expect((await api.me.get()).usage).toMatchObject({ storageBytes: 10, aiCredits: 0 });
+    // 정리가 끝난 노트로 만든다(기기 저장 모드는 요약을 만들지 않는다)
+    const key = `user-${me._id}`;
+    const saved = JSON.parse(mockFiles.get(key)!);
+    saved.materials.find((x: { _id: string }) => x._id === m._id).summary = {
+      sections: [{ heading: '개요', body: '자료 설명.' }],
+      points: ['핵심'],
+    };
+    mockFiles.set(key, JSON.stringify(saved));
+    resetLocalForTests();
+    await api.content.ask(m._id, { question: '핵심 알려 주세요', history: [] });
+    await api.content.ask(m._id, { question: '오늘 날씨 알려 주세요', history: [] });
+    expect((await api.me.get()).usage?.aiCredits).toBe(2);
+    // 다시 켜도 남는다
+    resetLocalForTests();
+    expect((await api.me.get()).usage?.aiCredits).toBe(2);
+  });
+});
+
 describe('자료 저장 · 삭제 실패', () => {
   it('저장에 실패한 등록을 같은 키로 재시도하면 실제로 다시 만든다', async () => {
     await signup('a@test.com');

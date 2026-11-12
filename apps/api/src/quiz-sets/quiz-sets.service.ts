@@ -36,12 +36,23 @@ export const INPUT_SET_LIMIT = 50;
 /** 처리기 입력에 넣는 끝낸 풀이 수(최근 것부터). 세트 수와 함께 읽는 양을 묶는다(Codex 리뷰 #236) */
 export const INPUT_ATTEMPT_LIMIT = 500;
 /**
+ * 유형별 정답률(typeStats)을 셀 때 읽는 모든 사용자의 끝낸 풀이 수(최근 것부터, #268). 처리기는 유형마다
+ * 풀이가 30번 이상이면 정답률로 난이도를 한 단계 고친다(apps/ai services/quiz/levels.py type_levels).
+ * 퀴즈를 만들 때마다 세므로 읽는 양을 묶는다: 최근 풀이로 세어 정답률이 바뀌면 따라간다
+ */
+export const TYPE_STATS_ATTEMPT_LIMIT = 2000;
+/**
  * 처리기 입력 전체의 크기 한도(BSON 바이트). ai_jobs 문서는 MongoDB 16MB 한도 안이어야 하고, 처리기가
  * 같은 문서에 중간 결과(checkpoint) · 결과(result)도 쓰므로 절반만 입력에 쓴다(Codex 재리뷰 #236).
  * 넘으면 fitInput이 들어가지 않는 세트를 그 풀이 · 노트 글과 함께 뺀다
  */
 export const INPUT_BYTE_LIMIT = 8 * 1024 * 1024;
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
+/** 문제 난이도(packages/shared QuestionDifficulty, #268) */
+export type Difficulty = '하' | '중' | '상';
+const DIFFICULTIES: readonly string[] = ['하', '중', '상'];
+const difficultyOf = (v: unknown): Difficulty | null =>
+  typeof v === 'string' && DIFFICULTIES.includes(v) ? (v as Difficulty) : null;
 
 /** 앱에 보내는 문제(packages/shared Question) */
 export interface AppQuestion {
@@ -53,6 +64,7 @@ export interface AppQuestion {
   answer: string;
   explanation: string | null;
   conceptTags: string[];
+  difficulty: Difficulty | null;
 }
 
 /** 앱에 보내는 퀴즈 세트(packages/shared QuizSet) */
@@ -81,6 +93,7 @@ export interface QuestionRow {
   answer: string;
   explanation?: string | null;
   conceptTags?: string[];
+  difficulty?: Difficulty | null;
   srs?: Record<string, unknown> | null;
 }
 
@@ -134,6 +147,7 @@ export function toAppQuestion(q: QuestionRow): AppQuestion {
     answer: q.answer,
     explanation: q.explanation ?? null,
     conceptTags: q.conceptTags ?? [],
+    difficulty: q.difficulty ?? null,
   };
 }
 
@@ -201,6 +215,8 @@ export function fromWorkerQuestion(raw: unknown): QuestionRow | null {
     answer,
     explanation: str(q['explanation']),
     conceptTags,
+    // 하 · 중 · 상이 아니면 null(난이도 하나 때문에 문제를 빼지 않음)
+    difficulty: difficultyOf(q['difficulty']),
     srs: null,
   };
 }
@@ -398,6 +414,8 @@ export class QuizSetsService {
    * create가 이어받거나(도는 중) 결과를 바로 쓴다(끝남).
    * 넣지 않을 때: 물을 수 있는 쪽이 없음(null) · 도는 미리 만들기나 아직 쓰지 않은 결과가 있음(그 작업) ·
    * 이 노트에 세트가 이미 있음(null, 첫 세트만 미리 만든다).
+   * 입력은 퀴즈 요청과 같다(generateInput): 이 노트의 세트는 아직 없지만 사용자의 다른 세트 · 풀이와 모든
+   * 사용자의 유형별 정답률을 담아, 미리 만든 첫 세트에도 난이도 비율이 맞춰진다(Codex 리뷰 #300).
    * 알려진 한계: 확인과 넣기가 따로라 같은 노트에 거의 동시에 두 번 부르면 둘 다 넣을 수 있다
    * (노트 API는 정리가 끝날 때 한 번 부른다)
    */
@@ -422,15 +440,7 @@ export class QuizSetsService {
       userId,
       targetType: 'material',
       targetId: materialId,
-      // 첫 세트는 노트 내용만으로 만든다(지난 세트 · 풀이가 없는 새 노트, #134)
-      input: fitInput({
-        day: seoulDay(new Date()),
-        size: QUIZ_SET_SIZE,
-        material: materialInput(material, pages),
-        sets: [],
-        attempts: [],
-        notes: {},
-      }),
+      input: await this.generateInput(owner, material, pages),
     });
   }
 
@@ -540,6 +550,7 @@ export class QuizSetsService {
    * 처리기 입력(apps/ai services/quiz/generate.py 「input」). 처리기는 다른 컬렉션을 읽지 않으므로
    * 이 노트 글 · 사용자의 다른 세트와 풀이 · 그 세트가 가리키는 노트 글을 모두 담는다.
    * 노트의 개념 이름(concepts)은 지난 퀴즈 · 미리 만들기가 저장했으면 넣는다(처리기가 다시 뽑지 않음).
+   * 모든 사용자의 유형별 정답률(typeStats)도 넣는다: 처리기가 유형 난이도를 고친다(#268).
    * 노트 조각(chunks)은 아직 저장하는 곳이 없어 넣지 않는다.
    */
   private async generateInput(
@@ -604,8 +615,55 @@ export class QuizSetsService {
         })),
       })),
       notes: Object.fromEntries(others.map((m) => [m._id.toString(), textPages(m.pages)])),
+      typeStats: await this.typeStats(),
     });
   }
+
+  /**
+   * 모든 사용자의 유형별 푼 수 · 맞힌 수(처리기 입력 typeStats, #268). 최근 끝낸 풀이
+   * TYPE_STATS_ATTEMPT_LIMIT개의 답마다 그 문제의 유형(저장한 category: 정의 · 특징 · 조합 …)으로 센다.
+   * 지운 세트의 풀이도 센다(이미 푼 답이라 유형의 정답률로는 그대로 맞다). 유형을 모르는 문제(직접 만든
+   * 세트 · 세트를 찾을 수 없음)는 뺀다. 세는 값만 보내 다른 사용자의 문제 · 답은 처리기에 가지 않는다
+   */
+  private async typeStats(): Promise<Record<string, TypeTally>> {
+    const rows = await this.attempts
+      .find({ finishedAt: { $ne: null } }, { quizSetId: 1, answers: 1 })
+      .sort({ finishedAt: -1 })
+      .limit(TYPE_STATS_ATTEMPT_LIMIT)
+      .lean<Pick<AttemptRow, 'quizSetId' | 'answers'>[]>();
+    const setIds = [...new Set(rows.map((a) => a.quizSetId.toString()))];
+    const sets = setIds.length
+      ? await this.sets
+          .find(
+            { _id: { $in: setIds.map((id) => new Types.ObjectId(id)) } },
+            { 'questions._id': 1, 'questions.category': 1 },
+          )
+          .lean<Pick<QuizSetRow, '_id' | 'questions'>[]>()
+      : [];
+    const typeOf = new Map<string, string>();
+    for (const s of sets) {
+      for (const q of s.questions ?? []) {
+        if (q.category) typeOf.set(q._id.toString(), q.category);
+      }
+    }
+    const out: Record<string, TypeTally> = {};
+    for (const a of rows) {
+      for (const x of a.answers ?? []) {
+        const ty = typeOf.get(x.questionId.toString());
+        if (!ty) continue;
+        const t = (out[ty] ??= { answered: 0, correct: 0 });
+        t.answered += 1;
+        if (x.correct) t.correct += 1;
+      }
+    }
+    return out;
+  }
+}
+
+/** 유형 하나의 푼 수 · 맞힌 수(처리기 입력 typeStats) */
+export interface TypeTally {
+  answered: number;
+  correct: number;
 }
 
 type WorkerPage = { pageNo: number; ocrText: string };
@@ -639,6 +697,8 @@ export interface WorkerInput extends Record<string, unknown> {
   sets: { id: string; materialId: string; questions: Record<string, unknown>[] }[];
   attempts: { quizSetId: string }[];
   notes: Record<string, WorkerPage[]>;
+  /** 모든 사용자의 유형별 푼 수 · 맞힌 수(#268). 없으면 처리기는 유형의 처음 난이도를 쓴다 */
+  typeStats?: Record<string, TypeTally>;
 }
 
 /** 키 하나 아래에 둔 값의 BSON 크기. 키는 노트 id(24자)나 배열 번호(3자리까지)라 실제보다 조금 크게 잰다 */
@@ -725,6 +785,7 @@ function toWorkerQuestion(q: QuestionRow): Record<string, unknown> {
     ...(q.passage ? { passage: q.passage } : {}),
     ...(q.explanation ? { explanation: q.explanation } : {}),
     conceptTags: q.conceptTags ?? [],
+    ...(q.difficulty ? { difficulty: q.difficulty } : {}),
     srs: q.srs ?? null,
   };
 }

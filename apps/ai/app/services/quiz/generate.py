@@ -11,8 +11,13 @@ ai_jobs.type = 'quiz_pregen': 노트를 만들 때 NestJS가 넣는 첫 맞춤 �
   미리 만들기를 사용자가 이어받으면(report.awaited) 그때부터 빠른 모드 · 남은 자리 × 보통 상한으로
   마저 만듭니다(이미 만든 문제는 그대로).
   안정적 모드는 한국어 용어 과목 쪽에 유형 둘을 더합니다(#268): 부정설명('옳지 않은 것은?', 정답이
-  틀린 설명)과 조합(ㄱ · ㄴ · ㄷ 중 옳은 것을 모두, combo.py가 조립). 첫 유형은 세트 전체에서
-  자리마다 돌려 한 세트에 유형 · 난이도가 섞이게 합니다.
+  틀린 설명)과 조합(ㄱ · ㄴ · ㄷ 중 옳은 것을 모두, combo.py가 조립).
+
+난이도(#268, 규칙은 levels.py): 세트의 하 · 중 · 상 비율을 이 사용자의 난이도별 정답률로 정합니다
+  (기본 2 : 2 : 1, 많이 틀린 난이도를 늘림). 자리마다 난이도를 정해 그 난이도의 유형부터 만들고
+  실패하면 가까운 난이도로 넘어가며, 다음 판은 모자란 난이도부터 채웁니다. 같은 난이도 안의 유형은
+  빠른 모드는 쪽마다, 안정적 모드는 세트 전체에서 돌립니다. 유형의 난이도는 모든 사용자의 정답률
+  (input.typeStats)로 고칩니다.
 
   코드  쪽마다 문제 수 나누기 · 과목 판단(영어 문장 과목 / 용어 과목) · 쪽마다 유형 돌리기 ·
         세트 안에서 개념 · 정답 겹치지 않게 · 못 만든 자리는 다른 쪽으로 넘기기
@@ -68,6 +73,8 @@ input — NestJS가 작업을 만들 때 담습니다. ObjectId는 문자열, �
             void(true 또는 무효 이유 글)는 없는 풀이로 봅니다
   notes     {materialId: [{pageNo, ocrText}]} 사용자의 다른 노트(세트가 가리키는 노트 포함).
             이 노트는 material로 넣으므로 없어도 됩니다
+  typeStats? {유형: {answered, correct}} 모든 사용자의 유형별 풀이 수 · 맞힌 수(levels.type_levels).
+            없으면 유형의 처음 난이도. 모양이 틀린 유형은 뺌(퀴즈를 실패시키지 않음)
 
 result — NestJS가 quiz_sets에 새 세트로 저장합니다(materialId · folderId는 노트에서)
   questions  새 세트 문제(order 1부터, srs는 null: 아직 풀지 않음). 늘 size개. difficulty(하 · 중 ·
@@ -77,6 +84,10 @@ result — NestJS가 quiz_sets에 새 세트로 저장합니다(materialId · fo
   pages      [{pageNo, weight, plain, share, wrong, mastered}] 쪽마다 배분(앱 안내 · 확인용).
              plain은 기록 없이 고르게 나눴을 때, share는 실제로 나눈 문제 수
   failed     [{pageNo, why}] 못 만든 자리(마지막으로 시도한 쪽과 탈락 이유). 다 채우므로 늘 []
+  levels     {target: {난이도: 문제 수}, weak: 약한 난이도 또는 null,
+             user: {난이도: [푼 수, 틀린 수]}}
+             세트의 난이도 비율과 그 근거(앱 안내 · 확인용, #268). 결과 문제의 실제 난이도는
+             초안이 떨어지면 target과 조금 다를 수 있음
 
 size개를 다 만들지 못하면 짧은 결과로 끝내지 않습니다(앱은 작업 상태로 성공 화면을 고름,
 #175 · #247).
@@ -115,8 +126,9 @@ from app.clients.llm import (
     Stopping,
 )
 from app.core.config import settings
-from app.services.quiz import combo, concepts, quality, similar
+from app.services.quiz import combo, concepts, levels, quality, similar
 from app.services.quiz.checks import (
+    SAME_ANSWER,
     Seen,
     Target,
     code_check,
@@ -218,7 +230,13 @@ STABLE = Mode("stable", PATIENT, 3, True, similar.STABLE_TYPES)
 MAX_TRIES = max(FAST.tries, STABLE.tries)
 RECHECK = "Recheck"  # 생성 모델 2차 풀기 호출 이름(검사 모델 풀기 'Check'와 구분)
 CLASH = "동시에 만든 문제와 겹침"  # 다른 자리가 그사이 받은 문제와 겹침: 쪽을 닫지 않음
+# 그사이 다른 자리가 같은 정답을 받음: 쪽을 닫지 않음(DRY_REASONS의 SAME_ANSWER와 따로). 분류
+# 초안이면 분류 겹침으로 셈(Codex 리뷰 #293)
+CLASH_SAME = "동시에 만든 문제와 정답이 겹침"
 FULL = "이미 다 모음"
+# 남은 자리를 아직 도는 다른 난이도 자리를 위해 비워 둠(levels.held, Codex 리뷰 #300): 이 자리는 다
+# 모은 것처럼 멈추고(다른 쪽도 시도하지 않음) 못 만든 자리로 세지 않음
+HELD = "다른 난이도 자리를 기다림"
 TIMEOUT = "시간 상한"
 BAD_SHAPE = "문제 모양이 맞지 않음"  # 서버 모양 검사(fromWorkerQuestion)에 걸림
 # 모자란 자리를 다시 돌리는 전체 상한(문제 하나에): 5문제 300초(#247). 미리 만들기는 첫 판 상한
@@ -240,8 +258,19 @@ _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 DRY_REASONS = {
     "이미 있는 문제와 거의 같음",
     "앞 문제를 거꾸로 물음(겹침)",
-    "세트 안에서 정답이 겹침",
+    SAME_ANSWER,
 }
+# 분류 유형: 정답이 묶음 이름(편모충류 · 포자충류 · 조충류)이라 노트마다 몇 개 없어 세트 안에서 곧
+# 바닥남. 이미 쓴 정답 목록을 주어도 같은 묶음 이름을 계속 냄(11/10 학교 LLM 기생충 원충류: 정답
+# 겹침으로 떨어진 초안 10개 중 8개가 묶음 이름, 4/5로 실패, #282). 한 쪽에서 분류 초안이
+# GROUP_CLASH_LIMIT번 정답 겹침으로 떨어지면 그 쪽의 남은 자리는 분류 유형을 쓰지 않음(묶음
+# 이름은 쪽마다 다름: 원충류 쪽이 바닥나도 연충류 쪽은 그대로, /code-review #282)
+GROUP_TYPE = "분류"
+GROUP_CLASH_LIMIT = 2
+# 분류 초안의 정답 겹침: 묶음 이름이 바닥났을 뿐 그 쪽의 용어는 남아 있으므로 쪽을 닫지 않음
+# (DRY_REASONS에 넣지 않음). 닫으면 한도에 닿기 전에 쪽이 닫혀 정의 · 특징도 못 만듦
+# (/code-review #282)
+GROUP_SAME = "분류 이름이 세트 안에서 겹침"
 
 # 영어 기능어: 영어 문장 과목(토익)인지 용어만 영어인 과목인지 가름
 FUNC = {
@@ -300,6 +329,8 @@ class GenerateInput:
     sets: list[QuizSet]
     attempts: list[Attempt]
     notes: Notes
+    # 모든 사용자의 유형별 (푼 수, 맞힌 수): 유형 난이도를 고침(levels.type_levels, #268)
+    type_stats: dict[str, levels.Tally] = field(default_factory=dict)
 
 
 @dataclass
@@ -331,8 +362,11 @@ class Made:
     why: list[str] = field(default_factory=list)
     down: int = 0  # 호출이 실패한 시도 수
     tries: int = 0
-    rejected: int = 0  # down 중 서버가 요청을 거절한 생성 호출(LlmRejectedError, #262)
+    # down 중 서버가 요청을 거절한 시도(LlmRejectedError, #262): 생성 호출뿐 아니라 검사 호출
+    # (정답 둘 검사 · 검사 모델 풀기)이 모두 거절된 시도도 셈(#272)
+    rejected: int = 0
     answered: bool = False  # 생성 호출이 한 번이라도 답을 받음(학교 LLM이 답함, #247)
+    group_clash: int = 0  # 분류 유형 초안이 세트 안 정답 겹침으로 떨어진 수(#282)
 
 
 # ---------------------------------------------------------------- input
@@ -417,7 +451,23 @@ def parse(raw: JsonObject) -> GenerateInput:
             )
         attempts.append(Attempt(need(a, "quizSetId", str, w), at, answers))
     notes = parse_notes(need(raw, "notes", dict, "input"))
-    return GenerateInput(day, size, material, sets, attempts, notes)
+    return GenerateInput(day, size, material, sets, attempts, notes, _type_stats(raw))
+
+
+def _type_stats(raw: JsonObject) -> dict[str, levels.Tally]:
+    """input.typeStats {유형: {answered, correct}}(없어도 됨, #268). 모양이 틀린 유형은 뺌: 난이도를
+    고치는 참고값이라 이것 하나로 퀴즈를 실패시키지 않음."""
+    out: dict[str, levels.Tally] = {}
+    stats = raw.get("typeStats")
+    if not isinstance(stats, dict):
+        return out
+    for ty, v in stats.items():
+        a = v.get("answered") if isinstance(v, dict) else None
+        c = v.get("correct") if isinstance(v, dict) else None
+        ok = all(isinstance(x, int) and not isinstance(x, bool) for x in (a, c))
+        if ok and 0 <= c <= a:  # type: ignore[operator]
+            out[str(ty)] = levels.Tally(int(a), int(c))  # type: ignore[arg-type]
+    return out
 
 
 # ---------------------------------------------------------------- code: note text
@@ -700,6 +750,19 @@ def _listed(m: Made) -> bool:
     return not is_combo(m.question["options"]) and m.type != "부정설명"
 
 
+def _group_clash(ty: str, why: list[str], out: Made) -> list[str]:
+    """분류 초안의 정답 겹침을 out.group_clash에 세고, 쪽을 닫지 않는 이유(GROUP_SAME)로 바꿈(#282).
+
+    만든 유형(ty)으로 봄: 제시문에 ____가 있어 결과 유형이 빈칸으로 적혀도 분류로 셈. 만들 때
+    (code_check)와 받을 때(accept) 겹침을 이 한 곳에서 셈(/code-review #293).
+    """
+    same = (SAME_ANSWER, CLASH_SAME)
+    if ty != GROUP_TYPE or not any(w in same for w in why):
+        return why
+    out.group_clash += 1
+    return [GROUP_SAME if w in same else w for w in why]
+
+
 def _take(seen: list[Seen], used: list[str]) -> Accept:
     """차례로 만들 때: 겹침은 code_check가 이미 봤으니 seen · used에 더하기만."""
 
@@ -769,6 +832,8 @@ def gen_one(
         used_now = list(used)
         t = Target("new", used_answers=used_now)
         hint = _hint(info, used_now)
+        if ty == GROUP_TYPE and used_now:  # 정답은 용어가 아니라 그 용어의 분류(#282)
+            hint += "\n분류 문제: 정답(분류 이름)이 이미 정답으로 쓴 것이 되는 용어는 고르지 않는다"
         out.tries += 1
         concept: object
         if ty == "조합":
@@ -819,6 +884,7 @@ def gen_one(
             q = r.get("question")
             concept = q.get("concept") if isinstance(q, dict) else None
         why, k = code_check(d, t, text, ty, list(seen))
+        why = _group_clash(ty, why, out)
         if concept not in names:  # 개념 목록이 길면 모델이 이 필드를 빠뜨리기도 함
             why.append("개념 이름 없음")
         if (
@@ -843,6 +909,7 @@ def gen_one(
             k = k2 if k2 is not None else k
             if unchecked:  # 검사하지 못한 초안은 쓰지 않음
                 out.down += 1
+                out.rejected += unchecked == "refused"
                 out.why = ["정답 둘 검사 호출이 실패함"]
                 continue
         if not why and k is not None:
@@ -864,14 +931,16 @@ def gen_one(
                 why = accept(out)
                 if not why:
                     return out
+                why = _group_clash(ty, why, out)  # 그사이 다른 자리가 같은 정답을 받음(Codex #293)
                 out.question = out.concept = out.type = None
                 out.why = why
-                if FULL in why:
+                if FULL in why or HELD in why:
                     break
                 notes = f"\n앞서 만든 문제의 문제점: {'; '.join(why)} — 다른 문장으로 새로 만든다. "
                 continue
-            if verdict == "down":
+            if verdict in ("down", "refused"):
                 out.down += 1
+                out.rejected += verdict == "refused"
                 out.why = [said]
                 continue
             if verdict == "bad":  # 답 모양 오류: 재시도 지시에 문제점으로 넣지 않음
@@ -966,9 +1035,26 @@ def run(
 
     seen: list[Seen] = [seen_question(q) for s in inp.sets for q in s.questions if here(s, q)]
     subject = concepts.subject_words(m.title)
+    # 난이도(#268): 유형 난이도는 모든 사용자의 정답률로 고치고, 세트 비율은 이 사용자의 난이도별
+    # 정답률로 정함(levels.py)
+    lv = levels.type_levels(inp.type_stats)
+    user = levels.level_stats(
+        {q["id"]: q for s in inp.sets for q in s.questions},
+        (x for a in inp.attempts for x in a.answers),
+        lv,
+    )
+    # 쓸 수 있는 난이도: 이 노트의 쪽 유형에 있는 난이도(빠른 모드의 용어 과목은 하 · 중뿐)
+    usable = {
+        lv[t]
+        for text in pages.values()
+        if askable(text)
+        for t in page_types(text, korean, mode.extra)
+        if t in lv
+    }
+    mix = levels.level_mix(n, usable, user)
     made, failed, down, tried_calls, rejected = _make_all(
         llm, pages, names_all, subject, per_page, weight, share, korean, seen, n, report,
-        mode, hurry,
+        mode, hurry, mix, lv,
     )  # fmt: skip
     if len(made) < n:  # 모자란 세트는 돌려주지 않음(앱은 작업 상태로 성공 화면을 고름, #247)
         if not made and tried_calls and down == tried_calls:
@@ -990,14 +1076,22 @@ def run(
             "answer": r.question["answer"],
             "explanation": r.question.get("explanation"),
             "conceptTags": [r.concept],
-            # 유형으로 정한 처음 난이도(#268). 모델이 붙인 difficulty는 쓰지 않음(실험 1)
-            "difficulty": similar.difficulty_of(r.type),
+            # 유형으로 정하고 모든 사용자의 정답률로 고친 난이도(#268). 모델이 붙인 difficulty는
+            # 쓰지 않음(실험 1)
+            "difficulty": lv.get(r.type or "") or similar.difficulty_of(r.type),
             "srs": None,
         }
         for i, (_, r) in enumerate(made, 1)
         if r.question is not None
     ]
-    return _result(qs, title, new_names, weight, share, plain, per_page, failed)
+    out = _result(qs, title, new_names, weight, share, plain, per_page, failed)
+    # 앱 안내 · 확인용: 목표 비율, 약한 난이도, 이 사용자의 난이도별 (푼 수, 틀린 수)
+    out["levels"] = {
+        "target": mix,
+        "weak": levels.weak_level(user, usable),
+        "user": {k: [t.answered, t.count] for k, t in user.items()},
+    }
+    return out
 
 
 def _shape_ok(d: Draft) -> bool:
@@ -1032,6 +1126,8 @@ def _make_all(
     report: Progress,
     mode: Mode = FAST,
     hurry: Callable[[], bool] | None = None,
+    mix: dict[str, int] | None = None,
+    lv: dict[str, str] | None = None,
 ) -> tuple[list[tuple[int, Made]], list[JsonObject], int, int, int]:
     """자리마다 동시에 문제를 만들어 (만든 문제(세트 순서), 못 만든 자리, 실패한 시도, 시도,
     실패 중 서버가 거절한 생성 호출).
@@ -1049,12 +1145,26 @@ def _make_all(
     시간 상한은 mode.patience배입니다. hurry()가 참이 되면(미리 만들기를 사용자가 이어받음) 그때부터
     빠른 모드로 바꾸고 상한을 바로 요청한 것처럼 남은 자리 × 보통 상한으로 줄입니다(#274). 새
     초안 · 검사 앞(stop)과 판을 기다리는 동안 1초마다 봅니다.
+    난이도(#268): mix는 난이도마다 목표 문제 수, lv는 유형마다 난이도(levels.py). 자리마다 난이도를
+    정해 그 난이도의 유형부터 만들고(levels.order_types), 다음 판은 모자란 난이도부터 채웁니다.
     """
+    lv = lv or dict(similar.DIFFICULTY)
+    target = levels.slot_levels(mix or {}) or ["중"]  # 자리마다 난이도(첫 판의 차례)
     used: list[str] = []
     asked: Counter[str] = Counter()  # 세트에서 개념마다 물은 수
     taken: list[tuple[int, Made]] = []  # 받아들인 차례대로
-    visits: Counter[int] = Counter()
-    turns = 0  # 안정적 모드: 세트 전체에서 자리마다 첫 유형을 돌림(유형 · 난이도가 섞이게, #268)
+    # 같은 난이도의 유형 돌리기: 빠른 모드는 (쪽, 난이도)마다, 안정적 모드는 난이도마다 세트
+    # 전체에서(#268). 난이도를 가리지 않고 세면 한 쪽에 하 · 중이 번갈아 오면 하는 늘 같은 유형으로
+    # 시작함
+    # (Codex 리뷰 #300)
+    visits: Counter[tuple[int, str]] = Counter()
+    turns: Counter[str] = Counter()
+    # 판에 넣은 뒤 아직 끝나지 않은 자리의 목표 난이도별 수(levels.held). 스레드가 시작할 때가
+    # 아니라 판에 넣을 때 셈: 느린 기계에서 그 자리 스레드가 시작하기 전에 다른 자리가 남은 자리를
+    # 가져가지 않게(CI #300)
+    in_flight: Counter[str] = Counter()
+    # 비워 두느라(HELD) 받지 않은 문제: (쪽, 결과, 마지막 단계였는지). take_reserve가 다시 받아 봄
+    reserve: list[tuple[int, Made, bool]] = []
     dry: set[int] = set()
     drained: set[int] = set()  # dry 가운데 물을 개념이 남지 않아 닫은 쪽(마지막 단계에서 다시 엶)
     # dry 가운데 이번 판에 겹침(DRY_REASONS)으로 처음 닫은 쪽: 다음 판에 한 번 다시 엶. 학교 LLM은
@@ -1065,6 +1175,8 @@ def _make_all(
     # 닫음. 그 전에 시작해 아직 돌던 자리의 초안으로는 닫지 않음, /code-review #247)
     reopened: dict[int, int] = {}
     rounds = 0  # 끝난 판 수(자리가 시작할 때 보면 그 자리의 판 번호 - 1)
+    # 쪽마다 분류 초안이 정답 겹침으로 떨어진 수(GROUP_CLASH_LIMIT, #282)
+    group_clash: Counter[int] = Counter()
     lock = threading.Lock()
     done = threading.Event()  # n개를 다 모았거나 돌려줌: 남은 자리는 다음 단계에서 멈춤
     relaxed = False  # 마지막 단계: 이미 물은 개념도 다른 각도로(#247)
@@ -1116,33 +1228,77 @@ def _make_all(
         """한 개념을 물을 수 있는 문제 수: 마지막 단계에서만 AGAIN_PER_CONCEPT."""
         return AGAIN_PER_CONCEPT if again_ok else 1
 
-    def accept(page: int, r: Made, again_ok: bool) -> list[str]:
+    def clash_of(r: Made, again_ok: bool) -> list[str]:
+        """(잠금 안에서) 그사이 다른 자리가 받은 문제와의 겹침. 없으면 []."""
+        d = r.question
+        assert d is not None and r.concept is not None
+        # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
+        if asked[r.concept] >= per_concept(again_ok):
+            return [CLASH]
+        if not is_combo(d["options"]) and any(same_item(d["answer"], u) for u in used):
+            # 분류 초안이면 gen_one이 분류 겹침으로 셈: 동시에 만들면 묶음 이름은 대개 여기서
+            # 겹침(Codex 리뷰 #293). 개념이 먼저 겹친 초안은 세지 않음(/code-review #293)
+            return [CLASH_SAME]
+        if too_close(d, seen) or reversed_of(d, seen):
+            return [CLASH]
+        return []
+
+    def admit(page: int, r: Made) -> None:
+        """(잠금 안에서) 세트에 넣음."""
+        d = r.question
+        assert d is not None and r.concept is not None
+        asked[r.concept] += 1
+        seen.append(seen_draft(d))
+        if _listed(r):
+            used.append(d["answer"])
+        taken.append((page, r))
+        if len(taken) >= n:
+            done.set()
+
+    def must_hold(r: Made, own: str | None) -> bool:
+        """(잠금 안에서) 아직 도는 다른 난이도 자리를 위해 이 문제를 받지 않을지(levels.held).
+        own은 받으려는 자리의 목표 난이도(도는 자리 수에서 자신은 뺌). 보관한 문제는 None."""
+        got = Counter(lv.get(x.type or "", "중") for _, x in taken)
+        others = in_flight.copy()
+        if own is not None:
+            others[own] -= 1
+        return levels.held(lv.get(r.type or "", "중"), got, mix or {}, others, n - len(taken))
+
+    def accept(page: int, r: Made, again_ok: bool, own: str) -> list[str]:
         """잠금 안에서 그사이 다른 자리가 받은 문제와 겹침을 다시 보고, 받으면 세트에 바로 넣음
-        (받은 뒤 세트에 넣기 전에 돌려주면 그 문제를 잃고 개념만 막힘, /code-review #95)."""
+        (받은 뒤 세트에 넣기 전에 돌려주면 그 문제를 잃고 개념만 막힘, /code-review #95).
+        own은 이 자리의 목표 난이도. 다른 난이도 자리를 위해 비워 두면(levels.held) 이 문제는
+        버리지 않고 보관하고(reserve) 이 자리는 다 모은 것처럼 멈춤(HELD). 보관한 문제는 자리가
+        끝날 때마다 · 판이 끝날 때 다시 받아 봄(take_reserve): 비워 둔 자리를 맡은 자리가 상한
+        직전에 실패해도 세트가 모자라지 않게(Codex 재리뷰 #300)."""
         d = r.question
         assert d is not None and r.concept is not None
         if not _shape_ok(d):  # 서버가 빼는 모양이면 받지 않고 그 자리가 다시 만듦(#247)
             return [BAD_SHAPE]
-        combo_q = is_combo(d["options"])
         with lock:
             if done.is_set() or len(taken) >= n:
                 return [FULL]
-            if (
-                # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
-                asked[r.concept] >= per_concept(again_ok)
-                or (not combo_q and any(same_item(d["answer"], u) for u in used))
-                or too_close(d, seen)
-                or reversed_of(d, seen)
-            ):
-                return [CLASH]
-            asked[r.concept] += 1
-            seen.append(seen_draft(d))
-            if _listed(r):
-                used.append(d["answer"])
-            taken.append((page, r))
-            if len(taken) >= n:
-                done.set()
+            if why := clash_of(r, again_ok):
+                return why
+            if must_hold(r, own):
+                # gen_one이 돌려받은 뒤 r.question을 지우므로 사본을 보관
+                reserve.append((page, replace(r), again_ok))
+                return [HELD]
+            admit(page, r)
             return []
+
+    def take_reserve(final: bool = False) -> None:
+        """(잠금 안에서) 보관한 문제를 보관한 차례대로 다시 받아 봄. 겹침은 다시 봄(그사이 받은
+        문제와 겹치면 버림). final이면 도는 자리를 기다리지 않음(판 · 세트를 끝낼 때)."""
+        for item in list(reserve):
+            if done.is_set() or len(taken) >= n:
+                return
+            page, r, again_ok = item
+            if not final and must_hold(r, None):
+                continue
+            reserve.remove(item)
+            if not clash_of(r, again_ok):
+                admit(page, r)
 
     def stop_of(halt: threading.Event, at: _Limits) -> Callable[[bool], str | None]:
         """판마다 멈춤 판단: 지난 판에 남아 도는 자리가 다음 판의 늦춰진 상한을 보고 새 초안을
@@ -1160,9 +1316,8 @@ def _make_all(
         return stop
 
     def one_slot(
-        slot: int, p: int, until: Llm, stop: Callable[[bool], str | None]
+        slot: int, p: int, level: str, until: Llm, stop: Callable[[bool], str | None]
     ) -> tuple[int, Made]:
-        nonlocal turns
         with lock:
             tried = [p] + [b for b in backups if b != p and b not in dry][:BACKUPS]
             # 이 자리가 시작할 때의 단계: 지난 판에 남아 도는 자리가 뒤늦게 켜진 마지막 단계를 따라
@@ -1193,26 +1348,33 @@ def _make_all(
                         drained.add(page)
                     continue
                 types = page_types(pages[page], korean, cur.extra)
-                # 쪽마다 돌리면 한 쪽에 한 자리인 노트는 모든 자리가 정의로 시작해 새 유형이
-                # 세 번째 시도에서야 나옴. 빠른 모드는 지금처럼 쪽마다
-                k = (turns if cur.extra else visits[page]) % len(types)
-                visits[page] += 1
-                turns += 1
+                if group_clash[page] >= GROUP_CLASH_LIMIT and GROUP_TYPE in types:  # #282
+                    types = [x for x in types if x != GROUP_TYPE]
+                # 이 자리의 난이도 유형부터, 실패하면 가까운 난이도로(#268). 같은 난이도 안에서는
+                # 빠른 모드는 쪽마다, 안정적 모드는 세트 전체에서 돌림(한 쪽에 한 자리인 노트도
+                # 유형이 섞이게)
+                turn = turns[level] if cur.extra else visits[page, level]
+                types = levels.order_types(types, level, lv, turn)
+                visits[page, level] += 1
+                turns[level] += 1
                 info = per_page[page]
                 if again_ok and (again := [c for c in names if c in asked]):
                     info = replace(info, angle=again)
 
             def here(x: Made, page: int = page) -> list[str]:
-                return accept(page, x, again_ok)
+                return accept(page, x, again_ok, level)
 
             r = gen_one(
-                until, page, pages[page], types[k:] + types[:k], names, info,
+                until, page, pages[page], types, names, info,
                 seen, used, slot, here, stop, mode_now,
             )  # fmt: skip
             down, tries, rejected = down + r.down, tries + r.tries, rejected + r.rejected
             replied = replied or r.answered
+            if r.group_clash:
+                with lock:
+                    group_clash[page] += r.group_clash
             last = (page, r)
-            if r.question:  # accept가 세트에 넣음
+            if r.question or HELD in r.why:  # accept가 세트에 넣음 · 다른 난이도 자리에 비워 둠
                 break
             # 이 쪽에는 새로 물을 것이 남지 않음. 이유가 모두 겹침일 때만: 보기가 망가진 초안의
             # '정답이 겹침'에 1쪽이 닫혀 0문제가 됨(기생충 3 실제 실행, 11/04)
@@ -1240,27 +1402,31 @@ def _make_all(
             report(15 + 85 * shown // max(n, 1), "문제 만들기")
 
     def guarded(
-        slot: int, p: int, until: Llm, stop: Callable[[bool], str | None]
+        slot: int, p: int, level: str, until: Llm, stop: Callable[[bool], str | None]
     ) -> tuple[int, Made]:
         """자리가 LlmError가 아닌 오류(학교 LLM 설정 오류 · 코드 오류)로 끝나면 그 자리에서 바로
         멈춤 신호를 켬: 남은 자리도 같으므로 주 스레드가 알아채기 전에 다음 자리가 호출하지 않게
         (Codex 리뷰 #264). 신호를 켜기 전에 오류를 남겨 둠: 주 스레드가 신호를 보고 먼저 빠져나오면
         이 자리는 아직 도는 자리로 빠져 오류를 잃고 시간 상한으로 셈(Codex 재리뷰 #264)."""
         try:
-            return one_slot(slot, p, until, stop)
+            return one_slot(slot, p, level, until, stop)
         except LlmError:
             raise
         except BaseException as e:
             errors.append(e)
             done.set()
             raise
+        finally:
+            with lock:
+                in_flight[level] -= 1
+                take_reserve()  # 이 자리가 맡던 몫이 풀림: 보관한 문제를 다시 받아 봄
 
     # 판마다 새로 만들지 않음: 지난 판에 남아 응답을 기다리는 자리도 WORKERS 안에 들어, 동시에
     # 붙잡는 학교 LLM 연결이 판 수만큼 늘지 않게(/code-review #247)
     pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="quiz-slot")
 
     def one_round(
-        at: list[int], limits: _Limits
+        at: list[int], want: list[str], limits: _Limits
     ) -> tuple[list[tuple[int, Made]], list[tuple[int, Made]], int]:
         """자리들을 동시에 돌려 (끝난 자리, 못 만든 자리(시간 상한에 도는 중 · 시작하지 못함),
         시작한 자리 수)."""
@@ -1269,7 +1435,12 @@ def _make_all(
         stop = stop_of(halt, limits)
         futures: list[Future[tuple[int, Made]]] = []
         try:
-            futures = [pool.submit(guarded, k, p, until, stop) for k, p in enumerate(at)]
+            with lock:
+                in_flight.update(want)
+            futures = [
+                pool.submit(guarded, k, p, w, until, stop)
+                for k, (p, w) in enumerate(zip(at, want, strict=True))
+            ]
             pending: set[Future[tuple[int, Made]]] = set(futures)
             while pending and not done.is_set() and (left := limits.hard - _clock()) > 0:
                 # 자리 하나가 끝날 때마다 깨어남(늦어도 1초마다 시간 상한 · 이어받았는지를 봄)
@@ -1283,8 +1454,10 @@ def _make_all(
             # 시작하지 않은 자리는 취소하고, 취소되지 않고 끝나지도 않은 자리는 도는 자리로 셈
             # (그사이 워커를 얻은 자리도 빠지지 않게, /code-review #247). 도는 자리는 기다리지
             # 않음: 다음 호출(_until) · 단계(stop)에서 멈춤
-            for f in futures:
-                f.cancel()
+            for f, w in zip(futures, want, strict=False):
+                if f.cancel():  # 시작하지 않은 자리: 판에 넣을 때 센 것을 뺌
+                    with lock:
+                        in_flight[w] -= 1
             running = {f for f in futures if not f.done()}
         # 오류로 끝난 자리는 결과에서 빼고 아래에서 한 곳으로 올림: 설정 · 코드 오류는 guarded가
         # errors에, 자리 밖으로 나온 LlmError는 slot_down에 남김. 그사이 n개를 다 모았으면 세트를
@@ -1302,19 +1475,32 @@ def _make_all(
         """판에서 못 만든 자리(끝난 자리의 탈락 이유 + 도는 중이었거나 시작하지 못한 자리)."""
         out = []
         for page, r in finished:
-            if r.question is not None or FULL in r.why:  # 다 모아 멈춘 자리는 못 만든 것이 아님
+            # 다 모아 멈춘 자리 · 다른 난이도 자리에 비워 두고 멈춘 자리는 못 만든 것이 아님
+            if r.question is not None or FULL in r.why or HELD in r.why:
                 continue
             out.append((page, Made(why=[TIMEOUT]) if STOPPED in r.why else r))
         return out + cut
 
+    def levels_for(count: int, order: list[str]) -> list[str]:
+        """count자리의 난이도: order(모자란 난이도부터)를 앞에서부터 돌려 씀."""
+        return [order[i % len(order)] for i in range(count)] if order else ["중"] * count
+
+    def lacking() -> list[str]:
+        """다음 판의 난이도 차례: 목표보다 모자란 난이도부터(그다음 첫 판 차례)."""
+        with lock:
+            got = Counter(lv.get(r.type or "", "중") for _, r in taken)
+        short = {k: c - got[k] for k, c in (mix or {}).items() if c > got[k]}
+        return levels.slot_levels(short) + target
+
     at = slots + spare_of(n, backups)
+    want = levels_for(len(slots), target) + levels_for(len(at) - len(slots), target)
     finished: list[tuple[int, Made]] = []
     cut: list[tuple[int, Made]] = []
     earlier: list[tuple[int, Made]] = []  # 앞 판에서 못 만든 자리(오류 글에 이유를 모두 담음)
     answered = False  # 학교 LLM이 한 번이라도 답함(어느 판에서든 실패하지 않은 호출이 있음)
     try:
         while True:
-            finished, cut, started = one_round(at, lim)
+            finished, cut, started = one_round(at, want, lim)
             to_fast()  # 아래 남은 시간 판단이 이어받은 뒤의 전체 상한을 보게
             answered = answered or any(r.answered for _, r in finished)
             rounds += 1
@@ -1363,6 +1549,8 @@ def _make_all(
             earlier += not_made(finished, cut)
             at = [open_pages[i % len(open_pages)] for i in range(missing)]
             at += spare_of(missing, open_pages)
+            order = lacking()
+            want = levels_for(missing, order) + levels_for(len(at) - missing, order)
             # 판 하나의 상한은 첫 판과 같게: 자리는 동시에 돌아 한 자리에 드는 시간(생성 · 검사 ·
             # 풀기)이 모자란 문제 수에 비례하지 않음. 1문제 × 23초로 두면 다시 돌린 자리가 거의 늘
             # 상한에 걸림(/code-review #247)
@@ -1373,6 +1561,7 @@ def _make_all(
                 )
     finally:
         with lock:
+            take_reserve(final=True)  # 끝내기 전에 보관한 문제로 모자란 자리를 채움
             done.set()
             made = list(taken)
         pool.shutdown(wait=False, cancel_futures=True)

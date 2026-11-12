@@ -15,6 +15,7 @@ import Animated, {
 import { router, useFocusEffect } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as SecureStore from 'expo-secure-store';
+import * as Haptics from 'expo-haptics';
 import { Text } from '@/components/text';
 import type { ShopItem } from '@notelink/shared';
 import { api } from '@/lib/api';
@@ -30,7 +31,7 @@ export function useEquippedItem() {
   return mine.data?.find((u) => u.isEquipped && u.itemCategory === 'avatar')?.itemId ?? 'base';
 }
 
-const LOCAL_AVATARS = [BASE_AVATAR, ...SHOP.filter((i) => i.category === 'avatar')];
+export const LOCAL_AVATARS = [BASE_AVATAR, ...SHOP.filter((i) => i.category === 'avatar')];
 /**
  * 상품 id → 앱에 든 3D 모델 이름. 서버 상품은 id가 ObjectId라, 같은 이름이나 같은 그림(assetUrl)의
  * 앱 상품으로 찾는다. 못 찾으면 기본 얼굴
@@ -48,7 +49,7 @@ export function avatarModel(itemId: string, items?: Pick<ShopItem, '_id' | 'name
 /** 상품 id → 3D 모델 이름을 기기에 적어 둔다. 판매가 끝난 상품은 상품 목록에서 빠져도 같은 얼굴을 쓰게 */
 const KNOWN_KEY = 'notelink.avatar-models';
 type Known = Record<string, string>;
-async function readKnown(): Promise<Known> {
+export async function readKnown(): Promise<Known> {
   try {
     const raw = await SecureStore.getItemAsync(KNOWN_KEY);
     const v: unknown = raw ? JSON.parse(raw) : {};
@@ -117,12 +118,8 @@ const R = ReduceMotion.System;
 const TRAVEL = { duration: 460, dampingRatio: 0.62, reduceMotion: R };
 const SNAP = Easing.bezier(0.3, 0.75, 0.1, 1);
 
-/**
- * 노트 상세에 떠 있는 아바타 선생님. 화면 오른쪽 아래(아래 버튼 위)에 있다가, 읽는 동안에는
- * 가장자리로 "슉" 비켜 서고, 누르면 대화 화면을 연다. 다른 화면이 위에 있으면 3D를 그리지 않는다.
- */
-export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
-  const avatar = useEquippedAvatar();
+/** 이 화면이 맨 위에 있는지. 다른 화면이 위에 쌓이면 false(보이지 않는 3D를 그리지 않게) */
+export function useFocused() {
   const [focused, setFocused] = useState(true);
   useFocusEffect(
     useCallback(() => {
@@ -130,7 +127,52 @@ export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
       return () => setFocused(false);
     }, []),
   );
+  return focused;
+}
+
+/** 눌렀을 때 선생님이 하는 말(누를 때마다 다음 말) */
+export const BUDDY_LINES = [
+  '안녕하세요! 오늘도 같이 공부해요',
+  '궁금한 게 있으면 저를 한 번 더 눌러 주세요',
+  '다 읽었으면 퀴즈로 확인해 볼까요?',
+  '잘하고 있어요! 조금만 더 힘내요',
+];
+const SAY_MS = 3500;
+
+/**
+ * 노트 상세에 떠 있는 아바타 선생님. 화면 오른쪽 아래(아래 버튼 위)에 있다가, 읽는 동안에는
+ * 가장자리로 "슉" 비켜 서고, 누르면 통통 튀며 웃고 말풍선으로 한마디 한다. 말풍선이 떠 있을 때
+ * 다시 누르거나(또는 말풍선 · 길게 누르기) 대화 화면을 연다. 다른 화면이 위에 있으면 3D를 그리지 않는다.
+ */
+export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
+  const avatar = useEquippedAvatar();
+  const focused = useFocused();
   const [hint, setHint] = useState(true);
+  const [said, setSaid] = useState<string | null>(null);
+  const turn = useRef(0);
+  const hop = useSharedValue(0);
+  useEffect(() => {
+    if (!said) return;
+    const t = setTimeout(() => setSaid(null), SAY_MS);
+    return () => clearTimeout(t);
+  }, [said]);
+  const openChat = () => {
+    setSaid(null);
+    router.push({ pathname: '/tutor/[id]', params: { id } });
+  };
+  const react = () => {
+    if (said) return openChat();
+    setHint(false);
+    setSaid(BUDDY_LINES[turn.current++ % BUDDY_LINES.length]!);
+    void Haptics.selectionAsync().catch(() => {});
+    // 제자리에서 통통 한 번(작은 물체라 튀어도 된다: stageshow motion.md)
+    hop.set(
+      withSequence(
+        withTiming(-14, { duration: 140, easing: SNAP, reduceMotion: R }),
+        withSpring(0, { duration: 460, dampingRatio: 0.42, reduceMotion: R }),
+      ),
+    );
+  };
 
   const x = useSharedValue(OFF);
   const sx = useSharedValue(1);
@@ -183,6 +225,7 @@ export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
   const style = useAnimatedStyle(() => ({
     transform: [
       { translateX: x.get() },
+      { translateY: hop.get() },
       { rotate: `${tilt.get()}deg` },
       { scaleX: sx.get() * press.get() },
       { scaleY: (2 - sx.get()) * press.get() },
@@ -191,15 +234,36 @@ export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
 
   return (
     <View pointerEvents="box-none" className="absolute right-4 bottom-4 flex-row items-center">
-      {hint && ready && !tucked && (
+      {said && !tucked ? (
         <Animated.View
-          entering={FadeIn.delay(700).duration(220)}
+          key={said}
+          entering={FadeIn.duration(180)}
           exiting={FadeOut.duration(160)}
-          className="mr-2 rounded-full bg-ink px-3 py-1.5"
-          pointerEvents="none"
+          className="mr-2 max-w-[220px]"
         >
-          <Text className="text-caption font-semibold text-white">노트를 물어보세요</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${said}. 대화 열기`}
+            onPress={openChat}
+            className="rounded-2xl bg-ink px-3 py-2"
+          >
+            <Text className="text-caption font-semibold text-white">{said}</Text>
+            <Text className="mt-0.5 text-caption2 text-white/70">눌러서 물어보기 ›</Text>
+          </Pressable>
         </Animated.View>
+      ) : (
+        hint &&
+        ready &&
+        !tucked && (
+          <Animated.View
+            entering={FadeIn.delay(700).duration(220)}
+            exiting={FadeOut.duration(160)}
+            className="mr-2 rounded-full bg-ink px-3 py-1.5"
+            pointerEvents="none"
+          >
+            <Text className="text-caption font-semibold text-white">노트에 대해 물어보세요</Text>
+          </Animated.View>
+        )
       )}
       <Animated.View style={style}>
         <View
@@ -215,18 +279,20 @@ export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="아바타 선생님에게 물어보기"
+            accessibilityHint="누르면 인사하고, 한 번 더 누르면 대화를 열어요"
             hitSlop={8}
             onPressIn={() => press.set(withTiming(0.9, { duration: 100, reduceMotion: R }))}
             onPressOut={() =>
               press.set(withSpring(1, { duration: 300, dampingRatio: 0.6, reduceMotion: R }))
             }
-            onPress={() => router.push({ pathname: '/tutor/[id]', params: { id } })}
+            onPress={react}
+            onLongPress={openChat}
             className="items-center justify-center overflow-hidden rounded-full border-2 border-white bg-mint"
             style={{ width: SIZE, height: SIZE }}
           >
             {focused && (
               <Avatar3D
-                mood="idle"
+                mood={said ? 'happy' : 'idle'}
                 avatarId={avatar}
                 size={SIZE - 4}
                 framing="head"

@@ -169,6 +169,7 @@ def test_a_malformed_check_is_not_the_drafts_fault() -> None:
         (LlmError("시간 초과"), None, 0, False),
         (LlmRejectedError("거절"), None, 1, False),
         (GOOD, LlmError("시간 초과"), 0, True),
+        (GOOD, LlmRejectedError("거절"), 1, True),  # 문장 판정 거절도 셈(#272)
     ],
 )
 def test_a_failed_call_is_counted_as_down(

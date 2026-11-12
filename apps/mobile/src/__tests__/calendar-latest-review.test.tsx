@@ -385,6 +385,33 @@ it('화면에서 직접 입력한 시각은 할 일 목록을 다시 열어도 �
   expect(screen.getAllByText('일반 · 09:35').length).toBeGreaterThan(0);
 });
 
+// 시트 본문은 스크롤 영역이라 첫 줄에 음수 여백을 주면 윗부분이 잘리고, 줄이 남은 폭을 넘으면 오른쪽이 잘린다
+it('할 일 시트의 안내 문구와 긴 할 일이 잘리지 않게 배치된다', async () => {
+  const view = await renderScreen(
+    <AddTodoSheet open date={publicDay} onClose={jest.fn()} />,
+    client(),
+  );
+  const guide = screen.getByText('과제 · 시험으로 고르면 홈 화면에 D-day로 표시돼요');
+  expect(String(guide.props.className)).not.toMatch(/(^|\s)-m[ty]-/);
+  await view.unmount();
+  const long = '아주 긴 할 일 이름이 한 줄을 넘어가도 시트 오른쪽 밖으로 잘리지 않아야 한다';
+  await api.calendar.addTodo({
+    content: long,
+    todoType: 'general',
+    dueDate: publicDay,
+    timeSlot: 'none',
+    subjectName: null,
+  });
+  await renderScreen(
+    <TodoSheet open date={publicDay} onClose={jest.fn()} onAdd={jest.fn()} />,
+    client(),
+  );
+  // 글을 감싼 칸(가로 줄 바로 안쪽)이 남은 폭을 차지해야 줄이 바뀐다
+  let box = (await screen.findByText(long)).parent;
+  while (box?.parent && !String(box.parent.props.className).includes('flex-row')) box = box.parent;
+  expect(String(box?.props.className)).toMatch(/\bflex-1\b/);
+});
+
 function sharedCalendar(id: string): Awaited<ReturnType<typeof api.calendar.createShare>> {
   return {
     _id: id,
