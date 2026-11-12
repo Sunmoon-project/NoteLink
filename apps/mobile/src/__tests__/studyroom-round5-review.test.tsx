@@ -42,6 +42,7 @@ jest.mock('expo-image-picker', () => ({}));
 jest.mock('expo-calendar', () => ({}));
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn() }));
 jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
   router: { push: jest.fn(), replace: jest.fn(), back: jest.fn(), dismissTo: jest.fn() },
   useLocalSearchParams: () => globalThis.mockParams,
   useSegments: () => [],

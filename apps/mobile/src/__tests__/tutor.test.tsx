@@ -14,6 +14,7 @@ import { TutorScreen } from '../features/tutor/tutor';
 import { renderScreen, setParams } from '../test-utils';
 
 jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
   router: { push: jest.fn(), back: jest.fn(), replace: jest.fn(), navigate: jest.fn() },
   useLocalSearchParams: () => globalThis.mockParams,
   useSegments: () => [],

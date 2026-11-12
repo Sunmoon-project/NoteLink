@@ -1,7 +1,11 @@
 import { render, screen } from '@testing-library/react-native';
 import { Canvas, Card, Chip, Input, Screen } from '../components/ui';
 
-jest.mock('expo-router', () => ({ router: { back: jest.fn() }, useSegments: () => [] }));
+jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
+  router: { back: jest.fn() },
+  useSegments: () => [],
+}));
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));

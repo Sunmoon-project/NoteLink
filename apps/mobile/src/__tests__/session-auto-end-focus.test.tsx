@@ -24,6 +24,7 @@ jest.mock('expo-haptics', () => ({
 }));
 const mockBlurs = new Set<() => void>();
 jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
   ...jest.requireActual('expo-router'),
   router: { push: jest.fn(), back: jest.fn(), replace: jest.fn() },
   useLocalSearchParams: () => ({}),

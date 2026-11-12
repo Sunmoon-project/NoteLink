@@ -2,7 +2,11 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { Text } from 'react-native';
 import { Roll, RollUp, Segment, Swap } from '../components/ui';
 
-jest.mock('expo-router', () => ({ router: { back: jest.fn() }, useSegments: () => [] }));
+jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
+  router: { back: jest.fn() },
+  useSegments: () => [],
+}));
 
 it('Swap은 키가 바뀌면 옛 내용을 잠깐 두었다가 새 내용으로 바꾼다', async () => {
   jest.useFakeTimers();

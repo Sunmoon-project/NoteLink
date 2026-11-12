@@ -38,7 +38,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Path, SvgXml } from 'react-native-svg';
-import { router, useSegments } from 'expo-router';
+import { router, useIsFocused, useSegments } from 'expo-router';
 import {
   Check,
   ChevronLeft,
@@ -901,9 +901,12 @@ export function Sheet({
 }) {
   const insets = useSafeAreaInsets();
   const mounted = useMounted(open);
+  // 다른 화면으로 옮겨 가면(딥링크 · 알림 등) 시트를 숨긴다. Modal은 화면 밖에 떠서, 숨기지 않으면
+  // 새 화면 위에 남는다. 열림 상태는 그대로 두어 돌아오면 다시 보인다(onClose의 부수 효과는 부르지 않는다)
+  const focused = useIsFocused();
   return (
     <Modal
-      visible={mounted}
+      visible={mounted && focused}
       transparent
       animationType="none"
       onRequestClose={onClose}
