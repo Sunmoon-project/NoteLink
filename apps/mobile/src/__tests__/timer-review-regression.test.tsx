@@ -90,6 +90,14 @@ describe('탁상 모드', () => {
     expect(resume).not.toHaveBeenCalled();
     expect(pause).not.toHaveBeenCalled();
   });
+
+  it('오늘 기록을 받지 못하면 순공시간을 0으로 보이지 않고 그 줄을 숨긴다', async () => {
+    jest.spyOn(api.study, 'today').mockRejectedValue(new Error('offline'));
+    await renderScreen(<LandscapeScreen />, client());
+    expect(screen.getByText('23:59')).toBeTruthy();
+    expect(screen.getByLabelText('탁상 시계, 10월 31일 (토) 23:59')).toBeTruthy();
+    expect(screen.queryByText(/오늘 순공시간/)).toBeNull();
+  });
 });
 
 it('일시정지해도 가로 전환 센서가 살아 있다', async () => {

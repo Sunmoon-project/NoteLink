@@ -223,13 +223,14 @@ export function LandscapeScreen() {
     const t = seoul(now);
     const date = `${t.getMonth() + 1}월 ${t.getDate()}일 (${WD[t.getDay()]})`;
     const time = `${pad2(t.getHours())}:${pad2(t.getMinutes())}`;
-    const studied = `오늘 순공시간 ${hms(today.data?.totalSec ?? 0)}`;
+    // 불러오기 전 · 실패 때 0으로 보이면 공부한 사람에게 틀린 값이라, 받은 뒤에만 보인다
+    const studied = today.data ? `오늘 순공시간 ${hms(today.data.totalSec)}` : '';
     return (
       <Pressable
         onPress={exit}
         // 화면 읽기에도 보이는 정보(날짜 · 시각 · 순공시간)를 그대로 읽어 주고, 돌아가는 방법은 힌트로
         accessibilityRole="button"
-        accessibilityLabel={`탁상 시계, ${date} ${time}, ${studied}`}
+        accessibilityLabel={['탁상 시계', `${date} ${time}`, studied].filter(Boolean).join(', ')}
         accessibilityHint="누르거나 세로로 돌리면 돌아가요"
         className="flex-1 items-center justify-center bg-black px-10"
       >
@@ -242,7 +243,7 @@ export function LandscapeScreen() {
         >
           {time}
         </Text>
-        <Text className="text-footnote text-orange">{studied}</Text>
+        {!!studied && <Text className="text-footnote text-orange">{studied}</Text>}
         <Text className="absolute bottom-8 text-caption text-white/60">세로로 돌리면 돌아가요</Text>
       </Pressable>
     );
