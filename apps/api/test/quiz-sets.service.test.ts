@@ -1,6 +1,6 @@
 import { AiJob, QuizSet } from '@notelink/shared';
 import { mongo, Types } from 'mongoose';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import {
@@ -70,6 +70,8 @@ function setup() {
   );
   const materials = createFakeCollection<MaterialDocument>();
   const attempts = createFakeCollection<QuizAttemptDocument>();
+  const aggregate = vi.fn().mockResolvedValue([]);
+  Object.assign(attempts.model, { aggregate });
   const jobs = createFakeJobs();
   const aiJobs = new AiJobsService(jobs.model);
   const service = new QuizSetsService(sets.model, materials.model, attempts.model, aiJobs);
@@ -92,12 +94,60 @@ function setup() {
   const set = (id: string) => sets.rows.find((r) => r._id.toString() === id)!;
   const finish = (id: string, result: Record<string, unknown>) =>
     Object.assign(job(id), { status: 'succeeded', progress: 100, result });
-  return { service, aiJobs, sets, materials, attempts, jobs, addNote, job, set, finish };
+  return { service, aiJobs, sets, materials, attempts, jobs, addNote, job, set, finish, aggregate };
 }
 
 const notFound = { status: 404, response: { code: 'NOT_FOUND' } };
 
 describe('QuizSetsService.create', () => {
+  it('일반 생성과 미리 만들기 모두 전체 유형별 통계를 AI 작업에 전달한다', async () => {
+    const { service, aggregate, addNote, job } = setup();
+    aggregate.mockResolvedValue([{ _id: '조합', answered: 40, correct: 36 }]);
+    const first = await service.create(ME.toHexString(), await addNote());
+    const second = await service.pregenerate(ME.toHexString(), await addNote());
+    expect((job(first.job._id).input as WorkerInput).typeStats).toEqual({
+      조합: { answered: 40, correct: 36 },
+    });
+    expect((job(second!._id).input as WorkerInput).typeStats).toEqual({
+      조합: { answered: 40, correct: 36 },
+    });
+    expect(aggregate).toHaveBeenCalledTimes(1);
+  });
+
+  it('전체 통계를 읽을 수 없으면 기본 난이도로 조용히 진행하지 않는다', async () => {
+    const { service, aggregate, addNote, jobs } = setup();
+    aggregate.mockRejectedValueOnce(new Error('statistics unavailable'));
+    await expect(service.create(ME.toHexString(), await addNote())).rejects.toThrow(
+      'statistics unavailable',
+    );
+    expect(jobs.rows).toHaveLength(0);
+  });
+
+  it('동시에 생성하면 통계 집계 하나를 공유하고 실패 후 재시도할 수 있다', async () => {
+    const { service, aggregate, addNote } = setup();
+    const first = await addNote();
+    const second = await addNote();
+    let resolve!: (rows: { _id: string; answered: number; correct: number }[]) => void;
+    aggregate.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const a = service.pregenerate(ME.toHexString(), first);
+    const b = service.pregenerate(ME.toHexString(), second);
+    await vi.waitFor(() => expect(aggregate).toHaveBeenCalledTimes(1));
+    resolve([{ _id: '규칙', answered: 30, correct: 20 }]);
+    await Promise.all([a, b]);
+    expect(aggregate).toHaveBeenCalledTimes(1);
+
+    const next = setup();
+    next.aggregate.mockRejectedValueOnce(new Error('통계 오류')).mockResolvedValueOnce([]);
+    const note = await next.addNote();
+    await expect(next.service.pregenerate(ME.toHexString(), note)).rejects.toThrow('통계 오류');
+    await expect(next.service.pregenerate(ME.toHexString(), note)).resolves.not.toBeNull();
+    expect(next.aggregate).toHaveBeenCalledTimes(2);
+  });
   it('만드는 중인 세트를 만들고 quiz_generate 작업을 넣어 { quizSet, job }을 돌려준다', async () => {
     const { service, addNote, job, set } = setup();
     const materialId = await addNote();

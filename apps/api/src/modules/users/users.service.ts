@@ -24,7 +24,11 @@ export class UsersService {
       .find({ ownerId: null, isActive: true, deletedAt: null })
       .sort({ sortOrder: 1, _id: 1 })
       .toArray();
-    return categories.map((category) => ({ _id: String(category._id), name: category.name }));
+    return categories.map((category) => ({
+      _id: String(category._id),
+      name: category.name,
+      parentId: category.parentId ? String(category.parentId) : null,
+    }));
   }
 
   async getMe(userId: string) {

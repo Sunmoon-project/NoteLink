@@ -460,6 +460,7 @@ const api: Api = {
         ['자격증', '수능', '어학', '전공', '코딩', '공무원'].map((name, index) => ({
           _id: String(index + 1).padStart(24, '0'),
           name,
+          parentId: null,
         })),
       ),
     get: () => {

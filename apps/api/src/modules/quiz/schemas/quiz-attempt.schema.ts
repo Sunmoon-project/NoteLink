@@ -52,3 +52,8 @@ export class QuizAttempt {
 export const QuizAttemptSchema = SchemaFactory.createForClass(QuizAttempt);
 // 퀴즈를 만들 때 처리기 입력에 넣는 내 끝낸 풀이(최근 것부터, QuizSetsService.generateInput)
 QuizAttemptSchema.index({ userId: 1, finishedAt: -1 });
+// 전체 사용자의 완료된 풀이만 유형별 통계에 집계한다.
+QuizAttemptSchema.index(
+  { finishedAt: 1 },
+  { partialFilterExpression: { finishedAt: { $type: 'date' } } },
+);

@@ -45,6 +45,19 @@ const OBJECT_ID = /^[0-9a-f]{24}$/i;
 /** 문제 난이도(packages/shared QuestionDifficulty, #268) */
 export type Difficulty = '하' | '중' | '상';
 const DIFFICULTIES: readonly string[] = ['하', '중', '상'];
+// apps/ai/app/services/quiz/similar.py의 유형만 집계해 작업 입력 크기를 제한한다.
+const QUESTION_CATEGORIES = [
+  '정의',
+  '분류',
+  '빈칸',
+  '어휘',
+  '특징',
+  '부정설명',
+  '묘사',
+  '규칙',
+  '조합',
+];
+const TYPE_STATS_TTL_MS = 60_000;
 const difficultyOf = (v: unknown): Difficulty | null =>
   typeof v === 'string' && DIFFICULTIES.includes(v) ? (v as Difficulty) : null;
 
@@ -243,6 +256,8 @@ const isDuplicateKey = (e: unknown) =>
  */
 @Injectable()
 export class QuizSetsService {
+  private typeStatsCache?: { expiresAt: number; value: TypeStats };
+  private typeStatsPending?: Promise<TypeStats>;
   constructor(
     @InjectModel(QuizSet.name) private readonly sets: Model<QuizSetDocument>,
     @InjectModel(Material.name) private readonly materials: Model<MaterialDocument>,
@@ -440,6 +455,7 @@ export class QuizSetsService {
         sets: [],
         attempts: [],
         notes: {},
+        typeStats: await this.typeStats(),
       }),
     });
   }
@@ -614,12 +630,80 @@ export class QuizSetsService {
         })),
       })),
       notes: Object.fromEntries(others.map((m) => [m._id.toString(), textPages(m.pages)])),
+      typeStats: await this.typeStats(),
     });
+  }
+
+  /** 모든 사용자의 완료된 풀이에서 문제 유형별 수치만 집계한다. 개인의 풀이 내용은 반환하지 않는다. */
+  private async typeStats(): Promise<TypeStats> {
+    if (this.typeStatsCache && this.typeStatsCache.expiresAt > Date.now())
+      return this.typeStatsCache.value;
+    if (this.typeStatsPending) return this.typeStatsPending;
+    const pending = this.readTypeStats();
+    this.typeStatsPending = pending;
+    try {
+      const value = await pending;
+      this.typeStatsCache = { value, expiresAt: Date.now() + TYPE_STATS_TTL_MS };
+      return value;
+    } finally {
+      if (this.typeStatsPending === pending) this.typeStatsPending = undefined;
+    }
+  }
+
+  private async readTypeStats(): Promise<TypeStats> {
+    const rows = await this.attempts.aggregate<{ _id: string; answered: number; correct: number }>([
+      { $match: { finishedAt: { $type: 'date' } } },
+      { $unwind: '$answers' },
+      {
+        $match: {
+          'answers.correct': { $type: 'bool' },
+          $nor: [{ 'answers.void': true }, { 'answers.void': { $type: 'string', $ne: '' } }],
+        },
+      },
+      // 같은 풀이에 같은 문제가 중복 기록돼도 한 번만 센다.
+      {
+        $group: {
+          _id: { attempt: '$_id', questionId: '$answers.questionId' },
+          quizSetId: { $first: '$quizSetId' },
+          correct: { $first: '$answers.correct' },
+        },
+      },
+      {
+        $lookup: {
+          from: 'quiz_sets',
+          let: { setId: '$quizSetId', questionId: '$_id.questionId' },
+          pipeline: [
+            { $match: { status: 'ready', deletedAt: null, $expr: { $eq: ['$_id', '$$setId'] } } },
+            { $unwind: '$questions' },
+            {
+              $match: {
+                $expr: { $eq: ['$questions._id', '$$questionId'] },
+                'questions.category': { $in: QUESTION_CATEGORIES },
+              },
+            },
+            { $project: { _id: 0, category: '$questions.category' } },
+          ],
+          as: 'question',
+        },
+      },
+      { $unwind: '$question' },
+      {
+        $group: {
+          _id: '$question.category',
+          answered: { $sum: 1 },
+          correct: { $sum: { $cond: ['$correct', 1, 0] } },
+        },
+      },
+    ]);
+    return Object.fromEntries(
+      rows.map((row) => [row._id, { answered: row.answered, correct: row.correct }]),
+    );
   }
 }
 
 type WorkerPage = { pageNo: number; ocrText: string };
 type WorkerMaterial = { id: string; title: string; pages: WorkerPage[]; concepts?: string[] };
+type TypeStats = Record<string, { answered: number; correct: number }>;
 
 /** 처리기 입력의 노트(generate.py _material). 개념 이름은 저장된 것이 있을 때만 */
 function materialInput(material: MaterialRow, pages: WorkerPage[]): WorkerMaterial {
@@ -649,6 +733,7 @@ export interface WorkerInput extends Record<string, unknown> {
   sets: { id: string; materialId: string; questions: Record<string, unknown>[] }[];
   attempts: { quizSetId: string }[];
   notes: Record<string, WorkerPage[]>;
+  typeStats?: TypeStats;
 }
 
 /** 키 하나 아래에 둔 값의 BSON 크기. 키는 노트 id(24자)나 배열 번호(3자리까지)라 실제보다 조금 크게 잰다 */

@@ -14,6 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, Check, Sparkles } from 'lucide-react-native';
 import { ERROR_CODES, type LearnerType, type SocialProvider } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
+import { interestLabels } from '@/lib/interest-categories';
 import { getProviderToken, socialLoginReady } from '@/lib/social-auth';
 import { clearAccountState } from '@/lib/account';
 import {
@@ -727,6 +728,8 @@ export function ProfileSetupScreen() {
     queryKey: ['interest-categories'],
     queryFn: api.me.interestCategories,
   });
+  const topLevelCategories = categories.data?.filter((category) => category.parentId == null) ?? [];
+  const categoryLabels = interestLabels(topLevelCategories);
   const save = useMutation({
     mutationFn: () =>
       api.me.update({ nickname: nick.trim(), learnerType: type!, interestCategoryIds: interests }),
@@ -775,7 +778,7 @@ export function ProfileSetupScreen() {
         <FieldError msg={tried && !type ? '학습자 유형을 골라 주세요' : null} />
         <Label>관심 분야</Label>
         <View className="flex-row flex-wrap gap-2">
-          {categories.data?.map((x) => (
+          {topLevelCategories.map((x) => (
             <Chip
               key={x._id}
               on={interests.includes(x._id)}
@@ -785,7 +788,7 @@ export function ProfileSetupScreen() {
                 )
               }
             >
-              {x.name}
+              {categoryLabels.get(x._id)}
             </Chip>
           ))}
         </View>
@@ -795,7 +798,9 @@ export function ProfileSetupScreen() {
             <Text>관심 분야를 불러오지 못했어요. 다시 시도</Text>
           </Tap>
         )}
-        {categories.data?.length === 0 && <Text>선택할 관심 분야가 없어요</Text>}
+        {categories.data && topLevelCategories.length === 0 && (
+          <Text>선택할 관심 분야가 없어요</Text>
+        )}
         {save.isError && <FieldError msg="프로필을 저장하지 못했어요. 다시 시도해 주세요" />}
       </Screen>
     </Canvas>

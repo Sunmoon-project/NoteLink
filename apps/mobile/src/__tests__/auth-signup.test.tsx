@@ -597,7 +597,7 @@ it('초기 설정은 미리 고른 값이 없고, 닉네임과 학습자 유형�
 it('관심 분야를 선택하면 이름 대신 서버 카테고리 ID를 전송한다', async () => {
   jest
     .spyOn(api.me, 'interestCategories')
-    .mockResolvedValue([{ _id: '507f1f77bcf86cd799439011', name: '수능' }]);
+    .mockResolvedValue([{ _id: '507f1f77bcf86cd799439011', name: '수능', parentId: null }]);
   const update = jest.spyOn(api.me, 'update');
   await renderScreen(<ProfileSetupScreen />);
   await fireEvent.changeText(screen.getByPlaceholderText('노트러버'), '한결');
