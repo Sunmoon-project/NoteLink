@@ -385,11 +385,6 @@ const accountOf = (email: string) => {
 };
 // ponytail: 비밀번호는 기기 키체인에만 둔다. 서버가 붙으면 서버 인증으로 바뀐다
 const pwKey = (id: string) => `notelink-pw-${id}`;
-/** 아이디 찾기 결과: 앞 두 글자만 보이고 나머지 이름은 가린다(ab***@example.com) */
-export const maskEmail = (email: string) => {
-  const [name = '', domain = ''] = email.split('@');
-  return `${name.slice(0, 2)}${'*'.repeat(Math.max(3, name.length - 2))}@${domain}`;
-};
 
 /** DB를 먼저 쓰고 계정 목록에 올린다. 어느 쪽이든 실패하면 계정은 없던 일이 된다 */
 function createAccount(email: string, id: string) {
@@ -453,28 +448,25 @@ const api: Api = {
         return fail('STORAGE_FAILED', '가입 정보를 저장하지 못했어요. 다시 시도해 주세요', 507);
       }
     },
-    // 기기 저장 모드: 이 기기에 가입한 계정에서 찾는다
-    findEmail: async (nickname) => {
-      const name = nickname.trim();
-      if (!name) return fail(ERROR_CODES.VALIDATION, '닉네임을 입력해 주세요');
-      const emails = Object.entries(accountsMap())
-        .filter(([, id]) => readUserDb(id)?.user.nickname === name)
-        .map(([email]) => maskEmail(email));
-      return { emails };
-    },
-    passwordSendCode: async (email) => {
+    // 기기 저장 모드: 메일을 보낼 수 없어 인증번호는 6자리 숫자면 통과한다(가입과 같음). 이 기기의 계정에서 찾는다
+    recoverySendCode: async (email) => {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
         return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
     },
-    // 메일을 보낼 수 없어 인증번호는 6자리 숫자면 통과한다(가입과 같음)
-    passwordReset: async (email, code, password) => {
+    findId: async (email, code) => {
+      if (!/^\d{6}$/.test(code))
+        return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요', 400);
+      // 로그인 아이디는 가입 이메일이다
+      return { id: accountOf(email) ? email.trim().toLowerCase() : null };
+    },
+    passwordReset: async (id, email, code, password) => {
+      if (id.trim().toLowerCase() !== email.trim().toLowerCase() || !accountOf(id))
+        return fail(ERROR_CODES.VALIDATION, '아이디와 이메일이 같은 계정이 아니에요');
       if (!/^\d{6}$/.test(code))
         return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요', 400);
       if (password.length < 8)
         return fail(ERROR_CODES.VALIDATION, '비밀번호는 8자 이상이어야 해요');
-      const id = accountOf(email);
-      if (!id) return fail(ERROR_CODES.VALIDATION, '이 기기에 가입한 이메일이 아니에요');
-      await SecureStore.setItemAsync(pwKey(id), password);
+      await SecureStore.setItemAsync(pwKey(accountOf(id)!), password);
     },
     agreeTerms: (codes) => {
       db().terms = codes;

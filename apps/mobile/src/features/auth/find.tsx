@@ -8,7 +8,8 @@ import { api, ApiError } from '@/lib/api';
 import { looksLikeEmail, passwordError } from '@/lib/validation';
 import { toast } from '@/stores/toast';
 
-const TABS = ['아이디 찾기', '비밀번호 재설정'] as const;
+const TABS = ['아이디 찾기', '비밀번호 찾기'] as const;
+const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 /** 서버에 아직 경로가 없으면(404) 준비 중, 그 밖에는 서버가 준 문구 */
 const failText = (e: unknown, fallback: string) =>
@@ -18,7 +19,11 @@ const failText = (e: unknown, fallback: string) =>
       : e.message
     : fallback;
 
-/** 로그인 화면의 「아이디 · 비밀번호 찾기」. 아이디는 가입 이메일이라 닉네임으로 찾고, 비밀번호는 메일 인증 뒤 새로 정한다 */
+/**
+ * 로그인 화면의 「아이디 · 비밀번호 찾기」. 아이디는 가입 이메일이라, 아이디 찾기는 이메일 인증번호로
+ * 그 이메일로 가입한 아이디가 있는지 확인한다. 비밀번호 찾기는 아이디와 이메일을 둘 다 받아 같은
+ * 계정일 때 인증번호 뒤 새 비밀번호를 정한다.
+ */
 export function FindAccountScreen() {
   const [tab, setTab] = useState<(typeof TABS)[number]>(TABS[0]);
   return (
@@ -26,105 +31,49 @@ export function FindAccountScreen() {
       <Screen>
         <Header title="아이디 · 비밀번호 찾기" large={false} />
         <Segment items={TABS} value={tab} onChange={setTab} className="mt-2" />
-        {tab === TABS[0] ? <FindEmail /> : <ResetPassword />}
+        {tab === TABS[0] ? <FindId /> : <ResetPassword />}
       </Screen>
     </Canvas>
   );
 }
 
-function FindEmail() {
-  const [nickname, setNickname] = useState('');
-  const find = useMutation({ mutationFn: () => api.auth.findEmail(nickname.trim()) });
+/** 이메일로 인증번호 보내기. 이메일(또는 아이디)을 바꾸면 다시 보내야 한다 */
+function useCode(email: string) {
+  const [code, setCode] = useState('');
+  const send = useMutation({
+    mutationFn: () => api.auth.recoverySendCode(email.trim()),
+    onSuccess: () => toast('인증번호를 보냈어요. 메일함을 확인해 주세요'),
+  });
+  return { code, setCode, send, sent: send.isSuccess };
+}
+
+function CodeField({ code, setCode }: { code: string; setCode: (v: string) => void }) {
   return (
-    <View className="mt-4">
-      <Text className="text-footnote leading-5 text-sub">
-        노트링크 아이디는 가입한 이메일이에요. 닉네임을 입력하면 가입한 이메일을 일부 가려서 알려
-        드려요.
-      </Text>
-      <Label>닉네임</Label>
+    <>
+      <Label>인증번호</Label>
       <Input
-        value={nickname}
-        onChangeText={(v) => {
-          setNickname(v);
-          find.reset();
-        }}
-        placeholder="가입할 때 정한 닉네임"
-        autoCapitalize="none"
-        returnKeyType="search"
-        onSubmitEditing={() => nickname.trim() && find.mutate()}
+        value={code}
+        onChangeText={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
+        placeholder="6자리 숫자"
+        keyboardType="number-pad"
+        textContentType="oneTimeCode"
+        autoComplete="one-time-code"
       />
-      {find.isError && (
-        <Text className="mt-3 text-footnote text-danger">
-          {failText(find.error, '찾지 못했어요. 다시 시도해 주세요')}
-        </Text>
-      )}
-      {find.data &&
-        (find.data.emails.length ? (
-          <View className="mt-4 gap-1 rounded-xl bg-white px-4 py-3">
-            <Text className="text-caption text-sub">가입한 이메일</Text>
-            {find.data.emails.map((e) => (
-              <Text key={e} className="text-callout font-semibold text-ink">
-                {e}
-              </Text>
-            ))}
-          </View>
-        ) : (
-          <Text className="mt-3 text-footnote text-danger">이 닉네임으로 가입한 계정이 없어요</Text>
-        ))}
-      <Btn
-        className="mt-6"
-        disabled={!nickname.trim()}
-        loading={find.isPending}
-        onPress={() => find.mutate()}
-      >
-        아이디 찾기
-      </Btn>
-      {!!find.data?.emails.length && (
-        <Btn kind="cream" className="mt-2" onPress={() => router.back()}>
-          로그인하러 가기
-        </Btn>
-      )}
-    </View>
+    </>
   );
 }
 
-function ResetPassword() {
-  const [email, setEmail] = useState('');
-  const [code, setCode] = useState('');
-  const [pw, setPw] = useState('');
-  const [pw2, setPw2] = useState('');
-  const send = useMutation({
-    mutationFn: () => api.auth.passwordSendCode(email.trim()),
-    onSuccess: () => toast('인증번호를 보냈어요. 메일함을 확인해 주세요'),
-  });
-  const reset = useMutation({
-    mutationFn: () => api.auth.passwordReset(email.trim(), code, pw),
-    onSuccess: () => {
-      toast('비밀번호를 바꿨어요. 새 비밀번호로 로그인해 주세요');
-      router.replace({ pathname: '/(auth)/login', params: { email: email.trim() } });
-    },
-  });
-  const sent = send.isSuccess;
-  const pwMsg = pw ? passwordError(pw) : null;
-  const mismatch = !!pw2 && pw !== pw2;
+function SendButton({
+  sent,
+  disabled,
+  send,
+}: {
+  sent: boolean;
+  disabled: boolean;
+  send: ReturnType<typeof useCode>['send'];
+}) {
   return (
-    <View className="mt-4">
-      <Text className="text-footnote leading-5 text-sub">
-        가입한 이메일로 인증번호를 보내 드려요. 확인하면 새 비밀번호를 정할 수 있어요.
-      </Text>
-      <Label>이메일</Label>
-      <Input
-        value={email}
-        onChangeText={(v) => {
-          setEmail(v);
-          if (sent) send.reset();
-        }}
-        placeholder="you@example.com"
-        keyboardType="email-address"
-        autoCapitalize="none"
-        autoComplete="email"
-        editable={!reset.isPending}
-      />
+    <>
       {send.isError && (
         <Text className="mt-2 text-footnote text-danger">
           {failText(send.error, '인증번호를 보내지 못했어요. 다시 시도해 주세요')}
@@ -133,23 +82,146 @@ function ResetPassword() {
       <Btn
         kind={sent ? 'cream' : undefined}
         className="mt-3"
-        disabled={!looksLikeEmail(email)}
+        disabled={disabled}
         loading={send.isPending}
         onPress={() => send.mutate()}
       >
         {sent ? '인증번호 다시 보내기' : '인증번호 보내기'}
       </Btn>
+    </>
+  );
+}
+
+function FindId() {
+  const [email, setEmail] = useState('');
+  const { code, setCode, send, sent } = useCode(email);
+  const find = useMutation({ mutationFn: () => api.auth.findId(email.trim(), code) });
+  const found = find.data?.id;
+  return (
+    <View className="mt-4">
+      <Text className="text-footnote leading-5 text-sub">
+        가입할 때 쓴 이메일로 인증번호를 보내 드려요. 확인하면 그 이메일로 가입한 아이디를 알려
+        드려요.
+      </Text>
+      <Label>이메일</Label>
+      <Input
+        value={email}
+        onChangeText={(v) => {
+          setEmail(v);
+          send.reset();
+          find.reset();
+        }}
+        placeholder="you@example.com"
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoComplete="email"
+      />
+      <SendButton sent={sent} disabled={!looksLikeEmail(email)} send={send} />
       {sent && (
         <>
-          <Label>인증번호</Label>
-          <Input
-            value={code}
-            onChangeText={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
-            placeholder="6자리 숫자"
-            keyboardType="number-pad"
-            textContentType="oneTimeCode"
-            autoComplete="one-time-code"
-          />
+          <CodeField code={code} setCode={setCode} />
+          {find.isError && (
+            <Text className="mt-3 text-footnote text-danger">
+              {failText(find.error, '확인하지 못했어요. 다시 시도해 주세요')}
+            </Text>
+          )}
+          {find.data &&
+            (found ? (
+              <View className="mt-4 gap-1 rounded-xl bg-white px-4 py-3">
+                <Text className="text-caption text-sub">가입한 아이디</Text>
+                <Text className="text-callout font-semibold text-ink">{found}</Text>
+              </View>
+            ) : (
+              <Text className="mt-3 text-footnote text-danger">
+                이 이메일로 가입한 계정이 없어요
+              </Text>
+            ))}
+          <Btn
+            className="mt-6"
+            disabled={code.length !== 6}
+            loading={find.isPending}
+            onPress={() => find.mutate()}
+          >
+            아이디 찾기
+          </Btn>
+          {!!found && (
+            <Btn
+              kind="cream"
+              className="mt-2"
+              onPress={() =>
+                router.replace({ pathname: '/(auth)/login', params: { email: found } })
+              }
+            >
+              이 아이디로 로그인
+            </Btn>
+          )}
+        </>
+      )}
+    </View>
+  );
+}
+
+function ResetPassword() {
+  const [id, setId] = useState('');
+  const [email, setEmail] = useState('');
+  const { code, setCode, send, sent } = useCode(email);
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const reset = useMutation({
+    mutationFn: () => api.auth.passwordReset(id.trim(), email.trim(), code, pw),
+    onSuccess: () => {
+      toast('비밀번호를 바꿨어요. 새 비밀번호로 로그인해 주세요');
+      router.replace({ pathname: '/(auth)/login', params: { email: id.trim() } });
+    },
+  });
+  // 아이디는 가입 이메일이라, 두 칸이 같은 계정을 가리켜야 인증번호를 보낸다
+  const mismatchIdEmail = !!id.trim() && looksLikeEmail(email) && !same(id, email);
+  const pwMsg = pw ? passwordError(pw) : null;
+  const mismatch = !!pw2 && pw !== pw2;
+  const edit = (set: (v: string) => void) => (v: string) => {
+    set(v);
+    send.reset();
+  };
+  return (
+    <View className="mt-4">
+      <Text className="text-footnote leading-5 text-sub">
+        아이디와 가입한 이메일을 둘 다 입력해 주세요. 같은 계정이면 이메일로 인증번호를 보내 드리고,
+        확인하면 새 비밀번호를 정할 수 있어요.
+      </Text>
+      <Label>아이디</Label>
+      <Input
+        value={id}
+        onChangeText={edit(setId)}
+        placeholder="아이디(가입한 이메일)"
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoComplete="username"
+        editable={!reset.isPending}
+      />
+      <Label>이메일</Label>
+      <Input
+        value={email}
+        onChangeText={edit(setEmail)}
+        invalid={mismatchIdEmail}
+        placeholder="you@example.com"
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoComplete="email"
+        editable={!reset.isPending}
+      />
+      {mismatchIdEmail && (
+        <Text className="mt-1 text-caption text-danger">
+          아이디와 이메일이 같은 계정이 아니에요. 가입할 때 쓴 이메일을 입력해 주세요
+        </Text>
+      )}
+      <SendButton
+        sent={sent}
+        disabled={!id.trim() || !looksLikeEmail(email) || mismatchIdEmail}
+        send={send}
+      />
+      {sent && (
+        <>
+          <CodeField code={code} setCode={setCode} />
           <Label>새 비밀번호</Label>
           <Input
             value={pw}

@@ -559,25 +559,36 @@ it('기기 저장 모드 가입: 인증번호가 6자리 숫자가 아니면 EMA
 });
 
 describe('아이디 · 비밀번호 찾기(기기 저장 모드)', () => {
-  it('닉네임으로 가입 이메일을 가려서 찾고, 인증번호 뒤 새 비밀번호로 로그인한다', async () => {
+  it('이메일 인증번호로 아이디를 찾고, 아이디 · 이메일이 같은 계정일 때만 비밀번호를 바꾼다', async () => {
     await signup('student@example.com');
-    await api.me.update({ nickname: '광합성왕' });
-    expect(await api.auth.findEmail('광합성왕')).toEqual({ emails: ['st*****@example.com'] });
-    expect(await api.auth.findEmail('없는사람')).toEqual({ emails: [] });
-
-    await api.auth.passwordSendCode('student@example.com');
-    await expect(
-      api.auth.passwordReset('student@example.com', '12', 'newpass123'),
-    ).rejects.toMatchObject({
+    await api.auth.recoverySendCode('student@example.com');
+    await expect(api.auth.findId('student@example.com', '12')).rejects.toMatchObject({
       code: ERROR_CODES.EMAIL_CODE_INVALID,
     });
-    await api.auth.passwordReset('student@example.com', '123456', 'newpass123');
+    expect(await api.auth.findId('Student@example.com ', '123456')).toEqual({
+      id: 'student@example.com',
+    });
+    expect(await api.auth.findId('nobody@example.com', '123456')).toEqual({ id: null });
+
+    // 아이디와 이메일이 다르면 거절
+    await expect(
+      api.auth.passwordReset('student@example.com', 'other@example.com', '123456', 'newpass123'),
+    ).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION });
+    await expect(
+      api.auth.passwordReset('student@example.com', 'student@example.com', '12', 'newpass123'),
+    ).rejects.toMatchObject({ code: ERROR_CODES.EMAIL_CODE_INVALID });
+    await api.auth.passwordReset(
+      'student@example.com',
+      'student@example.com',
+      '123456',
+      'newpass123',
+    );
     await expect(api.auth.emailLogin('student@example.com', 'pw12345678')).rejects.toBeTruthy();
     expect((await api.auth.emailLogin('student@example.com', 'newpass123')).user.email).toBe(
       'student@example.com',
     );
     await expect(
-      api.auth.passwordReset('nobody@example.com', '123456', 'newpass123'),
+      api.auth.passwordReset('nobody@example.com', 'nobody@example.com', '123456', 'newpass123'),
     ).rejects.toBeTruthy();
   });
 });
