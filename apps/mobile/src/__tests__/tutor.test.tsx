@@ -10,8 +10,11 @@ import { AvatarCheer, ENCOURAGE, PRAISE } from '../features/tutor/cheer';
 import { AvatarTeacherScreen } from '../features/tutor/teacher';
 import { STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
 import { useAuth } from '../stores/auth';
-import { STAGE_LINES, TutorScreen } from '../features/tutor/tutor';
+import { TutorScreen } from '../features/tutor/tutor';
 import { renderScreen, setParams } from '../test-utils';
+
+const { STAGE_LINES } =
+  jest.requireActual<typeof import('../features/tutor/tutor')>('../features/tutor/tutor');
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn(), replace: jest.fn(), navigate: jest.fn() },
