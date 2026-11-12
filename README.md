@@ -223,9 +223,9 @@ npm run dev:mobile   # 앱 개발 서버
 - 소셜 로그인 시크릿 같은 비밀값은 **서버에만** 두고 앱에는 넣지 않습니다.
 - **팀 개발용 `.env`는 Azure Key Vault 하나에서 받습니다**(`scripts/env-vault.sh`). 키를 메시지나 파일로 따로 나누지 않습니다.
   - 처음 한 번: Azure CLI 설치(Windows `winget install --exact --id Microsoft.AzureCLI`, Mac `brew install azure-cli`) → 터미널을 새로 열고 `az login --tenant <팀 테넌트 ID>`(팀 디렉터리에 초대된 계정으로). Windows에서 계정 선택 창이 멈추면 `az config set core.enable_broker_on_windows=false` 뒤 다시 로그인합니다.
-  - 받기: `scripts/env-vault.sh pull ai`(또는 `api`) → `apps/<앱>/.env`가 만들어집니다. 손으로 만든 `.env`가 있었으면 `.env.bak`으로 남습니다. 이름만 보려면 `list`.
-  - 내 값(개인 키 · 로컬 주소)은 `apps/<앱>/.env.local`에 둡니다. `pull`할 때 이 값이 받은 값 위에 덮어씁니다. 앱은 `.env`만 읽으므로 `.env.local`을 고친 뒤에는 `pull`을 다시 합니다. 둘 다 커밋하지 않습니다.
-  - 넣기 · 바꾸기: `scripts/env-vault.sh push ai ANTHROPIC_API_KEY` → 값을 보이지 않게 입력합니다. 바꾼 뒤 팀원은 `pull`을 다시 합니다.
+  - 받기: `scripts/env-vault.sh pull ai`(또는 `api`) → `apps/<앱>/.env`가 만들어집니다. 그 앱의 `.env.production`에 적힌 변수 중 Key Vault에 있는 것만 받습니다. 손으로 만든 `.env`가 있었으면 `.env.bak`으로 남습니다. 이름만 보려면 `list`(`list ai`는 그 앱 것만).
+  - Key Vault에 없는 값(로컬 DB 주소 · `APP_ENV=development` 같은 로컬 설정)과 내 값(개인 키)은 `apps/<앱>/.env.local`에 둡니다(`.env.production`의 `로컬:` 줄 참고). `pull`할 때 이 값이 받은 값 위에 덮어씁니다. 앱은 `.env`만 읽으므로 `.env.local`을 고친 뒤에는 `pull`을 다시 합니다. 둘 다 커밋하지 않습니다.
+  - 넣기 · 바꾸기: `scripts/env-vault.sh push ANTHROPIC_API_KEY` → 값을 보이지 않게 입력합니다. secret 이름은 `_`만 `-`로 바꾼 것(`ANTHROPIC-API-KEY`)이고, 배포 App Service의 Key Vault 참조와 같은 secret입니다. 바꾼 뒤 팀원은 `pull`을 다시 하고, 배포 앱은 다시 시작하면(아니면 24시간 안에) 새 값을 씁니다.
   - 권한은 Key Vault 역할로 정합니다. 읽기 · 쓰기(`Key Vault Secrets Officer`): 완우 · 희재, 읽기(`Key Vault Secrets User`): 나머지. Key Vault 이름은 `NOTELINK_VAULT`(기본 `kv-notelink-dev`).
 
 ---
