@@ -39,7 +39,6 @@ import {
   Progress,
   Row,
   Screen,
-  Segment,
   Sheet,
   Title,
   Toggle,
@@ -52,7 +51,6 @@ import Constants from 'expo-constants';
 
 // p.43~45 프로필 · 설정 · 계정 정보 · 닉네임 · 요금제
 
-const LANGS = ['한국어', 'English', '日本語', '中文'];
 const PAGE = { swipe: '좌우 스와이프', scroll: '위아래 스크롤', tap: '탭해서 넘기기' } as const;
 // 1MB 아래를 MB로 반올림하면 자료를 올려도 0MB로 보인다: 단위를 낮추고 작은 값은 소수 한 자리까지
 const gb = (b: number) => {
@@ -73,7 +71,7 @@ export function SettingsScreen() {
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
   // 목록이 아니라 당겨서 새로 고침은 두지 않고, 돌아올 때 오래됐으면만 다시 읽는다
   useTabRefresh(me);
-  const [sheet, setSheet] = useState<null | 'lang' | 'page' | 'help' | 'biz'>(null);
+  const [sheet, setSheet] = useState<null | 'page' | 'help' | 'biz'>(null);
   const [dlg, setDlg] = useState<null | 'logout' | 'withdraw'>(null);
   const scroll = useRef<ScrollView>(null);
   const { scrollTo } = useLocalSearchParams<{ scrollTo?: string }>();
@@ -243,16 +241,6 @@ export function SettingsScreen() {
           >
             녹음 중 화면 켜 두기
           </Row>
-          <Row
-            onPress={() => setSheet('lang')}
-            right={
-              <View className="rounded-full bg-fill px-3 py-1">
-                <Text className="text-caption text-sub">{s.subtitleLanguage} ›</Text>
-              </View>
-            }
-          >
-            자막 기본 언어
-          </Row>
         </Group>
         <Label>노트</Label>
         <Group>
@@ -273,16 +261,8 @@ export function SettingsScreen() {
             오프라인 캐시
           </Row>
         </Group>
-        <Label>테마</Label>
-        <Segment
-          items={['라이트', '다크'] as const}
-          value={s.theme === 'dark' ? '다크' : '라이트'}
-          onChange={(v) => {
-            update.mutate({ theme: v === '다크' ? 'dark' : 'light' });
-            if (v === '다크') toast('다크 테마는 준비 중이에요 · 설정은 저장했어요');
-          }}
-        />
-        {/* 필기(펜) 편집기가 아직 없어 더블 탭 지우개 · 왼손잡이 설정은 두지 않는다. 편집기가 생기면 다시 연다 */}
+        {/* 필기(펜) 편집기가 없어 더블 탭 지우개 · 왼손잡이, 서버 번역 · 음성 인식 언어가 필요한 자막 언어,
+            다크 테마는 두지 않는다. 값(스키마)은 그대로 둔다 */}
         <Label>정보</Label>
         <Group>
           <Row chevron onPress={() => setSheet('help')}>
@@ -316,22 +296,6 @@ export function SettingsScreen() {
         </Pressable>
       </Screen>
 
-      <Sheet open={sheet === 'lang'} onClose={() => setSheet(null)} title="자막 기본 언어">
-        <Group>
-          {LANGS.map((l) => (
-            <Row
-              key={l}
-              onPress={() => {
-                update.mutate({ subtitleLanguage: l });
-                setSheet(null);
-              }}
-              right={s.subtitleLanguage === l && <Check size={ICON.md} color={C.brand} />}
-            >
-              {l}
-            </Row>
-          ))}
-        </Group>
-      </Sheet>
       <Sheet open={sheet === 'page'} onClose={() => setSheet(null)} title="페이지 넘김 방식">
         <Group>
           {(Object.keys(PAGE) as (keyof typeof PAGE)[]).map((k) => (

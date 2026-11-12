@@ -169,7 +169,7 @@ describe('설정 · 온보딩', () => {
   });
 });
 
-it('필기 편집기가 없어 더블 탭 지우개 · 왼손잡이 설정은 보이지 않는다', async () => {
+it('쓰는 곳 없는 필기 · 자막 언어 · 다크 테마 설정은 보이지 않는다', async () => {
   await useAuth.getState().signIn(A, user('u-a'));
   mockApi.me.get.mockResolvedValue({
     ...user('u-a'),
@@ -180,4 +180,7 @@ it('필기 편집기가 없어 더블 탭 지우개 · 왼손잡이 설정은 �
   expect(await screen.findByText('회원 탈퇴', {}, { timeout: 8000 })).toBeTruthy();
   expect(screen.queryByText('더블 탭으로 지우개 전환')).toBeNull();
   expect(screen.queryByText('왼손잡이 모드')).toBeNull();
+  // 서버가 있어야 하는 자막 언어, 다크 테마도 두지 않는다
+  expect(screen.queryByText('자막 기본 언어')).toBeNull();
+  expect(screen.queryByText('다크')).toBeNull();
 });
