@@ -481,7 +481,7 @@ describe('처음 안내', () => {
     useTour.setState({ step: 0 });
   });
 
-  it('실제 화면(홈 → 노트 → 퀴즈 → 홈)을 옮겨 다니며 단계마다 설명하고, 끝나면 기록한다', async () => {
+  it('실제 화면(홈 → 노트 → 퀴즈 → 홈)을 옮겨 다니며 + 버튼 · 퀴즈 만들기 · 오답 복습을 설명하고 요약한 뒤 기록한다', async () => {
     await renderScreen(<TourCoach />);
     expect(screen.getByText(STEPS[0]!.title)).toBeTruthy();
     expect(router.navigate).toHaveBeenLastCalledWith('/');
@@ -490,15 +490,17 @@ describe('처음 안내', () => {
       expect(await screen.findByText(s.title)).toBeTruthy();
       expect(router.navigate).toHaveBeenLastCalledWith(s.route);
     }
-    expect(STEPS.map((s) => s.route)).toEqual([
-      '/',
-      '/note',
-      '/note',
-      '/note',
-      '/quiz',
-      '/quiz',
-      '/',
+    expect(STEPS.map((s) => s.route)).toEqual(['/', '/note', '/quiz', '/quiz', '/']);
+    // 짚는 자리: 노트 탭 + 버튼, 퀴즈 만들기
+    expect(STEPS.map((s) => (s.spot && 'target' in s.spot ? s.spot.target : null))).toEqual([
+      null,
+      'note-add',
+      'quiz-make',
+      null,
+      null,
     ]);
+    // 마지막은 세 가지 요약
+    expect(STEPS.at(-1)!.body).toMatch(/① .*② .*③ /);
     await fireEvent.press(screen.getByText('첫 학습 폴더 만들기'));
     await waitFor(() =>
       expect(SecureStore.setItemAsync).toHaveBeenCalledWith('notelink.toured', '["u1"]'),
