@@ -2,6 +2,8 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { type Connection, Model, Types } from 'mongoose';
 
+import { User, type UserDocument } from '../auth/schemas/user.schema.js';
+import { PointService } from '../reward/point/point.service.js';
 import { QuizAttempt, type QuizAttemptDocument } from './schemas/quiz-attempt.schema.js';
 import { QuizSet, type QuizSetDocument } from './schemas/quiz-set.schema.js';
 
@@ -29,6 +31,12 @@ export interface AnswerResult {
     correctAnswer: string;
 }
 
+/** 풀이를 끝낸 결과: 이번에 받은 포인트와 적립 후 잔액 */
+export interface FinishResult {
+    pointsEarned: number;
+    balance: number;
+}
+
 interface AttemptRow {
     _id: Types.ObjectId;
     answers?: { questionId: Types.ObjectId; answer?: string | null; correct: boolean; tries: number }[];
@@ -54,6 +62,8 @@ export class QuizAttemptsService {
     constructor(
         @InjectModel(QuizAttempt.name) private readonly attempts: Model<QuizAttemptDocument>,
         @InjectModel(QuizSet.name) private readonly sets: Model<QuizSetDocument>,
+        @InjectModel(User.name) private readonly users: Model<UserDocument>,
+        private readonly points: PointService,
         @InjectConnection() private readonly connection: Connection,
     ) { }
 
@@ -136,6 +146,45 @@ export class QuizAttemptsService {
                 .lean();
             if (!saved) throw invalid('이미 끝낸 풀이예요');
             return { correct, correctAnswer: question.answer };
+        });
+    }
+
+    /**
+     * 풀이를 끝내고 정답 포인트를 준다(앱의 로컬 모의 API quiz.finish와 같은 동작).
+     * 처음 끝낼 때만 finishedAt · pointsEarned를 기록하고 포인트를 주며, 이미 끝낸 풀이는 0P에 현재 잔액만 돌려준다.
+     *
+     * "finishedAt이 null인 풀이만 끝내기 → 포인트 적립"을 한 트랜잭션으로 묶는다. 같은 풀이를 동시에 끝내면
+     * 한쪽이 쓰기 충돌로 처음부터 다시 시도되고, 그때는 이미 끝난 풀이라 포인트를 주지 않는다.
+     * 하루 40P 한도는 PointService.earnQuiz가 계산한다
+     */
+    async finish(userId: string, attemptId: string): Promise<FinishResult> {
+        const owner = objectId(userId, '사용자');
+        const attemptOid = objectId(attemptId, '풀이 기록');
+        return this.connection.transaction(async (session) => {
+            const closed = await this.attempts
+                .findOneAndUpdate(
+                    { _id: attemptOid, userId: owner, finishedAt: null },
+                    { $set: { finishedAt: new Date() } },
+                    { returnDocument: 'after', session },
+                )
+                .lean<{ correctCount: number }>();
+
+            let pointsEarned = 0;
+            if (closed) {
+                pointsEarned = await this.points.earnQuiz(userId, closed.correctCount, session);
+                if (pointsEarned > 0) {
+                    await this.attempts
+                        .findOneAndUpdate({ _id: attemptOid, userId: owner }, { $set: { pointsEarned } }, { session })
+                        .lean();
+                }
+            } else {
+                // 못 닫았으면 없는 풀이(남의 것 포함)이거나 이미 끝낸 풀이다
+                const exists = await this.attempts.findOne({ _id: attemptOid, userId: owner }, null, { session }).lean();
+                if (!exists) throw notFound('풀이 기록');
+            }
+
+            const user = await this.users.findOne({ _id: owner }, null, { session }).lean<{ pointBalance?: number }>();
+            return { pointsEarned, balance: user?.pointBalance ?? 0 };
         });
     }
 }
