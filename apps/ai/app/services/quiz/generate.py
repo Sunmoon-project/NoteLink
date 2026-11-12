@@ -35,7 +35,8 @@ ai_jobs.type = 'quiz_pregen': 노트를 만들 때 NestJS가 넣는 첫 맞춤 �
     끝냅니다(아직 도는 자리는 다음 단계에서 멈춤). 개념 뽑기 시간은 넣지 않습니다
   - n개가 안 되면 통과한 문제는 둔 채 모자란 자리만 다음 판에 다시 돌립니다(MAX_ROUNDS판 ·
     FILL_SEC_PER_QUESTION × n초까지, #247). 열린 쪽이 없으면 마지막 단계로 이미 물은 개념도 다른
-    각도로 묻습니다. 그래도 모자라면 짧은 세트 대신 NoQuestionsError(앱은 '다시 시도')
+    유형 · 다른 각도로 묻습니다(#268). 그래도 모자라면 짧은 세트 대신 NoQuestionsError(앱은
+    '다시 시도')
   - 한 자리가 겹침(DRY_REASONS)으로만 떨어져 닫은 쪽은 다음 판에 한 번 다시 엽니다. 학교 LLM은
     같은 쪽에서도 다음 시도에 다른 정답을 고름(11/10 기생충 원충류: 세 쪽이 차례로 닫혀 상한 전에
     3/5로 끝남)
@@ -255,10 +256,14 @@ _clock = time.monotonic  # 시험에서 바꿔 끼움
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 # 이 쪽에서 새로 물을 것이 남지 않았다는 탈락 이유(checks.code_check). '보기 5개가 아니거나 겹침'은
 # 초안 잘못이라 넣지 않음: '겹침'이 든 이유를 모두 보면 그 쪽이 닫혔음(/code-review 11/04)
+# 마지막 단계에서 이미 물은 개념을 그 개념을 물은 유형으로 다시 고름(#268): 같은 문제를 또 내는
+# 겹침이라 쪽 닫기에 넣음(이 이유가 섞이면 다른 겹침으로 닫혔을 쪽이 열린 채 판이 늘었음)
+SAME_TYPE_AGAIN = "같은 개념을 같은 유형으로 다시 물음"
 DRY_REASONS = {
     "이미 있는 문제와 거의 같음",
     "앞 문제를 거꾸로 물음(겹침)",
     SAME_ANSWER,
+    SAME_TYPE_AGAIN,
 }
 # 분류 유형: 정답이 묶음 이름(편모충류 · 포자충류 · 조충류)이라 노트마다 몇 개 없어 세트 안에서 곧
 # 바닥남. 이미 쓴 정답 목록을 주어도 같은 묶음 이름을 계속 냄(11/10 학교 LLM 기생충 원충류: 정답
@@ -341,7 +346,9 @@ class PageInfo:
     mastered: int = 0
     weak: list[str] = field(default_factory=list)
     done: list[str] = field(default_factory=list)
-    angle: list[str] = field(default_factory=list)  # 마지막 단계: 이미 물은 개념(다른 각도로, #247)
+    # 마지막 단계: 이미 물은 개념 → 그 개념을 물은 유형들. 같은 개념은 다른 유형 · 다른 각도로만
+    # 다시 묻는다(#247 · #268)
+    angle: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -359,6 +366,9 @@ class Made:
     question: Draft | None = None
     concept: str | None = None
     type: str | None = None
+    # 만들게 한 유형. type은 제시문에 ____가 있으면 빈칸으로 적혀, 같은 개념을 같은 유형으로 다시
+    # 묻는지(PageInfo.angle · Seen.type)는 이것으로 봄(#268)
+    asked_as: str | None = None
     why: list[str] = field(default_factory=list)
     down: int = 0  # 호출이 실패한 시도 수
     tries: int = 0
@@ -730,8 +740,9 @@ def _hint(info: PageInfo, used: list[str]) -> str:
     if info.done:
         hint += f"\n이미 익힌 개념(피한다): {', '.join(info.done)}"
     if info.angle:
+        asked = ", ".join(f"{c}({' · '.join(tys)})" for c, tys in info.angle.items())
         hint += (
-            f"\n이 퀴즈에서 이미 물은 개념: {', '.join(info.angle)} — 고른다면"
+            f"\n이 퀴즈에서 이미 물은 개념(물은 유형): {asked} — 고른다면"
             " 앞 문제와 다른 특징 · 다른 각도를 묻는다"
         )
     # 목록이 없으면 appeal to · budget · serving을 또 정답으로 냄(버린 초안 34개 중 7개, 10/29)
@@ -763,12 +774,21 @@ def _group_clash(ty: str, why: list[str], out: Made) -> list[str]:
     return [GROUP_SAME if w in same else w for w in why]
 
 
+def _seen_made(m: Made) -> Seen:
+    """받은 문제를 겹침 검사(seen)에 더할 모양으로: 개념 · 만들게 한 유형을 붙임(#268)."""
+    assert m.question is not None
+    s = seen_draft(m.question)
+    s["concept"] = m.concept or ""
+    s["type"] = m.asked_as or m.type or ""
+    return s
+
+
 def _take(seen: list[Seen], used: list[str]) -> Accept:
     """차례로 만들 때: 겹침은 code_check가 이미 봤으니 seen · used에 더하기만."""
 
     def accept(m: Made) -> list[str]:
         assert m.question is not None
-        seen.append(seen_draft(m.question))
+        seen.append(_seen_made(m))
         if _listed(m):
             used.append(m.question["answer"])
         return []
@@ -825,10 +845,15 @@ def gen_one(
         # 빠른 모드로 바뀌면 안정적 모드 유형을 건너뜀. 유형이 둘뿐인 쪽(묘사 · 어휘)은 세 번째에
         # 처음 유형으로
         kinds = [x for x in types if x not in similar.STABLE_TYPES or x in m.extra] or types
+        # 마지막 단계: 고를 개념을 모두 이 유형으로 이미 물었으면 그 유형은 건너뜀(#268)
+        kinds = [x for x in kinds if any(x not in info.angle.get(c, ()) for c in names)] or kinds
         ty = kinds[i % len(kinds)]
         if stop and (halt := stop(True)):
             out.why = out.why or [halt]
             break
+        # 이미 물은 개념은 그 개념을 물은 유형으로는 다시 고르지 않음: 같은 유형으로 다시 물으면
+        # 정의는 정답이, 특징 · 분류는 제시문이 겹쳐 떨어졌음(개념 3개 노트 5문제, 11/12 학교 LLM)
+        offered = [c for c in names if ty not in info.angle.get(c, ())] or names
         used_now = list(used)
         t = Target("new", used_answers=used_now)
         hint = _hint(info, used_now)
@@ -837,7 +862,7 @@ def gen_one(
         out.tries += 1
         concept: object
         if ty == "조합":
-            b = combo.build(llm, page_no, text, names, hint, notes, combo.truth_for())
+            b = combo.build(llm, page_no, text, offered, hint, notes, combo.truth_for())
             out.down += b.down
             out.rejected += b.rejected
             out.answered = out.answered or b.answered
@@ -854,7 +879,7 @@ def gen_one(
             tip = similar.first_tip(ty)
             user = (
                 f'<노트 쪽="{page_no}">\n{text[:TEXT_CAP]}\n</노트>\n\n'
-                f"개념 목록(이 안에서 고른다): {', '.join(names)}{hint}\n"
+                f"개념 목록(이 안에서 고른다): {', '.join(offered)}{hint}\n"
                 f"문제 유형: {ty} — {similar.TYPES[ty][0]}\npassage: {similar.TYPES[ty][1]}"
                 f"{notes}{chr(10) + tip if tip else ''}\n\n"
                 f"이 노트로 {CHOICES}지선다 문제 1개를 만들어라. 난이도는 중·고등학교 내신 보통 "
@@ -865,7 +890,7 @@ def gen_one(
                     settings.quiz_gen_model,
                     GEN_SYS,
                     user,
-                    _schema(names),
+                    _schema(offered),
                     "Quiz",
                     max_tokens=1400,
                     temperature=0.7,
@@ -883,10 +908,13 @@ def gen_one(
             d = tidy(raw)
             q = r.get("question")
             concept = q.get("concept") if isinstance(q, dict) else None
-        why, k = code_check(d, t, text, ty, list(seen))
+        named = concept if isinstance(concept, str) else ""
+        why, k = code_check(d, t, text, ty, list(seen), named)
         why = _group_clash(ty, why, out)
         if concept not in names:  # 개념 목록이 길면 모델이 이 필드를 빠뜨리기도 함
             why.append("개념 이름 없음")
+        elif concept not in offered:  # 목록에서 뺐는데도 같은 유형으로 다시 고름
+            why.append(SAME_TYPE_AGAIN)
         if (
             not d["stem"].strip()
             or not d["answer"].strip()
@@ -902,8 +930,10 @@ def gen_one(
             # 오답 보기 한두 개만 걸린 초안은 새로 만들지 않고 그 보기만 바꿔 다시 검사(로컬과
             # 같음): 11/05 동시 실행에서 못 만든 자리 둘이 모두 이런 초안이었음(미생 '항산성균의
             # 염색 보조' · 'AFB stain'). 새 초안(생성 · 검사 · 풀기) 대신 생성 모델 한 번
-            def check(x: Draft, t: Target = t, ty: str = ty) -> tuple[list[str], int | None]:
-                return code_check(x, t, text, ty, list(seen))
+            def check(
+                x: Draft, t: Target = t, ty: str = ty, c: str = named
+            ) -> tuple[list[str], int | None]:
+                return code_check(x, t, text, ty, list(seen), c)
 
             d, why, k2, _, unchecked = quality.checked(llm, d, check, text, ty)
             k = k2 if k2 is not None else k
@@ -928,11 +958,12 @@ def gen_one(
             if verdict == "pass":
                 out.question, out.concept = {**d, "options": options}, str(concept)
                 out.type, out.why = ("빈칸" if "____" in d["passage"] else ty), []
+                out.asked_as = ty
                 why = accept(out)
                 if not why:
                     return out
                 why = _group_clash(ty, why, out)  # 그사이 다른 자리가 같은 정답을 받음(Codex #293)
-                out.question = out.concept = out.type = None
+                out.question = out.concept = out.type = out.asked_as = None
                 out.why = why
                 if FULL in why or HELD in why:
                     break
@@ -1134,11 +1165,12 @@ def _make_all(
 
     판(round)마다 자리를 동시에 돌리고, n개가 안 되면 통과한 문제는 둔 채 모자란 자리만 다음 판에
     다시 돌립니다(전체 상한 FILL_SEC_PER_QUESTION × n초, 미리 만들기는 첫 판 상한, #247). 열린
-    쪽(물을 개념이 남은 쪽)이 없으면 마지막 단계로 이미 물은 개념도 다른 각도로 묻게 합니다(정답 ·
-    문장 겹침 검사는 그대로). 한 자리가 겹침(DRY_REASONS)으로만 떨어져 닫은 쪽은 다음 판에 한 번
-    다시 엽니다(첫 단계에서 처음 닫힌 쪽만, 다시 연 뒤 시작한 자리가 또 겹치면 그대로 닫음). 열린
-    쪽이 다시 열 쪽뿐이어도 마지막 단계로 갑니다. 판의 생성 호출이 모두 실패하면(학교 LLM 장애) 더
-    돌리지 않습니다.
+    쪽(물을 개념이 남은 쪽)이 없으면 마지막 단계로 이미 물은 개념도 다른 유형 · 다른 각도로 묻게
+    합니다(같은 유형으로는 다시 묻지 않음. 그 개념의 앞 문제와는 제시문을 비교하지 않고, 정답 ·
+    문장 보기 · 거꾸로 묻기 겹침은 그대로 봄, #268). 한 자리가 겹침(DRY_REASONS)으로만 떨어져
+    닫은 쪽은 다음 판에 한 번 다시 엽니다(첫 단계에서 처음 닫힌 쪽만, 다시 연 뒤 시작한 자리가 또
+    겹치면 그대로 닫음). 열린 쪽이 다시 열 쪽뿐이어도 마지막 단계로 갑니다. 판의 생성 호출이 모두
+    실패하면(학교 LLM 장애) 더 돌리지 않습니다.
     시도 수는 마지막 판 것이고, 못 만든 자리는 모든 판 것(마지막 판 먼저)입니다.
     시간 상한에 아직 호출 중인 자리는 실패한 시도로 셉니다: 학교 LLM이 연결만 받고 답하지
     않으면 끝난 자리가 없어, 다시 시도하지 않고 0문제 세트로 끝났음(/code-review #95).
@@ -1152,6 +1184,8 @@ def _make_all(
     target = levels.slot_levels(mix or {}) or ["중"]  # 자리마다 난이도(첫 판의 차례)
     used: list[str] = []
     asked: Counter[str] = Counter()  # 세트에서 개념마다 물은 수
+    # 개념마다 물은 유형(만들게 한 유형, 받은 차례대로): 마지막 단계는 다른 유형으로만(#268)
+    asked_as: defaultdict[str, list[str]] = defaultdict(list)
     taken: list[tuple[int, Made]] = []  # 받아들인 차례대로
     # 같은 난이도의 유형 돌리기: 빠른 모드는 (쪽, 난이도)마다, 안정적 모드는 난이도마다 세트
     # 전체에서(#268). 난이도를 가리지 않고 세면 한 쪽에 하 · 중이 번갈아 오면 하는 늘 같은 유형으로
@@ -1239,7 +1273,10 @@ def _make_all(
             # 분류 초안이면 gen_one이 분류 겹침으로 셈: 동시에 만들면 묶음 이름은 대개 여기서
             # 겹침(Codex 리뷰 #293). 개념이 먼저 겹친 초안은 세지 않음(/code-review #293)
             return [CLASH_SAME]
-        if too_close(d, seen) or reversed_of(d, seen):
+        # 그사이 다른 자리가 같은 개념을 같은 유형으로 받았으면 제시문 · 정답 겹침(CLASH)으로 걸림:
+        # 동시에 만든 겹침이라 쪽을 닫는 SAME_TYPE_AGAIN으로는 돌려주지 않음(#268)
+        kind = r.asked_as or r.type or ""
+        if too_close(d, seen, r.concept, kind) or reversed_of(d, seen, r.concept, kind):
             return [CLASH]
         return []
 
@@ -1248,7 +1285,8 @@ def _make_all(
         d = r.question
         assert d is not None and r.concept is not None
         asked[r.concept] += 1
-        seen.append(seen_draft(d))
+        asked_as[r.concept].append(r.asked_as or r.type or "")
+        seen.append(_seen_made(r))
         if _listed(r):
             used.append(d["answer"])
         taken.append((page, r))
@@ -1358,7 +1396,7 @@ def _make_all(
                 visits[page, level] += 1
                 turns[level] += 1
                 info = per_page[page]
-                if again_ok and (again := [c for c in names if c in asked]):
+                if again_ok and (again := {c: list(asked_as[c]) for c in names if c in asked}):
                     info = replace(info, angle=again)
 
             def here(x: Made, page: int = page) -> list[str]:
