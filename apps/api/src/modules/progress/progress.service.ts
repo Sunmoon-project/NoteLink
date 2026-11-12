@@ -2,10 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
+import { StudySession } from '../session/schemas/study-session.schema.js';
 import { seoulDate } from '../session/study-time.js';
 import type { SetWeeklyGoalDto } from './dto/set-weekly-goal.dto.js';
+import type { StatsRange } from './dto/study-query.dto.js';
 import { DailyRecord } from './schemas/daily-record.schema.js';
 import { WeeklyGoal } from './schemas/weekly-goal.schema.js';
+import { isStreakDay, levelOf, longestStreak, peakHour } from './stats.js';
 import { addDays, daysBetween, sumRange, weekStartOf } from './week.js';
 
 /** 앱에 내려주는 이번 주 목표 (공유 계약 WeeklyGoal) */
@@ -26,6 +29,26 @@ export interface WeeklySummaryView {
     days: { studyDate: string; totalSec: number }[];
 }
 
+/** 월간 캘린더 한 칸 (앱 MonthDay) */
+export interface MonthDayView {
+    studyDate: string;
+    level: number;
+    hasTodo: boolean;
+}
+
+/** 누적 기록 (공유 계약 StudyStats) */
+export interface StudyStatsView {
+    totalSec: number;
+    studyDays: number;
+    longestStreak: number;
+    peakHour: number;
+    heatmap: { studyDate: string; level: number }[];
+}
+
+const HEATMAP_DAYS = 126; // 18주 (앱과 같다)
+// 오늘을 포함해 며칠인지 (앱: 90d는 오늘-89일부터, 30d는 오늘-29일부터). all은 처음 기록부터 오늘까지
+const RANGE_DAYS: Record<StatsRange, number | null> = { all: null, '90d': 90, '30d': 30 };
+
 type GoalLean = WeeklyGoal & { _id: Types.ObjectId };
 type DayTotalLean = Pick<DailyRecord, 'studyDate' | 'totalSec'>;
 
@@ -40,6 +63,7 @@ export class ProgressService {
     constructor(
         @InjectModel(DailyRecord.name) private readonly dailyModel: Model<DailyRecord>,
         @InjectModel(WeeklyGoal.name) private readonly goalModel: Model<WeeklyGoal>,
+        @InjectModel(StudySession.name) private readonly sessionModel: Model<StudySession>,
     ) { }
 
     /** 이번 주(월~일) 요약: 합계, 지난주 같은 요일까지와의 차이, 요일별 시간, 목표 */
@@ -64,6 +88,68 @@ export class ProgressService {
             days: Array.from({ length: 7 }, (_, i) => {
                 const studyDate = addDays(weekStart, i);
                 return { studyDate, totalSec: totals.get(studyDate) ?? 0 };
+            }),
+        };
+    }
+
+    /** 그 달 모든 날짜의 색 진하기 (ym은 'YYYY-MM') */
+    async month(userId: string, ym: string): Promise<MonthDayView[]> {
+        const owner = new Types.ObjectId(userId);
+        const [year, month] = ym.split('-').map(Number) as [number, number];
+        const length = new Date(Date.UTC(year, month, 0)).getUTCDate(); // 28 ~ 31
+        const first = `${ym}-01`;
+        const totals = await this.dayTotals(owner, first, addDays(first, length - 1));
+        return Array.from({ length }, (_, i) => {
+            const studyDate = addDays(first, i);
+            // hasTodo는 할 일(FR-10) PR에서 todos와 연결한다. 그때까지는 항상 false
+            return { studyDate, level: levelOf(totals.get(studyDate) ?? 0), hasTodo: false };
+        });
+    }
+
+    /**
+     * 기간별 누적 기록. 합계 · 공부한 날 · 최장 연속은 daily_records의 날짜별 순공(서울 기준)에서 구하고,
+     * 가장 많이 공부한 시간대는 끝난 세션 중 어뷰징이 아닌 것의 시작 시각(서울)으로 구한다.
+     * 잔디(heatmap)는 기간과 상관없이 오늘까지 최근 126일이다
+     */
+    async stats(userId: string, range: StatsRange, now = new Date()): Promise<StudyStatsView> {
+        const owner = new Types.ObjectId(userId);
+        const today = seoulDate(now);
+        const spanDays = RANGE_DAYS[range];
+        const from = spanDays === null ? null : addDays(today, -(spanDays - 1));
+        const heatFrom = addDays(today, -(HEATMAP_DAYS - 1));
+        // 합계 기간과 잔디 중 더 긴 쪽을 한 번에 읽는다
+        const readFrom = from === null ? '0000-01-01' : from < heatFrom ? from : heatFrom;
+
+        const [totals, sessions] = await Promise.all([
+            this.dayTotals(owner, readFrom, today),
+            this.sessionModel
+                .find(
+                    {
+                        userId: owner,
+                        status: 'ended',
+                        isAbuse: { $ne: true },
+                        ...(from === null ? {} : { studyDate: { $gte: from } }),
+                    },
+                    { startedAt: 1, durationSec: 1 },
+                )
+                .lean<{ startedAt: Date; durationSec: number }[]>(),
+        ]);
+
+        let totalSec = 0;
+        const okDays = new Set<string>();
+        for (const [day, sec] of totals) {
+            if (from !== null && day < from) continue;
+            totalSec += sec;
+            if (isStreakDay(sec)) okDays.add(day);
+        }
+        return {
+            totalSec,
+            studyDays: okDays.size,
+            longestStreak: longestStreak(okDays),
+            peakHour: peakHour(sessions),
+            heatmap: Array.from({ length: HEATMAP_DAYS }, (_, i) => {
+                const studyDate = addDays(heatFrom, i);
+                return { studyDate, level: levelOf(totals.get(studyDate) ?? 0) };
             }),
         };
     }

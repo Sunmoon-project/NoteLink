@@ -1,0 +1,215 @@
+// 진짜 MongoDB(replica set)에서 월간 캘린더(FR-09-02~04)와 기간별 누적 기록(FR-09-05~07)을 확인하는 테스트.
+// 확인하는 것: 달 길이와 level, range별 합계 · 공부한 날 · 최장 연속, peakHour(기록 없음 -1 · 어뷰징 제외 · 서울 시각),
+// 서울 자정에 오늘이 바뀌는 것, 다른 사람 기록이 섞이지 않는 것.
+// MONGODB_VERIFY_URI가 localhost일 때만 돌고(없거나 localhost가 아니면 건너뜀), 파일·실행마다 고유한 전용 DB만 쓰고 끝나면 그 DB만 지운다.
+// 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/progress-stats-real-db.test.ts
+import { getConnectionToken, MongooseModule } from '@nestjs/mongoose';
+import { Test, type TestingModule } from '@nestjs/testing';
+import { Types, type Connection } from 'mongoose';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
+import { ProgressService } from '../src/modules/progress/progress.service.js';
+import { DailyRecord, DailyRecordSchema } from '../src/modules/progress/schemas/daily-record.schema.js';
+import { WeeklyGoal, WeeklyGoalSchema } from '../src/modules/progress/schemas/weekly-goal.schema.js';
+import { PointService } from '../src/modules/reward/point/point.service.js';
+import { PointLedger, PointLedgerSchema } from '../src/modules/reward/schemas/point-ledger.schema.js';
+import { StudySession, StudySessionSchema } from '../src/modules/session/schemas/study-session.schema.js';
+import { Subject, SubjectSchema } from '../src/modules/session/schemas/subject.schema.js';
+import { StudyService } from '../src/modules/session/study.service.js';
+
+const uri = process.env.MONGODB_VERIFY_URI;
+const isLocal = !!uri && /^mongodb:\/\/([^@/]*@)?(localhost|127\.0\.0\.1)[:/]/.test(uri);
+// 이 파일이 이번 실행에서만 쓰는 DB 이름 (다른 파일 · 다른 실행과 겹치지 않는다)
+const dbName = `notelink_verify_progress_stats_${process.pid}_${Date.now()}`;
+
+// 서울 목요일 정오. 오늘은 2026-11-12
+const NOW = new Date('2026-11-12T03:00:00.000Z');
+const ago = (n: number): string => new Date(Date.UTC(2026, 10, 12 - n)).toISOString().slice(0, 10);
+
+describe.skipIf(!isLocal)('진짜 DB 월간 캘린더 · 누적 기록 확인', () => {
+    let moduleRef: TestingModule;
+    let conn: Connection;
+    let progress: ProgressService;
+    let study: StudyService;
+    const col = (name: string) => conn.collection(name);
+
+    const day = async (userId: Types.ObjectId, studyDate: string, totalSec: number): Promise<void> => {
+        await col('daily_records').insertOne({
+            userId,
+            studyDate,
+            totalSec,
+            personalSec: totalSec,
+            roomSec: 0,
+            streakOk: false,
+            items: [],
+        });
+    };
+    // 끝난 세션을 바로 넣는다 (peakHour 확인용)
+    const endedSession = async (userId: Types.ObjectId, startedAt: Date, durationSec: number, isAbuse = false): Promise<void> => {
+        await col('study_sessions').insertOne({
+            userId,
+            studyDate: new Date(startedAt.getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10),
+            studyItemId: null,
+            roomId: null,
+            mode: 'personal',
+            status: 'ended',
+            startedAt,
+            endedAt: new Date(startedAt.getTime() + durationSec * 1000),
+            durationSec,
+            departureCount: 0,
+            endReason: 'user',
+            isAbuse,
+            pointsEarned: 0,
+            pauses: [],
+        });
+    };
+
+    beforeAll(async () => {
+        moduleRef = await Test.createTestingModule({
+            imports: [
+                // 접속이 안 되면 30초 기다리지 않고 5초 뒤에 이유와 함께 실패하게 한다
+                MongooseModule.forRoot(uri!, { dbName, serverSelectionTimeoutMS: 5000 }),
+                MongooseModule.forFeature([
+                    { name: DailyRecord.name, schema: DailyRecordSchema },
+                    { name: WeeklyGoal.name, schema: WeeklyGoalSchema },
+                    { name: StudySession.name, schema: StudySessionSchema },
+                    { name: Subject.name, schema: SubjectSchema },
+                    { name: PointLedger.name, schema: PointLedgerSchema },
+                    { name: User.name, schema: UserSchema },
+                ]),
+            ],
+            providers: [ProgressService, StudyService, PointService],
+        }).compile();
+        await moduleRef.init();
+        conn = moduleRef.get<Connection>(getConnectionToken());
+        await conn.dropDatabase();
+        await conn.model(DailyRecord.name).syncIndexes();
+        await conn.model(StudySession.name).syncIndexes();
+        await Promise.all([conn.model(Subject.name).init(), conn.model(PointLedger.name).init(), conn.model(User.name).init()]);
+        progress = moduleRef.get(ProgressService);
+        study = moduleRef.get(StudyService);
+    }, 30000);
+
+    afterAll(async () => {
+        if (conn) await conn.dropDatabase();
+        await moduleRef?.close();
+    });
+
+    it('month: 달 길이(28 · 29 · 30 · 31일)와 level 경계, 다른 달 · 다른 사람 기록은 섞이지 않는다', async () => {
+        const me = new Types.ObjectId();
+        const other = new Types.ObjectId();
+        await day(me, '2026-02-01', 1);
+        await day(me, '2026-02-28', 2 * 3600);
+        await day(me, '2026-03-01', 99999); // 다음 달
+        await day(me, '2026-01-31', 99999); // 지난달
+        await day(other, '2026-02-02', 99999);
+
+        const feb = await progress.month(me.toString(), '2026-02');
+        expect(feb).toHaveLength(28);
+        expect(feb[0]).toEqual({ studyDate: '2026-02-01', level: 1, hasTodo: false });
+        expect(feb[1]).toEqual({ studyDate: '2026-02-02', level: 0, hasTodo: false }); // 다른 사람 기록은 안 보인다
+        expect(feb[27]).toEqual({ studyDate: '2026-02-28', level: 4, hasTodo: false });
+
+        expect(await progress.month(me.toString(), '2028-02')).toHaveLength(29);
+        expect(await progress.month(me.toString(), '2026-04')).toHaveLength(30);
+        expect(await progress.month(me.toString(), '2026-12')).toHaveLength(31);
+    });
+
+    it('month: level 경계값 (0 · 1초 · 30분 · 1시간 · 2시간)', async () => {
+        const me = new Types.ObjectId();
+        const secs = [0, 1, 30 * 60 - 1, 30 * 60, 60 * 60 - 1, 60 * 60, 2 * 3600 - 1, 2 * 3600];
+        for (const [i, sec] of secs.entries()) await day(me, `2026-11-${String(i + 1).padStart(2, '0')}`, sec);
+        const nov = await progress.month(me.toString(), '2026-11');
+        expect(nov.slice(0, 8).map((d) => d.level)).toEqual([0, 1, 1, 2, 2, 3, 3, 4]);
+    });
+
+    it('stats: 기록이 없으면 0 · peakHour -1 · 잔디 126일', async () => {
+        const stats = await progress.stats(new Types.ObjectId().toString(), 'all', NOW);
+        expect(stats).toMatchObject({ totalSec: 0, studyDays: 0, longestStreak: 0, peakHour: -1 });
+        expect(stats.heatmap).toHaveLength(126);
+        expect(stats.heatmap[125]?.studyDate).toBe('2026-11-12');
+    });
+
+    it('stats: range마다 합계 · 공부한 날 · 최장 연속이 달라지고, 다른 사람 기록은 섞이지 않는다', async () => {
+        const me = new Types.ObjectId();
+        const other = new Types.ObjectId();
+        for (const n of [100, 101, 102, 103, 104]) await day(me, ago(n), 1000);
+        for (const n of [60, 61, 62]) await day(me, ago(n), 2000);
+        for (const n of [0, 1]) await day(me, ago(n), 3000);
+        for (const n of [0, 1, 2, 3, 4, 5]) await day(other, ago(n), 50000);
+
+        const d30 = await progress.stats(me.toString(), '30d', NOW);
+        const d90 = await progress.stats(me.toString(), '90d', NOW);
+        const all = await progress.stats(me.toString(), 'all', NOW);
+        expect([d30.totalSec, d90.totalSec, all.totalSec]).toEqual([6000, 12000, 17000]);
+        expect([d30.studyDays, d90.studyDays, all.studyDays]).toEqual([2, 5, 10]);
+        expect([d30.longestStreak, d90.longestStreak, all.longestStreak]).toEqual([2, 3, 5]);
+        // 잔디는 range와 상관없이 126일이고, 100일 전 기록(1000초 = level 1)도 보인다
+        expect(d30.heatmap).toHaveLength(126);
+        expect(d30.heatmap.find((h) => h.studyDate === ago(100))?.level).toBe(1);
+    });
+
+    it('stats: 90d · 30d는 오늘 포함 90일 · 30일이다', async () => {
+        const me = new Types.ObjectId();
+        for (const n of [0, 29, 30, 89, 90]) await day(me, ago(n), 600);
+        expect((await progress.stats(me.toString(), '30d', NOW)).studyDays).toBe(2);
+        expect((await progress.stats(me.toString(), '90d', NOW)).studyDays).toBe(4);
+        expect((await progress.stats(me.toString(), 'all', NOW)).studyDays).toBe(5);
+    });
+
+    it('stats: 서울 자정(UTC 15:00)에 오늘이 바뀌어 잔디 마지막 날과 30d 범위가 하루 밀린다', async () => {
+        const me = new Types.ObjectId();
+        await day(me, '2026-11-01', 600);
+        const before = await progress.stats(me.toString(), '30d', new Date('2026-11-30T14:59:59.000Z'));
+        expect(before.heatmap[125]?.studyDate).toBe('2026-11-30');
+        expect(before.studyDays).toBe(1); // 11-01은 30d(11-01 ~ 11-30)의 첫날
+
+        const after = await progress.stats(me.toString(), '30d', new Date('2026-11-30T15:00:00.000Z'));
+        expect(after.heatmap[125]?.studyDate).toBe('2026-12-01');
+        expect(after.studyDays).toBe(0); // 12-01 기준 30d는 11-02부터
+    });
+
+    it('stats peakHour: 어뷰징 세션은 빠지고 서울 시각으로 센다, 다른 사람 세션은 섞이지 않는다', async () => {
+        const me = new Types.ObjectId();
+        const other = new Types.ObjectId();
+        await endedSession(me, new Date('2026-11-10T14:30:00.000Z'), 600); // 서울 23시
+        await endedSession(me, new Date('2026-11-09T01:00:00.000Z'), 99999, true); // 서울 10시, 어뷰징: 제외
+        await endedSession(other, new Date('2026-11-09T05:00:00.000Z'), 99999); // 다른 사람
+        expect((await progress.stats(me.toString(), 'all', NOW)).peakHour).toBe(23);
+    });
+
+    it('stats peakHour: session 모듈이 24시간 이상 세션을 정산하면 어뷰징으로 표시되어 peakHour에 들어가지 않는다', async () => {
+        const me = new Types.ObjectId();
+        await col('users').insertOne({ _id: me, pointBalance: 0, nickname: me.toString() });
+        const sessionId = new Types.ObjectId();
+        await col('study_sessions').insertOne({
+            _id: sessionId,
+            userId: me,
+            studyDate: '2026-11-09',
+            studyItemId: null,
+            roomId: null,
+            mode: 'personal',
+            status: 'running',
+            startedAt: new Date('2026-11-09T06:00:00.000Z'), // 서울 15시
+            endedAt: null,
+            durationSec: 0,
+            departureCount: 0,
+            endReason: null,
+            isAbuse: false,
+            pointsEarned: 0,
+            pauses: [],
+        });
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date('2026-11-10T12:00:00.000Z')); // 30시간 뒤
+        try {
+            await study.end(me.toString(), sessionId.toString(), { clientDurationSec: 0, endReason: 'user' });
+        } finally {
+            vi.useRealTimers();
+        }
+        expect(await col('study_sessions').findOne({ _id: sessionId })).toMatchObject({ isAbuse: true, status: 'ended' });
+
+        const stats = await progress.stats(me.toString(), 'all', NOW);
+        expect(stats).toMatchObject({ peakHour: -1, totalSec: 0 });
+    });
+});
