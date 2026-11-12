@@ -13,6 +13,7 @@ import { useDraft } from '../stores/draft';
 import { renderScreen, setParams } from '../test-utils';
 
 jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
   router: { push: jest.fn(), replace: jest.fn(), back: jest.fn(), dismissTo: jest.fn() },
   useLocalSearchParams: () => globalThis.mockParams,
   useSegments: () => [],

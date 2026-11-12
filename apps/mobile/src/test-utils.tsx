@@ -22,6 +22,8 @@ export function renderScreen(ui: ReactElement, qc = testClient()) {
 
 declare global {
   var mockParams: Record<string, string | undefined>;
+  /** useIsFocused가 돌려줄 값. 비우면 true */
+  var mockFocused: boolean | undefined;
 }
 /** useLocalSearchParams가 돌려줄 값 (jest.setup.js의 expo-router 목) */
 export const setParams = (p: Record<string, string | undefined>) => {

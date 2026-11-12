@@ -37,6 +37,7 @@ let mockNow = Date.parse('2026-10-31T14:59:59Z');
 jest.mock('../hooks', () => ({ ...jest.requireActual('../hooks'), useNow: () => mockNow }));
 jest.mock('expo-router', () => ({
   ...jest.requireActual('expo-router'),
+  useIsFocused: () => true,
   router: { push: jest.fn(), back: jest.fn(), replace: jest.fn() },
   useLocalSearchParams: () => ({}),
   useFocusEffect: (callback: () => void) =>

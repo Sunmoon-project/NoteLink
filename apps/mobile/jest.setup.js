@@ -32,6 +32,7 @@ jest.mock('expo-router', () => ({
   useSitemap: jest.fn(() => null),
   useLocalSearchParams: () => global.mockParams,
   useFocusEffect: () => {},
+  useIsFocused: () => global.mockFocused ?? true,
   Redirect: () => null,
   Link: ({ children }) => children,
 }));

@@ -30,6 +30,7 @@ jest.mock('../lib/upload', () => ({
 jest.mock('../lib/image-edit', () => ({ editPhoto: jest.fn() }));
 jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'https://api.example' } }));
 jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
   router: {
     push: jest.fn(),
     replace: jest.fn(),

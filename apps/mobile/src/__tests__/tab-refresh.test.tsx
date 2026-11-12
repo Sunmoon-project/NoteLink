@@ -11,6 +11,7 @@ import { renderScreen } from '../test-utils';
 let mockCleanups: (() => void)[] = [];
 const mockFocus = new Set<() => (() => void) | void>();
 jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
   useSegments: () => [],
   useFocusEffect: (cb: () => (() => void) | void) => mockFocus.add(cb),
 }));
