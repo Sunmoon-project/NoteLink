@@ -135,6 +135,41 @@ describe('할 일 · D-day API (/todos, /ddays)', () => {
             expect(am.body.data).toMatchObject({ timeSlot: 'am', dueTime: null });
         });
 
+        it('직접 시간(custom)인데 dueTime이 없거나 null이거나 형식이 틀리면 400, 아무것도 만들어지지 않는다', async () => {
+            for (const todoType of ['general', 'assignment']) {
+                const noTime = { ...todoBody, todoType, timeSlot: 'custom' };
+                expect((await post('/todos', noTime)).status).toBe(400);
+                expect((await post('/todos', { ...noTime, dueTime: null })).status).toBe(400);
+                expect((await post('/todos', { ...noTime, dueTime: '' })).status).toBe(400);
+                expect((await post('/todos', { ...noTime, dueTime: '24:00' })).status).toBe(400);
+                expect((await post('/todos', { ...noTime, dueTime: '9:30' })).status).toBe(400);
+                expect((await post('/todos', { ...noTime, dueTime: 1430 })).status).toBe(400);
+            }
+            expect(rows).toHaveLength(0);
+        });
+
+        it('직접 시간(custom)에 올바른 dueTime이 있으면 저장하고, 과제 · 시험은 짝에도 같은 시각이 들어간다', async () => {
+            const res = await post('/todos', { ...todoBody, todoType: 'exam', timeSlot: 'custom', dueTime: '09:05' });
+            expect(res.status).toBe(201);
+            expect(res.body.data).toMatchObject({ timeSlot: 'custom', dueTime: '09:05' });
+            expect(rows.map((r) => r.dueTime)).toEqual(['09:05', '09:05']);
+        });
+
+        it('직접 시간이 아니면 dueTime 없이도 만들어지고, 보내도 저장하지 않는다', async () => {
+            for (const timeSlot of ['none', 'am', 'pm']) {
+                const without = await post('/todos', { ...todoBody, timeSlot });
+                expect(without.status).toBe(201);
+                expect(without.body.data.dueTime).toBeNull();
+                const withNull = await post('/todos', { ...todoBody, timeSlot, dueTime: null });
+                expect(withNull.status).toBe(201);
+                const withTime = await post('/todos', { ...todoBody, timeSlot, dueTime: '14:30' });
+                expect(withTime.status).toBe(201);
+                expect(withTime.body.data.dueTime).toBeNull();
+            }
+            expect(rows.every((r) => !r.dueTime)).toBe(true);
+            expect((await post('/todos', { ...todoBody, timeSlot: 'am', dueTime: '25:00' })).status).toBe(400); // 형식이 틀린 값은 지금처럼 400
+        });
+
         it('완료 표시: 204, doneAt이 채워지고 다시 풀면 비워진다', async () => {
             const created = await post('/todos', todoBody);
             const id = created.body.data._id;

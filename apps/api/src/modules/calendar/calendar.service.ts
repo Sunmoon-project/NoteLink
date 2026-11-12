@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { Connection, Model, Types } from 'mongoose';
 
 import { daysBetween } from '../progress/week.js';
 import { Subject } from '../session/schemas/subject.schema.js';
@@ -45,6 +45,7 @@ export class CalendarService {
     constructor(
         @InjectModel(Todo.name) private readonly todoModel: Model<Todo>,
         @InjectModel(Subject.name) private readonly subjectModel: Model<Subject>,
+        @InjectConnection() private readonly connection: Connection,
     ) { }
 
     /** 그날 할 일 목록 (D-day 목록용 건은 빼고, 만든 순서) */
@@ -72,28 +73,35 @@ export class CalendarService {
             subjectName: dto.subjectName || null,
         };
 
-        if (dto.todoType === 'general') {
-            const [created] = await this.todoModel.create([{ ...base, isDday: false }]);
-            return toTodoView(requireCreated(created));
-        }
-        const pairId = new Types.ObjectId();
-        const [dayItem] = await this.todoModel.create([
-            { ...base, isDday: false, pairId },
-            { ...base, isDday: true, pairId },
-        ]);
+        // 과제 · 시험의 두 건은 한 트랜잭션으로 만든다: 둘 다 생기거나 둘 다 안 생긴다 (일반 할 일은 한 건)
+        const pairId = dto.todoType === 'general' ? null : new Types.ObjectId();
+        const docs = pairId
+            ? [{ ...base, isDday: false, pairId }, { ...base, isDday: true, pairId }]
+            : [{ ...base, isDday: false }];
+        const dayItem = await this.connection.transaction(async (session) => {
+            let first: TodoDocument | undefined;
+            for (const doc of docs) {
+                const [created] = await this.todoModel.create([doc], { session });
+                first ??= created;
+            }
+            return first;
+        });
         return toTodoView(requireCreated(dayItem));
     }
 
     /** 완료 표시를 바꾼다. 짝이 있으면(과제 · 시험) D-day 쪽도 같이 바꿔서 완료한 과제는 D-day 목록에서 빠진다 */
     async setDone(userId: string, id: string, done: boolean): Promise<void> {
         const owner = new Types.ObjectId(userId);
-        const found = await this.todoModel
-            .findOne({ _id: toObjectId(id), userId: owner })
-            .lean<TodoLean>();
-        if (!found) throw new NotFoundException(NOT_FOUND);
+        // 찾기와 바꾸기를 한 트랜잭션으로: 짝이 함께 바뀌거나 아무것도 안 바뀐다
+        await this.connection.transaction(async (session) => {
+            const found = await this.todoModel
+                .findOne({ _id: toObjectId(id), userId: owner }, null, { session })
+                .lean<TodoLean>();
+            if (!found) throw new NotFoundException(NOT_FOUND);
 
-        const filter = found.pairId ? { userId: owner, pairId: found.pairId } : { _id: found._id, userId: owner };
-        await this.todoModel.updateMany(filter, { $set: { done, doneAt: done ? new Date() : null } });
+            const filter = found.pairId ? { userId: owner, pairId: found.pairId } : { _id: found._id, userId: owner };
+            await this.todoModel.updateMany(filter, { $set: { done, doneAt: done ? new Date() : null } }, { session });
+        });
     }
 
     /** D-day 목록: 안 끝낸 과제 · 시험과 직접 만든 D-day. 남은 일수가 적은 순, 지난 날짜는 지우지 않고 맨 뒤 */

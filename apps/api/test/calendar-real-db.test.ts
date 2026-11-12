@@ -5,11 +5,11 @@
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/calendar-real-db.test.ts
 import type { INestApplication } from '@nestjs/common';
 import { UnauthorizedException } from '@nestjs/common';
-import { getConnectionToken, MongooseModule } from '@nestjs/mongoose';
+import { getConnectionToken, getModelToken, MongooseModule } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
-import { Types, type Connection } from 'mongoose';
+import { Types, type Connection, type Model } from 'mongoose';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { configureApp } from '../src/app.setup.js';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
@@ -34,6 +34,7 @@ describe.skipIf(!isLocal)('진짜 DB 할 일 · D-day 확인', () => {
     const AUTH_OTHER = { Authorization: 'Bearer token-other' };
     let app: INestApplication;
     let conn: Connection;
+    let todoModel: Model<Todo>;
     const col = (name: string) => conn.collection(name);
 
     // 서울 기준 오늘과 며칠 뒤 날짜
@@ -76,6 +77,7 @@ describe.skipIf(!isLocal)('진짜 DB 할 일 · D-day 확인', () => {
         configureApp(app);
         await app.init();
         conn = moduleRef.get<Connection>(getConnectionToken());
+        todoModel = moduleRef.get<Model<Todo>>(getModelToken(Todo.name));
         await conn.dropDatabase();
         await Promise.all([conn.model(Todo.name).init(), conn.model(User.name).init(), conn.model(Subject.name).init()]);
         // nickname에 유일 인덱스가 있어서 사람마다 다르게 넣는다
@@ -85,6 +87,10 @@ describe.skipIf(!isLocal)('진짜 DB 할 일 · D-day 확인', () => {
         ]);
         await col('subjects').insertOne({ name: '수학', color: '#fff', sortOrder: 0, isActive: true, categoryId: null });
     }, 30000);
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
 
     afterAll(async () => {
         if (conn) await conn.dropDatabase();
@@ -182,5 +188,60 @@ describe.skipIf(!isLocal)('진짜 DB 할 일 · D-day 확인', () => {
         expect(keys).toContain(JSON.stringify({ userId: 1, dueDate: 1 }));
         expect(keys).toContain(JSON.stringify({ userId: 1, isDday: 1, done: 1 }));
         expect(keys).toContain(JSON.stringify({ userId: 1, pairId: 1 }));
+    });
+    it('9) 과제 추가 중 두 번째 문서 저장이 실패하면 할 일 · D-day 둘 다 남지 않고, 다시 하면 둘 다 생긴다', async () => {
+        const content = '트랜잭션 과제';
+        const count = () => col('todos').countDocuments({ userId: me, content });
+        const create = todoModel.create.bind(todoModel) as (...args: unknown[]) => Promise<unknown>;
+        let calls = 0;
+        const spy = vi.spyOn(todoModel, 'create').mockImplementation(((...args: unknown[]) => {
+            calls += 1;
+            return calls === 2 ? Promise.reject(new Error('두 번째 저장 실패')) : create(...args);
+        }) as never);
+
+        const failed = await post('/todos', { ...base, todoType: 'assignment', content });
+        expect(failed.status).toBe(500);
+        expect(calls).toBe(2); // 첫 문서는 저장까지 갔지만
+        expect(await count()).toBe(0); // 롤백되어 하나도 남지 않는다
+        expect((await get('/ddays')).body.data.map((d: { title: string }) => d.title)).not.toContain(content);
+
+        spy.mockRestore();
+        const ok = await post('/todos', { ...base, todoType: 'assignment', content });
+        expect(ok.status).toBe(201);
+        const docs = await col('todos').find({ userId: me, content }).toArray();
+        expect(docs.map((d) => d['isDday']).sort()).toEqual([false, true]);
+        expect(String(docs[0]?.['pairId'])).toBe(String(docs[1]?.['pairId']));
+    });
+
+    it('10) 완료 변경 중 짝 업데이트가 실패하면 두 문서 모두 그대로이고, 다시 하면 둘 다 완료된다', async () => {
+        const content = '트랜잭션 완료';
+        const created = await post('/todos', { ...base, todoType: 'exam', content });
+        const id = created.body.data._id as string;
+        const state = async () => (await col('todos').find({ userId: me, content }).toArray()).map((d) => [d['done'], d['doneAt']]);
+
+        vi.spyOn(todoModel, 'updateMany').mockImplementationOnce((() => Promise.reject(new Error('짝 업데이트 실패'))) as never);
+        const failed = await patch(`/todos/${id}`, { done: true });
+        expect(failed.status).toBe(500);
+        expect(await state()).toEqual([[false, null], [false, null]]);
+        expect((await get('/ddays')).body.data.map((d: { title: string }) => d.title)).toContain(content);
+
+        vi.restoreAllMocks();
+        expect((await patch(`/todos/${id}`, { done: true })).status).toBe(204);
+        const after = await col('todos').find({ userId: me, content }).toArray();
+        expect(after).toHaveLength(2);
+        expect(after.every((d) => d['done'] === true && d['doneAt'] instanceof Date)).toBe(true);
+        expect((await get('/ddays')).body.data.map((d: { title: string }) => d.title)).not.toContain(content);
+    });
+
+    it('11) 직접 시간(custom)인데 dueTime이 없거나 null이면 400, 올바른 시각이면 저장된다', async () => {
+        const before = await col('todos').countDocuments();
+        expect((await post('/todos', { ...base, timeSlot: 'custom' })).status).toBe(400);
+        expect((await post('/todos', { ...base, timeSlot: 'custom', dueTime: null })).status).toBe(400);
+        expect(await col('todos').countDocuments()).toBe(before);
+        const ok = await post('/todos', { ...base, content: '직접 시간', timeSlot: 'custom', dueTime: '21:15' });
+        expect(ok.status).toBe(201);
+        expect(await col('todos').findOne({ userId: me, content: '직접 시간' })).toMatchObject({ timeSlot: 'custom', dueTime: '21:15' });
+        const am = await post('/todos', { ...base, content: '오전', timeSlot: 'am', dueTime: '09:00' });
+        expect(await col('todos').findOne({ _id: new Types.ObjectId(am.body.data._id) })).toMatchObject({ dueTime: null });
     });
 });

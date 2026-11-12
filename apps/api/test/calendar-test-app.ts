@@ -1,6 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 import { UnauthorizedException } from '@nestjs/common';
-import { getModelToken } from '@nestjs/mongoose';
+import { getConnectionToken, getModelToken } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
 
 import { configureApp } from '../src/app.setup.js';
@@ -22,6 +22,8 @@ export async function createCalendarTestApp(fakes: { todo: object; subject: obje
             CalendarService,
             { provide: getModelToken(Todo.name), useValue: fakes.todo },
             { provide: getModelToken(Subject.name), useValue: fakes.subject },
+            // 트랜잭션의 가짜: 콜백을 그대로 실행한다 (실제 묶음 동작은 calendar-real-db.test.ts에서 확인)
+            { provide: getConnectionToken(), useValue: { transaction: (fn: (session: object) => unknown) => fn({}) } },
             // 로그인 확인(JwtAuthGuard)이 쓰는 도구의 가짜: TEST_TOKEN만 통과시킨다
             {
                 provide: TokenService,

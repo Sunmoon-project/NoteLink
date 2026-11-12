@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsISO8601, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsIn, IsISO8601, IsOptional, IsString, Matches, MaxLength, MinLength, ValidateIf } from 'class-validator';
 
 export const TODO_TYPES = ['general', 'assignment', 'exam'] as const;
 export type TodoType = (typeof TODO_TYPES)[number];
@@ -33,8 +33,8 @@ export class CreateTodoDto {
     @IsIn(TIME_SLOTS)
     timeSlot!: TimeSlot;
 
-    // 시각을 직접 고른 경우의 'HH:mm'
-    @IsOptional()
+    // 시각을 직접 고른 경우(custom)에는 꼭 있어야 하는 'HH:mm'. custom이 아니면 없어도 되고 보내도 저장하지 않는다
+    @ValidateIf((o: CreateTodoDto) => o.timeSlot === 'custom' || (o.dueTime !== undefined && o.dueTime !== null))
     @Matches(HHMM)
     dueTime?: string;
 
