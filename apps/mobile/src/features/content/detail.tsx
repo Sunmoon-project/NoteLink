@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Image as RNImage, Linking, Pressable, ScrollView, View } from 'react-native';
+import { Linking, Pressable, View } from 'react-native';
 import { Text, TextInput } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -46,6 +46,7 @@ import {
 import { C, ICON } from '@/theme';
 import { DocSummary, NoteBody } from './convert';
 import { Player } from './player';
+import { PageImages, usePageTurn } from './page-images';
 import { TutorBuddy, useTuckOnScroll } from '@/features/tutor/buddy';
 import { seoul } from '@/lib/dates';
 
@@ -114,8 +115,6 @@ function useSubject(folderId?: string) {
   return folders.data?.find((f) => f._id === folderId)?.subjectName;
 }
 
-const mb = (bytes: number) => (bytes > 0 ? `${(bytes / 1024 / 1024).toFixed(1)}MB` : '');
-
 /** 원본 파일을 시스템 미리보기 · 공유 시트로 연다 (파일 앱에 저장 · 다른 앱으로 열기) */
 async function openOriginal(id: string) {
   const { url } = await api.content.downloadUrl(id);
@@ -123,37 +122,6 @@ async function openOriginal(id: string) {
     return Sharing.shareAsync(url);
   if (!/^https?:\/\//i.test(url)) throw new Error('원본 주소가 없어요');
   await Linking.openURL(url);
-}
-
-/** 원본 페이지 이미지 — 두 손가락으로 확대 (FR-25-02) */
-function PageImages({ pages }: { pages: NonNullable<Material['pages']> }) {
-  if (!pages.length)
-    return <Text className="mt-4 text-center text-footnote text-sub">원본 이미지가 없어요</Text>;
-  return (
-    <View className="gap-3">
-      {pages.map((p) => (
-        <View key={p.pageNo} className="overflow-hidden rounded-card bg-white">
-          <ScrollView
-            maximumZoomScale={4}
-            minimumZoomScale={1}
-            centerContent
-            showsHorizontalScrollIndicator={false}
-            showsVerticalScrollIndicator={false}
-          >
-            <RNImage
-              source={{ uri: p.imageUrl }}
-              accessibilityLabel={`${p.pageNo}페이지 원본`}
-              className="aspect-[3/4] w-full"
-              resizeMode="contain"
-            />
-          </ScrollView>
-          <Text className="px-3 py-2 text-caption text-sub">
-            {p.pageNo}페이지{p.sizeBytes ? ` · ${mb(p.sizeBytes)}` : ''}
-          </Text>
-        </View>
-      ))}
-    </View>
-  );
 }
 
 /** ⋯ 옵션 → 편집 · 공유 · 삭제 (p.72~73) */
@@ -260,6 +228,7 @@ const dateLabel = (m: Material, kind: string) =>
   `${kind} · ${seoul(m.createdAt).getMonth() + 1}/${seoul(m.createdAt).getDate()} 업로드`;
 
 export function HandDetailScreen() {
+  const pageTurn = usePageTurn();
   const { tab: t } = useLocalSearchParams<{ tab?: '정리된 노트' | '원본 이미지' }>();
   const { id, m, isError, refetch } = useMaterial();
   const [tab, setTab] = useState<'정리된 노트' | '원본 이미지'>(t ?? '정리된 노트');
@@ -303,7 +272,7 @@ export function HandDetailScreen() {
             )
           ) : (
             <View className="gap-3">
-              {!!m.pages?.length && <PageImages pages={m.pages} />}
+              {!!m.pages?.length && <PageImages pages={m.pages} mode={pageTurn} />}
               <OriginalFile m={m} />
             </View>
           )}
@@ -494,6 +463,7 @@ export function RecDetailScreen() {
 }
 
 export function DocDetailScreen() {
+  const pageTurn = usePageTurn();
   const { tab: t } = useLocalSearchParams<{ tab?: '요약' | '원본 문서' }>();
   const { id, m, isError, refetch } = useMaterial();
   const [tab, setTab] = useState<'요약' | '원본 문서'>(t ?? '요약');
@@ -562,7 +532,7 @@ export function DocDetailScreen() {
           </View>
         ) : (
           <View className="mt-4 gap-3">
-            {!!m.pages?.length && <PageImages pages={m.pages} />}
+            {!!m.pages?.length && <PageImages pages={m.pages} mode={pageTurn} />}
             <OriginalFile m={m} />
           </View>
         )}
