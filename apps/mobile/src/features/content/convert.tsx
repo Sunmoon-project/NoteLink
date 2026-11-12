@@ -12,6 +12,7 @@ import { notifyLocal } from '@/lib/push';
 import { socket } from '@/lib/socket';
 import { useSocket } from '@/hooks';
 import { useDraft } from '@/stores/draft';
+import { scanTitle } from '@/lib/scan-title';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
 import { toast } from '@/stores/toast';
@@ -168,7 +169,7 @@ export function ConvertScreen() {
         folderId: requireFolder(),
         kind: draft.kind,
         source: draft.source,
-        title: draft.title || defaultTitle(draft.kind, draft.files[0]?.name),
+        title: draft.title.trim() || defaultTitle(draft.kind, draft.files[0]?.name, draft.source),
         description: draft.description,
         blobUrls: blobs.current,
         avatarItemId: draft.avatar,
@@ -468,8 +469,9 @@ export function ConvertScreen() {
   );
 }
 
-const defaultTitle = (kind: keyof typeof TITLE, name?: string) =>
-  name?.trim() ||
+const defaultTitle = (kind: keyof typeof TITLE, name?: string, source?: string) =>
+  // 스캔 · 촬영은 파일 이름이 기계식(scan_1794….jpg)이라 제목으로 쓰지 않는다
+  (source === 'scan' ? scanTitle() : name?.trim()) ||
   (kind === 'recording' ? '강의 녹음' : kind === 'handwriting' ? '필기 자료' : '학습 자료');
 
 /* ── 정리 완료 (p.66 #21~23) ─────────────────────── */
