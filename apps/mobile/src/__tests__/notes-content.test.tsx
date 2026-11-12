@@ -1,7 +1,8 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { ScanCheckScreen, scanPages } from '../features/content/capture';
 import { scanTitle } from '../lib/scan-title';
-import { ConvertScreen } from '../features/content/convert';
+import { ConvertScreen, speechLocale } from '../features/content/convert';
+import { seedUser } from './fixtures/seed';
 import { useMockFlags } from './fixtures/flags';
 import { socket } from '../lib/socket';
 import { router } from 'expo-router';
@@ -102,6 +103,61 @@ describe('서버 없이 저장한 자료', () => {
     });
     expect(router.replace).not.toHaveBeenCalled();
   });
+});
+
+describe('받아쓰기 언어', () => {
+  const register = () => {
+    const spy = jest.spyOn(api.content, 'createMaterial').mockResolvedValue({
+      material: { _id: 'm1' },
+      job: { _id: 'j1', status: 'queued', step: AI_WAITING_STEP, progress: 0 },
+    } as never);
+    jest.spyOn(api.ai, 'job').mockResolvedValue({
+      _id: 'j1',
+      status: 'queued',
+      step: AI_WAITING_STEP,
+      progress: 0,
+    } as never);
+    return spy;
+  };
+  const me = (subtitleLanguage: string) =>
+    jest.spyOn(api.me, 'get').mockResolvedValue({
+      ...seedUser(),
+      settings: { ...seedUser().settings, subtitleLanguage },
+    });
+
+  it('녹음은 설정한 받아쓰기 언어(English → en-US)로 등록한다', async () => {
+    me('English');
+    const spy = register();
+    useDraft.getState().set({ folderId: 'fo1', kind: 'recording', files: [audio], title: '강의' });
+    await renderScreen(<ConvertScreen />);
+    // 앞 테스트 화면이 남긴 호출과 섞이지 않게, 이 녹음(제목 강의)의 등록을 찾는다
+    await waitFor(() =>
+      expect(spy.mock.calls.map(([p]) => p)).toContainEqual(
+        expect.objectContaining({ kind: 'recording', title: '강의', language: 'en-US' }),
+      ),
+    );
+  });
+
+  it('녹음이 아니면 언어를 보내지 않는다', async () => {
+    me('English');
+    const spy = register();
+    useDraft.getState().set({
+      folderId: 'fo1',
+      kind: 'document',
+      files: [{ uri: 'file:///a.pdf', name: 'a.pdf', size: 10 }],
+      title: '문서',
+    });
+    await renderScreen(<ConvertScreen />);
+    await waitFor(() => expect(spy.mock.calls.some(([p]) => p.kind === 'document')).toBe(true));
+    const doc = spy.mock.calls.find(([p]) => p.kind === 'document')![0];
+    expect(doc).not.toHaveProperty('language');
+  });
+});
+
+it('모르는 언어 설정은 한국어로 받아쓴다', () => {
+  expect(speechLocale('日本語')).toBe('ja-JP');
+  expect(speechLocale(undefined)).toBe('ko-KR');
+  expect(speechLocale('Español')).toBe('ko-KR');
 });
 
 describe('스캔 제목', () => {

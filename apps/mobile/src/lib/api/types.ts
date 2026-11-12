@@ -192,6 +192,8 @@ export interface Api {
       description?: string;
       blobUrls: string[];
       avatarItemId?: string | null;
+      /** 녹음을 받아쓸 언어(BCP-47, 예: ko-KR). 녹음일 때만 보낸다(설정 「받아쓰기 언어」) */
+      language?: string;
     }): Promise<{ material: Material; job: AiJob }>;
     material(id: string): Promise<Material>;
     saveMaterial(id: string): Promise<void>;

@@ -37,6 +37,15 @@ import {
 import { C, ICON } from '@/theme';
 import { Player } from './player';
 
+/** 설정 「받아쓰기 언어」(화면 이름) → 음성 인식 언어 코드. 모르는 값은 한국어 */
+export const SPEECH_LOCALE: Record<string, string> = {
+  한국어: 'ko-KR',
+  English: 'en-US',
+  日本語: 'ja-JP',
+  中文: 'zh-CN',
+};
+export const speechLocale = (setting?: string) => SPEECH_LOCALE[setting ?? ''] ?? 'ko-KR';
+
 // p.66 AI 변환 중 · 정리 완료 / p.98 업로드 · 변환 중 연결 끊김 / p.99 LLM 오류
 
 const TITLE = {
@@ -173,6 +182,16 @@ export function ConvertScreen() {
         description: draft.description,
         blobUrls: blobs.current,
         avatarItemId: draft.avatar,
+        ...(draft.kind === 'recording' && {
+          // 내 설정을 아직 못 불러왔으면 여기서 받는다(캐시가 있으면 바로). 실패하면 한국어
+          language: speechLocale(
+            (
+              await qc
+                .fetchQuery({ queryKey: ['me'], queryFn: () => api.me.get() })
+                .catch(() => undefined)
+            )?.settings.subtitleLanguage,
+          ),
+        }),
       });
       if (canceled.current) {
         await api.ai.cancel(r.job._id);
