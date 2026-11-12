@@ -71,10 +71,20 @@ def page_layouts(
     nxt = 1
     for p in sorted(pages, key=lambda x: x["pageNo"]):
         start = max(p["pageNo"], nxt)
-        count = max(1, len(p["read"].get("pages") or []))
+        count = page_span(p["read"])
         lines += page_lines({**p, "pageNo": start}, threshold, known)
         numbers += range(start, start + count)
         nxt = start + count
+    return layouts_from_lines(lines, numbers)
+
+
+def page_span(read: dict[str, Any]) -> int:
+    """OCR 결과 하나가 차지하는 쪽 수. 글이 없는 쪽도 한 쪽."""
+    return max(1, len(read.get("pages") or []))
+
+
+def layouts_from_lines(lines: list[Line], numbers: list[int]) -> list[PageLayout]:
+    """page_lines로 만든 줄 → numbers 순서의 읽는 순서. 줄이 없는 쪽은 빈 쪽으로 남김."""
     laid = {p["pageNo"]: p for p in layout_pages(lines)}
     return [laid.get(n, {"pageNo": n, "twoColumn": False, "rows": []}) for n in numbers]
 
@@ -83,7 +93,11 @@ def note_result(
     pages: list[NotePage], threshold: float = UNCERTAIN_MEAN, known: frozenset[str] = frozenset()
 ) -> NoteResult:
     """노트 한 개(여러 쪽)의 ① · ② · ④."""
-    layouts = page_layouts(pages, threshold, known)
+    return result_from_layouts(page_layouts(pages, threshold, known))
+
+
+def result_from_layouts(layouts: list[PageLayout]) -> NoteResult:
+    """읽는 순서 → ① · ② · ④."""
     return {
         "pages": page_texts(layouts),
         "lineResults": line_results(layouts),

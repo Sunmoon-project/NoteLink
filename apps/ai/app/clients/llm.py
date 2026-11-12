@@ -364,10 +364,15 @@ class PacedLlm:
         yields()가 참인 호출(background)은 사용자 작업 호출이 도는 동안(_user_busy) 보내지
         않습니다(#138). 깨어날 때마다 다시 보고, 거짓이 되면(사용자가 이어받음) 그때부터 사용자
         작업 호출로 셉니다(mine[0], _send가 끝날 때 뺌).
+        예산(set_gate)도 여기서, 차례를 가져가기 전에 봅니다. 차례를 가져간 뒤에 보면 합계(DB)를
+        읽느라 늦어진 만큼 다음 호출과의 간격이 줄어듦(Codex 리뷰 5차 #277). 기다렸다 깨어나면
+        다시 보므로, 기다리는 사이 다른 호출이 한도를 넘겼으면 보내지 않음(Codex 리뷰 #299).
         """
         while True:
             check_stop()
             bg = yields()  # 잠금 밖에서(DB를 읽을 수 있음)
+            if self._gate is not None and self._gate():  # 잠금 밖에서(DB를 읽을 수 있음)
+                raise LlmUsageLimitError("Claude 비용 한도에 닿음(보내기 직전 확인)")
             check_stop()  # 읽는 동안 켜진 멈춤 신호(Codex 리뷰 #149)
             with self._lock:
                 if not bg and not mine[0]:
@@ -408,7 +413,9 @@ class PacedLlm:
         self._cost_hook = hook
 
     def set_gate(self, over: Callable[[], bool]) -> None:
-        """over()가 참이면 보내기 직전(처음 · 다시 보내기마다) LlmUsageLimitError(#298)."""
+        """over()가 참이면 보내기 직전(처음 · 다시 보내기마다) LlmUsageLimitError(#298).
+
+        차례를 가져가기 전에 부름(_turn). 느려도 호출 간격은 그대로."""
         self._gate = over
 
     def _attempts(
@@ -417,9 +424,7 @@ class PacedLlm:
         err = "retries"
         tries = holds = 0  # 다시 보낸 횟수: 일반(retries까지) · 429(MAX_HOLDS까지) 따로
         while tries <= self._retries:
-            self._turn(yields, mine)  # 멈춤 신호도 여기서 봄(처음 · 다시 보내기 전)
-            if self._gate is not None and self._gate():
-                raise LlmUsageLimitError("Claude 비용 한도에 닿음(보내기 직전 확인)")
+            self._turn(yields, mine)  # 멈춤 신호 · 예산도 여기서 봄(처음 · 다시 보내기 전)
             try:
                 status, after, text = self._exchange(body)
             except _TransportError as e:

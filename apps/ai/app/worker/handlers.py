@@ -6,10 +6,12 @@
 import threading
 from collections.abc import Callable
 
+from app.clients.docint import Ocr, OcrUnavailableError, docint, download
 from app.clients.llm import JsonObject, Llm, LlmError, Metered, Paced, Spend, Stopping, make_llm
 from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
 from app.services.note import ask
+from app.services.note import job as note_job
 from app.services.quiz import generate, review, today
 from app.services.recording import job as recording_job
 from app.worker.runner import Handler, JobInputError, JobReport
@@ -66,6 +68,11 @@ def _speech() -> Speech:
 @_Once
 def _voyage() -> Voyage:
     return voyage()
+
+
+@_Once
+def _ocr() -> Ocr:
+    return Ocr(docint())
 
 
 type _Run = Callable[[Llm, JsonObject, JobReport], JsonObject]
@@ -126,6 +133,24 @@ def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
         raise LlmError(f"임베딩 {e}") from e
 
 
+def handwriting_summary(inp: JsonObject, report: JobReport) -> JsonObject:
+    """노트 정리(note_job.run). 일시 오류는 LlmError로 바꿔 시도 한도 안에서 다시 시도합니다.
+
+    OCR 설정 오류(OcrSetupError: 설정 누락 · 키 · 권한 401 · 403)와 그 밖의 영구 오류는 그대로
+    올려 다시 시도 없이 바로 실패합니다(자세한 내용은 로그에만).
+    작업이 취소되면 남은 LLM 호출을 보내지 않고, OCR은 쪽마다 진행률을 쓸 때 멈춥니다.
+    """
+    llm = Stopping(Metered(_llm(), report.add_cost), report.canceled())
+    try:
+        return note_job.run(llm, _ocr, _voyage(), inp, report, checkpoint=report, fetch=download)
+    except note_job.InputError as e:
+        raise JobInputError(str(e), code=e.code) from e
+    except OcrUnavailableError as e:
+        raise LlmError(f"OCR {e}") from e
+    except EmbedUnavailableError as e:
+        raise LlmError(f"임베딩 {e}") from e
+
+
 HANDLERS: dict[str, Handler] = {
     review.TYPE: similar_quiz,
     today.TYPE: today_review,
@@ -134,6 +159,7 @@ HANDLERS: dict[str, Handler] = {
 }
 # 목록 밖에서 더해 다른 종류 추가와 줄이 겹치지 않게 둡니다.
 HANDLERS[generate.PREGEN_TYPE] = quiz_pregen
+HANDLERS[note_job.TYPE] = handwriting_summary
 HANDLERS[ask.TYPE] = note_ask
 # 사용자 작업과 따로 도는 반복이 하나씩 처리하는 종류(__main__ · runner.run_lanes, #138)
 BACKGROUND: frozenset[str] = frozenset({generate.PREGEN_TYPE})
