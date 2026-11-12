@@ -7,6 +7,7 @@ import {
   WrongReviewScreen,
   addWrong,
   dueOn,
+  forgetWrongNotes,
   loadWrong,
   recordWrong,
   sameAnswer,
@@ -22,6 +23,7 @@ const mockFiles = new Map<string, string>();
 jest.mock('../lib/local/storage', () => ({
   readDb: (n: string) => (mockFiles.has(n) ? JSON.parse(mockFiles.get(n)!) : null),
   writeDb: (n: string, d: unknown) => mockFiles.set(n, JSON.stringify(d)),
+  dropDb: (n: string) => mockFiles.delete(n),
   keepFile: (uri: string) => ({ uri, size: 0 }),
 }));
 
@@ -76,6 +78,15 @@ describe('오답 노트 계산', () => {
     expect(loadWrong('u1').items).toMatchObject([{ _id: 'a', setTitle: '광합성 퀴즈' }]);
     expect(loadWrong('u2').items).toEqual([]);
   });
+});
+
+it('회원 탈퇴하면 그 계정의 오답 노트만 지운다', () => {
+  recordWrong('u1', q('a'));
+  recordWrong('u2', q('b'));
+  forgetWrongNotes('u1');
+  expect(loadWrong('u1').items).toEqual([]);
+  expect(loadWrong('u2').items).toHaveLength(1);
+  expect(() => forgetWrongNotes(null)).not.toThrow();
 });
 
 describe('하루에 처음 열 때 오답 복습', () => {

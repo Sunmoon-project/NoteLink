@@ -5,7 +5,7 @@ import type { Question } from '@notelink/shared';
 import { Text } from '@/components/text';
 import { Btn, Canvas, Chip, Header, Input, Screen } from '@/components/ui';
 import { today } from '@/lib/dates';
-import { readDb, writeDb } from '@/lib/local/storage';
+import { dropDb, readDb, writeDb } from '@/lib/local/storage';
 import { useAuth } from '@/stores/auth';
 import { AvatarCheer } from '@/features/tutor/cheer';
 import { Avatar3D } from '@/features/tutor/avatar3d';
@@ -71,6 +71,16 @@ export function recordWrong(userId: string | null, q: Question, setTitle?: strin
   save(userId, (n) =>
     addWrong(n, { _id, type, prompt, choices, answer, explanation, setTitle: setTitle ?? null }),
   );
+}
+
+/** 회원 탈퇴: 그 계정의 오답 노트 파일을 지운다. 못 지워도 탈퇴는 막지 않는다(다시 쓸 일이 없는 파일) */
+export function forgetWrongNotes(userId: string | null) {
+  if (!userId) return;
+  try {
+    dropDb(file(userId));
+  } catch {
+    // 남아도 다른 계정에는 보이지 않는다
+  }
 }
 
 /**

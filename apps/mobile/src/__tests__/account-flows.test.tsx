@@ -8,6 +8,11 @@ import { useAuth } from '../stores/auth';
 import { useSession } from '../stores/session';
 import { renderScreen } from '../test-utils';
 
+const mockForgetWrong = jest.fn();
+jest.mock('../features/quiz/wrong-review', () => ({
+  forgetWrongNotes: (id: string | null) => mockForgetWrong(id),
+}));
+
 const mockStore = new Map<string, string>();
 let mockDelay = 0;
 jest.mock('expo-secure-store', () => ({
@@ -133,6 +138,8 @@ describe('설정 · 온보딩', () => {
     await fireEvent.press(await screen.findByText('로그아웃', {}, { timeout: 8000 }));
     await waitFor(() => expect(useAuth.getState().tokens).toBeNull());
     expect(router.replace).toHaveBeenCalledWith('/(auth)/login');
+    // 로그아웃은 오답 노트를 남긴다(다시 로그인하면 이어서 복습)
+    expect(mockForgetWrong).not.toHaveBeenCalled();
   });
 
   it('프로필 설정을 저장하면 온보딩을 마치고 홈으로 간다', async () => {
@@ -161,5 +168,7 @@ describe('설정 · 온보딩', () => {
     await fireEvent.press(await screen.findByText('탈퇴하기'));
     await waitFor(() => expect(mockApi.me.withdraw).toHaveBeenCalled());
     await waitFor(() => expect(useAuth.getState().userId).toBeNull());
+    // 탈퇴한 계정의 오답 노트도 지운다
+    expect(mockForgetWrong).toHaveBeenCalledWith('u-a');
   });
 });

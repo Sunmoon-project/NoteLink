@@ -22,6 +22,7 @@ import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { INTERESTS } from '../auth/auth';
 import { LoadError } from '../progress/load-error';
+import { forgetWrongNotes } from '../quiz/wrong-review';
 import {
   Alert,
   Avatar,
@@ -90,8 +91,11 @@ export function SettingsScreen() {
   const signOut = async (withdraw: boolean) => {
     let failure = '회원 탈퇴를 완료하지 못했어요. 다시 시도해 주세요';
     try {
-      if (withdraw) await api.me.withdraw();
-      else await api.auth.logout().catch(() => {});
+      if (withdraw) {
+        await api.me.withdraw();
+        // 탈퇴한 계정의 오답 노트(기기 파일)도 지운다
+        forgetWrongNotes(useAuth.getState().userId);
+      } else await api.auth.logout().catch(() => {});
       failure = '기기의 로그인 정보를 지우지 못했어요. 다시 시도해 주세요';
       await useAuth.getState().signOut();
       clearAccountState(qc);
