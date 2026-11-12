@@ -134,19 +134,27 @@ describe('하루에 처음 열 때 오답 복습', () => {
     }
   });
 
-  it('그날 처음 열 때 오답이 없었으면, 그날 늦게 틀린 문제는 다음 날 복습한다', async () => {
+  it('그날 처음 열 때 오답이 없었으면, 그날 늦게 틀린 문제는 다음 날 처음 열 때 복습한다', async () => {
     jest.useFakeTimers();
     try {
+      jest.setSystemTime(new Date('2026-11-12T01:00:00Z')); // 서울 11월 12일 10시
       const first = await renderHook(() => useDailyWrongReview(true));
       await act(async () => jest.advanceTimersByTime(700));
       expect(router.push).not.toHaveBeenCalled();
-      expect(loadWrong('u1').shownOn).toBe(today());
+      expect(loadWrong('u1').shownOn).toBe('2026-11-12');
       await first.unmount();
+      // 그날 늦게 틀리고 다시 열어도 그날은 띄우지 않는다
       recordWrong('u1', q('a'));
-      await renderHook(() => useDailyWrongReview(true));
+      const again = await renderHook(() => useDailyWrongReview(true));
       await act(async () => jest.advanceTimersByTime(700));
       expect(router.push).not.toHaveBeenCalled();
-      expect(loadWrong('u1').items).toHaveLength(1);
+      await again.unmount();
+      // 다음 날(서울 자정 지나) 처음 열면 띄운다
+      jest.setSystemTime(new Date('2026-11-12T15:30:00Z')); // 서울 11월 13일 0시 30분
+      await renderHook(() => useDailyWrongReview(true));
+      await act(async () => jest.advanceTimersByTime(700));
+      expect(router.push).toHaveBeenCalledWith('/play/wrong');
+      expect(loadWrong('u1').shownOn).toBe('2026-11-13');
     } finally {
       jest.useRealTimers();
     }
