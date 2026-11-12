@@ -17,8 +17,11 @@ export class WeeklyGoal {
   @Prop({ type: Types.ObjectId, ref: 'Subject' })
   subjectId?: Types.ObjectId;
 
-  @Prop({ required: true, type: Boolean, default: false })
-  notify80: boolean; // 80% 달성 시 알림 여부
+  @Prop({ required: true, type: Boolean, default: true })
+  notify80: boolean; // 80% 달성 시 알림 여부 (기본값은 shared · 앱 기준 true)
 }
 
 export const WeeklyGoalSchema = SchemaFactory.createForClass(WeeklyGoal);
+
+// 한 사람이 같은 주 목표를 두 개 가질 수 없게 (같은 주 PUT이 동시에 와도 한 건만)
+WeeklyGoalSchema.index({ userId: 1, weekStart: 1 }, { unique: true });
