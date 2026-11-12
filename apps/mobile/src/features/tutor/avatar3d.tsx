@@ -16,8 +16,9 @@ globalThis.FinalizationRegistry ??= class {
 } as unknown as FinalizationRegistryConstructor;
 
 /** idle: 숨 쉬듯 흔들림 · thinking: 고개 갸웃 · talking: 입을 여닫고 끄덕임 */
-/** happy: 눌렀을 때의 반응(눈웃음 · 넓은 입 · 고개 흔들기) */
-export type Mood = 'idle' | 'thinking' | 'talking' | 'happy';
+/** happy: 눌렀을 때의 반응(눈웃음 · 넓은 입 · 고개 흔들기) · surprised: 놀람(큰 눈 · 동그란 입 · 뒤로 젖힘)
+ * · wink: 한쪽 눈을 감고 웃음 */
+export type Mood = 'idle' | 'thinking' | 'talking' | 'happy' | 'surprised' | 'wink';
 /** full: 대화 무대(여백을 두고 얼굴 전체) · head: 떠다니는 버튼(얼굴을 꽉 채움) */
 export type Framing = 'full' | 'head';
 
@@ -150,6 +151,8 @@ function patchGl(gl: ExpoWebGLRenderingContext, canvas: HTMLCanvasElement) {
 
 const FRAME_MS = 33;
 const approach = (from: number, to: number, k: number) => from + (to - from) * k;
+/** 표정별 입 너비(기본 1) */
+const MOUTH_WIDE: Partial<Record<Mood, number>> = { happy: 1.35, wink: 1.2, surprised: 0.6 };
 const CAMERA: Record<Framing, { pos: [number, number, number]; at: number }> = {
   full: { pos: [0, 0.5, 3.5], at: 0.44 },
   head: { pos: [0, 0.56, 2.9], at: 0.5 },
@@ -275,7 +278,13 @@ export function Avatar3D({
         if (head) {
           head.rotation.z = approach(
             head.rotation.z,
-            m === 'thinking' ? 0.16 : m === 'happy' && !still ? Math.sin(t * 7) * 0.14 : 0,
+            m === 'thinking'
+              ? 0.16
+              : m === 'wink'
+                ? -0.12
+                : m === 'happy' && !still
+                  ? Math.sin(t * 7) * 0.14
+                  : 0,
             m === 'happy' ? 0.3 : 0.08,
           );
           head.rotation.y = approach(
@@ -283,7 +292,11 @@ export function Avatar3D({
             still ? 0 : m === 'idle' ? Math.sin(t * 0.6) * 0.18 : 0,
             0.06,
           );
-          head.rotation.x = still || m !== 'talking' ? 0 : Math.sin(t * 3.2) * 0.05;
+          head.rotation.x = approach(
+            head.rotation.x,
+            m === 'surprised' ? -0.12 : still || m !== 'talking' ? 0 : Math.sin(t * 3.2) * 0.05,
+            0.3,
+          );
         }
         if (mouth) {
           // 말할 때는 두 박자를 섞어 같은 모양이 반복되지 않게
@@ -293,8 +306,12 @@ export function Avatar3D({
               ? mouthY * (1 + 2.4 * Math.abs(open))
               : m === 'happy'
                 ? mouthY * 1.9
-                : mouthY;
-          mouth.scale.x = approach(mouth.scale.x, m === 'happy' ? mouthX * 1.35 : mouthX, 0.25);
+                : m === 'surprised'
+                  ? mouthY * 3.2
+                  : m === 'wink'
+                    ? mouthY * 1.5
+                    : mouthY;
+          mouth.scale.x = approach(mouth.scale.x, mouthX * (MOUTH_WIDE[m] ?? 1), 0.25);
         }
         const ms = t * 1000;
         if (ms > nextBlink) {
@@ -302,9 +319,22 @@ export function Avatar3D({
           nextBlink = ms + 2800 + Math.random() * 2200;
         }
         const blink = ms < blinkEnd ? 0.12 : 1;
-        // 웃을 때는 눈을 가늘게(눈웃음)
-        for (const e of eyes)
-          e.scale.y = eyeY * (m === 'happy' ? 0.35 : m === 'thinking' ? 0.7 : blink);
+        // 웃을 때는 눈을 가늘게(눈웃음), 놀라면 크게, 윙크는 한쪽(eyeL)만 감는다
+        eyes.forEach((e, n) => {
+          const k =
+            m === 'happy'
+              ? 0.35
+              : m === 'thinking'
+                ? 0.7
+                : m === 'surprised'
+                  ? 1.35
+                  : m === 'wink'
+                    ? n === 0
+                      ? 0.1
+                      : 1
+                    : blink;
+          e.scale.y = eyeY * k;
+        });
 
         renderer.render(scene, camera);
         renderer.resetState();
@@ -354,15 +384,27 @@ function FlatFace({ mood, size }: { mood: Mood; size: number }) {
         className="items-center justify-center rounded-full bg-brand"
         style={{ width: d, height: d }}
       >
-        <View className="flex-row gap-5">
-          <View className="h-3 w-3 rounded-full bg-white" />
-          <View className="h-3 w-3 rounded-full bg-white" />
+        <View className="flex-row items-center gap-5">
+          {[0, 1].map((n) => (
+            <View
+              key={n}
+              className="w-3 rounded-full bg-white"
+              style={{
+                height:
+                  mood === 'surprised'
+                    ? 16
+                    : (mood === 'wink' && n === 0) || mood === 'happy'
+                      ? 3
+                      : 12,
+              }}
+            />
+          ))}
         </View>
         <View
           className="mt-3 rounded-full bg-white"
           style={{
-            width: mood === 'happy' ? 28 : 22,
-            height: mood === 'talking' ? 10 : mood === 'happy' ? 8 : 4,
+            width: mood === 'happy' ? 28 : mood === 'surprised' ? 12 : 22,
+            height: mood === 'talking' ? 10 : mood === 'happy' ? 8 : mood === 'surprised' ? 12 : 4,
           }}
         />
       </View>
