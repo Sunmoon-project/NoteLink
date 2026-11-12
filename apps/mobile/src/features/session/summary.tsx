@@ -4,16 +4,20 @@ import { Text } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { Accelerometer } from 'expo-sensors';
+import { useKeepAwake } from 'expo-keep-awake';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { Mic, PartyPopper, PenLine, X } from 'lucide-react-native';
 import { api } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
-import { diffLabel, goalLabel, hm, hms, seoul, ymd, today as seoulToday } from '@/lib/dates';
+import { WD, diffLabel, goalLabel, hm, hms, seoul, ymd, today as seoulToday } from '@/lib/dates';
+
 import { useNow } from '@/hooks';
 import { useSession } from '@/stores/session';
 import { toast } from '@/stores/toast';
 import { Btn, Canvas, Card, Progress, RollUp, Screen } from '@/components/ui';
 import { C, ICON } from '@/theme';
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
 
 // p.48 #6 공부 종료 요약
 
@@ -182,6 +186,11 @@ export function SummaryScreen() {
 }
 
 /** p.49 #8 가로로 돌리면 자동 측정 — 세로로 세우면 측정을 멈추고 돌아간다 */
+function DeskAwake() {
+  useKeepAwake('desk-clock');
+  return null;
+}
+
 export function LandscapeScreen() {
   const s = useSession();
   const now = useNow();
@@ -195,7 +204,7 @@ export function LandscapeScreen() {
   const exit = () => {
     if (leaving.current) return;
     leaving.current = true;
-    s.pause();
+    if (s.itemId) s.pause(); // 탁상 시계(측정 없음)는 멈출 것이 없다
     router.back();
   };
   useEffect(() => {
@@ -209,6 +218,36 @@ export function LandscapeScreen() {
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // 측정 중이 아니면 탁상 시계: 지금 시각 · 날짜와 오늘 순공시간
+  if (!s.itemId) {
+    const t = seoul(now);
+    const date = `${t.getMonth() + 1}월 ${t.getDate()}일 (${WD[t.getDay()]})`;
+    const time = `${pad2(t.getHours())}:${pad2(t.getMinutes())}`;
+    // 불러오기 전 · 실패 때 0으로 보이면 공부한 사람에게 틀린 값이라, 받은 뒤에만 보인다
+    const studied = today.data ? `오늘 순공시간 ${hms(today.data.totalSec)}` : '';
+    return (
+      <Pressable
+        onPress={exit}
+        // 화면 읽기에도 보이는 정보(날짜 · 시각 · 순공시간)를 그대로 읽어 주고, 돌아가는 방법은 힌트로
+        accessibilityRole="button"
+        accessibilityLabel={['탁상 시계', `${date} ${time}`, studied].filter(Boolean).join(', ')}
+        accessibilityHint="누르거나 세로로 돌리면 돌아가요"
+        className="flex-1 items-center justify-center bg-black px-10"
+      >
+        {/* 시계로 세워 두는 화면이라 기기 자동 잠금으로 꺼지지 않게 */}
+        <DeskAwake />
+        <Text className="text-body font-semibold text-white/70">{date}</Text>
+        <Text
+          className="tabular-nums text-timer font-bold text-white"
+          style={{ fontVariant: ['tabular-nums'] }}
+        >
+          {time}
+        </Text>
+        {!!studied && <Text className="text-footnote text-orange">{studied}</Text>}
+        <Text className="absolute bottom-8 text-caption text-white/60">세로로 돌리면 돌아가요</Text>
+      </Pressable>
+    );
+  }
   return (
     <Pressable onPress={exit} className="flex-1 items-center justify-center bg-black px-10">
       <View className="absolute top-8 left-10 flex-row items-center gap-1.5">
