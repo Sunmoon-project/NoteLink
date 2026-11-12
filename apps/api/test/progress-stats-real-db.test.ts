@@ -1,6 +1,6 @@
 // 진짜 MongoDB(replica set)에서 월간 캘린더(FR-09-02~04)와 기간별 누적 기록(FR-09-05~07)을 확인하는 테스트.
 // 확인하는 것: 달 길이와 level, range별 합계 · 공부한 날 · 최장 연속, peakHour(기록 없음 -1 · 어뷰징 제외 · 서울 시각),
-// 서울 자정에 오늘이 바뀌는 것, 다른 사람 기록이 섞이지 않는 것.
+// 서울 자정에 오늘이 바뀌는 것, 다른 사람 기록이 섞이지 않는 것, 연속 학습일(streakDays)과 GET /users/me 연결.
 // MONGODB_VERIFY_URI가 localhost일 때만 돌고(없거나 localhost가 아니면 건너뜀), 파일·실행마다 고유한 전용 DB만 쓰고 끝나면 그 DB만 지운다.
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/progress-stats-real-db.test.ts
 import { getConnectionToken, MongooseModule } from '@nestjs/mongoose';
@@ -9,6 +9,7 @@ import { Types, type Connection } from 'mongoose';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
+import { UsersService } from '../src/modules/users/users.service.js';
 import { ProgressService } from '../src/modules/progress/progress.service.js';
 import { DailyRecord, DailyRecordSchema } from '../src/modules/progress/schemas/daily-record.schema.js';
 import { WeeklyGoal, WeeklyGoalSchema } from '../src/modules/progress/schemas/weekly-goal.schema.js';
@@ -32,6 +33,7 @@ describe.skipIf(!isLocal)('진짜 DB 월간 캘린더 · 누적 기록 확인', 
     let conn: Connection;
     let progress: ProgressService;
     let study: StudyService;
+    let users: UsersService;
     const col = (name: string) => conn.collection(name);
 
     const day = async (userId: Types.ObjectId, studyDate: string, totalSec: number): Promise<void> => {
@@ -79,7 +81,7 @@ describe.skipIf(!isLocal)('진짜 DB 월간 캘린더 · 누적 기록 확인', 
                     { name: User.name, schema: UserSchema },
                 ]),
             ],
-            providers: [ProgressService, StudyService, PointService],
+            providers: [ProgressService, StudyService, PointService, UsersService],
         }).compile();
         await moduleRef.init();
         conn = moduleRef.get<Connection>(getConnectionToken());
@@ -89,6 +91,7 @@ describe.skipIf(!isLocal)('진짜 DB 월간 캘린더 · 누적 기록 확인', 
         await Promise.all([conn.model(Subject.name).init(), conn.model(PointLedger.name).init(), conn.model(User.name).init()]);
         progress = moduleRef.get(ProgressService);
         study = moduleRef.get(StudyService);
+        users = moduleRef.get(UsersService);
     }, 30000);
 
     afterAll(async () => {
@@ -211,5 +214,66 @@ describe.skipIf(!isLocal)('진짜 DB 월간 캘린더 · 누적 기록 확인', 
 
         const stats = await progress.stats(me.toString(), 'all', NOW);
         expect(stats).toMatchObject({ peakHour: -1, totalSec: 0 });
+    });
+
+    // ── 연속 학습일 (FR-09-08, 09-09) ──
+
+    it('streakDays: 오늘 10분 이상이면 오늘까지, 하루 건너뛰면 끊긴다', async () => {
+        const me = new Types.ObjectId();
+        for (const n of [0, 1, 2]) await day(me, ago(n), 600);
+        await day(me, ago(4), 5000); // 3일 전을 건너뛰어서 끊긴다
+        expect(await progress.streakDays(me.toString(), NOW)).toBe(3);
+    });
+
+    it('streakDays: 오늘 10분 미만이면 어제까지의 연속을 센다', async () => {
+        const me = new Types.ObjectId();
+        await day(me, ago(0), 599);
+        for (const n of [1, 2]) await day(me, ago(n), 700);
+        expect(await progress.streakDays(me.toString(), NOW)).toBe(2);
+    });
+
+    it('streakDays: 어제도 오늘도 10분 미만이면 0, 기록이 없어도 0이다', async () => {
+        const me = new Types.ObjectId();
+        await day(me, ago(1), 599);
+        await day(me, ago(2), 5000);
+        expect(await progress.streakDays(me.toString(), NOW)).toBe(0);
+        expect(await progress.streakDays(new Types.ObjectId().toString(), NOW)).toBe(0);
+    });
+
+    it('streakDays: 서울 자정(UTC 15:00)이 지나면 오늘이 바뀌어 어제 하루만 있던 연속은 끊긴다', async () => {
+        const me = new Types.ObjectId();
+        await day(me, '2026-11-29', 600);
+        expect(await progress.streakDays(me.toString(), new Date('2026-11-30T14:59:59.000Z'))).toBe(1); // 11-30 아침, 어제까지
+        await day(me, '2026-11-30', 600);
+        expect(await progress.streakDays(me.toString(), new Date('2026-11-30T14:59:59.000Z'))).toBe(2);
+        // 12-01 0시: 오늘(12-01)이 비었으니 어제(11-30)까지 센다 → 2. 하루 더 지나 12-02가 되면 끊긴다
+        expect(await progress.streakDays(me.toString(), new Date('2026-11-30T15:00:00.000Z'))).toBe(2);
+        expect(await progress.streakDays(me.toString(), new Date('2026-12-01T15:00:00.000Z'))).toBe(0);
+    });
+
+    it('streakDays: 다른 사람의 기록은 섞이지 않는다', async () => {
+        const me = new Types.ObjectId();
+        const other = new Types.ObjectId();
+        for (const n of [0, 1, 2, 3, 4]) await day(other, ago(n), 9000);
+        await day(me, ago(0), 600);
+        expect(await progress.streakDays(me.toString(), NOW)).toBe(1);
+    });
+
+    it('GET /users/me 에 쓰는 UsersService.getMe가 streakDays를 실제 값으로 돌려준다', async () => {
+        const me = new Types.ObjectId();
+        await col('users').insertOne({ _id: me, nickname: `streak-${me.toString()}`, deletedAt: null, pointBalance: 0 });
+        // UsersService는 현재 시각(오늘)을 쓰므로, 시각을 NOW로 고정하고 읽는다
+        for (const n of [0, 1, 2, 3]) await day(me, ago(n), 600);
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(NOW);
+        try {
+            expect((await users.getMe(me.toString())).streakDays).toBe(4);
+        } finally {
+            vi.useRealTimers();
+        }
+        // 기록이 없는 사용자는 0
+        const empty = new Types.ObjectId();
+        await col('users').insertOne({ _id: empty, nickname: `streak-${empty.toString()}`, deletedAt: null, pointBalance: 0 });
+        expect((await users.getMe(empty.toString())).streakDays).toBe(0);
     });
 });

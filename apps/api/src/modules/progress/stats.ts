@@ -14,6 +14,17 @@ export function levelOf(totalSec: number): number {
 /** '공부한 날'인지 (하루 순공 10분 이상, FR-09-09) */
 export const isStreakDay = (totalSec: number): boolean => totalSec >= STREAK_MIN_SEC;
 
+/** 지금 이어지는 연속 일수. 오늘 아직 10분을 못 채웠으면 어제까지의 연속을 센다 (하루를 건너뛰면 끊긴다) */
+export function currentStreak(okDays: Set<string>, today: string): number {
+    let day = okDays.has(today) ? today : addDays(today, -1);
+    let count = 0;
+    while (okDays.has(day)) {
+        count++;
+        day = addDays(day, -1);
+    }
+    return count;
+}
+
 /** 가장 길게 이어진 연속 일수 */
 export function longestStreak(okDays: Set<string>): number {
     let best = 0;

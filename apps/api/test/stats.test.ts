@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isStreakDay, levelOf, longestStreak, peakHour, seoulHour } from '../src/modules/progress/stats.js';
+import { currentStreak, isStreakDay, levelOf, longestStreak, peakHour, seoulHour } from '../src/modules/progress/stats.js';
 
 describe('levelOf (공부 시간 → 색 진하기)', () => {
     it.each([
@@ -67,5 +67,26 @@ describe('seoulHour / peakHour', () => {
             { startedAt: new Date('2026-11-10T01:00:00Z'), durationSec: 500 }, // 서울 10시
         ];
         expect(peakHour(sessions)).toBe(10);
+    });
+});
+
+describe('currentStreak', () => {
+    const days = (...list: string[]) => new Set(list);
+
+    it('오늘까지 이어진 날수를 센다', () => {
+        expect(currentStreak(days('2026-11-10', '2026-11-11', '2026-11-12'), '2026-11-12')).toBe(3);
+    });
+
+    it('오늘 아직 10분을 못 채웠으면 어제까지의 연속을 센다', () => {
+        expect(currentStreak(days('2026-11-10', '2026-11-11'), '2026-11-12')).toBe(2);
+    });
+
+    it('하루 건너뛰면 끊긴다 (어제도 오늘도 없으면 0)', () => {
+        expect(currentStreak(days('2026-11-09', '2026-11-10'), '2026-11-12')).toBe(0);
+        expect(currentStreak(days('2026-11-08', '2026-11-10', '2026-11-12'), '2026-11-12')).toBe(1);
+    });
+
+    it('월 · 연을 넘어도 이어진다', () => {
+        expect(currentStreak(days('2026-12-31', '2027-01-01'), '2027-01-01')).toBe(2);
     });
 });

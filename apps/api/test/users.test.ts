@@ -8,6 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { configureApp } from '../src/app.setup.js';
 import { User } from '../src/modules/auth/schemas/user.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
+import { ProgressService } from '../src/modules/progress/progress.service.js';
 import { UsersController } from '../src/modules/users/users.controller.js';
 import { UsersService } from '../src/modules/users/users.service.js';
 
@@ -17,6 +18,7 @@ const activeId = new Types.ObjectId();
 const inactiveId = new Types.ObjectId();
 const deletedId = new Types.ObjectId();
 let user: Record<string, unknown> | null;
+const streakDays = vi.fn(async (_userId: string) => 0);
 const categoryCount = vi.fn(
   async (filter: { _id: { $in: Types.ObjectId[] }; isActive: boolean; deletedAt: null }) => {
     const categories = [
@@ -62,6 +64,7 @@ beforeAll(async () => {
     providers: [
       UsersService,
       { provide: getModelToken(User.name), useValue: model },
+      { provide: ProgressService, useValue: { streakDays } },
       {
         provide: TokenService,
         useValue: {
@@ -82,6 +85,7 @@ afterAll(async () => {
 });
 beforeEach(() => {
   vi.clearAllMocks();
+  streakDays.mockResolvedValue(0);
   user = {
     _id: userId,
     nickname: '기존닉네임',
@@ -117,6 +121,15 @@ describe('내 프로필 API', () => {
     expect(res.body.data).toMatchObject({ _id: String(userId), nickname: '기존닉네임' });
     expect(res.body.data).not.toHaveProperty('passwordHash');
     expect(model.findOne).toHaveBeenCalledWith({ _id: userId, deletedAt: null });
+  });
+  it('GET·PATCH 모두 연속 학습일(streakDays)을 학습 기록에서 계산한 실제 값으로 내려준다', async () => {
+    streakDays.mockResolvedValue(7);
+    const res = await get();
+    expect(res.body.data.streakDays).toBe(7);
+    expect(streakDays).toHaveBeenCalledWith(String(userId));
+    const patched = await patch({ nickname: '새닉네임' });
+    expect(patched.status).toBe(200);
+    expect(patched.body.data.streakDays).toBe(7);
   });
   it('미인증 요청과 삭제되거나 없는 사용자를 거부한다', async () => {
     expect((await request(app.getHttpServer()).get('/api/v1/users/me')).status).toBe(401);

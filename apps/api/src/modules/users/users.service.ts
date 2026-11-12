@@ -9,6 +9,7 @@ import { isValidObjectId, Types, type Model } from 'mongoose';
 
 import { User } from '../auth/schemas/user.schema.js';
 import { toAppUser } from '../auth/to-app-user.js';
+import { ProgressService } from '../progress/progress.service.js';
 import type { UpdateProfileDto } from './dto/update-profiile.dto.js';
 
 @Injectable()
@@ -16,6 +17,7 @@ export class UsersService {
   constructor(
     @InjectModel(User.name)
     private readonly userModel: Model<User>,
+    private readonly progress: ProgressService,
   ) {}
 
   async interestCategories() {
@@ -49,7 +51,7 @@ export class UsersService {
         message: '사용자를 찾을 수 없습니다.',
       });
     }
-    return toAppUser(user);
+    return toAppUser(user, await this.progress.streakDays(userId));
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
@@ -109,7 +111,7 @@ export class UsersService {
         });
       }
 
-      return toAppUser(user);
+      return toAppUser(user, await this.progress.streakDays(userId));
     } catch (error) {
       // nickname에는 유일 인덱스가 있으므로 DB에서도 중복을 막아줌.
       if (

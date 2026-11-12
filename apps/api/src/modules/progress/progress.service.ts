@@ -3,12 +3,12 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
 import { StudySession } from '../session/schemas/study-session.schema.js';
-import { seoulDate } from '../session/study-time.js';
+import { seoulDate, STREAK_MIN_SEC } from '../session/study-time.js';
 import type { SetWeeklyGoalDto } from './dto/set-weekly-goal.dto.js';
 import type { StatsRange } from './dto/study-query.dto.js';
 import { DailyRecord } from './schemas/daily-record.schema.js';
 import { WeeklyGoal } from './schemas/weekly-goal.schema.js';
-import { isStreakDay, levelOf, longestStreak, peakHour } from './stats.js';
+import { currentStreak, isStreakDay, levelOf, longestStreak, peakHour } from './stats.js';
 import { addDays, daysBetween, sumRange, weekStartOf } from './week.js';
 
 /** 앱에 내려주는 이번 주 목표 (공유 계약 WeeklyGoal) */
@@ -152,6 +152,20 @@ export class ProgressService {
                 return { studyDate, level: levelOf(totals.get(studyDate) ?? 0) };
             }),
         };
+    }
+
+    /**
+     * 지금 이어지는 연속 학습일 (GET /users/me 의 streakDays). 하루 순공 10분 이상인 날이 이어진 일수이고,
+     * 오늘 아직 못 채웠으면 어제까지의 연속을 센다. 날짜별 순공은 daily_records(서울 기준)에서 읽는다
+     */
+    async streakDays(userId: string, now = new Date()): Promise<number> {
+        const owner = new Types.ObjectId(userId);
+        const today = seoulDate(now);
+        const docs = await this.dailyModel
+            .find({ userId: owner, studyDate: { $lte: today }, totalSec: { $gte: STREAK_MIN_SEC } }, { studyDate: 1 })
+            .sort({ studyDate: -1 })
+            .lean<{ studyDate: string }[]>();
+        return currentStreak(new Set(docs.map((doc) => doc.studyDate)), today);
     }
 
     /** 이번 주 목표 (+ 목표를 정할 때 참고할 최근 4주 평균) */

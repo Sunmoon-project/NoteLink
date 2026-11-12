@@ -61,7 +61,7 @@ function oneOf<T extends string>(allowed: readonly T[], value: unknown, fallback
  * DB의 사용자 문서를 앱이 기대하는 `User` 모양으로 바꾼다. 비밀번호 해시 · 소셜 연동 정보 등 앱에 필요 없는 값은 내보내지 않는다.
  * 허용 목록에 있는 필드만 골라 담는 방식이라, 스키마에 필드가 늘어도 자동으로 새어 나가지 않는다.
  */
-export function toAppUser(user: UserSource): AppUser {
+export function toAppUser(user: UserSource, streakDays = 0): AppUser {
   return {
     _id: String(user._id),
     email: user.email ?? null,
@@ -73,8 +73,8 @@ export function toAppUser(user: UserSource): AppUser {
     settings: { ...DEFAULT_SETTINGS, ...(user.settings ?? {}) },
     status: oneOf(STATUSES, user.status, 'active'),
     interestCategoryIds: (user.interestCategoryIds ?? []).map(String),
-    // 연속 학습일은 학습 기록에서 서울 자정 기준으로 계산한다. 아직 학습 기록 기능이 없어 0이다
-    streakDays: 0,
+    // 연속 학습일은 학습 기록(ProgressService.streakDays)에서 서울 자정 기준으로 계산해 넘겨받는다. 안 넘기면 0이다
+    streakDays,
     createdAt: (user.createdAt ?? new Date()).toISOString(),
   };
 }

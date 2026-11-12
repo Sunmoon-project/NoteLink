@@ -20,5 +20,6 @@ import { StudyProgressController } from './study-progress.controller.js';
     ],
     controllers: [GoalsController, StudyProgressController],
     providers: [ProgressService],
+    exports: [ProgressService], // 프로필(GET /users/me)이 streakDays를 가져다 쓴다
 })
 export class ProgressModule { }
