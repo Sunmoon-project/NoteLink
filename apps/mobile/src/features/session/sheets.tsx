@@ -12,9 +12,10 @@ import { useNow } from '@/hooks';
 
 // p.47 #2 공부할 항목 추가 / p.49 #7 이번주 목표 시간
 
-const GOALS = { '30분': 30, '1시간': 60, '1시간 30분': 90, '직접 입력': null } as const;
+// 목표는 시간 단위로 고른다. 저장은 서버 계약대로 분(goalMin)
+const GOALS = { '1시간': 60, '2시간': 120, '3시간': 180, '직접 입력': null } as const;
 const NEW_SUBJECT = '+ 새 과목';
-const MAX_GOAL_MIN = 24 * 60; // 하루 24시간을 넘게 정할 수 없다 (FR-06-23)
+const MAX_GOAL_HOURS = 24; // 하루 24시간을 넘게 정할 수 없다 (FR-06-23)
 
 /** 바텀시트 입력을 저장할 값으로 바꾼다. 잘못된 입력이면 안내 문구를 돌려준다 */
 export function itemInput(p: {
@@ -22,7 +23,7 @@ export function itemInput(p: {
   subject: string;
   newSubject: string;
   goal: keyof typeof GOALS | null;
-  customMin: string;
+  customHours: string;
 }): { title: string; subjectName: string; goalMin: number | null } | string {
   const title = p.title.trim();
   if (!title) return '공부할 내용을 입력해 주세요';
@@ -30,10 +31,10 @@ export function itemInput(p: {
   if (!subjectName) return '과목 이름을 입력해 주세요';
   if (subjectName.length > 20) return '과목 이름은 20자까지 쓸 수 있어요';
   if (p.goal !== '직접 입력') return { title, subjectName, goalMin: p.goal ? GOALS[p.goal] : null };
-  const min = Number(p.customMin);
-  if (!Number.isInteger(min) || min < 1 || min > MAX_GOAL_MIN)
-    return `목표 시간은 1 ~ ${MAX_GOAL_MIN}분으로 입력해 주세요`;
-  return { title, subjectName, goalMin: min };
+  const h = Number(p.customHours);
+  if (!p.customHours || !Number.isInteger(h) || h < 1 || h > MAX_GOAL_HOURS)
+    return `목표 시간은 1 ~ ${MAX_GOAL_HOURS}시간으로 입력해 주세요`;
+  return { title, subjectName, goalMin: h * 60 };
 }
 
 export function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -44,8 +45,8 @@ export function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => 
   const [newSubject, setNewSubject] = useState('');
   // 목표 시간은 생략할 수 있다 (FR-06-01) — 같은 칩을 다시 누르면 해제
   const [goal, setGoal] = useState<keyof typeof GOALS | null>(null);
-  const [customMin, setCustomMin] = useState('');
-  const input = itemInput({ title, subject, newSubject, goal, customMin });
+  const [customHours, setCustomHours] = useState('');
+  const input = itemInput({ title, subject, newSubject, goal, customHours });
   const add = useMutation({
     mutationFn: () => {
       if (typeof input === 'string') throw new Error(input);
@@ -101,11 +102,12 @@ export function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => 
       {goal === '직접 입력' && (
         <Input
           className="mt-2"
-          value={customMin}
-          onChangeText={(v) => setCustomMin(v.replace(/[^0-9]/g, ''))}
-          placeholder="목표 시간 (분)"
+          value={customHours}
+          onChangeText={(v) => setCustomHours(v.replace(/[^0-9]/g, ''))}
+          placeholder="목표 시간 (시간)"
           keyboardType="number-pad"
-          right={<Text className="text-footnote text-sub">분</Text>}
+          maxLength={2}
+          right={<Text className="text-footnote text-sub">시간</Text>}
         />
       )}
       {typeof input === 'string' && (title || subject === NEW_SUBJECT || goal === '직접 입력') && (
