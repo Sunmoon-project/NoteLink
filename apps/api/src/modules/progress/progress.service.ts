@@ -3,12 +3,12 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
 import { StudySession } from '../session/schemas/study-session.schema.js';
-import { seoulDate, STREAK_MIN_SEC } from '../session/study-time.js';
+import { seoulDate } from '../session/study-time.js';
 import type { SetWeeklyGoalDto } from './dto/set-weekly-goal.dto.js';
 import type { StatsRange } from './dto/study-query.dto.js';
 import { DailyRecord } from './schemas/daily-record.schema.js';
 import { WeeklyGoal } from './schemas/weekly-goal.schema.js';
-import { currentStreak, isStreakDay, levelOf, longestStreak, peakHour } from './stats.js';
+import { isStreakDay, levelOf, longestStreak, peakHour } from './stats.js';
 import { addDays, daysBetween, sumRange, weekStartOf } from './week.js';
 
 /** 앱에 내려주는 이번 주 목표 (공유 계약 WeeklyGoal) */
@@ -46,6 +46,8 @@ export interface StudyStatsView {
 }
 
 const HEATMAP_DAYS = 126; // 18주 (앱과 같다)
+// 연속 학습일을 셀 때 한 번에 읽는 하루 기록 수. 연속이 이보다 길면 다음 묶음을 이어서 읽는다
+export const STREAK_BATCH_SIZE = 30;
 // 오늘을 포함해 며칠인지 (앱: 90d는 오늘-89일부터, 30d는 오늘-29일부터). all은 처음 기록부터 오늘까지
 const RANGE_DAYS: Record<StatsRange, number | null> = { all: null, '90d': 90, '30d': 30 };
 
@@ -156,16 +158,51 @@ export class ProgressService {
 
     /**
      * 지금 이어지는 연속 학습일 (GET /users/me 의 streakDays). 하루 순공 10분 이상인 날이 이어진 일수이고,
-     * 오늘 아직 못 채웠으면 어제까지의 연속을 센다. 날짜별 순공은 daily_records(서울 기준)에서 읽는다
+     * 오늘 아직 못 채웠으면(기록이 없거나 10분 미만) 어제까지의 연속을 센다. 하루라도 비면 끊긴다.
+     * 날짜별 순공은 daily_records(서울 기준)에서 최근 날짜부터 batchSize건씩만 읽고, 첫 공백에서 멈춘다
+     * (이미 끊긴 오래된 기록은 읽지 않는다). (userId, studyDate) 인덱스를 쓴다
      */
-    async streakDays(userId: string, now = new Date()): Promise<number> {
+    async streakDays(userId: string, now = new Date(), batchSize = STREAK_BATCH_SIZE): Promise<number> {
         const owner = new Types.ObjectId(userId);
         const today = seoulDate(now);
-        const docs = await this.dailyModel
-            .find({ userId: owner, studyDate: { $lte: today }, totalSec: { $gte: STREAK_MIN_SEC } }, { studyDate: 1 })
-            .sort({ studyDate: -1 })
-            .lean<{ studyDate: string }[]>();
-        return currentStreak(new Set(docs.map((doc) => doc.studyDate)), today);
+        let expected = today; // 다음에 나와야 하는 날짜 (이 날짜가 10분 이상이면 연속이 이어진다)
+        let graceLeft = true; // 오늘은 아직 안 채워도 끊기지 않는다 (한 번만)
+        let count = 0;
+        let cursor: string | null = null; // 지금까지 읽은 가장 오래된 날짜
+
+        for (;;) {
+            const docs: DayTotalLean[] = await this.dailyModel
+                .find(
+                    { userId: owner, studyDate: cursor === null ? { $lte: today } : { $lt: cursor } },
+                    { studyDate: 1, totalSec: 1 },
+                )
+                .sort({ studyDate: -1 })
+                .limit(batchSize)
+                .lean<DayTotalLean[]>();
+
+            for (const doc of docs) {
+                if (graceLeft && doc.studyDate < expected) {
+                    // 오늘 기록이 아예 없다 → 어제부터 센다
+                    graceLeft = false;
+                    expected = addDays(expected, -1);
+                }
+                if (doc.studyDate !== expected) return count; // 하루가 비었다
+                if (isStreakDay(doc.totalSec)) {
+                    count++;
+                    expected = addDays(expected, -1);
+                    graceLeft = false;
+                } else if (graceLeft) {
+                    // 오늘 기록은 있지만 10분 미만 → 어제부터 센다
+                    graceLeft = false;
+                    expected = addDays(expected, -1);
+                } else {
+                    return count; // 10분 미만인 날에서 끊긴다
+                }
+            }
+
+            if (docs.length < batchSize) return count; // 더 오래된 기록이 없다
+            cursor = docs[docs.length - 1]!.studyDate;
+        }
     }
 
     /** 이번 주 목표 (+ 목표를 정할 때 참고할 최근 4주 평균) */

@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { UsersService } from '../src/modules/users/users.service.js';
-import { ProgressService } from '../src/modules/progress/progress.service.js';
+import { ProgressService, STREAK_BATCH_SIZE } from '../src/modules/progress/progress.service.js';
 import { DailyRecord, DailyRecordSchema } from '../src/modules/progress/schemas/daily-record.schema.js';
 import { WeeklyGoal, WeeklyGoalSchema } from '../src/modules/progress/schemas/weekly-goal.schema.js';
 import { PointService } from '../src/modules/reward/point/point.service.js';
@@ -257,6 +257,41 @@ describe.skipIf(!isLocal)('진짜 DB 월간 캘린더 · 누적 기록 확인', 
         for (const n of [0, 1, 2, 3, 4]) await day(other, ago(n), 9000);
         await day(me, ago(0), 600);
         expect(await progress.streakDays(me.toString(), NOW)).toBe(1);
+    });
+
+    it('streakDays: 오래된 기록이 많고 중간에 끊겨 있어도 최근 연속만 센다', async () => {
+        const me = new Types.ObjectId();
+        for (const n of [0, 1, 2]) await day(me, ago(n), 600);
+        // 3일 전이 비어 끊긴다. 그 앞 400일은 모두 연속이지만 세지 않는다
+        await Promise.all(Array.from({ length: 400 }, (_, i) => day(me, ago(4 + i), 9000)));
+        expect(await progress.streakDays(me.toString(), NOW)).toBe(3);
+    });
+
+    it('streakDays: 연속이 한 번에 읽는 개수(STREAK_BATCH_SIZE)보다 길어도 정확하다', async () => {
+        const me = new Types.ObjectId();
+        const run = STREAK_BATCH_SIZE * 3 + 5; // 95일 연속
+        await Promise.all(Array.from({ length: run }, (_, n) => day(me, ago(n), 600)));
+        await day(me, ago(run + 1), 9000); // 하루 비우고 그 앞은 세지 않는다
+        expect(await progress.streakDays(me.toString(), NOW)).toBe(run);
+        // 오늘만 빠져도(어제부터 이어짐) 같은 방식으로 센다
+        const other = new Types.ObjectId();
+        await Promise.all(Array.from({ length: run }, (_, n) => day(other, ago(n + 1), 600)));
+        expect(await progress.streakDays(other.toString(), NOW)).toBe(run);
+    });
+
+    it('streakDays: 쓰는 쿼리가 (userId, studyDate) 인덱스를 타고 묶음 크기만큼만 읽는다', async () => {
+        const me = new Types.ObjectId();
+        await Promise.all(Array.from({ length: 200 }, (_, n) => day(me, ago(n), 600)));
+        const plan = await col('daily_records')
+            .find({ userId: me, studyDate: { $lte: ago(0) } }, { projection: { studyDate: 1, totalSec: 1 } })
+            .sort({ studyDate: -1 })
+            .limit(STREAK_BATCH_SIZE)
+            .explain('executionStats');
+        const stats = plan.executionStats as { totalDocsExamined: number; nReturned: number };
+        expect(JSON.stringify(plan.queryPlanner.winningPlan)).toContain('IXSCAN');
+        expect(JSON.stringify(plan.queryPlanner.winningPlan)).not.toContain('COLLSCAN');
+        expect(stats.nReturned).toBe(STREAK_BATCH_SIZE);
+        expect(stats.totalDocsExamined).toBeLessThanOrEqual(STREAK_BATCH_SIZE);
     });
 
     it('GET /users/me 에 쓰는 UsersService.getMe가 streakDays를 실제 값으로 돌려준다', async () => {
