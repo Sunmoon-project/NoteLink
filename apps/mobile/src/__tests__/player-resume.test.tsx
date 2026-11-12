@@ -50,7 +50,10 @@ it('듣는 자리를 적어 두고, 끝까지 들으면 처음부터 듣게 지�
   meWith(true);
   const { view } = await run();
   await waitFor(() => expect(api.me.get).toHaveBeenCalled());
-  await act(async () => {}); // 복원(빈 값)이 끝나기를 기다린다
+  // 지난 자리 읽기(비동기)가 끝나야 적기 시작한다 — 남은 프로미스를 모두 흘려보낸다
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
   await view.rerender({ at: 42 });
   await waitFor(() => expect(mockStore.get('notelink.playpos.m1')).toBe('42'));
   await view.rerender({ at: 598 });
