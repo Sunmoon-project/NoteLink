@@ -4,7 +4,7 @@
 import { getConnectionToken, MongooseModule } from '@nestjs/mongoose';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { Types, type Connection } from 'mongoose';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { seoulDay } from '../src/modules/reward/point/point-rules.js';
@@ -233,6 +233,36 @@ describe.skipIf(!uri)('진짜 DB 퀴즈 답 동시 제출 확인', () => {
             await expect(
                 service.answer(me.toString(), attempt.id, attempt.questions[1]!._id.toString(), 'A'),
             ).rejects.toMatchObject({ status: 400 });
+        });
+
+        it('끝내는 중 장부 저장이 실패하면 finishedAt · pointsEarned · 잔액 · 장부가 함께 되돌아가고, 다시 끝내면 한 번만 지급된다', async () => {
+            const me = await newUser();
+            const attempt = await attemptWith(me, 3);
+            // 풀이 finishedAt 변경과 잔액 증가가 끝난 다음, 장부 저장에서 한 번 실패시킨다
+            const ledgerModel = conn.model(PointLedger.name);
+            const spy = vi.spyOn(ledgerModel, 'create').mockRejectedValueOnce(new Error('장부 저장 실패'));
+
+            await expect(service.finish(me.toString(), attempt.id)).rejects.toThrow('장부 저장 실패');
+            expect(spy).toHaveBeenCalledTimes(1);
+
+            const rolledBack = await rowOf(attempt.id);
+            expect(rolledBack.finishedAt).toBeNull();
+            expect(rolledBack.pointsEarned).toBe(0);
+            expect(await balanceOf(me)).toBe(100);
+            expect(await col('point_ledgers').countDocuments({ userId: me })).toBe(0);
+
+            spy.mockRestore();
+
+            expect(await service.finish(me.toString(), attempt.id)).toEqual({ pointsEarned: 12, balance: 112 });
+            const done = await rowOf(attempt.id);
+            expect(done.finishedAt).toBeInstanceOf(Date);
+            expect(done.pointsEarned).toBe(12);
+            expect(await balanceOf(me)).toBe(112);
+            expect(await ledgerOf(me)).toHaveLength(1);
+
+            expect(await service.finish(me.toString(), attempt.id)).toEqual({ pointsEarned: 0, balance: 112 });
+            expect(await balanceOf(me)).toBe(112);
+            expect(await ledgerOf(me)).toHaveLength(1);
         });
     });
 });
