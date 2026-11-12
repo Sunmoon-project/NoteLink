@@ -29,7 +29,7 @@ import { C, ICON } from '@/theme';
 import { Avatar3D, type Mood } from './avatar3d';
 import { useEquippedAvatar, useFocused } from './buddy';
 
-type Msg = {
+export type Msg = {
   id: number;
   role: NoteAskTurn['role'];
   text: string;
@@ -220,11 +220,19 @@ const nextStep = (msgs: Msg[]) => {
   return !!last && last.role === 'avatar' && !last.error && !last.refused;
 };
 
-/** 답을 받은 뒤 이어서 물어볼 추천 질문: 아직 묻지 않은 것만 */
-const nextSuggest = (msgs: Msg[]) => {
+/**
+ * 답을 받은 뒤 이어서 물어볼 추천 질문: 아직 답을 받지 못한 것만. 오류로 끝난 질문(연결 · 정리 전 등)은
+ * 물은 것으로 치지 않아 칩으로 다시 보여 주고, 거절(자료 밖)은 정해 둔 답을 받은 것이라 뺀다
+ */
+export const nextSuggest = (msgs: Msg[]) => {
   if (msgs[msgs.length - 1]?.role !== 'avatar') return [];
-  const asked = new Set(msgs.filter((m) => m.role === 'user').map((m) => m.text));
-  return SUGGEST.filter((q) => !asked.has(q));
+  const answered = new Set(
+    msgs.flatMap((m, i) => {
+      const reply = msgs[i + 1];
+      return m.role === 'user' && reply?.role === 'avatar' && !reply.error ? [m.text] : [];
+    }),
+  );
+  return SUGGEST.filter((q) => !answered.has(q));
 };
 
 /** 아바타 선생님: 정리된 노트(녹음 · 문서 · 필기)를 옆에서 설명한다 */
