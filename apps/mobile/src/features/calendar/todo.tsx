@@ -83,7 +83,8 @@ export function TodoSheet({
               >
                 {t.done && <Check size={ICON.xs} color="#fff" />}
               </View>
-              <View>
+              {/* 긴 할 일이 오른쪽 밖으로 넘쳐 잘리지 않게 남은 폭 안에서 줄을 바꾼다 */}
+              <View className="flex-1">
                 <Text className={cx('text-subhead', t.done ? 'text-sub line-through' : 'text-ink')}>
                   {t.content}
                 </Text>
@@ -159,7 +160,8 @@ export function AddTodoSheet({
         </Pressable>
       }
     >
-      <Text className="-mt-2 text-caption text-sub">
+      {/* 시트 본문은 스크롤 영역이라 음수 여백을 주면 첫 줄 윗부분이 잘린다 */}
+      <Text className="text-caption text-sub">
         과제 · 시험으로 고르면 홈 화면에 D-day로 표시돼요
       </Text>
       <Label>할 일</Label>
