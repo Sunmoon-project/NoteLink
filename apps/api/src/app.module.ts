@@ -14,6 +14,7 @@ import { UsersModule } from './modules/users/users.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
 import { TimetableModule } from './modules/timetable/timetable.module.js';
+import { UploadModule } from './modules/upload/upload.module.js';
 
 @Module({
   imports: [
@@ -45,6 +46,8 @@ import { TimetableModule } from './modules/timetable/timetable.module.js';
     QuizAttemptsModule,
     // 시간표 · 수업 · 친구 공유(FR-14)
     TimetableModule,
+    // 파일 올리기 주소 발급(FR-19)
+    UploadModule,
   ],
   controllers: [HealthController],
 })

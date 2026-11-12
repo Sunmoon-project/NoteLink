@@ -37,6 +37,8 @@ export const ERROR_CODES = {
   EMAIL_PROOF_EXPIRED: 'EMAIL_PROOF_EXPIRED',
   /** 이메일 인증 증표를 쓸 수 없다(위조 · 이미 사용 · 인증번호를 다시 받아 무효). 이메일 인증을 다시 한다 (401) */
   EMAIL_PROOF_INVALID: 'EMAIL_PROOF_INVALID',
+  /** 파일 저장소가 설정되지 않아 올릴 주소를 만들지 못했다 (503) */
+  UPLOAD_UNAVAILABLE: 'UPLOAD_UNAVAILABLE',
   /** 인증 메일을 보내지 못했다 (503) */
   MAIL_UNAVAILABLE: 'MAIL_UNAVAILABLE',
   /** 이메일 또는 비밀번호가 맞지 않다. 어느 쪽이 틀렸는지 · 가입 여부는 알려 주지 않는다 (401, 토큰 갱신을 시도하지 않는다) */
