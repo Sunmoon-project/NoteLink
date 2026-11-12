@@ -453,7 +453,8 @@ function TiltWatcher() {
   useFocusEffect(
     useCallback(() => {
       if (!on) return;
-      pushed.current = false;
+      // 홈으로 돌아와도 잠금을 풀지 않는다: 가로로 둔 채 탁상 화면을 닫으면 바로 다시 가지 않고,
+      // 한 번 세운(세로를 본) 뒤에야 다음 기울임을 받는다(#321 리뷰)
       Accelerometer.setUpdateInterval(400);
       const sub = Accelerometer.addListener(({ x, y }) => {
         // 다시 세우면 다음 기울임을 받는다

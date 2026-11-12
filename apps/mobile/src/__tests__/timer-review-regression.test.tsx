@@ -398,6 +398,26 @@ it('가로로 눕혀 한 번 탁상 모드로 가면, 다시 세우기 전에는
   expect(router.push).toHaveBeenLastCalledWith('/landscape');
 });
 
+it('가로로 둔 채 탁상 화면을 닫고 홈으로 돌아와도, 세우기 전에는 다시 가지 않는다', async () => {
+  useDevicePrefs.setState({ deskMode: true, loaded: true });
+  await renderScreen(<HomeScreen />, client());
+  await waitFor(() => expect(Accelerometer.addListener).toHaveBeenCalled());
+  const first = jest.mocked(Accelerometer.addListener).mock.calls.at(-1)![0];
+  await act(async () => first({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).toHaveBeenCalledTimes(1);
+  // 홈이 다시 보이면 센서를 새로 듣는다(포커스 효과가 다시 돈다)
+  await act(async () => useDevicePrefs.setState({ deskMode: false }));
+  await act(async () => useDevicePrefs.setState({ deskMode: true }));
+  const again = jest.mocked(Accelerometer.addListener).mock.calls.at(-1)![0];
+  expect(again).not.toBe(first);
+  await act(async () => again({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).toHaveBeenCalledTimes(1);
+  // 한 번 세운 뒤 다시 눕히면 간다
+  await act(async () => again({ x: 0, y: 1, z: 0, timestamp: 0 }));
+  await act(async () => again({ x: 1, y: 0, z: 0, timestamp: 0 }));
+  expect(router.push).toHaveBeenCalledTimes(2);
+});
+
 it('공부 목록의 목표는 "목표 30분" · "목표 없음"으로, 목표를 두 번 적지 않는다', async () => {
   const base = await api.study.today();
   const item = (id: string, goalMin: number | null) => ({
