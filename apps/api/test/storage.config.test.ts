@@ -39,6 +39,18 @@ describe('파일 저장소 설정', () => {
     expect(config?.blobEndpoint).toBe('http://127.0.0.1:10000/devstoreaccount1');
   });
 
+  it.each(['http://localhost:10000/devstoreaccount1', 'http://[::1]:10000/devstoreaccount1'])(
+    'http는 로컬 에뮬레이터 주소 %s 만 받는다',
+    (endpoint) => {
+      const config = createStorageConfig(
+        env({
+          AZURE_STORAGE_CONNECTION_STRING: `AccountName=devstoreaccount1;AccountKey=${KEY};BlobEndpoint=${endpoint}`,
+        }),
+      );
+      expect(config?.blobEndpoint).toBe(endpoint);
+    },
+  );
+
   it('컨테이너 이름을 환경변수로 바꿀 수 있다', () => {
     const config = createStorageConfig(
       env({
@@ -70,6 +82,18 @@ describe('파일 저장소 설정', () => {
     [
       'Blob 주소가 http(s)가 아님',
       `AccountName=a1;AccountKey=${KEY};BlobEndpoint=ftp://a1.example`,
+    ],
+    [
+      '로컬이 아닌 http 주소',
+      `AccountName=a1;AccountKey=${KEY};BlobEndpoint=http://a1.blob.core.windows.net`,
+    ],
+    [
+      '프로토콜을 http로 둔 실제 계정',
+      `DefaultEndpointsProtocol=http;AccountName=a1;AccountKey=${KEY}`,
+    ],
+    [
+      'localhost로 시작하는 다른 주소',
+      `AccountName=a1;AccountKey=${KEY};BlobEndpoint=http://localhost.example.com/a1`,
     ],
   ])('%s 이면 실패하고 오류 문구에 값을 넣지 않는다', (_name, value) => {
     let message = '';
