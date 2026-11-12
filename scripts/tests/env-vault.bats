@@ -131,6 +131,16 @@ put() { printf '%s' "$2" > "$VAULT_DIR/$1"; }  # $1 = secret 이름, $2 = 값
   [ ! -e "$VAULT_DIR/VOYAGE-API-KEY" ]
 }
 
+@test "push: 끝 줄바꿈이 둘 이상이면 줄여 넣지 않고 거절하며, 있던 값은 그대로 둔다" {
+  put JWT-ACCESS-SECRET old
+  run bash -c 'printf "secret\n\n" | "$1" push JWT_ACCESS_SECRET' _ "$SCRIPT"
+  [ "$status" -ne 0 ] && [[ "$output" == *"줄바꿈"* ]]
+  [ "$(cat "$VAULT_DIR/JWT-ACCESS-SECRET")" = old ]
+  run bash -c 'printf "secret\r\n\r\n" | "$1" push JWT_ACCESS_SECRET' _ "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [ "$(cat "$VAULT_DIR/JWT-ACCESS-SECRET")" = old ]
+}
+
 @test "push: 따옴표 · 역슬래시 같은 문자는 그대로 넣는다" {
   printf '%s' "it's a\\b" > "$TMP/value"
   run bash -c '"$1" push APP_ENV < "$2"' _ "$SCRIPT" "$TMP/value"

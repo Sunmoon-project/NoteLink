@@ -99,7 +99,8 @@ read_value() {  # 터미널이면 보이지 않게 한 줄, 아니면 표준 입
     v=${v%x}
     v=${v%$'\n'}
   fi
-  printf '%s' "${v%$'\r'}"  # PowerShell 파이프 · Windows 편집기의 \r\n
+  # 값은 출력하지 않고 VALUE에 넣음: $(…)로 받으면 끝 줄바꿈이 모두 사라져 "a\n\n"이 검사 없이 "a"가 됨
+  VALUE=${v%$'\r'}  # PowerShell 파이프 · Windows 편집기의 \r\n
 }
 
 push() {  # $1 = 변수
@@ -109,7 +110,8 @@ push() {  # $1 = 변수
   users=$(apps_of "$var")
   [ -n "$users" ] \
     || echo "env-vault: $var는 ai · api의 .env.production에 없습니다(이름을 확인하세요. 새 변수면 .env.production에도 적습니다)" >&2
-  value=$(read_value)
+  read_value
+  value=$VALUE
   [ -n "$value" ] || die "값이 비었습니다"
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] \
     || die "값에 줄바꿈(\r 포함)이 있습니다. 앱 설정 값은 한 줄이어야 합니다"
