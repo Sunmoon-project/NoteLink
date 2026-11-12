@@ -48,6 +48,7 @@ const STATUS: Record<Mood, string> = {
   idle: '노트에서 궁금한 걸 물어보세요',
   thinking: '노트를 살펴보는 중이에요',
   talking: '설명하는 중이에요',
+  happy: '노트에서 궁금한 걸 물어보세요',
 };
 const POLL_MS = 1500;
 const WAIT_MS = 120_000; // 학교 LLM이 붐비면 길어짐. 넘으면 다시 물어보게
