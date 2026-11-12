@@ -37,14 +37,18 @@ export function FindAccountScreen() {
   );
 }
 
-/** 이메일로 인증번호 보내기. 이메일(또는 아이디)을 바꾸면 다시 보내야 한다 */
+/**
+ * 이메일로 인증번호 보내기. 보낸 이메일을 기억해, 지금 칸의 이메일로 보낸 것이 성공했을 때만 「보냄」이다.
+ * 보내는 중에 이메일을 바꾸면 앞 요청이 성공해도 다른 이메일의 인증번호 칸이 열리지 않는다(#343 리뷰)
+ */
 function useCode(email: string) {
   const [code, setCode] = useState('');
   const send = useMutation({
-    mutationFn: () => api.auth.recoverySendCode(email.trim()),
+    mutationFn: (to: string) => api.auth.recoverySendCode(to),
     onSuccess: () => toast('인증번호를 보냈어요. 메일함을 확인해 주세요'),
   });
-  return { code, setCode, send, sent: send.isSuccess };
+  const sent = send.isSuccess && send.variables === email.trim();
+  return { code, setCode, send, sent, sendNow: () => send.mutate(email.trim()) };
 }
 
 function CodeField({ code, setCode }: { code: string; setCode: (v: string) => void }) {
@@ -67,10 +71,12 @@ function SendButton({
   sent,
   disabled,
   send,
+  onPress,
 }: {
   sent: boolean;
   disabled: boolean;
   send: ReturnType<typeof useCode>['send'];
+  onPress: () => void;
 }) {
   return (
     <>
@@ -84,7 +90,7 @@ function SendButton({
         className="mt-3"
         disabled={disabled}
         loading={send.isPending}
-        onPress={() => send.mutate()}
+        onPress={onPress}
       >
         {sent ? '인증번호 다시 보내기' : '인증번호 보내기'}
       </Btn>
@@ -94,7 +100,7 @@ function SendButton({
 
 function FindId() {
   const [email, setEmail] = useState('');
-  const { code, setCode, send, sent } = useCode(email);
+  const { code, setCode, send, sent, sendNow } = useCode(email);
   const find = useMutation({ mutationFn: () => api.auth.findId(email.trim(), code) });
   const found = find.data?.id;
   return (
@@ -115,8 +121,9 @@ function FindId() {
         keyboardType="email-address"
         autoCapitalize="none"
         autoComplete="email"
+        editable={!send.isPending}
       />
-      <SendButton sent={sent} disabled={!looksLikeEmail(email)} send={send} />
+      <SendButton sent={sent} disabled={!looksLikeEmail(email)} send={send} onPress={sendNow} />
       {sent && (
         <>
           <CodeField code={code} setCode={setCode} />
@@ -164,7 +171,7 @@ function FindId() {
 function ResetPassword() {
   const [id, setId] = useState('');
   const [email, setEmail] = useState('');
-  const { code, setCode, send, sent } = useCode(email);
+  const { code, setCode, send, sent, sendNow } = useCode(email);
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const reset = useMutation({
@@ -196,7 +203,7 @@ function ResetPassword() {
         keyboardType="email-address"
         autoCapitalize="none"
         autoComplete="username"
-        editable={!reset.isPending}
+        editable={!reset.isPending && !send.isPending}
       />
       <Label>이메일</Label>
       <Input
@@ -207,7 +214,7 @@ function ResetPassword() {
         keyboardType="email-address"
         autoCapitalize="none"
         autoComplete="email"
-        editable={!reset.isPending}
+        editable={!reset.isPending && !send.isPending}
       />
       {mismatchIdEmail && (
         <Text className="mt-1 text-caption text-danger">
@@ -218,6 +225,7 @@ function ResetPassword() {
         sent={sent}
         disabled={!id.trim() || !looksLikeEmail(email) || mismatchIdEmail}
         send={send}
+        onPress={sendNow}
       />
       {sent && (
         <>

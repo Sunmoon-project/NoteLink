@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import { FindAccountScreen } from '../features/auth/find';
 import { LoginScreen } from '../features/auth/auth';
@@ -88,4 +88,27 @@ it('서버에 아직 경로가 없으면(404) 준비 중이라고 안내한다',
   await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'a@b.co');
   await fireEvent.press(screen.getByText('인증번호 보내기'));
   expect(await screen.findByText(/아직 준비 중이에요/)).toBeTruthy();
+});
+
+it('인증번호를 보내는 중에는 이메일을 바꿀 수 없고, 다른 이메일로 바꾸면 인증번호 칸을 닫는다', async () => {
+  let done!: () => void;
+  jest
+    .spyOn(api.auth, 'recoverySendCode')
+    .mockImplementationOnce(() => new Promise<void>((r) => (done = r)))
+    .mockResolvedValue(undefined);
+  await renderScreen(<FindAccountScreen />);
+  await fireEvent.press(screen.getByText('비밀번호 찾기'));
+  await fireEvent.changeText(screen.getByPlaceholderText('아이디(가입한 이메일)'), 'a@b.co');
+  await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'a@b.co');
+  await fireEvent.press(screen.getByText('인증번호 보내기'));
+  // 보내는 중에는 두 칸을 잠근다
+  await waitFor(() =>
+    expect(screen.getByPlaceholderText('you@example.com').props.editable).toBe(false),
+  );
+  expect(screen.getByPlaceholderText('아이디(가입한 이메일)').props.editable).toBe(false);
+  await act(async () => done());
+  expect(await screen.findByPlaceholderText('6자리 숫자')).toBeTruthy();
+  // 보낸 뒤 이메일을 바꾸면 그 이메일로는 보내지 않았으니 인증번호 칸을 닫는다
+  await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'a@b.cox');
+  expect(screen.queryByPlaceholderText('6자리 숫자')).toBeNull();
 });
