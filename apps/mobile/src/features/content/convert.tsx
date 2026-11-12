@@ -67,6 +67,8 @@ function SavedForLater({
   useEffect(() => {
     qc.invalidateQueries({ queryKey: ['folders'] });
     qc.invalidateQueries({ queryKey: ['materials'] });
+    // 올린 파일만큼 저장 공간이 늘었다
+    qc.invalidateQueries({ queryKey: ['me'] });
     useDraft.getState().reset();
   }, [qc]);
   return (
@@ -481,6 +483,7 @@ export function ResultScreen() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['materials'] });
       qc.invalidateQueries({ queryKey: ['folders'] });
+      qc.invalidateQueries({ queryKey: ['me'] });
       useDraft.getState().reset();
       router.dismissTo({ pathname: '/(tabs)/note/folder/[id]', params: { id: m.data!.folderId } });
       toast('학습자료에 저장했어요');

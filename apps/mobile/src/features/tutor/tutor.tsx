@@ -18,7 +18,7 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ERROR_CODES, NoteAskResult, type AiJob, NoteAskTurn } from '@notelink/shared';
 import { ArrowUp } from 'lucide-react-native';
 import { Text } from '@/components/text';
@@ -224,6 +224,7 @@ const nextStep = (msgs: Msg[]) => {
 export function TutorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const mat = useQuery({ queryKey: ['material', id], queryFn: () => api.content.material(id) });
+  const qc = useQueryClient();
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [v, setV] = useState('');
   const [mood, setMood] = useState<Mood>('idle');
@@ -267,6 +268,8 @@ export function TutorScreen() {
       if (!alive.current) return;
       const result = job.status === 'succeeded' ? NoteAskResult.safeParse(job.result) : null;
       if (!result?.success) throw new Error(job.status);
+      // 답 하나에 AI 크레딧을 썼다: 설정의 사용량이 바로 맞게 내 정보를 다시 읽는다
+      void qc.invalidateQueries({ queryKey: ['me'] });
       const { answer, refs, answerable } = result.data;
       setLive(say({ role: 'avatar', text: answer, refs, refused: !answerable }));
       setMood('talking');
