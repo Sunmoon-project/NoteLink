@@ -16,7 +16,8 @@ globalThis.FinalizationRegistry ??= class {
 } as unknown as FinalizationRegistryConstructor;
 
 /** idle: 숨 쉬듯 흔들림 · thinking: 고개 갸웃 · talking: 입을 여닫고 끄덕임 */
-export type Mood = 'idle' | 'thinking' | 'talking';
+/** happy: 눌렀을 때의 반응(눈웃음 · 넓은 입 · 고개 흔들기) */
+export type Mood = 'idle' | 'thinking' | 'talking' | 'happy';
 /** full: 대화 무대(여백을 두고 얼굴 전체) · head: 떠다니는 버튼(얼굴을 꽉 채움) */
 export type Framing = 'full' | 'head';
 
@@ -182,7 +183,7 @@ export function Avatar3D({
   useEffect(() => {
     ready.current = onReady;
   });
-  // 실패한 모델 id. 다른 아바타로 바꾸면 그 모델은 다시 3D로 그려 본다
+  // 실패는 그 모델에만: 다른 아바타로 바꾸면 다시 3D로 읽어 본다
   const [failedId, setFailedId] = useState<string | null>(null);
   const failed = failedId === id;
   const [model, setModel] = useState<{ id: string; root: THREE.Group } | null>(null);
@@ -203,7 +204,12 @@ export function Avatar3D({
     let live = true;
     loadModel(id)
       .then((buf) => new GLTFLoader().parseAsync(buf, ''))
-      .then((g) => live && setModel({ id, root: g.scene }))
+      .then((g) => {
+        if (!live) return;
+        setModel({ id, root: g.scene });
+        // 전에 실패했던 모델을 다시 골라 이번에 읽었으면 2D에서 3D로 돌아온다
+        setFailedId((f) => (f === id ? null : f));
+      })
       .catch(() => {
         if (!live) return;
         setFailedId(id);
@@ -246,6 +252,7 @@ export function Avatar3D({
       const eyes = [part('eyeL'), part('eyeR')].filter((e) => !!e);
       const mouth = part('mouth');
       const mouthY = mouth?.scale.y ?? 0.35;
+      const mouthX = mouth?.scale.x ?? 1;
       const eyeY = eyes[0]?.scale.y ?? 1.3;
 
       const start = Date.now();
@@ -266,7 +273,11 @@ export function Avatar3D({
         const still = reduce.current;
         if (!still) root.position.y = Math.sin(t * 1.8) * 0.025;
         if (head) {
-          head.rotation.z = approach(head.rotation.z, m === 'thinking' ? 0.16 : 0, 0.08);
+          head.rotation.z = approach(
+            head.rotation.z,
+            m === 'thinking' ? 0.16 : m === 'happy' && !still ? Math.sin(t * 7) * 0.14 : 0,
+            m === 'happy' ? 0.3 : 0.08,
+          );
           head.rotation.y = approach(
             head.rotation.y,
             still ? 0 : m === 'idle' ? Math.sin(t * 0.6) * 0.18 : 0,
@@ -277,7 +288,13 @@ export function Avatar3D({
         if (mouth) {
           // 말할 때는 두 박자를 섞어 같은 모양이 반복되지 않게
           const open = 0.5 + 0.5 * Math.sin(t * 13) * Math.sin(t * 4.3 + 1);
-          mouth.scale.y = m === 'talking' ? mouthY * (1 + 2.4 * Math.abs(open)) : mouthY;
+          mouth.scale.y =
+            m === 'talking'
+              ? mouthY * (1 + 2.4 * Math.abs(open))
+              : m === 'happy'
+                ? mouthY * 1.9
+                : mouthY;
+          mouth.scale.x = approach(mouth.scale.x, m === 'happy' ? mouthX * 1.35 : mouthX, 0.25);
         }
         const ms = t * 1000;
         if (ms > nextBlink) {
@@ -285,7 +302,9 @@ export function Avatar3D({
           nextBlink = ms + 2800 + Math.random() * 2200;
         }
         const blink = ms < blinkEnd ? 0.12 : 1;
-        for (const e of eyes) e.scale.y = eyeY * (m === 'thinking' ? 0.7 : blink);
+        // 웃을 때는 눈을 가늘게(눈웃음)
+        for (const e of eyes)
+          e.scale.y = eyeY * (m === 'happy' ? 0.35 : m === 'thinking' ? 0.7 : blink);
 
         renderer.render(scene, camera);
         renderer.resetState();
@@ -341,7 +360,10 @@ function FlatFace({ mood, size }: { mood: Mood; size: number }) {
         </View>
         <View
           className="mt-3 rounded-full bg-white"
-          style={{ width: 22, height: mood === 'talking' ? 10 : 4 }}
+          style={{
+            width: mood === 'happy' ? 28 : 22,
+            height: mood === 'talking' ? 10 : mood === 'happy' ? 8 : 4,
+          }}
         />
       </View>
     </View>

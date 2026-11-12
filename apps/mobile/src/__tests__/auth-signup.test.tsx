@@ -90,6 +90,17 @@ describe('입력 검사', () => {
   ])('닉네임 %s', (v, expected) => expect(nicknameError(v)).toBe(expected));
 });
 
+// 작은 화면(iPhone SE 667pt)에서도 스크롤 없이 한 화면에 들어가게 칸 간격을 줄이고 간편 로그인을 한 줄로 둔다
+it('회원가입은 칸 간격이 좁고, 간편 로그인은 로고 버튼 한 줄이다', async () => {
+  await renderScreen(<SignupScreen />);
+  for (const l of ['이메일 (아이디)', '비밀번호', '비밀번호 확인'])
+    expect(String(screen.getByText(l).props.className)).not.toMatch(/\bmt-8\b/);
+  for (const l of ['카카오로 시작하기', 'Google로 시작하기', '네이버로 시작하기']) {
+    expect(screen.getByLabelText(l)).toBeTruthy();
+    expect(screen.queryByText(l)).toBeNull(); // 글자 없이 로고만
+  }
+});
+
 it('칸을 벗어나면 그 칸 아래에 안내하고, 쓰는 중에는 탓하지 않는다', async () => {
   await renderScreen(<SignupScreen />);
   const email = screen.getByPlaceholderText('you@example.com');
@@ -594,6 +605,23 @@ it('초기 설정은 미리 고른 값이 없고, 닉네임과 학습자 유형�
   );
 });
 
+it('관심 분야를 선택하면 이름 대신 서버 카테고리 ID를 전송한다', async () => {
+  jest
+    .spyOn(api.me, 'interestCategories')
+    .mockResolvedValue([{ _id: '507f1f77bcf86cd799439011', name: '수능', parentId: null }]);
+  const update = jest.spyOn(api.me, 'update');
+  await renderScreen(<ProfileSetupScreen />);
+  await fireEvent.changeText(screen.getByPlaceholderText('노트러버'), '한결');
+  await fireEvent.press(screen.getByText('대학생'));
+  await fireEvent.press(await screen.findByText('수능'));
+  await fireEvent.press(screen.getByText('시작하기'));
+  await waitFor(() =>
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ interestCategoryIds: ['507f1f77bcf86cd799439011'] }),
+    ),
+  );
+});
+
 it('이미 있는 이메일이면 로그인으로 돌아갈 길을 보여 준다', async () => {
   jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
   jest
@@ -632,8 +660,9 @@ it('로그인 화면에서 회원가입으로 갈 수 있다', async () => {
 
 it('회원가입 화면에도 간편 로그인 버튼이 있다', async () => {
   await renderScreen(<SignupScreen />);
+  // 로고만 있는 버튼이라 화면 읽기 이름으로 찾는다
   for (const label of ['카카오로 시작하기', '네이버로 시작하기', 'Google로 시작하기'])
-    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.getByRole('button', { name: label })).toBeTruthy();
 });
 
 it('초기 설정은 닉네임 규칙과 빠진 학습자 유형을 칸 아래에 안내한다', async () => {

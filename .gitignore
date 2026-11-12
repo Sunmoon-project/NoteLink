@@ -26,6 +26,9 @@ __pycache__/
 .env.*
 !.env.production
 
+# AI 처리기가 DB에 적지 못한 Claude 비용을 남기는 파일(apps/ai, #298)
+llm-cost-spool.json*
+
 # 기타
 .DS_Store
 *.log

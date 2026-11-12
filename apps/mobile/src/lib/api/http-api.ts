@@ -68,6 +68,7 @@ export const httpApi: Api = {
       http.post(P.logout, () => ({ refreshToken: useAuth.getState().tokens?.refreshToken })),
   },
   me: {
+    interestCategories: () => http.get('/users/interest-categories'),
     get: () => http.get(P.me),
     update: (patch) => http.patch(P.me, patch),
     setStatus: (status) => http.patch(P.myStatus, { status }),

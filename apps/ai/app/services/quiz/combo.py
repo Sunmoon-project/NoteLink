@@ -143,7 +143,7 @@ class Built:
     concept: str | None = None
     why: list[str] = field(default_factory=list)
     down: int = 0  # 호출 실패(생성 · 문장 판정)
-    rejected: int = 0  # down 중 서버가 생성 요청을 거절함(LlmRejectedError)
+    rejected: int = 0  # down 중 서버가 요청을 거절함(LlmRejectedError: 생성 · 문장 판정, #272)
     answered: bool = False  # 생성 호출이 답을 받음
     # 초안 잘못(다음 시도에 문제점으로 알림): 문장 판정이 요청과 다름 · 개념 이름 없음.
     # 호출 실패 · 답 모양 오류는 초안 잘못이 아님
@@ -208,7 +208,7 @@ def build(
             max_tokens=200,
         )
     except LlmError as e:
-        out.down, out.why = 1, [str(e)]
+        out.down, out.rejected, out.why = 1, int(isinstance(e, LlmRejectedError)), [str(e)]
         return out
     got = v.get("correct")
     if not (

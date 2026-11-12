@@ -25,3 +25,11 @@ export function initialNickname(
 function fourRandomDigits(): string {
   return String(Math.floor(Math.random() * 10_000)).padStart(4, '0');
 }
+
+export function isNicknameConflict(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const duplicate = error as { code?: number; keyPattern?: Record<string, unknown> };
+  return duplicate.code === 11000 && duplicate.keyPattern?.nickname === 1;
+}
+
+export const NICKNAME_CREATE_ATTEMPTS = 20;

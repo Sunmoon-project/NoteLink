@@ -39,7 +39,7 @@ import type { Message, RoomMember, RoomSharedItem } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { socket } from '@/lib/socket';
 import { hms, seoul, ymd } from '@/lib/dates';
-import { useNow, useSocket } from '@/hooks';
+import { useNow, useSocket, useTabRefresh } from '@/hooks';
 import { toast } from '@/stores/toast';
 import {
   Alert,
@@ -74,6 +74,8 @@ const ACK_TIMEOUT_MS = 8000;
 export function RoomListScreen() {
   const mine = useQuery({ queryKey: ['rooms', 'mine'], queryFn: api.rooms.mine });
   const rec = useQuery({ queryKey: ['rooms', 'recommended'], queryFn: api.rooms.recommended });
+  // 방 안(소켓으로 실시간)은 대상이 아니다. 목록만 돌아올 때 · 당길 때 다시 읽는다
+  const refresh = useTabRefresh(mine, rec);
   const qc = useQueryClient();
   const [q, setQ] = useState('');
   const [code, setCode] = useState(false);
@@ -94,7 +96,7 @@ export function RoomListScreen() {
   );
   return (
     <Canvas>
-      <Screen>
+      <Screen refresh={refresh}>
         <Title>스터디룸</Title>
         <Search value={q} onChangeText={setQ} placeholder="스터디룸 검색" />
         {mine.isPending ? (

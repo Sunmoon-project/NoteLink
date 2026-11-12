@@ -24,9 +24,10 @@ const HELD = 'held';
  * (빠진 사이 다른 요청이 한도 안으로 들어왔을 수 있다). 확인 도중 서버가 멈춰 남은 held는 다시 시도 · 취소로 되살린다
  */
 const HELD_TTL_MS = 60_000;
-const heldSince = () => new Date(Date.now() - HELD_TTL_MS);
 /** DB가 갱신하는 그 순간의 시각($$NOW)으로 held가 아직 지나지 않았는지 본다(앱에서 미리 본 뒤 갱신이 늦어도 맞게) */
 const heldLive = () => ({ $expr: { $gt: ['$heldAt', { $subtract: ['$$NOW', HELD_TTL_MS] }] } });
+/** 지난 held(DB 시각 기준). 세기 · 다시 잡기 · 열기가 모두 같은 시계(DB)로 판단해야 한도를 넘지 않는다 */
+const heldStale = () => ({ $expr: { $lte: ['$heldAt', { $subtract: ['$$NOW', HELD_TTL_MS] }] } });
 
 /**
  * 사용자마다 동시에 기다릴 수 있는 작업 수(종류별). 학교 LLM 분당 한도를 함께 쓰는 작업을 몰아 보내지 못하게 한다.
@@ -240,7 +241,7 @@ export class AiJobsService {
     return this.jobs.countDocuments({
       userId,
       type,
-      $or: [{ status: { $in: ACTIVE } }, { status: HELD, heldAt: { $gt: heldSince() } }],
+      $or: [{ status: { $in: ACTIVE } }, { status: HELD, ...heldLive() }],
     });
   }
 
@@ -336,7 +337,7 @@ export class AiJobsService {
           type: current.type,
           $or: [
             { status: { $in: RETRYABLE }, $or: unlocked(new Date()) },
-            ...(limit === undefined ? [] : [{ status: HELD, heldAt: { $lte: heldSince() } }]),
+            ...(limit === undefined ? [] : [{ status: HELD, ...heldStale() }]),
           ],
         },
         {

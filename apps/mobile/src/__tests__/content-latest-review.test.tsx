@@ -475,7 +475,7 @@ it('실서버 등록 결과가 불명확하면 재등록 버튼 대신 자료 �
   expect(screen.queryByText('지금 다시 시도')).toBeNull();
   expect(screen.queryByText('다시 시도')).toBeNull();
   await fireEvent.press(screen.getByText('학습자료에서 확인'));
-  expect(router.replace).toHaveBeenCalledWith({
+  expect(router.dismissTo).toHaveBeenCalledWith({
     pathname: '/(tabs)/note/folder/[id]',
     params: { id: 'folder1' },
   });
@@ -565,7 +565,7 @@ it('등록 여부 조회가 실패하면 안내하고 같은 조회만 재시도
   await fireEvent.press(screen.getByText('학습자료에서 확인'));
   expect(mockApi.content.materials).toHaveBeenCalledTimes(2);
   expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1);
-  expect(router.replace).toHaveBeenCalled();
+  expect(router.dismissTo).toHaveBeenCalled();
 });
 
 it('등록 목록 확인을 기다리다 화면을 나가면 늦은 응답으로 다시 이동하지 않는다', async () => {
@@ -579,6 +579,7 @@ it('등록 목록 확인을 기다리다 화면을 나가면 늦은 응답으로
   await waitFor(() => expect(mockApi.content.materials).toHaveBeenCalledTimes(1));
   await rendered.unmount();
   await act(async () => pending.resolve([]));
+  expect(router.dismissTo).not.toHaveBeenCalled();
   expect(router.replace).not.toHaveBeenCalled();
   expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1);
 });

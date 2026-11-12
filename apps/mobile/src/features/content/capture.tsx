@@ -41,6 +41,7 @@ import { toast } from '@/stores/toast';
 import { checkFile, uploadToBlob, type LocalFile } from '@/lib/upload';
 import { audioFileIssue, CONTENT_MIN, documentIssue, recordingIssue } from '@/lib/content-check';
 import { useDraft } from '@/stores/draft';
+import { scanTitle } from '@/lib/scan-title';
 import {
   Alert,
   Badge,
@@ -997,6 +998,7 @@ function UnfitAlert({
 /** p.65 #19 스캔 확인 */
 export function ScanCheckScreen() {
   const files = useDraft((s) => s.files);
+  const title = useDraft((s) => s.title);
   const [cur, setCur] = useState(0);
   return (
     <Canvas>
@@ -1043,6 +1045,14 @@ export function ScanCheckScreen() {
             <Text className="text-caption2 font-semibold text-brand">추가</Text>
           </Pressable>
         </View>
+        {/* 제목을 정하지 않으면 날짜 제목을 쓴다(파일 이름 scan_….jpg 대신) */}
+        <Label>노트 제목</Label>
+        <Input
+          value={title}
+          onChangeText={(t) => useDraft.getState().set({ title: t.slice(0, 50) })}
+          placeholder={scanTitle()}
+          maxLength={50}
+        />
         <View className="mt-4 aspect-[4/3.6] items-center justify-center overflow-hidden rounded-card bg-white">
           {files[cur] ? (
             <Image

@@ -6,7 +6,7 @@
 import threading
 from collections.abc import Callable
 
-from app.clients.llm import JsonObject, Llm, LlmError, PacedLlm, Stopping, make_llm
+from app.clients.llm import JsonObject, Llm, LlmError, Metered, Paced, Spend, Stopping, make_llm
 from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
 from app.services.note import ask
@@ -38,10 +38,24 @@ class _Once[T]:
             self._made.clear()
 
 
+_spend: list[Spend] = []  # use_spend로 정함: 지금까지 쓴 Claude 비용(#298)
+
+
+def use_spend(read_total: Callable[[], float]) -> Spend:
+    """처리기가 시작할 때 부름: Claude 비용 합계를 읽는 법(ai_jobs.llmUsd).
+
+    부르지 않으면 예산 제한 없음(시험 · 처리기 밖)."""
+    _spend[:] = [Spend(read_total)]
+    _llm.cache_clear()
+    return _spend[0]
+
+
 @_Once
-def _llm() -> PacedLlm:
-    """프로세스에 하나만 둡니다. LLM 호출 간격(LLM_CALL_GAP_SEC)을 작업 사이에도 지키게."""
-    return make_llm()
+def _llm() -> Paced:
+    """프로세스에 하나만 둡니다. LLM 호출 간격(LLM_CALL_GAP_SEC)을 작업 사이에도 지키게.
+
+    Claude 비용이 CLAUDE_BUDGET_USD에 닿으면 학교 LLM으로 넘기는 연결(#298)."""
+    return make_llm(_spend[0] if _spend else None)
 
 
 @_Once
@@ -68,8 +82,8 @@ def _handler(run: _Run, *, background: bool = False) -> Handler:
     def handle(inp: JsonObject, report: JobReport) -> JsonObject:
         llm = _llm()
         conn: Llm = llm.background(report.awaited) if background else llm
-        try:
-            return run(Stopping(conn, report.canceled()), inp, report)
+        try:  # Claude 비용은 이 작업 문서에 쌓음(#298)
+            return run(Stopping(Metered(conn, report.add_cost), report.canceled()), inp, report)
         except review.InputError as e:  # generate.NoQuestionsError는 code를 붙여 앱이 구분
             raise JobInputError(str(e), code=e.code) from e
 
@@ -101,7 +115,7 @@ def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
     작업이 취소되면 남은 LLM 호출을 보내지 않습니다(#263). 음성 인식은 한 번의 긴 호출이라
     보낸 뒤에는 멈추지 못합니다.
     """
-    llm = Stopping(_llm(), report.canceled())
+    llm = Stopping(Metered(_llm(), report.add_cost), report.canceled())
     try:
         return recording_job.run(llm, _speech, _voyage(), inp, report, checkpoint=report)
     except recording_job.InputError as e:

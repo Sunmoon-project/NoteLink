@@ -224,6 +224,14 @@ export const mockApi: Api = {
     logout: () => ok(undefined),
   },
   me: {
+    interestCategories: () =>
+      ok(
+        ['자격증', '수능', '어학', '전공', '코딩', '공무원'].map((name, index) => ({
+          _id: String(index + 1).padStart(24, '0'),
+          name,
+          parentId: null,
+        })),
+      ),
     get: () => {
       if (useMockFlags.getState().tokenExpired)
         return fail(ERROR_CODES.TOKEN_EXPIRED, '로그인이 만료됐어요', 401);
@@ -768,7 +776,12 @@ export const mockApi: Api = {
         targetId: materialId,
         progress: 100,
         attempts: 1,
-        result: { answer: `'${body.question}'에 대한 설명이에요.`, refs: ['요약'] },
+        result: {
+          answerable: true,
+          reason: null,
+          answer: `'${body.question}'에 대한 설명이에요.`,
+          refs: ['요약'],
+        },
         error: null,
         createdAt: now(),
         updatedAt: now(),

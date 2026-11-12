@@ -7,19 +7,22 @@ from typing import Any
 import mongomock
 import pytest
 
-from app.clients.llm import LlmError
+from app.clients.llm import JsonObject, Llm, LlmError, LlmRejectedError
 from app.worker import handlers
 from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobStore
 from app.worker.runner import JobInputError, run_once
 from tests.fakes import FakeLlm
-from tests.services.quiz.test_review import happy_llm, job_input
+from tests.services.quiz.test_review import BE, STACK, happy_llm, job_input
 
 T0 = datetime(2026, 10, 29, 7, 0, tzinfo=UTC)
 
 
 def run_job(
-    monkeypatch: pytest.MonkeyPatch, llm: FakeLlm, inp: dict[str, Any], kind: str = "similar_quiz"
+    monkeypatch: pytest.MonkeyPatch,
+    llm: Llm,
+    inp: dict[str, Any],
+    kind: str = "similar_quiz",
 ) -> dict[str, Any]:
     monkeypatch.setattr(handlers, "_llm", lambda: llm)
     col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
@@ -150,6 +153,7 @@ class StubReport:
     def __init__(self, awaited: bool) -> None:
         self._awaited = awaited
         self._canceled = threading.Event()
+        self.costs: list[float] = []
 
     def __call__(self, value: int, step: str | None = None) -> None:
         pass
@@ -165,6 +169,9 @@ class StubReport:
 
     def canceled(self) -> threading.Event:
         return self._canceled
+
+    def add_cost(self, usd: float) -> None:
+        self.costs.append(usd)
 
 
 def test_a_pregen_runs_in_stable_mode_and_hurries_when_taken_over(
@@ -217,8 +224,52 @@ def test_lanes_starting_together_share_one_llm(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_note_ask_job_saves_the_avatar_answer(monkeypatch: pytest.MonkeyPatch) -> None:
-    llm = FakeLlm({"note_ask": [{"answer": "네 가지 조건이 있어요.", "refs": ["교착 상태"]}]})
+    llm = FakeLlm(
+        {
+            "note_ask": [
+                {"answerable": True, "answer": "네 가지 조건이 있어요.", "refs": ["교착 상태"]}
+            ]
+        }
+    )
     inp = {"title": "운영체제", "context": "교착 상태", "history": [], "question": "뭐예요?"}
     doc = run_job(monkeypatch, llm, inp, kind="note_ask")
     assert doc["status"] == "succeeded"
-    assert doc["result"] == {"answer": "네 가지 조건이 있어요.", "refs": ["교착 상태"]}
+    assert doc["result"] == {
+        "answerable": True,
+        "reason": None,
+        "answer": "네 가지 조건이 있어요.",
+        "refs": ["교착 상태"],
+    }
+
+
+# ---------------------------------------------------------------- 거절(#272)
+# 서버가 요청을 거절(400 · 413 · 422)하면 다시 보내도 같음: 작업을 다시 넣지 않고 바로 실패.
+# 거절과 다른 장애(503)가 섞이면 지금처럼 다시 넣음(맞춤 퀴즈는 test_generate)
+
+
+def test_similar_quiz_all_rejected_fails_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm = FakeLlm({"Review": [LlmRejectedError("HTTP 413")] * 6})
+    doc = run_job(monkeypatch, llm, job_input())
+    assert (doc["status"], doc["attempts"]) == ("failed", 1)
+    assert doc["error"].startswith("AI가 요청을 거절함")
+
+
+def test_similar_quiz_checks_all_rejected_fail_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1 · 3번째 시도는 검사 모델 풀기가, 2번째(다른 유형)는 생성이 거절됨
+    no = LlmRejectedError("HTTP 413")
+    llm = FakeLlm({"Review": [STACK, no, STACK, BE, no, BE], "Check": [no] * 4})
+    doc = run_job(monkeypatch, llm, job_input())
+    assert (doc["status"], doc["attempts"]) == ("failed", 1)
+    assert doc["error"].startswith("AI가 요청을 거절함")
+    assert len(llm.named("Check")) == 4
+
+
+def test_similar_quiz_rejections_mixed_with_outages_are_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    errors: list[JsonObject | LlmError] = [LlmRejectedError("HTTP 413"), LlmError("HTTP 503")] * 3
+    llm = FakeLlm({"Review": errors})
+    doc = run_job(monkeypatch, llm, job_input())
+    assert (doc["status"], doc["attempts"]) == ("queued", 1)
