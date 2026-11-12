@@ -48,4 +48,4 @@ import { TimetableModule } from './modules/timetable/timetable.module.js';
   ],
   controllers: [HealthController],
 })
-export class AppModule { }
+export class AppModule {}

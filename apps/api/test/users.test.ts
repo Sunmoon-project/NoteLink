@@ -194,3 +194,67 @@ describe('내 프로필 API', () => {
     expect((await patch({ nickname: '새닉네임' })).status).toBe(500);
   });
 });
+
+describe('관심 분야는 공용 카테고리만 저장한다 (#287 리뷰)', () => {
+  const publicId = new Types.ObjectId();
+  const otherOwnerId = new Types.ObjectId();
+  // ownerId까지 보는 카테고리 목업. 다른 사용자가 만든 활성 카테고리(otherOwnerId)가 섞여 있다
+  const useCategories = () =>
+    categoryCount.mockImplementation(
+      async (filter: {
+        _id: { $in: Types.ObjectId[] };
+        ownerId?: null;
+        isActive: boolean;
+        deletedAt: null;
+      }) => {
+        const categories = [
+          { _id: publicId, ownerId: null, isActive: true, deletedAt: null },
+          { _id: otherOwnerId, ownerId: new Types.ObjectId(), isActive: true, deletedAt: null },
+        ];
+        return categories.filter(
+          (c) =>
+            filter._id.$in.some((id) => id.equals(c._id)) &&
+            (filter.ownerId === undefined || filter.ownerId === c.ownerId) &&
+            c.isActive === filter.isActive &&
+            c.deletedAt === filter.deletedAt,
+        ).length;
+      },
+    );
+
+  it('다른 사용자가 만든 카테고리를 보내면 400 INVALID_CATEGORY이고 저장하지 않는다', async () => {
+    useCategories();
+    const res = await patch({ interestCategoryIds: [String(otherOwnerId)] });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_CATEGORY');
+    expect(categoryCount).toHaveBeenCalledWith(expect.objectContaining({ ownerId: null }));
+    expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+    // 공용 + 남의 카테고리를 같이 보내도 전체가 거부된다
+    expect(
+      (await patch({ interestCategoryIds: [String(publicId), String(otherOwnerId)] })).status,
+    ).toBe(400);
+  });
+
+  it('공용 카테고리는 그대로 저장한다', async () => {
+    useCategories();
+    const res = await patch({ interestCategoryIds: [String(publicId)] });
+    expect(res.status).toBe(200);
+    expect(model.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      { $set: { interestCategoryIds: [publicId] } },
+      expect.anything(),
+    );
+  });
+
+  it('같은 ID가 (대소문자만 달라도) 중복으로 와도 한 번만 검사하고 저장한다', async () => {
+    useCategories();
+    const hex = String(publicId);
+    const res = await patch({ interestCategoryIds: [hex, hex.toUpperCase()] });
+    expect(res.status).toBe(200);
+    expect(categoryCount).toHaveBeenCalledWith(expect.objectContaining({ _id: { $in: [publicId] } }));
+    expect(model.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      { $set: { interestCategoryIds: [publicId] } },
+      expect.anything(),
+    );
+  });
+});
