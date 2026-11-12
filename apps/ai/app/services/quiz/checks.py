@@ -160,8 +160,9 @@ def _shared(mine: list[str], theirs: list[str]) -> bool:
     return sum(take(i, set()) for i in range(len(mine))) >= SAME_SENTENCES
 
 
-# 용어가 어느 쪽에 오는지(유형으로 정해짐, reversed_of). 특징 · 분류 · 부정설명은 제시문이 용어
-# (code_check '물을 용어 없음'), 정의 · 빈칸 · 어휘는 정답이 용어
+# 용어가 어느 쪽에 오는지(유형으로 정해짐). 특징 · 분류 · 부정설명은 제시문이 용어, 정의 · 빈칸 ·
+# 어휘는 정답이 용어. code_check('물을 용어 없음')와 reversed_of(용어끼리 비교 건너뛰기)가 같은
+# 목록을 써, 유형을 더할 때 두 검사가 따로 놀지 않게(Claude 재리뷰 #303)
 TERM_PASSAGE_TYPES = frozenset({"특징", "분류", "부정설명"})
 TERM_ANSWER_TYPES = frozenset({"정의", "빈칸", "어휘"})
 
@@ -315,7 +316,7 @@ def code_check(
     if ty == "정의" and len(re.findall(r"[가-힣]", p)) < 10:
         why.append("설명 문장 없음")
     # passage가 '____'뿐이어도 용어가 아님: 미생 초안 9개가 지식 검사에 '용어: ____'로 감(10/29)
-    if ty in ("특징", "분류", "부정설명") and not (1 <= len(BLANK.sub("", p).strip()) <= 40):
+    if ty in TERM_PASSAGE_TYPES and not (1 <= len(BLANK.sub("", p).strip()) <= 40):
         why.append("물을 용어 없음")
     if ty == "정의" and p and norm(d["answer"]) in norm(p):
         why.append("설명에 정답 용어 노출")
