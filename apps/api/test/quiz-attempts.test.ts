@@ -8,6 +8,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { configureApp } from '../src/app.setup.js';
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
+import { User } from '../src/modules/auth/schemas/user.schema.js';
+import { PointService } from '../src/modules/reward/point/point.service.js';
 import { QuizAttempt } from '../src/modules/quiz/schemas/quiz-attempt.schema.js';
 import { QuizSet } from '../src/modules/quiz/schemas/quiz-set.schema.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
@@ -21,6 +23,13 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
   let app: INestApplication;
   const sets = createFakeCollection();
   const attempts = createFakeCollection();
+  const users = createFakeCollection();
+  // 포인트 계산(하루 한도 등)은 point-earn 테스트와 실제 DB 테스트가 본다. 여기서는 풀이 끝내기가 정답 수로 부르는지만 본다
+  const earnQuiz = vi.fn((_userId: string, correctCount: number, _session?: unknown) => {
+    const pts = correctCount * 4;
+    (users.rows[0] as unknown as { pointBalance: number }).pointBalance += pts;
+    return Promise.resolve(pts);
+  });
   const me = new Types.ObjectId();
   const q1 = new Types.ObjectId();
   const q2 = new Types.ObjectId();
@@ -43,6 +52,10 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       .useValue(sets.model)
       .overrideProvider(getModelToken(QuizAttempt.name))
       .useValue(attempts.model)
+      .overrideProvider(getModelToken(User.name))
+      .useValue(users.model)
+      .overrideProvider(PointService)
+      .useValue({ earnQuiz })
       .compile();
     app = moduleRef.createNestApplication();
     configureApp(app);
@@ -59,6 +72,9 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
   beforeEach(() => {
     sets.rows.length = 0;
     attempts.rows.length = 0;
+    users.rows.length = 0;
+    users.rows.push({ _id: me, pointBalance: 100 });
+    earnQuiz.mockClear();
   });
 
   const http = () => request(app.getHttpServer());
@@ -268,9 +284,90 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
     });
   });
 
+  describe('풀이 끝내기 POST /quiz-attempts/:id/finish', () => {
+    const finish = (attemptId: string) => http().post(api(PATHS.attemptFinish(attemptId))).set(auth);
+    const balance = () => (users.rows[0] as unknown as { pointBalance: number }).pointBalance;
+    const startWithCorrect = async (answers: string[]) => {
+      const attempt = await start(await addSet());
+      const ids = [q1, q2];
+      for (const [i, answer] of answers.entries()) {
+        await submit(attempt._id, { questionId: ids[i]!.toHexString(), answer }).expect(200);
+      }
+      return attempt;
+    };
+
+    it('끝내면 200 { data: { pointsEarned, balance } }, 정답 수 × 4P를 주고 finishedAt · pointsEarned를 기록한다', async () => {
+      const attempt = await startWithCorrect(['DNA', '리보솜']);
+      const res = await finish(attempt._id).expect(200);
+
+      expect(res.body).toEqual({ data: { pointsEarned: 8, balance: 108 } });
+      expect(earnQuiz).toHaveBeenCalledTimes(1);
+      expect(earnQuiz).toHaveBeenCalledWith(me.toHexString(), 2, expect.anything());
+      expect(stored().finishedAt).toBeInstanceOf(Date);
+      expect((attempts.rows[0] as unknown as { pointsEarned: number }).pointsEarned).toBe(8);
+    });
+
+    it('이미 끝낸 풀이를 다시 끝내면 0P이고 잔액 그대로, 처음 기록은 바뀌지 않는다', async () => {
+      const attempt = await startWithCorrect(['DNA']);
+      await finish(attempt._id).expect(200);
+      const firstFinishedAt = stored().finishedAt;
+
+      const res = await finish(attempt._id).expect(200);
+
+      expect(res.body).toEqual({ data: { pointsEarned: 0, balance: 104 } });
+      expect(earnQuiz).toHaveBeenCalledTimes(1);
+      expect(stored().finishedAt).toEqual(firstFinishedAt);
+      expect((attempts.rows[0] as unknown as { pointsEarned: number }).pointsEarned).toBe(4);
+    });
+
+    it('정답이 0개면 0P이고 finishedAt만 기록한다', async () => {
+      const attempt = await start(await addSet());
+      earnQuiz.mockResolvedValueOnce(0);
+      const res = await finish(attempt._id).expect(200);
+
+      expect(res.body).toEqual({ data: { pointsEarned: 0, balance: 100 } });
+      expect(stored().finishedAt).toBeInstanceOf(Date);
+      expect((attempts.rows[0] as unknown as { pointsEarned: number }).pointsEarned).toBe(0);
+    });
+
+    it.each([['형식이 틀린 id', 'nope'], ['없는 풀이', hex()]])('%s는 404 NOT_FOUND', async (_name, attemptId) => {
+      const res = await finish(attemptId).expect(404);
+      expect(res.body).toMatchObject({ code: 'NOT_FOUND' });
+      expect(earnQuiz).not.toHaveBeenCalled();
+    });
+
+    it('남의 풀이는 404 NOT_FOUND이고 끝내지도 포인트를 주지도 않는다', async () => {
+      const theirs = (await attempts.model.create({
+        quizSetId: new Types.ObjectId(),
+        userId: new Types.ObjectId(),
+        correctCount: 2,
+        total: 2,
+        pointsEarned: 0,
+        answers: [],
+        startedAt: new Date(),
+        finishedAt: null,
+      } as never)) as unknown as { _id: Types.ObjectId };
+
+      const res = await finish(theirs._id.toHexString()).expect(404);
+      expect(res.body).toMatchObject({ code: 'NOT_FOUND' });
+      expect(stored().finishedAt).toBeNull();
+      expect(earnQuiz).not.toHaveBeenCalled();
+      expect(balance()).toBe(100);
+    });
+
+    it('끝낸 뒤 답을 내면 400 VALIDATION_FAILED', async () => {
+      const attempt = await startWithCorrect(['DNA']);
+      await finish(attempt._id).expect(200);
+
+      const res = await submit(attempt._id, { questionId: q2.toHexString(), answer: '리보솜' }).expect(400);
+      expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
+    });
+  });
+
   it.each([
     ['POST', PATHS.quizAttempts],
     ['POST', PATHS.attemptAnswer(hex())],
+    ['POST', PATHS.attemptFinish(hex())],
   ])('%s %s는 토큰이 없으면 401 AUTH_TOKEN_EXPIRED', async (_method, path) => {
     const res = await http().post(api(path)).send({}).expect(401);
     expect(res.body).toMatchObject({ code: 'AUTH_TOKEN_EXPIRED' });
