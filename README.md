@@ -221,6 +221,19 @@ npm run dev:mobile   # 앱 개발 서버
 - Expo 패키지는 `npx expo install`로 설치합니다.
 - `.env`는 커밋하지 않습니다. 커밋하는 것은 배포 기준 예시 `.env.production`뿐이고, 실제 값은 넣지 않습니다(배포 값은 Azure App Service 앱 설정 · EAS에). API 키 같은 비밀값이 들어간 커밋은 GitHub push protection이 push 단계에서 막습니다.
 - 소셜 로그인 시크릿 같은 비밀값은 **서버에만** 두고 앱에는 넣지 않습니다.
+- **로컬 개발용 키는 각자 `apps/<앱>/.env`에 둡니다**(커밋하지 않음). 필요한 이름은 그 앱의 `.env.production`(`로컬:` 줄 참고)에 있습니다. 로컬 키는 각자 발급받거나 개발용 값을 써서, 새거나 잘못 바뀌어도 배포 앱과 실제 데이터에 닿지 않게 합니다.
+- **배포용 키는 Azure Key Vault `kv-notelink-dev`에만 둡니다.** 배포 App Service가 Key Vault 참조(`@Microsoft.KeyVault(SecretUri=…)`)로 읽습니다. 키를 메시지나 파일로 따로 나누지 않고, 각자 자기 Azure 계정으로 엽니다(팀 키 하나를 나눠 갖지 않음).
+
+  | 누구 | 역할 | 이름 보기 | 값 보기 | 넣기 · 바꾸기 |
+  | --- | --- | --- | --- | --- |
+  | 완우 · 희재 | `Key Vault Secrets Officer` | ✅ | ✅ | ✅ |
+  | 나머지 팀원 | 사용자 지정 역할 `NoteLink Secrets Writer` | ✅ | ❌ | ✅ |
+  | 배포 앱(관리 ID) | `Key Vault Secrets User` | — | ✅ | ❌ |
+
+  - 처음 한 번: Azure CLI 설치(Windows `winget install --exact --id Microsoft.AzureCLI`, Mac `brew install azure-cli`) → 터미널을 새로 열고 `az login --tenant <팀 테넌트 ID>`(팀 디렉터리에 초대된 계정으로). Windows에서 계정 선택 창이 멈추면 `az config set core.enable_broker_on_windows=false` 뒤 다시 로그인합니다.
+  - 넣기 · 바꾸기: `scripts/env-vault.sh push JWT_ACCESS_SECRET` → 값을 보이지 않게 입력합니다. secret 이름은 `_`만 `-`로 바꾼 것(`JWT-ACCESS-SECRET`)입니다. 배포 앱은 다시 시작하면(아니면 24시간 안에) 새 값을 씁니다. 처음 넣은 이름이면 App Service 앱 설정에 Key Vault 참조를 추가합니다.
+  - 어떤 키가 있는지: `scripts/env-vault.sh list`(`list ai`는 그 앱 것만). 이름과 쓰는 앱만 보이고 값은 보이지 않습니다.
+  - Key Vault 이름은 `NOTELINK_VAULT`(기본 `kv-notelink-dev`).
 
 ---
 
