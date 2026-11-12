@@ -221,6 +221,12 @@ npm run dev:mobile   # 앱 개발 서버
 - Expo 패키지는 `npx expo install`로 설치합니다.
 - `.env`는 커밋하지 않습니다. 커밋하는 것은 배포 기준 예시 `.env.production`뿐이고, 실제 값은 넣지 않습니다(배포 값은 Azure App Service 앱 설정 · EAS에). API 키 같은 비밀값이 들어간 커밋은 GitHub push protection이 push 단계에서 막습니다.
 - 소셜 로그인 시크릿 같은 비밀값은 **서버에만** 두고 앱에는 넣지 않습니다.
+- **팀 개발용 `.env`는 Azure Key Vault 하나에서 받습니다**(`scripts/env-vault.sh`). 키를 메시지나 파일로 따로 나누지 않습니다.
+  - 처음 한 번: Azure CLI 설치(Windows `winget install --exact --id Microsoft.AzureCLI`, Mac `brew install azure-cli`) → 터미널을 새로 열고 `az login --tenant <팀 테넌트 ID>`(팀 디렉터리에 초대된 계정으로). Windows에서 계정 선택 창이 멈추면 `az config set core.enable_broker_on_windows=false` 뒤 다시 로그인합니다.
+  - 받기: `scripts/env-vault.sh pull ai`(또는 `api`) → `apps/<앱>/.env`가 만들어집니다. 손으로 만든 `.env`가 있었으면 `.env.bak`으로 남습니다. 이름만 보려면 `list`.
+  - 내 값(개인 키 · 로컬 주소)은 `apps/<앱>/.env.local`에 둡니다. `pull`할 때 이 값이 받은 값 위에 덮어씁니다. 앱은 `.env`만 읽으므로 `.env.local`을 고친 뒤에는 `pull`을 다시 합니다. 둘 다 커밋하지 않습니다.
+  - 넣기 · 바꾸기: `scripts/env-vault.sh push ai ANTHROPIC_API_KEY` → 값을 보이지 않게 입력합니다. 바꾼 뒤 팀원은 `pull`을 다시 합니다.
+  - 권한은 Key Vault 역할로 정합니다. 읽기 · 쓰기(`Key Vault Secrets Officer`): 완우 · 희재, 읽기(`Key Vault Secrets User`): 나머지. Key Vault 이름은 `NOTELINK_VAULT`(기본 `kv-notelink-dev`).
 
 ---
 
