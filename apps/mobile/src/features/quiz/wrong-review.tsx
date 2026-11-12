@@ -61,27 +61,15 @@ function save(userId: string, change: (n: WrongNotes) => WrongNotes) {
     // 다음에 틀리거나 맞힐 때 다시 적는다
   }
 }
-/** 퀴즈에서 틀리면 오답 노트에 넣고, 맞히면 뺀다 */
-export function recordAnswer(
-  userId: string | null,
-  q: Question,
-  correct: boolean,
-  setTitle?: string,
-) {
+/**
+ * 퀴즈에서 틀리면 오답 노트에 넣는다. 맞혀도 여기서는 빼지 않는다: 틀린 뒤 「다시 풀기」로 맞힌 문제도
+ * 다음 날 복습해야 하고, 오답 노트에서는 오늘의 오답 복습에서 맞혔을 때만 뺀다
+ */
+export function recordWrong(userId: string | null, q: Question, setTitle?: string) {
   if (!userId) return;
   const { _id, type, prompt, choices, answer, explanation } = q;
   save(userId, (n) =>
-    correct
-      ? dropWrong(n, _id)
-      : addWrong(n, {
-          _id,
-          type,
-          prompt,
-          choices,
-          answer,
-          explanation,
-          setTitle: setTitle ?? null,
-        }),
+    addWrong(n, { _id, type, prompt, choices, answer, explanation, setTitle: setTitle ?? null }),
   );
 }
 

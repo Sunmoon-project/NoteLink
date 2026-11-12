@@ -8,7 +8,7 @@ import {
   addWrong,
   dueOn,
   loadWrong,
-  recordAnswer,
+  recordWrong,
   sameAnswer,
   useDailyWrongReview,
   type WrongNotes,
@@ -70,12 +70,11 @@ describe('오답 노트 계산', () => {
     expect(sameAnswer('호흡', '광합성')).toBe(false);
   });
 
-  it('퀴즈에서 틀리면 계정의 오답 노트에 넣고, 나중에 맞히면 뺀다', () => {
-    recordAnswer('u1', q('a'), false, '광합성 퀴즈');
+  it('퀴즈에서 틀리면 계정의 오답 노트에 넣는다(같은 문제는 한 번만)', () => {
+    recordWrong('u1', q('a'), '광합성 퀴즈');
+    recordWrong('u1', q('a'), '광합성 퀴즈');
     expect(loadWrong('u1').items).toMatchObject([{ _id: 'a', setTitle: '광합성 퀴즈' }]);
     expect(loadWrong('u2').items).toEqual([]);
-    recordAnswer('u1', q('a'), true);
-    expect(loadWrong('u1').items).toEqual([]);
   });
 });
 
@@ -83,7 +82,7 @@ describe('하루에 처음 열 때 오답 복습', () => {
   it('오답이 있으면 하루에 한 번 복습 화면을 연다', async () => {
     jest.useFakeTimers();
     try {
-      recordAnswer('u1', q('a'), false);
+      recordWrong('u1', q('a'));
       const { rerender } = await renderHook(({ r }: { r: boolean }) => useDailyWrongReview(r), {
         initialProps: { r: true },
       });
@@ -106,7 +105,7 @@ describe('하루에 처음 열 때 오답 복습', () => {
       await renderHook(() => useDailyWrongReview(true));
       await act(async () => jest.advanceTimersByTime(700));
       expect(router.push).not.toHaveBeenCalled();
-      recordAnswer('u1', q('a'), false);
+      recordWrong('u1', q('a'));
       useTour.setState({ step: 2 });
       await renderHook(() => useDailyWrongReview(true));
       await act(async () => jest.advanceTimersByTime(700));
@@ -129,8 +128,8 @@ describe('하루에 처음 열 때 오답 복습', () => {
 
 describe('오답 복습 화면', () => {
   it('문제를 다시 풀고, 맞힌 문제는 빼고 틀린 문제는 남긴 뒤 결과를 요약한다', async () => {
-    recordAnswer('u1', q('a'), false, '광합성 퀴즈');
-    recordAnswer('u1', q('b', { type: 'short_answer', choices: null, answer: '엽록체' }), false);
+    recordWrong('u1', q('a'), '광합성 퀴즈');
+    recordWrong('u1', q('b', { type: 'short_answer', choices: null, answer: '엽록체' }));
     await renderScreen(<WrongReviewScreen />);
     // 오래된 오답(a)부터
     expect(screen.getByText('Q. 문제 a')).toBeTruthy();
@@ -152,7 +151,7 @@ describe('오답 복습 화면', () => {
   });
 
   it('건너뛰면 닫는다', async () => {
-    recordAnswer('u1', q('a'), false);
+    recordWrong('u1', q('a'));
     await renderScreen(<WrongReviewScreen />);
     await fireEvent.press(screen.getByText('건너뛰기'));
     expect(router.back).toHaveBeenCalled();

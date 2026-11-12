@@ -23,6 +23,11 @@ jest.mock('expo-secure-store', () => ({
   deleteItemAsync: jest.fn(),
 }));
 jest.mock('expo-speech', () => ({ speak: jest.fn(), stop: jest.fn() }));
+// 오답 노트(기기 파일)는 부르는지만 본다
+const mockRecordWrong = jest.fn();
+jest.mock('../features/quiz/wrong-review', () => ({
+  recordWrong: (...a: unknown[]) => mockRecordWrong(...a),
+}));
 jest.mock('expo-haptics', () => ({
   notificationAsync: jest.fn(),
   NotificationFeedbackType: { Success: 'success', Error: 'error' },
@@ -199,4 +204,22 @@ it('완료 대기 중 동일 풀이의 저장·재조회로 객체만 바뀌면 
     }),
   );
   expect(useQuizProgress.getState().progress).toBeNull();
+});
+
+it('틀린 문제는 오답 노트에 넣고, 다시 풀기로 맞혀도 빼지 않는다(오답 복습에서 맞혀야 빠짐)', async () => {
+  mockApi.quiz.answer
+    .mockResolvedValueOnce({ correct: false, correctAnswer: '정답' })
+    .mockResolvedValueOnce({ correct: true, correctAnswer: '정답' });
+  await renderScreen(<QuizSolveScreen />, client());
+  const input = await screen.findByPlaceholderText('답을 입력해주세요');
+  await fireEvent.changeText(input, '오답');
+  await fireEvent.press(screen.getByText('답 제출'));
+  await waitFor(() =>
+    expect(mockRecordWrong).toHaveBeenCalledWith('fourth-review-user', question, 'A 세트'),
+  );
+  await fireEvent.press(await screen.findByRole('button', { name: '다시 풀기' }));
+  await fireEvent.changeText(await screen.findByPlaceholderText('답을 입력해주세요'), '정답');
+  await fireEvent.press(screen.getByText('답 제출'));
+  await waitFor(() => expect(mockApi.quiz.answer).toHaveBeenCalledTimes(2));
+  expect(mockRecordWrong).toHaveBeenCalledTimes(1);
 });
