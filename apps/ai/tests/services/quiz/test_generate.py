@@ -1045,6 +1045,50 @@ def test_a_question_another_slot_took_meanwhile_is_made_again(
     assert f"앞서 만든 문제의 문제점: {generate.CLASH}" in again  # 쪽을 닫지 않고 다시 만듦
 
 
+def test_the_same_note_line_taken_meanwhile_by_another_slot_is_made_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 두 자리가 동시에 다른 개념(이질 아메바 · 대장 아메바)의 정의 문제를 만들었는데 둘 다 설명이
+    # '영양형: 위족으로 운동하고 적혈구를 먹는다' 줄(#351). 제시문은 85%가 안 돼 too_close로는
+    # 통과: 먼저 받은 것만 쓰고, 다른 자리는 쪽을 닫지 않고 다시 만듦. 다른 유형이면 같은 줄을
+    # 물어도 되므로(#268) 두 자리 모두 정의로
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "page_types", lambda text, korean, extra=(): ["정의"])
+    inp = job(size=2)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": f"{PAGE1}\n{PAGE2}"}]
+    both = threading.Barrier(2, timeout=5)
+    lock = threading.Lock()
+    drafts, checks = [0], [0]
+    first = draft("이질 아메바", "영양형은 위족으로 운동하고 적혈구를 먹는 원충이다")
+    second = draft("대장 아메바", "위족으로 운동하며 적혈구를 먹는 영양형을 가진 원충")
+    for d in (first, second):
+        q = d["question"]
+        monkeypatch.setitem(ANSWER_OF, q["passage"], q["answer"])
+
+    def quiz(user: str) -> JsonObject:
+        with lock:
+            drafts[0] += 1
+            k = drafts[0]
+        return first if k == 1 else second if k == 2 else GOOD["람블편모충"]
+
+    def check(user: str) -> JsonObject:
+        with lock:
+            checks[0] += 1
+            first_two = checks[0] <= 2
+        if first_two:
+            both.wait()
+        return checker(answer_in)(user)
+
+    llm = parallel_llm(quiz)
+    llm.answers["Check"] = check
+    result, _ = run(llm, inp)
+    answers = sorted(q["answer"] for q in result["questions"])
+    assert len(answers) == 2 and "람블편모충" in answers, answers
+    assert result["failed"] == []
+    again = llm.named("Quiz")[2]
+    assert f"앞서 만든 문제의 문제점: {generate.CLASH}" in again  # 쪽을 닫지 않고 다시 만듦
+
+
 def test_spare_slots_stop_once_the_set_is_full(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(generate, "WORKERS", 8)
     monkeypatch.setattr(generate, "EXTRA", 1)  # 1문제에 자리 1 + 여분 1
