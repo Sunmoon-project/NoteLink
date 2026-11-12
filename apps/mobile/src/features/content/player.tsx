@@ -61,6 +61,7 @@ export function useResume(
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.me.get() });
   const on = me.data?.settings.resumePlayback ?? false;
   const restored = useRef(false);
+  const reading = useRef(false);
   const saved = useRef(-1);
   const latest = useRef({ on, pos: p.pos, duration: p.duration });
   useEffect(() => {
@@ -74,8 +75,10 @@ export function useResume(
   };
   // 길이를 알게 되면 한 번 지난 자리로 옮긴다
   useEffect(() => {
-    if (!on || restored.current || !p.ready || !p.duration) return;
-    restored.current = true;
+    if (!on || reading.current || restored.current || !p.ready || !p.duration) return;
+    // 읽기를 마친 뒤에만 「복원됨」으로 둔다. 읽는 동안 화면을 닫으면 아무것도 적지 않아,
+    // 지금 자리(0초)로 지난 자리를 덮어쓰지 않는다(#366 리뷰)
+    reading.current = true;
     void SecureStore.getItemAsync(posKey(materialId))
       .then((v) => {
         const at = Number(v);
@@ -85,7 +88,10 @@ export function useResume(
           toast(`지난번 ${mmss(at)}부터 이어서 들어요`);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        restored.current = true;
+      });
   }, [on, p.ready, p.duration]); // eslint-disable-line react-hooks/exhaustive-deps
   // 듣는 동안 5초마다, 화면을 떠날 때 한 번 더 적는다
   useEffect(() => {

@@ -30,7 +30,9 @@ export function restoreCache(qc: QueryClient, userId: string, now = Date.now()) 
 }
 export function saveCache(qc: QueryClient, userId: string, now = Date.now()) {
   try {
-    const state = dehydrate(qc, { shouldDehydrateQuery: (q) => q.state.status === 'success' });
+    // 데이터가 있는 조회는 모두 적는다. 오프라인에서 다시 받다 실패해 상태가 error가 되어도 받아 둔 데이터는
+    // 남아 있으므로, 성공한 조회만 고르면 그 데이터가 다음 저장에서 파일에서 빠진다(#366 리뷰)
+    const state = dehydrate(qc, { shouldDehydrateQuery: (q) => q.state.data !== undefined });
     writeDb(FILE, { userId, savedAt: now, state } satisfies Saved);
   } catch {
     // 다음 변경 때 다시 적는다

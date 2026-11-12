@@ -37,6 +37,19 @@ it('받아 둔 조회를 적어 두고, 같은 계정이면 다시 켤 때 채�
   expect(mockFiles.size).toBe(0);
 });
 
+it('오프라인에서 다시 받다 실패해도(error) 받아 둔 데이터는 계속 남긴다', async () => {
+  const a = client();
+  a.setQueryData(['folders'], [{ _id: 'f1' }]);
+  await a
+    .fetchQuery({ queryKey: ['folders'], queryFn: () => Promise.reject(new Error('offline')) })
+    .catch(() => {});
+  expect(a.getQueryState(['folders'])?.status).toBe('error');
+  saveCache(a, 'u1');
+  const b = client();
+  restoreCache(b, 'u1');
+  expect(b.getQueryData(['folders'])).toEqual([{ _id: 'f1' }]);
+});
+
 it('설정을 켜면 조회가 바뀔 때 적고, 끄면 지운다', async () => {
   jest.useFakeTimers();
   try {

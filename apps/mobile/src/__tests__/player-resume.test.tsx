@@ -67,3 +67,19 @@ it('이어듣기가 꺼져 있으면 옮기지도 적지도 않는다', async ()
   expect(seek).not.toHaveBeenCalled();
   expect(mockStore.get('notelink.playpos.m1')).toBe('125');
 });
+
+it('지난 자리를 읽는 동안 화면을 닫으면 아무것도 적지 않아 지난 자리를 지킨다', async () => {
+  meWith(true);
+  mockStore.set('notelink.playpos.m1', '125');
+  const SecureStore = jest.requireMock<typeof import('expo-secure-store')>('expo-secure-store');
+  let release!: (v: string | null) => void;
+  jest
+    .mocked(SecureStore.getItemAsync)
+    .mockImplementationOnce(() => new Promise((r) => (release = r)));
+  const { view } = await run();
+  await waitFor(() => expect(SecureStore.getItemAsync).toHaveBeenCalled());
+  await view.unmount();
+  await act(async () => release('125'));
+  expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
+  expect(mockStore.get('notelink.playpos.m1')).toBe('125');
+});
