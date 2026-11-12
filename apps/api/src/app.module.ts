@@ -7,6 +7,7 @@ import { createMongooseOptions } from './config/mongo.config.js';
 import { HealthController } from './health/health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
+import { ProgressModule } from './modules/progress/progress.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
@@ -37,6 +38,8 @@ import { TimetableModule } from './modules/timetable/timetable.module.js';
     NoteAskModule,
     // 공부 시간 · 타이머(FR-06~08)
     SessionModule,
+    // 이번 주 목표 · 요약(FR-06-20 · FR-06-24)
+    ProgressModule,
     // 시간표 · 수업 · 친구 공유(FR-14)
     TimetableModule,
   ],
