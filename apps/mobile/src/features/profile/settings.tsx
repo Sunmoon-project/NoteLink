@@ -53,8 +53,13 @@ import Constants from 'expo-constants';
 
 const LANGS = ['한국어', 'English', '日本語', '中文'];
 const PAGE = { swipe: '좌우 스와이프', scroll: '위아래 스크롤', tap: '탭해서 넘기기' } as const;
-const gb = (b: number) =>
-  b >= 1024 ** 3 ? `${Math.round(b / 1024 ** 3)}GB` : b ? `${Math.round(b / 1024 ** 2)}MB` : '0KB';
+// 1MB 아래를 MB로 반올림하면 자료를 올려도 0MB로 보인다: 단위를 낮추고 작은 값은 소수 한 자리까지
+const gb = (b: number) => {
+  const unit = (n: number, u: string) => `${n < 10 ? Math.round(n * 10) / 10 : Math.round(n)}${u}`;
+  if (b >= 1024 ** 3) return unit(b / 1024 ** 3, 'GB');
+  if (b >= 1024 ** 2) return unit(b / 1024 ** 2, 'MB');
+  return b ? unit(Math.max(b / 1024, 0.1), 'KB') : '0KB';
+};
 
 /** 앱 버전은 app.config.ts의 version을 읽는다 */
 const APP_VERSION = Constants.expoConfig?.version ?? '-';

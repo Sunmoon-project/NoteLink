@@ -1,9 +1,12 @@
 import type { Material, NoteAskResult } from '@notelink/shared';
 
+type Note = Pick<Material, 'summary' | 'pages'> & Partial<Pick<Material, 'keywords'>>;
+
 /** 노트를 부분(소제목 + 글)으로: 요약 → 핵심 → 쪽 글(OCR). 서버 note_ask의 노트 글 순서와 같다 */
-function parts(m: Pick<Material, 'summary' | 'pages'>) {
+function parts(m: Note) {
   const out = (m.summary?.sections ?? []).map((s) => ({ heading: s.heading, body: s.body }));
-  if (m.summary?.points.length) out.push({ heading: '핵심', body: m.summary.points.join(' ') });
+  // 핵심은 항목끼리 이어 붙으면 한 문장처럼 읽혀 쉼표로 나눈다
+  if (m.summary?.points.length) out.push({ heading: '핵심', body: m.summary.points.join(', ') });
   for (const p of m.pages ?? [])
     if (p.ocrText?.trim()) out.push({ heading: `${p.pageNo}쪽`, body: p.ocrText.trim() });
   return out;
@@ -48,8 +51,12 @@ const refuse = (reason: 'off_topic' | 'unsafe'): NoteAskResult => ({
 // "오늘 날씨 알려 줘"처럼 다른 낱말이 섞이면 자료 밖 질문으로 거절한다
 // 낱말 전체가 "줄기 + 정해진 끝말"이어야 한다(해외여행 · 해물라면처럼 앞만 같은 낱말은 아님).
 // 한 글자 낱말도 본다("달 설명해 주세요"의 "달"은 자료 밖 주제)
+// 추천 질문("어려운 개념을 쉽게 설명해 주세요" · "시험에 나올 만한 내용은 뭐예요?")의 낱말도 노트 전체를 묻는 말이다
 const OVERVIEW =
-  /^(이|그|이번|핵심|요약|정리|설명|뭐|무엇|무슨|알려|노트|자료|내용|전체|전부|이거|이것|그거|간단|좀|주세요|줘|해)(해|히|하게|해서)?(줘|주세요|줄래|줄래요|봐|봐요)?(야|이야|예요|에요|이에요|인가요|인지|요|은|는|을|를|이|가|의|만)?$/;
+  /^(이|그|이번|핵심|요약|정리|설명|뭐|무엇|무슨|알려|노트|자료|내용|전체|전부|이거|이것|그거|간단|좀|주세요|줘|해|어려운|어렵|개념|쉽게|쉬운|시험|나올|만한|중요|중요한|출제|키워드)(해|히|하게|해서)?(줘|주세요|줄래|줄래요|봐|봐요)?(야|이야|예요|에요|이에요|인가요|인지|요|은|는|을|를|이|가|의|만|에|도)?$/;
+/** 노트 전체를 묻는 말 가운데 쉬운 설명 · 시험 대비를 묻는 것 */
+const EASY = /어려운|어렵|개념|쉽게|쉬운/;
+const EXAM = /시험|나올|중요|출제/;
 const overview = (q: string) => {
   const ws = q.split(/[^0-9A-Za-z가-힣]+/).filter(Boolean);
   return ws.length > 0 && ws.every((w) => OVERVIEW.test(w));
@@ -64,10 +71,40 @@ const sentences = (t: string, n: number) =>
  * 기기 저장 모드의 아바타 답(서버 AI가 없을 때). 질문 낱말이 가장 많이 겹치는 부분을 읽어 준다.
  * 노트 글이 없으면 null(서버의 NOTE_NOT_READY와 같음)
  */
-export function localAnswer(
-  m: Pick<Material, 'summary' | 'pages'>,
-  question: string,
-): NoteAskResult | null {
+const NEXT = '\n\n이어서 퀴즈로 확인해 볼까요?';
+const bullets = (xs: string[]) => xs.map((x) => `• ${x}`).join('\n');
+const ok = (answer: string, refs: string[]): NoteAskResult => ({
+  answerable: true,
+  reason: null,
+  answer: answer + NEXT,
+  refs,
+});
+
+/** 노트 전체를 묻는 말: 쉬운 설명은 소제목마다 첫 문장, 시험 대비는 핵심 · 키워드, 그 밖에는 핵심 목록 */
+function overviewAnswer(m: Note, question: string, all: { heading: string; body: string }[]) {
+  const sections = m.summary?.sections ?? [];
+  const points = m.summary?.points ?? [];
+  if (EASY.test(question) && sections.length) {
+    const used = sections.slice(0, 3);
+    return ok(
+      `어려운 부분을 하나씩 쉽게 풀어 볼게요.\n${bullets(used.map((x) => `${x.heading}: ${sentences(x.body, 1)}`))}`,
+      used.map((x) => x.heading),
+    );
+  }
+  if (EXAM.test(question) && (points.length || sections.length)) {
+    const keys = (m.keywords ?? []).slice(0, 5);
+    return ok(
+      `시험에는 이 노트의 핵심이 나올 만해요.\n${bullets(points.length ? points : sections.map((x) => x.heading))}` +
+        (keys.length ? `\n키워드: ${keys.join(' · ')}` : ''),
+      [points.length ? '핵심' : sections[0]!.heading],
+    );
+  }
+  if (points.length) return ok(`이 노트의 핵심이에요.\n${bullets(points)}`, ['핵심']);
+  const first = all[0]!;
+  return ok(`노트의 '${first.heading}' 부분을 보면, ${sentences(first.body, 2)}`, [first.heading]);
+}
+
+export function localAnswer(m: Note, question: string): NoteAskResult | null {
   const all = parts(m);
   if (!all.length) return null;
   if (UNSAFE_PATTERN.test(question)) return refuse('unsafe');
@@ -77,12 +114,9 @@ export function localAnswer(
     return { p, score: ws.filter((w) => hit(text, w)).length };
   });
   const best = scored.reduce((a, b) => (b.score > a.score ? b : a));
-  if (!best.score && !overview(question)) return refuse('off_topic');
-  const { heading, body } = best.score ? best.p : all[0]!;
-  return {
-    answerable: true,
-    reason: null,
-    answer: `노트의 '${heading}' 부분을 보면, ${sentences(body, 2)} 이어서 퀴즈로 확인해 볼까요?`,
-    refs: [heading],
-  };
+  // 노트 전체를 묻는 말이면 겹친 낱말이 '핵심' 같은 소제목뿐이어도 전체 답으로 한다
+  if (overview(question)) return overviewAnswer(m, question, all);
+  if (!best.score) return refuse('off_topic');
+  const { heading, body } = best.p;
+  return ok(`노트의 '${heading}' 부분을 보면, ${sentences(body, 2)}`, [heading]);
 }

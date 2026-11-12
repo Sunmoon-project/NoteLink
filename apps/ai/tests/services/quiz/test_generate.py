@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.services.quiz import generate, srs
 from app.services.quiz.generate import Chunk, PageInfo
 from app.services.quiz.review import InputError, seoul_midnight
+from tests.worker.test_handlers import run_job
 
 PAGE1 = """Ⅰ. 근족충류
 1. 이질 아메바
@@ -1403,6 +1404,15 @@ def test_a_stable_draft_is_not_used_when_the_recheck_call_fails() -> None:
     assert len(llm.named(generate.RECHECK)) == 3  # 세 초안 모두 2차 풀기에서 멈춤
 
 
+def test_a_stable_draft_whose_recheck_is_always_rejected_ends_without_retry() -> None:
+    # 생성 모델 2차 풀기만 서버가 모두 거절: 다시 해도 같아 다시 넣지 않음(#272, Codex #302)
+    llm = happy([GOOD["이질 아메바"]] * 3)
+    llm.answers[generate.RECHECK] = lambda u: LlmRejectedError("HTTP 413")
+    with pytest.raises(LlmRejectedError, match="모두 거절함"):
+        make(llm, page1_job(size=1), mode=STEPS)
+    assert len(llm.named(generate.RECHECK)) == 3
+
+
 def test_the_fast_mode_still_checks_two_answers_and_the_checker_solve() -> None:
     # 빠르게 하려고 빼는 것은 추가 시도와 생성 모델 2차 풀기뿐: 정답 둘 검사 · 검사 모델
     # 풀기는 그대로
@@ -2645,3 +2655,50 @@ def test_a_held_question_clashing_with_one_taken_later_is_dropped(
         make(llm, one_page)
     join_threads("quiz-slot")
     assert len(kept) == 1 and handed_feature == kept
+
+
+# ---------- 거절: 작업 처리기까지(#272) ----------
+# 서버가 요청을 거절(400 · 413 · 422)하면 다시 보내도 같음: 작업을 다시 넣지 않고 바로 실패.
+# 생성뿐 아니라 검사 호출만 모두 거절된 경우도. 거절과 다른 장애가 섞이면 다시 넣음
+
+
+def refused(_: str) -> JsonObject | LlmError:
+    return LlmRejectedError("HTTP 413")
+
+
+def one_page_job() -> JsonObject:
+    inp = job(size=1)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    return inp
+
+
+def test_quiz_generation_all_rejected_fails_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm = happy([LlmRejectedError("HTTP 413")] * 6)
+    doc = run_job(monkeypatch, llm, one_page_job(), generate.TYPE)
+    assert (doc["status"], doc["attempts"]) == ("failed", 1)
+    assert doc["error"].startswith("AI가 요청을 거절함")
+
+
+@pytest.mark.parametrize("check", ["Naturals", "Check"])
+def test_quiz_checks_all_rejected_fail_without_retry(
+    monkeypatch: pytest.MonkeyPatch, check: str
+) -> None:
+    # 생성은 되고 검사 호출(정답 둘 검사 · 검사 모델 풀기)만 모두 거절됨
+    llm = happy([GOOD["이질 아메바"]] * 6)
+    llm.answers[check] = refused
+    doc = run_job(monkeypatch, llm, one_page_job(), generate.TYPE)
+    assert (doc["status"], doc["attempts"]) == ("failed", 1)
+    assert doc["error"].startswith("AI가 요청을 거절함")
+    assert llm.named("Quiz")  # 생성은 했음
+
+
+def test_quiz_check_rejections_mixed_with_outages_are_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    errors: list[LlmError] = [LlmRejectedError("HTTP 413"), LlmError("HTTP 503")] * 3
+    llm = happy([GOOD["이질 아메바"]] * 6)
+    llm.answers["Check"] = lambda _: errors.pop(0)
+    doc = run_job(monkeypatch, llm, one_page_job(), generate.TYPE)
+    assert (doc["status"], doc["attempts"]) == ("queued", 1)

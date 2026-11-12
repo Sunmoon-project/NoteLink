@@ -1,6 +1,6 @@
 import pytest
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmRejectedError
 from app.core.config import settings
 from app.services.quiz import quality as qa
 from app.services.quiz.models import Draft
@@ -127,7 +127,7 @@ def test_blank_option_that_also_fits_is_rejected_and_collected() -> None:
 def test_all_options_and_the_answer_are_judged_in_one_call_per_model() -> None:
     d = draft("The rope was ____ to the post.", ROPE_OPTIONS, "fastened")
     llm = FakeLlm({"Naturals": fits("fastened")})
-    assert qa.screen(llm, d, PAGE, "빈칸") == ([], False)
+    assert qa.screen(llm, d, PAGE, "빈칸") == ([], "")
     # 검사 모델 한 번 · 생성 모델(2차 판정) 한 번. 정답 판정은 검사 모델의 호출에서
     assert [(c.name, c.model) for c in llm.calls] == [
         ("Naturals", settings.quiz_check_model),
@@ -298,7 +298,7 @@ def test_repair_returns_none_when_the_new_option_is_unusable(
 def test_checked_passes_a_clean_draft_without_repair() -> None:
     d = draft(SCENE, ["stack", "fasten", "order", "move", "lift"], "stack")
     llm = FakeLlm()
-    assert qa.checked(llm, d, no_conflict, PAGE, "규칙") == (d, [], None, False, False)
+    assert qa.checked(llm, d, no_conflict, PAGE, "규칙") == (d, [], None, False, "")
     assert llm.calls == []
 
 
@@ -312,7 +312,7 @@ def test_checked_repairs_and_rechecks() -> None:
         [],
         2,
         True,
-        False,
+        "",
     )
     assert hits == ["stock"]  # 다음 시도에서 피할 낱말
 
@@ -325,7 +325,7 @@ def test_checked_keeps_the_first_reasons_when_the_repair_fails_again() -> None:
         return ["보기 5개가 아니거나 겹침"], None
 
     out = qa.checked(llm, d, code_fails, PAGE, "규칙")
-    assert out == (d, ["노트에서 정답과 같은 묶음인 보기: stock"], None, False, False)
+    assert out == (d, ["노트에서 정답과 같은 묶음인 보기: stock"], None, False, "")
 
 
 @pytest.mark.parametrize(
@@ -371,7 +371,7 @@ ROPE_OPTIONS = ["fastened", "secured", "extended", "displayed", "stacked"]
 def test_screen_reports_an_unchecked_draft_when_calls_fail() -> None:
     d = draft(ROPE, ROPE_OPTIONS, "fastened")
     llm = FakeLlm({"Naturals": [LlmError("HTTP 503")] * 2})
-    assert qa.screen(llm, d, PAGE, "빈칸") == ([], True)
+    assert qa.screen(llm, d, PAGE, "빈칸") == ([], "down")
 
 
 def test_screen_with_a_flagged_option_is_a_real_rejection_even_with_a_failed_call() -> None:
@@ -380,7 +380,7 @@ def test_screen_with_a_flagged_option_is_a_real_rejection_even_with_a_failed_cal
     llm = FakeLlm({"Naturals": [LlmError("HTTP 503"), verdicts(True, True, False, False, False)]})
     assert qa.screen(llm, d, PAGE, "빈칸") == (
         ["빈칸에 넣어도 말이 되는 오답 보기: secured"],
-        False,
+        "",
     )
 
 
@@ -392,7 +392,7 @@ def test_checked_uses_the_recheck_after_a_first_check_with_a_failed_call() -> No
     clean = verdicts(True, False, False, False, False)
     llm = FakeLlm({"Naturals": [*first, clean, clean], "Repair": [{"options": ["lifted"]}]})
     fixed, why, _, repaired, unchecked = qa.checked(llm, d, no_conflict, PAGE, "빈칸")
-    assert (why, repaired, unchecked) == ([], True, False)
+    assert (why, repaired, unchecked) == ([], True, "")
     assert "lifted" in fixed["options"]
 
 
@@ -403,14 +403,14 @@ def test_checked_reports_unchecked_when_the_recheck_fails() -> None:
         {"Naturals": first + [LlmError("HTTP 503")] * 2, "Repair": [{"options": ["lifted"]}]}
     )
     _, why, _, repaired, unchecked = qa.checked(llm, d, no_conflict, PAGE, "빈칸")
-    assert (why, repaired, unchecked) == ([], True, True)
+    assert (why, repaired, unchecked) == ([], True, "down")
 
 
 def test_screen_does_not_count_malformed_verdicts_as_unchecked() -> None:
     d = draft(ROPE, ROPE_OPTIONS, "fastened")
     # 모양이 틀린 판정: 묶은 판정 → 보기마다 → 정답 한 번 더도 모두 모양이 틀려 걸리지 않음
     llm = FakeLlm({"Naturals": [{"natural": "yes"}] * 2, "Natural": [{"natural": "yes"}] * 11})
-    assert qa.screen(llm, d, PAGE, "빈칸") == ([], False)
+    assert qa.screen(llm, d, PAGE, "빈칸") == ([], "")
 
 
 # ---------- 부정설명 (#268) ----------
@@ -450,3 +450,16 @@ def test_a_repair_for_a_negative_question_asks_for_true_statements() -> None:
         llm = FakeLlm({"Repair": [{"options": ["영양형이 있다"]}]})
         assert qa.repair(llm, d, {"원충이다"}, ["틀린 오답"], PAGE, qtype=qtype) is not None
         assert llm.calls[0].system == system
+
+
+def test_screen_reports_refused_when_every_failed_call_was_rejected() -> None:
+    # 서버가 판정 호출을 모두 거절(413): 다시 보내도 같아 부른 쪽이 따로 셈(#272)
+    d = draft(ROPE, ROPE_OPTIONS, "fastened")
+    llm = FakeLlm({"Naturals": [LlmRejectedError("HTTP 413")] * 2})
+    assert qa.screen(llm, d, PAGE, "빈칸") == ([], "refused")
+
+
+def test_screen_reports_down_when_a_rejection_is_mixed_with_an_outage() -> None:
+    d = draft(ROPE, ROPE_OPTIONS, "fastened")
+    llm = FakeLlm({"Naturals": [LlmRejectedError("HTTP 413"), LlmError("HTTP 503")]})
+    assert qa.screen(llm, d, PAGE, "빈칸") == ([], "down")

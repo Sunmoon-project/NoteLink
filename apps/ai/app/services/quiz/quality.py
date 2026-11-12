@@ -20,9 +20,9 @@ LLM 판정을 받지 못하면(호출 실패 · 답 모양 오류) 그 보기는
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Literal, TypedDict
 
-from app.clients.llm import JsonObject, Llm, LlmError
+from app.clients.llm import JsonObject, Llm, LlmError, LlmRejectedError
 from app.core.config import settings
 from app.services.quiz.checks import option_key
 from app.services.quiz.models import Draft
@@ -187,21 +187,34 @@ _KO_LABELS = {
 }
 
 
+# 검사 못 함(screen · checked의 값): ""(판정을 모두 받음) · down(판정 호출이 실패함) ·
+# refused(실패한 판정 호출을 모두 서버가 거절함: 다시 보내도 같음, #272)
+Unchecked = Literal["", "down", "refused"]
+# 실패한 판정 호출마다 서버가 거절했는지
+Failed = list[bool]
+
+
+def _unchecked(failed: Failed) -> Unchecked:
+    if not failed:
+        return ""
+    return "refused" if all(failed) else "down"
+
+
 def _ko_make(qtype: str, passage: str) -> Callable[[str], str]:
     first, second = _KO_LABELS[qtype]
     return lambda o: f"{first}: {passage}\n{second}: {o}"
 
 
 def _natural(
-    llm: Llm, model: str, system: str, user: str, failed: list[str] | None = None, what: str = ""
+    llm: Llm, model: str, system: str, user: str, failed: Failed | None = None
 ) -> bool | None:
-    """True · False, 판정을 받지 못하면 None. 호출이 실패했을 때만 failed에 what을 더합니다
-    (답 모양 오류는 더하지 않음)."""
+    """True · False, 판정을 받지 못하면 None. 호출이 실패했을 때만 failed에 서버가 거절했는지를
+    더합니다(답 모양 오류는 더하지 않음)."""
     try:
         r = llm.call(model, system, user, N_SCHEMA, "Natural", max_tokens=60)
-    except LlmError:
+    except LlmError as e:
         if failed is not None:
-            failed.append(what)
+            failed.append(isinstance(e, LlmRejectedError))
         return None
     v = r.get("natural")
     return v if isinstance(v, bool) else None
@@ -265,7 +278,7 @@ def _batch_system(system: str) -> str:
 
 
 def _verdicts(
-    llm: Llm, model: str, mode: _Mode, choices: list[str], failed: list[str]
+    llm: Llm, model: str, mode: _Mode, choices: list[str], failed: Failed
 ) -> list[bool | None]:
     """보기마다 판정(True · False, 받지 못하면 None). 보기를 모두 한 호출로 묻습니다.
 
@@ -299,13 +312,13 @@ def _verdicts(
             "Naturals",
             max_tokens=40 + 12 * len(choices),
         )
-    except LlmError:
-        failed.extend(choices)
+    except LlmError as e:
+        failed.extend([isinstance(e, LlmRejectedError)] * len(choices))
         return [None] * len(choices)
     v = r.get("natural")
     if isinstance(v, list) and len(v) == len(choices) and all(isinstance(x, bool) for x in v):
         return list(v)
-    return [_natural(llm, model, mode.system, mode.make(o), failed, o) for o in choices]
+    return [_natural(llm, model, mode.system, mode.make(o), failed) for o in choices]
 
 
 def natural_options(
@@ -313,13 +326,13 @@ def natural_options(
     item: _Item,
     model: str,
     mode: _Mode | None,
-    failed: list[str] | None = None,
+    failed: Failed | None = None,
 ) -> tuple[list[str] | None, bool | None]:
     """(모델이 자연스럽다고 본 오답 보기, 정답 판정). 이 검사를 하지 않는 유형(mode가 None)이면
     (None, None). 정답 판정은 정답 보기가 없거나 판정을 받지 못하면 None.
 
     정답 보기는 대소문자 · 공백만 달라도 정답으로 봅니다(code_check와 같은 기준).
-    failed에는 호출이 실패한 보기를 모읍니다(답 모양 오류는 넣지 않음).
+    failed에는 호출이 실패한 보기마다 서버가 거절했는지를 모읍니다(답 모양 오류는 넣지 않음).
     """
     if mode is None:
         return None, None
@@ -337,13 +350,14 @@ def screen(
     page_text: str,
     qtype: str | None = None,
     hits: list[str] | None = None,
-) -> tuple[list[str], bool]:
+) -> tuple[list[str], Unchecked]:
     """초안에 두 검사를 모두 돌려 (탈락 이유, 검사 못 함)을 돌려줍니다. 이유가 없고 검사 못 함이
-    False여야 통과입니다.
+    ""(Unchecked)여야 통과입니다.
 
     검사 못 함: 걸린 보기는 없는데 LLM 판정(_natural) 호출이 실패한 것이 있음. 통과로 볼 수 없어
-    부른 쪽이 LLM 장애로 처리합니다. 걸린 보기가 있으면 그 이유는 받은 판정에서 나온 것이라
-    False입니다. 답 모양이 틀린 판정은 그 보기를 걸리지 않은 것으로 넘기고 검사 못 함에 넣지
+    부른 쪽이 LLM 장애로 처리합니다. 실패한 호출을 모두 서버가 거절했으면 refused(다시 보내도
+    같음, #272), 아니면 down. 걸린 보기가 있으면 그 이유는 받은 판정에서 나온 것이라
+    ""입니다. 답 모양이 틀린 판정은 그 보기를 걸리지 않은 것으로 넘기고 검사 못 함에 넣지
     않습니다(similar.make_similar도 모양 오류를 장애로 세지 않음).
     hits에는 걸린 보기를 모읍니다(다음 시도에서 피할 낱말).
     채점한 61문제(10/22)에서 나쁜 문제 21개 중 14개를 잡고 좋은 문제 40개 중 4개를 버렸습니다
@@ -362,7 +376,7 @@ def screen(
     pair = contrasts(d["answer"], page_text)
     item["choices"] = [o for o in item["choices"] if o.strip().lower() not in pair]
     mode = _mode(item)
-    failed: list[str] = []
+    failed: Failed = []
     # 정답 판정은 검사 모델의 같은 호출에서 받음(따로 한 번 더 묻던 것)
     n, answer_ok = natural_options(llm, item, settings.quiz_check_model, mode, failed)
     if n == [] and qtype not in KO_SYS:
@@ -379,9 +393,8 @@ def screen(
     if not why and mode and (blank or qtype in KO_SYS) and answer_ok is None and not failed:
         # 정답이 검사한 보기에 없을 때(보기 모양이 다름 등)만 정답을 따로 물음
         answer_ok = _natural(
-            llm, settings.quiz_check_model, mode.system, mode.make(item["answer"]), failed,
-            item["answer"],
-        )  # fmt: skip
+            llm, settings.quiz_check_model, mode.system, mode.make(item["answer"]), failed
+        )
     if not why and blank and answer_ok is False:
         # 정답 자체도 맞아야 함: 'The construction team will ____ the road'에
         # 정답 'resurfacing' (10/26)
@@ -394,7 +407,7 @@ def screen(
                 qtype or "", "정답이 일반 전공 지식과 맞지 않음(노트 OCR 오류 가능)"
             )
         )
-    return why, bool(failed) and not why
+    return why, ("" if why else _unchecked(failed))
 
 
 R_SYS = (
@@ -502,13 +515,13 @@ def checked(
     qtype: str | None,
     avoid: Iterable[str] = (),
     hits: list[str] | None = None,
-) -> tuple[Draft, list[str], int | None, bool, bool]:
+) -> tuple[Draft, list[str], int | None, bool, Unchecked]:
     """코드 검사(check)를 통과한 초안에 screen을 돌리고, 걸린 오답 보기는 한 번 고쳐 봅니다.
 
     check(초안) → (탈락 이유, 정답 위치). (초안, 탈락 이유, 고친 초안의 정답 위치, 고쳤는지,
     검사 못 함)을 돌려줍니다. 고친 초안도 떨어지면 처음 초안과 처음 이유를 돌려줍니다(재시도
     지시에 들어감). 검사 못 함은 돌려주는 초안에 대한 마지막 screen의 값입니다: 처음 검사에서
-    판정을 못 받은 보기가 있어도 고친 초안의 재검사가 모두 판정을 받고 통과했으면 False.
+    판정을 못 받은 보기가 있어도 고친 초안의 재검사가 모두 판정을 받고 통과했으면 "".
     hits에는 처음 초안에서 걸린 보기를 모읍니다.
     """
     hits = [] if hits is None else hits
@@ -517,11 +530,11 @@ def checked(
         return d, why, None, False, unchecked
     fixed = repair(llm, d, set(hits), why, page_text, avoid, qtype)
     if fixed is None:
-        return d, why, None, False, False
+        return d, why, None, False, ""
     why2, k2 = check(fixed)
-    unchecked2 = False
+    unchecked2: Unchecked = ""
     if not why2:
         why2, unchecked2 = screen(llm, fixed, page_text, qtype)
     if why2:
-        return d, why, None, False, False
+        return d, why, None, False, ""
     return fixed, [], k2, True, unchecked2
