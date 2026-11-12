@@ -213,16 +213,26 @@ describe.skipIf(!isLocal)('진짜 DB 할 일 · D-day 확인', () => {
         expect(String(docs[0]?.['pairId'])).toBe(String(docs[1]?.['pairId']));
     });
 
-    it('10) 완료 변경 중 짝 업데이트가 실패하면 두 문서 모두 그대로이고, 다시 하면 둘 다 완료된다', async () => {
+    it('10) 완료 변경 중 짝 한 문서를 실제로 바꾼 뒤 실패해도 롤백되어 두 문서 모두 그대로이고, 다시 하면 둘 다 완료된다', async () => {
         const content = '트랜잭션 완료';
         const created = await post('/todos', { ...base, todoType: 'exam', content });
         const id = created.body.data._id as string;
-        const state = async () => (await col('todos').find({ userId: me, content }).toArray()).map((d) => [d['done'], d['doneAt']]);
+        const state = async () => (await col('todos').find({ userId: me, content }).sort({ isDday: 1 }).toArray()).map((d) => [d['done'], d['doneAt']]);
+        const dday = (await col('todos').findOne({ userId: me, content, isDday: true }))!;
 
-        vi.spyOn(todoModel, 'updateMany').mockImplementationOnce((() => Promise.reject(new Error('짝 업데이트 실패'))) as never);
+        // setDone이 넘기는 session 그대로 D-day 쪽 한 문서만 실제로 완료로 바꾼 뒤 예외를 낸다 (짝 하나만 바뀐 상태에서 실패)
+        const realUpdateMany = todoModel.updateMany.bind(todoModel) as (...args: unknown[]) => Promise<unknown>;
+        let wrote = false;
+        vi.spyOn(todoModel, 'updateMany').mockImplementationOnce(((_filter: unknown, update: unknown, options: unknown) => {
+            return realUpdateMany({ _id: dday._id, userId: me }, update, options).then(async (result) => {
+                wrote = true;
+                throw Object.assign(new Error('짝 한 문서만 바꾼 뒤 실패'), { result });
+            });
+        }) as never);
         const failed = await patch(`/todos/${id}`, { done: true });
         expect(failed.status).toBe(500);
-        expect(await state()).toEqual([[false, null], [false, null]]);
+        expect(wrote).toBe(true); // 한 문서는 실제로 바뀌었다가
+        expect(await state()).toEqual([[false, null], [false, null]]); // 롤백되어 둘 다 그대로
         expect((await get('/ddays')).body.data.map((d: { title: string }) => d.title)).toContain(content);
 
         vi.restoreAllMocks();
@@ -231,6 +241,32 @@ describe.skipIf(!isLocal)('진짜 DB 할 일 · D-day 확인', () => {
         expect(after).toHaveLength(2);
         expect(after.every((d) => d['done'] === true && d['doneAt'] instanceof Date)).toBe(true);
         expect((await get('/ddays')).body.data.map((d: { title: string }) => d.title)).not.toContain(content);
+    });
+
+    it('10-2) 같은 과제에 완료 · 해제를 동시에 여러 번 보내도 두 문서의 상태는 항상 서로 같다', async () => {
+        const content = '동시 변경';
+        const created = await post('/todos', { ...base, todoType: 'assignment', content });
+        const id = created.body.data._id as string;
+        const docs = () => col('todos').find({ userId: me, content }).toArray();
+
+        for (let round = 0; round < 3; round++) {
+            // 쓰기 충돌로 일부 요청이 오류로 끝나도 된다. 데이터가 짝끼리 맞기만 하면 된다
+            const results = await Promise.all(
+                Array.from({ length: 12 }, (_, i) => patch(`/todos/${id}`, { done: i % 2 === 0 })),
+            );
+            for (const res of results) expect([204, 500]).toContain(res.status);
+            expect(results.some((r) => r.status === 204)).toBe(true);
+
+            const rows = await docs();
+            expect(rows).toHaveLength(2);
+            const [a, b] = rows;
+            expect(a!['done']).toBe(b!['done']);
+            expect(a!['doneAt'] === null).toBe(b!['doneAt'] === null);
+            for (const row of rows) expect(row['doneAt'] === null).toBe(row['done'] === false); // done과 doneAt도 맞는다
+            // D-day 목록도 짝의 상태를 따른다
+            const listed = (await get('/ddays')).body.data.some((d: { title: string }) => d.title === content);
+            expect(listed).toBe(a!['done'] === false);
+        }
     });
 
     it('11) 직접 시간(custom)인데 dueTime이 없거나 null이면 400, 올바른 시각이면 저장된다', async () => {
