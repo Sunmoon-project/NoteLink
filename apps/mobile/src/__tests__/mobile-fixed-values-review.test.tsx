@@ -39,6 +39,22 @@ it('설정은 재조회가 실패해도 불러온 내 정보를 유지한다', a
   expect(screen.getByText('AI 크레딧')).toBeTruthy();
 });
 
+// 자료 몇 개(1MB 아래)를 올려도 저장 공간이 0MB로 보였다
+it.each([
+  [400_000, '391KB'],
+  [5 * 1024 ** 2, '5MB'],
+  [1.5 * 1024 ** 3, '1.5GB'],
+])('설정은 쓴 저장 공간 %d바이트를 %s로 보여 준다', async (bytes, label) => {
+  const me = await api.me.get();
+  jest
+    .spyOn(api.me, 'get')
+    .mockResolvedValue({ ...me, usage: { ...me.usage!, storageBytes: bytes, aiCredits: 3 } });
+  setParams({});
+  await renderScreen(<SettingsScreen />, client());
+  expect(await screen.findByText(`${label} / 2GB`)).toBeTruthy();
+  expect(screen.getByText('3 / 800')).toBeTruthy();
+});
+
 it('친구 요청 조회 실패를 안내한다', async () => {
   jest.spyOn(api.social, 'received').mockRejectedValue(new Error('실패'));
   setParams({});

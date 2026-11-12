@@ -5,7 +5,7 @@ import { ERROR_CODES, NoteAskBody, type AiJob } from '@notelink/shared';
 import { ApiError } from '../lib/api/http';
 import { OFF_TOPIC, UNSAFE, localAnswer } from '../lib/local/tutor';
 import * as SecureStore from 'expo-secure-store';
-import { TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
+import { BUDDY_LINES, TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
 import { AvatarCheer, ENCOURAGE, PRAISE } from '../features/tutor/cheer';
 import { AvatarTeacherScreen } from '../features/tutor/teacher';
 import { STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
@@ -26,7 +26,11 @@ const refocus = () => act(() => [...mockFocus].forEach((cb) => cb()));
 // GL · 3D 모델은 기기에서만. 화면 테스트는 어떤 아바타를 그리는지와 대화 흐름을 본다
 jest.mock('../features/tutor/avatar3d', () => {
   const { Text: T } = jest.requireActual('react-native');
-  return { Avatar3D: ({ avatarId }: { avatarId: string }) => <T>{`3D:${avatarId}`}</T> };
+  return {
+    Avatar3D: ({ avatarId, mood }: { avatarId: string; mood: string }) => (
+      <T accessibilityLabel={`표정:${mood}`}>{`3D:${avatarId}`}</T>
+    ),
+  };
 });
 
 // 기기 저장소는 메모리로(테스트마다 비움)
@@ -259,12 +263,43 @@ it('안드로이드에서는 keyboardDidShow · keyboardDidHide로 키보드를 
 });
 
 describe('노트 상세에 떠 있는 아바타 선생님', () => {
-  it('누르면 아바타 선생님 화면을 열고, 처음에 할 일을 말풍선으로 알려 준다', async () => {
+  it('처음에 할 일을 말풍선으로 알려 주고, 누르면 웃으며 한마디 한 뒤 한 번 더 누르면 대화를 연다', async () => {
     await renderScreen(<TutorBuddy id="m1" tucked={false} />);
     expect(await screen.findByText('3D:base')).toBeTruthy();
+    expect(screen.getByLabelText('표정:idle')).toBeTruthy();
     expect(await screen.findByText('노트에 대해 물어보세요', {}, { timeout: 3000 })).toBeTruthy();
-    await fireEvent.press(screen.getByLabelText('아바타 선생님에게 물어보기'));
+    const buddy = screen.getByLabelText('아바타 선생님에게 물어보기');
+    await fireEvent.press(buddy);
+    // 첫 누름은 반응만: 웃는 얼굴과 말풍선, 화면은 그대로
+    expect(screen.getByText(BUDDY_LINES[0]!)).toBeTruthy();
+    expect(screen.getByLabelText('표정:happy')).toBeTruthy();
+    expect(screen.queryByText('노트에 대해 물어보세요')).toBeNull();
+    expect(router.push).not.toHaveBeenCalled();
+    await fireEvent.press(buddy);
     expect(router.push).toHaveBeenCalledWith({ pathname: '/tutor/[id]', params: { id: 'm1' } });
+    expect(screen.queryByText(BUDDY_LINES[0]!)).toBeNull();
+  });
+
+  it('누를 때마다 다른 말을 하고, 말풍선을 누르거나 길게 누르면 바로 대화를 연다', async () => {
+    jest.useFakeTimers();
+    try {
+      await renderScreen(<TutorBuddy id="m1" tucked={false} />);
+      const buddy = screen.getByLabelText('아바타 선생님에게 물어보기');
+      await fireEvent.press(buddy);
+      expect(screen.getByText(BUDDY_LINES[0]!)).toBeTruthy();
+      // 말풍선이 사라지면 다시 웃는 얼굴이 아니고, 다음 누름은 다음 말
+      await act(async () => jest.advanceTimersByTime(3600));
+      expect(screen.queryByText(BUDDY_LINES[0]!)).toBeNull();
+      expect(screen.getByLabelText('표정:idle')).toBeTruthy();
+      await fireEvent.press(buddy);
+      expect(screen.getByText(BUDDY_LINES[1]!)).toBeTruthy();
+      await fireEvent.press(screen.getByLabelText(`${BUDDY_LINES[1]}. 대화 열기`));
+      expect(router.push).toHaveBeenCalledTimes(1);
+      await fireEvent(buddy, 'longPress');
+      expect(router.push).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('아래로 읽어 내려가면 비켜 서고, 위로 올리거나 잠시 멈추면 돌아온다', async () => {
@@ -308,18 +343,45 @@ describe('기기 저장 모드의 아바타 답', () => {
       answerable: true,
       reason: null,
       answer:
-        "노트의 '스케줄링' 부분을 보면, 라운드 로빈은 시간 조각으로 돌린다. 이어서 퀴즈로 확인해 볼까요?",
+        "노트의 '스케줄링' 부분을 보면, 라운드 로빈은 시간 조각으로 돌린다.\n\n이어서 퀴즈로 확인해 볼까요?",
       refs: ['스케줄링'],
     });
     expect(localAnswer(note, '교착상태 조건')!.answer).toBe(
-      "노트의 '교착 상태' 부분을 보면, 네 가지 조건이 모두 있어야 생긴다. 하나를 깨면 막는다. 이어서 퀴즈로 확인해 볼까요?",
+      "노트의 '교착 상태' 부분을 보면, 네 가지 조건이 모두 있어야 생긴다. 하나를 깨면 막는다.\n\n이어서 퀴즈로 확인해 볼까요?",
     );
     expect(localAnswer(note, '페이지 교체')!.refs).toEqual(['2쪽']);
   });
 
+  // 추천 질문 3개는 모두 답해야 한다(시뮬레이터에서 "어려운 개념"·"시험" 질문이 자료 밖으로 거절됐다)
+  it('추천 질문 3개에 각각 맞는 답을 하고, 항목은 줄을 바꿔 보여 준다', () => {
+    const rich = { ...note, keywords: ['교착', '스케줄링'] };
+    const core = localAnswer(rich, '이 노트 핵심만 알려 주세요')!;
+    expect(core.answer).toBe('이 노트의 핵심이에요.\n• 상호 배제\n\n이어서 퀴즈로 확인해 볼까요?');
+    const easy = localAnswer(rich, '어려운 개념을 쉽게 설명해 주세요')!;
+    expect(easy).toMatchObject({ answerable: true, refs: ['교착 상태', '스케줄링'] });
+    expect(easy.answer).toContain('• 교착 상태: 네 가지 조건이 모두 있어야 생긴다.');
+    expect(easy.answer).toContain('• 스케줄링: 라운드 로빈은 시간 조각으로 돌린다.');
+    const exam = localAnswer(rich, '시험에 나올 만한 내용은 뭐예요?')!;
+    expect(exam).toMatchObject({ answerable: true, refs: ['핵심'] });
+    expect(exam.answer).toContain('• 상호 배제');
+    expect(exam.answer).toContain('키워드: 교착 · 스케줄링');
+    // 핵심 항목이 여럿이면 쉼표 없이 이어 붙지 않는다
+    const many = {
+      ...note,
+      summary: { ...note.summary, points: ['빛 → 화학', '명반응: 틸라코이드'] },
+    };
+    expect(localAnswer(many, '핵심 알려 주세요')!.answer).toContain(
+      '• 빛 → 화학\n• 명반응: 틸라코이드',
+    );
+    // 쉬운 설명 · 시험 낱말이 있어도 노트와 상관없는 주제가 섞이면 거절
+    expect(localAnswer(rich, '어려운 수학 문제 쉽게 설명해 주세요')?.reason).toBe('off_topic');
+    expect(localAnswer(rich, '시험 일정 알려 주세요')?.reason).toBe('off_topic');
+  });
+
   it('겹치는 곳이 없으면 요약 질문은 첫 부분을, 학습 자료 밖 질문은 대답할 수 없다고 한다', () => {
     expect(localAnswer(note, '핵심 알려 주세요')!.refs).toEqual(['핵심']);
-    expect(localAnswer(note, '설명해 주세요')!.refs).toEqual(['교착 상태']);
+    // 노트 전체를 묻는 말은 핵심 목록으로 답한다
+    expect(localAnswer(note, '설명해 주세요')!.refs).toEqual(['핵심']);
     expect(localAnswer(note, '이 노트 내용 요약해 줘')!.answerable).toBe(true);
     // 요약 말("알려")이 붙어도 노트와 상관없는 낱말이 있으면 자료 밖 질문
     expect(localAnswer(note, '오늘 날씨 알려 주세요')?.reason).toBe('off_topic');
@@ -442,6 +504,8 @@ describe('처음 안내', () => {
       expect(SecureStore.setItemAsync).toHaveBeenCalledWith('notelink.toured', '["u1"]'),
     );
     expect(router.navigate).toHaveBeenLastCalledWith('/note');
+    // 버튼 이름대로 폴더 만들기를 연다
+    await waitFor(() => expect(router.push).toHaveBeenLastCalledWith('/note-new/tag'));
     expect(useTour.getState().step).toBe(-1);
   });
 

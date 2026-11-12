@@ -423,6 +423,8 @@ export class QuizSetsService {
    * create가 이어받거나(도는 중) 결과를 바로 쓴다(끝남).
    * 넣지 않을 때: 물을 수 있는 쪽이 없음(null) · 도는 미리 만들기나 아직 쓰지 않은 결과가 있음(그 작업) ·
    * 이 노트에 세트가 이미 있음(null, 첫 세트만 미리 만든다).
+   * 입력은 퀴즈 요청과 같다(generateInput): 이 노트의 세트는 아직 없지만 사용자의 다른 세트 · 풀이와 모든
+   * 사용자의 유형별 정답률을 담아, 미리 만든 첫 세트에도 난이도 비율이 맞춰진다(Codex 리뷰 #300).
    * 알려진 한계: 확인과 넣기가 따로라 같은 노트에 거의 동시에 두 번 부르면 둘 다 넣을 수 있다
    * (노트 API는 정리가 끝날 때 한 번 부른다)
    */
@@ -447,16 +449,7 @@ export class QuizSetsService {
       userId,
       targetType: 'material',
       targetId: materialId,
-      // 첫 세트는 노트 내용만으로 만든다(지난 세트 · 풀이가 없는 새 노트, #134)
-      input: fitInput({
-        day: seoulDay(new Date()),
-        size: QUIZ_SET_SIZE,
-        material: materialInput(material, pages),
-        sets: [],
-        attempts: [],
-        notes: {},
-        typeStats: await this.typeStats(),
-      }),
+      input: await this.generateInput(owner, material, pages),
     });
   }
 
@@ -566,6 +559,7 @@ export class QuizSetsService {
    * 처리기 입력(apps/ai services/quiz/generate.py 「input」). 처리기는 다른 컬렉션을 읽지 않으므로
    * 이 노트 글 · 사용자의 다른 세트와 풀이 · 그 세트가 가리키는 노트 글을 모두 담는다.
    * 노트의 개념 이름(concepts)은 지난 퀴즈 · 미리 만들기가 저장했으면 넣는다(처리기가 다시 뽑지 않음).
+   * 모든 사용자의 유형별 정답률(typeStats)도 넣는다: 처리기가 유형 난이도를 고친다(#268).
    * 노트 조각(chunks)은 아직 저장하는 곳이 없어 넣지 않는다.
    */
   private async generateInput(
@@ -733,6 +727,7 @@ export interface WorkerInput extends Record<string, unknown> {
   sets: { id: string; materialId: string; questions: Record<string, unknown>[] }[];
   attempts: { quizSetId: string }[];
   notes: Record<string, WorkerPage[]>;
+  /** 모든 사용자의 유형별 푼 수 · 맞힌 수(#268). 없으면 처리기는 유형의 처음 난이도를 쓴다 */
   typeStats?: TypeStats;
 }
 

@@ -9,7 +9,7 @@ import mongomock
 import pytest
 from pydantic import SecretStr
 
-from app.clients.llm import JsonObject, LlmError, LlmRejectedError
+from app.clients.llm import JsonObject, LlmCutError, LlmError, LlmRejectedError
 from app.clients.speech import (
     NoSpeechError,
     Phrase,
@@ -37,7 +37,7 @@ from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobGoneError, JobStore
 from app.worker.runner import run_once
 from tests.fakes import FakeLlm
-from tests.services.recording.test_pipeline import SLIDES, WindowLlm, item
+from tests.services.recording.test_pipeline import SLIDES, PieceLlm, WindowLlm, item
 
 T0 = datetime(2026, 11, 5, 1, 0, tzinfo=UTC)
 AUDIO_URL = "https://blob.example.test/a.m4a?sig=secret-sas"
@@ -598,6 +598,17 @@ def test_llm_rejection_fails_without_retry(monkeypatch: pytest.MonkeyPatch) -> N
 
     doc = run_job(monkeypatch, {"audioUrl": AUDIO_URL}, llm=llm)
 
+    assert (doc["status"], doc["attempts"]) == ("failed", 1)
+    assert doc["error"] == "AI가 요청을 거절함(HTTP 413)"
+
+
+def test_a_rejected_right_half_fails_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 창 전체가 잘려 반으로 나눈 뒤 오른쪽 반을 서버가 거절: 작업 처리기까지 와서 바로 실패(#272)
+    llm = PieceLlm({(0, 4): [LlmCutError("JSON")], (2, 2): [LlmRejectedError("HTTP 413")]})
+
+    doc = run_job(monkeypatch, {"audioUrl": AUDIO_URL}, llm=llm)
+
+    assert llm.asked == [(0, 4), (0, 2), (2, 2)]
     assert (doc["status"], doc["attempts"]) == ("failed", 1)
     assert doc["error"] == "AI가 요청을 거절함(HTTP 413)"
 

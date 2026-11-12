@@ -1043,6 +1043,9 @@ const api: Api = {
         return fail(ERROR_CODES.NOTE_NOT_READY, '노트 정리가 끝나면 물어볼 수 있어요', 409);
       const job = queueJob('note_ask', 'material', id);
       Object.assign(job, { status: 'succeeded', progress: 100, step: undefined, result });
+      // 답 하나는 LLM 요청 한 번: 서버처럼 AI 크레딧을 쓴다(요약 · 퀴즈는 서버가 처리할 때 쓴다)
+      const usage = db().user.usage;
+      if (usage) usage.aiCredits += 1;
       return ok(job);
     },
   },

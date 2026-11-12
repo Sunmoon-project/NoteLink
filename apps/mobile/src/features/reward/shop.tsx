@@ -37,6 +37,8 @@ import {
   cx,
 } from '@/components/ui';
 import { C, ICON, MOTION } from '@/theme';
+import { Avatar3D } from '../tutor/avatar3d';
+import { avatarModel } from '../tutor/buddy';
 
 // p.91~95 상점 · 정렬 · 상세 · 구매 · 포인트 내역 · 보관함 / p.101 구매 중 연결 끊김
 
@@ -67,6 +69,22 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
 }
 
 /** 상품 그림: 이미지 주소면 그림으로, 아니면 이모지 글자로(small은 아바타 선생님 고르기 칸 크기) */
+/** 상세 창 미리보기: 아바타는 선생님이 될 3D 얼굴로, 그 밖의 상품은 그림으로 */
+function DetailPreview({ item }: { item: ShopItem }) {
+  if (item.category !== 'avatar') return <ItemPreview item={item} large />;
+  return (
+    <View accessibilityLabel={`${item.name} 3D 미리보기`}>
+      {/* 상자(bg-fill)와 같은 색으로 칠해 네모난 3D 바탕이 보이지 않게 */}
+      <Avatar3D
+        mood="idle"
+        avatarId={avatarModel(item._id, [item])}
+        size={128}
+        background={C.fill}
+      />
+    </View>
+  );
+}
+
 export function ItemPreview({
   item,
   large = false,
@@ -379,7 +397,7 @@ export function ShopScreen() {
           {detail && (
             <>
               <View className="h-36 items-center justify-center rounded-2xl bg-fill">
-                <ItemPreview item={detail} large />
+                <DetailPreview item={detail} />
               </View>
               <View className="mt-3 flex-row items-center justify-between">
                 <Text className="text-body font-bold text-ink">{detail.name}</Text>
@@ -698,7 +716,7 @@ export function BoxScreen() {
           {pick && (
             <>
               <View className="h-36 items-center justify-center rounded-2xl bg-fill">
-                <ItemPreview item={pick} large />
+                <DetailPreview item={pick} />
               </View>
               <View className="mt-3 flex-row items-center justify-between">
                 <Text className="text-body font-bold text-ink">{pick.name}</Text>
