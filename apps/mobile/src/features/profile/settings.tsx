@@ -245,14 +245,13 @@ export function SettingsScreen() {
           </Row>
           <Row
             onPress={() => setSheet('lang')}
-            sub="녹음을 글(대본)로 옮길 때 알아들을 언어예요"
             right={
               <View className="rounded-full bg-fill px-3 py-1">
                 <Text className="text-caption text-sub">{s.subtitleLanguage} ›</Text>
               </View>
             }
           >
-            받아쓰기 언어
+            자막 기본 언어
           </Row>
         </Group>
         <Label>노트</Label>
@@ -317,7 +316,7 @@ export function SettingsScreen() {
         </Pressable>
       </Screen>
 
-      <Sheet open={sheet === 'lang'} onClose={() => setSheet(null)} title="받아쓰기 언어">
+      <Sheet open={sheet === 'lang'} onClose={() => setSheet(null)} title="자막 기본 언어">
         <Group>
           {LANGS.map((l) => (
             <Row
