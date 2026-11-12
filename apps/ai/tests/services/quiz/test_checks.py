@@ -167,7 +167,8 @@ def test_options_judging_right_or_wrong_are_a_meta_question() -> None:
     assert META in why(meta, "정의")  # 유형과 상관없이
     # 다른 말로 쓴 판단도: 맞는 · 틀린 · 옳은 · correct(/code-review #291)
     for pair in (["맞는 문장이다", "틀린 문장이다"], ["옳은 표현", "옳지 않은 표현"],
-                 ["Correct.", "Incorrect"], ["정답이다", "오답이다"]):  # fmt: skip
+                 ["Correct sentence.", "Incorrect sentence"], ["정답이다", "오답이다"],
+                 ["'정답인 문장이다'", "오답이다!"], ["“정답”", "(오답)"]):  # fmt: skip
         assert META in why(draft(options=[*pair, "folded", "painted", "cleared"])), pair
 
 
@@ -180,6 +181,9 @@ def test_subject_words_with_right_or_wrong_are_not_a_meta_question() -> None:
         "정답 근거 찾기",
     ]
     assert META not in why(draft(options=[*words, "문항 변별도"]), "특징")
+    # 어휘 문제의 반대말 보기: 낱말만 있으면 판단이 아님
+    assert META not in why(draft(options=["correct", "incorrect", "accurate", "precise", "exact"]))
+    assert META not in why(draft(options=["바른", "틀린", "고운", "굳은", "옳은"]), "정의")
     # 판단 보기가 하나뿐이면 판단 자체가 아님
     assert META not in why(draft(options=["stacked", "folded", "painted", "cleared", "정답이다"]))
     assert META not in why(draft())
