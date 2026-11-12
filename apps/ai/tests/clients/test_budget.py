@@ -5,6 +5,7 @@
 
 import json
 import threading
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,11 +17,14 @@ from pymongo.errors import AutoReconnect
 from app.clients.llm import (
     Budgeted,
     ClaudeLlm,
+    JsonObject,
     LlmCutError,
+    LlmError,
     LlmRejectedError,
     LlmSetupError,
     LlmUsageLimitError,
     Metered,
+    PacedLlm,
     Spend,
     charge,
     claude_cost,
@@ -28,6 +32,7 @@ from app.clients.llm import (
     make_llm,
     metering,
     school_models,
+    stop_on,
 )
 from app.core.config import settings
 from app.worker import handlers
@@ -668,3 +673,97 @@ def test_after_switching_a_recovered_db_gets_the_queued_cost() -> None:
     b.over()
     assert col.find_one({"_id": a})[COST_FIELD] == 1.0
     assert store.unwritten_usd() == 0.0
+
+
+# ---------- Codex 리뷰(5차) #277 ----------
+
+
+class Timed(PacedLlm):
+    """실제 시계로 보낸 시각만 적는 연결."""
+
+    def __init__(self, gap: float) -> None:
+        super().__init__(gap_sec=gap, retries=0, sleep=time.sleep, clock=time.monotonic)
+        self.sent: list[float] = []
+
+    def _exchange(self, body: JsonObject) -> tuple[int, str | None, str | None]:
+        self.sent.append(time.monotonic())
+        return 200, None, "{}"
+
+
+def test_a_slow_budget_read_does_not_shrink_the_gap_between_calls() -> None:
+    # 합계를 읽는 한 호출만 느림(Spend: 한 스레드만 DB를 읽고 나머지는 지난 값). 예전에는 차례를
+    # 가져간 뒤에 읽어, 그 사이 다음 차례를 받은 호출과 거의 함께 나갔음
+    gap = 0.2
+    llm = Timed(gap)
+    reading = threading.Event()
+
+    def over() -> bool:
+        if not reading.is_set():
+            reading.set()
+            time.sleep(gap)
+        return False
+
+    llm.set_gate(over)
+    slow = threading.Thread(target=llm._send, args=({},))
+    slow.start()
+    assert reading.wait(5)
+    fast = threading.Thread(target=llm._send, args=({},))
+    fast.start()
+    slow.join(5)
+    fast.join(5)
+
+    assert len(llm.sent) == 2
+    assert abs(llm.sent[1] - llm.sent[0]) >= gap * 0.8
+
+
+def test_a_call_canceled_during_the_budget_read_is_not_sent() -> None:
+    llm = Timed(0)
+    stop = threading.Event()
+
+    def over() -> bool:
+        stop.set()  # 합계를 읽는 동안 작업이 취소됨
+        return False
+
+    llm.set_gate(over)
+    with stop_on(stop), pytest.raises(LlmError):
+        llm._send({})
+    assert llm.sent == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "null",
+        "{}",
+        '"글"',
+        "[{}]",
+        "[null]",
+        '[{"id": "c1", "job": "아이디가 아님", "usd": 1.0}]',
+        '[{"id": "c1", "job": "6543210fedcba9876543210f", "usd": "1.0"}]',
+        '[{"id": "c1", "job": "6543210fedcba9876543210f", "usd": NaN}]',
+        '[{"id": "c1", "job": "6543210fedcba9876543210f", "usd": -1}]',
+        '[{"id": 1, "job": "6543210fedcba9876543210f", "usd": 1.0}]',
+        '[{"id": "c1", "job": 1, "usd": 1.0}]',
+    ],
+)
+def test_a_spool_file_of_another_shape_does_not_stop_the_worker(tmp_path: Any, text: str) -> None:
+    (tmp_path / "s.json").write_text(text, encoding="utf-8")
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    jobs_module._unrecorded.clear()
+
+    assert jobs_module.use_spool(str(tmp_path / "s.json"), col) == 0
+    assert jobs_module._unrecorded == {}
+
+
+def test_good_rows_of_a_partly_broken_spool_file_are_kept(tmp_path: Any) -> None:
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    a = col.insert_one({"type": "x"}).inserted_id
+    rows = [{}, {"id": "c1", "job": str(a), "usd": 1.5}, None]
+    (tmp_path / "s.json").write_text(json.dumps(rows), encoding="utf-8")
+    jobs_module._unrecorded.clear()
+
+    assert jobs_module.use_spool(str(tmp_path / "s.json"), col) == 1
+    totals = JobStore(col, "w1:spend", lock_sec=60, max_attempts=3, retry_delay_sec=30)
+    assert totals.claude_spent() == pytest.approx(1.5)
+    assert col.find_one({"_id": a})[COST_FIELD] == 1.5
+    assert not (tmp_path / "s.json").exists()  # 다 적으면 버린 줄이 있던 파일도 지움

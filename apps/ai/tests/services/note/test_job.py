@@ -516,7 +516,7 @@ def test_ocr_rejecting_the_file_is_invalid_file_and_hides_the_address(
 
     assert (doc["status"], doc["attempts"]) == ("failed", 1)
     assert doc["error"] == "INVALID_FILE: 2번 파일 글자 인식 실패(HTTP 400 InvalidRequest)"
-    assert "checkpoint" not in doc
+    assert [u["pageNo"] for u in doc["checkpoint"]["uploads"]] == [1]  # 끝낸 업로드까지는 남음
 
 
 def test_input_error_keeps_code_outside_runner() -> None:
@@ -732,6 +732,125 @@ def test_retry_keeps_download_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert doc["status"] == "succeeded"
     assert doc["result"]["warnings"] == [no_color(1, "download")]
+
+
+# ---------- 업로드마다 저장 · 이어 읽기 ----------
+
+
+def test_each_finished_upload_is_saved_before_the_next_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ocr = FakeOcr({URL1: note_read(), URL2: OcrUnavailableError("HTTP 503")})
+    fetch = FakeFetch({URL1: DownloadError("HTTP 403")})
+
+    doc = attempt(monkeypatch, queued_job(two_pages()), ocr=ocr, fetch=fetch)
+
+    assert (doc["status"], doc["attempts"]) == ("queued", 1)
+    saved_now = doc["checkpoint"]
+    assert [(u["pageNo"], u["pages"], len(u["lines"])) for u in saved_now["uploads"]] == [(1, 1, 3)]
+    assert saved_now["warnings"] == [no_color(1, "download")]
+
+
+def test_retry_after_a_later_upload_failed_reads_only_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    photo = {URL1: image(BLACK, BLACK, RED)}
+    fresh = run_direct(two_pages(), fetch=FakeFetch(dict(photo)))
+    col = queued_job(two_pages())
+    down = FakeOcr({URL1: note_read(), URL2: OcrUnavailableError("HTTP 503")})
+    attempt(monkeypatch, col, ocr=down, fetch=FakeFetch(dict(photo)))
+    # 첫 파일은 다시 부르면 실패(읽기 주소 만료): 부르지 않아야 끝까지 감
+    ocr = FakeOcr({URL1: OcrError("HTTP 400"), URL2: note_read("2. 대장 아메바")})
+    fetch = FakeFetch()
+
+    doc = attempt(monkeypatch, col, ocr=ocr, fetch=fetch)
+
+    assert (doc["status"], doc["attempts"], doc["error"]) == ("succeeded", 2, None)
+    assert ocr.urls == [URL2] and fetch.urls == [URL2]
+    assert doc["result"] == json.loads(json.dumps(fresh))
+    assert "checkpoint" not in doc
+
+
+def test_retry_after_a_pdf_keeps_the_page_numbers_and_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf = read(
+        ocr_page("1. 개요", "내용", unit="inch"),
+        ocr_page("2. 분류", "내용", unit="inch", page_number=2),
+    )
+    inp: JsonObject = {
+        "pages": [{"pageNo": 1, "imageUrl": PDF_URL}, {"pageNo": 2, "imageUrl": URL2}]
+    }
+    good = {PDF_URL: pdf, URL2: note_read("3. 이질 아메바")}
+    fresh = run_direct(inp, ocr=FakeOcr(dict(good)))
+    col = queued_job(inp)
+    attempt(monkeypatch, col, ocr=FakeOcr({**good, URL2: OcrUnavailableError("HTTP 503")}))
+    ocr = FakeOcr({URL2: good[URL2]})
+
+    doc = attempt(monkeypatch, col, ocr=ocr)
+
+    assert doc["status"] == "succeeded" and ocr.urls == [URL2]
+    assert [p["pageNo"] for p in doc["result"]["pages"]] == [1, 2, 3]  # 뒤 사진은 3쪽 그대로
+    assert doc["result"]["warnings"] == [no_color(1, "pdf")]
+    assert doc["result"] == json.loads(json.dumps(fresh))
+
+
+def test_pages_saved_so_far_count_toward_the_page_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    big = read(
+        *(ocr_page("내용", unit="inch", page_number=i) for i in range(1, NOTE_MAX_PAGES + 1))
+    )
+    inp: JsonObject = {
+        "pages": [{"pageNo": 1, "imageUrl": PDF_URL}, {"pageNo": 2, "imageUrl": URL2}]
+    }
+    col = queued_job(inp)
+    attempt(monkeypatch, col, ocr=FakeOcr({PDF_URL: big, URL2: OcrUnavailableError("HTTP 503")}))
+
+    doc = attempt(monkeypatch, col, ocr=FakeOcr({URL2: note_read()}))
+
+    assert doc["status"] == "failed"
+    assert doc["error"] == f"INVALID_FILE: 노트가 {NOTE_MAX_PAGES}쪽을 넘음"
+
+
+def test_hand_written_partial_checkpoint_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job(two_pages())
+    value = saved([good_upload(1, lines=[])], [no_color(1, "size")])  # 글이 없어도 아직 중간
+    col.update_one({"_id": "j1"}, {"$set": {"checkpoint": value}})
+    ocr = FakeOcr()
+
+    doc = attempt(monkeypatch, col, ocr=ocr)
+
+    assert doc["status"] == "succeeded"
+    assert ocr.urls == [URL2]
+    assert [p["ocrText"] for p in doc["result"]["pages"]][0] == ""
+    assert doc["result"]["warnings"] == [no_color(1, "size")]
+
+
+def test_checkpoint_with_no_upload_runs_ocr_from_the_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job(two_pages())
+    col.update_one({"_id": "j1"}, {"$set": {"checkpoint": saved([])}})
+    ocr = FakeOcr()
+
+    doc = attempt(monkeypatch, col, ocr=ocr)
+
+    assert doc["status"] == "succeeded" and ocr.urls == [URL1, URL2]
+
+
+def test_resumed_progress_starts_where_the_saved_uploads_end() -> None:
+    seen: list[tuple[int, str | None]] = []
+    keep = Keep(saved([good_upload(1)]))
+
+    run(
+        FakeLlm(),
+        lambda: FakeOcr(),
+        FakeVoyage(),
+        two_pages(),
+        lambda value, step=None: seen.append((value, step)),
+        checkpoint=keep,
+        fetch=FakeFetch(),
+    )
+
+    assert seen[:3] == [(25, "ocr"), (50, "ocr"), (50, "split")]
+    assert [len(v["uploads"]) for v in keep.saved] == [2]  # 저장된 것 뒤에 이어 붙여 저장
 
 
 def test_retry_progress_starts_at_split(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -968,13 +1087,23 @@ class Keep:
 
     def __init__(self, value: object = None) -> None:
         self.value = value
-        self.saved: list[JsonObject] = []
+        self.count = 0  # 저장한 횟수
+        self._raw: list[bytes] = []
+
+    @property
+    def saved(self) -> list[JsonObject]:
+        return [bson.decode(raw) for raw in self._raw]
+
+    @property
+    def last(self) -> JsonObject:
+        return bson.decode(self._raw[-1])
 
     def load_checkpoint(self) -> object:
         return self.value
 
     def save_checkpoint(self, value: JsonObject) -> None:
-        self.saved.append(bson.decode(bson.encode(value)))
+        self.count += 1
+        self._raw.append(bson.encode(value))
 
 
 def with_colors(monkeypatch: pytest.MonkeyPatch, other_text: bool = False) -> None:
@@ -1020,10 +1149,10 @@ def test_thirty_dense_pages_checkpoint_and_result_fit_in_a_mongo_document() -> N
     keep = Keep()
     result = run_dense(30, keep)
 
-    checkpoint_bytes = len(bson.encode({"checkpoint": keep.saved[0]}))
+    checkpoint_bytes = len(bson.encode({"checkpoint": keep.last}))
     assert checkpoint_bytes < 4 * 1024 * 1024
     # 성공하면 checkpoint는 지워지지만, 마지막 저장과 결과가 함께 있는 때를 넉넉히 봄
-    assert len(bson.encode({"checkpoint": keep.saved[0], "result": result})) < MONGO_DOC_LIMIT
+    assert len(bson.encode({"checkpoint": keep.last, "result": result})) < MONGO_DOC_LIMIT
 
 
 def test_fifty_dense_colored_pages_checkpoint_and_result_fit(
@@ -1034,20 +1163,20 @@ def test_fifty_dense_colored_pages_checkpoint_and_result_fit(
     keep = Keep()
     result = run_dense(NOTE_MAX_PAGES, keep, lines=60, syllables=50)
 
-    assert len(keep.saved) == 1
-    checkpoint_bytes = len(bson.encode({"checkpoint": keep.saved[0]}))
+    assert keep.count == NOTE_MAX_PAGES  # 업로드마다 저장
+    checkpoint_bytes = len(bson.encode({"checkpoint": keep.last}))
     assert checkpoint_bytes < 8 * 1024 * 1024  # 상한(12MiB)보다 넉넉히 작음
     assert len(bson.encode({"result": result})) < 8 * 1024 * 1024
-    assert len(bson.encode({"checkpoint": keep.saved[0], "result": result})) < MONGO_DOC_LIMIT
+    assert len(bson.encode({"checkpoint": keep.last, "result": result})) < MONGO_DOC_LIMIT
 
 
 def test_dense_colored_checkpoint_gives_the_same_result(monkeypatch: pytest.MonkeyPatch) -> None:
     with_colors(monkeypatch, other_text=True)
     first = Keep()
     fresh = run_dense(3, first, lines=60, syllables=50)
-    words = json.loads(first.saved[0]["uploads"][0]["lines"][0][8])
+    words = json.loads(first.last["uploads"][0]["lines"][0][8])
     assert words[0][-1] == "?" and len(words[1]) == 8  # 다를 때만 단어 글을 저장
-    again = Keep(first.saved[0])
+    again = Keep(first.last)
 
     assert run_dense(3, again, lines=60, syllables=50) == fresh
     assert again.saved == []
@@ -1057,17 +1186,19 @@ def test_checkpoint_over_the_limit_is_not_saved_and_the_job_goes_on(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     keep = Keep()
-    expected = run_dense(2, keep)
-    size = len(bson.encode({"checkpoint": keep.saved[0]}))
+    expected = run_dense(3, keep)
+    size = len(bson.encode({"checkpoint": keep.saved[1]}))  # 둘째 업로드까지의 크기
     assert size < CHECKPOINT_MAX_BYTES
     monkeypatch.setattr(note_job, "CHECKPOINT_MAX_BYTES", size - 1)
     keep = Keep()
 
     with caplog.at_level(logging.WARNING):
-        result = run_dense(2, keep)
+        result = run_dense(3, keep)
 
-    assert keep.saved == []
+    # 첫 업로드까지만 저장되고, 넘은 뒤로는 다시 재 보지도 않음(경고 한 번)
+    assert [len(v["uploads"]) for v in keep.saved] == [1]
     assert result == expected
+    assert caplog.text.count("저장 상한을 넘어 저장하지 않음") == 1
     assert f"{size}바이트로 저장 상한을 넘어 저장하지 않음" in caplog.text
 
 

@@ -12,11 +12,13 @@ result  {pages: [{pageNo, ocrText}], lineResults, chunks: [노트 조각 + embed
 EmbedUnavailableError)는 그대로 올립니다. OCR 키 · 권한 오류(OcrSetupError)는 파일 문제가
 아니므로 InputError로 바꾸지 않습니다. 오류 문구에 사진 주소(SAS)를 넣지 않습니다.
 색 찾기용 사진을 쓰지 못하면 색 없이 계속하고 warnings에 NO_COLOR로 남깁니다.
-OCR · 색 단계가 끝나면 업로드마다 {pageNo(놓인 번호), pages(차지한 쪽 수), lines(처리한 줄)}를
-checkpoint에 저장하고, 다시 시도할 때 값이 검사를 통과하면 OCR과 내려받기를 건너뜁니다(과금 ·
-SAS 만료를 피함). 문서 크기(16MiB)를 지키려고 OCR 원본과 색 찾기 뒤에 쓰지 않는 단어 상자는
-저장하지 않고, 줄 · 단어는 짧은 배열로 줄여 저장합니다(_pack_line). 그래도 저장값이
-CHECKPOINT_MAX_BYTES를 넘으면 저장하지 않고 계속합니다(다시 시도하면 OCR부터).
+업로드 하나의 OCR · 색 찾기가 끝날 때마다 그때까지의 업로드를 {pageNo(놓인 번호), pages(차지한
+쪽 수), lines(처리한 줄)}로 checkpoint에 저장하고, 다시 시도할 때 값이 검사를 통과하면 저장된
+업로드의 OCR과 내려받기를 건너뛰고 그다음 업로드부터 합니다(과금 · SAS 만료를 피함. 뒤쪽 파일의
+일시 오류로 앞쪽을 다시 읽지 않음). 문서 크기(16MiB)를 지키려고 OCR 원본과 색 찾기 뒤에 쓰지
+않는 단어 상자는 저장하지 않고, 줄 · 단어는 짧은 배열로 줄여 저장합니다(_pack_line). 그래도
+저장값이 CHECKPOINT_MAX_BYTES를 넘으면 그때부터 저장하지 않고 계속합니다(다시 시도하면 마지막으로
+저장된 업로드 다음부터, 저장된 것이 없으면 OCR부터).
 """
 
 import json
@@ -212,14 +214,19 @@ def _read(
     report: Report,
     checkpoint: Checkpoint | None,
 ) -> tuple[list[_Upload], list[NoColor]]:
-    if checkpoint is not None and (reused := _from_checkpoint(checkpoint.load_checkpoint(), pages)):
-        return reused
-    client = ocr()  # 설정 누락은 파일 문제가 아니므로 아래 except 밖에서
-    report(0, "ocr")
     uploads: list[_Upload] = []
     warnings: list[NoColor] = []
-    nxt, total = 1, 0
-    for i, (page_no, url) in enumerate(pages, 1):
+    if checkpoint is not None and (reused := _from_checkpoint(checkpoint.load_checkpoint(), pages)):
+        uploads, warnings = reused
+        if len(uploads) == len(pages):
+            return reused
+    client = ocr()  # 설정 누락은 파일 문제가 아니므로 아래 except 밖에서
+    done = len(uploads)  # 지난 시도가 저장한 업로드 수. 그다음부터 읽음
+    report(OCR_END * done // len(pages), "ocr")
+    saver = _Saver(checkpoint, uploads) if checkpoint is not None else None
+    nxt = uploads[-1].page_no + uploads[-1].pages if uploads else 1
+    total = sum(u.pages for u in uploads)
+    for i, (page_no, url) in enumerate(pages[done:], done + 1):
         start = max(page_no, nxt)
         try:
             read = client.read(url)
@@ -239,10 +246,11 @@ def _read(
             page["image"] = image
         uploads.append(_Upload(start, span, page_lines(page)))
         nxt = start + span
-        report(OCR_END * i // len(pages), "ocr")
-    _check_text(uploads)
-    if checkpoint is not None:
-        _save(checkpoint, uploads, warnings)
+        report(OCR_END * i // len(pages), "ocr")  # 취소됐으면 여기서 멈춤(저장하지 않음)
+        if i == len(pages):
+            _check_text(uploads)  # 글이 없는 결과는 저장하지 않음
+        if saver is not None:
+            saver.save(uploads[-1], warnings)
     return uploads, warnings
 
 
@@ -299,6 +307,7 @@ def _check_text(uploads: list[_Upload]) -> None:
 # ---------------------------------------------------------------- checkpoint
 #
 # {version: 2, colors: [색 이름], uploads: [{pageNo, pages, lines: [줄]}], warnings: [NoColor]}
+# uploads는 input.pages의 앞에서부터 끝낸 것만. 수가 input보다 적으면 그다음 업로드부터 이어서 읽음
 # 줄   [id, page, text, x0, x1, y0, y1, hand, 단어들]  ← BSON 배열(키 이름을 줄마다 되풀이하지 않음)
 # 단어들 [[start, end, confidence, hand, colorDiff, color, baseColor, highlight(, text)], ...]의
 #      JSON 글자. BSON 배열은 원소마다 형식 · 번호 키가 붙어 단어 수십만 개면 커서 글자로 묶음
@@ -307,24 +316,40 @@ def _check_text(uploads: list[_Upload]) -> None:
 # 숫자는 반올림하지 않음(JSON · BSON 모두 float 그대로 되돌아옴) → 다시 만든 결과가 처음과 같음
 
 
-def _save(checkpoint: Checkpoint, uploads: list[_Upload], warnings: list[NoColor]) -> None:
-    colors: dict[str, int] = {}
-    packed = [
-        {"pageNo": u.page_no, "pages": u.pages, "lines": [_pack_line(ln, colors) for ln in u.lines]}
-        for u in uploads
-    ]
-    value: JsonObject = {
-        "version": CHECKPOINT_VERSION,
-        "colors": list(colors),
-        "uploads": packed,
-        "warnings": warnings,
-    }
-    size = len(bson.encode({"checkpoint": value}))
-    if size > CHECKPOINT_MAX_BYTES:
-        # 저장하지 못해도 이번 시도는 그대로 계속함. 다시 시도하면 OCR부터(깨진 checkpoint와 같음)
-        log.warning("OCR 결과가 %d바이트로 저장 상한을 넘어 저장하지 않음", size)
-        return
-    checkpoint.save_checkpoint(value)
+class _Saver:
+    """업로드가 끝날 때마다 그때까지의 결과를 checkpoint에 저장합니다.
+
+    이미 줄인 업로드는 다시 줄이지 않습니다(색 번호는 뒤에 더해질 뿐 바뀌지 않음). 저장값이
+    상한을 넘으면 그때부터 저장하지 않습니다(뒤로 갈수록 커지기만 함). 앞서 저장한 값은 남습니다.
+    """
+
+    def __init__(self, checkpoint: Checkpoint, done: list[_Upload]) -> None:
+        self._checkpoint = checkpoint
+        self._colors: dict[str, int] = {}
+        self._packed = [self._pack(u) for u in done]
+        self._full = False
+
+    def _pack(self, u: _Upload) -> JsonObject:
+        lines = [_pack_line(ln, self._colors) for ln in u.lines]
+        return {"pageNo": u.page_no, "pages": u.pages, "lines": lines}
+
+    def save(self, upload: _Upload, warnings: list[NoColor]) -> None:
+        if self._full:
+            return
+        self._packed.append(self._pack(upload))
+        value: JsonObject = {
+            "version": CHECKPOINT_VERSION,
+            "colors": list(self._colors),
+            "uploads": list(self._packed),
+            "warnings": list(warnings),
+        }
+        size = len(bson.encode({"checkpoint": value}))
+        if size > CHECKPOINT_MAX_BYTES:
+            # 저장하지 못해도 이번 시도는 그대로 계속함. 다시 시도하면 앞서 저장한 곳 다음부터
+            log.warning("OCR 결과가 %d바이트로 저장 상한을 넘어 저장하지 않음", size)
+            self._full = True
+            return
+        self._checkpoint.save_checkpoint(value)
 
 
 def _pack_line(ln: Line, colors: dict[str, int]) -> list[object]:
@@ -358,7 +383,7 @@ def _pack_word(w: Word, line_text: str, colors: dict[str, int]) -> list[object]:
 def _from_checkpoint(
     saved: object, pages: list[tuple[int, str]]
 ) -> tuple[list[_Upload], list[NoColor]] | None:
-    """없거나 깨져 있으면 None(OCR부터 다시)."""
+    """저장된 업로드(input.pages의 앞에서부터)와 경고. 없거나 깨져 있으면 None(OCR부터 다시)."""
     if saved is None:
         return None
     if not isinstance(saved, dict):
@@ -371,9 +396,12 @@ def _from_checkpoint(
         colors = _saved_colors(saved.get("colors"))
         uploads = _saved_uploads(saved.get("uploads"), pages, colors)
         warnings = _saved_warnings(saved.get("warnings"), {u.page_no for u in uploads})
-        _check_text(uploads)
+        if len(uploads) == len(pages):
+            _check_text(uploads)
     except InputError as e:
         log.warning("저장된 OCR 결과가 깨져 OCR부터 다시 함: %s", e)
+        return None
+    if not uploads:
         return None
     return uploads, warnings
 
@@ -412,11 +440,11 @@ def _saved_colors(raw: object) -> list[str]:
 
 
 def _saved_uploads(raw: object, pages: list[tuple[int, str]], colors: list[str]) -> list[_Upload]:
-    if not isinstance(raw, list) or len(raw) != len(pages):
-        raise InputError("uploads 수가 input과 다름")
+    if not isinstance(raw, list) or len(raw) > len(pages):
+        raise InputError("uploads 수가 input보다 많음")
     out: list[_Upload] = []
     nxt, total = 1, 0
-    for i, (u, (page_no, _)) in enumerate(zip(raw, pages, strict=True)):
+    for i, (u, (page_no, _)) in enumerate(zip(raw, pages, strict=False)):
         error = InputError(f"uploads[{i}] 모양이 맞지 않음")
         if not isinstance(u, dict):
             raise error
