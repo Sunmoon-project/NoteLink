@@ -225,6 +225,24 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
     expect((await post(SEND, { email: EMAIL })).status).toBe(204);
   });
 
+  it('서울 자정 직전에 처음 보낸 인증번호는 자정 뒤 만료까지 남고, 자정을 넘어도 재발송 간격은 지킨다', async () => {
+    vi.setSystemTime(new Date('2026-01-01T14:59:30Z')); // 서울 23:59:30
+    expect((await post(SEND, { email: EMAIL })).status).toBe(204);
+    const row = authCodes.rows.find((r) => r.purpose === 'recovery')!;
+    expect(row.windowEndsAt.toISOString()).toBe('2026-01-01T15:00:00.000Z');
+    // 구간(자정)보다 번호 만료(10분 뒤)가 늦으므로 보관은 만료까지
+    expect(row.retainUntil.getTime()).toBe(row.expiresAt.getTime());
+    expect(row.expiresAt.toISOString()).toBe('2026-01-01T15:09:30.000Z');
+
+    vi.setSystemTime(new Date('2026-01-01T15:00:10Z')); // 자정 10초 뒤: 새 구간이지만 마지막 발송 40초 뒤
+    expect((await post(SEND, { email: EMAIL })).status).toBe(429);
+    vi.setSystemTime(new Date('2026-01-01T15:00:31Z')); // 60초가 지나면 새 구간으로 다시 센다
+    expect((await post(SEND, { email: EMAIL })).status).toBe(204);
+    expect(row.sendCount).toBe(1);
+    // 같은 이메일로 받은 번호로 계정 찾기가 된다(자정을 넘긴 번호도 쓸 수 있다)
+    expect((await post(FIND, { email: EMAIL, code: code() })).status).toBe(200);
+  });
+
   it('새 비밀번호도 가입과 같은 규칙(영문 + 숫자 8자 이상)을 지킨다', async () => {
     await post(SEND, { email: EMAIL });
     const res = await post(RESET, { id: EMAIL, email: EMAIL, code: code(), password: 'short' });
