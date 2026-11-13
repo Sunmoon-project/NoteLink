@@ -7,6 +7,7 @@ import { createGoogleConfig } from '../../config/google.config.js';
 import { createJwtConfig } from '../../config/jwt.config.js';
 import { createKakaoConfig } from '../../config/kakao.config.js';
 import { createNaverConfig } from '../../config/naver.config.js';
+import { optionalProviderConfig } from '../../config/oauth-config.js';
 import { MailModule } from '../mail/mail.module.js';
 import { AppLoginController } from './app-login/app-login.controller.js';
 import { AppLoginService } from './app-login/app-login.service.js';
@@ -69,23 +70,33 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       inject: [ConfigService],
       useFactory: createJwtConfig,
     },
-    // GOOGLE_* 환경변수를 읽고 검증한다. 마찬가지로 서버가 시작할 때 바로 실패한다
+    // GOOGLE_* 환경변수를 읽고 검증한다. 일부만 있거나 잘못되면 서버가 시작할 때 바로 실패하고,
+    // 하나도 없으면 구글 로그인만 끈다(null, 아래 SOCIAL_PROVIDER_ADAPTERS에서 빠진다)
     {
       provide: GOOGLE_CONFIG,
       inject: [ConfigService],
-      useFactory: createGoogleConfig,
+      useFactory: optionalProviderConfig(
+        ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI'],
+        createGoogleConfig,
+      ),
     },
     // KAKAO_* 환경변수도 같은 방식으로 읽고 검증한다
     {
       provide: KAKAO_CONFIG,
       inject: [ConfigService],
-      useFactory: createKakaoConfig,
+      useFactory: optionalProviderConfig(
+        ['KAKAO_REST_API_KEY', 'KAKAO_CLIENT_SECRET', 'KAKAO_REDIRECT_URI'],
+        createKakaoConfig,
+      ),
     },
     // NAVER_* 환경변수도 같은 방식으로 읽고 검증한다
     {
       provide: NAVER_CONFIG,
       inject: [ConfigService],
-      useFactory: createNaverConfig,
+      useFactory: optionalProviderConfig(
+        ['NAVER_CLIENT_ID', 'NAVER_CLIENT_SECRET', 'NAVER_REDIRECT_URI'],
+        createNaverConfig,
+      ),
     },
     TokenService,
     EmailCodeService,
@@ -99,15 +110,24 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
     GoogleOAuthClient,
     KakaoOAuthClient,
     NaverOAuthClient,
-    // 지원하는 소셜 로그인 제공자 목록
+    // 지원하는 소셜 로그인 제공자 목록. 키가 없어 꺼진(설정이 null인) 제공자는 빼서, 등록되지 않은 제공자처럼 거절된다
+    // (꺼진 제공자의 클라이언트는 만들어지지만 쓰이지 않는다)
     {
       provide: SOCIAL_PROVIDER_ADAPTERS,
-      inject: [GoogleOAuthClient, KakaoOAuthClient, NaverOAuthClient],
-      useFactory: (google: GoogleOAuthClient, kakao: KakaoOAuthClient, naver: NaverOAuthClient) => [
-        google,
-        kakao,
-        naver,
+      inject: [
+        GoogleOAuthClient,
+        KakaoOAuthClient,
+        NaverOAuthClient,
+        GOOGLE_CONFIG,
+        KAKAO_CONFIG,
+        NAVER_CONFIG,
       ],
+      useFactory: (
+        google: GoogleOAuthClient,
+        kakao: KakaoOAuthClient,
+        naver: NaverOAuthClient,
+        ...configs: unknown[]
+      ) => [google, kakao, naver].filter((_, i) => configs[i] !== null),
     },
     SocialProviderRegistry,
     SocialUserService,
