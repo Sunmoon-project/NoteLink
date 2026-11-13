@@ -125,7 +125,9 @@ describe('스터디룸 Socket.IO', () => {
     b.on('chat:message', receive);
     await app.get(StudyChatGateway).evict('room', 'b');
     await a.timeout(1000).emitWithAck('chat:send', {
-      chatRoomId: 'chat', text: '안녕', clientId: 'client1',
+      chatRoomId: 'chat',
+      text: '안녕',
+      clientId: 'client1',
     });
     expect(receive).not.toHaveBeenCalled();
     b.off('chat:message', receive);
@@ -143,5 +145,39 @@ describe('스터디룸 Socket.IO', () => {
     ).rejects.toThrow();
     expect(receive).not.toHaveBeenCalled();
     b.off('chat:message', receive);
+  });
+  it('만료된 토큰으로 보낸 메시지는 거부하고 새 토큰으로 재연결·재입장하면 복구된다', async () => {
+    tokens.verifyAccess.mockImplementation(async (token: string) => {
+      if (token === 'a') throw new Error('expired');
+      return { userId: token === 'renewed-a' ? 'a' : token };
+    });
+    await expect(
+      a.timeout(150).emitWithAck('chat:send', {
+        chatRoomId: 'chat',
+        text: '안녕',
+        clientId: 'expired',
+      }),
+    ).rejects.toThrow();
+    expect(chat.send).not.toHaveBeenCalled();
+    a.disconnect();
+    a.auth = { token: 'renewed-a' };
+    const reconnected = new Promise<void>((resolve, reject) => {
+      a.once('connect', resolve);
+      a.once('connect_error', reject);
+    });
+    a.connect();
+    await reconnected;
+    expect(await a.timeout(1000).emitWithAck('room:join', { roomId: 'room' })).toMatchObject({
+      ok: true,
+    });
+    const received = vi.fn();
+    a.on('chat:message', received);
+    await b.timeout(1000).emitWithAck('chat:send', {
+      chatRoomId: 'chat',
+      text: '안녕',
+      clientId: 'after-reconnect',
+    });
+    await vi.waitFor(() => expect(received).toHaveBeenCalledWith(message));
+    a.off('chat:message', received);
   });
 });

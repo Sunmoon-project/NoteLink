@@ -11,6 +11,7 @@ const mockApi = {
   social: { messages: jest.fn() },
 };
 const mockEmit = jest.fn();
+const mockConnectionListeners = new Set<(connected: boolean) => void>();
 const mockParticipantState = jest.fn((_userId: string) => ({ camOn: false, micOn: false }));
 const mockListeners = new Map<string, (payload: { roomId: string }) => void>();
 const mockOutbox = new Map<
@@ -60,6 +61,11 @@ jest.mock('../lib/livekit', () => ({
 jest.mock('../lib/socket', () => ({
   socket: {
     emit: (...args: unknown[]) => mockEmit(...args),
+    onConnection: (handler: (connected: boolean) => void) => {
+      mockConnectionListeners.add(handler);
+      handler(true);
+      return () => mockConnectionListeners.delete(handler);
+    },
     on: (event: string, handler: (payload: { roomId: string }) => void) => {
       mockListeners.set(event, handler);
       return () => mockListeners.delete(event);
@@ -96,6 +102,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockParticipantState.mockReturnValue({ camOn: false, micOn: false });
   mockListeners.clear();
+  mockConnectionListeners.clear();
   mockOutbox.clear();
   useAuth.setState({ userId: 'me' });
   useNet.setState({ state: 'ok' });
@@ -133,6 +140,22 @@ it('다른 참가자의 마이크 표시는 방 정보가 아니라 라이브 �
   });
   await renderScreen(<RoomScreen />, client());
   expect(await screen.findByLabelText('친구 마이크 꺼짐')).toBeTruthy();
+});
+
+it('소켓이 다시 연결되면 방을 재구독하고 대기 메시지를 전송한다', async () => {
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText('방');
+  await act(async () => mockConnectionListeners.forEach((listener) => listener(false)));
+  await act(async () => useNet.getState().set('ok'));
+  expect(screen.getByText('● 연결이 끊겼어요 · 다시 연결 중…')).toBeTruthy();
+  await sendMessage('연결 복구 테스트');
+  expect(mockEmit.mock.calls.filter(([event]) => event === 'chat:send')).toHaveLength(0);
+  const joins = mockEmit.mock.calls.filter(([event]) => event === 'room:join').length;
+  await act(async () => mockConnectionListeners.forEach((listener) => listener(true)));
+  expect(mockEmit.mock.calls.filter(([event]) => event === 'room:join').length).toBeGreaterThan(
+    joins,
+  );
+  expect(mockEmit.mock.calls.filter(([event]) => event === 'chat:send')).toHaveLength(1);
 });
 afterEach(() => jest.useRealTimers());
 

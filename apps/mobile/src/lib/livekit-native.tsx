@@ -32,7 +32,11 @@ const releaseAudio = () => {
   return audioUsers === 0 ? audioOp(() => AudioSession.stopAudioSession()) : Promise.resolve();
 };
 
-export async function connectMedia(roomId: string, onChange: () => void): Promise<MediaConnection> {
+export async function connectMedia(
+  roomId: string,
+  onChange: () => void,
+  onDisconnected?: () => void,
+): Promise<MediaConnection> {
   const { token, url } = await api.rooms.livekitToken(roomId);
   if (!token || !/^wss?:\/\//.test(url)) throw new Error('미디어 연결 주소를 확인해 주세요');
   const room = new Room({ adaptiveStream: { pixelDensity: 'screen' }, dynacast: true });
@@ -62,7 +66,12 @@ export async function connectMedia(roomId: string, onChange: () => void): Promis
     RoomEvent.Reconnecting,
     RoomEvent.Disconnected,
   ];
-  events.forEach((event) => room.on(event, syncAudio));
+  events.forEach((event) =>
+    room.on(event, () => {
+      syncAudio();
+      if (event === RoomEvent.Disconnected) onDisconnected?.();
+    }),
+  );
   try {
     await acquireAudio();
     await room.connect(url, token);

@@ -407,6 +407,7 @@ export function RoomScreen() {
   const [pick, setPick] = useState(false);
   const [chat, setChat] = useState(false);
   const [conn, setConn] = useState<'ok' | 'lost' | 'back' | 'kicked'>('ok');
+  const [socketConnected, setSocketConnected] = useState<boolean | null>(null);
   const [mediaGeneration, setMediaGeneration] = useState(0);
   const day = ymd(seoul(now));
   const midnight = Date.parse(`${day}T00:00:00+09:00`);
@@ -524,26 +525,51 @@ export function RoomScreen() {
       ).values(),
     ]);
   }, [history.data, myId, id]);
-  useEffect(() => {
-    let active = true;
-    const epochRef = syncEpoch;
+  // 방 구독(room:join). 소켓이 다시 붙을 때와, 소켓은 살아 있는데 HTTP 실패로만 끊김 상태였다가 돌아올 때
+  // 모두 부른다. 마지막으로 보낸 요청의 응답만 반영해, 둘이 겹쳐도 대기 메시지를 한 번만 보낸다
+  const joinAttempt = useRef(0);
+  const joinRoom = () => {
+    const attempt = ++joinAttempt.current;
     socket.emit('room:join', { roomId: id }, (r) => {
-      if (!active) return;
+      if (attempt !== joinAttempt.current) return;
       if (!r.ok) toast('채팅에 연결하지 못했어요. 나갔다가 다시 들어와 주세요');
       joinedChat.current = r.ok;
       setJoinedRoom(r.ok ? id : null);
-      if (r.ok) flushPending();
+      if (r.ok) {
+        flushPending();
+        if (chatId.data) void history.refetch();
+      }
       if (r.missed)
         setMsgs((p) => [...new Map([...p, ...r.missed!].map((m) => [m._id, m])).values()]);
     });
+  };
+  useEffect(() => {
+    const epochRef = syncEpoch;
+    const attempts = joinAttempt;
+    const onConnection = (connected: boolean) => {
+      setSocketConnected(connected);
+      if (!connected) {
+        attempts.current++;
+        epochRef.current++;
+        joinedChat.current = false;
+        inFlight.current.clear();
+        setJoinedRoom(null);
+        return;
+      }
+      joinRoom();
+    };
+    const unsubscribe = socket.onConnection?.(onConnection);
+    if (!socket.onConnection) onConnection(true);
     return () => {
-      active = false;
+      // 화면을 떠난 뒤 늦게 온 구독 응답은 버린다
+      attempts.current++;
+      unsubscribe?.();
       epochRef.current++;
       joinedChat.current = false;
       setJoinedRoom(null);
       socket.emit('room:leave', { roomId: id });
     };
-  }, [id, myId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [id, myId, chatId.data]); // eslint-disable-line react-hooks/exhaustive-deps
   useSocket(
     'room:presence',
     (p) => {
@@ -585,11 +611,13 @@ export function RoomScreen() {
   ]);
 
   // p.100 연결 끊김 시나리오: 끊김 → (재연결 | 5분 넘으면 자동 퇴장). 소켓이 끊기면 useNet이 'unstable' · 'offline'이 된다
-  const lost = useNet((s) => s.state === 'unstable' || s.state === 'offline');
+  const networkLost = useNet((s) => s.state === 'unstable' || s.state === 'offline');
+  const lost = networkLost || socketConnected === false;
   // 끊김 ↔ 복구 전이 (렌더 중 상태 조정)
   useEffect(() => {
     if (!lost) return;
     syncEpoch.current++;
+    joinAttempt.current++;
     // 연결 상실에 맞춰 기록 조회를 중지한다.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setJoinedRoom(null);
@@ -598,20 +626,12 @@ export function RoomScreen() {
   }, [lost]);
   if (lost && conn !== 'lost' && conn !== 'kicked') setConn('lost');
   if (!lost && conn === 'lost') setConn('back');
-  // 다시 연결되면 끊긴 동안 쓴 메시지를 보내고 잠시 뒤 안내를 닫는다
+  // 다시 연결되면 끊긴 동안 쓴 메시지를 보내고 잠시 뒤 안내를 닫는다.
+  // 끊김 상태가 되면 방 구독을 놓은 것으로 보므로(joinedChat = false), 소켓이 다시 붙지 않고 HTTP만 회복된
+  // 경우에도 여기서 다시 구독한다. 소켓이 다시 붙으며 이미 보낸 구독은 이 요청이 대신한다
   useEffect(() => {
     if (conn !== 'back') return;
-    socket.emit('room:join', { roomId: id }, (r) => {
-      if (!r.ok) toast('채팅에 연결하지 못했어요. 나갔다가 다시 들어와 주세요');
-      joinedChat.current = r.ok;
-      setJoinedRoom(r.ok ? id : null);
-      if (r.ok) {
-        flushPending();
-        if (chatId.data) void history.refetch();
-      }
-      if (r.missed)
-        setMsgs((p) => [...new Map([...p, ...r.missed!].map((m) => [m._id, m])).values()]);
-    });
+    if (!joinedChat.current) joinRoom();
     room.refetch();
     const t = setTimeout(() => setConn('ok'), 2600);
     return () => clearTimeout(t);

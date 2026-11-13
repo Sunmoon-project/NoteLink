@@ -70,7 +70,11 @@ it('실제 SDK 연결이 완료되어야 연결 상태를 표시하고 상태 �
   const { result } = await renderHook(() => useLiveRoom('room-1'));
   expect(result.current.connected).toBe(false);
   await waitFor(() =>
-    expect(mockConnectMedia).toHaveBeenCalledWith('room-1', expect.any(Function)),
+    expect(mockConnectMedia).toHaveBeenCalledWith(
+      'room-1',
+      expect.any(Function),
+      expect.any(Function),
+    ),
   );
   await act(async () => pending.resolve(connection));
   await waitFor(() => expect(result.current.connected).toBe(true));
@@ -84,6 +88,54 @@ it('실제 SDK 연결이 완료되어야 연결 상태를 표시하고 상태 �
     'room:state',
     expect.objectContaining({ roomId: 'room-1', micOn: true, camOn: true }),
   );
+});
+
+it('연결이 최종 종료되면 새 토큰으로 다시 연결하고 이전 연결을 정리한다', async () => {
+  jest.useFakeTimers();
+  const first = media();
+  const second = media();
+  mockConnectMedia.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+  const { result, unmount } = await renderHook(() => useLiveRoom('room-1'));
+  await act(async () => {});
+  expect(result.current.connected).toBe(true);
+  first.connected = false;
+  await act(async () => {
+    mockConnectMedia.mock.calls[0]![2]();
+    await jest.advanceTimersByTimeAsync(2_000);
+  });
+  await act(async () => {});
+  expect(first.close).toHaveBeenCalledTimes(1);
+  expect(mockConnectMedia).toHaveBeenCalledTimes(2);
+  expect(result.current.connected).toBe(true);
+  expect(second.micOn).toBe(false);
+  expect(second.camOn).toBe(false);
+  await unmount();
+  jest.useRealTimers();
+});
+
+it('화면을 나간 후에는 미디어 재연결을 시도하지 않는다', async () => {
+  jest.useFakeTimers();
+  const first = media();
+  mockConnectMedia.mockResolvedValue(first);
+  const { unmount } = await renderHook(() => useLiveRoom('room-1'));
+  await act(async () => {});
+  await act(async () => mockConnectMedia.mock.calls[0]![2]());
+  await unmount();
+  await jest.advanceTimersByTimeAsync(30_000);
+  expect(mockConnectMedia).toHaveBeenCalledTimes(1);
+  jest.useRealTimers();
+});
+
+it('방 접근 권한이 없으면 라이브 연결을 반복 재시도하지 않는다', async () => {
+  jest.useFakeTimers();
+  mockConnectMedia.mockRejectedValue({ status: 403 });
+  const { result, unmount } = await renderHook(() => useLiveRoom('room-1'));
+  await act(async () => {});
+  expect(result.current.error).toBeTruthy();
+  await act(async () => jest.advanceTimersByTimeAsync(60_000));
+  expect(mockConnectMedia).toHaveBeenCalledTimes(1);
+  await unmount();
+  jest.useRealTimers();
 });
 
 it('마이크 토글을 연결 객체에 전달하고 실제 결과를 읽는다', async () => {
