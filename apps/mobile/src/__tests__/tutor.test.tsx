@@ -8,7 +8,7 @@ import * as SecureStore from 'expo-secure-store';
 import { BUDDY_LINES, TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
 import { AvatarCheer, ENCOURAGE, PRAISE } from '../features/tutor/cheer';
 import { AvatarTeacherScreen } from '../features/tutor/teacher';
-import { STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
+import { FOLDER_STEPS, STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
 import { useAuth } from '../stores/auth';
 import { TutorScreen, nextSuggest, type Msg } from '../features/tutor/tutor';
 import { renderScreen, setParams } from '../test-utils';
@@ -591,7 +591,7 @@ it('처음 안내는 틀린 문제를 오답 노트로 매일 복습하는 방�
 describe('처음 안내', () => {
   beforeEach(() => {
     useAuth.setState({ userId: 'u1' });
-    useTour.setState({ step: 0 });
+    useTour.setState({ step: 0, kind: 'main', afterFolder: false });
   });
 
   it('실제 화면(홈 → 노트 → 퀴즈 → 홈)을 옮겨 다니며 단계마다 설명하고, 끝나면 기록한다', async () => {
@@ -621,6 +621,37 @@ describe('처음 안내', () => {
     // 버튼 이름대로 폴더 만들기를 연다
     await waitFor(() => expect(router.push).toHaveBeenLastCalledWith('/note-new/tag'));
     expect(useTour.getState().step).toBe(-1);
+    // 폴더를 만들면 폴더 안 + 버튼 안내로 잇는다
+    expect(useTour.getState().afterFolder).toBe(true);
+  });
+
+  it('첫 폴더 안내: 폴더 안 + 버튼을 짚어 올리는 방법을 알려 주고, 화면은 옮기지 않는다', async () => {
+    useTour.setState({ step: 0, kind: 'folder' });
+    jest.mocked(router.navigate).mockClear();
+    jest.mocked(router.push).mockClear();
+    await renderScreen(<TourCoach />);
+    expect(screen.getByText(FOLDER_STEPS[0]!.title)).toBeTruthy();
+    expect(FOLDER_STEPS[0]!.spot).toEqual({ target: 'folder-add', tab: 1 });
+    expect(FOLDER_STEPS[0]!.body).toMatch(/학습 자료 .*녹음 .*필기/);
+    expect(screen.getByText(`1 / ${FOLDER_STEPS.length}`)).toBeTruthy();
+    await fireEvent.press(screen.getByText('다음'));
+    expect(await screen.findByText(FOLDER_STEPS[1]!.title)).toBeTruthy();
+    await fireEvent.press(screen.getByText('시작하기'));
+    await waitFor(() => expect(useTour.getState().step).toBe(-1));
+    expect(router.navigate).not.toHaveBeenCalled();
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it('안내는 지금 있는 기능만 말한다: 노트 탭 + 는 폴더 만들기, 틀린 문제는 유사 퀴즈 · 보관함', () => {
+    const add = STEPS.find((s) => s.title === '정리: 자료 올리기')!;
+    expect(add.body).toMatch(/폴더를 먼저 만들어요.*폴더에 들어가 \+ 버튼/);
+    const make = STEPS.find((s) => s.title === '복습: 퀴즈 만들기')!;
+    expect(make.body).toMatch(/유사 퀴즈.*보관함/);
+    expect(STEPS.map((s) => s.body).join(' ')).not.toMatch(/오늘의 복습/);
+  });
+
+  it('처음 안내 마지막 단계는 정리 · 학습 · 복습을 ①②③으로 요약한다', () => {
+    expect(STEPS.at(-1)!.body).toMatch(/① .*② .*③ /);
   });
 
   it('건너뛰기는 한 번 더 묻고, 계속 보기를 고르면 안내에 남는다', async () => {
