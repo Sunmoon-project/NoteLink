@@ -80,6 +80,7 @@ export class AppLoginService {
       String(user._id),
       undefined,
       authorizedAt,
+      storedHash,
     );
     return { accessToken, refreshToken, user: toAppUser(user) };
   }
