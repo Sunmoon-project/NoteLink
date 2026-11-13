@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { UsersService } from '../src/modules/users/users.service.js';
 import { matches, type Row } from './support/fake-collection.js';
@@ -107,6 +107,11 @@ function savedDevices() {
   return () => count;
 }
 
+afterEach(() => {
+  service.onModuleDestroy();
+  vi.useRealTimers();
+});
+
 describe('상태 · 기기', () => {
   it('내 상태를 바꾼다', async () => {
     await service.setStatus(me.toHexString(), { status: 'busy' });
@@ -172,6 +177,39 @@ describe('상태 · 기기', () => {
     ).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
     expect(users.rows[0]).toMatchObject({ deletedAt: NOW });
     expect(saved()).toBe(1); // 저장까지 갔고, 보상 삭제가 지웠다
+    expect(devices.rows).toHaveLength(0);
+  });
+
+  it('보상 삭제까지 실패하면 서버가 도는 중에도 정리될 때까지 다시 한다(간격을 늘려 가며)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const deleteMany = devices.deleteMany;
+    const exists = users.exists;
+    let calls = 0;
+    users.exists = async (f) => {
+      calls += 1;
+      const found = await exists(f);
+      if (calls === 1) {
+        users.exists = exists;
+        await service.withdraw(me.toHexString(), NOW);
+        devices.deleteMany = () => Promise.reject(new Error('DB 오류'));
+      }
+      return found;
+    };
+    await expect(
+      service.registerDevice(me.toHexString(), {
+        platform: 'ios',
+        pushToken: 't',
+        locale: 'ko-KR',
+      }),
+    ).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
+    expect(devices.rows).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(60_000); // 1분 뒤 정리: DB가 아직 안 돼서 실패 → 2분 뒤로
+    expect(devices.rows).toHaveLength(1);
+    devices.deleteMany = deleteMany; // DB가 돌아왔다
+    await vi.advanceTimersByTimeAsync(60_000); // 아직 2분이 안 됐다
+    expect(devices.rows).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(devices.rows).toHaveLength(0);
   });
 

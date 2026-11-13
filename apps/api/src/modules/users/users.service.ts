@@ -7,6 +7,7 @@ import {
   Logger,
   NotFoundException,
   type OnApplicationBootstrap,
+  type OnModuleDestroy,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Types, type Model } from 'mongoose';
@@ -22,8 +23,10 @@ import { ProgressService } from '../progress/progress.service.js';
 import type { UpdateProfileDto } from './dto/update-profiile.dto.js';
 
 @Injectable()
-export class UsersService implements OnApplicationBootstrap {
+export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(UsersService.name);
+  /** 다시 할 탈퇴 계정 기기 정리(실패했을 때만 잡힌다). 하나만 둔다 */
+  private sweepTimer: NodeJS.Timeout | null = null;
 
   constructor(
     @InjectModel(User.name)
@@ -68,21 +71,41 @@ export class UsersService implements OnApplicationBootstrap {
       { upsert: true },
     );
     if (!(await this.userModel.exists(accepting))) {
-      // 저장한 기기를 지운다. 끝내 못 지우면 서버가 켜질 때 정리한다(sweepWithdrawnDevices)
+      // 저장한 기기를 지운다. 끝내 못 지우면 정리될 때까지 주기적으로 다시 한다(scheduleSweep)
       await this.retry(() =>
         this.devices.deleteMany({ pushToken: dto.pushToken, userId: id }),
-      ).catch((error: unknown) =>
-        this.logger.error(`탈퇴 중 등록된 기기를 지우지 못함(다음 시작 때 정리): ${String(error)}`),
-      );
+      ).catch((error: unknown) => {
+        this.logger.error(`탈퇴 중 등록된 기기를 지우지 못함(곧 다시 정리): ${String(error)}`);
+        this.scheduleSweep();
+      });
       throw notFound();
     }
   }
 
-  /** 서버가 켜질 때 탈퇴한 계정에 남은 기기를 정리한다. 시작을 늦추지 않게 기다리지 않는다 */
+  /** 서버가 켜질 때 탈퇴한 계정에 남은 기기를 정리한다(이전 실행에서 못 지운 것). 시작을 늦추지 않게 기다리지 않는다 */
   onApplicationBootstrap(): void {
-    void this.sweepWithdrawnDevices().catch((error: unknown) =>
-      this.logger.warn(`탈퇴 계정 기기 정리 실패: ${String(error)}`),
-    );
+    this.scheduleSweep(0);
+  }
+
+  onModuleDestroy(): void {
+    if (this.sweepTimer) clearTimeout(this.sweepTimer);
+    this.sweepTimer = null;
+  }
+
+  /**
+   * 탈퇴 계정 기기 정리를 delayMs 뒤에 한다. 실패하면 간격을 두 배로(최대 1시간) 늘려 성공할 때까지 다시 한다.
+   * 이미 잡혀 있으면 그대로 둔다(그 정리가 남은 기기를 모두 지운다)
+   */
+  private scheduleSweep(delayMs = 60_000): void {
+    if (this.sweepTimer) return;
+    this.sweepTimer = setTimeout(() => {
+      this.sweepTimer = null;
+      this.sweepWithdrawnDevices().catch((error: unknown) => {
+        this.logger.warn(`탈퇴 계정 기기 정리 실패(다시 시도): ${String(error)}`);
+        this.scheduleSweep(Math.min(Math.max(delayMs * 2, 60_000), 3_600_000));
+      });
+    }, delayMs);
+    this.sweepTimer.unref();
   }
 
   /**
