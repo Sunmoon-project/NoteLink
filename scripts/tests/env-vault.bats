@@ -460,6 +460,39 @@ team() { printf '%s' "$2" > "$TEAM_DIR/$1"; }  # 팀
   [ "$(ls -A "$dir" | grep -c '^\.env\.bak\.')" -eq 1 ]
 }
 
+@test "pull: 같은 초에 손으로 만든 .env를 또 남겨도 앞의 시각 백업을 덮지 않는다" {
+  team APP-ENV dev
+  dir="$ENV_VAULT_ROOT/apps/ai"
+  # 늘 같은 시각. 형식이 바뀌면 실패(가짜가 시각 형식 변경을 가리지 않게)
+  printf '#!/usr/bin/env bash\n[ "$1" = +%%Y%%m%%d%%H%%M%%S ] || exit 9\necho 20261114010203\n' > "$TMP/bin/date"
+  chmod +x "$TMP/bin/date"
+  printf 'FIRST=1\n' > "$dir/.env.bak"
+  printf 'SAME_SECOND=1\n' > "$dir/.env.bak.20261114010203"
+  printf 'MY_HAND=1\n' > "$dir/.env"
+  run bash "$SCRIPT" pull ai
+  [ "$status" -eq 0 ]
+  [[ "$output" == *".env.bak.20261114010203.1로 남겼습니다"* ]]
+  printf 'MY_HAND=2\n' > "$dir/.env"
+  run bash "$SCRIPT" pull ai
+  [ "$status" -eq 0 ]
+  [ "$(cat "$dir/.env.bak")" = FIRST=1 ]
+  [ "$(cat "$dir/.env.bak.20261114010203")" = SAME_SECOND=1 ]
+  [ "$(cat "$dir/.env.bak.20261114010203.1")" = MY_HAND=1 ]
+  [ "$(cat "$dir/.env.bak.20261114010203.2")" = MY_HAND=2 ]
+}
+
+@test "pull: 백업 이름이 끊어진 링크면 따라가 쓰지 않고 다음 이름을 쓴다" {
+  dir="$ENV_VAULT_ROOT/apps/ai"
+  ln -s "$TMP/outside" "$dir/.env.bak" 2> /dev/null || true
+  [ -L "$dir/.env.bak" ] || skip "심볼릭 링크를 만들 수 없음(Windows Git Bash)"
+  team APP-ENV dev
+  printf 'MY_HAND=1\n' > "$dir/.env"
+  run bash "$SCRIPT" pull ai
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMP/outside" ]
+  [ "$(cat "$dir"/.env.bak.*)" = MY_HAND=1 ]
+}
+
 @test "pull: 꺼 둔 secret은 받지 않고, .env로 쓸 수 없는 값은 건너뛴다" {
   team APP-ENV dev
   team ANTHROPIC-API-KEY off

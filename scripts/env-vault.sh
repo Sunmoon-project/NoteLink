@@ -169,6 +169,11 @@ local_keys() {  # $1 = .env.local 경로
 
 PULL_HEAD='# scripts/env-vault.sh pull '
 
+# $1을 $2라는 새 파일(권한 600)로 복사. $2가 이미 있으면(끊어진 링크 포함) 쓰지 않고 실패
+new_file() {  # $1 = 원본, $2 = 새 파일
+  (set -C; umask 077; cat "$1" > "$2") 2> /dev/null
+}
+
 pull() {  # $1 = 앱. 팀 Key Vault에서만 받음(배포 값은 로컬로 내려받지 않음)
   local app=$1 dir env local_file tmp have local_set var name value line bak rc count=0 skipped=0 overridden=0
   check_app "$app"
@@ -219,16 +224,26 @@ pull() {  # $1 = 앱. 팀 Key Vault에서만 받음(배포 값은 로컬로 내�
       echo "env-vault: apps/ai/.env.local의 값에 \${…}가 있어 다른 변수로 바뀌어 읽힙니다. 의도한 것이 아니면 $DOLLAR_HINT" >&2
     fi
   fi
-  # 있던 .env는 늘 남김. 손으로 만든 것(pull 머리말이 없음)은 .env.bak — 이미 있으면 시각을 붙인 새 이름으로
-  # 덮지 않음. pull이 만든 것은 .env.prev(매번 바꿈): 받은 뒤 .env에 직접 고친 값도 한 번은 되찾을 수 있게
+  # 있던 .env는 늘 남김. 손으로 만든 것(pull 머리말이 없음)은 .env.bak — 이미 있으면 .env.bak.<시각>,
+  # 그것도 있으면 .<시각>.1 · .2 …로 덮지 않음. pull이 만든 것은 .env.prev(매번 바꿈): 받은 뒤 .env에 직접
+  # 고친 값도 한 번은 되찾을 수 있게. 새 이름은 noclobber(set -C)로 만들어, 있는지 보고 쓰는 사이에 다른
+  # pull이 같은 이름을 쓰거나 끊어진 링크를 따라 다른 곳에 쓰지 않게 함
   if [ -f "$env" ]; then
     if head -n 1 "$env" | grep -qF "$PULL_HEAD"; then
       bak="$dir/.env.prev"
+      rm -f "$bak"
+      new_file "$env" "$bak" || die "있던 .env를 ${bak##*/}로 남기지 못했습니다"
     else
+      local base i=0
+      base="$dir/.env.bak.$(date +%Y%m%d%H%M%S)"
       bak="$dir/.env.bak"
-      [ -e "$bak" ] && bak="$dir/.env.bak.$(date +%Y%m%d%H%M%S)"
+      until new_file "$env" "$bak"; do
+        [ -e "$bak" ] || [ -L "$bak" ] || die "있던 .env를 ${bak##*/}로 남기지 못했습니다"
+        if [ "$i" -eq 0 ]; then bak=$base; else bak="$base.$i"; fi
+        i=$((i + 1))
+        [ "$i" -le 100 ] || die "있던 .env를 남길 이름을 찾지 못했습니다(apps/$app/.env.bak.* 정리)"
+      done
     fi
-    (umask 077 && cp "$env" "$bak") || die "있던 .env를 ${bak##*/}로 남기지 못했습니다"
     echo "있던 .env를 apps/$app/${bak##*/}로 남겼습니다"
   fi
   mv "$tmp" "$env" || die "$env를 쓰지 못했습니다"
