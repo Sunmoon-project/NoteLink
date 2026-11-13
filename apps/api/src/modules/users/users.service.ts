@@ -70,7 +70,15 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
       { $set: { userId: id, platform: dto.platform, locale: dto.locale, lastSeenAt: now } },
       { upsert: true },
     );
-    if (!(await this.userModel.exists(accepting))) {
+    let stillAccepting: boolean;
+    try {
+      stillAccepting = Boolean(await this.userModel.exists(accepting));
+    } catch (error) {
+      // 다시 확인하지 못했다: 그사이 탈퇴했을 수도 있으니 정리를 잡아 둔다(탈퇴한 계정의 기기만 지운다)
+      this.scheduleSweep();
+      throw error;
+    }
+    if (!stillAccepting) {
       // 저장한 기기를 지운다. 끝내 못 지우면 정리될 때까지 주기적으로 다시 한다(scheduleSweep)
       await this.retry(() =>
         this.devices.deleteMany({ pushToken: dto.pushToken, userId: id }),

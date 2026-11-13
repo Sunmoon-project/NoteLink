@@ -213,6 +213,31 @@ describe('상태 · 기기', () => {
     expect(devices.rows).toHaveLength(0);
   });
 
+  it('저장 뒤 다시 확인하다 DB 오류가 나도, 그사이 탈퇴했다면 잡아 둔 정리가 기기를 지운다', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const original = users.exists;
+    // 기기 등록의 첫 확인이 통과한 직후 탈퇴가 끝까지 돌고(그 안의 확인은 원래 함수), 저장 뒤 다시 확인은 DB 오류
+    users.exists = async (f) => {
+      const found = await original(f);
+      users.exists = original;
+      await service.withdraw(me.toHexString(), NOW);
+      users.exists = () => Promise.reject(new Error('DB 오류'));
+      return found;
+    };
+    await expect(
+      service.registerDevice(me.toHexString(), {
+        platform: 'ios',
+        pushToken: 't',
+        locale: 'ko-KR',
+      }),
+    ).rejects.toThrow('DB 오류');
+    expect(devices.rows).toHaveLength(1);
+    users.exists = original;
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(devices.rows).toHaveLength(0);
+  });
+
   it('보상 삭제까지 실패해 남은 기기는 서버가 켜질 때의 정리가 지운다', async () => {
     const exists = users.exists;
     let calls = 0;
