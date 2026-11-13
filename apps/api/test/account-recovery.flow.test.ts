@@ -43,6 +43,7 @@ const NEW_PASSWORD = 'NewPassw0rd';
 const START = new Date('2026-01-01T00:00:00Z');
 
 interface UserRow {
+  sessionVersion?: number;
   _id: Types.ObjectId;
   email: string;
   passwordHash: string | null;
@@ -90,9 +91,15 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
       findOne: (f: { email?: string; deletedAt?: null; _id?: Types.ObjectId }) => ({
         lean: () => Promise.resolve(find(f)),
       }),
-      updateOne: (f: { _id: Types.ObjectId }, update: { $set: Partial<UserRow> }) => {
+      updateOne: (
+        f: { _id: Types.ObjectId },
+        update: { $set: Partial<UserRow>; $inc?: { sessionVersion?: number } },
+      ) => {
         const row = users.find((u) => u._id.equals(f._id));
         if (row) Object.assign(row, update.$set);
+        if (row && update.$inc?.sessionVersion) {
+          row.sessionVersion = (row.sessionVersion ?? 0) + update.$inc.sessionVersion;
+        }
         const hook = 'lastLoginAt' in update.$set ? afterPasswordCheck : undefined;
         afterPasswordCheck = undefined;
         return (hook ? hook() : Promise.resolve()).then(() => ({ matchedCount: row ? 1 : 0 }));
@@ -241,6 +248,34 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
       fakeRefresh.model.updateMany = updateMany;
     }
     expect(await compare(NEW_PASSWORD, user.passwordHash!)).toBe(true);
+    const me = await request(app.getHttpServer())
+      .get('/api/v1/users/me')
+      .set('Authorization', `Bearer ${before.accessToken}`);
+    expect(me.status).toBe(401);
+    expect((await post(BASE(PATHS.refresh), { refreshToken: before.refreshToken })).status).toBe(
+      401,
+    );
+  });
+
+  it('재설정 전에 끝난 로그인의 토큰은, 재설정의 끊은 시각이 그보다 앞서고 refresh 폐기가 실패해도 거절된다', async () => {
+    const user = users[0]!;
+    vi.setSystemTime(new Date(START.getTime() + 1000));
+    const before = await tokens.issue(user._id.toString()); // 재설정이 시각을 정한 뒤 만들어진 토큰
+    vi.setSystemTime(START); // 재설정의 끊은 시각은 그보다 앞선다
+    await post(SEND, { email: EMAIL });
+    const updateMany = fakeRefresh.model.updateMany;
+    fakeRefresh.model.updateMany = () => Promise.reject(new Error('DB 쓰기 실패'));
+    try {
+      const res = await post(RESET, {
+        id: EMAIL,
+        email: EMAIL,
+        code: code(),
+        password: NEW_PASSWORD,
+      });
+      expect(res.status).toBe(500);
+    } finally {
+      fakeRefresh.model.updateMany = updateMany;
+    }
     const me = await request(app.getHttpServer())
       .get('/api/v1/users/me')
       .set('Authorization', `Bearer ${before.accessToken}`);

@@ -84,10 +84,8 @@ export class AccountRecoveryService {
     const passwordHash = await hash(password, this.hashCost);
     // 비밀번호를 바꾸면 다른 기기의 로그인은 끊는다(잃어버린 기기 · 남이 쓰던 세션 정리).
     // 새 해시와 끊은 시각을 한 번에 적어, 비밀번호만 바뀌고 예전 로그인이 남는 일이 없게 한다
+    // 세션 버전도 같은 갱신에서 올라가므로, 이 갱신 전에 예전 비밀번호를 읽은 로그인의 토큰은 언제 만들어졌든 거절된다
     await this.tokens.revokeAll(user._id, new Date(), { passwordHash });
-    // 끊은 시각은 DB에 쓰기 직전에 정해진다. 쓰기가 반영되기 전에 만들어진 토큰도 거절되게, 반영된 뒤 한 번 더 끊는다
-    // (반영 뒤에 예전 해시로 확인한 로그인은 TokenService.issue가 해시를 다시 봐서 거절한다)
-    await this.tokens.revokeAll(user._id);
   }
 
   /** 인증번호를 확인하고 바로 써 버린다(한 번만 쓸 수 있다) */
