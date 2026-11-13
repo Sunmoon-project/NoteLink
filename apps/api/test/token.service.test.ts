@@ -24,9 +24,16 @@ interface Row {
   device?: Record<string, unknown>;
   expiresAt: Date;
   revokedAt: Date | null;
+  claimId?: string | null;
 }
 
-type Filter = { tokenHash: string; revokedAt?: null; expiresAt?: { $gt: Date } };
+type Filter = {
+  tokenHash: string;
+  revokedAt?: null;
+  expiresAt?: { $gt: Date };
+  claimId?: string;
+};
+type Update = { revokedAt: Date | null; claimId?: string | null };
 
 /**
  * refresh_tokens 컬렉션을 메모리로 흉내 낸다. TokenService가 쓰는 것(create · findOne · findOneAndUpdate · updateOne · deleteOne)만 만든다.
@@ -42,7 +49,8 @@ function createFakeModel() {
   const matches = (row: Row, f: Filter) =>
     row.tokenHash === f.tokenHash &&
     (!('revokedAt' in f) || row.revokedAt === f.revokedAt) &&
-    (!f.expiresAt || row.expiresAt > f.expiresAt.$gt);
+    (!f.expiresAt || row.expiresAt > f.expiresAt.$gt) &&
+    (!('claimId' in f) || row.claimId === f.claimId);
 
   const model = {
     create: (data: Omit<Row, 'revokedAt' | '_id'>) => {
@@ -61,17 +69,24 @@ function createFakeModel() {
       return Promise.resolve(row);
     },
     findOne: (filter: Filter) => Promise.resolve(rows.find((r) => matches(r, filter)) ?? null),
-    findOneAndUpdate: (filter: Filter, update: { revokedAt: Date }) => {
+    findOneAndUpdate: (filter: Filter, update: Update) => {
       const row = rows.find((r) => matches(r, filter));
       if (!row) return Promise.resolve(null);
       const before = { ...row };
-      row.revokedAt = update.revokedAt;
+      Object.assign(row, update);
       return Promise.resolve(before);
     },
-    updateOne: (filter: Filter, update: { revokedAt: Date }) => {
+    updateOne: (filter: Filter, update: Update) => {
       const row = rows.find((r) => matches(r, filter));
-      if (row) row.revokedAt = update.revokedAt;
+      if (row) Object.assign(row, update);
       return Promise.resolve({ modifiedCount: row ? 1 : 0 });
+    },
+    updateMany: (filter: { userId: Types.ObjectId; revokedAt?: null }, update: Update) => {
+      const hit = rows.filter(
+        (r) => r.userId.equals(filter.userId) && (!('revokedAt' in filter) || r.revokedAt === null),
+      );
+      for (const r of hit) Object.assign(r, update);
+      return Promise.resolve({ modifiedCount: hit.length });
     },
     deleteOne: (filter: { _id: Types.ObjectId }) => {
       if (failures.deleteOne > 0) {
@@ -86,11 +101,57 @@ function createFakeModel() {
   return { rows, failures, hooks, model: model as unknown as Model<RefreshTokenDocument> };
 }
 
+/** users 컬렉션: 탈퇴 · 로그인 끊은 시각만 담는다. 없는 id는 활성 사용자로 본다(지우려면 deleted에 넣는다) */
+function createFakeUsers() {
+  const state = new Map<
+    string,
+    {
+      deletedAt?: Date | null;
+      sessionsRevokedAt?: Date | null;
+      passwordHash?: string | null;
+      sessionVersion?: number;
+    }
+  >();
+  const missing = new Set<string>();
+  // 다음 findOne 몇 번을 DB 오류로 실패시킨다(skip번은 통과시킨 뒤)
+  const failures = { skip: 0, findOne: 0 };
+  const model = {
+    findOne: (filter: { _id: Types.ObjectId }) => ({
+      lean: () => {
+        if (failures.findOne > 0) {
+          if (failures.skip > 0) failures.skip -= 1;
+          else {
+            failures.findOne -= 1;
+            return Promise.reject(new Error('DB 읽기 실패'));
+          }
+        }
+        const id = filter._id.toHexString();
+        return Promise.resolve(missing.has(id) ? null : (state.get(id) ?? {}));
+      },
+    }),
+    updateOne: (
+      filter: { _id: Types.ObjectId },
+      update: { $set: { sessionsRevokedAt: Date }; $inc?: { sessionVersion: number } },
+    ) => {
+      const id = filter._id.toHexString();
+      const prev = state.get(id);
+      state.set(id, {
+        ...prev,
+        ...update.$set,
+        sessionVersion: (prev?.sessionVersion ?? 0) + (update.$inc?.sessionVersion ?? 0),
+      });
+      return Promise.resolve({ matchedCount: 1 });
+    },
+  };
+  return { state, missing, failures, model: model as never };
+}
+
 function setup() {
   const fake = createFakeModel();
+  const users = createFakeUsers();
   const jwt = new JwtService();
-  const service = new TokenService(jwt, CONFIG, fake.model);
-  return { service, jwt, rows: fake.rows, failures: fake.failures, hooks: fake.hooks };
+  const service = new TokenService(jwt, CONFIG, fake.model, users.model);
+  return { service, jwt, rows: fake.rows, failures: fake.failures, hooks: fake.hooks, users };
 }
 
 const newUserId = () => new Types.ObjectId().toHexString();
@@ -332,5 +393,175 @@ describe('TokenService.revoke', () => {
 
     await expect(service.revoke(refreshToken)).resolves.toBeUndefined();
     await expect(service.revoke('아무-토큰')).resolves.toBeUndefined();
+  });
+});
+
+describe('로그인 끊기 · 탈퇴', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('로그인을 확인한 뒤 발급 전에 로그인이 끊겼으면(비밀번호 재설정) 토큰을 지우고 거절한다', async () => {
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:00.000Z') });
+    const { service, rows } = setup();
+    const userId = newUserId();
+    const authorizedAt = new Date(); // 예전 비밀번호를 읽은 시각
+    vi.setSystemTime(new Date('2026-11-13T00:00:00.200Z'));
+    await service.revokeAll(new Types.ObjectId(userId)); // 그사이 재설정
+    vi.setSystemTime(new Date('2026-11-13T00:00:00.400Z'));
+
+    await expectUnauthorized(service.issue(userId, undefined, authorizedAt));
+    expect(rows).toHaveLength(0);
+    // 끊기 뒤에 확인한 로그인은 된다
+    await expect(service.issue(userId, undefined, new Date())).resolves.toBeDefined();
+  });
+
+  it('갱신의 두 번째 확인에서 DB를 못 읽으면 401이 아니라 오류를 내고, 쓴 토큰을 되살려 다시 갱신할 수 있다', async () => {
+    const { service, rows, users } = setup();
+    const pair = await service.issue(newUserId());
+    users.failures.skip = 1; // 첫 확인은 통과, 두 번째 확인만 실패
+    users.failures.findOne = 1;
+
+    await expect(service.rotate(pair.refreshToken)).rejects.toThrow('DB 읽기 실패');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.revokedAt).toBeNull();
+    await expect(service.rotate(pair.refreshToken)).resolves.toBeDefined();
+  });
+
+  it('갱신 도중 DB 오류가 난 사이에 로그아웃했으면(같은 밀리초여도) 쓴 토큰을 되살리지 않는다', async () => {
+    // 시계를 멈춰 갱신의 폐기 시각과 로그아웃 시각이 같은 밀리초가 되게 한다
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:00.000Z') });
+    const { service, rows, users } = setup();
+    const pair = await service.issue(newUserId());
+    const model = users.model as unknown as {
+      findOne: (f: unknown) => { lean: () => Promise<unknown> };
+    };
+    const findOne = model.findOne;
+    let calls = 0;
+    model.findOne = (f) => ({
+      lean: async () => {
+        calls += 1;
+        if (calls === 1) return findOne(f).lean();
+        await service.revoke(pair.refreshToken); // 두 번째 확인 중에 로그아웃
+        throw new Error('DB 읽기 실패');
+      },
+    });
+
+    await expect(service.rotate(pair.refreshToken)).rejects.toThrow('DB 읽기 실패');
+    expect(rows[0]!.revokedAt).not.toBeNull();
+    model.findOne = findOne;
+    await expectUnauthorized(service.rotate(pair.refreshToken));
+  });
+
+  it('로그인이 확인한 비밀번호 해시가 발급 때 DB와 다르면(그사이 재설정) 끊은 시각과 상관없이 거절한다', async () => {
+    const { service, rows, users } = setup();
+    const userId = newUserId();
+    users.state.set(userId, { passwordHash: 'new-hash' });
+
+    await expectUnauthorized(service.issue(userId, undefined, new Date(), 'old-hash'));
+    expect(rows).toHaveLength(0);
+    await expect(service.issue(userId, undefined, new Date(), 'new-hash')).resolves.toBeDefined();
+  });
+
+  it('revokeAll은 세션 버전을 올려, 끊은 시각보다 늦게 만든 예전 버전 토큰도 거절한다', async () => {
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:01.000Z') });
+    const { service } = setup();
+    const userId = newUserId();
+    const pair = await service.issue(userId); // 버전 0
+    // 끊은 시각이 토큰보다 앞서는 경우(시각을 정한 뒤 DB 반영 전에 토큰이 만들어짐)
+    await service.revokeAll(new Types.ObjectId(userId), new Date('2026-11-13T00:00:00.000Z'));
+
+    await expectUnauthorized(service.verifyAccess(pair.accessToken));
+    await expectUnauthorized(service.rotate(pair.refreshToken));
+    // 새로 로그인하면 지금 버전(1)으로 받아 쓸 수 있다
+    vi.setSystemTime(new Date('2026-11-13T00:00:02.000Z'));
+    const next = await service.issue(userId);
+    await expect(service.verifyAccess(next.accessToken)).resolves.toEqual({ userId });
+    await expect(service.rotate(next.refreshToken)).resolves.toBeDefined();
+  });
+
+  it('같은 밀리초에 받은 토큰도 거절한다', async () => {
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:00.000Z') });
+    const { service } = setup();
+    const userId = newUserId();
+    const pair = await service.issue(userId);
+    await service.revokeAll(new Types.ObjectId(userId));
+
+    await expectUnauthorized(service.verifyAccess(pair.accessToken));
+  });
+
+  it('갱신 도중(확인 뒤 · 새 토큰 저장 전) 로그인이 끊기면 새 토큰을 주지 않고 지운다', async () => {
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:00.000Z') });
+    const { service, rows, hooks, users } = setup();
+    const userId = newUserId();
+    const pair = await service.issue(userId);
+    vi.setSystemTime(new Date('2026-11-13T00:00:01.000Z'));
+    // 새 토큰 줄이 저장된 직후, 기존 줄을 폐기하기 전에 끊긴 시각만 먼저 적힌 상황
+    hooks.afterCreate = () => {
+      users.state.set(userId, { sessionsRevokedAt: new Date('2026-11-13T00:00:00.500Z') });
+    };
+
+    await expectUnauthorized(service.rotate(pair.refreshToken));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('revokeAll 뒤에는 그 전에 받은 access · refresh 토큰을 모두 거절한다', async () => {
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:00Z') });
+    const { service, rows } = setup();
+    const userId = newUserId();
+    const pair = await service.issue(userId);
+
+    vi.setSystemTime(new Date('2026-11-13T00:00:05Z'));
+    await service.revokeAll(new Types.ObjectId(userId));
+
+    await expectUnauthorized(service.verifyAccess(pair.accessToken));
+    await expectUnauthorized(service.rotate(pair.refreshToken));
+    expect(rows.every((r) => r.revokedAt)).toBe(true);
+  });
+
+  it('끊기 직전 같은 초에 받은 토큰도 거절한다(밀리초로 비교)', async () => {
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:00.100Z') });
+    const { service } = setup();
+    const userId = newUserId();
+    const pair = await service.issue(userId);
+
+    vi.setSystemTime(new Date('2026-11-13T00:00:00.900Z'));
+    await service.revokeAll(new Types.ObjectId(userId));
+
+    await expectUnauthorized(service.verifyAccess(pair.accessToken));
+    await expectUnauthorized(service.rotate(pair.refreshToken));
+  });
+
+  it('밀리초 발급 시각이 없는 예전 토큰은 끊은 그 초에 받았어도 거절한다', async () => {
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:00.500Z') });
+    const { service, jwt } = setup();
+    const userId = newUserId();
+    const legacy = jwt.sign({ sub: userId }, { secret: CONFIG.accessSecret, expiresIn: '15m' });
+    await service.revokeAll(new Types.ObjectId(userId));
+
+    await expectUnauthorized(service.verifyAccess(legacy));
+  });
+
+  it('끊은 뒤 새로 로그인한 토큰은 받는다(같은 초여도)', async () => {
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:00.000Z') });
+    const { service } = setup();
+    const userId = newUserId();
+    await service.revokeAll(new Types.ObjectId(userId));
+    vi.setSystemTime(new Date('2026-11-13T00:00:00.001Z'));
+
+    const pair = await service.issue(userId);
+    await expect(service.verifyAccess(pair.accessToken)).resolves.toEqual({ userId });
+  });
+
+  it('탈퇴했거나 없는 사용자의 토큰은 거절한다', async () => {
+    const { service, users } = setup();
+    const gone = newUserId();
+    const missing = newUserId();
+    const a = await service.issue(gone);
+    const b = await service.issue(missing);
+    users.state.set(gone, { deletedAt: new Date() });
+    users.missing.add(missing);
+
+    await expectUnauthorized(service.verifyAccess(a.accessToken));
+    await expectUnauthorized(service.rotate(a.refreshToken));
+    await expectUnauthorized(service.verifyAccess(b.accessToken));
   });
 });

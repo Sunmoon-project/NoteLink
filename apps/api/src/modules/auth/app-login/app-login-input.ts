@@ -129,3 +129,19 @@ export function parseLoginBody(body: unknown): { email: string; password: string
   const record = asRecord(body);
   return { email: readEmail(record), password: readLoginPassword(record) };
 }
+
+/** `POST /auth/password/reset` 본문: `{ id, email, code, password }` (아이디는 가입 이메일) */
+export function parsePasswordResetBody(body: unknown): {
+  id: string;
+  email: string;
+  code: string;
+  password: string;
+} {
+  const record = asRecord(body);
+  return {
+    id: readEmail(record, 'id'),
+    email: readEmail(record),
+    code: readCode(record),
+    password: readNewPassword(record),
+  };
+}
