@@ -35,8 +35,11 @@ export interface UserSource {
   settings?: Record<string, unknown>;
   status?: string;
   interestCategoryIds?: Types.ObjectId[];
+  subscription?: { tier?: string; status?: string; currentPeriodEnd?: Date | null } | null;
   createdAt?: Date;
 }
+
+const PLAN_TIERS = ['free', 'pro', 'max'] as const;
 
 /** `packages/shared` 의 `User` 모양. 서버는 이 패키지에 의존하지 않아 필요한 부분을 여기에 둔다 */
 export interface AppUser {
@@ -50,6 +53,8 @@ export interface AppUser {
   status: Status;
   interestCategoryIds: string[];
   streakDays: number;
+  /** 요금제(packages/shared User.subscription). 기록이 없으면 보내지 않는다(앱은 Free로 본다) */
+  subscription?: { tier: (typeof PLAN_TIERS)[number]; status: string; currentPeriodEnd?: string };
   createdAt: string;
 }
 
@@ -75,6 +80,17 @@ export function toAppUser(user: UserSource, streakDays = 0): AppUser {
     interestCategoryIds: (user.interestCategoryIds ?? []).map(String),
     // 연속 학습일은 학습 기록(ProgressService.streakDays)에서 서울 자정 기준으로 계산해 넘겨받는다. 안 넘기면 0이다
     streakDays,
+    ...(user.subscription?.tier
+      ? {
+          subscription: {
+            tier: oneOf(PLAN_TIERS, user.subscription.tier, 'free'),
+            status: user.subscription.status ?? 'active',
+            ...(user.subscription.currentPeriodEnd
+              ? { currentPeriodEnd: user.subscription.currentPeriodEnd.toISOString() }
+              : {}),
+          },
+        }
+      : {}),
     createdAt: (user.createdAt ?? new Date()).toISOString(),
   };
 }
