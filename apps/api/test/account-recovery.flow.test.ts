@@ -275,6 +275,30 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
     expect(again.status).toBe(200);
   });
 
+  it('재설정의 끊은 시각이 로그인 확인보다 앞서도, 예전 비밀번호 해시로 확인한 로그인은 401이다', async () => {
+    const user = users[0]!;
+    user.passwordHash = await hash('OldPassw0rd', 4);
+    await post(SEND, { email: EMAIL });
+    const resetCode = code();
+    // 로그인이 예전 해시를 읽고 확인하는 사이에 재설정이 반영된다. 재설정의 시각은 로그인 확인 시각보다 앞선다
+    // (재설정이 시각을 정한 뒤 DB 반영 전에 로그인이 예전 해시를 읽은 경우)
+    afterPasswordCheck = async () => {
+      vi.setSystemTime(new Date(START.getTime() - 1000));
+      const reset = await post(RESET, {
+        id: EMAIL,
+        email: EMAIL,
+        code: resetCode,
+        password: NEW_PASSWORD,
+      });
+      expect(reset.status).toBe(204);
+      vi.setSystemTime(START);
+    };
+
+    const login = await post(BASE(PATHS.emailLogin), { email: EMAIL, password: 'OldPassw0rd' });
+    expect(login.status).toBe(401);
+    expect(fakeRefresh.rows.filter((r) => r.revokedAt === null)).toHaveLength(0);
+  });
+
   it('계정 찾기 인증번호는 하루 3번까지만 보낸다(인증번호를 계속 받아 맞혀 보는 공격을 막는다)', async () => {
     for (let i = 0; i < 3; i++) {
       vi.setSystemTime(new Date(START.getTime() + i * 61_000));
