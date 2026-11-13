@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from '../auth/auth.module.js';
 import { QuizBoxController } from './quiz-box.controller.js';
 import { QuizBoxService } from './quiz-box.service.js';
+import { QuizBoxCounter, QuizBoxCounterSchema } from './schemas/quiz-box-counter.schema.js';
 import { QuizBoxItem, QuizBoxItemSchema } from './schemas/quiz-box-item.schema.js';
 import { QuizSet, QuizSetSchema } from './schemas/quiz-set.schema.js';
 
@@ -12,6 +13,7 @@ import { QuizSet, QuizSetSchema } from './schemas/quiz-set.schema.js';
     imports: [
         MongooseModule.forFeature([
             { name: QuizBoxItem.name, schema: QuizBoxItemSchema },
+            { name: QuizBoxCounter.name, schema: QuizBoxCounterSchema },
             { name: QuizSet.name, schema: QuizSetSchema }, // 내 세트인지 · 문제 내용을 읽기만 한다
         ]),
         AuthModule, // 로그인 확인(JwtAuthGuard)에 필요한 도구를 가져온다

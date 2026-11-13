@@ -3,6 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
 import { toAppQuestion, type AppQuestion, type QuestionRow } from '../../quiz-sets/quiz-sets.service.js';
+import { QuizBoxCounter } from './schemas/quiz-box-counter.schema.js';
 import { QuizBoxItem } from './schemas/quiz-box-item.schema.js';
 import { QuizSet } from './schemas/quiz-set.schema.js';
 
@@ -24,13 +25,17 @@ interface BoxRow {
 export class QuizBoxService {
     constructor(
         @InjectModel(QuizBoxItem.name) private readonly items: Model<QuizBoxItem>,
+        @InjectModel(QuizBoxCounter.name) private readonly counters: Model<QuizBoxCounter>,
         @InjectModel(QuizSet.name) private readonly sets: Model<QuizSet>, // 읽기만 한다
     ) { }
 
-    /** 내 보관함의 문제 (담은 순서, 정답 포함). 앱의 기기 저장 모드와 같다 */
+    /**
+     * 내 보관함의 문제 (담은 순서, 정답 포함). 앱의 기기 저장 모드(먼저 담은 것이 앞)와 같다.
+     * order 순이고, order가 없는 옛 문서는 맨 앞에 savedAt 순으로 온다(없는 값은 숫자보다 앞에 정렬된다)
+     */
     async box(userId: string): Promise<AppQuestion[]> {
         const owner = new Types.ObjectId(userId);
-        const rows = await this.items.find({ userId: owner }).sort({ savedAt: 1, _id: 1 }).lean<BoxRow[]>();
+        const rows = await this.items.find({ userId: owner }).sort({ order: 1, savedAt: 1, _id: 1 }).lean<BoxRow[]>();
         if (rows.length === 0) return [];
         // 세트를 지워도(deletedAt) 문제 자체는 남아 있어서 보관함에는 계속 보인다
         const sets = await this.sets
@@ -63,18 +68,33 @@ export class QuizBoxService {
             for (const set of sets) for (const q of set.questions ?? []) if (wanted.has(q._id.toString())) setOf.set(q._id.toString(), set._id);
             if (ids.some((id) => !setOf.has(id))) throw new NotFoundException(NOT_FOUND);
 
-            const now = Date.now();
-            for (const [index, id] of ids.entries()) {
-                const questionId = new Types.ObjectId(id);
+            // 이미 담긴 문제는 그대로 둔다(담은 시각 · 순서 번호가 바뀌지 않는다). 새 문제만 번호를 받는다
+            const existing = await this.items.find({ userId: owner, questionId: { $in: ids.map((id) => new Types.ObjectId(id)) } }, { questionId: 1 }).lean<{ questionId: Types.ObjectId }[]>();
+            const have = new Set(existing.map((e) => e.questionId.toString()));
+            const fresh = ids.filter((id) => !have.has(id));
+            if (fresh.length > 0) {
+                // 새로 담을 개수만큼 번호 묶음을 한 번에 받는다 → 이 요청의 문제들은 이어진 번호라 다른 요청과 섞이지 않는다
+                const counter = await this.counters
+                    .findOneAndUpdate({ _id: owner }, { $inc: { seq: fresh.length } }, { upsert: true, returnDocument: 'after' })
+                    .lean<{ seq: number }>();
+                const first = counter!.seq - fresh.length + 1;
+                const savedAt = new Date();
                 try {
-                    // 이미 담긴 문제는 그대로 둔다 (담은 시각 · 순서가 바뀌지 않는다)
-                    await this.items.updateOne(
-                        { userId: owner, questionId },
-                        { $setOnInsert: { userId: owner, questionId, quizSetId: setOf.get(id)!, savedAt: new Date(now + index) } },
-                        { upsert: true },
+                    await this.items.bulkWrite(
+                        fresh.map((id, index) => {
+                            const questionId = new Types.ObjectId(id);
+                            return {
+                                updateOne: {
+                                    filter: { userId: owner, questionId },
+                                    update: { $setOnInsert: { userId: owner, questionId, quizSetId: setOf.get(id)!, savedAt, order: first + index } },
+                                    upsert: true,
+                                },
+                            };
+                        }),
+                        { ordered: false }, // 겹친 문제 때문에 실패해도 나머지는 계속 담는다
                     );
                 } catch (e) {
-                    if ((e as { code?: number } | null)?.code !== DUPLICATE_KEY) throw e; // 동시에 담은 다른 요청이 먼저 넣었다
+                    if (!onlyDuplicateKey(e)) throw e; // 동시에 담은 다른 요청이 먼저 넣은 문제만 겹친 것이면 괜찮다(유일 인덱스로 한 건만 남는다)
                 }
             }
         }
@@ -87,4 +107,11 @@ export class QuizBoxService {
         if (ids.length === 0) return;
         await this.items.deleteMany({ userId: new Types.ObjectId(userId), questionId: { $in: ids } });
     }
+}
+
+/** 일괄 저장이 "같은 문제를 동시에 담아 유일 인덱스에 걸린" 오류로만 실패했는지 */
+function onlyDuplicateKey(e: unknown): boolean {
+    const err = e as { code?: number; writeErrors?: { code?: number; err?: { code?: number } }[] } | null;
+    if (err?.writeErrors?.length) return err.writeErrors.every((w) => (w.code ?? w.err?.code) === DUPLICATE_KEY);
+    return err?.code === DUPLICATE_KEY;
 }

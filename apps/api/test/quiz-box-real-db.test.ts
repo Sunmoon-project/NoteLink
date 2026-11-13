@@ -1,6 +1,7 @@
 // 진짜 MongoDB에서 퀴즈 보관함 API(FR-57 · 58)를 확인하는 테스트.
 // 확인하는 것: 담기 · 목록(담은 순서, 정답 포함) · 삭제, 같은 문제를 두 번 · 동시에 담아도 한 건, 남의 세트 문제 · 없는 문제 · 잘못된 id → 404(하나라도 틀리면 아무것도 안 담김),
-// 다른 사람 보관함이 섞이지 않음, 남의 보관함 항목은 지워지지 않음, 인덱스.
+// 다른 사람 보관함이 섞이지 않음, 남의 보관함 항목은 지워지지 않음, 인덱스,
+// 담은 순서 번호(사용자별 카운터): 동시에 담아도 요청별로 이어진 번호 · 번호가 겹치지 않음 · 다시 담아도 순서 그대로, 한 번에 3000개까지(실제 HTTP).
 // MONGODB_VERIFY_URI가 localhost일 때만 돌고(없거나 localhost가 아니면 건너뜀), 파일 · 실행마다 고유한 전용 DB만 쓰고 끝나면 그 DB만 지운다.
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/quiz-box-real-db.test.ts
 import type { INestApplication } from '@nestjs/common';
@@ -14,8 +15,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
+import { BOX_MAX_IDS } from '../src/modules/quiz/dto/quiz-box.dto.js';
 import { QuizBoxController } from '../src/modules/quiz/quiz-box.controller.js';
 import { QuizBoxService } from '../src/modules/quiz/quiz-box.service.js';
+import { QuizBoxCounter, QuizBoxCounterSchema } from '../src/modules/quiz/schemas/quiz-box-counter.schema.js';
 import { QuizBoxItem, QuizBoxItemSchema } from '../src/modules/quiz/schemas/quiz-box-item.schema.js';
 import { QuizSet, QuizSetSchema } from '../src/modules/quiz/schemas/quiz-set.schema.js';
 
@@ -60,6 +63,7 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 보관함 확인', () => {
                 MongooseModule.forRoot(uri!, { dbName, serverSelectionTimeoutMS: 5000 }),
                 MongooseModule.forFeature([
                     { name: QuizBoxItem.name, schema: QuizBoxItemSchema },
+                    { name: QuizBoxCounter.name, schema: QuizBoxCounterSchema },
                     { name: QuizSet.name, schema: QuizSetSchema },
                     { name: User.name, schema: UserSchema },
                 ]),
@@ -83,7 +87,7 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 보관함 확인', () => {
         await app.init();
         conn = moduleRef.get<Connection>(getConnectionToken());
         await conn.dropDatabase();
-        await Promise.all([conn.model(QuizBoxItem.name).init(), conn.model(QuizSet.name).init(), conn.model(User.name).init()]);
+        await Promise.all([conn.model(QuizBoxItem.name).init(), conn.model(QuizBoxCounter.name).init(), conn.model(QuizSet.name).init(), conn.model(User.name).init()]);
         // nickname에 유일 인덱스가 있어서 사람마다 다르게 넣는다
         await col('users').insertMany([
             { _id: me, nickname: `me_${process.pid}`, email: `me_${process.pid}@example.com` },
@@ -98,7 +102,7 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 보관함 확인', () => {
     }, 30000);
 
     afterEach(async () => {
-        await col('quiz_box_items').deleteMany({});
+        await Promise.all([col('quiz_box_items').deleteMany({}), col('quiz_box_counters').deleteMany({})]);
     });
 
     afterAll(async () => {
@@ -196,5 +200,89 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 보관함 확인', () => {
         await col('quiz_box_items').insertOne({ ...doc });
         await expect(col('quiz_box_items').insertOne({ ...doc })).rejects.toThrow(/duplicate key/);
         await expect(col('quiz_box_items').insertOne({ ...doc, userId: other })).resolves.toBeTruthy();
+    });
+
+    it('9) 순서: 두 요청을 동시에 보내도 각 요청의 문제가 서로 섞이지 않고 번호가 겹치지 않는다', async () => {
+        const setId = new Types.ObjectId();
+        const qs = Array.from({ length: 60 }, (_, i) => q(i + 1));
+        await col('quiz_sets').insertOne({ _id: setId, ownerId: me, title: '큰 세트', questions: qs, questionCount: 60, source: 'ai_generated', status: 'ready', progress: 100, deletedAt: null });
+        for (let round = 0; round < 5; round++) {
+            await Promise.all([col('quiz_box_items').deleteMany({}), col('quiz_box_counters').deleteMany({})]);
+            const a = qs.slice(0, 30).map(sid);
+            const b = qs.slice(30).map(sid).reverse(); // 보낸 순서 그대로 담긴다
+            const [ra, rb] = await Promise.all([save(a), save(b)]);
+            expect([ra.status, rb.status]).toEqual([200, 200]);
+
+            const listed = idsOf(await box());
+            expect(listed).toHaveLength(60);
+            const posA = a.map((id) => listed.indexOf(id));
+            const posB = b.map((id) => listed.indexOf(id));
+            const contiguous = (pos: number[]) => pos.every((p, i) => i === 0 || p === pos[i - 1]! + 1); // 보낸 순서대로 이어져 있다
+            expect(contiguous(posA)).toBe(true);
+            expect(contiguous(posB)).toBe(true);
+
+            const orders = (await col('quiz_box_items').find({ userId: me }).toArray()).map((r) => r['order'] as number);
+            expect(new Set(orders).size).toBe(60); // 번호가 겹치지 않는다
+            expect([...orders].sort((x, y) => x - y)).toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
+        }
+        await col('quiz_sets').deleteOne({ _id: setId });
+    });
+
+    it('10) 순서: 이미 담긴 문제를 다시 담아도 번호 · 순서가 바뀌지 않고, 번호는 새 문제만큼만 올라간다', async () => {
+        const [a, b, c] = [sid(mineQs[0]!), sid(mineQs[1]!), sid(mineQs[2]!)];
+        await save([b, a]);
+        const before = await col('quiz_box_items').find({ userId: me }).sort({ order: 1 }).toArray();
+        expect(before.map((r) => r['order'])).toEqual([1, 2]);
+
+        await Promise.all([save([a, b]), save([b]), save([a, a])]); // 모두 이미 담긴 문제
+        expect(idsOf(await save([a, c, b]))).toEqual([b, a, c]); // 일부만 새 문제
+        const after = await col('quiz_box_items').find({ userId: me }).sort({ order: 1 }).toArray();
+        expect(after.map((r) => [String(r['questionId']), r['order']])).toEqual([[b, 1], [a, 2], [c, 3]]);
+        expect(after[0]!['savedAt']).toEqual(before[0]!['savedAt']); // 담은 시각도 그대로
+        expect(await col('quiz_box_counters').findOne({ _id: me as never })).toMatchObject({ seq: 3 });
+    });
+
+    it('11) 순서: 번호가 없는 옛 문서는 savedAt 순으로 맨 앞에 오고, 새로 담은 문제는 그 뒤에 붙는다', async () => {
+        const base = { userId: me, quizSetId: mineSet };
+        await col('quiz_box_items').insertMany([
+            { ...base, questionId: mineQs[1]!._id, savedAt: new Date('2026-01-02T00:00:00Z') },
+            { ...base, questionId: mineQs[0]!._id, savedAt: new Date('2026-01-01T00:00:00Z') },
+        ]);
+        expect(idsOf(await box())).toEqual([sid(mineQs[0]!), sid(mineQs[1]!)]);
+        expect(idsOf(await save([sid(mineQs[2]!)]))).toEqual([sid(mineQs[0]!), sid(mineQs[1]!), sid(mineQs[2]!)]);
+    });
+
+    it('12) 인덱스: 보관함 목록은 userId + order 인덱스를 쓴다', async () => {
+        const keys = (await col('quiz_box_items').indexes()).map((i) => Object.keys(i.key).join(','));
+        expect(keys).toContain('userId,order');
+    });
+
+    describe('한 번에 상한(3000개)까지', () => {
+        const bigSet = new Types.ObjectId();
+        const bigQs = Array.from({ length: BOX_MAX_IDS }, (_, i) => q(i + 1));
+
+        beforeAll(async () => {
+            await col('quiz_sets').insertOne({ _id: bigSet, ownerId: me, title: '3000문제', questions: bigQs, questionCount: bigQs.length, source: 'ai_generated', status: 'ready', progress: 100, deletedAt: null });
+        });
+        afterAll(async () => {
+            await col('quiz_sets').deleteOne({ _id: bigSet });
+        });
+
+        it('13) 3000개를 한 번에 담고 지워도 되고(실제 HTTP), 3001개는 400이다. 지울 때 남의 보관함은 그대로', async () => {
+            const ids = bigQs.map(sid);
+            const saved = await save(ids);
+            expect(saved.status).toBe(200);
+            expect(idsOf(saved)).toEqual(ids); // 보낸 순서 그대로
+            await col('quiz_box_items').insertOne({ userId: other, questionId: bigQs[0]!._id, quizSetId: bigSet, savedAt: new Date(), order: 1 });
+
+            const tooMany = [...ids, new Types.ObjectId().toString()];
+            expect((await save(tooMany)).status).toBe(400);
+            expect((await remove(tooMany)).status).toBe(400);
+            expect(await col('quiz_box_items').countDocuments({ userId: me })).toBe(BOX_MAX_IDS); // 400이면 아무것도 안 바뀐다
+
+            expect((await remove(ids)).status).toBe(204);
+            expect(await col('quiz_box_items').countDocuments({ userId: me })).toBe(0);
+            expect(await col('quiz_box_items').countDocuments({ userId: other })).toBe(1);
+        }, 60000);
     });
 });
