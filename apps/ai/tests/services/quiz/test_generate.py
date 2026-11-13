@@ -1778,6 +1778,73 @@ def test_a_round_with_no_answer_stops_the_rounds_as_an_outage(
     join_threads("quiz-slot")
 
 
+def test_a_slot_cut_after_an_answer_is_not_an_outage(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 초안은 받았는데 검사하는 사이 상한에 걸려 잘린 자리: 서버는 답했으므로 장애(LlmError, 작업을
+    # 다시 넣음)가 아니라 시간 상한으로 못 만든 세트. 끝난 자리의 결과만 보면 응답을 받은 줄 몰라
+    # 장애로 봤음(PC가 바쁠 때 test_a_pregen_taken_over_mid_slot_finishes_in_fast_mode가 가끔 실패)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.1)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 0.15)
+    release = threading.Event()
+    llm = parallel_llm(lambda user: GOOD["이질 아메바"])
+    for name in ("Naturals", "Check"):
+        answer = llm.answers[name]
+
+        def held(user: str, answer: Callable[[str], JsonObject] = answer) -> JsonObject:
+            release.wait(10)  # 상한(0.15초)이 지나도록 검사가 끝나지 않음
+            return answer(user)
+
+        llm.answers[name] = held
+    try:
+        with pytest.raises(generate.NoQuestionsError) as e:
+            run(llm, page1_job(size=1))
+    finally:
+        release.set()
+    assert generate.TIMEOUT in str(e.value)
+    assert len(llm.named("Quiz")) == 1
+    join_threads("quiz-slot")
+
+
+def test_a_slot_cut_after_an_answer_beside_a_failed_slot_is_not_an_outage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 두 자리가 함께: 1쪽 자리는 호출이 모두 503으로 실패해 끝나고, 2쪽 자리는 초안을 받은 뒤
+    # 검사하는 사이 잘림. 끝난 자리만 세면 시도가 모두 실패라 장애(LlmError)였음: 서버는 2쪽
+    # 자리에 답했으므로 못 만든 세트(Codex 리뷰 #376)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "SEC_PER_QUESTION", 0.5)
+    monkeypatch.setattr(generate, "HARD_SEC_PER_QUESTION", 1.0)  # 1쪽 자리가 끝날 만큼
+    release, answered = threading.Event(), threading.Event()
+    lock = threading.Lock()
+
+    def quiz(user: str) -> JsonObject:
+        with lock:
+            first_on_two = '<노트 쪽="2">' in user and not answered.is_set()
+            if first_on_two:
+                answered.set()
+        if first_on_two:
+            return GOOD["람블편모충"]
+        answered.wait(5)  # 2쪽 자리가 먼저 초안을 받은 뒤에 실패
+        raise LlmError("학교 LLM 503")
+
+    llm = parallel_llm(quiz)
+    for name in ("Naturals", "Check"):
+        answer = llm.answers[name]
+
+        def held(user: str, answer: Callable[[str], JsonObject] = answer) -> JsonObject:
+            release.wait(10)  # 2쪽 자리의 검사가 상한이 지나도록 끝나지 않음
+            return answer(user)
+
+        llm.answers[name] = held
+    try:
+        with pytest.raises(generate.NoQuestionsError) as e:
+            run(llm, job(size=2))
+    finally:
+        release.set()
+    # 1쪽 자리는 끝남(503이 탈락 이유로 남음), 2쪽 자리는 시간 상한
+    assert "학교 LLM 503" in str(e.value) and generate.TIMEOUT in str(e.value)
+    join_threads("quiz-slot")
+
+
 @pytest.mark.usefixtures("fill_rounds")
 def test_an_outage_after_some_questions_is_a_short_set_not_a_retry() -> None:
     # 1판에서 1문제를 만든 뒤 2판의 호출이 모두 503: 받아 둔 문제를 버리고 작업을 처음부터 다시
