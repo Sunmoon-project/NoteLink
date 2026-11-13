@@ -6,8 +6,12 @@ const trim = ({ value }: { value: unknown }): unknown => (typeof value === 'stri
 
 export const FLASHCARD_FRONT_MAX = 1000;
 export const FLASHCARD_BACK_MAX = 2000;
-/** 한 번에 지울 수 있는 카드 수 */
-export const FLASHCARD_DELETE_MAX = 200;
+/**
+ * 한 번에 지울 수 있는 카드 수. 앱(CardsScreen)은 선택한 id를 개수 제한 없이 한 번에 보내서 많이 골라도 400이 되지 않게 넉넉히 잡되,
+ * Express 기본 본문 제한(100KB) 안에 들어와야 한다: id 하나가 약 27바이트(24자리 + 따옴표 둘 + 쉼표)라 3000개면 약 81KB.
+ * 서비스는 중복을 없애고 $in 한 번으로 지우므로 3000장이어도 쿼리는 한 번이다
+ */
+export const FLASHCARD_DELETE_MAX = 3000;
 
 // POST /flashcards { front, back, sourceQuestionId? }
 export class SaveFlashcardDto {

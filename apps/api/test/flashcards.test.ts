@@ -2,7 +2,7 @@ import { BadRequestException, NotFoundException, ValidationPipe } from '@nestjs/
 import { Types } from 'mongoose';
 import { describe, expect, it } from 'vitest';
 
-import { DeleteFlashcardsDto, SaveFlashcardDto } from '../src/modules/quiz/dto/flashcard.dto.js';
+import { DeleteFlashcardsDto, FLASHCARD_DELETE_MAX, SaveFlashcardDto } from '../src/modules/quiz/dto/flashcard.dto.js';
 import { FlashcardsService } from '../src/modules/quiz/flashcards.service.js';
 import { FlashcardSchema } from '../src/modules/quiz/schemas/flashcard.schema.js';
 
@@ -205,7 +205,10 @@ describe('플래시카드 요청 검사(DTO)', () => {
   it('삭제 요청은 문자열 배열이어야 한다', async () => {
     await expect(del({ ids: [] })).resolves.toBeDefined();
     await expect(del({ ids: ['a', 'b'] })).resolves.toBeDefined();
-    for (const body of [{}, { ids: 'a' }, { ids: [1] }, { ids: Array.from({ length: 201 }, () => 'a') }]) {
+    for (const n of [201, FLASHCARD_DELETE_MAX]) { // 앱이 한 번에 많이 골라 보내도 된다
+      await expect(del({ ids: Array.from({ length: n }, () => 'a') })).resolves.toBeDefined();
+    }
+    for (const body of [{}, { ids: 'a' }, { ids: [1] }, { ids: Array.from({ length: FLASHCARD_DELETE_MAX + 1 }, () => 'a') }]) {
       await expect(del(body)).rejects.toBeInstanceOf(BadRequestException);
     }
   });

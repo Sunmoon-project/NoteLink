@@ -1,15 +1,21 @@
 // 진짜 MongoDB에서 플래시카드 저장 · 조회 · 삭제를 확인하는 테스트(스키마 변경 포함).
 // MONGODB_VERIFY_URI가 있을 때만 돌고(없으면 건너뜀), localhost가 아니면 거부한다. 파일·실행마다 고유한 전용 DB(notelink_verify_flashcards_<pid>_<시각>)만 쓰고 끝나면 그 DB만 지운다.
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/flashcards-real-db.test.ts
-import { NotFoundException } from '@nestjs/common';
+import type { INestApplication } from '@nestjs/common';
+import { NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { getConnectionToken, MongooseModule } from '@nestjs/mongoose';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { Flashcard as SharedFlashcard } from '@notelink/shared';
 import { Types, type Connection } from 'mongoose';
+import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { configureApp } from '../src/app.setup.js';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { Material, MaterialSchema } from '../src/modules/content/schemas/material.schema.js';
+import { TokenService } from '../src/modules/auth/token.service.js';
+import { FLASHCARD_DELETE_MAX } from '../src/modules/quiz/dto/flashcard.dto.js';
+import { FlashcardsController } from '../src/modules/quiz/flashcards.controller.js';
 import { FlashcardsService } from '../src/modules/quiz/flashcards.service.js';
 import { Flashcard, FlashcardSchema } from '../src/modules/quiz/schemas/flashcard.schema.js';
 import { QuizSet, QuizSetSchema } from '../src/modules/quiz/schemas/quiz-set.schema.js';
@@ -22,6 +28,7 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
   let moduleRef: TestingModule;
   let conn: Connection;
   let service: FlashcardsService;
+  let app: INestApplication;
   const col = (name: string) => conn.collection(name);
   let nicknameSeq = 0;
 
@@ -44,9 +51,22 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
           { name: User.name, schema: UserSchema },
         ]),
       ],
-      providers: [FlashcardsService],
+      controllers: [FlashcardsController],
+      providers: [
+        FlashcardsService,
+        {
+          provide: TokenService,
+          // 'user-<id>' 토큰이면 그 사용자로 로그인한 것으로 본다
+          useValue: {
+            verifyAccess: (t: string) =>
+              t.startsWith('user-') ? Promise.resolve({ userId: t.slice(5) }) : Promise.reject(new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: 'x' })),
+          },
+        },
+      ],
     }).compile();
-    await moduleRef.init();
+    app = moduleRef.createNestApplication();
+    configureApp(app);
+    await app.init();
     conn = moduleRef.get<Connection>(getConnectionToken());
     await conn.dropDatabase();
     await Promise.all([
@@ -60,6 +80,7 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
 
   afterAll(async () => {
     if (conn) await conn.dropDatabase();
+    await app?.close();
     await moduleRef?.close();
   });
 
@@ -115,8 +136,10 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
     expect(card).toMatchObject({ materialId: null, folderId: null, sourceQuizSetId: null, sourceQuestionId: null, lastResult: null });
     const row = await col('flashcards').findOne({ _id: new Types.ObjectId(card._id) });
     expect(row).toMatchObject({ materialId: null, folderId: null, sourceQuizSetId: null, sourceQuestionId: null });
-    // 문제 없이 만든 카드는 아직 shared Flashcard.folderId(null 불가)와 맞지 않는다: 폴더 API 이후 shared 쪽을 정한다
-    expect(await service.list(me)).toHaveLength(1);
+    expect(SharedFlashcard.safeParse(card).success).toBe(true); // 폴더 없는 카드도 공용 계약(folderId null 허용)에 맞는다
+    const listed = await service.list(me);
+    expect(listed).toHaveLength(1);
+    expect(SharedFlashcard.safeParse(listed[0]).success).toBe(true);
   });
 
   it('남의 세트 문제 · 없는 문제는 404이고 카드가 생기지 않는다', async () => {
@@ -167,5 +190,37 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
     expect(await service.list(me)).toEqual([]);
     expect(await service.list(other)).toHaveLength(1);
     expect((await col('flashcards').findOne({ _id: new Types.ObjectId(theirs._id) }))?.['deletedAt']).toBeNull();
+  });
+
+  it.each([201, FLASHCARD_DELETE_MAX])('%i장을 한 번에 지워도 되고 내 카드만 지워진다 (남의 카드 · 없는 id · 중복 id가 섞여도)', async (n) => {
+    const me = await newUser();
+    const other = await newUser();
+    const now = new Date();
+    const mine = Array.from({ length: n }, (_, i) => ({ ownerId: new Types.ObjectId(me), front: `앞${i}`, back: '뒤', deletedAt: null, createdAt: now }));
+    const mineIds = Object.values((await col('flashcards').insertMany(mine)).insertedIds).map(String);
+    const theirs = await service.save(other, { front: '남', back: 'x' });
+    // 남의 카드 · 없는 id · 중복 id를 섞되 전체 개수는 n개 (실제 id 길이 그대로라 본문 크기도 앱과 같다)
+    const ids = [...mineIds.slice(0, n - 5), theirs._id, new Types.ObjectId().toString(), mineIds[0]!, mineIds[1]!, mineIds[2]!];
+    expect(ids).toHaveLength(n);
+
+    const res = await request(app.getHttpServer()).post('/api/v1/flashcards/delete').set({ Authorization: `Bearer user-${me}` }).send({ ids });
+
+    expect(res.status).toBe(204);
+    // 앞의 n-5장만 보냈으므로 마지막 5장은 남고(단, 중복으로 보낸 앞의 3장은 이미 지워짐), 남의 카드는 그대로
+    expect(await col('flashcards').countDocuments({ ownerId: new Types.ObjectId(me), deletedAt: null })).toBe(5);
+    expect((await service.list(other))).toHaveLength(1);
+    expect((await col('flashcards').findOne({ _id: new Types.ObjectId(theirs._id) }))?.['deletedAt']).toBeNull();
+  });
+
+  it('상한을 넘는 요청은 400이고 아무것도 지워지지 않는다 (상한 + 1개, 실제 HTTP)', async () => {
+    const me = await newUser();
+    const card = await service.save(me, { front: '1', back: 'a' });
+    const ids = [card._id, ...Array.from({ length: FLASHCARD_DELETE_MAX }, () => new Types.ObjectId().toString())];
+    expect(ids).toHaveLength(FLASHCARD_DELETE_MAX + 1);
+
+    const res = await request(app.getHttpServer()).post('/api/v1/flashcards/delete').set({ Authorization: `Bearer user-${me}` }).send({ ids });
+
+    expect(res.status).toBe(400);
+    expect(await service.list(me)).toHaveLength(1);
   });
 });
