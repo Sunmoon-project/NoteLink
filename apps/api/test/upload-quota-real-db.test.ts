@@ -14,9 +14,10 @@ import {
   UPLOAD_ISSUE_WINDOW_MS,
   UploadQuotaService,
 } from '../src/modules/upload/upload-quota.service.js';
+import { isLocalMongoUri } from './support/local-mongo.js';
 
 const uri = process.env.MONGODB_VERIFY_URI;
-const isLocal = !!uri && /^mongodb:\/\/([^@/]*@)?(localhost|127\.0\.0\.1)[:/]/.test(uri);
+const isLocal = isLocalMongoUri(uri);
 const dbName = `notelink_verify_upload_quota_${process.pid}_${Date.now()}`;
 
 describe.skipIf(!uri)('진짜 DB 발급 횟수 제한 확인', () => {
