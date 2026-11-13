@@ -131,7 +131,6 @@ it('제공되지 않은 화면으로 이동하지 않는다', async () => {
   await renderScreen(<SettingsScreen />);
   await fireEvent.press(await screen.findByText('캘린더 바로가기'));
   await fireEvent.press(screen.getByText('상점 바로가기'));
-  await fireEvent.press(screen.getByLabelText('프로필 사진 변경'));
   expect(router.push).not.toHaveBeenCalled();
 });
 

@@ -34,9 +34,9 @@ it('없는 sitemap과 등록되지 않은 경로는 일치하지 않는다', () 
 });
 
 it('중첩된 실제 화면을 찾으며 라우트 그룹과 끝 슬래시를 무시한다', () => {
-  const sitemap = node('/', [node('/(tabs)', [node('/(tabs)/profile/photo/')])]);
-  expect(featureRouteExists(sitemap, '/profile/photo')).toBe(true);
-  expect(featureRouteExists(sitemap, '/(tabs)/profile/photo/')).toBe(true);
+  const sitemap = node('/', [node('/(tabs)', [node('/(tabs)/profile/plan/')])]);
+  expect(featureRouteExists(sitemap, '/profile/plan')).toBe(true);
+  expect(featureRouteExists(sitemap, '/(tabs)/profile/plan/')).toBe(true);
   expect(featureRouteExists(node('/(tabs)/'), '/')).toBe(true);
 });
 
@@ -74,9 +74,9 @@ it('미등록 화면은 이동하지 않고 준비 중 안내와 false를 반환
 it.each(['replace', 'navigate'] as const)(
   '%s 이동은 href 객체와 파라미터를 그대로 전달한다',
   async (method) => {
-    jest.mocked(useSitemap).mockReturnValue(node('/', [node('/(tabs)/profile/photo')]));
+    jest.mocked(useSitemap).mockReturnValue(node('/', [node('/(tabs)/profile/plan')]));
     const href = {
-      pathname: '/(tabs)/profile/photo',
+      pathname: '/(tabs)/profile/plan',
       params: { source: 'settings', id: 'user-1' },
     } as const;
     const { result } = await renderHook(() => useFeatureNavigation());

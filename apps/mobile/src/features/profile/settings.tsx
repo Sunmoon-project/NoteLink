@@ -135,12 +135,7 @@ export function SettingsScreen() {
         <Title>설정</Title>
         {/* 프로필: 큰 아바타와 이름이 맨 위. 누르면 계정 정보 */}
         <View className="flex-row items-center gap-4 py-3">
-          <Pressable
-            accessibilityLabel="프로필 사진 변경"
-            onPress={() => openFeature('/(tabs)/profile/photo')}
-          >
-            <Avatar name={u.nickname} uri={u.avatarUrl} size={64} />
-          </Pressable>
+          <Avatar name={u.nickname} uri={u.avatarUrl} size={64} />
           <Pressable
             className="flex-1 flex-row items-center"
             onPress={() => router.push('/(tabs)/profile/account')}

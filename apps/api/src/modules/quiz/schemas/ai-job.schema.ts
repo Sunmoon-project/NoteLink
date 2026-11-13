@@ -18,7 +18,6 @@ export class AiJob {
       'similar_quiz',
       'today_review',
       'explain',
-      'avatar_profile',
       'image_check',
       'note_ask',
     ],
