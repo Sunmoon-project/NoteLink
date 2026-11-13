@@ -105,7 +105,12 @@ function createFakeModel() {
 function createFakeUsers() {
   const state = new Map<
     string,
-    { deletedAt?: Date | null; sessionsRevokedAt?: Date | null; passwordHash?: string | null }
+    {
+      deletedAt?: Date | null;
+      sessionsRevokedAt?: Date | null;
+      passwordHash?: string | null;
+      sessionVersion?: number;
+    }
   >();
   const missing = new Set<string>();
   // 다음 findOne 몇 번을 DB 오류로 실패시킨다(skip번은 통과시킨 뒤)
@@ -124,9 +129,17 @@ function createFakeUsers() {
         return Promise.resolve(missing.has(id) ? null : (state.get(id) ?? {}));
       },
     }),
-    updateOne: (filter: { _id: Types.ObjectId }, update: { $set: { sessionsRevokedAt: Date } }) => {
+    updateOne: (
+      filter: { _id: Types.ObjectId },
+      update: { $set: { sessionsRevokedAt: Date }; $inc?: { sessionVersion: number } },
+    ) => {
       const id = filter._id.toHexString();
-      state.set(id, { ...state.get(id), ...update.$set });
+      const prev = state.get(id);
+      state.set(id, {
+        ...prev,
+        ...update.$set,
+        sessionVersion: (prev?.sessionVersion ?? 0) + (update.$inc?.sessionVersion ?? 0),
+      });
       return Promise.resolve({ matchedCount: 1 });
     },
   };
@@ -446,6 +459,23 @@ describe('로그인 끊기 · 탈퇴', () => {
     await expectUnauthorized(service.issue(userId, undefined, new Date(), 'old-hash'));
     expect(rows).toHaveLength(0);
     await expect(service.issue(userId, undefined, new Date(), 'new-hash')).resolves.toBeDefined();
+  });
+
+  it('revokeAll은 세션 버전을 올려, 끊은 시각보다 늦게 만든 예전 버전 토큰도 거절한다', async () => {
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:01.000Z') });
+    const { service } = setup();
+    const userId = newUserId();
+    const pair = await service.issue(userId); // 버전 0
+    // 끊은 시각이 토큰보다 앞서는 경우(시각을 정한 뒤 DB 반영 전에 토큰이 만들어짐)
+    await service.revokeAll(new Types.ObjectId(userId), new Date('2026-11-13T00:00:00.000Z'));
+
+    await expectUnauthorized(service.verifyAccess(pair.accessToken));
+    await expectUnauthorized(service.rotate(pair.refreshToken));
+    // 새로 로그인하면 지금 버전(1)으로 받아 쓸 수 있다
+    vi.setSystemTime(new Date('2026-11-13T00:00:02.000Z'));
+    const next = await service.issue(userId);
+    await expect(service.verifyAccess(next.accessToken)).resolves.toEqual({ userId });
+    await expect(service.rotate(next.refreshToken)).resolves.toBeDefined();
   });
 
   it('같은 밀리초에 받은 토큰도 거절한다', async () => {

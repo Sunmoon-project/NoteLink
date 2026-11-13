@@ -47,6 +47,7 @@ const PASSWORD = 'Passw0rdOK';
 const START = new Date('2026-01-01T00:00:00Z');
 
 interface UserRow {
+  sessionVersion?: number;
   _id: Types.ObjectId;
   email: string | null;
   passwordHash: string | null;
@@ -134,9 +135,15 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
             ) ?? null,
           ),
       }),
-      updateOne: (f: { _id: Types.ObjectId }, update: { $set: Partial<UserRow> }) => {
+      updateOne: (
+        f: { _id: Types.ObjectId },
+        update: { $set: Partial<UserRow>; $inc?: { sessionVersion?: number } },
+      ) => {
         const row = users.find((u) => u._id.equals(f._id));
         if (row) Object.assign(row, update.$set);
+        if (row && update.$inc?.sessionVersion) {
+          row.sessionVersion = (row.sessionVersion ?? 0) + update.$inc.sessionVersion;
+        }
         return Promise.resolve({ matchedCount: row ? 1 : 0 });
       },
     };

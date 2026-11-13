@@ -81,6 +81,7 @@ export class AppLoginService {
       undefined,
       authorizedAt,
       storedHash,
+      user.sessionVersion ?? 0,
     );
     return { accessToken, refreshToken, user: toAppUser(user) };
   }

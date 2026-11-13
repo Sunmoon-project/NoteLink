@@ -44,7 +44,11 @@ export class TokenService {
     now = new Date(),
     alsoSet: Record<string, unknown> = {},
   ): Promise<void> {
-    await this.users.updateOne({ _id: userId }, { $set: { ...alsoSet, sessionsRevokedAt: now } });
+    // 세션 버전을 같은 갱신에서 올린다: 이 갱신 전에 사용자를 읽고 만든 토큰은 버전이 달라 모두 거절된다
+    await this.users.updateOne(
+      { _id: userId },
+      { $set: { ...alsoSet, sessionsRevokedAt: now }, $inc: { sessionVersion: 1 } },
+    );
     // 이미 폐기된 줄도 덮어쓴다: 갱신 중이던 토큰의 표시(claimId)를 지워 되살아나지 않게(rotate)
     await this.refreshTokens.updateMany({ userId }, { revokedAt: now, claimId: null });
   }
@@ -56,7 +60,7 @@ export class TokenService {
    */
   private async assertActive(
     userId: string,
-    payload: { iat?: unknown; iatMs?: unknown },
+    payload: { iat?: unknown; iatMs?: unknown; sv?: unknown },
     /** 주면 사용자의 비밀번호 해시가 아직 이 값과 같아야 한다(로그인이 확인한 비밀번호가 그사이 바뀌지 않았는지) */
     passwordHash?: string,
   ): Promise<void> {
@@ -66,15 +70,21 @@ export class TokenService {
         {
           deletedAt: 1,
           sessionsRevokedAt: 1,
+          sessionVersion: 1,
           ...(passwordHash === undefined ? {} : { passwordHash: 1 }),
         },
       )
       .lean<{
         deletedAt?: Date | null;
         sessionsRevokedAt?: Date | null;
+        sessionVersion?: number;
         passwordHash?: string | null;
       }>();
     if (!user || user.deletedAt) throw invalidToken();
+    // 세션 버전이 다르면 그사이 로그인이 끊겼다(sv가 없는 예전 토큰은 0으로 본다)
+    if ((user.sessionVersion ?? 0) !== (typeof payload.sv === 'number' ? payload.sv : 0)) {
+      throw invalidToken();
+    }
     if (passwordHash !== undefined && user.passwordHash !== passwordHash) throw invalidToken();
     const revoked = user.sessionsRevokedAt;
     if (revoked) {
@@ -100,11 +110,17 @@ export class TokenService {
     device?: DeviceInfo,
     authorizedAt?: Date,
     passwordHash?: string,
+    /** 로그인이 비밀번호와 함께 읽은 세션 버전. 주지 않으면 지금 값을 읽어 쓴다 */
+    sessionVersion?: number,
   ): Promise<IssuedTokens> {
-    const next = await this.mint(userId, device);
+    const next = await this.mint(userId, device, sessionVersion);
     if (authorizedAt) {
       try {
-        await this.assertActive(userId, { iatMs: authorizedAt.getTime() }, passwordHash);
+        await this.assertActive(
+          userId,
+          { iatMs: authorizedAt.getTime(), sv: next.sessionVersion },
+          passwordHash,
+        );
       } catch (error) {
         await this.discard(next.rowId);
         throw error;
@@ -132,7 +148,8 @@ export class TokenService {
     });
     if (!current) throw invalidToken();
 
-    const next = await this.mint(payload.sub, current.device);
+    // 세션 버전은 쓴 토큰의 것을 이어 간다(위 assertActive가 지금 값과 같은지 확인했다)
+    const next = await this.mint(payload.sub, current.device, payload.sv ?? 0);
 
     // 조회와 폐기를 한 번에 해서, 같은 토큰으로 동시에 두 번 요청해도 한쪽만 이긴다.
     // 위에서 확인한 뒤 새 토큰을 만드는 사이에 기존 토큰이 만료될 수 있어 만료 조건도 다시 건다
@@ -187,16 +204,19 @@ export class TokenService {
   private async mint(
     userId: string,
     device?: DeviceInfo,
-  ): Promise<{ tokens: IssuedTokens; rowId: Types.ObjectId }> {
+    sessionVersion?: number,
+  ): Promise<{ tokens: IssuedTokens; rowId: Types.ObjectId; sessionVersion: number }> {
     // iatMs: 로그인 끊기와 밀리초로 비교하려고 넣는다(assertActive)
     const iatMs = Date.now();
+    // sv: 세션 버전(assertActive). 모르면 지금 값을 읽는다
+    const sv = sessionVersion ?? (await this.currentSessionVersion(userId));
     const accessToken = await this.jwt.signAsync(
-      { sub: userId, iatMs },
+      { sub: userId, iatMs, sv },
       { secret: this.config.accessSecret, expiresIn: this.config.accessTTL },
     );
     // jti: 같은 사용자가 같은 초에 두 번 로그인해도 토큰이 서로 달라지게 한다(tokenHash가 unique)
     const refreshToken = await this.jwt.signAsync(
-      { sub: userId, jti: randomUUID(), iatMs },
+      { sub: userId, jti: randomUUID(), iatMs, sv },
       { secret: this.config.refreshSecret, expiresIn: this.config.refreshTTL },
     );
     const { exp } = this.jwt.decode<{ exp: number }>(refreshToken);
@@ -206,7 +226,14 @@ export class TokenService {
       device,
       expiresAt: new Date(exp * 1000),
     });
-    return { tokens: { accessToken, refreshToken }, rowId: row._id };
+    return { tokens: { accessToken, refreshToken }, rowId: row._id, sessionVersion: sv };
+  }
+
+  private async currentSessionVersion(userId: string): Promise<number> {
+    const user = await this.users
+      .findOne({ _id: new Types.ObjectId(userId) }, { sessionVersion: 1 })
+      .lean<{ sessionVersion?: number }>();
+    return user?.sessionVersion ?? 0;
   }
 
   /**
@@ -216,14 +243,16 @@ export class TokenService {
    * refresh 토큰은 다른 시크릿으로 서명하므로 access 자리에 내밀어도 통과하지 못한다.
    */
   async verifyAccess(accessToken: string): Promise<{ userId: string }> {
-    let payload: { sub?: unknown; iat?: unknown; iatMs?: unknown };
+    let payload: { sub?: unknown; iat?: unknown; iatMs?: unknown; sv?: unknown };
     try {
-      payload = await this.jwt.verifyAsync<{ sub?: unknown; iat?: unknown; iatMs?: unknown }>(
-        accessToken,
-        {
-          secret: this.config.accessSecret,
-        },
-      );
+      payload = await this.jwt.verifyAsync<{
+        sub?: unknown;
+        iat?: unknown;
+        iatMs?: unknown;
+        sv?: unknown;
+      }>(accessToken, {
+        secret: this.config.accessSecret,
+      });
     } catch {
       throw invalidToken();
     }
@@ -238,9 +267,9 @@ export class TokenService {
 
   private async verifyRefresh(
     refreshToken: string,
-  ): Promise<{ sub: string; iat?: number; iatMs?: number }> {
+  ): Promise<{ sub: string; iat?: number; iatMs?: number; sv?: number }> {
     try {
-      return await this.jwt.verifyAsync<{ sub: string; iat?: number; iatMs?: number }>(
+      return await this.jwt.verifyAsync<{ sub: string; iat?: number; iatMs?: number; sv?: number }>(
         refreshToken,
         {
           secret: this.config.refreshSecret,

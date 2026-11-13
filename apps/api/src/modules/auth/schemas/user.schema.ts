@@ -126,6 +126,13 @@ export class User {
    */
   @Prop({ type: Date, default: null })
   sessionsRevokedAt?: Date | null;
+
+  /**
+   * 로그인 세션 버전. 로그인을 끊을 때(revokeAll) 비밀번호 변경과 같은 갱신에서 1 올린다. 토큰에는 발급 때 읽은 값(sv)이
+   * 들어가고, 다르면 거절한다 — 시각과 달리 「예전 비밀번호를 읽은 로그인」을 DB 반영 순서와 상관없이 걸러 낸다
+   */
+  @Prop({ type: Number, default: 0 })
+  sessionVersion?: number;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
