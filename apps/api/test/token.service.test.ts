@@ -98,9 +98,18 @@ function createFakeModel() {
 function createFakeUsers() {
   const state = new Map<string, { deletedAt?: Date | null; sessionsRevokedAt?: Date | null }>();
   const missing = new Set<string>();
+  // 다음 findOne 몇 번을 DB 오류로 실패시킨다(skip번은 통과시킨 뒤)
+  const failures = { skip: 0, findOne: 0 };
   const model = {
     findOne: (filter: { _id: Types.ObjectId }) => ({
       lean: () => {
+        if (failures.findOne > 0) {
+          if (failures.skip > 0) failures.skip -= 1;
+          else {
+            failures.findOne -= 1;
+            return Promise.reject(new Error('DB 읽기 실패'));
+          }
+        }
         const id = filter._id.toHexString();
         return Promise.resolve(missing.has(id) ? null : (state.get(id) ?? {}));
       },
@@ -111,7 +120,7 @@ function createFakeUsers() {
       return Promise.resolve({ matchedCount: 1 });
     },
   };
-  return { state, missing, model: model as never };
+  return { state, missing, failures, model: model as never };
 }
 
 function setup() {
@@ -366,6 +375,33 @@ describe('TokenService.revoke', () => {
 
 describe('로그인 끊기 · 탈퇴', () => {
   afterEach(() => vi.useRealTimers());
+
+  it('로그인을 확인한 뒤 발급 전에 로그인이 끊겼으면(비밀번호 재설정) 토큰을 지우고 거절한다', async () => {
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:00.000Z') });
+    const { service, rows } = setup();
+    const userId = newUserId();
+    const authorizedAt = new Date(); // 예전 비밀번호를 읽은 시각
+    vi.setSystemTime(new Date('2026-11-13T00:00:00.200Z'));
+    await service.revokeAll(new Types.ObjectId(userId)); // 그사이 재설정
+    vi.setSystemTime(new Date('2026-11-13T00:00:00.400Z'));
+
+    await expectUnauthorized(service.issue(userId, undefined, authorizedAt));
+    expect(rows).toHaveLength(0);
+    // 끊기 뒤에 확인한 로그인은 된다
+    await expect(service.issue(userId, undefined, new Date())).resolves.toBeDefined();
+  });
+
+  it('갱신의 두 번째 확인에서 DB를 못 읽으면 401이 아니라 오류를 내고, 쓴 토큰을 되살려 다시 갱신할 수 있다', async () => {
+    const { service, rows, users } = setup();
+    const pair = await service.issue(newUserId());
+    users.failures.skip = 1; // 첫 확인은 통과, 두 번째 확인만 실패
+    users.failures.findOne = 1;
+
+    await expect(service.rotate(pair.refreshToken)).rejects.toThrow('DB 읽기 실패');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.revokedAt).toBeNull();
+    await expect(service.rotate(pair.refreshToken)).resolves.toBeDefined();
+  });
 
   it('같은 밀리초에 받은 토큰도 거절한다', async () => {
     vi.useFakeTimers({ now: new Date('2026-11-13T00:00:00.000Z') });
