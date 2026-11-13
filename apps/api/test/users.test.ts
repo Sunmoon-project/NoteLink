@@ -6,7 +6,6 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureApp } from '../src/app.setup.js';
-import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
 import { User } from '../src/modules/auth/schemas/user.schema.js';
 import { TimetableShare } from '../src/modules/calendar/schemas/timetable-share.schema.js';
 import { Friendship } from '../src/modules/social/schemas/friendship.schema.js';
@@ -64,7 +63,8 @@ const model = {
   }),
 };
 const devices = { updateOne: vi.fn(async () => ({})), deleteMany: vi.fn(async () => ({})) };
-/** 탈퇴 정리(토큰 · 친구 · 시간표 공유)만 받는다 */
+/** 탈퇴 정리(친구 · 시간표 공유)만 받는다 */
+const revokeAll = vi.fn(async () => undefined);
 const cleanup = { updateMany: vi.fn(async () => ({})), deleteMany: vi.fn(async () => ({})) };
 let app: INestApplication;
 beforeAll(async () => {
@@ -75,12 +75,12 @@ beforeAll(async () => {
       { provide: getModelToken(User.name), useValue: model },
       { provide: ProgressService, useValue: { streakDays } },
       { provide: getModelToken(Device.name), useValue: devices },
-      { provide: getModelToken(RefreshToken.name), useValue: cleanup },
       { provide: getModelToken(Friendship.name), useValue: cleanup },
       { provide: getModelToken(TimetableShare.name), useValue: cleanup },
       {
         provide: TokenService,
         useValue: {
+          revokeAll,
           verifyAccess: (token: string) =>
             token === 'valid' || token === 'other'
               ? Promise.resolve({ userId: String(token === 'valid' ? userId : otherUserId) })
@@ -333,7 +333,8 @@ describe('내 계정: 상태 · 기기 · 요금제 · 탈퇴', () => {
 
   it('탈퇴는 204이고, 로그인 없이는 할 수 없다', async () => {
     await http().delete('/api/v1/users/me').set(auth).expect(204);
-    expect(cleanup.updateMany).toHaveBeenCalled();
+    expect(revokeAll).toHaveBeenCalled();
+    expect(cleanup.deleteMany).toHaveBeenCalled();
     await http().delete('/api/v1/users/me').expect(401);
   });
 });

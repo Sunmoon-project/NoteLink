@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 
-import { RefreshToken, RefreshTokenSchema } from '../auth/schemas/refresh-token.schema.js';
 import { User, UserSchema } from '../auth/schemas/user.schema.js';
 import {
   TimetableShare,
@@ -21,8 +20,7 @@ import { ProgressModule } from '../progress/progress.module.js';
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
       { name: Device.name, schema: DeviceSchema },
-      // 탈퇴할 때 로그인 · 친구 · 시간표 공유를 정리한다
-      { name: RefreshToken.name, schema: RefreshTokenSchema },
+      // 탈퇴할 때 친구 · 시간표 공유를 정리한다(로그인은 AuthModule의 TokenService로 끊는다)
       { name: Friendship.name, schema: FriendshipSchema },
       { name: TimetableShare.name, schema: TimetableShareSchema },
     ]),

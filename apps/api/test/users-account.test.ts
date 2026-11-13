@@ -42,11 +42,13 @@ let tokens: ReturnType<typeof model>;
 let friendships: ReturnType<typeof model>;
 let shares: ReturnType<typeof model>;
 let service: UsersService;
+let revokedUsers: Types.ObjectId[];
 let me: Types.ObjectId;
 const other = new Types.ObjectId();
 
 beforeEach(() => {
   me = new Types.ObjectId();
+  revokedUsers = [];
   users = model([
     {
       _id: me,
@@ -76,7 +78,13 @@ beforeEach(() => {
     users as never,
     { streakDays: async () => 0 } as never,
     devices as never,
-    tokens as never,
+    // TokenService.revokeAll만 쓴다(access 토큰 거절은 token.service.test.ts에서 본다)
+    {
+      revokeAll: (userId: Types.ObjectId, now: Date) => {
+        revokedUsers.push(userId);
+        return tokens.updateMany({ userId, revokedAt: null }, { revokedAt: now });
+      },
+    } as never,
     friendships as never,
     shares as never,
   );
@@ -110,6 +118,21 @@ describe('상태 · 기기', () => {
     );
     expect(devices.rows).toHaveLength(1);
     expect(String(devices.rows[0]!.userId)).toBe(String(other));
+  });
+
+  it('등록하는 사이에 탈퇴했으면 저장한 기기를 지우고 404', async () => {
+    // 확인(exists)은 통과하고, 저장한 뒤 다시 확인할 때는 탈퇴한 상태
+    const exists = users.exists;
+    let calls = 0;
+    users.exists = (f) => (++calls === 1 ? exists(f) : Promise.resolve(null));
+    await expect(
+      service.registerDevice(
+        me.toHexString(),
+        { platform: 'ios', pushToken: 't', locale: 'ko-KR' },
+        NOW,
+      ),
+    ).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
+    expect(devices.rows).toHaveLength(0);
   });
 
   it('탈퇴했거나 없는 사용자는 404', async () => {
@@ -152,6 +175,7 @@ describe('회원 탈퇴', () => {
       nickname: `탈퇴-${me.toHexString()}`,
       status: 'offline',
     });
+    expect(revokedUsers.map(String)).toEqual([String(me)]);
     expect(tokens.rows.find((t) => String(t.userId) === String(me))!.revokedAt).toEqual(NOW);
     expect(tokens.rows.find((t) => String(t.userId) === String(other))!.revokedAt).toBeNull();
     expect(devices.rows).toHaveLength(0);
@@ -161,5 +185,18 @@ describe('회원 탈퇴', () => {
     await expect(service.withdraw(me.toHexString())).rejects.toMatchObject({
       response: { code: 'NOT_FOUND' },
     });
+  });
+
+  it('정리 중에 실패하면 계정은 탈퇴 전 그대로라 다시 시도해 끝낼 수 있다', async () => {
+    const deleteMany = friendships.deleteMany;
+    friendships.deleteMany = () => Promise.reject(new Error('DB 오류'));
+    await expect(service.withdraw(me.toHexString(), NOW)).rejects.toThrow('DB 오류');
+    expect(users.rows[0]).toMatchObject({ deletedAt: null, email: 'me@example.com' });
+
+    friendships.deleteMany = deleteMany;
+    await service.withdraw(me.toHexString(), NOW);
+    expect(users.rows[0]).toMatchObject({ deletedAt: NOW, email: null });
+    expect(friendships.rows).toHaveLength(1);
+    expect(shares.rows).toHaveLength(0);
   });
 });

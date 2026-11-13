@@ -9,13 +9,13 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Types, type Model } from 'mongoose';
 
-import { RefreshToken } from '../auth/schemas/refresh-token.schema.js';
 import { User } from '../auth/schemas/user.schema.js';
 import { TimetableShare } from '../calendar/schemas/timetable-share.schema.js';
 import { Friendship } from '../social/schemas/friendship.schema.js';
 import { Device } from './schemas/device.schema.js';
 import type { ChangePlanDto, RegisterDeviceDto, UpdateStatusDto } from './dto/account.dto.js';
 import { toAppUser } from '../auth/to-app-user.js';
+import { TokenService } from '../auth/token.service.js';
 import { ProgressService } from '../progress/progress.service.js';
 import type { UpdateProfileDto } from './dto/update-profiile.dto.js';
 
@@ -26,7 +26,7 @@ export class UsersService {
     private readonly userModel: Model<User>,
     private readonly progress: ProgressService,
     @InjectModel(Device.name) private readonly devices: Model<Device>,
-    @InjectModel(RefreshToken.name) private readonly refreshTokens: Model<RefreshToken>,
+    private readonly tokens: TokenService,
     @InjectModel(Friendship.name) private readonly friendships: Model<Friendship>,
     @InjectModel(TimetableShare.name) private readonly shares: Model<TimetableShare>,
   ) {}
@@ -57,6 +57,11 @@ export class UsersService {
       { $set: { userId: id, platform: dto.platform, locale: dto.locale, lastSeenAt: now } },
       { upsert: true },
     );
+    // 확인한 뒤 저장하는 사이에 탈퇴했으면, 탈퇴 정리가 이 기기를 놓쳤을 수 있으니 지운다
+    if (!(await this.userModel.exists({ _id: id, deletedAt: null }))) {
+      await this.devices.deleteMany({ pushToken: dto.pushToken, userId: id });
+      throw new NotFoundException({ code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' });
+    }
   }
 
   /**
@@ -92,11 +97,19 @@ export class UsersService {
   /**
    * 회원 탈퇴. 계정 문서는 남기되(기록 · 정산 대조용) 로그인 수단과 개인 정보를 지운다:
    * 이메일 · 비밀번호 · 소셜 연동을 비우고 닉네임을 바꿔 같은 이메일 · 닉네임으로 다시 가입할 수 있게 한다.
-   * 모든 기기 로그인(refresh 토큰)을 끊고, 푸시 기기 · 친구 관계 · 시간표 공유를 지운다.
+   * 모든 기기 로그인(access · refresh 토큰)을 끊고, 푸시 기기 · 친구 관계 · 시간표 공유를 지운다.
+   *
+   * 정리를 먼저 하고 탈퇴 표시(deletedAt)는 마지막에 한다: 중간에 실패하면 계정이 아직 살아 있어
+   * 다시 로그인해 탈퇴를 다시 시도할 수 있다(먼저 표시하면 404가 나서 남은 정리를 다시 할 수 없다).
+   * 정리는 몇 번 되풀이해도 결과가 같다.
    */
   async withdraw(userId: string, now = new Date()): Promise<void> {
     const id = await this.activeId(userId);
-    const done = await this.userModel.updateOne(
+    await this.tokens.revokeAll(id, now);
+    await this.devices.deleteMany({ userId: id });
+    await this.friendships.deleteMany({ $or: [{ userA: id }, { userB: id }] });
+    await this.shares.deleteMany({ $or: [{ ownerId: id }, { friendId: id }] });
+    await this.userModel.updateOne(
       { _id: id, deletedAt: null },
       {
         $set: {
@@ -109,12 +122,8 @@ export class UsersService {
         },
       },
     );
-    // 동시에 두 번 눌렀으면 먼저 끝난 쪽이 정리한다
-    if (done.modifiedCount === 0) return;
-    await this.refreshTokens.updateMany({ userId: id, revokedAt: null }, { revokedAt: now });
+    // 정리하는 사이에 등록된 기기가 있으면 지운다(registerDevice도 저장 뒤 탈퇴를 다시 확인한다)
     await this.devices.deleteMany({ userId: id });
-    await this.friendships.deleteMany({ $or: [{ userA: id }, { userB: id }] });
-    await this.shares.deleteMany({ $or: [{ ownerId: id }, { friendId: id }] });
   }
 
   async interestCategories() {
