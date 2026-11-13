@@ -123,10 +123,13 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
         users.push(row);
         return Promise.resolve(row);
       },
-      findOne: (f: { email: string; deletedAt: null }) => ({
+      // 이메일로 찾기(로그인) · id로 찾기(토큰 검사) 둘 다
+      findOne: (f: { email?: string; deletedAt?: null; _id?: Types.ObjectId }) => ({
         lean: () =>
           Promise.resolve(
-            users.find((u) => u.email === f.email && u.deletedAt === f.deletedAt) ?? null,
+            users.find((u) =>
+              f._id ? u._id.equals(f._id) : u.email === f.email && u.deletedAt === f.deletedAt,
+            ) ?? null,
           ),
       }),
       updateOne: (f: { _id: Types.ObjectId }, update: { $set: Partial<UserRow> }) => {

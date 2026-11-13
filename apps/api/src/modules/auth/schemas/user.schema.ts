@@ -119,6 +119,13 @@ export class User {
 
   @Prop({ type: Date, default: null })
   deletedAt?: Date | null;
+
+  /**
+   * 이 시각 이전에 발급된 로그인 토큰(access · refresh)은 받지 않는다. 비밀번호를 바꾸거나 탈퇴하면
+   * 모든 기기 로그인을 끊으려고 적는다(TokenService.revokeAll)
+   */
+  @Prop({ type: Date, default: null })
+  sessionsRevokedAt?: Date | null;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
