@@ -7,14 +7,14 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "ios:device": "NOTELINK_FREE_IOS=1 expo run:ios --device --configuration Release",
+    "ios:device": "NOTELINK_FREE_IOS=1 expo prebuild -p ios --clean && NOTELINK_FREE_IOS=1 expo run:ios --device --configuration Release --no-build-cache",
     "android:device": "expo run:android --device --variant release",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "jest",
     "format": "prettier --write .",
-    "build:android:local": "eas build -p android --profile preview-local",
-    "build:android:server": "eas build -p android --profile preview-server",
+    "build:android:local": "npx eas-cli build -p android --profile preview-local",
+    "build:android:server": "npx eas-cli build -p android --profile preview-server",
     "eas-build-post-install": "cd ../.. && npm run build -w @notelink/shared"
   },
   "jest": {
