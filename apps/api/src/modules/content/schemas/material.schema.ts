@@ -139,3 +139,6 @@ export class Material {
 }
 
 export const MaterialSchema = SchemaFactory.createForClass(Material);
+
+// 폴더별 자료 수 세기 · 폴더 안 자료 찾기(내 것, 지우지 않은 것)
+MaterialSchema.index({ ownerId: 1, deletedAt: 1, folderId: 1 });

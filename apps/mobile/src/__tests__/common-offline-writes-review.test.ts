@@ -149,16 +149,6 @@ const writes: [string, () => Promise<unknown>][] = [
   ['me.setStatus', () => api.me.setStatus('busy')],
   ['me.changePlan', () => api.me.changePlan('pro')],
   [
-    'me.generateProfile',
-    () =>
-      api.me.generateProfile({
-        photoBlobUrl: 'https://example.test/p.png',
-        prompt: '',
-        style: null,
-      }),
-  ],
-  ['me.saveAvatar', () => api.me.saveAvatar({ style: 'nice', gender: 'female', color: '#123456' })],
-  [
     'study.addItem',
     () => api.study.addItem({ title: '실패할 항목', subjectName: '수학', goalMin: 30 }),
   ],

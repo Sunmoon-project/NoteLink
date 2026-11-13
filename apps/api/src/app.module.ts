@@ -7,6 +7,7 @@ import { createMongooseOptions } from './config/mongo.config.js';
 import { HealthController } from './health/health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { CalendarModule } from './modules/calendar/calendar.module.js';
+import { FoldersModule } from './modules/content/folders/folders.module.js';
 import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
 import { ProgressModule } from './modules/progress/progress.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
@@ -53,6 +54,8 @@ import { UploadModule } from './modules/upload/upload.module.js';
     CalendarModule,
     // 파일 올리기 주소 발급(FR-19)
     UploadModule,
+    // 학습 폴더 목록 · 만들기(FR-19)
+    FoldersModule,
   ],
   controllers: [HealthController],
 })
