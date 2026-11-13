@@ -36,6 +36,11 @@ VAR_RE='^[A-Z][A-Z0-9_]*$'
 ROLES="값 보기 · 쓰기는 Key Vault Secrets Officer(완우 · 희재), 이름 보기 · 넣기는 NoteLink Secrets Writer(나머지 팀원)입니다"
 TEAM_ROLES="팀 Key Vault는 팀원 모두 Key Vault Secrets Officer입니다"
 USAGE="pull <ai|api> · push [--team] <변수> · list [--team] [ai|api]"
+# ai의 ${…} 값: .env · .env.local(pull이 .env에 합침) 어디에 두어도 python-dotenv가 바꿔 읽음. 셸 환경 변수는
+# pydantic-settings가 .env보다 먼저 쓰고 바꾸지 않음. python-dotenv가 바꾸는 모양은 닫는 }까지 있는 ${…}뿐
+# (dotenv/variables.py: 'x${}y' → xy, 'ab${cd'는 그대로)
+EXPAND_RE='\$\{[^}]*\}'
+DOLLAR_HINT="python-dotenv는 .env(.env.local도 .env에 합쳐짐)의 \${이름}을 바꿔 읽으므로, 셸 환경 변수로 넘기세요(예: export 이름='값' 뒤 서버 실행)"
 
 die() { echo "env-vault: $*" >&2; exit 1; }
 
@@ -139,15 +144,15 @@ overrides() {  # $1 = 앱, $2 = 변수, $3 = .env.local의 이름 목록
 
 # .env 한 줄: 특수 문자가 없으면 그대로, 있으면 작은따옴표. 작은따옴표 · 역슬래시 · 줄바꿈은 dotenv마다
 # 읽는 법이 달라(python-dotenv는 작은따옴표 안의 \\ · \'를 풀고 Node dotenv는 그대로 둠) 거절.
-# ai는 ${ 도 거절: python-dotenv는 작은따옴표 안에서도 ${이름}을 바꿈('abc${X}def' → abcdef).
-# api(NestJS · Node dotenv)는 바꾸지 않아 그대로 씀
+# ai는 ${…}도 거절: python-dotenv는 작은따옴표 안에서도 ${이름}을 바꿈('abc${X}def' → abcdef).
+# api(NestJS · Node dotenv)는 바꾸지 않아 그대로 씀. 거절하면 1(줄바꿈 · 작은따옴표 · 역슬래시), 2(ai의 ${…})
 env_line() {  # $1 = 변수, $2 = 값, $3 = 앱(없으면 ai · api 공통 검사만)
   local value=$2
   if [[ "$value" == *$'\n'* || "$value" == *$'\r'* || "$value" == *"'"* || "$value" == *\\* ]]; then
     return 1
   fi
-  if [ "${3:-}" = ai ] && [[ "$value" == *'${'* ]]; then
-    return 1
+  if [ "${3:-}" = ai ] && [[ "$value" =~ $EXPAND_RE ]]; then
+    return 2
   fi
   if [[ "$value" =~ ^[A-Za-z0-9_./:@+=,%?\&-]*$ ]]; then
     printf '%s=%s\n' "$1" "$value"
@@ -165,7 +170,7 @@ local_keys() {  # $1 = .env.local 경로
 PULL_HEAD='# scripts/env-vault.sh pull '
 
 pull() {  # $1 = 앱. 팀 Key Vault에서만 받음(배포 값은 로컬로 내려받지 않음)
-  local app=$1 dir env local_file tmp have local_set var value bak rc count=0 skipped=0 overridden=0
+  local app=$1 dir env local_file tmp have local_set var name value line bak rc count=0 skipped=0 overridden=0
   check_app "$app"
   use_team
   need_az
@@ -189,21 +194,30 @@ pull() {  # $1 = 앱. 팀 Key Vault에서만 받음(배포 값은 로컬로 내�
     if overrides "$app" "$var" "$local_set"; then
       overridden=$((overridden + 1)); continue
     fi
+    name=$(secret_name "$var")
     rc=0
-    az_value "$(secret_name "$var")" || rc=$?
+    az_value "$name" || rc=$?
     [ "$rc" -ne 2 ] \
-      || die "'$(secret_name "$var")'의 az 출력 모양이 예상과 다릅니다(.env는 그대로). Azure CLI 버전을 확인하세요"
+      || die "'$name'의 az 출력 모양이 예상과 다릅니다(.env는 그대로). Azure CLI 버전을 확인하세요"
     [ "$rc" -eq 0 ] \
-      || die "'$(secret_name "$var")'의 값을 읽지 못했습니다(.env는 그대로). 방금 지우거나 껐으면 pull을 다시 하고, 아니면 권한을 확인하세요. $(role_hint)"
+      || die "'$name'의 값을 읽지 못했습니다(.env는 그대로, 위 az 오류 참고). 방금 지우거나 껐으면 pull을 다시 하고, 아니면 권한을 확인하세요. $(role_hint)"
     value=$VALUE
-    if ! env_line "$var" "$value" "$app" >> "$tmp"; then
-      echo "env-vault: $var 값에 줄바꿈 · 작은따옴표 · 역슬래시$([ "$app" != ai ] || printf ' · ${')가 있어 건너뜀(.env.local에 직접 넣으세요)" >&2
-      skipped=$((skipped + 1)); continue
-    fi
-    count=$((count + 1))
+    rc=0
+    line=$(env_line "$var" "$value" "$app") || rc=$?
+    case $rc in
+      0) printf '%s\n' "$line" >> "$tmp"; count=$((count + 1)) ;;
+      2) echo "env-vault: $var 값에 \${…}가 있어 건너뜀. $DOLLAR_HINT" >&2; skipped=$((skipped + 1)) ;;
+      *) echo "env-vault: $var 값에 줄바꿈 · 작은따옴표 · 역슬래시가 있어 건너뜀(.env.local에 직접 넣으세요)" >&2
+         skipped=$((skipped + 1)) ;;
+    esac
   done <<< "$have"
   if [ -f "$local_file" ]; then
     { echo; echo "# apps/$app/.env.local"; tr -d '\r' < "$local_file"; echo; } >> "$tmp"
+    # 주석이 아닌 값 줄의 ${…}만(일부러 다른 변수로 바꾸는 것이면 그대로 둬도 됨)
+    if [ "$app" = ai ] \
+      && grep -qE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=.*\$\{[^}]*\}' "$local_file"; then
+      echo "env-vault: apps/ai/.env.local의 값에 \${…}가 있어 다른 변수로 바뀌어 읽힙니다. 의도한 것이 아니면 $DOLLAR_HINT" >&2
+    fi
   fi
   # 있던 .env는 늘 남김. 손으로 만든 것(pull 머리말이 없음)은 .env.bak — 이미 있으면 시각을 붙인 새 이름으로
   # 덮지 않음. pull이 만든 것은 .env.prev(매번 바꿈): 받은 뒤 .env에 직접 고친 값도 한 번은 되찾을 수 있게
@@ -237,7 +251,7 @@ read_value() {  # 터미널이면 보이지 않게 한 줄, 아니면 표준 입
 }
 
 push() {  # $1 = 변수
-  local var=$1 value tmp users
+  local var=$1 value tmp users rc
   check_var "$var"
   need_az
   users=$(apps_of "$var")
@@ -249,11 +263,14 @@ push() {  # $1 = 변수
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] \
     || die "값에 줄바꿈(\r 포함)이 있습니다. 앱 설정 값은 한 줄이어야 합니다"
   if is_team; then
-    env_line "$var" "$value" > /dev/null \
-      || die "값에 작은따옴표 · 역슬래시가 있으면 pull로 .env에 받을 수 없습니다(.env.local에 직접 두세요)"
-    if [[ " $users " == *" ai "* ]] && ! env_line "$var" "$value" ai > /dev/null; then
-      die "ai가 쓰는 값에 \${가 있으면 python-dotenv가 바꿔 읽으므로 pull로 받을 수 없습니다(apps/ai/.env.local에 직접 두세요)"
+    rc=0
+    if [[ " $users " == *" ai "* ]]; then
+      env_line "$var" "$value" ai > /dev/null || rc=$?
+    else
+      env_line "$var" "$value" > /dev/null || rc=$?
     fi
+    [ "$rc" -ne 2 ] || die "ai가 쓰는 값에 \${…}가 있으면 pull로 받을 수 없습니다. $DOLLAR_HINT"
+    [ "$rc" -eq 0 ] || die "값에 작은따옴표 · 역슬래시가 있으면 pull로 .env에 받을 수 없습니다(.env.local에 직접 두세요)"
   fi
   tmp=$(umask 077 && mktemp) || die "임시 파일을 만들지 못했습니다"
   trap 'rm -f "$tmp"' EXIT

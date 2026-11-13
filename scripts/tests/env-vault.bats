@@ -381,24 +381,43 @@ team() { printf '%s' "$2" > "$TEAM_DIR/$1"; }  # 팀
   [ "$(cat "$dir/.env")" = MY_HAND=1 ]
 }
 
-@test "pull · push --team: ai가 쓰는 값의 \${는 python-dotenv가 바꾸므로 거르고, api만 쓰는 값 · \$ 하나는 그대로" {
+@test "pull · push --team: ai가 쓰는 값의 \${…}는 python-dotenv가 바꾸므로 거르고, api만 쓰는 값 · \$ · 닫히지 않은 \${는 그대로" {
   team ANTHROPIC-API-KEY 'abc${UNSET}def'
   team VOYAGE-API-KEY 'p$q'
+  team APP-ENV 'ab${cd'  # 닫는 }가 없으면 python-dotenv도 그대로 읽음
+  team QUIZ-GEN-MODEL 'x${}y'  # 빈 ${}도 바뀜(→ xy)
   team JWT-ACCESS-SECRET 'j${X}k'
   run bash "$SCRIPT" pull ai
   [ "$status" -eq 0 ]
   env="$ENV_VAULT_ROOT/apps/ai/.env"
-  ! grep -q ANTHROPIC "$env" || false
+  ! grep -q -e ANTHROPIC -e QUIZ_GEN_MODEL "$env" || false
   grep -qxF "VOYAGE_API_KEY='p\$q'" "$env"
-  [[ "$output" == *"ANTHROPIC_API_KEY 값에"*'${가 있어 건너뜀'* ]]
+  grep -qxF "APP_ENV='ab\${cd'" "$env"
+  [[ "$output" == *"ANTHROPIC_API_KEY 값에"*'${…}가 있어 건너뜀'* ]]
+  [[ "$output" == *"셸 환경 변수로 넘기세요"* && "$output" != *"넣으세요"* ]]  # .env.local은 안 됨
+  [[ "$output" == *"건너뜀 2개"* ]]
+  printf 'MY_TOKEN=a${B}c\n' > "$ENV_VAULT_ROOT/apps/ai/.env.local"
+  run bash "$SCRIPT" pull ai
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'apps/ai/.env.local의 값에 ${…}가 있어'* ]]
+  printf '# MY_TOKEN=a${B}c\nMY_TOKEN=ab${c\n' > "$ENV_VAULT_ROOT/apps/ai/.env.local"  # 주석 · 닫히지 않음
+  run bash "$SCRIPT" pull ai
+  [ "$status" -eq 0 ]
+  [[ "$output" != *'.env.local의 값에'* ]]
+  printf 'MY_TOKEN=a${B}c\n' > "$ENV_VAULT_ROOT/apps/api/.env.local"
+  rm "$ENV_VAULT_ROOT/apps/ai/.env.local"
+  run bash "$SCRIPT" pull api
+  [ "$status" -eq 0 ]
+  [[ "$output" != *'.env.local의 값에'* ]]  # api는 바꾸지 않음
+  rm "$ENV_VAULT_ROOT/apps/api/.env.local"
   run bash "$SCRIPT" pull api
   [ "$status" -eq 0 ]
   grep -qxF "JWT_ACCESS_SECRET='j\${X}k'" "$ENV_VAULT_ROOT/apps/api/.env"
   printf '%s' 'x${HOME}' > "$TMP/brace"
   run bash -c '"$1" push --team APP_ENV < "$2"' _ "$SCRIPT" "$TMP/brace"
   [ "$status" -ne 0 ]
-  [[ "$output" == *'ai가 쓰는 값에 ${가 있으면'* ]]
-  [ ! -e "$TEAM_DIR/APP-ENV" ]
+  [[ "$output" == *'ai가 쓰는 값에 ${…}가 있으면'* && "$output" == *"셸 환경 변수로 넘기세요"* ]]
+  [ "$(cat "$TEAM_DIR/APP-ENV")" = 'ab${cd' ]  # 거절해 바뀌지 않음
   run bash -c '"$1" push --team JWT_ACCESS_SECRET < "$2"' _ "$SCRIPT" "$TMP/brace"
   [ "$status" -eq 0 ]
   [ "$(cat "$TEAM_DIR/JWT-ACCESS-SECRET")" = 'x${HOME}' ]
@@ -472,7 +491,7 @@ team() { printf '%s' "$2" > "$TEAM_DIR/$1"; }  # 팀
   printf 'MY_HAND=1\n' > "$dir/.env"
   AZ_FAIL_SHOW=VOYAGE-API-KEY run bash "$SCRIPT" pull ai
   [ "$status" -ne 0 ]
-  [[ "$output" == *"VOYAGE-API-KEY'의 값을 읽지 못했습니다(.env는 그대로)"* ]]
+  [[ "$output" == *"VOYAGE-API-KEY'의 값을 읽지 못했습니다(.env는 그대로, 위 az 오류 참고)"* ]]
   [ "$(cat "$dir/.env")" = MY_HAND=1 ]
   [ -z "$(ls -A "$dir" | grep -E '^\.env\.(pull|bak)' || true)" ]
   ! grep -rq sk-got-before-fail "$dir" || false
