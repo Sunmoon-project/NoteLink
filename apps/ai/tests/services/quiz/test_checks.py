@@ -748,6 +748,19 @@ def test_sharing_one_sentence_each_is_not_the_same_fact() -> None:
     assert not same_fact(second, [made(first, "애니메이션 제어", "조합")], FACT_PAGE, "조합")
 
 
+def test_sharing_one_sentence_with_a_question_of_another_page_is_not_the_same_fact() -> None:
+    # 앞 문제는 다른 쪽(resizeMode · onLoadEnd 줄이 있는 쪽)에서 만듦: 이 쪽 글로는 근거가 문장
+    # 하나(REQUEST)만 남음. 기준을 근거가 남은 문장 수(1)로 낮추면 문장 하나만 겹쳐도 같은
+    # 사실이 됐음(Codex 리뷰 #354)
+    first = lines(REQUEST, RESIZE, LOAD_END)
+    second = lines(RESPONSE, UNKNOWN, "앱은 서버 안의 진행 정도를 직접 알 수 있다")
+    this_page = "\n".join(FACT_PAGE.split("\n")[:3])  # 제목 · 요청 줄 · 서버 상태 줄
+    assert not same_fact(second, [made(first, "애니메이션 제어", "조합")], this_page, "조합")
+    # 문장 둘이 겹치면 그대로 같은 사실
+    third = lines(RESPONSE, FLIPPED, UNKNOWN)
+    assert same_fact(third, [made(first, "애니메이션 제어", "조합")], this_page, "조합")
+
+
 def test_other_note_lines_are_not_the_same_fact() -> None:
     before = [made(lines(REQUEST, RESPONSE, UNKNOWN), "상태값 제어", "조합")]
     assert not same_fact(lines(RESIZE, LOAD_END, RESIZE), before, FACT_PAGE, "조합")

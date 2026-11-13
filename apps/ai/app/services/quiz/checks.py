@@ -222,9 +222,12 @@ def facts_of(asked: list[str], lines: list[tuple[str, set[str]]]) -> list[str]:
     return out
 
 
-def _same_facts(mine: list[str], theirs: list[str]) -> bool:
+def _same_facts(mine: list[str], theirs: list[str], n_mine: int, n_theirs: int) -> bool:
     """어느 한쪽 문장 중 SAME_FACTS개(문장이 그보다 적으면 모두)가 상대의 근거 줄을 물음.
 
+    mine · theirs는 근거 줄(facts_of), n_mine · n_theirs는 근거를 찾기 전 묻는 문장 수. 기준은
+    묻는 문장 수로 정함: 근거를 찾은 문장 수로 정하면 다른 쪽의 문제처럼 근거가 하나만 남은 조합
+    문제가 문장 하나만 겹쳐도 같은 사실이 됨(Codex 리뷰 #354).
     한쪽만 보면 차례에 따라 달라짐: 근거 줄 하나에 문장 셋을 모두 쓴 문제를 뒤에 만들면 앞 문제
     (근거 줄 둘)의 문장은 하나만 그 줄을 물음(0928 '애니메이션 제어' · '상태값 제어').
     """
@@ -232,7 +235,7 @@ def _same_facts(mine: list[str], theirs: list[str]) -> bool:
         return False
     a = sum(x in set(theirs) for x in mine)
     b = sum(y in set(mine) for y in theirs)
-    return a >= min(SAME_FACTS, len(mine)) or b >= min(SAME_FACTS, len(theirs))
+    return a >= min(SAME_FACTS, n_mine) or b >= min(SAME_FACTS, n_theirs)
 
 
 def same_fact(d: Draft, seen: list[Seen], page_text: str, ty: str) -> bool:
@@ -261,7 +264,7 @@ def same_fact(d: Draft, seen: list[Seen], page_text: str, ty: str) -> bool:
         if s.get("type") != ty:
             continue
         asked = _asked(ty, s.get("sentences") or [], s.get("answer", ""), s["passage"])
-        if _same_facts(mine, facts_of(asked, lines)):
+        if _same_facts(mine, facts_of(asked, lines), len(mine_asked), len(asked)):
             return True
     return False
 
