@@ -30,11 +30,23 @@ export const EMAIL_CODE_MAX_SENDS_PER_WINDOW = 5;
  */
 export const EMAIL_CODE_SEND_POLICY: Record<
   AuthCodePurpose,
-  { windowMs: number; maxSends: number }
+  { windowEnd: (now: Date) => Date; maxSends: number }
 > = {
-  signup: { windowMs: EMAIL_CODE_SEND_WINDOW_MS, maxSends: EMAIL_CODE_MAX_SENDS_PER_WINDOW },
-  recovery: { windowMs: 24 * 60 * 60 * 1000, maxSends: 3 },
+  signup: {
+    windowEnd: (now) => new Date(now.getTime() + EMAIL_CODE_SEND_WINDOW_MS),
+    maxSends: EMAIL_CODE_MAX_SENDS_PER_WINDOW,
+  },
+  // 「하루」는 서울 자정에 바뀐다(README 규칙)
+  recovery: { windowEnd: nextSeoulMidnight, maxSends: 3 },
 };
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const SEOUL_OFFSET_MS = 9 * 60 * 60 * 1000;
+/** now 다음에 오는 서울 자정. 서울은 서머타임이 없어 UTC+9로 고정이다 */
+export function nextSeoulMidnight(now: Date): Date {
+  const seoulDay = Math.floor((now.getTime() + SEOUL_OFFSET_MS) / DAY_MS);
+  return new Date((seoulDay + 1) * DAY_MS - SEOUL_OFFSET_MS);
+}
 /**
  * 인증에 성공한 뒤 가입을 끝낼 수 있는 시간(인증 증표의 수명). 이 시간 동안은 인증번호 기록이 남아 있어야 하므로,
  * 인증에 성공하면 기록의 보관 기한(retainUntil)이 이보다 일찍 끝나지 않게 늘린다.
@@ -111,7 +123,9 @@ export class EmailCodeService {
     const key = { email, purpose };
     const cooledDown = { $lte: new Date(now.getTime() - EMAIL_CODE_RESEND_COOLDOWN_MS) };
     const policy = EMAIL_CODE_SEND_POLICY[purpose];
-    const newWindowEnd = new Date(now.getTime() + policy.windowMs);
+    const newWindowEnd = policy.windowEnd(now);
+    // 서울 자정 직전이면 구간 끝이 번호 만료보다 이를 수 있으니, 보관은 둘 중 늦은 때까지
+    const newRetainUntil = new Date(Math.max(newWindowEnd.getTime(), fresh.expiresAt.getTime()));
 
     // 1. 제한 구간이 끝났으면 횟수를 처음부터 센다. 구간이 끝났어도 마지막 발송 뒤 간격은 지켜야 한다
     //    (구간 끝 직전에 보낸 직후 새 구간으로 넘어가며 간격 제한을 피하지 못하게 한다)
@@ -122,8 +136,7 @@ export class EmailCodeService {
           ...fresh,
           sendCount: 1,
           windowEndsAt: newWindowEnd,
-          // 새 구간의 끝이 번호 만료(10분 뒤)보다 늦으므로 보관 기한은 구간 끝과 같다
-          retainUntil: newWindowEnd,
+          retainUntil: newRetainUntil,
         },
       },
     );
@@ -151,7 +164,7 @@ export class EmailCodeService {
           ...fresh,
           sendCount: 1,
           windowEndsAt: newWindowEnd,
-          retainUntil: newWindowEnd,
+          retainUntil: newRetainUntil,
         });
         return { ok: true, code };
       } catch (error) {

@@ -7,7 +7,10 @@ import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureApp } from '../src/app.setup.js';
-import { EMAIL_CODE_MAX_ATTEMPTS } from '../src/modules/auth/app-login/email-code.service.js';
+import {
+  EMAIL_CODE_MAX_ATTEMPTS,
+  nextSeoulMidnight,
+} from '../src/modules/auth/app-login/email-code.service.js';
 import { MAIL_SENDER, type MailSender } from '../src/modules/mail/mail-sender.js';
 import { AuthCode } from '../src/modules/auth/schemas/auth-code.schema.js';
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
@@ -71,12 +74,15 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
         return Promise.resolve();
       },
     };
-    const find = (f: { email: string; deletedAt: null }) =>
-      users.find((u) => u.email === f.email && u.deletedAt === f.deletedAt) ?? null;
+    // 이메일로 찾기(계정 찾기) · id로 찾기(토큰 검사) 둘 다
+    const find = (f: { email?: string; deletedAt?: null; _id?: Types.ObjectId }) =>
+      users.find((u) =>
+        f._id ? u._id.equals(f._id) : u.email === f.email && u.deletedAt === f.deletedAt,
+      ) ?? null;
     const usersModel = {
       exists: (f: { email: string; deletedAt: null }) =>
         Promise.resolve(find(f) ? { _id: find(f)!._id } : null),
-      findOne: (f: { email: string; deletedAt: null }) => ({
+      findOne: (f: { email?: string; deletedAt?: null; _id?: Types.ObjectId }) => ({
         lean: () => Promise.resolve(find(f)),
       }),
       updateOne: (f: { _id: Types.ObjectId }, update: { $set: Partial<UserRow> }) => {
@@ -160,7 +166,7 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
 
   it('비밀번호 재설정: 아이디와 이메일이 다르면 거절하고, 맞으면 바꾼 뒤 모든 기기 로그인을 끊는다', async () => {
     const user = users[0]!;
-    await tokens.issue(user._id.toString());
+    const before = await tokens.issue(user._id.toString());
     await post(SEND, { email: EMAIL });
     const mismatch = await post(RESET, {
       id: EMAIL,
@@ -181,6 +187,28 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
     expect(res.status).toBe(204);
     expect(await compare(NEW_PASSWORD, user.passwordHash!)).toBe(true);
     expect(fakeRefresh.rows.every((r) => r.revokedAt !== null)).toBe(true);
+    // 재설정 전에 받은 access 토큰도 만료 전에 바로 막힌다
+    const me = await request(app.getHttpServer())
+      .get('/api/v1/users/me')
+      .set('Authorization', `Bearer ${before.accessToken}`);
+    expect(me.status).toBe(401);
+  });
+
+  it('서울 자정이 지나면 하루 횟수를 다시 센다(24시간을 기다리지 않는다)', async () => {
+    expect(nextSeoulMidnight(new Date('2026-01-01T14:59:59Z')).toISOString()).toBe(
+      '2026-01-01T15:00:00.000Z',
+    );
+    expect(nextSeoulMidnight(new Date('2026-01-01T15:00:00Z')).toISOString()).toBe(
+      '2026-01-02T15:00:00.000Z',
+    );
+    const lateNight = new Date('2026-01-01T14:50:00Z'); // 서울 23:50
+    for (let i = 0; i < 3; i++) {
+      vi.setSystemTime(new Date(lateNight.getTime() + i * 61_000));
+      expect((await post(SEND, { email: EMAIL })).status).toBe(204);
+    }
+    expect((await post(SEND, { email: EMAIL })).status).toBe(429);
+    vi.setSystemTime(new Date('2026-01-01T15:00:00Z')); // 서울 00:00
+    expect((await post(SEND, { email: EMAIL })).status).toBe(204);
   });
 
   it('계정 찾기 인증번호는 하루 3번까지만 보낸다(인증번호를 계속 받아 맞혀 보는 공격을 막는다)', async () => {
@@ -193,7 +221,7 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
     expect(blocked.status).toBe(429);
     expect(blocked.body.code).toBe(ERROR_CODES.RATE_LIMITED);
     expect(recovery).toHaveLength(3);
-    vi.setSystemTime(new Date(START.getTime() + 24 * 60 * 60 * 1000 + 1)); // 하루가 지나면 다시
+    vi.setSystemTime(nextSeoulMidnight(START)); // 서울 자정이 지나면 다시
     expect((await post(SEND, { email: EMAIL })).status).toBe(204);
   });
 
