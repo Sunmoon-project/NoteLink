@@ -34,13 +34,19 @@ export class TokenService {
   ) {}
 
   /**
-   * 이 사용자의 모든 기기 로그인을 끊는다(비밀번호를 바꿨거나 탈퇴할 때). refresh 토큰을 모두 폐기하고,
-   * 끊은 시각을 사용자에 적어 그 전에 발급된 access 토큰도 만료 전에 거절되게 한다.
+   * 이 사용자의 모든 기기 로그인을 끊는다(비밀번호를 바꿨거나 탈퇴할 때). 끊은 시각을 사용자에 적어 그 전에 발급된
+   * access · refresh 토큰을 모두 거절하고(assertActive), refresh 토큰 줄도 폐기한다.
+   * @param alsoSet 끊기와 함께 사용자에 적을 값(예: 새 비밀번호 해시). 한 번의 갱신으로 적어서, 비밀번호는 바뀌었는데
+   *   로그인은 안 끊기는 일이 없게 한다. 줄 폐기가 실패해도 끊은 시각이 이미 적혀 있어 토큰은 거절된다
    */
-  async revokeAll(userId: Types.ObjectId, now = new Date()): Promise<void> {
-    await this.users.updateOne({ _id: userId }, { $set: { sessionsRevokedAt: now } });
-    // 이미 폐기된 줄도 시각을 덮어쓴다: 갱신 중(쓴 토큰을 잠시 폐기해 둔 상태)이던 토큰이 되살아나지 않게(rotate)
-    await this.refreshTokens.updateMany({ userId }, { revokedAt: now });
+  async revokeAll(
+    userId: Types.ObjectId,
+    now = new Date(),
+    alsoSet: Record<string, unknown> = {},
+  ): Promise<void> {
+    await this.users.updateOne({ _id: userId }, { $set: { ...alsoSet, sessionsRevokedAt: now } });
+    // 이미 폐기된 줄도 덮어쓴다: 갱신 중이던 토큰의 표시(claimId)를 지워 되살아나지 않게(rotate)
+    await this.refreshTokens.updateMany({ userId }, { revokedAt: now, claimId: null });
   }
 
   /**
@@ -110,9 +116,10 @@ export class TokenService {
     // 조회와 폐기를 한 번에 해서, 같은 토큰으로 동시에 두 번 요청해도 한쪽만 이긴다.
     // 위에서 확인한 뒤 새 토큰을 만드는 사이에 기존 토큰이 만료될 수 있어 만료 조건도 다시 건다
     const claimedAt = new Date();
+    const claimId = randomUUID();
     const claimed = await this.refreshTokens.findOneAndUpdate(
       { tokenHash, revokedAt: null, expiresAt: { $gt: claimedAt } },
-      { revokedAt: claimedAt },
+      { revokedAt: claimedAt, claimId },
     );
     if (!claimed) {
       // 동시 요청에 졌거나 그사이 만료됐다. 앱에 돌려주지 않은 새 토큰의 줄을 지운다
@@ -127,10 +134,10 @@ export class TokenService {
       await this.discard(next.rowId);
       if (!(error instanceof UnauthorizedException)) {
         // 끊긴 게 아니라 DB를 읽지 못했다: 쓴 토큰을 되살려 앱이 같은 토큰으로 다시 갱신할 수 있게 한다.
-        // 우리가 적은 폐기 시각(claimedAt) 그대로일 때만 되살린다 — 그사이 로그아웃 · revokeAll이 덮어썼으면 그대로 둔다.
+        // 우리 표시(claimId)가 그대로일 때만 되살린다 — 그사이 로그아웃 · revokeAll이 표시를 지웠으면 그대로 둔다.
         // 그사이 로그인이 끊겼다면 다음 갱신의 첫 확인(assertActive)도 막는다
         await this.refreshTokens
-          .updateOne({ tokenHash, revokedAt: claimedAt }, { revokedAt: null })
+          .updateOne({ tokenHash, claimId }, { revokedAt: null, claimId: null })
           .catch(() => undefined);
       }
       throw error;
@@ -149,10 +156,10 @@ export class TokenService {
 
   /** 로그아웃. 이미 폐기됐거나 없는 토큰이어도 오류 없이 끝낸다 */
   async revoke(refreshToken: string): Promise<void> {
-    // 이미 폐기된 줄도 시각을 덮어쓴다: 갱신 중이던 토큰을 로그아웃하면 rotate가 그 토큰을 되살리지 않게 한다
+    // 이미 폐기된 줄도 덮어쓴다: 갱신 중이던 토큰의 표시(claimId)를 지워 rotate가 되살리지 않게 한다
     await this.refreshTokens.updateOne(
       { tokenHash: hashToken(refreshToken) },
-      { revokedAt: new Date() },
+      { revokedAt: new Date(), claimId: null },
     );
   }
 
