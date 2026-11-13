@@ -201,7 +201,7 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 연속 달성 주 수', () =>
         expect(await streakOf(me)).toBe(4);
     });
 
-    it('5) 공휴일도 건너뛴다. 내가 숨긴 공휴일은 건너뛰지 않는다(skipDates와 같다)', async () => {
+    it('5) 공휴일도 건너뛴다. 내가 캘린더에서 숨겨도 건너뛴다(숨김은 표시 설정일 뿐)', async () => {
         const me = await newUser();
         await addGoal(me);
         await addStudy(me, WEEKS.filter((d) => d !== '2026-11-04'));
@@ -210,7 +210,7 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 연속 달성 주 수', () =>
         expect(await streakOf(me)).toBe(4);
 
         await col('hidden_holidays').insertOne({ userId: me.id, date: '2026-11-04' }); // 내 캘린더에서 숨김
-        expect(await streakOf(me)).toBe(1); // 숨긴 공휴일은 평범한 날이라 못 채운 날이 된다
+        expect(await streakOf(me)).toBe(4); // 숨겨도 그 날 공부를 안 해도 스트릭이 끊기지 않는다
 
         await col('hidden_holidays').deleteMany({});
         expect(await streakOf(me)).toBe(4);

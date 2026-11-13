@@ -242,17 +242,17 @@ describe.skipIf(!isLocal)('진짜 DB 공휴일 · 제외일 확인', () => {
         expect(res.body.data).toEqual([{ _id: '2027-01-01', name: '신정', hidden: false }]);
     });
 
-    it('10) skipDates: 내가 숨기지 않은 공휴일 + 내 제외일을 기간 안에서 오름차순 · 중복 없이 (해가 넘어가도, 다른 사람 것은 빼고)', async () => {
+    it('10) skipDates: 공휴일(내가 숨긴 것도) + 내 제외일을 기간 안에서 오름차순 · 중복 없이 (해가 넘어가도, 다른 사람 것은 빼고)', async () => {
         fetchYear.mockImplementation((year) =>
             Promise.resolve(year === 2026 ? fetched2026 : [{ date: '2027-01-01', name: '신정' }]),
         );
-        await patch('/holidays/2026-02-17', { hidden: true }); // 내가 숨김
+        await patch('/holidays/2026-02-17', { hidden: true }); // 내가 숨김 — 표시만 바뀌고 건너뛰기는 그대로
         await post('/holidays/custom', { name: '여행', date: '2026-01-01' }); // 공휴일과 겹침
         await post('/holidays/custom', { name: '방학', date: '2026-01-05' });
         await post('/holidays/custom', { name: '남', date: '2026-01-03' }, AUTH_OTHER);
 
         const mine = me.toString();
-        expect(await service.skipDates(mine, '2026-01-01', '2026-02-28')).toEqual(['2026-01-01', '2026-01-05']);
+        expect(await service.skipDates(mine, '2026-01-01', '2026-02-28')).toEqual(['2026-01-01', '2026-01-05', '2026-02-17']);
         expect(await service.skipDates(mine, '2026-12-30', '2027-01-02')).toEqual(['2026-12-31', '2027-01-01']);
         expect(await service.skipDates(mine, '2026-03-01', '2026-01-01')).toEqual([]);
         expect(await service.skipDates(other.toString(), '2026-01-01', '2026-02-28')).toEqual([
