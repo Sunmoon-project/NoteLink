@@ -3,14 +3,20 @@ import { getModelToken } from '@nestjs/mongoose';
 import { ERROR_CODES, PATHS, UPLOAD_RULES, UploadTarget } from '@notelink/shared';
 import { Types } from 'mongoose';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureApp } from '../src/app.setup.js';
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
+import { UploadQuota } from '../src/modules/upload/schemas/upload-quota.schema.js';
+import {
+  UPLOAD_ISSUE_LIMIT,
+  UPLOAD_ISSUE_WINDOW_MS,
+} from '../src/modules/upload/upload-quota.service.js';
 import { UPLOAD_PREFIX, UPLOAD_SAS_MINUTES } from '../src/modules/upload/upload.service.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
+import { createFakeUploadQuotas } from './support/fake-upload-quotas.js';
 
 const api = (path: string) => `/api/v1${path}`;
 const KEY = 'ZmFrZS1zdG9yYWdlLWtleS1mb3ItdGVzdHM=';
@@ -19,27 +25,36 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
 async function startApp(env: Record<string, string>) {
   stubAppEnv(env);
+  const quotas = createFakeUploadQuotas();
   const ref = await createAppModuleBuilder()
     .overrideProvider(getModelToken(RefreshToken.name))
     .useValue(createFakeRefreshTokens().model)
+    .overrideProvider(getModelToken(UploadQuota.name))
+    .useValue(quotas.model)
     .compile();
   const app = ref.createNestApplication();
   configureApp(app);
   await app.init();
-  return { app, tokens: ref.get(TokenService) };
+  return { app, tokens: ref.get(TokenService), quotas };
 }
 
 const image = { kind: 'image', fileName: 'note.jpg', contentType: 'image/jpeg', sizeBytes: 1024 };
 
 describe('파일 올리기 주소 발급 (POST /api/v1/uploads/sas)', () => {
   let app: INestApplication;
+  let started: Awaited<ReturnType<typeof startApp>>;
   const me = new Types.ObjectId().toHexString();
   let token: string;
 
   beforeAll(async () => {
-    const started = await startApp({ AZURE_STORAGE_CONNECTION_STRING: CONNECTION });
+    started = await startApp({ AZURE_STORAGE_CONNECTION_STRING: CONNECTION });
     app = started.app;
     token = (await started.tokens.issue(me)).accessToken;
+  });
+
+  beforeEach(() => {
+    started.quotas.rows.length = 0;
+    started.quotas.raceOnce(false);
   });
 
   afterAll(async () => {
@@ -149,6 +164,63 @@ describe('파일 올리기 주소 발급 (POST /api/v1/uploads/sas)', () => {
     expect(res.body.code).toBe(ERROR_CODES.VALIDATION);
   });
 
+  describe('발급 횟수 제한', () => {
+    /** 이번 구간에 이미 n개를 받은 것으로 둔다 */
+    const used = (n: number, userId = me) => {
+      const start = Math.floor(Date.now() / UPLOAD_ISSUE_WINDOW_MS) * UPLOAD_ISSUE_WINDOW_MS;
+      started.quotas.rows.push({
+        ownerId: new Types.ObjectId(userId),
+        windowStart: new Date(start),
+        count: n,
+        expiresAt: new Date(start + UPLOAD_ISSUE_WINDOW_MS),
+      });
+    };
+
+    it(`한 구간에 ${UPLOAD_ISSUE_LIMIT}개까지 받고, 넘으면 429 RATE_LIMITED와 남은 시간을 준다`, async () => {
+      used(UPLOAD_ISSUE_LIMIT - 1);
+      await sas(image).expect(200);
+      const res = await sas(image).expect(429);
+      expect(res.body.code).toBe(ERROR_CODES.RATE_LIMITED);
+      expect(res.body.retryAfterSeconds).toBeGreaterThan(0);
+      expect(res.body.retryAfterSeconds).toBeLessThanOrEqual(UPLOAD_ISSUE_WINDOW_MS / 1000);
+      expect(started.quotas.rows[0]!.count).toBe(UPLOAD_ISSUE_LIMIT);
+    });
+
+    it('동시에 요청해도 한도를 넘겨 내주지 않는다', async () => {
+      used(UPLOAD_ISSUE_LIMIT - 5);
+      const codes = await Promise.all(
+        Array.from({ length: 20 }, () => sas(image).then((r) => r.status)),
+      );
+      expect(codes.filter((c) => c === 200)).toHaveLength(5);
+      expect(codes.filter((c) => c === 429)).toHaveLength(15);
+      expect(started.quotas.rows[0]!.count).toBe(UPLOAD_ISSUE_LIMIT);
+    });
+
+    it('구간의 첫 요청이 겹쳐 만들기가 부딪혀도 받는다', async () => {
+      started.quotas.raceOnce(true);
+      await sas(image).expect(200);
+      expect(started.quotas.rows).toHaveLength(1);
+      expect(started.quotas.rows[0]!.count).toBe(1);
+    });
+
+    it('다른 사용자 · 지난 구간의 횟수는 세지 않는다', async () => {
+      used(UPLOAD_ISSUE_LIMIT, new Types.ObjectId().toHexString());
+      started.quotas.rows.push({
+        ownerId: new Types.ObjectId(me),
+        windowStart: new Date(Date.now() - 2 * UPLOAD_ISSUE_WINDOW_MS),
+        count: UPLOAD_ISSUE_LIMIT,
+        expiresAt: new Date(Date.now() - UPLOAD_ISSUE_WINDOW_MS),
+      });
+      await sas(image).expect(200);
+    });
+
+    it('거절한 요청은 횟수를 쓰지 않는다', async () => {
+      await sas({ ...image, fileName: 'a.gif' }).expect(400);
+      await sas({ ...image, sizeBytes: 0 }).expect(400);
+      expect(started.quotas.rows).toHaveLength(0);
+    });
+  });
+
   it('응답 · 오류 어디에도 스토리지 키가 없다', async () => {
     const ok = await sas(image).expect(200);
     const bad = await sas({ ...image, fileName: 'a.gif' }).expect(400);
@@ -162,9 +234,9 @@ describe('파일 저장소가 설정되지 않은 서버', () => {
   let token: string;
 
   beforeAll(async () => {
-    const started = await startApp({ AZURE_STORAGE_CONNECTION_STRING: '' });
-    app = started.app;
-    token = (await started.tokens.issue(new Types.ObjectId().toHexString())).accessToken;
+    const off = await startApp({ AZURE_STORAGE_CONNECTION_STRING: '' });
+    app = off.app;
+    token = (await off.tokens.issue(new Types.ObjectId().toHexString())).accessToken;
   });
 
   afterAll(async () => {

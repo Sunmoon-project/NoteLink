@@ -8,6 +8,8 @@ import {
 } from '@azure/storage-blob';
 import {
   BadRequestException,
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   ServiceUnavailableException,
@@ -15,6 +17,7 @@ import {
 import { ERROR_CODES, UPLOAD_RULES, UploadSasBody, type UploadTarget } from '@notelink/shared';
 
 import type { StorageConfig } from '../../config/storage.config.js';
+import { UploadQuotaService } from './upload-quota.service.js';
 
 export const STORAGE_CONFIG = Symbol('STORAGE_CONFIG');
 /** 올릴 주소가 유효한 시간 */
@@ -44,7 +47,10 @@ const notAllowed = (message: string) =>
 export class UploadService {
   private readonly credential: StorageSharedKeyCredential | null;
 
-  constructor(@Inject(STORAGE_CONFIG) private readonly storage: StorageConfig | null) {
+  constructor(
+    @Inject(STORAGE_CONFIG) private readonly storage: StorageConfig | null,
+    private readonly quota: UploadQuotaService,
+  ) {
     this.credential = storage
       ? new StorageSharedKeyCredential(storage.accountName, storage.accountKey)
       : null;
@@ -54,7 +60,7 @@ export class UploadService {
    * 앱이 Blob에 바로 올릴 주소. 임시 경로의 사용자 폴더 아래 새 이름으로 한 번만 올라간다.
    * sizeBytes는 앱이 알린 값이고 SAS로는 크기를 묶을 수 없다. 실제 크기는 자료를 등록할 때 Blob에서 다시 확인해야 한다
    */
-  createTarget(userId: string, raw: unknown, now: Date = new Date()): UploadTarget {
+  async createTarget(userId: string, raw: unknown, now: Date = new Date()): Promise<UploadTarget> {
     const body = UploadSasBody.safeParse(raw);
     if (!body.success)
       throw new BadRequestException({
@@ -75,6 +81,18 @@ export class UploadService {
         code: ERROR_CODES.UPLOAD_UNAVAILABLE,
         message: '지금은 파일을 올릴 수 없어요',
       });
+
+    // 올릴 수 있는 요청만 횟수를 쓴다(거절한 요청은 세지 않는다)
+    const reserved = await this.quota.reserve(userId, now);
+    if (!reserved.ok)
+      throw new HttpException(
+        {
+          code: ERROR_CODES.RATE_LIMITED,
+          message: '파일을 너무 많이 올리고 있어요. 잠시 뒤에 다시 해 주세요',
+          retryAfterSeconds: Math.ceil(reserved.retryAfterMs / 1000),
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
 
     const sent = body.data.contentType.toLowerCase();
     const contentType = (rule.types as readonly string[]).includes(sent)
