@@ -41,17 +41,27 @@ const timetableModel = {
         },
     ),
 };
+type ShareFilter = { ownerId: Types.ObjectId; friendId: Types.ObjectId; sharedAt?: Date };
+type ShareOp =
+    | { updateOne: { filter: ShareFilter; update: { $set: { mode: string; sharedAt: Date } }; upsert?: boolean } }
+    | { deleteOne: { filter: ShareFilter } };
+const shareHit = (f: ShareFilter) => (s: ShareRow) =>
+    s.ownerId.equals(f.ownerId) && s.friendId.equals(f.friendId) && (!f.sharedAt || s.sharedAt.getTime() === f.sharedAt.getTime());
 const shareModel = {
-    bulkWrite: vi.fn(
-        (ops: { updateOne: { filter: { ownerId: Types.ObjectId; friendId: Types.ObjectId }; update: { $set: { mode: string; sharedAt: Date } } } }[]) => {
-            for (const { updateOne: op } of ops) {
-                const row = shares.find((s) => s.ownerId.equals(op.filter.ownerId) && s.friendId.equals(op.filter.friendId));
-                if (row) Object.assign(row, op.update.$set);
-                else shares.push({ _id: new Types.ObjectId(), ...op.filter, ...op.update.$set });
+    bulkWrite: vi.fn((ops: ShareOp[]) => {
+        for (const op of ops) {
+            if ('deleteOne' in op) {
+                const i = shares.findIndex(shareHit(op.deleteOne.filter));
+                if (i >= 0) shares.splice(i, 1);
+                continue;
             }
-            return Promise.resolve({});
-        },
-    ),
+            const { filter, update, upsert } = op.updateOne;
+            const row = shares.find(shareHit(filter));
+            if (row) Object.assign(row, update.$set);
+            else if (upsert) shares.push({ _id: new Types.ObjectId(), ownerId: filter.ownerId, friendId: filter.friendId, ...update.$set });
+        }
+        return Promise.resolve({});
+    }),
     deleteMany: vi.fn((f: { ownerId: Types.ObjectId; friendId: { $in: Types.ObjectId[] } }) => {
         shares = shares.filter((s) => !(s.ownerId.equals(f.ownerId) && f.friendId.$in.some((id) => id.equals(s.friendId))));
         return Promise.resolve({});
@@ -63,7 +73,7 @@ const shareModel = {
                 rows.sort((a, b) => a.sharedAt.getTime() - b.sharedAt.getTime());
                 return chain;
             }),
-            lean: vi.fn(() => Promise.resolve(rows)),
+            lean: vi.fn(() => Promise.resolve(rows.map((r) => ({ ...r })))),
         };
         return chain;
     }),
@@ -242,16 +252,34 @@ describe('시간표 API (/timetable)', () => {
 
         it('친구 확인 뒤 공유를 쓰는 사이에 친구를 끊었으면 쓴 공유를 지우고 400 NOT_FRIEND', async () => {
             // 공유 쓰기 직전에 친구 끊기(관계 삭제 → 공유 정리)가 끝까지 돈다
+            const write = shareModel.bulkWrite.getMockImplementation()!;
             shareModel.bulkWrite.mockImplementationOnce(async (ops) => {
                 friendships = [];
                 shares = [];
-                for (const { updateOne: op } of ops) shares.push({ _id: new Types.ObjectId(), ...op.filter, ...op.update.$set });
-                return {};
+                return write(ops);
             });
             const res = await shareWith([friend.toString()]);
             expect(res.status).toBe(400);
             expect(res.body.code).toBe('NOT_FRIEND');
             expect(shares).toHaveLength(0);
+        });
+
+        it('두 친구에게 공유하는 사이 한 명과 끊기면 요청 전체를 되돌린다(새 공유는 지우고, 있던 공유는 예전 방식으로)', async () => {
+            const before = new Date('2026-11-01T00:00:00Z');
+            shares.push({ _id: new Types.ObjectId(), ownerId: ME, friendId: friend, mode: 'full', sharedAt: before });
+            const write = shareModel.bulkWrite.getMockImplementation()!;
+            shareModel.bulkWrite.mockImplementationOnce(async (ops) => {
+                // 쓰기 직전에 friend2와의 친구 끊기(관계 삭제 → 공유 정리)가 끝까지 돈다
+                friendships = friendships.filter((r) => !(r.userA.equals(friend2) || r.userB.equals(friend2)));
+                shares = shares.filter((s) => !s.friendId.equals(friend2));
+                return write(ops);
+            });
+            const res = await shareWith([friend.toString(), friend2.toString()], 'free_only');
+            expect(res.status).toBe(400);
+            expect(res.body.code).toBe('NOT_FRIEND');
+            expect(shares).toHaveLength(1);
+            expect(shares[0]).toMatchObject({ mode: 'full', sharedAt: before });
+            expect(shares[0]!.friendId.equals(friend)).toBe(true);
         });
 
         it('수락 전(pending)·거절된 관계는 친구로 치지 않는다', async () => {

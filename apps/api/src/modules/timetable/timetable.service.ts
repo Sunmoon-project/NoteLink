@@ -94,23 +94,44 @@ export class TimetableService {
         if (strangers.length > 0) {
             throw new BadRequestException({ code: 'NOT_FRIEND', message: '친구가 아닌 사용자에게는 시간표를 공유할 수 없습니다.' });
         }
+        const ids = requested.map((id) => new Types.ObjectId(id));
+        // 실패하면 되돌리려고 쓰기 전 상태를 기억한다
+        const before = await this.shareModel.find({ ownerId: owner, friendId: { $in: ids } }).lean<ShareLean[]>();
         await this.shareModel.bulkWrite(
-            requested.map((friendId) => ({
+            ids.map((friendId) => ({
                 updateOne: {
-                    filter: { ownerId: owner, friendId: new Types.ObjectId(friendId) },
+                    filter: { ownerId: owner, friendId },
                     update: { $set: { mode: dto.mode, sharedAt: now } },
                     upsert: true,
                 },
             })),
         );
         // 확인한 뒤 쓰는 사이에 친구를 끊었으면(FriendsService.remove는 관계 → 공유 순으로 지운다) 방금 쓴 공유가 남는다.
-        // 다시 확인해서 그 공유를 지운다. 다시 확인이 통과했다면 쓰기는 끊기보다 앞이라 끊기의 공유 정리가 지운다
+        // 다시 확인해서, 한 명이라도 끊겼으면 이 요청 전체를 되돌린다("하나라도 친구가 아니면 하나도 공유하지 않는다").
+        // 다시 확인이 통과했다면 쓰기는 끊기보다 앞이라 끊기의 공유 정리가 지운다
         const still = await this.friendIds(owner, requested);
         const gone = requested.filter((id) => !still.has(id));
         if (gone.length > 0) {
-            await this.shareModel.deleteMany({ ownerId: owner, friendId: { $in: gone.map((id) => new Types.ObjectId(id)) } });
+            await this.undoShare(owner, ids, gone, before, now);
             throw new BadRequestException({ code: 'NOT_FRIEND', message: '친구가 아닌 사용자에게는 시간표를 공유할 수 없습니다.' });
         }
+    }
+
+    /**
+     * share()가 쓴 것을 되돌린다. 끊긴 상대의 공유는 지우고, 나머지는 쓰기 전으로 돌린다(없던 공유는 지우고, 있던 공유는
+     * 예전 방식 · 시각으로). 그사이 다른 요청이 새로 쓴 공유(sharedAt이 now가 아님)는 건드리지 않는다
+     */
+    private async undoShare(owner: Types.ObjectId, ids: Types.ObjectId[], gone: string[], before: ShareLean[], now: Date): Promise<void> {
+        const previous = new Map(before.map((d) => [d.friendId.toString(), d]));
+        await this.shareModel.bulkWrite(
+            ids.map((friendId) => {
+                const prev = previous.get(friendId.toString());
+                const ours = { ownerId: owner, friendId, sharedAt: now };
+                return gone.includes(friendId.toString()) || !prev
+                    ? { deleteOne: { filter: gone.includes(friendId.toString()) ? { ownerId: owner, friendId } : ours } }
+                    : { updateOne: { filter: ours, update: { $set: { mode: prev.mode, sharedAt: prev.sharedAt } } } };
+            }),
+        );
     }
 
     /** 내가 시간표를 공유 중인 친구들 (공유한 순서) */
