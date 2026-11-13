@@ -183,6 +183,20 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
     expect(fakeRefresh.rows.every((r) => r.revokedAt !== null)).toBe(true);
   });
 
+  it('계정 찾기 인증번호는 하루 3번까지만 보낸다(인증번호를 계속 받아 맞혀 보는 공격을 막는다)', async () => {
+    for (let i = 0; i < 3; i++) {
+      vi.setSystemTime(new Date(START.getTime() + i * 61_000));
+      expect((await post(SEND, { email: EMAIL })).status).toBe(204);
+    }
+    vi.setSystemTime(new Date(START.getTime() + 3 * 61_000 + 60 * 60 * 1000)); // 1시간 뒤에도
+    const blocked = await post(SEND, { email: EMAIL });
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.code).toBe(ERROR_CODES.RATE_LIMITED);
+    expect(recovery).toHaveLength(3);
+    vi.setSystemTime(new Date(START.getTime() + 24 * 60 * 60 * 1000 + 1)); // 하루가 지나면 다시
+    expect((await post(SEND, { email: EMAIL })).status).toBe(204);
+  });
+
   it('새 비밀번호도 가입과 같은 규칙(영문 + 숫자 8자 이상)을 지킨다', async () => {
     await post(SEND, { email: EMAIL });
     const res = await post(RESET, { id: EMAIL, email: EMAIL, code: code(), password: 'short' });

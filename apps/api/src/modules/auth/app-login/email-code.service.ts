@@ -24,6 +24,18 @@ export const EMAIL_CODE_RESEND_COOLDOWN_MS = 60 * 1000;
 export const EMAIL_CODE_SEND_WINDOW_MS = 60 * 60 * 1000;
 export const EMAIL_CODE_MAX_SENDS_PER_WINDOW = 5;
 /**
+ * 목적별 발송 한도. 계정 찾기(비밀번호 재설정까지 이어짐)는 가입보다 훨씬 좁게 둔다:
+ * 인증번호를 계속 다시 받아 맞혀 보는 공격은 「구간당 발송 수 × 인증번호당 시도 수」번까지만 추측할 수 있다.
+ * 가입(1시간 5번)이면 하루 600번이지만, 계정 찾기(하루 3번)는 하루 15번이다.
+ */
+export const EMAIL_CODE_SEND_POLICY: Record<
+  AuthCodePurpose,
+  { windowMs: number; maxSends: number }
+> = {
+  signup: { windowMs: EMAIL_CODE_SEND_WINDOW_MS, maxSends: EMAIL_CODE_MAX_SENDS_PER_WINDOW },
+  recovery: { windowMs: 24 * 60 * 60 * 1000, maxSends: 3 },
+};
+/**
  * 인증에 성공한 뒤 가입을 끝낼 수 있는 시간(인증 증표의 수명). 이 시간 동안은 인증번호 기록이 남아 있어야 하므로,
  * 인증에 성공하면 기록의 보관 기한(retainUntil)이 이보다 일찍 끝나지 않게 늘린다.
  */
@@ -98,7 +110,8 @@ export class EmailCodeService {
     };
     const key = { email, purpose };
     const cooledDown = { $lte: new Date(now.getTime() - EMAIL_CODE_RESEND_COOLDOWN_MS) };
-    const newWindowEnd = new Date(now.getTime() + EMAIL_CODE_SEND_WINDOW_MS);
+    const policy = EMAIL_CODE_SEND_POLICY[purpose];
+    const newWindowEnd = new Date(now.getTime() + policy.windowMs);
 
     // 1. 제한 구간이 끝났으면 횟수를 처음부터 센다. 구간이 끝났어도 마지막 발송 뒤 간격은 지켜야 한다
     //    (구간 끝 직전에 보낸 직후 새 구간으로 넘어가며 간격 제한을 피하지 못하게 한다)
@@ -123,7 +136,7 @@ export class EmailCodeService {
         ...key,
         windowEndsAt: { $gt: now },
         lastSentAt: cooledDown,
-        sendCount: { $lt: EMAIL_CODE_MAX_SENDS_PER_WINDOW },
+        sendCount: { $lt: policy.maxSends },
       },
       { $set: fresh, $inc: { sendCount: 1 }, $max: { retainUntil: fresh.expiresAt } },
     );
@@ -149,7 +162,7 @@ export class EmailCodeService {
     }
 
     // 4. 제한에 걸렸다. 무엇에 걸렸는지, 언제 다시 할 수 있는지 알려 준다
-    return this.blocked(existing, now);
+    return this.blocked(existing, now, policy.maxSends);
   }
 
   /**
@@ -226,11 +239,12 @@ export class EmailCodeService {
   private blocked(
     existing: { lastSentAt: Date; sendCount: number; windowEndsAt: Date },
     now: Date,
+    maxSends: number,
   ): IssueResult {
     const cooldownEndsAt = existing.lastSentAt.getTime() + EMAIL_CODE_RESEND_COOLDOWN_MS;
     // 구간이 이미 끝났다면 횟수 한도는 더 이상 적용되지 않는다. 남은 건 마지막 발송 뒤 간격뿐이다
     const windowActive = existing.windowEndsAt.getTime() > now.getTime();
-    if (windowActive && existing.sendCount >= EMAIL_CODE_MAX_SENDS_PER_WINDOW) {
+    if (windowActive && existing.sendCount >= maxSends) {
       return {
         ok: false,
         reason: 'limit',
