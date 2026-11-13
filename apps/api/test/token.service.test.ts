@@ -24,9 +24,16 @@ interface Row {
   device?: Record<string, unknown>;
   expiresAt: Date;
   revokedAt: Date | null;
+  claimId?: string | null;
 }
 
-type Filter = { tokenHash: string; revokedAt?: null; expiresAt?: { $gt: Date } };
+type Filter = {
+  tokenHash: string;
+  revokedAt?: null;
+  expiresAt?: { $gt: Date };
+  claimId?: string;
+};
+type Update = { revokedAt: Date | null; claimId?: string | null };
 
 /**
  * refresh_tokens 컬렉션을 메모리로 흉내 낸다. TokenService가 쓰는 것(create · findOne · findOneAndUpdate · updateOne · deleteOne)만 만든다.
@@ -42,7 +49,8 @@ function createFakeModel() {
   const matches = (row: Row, f: Filter) =>
     row.tokenHash === f.tokenHash &&
     (!('revokedAt' in f) || row.revokedAt === f.revokedAt) &&
-    (!f.expiresAt || row.expiresAt > f.expiresAt.$gt);
+    (!f.expiresAt || row.expiresAt > f.expiresAt.$gt) &&
+    (!('claimId' in f) || row.claimId === f.claimId);
 
   const model = {
     create: (data: Omit<Row, 'revokedAt' | '_id'>) => {
@@ -61,26 +69,23 @@ function createFakeModel() {
       return Promise.resolve(row);
     },
     findOne: (filter: Filter) => Promise.resolve(rows.find((r) => matches(r, filter)) ?? null),
-    findOneAndUpdate: (filter: Filter, update: { revokedAt: Date }) => {
+    findOneAndUpdate: (filter: Filter, update: Update) => {
       const row = rows.find((r) => matches(r, filter));
       if (!row) return Promise.resolve(null);
       const before = { ...row };
-      row.revokedAt = update.revokedAt;
+      Object.assign(row, update);
       return Promise.resolve(before);
     },
-    updateOne: (filter: Filter, update: { revokedAt: Date }) => {
+    updateOne: (filter: Filter, update: Update) => {
       const row = rows.find((r) => matches(r, filter));
-      if (row) row.revokedAt = update.revokedAt;
+      if (row) Object.assign(row, update);
       return Promise.resolve({ modifiedCount: row ? 1 : 0 });
     },
-    updateMany: (
-      filter: { userId: Types.ObjectId; revokedAt?: null },
-      update: { revokedAt: Date },
-    ) => {
+    updateMany: (filter: { userId: Types.ObjectId; revokedAt?: null }, update: Update) => {
       const hit = rows.filter(
         (r) => r.userId.equals(filter.userId) && (!('revokedAt' in filter) || r.revokedAt === null),
       );
-      for (const r of hit) r.revokedAt = update.revokedAt;
+      for (const r of hit) Object.assign(r, update);
       return Promise.resolve({ modifiedCount: hit.length });
     },
     deleteOne: (filter: { _id: Types.ObjectId }) => {
@@ -405,7 +410,9 @@ describe('로그인 끊기 · 탈퇴', () => {
     await expect(service.rotate(pair.refreshToken)).resolves.toBeDefined();
   });
 
-  it('갱신 도중 DB 오류가 난 사이에 로그아웃했으면 쓴 토큰을 되살리지 않는다', async () => {
+  it('갱신 도중 DB 오류가 난 사이에 로그아웃했으면(같은 밀리초여도) 쓴 토큰을 되살리지 않는다', async () => {
+    // 시계를 멈춰 갱신의 폐기 시각과 로그아웃 시각이 같은 밀리초가 되게 한다
+    vi.useFakeTimers({ now: new Date('2026-11-13T00:00:00.000Z') });
     const { service, rows, users } = setup();
     const pair = await service.issue(newUserId());
     const model = users.model as unknown as {
