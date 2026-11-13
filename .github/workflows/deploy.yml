@@ -136,6 +136,24 @@ jobs:
           cp -r apps/ai/app deploy/app
           cp apps/ai/requirements.lock deploy/requirements.txt
           cd deploy && zip -qr ../ai.zip .
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: apps/ai/.python-version
+          cache: pip
+          cache-dependency-path: apps/ai/requirements.lock
+      - name: 배포 묶음 확인
+        # App Service처럼 묶음(ai.zip)의 requirements.txt(운영 lock)만 깨끗한 가상환경에 설치하고,
+        # 묶음 안의 웹 서버(app.main)와 작업 처리기(app.worker.__main__ → 처리 함수 · 서비스 전체)
+        # 코드를 불러옵니다. 개발 의존성(requirements-dev)에만 있는 패키지를 쓰거나 묶음에 파일이
+        # 빠지면, main 병합 뒤 배포에서가 아니라 PR에서 실패합니다. 불러오기만 하고 서버 · 처리기는
+        # 띄우지 않아 환경 변수 · DB가 없어도 됩니다(설정은 모두 기본값이 있음).
+        run: |
+          mkdir /tmp/ai-bundle
+          unzip -q ai.zip -d /tmp/ai-bundle
+          python -m venv /tmp/ai-venv
+          /tmp/ai-venv/bin/pip install --quiet -r /tmp/ai-bundle/requirements.txt
+          cd /tmp/ai-bundle
+          /tmp/ai-venv/bin/python -c "import uvicorn, app.main, app.worker.__main__"
       - uses: azure/login@v3
         if: github.event_name != 'pull_request'
         with:
