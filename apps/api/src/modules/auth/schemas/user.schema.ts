@@ -114,6 +114,10 @@ export class User {
   @Prop({ type: SubscriptionSchema })
   subscription?: Subscription;
 
+  /** 탈퇴를 시작한 시각. 이때부터 새 푸시 기기를 받지 않는다(UsersService.withdraw · registerDevice) */
+  @Prop({ type: Date, default: null })
+  withdrawingAt?: Date | null;
+
   @Prop({ type: Date, default: null })
   lastLoginAt?: Date | null;
 
@@ -126,10 +130,6 @@ export class User {
    */
   @Prop({ type: Date, default: null })
   sessionsRevokedAt?: Date | null;
-
-  /** 탈퇴를 시작한 시각. 이때부터 새 푸시 기기를 받지 않는다(UsersService.withdraw · registerDevice) */
-  @Prop({ type: Date, default: null })
-  withdrawingAt?: Date | null;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
