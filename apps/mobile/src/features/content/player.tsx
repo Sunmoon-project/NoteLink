@@ -11,6 +11,7 @@ import Animated, {
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
+import * as SecureStore from 'expo-secure-store';
 import { Bookmark, Pause, Play, Repeat, Sparkles } from 'lucide-react-native';
 import { api } from '@/lib/api';
 import { toast } from '@/stores/toast';
@@ -43,6 +44,76 @@ function usePlayback(url: string | undefined, knownDuration: number) {
     // eslint-disable-next-line react-hooks/immutability
     setLoop: (l: boolean) => (player.loop = l),
   };
+}
+
+const posKey = (materialId: string) => `notelink.playpos.${materialId}`;
+const RESUME_MARGIN = 5; // 처음 · 끝 5초 안이면 이어듣지 않는다(거의 처음이거나 다 들음)
+
+/**
+ * 이어듣기(설정 「이어듣기」): 켜져 있으면 녹음마다 멈춘 자리를 기기에 적어 두고, 다시 열면 그 자리부터.
+ * 끝까지 들었으면 처음부터. 꺼져 있으면 읽지도 적지도 않는다
+ */
+export function useResume(
+  materialId: string,
+  p: { ready: boolean; duration: number; pos: number; seek: (s: number) => void },
+) {
+  // 내 설정은 다른 화면과 같은 ['me'] 캐시를 쓴다
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.me.get() });
+  const on = me.data?.settings.resumePlayback ?? false;
+  const restored = useRef(false);
+  const reading = useRef(false);
+  // 화면을 떠났으면 읽기 결과로 닫힌 플레이어를 옮기거나 알리지 않는다(#366 리뷰)
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
+  const saved = useRef(-1);
+  const latest = useRef({ on, pos: p.pos, duration: p.duration });
+  useEffect(() => {
+    latest.current = { on, pos: p.pos, duration: p.duration };
+  });
+  const write = (pos: number, duration: number) => {
+    const at = duration && pos >= duration - RESUME_MARGIN ? 0 : Math.floor(pos);
+    if (at === saved.current) return;
+    saved.current = at;
+    void SecureStore.setItemAsync(posKey(materialId), String(at)).catch(() => {});
+  };
+  // 길이를 알게 되면 한 번 지난 자리로 옮긴다
+  useEffect(() => {
+    if (!on || reading.current || restored.current || !p.ready || !p.duration) return;
+    // 읽기를 마친 뒤에만 「복원됨」으로 둔다. 읽는 동안 화면을 닫으면 아무것도 적지 않아,
+    // 지금 자리(0초)로 지난 자리를 덮어쓰지 않는다(#366 리뷰)
+    reading.current = true;
+    void SecureStore.getItemAsync(posKey(materialId))
+      .then((v) => {
+        if (!alive.current) return;
+        const at = Number(v);
+        if (at > RESUME_MARGIN && at < p.duration - RESUME_MARGIN) {
+          saved.current = at;
+          p.seek(at);
+          toast(`지난번 ${mmss(at)}부터 이어서 들어요`);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive.current) restored.current = true;
+      });
+  }, [on, p.ready, p.duration]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 듣는 동안 5초마다, 화면을 떠날 때 한 번 더 적는다
+  useEffect(() => {
+    if (on && restored.current && Math.abs(p.pos - Math.max(0, saved.current)) >= 5)
+      write(p.pos, p.duration);
+  }, [on, p.pos]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(
+    () => () => {
+      const l = latest.current;
+      if (l.on && restored.current) write(l.pos, l.duration);
+    },
+    [], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 }
 
 /** 아바타 입 모양 — 서버의 viseme(입 모양 9종) 연결 전까지 재생 중에 여닫는다 */
@@ -89,6 +160,7 @@ export function Player({
     queryFn: () => api.content.material(materialId),
   });
   const p = usePlayback(rec.data?.audioUrl || undefined, rec.data?.durationSec ?? 0);
+  useResume(materialId, p);
   const duration = p.duration;
   const percent = (sec: number) => `${duration ? (sec / duration) * 100 : 0}%` as const;
   const [view, setView] = useState(initialView);
