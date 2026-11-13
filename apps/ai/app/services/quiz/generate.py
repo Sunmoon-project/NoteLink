@@ -130,10 +130,12 @@ from app.core.config import settings
 from app.services.quiz import combo, concepts, levels, quality, similar
 from app.services.quiz.checks import (
     SAME_ANSWER,
+    SAME_FACT,
     Seen,
     Target,
     code_check,
     reversed_of,
+    same_fact,
     seen_draft,
     seen_question,
     too_close,
@@ -264,6 +266,7 @@ DRY_REASONS = {
     "앞 문제를 거꾸로 물음(겹침)",
     SAME_ANSWER,
     SAME_TYPE_AGAIN,
+    SAME_FACT,  # 그 쪽의 사실을 그 유형으로 다 물음(#351): 다음 시도는 다른 쪽 · 다른 유형
 }
 # 분류 유형: 정답이 묶음 이름(편모충류 · 포자충류 · 조충류)이라 노트마다 몇 개 없어 세트 안에서 곧
 # 바닥남. 이미 쓴 정답 목록을 주어도 같은 묶음 이름을 계속 냄(11/10 학교 LLM 기생충 원충류: 정답
@@ -1262,8 +1265,8 @@ def _make_all(
         """한 개념을 물을 수 있는 문제 수: 마지막 단계에서만 AGAIN_PER_CONCEPT."""
         return AGAIN_PER_CONCEPT if again_ok else 1
 
-    def clash_of(r: Made, again_ok: bool) -> list[str]:
-        """(잠금 안에서) 그사이 다른 자리가 받은 문제와의 겹침. 없으면 []."""
+    def clash_of(page: int, r: Made, again_ok: bool) -> list[str]:
+        """(잠금 안에서) 그사이 다른 자리가 받은 문제와의 겹침. 없으면 []. page는 r을 만든 쪽."""
         d = r.question
         assert d is not None and r.concept is not None
         # 마지막 단계에서도 한 개념은 두 문제까지(/code-review #247)
@@ -1274,9 +1277,14 @@ def _make_all(
             # 겹침(Codex 리뷰 #293). 개념이 먼저 겹친 초안은 세지 않음(/code-review #293)
             return [CLASH_SAME]
         # 그사이 다른 자리가 같은 개념을 같은 유형으로 받았으면 제시문 · 정답 겹침(CLASH)으로 걸림:
-        # 동시에 만든 겹침이라 쪽을 닫는 SAME_TYPE_AGAIN으로는 돌려주지 않음(#268)
+        # 동시에 만든 겹침이라 쪽을 닫는 SAME_TYPE_AGAIN으로는 돌려주지 않음(#268). 같은 노트 문장을
+        # 같은 유형으로 물은 것(same_fact, #351)도 같은 이유로 CLASH
         kind = r.asked_as or r.type or ""
-        if too_close(d, seen, r.concept, kind) or reversed_of(d, seen, r.concept, kind):
+        if (
+            too_close(d, seen, r.concept, kind)
+            or reversed_of(d, seen, r.concept, kind)
+            or same_fact(d, seen, pages[page], kind)
+        ):
             return [CLASH]
         return []
 
@@ -1316,7 +1324,7 @@ def _make_all(
         with lock:
             if done.is_set() or len(taken) >= n:
                 return [FULL]
-            if why := clash_of(r, again_ok):
+            if why := clash_of(page, r, again_ok):
                 return why
             if must_hold(r, own):
                 # gen_one이 돌려받은 뒤 r.question을 지우므로 사본을 보관
@@ -1335,7 +1343,7 @@ def _make_all(
             if not final and must_hold(r, None):
                 continue
             reserve.remove(item)
-            if not clash_of(r, again_ok):
+            if not clash_of(page, r, again_ok):
                 admit(page, r)
 
     def stop_of(halt: threading.Event, at: _Limits) -> Callable[[bool], str | None]:

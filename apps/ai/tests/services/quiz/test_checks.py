@@ -2,12 +2,14 @@ import pytest
 
 from app.services.quiz.checks import (
     META,
+    SAME_FACT,
     Seen,
     Target,
     code_check,
     form_giveaway,
     number_values,
     reversed_of,
+    same_fact,
     same_value,
     seen_draft,
     seen_question,
@@ -690,3 +692,129 @@ def test_a_term_that_looks_like_a_sentence_is_still_a_term_by_its_type(term: str
     # 같은 유형이거나 개념을 모르면 전과 같음
     assert reversed_of(feature, [tagged(definition, term, "정의")])
     assert reversed_of(definition, [tagged(feature, term, "특징")], term, "특징")
+
+
+# ---------- 같은 노트 문장을 같은 유형으로 다시 묻기 (#351) ----------
+
+FACT_PAGE = """ActivityIndicator
+서버에 요청을 보낼 때 animating 값을 true로 바꾸고, 응답이 오면 false로 바꾼다.
+앱은 서버 안에서 일이 얼마나 진행됐는지 알 수 없어 요청과 응답 시점으로만 표시를 제어한다.
+resizeMode는 이미지 크기와 화면 영역이 다를 때 이미지를 어떻게 맞출지 정한다.
+onLoadEnd는 이미지를 다 불러온 뒤에 한 번 불린다."""
+REQUEST = "서버에 요청을 보낼 때 animating 값을 true로 바꾼다"
+RESPONSE = "응답이 오면 animating 값을 false로 바꾼다"
+FLIPPED = "서버에 요청을 보낼 때 animating 값을 false로 바꾼다"  # 같은 줄을 틀리게 바꾼 문장
+UNKNOWN = "앱은 서버 안의 진행 정도를 알 수 없어 요청과 응답 시점으로 표시를 제어한다"
+RESIZE = "resizeMode는 이미지 크기와 화면 영역이 다를 때 맞추는 방식을 정한다"
+LOAD_END = "onLoadEnd는 이미지를 다 불러온 뒤에 불린다"
+
+
+def lines(*sentences: str) -> Draft:
+    """ㄱ · ㄴ · ㄷ 문장으로 만든 조합형 초안."""
+    passage = "\n".join(f"{m}. {x}" for m, x in zip("ㄱㄴㄷ", sentences, strict=True))
+    return combo_draft(stem="다음 중 옳은 것을 모두 고른 것은?", passage=passage)
+
+
+def made(d: Draft, concept: str, ty: str) -> Seen:
+    """이 세트에서 받은 문제(generate._seen_made처럼 개념 · 유형이 붙음)."""
+    return tagged(d, concept, ty)
+
+
+def test_two_combinations_asking_the_same_note_lines_are_the_same_fact() -> None:
+    # 0928 학습 노트(#288): 개념이 다른 두 조합 문제('상태값 true/false 제어' · '애니메이션 제어')가
+    # 둘 다 '요청 때 true, 응답이 오면 false' 줄을 말만 바꿔 물음. 문장끼리 85%가 안 돼
+    # too_close로는 통과했음
+    before = [made(lines(REQUEST, UNKNOWN, RESPONSE), "상태값 제어", "조합")]
+    again = lines(FLIPPED, RESPONSE, REQUEST)
+    assert not too_close(again, before)
+    assert same_fact(again, before, FACT_PAGE, "조합")
+    assert SAME_FACT in code_check(again, NEW, FACT_PAGE, "조합", before, "애니메이션 제어")[0]
+
+
+def test_the_same_fact_is_found_whichever_question_came_first() -> None:
+    # 근거 줄 하나에 문장 셋을 모두 쓴 문제와, 그 줄과 다른 줄을 쓴 문제: 어느 쪽을 먼저 받아도
+    # 겹침(한쪽 문장만 세면 뒤에 온 문제의 문장 하나만 걸려 차례에 따라 달라짐)
+    one_line = lines(REQUEST, RESPONSE, FLIPPED)
+    two_lines = lines(REQUEST, UNKNOWN, LOAD_END)
+    assert same_fact(two_lines, [made(one_line, "상태값 제어", "조합")], FACT_PAGE, "조합")
+    assert same_fact(one_line, [made(two_lines, "애니메이션 제어", "조합")], FACT_PAGE, "조합")
+
+
+def test_sharing_one_sentence_each_is_not_the_same_fact() -> None:
+    # 문장 하나씩만 같은 줄을 물으면 다른 문제(0928 '애니메이션 제어' · '이미지 로딩 상태 연동'처럼
+    # 한 줄만 겹친 두 문제는 사람이 봐도 다른 내용)
+    first = lines(REQUEST, RESIZE, LOAD_END)
+    second = lines(RESPONSE, UNKNOWN, "앱은 서버 안의 진행 정도를 직접 알 수 있다")
+    assert not same_fact(second, [made(first, "애니메이션 제어", "조합")], FACT_PAGE, "조합")
+
+
+def test_sharing_one_sentence_with_a_question_of_another_page_is_not_the_same_fact() -> None:
+    # 앞 문제는 다른 쪽(resizeMode · onLoadEnd 줄이 있는 쪽)에서 만듦: 이 쪽 글로는 근거가 문장
+    # 하나(REQUEST)만 남음. 기준을 근거가 남은 문장 수(1)로 낮추면 문장 하나만 겹쳐도 같은
+    # 사실이 됐음(Codex 리뷰 #354)
+    first = lines(REQUEST, RESIZE, LOAD_END)
+    second = lines(RESPONSE, UNKNOWN, "앱은 서버 안의 진행 정도를 직접 알 수 있다")
+    this_page = "\n".join(FACT_PAGE.split("\n")[:3])  # 제목 · 요청 줄 · 서버 상태 줄
+    assert not same_fact(second, [made(first, "애니메이션 제어", "조합")], this_page, "조합")
+    # 문장 둘이 겹치면 그대로 같은 사실
+    third = lines(RESPONSE, FLIPPED, UNKNOWN)
+    assert same_fact(third, [made(first, "애니메이션 제어", "조합")], this_page, "조합")
+
+
+def test_other_note_lines_are_not_the_same_fact() -> None:
+    before = [made(lines(REQUEST, RESPONSE, UNKNOWN), "상태값 제어", "조합")]
+    assert not same_fact(lines(RESIZE, LOAD_END, RESIZE), before, FACT_PAGE, "조합")
+
+
+def test_the_same_fact_with_another_type_is_asked_from_another_angle() -> None:
+    # 다른 유형이면 같은 줄을 물어도 됨: 내용이 모자란 노트를 다른 유형으로 채움(#268)
+    feature = negative(
+        stem="다음 중 ActivityIndicator에 대한 설명으로 옳지 않은 것은?",
+        passage="ActivityIndicator",
+        options=[FLIPPED, REQUEST, RESPONSE, UNKNOWN, LOAD_END],
+        answer=FLIPPED,
+    )
+    before = [made(lines(REQUEST, RESPONSE, UNKNOWN), "상태값 제어", "조합")]
+    assert not same_fact(feature, before, FACT_PAGE, "부정설명")
+    # 같은 유형(부정설명)이면 겹침: 옳은 설명 · 바꾼 설명이 모두 그 줄들
+    assert same_fact(feature, [made(feature, "상태값 제어", "부정설명")], FACT_PAGE, "부정설명")
+
+
+def test_the_answer_of_a_feature_question_is_its_fact() -> None:
+    def feature(term: str, answer: str) -> Draft:
+        return negative(
+            stem=f"다음 중 {term}에 대한 설명으로 옳은 것은?",
+            passage=term,
+            options=[answer, "이미지를 지운다", "글꼴을 바꾼다", "앱을 끈다", "소리를 낸다"],
+            answer=answer,
+        )
+
+    before = [made(feature("ActivityIndicator", REQUEST), "상태값 제어", "특징")]
+    # 오답 보기는 다른 개념의 설명이라 근거로 보지 않음: 정답이 같은 줄이면 겹침
+    assert same_fact(feature("animating", FLIPPED), before, FACT_PAGE, "특징")
+    assert not same_fact(feature("resizeMode", RESIZE), before, FACT_PAGE, "특징")
+
+
+def test_questions_of_earlier_sets_and_untyped_drafts_are_not_compared() -> None:
+    # 지난 세트에서 같은 사실을 물은 것은 다시 익히기(막으면 사실이 적은 노트는 몇 세트 만에
+    # 바닥남). 유형을 모르는 초안(오답 복습 · 오늘의 복습)도 보지 않음
+    old = lines(REQUEST, RESPONSE, UNKNOWN)
+    saved = seen_question(
+        {
+            "id": "q1",
+            "order": 1,
+            "type": "조합",
+            "prompt": old["stem"],
+            "passage": old["passage"],
+            "choices": old["options"],
+            "answer": old["answer"],
+        }
+    )
+    again = lines(FLIPPED, RESPONSE, REQUEST)
+    assert not same_fact(again, [saved, seen_draft(old)], FACT_PAGE, "조합")
+
+
+def test_lines_of_another_page_are_not_facts_of_this_page() -> None:
+    before = [made(lines(REQUEST, RESPONSE, UNKNOWN), "상태값 제어", "조합")]
+    other_page = "resizeMode는 이미지 크기와 화면 영역이 다를 때 이미지를 어떻게 맞출지 정한다."
+    assert not same_fact(lines(FLIPPED, RESPONSE, REQUEST), before, other_page, "조합")
