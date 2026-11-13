@@ -582,6 +582,12 @@ describe('퀴즈 · 복습 문제의 아바타 한마디', () => {
   });
 });
 
+it('처음 안내는 틀린 문제를 오답 노트로 매일 복습하는 방법도 알려 준다', () => {
+  const step = STEPS.find((s) => s.title === '복습: 틀린 문제');
+  expect(step).toMatchObject({ route: '/quiz', flow: 2 });
+  expect(step!.body).toMatch(/오답 노트.*하루에 처음/);
+});
+
 describe('처음 안내', () => {
   beforeEach(() => {
     useAuth.setState({ userId: 'u1' });
@@ -602,6 +608,7 @@ describe('처음 안내', () => {
       '/note',
       '/note',
       '/note',
+      '/quiz',
       '/quiz',
       '/quiz',
       '/',
