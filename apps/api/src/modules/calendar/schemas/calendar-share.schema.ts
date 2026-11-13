@@ -43,3 +43,7 @@ export class CalendarShare {
 }
 
 export const CalendarShareSchema = SchemaFactory.createForClass(CalendarShare);
+
+// 아래 두 인덱스는 캘린더 공유 API(FR-13)에서 추가했다 (필드는 그대로)
+CalendarShareSchema.index({ ownerId: 1, revokedAt: 1, createdAt: -1 }); // 내가 만든 링크 목록
+CalendarShareSchema.index({ 'subscribers.userId': 1 }); // 내가 받은 캘린더
