@@ -31,6 +31,7 @@ type ShareLean = CalendarShare & { _id: Types.ObjectId; createdAt: Date };
 const MAX_RANGE_DAYS = 366; // 한 번에 1년까지만 공유한다
 const DAY_MS = 24 * 3600 * 1000;
 const DEFAULT_BASE_URL = 'notelink.app/share';
+const OBJECT_ID_RE = /^[0-9a-fA-F]{24}$/; // 공유 _id(24자리). 토큰은 항상 32자리라 서로 겹치지 않는다
 const NOT_FOUND = { code: 'NOT_FOUND', message: '존재하지 않거나 취소된 공유 링크입니다.' };
 
 @Injectable()
@@ -63,8 +64,13 @@ export class CalendarSharesService {
             // 스키마 타입이 expiresAt · revokedAt에 null을 적지 않았지만 기본값은 null이라(무제한 · 취소 안 함) 그대로 저장한다
         } as unknown as Partial<CalendarShare>);
         const view = toView(created.toObject() as unknown as ShareLean, true);
-        const base = this.config.get<string>('SHARE_BASE_URL') ?? DEFAULT_BASE_URL;
-        return { ...view, url: `${base}/${view.token}` };
+        return { ...view, url: `${this.shareBase()}/${view.token}` };
+    }
+
+    /** 공유 주소의 앞부분. 앱이 앞에 https://를 붙이므로 http(s)://와 끝의 /는 떼고 프로토콜 없이 돌려준다 */
+    private shareBase(): string {
+        const raw = this.config.get<string>('SHARE_BASE_URL') ?? '';
+        return raw.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '') || DEFAULT_BASE_URL;
     }
 
     /** 내가 만든 링크 (취소한 것 제외, 최신순). 만료된 것도 만료일과 함께 보인다 */
@@ -87,17 +93,26 @@ export class CalendarSharesService {
     }
 
     /**
-     * 링크(토큰 또는 공유 id)로 받은 캘린더를 내 캘린더에 담는다.
-     * 이미 담았거나 내 링크면 아무 일도 하지 않고 성공한다. 없거나 취소된 링크는 404, 만료된 링크는 410
+     * 링크로 받은 캘린더를 내 캘린더에 담는다.
+     * - 토큰(32자리)이면 처음 들어오는 사람도 담을 수 있다. 이미 담았거나 내 링크면 아무 일도 하지 않고 성공한다
+     * - 공유 id(24자리)면 만든 사람이나 이미 담은 사람만 된다(앱의 '내 캘린더에 추가'). 그 밖의 사람은 공유가 있다는 것도
+     *   알려 주지 않으려고 없는 것처럼 404를 준다. id로는 새로 담기지 않는다
+     * 없거나 취소된 링크는 404, 만료된 링크는 410
      */
     async subscribe(userId: string, key: string, now = new Date()): Promise<void> {
-        const share = await this.findByKey(key);
-        if (!share || share.revokedAt) throw new NotFoundException(NOT_FOUND);
+        const byId = OBJECT_ID_RE.test(key);
+        const share = await this.shareModel
+            .findOne(byId ? { _id: new Types.ObjectId(key) } : { token: key })
+            .lean<ShareLean | null>();
+        if (!share) throw new NotFoundException(NOT_FOUND);
+        const me = new Types.ObjectId(userId);
+        const isOwner = share.ownerId.equals(me);
+        if (byId && !isOwner && !(share.subscribers ?? []).some((s) => s.userId.equals(me))) throw new NotFoundException(NOT_FOUND);
+        if (share.revokedAt) throw new NotFoundException(NOT_FOUND);
         if (share.expiresAt && share.expiresAt <= now) {
             throw new GoneException({ code: 'SHARE_EXPIRED', message: '유효기간이 지난 공유 링크입니다.' });
         }
-        const me = new Types.ObjectId(userId);
-        if (share.ownerId.equals(me)) return;
+        if (isOwner || byId) return;
         // 이미 담은 사람은 조건에서 빠져 두 번 담기지 않는다 (동시에 눌러도 한 번)
         await this.shareModel.updateOne(
             { _id: share._id, 'subscribers.userId': { $ne: me } },
@@ -128,12 +143,6 @@ export class CalendarSharesService {
                 days: await this.daysWithContent(d),
             })),
         );
-    }
-
-    private async findByKey(key: string): Promise<ShareLean | null> {
-        const byToken = await this.shareModel.findOne({ token: key }).lean<ShareLean | null>();
-        if (byToken || !Types.ObjectId.isValid(key)) return byToken;
-        return this.shareModel.findOne({ _id: new Types.ObjectId(key) }).lean<ShareLean | null>();
     }
 
     /**

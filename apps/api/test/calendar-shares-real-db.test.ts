@@ -140,10 +140,11 @@ describe.skipIf(!isLocal)('진짜 DB 캘린더 공유 확인', () => {
         expect(await col('calendar_shares').countDocuments()).toBe(0);
     });
 
-    it('3) 구독: 토큰으로도 공유 id로도 담기고, 두 번 · 동시에 눌러도 한 번, 내 링크는 무변화', async () => {
+    it('3) 구독: 토큰으로 담고, 담은 사람은 공유 id로 다시 눌러도 성공, 두 번 · 동시에 눌러도 한 번, 내 링크는 무변화', async () => {
         const share = await make();
         expect((await post(`/calendar-shares/${share.token}/subscribe`, {}, FRIEND)).status).toBe(204);
-        expect((await post(`/calendar-shares/${share._id}/subscribe`, {}, FRIEND)).status).toBe(204);
+        expect((await post(`/calendar-shares/${share._id}/subscribe`, {}, FRIEND)).status).toBe(204); // 앱의 '내 캘린더에 추가'
+        expect((await post(`/calendar-shares/${share._id}/subscribe`, {}, OWNER)).status).toBe(204);
         await Promise.all([1, 2, 3].map(() => post(`/calendar-shares/${share.token}/subscribe`, {}, STRANGER)));
         expect((await post(`/calendar-shares/${share.token}/subscribe`, {}, OWNER)).status).toBe(204);
 
@@ -154,6 +155,22 @@ describe.skipIf(!isLocal)('진짜 DB 캘린더 공유 확인', () => {
         // 만든 사람에게는 받은 사람이 보인다
         const mine = await get('/calendar-shares');
         expect(mine.body.data[0].subscribers.map((s: { userId: string }) => s.userId).sort()).toEqual([friend.toString(), stranger.toString()].sort());
+    });
+
+    it('3-1) 토큰 없는 제3자가 공유 id로 구독하면 404, 받은 목록에 안 나오고 구독자에도 안 들어간다', async () => {
+        const share = await make();
+        await todo(owner, '2026-11-05');
+        await post(`/calendar-shares/${share.token}/subscribe`, {}, FRIEND);
+        const res = await post(`/calendar-shares/${share._id}/subscribe`, {}, STRANGER);
+        expect(res.status).toBe(404);
+        expect(res.body.code).toBe('NOT_FOUND');
+        expect(await receivedOf(STRANGER)).toEqual([]);
+        const doc = await col('calendar_shares').findOne({ _id: new Types.ObjectId(share._id) });
+        expect((doc!['subscribers'] as { userId: Types.ObjectId }[]).map((s) => String(s.userId))).toEqual([friend.toString()]);
+        // 없는 id와 응답이 같아 공유가 있는지 알 수 없다
+        const missing = await post(`/calendar-shares/${new Types.ObjectId().toString()}/subscribe`, {}, STRANGER);
+        expect(missing.status).toBe(404);
+        expect(missing.body).toEqual(res.body);
     });
 
     it('4) 받은 공유 목록: 보낸 사람 닉네임 · 일정이 있는 날짜 · 다른 구독자는 숨김, 담지 않은 사람은 빈 목록', async () => {
@@ -223,6 +240,7 @@ describe.skipIf(!isLocal)('진짜 DB 캘린더 공유 확인', () => {
         expect(late.status).toBe(410);
         expect(late.body.code).toBe('SHARE_EXPIRED');
         expect(await receivedOf(FRIEND)).toEqual([]);
+        expect((await post(`/calendar-shares/${share._id}/subscribe`, {}, FRIEND)).status).toBe(410); // 담은 사람이 id로 눌러도 만료
         expect((await get('/calendar-shares')).body.data.map((s: { _id: string }) => s._id)).toContain(share._id);
         expect(String((await col('calendar_shares').findOne({ _id: new Types.ObjectId(share._id) }))!['subscribers'].length)).toBe('1'); // 못 담았다
     });
@@ -235,6 +253,7 @@ describe.skipIf(!isLocal)('진짜 DB 캘린더 공유 확인', () => {
         expect(await receivedOf(FRIEND)).toEqual([]);
         expect((await get('/calendar-shares')).body.data).toEqual([]);
         expect((await post(`/calendar-shares/${share.token}/subscribe`, {}, STRANGER)).status).toBe(404);
+        expect((await post(`/calendar-shares/${share._id}/subscribe`, {}, FRIEND)).status).toBe(404); // 담았던 사람도 취소 후엔 404
         expect((await del(`/calendar-shares/${share._id}`)).status).toBe(404);
         const doc = await col('calendar_shares').findOne({ _id: new Types.ObjectId(share._id) });
         expect(doc!['revokedAt']).toBeInstanceOf(Date);

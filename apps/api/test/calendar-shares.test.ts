@@ -123,9 +123,27 @@ describe('CalendarSharesService', () => {
         expect(a.expiresAt).toBe('2026-11-20T00:00:00.000Z');
         expect(b.expiresAt).toBeNull();
         expect(a.url).toBe(`notelink.app/share/${a.token}`);
-        expect(b.url).toBe(`https://x.test/s/${b.token}`);
+        expect(b.url).toBe(`x.test/s/${b.token}`); // https://는 서버가 뗀다
         expect(a.revokedAt).toBeNull();
         expect(a.subscribers).toEqual([]);
+    });
+
+    it('만들기: SHARE_BASE_URL이 없거나 · 프로토콜 · 끝 /가 있어도 url은 프로토콜 없이, 앱처럼 https://를 붙이면 한 번만', async () => {
+        const cases: [string | undefined, string][] = [
+            [undefined, 'notelink.app/share'],
+            ['', 'notelink.app/share'],
+            ['notelink.app/share', 'notelink.app/share'],
+            ['https://notelink.app/share/', 'notelink.app/share'],
+            ['http://x.y/s', 'x.y/s'],
+            ['HTTPS://x.y/s//', 'x.y/s'],
+        ];
+        for (const [env, base] of cases) {
+            const { url, token } = await svc(env).create(ME.toString(), dto(), now);
+            expect(url).toBe(`${base}/${token}`);
+            const shown = `https://${url}`; // 앱(CalShareScreen)이 복사 · 공유할 때 하는 것
+            expect(shown.match(/https?:\/\//g)).toHaveLength(1);
+            expect(shown.startsWith('https://')).toBe(true);
+        }
     });
 
     it('만들기: 공유 범위를 고르면 그대로 저장하고, 기간이 거꾸로이거나 366일을 넘으면 400', async () => {
@@ -159,6 +177,49 @@ describe('CalendarSharesService', () => {
         await expect(svc().subscribe(ME.toString(), 'tok', now)).rejects.toBeInstanceOf(GoneException);
         found({ expiresAt: now }); // 만료 시각 정각도 만료
         await expect(svc().subscribe(ME.toString(), 'tok', now)).rejects.toBeInstanceOf(GoneException);
+    });
+
+    describe('공유 id로 구독 (앱의 내 캘린더에 추가)', () => {
+        const ID = new Types.ObjectId();
+        const idKey = ID.toString();
+        const THIRD = new Types.ObjectId();
+        const sub = (u: Types.ObjectId) => ({ userId: u, addedAt: now });
+
+        it('토큰 없는 제3자는 404이고 아무것도 바꾸지 않는다 (소유자 · 구독자가 아닌 사람)', async () => {
+            updateOne.mockReset();
+            found({ _id: ID, subscribers: [sub(THIRD)] });
+            await expect(svc().subscribe(ME.toString(), idKey, now)).rejects.toBeInstanceOf(NotFoundException);
+            found({ _id: ID, subscribers: [], expiresAt: new Date(now.getTime() - 1) }); // 만료 · 취소여도 존재를 알리지 않는다
+            await expect(svc().subscribe(ME.toString(), idKey, now)).rejects.toBeInstanceOf(NotFoundException);
+            found({ _id: ID, subscribers: [], revokedAt: new Date() });
+            await expect(svc().subscribe(ME.toString(), idKey, now)).rejects.toBeInstanceOf(NotFoundException);
+            expect(updateOne).not.toHaveBeenCalled();
+        });
+
+        it('이미 구독한 사람은 성공하고 다시 담지 않는다. 소유자도 성공', async () => {
+            updateOne.mockReset();
+            found({ _id: ID, subscribers: [sub(ME)] });
+            await expect(svc().subscribe(ME.toString(), idKey, now)).resolves.toBeUndefined();
+            found({ _id: ID, ownerId: ME, subscribers: [] });
+            await expect(svc().subscribe(ME.toString(), idKey, now)).resolves.toBeUndefined();
+            expect(updateOne).not.toHaveBeenCalled();
+        });
+
+        it('구독자라도 취소는 404, 만료는 410', async () => {
+            found({ _id: ID, subscribers: [sub(ME)], revokedAt: new Date() });
+            await expect(svc().subscribe(ME.toString(), idKey, now)).rejects.toBeInstanceOf(NotFoundException);
+            found({ _id: ID, subscribers: [sub(ME)], expiresAt: new Date(now.getTime() - 1) });
+            await expect(svc().subscribe(ME.toString(), idKey, now)).rejects.toBeInstanceOf(GoneException);
+        });
+
+        it('24자리 16진수면 id, 아니면 토큰으로 찾는다', async () => {
+            found({});
+            await svc().subscribe(ME.toString(), idKey, now).catch(() => undefined);
+            expect(findOne.mock.calls[0]![0]).toEqual({ _id: ID });
+            found({});
+            await svc().subscribe(ME.toString(), 'a'.repeat(32), now);
+            expect(findOne.mock.calls[0]![0]).toEqual({ token: 'a'.repeat(32) });
+        });
     });
 
     it('구독: 내 링크는 아무 일 없이 성공, 남의 링크는 한 번만 담는 조건으로 추가', async () => {
