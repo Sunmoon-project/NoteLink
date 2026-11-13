@@ -166,6 +166,24 @@ const sendMessage = async (text: string) => {
   await fireEvent.press(screen.getByLabelText('전송'));
 };
 
+it('채팅 입장 실패 후 같은 화면에서 재시도해 대기 메시지를 전송한다', async () => {
+  let allowJoin = false;
+  mockEmit.mockImplementation((event, _payload, ack) => {
+    if (event === 'room:join' && typeof ack === 'function') ack({ ok: allowJoin });
+  });
+  await renderScreen(<RoomScreen />, client());
+  const retryLabel = '채팅 연결에 실패했어요 · 다시 연결';
+  await screen.findByText(retryLabel);
+  await sendMessage('대기 메시지');
+  expect(mockEmit.mock.calls.filter(([event]) => event === 'chat:send')).toHaveLength(0);
+  await fireEvent.press(screen.getByText(retryLabel));
+  expect(await screen.findByText(retryLabel)).toBeTruthy();
+  allowJoin = true;
+  await fireEvent.press(screen.getByText(retryLabel));
+  await waitFor(() => expect(screen.queryByText(retryLabel)).toBeNull());
+  expect(mockEmit.mock.calls.filter(([event]) => event === 'chat:send')).toHaveLength(1);
+});
+
 it('2,000자 메시지는 저장하고 전송한다', async () => {
   await renderScreen(<RoomScreen />, client());
   await screen.findByText('방');

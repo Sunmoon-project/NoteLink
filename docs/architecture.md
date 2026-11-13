@@ -1,3 +1,3 @@
 - 캠·음성: LiveKit Cloud
 - 방 타이머·친구 상태·AI 진행률: NestJS의 Socket.IO
-- 텍스트 채팅: 문서에는 앱이 Firestore를 직접 읽고 쓰는 방식으로 표시됨
+- 텍스트 채팅: 앱은 NestJS의 Socket.IO로 방을 구독하고 메시지를 주고받는다. NestJS가 참여 권한을 확인하고 MongoDB에 메시지를 저장하며, 재연결 시 앱은 NestJS API로 누락된 기록을 복구한다. 상세 동작은 [스터디룸 채팅 문서](studyroom-chat.md)를 따른다.

@@ -28,6 +28,7 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
     rooms = connection.model(StudyRoom.name, StudyRoomSchema, names[0]);
     users = connection.model(User.name, UserSchema, names[1]);
     categories = connection.model(Category.name, CategorySchema, names[2]);
+    await rooms.init();
     service = new StudyRoomsService(rooms, users, categories);
   });
   beforeEach(async () => {
@@ -82,6 +83,19 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
       service.create(String(host), { title: '방', categoryName: '없는 카테고리', isPublic: true }),
     ).rejects.toMatchObject({ status: 400 });
     expect(await rooms.countDocuments()).toBe(0);
+  });
+
+  it('같은 이름의 방을 만들면 409 충돌을 반환하고 기존 방을 유지한다', async () => {
+    const input = { title: '중복 방', categoryName: '수학', isPublic: true };
+    const first = await service.create(String(host), input);
+    await expect(
+      service.create(String(other), { ...input, title: ' 중복 방 ' }),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'ROOM_TITLE_DUPLICATE', message: '이미 사용 중인 스터디룸 이름입니다.' },
+    });
+    expect(await rooms.countDocuments({ title: input.title })).toBe(1);
+    expect(await rooms.exists({ _id: first._id })).toBeTruthy();
   });
 
   it('내 목록과 추천 목록은 참여 여부·공개 상태·종료 상태를 구분한다', async () => {

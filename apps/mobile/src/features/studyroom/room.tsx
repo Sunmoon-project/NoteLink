@@ -408,6 +408,7 @@ export function RoomScreen() {
   const [chat, setChat] = useState(false);
   const [conn, setConn] = useState<'ok' | 'lost' | 'back' | 'kicked'>('ok');
   const [socketConnected, setSocketConnected] = useState<boolean | null>(null);
+  const [chatJoinFailed, setChatJoinFailed] = useState(false);
   const [mediaGeneration, setMediaGeneration] = useState(0);
   const day = ymd(seoul(now));
   const midnight = Date.parse(`${day}T00:00:00+09:00`);
@@ -530,9 +531,10 @@ export function RoomScreen() {
   const joinAttempt = useRef(0);
   const joinRoom = () => {
     const attempt = ++joinAttempt.current;
+    setChatJoinFailed(false);
     socket.emit('room:join', { roomId: id }, (r) => {
       if (attempt !== joinAttempt.current) return;
-      if (!r.ok) toast('채팅에 연결하지 못했어요. 나갔다가 다시 들어와 주세요');
+      if (!r.ok) setChatJoinFailed(true);
       joinedChat.current = r.ok;
       setJoinedRoom(r.ok ? id : null);
       if (r.ok) {
@@ -549,6 +551,7 @@ export function RoomScreen() {
     const onConnection = (connected: boolean) => {
       setSocketConnected(connected);
       if (!connected) {
+        setChatJoinFailed(false);
         attempts.current++;
         epochRef.current++;
         joinedChat.current = false;
@@ -936,6 +939,11 @@ export function RoomScreen() {
               </Pressable>
             </View>
           </View>
+        )}
+        {chatJoinFailed && conn !== 'lost' && conn !== 'kicked' && (
+          <Pressable accessibilityRole="button" onPress={joinRoom} className="px-5 py-2">
+            <Text className="text-caption text-danger">채팅 연결에 실패했어요 · 다시 연결</Text>
+          </Pressable>
         )}
         <View
           className="flex-row items-center gap-3 px-5 pt-3"

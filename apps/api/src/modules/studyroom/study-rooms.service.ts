@@ -93,6 +93,21 @@ export class StudyRoomsService {
           'keyPattern' in error &&
           typeof error.keyPattern === 'object' &&
           error.keyPattern !== null &&
+          'title' in error.keyPattern
+        ) {
+          throw new ConflictException({
+            code: 'ROOM_TITLE_DUPLICATE',
+            message: '이미 사용 중인 스터디룸 이름입니다.',
+          });
+        }
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          error.code === 11000 &&
+          'keyPattern' in error &&
+          typeof error.keyPattern === 'object' &&
+          error.keyPattern !== null &&
           'inviteCode' in error.keyPattern
         )
           continue;
