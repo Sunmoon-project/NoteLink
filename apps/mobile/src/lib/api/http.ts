@@ -26,7 +26,7 @@ type Tokens = NonNullable<ReturnType<typeof useAuth.getState>['tokens']>;
 let refreshing: { from: Tokens; p: Promise<boolean> } | null = null;
 
 /** 토큰 t를 갱신한다. 갱신하는 동안 토큰이 바뀌었으면 결과를 쓰지 않는다 */
-function refresh(t: Tokens): Promise<boolean> {
+export function refreshAccessTokens(t: Tokens): Promise<boolean> {
   if (refreshing?.from === t) return refreshing.p;
   const uid = useAuth.getState().userId;
   const p = (async () => {
@@ -106,7 +106,7 @@ export async function request<T>(
     if (!sameUser()) throw new ApiError(code, json.message ?? '로그인이 바뀌었어요', res.status);
     // 같은 계정의 다른 요청이 이미 갱신했으면 새 토큰으로 바로 다시 보낸다
     if (useAuth.getState().tokens !== sent) return retry();
-    if ((await refresh(sent)) && sameUser()) return retry();
+    if ((await refreshAccessTokens(sent)) && sameUser()) return retry();
     // 갱신 실패를 만료로 알리는 것도 시작한 토큰이 아직 쓰이고 있을 때만
     if (useAuth.getState().tokens === sent) useAuth.getState().setExpired(true);
   }

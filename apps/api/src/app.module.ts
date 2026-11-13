@@ -10,6 +10,7 @@ import { CalendarModule } from './modules/calendar/calendar.module.js';
 import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
 import { ProgressModule } from './modules/progress/progress.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
+import { StudyRoomsModule } from './modules/studyroom/study-rooms.module.js';
 import { QuizAttemptsModule } from './modules/quiz/quiz-attempts.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
@@ -36,6 +37,7 @@ import { UploadModule } from './modules/upload/upload.module.js';
     AiJobsModule,
     // 상점 · 포인트(FR-59~63)
     RewardModule,
+    StudyRoomsModule,
     // 맞춤 퀴즈 세트 만들기 · 조회 · 작업 결과 반영(#175)
     QuizSetsModule,
     NoteAskModule,

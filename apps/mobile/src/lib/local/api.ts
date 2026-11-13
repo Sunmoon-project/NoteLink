@@ -448,6 +448,26 @@ const api: Api = {
         return fail('STORAGE_FAILED', '가입 정보를 저장하지 못했어요. 다시 시도해 주세요', 507);
       }
     },
+    // 기기 저장 모드: 메일을 보낼 수 없어 인증번호는 6자리 숫자면 통과한다(가입과 같음). 이 기기의 계정에서 찾는다
+    recoverySendCode: async (email) => {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+        return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
+    },
+    findId: async (email, code) => {
+      if (!/^\d{6}$/.test(code))
+        return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요', 400);
+      // 로그인 아이디는 가입 이메일이다
+      return { id: accountOf(email) ? email.trim().toLowerCase() : null };
+    },
+    passwordReset: async (id, email, code, password) => {
+      if (id.trim().toLowerCase() !== email.trim().toLowerCase() || !accountOf(id))
+        return fail(ERROR_CODES.VALIDATION, '아이디와 이메일이 같은 계정이 아니에요');
+      if (!/^\d{6}$/.test(code))
+        return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요', 400);
+      if (password.length < 8)
+        return fail(ERROR_CODES.VALIDATION, '비밀번호는 8자 이상이어야 해요');
+      await SecureStore.setItemAsync(pwKey(accountOf(id)!), password);
+    },
     agreeTerms: (codes) => {
       db().terms = codes;
       return ok(undefined);
@@ -847,7 +867,16 @@ const api: Api = {
         members: [],
         updatedAt: now(),
       }),
-    messages: (id) => ok(db().messages[id] ?? []),
+    messages: (id, before) => {
+      const items = db().messages[id] ?? [];
+      const end = before
+        ? Math.max(
+            0,
+            items.findIndex((item) => item._id === before),
+          )
+        : items.length;
+      return ok(items.slice(Math.max(0, end - 50), end));
+    },
   },
   content: {
     folders: () => {
@@ -1382,6 +1411,11 @@ export const localApi: Api = asAsync(api);
 
 /** 채팅: 보낸 메시지를 저장하고 화면에 돌려준다 (다른 사람에게 전달은 서버 연결 후) */
 localSocket.onClient = (ev, args) => {
+  if (ev === 'room:join') {
+    const ack = args[1] as ((result: { ok: boolean }) => void) | undefined;
+    ack?.({ ok: true });
+    return;
+  }
   if (ev !== 'chat:send') return;
   const [p, ack] = args as [
     { chatRoomId: string; text: string; clientId: string },

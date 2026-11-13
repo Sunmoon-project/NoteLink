@@ -194,6 +194,7 @@ export type ServerToClient = {
   'ai:done': (p: { jobId: string; job: AiJob }) => void;
   'chat:message': (m: Message) => void;
   'room:presence': (p: { roomId: string; members: RoomMember[] }) => void;
+  'room:members-changed': (payload: { roomId: string }) => void;
   'room:timer': (p: {
     roomId: string;
     rule: TimerRule | null;

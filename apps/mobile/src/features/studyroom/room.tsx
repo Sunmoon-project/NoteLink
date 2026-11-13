@@ -1,5 +1,12 @@
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
+import {
+  addChatOutbox,
+  readChatOutbox,
+  removeChatOutbox,
+  type QueuedChatMessage,
+} from '@/lib/chat-outbox';
+import { loadCompleteChatHistory } from '@/lib/chat-history';
 import { useEffect, useRef, useState } from 'react';
 import { FlatList, Pressable, View } from 'react-native';
 import { Text, TextInput } from '@/components/text';
@@ -362,10 +369,19 @@ export function RoomScreen() {
     },
   });
   const chatId = useQuery({ queryKey: ['room-chat', id], queryFn: () => api.rooms.chatRoomId(id) });
+  const [joinedRoom, setJoinedRoom] = useState<string | null>(null);
+  const syncEpoch = useRef(0);
   const history = useQuery({
     queryKey: ['messages', chatId.data],
-    queryFn: () => api.social.messages(chatId.data!),
-    enabled: !!chatId.data,
+    queryFn: () => {
+      const epoch = syncEpoch.current;
+      return loadCompleteChatHistory(
+        (before) => api.social.messages(chatId.data!, before),
+        () =>
+          syncEpoch.current === epoch && !['offline', 'unstable'].includes(useNet.getState().state),
+      );
+    },
+    enabled: !!chatId.data && joinedRoom === id,
   });
   const now = useNow();
   const [membersAt, setMembersAt] = useState(() => Date.now());
@@ -391,6 +407,8 @@ export function RoomScreen() {
   const [pick, setPick] = useState(false);
   const [chat, setChat] = useState(false);
   const [conn, setConn] = useState<'ok' | 'lost' | 'back' | 'kicked'>('ok');
+  const [socketConnected, setSocketConnected] = useState<boolean | null>(null);
+  const [chatJoinFailed, setChatJoinFailed] = useState(false);
   const [mediaGeneration, setMediaGeneration] = useState(0);
   const day = ymd(seoul(now));
   const midnight = Date.parse(`${day}T00:00:00+09:00`);
@@ -400,7 +418,9 @@ export function RoomScreen() {
     Math.max(0, Math.floor((now - Math.max(membersAt, midnight)) / 1000));
   const live = useLiveRoom(id, conn !== 'kicked' && !!room.data, mediaGeneration, mySec);
   const [v, setV] = useState('');
-  const pending = useRef<{ clientId: string; text: string }[]>([]);
+  const pending = useRef<QueuedChatMessage[]>([]);
+  const joinedChat = useRef(false);
+  const inFlight = useRef(new Set<string>());
   const messageSeq = useRef(0);
   // 확인 응답이 오지 않은 메시지. 입력을 지운 뒤에도 실패를 알고 다시 보낼 수 있게 한다
   const [failedIds, setFailedIds] = useState<string[]>([]);
@@ -409,20 +429,72 @@ export function RoomScreen() {
     const timers = ackTimers.current;
     return () => timers.forEach(clearTimeout);
   }, []);
+  const receiveMessage = (m: Message, clientId?: string) =>
+    setMsgs((messages) => {
+      const local = clientId ?? (m.senderId === myId ? m.clientId : undefined);
+      const confirmed = local ? messages.filter((x) => x._id !== local) : messages;
+      return confirmed.some((x) => x._id === m._id) ? confirmed : [...confirmed, m];
+    });
   const deliver = (chatRoomId: string, clientId: string, text: string) => {
+    if (inFlight.current.has(clientId)) return;
+    inFlight.current.add(clientId);
     setFailedIds((ids) => ids.filter((x) => x !== clientId));
     clearTimeout(ackTimers.current.get(clientId));
     ackTimers.current.set(
       clientId,
-      setTimeout(() => setFailedIds((ids) => [...ids, clientId]), ACK_TIMEOUT_MS),
+      setTimeout(() => {
+        inFlight.current.delete(clientId);
+        setFailedIds((ids) => [...new Set([...ids, clientId])]);
+      }, ACK_TIMEOUT_MS),
     );
     socket.emit('chat:send', { chatRoomId, text, clientId }, (m) => {
       clearTimeout(ackTimers.current.get(clientId));
       ackTimers.current.delete(clientId);
+      inFlight.current.delete(clientId);
+      if (myId && m.senderId === myId && m.clientId === clientId) {
+        try {
+          removeChatOutbox(myId, id, clientId);
+          pending.current = pending.current.filter((entry) => entry.clientId !== clientId);
+        } catch {
+          toast('전송 확인을 기기에 저장하지 못했어요');
+        }
+      }
       setFailedIds((ids) => ids.filter((x) => x !== clientId));
       receiveMessage(m, clientId);
     });
   };
+  const flushPending = () => {
+    if (!joinedChat.current || useAuth.getState().userId !== myId) return;
+    pending.current.forEach((entry) => deliver(entry.chatRoomId, entry.clientId, entry.text));
+  };
+  useEffect(() => {
+    if (!myId || !id || !chatId.data) return;
+    try {
+      const restored = readChatOutbox(myId, id).filter((entry) => entry.chatRoomId === chatId.data);
+      pending.current = restored;
+      // 디스크에 보관한 대기열을 화면 상태에 복원한다.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setMsgs((current) => {
+        const known = new Set(current.map((m) => m._id));
+        const queued = restored
+          .filter((entry) => !known.has(entry.clientId))
+          .map((entry) => ({
+            _id: entry.clientId,
+            clientId: entry.clientId,
+            chatRoomId: entry.chatRoomId,
+            senderId: myId,
+            type: 'text' as const,
+            text: entry.text,
+            sharedItemId: null,
+            createdAt: entry.createdAt,
+          }));
+        return [...current, ...queued];
+      });
+      flushPending();
+    } catch {
+      toast('전송 대기 메시지를 불러오지 못했어요');
+    }
+  }, [myId, id, chatId.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const list = useRef<FlatList<Message>>(null);
 
   // 방 정보 · 대화 기록을 불러오면 목록을 채운다 (렌더 중 상태 조정)
@@ -432,27 +504,75 @@ export function RoomScreen() {
     setMembers(room.data.members);
     setMembersAt(now);
   }
-  const [loadedMsgs, setLoadedMsgs] = useState<typeof history.data>();
-  if (history.data && history.data !== loadedMsgs) {
-    setLoadedMsgs(history.data);
-    setMsgs((current) => [
-      ...new Map([...history.data!, ...current].map((m) => [m._id, m])).values(),
-    ]);
-  }
-  const receiveMessage = (m: Message, clientId?: string) =>
-    setMsgs((messages) => {
-      const local = clientId ?? m.clientId;
-      const confirmed = local ? messages.filter((x) => x._id !== local) : messages;
-      return confirmed.some((x) => x._id === m._id) ? confirmed : [...confirmed, m];
-    });
   useEffect(() => {
+    if (!history.data) return;
+    const confirmed = new Set(
+      history.data.filter((m) => m.senderId === myId && m.clientId).map((m) => m.clientId!),
+    );
+    if (myId)
+      for (const entry of pending.current.filter((item) => confirmed.has(item.clientId))) {
+        try {
+          removeChatOutbox(myId, id, entry.clientId);
+          pending.current = pending.current.filter((item) => item.clientId !== entry.clientId);
+        } catch {
+          toast('전송 확인을 기기에 저장하지 못했어요');
+        }
+      }
+    // 네트워크에서 읽은 기록과 화면의 대기 메시지를 합친다.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMsgs((current) => [
+      ...new Map(
+        [...history.data!, ...current.filter((m) => !confirmed.has(m._id))].map((m) => [m._id, m]),
+      ).values(),
+    ]);
+  }, [history.data, myId, id]);
+  // 방 구독(room:join). 소켓이 다시 붙을 때와, 소켓은 살아 있는데 HTTP 실패로만 끊김 상태였다가 돌아올 때
+  // 모두 부른다. 마지막으로 보낸 요청의 응답만 반영해, 둘이 겹쳐도 대기 메시지를 한 번만 보낸다
+  const joinAttempt = useRef(0);
+  const joinRoom = () => {
+    const attempt = ++joinAttempt.current;
+    setChatJoinFailed(false);
     socket.emit('room:join', { roomId: id }, (r) => {
-      if (!r.ok) toast('채팅에 연결하지 못했어요. 나갔다가 다시 들어와 주세요');
+      if (attempt !== joinAttempt.current) return;
+      if (!r.ok) setChatJoinFailed(true);
+      joinedChat.current = r.ok;
+      setJoinedRoom(r.ok ? id : null);
+      if (r.ok) {
+        flushPending();
+        if (chatId.data) void history.refetch();
+      }
       if (r.missed)
         setMsgs((p) => [...new Map([...p, ...r.missed!].map((m) => [m._id, m])).values()]);
     });
-    return () => socket.emit('room:leave', { roomId: id });
-  }, [id]);
+  };
+  useEffect(() => {
+    const epochRef = syncEpoch;
+    const attempts = joinAttempt;
+    const onConnection = (connected: boolean) => {
+      setSocketConnected(connected);
+      if (!connected) {
+        setChatJoinFailed(false);
+        attempts.current++;
+        epochRef.current++;
+        joinedChat.current = false;
+        inFlight.current.clear();
+        setJoinedRoom(null);
+        return;
+      }
+      joinRoom();
+    };
+    const unsubscribe = socket.onConnection?.(onConnection);
+    if (!socket.onConnection) onConnection(true);
+    return () => {
+      // 화면을 떠난 뒤 늦게 온 구독 응답은 버린다
+      attempts.current++;
+      unsubscribe?.();
+      epochRef.current++;
+      joinedChat.current = false;
+      setJoinedRoom(null);
+      socket.emit('room:leave', { roomId: id });
+    };
+  }, [id, myId, chatId.data]); // eslint-disable-line react-hooks/exhaustive-deps
   useSocket(
     'room:presence',
     (p) => {
@@ -462,6 +582,17 @@ export function RoomScreen() {
     },
     [id],
   );
+
+  useSocket(
+    'room:members-changed',
+    (payload) => {
+      if (payload.roomId !== id) return;
+
+      void room.refetch();
+    },
+    [id],
+  );
+
   useSocket(
     'room:timer',
     (p) => {
@@ -483,23 +614,28 @@ export function RoomScreen() {
   ]);
 
   // p.100 연결 끊김 시나리오: 끊김 → (재연결 | 5분 넘으면 자동 퇴장). 소켓이 끊기면 useNet이 'unstable' · 'offline'이 된다
-  const lost = useNet((s) => s.state === 'unstable' || s.state === 'offline');
+  const networkLost = useNet((s) => s.state === 'unstable' || s.state === 'offline');
+  const lost = networkLost || socketConnected === false;
   // 끊김 ↔ 복구 전이 (렌더 중 상태 조정)
+  useEffect(() => {
+    if (!lost) return;
+    syncEpoch.current++;
+    joinAttempt.current++;
+    // 연결 상실에 맞춰 기록 조회를 중지한다.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setJoinedRoom(null);
+    joinedChat.current = false;
+    inFlight.current.clear();
+  }, [lost]);
   if (lost && conn !== 'lost' && conn !== 'kicked') setConn('lost');
   if (!lost && conn === 'lost') setConn('back');
-  // 다시 연결되면 끊긴 동안 쓴 메시지를 보내고 잠시 뒤 안내를 닫는다
+  // 다시 연결되면 끊긴 동안 쓴 메시지를 보내고 잠시 뒤 안내를 닫는다.
+  // 끊김 상태가 되면 방 구독을 놓은 것으로 보므로(joinedChat = false), 소켓이 다시 붙지 않고 HTTP만 회복된
+  // 경우에도 여기서 다시 구독한다. 소켓이 다시 붙으며 이미 보낸 구독은 이 요청이 대신한다
   useEffect(() => {
     if (conn !== 'back') return;
-    socket.emit('room:join', { roomId: id }, (r) => {
-      if (!r.ok) toast('채팅에 연결하지 못했어요. 나갔다가 다시 들어와 주세요');
-      if (r.missed)
-        setMsgs((p) => [...new Map([...p, ...r.missed!].map((m) => [m._id, m])).values()]);
-    });
+    if (!joinedChat.current) joinRoom();
     room.refetch();
-    history.refetch();
-    const roomId = chatId.data;
-    if (roomId) pending.current.forEach(({ clientId, text }) => deliver(roomId, clientId, text));
-    pending.current = [];
     const t = setTimeout(() => setConn('ok'), 2600);
     return () => clearTimeout(t);
   }, [conn]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -519,27 +655,36 @@ export function RoomScreen() {
   }, [conn]);
 
   const send = () => {
-    if (!v.trim()) return;
+    const text = v.trim();
+    if (!text) return;
+    if (text.length > 2000) return toast('메시지는 2,000자까지 보낼 수 있어요');
     if (!chatId.data) {
       void chatId.refetch();
       return toast('채팅을 준비하고 있어요. 잠시 후 다시 보내 주세요');
     }
-    const clientId = `c${Date.now()}-${++messageSeq.current}`;
-    const text = v.trim();
+    if (!myId) return toast('로그인 상태를 확인해 주세요');
+    const clientId = `c${Date.now()}-${++messageSeq.current}-${Math.random().toString(36).slice(2, 10)}`;
+    const entry = { clientId, chatRoomId: chatId.data, text, createdAt: new Date().toISOString() };
+    try {
+      addChatOutbox(myId, id, entry);
+    } catch {
+      return toast('메시지를 기기에 저장하지 못했어요. 다시 시도해 주세요');
+    }
+    pending.current.push(entry);
     setMsgs((p) => [
       ...p,
       {
         _id: clientId,
+        clientId,
         chatRoomId: chatId.data!,
         senderId: myId ?? '',
         type: 'text',
         text,
         sharedItemId: null,
-        createdAt: new Date().toISOString(),
+        createdAt: entry.createdAt,
       },
     ]);
-    if (conn === 'lost') pending.current.push({ clientId, text });
-    else deliver(chatId.data, clientId, text);
+    if (conn !== 'lost' && joinedChat.current) deliver(chatId.data, clientId, text);
     setV('');
   };
   if (!room.data && room.isError)
@@ -623,7 +768,10 @@ export function RoomScreen() {
         <View className="flex-row flex-wrap justify-between gap-y-2.5 px-4 pt-3">
           {tiles.map((m) => {
             const me = m.userId === myId;
-            const camOn = me ? live.camOn : m.camOn;
+            const remote = me ? null : live.participantState?.(m.userId);
+            const camOn = me ? live.camOn : (remote?.camOn ?? false);
+            const micOn = me ? live.micOn : (remote?.micOn ?? false);
+            const video = live.video(m.userId);
             return (
               <View
                 key={m.userId}
@@ -633,11 +781,11 @@ export function RoomScreen() {
                   camOn ? 'bg-night' : 'bg-white',
                 )}
               >
-                {live.video(m.userId)}
+                {video}
                 {camOn && (
                   <View className="absolute top-2.5 right-2.5 h-1.5 w-1.5 rounded-full bg-sun" />
                 )}
-                {!camOn && <Avatar uri={m.avatarUrl} name={m.nickname} size={chat ? 28 : 44} />}
+                {!video && <Avatar uri={m.avatarUrl} name={m.nickname} size={chat ? 28 : 44} />}
                 <Text className={cx('text-footnote font-bold', camOn ? 'text-white' : 'text-ink')}>
                   {m.nickname}
                 </Text>
@@ -661,8 +809,11 @@ export function RoomScreen() {
                                   )),
                       )}
                 </Text>
-                {!chat && !(me ? live.micOn : m.micOn) && (
-                  <View className="absolute bottom-2.5 left-2.5">
+                {!chat && !micOn && (
+                  <View
+                    accessibilityLabel={`${m.nickname} 마이크 꺼짐`}
+                    className="absolute bottom-2.5 left-2.5"
+                  >
                     <MicOff size={ICON.xs} color={camOn ? 'rgba(255,255,255,.5)' : C.sub} />
                   </View>
                 )}
@@ -709,6 +860,11 @@ export function RoomScreen() {
                         전송하지 못했어요 · 다시 보내기
                       </Text>
                     </Pressable>
+                  )}
+                  {mine && m.clientId === m._id && !failedIds.includes(m._id) && (
+                    <Text className="mt-1 text-caption2 text-sub">
+                      {conn === 'lost' || joinedRoom !== id ? '연결 후 전송 대기' : '전송 중'}
+                    </Text>
                   )}
                   {mine && conn === 'back' && m === msgs[msgs.length - 1] && (
                     <Text className="mt-1 text-caption2 text-brand">자동으로 전송했어요</Text>
@@ -783,6 +939,11 @@ export function RoomScreen() {
               </Pressable>
             </View>
           </View>
+        )}
+        {chatJoinFailed && conn !== 'lost' && conn !== 'kicked' && (
+          <Pressable accessibilityRole="button" onPress={joinRoom} className="px-5 py-2">
+            <Text className="text-caption text-danger">채팅 연결에 실패했어요 · 다시 연결</Text>
+          </Pressable>
         )}
         <View
           className="flex-row items-center gap-3 px-5 pt-3"

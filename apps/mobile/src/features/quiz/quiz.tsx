@@ -67,6 +67,7 @@ import {
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
 import { AvatarCheer } from '@/features/tutor/cheer';
+import { recordWrong } from './wrong-review';
 import { useTourTarget } from '@/features/tutor/tour';
 import { seoul } from '@/lib/dates';
 import { aiWaiting } from '@/lib/ai';
@@ -752,6 +753,8 @@ export function QuizSolveScreen() {
     try {
       const r = await api.quiz.answer(attemptId, q._id, c);
       if (!ownsProgress()) return;
+      // 틀린 문제는 오답 노트에 모아 다음 날 처음 열 때 다시 풀게 한다
+      if (!r.correct) recordWrong(screenOwner, q, set.data?.title);
       setRight(r.correct);
       setResults((x) => [...x, r.correct]);
       Haptics.notificationAsync(

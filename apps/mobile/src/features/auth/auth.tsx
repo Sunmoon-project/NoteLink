@@ -209,6 +209,13 @@ export function LoginScreen() {
           >
             로그인
           </Btn>
+          <Pressable
+            accessibilityRole="button"
+            className="mt-2 self-center py-2"
+            onPress={() => router.push('/(auth)/find-account')}
+          >
+            <Text className="text-footnote text-sub">아이디 · 비밀번호 찾기</Text>
+          </Pressable>
         </View>
 
         {/* 2. 그 아래 간편 로그인: 로고 버튼 한 줄 */}
