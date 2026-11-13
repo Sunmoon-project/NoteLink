@@ -16,9 +16,10 @@ import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
 import { HolidaySource, type HolidayItem } from '../src/modules/calendar/holiday-source.js';
 import { HolidaysController } from '../src/modules/calendar/holidays.controller.js';
-import { HolidaysService } from '../src/modules/calendar/holidays.service.js';
+import { HOLIDAY_REFETCH_MS, HolidaysService } from '../src/modules/calendar/holidays.service.js';
 import { CustomHoliday, CustomHolidaySchema } from '../src/modules/calendar/schemas/custom-holiday.schema.js';
 import { HiddenHoliday, HiddenHolidaySchema } from '../src/modules/calendar/schemas/hidden-holiday.schema.js';
+import { HolidayFetch, HolidayFetchSchema } from '../src/modules/calendar/schemas/holiday-fetch.schema.js';
 import { PublicHoliday, PublicHolidaySchema } from '../src/modules/calendar/schemas/public-holiday.schema.js';
 
 const uri = process.env.MONGODB_VERIFY_URI;
@@ -50,7 +51,7 @@ describe.skipIf(!isLocal)('진짜 DB 공휴일 · 제외일 확인', () => {
     const post = (path: string, body: object, auth = AUTH) => http().post(`/api/v1${path}`).set(auth).send(body);
     const patch = (path: string, body: object, auth = AUTH) => http().patch(`/api/v1${path}`).set(auth).send(body);
     const del = (path: string, auth = AUTH) => http().delete(`/api/v1${path}`).set(auth);
-    const clear = () => Promise.all(['public_holidays', 'hidden_holidays', 'custom_holidays'].map((n) => col(n).deleteMany({})));
+    const clear = () => Promise.all(['public_holidays', 'holiday_fetches', 'hidden_holidays', 'custom_holidays'].map((n) => col(n).deleteMany({})));
 
     beforeAll(async () => {
         if (!isLocal) throw new Error('localhost 주소가 아니라서 실행하지 않습니다');
@@ -60,6 +61,7 @@ describe.skipIf(!isLocal)('진짜 DB 공휴일 · 제외일 확인', () => {
                 MongooseModule.forRoot(uri!, { dbName, serverSelectionTimeoutMS: 5000 }),
                 MongooseModule.forFeature([
                     { name: PublicHoliday.name, schema: PublicHolidaySchema },
+                    { name: HolidayFetch.name, schema: HolidayFetchSchema },
                     { name: HiddenHoliday.name, schema: HiddenHolidaySchema },
                     { name: CustomHoliday.name, schema: CustomHolidaySchema },
                     { name: User.name, schema: UserSchema },
@@ -88,6 +90,7 @@ describe.skipIf(!isLocal)('진짜 DB 공휴일 · 제외일 확인', () => {
         await conn.dropDatabase();
         await Promise.all([
             conn.model(PublicHoliday.name).init(),
+            conn.model(HolidayFetch.name).init(),
             conn.model(HiddenHoliday.name).init(),
             conn.model(CustomHoliday.name).init(),
             conn.model(User.name).init(),
@@ -264,5 +267,97 @@ describe.skipIf(!isLocal)('진짜 DB 공휴일 · 제외일 확인', () => {
         await col('hidden_holidays').insertOne({ ...dup });
         await expect(col('hidden_holidays').insertOne({ ...dup })).rejects.toThrow(/duplicate key/);
         await expect(col('hidden_holidays').insertOne({ userId: other, date: '2026-05-05' })).resolves.toBeTruthy();
+    });
+
+    describe('해마다 다 받음 표시 · 다시 받기', () => {
+        const pub = () => col('public_holidays');
+        const mine = () => me.toString();
+        const names = async () => (await pub().find({}).sort({ _id: 1 }).toArray()).map((d) => [d._id, d['name'], d['source']]);
+
+        it('12) 표시 없이 문서 몇 개만 있으면(저장이 중간에 끊긴 상태) 다시 받아 와 전체가 나오고 skipDates도 전체 기준이다', async () => {
+            await pub().insertOne({ _id: '2026-01-01' as never, name: '신정', source: 'public_api', createdAt: new Date() });
+            fetchYear.mockResolvedValue(fetched2026);
+
+            const res = await get('/holidays?year=2026');
+            expect(res.body.data).toHaveLength(3);
+            expect(fetchYear).toHaveBeenCalledTimes(1);
+            expect(await pub().countDocuments()).toBe(3);
+            expect(await col('holiday_fetches').findOne({ _id: 2026 as never })).toMatchObject({ count: 3 });
+            expect(await service.skipDates(mine(), '2026-01-01', '2026-12-31')).toEqual(['2026-01-01', '2026-02-17', '2026-12-31']);
+            await get('/holidays?year=2026');
+            expect(fetchYear).toHaveBeenCalledTimes(1);
+        });
+
+        it('13) 저장이 중간에 실패하면 표시를 쓰지 않아 다음 조회 때 다시 받는다', async () => {
+            fetchYear.mockResolvedValue(fetched2026);
+            const model = conn.model(PublicHoliday.name);
+            const spy = vi.spyOn(model, 'bulkWrite').mockRejectedValueOnce(new Error('db down'));
+            expect((await get('/holidays?year=2026')).status).toBe(200);
+            spy.mockRestore();
+            expect(await col('holiday_fetches').countDocuments()).toBe(0);
+
+            expect((await get('/holidays?year=2026')).body.data).toHaveLength(3);
+            expect(fetchYear).toHaveBeenCalledTimes(2);
+            expect(await pub().countDocuments()).toBe(3);
+        });
+
+        it('14) 기간 안이면 외부를 부르지 않고, 기간이 지나면 다시 받아 정정 · 추가 · 삭제가 반영된다(다른 source · 숨김은 그대로)', async () => {
+            vi.useFakeTimers({ toFake: ['Date'] });
+            vi.setSystemTime(new Date('2026-01-10T00:00:00Z'));
+            fetchYear.mockResolvedValue(fetched2026);
+            await get('/holidays?year=2026');
+            await pub().insertOne({ _id: '2026-07-07' as never, name: '직접 넣은 날', source: 'manual', createdAt: new Date() });
+            await patch('/holidays/2026-01-01', { hidden: true });
+
+            vi.setSystemTime(new Date(Date.now() + HOLIDAY_REFETCH_MS - 1000));
+            await get('/holidays?year=2026');
+            expect(fetchYear).toHaveBeenCalledTimes(1);
+
+            vi.setSystemTime(new Date(Date.now() + 2000));
+            fetchYear.mockResolvedValue([
+                { date: '2026-01-01', name: '새해 첫날' },
+                { date: '2026-05-05', name: '어린이날' },
+                { date: '2026-12-31', name: '가짜 연말 휴일' },
+            ]); // 2026-02-17은 사라짐
+            const res = await get('/holidays?year=2026');
+            expect(fetchYear).toHaveBeenCalledTimes(2);
+            expect(res.body.data).toEqual([
+                { _id: '2026-01-01', name: '새해 첫날', hidden: true },
+                { _id: '2026-05-05', name: '어린이날', hidden: false },
+                { _id: '2026-07-07', name: '직접 넣은 날', hidden: false },
+                { _id: '2026-12-31', name: '가짜 연말 휴일', hidden: false },
+            ]);
+            expect(await names()).toEqual([
+                ['2026-01-01', '새해 첫날', 'public_api'],
+                ['2026-05-05', '어린이날', 'public_api'],
+                ['2026-07-07', '직접 넣은 날', 'manual'],
+                ['2026-12-31', '가짜 연말 휴일', 'public_api'],
+            ]);
+            expect(await col('hidden_holidays').countDocuments()).toBe(1);
+            await get('/holidays?year=2026');
+            expect(fetchYear).toHaveBeenCalledTimes(2);
+        });
+
+        it('15) 다시 받기에 실패하면 기존 값으로 200이다', async () => {
+            vi.useFakeTimers({ toFake: ['Date'] });
+            vi.setSystemTime(new Date('2026-01-10T00:00:00Z'));
+            fetchYear.mockResolvedValue(fetched2026);
+            await get('/holidays?year=2026');
+            vi.setSystemTime(new Date(Date.now() + HOLIDAY_REFETCH_MS + 1000));
+
+            fetchYear.mockRejectedValueOnce(new Error('down'));
+            const res = await get('/holidays?year=2026');
+            expect(res.status).toBe(200);
+            expect(res.body.data).toHaveLength(3);
+            expect(await pub().countDocuments()).toBe(3);
+        });
+
+        it('16) 같은 해를 동시에 처음 조회하면 외부는 한 번만 부른다', async () => {
+            fetchYear.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(fetched2026), 50)));
+            const results = await Promise.all([1, 2, 3, 4].map(() => get('/holidays?year=2026')));
+            expect(results.every((r) => r.status === 200 && r.body.data.length === 3)).toBe(true);
+            expect(fetchYear).toHaveBeenCalledTimes(1);
+            expect(await pub().countDocuments()).toBe(3);
+        });
     });
 });

@@ -7,6 +7,7 @@ import { HolidaysController } from './holidays.controller.js';
 import { HolidaysService } from './holidays.service.js';
 import { CustomHoliday, CustomHolidaySchema } from './schemas/custom-holiday.schema.js';
 import { HiddenHoliday, HiddenHolidaySchema } from './schemas/hidden-holiday.schema.js';
+import { HolidayFetch, HolidayFetchSchema } from './schemas/holiday-fetch.schema.js';
 import { PublicHoliday, PublicHolidaySchema } from './schemas/public-holiday.schema.js';
 
 // 공휴일 · 사용자 제외일 (FR-12). 할 일 · D-day의 CalendarModule과는 따로 둔다
@@ -14,6 +15,7 @@ import { PublicHoliday, PublicHolidaySchema } from './schemas/public-holiday.sch
     imports: [
         MongooseModule.forFeature([
             { name: PublicHoliday.name, schema: PublicHolidaySchema },
+            { name: HolidayFetch.name, schema: HolidayFetchSchema },
             { name: HiddenHoliday.name, schema: HiddenHolidaySchema },
             { name: CustomHoliday.name, schema: CustomHolidaySchema },
         ]),

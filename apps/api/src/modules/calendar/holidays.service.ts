@@ -7,6 +7,7 @@ import type { CreateCustomHolidayDto } from './dto/holiday.dto.js';
 import { fixedHolidays, HolidaySource, type HolidayItem } from './holiday-source.js';
 import { CustomHoliday } from './schemas/custom-holiday.schema.js';
 import { HiddenHoliday } from './schemas/hidden-holiday.schema.js';
+import { HolidayFetch } from './schemas/holiday-fetch.schema.js';
 import { PublicHoliday } from './schemas/public-holiday.schema.js';
 
 /** 앱에 내려주는 공휴일 (공유 계약 PublicHoliday). _id는 날짜 */
@@ -27,15 +28,22 @@ type CustomLean = CustomHoliday & { _id: Types.ObjectId };
 
 const NOT_FOUND = { code: 'NOT_FOUND', message: '존재하지 않는 제외일입니다.' };
 const SOURCE_PUBLIC_API = 'public_api'; // public_holidays.source 값
+/** 다 받은 해도 이 기간이 지나면 원본(공공데이터포털)의 추가 · 정정을 반영하려고 다시 받는다 */
+export const HOLIDAY_REFETCH_MS = 7 * 24 * 60 * 60 * 1000;
+
+type StoredHoliday = { _id: string; name: string; source?: string };
 
 @Injectable()
 export class HolidaysService {
     private readonly logger = new Logger(HolidaysService.name);
+    /** 지금 받는 중인 해. 같은 해를 동시에 요청하면 이 Promise를 같이 기다려 외부 API를 한 번만 부른다 */
+    private readonly inflight = new Map<number, Promise<HolidayItem[]>>();
 
     constructor(
         @InjectModel(PublicHoliday.name) private readonly publicModel: Model<PublicHoliday>,
         @InjectModel(HiddenHoliday.name) private readonly hiddenModel: Model<HiddenHoliday>,
         @InjectModel(CustomHoliday.name) private readonly customModel: Model<CustomHoliday>,
+        @InjectModel(HolidayFetch.name) private readonly fetchModel: Model<HolidayFetch>,
         private readonly source: HolidaySource,
     ) { }
 
@@ -107,45 +115,93 @@ export class HolidaysService {
         return new Set(docs.map((doc) => doc.date));
     }
 
-    /** 저장된 그 해 공휴일(_id가 날짜라 범위로 찾는다). 없으면 외부에서 받아 저장하고, 그것도 안 되면 고정 공휴일 */
-    private async yearItems(year: number): Promise<HolidayItem[]> {
-        const stored = await this.publicModel
-            .find({ _id: { $gte: `${year}-01-01`, $lte: `${year}-12-31` } }, { name: 1 })
-            .sort({ _id: 1 })
-            .lean<{ _id: string; name: string }[]>();
-        if (stored.length > 0) return stored.map((doc) => ({ date: doc._id, name: doc.name }));
-        return this.load(year);
+    /**
+     * 그 해 공휴일. 해마다 "다 받음" 표시(holiday_fetches)가 있고 기간(HOLIDAY_REFETCH_MS) 안이면 저장된 값을 쓴다.
+     * 표시가 없거나 기간이 지났으면 다시 받는다. 같은 해를 동시에 요청하면 한 번만 받는다(끝나면 성공 · 실패 모두 Map에서 지운다)
+     */
+    private yearItems(year: number): Promise<HolidayItem[]> {
+        const running = this.inflight.get(year);
+        if (running) return running;
+        const task = this.resolveYear(year).finally(() => this.inflight.delete(year));
+        this.inflight.set(year, task);
+        return task;
     }
 
-    /** 외부에서 받아 저장한다. 못 받으면(키 없음 · 호출 실패) 날짜가 고정인 공휴일만 임시로 보여 주고 저장은 하지 않는다 */
-    private async load(year: number): Promise<HolidayItem[]> {
+    private async resolveYear(year: number): Promise<HolidayItem[]> {
+        const mark = await this.fetchModel.findOne({ _id: year }).lean<{ fetchedAt: Date } | null>();
+        const stored = await this.publicModel
+            .find({ _id: { $gte: `${year}-01-01`, $lte: `${year}-12-31` } }, { name: 1, source: 1 })
+            .sort({ _id: 1 })
+            .lean<StoredHoliday[]>();
+        const fresh = !!mark && Date.now() - mark.fetchedAt.getTime() < HOLIDAY_REFETCH_MS;
+        if (fresh && stored.length > 0) return stored.map(toItem);
+        return this.load(year, stored);
+    }
+
+    /**
+     * 외부에서 받아 그 해의 public_api 공휴일을 원본 기준으로 맞춘 뒤, 다 끝나면 "다 받음" 표시를 쓴다.
+     * 못 받으면(키 없음 · 호출 실패): 저장된 값이 있으면 그것을, 없으면 날짜가 고정인 공휴일만 임시로 보여 주고 아무것도 저장하지 않는다
+     */
+    private async load(year: number, stored: StoredHoliday[]): Promise<HolidayItem[]> {
         let fetched: HolidayItem[] | null = null;
         try {
             fetched = await this.source.fetchYear(year);
         } catch (error) {
             this.logger.warn(`${year}년 공휴일 호출 오류 (${error instanceof Error ? error.name : 'unknown'})`);
         }
+        fetched = fetched?.filter((item) => item.date.startsWith(`${year}-`)) ?? null;
         if (!fetched || fetched.length === 0) {
+            if (stored.length > 0) {
+                this.logger.warn(`${year}년 공휴일을 다시 받지 못해 저장된 값을 사용합니다.`);
+                return stored.map(toItem);
+            }
             this.logger.warn(`${year}년 공휴일을 받지 못해 고정 공휴일만 사용합니다.`);
             return fixedHolidays(year);
         }
-        try {
-            // 동시에 두 요청이 와도 날짜가 겹치지 않게 upsert로 넣는다
-            await this.publicModel.bulkWrite(
-                fetched.map((item) => ({
+
+        // 다른 출처(manual 등)로 저장된 날짜는 건드리지 않는다
+        const others = stored.filter((doc) => doc.source !== SOURCE_PUBLIC_API);
+        const otherDates = new Set(others.map((doc) => doc._id));
+        const own = new Map(stored.filter((doc) => doc.source === SOURCE_PUBLIC_API).map((doc) => [doc._id, doc.name]));
+        const wanted = fetched.filter((item) => !otherDates.has(item.date));
+        const wantedDates = new Set(wanted.map((item) => item.date));
+
+        const ops: Parameters<Model<PublicHoliday>['bulkWrite']>[0] = [];
+        for (const item of wanted) {
+            if (!own.has(item.date)) {
+                // 동시에 두 요청이 와도 날짜가 겹치지 않게 upsert로 넣는다
+                ops.push({
                     updateOne: {
                         filter: { _id: item.date },
                         update: { $setOnInsert: { name: item.name, source: SOURCE_PUBLIC_API, createdAt: new Date() } },
                         upsert: true,
                     },
-                })),
+                });
+            } else if (own.get(item.date) !== item.name) {
+                ops.push({ updateOne: { filter: { _id: item.date, source: SOURCE_PUBLIC_API }, update: { $set: { name: item.name } } } });
+            }
+        }
+        for (const date of own.keys()) {
+            if (!wantedDates.has(date)) ops.push({ deleteOne: { filter: { _id: date, source: SOURCE_PUBLIC_API } } });
+        }
+
+        try {
+            if (ops.length > 0) await this.publicModel.bulkWrite(ops);
+            // 공휴일 저장이 모두 끝난 다음에만 표시를 쓴다
+            await this.fetchModel.updateOne(
+                { _id: year },
+                { $set: { fetchedAt: new Date(), count: fetched.length } },
+                { upsert: true },
             );
         } catch (error) {
             this.logger.warn(`${year}년 공휴일을 저장하지 못했습니다 (${error instanceof Error ? error.name : 'unknown'})`);
         }
-        return fetched;
+        const merged = new Map([...others.map(toItem), ...wanted].map((item) => [item.date, item]));
+        return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
     }
 }
+
+const toItem = (doc: StoredHoliday): HolidayItem => ({ date: doc._id, name: doc.name });
 
 function toCustomView(doc: CustomLean): CustomHolidayView {
     return { _id: doc._id.toString(), name: doc.name, date: doc.date };

@@ -9,7 +9,7 @@ import {
     parseKasiResponse,
     type HolidayItem,
 } from '../src/modules/calendar/holiday-source.js';
-import type { HolidaysService } from '../src/modules/calendar/holidays.service.js';
+import { HOLIDAY_REFETCH_MS, type HolidaysService } from '../src/modules/calendar/holidays.service.js';
 import { AUTH_A, AUTH_B, createFakeStores, createHolidaysTestApp, type FakeStores } from './holidays-test-app.js';
 
 describe('parseKasiResponse (공공데이터포털 응답 해석)', () => {
@@ -232,5 +232,119 @@ describe('공휴일 · 제외일 API (가짜 DB)', () => {
         expect(await service.skipDates(a, '2026-01-02', '2026-01-04')).toEqual([]);
         expect(await service.skipDates(a, '2026-03-01', '2026-01-01')).toEqual([]);
         expect(await service.skipDates(b, '2026-01-01', '2026-02-28')).toEqual(['2026-01-01', '2026-02-17']);
+    });
+
+    describe('해마다 다 받음 표시 · 다시 받기', () => {
+        const full = [
+            { date: '2026-01-01', name: '신정' },
+            { date: '2026-02-17', name: '설날' },
+            { date: '2026-03-01', name: '삼일절' },
+        ];
+        const ids = async (year = 2026) => (await service.list(USER_ID, year)).map((h) => h._id);
+        const USER_ID = '000000000000000000000001';
+
+        it('키가 없으면 표시도 저장하지 않는다', async () => {
+            fetchYear.mockResolvedValue(null);
+            await service.list(USER_ID, 2026);
+            expect(stores.pub).toHaveLength(0);
+            expect(stores.fetches).toHaveLength(0);
+        });
+
+        it('일부만 저장하고 실패하면 표시가 없어, 다음 조회 때 다시 받아 전체가 나온다(skipDates도 전체 기준)', async () => {
+            fetchYear.mockResolvedValue(full);
+            const realBulk = stores.publicModel.bulkWrite;
+            stores.publicModel.bulkWrite = (ops) => {
+                realBulk(ops.slice(0, 1)); // 한 건만 저장되고
+                return Promise.reject(new Error('db down')); // 실패
+            };
+            expect(await ids()).toEqual(['2026-01-01', '2026-02-17', '2026-03-01']); // 이번 응답은 받아 온 값
+            expect(stores.pub).toHaveLength(1);
+            expect(stores.fetches).toHaveLength(0);
+
+            stores.publicModel.bulkWrite = realBulk;
+            expect(await ids()).toEqual(['2026-01-01', '2026-02-17', '2026-03-01']);
+            expect(fetchYear).toHaveBeenCalledTimes(2);
+            expect(stores.pub).toHaveLength(3);
+            expect(stores.fetches).toHaveLength(1);
+            expect(await service.skipDates(USER_ID, '2026-01-01', '2026-12-31')).toEqual(['2026-01-01', '2026-02-17', '2026-03-01']);
+        });
+
+        it('표시 없이 문서만 몇 개 들어 있어도 다시 받아 온다', async () => {
+            stores.pub.push({ _id: '2026-01-01', name: '신정', source: 'public_api', createdAt: new Date() });
+            fetchYear.mockResolvedValue(full);
+            expect(await ids()).toHaveLength(3);
+            expect(await service.skipDates(USER_ID, '2026-01-01', '2026-12-31')).toHaveLength(3);
+            expect(fetchYear).toHaveBeenCalledTimes(1);
+            expect(stores.fetches[0]).toMatchObject({ _id: 2026, count: 3 });
+        });
+
+        it('기간 안이면 외부를 부르지 않고, 기간이 지나면 다시 받아 이름 정정 · 새 공휴일 · 사라진 공휴일이 반영된다', async () => {
+            vi.useFakeTimers({ toFake: ['Date'] });
+            vi.setSystemTime(new Date('2026-01-10T00:00:00Z'));
+            fetchYear.mockResolvedValue(full);
+            await ids();
+            stores.pub.push({ _id: '2026-07-07', name: '직접 넣은 날', source: 'manual', createdAt: new Date() });
+            await api.hide('2026-01-01', true);
+
+            vi.setSystemTime(new Date(Date.now() + HOLIDAY_REFETCH_MS - 1000));
+            await ids();
+            expect(fetchYear).toHaveBeenCalledTimes(1);
+
+            vi.setSystemTime(new Date(Date.now() + 2000));
+            fetchYear.mockResolvedValue([
+                { date: '2026-01-01', name: '새해 첫날' }, // 이름 정정
+                { date: '2026-03-01', name: '삼일절' },
+                { date: '2026-05-05', name: '어린이날' }, // 새로 생김
+            ]); // 2026-02-17은 사라짐
+            const list = await service.list(USER_ID, 2026);
+            expect(fetchYear).toHaveBeenCalledTimes(2);
+            expect(list.map((h) => [h._id, h.name])).toEqual([
+                ['2026-01-01', '새해 첫날'],
+                ['2026-03-01', '삼일절'],
+                ['2026-05-05', '어린이날'],
+                ['2026-07-07', '직접 넣은 날'],
+            ]);
+            expect(stores.pub.map((r) => r._id).sort()).toEqual(['2026-01-01', '2026-03-01', '2026-05-05', '2026-07-07']);
+            expect(stores.pub.find((r) => r._id === '2026-07-07')).toMatchObject({ name: '직접 넣은 날', source: 'manual' });
+            expect(stores.hid).toHaveLength(1); // 숨김은 그대로
+
+            await ids(); // 표시가 새로 써졌으니 또 기간 안
+            expect(fetchYear).toHaveBeenCalledTimes(2);
+        });
+
+        it('다시 받기에 실패하면 기존 값으로 200이고, 표시도 그대로라 다음에 또 시도한다', async () => {
+            vi.useFakeTimers({ toFake: ['Date'] });
+            vi.setSystemTime(new Date('2026-01-10T00:00:00Z'));
+            fetchYear.mockResolvedValue(full);
+            await ids();
+            vi.setSystemTime(new Date(Date.now() + HOLIDAY_REFETCH_MS + 1000));
+            const before = { ...stores.fetches[0]! };
+
+            fetchYear.mockRejectedValueOnce(new Error('down'));
+            const res = await api.list(2026);
+            expect(res.status).toBe(200);
+            expect(res.body.data).toHaveLength(3);
+            fetchYear.mockResolvedValueOnce(null);
+            expect((await api.list(2026)).body.data).toHaveLength(3);
+            expect(stores.fetches[0]).toEqual(before);
+            expect(fetchYear).toHaveBeenCalledTimes(3);
+        });
+
+        it('같은 해를 동시에 처음 조회하면 외부는 한 번만 부르고, 끝난 뒤에는(실패해도) 다시 시도할 수 있다', async () => {
+            let release!: (items: HolidayItem[]) => void;
+            fetchYear.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+            const calls = Promise.all([1, 2, 3, 4, 5].map(() => service.list(USER_ID, 2026)));
+            await new Promise((r) => setTimeout(r, 20));
+            release(full);
+            const results = await calls;
+            expect(fetchYear).toHaveBeenCalledTimes(1);
+            expect(results.every((r) => r.length === 3)).toBe(true);
+            expect(stores.pub).toHaveLength(3);
+
+            fetchYear.mockRejectedValueOnce(new Error('down'));
+            expect(await ids(2027)).toHaveLength(8); // 실패 → 고정 공휴일
+            fetchYear.mockResolvedValueOnce([{ date: '2027-01-01', name: '신정' }]);
+            expect(await ids(2027)).toEqual(['2027-01-01']); // Map에서 지워졌으니 다시 받는다
+        });
     });
 });
