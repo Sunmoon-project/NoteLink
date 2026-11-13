@@ -150,6 +150,19 @@ describe('친구 요청 · 수락 · 거절', () => {
     expect(await service.received(you)).toMatchObject([{ requestedAt: later.toISOString() }]);
   });
 
+  it('거절된 쌍에서 둘이 동시에 다시 요청하면 친구가 된다', async () => {
+    const me = person('나');
+    const you = person('지우');
+    await service.request(me, you, NOW);
+    const [req] = await service.received(you);
+    await service.respond(you, req!._id, false);
+
+    // 둘 다 rejected를 읽은 뒤 갱신한다 → 늦은 쪽은 갱신이 빗나가고, 다시 읽어 상대 요청을 수락한다
+    await Promise.all([service.request(me, you, NOW), service.request(you, me, NOW)]);
+    expect(await service.friends(me)).toMatchObject([{ userId: you }]);
+    expect(friendships.rows).toHaveLength(1);
+  });
+
   it('보낸 사람이나 다른 사람은 그 요청을 수락할 수 없다', async () => {
     const me = person('나');
     const you = person('지우');

@@ -110,18 +110,22 @@ export class FriendsService {
     if (current.status === 'pending') {
       if (current.requesterId.equals(meId)) return;
       // 상대가 먼저 보낸 요청이 있으면 수락한 것으로 본다
-      await this.friendships.updateOne(
+      const accepted = await this.friendships.updateOne(
         { _id: current._id, status: 'pending' },
         { $set: { status: 'accepted', acceptedAt: now } },
       );
+      // 그사이 상태가 바뀌었으면(상대가 거절 · 끊기) 지금 상태로 다시 처리한다
+      if (accepted.matchedCount === 0) return this.request(me, targetId, now);
       return;
     }
     // 거절 · 차단 이후의 새 요청: 거절은 되살리고, 차단은 조용히 받아 둔 척한다(차단 여부를 알리지 않는다)
     if (current.status === 'rejected') {
-      await this.friendships.updateOne(
+      const revived = await this.friendships.updateOne(
         { _id: current._id, status: 'rejected' },
         { $set: { status: 'pending', requesterId: meId, requestedAt: now, acceptedAt: null } },
       );
+      // 양쪽이 동시에 다시 요청해 상대가 먼저 되살렸다 → 상대 요청이 있는 상태로 다시 처리해 친구가 된다
+      if (revived.matchedCount === 0) return this.request(me, targetId, now);
     }
   }
 
