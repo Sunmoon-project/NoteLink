@@ -89,6 +89,8 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
         notices.push(to);
         return Promise.resolve();
       },
+      sendRecoveryCode: () => Promise.resolve(),
+      sendNoAccount: () => Promise.resolve(),
     };
     const usersModel = {
       exists: (f: { email: string; deletedAt: null }) =>

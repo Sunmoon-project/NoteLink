@@ -83,6 +83,11 @@ export class TokenService {
     );
   }
 
+  /** 이 사용자의 모든 기기 로그인을 끊는다(비밀번호를 바꿨을 때) */
+  async revokeAll(userId: Types.ObjectId): Promise<void> {
+    await this.refreshTokens.updateMany({ userId, revokedAt: null }, { revokedAt: new Date() });
+  }
+
   private async mint(
     userId: string,
     device?: DeviceInfo,
