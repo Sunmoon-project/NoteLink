@@ -56,7 +56,6 @@ import {
   rememberOrphans,
   writeDb,
 } from './storage';
-import { avatarFace } from '../avatar-styles';
 import { AI_WAITING_STEP, withTopic } from '../ai';
 import { quizPoints, sessionPoints } from '../points';
 import { localAnswer } from './tutor';
@@ -528,22 +527,6 @@ const api: Api = {
       // 계정이 이미 없어 재시도할 수 없으므로 비밀번호 삭제 실패로 탈퇴를 막지 않는다
       // (남은 비밀번호는 어떤 계정과도 이어지지 않는다)
       await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
-    },
-    generateProfile: async (p) => {
-      try {
-        return await ok(queueJob('avatar_profile', 'user', p.photoBlobUrl));
-      } catch (e) {
-        // 요청이 실패하면 DB에 남지 않으므로 방금 복사한 사진도 지운다 (다시 시도하면 새로 복사한다)
-        dropFile(p.photoBlobUrl);
-        throw e;
-      }
-    },
-    saveAvatar: (p) => {
-      const d = db();
-      d.avatar = p;
-      // 프로필 · 친구 목록 · 스터디룸이 avatarUrl을 그린다 — 고른 스타일의 얼굴을 넣는다
-      d.user.avatarUrl = avatarFace(p.style, p.gender);
-      return ok(undefined);
     },
   },
   upload: {

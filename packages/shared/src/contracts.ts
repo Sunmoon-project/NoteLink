@@ -175,8 +175,6 @@ export const PATHS = {
   equip: (itemId: string) => `/users/me/items/${seg(itemId)}/equip`,
   pointLedger: '/points/ledger',
   // 아바타 · 프로필 생성
-  profileAvatar: '/avatars/profile',
-  avatars: '/avatars',
 } as const;
 
 /* ── Socket.IO 이벤트 (NestJS realtime 게이트웨이) ──── */

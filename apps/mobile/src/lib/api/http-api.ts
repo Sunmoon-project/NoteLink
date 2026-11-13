@@ -81,8 +81,6 @@ export const httpApi: Api = {
     registerDevice: (d) => http.post(P.myDevices, d),
     changePlan: (tier) => http.patch(P.mySubscription, { tier }),
     withdraw: () => http.del(P.me),
-    generateProfile: (p) => http.post(P.profileAvatar, p),
-    saveAvatar: (p) => http.post(P.avatars, p),
   },
   upload: { getSas: (p) => http.post(P.uploadSas, p) },
   study: {

@@ -104,12 +104,6 @@ export interface Api {
     }): Promise<void>;
     changePlan(tier: PlanTier): Promise<User>;
     withdraw(): Promise<void>;
-    generateProfile(p: {
-      photoBlobUrl: string;
-      prompt: string;
-      style: string | null;
-    }): Promise<AiJob>;
-    saveAvatar(p: { style: string; gender: 'male' | 'female'; color: string }): Promise<void>;
   };
   upload: {
     getSas(p: {
