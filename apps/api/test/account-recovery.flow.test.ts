@@ -1,7 +1,7 @@
 import { type INestApplication } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
 import { ERROR_CODES, PATHS } from '@notelink/shared';
-import { compare } from 'bcrypt';
+import { compare, hash } from 'bcrypt';
 import { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,11 +13,13 @@ import {
 } from '../src/modules/auth/app-login/email-code.service.js';
 import { MAIL_SENDER, type MailSender } from '../src/modules/mail/mail-sender.js';
 import { AuthCode } from '../src/modules/auth/schemas/auth-code.schema.js';
+import { LoginAttempt } from '../src/modules/auth/schemas/login-attempt.schema.js';
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
 import { User } from '../src/modules/auth/schemas/user.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeAuthCodes } from './support/fake-auth-codes.js';
+import { createFakeLoginAttempts } from './support/fake-login-attempts.js';
 import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
 
 // 시험을 빠르게 하려고 bcrypt 비용만 4로 낮춘다(운영은 12)
@@ -56,6 +58,9 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
   const noAccount: string[] = [];
   const authCodes = createFakeAuthCodes();
   const fakeRefresh = createFakeRefreshTokens();
+  const loginAttempts = createFakeLoginAttempts();
+  // 로그인이 비밀번호를 확인한 뒤(lastLoginAt을 적을 때) 한 번 실행할 일
+  let afterPasswordCheck: (() => Promise<void>) | undefined;
 
   beforeAll(async () => {
     stubAppEnv();
@@ -88,7 +93,9 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
       updateOne: (f: { _id: Types.ObjectId }, update: { $set: Partial<UserRow> }) => {
         const row = users.find((u) => u._id.equals(f._id));
         if (row) Object.assign(row, update.$set);
-        return Promise.resolve({ matchedCount: row ? 1 : 0 });
+        const hook = 'lastLoginAt' in update.$set ? afterPasswordCheck : undefined;
+        afterPasswordCheck = undefined;
+        return (hook ? hook() : Promise.resolve()).then(() => ({ matchedCount: row ? 1 : 0 }));
       },
     };
     const moduleRef = await createAppModuleBuilder()
@@ -98,6 +105,8 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
       .useValue(authCodes.model)
       .overrideProvider(getModelToken(RefreshToken.name))
       .useValue(fakeRefresh.model)
+      .overrideProvider(getModelToken(LoginAttempt.name))
+      .useValue(loginAttempts.model)
       .overrideProvider(MAIL_SENDER)
       .useValue(mail)
       .compile();
@@ -121,6 +130,8 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
     noAccount.length = 0;
     authCodes.rows.length = 0;
     fakeRefresh.rows.length = 0;
+    loginAttempts.rows.length = 0;
+    afterPasswordCheck = undefined;
     users.push({ _id: new Types.ObjectId(), email: EMAIL, passwordHash: 'old', deletedAt: null });
   });
   afterEach(() => vi.useRealTimers());
@@ -209,6 +220,59 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
     expect((await post(SEND, { email: EMAIL })).status).toBe(429);
     vi.setSystemTime(new Date('2026-01-01T15:00:00Z')); // 서울 00:00
     expect((await post(SEND, { email: EMAIL })).status).toBe(204);
+  });
+
+  it('재설정에서 refresh 토큰 줄 폐기가 실패해도, 비밀번호와 함께 끊은 시각이 적혀 예전 토큰은 거절된다', async () => {
+    const user = users[0]!;
+    const before = await tokens.issue(user._id.toString());
+    vi.setSystemTime(new Date(START.getTime() + 1000));
+    await post(SEND, { email: EMAIL });
+    const updateMany = fakeRefresh.model.updateMany;
+    fakeRefresh.model.updateMany = () => Promise.reject(new Error('DB 쓰기 실패'));
+    try {
+      const res = await post(RESET, {
+        id: EMAIL,
+        email: EMAIL,
+        code: code(),
+        password: NEW_PASSWORD,
+      });
+      expect(res.status).toBe(500);
+    } finally {
+      fakeRefresh.model.updateMany = updateMany;
+    }
+    expect(await compare(NEW_PASSWORD, user.passwordHash!)).toBe(true);
+    const me = await request(app.getHttpServer())
+      .get('/api/v1/users/me')
+      .set('Authorization', `Bearer ${before.accessToken}`);
+    expect(me.status).toBe(401);
+    expect((await post(BASE(PATHS.refresh), { refreshToken: before.refreshToken })).status).toBe(
+      401,
+    );
+  });
+
+  it('예전 비밀번호로 로그인하는 도중(확인 뒤 · 발급 전) 재설정이 끝나면 그 로그인은 401이고 토큰이 남지 않는다', async () => {
+    const user = users[0]!;
+    user.passwordHash = await hash('OldPassw0rd', 4);
+    await post(SEND, { email: EMAIL });
+    const resetCode = code();
+    afterPasswordCheck = async () => {
+      vi.setSystemTime(new Date(START.getTime() + 1000));
+      const reset = await post(RESET, {
+        id: EMAIL,
+        email: EMAIL,
+        code: resetCode,
+        password: NEW_PASSWORD,
+      });
+      expect(reset.status).toBe(204);
+    };
+
+    const login = await post(BASE(PATHS.emailLogin), { email: EMAIL, password: 'OldPassw0rd' });
+    expect(login.status).toBe(401);
+    expect(fakeRefresh.rows.filter((r) => r.revokedAt === null)).toHaveLength(0);
+    // 새 비밀번호로는 로그인된다
+    vi.setSystemTime(new Date(START.getTime() + 2000));
+    const again = await post(BASE(PATHS.emailLogin), { email: EMAIL, password: NEW_PASSWORD });
+    expect(again.status).toBe(200);
   });
 
   it('계정 찾기 인증번호는 하루 3번까지만 보낸다(인증번호를 계속 받아 맞혀 보는 공격을 막는다)', async () => {
