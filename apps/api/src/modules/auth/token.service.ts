@@ -68,9 +68,21 @@ export class TokenService {
   }
 
   /** 로그인할 때마다 호출한다. 기기마다 자기 refresh 토큰 한 줄이 생긴다 */
-  async issue(userId: string, device?: DeviceInfo): Promise<IssuedTokens> {
-    const { tokens } = await this.mint(userId, device);
-    return tokens;
+  /**
+   * @param authorizedAt 로그인을 확인한 시각(비밀번호를 읽기 직전). 그 뒤에 로그인이 끊겼으면(비밀번호 재설정 ·
+   *   탈퇴) 확인에 쓴 비밀번호가 이미 바뀐 것이라, 만든 토큰을 지우고 거절한다. 끊기가 발급 뒤에 오면 revokeAll이 지운다
+   */
+  async issue(userId: string, device?: DeviceInfo, authorizedAt?: Date): Promise<IssuedTokens> {
+    const next = await this.mint(userId, device);
+    if (authorizedAt) {
+      try {
+        await this.assertActive(userId, { iatMs: authorizedAt.getTime() });
+      } catch (error) {
+        await this.discard(next.rowId);
+        throw error;
+      }
+    }
+    return next.tokens;
   }
 
   /**
@@ -96,29 +108,41 @@ export class TokenService {
 
     // 조회와 폐기를 한 번에 해서, 같은 토큰으로 동시에 두 번 요청해도 한쪽만 이긴다.
     // 위에서 확인한 뒤 새 토큰을 만드는 사이에 기존 토큰이 만료될 수 있어 만료 조건도 다시 건다
+    const claimedAt = new Date();
     const claimed = await this.refreshTokens.findOneAndUpdate(
-      { tokenHash, revokedAt: null, expiresAt: { $gt: new Date() } },
-      { revokedAt: new Date() },
+      { tokenHash, revokedAt: null, expiresAt: { $gt: claimedAt } },
+      { revokedAt: claimedAt },
     );
-    // 처음 확인한 뒤 새 토큰을 만드는 사이에 로그인이 끊겼으면(revokeAll) 새 토큰은 끊기 뒤에 만들어져 살아남는다.
-    // 쓴 토큰을 다시 확인해서 그때도 막는다
-    const stillActive =
-      claimed !== null &&
-      (await this.assertActive(payload.sub, payload).then(
-        () => true,
-        () => false,
-      ));
-    if (!stillActive) {
-      // 동시 요청에 졌거나, 그사이 만료됐거나, 로그인이 끊겼다. 앱에 돌려주지 않은 새 토큰의 줄을 지운다.
-      // 못 지워도 그 토큰을 가진 쪽이 없어서 쓰일 수 없다.
-      try {
-        await this.refreshTokens.deleteOne({ _id: next.rowId });
-      } catch {
-        // 정리 실패는 무시한다
-      }
+    if (!claimed) {
+      // 동시 요청에 졌거나 그사이 만료됐다. 앱에 돌려주지 않은 새 토큰의 줄을 지운다
+      await this.discard(next.rowId);
       throw invalidToken();
     }
+    // 처음 확인한 뒤 새 토큰을 만드는 사이에 로그인이 끊겼으면(revokeAll) 새 토큰은 끊기 뒤에 만들어져 살아남는다.
+    // 쓴 토큰을 다시 확인해서 그때도 막는다
+    try {
+      await this.assertActive(payload.sub, payload);
+    } catch (error) {
+      await this.discard(next.rowId);
+      if (!(error instanceof UnauthorizedException)) {
+        // 끊긴 게 아니라 DB를 읽지 못했다: 쓴 토큰을 되살려 앱이 같은 토큰으로 다시 갱신할 수 있게 한다.
+        // 그사이 끊겼다면 다음 갱신의 첫 확인(assertActive)이 막는다
+        await this.refreshTokens
+          .updateOne({ tokenHash, revokedAt: claimedAt }, { revokedAt: null })
+          .catch(() => undefined);
+      }
+      throw error;
+    }
     return next.tokens;
+  }
+
+  /** 앱에 돌려주지 않은 새 토큰의 줄을 지운다. 못 지워도 그 토큰을 가진 쪽이 없어서 쓰일 수 없다 */
+  private async discard(rowId: Types.ObjectId): Promise<void> {
+    try {
+      await this.refreshTokens.deleteOne({ _id: rowId });
+    } catch {
+      // 정리 실패는 무시한다
+    }
   }
 
   /** 로그아웃. 이미 폐기됐거나 없는 토큰이어도 오류 없이 끝낸다 */

@@ -59,6 +59,8 @@ export class AppLoginService {
     const slot = await this.throttle.reserve(email);
     if (!slot.ok) throw loginLocked(slot.retryAfterMs);
 
+    // 비밀번호를 읽기 직전 시각. 확인하는 사이에 비밀번호가 재설정되면 이 로그인의 토큰은 거절된다(TokenService.issue)
+    const authorizedAt = new Date();
     const user = await this.users.findOne({ email, deletedAt: null }).lean();
 
     // 비교할 해시: 비밀번호를 가진 계정이면 그 해시, 아니면 같은 비용의 가짜 해시
@@ -74,7 +76,11 @@ export class AppLoginService {
     // 성공하면 횟수를 지운다(정상 사용자가 몇 번 틀리고 맞춘 경우)
     await this.throttle.clear(email);
     await this.users.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } });
-    const { accessToken, refreshToken } = await this.tokens.issue(String(user._id));
+    const { accessToken, refreshToken } = await this.tokens.issue(
+      String(user._id),
+      undefined,
+      authorizedAt,
+    );
     return { accessToken, refreshToken, user: toAppUser(user) };
   }
 
