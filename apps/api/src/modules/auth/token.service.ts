@@ -7,6 +7,7 @@ import { Model, Types } from 'mongoose';
 
 import type { JwtConfig } from '../../config/jwt.config.js';
 import { RefreshToken, type RefreshTokenDocument } from './schemas/refresh-token.schema.js';
+import { User } from './schemas/user.schema.js';
 
 /** `createJwtConfig`로 만든 설정을 이 이름으로 넣어 둔다(auth.module에서 연결) */
 export const JWT_CONFIG = 'JWT_CONFIG';
@@ -29,7 +30,42 @@ export class TokenService {
     private readonly jwt: JwtService,
     @Inject(JWT_CONFIG) private readonly config: JwtConfig,
     @InjectModel(RefreshToken.name) private readonly refreshTokens: Model<RefreshTokenDocument>,
+    @InjectModel(User.name) private readonly users: Model<User>,
   ) {}
+
+  /**
+   * 이 사용자의 모든 기기 로그인을 끊는다(비밀번호를 바꿨거나 탈퇴할 때). refresh 토큰을 모두 폐기하고,
+   * 끊은 시각을 사용자에 적어 그 전에 발급된 access 토큰도 만료 전에 거절되게 한다.
+   */
+  async revokeAll(userId: Types.ObjectId, now = new Date()): Promise<void> {
+    await this.users.updateOne({ _id: userId }, { $set: { sessionsRevokedAt: now } });
+    await this.refreshTokens.updateMany({ userId, revokedAt: null }, { revokedAt: now });
+  }
+
+  /**
+   * 토큰을 받아도 되는 사용자인지: 탈퇴하지 않았고, 토큰 발급 시각이 로그인을 끊은 시각보다 늦어야 한다(같은 밀리초도 거절).
+   * 발급 시각은 밀리초(iatMs)로 비교한다 — 초 단위 iat만 보면 끊기 직전 같은 초에 받은 토큰이 통과한다.
+   * iatMs가 없는 예전 토큰은 iat(초)를 내림해 쓰므로, 끊은 그 초에 받았어도 거절된다.
+   */
+  private async assertActive(
+    userId: string,
+    payload: { iat?: unknown; iatMs?: unknown },
+  ): Promise<void> {
+    const user = await this.users
+      .findOne({ _id: new Types.ObjectId(userId) }, { deletedAt: 1, sessionsRevokedAt: 1 })
+      .lean<{ deletedAt?: Date | null; sessionsRevokedAt?: Date | null }>();
+    if (!user || user.deletedAt) throw invalidToken();
+    const revoked = user.sessionsRevokedAt;
+    if (revoked) {
+      const issuedMs =
+        typeof payload.iatMs === 'number'
+          ? payload.iatMs
+          : typeof payload.iat === 'number'
+            ? payload.iat * 1000
+            : 0;
+      if (issuedMs <= revoked.getTime()) throw invalidToken();
+    }
+  }
 
   /** 로그인할 때마다 호출한다. 기기마다 자기 refresh 토큰 한 줄이 생긴다 */
   async issue(userId: string, device?: DeviceInfo): Promise<IssuedTokens> {
@@ -46,6 +82,8 @@ export class TokenService {
    */
   async rotate(refreshToken: string): Promise<IssuedTokens> {
     const payload = await this.verifyRefresh(refreshToken);
+    // 탈퇴했거나 로그인을 끊은 뒤라면 남은 refresh 토큰으로도 갱신하지 않는다
+    await this.assertActive(payload.sub, payload);
     const tokenHash = hashToken(refreshToken);
     const current = await this.refreshTokens.findOne({
       tokenHash,
@@ -62,8 +100,16 @@ export class TokenService {
       { tokenHash, revokedAt: null, expiresAt: { $gt: new Date() } },
       { revokedAt: new Date() },
     );
-    if (!claimed) {
-      // 동시 요청에 졌거나 그사이 만료됐다. 앱에 돌려주지 않은 새 토큰의 줄을 지운다.
+    // 처음 확인한 뒤 새 토큰을 만드는 사이에 로그인이 끊겼으면(revokeAll) 새 토큰은 끊기 뒤에 만들어져 살아남는다.
+    // 쓴 토큰을 다시 확인해서 그때도 막는다
+    const stillActive =
+      claimed !== null &&
+      (await this.assertActive(payload.sub, payload).then(
+        () => true,
+        () => false,
+      ));
+    if (!stillActive) {
+      // 동시 요청에 졌거나, 그사이 만료됐거나, 로그인이 끊겼다. 앱에 돌려주지 않은 새 토큰의 줄을 지운다.
       // 못 지워도 그 토큰을 가진 쪽이 없어서 쓰일 수 없다.
       try {
         await this.refreshTokens.deleteOne({ _id: next.rowId });
@@ -83,22 +129,19 @@ export class TokenService {
     );
   }
 
-  /** 이 사용자의 모든 기기 로그인을 끊는다(비밀번호를 바꿨을 때) */
-  async revokeAll(userId: Types.ObjectId): Promise<void> {
-    await this.refreshTokens.updateMany({ userId, revokedAt: null }, { revokedAt: new Date() });
-  }
-
   private async mint(
     userId: string,
     device?: DeviceInfo,
   ): Promise<{ tokens: IssuedTokens; rowId: Types.ObjectId }> {
+    // iatMs: 로그인 끊기와 밀리초로 비교하려고 넣는다(assertActive)
+    const iatMs = Date.now();
     const accessToken = await this.jwt.signAsync(
-      { sub: userId },
+      { sub: userId, iatMs },
       { secret: this.config.accessSecret, expiresIn: this.config.accessTTL },
     );
     // jti: 같은 사용자가 같은 초에 두 번 로그인해도 토큰이 서로 달라지게 한다(tokenHash가 unique)
     const refreshToken = await this.jwt.signAsync(
-      { sub: userId, jti: randomUUID() },
+      { sub: userId, jti: randomUUID(), iatMs },
       { secret: this.config.refreshSecret, expiresIn: this.config.refreshTTL },
     );
     const { exp } = this.jwt.decode<{ exp: number }>(refreshToken);
@@ -112,17 +155,20 @@ export class TokenService {
   }
 
   /**
-   * access 토큰을 검증해 사용자 id를 돌려준다(요청을 인증할 때 쓴다). DB를 읽지 않고 서명 · 만료만 본다.
+   * access 토큰을 검증해 사용자 id를 돌려준다(요청을 인증할 때 쓴다). 서명 · 만료에 더해 탈퇴 · 로그인 끊기를 본다.
    * 만료 · 위조 · 형식 오류를 구분하지 않고 모두 401 + AUTH_TOKEN_EXPIRED로 돌려준다:
    * 앱은 이 코드를 받으면 refresh 토큰으로 갱신을 시도하고, 갱신도 안 되면 로그인 화면으로 보낸다.
    * refresh 토큰은 다른 시크릿으로 서명하므로 access 자리에 내밀어도 통과하지 못한다.
    */
   async verifyAccess(accessToken: string): Promise<{ userId: string }> {
-    let payload: { sub?: unknown };
+    let payload: { sub?: unknown; iat?: unknown; iatMs?: unknown };
     try {
-      payload = await this.jwt.verifyAsync<{ sub?: unknown }>(accessToken, {
-        secret: this.config.accessSecret,
-      });
+      payload = await this.jwt.verifyAsync<{ sub?: unknown; iat?: unknown; iatMs?: unknown }>(
+        accessToken,
+        {
+          secret: this.config.accessSecret,
+        },
+      );
     } catch {
       throw invalidToken();
     }
@@ -130,14 +176,21 @@ export class TokenService {
     if (typeof payload.sub !== 'string' || !OBJECT_ID_PATTERN.test(payload.sub)) {
       throw invalidToken();
     }
+    // 탈퇴 · 로그인 끊기를 만료 전에도 바로 반영한다(요청마다 사용자 한 명을 읽는다)
+    await this.assertActive(payload.sub, payload);
     return { userId: payload.sub };
   }
 
-  private async verifyRefresh(refreshToken: string): Promise<{ sub: string }> {
+  private async verifyRefresh(
+    refreshToken: string,
+  ): Promise<{ sub: string; iat?: number; iatMs?: number }> {
     try {
-      return await this.jwt.verifyAsync<{ sub: string }>(refreshToken, {
-        secret: this.config.refreshSecret,
-      });
+      return await this.jwt.verifyAsync<{ sub: string; iat?: number; iatMs?: number }>(
+        refreshToken,
+        {
+          secret: this.config.refreshSecret,
+        },
+      );
     } catch {
       throw invalidToken();
     }
