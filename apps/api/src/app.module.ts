@@ -7,6 +7,7 @@ import { createMongooseOptions } from './config/mongo.config.js';
 import { HealthController } from './health/health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { CalendarModule } from './modules/calendar/calendar.module.js';
+import { HolidaysModule } from './modules/calendar/holidays.module.js';
 import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
 import { ProgressModule } from './modules/progress/progress.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
@@ -50,6 +51,8 @@ import { TimetableModule } from './modules/timetable/timetable.module.js';
     TimetableModule,
     // 할 일 · D-day (FR-10)
     CalendarModule,
+    // 공휴일 · 사용자 제외일 (FR-12)
+    HolidaysModule,
   ],
   controllers: [HealthController],
 })
