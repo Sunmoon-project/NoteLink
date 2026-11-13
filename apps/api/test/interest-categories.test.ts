@@ -1,6 +1,9 @@
 import { Types } from 'mongoose';
 import { BadRequestException } from '@nestjs/common';
 import { expect, it, vi } from 'vitest';
+
+/** 이 시험이 쓰지 않는 기기 · 토큰 · 친구 · 시간표 공유 모델 자리 */
+const UNUSED_MODELS = [{}, {}, {}, {}] as [never, never, never, never];
 import { UsersService } from '../src/modules/users/users.service.js';
 
 it('활성 공용 분야를 정렬해 부모 ID와 함께 반환한다', async () => {
@@ -13,7 +16,11 @@ it('활성 공용 분야를 정렬해 부모 ID와 함께 반환한다', async (
     ],
   }));
   const find = vi.fn(() => ({ sort }));
-  const service = new UsersService({ db: { collection: () => ({ find }) } } as never, { streakDays: async () => 0 } as never);
+  const service = new UsersService(
+    { db: { collection: () => ({ find }) } } as never,
+    { streakDays: async () => 0 } as never,
+    ...UNUSED_MODELS,
+  );
   expect(await service.interestCategories()).toEqual([
     { _id: String(parent), name: '코딩', parentId: null },
     { _id: String(child), name: '기초', parentId: String(parent) },
@@ -33,10 +40,14 @@ it('여러 상위·하위 ID를 모두 검증하고 ObjectId 배열로 저장한
     settings: {},
     createdAt: new Date(),
   });
-  const service = new UsersService({
-    db: { collection: () => ({ countDocuments }) },
-    findOneAndUpdate,
-  } as never, { streakDays: async () => 0 } as never);
+  const service = new UsersService(
+    {
+      db: { collection: () => ({ countDocuments }) },
+      findOneAndUpdate,
+    } as never,
+    { streakDays: async () => 0 } as never,
+    ...UNUSED_MODELS,
+  );
   const userId = new Types.ObjectId();
   await service.updateProfile(String(userId), {
     interestCategoryIds: [String(parent), String(child)],
