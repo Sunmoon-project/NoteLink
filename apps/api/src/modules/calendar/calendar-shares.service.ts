@@ -97,7 +97,7 @@ export class CalendarSharesService {
      * - 토큰(32자리)이면 처음 들어오는 사람도 담을 수 있다. 이미 담았거나 내 링크면 아무 일도 하지 않고 성공한다
      * - 공유 id(24자리)면 만든 사람이나 이미 담은 사람만 된다(앱의 '내 캘린더에 추가'). 그 밖의 사람은 공유가 있다는 것도
      *   알려 주지 않으려고 없는 것처럼 404를 준다. id로는 새로 담기지 않는다
-     * 없거나 취소된 링크는 404, 만료된 링크는 410
+     * 없거나 취소된 링크 · 소유자가 탈퇴한 링크는 404, 만료된 링크는 410
      */
     async subscribe(userId: string, key: string, now = new Date()): Promise<void> {
         const byId = OBJECT_ID_RE.test(key);
@@ -105,6 +105,10 @@ export class CalendarSharesService {
             .findOne(byId ? { _id: new Types.ObjectId(key) } : { token: key })
             .lean<ShareLean | null>();
         if (!share) throw new NotFoundException(NOT_FOUND);
+        // 소유자가 탈퇴했거나(탈퇴 중 포함) 계정이 없으면 없는 공유와 똑같이 404 (토큰이든 id든)
+        if (!(await this.userModel.exists({ _id: share.ownerId, deletedAt: null, withdrawingAt: null }))) {
+            throw new NotFoundException(NOT_FOUND);
+        }
         const me = new Types.ObjectId(userId);
         const isOwner = share.ownerId.equals(me);
         if (byId && !isOwner && !(share.subscribers ?? []).some((s) => s.userId.equals(me))) throw new NotFoundException(NOT_FOUND);
@@ -120,9 +124,21 @@ export class CalendarSharesService {
         );
     }
 
-    /** 내가 받은 캘린더(취소 · 만료 제외, 최신순)와 그 기간 중 일정이 있는 날짜. 받은 사람에게는 다른 구독자를 보여 주지 않는다 */
+    /**
+     * 사람이 탈퇴해서 그 사람이 만든 공유를 모두 취소한다(revokedAt). 이미 취소한 것은 그대로 둔다. 취소한 개수를 돌려준다.
+     * 탈퇴 처리(UsersService.withdraw)가 부를 용도로 만들어 두었다. 아직 어디서도 부르지 않는다
+     */
+    async revokeAllByOwner(ownerId: string, now = new Date()): Promise<number> {
+        const done = await this.shareModel.updateMany(
+            { ownerId: new Types.ObjectId(ownerId), revokedAt: null },
+            { $set: { revokedAt: now } },
+        );
+        return done.modifiedCount;
+    }
+
+    /** 내가 받은 캘린더(취소 · 만료 · 소유자 탈퇴 제외, 최신순)와 그 기간 중 일정이 있는 날짜. 받은 사람에게는 다른 구독자를 보여 주지 않는다 */
     async received(userId: string, now = new Date()): Promise<(CalendarShareView & { days: string[] })[]> {
-        const docs = await this.shareModel
+        const found = await this.shareModel
             .find({
                 'subscribers.userId': new Types.ObjectId(userId),
                 revokedAt: null,
@@ -131,10 +147,12 @@ export class CalendarSharesService {
             .sort({ createdAt: -1, _id: -1 })
             .lean<ShareLean[]>();
 
+        // 소유자는 한 번에 조회하고, 탈퇴했거나(탈퇴 중 포함) 계정이 없는 소유자의 공유는 뺀다
         const owners = await this.userModel
-            .find({ _id: { $in: docs.map((d) => d.ownerId) } }, { nickname: 1 })
+            .find({ _id: { $in: found.map((d) => d.ownerId) }, deletedAt: null, withdrawingAt: null }, { nickname: 1 })
             .lean<{ _id: Types.ObjectId; nickname: string }[]>();
         const nickname = new Map(owners.map((o) => [o._id.toString(), o.nickname]));
+        const docs = found.filter((d) => nickname.has(d.ownerId.toString()));
 
         return Promise.all(
             docs.map(async (d) => ({

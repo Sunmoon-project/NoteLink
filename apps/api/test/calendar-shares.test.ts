@@ -102,10 +102,13 @@ describe('CalendarSharesService', () => {
     );
     const findOne = vi.fn();
     const updateOne = vi.fn();
-    const shareModel = { create, findOne, updateOne };
+    const updateMany = vi.fn();
+    const shareModel = { create, findOne, updateOne, updateMany };
+    const ownerExists = vi.fn().mockResolvedValue({ _id: 'x' }); // 소유자는 탈퇴하지 않았다
+    const userModel = { exists: ownerExists };
     const config = (v?: string) => ({ get: () => v }) as unknown as ConfigService;
     const svc = (base?: string) =>
-        new CalendarSharesService(shareModel as unknown as Model<CalendarShare>, {} as never, {} as never, {} as never, config(base));
+        new CalendarSharesService(shareModel as unknown as Model<CalendarShare>, {} as never, {} as never, userModel as never, config(base));
     const dto = (over: Partial<CreateCalendarShareDto> = {}): CreateCalendarShareDto => ({
         rangeStart: '2026-11-01',
         rangeEnd: '2026-11-30',
@@ -177,6 +180,25 @@ describe('CalendarSharesService', () => {
         await expect(svc().subscribe(ME.toString(), 'tok', now)).rejects.toBeInstanceOf(GoneException);
         found({ expiresAt: now }); // 만료 시각 정각도 만료
         await expect(svc().subscribe(ME.toString(), 'tok', now)).rejects.toBeInstanceOf(GoneException);
+    });
+
+    it('구독: 소유자가 탈퇴했으면(탈퇴 중 포함) 토큰이든 id든 404이고 아무것도 담지 않는다', async () => {
+        updateOne.mockReset();
+        ownerExists.mockResolvedValueOnce(null);
+        found({});
+        await expect(svc().subscribe(ME.toString(), 'tok', now)).rejects.toBeInstanceOf(NotFoundException);
+        expect(ownerExists).toHaveBeenLastCalledWith({ _id: OTHER, deletedAt: null, withdrawingAt: null });
+        const id = new Types.ObjectId();
+        ownerExists.mockResolvedValueOnce(null);
+        found({ _id: id, subscribers: [{ userId: ME, addedAt: now }] }); // 이미 담은 사람도 막는다
+        await expect(svc().subscribe(ME.toString(), id.toString(), now)).rejects.toBeInstanceOf(NotFoundException);
+        expect(updateOne).not.toHaveBeenCalled();
+    });
+
+    it('revokeAllByOwner: 그 사람이 만든 취소 안 한 공유만 revokedAt을 찍고, 취소한 개수를 돌려준다', async () => {
+        updateMany.mockResolvedValueOnce({ modifiedCount: 3 });
+        await expect(svc().revokeAllByOwner(ME.toString(), now)).resolves.toBe(3);
+        expect(updateMany).toHaveBeenCalledWith({ ownerId: ME, revokedAt: null }, { $set: { revokedAt: now } });
     });
 
     describe('공유 id로 구독 (앱의 내 캘린더에 추가)', () => {

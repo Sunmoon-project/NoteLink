@@ -37,6 +37,7 @@ describe.skipIf(!isLocal)('진짜 DB 캘린더 공유 확인', () => {
     const STRANGER = { Authorization: 'Bearer token-stranger' };
     let app: INestApplication;
     let conn: Connection;
+    let service: CalendarSharesService;
     const col = (name: string) => conn.collection(name);
 
     const http = () => request(app.getHttpServer());
@@ -89,6 +90,7 @@ describe.skipIf(!isLocal)('진짜 DB 캘린더 공유 확인', () => {
         configureApp(app);
         await app.init();
         conn = moduleRef.get<Connection>(getConnectionToken());
+        service = moduleRef.get(CalendarSharesService);
         await conn.dropDatabase();
         await Promise.all([
             conn.model(CalendarShare.name).init(),
@@ -171,6 +173,77 @@ describe.skipIf(!isLocal)('진짜 DB 캘린더 공유 확인', () => {
         const missing = await post(`/calendar-shares/${new Types.ObjectId().toString()}/subscribe`, {}, STRANGER);
         expect(missing.status).toBe(404);
         expect(missing.body).toEqual(res.body);
+    });
+
+    describe('소유자가 탈퇴한 공유', () => {
+        const goneOwner = new Types.ObjectId();
+        const otherOwner = new Types.ObjectId();
+        const GONE = { Authorization: 'Bearer token-gone' };
+        const OTHER = { Authorization: 'Bearer token-other-owner' };
+        const subscribersOf = async (id: string) =>
+            ((await col('calendar_shares').findOne({ _id: new Types.ObjectId(id) }))!['subscribers'] as { userId: Types.ObjectId }[]).map((s) => String(s.userId));
+
+        beforeAll(async () => {
+            tokens['token-gone'] = goneOwner;
+            tokens['token-other-owner'] = otherOwner;
+            await col('users').insertMany([
+                { _id: goneOwner, nickname: `gone_${process.pid}`, email: `gone_${process.pid}@example.com`, deletedAt: null, withdrawingAt: null },
+                { _id: otherOwner, nickname: `other_owner_${process.pid}`, email: `other_owner_${process.pid}@example.com`, deletedAt: null, withdrawingAt: null },
+            ]);
+        });
+        afterAll(async () => {
+            await col('users').deleteMany({ _id: { $in: [goneOwner, otherOwner] } });
+        });
+
+        it.each([
+            ['탈퇴 완료(deletedAt)', { deletedAt: new Date() }],
+            ['탈퇴 진행 중(withdrawingAt)', { withdrawingAt: new Date() }],
+        ])('13) %s: 기존 구독자의 받은 목록에서 사라지고, 새 토큰 · id 구독은 404 (다른 소유자의 공유는 그대로)', async (_name, mark) => {
+            const gone = await make({}, GONE);
+            const kept = await make({}, OTHER);
+            await todo(goneOwner, '2026-11-05');
+            await post(`/calendar-shares/${gone.token}/subscribe`, {}, FRIEND);
+            await post(`/calendar-shares/${kept.token}/subscribe`, {}, FRIEND);
+            expect((await receivedOf(FRIEND)).map((r) => r._id).sort()).toEqual([gone._id, kept._id].sort());
+
+            await col('users').updateOne({ _id: goneOwner }, { $set: mark });
+            try {
+                expect((await receivedOf(FRIEND)).map((r) => r._id)).toEqual([kept._id]);
+                const byToken = await post(`/calendar-shares/${gone.token}/subscribe`, {}, STRANGER);
+                const byId = await post(`/calendar-shares/${gone._id}/subscribe`, {}, FRIEND); // 이미 담은 사람도 막는다
+                const missing = await post(`/calendar-shares/${'0'.repeat(32)}/subscribe`, {}, STRANGER);
+                expect([byToken.status, byId.status]).toEqual([404, 404]);
+                expect(byToken.body).toEqual(missing.body); // 없는 공유와 같은 응답
+                expect(await receivedOf(STRANGER)).toEqual([]);
+                expect(await subscribersOf(gone._id)).toEqual([friend.toString()]); // 새로 담기지 않았다
+                // 탈퇴하지 않은 소유자의 공유는 새 구독도 된다
+                expect((await post(`/calendar-shares/${kept.token}/subscribe`, {}, STRANGER)).status).toBe(204);
+                expect((await receivedOf(STRANGER)).map((r) => r._id)).toEqual([kept._id]);
+            } finally {
+                await col('users').updateOne({ _id: goneOwner }, { $set: { deletedAt: null, withdrawingAt: null } });
+            }
+        });
+
+        it('14) revokeAllByOwner: 그 사람 공유만 취소되고(이미 취소한 것 · 남의 것은 그대로), 받은 목록에서도 빠진다', async () => {
+            const a = await make({}, GONE);
+            const b = await make({}, GONE);
+            const kept = await make({}, OTHER);
+            await post(`/calendar-shares/${a.token}/subscribe`, {}, FRIEND);
+            await post(`/calendar-shares/${kept.token}/subscribe`, {}, FRIEND);
+            const before = new Date('2026-01-01T00:00:00Z');
+            await col('calendar_shares').updateOne({ _id: new Types.ObjectId(b._id) }, { $set: { revokedAt: before } });
+
+            const now = new Date();
+            expect(await service.revokeAllByOwner(goneOwner.toString(), now)).toBe(1);
+
+            const revokedAt = async (id: string) => (await col('calendar_shares').findOne({ _id: new Types.ObjectId(id) }))!['revokedAt'];
+            expect(await revokedAt(a._id)).toEqual(now);
+            expect(await revokedAt(b._id)).toEqual(before); // 이미 취소한 것은 그대로
+            expect(await revokedAt(kept._id)).toBeNull();
+            expect((await receivedOf(FRIEND)).map((r) => r._id)).toEqual([kept._id]);
+            expect((await post(`/calendar-shares/${a.token}/subscribe`, {}, STRANGER)).status).toBe(404);
+            expect(await service.revokeAllByOwner(goneOwner.toString())).toBe(0);
+        });
     });
 
     it('4) 받은 공유 목록: 보낸 사람 닉네임 · 일정이 있는 날짜 · 다른 구독자는 숨김, 담지 않은 사람은 빈 목록', async () => {
