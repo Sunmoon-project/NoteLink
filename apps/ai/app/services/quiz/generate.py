@@ -1499,7 +1499,6 @@ def _make_all(
     # 판마다 새로 만들지 않음: 지난 판에 남아 응답을 기다리는 자리도 WORKERS 안에 들어, 동시에
     # 붙잡는 학교 LLM 연결이 판 수만큼 늘지 않게(/code-review #247)
     pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="quiz-slot")
-    heard = threading.Event()  # 학교 LLM이 한 번이라도 답함(잘린 자리의 호출도, _Heard)
 
     def one_round(
         at: list[int], want: list[str], limits: _Limits
@@ -1507,14 +1506,15 @@ def _make_all(
         """자리들을 동시에 돌려 (끝난 자리, 못 만든 자리(시간 상한에 도는 중 · 시작하지 못함),
         시작한 자리 수)."""
         halt = threading.Event()  # 이 판이 끝나면 남은 자리는 호출하지 않음
-        until = _until(_Heard(llm, heard), halt)
         stop = stop_of(halt, limits)
+        # 자리마다 응답을 받았는지(_Heard): 시간 상한에 잘린 자리도 그 전에 받은 응답을 셈
+        heard = [threading.Event() for _ in at]
         futures: list[Future[tuple[int, Made]]] = []
         try:
             with lock:
                 in_flight.update(want)
             futures = [
-                pool.submit(guarded, k, p, w, until, stop)
+                pool.submit(guarded, k, p, w, _until(_Heard(llm, heard[k]), halt), stop)
                 for k, (p, w) in enumerate(zip(at, want, strict=True))
             ]
             pending: set[Future[tuple[int, Made]]] = set(futures)
@@ -1541,7 +1541,8 @@ def _make_all(
         ended = [f for f in futures if f.done() and not f.cancelled() and f not in running]
         slot_down.extend(e for f in ended if isinstance(e := f.exception(), LlmError))
         finished = [f.result() for f in ended if f.exception() is None]
-        cut = [(p, Made(why=[TIMEOUT])) for f, p in zip(futures, at, strict=True)
+        cut = [(p, Made(why=[TIMEOUT], answered=h.is_set()))
+               for f, p, h in zip(futures, at, heard, strict=True)
                if f in running or f.cancelled()]  # fmt: skip
         return finished, cut, len(ended) + len(running)
 
@@ -1578,7 +1579,7 @@ def _make_all(
         while True:
             finished, cut, started = one_round(at, want, lim)
             to_fast()  # 아래 남은 시간 판단이 이어받은 뒤의 전체 상한을 보게
-            answered = answered or any(r.answered for _, r in finished)
+            answered = answered or any(r.answered for _, r in finished + cut)
             rounds += 1
             missing = n - len(taken)
             now = _clock()
@@ -1664,12 +1665,15 @@ def _make_all(
     # 한 문제도 못 만들었을 때만 시간 상한에 호출 중이던 · 시작하지 못한 자리를 실패한 시도로
     # (응답하지 않는 서버). 만든 문제가 있으면 서버는 답하고 있으므로 장애가 아님(/code-review #247)
     # 앞 판에서 서버가 답했으면 마지막 판이 전체 상한에 잘린 것도 장애가 아님(/code-review #269)
-    # 잘린 자리가 그 전에 받은 응답도 셈(heard): 끝난 자리의 answered만 보면, 응답을 받고 검사하는
-    # 사이에 상한에 걸린 자리를 응답하지 않는 서버로 봐서 작업을 다시 넣었음(PC가 바쁠 때 시험
-    # test_a_pregen_taken_over_mid_slot_finishes_in_fast_mode가 가끔 실패, #354)
-    stuck = len(cut) if not made and not answered and not heard.is_set() else 0
+    # 잘린 자리가 그 전에 받은 응답도 셈(Made.answered, _Heard): 끝난 자리만 보면, 응답을 받고
+    # 검사하는 사이에 상한에 걸린 자리를 응답하지 않는 서버로 봐서 작업을 다시 넣었음(PC가 바쁠 때
+    # 시험 test_a_pregen_taken_over_mid_slot_finishes_in_fast_mode가 가끔 실패, #376). 응답을 받고
+    # 잘린 자리는 실패하지 않은 시도로 셈: 다른 자리의 호출이 모두 실패해 끝났어도 서버는 답했으므로
+    # 장애가 아님(Codex 리뷰 #376)
+    stuck = len(cut) if not made and not answered else 0
+    heard_cut = sum(r.answered for _, r in cut) if not made else 0
     down = sum(r.down for _, r in finished) + stuck
-    tries = sum(r.tries for _, r in finished) + stuck
+    tries = sum(r.tries for _, r in finished) + stuck + heard_cut
     return out, failed, down, tries, sum(r.rejected for _, r in finished)
 
 
