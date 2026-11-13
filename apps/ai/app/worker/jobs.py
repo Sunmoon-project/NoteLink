@@ -59,6 +59,7 @@ PR #31에서 추가 · 병합 전)을 따릅니다.
 
 import json
 import logging
+import math
 import os
 import threading
 import uuid
@@ -105,11 +106,32 @@ def use_spool(path: str, col: Collection[JsonObject]) -> int:
     except (OSError, ValueError):
         log.warning("남긴 Claude 비용 파일 %s를 읽지 못함", path, exc_info=True)
         return 0
+    if not isinstance(rows, list):  # 문법은 맞지만 모양이 다른 파일(null · 객체 등)
+        log.warning("남긴 Claude 비용 파일 %s가 목록이 아니라 읽지 않음", path)
+        return 0
+    kept = [k for k in map(_spool_row, rows) if k is not None]
+    if len(kept) < len(rows):
+        bad = len(rows) - len(kept)
+        log.warning("남긴 Claude 비용 파일 %s의 %d줄은 모양이 달라 버림", path, bad)
     with _unrecorded_lock:
-        for r in rows:
-            _unrecorded[r["id"]] = (col, ObjectId(r["job"]), float(r["usd"]))
-        _spooled[0] = bool(rows)
-    return len(rows)
+        for cost_id, job_id, usd in kept:
+            _unrecorded[cost_id] = (col, job_id, usd)
+        _spooled[0] = bool(rows)  # 버린 줄만 있어도 다음에 적을 때 파일을 고쳐 씀
+    return len(kept)
+
+
+def _spool_row(row: object) -> tuple[str, ObjectId, float] | None:
+    """파일의 한 줄 {id, job, usd} → (비용 id, 작업 id, 달러). 모양이 다르면 None."""
+    if not isinstance(row, dict):
+        return None
+    cost_id, job, usd = row.get("id"), row.get("job"), row.get("usd")
+    if not isinstance(cost_id, str) or not cost_id or not isinstance(job, str):
+        return None
+    if isinstance(usd, bool) or not isinstance(usd, int | float):
+        return None
+    if not ObjectId.is_valid(job) or not math.isfinite(usd) or usd < 0:
+        return None
+    return cost_id, ObjectId(job), float(usd)
 
 
 def _save_spool() -> None:

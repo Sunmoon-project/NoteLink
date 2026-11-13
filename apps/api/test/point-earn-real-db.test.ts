@@ -23,9 +23,10 @@ describe.skipIf(!uri)('진짜 DB 포인트 적립 롤백 확인', () => {
     const col = (name: string) => conn.collection(name);
 
     // 테스트마다 새 사용자를 만들어 서로 영향이 없게 한다 (잔액 100)
+    // users.nickname에 유일 인덱스가 있어서(#284) 사용자마다 다른 닉네임을 넣는다
     const newUser = async (): Promise<Types.ObjectId> => {
         const userId = new Types.ObjectId();
-        await col('users').insertOne({ _id: userId, pointBalance: 100 });
+        await col('users').insertOne({ _id: userId, pointBalance: 100, nickname: userId.toString() });
         return userId;
     };
     const balanceOf = async (userId: Types.ObjectId): Promise<number> =>

@@ -1045,6 +1045,50 @@ def test_a_question_another_slot_took_meanwhile_is_made_again(
     assert f"앞서 만든 문제의 문제점: {generate.CLASH}" in again  # 쪽을 닫지 않고 다시 만듦
 
 
+def test_the_same_note_line_taken_meanwhile_by_another_slot_is_made_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 두 자리가 동시에 다른 개념(이질 아메바 · 대장 아메바)의 정의 문제를 만들었는데 둘 다 설명이
+    # '영양형: 위족으로 운동하고 적혈구를 먹는다' 줄(#351). 제시문은 85%가 안 돼 too_close로는
+    # 통과: 먼저 받은 것만 쓰고, 다른 자리는 쪽을 닫지 않고 다시 만듦. 다른 유형이면 같은 줄을
+    # 물어도 되므로(#268) 두 자리 모두 정의로
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "page_types", lambda text, korean, extra=(): ["정의"])
+    inp = job(size=2)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": f"{PAGE1}\n{PAGE2}"}]
+    both = threading.Barrier(2, timeout=5)
+    lock = threading.Lock()
+    drafts, checks = [0], [0]
+    first = draft("이질 아메바", "영양형은 위족으로 운동하고 적혈구를 먹는 원충이다")
+    second = draft("대장 아메바", "위족으로 운동하며 적혈구를 먹는 영양형을 가진 원충")
+    for d in (first, second):
+        q = d["question"]
+        monkeypatch.setitem(ANSWER_OF, q["passage"], q["answer"])
+
+    def quiz(user: str) -> JsonObject:
+        with lock:
+            drafts[0] += 1
+            k = drafts[0]
+        return first if k == 1 else second if k == 2 else GOOD["람블편모충"]
+
+    def check(user: str) -> JsonObject:
+        with lock:
+            checks[0] += 1
+            first_two = checks[0] <= 2
+        if first_two:
+            both.wait()
+        return checker(answer_in)(user)
+
+    llm = parallel_llm(quiz)
+    llm.answers["Check"] = check
+    result, _ = run(llm, inp)
+    answers = sorted(q["answer"] for q in result["questions"])
+    assert len(answers) == 2 and "람블편모충" in answers, answers
+    assert result["failed"] == []
+    again = llm.named("Quiz")[2]
+    assert f"앞서 만든 문제의 문제점: {generate.CLASH}" in again  # 쪽을 닫지 않고 다시 만듦
+
+
 def test_spare_slots_stop_once_the_set_is_full(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(generate, "WORKERS", 8)
     monkeypatch.setattr(generate, "EXTRA", 1)  # 1문제에 자리 1 + 여분 1
@@ -1689,7 +1733,7 @@ def test_an_outage_round_stops_the_rounds_and_retries_the_job() -> None:
 @pytest.mark.usefixtures("fill_rounds")
 def test_the_last_stage_asks_an_asked_concept_from_another_angle() -> None:
     # 1쪽 개념 둘(이질 · 대장 아메바)로 3문제: 2판에서 열린 쪽이 없어 마지막 단계로 이미 물은
-    # 개념을 다른 각도로(정답 겹침 검사는 그대로)
+    # 개념을 다른 유형 · 다른 각도로(정답 겹침 검사는 그대로). 안내에 개념마다 물은 유형(#268)
     angle = draft(
         "4핵",
         "이질 아메바 포낭형의 핵 수",
@@ -1703,7 +1747,7 @@ def test_the_last_stage_asks_an_asked_concept_from_another_angle() -> None:
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "대장 아메바", "4핵"]
     assert [q["conceptTags"] for q in result["questions"]][2] == ["이질 아메바"]
     last = llm.named("Quiz")[2]
-    assert "이 퀴즈에서 이미 물은 개념: 이질 아메바, 대장 아메바" in last
+    assert "이 퀴즈에서 이미 물은 개념(물은 유형): 이질 아메바(정의), 대장 아메바(특징)" in last
     assert "이 퀴즈에서 이미 물은 개념" not in llm.named("Quiz")[1]  # 첫 단계에는 없음
 
 
@@ -2655,6 +2699,78 @@ def test_a_held_question_clashing_with_one_taken_later_is_dropped(
         make(llm, one_page)
     join_threads("quiz-slot")
     assert len(kept) == 1 and handed_feature == kept
+
+
+# ---------- 내용이 모자랄 때 다른 유형으로 채우기 (#268) ----------
+
+
+def angled(concept: str, ty: str) -> generate.Seen:
+    """마지막 단계 전에 받은 문제(개념 · 만들게 한 유형이 붙음)."""
+    m = generate.Made(
+        question=typed_draft(ty, concept)["question"], concept=concept, type=ty, asked_as=ty
+    )
+    return generate._seen_made(m)
+
+
+def offered_names(llm: ScriptLlm) -> list[str]:
+    out = []
+    for name, user in llm.calls:
+        m = re.search(r"^개념 목록\(이 안에서 고른다\): (.+)$", user, re.M)
+        if name == "Quiz" and m:
+            out.append(m.group(1))
+    return out
+
+
+def test_an_asked_concept_is_offered_again_only_with_another_type() -> None:
+    # 이질 아메바는 특징으로 물었음: 특징 문제의 개념 목록에서 빼고, 부정설명 문제에는 넣음
+    info = PageInfo(angle={"이질 아메바": ["특징"]})
+    llm = typed_llm()
+    r = generate.gen_one(
+        llm, 1, PAGE1, ["특징"], NAMES[:2], info, [angled("이질 아메바", "특징")], [], 0
+    )
+    assert offered_names(llm) == ["대장 아메바"]
+    assert r.question is not None and r.concept == "대장 아메바"
+
+    llm = typed_llm()
+    r = generate.gen_one(
+        llm, 1, PAGE1, ["부정설명"], NAMES[:2], info, [angled("이질 아메바", "특징")], [], 0,
+        mode=lambda: generate.STABLE,
+    )  # fmt: skip
+    assert offered_names(llm) == ["이질 아메바, 대장 아메바"]
+    # 제시문(이질 아메바)이 앞 특징 문제와 같아도 다른 유형이라 '거의 같음'이 아님
+    assert r.question is not None and r.concept == "이질 아메바" and r.type == "부정설명"
+
+
+def test_a_draft_asking_a_concept_again_with_the_same_type_is_dropped() -> None:
+    # 목록에서 뺐는데도 모델이 같은 개념을 같은 유형으로 고름
+    info = PageInfo(angle={"이질 아메바": ["특징"]})
+    llm = typed_llm()
+    llm.answers["Quiz"] = lambda u: typed_draft("특징", "이질 아메바")
+    r = generate.gen_one(
+        llm, 1, PAGE1, ["특징", "특징"], NAMES[:2], info, [angled("이질 아메바", "특징")], [], 0
+    )
+    assert r.question is None
+    assert generate.SAME_TYPE_AGAIN in r.why
+    assert generate.SAME_TYPE_AGAIN in generate.DRY_REASONS  # 쪽 닫기에 셈
+
+
+def test_a_type_every_concept_was_asked_with_is_skipped() -> None:
+    # 두 개념 모두 정의로 물었음: 정의는 건너뛰고 특징부터
+    info = PageInfo(angle={"이질 아메바": ["정의"], "대장 아메바": ["정의"]})
+    llm = typed_llm()
+    generate.gen_one(llm, 1, PAGE1, ["정의", "특징"], NAMES[:2], info, [], [], 0)
+    assert asked_types(llm)[0] == "특징"
+
+
+@pytest.mark.usefixtures("fill_rounds")
+def test_a_note_with_few_concepts_is_filled_with_other_types() -> None:
+    # 1쪽 개념 둘로 4문제: 마지막 단계에서 두 개념을 각각 다른 유형으로 한 번 더 물음
+    inp = job(size=4)
+    inp["material"]["pages"] = [{"pageNo": 1, "ocrText": PAGE1}]
+    result, _ = run(typed_llm(), inp)
+    asked = [(q["conceptTags"][0], q["type"]) for q in result["questions"]]
+    assert len(asked) == 4 and len(set(asked)) == 4
+    assert sorted(c for c, _ in asked) == ["대장 아메바"] * 2 + ["이질 아메바"] * 2
 
 
 # ---------- 거절: 작업 처리기까지(#272) ----------

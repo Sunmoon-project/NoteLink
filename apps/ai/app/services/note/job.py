@@ -1,0 +1,534 @@
+"""노트 정리 작업(ai_jobs). 쪽마다 OCR → 색 · 형광펜 → [?] → 읽는 순서 → 조각 → 임베딩.
+
+input   {pages: [{pageNo, imageUrl}], subject?: 글, seeds?: [{topic, terms: [{term, url?}]}]}
+        pageNo는 업로드 순서(1부터). 여러 쪽 PDF는 pageNo부터 쪽 수만큼 번호를 차지함
+result  {pages: [{pageNo, ocrText}], lineResults, chunks: [노트 조각 + embedding], warnings}
+        chunks는 맞춤 퀴즈 input의 material.chunks에 그대로 들어감(quiz.generate)
+        warnings는 녹음처럼 {code, ...} 목록. 지금은 색 · 형광펜을 찾지 못한 쪽만
+        {code: NO_COLOR, pageNo(놓인 번호), reason: pdf | download | decode | size}
+
+진행률 단계: ocr 0→50(쪽 하나 끝날 때마다), split 50→70, refine 70→90, embed 90→100.
+거절은 InputError(코드가 있으면 앱이 구분), 일시 오류(LlmError · OcrUnavailableError ·
+EmbedUnavailableError)는 그대로 올립니다. OCR 키 · 권한 오류(OcrSetupError)는 파일 문제가
+아니므로 InputError로 바꾸지 않습니다. 오류 문구에 사진 주소(SAS)를 넣지 않습니다.
+색 찾기용 사진을 쓰지 못하면 색 없이 계속하고 warnings에 NO_COLOR로 남깁니다.
+업로드 하나의 OCR · 색 찾기가 끝날 때마다 그때까지의 업로드를 {pageNo(놓인 번호), pages(차지한
+쪽 수), lines(처리한 줄)}로 checkpoint에 저장하고, 다시 시도할 때 값이 검사를 통과하면 저장된
+업로드의 OCR과 내려받기를 건너뛰고 그다음 업로드부터 합니다(과금 · SAS 만료를 피함. 뒤쪽 파일의
+일시 오류로 앞쪽을 다시 읽지 않음). 문서 크기(16MiB)를 지키려고 OCR 원본과 색 찾기 뒤에 쓰지
+않는 단어 상자는 저장하지 않고, 줄 · 단어는 짧은 배열로 줄여 저장합니다(_pack_line). 그래도
+저장값이 CHECKPOINT_MAX_BYTES를 넘으면 그때부터 저장하지 않고 계속합니다(다시 시도하면 마지막으로
+저장된 업로드 다음부터, 저장된 것이 없으면 OCR부터).
+"""
+
+import json
+import logging
+import math
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, TypedDict, TypeIs, get_args
+
+import bson
+import cv2
+import numpy as np
+
+from app.clients.docint import DownloadError, OcrError, OcrUnavailableError, download
+from app.clients.llm import JsonObject, Llm
+from app.clients.voyage import InputType
+from app.core.config import settings
+from app.services.note.emphasis import Image
+from app.services.note.models import Line, Word
+from app.services.note.pipeline import (
+    NotePage,
+    embed_texts,
+    layouts_from_lines,
+    page_lines,
+    page_span,
+    refine_note,
+    result_from_layouts,
+    split_with_llm,
+)
+from app.services.note.seeds import SeedTerm, TopicSeed
+
+log = logging.getLogger(__name__)
+
+TYPE = "handwriting_summary"
+NOTE_MAX_PAGES = 50  # 업로드 수, 그리고 OCR 뒤 여러 쪽 PDF를 펼친 쪽 수의 상한
+INVALID_FILE = "INVALID_FILE"
+NO_TEXT = "NO_TEXT"
+NO_COLOR = "NO_COLOR"
+# 색 찾기용 사진의 최대 픽셀 수(폭 × 높이). 20MB 압축 파일도 풀면 훨씬 커질 수 있어 OCR 쪽
+# 크기로 먼저 거름(5천만 픽셀 BGR ≈ 150MB, 색 계산용 Lab float32 ≈ 600MB)
+IMAGE_MAX_PIXELS = 50_000_000
+OCR_END = 50
+SPLIT_END = 70
+REFINE_END = 90
+# checkpoint 저장 상한(BSON). Mongo 문서 상한 16MiB에서 input · 진행 상태 등 다른 필드 몫을 남김
+CHECKPOINT_MAX_BYTES = 12 * 1024 * 1024
+# checkpoint 형식 번호. 다르면(이번 형식 이전 포함) 깨진 값처럼 OCR부터 다시 함
+CHECKPOINT_VERSION = 2
+_WORD_TEXT_KEYS = ("color", "baseColor", "highlight")
+_WORD_BOOL_KEYS = ("hand", "colorDiff")
+_NONE = -1  # 저장한 단어 배열에서 '값 없음'(색 번호 · 참거짓)
+
+
+type NoColorReason = Literal["pdf", "download", "decode", "size"]
+
+
+class NoColor(TypedDict):
+    """색 · 형광펜을 찾지 못한 쪽. 사유: pdf(사진 한 장이 아님) · download(내려받기 실패) ·
+    decode(사진으로 읽지 못함) · size(OCR 쪽 크기가 없거나, 너무 크거나, 사진과 다름)."""
+
+    code: Literal["NO_COLOR"]
+    pageNo: int
+    reason: NoColorReason
+
+
+class InputError(ValueError):
+    """노트 사진이나 input이 작업에 맞지 않음. 다시 해도 같음. 메시지는 앱에 보이는 짧은 원인."""
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class Report(Protocol):
+    def __call__(self, value: int, step: str | None = None) -> None: ...
+
+
+class Checkpoint(Protocol):
+    def load_checkpoint(self) -> object: ...
+
+    def save_checkpoint(self, value: JsonObject) -> None: ...
+
+
+class Reader(Protocol):
+    def read(self, url: str) -> dict[str, Any]: ...
+
+
+class Embedder(Protocol):
+    def embed(self, texts: list[str], input_type: InputType) -> list[list[float]]: ...
+
+
+@dataclass(frozen=True)
+class _Upload:
+    page_no: int  # 놓인 번호(앞 PDF가 번호를 차지하면 밀림)
+    pages: int  # 차지한 쪽 수
+    lines: list[Line]
+
+
+def run(
+    llm: Llm,
+    ocr: Callable[[], Reader],
+    embedder: Embedder,
+    inp: JsonObject,
+    report: Report,
+    *,
+    checkpoint: Checkpoint | None = None,
+    fetch: Callable[[str], bytes] = download,
+) -> JsonObject:
+    """ocr는 OCR을 할 때만 만듭니다. fetch는 색 찾기용 사진을 내려받음(시험에서 바꿈)."""
+    pages = _pages(inp.get("pages"))
+    subject = inp.get("subject")
+    if subject is not None and not isinstance(subject, str):
+        raise InputError("input.subject가 글자가 아님")
+    seeds = _seeds(inp.get("seeds"))
+    uploads, warnings = _read(ocr, fetch, pages, report, checkpoint)
+    _check_text(uploads)
+    lines = [ln for u in uploads for ln in u.lines]
+    numbers = [n for u in uploads for n in range(u.page_no, u.page_no + u.pages)]
+    note = result_from_layouts(layouts_from_lines(lines, numbers))
+    report(OCR_END, "split")
+    chunks = split_with_llm(llm, settings.note_split_model, note["chunks"])
+    report(SPLIT_END, "refine")
+    chunks = refine_note(llm, settings.note_refine_model, chunks, subject or "", seeds)
+    report(REFINE_END, "embed")
+    vectors = embedder.embed(embed_texts(chunks), "document")
+    report(100, "embed")
+    return {
+        "pages": note["pages"],
+        "lineResults": note["lineResults"],
+        "chunks": [{**c, "embedding": v} for c, v in zip(chunks, vectors, strict=True)],
+        "warnings": warnings,
+    }
+
+
+# ---------------------------------------------------------------- input
+
+
+def _pages(raw: object) -> list[tuple[int, str]]:
+    """(pageNo, imageUrl)을 pageNo 순서로."""
+    if not isinstance(raw, list) or not raw:
+        raise InputError("input.pages가 비어 있거나 목록이 아님")
+    if len(raw) > NOTE_MAX_PAGES:
+        raise InputError(f"input.pages가 {NOTE_MAX_PAGES}개를 넘음")
+    out: list[tuple[int, str]] = []
+    for i, p in enumerate(raw):
+        page_no = p.get("pageNo") if isinstance(p, dict) else None
+        url = p.get("imageUrl") if isinstance(p, dict) else None
+        if not _is_count(page_no) or page_no < 1:
+            raise InputError(f"input.pages[{i}].pageNo가 1 이상의 정수가 아님")
+        if not isinstance(url, str) or not url.strip():
+            raise InputError(f"input.pages[{i}].imageUrl이 글자가 아님")
+        out.append((page_no, url))
+    if len({n for n, _ in out}) != len(out):
+        raise InputError("input.pages의 pageNo가 겹침")
+    return sorted(out)
+
+
+def _seeds(raw: object) -> list[TopicSeed]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise InputError("input.seeds가 목록이 아님")
+    out: list[TopicSeed] = []
+    for i, s in enumerate(raw):
+        error = InputError(f"input.seeds[{i}] 모양이 맞지 않음")
+        if not isinstance(s, dict) or not isinstance(s.get("topic"), str):
+            raise error
+        terms = s.get("terms")
+        if not isinstance(terms, list):
+            raise error
+        kept: list[SeedTerm] = []
+        for t in terms:
+            if not isinstance(t, dict) or not isinstance(t.get("term"), str):
+                raise error
+            url = t.get("url")
+            if url is not None and not isinstance(url, str):
+                raise error
+            term: SeedTerm = {"term": t["term"]}
+            if url is not None:
+                term["url"] = url
+            kept.append(term)
+        out.append({"topic": s["topic"], "terms": kept})
+    return out
+
+
+# ---------------------------------------------------------------- OCR · 색
+
+
+def _read(
+    ocr: Callable[[], Reader],
+    fetch: Callable[[str], bytes],
+    pages: list[tuple[int, str]],
+    report: Report,
+    checkpoint: Checkpoint | None,
+) -> tuple[list[_Upload], list[NoColor]]:
+    uploads: list[_Upload] = []
+    warnings: list[NoColor] = []
+    if checkpoint is not None and (reused := _from_checkpoint(checkpoint.load_checkpoint(), pages)):
+        uploads, warnings = reused
+        if len(uploads) == len(pages):
+            return reused
+    client = ocr()  # 설정 누락은 파일 문제가 아니므로 아래 except 밖에서
+    done = len(uploads)  # 지난 시도가 저장한 업로드 수. 그다음부터 읽음
+    report(OCR_END * done // len(pages), "ocr")
+    saver = _Saver(checkpoint, uploads) if checkpoint is not None else None
+    nxt = uploads[-1].page_no + uploads[-1].pages if uploads else 1
+    total = sum(u.pages for u in uploads)
+    for i, (page_no, url) in enumerate(pages[done:], done + 1):
+        start = max(page_no, nxt)
+        try:
+            read = client.read(url)
+        except OcrUnavailableError:
+            raise
+        except OcrError as e:  # OcrSetupError(키 · 권한)는 OcrError가 아니라 그대로 올라감
+            raise InputError(f"{page_no}번 파일 글자 인식 실패({e})", code=INVALID_FILE) from e
+        span = page_span(read)
+        total += span
+        if total > NOTE_MAX_PAGES:
+            raise InputError(f"노트가 {NOTE_MAX_PAGES}쪽을 넘음", code=INVALID_FILE)
+        page: NotePage = {"pageNo": start, "read": read}
+        image = _image(fetch, url, read)
+        if isinstance(image, str):
+            warnings.append({"code": "NO_COLOR", "pageNo": start, "reason": image})
+        elif image is not None:
+            page["image"] = image
+        uploads.append(_Upload(start, span, page_lines(page)))
+        nxt = start + span
+        report(OCR_END * i // len(pages), "ocr")  # 취소됐으면 여기서 멈춤(저장하지 않음)
+        if i == len(pages):
+            _check_text(uploads)  # 글이 없는 결과는 저장하지 않음
+        if saver is not None:
+            saver.save(uploads[-1], warnings)
+    return uploads, warnings
+
+
+def _image(
+    fetch: Callable[[str], bytes], url: str, read: dict[str, Any]
+) -> Image | NoColorReason | None:
+    """색 찾기용 사진. 사진 한 장(OCR 단위 pixel)만 내려받음. 못 쓰면 그 사유, 빈 쪽이면 None."""
+    pages = read.get("pages") or []
+    if not pages:
+        return None
+    if len(pages) > 1 or pages[0].get("unit") != "pixel":
+        return "pdf"
+    size = _page_size(pages[0])
+    if size is None:  # 크기를 모르면 단어 상자와 맞는지 볼 수 없음. 내려받기 전에 건너뜀
+        return "size"
+    if size[0] * size[1] > IMAGE_MAX_PIXELS:  # 풀면 메모리를 많이 씀. 내려받기 전에 건너뜀
+        return "size"
+    try:
+        data = fetch(url)
+    except DownloadError as e:
+        log.warning("색 찾기용 사진을 내려받지 못함: %s", e)  # e에는 주소가 없음
+        return "download"
+    try:
+        image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    except cv2.error:
+        image = None
+    if image is None:
+        return "decode"
+    height, width = image.shape[:2]
+    if (width, height) != size:
+        # 단어 상자가 OCR 크기 기준이라 크기가 다르면 엉뚱한 곳의 색을 잼(회전 · 다른 파일)
+        return "size"
+    return np.asarray(image, dtype=np.uint8)
+
+
+def _page_size(page: object) -> tuple[int, int] | None:
+    """OCR 쪽의 (폭, 높이) 픽셀. 없거나 숫자가 아니면 None."""
+    if not isinstance(page, dict):
+        return None
+    out: list[int] = []
+    for key in ("width", "height"):
+        v = page.get(key)
+        if not isinstance(v, int | float) or isinstance(v, bool) or not math.isfinite(v):
+            return None
+        out.append(round(v))
+    return out[0], out[1]
+
+
+def _check_text(uploads: list[_Upload]) -> None:
+    if not any(ln["text"].strip() for u in uploads for ln in u.lines):
+        raise InputError("노트에서 글자를 찾지 못함", code=NO_TEXT)
+
+
+# ---------------------------------------------------------------- checkpoint
+#
+# {version: 2, colors: [색 이름], uploads: [{pageNo, pages, lines: [줄]}], warnings: [NoColor]}
+# uploads는 input.pages의 앞에서부터 끝낸 것만. 수가 input보다 적으면 그다음 업로드부터 이어서 읽음
+# 줄   [id, page, text, x0, x1, y0, y1, hand, 단어들]  ← BSON 배열(키 이름을 줄마다 되풀이하지 않음)
+# 단어들 [[start, end, confidence, hand, colorDiff, color, baseColor, highlight(, text)], ...]의
+#      JSON 글자. BSON 배열은 원소마다 형식 · 번호 키가 붙어 단어 수십만 개면 커서 글자로 묶음
+#      hand · colorDiff는 1 · 0 · -1(없음), 색은 colors의 번호 · -1(없음),
+#      text는 줄 글자 text[start:end]와 다를 때만. 단어 상자(polygon)는 색 찾기에만 써서 뺌
+# 숫자는 반올림하지 않음(JSON · BSON 모두 float 그대로 되돌아옴) → 다시 만든 결과가 처음과 같음
+
+
+class _Saver:
+    """업로드가 끝날 때마다 그때까지의 결과를 checkpoint에 저장합니다.
+
+    이미 줄인 업로드는 다시 줄이지 않습니다(색 번호는 뒤에 더해질 뿐 바뀌지 않음). 저장값이
+    상한을 넘으면 그때부터 저장하지 않습니다(뒤로 갈수록 커지기만 함). 앞서 저장한 값은 남습니다.
+    """
+
+    def __init__(self, checkpoint: Checkpoint, done: list[_Upload]) -> None:
+        self._checkpoint = checkpoint
+        self._colors: dict[str, int] = {}
+        self._packed = [self._pack(u) for u in done]
+        self._full = False
+
+    def _pack(self, u: _Upload) -> JsonObject:
+        lines = [_pack_line(ln, self._colors) for ln in u.lines]
+        return {"pageNo": u.page_no, "pages": u.pages, "lines": lines}
+
+    def save(self, upload: _Upload, warnings: list[NoColor]) -> None:
+        if self._full:
+            return
+        self._packed.append(self._pack(upload))
+        value: JsonObject = {
+            "version": CHECKPOINT_VERSION,
+            "colors": list(self._colors),
+            "uploads": list(self._packed),
+            "warnings": list(warnings),
+        }
+        size = len(bson.encode({"checkpoint": value}))
+        if size > CHECKPOINT_MAX_BYTES:
+            # 저장하지 못해도 이번 시도는 그대로 계속함. 다시 시도하면 앞서 저장한 곳 다음부터
+            log.warning("OCR 결과가 %d바이트로 저장 상한을 넘어 저장하지 않음", size)
+            self._full = True
+            return
+        self._checkpoint.save_checkpoint(value)
+
+
+def _pack_line(ln: Line, colors: dict[str, int]) -> list[object]:
+    words = [_pack_word(w, ln["text"], colors) for w in ln["words"]]
+    return [
+        ln["id"],
+        ln["page"],
+        ln["text"],
+        ln["x0"],
+        ln["x1"],
+        ln["y0"],
+        ln["y1"],
+        ln["hand"],
+        json.dumps(words, ensure_ascii=False, separators=(",", ":")),
+    ]
+
+
+def _pack_word(w: Word, line_text: str, colors: dict[str, int]) -> list[object]:
+    out: list[object] = [w["start"], w["end"], w["confidence"]]
+    for key in _WORD_BOOL_KEYS:
+        flag = w.get(key)
+        out.append(_NONE if flag is None else int(bool(flag)))
+    for key in _WORD_TEXT_KEYS:
+        name = w.get(key)
+        out.append(_NONE if name is None else colors.setdefault(str(name), len(colors)))
+    if w["text"] != line_text[w["start"] : w["end"]]:
+        out.append(w["text"])
+    return out
+
+
+def _from_checkpoint(
+    saved: object, pages: list[tuple[int, str]]
+) -> tuple[list[_Upload], list[NoColor]] | None:
+    """저장된 업로드(input.pages의 앞에서부터)와 경고. 없거나 깨져 있으면 None(OCR부터 다시)."""
+    if saved is None:
+        return None
+    if not isinstance(saved, dict):
+        log.warning("저장된 OCR 결과가 객체가 아니라 OCR부터 다시 함")
+        return None
+    if saved.get("version") != CHECKPOINT_VERSION:
+        log.warning("저장된 OCR 결과의 형식이 달라 OCR부터 다시 함")
+        return None
+    try:
+        colors = _saved_colors(saved.get("colors"))
+        uploads = _saved_uploads(saved.get("uploads"), pages, colors)
+        warnings = _saved_warnings(saved.get("warnings"), {u.page_no for u in uploads})
+        if len(uploads) == len(pages):
+            _check_text(uploads)
+    except InputError as e:
+        log.warning("저장된 OCR 결과가 깨져 OCR부터 다시 함: %s", e)
+        return None
+    if not uploads:
+        return None
+    return uploads, warnings
+
+
+def _saved_warnings(raw: object, starts: set[int]) -> list[NoColor]:
+    """경고는 업로드 하나에 하나까지, 놓인 번호(upload pageNo)에만 붙음."""
+    if not isinstance(raw, list):
+        raise InputError("warnings가 목록이 아님")
+    out: list[NoColor] = []
+    for i, w in enumerate(raw):
+        page_no = w.get("pageNo") if isinstance(w, dict) else None
+        reason = w.get("reason") if isinstance(w, dict) else None
+        if (
+            not isinstance(w, dict)
+            or w.get("code") != NO_COLOR
+            or set(w) != {"code", "pageNo", "reason"}
+            or not _is_count(page_no)
+            or page_no not in starts
+            or not _is_reason(reason)
+        ):
+            raise InputError(f"warnings[{i}] 모양이 맞지 않음")
+        out.append({"code": "NO_COLOR", "pageNo": page_no, "reason": reason})
+    if len({w["pageNo"] for w in out}) != len(out):
+        raise InputError("warnings의 pageNo가 겹침")
+    return out
+
+
+def _is_reason(value: object) -> TypeIs[NoColorReason]:
+    return value in get_args(NoColorReason.__value__)
+
+
+def _saved_colors(raw: object) -> list[str]:
+    if not isinstance(raw, list) or not all(isinstance(c, str) for c in raw):
+        raise InputError("colors가 글자 목록이 아님")
+    return raw
+
+
+def _saved_uploads(raw: object, pages: list[tuple[int, str]], colors: list[str]) -> list[_Upload]:
+    if not isinstance(raw, list) or len(raw) > len(pages):
+        raise InputError("uploads 수가 input보다 많음")
+    out: list[_Upload] = []
+    nxt, total = 1, 0
+    for i, (u, (page_no, _)) in enumerate(zip(raw, pages, strict=False)):
+        error = InputError(f"uploads[{i}] 모양이 맞지 않음")
+        if not isinstance(u, dict):
+            raise error
+        start, span, lines = u.get("pageNo"), u.get("pages"), u.get("lines")
+        if not _is_count(start) or start != max(page_no, nxt) or not _is_count(span) or span < 1:
+            raise error
+        total += span
+        if total > NOTE_MAX_PAGES or not isinstance(lines, list):
+            raise error
+        kept = [
+            _saved_line(ln, start, start + span, colors, f"uploads[{i}].lines[{j}]")
+            for j, ln in enumerate(lines)
+        ]
+        out.append(_Upload(start, span, kept))
+        nxt = start + span
+    return out
+
+
+def _saved_line(raw: object, lo: int, hi: int, colors: list[str], where: str) -> Line:
+    """[id, page, text, x0, x1, y0, y1, hand, 단어들 JSON] → Line(_pack_line의 반대)."""
+    error = InputError(f"{where} 모양이 맞지 않음")
+    if not isinstance(raw, list) or len(raw) != 9:
+        raise error
+    lid, page, text = raw[0], raw[1], raw[2]
+    hand, packed = raw[7], raw[8]
+    if not _is_count(lid) or not _is_count(page) or not lo <= page < hi:
+        raise error
+    if not isinstance(text, str) or not isinstance(hand, bool) or not isinstance(packed, str):
+        raise error
+    x0, x1, y0, y1 = (_number(v, error) for v in raw[3:7])
+    try:
+        words = json.loads(packed)
+    except (ValueError, RecursionError) as e:  # 아주 깊게 중첩된 글자는 RecursionError
+        raise error from e
+    if not isinstance(words, list):
+        raise error
+    return {
+        "id": lid,
+        "page": page,
+        "text": text,
+        "x0": x0,
+        "x1": x1,
+        "y0": y0,
+        "y1": y1,
+        "hand": hand,
+        "words": [_saved_word(w, text, colors, error) for w in words],
+    }
+
+
+def _saved_word(raw: object, line_text: str, colors: list[str], error: InputError) -> Word:
+    """[start, end, confidence, hand, colorDiff, color, baseColor, highlight(, text)] → Word."""
+    if not isinstance(raw, list) or len(raw) not in (8, 9):
+        raise error
+    start, end = raw[0], raw[1]
+    if not _is_count(start) or not _is_count(end) or not start <= end <= len(line_text):
+        raise error
+    text = raw[8] if len(raw) == 9 else line_text[start:end]
+    if not isinstance(text, str):
+        raise error
+    word: Word = {
+        "text": text,
+        "start": start,
+        "end": end,
+        "polygon": [],  # 저장하지 않음(_pack_word)
+        "confidence": _number(raw[2], error),
+    }
+    for key, flag in zip(_WORD_BOOL_KEYS, raw[3:5], strict=True):
+        if flag not in (_NONE, 0, 1) or isinstance(flag, bool | float):
+            raise error
+        if flag != _NONE:
+            word[key] = bool(flag)  # type: ignore[literal-required]
+    for key, index in zip(_WORD_TEXT_KEYS, raw[5:8], strict=True):
+        if _is_count(index) and index < len(colors):
+            word[key] = colors[index]  # type: ignore[literal-required]
+        elif index != _NONE or isinstance(index, bool | float):
+            raise error
+    return word
+
+
+def _is_count(value: object) -> TypeIs[int]:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _number(value: object, error: InputError) -> float:
+    if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value):
+        return float(value)
+    raise error

@@ -42,6 +42,13 @@ export class RecurringGoal {
 
   @Prop({ required: true, type: Boolean, default: true })
   isActive: boolean;
+
+  // 소프트 삭제(FR-11-10): 지운 시각. null이면 살아 있는 목표. 문서는 지우지 않아 과거 기록이 남는다
+  @Prop({ type: Date, default: null })
+  deletedAt?: Date | null;
 }
 
 export const RecurringGoalSchema = SchemaFactory.createForClass(RecurringGoal);
+
+// 내 살아 있는 목표를 만든 순서로 읽는다
+RecurringGoalSchema.index({ userId: 1, deletedAt: 1, createdAt: 1 });

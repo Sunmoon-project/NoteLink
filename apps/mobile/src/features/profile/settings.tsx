@@ -19,9 +19,11 @@ import { nicknameError } from '@/lib/validation';
 import { env } from '@/lib/env';
 import { clearAccountState } from '@/lib/account';
 import { useAuth } from '@/stores/auth';
+import { useDevicePrefs } from '@/stores/device-prefs';
 import { toast } from '@/stores/toast';
 import { interestLabels } from '@/lib/interest-categories';
 import { LoadError } from '../progress/load-error';
+import { forgetWrongNotes } from '../quiz/wrong-review';
 import {
   Alert,
   Avatar,
@@ -38,7 +40,6 @@ import {
   Progress,
   Row,
   Screen,
-  Segment,
   Sheet,
   Title,
   Toggle,
@@ -51,7 +52,6 @@ import Constants from 'expo-constants';
 
 // p.43~45 프로필 · 설정 · 계정 정보 · 닉네임 · 요금제
 
-const LANGS = ['한국어', 'English', '日本語', '中文'];
 const PAGE = { swipe: '좌우 스와이프', scroll: '위아래 스크롤', tap: '탭해서 넘기기' } as const;
 // 1MB 아래를 MB로 반올림하면 자료를 올려도 0MB로 보인다: 단위를 낮추고 작은 값은 소수 한 자리까지
 const gb = (b: number) => {
@@ -64,12 +64,15 @@ const gb = (b: number) => {
 /** 앱 버전은 app.config.ts의 version을 읽는다 */
 const APP_VERSION = Constants.expoConfig?.version ?? '-';
 export function SettingsScreen() {
+  // 탁상 모드는 기기마다 따로(서버 사용자 설정이 아니라 이 기기에 저장)
+  const deskMode = useDevicePrefs((p) => p.deskMode);
+  useEffect(() => void useDevicePrefs.getState().load(), []);
   const openFeature = useFeatureNavigation();
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
   // 목록이 아니라 당겨서 새로 고침은 두지 않고, 돌아올 때 오래됐으면만 다시 읽는다
   useTabRefresh(me);
-  const [sheet, setSheet] = useState<null | 'lang' | 'page' | 'help' | 'biz'>(null);
+  const [sheet, setSheet] = useState<null | 'page' | 'help' | 'biz'>(null);
   const [dlg, setDlg] = useState<null | 'logout' | 'withdraw'>(null);
   const scroll = useRef<ScrollView>(null);
   const { scrollTo } = useLocalSearchParams<{ scrollTo?: string }>();
@@ -90,8 +93,11 @@ export function SettingsScreen() {
   const signOut = async (withdraw: boolean) => {
     let failure = '회원 탈퇴를 완료하지 못했어요. 다시 시도해 주세요';
     try {
-      if (withdraw) await api.me.withdraw();
-      else await api.auth.logout().catch(() => {});
+      if (withdraw) {
+        await api.me.withdraw();
+        // 탈퇴한 계정의 오답 노트(기기 파일)도 지운다
+        forgetWrongNotes(useAuth.getState().userId);
+      } else await api.auth.logout().catch(() => {});
       failure = '기기의 로그인 정보를 지우지 못했어요. 다시 시도해 주세요';
       await useAuth.getState().signOut();
       clearAccountState(qc);
@@ -204,6 +210,21 @@ export function SettingsScreen() {
             상점 바로가기
           </Row>
         </Group>
+        <Label>탁상 모드</Label>
+        <Group>
+          <Row
+            sub="홈에서 가로로 눕히면 측정 중에는 타이머, 아니면 시계를 크게 보여 줘요"
+            right={
+              <Toggle
+                label="탁상 모드"
+                on={deskMode}
+                onChange={(v) => useDevicePrefs.getState().set({ deskMode: v })}
+              />
+            }
+          >
+            가로로 눕히면 탁상 모드
+          </Row>
+        </Group>
         <Label>녹음·재생</Label>
         <Group>
           <Row
@@ -223,16 +244,6 @@ export function SettingsScreen() {
             }
           >
             녹음 중 화면 켜 두기
-          </Row>
-          <Row
-            onPress={() => setSheet('lang')}
-            right={
-              <View className="rounded-full bg-fill px-3 py-1">
-                <Text className="text-caption text-sub">{s.subtitleLanguage} ›</Text>
-              </View>
-            }
-          >
-            자막 기본 언어
           </Row>
         </Group>
         <Label>노트</Label>
@@ -254,34 +265,8 @@ export function SettingsScreen() {
             오프라인 캐시
           </Row>
         </Group>
-        <Label>테마</Label>
-        <Segment
-          items={['라이트', '다크'] as const}
-          value={s.theme === 'dark' ? '다크' : '라이트'}
-          onChange={(v) => {
-            update.mutate({ theme: v === '다크' ? 'dark' : 'light' });
-            if (v === '다크') toast('다크 테마는 준비 중이에요 · 설정은 저장했어요');
-          }}
-        />
-        <Label>필기</Label>
-        <Group>
-          <Row
-            right={
-              <Toggle
-                label="더블 탭으로 지우개 전환"
-                on={s.doubleTapEraser}
-                onChange={set('doubleTapEraser')}
-              />
-            }
-          >
-            더블 탭으로 지우개 전환
-          </Row>
-          <Row
-            right={<Toggle label="왼손잡이 모드" on={s.leftHanded} onChange={set('leftHanded')} />}
-          >
-            왼손잡이 모드
-          </Row>
-        </Group>
+        {/* 필기(펜) 편집기가 없어 더블 탭 지우개 · 왼손잡이, 서버 번역 · 음성 인식 언어가 필요한 자막 언어,
+            다크 테마는 두지 않는다. 값(스키마)은 그대로 둔다 */}
         <Label>정보</Label>
         <Group>
           <Row chevron onPress={() => setSheet('help')}>
@@ -315,22 +300,6 @@ export function SettingsScreen() {
         </Pressable>
       </Screen>
 
-      <Sheet open={sheet === 'lang'} onClose={() => setSheet(null)} title="자막 기본 언어">
-        <Group>
-          {LANGS.map((l) => (
-            <Row
-              key={l}
-              onPress={() => {
-                update.mutate({ subtitleLanguage: l });
-                setSheet(null);
-              }}
-              right={s.subtitleLanguage === l && <Check size={ICON.md} color={C.brand} />}
-            >
-              {l}
-            </Row>
-          ))}
-        </Group>
-      </Sheet>
       <Sheet open={sheet === 'page'} onClose={() => setSheet(null)} title="페이지 넘김 방식">
         <Group>
           {(Object.keys(PAGE) as (keyof typeof PAGE)[]).map((k) => (

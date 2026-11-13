@@ -15,8 +15,11 @@ import Animated, {
   interpolate,
   useAnimatedStyle,
   useSharedValue,
+  withSequence,
   withSpring,
+  withTiming,
 } from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ERROR_CODES, NoteAskResult, type AiJob, NoteAskTurn } from '@notelink/shared';
@@ -29,7 +32,7 @@ import { C, ICON } from '@/theme';
 import { Avatar3D, type Mood } from './avatar3d';
 import { useEquippedAvatar, useFocused } from './buddy';
 
-type Msg = {
+export type Msg = {
   id: number;
   role: NoteAskTurn['role'];
   text: string;
@@ -49,7 +52,18 @@ const STATUS: Record<Mood, string> = {
   thinking: '노트를 살펴보는 중이에요',
   talking: '설명하는 중이에요',
   happy: '노트에서 궁금한 걸 물어보세요',
+  surprised: '노트에서 궁금한 걸 물어보세요',
+  wink: '노트에서 궁금한 걸 물어보세요',
 };
+/** 무대의 아바타를 누를 때마다 차례로 짓는 표정과 말풍선 */
+export const STAGE_LINES: { mood: Mood; line: string }[] = [
+  { mood: 'happy', line: '안녕하세요! 오늘도 같이 공부해요' },
+  { mood: 'surprised', line: '앗, 깜짝이야! 궁금한 게 생겼어요?' },
+  { mood: 'wink', line: '시험에 나올 만한 건 제가 콕 집어 드릴게요' },
+  { mood: 'thinking', line: '음… 이 노트에서 뭘 물어보면 좋을까요?' },
+  { mood: 'happy', line: '잘하고 있어요! 아래 추천 질문도 눌러 보세요' },
+];
+const SAY_MS = 3500;
 const POLL_MS = 1500;
 const WAIT_MS = 120_000; // 학교 LLM이 붐비면 길어짐. 넘으면 다시 물어보게
 const HISTORY = 6; // 서버(apps/ai note/ask.py HISTORY_TURNS)와 같은 수만 보낸다
@@ -101,13 +115,50 @@ function TutorStage({
   mood,
   avatarId,
   compact,
+  turns,
 }: {
   mood: Mood;
   avatarId: string;
   compact: boolean;
+  /** 지금까지 대화 수 */
+  turns: number;
 }) {
   const [w, setW] = useState(0);
   const focused = useFocused();
+  // 누르면 표정을 바꾸고 말풍선으로 한마디(답하는 중에는 답이 먼저라 받지 않는다)
+  const [said, setSaid] = useState<{ n: number; mood: Mood; line: string } | null>(null);
+  const turn = useRef(0);
+  const hop = useSharedValue(0);
+  useEffect(() => {
+    if (!said) return;
+    const t = setTimeout(() => setSaid(null), SAY_MS);
+    return () => clearTimeout(t);
+  }, [said]);
+  // 질문을 보내 생각 · 설명을 시작하면 말풍선을 거둔다
+  // 질문을 보내면(대화가 늘면) 말풍선을 버린다. 답이 일찍 끝나 idle로 돌아와도 옛 말풍선이 다시 뜨지 않게
+  // (생각 상태가 한 번도 그려지지 않을 만큼 빨리 실패해도 대화 수는 늘어난다, #344 리뷰)
+  const [seenTurns, setSeenTurns] = useState(turns);
+  if (turns !== seenTurns) {
+    setSeenTurns(turns);
+    setSaid(null);
+  }
+  const reacting = said && mood === 'idle' ? said : null;
+  const face = reacting?.mood ?? mood;
+  const status = reacting?.line ?? STATUS[mood];
+  const poke = () => {
+    if (mood !== 'idle') return;
+    const n = turn.current++;
+    setSaid({ n, ...STAGE_LINES[n % STAGE_LINES.length]! });
+    void Haptics.selectionAsync().catch(() => {});
+    // 제자리에서 통통 한 번(작은 물체라 튀어도 된다: stageshow motion.md)
+    hop.set(
+      withSequence(
+        withTiming(-12, { duration: 140, reduceMotion: ReduceMotion.System }),
+        withSpring(0, { duration: 460, dampingRatio: 0.42, reduceMotion: ReduceMotion.System }),
+      ),
+    );
+  };
+  const hopStyle = useAnimatedStyle(() => ({ transform: [{ translateY: hop.get() }] }));
   const p = useSharedValue(compact ? 1 : 0);
   useEffect(() => {
     p.set(
@@ -153,22 +204,54 @@ function TutorStage({
       onLayout={(e) => setW(e.nativeEvent.layout.width)}
     >
       <Animated.View className="absolute top-2" style={[{ left: (w - BIG) / 2 }, fly]}>
-        {/* 퀴즈처럼 다른 화면이 위에 쌓이면 3D를 내려 그리기 반복을 멈춘다 */}
-        {focused && <Avatar3D mood={mood} avatarId={avatarId} size={BIG} />}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="아바타 선생님에게 말 걸기"
+          accessibilityHint="누를 때마다 표정을 바꾸며 한마디 해요"
+          onPress={poke}
+        >
+          {/* 3D(GL) 화면이 터치를 가져가 누르기가 빗나가지 않게, 얼굴은 터치를 받지 않는다 */}
+          <Animated.View style={hopStyle} pointerEvents="none">
+            {/* 퀴즈처럼 다른 화면이 위에 쌓이면 3D를 내려 그리기 반복을 멈춘다 */}
+            {focused && <Avatar3D mood={face} avatarId={avatarId} size={BIG} />}
+          </Animated.View>
+        </Pressable>
       </Animated.View>
-      <Animated.View className="absolute inset-x-0 bottom-2.5 items-center" style={bigText}>
-        <Swap k={mood}>
-          <Text className="text-caption text-sub">{STATUS[mood]}</Text>
+      <Animated.View
+        className="absolute inset-x-0 bottom-2.5 items-center"
+        style={bigText}
+        pointerEvents="none"
+      >
+        <Swap k={reacting ? `say${reacting.n}` : mood}>
+          {reacting ? (
+            // 말풍선: 꼬리가 위의 얼굴을 가리킨다
+            <View className="items-center">
+              <View className="h-2.5 w-2.5 rotate-45 bg-white" style={{ marginBottom: -5 }} />
+              <View className="rounded-2xl bg-white px-3.5 py-2">
+                <Text className="text-footnote font-semibold text-ink">{reacting.line}</Text>
+              </View>
+            </View>
+          ) : (
+            <Text className="text-caption text-sub">{status}</Text>
+          )}
         </Swap>
       </Animated.View>
       <Animated.View
         className="absolute top-0 bottom-0 left-4 justify-center"
-        style={smallText}
+        // 작은 얼굴(오른쪽)과 겹치지 않게 말이 길면 줄을 바꾼다
+        style={[{ right: 16 + SMALL + 8 }, smallText]}
         pointerEvents="none"
       >
         <Text className="text-caption2 text-sub">아바타 선생님</Text>
-        <Swap k={mood}>
-          <Text className="text-footnote font-semibold text-ink">{STATUS[mood]}</Text>
+        <Swap k={reacting ? `say${reacting.n}` : mood}>
+          <Text
+            className={cx(
+              'text-footnote font-semibold text-ink',
+              reacting && 'mt-0.5 self-start rounded-2xl rounded-tl-sm bg-white px-2.5 py-1',
+            )}
+          >
+            {status}
+          </Text>
         </Swap>
       </Animated.View>
     </Animated.View>
@@ -219,6 +302,21 @@ function Typing({ text, onDone }: { text: string; onDone: () => void }) {
 const nextStep = (msgs: Msg[]) => {
   const last = msgs[msgs.length - 1];
   return !!last && last.role === 'avatar' && !last.error && !last.refused;
+};
+
+/**
+ * 답을 받은 뒤 이어서 물어볼 추천 질문: 아직 답을 받지 못한 것만. 오류로 끝난 질문(연결 · 정리 전 등)은
+ * 물은 것으로 치지 않아 칩으로 다시 보여 주고, 거절(자료 밖)은 정해 둔 답을 받은 것이라 뺀다
+ */
+export const nextSuggest = (msgs: Msg[]) => {
+  if (msgs[msgs.length - 1]?.role !== 'avatar') return [];
+  const answered = new Set(
+    msgs.flatMap((m, i) => {
+      const reply = msgs[i + 1];
+      return m.role === 'user' && reply?.role === 'avatar' && !reply.error ? [m.text] : [];
+    }),
+  );
+  return SUGGEST.filter((q) => !answered.has(q));
 };
 
 /** 아바타 선생님: 정리된 노트(녹음 · 문서 · 필기)를 옆에서 설명한다 */
@@ -313,7 +411,12 @@ export function TutorScreen() {
         }
       >
         <Header title="아바타 선생님" sub={mat.data?.title} large={false} />
-        <TutorStage mood={mood} avatarId={avatar} compact={msgs.length > 0 || keyboard} />
+        <TutorStage
+          mood={mood}
+          avatarId={avatar}
+          compact={msgs.length > 0 || keyboard}
+          turns={msgs.length}
+        />
         <FlatList
           ref={list}
           className="mt-3 flex-1"
@@ -323,22 +426,32 @@ export function TutorScreen() {
           contentContainerClassName="gap-3 pb-4"
           // 에이전트처럼 다음 학습으로 잇는다: 자료로 답한 뒤 퀴즈(학습 확인) · 복습으로
           ListFooterComponent={
-            nextStep(msgs) && live === null ? (
+            live === null && (nextStep(msgs) || nextSuggest(msgs).length > 0) ? (
               <Animated.View entering={FadeIn.duration(220)} className="flex-row flex-wrap gap-2">
-                <Chip
-                  small
-                  onPress={() =>
-                    router.push({
-                      pathname: '/play/gen',
-                      params: { materialId: id, title: mat.data?.title ?? '' },
-                    })
-                  }
-                >
-                  이 노트로 퀴즈 풀기
-                </Chip>
-                <Chip small onPress={() => router.push('/quiz')}>
-                  복습하러 가기
-                </Chip>
+                {/* 하나를 물은 뒤에도 남은 추천 질문을 다음 질문으로 이어 준다 */}
+                {nextSuggest(msgs).map((q) => (
+                  <Chip key={q} small disabled={busy} onPress={() => void ask(q)}>
+                    {q}
+                  </Chip>
+                ))}
+                {nextStep(msgs) && (
+                  <>
+                    <Chip
+                      small
+                      onPress={() =>
+                        router.push({
+                          pathname: '/play/gen',
+                          params: { materialId: id, title: mat.data?.title ?? '' },
+                        })
+                      }
+                    >
+                      이 노트로 퀴즈 풀기
+                    </Chip>
+                    <Chip small onPress={() => router.push('/quiz')}>
+                      복습하러 가기
+                    </Chip>
+                  </>
+                )}
               </Animated.View>
             ) : null
           }

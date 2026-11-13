@@ -30,6 +30,20 @@ OVERSTATED = re.compile(r"반드시|절대|모든|항상|오직|전혀|무조건
 # 조합형 제시문: 줄마다 'ㄱ. …'(combo.py가 조립)
 _COMBO_LINES = re.compile(r"ㄱ\. [^\n]+\nㄴ\. [^\n]+\nㄷ\. [^\n]+")
 _KO = re.compile(r"[가-힣]{2,}")
+# 보기가 문제 풀이의 판단 자체('정답인 문장이다' · '오답인 문장이다'): 노트 규칙을 문장에 적용하지
+# 않은 메타 문제. 토익 규칙 초안이 코드 · 정답 둘 · 검수자 검사를 모두 통과함(11/11, #291)
+# 보기 전체가 판단일 때만: '정답률 · 오답지 · 오답 소거법'처럼 그 말을 쓰는 과목 낱말은 좋은 보기.
+# 맞는 · 틀린 · 옳은 · correct는 '문장 · 보기 · 표현 · 답'이 붙어야 판단: '바른 · 틀린 · correct ·
+# incorrect'만 있는 보기는 어휘 문제의 좋은 보기(/code-review #291)
+_JUDGED = re.compile(
+    r"(?:정답|오답)(?:인|이)?\s*(?:문장|보기|표현|선택지)?\s*(?:이다|입니다|임)?"
+    r"|(?:맞는|틀린|옳은|옳지\s?않은|바른|잘못된)\s*(?:문장|보기|표현|선택지|답)\s*(?:이다|입니다|임)?"
+    r"|(?:in)?correct\s+(?:sentence|answer|option|expression)",
+    re.IGNORECASE,
+)
+# 판단 보기를 감싼 따옴표 · 끝의 문장 부호('정답인 문장이다' · 정답이다! · 오답이다。)
+_EDGE = re.compile(r"^[\s'\"‘’“”(\[]+|[\s'\"‘’“”)\].!?。]+$")
+META = "보기가 정답 · 오답 판단 자체(규칙을 적용한 문장 · 표현을 보기로)"
 _PIECE = re.compile(r",\s+")  # 이어 붙인 보기의 조각 사이
 SAME_ANSWER = "세트 안에서 정답이 겹침"  # generate가 쪽 닫기 · 분류 유형 빼기에 씀(#282)
 
@@ -42,6 +56,10 @@ class Seen(TypedDict):
     answer: NotRequired[str]  # norm(정답)
     q: NotRequired[Question | None]
     sentences: NotRequired[list[str]]  # norm(설명 문장) (too_close)
+    # 이번에 만든 문제의 개념 · 유형(맞춤 퀴즈 마지막 단계에서 같은 개념을 다른 유형으로 다시 물을
+    # 때, too_close가 그 개념의 앞 문제와는 제시문을 비교하지 않음, #268)
+    concept: NotRequired[str]
+    type: NotRequired[str]
 
 
 _COMBO_MARK = re.compile(r"^[ㄱㄴㄷ]\.\s*")
@@ -92,25 +110,34 @@ class Target:
     keep_answer: bool = False
 
 
-def too_close(d: Draft, seen: list[Seen]) -> bool:
+def too_close(d: Draft, seen: list[Seen], concept: str = "", ty: str = "") -> bool:
     """이미 있는 문제와 85% 이상 같음.
+
+    concept · ty는 이 초안의 개념 · 유형. 같은 개념을 다른 유형으로 물은 앞 문제(seen의 concept ·
+    type)와는 제시문 · 문제 글을 비교하지 않고 문장 보기만 비교합니다(#268): 개념이 모자란 노트에서
+    같은 개념을 다른 유형으로 다시 묻는데, 특징 · 부정설명 · 분류는 제시문이 용어 이름뿐이라 늘
+    같았음(개념 3개 노트 5문제, 11/12 학교 LLM: 탈락 이유 가운데 가장 많음). 같은 사실을 늘어놓은
+    두 문제(부정설명 · 조합)는 문장 보기로 계속 막습니다.
 
     둘 다 제시문이 있으면 제시문끼리만 비교합니다. 문제 글은 tidy가 같은 문장으로 맞추기도 해서,
     문제 글까지 합쳐 비교하면 제시문이 짧은 다른 문제('쌓다' / '계약을 성공하다')도 같다고 봤습니다
     (로컬 DB 116문제에서 바뀐 판정은 이 1쌍, 10/27 측정).
     문장 보기 셋 이상이 같은 문제도 거의 같음(#268): 특징 · 부정설명은 제시문이 용어 이름뿐이라,
-    개념 이름만 다른 같은 내용('액티브 인디케이터 제어' / 'ActivityIndicator와 서버 통신 제어')에서
-    옳은 설명 보기 넷이 똑같은 두 문제가 한 세트에 들어감(0928 학습 노트, 부정설명 5문제).
+    제시문의 용어 이름만 다른 같은 내용('액티브 인디케이터 제어' / 'ActivityIndicator와 서버 통신
+    제어')에서 옳은 설명 보기 넷이 똑같은 두 문제가 한 세트에 들어감(0928 학습 노트, 부정설명
+    5문제). 말을 바꿔 쓴 같은 사실은 same_fact가 봄(#351).
     """
     me = norm(d["stem"] + d["passage"])
     mp = norm(d["passage"])
     mine = sentences_of(d["options"], d["passage"])
     for s in seen:
-        if mp and s["passage"]:
-            if difflib.SequenceMatcher(None, mp, s["passage"]).ratio() >= 0.85:
+        other_angle = bool(concept) and s.get("concept") == concept and s.get("type") != ty
+        if not other_angle:
+            if mp and s["passage"]:
+                if difflib.SequenceMatcher(None, mp, s["passage"]).ratio() >= 0.85:
+                    return True
+            elif difflib.SequenceMatcher(None, me, s["all"]).ratio() >= 0.85:
                 return True
-        elif difflib.SequenceMatcher(None, me, s["all"]).ratio() >= 0.85:
-            return True
         if len(mine) >= SAME_SENTENCES and _shared(mine, s.get("sentences") or []):
             return True
     return False
@@ -148,20 +175,137 @@ def _shared(mine: list[str], theirs: list[str]) -> bool:
     return sum(take(i, set()) for i in range(len(mine))) >= SAME_SENTENCES
 
 
-def reversed_of(d: Draft, seen: list[Seen]) -> bool:
+# 같은 노트 문장을 같은 유형으로 다시 묻기(#351). 개념 이름이 달라도 같은 사실을 물음: 0928 학습
+# 노트의 '상태값 true/false 제어'와 '애니메이션 제어' 조합 문제가 둘 다 3쪽의 '요청 때 true, 응답이
+# 오면 false' · '서버 내부 상태는 모름' 문장을 물음(#288). 말을 바꿔 써서 too_close(문장 85%)로는
+# 못 잡음
+SAME_FACT = "이미 있는 문제와 같은 노트 문장을 물음"
+FACT_COVER = 0.6  # 문제 문장의 글자 2개 묶음 중 노트 줄에 있는 비율: 이 이상이면 그 줄이 근거
+FACT_MIN = 8  # 이보다 짧은 줄(norm)은 근거로 보지 않음: 제목 · 용어 줄
+SAME_FACTS = 2  # 문제 문장 중 이만큼(문장이 하나뿐이면 그 하나)이 상대 문제의 근거 줄을 물으면 겹침
+# 묻는 문장: 조합은 ㄱ · ㄴ · ㄷ, 부정설명은 보기 모두(옳은 설명과 바꾼 설명 모두 그 개념의 사실),
+# 특징은 정답(오답 보기는 다른 개념의 설명), 정의 · 빈칸은 제시문
+_FACT_BY_SENTENCES = frozenset({"조합", "부정설명"})
+_FACT_BY_ANSWER = frozenset({"특징"})
+_FACT_BY_PASSAGE = frozenset({"정의", "빈칸"})
+
+
+def _grams(s: str) -> set[str]:
+    return {s[i : i + 2] for i in range(len(s) - 1)}
+
+
+def _asked(ty: str, sentences: list[str], answer: str, passage: str) -> list[str]:
+    """그 문제가 묻는 문장(norm). 영어 문장 과목 유형(어휘 · 규칙 · 묘사) · 분류는 없음."""
+    if ty in _FACT_BY_SENTENCES:
+        return sentences
+    if ty in _FACT_BY_ANSWER:
+        return [answer] if len(answer) >= FACT_MIN else []
+    if ty in _FACT_BY_PASSAGE:
+        return [passage] if len(passage) >= FACT_MIN else []
+    return []
+
+
+def facts_of(asked: list[str], lines: list[tuple[str, set[str]]]) -> list[str]:
+    """묻는 문장마다 근거 줄(가장 많이 덮는 노트 줄, FACT_COVER 이상). 근거가 없는 문장은 뺌.
+
+    틀리게 바꾼 문장(부정설명 정답 · 조합의 틀린 문장)도 고친 곳 밖은 노트 줄 그대로라 그 줄로
+    감: 같은 사실을 옳게 · 틀리게 묻는 두 문제도 같은 사실을 물음.
+    """
+    out: list[str] = []
+    for s in asked:
+        g = _grams(s)
+        if not g:
+            continue
+        cover, line = max(((len(g & lg) / len(g), ln) for ln, lg in lines), default=(0.0, ""))
+        if cover >= FACT_COVER:
+            out.append(line)
+    return out
+
+
+def _same_facts(mine: list[str], theirs: list[str], n_mine: int, n_theirs: int) -> bool:
+    """어느 한쪽 문장 중 SAME_FACTS개(문장이 그보다 적으면 모두)가 상대의 근거 줄을 물음.
+
+    mine · theirs는 근거 줄(facts_of), n_mine · n_theirs는 근거를 찾기 전 묻는 문장 수. 기준은
+    묻는 문장 수로 정함: 근거를 찾은 문장 수로 정하면 다른 쪽의 문제처럼 근거가 하나만 남은 조합
+    문제가 문장 하나만 겹쳐도 같은 사실이 됨(Codex 리뷰 #354).
+    한쪽만 보면 차례에 따라 달라짐: 근거 줄 하나에 문장 셋을 모두 쓴 문제를 뒤에 만들면 앞 문제
+    (근거 줄 둘)의 문장은 하나만 그 줄을 물음(0928 '애니메이션 제어' · '상태값 제어').
+    """
+    if not mine or not theirs:
+        return False
+    a = sum(x in set(theirs) for x in mine)
+    b = sum(y in set(mine) for y in theirs)
+    return a >= min(SAME_FACTS, n_mine) or b >= min(SAME_FACTS, n_theirs)
+
+
+def same_fact(d: Draft, seen: list[Seen], page_text: str, ty: str) -> bool:
+    """이 세트에서 받은 같은 유형의 문제가 이 초안과 같은 노트 문장을 물음(#351).
+
+    이 세트에서 받은 문제(유형이 붙은 seen, generate._seen_made)만 봄: 지난 세트에서 같은 사실을
+    물은 것은 다시 익히는 것이라 막지 않음(막으면 쪽마다 사실이 몇 개 없는 노트는 몇 세트 만에
+    바닥남). 저장된 문제와 거의 같은 문제는 지금처럼 too_close가 막음. 오답 복습 · 오늘의 복습의
+    초안도 유형이 없어 보지 않음.
+    근거 줄은 이 초안의 쪽 글에서 찾음: 다른 쪽의 문제는 이 쪽 줄을 근거로 쓰지 않으면 걸리지
+    않음. 다른 유형이면 같은 문장을 물어도 됨: 정의 문제의 설명이 특징 문제의 정답인 것처럼
+    다른 각도이고, 내용이 모자란 노트를 다른 유형으로 채움(#268).
+    """
+    if ty not in _FACT_BY_SENTENCES | _FACT_BY_ANSWER | _FACT_BY_PASSAGE:
+        return False
+    lines = [(x, _grams(x)) for ln in page_text.splitlines() if len(x := norm(ln)) >= FACT_MIN]
+    if not lines:
+        return False
+    mine_asked = _asked(
+        ty, sentences_of(d["options"], d["passage"]), norm(d["answer"]), norm(d["passage"])
+    )
+    mine = facts_of(mine_asked, lines)
+    if not mine:
+        return False
+    for s in seen:
+        if s.get("type") != ty:
+            continue
+        asked = _asked(ty, s.get("sentences") or [], s.get("answer", ""), s["passage"])
+        if _same_facts(mine, facts_of(asked, lines), len(mine_asked), len(asked)):
+            return True
+    return False
+
+
+# 용어가 어느 쪽에 오는지(유형으로 정해짐). 특징 · 분류 · 부정설명은 제시문이 용어, 정의 · 빈칸 ·
+# 어휘는 정답이 용어. code_check('물을 용어 없음')와 reversed_of(용어끼리 비교 건너뛰기)가 같은
+# 목록을 써, 유형을 더할 때 두 검사가 따로 놀지 않게(Claude 재리뷰 #303)
+TERM_PASSAGE_TYPES = frozenset({"특징", "분류", "부정설명"})
+TERM_ANSWER_TYPES = frozenset({"정의", "빈칸", "어휘"})
+
+
+def reversed_of(d: Draft, seen: list[Seen], concept: str = "", ty: str = "") -> bool:
     """이번에 만든 앞 문제를 거꾸로 물음 (미생 시험).
 
     '무산소성 세균 → 산소 없이 증식한다' 다음에 '산소 없이 증식하는 세균 → 무산소성 세균'.
     저장된 문제(q가 있음)는 보지 않습니다.
+    같은 개념을 다른 유형으로 물은 앞 문제(concept · ty, too_close와 같음)와는 용어끼리 비교하지
+    않습니다(#268): 정의 문제의 정답(용어)이 같은 개념의 특징 · 부정설명 · 분류 문제에서는
+    제시문이라 늘 '거꾸로'였음. 용어가 보인다고 정답이 보이지는 않음. 설명끼리(앞 문제의 설명이 새
+    문제의 정답)는 그대로 봅니다. 어느 쪽이 용어인지는 글 모양(short_answer)이 아니라 두 문제의
+    유형으로 정합니다: short_answer는 '람다' · 15자가 넘는 한국어 용어를 문장으로 봐 그런 개념은
+    여전히 '거꾸로'로 떨어졌음(Codex 리뷰 #303).
     """
     a, p = norm(d["answer"]), norm(d["passage"])
     for s in seen:
         if s.get("q") is not None or not s.get("answer"):
             continue
+        other_angle = bool(concept) and s.get("concept") == concept and s.get("type") != ty
+        before = s.get("type", "")
+        # 새 정답(용어)과 앞 제시문(용어) · 새 제시문(용어)과 앞 정답(용어)
+        terms_a = other_angle and ty in TERM_ANSWER_TYPES and before in TERM_PASSAGE_TYPES
+        terms_p = other_angle and ty in TERM_PASSAGE_TYPES and before in TERM_ANSWER_TYPES
         sa = s.get("answer", "")
-        if a and s["passage"] and difflib.SequenceMatcher(None, a, s["passage"]).ratio() >= 0.8:
+        if (
+            a
+            and s["passage"]
+            and not terms_a
+            and difflib.SequenceMatcher(None, a, s["passage"]).ratio() >= 0.8
+        ):
             return True
-        if p and difflib.SequenceMatcher(None, p, sa).ratio() >= 0.8:
+        if p and not terms_p and difflib.SequenceMatcher(None, p, sa).ratio() >= 0.8:
             return True
     return False
 
@@ -234,9 +378,9 @@ def _joined(i: int, opts: list[str], keys: list[tuple[str, tuple[Decimal, ...]]]
 
 
 def code_check(
-    d: Draft, t: Target, page_text: str, ty: str, seen: list[Seen]
+    d: Draft, t: Target, page_text: str, ty: str, seen: list[Seen], concept: str = ""
 ) -> tuple[list[str], int | None]:
-    """(탈락 이유, 정답 보기 위치). 이유가 비어 있으면 통과."""
+    """(탈락 이유, 정답 보기 위치). 이유가 비어 있으면 통과. concept는 초안의 개념(too_close)."""
     why: list[str] = []
     opts = d["options"]
     keys = [option_key(o) for o in opts]
@@ -247,6 +391,8 @@ def code_check(
     # 똑같을 때만 봄: 글자가 안에 들어 있기만 한 H2O · H2O2, 15 · 1.5, ㄱ · ㄱ, ㄴ은 좋은 보기
     if any(_joined(i, opts, keys) for i in range(len(opts))):
         why.append("다른 보기를 이어 붙인 보기")
+    if sum(bool(_JUDGED.fullmatch(_EDGE.sub("", o))) for o in opts) >= 2:
+        why.append(META)
     parsed = [number_values(o) for o in opts]
     if any(_same_parsed(a, b) for i, a in enumerate(parsed) for b in parsed[i + 1 :]):
         why.append("값이 같은 숫자 보기")
@@ -281,7 +427,7 @@ def code_check(
     if ty == "정의" and len(re.findall(r"[가-힣]", p)) < 10:
         why.append("설명 문장 없음")
     # passage가 '____'뿐이어도 용어가 아님: 미생 초안 9개가 지식 검사에 '용어: ____'로 감(10/29)
-    if ty in ("특징", "분류", "부정설명") and not (1 <= len(BLANK.sub("", p).strip()) <= 40):
+    if ty in TERM_PASSAGE_TYPES and not (1 <= len(BLANK.sub("", p).strip()) <= 40):
         why.append("물을 용어 없음")
     if ty == "정의" and p and norm(d["answer"]) in norm(p):
         why.append("설명에 정답 용어 노출")
@@ -335,8 +481,10 @@ def code_check(
     # 조합형 정답(ㄱ, ㄴ)은 묶음 이름이라 세트 안에서 겹쳐도 됨
     if ty != "조합" and any(same_item(d["answer"], u) for u in t.used_answers):
         why.append(SAME_ANSWER)
-    if too_close(d, seen):
+    if too_close(d, seen, concept, ty):
         why.append("이미 있는 문제와 거의 같음")
-    if reversed_of(d, seen):
+    elif same_fact(d, seen, page_text, ty):
+        why.append(SAME_FACT)
+    if reversed_of(d, seen, concept, ty):
         why.append("앞 문제를 거꾸로 물음(겹침)")
     return why, (hits[0] if len(hits) == 1 else None)

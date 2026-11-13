@@ -6,10 +6,12 @@ import { AiJobsModule } from './ai-jobs/ai-jobs.module.js';
 import { createMongooseOptions } from './config/mongo.config.js';
 import { HealthController } from './health/health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
+import { CalendarModule } from './modules/calendar/calendar.module.js';
 import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
 import { ProgressModule } from './modules/progress/progress.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
 import { StudyRoomsModule } from './modules/studyroom/study-rooms.module.js';
+import { QuizAttemptsModule } from './modules/quiz/quiz-attempts.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
@@ -42,8 +44,12 @@ import { TimetableModule } from './modules/timetable/timetable.module.js';
     SessionModule,
     // 이번 주 목표 · 요약(FR-06-20 · FR-06-24)
     ProgressModule,
+    // 퀴즈 풀이 시작 · 답 제출 채점(FR-49·50)
+    QuizAttemptsModule,
     // 시간표 · 수업 · 친구 공유(FR-14)
     TimetableModule,
+    // 할 일 · D-day (FR-10)
+    CalendarModule,
   ],
   controllers: [HealthController],
 })

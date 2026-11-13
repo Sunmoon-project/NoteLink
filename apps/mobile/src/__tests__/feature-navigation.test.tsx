@@ -4,6 +4,7 @@ import { featureRouteExists, useFeatureNavigation } from '../lib/feature-navigat
 import { useToast } from '../stores/toast';
 
 jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
   router: { push: jest.fn(), replace: jest.fn(), navigate: jest.fn() },
   useSitemap: jest.fn(() => null),
 }));

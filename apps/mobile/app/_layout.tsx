@@ -11,6 +11,13 @@ import { connectSocket } from '@/lib/socket';
 import { registerPush } from '@/lib/push';
 import { useAuth } from '@/stores/auth';
 import { AppOverlays } from '@/components/AppOverlays';
+import { useOfflineCache } from '@/lib/offline-cache';
+
+/** 설정 「오프라인 캐시」(QueryClientProvider 안에서) */
+function OfflineCache() {
+  useOfflineCache();
+  return null;
+}
 
 SplashScreen.preventAutoHideAsync();
 
@@ -46,6 +53,7 @@ export default function RootLayout() {
           }}
         />
         <AppOverlays />
+        <OfflineCache />
       </QueryClientProvider>
     </GestureHandlerRootView>
   );

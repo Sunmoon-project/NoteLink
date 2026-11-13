@@ -10,6 +10,7 @@ jest.mock('react-native-reanimated', () => {
 });
 
 jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
   router: { back: jest.fn(), replace: jest.fn() },
   useLocalSearchParams: () => ({}),
 }));

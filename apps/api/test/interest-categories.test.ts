@@ -13,7 +13,7 @@ it('활성 공용 분야를 정렬해 부모 ID와 함께 반환한다', async (
     ],
   }));
   const find = vi.fn(() => ({ sort }));
-  const service = new UsersService({ db: { collection: () => ({ find }) } } as never);
+  const service = new UsersService({ db: { collection: () => ({ find }) } } as never, { streakDays: async () => 0 } as never);
   expect(await service.interestCategories()).toEqual([
     { _id: String(parent), name: '코딩', parentId: null },
     { _id: String(child), name: '기초', parentId: String(parent) },
@@ -36,13 +36,14 @@ it('여러 상위·하위 ID를 모두 검증하고 ObjectId 배열로 저장한
   const service = new UsersService({
     db: { collection: () => ({ countDocuments }) },
     findOneAndUpdate,
-  } as never);
+  } as never, { streakDays: async () => 0 } as never);
   const userId = new Types.ObjectId();
   await service.updateProfile(String(userId), {
     interestCategoryIds: [String(parent), String(child)],
   });
   expect(countDocuments).toHaveBeenCalledWith({
     _id: { $in: [parent, child] },
+    ownerId: null,
     isActive: true,
     deletedAt: null,
   });

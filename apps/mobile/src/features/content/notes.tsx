@@ -1,4 +1,4 @@
-import { useTourTarget } from '@/features/tutor/tour';
+import { useTour, useTourTarget } from '@/features/tutor/tour';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, View } from 'react-native';
 import { Text } from '@/components/text';
@@ -250,10 +250,17 @@ export function NoteTitleScreen() {
   const d = seoul();
   const create = useMutation({
     mutationFn: () => api.content.createFolder({ title: title.trim(), subjectName: tag }),
-    onSuccess: () => {
+    onSuccess: (folder) => {
       qc.invalidateQueries({ queryKey: ['folders'] });
       router.dismissTo('/(tabs)/note');
       toast('학습 폴더를 만들었어요');
+      // 처음 안내에서 「첫 학습 폴더 만들기」로 왔으면 새 폴더로 들어가 + 버튼을 이어서 알려 준다
+      const tour = useTour.getState();
+      if (tour.afterFolder) {
+        tour.setAfterFolder(false);
+        router.push({ pathname: '/(tabs)/note/folder/[id]', params: { id: folder._id } });
+        tour.start('folder');
+      }
     },
   });
   return (
@@ -297,6 +304,8 @@ const summaryState = (m: Material) =>
       : '요약 중';
 
 export function FolderScreen() {
+  // 첫 폴더 안내가 짚는 + 버튼
+  const addTarget = useTourTarget('folder-add');
   const { id, upload } = useLocalSearchParams<{ id: string; upload?: 'hand' | 'rec' | 'doc' }>();
   const qc = useQueryClient();
   const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
@@ -499,7 +508,7 @@ export function FolderScreen() {
           </View>
         </View>
       )}
-      <Fab open={dial} onPress={() => setDial((d) => !d)} />
+      <Fab tour={addTarget} open={dial} onPress={() => setDial((d) => !d)} />
 
       <Sheet open={sheet === 'hand'} onClose={() => setSheet(null)} title="필기 올리기">
         <UploadOpt

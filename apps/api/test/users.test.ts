@@ -8,6 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { configureApp } from '../src/app.setup.js';
 import { User } from '../src/modules/auth/schemas/user.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
+import { ProgressService } from '../src/modules/progress/progress.service.js';
 import { UsersController } from '../src/modules/users/users.controller.js';
 import { UsersService } from '../src/modules/users/users.service.js';
 
@@ -17,6 +18,7 @@ const activeId = new Types.ObjectId();
 const inactiveId = new Types.ObjectId();
 const deletedId = new Types.ObjectId();
 let user: Record<string, unknown> | null;
+const streakDays = vi.fn(async (_userId: string) => 0);
 const categoryCount = vi.fn(
   async (filter: { _id: { $in: Types.ObjectId[] }; isActive: boolean; deletedAt: null }) => {
     const categories = [
@@ -62,6 +64,7 @@ beforeAll(async () => {
     providers: [
       UsersService,
       { provide: getModelToken(User.name), useValue: model },
+      { provide: ProgressService, useValue: { streakDays } },
       {
         provide: TokenService,
         useValue: {
@@ -82,6 +85,7 @@ afterAll(async () => {
 });
 beforeEach(() => {
   vi.clearAllMocks();
+  streakDays.mockResolvedValue(0);
   user = {
     _id: userId,
     nickname: '기존닉네임',
@@ -117,6 +121,15 @@ describe('내 프로필 API', () => {
     expect(res.body.data).toMatchObject({ _id: String(userId), nickname: '기존닉네임' });
     expect(res.body.data).not.toHaveProperty('passwordHash');
     expect(model.findOne).toHaveBeenCalledWith({ _id: userId, deletedAt: null });
+  });
+  it('GET·PATCH 모두 연속 학습일(streakDays)을 학습 기록에서 계산한 실제 값으로 내려준다', async () => {
+    streakDays.mockResolvedValue(7);
+    const res = await get();
+    expect(res.body.data.streakDays).toBe(7);
+    expect(streakDays).toHaveBeenCalledWith(String(userId));
+    const patched = await patch({ nickname: '새닉네임' });
+    expect(patched.status).toBe(200);
+    expect(patched.body.data.streakDays).toBe(7);
   });
   it('미인증 요청과 삭제되거나 없는 사용자를 거부한다', async () => {
     expect((await request(app.getHttpServer()).get('/api/v1/users/me')).status).toBe(401);
@@ -192,5 +205,69 @@ describe('내 프로필 API', () => {
   it('다른 인덱스 충돌은 닉네임 중복으로 잘못 표시하지 않는다', async () => {
     model.findOneAndUpdate.mockRejectedValueOnce({ code: 11000, keyPattern: { email: 1 } });
     expect((await patch({ nickname: '새닉네임' })).status).toBe(500);
+  });
+});
+
+describe('관심 분야는 공용 카테고리만 저장한다 (#287 리뷰)', () => {
+  const publicId = new Types.ObjectId();
+  const otherOwnerId = new Types.ObjectId();
+  // ownerId까지 보는 카테고리 목업. 다른 사용자가 만든 활성 카테고리(otherOwnerId)가 섞여 있다
+  const useCategories = () =>
+    categoryCount.mockImplementation(
+      async (filter: {
+        _id: { $in: Types.ObjectId[] };
+        ownerId?: null;
+        isActive: boolean;
+        deletedAt: null;
+      }) => {
+        const categories = [
+          { _id: publicId, ownerId: null, isActive: true, deletedAt: null },
+          { _id: otherOwnerId, ownerId: new Types.ObjectId(), isActive: true, deletedAt: null },
+        ];
+        return categories.filter(
+          (c) =>
+            filter._id.$in.some((id) => id.equals(c._id)) &&
+            (filter.ownerId === undefined || filter.ownerId === c.ownerId) &&
+            c.isActive === filter.isActive &&
+            c.deletedAt === filter.deletedAt,
+        ).length;
+      },
+    );
+
+  it('다른 사용자가 만든 카테고리를 보내면 400 INVALID_CATEGORY이고 저장하지 않는다', async () => {
+    useCategories();
+    const res = await patch({ interestCategoryIds: [String(otherOwnerId)] });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_CATEGORY');
+    expect(categoryCount).toHaveBeenCalledWith(expect.objectContaining({ ownerId: null }));
+    expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+    // 공용 + 남의 카테고리를 같이 보내도 전체가 거부된다
+    expect(
+      (await patch({ interestCategoryIds: [String(publicId), String(otherOwnerId)] })).status,
+    ).toBe(400);
+  });
+
+  it('공용 카테고리는 그대로 저장한다', async () => {
+    useCategories();
+    const res = await patch({ interestCategoryIds: [String(publicId)] });
+    expect(res.status).toBe(200);
+    expect(model.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      { $set: { interestCategoryIds: [publicId] } },
+      expect.anything(),
+    );
+  });
+
+  it('같은 ID가 (대소문자만 달라도) 중복으로 와도 한 번만 검사하고 저장한다', async () => {
+    useCategories();
+    const hex = String(publicId);
+    const res = await patch({ interestCategoryIds: [hex, hex.toUpperCase()] });
+    expect(res.status).toBe(200);
+    expect(categoryCount).toHaveBeenCalledWith(expect.objectContaining({ _id: { $in: [publicId] } }));
+    expect(model.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      { $set: { interestCategoryIds: [publicId] } },
+      expect.anything(),
+    );
   });
 });

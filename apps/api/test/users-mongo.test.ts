@@ -18,7 +18,7 @@ suite('MongoDB 프로필 닉네임 동시성', () => {
     await model.create(
       ids.map((_id, index) => ({ _id, nickname: `n${index}${target.slice(1)}`, email: null })),
     );
-    service = new UsersService(model as never);
+    service = new UsersService(model as never, { streakDays: async () => 0 } as never);
   });
   afterAll(async () => {
     if (!connection) return;

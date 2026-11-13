@@ -9,6 +9,7 @@ import { isValidObjectId, Types, type Model } from 'mongoose';
 
 import { User } from '../auth/schemas/user.schema.js';
 import { toAppUser } from '../auth/to-app-user.js';
+import { ProgressService } from '../progress/progress.service.js';
 import type { UpdateProfileDto } from './dto/update-profiile.dto.js';
 
 @Injectable()
@@ -16,6 +17,7 @@ export class UsersService {
   constructor(
     @InjectModel(User.name)
     private readonly userModel: Model<User>,
+    private readonly progress: ProgressService,
   ) {}
 
   async interestCategories() {
@@ -49,7 +51,7 @@ export class UsersService {
         message: '사용자를 찾을 수 없습니다.',
       });
     }
-    return toAppUser(user);
+    return toAppUser(user, await this.progress.streakDays(userId));
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
@@ -64,9 +66,15 @@ export class UsersService {
     if (dto.nickname !== undefined) changes.nickname = dto.nickname;
     if (dto.learnerType !== undefined) changes.learnerType = dto.learnerType;
     if (dto.interestCategoryIds !== undefined) {
-      const categoryIds = dto.interestCategoryIds.map((id) => new Types.ObjectId(id));
+      // 같은 ID가 두 번 와도 한 번만 검사하고 저장한다 (개수 비교가 어긋나지 않게)
+      // (대소문자만 다른 같은 ID도 합치려고 ObjectId 값 기준으로 비교한다)
+      const categoryIds = [
+        ...new Set(dto.interestCategoryIds.map((id) => new Types.ObjectId(id).toHexString())),
+      ].map((hex) => new Types.ObjectId(hex));
+      // interestCategories()와 같은 범위: 공용 카테고리(ownerId: null)만 허용한다
       const categoryCount = await this.userModel.db.collection('categories').countDocuments({
         _id: { $in: categoryIds },
+        ownerId: null,
         isActive: true,
         deletedAt: null,
       });
@@ -103,7 +111,7 @@ export class UsersService {
         });
       }
 
-      return toAppUser(user);
+      return toAppUser(user, await this.progress.streakDays(userId));
     } catch (error) {
       // nickname에는 유일 인덱스가 있으므로 DB에서도 중복을 막아줌.
       if (

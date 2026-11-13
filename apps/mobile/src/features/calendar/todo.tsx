@@ -89,7 +89,7 @@ export function TodoSheet({
                   {t.content}
                 </Text>
                 <Text className="text-caption2 text-sub">
-                  {t.subjectName ?? '일반'} · {slotLabel(t)}
+                  {todoMeta(t)}
                 </Text>
               </View>
             </Pressable>
@@ -106,6 +106,11 @@ const TYPES: [TodoType, string][] = [
   ['assignment', '과제'],
   ['exam', '시험'],
 ];
+/** 날짜 시트 할 일 아래 줄: 종류(일반 · 과제 · 시험) · 과목(있으면) · 시간. 과목이 없을 때 '일반'으로 채우면 종류와 헷갈린다 */
+export const todoMeta = (t: Todo) =>
+  [TYPES.find(([k]) => k === t.todoType)?.[1], t.subjectName, slotLabel(t)]
+    .filter(Boolean)
+    .join(' · ');
 const SLOTS: [Todo['timeSlot'], string][] = [
   ['none', '시간 미정'],
   ['am', '오전'],

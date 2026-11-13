@@ -194,16 +194,16 @@ it('공부 항목 추가 실패를 알리고 입력을 유지한 채 같은 값�
   await fireEvent.press(screen.getByText('+ 새 과목'));
   await fireEvent.changeText(screen.getByPlaceholderText('새 과목 이름 (20자까지)'), '물리');
   await fireEvent.press(screen.getByText('직접 입력'));
-  await fireEvent.changeText(screen.getByPlaceholderText('목표 시간 (분)'), '37');
+  await fireEvent.changeText(screen.getByPlaceholderText('목표 시간 (시간)'), '3');
   await fireEvent.press(screen.getByText('추가하기'));
   await waitFor(() => expect(mockToast).toHaveBeenCalled());
   expect(onClose).not.toHaveBeenCalled();
   expect(screen.getByPlaceholderText('이차방정식 풀이').props.value).toBe('재시도할 공부');
   expect(screen.getByPlaceholderText('새 과목 이름 (20자까지)').props.value).toBe('물리');
-  expect(screen.getByPlaceholderText('목표 시간 (분)').props.value).toBe('37');
+  expect(screen.getByPlaceholderText('목표 시간 (시간)').props.value).toBe('3');
   await fireEvent.press(screen.getByText('추가하기'));
   await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-  const payload = { title: '재시도할 공부', subjectName: '물리', goalMin: 37 };
+  const payload = { title: '재시도할 공부', subjectName: '물리', goalMin: 180 };
   expect(mockApi.study.addItem.mock.calls.map(([input]) => input)).toEqual([payload, payload]);
 });
 

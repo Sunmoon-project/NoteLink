@@ -199,3 +199,28 @@ it('움직이는 부품(눈 · 입)은 따로 두고 나머지는 한 메시로 
     expect((m.material as { isMeshMatcapMaterial?: boolean }).isMeshMatcapMaterial).toBe(true);
   add.mockRestore();
 });
+
+describe('표정', () => {
+  const { eyeOpen, FlatFace, MOUTH_WIDE } = jest.requireActual<
+    typeof import('../features/tutor/avatar3d')
+  >('../features/tutor/avatar3d');
+  const h = (id: string) => screen.getByTestId(id).props.style.height as number;
+
+  it('3D: 놀라면 두 눈을 크게, 윙크는 왼눈만 감고, 평소에는 깜빡임을 따른다', () => {
+    expect(eyeOpen('surprised', 0, 1)).toBeGreaterThan(1);
+    expect(eyeOpen('surprised', 1, 1)).toBeGreaterThan(1);
+    expect(eyeOpen('wink', 0, 1)).toBeLessThan(0.2);
+    expect(eyeOpen('wink', 1, 1)).toBe(1);
+    expect(eyeOpen('idle', 0, 0.12)).toBe(0.12);
+    expect(MOUTH_WIDE.surprised).toBeLessThan(1); // 동그랗게 오므린 입
+    expect(MOUTH_WIDE.wink).toBeGreaterThan(1);
+  });
+
+  it('2D 얼굴도 같은 표정: 놀람은 큰 눈 · 동그란 입, 윙크는 왼눈만 감음', async () => {
+    const view = await render(<FlatFace mood="surprised" size={100} />);
+    expect(h('flat-eye-0')).toBeGreaterThan(12);
+    expect(h('flat-mouth')).toBe(screen.getByTestId('flat-mouth').props.style.width);
+    await view.rerender(<FlatFace mood="wink" size={100} />);
+    expect(h('flat-eye-0')).toBeLessThan(h('flat-eye-1'));
+  });
+});

@@ -28,7 +28,7 @@ describe('공부할 항목 추가 입력', () => {
     subject: '수학',
     newSubject: '',
     goal: '1시간' as const,
-    customMin: '',
+    customHours: '',
   };
   it('새 과목은 입력한 이름으로 저장한다', () => {
     expect(itemInput({ ...base, subject: '+ 새 과목', newSubject: ' 물리 ' })).toMatchObject({
@@ -38,12 +38,14 @@ describe('공부할 항목 추가 입력', () => {
       '과목 이름을 입력해 주세요',
     );
   });
-  it('직접 입력한 목표 시간을 1 ~ 1440분 안에서 저장한다', () => {
-    expect(itemInput({ ...base, goal: '직접 입력', customMin: '75' })).toMatchObject({
-      goalMin: 75,
+  it('목표 시간은 시간 단위로 고르고 분으로 저장한다', () => {
+    expect(itemInput({ ...base, goal: '2시간' })).toMatchObject({ goalMin: 120 });
+    expect(itemInput({ ...base, goal: '직접 입력', customHours: '5' })).toMatchObject({
+      goalMin: 300,
     });
-    expect(typeof itemInput({ ...base, goal: '직접 입력', customMin: '' })).toBe('string');
-    expect(typeof itemInput({ ...base, goal: '직접 입력', customMin: '1441' })).toBe('string');
+    expect(typeof itemInput({ ...base, goal: '직접 입력', customHours: '' })).toBe('string');
+    expect(typeof itemInput({ ...base, goal: '직접 입력', customHours: '0' })).toBe('string');
+    expect(typeof itemInput({ ...base, goal: '직접 입력', customHours: '25' })).toBe('string');
   });
   it('목표는 생략할 수 있고, 공부할 내용은 비울 수 없다', () => {
     expect(itemInput({ ...base, goal: null })).toMatchObject({ goalMin: null });

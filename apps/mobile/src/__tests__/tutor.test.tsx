@@ -8,12 +8,16 @@ import * as SecureStore from 'expo-secure-store';
 import { BUDDY_LINES, TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
 import { AvatarCheer, ENCOURAGE, PRAISE } from '../features/tutor/cheer';
 import { AvatarTeacherScreen } from '../features/tutor/teacher';
-import { STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
+import { FOLDER_STEPS, STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
 import { useAuth } from '../stores/auth';
-import { TutorScreen } from '../features/tutor/tutor';
+import { TutorScreen, nextSuggest, type Msg } from '../features/tutor/tutor';
 import { renderScreen, setParams } from '../test-utils';
 
+const { STAGE_LINES } =
+  jest.requireActual<typeof import('../features/tutor/tutor')>('../features/tutor/tutor');
+
 jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
   router: { push: jest.fn(), back: jest.fn(), replace: jest.fn(), navigate: jest.fn() },
   useLocalSearchParams: () => globalThis.mockParams,
   useSegments: () => [],
@@ -90,6 +94,61 @@ describe('아바타 선생님 대화', () => {
       question: '이 노트 핵심만 알려 주세요',
       history: [],
     });
+  });
+
+  it('추천 질문 하나에 답한 뒤 남은 추천 질문을 다음 질문으로 보여 주고, 누르면 이어서 묻는다', async () => {
+    mockApi.content.ask.mockResolvedValue(job());
+    await renderScreen(<TutorScreen />);
+    await fireEvent.press(await screen.findByText('이 노트 핵심만 알려 주세요'));
+    expect(await screen.findByText('어려운 개념을 쉽게 설명해 주세요')).toBeTruthy();
+    expect(screen.getByText('시험에 나올 만한 내용은 뭐예요?')).toBeTruthy();
+    // 이미 물은 질문은 다시 권하지 않는다(사용자 말풍선 하나만 남는다)
+    expect(screen.getAllByText('이 노트 핵심만 알려 주세요')).toHaveLength(1);
+    await fireEvent.press(screen.getByText('시험에 나올 만한 내용은 뭐예요?'));
+    await waitFor(() =>
+      expect(mockApi.content.ask).toHaveBeenLastCalledWith('m1', {
+        question: '시험에 나올 만한 내용은 뭐예요?',
+        history: expect.any(Array),
+      }),
+    );
+    expect(await screen.findByText('어려운 개념을 쉽게 설명해 주세요')).toBeTruthy();
+    expect(screen.getAllByText('시험에 나올 만한 내용은 뭐예요?')).toHaveLength(1);
+  });
+
+  it('오류로 끝난 추천 질문은 다시 칩으로 보여 주고, 누르면 같은 질문을 다시 묻는다', async () => {
+    mockApi.content.ask
+      .mockRejectedValueOnce(new ApiError(ERROR_CODES.NOTE_NOT_READY, '정리 중', 409))
+      .mockResolvedValueOnce(job());
+    await renderScreen(<TutorScreen />);
+    await fireEvent.press(await screen.findByText('이 노트 핵심만 알려 주세요'));
+    expect(await screen.findByText('노트 정리가 끝나면 설명해 드릴게요.')).toBeTruthy();
+    // 사용자 말풍선 + 다시 묻기 칩
+    expect(screen.getAllByText('이 노트 핵심만 알려 주세요')).toHaveLength(2);
+    await fireEvent.press(screen.getAllByText('이 노트 핵심만 알려 주세요').at(-1)!);
+    expect(await screen.findByText('네 가지 조건이 있어요.')).toBeTruthy();
+    expect(mockApi.content.ask).toHaveBeenLastCalledWith('m1', {
+      question: '이 노트 핵심만 알려 주세요',
+      history: expect.any(Array),
+    });
+  });
+
+  it('다음 추천 질문: 답을 받은 질문(거절 포함)만 빼고, 오류로 끝난 질문은 남긴다', () => {
+    const m = (role: Msg['role'], text: string, extra: Partial<Msg> = {}): Msg => ({
+      id: 0,
+      role,
+      text,
+      ...extra,
+    });
+    expect(
+      nextSuggest([
+        m('user', '이 노트 핵심만 알려 주세요'),
+        m('avatar', '연결을 확인해 주세요', { error: true }),
+        m('user', '시험에 나올 만한 내용은 뭐예요?'),
+        m('avatar', '대답할 수 없어요', { refused: true }),
+      ]),
+    ).toEqual(['이 노트 핵심만 알려 주세요', '어려운 개념을 쉽게 설명해 주세요']);
+    // 아바타가 아직 답하지 않았으면 보이지 않는다
+    expect(nextSuggest([m('user', '이 노트 핵심만 알려 주세요')])).toEqual([]);
   });
 
   it('자료로 답하면 다음 학습(퀴즈 · 복습)으로 잇고, 답하지 못한 질문 뒤에는 권하지 않는다', async () => {
@@ -234,6 +293,54 @@ describe('아바타 선생님 대화', () => {
     mockApi.shop.items.mockResolvedValue([]);
     await renderScreen(<TutorScreen />);
     expect(await screen.findByText('3D:jihoo')).toBeTruthy();
+  });
+
+  it('무대의 아바타를 누를 때마다 표정을 바꾸며 말풍선으로 한마디 하고, 잠시 뒤 원래대로 돌아온다', async () => {
+    jest.useFakeTimers();
+    try {
+      await renderScreen(<TutorScreen />);
+      expect(await screen.findByText('3D:base')).toBeTruthy();
+      const face = screen.getByLabelText('아바타 선생님에게 말 걸기');
+      const seen = new Set<string>();
+      for (const { mood, line } of STAGE_LINES.slice(0, 4)) {
+        await fireEvent.press(face);
+        // 말풍선은 앞 글을 흐리게 지운 뒤 바뀐다(Swap)
+        await act(async () => jest.advanceTimersByTime(300));
+        expect(screen.getAllByText(line).length).toBeGreaterThan(0);
+        expect(screen.getByLabelText(`표정:${mood}`)).toBeTruthy();
+        seen.add(mood);
+      }
+      // 표정이 여러 가지(웃음 · 놀람 · 윙크 · 생각)
+      expect(seen.size).toBe(4);
+      await act(async () => jest.advanceTimersByTime(3600));
+      await act(async () => jest.advanceTimersByTime(300));
+      expect(screen.queryByText(STAGE_LINES[3]!.line)).toBeNull();
+      expect(screen.getByLabelText('표정:idle')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('말풍선을 띄운 뒤 질문하면 말풍선을 버려, 답이 일찍 끝나도 옛 말풍선이 다시 뜨지 않는다', async () => {
+    mockApi.content.ask.mockRejectedValueOnce(new Error('offline'));
+    await renderScreen(<TutorScreen />);
+    await fireEvent.press(await screen.findByLabelText('아바타 선생님에게 말 걸기'));
+    expect((await screen.findAllByText(STAGE_LINES[0]!.line)).length).toBeGreaterThan(0);
+    await fireEvent.press(screen.getByText('이 노트 핵심만 알려 주세요'));
+    expect(await screen.findByText(/답을 만들지 못했어요/)).toBeTruthy();
+    // 말풍선 타이머(3.5초)가 끝나기 전에, 사라지는 페이드(Swap)만 기다려도 옛 말풍선은 없다
+    await waitFor(() => expect(screen.queryAllByText(STAGE_LINES[0]!.line)).toHaveLength(0), {
+      timeout: 800,
+    });
+  });
+
+  it('답하는 중에는 눌러도 말풍선을 띄우지 않는다', async () => {
+    mockApi.content.ask.mockReturnValue(new Promise(() => {}));
+    await renderScreen(<TutorScreen />);
+    await fireEvent.press(await screen.findByText('이 노트 핵심만 알려 주세요'));
+    await fireEvent.press(screen.getByLabelText('아바타 선생님에게 말 걸기'));
+    expect(screen.queryByText(STAGE_LINES[0]!.line)).toBeNull();
+    expect(screen.getByLabelText('표정:thinking')).toBeTruthy();
   });
 
   it('퀴즈처럼 다른 화면이 위에 쌓이면 보이지 않는 3D 아바타를 내린다', async () => {
@@ -475,10 +582,16 @@ describe('퀴즈 · 복습 문제의 아바타 한마디', () => {
   });
 });
 
+it('처음 안내는 틀린 문제를 오답 노트로 매일 복습하는 방법도 알려 준다', () => {
+  const step = STEPS.find((s) => s.title === '복습: 틀린 문제');
+  expect(step).toMatchObject({ route: '/quiz', flow: 2 });
+  expect(step!.body).toMatch(/오답 노트.*하루에 처음/);
+});
+
 describe('처음 안내', () => {
   beforeEach(() => {
     useAuth.setState({ userId: 'u1' });
-    useTour.setState({ step: 0 });
+    useTour.setState({ step: 0, kind: 'main', afterFolder: false });
   });
 
   it('실제 화면(홈 → 노트 → 퀴즈 → 홈)을 옮겨 다니며 단계마다 설명하고, 끝나면 기록한다', async () => {
@@ -497,6 +610,7 @@ describe('처음 안내', () => {
       '/note',
       '/quiz',
       '/quiz',
+      '/quiz',
       '/',
     ]);
     await fireEvent.press(screen.getByText('첫 학습 폴더 만들기'));
@@ -507,6 +621,37 @@ describe('처음 안내', () => {
     // 버튼 이름대로 폴더 만들기를 연다
     await waitFor(() => expect(router.push).toHaveBeenLastCalledWith('/note-new/tag'));
     expect(useTour.getState().step).toBe(-1);
+    // 폴더를 만들면 폴더 안 + 버튼 안내로 잇는다
+    expect(useTour.getState().afterFolder).toBe(true);
+  });
+
+  it('첫 폴더 안내: 폴더 안 + 버튼을 짚어 올리는 방법을 알려 주고, 화면은 옮기지 않는다', async () => {
+    useTour.setState({ step: 0, kind: 'folder' });
+    jest.mocked(router.navigate).mockClear();
+    jest.mocked(router.push).mockClear();
+    await renderScreen(<TourCoach />);
+    expect(screen.getByText(FOLDER_STEPS[0]!.title)).toBeTruthy();
+    expect(FOLDER_STEPS[0]!.spot).toEqual({ target: 'folder-add', tab: 1 });
+    expect(FOLDER_STEPS[0]!.body).toMatch(/학습 자료 .*녹음 .*필기/);
+    expect(screen.getByText(`1 / ${FOLDER_STEPS.length}`)).toBeTruthy();
+    await fireEvent.press(screen.getByText('다음'));
+    expect(await screen.findByText(FOLDER_STEPS[1]!.title)).toBeTruthy();
+    await fireEvent.press(screen.getByText('시작하기'));
+    await waitFor(() => expect(useTour.getState().step).toBe(-1));
+    expect(router.navigate).not.toHaveBeenCalled();
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it('안내는 지금 있는 기능만 말한다: 노트 탭 + 는 폴더 만들기, 틀린 문제는 유사 퀴즈 · 보관함', () => {
+    const add = STEPS.find((s) => s.title === '정리: 자료 올리기')!;
+    expect(add.body).toMatch(/폴더를 먼저 만들어요.*폴더에 들어가 \+ 버튼/);
+    const make = STEPS.find((s) => s.title === '복습: 퀴즈 만들기')!;
+    expect(make.body).toMatch(/유사 퀴즈.*보관함/);
+    expect(STEPS.map((s) => s.body).join(' ')).not.toMatch(/오늘의 복습/);
+  });
+
+  it('처음 안내 마지막 단계는 정리 · 학습 · 복습을 ①②③으로 요약한다', () => {
+    expect(STEPS.at(-1)!.body).toMatch(/① .*② .*③ /);
   });
 
   it('건너뛰기는 한 번 더 묻고, 계속 보기를 고르면 안내에 남는다', async () => {
