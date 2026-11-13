@@ -52,6 +52,10 @@ const shareModel = {
             return Promise.resolve({});
         },
     ),
+    deleteMany: vi.fn((f: { ownerId: Types.ObjectId; friendId: { $in: Types.ObjectId[] } }) => {
+        shares = shares.filter((s) => !(s.ownerId.equals(f.ownerId) && f.friendId.$in.some((id) => id.equals(s.friendId))));
+        return Promise.resolve({});
+    }),
     find: vi.fn((f: { ownerId: Types.ObjectId }) => {
         const rows = shares.filter((s) => s.ownerId.equals(f.ownerId));
         const chain = {
@@ -231,6 +235,20 @@ describe('시간표 API (/timetable)', () => {
 
         it('친구가 아닌 사람이 하나라도 섞여 있으면 400 NOT_FRIEND이고 아무에게도 공유하지 않는다', async () => {
             const res = await shareWith([friend.toString(), stranger.toString()]);
+            expect(res.status).toBe(400);
+            expect(res.body.code).toBe('NOT_FRIEND');
+            expect(shares).toHaveLength(0);
+        });
+
+        it('친구 확인 뒤 공유를 쓰는 사이에 친구를 끊었으면 쓴 공유를 지우고 400 NOT_FRIEND', async () => {
+            // 공유 쓰기 직전에 친구 끊기(관계 삭제 → 공유 정리)가 끝까지 돈다
+            shareModel.bulkWrite.mockImplementationOnce(async (ops) => {
+                friendships = [];
+                shares = [];
+                for (const { updateOne: op } of ops) shares.push({ _id: new Types.ObjectId(), ...op.filter, ...op.update.$set });
+                return {};
+            });
+            const res = await shareWith([friend.toString()]);
             expect(res.status).toBe(400);
             expect(res.body.code).toBe('NOT_FRIEND');
             expect(shares).toHaveLength(0);

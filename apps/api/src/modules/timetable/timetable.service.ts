@@ -103,6 +103,14 @@ export class TimetableService {
                 },
             })),
         );
+        // 확인한 뒤 쓰는 사이에 친구를 끊었으면(FriendsService.remove는 관계 → 공유 순으로 지운다) 방금 쓴 공유가 남는다.
+        // 다시 확인해서 그 공유를 지운다. 다시 확인이 통과했다면 쓰기는 끊기보다 앞이라 끊기의 공유 정리가 지운다
+        const still = await this.friendIds(owner, requested);
+        const gone = requested.filter((id) => !still.has(id));
+        if (gone.length > 0) {
+            await this.shareModel.deleteMany({ ownerId: owner, friendId: { $in: gone.map((id) => new Types.ObjectId(id)) } });
+            throw new BadRequestException({ code: 'NOT_FRIEND', message: '친구가 아닌 사용자에게는 시간표를 공유할 수 없습니다.' });
+        }
     }
 
     /** 내가 시간표를 공유 중인 친구들 (공유한 순서) */
