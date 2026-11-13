@@ -19,6 +19,7 @@ on:
       - 'package-lock.json'
       - 'tsconfig.base.json'
       - 'scripts/wait-http-ok.sh'
+      - 'scripts/kudu-zip-deploy.sh'
       - '.github/workflows/deploy.yml'
   pull_request:
     branches: [develop, main]
@@ -30,6 +31,7 @@ on:
       - 'package-lock.json'
       - 'tsconfig.base.json'
       - 'scripts/wait-http-ok.sh'
+      - 'scripts/kudu-zip-deploy.sh'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
@@ -145,31 +147,6 @@ jobs:
       - name: 배포
         if: github.event_name != 'pull_request'
         # App Service가 배포 때 패키지를 설치하느라 몇 분 걸려서, 끝까지 붙잡고 기다리면 앞단 응답 한도(약 4분)에 걸려
-        # 504로 끊긴다. 그래서 배포는 비동기로 시작하고, Kudu 배포 기록으로 끝났는지 확인한다.
+        # 504로 끊긴다. Kudu 비동기 zip 배포로 시작하고 그 배포의 상태 주소를 최대 30분 확인한다(scripts/kudu-zip-deploy.sh).
         # AI 서버는 API 서버 IP만 받으므로 주소로는 확인하지 못한다.
-        run: |
-          latest() {
-            az rest --method get --resource "https://management.azure.com/" \
-              --uri "https://$AI_APP.scm.azurewebsites.net/api/deployments/latest" \
-              --query "{id:id,complete:complete,status:status,text:status_text}" -o json 2>/dev/null || echo '{}'
-          }
-          before=$(latest | jq -r '.id // ""')
-          az webapp deploy --resource-group "$RESOURCE_GROUP" --name "$AI_APP" --src-path ai.zip --type zip --async true
-          # Kudu status: 3 실패, 4 성공. 최대 30분(20초 × 90번) 기다린다
-          for _ in $(seq 1 90); do
-            sleep 20
-            now=$(latest)
-            id=$(jq -r '.id // ""' <<<"$now")
-            if [ -z "$id" ] || [ "$id" = "$before" ] || [ "$(jq -r '.complete' <<<"$now")" != "true" ]; then
-              echo "진행 중: $(jq -c . <<<"$now")"
-              continue
-            fi
-            if [ "$(jq -r '.status' <<<"$now")" = "4" ]; then
-              echo "배포 성공: $(jq -c . <<<"$now")"
-              exit 0
-            fi
-            echo "::error::AI 서버 배포 실패: $(jq -c . <<<"$now") — https://$AI_APP.scm.azurewebsites.net/api/deployments/$id/log"
-            exit 1
-          done
-          echo "::error::AI 서버 배포가 30분 안에 끝나지 않았습니다"
-          exit 1
+        run: bash scripts/kudu-zip-deploy.sh "$AI_APP" ai.zip 90 20
