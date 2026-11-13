@@ -175,6 +175,22 @@ npm run dev:mobile   # 앱 개발 서버
 
 > Expo SDK 57에서는 Watchman이 필요 없습니다. iPhone 실기기에 설치하려면 Apple 개발자 계정이 필요합니다.
 
+### 실제 휴대폰에서 테스트
+
+앱에 LiveKit · WebRTC 같은 네이티브 모듈이 있어 Expo Go 앱으로는 열 수 없습니다. 테스트용 앱을 직접 빌드해 설치합니다.
+빌드 종류는 둘입니다: **기기 저장 모드**(`EXPO_PUBLIC_USE_LOCAL_DATA=true`, 서버 없이 폰에 저장)와 **서버 연결**(배포 서버 주소로 연결).
+
+| 방법 | 필요한 것 | 명령(`apps/mobile`에서) | 설치 |
+| --- | --- | --- | --- |
+| 안드로이드 · USB | Android Studio(4장 Mac/Windows 준비), 폰 USB 디버깅 | `npm run android:device` | 연결한 폰에 바로 설치(릴리스 빌드라 Metro 없이 동작) |
+| 안드로이드 · 링크(APK) | Expo 계정 | `npm run build:android:local` 또는 `build:android:server` | 빌드가 끝나면 나오는 링크 · QR로 받아 설치 |
+| 아이폰 · USB | Mac + Xcode, 무료 Apple ID | `npm run ios:device` | 연결한 아이폰에 설치. **무료 계정은 7일마다 다시 설치**해야 하고 푸시 알림은 빠진다 |
+
+- **USB 빌드의 연결 대상**은 `apps/mobile/.env`를 따릅니다. 기기 저장 모드면 `EXPO_PUBLIC_USE_LOCAL_DATA=true`, 서버 연결이면 `false`와 `EXPO_PUBLIC_API_URL`(폰에서 닿는 주소: 배포 서버 또는 같은 와이파이의 PC IP)
+- **아이폰 · USB 처음 한 번**: Xcode > Settings > Accounts에 Apple ID를 더하고, 빌드 중 서명 팀을 고르라고 하면 그 Apple ID(Personal Team)를 고릅니다. 번들 ID가 이미 쓰인다고 나오면 `NOTELINK_IOS_BUNDLE_ID=com.내이름.notelink npm run ios:device`. 설치 뒤 아이폰 설정 > 일반 > VPN 및 기기 관리에서 개발자 앱을 신뢰합니다
+- **EAS(링크 설치) 처음 한 번**: expo.dev 가입 → `npx eas-cli login` → `apps/mobile`에서 `npx eas-cli init` → 알려 준 프로젝트 ID를 `app.config.ts`의 `EAS_PROJECT_ID`에 넣어 커밋. 서버 연결 빌드는 `npx eas-cli env:create --environment preview --name EXPO_PUBLIC_API_URL --value https://<배포 서버>/api/v1 --visibility plaintext`로 주소를 넣습니다
+- 아이폰 링크 설치(EAS 내부 배포 · TestFlight)는 Apple 개발자 계정(연 $99)이 있어야 합니다(`eas.json`의 `preview-*` 프로필이 그대로 쓰임)
+
 ---
 
 ## 5. 개발 규칙
