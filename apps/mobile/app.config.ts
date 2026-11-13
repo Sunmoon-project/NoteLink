@@ -26,6 +26,7 @@ const config: ExpoConfig = {
   },
   plugins: [
     'expo-router',
+    ['expo-build-properties', { ios: { enableSceneSupport: true } }],
     '@livekit/react-native-expo-plugin',
     '@config-plugins/react-native-webrtc',
     'expo-status-bar',

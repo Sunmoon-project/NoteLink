@@ -110,6 +110,28 @@ describe.skipIf(!local)('로컬 MongoDB 동시 참여', () => {
       status: 'kicked',
     });
   });
+  it('마지막 참가자가 나가면 닫힌 방으로 남고 반복 퇴장은 안전하다', async () => {
+    const room = await model.create({
+      title: '마지막 퇴장',
+      categoryId: new Types.ObjectId(),
+      hostId: ids[0],
+      inviteCode: 'LAST01',
+      isPublic: true,
+      memberCount: 1,
+      maxCapacity: 5,
+      members: [{ userId: ids[0], role: 'host', status: 'joined', joinedAt: new Date() }],
+    });
+    await service.leaveRoom(String(ids[0]), String(room._id));
+    const closed = await model.findById(room._id).lean().orFail();
+    expect(closed.closedAt).toBeInstanceOf(Date);
+    expect(closed.deleteAfter!.getTime() - closed.closedAt!.getTime()).toBe(
+      7 * 24 * 60 * 60 * 1000,
+    );
+    expect(closed.memberCount).toBe(0);
+    expect(closed.members[0]).toMatchObject({ status: 'left', leaveReason: 'voluntary' });
+    await expect(service.leaveRoom(String(ids[0]), String(room._id))).resolves.toBeUndefined();
+  });
+
   it('방장과 다른 참가자가 동시에 퇴장해도 남은 방장은 참여 상태다', async () => {
     const third = new Types.ObjectId();
     const room = await model.create({

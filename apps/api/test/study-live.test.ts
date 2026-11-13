@@ -1,7 +1,7 @@
 import { JwtService } from '@nestjs/jwt';
 import { NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
-import { RoomServiceClient } from 'livekit-server-sdk';
+import { RoomServiceClient, ServerError } from 'livekit-server-sdk';
 import { StudyLiveService } from '../src/modules/studyroom/study-live.service.js';
 
 const ROOM = '507f1f77bcf86cd799439011';
@@ -67,6 +67,27 @@ describe('스터디 라이브 토큰', () => {
       await expect(setup().service.disconnect(ROOM, USER)).rejects.toBeInstanceOf(
         ServiceUnavailableException,
       );
+    } finally {
+      disconnect.mockRestore();
+    }
+  });
+  it('이미 없는 참가자는 반복 종료해도 성공하고 다른 실패는 알린다', async () => {
+    const disconnect = vi.spyOn(RoomServiceClient.prototype, 'removeParticipant');
+    disconnect.mockResolvedValueOnce(undefined);
+    disconnect.mockRejectedValueOnce(
+      new ServerError('Not Found', 'participant not found', 404, 'not_found'),
+    );
+    disconnect.mockRejectedValueOnce(
+      new ServerError('Unavailable', 'network failure', 503, 'unavailable'),
+    );
+    try {
+      const { service } = setup();
+      await expect(service.disconnect(ROOM, USER)).resolves.toBeUndefined();
+      await expect(service.disconnect(ROOM, USER)).resolves.toBeUndefined();
+      await expect(service.disconnect(ROOM, USER)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      expect(disconnect).toHaveBeenCalledTimes(3);
     } finally {
       disconnect.mockRestore();
     }

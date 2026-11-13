@@ -229,6 +229,14 @@ describe('RoomSettingsScreen', () => {
     await fireEvent.press(screen.getByText('채팅방 나가기'));
     await fireEvent.press(await screen.findByText('확인'));
   }
+  it('마지막 멤버가 나갈 때 방과 채팅의 7일 뒤 삭제를 안내한다', async () => {
+    mockApi.rooms.get.mockResolvedValue({ ...room, memberCount: 1 });
+    const qc = client();
+    await renderScreen(<RoomSettingsScreen />, qc);
+    await waitFor(() => expect(qc.getQueryData(['room', room._id])).toBeTruthy());
+    await fireEvent.press(screen.getByText('채팅방 나가기'));
+    expect(screen.getByText('마지막으로 나가면 방이 닫히고 7일 후 방과 채팅 기록이 삭제돼요.')).toBeTruthy();
+  });
   it('퇴장 성공 시 해당 방을 떠나고 방 목록 캐시 갱신 후 목록으로 돌아간다', async () => {
     const qc = client();
     qc.setQueryData(['rooms', 'mine'], [room]);

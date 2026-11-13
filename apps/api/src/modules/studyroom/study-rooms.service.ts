@@ -450,10 +450,65 @@ export class StudyRoomsService {
         { updatePipeline: true },
       );
       if (hostResult.matchedCount) return;
+      // 마지막 참여자가 나가면 방을 닫고 보관 기간을 시작한다.
+      // 동시에 입장하거나 다른 참여자가 남아 있으면 닫지 않는다.
+      const closedAt = new Date();
+      const deleteAfter = new Date(closedAt.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const lastMemberResult = await this.rooms.updateOne(
+        {
+          _id: new Types.ObjectId(roomId),
+          closedAt: null,
+          hostId: memberId,
+          memberCount: 1,
+          members: { $elemMatch: { userId: memberId, status: 'joined' } },
+          $expr: {
+            $and: [
+              {
+                $eq: [
+                  {
+                    $size: {
+                      $filter: {
+                        input: '$members',
+                        as: 'm',
+                        cond: { $eq: ['$$m.status', 'joined'] },
+                      },
+                    },
+                  },
+                  1,
+                ],
+              },
+              {
+                $eq: [
+                  {
+                    $size: {
+                      $filter: {
+                        input: '$members',
+                        as: 'm',
+                        cond: { $eq: ['$$m.userId', memberId] },
+                      },
+                    },
+                  },
+                  1,
+                ],
+              },
+            ],
+          },
+        },
+        {
+          $set: {
+            closedAt,
+            deleteAfter,
+            memberCount: 0,
+            'members.$[member].status': 'left',
+            'members.$[member].leaveReason': 'voluntary',
+            'members.$[member].leftAt': closedAt,
+          },
+        },
+        { arrayFilters: [{ 'member.userId': memberId, 'member.status': 'joined' }] },
+      );
+      if (lastMemberResult.matchedCount) return;
       const alreadyLeft = await this.rooms.exists({
         _id: new Types.ObjectId(roomId),
-        closedAt: null,
-        hostId: { $ne: memberId },
         members: { $elemMatch: { userId: memberId, status: 'left', leaveReason: 'voluntary' } },
       });
       if (alreadyLeft) return;

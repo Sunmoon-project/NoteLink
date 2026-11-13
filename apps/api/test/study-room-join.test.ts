@@ -34,12 +34,16 @@ describe('스터디룸 퇴장', () => {
     });
     expect(Array.isArray(rooms.updateOne.mock.calls[1]![1])).toBe(true);
   });
-  it('위임할 참가자가 없는 방장의 퇴장 요청은 현재 정책대로 거절한다', async () => {
-    rooms.updateOne.mockResolvedValue({ matchedCount: 0 });
-    rooms.exists.mockResolvedValue(null);
-    await expect(service.leaveRoom(String(userId), String(roomId))).rejects.toBeInstanceOf(
-      ConflictException,
-    );
+  it('마지막 방장이 나가면 방을 닫고 퇴장 상태를 저장한다', async () => {
+    rooms.updateOne
+      .mockResolvedValueOnce({ matchedCount: 0 })
+      .mockResolvedValueOnce({ matchedCount: 0 })
+      .mockResolvedValueOnce({ matchedCount: 1 });
+    await expect(service.leaveRoom(String(userId), String(roomId))).resolves.toBeUndefined();
+    expect(rooms.updateOne.mock.calls[2]![0]).toMatchObject({ hostId: userId, memberCount: 1 });
+    expect(rooms.updateOne.mock.calls[2]![1]).toMatchObject({
+      $set: { closedAt: expect.any(Date), memberCount: 0, 'members.$[member].status': 'left' },
+    });
   });
   it('자진 퇴장은 상태 변경과 인원 감소를 함께 수행한다', async () => {
     rooms.updateOne.mockResolvedValue({ matchedCount: 1 });

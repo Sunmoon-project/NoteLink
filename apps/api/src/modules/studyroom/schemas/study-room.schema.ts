@@ -76,6 +76,12 @@ export class StudyRoom {
   @Prop({ type: Date, default: null })
   closedAt?: Date | null;
 
+  @Prop({ type: Date, default: null })
+  deleteAfter?: Date | null;
 }
 
 export const StudyRoomSchema = SchemaFactory.createForClass(StudyRoom);
+StudyRoomSchema.index(
+  { deleteAfter: 1 },
+  { partialFilterExpression: { deleteAfter: { $type: 'date' } } },
+);

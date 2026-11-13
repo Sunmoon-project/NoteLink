@@ -12,6 +12,7 @@ import { StudyChatService } from './study-chat.service.js';
 import { StudyChatController } from './study-chat.controller.js';
 import { StudyChatGateway } from './study-chat.gateway.js';
 import { StudyLiveService } from './study-live.service.js';
+import { StudyRoomCleanupService } from './study-room-cleanup.service.js';
 
 @Module({
   imports: [
@@ -25,6 +26,12 @@ import { StudyLiveService } from './study-live.service.js';
     ]),
   ],
   controllers: [StudyRoomsController, StudyChatController],
-  providers: [StudyRoomsService, StudyChatService, StudyChatGateway, StudyLiveService],
+  providers: [
+    StudyRoomsService,
+    StudyChatService,
+    StudyChatGateway,
+    StudyLiveService,
+    StudyRoomCleanupService,
+  ],
 })
 export class StudyRoomsModule {}

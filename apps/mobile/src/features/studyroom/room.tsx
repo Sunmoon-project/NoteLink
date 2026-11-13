@@ -652,14 +652,15 @@ export function RoomScreen() {
   }, [conn]);
 
   const send = () => {
-    if (!v.trim()) return;
+    const text = v.trim();
+    if (!text) return;
+    if (text.length > 2000) return toast('메시지는 2,000자까지 보낼 수 있어요');
     if (!chatId.data) {
       void chatId.refetch();
       return toast('채팅을 준비하고 있어요. 잠시 후 다시 보내 주세요');
     }
     if (!myId) return toast('로그인 상태를 확인해 주세요');
     const clientId = `c${Date.now()}-${++messageSeq.current}-${Math.random().toString(36).slice(2, 10)}`;
-    const text = v.trim();
     const entry = { clientId, chatRoomId: chatId.data, text, createdAt: new Date().toISOString() };
     try {
       addChatOutbox(myId, id, entry);

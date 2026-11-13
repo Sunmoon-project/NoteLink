@@ -4,6 +4,7 @@ import { RoomListScreen, RoomScreen } from '../features/studyroom/room';
 import { TimerScreen } from '../features/studyroom/tools';
 import { useAuth } from '../stores/auth';
 import { useNet } from '../stores/net';
+import { useToast } from '../stores/toast';
 import { renderScreen, setParams } from '../test-utils';
 
 const mockApi = {
@@ -164,6 +165,26 @@ const sendMessage = async (text: string) => {
   await fireEvent.changeText(screen.getByPlaceholderText('채팅을 입력해 주세요'), text);
   await fireEvent.press(screen.getByLabelText('전송'));
 };
+
+it('2,000자 메시지는 저장하고 전송한다', async () => {
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText('방');
+  const text = '가'.repeat(2000);
+  await sendMessage(text);
+  expect(mockOutbox.get('me:r1')?.[0]?.text).toBe(text);
+  expect(mockEmit.mock.calls.find(([event]) => event === 'chat:send')?.[1].text).toBe(text);
+});
+
+it('2,001자 메시지는 입력을 유지하고 저장하거나 전송하지 않는다', async () => {
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText('방');
+  const text = '가'.repeat(2001);
+  await sendMessage(text);
+  expect(screen.getByPlaceholderText('채팅을 입력해 주세요').props.value).toBe(text);
+  expect(mockOutbox.size).toBe(0);
+  expect(mockEmit.mock.calls.filter(([event]) => event === 'chat:send')).toHaveLength(0);
+  expect(useToast.getState().msg).toBe('메시지는 2,000자까지 보낼 수 있어요');
+});
 
 it('목록 조회가 실패하면 없다고 안내하지 않고 다시 시도하게 한다', async () => {
   mockApi.rooms.mine.mockRejectedValue(new Error('실패'));

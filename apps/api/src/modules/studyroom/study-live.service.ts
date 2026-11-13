@@ -1,6 +1,6 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient, ServerError } from 'livekit-server-sdk';
 import { StudyChatService } from './study-chat.service.js';
 
 @Injectable()
@@ -53,7 +53,9 @@ export class StudyLiveService {
         userId,
         { revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)) },
       );
-    } catch {
+    } catch (error) {
+      // 이미 나간 참가자나 사라진 방은 종료할 연결이 없다. 다른 장애는 재시도할 수 있게 알린다.
+      if (error instanceof ServerError && error.code === 'not_found') return;
       throw new ServiceUnavailableException({
         code: 'LIVEKIT_DISCONNECT_FAILED',
         message: '라이브 연결을 종료하지 못했어요. 다시 시도해 주세요',
