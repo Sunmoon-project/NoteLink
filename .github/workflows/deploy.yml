@@ -88,7 +88,10 @@ jobs:
             cp -r apps/api/node_modules deploy/apps/api/node_modules
           fi
       - name: 배포 묶음 확인
-        # 운영 의존성이 모두 찾아지는지, bcrypt 네이티브 모듈이 열리는지 확인
+        # 운영 의존성이 모두 찾아지는지, bcrypt 네이티브 모듈이 열리는지 확인.
+        # main.js가 불러오는 서버 코드(reflect-metadata → app.module · app.setup)도 그대로 불러옵니다.
+        # 타입만 쓰는 이름을 값으로 import하면 테스트(SWC)는 지나가도 실제 서버는 시작하자마자
+        # 꺼지므로 여기서 잡습니다(#384). 불러오기만 하고 서버는 띄우지 않아 환경 변수가 없어도 됩니다.
         working-directory: deploy/apps/api
         run: |
           node --input-type=module -e "
@@ -99,6 +102,9 @@ jobs:
             }
             await import('bcrypt');
             await import('@notelink/shared');
+            await import('reflect-metadata');
+            await import('./dist/app.module.js');
+            await import('./dist/app.setup.js');
           "
       - name: 압축
         run: |
@@ -146,4 +152,7 @@ jobs:
         if: github.event_name != 'pull_request'
         # AI 서버는 API 서버 IP만 받으므로 여기서 주소로 확인하지 못합니다.
         # 설치 · 시작 실패는 이 명령이 실패로 알려 줍니다.
-        run: az webapp deploy --resource-group "$RESOURCE_GROUP" --name "$AI_APP" --src-path ai.zip --type zip --timeout 1800000
+        # 패키지 설치가 4분을 넘으면 동기 요청이 게이트웨이에서 504로 끊겨 성공한 배포도 실패로
+        # 남으므로(#384) 비동기로 올립니다. 올린 뒤에도 az가 배포 상태 API로 설치(BuildFailed)와
+        # 앱 시작(RuntimeSuccessful · RuntimeFailed)을 끝까지 따라가 결과를 알려 줍니다.
+        run: az webapp deploy --resource-group "$RESOURCE_GROUP" --name "$AI_APP" --src-path ai.zip --type zip --async true
