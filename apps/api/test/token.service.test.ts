@@ -74,10 +74,12 @@ function createFakeModel() {
       return Promise.resolve({ modifiedCount: row ? 1 : 0 });
     },
     updateMany: (
-      filter: { userId: Types.ObjectId; revokedAt: null },
+      filter: { userId: Types.ObjectId; revokedAt?: null },
       update: { revokedAt: Date },
     ) => {
-      const hit = rows.filter((r) => r.userId.equals(filter.userId) && r.revokedAt === null);
+      const hit = rows.filter(
+        (r) => r.userId.equals(filter.userId) && (!('revokedAt' in filter) || r.revokedAt === null),
+      );
       for (const r of hit) r.revokedAt = update.revokedAt;
       return Promise.resolve({ modifiedCount: hit.length });
     },
@@ -401,6 +403,29 @@ describe('로그인 끊기 · 탈퇴', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.revokedAt).toBeNull();
     await expect(service.rotate(pair.refreshToken)).resolves.toBeDefined();
+  });
+
+  it('갱신 도중 DB 오류가 난 사이에 로그아웃했으면 쓴 토큰을 되살리지 않는다', async () => {
+    const { service, rows, users } = setup();
+    const pair = await service.issue(newUserId());
+    const model = users.model as unknown as {
+      findOne: (f: unknown) => { lean: () => Promise<unknown> };
+    };
+    const findOne = model.findOne;
+    let calls = 0;
+    model.findOne = (f) => ({
+      lean: async () => {
+        calls += 1;
+        if (calls === 1) return findOne(f).lean();
+        await service.revoke(pair.refreshToken); // 두 번째 확인 중에 로그아웃
+        throw new Error('DB 읽기 실패');
+      },
+    });
+
+    await expect(service.rotate(pair.refreshToken)).rejects.toThrow('DB 읽기 실패');
+    expect(rows[0]!.revokedAt).not.toBeNull();
+    model.findOne = findOne;
+    await expectUnauthorized(service.rotate(pair.refreshToken));
   });
 
   it('같은 밀리초에 받은 토큰도 거절한다', async () => {

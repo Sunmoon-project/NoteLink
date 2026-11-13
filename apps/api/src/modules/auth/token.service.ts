@@ -39,7 +39,8 @@ export class TokenService {
    */
   async revokeAll(userId: Types.ObjectId, now = new Date()): Promise<void> {
     await this.users.updateOne({ _id: userId }, { $set: { sessionsRevokedAt: now } });
-    await this.refreshTokens.updateMany({ userId, revokedAt: null }, { revokedAt: now });
+    // 이미 폐기된 줄도 시각을 덮어쓴다: 갱신 중(쓴 토큰을 잠시 폐기해 둔 상태)이던 토큰이 되살아나지 않게(rotate)
+    await this.refreshTokens.updateMany({ userId }, { revokedAt: now });
   }
 
   /**
@@ -126,7 +127,8 @@ export class TokenService {
       await this.discard(next.rowId);
       if (!(error instanceof UnauthorizedException)) {
         // 끊긴 게 아니라 DB를 읽지 못했다: 쓴 토큰을 되살려 앱이 같은 토큰으로 다시 갱신할 수 있게 한다.
-        // 그사이 끊겼다면 다음 갱신의 첫 확인(assertActive)이 막는다
+        // 우리가 적은 폐기 시각(claimedAt) 그대로일 때만 되살린다 — 그사이 로그아웃 · revokeAll이 덮어썼으면 그대로 둔다.
+        // 그사이 로그인이 끊겼다면 다음 갱신의 첫 확인(assertActive)도 막는다
         await this.refreshTokens
           .updateOne({ tokenHash, revokedAt: claimedAt }, { revokedAt: null })
           .catch(() => undefined);
@@ -147,8 +149,9 @@ export class TokenService {
 
   /** 로그아웃. 이미 폐기됐거나 없는 토큰이어도 오류 없이 끝낸다 */
   async revoke(refreshToken: string): Promise<void> {
+    // 이미 폐기된 줄도 시각을 덮어쓴다: 갱신 중이던 토큰을 로그아웃하면 rotate가 그 토큰을 되살리지 않게 한다
     await this.refreshTokens.updateOne(
-      { tokenHash: hashToken(refreshToken), revokedAt: null },
+      { tokenHash: hashToken(refreshToken) },
       { revokedAt: new Date() },
     );
   }
