@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 
 import { AuthModule } from '../auth/auth.module.js';
+import { HolidaysModule } from '../calendar/holidays.module.js';
 import { Subject, SubjectSchema } from '../session/schemas/subject.schema.js';
 import { StudySession, StudySessionSchema } from '../session/schemas/study-session.schema.js';
 import { GoalsController } from './goals.controller.js';
@@ -23,6 +24,7 @@ import { StudyProgressController } from './study-progress.controller.js';
             { name: StudySession.name, schema: StudySessionSchema }, // 가장 많이 공부한 시간대(peakHour) 계산
         ]),
         AuthModule, // 로그인 확인(JwtAuthGuard)에 필요한 도구를 가져온다
+        HolidaysModule, // 반복 목표 판정에서 건너뛸 날(공휴일 · 내 제외일)을 물어본다 (HolidaysService)
     ],
     controllers: [GoalsController, RecurringGoalsController, StudyProgressController],
     providers: [ProgressService, RecurringGoalsService],

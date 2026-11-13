@@ -301,3 +301,76 @@ describe('반복 목표 API (/goals/recurring)', () => {
         expect((await http().delete(url('/abc'))).status).toBe(401);
     });
 });
+
+describe('반복 목표 streak 계산 연결 (가짜 DB)', () => {
+    let app: INestApplication;
+    const records: unknown[] = [];
+    const dailyFind = vi.fn(() => ({ lean: () => Promise.resolve(records) }));
+    const skipDates = vi.fn((_u: string, _from: string, _to: string) => Promise.resolve([] as string[]));
+
+    beforeAll(async () => {
+        app = await createRecurringGoalsTestApp({
+            recurringGoal: goalModel,
+            subject: subjectModel,
+            dailyRecord: { find: dailyFind },
+            skipDates,
+        });
+    });
+    afterAll(async () => {
+        vi.useRealTimers();
+        await app.close();
+    });
+    beforeEach(() => {
+        rows = [];
+        subjects = [];
+        records.length = 0;
+        vi.clearAllMocks();
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date('2026-11-14T03:00:00Z')); // 서울 토요일 정오
+    });
+
+    const seed = (over: Record<string, unknown> = {}) =>
+        rows.push({
+            _id: new Types.ObjectId(),
+            userId: new Types.ObjectId(TEST_USER_ID),
+            name: '운동',
+            days: [1, 3],
+            targetMin: 30,
+            remindEnabled: false,
+            isActive: true,
+            deletedAt: null,
+            createdAt: new Date('2026-10-01T00:00:00+09:00'),
+            ...over,
+        } as Row);
+    const day = (studyDate: string, totalSec = 1800) => ({ studyDate, totalSec, items: [] });
+
+    it('목록의 streak은 공부 기록으로 계산하고, 기록과 건너뛸 날은 목표 수와 상관없이 한 번씩만 읽는다', async () => {
+        seed();
+        seed({ name: '독서', days: [2] });
+        records.push(day('2026-11-02'), day('2026-11-04'), day('2026-11-09'), day('2026-11-11'));
+        const res = await request(app.getHttpServer()).get('/api/v1/goals/recurring').set(AUTH);
+        expect(res.status).toBe(200);
+        expect(res.body.data.map((g: { streak: number }) => g.streak)).toEqual([2, 0]);
+        expect(dailyFind).toHaveBeenCalledTimes(1);
+        expect(skipDates).toHaveBeenCalledTimes(1);
+        // 가장 이른 목표 만든 날부터 이번 주 일요일까지
+        expect(skipDates).toHaveBeenCalledWith(TEST_USER_ID, '2026-10-01', '2026-11-15');
+    });
+
+    it('쉬는 목표만 있으면 아무것도 읽지 않고 0이다', async () => {
+        seed({ isActive: false });
+        const res = await request(app.getHttpServer()).get('/api/v1/goals/recurring').set(AUTH);
+        expect(res.body.data[0].streak).toBe(0);
+        expect(dailyFind).not.toHaveBeenCalled();
+        expect(skipDates).not.toHaveBeenCalled();
+    });
+
+    it('수정 응답도 현재 설정으로 계산한 streak을 준다', async () => {
+        seed({ name: '운동', days: [2] }); // 화요일 목표라서 기록이 없으면 지난 주를 못 한 것
+        records.push(day('2026-11-03'), day('2026-11-10'));
+        const id = String(rows[0]!._id);
+        const res = await request(app.getHttpServer()).patch(`/api/v1/goals/recurring/${id}`).set(AUTH).send({ name: '운동2' });
+        expect(res.status).toBe(200);
+        expect(res.body.data.streak).toBe(2);
+    });
+});
