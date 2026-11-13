@@ -57,11 +57,25 @@ export class TokenService {
   private async assertActive(
     userId: string,
     payload: { iat?: unknown; iatMs?: unknown },
+    /** 주면 사용자의 비밀번호 해시가 아직 이 값과 같아야 한다(로그인이 확인한 비밀번호가 그사이 바뀌지 않았는지) */
+    passwordHash?: string,
   ): Promise<void> {
     const user = await this.users
-      .findOne({ _id: new Types.ObjectId(userId) }, { deletedAt: 1, sessionsRevokedAt: 1 })
-      .lean<{ deletedAt?: Date | null; sessionsRevokedAt?: Date | null }>();
+      .findOne(
+        { _id: new Types.ObjectId(userId) },
+        {
+          deletedAt: 1,
+          sessionsRevokedAt: 1,
+          ...(passwordHash === undefined ? {} : { passwordHash: 1 }),
+        },
+      )
+      .lean<{
+        deletedAt?: Date | null;
+        sessionsRevokedAt?: Date | null;
+        passwordHash?: string | null;
+      }>();
     if (!user || user.deletedAt) throw invalidToken();
+    if (passwordHash !== undefined && user.passwordHash !== passwordHash) throw invalidToken();
     const revoked = user.sessionsRevokedAt;
     if (revoked) {
       const issuedMs =
@@ -74,16 +88,23 @@ export class TokenService {
     }
   }
 
-  /** 로그인할 때마다 호출한다. 기기마다 자기 refresh 토큰 한 줄이 생긴다 */
   /**
+   * 로그인할 때마다 호출한다. 기기마다 자기 refresh 토큰 한 줄이 생긴다
    * @param authorizedAt 로그인을 확인한 시각(비밀번호를 읽기 직전). 그 뒤에 로그인이 끊겼으면(비밀번호 재설정 ·
    *   탈퇴) 확인에 쓴 비밀번호가 이미 바뀐 것이라, 만든 토큰을 지우고 거절한다. 끊기가 발급 뒤에 오면 revokeAll이 지운다
+   * @param passwordHash 로그인이 확인한 비밀번호 해시. 토큰을 만든 뒤 DB의 해시가 이것과 다르면(그사이 재설정) 거절한다.
+   *   끊은 시각은 재설정이 DB에 쓰기 직전에 정해져서, 그 틈에 예전 해시를 읽은 로그인은 시각만으로는 걸러지지 않는다
    */
-  async issue(userId: string, device?: DeviceInfo, authorizedAt?: Date): Promise<IssuedTokens> {
+  async issue(
+    userId: string,
+    device?: DeviceInfo,
+    authorizedAt?: Date,
+    passwordHash?: string,
+  ): Promise<IssuedTokens> {
     const next = await this.mint(userId, device);
     if (authorizedAt) {
       try {
-        await this.assertActive(userId, { iatMs: authorizedAt.getTime() });
+        await this.assertActive(userId, { iatMs: authorizedAt.getTime() }, passwordHash);
       } catch (error) {
         await this.discard(next.rowId);
         throw error;

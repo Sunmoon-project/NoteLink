@@ -103,7 +103,10 @@ function createFakeModel() {
 
 /** users 컬렉션: 탈퇴 · 로그인 끊은 시각만 담는다. 없는 id는 활성 사용자로 본다(지우려면 deleted에 넣는다) */
 function createFakeUsers() {
-  const state = new Map<string, { deletedAt?: Date | null; sessionsRevokedAt?: Date | null }>();
+  const state = new Map<
+    string,
+    { deletedAt?: Date | null; sessionsRevokedAt?: Date | null; passwordHash?: string | null }
+  >();
   const missing = new Set<string>();
   // 다음 findOne 몇 번을 DB 오류로 실패시킨다(skip번은 통과시킨 뒤)
   const failures = { skip: 0, findOne: 0 };
@@ -433,6 +436,16 @@ describe('로그인 끊기 · 탈퇴', () => {
     expect(rows[0]!.revokedAt).not.toBeNull();
     model.findOne = findOne;
     await expectUnauthorized(service.rotate(pair.refreshToken));
+  });
+
+  it('로그인이 확인한 비밀번호 해시가 발급 때 DB와 다르면(그사이 재설정) 끊은 시각과 상관없이 거절한다', async () => {
+    const { service, rows, users } = setup();
+    const userId = newUserId();
+    users.state.set(userId, { passwordHash: 'new-hash' });
+
+    await expectUnauthorized(service.issue(userId, undefined, new Date(), 'old-hash'));
+    expect(rows).toHaveLength(0);
+    await expect(service.issue(userId, undefined, new Date(), 'new-hash')).resolves.toBeDefined();
   });
 
   it('같은 밀리초에 받은 토큰도 거절한다', async () => {
