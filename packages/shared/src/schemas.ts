@@ -127,10 +127,16 @@ export const PointLedger = z.object({
 export const Folder = z.object({
   _id: id,
   title: z.string(),
-  subjectId: id,
+  /** 과목 목록(subjects)에 같은 이름이 없으면 null */
+  subjectId: id.nullable(),
   subjectName: z.string().optional(),
   createdAt: date,
   updatedAt: date,
+});
+/** 학습 폴더 만들기 — POST /folders 본문. 과목은 이름으로 보낸다 */
+export const FolderCreateBody = z.object({
+  title: z.string().trim().min(1).max(50),
+  subjectName: z.string().trim().min(1).max(30),
 });
 
 export const MaterialKind = z.enum(['handwriting', 'recording', 'document']);
@@ -267,7 +273,6 @@ export const AiJobType = z.enum([
   'similar_quiz',
   'today_review',
   'explain',
-  'avatar_profile',
   'image_check',
   'note_ask',
 ]);
@@ -594,6 +599,7 @@ export type ShopItem = z.infer<typeof ShopItem>;
 export type UserItem = z.infer<typeof UserItem>;
 export type PointLedger = z.infer<typeof PointLedger>;
 export type Folder = z.infer<typeof Folder>;
+export type FolderCreateBody = z.infer<typeof FolderCreateBody>;
 export type MaterialKind = z.infer<typeof MaterialKind>;
 export type MaterialSource = z.infer<typeof MaterialSource>;
 export type Material = z.infer<typeof Material>;
