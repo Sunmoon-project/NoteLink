@@ -27,6 +27,12 @@ function model(rows: Row[]) {
       for (const r of hit) Object.assign(r, u);
       return Promise.resolve({ modifiedCount: hit.length });
     },
+    distinct: (key: string, f: Record<string, unknown> = {}) =>
+      Promise.resolve([
+        ...new Map(
+          rows.filter((r) => matches(r, f)).map((r) => [String(r[key]), r[key]] as const),
+        ).values(),
+      ]),
     deleteMany: (f: Record<string, unknown>) => {
       const before = rows.length;
       for (let i = rows.length - 1; i >= 0; i--) if (matches(rows[i]!, f)) rows.splice(i, 1);
@@ -90,6 +96,17 @@ beforeEach(() => {
   );
 });
 
+/** 기기 저장(upsert)이 몇 번 불렸는지 센다 */
+function savedDevices() {
+  const updateOne = devices.updateOne;
+  let count = 0;
+  devices.updateOne = (...args) => {
+    count += 1;
+    return updateOne(...args);
+  };
+  return () => count;
+}
+
 describe('상태 · 기기', () => {
   it('내 상태를 바꾼다', async () => {
     await service.setStatus(me.toHexString(), { status: 'busy' });
@@ -133,6 +150,7 @@ describe('상태 · 기기', () => {
   });
 
   it('확인 직후 탈퇴가 끝까지 돌고 나서 저장돼도 기기가 남지 않는다', async () => {
+    const saved = savedDevices();
     const exists = users.exists;
     let calls = 0;
     users.exists = async (f) => {
@@ -153,11 +171,46 @@ describe('상태 · 기기', () => {
       }),
     ).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
     expect(users.rows[0]).toMatchObject({ deletedAt: NOW });
+    expect(saved()).toBe(1); // 저장까지 갔고, 보상 삭제가 지웠다
     expect(devices.rows).toHaveLength(0);
+  });
+
+  it('보상 삭제까지 실패해 남은 기기는 서버가 켜질 때의 정리가 지운다', async () => {
+    const exists = users.exists;
+    let calls = 0;
+    users.exists = async (f) => {
+      calls += 1;
+      const found = await exists(f);
+      if (calls === 1) {
+        users.exists = exists;
+        await service.withdraw(me.toHexString(), NOW);
+        devices.deleteMany = () => Promise.reject(new Error('DB 오류')); // 이후 기기 삭제는 모두 실패
+      }
+      return found;
+    };
+    await expect(
+      service.registerDevice(me.toHexString(), {
+        platform: 'ios',
+        pushToken: 't',
+        locale: 'ko-KR',
+      }),
+    ).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
+    expect(devices.rows).toHaveLength(1);
+
+    devices.deleteMany = model(devices.rows).deleteMany; // DB가 돌아온 뒤 서버 재시작
+    devices.rows.push({
+      _id: new Types.ObjectId(),
+      userId: other,
+      pushToken: 'o',
+      platform: 'ios',
+    });
+    expect(await service.sweepWithdrawnDevices()).toBe(1);
+    expect(devices.rows.map((d) => d.pushToken)).toEqual(['o']); // 탈퇴하지 않은 사람의 기기는 남는다
   });
 
   it('등록하는 사이에 탈퇴했으면 저장한 기기를 지우고 404', async () => {
     // 확인(exists)은 통과하고, 저장한 뒤 다시 확인할 때는 탈퇴한 상태
+    const saved = savedDevices();
     const exists = users.exists;
     let calls = 0;
     users.exists = (f) => (++calls === 1 ? exists(f) : Promise.resolve(null));
@@ -168,6 +221,7 @@ describe('상태 · 기기', () => {
         NOW,
       ),
     ).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
+    expect(saved()).toBe(1);
     expect(devices.rows).toHaveLength(0);
   });
 

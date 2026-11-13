@@ -4,7 +4,9 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
+  type OnApplicationBootstrap,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Types, type Model } from 'mongoose';
@@ -20,7 +22,9 @@ import { ProgressService } from '../progress/progress.service.js';
 import type { UpdateProfileDto } from './dto/update-profiile.dto.js';
 
 @Injectable()
-export class UsersService {
+export class UsersService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     @InjectModel(User.name)
     private readonly userModel: Model<User>,
@@ -51,21 +55,60 @@ export class UsersService {
    * (한 기기에서 계정을 바꿔 로그인하면 이전 계정의 알림이 그 기기로 가지 않게).
    */
   async registerDevice(userId: string, dto: RegisterDeviceDto, now = new Date()): Promise<void> {
-    const id = await this.activeId(userId);
     // 탈퇴를 시작한 계정은 기기를 받지 않는다. 저장 뒤에도 다시 확인해서, 탈퇴 시작과 겹쳐도 남지 않게 한다:
     // 다시 확인이 통과했다면 저장은 탈퇴 시작보다 앞이라, 그 뒤에 도는 탈퇴의 기기 정리가 지운다
+    const id = isValidObjectId(userId) ? new Types.ObjectId(userId) : null;
     const accepting = { _id: id, deletedAt: null, withdrawingAt: null };
     const notFound = () =>
       new NotFoundException({ code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' });
-    if (!(await this.userModel.exists(accepting))) throw notFound();
+    if (!id || !(await this.userModel.exists(accepting))) throw notFound();
     await this.devices.updateOne(
       { pushToken: dto.pushToken },
       { $set: { userId: id, platform: dto.platform, locale: dto.locale, lastSeenAt: now } },
       { upsert: true },
     );
     if (!(await this.userModel.exists(accepting))) {
-      await this.devices.deleteMany({ pushToken: dto.pushToken, userId: id });
+      // 저장한 기기를 지운다. 끝내 못 지우면 서버가 켜질 때 정리한다(sweepWithdrawnDevices)
+      await this.retry(() =>
+        this.devices.deleteMany({ pushToken: dto.pushToken, userId: id }),
+      ).catch((error: unknown) =>
+        this.logger.error(`탈퇴 중 등록된 기기를 지우지 못함(다음 시작 때 정리): ${String(error)}`),
+      );
       throw notFound();
+    }
+  }
+
+  /** 서버가 켜질 때 탈퇴한 계정에 남은 기기를 정리한다. 시작을 늦추지 않게 기다리지 않는다 */
+  onApplicationBootstrap(): void {
+    void this.sweepWithdrawnDevices().catch((error: unknown) =>
+      this.logger.warn(`탈퇴 계정 기기 정리 실패: ${String(error)}`),
+    );
+  }
+
+  /**
+   * 탈퇴한(또는 탈퇴를 시작한) 계정에 남은 푸시 기기를 지운다. 기기 등록이 탈퇴와 겹친 뒤 보상 삭제까지 실패한 경우를
+   * 되살리는 경로다. 지운 개수를 돌려준다.
+   */
+  async sweepWithdrawnDevices(): Promise<number> {
+    const owners = (await this.devices.distinct('userId')) as Types.ObjectId[];
+    if (!owners.length) return 0;
+    const gone = (await this.userModel.distinct('_id', {
+      _id: { $in: owners },
+      $or: [{ deletedAt: { $ne: null } }, { withdrawingAt: { $ne: null } }],
+    })) as Types.ObjectId[];
+    if (!gone.length) return 0;
+    const result = await this.devices.deleteMany({ userId: { $in: gone } });
+    return result.deletedCount;
+  }
+
+  /** 짧은 DB 오류를 넘기려고 세 번까지 해 본다 */
+  private async retry<T>(task: () => Promise<T>, times = 3): Promise<T> {
+    for (let i = 1; ; i++) {
+      try {
+        return await task();
+      } catch (error) {
+        if (i >= times) throw error;
+      }
     }
   }
 
