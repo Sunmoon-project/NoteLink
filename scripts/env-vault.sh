@@ -95,14 +95,16 @@ az_out() {
   printf '%s\n' "$out" | tr -d '\r'
 }
 
-# 값 하나를 VALUE에 그대로: az가 붙인 끝 줄바꿈 하나(\n · Windows \r\n)만 뺌. 값 안의 \r · 끝 줄바꿈은
-# 남겨 env_line이 거르게 함($(…)로 받으면 끝 줄바꿈이 모두 사라짐). 실패하면 1
-az_value() {
+# secret 값 하나를 VALUE에 그대로. tsv의 줄 끝은 OS마다 \n · \r\n이라, 값 끝의 \r · \n과 가릴 수 없음.
+# 그래서 값 뒤에 표지 열('x')을 붙여 받고 마지막 탭 앞만 씀: az tsv는 값 안의 \r · 줄바꿈 · 탭을 그대로
+# 내므로 그대로 남아 env_line이 거름. 목록을 한 겹 더 감싸야([[…]]) 한 줄에 탭으로 이어짐([값,'x']는
+# 두 줄). 실패하면 1, 출력 모양이 다르면 2
+az_value() {  # $1 = secret 이름
   local out
-  out=$(az "$@" && printf x) || return 1
-  out=${out%x}
-  out=${out%$'\n'}
-  VALUE=${out%$'\r'}
+  out=$(az keyvault secret show --vault-name "$VAULT" --name "$1" --query "[[value,'x']]" -o tsv) \
+    || return 1
+  [[ "$out" == *$'\t'x || "$out" == *$'\t'x$'\r' ]] || return 2  # $(…)가 끝 줄바꿈만 지움
+  VALUE=${out%$'\t'*}
 }
 
 # 켜 둔 secret의 변수 이름(한 줄에 하나, 정렬). 값은 읽지 않음(secret list는 이름 · 속성만).
@@ -136,10 +138,15 @@ overrides() {  # $1 = 앱, $2 = 변수, $3 = .env.local의 이름 목록
 }
 
 # .env 한 줄: 특수 문자가 없으면 그대로, 있으면 작은따옴표. 작은따옴표 · 역슬래시 · 줄바꿈은 dotenv마다
-# 읽는 법이 달라(python-dotenv는 작은따옴표 안의 \\ · \'를 풀고 Node dotenv는 그대로 둠) 거절
-env_line() {  # $1 = 변수, $2 = 값
+# 읽는 법이 달라(python-dotenv는 작은따옴표 안의 \\ · \'를 풀고 Node dotenv는 그대로 둠) 거절.
+# ai는 ${ 도 거절: python-dotenv는 작은따옴표 안에서도 ${이름}을 바꿈('abc${X}def' → abcdef).
+# api(NestJS · Node dotenv)는 바꾸지 않아 그대로 씀
+env_line() {  # $1 = 변수, $2 = 값, $3 = 앱(없으면 ai · api 공통 검사만)
   local value=$2
   if [[ "$value" == *$'\n'* || "$value" == *$'\r'* || "$value" == *"'"* || "$value" == *\\* ]]; then
+    return 1
+  fi
+  if [ "${3:-}" = ai ] && [[ "$value" == *'${'* ]]; then
     return 1
   fi
   if [[ "$value" =~ ^[A-Za-z0-9_./:@+=,%?\&-]*$ ]]; then
@@ -158,7 +165,7 @@ local_keys() {  # $1 = .env.local 경로
 PULL_HEAD='# scripts/env-vault.sh pull '
 
 pull() {  # $1 = 앱. 팀 Key Vault에서만 받음(배포 값은 로컬로 내려받지 않음)
-  local app=$1 dir env local_file tmp have local_set var value bak count=0 skipped=0 overridden=0
+  local app=$1 dir env local_file tmp have local_set var value bak rc count=0 skipped=0 overridden=0
   check_app "$app"
   use_team
   need_az
@@ -182,12 +189,15 @@ pull() {  # $1 = 앱. 팀 Key Vault에서만 받음(배포 값은 로컬로 내�
     if overrides "$app" "$var" "$local_set"; then
       overridden=$((overridden + 1)); continue
     fi
-    az_value keyvault secret show --vault-name "$VAULT" --name "$(secret_name "$var")" \
-      --query value -o tsv \
+    rc=0
+    az_value "$(secret_name "$var")" || rc=$?
+    [ "$rc" -ne 2 ] \
+      || die "'$(secret_name "$var")'의 az 출력 모양이 예상과 다릅니다(.env는 그대로). Azure CLI 버전을 확인하세요"
+    [ "$rc" -eq 0 ] \
       || die "'$(secret_name "$var")'의 값을 읽지 못했습니다(.env는 그대로). 방금 지우거나 껐으면 pull을 다시 하고, 아니면 권한을 확인하세요. $(role_hint)"
     value=$VALUE
-    if ! env_line "$var" "$value" >> "$tmp"; then
-      echo "env-vault: $var 값에 줄바꿈 · 작은따옴표 · 역슬래시가 있어 건너뜀(.env.local에 직접 넣으세요)" >&2
+    if ! env_line "$var" "$value" "$app" >> "$tmp"; then
+      echo "env-vault: $var 값에 줄바꿈 · 작은따옴표 · 역슬래시$([ "$app" != ai ] || printf ' · ${')가 있어 건너뜀(.env.local에 직접 넣으세요)" >&2
       skipped=$((skipped + 1)); continue
     fi
     count=$((count + 1))
@@ -241,6 +251,9 @@ push() {  # $1 = 변수
   if is_team; then
     env_line "$var" "$value" > /dev/null \
       || die "값에 작은따옴표 · 역슬래시가 있으면 pull로 .env에 받을 수 없습니다(.env.local에 직접 두세요)"
+    if [[ " $users " == *" ai "* ]] && ! env_line "$var" "$value" ai > /dev/null; then
+      die "ai가 쓰는 값에 \${가 있으면 python-dotenv가 바꿔 읽으므로 pull로 받을 수 없습니다(apps/ai/.env.local에 직접 두세요)"
+    fi
   fi
   tmp=$(umask 077 && mktemp) || die "임시 파일을 만들지 못했습니다"
   trap 'rm -f "$tmp"' EXIT

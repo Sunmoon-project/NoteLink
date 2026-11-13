@@ -20,12 +20,13 @@ setup() {
 # 가짜 az: keyvault secret list · set · show(show는 팀 Key Vault만)
 printf '%s\n' "$*" >> "$AZ_LOG"
 [ -n "${AZ_FAIL:-}" ] && { echo "ERROR: Forbidden" >&2; exit 1; }
-args=("$@"); name=""; file=""; vault=""
+args=("$@"); name=""; file=""; vault=""; query=""
 for ((i = 0; i < ${#args[@]}; i++)); do
   case "${args[i]}" in
     --name) name=${args[i+1]} ;;
     --file) file=${args[i+1]} ;;
     --vault-name) vault=${args[i+1]} ;;
+    --query) query=${args[i+1]} ;;
   esac
 done
 case "$vault" in
@@ -45,7 +46,16 @@ case "$1 $2 $3" in
     [ "$vault" = kv-team ] || { echo "ERROR: Forbidden (getSecret)" >&2; exit 1; }
     [ "$name" != "${AZ_FAIL_SHOW:-}" ] || { echo "ERROR: SecretNotFound" >&2; exit 3; }
     [ -f "$dir/$name" ] || { echo "ERROR: SecretNotFound" >&2; exit 3; }
-    cat "$dir/$name"; printf '\r\n' ;;  # Windows az처럼 \r\n
+    # 실제 az(knack) tsv처럼: 값은 이스케이프 없이 그대로. [[value,'x']]는 한 줄에 탭으로 이어지고,
+    # [value,'x']는 요소마다 한 줄(값\nx). 줄 끝은 Windows az처럼 \r\n(AZ_EOL=lf면 macOS · Linux처럼 \n)
+    if [ "${AZ_EOL:-}" = lf ]; then eol=$'\n'; else eol=$'\r\n'; fi
+    [ "${AZ_SHAPE:-}" != rows ] || query="[value,'x']"  # 출력 모양이 다른 az
+    case "$query" in
+      "[[value,'x']]") cat "$dir/$name"; printf '\tx%s' "$eol" ;;
+      "[value,'x']") cat "$dir/$name"; printf '%sx%s' "$eol" "$eol" ;;
+      value) cat "$dir/$name"; printf '%s' "$eol" ;;
+      *) echo "ERROR: unexpected query: $query" >&2; exit 2 ;;
+    esac ;;
   "keyvault secret set")
     cp "$file" "$dir/$name"
     stat -c %a "$file" > "$TMP_MODE_FILE" 2> /dev/null || true ;;
@@ -344,16 +354,54 @@ team() { printf '%s' "$2" > "$TEAM_DIR/$1"; }  # 팀
   [[ "$output" == *"1개, .env.local이 1개 덮어씀"* ]]
 }
 
-@test "pull: 값 안의 \\r · 끝 줄바꿈은 줄이지 않고 건너뛴다(az가 붙인 끝 줄바꿈 하나만 뺌)" {
-  team APP-ENV dev
+@test "pull: 값의 \\r · 끝 줄바꿈은 az 줄 끝이 \\r\\n이든 \\n이든 줄이지 않고 건너뛴다" {
+  team APP-ENV 'dev x'
   printf 'a\rb' > "$TEAM_DIR/ANTHROPIC-API-KEY"
-  printf 'v\n' > "$TEAM_DIR/VOYAGE-API-KEY"
+  printf 'v\r' > "$TEAM_DIR/VOYAGE-API-KEY"
+  printf 'm\n' > "$TEAM_DIR/MONGODB-URI"
+  for eol in crlf lf; do
+    AZ_EOL=$eol run bash "$SCRIPT" pull ai
+    [ "$status" -eq 0 ]
+    env="$ENV_VAULT_ROOT/apps/ai/.env"
+    grep -qxF "APP_ENV='dev x'" "$env"
+    ! grep -q -e ANTHROPIC -e VOYAGE -e MONGODB "$env" || false
+    [[ "$output" == *"건너뜀 3개"* ]]
+  done
+  grep -q "\[\[value,'x'\]\]" "$AZ_LOG"
+}
+
+@test "pull: az 출력 모양이 다르면 권한이 아니라 출력 모양을 알리고 .env는 그대로 둔다" {
+  team APP-ENV dev
+  dir="$ENV_VAULT_ROOT/apps/ai"
+  printf 'MY_HAND=1\n' > "$dir/.env"
+  # 다른 버전의 az가 [[value,'x']]를 요소마다 한 줄로 낸다고 침(값\nx)
+  AZ_SHAPE=rows run bash "$SCRIPT" pull ai
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"az 출력 모양이 예상과 다릅니다"* && "$output" != *"권한"* ]]
+  [ "$(cat "$dir/.env")" = MY_HAND=1 ]
+}
+
+@test "pull · push --team: ai가 쓰는 값의 \${는 python-dotenv가 바꾸므로 거르고, api만 쓰는 값 · \$ 하나는 그대로" {
+  team ANTHROPIC-API-KEY 'abc${UNSET}def'
+  team VOYAGE-API-KEY 'p$q'
+  team JWT-ACCESS-SECRET 'j${X}k'
   run bash "$SCRIPT" pull ai
   [ "$status" -eq 0 ]
   env="$ENV_VAULT_ROOT/apps/ai/.env"
-  grep -qxF 'APP_ENV=dev' "$env"
-  ! grep -q -e ANTHROPIC -e VOYAGE "$env" || false
-  [[ "$output" == *"건너뜀 2개"* ]]
+  ! grep -q ANTHROPIC "$env" || false
+  grep -qxF "VOYAGE_API_KEY='p\$q'" "$env"
+  [[ "$output" == *"ANTHROPIC_API_KEY 값에"*'${가 있어 건너뜀'* ]]
+  run bash "$SCRIPT" pull api
+  [ "$status" -eq 0 ]
+  grep -qxF "JWT_ACCESS_SECRET='j\${X}k'" "$ENV_VAULT_ROOT/apps/api/.env"
+  printf '%s' 'x${HOME}' > "$TMP/brace"
+  run bash -c '"$1" push --team APP_ENV < "$2"' _ "$SCRIPT" "$TMP/brace"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'ai가 쓰는 값에 ${가 있으면'* ]]
+  [ ! -e "$TEAM_DIR/APP-ENV" ]
+  run bash -c '"$1" push --team JWT_ACCESS_SECRET < "$2"' _ "$SCRIPT" "$TMP/brace"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TEAM_DIR/JWT-ACCESS-SECRET")" = 'x${HOME}' ]
 }
 
 @test "pull: .env.local의 값이 이긴다(이름 대소문자 무시) — 덮인 값은 Key Vault에서 읽지도 않는다" {
