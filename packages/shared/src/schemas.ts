@@ -267,7 +267,6 @@ export const AiJobType = z.enum([
   'similar_quiz',
   'today_review',
   'explain',
-  'avatar_profile',
   'image_check',
   'note_ask',
 ]);

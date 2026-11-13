@@ -81,8 +81,6 @@ export const httpApi: Api = {
     registerDevice: (d) => http.post(P.myDevices, d),
     changePlan: (tier) => http.patch(P.mySubscription, { tier }),
     withdraw: () => http.del(P.me),
-    generateProfile: (p) => http.post(P.profileAvatar, p),
-    saveAvatar: (p) => http.post(P.avatars, p),
   },
   upload: { getSas: (p) => http.post(P.uploadSas, p) },
   study: {
@@ -135,7 +133,8 @@ export const httpApi: Api = {
     respond: (id, accept) => http.post(P.friendRequestAction(id, accept ? 'accept' : 'reject')),
     remove: (userId) => http.del(P.friend(userId)),
     openDirect: (userId) => http.post(P.directChat, { userId }),
-    messages: (chatRoomId) => http.get(P.chatMessages(chatRoomId)),
+    messages: (chatRoomId, before) =>
+      http.get(P.chatMessages(chatRoomId), before ? { before } : undefined),
   },
   content: {
     folders: () => http.get(P.folders),

@@ -804,6 +804,11 @@ export function RoomSettingsScreen() {
         </View>
         <Text className="mt-2 text-subhead font-bold text-ink">{room.data?.title}</Text>
         <Text className="mt-3 text-subhead text-sub">채팅방을 나가시겠어요?</Text>
+        {room.data?.memberCount === 1 && (
+          <Text className="mt-2 text-caption text-sub">
+            마지막으로 나가면 방이 닫히고 7일 후 방과 채팅 기록이 삭제돼요.
+          </Text>
+        )}
         <View className="mt-5 w-full">
           <Two>
             <Btn small kind="outline" onPress={() => setLeave(false)}>

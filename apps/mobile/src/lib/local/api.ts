@@ -56,7 +56,6 @@ import {
   rememberOrphans,
   writeDb,
 } from './storage';
-import { avatarFace } from '../avatar-styles';
 import { AI_WAITING_STEP, withTopic } from '../ai';
 import { quizPoints, sessionPoints } from '../points';
 import { localAnswer } from './tutor';
@@ -529,22 +528,6 @@ const api: Api = {
       // (남은 비밀번호는 어떤 계정과도 이어지지 않는다)
       await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
     },
-    generateProfile: async (p) => {
-      try {
-        return await ok(queueJob('avatar_profile', 'user', p.photoBlobUrl));
-      } catch (e) {
-        // 요청이 실패하면 DB에 남지 않으므로 방금 복사한 사진도 지운다 (다시 시도하면 새로 복사한다)
-        dropFile(p.photoBlobUrl);
-        throw e;
-      }
-    },
-    saveAvatar: (p) => {
-      const d = db();
-      d.avatar = p;
-      // 프로필 · 친구 목록 · 스터디룸이 avatarUrl을 그린다 — 고른 스타일의 얼굴을 넣는다
-      d.user.avatarUrl = avatarFace(p.style, p.gender);
-      return ok(undefined);
-    },
   },
   upload: {
     // 기기 저장 모드에서는 upload.ts가 파일을 앱 저장 공간에 바로 복사한다
@@ -867,7 +850,16 @@ const api: Api = {
         members: [],
         updatedAt: now(),
       }),
-    messages: (id) => ok(db().messages[id] ?? []),
+    messages: (id, before) => {
+      const items = db().messages[id] ?? [];
+      const end = before
+        ? Math.max(
+            0,
+            items.findIndex((item) => item._id === before),
+          )
+        : items.length;
+      return ok(items.slice(Math.max(0, end - 50), end));
+    },
   },
   content: {
     folders: () => {
@@ -1402,6 +1394,11 @@ export const localApi: Api = asAsync(api);
 
 /** 채팅: 보낸 메시지를 저장하고 화면에 돌려준다 (다른 사람에게 전달은 서버 연결 후) */
 localSocket.onClient = (ev, args) => {
+  if (ev === 'room:join') {
+    const ack = args[1] as ((result: { ok: boolean }) => void) | undefined;
+    ack?.({ ok: true });
+    return;
+  }
   if (ev !== 'chat:send') return;
   const [p, ack] = args as [
     { chatRoomId: string; text: string; clientId: string },

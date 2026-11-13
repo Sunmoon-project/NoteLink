@@ -19,7 +19,6 @@ import { useNet } from '@/stores/net';
 import { useAuth } from '@/stores/auth';
 import { useMockFlags } from './flags';
 import * as S from './seed';
-import { mockUploadSource } from './uploads';
 import { roomTimerState } from '../../lib/local/timer';
 
 // 목업 백엔드. 실서버와 같은 Api 인터페이스를 구현하고, AI 작업 진행률은 소켓 이벤트로 흘려보낸다.
@@ -95,7 +94,6 @@ const STEPS: Partial<Record<AiJobType, string[]>> = {
   ],
   document_summary: ['문서 업로드 완료', '문서 읽기 완료', '핵심 요약 중', '키워드 추출'],
   quiz_generate: ['노트 분석', '문제 생성', '해설 작성', '검토'],
-  avatar_profile: ['사진 분석', '스타일 적용', '프로필 생성', '마무리'],
 };
 
 const jobCompletions = new Map<string, (job: AiJob) => void>();
@@ -259,26 +257,6 @@ export const mockApi: Api = {
       return structuredClone(db.user);
     },
     withdraw: () => ok(undefined),
-    generateProfile: async (p) => {
-      await ok(undefined);
-      return structuredClone(
-        runJob('avatar_profile', p.photoBlobUrl, (job) => {
-          // 목업은 입력 사진을 성공 결과로 재사용한다. 실제 AI 생성은 서버가 담당한다.
-          const avatarUrl = mockUploadSource(p.photoBlobUrl);
-          db.user.avatarUrl = avatarUrl;
-          job.result = { avatarUrl };
-        }),
-      );
-    },
-    saveAvatar: async (p) => {
-      await ok(undefined);
-
-      const color = /^#[0-9a-f]{6}$/i.test(p.color) ? p.color : '#8cbea3';
-      const descriptor = encodeURIComponent(`${p.style}:${p.gender}:${p.color}`);
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><desc>${descriptor}</desc><rect width="128" height="128" rx="64" fill="${color}"/><circle cx="64" cy="53" r="28" fill="#f5d3b3"/><path d="M24 128v-18a40 40 0 0 1 80 0v18" fill="#ffffff"/><circle cx="54" cy="52" r="3"/><circle cx="74" cy="52" r="3"/><path d="M55 67q9 8 18 0" fill="none" stroke="#76533d" stroke-width="3"/></svg>`;
-      db.user.avatarUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-      return structuredClone(undefined);
-    },
   },
   upload: {
     getSas: (p) => {
@@ -629,7 +607,16 @@ export const mockApi: Api = {
         updatedAt: now(),
       });
     },
-    messages: (id) => ok(db.messages.get(id) ?? []),
+    messages: (id, before) => {
+      const items = db.messages.get(id) ?? [];
+      const end = before
+        ? Math.max(
+            0,
+            items.findIndex((item) => item._id === before),
+          )
+        : items.length;
+      return ok(items.slice(Math.max(0, end - 50), end));
+    },
   },
   content: {
     folders: () =>
@@ -1138,6 +1125,11 @@ export const mockApi: Api = {
 
 /** 채팅 전송을 목업 서버가 받아 되돌려준다 */
 localSocket.onClient = (ev, args) => {
+  if (ev === 'room:join') {
+    const ack = args[1] as ((result: { ok: boolean }) => void) | undefined;
+    ack?.({ ok: true });
+    return;
+  }
   if (ev !== 'chat:send') return;
   const [p, ack] = args as [
     { chatRoomId: string; text: string; clientId: string },

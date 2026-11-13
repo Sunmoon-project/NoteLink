@@ -175,8 +175,6 @@ export const PATHS = {
   equip: (itemId: string) => `/users/me/items/${seg(itemId)}/equip`,
   pointLedger: '/points/ledger',
   // 아바타 · 프로필 생성
-  profileAvatar: '/avatars/profile',
-  avatars: '/avatars',
 } as const;
 
 /* ── Socket.IO 이벤트 (NestJS realtime 게이트웨이) ──── */
@@ -192,6 +190,7 @@ export type ServerToClient = {
   'ai:done': (p: { jobId: string; job: AiJob }) => void;
   'chat:message': (m: Message) => void;
   'room:presence': (p: { roomId: string; members: RoomMember[] }) => void;
+  'room:members-changed': (payload: { roomId: string }) => void;
   'room:timer': (p: {
     roomId: string;
     rule: TimerRule | null;

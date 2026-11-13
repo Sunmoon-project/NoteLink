@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
-import { Connection, Model, Types } from 'mongoose';
+import { Model, Types } from 'mongoose';
+import type { Connection } from 'mongoose';
 
 import { daysBetween } from '../progress/week.js';
 import { Subject } from '../session/schemas/subject.schema.js';

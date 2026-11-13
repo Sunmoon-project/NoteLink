@@ -104,12 +104,6 @@ export interface Api {
     }): Promise<void>;
     changePlan(tier: PlanTier): Promise<User>;
     withdraw(): Promise<void>;
-    generateProfile(p: {
-      photoBlobUrl: string;
-      prompt: string;
-      style: string | null;
-    }): Promise<AiJob>;
-    saveAvatar(p: { style: string; gender: 'male' | 'female'; color: string }): Promise<void>;
   };
   upload: {
     getSas(p: {
@@ -184,7 +178,7 @@ export interface Api {
     respond(requestId: string, accept: boolean): Promise<void>;
     remove(userId: string): Promise<void>;
     openDirect(userId: string): Promise<ChatRoom>;
-    messages(chatRoomId: string): Promise<Message[]>;
+    messages(chatRoomId: string, before?: string): Promise<Message[]>;
   };
   content: {
     folders(): Promise<(Folder & { materialCount: number })[]>;
