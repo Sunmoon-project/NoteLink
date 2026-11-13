@@ -1,5 +1,6 @@
-# develop에 들어온 커밋을 Azure App Service(개발 환경)에 배포합니다. Actions 탭에서 직접 실행할 수도 있습니다.
-# develop으로 가는 PR에서는 배포 묶음 만들기 · 확인까지만 돌리고 Azure에는 올리지 않습니다.
+# main에 들어온 커밋(develop → main 릴리스)을 Azure App Service(개발 환경)에 배포합니다(#363). Actions 탭에서 main으로 직접 실행할 수도 있습니다.
+# develop · main으로 가는 PR에서는 배포 묶음 만들기 · 확인까지만 돌리고 Azure에는 올리지 않습니다.
+# 다른 브랜치에서 직접 실행하면 배포 작업을 건너뜁니다(검토 전 코드가 올라가지 않게).
 #   - API 서버(apps/api)  → notelink-api-dev (Node 24)
 #   - AI 서버(apps/ai)    → notelink-ai-dev  (Python 3.13)
 # Azure 로그인은 비밀값 없이 OIDC로 합니다. 저장소 Variables에 AZURE_CLIENT_ID · AZURE_TENANT_ID ·
@@ -9,7 +10,7 @@ name: Deploy
 
 on:
   push:
-    branches: [develop]
+    branches: [main]
     paths:
       - 'apps/api/**'
       - 'apps/ai/**'
@@ -20,7 +21,7 @@ on:
       - 'scripts/wait-http-ok.sh'
       - '.github/workflows/deploy.yml'
   pull_request:
-    branches: [develop]
+    branches: [develop, main]
     paths: # push와 같게 둡니다
       - 'apps/api/**'
       - 'apps/ai/**'
@@ -51,8 +52,8 @@ jobs:
   api:
     name: API 서버 (NestJS)
     if: >-
-      github.event_name == 'pull_request' ||
-      (vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '')
+      github.event_name == 'pull_request' || (github.ref == 'refs/heads/main' &&
+      vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -122,8 +123,8 @@ jobs:
   ai:
     name: AI 서버 (FastAPI)
     if: >-
-      github.event_name == 'pull_request' ||
-      (vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '')
+      github.event_name == 'pull_request' || (github.ref == 'refs/heads/main' &&
+      vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
