@@ -13,8 +13,16 @@ export class RoomMember {
   @Prop({ required: true, type: String, default: 'member' })
   role: string; // host, member 등
 
-  @Prop({ required: true, type: String, default: 'joined' })
-  status: string;
+  @Prop({
+    required: true,
+    type: String,
+    enum: ['invited', 'joined', 'left', 'kicked'],
+    default: 'joined',
+  })
+  status: 'invited' | 'joined' | 'left' | 'kicked';
+
+  @Prop({ type: String, enum: ['voluntary', 'host_kick', 'report'], default: null })
+  leaveReason?: 'voluntary' | 'host_kick' | 'report' | null;
 
   @Prop({ type: Object })
   personalTimerRule?: Record<string, unknown>;
@@ -23,10 +31,10 @@ export class RoomMember {
   invitedAt?: Date | null;
 
   @Prop({ type: Date, default: null })
-  joinedAt?: Date | null ;
+  joinedAt?: Date | null;
 
   @Prop({ type: Date, default: null })
-  leftAt?: Date | null ;
+  leftAt?: Date | null;
 
   @Prop({ type: Date, default: null })
   kickedAt?: Date | null;
@@ -67,6 +75,13 @@ export class StudyRoom {
 
   @Prop({ type: Date, default: null })
   closedAt?: Date | null;
+
+  @Prop({ type: Date, default: null })
+  deleteAfter?: Date | null;
 }
 
 export const StudyRoomSchema = SchemaFactory.createForClass(StudyRoom);
+StudyRoomSchema.index(
+  { deleteAfter: 1 },
+  { partialFilterExpression: { deleteAfter: { $type: 'date' } } },
+);

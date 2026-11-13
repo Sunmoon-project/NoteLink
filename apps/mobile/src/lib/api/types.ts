@@ -184,7 +184,7 @@ export interface Api {
     respond(requestId: string, accept: boolean): Promise<void>;
     remove(userId: string): Promise<void>;
     openDirect(userId: string): Promise<ChatRoom>;
-    messages(chatRoomId: string): Promise<Message[]>;
+    messages(chatRoomId: string, before?: string): Promise<Message[]>;
   };
   content: {
     folders(): Promise<(Folder & { materialCount: number })[]>;

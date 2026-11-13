@@ -867,7 +867,16 @@ const api: Api = {
         members: [],
         updatedAt: now(),
       }),
-    messages: (id) => ok(db().messages[id] ?? []),
+    messages: (id, before) => {
+      const items = db().messages[id] ?? [];
+      const end = before
+        ? Math.max(
+            0,
+            items.findIndex((item) => item._id === before),
+          )
+        : items.length;
+      return ok(items.slice(Math.max(0, end - 50), end));
+    },
   },
   content: {
     folders: () => {
@@ -1402,6 +1411,11 @@ export const localApi: Api = asAsync(api);
 
 /** 채팅: 보낸 메시지를 저장하고 화면에 돌려준다 (다른 사람에게 전달은 서버 연결 후) */
 localSocket.onClient = (ev, args) => {
+  if (ev === 'room:join') {
+    const ack = args[1] as ((result: { ok: boolean }) => void) | undefined;
+    ack?.({ ok: true });
+    return;
+  }
   if (ev !== 'chat:send') return;
   const [p, ack] = args as [
     { chatRoomId: string; text: string; clientId: string },

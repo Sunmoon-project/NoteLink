@@ -8,6 +8,8 @@ const mockRemoteVolume = jest.fn();
 const mockCameraPublication = { track: {}, isMuted: false };
 const mockRemote = {
   identity: 'friend-1',
+  isMicrophoneEnabled: false,
+  isCameraEnabled: false,
   audioTrackPublications: new Map([['audio-1', { audioTrack: { setVolume: mockRemoteVolume } }]]),
   getTrackPublication: jest.fn(() => mockCameraPublication),
 };
@@ -48,6 +50,8 @@ jest.mock(
     RoomEvent: {
       TrackSubscribed: 'TrackSubscribed',
       TrackUnsubscribed: 'TrackUnsubscribed',
+      TrackPublished: 'TrackPublished',
+      TrackUnpublished: 'TrackUnpublished',
       LocalTrackPublished: 'LocalTrackPublished',
       LocalTrackUnpublished: 'LocalTrackUnpublished',
       TrackMuted: 'TrackMuted',
@@ -55,6 +59,7 @@ jest.mock(
       ParticipantConnected: 'ParticipantConnected',
       ParticipantDisconnected: 'ParticipantDisconnected',
       Reconnected: 'Reconnected',
+      Reconnecting: 'Reconnecting',
       Disconnected: 'Disconnected',
     },
     Track: { Source: { Camera: 'camera' } },
@@ -65,6 +70,9 @@ jest.mock(
 beforeEach(() => {
   jest.clearAllMocks();
   mockEvents.clear();
+  mockRoom.remoteParticipants.set('friend-1', mockRemote);
+  mockRemote.isCameraEnabled = false;
+  mockRemote.isMicrophoneEnabled = false;
   mockToken.mockResolvedValue({ url: 'wss://media.test', token: 'test-token' });
   mockStart.mockResolvedValue(undefined);
   mockStop.mockResolvedValue(undefined);
@@ -84,6 +92,39 @@ beforeEach(() => {
     mockRoom.localParticipant.isCameraEnabled = enabled;
   });
   mockCameraPublication.isMuted = false;
+});
+
+it('원격 참가자의 켜기·끄기와 퇴장 상태를 LiveKit에서 읽는다', async () => {
+  const changed = jest.fn();
+  const connection = await connectMedia('room-1', changed);
+  expect(connection.participantState('friend-1')).toEqual({ camOn: false, micOn: false });
+  mockRemote.isCameraEnabled = true;
+  mockRemote.isMicrophoneEnabled = true;
+  mockEvents.get('TrackUnmuted')!();
+  expect(changed).toHaveBeenCalled();
+  expect(connection.participantState('friend-1')).toEqual({ camOn: true, micOn: true });
+  mockRemote.isCameraEnabled = false;
+  mockEvents.get('TrackMuted')!();
+  expect(connection.participantState('friend-1')).toEqual({ camOn: false, micOn: true });
+  mockRoom.remoteParticipants.delete('friend-1');
+  mockEvents.get('ParticipantDisconnected')!();
+  expect(connection.participantState('friend-1')).toEqual({ camOn: false, micOn: false });
+  await connection.close();
+});
+
+it('재연결 중에는 이전 참가자 미디어 상태를 표시하지 않는다', async () => {
+  const changed = jest.fn();
+  const connection = await connectMedia('room-1', changed);
+  mockRemote.isCameraEnabled = true;
+  mockRoom.state = 'reconnecting';
+  mockEvents.get('Reconnecting')!();
+  expect(changed).toHaveBeenCalled();
+  expect(connection.participantState('friend-1')).toEqual({ camOn: false, micOn: false });
+  expect(connection.video('friend-1')).toBeNull();
+  mockRoom.state = 'connected';
+  mockEvents.get('Reconnected')!();
+  expect(connection.participantState('friend-1').camOn).toBe(true);
+  await connection.close();
 });
 
 it('서버 토큰으로 오디오 세션을 시작한 뒤 실제 SDK에 연결한다', async () => {
