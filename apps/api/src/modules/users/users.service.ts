@@ -52,15 +52,20 @@ export class UsersService {
    */
   async registerDevice(userId: string, dto: RegisterDeviceDto, now = new Date()): Promise<void> {
     const id = await this.activeId(userId);
+    // 탈퇴를 시작한 계정은 기기를 받지 않는다. 저장 뒤에도 다시 확인해서, 탈퇴 시작과 겹쳐도 남지 않게 한다:
+    // 다시 확인이 통과했다면 저장은 탈퇴 시작보다 앞이라, 그 뒤에 도는 탈퇴의 기기 정리가 지운다
+    const accepting = { _id: id, deletedAt: null, withdrawingAt: null };
+    const notFound = () =>
+      new NotFoundException({ code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' });
+    if (!(await this.userModel.exists(accepting))) throw notFound();
     await this.devices.updateOne(
       { pushToken: dto.pushToken },
       { $set: { userId: id, platform: dto.platform, locale: dto.locale, lastSeenAt: now } },
       { upsert: true },
     );
-    // 확인한 뒤 저장하는 사이에 탈퇴했으면, 탈퇴 정리가 이 기기를 놓쳤을 수 있으니 지운다
-    if (!(await this.userModel.exists({ _id: id, deletedAt: null }))) {
+    if (!(await this.userModel.exists(accepting))) {
       await this.devices.deleteMany({ pushToken: dto.pushToken, userId: id });
-      throw new NotFoundException({ code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' });
+      throw notFound();
     }
   }
 
@@ -99,12 +104,16 @@ export class UsersService {
    * 이메일 · 비밀번호 · 소셜 연동을 비우고 닉네임을 바꿔 같은 이메일 · 닉네임으로 다시 가입할 수 있게 한다.
    * 모든 기기 로그인(access · refresh 토큰)을 끊고, 푸시 기기 · 친구 관계 · 시간표 공유를 지운다.
    *
-   * 정리를 먼저 하고 탈퇴 표시(deletedAt)는 마지막에 한다: 중간에 실패하면 계정이 아직 살아 있어
-   * 다시 로그인해 탈퇴를 다시 시도할 수 있다(먼저 표시하면 404가 나서 남은 정리를 다시 할 수 없다).
-   * 정리는 몇 번 되풀이해도 결과가 같다.
+   * 순서: 탈퇴 시작 표시(withdrawingAt, 새 기기를 막는다) → 정리 → 탈퇴 표시(deletedAt)와 개인 정보 지우기.
+   * 탈퇴 표시를 마지막에 해서, 중간에 실패하면 계정이 아직 살아 있어 다시 로그인해 탈퇴를 다시 시도할 수 있다.
+   * 탈퇴 표시 뒤에는 정리할 것이 남지 않는다(기기는 탈퇴 시작 뒤로 저장되지 않는다). 정리는 몇 번 되풀이해도 결과가 같다.
    */
   async withdraw(userId: string, now = new Date()): Promise<void> {
     const id = await this.activeId(userId);
+    await this.userModel.updateOne(
+      { _id: id, deletedAt: null, withdrawingAt: null },
+      { $set: { withdrawingAt: now } },
+    );
     await this.tokens.revokeAll(id, now);
     await this.devices.deleteMany({ userId: id });
     await this.friendships.deleteMany({ $or: [{ userA: id }, { userB: id }] });
@@ -122,8 +131,6 @@ export class UsersService {
         },
       },
     );
-    // 정리하는 사이에 등록된 기기가 있으면 지운다(registerDevice도 저장 뒤 탈퇴를 다시 확인한다)
-    await this.devices.deleteMany({ userId: id });
   }
 
   async interestCategories() {

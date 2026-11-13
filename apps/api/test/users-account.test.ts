@@ -120,6 +120,42 @@ describe('상태 · 기기', () => {
     expect(String(devices.rows[0]!.userId)).toBe(String(other));
   });
 
+  it('탈퇴를 시작한 계정은 기기를 받지 않는다', async () => {
+    users.rows[0]!.withdrawingAt = NOW;
+    await expect(
+      service.registerDevice(me.toHexString(), {
+        platform: 'ios',
+        pushToken: 't',
+        locale: 'ko-KR',
+      }),
+    ).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
+    expect(devices.rows).toHaveLength(0);
+  });
+
+  it('확인 직후 탈퇴가 끝까지 돌고 나서 저장돼도 기기가 남지 않는다', async () => {
+    const exists = users.exists;
+    let calls = 0;
+    users.exists = async (f) => {
+      calls += 1;
+      const found = await exists(f);
+      // 기기 등록의 첫 확인이 통과한 직후 탈퇴가 처음부터 끝까지 돈다(그 안의 확인은 그대로 통과)
+      if (calls === 1) {
+        users.exists = exists;
+        await service.withdraw(me.toHexString(), NOW);
+      }
+      return found;
+    };
+    await expect(
+      service.registerDevice(me.toHexString(), {
+        platform: 'ios',
+        pushToken: 't',
+        locale: 'ko-KR',
+      }),
+    ).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
+    expect(users.rows[0]).toMatchObject({ deletedAt: NOW });
+    expect(devices.rows).toHaveLength(0);
+  });
+
   it('등록하는 사이에 탈퇴했으면 저장한 기기를 지우고 404', async () => {
     // 확인(exists)은 통과하고, 저장한 뒤 다시 확인할 때는 탈퇴한 상태
     const exists = users.exists;
@@ -168,6 +204,7 @@ describe('회원 탈퇴', () => {
     devices.rows.push({ _id: new Types.ObjectId(), userId: me, pushToken: 't', platform: 'ios' });
     await service.withdraw(me.toHexString(), NOW);
     expect(users.rows[0]).toMatchObject({
+      withdrawingAt: NOW,
       deletedAt: NOW,
       email: null,
       passwordHash: null,
