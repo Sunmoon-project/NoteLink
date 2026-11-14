@@ -35,15 +35,22 @@ export class ReportsService {
       String(new Types.ObjectId(reporterId)),
       input.imageUrls ?? [],
     );
-    const report = await this.reports.create({
-      roomId: new Types.ObjectId(input.roomId),
-      reporterId: new Types.ObjectId(reporterId),
-      targetUserId: targetId,
-      reportType: input.reportType,
-      details: input.details,
-      imageUrls,
-      status: REPORT_STATUS.PENDING,
-    });
+    let report;
+    try {
+      report = await this.reports.create({
+        roomId: new Types.ObjectId(input.roomId),
+        reporterId: new Types.ObjectId(reporterId),
+        targetUserId: targetId,
+        reportType: input.reportType,
+        details: input.details,
+        imageUrls,
+        status: REPORT_STATUS.PENDING,
+      });
+    } catch (error) {
+      // 저장하지 못한 신고의 복사본은 어느 신고도 가리키지 않으므로 지운다
+      await this.storage.discardReportImages(imageUrls);
+      throw error;
+    }
     return { _id: String(report._id), status: report.status };
   }
 }

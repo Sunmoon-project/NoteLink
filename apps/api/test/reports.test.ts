@@ -22,7 +22,7 @@ const roomId = new Types.ObjectId();
 const reportId = new Types.ObjectId();
 const rooms = { findOne: vi.fn() };
 const reports = { create: vi.fn() };
-const storage = { keepReportImages: vi.fn() };
+const storage = { keepReportImages: vi.fn(), discardReportImages: vi.fn() };
 const KEPT = ['https://blob.example.com/raw/reports/kept.jpg'];
 const valid = {
   roomId: String(roomId),
@@ -177,5 +177,15 @@ describe('POST /api/v1/reports', () => {
       .send(valid);
     expect(response.status).toBe(401);
     expect(reports.create).not.toHaveBeenCalled();
+  });
+
+  it('신고를 저장하지 못하면 이번에 복사한 사진을 지우고 실패를 돌려준다', async () => {
+    reports.create.mockRejectedValueOnce(new Error('DB 장애'));
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/reports')
+      .set('Authorization', 'Bearer valid')
+      .send(valid);
+    expect(response.status).toBe(500);
+    expect(storage.discardReportImages).toHaveBeenCalledWith(KEPT);
   });
 });

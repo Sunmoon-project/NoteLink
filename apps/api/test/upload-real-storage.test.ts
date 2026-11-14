@@ -123,10 +123,16 @@ describe.skipIf(!connection)('진짜 저장소에서 신고 사진 확인 · 보
   it('올린 사진을 확인해 reports/로 복사하고, 크기 · 형식이 그대로다', async () => {
     kept = await blobs.keepReportImages(USER, [target.blobUrl]);
     expect(kept).toHaveLength(1);
-    expect(nameOf(kept[0]!)).toBe(nameOf(target.blobUrl).replace(`${UPLOAD_PREFIX}/`, 'reports/'));
+    expect(nameOf(kept[0]!)).toMatch(new RegExp(`^reports/${USER}/[0-9a-f-]{36}\\.jpg$`));
     const props = await container.getBlobClient(nameOf(kept[0]!)).getProperties();
     expect(props.contentLength).toBe(body.length);
     expect(props.contentType).toBe('image/jpeg');
+  });
+
+  it('저장하지 못한 신고의 복사본은 지운다', async () => {
+    const [copy] = await blobs.keepReportImages(USER, [target.blobUrl]);
+    await blobs.discardReportImages([copy!]);
+    expect(await container.getBlobClient(nameOf(copy!)).exists()).toBe(false);
   });
 
   it('남이 올린 사진은 받지 않는다', async () => {

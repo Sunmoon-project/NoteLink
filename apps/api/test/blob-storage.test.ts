@@ -26,15 +26,19 @@ function stubBlob(properties: object | Error = { contentLength: 123, contentType
   const copy = vi
     .spyOn(BlockBlobClient.prototype, 'syncCopyFromURL')
     .mockResolvedValue({} as never);
-  return { get, copy };
+  const remove = vi
+    .spyOn(BlockBlobClient.prototype, 'deleteIfExists')
+    .mockResolvedValue({} as never);
+  return { get, copy, remove };
 }
+const kept = (url: string) =>
+  expect(url).toMatch(new RegExp(`^${base}/reports/${owner}/[0-9a-f-]{36}\\.jpg$`));
 
 describe('신고 사진 확인 · 보관 (BlobStorageService.keepReportImages)', () => {
   it('내 임시 경로의 사진을 확인하고 reports/로 복사한 주소를 돌려준다', async () => {
     const { copy } = stubBlob();
-    await expect(service().keepReportImages(owner, [incoming])).resolves.toEqual([
-      `${base}/reports/${owner}/${file}`,
-    ]);
+    const [url] = await service().keepReportImages(owner, [incoming]);
+    kept(url!);
     // 원본은 짧은 읽기 전용 SAS로 읽는다
     const source = new URL(copy.mock.calls[0]![0]);
     expect(`${source.origin}${source.pathname}`).toBe(incoming);
@@ -97,6 +101,35 @@ describe('신고 사진 확인 · 보관 (BlobStorageService.keepReportImages)',
     await expect(service().keepReportImages(owner, [incoming])).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
+  });
+
+  it('복사본은 부를 때마다 새 이름이라 다른 신고와 공유하지 않는다', async () => {
+    stubBlob();
+    const [first] = await service().keepReportImages(owner, [incoming]);
+    const [second] = await service().keepReportImages(owner, [incoming]);
+    expect(first).not.toBe(second);
+  });
+
+  it('두 번째 사진에서 실패하면 이번에 만든 첫 복사본을 지운다', async () => {
+    const { get, remove } = stubBlob();
+    get.mockResolvedValueOnce({ contentLength: 123, contentType: 'image/jpeg' } as never);
+    get.mockResolvedValueOnce({ contentLength: 0, contentType: 'image/jpeg' } as never);
+    const other = incoming.replace('550e8400', '660e8400');
+    await expect(service().keepReportImages(owner, [incoming, other])).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(remove).toHaveBeenCalledTimes(1);
+    kept((remove.mock.contexts[0] as BlockBlobClient).url);
+  });
+
+  it('discardReportImages는 reports/ 복사본만 지우고, 지우기 실패는 던지지 않는다', async () => {
+    const { remove } = stubBlob();
+    remove.mockRejectedValue(new Error('장애'));
+    const copy = `${base}/reports/${owner}/${file}`;
+    await expect(service().discardReportImages([copy, incoming])).resolves.toBeUndefined();
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect((remove.mock.contexts[0] as BlockBlobClient).url).toBe(copy);
+    await expect(new BlobStorageService(null).discardReportImages([copy])).resolves.toBeUndefined();
   });
 
   it('복사에 실패하면 503', async () => {
