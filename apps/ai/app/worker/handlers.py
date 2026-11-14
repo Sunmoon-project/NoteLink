@@ -14,6 +14,7 @@ from app.services.note import ask
 from app.services.note import job as note_job
 from app.services.quiz import generate, review, today
 from app.services.recording import job as recording_job
+from app.services.recording.slides import download_slides
 from app.worker.runner import Handler, JobInputError, JobReport
 
 
@@ -114,6 +115,11 @@ def _pregen(llm: Llm, inp: JsonObject, report: JobReport) -> JsonObject:
 quiz_pregen = _handler(_pregen, background=True)
 
 
+def _fetch_slides(url: str) -> bytes:
+    """강의 자료 내려받기(시험에서 바꿈)."""
+    return download_slides(url)
+
+
 def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
     """녹음 정리(recording_job.run). 일시 오류는 LlmError로 바꿔 시도 한도 안에서 다시 시도합니다.
 
@@ -124,7 +130,9 @@ def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
     """
     llm = Stopping(Metered(_llm(), report.add_cost), report.canceled())
     try:
-        return recording_job.run(llm, _speech, _voyage(), inp, report, checkpoint=report)
+        return recording_job.run(
+            llm, _speech, _voyage(), inp, report, checkpoint=report, fetch=_fetch_slides
+        )
     except recording_job.InputError as e:
         raise JobInputError(str(e), code=e.code) from e
     except SpeechUnavailableError as e:
