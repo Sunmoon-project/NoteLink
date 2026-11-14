@@ -13,25 +13,32 @@ import { StudyChatController } from './study-chat.controller.js';
 import { StudyChatGateway } from './study-chat.gateway.js';
 import { StudyLiveService } from './study-live.service.js';
 import { StudyRoomCleanupService } from './study-room-cleanup.service.js';
+import { Report, ReportSchema } from '../social/schemas/report.schema.js';
+import { ReportsController } from '../social/reports.controller.js';
+import { ReportsService } from '../social/reports.service.js';
+import { UploadsModule } from '../upload/uploads.module.js';
 
 @Module({
   imports: [
     AuthModule,
+    UploadsModule,
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
       { name: Category.name, schema: CategorySchema },
       { name: ChatRoom.name, schema: ChatRoomSchema },
       { name: Message.name, schema: MessageSchema },
       { name: StudyRoom.name, schema: StudyRoomSchema },
+      { name: Report.name, schema: ReportSchema },
     ]),
   ],
-  controllers: [StudyRoomsController, StudyChatController],
+  controllers: [StudyRoomsController, StudyChatController, ReportsController],
   providers: [
     StudyRoomsService,
     StudyChatService,
     StudyChatGateway,
     StudyLiveService,
     StudyRoomCleanupService,
+    ReportsService,
   ],
 })
 export class StudyRoomsModule {}

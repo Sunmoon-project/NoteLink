@@ -16,6 +16,7 @@ import { UsersModule } from './modules/users/users.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
 import { TimetableModule } from './modules/timetable/timetable.module.js';
+import { UploadsModule } from './modules/upload/uploads.module.js';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { TimetableModule } from './modules/timetable/timetable.module.js';
     TimetableModule,
     // 할 일 · D-day (FR-10)
     CalendarModule,
+    UploadsModule,
   ],
   controllers: [HealthController],
 })

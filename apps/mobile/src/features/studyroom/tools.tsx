@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Image, Pressable, View } from 'react-native';
 import { Text, TextInput } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -90,6 +90,8 @@ export function ReportScreen() {
   const [photos, setPhotos] = useState<LocalFile[]>([]);
   const [sheet, setSheet] = useState<null | 'target' | 'type'>(null);
   const [done, setDone] = useState(false);
+  const [reportStage, setReportStage] = useState<'uploading' | 'submitting' | null>(null);
+  const uploadedPhotos = useRef(new Map<LocalFile, string>());
   const addPhoto = async () => {
     const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
     const asset = r.canceled ? undefined : r.assets[0];
@@ -110,7 +112,17 @@ export function ReportScreen() {
     mutationFn: async () => {
       if (!target || !reportReady({ target: target.id, type, body }))
         throw new Error('입력을 확인해 주세요');
-      const urls = await Promise.all(photos.map((file) => uploadToBlob('image', file)));
+      if (photos.length) setReportStage('uploading');
+      const urls = await Promise.all(
+        photos.map(async (file) => {
+          const existing = uploadedPhotos.current.get(file);
+          if (existing) return existing;
+          const url = await uploadToBlob('image', file, undefined, undefined, 'report');
+          uploadedPhotos.current.set(file, url);
+          return url;
+        }),
+      );
+      setReportStage('submitting');
       await api.rooms.report({
         roomId: id,
         targetUserId: target.id,
@@ -121,18 +133,26 @@ export function ReportScreen() {
     },
     onError: () => toast('신고를 보내지 못했어요. 입력을 유지했으니 다시 시도해주세요'),
     onSuccess: () => setDone(true),
+    onSettled: () => setReportStage(null),
   });
   return (
     <Canvas>
       <Screen
         footer={
-          <Btn
-            disabled={!reportReady({ target: target?.id, type, body })}
-            loading={send.isPending}
-            onPress={() => send.mutate()}
-          >
-            신고하기
-          </Btn>
+          <View>
+            {reportStage && (
+              <Text className="mb-2 text-center text-caption text-sub">
+                {reportStage === 'uploading' ? '사진 업로드 중…' : '신고 접수 중…'}
+              </Text>
+            )}
+            <Btn
+              disabled={!reportReady({ target: target?.id, type, body })}
+              loading={send.isPending}
+              onPress={() => send.mutate()}
+            >
+              신고하기
+            </Btn>
+          </View>
         }
       >
         <Header title="신고" center />
