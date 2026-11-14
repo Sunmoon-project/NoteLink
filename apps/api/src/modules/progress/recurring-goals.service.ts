@@ -2,9 +2,14 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
-import type { SaveRecurringGoalDto } from './dto/recurring-goal.dto.js';
+import { HolidaysService } from '../calendar/holidays.service.js';
 import { Subject } from '../session/schemas/subject.schema.js';
+import { seoulDate } from '../session/study-time.js';
+import type { SaveRecurringGoalDto } from './dto/recurring-goal.dto.js';
+import { weeklyStreak, type DayStudy, type GoalRule } from './goal-judge.js';
+import { DailyRecord } from './schemas/daily-record.schema.js';
 import { RecurringGoal } from './schemas/recurring-goal.schema.js';
+import { addDays, weekStartOf } from './week.js';
 
 /** 앱에 내려주는 반복 목표 (shared RecurringGoal) */
 export interface RecurringGoalView {
@@ -20,7 +25,16 @@ export interface RecurringGoalView {
     isActive: boolean;
 }
 
-type GoalLean = RecurringGoal & { _id: Types.ObjectId };
+type GoalLean = RecurringGoal & { _id: Types.ObjectId; createdAt?: Date };
+type DayLean = {
+    studyDate: string;
+    totalSec: number;
+    subjectSec?: Record<string, number> | null; // 날짜별 과목 시간(자정을 넘긴 몫 포함). 이 칸이 생기기 전 옛 기록에는 없다
+    items?: { subjectId?: Types.ObjectId | null; accumulatedSec: number }[];
+};
+
+/** 연속 달성 주 수를 셀 때 읽는 공부 기록의 최대 기간(일). 약 2년 */
+export const MAX_LOOKBACK_DAYS = 730;
 
 const VALIDATION_FAILED = 'VALIDATION_FAILED';
 const NOT_FOUND = { code: 'NOT_FOUND', message: '존재하지 않는 반복 목표입니다.' };
@@ -31,15 +45,18 @@ export class RecurringGoalsService {
     constructor(
         @InjectModel(RecurringGoal.name) private readonly goalModel: Model<RecurringGoal>,
         @InjectModel(Subject.name) private readonly subjectModel: Model<Subject>, // 과목이 있는지 확인한다 (읽기만)
+        @InjectModel(DailyRecord.name) private readonly dailyModel: Model<DailyRecord>, // 연속 달성 판정에 하루 기록을 읽기만 한다
+        private readonly holidays: HolidaysService, // 건너뛸 날(공휴일 · 내 제외일)
     ) { }
 
-    /** 내 반복 목표 (지운 것 제외), 만든 순서 */
-    async list(userId: string): Promise<RecurringGoalView[]> {
+    /** 내 반복 목표 (지운 것 제외), 만든 순서. streak은 조회할 때 계산한다(저장하지 않는다) */
+    async list(userId: string, now: Date = new Date()): Promise<RecurringGoalView[]> {
         const docs = await this.goalModel
             .find({ userId: new Types.ObjectId(userId), deletedAt: null })
             .sort({ createdAt: 1, _id: 1 })
             .lean<GoalLean[]>();
-        return docs.map(toView);
+        const streaks = await this.streaks(userId, docs, now);
+        return docs.map((goal) => toView(goal, streaks.get(goal._id.toString()) ?? 0));
     }
 
     /** 만든다. 이름과 요일은 꼭 있어야 하고, 나머지는 앱과 같은 기본값 */
@@ -57,7 +74,10 @@ export class RecurringGoalsService {
             name: dto.name,
             days: sortedDays(dto.days),
         });
-        return toView(created.toObject() as unknown as GoalLean);
+        // 목록 · 수정과 같은 계산을 쓴다. 오늘 이미 목표 시간을 채운 사용자가 오늘 요일로 만들면 바로 1 이상일 수 있다
+        const goal = created.toObject() as unknown as GoalLean;
+        const streaks = await this.streaks(userId, [goal], new Date());
+        return toView(goal, streaks.get(goal._id.toString()) ?? 0);
     }
 
     /** 보낸 필드만 바꾼다. 남의 목표 · 지운 목표 · 없는 목표는 404 */
@@ -70,7 +90,8 @@ export class RecurringGoalsService {
             .findOneAndUpdate(ownedAlive(userId, id), { $set: fields }, { returnDocument: 'after' })
             .lean<GoalLean>();
         if (!saved) throw new NotFoundException(NOT_FOUND);
-        return toView(saved);
+        const streaks = await this.streaks(userId, [saved], new Date());
+        return toView(saved, streaks.get(saved._id.toString()) ?? 0);
     }
 
     /**
@@ -81,6 +102,38 @@ export class RecurringGoalsService {
         if (subjectId === undefined || subjectId === null) return;
         const found = await this.subjectModel.findOne({ _id: new Types.ObjectId(subjectId), isActive: true }).lean();
         if (!found) throw new BadRequestException({ code: VALIDATION_FAILED, message: '존재하지 않는 과목입니다.' });
+    }
+
+    /**
+     * 목표마다 연속 달성 주 수를 구한다. 공부 기록과 건너뛸 날은 목록 전체에 필요한 기간을 한 번씩만 읽고(목표마다 읽지 않는다),
+     * 판정은 순수 함수(goal-judge.ts)가 한다. 쉬는 목표(isActive=false)는 읽을 것 없이 0이다.
+     * 목표를 고치면 과거 판정도 지금 설정으로 다시 계산된다
+     */
+    private async streaks(userId: string, goals: GoalLean[], now: Date): Promise<Map<string, number>> {
+        const result = new Map<string, number>();
+        const running = goals.filter((g) => g.isActive);
+        if (running.length === 0) return result;
+
+        const today = seoulDate(now);
+        const rules = running.map((g) => ({ id: g._id.toString(), rule: toRule(g) }));
+        const earliest = rules.map((r) => r.rule.createdDate).reduce((a, b) => (a < b ? a : b));
+        const limit = addDays(today, -MAX_LOOKBACK_DAYS);
+        const from = earliest > limit ? earliest : limit;
+        const weekEnd = addDays(weekStartOf(today), 6); // 이번 주 남은 날의 공휴일도 알아야 "남은 날"을 바르게 센다
+
+        const [records, skipList] = await Promise.all([
+            this.dailyModel
+                .find(
+                    { userId: new Types.ObjectId(userId), studyDate: { $gte: from, $lte: today } },
+                    { studyDate: 1, totalSec: 1, subjectSec: 1, 'items.subjectId': 1, 'items.accumulatedSec': 1 },
+                )
+                .lean<DayLean[]>(),
+            this.holidays.skipDates(userId, from, weekEnd),
+        ]);
+        const study = new Map(records.map((r) => [r.studyDate, toDayStudy(r)]));
+        const skipDates = new Set(skipList);
+        for (const { id, rule } of rules) result.set(id, weeklyStreak(rule, today, study, skipDates, from));
+        return result;
     }
 
     /** 지우지 않고 지운 시각만 표시한다 (FR-11-10). 과거 이력은 남는다 */
@@ -118,7 +171,35 @@ function toFields(dto: SaveRecurringGoalDto): Record<string, unknown> {
     return fields;
 }
 
-function toView(goal: GoalLean): RecurringGoalView {
+/**
+ * 하루 기록에서 총 시간과 과목별 시간을 뽑는다.
+ * 과목별 시간(subjectSec)이 있으면 그걸로 읽는다 — 자정을 넘긴 공부의 다음 날 몫도 들어 있다.
+ * 없는 옛 기록은 항목(items)에서 읽고, 같은 과목 항목이 여러 개면 더한다
+ */
+function toDayStudy(record: DayLean): DayStudy {
+    if (record.subjectSec) return { totalSec: record.totalSec, bySubject: new Map(Object.entries(record.subjectSec)) };
+    const bySubject = new Map<string, number>();
+    for (const item of record.items ?? []) {
+        if (!item.subjectId) continue;
+        const key = item.subjectId.toString();
+        bySubject.set(key, (bySubject.get(key) ?? 0) + item.accumulatedSec);
+    }
+    return { totalSec: record.totalSec, bySubject };
+}
+
+/** 저장된 목표를 판정 규칙으로. 날짜는 서울 날짜로 바꾼다(만든 시각 · pausedUntil 모두 순간으로 저장돼 있다) */
+function toRule(goal: GoalLean): GoalRule {
+    return {
+        isActive: goal.isActive,
+        days: goal.days,
+        targetSec: goal.targetMin * 60,
+        subjectId: goal.subjectId ? goal.subjectId.toString() : null,
+        createdDate: seoulDate(goal.createdAt ?? new Date(0)),
+        pausedUntil: goal.pausedUntil ? seoulDate(goal.pausedUntil) : null,
+    };
+}
+
+function toView(goal: GoalLean, streak: number): RecurringGoalView {
     return {
         _id: goal._id.toString(),
         name: goal.name,
@@ -128,8 +209,7 @@ function toView(goal: GoalLean): RecurringGoalView {
         remindEnabled: goal.remindEnabled,
         remindTime: goal.remindTime ?? null,
         pausedUntil: goal.pausedUntil ? goal.pausedUntil.toISOString() : null,
-        // TODO: 달성 판정 · streak 계산(FR-11-06 · 11)은 판정 PR에서 채운다. 지금은 항상 0
-        streak: 0,
+        streak,
         isActive: goal.isActive,
     };
 }

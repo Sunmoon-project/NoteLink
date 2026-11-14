@@ -46,6 +46,12 @@ export class DailyRecord {
 
     @Prop({ type: [StudyItemSchema], default: [] })
     items: StudyItem[];
+
+    // 그날 과목별로 쌓인 공부 시간(초). 키는 과목 id 글자. 자정을 넘긴 공부는 다음 날 몫도 여기 쌓인다
+    // (items.accumulatedSec은 시작한 날에만 쌓여서 다음 날 과목 시간을 알 수 없다). 반복 목표 판정에만 쓰고 앱에는 내보내지 않는다.
+    // 이 칸이 생기기 전의 옛 기록에는 없다(그때는 items에서 읽는다). 기본값은 두지 않는다 — 과목 없는 날은 칸 자체가 없다
+    @Prop({ type: Map, of: Number })
+    subjectSec?: Record<string, number>;
 }
 
 export const DailyRecordSchema = SchemaFactory.createForClass(DailyRecord);
