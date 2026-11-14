@@ -12,26 +12,26 @@
 
 ## 1. 기술 스택
 
-| 영역 | 사용 기술 | 버전 |
-| --- | --- | --- |
-| 모바일 앱 | Expo (React Native) + TypeScript | Expo SDK 57 · RN 0.86.3 · TS 6.0.3 |
-| 메인 서버 | NestJS (Node.js) | NestJS 12 · Node 24 |
-| AI 서버 | FastAPI (Python) | FastAPI 0.142 · Python 3.13 |
-| 데이터베이스 | MongoDB Atlas (Azure 코리아 중부) | MongoDB 8.0 |
-| 파일 저장소 | Azure Blob Storage | — |
-| 배포 | Azure App Service (Linux) | — |
-| 실시간 | Socket.IO (NestJS 서버에 직접) | 4.8 |
-| 캠 · 음성 스터디 | LiveKit Cloud | — |
+| 영역             | 사용 기술                         | 버전                               |
+| ---------------- | --------------------------------- | ---------------------------------- |
+| 모바일 앱        | Expo (React Native) + TypeScript  | Expo SDK 57 · RN 0.86.3 · TS 6.0.3 |
+| 메인 서버        | NestJS (Node.js)                  | NestJS 12 · Node 24                |
+| AI 서버          | FastAPI (Python)                  | FastAPI 0.142 · Python 3.13        |
+| 데이터베이스     | MongoDB Atlas (Azure 코리아 중부) | MongoDB 8.0                        |
+| 파일 저장소      | Azure Blob Storage                | —                                  |
+| 배포             | Azure App Service (Linux)         | —                                  |
+| 실시간           | Socket.IO (NestJS 서버에 직접)    | 4.8                                |
+| 캠 · 음성 스터디 | LiveKit Cloud                     | —                                  |
 
 ### AI 서비스
 
-| 기능 | 서비스 |
-| --- | --- |
-| 요약 · 퀴즈 · AI 설명 | Claude Opus 5.5 |
-| 필기 사진 · PDF 읽기 | Claude (이미지 · PDF 직접 입력) |
-| 필기 인식 보조 (테스트 후 결정) | Azure AI Document Intelligence |
-| 음성 인식 | Azure AI Speech (단어별 시간 정보) |
-| 음성 합성 · 아바타 입 모양 | Azure AI Speech (TTS + viseme) |
+| 기능                            | 서비스                             |
+| ------------------------------- | ---------------------------------- |
+| 요약 · 퀴즈 · AI 설명           | Claude Opus 5.5                    |
+| 필기 사진 · PDF 읽기            | Claude (이미지 · PDF 직접 입력)    |
+| 필기 인식 보조 (테스트 후 결정) | Azure AI Document Intelligence     |
+| 음성 인식                       | Azure AI Speech (단어별 시간 정보) |
+| 음성 합성 · 아바타 입 모양      | Azure AI Speech (TTS + viseme)     |
 
 ---
 
@@ -173,7 +173,70 @@ npm run dev:ai       # FastAPI 서버
 npm run dev:mobile   # 앱 개발 서버
 ```
 
+서버(`npm run dev:api`)를 켜면 기본 상점 아이템이 자동으로 들어갑니다(없는 것만 넣고 이미 있는 아이템은 고치지 않음). 끄려면 `apps/api/.env`에 `SHOP_SEED=off`를 적습니다.
+
 > Expo SDK 57에서는 Watchman이 필요 없습니다. iPhone 실기기에 설치하려면 Apple 개발자 계정이 필요합니다.
+
+### 실제 휴대폰에서 테스트
+
+앱에 LiveKit · WebRTC 같은 네이티브 모듈이 있어 Expo Go 앱으로는 열 수 없습니다. 테스트용 앱을 직접 빌드해 설치합니다.
+빌드 종류는 둘입니다: **기기 저장 모드**(`EXPO_PUBLIC_USE_LOCAL_DATA=true`, 서버 없이 폰에 저장)와 **서버 연결**(배포 서버 주소로 연결).
+
+| 방법                   | 필요한 것                                           | 명령(`apps/mobile`에서)                                   | 설치                                                                                                                                |
+| ---------------------- | --------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| 안드로이드 · USB       | Android Studio(4장 Mac/Windows 준비), 폰 USB 디버깅 | `npm run android:device`                                  | 연결한 폰에 바로 설치(릴리스 빌드라 Metro 없이 동작)                                                                                |
+| 안드로이드 · 링크(APK) | Expo 계정                                           | `npm run build:android:local` 또는 `build:android:server` | 빌드가 끝나면 나오는 링크 · QR로 받아 설치                                                                                          |
+| 아이폰 · USB           | Mac + Xcode, 무료 Apple ID                          | `npm run ios:device`                                      | 연결한 아이폰에 설치(매번 `ios/` 폴더를 무료 계정용으로 다시 만든다). **무료 계정은 7일마다 다시 설치**해야 하고 푸시 알림은 빠진다 |
+
+서버(개발 배포)가 아직 없으면 **기기 저장 모드**로 빌드합니다. 고친 내용은 먼저 커밋합니다(EAS는 git에 커밋된 상태를 올립니다).
+
+#### 처음 한 번
+
+```bash
+npm install
+npm run build -w @notelink/shared   # 앱이 쓰는 공용 계약(dist는 git에 없음)
+cd apps/mobile
+```
+
+- **Expo 계정**: EAS 프로젝트는 expo.dev의 `cchangyeols-team/notelink`입니다(`app.config.ts`의 `EAS_OWNER` · `EAS_PROJECT_ID`). expo.dev에 가입하고 조직 `cchangyeols-team`에 초대받은 뒤 `npx eas-cli login`. `npx eas-cli project:info`에 `@cchangyeols-team/notelink`가 나오면 연결된 것입니다. `eas init`은 다시 하지 않습니다(새 프로젝트가 생깁니다)
+
+#### 안드로이드 — 링크(APK)로 설치
+
+PC에 Android SDK가 없어도 됩니다(빌드는 Expo 서버에서).
+
+1. `npm run build:android:local`(기기 저장 모드) 또는 `npm run build:android:server`(서버 연결)
+2. 처음이면 안드로이드 서명 키를 만들지 묻습니다. **Yes**를 고르면 EAS가 만들어 보관합니다
+3. 10~20분 뒤 나오는 링크 · QR을 폰으로 열어 APK를 받아 설치합니다(「출처를 알 수 없는 앱」 허용). 진행 상황은 터미널이나 expo.dev → `notelink` → Builds, `npx eas-cli build:list`
+
+무료 요금제는 한 달 빌드 횟수가 정해져 있고 대기열에서 기다릴 수 있습니다.
+
+#### 안드로이드 — USB로 설치
+
+Android Studio(4장 준비)가 있고 폰에서 개발자 옵션 → USB 디버깅을 켰으면 `npm run android:device`. 연결한 폰에 릴리스 빌드를 바로 설치합니다(Metro 없이 동작).
+
+#### 아이폰 — USB + 무료 Apple ID
+
+Apple 개발자 계정(연 $99)이 없으면 링크 설치는 안 되고 Mac에 연결해 설치합니다.
+
+1. Xcode → Settings → Accounts에 Apple ID를 더합니다
+2. 아이폰을 USB로 연결하고 「이 컴퓨터를 신뢰」
+3. 아이폰 설정 → 개인정보 보호 및 보안 → **개발자 모드** 켜기(재시작됨)
+4. `EXPO_PUBLIC_USE_LOCAL_DATA=true npm run ios:device` — 기기를 고르라면 아이폰, 서명 팀을 물으면 그 Apple ID(Personal Team). 번들 ID가 이미 쓰인다고 나오면 `NOTELINK_IOS_BUNDLE_ID=com.내이름.notelink`를 앞에 붙여 다시 실행합니다
+5. 설치 뒤 아이폰 설정 → 일반 → VPN 및 기기 관리에서 그 Apple ID의 앱을 신뢰합니다
+
+첫 빌드는 Pod 설치로 10분 넘게 걸립니다. **무료 계정은 7일마다 다시 설치**해야 하고 푸시 알림은 빠집니다.
+
+#### 서버에 연결된 빌드
+
+- **EAS(안드로이드 링크)**: 배포 서버 주소를 한 번 넣고 `npm run build:android:server`
+  ```bash
+  npx eas-cli env:create --environment preview --name EXPO_PUBLIC_API_URL --value https://<배포 서버>/api/v1 --visibility plaintext
+  ```
+- **USB 빌드**: `apps/mobile/.env`에 `EXPO_PUBLIC_USE_LOCAL_DATA=false`와 `EXPO_PUBLIC_API_URL`(폰에서 닿는 주소: 배포 서버 또는 같은 와이파이에 있는 PC의 IP)
+
+#### 아이폰 링크 설치 · TestFlight
+
+Apple 개발자 계정이 있어야 합니다. 등록한 기기에 바로 까는 내부 배포는 `preview-*` 프로필(ad hoc 서명), TestFlight는 스토어 서명이라 `production` 프로필(`npx eas-cli build -p ios --profile production` → `npx eas-cli submit -p ios`)을 씁니다.
 
 ---
 
@@ -223,17 +286,16 @@ npm run dev:mobile   # 앱 개발 서버
 - 소셜 로그인 시크릿 같은 비밀값은 **서버에만** 두고 앱에는 넣지 않습니다.
 - **비밀값은 Azure Key Vault 두 곳에 나눠 둡니다.** 키를 메시지나 파일로 따로 나누지 않고, 각자 자기 Azure 계정으로 엽니다(팀 키 하나를 나눠 갖지 않음). 배포 값과 개발 값을 나눠, 개발 값이 새거나 잘못 바뀌어도 배포 앱과 실제 데이터에 닿지 않게 합니다.
 
-  | Key Vault | 무엇 | 쓰는 곳 |
-  | --- | --- | --- |
-  | 배포 `kv-notelink-dev` | **배포용 키만** | 배포 App Service가 Key Vault 참조(`@Microsoft.KeyVault(SecretUri=…)`)로 읽음. 로컬로 받지 않음 |
-  | 팀 `kv-notelink-team` | 팀원이 같이 쓰는 **로컬 개발용 키**(배포 값은 넣지 않음) | `pull`로 받아 각자 `apps/<앱>/.env`를 만듦 |
+  | Key Vault              | 무엇                                                     | 쓰는 곳                                                                                        |
+  | ---------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+  | 배포 `kv-notelink-dev` | **배포용 키만**                                          | 배포 App Service가 Key Vault 참조(`@Microsoft.KeyVault(SecretUri=…)`)로 읽음. 로컬로 받지 않음 |
+  | 팀 `kv-notelink-team`  | 팀원이 같이 쓰는 **로컬 개발용 키**(배포 값은 넣지 않음) | `pull`로 받아 각자 `apps/<앱>/.env`를 만듦                                                     |
 
-  | 누구 | 배포 Key Vault | 팀 Key Vault |
-  | --- | --- | --- |
-  | 완우 · 희재 | `Key Vault Secrets Officer`(값 보기 · 넣기) | `Key Vault Secrets Officer` |
-  | 나머지 팀원 | 사용자 지정 역할 `NoteLink Secrets Writer`(이름 보기 · 넣기, 값 보기 ❌) | `Key Vault Secrets Officer` |
-  | 배포 앱(관리 ID) | `Key Vault Secrets User`(값 읽기) | — |
-
+  | 누구             | 배포 Key Vault                                                           | 팀 Key Vault                |
+  | ---------------- | ------------------------------------------------------------------------ | --------------------------- |
+  | 완우 · 희재      | `Key Vault Secrets Officer`(값 보기 · 넣기)                              | `Key Vault Secrets Officer` |
+  | 나머지 팀원      | 사용자 지정 역할 `NoteLink Secrets Writer`(이름 보기 · 넣기, 값 보기 ❌) | `Key Vault Secrets Officer` |
+  | 배포 앱(관리 ID) | `Key Vault Secrets User`(값 읽기)                                        | —                           |
   - 처음 한 번: Azure CLI 설치(Windows `winget install --exact --id Microsoft.AzureCLI`, Mac `brew install azure-cli`) → 터미널을 새로 열고 `az login --tenant <팀 테넌트 ID>`(팀 디렉터리에 초대된 계정으로). Windows에서 계정 선택 창이 멈추면 `az config set core.enable_broker_on_windows=false` 뒤 다시 로그인합니다.
   - **로컬 `.env` 만들기**: `scripts/env-vault.sh pull ai`(또는 `api`). 팀 Key Vault에서 그 앱의 `.env.production`에 적힌 이름만 받아 `apps/<앱>/.env`(커밋하지 않음)를 만듭니다. 값은 화면에 나오지 않습니다. 사람마다 다른 값(개인 키 · 로컬 DB 주소, `.env.production`의 `로컬:` 줄 참고)은 `apps/<앱>/.env.local`에 두면 받은 값 위에 덮어씁니다(`.env`를 직접 고치면 다음 `pull`에 덮이므로 `.env.local`에). 있던 `.env`는 손으로 만든 것이면 `.env.bak`, `pull`이 만든 것이면 `.env.prev`로 남깁니다. 값이 바뀌면 `pull`을 다시 합니다. AI 서버는 `.env`의 `${이름}`을 다른 변수로 바꿔 읽으므로(python-dotenv), `${`가 든 값은 `.env`가 아니라 셸 환경 변수로 넘깁니다.
   - 팀 개발용 키 넣기 · 바꾸기: `scripts/env-vault.sh push --team ANTHROPIC_API_KEY` → 값을 보이지 않게 입력합니다. 이름 보기는 `list --team`.
@@ -245,13 +307,13 @@ npm run dev:mobile   # 앱 개발 서버
 
 ## 6. 결정 사항
 
-| 항목 | 결정 |
-| --- | --- |
-| 실시간 통신 | Socket.IO 직접 (App Service에서 WebSocket 켜기) |
-| 캠 · 음성 스터디 | 이번 학기 개발 (LiveKit Cloud) |
-| 앱 차단 | Android 먼저, iOS는 Apple 승인 후 |
-| 소셜 로그인 | 개발용 테스트 키부터 (카카오 · 네이버 · Google) |
-| 결제 | 나중에 개발 (포인트 충전 · 요금제 결제만 미룸) |
+| 항목             | 결정                                            |
+| ---------------- | ----------------------------------------------- |
+| 실시간 통신      | Socket.IO 직접 (App Service에서 WebSocket 켜기) |
+| 캠 · 음성 스터디 | 이번 학기 개발 (LiveKit Cloud)                  |
+| 앱 차단          | Android 먼저, iOS는 Apple 승인 후               |
+| 소셜 로그인      | 개발용 테스트 키부터 (카카오 · 네이버 · Google) |
+| 결제             | 나중에 개발 (포인트 충전 · 요금제 결제만 미룸)  |
 
 ## 7. 남은 일
 

@@ -7,6 +7,7 @@ import { configureApp } from '../src/app.setup.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
 import { GoalsController } from '../src/modules/progress/goals.controller.js';
 import { ProgressService } from '../src/modules/progress/progress.service.js';
+import { Todo } from '../src/modules/calendar/schemas/todo.schema.js';
 import { DailyRecord } from '../src/modules/progress/schemas/daily-record.schema.js';
 import { StudySession } from '../src/modules/session/schemas/study-session.schema.js';
 import { WeeklyGoal } from '../src/modules/progress/schemas/weekly-goal.schema.js';
@@ -21,6 +22,7 @@ export async function createProgressTestApp(fakes: {
     dailyRecord: object;
     weeklyGoal: object;
     studySession?: object;
+    todo?: object; // 월간 hasTodo 테스트에서만 넘긴다
 }): Promise<INestApplication> {
     const moduleRef = await Test.createTestingModule({
         controllers: [GoalsController, StudyProgressController],
@@ -29,6 +31,7 @@ export async function createProgressTestApp(fakes: {
             { provide: getModelToken(DailyRecord.name), useValue: fakes.dailyRecord },
             { provide: getModelToken(WeeklyGoal.name), useValue: fakes.weeklyGoal },
             { provide: getModelToken(StudySession.name), useValue: fakes.studySession ?? {} },
+            { provide: getModelToken(Todo.name), useValue: fakes.todo ?? { distinct: () => Promise.resolve([]) } },
             {
                 provide: TokenService,
                 useValue: {

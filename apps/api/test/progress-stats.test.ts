@@ -1,9 +1,10 @@
 import type { INestApplication } from '@nestjs/common';
+import { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createProgressTestApp } from './progress-test-app.js';
-import { AUTH } from './shop-test-app.js';
+import { AUTH, TEST_USER_ID } from './shop-test-app.js';
 
 // 서울 목요일 정오. 오늘은 2026-11-12
 const NOW = new Date('2026-11-12T03:00:00.000Z');
@@ -32,13 +33,28 @@ const sessionModel = {
 };
 const weeklyGoalModel = {};
 
+// 할 일 모델의 가짜: distinct만 쓴다. 조건(내 것, 그 달 범위, D-day 짝 제외)에 맞는 dueDate를 중복 없이 돌려준다
+let todos: { userId: string; dueDate: string; isDday: boolean; done?: boolean }[];
+type TodoFilter = { userId: { toString(): string }; dueDate: { $gte: string; $lte: string }; isDday: boolean };
+const todoModel = {
+    distinct: vi.fn((_field: string, f: TodoFilter) =>
+        Promise.resolve([
+            ...new Set(
+                todos
+                    .filter((t) => t.userId === f.userId.toString() && t.isDday === f.isDday && t.dueDate >= f.dueDate.$gte && t.dueDate <= f.dueDate.$lte)
+                    .map((t) => t.dueDate),
+            ),
+        ]),
+    ),
+};
+
 // 오늘에서 n일 전 날짜 (2026-11-12 기준)
 const ago = (n: number): string => new Date(Date.UTC(2026, 10, 12 - n)).toISOString().slice(0, 10);
 
 describe('GET /study/month', () => {
     let app: INestApplication;
     beforeAll(async () => {
-        app = await createProgressTestApp({ dailyRecord: dailyModel, weeklyGoal: weeklyGoalModel, studySession: sessionModel });
+        app = await createProgressTestApp({ dailyRecord: dailyModel, weeklyGoal: weeklyGoalModel, studySession: sessionModel, todo: todoModel });
     });
     afterAll(async () => {
         await app.close();
@@ -46,6 +62,8 @@ describe('GET /study/month', () => {
     beforeEach(() => {
         days = [];
         sessions = [];
+        todos = [];
+        todoModel.distinct.mockClear();
     });
 
     const month = (ym: string) => request(app.getHttpServer()).get('/api/v1/study/month').query({ ym }).set(AUTH);
@@ -70,7 +88,7 @@ describe('GET /study/month', () => {
         expect(new Set(list.map((d) => d.studyDate)).size).toBe(length);
     });
 
-    it('level은 하루 순공 시간으로 정하고 hasTodo는 항상 false다', async () => {
+    it('level은 하루 순공 시간으로 정하고 할 일이 없으면 hasTodo는 false다', async () => {
         days = [
             { studyDate: '2026-11-01', totalSec: 1 },
             { studyDate: '2026-11-02', totalSec: 30 * 60 },
@@ -83,6 +101,37 @@ describe('GET /study/month', () => {
         const list = res.body.data as { level: number; hasTodo: boolean }[];
         expect(list.slice(0, 5).map((d) => d.level)).toEqual([1, 2, 3, 4, 0]);
         expect(list.every((d) => d.hasTodo === false)).toBe(true);
+    });
+
+    it('할 일이 있는 날만 hasTodo가 true다 (같은 날 여러 개 · 완료한 것 포함, D-day 짝 · 남의 것 · 다른 달은 제외)', async () => {
+        const me = TEST_USER_ID;
+        const other = new Types.ObjectId().toString();
+        todos = [
+            { userId: me, dueDate: '2026-11-05', isDday: false },
+            { userId: me, dueDate: '2026-11-05', isDday: false }, // 같은 날 두 개
+            { userId: me, dueDate: '2026-11-20', isDday: false, done: true }, // 완료한 할 일도 센다
+            { userId: me, dueDate: '2026-11-20', isDday: true }, // 과제 · 시험의 D-day 짝
+            { userId: me, dueDate: '2026-11-25', isDday: true }, // 직접 만든 D-day만 있는 날
+            { userId: me, dueDate: '2026-10-31', isDday: false }, // 이전 달
+            { userId: me, dueDate: '2026-12-01', isDday: false }, // 다음 달
+            { userId: other, dueDate: '2026-11-10', isDday: false }, // 다른 사람
+        ];
+        const res = await month('2026-11').expect(200);
+        const list = res.body.data as { studyDate: string; hasTodo: boolean }[];
+        expect(list).toHaveLength(30);
+        expect(list.filter((d) => d.hasTodo).map((d) => d.studyDate)).toEqual(['2026-11-05', '2026-11-20']);
+    });
+
+    it('그 달 할 일 날짜는 날짜마다가 아니라 한 번의 조회로 가져온다', async () => {
+        const me = TEST_USER_ID;
+        todos = [{ userId: me, dueDate: '2026-02-14', isDday: false }];
+        const res = await month('2026-02').expect(200);
+        expect(res.body.data).toHaveLength(28);
+        expect(todoModel.distinct).toHaveBeenCalledTimes(1);
+        const [field, filter] = todoModel.distinct.mock.calls[0] as [string, TodoFilter];
+        expect(field).toBe('dueDate');
+        expect(filter).toMatchObject({ dueDate: { $gte: '2026-02-01', $lte: '2026-02-28' }, isDday: false });
+        expect(filter.userId.toString()).toBe(me);
     });
 
     it.each(['2026-13', '2026-00', '2026-1', '202611', 'abc', '2026-11-01'])('ym=%s 는 400', async (ym) => {

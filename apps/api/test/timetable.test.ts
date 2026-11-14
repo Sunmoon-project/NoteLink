@@ -9,8 +9,8 @@ import { AUTH, TEST_USER_ID } from './shop-test-app.js';
 
 type ClassRow = { _id: Types.ObjectId; subjectName: string; days: number[]; startTime: string; endTime: string; location: string; color: string; source: string };
 type TtRow = { _id: Types.ObjectId; userId: Types.ObjectId; classes: ClassRow[]; updatedAt: Date };
-type ShareRow = { _id: Types.ObjectId; ownerId: Types.ObjectId; friendId: Types.ObjectId; mode: string; sharedAt: Date };
-type FriendRow = { userA: Types.ObjectId; userB: Types.ObjectId; status: string };
+type ShareRow = { _id: Types.ObjectId; ownerId: Types.ObjectId; friendId: Types.ObjectId; mode: string; sharedAt: Date; friendshipId?: Types.ObjectId | null };
+type FriendRow = { _id?: Types.ObjectId; userA: Types.ObjectId; userB: Types.ObjectId; status: string };
 
 let tts: TtRow[];
 let shares: ShareRow[];
@@ -41,17 +41,50 @@ const timetableModel = {
         },
     ),
 };
+type ShareFilter = { ownerId: Types.ObjectId; friendId: Types.ObjectId; friendshipId?: { $in: (Types.ObjectId | null)[] } };
+type ShareSet = { mode: string; sharedAt: Date; friendshipId?: Types.ObjectId };
+const samePair = (f: ShareFilter) => (s: ShareRow) => s.ownerId.equals(f.ownerId) && s.friendId.equals(f.friendId);
+const shareHit = (f: ShareFilter) => (s: ShareRow) =>
+    samePair(f)(s) && (!f.friendshipId || f.friendshipId.$in.some((id) => (id === null ? s.friendshipId == null : String(id) === String(s.friendshipId))));
 const shareModel = {
-    bulkWrite: vi.fn(
-        (ops: { updateOne: { filter: { ownerId: Types.ObjectId; friendId: Types.ObjectId }; update: { $set: { mode: string; sharedAt: Date } } } }[]) => {
-            for (const { updateOne: op } of ops) {
-                const row = shares.find((s) => s.ownerId.equals(op.filter.ownerId) && s.friendId.equals(op.filter.friendId));
-                if (row) Object.assign(row, op.update.$set);
-                else shares.push({ _id: new Types.ObjectId(), ...op.filter, ...op.update.$set });
+    bulkWrite: vi.fn((ops: { updateOne: { filter: ShareFilter; update: { $set: ShareSet }; upsert?: boolean } }[]) => {
+        const writeErrors: { code: number; index: number }[] = [];
+        ops.forEach(({ updateOne: op }, index) => {
+            const row = shares.find(shareHit(op.filter));
+            if (row) Object.assign(row, op.update.$set);
+            // 조건에 안 맞는데 같은 쌍의 줄이 있으면, 끼워 넣기가 유일 인덱스({ ownerId, friendId })에 걸린다
+            else if (shares.some(samePair(op.filter))) writeErrors.push({ code: 11000, index });
+            else shares.push({ _id: new Types.ObjectId(), ownerId: op.filter.ownerId, friendId: op.filter.friendId, ...op.update.$set });
+        });
+        return writeErrors.length ? Promise.reject(Object.assign(new Error('E11000'), { writeErrors })) : Promise.resolve({});
+    }),
+    findOne: vi.fn((f: ShareFilter) => {
+        const row = shares.find(samePair(f));
+        const lean = vi.fn(() => Promise.resolve(row ? { ...row } : null));
+        return { select: vi.fn(() => ({ lean })), lean };
+    }),
+    /** friendshipId 조건은 값 하나(null 포함) 또는 { $in } */
+    updateOne: vi.fn(
+        (f: Omit<ShareFilter, 'friendshipId'> & { friendshipId: Types.ObjectId | null | { $in: (Types.ObjectId | null)[] } }, u: { $set: ShareSet }, o?: { upsert?: boolean }) => {
+            const pair = { ownerId: f.ownerId, friendId: f.friendId };
+            const wanted = f.friendshipId && '$in' in f.friendshipId ? f.friendshipId.$in : [f.friendshipId as Types.ObjectId | null];
+            const row = shares.find(shareHit({ ...pair, friendshipId: { $in: wanted } }));
+            if (row) {
+                Object.assign(row, u.$set);
+                return Promise.resolve({ matchedCount: 1 });
             }
-            return Promise.resolve({});
+            if (!o?.upsert) return Promise.resolve({ matchedCount: 0 });
+            if (shares.some(samePair(pair))) return Promise.reject(Object.assign(new Error('E11000'), { code: 11000 }));
+            shares.push({ _id: new Types.ObjectId(), ownerId: f.ownerId, friendId: f.friendId, ...u.$set });
+            return Promise.resolve({ matchedCount: 0 });
         },
     ),
+    deleteMany: vi.fn((f: { ownerId: Types.ObjectId; $or: { friendId: Types.ObjectId; friendshipId: Types.ObjectId }[] }) => {
+        shares = shares.filter(
+            (s) => !(s.ownerId.equals(f.ownerId) && f.$or.some((o) => o.friendId.equals(s.friendId) && String(o.friendshipId) === String(s.friendshipId))),
+        );
+        return Promise.resolve({});
+    }),
     find: vi.fn((f: { ownerId: Types.ObjectId }) => {
         const rows = shares.filter((s) => s.ownerId.equals(f.ownerId));
         const chain = {
@@ -66,12 +99,17 @@ const shareModel = {
 };
 type FriendFilter = { status: string; $or: { userA: Types.ObjectId; userB: { $in: Types.ObjectId[] } }[] | { userB: Types.ObjectId; userA: { $in: Types.ObjectId[] } }[] };
 const friendshipModel = {
+    exists: vi.fn((f: { _id: Types.ObjectId; status: string }) =>
+        Promise.resolve(friendships.some((r) => String(r._id) === String(f._id) && r.status === f.status) ? { _id: f._id } : null),
+    ),
     find: vi.fn((f: FriendFilter) => {
         const [a, b] = f.$or as [{ userA: Types.ObjectId; userB: { $in: Types.ObjectId[] } }, { userB: Types.ObjectId; userA: { $in: Types.ObjectId[] } }];
         const has = (list: Types.ObjectId[], id: Types.ObjectId) => list.some((x) => x.equals(id));
         const rows = friendships.filter(
             (r) => r.status === f.status && ((r.userA.equals(a.userA) && has(a.userB.$in, r.userB)) || (r.userB.equals(b.userB) && has(b.userA.$in, r.userA))),
         );
+        // 관계 문서 id가 없으면 만들어 둔다(공유가 어느 관계로 만들어졌는지 friendshipId로 남긴다)
+        for (const r of rows) r._id ??= new Types.ObjectId();
         return { lean: vi.fn(() => Promise.resolve(rows)) };
     }),
 };
@@ -234,6 +272,91 @@ describe('시간표 API (/timetable)', () => {
             expect(res.status).toBe(400);
             expect(res.body.code).toBe('NOT_FRIEND');
             expect(shares).toHaveLength(0);
+        });
+
+        it('친구 확인 뒤 공유를 쓰는 사이에 친구를 끊었으면 쓴 공유를 지운다(공유한 뒤 끊긴 것과 같은 결과)', async () => {
+            // 공유 쓰기 직전에 친구 끊기(관계 삭제 → 공유 정리)가 끝까지 돈다
+            const write = shareModel.bulkWrite.getMockImplementation()!;
+            shareModel.bulkWrite.mockImplementationOnce((ops) => {
+                friendships = [];
+                shares = [];
+                return write(ops);
+            });
+            const res = await shareWith([friend.toString()]);
+            expect(res.status).toBe(204);
+            expect(shares).toHaveLength(0);
+        });
+
+        it('끊긴 사람의 공유를 지우기 전에 다시 친구가 되어 새로 공유했으면(같은 밀리초여도) 그 새 공유는 남긴다', async () => {
+            const refriended = new Types.ObjectId();
+            // 다시 확인 직전: 끊겼다가 다시 친구가 되어(새 관계 문서) 새 공유 요청이 성공했다. 시각은 이 요청과 같다
+            const find = friendshipModel.find.getMockImplementation()!;
+            friendshipModel.find
+                .mockImplementationOnce(find) // 처음 확인: 원래 관계
+                .mockImplementationOnce((f) => {
+                    friendships = friendships.map((r) => (r.userB.equals(friend) ? { ...r, _id: refriended } : r));
+                    const mine = shares.find((x) => x.friendId.equals(friend))!;
+                    Object.assign(mine, { mode: 'free_only', friendshipId: refriended }); // sharedAt은 그대로(같은 밀리초)
+                    return find(f);
+                });
+            const res = await shareWith([friend.toString()], 'full');
+            expect(res.status).toBe(204);
+            expect(shares).toHaveLength(1);
+            expect(shares[0]).toMatchObject({ mode: 'free_only', friendshipId: refriended });
+        });
+
+        it('예전 관계로 시작한 요청이 늦게 쓰면, 다시 친구가 된 뒤의 새 공유를 덮어쓰거나 지우지 않는다', async () => {
+            const renewed = new Types.ObjectId();
+            const write = shareModel.bulkWrite.getMockImplementation()!;
+            shareModel.bulkWrite.mockImplementationOnce((ops) => {
+                // 이 요청이 처음 확인한 뒤 쓰기 전에: 친구 끊기 → 다시 친구(새 관계) → 새 공유(free_only) 완료
+                friendships = friendships.map((r) => (r.userB.equals(friend) ? { ...r, _id: renewed } : r));
+                shares.push({ _id: new Types.ObjectId(), ownerId: ME, friendId: friend, mode: 'free_only', sharedAt: new Date(), friendshipId: renewed });
+                return write(ops);
+            });
+            const res = await shareWith([friend.toString()], 'full');
+            expect(res.status).toBe(204);
+            expect(shares).toHaveLength(1);
+            expect(shares[0]).toMatchObject({ mode: 'free_only', friendshipId: renewed });
+        });
+
+        it('끊긴 예전 관계의 공유가 아직 남아 있으면 새 관계의 공유로 바꿔 써서, 늦은 정리 뒤에도 공유가 남는다', async () => {
+            const ended = new Types.ObjectId(); // friend와의 예전 관계(이미 지워졌고, 공유 정리는 아직)
+            shares.push({ _id: new Types.ObjectId(), ownerId: ME, friendId: friend, mode: 'full', sharedAt: new Date('2026-11-01T00:00:00Z'), friendshipId: ended });
+            const res = await shareWith([friend.toString()], 'free_only');
+            expect(res.status).toBe(204);
+            const live = friendships.find((r) => r.userB.equals(friend))!._id!;
+            expect(shares).toHaveLength(1);
+            expect(shares[0]).toMatchObject({ mode: 'free_only', friendshipId: live });
+            // 친구 끊기의 늦은 정리(예전 관계 id · null만)는 새 공유를 지우지 않는다
+            shares = shares.filter((x) => !(x.friendshipId == null || String(x.friendshipId) === String(ended)));
+            expect(shares).toHaveLength(1);
+        });
+
+        it('같은 관계의 공유와 관계 id가 없는 예전 공유는 덮어쓴다', async () => {
+            shares.push({ _id: new Types.ObjectId(), ownerId: ME, friendId: friend, mode: 'full', sharedAt: new Date('2026-11-01T00:00:00Z') });
+            expect((await shareWith([friend.toString()], 'free_only')).status).toBe(204);
+            expect(shares).toHaveLength(1);
+            expect(shares[0]!.mode).toBe('free_only');
+            expect(shares[0]!.friendshipId).toBeDefined();
+            expect((await shareWith([friend.toString()], 'full')).status).toBe(204);
+            expect(shares[0]!.mode).toBe('full');
+        });
+
+        it('두 친구에게 공유하는 사이 한 명과 끊기면 그 사람 공유만 지우고, 남은 친구의 공유는 요청대로 둔다', async () => {
+            shares.push({ _id: new Types.ObjectId(), ownerId: ME, friendId: friend, mode: 'full', sharedAt: new Date('2026-11-01T00:00:00Z') });
+            const write = shareModel.bulkWrite.getMockImplementation()!;
+            shareModel.bulkWrite.mockImplementationOnce((ops) => {
+                // 쓰기 직전에 friend2와의 친구 끊기(관계 삭제 → 공유 정리)가 끝까지 돈다
+                friendships = friendships.filter((r) => !(r.userA.equals(friend2) || r.userB.equals(friend2)));
+                shares = shares.filter((x) => !x.friendId.equals(friend2));
+                return write(ops);
+            });
+            const res = await shareWith([friend.toString(), friend2.toString()], 'free_only');
+            expect(res.status).toBe(204);
+            expect(shares).toHaveLength(1);
+            expect(shares[0]!.friendId.equals(friend)).toBe(true);
+            expect(shares[0]!.mode).toBe('free_only');
         });
 
         it('수락 전(pending)·거절된 관계는 친구로 치지 않는다', async () => {
