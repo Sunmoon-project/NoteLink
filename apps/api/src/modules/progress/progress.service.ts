@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
+import { Todo } from '../calendar/schemas/todo.schema.js';
 import { StudySession } from '../session/schemas/study-session.schema.js';
 import { seoulDate } from '../session/study-time.js';
 import type { SetWeeklyGoalDto } from './dto/set-weekly-goal.dto.js';
@@ -66,6 +67,7 @@ export class ProgressService {
         @InjectModel(DailyRecord.name) private readonly dailyModel: Model<DailyRecord>,
         @InjectModel(WeeklyGoal.name) private readonly goalModel: Model<WeeklyGoal>,
         @InjectModel(StudySession.name) private readonly sessionModel: Model<StudySession>,
+        @InjectModel(Todo.name) private readonly todoModel: Model<Todo>, // 월간 캘린더의 hasTodo를 위해 할 일 날짜만 읽는다
     ) { }
 
     /** 이번 주(월~일) 요약: 합계, 지난주 같은 요일까지와의 차이, 요일별 시간, 목표 */
@@ -94,17 +96,26 @@ export class ProgressService {
         };
     }
 
-    /** 그 달 모든 날짜의 색 진하기 (ym은 'YYYY-MM') */
+    /**
+     * 그 달 모든 날짜의 색 진하기와 할 일 유무 (ym은 'YYYY-MM').
+     * hasTodo는 그 날짜(dueDate)에 할 일이 하나라도 있으면 true다 (앱 study.month와 같은 기준):
+     * 완료한 할 일도 센다. 과제 · 시험의 D-day 짝(isDday=true)과 직접 만든 D-day는 할 일이 아니라서 세지 않는다
+     */
     async month(userId: string, ym: string): Promise<MonthDayView[]> {
         const owner = new Types.ObjectId(userId);
         const [year, month] = ym.split('-').map(Number) as [number, number];
         const length = new Date(Date.UTC(year, month, 0)).getUTCDate(); // 28 ~ 31
         const first = `${ym}-01`;
-        const totals = await this.dayTotals(owner, first, addDays(first, length - 1));
+        const last = addDays(first, length - 1);
+        // 그 달 할 일 날짜를 한 번에 가져온다 (userId, dueDate 인덱스)
+        const [totals, todoDates] = await Promise.all([
+            this.dayTotals(owner, first, last),
+            this.todoModel.distinct('dueDate', { userId: owner, dueDate: { $gte: first, $lte: last }, isDday: false }),
+        ]);
+        const withTodo = new Set<string>(todoDates);
         return Array.from({ length }, (_, i) => {
             const studyDate = addDays(first, i);
-            // hasTodo는 할 일(FR-10) PR에서 todos와 연결한다. 그때까지는 항상 false
-            return { studyDate, level: levelOf(totals.get(studyDate) ?? 0), hasTodo: false };
+            return { studyDate, level: levelOf(totals.get(studyDate) ?? 0), hasTodo: withTodo.has(studyDate) };
         });
     }
 
