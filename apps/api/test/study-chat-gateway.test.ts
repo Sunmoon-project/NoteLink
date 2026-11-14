@@ -141,6 +141,33 @@ describe('스터디룸 Socket.IO', () => {
     expect(onMessage).not.toHaveBeenCalled();
     b.off('chat:message', onMessage);
   });
+  it('폐기되거나 만료된 DM 세션에는 스터디룸 초대 메시지를 전달하지 않는다', async () => {
+    chat.requireChat.mockResolvedValue({ type: 'direct' });
+    for (const socket of [a, b]) {
+      expect(
+        await socket.timeout(1000).emitWithAck('chat:join', { chatRoomId: 'chat' }),
+      ).toMatchObject({ ok: true });
+    }
+    tokens.verifyAccess.mockImplementation(async (token: string) => {
+      if (token === 'b') throw new Error('session revoked');
+      return { userId: token };
+    });
+    const receivedA = vi.fn();
+    const receivedB = vi.fn();
+    a.on('chat:message', receivedA);
+    b.on('chat:message', receivedB);
+
+    await app.get(StudyChatGateway).notifyDirectMessage({
+      chatRoomId: 'chat',
+      type: 'study_room_invite',
+      studyRoomInvite: { inviteCode: 'SECRET' },
+    } as never);
+    await vi.waitFor(() => expect(receivedA).toHaveBeenCalledOnce());
+    expect(receivedB).not.toHaveBeenCalled();
+
+    a.off('chat:message', receivedA);
+    b.off('chat:message', receivedB);
+  });
   it('강퇴된 사용자의 방 구독을 제거한다', async () => {
     const receive = vi.fn();
     b.on('chat:message', receive);

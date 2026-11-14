@@ -37,8 +37,21 @@ export class StudyChatGateway {
       roomId,
     });
   }
-  notifyDirectMessage(message: { chatRoomId: string }) {
-    this.server.to(`direct-chat:${message.chatRoomId}`).emit('chat:message', message);
+  async notifyDirectMessage(message: { chatRoomId: string }) {
+    const channel = `direct-chat:${message.chatRoomId}`;
+    const recipients = await this.server.in(channel).fetchSockets().catch(() => []);
+    for (const recipient of recipients) {
+      try {
+        const token = recipient.handshake.auth?.token;
+        if (typeof token !== 'string') throw new Error('unauthorized');
+        const { userId } = await this.tokens.verifyAccess(token);
+        const chat = await this.chat.requireChat(message.chatRoomId, userId);
+        if (chat.type !== 'direct') throw new Error('not a direct chat member');
+        recipient.emit('chat:message', message);
+      } catch {
+        await recipient.leave(channel);
+      }
+    }
   }
   @WebSocketServer() private server: Server;
   constructor(

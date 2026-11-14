@@ -75,7 +75,7 @@ export class StudyRoomsController {
         this.chat.sendRoomInvite(requireUserId(req), targetUserId, invitation.room),
       ),
     );
-    messages.forEach((message) => this.gateway.notifyDirectMessage(message));
+    await Promise.all(messages.map((message) => this.gateway.notifyDirectMessage(message)));
     return { data: null };
   }
 

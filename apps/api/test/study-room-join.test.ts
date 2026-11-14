@@ -210,7 +210,7 @@ describe('스터디룸 친구 초대', () => {
   it('참여 중인 사용자가 친구를 초대 상태로 저장한다', async () => {
     const friendId = new Types.ObjectId();
     rooms.findOne.mockReturnValue(
-      query({ _id: roomId, title: '스터디룸', inviteCode: 'ABC123', members: [] }),
+      query({ _id: roomId, title: '스터디룸', inviteCode: 'ABC123', maxCapacity: 6, members: [] }),
     );
     friendships.countDocuments.mockResolvedValue(1);
     users.find.mockReturnValue({ select: () => query([{ _id: friendId }]) });
@@ -222,14 +222,44 @@ describe('스터디룸 친구 초대', () => {
     expect(rooms.updateOne).toHaveBeenCalledWith(
       expect.objectContaining({
         _id: roomId,
-        members: { $not: { $elemMatch: { userId: friendId } } },
+        members: { $not: { $elemMatch: { userId: { $in: [friendId] } } } },
       }),
       {
         $push: {
-          members: expect.objectContaining({ userId: friendId, role: 'member', status: 'invited' }),
+          members: {
+            $each: [
+              expect.objectContaining({ userId: friendId, role: 'member', status: 'invited' }),
+            ],
+          },
         },
       },
     );
+  });
+
+  it('남은 정원보다 많은 친구를 일괄 초대하면 일부도 초대 상태로 저장하지 않는다', async () => {
+    const firstFriendId = new Types.ObjectId();
+    const secondFriendId = new Types.ObjectId();
+    rooms.findOne.mockReturnValue(
+      query({
+        _id: roomId,
+        title: '스터디룸',
+        inviteCode: 'ABC123',
+        maxCapacity: 2,
+        members: [{ userId, status: 'joined' }],
+      }),
+    );
+    friendships.countDocuments.mockResolvedValue(2);
+    users.find.mockReturnValue({
+      select: () => query([{ _id: firstFriendId }, { _id: secondFriendId }]),
+    });
+
+    await expect(
+      service.invite(String(userId), String(roomId), [String(firstFriendId), String(secondFriendId)]),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'ROOM_FULL' },
+    });
+    expect(rooms.updateOne).not.toHaveBeenCalled();
   });
 
   it('친구가 아닌 사용자와 방에 참여하지 않은 사용자의 초대를 거부한다', async () => {

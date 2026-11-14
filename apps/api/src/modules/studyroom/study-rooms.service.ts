@@ -81,24 +81,39 @@ export class StudyRoomsService {
         message: '초대할 사용자를 찾을 수 없습니다.',
       });
 
-    for (const targetId of targetObjectIds) {
+    const targetsToInvite = targetObjectIds.filter((targetId) => {
       const existing = room.members.find((member) => member.userId.equals(targetId));
-      if (existing?.status === 'joined' || existing?.status === 'invited') continue;
+      return existing?.status !== 'joined' && existing?.status !== 'invited';
+    });
+    const activeMemberCount = room.members.filter((member) =>
+      ['joined', 'invited'].includes(member.status),
+    ).length;
+    if (activeMemberCount + targetsToInvite.length > room.maxCapacity) {
+      throw new ConflictException({ code: 'ROOM_FULL', message: '스터디룸 정원이 가득 찼습니다.' });
+    }
+
+    if (targetsToInvite.length) {
+      const invitedAt = new Date();
       const result = await this.rooms.updateOne(
         {
           _id: roomObjectId,
           closedAt: null,
-          members: { $not: { $elemMatch: { userId: targetId } } },
+          members: { $not: { $elemMatch: { userId: { $in: targetsToInvite } } } },
           $expr: {
-            $lt: [
+            $lte: [
               {
-                $size: {
-                  $filter: {
-                    input: '$members',
-                    as: 'member',
-                    cond: { $in: ['$$member.status', ['joined', 'invited']] },
+                $add: [
+                  {
+                    $size: {
+                      $filter: {
+                        input: '$members',
+                        as: 'member',
+                        cond: { $in: ['$$member.status', ['joined', 'invited']] },
+                      },
+                    },
                   },
-                },
+                  targetsToInvite.length,
+                ],
               },
               '$maxCapacity',
             ],
@@ -106,18 +121,28 @@ export class StudyRoomsService {
         },
         {
           $push: {
-            members: { userId: targetId, role: 'member', status: 'invited', invitedAt: new Date() },
+            members: {
+              $each: targetsToInvite.map((targetId) => ({
+                userId: targetId,
+                role: 'member',
+                status: 'invited',
+                invitedAt,
+              })),
+            },
           },
         },
       );
       if (!result.modifiedCount) {
         const latest = await this.rooms.findById(roomObjectId).lean();
-        const member = latest?.members.find((item) => item.userId.equals(targetId));
-        if (member?.status === 'joined' || member?.status === 'invited') continue;
-        throw new ConflictException({
-          code: 'ROOM_FULL',
-          message: '스터디룸 정원이 가득 찼습니다.',
+        const hasUninvitedTarget = targetsToInvite.some((targetId) => {
+          const member = latest?.members.find((item) => item.userId.equals(targetId));
+          return member?.status !== 'joined' && member?.status !== 'invited';
         });
+        if (hasUninvitedTarget)
+          throw new ConflictException({
+            code: 'ROOM_FULL',
+            message: '스터디룸 정원이 가득 찼습니다.',
+          });
       }
     }
     return {
