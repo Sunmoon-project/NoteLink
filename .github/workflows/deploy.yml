@@ -19,7 +19,7 @@ on:
       - 'package-lock.json'
       - 'tsconfig.base.json'
       - 'scripts/wait-http-ok.sh'
-      - 'scripts/kudu-zip-deploy.sh'
+      - 'scripts/webapp-deploy.sh'
       - '.github/workflows/deploy.yml'
   pull_request:
     branches: [develop, main]
@@ -31,7 +31,7 @@ on:
       - 'package-lock.json'
       - 'tsconfig.base.json'
       - 'scripts/wait-http-ok.sh'
-      - 'scripts/kudu-zip-deploy.sh'
+      - 'scripts/webapp-deploy.sh'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
@@ -134,7 +134,7 @@ jobs:
       github.event_name == 'pull_request' || (github.ref == 'refs/heads/main' &&
       vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '')
     runs-on: ubuntu-latest
-    timeout-minutes: 45 # 배포 상태 확인(scripts/kudu-zip-deploy.sh, 최대 30분)과 설치 · 묶음 확인을 합쳐 작업 전체에 상한을 둡니다
+    timeout-minutes: 45 # 배포 확인(scripts/webapp-deploy.sh, 최대 30분)과 설치 · 묶음 확인을 합쳐 작업 전체에 상한을 둡니다
     steps:
       - uses: actions/checkout@v7
       - name: 배포 묶음 만들기
@@ -175,6 +175,7 @@ jobs:
       - name: 배포
         if: github.event_name != 'pull_request'
         # App Service가 배포 때 패키지를 설치하느라 몇 분 걸려서, 끝까지 붙잡고 기다리면 앞단 응답 한도(약 4분)에 걸려
-        # 504로 끊긴다. Kudu 비동기 zip 배포로 시작하고 그 배포의 상태 주소를 최대 30분 확인한다(scripts/kudu-zip-deploy.sh).
-        # AI 서버는 API 서버 IP만 받으므로 주소로는 확인하지 못한다.
-        run: bash scripts/kudu-zip-deploy.sh "$AI_APP" ai.zip 90 20
+        # 504로 끊긴다. OneDeploy 비동기 배포로 시작하고, 이 배포의 id로 Azure 배포 상태 API를 최대 30분 확인해
+        # 패키지 설치(BuildFailed)와 앱 시작(RuntimeSuccessful · RuntimeFailed)까지 판정한다(scripts/webapp-deploy.sh).
+        # AI 서버는 API 서버 IP만 받으므로 주소(헬스 체크)로는 확인하지 못한다.
+        run: bash scripts/webapp-deploy.sh "$RESOURCE_GROUP" "$AI_APP" ai.zip 1800 20
