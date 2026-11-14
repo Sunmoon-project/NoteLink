@@ -791,12 +791,48 @@ def test_note_lines_joined_into_one_line_keep_their_facts_apart() -> None:
 
 
 def test_note_text_is_split_at_sentence_ends_only() -> None:
-    # 소수점 · 점이 든 이름은 문장 끝이 아님: 마침표 뒤에 공백이 올 때만 나눔. 짧은 조각(제목)은 뺌
+    # 소수점 · 점이 든 이름은 문장 끝이 아님: 마침표 뒤에 공백이 올 때만 나눔. 짧은 줄(제목)은 뺌
     page = "Image.prefetch는 이미지를 3.5초 안에 미리 받는다. 받은 이미지는 캐시에 넣어 둔다!\n제목"
     assert fact_lines(page) == [
         "imageprefetch는이미지를35초안에미리받는다",
         "받은이미지는캐시에넣어둔다",
     ]
+    text = "상태가 바뀌면 다시 그릴까? 그렇다면 useEffect를 쓴다。화면이 새로 갱신된다"
+    assert fact_lines(text) == [
+        "상태가바뀌면다시그릴까",
+        "그렇다면useeffect를쓴다",
+        "화면이새로갱신된다",
+    ]
+
+
+def test_short_pieces_stay_with_their_line() -> None:
+    # 번호 · 물음표 앞의 짧은 조각을 버리면 번호 매긴 줄은 근거가 하나도 안 남음: 같은 줄에 붙임
+    assert fact_lines("1. 정의는 이렇다 2. 특징은 저렇다") == ["1정의는이렇다2특징은저렇다"]
+    assert fact_lines("조건 ? 참일 때 값 : 거짓일 때 값을 돌려준다") == [
+        "조건참일때값거짓일때값을돌려준다"
+    ]
+    assert fact_lines("1. 짧다") == []
+
+
+def test_one_question_sentence_joining_two_note_sentences_has_no_fact() -> None:
+    # 문장 둘을 합쳐 물으면 어느 한 문장도 FACT_COVER를 못 넘어 근거가 없음: 줄바꿈으로 나뉜 노트와
+    # 같고, 같은 사실을 못 잡는 쪽(쪽을 닫지 않음)
+    def feature(answer: str) -> Draft:
+        return negative(
+            stem="다음 중 useState에 대한 설명으로 옳은 것은?",
+            passage="useState",
+            options=[answer, "이미지를 지운다", "글꼴을 바꾼다", "앱을 끈다", "소리를 낸다"],
+            answer=answer,
+        )
+
+    joined = feature("useState는 상태를 만들고 값이 바뀌면 다시 그린다")
+    one = feature("useState는 상태를 만든다")
+    for page in (
+        "useState는 상태를 만든다. 값이 바뀌면 다시 그린다.",
+        "useState는 상태를 만든다.\n값이 바뀌면 다시 그린다.",
+    ):
+        assert not same_fact(joined, [made(joined, "상태", "특징")], page, "특징")
+        assert same_fact(one, [made(one, "상태", "특징")], page, "특징")
 
 
 def test_the_same_fact_with_another_type_is_asked_from_another_angle() -> None:
