@@ -43,6 +43,7 @@ from tests.services.recording.files import (
     ppt_document,
     ppt_stream,
     pptx_file,
+    pptx_repeating,
     pptx_with_table_and_group,
     record,
     slide_container,
@@ -541,7 +542,7 @@ def test_many_pages_sharing_one_big_container_stop_at_the_total_limit() -> None:
     assert len(texts) == SLIDES_MAX_CHARS // PAGE_MAX_CHARS
     assert kept_chars(texts) <= SLIDES_MAX_CHARS
     assert all(len(t) <= PPT_PAGE_MAX_RAW_CHARS for t in texts)
-    assert not limit_pages(texts)[1]  # 같은 셈이라 limit_pages는 더 자르지 않음
+    assert len(limit_pages(texts)[0]) == len(texts)  # 같은 셈이라 쪽을 더 버리지 않음
 
 
 def test_many_pages_sharing_a_container_of_many_records_finish() -> None:
@@ -634,3 +635,36 @@ def test_many_slide_lists_and_directories_finish() -> None:
 
     assert time.perf_counter() - start < FAST_SECONDS
     assert texts == ["끝"]
+
+
+# ---------- pptx 상한 (Codex 리뷰 #412) ----------
+
+
+def test_pptx_pointing_at_one_big_page_many_times_finishes_within_limits() -> None:
+    # 큰 쪽 파일 하나를 쪽 목록이 5,000번 가리킴: 모두 모은 뒤 자르면 1억 자 · 수 초
+    data = pptx_repeating("가 " * 10_000, 5_000)
+
+    start = time.perf_counter()
+    texts, cut = slides.pptx_texts(data)
+
+    assert time.perf_counter() - start < FAST_SECONDS
+    assert cut
+    assert len(texts) == SLIDES_MAX_CHARS // PAGE_MAX_CHARS
+    assert all(len(t) <= PPT_PAGE_MAX_RAW_CHARS for t in texts)
+    assert kept_chars(texts) <= SLIDES_MAX_CHARS
+
+
+def test_pptx_pages_beyond_the_page_limit_are_dropped() -> None:
+    texts, cut = slides.pptx_texts(pptx_repeating("", PPT_MAX_PAGES + 5))
+    assert cut
+    assert len(texts) == PPT_MAX_PAGES
+
+
+def test_a_page_cut_to_the_page_limit_is_reported() -> None:
+    pages, trimmed = limit_pages(["가" * (PAGE_MAX_CHARS + 1)])
+    assert len(pages[0]["text"]) == PAGE_MAX_CHARS
+    assert trimmed
+    assert limit_pages(["가" * PAGE_MAX_CHARS]) == (
+        [{"pageNo": 1, "text": "가" * PAGE_MAX_CHARS}],
+        False,
+    )

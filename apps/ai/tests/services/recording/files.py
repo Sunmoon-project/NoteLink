@@ -6,7 +6,9 @@ ppt   [MS-PPT] 레코드 바이트(record · container)와, olefile이 읽는 �
 
 import io
 import math
+import re
 import struct
+import zipfile
 from dataclasses import dataclass
 
 from pptx import Presentation
@@ -46,6 +48,25 @@ def pptx_file(*slides: list[str], notes: str | None = None) -> bytes:
         prs.slides[0].notes_slide.notes_text_frame.text = notes
     out = io.BytesIO()
     prs.save(out)
+    return out.getvalue()
+
+
+def pptx_repeating(text: str, refs: int) -> bytes:
+    """쪽 파일 하나(글 text)를 쪽 목록에서 refs번 가리키는 pptx(조작된 파일)."""
+    src = zipfile.ZipFile(io.BytesIO(pptx_file([text])))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            data = src.read(info)
+            if info.filename == "ppt/presentation.xml":
+                xml = data.decode()
+                one = re.search(r'<p:sldId id="256" r:id="(rId\d+)"/>', xml)
+                assert one is not None
+                many = "".join(
+                    f'<p:sldId id="{256 + i}" r:id="{one.group(1)}"/>' for i in range(refs)
+                )
+                data = xml.replace(one.group(0), many).encode()
+            dst.writestr(info, data)
     return out.getvalue()
 
 

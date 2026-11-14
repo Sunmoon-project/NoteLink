@@ -2,8 +2,9 @@
 
 read_slides(url, fetch) → (쪽 글 목록, 경고 목록). 파일 문제는 예외가 아니라 경고입니다:
   {code: NO_SLIDES, reason: download | format | parse | empty | size}
-  {code: MATERIAL_TRIMMED, reason: slides}  전체 글자 상한(SLIDES_MAX_CHARS) · ppt 쪽 수 상한
-                                            (PPT_MAX_PAGES)을 넘어 뒤쪽을 버림
+  {code: MATERIAL_TRIMMED, reason: slides}  전체 글자 상한(SLIDES_MAX_CHARS) · 쪽 수 상한
+                                            (PPT_MAX_PAGES)을 넘어 뒤쪽을 버리거나, 쪽 글을
+                                            PAGE_MAX_CHARS로 자름
 파일 형식은 확장자가 아니라 앞 바이트로 정합니다: zip(PK\\x03\\x04) → pptx, OLE → ppt.
   pptx  python-pptx로 쪽 순서대로 도형 글(텍스트 상자 · 자리 표시자 · 표 셀 · 그룹 안 도형)
   ppt   변환 없이 olefile로 'PowerPoint Document' 스트림을 열고 레코드를 읽음([MS-PPT]).
@@ -60,7 +61,7 @@ TEXT_BYTES_ATOM = 0x0FA8  # 글자마다 UTF-16 아래 바이트(위 바이트 0
 CONTAINER_VER = 0xF
 RECORD_HEADER = struct.Struct("<HHI")  # recVer(4비트) · recInstance(12비트), recType, recLen
 PPT_MAX_DEPTH = 32  # 컨테이너 중첩 상한. 실제 파일은 10단계 안쪽. 깨진 파일의 깊은 재귀를 막음
-# 아래는 조작된 .ppt가 시간 · 메모리를 다 쓰지 않게 하는 상한(정상 파일은 닿지 않음)
+# 아래는 조작된 .ppt · .pptx가 시간 · 메모리를 다 쓰지 않게 하는 상한(정상 파일은 닿지 않음)
 # 쪽 수. 수업 자료는 수백 쪽 안쪽. 넘는 쪽은 버리고 MATERIAL_TRIMMED
 PPT_MAX_PAGES = 2000
 # 쪽 하나에서 모으는 글(원문 글자). 공백 · 겹친 글이 정리(clean)로 줄어드는 여유를 둔
@@ -140,18 +141,21 @@ def clean(text: str) -> str:
 
 
 def limit_pages(texts: list[str]) -> tuple[list[Page], bool]:
-    """쪽 글(파일 순서) → 빈 쪽을 뺀 Page 목록. 쪽마다 · 전체 상한. 전체 상한을 넘었으면 True."""
+    """쪽 글(파일 순서) → 빈 쪽을 뺀 Page 목록. 쪽마다 · 전체 상한. 잘라 낸 글이 있으면 True."""
     pages: list[Page] = []
     total = 0
+    cut = False
     for i, raw in enumerate(texts, 1):
-        text = clean(raw)[:PAGE_MAX_CHARS]
+        whole = clean(raw)
+        text = whole[:PAGE_MAX_CHARS]
         if not text:
             continue
         if total + len(text) > SLIDES_MAX_CHARS:
             return pages, True
+        cut = cut or len(whole) > PAGE_MAX_CHARS
         pages.append({"pageNo": i, "text": text})
         total += len(text)
-    return pages, False
+    return pages, cut
 
 
 def slide_texts(data: bytes) -> list[str]:
@@ -164,7 +168,7 @@ def read_texts(data: bytes) -> tuple[list[str], bool]:
     if len(data) > SLIDES_MAX_BYTES:
         raise SlidesError("size")
     if data.startswith(ZIP_MAGIC):
-        return pptx_texts(data), False
+        return pptx_texts(data)
     if data.startswith(OLE_MAGIC):
         return ppt_texts(data)
     raise SlidesError("format")
@@ -173,7 +177,10 @@ def read_texts(data: bytes) -> tuple[list[str], bool]:
 # ---------------------------------------------------------------- pptx
 
 
-def pptx_texts(data: bytes) -> list[str]:
+def pptx_texts(data: bytes) -> tuple[list[str], bool]:
+    """쪽마다 글과, 상한으로 뒤쪽을 버렸으면 True. 읽는 도중에 상한을 적용(ppt와 같은 기준):
+    쪽은 PPT_MAX_PAGES까지, 쪽 글은 PPT_PAGE_MAX_RAW_CHARS까지, limit_pages 기준 전체 글이
+    SLIDES_MAX_CHARS를 넘으면 멈춤. 같은 쪽 파일을 여러 쪽이 가리키면 한 번만 읽음."""
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             unzipped = sum(info.file_size for info in z.infolist())
@@ -183,10 +190,36 @@ def pptx_texts(data: bytes) -> list[str]:
         raise SlidesError("size")
     try:
         prs = Presentation(io.BytesIO(data))
-        return [" ".join(_shape_texts(slide.shapes)) for slide in prs.slides]
+        texts: list[str] = []
+        total = 0
+        read: dict[str, str] = {}  # 쪽 파일 이름 → 글
+        for n, slide in enumerate(prs.slides):
+            if n >= PPT_MAX_PAGES:
+                return texts, True
+            name = str(slide.part.partname)
+            if (text := read.get(name)) is None:
+                text = read[name] = _capped(_shape_texts(slide.shapes))
+            kept = len(clean(text)[:PAGE_MAX_CHARS])  # limit_pages와 같은 셈
+            if total + kept > SLIDES_MAX_CHARS:
+                return texts, True
+            texts.append(text)
+            total += kept
+        return texts, False
     except Exception:  # 사용자가 올린 파일: 라이브러리 안의 어떤 오류든 '읽지 못함'
         log.debug("pptx 읽기 오류", exc_info=True)
         raise SlidesError("parse") from None
+
+
+def _capped(pieces: Iterator[str]) -> str:
+    """조각을 공백으로 이어 PPT_PAGE_MAX_RAW_CHARS까지. 넘으면 남은 조각은 읽지 않음."""
+    out: list[str] = []
+    size = 0
+    for piece in pieces:
+        out.append(piece[: PPT_PAGE_MAX_RAW_CHARS - size])
+        size += len(out[-1]) + 1
+        if size >= PPT_PAGE_MAX_RAW_CHARS:
+            break
+    return " ".join(out)[:PPT_PAGE_MAX_RAW_CHARS]
 
 
 def _shape_texts(shapes: SlideShapes | Iterator[BaseShape]) -> Iterator[str]:
