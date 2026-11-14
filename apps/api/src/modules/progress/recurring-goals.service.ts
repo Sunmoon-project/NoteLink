@@ -26,7 +26,12 @@ export interface RecurringGoalView {
 }
 
 type GoalLean = RecurringGoal & { _id: Types.ObjectId; createdAt?: Date };
-type DayLean = { studyDate: string; totalSec: number; items?: { subjectId?: Types.ObjectId | null; accumulatedSec: number }[] };
+type DayLean = {
+    studyDate: string;
+    totalSec: number;
+    subjectSec?: Record<string, number> | null; // 날짜별 과목 시간(자정을 넘긴 몫 포함). 이 칸이 생기기 전 옛 기록에는 없다
+    items?: { subjectId?: Types.ObjectId | null; accumulatedSec: number }[];
+};
 
 /** 연속 달성 주 수를 셀 때 읽는 공부 기록의 최대 기간(일). 약 2년 */
 export const MAX_LOOKBACK_DAYS = 730;
@@ -117,7 +122,7 @@ export class RecurringGoalsService {
             this.dailyModel
                 .find(
                     { userId: new Types.ObjectId(userId), studyDate: { $gte: from, $lte: today } },
-                    { studyDate: 1, totalSec: 1, 'items.subjectId': 1, 'items.accumulatedSec': 1 },
+                    { studyDate: 1, totalSec: 1, subjectSec: 1, 'items.subjectId': 1, 'items.accumulatedSec': 1 },
                 )
                 .lean<DayLean[]>(),
             this.holidays.skipDates(userId, from, weekEnd),
@@ -163,8 +168,13 @@ function toFields(dto: SaveRecurringGoalDto): Record<string, unknown> {
     return fields;
 }
 
-/** 하루 기록에서 총 시간과 과목별 시간을 뽑는다. 같은 과목 항목이 여러 개면 더한다 */
+/**
+ * 하루 기록에서 총 시간과 과목별 시간을 뽑는다.
+ * 과목별 시간(subjectSec)이 있으면 그걸로 읽는다 — 자정을 넘긴 공부의 다음 날 몫도 들어 있다.
+ * 없는 옛 기록은 항목(items)에서 읽고, 같은 과목 항목이 여러 개면 더한다
+ */
 function toDayStudy(record: DayLean): DayStudy {
+    if (record.subjectSec) return { totalSec: record.totalSec, bySubject: new Map(Object.entries(record.subjectSec)) };
     const bySubject = new Map<string, number>();
     for (const item of record.items ?? []) {
         if (!item.subjectId) continue;

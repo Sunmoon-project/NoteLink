@@ -250,8 +250,10 @@ export class StudyService {
         // 날짜마다 하루 상한(16시간)까지만 쌓는다 (FR-06-15). 트랜잭션 안이라 await를 순서대로 쓴다
         let durationSec = 0;
         if (!isAbuse) {
+            // 과목은 세션 시작 때의 공부 항목에서 정해지므로 정산할 때 한 번만 찾아 모든 날짜에 쓴다
+            const subjectId = await this.findSessionSubject(owner, row, tx);
             for (const [studyDate, sec] of days) {
-                durationSec += await this.addToDay(owner, studyDate, sec, row, tx);
+                durationSec += await this.addToDay(owner, studyDate, sec, row, subjectId, tx);
             }
         }
         let reward = isAbuse ? undefined : sessionReward(durationSec);
@@ -308,14 +310,28 @@ export class StudyService {
     }
 
     /**
+     * 세션이 시작한 날의 공부 항목에 달린 과목 id. 항목이 없거나 과목이 없는 항목이면 null.
+     * 정산할 때 한 번만 읽는다 (날짜마다 읽지 않는다)
+     */
+    private async findSessionSubject(owner: Types.ObjectId, row: StudySessionLean, tx: ClientSession): Promise<Types.ObjectId | null> {
+        if (!row.studyItemId) return null;
+        const record = await this.dailyModel
+            .findOne({ userId: owner, studyDate: row.studyDate, 'items._id': row.studyItemId }, { 'items.$': 1 }, { session: tx })
+            .lean<{ items?: { subjectId?: Types.ObjectId | null }[] }>();
+        return record?.items?.[0]?.subjectId ?? null;
+    }
+
+    /**
      * 그 날짜 하루 기록에 sec초를 쌓는다. 하루 상한(16시간)을 넘는 부분은 빼고, 실제로 쌓은 초를 돌려준다.
-     * 시작한 날이면 공부 항목에도 쌓고, 합계가 10분을 넘으면 streakOk를 켠다
+     * 시작한 날이면 공부 항목에도 쌓고, 합계가 10분을 넘으면 streakOk를 켠다.
+     * 과목이 있으면 시작한 날이든 아니든(자정을 넘긴 날도) 그날 쌓은 초만큼 과목별 시간(subjectSec)에 쌓는다
      */
     private async addToDay(
         owner: Types.ObjectId,
         studyDate: string,
         sec: number,
         row: StudySessionLean,
+        subjectId: Types.ObjectId | null,
         tx: ClientSession,
     ): Promise<number> {
         const existing = await this.dailyModel
@@ -336,6 +352,7 @@ export class StudyService {
             inc['items.$[item].accumulatedSec'] = counted;
             options.arrayFilters = [{ 'item._id': row.studyItemId }];
         }
+        if (subjectId) inc[`subjectSec.${subjectId.toString()}`] = counted;
 
         const reachesStreak = before + counted >= STREAK_MIN_SEC;
         const update: Record<string, Record<string, unknown>> = { $inc: inc };
