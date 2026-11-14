@@ -47,6 +47,7 @@ const PASSWORD = 'Passw0rdOK';
 const START = new Date('2026-01-01T00:00:00Z');
 
 interface UserRow {
+  sessionVersion?: number;
   _id: Types.ObjectId;
   email: string | null;
   passwordHash: string | null;
@@ -89,6 +90,8 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
         notices.push(to);
         return Promise.resolve();
       },
+      sendRecoveryCode: () => Promise.resolve(),
+      sendNoAccount: () => Promise.resolve(),
     };
     const usersModel = {
       exists: (f: { email: string; deletedAt: null }) =>
@@ -123,15 +126,24 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
         users.push(row);
         return Promise.resolve(row);
       },
-      findOne: (f: { email: string; deletedAt: null }) => ({
+      // 이메일로 찾기(로그인) · id로 찾기(토큰 검사) 둘 다
+      findOne: (f: { email?: string; deletedAt?: null; _id?: Types.ObjectId }) => ({
         lean: () =>
           Promise.resolve(
-            users.find((u) => u.email === f.email && u.deletedAt === f.deletedAt) ?? null,
+            users.find((u) =>
+              f._id ? u._id.equals(f._id) : u.email === f.email && u.deletedAt === f.deletedAt,
+            ) ?? null,
           ),
       }),
-      updateOne: (f: { _id: Types.ObjectId }, update: { $set: Partial<UserRow> }) => {
+      updateOne: (
+        f: { _id: Types.ObjectId },
+        update: { $set: Partial<UserRow>; $inc?: { sessionVersion?: number } },
+      ) => {
         const row = users.find((u) => u._id.equals(f._id));
         if (row) Object.assign(row, update.$set);
+        if (row && update.$inc?.sessionVersion) {
+          row.sessionVersion = (row.sessionVersion ?? 0) + update.$inc.sessionVersion;
+        }
         return Promise.resolve({ matchedCount: row ? 1 : 0 });
       },
     };

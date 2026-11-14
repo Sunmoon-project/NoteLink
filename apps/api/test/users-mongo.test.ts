@@ -1,6 +1,9 @@
 import mongoose, { Types, type Connection } from 'mongoose';
 import { ConflictException } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+/** 이 시험이 쓰지 않는 기기 · 토큰 · 친구 · 시간표 공유 모델 자리 */
+const UNUSED_MODELS = [{}, {}, {}, {}] as [never, never, never, never];
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { UsersService } from '../src/modules/users/users.service.js';
 
@@ -18,7 +21,11 @@ suite('MongoDB 프로필 닉네임 동시성', () => {
     await model.create(
       ids.map((_id, index) => ({ _id, nickname: `n${index}${target.slice(1)}`, email: null })),
     );
-    service = new UsersService(model as never, { streakDays: async () => 0 } as never);
+    service = new UsersService(
+      model as never,
+      { streakDays: async () => 0 } as never,
+      ...UNUSED_MODELS,
+    );
   });
   afterAll(async () => {
     if (!connection) return;

@@ -54,6 +54,20 @@ async function registerMaterial({
   return JSON.parse(JSON.stringify(await pending));
 }
 
+// 서버가 삭제 요청 한 번에 받는 id 상한(플래시카드 FLASHCARD_DELETE_MAX · 보관함 BOX_MAX_IDS)과 맞춘 값
+const DELETE_CHUNK_SIZE = 3000;
+
+// 상한을 넘는 id는 나눠서 차례대로 보낸다. 상한 이하(빈 배열 포함)면 요청 한 번만 보낸다
+async function postDeleteInChunks(path: string, key: 'ids' | 'questionIds', ids: string[]) {
+  if (ids.length <= DELETE_CHUNK_SIZE) {
+    await http.post(path, { [key]: ids });
+    return;
+  }
+  for (let i = 0; i < ids.length; i += DELETE_CHUNK_SIZE) {
+    await http.post(path, { [key]: ids.slice(i, i + DELETE_CHUNK_SIZE) });
+  }
+}
+
 export const httpApi: Api = {
   auth: {
     socialLogin: (provider, proof) => http.post(P.socialLogin(provider), proof),
@@ -62,12 +76,10 @@ export const httpApi: Api = {
     emailVerifyCode: (email, code) => http.post(P.emailVerifyCode, { email, code }),
     emailSignup: (verificationToken, password) =>
       http.post(P.emailSignup, { verificationToken, password }),
-    // ponytail: 아이디 · 비밀번호 찾기 경로는 서버 · 공용 계약(@notelink/shared PATHS)에 아직 없다.
-    // 서버 담당이 만들면 PATHS로 옮긴다. 그 전에는 404가 와서 화면이 '준비 중'으로 안내한다
-    recoverySendCode: (email) => http.post('/auth/recovery/send-code', { email }),
-    findId: (email, code) => http.post('/auth/find-id', { email, code }),
+    recoverySendCode: (email) => http.post(P.recoverySendCode, { email }),
+    findId: (email, code) => http.post(P.findId, { email, code }),
     passwordReset: (id, email, code, password) =>
-      http.post('/auth/password/reset', { id, email, code, password }),
+      http.post(P.passwordReset, { id, email, code, password }),
     agreeTerms: (termCodes) => http.post(P.terms, { termCodes }),
     // 서버가 폐기할 토큰. 토큰 갱신 뒤 재시도하면 그때의 토큰을 보낸다
     logout: () =>
@@ -170,10 +182,11 @@ export const httpApi: Api = {
     similar: (id) => http.post(P.similarQuiz(id)),
     box: () => http.get(P.quizBox),
     saveToBox: (questionIds) => http.post(P.quizBox, { questionIds }),
-    deleteFromBox: (questionIds) => http.post(`${P.quizBox}/delete`, { questionIds }),
+    deleteFromBox: (questionIds) =>
+      postDeleteInChunks(`${P.quizBox}/delete`, 'questionIds', questionIds),
     flashcards: () => http.get(P.flashcards),
     saveFlashcard: (p) => http.post(P.flashcards, p),
-    deleteFlashcards: (ids) => http.post(P.flashcardsDelete, { ids }),
+    deleteFlashcards: (ids) => postDeleteInChunks(P.flashcardsDelete, 'ids', ids),
   },
   rooms: {
     recommended: () => http.get(P.studyRooms, { recommended: true }),

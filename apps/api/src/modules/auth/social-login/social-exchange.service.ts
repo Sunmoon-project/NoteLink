@@ -92,7 +92,14 @@ export class SocialExchangeService {
     }
 
     // 4. 토큰을 발급한다(기기마다 refresh 토큰이 한 줄씩 생긴다)
-    const { accessToken, refreshToken } = await this.tokens.issue(String(user._id));
+    // 세션 버전은 방금 읽은 사용자의 값을 쓴다(TokenService.assertActive)
+    const { accessToken, refreshToken } = await this.tokens.issue(
+      String(user._id),
+      undefined,
+      undefined,
+      undefined,
+      user.sessionVersion ?? 0,
+    );
     return { accessToken, refreshToken, user: toAppUser(user) };
   }
 }

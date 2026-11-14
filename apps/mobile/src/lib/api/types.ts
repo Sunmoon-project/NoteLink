@@ -111,6 +111,7 @@ export interface Api {
       fileName: string;
       contentType: string;
       sizeBytes: number;
+      purpose?: 'report';
     }): Promise<UploadTarget>;
   };
   study: {

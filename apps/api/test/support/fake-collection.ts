@@ -48,7 +48,8 @@ export function matches(row: Record<string, unknown>, filter: Filter): boolean {
     const value = row[key];
     if (want === null) return value === null || value === undefined;
     if (!isOps(want)) return same(value, want);
-    if (want.$in) return want.$in.some((w) => same(value, w));
+    // MongoDB처럼 $in의 null은 필드가 없는 문서에도 맞는다
+    if (want.$in) return want.$in.some((w) => (w === null ? value == null : same(value, w)));
     if ('$ne' in want) {
       return want.$ne === null ? value !== null && value !== undefined : !same(value, want.$ne);
     }

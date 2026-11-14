@@ -23,6 +23,7 @@ import { User, type UserDocument } from '../schemas/user.schema.js';
 import {
   EMAIL_CODE_RESEND_COOLDOWN_MS,
   type IssueResult,
+  type VerifyResult,
   EmailCodeService,
 } from './email-code.service.js';
 import { APP_LOGIN_ERRORS } from './app-login-errors.js';
@@ -103,21 +104,7 @@ export class AppSignupService {
       });
       return { verificationToken: token, expiresInSeconds };
     }
-    if (result.reason === 'locked') {
-      throw new HttpException(
-        {
-          code: APP_LOGIN_ERRORS.EMAIL_CODE_LOCKED,
-          message: '인증번호를 너무 많이 틀렸어요. 인증번호를 다시 받아 주세요',
-        },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
-    throw new BadRequestException({
-      code: APP_LOGIN_ERRORS.EMAIL_CODE_INVALID,
-      message: '인증번호가 맞지 않아요',
-      // 틀린 경우에만 남은 횟수를 알려 준다(없음 · 만료 · 이미 씀과 구분되지 않게 그 경우엔 넣지 않는다)
-      ...(result.reason === 'wrong' ? { attemptsLeft: result.attemptsLeft } : {}),
-    });
+    throw codeRejected(result);
   }
 
   /**
@@ -180,7 +167,27 @@ function emailTaken(): ConflictException {
   });
 }
 
-function rateLimited(blocked: Extract<IssueResult, { ok: false }>): HttpException {
+/** 인증번호 확인에 실패했을 때의 오류(가입 · 계정 찾기 공통) */
+export function codeRejected(result: Extract<VerifyResult, { ok: false }>): HttpException {
+  if (result.reason === 'locked') {
+    return new HttpException(
+      {
+        code: APP_LOGIN_ERRORS.EMAIL_CODE_LOCKED,
+        message: '인증번호를 너무 많이 틀렸어요. 인증번호를 다시 받아 주세요',
+      },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+  return new BadRequestException({
+    code: APP_LOGIN_ERRORS.EMAIL_CODE_INVALID,
+    message: '인증번호가 맞지 않아요',
+    // 틀린 경우에만 남은 횟수를 알려 준다(없음 · 만료 · 이미 씀과 구분되지 않게 그 경우엔 넣지 않는다)
+    ...(result.reason === 'wrong' ? { attemptsLeft: result.attemptsLeft } : {}),
+  });
+}
+
+/** 인증번호 발송 제한에 걸렸을 때의 오류(가입 · 계정 찾기 공통) */
+export function rateLimited(blocked: Extract<IssueResult, { ok: false }>): HttpException {
   const retryAfterSeconds = Math.ceil(blocked.retryAfterMs / 1000);
   return new HttpException(
     {
