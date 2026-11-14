@@ -23,6 +23,10 @@ export interface MailSender {
    * (가입 여부를 화면 응답으로 알려 주면 남의 가입 여부를 조회할 수 있어, 메일로만 알린다)
    */
   sendAlreadyRegistered(to: string): Promise<void>;
+  /** 아이디 찾기 · 비밀번호 재설정 인증번호를 보낸다. 가입한 이메일에만 보낸다(`code`는 저장 · 기록하지 않는다) */
+  sendRecoveryCode(to: string, code: string): Promise<void>;
+  /** 가입하지 않은 이메일로 계정 찾기를 요청했을 때 알린다(응답은 같게 두고 메일로만 알린다) */
+  sendNoAccount(to: string): Promise<void>;
 }
 
 /**
@@ -45,6 +49,16 @@ export class LogMailSender implements MailSender {
   async sendAlreadyRegistered(to: string): Promise<void> {
     this.ensureEnabled();
     this.logger.warn(`[개발용 메일] 이미 가입한 이메일입니다 → ${to}`);
+  }
+
+  async sendRecoveryCode(to: string, code: string): Promise<void> {
+    this.ensureEnabled();
+    this.logger.warn(`[개발용 메일] 계정 찾기 인증번호 → ${to}: ${code}`);
+  }
+
+  async sendNoAccount(to: string): Promise<void> {
+    this.ensureEnabled();
+    this.logger.warn(`[개발용 메일] 가입한 계정이 없는 이메일입니다 → ${to}`);
   }
 
   private ensureEnabled(): void {

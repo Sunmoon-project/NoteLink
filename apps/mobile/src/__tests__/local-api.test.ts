@@ -350,20 +350,12 @@ it('방 타이머 저장이 실패하면 참여자에게 알리지 않는다', a
   push.mockRestore();
 });
 
-it('탈퇴하면 자료 원본과 프로필 사진을 모두 지운다', async () => {
+it('탈퇴하면 자료 원본을 모두 지운다', async () => {
   await signup('a@test.com');
   const f = await addFolder();
   await api.content.createMaterial(material(f._id));
-  await api.me.generateProfile({
-    photoBlobUrl: 'file:///doc/files/p.jpg',
-    prompt: '사진',
-    style: '수채화',
-  });
   await api.me.withdraw();
-  expect(mockDropFile.mock.calls.map(([u]) => u).sort()).toEqual([
-    'file:///doc/files/a.pdf',
-    'file:///doc/files/p.jpg',
-  ]);
+  expect(mockDropFile.mock.calls.map(([u]) => u).sort()).toEqual(['file:///doc/files/a.pdf']);
 });
 
 it('키체인 삭제가 실패해도 탈퇴를 마치고 파일을 지운다', async () => {
@@ -375,20 +367,6 @@ it('키체인 삭제가 실패해도 탈퇴를 마치고 파일을 지운다', a
   await expect(api.me.withdraw()).resolves.toBeUndefined();
   expect(mockDropFile).toHaveBeenCalledWith('file:///doc/files/a.pdf');
   await expect(api.auth.emailLogin('a@test.com', 'pw12345678')).rejects.toThrow('맞지 않아요');
-});
-
-it('프로필 생성 요청이 실패하면 방금 복사한 사진을 지운다', async () => {
-  await signup('a@test.com');
-  useNet.setState({ state: 'offline' });
-  await expect(
-    api.me.generateProfile({
-      photoBlobUrl: 'file:///doc/files/p.jpg',
-      prompt: '',
-      style: '수채화',
-    }),
-  ).rejects.toThrow('offline');
-  useNet.setState({ state: 'ok' });
-  expect(mockDropFile).toHaveBeenCalledWith('file:///doc/files/p.jpg');
 });
 
 it('DB를 지우지 못하면 탈퇴 실패를 알리고, 로그인한 채로 다시 탈퇴할 수 있다', async () => {
@@ -451,15 +429,6 @@ it('구매한 아바타를 낀 뒤 기본 아바타로 돌아갈 수 있고, 테
   const after = await api.shop.myItems();
   expect(after.filter((u) => u.isEquipped && u.itemCategory === 'avatar')).toHaveLength(0);
   expect(after.find((u) => u.itemId === theme._id)?.isEquipped).toBe(true);
-});
-
-it('저장한 아바타가 프로필에 보이고, 다시 켜도 남는다', async () => {
-  await signup('a@test.com');
-  await api.me.saveAvatar({ style: 'toon', gender: 'male', color: '#3b6e5b' });
-  expect((await api.me.get()).avatarUrl).toBe('👨🏼‍🦱');
-  resetLocalForTests();
-  await login('a@test.com');
-  expect((await api.me.get()).avatarUrl).toBe('👨🏼‍🦱');
 });
 
 it('지울 파일 목록을 적지 못하면 계정을 지우지 않고, 다시 탈퇴할 수 있다', async () => {

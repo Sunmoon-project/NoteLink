@@ -350,18 +350,32 @@ describe('발급 형식을 못박는다 (실수로 바뀌면 이미 발급된 �
   });
 });
 
+const ACTIVE_USERS = {
+  findOne: () => ({ lean: () => Promise.resolve({ deletedAt: null }) }),
+} as never;
+
 describe('다른 토큰과 서로 대신 쓸 수 없다', () => {
   // 실제 TokenService로 access · refresh 토큰을 만들어 교차 검증한다
   const access = async () => {
-    const tokens = new TokenService(jwt, CONFIG, {
-      create: () => Promise.resolve({ _id: new Types.ObjectId() }),
-    } as never);
+    const tokens = new TokenService(
+      jwt,
+      CONFIG,
+      {
+        create: () => Promise.resolve({ _id: new Types.ObjectId() }),
+      } as never,
+      ACTIVE_USERS,
+    );
     return tokens.issue(new Types.ObjectId().toHexString());
   };
   const tokenService = () =>
-    new TokenService(jwt, CONFIG, {
-      create: () => Promise.resolve({ _id: new Types.ObjectId() }),
-    } as never);
+    new TokenService(
+      jwt,
+      CONFIG,
+      {
+        create: () => Promise.resolve({ _id: new Types.ObjectId() }),
+      } as never,
+      ACTIVE_USERS,
+    );
 
   it('access 토큰은 증표로 쓸 수 없다', async () => {
     const { accessToken } = await access();

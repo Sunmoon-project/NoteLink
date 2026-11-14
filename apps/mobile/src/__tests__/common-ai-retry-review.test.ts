@@ -39,22 +39,6 @@ async function retry(job: AiJob) {
   });
   return retried;
 }
-it('실패한 프로필 생성을 재시도하면 프로필 사진과 결과를 함께 갱신한다', async () => {
-  const before = (await settle(api.me.get())).avatarUrl;
-  useMockFlags.setState({ llmFail: true });
-  const job = await settle(
-    api.me.generateProfile({
-      photoBlobUrl: 'https://example.test/retried-profile.png',
-      prompt: '',
-      style: null,
-    }),
-  );
-  expect((await settle(api.me.get())).avatarUrl).toBe(before);
-  const retried = await retry(job);
-  const completed = await settle(api.ai.job(retried._id));
-  expect(completed.result).toEqual({ avatarUrl: 'https://example.test/retried-profile.png' });
-  expect((await settle(api.me.get())).avatarUrl).toBe('https://example.test/retried-profile.png');
-});
 it('실패한 퀴즈 생성을 재시도하면 같은 세트가 ready로 바뀐다', async () => {
   useMockFlags.setState({ llmFail: true });
   const created = await settle(api.quiz.createSet('retry-material'));

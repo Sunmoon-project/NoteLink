@@ -8,6 +8,8 @@ import { createJwtConfig } from '../../config/jwt.config.js';
 import { createKakaoConfig } from '../../config/kakao.config.js';
 import { createNaverConfig } from '../../config/naver.config.js';
 import { MailModule } from '../mail/mail.module.js';
+import { AccountRecoveryController } from './app-login/account-recovery.controller.js';
+import { AccountRecoveryService } from './app-login/account-recovery.service.js';
 import { AppLoginController } from './app-login/app-login.controller.js';
 import { AppLoginService } from './app-login/app-login.service.js';
 import { AppSignupService } from './app-login/app-signup.service.js';
@@ -61,8 +63,15 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
       { name: User.name, schema: UserSchema },
     ]),
   ],
-  controllers: [AuthTokenController, SocialLoginController, AppLoginController, TermsController],
+  controllers: [
+    AuthTokenController,
+    SocialLoginController,
+    AppLoginController,
+    AccountRecoveryController,
+    TermsController,
+  ],
   providers: [
+    AccountRecoveryService,
     // JWT_* 환경변수를 읽고 검증한다. 없거나 잘못되면 서버가 시작할 때 바로 실패한다
     {
       provide: JWT_CONFIG,
