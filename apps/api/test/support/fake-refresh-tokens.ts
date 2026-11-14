@@ -52,6 +52,11 @@ export function createFakeRefreshTokens() {
       if (row) row.revokedAt = update.revokedAt;
       return Promise.resolve({ matchedCount: row ? 1 : 0, modifiedCount: row ? 1 : 0 });
     },
+    updateMany: (f: Filter, update: { revokedAt: Date }) => {
+      const hit = rows.filter((r) => matches(r, f));
+      for (const r of hit) r.revokedAt = update.revokedAt;
+      return Promise.resolve({ matchedCount: hit.length, modifiedCount: hit.length });
+    },
     deleteOne: (f: { _id: Types.ObjectId }) => {
       const i = rows.findIndex((r) => r._id.equals(f._id));
       if (i >= 0) rows.splice(i, 1);
