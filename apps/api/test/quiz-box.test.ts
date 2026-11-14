@@ -1,7 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import { NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { Types, type Model } from 'mongoose';
+import { Types, type Connection, type Model } from 'mongoose';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -76,11 +76,13 @@ describe('QuizBoxService (가짜 모델)', () => {
     const itemsModel = { find: vi.fn(), bulkWrite: vi.fn(), deleteMany: vi.fn() };
     const setsModel = { find: vi.fn() };
     const countersModel = { findOneAndUpdate: vi.fn() };
+    const connection = { transaction: (fn: (tx: object) => Promise<unknown>) => fn({}) };
     const svc = () =>
         new QuizBoxService(
             itemsModel as unknown as Model<QuizBoxItem>,
             countersModel as unknown as Model<QuizBoxCounter>,
             setsModel as unknown as Model<QuizSet>,
+            connection as unknown as Connection,
         );
 
     it('담기: 형식이 틀린 id가 있으면 DB를 거치지 않고 404', async () => {
@@ -140,7 +142,7 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         return (x as number) < (y as number) ? -1 : (x as number) > (y as number) ? 1 : 0;
     };
     const itemsModel = {
-        find: (filter: { userId: Types.ObjectId; questionId?: { $in: Types.ObjectId[] } }) => {
+        find: (filter: { userId: Types.ObjectId; questionId?: { $in: Types.ObjectId[] } }, ..._rest: unknown[]) => {
             const hit = rows.filter((r) => same(r.userId, filter.userId) && (!filter.questionId || filter.questionId.$in.some((i) => same(i, r.questionId))));
             return {
                 lean: () => Promise.resolve(hit),
@@ -186,11 +188,22 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
             return { lean: () => Promise.resolve(hit) };
         },
     };
+    // 트랜잭션 흉내: 같은 사람의 카운터를 함께 쓰는 겹치는 요청은 실제 DB에서 쓰기 충돌로 하나씩 다시 시도되므로,
+    // 여기서는 요청을 한 줄로 세워 하나가 끝난 뒤 다음이 처음부터(기존 항목 확인부터) 실행되게 한다
+    let lock: Promise<unknown> = Promise.resolve();
+    const connection = {
+        transaction: (fn: (tx: object) => Promise<unknown>) => {
+            const run = lock.then(() => fn({}));
+            lock = run.catch(() => undefined);
+            return run;
+        },
+    };
     const svc = () =>
         new QuizBoxService(
             itemsModel as unknown as Model<QuizBoxItem>,
             countersModel as unknown as Model<QuizBoxCounter>,
             setsModel as unknown as Model<QuizSet>,
+            connection as unknown as Connection,
         );
     const idsOf = (list: { _id: string }[]) => list.map((x) => x._id);
 
@@ -199,6 +212,7 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         seqs = new Map();
         itemsModel.bulkWrite.mockClear();
         countersModel.findOneAndUpdate.mockClear();
+        lock = Promise.resolve();
     });
 
     it('담으면 보낸 순서대로 이어진 번호가 붙고, 목록은 앱 모양(정답 포함)으로 번호 순으로 나온다', async () => {
@@ -260,11 +274,27 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         expect(rows.find((r) => r.questionId.equals(mine[3]!._id))!.order).toBe(1); // 옛 문서 뒤에는 번호로 정렬된다
     });
 
-    it('동시에 담아 같은 문제가 겹쳐 유일 인덱스에 걸려도(11000만) 오류 없이 보관함을 돌려준다', async () => {
-        itemsModel.bulkWrite.mockImplementationOnce(() => Promise.reject(Object.assign(new Error('dup'), { code: 11000, writeErrors: [{ code: 11000 }] })));
-        await expect(svc().save(ME.toString(), [sid(mine[0]!)])).resolves.toEqual([]);
+    it('겹치는 동시 저장: 앞 요청이 [a,b,c], 뒤 요청이 [b,d]이고 뒤 요청의 삽입이 먼저 끝나려 해도 순서는 [a,b,c,d]다', async () => {
+        const [a, b, c, d] = [sid(mine[0]!), sid(mine[1]!), sid(mine[2]!), sid(mine[3]!)];
+        // 3개를 담는 첫 요청의 삽입만 늦춰서, 보호가 없으면 두 번째 요청의 삽입이 먼저 끝나게 한다
+        const realBulk = itemsModel.bulkWrite.getMockImplementation()!;
+        itemsModel.bulkWrite.mockImplementation(async (ops) => {
+            if (ops.length === 3) await new Promise((resolve) => setTimeout(resolve, 20));
+            return realBulk(ops);
+        });
+        try {
+            await Promise.all([svc().save(ME.toString(), [a, b, c]), svc().save(ME.toString(), [b, d])]);
+        } finally {
+            itemsModel.bulkWrite.mockImplementation(realBulk);
+        }
+        const list = await svc().save(ME.toString(), []);
+        expect(idsOf(list)).toEqual([a, b, c, d]);
+        expect(rows.map((r) => r.order)).toEqual([1, 2, 3, 4]); // 번호도 건너뛰지 않는다
+    });
+
+    it('삽입이 실패하면 오류를 그대로 던진다', async () => {
         itemsModel.bulkWrite.mockImplementationOnce(() => Promise.reject(new Error('db down')));
-        await expect(svc().save(ME.toString(), [sid(mine[0]!)])).rejects.toThrow('db down'); // 다른 오류는 그대로 던진다
+        await expect(svc().save(ME.toString(), [sid(mine[0]!)])).rejects.toThrow('db down');
     });
 
     it('남의 세트 문제가 섞이면 아무것도 담지 않고 404이고 번호도 받지 않는다', async () => {

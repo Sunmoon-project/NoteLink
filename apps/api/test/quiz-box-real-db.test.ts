@@ -1,14 +1,14 @@
 // 진짜 MongoDB에서 퀴즈 보관함 API(FR-57 · 58)를 확인하는 테스트.
 // 확인하는 것: 담기 · 목록(담은 순서, 정답 포함) · 삭제, 같은 문제를 두 번 · 동시에 담아도 한 건, 남의 세트 문제 · 없는 문제 · 잘못된 id → 404(하나라도 틀리면 아무것도 안 담김),
 // 다른 사람 보관함이 섞이지 않음, 남의 보관함 항목은 지워지지 않음, 인덱스,
-// 담은 순서 번호(사용자별 카운터): 동시에 담아도 요청별로 이어진 번호 · 번호가 겹치지 않음 · 다시 담아도 순서 그대로, 한 번에 3000개까지(실제 HTTP).
+// 담은 순서 번호(사용자별 카운터): 동시에 담아도 요청별로 이어진 번호 · 번호가 겹치지 않음 · 다시 담아도 순서 그대로, 겹치는 요청([a,b,c]와 [b,d])도 순서 유지, 한 번에 3000개까지(실제 HTTP).
 // MONGODB_VERIFY_URI가 localhost일 때만 돌고(없거나 localhost가 아니면 건너뜀), 파일 · 실행마다 고유한 전용 DB만 쓰고 끝나면 그 DB만 지운다.
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/quiz-box-real-db.test.ts
 import type { INestApplication } from '@nestjs/common';
 import { UnauthorizedException } from '@nestjs/common';
 import { getConnectionToken, MongooseModule } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
-import { Types, type Connection } from 'mongoose';
+import mongoose, { Types, type Connection } from 'mongoose';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
@@ -228,6 +228,28 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 보관함 확인', () => {
         await col('quiz_sets').deleteOne({ _id: setId });
     });
 
+    it('9-2) 순서: 문제가 겹치는 두 요청([a,b,c]와 [b,d])을 동시에 여러 번 보내도 공유 문제가 뒤로 밀리지 않는다', async () => {
+        // 겹치는 요청은 쓰기 충돌로 하나씩 다시 시도되므로 가능한 결과는 둘뿐이다: 앞 요청이 먼저 [a,b,c,d], 뒤 요청이 먼저 [b,d,a,c].
+        // 번호만 먼저 받고 삽입이 뒤바뀌면 [a,c,b,d]처럼 b가 4번으로 밀린다
+        const setId = new Types.ObjectId();
+        const qs = [q(1), q(2), q(3), q(4)];
+        await col('quiz_sets').insertOne({ _id: setId, ownerId: me, title: '겹침 세트', questions: qs, questionCount: 4, source: 'ai_generated', status: 'ready', progress: 100, deletedAt: null });
+        const [a, b, c, d] = qs.map(sid) as [string, string, string, string];
+        const seen = new Set<string>();
+        for (let round = 0; round < 30; round++) {
+            await Promise.all([col('quiz_box_items').deleteMany({}), col('quiz_box_counters').deleteMany({})]);
+            const [r1, r2] = await Promise.all([save([a, b, c]), save([b, d])]);
+            expect([r1.status, r2.status]).toEqual([200, 200]);
+            const listed = idsOf(await box());
+            seen.add(listed.join());
+            expect([[a, b, c, d].join(), [b, d, a, c].join()]).toContain(listed.join());
+            const orders = (await col('quiz_box_items').find({ userId: me }).toArray()).map((r) => r['order'] as number);
+            expect([...orders].sort((x, y) => x - y)).toEqual([1, 2, 3, 4]); // 번호가 건너뛰지 않는다
+        }
+        expect(seen.size).toBeGreaterThan(0);
+        await col('quiz_sets').deleteOne({ _id: setId });
+    });
+
     it('10) 순서: 이미 담긴 문제를 다시 담아도 번호 · 순서가 바뀌지 않고, 번호는 새 문제만큼만 올라간다', async () => {
         const [a, b, c] = [sid(mineQs[0]!), sid(mineQs[1]!), sid(mineQs[2]!)];
         await save([b, a]);
@@ -252,9 +274,36 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 보관함 확인', () => {
         expect(idsOf(await save([sid(mineQs[2]!)]))).toEqual([sid(mineQs[0]!), sid(mineQs[1]!), sid(mineQs[2]!)]);
     });
 
-    it('12) 인덱스: 보관함 목록은 userId + order 인덱스를 쓴다', async () => {
-        const keys = (await col('quiz_box_items').indexes()).map((i) => Object.keys(i.key).join(','));
-        expect(keys).toContain('userId,order');
+    it('12) 인덱스: QuizBoxService.box()의 실제 조회(userId + order · savedAt · _id 정렬)가 인덱스를 쓴다 (COLLSCAN이 아니다)', async () => {
+        // 내 항목은 적게, 남의 항목은 많이 두어 userId로 좁히는 인덱스가 더 좋은 계획이 되게 한다
+        const others = Array.from({ length: 200 }, (_, i) => ({ userId: new Types.ObjectId(), questionId: new Types.ObjectId(), quizSetId: mineSet, savedAt: new Date(), order: i + 1 }));
+        await col('quiz_box_items').insertMany(others);
+        await save([sid(mineQs[0]!), sid(mineQs[1]!)]);
+
+        // box()가 DB에 실제로 보낸 find의 조건 · 정렬을 가로채서 그대로 explain에 넣는다 (테스트가 따로 만든 조회가 아니다)
+        const sent: { filter: Record<string, unknown>; sort: Record<string, number> }[] = [];
+        mongoose.set('debug', (collection: string, method: string, ...args: unknown[]) => {
+            if (collection === 'quiz_box_items' && method === 'find') {
+                sent.push({ filter: args[0] as Record<string, unknown>, sort: (args[1] as { sort: Record<string, number> }).sort });
+            }
+        });
+        try {
+            await app.get(QuizBoxService).box(me.toString());
+        } finally {
+            mongoose.set('debug', false);
+        }
+        expect(sent).toHaveLength(1);
+        expect(sent[0]!.sort).toEqual({ order: 1, savedAt: 1, _id: 1 });
+
+        const explained = await conn.db!.command({
+            explain: { find: 'quiz_box_items', filter: { userId: me }, sort: sent[0]!.sort },
+            verbosity: 'queryPlanner',
+        });
+        const plan = JSON.stringify(explained['queryPlanner'].winningPlan);
+        expect(plan).toMatch(/IXSCAN/);
+        expect(plan).not.toMatch(/COLLSCAN/);
+        // userId로 범위를 좁히는 인덱스를 쓴다 (정렬은 좁혀진 내 항목만 메모리에서 한다)
+        expect(plan).toMatch(/"keyPattern":\{"userId":1/);
     });
 
     describe('한 번에 상한(3000개)까지', () => {
