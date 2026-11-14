@@ -74,7 +74,10 @@ export class RecurringGoalsService {
             name: dto.name,
             days: sortedDays(dto.days),
         });
-        return toView(created.toObject() as unknown as GoalLean, 0); // 방금 만든 목표는 지난 주가 없다
+        // 목록 · 수정과 같은 계산을 쓴다. 오늘 이미 목표 시간을 채운 사용자가 오늘 요일로 만들면 바로 1 이상일 수 있다
+        const goal = created.toObject() as unknown as GoalLean;
+        const streaks = await this.streaks(userId, [goal], new Date());
+        return toView(goal, streaks.get(goal._id.toString()) ?? 0);
     }
 
     /** 보낸 필드만 바꾼다. 남의 목표 · 지운 목표 · 없는 목표는 404 */

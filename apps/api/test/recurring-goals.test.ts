@@ -23,7 +23,8 @@ const goalModel = {
         sort: vi.fn(() => ({ lean: vi.fn(() => Promise.resolve(rows.filter((r) => matches(r, f)))) })),
     })),
     create: vi.fn((doc: Record<string, unknown>) => {
-        const row = { _id: new Types.ObjectId(), pausedUntil: null, remindTime: null, deletedAt: null, ...doc } as unknown as Row;
+        // 스키마 기본값과 timestamps(createdAt)도 흉내 낸다
+        const row = { _id: new Types.ObjectId(), pausedUntil: null, remindTime: null, deletedAt: null, createdAt: new Date(), ...doc } as unknown as Row;
         rows.push(row);
         return Promise.resolve({ toObject: () => row });
     }),
@@ -363,6 +364,16 @@ describe('반복 목표 streak 계산 연결 (가짜 DB)', () => {
         expect(res.body.data[0].streak).toBe(0);
         expect(dailyFind).not.toHaveBeenCalled();
         expect(skipDates).not.toHaveBeenCalled();
+    });
+
+    it('만들 때도 같은 streak 계산을 쓴다: 오늘 목표 시간을 이미 채운 사용자가 오늘 요일로 만들면 바로 이어서 목록과 같은 값이다', async () => {
+        records.push(day('2026-11-14')); // 오늘(토) 30분을 이미 공부했다
+        const created = await request(app.getHttpServer()).post('/api/v1/goals/recurring').set(AUTH).send({ name: '토요일 공부', days: [6], targetMin: 30 });
+        expect(created.status).toBe(201);
+        expect(created.body.data.streak).toBe(1); // 이번 주 대상 날(오늘)을 이미 달성
+        const listed = await request(app.getHttpServer()).get('/api/v1/goals/recurring').set(AUTH);
+        expect(listed.body.data[0].streak).toBe(created.body.data.streak);
+        expect(dailyFind).toHaveBeenCalledTimes(2); // 만들 때 한 번, 목록에서 한 번
     });
 
     it('수정 응답도 현재 설정으로 계산한 streak을 준다', async () => {

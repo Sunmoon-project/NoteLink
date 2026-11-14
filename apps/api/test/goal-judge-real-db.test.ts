@@ -274,4 +274,14 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 연속 달성 주 수', () =>
         expect((await list(me))[0]!.streak).toBe(0);
         expect(find).not.toHaveBeenCalled();
     });
+
+    it('11) 만들기 응답의 streak은 바로 뒤 목록의 streak과 같다 (오늘 목표 시간을 이미 채운 사용자가 오늘 요일로 만들 때)', async () => {
+        const me = await newUser();
+        await addStudy(me, ['2026-11-14']); // 오늘(토) 30분을 이미 공부했다
+        const created = await http().post('/api/v1/goals/recurring').set(me.auth).send({ name: '토요일 공부', days: [6], targetMin: 30 });
+        expect(created.status).toBe(201);
+        expect(SharedRecurringGoal.safeParse(created.body.data).success).toBe(true);
+        expect(created.body.data.streak).toBe(1); // 이번 주 대상 날(오늘)을 이미 달성
+        expect((await list(me)).find((g) => g.name === '토요일 공부')!.streak).toBe(created.body.data.streak);
+    });
 });
