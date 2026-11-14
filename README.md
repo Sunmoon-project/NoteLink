@@ -173,7 +173,7 @@ npm run dev:ai       # FastAPI 서버
 npm run dev:mobile   # 앱 개발 서버
 ```
 
-루트의 `npm run build` · `lint` · `typecheck` · `test` · `dev:*`는 [Turborepo](https://turborepo.com)(`turbo.json`)로 돌아갑니다. `@notelink/shared`를 먼저 빌드하고, 바뀐 것이 없는 작업은 캐시(`.turbo/`, 커밋하지 않음)로 건너뜁니다. 한 앱만 돌리려면 `npx turbo run test --filter=@notelink/api`처럼 씁니다. 테스트는 부하로 시간이 초과되지 않게 하나씩 돌립니다.
+루트의 `npm run build` · `lint` · `typecheck` · `test` · `dev:*`는 [Turborepo](https://turborepo.com)(`turbo.json`)로 돌아갑니다. `@notelink/shared`를 먼저 빌드하고, 바뀐 것이 없는 빌드 · 린트 · 타입 검사는 캐시(`.turbo/`, 커밋하지 않음)로 건너뜁니다. 테스트는 DB · 환경 변수에 따라 결과가 달라져 캐시하지 않습니다. 한 앱만 돌리려면 `npx turbo run test --filter=@notelink/api`처럼 씁니다. 테스트는 부하로 시간이 초과되지 않게 하나씩 돌립니다.
 
 서버(`npm run dev:api`)를 켜면 기본 상점 아이템이 자동으로 들어갑니다(없는 것만 넣고 이미 있는 아이템은 고치지 않음). 끄려면 `apps/api/.env`에 `SHOP_SEED=off`를 적습니다.
 

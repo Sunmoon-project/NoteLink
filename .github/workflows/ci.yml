@@ -47,7 +47,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # 루트 명령은 Turborepo(turbo.json)로 돈다: @notelink/shared를 먼저 빌드하는 순서까지 여기서 검증한다
+      # 루트 명령은 Turborepo(turbo.json)로 돈다. npm ci의 prepare가 @notelink/shared를 미리 빌드하므로 그 결과를 지워,
+      # turbo가 shared를 먼저 빌드(^build)하지 않으면 아래 lint가 실패하게 한다(작업 순서 검증)
+      - name: shared 빌드 결과 지우기
+        run: rm -rf packages/shared/dist
       - name: Lint
         run: npm run lint
       - name: Typecheck
