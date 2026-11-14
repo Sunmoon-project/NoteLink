@@ -41,17 +41,23 @@ const timetableModel = {
         },
     ),
 };
+type ShareFilter = { ownerId: Types.ObjectId; friendId: Types.ObjectId; friendshipId?: { $in: (Types.ObjectId | null)[] } };
+type ShareSet = { mode: string; sharedAt: Date; friendshipId?: Types.ObjectId };
+const samePair = (f: ShareFilter) => (s: ShareRow) => s.ownerId.equals(f.ownerId) && s.friendId.equals(f.friendId);
+const shareHit = (f: ShareFilter) => (s: ShareRow) =>
+    samePair(f)(s) && (!f.friendshipId || f.friendshipId.$in.some((id) => (id === null ? s.friendshipId == null : String(id) === String(s.friendshipId))));
 const shareModel = {
-    bulkWrite: vi.fn(
-        (ops: { updateOne: { filter: { ownerId: Types.ObjectId; friendId: Types.ObjectId }; update: { $set: { mode: string; sharedAt: Date } } } }[]) => {
-            for (const { updateOne: op } of ops) {
-                const row = shares.find((s) => s.ownerId.equals(op.filter.ownerId) && s.friendId.equals(op.filter.friendId));
-                if (row) Object.assign(row, op.update.$set);
-                else shares.push({ _id: new Types.ObjectId(), ...op.filter, ...op.update.$set });
-            }
-            return Promise.resolve({});
-        },
-    ),
+    bulkWrite: vi.fn((ops: { updateOne: { filter: ShareFilter; update: { $set: ShareSet }; upsert?: boolean } }[]) => {
+        const writeErrors: { code: number }[] = [];
+        for (const { updateOne: op } of ops) {
+            const row = shares.find(shareHit(op.filter));
+            if (row) Object.assign(row, op.update.$set);
+            // 조건에 안 맞는데 같은 쌍의 줄이 있으면, 끼워 넣기가 유일 인덱스({ ownerId, friendId })에 걸린다
+            else if (shares.some(samePair(op.filter))) writeErrors.push({ code: 11000 });
+            else shares.push({ _id: new Types.ObjectId(), ownerId: op.filter.ownerId, friendId: op.filter.friendId, ...op.update.$set });
+        }
+        return writeErrors.length ? Promise.reject(Object.assign(new Error('E11000'), { writeErrors })) : Promise.resolve({});
+    }),
     deleteMany: vi.fn((f: { ownerId: Types.ObjectId; $or: { friendId: Types.ObjectId; friendshipId: Types.ObjectId }[] }) => {
         shares = shares.filter(
             (s) => !(s.ownerId.equals(f.ownerId) && f.$or.some((o) => o.friendId.equals(s.friendId) && String(o.friendshipId) === String(s.friendshipId))),
@@ -246,11 +252,11 @@ describe('시간표 API (/timetable)', () => {
 
         it('친구 확인 뒤 공유를 쓰는 사이에 친구를 끊었으면 쓴 공유를 지운다(공유한 뒤 끊긴 것과 같은 결과)', async () => {
             // 공유 쓰기 직전에 친구 끊기(관계 삭제 → 공유 정리)가 끝까지 돈다
-            shareModel.bulkWrite.mockImplementationOnce(async (ops) => {
+            const write = shareModel.bulkWrite.getMockImplementation()!;
+            shareModel.bulkWrite.mockImplementationOnce((ops) => {
                 friendships = [];
                 shares = [];
-                for (const { updateOne: op } of ops) shares.push({ _id: new Types.ObjectId(), ...op.filter, ...op.update.$set });
-                return {};
+                return write(ops);
             });
             const res = await shareWith([friend.toString()]);
             expect(res.status).toBe(204);
@@ -275,18 +281,39 @@ describe('시간표 API (/timetable)', () => {
             expect(shares[0]).toMatchObject({ mode: 'free_only', friendshipId: refriended });
         });
 
+        it('예전 관계로 시작한 요청이 늦게 쓰면, 다시 친구가 된 뒤의 새 공유를 덮어쓰거나 지우지 않는다', async () => {
+            const renewed = new Types.ObjectId();
+            const write = shareModel.bulkWrite.getMockImplementation()!;
+            shareModel.bulkWrite.mockImplementationOnce((ops) => {
+                // 이 요청이 처음 확인한 뒤 쓰기 전에: 친구 끊기 → 다시 친구(새 관계) → 새 공유(free_only) 완료
+                friendships = friendships.map((r) => (r.userB.equals(friend) ? { ...r, _id: renewed } : r));
+                shares.push({ _id: new Types.ObjectId(), ownerId: ME, friendId: friend, mode: 'free_only', sharedAt: new Date(), friendshipId: renewed });
+                return write(ops);
+            });
+            const res = await shareWith([friend.toString()], 'full');
+            expect(res.status).toBe(204);
+            expect(shares).toHaveLength(1);
+            expect(shares[0]).toMatchObject({ mode: 'free_only', friendshipId: renewed });
+        });
+
+        it('같은 관계의 공유와 관계 id가 없는 예전 공유는 덮어쓴다', async () => {
+            shares.push({ _id: new Types.ObjectId(), ownerId: ME, friendId: friend, mode: 'full', sharedAt: new Date('2026-11-01T00:00:00Z') });
+            expect((await shareWith([friend.toString()], 'free_only')).status).toBe(204);
+            expect(shares).toHaveLength(1);
+            expect(shares[0]!.mode).toBe('free_only');
+            expect(shares[0]!.friendshipId).toBeDefined();
+            expect((await shareWith([friend.toString()], 'full')).status).toBe(204);
+            expect(shares[0]!.mode).toBe('full');
+        });
+
         it('두 친구에게 공유하는 사이 한 명과 끊기면 그 사람 공유만 지우고, 남은 친구의 공유는 요청대로 둔다', async () => {
             shares.push({ _id: new Types.ObjectId(), ownerId: ME, friendId: friend, mode: 'full', sharedAt: new Date('2026-11-01T00:00:00Z') });
-            shareModel.bulkWrite.mockImplementationOnce(async (ops) => {
+            const write = shareModel.bulkWrite.getMockImplementation()!;
+            shareModel.bulkWrite.mockImplementationOnce((ops) => {
                 // 쓰기 직전에 friend2와의 친구 끊기(관계 삭제 → 공유 정리)가 끝까지 돈다
                 friendships = friendships.filter((r) => !(r.userA.equals(friend2) || r.userB.equals(friend2)));
                 shares = shares.filter((x) => !x.friendId.equals(friend2));
-                for (const { updateOne: op } of ops) {
-                    const row = shares.find((x) => x.ownerId.equals(op.filter.ownerId) && x.friendId.equals(op.filter.friendId));
-                    if (row) Object.assign(row, op.update.$set);
-                    else shares.push({ _id: new Types.ObjectId(), ...op.filter, ...op.update.$set });
-                }
-                return {};
+                return write(ops);
             });
             const res = await shareWith([friend.toString(), friend2.toString()], 'free_only');
             expect(res.status).toBe(204);

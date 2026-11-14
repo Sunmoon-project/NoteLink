@@ -98,16 +98,24 @@ export class TimetableService {
         if (strangers.length > 0) {
             throw new BadRequestException({ code: 'NOT_FRIEND', message: '친구가 아닌 사용자에게는 시간표를 공유할 수 없습니다.' });
         }
-        await this.shareModel.bulkWrite(
-            requested.map((friendId) => ({
-                updateOne: {
-                    filter: { ownerId: owner, friendId: new Types.ObjectId(friendId) },
-                    // 어느 친구 관계에서 만든 공유인지 남긴다(끊기면 그 관계의 공유만 정리한다)
-                    update: { $set: { mode: dto.mode, sharedAt: now, friendshipId: friends.get(friendId) } },
-                    upsert: true,
-                },
-            })),
-        );
+        // 이 관계(또는 관계 id가 없는 예전 공유)의 줄에만 쓴다. 다른 관계의 공유가 이미 있으면 — 이 요청이 늦게 쓰는 사이
+        // 친구를 끊었다 다시 맺고 새로 공유했다 — 덮어쓰지 않고 건너뛴다(유일 인덱스가 중복 오류를 낸다). 예전 공유가 끊기며
+        // 지워진 뒤 새 공유가 생긴 것과 같은 결과다
+        try {
+            await this.shareModel.bulkWrite(
+                requested.map((friendId) => ({
+                    updateOne: {
+                        filter: { ownerId: owner, friendId: new Types.ObjectId(friendId), friendshipId: { $in: [friends.get(friendId)!, null] } },
+                        // 어느 친구 관계에서 만든 공유인지 남긴다(끊기면 그 관계의 공유만 정리한다)
+                        update: { $set: { mode: dto.mode, sharedAt: now, friendshipId: friends.get(friendId)! } },
+                        upsert: true,
+                    },
+                })),
+                { ordered: false },
+            );
+        } catch (error) {
+            if (!onlyDuplicateKeys(error)) throw error;
+        }
         // 확인한 뒤 쓰는 사이에 친구를 끊었으면(FriendsService.remove는 관계 → 공유 순으로 지운다) 방금 쓴 공유가 남는다.
         // 다시 확인해서, 처음 확인한 친구 관계가 끊긴 사람의 공유를 지운다(끊기가 공유 뒤에 온 것과 같은 결과). 다시 확인이
         // 통과했다면 쓰기는 끊기보다 앞이라 끊기의 공유 정리가 지운다.
@@ -145,6 +153,13 @@ export class TimetableService {
             .lean<(Pick<Friendship, 'userA' | 'userB'> & { _id: Types.ObjectId })[]>();
         return new Map(docs.map((d) => [(d.userA.equals(owner) ? d.userB : d.userA).toString(), d._id]));
     }
+}
+
+/** bulkWrite 오류가 모두 중복 키(11000)인지 — 다른 관계의 공유가 이미 있어 건너뛴 쓰기만 실패했는지 */
+function onlyDuplicateKeys(error: unknown): boolean {
+    const raw = (error as { writeErrors?: unknown } | null)?.writeErrors;
+    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    return list.length > 0 && list.every((e) => (e as { code?: unknown }).code === 11000);
 }
 
 function toClassView(cls: TimetableClass): ClassView {
