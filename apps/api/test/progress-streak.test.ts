@@ -46,7 +46,7 @@ const dailyModel = {
     }),
 };
 
-const service = new ProgressService(dailyModel as never, {} as never, {} as never);
+const service = new ProgressService(dailyModel as never, {} as never, {} as never, {} as never);
 const me = new Types.ObjectId();
 const add = (n: number, totalSec: number, userId = me.toString()): void => {
     days.push({ userId, studyDate: ago(n), totalSec });

@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { UsersService } from '../src/modules/users/users.service.js';
 import { ProgressService, STREAK_BATCH_SIZE } from '../src/modules/progress/progress.service.js';
+import { Todo, TodoSchema } from '../src/modules/calendar/schemas/todo.schema.js';
 import { DailyRecord, DailyRecordSchema } from '../src/modules/progress/schemas/daily-record.schema.js';
 import { WeeklyGoal, WeeklyGoalSchema } from '../src/modules/progress/schemas/weekly-goal.schema.js';
 import { PointService } from '../src/modules/reward/point/point.service.js';
@@ -75,6 +76,7 @@ describe.skipIf(!isLocal)('진짜 DB 월간 캘린더 · 누적 기록 확인', 
                 MongooseModule.forFeature([
                     { name: DailyRecord.name, schema: DailyRecordSchema },
                     { name: WeeklyGoal.name, schema: WeeklyGoalSchema },
+                    { name: Todo.name, schema: TodoSchema },
                     { name: StudySession.name, schema: StudySessionSchema },
                     { name: Subject.name, schema: SubjectSchema },
                     { name: PointLedger.name, schema: PointLedgerSchema },

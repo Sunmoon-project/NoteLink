@@ -83,6 +83,12 @@ export const PATHS = {
   refresh: '/auth/refresh',
   logout: '/auth/logout',
   terms: '/auth/terms',
+  /** 아이디 찾기 · 비밀번호 재설정 인증번호 받기 { email } → 204. 가입하지 않은 이메일이어도 응답은 같다 */
+  recoverySendCode: '/auth/recovery/send-code',
+  /** 아이디 찾기 { email, code } → { data: { id } } (아이디 = 가입 이메일, 계정이 없으면 null) */
+  findId: '/auth/find-id',
+  /** 비밀번호 재설정 { id, email, code, password } → 204. 모든 기기 로그인을 끊는다 */
+  passwordReset: '/auth/password/reset',
   me: '/users/me',
   myStatus: '/users/me/status',
   myDevices: '/users/me/devices',

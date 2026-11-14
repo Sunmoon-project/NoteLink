@@ -114,11 +114,29 @@ export class User {
   @Prop({ type: SubscriptionSchema })
   subscription?: Subscription;
 
+  /** 탈퇴를 시작한 시각. 이때부터 새 푸시 기기를 받지 않는다(UsersService.withdraw · registerDevice) */
+  @Prop({ type: Date, default: null })
+  withdrawingAt?: Date | null;
+
   @Prop({ type: Date, default: null })
   lastLoginAt?: Date | null;
 
   @Prop({ type: Date, default: null })
   deletedAt?: Date | null;
+
+  /**
+   * 이 시각 이전에 발급된 로그인 토큰(access · refresh)은 받지 않는다. 비밀번호를 바꾸거나 탈퇴하면
+   * 모든 기기 로그인을 끊으려고 적는다(TokenService.revokeAll)
+   */
+  @Prop({ type: Date, default: null })
+  sessionsRevokedAt?: Date | null;
+
+  /**
+   * 로그인 세션 버전. 로그인을 끊을 때(revokeAll) 비밀번호 변경과 같은 갱신에서 1 올린다. 토큰에는 발급 때 읽은 값(sv)이
+   * 들어가고, 다르면 거절한다 — 시각과 달리 「예전 비밀번호를 읽은 로그인」을 DB 반영 순서와 상관없이 걸러 낸다
+   */
+  @Prop({ type: Number, default: 0 })
+  sessionVersion?: number;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

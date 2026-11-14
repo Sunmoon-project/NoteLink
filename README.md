@@ -173,6 +173,8 @@ npm run dev:ai       # FastAPI 서버
 npm run dev:mobile   # 앱 개발 서버
 ```
 
+서버(`npm run dev:api`)를 켜면 기본 상점 아이템이 자동으로 들어갑니다(없는 것만 넣고 이미 있는 아이템은 고치지 않음). 끄려면 `apps/api/.env`에 `SHOP_SEED=off`를 적습니다.
+
 > Expo SDK 57에서는 Watchman이 필요 없습니다. iPhone 실기기에 설치하려면 Apple 개발자 계정이 필요합니다.
 
 ---

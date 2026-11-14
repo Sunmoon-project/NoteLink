@@ -3,6 +3,8 @@ import { Logger } from '@nestjs/common';
 import { isSingleEmailAddress } from '../../common/email-address.js';
 import {
   alreadyRegisteredMessage,
+  noAccountMessage,
+  recoveryCodeMessage,
   verificationCodeMessage,
   type MailMessage,
 } from './mail-messages.js';
@@ -69,6 +71,14 @@ export class SmtpMailSender implements MailSender {
 
   sendAlreadyRegistered(to: string): Promise<void> {
     return this.send(to, alreadyRegisteredMessage());
+  }
+
+  sendRecoveryCode(to: string, code: string): Promise<void> {
+    return this.send(to, recoveryCodeMessage(code));
+  }
+
+  sendNoAccount(to: string): Promise<void> {
+    return this.send(to, noAccountMessage());
   }
 
   private async send(to: string, message: MailMessage): Promise<void> {
