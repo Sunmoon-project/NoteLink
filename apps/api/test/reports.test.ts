@@ -1,7 +1,7 @@
 import { UnauthorizedException, type INestApplication } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
@@ -179,13 +179,35 @@ describe('POST /api/v1/reports', () => {
     expect(reports.create).not.toHaveBeenCalled();
   });
 
-  it('신고를 저장하지 못하면 이번에 복사한 사진을 지우고 실패를 돌려준다', async () => {
-    reports.create.mockRejectedValueOnce(new Error('DB 장애'));
-    const response = await request(app.getHttpServer())
+  const sendFailing = async (error: Error) => {
+    reports.create.mockRejectedValueOnce(error);
+    return request(app.getHttpServer())
       .post('/api/v1/reports')
       .set('Authorization', 'Bearer valid')
       .send(valid);
-    expect(response.status).toBe(500);
+  };
+
+  it.each([
+    ['서버가 거절한 쓰기', new mongoose.mongo.MongoServerError({ code: 2, errmsg: '거절' })],
+    ['보내기 전 검증 실패', new mongoose.Error.ValidationError()],
+  ])('%s로 저장되지 않은 신고는 이번에 복사한 사진을 지우고 실패를 돌려준다', async (_, error) => {
+    expect((await sendFailing(error)).status).toBe(500);
     expect(storage.discardReportImages).toHaveBeenCalledWith(KEPT);
+  });
+
+  it.each([
+    [
+      '쓰기 확인 시간 초과(이미 저장됨)',
+      new mongoose.mongo.MongoWriteConcernError({
+        code: 64,
+        errmsg: 'waiting for replication timed out',
+        writeConcernError: { code: 64, errmsg: 'waiting for replication timed out' },
+      } as never),
+    ],
+    ['연결 오류', new mongoose.mongo.MongoNetworkError('연결 끊김')],
+    ['알 수 없는 오류', new Error('DB 장애')],
+  ])('%s처럼 저장 결과가 불명확하면 사진을 지우지 않는다', async (_, error) => {
+    expect((await sendFailing(error)).status).toBe(500);
+    expect(storage.discardReportImages).not.toHaveBeenCalled();
   });
 });
