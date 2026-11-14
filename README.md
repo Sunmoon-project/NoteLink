@@ -188,10 +188,55 @@ npm run dev:mobile   # 앱 개발 서버
 | 안드로이드 · 링크(APK) | Expo 계정                                           | `npm run build:android:local` 또는 `build:android:server` | 빌드가 끝나면 나오는 링크 · QR로 받아 설치                                                                                          |
 | 아이폰 · USB           | Mac + Xcode, 무료 Apple ID                          | `npm run ios:device`                                      | 연결한 아이폰에 설치(매번 `ios/` 폴더를 무료 계정용으로 다시 만든다). **무료 계정은 7일마다 다시 설치**해야 하고 푸시 알림은 빠진다 |
 
-- **USB 빌드의 연결 대상**은 `apps/mobile/.env`를 따릅니다. 기기 저장 모드면 `EXPO_PUBLIC_USE_LOCAL_DATA=true`, 서버 연결이면 `false`와 `EXPO_PUBLIC_API_URL`(폰에서 닿는 주소: 배포 서버 또는 같은 와이파이의 PC IP)
-- **아이폰 · USB 처음 한 번**: Xcode > Settings > Accounts에 Apple ID를 더하고, 빌드 중 서명 팀을 고르라고 하면 그 Apple ID(Personal Team)를 고릅니다. 번들 ID가 이미 쓰인다고 나오면 `NOTELINK_IOS_BUNDLE_ID=com.내이름.notelink npm run ios:device`. 설치 뒤 아이폰 설정 > 일반 > VPN 및 기기 관리에서 개발자 앱을 신뢰합니다
-- **EAS(링크 설치) 처음 한 번**: EAS 프로젝트는 expo.dev의 `cchangyeols-team/notelink`입니다(`app.config.ts`의 `EAS_OWNER` · `EAS_PROJECT_ID`). expo.dev 가입 → 조직 `cchangyeols-team`에 초대받기 → `npx eas-cli login`. 서버 연결 빌드는 `npx eas-cli env:create --environment preview --name EXPO_PUBLIC_API_URL --value https://<배포 서버>/api/v1 --visibility plaintext`로 주소를 넣습니다
-- 아이폰 링크 설치는 Apple 개발자 계정(연 $99)이 있어야 합니다. 등록한 기기에 바로 까는 내부 배포는 `preview-*` 프로필(ad hoc 서명), TestFlight는 스토어 서명이라 `production` 프로필(`npx eas-cli build -p ios --profile production` → `npx eas-cli submit -p ios`)을 씁니다
+서버(개발 배포)가 아직 없으면 **기기 저장 모드**로 빌드합니다. 고친 내용은 먼저 커밋합니다(EAS는 git에 커밋된 상태를 올립니다).
+
+#### 처음 한 번
+
+```bash
+npm install
+npm run build -w @notelink/shared   # 앱이 쓰는 공용 계약(dist는 git에 없음)
+cd apps/mobile
+```
+
+- **Expo 계정**: EAS 프로젝트는 expo.dev의 `cchangyeols-team/notelink`입니다(`app.config.ts`의 `EAS_OWNER` · `EAS_PROJECT_ID`). expo.dev에 가입하고 조직 `cchangyeols-team`에 초대받은 뒤 `npx eas-cli login`. `npx eas-cli project:info`에 `@cchangyeols-team/notelink`가 나오면 연결된 것입니다. `eas init`은 다시 하지 않습니다(새 프로젝트가 생깁니다)
+
+#### 안드로이드 — 링크(APK)로 설치
+
+PC에 Android SDK가 없어도 됩니다(빌드는 Expo 서버에서).
+
+1. `npm run build:android:local`(기기 저장 모드) 또는 `npm run build:android:server`(서버 연결)
+2. 처음이면 안드로이드 서명 키를 만들지 묻습니다. **Yes**를 고르면 EAS가 만들어 보관합니다
+3. 10~20분 뒤 나오는 링크 · QR을 폰으로 열어 APK를 받아 설치합니다(「출처를 알 수 없는 앱」 허용). 진행 상황은 터미널이나 expo.dev → `notelink` → Builds, `npx eas-cli build:list`
+
+무료 요금제는 한 달 빌드 횟수가 정해져 있고 대기열에서 기다릴 수 있습니다.
+
+#### 안드로이드 — USB로 설치
+
+Android Studio(4장 준비)가 있고 폰에서 개발자 옵션 → USB 디버깅을 켰으면 `npm run android:device`. 연결한 폰에 릴리스 빌드를 바로 설치합니다(Metro 없이 동작).
+
+#### 아이폰 — USB + 무료 Apple ID
+
+Apple 개발자 계정(연 $99)이 없으면 링크 설치는 안 되고 Mac에 연결해 설치합니다.
+
+1. Xcode → Settings → Accounts에 Apple ID를 더합니다
+2. 아이폰을 USB로 연결하고 「이 컴퓨터를 신뢰」
+3. 아이폰 설정 → 개인정보 보호 및 보안 → **개발자 모드** 켜기(재시작됨)
+4. `EXPO_PUBLIC_USE_LOCAL_DATA=true npm run ios:device` — 기기를 고르라면 아이폰, 서명 팀을 물으면 그 Apple ID(Personal Team). 번들 ID가 이미 쓰인다고 나오면 `NOTELINK_IOS_BUNDLE_ID=com.내이름.notelink`를 앞에 붙여 다시 실행합니다
+5. 설치 뒤 아이폰 설정 → 일반 → VPN 및 기기 관리에서 그 Apple ID의 앱을 신뢰합니다
+
+첫 빌드는 Pod 설치로 10분 넘게 걸립니다. **무료 계정은 7일마다 다시 설치**해야 하고 푸시 알림은 빠집니다.
+
+#### 서버에 연결된 빌드
+
+- **EAS(안드로이드 링크)**: 배포 서버 주소를 한 번 넣고 `npm run build:android:server`
+  ```bash
+  npx eas-cli env:create --environment preview --name EXPO_PUBLIC_API_URL --value https://<배포 서버>/api/v1 --visibility plaintext
+  ```
+- **USB 빌드**: `apps/mobile/.env`에 `EXPO_PUBLIC_USE_LOCAL_DATA=false`와 `EXPO_PUBLIC_API_URL`(폰에서 닿는 주소: 배포 서버 또는 같은 와이파이에 있는 PC의 IP)
+
+#### 아이폰 링크 설치 · TestFlight
+
+Apple 개발자 계정이 있어야 합니다. 등록한 기기에 바로 까는 내부 배포는 `preview-*` 프로필(ad hoc 서명), TestFlight는 스토어 서명이라 `production` 프로필(`npx eas-cli build -p ios --profile production` → `npx eas-cli submit -p ios`)을 씁니다.
 
 ---
 
