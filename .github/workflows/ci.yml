@@ -89,18 +89,20 @@ jobs:
         run: pytest || [ $? -eq 5 ]
 
   infra:
-    name: Infra (Docker)
+    name: Infra (Docker & Persistence)
     needs: detect
     if: needs.detect.outputs.infra == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
       - name: Dockerfile 검사 (hadolint)
         run: |
           git ls-files -z '*Dockerfile*' | while IFS= read -r -d '' f; do
             echo "▶ $f"
             docker run --rm -i hadolint/hadolint:v2.15.1 hadolint --failure-threshold warning - < "$f"
           done
+
       - name: compose 파일 검사
         # 문법 · 구조만 봅니다. .env 값은 커밋되지 않으므로 변수 치환은 하지 않습니다.
         run: |
@@ -109,6 +111,40 @@ jobs:
             docker compose -f "$f" config --quiet --no-interpolate
           done
 
+      - name: 테스트용 환경변수(.env) 설정
+        run: |
+          if [ -f infra/.env.example ]; then
+            cp infra/.env.example infra/.env
+          else
+            echo "MONGO_USER=admin" >> infra/.env
+            echo "MONGO_PASSWORD=password" >> infra/.env
+          fi
+
+      - name: Azurite 볼륨 영속성(Persistence) 통합 테스트
+        run: |
+          # 1단계: 컨테이너 실행
+          docker compose -f infra/docker-compose.yml up -d
+          sleep 3
+
+          # 2단계: Azurite 컨테이너 ID를 동적으로 추출하여 /data 볼륨에 테스트 파일 생성
+          AZURITE_CONTAINER=$(docker compose -f infra/docker-compose.yml ps -q azurite)
+          docker exec "$AZURITE_CONTAINER" sh -c "echo 'CI Volume Persistence Test' > /data/persistence_test.txt"
+
+          # 3단계: 볼륨은 유지한 채 컨테이너 중단 (down)
+          docker compose -f infra/docker-compose.yml down
+
+          # 4단계: 컨테이너 재시작 (up)
+          docker compose -f infra/docker-compose.yml up -d
+          sleep 3
+
+          # 5단계: 재시작 후 볼륨 내 파일 내용 유지 여부 검증
+          AZURITE_CONTAINER_NEW=$(docker compose -f infra/docker-compose.yml ps -q azurite)
+          docker exec notelink-azurite-1 sh -c "grep -q 'CI Volume Persistence Test' /data/persistence_test.txt && echo 'Success'"
+
+      - name: Teardown Docker Compose
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down -v
+        
   scripts:
     name: Scripts (bats)
     runs-on: ubuntu-latest

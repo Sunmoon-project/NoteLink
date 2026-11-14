@@ -1,0 +1,28 @@
+name: notelink
+
+services:
+  mongodb:
+    image: mongodb/mongodb-atlas-local:8.0.32
+    ports:
+      - "127.0.0.1:27017:27017"
+    environment:
+      - MONGODB_INITDB_ROOT_USERNAME=${MONGO_USER:?infra/.env에 MONGO_USER를 설정해주세요}
+      - MONGODB_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:?infra/.env에 MONGO_PASSWORD를 설정해주세요}
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    ports:
+      - "127.0.0.1:10000:10000"
+      - "127.0.0.1:10001:10001"
+      - "127.0.0.1:10002:10002"
+    volumes:
+      - azurite_data:/data
+    command: ["azurite", "--location", "/data", "--blobHost", "0.0.0.0", "--queueHost", "0.0.0.0", "--tableHost", "0.0.0.0", "--skipApiVersionCheck"]
+
+volumes:
+  mongodb_data:
+  mongodb_config:
+  azurite_data:
