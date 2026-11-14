@@ -25,3 +25,7 @@ export class Friendship {
 }
 
 export const FriendshipSchema = SchemaFactory.createForClass(Friendship);
+// 한 쌍에 관계 문서 하나(userA는 id가 작은 쪽, FriendsService.pairOf). 동시에 서로 요청해도 두 개가 생기지 않는다
+FriendshipSchema.index({ userA: 1, userB: 1 }, { unique: true });
+// 받은 요청 · 친구 목록 조회
+FriendshipSchema.index({ userB: 1, status: 1 });

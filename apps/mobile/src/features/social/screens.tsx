@@ -6,7 +6,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MoreHorizontal, Search as SearchIcon } from 'lucide-react-native';
 import type { Message, User } from '@notelink/shared';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { socket } from '@/lib/socket';
 import { timeAgo } from '@/lib/dates';
 import { useSocket } from '@/hooks';
@@ -43,7 +43,13 @@ export function FriendAddScreen() {
   });
   const send = useMutation({
     mutationFn: (userId: string) => api.social.sendRequest(userId),
-    onError: () => toast('친구 요청을 보내지 못했어요. 다시 시도해주세요'),
+    // 서버가 이유를 알려 주면(이미 친구예요 · 나에게는 보낼 수 없어요 등) 그 문구를 보여 준다
+    onError: (e) =>
+      toast(
+        e instanceof ApiError && e.status < 500
+          ? e.message
+          : '친구 요청을 보내지 못했어요. 다시 시도해주세요',
+      ),
     onSuccess: (_, userId) => {
       setSent((p) => [...p, userId]);
       toast('친구 요청을 보냈어요');

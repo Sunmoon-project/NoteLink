@@ -18,6 +18,7 @@ jest.mock('../lib/api', () => ({
   get api() {
     return mockApi;
   },
+  ApiError: jest.requireActual('../lib/api/http').ApiError,
 }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),

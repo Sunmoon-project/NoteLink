@@ -53,13 +53,13 @@ import { TimetableModule } from './modules/timetable/timetable.module.js';
     TimetableModule,
     // 할 일 · D-day (FR-10)
     CalendarModule,
-    // 공휴일 · 사용자 제외일 (FR-12)
-    HolidaysModule,
     // 캘린더 공유 링크(FR-13)
     CalendarSharesModule,
+    // 공휴일 · 사용자 제외일 (FR-12)
+    HolidaysModule,
     // 학습 폴더 목록 · 만들기(FR-19)
     FoldersModule,
   ],
   controllers: [HealthController],
 })
-export class AppModule {}
+export class AppModule { }

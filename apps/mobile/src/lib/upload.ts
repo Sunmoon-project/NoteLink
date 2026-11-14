@@ -58,6 +58,7 @@ export async function uploadToBlob(
   f: LocalFile,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal,
+  purpose?: 'report',
 ): Promise<string> {
   const file = new File(f.uri);
   const contentType = f.mimeType ?? guessType(f.name);
@@ -72,7 +73,13 @@ export async function uploadToBlob(
     onProgress?.(100);
     return kept.uri;
   }
-  const sas = await api.upload.getSas({ kind, fileName: f.name, contentType, sizeBytes });
+  const sas = await api.upload.getSas({
+    kind,
+    fileName: f.name,
+    contentType,
+    sizeBytes,
+    ...(purpose ? { purpose } : {}),
+  });
   const task = file.createUploadTask(sas.uploadUrl, {
     httpMethod: 'PUT',
     uploadType: UploadType.BINARY_CONTENT,
