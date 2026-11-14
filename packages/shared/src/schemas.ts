@@ -559,9 +559,13 @@ export const Message = z.object({
   chatRoomId: id,
   senderId: id,
   senderNickname: z.string().optional(),
-  type: z.enum(['text', 'shared_item', 'system']),
+  type: z.enum(['text', 'shared_item', 'system', 'study_room_invite']),
   text: z.string().nullable(),
   sharedItemId: id.nullable(),
+  studyRoomInvite: z
+    .object({ roomId: id, title: z.string(), inviteCode: z.string() })
+    .nullable()
+    .optional(),
   createdAt: date,
   clientId: z.string().optional(),
 });
