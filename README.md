@@ -198,7 +198,7 @@ npm run build -w @notelink/shared   # 앱이 쓰는 공용 계약(dist는 git에
 cd apps/mobile
 ```
 
-- **Expo 계정**: EAS 프로젝트는 expo.dev의 `cchangyeols-team/notelink`입니다(`app.config.ts`의 `EAS_OWNER` · `EAS_PROJECT_ID`). expo.dev에 가입하고 조직 `cchangyeols-team`에 초대받은 뒤 `npx eas-cli login`. `npx eas-cli project:info`에 `@cchangyeols-team/notelink`가 나오면 연결된 것입니다. `eas init`은 다시 하지 않습니다(새 프로젝트가 생깁니다)
+- **Expo 계정**: 시뮬레이터 · USB 설치(`ios:device` · `android:device`)는 각자 PC에서 빌드해 Expo 계정이 필요 없습니다. **EAS로 빌드**하거나 빌드 기록 · Insights · 환경 변수를 보려면 EAS 프로젝트(expo.dev의 `cchangyeols-team/notelink`, `app.config.ts`의 `EAS_OWNER` · `EAS_PROJECT_ID`)가 속한 조직 `cchangyeols-team`에 초대받아야 합니다. 초대받지 않은 팀원은 EAS 빌드를 맡은 사람이 나눠 준 APK 링크로 설치하면 됩니다. 초대받았으면 `npx eas-cli login` 뒤 `npx eas-cli project:info`에 `@cchangyeols-team/notelink`가 나오면 연결된 것입니다. `eas init`은 다시 하지 않습니다(새 프로젝트가 생깁니다)
 
 #### 안드로이드 — 링크(APK)로 설치
 
