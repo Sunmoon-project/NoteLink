@@ -42,6 +42,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Turborepo 캐시 복원
+      - name: Restore Turborepo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-node24-${{ hashFiles('package-lock.json', 'turbo.json', '**/package.json') }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-node24-${{ hashFiles('package-lock.json', 'turbo.json', '**/package.json') }}-
+            turbo-${{ runner.os }}-node24-
       - uses: actions/setup-node@v7
         with:
           node-version: 24
