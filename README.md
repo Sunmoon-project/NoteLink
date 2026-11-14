@@ -173,9 +173,11 @@ npm run dev:ai       # FastAPI 서버
 npm run dev:mobile   # 앱 개발 서버
 ```
 
+루트의 `npm run build` · `lint` · `typecheck` · `test` · `dev:*`는 [Turborepo](https://turborepo.com)(`turbo.json`)로 돌아갑니다. `@notelink/shared`를 먼저 빌드하고, 바뀐 것이 없는 작업은 캐시(`.turbo/`, 커밋하지 않음)로 건너뜁니다. 한 앱만 돌리려면 `npx turbo run test --filter=@notelink/api`처럼 씁니다. 테스트는 부하로 시간이 초과되지 않게 하나씩 돌립니다.
+
 서버(`npm run dev:api`)를 켜면 기본 상점 아이템이 자동으로 들어갑니다(없는 것만 넣고 이미 있는 아이템은 고치지 않음). 끄려면 `apps/api/.env`에 `SHOP_SEED=off`를 적습니다.
 
-> Expo SDK 57에서는 Watchman이 필요 없습니다. iPhone 실기기에 설치하려면 Apple 개발자 계정이 필요합니다.
+> Expo SDK 57에서는 Watchman이 필요 없습니다. iPhone 실기기 설치는 아래 「실제 휴대폰에서 테스트」를 봅니다(무료 Apple ID로 USB 설치, 링크 설치 · TestFlight는 Apple 개발자 계정).
 
 ### 실제 휴대폰에서 테스트
 
@@ -198,7 +200,7 @@ npm run build -w @notelink/shared   # 앱이 쓰는 공용 계약(dist는 git에
 cd apps/mobile
 ```
 
-- **Expo 계정**: EAS 프로젝트는 expo.dev의 `cchangyeols-team/notelink`입니다(`app.config.ts`의 `EAS_OWNER` · `EAS_PROJECT_ID`). expo.dev에 가입하고 조직 `cchangyeols-team`에 초대받은 뒤 `npx eas-cli login`. `npx eas-cli project:info`에 `@cchangyeols-team/notelink`가 나오면 연결된 것입니다. `eas init`은 다시 하지 않습니다(새 프로젝트가 생깁니다)
+- **Expo 계정**: 시뮬레이터 · USB 설치(`ios:device` · `android:device`)는 각자 PC에서 빌드해 Expo 계정이 필요 없습니다. **EAS로 빌드**하거나 빌드 기록 · Insights · 환경 변수를 보려면 EAS 프로젝트(expo.dev의 `cchangyeols-team/notelink`, `app.config.ts`의 `EAS_OWNER` · `EAS_PROJECT_ID`)가 속한 조직 `cchangyeols-team`에 초대받아야 합니다. 초대받지 않은 팀원은 EAS 빌드를 맡은 사람이 나눠 준 APK 링크로 설치하면 됩니다. 초대받았으면 `npx eas-cli login` 뒤 `npx eas-cli project:info`에 `@cchangyeols-team/notelink`가 나오면 연결된 것입니다. `eas init`은 다시 하지 않습니다(새 프로젝트가 생깁니다)
 
 #### 안드로이드 — 링크(APK)로 설치
 
