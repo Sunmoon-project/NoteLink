@@ -1,5 +1,5 @@
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FlatList, Pressable, View } from 'react-native';
 import { Text, TextInput } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -232,6 +232,26 @@ export function ChatScreen() {
     room.data?._id,
   ]);
 
+  useEffect(() => {
+    const chatRoomId = room.data?._id;
+    if (!chatRoomId) return;
+    const join = (connected: boolean) => {
+      if (!connected) return;
+      socket.emit('chat:join', { chatRoomId }, (result) => {
+        if (!result.ok || !result.missed) return;
+        qc.setQueryData<Message[]>(['messages', chatRoomId], (previous = []) => [
+          ...new Map([...previous, ...result.missed!].map((m) => [m._id, m])).values(),
+        ]);
+      });
+    };
+    const unsubscribe = socket.onConnection?.(join);
+    if (!socket.onConnection) join(true);
+    return () => {
+      unsubscribe?.();
+      socket.emit('chat:leave', { chatRoomId });
+    };
+  }, [room.data?._id, qc]);
+
   const send = () => {
     if (!v.trim() || !room.data) return;
     socket.emit(
@@ -256,6 +276,15 @@ export function ChatScreen() {
       toast(`${name}님을 친구에서 삭제했어요`);
     },
     onError: () => toast('친구 삭제에 실패했어요. 다시 시도해주세요'),
+  });
+  const joinInvite = useMutation({
+    mutationFn: (inviteCode: string) => api.rooms.join(inviteCode),
+    onSuccess: async (joined) => {
+      await qc.invalidateQueries({ queryKey: ['rooms'] });
+      router.push({ pathname: '/room/[id]', params: { id: joined._id } });
+    },
+    onError: (error) =>
+      toast(error instanceof ApiError ? error.message : '스터디룸에 참여하지 못했어요'),
   });
 
   if (room.isError && !room.data)
@@ -321,6 +350,28 @@ export function ChatScreen() {
           contentContainerClassName="gap-3 pb-4"
           renderItem={({ item: m }) => {
             const mine = m.senderId === myId;
+            if (m.type === 'study_room_invite' && m.studyRoomInvite)
+              return (
+                <View className={cx('flex-row', mine && 'justify-end')}>
+                  <View className="max-w-[85%] rounded-2xl bg-white p-4">
+                    <Text className="text-caption text-sub">스터디룸 초대</Text>
+                    <Text className="mt-1 text-footnote font-bold text-ink">
+                      {m.studyRoomInvite.title}
+                    </Text>
+                    <Text className="mt-1 text-caption text-sub">
+                      참여 코드 {m.studyRoomInvite.inviteCode}
+                    </Text>
+                    <Btn
+                      small
+                      className="mt-3"
+                      loading={joinInvite.isPending}
+                      onPress={() => joinInvite.mutate(m.studyRoomInvite!.inviteCode)}
+                    >
+                      스터디룸 참여하기
+                    </Btn>
+                  </View>
+                </View>
+              );
             return (
               <View className={cx('flex-row', mine && 'justify-end')}>
                 <View

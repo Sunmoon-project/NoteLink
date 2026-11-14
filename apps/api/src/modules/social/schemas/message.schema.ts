@@ -23,6 +23,9 @@ export class Message {
   @Prop({ type: Types.ObjectId, ref: 'Message' })
   chatMessageId?: Types.ObjectId;
 
+  @Prop({ type: Object, default: null })
+  studyRoomInvite?: { roomId: string; title: string; inviteCode: string } | null;
+
   @Prop({ type: Types.ObjectId, ref: 'RoomSharedItem' })
   sharedItemId?: Types.ObjectId;
 

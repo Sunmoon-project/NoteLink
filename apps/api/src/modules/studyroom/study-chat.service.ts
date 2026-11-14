@@ -6,6 +6,7 @@ import { User } from '../auth/schemas/user.schema.js';
 import { ChatRoom } from '../social/schemas/chat-room.schema.js';
 import { Message } from '../social/schemas/message.schema.js';
 import { StudyRoom } from './schemas/study-room.schema.js';
+import { Friendship } from '../social/schemas/friendship.schema.js';
 
 @Injectable()
 export class StudyChatService {
@@ -14,7 +15,92 @@ export class StudyChatService {
     @InjectModel(ChatRoom.name) private readonly chats: Model<ChatRoom>,
     @InjectModel(Message.name) private readonly messages: Model<Message>,
     @InjectModel(User.name) private readonly users: Model<User>,
+    @InjectModel(Friendship.name) private readonly friendships: Model<Friendship>,
   ) {}
+
+  async getDirectChat(userId: string, targetUserId: string) {
+    if (!isValidObjectId(userId) || !isValidObjectId(targetUserId) || userId === targetUserId)
+      throw this.notFound();
+    const first = new Types.ObjectId(userId);
+    const second = new Types.ObjectId(targetUserId);
+    const userA = first.toHexString() < second.toHexString() ? first : second;
+    const userB = userA === first ? second : first;
+    const friendship = await this.friendships.exists({ userA, userB, status: 'accepted' });
+    const activeUsers = await this.users.countDocuments({
+      _id: { $in: [first, second] },
+      deletedAt: null,
+    });
+    if (!friendship || activeUsers !== 2) throw this.notFound();
+    const directKey = `${userA.toHexString()}:${userB.toHexString()}`;
+    const now = new Date();
+    try {
+      return await this.chats
+        .findOneAndUpdate(
+          { directKey },
+          {
+            $setOnInsert: {
+              type: 'direct',
+              directKey,
+              members: [
+                { userId: userA, joinedAt: now, muted: false, leftAt: null },
+                { userId: userB, joinedAt: now, muted: false, leftAt: null },
+              ],
+            },
+          },
+          { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
+        )
+        .lean()
+        .orFail();
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 11000) {
+        const existing = await this.chats.findOne({ directKey }).lean();
+        if (existing) return existing;
+      }
+      throw error;
+    }
+  }
+
+  async sendRoomInvite(
+    senderId: string,
+    targetUserId: string,
+    room: { _id: string; title: string; inviteCode: string },
+  ) {
+    const chat = await this.getDirectChat(senderId, targetUserId);
+    const sender = new Types.ObjectId(senderId);
+    const target = new Types.ObjectId(targetUserId);
+    const clientId = `room_invite_${room._id}_${targetUserId}`;
+    const key = { chatRoomId: chat._id, senderId: sender, clientId };
+    const message = await this.messages
+      .findOneAndUpdate(
+        key,
+        {
+          $setOnInsert: {
+            ...key,
+            type: 'study_room_invite',
+            text: `${room.title} 스터디룸에 초대했어요.`,
+            studyRoomInvite: { roomId: room._id, title: room.title, inviteCode: room.inviteCode },
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      )
+      .lean()
+      .orFail();
+    await this.chats.updateOne(
+      { _id: chat._id, members: { $elemMatch: { userId: target, leftAt: null } } },
+      {
+        $set: {
+          lastMessage: {
+            type: 'study_room_invite',
+            text: message.text,
+            senderId: sender,
+            createdAt: new Date(),
+          },
+        },
+      },
+    );
+    const user = await this.users.findById(sender, { nickname: 1 }).lean();
+    return this.serialize(message, user?.nickname);
+  }
 
   async requireMember(roomId: string, userId: string) {
     if (!isValidObjectId(roomId) || !isValidObjectId(userId)) {
@@ -84,10 +170,27 @@ export class StudyChatService {
   async requireChat(chatId: string, userId: string) {
     if (!isValidObjectId(chatId)) throw this.notFound();
     const chat = await this.chats
-      .findOne({ _id: new Types.ObjectId(chatId), type: 'study_room' })
+      .findOne({
+        _id: new Types.ObjectId(chatId),
+        type: { $in: ['study_room', 'direct'] },
+      })
       .lean();
-    if (!chat?.studyRoomId) throw this.notFound();
-    await this.requireMember(String(chat.studyRoomId), userId);
+    if (!chat) throw this.notFound();
+    if (chat.type === 'study_room' && chat.studyRoomId) {
+      await this.requireMember(String(chat.studyRoomId), userId);
+    } else if (chat.type === 'direct') {
+      const member = chat.members.some((item) => item.userId.equals(userId) && !item.leftAt);
+      if (!member) throw this.notFound();
+      const other = chat.members.find((item) => !item.userId.equals(userId) && !item.leftAt);
+      if (!other) throw this.notFound();
+      const ids = [new Types.ObjectId(userId), other.userId].sort((a, b) =>
+        a.toHexString().localeCompare(b.toHexString()),
+      );
+      if (!(await this.friendships.exists({ userA: ids[0], userB: ids[1], status: 'accepted' })))
+        throw this.notFound();
+    } else {
+      throw this.notFound();
+    }
     return chat;
   }
 
@@ -164,6 +267,7 @@ export class StudyChatService {
       type: m.type,
       text: m.text ?? null,
       sharedItemId: m.sharedItemId ? String(m.sharedItemId) : null,
+      ...(m.studyRoomInvite ? { studyRoomInvite: m.studyRoomInvite } : {}),
       createdAt: m.createdAt?.toISOString(),
       ...(m.clientId ? { clientId: m.clientId } : {}),
     };

@@ -184,6 +184,30 @@ it('채팅 입장 실패 후 같은 화면에서 재시도해 대기 메시지�
   expect(mockEmit.mock.calls.filter(([event]) => event === 'chat:send')).toHaveLength(1);
 });
 
+it('입장 ACK가 오지 않으면 시간 초과를 알리고 재시도 후 대기 메시지를 한 번 보낸다', async () => {
+  jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+  const acknowledgements: ((response: { ok: boolean }) => void)[] = [];
+  mockEmit.mockImplementation((event, _payload, ack) => {
+    if (event === 'room:join' && typeof ack === 'function') acknowledgements.push(ack);
+  });
+  const ui = await renderScreen(<RoomScreen />, client());
+  await screen.findByText('방');
+  await waitFor(() => expect(acknowledgements.length).toBeGreaterThan(0));
+  const oldAck = acknowledgements.at(-1)!;
+  await sendMessage('시간 초과 중 대기');
+  await act(async () => jest.advanceTimersByTime(8000));
+  const retryLabel = '채팅 연결에 실패했어요 · 다시 연결';
+  expect(screen.getByText(retryLabel)).toBeTruthy();
+  await act(async () => oldAck({ ok: true }));
+  expect(screen.getByText(retryLabel)).toBeTruthy();
+  expect(mockEmit.mock.calls.filter(([event]) => event === 'chat:send')).toHaveLength(0);
+  await fireEvent.press(screen.getByText(retryLabel));
+  await act(async () => acknowledgements.at(-1)!({ ok: true }));
+  expect(screen.queryByText(retryLabel)).toBeNull();
+  expect(mockEmit.mock.calls.filter(([event]) => event === 'chat:send')).toHaveLength(1);
+  await ui.unmount();
+});
+
 it('2,000자 메시지는 저장하고 전송한다', async () => {
   await renderScreen(<RoomScreen />, client());
   await screen.findByText('방');

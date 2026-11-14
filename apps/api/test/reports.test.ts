@@ -9,6 +9,7 @@ import { TokenService } from '../src/modules/auth/token.service.js';
 import { User } from '../src/modules/auth/schemas/user.schema.js';
 import { ChatRoom } from '../src/modules/social/schemas/chat-room.schema.js';
 import { Message } from '../src/modules/social/schemas/message.schema.js';
+import { Friendship } from '../src/modules/social/schemas/friendship.schema.js';
 import { Report } from '../src/modules/social/schemas/report.schema.js';
 import { ReportsController } from '../src/modules/social/reports.controller.js';
 import { ReportsService } from '../src/modules/social/reports.service.js';
@@ -44,6 +45,7 @@ beforeAll(async () => {
       { provide: getModelToken(ChatRoom.name), useValue: {} },
       { provide: getModelToken(Message.name), useValue: {} },
       { provide: getModelToken(User.name), useValue: {} },
+      { provide: getModelToken(Friendship.name), useValue: {} },
       {
         provide: TokenService,
         useValue: {

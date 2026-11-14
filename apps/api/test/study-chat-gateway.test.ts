@@ -65,6 +65,27 @@ beforeEach(async () => {
   );
 });
 describe('스터디룸 Socket.IO', () => {
+  it('이전 입장 요청이 늦게 실패해도 나중 입장의 구독을 해제하지 않는다', async () => {
+    let failHistory!: (error: Error) => void;
+    chat.history.mockReset();
+    chat.history.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        failHistory = reject;
+      }),
+    );
+    chat.history.mockResolvedValueOnce([]);
+    const oldJoin = a.timeout(2000).emitWithAck('room:join', { roomId: 'room' });
+    await vi.waitFor(() => expect(chat.history).toHaveBeenCalledTimes(1));
+    const newJoin = a.timeout(2000).emitWithAck('room:join', { roomId: 'room' });
+    failHistory(new Error('history failed'));
+    expect(await oldJoin).toEqual({ ok: false });
+    expect(await newJoin).toEqual({ ok: true, missed: [] });
+    const received = vi.fn();
+    a.on('room:members-changed', received);
+    app.get(StudyChatGateway).notifyMembersChanged('room');
+    await vi.waitFor(() => expect(received).toHaveBeenCalledWith({ roomId: 'room' }));
+    a.off('room:members-changed', received);
+  });
   it('참가자 변경 알림은 해당 방에만 전달하고 강퇴된 사용자는 제외한다', async () => {
     const receivedA = vi.fn();
     const receivedB = vi.fn();
@@ -119,6 +140,69 @@ describe('스터디룸 Socket.IO', () => {
       .emitWithAck('chat:send', { chatRoomId: 'chat', text: '안녕', clientId: 'client1' });
     expect(onMessage).not.toHaveBeenCalled();
     b.off('chat:message', onMessage);
+  });
+  it('폐기되거나 만료된 DM 세션에는 스터디룸 초대 메시지를 전달하지 않는다', async () => {
+    chat.requireChat.mockResolvedValue({ type: 'direct' });
+    for (const socket of [a, b]) {
+      expect(
+        await socket.timeout(1000).emitWithAck('chat:join', { chatRoomId: 'chat' }),
+      ).toMatchObject({ ok: true });
+    }
+    tokens.verifyAccess.mockImplementation(async (token: string) => {
+      if (token === 'b') throw new Error('session revoked');
+      return { userId: token };
+    });
+    const receivedA = vi.fn();
+    const receivedB = vi.fn();
+    a.on('chat:message', receivedA);
+    b.on('chat:message', receivedB);
+
+    await app.get(StudyChatGateway).notifyDirectMessage({
+      chatRoomId: 'chat',
+      type: 'study_room_invite',
+      studyRoomInvite: { inviteCode: 'SECRET' },
+    } as never);
+    await vi.waitFor(() => expect(receivedA).toHaveBeenCalledOnce());
+    expect(receivedB).not.toHaveBeenCalled();
+
+    a.off('chat:message', receivedA);
+    b.off('chat:message', receivedB);
+  });
+  it('DM 입장 조회 중 퇴장 요청이 오면 퇴장을 마지막에 적용한다', async () => {
+    chat.requireChat.mockResolvedValue({ type: 'direct' });
+    let finishJoin!: (value: { type: 'direct' }) => void;
+    chat.requireChat.mockReturnValueOnce(new Promise((resolve) => (finishJoin = resolve)));
+    const received = vi.fn();
+    a.on('chat:message', received);
+
+    const joining = a.timeout(2000).emitWithAck('chat:join', { chatRoomId: 'chat' });
+    await vi.waitFor(() => expect(chat.requireChat).toHaveBeenCalledOnce());
+    const leaving = a.timeout(2000).emitWithAck('chat:leave', { chatRoomId: 'chat' });
+    finishJoin({ type: 'direct' });
+    expect(await joining).toMatchObject({ ok: true });
+    await leaving;
+
+    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' });
+    expect(received).not.toHaveBeenCalled();
+    a.off('chat:message', received);
+  });
+  it('이전 DM 입장의 늦은 실패가 뒤이은 성공 구독을 해제하지 않는다', async () => {
+    chat.requireChat.mockResolvedValue({ type: 'direct' });
+    let failOldJoin!: (error: Error) => void;
+    chat.requireChat.mockReturnValueOnce(new Promise((_resolve, reject) => (failOldJoin = reject)));
+    const received = vi.fn();
+    a.on('chat:message', received);
+
+    const oldJoin = a.timeout(2000).emitWithAck('chat:join', { chatRoomId: 'chat' });
+    await vi.waitFor(() => expect(chat.requireChat).toHaveBeenCalledOnce());
+    const newJoin = a.timeout(2000).emitWithAck('chat:join', { chatRoomId: 'chat' });
+    failOldJoin(new Error('old membership check failed'));
+    expect(await oldJoin).toMatchObject({ ok: false });
+    expect(await newJoin).toMatchObject({ ok: true });
+
+    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' });
+    await vi.waitFor(() => expect(received).toHaveBeenCalledOnce());
+    a.off('chat:message', received);
   });
   it('강퇴된 사용자의 방 구독을 제거한다', async () => {
     const receive = vi.fn();

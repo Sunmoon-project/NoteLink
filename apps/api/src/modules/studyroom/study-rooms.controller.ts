@@ -18,6 +18,7 @@ import { StudyRoomsService } from './study-rooms.service.js';
 import { StudyChatService } from './study-chat.service.js';
 import { StudyChatGateway } from './study-chat.gateway.js';
 import { StudyLiveService } from './study-live.service.js';
+import { InviteStudyRoomDto } from './dto/invite-study-room.dto.js';
 
 @Controller('study-rooms')
 @UseGuards(JwtAuthGuard)
@@ -60,6 +61,22 @@ export class StudyRoomsController {
   @Get(':id')
   async get(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
     return { data: await this.rooms.getRoom(requireUserId(req), id) };
+  }
+
+  @Post(':id/invites')
+  async invite(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: InviteStudyRoomDto,
+  ) {
+    const invitation = await this.rooms.invite(requireUserId(req), id, body.userIds);
+    const messages = await Promise.all(
+      invitation.targetUserIds.map((targetUserId) =>
+        this.chat.sendRoomInvite(requireUserId(req), targetUserId, invitation.room),
+      ),
+    );
+    await Promise.all(messages.map((message) => this.gateway.notifyDirectMessage(message)));
+    return { data: null };
   }
 
   @Post(':id/leave')
