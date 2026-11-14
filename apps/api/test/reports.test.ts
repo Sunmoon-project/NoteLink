@@ -1,7 +1,7 @@
 import { UnauthorizedException, type INestApplication } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
@@ -22,7 +22,8 @@ const roomId = new Types.ObjectId();
 const reportId = new Types.ObjectId();
 const rooms = { findOne: vi.fn() };
 const reports = { create: vi.fn() };
-const storage = { validateReportImages: vi.fn() };
+const storage = { keepReportImages: vi.fn(), discardReportImages: vi.fn() };
+const KEPT = ['https://blob.example.com/raw/reports/kept.jpg'];
 const valid = {
   roomId: String(roomId),
   targetUserId: String(target),
@@ -62,7 +63,9 @@ beforeAll(async () => {
 afterAll(async () => app.close());
 beforeEach(() => {
   vi.resetAllMocks();
-  storage.validateReportImages.mockResolvedValue(undefined);
+  storage.keepReportImages.mockImplementation(async (_: string, urls: string[]) =>
+    urls.length ? KEPT : [],
+  );
   rooms.findOne.mockReturnValue({
     lean: async () => ({
       members: [
@@ -82,6 +85,7 @@ describe('POST /api/v1/reports', () => {
       .send({ ...valid, details: `  ${valid.details}  ` });
     expect(response.status).toBe(201);
     expect(response.body).toEqual({ data: { _id: String(reportId), status: 'pending' } });
+    expect(storage.keepReportImages).toHaveBeenCalledWith(String(reporter), valid.imageUrls);
     expect(rooms.findOne).toHaveBeenCalledWith({
       _id: roomId,
       closedAt: null,
@@ -93,7 +97,8 @@ describe('POST /api/v1/reports', () => {
       targetUserId: target,
       reportType: 'spam',
       details: valid.details,
-      imageUrls: valid.imageUrls,
+      // 앱이 보낸 임시 주소가 아니라 보관 경로로 복사한 주소를 저장
+      imageUrls: KEPT,
       status: 'pending',
     });
   });
@@ -165,12 +170,44 @@ describe('POST /api/v1/reports', () => {
   });
 
   it('신고 사진 검증에 실패하면 신고를 저장하지 않는다', async () => {
-    storage.validateReportImages.mockRejectedValueOnce(new UnauthorizedException());
+    storage.keepReportImages.mockRejectedValueOnce(new UnauthorizedException());
     const response = await request(app.getHttpServer())
       .post('/api/v1/reports')
       .set('Authorization', 'Bearer valid')
       .send(valid);
     expect(response.status).toBe(401);
     expect(reports.create).not.toHaveBeenCalled();
+  });
+
+  const sendFailing = async (error: Error) => {
+    reports.create.mockRejectedValueOnce(error);
+    return request(app.getHttpServer())
+      .post('/api/v1/reports')
+      .set('Authorization', 'Bearer valid')
+      .send(valid);
+  };
+
+  it.each([
+    ['서버가 거절한 쓰기', new mongoose.mongo.MongoServerError({ code: 2, errmsg: '거절' })],
+    ['보내기 전 검증 실패', new mongoose.Error.ValidationError()],
+  ])('%s로 저장되지 않은 신고는 이번에 복사한 사진을 지우고 실패를 돌려준다', async (_, error) => {
+    expect((await sendFailing(error)).status).toBe(500);
+    expect(storage.discardReportImages).toHaveBeenCalledWith(KEPT);
+  });
+
+  it.each([
+    [
+      '쓰기 확인 시간 초과(이미 저장됨)',
+      new mongoose.mongo.MongoWriteConcernError({
+        code: 64,
+        errmsg: 'waiting for replication timed out',
+        writeConcernError: { code: 64, errmsg: 'waiting for replication timed out' },
+      } as never),
+    ],
+    ['연결 오류', new mongoose.mongo.MongoNetworkError('연결 끊김')],
+    ['알 수 없는 오류', new Error('DB 장애')],
+  ])('%s처럼 저장 결과가 불명확하면 사진을 지우지 않는다', async (_, error) => {
+    expect((await sendFailing(error)).status).toBe(500);
+    expect(storage.discardReportImages).not.toHaveBeenCalled();
   });
 });

@@ -1,89 +1,142 @@
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { BlockBlobClient } from '@azure/storage-blob';
+import { ERROR_CODES } from '@notelink/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import type { StorageConfig } from '../src/config/storage.config.js';
 import { BlobStorageService } from '../src/modules/upload/blob-storage.service.js';
 
-const account = 'stnotelinkdev01';
-const container = 'studyroom-report';
-const connectionString = `DefaultEndpointsProtocol=https;AccountName=${account};AccountKey=${Buffer.alloc(32, 1).toString('base64')};EndpointSuffix=core.windows.net`;
-const owner = '507f1f77bcf86cd799439011';
-const name = `reports/${owner}/550e8400-e29b-41d4-a716-446655440000.jpg`;
-const config = {
-  get: (key: string) =>
-    ({
-      AZURE_BLOB_ACCOUNT_URL: `https://${account}.blob.core.windows.net`,
-      AZURE_BLOB_CONTAINER: container,
-      AZURE_STORAGE_CONNECTION_STRING: connectionString,
-    })[key],
+const config: StorageConfig = {
+  accountName: 'stnotelinkdev01',
+  accountKey: Buffer.alloc(32, 1).toString('base64'),
+  blobEndpoint: 'https://stnotelinkdev01.blob.core.windows.net',
+  container: 'raw',
 };
-const service = () => new BlobStorageService(config as never);
+const base = `${config.blobEndpoint}/${config.container}`;
+const owner = '507f1f77bcf86cd799439011';
+const file = '550e8400-e29b-41d4-a716-446655440000.jpg';
+const incoming = `${base}/incoming/${owner}/${file}`;
+const service = () => new BlobStorageService(config);
 afterEach(() => vi.restoreAllMocks());
 
-describe('Azure Blob 신고 첨부', () => {
-  it('파일 하나에 대해서만 생성 권한과 HTTPS를 가진 만료 SAS를 발급한다', async () => {
-    const now = Date.now();
-    const result = await service().createUpload(name);
-    const url = new URL(result.uploadUrl);
-    expect(result.blobUrl).toBe(`https://${account}.blob.core.windows.net/${container}/${name}`);
-    expect(url.searchParams.get('sp')).toBe('c');
-    expect(url.searchParams.get('sr')).toBe('b');
-    expect(url.searchParams.get('spr')).toBe('https');
-    expect(new Date(result.expiresAt).getTime() - now).toBeLessThanOrEqual(600_100);
-    expect(result.headers).toEqual({ 'x-ms-blob-type': 'BlockBlob' });
+function stubBlob(properties: object | Error = { contentLength: 123, contentType: 'image/jpeg' }) {
+  const get = vi.spyOn(BlockBlobClient.prototype, 'getProperties');
+  if (properties instanceof Error) get.mockRejectedValue(properties);
+  else get.mockResolvedValue(properties as never);
+  const copy = vi
+    .spyOn(BlockBlobClient.prototype, 'syncCopyFromURL')
+    .mockResolvedValue({} as never);
+  const remove = vi
+    .spyOn(BlockBlobClient.prototype, 'deleteIfExists')
+    .mockResolvedValue({} as never);
+  return { get, copy, remove };
+}
+const kept = (url: string) =>
+  expect(url).toMatch(new RegExp(`^${base}/reports/${owner}/[0-9a-f-]{36}\\.jpg$`));
+
+describe('신고 사진 확인 · 보관 (BlobStorageService.keepReportImages)', () => {
+  it('내 임시 경로의 사진을 확인하고 reports/로 복사한 주소를 돌려준다', async () => {
+    const { copy } = stubBlob();
+    const [url] = await service().keepReportImages(owner, [incoming]);
+    kept(url!);
+    // 원본은 짧은 읽기 전용 SAS로 읽는다
+    const source = new URL(copy.mock.calls[0]![0]);
+    expect(`${source.origin}${source.pathname}`).toBe(incoming);
+    expect(source.searchParams.get('sp')).toBe('r');
+    expect(source.searchParams.get('sr')).toBe('b');
   });
-  it('다른 사용자나 외부 주소는 저장소 접근 없이 거부한다', async () => {
-    const get = vi.spyOn(BlockBlobClient.prototype, 'getProperties');
+
+  it('사진이 없으면 저장소 설정이 없어도 통과한다', async () => {
+    await expect(new BlobStorageService(null).keepReportImages(owner, [])).resolves.toEqual([]);
+  });
+
+  it('사진이 있는데 저장소 설정이 없으면 503 UPLOAD_UNAVAILABLE', async () => {
     await expect(
-      service().validateReportImages(owner, [
-        `https://${account}.blob.core.windows.net/${container}/reports/507f1f77bcf86cd799439012/550e8400-e29b-41d4-a716-446655440000.jpg`,
-      ]),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    await expect(
-      service().validateReportImages(owner, ['https://example.com/image.jpg']),
-    ).rejects.toBeInstanceOf(BadRequestException);
+      new BlobStorageService(null).keepReportImages(owner, [incoming]),
+    ).rejects.toMatchObject({ response: { code: ERROR_CODES.UPLOAD_UNAVAILABLE } });
+  });
+
+  it.each([
+    ['남의 임시 경로', `${base}/incoming/507f1f77bcf86cd799439012/${file}`],
+    ['보관 경로로 바로 올린 사진', `${base}/reports/${owner}/${file}`],
+    ['다른 저장소', `https://example.com/raw/incoming/${owner}/${file}`],
+    ['다른 이름', `${base}/incoming/${owner}/photo.jpg`],
+    ['사진이 아닌 파일', `${base}/incoming/${owner}/${file.replace('.jpg', '.pdf')}`],
+    ['더 깊은 경로', `${base}/incoming/${owner}/x/${file}`],
+  ])('%s은 저장소를 보기 전에 거부한다', async (_, url) => {
+    const { get, copy } = stubBlob();
+    await expect(service().keepReportImages(owner, [url])).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
     expect(get).not.toHaveBeenCalled();
+    expect(copy).not.toHaveBeenCalled();
   });
-  it('같은 사용자가 올린 실재 사진만 허용하고 누락·잘못된 크기·저장소 장애를 구분한다', async () => {
-    const url = `https://${account}.blob.core.windows.net/${container}/${name}`;
-    const get = vi.spyOn(BlockBlobClient.prototype, 'getProperties');
-    get.mockResolvedValueOnce({ contentLength: 123, contentType: 'image/jpeg' } as never);
-    get.mockRejectedValueOnce({ statusCode: 404 });
-    get.mockResolvedValueOnce({
-      contentLength: 21 * 1024 * 1024,
-      contentType: 'image/jpeg',
-    } as never);
-    get.mockRejectedValueOnce(new Error('unavailable'));
-    await expect(service().validateReportImages(owner, [url])).resolves.toBeUndefined();
-    await expect(service().validateReportImages(owner, [url])).rejects.toBeInstanceOf(
+
+  it('같은 사진을 두 번 붙이면 거부한다', async () => {
+    stubBlob();
+    await expect(service().keepReportImages(owner, [incoming, incoming])).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    await expect(service().validateReportImages(owner, [url])).rejects.toBeInstanceOf(
+  });
+
+  it.each([
+    ['빈 파일', { contentLength: 0, contentType: 'image/jpeg' }],
+    ['20MB 초과', { contentLength: 20 * 1024 * 1024 + 1, contentType: 'image/jpeg' }],
+    ['확장자와 다른 형식', { contentLength: 123, contentType: 'image/png' }],
+  ])('실제 파일이 %s이면 복사하지 않고 거부한다', async (_, properties) => {
+    const { copy } = stubBlob(properties);
+    await expect(service().keepReportImages(owner, [incoming])).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    await expect(service().validateReportImages(owner, [url])).rejects.toBeInstanceOf(
+    expect(copy).not.toHaveBeenCalled();
+  });
+
+  it('올리지 않은 사진은 400, 저장소 장애는 503', async () => {
+    stubBlob(Object.assign(new Error('없음'), { statusCode: 404 }));
+    await expect(service().keepReportImages(owner, [incoming])).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    vi.restoreAllMocks();
+    stubBlob(new Error('장애'));
+    await expect(service().keepReportImages(owner, [incoming])).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
   });
-  it('설정이 없어도 첨부 없는 신고는 저장소 접근 없이 통과한다', async () => {
-    const missing = new BlobStorageService({ get: () => undefined } as never);
-    await expect(missing.validateReportImages(owner, [])).resolves.toBeUndefined();
-    await expect(missing.createUpload(name)).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+  it('복사본은 부를 때마다 새 이름이라 다른 신고와 공유하지 않는다', async () => {
+    stubBlob();
+    const [first] = await service().keepReportImages(owner, [incoming]);
+    const [second] = await service().keepReportImages(owner, [incoming]);
+    expect(first).not.toBe(second);
   });
 
-  it('계정이 다른 연결 문자열은 사용하지 않는다', async () => {
-    const mismatched = new BlobStorageService({
-      get: (key: string) =>
-        key === 'AZURE_STORAGE_CONNECTION_STRING'
-          ? connectionString.replace(`AccountName=${account}`, 'AccountName=otheraccount')
-          : config.get(key),
-    } as never);
-    await expect(mismatched.createUpload(name)).rejects.toBeInstanceOf(ServiceUnavailableException);
+  it('두 번째 사진에서 실패하면 이번에 만든 첫 복사본을 지운다', async () => {
+    const { get, remove } = stubBlob();
+    get.mockResolvedValueOnce({ contentLength: 123, contentType: 'image/jpeg' } as never);
+    get.mockResolvedValueOnce({ contentLength: 0, contentType: 'image/jpeg' } as never);
+    const other = incoming.replace('550e8400', '660e8400');
+    await expect(service().keepReportImages(owner, [incoming, other])).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(remove).toHaveBeenCalledTimes(1);
+    kept((remove.mock.contexts[0] as BlockBlobClient).url);
   });
 
-  it('빈 연결 문자열은 안전한 오류로 처리한다', async () => {
-    const missing = new BlobStorageService({
-      get: (key: string) => (key === 'AZURE_STORAGE_CONNECTION_STRING' ? '' : config.get(key)),
-    } as never);
-    await expect(missing.createUpload(name)).rejects.toBeInstanceOf(ServiceUnavailableException);
+  it('discardReportImages는 reports/ 복사본만 지우고, 지우기 실패는 던지지 않는다', async () => {
+    const { remove } = stubBlob();
+    remove.mockRejectedValue(new Error('장애'));
+    const copy = `${base}/reports/${owner}/${file}`;
+    await expect(service().discardReportImages([copy, incoming])).resolves.toBeUndefined();
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect((remove.mock.contexts[0] as BlockBlobClient).url).toBe(copy);
+    await expect(new BlobStorageService(null).discardReportImages([copy])).resolves.toBeUndefined();
+  });
+
+  it('복사에 실패하면 503', async () => {
+    const { copy } = stubBlob();
+    copy.mockRejectedValue(new Error('복사 실패'));
+    await expect(service().keepReportImages(owner, [incoming])).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
   });
 });

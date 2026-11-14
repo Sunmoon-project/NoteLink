@@ -580,6 +580,17 @@ export const FriendRequest = z.object({ _id: id, requester: Friend, requestedAt:
 
 /* ── 공통 ────────────────────────────────────────── */
 
+export const UploadKind = z.enum(['image', 'document', 'audio']);
+/** 파일 올리기 주소 요청 — POST /uploads/sas 본문. 확장자 · 크기는 서버가 UPLOAD_RULES로 검사한다 */
+export const UploadSasBody = z.object({
+  kind: UploadKind,
+  fileName: z.string().trim().min(1).max(255),
+  contentType: z.string().trim().max(100),
+  sizeBytes: z.number().int().positive(),
+  /** 쓰는 곳. report: 스터디룸 신고 사진(이미지만) */
+  purpose: z.enum(['report']).optional(),
+});
+
 export const UploadTarget = z.object({
   uploadUrl: z.string(),
   blobUrl: z.string(),
@@ -610,6 +621,8 @@ export type QuestionDifficulty = z.infer<typeof QuestionDifficulty>;
 export type NoteAskTurn = z.infer<typeof NoteAskTurn>;
 export type NoteAskBody = z.input<typeof NoteAskBody>;
 export type NoteAskResult = z.infer<typeof NoteAskResult>;
+export type UploadKind = z.infer<typeof UploadKind>;
+export type UploadSasBody = z.infer<typeof UploadSasBody>;
 export type QuizSet = z.infer<typeof QuizSet>;
 export type QuizAttempt = z.infer<typeof QuizAttempt>;
 export type Flashcard = z.infer<typeof Flashcard>;

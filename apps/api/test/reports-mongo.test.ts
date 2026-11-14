@@ -27,7 +27,10 @@ describe.skipIf(!local)('스터디룸 신고 MongoDB 저장', () => {
     rooms = connection.model(StudyRoom.name, StudyRoomSchema, roomCollection);
     reports = connection.model(Report.name, ReportSchema, reportCollection);
     const chat = new StudyChatService(rooms, {} as never, {} as never, {} as never);
-    service = new ReportsService(reports, chat, { validateReportImages: async () => {} } as never);
+    service = new ReportsService(reports, chat, {
+      keepReportImages: async (_: string, urls: string[]) => urls,
+      discardReportImages: async () => {},
+    } as never);
   });
   afterAll(async () => {
     if (!connection) return;

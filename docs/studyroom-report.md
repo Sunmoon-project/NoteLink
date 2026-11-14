@@ -37,12 +37,12 @@
 
 응답은 `{ data: { uploadUrl, blobUrl, expiresAt, headers } }` 형식이다. 이미지 파일은 JPG·JPEG·PNG·HEIC, 파일당 최대 20MB까지 허용한다. 앱에는 업로드 중·신고 접수 중 상태를 표시하고 전송 중 중복 제출을 막는다.
 
-서버는 사용자별 임의 경로에 대한 HTTPS 전용·10분 유효·생성 전용 SAS를 발급한다. 신고 접수 시 URL이 해당 사용자의 신고 사진 경로인지 확인하고 Azure에서 Blob의 존재, 크기 및 선언된 콘텐츠 유형을 확인한다. 이 확인은 파일 내용 검사나 악성코드 검사를 대신하지 않는다. 업로드 요청 시 파일당 최대 20MB를 검증하지만 SAS 자체가 전송 크기를 제한하지 않으므로 운영 시 저장소 사용량 및 미접수 업로드를 관리해야 한다.
+업로드 주소는 자료 업로드와 같은 `POST /uploads/sas`가 발급한다. 신고 사진도 임시 경로 `incoming/{사용자}/`에 HTTPS 전용·15분 유효·생성 전용 SAS로 올라가고, 사용자당 10분에 100건까지 발급한다. `purpose: "report"`이면 이미지만, 확장자와 같은 형식만 받는다. 신고 접수 시 URL이 신고자의 임시 경로인지 확인하고 Azure에서 Blob의 존재, 크기 및 콘텐츠 유형을 확인한 뒤 `reports/{사용자}/`로 복사하며, 신고에는 복사한 주소를 저장한다. 이 확인은 파일 내용 검사나 악성코드 검사를 대신하지 않는다. 접수하지 않은 사진은 임시 경로의 수명 주기 규칙이 하루 뒤 지운다.
 
-배포 전에 비공개 컨테이너를 만들고 서버에 `AZURE_BLOB_ACCOUNT_URL=https://<계정>.blob.core.windows.net`, `AZURE_BLOB_CONTAINER=<컨테이너>`, `AZURE_STORAGE_CONNECTION_STRING`을 설정한다. 연결 문자열은 서버의 안전한 환경변수로 제공하고 앱이나 저장소에 넣지 않는다. 배포에서는 Key Vault의 `AZURE-STORAGE-CONNECTION-STRING`을 App Service의 Key Vault 참조로 주입할 수 있다. 계정 URL과 연결 문자열이 서로 다른 계정을 가리키면 요청을 거부한다. 이 방식은 스토리지 계정에서 Shared Key 인증을 허용해야 한다.
+서버에는 `AZURE_STORAGE_CONNECTION_STRING`을 설정하고, 컨테이너는 `AZURE_BLOB_CONTAINER`(비우면 `raw`)로 정한다. 계정 주소는 연결 문자열에서 읽는다. 연결 문자열은 서버의 안전한 환경변수로 제공하고 앱이나 저장소에 넣지 않는다. 배포에서는 Key Vault의 `AZURE-STORAGE-CONNECTION-STRING`을 App Service의 Key Vault 참조로 주입할 수 있다. 이 방식은 스토리지 계정에서 Shared Key 인증을 허용해야 한다.
 
 ## 검증과 남은 작업
 
 - 인증·입력·방 참여 권한, 신고 저장과 SAS 범위·사진 경로 검증을 자동화 테스트로 확인한다. 실제 MongoDB 통합 테스트는 `STUDYROOM_TEST_MONGO_URI`가 지정된 로컬 MongoDB에서만 실행한다.
-- `AZURE_BLOB_INTEGRATION=1`로 실행하는 실제 Azure 연결 테스트는 서버의 로컬 `.env` 설정을 사용한다. 실제 연결 문자열과 컨테이너 접근이 준비되지 않아 클라우드 사진 업로드·신고 접수 전 과정을 아직 확인하지 못했다.
-- 신고 검토·처리, 비공개 사진의 관리자 열람, 미접수 업로드 정리와 앱 종료 후 자동 재전송은 구현 범위에 포함되지 않는다.
+- `AZURE_STORAGE_VERIFY_CONNECTION_STRING`이 있을 때만 도는 `test/upload-real-storage.test.ts`가 실제 저장소에서 신고 사진 업로드, 확인 후 `reports/` 복사(크기·형식 유지)와 다른 사용자 사진 거부를 확인한다. `AZURE_BLOB_INTEGRATION=1`로 실행하는 연결 테스트도 그대로 있다.
+- 신고 검토·처리, 비공개 사진의 관리자 열람과 앱 종료 후 자동 재전송은 구현 범위에 포함되지 않는다.
