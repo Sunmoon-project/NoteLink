@@ -6,6 +6,7 @@ from app.services.quiz.checks import (
     Seen,
     Target,
     code_check,
+    fact_lines,
     form_giveaway,
     number_values,
     reversed_of,
@@ -764,6 +765,38 @@ def test_sharing_one_sentence_with_a_question_of_another_page_is_not_the_same_fa
 def test_other_note_lines_are_not_the_same_fact() -> None:
     before = [made(lines(REQUEST, RESPONSE, UNKNOWN), "상태값 제어", "조합")]
     assert not same_fact(lines(RESIZE, LOAD_END, RESIZE), before, FACT_PAGE, "조합")
+
+
+def test_note_lines_joined_into_one_line_keep_their_facts_apart() -> None:
+    # OCR이 줄바꿈 없이 여러 문장을 한 줄로 주는 쪽: 줄 전체를 근거로 보면 서로 다른 사실(REQUEST ·
+    # RESIZE)이 모두 같은 근거가 됨(Codex 리뷰 #362). 문장 끝(. ! ? 。)에서 나눠 줄바꿈이 있는 쪽과
+    # 같게 판정
+    one_line = FACT_PAGE.replace("\n", " ")
+
+    def feature(term: str, answer: str) -> Draft:
+        return negative(
+            stem=f"다음 중 {term}에 대한 설명으로 옳은 것은?",
+            passage=term,
+            options=[answer, "이미지를 지운다", "글꼴을 바꾼다", "앱을 끈다", "소리를 낸다"],
+            answer=answer,
+        )
+
+    before = [made(feature("ActivityIndicator", REQUEST), "상태값 제어", "특징")]
+    for page in (FACT_PAGE, one_line):
+        assert not same_fact(feature("resizeMode", RESIZE), before, page, "특징")
+        assert same_fact(feature("animating", FLIPPED), before, page, "특징")
+    combo = [made(lines(REQUEST, RESPONSE, UNKNOWN), "상태값 제어", "조합")]
+    assert not same_fact(lines(RESIZE, LOAD_END, RESIZE), combo, one_line, "조합")
+    assert same_fact(lines(FLIPPED, RESPONSE, REQUEST), combo, one_line, "조합")
+
+
+def test_note_text_is_split_at_sentence_ends_only() -> None:
+    # 소수점 · 점이 든 이름은 문장 끝이 아님: 마침표 뒤에 공백이 올 때만 나눔. 짧은 조각(제목)은 뺌
+    page = "Image.prefetch는 이미지를 3.5초 안에 미리 받는다. 받은 이미지는 캐시에 넣어 둔다!\n제목"
+    assert fact_lines(page) == [
+        "imageprefetch는이미지를35초안에미리받는다",
+        "받은이미지는캐시에넣어둔다",
+    ]
 
 
 def test_the_same_fact_with_another_type_is_asked_from_another_angle() -> None:
