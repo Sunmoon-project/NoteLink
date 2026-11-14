@@ -192,6 +192,9 @@ it('신고는 첨부를 Blob에 올린 URL만 신고 API에 전달하고 성공 
       name: expect.any(String),
       mimeType: 'image/jpeg',
     }),
+    undefined,
+    undefined,
+    'report',
   );
   expect(mockApi.rooms.report).toHaveBeenCalledWith({
     roomId: room._id,
@@ -232,6 +235,45 @@ it.each(['upload', 'report'] as const)(
   },
 );
 
+it('신고 저장에 실패한 뒤 재시도하면 사진을 다시 업로드하지 않고 접수한다', async () => {
+  mockApi.rooms.report.mockRejectedValueOnce(new Error('신고 저장 실패'));
+  await renderScreen(<ReportScreen />, client());
+  await fillReport();
+  await fireEvent.press(screen.getByRole('button', { name: '신고하기' }));
+  await waitFor(() => expect(useToast.getState().msg).toBeTruthy());
+  expect(screen.queryByText('신고 완료')).toBeNull();
+  await fireEvent.press(await screen.findByRole('button', { name: '신고하기' }));
+  await screen.findByText('신고 완료');
+  expect(mockUpload).toHaveBeenCalledTimes(1);
+  expect(mockApi.rooms.report).toHaveBeenCalledTimes(2);
+});
+
+it('사진 업로드와 신고 저장이 끝날 때까지 접수 완료를 표시하지 않는다', async () => {
+  let finishUpload!: (url: string) => void;
+  let finishReport!: () => void;
+  mockUpload.mockReturnValueOnce(
+    new Promise<string>((resolve) => {
+      finishUpload = resolve;
+    }),
+  );
+  mockApi.rooms.report.mockReturnValueOnce(
+    new Promise<void>((resolve) => {
+      finishReport = resolve;
+    }),
+  );
+  await renderScreen(<ReportScreen />, client());
+  await fillReport();
+  await fireEvent.press(screen.getByRole('button', { name: '신고하기' }));
+  expect(await screen.findByText('사진 업로드 중…')).toBeTruthy();
+  expect(mockApi.rooms.report).not.toHaveBeenCalled();
+  expect(screen.queryByText('신고 완료')).toBeNull();
+  await act(async () => finishUpload('https://blob.test/evidence.jpg'));
+  expect(await screen.findByText('신고 접수 중…')).toBeTruthy();
+  expect(screen.queryByText('신고 완료')).toBeNull();
+  await act(async () => finishReport());
+  expect(await screen.findByText('신고 완료')).toBeTruthy();
+});
+
 it('신고 PNG 첨부는 원본 파일명·MIME·크기를 보존하고 Blob URL만 전송한다', async () => {
   mockPicker.mockResolvedValueOnce({
     canceled: false,
@@ -257,6 +299,9 @@ it('신고 PNG 첨부는 원본 파일명·MIME·크기를 보존하고 Blob URL
       mimeType: 'image/png',
       size: 123,
     }),
+    undefined,
+    undefined,
+    'report',
   );
   expect(mockApi.rooms.report).toHaveBeenCalledWith({
     roomId: room._id,

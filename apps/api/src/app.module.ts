@@ -19,6 +19,7 @@ import { UsersModule } from './modules/users/users.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
 import { TimetableModule } from './modules/timetable/timetable.module.js';
+import { UploadsModule } from './modules/upload/uploads.module.js';
 import { FriendsModule } from './modules/social/friends/friends.module.js';
 
 @Module({
@@ -58,8 +59,8 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
     FriendsModule,
     // 할 일 · D-day (FR-10)
     CalendarModule,
-    // 공휴일 · 사용자 제외일 (FR-12)
     HolidaysModule,
+    UploadsModule,
     // 학습 폴더 목록 · 만들기(FR-19)
     FoldersModule,
   ],
