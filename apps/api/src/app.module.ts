@@ -53,6 +53,7 @@ import { UploadsModule } from './modules/upload/uploads.module.js';
     TimetableModule,
     // 할 일 · D-day (FR-10)
     CalendarModule,
+    HolidaysModule,
     UploadsModule,
     // 학습 폴더 목록 · 만들기(FR-19)
     FoldersModule,
