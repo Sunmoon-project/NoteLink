@@ -47,14 +47,15 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # 루트 명령은 Turborepo(turbo.json)로 돈다: @notelink/shared를 먼저 빌드하는 순서까지 여기서 검증한다
       - name: Lint
-        run: npm run lint --workspaces --if-present
+        run: npm run lint
       - name: Typecheck
-        run: npm run typecheck --workspaces --if-present
+        run: npm run typecheck
       - name: Build
-        run: npm run build --workspaces --if-present
+        run: npm run build
       - name: Test
-        run: npm run test --workspaces --if-present
+        run: npm test
 
   python:
     name: Python (ai)

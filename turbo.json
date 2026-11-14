@@ -1,12 +1,14 @@
 {
   "$schema": "https://turborepo.com/schema.json",
   "envMode": "loose",
+  "globalDependencies": ["eslint.config.mjs", "eslint.rules.mjs", "tsconfig.base.json"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
     "lint": {
+      "dependsOn": ["^build"],
       "outputs": []
     },
     "typecheck": {
