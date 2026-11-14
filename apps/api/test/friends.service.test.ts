@@ -163,6 +163,32 @@ describe('친구 요청 · 수락 · 거절', () => {
     expect(friendships.rows).toHaveLength(1);
   });
 
+  it('상대 요청을 읽은 뒤 그 요청이 내 요청으로 바뀌었으면 자동 수락하지 않는다(상대 응답 없이 친구가 되지 않게)', async () => {
+    const a = person('가');
+    const b = person('나');
+    await service.request(a, b, NOW); // A → B 대기
+    // B의 request가 A → B 요청을 읽은 직후, 그 요청이 거절되고 B → A 새 요청으로 바뀐다
+    const findOne = friendships.findOne;
+    friendships.findOne = (f) => {
+      const found = findOne(f);
+      friendships.findOne = findOne;
+      const row = friendships.rows[0]!;
+      return {
+        ...found,
+        lean: async () => {
+          const snapshot = await found.lean();
+          Object.assign(row, { status: 'pending', requesterId: new Types.ObjectId(b) });
+          return snapshot;
+        },
+      };
+    };
+
+    await service.request(b, a, NOW);
+    expect(friendships.rows[0]).toMatchObject({ status: 'pending' });
+    expect(String(friendships.rows[0]!.requesterId)).toBe(b);
+    expect(await service.friends(a)).toEqual([]);
+  });
+
   it('보낸 사람이나 다른 사람은 그 요청을 수락할 수 없다', async () => {
     const me = person('나');
     const you = person('지우');

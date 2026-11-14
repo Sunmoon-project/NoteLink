@@ -110,8 +110,10 @@ export class FriendsService {
     if (current.status === 'pending') {
       if (current.requesterId.equals(meId)) return;
       // 상대가 먼저 보낸 요청이 있으면 수락한 것으로 본다
+      // 요청자가 상대일 때만 수락한다: 그사이 상대 요청이 거절되고 내가 새로 보낸 요청으로 바뀌었으면, 내 요청을
+      // 내가 수락하게 되므로(상대 응답 없이 친구가 됨) 빗나가게 해 지금 상태로 다시 처리한다
       const accepted = await this.friendships.updateOne(
-        { _id: current._id, status: 'pending' },
+        { _id: current._id, status: 'pending', requesterId: target },
         { $set: { status: 'accepted', acceptedAt: now } },
       );
       // 그사이 상태가 바뀌었으면(상대가 거절 · 끊기) 지금 상태로 다시 처리한다
