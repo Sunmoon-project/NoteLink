@@ -8,6 +8,7 @@ import { HealthController } from './health/health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { CalendarModule } from './modules/calendar/calendar.module.js';
 import { HolidaysModule } from './modules/calendar/holidays.module.js';
+import { CalendarSharesModule } from './modules/calendar/calendar-shares.module.js';
 import { FoldersModule } from './modules/content/folders/folders.module.js';
 import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
 import { ProgressModule } from './modules/progress/progress.module.js';
@@ -61,6 +62,8 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
     CalendarModule,
     HolidaysModule,
     UploadsModule,
+    // 캘린더 공유 링크(FR-13)
+    CalendarSharesModule,
     // 학습 폴더 목록 · 만들기(FR-19)
     FoldersModule,
   ],
