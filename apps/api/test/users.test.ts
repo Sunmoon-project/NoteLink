@@ -7,6 +7,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 import { configureApp } from '../src/app.setup.js';
 import { User } from '../src/modules/auth/schemas/user.schema.js';
+import { TimetableShare } from '../src/modules/calendar/schemas/timetable-share.schema.js';
+import { Friendship } from '../src/modules/social/schemas/friendship.schema.js';
+import { Device } from '../src/modules/users/schemas/device.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
 import { ProgressService } from '../src/modules/progress/progress.service.js';
 import { UsersController } from '../src/modules/users/users.controller.js';
@@ -44,6 +47,8 @@ const model = {
     })),
   },
   findOne: vi.fn(async () => user),
+  exists: vi.fn(async () => (user && !user.deletedAt ? { _id: user._id } : null)),
+  updateOne: vi.fn(async () => ({ matchedCount: 1, modifiedCount: 1 })),
   findOneAndUpdate: vi.fn(async (_filter: unknown, update: { $set: Record<string, unknown> }) => {
     if (!user) return null;
     if (update.$set.nickname === '중복닉네임') throw { code: 11000, keyPattern: { nickname: 1 } };
@@ -57,6 +62,10 @@ const model = {
     return user;
   }),
 };
+const devices = { updateOne: vi.fn(async () => ({})), deleteMany: vi.fn(async () => ({})) };
+/** 탈퇴 정리(친구 · 시간표 공유)만 받는다 */
+const revokeAll = vi.fn(async () => undefined);
+const cleanup = { updateMany: vi.fn(async () => ({})), deleteMany: vi.fn(async () => ({})) };
 let app: INestApplication;
 beforeAll(async () => {
   const module = await Test.createTestingModule({
@@ -65,9 +74,13 @@ beforeAll(async () => {
       UsersService,
       { provide: getModelToken(User.name), useValue: model },
       { provide: ProgressService, useValue: { streakDays } },
+      { provide: getModelToken(Device.name), useValue: devices },
+      { provide: getModelToken(Friendship.name), useValue: cleanup },
+      { provide: getModelToken(TimetableShare.name), useValue: cleanup },
       {
         provide: TokenService,
         useValue: {
+          revokeAll,
           verifyAccess: (token: string) =>
             token === 'valid' || token === 'other'
               ? Promise.resolve({ userId: String(token === 'valid' ? userId : otherUserId) })
@@ -263,11 +276,65 @@ describe('관심 분야는 공용 카테고리만 저장한다 (#287 리뷰)', (
     const hex = String(publicId);
     const res = await patch({ interestCategoryIds: [hex, hex.toUpperCase()] });
     expect(res.status).toBe(200);
-    expect(categoryCount).toHaveBeenCalledWith(expect.objectContaining({ _id: { $in: [publicId] } }));
+    expect(categoryCount).toHaveBeenCalledWith(
+      expect.objectContaining({ _id: { $in: [publicId] } }),
+    );
     expect(model.findOneAndUpdate).toHaveBeenCalledWith(
       expect.anything(),
       { $set: { interestCategoryIds: [publicId] } },
       expect.anything(),
     );
+  });
+});
+
+describe('내 계정: 상태 · 기기 · 요금제 · 탈퇴', () => {
+  const auth = { Authorization: 'Bearer valid' };
+  const http = () => request(app.getHttpServer());
+
+  it('상태는 정해진 값만 받는다', async () => {
+    await http().patch('/api/v1/users/me/status').set(auth).send({ status: 'busy' }).expect(204);
+    await http()
+      .patch('/api/v1/users/me/status')
+      .set(auth)
+      .send({ status: 'sleeping' })
+      .expect(400);
+  });
+
+  it('기기 등록은 플랫폼 · 토큰 · 언어를 검사하고 토큰으로 덮어 저장한다', async () => {
+    const ok = { platform: 'ios', pushToken: 'ExponentPushToken[abc123]', locale: 'ko-KR' };
+    await http().post('/api/v1/users/me/devices').set(auth).send(ok).expect(204);
+    expect(devices.updateOne).toHaveBeenCalledWith(
+      { pushToken: ok.pushToken },
+      expect.objectContaining({ $set: expect.objectContaining({ platform: 'ios' }) }),
+      { upsert: true },
+    );
+    await http()
+      .post('/api/v1/users/me/devices')
+      .set(auth)
+      .send({ ...ok, platform: 'web' })
+      .expect(400);
+    await http()
+      .post('/api/v1/users/me/devices')
+      .set(auth)
+      .send({ ...ok, locale: 'ko KR!' })
+      .expect(400);
+  });
+
+  it('유료 요금제는 결제 연동 전이라 402, 잘못된 값은 400', async () => {
+    const res = await http().patch('/api/v1/users/me/subscription').set(auth).send({ tier: 'pro' });
+    expect(res.status).toBe(402);
+    expect(res.body.code).toBe('PAYMENT_REQUIRED');
+    await http()
+      .patch('/api/v1/users/me/subscription')
+      .set(auth)
+      .send({ tier: 'gold' })
+      .expect(400);
+  });
+
+  it('탈퇴는 204이고, 로그인 없이는 할 수 없다', async () => {
+    await http().delete('/api/v1/users/me').set(auth).expect(204);
+    expect(revokeAll).toHaveBeenCalled();
+    expect(cleanup.deleteMany).toHaveBeenCalled();
+    await http().delete('/api/v1/users/me').expect(401);
   });
 });

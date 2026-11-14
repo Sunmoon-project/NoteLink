@@ -10,8 +10,9 @@ import { configureApp } from '../src/app.setup.js';
 import { AuthModule } from '../src/modules/auth/auth.module.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../src/modules/auth/jwt-auth.guard.js';
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
+import { User } from '../src/modules/auth/schemas/user.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
-import { stubAppEnv } from './support/app-module.js';
+import { ACTIVE_USERS, stubAppEnv } from './support/app-module.js';
 import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
 
 const REFRESH = '/api/v1/auth/refresh';
@@ -47,6 +48,8 @@ describe('토큰 갱신 · 로그아웃 · 인증 가드 (로그인 방식과 �
       .useValue({ close: () => Promise.resolve(), models: {}, model: () => ({}) })
       .overrideProvider(getModelToken(RefreshToken.name))
       .useValue(refreshModel)
+      .overrideProvider(getModelToken(User.name))
+      .useValue(ACTIVE_USERS)
       .compile();
     app = moduleRef.createNestApplication();
     configureApp(app);

@@ -186,13 +186,20 @@ describe('SocialExchangeService.exchange', () => {
       });
     });
 
-    it('사용자 id로 토큰을 한 번만 발급한다', async () => {
+    it('사용자 id와 그 사용자의 세션 버전으로 토큰을 한 번만 발급한다', async () => {
       const s = setup();
       s.issued();
 
       await s.service.exchange('google', body);
 
-      expect(s.tokens.issue).toHaveBeenCalledExactlyOnceWith(String(s.userId));
+      // 세션 버전이 없는 사용자 문서는 0으로 본다
+      expect(s.tokens.issue).toHaveBeenCalledExactlyOnceWith(
+        String(s.userId),
+        undefined,
+        undefined,
+        undefined,
+        0,
+      );
     });
 
     it('앱의 AuthTokens 스키마(packages/shared)로 파싱된다', async () => {

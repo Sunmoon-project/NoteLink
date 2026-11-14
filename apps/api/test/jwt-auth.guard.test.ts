@@ -25,13 +25,14 @@ const userId = new Types.ObjectId().toHexString();
 const accessToken = () =>
   jwt.sign({ sub: userId }, { secret: CONFIG.accessSecret, expiresIn: '15m' });
 
-/** verifyAccess는 DB를 쓰지 않는다. 쓰이면 바로 알 수 있도록 모든 호출이 실패하는 모델을 넣는다 */
+/** verifyAccess는 refresh 토큰을 읽지 않는다(쓰이면 바로 실패). 사용자는 탈퇴하지 않은 상태로 둔다 */
 function service() {
   const model = new Proxy(
     {},
-    { get: () => () => Promise.reject(new Error('DB를 읽으면 안 된다')) },
+    { get: () => () => Promise.reject(new Error('refresh 토큰을 읽으면 안 된다')) },
   );
-  return new TokenService(jwt, CONFIG, model as Model<RefreshTokenDocument>);
+  const users = { findOne: () => ({ lean: () => Promise.resolve({ deletedAt: null }) }) };
+  return new TokenService(jwt, CONFIG, model as Model<RefreshTokenDocument>, users as never);
 }
 
 function contextOf(authorization: string | string[] | undefined) {

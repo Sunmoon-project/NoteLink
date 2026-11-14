@@ -7,6 +7,7 @@ import { ShopItem, ShopItemSchema } from './schemas/shop-item.schema.js';
 import { UserItem, UserItemSchema } from './schemas/user-item.schema.js';
 import { ShopController } from './shop/shop.controller.js';
 import { ShopService } from './shop/shop.service.js';
+import { ShopSeedService } from './shop/shop-seed.service.js';
 import { MyItemsController } from './shop/my-items.controller.js';
 import { PurchaseController } from './shop/purchase.controller.js';
 import { PointController } from './point/point.controller.js';
@@ -25,7 +26,7 @@ import { User, UserSchema } from '../auth/schemas/user.schema.js';
         AuthModule, // 로그인 확인(JwtAuthGuard)에 필요한 도구를 가져온다
     ],
     controllers: [ShopController, MyItemsController, PurchaseController, PointController],
-    providers: [ShopService, PointService],
+    providers: [ShopService, ShopSeedService, PointService],
     exports: [PointService], // 세션·퀴즈 모듈이 적립을 부를 수 있게
 })
 export class RewardModule { }
