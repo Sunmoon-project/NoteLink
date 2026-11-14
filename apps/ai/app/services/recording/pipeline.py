@@ -11,6 +11,9 @@ again = organize(llm, result["sentences"], result["durationMs"])  # 다시 정�
 잘못된 번호와 도식은 그것만 버립니다. 경계를 합치거나 잘라 범위가 달라진 슬라이드는 받은 글의
 근거가 맞지 않으므로 그 슬라이드의 글만 다시 받습니다. 창 목록에서 잘린 문장이 든 슬라이드도
 같습니다.
+
+강의 자료(material)가 있으면 창 · 글 다시 받기 모두 시스템 프롬프트 뒤에 <material> 블록을
+붙입니다(material.system_with). 없으면 프롬프트는 그대로입니다.
 """
 
 import re
@@ -21,6 +24,7 @@ from itertools import takewhile
 from app.clients.llm import JsonObject, Llm, LlmCutError, LlmError, LlmRejectedError
 from app.clients.speech import NoSpeechError, Phrase, Transcript
 from app.core.config import settings
+from app.services.recording.material import Material, system_with
 from app.services.recording.models import (
     Diagram,
     RecordingResult,
@@ -189,7 +193,18 @@ def slide_windows(sentences: list[Sentence]) -> list[SentenceRange]:
         start = max(start + 1, end - min(WINDOW_OVERLAP, (end - start) // 3))
 
 
-def read_window(llm: Llm, sentences: list[Sentence], window: SentenceRange) -> WindowAnswer:
+def _system(base: str, material: Material | None, part: list[Sentence]) -> str:
+    if material is None:
+        return base
+    return system_with(base, material.block("\n".join(s["text"] for s in part)))
+
+
+def read_window(
+    llm: Llm,
+    sentences: list[Sentence],
+    window: SentenceRange,
+    material: Material | None = None,
+) -> WindowAnswer:
     """창 하나의 슬라이드. 쓸 내용이 없거나 상한을 넘는 슬라이드가 있으면 한 번 더 묻습니다.
 
     완전한 슬라이드 뒤에서 잘린 답은 상한을 넘는 슬라이드로 보입니다. 두 답 모두 상한을 넘으면
@@ -198,6 +213,7 @@ def read_window(llm: Llm, sentences: list[Sentence], window: SentenceRange) -> W
     """
     start, end = window
     part = sentences[start:end]
+    system = _system(WINDOW_SYSTEM, material, part)
     listing = "\n".join(
         f"{i} [{s['startMs'] // 1000}초]: {s['text'][:LINE_CHARS]}" for i, s in enumerate(part, 1)
     )
@@ -212,7 +228,7 @@ def read_window(llm: Llm, sentences: list[Sentence], window: SentenceRange) -> W
         try:
             raw = llm.call(
                 settings.recording_model,
-                WINDOW_SYSTEM,
+                system,
                 user,
                 WINDOW_SCHEMA,
                 "recording_slides",
@@ -234,25 +250,27 @@ def read_window(llm: Llm, sentences: list[Sentence], window: SentenceRange) -> W
     if expected < WINDOW_SPLIT_MIN_SLIDES or len(part) < 2:
         raise error
     middle = (start + end) // 2
-    left = read_window(llm, sentences, (start, middle))
-    right = _read_right_half(llm, sentences, (middle, end))
+    left = read_window(llm, sentences, (start, middle), material)
+    right = _read_right_half(llm, sentences, (middle, end), material)
     return WindowAnswer([*left.starts, *right.starts], {**left.bodies, **right.bodies})
 
 
-def _read_right_half(llm: Llm, sentences: list[Sentence], window: SentenceRange) -> WindowAnswer:
+def _read_right_half(
+    llm: Llm, sentences: list[Sentence], window: SentenceRange, material: Material | None
+) -> WindowAnswer:
     """왼쪽 답을 버리지 않으려고 오른쪽만 한 번 더 묻습니다. 그 안에서 이미 다시 물었으면 그대로.
 
     서버가 요청을 거절했으면(LlmRejectedError) 같은 요청을 다시 묻지 않고 그대로 올립니다:
     _HalfFailedError로 바꾸면 작업 처리기가 작업을 다시 넣음(Codex 리뷰 #264).
     """
     try:
-        return read_window(llm, sentences, window)
+        return read_window(llm, sentences, window, material)
     except (_HalfFailedError, LlmRejectedError):
         raise
     except LlmError:
         pass
     try:
-        return read_window(llm, sentences, window)
+        return read_window(llm, sentences, window, material)
     except LlmRejectedError:
         raise
     except LlmError as e:
@@ -336,6 +354,7 @@ def assemble_slides(
     answers: list[WindowAnswer],
     *,
     should_stop: Callable[[], bool] | None = None,
+    material: Material | None = None,
 ) -> list[Slide]:
     """창별 답을 합쳐 슬라이드 목록으로. 범위와 맞는 글이 없는 슬라이드만 다시 받습니다.
 
@@ -357,7 +376,7 @@ def assemble_slides(
     for i, batch in enumerate(_fill_batches(sentences, missing)):
         if i and should_stop is not None and should_stop():
             break
-        bodies.update(_fill_batch(llm, sentences, batch))
+        bodies.update(_fill_batch(llm, sentences, batch, material))
     return [_slide(sentences, r, bodies[r]) for r in takewhile(lambda r: r in bodies, ranges)]
 
 
@@ -416,10 +435,14 @@ def _fill_batches(
 
 
 def _fill_batch(
-    llm: Llm, sentences: list[Sentence], batch: list[SentenceRange]
+    llm: Llm,
+    sentences: list[Sentence],
+    batch: list[SentenceRange],
+    material: Material | None = None,
 ) -> dict[SentenceRange, SlideBody]:
     """정해진 범위의 글. 못 받은 슬라이드만 한 번 더 묻고, 그래도 없으면 LlmError."""
     done: dict[SentenceRange, SlideBody] = {}
+    system = _system(FILL_SYSTEM, material, [s for a, b in batch for s in sentences[a:b]])
     for temperature in ANSWER_TEMPERATURES:
         pending = [r for r in batch if r not in done]
         if not pending:
@@ -430,7 +453,7 @@ def _fill_batch(
         )
         answer = llm.call(
             settings.recording_model,
-            FILL_SYSTEM,
+            system,
             f"슬라이드 {len(pending)}개. 슬라이드마다 제목 · 요약 · 도식을 쓰시오.\n"
             f"<transcript>\n{listing}\n</transcript>",
             FILL_SCHEMA,
@@ -481,8 +504,9 @@ def organize(
     *,
     on_window: Callable[[int, int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    material: Material | None = None,
 ) -> RecordingResult:
-    """문장 목록 → 슬라이드(후처리 한 단계). STT를 다시 하지 않음.
+    """문장 목록 → 슬라이드(후처리 한 단계). STT를 다시 하지 않음. material은 함께 넣는 자료.
 
     on_window(끝난 창 수, 전체 창 수)는 창이 끝날 때마다 부릅니다. 창 사이에 should_stop이 참이면
     남은 창을 부르지 않고, 끝난 창까지의 슬라이드에 PARTIAL 경고를 답니다(창 하나는 항상 처리).
@@ -493,11 +517,18 @@ def organize(
     for window in windows:
         if answers and should_stop is not None and should_stop():
             break
-        answers.append(read_window(llm, sentences, window))
+        answers.append(read_window(llm, sentences, window, material))
         if on_window is not None:
             on_window(len(answers), len(windows))
     done = windows[: len(answers)]
-    slides = assemble_slides(llm, sentences[: done[-1][1]], done, answers, should_stop=should_stop)
+    slides = assemble_slides(
+        llm,
+        sentences[: done[-1][1]],
+        done,
+        answers,
+        should_stop=should_stop,
+        material=material,
+    )
     result = result_from(sentences, slides, duration_ms)
     if slides[-1]["sentenceEnd"] < len(sentences):
         result["warnings"] = [{"code": "PARTIAL", "untilMs": slides[-1]["endMs"]}]
