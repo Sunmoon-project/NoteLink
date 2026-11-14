@@ -93,7 +93,7 @@ export class TimetableService {
         const owner = new Types.ObjectId(userId);
         // 대문자 등 표기가 달라도 같은 ID로 보도록 소문자 표준형으로 바꾸고 중복을 없앤다
         const requested = [...new Set(dto.friendIds.map((id) => new Types.ObjectId(id).toHexString()))];
-        const friends = await this.friendIds(owner, requested);
+        const friends = await this.friendLinks(owner, requested);
         const strangers = requested.filter((id) => !friends.has(id));
         if (strangers.length > 0) {
             throw new BadRequestException({ code: 'NOT_FRIEND', message: '친구가 아닌 사용자에게는 시간표를 공유할 수 없습니다.' });
@@ -102,23 +102,22 @@ export class TimetableService {
             requested.map((friendId) => ({
                 updateOne: {
                     filter: { ownerId: owner, friendId: new Types.ObjectId(friendId) },
-                    update: { $set: { mode: dto.mode, sharedAt: now } },
+                    // 어느 친구 관계에서 만든 공유인지 남긴다(끊기면 그 관계의 공유만 정리한다)
+                    update: { $set: { mode: dto.mode, sharedAt: now, friendshipId: friends.get(friendId) } },
                     upsert: true,
                 },
             })),
         );
         // 확인한 뒤 쓰는 사이에 친구를 끊었으면(FriendsService.remove는 관계 → 공유 순으로 지운다) 방금 쓴 공유가 남는다.
-        // 다시 확인해서 끊긴 사람의 공유를 지운다(끊기가 공유 뒤에 온 것과 같은 결과). 다시 확인이 통과했다면 쓰기는
-        // 끊기보다 앞이라 끊기의 공유 정리가 지운다.
-        // 이 요청이 쓴 줄(sharedAt이 이 요청의 now)만 지운다: 그사이 다시 친구가 되어 새로 공유했다면 그 요청은 다시 친구가 된
-        // 뒤에 시작해 sharedAt이 이 요청의 now보다 늦으므로 지워지지 않는다
-        const still = await this.friendIds(owner, requested);
-        const gone = requested.filter((id) => !still.has(id));
+        // 다시 확인해서, 처음 확인한 친구 관계가 끊긴 사람의 공유를 지운다(끊기가 공유 뒤에 온 것과 같은 결과). 다시 확인이
+        // 통과했다면 쓰기는 끊기보다 앞이라 끊기의 공유 정리가 지운다.
+        // 그 관계(friendshipId)로 쓴 공유만 지운다: 그사이 다시 친구가 되어 새로 공유했다면 새 관계의 id라 지워지지 않는다
+        const still = await this.friendLinks(owner, requested);
+        const gone = requested.filter((id) => !still.get(id)?.equals(friends.get(id)!));
         if (gone.length > 0) {
             await this.shareModel.deleteMany({
                 ownerId: owner,
-                friendId: { $in: gone.map((id) => new Types.ObjectId(id)) },
-                sharedAt: now,
+                $or: gone.map((id) => ({ friendId: new Types.ObjectId(id), friendshipId: friends.get(id) })),
             });
         }
     }
@@ -132,8 +131,8 @@ export class TimetableService {
         return docs.map((d) => ({ _id: d._id.toString(), friendId: d.friendId.toString(), mode: d.mode, sharedAt: d.sharedAt.toISOString() }));
     }
 
-    /** 주어진 사용자 중 나와 수락된 친구 관계인 사람의 id */
-    private async friendIds(owner: Types.ObjectId, candidates: string[]): Promise<Set<string>> {
+    /** 주어진 사용자 중 나와 수락된 친구 관계인 사람 → 그 친구 관계 문서 id */
+    private async friendLinks(owner: Types.ObjectId, candidates: string[]): Promise<Map<string, Types.ObjectId>> {
         const ids = candidates.map((id) => new Types.ObjectId(id));
         const docs = await this.friendshipModel
             .find({
@@ -143,8 +142,8 @@ export class TimetableService {
                     { userB: owner, userA: { $in: ids } },
                 ],
             })
-            .lean<Pick<Friendship, 'userA' | 'userB'>[]>();
-        return new Set(docs.map((d) => (d.userA.equals(owner) ? d.userB : d.userA).toString()));
+            .lean<(Pick<Friendship, 'userA' | 'userB'> & { _id: Types.ObjectId })[]>();
+        return new Map(docs.map((d) => [(d.userA.equals(owner) ? d.userB : d.userA).toString(), d._id]));
     }
 }
 

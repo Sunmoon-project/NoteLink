@@ -46,6 +46,11 @@ function model(rows: Row[], unique?: (a: Row, b: Row) => boolean) {
       if (row) Object.assign(row, u.$set);
       return Promise.resolve({ matchedCount: row ? 1 : 0 });
     },
+    findOneAndDelete: (f: Record<string, unknown>) => {
+      const i = rows.findIndex((r) => matches(r, f));
+      const hit = i >= 0 ? rows.splice(i, 1)[0]! : null;
+      return { lean: () => Promise.resolve(hit) };
+    },
     deleteOne: (f: Record<string, unknown>) => {
       const i = rows.findIndex((r) => matches(r, f));
       if (i >= 0) rows.splice(i, 1);
@@ -239,6 +244,59 @@ describe('친구 목록 · 삭제', () => {
     expect(shares.rows.map((s) => String(s.friendId))).toEqual([other]);
     // 친구가 아니어도 오류 없이 끝난다
     await expect(service.remove(me, other)).resolves.toBeUndefined();
+  });
+});
+
+describe('친구 끊기와 다시 친구 되기', () => {
+  it('끊은 관계의 공유만 지우고, 그사이 다시 친구가 되어 만든 새 공유는 남긴다', async () => {
+    const me = person('나');
+    const you = person('지우');
+    await service.request(me, you, NOW);
+    const [req] = await service.received(you);
+    await service.respond(you, req!._id, true);
+    const old = friendships.rows[0]!._id;
+    const meId = new Types.ObjectId(me);
+    const youId = new Types.ObjectId(you);
+    shares.rows.push({
+      _id: new Types.ObjectId(),
+      ownerId: meId,
+      friendId: youId,
+      friendshipId: old,
+    });
+    // 관계를 지운 직후(공유 정리 전), 다시 친구가 되어 새 관계로 새 공유가 생겼다
+    const findOneAndDelete = friendships.findOneAndDelete;
+    friendships.findOneAndDelete = (f) => {
+      const result = findOneAndDelete(f);
+      const renewed = new Types.ObjectId();
+      friendships.rows.push({ _id: renewed, ...pairOf(meId, youId), status: 'accepted' });
+      shares.rows.length = 0;
+      shares.rows.push({
+        _id: new Types.ObjectId(),
+        ownerId: youId,
+        friendId: meId,
+        friendshipId: renewed,
+      });
+      return result;
+    };
+
+    await service.remove(me, you);
+    expect(shares.rows).toHaveLength(1);
+    expect(String(shares.rows[0]!.ownerId)).toBe(you);
+  });
+
+  it('관계 id가 없는 예전 공유도 친구를 끊으면 함께 지운다', async () => {
+    const me = person('나');
+    const you = person('지우');
+    await service.request(me, you, NOW);
+    const [req] = await service.received(you);
+    await service.respond(you, req!._id, true);
+    shares.rows.push({
+      _id: new Types.ObjectId(),
+      ownerId: new Types.ObjectId(me),
+      friendId: new Types.ObjectId(you),
+    });
+    await service.remove(me, you);
+    expect(shares.rows).toHaveLength(0);
   });
 });
 

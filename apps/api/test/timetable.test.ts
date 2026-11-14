@@ -9,8 +9,8 @@ import { AUTH, TEST_USER_ID } from './shop-test-app.js';
 
 type ClassRow = { _id: Types.ObjectId; subjectName: string; days: number[]; startTime: string; endTime: string; location: string; color: string; source: string };
 type TtRow = { _id: Types.ObjectId; userId: Types.ObjectId; classes: ClassRow[]; updatedAt: Date };
-type ShareRow = { _id: Types.ObjectId; ownerId: Types.ObjectId; friendId: Types.ObjectId; mode: string; sharedAt: Date };
-type FriendRow = { userA: Types.ObjectId; userB: Types.ObjectId; status: string };
+type ShareRow = { _id: Types.ObjectId; ownerId: Types.ObjectId; friendId: Types.ObjectId; mode: string; sharedAt: Date; friendshipId?: Types.ObjectId | null };
+type FriendRow = { _id?: Types.ObjectId; userA: Types.ObjectId; userB: Types.ObjectId; status: string };
 
 let tts: TtRow[];
 let shares: ShareRow[];
@@ -52,14 +52,9 @@ const shareModel = {
             return Promise.resolve({});
         },
     ),
-    deleteMany: vi.fn((f: { ownerId: Types.ObjectId; friendId: { $in: Types.ObjectId[] }; sharedAt?: Date }) => {
+    deleteMany: vi.fn((f: { ownerId: Types.ObjectId; $or: { friendId: Types.ObjectId; friendshipId: Types.ObjectId }[] }) => {
         shares = shares.filter(
-            (s) =>
-                !(
-                    s.ownerId.equals(f.ownerId) &&
-                    f.friendId.$in.some((id) => id.equals(s.friendId)) &&
-                    (!f.sharedAt || s.sharedAt.getTime() === f.sharedAt.getTime())
-                ),
+            (s) => !(s.ownerId.equals(f.ownerId) && f.$or.some((o) => o.friendId.equals(s.friendId) && String(o.friendshipId) === String(s.friendshipId))),
         );
         return Promise.resolve({});
     }),
@@ -83,6 +78,8 @@ const friendshipModel = {
         const rows = friendships.filter(
             (r) => r.status === f.status && ((r.userA.equals(a.userA) && has(a.userB.$in, r.userB)) || (r.userB.equals(b.userB) && has(b.userA.$in, r.userA))),
         );
+        // 관계 문서 id가 없으면 만들어 둔다(공유가 어느 관계로 만들어졌는지 friendshipId로 남긴다)
+        for (const r of rows) r._id ??= new Types.ObjectId();
         return { lean: vi.fn(() => Promise.resolve(rows)) };
     }),
 };
@@ -260,25 +257,22 @@ describe('시간표 API (/timetable)', () => {
             expect(shares).toHaveLength(0);
         });
 
-        it('끊긴 사람의 공유를 지우기 전에 다시 친구가 되어 새로 공유했으면 그 새 공유는 남긴다', async () => {
-            const later = new Date(Date.now() + 60_000);
-            // 다시 확인 직전: 끊겼다가(1번째 확인 뒤) 다시 확인 때는 친구가 아니고, 지우기 전에 다시 친구가 되어 새로 공유했다
+        it('끊긴 사람의 공유를 지우기 전에 다시 친구가 되어 새로 공유했으면(같은 밀리초여도) 그 새 공유는 남긴다', async () => {
+            const refriended = new Types.ObjectId();
+            // 다시 확인 직전: 끊겼다가 다시 친구가 되어(새 관계 문서) 새 공유 요청이 성공했다. 시각은 이 요청과 같다
             const find = friendshipModel.find.getMockImplementation()!;
             friendshipModel.find
-                .mockImplementationOnce(find) // 처음 확인: 친구
+                .mockImplementationOnce(find) // 처음 확인: 원래 관계
                 .mockImplementationOnce((f) => {
-                    const saved = friendships;
-                    friendships = []; // 다시 확인: 끊긴 상태
-                    const result = find(f);
-                    friendships = saved;
-                    // 그 직후 다시 친구가 되어 새 공유 요청이 성공했다
-                    Object.assign(shares.find((x) => x.friendId.equals(friend))!, { mode: 'free_only', sharedAt: later });
-                    return result;
+                    friendships = friendships.map((r) => (r.userB.equals(friend) ? { ...r, _id: refriended } : r));
+                    const mine = shares.find((x) => x.friendId.equals(friend))!;
+                    Object.assign(mine, { mode: 'free_only', friendshipId: refriended }); // sharedAt은 그대로(같은 밀리초)
+                    return find(f);
                 });
             const res = await shareWith([friend.toString()], 'full');
             expect(res.status).toBe(204);
             expect(shares).toHaveLength(1);
-            expect(shares[0]).toMatchObject({ mode: 'free_only', sharedAt: later });
+            expect(shares[0]).toMatchObject({ mode: 'free_only', friendshipId: refriended });
         });
 
         it('두 친구에게 공유하는 사이 한 명과 끊기면 그 사람 공유만 지우고, 남은 친구의 공유는 요청대로 둔다', async () => {

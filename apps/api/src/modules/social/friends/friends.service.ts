@@ -198,12 +198,17 @@ export class FriendsService {
   async remove(me: string, friendUserId: string): Promise<void> {
     const meId = new Types.ObjectId(me);
     const other = objectId(friendUserId, '친구');
-    await this.friendships.deleteOne({ ...pairOf(meId, other), status: 'accepted' });
+    const ended = await this.friendships
+      .findOneAndDelete({ ...pairOf(meId, other), status: 'accepted' })
+      .lean<{ _id: Types.ObjectId }>();
+    // 끊은 관계로 만든 공유만 지운다(예전 공유는 관계 id가 없어 null도 함께). 그사이 다시 친구가 되어 새로 공유했다면 새 관계의
+    // id라 지워지지 않는다. 친구가 아니었으면 관계 id가 없는 예전 공유만 정리한다
     await this.shares.deleteMany({
       $or: [
         { ownerId: meId, friendId: other },
         { ownerId: other, friendId: meId },
       ],
+      friendshipId: { $in: ended ? [ended._id, null] : [null] },
     });
   }
 

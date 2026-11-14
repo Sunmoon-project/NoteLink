@@ -19,6 +19,13 @@ export class TimetableShare {
 
   @Prop({ required: true, type: Date, default: Date.now })
   sharedAt: Date;
+
+  /**
+   * 이 공유를 만든 친구 관계(friendships 문서 id). 친구를 끊었다 다시 맺으면 관계 문서가 새로 생겨 id가 달라지므로,
+   * 끊긴 관계의 공유만 정리하고 다시 친구가 된 뒤의 새 공유는 남길 수 있다. 예전 공유는 값이 없다(null)
+   */
+  @Prop({ type: Types.ObjectId, ref: 'Friendship', default: null })
+  friendshipId?: Types.ObjectId | null;
 }
 
 export const TimetableShareSchema = SchemaFactory.createForClass(TimetableShare);
