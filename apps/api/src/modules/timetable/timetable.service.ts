@@ -114,7 +114,13 @@ export class TimetableService {
                 { ordered: false },
             );
         } catch (error) {
-            if (!onlyDuplicateKeys(error)) throw error;
+            const skipped = duplicateKeyIndexes(error);
+            if (!skipped) throw error;
+            // 다른 관계의 공유와 부딪혔다. 그 관계가 이미 끊겼으면(아직 정리 전인 예전 공유) 이 요청의 공유로 바꿔 쓴다
+            for (const i of skipped) {
+                const friendId = requested[i]!;
+                await this.replaceEndedShare(owner, new Types.ObjectId(friendId), friends.get(friendId)!, dto.mode, now);
+            }
         }
         // 확인한 뒤 쓰는 사이에 친구를 끊었으면(FriendsService.remove는 관계 → 공유 순으로 지운다) 방금 쓴 공유가 남는다.
         // 다시 확인해서, 처음 확인한 친구 관계가 끊긴 사람의 공유를 지운다(끊기가 공유 뒤에 온 것과 같은 결과). 다시 확인이
@@ -127,6 +133,32 @@ export class TimetableService {
                 ownerId: owner,
                 $or: gone.map((id) => ({ friendId: new Types.ObjectId(id), friendshipId: friends.get(id) })),
             });
+        }
+    }
+
+    /**
+     * 같은 쌍에 다른 관계로 만든 공유가 있을 때, 그 관계가 이미 끊겼으면 이 관계(mine)의 공유로 바꿔 쓴다.
+     * 수락된 관계는 지워지기만 하고 되살아나지 않으므로, 끊긴 관계의 공유는 언제 바꿔 써도 된다. 그 관계가 살아 있으면
+     * (이 요청이 늦었고 그사이 새로 친구가 되어 공유했다) 그대로 둔다. 바꿔 쓰는 사이 그 줄이 정리되면 다시 해 본다
+     */
+    private async replaceEndedShare(owner: Types.ObjectId, friendId: Types.ObjectId, mine: Types.ObjectId, mode: ShareMode, now: Date): Promise<void> {
+        const set = { $set: { mode, sharedAt: now, friendshipId: mine } };
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const row = await this.shareModel.findOne({ ownerId: owner, friendId }).select('friendshipId').lean<{ friendshipId?: Types.ObjectId | null }>();
+            if (!row) {
+                // 그사이 예전 줄이 정리됐다: 다시 같은 관계 조건으로 쓴다(또 부딪히면 다시 본다)
+                try {
+                    await this.shareModel.updateOne({ ownerId: owner, friendId, friendshipId: { $in: [mine, null] } }, set, { upsert: true });
+                    return;
+                } catch (error) {
+                    if ((error as { code?: unknown } | null)?.code !== 11000) throw error;
+                    continue;
+                }
+            }
+            const other = row.friendshipId ?? null;
+            if (other && !other.equals(mine) && (await this.friendshipModel.exists({ _id: other, status: 'accepted' }))) return;
+            const done = await this.shareModel.updateOne({ ownerId: owner, friendId, friendshipId: other }, set);
+            if (done.matchedCount === 1) return;
         }
     }
 
@@ -155,11 +187,15 @@ export class TimetableService {
     }
 }
 
-/** bulkWrite 오류가 모두 중복 키(11000)인지 — 다른 관계의 공유가 이미 있어 건너뛴 쓰기만 실패했는지 */
-function onlyDuplicateKeys(error: unknown): boolean {
+/**
+ * bulkWrite 오류가 모두 중복 키(11000)이면 실패한 쓰기의 순번들을, 아니면 null을 돌려준다
+ * (다른 관계의 공유가 이미 있어 조건에 안 맞은 쓰기만 실패했는지)
+ */
+function duplicateKeyIndexes(error: unknown): number[] | null {
     const raw = (error as { writeErrors?: unknown } | null)?.writeErrors;
-    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
-    return list.length > 0 && list.every((e) => (e as { code?: unknown }).code === 11000);
+    const list = (Array.isArray(raw) ? raw : raw ? [raw] : []) as { code?: unknown; index?: unknown }[];
+    if (!list.length || !list.every((e) => e.code === 11000 && typeof e.index === 'number')) return null;
+    return list.map((e) => e.index as number);
 }
 
 function toClassView(cls: TimetableClass): ClassView {
