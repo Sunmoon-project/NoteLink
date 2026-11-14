@@ -118,17 +118,23 @@ export class StudyChatGateway {
     @MessageBody() data: { chatRoomId?: unknown },
   ) {
     if (typeof data?.chatRoomId !== 'string') return { ok: false };
-    const userId = await this.identity(socket);
-    try {
-      const chat = await this.chat.requireChat(data.chatRoomId, userId);
-      if (chat.type !== 'direct') return { ok: false };
-      const channel = `direct-chat:${data.chatRoomId}`;
-      await socket.join(channel);
-      return { ok: true, missed: await this.chat.history(data.chatRoomId, userId) };
-    } catch {
-      await socket.leave(`direct-chat:${data.chatRoomId}`);
-      return { ok: false };
-    }
+    const chatRoomId = data.chatRoomId;
+    return this.inRoomOrder(socket, `direct:${chatRoomId}`, async () => {
+      const channel = `direct-chat:${chatRoomId}`;
+      try {
+        const userId = await this.identity(socket);
+        const chat = await this.chat.requireChat(chatRoomId, userId);
+        if (chat.type !== 'direct') {
+          await socket.leave(channel);
+          return { ok: false };
+        }
+        await socket.join(channel);
+        return { ok: true, missed: await this.chat.history(chatRoomId, userId) };
+      } catch {
+        await socket.leave(channel);
+        return { ok: false };
+      }
+    });
   }
 
   @SubscribeMessage('chat:leave')
@@ -136,7 +142,13 @@ export class StudyChatGateway {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { chatRoomId?: unknown },
   ) {
-    if (typeof data?.chatRoomId === 'string') await socket.leave(`direct-chat:${data.chatRoomId}`);
+    if (typeof data?.chatRoomId === 'string') {
+      const chatRoomId = data.chatRoomId;
+      return this.inRoomOrder(socket, `direct:${chatRoomId}`, async () => {
+        await socket.leave(`direct-chat:${chatRoomId}`);
+        return { ok: true };
+      });
+    }
   }
 
   async evict(roomId: string, userId: string) {

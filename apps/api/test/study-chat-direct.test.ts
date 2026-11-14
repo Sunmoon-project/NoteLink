@@ -9,6 +9,7 @@ const leanResult = (value: unknown) => ({ lean: () => ({ orFail: async () => val
 
 function setup(isFriend = true) {
   const chats = {
+    findOne: vi.fn(),
     findOneAndUpdate: vi.fn().mockReturnValue(leanResult(directChat)),
     updateOne: vi.fn(),
   };
@@ -88,5 +89,32 @@ describe('1:1 채팅 스터디룸 초대 메시지', () => {
       status: 404,
     });
     expect(chats.findOneAndUpdate).not.toHaveBeenCalled();
+  });
+
+  it('requireChat은 실제 DM 멤버십과 현재 친구 관계를 모두 확인한다', async () => {
+    const { service, chats, friendships } = setup();
+    const chatId = new Types.ObjectId();
+    const members = [
+      { userId: me, leftAt: null },
+      { userId: friend, leftAt: null },
+    ];
+    chats.findOne.mockReturnValue({ lean: async () => ({ _id: chatId, type: 'direct', members }) });
+
+    await expect(service.requireChat(String(chatId), String(me))).resolves.toMatchObject({
+      type: 'direct',
+    });
+    await expect(service.requireChat(String(chatId), String(new Types.ObjectId()))).rejects.toMatchObject({
+      status: 404,
+    });
+
+    friendships.exists.mockResolvedValueOnce(null);
+    await expect(service.requireChat(String(chatId), String(me))).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(friendships.exists).toHaveBeenCalledWith({
+      userA: expect.any(Types.ObjectId),
+      userB: expect.any(Types.ObjectId),
+      status: 'accepted',
+    });
   });
 });

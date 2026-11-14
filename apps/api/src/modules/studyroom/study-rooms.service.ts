@@ -85,6 +85,22 @@ export class StudyRoomsService {
       const existing = room.members.find((member) => member.userId.equals(targetId));
       return existing?.status !== 'joined' && existing?.status !== 'invited';
     });
+    const reinviteIds = targetsToInvite.filter((targetId) => {
+      const existing = room.members.find((member) => member.userId.equals(targetId));
+      return existing?.status === 'left';
+    });
+    const newInviteIds = targetsToInvite.filter(
+      (targetId) => !room.members.some((member) => member.userId.equals(targetId)),
+    );
+    const ineligibleMember = targetsToInvite.some((targetId) => {
+      const existing = room.members.find((member) => member.userId.equals(targetId));
+      return !!existing && (
+        existing.status !== 'left' ||
+        (existing.leaveReason !== 'voluntary' && existing.leaveReason != null)
+      );
+    });
+    if (ineligibleMember)
+      throw new ForbiddenException({ code: 'ROOM_BANNED', message: '퇴장 조치된 사용자는 초대할 수 없습니다.' });
     const activeMemberCount = room.members.filter((member) =>
       ['joined', 'invited'].includes(member.status),
     ).length;
@@ -94,11 +110,25 @@ export class StudyRoomsService {
 
     if (targetsToInvite.length) {
       const invitedAt = new Date();
+      const eligibility = [
+        ...newInviteIds.map((targetId) => ({
+          members: { $not: { $elemMatch: { userId: targetId } } },
+        })),
+        ...reinviteIds.map((targetId) => ({
+          members: {
+            $elemMatch: {
+              userId: targetId,
+              status: 'left',
+              leaveReason: { $in: ['voluntary', null] },
+            },
+          },
+        })),
+      ];
       const result = await this.rooms.updateOne(
         {
           _id: roomObjectId,
           closedAt: null,
-          members: { $not: { $elemMatch: { userId: { $in: targetsToInvite } } } },
+          $and: eligibility,
           $expr: {
             $lte: [
               {
@@ -119,18 +149,52 @@ export class StudyRoomsService {
             ],
           },
         },
-        {
-          $push: {
-            members: {
-              $each: targetsToInvite.map((targetId) => ({
-                userId: targetId,
-                role: 'member',
-                status: 'invited',
-                invitedAt,
-              })),
+        [
+          {
+            $set: {
+              members: {
+                $concatArrays: [
+                  {
+                    $map: {
+                      input: '$members',
+                      as: 'member',
+                      in: {
+                        $cond: [
+                          { $in: ['$$member.userId', reinviteIds] },
+                          {
+                            $mergeObjects: [
+                              '$$member',
+                              {
+                                status: 'invited',
+                                invitedAt,
+                                joinedAt: null,
+                                leftAt: null,
+                                leaveReason: null,
+                              },
+                            ],
+                          },
+                          '$$member',
+                        ],
+                      },
+                    },
+                  },
+                  {
+                    $map: {
+                      input: { $literal: newInviteIds },
+                      as: 'targetId',
+                      in: {
+                        userId: '$$targetId',
+                        role: 'member',
+                        status: 'invited',
+                        invitedAt: { $literal: invitedAt },
+                      },
+                    },
+                  },
+                ],
+              },
             },
           },
-        },
+        ] as never,
       );
       if (!result.modifiedCount) {
         const latest = await this.rooms.findById(roomObjectId).lean();
@@ -344,17 +408,27 @@ export class StudyRoomsService {
     if (!user)
       throw new NotFoundException({ code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' });
     const code = inviteCode.trim().toUpperCase();
+    const activeMemberCount = {
+      $size: {
+        $filter: {
+          input: '$members',
+          as: 'member',
+          cond: { $in: ['$$member.status', ['joined', 'invited']] },
+        },
+      },
+    };
     const available = {
       inviteCode: code,
       closedAt: null,
-      $expr: { $lt: ['$memberCount', '$maxCapacity'] },
+      $expr: { $lt: [activeMemberCount, '$maxCapacity'] },
     };
+    const openRoom = { inviteCode: code, closedAt: null };
     const now = new Date();
 
     // 초대받은 사용자는 초대 상태를 참여 상태로 바꿔 방에 들어간다.
     let room = await this.rooms.findOneAndUpdate(
       {
-        ...available,
+        ...openRoom,
         members: { $elemMatch: { userId: memberId, status: 'invited' } },
       },
       {
@@ -452,7 +526,10 @@ export class StudyRoomsService {
     }
     if (members.some((member) => member.status === 'joined'))
       return this.getRoom(userId, String(existing._id));
-    if (existing.memberCount >= existing.maxCapacity) {
+    const occupiedSeats = existing.members.filter((member) =>
+      ['joined', 'invited'].includes(member.status),
+    ).length;
+    if (occupiedSeats >= existing.maxCapacity) {
       throw new ConflictException({ code: 'ROOM_FULL', message: '스터디룸 정원이 가득 찼습니다.' });
     }
     throw new ConflictException({

@@ -168,6 +168,42 @@ describe('스터디룸 Socket.IO', () => {
     a.off('chat:message', receivedA);
     b.off('chat:message', receivedB);
   });
+  it('DM 입장 조회 중 퇴장 요청이 오면 퇴장을 마지막에 적용한다', async () => {
+    chat.requireChat.mockResolvedValue({ type: 'direct' });
+    let finishJoin!: (value: { type: 'direct' }) => void;
+    chat.requireChat.mockReturnValueOnce(new Promise((resolve) => (finishJoin = resolve)));
+    const received = vi.fn();
+    a.on('chat:message', received);
+
+    const joining = a.timeout(2000).emitWithAck('chat:join', { chatRoomId: 'chat' });
+    await vi.waitFor(() => expect(chat.requireChat).toHaveBeenCalledOnce());
+    const leaving = a.timeout(2000).emitWithAck('chat:leave', { chatRoomId: 'chat' });
+    finishJoin({ type: 'direct' });
+    expect(await joining).toMatchObject({ ok: true });
+    await leaving;
+
+    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' });
+    expect(received).not.toHaveBeenCalled();
+    a.off('chat:message', received);
+  });
+  it('이전 DM 입장의 늦은 실패가 뒤이은 성공 구독을 해제하지 않는다', async () => {
+    chat.requireChat.mockResolvedValue({ type: 'direct' });
+    let failOldJoin!: (error: Error) => void;
+    chat.requireChat.mockReturnValueOnce(new Promise((_resolve, reject) => (failOldJoin = reject)));
+    const received = vi.fn();
+    a.on('chat:message', received);
+
+    const oldJoin = a.timeout(2000).emitWithAck('chat:join', { chatRoomId: 'chat' });
+    await vi.waitFor(() => expect(chat.requireChat).toHaveBeenCalledOnce());
+    const newJoin = a.timeout(2000).emitWithAck('chat:join', { chatRoomId: 'chat' });
+    failOldJoin(new Error('old membership check failed'));
+    expect(await oldJoin).toMatchObject({ ok: false });
+    expect(await newJoin).toMatchObject({ ok: true });
+
+    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' });
+    await vi.waitFor(() => expect(received).toHaveBeenCalledOnce());
+    a.off('chat:message', received);
+  });
   it('강퇴된 사용자의 방 구독을 제거한다', async () => {
     const receive = vi.fn();
     b.on('chat:message', receive);
