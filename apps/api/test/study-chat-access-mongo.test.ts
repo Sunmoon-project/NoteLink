@@ -41,7 +41,7 @@ describe.skipIf(!local)('실제 MongoDB 채팅방 생성', () => {
       findById: () => ({ lean: async () => ({ nickname: '참여자' }) }),
       find: () => ({ lean: async () => [{ _id: userId, nickname: '참여자' }] }),
     };
-    service = new StudyChatService(rooms, chats, messages, users as never);
+    service = new StudyChatService(rooms, chats, messages, users as never, {} as never);
   });
   afterAll(async () => {
     if (connection) {

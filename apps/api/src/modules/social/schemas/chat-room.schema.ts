@@ -32,6 +32,9 @@ export class ChatRoom {
   @Prop({ type: Types.ObjectId, ref: 'StudyRoom' })
   studyRoomId?: Types.ObjectId;
 
+  @Prop({ type: String })
+  directKey?: string;
+
   @Prop({ type: Object })
   lastMessage?: Record<string, unknown>; // 방 목록에 보여줄 마지막 메시지 객체
 
@@ -46,4 +49,8 @@ export const ChatRoomSchema = SchemaFactory.createForClass(ChatRoom);
 ChatRoomSchema.index(
   { studyRoomId: 1 },
   { unique: true, partialFilterExpression: { studyRoomId: { $type: 'objectId' } } },
+);
+ChatRoomSchema.index(
+  { directKey: 1 },
+  { unique: true, partialFilterExpression: { directKey: { $type: 'string' } } },
 );

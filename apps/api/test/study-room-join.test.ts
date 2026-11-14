@@ -11,13 +11,25 @@ import { StudyRoomsService } from '../src/modules/studyroom/study-rooms.service.
 const userId = new Types.ObjectId();
 const roomId = new Types.ObjectId();
 const query = (value: unknown) => ({ lean: async () => value });
-const rooms = { findOneAndUpdate: vi.fn(), findOne: vi.fn(), updateOne: vi.fn(), exists: vi.fn() };
-const users = { findOne: vi.fn() };
+const rooms = {
+  findOneAndUpdate: vi.fn(),
+  findOne: vi.fn(),
+  updateOne: vi.fn(),
+  exists: vi.fn(),
+  findById: vi.fn(),
+};
+const users = { findOne: vi.fn(), find: vi.fn() };
+const friendships = { countDocuments: vi.fn() };
 let service: StudyRoomsService;
 beforeEach(() => {
   vi.resetAllMocks();
   users.findOne.mockReturnValue(query({ _id: userId }));
-  service = new StudyRoomsService(rooms as never, users as never, {} as never);
+  service = new StudyRoomsService(
+    rooms as never,
+    users as never,
+    {} as never,
+    friendships as never,
+  );
   vi.spyOn(service, 'getRoom').mockResolvedValue({ _id: String(roomId) } as never);
 });
 
@@ -97,11 +109,14 @@ describe('스터디룸 퇴장', () => {
 
 describe('스터디룸 코드 참여', () => {
   it('새 참여자를 원자적으로 추가하고 방 정보를 반환한다', async () => {
-    rooms.findOneAndUpdate.mockResolvedValueOnce(null).mockResolvedValueOnce({ _id: roomId });
+    rooms.findOneAndUpdate
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ _id: roomId });
     await expect(service.joinRoom(String(userId), 'ABC123')).resolves.toEqual({
       _id: String(roomId),
     });
-    const [filter, update] = rooms.findOneAndUpdate.mock.calls[1]!;
+    const [filter, update] = rooms.findOneAndUpdate.mock.calls[2]!;
     expect(filter).toMatchObject({
       inviteCode: 'ABC123',
       closedAt: null,
@@ -114,9 +129,9 @@ describe('스터디룸 코드 참여', () => {
     });
   });
   it('자진 퇴장 기록을 재사용하며 정원 검사를 함께 수행한다', async () => {
-    rooms.findOneAndUpdate.mockResolvedValueOnce({ _id: roomId });
+    rooms.findOneAndUpdate.mockResolvedValueOnce(null).mockResolvedValueOnce({ _id: roomId });
     await service.joinRoom(String(userId), 'ABC123');
-    const [filter, update, options] = rooms.findOneAndUpdate.mock.calls[0]!;
+    const [filter, update, options] = rooms.findOneAndUpdate.mock.calls[1]!;
     expect(filter.members.$elemMatch).toEqual({
       userId,
       status: 'left',
@@ -125,6 +140,26 @@ describe('스터디룸 코드 참여', () => {
     expect(update.$set['members.$[member].status']).toBe('joined');
     expect(update.$inc.memberCount).toBe(1);
     expect(options.arrayFilters).toEqual([{ 'member.userId': userId, 'member.status': 'left' }]);
+  });
+  it('초대된 멤버는 초대 기록을 참여 상태로 전환한다', async () => {
+    rooms.findOneAndUpdate
+      .mockResolvedValueOnce({ _id: roomId })
+      .mockResolvedValueOnce({ _id: roomId });
+    await service.joinRoom(String(userId), 'ABC123');
+    const [filter, update, options] = rooms.findOneAndUpdate.mock.calls[0]!;
+    expect(filter).toMatchObject({
+      inviteCode: 'ABC123',
+      members: { $elemMatch: { userId, status: 'invited' } },
+    });
+    expect(update).toMatchObject({
+      $set: {
+        'members.$[member].status': 'joined',
+        'members.$[member].joinedAt': expect.any(Date),
+        'members.$[member].invitedAt': null,
+      },
+      $inc: { memberCount: 1 },
+    });
+    expect(options.arrayFilters).toEqual([{ 'member.userId': userId, 'member.status': 'invited' }]);
   });
   it('강퇴되거나 신고 퇴장된 사용자는 재입장을 거부한다', async () => {
     rooms.findOneAndUpdate.mockResolvedValue(null);
@@ -168,5 +203,48 @@ describe('스터디룸 코드 참여', () => {
     await expect(service.joinRoom('invalid', 'ABC123')).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
+  });
+});
+
+describe('스터디룸 친구 초대', () => {
+  it('참여 중인 사용자가 친구를 초대 상태로 저장한다', async () => {
+    const friendId = new Types.ObjectId();
+    rooms.findOne.mockReturnValue(
+      query({ _id: roomId, title: '스터디룸', inviteCode: 'ABC123', members: [] }),
+    );
+    friendships.countDocuments.mockResolvedValue(1);
+    users.find.mockReturnValue({ select: () => query([{ _id: friendId }]) });
+    rooms.updateOne.mockResolvedValue({ modifiedCount: 1 });
+
+    await expect(
+      service.invite(String(userId), String(roomId), [String(friendId)]),
+    ).resolves.toMatchObject({ room: { _id: String(roomId) }, targetUserIds: [String(friendId)] });
+    expect(rooms.updateOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _id: roomId,
+        members: { $not: { $elemMatch: { userId: friendId } } },
+      }),
+      {
+        $push: {
+          members: expect.objectContaining({ userId: friendId, role: 'member', status: 'invited' }),
+        },
+      },
+    );
+  });
+
+  it('친구가 아닌 사용자와 방에 참여하지 않은 사용자의 초대를 거부한다', async () => {
+    rooms.findOne.mockReturnValue(query({ members: [] }));
+    friendships.countDocuments.mockResolvedValue(0);
+    await expect(
+      service.invite(String(userId), String(roomId), [String(new Types.ObjectId())]),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { code: 'ROOM_INVITE_NOT_FRIEND' },
+    });
+
+    rooms.findOne.mockReturnValue(query(null));
+    await expect(
+      service.invite(String(userId), String(roomId), [String(new Types.ObjectId())]),
+    ).rejects.toMatchObject({ status: 404 });
   });
 });

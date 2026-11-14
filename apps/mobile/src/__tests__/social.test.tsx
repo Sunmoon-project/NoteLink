@@ -2,8 +2,10 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { FriendAddScreen, ChatScreen } from '../features/social/screens';
 import { useAuth } from '../stores/auth';
 import { renderScreen, setParams } from '../test-utils';
+import { router } from 'expo-router';
 
 const mockApi = {
+  rooms: { join: jest.fn() },
   social: {
     search: jest.fn(),
     sendRequest: jest.fn(async () => {}),
@@ -126,5 +128,35 @@ describe('채팅 중복 수신', () => {
       ack(message);
     });
     await waitFor(() => expect(screen.getAllByText(message.text)).toHaveLength(1));
+  });
+});
+
+it('1:1 채팅의 스터디룸 초대 카드에서 참여 코드를 제출하고 방으로 이동한다', async () => {
+  setParams({ id: 'u1', name: '지우' });
+  mockApi.social.messages.mockResolvedValue([
+    {
+      _id: 'room-invite-1',
+      chatRoomId: 'room1',
+      senderId: 'me',
+      type: 'study_room_invite',
+      text: '스터디룸에 초대했어요.',
+      sharedItemId: null,
+      studyRoomInvite: {
+        roomId: 'invite-room',
+        title: '수학 스터디',
+        inviteCode: 'AB12CD',
+      },
+      createdAt: '2026-11-14T00:00:00.000Z',
+    },
+  ]);
+  mockApi.rooms.join.mockResolvedValue({ _id: 'joined-room' });
+
+  await renderScreen(<ChatScreen />);
+  await fireEvent.press(await screen.findByText('스터디룸 참여하기'));
+
+  await waitFor(() => expect(mockApi.rooms.join).toHaveBeenCalledWith('AB12CD'));
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/room/[id]',
+    params: { id: 'joined-room' },
   });
 });

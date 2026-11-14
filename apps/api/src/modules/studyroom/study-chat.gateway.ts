@@ -37,6 +37,9 @@ export class StudyChatGateway {
       roomId,
     });
   }
+  notifyDirectMessage(message: { chatRoomId: string }) {
+    this.server.to(`direct-chat:${message.chatRoomId}`).emit('chat:message', message);
+  }
   @WebSocketServer() private server: Server;
   constructor(
     private readonly tokens: TokenService,
@@ -96,6 +99,33 @@ export class StudyChatGateway {
     });
   }
 
+  @SubscribeMessage('chat:join')
+  async joinDirectChat(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { chatRoomId?: unknown },
+  ) {
+    if (typeof data?.chatRoomId !== 'string') return { ok: false };
+    const userId = await this.identity(socket);
+    try {
+      const chat = await this.chat.requireChat(data.chatRoomId, userId);
+      if (chat.type !== 'direct') return { ok: false };
+      const channel = `direct-chat:${data.chatRoomId}`;
+      await socket.join(channel);
+      return { ok: true, missed: await this.chat.history(data.chatRoomId, userId) };
+    } catch {
+      await socket.leave(`direct-chat:${data.chatRoomId}`);
+      return { ok: false };
+    }
+  }
+
+  @SubscribeMessage('chat:leave')
+  async leaveDirectChat(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { chatRoomId?: unknown },
+  ) {
+    if (typeof data?.chatRoomId === 'string') await socket.leave(`direct-chat:${data.chatRoomId}`);
+  }
+
   async evict(roomId: string, userId: string) {
     const sockets = await this.server.in(`study-room:${roomId}`).fetchSockets();
     for (const socket of sockets) {
@@ -121,10 +151,16 @@ export class StudyChatGateway {
     @MessageBody() data: { chatRoomId?: unknown; text?: unknown; clientId?: unknown },
   ) {
     const userId = await this.identity(socket);
-    if (typeof data?.chatRoomId !== 'string' || !socket.rooms.has(`study-chat:${data.chatRoomId}`))
+    if (
+      typeof data?.chatRoomId !== 'string' ||
+      (!socket.rooms.has(`study-chat:${data.chatRoomId}`) &&
+        !socket.rooms.has(`direct-chat:${data.chatRoomId}`))
+    )
       throw new Error('not joined');
     const message = await this.chat.send(data.chatRoomId, userId, data.text, data.clientId);
-    const channel = `study-chat:${data.chatRoomId}`;
+    const channel = socket.rooms.has(`study-chat:${data.chatRoomId}`)
+      ? `study-chat:${data.chatRoomId}`
+      : `direct-chat:${data.chatRoomId}`;
     // 나간 사용자에게 전달하지 않도록 각 연결의 토큰과 현재 멤버십을 다시 검사한다.
     for (const recipient of await this.server.in(channel).fetchSockets()) {
       try {
