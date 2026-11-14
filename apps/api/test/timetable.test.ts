@@ -52,8 +52,15 @@ const shareModel = {
             return Promise.resolve({});
         },
     ),
-    deleteMany: vi.fn((f: { ownerId: Types.ObjectId; friendId: { $in: Types.ObjectId[] } }) => {
-        shares = shares.filter((s) => !(s.ownerId.equals(f.ownerId) && f.friendId.$in.some((id) => id.equals(s.friendId))));
+    deleteMany: vi.fn((f: { ownerId: Types.ObjectId; friendId: { $in: Types.ObjectId[] }; sharedAt?: Date }) => {
+        shares = shares.filter(
+            (s) =>
+                !(
+                    s.ownerId.equals(f.ownerId) &&
+                    f.friendId.$in.some((id) => id.equals(s.friendId)) &&
+                    (!f.sharedAt || s.sharedAt.getTime() === f.sharedAt.getTime())
+                ),
+        );
         return Promise.resolve({});
     }),
     find: vi.fn((f: { ownerId: Types.ObjectId }) => {
@@ -251,6 +258,27 @@ describe('시간표 API (/timetable)', () => {
             const res = await shareWith([friend.toString()]);
             expect(res.status).toBe(204);
             expect(shares).toHaveLength(0);
+        });
+
+        it('끊긴 사람의 공유를 지우기 전에 다시 친구가 되어 새로 공유했으면 그 새 공유는 남긴다', async () => {
+            const later = new Date(Date.now() + 60_000);
+            // 다시 확인 직전: 끊겼다가(1번째 확인 뒤) 다시 확인 때는 친구가 아니고, 지우기 전에 다시 친구가 되어 새로 공유했다
+            const find = friendshipModel.find.getMockImplementation()!;
+            friendshipModel.find
+                .mockImplementationOnce(find) // 처음 확인: 친구
+                .mockImplementationOnce((f) => {
+                    const saved = friendships;
+                    friendships = []; // 다시 확인: 끊긴 상태
+                    const result = find(f);
+                    friendships = saved;
+                    // 그 직후 다시 친구가 되어 새 공유 요청이 성공했다
+                    Object.assign(shares.find((x) => x.friendId.equals(friend))!, { mode: 'free_only', sharedAt: later });
+                    return result;
+                });
+            const res = await shareWith([friend.toString()], 'full');
+            expect(res.status).toBe(204);
+            expect(shares).toHaveLength(1);
+            expect(shares[0]).toMatchObject({ mode: 'free_only', sharedAt: later });
         });
 
         it('두 친구에게 공유하는 사이 한 명과 끊기면 그 사람 공유만 지우고, 남은 친구의 공유는 요청대로 둔다', async () => {

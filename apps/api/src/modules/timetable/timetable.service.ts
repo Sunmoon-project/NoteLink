@@ -109,11 +109,17 @@ export class TimetableService {
         );
         // 확인한 뒤 쓰는 사이에 친구를 끊었으면(FriendsService.remove는 관계 → 공유 순으로 지운다) 방금 쓴 공유가 남는다.
         // 다시 확인해서 끊긴 사람의 공유를 지운다(끊기가 공유 뒤에 온 것과 같은 결과). 다시 확인이 통과했다면 쓰기는
-        // 끊기보다 앞이라 끊기의 공유 정리가 지운다
+        // 끊기보다 앞이라 끊기의 공유 정리가 지운다.
+        // 이 요청이 쓴 줄(sharedAt이 이 요청의 now)만 지운다: 그사이 다시 친구가 되어 새로 공유했다면 그 요청은 다시 친구가 된
+        // 뒤에 시작해 sharedAt이 이 요청의 now보다 늦으므로 지워지지 않는다
         const still = await this.friendIds(owner, requested);
         const gone = requested.filter((id) => !still.has(id));
         if (gone.length > 0) {
-            await this.shareModel.deleteMany({ ownerId: owner, friendId: { $in: gone.map((id) => new Types.ObjectId(id)) } });
+            await this.shareModel.deleteMany({
+                ownerId: owner,
+                friendId: { $in: gone.map((id) => new Types.ObjectId(id)) },
+                sharedAt: now,
+            });
         }
     }
 
