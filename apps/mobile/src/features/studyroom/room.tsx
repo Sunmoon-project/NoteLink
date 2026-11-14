@@ -529,11 +529,22 @@ export function RoomScreen() {
   // 방 구독(room:join). 소켓이 다시 붙을 때와, 소켓은 살아 있는데 HTTP 실패로만 끊김 상태였다가 돌아올 때
   // 모두 부른다. 마지막으로 보낸 요청의 응답만 반영해, 둘이 겹쳐도 대기 메시지를 한 번만 보낸다
   const joinAttempt = useRef(0);
+  const joinAckTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const joinRoom = () => {
     const attempt = ++joinAttempt.current;
+    clearTimeout(joinAckTimer.current);
     setChatJoinFailed(false);
+    joinAckTimer.current = setTimeout(() => {
+      if (attempt !== joinAttempt.current) return;
+      joinAttempt.current++;
+      joinedChat.current = false;
+      setJoinedRoom(null);
+      setChatJoinFailed(true);
+    }, ACK_TIMEOUT_MS);
     socket.emit('room:join', { roomId: id }, (r) => {
       if (attempt !== joinAttempt.current) return;
+      clearTimeout(joinAckTimer.current);
+      joinAckTimer.current = undefined;
       if (!r.ok) setChatJoinFailed(true);
       joinedChat.current = r.ok;
       setJoinedRoom(r.ok ? id : null);
@@ -551,6 +562,7 @@ export function RoomScreen() {
     const onConnection = (connected: boolean) => {
       setSocketConnected(connected);
       if (!connected) {
+        clearTimeout(joinAckTimer.current);
         setChatJoinFailed(false);
         attempts.current++;
         epochRef.current++;
@@ -566,6 +578,7 @@ export function RoomScreen() {
     return () => {
       // 화면을 떠난 뒤 늦게 온 구독 응답은 버린다
       attempts.current++;
+      clearTimeout(joinAckTimer.current);
       unsubscribe?.();
       epochRef.current++;
       joinedChat.current = false;
@@ -621,6 +634,7 @@ export function RoomScreen() {
     if (!lost) return;
     syncEpoch.current++;
     joinAttempt.current++;
+    clearTimeout(joinAckTimer.current);
     // 연결 상실에 맞춰 기록 조회를 중지한다.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setJoinedRoom(null);

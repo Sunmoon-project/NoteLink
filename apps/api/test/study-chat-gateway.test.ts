@@ -65,6 +65,27 @@ beforeEach(async () => {
   );
 });
 describe('스터디룸 Socket.IO', () => {
+  it('이전 입장 요청이 늦게 실패해도 나중 입장의 구독을 해제하지 않는다', async () => {
+    let failHistory!: (error: Error) => void;
+    chat.history.mockReset();
+    chat.history.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        failHistory = reject;
+      }),
+    );
+    chat.history.mockResolvedValueOnce([]);
+    const oldJoin = a.timeout(2000).emitWithAck('room:join', { roomId: 'room' });
+    await vi.waitFor(() => expect(chat.history).toHaveBeenCalledTimes(1));
+    const newJoin = a.timeout(2000).emitWithAck('room:join', { roomId: 'room' });
+    failHistory(new Error('history failed'));
+    expect(await oldJoin).toEqual({ ok: false });
+    expect(await newJoin).toEqual({ ok: true, missed: [] });
+    const received = vi.fn();
+    a.on('room:members-changed', received);
+    app.get(StudyChatGateway).notifyMembersChanged('room');
+    await vi.waitFor(() => expect(received).toHaveBeenCalledWith({ roomId: 'room' }));
+    a.off('room:members-changed', received);
+  });
   it('참가자 변경 알림은 해당 방에만 전달하고 강퇴된 사용자는 제외한다', async () => {
     const receivedA = vi.fn();
     const receivedB = vi.fn();
