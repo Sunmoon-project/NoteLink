@@ -194,6 +194,34 @@ def _grams(s: str) -> set[str]:
     return {s[i : i + 2] for i in range(len(s) - 1)}
 
 
+# 문장 끝: 마침표 · 물음표 · 느낌표 뒤에 공백이 올 때(소수점 · 'Image.prefetch'는 나누지 않음), 。
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+|。\s*")
+
+
+def fact_lines(page_text: str) -> list[str]:
+    """근거로 볼 노트 문장(norm). 줄바꿈과 문장 끝에서 나눔.
+
+    OCR이 여러 문장을 한 줄로 주면 줄 전체가 한 근거가 되어 다른 사실도 같은 근거로 판정됨
+    (Codex 리뷰 #362). FACT_MIN보다 짧은 조각(번호 · 끊긴 앞부분)은 버리지 않고 같은 줄의
+    이웃 조각에 붙임. 짧은 줄은 전처럼 뺌.
+    """
+    out: list[str] = []
+    for ln in page_text.splitlines():
+        pieces: list[str] = []
+        carry = ""
+        for part in _SENTENCE_END.split(ln):
+            part = carry + part
+            carry = ""
+            if len(norm(part)) >= FACT_MIN:
+                pieces.append(part)
+            elif pieces:
+                pieces[-1] += " " + part
+            else:
+                carry = part + " "
+        out += [norm(p) for p in pieces]
+    return out
+
+
 def _asked(ty: str, sentences: list[str], answer: str, passage: str) -> list[str]:
     """그 문제가 묻는 문장(norm). 영어 문장 과목 유형(어휘 · 규칙 · 묘사) · 분류는 없음."""
     if ty in _FACT_BY_SENTENCES:
@@ -251,7 +279,7 @@ def same_fact(d: Draft, seen: list[Seen], page_text: str, ty: str) -> bool:
     """
     if ty not in _FACT_BY_SENTENCES | _FACT_BY_ANSWER | _FACT_BY_PASSAGE:
         return False
-    lines = [(x, _grams(x)) for ln in page_text.splitlines() if len(x := norm(ln)) >= FACT_MIN]
+    lines = [(x, _grams(x)) for x in fact_lines(page_text)]
     if not lines:
         return False
     mine_asked = _asked(

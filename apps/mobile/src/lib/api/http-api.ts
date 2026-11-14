@@ -54,6 +54,20 @@ async function registerMaterial({
   return JSON.parse(JSON.stringify(await pending));
 }
 
+// 서버가 삭제 요청 한 번에 받는 id 상한(플래시카드 FLASHCARD_DELETE_MAX · 보관함 BOX_MAX_IDS)과 맞춘 값
+const DELETE_CHUNK_SIZE = 3000;
+
+// 상한을 넘는 id는 나눠서 차례대로 보낸다. 상한 이하(빈 배열 포함)면 요청 한 번만 보낸다
+async function postDeleteInChunks(path: string, key: 'ids' | 'questionIds', ids: string[]) {
+  if (ids.length <= DELETE_CHUNK_SIZE) {
+    await http.post(path, { [key]: ids });
+    return;
+  }
+  for (let i = 0; i < ids.length; i += DELETE_CHUNK_SIZE) {
+    await http.post(path, { [key]: ids.slice(i, i + DELETE_CHUNK_SIZE) });
+  }
+}
+
 export const httpApi: Api = {
   auth: {
     socialLogin: (provider, proof) => http.post(P.socialLogin(provider), proof),
@@ -168,10 +182,11 @@ export const httpApi: Api = {
     similar: (id) => http.post(P.similarQuiz(id)),
     box: () => http.get(P.quizBox),
     saveToBox: (questionIds) => http.post(P.quizBox, { questionIds }),
-    deleteFromBox: (questionIds) => http.post(`${P.quizBox}/delete`, { questionIds }),
+    deleteFromBox: (questionIds) =>
+      postDeleteInChunks(`${P.quizBox}/delete`, 'questionIds', questionIds),
     flashcards: () => http.get(P.flashcards),
     saveFlashcard: (p) => http.post(P.flashcards, p),
-    deleteFlashcards: (ids) => http.post(P.flashcardsDelete, { ids }),
+    deleteFlashcards: (ids) => postDeleteInChunks(P.flashcardsDelete, 'ids', ids),
   },
   rooms: {
     recommended: () => http.get(P.studyRooms, { recommended: true }),

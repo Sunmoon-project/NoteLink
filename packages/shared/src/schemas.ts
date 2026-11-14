@@ -255,7 +255,7 @@ export const QuizAttempt = z.object({
 export const Flashcard = z.object({
   _id: id,
   materialId: id.nullable(),
-  folderId: id,
+  folderId: id.nullable(),
   front: z.string(),
   back: z.string(),
   sourceQuizSetId: id.nullable(),
