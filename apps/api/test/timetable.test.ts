@@ -9,7 +9,7 @@ import { AUTH, TEST_USER_ID } from './shop-test-app.js';
 
 type ClassRow = { _id: Types.ObjectId; subjectName: string; days: number[]; startTime: string; endTime: string; location: string; color: string; source: string };
 type TtRow = { _id: Types.ObjectId; userId: Types.ObjectId; classes: ClassRow[]; updatedAt: Date };
-type ShareRow = { _id: Types.ObjectId; ownerId: Types.ObjectId; friendId: Types.ObjectId; mode: string; sharedAt: Date };
+type ShareRow = { _id: Types.ObjectId; ownerId: Types.ObjectId; friendId: Types.ObjectId; mode: string; sharedAt: Date; writeId?: string | null };
 type FriendRow = { userA: Types.ObjectId; userB: Types.ObjectId; status: string };
 
 let tts: TtRow[];
@@ -41,13 +41,20 @@ const timetableModel = {
         },
     ),
 };
-type ShareFilter = { ownerId: Types.ObjectId; friendId: Types.ObjectId; sharedAt?: Date };
-type ShareOp =
-    | { updateOne: { filter: ShareFilter; update: { $set: { mode: string; sharedAt: Date } }; upsert?: boolean } }
-    | { deleteOne: { filter: ShareFilter } };
+type ShareFilter = { ownerId: Types.ObjectId; friendId: Types.ObjectId; writeId?: string };
+type ShareSet = { mode: string; sharedAt: Date; writeId?: string | null };
+type ShareOp = { updateOne: { filter: ShareFilter; update: { $set: ShareSet }; upsert?: boolean } } | { deleteOne: { filter: ShareFilter } };
 const shareHit = (f: ShareFilter) => (s: ShareRow) =>
-    s.ownerId.equals(f.ownerId) && s.friendId.equals(f.friendId) && (!f.sharedAt || s.sharedAt.getTime() === f.sharedAt.getTime());
+    s.ownerId.equals(f.ownerId) && s.friendId.equals(f.friendId) && (!('writeId' in f) || s.writeId === f.writeId);
 const shareModel = {
+    /** 실제처럼 「바뀌기 전」 문서(없으면 null)를 돌려주고, 찾기와 쓰기를 한 번에 한다 */
+    findOneAndUpdate: vi.fn((filter: ShareFilter, update: { $set: ShareSet }) => {
+        const row = shares.find(shareHit(filter));
+        const before = row ? { ...row } : null;
+        if (row) Object.assign(row, update.$set);
+        else shares.push({ _id: new Types.ObjectId(), ownerId: filter.ownerId, friendId: filter.friendId, ...update.$set });
+        return { lean: vi.fn(() => Promise.resolve(before)) };
+    }),
     bulkWrite: vi.fn((ops: ShareOp[]) => {
         for (const op of ops) {
             if ('deleteOne' in op) {
@@ -233,7 +240,7 @@ describe('시간표 API (/timetable)', () => {
             const res = await shareWith([friend.toString(), friend.toString().toUpperCase()]);
             expect(res.status).toBe(204);
             expect(shares).toHaveLength(1);
-            expect(shareModel.bulkWrite.mock.calls[0]![0]).toHaveLength(1);
+            expect(shareModel.findOneAndUpdate).toHaveBeenCalledTimes(1);
         });
 
         it('이미 공유 중인 친구에게 다시 공유하면 한 건 그대로 방식만 바뀐다', async () => {
@@ -252,11 +259,11 @@ describe('시간표 API (/timetable)', () => {
 
         it('친구 확인 뒤 공유를 쓰는 사이에 친구를 끊었으면 쓴 공유를 지우고 400 NOT_FRIEND', async () => {
             // 공유 쓰기 직전에 친구 끊기(관계 삭제 → 공유 정리)가 끝까지 돈다
-            const write = shareModel.bulkWrite.getMockImplementation()!;
-            shareModel.bulkWrite.mockImplementationOnce(async (ops) => {
+            const write = shareModel.findOneAndUpdate.getMockImplementation()!;
+            shareModel.findOneAndUpdate.mockImplementationOnce((filter, update) => {
                 friendships = [];
                 shares = [];
-                return write(ops);
+                return write(filter, update);
             });
             const res = await shareWith([friend.toString()]);
             expect(res.status).toBe(400);
@@ -267,12 +274,12 @@ describe('시간표 API (/timetable)', () => {
         it('두 친구에게 공유하는 사이 한 명과 끊기면 요청 전체를 되돌린다(새 공유는 지우고, 있던 공유는 예전 방식으로)', async () => {
             const before = new Date('2026-11-01T00:00:00Z');
             shares.push({ _id: new Types.ObjectId(), ownerId: ME, friendId: friend, mode: 'full', sharedAt: before });
-            const write = shareModel.bulkWrite.getMockImplementation()!;
-            shareModel.bulkWrite.mockImplementationOnce(async (ops) => {
+            const write = shareModel.findOneAndUpdate.getMockImplementation()!;
+            shareModel.findOneAndUpdate.mockImplementationOnce((filter, update) => {
                 // 쓰기 직전에 friend2와의 친구 끊기(관계 삭제 → 공유 정리)가 끝까지 돈다
                 friendships = friendships.filter((r) => !(r.userA.equals(friend2) || r.userB.equals(friend2)));
                 shares = shares.filter((s) => !s.friendId.equals(friend2));
-                return write(ops);
+                return write(filter, update);
             });
             const res = await shareWith([friend.toString(), friend2.toString()], 'free_only');
             expect(res.status).toBe(400);
@@ -280,6 +287,44 @@ describe('시간표 API (/timetable)', () => {
             expect(shares).toHaveLength(1);
             expect(shares[0]).toMatchObject({ mode: 'full', sharedAt: before });
             expect(shares[0]!.friendId.equals(friend)).toBe(true);
+        });
+
+        it('되돌릴 때 그사이 성공한 다른 공유 요청의 결과를 지우지 않는다', async () => {
+            const old = new Date('2026-11-01T00:00:00Z');
+            const later = new Date('2026-11-02T00:00:00Z');
+            shares.push({ _id: new Types.ObjectId(), ownerId: ME, friendId: friend, mode: 'full', sharedAt: old });
+            const write = shareModel.findOneAndUpdate.getMockImplementation()!;
+            shareModel.findOneAndUpdate.mockImplementationOnce((filter, update) => {
+                // 이 요청이 friend에게 쓰기 직전, 다른 요청이 friend를 free_only로 바꾸고 성공했다
+                Object.assign(shares[0]!, { mode: 'free_only', sharedAt: later, writeId: 'other' });
+                return write(filter, update);
+            });
+            shareModel.findOneAndUpdate.mockImplementationOnce((filter, update) => {
+                // friend2에게 쓰기 직전 friend2와 끊긴다 → 이 요청은 실패해 되돌린다
+                friendships = friendships.filter((r) => !(r.userA.equals(friend2) || r.userB.equals(friend2)));
+                return write(filter, update);
+            });
+            const res = await shareWith([friend.toString(), friend2.toString()], 'full');
+            expect(res.status).toBe(400);
+            // friend는 다른 요청의 결과(free_only)로 돌아가고, 처음 값(full)으로 넓어지지 않는다
+            expect(shares).toHaveLength(1);
+            expect(shares[0]).toMatchObject({ mode: 'free_only', sharedAt: later, writeId: 'other' });
+        });
+
+        it('되돌리기 전에 다른 요청이 다시 쓴 줄은 그대로 둔다', async () => {
+            const write = shareModel.findOneAndUpdate.getMockImplementation()!;
+            shareModel.findOneAndUpdate.mockImplementationOnce((filter, update) => write(filter, update));
+            shareModel.findOneAndUpdate.mockImplementationOnce((filter, update) => {
+                const result = write(filter, update);
+                friendships = friendships.filter((r) => !(r.userA.equals(friend2) || r.userB.equals(friend2)));
+                // 되돌리기 전에 다른 요청이 friend를 다시 썼다
+                Object.assign(shares.find((s) => s.friendId.equals(friend))!, { mode: 'free_only', writeId: 'newer' });
+                return result;
+            });
+            const res = await shareWith([friend.toString(), friend2.toString()], 'full');
+            expect(res.status).toBe(400);
+            expect(shares).toHaveLength(1);
+            expect(shares[0]).toMatchObject({ mode: 'free_only', writeId: 'newer' });
         });
 
         it('수락 전(pending)·거절된 관계는 친구로 치지 않는다', async () => {

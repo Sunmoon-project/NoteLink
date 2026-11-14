@@ -19,6 +19,10 @@ export class TimetableShare {
 
   @Prop({ required: true, type: Date, default: Date.now })
   sharedAt: Date;
+
+  /** 이 줄을 마지막으로 쓴 공유 요청의 표시(TimetableService.share). 실패한 요청이 자기가 쓴 줄만 되돌리는 데 쓴다 */
+  @Prop({ type: String, default: null })
+  writeId?: string | null;
 }
 
 export const TimetableShareSchema = SchemaFactory.createForClass(TimetableShare);

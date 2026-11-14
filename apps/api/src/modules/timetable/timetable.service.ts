@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -95,41 +97,46 @@ export class TimetableService {
             throw new BadRequestException({ code: 'NOT_FRIEND', message: '친구가 아닌 사용자에게는 시간표를 공유할 수 없습니다.' });
         }
         const ids = requested.map((id) => new Types.ObjectId(id));
-        // 실패하면 되돌리려고 쓰기 전 상태를 기억한다
-        const before = await this.shareModel.find({ ownerId: owner, friendId: { $in: ids } }).lean<ShareLean[]>();
-        await this.shareModel.bulkWrite(
-            ids.map((friendId) => ({
-                updateOne: {
-                    filter: { ownerId: owner, friendId },
-                    update: { $set: { mode: dto.mode, sharedAt: now } },
-                    upsert: true,
-                },
-            })),
-        );
+        // 이 요청이 쓴 줄의 표시. 실패하면 이 표시가 남은 줄만 되돌린다(그 뒤 다른 요청이 쓴 줄은 건드리지 않는다)
+        const writeId = randomUUID();
+        // 쓰는 그 순간 덮어쓴 값(없던 줄이면 null)을 받아 둔다. 따로 먼저 읽으면 그 사이 성공한 다른 요청의 값을 놓친다
+        const previous = new Map<string, ShareLean | null>();
+        for (const friendId of ids) {
+            const prev = await this.shareModel
+                .findOneAndUpdate({ ownerId: owner, friendId }, { $set: { mode: dto.mode, sharedAt: now, writeId } }, { upsert: true, new: false })
+                .lean<ShareLean>();
+            previous.set(friendId.toString(), prev ?? null);
+        }
         // 확인한 뒤 쓰는 사이에 친구를 끊었으면(FriendsService.remove는 관계 → 공유 순으로 지운다) 방금 쓴 공유가 남는다.
         // 다시 확인해서, 한 명이라도 끊겼으면 이 요청 전체를 되돌린다("하나라도 친구가 아니면 하나도 공유하지 않는다").
         // 다시 확인이 통과했다면 쓰기는 끊기보다 앞이라 끊기의 공유 정리가 지운다
         const still = await this.friendIds(owner, requested);
         const gone = requested.filter((id) => !still.has(id));
         if (gone.length > 0) {
-            await this.undoShare(owner, ids, gone, before, now);
+            await this.undoShare(owner, ids, gone, previous, writeId);
             throw new BadRequestException({ code: 'NOT_FRIEND', message: '친구가 아닌 사용자에게는 시간표를 공유할 수 없습니다.' });
         }
     }
 
     /**
-     * share()가 쓴 것을 되돌린다. 끊긴 상대의 공유는 지우고, 나머지는 쓰기 전으로 돌린다(없던 공유는 지우고, 있던 공유는
-     * 예전 방식 · 시각으로). 그사이 다른 요청이 새로 쓴 공유(sharedAt이 now가 아님)는 건드리지 않는다
+     * share()가 쓴 것을 되돌린다. 끊긴 상대의 공유는 지운다(이제 친구가 아니다). 나머지는 이 요청의 표시가 아직 남은 줄만,
+     * 이 요청이 덮어쓴 값으로 돌린다(없던 줄은 지운다). 그사이 다른 요청이 다시 쓴 줄은 그 요청의 결과라 그대로 둔다
      */
-    private async undoShare(owner: Types.ObjectId, ids: Types.ObjectId[], gone: string[], before: ShareLean[], now: Date): Promise<void> {
-        const previous = new Map(before.map((d) => [d.friendId.toString(), d]));
+    private async undoShare(
+        owner: Types.ObjectId,
+        ids: Types.ObjectId[],
+        gone: string[],
+        previous: Map<string, ShareLean | null>,
+        writeId: string,
+    ): Promise<void> {
         await this.shareModel.bulkWrite(
             ids.map((friendId) => {
-                const prev = previous.get(friendId.toString());
-                const ours = { ownerId: owner, friendId, sharedAt: now };
-                return gone.includes(friendId.toString()) || !prev
-                    ? { deleteOne: { filter: gone.includes(friendId.toString()) ? { ownerId: owner, friendId } : ours } }
-                    : { updateOne: { filter: ours, update: { $set: { mode: prev.mode, sharedAt: prev.sharedAt } } } };
+                const key = friendId.toString();
+                const prev = previous.get(key);
+                const ours = { ownerId: owner, friendId, writeId };
+                if (gone.includes(key)) return { deleteOne: { filter: { ownerId: owner, friendId } } };
+                if (!prev) return { deleteOne: { filter: ours } };
+                return { updateOne: { filter: ours, update: { $set: { mode: prev.mode, sharedAt: prev.sharedAt, writeId: prev.writeId ?? null } } } };
             }),
         );
     }
