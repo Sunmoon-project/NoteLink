@@ -9,6 +9,10 @@ import { Types, type Connection } from 'mongoose';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
+import { TokenService } from '../src/modules/auth/token.service.js';
+import { TimetableShare, TimetableShareSchema } from '../src/modules/calendar/schemas/timetable-share.schema.js';
+import { Friendship, FriendshipSchema } from '../src/modules/social/schemas/friendship.schema.js';
+import { Device, DeviceSchema } from '../src/modules/users/schemas/device.schema.js';
 import { UsersService } from '../src/modules/users/users.service.js';
 import { ProgressService, STREAK_BATCH_SIZE } from '../src/modules/progress/progress.service.js';
 import { Todo, TodoSchema } from '../src/modules/calendar/schemas/todo.schema.js';
@@ -81,9 +85,13 @@ describe.skipIf(!isLocal)('진짜 DB 월간 캘린더 · 누적 기록 확인', 
                     { name: Subject.name, schema: SubjectSchema },
                     { name: PointLedger.name, schema: PointLedgerSchema },
                     { name: User.name, schema: UserSchema },
+                    // UsersService가 주입받는 모델 (#382 이후)
+                    { name: Device.name, schema: DeviceSchema },
+                    { name: Friendship.name, schema: FriendshipSchema },
+                    { name: TimetableShare.name, schema: TimetableShareSchema },
                 ]),
             ],
-            providers: [ProgressService, StudyService, PointService, UsersService],
+            providers: [ProgressService, StudyService, PointService, UsersService, { provide: TokenService, useValue: {} }], // 이 테스트는 토큰을 쓰지 않는다
         }).compile();
         await moduleRef.init();
         conn = moduleRef.get<Connection>(getConnectionToken());

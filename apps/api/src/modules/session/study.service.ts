@@ -250,8 +250,10 @@ export class StudyService {
         // 날짜마다 하루 상한(16시간)까지만 쌓는다 (FR-06-15). 트랜잭션 안이라 await를 순서대로 쓴다
         let durationSec = 0;
         if (!isAbuse) {
+            // 과목은 세션 시작 때의 공부 항목에서 정해지므로 정산할 때 한 번만 찾아 모든 날짜에 쓴다
+            const subjectId = await this.findSessionSubject(owner, row, tx);
             for (const [studyDate, sec] of days) {
-                durationSec += await this.addToDay(owner, studyDate, sec, row, tx);
+                durationSec += await this.addToDay(owner, studyDate, sec, row, subjectId, tx);
             }
         }
         let reward = isAbuse ? undefined : sessionReward(durationSec);
@@ -308,22 +310,60 @@ export class StudyService {
     }
 
     /**
+     * 세션이 시작한 날의 공부 항목에 달린 과목 id. 항목이 없거나 과목이 없는 항목이면 null.
+     * 정산할 때 한 번만 읽는다 (날짜마다 읽지 않는다)
+     */
+    private async findSessionSubject(owner: Types.ObjectId, row: StudySessionLean, tx: ClientSession): Promise<Types.ObjectId | null> {
+        if (!row.studyItemId) return null;
+        const record = await this.dailyModel
+            .findOne({ userId: owner, studyDate: row.studyDate, 'items._id': row.studyItemId }, { 'items.$': 1 }, { session: tx })
+            .lean<{ items?: { subjectId?: Types.ObjectId | null }[] }>();
+        return record?.items?.[0]?.subjectId ?? null;
+    }
+
+    /**
      * 그 날짜 하루 기록에 sec초를 쌓는다. 하루 상한(16시간)을 넘는 부분은 빼고, 실제로 쌓은 초를 돌려준다.
-     * 시작한 날이면 공부 항목에도 쌓고, 합계가 10분을 넘으면 streakOk를 켠다
+     * 시작한 날이면 공부 항목에도 쌓고, 합계가 10분을 넘으면 streakOk를 켠다.
+     * 과목이 있으면 시작한 날이든 아니든(자정을 넘긴 날도) 그날 쌓은 초만큼 과목별 시간(subjectSec)에 쌓는다
      */
     private async addToDay(
         owner: Types.ObjectId,
         studyDate: string,
         sec: number,
         row: StudySessionLean,
+        subjectId: Types.ObjectId | null,
         tx: ClientSession,
     ): Promise<number> {
         const existing = await this.dailyModel
-            .findOne({ userId: owner, studyDate }, { totalSec: 1, streakOk: 1 }, { session: tx })
-            .lean<{ totalSec: number; streakOk: boolean }>();
+            .findOne({ userId: owner, studyDate }, { totalSec: 1, streakOk: 1, subjectSec: 1, items: 1 }, { session: tx })
+            .lean<{
+                totalSec: number;
+                streakOk: boolean;
+                subjectSec?: Record<string, number> | null;
+                items?: { subjectId?: Types.ObjectId | null; accumulatedSec: number }[];
+            }>();
         const before = existing?.totalSec ?? 0;
         const counted = Math.max(0, Math.min(sec, DAILY_CAP_SEC - before));
         if (counted === 0) return 0;
+
+        // 과목별 시간 칸이 생기기 전의 옛 기록: 이번 정산분을 더하기 전에 이전 공부 시간(items 기준)을 먼저 옮겨 담는다.
+        // 안 그러면 칸이 이번 분만으로 새로 생겨 판정이 items를 무시하고 이전 시간을 잃는다.
+        // subjectSec이 없을 때만 바꾸는 조건이라 두 번 옮겨지지 않고, 같은 날 동시 정산은 트랜잭션 쓰기 충돌로 다시 시도된다
+        if (existing && !existing.subjectSec && subjectId) {
+            const carried: Record<string, number> = {};
+            for (const item of existing.items ?? []) {
+                if (!item.subjectId) continue;
+                const key = item.subjectId.toString();
+                carried[key] = (carried[key] ?? 0) + item.accumulatedSec;
+            }
+            if (Object.keys(carried).length > 0) {
+                await this.dailyModel.updateOne(
+                    { userId: owner, studyDate, subjectSec: { $exists: false } },
+                    { $set: { subjectSec: carried } },
+                    { session: tx },
+                );
+            }
+        }
 
         const inc: Record<string, number> = {
             totalSec: counted,
@@ -336,6 +376,7 @@ export class StudyService {
             inc['items.$[item].accumulatedSec'] = counted;
             options.arrayFilters = [{ 'item._id': row.studyItemId }];
         }
+        if (subjectId) inc[`subjectSec.${subjectId.toString()}`] = counted;
 
         const reachesStreak = before + counted >= STREAK_MIN_SEC;
         const update: Record<string, Record<string, unknown>> = { $inc: inc };
