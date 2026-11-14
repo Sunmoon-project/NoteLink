@@ -47,14 +47,37 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # 루트 명령은 Turborepo(turbo.json)로 돈다. npm ci의 prepare가 @notelink/shared를 미리 빌드하므로 그 결과를 지워,
+      # turbo가 shared를 먼저 빌드(^build)하지 않으면 아래 lint가 실패하게 한다(작업 순서 검증)
+      - name: shared 빌드 결과 지우기
+        run: rm -rf packages/shared/dist
       - name: Lint
-        run: npm run lint --workspaces --if-present
+        run: npm run lint
+      - name: turbo 캐시 확인
+        # 방금 돈 lint와 같은 입력이면 캐시가 적중하고(HIT), 루트 eslint 설정(globalDependencies)이 바뀌면 다시 돌아야(MISS) 한다.
+        # 실행 계획(--dry)만 보므로 검사를 다시 돌리지 않는다. 스크립트가 없는 워크스페이스(ai의 lint)는 뺀다
+        run: |
+          status() {
+            npx turbo run lint --dry=json | node -e "
+              const tasks = JSON.parse(require('fs').readFileSync(0, 'utf8')).tasks
+                .filter((t) => t.task === 'lint' && t.command !== '<NONEXISTENT>');
+              console.log([...new Set(tasks.map((t) => t.cache.status))].join(','));
+            "
+          }
+          same=$(status)
+          echo "같은 입력: $same"
+          [ "$same" = "HIT" ] || { echo "::error::같은 입력인데 lint 캐시가 적중하지 않았습니다($same)"; exit 1; }
+          echo "// turbo 캐시 확인용" >> eslint.rules.mjs
+          changed=$(status)
+          git checkout -- eslint.rules.mjs
+          echo "루트 eslint 설정 변경 뒤: $changed"
+          [ "$changed" = "MISS" ] || { echo "::error::루트 eslint 설정이 바뀌었는데 lint 캐시를 씁니다($changed)"; exit 1; }
       - name: Typecheck
-        run: npm run typecheck --workspaces --if-present
+        run: npm run typecheck
       - name: Build
-        run: npm run build --workspaces --if-present
+        run: npm run build
       - name: Test
-        run: npm run test --workspaces --if-present
+        run: npm test
 
   python:
     name: Python (ai)
