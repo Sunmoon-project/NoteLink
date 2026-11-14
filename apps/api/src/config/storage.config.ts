@@ -50,10 +50,9 @@ export function createStorageConfig(config: ConfigReader): StorageConfig | null 
     );
   }
 
-  const container =
-    config.get('AZURE_STORAGE_UPLOAD_CONTAINER')?.trim() || DEFAULT_UPLOAD_CONTAINER;
+  const container = config.get('AZURE_BLOB_CONTAINER')?.trim() || DEFAULT_UPLOAD_CONTAINER;
   if (!CONTAINER_PATTERN.test(container)) {
-    throw new Error('AZURE_STORAGE_UPLOAD_CONTAINER는 소문자 · 숫자 · 하이픈 3~63자여야 합니다');
+    throw new Error('AZURE_BLOB_CONTAINER는 소문자 · 숫자 · 하이픈 3~63자여야 합니다');
   }
 
   return {

@@ -7,7 +7,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createStorageConfig, type StorageConfig } from '../src/config/storage.config.js';
 import type { UploadQuotaService } from '../src/modules/upload/upload-quota.service.js';
-import { UPLOAD_PREFIX, UploadService } from '../src/modules/upload/upload.service.js';
+import { BlobStorageService, UPLOAD_PREFIX } from '../src/modules/upload/blob-storage.service.js';
+import { UploadsService } from '../src/modules/upload/uploads.service.js';
 
 const connection = process.env.AZURE_STORAGE_VERIFY_CONNECTION_STRING;
 const USER = '000000000000000000000000';
@@ -33,7 +34,7 @@ describe.skipIf(!connection)('진짜 저장소에서 올리기 주소 권한 확
       get: (key) => (key === 'AZURE_STORAGE_CONNECTION_STRING' ? connection : undefined),
     })!;
     const quota = { reserve: () => Promise.resolve({ ok: true }) } as unknown as UploadQuotaService;
-    target = await new UploadService(storage, quota).createTarget(USER, {
+    target = await new UploadsService(new BlobStorageService(storage), quota).createTarget(USER, {
       kind: 'image',
       fileName: 'verify.png',
       contentType: 'image/png',
@@ -81,5 +82,54 @@ describe.skipIf(!connection)('진짜 저장소에서 올리기 주소 권한 확
   it('서버는 올라간 파일을 지울 수 있다', async () => {
     await blob().deleteIfExists();
     expect(await blob().exists()).toBe(false);
+  });
+});
+
+describe.skipIf(!connection)('진짜 저장소에서 신고 사진 확인 · 보관', () => {
+  let blobs: BlobStorageService;
+  let container: ReturnType<BlobServiceClient['getContainerClient']>;
+  let target: UploadTarget;
+  let kept: string[] = [];
+  const body = new Uint8Array(500);
+  const nameOf = (url: string) =>
+    decodeURIComponent(new URL(url).pathname).split('/').slice(2).join('/');
+
+  beforeAll(async () => {
+    const storage = createStorageConfig({
+      get: (key) => (key === 'AZURE_STORAGE_CONNECTION_STRING' ? connection : undefined),
+    })!;
+    blobs = new BlobStorageService(storage);
+    container = new BlobServiceClient(
+      storage.blobEndpoint,
+      new StorageSharedKeyCredential(storage.accountName, storage.accountKey),
+    ).getContainerClient(storage.container);
+    const quota = { reserve: () => Promise.resolve({ ok: true }) } as unknown as UploadQuotaService;
+    target = await new UploadsService(blobs, quota).createTarget(USER, {
+      kind: 'image',
+      purpose: 'report',
+      fileName: 'report.jpg',
+      contentType: 'image/jpeg',
+      sizeBytes: body.length,
+    });
+    const res = await fetch(target.uploadUrl, { method: 'PUT', headers: target.headers, body });
+    expect(res.status).toBe(201);
+  });
+
+  afterAll(async () => {
+    for (const url of [target.blobUrl, ...kept])
+      await container.getBlobClient(nameOf(url)).deleteIfExists();
+  });
+
+  it('올린 사진을 확인해 reports/로 복사하고, 크기 · 형식이 그대로다', async () => {
+    kept = await blobs.keepReportImages(USER, [target.blobUrl]);
+    expect(kept).toHaveLength(1);
+    expect(nameOf(kept[0]!)).toBe(nameOf(target.blobUrl).replace(`${UPLOAD_PREFIX}/`, 'reports/'));
+    const props = await container.getBlobClient(nameOf(kept[0]!)).getProperties();
+    expect(props.contentLength).toBe(body.length);
+    expect(props.contentType).toBe('image/jpeg');
+  });
+
+  it('남이 올린 사진은 받지 않는다', async () => {
+    await expect(blobs.keepReportImages(OTHER, [target.blobUrl])).rejects.toThrow();
   });
 });

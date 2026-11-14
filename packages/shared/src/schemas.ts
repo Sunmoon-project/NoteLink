@@ -587,6 +587,8 @@ export const UploadSasBody = z.object({
   fileName: z.string().trim().min(1).max(255),
   contentType: z.string().trim().max(100),
   sizeBytes: z.number().int().positive(),
+  /** 쓰는 곳. report: 스터디룸 신고 사진(이미지만) */
+  purpose: z.enum(['report']).optional(),
 });
 
 export const UploadTarget = z.object({

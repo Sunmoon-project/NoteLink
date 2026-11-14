@@ -55,7 +55,7 @@ describe('파일 저장소 설정', () => {
     const config = createStorageConfig(
       env({
         AZURE_STORAGE_CONNECTION_STRING: CONNECTION,
-        AZURE_STORAGE_UPLOAD_CONTAINER: 'uploads-dev',
+        AZURE_BLOB_CONTAINER: 'uploads-dev',
       }),
     );
     expect(config?.container).toBe('uploads-dev');
@@ -68,10 +68,10 @@ describe('파일 저장소 설정', () => {
         createStorageConfig(
           env({
             AZURE_STORAGE_CONNECTION_STRING: CONNECTION,
-            AZURE_STORAGE_UPLOAD_CONTAINER: container,
+            AZURE_BLOB_CONTAINER: container,
           }),
         ),
-      ).toThrow('AZURE_STORAGE_UPLOAD_CONTAINER');
+      ).toThrow('AZURE_BLOB_CONTAINER');
     },
   );
 

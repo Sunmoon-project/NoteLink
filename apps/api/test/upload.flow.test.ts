@@ -13,7 +13,8 @@ import {
   UPLOAD_ISSUE_LIMIT,
   UPLOAD_ISSUE_WINDOW_MS,
 } from '../src/modules/upload/upload-quota.service.js';
-import { UPLOAD_PREFIX, UPLOAD_SAS_MINUTES } from '../src/modules/upload/upload.service.js';
+import { UPLOAD_PREFIX } from '../src/modules/upload/blob-storage.service.js';
+import { UPLOAD_SAS_MINUTES } from '../src/modules/upload/uploads.service.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
 import { createFakeUploadQuotas } from './support/fake-upload-quotas.js';
@@ -226,6 +227,39 @@ describe('파일 올리기 주소 발급 (POST /api/v1/uploads/sas)', () => {
     const bad = await sas({ ...image, fileName: 'a.gif' }).expect(400);
     expect(JSON.stringify(ok.body)).not.toContain(KEY);
     expect(JSON.stringify(bad.body)).not.toContain(KEY);
+  });
+
+  describe('신고 사진 (purpose: report)', () => {
+    const report = { ...image, purpose: 'report' };
+
+    it('다른 파일처럼 임시 경로의 내 폴더에 올린다(접수 때 보관 경로로 복사)', async () => {
+      const res = await sas(report).expect(200);
+      expect(UploadTarget.parse(res.body.data).blobUrl).toMatch(
+        new RegExp(`/raw/${UPLOAD_PREFIX}/${me}/${UUID}\\.jpg$`),
+      );
+    });
+
+    it.each([
+      ['문서', { kind: 'document', fileName: 'a.pdf', contentType: 'application/pdf' }],
+      ['녹음', { kind: 'audio', fileName: 'a.m4a', contentType: 'audio/mp4' }],
+      ['확장자와 다른 형식', { fileName: 'a.png', contentType: 'image/jpeg' }],
+      ['알 수 없는 형식', { contentType: 'application/octet-stream' }],
+    ])('%s은 FILE_NOT_ALLOWED', async (_, over) => {
+      const res = await sas({ ...report, ...over }).expect(400);
+      expect(res.body.code).toBe(ERROR_CODES.FILE_NOT_ALLOWED);
+      expect(started.quotas.rows).toHaveLength(0);
+    });
+
+    it('모르는 purpose는 VALIDATION_FAILED', async () => {
+      const res = await sas({ ...image, purpose: 'avatar' }).expect(400);
+      expect(res.body.code).toBe(ERROR_CODES.VALIDATION);
+    });
+
+    it('발급 횟수 제한을 다른 파일과 함께 쓴다', async () => {
+      await sas(report).expect(200);
+      await sas(image).expect(200);
+      expect(started.quotas.rows[0]?.count).toBe(2);
+    });
   });
 });
 
