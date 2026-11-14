@@ -296,7 +296,7 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 보관함 확인', () => {
         expect(sent[0]!.sort).toEqual({ order: 1, savedAt: 1, _id: 1 });
 
         const explained = await conn.db!.command({
-            explain: { find: 'quiz_box_items', filter: { userId: me }, sort: sent[0]!.sort },
+            explain: { find: 'quiz_box_items', filter: sent[0]!.filter, sort: sent[0]!.sort },
             verbosity: 'queryPlanner',
         });
         const plan = JSON.stringify(explained['queryPlanner'].winningPlan);

@@ -131,6 +131,7 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
     const sid = (x: { _id: Types.ObjectId }) => x._id.toString();
 
     let rows: Row[];
+    const findCalls: { filter: { questionId?: unknown }; options?: { session?: unknown } }[] = [];
     let seqs: Map<string, number>;
     const same = (a: unknown, b: unknown) => String(a) === String(b);
 
@@ -142,7 +143,8 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         return (x as number) < (y as number) ? -1 : (x as number) > (y as number) ? 1 : 0;
     };
     const itemsModel = {
-        find: (filter: { userId: Types.ObjectId; questionId?: { $in: Types.ObjectId[] } }, ..._rest: unknown[]) => {
+        find: (filter: { userId: Types.ObjectId; questionId?: { $in: Types.ObjectId[] } }, ...rest: unknown[]) => {
+            findCalls.push({ filter, options: rest[1] as { session?: unknown } | undefined });
             const hit = rows.filter((r) => same(r.userId, filter.userId) && (!filter.questionId || filter.questionId.$in.some((i) => same(i, r.questionId))));
             return {
                 lean: () => Promise.resolve(hit),
@@ -160,7 +162,7 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
                 }),
             };
         },
-        bulkWrite: vi.fn((ops: { updateOne: { filter: { userId: Types.ObjectId; questionId: Types.ObjectId }; update: { $setOnInsert: Row } } }[]) => {
+        bulkWrite: vi.fn((ops: { updateOne: { filter: { userId: Types.ObjectId; questionId: Types.ObjectId }; update: { $setOnInsert: Row } } }[], _options?: { session?: unknown }) => {
             for (const { updateOne } of ops) {
                 const { filter, update } = updateOne;
                 if (!rows.some((r) => same(r.userId, filter.userId) && same(r.questionId, filter.questionId))) rows.push({ ...update.$setOnInsert });
@@ -170,7 +172,7 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         deleteMany: vi.fn(),
     };
     const countersModel = {
-        findOneAndUpdate: vi.fn((filter: { _id: Types.ObjectId }, update: { $inc: { seq: number } }) => {
+        findOneAndUpdate: vi.fn((filter: { _id: Types.ObjectId }, update: { $inc: { seq: number } }, _options?: { session?: unknown }) => {
             const next = (seqs.get(String(filter._id)) ?? 0) + update.$inc.seq;
             seqs.set(String(filter._id), next);
             return { lean: () => Promise.resolve({ _id: filter._id, seq: next }) };
@@ -191,9 +193,14 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
     // 트랜잭션 흉내: 같은 사람의 카운터를 함께 쓰는 겹치는 요청은 실제 DB에서 쓰기 충돌로 하나씩 다시 시도되므로,
     // 여기서는 요청을 한 줄로 세워 하나가 끝난 뒤 다음이 처음부터(기존 항목 확인부터) 실행되게 한다
     let lock: Promise<unknown> = Promise.resolve();
+    const sessions: object[] = []; // transaction()이 콜백에 넘긴 세션들
     const connection = {
         transaction: (fn: (tx: object) => Promise<unknown>) => {
-            const run = lock.then(() => fn({}));
+            const run = lock.then(() => {
+                const tx = {};
+                sessions.push(tx);
+                return fn(tx);
+            });
             lock = run.catch(() => undefined);
             return run;
         },
@@ -213,6 +220,8 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         itemsModel.bulkWrite.mockClear();
         countersModel.findOneAndUpdate.mockClear();
         lock = Promise.resolve();
+        sessions.length = 0;
+        findCalls.length = 0;
     });
 
     it('담으면 보낸 순서대로 이어진 번호가 붙고, 목록은 앱 모양(정답 포함)으로 번호 순으로 나온다', async () => {
@@ -290,6 +299,17 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         const list = await svc().save(ME.toString(), []);
         expect(idsOf(list)).toEqual([a, b, c, d]);
         expect(rows.map((r) => r.order)).toEqual([1, 2, 3, 4]); // 번호도 건너뛰지 않는다
+    });
+
+    it('저장의 모든 DB 호출(기존 항목 조회 · 카운터 갱신 · 일괄 삽입)이 트랜잭션이 넘긴 같은 세션을 쓴다', async () => {
+        await svc().save(ME.toString(), [sid(mine[0]!), sid(mine[1]!)]);
+        expect(sessions).toHaveLength(1);
+        const [tx] = sessions;
+        // 기존 항목 조회는 questionId로 찾는 find (뒤의 목록 조회 box()는 트랜잭션 밖이다)
+        const existingCall = findCalls.find((c) => c.filter.questionId);
+        expect(existingCall?.options?.session).toBe(tx);
+        expect(countersModel.findOneAndUpdate.mock.calls[0]![2]?.session).toBe(tx);
+        expect(itemsModel.bulkWrite.mock.calls[0]![1]?.session).toBe(tx);
     });
 
     it('삽입이 실패하면 오류를 그대로 던진다', async () => {
