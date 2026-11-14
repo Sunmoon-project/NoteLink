@@ -238,4 +238,78 @@ describe.skipIf(!isLocal)('진짜 DB 자정을 넘긴 공부와 과목 반복 �
         expect(today.totalSec).toBe(1800);
         expect(Object.keys(today).sort()).toEqual(['_id', 'items', 'personalSec', 'roomSec', 'streakOk', 'studyDate', 'totalSec']);
     });
+
+    /**
+     * 배포 전에 쌓인 금요일 기록(subjectSec 없음, 수학 항목에 30분 + 영어 항목 0)과 금요일 수학 30분 목표를 만든다.
+     * 그날 오전 10시(서울)에 sessionItem 항목으로 10분 공부하고 끝낸 뒤 결과를 돌려준다
+     */
+    const legacyDaySession = async (sessionOn: 'math' | 'english') => {
+        const userId = new Types.ObjectId();
+        const mathItem = new Types.ObjectId();
+        const englishItem = new Types.ObjectId();
+        const mathId = new Types.ObjectId();
+        const englishId = new Types.ObjectId();
+        await col('users').insertOne({ _id: userId, nickname: `legacy_${userId.toString()}`, pointBalance: 0 });
+        await col('daily_records').insertOne({
+            userId,
+            studyDate: FRIDAY,
+            totalSec: 1800,
+            personalSec: 1800,
+            roomSec: 0,
+            streakOk: true,
+            items: [
+                { _id: mathItem, title: '수학', subjectId: mathId, subjectName: '수학', goalMin: null, accumulatedSec: 1800 },
+                { _id: englishItem, title: '영어', subjectId: englishId, subjectName: '영어', goalMin: null, accumulatedSec: 0 },
+            ],
+        });
+        await col('recurring_goals').insertOne({
+            _id: new Types.ObjectId(),
+            userId,
+            name: '수학 금요일',
+            days: [5],
+            targetMin: 30,
+            subjectId: mathId,
+            remindEnabled: false,
+            remindTime: null,
+            pausedUntil: null,
+            isActive: true,
+            deletedAt: null,
+            createdAt: CREATED,
+            updatedAt: CREATED,
+        });
+        const after = new Date('2026-11-14T03:00:00Z'); // 토요일 정오: 이 주(금요일 목표)를 센다
+        const streakBefore = await streakAt(userId, after);
+
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date('2026-11-13T01:00:00Z')); // 서울 금 10:00
+        const started = await study.startSession(userId.toString(), {
+            studyItemId: (sessionOn === 'math' ? mathItem : englishItem).toString(),
+            mode: 'personal',
+        } as never);
+        expect(started).toBeDefined();
+        vi.setSystemTime(new Date('2026-11-13T01:10:00Z')); // 10분 뒤
+        const ended = await study.end(userId.toString(), started!._id, { clientDurationSec: 600, endReason: 'user' } as never);
+        expect(ended?.durationSec).toBe(600);
+        vi.useRealTimers();
+        return { userId, mathId, englishId, streakBefore, streakAfter: await streakAt(userId, after) };
+    };
+
+    it('g) subjectSec 없는 옛 기록에 다른 과목을 정산해도 이전 과목 시간이 사라지지 않는다', async () => {
+        const { userId, mathId, englishId, streakBefore, streakAfter } = await legacyDaySession('english');
+        const fri = await dailyOf(userId, FRIDAY);
+        expect(fri?.subjectSec?.[mathId.toString()]).toBe(1800); // 옛 수학 30분이 옮겨 담김
+        expect(fri?.subjectSec?.[englishId.toString()]).toBe(600); // 이번 영어 10분
+        expect(fri?.totalSec).toBe(2400);
+        expect(streakBefore).toBe(1);
+        expect(streakAfter).toBe(1); // 수학 30분 목표가 그대로 달성
+    });
+
+    it('h) 같은 과목을 정산하면 이전 시간 위에 한 번만 더해진다', async () => {
+        const { userId, mathId, streakAfter } = await legacyDaySession('math');
+        const fri = await dailyOf(userId, FRIDAY);
+        expect(fri?.subjectSec?.[mathId.toString()]).toBe(2400); // 30분 + 10분, 두 번 더해지지 않음
+        expect(fri?.items[0]?.accumulatedSec).toBe(2400);
+        expect(fri?.totalSec).toBe(2400);
+        expect(streakAfter).toBe(1);
+    });
 });

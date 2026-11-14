@@ -335,11 +335,35 @@ export class StudyService {
         tx: ClientSession,
     ): Promise<number> {
         const existing = await this.dailyModel
-            .findOne({ userId: owner, studyDate }, { totalSec: 1, streakOk: 1 }, { session: tx })
-            .lean<{ totalSec: number; streakOk: boolean }>();
+            .findOne({ userId: owner, studyDate }, { totalSec: 1, streakOk: 1, subjectSec: 1, items: 1 }, { session: tx })
+            .lean<{
+                totalSec: number;
+                streakOk: boolean;
+                subjectSec?: Record<string, number> | null;
+                items?: { subjectId?: Types.ObjectId | null; accumulatedSec: number }[];
+            }>();
         const before = existing?.totalSec ?? 0;
         const counted = Math.max(0, Math.min(sec, DAILY_CAP_SEC - before));
         if (counted === 0) return 0;
+
+        // 과목별 시간 칸이 생기기 전의 옛 기록: 이번 정산분을 더하기 전에 이전 공부 시간(items 기준)을 먼저 옮겨 담는다.
+        // 안 그러면 칸이 이번 분만으로 새로 생겨 판정이 items를 무시하고 이전 시간을 잃는다.
+        // subjectSec이 없을 때만 바꾸는 조건이라 두 번 옮겨지지 않고, 같은 날 동시 정산은 트랜잭션 쓰기 충돌로 다시 시도된다
+        if (existing && !existing.subjectSec && subjectId) {
+            const carried: Record<string, number> = {};
+            for (const item of existing.items ?? []) {
+                if (!item.subjectId) continue;
+                const key = item.subjectId.toString();
+                carried[key] = (carried[key] ?? 0) + item.accumulatedSec;
+            }
+            if (Object.keys(carried).length > 0) {
+                await this.dailyModel.updateOne(
+                    { userId: owner, studyDate, subjectSec: { $exists: false } },
+                    { $set: { subjectSec: carried } },
+                    { session: tx },
+                );
+            }
+        }
 
         const inc: Record<string, number> = {
             totalSec: counted,
