@@ -16,8 +16,9 @@ const withoutPushEntitlement: ConfigPlugin = (config) =>
     c.modResults = dropPushEntitlement(c.modResults);
     return c;
   });
-/** EAS 프로젝트 ID(`eas init`이 알려 준 값). 비어 있으면 EAS 빌드 전에 채운다 */
-const EAS_PROJECT_ID: string | undefined = undefined;
+/** EAS 프로젝트(expo.dev의 cchangyeols-team/notelink). `eas init`이 만든 값 */
+const EAS_OWNER = 'cchangyeols-team';
+const EAS_PROJECT_ID = '7812fb56-3b89-4864-bb10-087c6fb2247f';
 
 /**
  * 앱 설정. NOTELINK_FREE_IOS=1은 아이폰 무료 Apple ID로 기기에 직접 설치할 때(`npm run ios:device`):
@@ -29,6 +30,7 @@ export function createConfig(env: Record<string, string | undefined> = process.e
   const config: ExpoConfig = {
     name: 'NoteLink',
     slug: 'notelink',
+    owner: EAS_OWNER,
     scheme: 'notelink',
     version: '0.1.0',
     // 기본은 코드에서 세로로 고정하고, 순공시간 자동 측정 화면만 가로로 돌린다 (p.49)
@@ -114,7 +116,7 @@ export function createConfig(env: Record<string, string | undefined> = process.e
       ...(FREE_IOS ? [] : [['expo-notifications', { color: '#3B6E5B' }] as [string, object]]),
     ],
     experiments: { typedRoutes: true },
-    ...(EAS_PROJECT_ID ? { extra: { eas: { projectId: EAS_PROJECT_ID } } } : {}),
+    extra: { eas: { projectId: EAS_PROJECT_ID } },
   };
   return FREE_IOS ? withoutPushEntitlement(config) : config;
 }

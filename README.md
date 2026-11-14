@@ -190,7 +190,7 @@ npm run dev:mobile   # 앱 개발 서버
 
 - **USB 빌드의 연결 대상**은 `apps/mobile/.env`를 따릅니다. 기기 저장 모드면 `EXPO_PUBLIC_USE_LOCAL_DATA=true`, 서버 연결이면 `false`와 `EXPO_PUBLIC_API_URL`(폰에서 닿는 주소: 배포 서버 또는 같은 와이파이의 PC IP)
 - **아이폰 · USB 처음 한 번**: Xcode > Settings > Accounts에 Apple ID를 더하고, 빌드 중 서명 팀을 고르라고 하면 그 Apple ID(Personal Team)를 고릅니다. 번들 ID가 이미 쓰인다고 나오면 `NOTELINK_IOS_BUNDLE_ID=com.내이름.notelink npm run ios:device`. 설치 뒤 아이폰 설정 > 일반 > VPN 및 기기 관리에서 개발자 앱을 신뢰합니다
-- **EAS(링크 설치) 처음 한 번**: expo.dev 가입 → `npx eas-cli login` → `apps/mobile`에서 `npx eas-cli init` → 알려 준 프로젝트 ID를 `app.config.ts`의 `EAS_PROJECT_ID`에 넣어 커밋. 서버 연결 빌드는 `npx eas-cli env:create --environment preview --name EXPO_PUBLIC_API_URL --value https://<배포 서버>/api/v1 --visibility plaintext`로 주소를 넣습니다
+- **EAS(링크 설치) 처음 한 번**: EAS 프로젝트는 expo.dev의 `cchangyeols-team/notelink`입니다(`app.config.ts`의 `EAS_OWNER` · `EAS_PROJECT_ID`). expo.dev 가입 → 조직 `cchangyeols-team`에 초대받기 → `npx eas-cli login`. 서버 연결 빌드는 `npx eas-cli env:create --environment preview --name EXPO_PUBLIC_API_URL --value https://<배포 서버>/api/v1 --visibility plaintext`로 주소를 넣습니다
 - 아이폰 링크 설치는 Apple 개발자 계정(연 $99)이 있어야 합니다. 등록한 기기에 바로 까는 내부 배포는 `preview-*` 프로필(ad hoc 서명), TestFlight는 스토어 서명이라 `production` 프로필(`npx eas-cli build -p ios --profile production` → `npx eas-cli submit -p ios`)을 씁니다
 
 ---
@@ -241,17 +241,16 @@ npm run dev:mobile   # 앱 개발 서버
 - 소셜 로그인 시크릿 같은 비밀값은 **서버에만** 두고 앱에는 넣지 않습니다.
 - **비밀값은 Azure Key Vault 두 곳에 나눠 둡니다.** 키를 메시지나 파일로 따로 나누지 않고, 각자 자기 Azure 계정으로 엽니다(팀 키 하나를 나눠 갖지 않음). 배포 값과 개발 값을 나눠, 개발 값이 새거나 잘못 바뀌어도 배포 앱과 실제 데이터에 닿지 않게 합니다.
 
-  | Key Vault | 무엇 | 쓰는 곳 |
-  | --- | --- | --- |
-  | 배포 `kv-notelink-dev` | **배포용 키만** | 배포 App Service가 Key Vault 참조(`@Microsoft.KeyVault(SecretUri=…)`)로 읽음. 로컬로 받지 않음 |
-  | 팀 `kv-notelink-team` | 팀원이 같이 쓰는 **로컬 개발용 키**(배포 값은 넣지 않음) | `pull`로 받아 각자 `apps/<앱>/.env`를 만듦 |
+  | Key Vault              | 무엇                                                     | 쓰는 곳                                                                                        |
+  | ---------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+  | 배포 `kv-notelink-dev` | **배포용 키만**                                          | 배포 App Service가 Key Vault 참조(`@Microsoft.KeyVault(SecretUri=…)`)로 읽음. 로컬로 받지 않음 |
+  | 팀 `kv-notelink-team`  | 팀원이 같이 쓰는 **로컬 개발용 키**(배포 값은 넣지 않음) | `pull`로 받아 각자 `apps/<앱>/.env`를 만듦                                                     |
 
-  | 누구 | 배포 Key Vault | 팀 Key Vault |
-  | --- | --- | --- |
-  | 완우 · 희재 | `Key Vault Secrets Officer`(값 보기 · 넣기) | `Key Vault Secrets Officer` |
-  | 나머지 팀원 | 사용자 지정 역할 `NoteLink Secrets Writer`(이름 보기 · 넣기, 값 보기 ❌) | `Key Vault Secrets Officer` |
-  | 배포 앱(관리 ID) | `Key Vault Secrets User`(값 읽기) | — |
-
+  | 누구             | 배포 Key Vault                                                           | 팀 Key Vault                |
+  | ---------------- | ------------------------------------------------------------------------ | --------------------------- |
+  | 완우 · 희재      | `Key Vault Secrets Officer`(값 보기 · 넣기)                              | `Key Vault Secrets Officer` |
+  | 나머지 팀원      | 사용자 지정 역할 `NoteLink Secrets Writer`(이름 보기 · 넣기, 값 보기 ❌) | `Key Vault Secrets Officer` |
+  | 배포 앱(관리 ID) | `Key Vault Secrets User`(값 읽기)                                        | —                           |
   - 처음 한 번: Azure CLI 설치(Windows `winget install --exact --id Microsoft.AzureCLI`, Mac `brew install azure-cli`) → 터미널을 새로 열고 `az login --tenant <팀 테넌트 ID>`(팀 디렉터리에 초대된 계정으로). Windows에서 계정 선택 창이 멈추면 `az config set core.enable_broker_on_windows=false` 뒤 다시 로그인합니다.
   - **로컬 `.env` 만들기**: `scripts/env-vault.sh pull ai`(또는 `api`). 팀 Key Vault에서 그 앱의 `.env.production`에 적힌 이름만 받아 `apps/<앱>/.env`(커밋하지 않음)를 만듭니다. 값은 화면에 나오지 않습니다. 사람마다 다른 값(개인 키 · 로컬 DB 주소, `.env.production`의 `로컬:` 줄 참고)은 `apps/<앱>/.env.local`에 두면 받은 값 위에 덮어씁니다(`.env`를 직접 고치면 다음 `pull`에 덮이므로 `.env.local`에). 있던 `.env`는 손으로 만든 것이면 `.env.bak`, `pull`이 만든 것이면 `.env.prev`로 남깁니다. 값이 바뀌면 `pull`을 다시 합니다. AI 서버는 `.env`의 `${이름}`을 다른 변수로 바꿔 읽으므로(python-dotenv), `${`가 든 값은 `.env`가 아니라 셸 환경 변수로 넘깁니다.
   - 팀 개발용 키 넣기 · 바꾸기: `scripts/env-vault.sh push --team ANTHROPIC_API_KEY` → 값을 보이지 않게 입력합니다. 이름 보기는 `list --team`.
