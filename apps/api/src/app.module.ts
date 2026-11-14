@@ -13,12 +13,14 @@ import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
 import { ProgressModule } from './modules/progress/progress.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
 import { StudyRoomsModule } from './modules/studyroom/study-rooms.module.js';
+import { FlashcardsModule } from './modules/quiz/flashcards.module.js';
 import { QuizAttemptsModule } from './modules/quiz/quiz-attempts.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
 import { TimetableModule } from './modules/timetable/timetable.module.js';
 import { UploadsModule } from './modules/upload/uploads.module.js';
+import { FriendsModule } from './modules/social/friends/friends.module.js';
 
 @Module({
   imports: [
@@ -49,8 +51,12 @@ import { UploadsModule } from './modules/upload/uploads.module.js';
     ProgressModule,
     // 퀴즈 풀이 시작 · 답 제출 채점(FR-49·50)
     QuizAttemptsModule,
+    // 플래시카드 저장 · 조회 · 삭제(FR-55 · 56)
+    FlashcardsModule,
     // 시간표 · 수업 · 친구 공유(FR-14)
     TimetableModule,
+    // 친구 찾기 · 요청 · 목록 · 삭제(FR-15)
+    FriendsModule,
     // 할 일 · D-day (FR-10)
     CalendarModule,
     HolidaysModule,

@@ -15,6 +15,7 @@ jest.mock('../lib/api', () => ({
   get api() {
     return mockApi;
   },
+  ApiError: jest.requireActual('../lib/api/http').ApiError,
 }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
@@ -56,6 +57,19 @@ describe('친구 추가', () => {
     expect(mockApi.social.sendRequest).toHaveBeenCalledWith('u2');
     expect(await screen.findByText('요청 보냄')).toBeTruthy();
     expect(screen.getAllByText('친구 요청 보내기')).toHaveLength(1);
+  });
+
+  it('서버가 거절 이유를 알려 주면(이미 친구 등) 그 문구를 보여 준다', async () => {
+    const { ApiError } = jest.requireActual('../lib/api/http');
+    const { useToast } = jest.requireActual('../stores/toast');
+    mockApi.social.search.mockResolvedValue([user('u1', '지우')]);
+    mockApi.social.sendRequest.mockRejectedValueOnce(
+      new ApiError('FRIEND_ALREADY', '이미 친구예요', 409),
+    );
+    await renderScreen(<FriendAddScreen />);
+    await fireEvent.changeText(screen.getByPlaceholderText('닉네임을 입력해주세요.'), '지우');
+    await fireEvent.press(await screen.findByText('친구 요청 보내기'));
+    await waitFor(() => expect(JSON.stringify(useToast.getState())).toContain('이미 친구예요'));
   });
 });
 

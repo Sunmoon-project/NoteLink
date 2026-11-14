@@ -47,3 +47,38 @@ it('실서버 보관함 저장·삭제 요청에 선택한 문제 ID를 그대�
     post.mockRestore();
   }
 });
+
+it.each([
+  [
+    '보관함',
+    (ids: string[]) => httpApi.quiz.deleteFromBox(ids),
+    `${PATHS.quizBox}/delete`,
+    'questionIds',
+  ],
+  [
+    '플래시카드',
+    (ids: string[]) => httpApi.quiz.deleteFlashcards(ids),
+    PATHS.flashcardsDelete,
+    'ids',
+  ],
+] as const)(
+  '실서버 %s 삭제는 3000개를 넘으면 3000개씩 나눠 차례로 보낸다',
+  async (_name, remove, path, key) => {
+    const ids = Array.from({ length: 3001 }, (_, i) => `id${i}`);
+    const post = jest.spyOn(http, 'post').mockResolvedValue(undefined);
+    try {
+      await remove(ids);
+      expect(post).toHaveBeenCalledTimes(2);
+      expect(post).toHaveBeenNthCalledWith(1, path, { [key]: ids.slice(0, 3000) });
+      expect(post).toHaveBeenNthCalledWith(2, path, { [key]: ['id3000'] });
+      post.mockClear();
+      await remove(ids.slice(0, 3000));
+      await remove([]);
+      expect(post).toHaveBeenCalledTimes(2);
+      expect(post).toHaveBeenNthCalledWith(1, path, { [key]: ids.slice(0, 3000) });
+      expect(post).toHaveBeenNthCalledWith(2, path, { [key]: [] });
+    } finally {
+      post.mockRestore();
+    }
+  },
+);
