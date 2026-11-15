@@ -17,6 +17,7 @@ import { BlobStorageService } from '../../upload/blob-storage.service.js';
 import { Folder } from '../schemas/folder.schema.js';
 import { Material } from '../schemas/material.schema.js';
 import type { CreateMaterialDto } from './dto/create-material.dto.js';
+import type { UpdateMaterialDto } from './dto/update-material.dto.js';
 import { syncFromJob } from './material-sync.js';
 import { type MaterialRow, toAppMaterial } from './material-view.js';
 
@@ -26,6 +27,10 @@ type AppMaterial = ReturnType<typeof toAppMaterial>;
 export const AI_READ_SAS_MS = 24 * 60 * 60 * 1000;
 /** 응답에 담는 원본 이미지 읽기 주소 유효 시간 */
 export const APP_READ_SAS_MS = 60 * 60 * 1000;
+/** 폴더 노트 목록 상한(최근 것부터, 페이지 나누기 없음) */
+export const LIST_MAX = 200;
+/** 목록 조회 한 번에 끝난 작업 결과를 옮기는 노트 수 상한 */
+export const LIST_SYNC_MAX = 20;
 /** Idempotency-Key 최대 길이 */
 export const IDEMPOTENCY_KEY_MAX = 128;
 
@@ -397,6 +402,95 @@ export class MaterialsService {
       const reason = e instanceof Error ? e.message : '알 수 없는 오류';
       this.logger.warn(`퀴즈 미리 만들기를 넣지 못했어요(노트 ${row._id.toString()}): ${reason}`);
     }
+  }
+
+  /**
+   * 내 폴더 안의 지우지 않은 노트(최근 것부터, 최대 LIST_MAX 개). 정리 중인 노트도 포함한다(앱이 "요약 중"을 보인다).
+   * 정리 중인 노트는 상세 조회처럼 끝난 작업 결과를 먼저 옮긴다. 한 번에 옮기는 수는 LIST_SYNC_MAX 개까지
+   * (나머지는 상세를 열거나 다음 목록 조회 때). 목록에는 쪽(pages)을 담지 않는다
+   */
+  async listInFolder(userId: string, folderId: string): Promise<AppMaterial[]> {
+    const owner = new Types.ObjectId(userId);
+    const folder = await this.folders.exists({
+      _id: objectId(folderId, '폴더'),
+      ownerId: owner,
+      deletedAt: null,
+    });
+    if (!folder) throw notFound('폴더');
+    // 쪽 글(ocrText)이 큰 노트가 많아도 목록이 무겁지 않게, 목록에 쓰지 않는 값은 읽지 않는다
+    const rows = await this.materials
+      .find(
+        { ownerId: owner, folderId: folder._id, deletedAt: null },
+        { pages: 0, concepts: 0, blobUrls: 0 },
+      )
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(LIST_MAX)
+      .lean<MaterialRow[]>();
+    const waiting = new Set(
+      rows
+        .filter((r) => r.processing.jobId && ['queued', 'processing'].includes(r.processing.status))
+        .slice(0, LIST_SYNC_MAX)
+        .map((r) => r._id.toString()),
+    );
+    const synced = await Promise.all(
+      rows.map(async (row): Promise<MaterialRow | null> => {
+        if (!waiting.has(row._id.toString())) return row;
+        try {
+          // 옮기려면 원본 쪽 정보가 필요해 이 노트만 전체를 다시 읽는다
+          const full = await this.materials
+            .findOne({ _id: row._id, ownerId: owner, deletedAt: null })
+            .lean<MaterialRow>();
+          return full ? await this.sync(userId, full) : null;
+        } catch (e) {
+          // 한 노트를 옮기지 못해도 목록은 보여 준다
+          const reason = e instanceof Error ? e.message : '알 수 없는 오류';
+          this.logger.warn(`노트 ${row._id.toString()} 결과를 옮기지 못했어요: ${reason}`);
+          return row;
+        }
+      }),
+    );
+    return synced.filter((r): r is MaterialRow => r !== null).map((r) => toAppMaterial(r));
+  }
+
+  /**
+   * 노트 수정. `saved: true` 는 저장 시각을 남기고(이미 저장했으면 그대로), `summary` 는 소제목 · 본문을 통째로
+   * 바꾸고 개념 이름 캐시(concepts)를 비운다(글이 바뀌었으므로 다음 퀴즈 때 처리기가 다시 뽑는다).
+   * 둘 중 하나만 보낸다. 정리가 끝나기 전의 노트는 요약을 고칠 수 없다(끝나면 결과가 덮어쓴다): 409 NOTE_NOT_READY
+   */
+  async update(userId: string, id: string, dto: UpdateMaterialDto): Promise<AppMaterial> {
+    const owner = new Types.ObjectId(userId);
+    if ((dto.saved === true) === (dto.summary != null))
+      throw invalid('saved 와 summary 중 하나만 보내 주세요');
+    const _id = objectId(id);
+    const found = await this.materials
+      .findOne({ _id, ownerId: owner, deletedAt: null })
+      .lean<MaterialRow>();
+    const row = found ? await this.sync(userId, found) : null;
+    if (!row) throw notFound('노트');
+    const mine = { _id, ownerId: owner, deletedAt: null };
+    if (dto.summary != null) {
+      if (row.processing.status !== 'done')
+        throw new ConflictException({
+          code: ERROR_CODES.NOTE_NOT_READY,
+          message: '아직 정리 중인 노트라 요약을 고칠 수 없어요',
+        });
+      const sections = dto.summary.sections.map((s) => ({ heading: s.heading, body: s.body }));
+      await this.materials.updateOne(mine, {
+        $set: { summary: { sections, points: row.summary?.points ?? [] }, concepts: [] },
+      });
+    } else {
+      await this.materials.updateOne({ ...mine, savedAt: null }, { $set: { savedAt: new Date() } });
+    }
+    return this.findMine(userId, id);
+  }
+
+  /** 노트를 지운 것으로 표시한다(소프트 삭제). 진행 중인 작업 · 퀴즈 세트 · 원본 파일은 건드리지 않는다 */
+  async remove(userId: string, id: string): Promise<void> {
+    const result = await this.materials.updateOne(
+      { _id: objectId(id), ownerId: new Types.ObjectId(userId), deletedAt: null },
+      { $set: { deletedAt: new Date() } },
+    );
+    if (result.matchedCount === 0) throw notFound('노트');
   }
 
   /** 앱에 보낼 노트 한 개. 쪽 이미지는 읽기 SAS 로 바꾼다(저장소 설정이 없거나 만들지 못하면 원래 주소) */

@@ -28,6 +28,9 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
   let token: string;
   const register = vi.fn();
   const findMine = vi.fn();
+  const listInFolder = vi.fn();
+  const update = vi.fn();
+  const remove = vi.fn();
 
   beforeAll(async () => {
     stubAppEnv();
@@ -35,7 +38,7 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
       .overrideProvider(getModelToken(RefreshToken.name))
       .useValue(createFakeRefreshTokens().model)
       .overrideProvider(MaterialsService)
-      .useValue({ register, findMine })
+      .useValue({ register, findMine, listInFolder, update, remove })
       .compile();
     app = ref.createNestApplication();
     configureApp(app);
@@ -127,5 +130,84 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
       .expect(200);
     expect(res.body).toEqual({ data: { _id: 'm1' } });
     expect(findMine).toHaveBeenCalledWith(me.toHexString(), 'm1');
+  });
+  describe('목록 · 수정 · 삭제 요청', () => {
+    const auth = () => ({ Authorization: `Bearer ${token}` });
+    const patch = (id: string, payload: unknown) =>
+      request(app.getHttpServer())
+        .patch(api(PATHS.material(id)))
+        .set(auth())
+        .send(payload as object);
+
+    it('GET /folders/:id/materials: { data: [...] } 로 돌려준다', async () => {
+      listInFolder.mockResolvedValue([{ _id: 'm1' }]);
+      await request(app.getHttpServer())
+        .get(api(PATHS.folderMaterials('f1')))
+        .expect(401);
+      const res = await request(app.getHttpServer())
+        .get(api(PATHS.folderMaterials('f1')))
+        .set(auth())
+        .expect(200);
+      expect(res.body).toEqual({ data: [{ _id: 'm1' }] });
+      expect(listInFolder).toHaveBeenCalledWith(me.toHexString(), 'f1');
+    });
+
+    it('PATCH: { saved: true } 와 { summary: { sections } } 를 받는다', async () => {
+      update.mockResolvedValue({ _id: 'm1' });
+      await patch('m1', { saved: true }).expect(200);
+      expect(update).toHaveBeenLastCalledWith(
+        me.toHexString(),
+        'm1',
+        expect.objectContaining({ saved: true }),
+      );
+      const res = await patch('m1', {
+        summary: { sections: [{ heading: '  제목  ', body: '본문' }] },
+      }).expect(200);
+      expect(res.body).toEqual({ data: { _id: 'm1' } });
+      expect(update.mock.lastCall![2].summary.sections).toEqual([
+        { heading: '제목', body: '본문' },
+      ]);
+      await request(app.getHttpServer())
+        .patch(api(PATHS.material('m1')))
+        .send({ saved: true })
+        .expect(401);
+    });
+
+    it('PATCH 상한: 섹션 50개 · 제목 100자 · 본문 10000자', async () => {
+      update.mockResolvedValue({ _id: 'm1' });
+      const section = { heading: 'h', body: 'b' };
+      await patch('m1', { summary: { sections: Array(50).fill(section) } }).expect(200);
+      await patch('m1', {
+        summary: { sections: [{ heading: 'h'.repeat(100), body: 'b'.repeat(10000) }] },
+      }).expect(200);
+      update.mockClear();
+      for (const bad of [
+        { summary: { sections: Array(51).fill(section) } },
+        { summary: { sections: [{ heading: 'h'.repeat(101), body: 'b' }] } },
+        { summary: { sections: [{ heading: 'h', body: 'b'.repeat(10001) }] } },
+        { summary: { sections: [{ heading: '   ', body: 'b' }] } },
+        { summary: { sections: [{ heading: 'h' }] } },
+        { summary: { sections: 'x' } },
+        { saved: false },
+        { saved: 'yes' },
+        { title: '못 바꿈' },
+      ]) {
+        await patch('m1', bad).expect(400);
+      }
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('DELETE /materials/:id: 204, 본문 없음', async () => {
+      remove.mockResolvedValue(undefined);
+      await request(app.getHttpServer())
+        .delete(api(PATHS.material('m1')))
+        .expect(401);
+      const res = await request(app.getHttpServer())
+        .delete(api(PATHS.material('m1')))
+        .set(auth())
+        .expect(204);
+      expect(res.text).toBe('');
+      expect(remove).toHaveBeenCalledWith(me.toHexString(), 'm1');
+    });
   });
 });

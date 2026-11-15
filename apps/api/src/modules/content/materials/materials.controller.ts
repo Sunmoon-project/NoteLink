@@ -1,9 +1,22 @@
-import { Body, Controller, Get, Headers, Param, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Headers,
+  HttpCode,
+  Param,
+  Patch,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import type { AiJob, Material } from '@notelink/shared';
 
 import { requireUserId } from '../../../common/request-user.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../../auth/jwt-auth.guard.js';
 import { CreateMaterialDto } from './dto/create-material.dto.js';
+import { UpdateMaterialDto } from './dto/update-material.dto.js';
 import { MaterialsService, parseIdempotencyKey } from './materials.service.js';
 
 /** 노트(자료) 주소 (packages/shared PATHS.materials · material · folderMaterials) */
@@ -34,5 +47,30 @@ export class MaterialsController {
     @Param('id') id: string,
   ): Promise<{ data: Material }> {
     return { data: (await this.materials.findMine(requireUserId(req), id)) as Material };
+  }
+
+  /** 폴더 안의 노트(최근 순, 정리 중인 노트 포함) */
+  @Get('folders/:id/materials')
+  async listInFolder(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ): Promise<{ data: Material[] }> {
+    return { data: (await this.materials.listInFolder(requireUserId(req), id)) as Material[] };
+  }
+
+  /** 저장({ saved: true }) 또는 요약 수정({ summary: { sections } }) */
+  @Patch('materials/:id')
+  async update(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: UpdateMaterialDto,
+  ): Promise<{ data: Material }> {
+    return { data: (await this.materials.update(requireUserId(req), id, body)) as Material };
+  }
+
+  @Delete('materials/:id')
+  @HttpCode(204)
+  async remove(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
+    await this.materials.remove(requireUserId(req), id);
   }
 }

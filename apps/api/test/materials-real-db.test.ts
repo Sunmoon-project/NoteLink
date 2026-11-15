@@ -6,7 +6,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import type { CreateMaterialDto } from '../src/modules/content/materials/dto/create-material.dto.js';
-import { MaterialsService } from '../src/modules/content/materials/materials.service.js';
+import {
+  LIST_MAX,
+  LIST_SYNC_MAX,
+  MaterialsService,
+} from '../src/modules/content/materials/materials.service.js';
 import { Folder, FolderSchema } from '../src/modules/content/schemas/folder.schema.js';
 import { Material, MaterialSchema } from '../src/modules/content/schemas/material.schema.js';
 import { AiJob, AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
@@ -61,6 +65,7 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
 
   const url = (n: number, user = me) =>
     `https://a.blob.core.windows.net/c/uploads/image/${user.toHexString()}/550e8400-e29b-41d4-a716-44665544000${n}.jpg`;
+  const docUrl = `https://a.blob.core.windows.net/c/uploads/document/${me.toHexString()}/550e8400-e29b-41d4-a716-446655440007.pdf`;
   const dto = (over: Partial<CreateMaterialDto> = {}): CreateMaterialDto => ({
     folderId,
     kind: 'handwriting',
@@ -381,6 +386,190 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       }
       await materials.updateOne({ _id: material._id }, { $set: { deletedAt: new Date() } });
       await expect(service.findMine(me.toHexString(), material._id)).rejects.toMatchObject({
+        status: 404,
+      });
+    });
+  });
+  describe('목록 · 수정 · 삭제', () => {
+    const complete = (jobId: string) =>
+      jobs.updateOne(
+        { _id: jobId },
+        {
+          $set: {
+            status: 'succeeded',
+            progress: 100,
+            result: {
+              pages: [{ pageNo: 1, ocrText: '글' }],
+              chunks: [{ order: 1, title: '제목', text: '본문', lines: [] }],
+            },
+          },
+        },
+      );
+
+    beforeEach(() => {
+      quizSets.pregenerate.mockReset();
+    });
+
+    it('폴더 안의 지우지 않은 노트만 최근 순으로, 정리 중인 노트도 포함하고 쪽은 담지 않는다', async () => {
+      const a = await service.register(me.toHexString(), dto({ title: 'a' }));
+      const b = await service.register(me.toHexString(), dto({ title: 'b' }));
+      const c = await service.register(me.toHexString(), dto({ title: 'c' }));
+      await materials.updateOne({ _id: b.material._id }, { $set: { deletedAt: new Date() } });
+      const otherFolder = await folders.create({
+        ownerId: me,
+        title: '다른 폴더',
+        subjectName: '수학',
+      });
+      await service.register(me.toHexString(), dto({ folderId: otherFolder._id.toHexString() }));
+
+      const list = await service.listInFolder(me.toHexString(), folderId);
+      expect(list.map((m) => m.title)).toEqual(['c', 'a']);
+      expect(list[0]!._id).toBe(c.material._id);
+      expect(list[1]!._id).toBe(a.material._id);
+      expect(list.every((m) => m.processing.status === 'queued' && m.pages === undefined)).toBe(
+        true,
+      );
+    });
+
+    it('남의 폴더 · 지운 폴더 · 없는 폴더 · 잘못된 id 는 404', async () => {
+      const theirs = await folders.create({ ownerId: other, title: '남의', subjectName: '수학' });
+      const gone = await folders.create({
+        ownerId: me,
+        title: '지운',
+        subjectName: '수학',
+        deletedAt: new Date(),
+      });
+      for (const id of [
+        theirs._id.toHexString(),
+        gone._id.toHexString(),
+        new Types.ObjectId().toHexString(),
+        'nope',
+      ]) {
+        await expect(service.listInFolder(me.toHexString(), id)).rejects.toMatchObject({
+          status: 404,
+        });
+      }
+    });
+
+    it('정리가 끝난 노트는 목록에서도 완료로 보이고, 한 번에 옮기는 수는 상한(20)까지', async () => {
+      const made = [];
+      for (let i = 0; i < 22; i++) {
+        made.push(await service.register(me.toHexString(), dto({ title: `n${i}` })));
+      }
+      await Promise.all(made.map((m) => complete(m.job._id)));
+      const list = await service.listInFolder(me.toHexString(), folderId);
+      expect(list).toHaveLength(22);
+      expect(list.filter((m) => m.processing.status === 'done')).toHaveLength(LIST_SYNC_MAX);
+      // 가장 최근 20개부터 옮긴다
+      expect(list.slice(0, LIST_SYNC_MAX).every((m) => m.processing.status === 'done')).toBe(true);
+      expect(quizSets.pregenerate).toHaveBeenCalledTimes(LIST_SYNC_MAX);
+      // 다음 조회에서 나머지가 옮겨진다
+      const again = await service.listInFolder(me.toHexString(), folderId);
+      expect(again.every((m) => m.processing.status === 'done')).toBe(true);
+    });
+
+    it('목록은 200개까지(최근 것부터)', async () => {
+      const base = {
+        ownerId: me,
+        folderId: new Types.ObjectId(folderId),
+        kind: 'handwriting',
+        source: 'camera',
+        processing: { status: 'done', progress: 100 },
+      };
+      await materials.insertMany(
+        Array.from({ length: 205 }, (_, i) => ({
+          ...base,
+          title: `m${i}`,
+          createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)),
+        })),
+      );
+      const list = await service.listInFolder(me.toHexString(), folderId);
+      expect(list).toHaveLength(LIST_MAX);
+      expect(list[0]!.title).toBe('m204');
+      expect(list.at(-1)!.title).toBe('m5');
+    });
+
+    it('저장: 저장 시각을 한 번 남기고(다시 눌러도 그대로), 응답은 노트 모양', async () => {
+      const { material } = await service.register(me.toHexString(), dto());
+      const first = await service.update(me.toHexString(), material._id, { saved: true });
+      expect(first._id).toBe(material._id);
+      expect(first).not.toHaveProperty('savedAt');
+      const savedAt = (await materials.findById(material._id).lean())?.savedAt;
+      expect(savedAt).toBeInstanceOf(Date);
+      await new Promise((r) => setTimeout(r, 20));
+      await service.update(me.toHexString(), material._id, { saved: true });
+      expect((await materials.findById(material._id).lean())?.savedAt?.getTime()).toBe(
+        savedAt!.getTime(),
+      );
+    });
+
+    it('요약 수정: 소제목 · 본문을 바꾸고 points 는 유지, 개념 캐시는 비운다', async () => {
+      const { material, job } = await service.register(
+        me.toHexString(),
+        dto({ kind: 'document', source: 'file', blobUrls: [docUrl] }),
+      );
+      await complete(job._id);
+      // 정리 결과를 먼저 옮겨 두고, 그 뒤에 퀴즈가 저장한 개념 이름이 있는 상태에서 요약을 고친다
+      await service.findMine(me.toHexString(), material._id);
+      await materials.updateOne({ _id: material._id }, { $set: { concepts: ['옛 개념'] } });
+      const got = await service.update(me.toHexString(), material._id, {
+        summary: { sections: [{ heading: '고친 제목', body: '고친 본문' }] },
+      });
+      expect(got.summary).toEqual({
+        sections: [{ heading: '고친 제목', body: '고친 본문' }],
+        points: ['제목'],
+      });
+      const row = await materials.findById(material._id).lean();
+      expect(row?.concepts).toEqual([]);
+      // 다시 조회해도 고친 요약이 그대로(끝난 노트는 작업 결과로 덮어쓰지 않는다)
+      expect(
+        (await service.findMine(me.toHexString(), material._id)).summary?.sections[0]?.heading,
+      ).toBe('고친 제목');
+    });
+
+    it('정리가 끝나기 전의 요약 수정은 409 NOTE_NOT_READY', async () => {
+      const { material } = await service.register(me.toHexString(), dto());
+      await expect(
+        service.update(me.toHexString(), material._id, {
+          summary: { sections: [{ heading: 'a', body: 'b' }] },
+        }),
+      ).rejects.toMatchObject({ status: 409, response: { code: 'NOTE_NOT_READY' } });
+    });
+
+    it('saved 와 summary 를 함께 보내거나 둘 다 안 보내면 400', async () => {
+      const { material } = await service.register(me.toHexString(), dto());
+      const both = { saved: true, summary: { sections: [] } } as never;
+      await expect(service.update(me.toHexString(), material._id, both)).rejects.toMatchObject({
+        status: 400,
+      });
+      await expect(service.update(me.toHexString(), material._id, {})).rejects.toMatchObject({
+        status: 400,
+      });
+    });
+
+    it('남의 노트 · 없는 노트의 수정 · 삭제는 404', async () => {
+      const { material } = await service.register(me.toHexString(), dto());
+      await expect(
+        service.update(other.toHexString(), material._id, { saved: true }),
+      ).rejects.toMatchObject({ status: 404 });
+      await expect(service.remove(other.toHexString(), material._id)).rejects.toMatchObject({
+        status: 404,
+      });
+      await expect(service.remove(me.toHexString(), 'nope')).rejects.toMatchObject({ status: 404 });
+      expect((await materials.findById(material._id).lean())?.deletedAt).toBeNull();
+    });
+
+    it('삭제: 소프트 삭제라 조회 · 목록에서 사라지고, 진행 중인 작업은 건드리지 않는다. 다시 지우면 404', async () => {
+      const { material, job } = await service.register(me.toHexString(), dto());
+      await service.remove(me.toHexString(), material._id);
+      const row = await materials.findById(material._id).lean();
+      expect(row?.deletedAt).toBeInstanceOf(Date);
+      expect((await jobs.findById(job._id).lean())?.status).toBe('queued');
+      await expect(service.findMine(me.toHexString(), material._id)).rejects.toMatchObject({
+        status: 404,
+      });
+      expect(await service.listInFolder(me.toHexString(), folderId)).toEqual([]);
+      await expect(service.remove(me.toHexString(), material._id)).rejects.toMatchObject({
         status: 404,
       });
     });
