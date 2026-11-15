@@ -555,6 +555,31 @@ def test_sentence_answer_does_not_avoid_note_group_words() -> None:
     assert "오답 보기로" not in llm.named("Review")[0].user
 
 
+@pytest.mark.parametrize(
+    "before",
+    [unchecked(), unchecked(lastResult="right", streak=2, reviews=4)],
+    ids=["last-wrong", "streak-2"],
+)
+def test_answer_side_flaw_keeps_the_attempts_and_carries_the_review(before: JsonObject) -> None:
+    # 정답 쪽 결함(정답을 빈칸에 넣으면 문장이 틀림): 걸린 보기가 없어 풀이를 무효로 하지 않고,
+    # 학생 잘못이 아니므로 복습 기록(streak · reviews)을 새 문제로 그대로 이어 감(#113에서 정함).
+    # 연속 정답이 있는 경우도 봄: 0으로 되돌리는 회귀를 잡도록
+    def naturals(user: str) -> JsonObject:
+        old = re.search(r"^\d+\. secured$", user, re.M)  # 저장된 문제: 정답도 오답도 맞지 않음
+        return fits()(user) if old else SECURED(user)
+
+    llm = FakeLlm({"Naturals": naturals, "Review": [FASTENED], "Check": [CHECK_A]})
+    result = run(llm, flawed_input(copy.deepcopy(before)))
+    [new] = result["questions"]
+    assert result["voidAnswers"] == []
+    [d] = result["dropped"]
+    assert "정답을 빈칸에 넣으면 문장이 틀림" in d["flaw"] and d["replacedBy"] == new["id"]
+    s = updates(result)["q1"]
+    assert (s["state"], s["movedTo"]) == ("flawed", new["id"])
+    carried = {k: new["srs"][k] for k in ("streak", "reviews", "lastResult")}
+    assert carried == {k: before[k] for k in ("streak", "reviews", "lastResult")}
+
+
 def test_new_question_counts_its_own_flaw_tries() -> None:
     llm = FakeLlm({"Naturals": SECURED, "Review": [FASTENED], "Check": [CHECK_A]})
     [new] = run(llm, flawed_input(unchecked(flawTries=1)))["questions"]
