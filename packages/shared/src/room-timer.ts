@@ -23,7 +23,20 @@ export function roomTimerState(
     const current = periods.find((period) => now >= period.start && now < period.end);
     if (current) return { phase: 'period', endsAt: new Date(current.end).toISOString() };
     const next = periods.find((period) => period.start > now);
-    return next ? { phase: 'break', endsAt: new Date(next.start).toISOString() } : null;
+    if (next) return { phase: 'break', endsAt: new Date(next.start).toISOString() };
+
+    // 오늘의 마지막 교시 이후에도 다음 날 첫 교시를 예약할 수 있도록 다음 발생 시각을 반환한다.
+    const [year, month, date] = day.split('-').map(Number);
+    const nextDay = new Date(Date.UTC(year!, month! - 1, date! + 1)).toISOString().slice(0, 10);
+    const firstTomorrow = rule.periods
+      .map((period) =>
+        Date.parse(`${nextDay}T${period.start.padStart(5, '0')}:00+09:00`),
+      )
+      .filter((start) => Number.isFinite(start) && start > now)
+      .sort((a, b) => a - b)[0];
+    return firstTomorrow
+      ? { phase: 'break', endsAt: new Date(firstTomorrow).toISOString() }
+      : null;
   }
 
   const startedAtMs =

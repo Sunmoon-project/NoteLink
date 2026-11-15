@@ -134,4 +134,59 @@ describe('RoomTimerNotificationsService', () => {
     await service.runOnce(now);
     expect(push.send).not.toHaveBeenCalled();
   });
+
+  it('마지막 교시가 끝나면 다음 날 첫 교시를 다음 알림 시각으로 저장한다', async () => {
+    const lastPeriodAt = new Date('2026-11-15T06:50:00.000Z');
+    const schedulerNow = new Date('2026-11-15T06:50:01.000Z');
+    const lastPeriodRoom = {
+      ...dueRoom,
+      timerRule: {
+        enabled: true,
+        type: 'period',
+        focusMin: 50,
+        breakMin: 10,
+        repeat: 4,
+        periods: [
+          { start: '09:00', end: '09:50', label: '1교시' },
+          { start: '15:00', end: '15:50', label: '마지막 교시' },
+        ],
+      },
+      timerStartedAt: null,
+      timerNextNotificationAt: lastPeriodAt,
+    };
+    rooms.find
+      .mockReset()
+      .mockReturnValueOnce({ limit: () => ({ lean: async () => [] }) })
+      .mockReturnValueOnce({
+        sort: () => ({ limit: () => ({ lean: async () => [lastPeriodRoom] }) }),
+      });
+    rooms.findOne.mockReturnValue(
+      query({
+        ...lastPeriodRoom,
+        timerPendingNotification: {
+          transitionAt: lastPeriodAt,
+          phase: 'break',
+          title: '아침 집중방 타이머',
+          body: '교시가 끝났어요. 다음 교시를 기다려요.',
+        },
+      }),
+    );
+    const service = new RoomTimerNotificationsService(
+      rooms as never,
+      devices as never,
+      push as never,
+    );
+
+    await service.runOnce(schedulerNow);
+
+    expect(rooms.updateOne.mock.calls[0]![1]).toMatchObject({
+      $set: {
+        timerNextNotificationAt: new Date('2026-11-16T00:00:00.000Z'),
+        timerPendingNotification: expect.objectContaining({
+          transitionAt: lastPeriodAt,
+          phase: 'break',
+        }),
+      },
+    });
+  });
 });
