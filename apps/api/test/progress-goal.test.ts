@@ -62,6 +62,7 @@ describe('GET·PUT /goals/weekly', () => {
         goals = [];
         lastUpdate = undefined;
         weeklyGoalModel.findOneAndUpdate.mockClear();
+        weeklyGoalModel.updateOne.mockClear();
     });
     afterEach(() => {
         vi.useRealTimers();
@@ -87,6 +88,8 @@ describe('GET·PUT /goals/weekly', () => {
         goals = [{ _id: new Types.ObjectId(), userId: owner, weekStart: '2026-11-02', targetMin: 600, notify80: true }];
         await request(app.getHttpServer()).post('/api/v1/goals/weekly/acknowledge').send({ weekStart: WEEK }).expect(401);
         await request(app.getHttpServer()).post('/api/v1/goals/weekly/acknowledge').set(AUTH).send({ weekStart: 'bad' }).expect(400);
+        await request(app.getHttpServer()).post('/api/v1/goals/weekly/acknowledge').set(AUTH).send({ weekStart: '2026-99-99' }).expect(400);
+        expect(weeklyGoalModel.updateOne).not.toHaveBeenCalled();
         await request(app.getHttpServer()).post('/api/v1/goals/weekly/acknowledge').set(AUTH).send({ weekStart: WEEK }).expect(204);
         expect(weeklyGoalModel.updateOne).toHaveBeenCalledWith(
             { userId: owner, weekStart: WEEK },

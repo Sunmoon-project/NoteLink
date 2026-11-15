@@ -38,26 +38,28 @@ export function WeeklyGoalNotifications() {
     enabled: active,
   });
   const shown = useRef(false);
-  const previousOwner = useRef<{ userId: string; week: string } | null>(null);
 
   useEffect(() => {
-    const previous = previousOwner.current;
-    if (previous && (!active || previous.userId !== userId)) {
-      void enqueue(async () => {
-        const key = keyFor(previous.userId, previous.week);
-        const raw = await SecureStore.getItemAsync(key);
-        if (!raw) return;
-        const saved = JSON.parse(raw) as Reservation;
-        if (saved.dueAt > Date.now()) {
-          await Notifications.cancelScheduledNotificationAsync(saved.id);
-          await SecureStore.deleteItemAsync(key);
-        }
-      }).catch(() => toast('주간 목표 알림을 취소하지 못했어요'));
-      previousOwner.current = null;
-    }
-    if (active && userId && goal.data)
-      previousOwner.current = { userId, week: goal.data.weekStart };
-  }, [active, userId, goal.data]);
+    const activeOwner = active ? userId : null;
+    void enqueue(async () => {
+      const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+      const stale = scheduled.filter((notification) => {
+        const data = notification.content.data;
+        return data?.kind === KIND && (!activeOwner || data.userId !== activeOwner);
+      });
+      await Promise.all(
+        stale.map(async (notification) => {
+          const data = notification.content.data;
+          await Notifications.cancelScheduledNotificationAsync(notification.identifier);
+          if (
+            typeof data?.userId === 'string' &&
+            typeof data.weekStart === 'string'
+          )
+            await SecureStore.deleteItemAsync(keyFor(data.userId, data.weekStart));
+        }),
+      );
+    }).catch(() => toast('주간 목표 알림을 취소하지 못했어요'));
+  }, [active, userId]);
 
   useEffect(() => {
     if (

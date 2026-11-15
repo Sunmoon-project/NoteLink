@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Post, Put, Req, UseGuards } from '@nestjs/common';
-import { Matches } from 'class-validator';
+import { IsDateString, Matches } from 'class-validator';
 
 import { requireUserId } from '../../common/request-user.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
@@ -9,6 +9,7 @@ import { ProgressService, type WeeklyGoalView } from './progress.service.js';
 
 class AcknowledgeWeeklyGoalDto {
     @Matches(/^\d{4}-\d{2}-\d{2}$/)
+    @IsDateString({ strict: true })
     weekStart!: string;
 }
 

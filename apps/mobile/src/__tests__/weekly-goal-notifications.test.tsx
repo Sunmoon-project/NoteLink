@@ -7,9 +7,23 @@ import { useAuth } from '../stores/auth';
 import { useSession } from '../stores/session';
 
 const mockStore = new Map<string, string>();
-const mockSchedule = jest.fn(async (_request: unknown) => 'reservation');
-const mockCancel = jest.fn(async (_id: string) => {});
+type MockNotificationRequest = { content: { data: Record<string, unknown> } };
+type MockScheduledNotification = {
+  identifier: string;
+  content: { data: Record<string, unknown> };
+};
+const mockScheduled: MockScheduledNotification[] = [];
+const mockSchedule = jest.fn(async (request: MockNotificationRequest) => {
+  mockScheduled.push({ identifier: 'reservation', content: request.content });
+  return 'reservation';
+});
+const mockCancel = jest.fn(async (id: string) => {
+  const index = mockScheduled.findIndex((notification) => notification.identifier === id);
+  if (index >= 0) mockScheduled.splice(index, 1);
+});
+const mockGetScheduled = jest.fn(async () => [...mockScheduled]);
 const mockAck = jest.fn(async (_week: string) => {});
+let mockGoalFetchFails = false;
 let mockResponse: ((event: unknown) => void) | undefined;
 const mockGoal = {
   _id: 'goal',
@@ -22,7 +36,10 @@ const mockGoal = {
 jest.mock('../lib/api', () => ({
   api: {
     study: {
-      weeklyGoal: async () => mockGoal,
+      weeklyGoal: async () => {
+        if (mockGoalFetchFails) throw new Error('offline');
+        return mockGoal;
+      },
       weekly: async () => ({ weekStart: '2026-11-09', totalSec: 0 }),
       acknowledgeWeeklyGoal: (week: string) => mockAck(week),
     },
@@ -40,7 +57,9 @@ jest.mock('expo-secure-store', () => ({
 jest.mock('expo-notifications', () => ({
   SchedulableTriggerInputTypes: { DATE: 'date' },
   getPermissionsAsync: jest.fn(async () => ({ granted: true })),
-  scheduleNotificationAsync: (request: unknown) => mockSchedule(request),
+  getAllScheduledNotificationsAsync: () => mockGetScheduled(),
+  scheduleNotificationAsync: (request: unknown) =>
+    mockSchedule(request as MockNotificationRequest),
   cancelScheduledNotificationAsync: (id: string) => mockCancel(id),
   getLastNotificationResponseAsync: jest.fn(async () => null),
   clearLastNotificationResponseAsync: jest.fn(async () => {}),
@@ -59,9 +78,12 @@ const now = Date.parse('2026-11-09T03:00:00Z');
 beforeEach(() => {
   jest.spyOn(Date, 'now').mockReturnValue(now);
   mockStore.clear();
+  mockScheduled.length = 0;
   mockSchedule.mockClear();
   mockCancel.mockClear();
+  mockGetScheduled.mockClear();
   mockAck.mockClear();
+  mockGoalFetchFails = false;
   useAuth.setState({ userId: 'user', tokens: { accessToken: 'token', refreshToken: 'refresh' } });
   useSession.setState({
     itemId: 'item',
@@ -125,4 +147,25 @@ it('이미 발송 시각이 지난 예약은 확인 전 앱 재진입으로 다�
   );
   expect(mockSchedule).not.toHaveBeenCalled();
   expect(mockAck).not.toHaveBeenCalled();
+});
+
+it('오프라인 재시작 후 목표 조회가 실패해도 로그아웃하면 예약된 계정 알림을 취소한다', async () => {
+  mockGoalFetchFails = true;
+  mockScheduled.push({
+    identifier: 'old-account-reservation',
+    content: {
+      data: { kind: 'weekly-goal-80', userId: 'user', weekStart: '2026-11-09' },
+    },
+  });
+  const view = await show();
+  await waitFor(() => expect(mockGetScheduled).toHaveBeenCalled());
+
+  await act(async () =>
+    useAuth.setState({ userId: null, tokens: null }),
+  );
+
+  await waitFor(() => expect(mockCancel).toHaveBeenCalledWith('old-account-reservation'));
+  expect(mockSchedule).not.toHaveBeenCalled();
+  expect(mockStore.has('weekly80.user.2026-11-09')).toBe(false);
+  view.unmount();
 });
