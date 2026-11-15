@@ -788,6 +788,51 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       expect(list.at(-1)!.title).toBe('m0');
     });
 
+    describe('목록에서 실패한 노트 다시 확인', () => {
+      /** 노트를 하나 만들어 작업을 취소해 "처리 실패"로 반영해 둔다(작업은 나중에 재시도로 성공시킬 수 있다) */
+      const failedNote = async (title: string) => {
+        const made = await service.register(me.toHexString(), dto({ title }));
+        await jobs.updateOne({ _id: made.job._id }, { $set: { status: 'canceled' } });
+        const row = await service.findMine(me.toHexString(), made.material._id);
+        expect(row.processing.status).toBe('failed');
+        return made;
+      };
+
+      it('실패로 반영된 노트의 작업이 재시도로 성공하면 목록 조회만으로 완료(done)로 바뀐다', async () => {
+        const failed = await failedNote('실패했다 되살아남');
+        await complete(failed.job._id);
+
+        const list = await service.listInFolder(me.toHexString(), folderId);
+
+        expect(list.find((m) => m._id === failed.material._id)?.processing.status).toBe('done');
+        expect(quizSets.pregenerate).toHaveBeenCalledTimes(1);
+        // 작업이 아직 실패인 노트는 그대로 실패로 보인다
+        const still = await failedNote('계속 실패');
+        const again = await service.listInFolder(me.toHexString(), folderId);
+        expect(again.find((m) => m._id === still.material._id)?.processing.status).toBe('failed');
+      });
+
+      it('확인하는 수 상한(20)은 그대로이고, 진행 중인 노트를 먼저 고른 뒤 남는 자리에 실패 노트를 넣는다', async () => {
+        const failed = await failedNote('실패 노트');
+        await complete(failed.job._id);
+        // 더 최근에 만든 진행 중 노트들
+        for (let i = 0; i < LIST_SYNC_MAX; i++) {
+          await service.register(me.toHexString(), dto({ title: `진행 ${i}` }));
+        }
+        const full = await service.listInFolder(me.toHexString(), folderId);
+        // 진행 중 20개가 자리를 모두 써서 실패 노트는 이번에는 확인하지 못한다
+        expect(full.find((m) => m._id === failed.material._id)?.processing.status).toBe('failed');
+
+        await materials.updateOne(
+          { title: '진행 0', ownerId: me },
+          { $set: { deletedAt: new Date() } },
+        );
+        const freed = await service.listInFolder(me.toHexString(), folderId);
+        // 자리가 하나 남으니 실패 노트도 확인한다
+        expect(freed.find((m) => m._id === failed.material._id)?.processing.status).toBe('done');
+      });
+    });
+
     it('저장: 저장 시각을 한 번 남기고(다시 눌러도 그대로), 응답은 노트 모양', async () => {
       const { material } = await service.register(me.toHexString(), dto());
       const first = await service.update(me.toHexString(), material._id, { saved: true });

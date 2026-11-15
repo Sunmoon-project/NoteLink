@@ -546,9 +546,13 @@ export class MaterialsService {
       )
       .sort({ createdAt: -1, _id: -1 })
       .lean<MaterialRow[]>();
+    // 진행 중인 노트를 먼저, 남는 자리에 실패한 노트(다시 시도해 성공했을 수 있다)를 넣는다
+    const withJob = rows.filter((r) => r.processing.jobId);
     const waiting = new Set(
-      rows
-        .filter((r) => r.processing.jobId && ['queued', 'processing'].includes(r.processing.status))
+      [
+        ...withJob.filter((r) => ['queued', 'processing'].includes(r.processing.status)),
+        ...withJob.filter((r) => r.processing.status === 'failed'),
+      ]
         .slice(0, LIST_SYNC_MAX)
         .map((r) => r._id.toString()),
     );
