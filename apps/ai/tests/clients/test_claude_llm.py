@@ -12,6 +12,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.clients.llm import (
+    CACHE_MIN_SYSTEM_CHARS,
     CLAUDE_THINK_ROOM,
     CLAUDE_TOKEN_SCALE,
     MODEL_FIELDS,
@@ -202,6 +203,70 @@ def test_every_service_schema_can_be_sent_to_claude() -> None:
     assert len(schemas) >= 10
     for _, _, schema in schemas:
         anthropic.transform_schema(schema)
+
+
+# ---------- 프롬프트 캐시(FR-23) ----------
+
+
+def test_short_system_prompt_is_sent_as_text_without_cache() -> None:
+    s = Server(message("{}"))
+    short = "가" * (CACHE_MIN_SYSTEM_CHARS - 1)
+
+    s.client().call("claude-sonnet-5-5", short, "u", SCHEMA, "N")
+
+    assert s.bodies[0]["system"] == short
+
+
+def test_long_system_prompt_is_one_cached_block() -> None:
+    s = Server(message("{}"), message("{}"))
+    long = "규칙. <material>\n" + "가" * CACHE_MIN_SYSTEM_CHARS + "\n</material>"
+    llm = s.client()
+
+    llm.call("claude-sonnet-5-5", long, "첫 창", SCHEMA, "N")
+    llm.call("claude-sonnet-5-5", long, "둘째 창", SCHEMA, "N")
+
+    expected = [{"type": "text", "text": long, "cache_control": {"type": "ephemeral"}}]
+    assert s.bodies[0]["system"] == s.bodies[1]["system"] == expected  # 둘째 창은 캐시 읽기
+    assert s.bodies[0]["messages"] == [{"role": "user", "content": "첫 창"}]
+
+
+def test_cache_starts_exactly_at_the_limit() -> None:
+    s = Server(message("{}"))
+    exact = "a" * CACHE_MIN_SYSTEM_CHARS
+
+    s.client().call("claude-haiku-5-5", exact, "u", SCHEMA, "N")
+
+    assert s.bodies[0]["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_every_fixed_service_system_prompt_stays_uncached() -> None:
+    # 고정 시스템 프롬프트(…_SYS · …_SYSTEM)는 짧아 지금처럼 문자열로 감: 캐시 쓰기 비용 없음
+    import app.services
+
+    names = [m.name for m in pkgutil.walk_packages(app.services.__path__, "app.services.")]
+    prompts = [
+        value
+        for name in names
+        for key, value in vars(importlib.import_module(name)).items()
+        if key.endswith(("_SYS", "_SYSTEM", "SYSTEM")) and isinstance(value, str)
+    ]
+    assert len(prompts) >= 5
+    assert max(map(len, prompts)) < CACHE_MIN_SYSTEM_CHARS
+
+
+def test_school_llm_keeps_long_system_prompt_as_a_string() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        bodies.append(json.loads(request.content))
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    llm = SchoolLlm("https://llm.test", "k", gap_sec=0, transport=httpx2.MockTransport(handle))
+    long = "가" * (CACHE_MIN_SYSTEM_CHARS * 2)
+
+    llm.call("gemma-4-26b", long, "u", SCHEMA, "N")
+
+    assert bodies[0]["messages"][0] == {"role": "system", "content": long}
 
 
 # ---------- 응답 · 오류 ----------

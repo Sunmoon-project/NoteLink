@@ -19,6 +19,7 @@ Claude(ClaudeLlm, 공식 SDK anthropic)
   - SDK 자체 재시도는 끔(max_retries=0): 다시 보내기는 아래 규칙대로 여기서 함
   - 응답의 토큰 수로 비용을 셈(claude_cost). 작업마다 ai_jobs.llmUsd에 쌓고(Metered), 합계가
     CLAUDE_BUDGET_USD에 닿으면 다음 호출부터 학교 LLM으로 넘김(Budgeted, #298)
+  - 긴 시스템 프롬프트(CACHE_MIN_SYSTEM_CHARS 이상)는 프롬프트 캐시 블록으로 보냄(FR-23)
 
 학교 LLM: 10/21 시험에서 확인한 서버 특성을 여기서 처리합니다.
   - User-Agent 헤더가 없으면 거절됨
@@ -54,6 +55,7 @@ from typing import Any, Protocol
 
 import anthropic
 import httpx2
+from anthropic.types import TextBlockParam
 
 from app.core.config import GAP_DEFAULTS, LLM_DEFAULTS, settings
 
@@ -536,6 +538,13 @@ CLAUDE_THINK_ROOM = 4000
 # 검사 정확도 때문에 쓰지 않음(CLAUDE_THINK_ROOM)
 CLAUDE_NO_THINK = ("claude-sonnet-5-5",)
 USAGE_LIMIT_HINTS = ("usage limit", "credit balance")
+# 시스템 프롬프트가 이 글자 수 이상이면 프롬프트 캐시를 씀(cache_control ephemeral, 5분).
+# 지금 서비스의 고정 시스템 프롬프트는 모두 700자 안쪽이라 그대로(문자열)이고, 녹음 정리에 강의
+# 자료(<material>, FR-23)가 붙을 때만 넘음: 같은 자료로 창마다 다시 부르므로 두 번째 호출부터 캐시
+# 읽기(CACHE_READ_RATE)로 쓰기 비용(CACHE_WRITE_RATE)을 넘게 아낌. 짧은 글에 쓰기 비용이 붙지 않게
+# 하는 기준이기도 함: Sonnet · Haiku 5.5의 캐시 최소 길이 512토큰보다 넉넉히 위(영어 약 4자/토큰
+# 으로도 600토큰 이상, 한국어는 그보다 많음). 이보다 짧은 앞부분은 어차피 캐시되지 않음
+CACHE_MIN_SYSTEM_CHARS = 2500
 # 바꾼 스키마를 기억해 두는 수. 개념 고르기(concepts._pick_schema)처럼 내용마다 다른 스키마도 있어
 # 오래 쓰지 않은 것부터 버림(Codex 리뷰 #279)
 SCHEMA_CACHE_MAX = 128
@@ -552,7 +561,19 @@ CLAUDE_LONG_PROMPT = 100_000
 CLAUDE_LONG_PRICES: dict[str, tuple[float, float]] = {"claude-haiku-5-5": (0.50, 2.50)}
 
 
-def claude_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+# 프롬프트 캐시 토큰 값(입력 값의 배수). input_tokens에는 들어 있지 않아 따로 셈. 읽기는 모델마다
+# 더 쌀 수 있어 넉넉한 쪽으로 잡음(예산을 적게 세지 않게)
+CACHE_WRITE_RATE = 1.25
+CACHE_READ_RATE = 0.1
+
+
+def claude_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_write_tokens: int = 0,
+    cache_read_tokens: int = 0,
+) -> float:
     """응답 하나의 비용(달러). 출력 토큰에는 생각(thinking)도 들어 있음."""
 
     def find(table: dict[str, tuple[float, float]]) -> tuple[float, float] | None:
@@ -562,9 +583,13 @@ def claude_cost(model: str, input_tokens: int, output_tokens: int) -> float:
         max(p[0] for p in CLAUDE_PRICES.values()),
         max(p[1] for p in CLAUDE_PRICES.values()),
     )
-    if input_tokens > CLAUDE_LONG_PROMPT and (long := find(CLAUDE_LONG_PRICES)):
+    prompt = input_tokens + cache_write_tokens + cache_read_tokens
+    if prompt > CLAUDE_LONG_PROMPT and (long := find(CLAUDE_LONG_PRICES)):
         price = long
-    return (input_tokens * price[0] + output_tokens * price[1]) / 1_000_000
+    inputs = (
+        input_tokens + cache_write_tokens * CACHE_WRITE_RATE + cache_read_tokens * CACHE_READ_RATE
+    )
+    return (inputs * price[0] + output_tokens * price[1]) / 1_000_000
 
 
 class _Meter:
@@ -660,7 +685,7 @@ class ClaudeLlm(PacedLlm):
         body: JsonObject = {
             "model": model,
             "max_tokens": max_tokens * CLAUDE_TOKEN_SCALE + (0 if no_think else CLAUDE_THINK_ROOM),
-            "system": system,
+            "system": _system_param(system),
             "messages": [{"role": "user", "content": user}],
             "output_config": {
                 "effort": self._effort,
@@ -686,7 +711,14 @@ class ClaudeLlm(PacedLlm):
         if not isinstance(msg, anthropic.types.Message):  # 200인데 JSON이 아니면 SDK가 글자로 줌
             return 200, None, None
         # 잘린 답 · 거절 · 못 읽는 답도 청구됨: 답을 읽기 전에 셈(#298)
-        usd = claude_cost(str(body["model"]), msg.usage.input_tokens, msg.usage.output_tokens)
+        usage = msg.usage
+        usd = claude_cost(
+            str(body["model"]),
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_creation_input_tokens or 0,
+            usage.cache_read_input_tokens or 0,
+        )
         charge(usd)
         if self._cost_hook is not None:
             self._cost_hook(usd)
@@ -694,6 +726,13 @@ class ClaudeLlm(PacedLlm):
             raise LlmRejectedError("거절(refusal)")
         text = "".join(b.text for b in msg.content if b.type == "text")
         return 200, None, text
+
+
+def _system_param(system: str) -> str | list[TextBlockParam]:
+    """긴 시스템 프롬프트는 캐시 표시를 단 블록 하나로(CACHE_MIN_SYSTEM_CHARS). 짧으면 그대로."""
+    if len(system) < CACHE_MIN_SYSTEM_CHARS:
+        return system
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
 
 def _usage_limited(e: anthropic.APIStatusError) -> bool:
