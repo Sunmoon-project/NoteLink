@@ -151,6 +151,16 @@ it('이미 발송 시각이 지난 예약은 확인 전 앱 재진입으로 다�
 
 it('오프라인 재시작 후 목표 조회가 실패해도 로그아웃하면 예약된 계정 알림을 취소한다', async () => {
   mockGoalFetchFails = true;
+  const reservationKey = 'weekly80.user.2026-11-09';
+  mockStore.set(
+    reservationKey,
+    JSON.stringify({
+      id: 'old-account-reservation',
+      dueAt: now + 10 * 60 * 1000,
+      sessionId: 'session',
+      targetMin: 60,
+    }),
+  );
   mockScheduled.push({
     identifier: 'old-account-reservation',
     content: {
@@ -166,6 +176,7 @@ it('오프라인 재시작 후 목표 조회가 실패해도 로그아웃하면 
 
   await waitFor(() => expect(mockCancel).toHaveBeenCalledWith('old-account-reservation'));
   expect(mockSchedule).not.toHaveBeenCalled();
-  expect(mockStore.has('weekly80.user.2026-11-09')).toBe(false);
+  await waitFor(() => expect(mockStore.has(reservationKey)).toBe(false));
+  expect(jest.mocked(SecureStore.deleteItemAsync)).toHaveBeenCalledWith(reservationKey);
   view.unmount();
 });
