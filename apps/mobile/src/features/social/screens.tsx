@@ -222,12 +222,12 @@ export function ChatScreen() {
     queryFn: async (): Promise<DirectHistory> => {
       const roomId = room.data!._id;
       const fetched = await api.social.messages(roomId);
-      const cached = qc.getQueryData<DirectHistory>(['messages', roomId])?.messages ?? [];
+      const cached = qc.getQueryData<DirectHistory>(['messages', roomId]);
       return {
-        messages: mergeMessages(fetched, cached),
-        hasMore: fetched.length === DIRECT_MESSAGE_PAGE_SIZE,
+        messages: mergeMessages(fetched, cached?.messages ?? []),
+        hasMore: fetched.length === DIRECT_MESSAGE_PAGE_SIZE || cached?.hasMore === true,
         nextBefore:
-          fetched.length === DIRECT_MESSAGE_PAGE_SIZE ? fetched[0]?._id : undefined,
+          fetched.length === DIRECT_MESSAGE_PAGE_SIZE ? fetched[0]?._id : cached?.nextBefore,
       };
     },
     enabled: !!room.data,
@@ -286,10 +286,10 @@ export function ChatScreen() {
 
   const loadOlderMessages = async (manualRetry = false) => {
     const chatRoomId = room.data?._id;
-    const current = history.data;
+    if (!chatRoomId) return;
+    const current = qc.getQueryData<DirectHistory>(['messages', chatRoomId]) ?? history.data;
     const nextBefore = current?.nextBefore;
     if (
-      !chatRoomId ||
       !current?.hasMore ||
       !nextBefore ||
       olderLoadingRef.current ||

@@ -63,12 +63,17 @@ describe('1:1 채팅 재접속 기록 페이지', () => {
 
     const view = await renderScreen(<ChatScreen />, qc);
     await waitFor(() => expect(mockApi.social.messages).toHaveBeenCalledWith('room1'));
+    await waitFor(() =>
+      expect(qc.getQueryState(['messages', 'room1'])?.fetchStatus).toBe('idle'),
+    );
     const joinCall = mockEmit.mock.calls.find(([event]) => event === 'chat:join');
     const acknowledgeJoin = joinCall?.[2] as
       | ((result: { ok: boolean; missed: typeof latest }) => void)
       | undefined;
     expect(acknowledgeJoin).toEqual(expect.any(Function));
-    act(() => acknowledgeJoin?.({ ok: true, missed: latest }));
+    await act(async () => {
+      acknowledgeJoin?.({ ok: true, missed: latest });
+    });
 
     await waitFor(() => {
       expect(qc.getQueryData<{ hasMore: boolean; nextBefore?: string }>([
