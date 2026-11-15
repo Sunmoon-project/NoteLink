@@ -931,6 +931,86 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       });
     });
 
+    it('실패 노트가 21개 이상이어도 확인한 지 오래된 것부터 돌아가며 확인해, 가장 오래된 노트도 결국 갱신된다', async () => {
+      // jobId 가 있는 failed 노트 21개를 DB 에 직접 만든다(i=0 이 가장 오래됨). 확인한 적은 한 번도 없다
+      const made: { id: Types.ObjectId; jobId: Types.ObjectId }[] = [];
+      for (let i = 0; i < LIST_SYNC_MAX + 1; i++) {
+        const noteId = new Types.ObjectId();
+        const job = await jobs.create({
+          userId: me,
+          type: 'handwriting_summary',
+          targetType: 'material',
+          targetId: noteId,
+          input: {},
+          status: 'failed',
+          error: 'boom',
+          progress: 0,
+          attempts: 3,
+          result: null,
+        });
+        await materials.collection.insertOne({
+          _id: noteId,
+          ownerId: me,
+          folderId: new Types.ObjectId(folderId),
+          kind: 'handwriting',
+          source: 'camera',
+          title: `실패 ${i}`,
+          processing: { status: 'failed', progress: 0, jobId: job._id },
+          pages: [{ pageNo: 1, imageUrl: url(1), sizeBytes: 100, ocrText: null, takenAt: null }],
+          deletedAt: null,
+          createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)),
+          updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)),
+        });
+        made.push({ id: noteId, jobId: job._id as Types.ObjectId });
+      }
+      const oldest = made[0]!;
+      // 가장 오래된 노트의 작업만 나중에 재시도로 성공한다
+      await complete(oldest.jobId.toString());
+      const statusOf = (list: Awaited<ReturnType<typeof service.listInFolder>>) =>
+        list.find((m) => m._id === oldest.id.toHexString())?.processing.status;
+
+      const first = await service.listInFolder(me.toHexString(), folderId);
+      expect(first).toHaveLength(LIST_SYNC_MAX + 1);
+      // 첫 조회: 최신 20개를 확인하고 가장 오래된 노트는 자리가 없어 아직이다
+      expect(statusOf(first)).toBe('failed');
+      const checked = await materials
+        .find({ _id: { $in: made.map((m) => m.id) }, 'processing.checkedAt': { $type: 'date' } })
+        .lean();
+      expect(checked).toHaveLength(LIST_SYNC_MAX);
+      expect(checked.map((c) => c._id.toString())).not.toContain(oldest.id.toString());
+
+      // 두 번째 조회: 확인한 적 없는 노트가 먼저라서 가장 오래된 노트가 갱신된다
+      const second = await service.listInFolder(me.toHexString(), folderId);
+      expect(statusOf(second)).toBe('done');
+      expect(quizSets.pregenerate).toHaveBeenCalledTimes(1);
+      // 확인 시각은 앱 응답에 나가지 않는다
+      for (const m of second)
+        expect(Object.keys(m.processing).sort()).toEqual(['jobId', 'progress', 'status']);
+    });
+
+    it('목록이 확인한 노트는 결과가 바뀌지 않았어도 확인 시각을 남기고, 확인하지 않은 노트에는 남기지 않는다', async () => {
+      const failed = await service.register(me.toHexString(), dto({ title: '실패' }));
+      await jobs.updateOne({ _id: failed.job._id }, { $set: { status: 'canceled' } });
+      const waiting = await service.register(me.toHexString(), dto({ title: '정리 중' }));
+      const before = new Date();
+
+      await service.listInFolder(me.toHexString(), folderId);
+
+      const rows = await materials
+        .find({ _id: { $in: [failed.material._id, waiting.material._id] } })
+        .lean();
+      for (const r of rows)
+        expect(r.processing.checkedAt!.getTime()).toBeGreaterThanOrEqual(before.getTime());
+      // 상세 조회(findMine)는 확인 시각을 건드리지 않는다
+      const stamp = (await materials
+        .findById(waiting.material._id)
+        .lean())!.processing.checkedAt!.getTime();
+      await service.findMine(me.toHexString(), waiting.material._id);
+      expect(
+        (await materials.findById(waiting.material._id).lean())!.processing.checkedAt!.getTime(),
+      ).toBe(stamp);
+    });
+
     it('저장: 저장 시각을 한 번 남기고(다시 눌러도 그대로), 응답은 노트 모양', async () => {
       const { material } = await service.register(me.toHexString(), dto());
       const first = await service.update(me.toHexString(), material._id, { saved: true });

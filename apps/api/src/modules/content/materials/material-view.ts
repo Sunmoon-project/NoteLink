@@ -11,7 +11,12 @@ export interface MaterialRow {
   title: string;
   description?: string | null;
   avatarItemId?: Types.ObjectId | null;
-  processing: { status: string; progress?: number; jobId?: Types.ObjectId | null };
+  processing: {
+    status: string;
+    progress?: number;
+    jobId?: Types.ObjectId | null;
+    checkedAt?: Date;
+  };
   summary?: { sections: { heading: string; body: string }[]; points?: string[] } | null;
   keywords?: string[];
   concepts?: string[];

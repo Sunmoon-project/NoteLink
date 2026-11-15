@@ -38,6 +38,10 @@ export class Processing {
 
   @Prop({ type: Types.ObjectId, ref: 'AiJob', default: null })
   jobId?: Types.ObjectId | null;
+
+  /** 목록 조회가 이 노트의 작업 상태를 마지막으로 확인한 시각. 서버 전용(앱 응답에는 없다). 실패한 노트를 돌아가며 확인하려고 쓴다 */
+  @Prop({ type: Date })
+  checkedAt?: Date;
 }
 
 export const ProcessingSchema = SchemaFactory.createForClass(Processing);

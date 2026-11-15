@@ -63,6 +63,22 @@ const conflict = (message: string) =>
 const isDuplicateKey = (e: unknown) =>
   typeof e === 'object' && e !== null && (e as { code?: unknown }).code === DUPLICATE_KEY;
 
+/**
+ * 목록 조회가 작업 결과를 다시 확인할 노트를 고른다(최대 LIST_SYNC_MAX 개). 정리 중(queued · processing)인 노트를 먼저(주어진 순서대로),
+ * 남는 자리에 작업이 있는 failed 노트를 확인한 지 오래된 순으로(확인한 적 없으면 가장 먼저, 같으면 주어진 순서).
+ * 늘 같은 최신 노트만 고르면 오래된 실패 노트가 영원히 확인되지 않는다
+ */
+export function pickToCheck(rows: MaterialRow[]): MaterialRow[] {
+  const withJob = rows.filter((r) => r.processing.jobId);
+  const running = withJob.filter((r) => ['queued', 'processing'].includes(r.processing.status));
+  const failed = withJob
+    .filter((r) => r.processing.status === 'failed')
+    .sort(
+      (a, b) => (a.processing.checkedAt?.getTime() ?? 0) - (b.processing.checkedAt?.getTime() ?? 0),
+    );
+  return [...running, ...failed].slice(0, LIST_SYNC_MAX);
+}
+
 /** 앱이 보낸 id. 형식이 틀리면 없는 것과 같게 404 */
 export function objectId(id: string, what = '노트'): Types.ObjectId {
   if (!OBJECT_ID.test(id)) throw notFound(what);
@@ -568,16 +584,7 @@ export class MaterialsService {
       )
       .sort({ createdAt: -1, _id: -1 })
       .lean<MaterialRow[]>();
-    // 진행 중인 노트를 먼저, 남는 자리에 실패한 노트(다시 시도해 성공했을 수 있다)를 넣는다
-    const withJob = rows.filter((r) => r.processing.jobId);
-    const waiting = new Set(
-      [
-        ...withJob.filter((r) => ['queued', 'processing'].includes(r.processing.status)),
-        ...withJob.filter((r) => r.processing.status === 'failed'),
-      ]
-        .slice(0, LIST_SYNC_MAX)
-        .map((r) => r._id.toString()),
-    );
+    const waiting = new Set(pickToCheck(rows).map((r) => r._id.toString()));
     const synced = await Promise.all(
       rows.map(async (row): Promise<MaterialRow | null> => {
         if (!waiting.has(row._id.toString())) return row;
@@ -595,7 +602,26 @@ export class MaterialsService {
         }
       }),
     );
+    await this.markChecked(
+      owner,
+      [...waiting].map((id) => new Types.ObjectId(id)),
+    );
     return synced.filter((r): r is MaterialRow => r !== null).map((r) => toAppMaterial(r));
+  }
+
+  /** 목록이 확인한 노트에 확인 시각을 남긴다(결과가 바뀌지 않았어도). 못 남겨도 목록은 보여 준다 */
+  private async markChecked(owner: Types.ObjectId, ids: Types.ObjectId[]): Promise<void> {
+    if (ids.length === 0) return;
+    try {
+      await this.materials.updateMany(
+        { _id: { $in: ids }, ownerId: owner },
+        { $set: { 'processing.checkedAt': new Date() } },
+        { timestamps: false },
+      );
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : '알 수 없는 오류';
+      this.logger.warn(`노트 확인 시각을 남기지 못했어요: ${reason}`);
+    }
   }
 
   /**
