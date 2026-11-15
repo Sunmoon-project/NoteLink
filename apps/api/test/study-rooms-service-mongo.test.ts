@@ -78,6 +78,31 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
     });
     expect(stored.memberCount).toBe(1);
   });
+  it('자진 퇴장한 사용자의 기록을 재사용해 실제 MongoDB에서 다시 초대한다', async () => {
+    const created = await service.create(String(host), {
+      title: '재초대 테스트',
+      categoryName: '수학',
+      isPublic: true,
+    });
+    const userA = host.toHexString() < friend.toHexString() ? host : friend;
+    const userB = userA === host ? friend : host;
+    await friendships.create({ userA, userB, requesterId: host, status: 'accepted' });
+
+    await service.invite(String(host), created._id, [String(friend)]);
+    await service.joinRoom(String(friend), created.inviteCode);
+    await service.leaveRoom(String(friend), created._id);
+    await service.invite(String(host), created._id, [String(friend)]);
+
+    const stored = await rooms.findById(created._id).lean().orFail();
+    expect(stored.members.filter((member) => member.userId.equals(friend))).toHaveLength(1);
+    expect(stored.members.find((member) => member.userId.equals(friend))).toMatchObject({
+      role: 'member',
+      status: 'invited',
+      leaveReason: null,
+      leftAt: null,
+    });
+    expect(stored.memberCount).toBe(1);
+  });
   afterAll(async () => {
     if (!connection) return;
     for (const name of names) await connection.dropCollection(name!).catch(() => {});
