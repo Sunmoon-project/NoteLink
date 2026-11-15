@@ -6,6 +6,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import { FoldersService } from '../src/modules/content/folders/folders.service.js';
+import {
+  decodeCursor,
+  encodeCursor,
+  type ListCursor,
+} from '../src/modules/content/materials/list-cursor.js';
 import type { CreateMaterialDto } from '../src/modules/content/materials/dto/create-material.dto.js';
 import {
   CLAIM_TTL_MS,
@@ -1009,6 +1014,104 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       expect(
         (await materials.findById(waiting.material._id).lean())!.processing.checkedAt!.getTime(),
       ).toBe(stamp);
+    });
+
+    describe('페이지 나누기 (listPage)', () => {
+      /** 노트 25개: 같은 createdAt 이 5개씩 겹치도록 해서 _id 로 순서를 가른다(i=24 가 가장 최근) */
+      const seed = async (count = 25, status = 'done') => {
+        const ids: Types.ObjectId[] = [];
+        for (let i = 0; i < count; i++) {
+          const _id = new Types.ObjectId();
+          ids.push(_id);
+          await materials.collection.insertOne({
+            _id,
+            ownerId: me,
+            folderId: new Types.ObjectId(folderId),
+            kind: 'handwriting',
+            source: 'camera',
+            title: `n${i}`,
+            processing: { status, progress: 100 },
+            pages: [],
+            deletedAt: null,
+            createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, Math.floor(i / 5))),
+            updatedAt: new Date(),
+          });
+        }
+        return ids;
+      };
+
+      it('limit 이 없으면 전체 배열을 정렬 순서 그대로 돌려준다 (다음 위치 없음)', async () => {
+        await seed();
+        const all = await service.listInFolder(me.toHexString(), folderId);
+        expect(all).toHaveLength(25);
+        const page = await service.listPage(me.toHexString(), folderId, {});
+        expect(page.items.map((m) => m._id)).toEqual(all.map((m) => m._id));
+        expect(page.next).toBeNull();
+      });
+
+      it('limit 과 다음 위치로 이어 받으면 겹치지도 빠지지도 않고 전체 순서와 같다 (같은 시각 노트 포함)', async () => {
+        await seed();
+        const all = (await service.listInFolder(me.toHexString(), folderId)).map((m) => m._id);
+        const seen: string[] = [];
+        const sizes: number[] = [];
+        let after: ListCursor | undefined;
+        for (let guard = 0; guard < 10; guard++) {
+          const page = await service.listPage(me.toHexString(), folderId, { limit: 7, after });
+          sizes.push(page.items.length);
+          seen.push(...page.items.map((m) => m._id));
+          if (!page.next) break;
+          after = decodeCursor(encodeCursor(page.next)); // 헤더로 오가는 문자열을 거쳐도 같다
+        }
+        expect(sizes).toEqual([7, 7, 7, 4]);
+        expect(seen).toEqual(all);
+        expect(new Set(seen).size).toBe(25);
+      });
+
+      it('딱 맞는 개수면 다음 위치가 없고, 한 개 모자라면 있다', async () => {
+        await seed(10);
+        expect((await service.listPage(me.toHexString(), folderId, { limit: 10 })).next).toBeNull();
+        expect(
+          (await service.listPage(me.toHexString(), folderId, { limit: 9 })).next,
+        ).not.toBeNull();
+        expect(
+          (await service.listPage(me.toHexString(), folderId, { limit: 100 })).items,
+        ).toHaveLength(10);
+      });
+
+      it('지운 노트 · 남의 노트 · 다른 폴더 노트는 페이지에도 섞이지 않는다', async () => {
+        const ids = await seed(6);
+        await materials.updateOne({ _id: ids[5] }, { $set: { deletedAt: new Date() } });
+        await materials.updateOne({ _id: ids[4] }, { $set: { ownerId: other } });
+        const page = await service.listPage(me.toHexString(), folderId, { limit: 10 });
+        expect(page.items.map((m) => m.title).sort()).toEqual(['n0', 'n1', 'n2', 'n3']);
+      });
+
+      it('확인할 노트는 돌려줄 페이지가 아니라 폴더 전체에서 고른다: 첫 페이지 밖의 정리 중 노트도 반영된다', async () => {
+        // 가장 오래된 노트는 정리 중이고 작업이 이미 끝났다. 페이지(최근 3개)에는 들어가지 않는다
+        const oldest = await service.register(me.toHexString(), dto({ title: '오래된 노트' }));
+        await materials.collection.updateOne(
+          { _id: new Types.ObjectId(oldest.material._id) },
+          { $set: { createdAt: new Date(0) } },
+        ); // createdAt 은 Mongoose 로는 바꿀 수 없다
+        await complete(oldest.job._id);
+        await seed(5);
+
+        const page = await service.listPage(me.toHexString(), folderId, { limit: 3 });
+
+        expect(page.items.map((m) => m.title)).not.toContain('오래된 노트');
+        expect((await materials.findById(oldest.material._id).lean())?.processing.status).toBe(
+          'done',
+        );
+        expect(quizSets.pregenerate).toHaveBeenCalledTimes(1);
+        // 확인 수 상한(20)도 폴더 전체 기준 그대로다
+        expect(LIST_SYNC_MAX).toBe(20);
+      });
+
+      it('없는 폴더 · 남의 폴더는 페이지를 요청해도 404', async () => {
+        await expect(
+          service.listPage(me.toHexString(), new Types.ObjectId().toHexString(), { limit: 5 }),
+        ).rejects.toMatchObject({ status: 404 });
+      });
     });
 
     it('저장: 저장 시각을 한 번 남기고(다시 눌러도 그대로), 응답은 노트 모양', async () => {

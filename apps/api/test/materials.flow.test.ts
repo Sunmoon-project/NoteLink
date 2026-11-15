@@ -8,6 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { configureApp } from '../src/app.setup.js';
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
+import { encodeCursor } from '../src/modules/content/materials/list-cursor.js';
 import { MaterialsService } from '../src/modules/content/materials/materials.service.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
@@ -28,7 +29,7 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
   let token: string;
   const register = vi.fn();
   const findMine = vi.fn();
-  const listInFolder = vi.fn();
+  const listPage = vi.fn();
   const update = vi.fn();
   const remove = vi.fn();
   const downloadUrl = vi.fn();
@@ -39,7 +40,7 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
       .overrideProvider(getModelToken(RefreshToken.name))
       .useValue(createFakeRefreshTokens().model)
       .overrideProvider(MaterialsService)
-      .useValue({ register, findMine, listInFolder, update, remove, downloadUrl })
+      .useValue({ register, findMine, listPage, update, remove, downloadUrl })
       .compile();
     app = ref.createNestApplication();
     configureApp(app);
@@ -140,8 +141,8 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
         .set(auth())
         .send(payload as object);
 
-    it('GET /folders/:id/materials: { data: [...] } 로 돌려준다', async () => {
-      listInFolder.mockResolvedValue([{ _id: 'm1' }]);
+    it('GET /folders/:id/materials: { data: [...] } 로 돌려준다 (쿼리가 없으면 전체, 헤더 없음)', async () => {
+      listPage.mockResolvedValue({ items: [{ _id: 'm1' }], next: null });
       await request(app.getHttpServer())
         .get(api(PATHS.folderMaterials('f1')))
         .expect(401);
@@ -150,7 +151,84 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
         .set(auth())
         .expect(200);
       expect(res.body).toEqual({ data: [{ _id: 'm1' }] });
-      expect(listInFolder).toHaveBeenCalledWith(me.toHexString(), 'f1');
+      expect(res.headers['x-next-cursor']).toBeUndefined();
+      expect(listPage).toHaveBeenCalledWith(me.toHexString(), 'f1', {});
+    });
+
+    describe('페이지 나누기 (limit · cursor)', () => {
+      const get = (query: string) =>
+        request(app.getHttpServer())
+          .get(`${api(PATHS.folderMaterials('f1'))}${query}`)
+          .set(auth());
+      const cursor = encodeCursor({
+        createdAt: new Date('2026-11-01T00:00:00.000Z'),
+        id: new Types.ObjectId('507f1f77bcf86cd799439011'),
+      });
+
+      it('limit 이 있으면 그 개수를 요청하고, 다음 페이지가 있을 때만 X-Next-Cursor 헤더를 준다 (본문은 배열 그대로)', async () => {
+        const next = { createdAt: new Date('2026-10-01T00:00:00.000Z'), id: new Types.ObjectId() };
+        listPage.mockResolvedValueOnce({ items: [{ _id: 'a' }, { _id: 'b' }], next });
+        const first = await get('?limit=2').expect(200);
+        expect(first.body).toEqual({ data: [{ _id: 'a' }, { _id: 'b' }] });
+        expect(first.headers['x-next-cursor']).toBe(encodeCursor(next));
+        expect(listPage).toHaveBeenLastCalledWith(me.toHexString(), 'f1', { limit: 2 });
+
+        listPage.mockResolvedValueOnce({ items: [{ _id: 'c' }], next: null });
+        const last = await get(`?limit=2&cursor=${first.headers['x-next-cursor']}`).expect(200);
+        expect(last.headers['x-next-cursor']).toBeUndefined();
+        const arg = listPage.mock.lastCall![2];
+        expect(arg.limit).toBe(2);
+        expect(arg.after.createdAt).toEqual(next.createdAt);
+        expect(arg.after.id.toHexString()).toBe(next.id.toHexString());
+      });
+
+      it('limit 1 · 100 은 통과', async () => {
+        listPage.mockResolvedValue({ items: [], next: null });
+        await get('?limit=1').expect(200);
+        await get('?limit=100').expect(200);
+      });
+
+      it.each(['limit=0', 'limit=101', 'limit=-1', 'limit=1.5', 'limit=abc', 'limit='])(
+        '%s 이면 400 이고 서비스를 부르지 않는다',
+        async (query) => {
+          listPage.mockClear();
+          const res = await get(`?${query}`).expect(400);
+          expect(res.body).toEqual({ code: 'BAD_REQUEST', message: expect.any(String) });
+          expect(listPage).not.toHaveBeenCalled();
+        },
+      );
+
+      it('cursor 형식이 틀리면 400 VALIDATION_FAILED', async () => {
+        listPage.mockClear();
+        const bad = [
+          'not-base64!',
+          Buffer.from('hello').toString('base64url'),
+          Buffer.from('[1]').toString('base64url'),
+          Buffer.from('["x","507f1f77bcf86cd799439011"]').toString('base64url'),
+          Buffer.from('[1.5,"507f1f77bcf86cd799439011"]').toString('base64url'),
+          Buffer.from('[1,"zzzzzzzzzzzzzzzzzzzzzzzz"]').toString('base64url'),
+          Buffer.from('[1,"507f1f77bcf86cd799439011","extra"]').toString('base64url'),
+          'a'.repeat(201),
+        ];
+        for (const c of bad) {
+          const res = await get(`?limit=5&cursor=${c}`).expect(400);
+          expect(res.body.code).toMatch(/VALIDATION_FAILED|BAD_REQUEST/);
+        }
+        expect(listPage).not.toHaveBeenCalled();
+        const res = await get('?limit=5&cursor=nope!').expect(400);
+        expect(res.body).toEqual({ code: 'VALIDATION_FAILED', message: expect.any(String) });
+      });
+
+      it('cursor 만 있고 limit 이 없으면 400 VALIDATION_FAILED', async () => {
+        listPage.mockClear();
+        const res = await get(`?cursor=${cursor}`).expect(400);
+        expect(res.body).toEqual({ code: 'VALIDATION_FAILED', message: expect.any(String) });
+        expect(listPage).not.toHaveBeenCalled();
+      });
+
+      it('모르는 쿼리는 400', async () => {
+        await get('?limit=5&page=2').expect(400);
+      });
     });
 
     it('PATCH: { saved: true } 와 { summary: { sections } } 를 받는다', async () => {

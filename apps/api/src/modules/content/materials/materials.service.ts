@@ -19,6 +19,7 @@ import { Folder } from '../schemas/folder.schema.js';
 import { Material } from '../schemas/material.schema.js';
 import type { CreateMaterialDto } from './dto/create-material.dto.js';
 import type { UpdateMaterialDto } from './dto/update-material.dto.js';
+import { type ListCursor } from './list-cursor.js';
 import { syncFromJob } from './material-sync.js';
 import { type MaterialRow, toAppMaterial } from './material-view.js';
 
@@ -564,11 +565,24 @@ export class MaterialsService {
   }
 
   /**
-   * 내 폴더 안의 지우지 않은 노트 전부(최근 것부터, 개수 상한 · 페이지 나누기 없음). 정리 중인 노트도 포함한다(앱이 "요약 중"을 보인다).
-   * 정리 중인 노트는 상세 조회처럼 끝난 작업 결과를 먼저 옮긴다. 한 번에 옮기는 수는 LIST_SYNC_MAX 개까지
-   * (나머지는 상세를 열거나 다음 목록 조회 때). 목록에는 쪽(pages)을 담지 않는다
+   * 내 폴더 안의 지우지 않은 노트 전부(최근 것부터, 개수 상한 없음). 정리 중인 노트도 포함한다(앱이 "요약 중"을 보인다).
+   * 목록에는 쪽(pages)을 담지 않는다. 페이지를 나누지 않는 기존 호출이다(listPage 참고)
    */
   async listInFolder(userId: string, folderId: string): Promise<AppMaterial[]> {
+    return (await this.listPage(userId, folderId, {})).items;
+  }
+
+  /**
+   * 폴더 노트 목록 한 페이지. limit 이 없으면 전부, 있으면 정렬 순서(createdAt · _id 내림차순) 그대로 limit 개와
+   * 다음 페이지 위치(next, 없으면 null). after 는 이전 페이지의 next 이다.
+   * 정리 중이거나 실패한 노트는 상세 조회처럼 끝난 작업 결과를 먼저 옮기는데, 어떤 노트를 확인할지는 돌려줄 페이지가 아니라
+   * 폴더 전체 기준으로 고른다(pickToCheck · 한 번에 LIST_SYNC_MAX 개). 확인한 뒤에 페이지를 읽으므로 결과가 반영돼 있다
+   */
+  async listPage(
+    userId: string,
+    folderId: string,
+    page: { limit?: number; after?: ListCursor },
+  ): Promise<{ items: AppMaterial[]; next: ListCursor | null }> {
     const owner = new Types.ObjectId(userId);
     const folder = await this.folders.exists({
       _id: objectId(folderId, '폴더'),
@@ -576,37 +590,69 @@ export class MaterialsService {
       deletedAt: null,
     });
     if (!folder) throw notFound('폴더');
-    // 쪽 글(ocrText)이 큰 노트가 많아도 목록이 무겁지 않게, 목록에 쓰지 않는 값은 읽지 않는다
-    const rows = await this.materials
+    const inFolder = { ownerId: owner, folderId: folder._id, deletedAt: null };
+    const newestFirst = { createdAt: -1, _id: -1 } as const;
+
+    // 확인할 노트를 폴더 전체에서 고른다(후보는 가볍게 상태만 읽는다)
+    const candidates = await this.materials
       .find(
-        { ownerId: owner, folderId: folder._id, deletedAt: null },
-        { pages: 0, concepts: 0, blobUrls: 0 },
+        {
+          ...inFolder,
+          'processing.jobId': { $ne: null },
+          'processing.status': { $in: ['queued', 'processing', 'failed'] },
+        },
+        { processing: 1 },
       )
-      .sort({ createdAt: -1, _id: -1 })
+      .sort(newestFirst)
       .lean<MaterialRow[]>();
-    const waiting = new Set(pickToCheck(rows).map((r) => r._id.toString()));
-    const synced = await Promise.all(
-      rows.map(async (row): Promise<MaterialRow | null> => {
-        if (!waiting.has(row._id.toString())) return row;
+    const targets = pickToCheck(candidates);
+    await Promise.all(
+      targets.map(async (target) => {
         try {
-          // 옮기려면 원본 쪽 정보가 필요해 이 노트만 전체를 다시 읽는다
+          // 옮기려면 원본 쪽 정보가 필요해 이 노트만 전체를 읽는다
           const full = await this.materials
-            .findOne({ _id: row._id, ownerId: owner, deletedAt: null })
+            .findOne({ _id: target._id, ownerId: owner, deletedAt: null })
             .lean<MaterialRow>();
-          return full ? await this.sync(userId, full) : null;
+          if (full) await this.sync(userId, full);
         } catch (e) {
           // 한 노트를 옮기지 못해도 목록은 보여 준다
           const reason = e instanceof Error ? e.message : '알 수 없는 오류';
-          this.logger.warn(`노트 ${row._id.toString()} 결과를 옮기지 못했어요: ${reason}`);
-          return row;
+          this.logger.warn(`노트 ${target._id.toString()} 결과를 옮기지 못했어요: ${reason}`);
         }
       }),
     );
     await this.markChecked(
       owner,
-      [...waiting].map((id) => new Types.ObjectId(id)),
+      targets.map((t) => t._id),
     );
-    return synced.filter((r): r is MaterialRow => r !== null).map((r) => toAppMaterial(r));
+
+    // 쪽 글(ocrText)이 큰 노트가 많아도 목록이 무겁지 않게, 목록에 쓰지 않는 값은 읽지 않는다
+    const after = page.after;
+    let query = this.materials
+      .find(
+        {
+          ...inFolder,
+          ...(after
+            ? {
+                $or: [
+                  { createdAt: { $lt: after.createdAt } },
+                  { createdAt: after.createdAt, _id: { $lt: after.id } },
+                ],
+              }
+            : {}),
+        },
+        { pages: 0, concepts: 0, blobUrls: 0 },
+      )
+      .sort(newestFirst);
+    if (page.limit !== undefined) query = query.limit(page.limit + 1); // 하나 더 읽어 다음 페이지가 있는지 본다
+    const rows = await query.lean<MaterialRow[]>();
+    const more = page.limit !== undefined && rows.length > page.limit;
+    const shown = more ? rows.slice(0, page.limit) : rows;
+    const last = shown.at(-1);
+    return {
+      items: shown.map((r) => toAppMaterial(r)),
+      next: more && last ? { createdAt: last.createdAt, id: last._id } : null,
+    };
   }
 
   /** 목록이 확인한 노트에 확인 시각을 남긴다(결과가 바뀌지 않았어도). 못 남겨도 목록은 보여 준다 */
