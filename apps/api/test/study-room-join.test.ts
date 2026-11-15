@@ -299,6 +299,43 @@ describe('스터디룸 친구 초대', () => {
     expect(options).toEqual({ updatePipeline: true });
   });
 
+  it('확인한 뒤 초대한 사람이 강퇴 · 퇴장하면 저장 조건에 걸려 404이고, 여전히 참여 중이면 정원 초과로 본다', async () => {
+    const friendId = new Types.ObjectId();
+    rooms.findOne.mockReturnValue(
+      query({
+        _id: roomId,
+        title: '스터디룸',
+        inviteCode: 'ABC123',
+        maxCapacity: 4,
+        members: [{ userId, status: 'joined' }],
+      }),
+    );
+    friendships.countDocuments.mockResolvedValue(1);
+    users.find.mockReturnValue({ select: () => query([{ _id: friendId }]) });
+    rooms.updateOne.mockResolvedValue({ modifiedCount: 0 });
+    const invite = () => service.invite(String(userId), String(roomId), [String(friendId)]);
+
+    rooms.findById.mockReturnValue(
+      query({ closedAt: null, members: [{ userId, status: 'left', leaveReason: 'kicked' }] }),
+    );
+    await expect(invite()).rejects.toMatchObject({
+      status: 404,
+      response: { code: 'ROOM_NOT_FOUND' },
+    });
+    expect(rooms.updateOne.mock.calls[0]![0]).toMatchObject({
+      members: { $elemMatch: { userId, status: 'joined' } },
+    });
+
+    rooms.findById.mockReturnValue(query({ closedAt: new Date(), members: [{ userId, status: 'joined' }] }));
+    await expect(invite()).rejects.toMatchObject({ status: 404 });
+
+    rooms.findById.mockReturnValue(query({ closedAt: null, members: [{ userId, status: 'joined' }] }));
+    await expect(invite()).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'ROOM_FULL' },
+    });
+  });
+
   it('남은 정원보다 많은 친구를 일괄 초대하면 일부도 초대 상태로 저장하지 않는다', async () => {
     const firstFriendId = new Types.ObjectId();
     const secondFriendId = new Types.ObjectId();

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import mongoose, { Types } from 'mongoose';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { Category, CategorySchema } from '../src/modules/content/schemas/category.schema.js';
 import { StudyRoom, StudyRoomSchema } from '../src/modules/studyroom/schemas/study-room.schema.js';
@@ -116,6 +116,37 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
     expect(reinvitation.invitations[0]?.invitationId).toBeTruthy();
     expect(reinvitation.invitations[0]?.invitationId).not.toBe(first.invitations[0]?.invitationId);
     expect(stored.memberCount).toBe(1);
+  });
+  it('친구를 확인하는 사이 초대한 사람이 강퇴되면 초대를 저장하지 않는다', async () => {
+    const created = await service.create(String(host), {
+      title: '강퇴 중 초대',
+      categoryName: '수학',
+      isPublic: true,
+    });
+    await service.joinRoom(String(other), created.inviteCode);
+    const userA = other.toHexString() < friend.toHexString() ? other : friend;
+    const userB = userA === other ? friend : other;
+    await friendships.create({ userA, userB, requesterId: other, status: 'accepted' });
+
+    // 참여 확인 다음 단계(친구 확인)에서 초대한 사람을 강퇴 상태로 바꾼다
+    const count = friendships.countDocuments.bind(friendships);
+    const spy = vi.spyOn(friendships, 'countDocuments').mockImplementationOnce((async (
+      filter: never,
+    ) => {
+      await rooms.updateOne(
+        { _id: created._id, 'members.userId': other },
+        { $set: { 'members.$.status': 'left', 'members.$.leaveReason': 'kicked' } },
+      );
+      return count(filter);
+    }) as never);
+
+    await expect(
+      service.invite(String(other), created._id, [String(friend)]),
+    ).rejects.toMatchObject({ status: 404, response: { code: 'ROOM_NOT_FOUND' } });
+    spy.mockRestore();
+
+    const stored = await rooms.findById(created._id).lean().orFail();
+    expect(stored.members.some((member) => member.userId.equals(friend))).toBe(false);
   });
   afterAll(async () => {
     if (!connection) return;
