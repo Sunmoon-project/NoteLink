@@ -479,6 +479,10 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
             if why and not new:
                 continue
             if new:
+                # 복습 기록(streak · reviews)은 새 문제가 이어 감. 정답 쪽 결함('정답을 빈칸에
+                # 넣으면 문장이 틀림' · '정답이 일반 전공 지식과 맞지 않음')은 걸린 보기가 없어
+                # 무효로 한 풀이도 없으므로 기록이 그대로 넘어감: 학생 잘못이 아니라 이어 가기로
+                # 정함(#113)
                 carry: srs.Srs = {
                     **st,
                     "state": "active",
