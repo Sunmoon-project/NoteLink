@@ -5,7 +5,12 @@ import {
   type OnModuleDestroy,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { TimerRule as TimerRuleSchema, roomTimerState, type TimerRule } from '@notelink/shared';
+import {
+  TimerRule as TimerRuleSchema,
+  nextRoomTimerTransitionAt,
+  roomTimerState,
+  type TimerRule,
+} from '@notelink/shared';
 import { isValidObjectId, type Model, Types } from 'mongoose';
 import { Device } from '../users/schemas/device.schema.js';
 import { ExpoPushService, type ExpoPushMessage } from '../notification/expo-push.service.js';
@@ -112,7 +117,8 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
 
     const rule: TimerRule = parsed.data;
     const state = roomTimerState(rule, room.timerStartedAt, now.getTime());
-    const nextNotificationAt = state?.endsAt ? new Date(state.endsAt) : null;
+    const nextTransitionAt = nextRoomTimerTransitionAt(rule, room.timerStartedAt, now.getTime());
+    const nextNotificationAt = nextTransitionAt ? new Date(nextTransitionAt) : null;
     const pending = this.pendingFor(room.title, rule, state, room.timerNextNotificationAt ?? now);
     const claimed = await this.rooms.updateOne(
       {
@@ -141,7 +147,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
     transitionAt: Date,
   ): PendingTimerNotification | null {
     if (rule.type === 'pomodoro' && rule.breakMin === 0 && state?.phase === 'focus') return null;
-    const phase: TimerPhase = state?.phase ?? 'completed';
+    const phase: TimerPhase = state?.phase ?? (rule.type === 'period' ? 'break' : 'completed');
     let body: string;
     if (phase === 'completed') body = '공동 타이머가 끝났어요.';
     else if (rule.type === 'period') {

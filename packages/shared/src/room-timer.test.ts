@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { roomTimerState } from './room-timer.js';
+import { nextRoomTimerTransitionAt, roomTimerState } from './room-timer.js';
 import type { TimerRule } from './schemas.js';
 
 const pomodoro: TimerRule = {
@@ -42,7 +42,7 @@ describe('roomTimerState', () => {
     });
   });
 
-  it('오늘 마지막 교시가 끝난 뒤 다음 날 첫 교시 시작 시각을 반환한다', () => {
+  it('오늘 마지막 교시가 끝나면 화면 상태는 비우고 다음 날 첫 교시는 별도 예약한다', () => {
     const rule: TimerRule = {
       ...pomodoro,
       type: 'period',
@@ -53,11 +53,21 @@ describe('roomTimerState', () => {
     };
     const afterLastPeriod = Date.parse('2026-11-15T07:00:00.000Z');
 
-    expect(roomTimerState(rule, null, afterLastPeriod)).toEqual({
-      phase: 'break',
-      endsAt: '2026-11-16T00:00:00.000Z',
-    });
+    expect(roomTimerState(rule, null, afterLastPeriod)).toBeNull();
+    expect(nextRoomTimerTransitionAt(rule, null, afterLastPeriod)).toBe('2026-11-16T00:00:00.000Z');
   });
+
+  it.each(['2026-11-02T01:50:00.000Z', '2026-11-02T12:00:00.000Z'])(
+    '마지막 교시 종료 이후 %s에는 화면에 실행 중 단계가 없다',
+    (value) => {
+      const rule: TimerRule = {
+        ...pomodoro,
+        type: 'period',
+        periods: [{ start: '09:00', end: '10:50', label: '오전 교시' }],
+      };
+      expect(roomTimerState(rule, null, Date.parse(value))).toBeNull();
+    },
+  );
 
   it('꺼진 규칙이나 시작 시각이 없는 뽀모도로는 활성 상태로 보이지 않는다', () => {
     expect(roomTimerState({ ...pomodoro, enabled: false }, Date.now())).toBeNull();
