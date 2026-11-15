@@ -27,7 +27,7 @@ from app.clients.llm import (
     llm_setup_problem,
     make_llm,
 )
-from app.core.config import Settings, settings
+from app.core.config import LLM_DEFAULTS, Settings, settings
 
 SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -417,6 +417,14 @@ def test_blank_gap_in_env_uses_the_default() -> None:
     assert s.call_gap_sec == 0.2
 
 
+@pytest.fixture
+def no_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_env_file=None은 .env만 막고 셸 환경 변수는 그대로 읽으므로, 기본값을 볼 때는 지웁니다."""
+    for name in ["LLM_PROVIDER", "LLM_CALL_GAP_SEC", *LLM_DEFAULTS["claude"]]:
+        monkeypatch.delenv(name.upper(), raising=False)
+
+
+@pytest.mark.usefixtures("no_llm_env")
 def test_the_default_provider_is_the_school_llm_for_now() -> None:
     # 개발 · 테스트 기간에는 Claude 비용을 아끼려고 학교 LLM이 기본(실제 배포 때 claude로 바꿈)
     s = Settings(_env_file=None)  # type: ignore[call-arg]
@@ -425,6 +433,7 @@ def test_the_default_provider_is_the_school_llm_for_now() -> None:
     assert s.call_gap_sec == 2.2
 
 
+@pytest.mark.usefixtures("no_llm_env")
 def test_models_and_gap_follow_the_provider() -> None:
     claude = Settings(_env_file=None, llm_provider="claude")  # type: ignore[call-arg]
     assert (claude.quiz_gen_model, claude.quiz_check_model) == (
