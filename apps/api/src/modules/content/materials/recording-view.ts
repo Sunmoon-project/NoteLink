@@ -1,6 +1,6 @@
 import type { Recording } from '@notelink/shared';
 
-import { isRecord, text } from './material-sync.js';
+import { isRecord, text, uniqueHeading } from './material-sync.js';
 
 type Playback = Pick<Recording, 'durationSec' | 'transcript' | 'slides'>;
 
@@ -24,11 +24,11 @@ export function bulletsOf(summary: string): string[] {
   return out;
 }
 
-/** [startMs, endMs] 가 맞는 구간이면 초로. 아니면 null */
+/** [startMs, endMs) 가 길이 있는 구간이면 초로. 아니면 null(길이 0 구간은 플레이어가 고를 수 없다: pos >= start && pos < end) */
 function span(item: Record<string, unknown>): { startSec: number; endSec: number } | null {
   const start = ms(item['startMs']);
   const end = ms(item['endMs']);
-  if (start === null || end === null || end < start) return null;
+  if (start === null || end === null || end <= start) return null;
   return { startSec: start / 1000, endSec: end / 1000 };
 }
 
@@ -36,7 +36,8 @@ function span(item: Record<string, unknown>): { startSec: number; endSec: number
  * 녹음 정리 결과(apps/ai services/recording/models.py RecordingResult)를 재생 화면 값(packages/shared
  * Recording 의 길이 · 대본 · 슬라이드)으로. 문장(sentences)은 대본 구간(segments), 슬라이드는 제목 + 요약 문장
  * 글머리로 바꾼다. 형식이 틀린 항목은 빼고, 요약이 빈 슬라이드도 노트 요약(material-sync sectionsFromSlides)처럼
- * 뺀다(두 화면의 슬라이드 수 · "내용 n" 번호를 맞춘다). 결과 자체가 없거나 틀리면 빈 값
+ * 빼며 같은 제목은 노트 요약처럼 "(2)"를 붙인다. 시간 구간이 틀린 슬라이드는 재생 화면에서만 빠진다(노트 요약에는
+ * 남는다). 결과 자체가 없거나 틀리면 빈 값
  */
 export function playbackFromResult(result: unknown): Playback {
   if (!isRecord(result)) return emptyPlayback();
@@ -48,6 +49,7 @@ export function playbackFromResult(result: unknown): Playback {
       const line = text(s['text']);
       return at && line ? [{ ...at, text: line }] : [];
     });
+  const used = new Set<string>();
   const slides = (Array.isArray(result['slides']) ? result['slides'] : [])
     .filter(isRecord)
     .flatMap((s) => {
@@ -57,7 +59,7 @@ export function playbackFromResult(result: unknown): Playback {
     })
     .map(({ title, summary, at }, index) => ({
       index,
-      title: title ?? `내용 ${index + 1}`,
+      title: uniqueHeading(title ?? `내용 ${index + 1}`, used),
       bullets: bulletsOf(summary),
       ...at,
     }));

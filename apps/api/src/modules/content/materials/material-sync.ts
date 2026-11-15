@@ -22,7 +22,7 @@ export const text = (v: unknown): string | null =>
 /**
  * 제목이 겹치지 않게 한다. 앱이 제목을 목록 키로 쓰므로(NoteBody) 같은 제목은 "(2)", "(3)"을 붙인다
  */
-function uniqueHeading(heading: string, used: Set<string>): string {
+export function uniqueHeading(heading: string, used: Set<string>): string {
   let out = heading;
   for (let n = 2; used.has(out); n += 1) out = `${heading} (${n})`;
   used.add(out);

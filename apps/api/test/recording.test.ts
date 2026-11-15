@@ -109,6 +109,7 @@ describe('녹음 정리 결과 → 재생 정보 (playbackFromResult)', () => {
       sentences: [
         { text: '  ', startMs: 0, endMs: 1 },
         { text: '거꾸로', startMs: 5, endMs: 1 },
+        { text: '길이 0', startMs: 5, endMs: 5 },
         { text: '음수', startMs: -1, endMs: 1 },
         { text: '글자 시각', startMs: '0', endMs: 1 },
         'x',
@@ -118,7 +119,9 @@ describe('녹음 정리 결과 → 재생 정보 (playbackFromResult)', () => {
         { title: '빠짐', summary: 'a', startMs: 9, endMs: 1 },
         { title: '요약 없음', summary: ' ', startMs: 0, endMs: 500 },
         { title: '', summary: '제목 없음.', startMs: 500, endMs: 1000 },
+        { title: '길이 0', summary: '안 보임.', startMs: 1000, endMs: 1000 },
         { title: '둘째', summary: '같은 말. 같은 말.', startMs: 1000, endMs: 3000 },
+        { title: '둘째', summary: '제목이 겹침.', startMs: 3000, endMs: 4000 },
       ],
     });
     expect(out.durationSec).toBe(0);
@@ -129,6 +132,7 @@ describe('녹음 정리 결과 → 재생 정보 (playbackFromResult)', () => {
     expect(out.slides).toEqual([
       { index: 0, title: '내용 1', bullets: ['제목 없음.'], startSec: 0.5, endSec: 1 },
       { index: 1, title: '둘째', bullets: ['같은 말.'], startSec: 1, endSec: 3 },
+      { index: 2, title: '둘째 (2)', bullets: ['제목이 겹침.'], startSec: 3, endSec: 4 },
     ]);
   });
 

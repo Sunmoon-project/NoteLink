@@ -55,7 +55,7 @@ export class RecordingService {
   async findMine(userId: string, id: string): Promise<Recording> {
     const owner = new Types.ObjectId(userId);
     const row = await this.materials
-      .findOne({ _id: objectId(id), ownerId: owner, deletedAt: null, kind: 'recording' })
+      .findOne({ _id: objectId(id, '녹음'), ownerId: owner, deletedAt: null, kind: 'recording' })
       .lean<MaterialRow>();
     if (!row) throw notFound();
     // 노트 조회처럼 끝난 작업의 상태 · 요약을 먼저 옮긴다(그 사이 지웠으면 null)
