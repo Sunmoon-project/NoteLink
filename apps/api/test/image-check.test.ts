@@ -66,7 +66,7 @@ describe('필기 사진 검사 (POST /api/v1/images/check)', () => {
   beforeEach(() => {
     configured = true;
     getProperties.mockReset();
-    getProperties.mockResolvedValue({ contentLength: 1024 } as never);
+    getProperties.mockResolvedValue({ contentLength: 1024, contentType: 'image/jpeg' } as never);
   });
 
   const post = (body: unknown, token = 'valid') =>
@@ -101,8 +101,14 @@ describe('필기 사진 검사 (POST /api/v1/images/check)', () => {
 
   it('앱이 보낸 크기가 아니라 저장소의 실제 크기로 한도를 본다', async () => {
     getProperties
-      .mockResolvedValueOnce({ contentLength: UPLOAD_RULES.image.maxBytes } as never)
-      .mockResolvedValueOnce({ contentLength: UPLOAD_RULES.image.maxBytes + 1 } as never);
+      .mockResolvedValueOnce({
+        contentLength: UPLOAD_RULES.image.maxBytes,
+        contentType: 'image/png',
+      } as never)
+      .mockResolvedValueOnce({
+        contentLength: UPLOAD_RULES.image.maxBytes + 1,
+        contentType: 'image/png',
+      } as never);
     const res = await post({
       files: [
         { name: 'a', sizeBytes: 1, uri: photo(1) },
@@ -146,7 +152,7 @@ describe('필기 사진 검사 (POST /api/v1/images/check)', () => {
   it('올리지 않은(없는) 파일 · 빈 파일은 not_allowed', async () => {
     getProperties
       .mockRejectedValueOnce({ statusCode: 404 })
-      .mockResolvedValueOnce({ contentLength: 0 } as never);
+      .mockResolvedValueOnce({ contentLength: 0, contentType: 'image/jpeg' } as never);
     const res = await post({ files: [file('a', photo(1)), file('b', photo(2))] }).expect(200);
     expect(res.body.data.map((v: { verdict: string }) => v.verdict)).toEqual([
       'not_allowed',
@@ -163,10 +169,40 @@ describe('필기 사진 검사 (POST /api/v1/images/check)', () => {
     expect(res.body.code).toBe('UPLOAD_UNAVAILABLE');
   });
 
-  it('사진 이름이 겹치면 400', async () => {
-    const res = await post({ files: [file('a', photo(1)), file('a', photo(2))] }).expect(400);
+  it('저장된 형식이 사진이 아니면(확장자만 사진) not_allowed, 형식 매개변수 · 대소문자는 무시한다', async () => {
+    getProperties
+      .mockResolvedValueOnce({ contentLength: 10, contentType: 'text/html' } as never)
+      .mockResolvedValueOnce({ contentLength: 10, contentType: 'application/pdf' } as never)
+      .mockResolvedValueOnce({ contentLength: 10 } as never)
+      .mockResolvedValueOnce({ contentLength: 10, contentType: 'Image/HEIC; x=1' } as never);
+    const res = await post({
+      files: [1, 2, 3, 4].map((n) => file(`f${n}`, photo(n))),
+    }).expect(200);
+    expect(res.body.data.map((v: { verdict: string }) => v.verdict)).toEqual([
+      'not_allowed',
+      'not_allowed',
+      'not_allowed',
+      'ok',
+    ]);
+  });
+
+  it.each([
+    ['이름', [file('a', photo(1)), file('a', photo(2))]],
+    ['주소', [file('a', photo(1)), file('b', photo(1))]],
+  ])('같은 %s이 두 번이면 400 (노트 등록도 같은 파일을 받지 않는다)', async (_name, files) => {
+    const res = await post({ files }).expect(400);
     expect(res.body.code).toBe('VALIDATION_FAILED');
     expect(getProperties).not.toHaveBeenCalled();
+  });
+
+  it('긴 기기 파일 이름 · 크기 생략 · 소수 크기도 받는다(크기는 쓰지 않는다)', async () => {
+    const res = await post({
+      files: [
+        { name: `0-${'가'.repeat(300)}.jpg`, uri: photo(1) },
+        { name: 'b', sizeBytes: 12.5, uri: photo(2) },
+      ],
+    }).expect(200);
+    expect(res.body.data.map((v: { verdict: string }) => v.verdict)).toEqual(['ok', 'ok']);
   });
 
   it.each([
@@ -175,6 +211,7 @@ describe('필기 사진 검사 (POST /api/v1/images/check)', () => {
     ['51장', { files: Array.from({ length: 51 }, (_, i) => file(`f${i}`, photo(i))) }],
     ['이름 없음', { files: [{ sizeBytes: 0, uri: photo(1) }] }],
     ['빈 이름', { files: [file('', photo(1))] }],
+    ['1025자 이름', { files: [file('a'.repeat(1025), photo(1))] }],
     ['주소가 글자가 아님', { files: [{ name: 'a', sizeBytes: 0, uri: 1 }] }],
     ['음수 크기', { files: [{ name: 'a', sizeBytes: -1, uri: photo(1) }] }],
     ['모르는 필드', { files: [{ ...file('a', photo(1)), extra: 1 }] }],
