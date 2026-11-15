@@ -16,16 +16,16 @@ import { configureApp } from '../src/app.setup.js';
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
-import {
-  APP_READ_SAS_MS,
-  MaterialsService,
-} from '../src/modules/content/materials/materials.service.js';
+import { MaterialsService } from '../src/modules/content/materials/materials.service.js';
 import {
   bulletsOf,
-  EMPTY_PLAYBACK,
+  emptyPlayback,
   playbackFromResult,
 } from '../src/modules/content/materials/recording-view.js';
-import { RecordingService } from '../src/modules/content/materials/recording.service.js';
+import {
+  RECORDING_READ_SAS_MS,
+  RecordingService,
+} from '../src/modules/content/materials/recording.service.js';
 import { Folder, FolderSchema } from '../src/modules/content/schemas/folder.schema.js';
 import { Material, MaterialSchema } from '../src/modules/content/schemas/material.schema.js';
 import { AiJob, AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
@@ -88,16 +88,22 @@ describe('녹음 정리 결과 → 재생 정보 (playbackFromResult)', () => {
       visemeUrl: null,
     };
     expect(Recording.safeParse(rec).success).toBe(true);
-    expect(Recording.safeParse({ ...rec, ...EMPTY_PLAYBACK }).success).toBe(true);
+    expect(Recording.safeParse({ ...rec, ...emptyPlayback() }).success).toBe(true);
+  });
+
+  it('빈 값은 부를 때마다 새 객체다(응답끼리 배열을 나눠 쓰지 않는다)', () => {
+    const a = emptyPlayback();
+    a.slides.push({ index: 0, title: 'x', bullets: [], startSec: 0, endSec: 1 });
+    expect(emptyPlayback().slides).toEqual([]);
   });
 
   it('결과가 없거나 모양이 틀리면 빈 값', () => {
     for (const bad of [null, undefined, 'x', [], 3])
-      expect(playbackFromResult(bad)).toEqual(EMPTY_PLAYBACK);
-    expect(playbackFromResult({ sentences: 'x', slides: {} })).toEqual(EMPTY_PLAYBACK);
+      expect(playbackFromResult(bad)).toEqual(emptyPlayback());
+    expect(playbackFromResult({ sentences: 'x', slides: {} })).toEqual(emptyPlayback());
   });
 
-  it('구간이 틀리거나 글이 빈 문장 · 구간이 틀린 슬라이드는 빼고, 남은 슬라이드 번호를 0부터 다시 붙인다', () => {
+  it('구간이 틀리거나 글이 빈 문장 · 구간이 틀리거나 요약이 빈 슬라이드는 빼고(노트 요약과 같게), 남은 슬라이드 번호를 0부터 다시 붙인다', () => {
     const out = playbackFromResult({
       durationMs: -1,
       sentences: [
@@ -110,7 +116,8 @@ describe('녹음 정리 결과 → 재생 정보 (playbackFromResult)', () => {
       ],
       slides: [
         { title: '빠짐', summary: 'a', startMs: 9, endMs: 1 },
-        { title: '', summary: '', startMs: 0, endMs: 1000 },
+        { title: '요약 없음', summary: ' ', startMs: 0, endMs: 500 },
+        { title: '', summary: '제목 없음.', startMs: 500, endMs: 1000 },
         { title: '둘째', summary: '같은 말. 같은 말.', startMs: 1000, endMs: 3000 },
       ],
     });
@@ -120,7 +127,7 @@ describe('녹음 정리 결과 → 재생 정보 (playbackFromResult)', () => {
       segments: [{ startSec: 0.01, endSec: 0.02, text: '남음' }],
     });
     expect(out.slides).toEqual([
-      { index: 0, title: '내용 1', bullets: [], startSec: 0, endSec: 1 },
+      { index: 0, title: '내용 1', bullets: ['제목 없음.'], startSec: 0.5, endSec: 1 },
       { index: 1, title: '둘째', bullets: ['같은 말.'], startSec: 1, endSec: 3 },
     ]);
   });
@@ -209,7 +216,7 @@ describe.skipIf(!uri)('진짜 DB 녹음 재생 정보 (RecordingService)', () =>
       quizSets as never,
       conn,
     );
-    service = new RecordingService(materials as never, notes, aiJobs, blobs as never);
+    service = new RecordingService(materials as never, jobs as never, notes, blobs as never);
   });
 
   afterAll(async () => {
@@ -221,7 +228,7 @@ describe.skipIf(!uri)('진짜 DB 녹음 재생 정보 (RecordingService)', () =>
     await Promise.all([materials.deleteMany({}), jobs.deleteMany({})]);
     blobs.createReadAccess.mockReset();
     blobs.createReadAccess.mockImplementation((u: string) =>
-      Promise.resolve({ readUrl: `${u}?sig=READ`, sizeBytes: 4321 }),
+      Promise.resolve({ readUrl: `${u}?sig=READ` }),
     );
     quizSets.pregenerate.mockReset();
   });
@@ -249,7 +256,7 @@ describe.skipIf(!uri)('진짜 DB 녹음 재생 정보 (RecordingService)', () =>
           userId: owner,
           targetType: 'material',
           targetId: materialId,
-          input: { audioUrl: 'x' },
+          input: { audioUrl: 'x?sig=AI', sizeBytes: 4321 },
           result: job.result ?? null,
           progress: job.status === 'succeeded' ? 100 : 0,
         },
@@ -270,7 +277,7 @@ describe.skipIf(!uri)('진짜 DB 녹음 재생 정보 (RecordingService)', () =>
     return materialId.toHexString();
   }
 
-  it('정리가 끝났으면 읽기 주소 · 실제 크기 · 대본 · 슬라이드를 담고, 노트도 완료로 옮긴다', async () => {
+  it('정리가 끝났으면 읽기 주소 · 등록 때 확인한 크기 · 대본 · 슬라이드를 담고, 노트도 완료로 옮긴다', async () => {
     const id = await seed({ job: { status: 'succeeded', result: RESULT } });
     const rec = await service.findMine(me.toHexString(), id);
     expect(Recording.safeParse(rec).success).toBe(true);
@@ -285,9 +292,10 @@ describe.skipIf(!uri)('진짜 DB 녹음 재생 정보 (RecordingService)', () =>
     expect(rec.transcript.segments).toHaveLength(2);
     expect(rec.slides[0]).toMatchObject({ index: 0, title: '미분 소개' });
     expect(JSON.stringify(rec)).not.toContain('embedding');
-    expect(blobs.createReadAccess).toHaveBeenCalledWith(audio(), APP_READ_SAS_MS, {
-      prefix: `uploads/audio/${me.toHexString()}/`,
-    });
+    expect(JSON.stringify(rec)).not.toContain('sig=AI');
+    // 저장소 확인(HEAD) 없이 서명만, 긴 강의도 끊기지 않게 6시간
+    expect(blobs.createReadAccess).toHaveBeenCalledWith(audio(), RECORDING_READ_SAS_MS);
+    expect(RECORDING_READ_SAS_MS).toBe(6 * 60 * 60 * 1000);
     const row = await materials.findById(id).lean();
     expect(row?.processing.status).toBe('done');
     expect(row?.summary?.sections[0]?.heading).toBe('미분 소개');
@@ -302,13 +310,17 @@ describe.skipIf(!uri)('진짜 DB 녹음 재생 정보 (RecordingService)', () =>
   ])('%s이면 원본만 재생(빈 대본 · 슬라이드)', async (_name, job) => {
     const id = await seed({ job });
     const rec = await service.findMine(me.toHexString(), id);
-    expect(rec).toMatchObject({ audioUrl: `${audio()}?sig=READ`, ...EMPTY_PLAYBACK });
+    expect(rec).toMatchObject({ audioUrl: `${audio()}?sig=READ`, ...emptyPlayback() });
   });
 
   it('작업이 없어도(연결 전 · 지워짐) 원본은 재생한다', async () => {
     const id = await seed({ job: null });
     const rec = await service.findMine(me.toHexString(), id);
-    expect(rec).toMatchObject({ audioSizeBytes: 4321, ...EMPTY_PLAYBACK });
+    expect(rec).toMatchObject({
+      audioUrl: `${audio()}?sig=READ`,
+      audioSizeBytes: 0,
+      ...emptyPlayback(),
+    });
   });
 
   it('남의 노트 · 지운 노트 · 녹음이 아닌 노트 · 없는 노트 · 잘못된 id 는 404, 저장소를 부르지 않는다', async () => {
@@ -327,20 +339,32 @@ describe.skipIf(!uri)('진짜 DB 녹음 재생 정보 (RecordingService)', () =>
     expect(blobs.createReadAccess).not.toHaveBeenCalled();
   });
 
-  it('원본 주소가 없거나 쓸 수 없으면 404, 저장소 장애는 503 그대로', async () => {
-    const empty = await seed({ blobUrls: [] });
-    await expect(service.findMine(me.toHexString(), empty)).rejects.toMatchObject({ status: 404 });
-    const id = await seed();
-    blobs.createReadAccess.mockRejectedValueOnce(
-      new BadRequestException({ code: 'VALIDATION_FAILED' }),
-    );
-    await expect(service.findMine(me.toHexString(), id)).rejects.toMatchObject({
-      status: 404,
-      response: { code: 'NOT_FOUND' },
+  it('원본 주소가 없거나 · 쓸 수 없거나 · 저장소가 안 되면 빈 주소로 답해 대본 · 슬라이드는 볼 수 있다', async () => {
+    const empty = await seed({ blobUrls: [], job: { status: 'succeeded', result: RESULT } });
+    expect(await service.findMine(me.toHexString(), empty)).toMatchObject({
+      audioUrl: '',
+      durationSec: 185.5,
     });
-    blobs.createReadAccess.mockRejectedValueOnce(new ServiceUnavailableException());
-    await expect(service.findMine(me.toHexString(), id)).rejects.toBeInstanceOf(
-      ServiceUnavailableException,
-    );
+    const id = await seed({ job: { status: 'succeeded', result: RESULT } });
+    for (const error of [
+      new BadRequestException({ code: 'VALIDATION_FAILED' }),
+      new ServiceUnavailableException(),
+    ]) {
+      blobs.createReadAccess.mockRejectedValueOnce(error);
+      const rec = await service.findMine(me.toHexString(), id);
+      expect(rec.audioUrl).toBe('');
+      expect(rec.slides).toHaveLength(1);
+    }
+  });
+
+  it('작업의 단어 시각 · 조각 embedding 은 읽지 않는다', async () => {
+    const id = await seed({ job: { status: 'succeeded', result: RESULT } });
+    const spy = vi.spyOn(jobs, 'findOne');
+    await service.findMine(me.toHexString(), id);
+    const projections = spy.mock.calls.map((c) => c[1] as Record<string, number> | undefined);
+    const mine = projections.find((p) => p && 'result.sentences.text' in p);
+    expect(mine).toBeDefined();
+    expect(Object.keys(mine!).some((k) => k.includes('words') || k.includes('chunks'))).toBe(false);
+    spy.mockRestore();
   });
 });

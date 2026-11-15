@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AiJobsModule } from '../../../ai-jobs/ai-jobs.module.js';
 import { QuizSetsModule } from '../../../quiz-sets/quiz-sets.module.js';
 import { AuthModule } from '../../auth/auth.module.js';
+import { AiJob, AiJobSchema } from '../../quiz/schemas/ai-job.schema.js';
 import { UploadsModule } from '../../upload/uploads.module.js';
 import { Folder, FolderSchema } from '../schemas/folder.schema.js';
 import { Material, MaterialSchema } from '../schemas/material.schema.js';
@@ -21,6 +22,8 @@ import { RecordingService } from './recording.service.js';
     MongooseModule.forFeature([
       { name: Material.name, schema: MaterialSchema },
       { name: Folder.name, schema: FolderSchema },
+      // 녹음 재생 정보가 정리 결과에서 필요한 부분만 읽는다(RecordingService)
+      { name: AiJob.name, schema: AiJobSchema },
     ]),
     AiJobsModule,
     QuizSetsModule,
