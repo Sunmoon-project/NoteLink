@@ -417,6 +417,14 @@ def test_blank_gap_in_env_uses_the_default() -> None:
     assert s.call_gap_sec == 0.2
 
 
+def test_the_default_provider_is_the_school_llm_for_now() -> None:
+    # 개발 · 테스트 기간에는 Claude 비용을 아끼려고 학교 LLM이 기본(실제 배포 때 claude로 바꿈)
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert s.llm_provider == "school"
+    assert (s.quiz_gen_model, s.quiz_check_model) == ("gemma-4-26b", "qwen-27b")
+    assert s.call_gap_sec == 2.2
+
+
 def test_models_and_gap_follow_the_provider() -> None:
     claude = Settings(_env_file=None, llm_provider="claude")  # type: ignore[call-arg]
     assert (claude.quiz_gen_model, claude.quiz_check_model) == (
