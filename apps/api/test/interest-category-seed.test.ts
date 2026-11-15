@@ -42,7 +42,7 @@ describe('공용 관심 분야 시드', () => {
     ][];
     const ids = new Map(calls.map(([, u]) => [u.$setOnInsert.name, u.$setOnInsert._id]));
     for (const [filter, update] of calls) {
-      expect(filter).toEqual({ name: update.$setOnInsert.name, ownerId: null, deletedAt: null });
+      expect(filter).toEqual({ name: update.$setOnInsert.name, ownerId: null });
       expect(Object.keys(update)).toEqual(['$setOnInsert']);
     }
     const coding = INTEREST_CATEGORY_GROUPS.find((g) => g.name === '코딩')!;
@@ -103,5 +103,31 @@ describe('공용 관심 분야 시드', () => {
     };
     await expect(runInterestCategorySeed(noCollection, undefined, logger)).resolves.toBeUndefined();
     expect(logger.error).toHaveBeenCalled();
+  });
+  it('운영에서 지운(deletedAt) · 숨긴 큰 분야는 다시 만들지 않고, 그 아래 세부 분야도 넣지 않는다', async () => {
+    const removed = new Types.ObjectId();
+    const findOneAndUpdate = vi.fn(async (f: { name: string }, u: Update) => {
+      if (f.name === '어학')
+        return {
+          value: { _id: removed, deletedAt: new Date() },
+          lastErrorObject: { updatedExisting: true },
+        };
+      if (f.name === '코딩')
+        return {
+          value: { _id: new Types.ObjectId(), isActive: false },
+          lastErrorObject: { updatedExisting: true },
+        };
+      return inserted(u.$setOnInsert._id);
+    });
+    const col = { findOneAndUpdate, findOne: vi.fn() } as unknown as CategoryCollection;
+    await seedInterestCategories(col);
+    const calls = findOneAndUpdate.mock.calls as unknown as [Record<string, unknown>, Update][];
+    // 지운 분야도 찾도록 deletedAt으로 거르지 않는다
+    expect(calls.every(([f]) => !('deletedAt' in f))).toBe(true);
+    const names = calls.map(([, u]) => u.$setOnInsert.name);
+    expect(names).toContain('어학');
+    expect(names).not.toContain('토익');
+    expect(names).not.toContain('웹 개발');
+    expect(names).toContain('국어');
   });
 });

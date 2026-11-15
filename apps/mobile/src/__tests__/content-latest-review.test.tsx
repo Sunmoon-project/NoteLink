@@ -682,3 +682,39 @@ it('자료가 있다고 센 폴더의 목록을 못 읽으면 지금처럼 실�
   await renderScreen(<FolderScreen />, client());
   expect(await screen.findByText('자료를 불러오지 못했어요')).toBeTruthy();
 });
+
+it('받아 둔 자료 목록이 있으면 다시 읽기가 404여도 빈 폴더로 덮지 않는다', async () => {
+  mockApi.content.folders.mockResolvedValue([
+    {
+      _id: 'folder1',
+      title: '11월 15일 수학',
+      subjectName: '수학',
+      createdAt: '2026-11-15T00:00:00Z',
+      materialCount: 0,
+    },
+  ]);
+  mockApi.content.materials.mockRejectedValue(
+    Object.assign(new Error('Cannot GET'), { status: 404 }),
+  );
+  const qc = client();
+  qc.setQueryData(
+    ['materials', 'folder1'],
+    [
+      {
+        _id: 'm1',
+        title: '받아 둔 자료',
+        kind: 'document',
+        createdAt: '2026-11-15T00:00:00Z',
+        processing: { status: 'done', progress: 100, jobId: null },
+      },
+    ],
+  );
+  setParams({ id: 'folder1' });
+  await renderScreen(<FolderScreen />, qc);
+  expect(await screen.findByText('받아 둔 자료')).toBeTruthy();
+  await act(async () => {
+    await qc.refetchQueries({ queryKey: ['materials', 'folder1'] });
+  });
+  expect(screen.getByText('받아 둔 자료')).toBeTruthy();
+  expect(screen.queryByText('아직 학습 자료가 없어요')).toBeNull();
+});

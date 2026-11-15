@@ -312,9 +312,12 @@ export function FolderScreen() {
   const folder = folders.data?.find((f) => f._id === id);
   const mats = useQuery({ queryKey: ['materials', id], queryFn: () => api.content.materials(id) });
   // 서버에 폴더 자료 목록 경로가 아직 없을 때(404) 폴더 목록이 센 자료가 0개면 실패가 아니라 빈 폴더다.
-  // 자료가 있다고 세었는데 목록을 못 읽으면 지금처럼 실패를 보여 준다(지운 폴더는 목록에 없어 여기도 실패)
+  // 자료가 있다고 세었는데 목록을 못 읽으면 지금처럼 실패를 보여 준다(지운 폴더는 목록에 없어 여기도 실패).
+  // 앞서 받아 둔 자료 목록이 있으면 다시 읽기가 404여도 그 목록을 그대로 보여 준다(빈 폴더로 덮지 않음)
   const emptyFolder =
-    (mats.error as { status?: number } | null)?.status === 404 && folder?.materialCount === 0;
+    !mats.data &&
+    (mats.error as { status?: number } | null)?.status === 404 &&
+    folder?.materialCount === 0;
   const [filter, setFilter] = useState('전체');
   const [dial, setDial] = useState(false);
   const [sheet, setSheet] = useState<null | 'hand' | 'rec' | 'doc' | 'more'>(upload ?? null);
