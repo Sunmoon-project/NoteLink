@@ -32,7 +32,7 @@ export class RecurringGoal {
   remindEnabled: boolean;
 
   @Prop({ type: String, default: null })
-  remindTime?: string; // 예: "20:00"
+  remindTime?: string; // 예: "21:00". 만들 때 안 보내면 서비스가 기본 "21:00"을 넣는다
 
   @Prop({ type: Date, default: null })
   pausedUntil?: Date;

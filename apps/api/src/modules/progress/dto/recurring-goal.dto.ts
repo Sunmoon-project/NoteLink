@@ -80,4 +80,9 @@ export class SaveRecurringGoalDto {
     @whenSent()
     @IsNumber()
     streak?: number;
+
+    // 위와 같다: 서버가 조회할 때 계산하는 값이라 받기만 하고 무시한다. 오늘이 목표 요일이 아니면 null이므로 null도 통과시킨다
+    @IsOptional()
+    @IsNumber()
+    todayMin?: number | null;
 }

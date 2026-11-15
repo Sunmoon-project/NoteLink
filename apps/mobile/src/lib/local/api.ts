@@ -746,6 +746,7 @@ const api: Api = {
         pausedUntil: null,
         streak: 0,
         isActive: true,
+        todayMin: null, // 로컬 모드는 서버 계산(오늘 공부 분)이 없다
         ...g,
       } as RecurringGoal;
       d.recurring.push(n);
