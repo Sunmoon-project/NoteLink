@@ -35,7 +35,7 @@ export function SummaryScreen() {
   });
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
   const items = today.data?.items ?? [];
-  const total = items.reduce((a, i) => a + i.accumulatedSec, 0);
+  const total = today.data?.totalSec ?? 0;
   const done = items.filter((i) => i.goalMin && i.accumulatedSec >= i.goalMin * 60).length;
   const goalMin = goal.data?.targetMin;
   const pct =

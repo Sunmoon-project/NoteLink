@@ -107,6 +107,7 @@ export const httpApi: Api = {
     stats: (range) => http.get(P.studyStats, { range }),
     weeklyGoal: () => http.get(P.weeklyGoal),
     setWeeklyGoal: (p) => http.put(P.weeklyGoal, p),
+    acknowledgeWeeklyGoal: (weekStart) => http.post(P.weeklyGoalAcknowledge, { weekStart }),
     recurringGoals: () => http.get(P.recurringGoals),
     saveRecurringGoal: (g) =>
       g._id ? http.patch(P.recurringGoal(g._id), g) : http.post(P.recurringGoals, g),

@@ -368,6 +368,7 @@ export const WeeklyGoal = z.object({
   weekStart: ymd,
   targetMin: z.number(),
   notify80: z.boolean(),
+  notified80: z.boolean().optional(),
   /** 최근 4주 평균 순공 분 — 목표를 정할 때 참고로 보여 준다 (서버 계산 · FR-06-24) */
   recentAvgMin: z.number().nonnegative(),
 });
