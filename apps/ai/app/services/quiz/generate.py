@@ -587,14 +587,16 @@ def history(
     # - 5번 풀어도 못 익혀 멈춘(stopped) 문제를 익힌 문제보다 나중에 풀었음: 빼면 다섯 번째 오답에
     #   가중치가 7.0 → 0.3(Codex 재리뷰 3차). 멈춘 뒤 새 문제를 익히면(같은 풀이에서 함께 끝나도)
     #   다시 다 익힌 개념: 멈춘 문제는 다시 풀 수 없어 늘 약하다고 보면 가중치가 내려가지 않음
-    #   (/code-review). 풀이 시각은 문제마다 마지막으로 푼 때, 풀이가 없으면 가장 오래된 것으로 봄
+    #   (/code-review). 시각은 mastered · stopped가 된 때(srs.endedAt, #113): 풀이가 무효가 되거나
+    #   세트가 지워져도 바뀌지 않음. endedAt이 없는 예전 기록만 문제마다 마지막으로 푼 때, 풀이도
+    #   없으면 가장 오래된 것으로 봄
     last: dict[str, datetime] = {}
     for a in attempts:
         for qid, _, void in a.answers:
             if not void and a.finished_at > last.get(qid, datetime.min):
                 last[qid] = a.finished_at
-    learned: dict[str, datetime] = {}  # 개념: 익힌 문제를 마지막으로 푼 때
-    stopped: dict[str, datetime] = {}  # 개념: 멈춘 문제를 마지막으로 푼 때
+    learned: dict[str, datetime] = {}  # 개념: 익힌 문제가 끝난 때(가장 나중)
+    stopped: dict[str, datetime] = {}  # 개념: 멈춘 문제가 끝난 때(가장 나중)
     active: set[str] = set()
     page_of: dict[str, int] = {}
     for s in sets:
@@ -605,7 +607,7 @@ def history(
             unknown = state not in ("mastered", "active", "stopped")
             if unknown or c == OTHER or home(s, q)[0] != material_id:
                 continue
-            at = last.get(q["id"], datetime.min)
+            at = (st.get("endedAt") if st else None) or last.get(q["id"], datetime.min)
             if state == "active":
                 active.add(c)
             else:

@@ -60,3 +60,27 @@ def test_moved_keeps_old_due_date_for_undo() -> None:
     s = srs.moved(old, "q2")
     assert (s["state"], s["dueAt"], s["movedTo"], s["dueBefore"]) == ("moved", None, "q2", days(1))
     assert old["state"] == "active"  # 원래 값은 바꾸지 않음
+
+
+def test_ending_keeps_the_time_it_ended() -> None:
+    # #113 1번: mastered · stopped가 된 풀이의 시각(at, 없으면 today)을 endedAt에 남김
+    first = srs.update(None, True, DAY)
+    assert "endedAt" not in first and first["carriedReviews"] == 0
+    done = srs.update(first, True, days(1), days(1) + timedelta(hours=10))
+    assert (done["state"], done["endedAt"]) == ("mastered", days(1) + timedelta(hours=10))
+    s = None
+    for i in range(srs.MAX_REVIEWS):
+        s = srs.update(s, False, days(i))
+    assert s is not None and (s["state"], s["endedAt"]) == ("stopped", days(4))
+    # 끝난 문제를 다시 풀면 그 시각(예전처럼 나중에 푼 쪽으로 봄: 멈춘 문제보다 뒤에 다시 익힘)
+    again = srs.update(done, True, days(9), days(9) + timedelta(hours=8))
+    assert (again["state"], again["endedAt"]) == ("mastered", days(9) + timedelta(hours=8))
+    # 틀려서 복습 중으로 돌아가면 지움
+    assert "endedAt" not in srs.update(done, False, days(9))
+
+
+def test_fresh_records_the_reviews_it_carried_and_drops_the_end_time() -> None:
+    old = srs.update(srs.update(None, True, DAY), True, days(1))
+    s = srs.fresh(days(2), carry=old)
+    assert (s["carriedReviews"], s["reviews"]) == (2, 2) and "endedAt" not in s
+    assert srs.fresh(DAY)["carriedReviews"] == 0

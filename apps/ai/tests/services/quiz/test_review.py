@@ -165,6 +165,7 @@ def test_review_dates_hand_over_to_the_new_questions() -> None:
         1,
         TODAY + timedelta(days=1),
     )
+    assert fresh["carriedReviews"] == 1  # 처음 이어받은 푼 횟수(#113)
 
 
 def test_note_lines_keep_only_what_is_really_in_the_note() -> None:
@@ -244,6 +245,16 @@ def test_question_the_model_keeps_copying_is_asked_again_and_handed_over_once() 
     # 두 번 넘기면 dueBefore가 None으로 지워짐(로컬 agent.py)
     assert srs["state"] == "moved" and srs["dueBefore"] == TODAY + timedelta(days=1)
     assert result["reviewQuestions"][0]["prompt"] == "요청 동사 뒤 동사원형에 알맞은 것은?"
+    # 방금 틀린 q1을 다시 냄: 글이 같아 q1의 풀이도 이 문제 것으로 셈. 그래서 이어받은 횟수는
+    # q1이 이어받은 0(q1의 풀이 1번은 오늘의 복습이 다시 셈, #113)
+    assert result["reviewQuestions"][0]["srs"]["carriedReviews"] == 0
+    # 이어받은 횟수가 없는 예전 기록이면 남기지 않음(예전처럼 저장값으로 거꾸로 셈)
+    old = {"step": 0, "streak": 0, "reviews": 2, "state": "active", "lastResult": "wrong",
+           "dueAt": "2026-10-31T00:00:00Z"}  # fmt: skip
+    inp["sets"][0]["questions"][0]["srs"] = old
+    result, _ = run(FakeLlm({"Review": [copy_of_q1] * 3, "Line": [{"line": "x"}]}), inp)
+    assert result["targets"][0]["reusedFrom"] == "q1"
+    assert "carriedReviews" not in result["reviewQuestions"][0]["srs"]
 
 
 def test_reused_question_in_another_set_is_handed_over_there() -> None:
