@@ -25,9 +25,10 @@ import { type MaterialRow, toAppMaterial } from './material-view.js';
 type AppMaterial = ReturnType<typeof toAppMaterial>;
 
 /**
- * AI 입력에 넣는 파일 읽기 주소 유효 시간(7일). 앱의 다시 시도(AiJobsService.retry)는 입력 주소를 새로 만들지 않으므로 넉넉히 잡는다
+ * 앱의 다시 시도(AiJobsService.retry)는 입력 주소를 새로 만들지 않으므로, 노트를 올리고
+ * 30일 안에는 다시 시도해도 AI 가 원본을 읽을 수 있게 길게 잡는다. 앱에 주는 주소(APP_READ_SAS_MS)는 1시간 그대로.
  */
-export const AI_READ_SAS_MS = 7 * 24 * 60 * 60 * 1000;
+export const AI_READ_SAS_MS = 30 * 24 * 60 * 60 * 1000;
 /** 응답에 담는 원본 이미지 읽기 주소 유효 시간 */
 export const APP_READ_SAS_MS = 60 * 60 * 1000;
 /** 목록 조회 한 번에 끝난 작업 결과를 옮기는 노트 수 상한 */
