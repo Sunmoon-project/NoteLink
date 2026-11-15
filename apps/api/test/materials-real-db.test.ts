@@ -1176,6 +1176,68 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       });
     });
 
+    describe('확인 대상 고르기: 상태 구분 없이 마지막 확인 시각 순', () => {
+      const listOnce = () => service.listInFolder(me.toHexString(), folderId);
+      const statusOf = (list: Awaited<ReturnType<typeof listOnce>>, id: string) =>
+        list.find((m) => m._id === id)?.processing.status;
+
+      it('진행 중 노트가 21개여도 가장 오래된 노트의 작업이 끝나면 목록을 두 번 부르는 사이에 반영된다', async () => {
+        const made = [];
+        for (let i = 0; i < LIST_SYNC_MAX + 1; i++) {
+          made.push(await service.register(me.toHexString(), dto({ title: `진행 ${i}` })));
+        }
+        const oldest = made[0]!;
+        await complete(oldest.job._id); // 가장 오래된 노트의 작업만 끝난다
+
+        const first = await listOnce();
+        // 첫 조회: 확인한 적 없는 노트 중 최신 20개를 확인하고, 가장 오래된 노트는 자리가 없다
+        expect(statusOf(first, oldest.material._id)).not.toBe('done');
+        const second = await listOnce();
+        // 둘째 조회: 확인한 적 없는 노트가 먼저라 가장 오래된 노트가 확인된다
+        expect(statusOf(second, oldest.material._id)).toBe('done');
+        expect(quizSets.pregenerate).toHaveBeenCalledTimes(1);
+      });
+
+      it('진행 중 20개 + 실패 1개여도 실패 노트의 작업이 재시도로 성공하면 목록을 두 번 부르는 사이에 완료로 바뀐다', async () => {
+        // 가장 오래된 노트가 실패 상태(작업이 취소돼 실패로 반영됨)다
+        const failed = await service.register(me.toHexString(), dto({ title: '실패' }));
+        await jobs.updateOne({ _id: failed.job._id }, { $set: { status: 'canceled' } });
+        await materials.updateOne(
+          { _id: failed.material._id },
+          { $set: { 'processing.status': 'failed' } },
+        );
+        await complete(failed.job._id); // 다시 시도해 성공했다
+        for (let i = 0; i < LIST_SYNC_MAX; i++) {
+          await service.register(me.toHexString(), dto({ title: `진행 ${i}` }));
+        }
+
+        const first = await listOnce();
+        expect(statusOf(first, failed.material._id)).toBe('failed'); // 진행 중 20개가 먼저 자리를 썼다
+        const second = await listOnce();
+        expect(statusOf(second, failed.material._id)).toBe('done');
+      });
+
+      it('확인 시각이 없는 노트가 있는 노트보다 먼저 확인된다(오름차순 정렬에서 없는 값이 앞선다)', async () => {
+        const ids = [];
+        for (let i = 0; i < 3; i++) {
+          ids.push(
+            (await service.register(me.toHexString(), dto({ title: `정렬 ${i}` }))).material._id,
+          );
+        }
+        // 가장 오래된 노트(정렬 0)만 확인 시각이 있다
+        await materials.updateOne(
+          { _id: ids[0] },
+          { $set: { 'processing.checkedAt': new Date(Date.now() - 60_000) } },
+        );
+        const rows = await materials
+          .find({ folderId: new Types.ObjectId(folderId), 'processing.jobId': { $ne: null } })
+          .sort({ 'processing.checkedAt': 1, createdAt: -1, _id: -1 })
+          .lean();
+        // 확인 시각이 없는 둘이 먼저(최신순), 있는 하나가 마지막
+        expect(rows.map((r) => r.title)).toEqual(['정렬 2', '정렬 1', '정렬 0']);
+      });
+    });
+
     it('저장: 저장 시각을 한 번 남기고(다시 눌러도 그대로), 응답은 노트 모양', async () => {
       const { material } = await service.register(me.toHexString(), dto());
       const first = await service.update(me.toHexString(), material._id, { saved: true });

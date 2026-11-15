@@ -64,22 +64,6 @@ const conflict = (message: string) =>
 const isDuplicateKey = (e: unknown) =>
   typeof e === 'object' && e !== null && (e as { code?: unknown }).code === DUPLICATE_KEY;
 
-/**
- * 목록 조회가 작업 결과를 다시 확인할 노트를 고른다(최대 LIST_SYNC_MAX 개). 정리 중(queued · processing)인 노트를 먼저(주어진 순서대로),
- * 남는 자리에 작업이 있는 failed 노트를 확인한 지 오래된 순으로(확인한 적 없으면 가장 먼저, 같으면 주어진 순서).
- * 늘 같은 최신 노트만 고르면 오래된 실패 노트가 영원히 확인되지 않는다
- */
-export function pickToCheck(rows: MaterialRow[]): MaterialRow[] {
-  const withJob = rows.filter((r) => r.processing.jobId);
-  const running = withJob.filter((r) => ['queued', 'processing'].includes(r.processing.status));
-  const failed = withJob
-    .filter((r) => r.processing.status === 'failed')
-    .sort(
-      (a, b) => (a.processing.checkedAt?.getTime() ?? 0) - (b.processing.checkedAt?.getTime() ?? 0),
-    );
-  return [...running, ...failed].slice(0, LIST_SYNC_MAX);
-}
-
 /** 앱이 보낸 id. 형식이 틀리면 없는 것과 같게 404 */
 export function objectId(id: string, what = '노트'): Types.ObjectId {
   if (!OBJECT_ID.test(id)) throw notFound(what);
@@ -579,7 +563,7 @@ export class MaterialsService {
    * 폴더 노트 목록 한 페이지. limit 이 없으면 전부, 있으면 정렬 순서(createdAt · _id 내림차순) 그대로 limit 개와
    * 다음 페이지 위치(next, 없으면 null). after 는 이전 페이지의 next 이다.
    * 정리 중이거나 실패한 노트는 상세 조회처럼 끝난 작업 결과를 먼저 옮기는데, 어떤 노트를 확인할지는 돌려줄 페이지가 아니라
-   * 폴더 전체 기준으로 고른다(pickToCheck · 한 번에 LIST_SYNC_MAX 개). 확인한 뒤에 페이지를 읽으므로 결과가 반영돼 있다
+   * 폴더 전체 기준으로 고른다(한 번에 LIST_SYNC_MAX 개). 확인한 뒤에 페이지를 읽으므로 결과가 반영돼 있다
    */
   async listPage(
     userId: string,
@@ -596,19 +580,21 @@ export class MaterialsService {
     const inFolder = { ownerId: owner, folderId: folder._id, deletedAt: null };
     const newestFirst = { createdAt: -1, _id: -1 } as const;
 
-    // 확인할 노트를 폴더 전체에서 고른다(후보는 가볍게 상태만 읽는다)
-    const candidates = await this.materials
+    // 확인할 노트를 폴더 전체에서 DB 가 고른다: 작업이 있고 아직 끝나지 않았거나 실패한 노트를 상태 구분 없이
+    // 마지막 확인 시각이 오래된 순으로(확인한 적 없으면 가장 먼저 — 오름차순에서 없는 값이 앞선다), 같으면 최신 노트부터 LIST_SYNC_MAX 개.
+    // 정리 중인 노트가 많아도 그 뒤의 오래된 노트와 실패한 노트가 돌아가며 확인된다. 인덱스는 폴더 안 노트만 훑는 기존 것으로 충분하다
+    const targets = await this.materials
       .find(
         {
           ...inFolder,
           'processing.jobId': { $ne: null },
           'processing.status': { $in: ['queued', 'processing', 'failed'] },
         },
-        { processing: 1 },
+        { _id: 1 },
       )
-      .sort(newestFirst)
-      .lean<MaterialRow[]>();
-    const targets = pickToCheck(candidates);
+      .sort({ 'processing.checkedAt': 1, ...newestFirst })
+      .limit(LIST_SYNC_MAX)
+      .lean<{ _id: Types.ObjectId }[]>();
     await Promise.all(
       targets.map(async (target) => {
         try {
