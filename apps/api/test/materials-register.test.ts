@@ -32,9 +32,9 @@ function setup(over: { folder?: unknown; size?: number } = {}) {
   const lean = <T>(v: T) => ({ lean: () => Promise.resolve(v) });
   const materials = {
     findOne: vi.fn(() => lean(saved)),
-    create: vi.fn((d: Record<string, unknown>) => {
-      saved = { _id: new Types.ObjectId(), createdAt: new Date(), ...d };
-      return Promise.resolve({ toObject: () => saved });
+    create: vi.fn((docs: Record<string, unknown>[]) => {
+      saved = { _id: new Types.ObjectId(), createdAt: new Date(), ...docs[0] };
+      return Promise.resolve([{ toObject: () => saved }]);
     }),
     updateOne: vi.fn(() => Promise.resolve()),
     findOneAndUpdate: vi.fn((_f: unknown, u: { $set: Record<string, unknown> }) => {
@@ -45,11 +45,11 @@ function setup(over: { folder?: unknown; size?: number } = {}) {
       return lean(saved);
     }),
   };
+  const folderRow = () =>
+    over.folder === undefined ? { _id: folderId, subjectName: '수학' } : over.folder;
   const folders = {
-    findOne: vi.fn(() =>
-      lean(over.folder === undefined ? { _id: folderId, subjectName: '수학' } : over.folder),
-    ),
-    updateOne: vi.fn(() => Promise.resolve()),
+    findOne: vi.fn(() => lean(folderRow())),
+    findOneAndUpdate: vi.fn(() => lean(folderRow())),
   };
   const jobs = {
     enqueue: vi.fn((j: { type: string; targetId: string }) =>
@@ -73,14 +73,19 @@ function setup(over: { folder?: unknown; size?: number } = {}) {
     ),
   };
   const quizSets = { pregenerate: vi.fn() };
+  const session = { id: 'session' };
+  const connection = {
+    transaction: vi.fn((work: (s: unknown) => Promise<unknown>) => work(session)),
+  };
   const service = new MaterialsService(
     materials as never,
     folders as never,
     jobs as never,
     blobs as never,
     quizSets as never,
+    connection as never,
   );
-  return { service, materials, folders, jobs, blobs, quizSets };
+  return { service, materials, folders, jobs, blobs, quizSets, connection, session };
 }
 
 const code = async (p: Promise<unknown>) =>
@@ -116,7 +121,7 @@ describe('노트 등록 (MaterialsService.register)', () => {
     expect(t.blobs.createReadAccess).toHaveBeenCalledWith(urls[0], AI_READ_SAS_MS, {
       prefix: `uploads/image/${me.toHexString()}/`,
     });
-    const stored = t.materials.create.mock.calls[0]![0] as {
+    const stored = (t.materials.create.mock.calls[0]![0] as unknown[])[0] as {
       pages: { imageUrl: string; sizeBytes: number }[];
       blobUrls: string[];
     };
@@ -129,7 +134,7 @@ describe('노트 등록 (MaterialsService.register)', () => {
     expect(material.processing).toMatchObject({ status: 'queued', progress: 0, jobId: job._id });
     expect(job.type).toBe('handwriting_summary');
     // 폴더를 맨 앞으로
-    expect(t.folders.updateOne).toHaveBeenCalled();
+    expect(t.folders.findOneAndUpdate).toHaveBeenCalled();
   });
 
   it('SAS를 만들지 못하면 원래 주소를 내보내고 응답은 실패시키지 않는다', async () => {
@@ -189,7 +194,7 @@ describe('노트 등록 (MaterialsService.register)', () => {
         input: { audioUrl: `${audio}?sig=SECRET`, sizeBytes: 1000 },
       }),
     );
-    expect((t.materials.create.mock.calls[0]![0] as { pages: unknown[] }).pages).toEqual([]);
+    expect((t.materials.create.mock.calls[0]![0] as { pages: unknown[] }[])[0]!.pages).toEqual([]);
     expect(material.pages).toBeUndefined();
 
     t = setup();
@@ -256,6 +261,55 @@ describe('노트 등록 (MaterialsService.register)', () => {
     );
   });
 
+  it('폴더 확인 · 폴더 갱신 · 노트 만들기는 한 트랜잭션(같은 세션)이고, 파일 확인 · 작업 등록은 트랜잭션 밖', async () => {
+    let inside = false;
+    const outside = (name: string) => () => {
+      expect(inside, name + ' 은 트랜잭션 밖이어야 해요').toBe(false);
+    };
+    t.connection.transaction.mockImplementation(async (work: (s: unknown) => Promise<unknown>) => {
+      inside = true;
+      try {
+        return await work(t.session);
+      } finally {
+        inside = false;
+      }
+    });
+    t.blobs.createReadAccess.mockImplementation((u: string, _ttl: number, verify?: unknown) => {
+      outside('저장소 호출')();
+      return Promise.resolve({
+        readUrl: u + '?sig=SECRET',
+        ...(verify ? { sizeBytes: 1000 } : {}),
+      });
+    });
+    const enqueue = t.jobs.enqueue.getMockImplementation()!;
+    t.jobs.enqueue.mockImplementation((j: { type: string; targetId: string }) => {
+      outside('작업 등록')();
+      return enqueue(j);
+    });
+
+    await t.service.register(me.toHexString(), dto());
+
+    expect(t.connection.transaction).toHaveBeenCalledTimes(1);
+    // 폴더는 { _id, ownerId, deletedAt: null } 조건으로 같은 세션에서 갱신
+    expect(t.folders.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: folderId, ownerId: me, deletedAt: null },
+      { $set: { updatedAt: expect.any(Date) } },
+      expect.objectContaining({ session: t.session }),
+    );
+    expect(t.materials.create).toHaveBeenCalledWith([expect.any(Object)], { session: t.session });
+  });
+
+  it('확인한 뒤 트랜잭션 안에서 폴더가 이미 지워졌으면 404이고 노트 · 작업을 만들지 않는다', async () => {
+    t.folders.findOneAndUpdate.mockReturnValue({ lean: () => Promise.resolve(null) });
+
+    await expect(t.service.register(me.toHexString(), dto(), 'key-1')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+
+    expect(t.materials.create).not.toHaveBeenCalled();
+    expect(t.jobs.enqueue).not.toHaveBeenCalled();
+  });
+
   it('키가 없는데 작업을 넣지 못하면 작업 없는 노트가 남지 않게 지운다', async () => {
     t.jobs.enqueue.mockRejectedValue(new Error('db down'));
     await expect(t.service.register(me.toHexString(), dto())).rejects.toThrow('db down');
@@ -269,7 +323,9 @@ describe('노트 등록 (MaterialsService.register)', () => {
     t.jobs.enqueue.mockRejectedValue(new Error('db down'));
     await expect(t.service.register(me.toHexString(), dto(), 'key-1')).rejects.toThrow('db down');
     expect(t.materials.updateOne).not.toHaveBeenCalled();
-    expect(t.materials.create.mock.calls[0]![0]).toMatchObject({ requestId: 'key-1' });
+    expect((t.materials.create.mock.calls[0]![0] as unknown[])[0]).toMatchObject({
+      requestId: 'key-1',
+    });
   });
 
   it('이 노트에 이미 넣은 작업이 있으면 새로 넣지 않고 그 작업을 연결한다(연결에 져도 취소하지 않는다)', async () => {

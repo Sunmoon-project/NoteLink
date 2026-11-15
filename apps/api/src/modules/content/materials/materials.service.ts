@@ -7,9 +7,9 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES, UPLOAD_RULES } from '@notelink/shared';
-import { Model, Types } from 'mongoose';
+import { type Connection, Model, Types } from 'mongoose';
 
 import { type AppAiJob, AiJobsService } from '../../../ai-jobs/ai-jobs.service.js';
 import { QuizSetsService } from '../../../quiz-sets/quiz-sets.service.js';
@@ -132,6 +132,7 @@ export class MaterialsService {
     private readonly jobs: AiJobsService,
     private readonly blobs: BlobStorageService,
     private readonly quizSets: QuizSetsService,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
 
   private readonly logger = new Logger(MaterialsService.name);
@@ -140,7 +141,9 @@ export class MaterialsService {
    * 노트를 등록하고 정리 작업을 넣는다. 응답은 앱의 로컬 모의 API(content.createMaterial)와 같은 { material, job }.
    * key(Idempotency-Key)가 있으면 같은 키의 재요청은 새로 만들지 않고 처음 만든 노트와 그 작업을 돌려준다.
    * 같은 키에 다른 내용(또는 이미 지운 노트)이면 409 IDEMPOTENCY_CONFLICT.
-   * 노트를 먼저 만들고 작업을 넣은 뒤 작업 id 를 연결한다(작업을 넣는 서비스가 트랜잭션을 받지 않는다).
+   * 폴더 확인 · 폴더 갱신 시각 · 노트 만들기는 한 트랜잭션이다: 같은 폴더를 지우는 요청(FoldersService.remove)과
+   * 같은 폴더 문서를 쓰므로 겹치면 한쪽이 쓰기 충돌로 다시 시도되어, 지운 폴더 안에 살아 있는 노트가 남지 않는다.
+   * 파일 확인(저장소)과 작업 넣기는 트랜잭션 밖이다: 노트를 만든 뒤 작업을 넣고 작업 id 를 연결한다(작업을 넣는 서비스가 트랜잭션을 받지 않는다).
    * 노트만 만들고 멈춘 요청은 같은 키의 재요청이 작업을 마저 넣는다. 키 없는 요청이 작업을 넣지 못하면 노트를 지운다.
    */
   async register(
@@ -163,30 +166,47 @@ export class MaterialsService {
 
     let created: MaterialRow;
     try {
-      const doc = await this.materials.create({
-        ownerId: owner,
-        folderId: folder._id,
-        kind: body.kind,
-        source: body.source,
-        title: body.title,
-        description: body.description,
-        avatarItemId: body.avatarItemId ? new Types.ObjectId(body.avatarItemId) : null,
-        processing: { status: 'queued', progress: 0, jobId: null },
-        // 이미지는 업로드마다 한 쪽. PDF 는 한 쪽으로 두었다가 정리가 끝나면 쪽 수만큼 펼친다
-        pages:
-          body.kind === 'recording'
-            ? []
-            : files.map((f, i) => ({
-                pageNo: i + 1,
-                imageUrl: f.blobUrl,
-                sizeBytes: f.sizeBytes,
-                ocrText: null,
-                takenAt: null,
-              })),
-        blobUrls: body.blobUrls,
-        ...(key ? { requestId: key, requestFingerprint: fingerprint } : {}),
+      created = await this.connection.transaction(async (session) => {
+        // 폴더 문서를 쓴다(지우는 요청과 같은 문서). 그 사이 지웠으면 없는 폴더와 같게 404
+        const live = await this.folders
+          .findOneAndUpdate(
+            { _id: folder._id, ownerId: owner, deletedAt: null },
+            // 폴더 목록이 최근에 바뀐 순이라 노트를 넣은 폴더를 맨 앞으로
+            { $set: { updatedAt: new Date() } },
+            { session, projection: { _id: 1 } },
+          )
+          .lean();
+        if (!live) throw notFound('폴더');
+        const [doc] = await this.materials.create(
+          [
+            {
+              ownerId: owner,
+              folderId: folder._id,
+              kind: body.kind,
+              source: body.source,
+              title: body.title,
+              description: body.description,
+              avatarItemId: body.avatarItemId ? new Types.ObjectId(body.avatarItemId) : null,
+              processing: { status: 'queued', progress: 0, jobId: null },
+              // 이미지는 업로드마다 한 쪽. PDF 는 한 쪽으로 두었다가 정리가 끝나면 쪽 수만큼 펼친다
+              pages:
+                body.kind === 'recording'
+                  ? []
+                  : files.map((f, i) => ({
+                      pageNo: i + 1,
+                      imageUrl: f.blobUrl,
+                      sizeBytes: f.sizeBytes,
+                      ocrText: null,
+                      takenAt: null,
+                    })),
+              blobUrls: body.blobUrls,
+              ...(key ? { requestId: key, requestFingerprint: fingerprint } : {}),
+            },
+          ],
+          { session },
+        );
+        return doc!.toObject() as unknown as MaterialRow;
       });
-      created = doc.toObject() as unknown as MaterialRow;
     } catch (e) {
       // 같은 키의 요청이 거의 동시에 와서 다른 쪽이 먼저 만들었다
       if (key && isDuplicateKey(e)) {
@@ -195,11 +215,6 @@ export class MaterialsService {
       }
       throw e;
     }
-
-    // 폴더 목록이 최근에 바뀐 순이라 노트를 넣은 폴더를 맨 앞으로(실패해도 등록은 성공으로 본다)
-    await this.folders
-      .updateOne({ _id: folder._id, ownerId: owner }, { $set: { updatedAt: new Date() } })
-      .catch(() => undefined);
 
     try {
       const started = await this.startJob(userId, created, folder.subjectName, files);

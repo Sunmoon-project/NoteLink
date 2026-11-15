@@ -5,6 +5,7 @@ import mongoose, { type Connection, type Model, Types } from 'mongoose';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
+import { FoldersService } from '../src/modules/content/folders/folders.service.js';
 import type { CreateMaterialDto } from '../src/modules/content/materials/dto/create-material.dto.js';
 import {
   LIST_SYNC_MAX,
@@ -48,6 +49,7 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       new AiJobsService(jobs as never),
       blobs as never,
       quizSets as never,
+      conn,
     );
   });
 
@@ -256,6 +258,45 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
     expect((await lookup.findForTarget(me.toHexString(), query))?._id).toBe(
       failed._id.toHexString(),
     );
+  });
+
+  it('폴더 삭제와 등록이 겹쳐도 지운 폴더 안에 살아 있는 노트가 남지 않는다', async () => {
+    const folderService = new FoldersService(
+      folders as never,
+      materials as never,
+      {} as never,
+      conn,
+    );
+    let registered = 0;
+    let rejected = 0;
+    for (let i = 0; i < 25; i++) {
+      const f = await folders.create({ ownerId: me, title: '겹침 ' + i, subjectName: '수학' });
+      const id = f._id.toHexString();
+      const [made, removed] = await Promise.allSettled([
+        service.register(me.toHexString(), dto({ folderId: id }), 'race-' + i),
+        folderService.remove(me.toHexString(), id),
+      ]);
+      // 폴더 삭제는 늘 성공, 등록은 성공하거나 404(지운 폴더)
+      expect(removed.status).toBe('fulfilled');
+      if (made.status === 'fulfilled') registered += 1;
+      else {
+        rejected += 1;
+        expect(made.reason).toMatchObject({ status: 404 });
+      }
+      expect((await folders.findById(f._id).lean())?.deletedAt).toBeInstanceOf(Date);
+      expect(
+        await materials.countDocuments({ folderId: f._id, deletedAt: null }),
+        '반복 ' + i + ': 지운 폴더 안에 살아 있는 노트',
+      ).toBe(0);
+    }
+    expect(registered + rejected).toBe(25);
+  });
+
+  it('이미 지운 폴더에는 등록하지 못하고(404) 노트 · 작업이 생기지 않는다', async () => {
+    await folders.updateOne({ _id: folderId }, { $set: { deletedAt: new Date() } });
+    await expect(service.register(me.toHexString(), dto())).rejects.toMatchObject({ status: 404 });
+    expect(await materials.countDocuments()).toBe(0);
+    expect(await jobs.countDocuments()).toBe(0);
   });
 
   it('지운 노트의 키로 다시 요청하면 409 (되살리지 않는다)', async () => {
