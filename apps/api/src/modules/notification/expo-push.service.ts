@@ -18,11 +18,16 @@ type ExpoPushTicket = {
   details?: { error?: string };
 };
 
+export type ExpoPushResult = {
+  invalidTokens: string[];
+  failedTickets: { token: string; error: string }[];
+};
+
 /** Expo Push Service를 통해 APNs·FCM으로 푸시를 보낸다. */
 @Injectable()
 export class ExpoPushService {
-  async send(messages: ExpoPushMessage[]): Promise<string[]> {
-    const invalidTokens: string[] = [];
+  async send(messages: ExpoPushMessage[]): Promise<ExpoPushResult> {
+    const result: ExpoPushResult = { invalidTokens: [], failedTickets: [] };
     for (let offset = 0; offset < messages.length; offset += 100) {
       const batch = messages.slice(offset, offset + 100);
       const response = await fetch('https://exp.host/--/api/v2/push/send', {
@@ -35,24 +40,32 @@ export class ExpoPushService {
         body: JSON.stringify(batch),
         signal: AbortSignal.timeout(10_000),
       });
-      const result = (await response.json().catch(() => null)) as {
+      const responseBody = (await response.json().catch(() => null)) as {
         data?: ExpoPushTicket[];
         errors?: { message?: string }[];
       } | null;
-      if (!response.ok || !Array.isArray(result?.data)) {
+      if (!response.ok || !Array.isArray(responseBody?.data)) {
         throw new Error(`Expo Push Service 요청 실패 (${response.status})`);
       }
-      if (result.errors?.length) throw new Error('Expo Push Service가 요청을 거부했습니다');
+      if (responseBody.errors?.length) throw new Error('Expo Push Service가 요청을 거부했습니다');
 
-      result.data.forEach((ticket, index) => {
+      if (responseBody.data.length !== batch.length) {
+        throw new Error('Expo Push Service 응답의 ticket 수가 요청과 일치하지 않습니다');
+      }
+
+      responseBody.data.forEach((ticket, index) => {
         if (ticket.status !== 'error') return;
+        const token = batch[index]!.to;
         if (ticket.details?.error === 'DeviceNotRegistered') {
-          invalidTokens.push(batch[index]!.to);
+          result.invalidTokens.push(token);
           return;
         }
-        throw new Error(`Expo 푸시 전달이 거부됐습니다: ${ticket.details?.error ?? 'unknown'}`);
+        result.failedTickets.push({
+          token,
+          error: ticket.details?.error ?? 'unknown',
+        });
       });
     }
-    return invalidTokens;
+    return result;
   }
 }

@@ -25,12 +25,7 @@ type PendingTimerNotification = {
 };
 type DueTimerRoom = Pick<
   StudyRoom,
-  | 'title'
-  | 'members'
-  | 'timerRule'
-  | 'timerStartedAt'
-  | 'timerNextNotificationAt'
-  | 'timerRevision'
+  'title' | 'members' | 'timerRule' | 'timerStartedAt' | 'timerNextNotificationAt' | 'timerRevision'
 > & { _id: Types.ObjectId };
 
 /** 타이머 단계가 바뀌면 현재 joined 멤버들의 기기에 소리 있는 푸시를 보낸다. */
@@ -71,7 +66,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
         .limit(TIMER_SCAN_LIMIT)
         .lean();
       for (const room of pending) {
-        await this.deliverPending(String(room._id), room.timerRevision ?? 0, now);
+        await this.deliverPending(String(room._id), room.timerRevision ?? 0);
       }
 
       const due = await this.rooms
@@ -136,7 +131,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
       },
     );
     if (!claimed.matchedCount || !pending) return;
-    await this.deliverPending(String(room._id), room.timerRevision ?? 0, now);
+    await this.deliverPending(String(room._id), room.timerRevision ?? 0);
   }
 
   private pendingFor(
@@ -168,18 +163,26 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
     };
   }
 
-  private async deliverPending(roomId: string, revision: number, now: Date): Promise<void> {
+  private async deliverPending(roomId: string, revision: number): Promise<void> {
     if (!isValidObjectId(roomId)) return;
     const id = new Types.ObjectId(roomId);
+    const leaseAcquiredAt = new Date();
     const claimed = await this.rooms.updateOne(
       {
         _id: id,
         closedAt: null,
         timerRevision: revision,
         timerPendingNotification: { $ne: null },
-        $or: [{ timerPendingLeaseUntil: null }, { timerPendingLeaseUntil: { $lte: now } }],
+        $or: [
+          { timerPendingLeaseUntil: null },
+          { timerPendingLeaseUntil: { $lte: leaseAcquiredAt } },
+        ],
       },
-      { $set: { timerPendingLeaseUntil: new Date(now.getTime() + PUSH_LEASE_MS) } },
+      {
+        $set: {
+          timerPendingLeaseUntil: new Date(leaseAcquiredAt.getTime() + PUSH_LEASE_MS),
+        },
+      },
     );
     if (!claimed.matchedCount) return;
 
@@ -221,9 +224,15 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
         collapseId: eventId,
         threadId: `study-room-${roomId}`,
       }));
-      const invalidTokens = await this.push.send(messages);
-      if (invalidTokens.length)
-        await this.devices.deleteMany({ pushToken: { $in: invalidTokens } });
+      const result = await this.push.send(messages);
+      if (result.invalidTokens.length)
+        await this.devices.deleteMany({ pushToken: { $in: result.invalidTokens } });
+      if (result.failedTickets.length)
+        this.logger.warn(
+          `일부 기기 푸시 ticket이 거부되어 해당 전환의 재전송을 생략합니다: ${result.failedTickets
+            .map(({ error }) => error)
+            .join(', ')}`,
+        );
       await this.clearPending(id, revision, pending.transitionAt);
     } catch (error) {
       this.logger.warn(`스터디룸 타이머 푸시 전송을 재시도합니다: ${String(error)}`);

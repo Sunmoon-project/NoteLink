@@ -72,7 +72,7 @@ beforeEach(() => {
   };
   devices.find.mockReturnValue(devicesQuery);
   devices.deleteMany.mockResolvedValue({ deletedCount: 0 });
-  push.send.mockResolvedValue([]);
+  push.send.mockResolvedValue({ invalidTokens: [], failedTickets: [] });
 });
 
 describe('RoomTimerNotificationsService', () => {
@@ -133,6 +133,95 @@ describe('RoomTimerNotificationsService', () => {
     );
     await service.runOnce(now);
     expect(push.send).not.toHaveBeenCalled();
+  });
+
+  it('전송 대기 시간이 길어져도 각 방의 lease는 실제 획득 시각부터 30초로 계산한다', async () => {
+    const firstRoom = {
+      ...dueRoom,
+      timerPendingNotification: {
+        transitionAt: nextAt,
+        phase: 'break',
+        title: '첫 번째 방 타이머',
+        body: '집중 시간이 끝났어요.',
+      },
+    };
+    const secondRoom = {
+      ...firstRoom,
+      _id: new Types.ObjectId(),
+      timerPendingNotification: {
+        ...firstRoom.timerPendingNotification,
+        title: '두 번째 방 타이머',
+      },
+    };
+    const leaseStart = new Date('2026-11-15T12:00:00.000Z');
+    vi.useFakeTimers();
+    vi.setSystemTime(leaseStart);
+    rooms.find
+      .mockReset()
+      .mockReturnValueOnce({ limit: () => ({ lean: async () => [firstRoom, secondRoom] }) })
+      .mockReturnValueOnce({ sort: () => ({ limit: () => ({ lean: async () => [] }) }) });
+    rooms.findOne
+      .mockReset()
+      .mockReturnValueOnce(query(firstRoom))
+      .mockReturnValueOnce(query(secondRoom));
+    rooms.updateOne.mockReset().mockResolvedValue({ matchedCount: 1 });
+    push.send
+      .mockImplementationOnce(async () => {
+        vi.setSystemTime(new Date(leaseStart.getTime() + 31_000));
+        return { invalidTokens: [], failedTickets: [] };
+      })
+      .mockResolvedValueOnce({ invalidTokens: [], failedTickets: [] });
+
+    try {
+      const service = new RoomTimerNotificationsService(
+        rooms as never,
+        devices as never,
+        push as never,
+      );
+      await service.runOnce(leaseStart);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const leases = rooms.updateOne.mock.calls
+      .map(([filter, update]) => ({ filter, update }))
+      .filter(({ update }) => update.$set?.timerPendingLeaseUntil instanceof Date);
+    expect(leases).toHaveLength(2);
+    expect(leases[0]!.update.$set.timerPendingLeaseUntil).toEqual(
+      new Date(leaseStart.getTime() + 30_000),
+    );
+    expect(leases[1]!.filter.$or[1].timerPendingLeaseUntil.$lte).toEqual(
+      new Date(leaseStart.getTime() + 31_000),
+    );
+    expect(leases[1]!.update.$set.timerPendingLeaseUntil).toEqual(
+      new Date(leaseStart.getTime() + 61_000),
+    );
+  });
+
+  it('개별 ticket 실패는 해당 전환에서만 기록하고 성공 기기에 재전송하지 않는다', async () => {
+    push.send.mockResolvedValueOnce({
+      invalidTokens: ['ExponentPushToken[host-device]'],
+      failedTickets: [{ token: 'ExpoPushToken[member-device]', error: 'MessageRateExceeded' }],
+    });
+    const service = new RoomTimerNotificationsService(
+      rooms as never,
+      devices as never,
+      push as never,
+    );
+
+    await service.runOnce(now);
+
+    expect(push.send).toHaveBeenCalledTimes(1);
+    expect(devices.deleteMany).toHaveBeenCalledWith({
+      pushToken: { $in: ['ExponentPushToken[host-device]'] },
+    });
+    expect(rooms.updateOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _id: roomId,
+        'timerPendingNotification.transitionAt': nextAt,
+      }),
+      { $set: { timerPendingNotification: null, timerPendingLeaseUntil: null } },
+    );
   });
 
   it('마지막 교시가 끝나면 다음 날 첫 교시를 다음 알림 시각으로 저장한다', async () => {
