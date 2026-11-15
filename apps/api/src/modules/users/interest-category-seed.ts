@@ -10,8 +10,11 @@ export interface CategoryCollection {
   findOneAndUpdate(
     filter: object,
     update: object,
-    options: { upsert: true; returnDocument: 'after' },
-  ): Promise<{ _id: Types.ObjectId } | null>;
+    options: { upsert: true; returnDocument: 'after'; includeResultMetadata: true },
+  ): Promise<{
+    value: { _id: Types.ObjectId } | null;
+    lastErrorObject?: { upserted?: unknown };
+  }>;
   findOne(filter: object): Promise<{ _id: Types.ObjectId } | null>;
 }
 
@@ -42,7 +45,7 @@ export async function seedInterestCategories(categories: CategoryCollection): Pr
     const _id = idOf(++n);
     const at = new Date();
     try {
-      const doc = await categories.findOneAndUpdate(
+      const res = await categories.findOneAndUpdate(
         { name, ownerId: null, deletedAt: null },
         {
           $setOnInsert: {
@@ -58,10 +61,11 @@ export async function seedInterestCategories(categories: CategoryCollection): Pr
             updatedAt: at,
           },
         },
-        { upsert: true, returnDocument: 'after' },
+        { upsert: true, returnDocument: 'after', includeResultMetadata: true },
       );
-      if (doc && String(doc._id) === String(_id)) inserted += 1;
-      return doc?._id ?? null;
+      // 이번에 새로 넣었을 때만 센다(같은 고정 id로 예전에 넣어 둔 분야는 이미 있는 것)
+      if (res.lastErrorObject?.upserted) inserted += 1;
+      return res.value?._id ?? null;
     } catch (e) {
       // 다른 서버가 같은 고정 id로 먼저 넣었거나, 운영에서 지운(deletedAt) 같은 id가 남아 있을 때
       if (!isDuplicateKey(e)) throw e;

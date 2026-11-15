@@ -14,9 +14,16 @@ type Update = {
   $setOnInsert: { _id: Types.ObjectId; name: string; parentId: Types.ObjectId | null };
 };
 
+/** 드라이버 응답(includeResultMetadata): 새로 넣음 · 이미 있음 */
+const inserted = (_id: Types.ObjectId) => ({ value: { _id }, lastErrorObject: { upserted: _id } });
+const found = (_id: Types.ObjectId) => ({
+  value: { _id },
+  lastErrorObject: { updatedExisting: true },
+});
+
 /** 비어 있는 컬렉션처럼: 넣은 문서를 그대로 돌려준다 */
 const emptyCollection = () => {
-  const findOneAndUpdate = vi.fn(async (_f: object, u: Update) => ({ _id: u.$setOnInsert._id }));
+  const findOneAndUpdate = vi.fn(async (_f: object, u: Update) => inserted(u.$setOnInsert._id));
   return {
     findOneAndUpdate,
     findOne: vi.fn(),
@@ -47,7 +54,7 @@ describe('공용 관심 분야 시드', () => {
   it('이미 있는 분야(다른 id)는 새로 세지 않고, 그 아래 세부 분야는 있던 분야를 부모로 단다', async () => {
     const existing = new Types.ObjectId();
     const findOneAndUpdate = vi.fn(async (f: { name: string }, u: Update) =>
-      f.name === '어학' ? { _id: existing } : { _id: u.$setOnInsert._id },
+      f.name === '어학' ? found(existing) : inserted(u.$setOnInsert._id),
     );
     const col = { findOneAndUpdate, findOne: vi.fn() } as unknown as CategoryCollection;
     expect(await seedInterestCategories(col)).toBe(total - 1);
@@ -60,7 +67,7 @@ describe('공용 관심 분야 시드', () => {
   it('동시에 다른 서버가 먼저 넣은 경우(중복 키)는 그 문서를 찾아 이어 간다', async () => {
     const findOneAndUpdate = vi.fn(async (_f: object, u: Update) => {
       if (u.$setOnInsert.name === '수능') throw Object.assign(new Error('dup'), { code: 11000 });
-      return { _id: u.$setOnInsert._id };
+      return inserted(u.$setOnInsert._id);
     });
     const findOne = vi.fn(async (f: { _id: Types.ObjectId }) => ({ _id: f._id }));
     const col = { findOneAndUpdate, findOne } as unknown as CategoryCollection;
@@ -83,5 +90,10 @@ describe('공용 관심 분야 시드', () => {
       runInterestCategorySeed(broken as unknown as CategoryCollection, undefined, logger),
     ).resolves.toBeUndefined();
     expect(logger.error).toHaveBeenCalled();
+  });
+  it('예전에 같은 고정 id로 넣어 둔 분야는 다시 세지 않는다(서버를 다시 켤 때)', async () => {
+    const findOneAndUpdate = vi.fn(async (_f: object, u: Update) => found(u.$setOnInsert._id));
+    const col = { findOneAndUpdate, findOne: vi.fn() } as unknown as CategoryCollection;
+    expect(await seedInterestCategories(col)).toBe(0);
   });
 });
