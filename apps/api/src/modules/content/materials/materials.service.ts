@@ -27,8 +27,6 @@ type AppMaterial = ReturnType<typeof toAppMaterial>;
 export const AI_READ_SAS_MS = 24 * 60 * 60 * 1000;
 /** 응답에 담는 원본 이미지 읽기 주소 유효 시간 */
 export const APP_READ_SAS_MS = 60 * 60 * 1000;
-/** 폴더 노트 목록 상한(최근 것부터, 페이지 나누기 없음) */
-export const LIST_MAX = 200;
 /** 목록 조회 한 번에 끝난 작업 결과를 옮기는 노트 수 상한 */
 export const LIST_SYNC_MAX = 20;
 /** Idempotency-Key 최대 길이 */
@@ -405,7 +403,7 @@ export class MaterialsService {
   }
 
   /**
-   * 내 폴더 안의 지우지 않은 노트(최근 것부터, 최대 LIST_MAX 개). 정리 중인 노트도 포함한다(앱이 "요약 중"을 보인다).
+   * 내 폴더 안의 지우지 않은 노트 전부(최근 것부터, 개수 상한 · 페이지 나누기 없음). 정리 중인 노트도 포함한다(앱이 "요약 중"을 보인다).
    * 정리 중인 노트는 상세 조회처럼 끝난 작업 결과를 먼저 옮긴다. 한 번에 옮기는 수는 LIST_SYNC_MAX 개까지
    * (나머지는 상세를 열거나 다음 목록 조회 때). 목록에는 쪽(pages)을 담지 않는다
    */
@@ -424,7 +422,6 @@ export class MaterialsService {
         { pages: 0, concepts: 0, blobUrls: 0 },
       )
       .sort({ createdAt: -1, _id: -1 })
-      .limit(LIST_MAX)
       .lean<MaterialRow[]>();
     const waiting = new Set(
       rows

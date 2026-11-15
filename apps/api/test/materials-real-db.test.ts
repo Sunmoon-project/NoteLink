@@ -7,7 +7,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import type { CreateMaterialDto } from '../src/modules/content/materials/dto/create-material.dto.js';
 import {
-  LIST_MAX,
   LIST_SYNC_MAX,
   MaterialsService,
 } from '../src/modules/content/materials/materials.service.js';
@@ -468,7 +467,7 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       expect(again.every((m) => m.processing.status === 'done')).toBe(true);
     });
 
-    it('목록은 200개까지(최근 것부터)', async () => {
+    it('목록은 개수 상한 없이 폴더 안 노트를 모두 최근 순으로 돌려준다(201개 이상도)', async () => {
       const base = {
         ownerId: me,
         folderId: new Types.ObjectId(folderId),
@@ -484,9 +483,9 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
         })),
       );
       const list = await service.listInFolder(me.toHexString(), folderId);
-      expect(list).toHaveLength(LIST_MAX);
+      expect(list).toHaveLength(205);
       expect(list[0]!.title).toBe('m204');
-      expect(list.at(-1)!.title).toBe('m5');
+      expect(list.at(-1)!.title).toBe('m0');
     });
 
     it('저장: 저장 시각을 한 번 남기고(다시 눌러도 그대로), 응답은 노트 모양', async () => {
