@@ -8,6 +8,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Types, type Model } from 'mongoose';
 
 import { BlobStorageService } from '../upload/blob-storage.service.js';
+import { StorageScopeService } from '../upload/storage-scope.service.js';
 import { Report } from './schemas/report.schema.js';
 
 export const REPORT_SWEEP_INTERVAL_MS = 60 * 60_000;
@@ -15,6 +16,7 @@ export const REPORT_SWEEP_INTERVAL_MS = 60 * 60_000;
 /**
  * 신고가 저장되지 않은 사진 복사본 정리. 신고를 접수할 때는 저장 실패를 확정할 수 없어 지우지 않고,
  * 충분히 지난 뒤 신고 문서가 있는지 보고 지우거나 남긴다(BlobStorageService.sweepReportImages).
+ * 이 DB의 구분값이 달린 복사본만 다룬다(같은 저장소를 쓰는 다른 DB의 신고 사진은 건드리지 않음).
  * 서버가 켜질 때는 돌지 않고 주기마다만 돈다(여러 서버가 함께 돌아도 결과가 같음)
  */
 @Injectable()
@@ -26,6 +28,7 @@ export class ReportImageSweeper implements OnApplicationBootstrap, OnApplication
   constructor(
     @InjectModel(Report.name) private readonly reports: Model<Report>,
     private readonly storage: BlobStorageService,
+    private readonly scopes: StorageScopeService,
   ) {}
 
   onApplicationBootstrap() {
@@ -42,7 +45,8 @@ export class ReportImageSweeper implements OnApplicationBootstrap, OnApplication
     if (this.running) return;
     this.running = true;
     try {
-      const counts = await this.storage.sweepReportImages(now, async (id) =>
+      const scope = await this.scopes.get();
+      const counts = await this.storage.sweepReportImages(now, scope, async (id) =>
         Boolean(await this.reports.exists({ _id: new Types.ObjectId(id) })),
       );
       if (counts.deleted || counts.failed)

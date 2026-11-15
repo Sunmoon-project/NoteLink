@@ -16,6 +16,7 @@ import { ReportsService } from '../src/modules/social/reports.service.js';
 import { StudyRoom } from '../src/modules/studyroom/schemas/study-room.schema.js';
 import { StudyChatService } from '../src/modules/studyroom/study-chat.service.js';
 import { BlobStorageService } from '../src/modules/upload/blob-storage.service.js';
+import { StorageScopeService } from '../src/modules/upload/storage-scope.service.js';
 
 const reporter = new Types.ObjectId();
 const target = new Types.ObjectId();
@@ -24,6 +25,8 @@ const reportId = new Types.ObjectId();
 const rooms = { findOne: vi.fn() };
 const reports = { create: vi.fn() };
 const storage = { keepReportImages: vi.fn(), confirmReportImages: vi.fn() };
+const scopes = { get: vi.fn() };
+const SCOPE = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
 const KEPT = ['https://blob.example.com/raw/reports/kept.jpg'];
 const valid = {
   roomId: String(roomId),
@@ -41,6 +44,7 @@ beforeAll(async () => {
       ReportsService,
       StudyChatService,
       { provide: BlobStorageService, useValue: storage },
+      { provide: StorageScopeService, useValue: scopes },
       { provide: getModelToken(StudyRoom.name), useValue: rooms },
       { provide: getModelToken(Report.name), useValue: reports },
       { provide: getModelToken(ChatRoom.name), useValue: {} },
@@ -65,6 +69,7 @@ beforeAll(async () => {
 afterAll(async () => app.close());
 beforeEach(() => {
   vi.resetAllMocks();
+  scopes.get.mockResolvedValue(SCOPE);
   storage.keepReportImages.mockImplementation(async (_: string, urls: string[]) =>
     urls.length ? KEPT : [],
   );
@@ -93,6 +98,7 @@ describe('POST /api/v1/reports', () => {
       String(reporter),
       valid.imageUrls,
       reportIdUsed,
+      SCOPE,
     );
     expect(String(reports.create.mock.calls[0]![0]._id)).toBe(reportIdUsed);
     expect(storage.confirmReportImages).toHaveBeenCalledWith(KEPT);
@@ -178,6 +184,10 @@ describe('POST /api/v1/reports', () => {
     expect(reports.create).toHaveBeenCalledWith(
       expect.objectContaining({ imageUrls: [], details: '가'.repeat(10) }),
     );
+    // 사진이 없으면 저장소 · DB 구분값을 보지 않는다
+    expect(scopes.get).not.toHaveBeenCalled();
+    expect(storage.keepReportImages).not.toHaveBeenCalled();
+    expect(storage.confirmReportImages).not.toHaveBeenCalled();
   });
 
   it('신고 사진 검증에 실패하면 신고를 저장하지 않는다', async () => {

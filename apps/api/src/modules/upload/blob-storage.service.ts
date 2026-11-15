@@ -32,6 +32,11 @@ export const REPORT_PREFIX = 'reports';
  */
 export const REPORT_PENDING_TAG = 'reportPending';
 /**
+ * 복사본을 만든 서버의 DB 구분값 태그(StorageScopeService). 같은 컨테이너를 다른 DB와 함께 쓰므로,
+ * 정리 작업은 자기 DB의 복사본만 찾고 지운다(다른 DB의 신고는 이 DB에 없어 지우면 안 됨)
+ */
+export const REPORT_SCOPE_TAG = 'reportScope';
+/**
  * 대기 복사본을 정리하기 전에 기다리는 시간. 진행 중이던 신고 저장이 모두 끝나고도 넉넉히 남는
  * 시간(임시 경로 수명 주기와 같은 하루)
  */
@@ -56,6 +61,7 @@ export const TYPE_BY_EXT: Record<string, string> = {
 };
 const REPORT_FILE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:jpg|jpeg|png|heic)$/;
+const SCOPE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const KEPT_NAME = new RegExp(`^${REPORT_PREFIX}/[0-9a-f]{24}/([0-9a-f]{24})/[^/]+$`);
 
 export interface BlobStore {
@@ -106,7 +112,12 @@ export class BlobStorageService {
    * 신고자가 올린 임시 경로의 사진만 받고, 실제 크기 · 형식을 Blob에서 다시 본다.
    * 중간에 실패하면 이번에 만든 복사본을 지운다(아직 신고를 저장하기 전이라 안전)
    */
-  async keepReportImages(userId: string, urls: string[], reportId: string): Promise<string[]> {
+  async keepReportImages(
+    userId: string,
+    urls: string[],
+    reportId: string,
+    scope: string,
+  ): Promise<string[]> {
     if (!urls.length) return [];
     if (new Set(urls).size !== urls.length)
       throw badReport('같은 사진을 중복해서 첨부할 수 없습니다.');
@@ -114,8 +125,12 @@ export class BlobStorageService {
     const owner = userId.toLowerCase();
     if (!/^[0-9a-f]{24}$/.test(owner) || !/^[0-9a-f]{24}$/.test(reportId))
       throw new Error('신고자 · 신고 ID는 ObjectId 문자열이어야 합니다');
+    if (!SCOPE.test(scope)) throw new Error('DB 구분값이 올바르지 않습니다');
     const prefix = this.urlOf(`${UPLOAD_PREFIX}/${owner}/`);
-    const tags = { [REPORT_PENDING_TAG]: pendingStamp(Date.now()) };
+    const tags = {
+      [REPORT_PENDING_TAG]: pendingStamp(Date.now()),
+      [REPORT_SCOPE_TAG]: scope,
+    };
 
     const sources = urls.map((url) => {
       const fileName = url.startsWith(prefix) ? url.slice(prefix.length) : '';
@@ -152,18 +167,22 @@ export class BlobStorageService {
   }
 
   /**
-   * 오래된 대기 복사본 정리: 그 신고가 저장돼 있으면 태그를 떼고, 없으면 지운다.
+   * 이 DB(scope)의 오래된 대기 복사본 정리: 그 신고가 저장돼 있으면 태그를 떼고, 없으면 지운다.
+   * 지우거나 뗄 때도 태그 조건을 다시 걸어, 그 사이 바뀐 Blob은 건너뛴다.
    * 하나가 실패해도 나머지는 계속한다. 정리한 수를 돌려준다
    */
   async sweepReportImages(
     now: Date,
+    scope: string,
     reportExists: (reportId: string) => Promise<boolean>,
   ): Promise<{ kept: number; deleted: number; failed: number }> {
     const counts = { kept: 0, deleted: 0, failed: 0 };
     if (!this.store) return counts;
+    if (!SCOPE.test(scope)) throw new Error('DB 구분값이 올바르지 않습니다');
     const { client, config } = this.store;
     const cutoff = pendingStamp(now.getTime() - REPORT_PENDING_GRACE_MS);
-    const query = `"${REPORT_PENDING_TAG}" < '${cutoff}'`;
+    const query = `"${REPORT_SCOPE_TAG}" = '${scope}' AND "${REPORT_PENDING_TAG}" < '${cutoff}'`;
+    const conditions = { tagConditions: query };
     const container = client.getContainerClient(config.container);
     const found: string[] = [];
     for await (const page of container
@@ -178,14 +197,16 @@ export class BlobStorageService {
       const blob = container.getBlockBlobClient(name);
       try {
         if (await reportExists(reportId)) {
-          await blob.setTags({});
+          await blob.setTags({}, { conditions });
           counts.kept += 1;
         } else {
-          await blob.deleteIfExists();
-          counts.deleted += 1;
+          // 색인이 늦어 이미 지워진 것이 다시 잡히면 세지 않음
+          const { succeeded } = await blob.deleteIfExists({ conditions });
+          if (succeeded) counts.deleted += 1;
         }
-      } catch {
-        counts.failed += 1;
+      } catch (error) {
+        // 412: 찾은 뒤 태그가 바뀜(이미 처리됨) → 건너뜀
+        if (statusOf(error) !== 412) counts.failed += 1;
       }
     }
     return counts;

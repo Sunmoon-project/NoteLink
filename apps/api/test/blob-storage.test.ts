@@ -8,6 +8,7 @@ import {
   BlobStorageService,
   REPORT_PENDING_GRACE_MS,
   REPORT_PENDING_TAG,
+  REPORT_SCOPE_TAG,
   REPORT_SWEEP_MAX,
 } from '../src/modules/upload/blob-storage.service.js';
 
@@ -21,10 +22,12 @@ const base = `${config.blobEndpoint}/${config.container}`;
 const owner = '507f1f77bcf86cd799439011';
 const reportId = '64b7f0c2a1b2c3d4e5f60718';
 const otherReport = '64b7f0c2a1b2c3d4e5f60719';
+const scope = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
 const file = '550e8400-e29b-41d4-a716-446655440000.jpg';
 const incoming = `${base}/incoming/${owner}/${file}`;
 const service = () => new BlobStorageService(config);
-const keep = (urls: string[], svc = service()) => svc.keepReportImages(owner, urls, reportId);
+const keep = (urls: string[], svc = service()) =>
+  svc.keepReportImages(owner, urls, reportId, scope);
 afterEach(() => vi.restoreAllMocks());
 
 function stubBlob(properties: object | Error = { contentLength: 123, contentType: 'image/jpeg' }) {
@@ -36,7 +39,7 @@ function stubBlob(properties: object | Error = { contentLength: 123, contentType
     .mockResolvedValue({} as never);
   const remove = vi
     .spyOn(BlockBlobClient.prototype, 'deleteIfExists')
-    .mockResolvedValue({} as never);
+    .mockResolvedValue({ succeeded: true } as never);
   const tag = vi.spyOn(BlockBlobClient.prototype, 'setTags').mockResolvedValue({} as never);
   return { get, copy, remove, tag };
 }
@@ -52,6 +55,7 @@ describe('신고 사진 확인 · 보관 (BlobStorageService.keepReportImages)',
     const stamp = Number(copy.mock.calls[0]![1]?.tags?.[REPORT_PENDING_TAG]);
     expect(stamp).toBeGreaterThanOrEqual(before);
     expect(stamp).toBeLessThanOrEqual(Date.now());
+    expect(copy.mock.calls[0]![1]?.tags?.[REPORT_SCOPE_TAG]).toBe(scope);
     // 원본은 짧은 읽기 전용 SAS로 읽는다
     const source = new URL(copy.mock.calls[0]![0]);
     expect(`${source.origin}${source.pathname}`).toBe(incoming);
@@ -129,9 +133,13 @@ describe('신고 사진 확인 · 보관 (BlobStorageService.keepReportImages)',
     await expect(keep([incoming])).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
-  it('ObjectId가 아닌 신고 ID는 경로에 넣지 않는다', async () => {
-    stubBlob();
-    await expect(service().keepReportImages(owner, [incoming], '../x')).rejects.toThrow();
+  it('ObjectId가 아닌 신고 ID · 형식이 다른 DB 구분값은 받지 않는다', async () => {
+    const { copy } = stubBlob();
+    await expect(service().keepReportImages(owner, [incoming], '../x', scope)).rejects.toThrow();
+    await expect(
+      service().keepReportImages(owner, [incoming], reportId, "x' OR 'a' = 'a"),
+    ).rejects.toThrow();
+    expect(copy).not.toHaveBeenCalled();
   });
 });
 
@@ -171,17 +179,48 @@ describe('대기 복사본 정리 (sweepReportImages)', () => {
     return queries;
   }
 
-  it('대기 시간이 지난 것만 찾고, 신고가 있으면 태그를 떼고 없으면 지운다', async () => {
+  it('이 DB의 대기 시간이 지난 것만 찾고, 신고가 있으면 태그를 떼고 없으면 지운다', async () => {
     const queries = stubFind([name(reportId), name(otherReport)]);
     const { remove, tag } = stubBlob();
 
-    const counts = await service().sweepReportImages(now, async (id) => id === reportId);
+    const counts = await service().sweepReportImages(now, scope, async (id) => id === reportId);
 
     expect(counts).toEqual({ kept: 1, deleted: 1, failed: 0 });
     const cutoff = String(now.getTime() - REPORT_PENDING_GRACE_MS).padStart(15, '0');
-    expect(queries).toEqual([`"${REPORT_PENDING_TAG}" < '${cutoff}'`]);
+    const query = `"${REPORT_SCOPE_TAG}" = '${scope}' AND "${REPORT_PENDING_TAG}" < '${cutoff}'`;
+    expect(queries).toEqual([query]);
     expect((tag.mock.contexts[0] as BlockBlobClient).name).toBe(name(reportId));
     expect((remove.mock.contexts[0] as BlockBlobClient).name).toBe(name(otherReport));
+    // 지우거나 뗄 때도 같은 태그 조건을 건다(다른 DB 것 · 그 사이 바뀐 것은 저장소가 거절)
+    const conditions = { tagConditions: query };
+    expect(tag).toHaveBeenCalledWith({}, { conditions });
+    expect(remove).toHaveBeenCalledWith({ conditions });
+  });
+
+  it('찾은 뒤 태그가 바뀐 것(412)은 실패로 세지 않고 건너뛴다', async () => {
+    stubFind([name(reportId), name(otherReport)]);
+    const { remove, tag } = stubBlob();
+    const changed = Object.assign(new Error('조건 불일치'), { statusCode: 412 });
+    remove.mockRejectedValue(changed);
+    tag.mockRejectedValue(changed);
+
+    const counts = await service().sweepReportImages(now, scope, async (id) => id === reportId);
+    expect(counts).toEqual(none);
+  });
+
+  it('이미 지워진 것이 색인에 남아 다시 잡혀도 지운 수로 세지 않는다', async () => {
+    stubFind([name(otherReport)]);
+    const { remove } = stubBlob();
+    remove.mockResolvedValue({ succeeded: false } as never);
+    expect(await service().sweepReportImages(now, scope, async () => false)).toEqual(none);
+  });
+
+  it('형식이 다른 DB 구분값으로는 찾지 않는다', async () => {
+    const queries = stubFind([name(otherReport)]);
+    await expect(
+      service().sweepReportImages(now, "x' OR 'a' = 'a", async () => false),
+    ).rejects.toThrow();
+    expect(queries).toEqual([]);
   });
 
   it('신고를 확인하지 못한 것은 건드리지 않고 나머지는 계속한다', async () => {
@@ -189,7 +228,7 @@ describe('대기 복사본 정리 (sweepReportImages)', () => {
     const { remove, tag } = stubBlob();
     const exists = vi.fn().mockRejectedValueOnce(new Error('DB 장애')).mockResolvedValueOnce(false);
 
-    expect(await service().sweepReportImages(now, exists)).toEqual({
+    expect(await service().sweepReportImages(now, scope, exists)).toEqual({
       kept: 0,
       deleted: 1,
       failed: 1,
@@ -202,7 +241,7 @@ describe('대기 복사본 정리 (sweepReportImages)', () => {
   it('한 번에 REPORT_SWEEP_MAX개까지만 보고 나머지는 다음 주기에 맡긴다', async () => {
     stubFind(Array.from({ length: REPORT_SWEEP_MAX + 5 }, () => name(otherReport)));
     stubBlob();
-    const counts = await service().sweepReportImages(now, async () => false);
+    const counts = await service().sweepReportImages(now, scope, async () => false);
     expect(counts.deleted).toBe(REPORT_SWEEP_MAX);
   });
 
@@ -211,8 +250,8 @@ describe('대기 복사본 정리 (sweepReportImages)', () => {
     const { remove, tag } = stubBlob();
     const exists = vi.fn();
 
-    expect(await service().sweepReportImages(now, exists)).toEqual(none);
-    expect(await new BlobStorageService(null).sweepReportImages(now, exists)).toEqual(none);
+    expect(await service().sweepReportImages(now, scope, exists)).toEqual(none);
+    expect(await new BlobStorageService(null).sweepReportImages(now, scope, exists)).toEqual(none);
     expect(exists).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
     expect(tag).not.toHaveBeenCalled();
