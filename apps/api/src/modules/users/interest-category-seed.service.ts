@@ -11,7 +11,7 @@ export class InterestCategorySeedService implements OnApplicationBootstrap {
 
   onApplicationBootstrap(): Promise<void> {
     return runInterestCategorySeed(
-      this.connection.collection('categories') as unknown as CategoryCollection,
+      () => this.connection.collection('categories') as unknown as CategoryCollection,
       process.env.INTEREST_SEED,
     );
   }

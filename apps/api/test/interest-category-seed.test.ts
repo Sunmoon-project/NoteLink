@@ -80,14 +80,14 @@ describe('공용 관심 분야 시드', () => {
     expect(isInterestSeedEnabled(undefined)).toBe(true);
     const logger = { log: vi.fn(), error: vi.fn() };
     const { findOneAndUpdate, col } = emptyCollection();
-    await runInterestCategorySeed(col, 'off', logger);
+    await runInterestCategorySeed(() => col, 'off', logger);
     expect(findOneAndUpdate).not.toHaveBeenCalled();
     const broken = {
       findOneAndUpdate: vi.fn().mockRejectedValue(new Error('down')),
       findOne: vi.fn(),
     };
     await expect(
-      runInterestCategorySeed(broken as unknown as CategoryCollection, undefined, logger),
+      runInterestCategorySeed(() => broken as unknown as CategoryCollection, undefined, logger),
     ).resolves.toBeUndefined();
     expect(logger.error).toHaveBeenCalled();
   });
@@ -95,5 +95,13 @@ describe('공용 관심 분야 시드', () => {
     const findOneAndUpdate = vi.fn(async (_f: object, u: Update) => found(u.$setOnInsert._id));
     const col = { findOneAndUpdate, findOne: vi.fn() } as unknown as CategoryCollection;
     expect(await seedInterestCategories(col)).toBe(0);
+  });
+  it('컬렉션을 꺼내다 실패해도(DB 대역에 collection이 없음 등) 서버 시작을 막지 않는다', async () => {
+    const logger = { log: vi.fn(), error: vi.fn() };
+    const noCollection = () => {
+      throw new TypeError('this.connection.collection is not a function');
+    };
+    await expect(runInterestCategorySeed(noCollection, undefined, logger)).resolves.toBeUndefined();
+    expect(logger.error).toHaveBeenCalled();
   });
 });

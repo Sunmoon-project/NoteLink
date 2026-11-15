@@ -85,7 +85,8 @@ export async function seedInterestCategories(categories: CategoryCollection): Pr
 
 /** 서버 시작 때 쓰는 진입점: 끄기 설정이면 건너뛰고, 실패해도 예외를 밖으로 내지 않는다 */
 export async function runInterestCategorySeed(
-  categories: CategoryCollection,
+  /** 컬렉션을 꺼내는 일까지 실패를 잡는 안에서 한다(DB 대역 · 연결 문제로 서버 시작이 막히지 않게) */
+  categories: () => CategoryCollection,
   env: string | undefined,
   logger: Pick<Logger, 'log' | 'error'> = new Logger('InterestCategorySeed'),
 ): Promise<void> {
@@ -94,7 +95,7 @@ export async function runInterestCategorySeed(
     return;
   }
   try {
-    const inserted = await seedInterestCategories(categories);
+    const inserted = await seedInterestCategories(categories());
     logger.log(`공용 관심 분야 확인 완료 (새로 넣은 개수: ${inserted})`);
   } catch (e) {
     logger.error(`공용 관심 분야를 넣지 못했습니다(서버는 계속 시작합니다): ${String(e)}`);
