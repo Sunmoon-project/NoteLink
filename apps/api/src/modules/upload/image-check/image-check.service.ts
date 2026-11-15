@@ -39,10 +39,13 @@ export class ImageCheckService {
     const asked = files.filter((f) =>
       (RULE.exts as readonly string[]).includes(f.uri.split('.').pop()?.toLowerCase() ?? ''),
     );
-    const found = await this.blobs.inspectUploads(
-      asked.map((f) => f.uri),
-      `uploads/image/${userId.toLowerCase()}/`,
-    );
+    // 물어볼 것이 없으면 저장소 설정 · 장애와 관계없이 바로 답한다
+    const found = asked.length
+      ? await this.blobs.inspectUploads(
+          asked.map((f) => f.uri),
+          `uploads/image/${userId.toLowerCase()}/`,
+        )
+      : [];
     const byUri = new Map(asked.map((f, i) => [f.uri, found[i] ?? null]));
     return files.map((f) => {
       const blob = byUri.get(f.uri);

@@ -1,7 +1,6 @@
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
-  ArrayMinSize,
   IsArray,
   IsNumber,
   IsOptional,
@@ -27,10 +26,12 @@ export class ImageCheckFileDto {
   @IsString() @MinLength(1) @MaxLength(2048) uri: string;
 }
 
-/** POST /images/check 본문 (packages/shared PATHS.imageCheck · 앱 api.content.checkImages) */
+/**
+ * POST /images/check 본문 (packages/shared PATHS.imageCheck · 앱 api.content.checkImages).
+ * 앱은 기기 검사(형식 · 용량)를 통과한 사진만 보내므로 빈 목록도 온다 → 빈 결과
+ */
 export class CheckImagesDto {
   @IsArray()
-  @ArrayMinSize(1)
   @ArrayMaxSize(IMAGE_CHECK_MAX_FILES)
   @ValidateNested({ each: true })
   @Type(() => ImageCheckFileDto)

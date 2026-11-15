@@ -207,7 +207,6 @@ describe('필기 사진 검사 (POST /api/v1/images/check)', () => {
 
   it.each([
     ['본문 없음', {}],
-    ['빈 목록', { files: [] }],
     ['51장', { files: Array.from({ length: 51 }, (_, i) => file(`f${i}`, photo(i))) }],
     ['이름 없음', { files: [{ sizeBytes: 0, uri: photo(1) }] }],
     ['빈 이름', { files: [file('', photo(1))] }],
@@ -219,6 +218,18 @@ describe('필기 사진 검사 (POST /api/v1/images/check)', () => {
   ])('400: %s', async (_name, body) => {
     await post(body).expect(400);
     expect(getProperties).not.toHaveBeenCalled();
+  });
+
+  it('빈 목록(앱이 기기 검사에서 모두 걸렀을 때)은 빈 결과, 저장소를 부르지 않는다', async () => {
+    const res = await post({ files: [] }).expect(200);
+    expect(res.body).toEqual({ data: [] });
+    expect(getProperties).not.toHaveBeenCalled();
+  });
+
+  it('모두 사진이 아닌 확장자면 저장소 설정이 없어도 not_allowed 로 답한다(503 아님)', async () => {
+    configured = false;
+    const res = await post({ files: [file('a', photo(1, 'pdf'))] }).expect(200);
+    expect(res.body.data).toEqual([{ name: 'a', verdict: 'not_allowed' }]);
   });
 
   it('50장까지는 받는다', async () => {
