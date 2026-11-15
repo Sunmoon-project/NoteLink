@@ -334,7 +334,7 @@ describe('노트 등록 (MaterialsService.register)', () => {
     });
   });
 
-  it('이 노트에 이미 넣은 작업이 있으면 새로 넣지 않고 그 작업을 연결한다(연결에 져도 취소하지 않는다)', async () => {
+  it('이 노트에 이미 넣은 다른 작업이 있어도 이어 쓰거나 취소하지 않고, 자기 작업을 새로 넣어 연결한다', async () => {
     const earlier = {
       _id: new Types.ObjectId().toString(),
       type: 'handwriting_summary',
@@ -344,12 +344,9 @@ describe('노트 등록 (MaterialsService.register)', () => {
 
     const res = await t.service.register(me.toHexString(), dto(), 'key-1');
 
-    expect(res.job._id).toBe(earlier._id);
-    expect(t.jobs.enqueue).not.toHaveBeenCalled();
-    expect(t.jobs.findForTarget).toHaveBeenCalledWith(
-      me.toHexString(),
-      expect.objectContaining({ type: 'handwriting_summary', targetType: 'material' }),
-    );
+    expect(res.job._id).not.toBe(earlier._id);
+    expect(t.jobs.enqueue).toHaveBeenCalledTimes(1);
+    expect(t.jobs.findForTarget).not.toHaveBeenCalled();
     expect(t.jobs.cancel).not.toHaveBeenCalled();
   });
 

@@ -203,7 +203,7 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
     expect(await jobs.countDocuments()).toBe(1);
   });
 
-  it('작업을 넣은 뒤 노트 연결이 실패해도 같은 키로 다시 요청하면 작업이 하나만 남고 그 작업이 연결된다', async () => {
+  it('작업을 넣은 뒤 서버가 멈춰 취소하지 못한 작업은 그대로 남고(다음 요청이 취소하지 않는다), 같은 키의 다시 요청은 새 작업을 만들어 연결한다', async () => {
     // 서버가 연결 도중 멈춘 상황: 연결도 취소도 하지 못한다
     const restore = failLinkOnce();
     const cancel = vi.spyOn(AiJobsService.prototype, 'cancel').mockRejectedValue(new Error('down'));
@@ -213,21 +213,23 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
     // 작업은 들어갔고 노트에는 연결되지 않은 상태
     const stuck = await materials.findOne({ requestId: 'half' }).lean();
     expect(stuck?.processing.jobId).toBeNull();
-    expect(await jobs.countDocuments({ targetId: stuck!._id })).toBe(1);
+    const [left] = await jobs.find({ targetId: stuck!._id }).lean();
+    expect(left?.status).toBe('queued');
 
     const again = await service.register(me.toHexString(), dto(), 'half');
 
-    expect(await jobs.countDocuments({ targetId: stuck!._id })).toBe(1);
+    // 남은 작업은 그대로 남고(다음 요청이 남의 작업을 취소하지 않는다) 새 작업이 노트에 연결된다
+    expect(again.job._id).not.toBe(left!._id.toString());
+    expect((await jobs.findById(left!._id).lean())?.status).toBe('queued');
+    expect(await jobs.countDocuments({ targetId: stuck!._id })).toBe(2);
     expect(await jobs.countDocuments({ status: 'canceled' })).toBe(0);
-    const only = await jobs.findOne({ targetId: stuck!._id }).lean();
-    expect(again.job._id).toBe(only!._id.toString());
     expect((await materials.findById(stuck!._id).lean())?.processing.jobId?.toString()).toBe(
       again.job._id,
     );
-    // 한 번 더 요청해도 같다
+    // 한 번 더 요청해도 연결된 작업을 돌려줄 뿐 작업이 늘지 않는다
     const third = await service.register(me.toHexString(), dto(), 'half');
     expect(third.job._id).toBe(again.job._id);
-    expect(await jobs.countDocuments()).toBe(1);
+    expect(await jobs.countDocuments()).toBe(2);
   });
 
   it('이어 쓸 작업이 취소된 것뿐이면 새로 넣는다. 다른 종류 · 다른 노트의 작업은 이어 쓰지 않는다', async () => {
@@ -353,21 +355,20 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
 
     it('같은 노트로 동시 요청이 여러 개이고 그중 하나의 연결이 실패해도, 연결된 작업 1개만 살아 있다', async () => {
       const note = await stuckNote('gate');
-      // 모든 요청이 "작업 없음"을 본 뒤에 작업을 만들도록 한 곳에서 맞춘다(표시가 없던 옛 코드에서는 둘 다 만든다)
-      const find = AiJobsService.prototype.findForTarget;
+      // 작업을 만드는 곳(enqueue)에서 요청들이 동시에 들어오게 맞춘다. 표시를 잡은 하나만 들어오므로 시간 제한(300ms)이 지나면 풀린다
+      const enqueue = AiJobsService.prototype.enqueue;
       let arrived = 0;
       let open!: () => void;
       const gate = new Promise<void>((resolve) => (open = resolve));
       const timer = setTimeout(open, 300);
-      vi.spyOn(AiJobsService.prototype, 'findForTarget').mockImplementation(async function (
+      vi.spyOn(AiJobsService.prototype, 'enqueue').mockImplementation(async function (
         this: AiJobsService,
-        ...args: Parameters<typeof find>
+        ...args: Parameters<typeof enqueue>
       ) {
-        const found = await find.apply(this, args);
         arrived += 1;
         if (arrived >= 2) open();
         if (arrived <= 2) await gate;
-        return found;
+        return enqueue.apply(this, args);
       });
       const restore = failLinkOnce();
 
@@ -376,7 +377,7 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       );
       restore();
       clearTimeout(timer);
-      vi.mocked(AiJobsService.prototype.findForTarget).mockRestore();
+      vi.mocked(AiJobsService.prototype.enqueue).mockRestore();
 
       const alive = await jobs.find({ targetId: note._id, status: { $ne: 'canceled' } }).lean();
       expect(alive).toHaveLength(1);
@@ -475,39 +476,17 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       expect(await jobs.countDocuments({ targetId: note._id })).toBe(1);
     });
 
-    it('표시가 만료돼 다른 요청이 가져간 뒤에는, 늦게 실패한 요청이 그 작업을 취소하거나 상대의 표시를 지우지 않는다', async () => {
-      const note = await stuckNote('late');
-      const defer = () => {
-        let resolve!: () => void;
-        const promise = new Promise<void>((r) => (resolve = r));
-        return { promise, resolve };
-      };
-      const aEnqueued = defer();
-      const gateA = defer();
-      const bAtLink = defer();
-      const gateB = defer();
-
-      // 요청 A: 작업을 만든 직후 멈춘다
-      const enqueue = AiJobsService.prototype.enqueue;
-      let enqueueCalls = 0;
-      const enqueueSpy = vi
-        .spyOn(AiJobsService.prototype, 'enqueue')
-        .mockImplementation(async function (
-          this: AiJobsService,
-          ...args: Parameters<typeof enqueue>
-        ) {
-          const job = await enqueue.apply(this, args);
-          enqueueCalls += 1;
-          if (enqueueCalls === 1) {
-            aEnqueued.resolve();
-            await gateA.promise;
-          }
-          return job;
-        });
-      // 표시를 잡은 순서대로 토큰을 기억한다: 첫째는 A, 둘째는 B. A의 연결은 예외, B의 연결은 풀어 줄 때까지 멈춘다
+    /** 표시 인계 테스트 공통: 요청 A 가 표시를 잡고 작업을 만든 뒤 연결에 실패하고, 표시가 만료돼 B 가 표시를 가져간다 */
+    const defer = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((r) => (resolve = r));
+      return { promise, resolve };
+    };
+    /** 표시를 잡은 순서대로 토큰을 기억한다(첫째는 A, 둘째는 B). A 의 연결은 예외, B 의 연결은 beforeBLink 가 풀릴 때까지 멈춘다 */
+    const hookLinks = (beforeBLink?: () => Promise<void>) => {
       const tokens: string[] = [];
       const original = materials.findOneAndUpdate.bind(materials);
-      const linkSpy = vi.spyOn(materials, 'findOneAndUpdate').mockImplementation(((
+      const spy = vi.spyOn(materials, 'findOneAndUpdate').mockImplementation(((
         f: { jobClaimToken?: string },
         u: { $set?: Record<string, string> },
         o: unknown,
@@ -519,14 +498,49 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
             return { lean: () => Promise.reject(new Error('link failed (A)')) };
           return {
             lean: async () => {
-              bAtLink.resolve();
-              await gateB.promise;
+              await beforeBLink?.();
               return original(f as never, u as never, o as never).lean();
             },
           };
         }
         return original(f as never, u as never, o as never);
       }) as never);
+      return { tokens, restore: () => spy.mockRestore() };
+    };
+    /** 첫 enqueue 가 끝난 직후(A 가 작업을 만든 직후) 멈춘다 */
+    const pauseAfterFirstEnqueue = (entered: () => void, gate: Promise<void>) => {
+      const enqueue = AiJobsService.prototype.enqueue;
+      let calls = 0;
+      return vi.spyOn(AiJobsService.prototype, 'enqueue').mockImplementation(async function (
+        this: AiJobsService,
+        ...args: Parameters<typeof enqueue>
+      ) {
+        const job = await enqueue.apply(this, args);
+        calls += 1;
+        if (calls === 1) {
+          entered();
+          await gate;
+        }
+        return job;
+      });
+    };
+    const expireClaim = (noteId: Types.ObjectId) =>
+      materials.updateOne(
+        { _id: noteId },
+        { $set: { jobClaimedAt: new Date(Date.now() - 2 * CLAIM_TTL_MS) } },
+      );
+
+    it('표시가 만료돼 다른 요청이 가져간 뒤 늦게 실패한 요청은 자기 작업만 취소하고, 상대의 작업 · 표시는 건드리지 않는다', async () => {
+      const note = await stuckNote('late');
+      const aEnqueued = defer();
+      const gateA = defer();
+      const bAtLink = defer();
+      const gateB = defer();
+      const enqueueSpy = pauseAfterFirstEnqueue(aEnqueued.resolve, gateA.promise);
+      const links = hookLinks(async () => {
+        bAtLink.resolve();
+        await gateB.promise;
+      });
       const cancelSpy = vi.spyOn(AiJobsService.prototype, 'cancel');
 
       try {
@@ -535,41 +549,89 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
           (e: Error) => e,
         );
         await aEnqueued.promise;
-        const jobA = (await jobs.findOne({ targetId: note._id }).lean())!;
-        // A의 표시가 만료된다
-        await materials.updateOne(
-          { _id: note._id },
-          { $set: { jobClaimedAt: new Date(Date.now() - 2 * CLAIM_TTL_MS) } },
-        );
-        // B가 표시를 가져가 A의 작업을 이어 쓰려고 연결 직전에 멈춘다
+        await expireClaim(note._id); // A 의 표시가 만료된다
+        // B 가 표시를 가져가 자기 작업을 만들고 연결 직전에 멈춘다(A 의 작업을 이어 쓰지 않는다)
         const b = service.register(me.toHexString(), dto(), 'late');
         await bAtLink.promise;
-        expect(tokens).toHaveLength(2);
+        expect(links.tokens).toHaveLength(2);
+        expect(await jobs.countDocuments({ targetId: note._id })).toBe(2);
 
-        // 이제 A가 늦게 실패한다
+        // A 가 늦게 실패한다
         gateA.resolve();
-        const aError = await a;
-        expect(aError?.message).toBe('link failed (A)');
-        // A는 B의 작업을 취소하지 않았고 B의 표시도 지우지 않았다
-        expect(cancelSpy).not.toHaveBeenCalled();
-        expect((await jobs.findById(jobA._id).lean())?.status).toBe('queued');
-        expect((await materials.findById(note._id).lean())?.jobClaimToken).toBe(tokens[1]);
+        expect((await a)?.message).toBe('link failed (A)');
+        const [jobA, jobB] = await jobs.find({ targetId: note._id }).sort({ _id: 1 }).lean();
+        // A 는 자기 작업만 스스로 취소했고, B 의 작업 · 표시는 그대로다
+        expect(cancelSpy.mock.calls.map((c) => c[1])).toEqual([jobA!._id.toString()]);
+        expect(jobA!.status).toBe('canceled');
+        expect(jobB!.status).toBe('queued');
+        expect((await materials.findById(note._id).lean())?.jobClaimToken).toBe(links.tokens[1]);
 
-        // B가 마저 연결한다
+        // B 가 마저 연결한다
         gateB.resolve();
         const done = await b;
-        expect(done.job._id).toBe(jobA._id.toString());
+        expect(done.job._id).toBe(jobB!._id.toString());
         const row = await materials.findById(note._id).lean();
-        expect(row?.processing.jobId?.toString()).toBe(jobA._id.toString());
+        expect(row?.processing.jobId?.toString()).toBe(jobB!._id.toString());
         expect(row?.jobClaimToken).toBeUndefined();
-        expect(await jobs.countDocuments({ targetId: note._id })).toBe(1);
-        expect(await jobs.countDocuments({ targetId: note._id, status: 'canceled' })).toBe(0);
+        expect((await jobs.findById(jobB!._id).lean())?.status).toBe('queued');
+        expect(await jobs.countDocuments({ targetId: note._id })).toBe(2);
+        expect(await jobs.countDocuments({ targetId: note._id, status: 'canceled' })).toBe(1);
       } finally {
         gateA.resolve();
         gateB.resolve();
         enqueueSpy.mockRestore();
-        linkSpy.mockRestore();
+        links.restore();
         cancelSpy.mockRestore();
+      }
+    });
+
+    it('A 가 뒷정리로 작업을 취소하려는 순간 멈춘 사이 표시가 만료돼 B 가 연결까지 끝내도, B 가 연결한 작업은 취소되지 않는다', async () => {
+      const note = await stuckNote('cleanup');
+      const aInCancel = defer();
+      const gateCancel = defer();
+      const links = hookLinks(); // A 의 연결만 실패시킨다
+      // A 의 첫 취소 호출(연결 여부를 확인한 뒤, 취소 직전)에서 멈춘다
+      const cancel = AiJobsService.prototype.cancel;
+      let cancelCalls = 0;
+      const cancelSpy = vi
+        .spyOn(AiJobsService.prototype, 'cancel')
+        .mockImplementation(async function (
+          this: AiJobsService,
+          ...args: Parameters<typeof cancel>
+        ) {
+          cancelCalls += 1;
+          if (cancelCalls === 1) {
+            aInCancel.resolve();
+            await gateCancel.promise;
+          }
+          return cancel.apply(this, args);
+        });
+
+      try {
+        const a = service.register(me.toHexString(), dto(), 'cleanup').then(
+          () => null,
+          (e: Error) => e,
+        );
+        await aInCancel.promise;
+        const jobA = (await jobs.findOne({ targetId: note._id }).lean())!;
+        await expireClaim(note._id);
+        // B 가 표시를 잡아 연결까지 끝낸다
+        const done = await service.register(me.toHexString(), dto(), 'cleanup');
+        expect(done.job._id).not.toBe(jobA._id.toString());
+
+        // 이제 A 의 취소가 이어진다
+        gateCancel.resolve();
+        expect((await a)?.message).toBe('link failed (A)');
+
+        const row = await materials.findById(note._id).lean();
+        expect(row?.processing.jobId?.toString()).toBe(done.job._id);
+        expect((await jobs.findById(done.job._id).lean())?.status).toBe('queued');
+        expect((await jobs.findById(jobA._id).lean())?.status).toBe('canceled');
+        expect(await jobs.countDocuments({ targetId: note._id })).toBe(2);
+      } finally {
+        gateCancel.resolve();
+        cancelSpy.mockRestore();
+        links.restore();
       }
     });
 

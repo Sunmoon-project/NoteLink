@@ -305,9 +305,9 @@ export class MaterialsService {
 
   /**
    * 정리 작업을 노트에 연결한다. 작업을 만드는 요청은 노트당 하나만 되게, 먼저 노트에 "작업 만드는 중" 표시를
-   * 원자적으로 잡는다(작업 id 가 없고, 표시가 없거나 CLAIM_TTL_MS 가 지났을 때만). 표시를 잡은 요청만:
-   * 이 노트에 이미 넣은(취소되지 않은) 작업이 있으면 그 작업을 쓰고(넣은 뒤 연결하지 못하고 멈춘 요청의 작업), 없으면
-   * 새로 넣어 연결한다. 연결에서 예외가 나면 새로 넣은 작업이 노트에 연결되지 않았을 때만 취소하고 표시를 푼다.
+   * 원자적으로 잡는다(작업 id 가 없고, 표시가 없거나 CLAIM_TTL_MS 가 지났을 때만). 표시를 잡은 요청만 자기 작업을
+   * 새로 넣어 연결한다(남이 넣은 작업은 이어 쓰지도 취소하지도 않는다 — createAndLink 참고).
+   * 연결에서 예외가 나면 자기가 넣은 작업만 취소하고 자기 토큰일 때만 표시를 푼다.
    * 표시를 못 잡은 요청은 작업을 만들지 않고, 다른 요청이 연결하길 짧게 기다려 그 작업을 돌려준다(끝내 없으면 503)
    */
   private async startJob(
@@ -350,7 +350,17 @@ export class MaterialsService {
     });
   }
 
-  /** 표시를 잡은 요청이 작업을 찾거나 넣어 노트에 연결한다(startJob 참고) */
+  /**
+   * 표시를 잡은 요청이 자기 작업을 새로 넣어 노트에 연결한다(startJob 참고).
+   *
+   * 남의 작업은 이어 쓰지도 취소하지도 않고, 각 요청은 자기가 넣은 작업만 다룬다.
+   * 노트 연결은 { _id, 'processing.jobId': null, jobClaimToken: 내 토큰 } 조건부 업데이트라 자기 토큰을 가진 요청만 연결할 수 있다.
+   * 그래서 자기가 넣은 작업은 자기만 연결할 수 있고, 표시가 만료돼 다른 요청이 표시를 가져갔어도 내 작업은 그쪽이 쓰지 않으며
+   * (그쪽은 자기 작업을 새로 넣는다) 내가 내 작업을 취소해도 다른 요청이 연결한 작업이 취소될 일이 없다. 시간(표시 만료)에 기대지 않는다.
+   *
+   * 트레이드오프: 작업을 넣은 뒤 서버가 죽으면 그 작업은 아무도 취소하지 않고 처리기가 한 번 돌고 버려진다.
+   * 노트에 연결되지 않은 작업은 노트 상태에 영향이 없고(노트는 연결된 작업만 읽는다), 같은 키의 다음 요청은 자기 작업을 새로 넣는다.
+   */
   private async createAndLink(
     userId: string,
     material: MaterialRow,
@@ -359,15 +369,8 @@ export class MaterialsService {
     files: UploadedFile[],
   ): Promise<{ row: MaterialRow; job: AppAiJob }> {
     const kind = material.kind as keyof typeof JOB_TYPE;
-    const type = JOB_TYPE[kind];
-    const targetId = material._id.toString();
-    let fresh: AppAiJob | null = null;
+    let mine: AppAiJob | null = null;
     try {
-      const reused = await this.jobs.findForTarget(userId, {
-        type,
-        targetType: 'material',
-        targetId,
-      });
       const input =
         kind === 'recording'
           ? { audioUrl: files[0]!.readUrl, sizeBytes: files[0]!.sizeBytes }
@@ -375,63 +378,63 @@ export class MaterialsService {
               pages: files.map((f, i) => ({ pageNo: i + 1, imageUrl: f.readUrl })),
               ...(subjectName ? { subject: subjectName } : {}),
             };
-      if (!reused) {
-        fresh = await this.jobs.enqueue({ type, userId, targetType: 'material', targetId, input });
-      }
-      const job = (reused ?? fresh)!;
+      mine = await this.jobs.enqueue({
+        type: JOB_TYPE[kind],
+        userId,
+        targetType: 'material',
+        targetId: material._id.toString(),
+        input,
+      });
       const linked = await this.materials
         .findOneAndUpdate(
           { _id: material._id, 'processing.jobId': null, jobClaimToken: token },
           {
-            $set: { 'processing.jobId': new Types.ObjectId(job._id) },
+            $set: { 'processing.jobId': new Types.ObjectId(mine._id) },
             $unset: { jobClaimToken: '', jobClaimedAt: '' },
           },
           { returnDocument: 'after' },
         )
         .lean<MaterialRow>();
-      if (linked) return { row: linked, job };
-      // 표시가 시간이 지나 다른 요청에게 넘어갔고 그쪽이 먼저 연결했다
+      if (linked) return { row: linked, job: mine };
+      // 표시가 시간이 지나 다른 요청에게 넘어갔고 그쪽이 먼저 연결했다: 내 작업은 쓸 곳이 없으니 내가 취소한다
       const current = await this.materials.findOne({ _id: material._id }).lean<MaterialRow>();
       const jobId = current?.processing.jobId;
       if (!current || !jobId) throw new Error('materials: 작업 연결이 계속 겹침');
-      if (fresh && jobId.toString() !== fresh._id) await this.cancelQuietly(userId, fresh._id);
-      fresh = null;
+      if (jobId.toString() !== mine._id) await this.cancelQuietly(userId, mine._id);
+      mine = null;
       return { row: current, job: await this.jobs.findMine(userId, jobId.toString()) };
     } catch (e) {
-      await this.abandonClaim(userId, material._id, token, fresh);
+      await this.abandonClaim(userId, material._id, token, mine);
       throw e;
     }
   }
 
   /**
-   * 연결에 실패한 요청이 뒷정리를 한다. 자기 토큰으로 표시를 아직 갖고 있을 때만 새로 넣은 작업을 취소한다:
-   * 표시가 만료돼 다른 요청이 가져갔다면 그쪽이 내가 넣은 작업을 이어 쓰고 있을 수 있어 취소하지 않고, 상대의 표시도 지우지 않는다.
-   * 순서: (1) 표시를 연장해 아직 내 것인지 확인 — 내 것이면 그동안 아무도 표시를 가져가 내 작업을 이어 쓸 수 없다
-   * (2) 연결되지 않은 새 작업 취소 (3) 토큰이 같을 때만 표시 해제. 해제부터 하면 그 직후 다른 요청이 작업을 이어 쓰는데 취소가 뒤따를 수 있다
+   * 연결에 실패한 요청의 뒷정리: 자기가 넣은 작업만 취소하고, 자기 토큰일 때만 표시를 푼다.
+   * 표시를 이미 빼앗겼어도 내 작업은 취소해도 된다(내 토큰 없이는 연결될 수 없으므로 다른 요청이 쓰고 있을 수 없다).
+   * 표시 해제는 { _id, jobClaimToken: 내 토큰 } 조건부라 상대의 표시를 지우지 않는다
    */
   private async abandonClaim(
     userId: string,
     noteId: Types.ObjectId,
     token: string,
-    fresh: AppAiJob | null,
+    mine: AppAiJob | null,
   ): Promise<void> {
     try {
-      const held = await this.materials.updateOne(
-        { _id: noteId, jobClaimToken: token },
-        { $set: { jobClaimedAt: new Date() } },
-      );
-      if (held.matchedCount === 0) return;
-      if (fresh) await this.cancelUnlinked(userId, noteId, fresh._id);
+      if (mine) await this.cancelUnlinked(userId, noteId, mine._id);
       await this.materials.updateOne(
         { _id: noteId, jobClaimToken: token },
         { $unset: { jobClaimToken: '', jobClaimedAt: '' } },
       );
     } catch {
-      // 뒷정리가 실패해도 원래 오류를 알린다. 남은 표시는 시간이 지나면 무효가 되고, 남은 작업은 다음 요청이 이어 쓴다
+      // 뒷정리가 실패해도 원래 오류를 알린다. 남은 표시는 시간이 지나면 무효가 된다
     }
   }
 
-  /** 노트에 이 작업이 연결돼 있지 않을 때만 취소한다(연결 여부를 모르면 취소하지 않는다) */
+  /**
+   * 내 작업이 노트에 연결돼 있지 않을 때만 취소한다. 연결 쓰기는 반영됐는데 응답만 실패한 경우
+   * (연결된 작업을 취소하지 않으려고) 노트를 읽어 확인하고, 확인하지 못하면 취소하지 않는다
+   */
   private async cancelUnlinked(userId: string, noteId: Types.ObjectId, jobId: string) {
     try {
       const current = await this.materials.findOne({ _id: noteId }).lean<MaterialRow>();
@@ -439,7 +442,7 @@ export class MaterialsService {
         await this.jobs.cancel(userId, jobId);
       }
     } catch {
-      // 취소하지 못해도 원래 오류를 먼저 알린다. 남은 작업은 같은 노트의 다음 요청이 이어 쓴다
+      // 취소하지 못해도 원래 오류를 먼저 알린다. 남은 작업은 처리기가 한 번 돌고 버려진다(노트에 영향 없음)
     }
   }
 
