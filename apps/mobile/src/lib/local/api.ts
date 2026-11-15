@@ -76,7 +76,7 @@ type Db = {
   subjects: Subject[];
   items: StudyItem[];
   sessions: StudySession[];
-  weeklyGoal: { targetMin: number; notify80: boolean };
+  weeklyGoal: { targetMin: number; notify80: boolean; notifiedWeek?: string };
   recurring: RecurringGoal[];
   todos: Todo[];
   manualDdays: { _id: string; title: string; date: string; kind: string }[];
@@ -714,16 +714,22 @@ const api: Api = {
         _id: `wg-${start}`,
         weekStart: start,
         ...d.weeklyGoal,
+        notified80: d.weeklyGoal.notifiedWeek === start,
         recentAvgMin: Math.round(weeks.reduce((a, b) => a + b, 0) / 4 / 60),
       });
     },
     setWeeklyGoal: (p) => {
       const d = db();
       d.weeklyGoal = {
+        ...d.weeklyGoal,
         targetMin: Math.max(0, Math.min(7 * 24 * 60, p.targetMin)),
         notify80: p.notify80,
       };
       return api.study.weeklyGoal();
+    },
+    acknowledgeWeeklyGoal: (week) => {
+      db().weeklyGoal.notifiedWeek = week;
+      return ok(undefined);
     },
     recurringGoals: () => ok(db().recurring),
     saveRecurringGoal: (g) => {

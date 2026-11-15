@@ -106,6 +106,7 @@ export const PATHS = {
   studyWeekly: '/study/weekly',
   studyStats: '/study/stats',
   weeklyGoal: '/goals/weekly',
+  weeklyGoalAcknowledge: '/goals/weekly/acknowledge',
   recurringGoals: '/goals/recurring',
   recurringGoal: (id: string) => `/goals/recurring/${seg(id)}`,
   // 일정 · 캘린더 · 시간표
