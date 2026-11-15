@@ -233,6 +233,44 @@ describe('PR36 실제 원본 및 북마크', () => {
     await waitFor(() => expect(mockApi.content.downloadUrl).toHaveBeenCalledWith('material1'));
     expect(open).toHaveBeenCalledWith(sourceUrl);
   });
+  describe('문서 원본 문서 탭: PDF는 쪽 이미지 대신 원본 파일 열기만', () => {
+    const withPage = (imageUrl: string) =>
+      mockApi.content.material.mockResolvedValue({
+        ...{ _id: 'material1', folderId: 'folder1', title: '문서', kind: 'document' },
+        createdAt: '2026-11-01T00:00:00Z',
+        keywords: [],
+        bookmarks: [],
+        summary: { sections: [], points: [] },
+        pages: [{ _id: 'page1', pageNo: 1, imageUrl, ocrText: null, takenAt: null }],
+      });
+    const openTab = async () => {
+      setParams({ id: 'material1', tab: '원본 문서' });
+      await renderScreen(<DocDetailScreen />, client());
+      await screen.findByText('원본 파일 열기');
+    };
+
+    it.each([
+      ['PDF', 'https://blob.example/u/a.pdf'],
+      ['SAS 쿼리가 붙은 PDF', 'https://blob.example/u/a.pdf?sv=2024&sp=r&sig=abc'],
+      ['대문자 확장자', 'https://blob.example/u/A.PDF'],
+      ['대문자 확장자 + 쿼리', 'https://blob.example/u/A.PDF?sig=x%2Fy'],
+    ])('%s면 쪽 이미지를 그리지 않고 안내와 버튼만 보인다', async (_name, imageUrl) => {
+      withPage(imageUrl);
+      await openTab();
+      expect(screen.getByText('PDF는 원본 파일 열기로 볼 수 있어요')).toBeTruthy();
+      expect(screen.queryByLabelText('1페이지 원본')).toBeNull();
+    });
+
+    it.each([
+      ['이미지', 'https://blob.example/u/scan.jpg'],
+      ['쿼리 안에 .pdf가 든 이미지', 'https://blob.example/u/scan.jpg?name=a.pdf'],
+    ])('%s면 쪽 이미지가 보이고 PDF 안내는 없다', async (_name, imageUrl) => {
+      withPage(imageUrl);
+      await openTab();
+      expect(screen.getByLabelText('1페이지 원본')).toBeTruthy();
+      expect(screen.queryByText('PDF는 원본 파일 열기로 볼 수 있어요')).toBeNull();
+    });
+  });
   it('북마크 저장 실패는 목록과 성공 안내에 반영하지 않고 재시도를 허용한다', async () => {
     mockApi.content.addBookmark.mockRejectedValueOnce(new Error('저장 거절'));
     await renderScreen(<Player materialId="material1" />, client());
