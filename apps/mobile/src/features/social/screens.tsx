@@ -33,6 +33,16 @@ import { StatusText } from './drawer';
 
 // p.53~55 친구 추가 · 요청 · 채팅 · 삭제
 
+const DIRECT_MESSAGE_PAGE_SIZE = 50;
+
+type DirectHistory = { messages: Message[]; hasMore: boolean };
+
+function mergeMessages(...groups: Message[][]): Message[] {
+  return [...new Map(groups.flat().map((message) => [message._id, message])).values()].sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a._id.localeCompare(b._id),
+  );
+}
+
 export function FriendAddScreen() {
   const [q, setQ] = useState('');
   const [sent, setSent] = useState<string[]>([]);
@@ -209,11 +219,14 @@ export function ChatScreen() {
   const room = useQuery({ queryKey: ['dm', id], queryFn: () => api.social.openDirect(id) });
   const history = useQuery({
     queryKey: ['messages', room.data?._id],
-    queryFn: async () => {
+    queryFn: async (): Promise<DirectHistory> => {
       const roomId = room.data!._id;
       const fetched = await api.social.messages(roomId);
-      const cached = qc.getQueryData<Message[]>(['messages', roomId]) ?? [];
-      return [...new Map([...fetched, ...cached].map((m) => [m._id, m])).values()];
+      const cached = qc.getQueryData<DirectHistory>(['messages', roomId])?.messages ?? [];
+      return {
+        messages: mergeMessages(fetched, cached),
+        hasMore: fetched.length === DIRECT_MESSAGE_PAGE_SIZE,
+      };
     },
     enabled: !!room.data,
     refetchOnMount: 'always',
@@ -221,12 +234,22 @@ export function ChatScreen() {
   const [v, setV] = useState('');
   const [menu, setMenu] = useState(false);
   const [del, setDel] = useState(false);
+  const [olderLoading, setOlderLoading] = useState(false);
+  const [olderError, setOlderError] = useState(false);
   const list = useRef<FlatList<Message>>(null);
+  const olderLoadingRef = useRef(false);
+  const contentHeight = useRef(0);
+  const scrollOffset = useRef(0);
+  const viewportHeight = useRef(0);
+  const restoreScroll = useRef<{ offset: number; contentHeight: number } | null>(null);
+  const didInitialScroll = useRef(false);
+  const nearBottom = useRef(true);
   const receiveMessage = (m: Message) => {
     if (m.chatRoomId !== room.data?._id) return;
-    qc.setQueryData<Message[]>(['messages', m.chatRoomId], (previous = []) =>
-      previous.some((x) => x._id === m._id) ? previous : [...previous, m],
-    );
+    qc.setQueryData<DirectHistory>(['messages', m.chatRoomId], (previous) => ({
+      messages: mergeMessages(previous?.messages ?? [], [m]),
+      hasMore: previous?.hasMore ?? false,
+    }));
   };
   useSocket('chat:message', (m) => m.chatRoomId === room.data?._id && receiveMessage(m), [
     room.data?._id,
@@ -239,9 +262,10 @@ export function ChatScreen() {
       if (!connected) return;
       socket.emit('chat:join', { chatRoomId }, (result) => {
         if (!result.ok || !result.missed) return;
-        qc.setQueryData<Message[]>(['messages', chatRoomId], (previous = []) => [
-          ...new Map([...previous, ...result.missed!].map((m) => [m._id, m])).values(),
-        ]);
+        qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
+          messages: mergeMessages(previous?.messages ?? [], result.missed!),
+          hasMore: previous?.hasMore ?? result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE,
+        }));
       });
     };
     const unsubscribe = socket.onConnection?.(join);
@@ -251,6 +275,52 @@ export function ChatScreen() {
       socket.emit('chat:leave', { chatRoomId });
     };
   }, [room.data?._id, qc]);
+
+  const loadOlderMessages = async (manualRetry = false) => {
+    const chatRoomId = room.data?._id;
+    const current = history.data;
+    const oldestMessage = current?.messages[0];
+    if (
+      !chatRoomId ||
+      !current?.hasMore ||
+      !oldestMessage ||
+      olderLoadingRef.current ||
+      (olderError && !manualRetry)
+    )
+      return;
+
+    olderLoadingRef.current = true;
+    setOlderLoading(true);
+    setOlderError(false);
+    try {
+      const older = await api.social.messages(chatRoomId, oldestMessage._id);
+      restoreScroll.current = { offset: scrollOffset.current, contentHeight: contentHeight.current };
+      qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
+        messages: mergeMessages(older, previous?.messages ?? []),
+        hasMore: older.length === DIRECT_MESSAGE_PAGE_SIZE,
+      }));
+    } catch {
+      setOlderError(true);
+    } finally {
+      olderLoadingRef.current = false;
+      setOlderLoading(false);
+    }
+  };
+
+  const handleContentSizeChange = (_width: number, height: number) => {
+    const anchor = restoreScroll.current;
+    if (anchor) {
+      const addedHeight = Math.max(0, height - anchor.contentHeight);
+      list.current?.scrollToOffset({ offset: anchor.offset + addedHeight, animated: false });
+      restoreScroll.current = null;
+    } else if (!didInitialScroll.current && history.isSuccess) {
+      didInitialScroll.current = true;
+      list.current?.scrollToEnd({ animated: false });
+    } else if (nearBottom.current) {
+      list.current?.scrollToEnd({ animated: true });
+    }
+    contentHeight.current = height;
+  };
 
   const send = () => {
     if (!v.trim() || !room.data) return;
@@ -344,9 +414,29 @@ export function ChatScreen() {
         )}
         <FlatList
           ref={list}
-          data={history.data ?? []}
+          data={history.data?.messages ?? []}
           keyExtractor={(m) => m._id}
-          onContentSizeChange={() => list.current?.scrollToEnd({ animated: true })}
+          onContentSizeChange={handleContentSizeChange}
+          onLayout={(event) => {
+            viewportHeight.current = event.nativeEvent.layout.height;
+          }}
+          onScroll={(event) => {
+            const offset = event.nativeEvent.contentOffset.y;
+            scrollOffset.current = offset;
+            nearBottom.current =
+              contentHeight.current - viewportHeight.current - offset < 80;
+            if (offset < 48) void loadOlderMessages();
+          }}
+          scrollEventThrottle={100}
+          ListHeaderComponent={
+            olderError ? (
+              <Btn small kind="outline" onPress={() => void loadOlderMessages(true)}>
+                이전 대화를 불러오지 못했어요 · 다시 시도
+              </Btn>
+            ) : olderLoading ? (
+              <Text className="py-2 text-center text-caption text-sub">이전 대화 불러오는 중</Text>
+            ) : null
+          }
           contentContainerClassName="gap-3 pb-4"
           renderItem={({ item: m }) => {
             const mine = m.senderId === myId;
