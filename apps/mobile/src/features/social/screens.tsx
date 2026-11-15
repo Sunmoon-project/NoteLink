@@ -267,10 +267,12 @@ export function ChatScreen() {
         if (!result.ok || !result.missed) return;
         qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
           messages: mergeMessages(previous?.messages ?? [], result.missed!),
-          hasMore: previous?.hasMore ?? result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE,
+          hasMore:
+            result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE || previous?.hasMore === true,
           nextBefore:
-            previous?.nextBefore ??
-            (result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE ? result.missed![0]?._id : undefined),
+            result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE
+              ? result.missed![0]?._id
+              : previous?.nextBefore,
         }));
       });
     };

@@ -8,6 +8,9 @@ import { StudyChatService } from '../src/modules/studyroom/study-chat.service.js
 
 const uri = process.env.STUDYROOM_TEST_MONGO_URI;
 const local = uri && /^mongodb:\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1)(?::\d+)?\//.test(uri);
+if (process.env.REQUIRE_STUDYROOM_MONGO_TESTS === 'true' && !local) {
+  throw new Error('REQUIRE_STUDYROOM_MONGO_TESTS=true requires a local STUDYROOM_TEST_MONGO_URI.');
+}
 describe.skipIf(!local)('실제 MongoDB 채팅방 생성', () => {
   const suffix = randomBytes(8).toString('hex');
   const roomsName = `test_chat_rooms_${suffix}`;
