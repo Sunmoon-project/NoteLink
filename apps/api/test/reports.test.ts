@@ -23,7 +23,7 @@ const roomId = new Types.ObjectId();
 const reportId = new Types.ObjectId();
 const rooms = { findOne: vi.fn() };
 const reports = { create: vi.fn() };
-const storage = { keepReportImages: vi.fn(), discardReportImages: vi.fn() };
+const storage = { keepReportImages: vi.fn(), confirmReportImages: vi.fn() };
 const KEPT = ['https://blob.example.com/raw/reports/kept.jpg'];
 const valid = {
   roomId: String(roomId),
@@ -87,13 +87,22 @@ describe('POST /api/v1/reports', () => {
       .send({ ...valid, details: `  ${valid.details}  ` });
     expect(response.status).toBe(201);
     expect(response.body).toEqual({ data: { _id: String(reportId), status: 'pending' } });
-    expect(storage.keepReportImages).toHaveBeenCalledWith(String(reporter), valid.imageUrls);
+    // 신고 ID를 먼저 정해 사진을 그 아래에 두고, 같은 ID로 저장한 뒤 대기 표시를 뗀다
+    const reportIdUsed = storage.keepReportImages.mock.calls[0]![2] as string;
+    expect(storage.keepReportImages).toHaveBeenCalledWith(
+      String(reporter),
+      valid.imageUrls,
+      reportIdUsed,
+    );
+    expect(String(reports.create.mock.calls[0]![0]._id)).toBe(reportIdUsed);
+    expect(storage.confirmReportImages).toHaveBeenCalledWith(KEPT);
     expect(rooms.findOne).toHaveBeenCalledWith({
       _id: roomId,
       closedAt: null,
       members: { $elemMatch: { userId: reporter, status: 'joined' } },
     });
     expect(reports.create).toHaveBeenCalledWith({
+      _id: expect.any(Types.ObjectId),
       roomId,
       reporterId: reporter,
       targetUserId: target,
@@ -181,23 +190,8 @@ describe('POST /api/v1/reports', () => {
     expect(reports.create).not.toHaveBeenCalled();
   });
 
-  const sendFailing = async (error: Error) => {
-    reports.create.mockRejectedValueOnce(error);
-    return request(app.getHttpServer())
-      .post('/api/v1/reports')
-      .set('Authorization', 'Bearer valid')
-      .send(valid);
-  };
-
   it.each([
     ['서버가 거절한 쓰기', new mongoose.mongo.MongoServerError({ code: 2, errmsg: '거절' })],
-    ['보내기 전 검증 실패', new mongoose.Error.ValidationError()],
-  ])('%s로 저장되지 않은 신고는 이번에 복사한 사진을 지우고 실패를 돌려준다', async (_, error) => {
-    expect((await sendFailing(error)).status).toBe(500);
-    expect(storage.discardReportImages).toHaveBeenCalledWith(KEPT);
-  });
-
-  it.each([
     [
       '쓰기 확인 시간 초과(이미 저장됨)',
       new mongoose.mongo.MongoWriteConcernError({
@@ -206,10 +200,22 @@ describe('POST /api/v1/reports', () => {
         writeConcernError: { code: 64, errmsg: 'waiting for replication timed out' },
       } as never),
     ],
+    [
+      '재시도 기록 유실(217)',
+      new mongoose.mongo.MongoServerError({ code: 217, errmsg: 'IncompleteTransactionHistory' }),
+    ],
     ['연결 오류', new mongoose.mongo.MongoNetworkError('연결 끊김')],
-    ['알 수 없는 오류', new Error('DB 장애')],
-  ])('%s처럼 저장 결과가 불명확하면 사진을 지우지 않는다', async (_, error) => {
-    expect((await sendFailing(error)).status).toBe(500);
-    expect(storage.discardReportImages).not.toHaveBeenCalled();
-  });
+  ])(
+    '%s: 저장 결과와 상관없이 사진을 지우지 않고 대기로 남긴다(정리 작업이 신고를 보고 판단)',
+    async (_, error) => {
+      reports.create.mockRejectedValueOnce(error);
+      const response = await request(app.getHttpServer())
+        .post('/api/v1/reports')
+        .set('Authorization', 'Bearer valid')
+        .send(valid);
+      expect(response.status).toBe(500);
+      expect(storage.confirmReportImages).not.toHaveBeenCalled();
+      expect(Object.keys(storage)).not.toContain('discardReportImages');
+    },
+  );
 });

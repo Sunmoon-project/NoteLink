@@ -7,12 +7,18 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createStorageConfig, type StorageConfig } from '../src/config/storage.config.js';
 import type { UploadQuotaService } from '../src/modules/upload/upload-quota.service.js';
-import { BlobStorageService, UPLOAD_PREFIX } from '../src/modules/upload/blob-storage.service.js';
+import {
+  BlobStorageService,
+  REPORT_PENDING_GRACE_MS,
+  REPORT_PENDING_TAG,
+  UPLOAD_PREFIX,
+} from '../src/modules/upload/blob-storage.service.js';
 import { UploadsService } from '../src/modules/upload/uploads.service.js';
 
 const connection = process.env.AZURE_STORAGE_VERIFY_CONNECTION_STRING;
 const USER = '000000000000000000000000';
 const OTHER = '111111111111111111111111';
+const OTHER_REPORT = '64b7f0c2a1b2c3d4e5f60719';
 
 describe.skipIf(!connection)('진짜 저장소에서 올리기 주소 권한 확인', () => {
   let storage: StorageConfig;
@@ -120,22 +126,47 @@ describe.skipIf(!connection)('진짜 저장소에서 신고 사진 확인 · 보
       await container.getBlobClient(nameOf(url)).deleteIfExists();
   });
 
-  it('올린 사진을 확인해 reports/로 복사하고, 크기 · 형식이 그대로다', async () => {
-    kept = await blobs.keepReportImages(USER, [target.blobUrl]);
+  const REPORT = '64b7f0c2a1b2c3d4e5f60718';
+  const tagsOf = async (url: string) =>
+    (await container.getBlockBlobClient(nameOf(url)).getTags()).tags;
+
+  it('올린 사진을 확인해 그 신고 아래로 대기 태그를 달아 복사하고, 크기 · 형식이 그대로다', async () => {
+    kept = await blobs.keepReportImages(USER, [target.blobUrl], REPORT);
     expect(kept).toHaveLength(1);
-    expect(nameOf(kept[0]!)).toMatch(new RegExp(`^reports/${USER}/[0-9a-f-]{36}\\.jpg$`));
+    expect(nameOf(kept[0]!)).toMatch(new RegExp(`^reports/${USER}/${REPORT}/[0-9a-f-]{36}\\.jpg$`));
     const props = await container.getBlobClient(nameOf(kept[0]!)).getProperties();
     expect(props.contentLength).toBe(body.length);
     expect(props.contentType).toBe('image/jpeg');
+    expect(Object.keys(await tagsOf(kept[0]!))).toEqual([REPORT_PENDING_TAG]);
   });
 
-  it('저장하지 못한 신고의 복사본은 지운다', async () => {
-    const [copy] = await blobs.keepReportImages(USER, [target.blobUrl]);
-    await blobs.discardReportImages([copy!]);
-    expect(await container.getBlobClient(nameOf(copy!)).exists()).toBe(false);
+  it('신고를 저장한 뒤 대기 표시를 뗀다', async () => {
+    await blobs.confirmReportImages(kept);
+    expect(await tagsOf(kept[0]!)).toEqual({});
   });
+
+  it('오래된 대기 복사본: 신고가 있으면 태그를 떼고, 없으면 지운다', async () => {
+    const saved = (await blobs.keepReportImages(USER, [target.blobUrl], REPORT))[0]!;
+    const lost = (await blobs.keepReportImages(USER, [target.blobUrl], OTHER_REPORT))[0]!;
+    kept.push(saved, lost);
+    // 대기 시간이 지난 것처럼 만든 시각을 앞당김
+    const old = String(Date.now() - 2 * REPORT_PENDING_GRACE_MS).padStart(15, '0');
+    for (const url of [saved, lost])
+      await container.getBlockBlobClient(nameOf(url)).setTags({ [REPORT_PENDING_TAG]: old });
+
+    // 태그 색인은 몇 초 늦게 반영될 수 있어 둘 다 처리될 때까지 다시 부름
+    const exists = async (id: string) => id === REPORT;
+    let done = { kept: 0, deleted: 0 };
+    for (let i = 0; i < 30 && (done.kept < 1 || done.deleted < 1); i += 1) {
+      const c = await blobs.sweepReportImages(new Date(), exists);
+      done = { kept: done.kept + c.kept, deleted: done.deleted + c.deleted };
+      if (done.kept < 1 || done.deleted < 1) await new Promise((r) => setTimeout(r, 1000));
+    }
+    expect(await tagsOf(saved)).toEqual({});
+    expect(await container.getBlobClient(nameOf(lost)).exists()).toBe(false);
+  }, 60_000);
 
   it('남이 올린 사진은 받지 않는다', async () => {
-    await expect(blobs.keepReportImages(OTHER, [target.blobUrl])).rejects.toThrow();
+    await expect(blobs.keepReportImages(OTHER, [target.blobUrl], REPORT)).rejects.toThrow();
   });
 });
