@@ -31,6 +31,7 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
   const listInFolder = vi.fn();
   const update = vi.fn();
   const remove = vi.fn();
+  const downloadUrl = vi.fn();
 
   beforeAll(async () => {
     stubAppEnv();
@@ -38,7 +39,7 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
       .overrideProvider(getModelToken(RefreshToken.name))
       .useValue(createFakeRefreshTokens().model)
       .overrideProvider(MaterialsService)
-      .useValue({ register, findMine, listInFolder, update, remove })
+      .useValue({ register, findMine, listInFolder, update, remove, downloadUrl })
       .compile();
     app = ref.createNestApplication();
     configureApp(app);
@@ -207,6 +208,21 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
         expect(res.body).toEqual({ code: 'BAD_REQUEST', message: expect.any(String) });
       }
       expect(update).not.toHaveBeenCalled();
+    });
+
+    it('GET /materials/:id/download-url: 로그인이 필요하고 { data: { url, fileName } } 로 돌려준다', async () => {
+      downloadUrl.mockResolvedValue({ url: 'https://x/y?sp=r', fileName: '필기.jpg' });
+      await request(app.getHttpServer())
+        .get(api(PATHS.materialDownloadUrl('m1')))
+        .expect(401);
+      const res = await request(app.getHttpServer())
+        .get(api(PATHS.materialDownloadUrl('m1')))
+        .set(auth())
+        .expect(200);
+      expect(res.body).toEqual({ data: { url: 'https://x/y?sp=r', fileName: '필기.jpg' } });
+      expect(downloadUrl).toHaveBeenCalledWith(me.toHexString(), 'm1');
+      // 상세 조회 경로와 겹치지 않는다
+      expect(findMine).not.toHaveBeenCalled();
     });
 
     it('DELETE /materials/:id: 204, 본문 없음', async () => {

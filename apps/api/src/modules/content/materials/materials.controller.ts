@@ -49,6 +49,15 @@ export class MaterialsController {
     return { data: (await this.materials.findMine(requireUserId(req), id)) as Material };
   }
 
+  /** 원본 파일(올린 첫 파일)의 내려받기 주소: 읽기 SAS 1시간 + 파일 이름 */
+  @Get('materials/:id/download-url')
+  async downloadUrl(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ): Promise<{ data: { url: string; fileName: string } }> {
+    return { data: await this.materials.downloadUrl(requireUserId(req), id) };
+  }
+
   /** 폴더 안의 노트(최근 순, 정리 중인 노트 포함) */
   @Get('folders/:id/materials')
   async listInFolder(

@@ -119,6 +119,22 @@ interface UploadedFile {
 /** 주소 끝의 확장자(소문자). 없으면 빈 문자열 */
 const extensionOf = (url: string): string => url.split('.').pop()?.toLowerCase() ?? '';
 
+/** 파일 이름에 쓸 수 없는 글자(Windows · 경로 구분 · 제어 문자) */
+// eslint-disable-next-line no-control-regex
+const FILE_NAME_FORBIDDEN = /[\\/:*?"<>|\x00-\x1f\x7f]/g;
+
+/** 내려받을 파일 이름: 노트 제목 + 원본 확장자. 쓸 수 없는 글자는 _ 로 바꾸고, 비면 "노트" */
+export function downloadFileName(title: string, blobUrl: string): string {
+  const name =
+    title
+      .replace(FILE_NAME_FORBIDDEN, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^\.+|[. ]+$/g, '') || '노트';
+  const ext = extensionOf(blobUrl);
+  return /^[a-z0-9]{1,5}$/.test(ext) ? `${name}.${ext}` : name;
+}
+
 /**
  * 노트(자료) 등록 · 조회 · 수정 · 삭제. 등록하면 FastAPI 처리기가 정리하는 AI 작업(ai_jobs)을 넣고,
  * 앱이 노트를 조회할 때 끝난 작업의 결과를 노트에 옮긴다(따로 도는 반복 없이, quiz-sets 와 같은 방식).
@@ -509,6 +525,25 @@ export class MaterialsService {
       { $set: { deletedAt: new Date() } },
     );
     if (result.matchedCount === 0) throw notFound('노트');
+  }
+
+  /**
+   * 원본 파일을 내려받는 주소. 올린 첫 파일(PDF · 녹음은 그 파일 하나)의 읽기 SAS(1시간)와 파일 이름을 돌려준다.
+   * 이미지를 여러 장 올린 노트도 첫 파일만 준다(앱이 한 개를 기대한다). 남의 노트 · 지운 노트 · 없는 노트 · 파일이 없는
+   * 노트는 404, 저장소 설정이 없으면 503. SAS 는 로그 · 오류 메시지에 넣지 않는다
+   */
+  async downloadUrl(userId: string, id: string): Promise<{ url: string; fileName: string }> {
+    const row = await this.materials
+      .findOne(
+        { _id: objectId(id), ownerId: new Types.ObjectId(userId), deletedAt: null },
+        { title: 1, blobUrls: 1 },
+      )
+      .lean<{ title: string; blobUrls?: string[] }>();
+    if (!row) throw notFound('노트');
+    const source = row.blobUrls?.[0];
+    if (!source) throw notFound('원본 파일');
+    const { readUrl } = await this.blobs.createReadAccess(source, APP_READ_SAS_MS);
+    return { url: readUrl, fileName: downloadFileName(row.title, source) };
   }
 
   /** 앱에 보낼 노트 한 개. 쪽 이미지는 읽기 SAS 로 바꾼다(저장소 설정이 없거나 만들지 못하면 원래 주소) */
