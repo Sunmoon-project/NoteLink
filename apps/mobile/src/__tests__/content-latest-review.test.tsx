@@ -643,3 +643,42 @@ describe('PR36 자료 표시는 실제 값만 쓴다', () => {
     expect(screen.queryByText(/32:10/)).toBeNull();
   });
 });
+
+it('폴더 자료 목록 경로가 서버에 없어도(404) 자료 0개 폴더는 실패 대신 빈 폴더로 보여 준다', async () => {
+  mockApi.content.folders.mockResolvedValue([
+    {
+      _id: 'folder1',
+      title: '11월 15일 수학',
+      subjectName: '수학',
+      createdAt: '2026-11-15T00:00:00Z',
+      materialCount: 0,
+    },
+  ]);
+  mockApi.content.materials.mockRejectedValue(
+    Object.assign(new Error('Cannot GET'), { status: 404 }),
+  );
+  setParams({ id: 'folder1' });
+  await renderScreen(<FolderScreen />, client());
+  await waitFor(() => expect(mockApi.content.materials).toHaveBeenCalled());
+  expect(await screen.findByText('아직 학습 자료가 없어요')).toBeTruthy();
+  expect(screen.queryByText('자료를 불러오지 못했어요')).toBeNull();
+  expect(screen.queryByText('자료 다시 시도')).toBeNull();
+});
+
+it('자료가 있다고 센 폴더의 목록을 못 읽으면 지금처럼 실패와 다시 시도를 보여 준다', async () => {
+  mockApi.content.folders.mockResolvedValue([
+    {
+      _id: 'folder1',
+      title: '11월 15일 수학',
+      subjectName: '수학',
+      createdAt: '2026-11-15T00:00:00Z',
+      materialCount: 2,
+    },
+  ]);
+  mockApi.content.materials.mockRejectedValue(
+    Object.assign(new Error('Cannot GET'), { status: 404 }),
+  );
+  setParams({ id: 'folder1' });
+  await renderScreen(<FolderScreen />, client());
+  expect(await screen.findByText('자료를 불러오지 못했어요')).toBeTruthy();
+});

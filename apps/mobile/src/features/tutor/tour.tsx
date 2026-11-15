@@ -106,6 +106,8 @@ type Step = {
   /** 한 줄에 한 가지씩. 카드에서 줄마다 점을 찍어 짧게 읽히게 한다 */
   lines: string[];
 };
+/** 학습 단계가 실제 3D 선생님을 보여 주려고 잠깐 여는 화면(프로필 탭 안) */
+const TEACHER_ROUTE = '/(tabs)/profile/avatar-teacher';
 /** 실제 화면을 옮겨 다니며 정리 → 학습 → 복습에서 무엇을 누르는지 짚어 준다 */
 export const STEPS: Step[] = [
   {
@@ -138,7 +140,7 @@ export const STEPS: Step[] = [
   },
   {
     // 노트가 없어도 실제 3D 선생님이 있는 화면(프로필 > 아바타 선생님)에서 저를 밝혀 보여 준다
-    route: '/(tabs)/profile/avatar-teacher',
+    route: TEACHER_ROUTE,
     spot: { target: 'teacher-stage', tab: 4 },
     flow: 1,
     title: '저에게 물어보기',
@@ -261,9 +263,16 @@ export function TourCoach() {
   const last = step === steps.length - 1;
 
   // 단계마다 그 화면으로 옮기고, 화면이 바뀐 뒤 짚을 자리를 잰다
+  // 앞 단계에서 연 화면. 선생님 화면을 지나가면 프로필 탭을 첫 화면(설정)으로 되돌려 둔다
+  const shown = useRef<Href | undefined>(undefined);
   useEffect(() => {
     if (!on) return;
-    if (s.route) router.navigate(s.route);
+    if (s.route) {
+      if (shown.current === TEACHER_ROUTE && s.route !== TEACHER_ROUTE)
+        router.navigate('/(tabs)/profile');
+      router.navigate(s.route);
+      shown.current = s.route;
+    }
     let live = true;
     const tabRect = (i: number): Rect => {
       const cw = W / 5;

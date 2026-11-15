@@ -660,6 +660,18 @@ describe('처음 안내', () => {
     });
   });
 
+  it('선생님 화면(프로필 탭 안)을 지나가면 프로필 탭을 첫 화면으로 되돌린 뒤 다음 화면으로 간다', async () => {
+    const ask = STEPS.findIndex((s) => s.title === '저에게 물어보기');
+    useTour.setState({ step: ask, kind: 'main', afterFolder: false });
+    jest.mocked(router.navigate).mockClear();
+    await renderScreen(<TourCoach />);
+    expect(router.navigate).toHaveBeenLastCalledWith('/(tabs)/profile/avatar-teacher');
+    await fireEvent.press(screen.getByText('다음'));
+    await screen.findByText(STEPS[ask + 1]!.title);
+    const calls = jest.mocked(router.navigate).mock.calls.map((c) => c[0]);
+    expect(calls.slice(-2)).toEqual(['/(tabs)/profile', STEPS[ask + 1]!.route]);
+  });
+
   it('처음 안내 마지막 단계는 정리 · 학습 · 복습을 ①②③으로 요약한다', () => {
     expect(STEPS.at(-1)!.lines.join(' ')).toMatch(/① .*② .*③ /);
   });
