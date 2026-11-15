@@ -240,6 +240,7 @@ export function ChatScreen() {
   const [olderError, setOlderError] = useState(false);
   const list = useRef<FlatList<Message>>(null);
   const olderLoadingRef = useRef(false);
+  const pageRequestGeneration = useRef(0);
   const contentHeight = useRef(0);
   const scrollOffset = useRef(0);
   const viewportHeight = useRef(0);
@@ -265,6 +266,11 @@ export function ChatScreen() {
       if (!connected) return;
       socket.emit('chat:join', { chatRoomId }, (result) => {
         if (!result.ok || !result.missed) return;
+        // 재접속 이전에 시작한 페이지 요청은 더 이상 최신 커서를 결정할 수 없다.
+        pageRequestGeneration.current++;
+        olderLoadingRef.current = false;
+        setOlderLoading(false);
+        setOlderError(false);
         qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
           messages: mergeMessages(previous?.messages ?? [], result.missed!),
           hasMore:
@@ -280,6 +286,7 @@ export function ChatScreen() {
     if (!socket.onConnection) join(true);
     return () => {
       unsubscribe?.();
+      pageRequestGeneration.current++;
       socket.emit('chat:leave', { chatRoomId });
     };
   }, [room.data?._id, qc]);
@@ -297,11 +304,13 @@ export function ChatScreen() {
     )
       return;
 
+    const requestGeneration = pageRequestGeneration.current;
     olderLoadingRef.current = true;
     setOlderLoading(true);
     setOlderError(false);
     try {
       const older = await api.social.messages(chatRoomId, nextBefore);
+      if (requestGeneration !== pageRequestGeneration.current) return;
       restoreScroll.current = { offset: scrollOffset.current, contentHeight: contentHeight.current };
       qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
         messages: mergeMessages(older, previous?.messages ?? []),
@@ -309,10 +318,12 @@ export function ChatScreen() {
         nextBefore: older.length === DIRECT_MESSAGE_PAGE_SIZE ? older[0]?._id : undefined,
       }));
     } catch {
-      setOlderError(true);
+      if (requestGeneration === pageRequestGeneration.current) setOlderError(true);
     } finally {
-      olderLoadingRef.current = false;
-      setOlderLoading(false);
+      if (requestGeneration === pageRequestGeneration.current) {
+        olderLoadingRef.current = false;
+        setOlderLoading(false);
+      }
     }
   };
 

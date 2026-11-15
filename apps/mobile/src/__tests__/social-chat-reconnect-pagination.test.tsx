@@ -105,4 +105,70 @@ describe('1:1 채팅 재접속 기록 페이지', () => {
       qc.clear();
     });
   });
+
+  it('재접속 ACK 이후 늦게 끝난 이전 페이지 응답은 새 커서를 덮지 않는다', async () => {
+    const cached = Array.from({ length: 40 }, (_, index) => directMessage(index + 31));
+    const latest = Array.from({ length: 50 }, (_, index) => directMessage(index + 71));
+    let resolvePreviousPage!: (messages: ReturnType<typeof directMessage>[]) => void;
+    const previousPage = new Promise<ReturnType<typeof directMessage>[]>((resolve) => {
+      resolvePreviousPage = resolve;
+    });
+    mockApi.social.messages
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(() => previousPage);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(['messages', 'room1'], {
+      messages: cached,
+      hasMore: true,
+      nextBefore: 'message-31',
+    });
+
+    const view = await renderScreen(<ChatScreen />, qc);
+    await waitFor(() => expect(mockApi.social.messages).toHaveBeenCalledWith('room1'));
+    await waitFor(() =>
+      expect(qc.getQueryState(['messages', 'room1'])?.fetchStatus).toBe('idle'),
+    );
+    const list = screen.getByTestId('direct-chat-messages');
+    await act(async () =>
+      list.props.onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 0 },
+          contentSize: { width: 390, height: 2400 },
+          layoutMeasurement: { width: 390, height: 600 },
+        },
+      }),
+    );
+    await waitFor(() =>
+      expect(mockApi.social.messages).toHaveBeenNthCalledWith(2, 'room1', 'message-31'),
+    );
+
+    const joinCall = mockEmit.mock.calls.find(([event]) => event === 'chat:join');
+    const acknowledgeJoin = joinCall?.[2] as
+      | ((result: { ok: boolean; missed: typeof latest }) => void)
+      | undefined;
+    expect(acknowledgeJoin).toEqual(expect.any(Function));
+    await act(async () => {
+      acknowledgeJoin?.({ ok: true, missed: latest });
+    });
+    await waitFor(() =>
+      expect(qc.getQueryData<{ hasMore: boolean; nextBefore?: string }>([
+        'messages',
+        'room1',
+      ])).toMatchObject({ hasMore: true, nextBefore: 'message-71' }),
+    );
+
+    await act(async () => {
+      resolvePreviousPage([]);
+      await previousPage;
+    });
+    expect(qc.getQueryData<{ hasMore: boolean; nextBefore?: string }>([
+      'messages',
+      'room1',
+    ])).toMatchObject({ hasMore: true, nextBefore: 'message-71' });
+
+    await act(async () => {
+      view.unmount();
+      qc.clear();
+    });
+  });
 });
