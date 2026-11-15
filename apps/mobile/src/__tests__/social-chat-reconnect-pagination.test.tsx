@@ -171,4 +171,78 @@ describe('1:1 채팅 재접속 기록 페이지', () => {
       qc.clear();
     });
   });
+
+  it('재접속 ACK 뒤 도착한 최초 HTTP 50개 응답도 ACK 커서를 보존하고 중간 기록을 조회한다', async () => {
+    const cachedOld = Array.from({ length: 70 }, (_, index) => directMessage(index + 1));
+    const delayedHistory = Array.from({ length: 50 }, (_, index) => directMessage(index + 71));
+    const missedOnReconnect = Array.from({ length: 50 }, (_, index) => directMessage(index + 171));
+    const missingMiddle = Array.from({ length: 50 }, (_, index) => directMessage(index + 121));
+    let resolveInitialHistory!: (messages: ReturnType<typeof directMessage>[]) => void;
+    const initialHistory = new Promise<ReturnType<typeof directMessage>[]>((resolve) => {
+      resolveInitialHistory = resolve;
+    });
+    mockApi.social.messages.mockImplementation((_roomId: string, before?: string) =>
+      before ? Promise.resolve(missingMiddle) : initialHistory,
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(['messages', 'room1'], {
+      messages: cachedOld,
+      hasMore: false,
+    });
+
+    const view = await renderScreen(<ChatScreen />, qc);
+    await waitFor(() => expect(mockApi.social.messages).toHaveBeenCalledWith('room1'));
+    expect(qc.getQueryState(['messages', 'room1'])?.fetchStatus).toBe('fetching');
+
+    const joinCall = mockEmit.mock.calls.find(([event]) => event === 'chat:join');
+    const acknowledgeJoin = joinCall?.[2] as
+      | ((result: { ok: boolean; missed: typeof missedOnReconnect }) => void)
+      | undefined;
+    expect(acknowledgeJoin).toEqual(expect.any(Function));
+    await act(async () => {
+      acknowledgeJoin?.({ ok: true, missed: missedOnReconnect });
+    });
+    await waitFor(() =>
+      expect(qc.getQueryData<{ hasMore: boolean; nextBefore?: string }>([
+        'messages',
+        'room1',
+      ])).toMatchObject({ hasMore: true, nextBefore: 'message-171' }),
+    );
+
+    await act(async () => {
+      resolveInitialHistory(delayedHistory);
+      await initialHistory;
+    });
+    await waitFor(() =>
+      expect(qc.getQueryState(['messages', 'room1'])?.fetchStatus).toBe('idle'),
+    );
+    expect(qc.getQueryData<{ hasMore: boolean; nextBefore?: string }>([
+      'messages',
+      'room1',
+    ])).toMatchObject({ hasMore: true, nextBefore: 'message-171' });
+
+    const list = screen.getByTestId('direct-chat-messages');
+    await act(async () =>
+      list.props.onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 0 },
+          contentSize: { width: 390, height: 2400 },
+          layoutMeasurement: { width: 390, height: 600 },
+        },
+      }),
+    );
+    await waitFor(() =>
+      expect(mockApi.social.messages).toHaveBeenNthCalledWith(2, 'room1', 'message-171'),
+    );
+    await waitFor(() =>
+      expect(qc.getQueryData<{ messages: unknown[] }>(['messages', 'room1'])?.messages).toHaveLength(
+        220,
+      ),
+    );
+
+    await act(async () => {
+      view.unmount();
+      qc.clear();
+    });
+  });
 });

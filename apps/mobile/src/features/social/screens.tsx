@@ -217,17 +217,24 @@ export function ChatScreen() {
   } = useLocalSearchParams<{ id: string; name?: string; status?: User['status'] }>();
   const qc = useQueryClient();
   const room = useQuery({ queryKey: ['dm', id], queryFn: () => api.social.openDirect(id) });
+  const pageRequestGeneration = useRef(0);
   const history = useQuery({
     queryKey: ['messages', room.data?._id],
     queryFn: async (): Promise<DirectHistory> => {
+      const requestGeneration = pageRequestGeneration.current;
       const roomId = room.data!._id;
       const fetched = await api.social.messages(roomId);
       const cached = qc.getQueryData<DirectHistory>(['messages', roomId]);
+      const reconnectedDuringRequest = requestGeneration !== pageRequestGeneration.current;
       return {
         messages: mergeMessages(fetched, cached?.messages ?? []),
-        hasMore: fetched.length === DIRECT_MESSAGE_PAGE_SIZE || cached?.hasMore === true,
+        hasMore: reconnectedDuringRequest
+          ? (cached?.hasMore ?? fetched.length === DIRECT_MESSAGE_PAGE_SIZE)
+          : fetched.length === DIRECT_MESSAGE_PAGE_SIZE || cached?.hasMore === true,
         nextBefore:
-          fetched.length === DIRECT_MESSAGE_PAGE_SIZE ? fetched[0]?._id : cached?.nextBefore,
+          reconnectedDuringRequest || fetched.length !== DIRECT_MESSAGE_PAGE_SIZE
+            ? cached?.nextBefore
+            : fetched[0]?._id,
       };
     },
     enabled: !!room.data,
@@ -240,7 +247,6 @@ export function ChatScreen() {
   const [olderError, setOlderError] = useState(false);
   const list = useRef<FlatList<Message>>(null);
   const olderLoadingRef = useRef(false);
-  const pageRequestGeneration = useRef(0);
   const contentHeight = useRef(0);
   const scrollOffset = useRef(0);
   const viewportHeight = useRef(0);
