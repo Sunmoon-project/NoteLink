@@ -191,8 +191,20 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
         { saved: false },
         { saved: 'yes' },
         { title: '못 바꿈' },
+        // summary 가 객체가 아닌 값 · sections 항목이 객체가 아닌 값
+        { summary: [] },
+        { summary: null },
+        { summary: 'x' },
+        { summary: 1 },
+        { summary: { sections: [1] } },
+        { summary: { sections: [null] } },
+        { summary: { sections: ['x'] } },
+        { summary: { sections: [[]] } },
+        { summary: { sections: [{ heading: 'h', body: 'b' }, 1] } },
+        { summary: {} },
       ]) {
-        await patch('m1', bad).expect(400);
+        const res = await patch('m1', bad).expect(400);
+        expect(res.body).toEqual({ code: 'BAD_REQUEST', message: expect.any(String) });
       }
       expect(update).not.toHaveBeenCalled();
     });

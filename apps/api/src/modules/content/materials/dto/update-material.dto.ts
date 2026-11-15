@@ -3,10 +3,12 @@ import {
   ArrayMaxSize,
   IsArray,
   IsIn,
+  IsObject,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
@@ -31,6 +33,7 @@ export class SummarySectionDto {
 export class SummaryPatchDto {
   @IsArray()
   @ArrayMaxSize(SUMMARY_MAX_SECTIONS)
+  @IsObject({ each: true })
   @ValidateNested({ each: true })
   @Type(() => SummarySectionDto)
   sections: SummarySectionDto[];
@@ -40,7 +43,9 @@ export class SummaryPatchDto {
 export class UpdateMaterialDto {
   @IsOptional() @IsIn([true]) saved?: true;
 
-  @IsOptional()
+  // 생략만 허용한다: null · 배열 · 글자는 객체 검사에서 400
+  @ValidateIf((_, value) => value !== undefined)
+  @IsObject()
   @ValidateNested()
   @Type(() => SummaryPatchDto)
   summary?: SummaryPatchDto;
