@@ -9,6 +9,8 @@ import { Folder, FolderSchema } from '../schemas/folder.schema.js';
 import { Material, MaterialSchema } from '../schemas/material.schema.js';
 import { MaterialsController } from './materials.controller.js';
 import { MaterialsService } from './materials.service.js';
+import { RecordingController } from './recording.controller.js';
+import { RecordingService } from './recording.service.js';
 
 /**
  * 노트(자료) 등록 · 조회 · 수정 · 삭제. 정리는 AI 작업(ai-jobs)으로 하고, 올린 파일의 읽기 주소는
@@ -26,7 +28,7 @@ import { MaterialsService } from './materials.service.js';
     // JwtAuthGuard · TokenService
     AuthModule,
   ],
-  controllers: [MaterialsController],
-  providers: [MaterialsService],
+  controllers: [MaterialsController, RecordingController],
+  providers: [MaterialsService, RecordingService],
 })
 export class MaterialsModule {}
