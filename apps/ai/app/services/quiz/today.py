@@ -47,6 +47,12 @@ flawTries를 늘리지 않은 채 하루 더 미룹니다(dropped에 state 'acti
 그대로). 답 모양이 틀린 판정은 전처럼 그 보기를 걸리지 않은 것으로 봅니다. 새 문제 만들기가
 LLM 장애(similar.make_similar의 llm_down)로 끝나면 그 문제만 내일로
 미루고 flawTries는 늘리지 않습니다.
+서버 거절(#423): 거절은 다시 보내도 같아서(#262 · #272) 장애로 보지 않습니다. 새 문제 만들기가 모두
+거절로 끝나면(llm_refused) '못 만든 날'로 세어 flawTries를 늘리고, FLAW_TRIES일이 되면 flawed로 그만
+냅니다(매일 같은 거절 호출을 되풀이하지 않게). llm_refused에는 새 초안의 검사 거절도 들어가는데,
+초안은 날마다 달라도 오답 복습(#272)과 같은 기준으로 셉니다(못 만든 날과 같이 FLAW_TRIES일로 끝남).
+전날 미룬 결함 문제의 검사가 거절되면 기다리지 않고 전날 결함으로 새 문제를 만들어 봅니다.
+검사한 적 없는 문제의 검사가 거절되면 지금처럼 검사하지 않은 그대로 냅니다(알려진 한계).
 알려진 한계: 같은 낱말은 text.same_word로 보지만, 새 문제를 만들 때의 겹침 검사(checks.code_check)와
 기존 문제 다시 내기(similar.reuse_existing)의 '이미 쓴 답'은 아직 text.same_item입니다(오답 복습
 전체 동작이 바뀌므로 따로 다룸). 결함 문제를 바꿀 새 문제는 세트에서 이미 고른 정답과 겹침 검사를
@@ -212,10 +218,13 @@ def _page(q: Question, notes: Notes, s: QuizSet) -> tuple[int, str]:
     return page, notes[mid][page]
 
 
-def flaw(llm: Llm, s: QuizSet, q: Question, notes: Notes, hits: list[str]) -> list[str] | None:
-    """저장된 문제에 '정답 둘' 검사(quality.screen). 걸린 보기는 hits에 모읍니다.
+def flaw(
+    llm: Llm, s: QuizSet, q: Question, notes: Notes, hits: list[str]
+) -> tuple[list[str] | None, quality.Unchecked]:
+    """(결함 이유, 검사 못 한 까닭). 저장된 문제에 '정답 둘' 검사(quality.screen).
 
-    검사 못 함(걸린 보기 없이 판정을 받지 못한 것이 있음)이면 None.
+    걸린 보기는 hits에 모읍니다. 검사 못 함(걸린 보기 없이 판정을 받지 못한 것이 있음)이면
+    이유는 None이고 까닭은 down(호출 실패) · refused(실패한 호출을 모두 서버가 거절함).
     """
     _, text = _page(q, notes, s)
     d: Draft = {
@@ -225,7 +234,7 @@ def flaw(llm: Llm, s: QuizSet, q: Question, notes: Notes, hits: list[str]) -> li
         "answer": q["answer"],
     }
     why, unchecked = quality.screen(llm, d, text, q.get("type"), hits)
-    return None if unchecked else why
+    return (None if unchecked else why), unchecked
 
 
 def void_flawed(
@@ -329,6 +338,8 @@ def replace_flawed(
 
     시도마다 생성 · 검사 호출이 실패했으면(장애) 두 번째 값이 True: 장애를 '못 만듦'으로 세면
     flawTries가 늘어 3일 뒤 복습에서 빠지므로 부른 쪽이 따로 처리합니다(로컬에는 없는 처리).
+    다만 모든 시도가 서버 거절로 끝났으면(llm_refused) 다시 해도 같으므로 장애로 보지 않고
+    '못 만듦'(False)으로 돌려줍니다(#423).
     seen은 run이 한 번 만든 목록: 통과한 새 문제가 더해져 같은 실행의 다음 결함 문제와도 겹침을
     봅니다(review.run과 같음).
     """
@@ -347,7 +358,7 @@ def replace_flawed(
     avoid = list(dict.fromkeys(hits + group))
     m = similar.make_similar(llm, q, t, page, text, slot, seen, avoid)
     if m.question is None:
-        return None, m.llm_down
+        return None, m.llm_down and not m.llm_refused
     g = m.question
     new: Question = {
         **q,
@@ -413,7 +424,12 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         if has_notes and choices is not None and not st.get("checked"):
             # '정답 둘' 검사(10/22) 전에 만든 문제는 검사한 적이 없음
             hits: list[str] = []
-            found = flaw(llm, s, q, notes, hits)
+            found, unchecked = flaw(llm, s, q, notes, hits)
+            if found is None and st.get("flaw") and unchecked == "refused":
+                # 전날 결함으로 미룬 문제의 검사를 서버가 거절함: 다시 해도 같으므로 기다리지 않고
+                # 전날 찾은 결함으로 오늘도 새 문제를 만들어 봄(못 만들면 아래에서 그날로 셈, #423).
+                # 걸린 보기(hits)는 없어 새로 무효로 하는 풀이는 없음(전날 무효로 한 풀이는 그대로)
+                found = [st["flaw"]]
             if found is None and st.get("flaw"):
                 # 전날 결함으로 미룬 문제는 검사를 못 해도 그대로 내지 않음: 하루 더 미룸
                 # (시도 수는 그대로)
