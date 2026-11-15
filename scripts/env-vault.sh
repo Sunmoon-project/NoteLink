@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# 비밀값을 Azure Key Vault에 넣고, 이름을 보고, 팀 개발용 값을 받아 .env를 만듭니다(#326, #375).
+# 비밀값을 Azure Key Vault에 넣고, 이름을 보고, 값을 받아 로컬 .env를 만듭니다(#326, #375, #393).
 #
-#   scripts/env-vault.sh pull <ai|api>                # 팀 Key Vault → apps/<앱>/.env
-#   scripts/env-vault.sh push [--team] <변수>         # 값 하나를 넣거나 바꿈(값은 표준 입력)
-#   scripts/env-vault.sh list [--team] [ai|api]       # 변수 이름과 그 이름을 쓰는 앱(값은 보이지 않음)
+#   scripts/env-vault.sh pull <ai|api>     # Key Vault → apps/<앱>/.env
+#   scripts/env-vault.sh push <변수>       # 값 하나를 넣거나 바꿈(값은 표준 입력)
+#   scripts/env-vault.sh list [ai|api]     # 변수 이름과 그 이름을 쓰는 앱(값은 보이지 않음)
 #
-# - Key Vault는 둘입니다. 각자 Azure 계정으로 열고, 팀 키 하나를 나눠 갖지 않습니다.
-#   - 배포(NOTELINK_VAULT, 기본 kv-notelink-dev): 배포 App Service가 Key Vault 참조로 읽는 **배포용 값만**.
-#     --team이 없으면 이쪽입니다. 받지(pull) 않습니다.
-#     값 보기 · 쓰기(Key Vault Secrets Officer): 완우 · 희재
-#     이름 보기 · 넣기(사용자 지정 역할 NoteLink Secrets Writer, 값 읽기 없음): 나머지 팀원
-#   - 팀(NOTELINK_TEAM_VAULT, 기본 kv-notelink-team, --team): 팀원이 같이 쓰는 **로컬 개발용 값**.
-#     팀원 모두 읽기 · 쓰기(Key Vault Secrets Officer). 배포 값은 넣지 않습니다.
+# - Key Vault는 하나(NOTELINK_VAULT, 기본 kv-notelink-dev)이고 개발 · 배포가 **같은 값**을 씁니다(#393).
+#   배포 App Service는 Key Vault 참조로, 로컬 개발은 pull로 받은 .env로 읽습니다. 키(API 키 · 시크릿)는
+#   배포와 같은 값이 들어오고, .env.production에 "# 로컬: 이름=값" 줄이 있는 변수(DB 주소 · 소셜 로그인
+#   돌아올 주소 · APP_ENV 등)는 Key Vault 값 대신 그 로컬 값을 씁니다. 로컬에서 배포 DB를 써서 실제
+#   데이터 · 배포 작업(ai_jobs)을 건드리지 않게 하려는 것으로, 배포 값을 쓰려면 .env.local에 둡니다.
+# - 각자 Azure 계정으로 열고, 팀 키 하나를 나눠 갖지 않습니다. 팀원 모두 값 보기 · 넣기 권한을 갖습니다.
 # - 먼저 Azure CLI를 설치하고 팀 디렉터리 계정으로 로그인합니다: az login --tenant <팀 테넌트 ID>
 # - secret 이름은 변수 이름에서 _만 -로 바꾼 것입니다(Key Vault 이름에는 _를 쓸 수 없음):
 #   ANTHROPIC-API-KEY ↔ ANTHROPIC_API_KEY. 꺼 둔(disabled) secret은 list · pull에 보이지 않습니다.
@@ -26,16 +25,12 @@
 #
 # 테스트: scripts/tests/env-vault.bats (source하면 main은 실행되지 않습니다)
 
-DEPLOY_VAULT="${NOTELINK_VAULT:-kv-notelink-dev}"
-TEAM_VAULT="${NOTELINK_TEAM_VAULT:-kv-notelink-team}"
-VAULT=$DEPLOY_VAULT  # 이번 명령이 쓰는 Key Vault(--team · pull이면 TEAM_VAULT)
-TEAM=""              # --team · pull이면 1(Key Vault 이름이 아니라 명령으로 정함)
+VAULT="${NOTELINK_VAULT:-kv-notelink-dev}"
 ROOT="${ENV_VAULT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 APPS="ai api"
 VAR_RE='^[A-Z][A-Z0-9_]*$'
-ROLES="값 보기 · 쓰기는 Key Vault Secrets Officer(완우 · 희재), 이름 보기 · 넣기는 NoteLink Secrets Writer(나머지 팀원)입니다"
-TEAM_ROLES="팀 Key Vault는 팀원 모두 Key Vault Secrets Officer입니다"
-USAGE="pull <ai|api> · push [--team] <변수> · list [--team] [ai|api]"
+ROLES="팀원 모두 값 보기 · 넣기 권한이 있어야 합니다(Key Vault Secrets Officer, 또는 NoteLink Secrets Writer와 Key Vault Secrets User). 없으면 구독 소유자에게 요청하세요"
+USAGE="pull <ai|api> · push <변수> · list [ai|api]"
 # ai의 ${…} 값: .env · .env.local(pull이 .env에 합침) 어디에 두어도 python-dotenv가 바꿔 읽음. 셸 환경 변수는
 # pydantic-settings가 .env보다 먼저 쓰고 바꾸지 않음. python-dotenv가 바꾸는 모양은 닫는 }까지 있는 ${…}뿐
 # (dotenv/variables.py: 'x${}y' → xy, 'ab${cd'는 그대로)
@@ -44,20 +39,6 @@ DOLLAR_HINT="python-dotenv는 .env(.env.local도 .env에 합쳐짐)의 \${이름
 
 die() { echo "env-vault: $*" >&2; exit 1; }
 
-is_team() { [ -n "$TEAM" ]; }
-
-lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }  # macOS bash 3.2에는 ${,,}가 없음
-
-# 팀 Key Vault로 바꿈. Key Vault 이름은 대소문자를 가리지 않으므로 배포 Key Vault와 같으면(대소문자 무시)
-# 배포 값을 팀 값처럼 받거나 넣게 되어 거절
-use_team() {
-  [ "$(lower "$TEAM_VAULT")" != "$(lower "$DEPLOY_VAULT")" ] \
-    || die "팀 Key Vault와 배포 Key Vault가 같습니다('$TEAM_VAULT'). 배포 값은 팀 값으로 받거나 넣지 않습니다"
-  VAULT=$TEAM_VAULT
-  TEAM=1
-}
-
-role_hint() { if is_team; then echo "$TEAM_ROLES"; else echo "$ROLES"; fi; }
 
 check_app() {  # $1 = 앱 이름
   case " $APPS " in
@@ -118,7 +99,7 @@ vault_vars() {
   local names name var
   names=$(az_out keyvault secret list --vault-name "$VAULT" \
     --query "[?attributes.enabled].name" -o tsv) \
-    || die "Key Vault '$VAULT'의 이름 목록을 읽지 못했습니다. az login(팀 디렉터리)과 권한을 확인하세요. $(role_hint)"
+    || die "Key Vault '$VAULT'의 이름 목록을 읽지 못했습니다. az login(팀 디렉터리)과 권한을 확인하세요. $ROLES"
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     var=$(var_name "$name")
@@ -169,15 +150,39 @@ local_keys() {  # $1 = .env.local 경로
 
 PULL_HEAD='# scripts/env-vault.sh pull '
 
+# .env.production의 "# 로컬: 이름=값" 줄(이름=값, 한 줄에 하나). 로컬에서 배포와 다른 값을 써야 하는 변수
+# (DB 주소 · 소셜 로그인 돌아올 주소 · APP_ENV 등)로, pull은 Key Vault 값 대신 이 값을 씀
+local_defaults() {  # $1 = 앱
+  local file="$ROOT/apps/$1/.env.production"
+  [ -f "$file" ] || return 0
+  sed -nE 's/^#[[:space:]]*로컬:[[:space:]]*([A-Z][A-Z0-9_]*=.*)$/\1/p' "$file" | tr -d '\r'
+}
+
+# 이 변수에 '로컬:' 값이 있는 앱(공백으로 나눔) — pull이 Key Vault 값 대신 로컬 값을 쓰는 앱
+local_apps_of() {  # $1 = 변수
+  local app out=""
+  for app in $APPS; do
+    if local_defaults "$app" | grep -q "^$1="; then out+="${out:+ }$app"; fi
+  done
+  printf '%s' "$out"
+}
+
+# .env.production의 주석이 아닌 "이름=" 줄(앱이 쓰는 기본 변수). 주석으로 둔 선택 항목은 뺌
+main_vars() {  # $1 = 앱
+  local file="$ROOT/apps/$1/.env.production"
+  [ -f "$file" ] || return 0
+  sed -nE 's/^([A-Z][A-Z0-9_]*)=.*/\1/p' "$file" | tr -d '\r' | sort -u
+}
+
 # $1을 $2라는 새 파일(권한 600)로 복사. $2가 이미 있으면(끊어진 링크 포함) 쓰지 않고 실패
 new_file() {  # $1 = 원본, $2 = 새 파일
   (set -C; umask 077; cat "$1" > "$2") 2> /dev/null
 }
 
-pull() {  # $1 = 앱. 팀 Key Vault에서만 받음(배포 값은 로컬로 내려받지 않음)
-  local app=$1 dir env local_file tmp have local_set var name value line bak rc count=0 skipped=0 overridden=0
+pull() {  # $1 = 앱. 배포와 같은 Key Vault에서 받음(#393)
+  local app=$1 dir env local_file tmp have local_set defaults def var name value line bak rc
+  local count=0 skipped=0 overridden=0 localed=0 local_names=""
   check_app "$app"
-  use_team
   need_az
   dir="$ROOT/apps/$app"
   env="$dir/.env"
@@ -187,11 +192,14 @@ pull() {  # $1 = 앱. 팀 Key Vault에서만 받음(배포 값은 로컬로 내�
   have=$(vault_vars) || exit 1  # 따로 받아야 vault_vars의 실패(die)가 묻히지 않음
   have=$(app_vault_vars "$app" "$have")
   local_set=$(local_keys "$local_file")
+  defaults=$(local_defaults "$app")
+  # Key Vault에 없어도 로컬: 값이 있는 변수는 씀(MAIL_TRANSPORT=log 등)
+  [ -z "$defaults" ] || have=$(printf '%s\n%s\n' "$have" "$(cut -d= -f1 <<< "$defaults")" | grep -v '^$' | sort -u)
 
   tmp=$(umask 077 && mktemp "$dir/.env.pull.XXXXXX") || die "임시 파일을 만들지 못했습니다"
   trap 'rm -f "$tmp"' EXIT
   {
-    echo "${PULL_HEAD}$app 로 팀 Key Vault '$VAULT'에서 받은 값입니다. 커밋하지 않습니다."
+    echo "${PULL_HEAD}$app 로 Key Vault '$VAULT'에서 받은 값(배포와 같은 키)과 '로컬:' 기본값입니다. 커밋하지 않습니다."
     echo "# 내 값으로 바꿀 것은 이 파일이 아니라 apps/$app/.env.local에 두고, 고친 뒤 pull을 다시 합니다(앱은 .env만 읽음)."
   } > "$tmp"
   while IFS= read -r var; do
@@ -199,13 +207,26 @@ pull() {  # $1 = 앱. 팀 Key Vault에서만 받음(배포 값은 로컬로 내�
     if overrides "$app" "$var" "$local_set"; then
       overridden=$((overridden + 1)); continue
     fi
+    # 로컬: 값이 있으면 Key Vault(배포 DB 주소 등)를 읽지 않고 그 값을 씀. 배포 값을 쓰려면 .env.local에
+    def=$(grep -m 1 "^$var=" <<< "$defaults" || true)
+    if [ -n "$def" ]; then
+      # Key Vault 값과 같은 검사(따옴표 · 역슬래시 · ai의 ${…})를 거쳐 씀
+      rc=0
+      line=$(env_line "$var" "${def#*=}" "$app") || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        echo "env-vault: .env.production의 '로컬: $var' 값을 .env로 그대로 쓸 수 없어 건너뜀(.env.local에 직접 넣으세요)" >&2
+        skipped=$((skipped + 1)); continue
+      fi
+      printf '%s\n' "$line" >> "$tmp"
+      localed=$((localed + 1)); local_names+="${local_names:+ · }$var"; continue
+    fi
     name=$(secret_name "$var")
     rc=0
     az_value "$name" || rc=$?
     [ "$rc" -ne 2 ] \
       || die "'$name'의 az 출력 모양이 예상과 다릅니다(.env는 그대로). Azure CLI 버전을 확인하세요"
     [ "$rc" -eq 0 ] \
-      || die "'$name'의 값을 읽지 못했습니다(.env는 그대로, 위 az 오류 참고). 방금 지우거나 껐으면 pull을 다시 하고, 아니면 권한을 확인하세요. $(role_hint)"
+      || die "'$name'의 값을 읽지 못했습니다(.env는 그대로, 위 az 오류 참고). 방금 지우거나 껐으면 pull을 다시 하고, 아니면 권한을 확인하세요. $ROLES"
     value=$VALUE
     rc=0
     line=$(env_line "$var" "$value" "$app") || rc=$?
@@ -248,8 +269,20 @@ pull() {  # $1 = 앱. 팀 Key Vault에서만 받음(배포 값은 로컬로 내�
   fi
   mv "$tmp" "$env" || die "$env를 쓰지 못했습니다"
   trap - EXIT
-  echo "apps/$app/.env: 팀 Key Vault에서 ${count}개, .env.local이 ${overridden}개 덮어씀, 건너뜀 ${skipped}개"
-  echo "팀 Key Vault에 없는 값(개인 키 · 로컬 DB 주소 등)은 apps/$app/.env.local에 둡니다(apps/$app/.env.production의 '로컬:' 줄 참고)"
+  echo "apps/$app/.env: Key Vault에서 ${count}개, 로컬 기본값 ${localed}개, .env.local이 ${overridden}개 덮어씀, 건너뜀 ${skipped}개"
+  [ -z "$local_names" ] \
+    || echo "로컬 기본값(.env.production의 '로컬:' 줄): $local_names. 배포 값(배포 DB 등)을 쓰려면 apps/$app/.env.local에 넣으세요"
+  # .env.production의 기본 변수 중 Key Vault에도 .env.local에도 없어 .env에 들어가지 않은 이름
+  local missing=""
+  while IFS= read -r var; do
+    [ -n "$var" ] || continue
+    grep -qxF "$var" <<< "$have" && continue
+    overrides "$app" "$var" "$local_set" && continue
+    missing+="${missing:+ · }$var"
+  done <<< "$(main_vars "$app")"
+  [ -z "$missing" ] \
+    || echo "Key Vault에 없어 .env에 넣지 않음: $missing (필요하면 push하거나 apps/$app/.env.local에 넣으세요)"
+  echo "키(API 키 · 시크릿)는 배포와 같은 값입니다. 내 값으로 바꿀 것은 apps/$app/.env.local에 둡니다"
 }
 
 read_value() {  # 터미널이면 보이지 않게 한 줄, 아니면 표준 입력 전체(끝 줄바꿈 하나만 뺌: \n · \r\n)
@@ -266,10 +299,14 @@ read_value() {  # 터미널이면 보이지 않게 한 줄, 아니면 표준 입
 }
 
 push() {  # $1 = 변수
-  local var=$1 value tmp users rc
+  local var=$1 value tmp users rc localized
   check_var "$var"
   need_az
   users=$(apps_of "$var")
+  localized=$(local_apps_of "$var")
+  # '로컬:' 값이 있는 변수(DB 주소 등)는 pull이 Key Vault 값을 쓰지 않음: 이 push는 배포 앱만 바꿈
+  [ -z "$localized" ] \
+    || echo "env-vault: $var는 ${localized// / · }의 pull이 '로컬:' 값을 쓰므로, 이 값은 팀원 로컬이 아니라 배포 앱만 바꿉니다(로컬에서 쓰려면 .env.local)" >&2
   [ -n "$users" ] \
     || echo "env-vault: $var는 ai · api의 .env.production에 없습니다(이름을 확인하세요. 새 변수면 .env.production에도 적습니다)" >&2
   read_value
@@ -277,32 +314,33 @@ push() {  # $1 = 변수
   [ -n "$value" ] || die "값이 비었습니다"
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] \
     || die "값에 줄바꿈(\r 포함)이 있습니다. 앱 설정 값은 한 줄이어야 합니다"
-  if is_team; then
-    rc=0
-    if [[ " $users " == *" ai "* ]]; then
-      env_line "$var" "$value" ai > /dev/null || rc=$?
-    else
-      env_line "$var" "$value" > /dev/null || rc=$?
-    fi
-    [ "$rc" -ne 2 ] || die "ai가 쓰는 값에 \${…}가 있으면 pull로 받을 수 없습니다. $DOLLAR_HINT"
-    [ "$rc" -eq 0 ] || die "값에 작은따옴표 · 역슬래시가 있으면 pull로 .env에 받을 수 없습니다(.env.local에 직접 두세요)"
+  # 배포 앱(App Service)은 그대로 읽으므로 넣되, pull이 .env로 받지 못하는 값이면 알림('로컬:' 변수는 pull이
+  # 이 값을 읽지 않으므로 알리지 않음)
+  rc=0
+  if [ -n "$localized" ]; then
+    :
+  elif [[ " $users " == *" ai "* ]]; then
+    env_line "$var" "$value" ai > /dev/null || rc=$?
+  else
+    env_line "$var" "$value" > /dev/null || rc=$?
   fi
+  case $rc in
+    0) ;;
+    2) echo "env-vault: ai가 쓰는 값에 \${…}가 있어 pull은 이 값을 건너뜁니다(배포 앱은 그대로 읽음). $DOLLAR_HINT" >&2 ;;
+    *) echo "env-vault: 값에 작은따옴표 · 역슬래시가 있어 pull은 이 값을 건너뜁니다(배포 앱은 그대로 읽음). 로컬에서는 .env.local에 직접 두세요" >&2 ;;
+  esac
   tmp=$(umask 077 && mktemp) || die "임시 파일을 만들지 못했습니다"
   trap 'rm -f "$tmp"' EXIT
   printf '%s' "$value" > "$tmp"
   az keyvault secret set --vault-name "$VAULT" --name "$(secret_name "$var")" \
     --file "$tmp" --encoding utf-8 --output none \
-    || die "Key Vault '$VAULT'에 쓰지 못했습니다. 권한을 확인하세요. $(role_hint)"
+    || die "Key Vault '$VAULT'에 쓰지 못했습니다. 권한을 확인하세요. $ROLES"
   rm -f "$tmp"
   trap - EXIT
-  if is_team; then
-    echo "$(secret_name "$var")를 팀 Key Vault '$VAULT'에 저장함.${users:+ 쓰는 앱: ${users// / · }.}" \
-      "팀원은 pull을 다시 하면 새 값을 씁니다(배포 값은 --team 없이 push)"
-  else
-    echo "$(secret_name "$var")를 배포 Key Vault '$VAULT'에 저장함.${users:+ 쓰는 앱: ${users// / · }.}" \
-      "배포 앱이 Key Vault 참조로 읽으면 앱을 다시 시작할 때(아니면 24시간 안에) 새 값을 씁니다." \
-      "처음 넣은 이름이면 App Service 앱 설정에 Key Vault 참조를 추가해야 합니다"
-  fi
+  local who="배포 앱은 다시 시작할 때(아니면 24시간 안에), 팀원은 pull을 다시 하면 새 값을 씁니다."
+  [ -z "$localized" ] || who="배포 앱은 다시 시작할 때(아니면 24시간 안에) 새 값을 씁니다(팀원 로컬은 '로컬:' 값 그대로)."
+  echo "$(secret_name "$var")를 Key Vault '$VAULT'에 저장함.${users:+ 쓰는 앱: ${users// / · }.}" "$who" \
+    "처음 넣은 이름이면 App Service 앱 설정에 Key Vault 참조를 추가해야 합니다"
 }
 
 list() {  # $1 = 앱(없으면 모두). 이름과 그 이름을 쓰는 앱
@@ -315,24 +353,34 @@ list() {  # $1 = 앱(없으면 모두). 이름과 그 이름을 쓰는 앱
     echo "Key Vault '$VAULT'에 ${app:+apps/$app/.env.production의 }변수가 없습니다" >&2
     return 0
   fi
+  local localized
   while IFS= read -r var; do
     users=$(apps_of "$var")
-    printf '%s\t%s\n' "$var" "${users:-(쓰는 앱 없음)}"
+    localized=$(local_apps_of "$var")  # pull이 이 값 대신 '로컬:' 값을 쓰는 앱
+    printf '%s\t%s%s\n' "$var" "${users:-(쓰는 앱 없음)}" \
+      "${localized:+$'\t'(pull은 로컬: 값 — ${localized// / · })}"
   done <<< "$have"
 }
 
 main() {
   local cmd=${1:-}
   [ $# -eq 0 ] || shift
-  if [ "${1:-}" = --team ]; then
-    [ "$cmd" != pull ] || die "pull은 늘 팀 Key Vault에서 받습니다(--team 없이): $0 pull <ai|api>"
-    use_team; shift
-  fi
+  local arg
+  for arg in "$cmd" "$@"; do
+    [ "$arg" != --team ] \
+      || die "--team은 없앴습니다(#393). Key Vault '$VAULT' 하나에 개발 · 배포 값을 함께 둡니다(push는 배포 앱이 읽는 값을 바꿈)"
+  done
+  # 예전(#375) 안내대로 export해 둔 값이 남아 있으면, 팀 값을 받는 줄 알고 배포 값을 받지 않게 멈춤
+  [ -z "${NOTELINK_TEAM_VAULT:-}" ] \
+    || die "NOTELINK_TEAM_VAULT는 없앴습니다(#393). 이제 Key Vault '$VAULT'(배포와 같은 값)만 씁니다. unset NOTELINK_TEAM_VAULT 뒤 다시 실행하세요"
+  # 없앤 팀 Key Vault를 NOTELINK_VAULT로 가리키면 배포 앱이 읽지 않는 곳에 넣거나 받게 되어 멈춤
+  [ "$(printf '%s' "$VAULT" | tr '[:upper:]' '[:lower:]')" != kv-notelink-team ] \
+    || die "kv-notelink-team은 없앴습니다(#393). NOTELINK_VAULT를 지우거나 kv-notelink-dev로 두세요"
   case "$cmd" in
     pull) [ $# -eq 1 ] || die "사용법: $0 pull <ai|api>"; pull "$1" ;;
-    push) [ $# -eq 1 ] || die "사용법: $0 push [--team] <변수>"; push "$1" ;;
-    list) [ $# -le 1 ] || die "사용법: $0 list [--team] [ai|api]"; list "${1:-}" ;;
-    *) die "사용법: $0 $USAGE (배포 Key Vault에는 배포 값만, 팀 개발용 값은 --team)" ;;
+    push) [ $# -eq 1 ] || die "사용법: $0 push <변수>"; push "$1" ;;
+    list) [ $# -le 1 ] || die "사용법: $0 list [ai|api]"; list "${1:-}" ;;
+    *) die "사용법: $0 $USAGE (Key Vault '$VAULT' 하나에 개발 · 배포 값을 함께 둡니다)" ;;
   esac
 }
 
