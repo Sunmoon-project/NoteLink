@@ -1,29 +1,32 @@
 {
   "name": "notelink",
   "private": true,
+  "packageManager": "npm@11.13.0",
   "workspaces": [
     "packages/shared",
     "apps/api",
-    "apps/mobile"
+    "apps/mobile",
+    "apps/ai"
   ],
   "engines": {
     "node": ">=24 <25"
   },
   "scripts": {
-    "lint": "npm run lint --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test --concurrency=1",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "dev:api": "npm run dev -w apps/api",
-    "dev:mobile": "npm run start -w apps/mobile",
-    "dev:ai": "cd apps/ai && python -m uvicorn app.main:app --reload --port 8000"
+    "dev:api": "turbo run dev --filter=@notelink/api",
+    "dev:mobile": "turbo run start --filter=@notelink/mobile",
+    "dev:ai": "turbo run dev --filter=@notelink/ai"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "eslint": "10.12.0",
     "prettier": "3.9.9",
+    "turbo": "2.11.11",
     "typescript": "6.0.3",
     "typescript-eslint": "8.71.1"
   },
