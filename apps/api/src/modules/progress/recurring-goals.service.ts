@@ -6,7 +6,7 @@ import { HolidaysService } from '../calendar/holidays.service.js';
 import { Subject } from '../session/schemas/subject.schema.js';
 import { seoulDate } from '../session/study-time.js';
 import type { SaveRecurringGoalDto } from './dto/recurring-goal.dto.js';
-import { weeklyStreak, type DayStudy, type GoalRule } from './goal-judge.js';
+import { todayStudyMin, weeklyStreak, type DayStudy, type GoalRule } from './goal-judge.js';
 import { DailyRecord } from './schemas/daily-record.schema.js';
 import { RecurringGoal } from './schemas/recurring-goal.schema.js';
 import { addDays, weekStartOf } from './week.js';
@@ -23,6 +23,13 @@ export interface RecurringGoalView {
     pausedUntil: string | null;
     streak: number;
     isActive: boolean;
+    todayMin: number | null; // 오늘(서울) 이 목표로 센 공부 분(내림). 오늘이 목표 요일이 아니거나 공휴일 · 제외일 · 일시 정지 · 쉬는 목표면 null
+}
+
+/** 목표마다 조회할 때 계산하는 값(저장하지 않는다) */
+interface GoalStats {
+    streak: number;
+    todayMin: number | null;
 }
 
 type GoalLean = RecurringGoal & { _id: Types.ObjectId; createdAt?: Date };
@@ -39,6 +46,8 @@ export const MAX_LOOKBACK_DAYS = 730;
 const VALIDATION_FAILED = 'VALIDATION_FAILED';
 const NOT_FOUND = { code: 'NOT_FOUND', message: '존재하지 않는 반복 목표입니다.' };
 const DEFAULT_TARGET_MIN = 30; // 앱(local/api.ts)이 새 목표에 넣는 값
+/** 리마인드 시각의 기본값(요구사항 FR-11-07 "기본 21시"). 만들 때 안 보내면 이 값을 저장하고, 값이 비어 있는 옛 목표는 응답에서만 이 값으로 보인다 */
+export const DEFAULT_REMIND_TIME = '21:00';
 
 @Injectable()
 export class RecurringGoalsService {
@@ -49,14 +58,14 @@ export class RecurringGoalsService {
         private readonly holidays: HolidaysService, // 건너뛸 날(공휴일 · 내 제외일)
     ) { }
 
-    /** 내 반복 목표 (지운 것 제외), 만든 순서. streak은 조회할 때 계산한다(저장하지 않는다) */
+    /** 내 반복 목표 (지운 것 제외), 만든 순서. streak · todayMin은 조회할 때 계산한다(저장하지 않는다) */
     async list(userId: string, now: Date = new Date()): Promise<RecurringGoalView[]> {
         const docs = await this.goalModel
             .find({ userId: new Types.ObjectId(userId), deletedAt: null })
             .sort({ createdAt: 1, _id: 1 })
             .lean<GoalLean[]>();
-        const streaks = await this.streaks(userId, docs, now);
-        return docs.map((goal) => toView(goal, streaks.get(goal._id.toString()) ?? 0));
+        const stats = await this.stats(userId, docs, now);
+        return docs.map((goal) => toView(goal, stats.get(goal._id.toString())));
     }
 
     /** 만든다. 이름과 요일은 꼭 있어야 하고, 나머지는 앱과 같은 기본값 */
@@ -68,6 +77,7 @@ export class RecurringGoalsService {
         const created = await this.goalModel.create({
             targetMin: DEFAULT_TARGET_MIN,
             remindEnabled: false,
+            remindTime: DEFAULT_REMIND_TIME,
             isActive: true,
             ...toFields(dto),
             userId: new Types.ObjectId(userId),
@@ -76,8 +86,8 @@ export class RecurringGoalsService {
         });
         // 목록 · 수정과 같은 계산을 쓴다. 오늘 이미 목표 시간을 채운 사용자가 오늘 요일로 만들면 바로 1 이상일 수 있다
         const goal = created.toObject() as unknown as GoalLean;
-        const streaks = await this.streaks(userId, [goal], new Date());
-        return toView(goal, streaks.get(goal._id.toString()) ?? 0);
+        const stats = await this.stats(userId, [goal], new Date());
+        return toView(goal, stats.get(goal._id.toString()));
     }
 
     /** 보낸 필드만 바꾼다. 남의 목표 · 지운 목표 · 없는 목표는 404 */
@@ -90,8 +100,8 @@ export class RecurringGoalsService {
             .findOneAndUpdate(ownedAlive(userId, id), { $set: fields }, { returnDocument: 'after' })
             .lean<GoalLean>();
         if (!saved) throw new NotFoundException(NOT_FOUND);
-        const streaks = await this.streaks(userId, [saved], new Date());
-        return toView(saved, streaks.get(saved._id.toString()) ?? 0);
+        const stats = await this.stats(userId, [saved], new Date());
+        return toView(saved, stats.get(saved._id.toString()));
     }
 
     /**
@@ -105,12 +115,13 @@ export class RecurringGoalsService {
     }
 
     /**
-     * 목표마다 연속 달성 주 수를 구한다. 공부 기록과 건너뛸 날은 목록 전체에 필요한 기간을 한 번씩만 읽고(목표마다 읽지 않는다),
-     * 판정은 순수 함수(goal-judge.ts)가 한다. 쉬는 목표(isActive=false)는 읽을 것 없이 0이다.
+     * 목표마다 연속 달성 주 수와 오늘 공부 분(todayMin)을 구한다. 공부 기록과 건너뛸 날은 목록 전체에 필요한 기간을 한 번씩만 읽고
+     * (목표마다 읽지 않고, todayMin을 위해 더 읽지도 않는다 — 오늘은 그 기간 안이다), 판정은 순수 함수(goal-judge.ts)가 한다.
+     * 쉬는 목표(isActive=false)는 읽을 것 없이 연속 0 · todayMin null이다.
      * 목표를 고치면 과거 판정도 지금 설정으로 다시 계산된다
      */
-    private async streaks(userId: string, goals: GoalLean[], now: Date): Promise<Map<string, number>> {
-        const result = new Map<string, number>();
+    private async stats(userId: string, goals: GoalLean[], now: Date): Promise<Map<string, GoalStats>> {
+        const result = new Map<string, GoalStats>();
         const running = goals.filter((g) => g.isActive);
         if (running.length === 0) return result;
 
@@ -132,7 +143,12 @@ export class RecurringGoalsService {
         ]);
         const study = new Map(records.map((r) => [r.studyDate, toDayStudy(r)]));
         const skipDates = new Set(skipList);
-        for (const { id, rule } of rules) result.set(id, weeklyStreak(rule, today, study, skipDates, from));
+        for (const { id, rule } of rules) {
+            result.set(id, {
+                streak: weeklyStreak(rule, today, study, skipDates, from),
+                todayMin: todayStudyMin(rule, today, study, skipDates),
+            });
+        }
         return result;
     }
 
@@ -199,7 +215,7 @@ function toRule(goal: GoalLean): GoalRule {
     };
 }
 
-function toView(goal: GoalLean, streak: number): RecurringGoalView {
+function toView(goal: GoalLean, stats: GoalStats | undefined): RecurringGoalView {
     return {
         _id: goal._id.toString(),
         name: goal.name,
@@ -207,9 +223,10 @@ function toView(goal: GoalLean, streak: number): RecurringGoalView {
         targetMin: goal.targetMin,
         subjectId: goal.subjectId ? goal.subjectId.toString() : null,
         remindEnabled: goal.remindEnabled,
-        remindTime: goal.remindTime ?? null,
+        remindTime: goal.remindTime ?? DEFAULT_REMIND_TIME,
         pausedUntil: goal.pausedUntil ? goal.pausedUntil.toISOString() : null,
-        streak,
+        streak: stats?.streak ?? 0,
         isActive: goal.isActive,
+        todayMin: stats?.todayMin ?? null,
     };
 }

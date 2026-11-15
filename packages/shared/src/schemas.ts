@@ -384,6 +384,8 @@ export const RecurringGoal = z.object({
   pausedUntil: date.nullable(),
   streak: z.number(),
   isActive: z.boolean(),
+  /** 오늘(서울) 이 목표로 센 공부 분(내림) — 리마인드 알림의 "남은 분" 계산용. 오늘이 목표 요일이 아니거나 공휴일 · 제외일 · 일시 정지 · 쉬는 목표면 null (서버 계산) */
+  todayMin: z.number().nullable(),
 });
 
 export const WeeklySummary = z.object({
