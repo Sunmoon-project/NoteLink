@@ -55,7 +55,10 @@ answer() { # $1: 응답 파일, $2: 이 주소를 부른 횟수
 }
 case "$url" in
   */api/publish*) wait_for "${PUBLISH_SLEEP:-0}"; printf '%s' "$START" ;;
-  */api/deployments/latest) answer "$LATEST" "$(grep -c '/api/deployments/latest' "$CALLS")" ;;
+  */api/deployments/latest)
+    [ -n "$withcode" ] && wait_for "${LATEST_SLEEP:-0}" # 배포 전 조회만 LATEST_SLEEP초 걸림
+    answer "$LATEST" "$(grep -c '/api/deployments/latest' "$CALLS")"
+    ;;
   */deploymentStatus/*) answer "$STATUS" "$(grep -c '/deploymentStatus/' "$CALLS")" ;;
   *) echo "모르는 주소: $url"; exit 22 ;;
 esac
@@ -64,7 +67,8 @@ SH
   PATH="$BIN:$PATH"
 }
 
-run_deploy() { run bash "$SCRIPT" rg-1 app "$BATS_TEST_TMPDIR/ai.zip" "${1:-30}" 0; }
+# $1: 최대 기다림(초, 기본 30), $2: 조회 간격(초, 기본 0)
+run_deploy() { run bash "$SCRIPT" rg-1 app "$BATS_TEST_TMPDIR/ai.zip" "${1:-30}" "${2:-0}"; }
 called() { grep -- "$1" "$CALLS"; }
 status_of() { printf '{"properties":{"status":"%s"%s}}' "$1" "${2:-}"; }
 
@@ -171,6 +175,27 @@ status_of() { printf '{"properties":{"status":"%s"%s}}' "$1" "${2:-}"; }
   run_deploy 3
   [ "$status" -eq 1 ]
   [[ "$output" == *"배포 전 최근 배포를 읽지 못해 배포를 시작하지 않았습니다"* ]]
+  ! called "/api/publish"
+}
+
+@test "배포 전 조회를 다시 기다리다 정한 시간이 지나면 다시 읽지 않고 배포를 시작하지 않는다" {
+  # Codex 재리뷰 #410: 시간이 지난 뒤 한 번 더 읽어 성공하면 배포를 시작하고, id 확인은 못 한 채
+  # 실패로 끝났음. 간격(5초)이 남은 시간(2초)보다 길어 기다리는 동안 시간이 다 감
+  printf '%s\n' fail '{"id":"old"}' > "$LATEST"
+  run_deploy 2 5
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"배포 전 최근 배포를 읽지 못해 배포를 시작하지 않았습니다"* ]]
+  [ "$(called '/api/deployments/latest' | wc -l)" -eq 1 ]
+  ! called "/api/publish"
+}
+
+@test "배포 전 조회에 정한 시간을 다 쓰면 배포를 시작하지 않는다" {
+  # 조회가 시간 안에 끝나도(또는 시간 초과로 끝나도) 남은 시간이 없으면 업로드하지 않음
+  printf '%s\n' '{"id":"old"}' > "$LATEST"
+  export LATEST_SLEEP=2
+  run_deploy 2
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"배포를 시작하지 않았습니다"* ]]
   ! called "/api/publish"
 }
 

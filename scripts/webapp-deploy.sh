@@ -57,9 +57,15 @@ nap() { local l; l=$(left); [ "$l" -gt 0 ] && sleep $((delay < l ? delay : l)); 
 # 배포 기록이 없으면(404) 건너뛸 id도 없음. 그 밖의 조회 실패는 다시 읽고, 끝내 못 읽으면 배포를
 # 시작하지 않음: 모른 채 시작하면 예전 배포를 이 배포로 보고, 그 배포가 성공이면 이 배포를 확인하지
 # 않고 성공으로 끝날 수 있음(Codex 재리뷰 #410)
+# 정한 시간이 지나면 다시 읽지 않고 끝냄: cap()은 시간이 없어도 1초를 주므로, 확인하지 않으면 시간이
+# 지난 뒤 조회에 성공해 배포를 시작하고 id 확인은 못 한 채 실패로 끝났음(Codex 재리뷰 #410)
 before=""
 last_error=""
 while :; do
+  if [ "$(left)" -le 0 ]; then
+    echo "배포 전 최근 배포를 읽지 못해 배포를 시작하지 않았습니다(${limit}초).${last_error:+ 마지막 조회 오류: $last_error}" >&2
+    exit 1
+  fi
   out=$(curl -sS --max-time "$(cap)" "${auth[@]}" -w '\n%{http_code}' "$scm/api/deployments/latest" 2>&1)
   rc=$?
   http="${out##*$'\n'}"
@@ -74,14 +80,15 @@ while :; do
   fi
   before=""
   last_error="HTTP ${http:-응답 없음} ${body}"
-  if [ "$(left)" -le 0 ]; then
-    echo "배포 전 최근 배포를 읽지 못해 배포를 시작하지 않았습니다(${limit}초). 마지막 조회 오류: $last_error" >&2
-    exit 1
-  fi
   echo "배포 전 최근 배포를 다시 읽음($last_error)"
   nap
 done
 
+# 배포 전 조회에 시간을 다 썼으면 배포를 시작하지 않음: 시작하면 이 배포를 확인할 시간이 없음
+if [ "$(left)" -le 0 ]; then
+  echo "정한 시간(${limit}초)이 지나 배포를 시작하지 않았습니다" >&2
+  exit 1
+fi
 code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$(cap 600)" -X POST "${auth[@]}" \
   -H 'Content-Type: application/octet-stream' --data-binary "@$zip" \
   "$scm/api/publish?type=zip&async=true") || code=""
