@@ -14,8 +14,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
+import { HolidaysService } from '../src/modules/calendar/holidays.service.js';
 import { RecurringGoalsController } from '../src/modules/progress/recurring-goals.controller.js';
 import { RecurringGoalsService } from '../src/modules/progress/recurring-goals.service.js';
+import { DailyRecord, DailyRecordSchema } from '../src/modules/progress/schemas/daily-record.schema.js';
 import { RecurringGoal, RecurringGoalSchema } from '../src/modules/progress/schemas/recurring-goal.schema.js';
 import { Subject, SubjectSchema } from '../src/modules/session/schemas/subject.schema.js';
 
@@ -48,12 +50,14 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 확인', () => {
                 MongooseModule.forFeature([
                     { name: RecurringGoal.name, schema: RecurringGoalSchema },
                     { name: Subject.name, schema: SubjectSchema },
+                    { name: DailyRecord.name, schema: DailyRecordSchema }, // 연속 달성 판정이 읽는다(여기서는 비어 있다)
                     { name: User.name, schema: UserSchema },
                 ]),
             ],
             controllers: [RecurringGoalsController],
             providers: [
                 RecurringGoalsService,
+                { provide: HolidaysService, useValue: { skipDates: () => Promise.resolve([]) } }, // 판정은 goal-judge-real-db.test.ts에서 확인한다
                 {
                     provide: TokenService,
                     useValue: {

@@ -2,6 +2,17 @@ import type { ConfigReader } from './mongo.config.js';
 
 /** 소셜 로그인 제공자 설정(구글 · 카카오 · 네이버)이 같이 쓰는 환경변수 검증 */
 
+/**
+ * 제공자 키가 하나도 없으면 그 제공자를 끈다(null). 간편 로그인을 아직 등록하지 않은 서버(개발 서버 등)도
+ * 이메일 로그인으로는 켜지게 하려는 것이다. 키가 일부만 있으면 설정 실수이므로 create가 지금처럼 바로 실패한다.
+ */
+export function optionalProviderConfig<T>(
+  keys: readonly string[],
+  create: (config: ConfigReader) => T,
+): (config: ConfigReader) => T | null {
+  return (config) => (keys.every((key) => !config.get(key)?.trim()) ? null : create(config));
+}
+
 export function requiredEnv(config: ConfigReader, key: string): string {
   const value = config.get(key)?.trim();
   if (!value) {
