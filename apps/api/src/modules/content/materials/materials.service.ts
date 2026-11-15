@@ -380,15 +380,36 @@ export class MaterialsService {
       fresh = null;
       return { row: current, job: await this.jobs.findMine(userId, jobId.toString()) };
     } catch (e) {
-      // 새로 넣은 작업이 노트에 연결되지 않았으면 남지 않게 취소하고, 표시를 풀어 다른 요청이 이어가게 한다
-      if (fresh) await this.cancelUnlinked(userId, material._id, fresh._id);
-      await this.materials
-        .updateOne(
-          { _id: material._id, jobClaimToken: token },
-          { $unset: { jobClaimToken: '', jobClaimedAt: '' } },
-        )
-        .catch(() => undefined);
+      await this.abandonClaim(userId, material._id, token, fresh);
       throw e;
+    }
+  }
+
+  /**
+   * 연결에 실패한 요청이 뒷정리를 한다. 자기 토큰으로 표시를 아직 갖고 있을 때만 새로 넣은 작업을 취소한다:
+   * 표시가 만료돼 다른 요청이 가져갔다면 그쪽이 내가 넣은 작업을 이어 쓰고 있을 수 있어 취소하지 않고, 상대의 표시도 지우지 않는다.
+   * 순서: (1) 표시를 연장해 아직 내 것인지 확인 — 내 것이면 그동안 아무도 표시를 가져가 내 작업을 이어 쓸 수 없다
+   * (2) 연결되지 않은 새 작업 취소 (3) 토큰이 같을 때만 표시 해제. 해제부터 하면 그 직후 다른 요청이 작업을 이어 쓰는데 취소가 뒤따를 수 있다
+   */
+  private async abandonClaim(
+    userId: string,
+    noteId: Types.ObjectId,
+    token: string,
+    fresh: AppAiJob | null,
+  ): Promise<void> {
+    try {
+      const held = await this.materials.updateOne(
+        { _id: noteId, jobClaimToken: token },
+        { $set: { jobClaimedAt: new Date() } },
+      );
+      if (held.matchedCount === 0) return;
+      if (fresh) await this.cancelUnlinked(userId, noteId, fresh._id);
+      await this.materials.updateOne(
+        { _id: noteId, jobClaimToken: token },
+        { $unset: { jobClaimToken: '', jobClaimedAt: '' } },
+      );
+    } catch {
+      // 뒷정리가 실패해도 원래 오류를 알린다. 남은 표시는 시간이 지나면 무효가 되고, 남은 작업은 다음 요청이 이어 쓴다
     }
   }
 

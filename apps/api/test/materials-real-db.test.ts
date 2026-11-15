@@ -470,6 +470,104 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       expect(await jobs.countDocuments({ targetId: note._id })).toBe(1);
     });
 
+    it('표시가 만료돼 다른 요청이 가져간 뒤에는, 늦게 실패한 요청이 그 작업을 취소하거나 상대의 표시를 지우지 않는다', async () => {
+      const note = await stuckNote('late');
+      const defer = () => {
+        let resolve!: () => void;
+        const promise = new Promise<void>((r) => (resolve = r));
+        return { promise, resolve };
+      };
+      const aEnqueued = defer();
+      const gateA = defer();
+      const bAtLink = defer();
+      const gateB = defer();
+
+      // 요청 A: 작업을 만든 직후 멈춘다
+      const enqueue = AiJobsService.prototype.enqueue;
+      let enqueueCalls = 0;
+      const enqueueSpy = vi
+        .spyOn(AiJobsService.prototype, 'enqueue')
+        .mockImplementation(async function (
+          this: AiJobsService,
+          ...args: Parameters<typeof enqueue>
+        ) {
+          const job = await enqueue.apply(this, args);
+          enqueueCalls += 1;
+          if (enqueueCalls === 1) {
+            aEnqueued.resolve();
+            await gateA.promise;
+          }
+          return job;
+        });
+      // 표시를 잡은 순서대로 토큰을 기억한다: 첫째는 A, 둘째는 B. A의 연결은 예외, B의 연결은 풀어 줄 때까지 멈춘다
+      const tokens: string[] = [];
+      const original = materials.findOneAndUpdate.bind(materials);
+      const linkSpy = vi.spyOn(materials, 'findOneAndUpdate').mockImplementation(((
+        f: { jobClaimToken?: string },
+        u: { $set?: Record<string, string> },
+        o: unknown,
+      ) => {
+        const claimToken = u?.$set?.['jobClaimToken'];
+        if (claimToken) tokens.push(claimToken);
+        if (u?.$set?.['processing.jobId']) {
+          if (f.jobClaimToken === tokens[0])
+            return { lean: () => Promise.reject(new Error('link failed (A)')) };
+          return {
+            lean: async () => {
+              bAtLink.resolve();
+              await gateB.promise;
+              return original(f as never, u as never, o as never).lean();
+            },
+          };
+        }
+        return original(f as never, u as never, o as never);
+      }) as never);
+      const cancelSpy = vi.spyOn(AiJobsService.prototype, 'cancel');
+
+      try {
+        const a = service.register(me.toHexString(), dto(), 'late').then(
+          () => null,
+          (e: Error) => e,
+        );
+        await aEnqueued.promise;
+        const jobA = (await jobs.findOne({ targetId: note._id }).lean())!;
+        // A의 표시가 만료된다
+        await materials.updateOne(
+          { _id: note._id },
+          { $set: { jobClaimedAt: new Date(Date.now() - 2 * CLAIM_TTL_MS) } },
+        );
+        // B가 표시를 가져가 A의 작업을 이어 쓰려고 연결 직전에 멈춘다
+        const b = service.register(me.toHexString(), dto(), 'late');
+        await bAtLink.promise;
+        expect(tokens).toHaveLength(2);
+
+        // 이제 A가 늦게 실패한다
+        gateA.resolve();
+        const aError = await a;
+        expect(aError?.message).toBe('link failed (A)');
+        // A는 B의 작업을 취소하지 않았고 B의 표시도 지우지 않았다
+        expect(cancelSpy).not.toHaveBeenCalled();
+        expect((await jobs.findById(jobA._id).lean())?.status).toBe('queued');
+        expect((await materials.findById(note._id).lean())?.jobClaimToken).toBe(tokens[1]);
+
+        // B가 마저 연결한다
+        gateB.resolve();
+        const done = await b;
+        expect(done.job._id).toBe(jobA._id.toString());
+        const row = await materials.findById(note._id).lean();
+        expect(row?.processing.jobId?.toString()).toBe(jobA._id.toString());
+        expect(row?.jobClaimToken).toBeUndefined();
+        expect(await jobs.countDocuments({ targetId: note._id })).toBe(1);
+        expect(await jobs.countDocuments({ targetId: note._id, status: 'canceled' })).toBe(0);
+      } finally {
+        gateA.resolve();
+        gateB.resolve();
+        enqueueSpy.mockRestore();
+        linkSpy.mockRestore();
+        cancelSpy.mockRestore();
+      }
+    });
+
     it('표시 필드는 응답에 내보내지 않는다', async () => {
       const res = await service.register(me.toHexString(), dto(), 'shape');
       expect(res.material).not.toHaveProperty('jobClaimToken');
