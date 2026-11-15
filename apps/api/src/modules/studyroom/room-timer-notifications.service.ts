@@ -19,6 +19,9 @@ import { StudyRoom } from './schemas/study-room.schema.js';
 const TIMER_SCAN_MS = 5_000;
 const TIMER_SCAN_LIMIT = 100;
 const PUSH_LEASE_MS = 30_000;
+const RETRY_BASE_MS = 5_000;
+const RETRY_MAX_MS = 60_000;
+const RETRY_MAX_ATTEMPTS = 5;
 const EXPO_PUSH_TOKEN = /^(?:Expo|Exponent)PushToken\[[^\]]+\]$/;
 
 type TimerPhase = 'focus' | 'break' | 'period' | 'completed';
@@ -27,6 +30,13 @@ type PendingTimerNotification = {
   phase: TimerPhase;
   title: string;
   body: string;
+};
+type TimerNotificationRetry = PendingTimerNotification & {
+  eventId: string;
+  timerRevision: number;
+  recipients: { userId: string; token: string }[];
+  attempts: number;
+  nextAttemptAt: Date;
 };
 type DueTimerRoom = Pick<
   StudyRoom,
@@ -96,6 +106,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
         .lean();
 
       for (const room of due) await this.queueTransition(room, now);
+      await this.retryFailedNotifications(now);
     } finally {
       this.running = false;
     }
@@ -208,7 +219,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
       }
 
       const devices = await this.devices
-        .find({ userId: { $in: joinedUserIds } }, { pushToken: 1 })
+        .find({ userId: { $in: joinedUserIds } }, { userId: 1, pushToken: 1 })
         .lean();
       const tokens = devices
         .map((device) => device.pushToken)
@@ -219,26 +230,51 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
       }
 
       const eventId = `${roomId}:${pending.transitionAt.toISOString()}`;
-      const messages: ExpoPushMessage[] = tokens.map((to) => ({
-        to,
-        title: pending.title,
-        body: pending.body,
-        data: { type: 'study-room-timer', roomId, phase: pending.phase },
-        sound: 'default',
-        priority: 'high',
-        channelId: 'study-room-timer',
-        collapseId: eventId,
-        threadId: `study-room-${roomId}`,
-      }));
+      const deviceByToken = new Map(
+        devices.map((device) => [device.pushToken, String(device.userId)]),
+      );
+      const messages = tokens.map((to) => this.pushMessage(roomId, eventId, pending, to));
       const result = await this.push.send(messages);
       if (result.invalidTokens.length)
         await this.devices.deleteMany({ pushToken: { $in: result.invalidTokens } });
-      if (result.failedTickets.length)
-        this.logger.warn(
-          `일부 기기 푸시 ticket이 거부되어 해당 전환의 재전송을 생략합니다: ${result.failedTickets
-            .map(({ error }) => error)
-            .join(', ')}`,
-        );
+      if (result.failedTickets.length) {
+        const failedTokenOwners = new Map<string, string>();
+        for (const { message } of result.failedTickets) {
+          const userId = deviceByToken.get(message.to);
+          if (userId) failedTokenOwners.set(message.to, userId);
+        }
+        const failedRecipients = [...failedTokenOwners].map(([token, userId]) => ({
+          token,
+          userId,
+        }));
+        if (failedRecipients.length) {
+          await this.rooms.updateOne(
+            {
+              _id: id,
+              timerRevision: revision,
+              'timerPendingNotification.transitionAt': pending.transitionAt,
+            },
+            {
+              $push: {
+                timerNotificationRetries: {
+                  eventId,
+                  transitionAt: pending.transitionAt,
+                  phase: pending.phase,
+                  title: pending.title,
+                  body: pending.body,
+                  timerRevision: revision,
+                  recipients: failedRecipients,
+                  attempts: 0,
+                  nextAttemptAt: new Date(Date.now() + RETRY_BASE_MS),
+                },
+              },
+            },
+          );
+          this.logger.warn(
+            `일부 스터디룸 타이머 푸시를 수신자별 재시도 큐에 보관했습니다 (${failedRecipients.length})`,
+          );
+        }
+      }
       await this.clearPending(id, revision, pending.transitionAt);
     } catch (error) {
       this.logger.warn(`스터디룸 타이머 푸시 전송을 재시도합니다: ${String(error)}`);
@@ -253,6 +289,209 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
         'timerPendingNotification.transitionAt': transitionAt,
       },
       { $set: { timerPendingNotification: null, timerPendingLeaseUntil: null } },
+    );
+  }
+
+  private pushMessage(
+    roomId: string,
+    eventId: string,
+    notification: PendingTimerNotification,
+    to: string,
+  ): ExpoPushMessage {
+    return {
+      to,
+      title: notification.title,
+      body: notification.body,
+      data: {
+        type: 'study-room-timer',
+        roomId,
+        phase: notification.phase,
+        transitionId: eventId,
+      },
+      sound: 'default',
+      priority: 'high',
+      channelId: 'study-room-timer',
+      collapseId: eventId,
+      threadId: `study-room-${roomId}`,
+    };
+  }
+
+  private async retryFailedNotifications(now: Date): Promise<void> {
+    const leaseCheckAt = new Date();
+    const rooms = await this.rooms
+      .find(
+        {
+          closedAt: null,
+          timerNotificationRetries: {
+            $elemMatch: {
+              nextAttemptAt: { $lte: now },
+              attempts: { $lt: RETRY_MAX_ATTEMPTS },
+            },
+          },
+          $or: [
+            { timerNotificationRetryLeaseUntil: null },
+            { timerNotificationRetryLeaseUntil: { $lte: leaseCheckAt } },
+          ],
+        },
+        { _id: 1, timerRevision: 1 },
+      )
+      .limit(TIMER_SCAN_LIMIT)
+      .lean();
+
+    for (const room of rooms)
+      await this.retryRoomNotifications(String(room._id), room.timerRevision ?? 0, now);
+  }
+
+  private async retryRoomNotifications(roomId: string, revision: number, now: Date): Promise<void> {
+    if (!isValidObjectId(roomId)) return;
+    const id = new Types.ObjectId(roomId);
+    const leaseAcquiredAt = new Date();
+    const leaseUntil = new Date(leaseAcquiredAt.getTime() + PUSH_LEASE_MS);
+    const dueFilter = {
+      nextAttemptAt: { $lte: now },
+      attempts: { $lt: RETRY_MAX_ATTEMPTS },
+      timerRevision: revision,
+    };
+    const claimed = await this.rooms.updateOne(
+      {
+        _id: id,
+        closedAt: null,
+        timerRevision: revision,
+        timerNotificationRetries: { $elemMatch: dueFilter },
+        $or: [
+          { timerNotificationRetryLeaseUntil: null },
+          { timerNotificationRetryLeaseUntil: { $lte: leaseAcquiredAt } },
+        ],
+      },
+      { $set: { timerNotificationRetryLeaseUntil: leaseUntil } },
+    );
+    if (!claimed.matchedCount) return;
+
+    try {
+      const room = await this.rooms
+        .findOne({ _id: id, closedAt: null, timerRevision: revision })
+        .lean();
+      if (!room) return;
+      const retries = (room.timerNotificationRetries ?? []) as unknown as TimerNotificationRetry[];
+      const due = retries.filter(
+        (retry) =>
+          retry.timerRevision === revision &&
+          retry.attempts < RETRY_MAX_ATTEMPTS &&
+          new Date(retry.nextAttemptAt).getTime() <= now.getTime(),
+      );
+      if (!due.length) {
+        await this.releaseRetryLease(id, revision, leaseUntil);
+        return;
+      }
+
+      const joinedMembers = new Map(
+        room.members
+          .filter((member) => member.status === 'joined')
+          .map((member) => [String(member.userId), member.userId]),
+      );
+      const candidateRecipients = due.flatMap((retry) =>
+        retry.recipients.filter((recipient) => joinedMembers.has(recipient.userId)),
+      );
+      const candidateTokens = [...new Set(candidateRecipients.map(({ token }) => token))];
+      const currentDevices =
+        candidateTokens.length && joinedMembers.size
+          ? await this.devices
+              .find(
+                {
+                  userId: { $in: [...joinedMembers.values()] },
+                  pushToken: { $in: candidateTokens },
+                },
+                { userId: 1, pushToken: 1 },
+              )
+              .lean()
+          : [];
+      const currentDeviceKeys = new Set(
+        currentDevices.map((device) => `${String(device.userId)}:${device.pushToken}`),
+      );
+      const eligibleByEvent = new Map<string, { userId: string; token: string }[]>();
+      const messages: ExpoPushMessage[] = [];
+      for (const retry of due) {
+        const eligible = retry.recipients.filter(
+          (recipient) =>
+            joinedMembers.has(recipient.userId) &&
+            currentDeviceKeys.has(`${recipient.userId}:${recipient.token}`),
+        );
+        eligibleByEvent.set(retry.eventId, eligible);
+        messages.push(
+          ...eligible.map((recipient) =>
+            this.pushMessage(roomId, retry.eventId, retry, recipient.token),
+          ),
+        );
+      }
+
+      const result = messages.length
+        ? await this.push.send(messages)
+        : { invalidTokens: [], failedTickets: [] };
+      if (result.invalidTokens.length)
+        await this.devices.deleteMany({ pushToken: { $in: result.invalidTokens } });
+      const failedByEvent = new Map<string, Set<string>>();
+      for (const { message } of result.failedTickets) {
+        const eventId = message.data.transitionId;
+        if (typeof eventId !== 'string') continue;
+        const failed = failedByEvent.get(eventId) ?? new Set<string>();
+        failed.add(message.to);
+        failedByEvent.set(eventId, failed);
+      }
+
+      const dueEventIds = new Set(due.map((retry) => retry.eventId));
+      const nextRetries = retries.filter((retry) => !dueEventIds.has(retry.eventId));
+      let exhausted = 0;
+      for (const retry of due) {
+        const failedTokens = failedByEvent.get(retry.eventId);
+        if (!failedTokens?.size) continue;
+        const recipients = (eligibleByEvent.get(retry.eventId) ?? []).filter(({ token }) =>
+          failedTokens.has(token),
+        );
+        if (!recipients.length) continue;
+        const attempts = retry.attempts + 1;
+        if (attempts >= RETRY_MAX_ATTEMPTS) {
+          exhausted += recipients.length;
+          continue;
+        }
+        const delay = Math.min(RETRY_BASE_MS * 2 ** (attempts - 1), RETRY_MAX_MS);
+        nextRetries.push({
+          ...retry,
+          recipients,
+          attempts,
+          nextAttemptAt: new Date(Date.now() + delay),
+        });
+      }
+      if (exhausted)
+        this.logger.warn(`스터디룸 타이머 푸시 재시도를 횟수 제한으로 종료했습니다 (${exhausted})`);
+
+      await this.rooms.updateOne(
+        {
+          _id: id,
+          closedAt: null,
+          timerRevision: revision,
+          timerNotificationRetryLeaseUntil: leaseUntil,
+        },
+        {
+          $set: {
+            timerNotificationRetries: nextRetries,
+            timerNotificationRetryLeaseUntil: null,
+          },
+        },
+      );
+    } catch (error) {
+      this.logger.warn(`스터디룸 타이머 푸시 재시도를 이어서 처리합니다: ${String(error)}`);
+      await this.releaseRetryLease(id, revision, leaseUntil);
+    }
+  }
+
+  private releaseRetryLease(id: Types.ObjectId, revision: number, leaseUntil: Date) {
+    return this.rooms.updateOne(
+      {
+        _id: id,
+        timerRevision: revision,
+        timerNotificationRetryLeaseUntil: leaseUntil,
+      },
+      { $set: { timerNotificationRetryLeaseUntil: null } },
     );
   }
 

@@ -88,6 +88,12 @@ export class StudyRoom {
   @Prop({ type: Date, default: null })
   timerPendingLeaseUntil?: Date | null; // 여러 API 인스턴스가 같은 알림을 보내지 않게 잠근다
 
+  @Prop({ type: [Object], default: [] })
+  timerNotificationRetries?: Record<string, unknown>[]; // 푸시 실패 수신자만 분리 재시도
+
+  @Prop({ type: Date, default: null })
+  timerNotificationRetryLeaseUntil?: Date | null; // 여러 API 인스턴스의 재시도 중복을 막는다
+
   @Prop({ type: [RoomMemberSchema], default: [] })
   members: RoomMember[]; // 참여 멤버 배열
 

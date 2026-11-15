@@ -49,6 +49,21 @@ describe('ExpoPushService', () => {
     expect(JSON.parse(fetchMock.mock.calls[1]![1].body)).toHaveLength(1);
   });
 
+  it('후속 배치가 실패해도 앞선 성공 결과는 유지하고 실패한 배치만 반환한다', async () => {
+    const messages = Array.from({ length: 101 }, (_, index) => message(`token-${index}`));
+    fetchMock
+      .mockResolvedValueOnce(
+        response({ data: Array.from({ length: 100 }, () => ({ status: 'ok' })) }),
+      )
+      .mockResolvedValueOnce(response({ errors: [{ message: 'temporarily unavailable' }] }, 503));
+    const service = new ExpoPushService();
+
+    await expect(service.send(messages)).resolves.toEqual({
+      invalidTokens: [],
+      failedTickets: [{ message: messages[100], error: 'Expo Push Service HTTP 503' }],
+    });
+  });
+
   it('기기별 ticket 오류를 분리해 성공 기기와 무효 토큰에 섞지 않는다', async () => {
     fetchMock.mockResolvedValueOnce(
       response({
@@ -65,20 +80,22 @@ describe('ExpoPushService', () => {
       service.send([message('success-token'), message('invalid-token'), message('retry-token')]),
     ).resolves.toEqual({
       invalidTokens: ['invalid-token'],
-      failedTickets: [{ token: 'retry-token', error: 'MessageRateExceeded' }],
+      failedTickets: [{ message: message('retry-token'), error: 'MessageRateExceeded' }],
     });
   });
 
-  it('요청 전체 오류나 ticket 수 불일치는 개별 결과로 오인하지 않고 실패 처리한다', async () => {
+  it('요청 전체 오류와 ticket 수 불일치를 해당 배치 수신자의 실패로 반환한다', async () => {
     const service = new ExpoPushService();
     fetchMock.mockResolvedValueOnce(response({ errors: [{ message: 'rate limited' }] }, 429));
-    await expect(service.send([message('token-1')])).rejects.toThrow(
-      'Expo Push Service 요청 실패 (429)',
-    );
+    await expect(service.send([message('token-1')])).resolves.toEqual({
+      invalidTokens: [],
+      failedTickets: [{ message: message('token-1'), error: 'Expo Push Service HTTP 429' }],
+    });
 
     fetchMock.mockResolvedValueOnce(response({ data: [] }));
-    await expect(service.send([message('token-1')])).rejects.toThrow(
-      'ticket 수가 요청과 일치하지 않습니다',
-    );
+    await expect(service.send([message('token-1')])).resolves.toMatchObject({
+      invalidTokens: [],
+      failedTickets: [{ message: { to: 'token-1' }, error: 'Expo ticket 수 불일치' }],
+    });
   });
 });

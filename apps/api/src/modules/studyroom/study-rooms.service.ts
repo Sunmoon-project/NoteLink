@@ -10,7 +10,12 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Types, type Model } from 'mongoose';
-import { TimerRule as TimerRuleSchema, roomTimerState, type TimerRule } from '@notelink/shared';
+import {
+  TimerRule as TimerRuleSchema,
+  nextRoomTimerTransitionAt,
+  roomTimerState,
+  type TimerRule,
+} from '@notelink/shared';
 
 import { User } from '../auth/schemas/user.schema.js';
 import { Category } from '../content/schemas/category.schema.js';
@@ -489,7 +494,7 @@ export class StudyRoomsService {
     const timerRule: TimerRule = TimerRuleSchema.parse(input);
     const now = new Date();
     const timerStartedAt = timerRule.enabled && timerRule.type === 'pomodoro' ? now : null;
-    const timerState = roomTimerState(timerRule, timerStartedAt, now.getTime());
+    const nextTransitionAt = nextRoomTimerTransitionAt(timerRule, timerStartedAt, now.getTime());
     const updated = await this.rooms
       .findOneAndUpdate(
         {
@@ -502,9 +507,11 @@ export class StudyRoomsService {
           $set: {
             timerRule,
             timerStartedAt,
-            timerNextNotificationAt: timerState?.endsAt ? new Date(timerState.endsAt) : null,
+            timerNextNotificationAt: nextTransitionAt ? new Date(nextTransitionAt) : null,
             timerPendingNotification: null,
             timerPendingLeaseUntil: null,
+            timerNotificationRetries: [],
+            timerNotificationRetryLeaseUntil: null,
           },
           $inc: { timerRevision: 1 },
         },

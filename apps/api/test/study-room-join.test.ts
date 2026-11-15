@@ -273,6 +273,32 @@ describe('스터디룸 타이머 규칙', () => {
     expect(rooms.findOneAndUpdate).not.toHaveBeenCalled();
   });
 
+  it('마지막 교시가 지난 뒤 규칙을 저장해도 다음 날 첫 교시를 예약한다', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-02T12:00:00.000Z'));
+    rooms.findOne.mockReturnValue(query({ _id: roomId, hostId: userId }));
+    rooms.findOneAndUpdate.mockReturnValue(query({ _id: roomId }));
+    const input = timerInput({
+      type: 'period',
+      periods: [{ start: '09:00', end: '10:50', label: '오전 교시' }],
+    });
+
+    try {
+      await service.setTimerRule(String(userId), String(roomId), input);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(rooms.findOneAndUpdate.mock.calls[0]![1]).toMatchObject({
+      $set: {
+        timerStartedAt: null,
+        timerNextNotificationAt: new Date('2026-11-03T00:00:00.000Z'),
+        timerNotificationRetries: [],
+        timerNotificationRetryLeaseUntil: null,
+      },
+    });
+  });
+
   it('교시 시간이 겹치면 저장하지 않는다', async () => {
     rooms.findOne.mockReturnValue(query({ _id: roomId, hostId: userId }));
     const input = timerInput({

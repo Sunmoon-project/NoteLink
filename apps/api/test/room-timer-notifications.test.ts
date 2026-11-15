@@ -47,9 +47,12 @@ const dueRoom = {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  rooms.find.mockReturnValueOnce({ limit: () => ({ lean: async () => [] }) }).mockReturnValueOnce({
-    sort: () => ({ limit: () => ({ lean: async () => [dueRoom] }) }),
-  });
+  rooms.find
+    .mockReturnValueOnce({ limit: () => ({ lean: async () => [] }) })
+    .mockReturnValueOnce({
+      sort: () => ({ limit: () => ({ lean: async () => [dueRoom] }) }),
+    })
+    .mockReturnValue({ limit: () => ({ lean: async () => [] }) });
   rooms.updateOne.mockResolvedValue({ matchedCount: 1 });
   rooms.findOne.mockReturnValue(
     query({
@@ -65,9 +68,9 @@ beforeEach(() => {
   const devicesQuery = {
     select: () => devicesQuery,
     lean: async () => [
-      { pushToken: 'ExponentPushToken[host-device]' },
-      { pushToken: 'ExpoPushToken[member-device]' },
-      { pushToken: 'native-apns-token-is-not-an-expo-token' },
+      { userId: hostId, pushToken: 'ExponentPushToken[host-device]' },
+      { userId: memberId, pushToken: 'ExpoPushToken[member-device]' },
+      { userId: invitedId, pushToken: 'native-apns-token-is-not-an-expo-token' },
     ],
   };
   devices.find.mockReturnValue(devicesQuery);
@@ -107,7 +110,7 @@ describe('RoomTimerNotificationsService', () => {
       {
         userId: { $in: [hostId, memberId] },
       },
-      { pushToken: 1 },
+      { userId: 1, pushToken: 1 },
     );
     expect(push.send).toHaveBeenCalledWith([
       expect.objectContaining({
@@ -115,7 +118,12 @@ describe('RoomTimerNotificationsService', () => {
         sound: 'default',
         priority: 'high',
         channelId: 'study-room-timer',
-        data: { type: 'study-room-timer', roomId: String(roomId), phase: 'break' },
+        data: {
+          type: 'study-room-timer',
+          roomId: String(roomId),
+          phase: 'break',
+          transitionId: `${roomId}:${nextAt.toISOString()}`,
+        },
       }),
       expect.objectContaining({
         to: 'ExpoPushToken[member-device]',
@@ -159,7 +167,8 @@ describe('RoomTimerNotificationsService', () => {
     rooms.find
       .mockReset()
       .mockReturnValueOnce({ limit: () => ({ lean: async () => [firstRoom, secondRoom] }) })
-      .mockReturnValueOnce({ sort: () => ({ limit: () => ({ lean: async () => [] }) }) });
+      .mockReturnValueOnce({ sort: () => ({ limit: () => ({ lean: async () => [] }) }) })
+      .mockReturnValue({ limit: () => ({ lean: async () => [] }) });
     rooms.findOne
       .mockReset()
       .mockReturnValueOnce(query(firstRoom))
@@ -198,11 +207,11 @@ describe('RoomTimerNotificationsService', () => {
     );
   });
 
-  it('개별 ticket 실패는 해당 전환에서만 기록하고 성공 기기에 재전송하지 않는다', async () => {
-    push.send.mockResolvedValueOnce({
+  it('개별 ticket 실패만 수신자별 재시도 큐에 넣고 성공 기기는 재전송하지 않는다', async () => {
+    push.send.mockImplementationOnce(async (messages: { to: string }[]) => ({
       invalidTokens: ['ExponentPushToken[host-device]'],
-      failedTickets: [{ token: 'ExpoPushToken[member-device]', error: 'MessageRateExceeded' }],
-    });
+      failedTickets: [{ message: messages[1], error: 'MessageRateExceeded' }],
+    }));
     const service = new RoomTimerNotificationsService(
       rooms as never,
       devices as never,
@@ -218,10 +227,161 @@ describe('RoomTimerNotificationsService', () => {
     expect(rooms.updateOne).toHaveBeenCalledWith(
       expect.objectContaining({
         _id: roomId,
+        timerRevision: 3,
+        'timerPendingNotification.transitionAt': nextAt,
+      }),
+      {
+        $push: {
+          timerNotificationRetries: expect.objectContaining({
+            eventId: `${roomId}:${nextAt.toISOString()}`,
+            timerRevision: 3,
+            recipients: [{ userId: String(memberId), token: 'ExpoPushToken[member-device]' }],
+            attempts: 0,
+            nextAttemptAt: expect.any(Date),
+          }),
+        },
+      },
+    );
+    expect(rooms.updateOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _id: roomId,
         'timerPendingNotification.transitionAt': nextAt,
       }),
       { $set: { timerPendingNotification: null, timerPendingLeaseUntil: null } },
     );
+  });
+
+  it('재시도 때 현재 joined 상태와 토큰 소유자를 재검증하고 실패 수신자만 보낸다', async () => {
+    const eventId = `${roomId}:${nextAt.toISOString()}`;
+    const retry = {
+      eventId,
+      transitionAt: nextAt,
+      phase: 'break',
+      title: '아침 집중방 타이머',
+      body: '집중 시간이 끝났어요. 잠시 쉬어 가세요.',
+      timerRevision: 3,
+      recipients: [{ userId: String(memberId), token: 'ExpoPushToken[member-device]' }],
+      attempts: 1,
+      nextAttemptAt: new Date(0),
+    };
+    const retryRoom = {
+      ...dueRoom,
+      timerPendingNotification: null,
+      timerNotificationRetries: [retry],
+    };
+    rooms.find
+      .mockReset()
+      .mockReturnValueOnce({ limit: () => ({ lean: async () => [] }) })
+      .mockReturnValueOnce({ sort: () => ({ limit: () => ({ lean: async () => [] }) }) })
+      .mockReturnValueOnce({ limit: () => ({ lean: async () => [retryRoom] }) });
+    rooms.findOne.mockReset().mockReturnValue(query(retryRoom));
+    rooms.updateOne.mockReset().mockResolvedValue({ matchedCount: 1 });
+    push.send.mockResolvedValueOnce({ invalidTokens: [], failedTickets: [] });
+    const service = new RoomTimerNotificationsService(
+      rooms as never,
+      devices as never,
+      push as never,
+    );
+
+    await service.runOnce(new Date());
+
+    expect(devices.find).toHaveBeenCalledWith(
+      {
+        userId: { $in: [hostId, memberId] },
+        pushToken: { $in: ['ExpoPushToken[member-device]'] },
+      },
+      { userId: 1, pushToken: 1 },
+    );
+    expect(push.send).toHaveBeenCalledTimes(1);
+    expect(push.send).toHaveBeenCalledWith([
+      expect.objectContaining({ to: 'ExpoPushToken[member-device]' }),
+    ]);
+    expect(rooms.updateOne).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        _id: roomId,
+        timerNotificationRetryLeaseUntil: expect.any(Date),
+      }),
+      {
+        $set: {
+          timerNotificationRetries: [],
+          timerNotificationRetryLeaseUntil: null,
+        },
+      },
+    );
+  });
+
+  it('지속되는 재시도 오류가 있어도 다음 타이머 단계는 보내고 실패 토큰만 다시 예약한다', async () => {
+    const retry = {
+      eventId: `${roomId}:old-transition`,
+      transitionAt: new Date(startedAt.getTime() - 60_000),
+      phase: 'break',
+      title: '아침 집중방 타이머',
+      body: '집중 시간이 끝났어요. 잠시 쉬어 가세요.',
+      timerRevision: 3,
+      recipients: [{ userId: String(memberId), token: 'ExpoPushToken[member-device]' }],
+      attempts: 1,
+      nextAttemptAt: new Date(0),
+    };
+    const pendingRoom = {
+      ...dueRoom,
+      timerPendingNotification: {
+        transitionAt: nextAt,
+        phase: 'break',
+        title: '아침 집중방 타이머',
+        body: '집중 시간이 끝났어요. 잠시 쉬어 가세요.',
+      },
+    };
+    const retryRoom = {
+      ...dueRoom,
+      timerPendingNotification: null,
+      timerNotificationRetries: [retry],
+    };
+    rooms.find
+      .mockReset()
+      .mockReturnValueOnce({ limit: () => ({ lean: async () => [] }) })
+      .mockReturnValueOnce({ sort: () => ({ limit: () => ({ lean: async () => [dueRoom] }) }) })
+      .mockReturnValueOnce({ limit: () => ({ lean: async () => [retryRoom] }) });
+    rooms.findOne
+      .mockReset()
+      .mockReturnValueOnce(query(pendingRoom))
+      .mockReturnValueOnce(query(retryRoom));
+    rooms.updateOne.mockReset().mockResolvedValue({ matchedCount: 1 });
+    push.send
+      .mockImplementationOnce(async () => ({ invalidTokens: [], failedTickets: [] }))
+      .mockImplementationOnce(async (messages: { to: string }[]) => ({
+        invalidTokens: [],
+        failedTickets: [{ message: messages[0], error: 'MessageRateExceeded' }],
+      }));
+    const service = new RoomTimerNotificationsService(
+      rooms as never,
+      devices as never,
+      push as never,
+    );
+
+    await service.runOnce(now);
+
+    expect(push.send).toHaveBeenCalledTimes(2);
+    expect(push.send.mock.calls[0]![0]).toHaveLength(2);
+    expect(push.send.mock.calls[1]![0]).toEqual([
+      expect.objectContaining({ to: 'ExpoPushToken[member-device]' }),
+    ]);
+    expect(rooms.updateOne).toHaveBeenCalledWith(
+      expect.objectContaining({ _id: roomId, timerNextNotificationAt: nextAt }),
+      expect.objectContaining({
+        $set: expect.objectContaining({
+          timerNextNotificationAt: new Date(startedAt.getTime() + 30 * 60_000),
+        }),
+      }),
+    );
+    const retryUpdate = rooms.updateOne.mock.calls.at(-1)![1];
+    expect(retryUpdate.$set.timerNotificationRetries).toEqual([
+      expect.objectContaining({
+        eventId: retry.eventId,
+        attempts: 2,
+        recipients: [{ userId: String(memberId), token: 'ExpoPushToken[member-device]' }],
+        nextAttemptAt: expect.any(Date),
+      }),
+    ]);
   });
 
   it('마지막 교시가 끝나면 다음 날 첫 교시를 다음 알림 시각으로 저장한다', async () => {
@@ -248,7 +408,8 @@ describe('RoomTimerNotificationsService', () => {
       .mockReturnValueOnce({ limit: () => ({ lean: async () => [] }) })
       .mockReturnValueOnce({
         sort: () => ({ limit: () => ({ lean: async () => [lastPeriodRoom] }) }),
-      });
+      })
+      .mockReturnValue({ limit: () => ({ lean: async () => [] }) });
     rooms.findOne.mockReturnValue(
       query({
         ...lastPeriodRoom,
