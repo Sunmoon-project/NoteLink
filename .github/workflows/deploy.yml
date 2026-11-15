@@ -2,7 +2,7 @@
 # develop · main으로 가는 PR에서는 배포 묶음 만들기 · 확인까지만 돌리고 Azure에는 올리지 않습니다.
 # 다른 브랜치에서 직접 실행하면 배포 작업을 건너뜁니다(검토 전 코드가 올라가지 않게).
 #   - API 서버(apps/api)  → notelink-api-dev (Node 24)
-#   - AI 서버(apps/ai)    → notelink-ai-dev  (Python 3.13)
+#   - AI 서버(apps/ai)    → notelink-ai-dev  (Python 3.13, 시작 명령 `bash startup.sh` · Always On 켬)
 # Azure 로그인은 비밀값 없이 OIDC로 합니다. 저장소 Variables에 AZURE_CLIENT_ID · AZURE_TENANT_ID ·
 # AZURE_SUBSCRIPTION_ID가 모두 있어야 하고, 하나라도 없으면 배포를 건너뜁니다.
 # 환경 변수(앱 설정)와 비밀값은 여기서 다루지 않습니다. App Service 앱 설정 · Key Vault에 둡니다.
@@ -140,10 +140,12 @@ jobs:
       - name: 배포 묶음 만들기
         # 패키지는 App Service가 배포 때 설치합니다(SCM_DO_BUILD_DURING_DEPLOYMENT=true).
         # 간접 의존성까지 고정한 lock 파일을 requirements.txt 자리에 넣습니다.
+        # startup.sh는 웹 서버와 작업 처리기를 함께 띄웁니다(App Service 시작 명령: bash startup.sh).
         run: |
           mkdir deploy
           cp -r apps/ai/app deploy/app
           cp apps/ai/requirements.lock deploy/requirements.txt
+          cp scripts/ai-startup.sh deploy/startup.sh
           cd deploy && zip -qr ../ai.zip .
       - uses: actions/setup-python@v7
         with:
@@ -159,6 +161,8 @@ jobs:
         # 함수 안에서 처음 쓸 때 불러오는 패키지는 위 import로 열리지 않아 따로 불러옵니다: 노트 용어
         # 분석(app/services/note/terms.py _kiwi)의 kiwipiepy(네이티브 모듈, Codex 리뷰 #390).
         # 그런 import를 더하면 여기에도 적습니다.
+        # 끝으로 묶음의 startup.sh를 App Service처럼 가상환경 python으로 실행합니다. DB 주소를 비워 두면
+        # 작업 처리기가 그 이유를 말하고 끝나고, 스크립트가 웹 서버도 멈춰 실패 코드로 끝나야 합니다.
         run: |
           mkdir /tmp/ai-bundle
           unzip -q ai.zip -d /tmp/ai-bundle
@@ -166,6 +170,14 @@ jobs:
           /tmp/ai-venv/bin/pip install --quiet -r /tmp/ai-bundle/requirements.txt
           cd /tmp/ai-bundle
           /tmp/ai-venv/bin/python -c "import uvicorn, app.main, app.worker.__main__, kiwipiepy"
+          code=0
+          out=$(cd / && PATH="/tmp/ai-venv/bin:$PATH" MONGODB_URI= timeout 120 bash /tmp/ai-bundle/startup.sh 2>&1) || code=$?
+          echo "$out"
+          echo "startup.sh 종료 코드: $code"
+          [ "$code" -ne 0 ]
+          [ "$code" -ne 124 ] # 시간 초과(멈추지 않음)
+          grep -q "MONGODB_URI가 비어 있습니다" <<< "$out"
+          grep -q "작업 처리기가 끝났습니다" <<< "$out"
       - uses: azure/login@v3
         if: github.event_name != 'pull_request'
         with:
