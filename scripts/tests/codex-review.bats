@@ -346,7 +346,7 @@ usage_state() {
 @test "pause_review: PR 댓글 없이 실행 화면에 경고 · 요약을 남기고, 멈춘 PR을 적은 뒤 성공으로 끝낸다" {
   PR=12; HEAD_SHA=abc123; USAGE_REASON=low; USAGE_LEFT=8; USAGE_RETRY=1761904800  # 10/31 19:00 서울
   gh() { echo "gh $*" >> "$TMP/gh.calls"; }
-  GITHUB_STEP_SUMMARY="$TMP/summary.md" CODEX_PAUSED_FILE="$TMP/paused.txt" run pause_review
+  GITHUB_RUN_ATTEMPT=1 GITHUB_STEP_SUMMARY="$TMP/summary.md" CODEX_PAUSED_FILE="$TMP/paused.txt" run pause_review
   [ "$status" -eq 0 ]
   [[ "$output" == "::warning title=Codex 리뷰 멈춤::⏸️ PR #12: Codex 남은 사용량이 10% 이하(8% 남음) — 리뷰를 멈췄습니다. 10/31 19:00(서울) 사용량이 초기화되면 이 실행을 자동으로 다시 돌립니다." ]]
   [[ "$(cat "$TMP/summary.md")" == "### ⏸️ Codex 리뷰 멈춤"*"10/31 19:00(서울)"* ]]

@@ -17,6 +17,7 @@ import { Report, ReportSchema } from '../social/schemas/report.schema.js';
 import { ReportsController } from '../social/reports.controller.js';
 import { ReportsService } from '../social/reports.service.js';
 import { UploadsModule } from '../upload/uploads.module.js';
+import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schema.js';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { UploadsModule } from '../upload/uploads.module.js';
       { name: Message.name, schema: MessageSchema },
       { name: StudyRoom.name, schema: StudyRoomSchema },
       { name: Report.name, schema: ReportSchema },
+      { name: Friendship.name, schema: FriendshipSchema },
     ]),
   ],
   controllers: [StudyRoomsController, StudyChatController, ReportsController],

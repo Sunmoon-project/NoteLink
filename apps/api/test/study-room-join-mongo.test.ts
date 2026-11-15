@@ -30,7 +30,7 @@ describe.skipIf(!local)('로컬 MongoDB 동시 참여', () => {
       members: [],
     });
     const users = { findOne: () => ({ lean: async () => ({ _id: ids[0] }) }) };
-    service = new StudyRoomsService(model, users as never, {} as never);
+    service = new StudyRoomsService(model, users as never, {} as never, {} as never);
     vi.spyOn(service, 'getRoom').mockResolvedValue({} as never);
   });
   afterAll(async () => {

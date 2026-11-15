@@ -5,20 +5,28 @@ import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { Category, CategorySchema } from '../src/modules/content/schemas/category.schema.js';
 import { StudyRoom, StudyRoomSchema } from '../src/modules/studyroom/schemas/study-room.schema.js';
 import { StudyRoomsService } from '../src/modules/studyroom/study-rooms.service.js';
+import { Friendship, FriendshipSchema } from '../src/modules/social/schemas/friendship.schema.js';
 
 const uri = process.env.STUDYROOM_TEST_MONGO_URI;
 const local = uri && /^mongodb:\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1)(?::\d+)?\//.test(uri);
+if (process.env.REQUIRE_STUDYROOM_MONGO_TESTS === 'true' && !local) {
+  throw new Error('REQUIRE_STUDYROOM_MONGO_TESTS=true requires a local STUDYROOM_TEST_MONGO_URI.');
+}
 
 describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서비스', () => {
   const suffix = randomBytes(8).toString('hex');
-  const names = ['rooms', 'users', 'categories'].map((name) => `test_study_${name}_${suffix}`);
+  const names = ['rooms', 'users', 'categories', 'friendships'].map(
+    (name) => `test_study_${name}_${suffix}`,
+  );
   const host = new Types.ObjectId();
   const other = new Types.ObjectId();
+  const friend = new Types.ObjectId();
   const category = new Types.ObjectId();
   let connection: mongoose.Connection;
   let rooms: mongoose.Model<StudyRoom>;
   let users: mongoose.Model<User>;
   let categories: mongoose.Model<Category>;
+  let friendships: mongoose.Model<Friendship>;
   let service: StudyRoomsService;
 
   beforeAll(async () => {
@@ -28,14 +36,21 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
     rooms = connection.model(StudyRoom.name, StudyRoomSchema, names[0]);
     users = connection.model(User.name, UserSchema, names[1]);
     categories = connection.model(Category.name, CategorySchema, names[2]);
+    friendships = connection.model(Friendship.name, FriendshipSchema, names[3]);
     await rooms.init();
-    service = new StudyRoomsService(rooms, users, categories);
+    service = new StudyRoomsService(rooms, users, categories, friendships);
   });
   beforeEach(async () => {
-    await Promise.all([rooms.deleteMany({}), users.deleteMany({}), categories.deleteMany({})]);
+    await Promise.all([
+      rooms.deleteMany({}),
+      users.deleteMany({}),
+      categories.deleteMany({}),
+      friendships.deleteMany({}),
+    ]);
     await users.collection.insertMany([
       { _id: host, nickname: '방장', deletedAt: null },
       { _id: other, nickname: '참여자', deletedAt: null },
+      { _id: friend, nickname: '친구', deletedAt: null },
     ]);
     await categories.collection.insertOne({
       _id: category,
@@ -43,6 +58,64 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
       isActive: true,
       deletedAt: null,
     });
+  });
+
+  it('참여 중인 사용자가 실제 친구를 초대하고 중복 요청은 같은 초대 상태로 유지한다', async () => {
+    const created = await service.create(String(host), {
+      title: '친구 초대',
+      categoryName: '수학',
+      isPublic: true,
+    });
+    const userA = host.toHexString() < friend.toHexString() ? host : friend;
+    const userB = userA === host ? friend : host;
+    await friendships.create({ userA, userB, requesterId: host, status: 'accepted' });
+
+    const first = await service.invite(String(host), created._id, [String(friend)]);
+    const duplicate = await service.invite(String(host), created._id, [String(friend)]);
+    expect(first.invitations).toEqual(duplicate.invitations);
+    expect(first.invitations[0]?.invitationId).toBeTruthy();
+    await rooms.updateOne(
+      { _id: created._id, 'members.userId': friend },
+      { $unset: { 'members.$.invitationId': 1 } },
+    );
+    const legacyPending = await service.invite(String(host), created._id, [String(friend)]);
+    expect(legacyPending.invitations[0]?.invitationId).toBeTruthy();
+    expect(legacyPending.invitations[0]?.invitationId).not.toBe(first.invitations[0]?.invitationId);
+
+    const stored = await rooms.findById(created._id).lean().orFail();
+    expect(stored.members.filter((member) => member.userId.equals(friend))).toHaveLength(1);
+    expect(stored.members.find((member) => member.userId.equals(friend))).toMatchObject({
+      role: 'member',
+      status: 'invited',
+    });
+    expect(stored.memberCount).toBe(1);
+  });
+  it('자진 퇴장한 사용자의 기록을 재사용해 실제 MongoDB에서 다시 초대한다', async () => {
+    const created = await service.create(String(host), {
+      title: '재초대 테스트',
+      categoryName: '수학',
+      isPublic: true,
+    });
+    const userA = host.toHexString() < friend.toHexString() ? host : friend;
+    const userB = userA === host ? friend : host;
+    await friendships.create({ userA, userB, requesterId: host, status: 'accepted' });
+
+    const first = await service.invite(String(host), created._id, [String(friend)]);
+    await service.joinRoom(String(friend), created.inviteCode);
+    await service.leaveRoom(String(friend), created._id);
+    const reinvitation = await service.invite(String(host), created._id, [String(friend)]);
+
+    const stored = await rooms.findById(created._id).lean().orFail();
+    expect(stored.members.filter((member) => member.userId.equals(friend))).toHaveLength(1);
+    expect(stored.members.find((member) => member.userId.equals(friend))).toMatchObject({
+      role: 'member',
+      status: 'invited',
+      leaveReason: null,
+      leftAt: null,
+    });
+    expect(reinvitation.invitations[0]?.invitationId).toBeTruthy();
+    expect(reinvitation.invitations[0]?.invitationId).not.toBe(first.invitations[0]?.invitationId);
+    expect(stored.memberCount).toBe(1);
   });
   afterAll(async () => {
     if (!connection) return;
