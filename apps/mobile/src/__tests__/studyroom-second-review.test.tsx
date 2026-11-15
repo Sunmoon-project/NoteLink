@@ -16,6 +16,8 @@ const mockApi = {
 const mockUpload = jest.fn();
 const mockPicker = jest.fn();
 const mockHandlers = new Map<string, (payload: unknown) => void>();
+const mockSocketEmit = jest.fn();
+let mockConnectionListener: ((connected: boolean) => void) | null = null;
 let mockNow = Date.parse('2026-11-01T09:00:00.000Z');
 jest.mock('../lib/api', () => ({
   get api() {
@@ -41,10 +43,17 @@ jest.mock('../lib/livekit', () => ({
 }));
 jest.mock('../lib/socket', () => ({
   socket: {
-    emit: jest.fn(),
+    emit: (...args: unknown[]) => mockSocketEmit(...args),
     on: (event: string, handler: (payload: unknown) => void) => {
       mockHandlers.set(event, handler);
       return () => mockHandlers.delete(event);
+    },
+    onConnection: (handler: (connected: boolean) => void) => {
+      mockConnectionListener = handler;
+      handler(true);
+      return () => {
+        if (mockConnectionListener === handler) mockConnectionListener = null;
+      };
     },
   },
 }));
@@ -89,6 +98,12 @@ function client() {
 beforeEach(() => {
   jest.clearAllMocks();
   mockHandlers.clear();
+  mockConnectionListener = null;
+  mockSocketEmit.mockImplementation(
+    (event: string, _payload: unknown, ack?: (result: unknown) => void) => {
+      if (event === 'room:join') ack?.({ ok: true, missed: [] });
+    },
+  );
   mockNow = Date.parse('2026-11-01T09:00:00.000Z');
   mockApi.rooms.get.mockResolvedValue(room);
   mockApi.rooms.chatRoomId.mockResolvedValue('chat-1');
@@ -159,6 +174,30 @@ it('서버 교시제 타이머는 집중이 아닌 교시 단계와 서버 남�
     }),
   );
   expect(screen.getByText('교시 02:00')).toBeTruthy();
+});
+
+it('소켓 재접속 때 방 조회로 현재 서버 타이머 상태를 다시 동기화한다', async () => {
+  const qc = client();
+  await renderScreen(<RoomScreen />, qc);
+  await screen.findByText(room.title);
+  const callsBeforeReconnect = mockApi.rooms.get.mock.calls.length;
+  mockApi.rooms.get.mockResolvedValue({
+    ...room,
+    timerState: {
+      phase: 'break',
+      endsAt: new Date(mockNow + 60_000).toISOString(),
+    },
+  });
+
+  await act(async () => {
+    mockConnectionListener?.(false);
+    mockConnectionListener?.(true);
+  });
+
+  await waitFor(() =>
+    expect(mockApi.rooms.get.mock.calls.length).toBeGreaterThan(callsBeforeReconnect),
+  );
+  expect(await screen.findByText('휴식 01:00')).toBeTruthy();
 });
 
 it('저장 API가 없는 방별 알림은 가짜 토글 대신 준비 중으로 표시한다', async () => {

@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   ConflictException,
   NotFoundException,
@@ -7,6 +8,7 @@ import {
 import { Types } from 'mongoose';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { StudyRoomsService } from '../src/modules/studyroom/study-rooms.service.js';
+import { SetRoomTimerDto } from '../src/modules/studyroom/dto/set-room-timer.dto.js';
 
 const userId = new Types.ObjectId();
 const roomId = new Types.ObjectId();
@@ -222,6 +224,77 @@ describe('스터디룸 코드 참여', () => {
     await expect(service.joinRoom('invalid', 'ABC123')).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
+  });
+});
+
+describe('스터디룸 타이머 규칙', () => {
+  const timerInput = (overrides: Partial<SetRoomTimerDto> = {}) =>
+    Object.assign(new SetRoomTimerDto(), {
+      enabled: true,
+      type: 'pomodoro',
+      focusMin: 50,
+      breakMin: 10,
+      repeat: 4,
+      periods: [],
+      ...overrides,
+    });
+
+  it('방장 규칙을 저장하고 새 공통 시작 시각과 방 상태를 반환한다', async () => {
+    rooms.findOne.mockReturnValue(query({ _id: roomId, hostId: userId }));
+    rooms.findOneAndUpdate.mockReturnValue(query({ _id: roomId }));
+
+    await expect(
+      service.setTimerRule(String(userId), String(roomId), timerInput()),
+    ).resolves.toEqual({
+      _id: String(roomId),
+    });
+
+    expect(rooms.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ _id: roomId, hostId: userId, closedAt: null }),
+      {
+        $set: expect.objectContaining({
+          timerRule: timerInput(),
+          timerStartedAt: expect.any(Date),
+          timerNextNotificationAt: expect.any(Date),
+          timerPendingNotification: null,
+          timerPendingLeaseUntil: null,
+        }),
+        $inc: { timerRevision: 1 },
+      },
+      { new: true, runValidators: true },
+    );
+  });
+
+  it('방장이 아니면 타이머 규칙을 변경하지 못한다', async () => {
+    rooms.findOne.mockReturnValue(query({ _id: roomId, hostId: new Types.ObjectId() }));
+    await expect(
+      service.setTimerRule(String(userId), String(roomId), timerInput()),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(rooms.findOneAndUpdate).not.toHaveBeenCalled();
+  });
+
+  it('교시 시간이 겹치면 저장하지 않는다', async () => {
+    rooms.findOne.mockReturnValue(query({ _id: roomId, hostId: userId }));
+    const input = timerInput({
+      type: 'period',
+      periods: [
+        { start: '09:00', end: '10:00', label: '1교시' },
+        { start: '09:50', end: '10:30', label: '2교시' },
+      ],
+    });
+    await expect(
+      service.setTimerRule(String(userId), String(roomId), input),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(rooms.findOneAndUpdate).not.toHaveBeenCalled();
+  });
+
+  it('타이머를 끄면 공통 시작 시각을 비운다', async () => {
+    rooms.findOne.mockReturnValue(query({ _id: roomId, hostId: userId }));
+    rooms.findOneAndUpdate.mockReturnValue(query({ _id: roomId }));
+    await service.setTimerRule(String(userId), String(roomId), timerInput({ enabled: false }));
+    expect(rooms.findOneAndUpdate.mock.calls[0]![1]).toMatchObject({
+      $set: { timerStartedAt: null },
+    });
   });
 });
 
