@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import mongoose, { Types } from 'mongoose';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ChatRoom, ChatRoomSchema } from '../src/modules/social/schemas/chat-room.schema.js';
 import { Message, MessageSchema } from '../src/modules/social/schemas/message.schema.js';
 import { StudyRoom, StudyRoomSchema } from '../src/modules/studyroom/schemas/study-room.schema.js';
@@ -8,6 +8,9 @@ import { StudyChatService } from '../src/modules/studyroom/study-chat.service.js
 
 const uri = process.env.STUDYROOM_TEST_MONGO_URI;
 const local = uri && /^mongodb:\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1)(?::\d+)?\//.test(uri);
+if (process.env.REQUIRE_STUDYROOM_MONGO_TESTS === 'true' && !local) {
+  throw new Error('REQUIRE_STUDYROOM_MONGO_TESTS=true requires a local STUDYROOM_TEST_MONGO_URI.');
+}
 describe.skipIf(!local)('실제 MongoDB 채팅방 생성', () => {
   const suffix = randomBytes(8).toString('hex');
   const roomsName = `test_chat_rooms_${suffix}`;
@@ -41,7 +44,7 @@ describe.skipIf(!local)('실제 MongoDB 채팅방 생성', () => {
       findById: () => ({ lean: async () => ({ nickname: '참여자' }) }),
       find: () => ({ lean: async () => [{ _id: userId, nickname: '참여자' }] }),
     };
-    service = new StudyChatService(rooms, chats, messages, users as never);
+    service = new StudyChatService(rooms, chats, messages, users as never, {} as never);
   });
   afterAll(async () => {
     if (connection) {
@@ -101,6 +104,49 @@ describe.skipIf(!local)('실제 MongoDB 채팅방 생성', () => {
     await expect(
       service.history(String(chat._id), String(userId), 'invalid'),
     ).rejects.toMatchObject({ status: 400 });
+  });
+  it('오래된 초대 카드가 최근 50개 밖에 있어도 재초대 카드는 최신 기록에 나타난다', async () => {
+    const chat = await service.getChat(String(roomId), String(userId));
+    vi.spyOn(service, 'getDirectChat').mockResolvedValue(chat as never);
+    const recipientId = String(new Types.ObjectId());
+
+    const original = await service.sendRoomInvite(
+      String(userId),
+      recipientId,
+      { _id: String(roomId), title: '테스트', inviteCode: 'TEST77' },
+      'attempt-original',
+    );
+    for (let i = 0; i < 50; i++) {
+      await messages.create({
+        chatRoomId: chat._id,
+        senderId: userId,
+        type: 'text',
+        text: `later ${i}`,
+        clientId: `later-${i}`,
+      });
+    }
+    const beforeReinvite = await service.history(String(chat._id), String(userId));
+    expect(beforeReinvite.some((message) => message._id === original._id)).toBe(false);
+
+    const retry = await service.sendRoomInvite(
+      String(userId),
+      recipientId,
+      { _id: String(roomId), title: '테스트', inviteCode: 'TEST77' },
+      'attempt-retry',
+    );
+    const repeated = await service.sendRoomInvite(
+      String(userId),
+      recipientId,
+      { _id: String(roomId), title: '테스트', inviteCode: 'TEST77' },
+      'attempt-retry',
+    );
+    const latest = await service.history(String(chat._id), String(userId));
+    expect(retry._id).toBe(repeated._id);
+    expect(latest[latest.length - 1]).toMatchObject({
+      type: 'study_room_invite',
+      clientId: 'room_invite_attempt-retry',
+    });
+    expect(await messages.countDocuments({ chatRoomId: chat._id, type: 'study_room_invite' })).toBe(2);
   });
   it('탈퇴·강퇴한 멤버와 종료된 방은 조회할 수 없다', async () => {
     for (const status of ['left', 'kicked']) {

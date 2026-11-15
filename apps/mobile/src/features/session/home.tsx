@@ -32,6 +32,7 @@ import { C, ICON, MOTION, SHADOW } from '@/theme';
 import { AddItemSheet, WeekGoalSheet } from './sheets';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { NetBanner } from '@/components/NetBanner';
+import { weeklyProgress } from './weekly-progress';
 
 // p.46~49 홈 · 공부 측정
 
@@ -60,7 +61,7 @@ export function HomeScreen() {
   const monday = midnight - ((weekday + 6) % 7) * 86400000;
   const dayLive = s.itemId ? s.elapsedSince(midnight, now) : 0;
   const live = (id: string, base: number) => base + (id === s.itemId ? dayLive : 0);
-  const todaySec = items.reduce((a, i) => a + i.accumulatedSec, 0) + dayLive;
+  const todaySec = (today.data?.totalSec ?? 0) + dayLive;
   // 큰 타이머는 지금 공부하는 항목의 시간만 보여 준다 (다른 항목 시간이 이어 붙지 않게)
   const activeSec = s.itemId
     ? live(s.itemId, items.find((i) => i._id === s.itemId)?.accumulatedSec ?? 0)
@@ -69,7 +70,8 @@ export function HomeScreen() {
   // 목표를 읽지 못했으면 임의의 목표로 계산하지 않는다
   const goalMin = goal.data?.targetMin;
   // 주간 기록을 못 읽었으면 0시간이나 0%로 표시하지 않는다
-  const pct = goalMin && weekly.data ? Math.round((weekSec / 60 / goalMin) * 100) : null;
+  const progress = weekly.data ? weeklyProgress(weekSec, goalMin) : null;
+  const pct = progress ? Math.round(progress.percent) : null;
   const weekLabel = weekly.data
     ? `이번주 ${hm(weekSec)}${goalMin ? ` / 목표 ${goalMin / 60}시간 (${pct}%)` : ''} ›`
     : '주간 목표 설정 ›';

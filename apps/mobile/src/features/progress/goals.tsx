@@ -271,7 +271,7 @@ export function RepeatGoalScreen() {
           <View className="mt-3 rounded-xl bg-sun/15 px-3 py-2.5">
             <View className="flex-row items-center gap-1.5">
               <Flame size={ICON.xs} color={C.brand} />
-              <Text className="text-footnote text-ink">연속 {g.streak}일 달성 중</Text>
+              <Text className="text-footnote text-ink">연속 {g.streak}주 달성 중</Text>
             </View>
           </View>
         )}

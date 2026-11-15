@@ -1,5 +1,5 @@
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FlatList, Pressable, View } from 'react-native';
 import { Text, TextInput } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -32,6 +32,16 @@ import { C, ICON, MOTION } from '@/theme';
 import { StatusText } from './drawer';
 
 // p.53~55 친구 추가 · 요청 · 채팅 · 삭제
+
+const DIRECT_MESSAGE_PAGE_SIZE = 50;
+
+type DirectHistory = { messages: Message[]; hasMore: boolean; nextBefore?: string };
+
+function mergeMessages(...groups: Message[][]): Message[] {
+  return [...new Map(groups.flat().map((message) => [message._id, message])).values()].sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a._id.localeCompare(b._id),
+  );
+}
 
 export function FriendAddScreen() {
   const [q, setQ] = useState('');
@@ -207,13 +217,25 @@ export function ChatScreen() {
   } = useLocalSearchParams<{ id: string; name?: string; status?: User['status'] }>();
   const qc = useQueryClient();
   const room = useQuery({ queryKey: ['dm', id], queryFn: () => api.social.openDirect(id) });
+  const pageRequestGeneration = useRef(0);
   const history = useQuery({
     queryKey: ['messages', room.data?._id],
-    queryFn: async () => {
+    queryFn: async (): Promise<DirectHistory> => {
+      const requestGeneration = pageRequestGeneration.current;
       const roomId = room.data!._id;
       const fetched = await api.social.messages(roomId);
-      const cached = qc.getQueryData<Message[]>(['messages', roomId]) ?? [];
-      return [...new Map([...fetched, ...cached].map((m) => [m._id, m])).values()];
+      const cached = qc.getQueryData<DirectHistory>(['messages', roomId]);
+      const reconnectedDuringRequest = requestGeneration !== pageRequestGeneration.current;
+      return {
+        messages: mergeMessages(fetched, cached?.messages ?? []),
+        hasMore: reconnectedDuringRequest
+          ? (cached?.hasMore ?? fetched.length === DIRECT_MESSAGE_PAGE_SIZE)
+          : fetched.length === DIRECT_MESSAGE_PAGE_SIZE || cached?.hasMore === true,
+        nextBefore:
+          reconnectedDuringRequest || fetched.length !== DIRECT_MESSAGE_PAGE_SIZE
+            ? cached?.nextBefore
+            : fetched[0]?._id,
+      };
     },
     enabled: !!room.data,
     refetchOnMount: 'always',
@@ -221,16 +243,110 @@ export function ChatScreen() {
   const [v, setV] = useState('');
   const [menu, setMenu] = useState(false);
   const [del, setDel] = useState(false);
+  const [olderLoading, setOlderLoading] = useState(false);
+  const [olderError, setOlderError] = useState(false);
   const list = useRef<FlatList<Message>>(null);
+  const olderLoadingRef = useRef(false);
+  const contentHeight = useRef(0);
+  const scrollOffset = useRef(0);
+  const viewportHeight = useRef(0);
+  const restoreScroll = useRef<{ offset: number; contentHeight: number } | null>(null);
+  const didInitialScroll = useRef(false);
+  const nearBottom = useRef(true);
   const receiveMessage = (m: Message) => {
     if (m.chatRoomId !== room.data?._id) return;
-    qc.setQueryData<Message[]>(['messages', m.chatRoomId], (previous = []) =>
-      previous.some((x) => x._id === m._id) ? previous : [...previous, m],
-    );
+    qc.setQueryData<DirectHistory>(['messages', m.chatRoomId], (previous) => ({
+      messages: mergeMessages(previous?.messages ?? [], [m]),
+      hasMore: previous?.hasMore ?? false,
+      nextBefore: previous?.nextBefore,
+    }));
   };
   useSocket('chat:message', (m) => m.chatRoomId === room.data?._id && receiveMessage(m), [
     room.data?._id,
   ]);
+
+  useEffect(() => {
+    const chatRoomId = room.data?._id;
+    if (!chatRoomId) return;
+    const join = (connected: boolean) => {
+      if (!connected) return;
+      socket.emit('chat:join', { chatRoomId }, (result) => {
+        if (!result.ok || !result.missed) return;
+        // 재접속 이전에 시작한 페이지 요청은 더 이상 최신 커서를 결정할 수 없다.
+        pageRequestGeneration.current++;
+        olderLoadingRef.current = false;
+        setOlderLoading(false);
+        setOlderError(false);
+        qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
+          messages: mergeMessages(previous?.messages ?? [], result.missed!),
+          hasMore:
+            result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE || previous?.hasMore === true,
+          nextBefore:
+            result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE
+              ? result.missed![0]?._id
+              : previous?.nextBefore,
+        }));
+      });
+    };
+    const unsubscribe = socket.onConnection?.(join);
+    if (!socket.onConnection) join(true);
+    return () => {
+      unsubscribe?.();
+      pageRequestGeneration.current++;
+      socket.emit('chat:leave', { chatRoomId });
+    };
+  }, [room.data?._id, qc]);
+
+  const loadOlderMessages = async (manualRetry = false) => {
+    const chatRoomId = room.data?._id;
+    if (!chatRoomId) return;
+    const current = qc.getQueryData<DirectHistory>(['messages', chatRoomId]) ?? history.data;
+    const nextBefore = current?.nextBefore;
+    if (
+      !current?.hasMore ||
+      !nextBefore ||
+      olderLoadingRef.current ||
+      (olderError && !manualRetry)
+    )
+      return;
+
+    const requestGeneration = pageRequestGeneration.current;
+    olderLoadingRef.current = true;
+    setOlderLoading(true);
+    setOlderError(false);
+    try {
+      const older = await api.social.messages(chatRoomId, nextBefore);
+      if (requestGeneration !== pageRequestGeneration.current) return;
+      restoreScroll.current = { offset: scrollOffset.current, contentHeight: contentHeight.current };
+      qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
+        messages: mergeMessages(older, previous?.messages ?? []),
+        hasMore: older.length === DIRECT_MESSAGE_PAGE_SIZE,
+        nextBefore: older.length === DIRECT_MESSAGE_PAGE_SIZE ? older[0]?._id : undefined,
+      }));
+    } catch {
+      if (requestGeneration === pageRequestGeneration.current) setOlderError(true);
+    } finally {
+      if (requestGeneration === pageRequestGeneration.current) {
+        olderLoadingRef.current = false;
+        setOlderLoading(false);
+      }
+    }
+  };
+
+  const handleContentSizeChange = (_width: number, height: number) => {
+    const anchor = restoreScroll.current;
+    if (anchor) {
+      const addedHeight = Math.max(0, height - anchor.contentHeight);
+      list.current?.scrollToOffset({ offset: anchor.offset + addedHeight, animated: false });
+      restoreScroll.current = null;
+    } else if (!didInitialScroll.current && history.isSuccess) {
+      didInitialScroll.current = true;
+      list.current?.scrollToEnd({ animated: false });
+    } else if (nearBottom.current) {
+      list.current?.scrollToEnd({ animated: true });
+    }
+    contentHeight.current = height;
+  };
 
   const send = () => {
     if (!v.trim() || !room.data) return;
@@ -256,6 +372,15 @@ export function ChatScreen() {
       toast(`${name}님을 친구에서 삭제했어요`);
     },
     onError: () => toast('친구 삭제에 실패했어요. 다시 시도해주세요'),
+  });
+  const joinInvite = useMutation({
+    mutationFn: (inviteCode: string) => api.rooms.join(inviteCode),
+    onSuccess: async (joined) => {
+      await qc.invalidateQueries({ queryKey: ['rooms'] });
+      router.push({ pathname: '/room/[id]', params: { id: joined._id } });
+    },
+    onError: (error) =>
+      toast(error instanceof ApiError ? error.message : '스터디룸에 참여하지 못했어요'),
   });
 
   if (room.isError && !room.data)
@@ -315,12 +440,55 @@ export function ChatScreen() {
         )}
         <FlatList
           ref={list}
-          data={history.data ?? []}
+          testID="direct-chat-messages"
+          data={history.data?.messages ?? []}
           keyExtractor={(m) => m._id}
-          onContentSizeChange={() => list.current?.scrollToEnd({ animated: true })}
+          onContentSizeChange={handleContentSizeChange}
+          onLayout={(event) => {
+            viewportHeight.current = event.nativeEvent.layout.height;
+          }}
+          onScroll={(event) => {
+            const offset = event.nativeEvent.contentOffset.y;
+            scrollOffset.current = offset;
+            nearBottom.current =
+              contentHeight.current - viewportHeight.current - offset < 80;
+            if (offset < 48) void loadOlderMessages();
+          }}
+          scrollEventThrottle={100}
+          ListHeaderComponent={
+            olderError ? (
+              <Btn small kind="outline" onPress={() => void loadOlderMessages(true)}>
+                이전 대화를 불러오지 못했어요 · 다시 시도
+              </Btn>
+            ) : olderLoading ? (
+              <Text className="py-2 text-center text-caption text-sub">이전 대화 불러오는 중</Text>
+            ) : null
+          }
           contentContainerClassName="gap-3 pb-4"
           renderItem={({ item: m }) => {
             const mine = m.senderId === myId;
+            if (m.type === 'study_room_invite' && m.studyRoomInvite)
+              return (
+                <View className={cx('flex-row', mine && 'justify-end')}>
+                  <View className="max-w-[85%] rounded-2xl bg-white p-4">
+                    <Text className="text-caption text-sub">스터디룸 초대</Text>
+                    <Text className="mt-1 text-footnote font-bold text-ink">
+                      {m.studyRoomInvite.title}
+                    </Text>
+                    <Text className="mt-1 text-caption text-sub">
+                      참여 코드 {m.studyRoomInvite.inviteCode}
+                    </Text>
+                    <Btn
+                      small
+                      className="mt-3"
+                      loading={joinInvite.isPending}
+                      onPress={() => joinInvite.mutate(m.studyRoomInvite!.inviteCode)}
+                    >
+                      스터디룸 참여하기
+                    </Btn>
+                  </View>
+                </View>
+              );
             return (
               <View className={cx('flex-row', mine && 'justify-end')}>
                 <View

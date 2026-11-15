@@ -53,6 +53,9 @@ def test_cost_uses_the_model_prices() -> None:
     assert claude_cost("claude-haiku-5-5", 100_000, 1_000_000) == pytest.approx(0.51)
     # 날짜가 붙은 이름도 앞부분으로 찾음
     assert claude_cost("claude-haiku-5-5-20261001", 100_000, 0) == pytest.approx(0.01)
+    # 프롬프트 캐시 토큰은 input_tokens 밖에 따로 옴: 쓰기 1.25배 · 읽기 0.1배로 셈
+    assert claude_cost("claude-sonnet-5-5", 0, 0, 1_000_000, 0) == pytest.approx(2.5)
+    assert claude_cost("claude-sonnet-5-5", 0, 0, 0, 1_000_000) == pytest.approx(0.2)
 
 
 def test_a_long_haiku_prompt_costs_more() -> None:

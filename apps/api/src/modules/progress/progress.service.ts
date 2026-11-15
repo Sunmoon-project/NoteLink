@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
@@ -18,6 +18,7 @@ export interface WeeklyGoalView {
     weekStart: string;
     targetMin: number;
     notify80: boolean;
+    notified80: boolean;
     recentAvgMin: number;
 }
 
@@ -227,6 +228,22 @@ export class ProgressService {
         return toGoalView(weekStart, goal, recentAvgMin);
     }
 
+    async acknowledgeWeeklyGoal(userId: string, weekStart: string): Promise<void> {
+        const owner = new Types.ObjectId(userId);
+        const goal = await this.findGoal(owner, weekStart);
+        if (!goal || goal.targetMin <= 0) throw new NotFoundException({ code: 'NOT_FOUND', message: '주간 목표를 찾을 수 없습니다.' });
+        try {
+            await this.goalModel.updateOne(
+                { userId: owner, weekStart },
+                { $set: { notified80: true }, $setOnInsert: { targetMin: goal.targetMin, notify80: goal.notify80 } },
+                { upsert: true },
+            );
+        } catch (error) {
+            if (!isDuplicateKeyError(error)) throw error;
+            await this.goalModel.updateOne({ userId: owner, weekStart }, { $set: { notified80: true } });
+        }
+    }
+
     /** 이번 주 목표를 정한다. 이미 있으면 바꾼다 (같은 주에 동시에 두 번 와도 한 건만 남는다) */
     async setWeeklyGoal(userId: string, dto: SetWeeklyGoalDto, now = new Date()): Promise<WeeklyGoalView> {
         const owner = new Types.ObjectId(userId);
@@ -290,6 +307,7 @@ function toGoalView(weekStart: string, goal: GoalLean | null, recentAvgMin: numb
         weekStart,
         targetMin: goal?.targetMin ?? DEFAULT_TARGET_MIN,
         notify80: goal?.notify80 ?? DEFAULT_NOTIFY80,
+        notified80: own ? (goal.notified80 ?? false) : false,
         recentAvgMin,
     };
 }

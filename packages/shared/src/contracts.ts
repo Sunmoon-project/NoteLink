@@ -108,6 +108,7 @@ export const PATHS = {
   studyWeekly: '/study/weekly',
   studyStats: '/study/stats',
   weeklyGoal: '/goals/weekly',
+  weeklyGoalAcknowledge: '/goals/weekly/acknowledge',
   recurringGoals: '/goals/recurring',
   recurringGoal: (id: string) => `/goals/recurring/${seg(id)}`,
   // 일정 · 캘린더 · 시간표
@@ -210,6 +211,11 @@ export type ServerToClient = {
 };
 
 export type ClientToServer = {
+  'chat:join': (
+    p: { chatRoomId: string },
+    ack?: (r: { ok: boolean; missed?: Message[] }) => void,
+  ) => void;
+  'chat:leave': (p: { chatRoomId: string }) => void;
   'room:join': (
     p: { roomId: string },
     ack?: (r: { ok: boolean; missed?: Message[] }) => void,

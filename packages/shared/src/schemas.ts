@@ -368,6 +368,7 @@ export const WeeklyGoal = z.object({
   weekStart: ymd,
   targetMin: z.number(),
   notify80: z.boolean(),
+  notified80: z.boolean().optional(),
   /** 최근 4주 평균 순공 분 — 목표를 정할 때 참고로 보여 준다 (서버 계산 · FR-06-24) */
   recentAvgMin: z.number().nonnegative(),
 });
@@ -559,9 +560,13 @@ export const Message = z.object({
   chatRoomId: id,
   senderId: id,
   senderNickname: z.string().optional(),
-  type: z.enum(['text', 'shared_item', 'system']),
+  type: z.enum(['text', 'shared_item', 'system', 'study_room_invite']),
   text: z.string().nullable(),
   sharedItemId: id.nullable(),
+  studyRoomInvite: z
+    .object({ roomId: id, title: z.string(), inviteCode: z.string() })
+    .nullable()
+    .optional(),
   createdAt: date,
   clientId: z.string().optional(),
 });

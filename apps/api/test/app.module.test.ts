@@ -91,6 +91,40 @@ describe('AppModule의 JWT 설정', () => {
   );
 });
 
+describe('간편 로그인 키가 없는 서버', () => {
+  const NONE = {
+    GOOGLE_CLIENT_ID: '',
+    GOOGLE_CLIENT_SECRET: '',
+    GOOGLE_REDIRECT_URI: '',
+    KAKAO_REST_API_KEY: '',
+    KAKAO_CLIENT_SECRET: '',
+    KAKAO_REDIRECT_URI: '',
+  };
+
+  it('키가 하나도 없는 제공자만 끄고 서버는 켜진다(나머지 제공자는 그대로)', async () => {
+    stubAppEnv(NONE);
+    const moduleRef = await createAppModuleBuilder().compile();
+
+    const registry = moduleRef.get(SocialProviderRegistry, { strict: false });
+    const service = moduleRef.get(SocialLoginService, { strict: false });
+    const google = moduleRef.get(GOOGLE_CONFIG, { strict: false });
+    await moduleRef.close();
+
+    expect(google).toBeNull();
+    expect(registry.names()).toEqual(['naver']);
+    expect(() => service.provider('google')).toThrow('지원하지 않는 로그인 방식이에요');
+  });
+
+  it('세 제공자 키가 모두 없어도 서버는 켜진다', async () => {
+    stubAppEnv({ ...NONE, NAVER_CLIENT_ID: '', NAVER_CLIENT_SECRET: '', NAVER_REDIRECT_URI: '' });
+    const moduleRef = await createAppModuleBuilder().compile();
+    const registry = moduleRef.get(SocialProviderRegistry, { strict: false });
+    await moduleRef.close();
+
+    expect(registry.names()).toEqual([]);
+  });
+});
+
 describe('AppModule의 구글 로그인 설정', () => {
   it('GOOGLE_* 환경변수를 읽어 SocialLoginService가 쓸 설정으로 만든다', async () => {
     stubAppEnv();

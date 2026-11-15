@@ -12,6 +12,7 @@ import { registerPush } from '@/lib/push';
 import { useAuth } from '@/stores/auth';
 import { AppOverlays } from '@/components/AppOverlays';
 import { useOfflineCache } from '@/lib/offline-cache';
+import { WeeklyGoalNotifications } from '@/features/session/weekly-goal-notifications';
 
 /** 설정 「오프라인 캐시」(QueryClientProvider 안에서) */
 function OfflineCache() {
@@ -42,6 +43,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <QueryClientProvider client={queryClient}>
+        <WeeklyGoalNotifications />
         <StatusBar style="dark" />
         <Stack
           screenOptions={{

@@ -142,6 +142,16 @@ it('주간 목표를 정하지 않은 새 계정은 NaN% 없이 이번주 시간
   expect(await screen.findByText('이번주 0시간 0분 ›')).toBeTruthy();
   expect(screen.queryByText(/NaN/)).toBeNull();
 });
+it('주간 목표 달성률은 저장된 시간과 현재 진행 중인 시간을 합산한다', async () => {
+  mockNow = Date.parse('2026-11-02T03:00:00Z');
+  const goal = await api.study.weeklyGoal();
+  const week = await api.study.weekly();
+  jest.spyOn(api.study, 'weeklyGoal').mockResolvedValue({ ...goal, targetMin: 20 * 60 });
+  jest.spyOn(api.study, 'weekly').mockResolvedValue({ ...week, totalSec: 16 * 3600 - 5 });
+  useSession.setState({ itemId: 'item', sessionId: 'session', since: mockNow - 5000 });
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('책상 앞이에요 · 이번주 목표 80%')).toBeTruthy();
+});
 it('10분 쉬면 종료 요청을 한 번만 보낸다', async () => {
   mockNow = Date.now();
   useSession.setState({
@@ -237,6 +247,26 @@ it('오늘 항목이 없어도 이번주 누적 기록을 표시한다', async (
   await renderScreen(<HomeScreen />, client());
   expect(await screen.findByText('2시간 0분')).toBeTruthy();
 });
+it('홈은 항목에 없는 자정 이후 기록도 오늘 전체 시간에 표시한다', async () => {
+  jest.spyOn(api.study, 'today').mockResolvedValue({ items: [], totalSec: 600 } as never);
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByLabelText('00:10:00')).toBeTruthy();
+});
+
+it('종료 요약은 항목에 없는 자정 이후 기록도 오늘 전체 시간에 표시한다', async () => {
+  jest.spyOn(api.study, 'today').mockResolvedValue({ items: [], totalSec: 600 } as never);
+  await renderScreen(<SummaryScreen />, client());
+  expect(await screen.findByLabelText('00:10:00')).toBeTruthy();
+});
+
+it('측정 중 홈은 저장된 오늘 전체 시간에 현재 세션의 오늘 경과 시간을 더한다', async () => {
+  mockNow = Date.parse('2026-11-01T15:00:05Z');
+  jest.spyOn(api.study, 'today').mockResolvedValue({ items: [], totalSec: 600 } as never);
+  useSession.setState({ itemId: 'yesterday', sessionId: 'session', since: mockNow - 10000 });
+  await renderScreen(<HomeScreen />, client());
+  expect(await screen.findByText('오늘 전체 00:10:05')).toBeTruthy();
+});
+
 it('서울 자정 이후 목록에 없는 진행 중 세션도 종료할 수 있다', async () => {
   mockNow = Date.parse('2026-11-01T15:00:02Z');
   jest.spyOn(api.study, 'today').mockResolvedValue({ items: [], totalSec: 0 } as never);
@@ -376,6 +406,7 @@ it('큰 타이머는 지금 공부하는 항목의 시간만 보여 주고 전�
   });
   jest.spyOn(api.study, 'today').mockResolvedValue({
     ...base,
+    totalSec: 110,
     items: [item('a', 100), item('b', 10)],
   } as never);
   useSession.setState({

@@ -130,6 +130,7 @@ export interface Api {
     stats(range: 'all' | '90d' | '30d'): Promise<StudyStats>;
     weeklyGoal(): Promise<WeeklyGoal>;
     setWeeklyGoal(p: { targetMin: number; notify80: boolean }): Promise<WeeklyGoal>;
+    acknowledgeWeeklyGoal(weekStart: string): Promise<void>;
     recurringGoals(): Promise<RecurringGoal[]>;
     saveRecurringGoal(g: Partial<RecurringGoal> & { name: string }): Promise<RecurringGoal>;
     deleteRecurringGoal(id: string): Promise<void>;

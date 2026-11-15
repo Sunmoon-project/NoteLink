@@ -406,6 +406,7 @@ export const mockApi: Api = {
       await ok(undefined);
       return structuredClone(Object.assign(db.weeklyGoal, p));
     },
+    acknowledgeWeeklyGoal: () => ok(undefined),
     recurringGoals: () => ok(db.recurring),
     saveRecurringGoal: async (g) => {
       await ok(undefined);

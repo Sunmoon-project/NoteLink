@@ -8,6 +8,7 @@ import { HealthController } from './health/health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { CalendarModule } from './modules/calendar/calendar.module.js';
 import { HolidaysModule } from './modules/calendar/holidays.module.js';
+import { CalendarSharesModule } from './modules/calendar/calendar-shares.module.js';
 import { FoldersModule } from './modules/content/folders/folders.module.js';
 import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
 import { ProgressModule } from './modules/progress/progress.module.js';
@@ -15,6 +16,7 @@ import { RewardModule } from './modules/reward/reward.module.js';
 import { StudyRoomsModule } from './modules/studyroom/study-rooms.module.js';
 import { FlashcardsModule } from './modules/quiz/flashcards.module.js';
 import { QuizAttemptsModule } from './modules/quiz/quiz-attempts.module.js';
+import { QuizBoxModule } from './modules/quiz/quiz-box.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
@@ -53,6 +55,8 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
     QuizAttemptsModule,
     // 플래시카드 저장 · 조회 · 삭제(FR-55 · 56)
     FlashcardsModule,
+    // 퀴즈 보관함 담기 · 보기 · 지우기(FR-57·58)
+    QuizBoxModule,
     // 시간표 · 수업 · 친구 공유(FR-14)
     TimetableModule,
     // 친구 찾기 · 요청 · 목록 · 삭제(FR-15)
@@ -63,6 +67,8 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
     HolidaysModule,
     // 파일 올리기 주소 발급(FR-19)
     UploadsModule,
+    // 캘린더 공유 링크(FR-13)
+    CalendarSharesModule,
     // 학습 폴더 목록 · 만들기(FR-19)
     FoldersModule,
   ],

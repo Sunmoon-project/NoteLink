@@ -19,6 +19,9 @@ export class WeeklyGoal {
 
   @Prop({ required: true, type: Boolean, default: true })
   notify80: boolean; // 80% 달성 시 알림 여부 (기본값은 shared · 앱 기준 true)
+
+  @Prop({ required: true, type: Boolean, default: false })
+  notified80: boolean; // 80% 알림 푸시 했는지 중복 확인
 }
 
 export const WeeklyGoalSchema = SchemaFactory.createForClass(WeeklyGoal);

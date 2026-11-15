@@ -26,6 +26,7 @@ const dailyModel = {
     })),
 };
 const weeklyGoalModel = {
+    updateOne: vi.fn().mockResolvedValue({ matchedCount: 1 }),
     findOne: vi.fn((filter: { weekStart: string | { $lt: string } }) => {
         const match = goals.filter((g) =>
             typeof filter.weekStart === 'string'
@@ -61,6 +62,7 @@ describe('GET·PUT /goals/weekly', () => {
         goals = [];
         lastUpdate = undefined;
         weeklyGoalModel.findOneAndUpdate.mockClear();
+        weeklyGoalModel.updateOne.mockClear();
     });
     afterEach(() => {
         vi.useRealTimers();
@@ -73,13 +75,28 @@ describe('GET·PUT /goals/weekly', () => {
 
     it('목표가 없으면 targetMin 0 · notify80 true · recentAvgMin 0', async () => {
         const res = await request(app.getHttpServer()).get('/api/v1/goals/weekly').set(AUTH).expect(200);
-        expect(res.body).toEqual({ data: { _id: `wg-${WEEK}`, weekStart: WEEK, targetMin: 0, notify80: true, recentAvgMin: 0 } });
+        expect(res.body).toEqual({ data: { _id: `wg-${WEEK}`, weekStart: WEEK, targetMin: 0, notify80: true, notified80: false, recentAvgMin: 0 } });
     });
 
     it('이번 주에 정한 목표가 없으면 가장 최근 목표를 이어받는다', async () => {
-        goals = [{ _id: new Types.ObjectId(), userId: owner, weekStart: '2026-11-02', targetMin: 600, notify80: false }];
+        goals = [{ _id: new Types.ObjectId(), userId: owner, weekStart: '2026-11-02', targetMin: 600, notify80: false, notified80: true }];
         const res = await request(app.getHttpServer()).get('/api/v1/goals/weekly').set(AUTH).expect(200);
-        expect(res.body.data).toMatchObject({ weekStart: WEEK, targetMin: 600, notify80: false });
+        expect(res.body.data).toMatchObject({ weekStart: WEEK, targetMin: 600, notify80: false, notified80: false });
+    });
+
+    it('확인 API는 로그인 사용자와 지정 주의 확인 상태를 저장한다', async () => {
+        goals = [{ _id: new Types.ObjectId(), userId: owner, weekStart: '2026-11-02', targetMin: 600, notify80: true }];
+        await request(app.getHttpServer()).post('/api/v1/goals/weekly/acknowledge').send({ weekStart: WEEK }).expect(401);
+        await request(app.getHttpServer()).post('/api/v1/goals/weekly/acknowledge').set(AUTH).send({ weekStart: 'bad' }).expect(400);
+        await request(app.getHttpServer()).post('/api/v1/goals/weekly/acknowledge').set(AUTH).send({ weekStart: '2026-99-99' }).expect(400);
+        await request(app.getHttpServer()).post('/api/v1/goals/weekly/acknowledge').set(AUTH).send({ weekStart: '2026-11-10' }).expect(400);
+        expect(weeklyGoalModel.updateOne).not.toHaveBeenCalled();
+        await request(app.getHttpServer()).post('/api/v1/goals/weekly/acknowledge').set(AUTH).send({ weekStart: WEEK }).expect(204);
+        expect(weeklyGoalModel.updateOne).toHaveBeenCalledWith(
+            { userId: owner, weekStart: WEEK },
+            { $set: { notified80: true }, $setOnInsert: { targetMin: 600, notify80: true } },
+            { upsert: true },
+        );
     });
 
     it('recentAvgMin은 이번 주를 빼고 최근 4주의 주간 평균이다', async () => {

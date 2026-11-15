@@ -574,18 +574,32 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
             // 서울 2026-11-04 23:30에 시작해 11-05 00:10에 끝남 → 1800초 + 600초
             vi.setSystemTime(new Date('2026-11-04T15:10:00.000Z'));
             row = makeRow({ startedAt: new Date('2026-11-04T14:30:00.000Z') });
+            // 공부 항목에 과목이 있다 → 두 날 모두 과목별 시간(subjectSec)에도 쌓는다
+            const mathId = new Types.ObjectId();
+            const subjectKey = `subjectSec.${mathId.toString()}`;
+            const withSubject = {
+                ...makeRecord(),
+                items: [{ _id: itemId, title: '수학 문제집', subjectId: mathId, subjectName: '수학', goalMin: 60, accumulatedSec: 600 }],
+            };
             const lean = (value: Record<string, unknown> | null) => ({ lean: vi.fn(() => Promise.resolve(value)) });
+            dailyModel.findOne.mockImplementationOnce(() => lean(withSubject)); // 시작한 날 항목의 과목 (정산할 때 한 번만 찾는다)
             dailyModel.findOne.mockImplementationOnce(() => lean(record)); // 11-04 (이미 600초)
             dailyModel.findOne.mockImplementationOnce(() => lean(null)); // 11-05 (아직 기록 없음)
 
             const res = await end(sessionId.toString());
 
             expect(res.body).toEqual({ data: { durationSec: 2400, pointsEarned: 20 } });
+            expect(dailyModel.findOne).toHaveBeenNthCalledWith(
+                1,
+                { userId: owner, studyDate: TODAY, 'items._id': itemId },
+                { 'items.$': 1 },
+                { session: tx },
+            );
             expect(dailyModel.updateOne).toHaveBeenNthCalledWith(
                 1,
                 { userId: owner, studyDate: '2026-11-04' },
                 {
-                    $inc: { totalSec: 1800, personalSec: 1800, 'items.$[item].accumulatedSec': 1800 },
+                    $inc: { totalSec: 1800, personalSec: 1800, 'items.$[item].accumulatedSec': 1800, [subjectKey]: 1800 },
                     $set: { streakOk: true },
                 },
                 { arrayFilters: [{ 'item._id': itemId }], session: tx },
@@ -594,7 +608,7 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
                 2,
                 { userId: owner, studyDate: '2026-11-05' },
                 {
-                    $inc: { totalSec: 600, personalSec: 600 },
+                    $inc: { totalSec: 600, personalSec: 600, [subjectKey]: 600 }, // 항목에는 안 쌓아도 과목 시간은 다음 날 몫도 쌓는다
                     $set: { streakOk: true },
                     $setOnInsert: { items: [] },
                 },

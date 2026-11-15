@@ -30,6 +30,9 @@ export class RoomMember {
   @Prop({ type: Date, default: null })
   invitedAt?: Date | null;
 
+  @Prop({ type: String, default: null })
+  invitationId?: string | null;
+
   @Prop({ type: Date, default: null })
   joinedAt?: Date | null;
 

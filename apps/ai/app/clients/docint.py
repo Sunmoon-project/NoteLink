@@ -29,6 +29,7 @@ SAS_MINUTES = 15
 IMAGE_MAX_BYTES = 20 * 1024 * 1024  # 색 찾기용으로 내려받는 사진의 최대 크기(20MB)
 DOWNLOAD_TIMEOUT_SEC = 60.0  # 내려받기 전체 마감
 DOWNLOAD_READ_TIMEOUT_SEC = 10.0  # 연결 · 읽기 한 번의 상한(httpx2 timeout)
+TOO_LARGE = "파일이 너무 큼"  # max_bytes를 넘었을 때 DownloadError의 문구(부르는 쪽이 사유를 구분)
 # 분석이 끝난 뒤(HTTP 200) 실패로 알려 오는 오류 중 다시 하면 풀릴 수 있는 것
 _TRANSIENT_CODES = frozenset(
     {"InternalServerError", "ServiceUnavailable", "Timeout", "TooManyRequests"}
@@ -184,14 +185,14 @@ class _Download:
                 raise DownloadError(f"HTTP {res.status_code}")
             size = res.headers.get("content-length", "")
             if size.isdigit() and int(size) > self._max_bytes:
-                raise DownloadError("파일이 너무 큼")
+                raise DownloadError(TOO_LARGE)
             data = bytearray()
             for part in res.iter_bytes():
                 if self._canceled.is_set() or self._clock() > self._deadline:
                     raise DownloadError("시간 초과")  # 받은 것은 버림
                 data += part
                 if len(data) > self._max_bytes:
-                    raise DownloadError("파일이 너무 큼")
+                    raise DownloadError(TOO_LARGE)
             return bytes(data)
 
     def cancel(self) -> None:

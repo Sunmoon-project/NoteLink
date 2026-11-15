@@ -855,7 +855,7 @@ export function InviteScreen() {
     onError: () => toast('초대하지 못했어요. 다시 시도해주세요'),
     onSuccess: (_, uid) => {
       setInvited((p) => [...p, uid]);
-      toast('초대했어요');
+      toast('친구 채팅으로 초대 메시지를 보냈어요');
     },
   });
   const inRoom = new Set(room.data?.members.map((m) => m.userId));
@@ -931,7 +931,7 @@ export function InviteScreen() {
                   </Text>
                 </View>
                 <Pressable
-                  disabled={st !== '초대하기'}
+                  disabled={st !== '초대하기' || inv.isPending}
                   onPress={() => inv.mutate(f.userId)}
                   className={cx(
                     'rounded-full px-3 py-1',
@@ -952,7 +952,7 @@ export function InviteScreen() {
           })}
         </View>
         <Text className="mt-3 text-center text-caption2 text-sub">
-          초대한 친구에게 스터디룸 초대 알림이 전송돼요.
+          친구와의 1:1 채팅에 스터디룸 참여 카드가 전송돼요.
         </Text>
       </Screen>
     </Canvas>

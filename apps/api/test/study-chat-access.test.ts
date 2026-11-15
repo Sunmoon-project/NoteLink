@@ -10,6 +10,7 @@ import { User } from '../src/modules/auth/schemas/user.schema.js';
 import { Category } from '../src/modules/content/schemas/category.schema.js';
 import { ChatRoom } from '../src/modules/social/schemas/chat-room.schema.js';
 import { Message } from '../src/modules/social/schemas/message.schema.js';
+import { Friendship } from '../src/modules/social/schemas/friendship.schema.js';
 import { StudyRoom } from '../src/modules/studyroom/schemas/study-room.schema.js';
 import { StudyChatService } from '../src/modules/studyroom/study-chat.service.js';
 import { StudyChatGateway } from '../src/modules/studyroom/study-chat.gateway.js';
@@ -38,6 +39,7 @@ beforeAll(async () => {
       { provide: getModelToken(ChatRoom.name), useValue: chats },
       { provide: getModelToken(Message.name), useValue: {} },
       { provide: getModelToken(User.name), useValue: {} },
+      { provide: getModelToken(Friendship.name), useValue: {} },
       { provide: getModelToken(Category.name), useValue: {} },
       {
         provide: TokenService,
