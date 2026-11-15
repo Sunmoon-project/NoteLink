@@ -33,7 +33,7 @@ export class Processing {
   })
   status: string;
 
-  @Prop({ required: true, type: Number})
+  @Prop({ required: true, type: Number })
   progress: number;
 
   @Prop({ type: Types.ObjectId, ref: 'AiJob', default: null })
@@ -72,7 +72,7 @@ export class Bookmark {
   @Prop({ required: true, type: Number })
   atSec: number;
 
-  @Prop({ type: String } ) // 예: "중간고사"
+  @Prop({ type: String }) // 예: "중간고사"
   label?: string;
 }
 
@@ -89,10 +89,7 @@ export class Material {
   @Prop({ type: Types.ObjectId, ref: 'Folder', required: true })
   folderId: Types.ObjectId;
 
-  @Prop({ required: true, 
-    type: String, 
-    enum: ['handwriting', 'recording', 'document'] 
-  })
+  @Prop({ required: true, type: String, enum: ['handwriting', 'recording', 'document'] })
   kind: string;
 
   @Prop({
@@ -149,6 +146,16 @@ export class Material {
   /** 등록 본문의 해시. 같은 키에 다른 내용을 보냈는지 가린다 */
   @Prop({ type: String })
   requestFingerprint?: string;
+
+  /**
+   * 정리 작업을 만드는 요청이 잡은 표시(작업 id 가 연결되면 지운다). 같은 노트에 요청이 겹쳐도 작업을 만드는 쪽을
+   * 하나로 하려는 서버 값이라 앱에는 보내지 않는다. 서버가 멈춰 남은 표시는 jobClaimedAt 으로부터 시간이 지나면 무효다
+   */
+  @Prop({ type: String })
+  jobClaimToken?: string;
+
+  @Prop({ type: Date })
+  jobClaimedAt?: Date;
 
   @Prop({ type: Date, default: null })
   deletedAt?: Date | null;

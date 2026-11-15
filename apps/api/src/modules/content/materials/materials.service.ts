@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   BadRequestException,
@@ -6,6 +6,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES, UPLOAD_RULES } from '@notelink/shared';
@@ -29,6 +30,12 @@ export const AI_READ_SAS_MS = 24 * 60 * 60 * 1000;
 export const APP_READ_SAS_MS = 60 * 60 * 1000;
 /** 목록 조회 한 번에 끝난 작업 결과를 옮기는 노트 수 상한 */
 export const LIST_SYNC_MAX = 20;
+/** 작업을 만드는 중 표시가 유효한 시간. 서버가 멈춰 남은 표시는 이 시간이 지나면 다른 요청이 다시 잡는다 */
+export const CLAIM_TTL_MS = 60_000;
+/** 표시를 못 잡은 요청이 다른 요청의 작업 연결을 기다리는 간격 · 횟수 */
+export const CLAIM_WAIT_MS = 300;
+export const CLAIM_WAIT_TRIES = 5;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 /** Idempotency-Key 최대 길이 */
 export const IDEMPOTENCY_KEY_MAX = 128;
 
@@ -277,10 +284,11 @@ export class MaterialsService {
   }
 
   /**
-   * 정리 작업을 노트에 연결한다. 이 노트에 이미 넣은(취소되지 않은) 작업이 있으면 새로 넣지 않고 그 작업을 쓴다:
-   * 작업을 넣은 뒤 연결하지 못하고 멈춘 요청이 다시 와도 작업이 하나만 남는다. 없을 때만 새로 넣는다.
-   * 연결은 아직 작업이 없을 때만 한다: 같은 키의 요청이 겹쳐 다른 쪽이 먼저 연결했으면, 내가 새로 넣은 작업이
-   * 연결되지 않은 경우에만 취소하고(이어 쓴 작업 · 다른 쪽이 연결한 작업은 취소하지 않는다) 먼저 연결된 작업을 돌려준다
+   * 정리 작업을 노트에 연결한다. 작업을 만드는 요청은 노트당 하나만 되게, 먼저 노트에 "작업 만드는 중" 표시를
+   * 원자적으로 잡는다(작업 id 가 없고, 표시가 없거나 CLAIM_TTL_MS 가 지났을 때만). 표시를 잡은 요청만:
+   * 이 노트에 이미 넣은(취소되지 않은) 작업이 있으면 그 작업을 쓰고(넣은 뒤 연결하지 못하고 멈춘 요청의 작업), 없으면
+   * 새로 넣어 연결한다. 연결에서 예외가 나면 새로 넣은 작업이 노트에 연결되지 않았을 때만 취소하고 표시를 푼다.
+   * 표시를 못 잡은 요청은 작업을 만들지 않고, 다른 요청이 연결하길 짧게 기다려 그 작업을 돌려준다(끝내 없으면 503)
    */
   private async startJob(
     userId: string,
@@ -288,38 +296,114 @@ export class MaterialsService {
     subjectName: string | undefined,
     files: UploadedFile[],
   ): Promise<{ row: MaterialRow; job: AppAiJob }> {
+    const token = randomUUID();
+    for (let attempt = 0; attempt < CLAIM_WAIT_TRIES; attempt++) {
+      const now = new Date();
+      const claimed = await this.materials
+        .findOneAndUpdate(
+          {
+            _id: material._id,
+            deletedAt: null,
+            'processing.jobId': null,
+            $or: [
+              { jobClaimedAt: null },
+              { jobClaimedAt: { $lte: new Date(now.getTime() - CLAIM_TTL_MS) } },
+            ],
+          },
+          { $set: { jobClaimToken: token, jobClaimedAt: now } },
+          { returnDocument: 'after' },
+        )
+        .lean<MaterialRow>();
+      if (claimed) return this.createAndLink(userId, claimed, token, subjectName, files);
+      // 못 잡았다: 이미 연결됐거나(그 작업을 돌려준다) 다른 요청이 만드는 중이다
+      const current = await this.materials
+        .findOne({ _id: material._id, deletedAt: null })
+        .lean<MaterialRow>();
+      if (!current) throw notFound('노트');
+      const jobId = current.processing.jobId;
+      if (jobId) return { row: current, job: await this.jobs.findMine(userId, jobId.toString()) };
+      await sleep(CLAIM_WAIT_MS);
+    }
+    throw new ServiceUnavailableException({
+      code: 'REGISTRATION_IN_PROGRESS',
+      message: '같은 자료를 처리하는 중이에요. 잠시 뒤 다시 시도해 주세요',
+    });
+  }
+
+  /** 표시를 잡은 요청이 작업을 찾거나 넣어 노트에 연결한다(startJob 참고) */
+  private async createAndLink(
+    userId: string,
+    material: MaterialRow,
+    token: string,
+    subjectName: string | undefined,
+    files: UploadedFile[],
+  ): Promise<{ row: MaterialRow; job: AppAiJob }> {
     const kind = material.kind as keyof typeof JOB_TYPE;
     const type = JOB_TYPE[kind];
     const targetId = material._id.toString();
-    const reused = await this.jobs.findForTarget(userId, {
-      type,
-      targetType: 'material',
-      targetId,
-    });
-    const input =
-      kind === 'recording'
-        ? { audioUrl: files[0]!.readUrl, sizeBytes: files[0]!.sizeBytes }
-        : {
-            pages: files.map((f, i) => ({ pageNo: i + 1, imageUrl: f.readUrl })),
-            ...(subjectName ? { subject: subjectName } : {}),
-          };
-    const job =
-      reused ??
-      (await this.jobs.enqueue({ type, userId, targetType: 'material', targetId, input }));
-    const linked = await this.materials
-      .findOneAndUpdate(
-        { _id: material._id, 'processing.jobId': null },
-        { $set: { 'processing.jobId': new Types.ObjectId(job._id) } },
-        { returnDocument: 'after' },
-      )
-      .lean<MaterialRow>();
-    if (linked) return { row: linked, job };
-    const current = await this.materials.findOne({ _id: material._id }).lean<MaterialRow>();
-    const jobId = current?.processing.jobId;
-    if (!current || !jobId) throw new Error('materials: 작업 연결이 계속 겹침');
-    // 내가 새로 넣은 작업이 연결되지 않았을 때만 취소한다(다른 요청이 이어 써 연결한 작업은 그대로 둔다)
-    if (!reused && jobId.toString() !== job._id) await this.jobs.cancel(userId, job._id);
-    return { row: current, job: await this.jobs.findMine(userId, jobId.toString()) };
+    let fresh: AppAiJob | null = null;
+    try {
+      const reused = await this.jobs.findForTarget(userId, {
+        type,
+        targetType: 'material',
+        targetId,
+      });
+      const input =
+        kind === 'recording'
+          ? { audioUrl: files[0]!.readUrl, sizeBytes: files[0]!.sizeBytes }
+          : {
+              pages: files.map((f, i) => ({ pageNo: i + 1, imageUrl: f.readUrl })),
+              ...(subjectName ? { subject: subjectName } : {}),
+            };
+      if (!reused) {
+        fresh = await this.jobs.enqueue({ type, userId, targetType: 'material', targetId, input });
+      }
+      const job = (reused ?? fresh)!;
+      const linked = await this.materials
+        .findOneAndUpdate(
+          { _id: material._id, 'processing.jobId': null, jobClaimToken: token },
+          {
+            $set: { 'processing.jobId': new Types.ObjectId(job._id) },
+            $unset: { jobClaimToken: '', jobClaimedAt: '' },
+          },
+          { returnDocument: 'after' },
+        )
+        .lean<MaterialRow>();
+      if (linked) return { row: linked, job };
+      // 표시가 시간이 지나 다른 요청에게 넘어갔고 그쪽이 먼저 연결했다
+      const current = await this.materials.findOne({ _id: material._id }).lean<MaterialRow>();
+      const jobId = current?.processing.jobId;
+      if (!current || !jobId) throw new Error('materials: 작업 연결이 계속 겹침');
+      if (fresh && jobId.toString() !== fresh._id) await this.cancelQuietly(userId, fresh._id);
+      fresh = null;
+      return { row: current, job: await this.jobs.findMine(userId, jobId.toString()) };
+    } catch (e) {
+      // 새로 넣은 작업이 노트에 연결되지 않았으면 남지 않게 취소하고, 표시를 풀어 다른 요청이 이어가게 한다
+      if (fresh) await this.cancelUnlinked(userId, material._id, fresh._id);
+      await this.materials
+        .updateOne(
+          { _id: material._id, jobClaimToken: token },
+          { $unset: { jobClaimToken: '', jobClaimedAt: '' } },
+        )
+        .catch(() => undefined);
+      throw e;
+    }
+  }
+
+  /** 노트에 이 작업이 연결돼 있지 않을 때만 취소한다(연결 여부를 모르면 취소하지 않는다) */
+  private async cancelUnlinked(userId: string, noteId: Types.ObjectId, jobId: string) {
+    try {
+      const current = await this.materials.findOne({ _id: noteId }).lean<MaterialRow>();
+      if (current && current.processing.jobId?.toString() !== jobId) {
+        await this.jobs.cancel(userId, jobId);
+      }
+    } catch {
+      // 취소하지 못해도 원래 오류를 먼저 알린다. 남은 작업은 같은 노트의 다음 요청이 이어 쓴다
+    }
+  }
+
+  private async cancelQuietly(userId: string, jobId: string) {
+    await this.jobs.cancel(userId, jobId).catch(() => undefined);
   }
 
   /**

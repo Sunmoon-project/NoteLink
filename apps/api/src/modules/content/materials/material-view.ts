@@ -27,6 +27,8 @@ export interface MaterialRow {
   savedAt?: Date | null;
   requestId?: string;
   requestFingerprint?: string;
+  jobClaimToken?: string;
+  jobClaimedAt?: Date;
   deletedAt?: Date | null;
   createdAt: Date;
 }

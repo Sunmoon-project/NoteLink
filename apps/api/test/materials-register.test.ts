@@ -37,11 +37,14 @@ function setup(over: { folder?: unknown; size?: number } = {}) {
       return Promise.resolve([{ toObject: () => saved }]);
     }),
     updateOne: vi.fn(() => Promise.resolve()),
+    // 첫 호출은 "작업 만드는 중" 표시 잡기, 다음은 작업 id 연결
     findOneAndUpdate: vi.fn((_f: unknown, u: { $set: Record<string, unknown> }) => {
-      saved = {
-        ...saved!,
-        processing: { ...(saved!['processing'] as object), jobId: u.$set['processing.jobId'] },
-      };
+      if ('processing.jobId' in u.$set) {
+        saved = {
+          ...saved!,
+          processing: { ...(saved!['processing'] as object), jobId: u.$set['processing.jobId'] },
+        };
+      }
       return lean(saved);
     }),
   };
@@ -322,7 +325,10 @@ describe('노트 등록 (MaterialsService.register)', () => {
   it('키가 있으면 같은 키의 재요청이 이어가도록 노트를 남긴다', async () => {
     t.jobs.enqueue.mockRejectedValue(new Error('db down'));
     await expect(t.service.register(me.toHexString(), dto(), 'key-1')).rejects.toThrow('db down');
-    expect(t.materials.updateOne).not.toHaveBeenCalled();
+    // 노트는 지우지 않는다(작업 만드는 중 표시만 푼다)
+    expect(t.materials.updateOne).not.toHaveBeenCalledWith(expect.anything(), {
+      $set: { deletedAt: expect.any(Date) },
+    });
     expect((t.materials.create.mock.calls[0]![0] as unknown[])[0]).toMatchObject({
       requestId: 'key-1',
     });

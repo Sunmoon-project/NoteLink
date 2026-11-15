@@ -8,6 +8,8 @@ import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import { FoldersService } from '../src/modules/content/folders/folders.service.js';
 import type { CreateMaterialDto } from '../src/modules/content/materials/dto/create-material.dto.js';
 import {
+  CLAIM_TTL_MS,
+  fingerprintOf,
   LIST_SYNC_MAX,
   MaterialsService,
 } from '../src/modules/content/materials/materials.service.js';
@@ -64,6 +66,23 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
     folderId = f._id.toHexString();
   });
 
+  /** 작업 id 를 노트에 연결하는 첫 호출만 예외로 끝낸다(그 밖의 호출은 그대로) */
+  const failLinkOnce = () => {
+    const original = materials.findOneAndUpdate.bind(materials);
+    let failed = false;
+    const spy = vi.spyOn(materials, 'findOneAndUpdate').mockImplementation(((
+      f: unknown,
+      u: { $set?: Record<string, unknown> },
+      o: unknown,
+    ) => {
+      if (!failed && u?.$set?.['processing.jobId']) {
+        failed = true;
+        return { lean: () => Promise.reject(new Error('link failed')) };
+      }
+      return original(f as never, u as never, o as never);
+    }) as never);
+    return () => spy.mockRestore();
+  };
   const url = (n: number, user = me) =>
     `https://a.blob.core.windows.net/c/uploads/image/${user.toHexString()}/550e8400-e29b-41d4-a716-44665544000${n}.jpg`;
   const docUrl = `https://a.blob.core.windows.net/c/uploads/document/${me.toHexString()}/550e8400-e29b-41d4-a716-446655440007.pdf`;
@@ -180,11 +199,12 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
   });
 
   it('작업을 넣은 뒤 노트 연결이 실패해도 같은 키로 다시 요청하면 작업이 하나만 남고 그 작업이 연결된다', async () => {
-    const link = vi.spyOn(materials, 'findOneAndUpdate').mockImplementationOnce((() => ({
-      lean: () => Promise.reject(new Error('link failed')),
-    })) as never);
+    // 서버가 연결 도중 멈춘 상황: 연결도 취소도 하지 못한다
+    const restore = failLinkOnce();
+    const cancel = vi.spyOn(AiJobsService.prototype, 'cancel').mockRejectedValue(new Error('down'));
     await expect(service.register(me.toHexString(), dto(), 'half')).rejects.toThrow('link failed');
-    link.mockRestore();
+    restore();
+    cancel.mockRestore();
     // 작업은 들어갔고 노트에는 연결되지 않은 상태
     const stuck = await materials.findOne({ requestId: 'half' }).lean();
     expect(stuck?.processing.jobId).toBeNull();
@@ -297,6 +317,164 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
     await expect(service.register(me.toHexString(), dto())).rejects.toMatchObject({ status: 404 });
     expect(await materials.countDocuments()).toBe(0);
     expect(await jobs.countDocuments()).toBe(0);
+  });
+
+  describe('작업 만들기 경쟁 (작업 만드는 중 표시)', () => {
+    /** 작업 id 없이 멈춘 노트(노트만 만들고 작업을 넣기 전에 멈춘 상태) */
+    const stuckNote = async (key: string, over: Record<string, unknown> = {}) =>
+      materials.create({
+        ownerId: me,
+        folderId: new Types.ObjectId(folderId),
+        kind: 'handwriting',
+        source: 'camera',
+        title: '필기',
+        description: null,
+        avatarItemId: null,
+        processing: { status: 'queued', progress: 0, jobId: null },
+        pages: [{ pageNo: 1, imageUrl: url(1), sizeBytes: 100, ocrText: null, takenAt: null }],
+        blobUrls: [url(1)],
+        requestId: key,
+        requestFingerprint: fingerprintOf({
+          folderId,
+          kind: 'handwriting',
+          source: 'camera',
+          title: '필기',
+          description: null,
+          blobUrls: [url(1)],
+          avatarItemId: null,
+        }),
+        ...over,
+      });
+
+    it('같은 노트로 동시 요청이 여러 개이고 그중 하나의 연결이 실패해도, 연결된 작업 1개만 살아 있다', async () => {
+      const note = await stuckNote('gate');
+      // 모든 요청이 "작업 없음"을 본 뒤에 작업을 만들도록 한 곳에서 맞춘다(표시가 없던 옛 코드에서는 둘 다 만든다)
+      const find = AiJobsService.prototype.findForTarget;
+      let arrived = 0;
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => (open = resolve));
+      const timer = setTimeout(open, 300);
+      vi.spyOn(AiJobsService.prototype, 'findForTarget').mockImplementation(async function (
+        this: AiJobsService,
+        ...args: Parameters<typeof find>
+      ) {
+        const found = await find.apply(this, args);
+        arrived += 1;
+        if (arrived >= 2) open();
+        if (arrived <= 2) await gate;
+        return found;
+      });
+      const restore = failLinkOnce();
+
+      const results = await Promise.allSettled(
+        Array.from({ length: 4 }, () => service.register(me.toHexString(), dto(), 'gate')),
+      );
+      restore();
+      clearTimeout(timer);
+      vi.mocked(AiJobsService.prototype.findForTarget).mockRestore();
+
+      const alive = await jobs.find({ targetId: note._id, status: { $ne: 'canceled' } }).lean();
+      expect(alive).toHaveLength(1);
+      expect((await materials.findById(note._id).lean())?.processing.jobId?.toString()).toBe(
+        alive[0]!._id.toString(),
+      );
+      // 나머지 작업은 없거나 취소 상태다
+      expect(await jobs.countDocuments({ targetId: note._id, status: 'queued' })).toBe(1);
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      expect(fulfilled.length).toBeGreaterThanOrEqual(3);
+      for (const r of fulfilled) {
+        expect((r as PromiseFulfilledResult<{ job: { _id: string } }>).value.job._id).toBe(
+          alive[0]!._id.toString(),
+        );
+      }
+    });
+
+    it('작업을 넣은 뒤 연결에서 예외가 나면 그 작업을 취소하고 표시를 풀어, 다음 요청이 새로 이어간다', async () => {
+      const restore = failLinkOnce();
+      await expect(service.register(me.toHexString(), dto(), 'once')).rejects.toThrow(
+        'link failed',
+      );
+      restore();
+      const note = (await materials.findOne({ requestId: 'once' }).lean())!;
+      expect(note.processing.jobId).toBeNull();
+      expect(note.jobClaimToken).toBeUndefined();
+      expect(note.jobClaimedAt).toBeUndefined();
+      expect(await jobs.countDocuments({ targetId: note._id, status: 'canceled' })).toBe(1);
+      expect(await jobs.countDocuments({ targetId: note._id, status: 'queued' })).toBe(0);
+
+      const again = await service.register(me.toHexString(), dto(), 'once');
+
+      expect(await jobs.countDocuments({ targetId: note._id, status: { $ne: 'canceled' } })).toBe(
+        1,
+      );
+      expect((await materials.findById(note._id).lean())?.processing.jobId?.toString()).toBe(
+        again.job._id,
+      );
+    });
+
+    it('다른 요청이 작업을 만드는 중(표시가 유효)이면 작업을 만들지 않고 기다리다 503', async () => {
+      const note = await stuckNote('busy', { jobClaimToken: 'other', jobClaimedAt: new Date() });
+
+      await expect(service.register(me.toHexString(), dto(), 'busy')).rejects.toMatchObject({
+        status: 503,
+        response: { code: 'REGISTRATION_IN_PROGRESS' },
+      });
+
+      expect(await jobs.countDocuments({ targetId: note._id })).toBe(0);
+      const row = await materials.findById(note._id).lean();
+      expect(row?.jobClaimToken).toBe('other');
+    });
+
+    it('기다리는 동안 다른 요청이 연결하면 그 작업을 돌려준다', async () => {
+      const note = await stuckNote('wait', { jobClaimToken: 'other', jobClaimedAt: new Date() });
+      const made = await jobs.create({
+        userId: me,
+        type: 'handwriting_summary',
+        targetType: 'material',
+        targetId: note._id,
+        input: {},
+        status: 'queued',
+        progress: 0,
+        attempts: 0,
+        result: null,
+      });
+      setTimeout(() => {
+        void materials
+          .updateOne(
+            { _id: note._id },
+            {
+              $set: { 'processing.jobId': made._id },
+              $unset: { jobClaimToken: '', jobClaimedAt: '' },
+            },
+          )
+          .exec();
+      }, 400);
+
+      const res = await service.register(me.toHexString(), dto(), 'wait');
+
+      expect(res.job._id).toBe(made._id.toHexString());
+      expect(await jobs.countDocuments({ targetId: note._id })).toBe(1);
+    });
+
+    it('서버가 멈춰 남은 표시는 시간이 지나면 다른 요청이 다시 잡아 이어간다', async () => {
+      const note = await stuckNote('expired', {
+        jobClaimToken: 'dead',
+        jobClaimedAt: new Date(Date.now() - 2 * CLAIM_TTL_MS),
+      });
+
+      const res = await service.register(me.toHexString(), dto(), 'expired');
+
+      const row = await materials.findById(note._id).lean();
+      expect(row?.processing.jobId?.toString()).toBe(res.job._id);
+      expect(row?.jobClaimToken).toBeUndefined();
+      expect(await jobs.countDocuments({ targetId: note._id })).toBe(1);
+    });
+
+    it('표시 필드는 응답에 내보내지 않는다', async () => {
+      const res = await service.register(me.toHexString(), dto(), 'shape');
+      expect(res.material).not.toHaveProperty('jobClaimToken');
+      expect(res.material).not.toHaveProperty('jobClaimedAt');
+    });
   });
 
   it('지운 노트의 키로 다시 요청하면 409 (되살리지 않는다)', async () => {
