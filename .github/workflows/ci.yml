@@ -40,6 +40,16 @@ jobs:
     needs: detect
     if: needs.detect.outputs.node == 'true'
     runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:8.0.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -53,6 +63,11 @@ jobs:
         run: npm run typecheck --workspaces --if-present
       - name: Build
         run: npm run build --workspaces --if-present
+      - name: Study room service MongoDB integration
+        env:
+          STUDYROOM_TEST_MONGO_URI: mongodb://127.0.0.1:27017/notelink_test
+          REQUIRE_STUDYROOM_SERVICE_MONGO_TEST: 'true'
+        run: npm run test -w apps/api -- test/study-rooms-service-mongo.test.ts
       - name: Test
         run: npm run test --workspaces --if-present
 

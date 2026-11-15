@@ -35,7 +35,7 @@ import { StatusText } from './drawer';
 
 const DIRECT_MESSAGE_PAGE_SIZE = 50;
 
-type DirectHistory = { messages: Message[]; hasMore: boolean };
+type DirectHistory = { messages: Message[]; hasMore: boolean; nextBefore?: string };
 
 function mergeMessages(...groups: Message[][]): Message[] {
   return [...new Map(groups.flat().map((message) => [message._id, message])).values()].sort(
@@ -226,6 +226,8 @@ export function ChatScreen() {
       return {
         messages: mergeMessages(fetched, cached),
         hasMore: fetched.length === DIRECT_MESSAGE_PAGE_SIZE,
+        nextBefore:
+          fetched.length === DIRECT_MESSAGE_PAGE_SIZE ? fetched[0]?._id : undefined,
       };
     },
     enabled: !!room.data,
@@ -249,6 +251,7 @@ export function ChatScreen() {
     qc.setQueryData<DirectHistory>(['messages', m.chatRoomId], (previous) => ({
       messages: mergeMessages(previous?.messages ?? [], [m]),
       hasMore: previous?.hasMore ?? false,
+      nextBefore: previous?.nextBefore,
     }));
   };
   useSocket('chat:message', (m) => m.chatRoomId === room.data?._id && receiveMessage(m), [
@@ -265,6 +268,9 @@ export function ChatScreen() {
         qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
           messages: mergeMessages(previous?.messages ?? [], result.missed!),
           hasMore: previous?.hasMore ?? result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE,
+          nextBefore:
+            previous?.nextBefore ??
+            (result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE ? result.missed![0]?._id : undefined),
         }));
       });
     };
@@ -279,11 +285,11 @@ export function ChatScreen() {
   const loadOlderMessages = async (manualRetry = false) => {
     const chatRoomId = room.data?._id;
     const current = history.data;
-    const oldestMessage = current?.messages[0];
+    const nextBefore = current?.nextBefore;
     if (
       !chatRoomId ||
       !current?.hasMore ||
-      !oldestMessage ||
+      !nextBefore ||
       olderLoadingRef.current ||
       (olderError && !manualRetry)
     )
@@ -293,11 +299,12 @@ export function ChatScreen() {
     setOlderLoading(true);
     setOlderError(false);
     try {
-      const older = await api.social.messages(chatRoomId, oldestMessage._id);
+      const older = await api.social.messages(chatRoomId, nextBefore);
       restoreScroll.current = { offset: scrollOffset.current, contentHeight: contentHeight.current };
       qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
         messages: mergeMessages(older, previous?.messages ?? []),
         hasMore: older.length === DIRECT_MESSAGE_PAGE_SIZE,
+        nextBefore: older.length === DIRECT_MESSAGE_PAGE_SIZE ? older[0]?._id : undefined,
       }));
     } catch {
       setOlderError(true);
@@ -414,6 +421,7 @@ export function ChatScreen() {
         )}
         <FlatList
           ref={list}
+          testID="direct-chat-messages"
           data={history.data?.messages ?? []}
           keyExtractor={(m) => m._id}
           onContentSizeChange={handleContentSizeChange}

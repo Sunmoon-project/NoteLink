@@ -9,6 +9,9 @@ import { Friendship, FriendshipSchema } from '../src/modules/social/schemas/frie
 
 const uri = process.env.STUDYROOM_TEST_MONGO_URI;
 const local = uri && /^mongodb:\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1)(?::\d+)?\//.test(uri);
+if (process.env.REQUIRE_STUDYROOM_SERVICE_MONGO_TEST === 'true' && !local) {
+  throw new Error('REQUIRE_STUDYROOM_SERVICE_MONGO_TEST=true requires a local STUDYROOM_TEST_MONGO_URI.');
+}
 
 describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서비스', () => {
   const suffix = randomBytes(8).toString('hex');
