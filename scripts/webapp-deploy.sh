@@ -42,17 +42,47 @@ scm="https://$scm"
 auth=(-H "Authorization: Bearer $token")
 deadline=$(($(date +%s) + limit))
 
-# 남은 시간(초). 조회 한 번은 30초를 넘지 않게
+# 남은 시간(초). 요청 하나는 남은 시간과 상한(기본 30초) 가운데 짧은 쪽까지만: 업로드 · 첫 조회도
+# 정한 시간을 넘기지 않게(Codex 재리뷰 #410)
 left() { echo $((deadline - $(date +%s))); }
-cap() { local l; l=$(left); [ "$l" -lt 30 ] && echo $((l > 1 ? l : 1)) || echo 30; }
+cap() {
+  local max="${1:-30}" l
+  l=$(left)
+  [ "$l" -lt "$max" ] && echo $((l > 1 ? l : 1)) || echo "$max"
+}
 # 조회 간격만큼 쉬되 남은 시간을 넘기지 않음
 nap() { local l; l=$(left); [ "$l" -gt 0 ] && sleep $((delay < l ? delay : l)); return 0; }
 
-# 배포를 시작하기 전의 최근 배포 id: 시작 뒤에도 잠깐 이 기록이 latest로 보일 수 있어 건너뜀
-before=$(curl -sS --fail --max-time 30 "${auth[@]}" "$scm/api/deployments/latest" 2>/dev/null |
-  jq -r '.id // ""' 2>/dev/null) || before=""
+# 배포를 시작하기 전의 최근 배포 id: 시작 뒤에도 잠깐 이 기록이 latest로 보일 수 있어 건너뜀.
+# 배포 기록이 없으면(404) 건너뛸 id도 없음. 그 밖의 조회 실패는 다시 읽고, 끝내 못 읽으면 배포를
+# 시작하지 않음: 모른 채 시작하면 예전 배포를 이 배포로 보고, 그 배포가 성공이면 이 배포를 확인하지
+# 않고 성공으로 끝날 수 있음(Codex 재리뷰 #410)
+before=""
+last_error=""
+while :; do
+  out=$(curl -sS --max-time "$(cap)" "${auth[@]}" -w '\n%{http_code}' "$scm/api/deployments/latest" 2>&1)
+  rc=$?
+  http="${out##*$'\n'}"
+  body="${out%$'\n'*}"
+  if [ "$rc" -eq 0 ] && [ "$http" = 404 ]; then
+    echo "이 앱의 배포 기록 없음"
+    break
+  fi
+  if [ "$rc" -eq 0 ] && [ "$http" = 200 ] && before=$(jq -r '.id // ""' <<<"$body" 2>/dev/null); then
+    echo "배포 전 최근 배포 id: ${before:-없음}"
+    break
+  fi
+  before=""
+  last_error="HTTP ${http:-응답 없음} ${body}"
+  if [ "$(left)" -le 0 ]; then
+    echo "배포 전 최근 배포를 읽지 못해 배포를 시작하지 않았습니다(${limit}초). 마지막 조회 오류: $last_error" >&2
+    exit 1
+  fi
+  echo "배포 전 최근 배포를 다시 읽음($last_error)"
+  nap
+done
 
-code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 600 -X POST "${auth[@]}" \
+code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$(cap 600)" -X POST "${auth[@]}" \
   -H 'Content-Type: application/octet-stream' --data-binary "@$zip" \
   "$scm/api/publish?type=zip&async=true") || code=""
 if [ "$code" != "202" ] && [ "$code" != "200" ]; then

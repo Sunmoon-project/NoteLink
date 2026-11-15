@@ -17,22 +17,44 @@ case "$*" in
   *"webapp show"*) echo "$SCM_HOST" ;;
 esac
 SH
-  # 배포 시작(/api/publish)은 START 코드를 낸다. /api/deployments/latest와 배포 상태(deploymentStatus)는
-  # 각각 LATEST · STATUS의 줄을 차례로 낸다("fail"이면 조회 실패, 다 쓰면 마지막 줄을 되풀이).
-  # latest의 첫 줄은 배포를 시작하기 전의 최근 배포다
+  # 배포 시작(/api/publish)은 START 코드를 낸다(PUBLISH_SLEEP초 걸림). /api/deployments/latest와 배포
+  # 상태(deploymentStatus)는 각각 LATEST · STATUS의 줄을 차례로 낸다(다 쓰면 마지막 줄을 되풀이).
+  #   fail: 연결 실패(curl 7) · 404: 기록 없음(-w로 코드를 받으면 404, --fail이면 curl 22)
+  # latest는 배포 전 조회(-w)부터 센다. --max-time보다 오래 걸리는 응답은 curl처럼 28로 끝난다
   cat > "$BIN/curl" <<'SH'
 #!/usr/bin/env bash
 echo "$*" >> "$CALLS"
 url="${*: -1}"
+max=""
+withcode=""
+for ((i = 1; i <= $#; i++)); do
+  [ "${!i}" = --max-time ] && { j=$((i + 1)); max="${!j}"; }
+  [[ "${!i}" == *'%{http_code}'* ]] && withcode=1
+done
+wait_for() { # $1초 걸리는 응답: --max-time을 넘으면 그때 시간 초과
+  if [ -n "$max" ] && [ "$1" -gt "$max" ]; then
+    sleep "$max"
+    echo "curl: (28) Operation timed out after ${max}000 milliseconds"
+    exit 28
+  fi
+  sleep "$1"
+}
 answer() { # $1: 응답 파일, $2: 이 주소를 부른 횟수
   local line
   line=$(sed -n "${2}p" "$1")
   [ -n "$line" ] || line=$(tail -n 1 "$1")
-  [ "$line" = fail ] && { echo "curl: (22) The requested URL returned error: 404"; exit 22; }
+  [ "$line" = fail ] && { echo "curl: (7) Failed to connect"; exit 7; }
+  if [ "$line" = 404 ]; then
+    [ -n "$withcode" ] && { printf '{"Message":"no deployment"}\n404'; exit 0; }
+    echo "curl: (22) The requested URL returned error: 404"
+    exit 22
+  fi
   printf '%s' "$line"
+  [ -n "$withcode" ] && printf '\n200'
+  return 0
 }
 case "$url" in
-  */api/publish*) printf '%s' "$START" ;;
+  */api/publish*) wait_for "${PUBLISH_SLEEP:-0}"; printf '%s' "$START" ;;
   */api/deployments/latest) answer "$LATEST" "$(grep -c '/api/deployments/latest' "$CALLS")" ;;
   */deploymentStatus/*) answer "$STATUS" "$(grep -c '/deploymentStatus/' "$CALLS")" ;;
   *) echo "모르는 주소: $url"; exit 22 ;;
@@ -100,7 +122,7 @@ status_of() { printf '{"properties":{"status":"%s"%s}}' "$1" "${2:-}"; }
 
 @test "배포 상태가 아직 없으면(404) 다시 보고, 그 뒤 성공하면 0" {
   printf '%s\n' '{"id":"old"}' '{"id":"abc"}' > "$LATEST"
-  { echo fail; status_of RuntimeSuccessful; echo; } > "$STATUS"
+  { echo 404; echo fail; status_of RuntimeSuccessful; echo; } > "$STATUS"
   run_deploy
   [ "$status" -eq 0 ]
 }
@@ -122,12 +144,47 @@ status_of() { printf '{"properties":{"status":"%s"%s}}' "$1" "${2:-}"; }
   [[ "$output" == *"이 배포의 id를 찾지 못했습니다"* ]]
 }
 
-@test "시작 전 최근 배포가 없어도(조회 실패) 이 배포를 찾는다" {
-  printf '%s\n' fail '{"id":"abc"}' > "$LATEST"
+@test "배포 기록이 없으면(404) 건너뛸 id 없이 이 배포를 찾는다" {
+  printf '%s\n' 404 '{"id":"abc"}' > "$LATEST"
   status_of RuntimeSuccessful > "$STATUS"
   run_deploy
   [ "$status" -eq 0 ]
+  [[ "$output" == *"이 앱의 배포 기록 없음"* ]]
   [[ "$output" == *"배포 id: abc"* ]]
+}
+
+@test "배포 전 조회가 잠깐 실패하면 다시 읽어, 예전 · 임시 id를 건너뛰고 이 배포를 찾는다" {
+  # Codex 재리뷰 #410: 조회 실패를 '기록 없음'으로 보면 시작 뒤 잠깐 보이는 예전 배포(성공)를 이
+  # 배포로 잡아, 이 배포를 확인하지 않고 성공으로 끝났음
+  printf '%s\n' fail '{"id":"old"}' '{"id":"old"}' '{"id":"temp-1"}' '{"id":"abc"}' > "$LATEST"
+  status_of RuntimeSuccessful > "$STATUS"
+  run_deploy
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"배포 전 최근 배포를 다시 읽음"* ]]
+  [[ "$output" == *"배포 전 최근 배포 id: old"* ]]
+  [[ "$output" == *"배포 id: abc"* ]]
+  ! called "/deploymentStatus/old"
+}
+
+@test "배포 전 조회를 끝내 못 하면 배포를 시작하지 않고 1" {
+  echo fail > "$LATEST"
+  run_deploy 3
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"배포 전 최근 배포를 읽지 못해 배포를 시작하지 않았습니다"* ]]
+  ! called "/api/publish"
+}
+
+@test "업로드도 정한 시간 안에서만 기다린다" {
+  # Codex 재리뷰 #410: 업로드는 600초 상한이 따로 있어 짧은 limit을 넘겼음
+  printf '%s\n' '{"id":"old"}' > "$LATEST"
+  export PUBLISH_SLEEP=60
+  SECONDS=0
+  run_deploy 3
+  [ "$status" -eq 1 ]
+  [ "$SECONDS" -lt 15 ]
+  [[ "$output" == *"배포를 시작하지 못했습니다"* ]]
+  max=$(called "/api/publish" | grep -oE -- '--max-time [0-9]+' | awk '{ print $2 }')
+  [ "$max" -le 3 ]
 }
 
 @test "배포 시작이 202 · 200이 아니면 바로 1" {
