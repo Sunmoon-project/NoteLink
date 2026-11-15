@@ -34,26 +34,31 @@ export class ExpoPushService {
     const result: ExpoPushResult = { invalidTokens: [], failedTickets: [] };
     for (let offset = 0; offset < messages.length; offset += 100) {
       const batch = messages.slice(offset, offset + 100);
-      let response: Response | null = null;
-      let responseBody: ExpoPushResponse | null = null;
-      try {
-        response = await fetch('https://exp.host/--/api/v2/push/send', {
-          method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Accept-Encoding': 'gzip, deflate',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(batch),
-          signal: AbortSignal.timeout(10_000),
-        });
-        responseBody = (await response.json().catch(() => null)) as ExpoPushResponse | null;
-      } catch {
+      const batchResponse = await (async () => {
+        try {
+          const response = await fetch('https://exp.host/--/api/v2/push/send', {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json',
+              'Accept-Encoding': 'gzip, deflate',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(batch),
+            signal: AbortSignal.timeout(10_000),
+          });
+          const responseBody = (await response.json().catch(() => null)) as ExpoPushResponse | null;
+          return { response, responseBody };
+        } catch {
+          return null;
+        }
+      })();
+      if (!batchResponse) {
         for (const message of batch)
           result.failedTickets.push({ message, error: 'Expo Push Service 연결 실패' });
         continue;
       }
 
+      const { response, responseBody } = batchResponse;
       const requestError = !response.ok
         ? `Expo Push Service HTTP ${response.status}`
         : responseBody?.errors?.length
