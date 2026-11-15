@@ -371,6 +371,13 @@ describe('노트 등록 (MaterialsService.register)', () => {
   });
 });
 
+describe('읽기 주소 유효 시간', () => {
+  it('AI 입력용은 7일(앱의 다시 시도가 입력 주소를 새로 만들지 않는다), 응답용은 1시간', () => {
+    expect(AI_READ_SAS_MS).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(APP_READ_SAS_MS).toBe(60 * 60 * 1000);
+  });
+});
+
 describe('Idempotency-Key 헤더', () => {
   it('없으면 undefined, 있으면 공백 없는 128자 이하만', () => {
     expect(parseIdempotencyKey(undefined)).toBeUndefined();
