@@ -17,3 +17,10 @@ export function interestLabels(categories: InterestCategory[]): Map<string, stri
     }),
   );
 }
+
+/** 관심 분야 요약: 아는 분야는 이름으로, 서버에서 사라진 분야는 「사용할 수 없는 분야 N개」 하나로 묶는다 */
+export function interestSummary(ids: string[], labels: Map<string, string>) {
+  const known = ids.flatMap((id) => labels.get(id) ?? []);
+  const unknown = ids.length - known.length;
+  return [...known, ...(unknown ? [`사용할 수 없는 분야 ${unknown}개`] : [])].join(' · ');
+}

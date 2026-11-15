@@ -21,7 +21,7 @@ import { clearAccountState } from '@/lib/account';
 import { useAuth } from '@/stores/auth';
 import { useDevicePrefs } from '@/stores/device-prefs';
 import { toast } from '@/stores/toast';
-import { interestLabels } from '@/lib/interest-categories';
+import { interestLabels, interestSummary } from '@/lib/interest-categories';
 import { LoadError } from '../progress/load-error';
 import { forgetWrongNotes } from '../quiz/wrong-review';
 import {
@@ -386,7 +386,7 @@ export function AccountScreen() {
       '관심 분야',
       u?.interestCategoryIds?.length
         ? categories.data
-          ? u.interestCategoryIds.map((id) => labels.get(id) ?? '사용할 수 없는 분야').join(' · ')
+          ? interestSummary(u.interestCategoryIds, labels)
           : categories.isError
             ? '관심 분야를 불러오지 못했어요'
             : '불러오는 중…'
