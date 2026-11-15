@@ -4,6 +4,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -11,10 +12,12 @@ import { ERROR_CODES, UPLOAD_RULES } from '@notelink/shared';
 import { Model, Types } from 'mongoose';
 
 import { type AppAiJob, AiJobsService } from '../../../ai-jobs/ai-jobs.service.js';
+import { QuizSetsService } from '../../../quiz-sets/quiz-sets.service.js';
 import { BlobStorageService } from '../../upload/blob-storage.service.js';
 import { Folder } from '../schemas/folder.schema.js';
 import { Material } from '../schemas/material.schema.js';
 import type { CreateMaterialDto } from './dto/create-material.dto.js';
+import { syncFromJob } from './material-sync.js';
 import { type MaterialRow, toAppMaterial } from './material-view.js';
 
 type AppMaterial = ReturnType<typeof toAppMaterial>;
@@ -39,7 +42,7 @@ const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const KEY_FORMAT = /^[\x21-\x7e]+$/;
 
 const notFound = (what: string) =>
-  new NotFoundException({ code: ERROR_CODES.NOT_FOUND, message: `${what}을 찾을 수 없어요` });
+  new NotFoundException({ code: ERROR_CODES.NOT_FOUND, message: `${what} 정보를 찾을 수 없어요` });
 const invalid = (message: string) =>
   new BadRequestException({ code: ERROR_CODES.VALIDATION, message });
 const conflict = (message: string) =>
@@ -125,7 +128,10 @@ export class MaterialsService {
     @InjectModel(Folder.name) private readonly folders: Model<Folder>,
     private readonly jobs: AiJobsService,
     private readonly blobs: BlobStorageService,
+    private readonly quizSets: QuizSetsService,
   ) {}
+
+  private readonly logger = new Logger(MaterialsService.name);
 
   /**
    * 노트를 등록하고 정리 작업을 넣는다. 응답은 앱의 로컬 모의 API(content.createMaterial)와 같은 { material, job }.
@@ -322,6 +328,75 @@ export class MaterialsService {
       }),
     );
     return files;
+  }
+
+  /** 내 노트 한 개. 정리 중이면 끝난 작업의 결과를 먼저 옮긴다. 남의 것 · 지운 것 · 없는 것 · 잘못된 id 는 404 */
+  async findMine(userId: string, id: string): Promise<AppMaterial> {
+    const owner = new Types.ObjectId(userId);
+    const row = await this.materials
+      .findOne({ _id: objectId(id), ownerId: owner, deletedAt: null })
+      .lean<MaterialRow>();
+    if (!row) throw notFound('노트');
+    const synced = await this.sync(userId, row);
+    if (!synced) throw notFound('노트');
+    return this.view(synced);
+  }
+
+  /**
+   * 정리 작업의 상태 · 결과를 노트에 옮긴다(quiz-sets 의 sync 와 같은 방식: 조회할 때, 지금 상태일 때만 바꿔
+   * 여러 요청이 같이 옮겨도 한 번만 반영). 이미 끝난 노트는 작업을 읽지 않는다.
+   * 처리 완료로 바뀐 필기 · 문서는 이어서 첫 맞춤 퀴즈를 미리 만든다(실패해도 노트 조회는 성공).
+   * 그 사이 지웠으면 null
+   */
+  async sync(userId: string, row: MaterialRow): Promise<MaterialRow | null> {
+    const jobId = row.processing.jobId;
+    if (!jobId || row.processing.status === 'done') return row;
+    const job = await this.findJob(userId, jobId);
+    // 작업이 없어졌으면 정리가 끝날 수 없다. 처리 중이던 노트는 실패로
+    const update = job
+      ? syncFromJob(row, job)
+      : row.processing.status === 'failed'
+        ? null
+        : { 'processing.status': 'failed' };
+    if (!update) return row;
+    const filter = {
+      _id: row._id,
+      ownerId: row.ownerId,
+      deletedAt: null,
+      'processing.status': row.processing.status,
+    };
+    const updated = await this.materials
+      .findOneAndUpdate(filter, { $set: update }, { returnDocument: 'after' })
+      .lean<MaterialRow>();
+    if (!updated) {
+      // 다른 요청이 먼저 옮겼거나 그 사이 지웠다
+      return this.materials
+        .findOne({ _id: row._id, ownerId: row.ownerId, deletedAt: null })
+        .lean<MaterialRow>();
+    }
+    if (update['processing.status'] === 'done' && updated.kind !== 'recording') {
+      await this.pregenerate(userId, updated);
+    }
+    return updated;
+  }
+
+  private async findJob(userId: string, jobId: Types.ObjectId): Promise<AppAiJob | null> {
+    try {
+      return await this.jobs.findMine(userId, jobId.toString());
+    } catch (e) {
+      if (e instanceof NotFoundException) return null;
+      throw e;
+    }
+  }
+
+  /** 노트 정리가 끝나면 첫 맞춤 퀴즈를 미리 만들어 둔다(#134). 못 넣어도 노트 조회는 그대로 성공 */
+  private async pregenerate(userId: string, row: MaterialRow): Promise<void> {
+    try {
+      await this.quizSets.pregenerate(userId, row._id.toString());
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : '알 수 없는 오류';
+      this.logger.warn(`퀴즈 미리 만들기를 넣지 못했어요(노트 ${row._id.toString()}): ${reason}`);
+    }
   }
 
   /** 앱에 보낼 노트 한 개. 쪽 이미지는 읽기 SAS 로 바꾼다(저장소 설정이 없거나 만들지 못하면 원래 주소) */

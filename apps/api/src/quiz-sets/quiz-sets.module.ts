@@ -26,5 +26,7 @@ import { QuizSetsService } from './quiz-sets.service.js';
   ],
   controllers: [QuizSetsController],
   providers: [QuizSetsService],
+  // 노트 API 가 정리를 마친 노트의 첫 퀴즈를 미리 만든다(pregenerate)
+  exports: [QuizSetsService],
 })
 export class QuizSetsModule {}

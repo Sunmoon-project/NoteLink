@@ -27,6 +27,7 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
   let app: INestApplication;
   let token: string;
   const register = vi.fn();
+  const findMine = vi.fn();
 
   beforeAll(async () => {
     stubAppEnv();
@@ -34,7 +35,7 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
       .overrideProvider(getModelToken(RefreshToken.name))
       .useValue(createFakeRefreshTokens().model)
       .overrideProvider(MaterialsService)
-      .useValue({ register })
+      .useValue({ register, findMine })
       .compile();
     app = ref.createNestApplication();
     configureApp(app);
@@ -49,6 +50,7 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
 
   beforeEach(() => {
     register.mockReset();
+    findMine.mockReset();
     register.mockResolvedValue({ material: { _id: 'm' }, job: { _id: 'j' } });
   });
 
@@ -113,5 +115,17 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
       blobUrls: Array.from({ length: 50 }, (_, i) => `https://x/${i}.jpg`),
     }).expect(201);
     await post({ ...body, avatarItemId: null }).expect(201);
+  });
+  it('GET /materials/:id: 로그인이 필요하고, { data } 로 노트를 돌려준다', async () => {
+    findMine.mockResolvedValue({ _id: 'm1' });
+    await request(app.getHttpServer())
+      .get(api(PATHS.material('m1')))
+      .expect(401);
+    const res = await request(app.getHttpServer())
+      .get(api(PATHS.material('m1')))
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(res.body).toEqual({ data: { _id: 'm1' } });
+    expect(findMine).toHaveBeenCalledWith(me.toHexString(), 'm1');
   });
 });

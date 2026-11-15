@@ -71,13 +71,15 @@ function setup(over: { folder?: unknown; size?: number } = {}) {
       }),
     ),
   };
+  const quizSets = { pregenerate: vi.fn() };
   const service = new MaterialsService(
     materials as never,
     folders as never,
     jobs as never,
     blobs as never,
+    quizSets as never,
   );
-  return { service, materials, folders, jobs, blobs };
+  return { service, materials, folders, jobs, blobs, quizSets };
 }
 
 const code = async (p: Promise<unknown>) =>

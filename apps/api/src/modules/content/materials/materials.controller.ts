@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Req, UseGuards } from '@nestjs/common';
 import type { AiJob, Material } from '@notelink/shared';
 
 import { requireUserId } from '../../../common/request-user.js';
@@ -25,5 +25,14 @@ export class MaterialsController {
         job: AiJob;
       },
     };
+  }
+
+  /** 노트 한 개. 정리 중이면 끝난 작업의 결과를 먼저 옮긴다 */
+  @Get('materials/:id')
+  async findOne(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ): Promise<{ data: Material }> {
+    return { data: (await this.materials.findMine(requireUserId(req), id)) as Material };
   }
 }

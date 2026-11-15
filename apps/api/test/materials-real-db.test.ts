@@ -22,6 +22,7 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
   let jobs: Model<AiJob>;
   let service: MaterialsService;
   let blobs: { createReadAccess: ReturnType<typeof vi.fn> };
+  const quizSets = { pregenerate: vi.fn() };
   const me = new Types.ObjectId();
   const other = new Types.ObjectId();
   let folderId: string;
@@ -43,6 +44,7 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       folders as never,
       new AiJobsService(jobs as never),
       blobs as never,
+      quizSets as never,
     );
   });
 
@@ -220,5 +222,167 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       processing: { status: 'queued', progress: 0 },
     });
     expect(await materials.countDocuments()).toBe(2);
+  });
+  describe('조회할 때 끝난 작업 반영 (GET /materials/:id)', () => {
+    const finish = (jobId: string, result: Record<string, unknown>) =>
+      jobs.updateOne({ _id: jobId }, { $set: { status: 'succeeded', progress: 100, result } });
+    const noteResult = {
+      pages: [{ pageNo: 1, ocrText: '첫 쪽 글' }],
+      lineResults: [],
+      warnings: [],
+      chunks: [
+        {
+          order: 1,
+          title: '미분',
+          path: [],
+          text: '정의',
+          lines: [{ pageNo: 1 }],
+          concept: '미분',
+          conceptStatus: 'auto',
+          embedding: [0.1],
+        },
+      ],
+    };
+
+    beforeEach(() => {
+      quizSets.pregenerate.mockReset();
+    });
+
+    it('진행 중이면 진행률만 옮기고, 작업이 끝나기 전에는 퀴즈를 만들지 않는다', async () => {
+      const { material, job } = await service.register(me.toHexString(), dto());
+      await jobs.updateOne({ _id: job._id }, { $set: { status: 'running', progress: 40 } });
+      const got = await service.findMine(me.toHexString(), material._id);
+      expect(got.processing).toMatchObject({ status: 'processing', progress: 40 });
+      expect(got.summary).toBeNull();
+      expect(quizSets.pregenerate).not.toHaveBeenCalled();
+    });
+
+    it('성공하면 쪽 글 · 소제목 · 키워드를 채워 완료로, 개념 캐시를 비우고 퀴즈 미리 만들기를 한 번만 부른다', async () => {
+      const { material, job } = await service.register(me.toHexString(), dto());
+      await materials.updateOne({ _id: material._id }, { $set: { concepts: ['옛 개념'] } });
+      await finish(job._id, noteResult);
+
+      // 여러 요청이 동시에 조회해도 한 번만 반영된다
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () => service.findMine(me.toHexString(), material._id)),
+      );
+      for (const got of results) {
+        expect(got.processing).toMatchObject({ status: 'done', progress: 100 });
+        expect(got.pages?.[0]?.ocrText).toBe('첫 쪽 글');
+        expect(got.summary).toEqual({ sections: [{ heading: '미분', body: '정의' }], points: [] });
+        expect(got.keywords).toEqual(['미분']);
+      }
+      const row = await materials.findById(material._id).lean();
+      expect(row?.concepts).toEqual([]);
+      expect(JSON.stringify(row)).not.toContain('embedding');
+      expect(quizSets.pregenerate).toHaveBeenCalledTimes(1);
+      expect(quizSets.pregenerate).toHaveBeenCalledWith(me.toHexString(), material._id);
+      // 끝난 노트는 다시 조회해도 작업을 읽지 않고 다시 미리 만들지 않는다
+      await service.findMine(me.toHexString(), material._id);
+      expect(quizSets.pregenerate).toHaveBeenCalledTimes(1);
+    });
+
+    it('퀴즈 미리 만들기가 실패해도 노트 조회는 성공한다', async () => {
+      const { material, job } = await service.register(me.toHexString(), dto());
+      await finish(job._id, noteResult);
+      quizSets.pregenerate.mockRejectedValueOnce(new Error('LLM 한도'));
+      const got = await service.findMine(me.toHexString(), material._id);
+      expect(got.processing.status).toBe('done');
+    });
+
+    it('실패 · 취소는 처리 실패로, 다시 시도해 성공하면 완료로 되살아난다', async () => {
+      const { material, job } = await service.register(me.toHexString(), dto());
+      await jobs.updateOne({ _id: job._id }, { $set: { status: 'canceled' } });
+      expect((await service.findMine(me.toHexString(), material._id)).processing.status).toBe(
+        'failed',
+      );
+
+      await jobs.updateOne({ _id: job._id }, { $set: { status: 'running', progress: 10 } });
+      expect((await service.findMine(me.toHexString(), material._id)).processing).toMatchObject({
+        status: 'processing',
+        progress: 10,
+      });
+      await finish(job._id, noteResult);
+      expect((await service.findMine(me.toHexString(), material._id)).processing.status).toBe(
+        'done',
+      );
+      expect(quizSets.pregenerate).toHaveBeenCalledTimes(1);
+    });
+
+    it('작업이 없어졌으면 처리 실패로 본다', async () => {
+      const { material, job } = await service.register(me.toHexString(), dto());
+      await jobs.deleteOne({ _id: job._id });
+      expect((await service.findMine(me.toHexString(), material._id)).processing.status).toBe(
+        'failed',
+      );
+    });
+
+    it('PDF 문서는 결과의 쪽 수만큼 펼치고, 소제목은 핵심 요약(points)이 된다', async () => {
+      const pdf = `https://a.blob.core.windows.net/c/uploads/document/${me.toHexString()}/550e8400-e29b-41d4-a716-446655440009.pdf`;
+      const { material, job } = await service.register(
+        me.toHexString(),
+        dto({ kind: 'document', source: 'file', blobUrls: [pdf] }),
+      );
+      await finish(job._id, {
+        pages: [
+          { pageNo: 1, ocrText: 'a' },
+          { pageNo: 2, ocrText: 'b' },
+          { pageNo: 3, ocrText: 'c' },
+        ],
+        chunks: [
+          { order: 1, title: '서론', text: 'a', lines: [] },
+          { order: 2, title: '본론', text: 'b', lines: [] },
+        ],
+      });
+      const got = await service.findMine(me.toHexString(), material._id);
+      expect(got.pages?.map((p) => [p.pageNo, p.ocrText])).toEqual([
+        [1, 'a'],
+        [2, 'b'],
+        [3, 'c'],
+      ]);
+      expect(got.summary?.points).toEqual(['서론', '본론']);
+      const row = await materials.findById(material._id).lean();
+      expect(row?.pages?.every((p) => p.imageUrl === pdf)).toBe(true);
+    });
+
+    it('녹음은 슬라이드를 소제목으로 옮기고 퀴즈 미리 만들기를 부르지 않는다', async () => {
+      const audio = `https://a.blob.core.windows.net/c/uploads/audio/${me.toHexString()}/550e8400-e29b-41d4-a716-446655440008.m4a`;
+      const { material, job } = await service.register(
+        me.toHexString(),
+        dto({ kind: 'recording', source: 'audio_file', blobUrls: [audio] }),
+      );
+      await finish(job._id, {
+        durationMs: 200000,
+        slides: [{ title: '도입', summary: '시작', startMs: 0, endMs: 10 }],
+      });
+      const got = await service.findMine(me.toHexString(), material._id);
+      expect(got.summary).toEqual({ sections: [{ heading: '도입', body: '시작' }], points: [] });
+      expect(got.processing.status).toBe('done');
+      expect(quizSets.pregenerate).not.toHaveBeenCalled();
+    });
+
+    it('응답의 쪽 이미지는 읽기 SAS 주소이고 DB 에는 SAS 없는 주소만 있다', async () => {
+      const { material } = await service.register(me.toHexString(), dto());
+      const got = await service.findMine(me.toHexString(), material._id);
+      expect(got.pages?.[0]?.imageUrl).toBe(`${url(1)}?sig=SECRET`);
+      expect(JSON.stringify(await materials.findById(material._id).lean())).not.toContain('SECRET');
+    });
+
+    it('남의 노트 · 지운 노트 · 없는 노트 · 잘못된 id 는 모두 404', async () => {
+      const { material } = await service.register(me.toHexString(), dto());
+      const ids = [
+        [other.toHexString(), material._id],
+        [me.toHexString(), new Types.ObjectId().toHexString()],
+        [me.toHexString(), 'not-an-id'],
+        [me.toHexString(), '../users/me'],
+      ] as const;
+      for (const [user, id] of ids) {
+        await expect(service.findMine(user, id)).rejects.toMatchObject({ status: 404 });
+      }
+      await materials.updateOne({ _id: material._id }, { $set: { deletedAt: new Date() } });
+      await expect(service.findMine(me.toHexString(), material._id)).rejects.toMatchObject({
+        status: 404,
+      });
+    });
   });
 });
