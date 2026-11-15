@@ -71,8 +71,8 @@ export class StudyRoomsController {
   ) {
     const invitation = await this.rooms.invite(requireUserId(req), id, body.userIds);
     const messages = await Promise.all(
-      invitation.targetUserIds.map((targetUserId) =>
-        this.chat.sendRoomInvite(requireUserId(req), targetUserId, invitation.room),
+      invitation.invitations.map(({ targetUserId, invitationId }) =>
+        this.chat.sendRoomInvite(requireUserId(req), targetUserId, invitation.room, invitationId),
       ),
     );
     await Promise.all(messages.map((message) => this.gateway.notifyDirectMessage(message)));

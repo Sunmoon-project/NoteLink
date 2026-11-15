@@ -67,8 +67,17 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
     const userB = userA === host ? friend : host;
     await friendships.create({ userA, userB, requesterId: host, status: 'accepted' });
 
-    await service.invite(String(host), created._id, [String(friend)]);
-    await service.invite(String(host), created._id, [String(friend)]);
+    const first = await service.invite(String(host), created._id, [String(friend)]);
+    const duplicate = await service.invite(String(host), created._id, [String(friend)]);
+    expect(first.invitations).toEqual(duplicate.invitations);
+    expect(first.invitations[0]?.invitationId).toBeTruthy();
+    await rooms.updateOne(
+      { _id: created._id, 'members.userId': friend },
+      { $unset: { 'members.$.invitationId': 1 } },
+    );
+    const legacyPending = await service.invite(String(host), created._id, [String(friend)]);
+    expect(legacyPending.invitations[0]?.invitationId).toBeTruthy();
+    expect(legacyPending.invitations[0]?.invitationId).not.toBe(first.invitations[0]?.invitationId);
 
     const stored = await rooms.findById(created._id).lean().orFail();
     expect(stored.members.filter((member) => member.userId.equals(friend))).toHaveLength(1);
@@ -88,10 +97,10 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
     const userB = userA === host ? friend : host;
     await friendships.create({ userA, userB, requesterId: host, status: 'accepted' });
 
-    await service.invite(String(host), created._id, [String(friend)]);
+    const first = await service.invite(String(host), created._id, [String(friend)]);
     await service.joinRoom(String(friend), created.inviteCode);
     await service.leaveRoom(String(friend), created._id);
-    await service.invite(String(host), created._id, [String(friend)]);
+    const reinvitation = await service.invite(String(host), created._id, [String(friend)]);
 
     const stored = await rooms.findById(created._id).lean().orFail();
     expect(stored.members.filter((member) => member.userId.equals(friend))).toHaveLength(1);
@@ -101,6 +110,8 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
       leaveReason: null,
       leftAt: null,
     });
+    expect(reinvitation.invitations[0]?.invitationId).toBeTruthy();
+    expect(reinvitation.invitations[0]?.invitationId).not.toBe(first.invitations[0]?.invitationId);
     expect(stored.memberCount).toBe(1);
   });
   afterAll(async () => {

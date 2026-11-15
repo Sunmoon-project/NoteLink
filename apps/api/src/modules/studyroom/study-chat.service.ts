@@ -64,11 +64,12 @@ export class StudyChatService {
     senderId: string,
     targetUserId: string,
     room: { _id: string; title: string; inviteCode: string },
+    invitationId: string,
   ) {
     const chat = await this.getDirectChat(senderId, targetUserId);
     const sender = new Types.ObjectId(senderId);
     const target = new Types.ObjectId(targetUserId);
-    const clientId = `room_invite_${room._id}_${targetUserId}`;
+    const clientId = `room_invite_${invitationId}`;
     const key = { chatRoomId: chat._id, senderId: sender, clientId };
     const message = await this.messages
       .findOneAndUpdate(
@@ -202,13 +203,28 @@ export class StudyChatService {
         message: '대화 기록 위치가 올바르지 않습니다.',
       });
     }
+    const chatRoomObjectId = new Types.ObjectId(chatId);
+    const beforeId = before ? new Types.ObjectId(before) : undefined;
+    const beforeMessage = beforeId
+      ? await this.messages
+          .findOne({ _id: beforeId, chatRoomId: chatRoomObjectId }, { createdAt: 1 })
+          .lean<{ createdAt?: Date }>()
+      : null;
+    const beforeCreatedAt = beforeMessage?.createdAt ?? beforeId?.getTimestamp();
     const messages = await this.messages
       .find({
-        chatRoomId: new Types.ObjectId(chatId),
+        chatRoomId: chatRoomObjectId,
         deletedAt: null,
-        ...(before ? { _id: { $lt: new Types.ObjectId(before) } } : {}),
+        ...(beforeId && beforeCreatedAt
+          ? {
+              $or: [
+                { createdAt: { $lt: beforeCreatedAt } },
+                { createdAt: beforeCreatedAt, _id: { $lt: beforeId } },
+              ],
+            }
+          : {}),
       })
-      .sort({ _id: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .limit(50)
       .lean();
     const users = await this.users

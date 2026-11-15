@@ -56,7 +56,7 @@ describe('1:1 채팅 스터디룸 초대 메시지', () => {
     const { service, chats, messages } = setup();
     const invite = { _id: '64b000000000000000000001', title: '함께 공부방', inviteCode: 'AB12CD' };
 
-    const sent = await service.sendRoomInvite(String(me), String(friend), invite);
+    const sent = await service.sendRoomInvite(String(me), String(friend), invite, 'invite-attempt-1');
 
     expect(chats.findOneAndUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ directKey: expect.stringMatching(/^[a-f0-9]{24}:[a-f0-9]{24}$/) }),
@@ -64,7 +64,11 @@ describe('1:1 채팅 스터디룸 초대 메시지', () => {
       expect.objectContaining({ upsert: true }),
     );
     expect(messages.findOneAndUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ chatRoomId: directChat._id, senderId: me }),
+      expect.objectContaining({
+        chatRoomId: directChat._id,
+        senderId: me,
+        clientId: 'room_invite_invite-attempt-1',
+      }),
       expect.objectContaining({
         $setOnInsert: expect.objectContaining({
           type: 'study_room_invite',
@@ -81,6 +85,21 @@ describe('1:1 채팅 스터디룸 초대 메시지', () => {
       type: 'study_room_invite',
       studyRoomInvite: { roomId: invite._id, title: invite.title, inviteCode: invite.inviteCode },
     });
+  });
+
+  it('같은 초대 재시도는 같은 clientId를 쓰고 새 초대는 다른 clientId를 쓴다', async () => {
+    const { service, messages } = setup();
+    const invite = { _id: '64b000000000000000000001', title: '함께 공부방', inviteCode: 'AB12CD' };
+
+    await service.sendRoomInvite(String(me), String(friend), invite, 'attempt-1');
+    await service.sendRoomInvite(String(me), String(friend), invite, 'attempt-1');
+    await service.sendRoomInvite(String(me), String(friend), invite, 'attempt-2');
+
+    expect(messages.findOneAndUpdate.mock.calls.map(([filter]) => filter.clientId)).toEqual([
+      'room_invite_attempt-1',
+      'room_invite_attempt-1',
+      'room_invite_attempt-2',
+    ]);
   });
 
   it('친구 관계가 없는 사용자에게는 DM을 만들지 않는다', async () => {

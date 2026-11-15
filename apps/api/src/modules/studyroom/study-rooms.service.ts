@@ -1,4 +1,4 @@
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 
 import {
   BadRequestException,
@@ -110,6 +110,8 @@ export class StudyRoomsService {
 
     if (targetsToInvite.length) {
       const invitedAt = new Date();
+      const reinviteInvitations = reinviteIds.map((userId) => ({ userId, invitationId: randomUUID() }));
+      const newInvitations = newInviteIds.map((userId) => ({ userId, invitationId: randomUUID() }));
       const eligibility = [
         ...newInviteIds.map((targetId) => ({
           members: { $not: { $elemMatch: { userId: targetId } } },
@@ -162,16 +164,35 @@ export class StudyRoomsService {
                         $cond: [
                           { $in: ['$$member.userId', reinviteIds] },
                           {
-                            $mergeObjects: [
-                              '$$member',
-                              {
-                                status: 'invited',
-                                invitedAt,
-                                joinedAt: null,
-                                leftAt: null,
-                                leaveReason: null,
+                            $let: {
+                              vars: {
+                                invitation: {
+                                  $arrayElemAt: [
+                                    {
+                                      $filter: {
+                                        input: { $literal: reinviteInvitations },
+                                        as: 'candidate',
+                                        cond: { $eq: ['$$candidate.userId', '$$member.userId'] },
+                                      },
+                                    },
+                                    0,
+                                  ],
+                                },
                               },
-                            ],
+                              in: {
+                                $mergeObjects: [
+                                  '$$member',
+                                  {
+                                    status: 'invited',
+                                    invitedAt,
+                                    invitationId: '$$invitation.invitationId',
+                                    joinedAt: null,
+                                    leftAt: null,
+                                    leaveReason: null,
+                                  },
+                                ],
+                              },
+                            },
                           },
                           '$$member',
                         ],
@@ -180,10 +201,11 @@ export class StudyRoomsService {
                   },
                   {
                     $map: {
-                      input: { $literal: newInviteIds },
-                      as: 'targetId',
+                    input: { $literal: newInvitations },
+                    as: 'invitation',
                       in: {
-                        userId: '$$targetId',
+                      userId: '$$invitation.userId',
+                      invitationId: '$$invitation.invitationId',
                         role: 'member',
                         status: 'invited',
                         invitedAt: { $literal: invitedAt },
@@ -210,9 +232,32 @@ export class StudyRoomsService {
           });
       }
     }
+    const legacyInvitedIds = targetObjectIds.filter((targetId) => {
+      const member = room.members.find((item) => item.userId.equals(targetId));
+      return member?.status === 'invited' && !member.invitationId;
+    });
+    for (const targetId of legacyInvitedIds) {
+      await this.rooms.updateOne(
+        {
+          _id: roomObjectId,
+          closedAt: null,
+          members: { $elemMatch: { userId: targetId, status: 'invited', invitationId: null } },
+        },
+        { $set: { 'members.$.invitationId': randomUUID() } },
+      );
+    }
+    const latestRoom = targetsToInvite.length || legacyInvitedIds.length
+      ? await this.rooms.findById(roomObjectId).lean()
+      : room;
+    const invitations = targetObjectIds.flatMap((targetId) => {
+      const member = latestRoom?.members.find((item) => item.userId.equals(targetId));
+      return member?.status === 'invited' && member.invitationId
+        ? [{ targetUserId: String(targetId), invitationId: member.invitationId }]
+        : [];
+    });
     return {
       room: { _id: String(room._id), title: room.title, inviteCode: room.inviteCode },
-      targetUserIds: targetObjectIds.map(String),
+      invitations,
     };
   }
 

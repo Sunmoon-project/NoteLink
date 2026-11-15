@@ -234,10 +234,16 @@ describe('스터디룸 친구 초대', () => {
     friendships.countDocuments.mockResolvedValue(1);
     users.find.mockReturnValue({ select: () => query([{ _id: friendId }]) });
     rooms.updateOne.mockResolvedValue({ modifiedCount: 1 });
+    rooms.findById.mockReturnValue(
+      query({ members: [{ userId: friendId, status: 'invited', invitationId: 'invite-id' }] }),
+    );
 
     await expect(
       service.invite(String(userId), String(roomId), [String(friendId)]),
-    ).resolves.toMatchObject({ room: { _id: String(roomId) }, targetUserIds: [String(friendId)] });
+    ).resolves.toMatchObject({
+      room: { _id: String(roomId) },
+      invitations: [{ targetUserId: String(friendId), invitationId: 'invite-id' }],
+    });
     const [filter, update, options] = rooms.updateOne.mock.calls[0]!;
     expect(filter).toMatchObject({ _id: roomId, closedAt: null });
     expect(update).toEqual([
@@ -268,10 +274,15 @@ describe('스터디룸 친구 초대', () => {
     friendships.countDocuments.mockResolvedValue(1);
     users.find.mockReturnValue({ select: () => query([{ _id: friendId }]) });
     rooms.updateOne.mockResolvedValue({ modifiedCount: 1 });
+    rooms.findById.mockReturnValue(
+      query({ members: [{ userId: friendId, status: 'invited', invitationId: 'reinvite-id' }] }),
+    );
 
     await expect(
       service.invite(String(userId), String(roomId), [String(friendId)]),
-    ).resolves.toMatchObject({ targetUserIds: [String(friendId)] });
+    ).resolves.toMatchObject({
+      invitations: [{ targetUserId: String(friendId), invitationId: 'reinvite-id' }],
+    });
     const [filter, pipeline, options] = rooms.updateOne.mock.calls[0]!;
     expect(filter.$and).toContainEqual({
       members: {
