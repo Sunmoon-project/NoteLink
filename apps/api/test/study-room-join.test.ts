@@ -238,7 +238,7 @@ describe('스터디룸 친구 초대', () => {
     await expect(
       service.invite(String(userId), String(roomId), [String(friendId)]),
     ).resolves.toMatchObject({ room: { _id: String(roomId) }, targetUserIds: [String(friendId)] });
-    const [filter, update] = rooms.updateOne.mock.calls[0]!;
+    const [filter, update, options] = rooms.updateOne.mock.calls[0]!;
     expect(filter).toMatchObject({ _id: roomId, closedAt: null });
     expect(update).toEqual([
       {
@@ -248,6 +248,7 @@ describe('스터디룸 친구 초대', () => {
       },
     ]);
     expect(JSON.stringify(update)).toContain('invited');
+    expect(options).toEqual({ updatePipeline: true });
   });
 
   it('자진 퇴장한 친구를 기존 멤버 기록을 재사용해 다시 초대한다', async () => {
@@ -271,7 +272,7 @@ describe('스터디룸 친구 초대', () => {
     await expect(
       service.invite(String(userId), String(roomId), [String(friendId)]),
     ).resolves.toMatchObject({ targetUserIds: [String(friendId)] });
-    const [filter, pipeline] = rooms.updateOne.mock.calls[0]!;
+    const [filter, pipeline, options] = rooms.updateOne.mock.calls[0]!;
     expect(filter.$and).toContainEqual({
       members: {
         $elemMatch: {
@@ -284,6 +285,7 @@ describe('스터디룸 친구 초대', () => {
     expect(JSON.stringify(pipeline)).toContain('leftAt');
     expect(JSON.stringify(pipeline)).toContain('invited');
     expect(JSON.stringify(pipeline)).not.toContain('$push');
+    expect(options).toEqual({ updatePipeline: true });
   });
 
   it('남은 정원보다 많은 친구를 일괄 초대하면 일부도 초대 상태로 저장하지 않는다', async () => {

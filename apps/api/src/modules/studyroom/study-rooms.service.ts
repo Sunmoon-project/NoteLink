@@ -194,7 +194,8 @@ export class StudyRoomsService {
               },
             },
           },
-        ] as never,
+        ],
+        { updatePipeline: true },
       );
       if (!result.modifiedCount) {
         const latest = await this.rooms.findById(roomObjectId).lean();
