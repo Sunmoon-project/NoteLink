@@ -24,7 +24,8 @@ result — NestJS가 반영합니다
   baseSetId      materialId · folderId를 따올 세트(첫 문제가 나온 세트). sourceSetId는 null
   srsUpdates     [{quizSetId, questionId, srs}] 원래 문제의 복습 상태: 사본으로 넘겨줌(moved,
                  dueBefore에 옛 날짜) · 결함(flawed) · 검사 통과(checked) · 다시 만들 날
-                 (flawTries) · reviews에서 이미 뺀 무효 풀이 수(voidedReviews, 그대로 저장).
+                 (flawTries) · reviews에서 이미 뺀 무효 풀이 수(voidedReviews, 그대로 저장) ·
+                 새 문제가 처음 이어받은 푼 횟수(carriedReviews) · 끝난 시각(endedAt).
                  결함 문제의 무효 풀이를 빼고 다시 세어 연속 정답이 차면 다 익힘(mastered, dueAt
                  null, flaw에 결함 이유): 새 문제로 바꾸지 않고 복습에서 뺌
   voidAnswers    [{attemptId, questionId, void}] 무효로 할 풀이. void(이유 글)를 그 풀이에 씀
@@ -281,11 +282,13 @@ def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], void_count: int) -
     무효로 한 것 포함).
     같은 낱말이라도 다른 문제(다른 세트에서 따로 만든 문제)의 풀이는 넣지 않습니다:
     이 문제를 한 번도 맞히지 않았는데 다 익힘이 될 수 있음.
-    이 문제가 시작한 상태에서 kept를 srs.update로 다시 풉니다. 시작 상태는 저장값으로
-    거꾸로 셉니다: 이어받은 횟수 = 저장된 reviews + voidedReviews − void_count − len(kept)
-    (0보다 작으면 0). 저장된 reviews는 푼 풀이 전체에서 voidedReviews(이미 뺀 무효 풀이 수)만큼
-    빠진 값이라, 무효 풀이를 모두 빼고 남은 풀이를 빼면 이어받은 횟수가 됩니다. 되살린 뒤
-    voidedReviews = void_count로 두므로, 되살린 상태를 다시 넣어도 결과가 같습니다(멱등).
+    이 문제가 시작한 상태에서 kept를 srs.update로 다시 풉니다. 이어받은 횟수는 저장된
+    carriedReviews(#113)를 씁니다: 무효 풀이가 언제 무효가 되었든(처음부터 void로 저장된 풀이도)
+    맞습니다. carriedReviews가 없는 예전 기록만 저장값으로 거꾸로 셉니다: 저장된 reviews +
+    voidedReviews − void_count − len(kept)(0보다 작으면 0). 저장된 reviews는 푼 풀이 전체에서
+    voidedReviews(이미 뺀 무효 풀이 수)만큼 빠진 값이라는 가정이라, 처음부터 무효였던 풀이가
+    있으면 하나 적게 나옵니다. 되살린 뒤 voidedReviews = void_count로 두므로, 되살린 상태를 다시
+    넣어도 결과가 같습니다(멱등).
     0이면 처음 낸 문제(srs 없음), 아니면 다시 보기 새 문제(srs.fresh: step 0, 이어받은 횟수).
     이어받은 횟수가 0이면 처음부터 다시 센 streak · step이 정확해서 그 값을 씁니다(첫 풀이인
     오답을 빼면 step이 줄 수 있음: [오답, 정답]은 1, [정답]은 0). 남은 풀이도 없으면(풀이가 모두
@@ -294,9 +297,13 @@ def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], void_count: int) -
     있으면 streak · step은 다시 센 값과 저장값 중 큰 쪽을 씁니다.
     reviews는 다시 센 값(이어받은 횟수 + 남은 풀이 수). lastResult는 남은
     마지막 풀이(없으면 None). dueAt은 그대로(오늘 날짜가 된 복습)이고, 연속 정답이 차면
-    mastered · dueAt 없음입니다. 다른 필드(checked · flawTries 등)는 그대로 둡니다.
+    mastered · dueAt 없음(endedAt은 남은 마지막 풀이 시각)입니다. 다른 필드(checked · flawTries ·
+    carriedReviews 등)는 그대로 둡니다.
     """
-    carried = max(0, st["reviews"] + st.get("voidedReviews", 0) - void_count - len(kept))
+    if "carriedReviews" in st:
+        carried = max(0, st["carriedReviews"])
+    else:
+        carried = max(0, st["reviews"] + st.get("voidedReviews", 0) - void_count - len(kept))
     replay: srs.Srs | None = None
     if carried:
         replay = {
@@ -308,7 +315,7 @@ def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], void_count: int) -
             "state": "active",
         }
     for t, ok in kept:
-        replay = srs.update(replay, ok, t)
+        replay = srs.update(replay, ok, t, t)
     streak, step = (replay["streak"], replay["step"]) if replay else (0, 0)
     if carried:  # 이어받은 연속 정답 · 단계를 몰라 저장값보다 낮추지 않음
         streak, step = max(streak, st["streak"]), max(step, st["step"])
@@ -322,6 +329,8 @@ def _restored(st: srs.Srs, kept: list[tuple[datetime, bool]], void_count: int) -
     }
     if out["streak"] >= srs.MASTER_STREAK:
         out["state"], out["dueAt"] = "mastered", None
+        if kept:
+            out["endedAt"] = kept[-1][0]
     return out
 
 
@@ -504,6 +513,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
                     "state": "active",
                     "checked": True,
                     "dueAt": cast(srs.Srs, new["srs"])["dueAt"],
+                    "carriedReviews": st["reviews"],  # 새 문제는 지금까지 푼 횟수를 이어받음(#113)
                 }
                 carry.pop("flaw", None)
                 carry.pop("movedTo", None)

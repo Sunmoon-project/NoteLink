@@ -440,6 +440,55 @@ def test_answers_voided_before_still_restore_the_review_state() -> None:
     assert (s["reviews"], s["step"], s["voidedReviews"]) == (1, 0, 1)
 
 
+def test_an_answer_void_from_the_start_does_not_lower_the_carried_reviews() -> None:
+    # #113 2번: 처음부터 void로 저장된 풀이(오답 복습이 세지 않음)가 있어도 이어받은 횟수는
+    # 저장된 carriedReviews(2)로 셈. 저장된 reviews 4 = 이어받은 2 + 맞힘 1 + secured 오답 1
+    inp = flawed_input(unchecked(reviews=4, step=2, carriedReviews=2))
+    never = {"questionId": "q1", "answer": "w1", "correct": False, "void": True}
+    inp["attempts"].append(
+        {"id": "a9", "quizSetId": "s1", "finishedAt": "2026-10-15T06:00:00Z", "answers": [never]}
+    )
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
+    s = updates(run(llm, inp))["q1"]
+    # 이어받은 2 + 남은 맞힘 1. 예전 셈(4 − 무효 2 − 남은 1 = 1)이면 2가 됨
+    assert (s["reviews"], s["carriedReviews"], s["voidedReviews"]) == (3, 2, 2)
+
+
+def test_a_broken_carried_count_is_not_below_zero() -> None:
+    s = updates(
+        run(
+            FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]}),
+            flawed_input(unchecked(carriedReviews=-3)),
+        )
+    )["q1"]
+    assert s["reviews"] == 1  # 남은 맞힘 1번만
+
+
+def test_old_records_without_carried_reviews_count_back_as_before() -> None:
+    inp = flawed_input(unchecked(reviews=4, step=2))
+    never = {"questionId": "q1", "answer": "w1", "correct": False, "void": True}
+    inp["attempts"].append(
+        {"id": "a9", "quizSetId": "s1", "finishedAt": "2026-10-15T06:00:00Z", "answers": [never]}
+    )
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
+    s = updates(run(llm, inp))["q1"]
+    assert s["reviews"] == 2 and "carriedReviews" not in s  # 알려진 한계 그대로(하나 적음)
+
+
+def test_a_restored_question_that_becomes_mastered_ends_at_its_last_answer() -> None:
+    inp = flawed_input(unchecked())
+    inp["attempts"].append(
+        {
+            "id": "a2",
+            "quizSetId": "s1",
+            "finishedAt": "2026-10-25T06:00:00Z",
+            "answers": [{"questionId": "q1", "answer": "fastened", "correct": True}],
+        }
+    )
+    s = updates(run(FakeLlm({"Naturals": SECURED}), inp))["q1"]
+    assert (s["state"], s["endedAt"]) == ("mastered", datetime(2026, 10, 25, 6))
+
+
 def test_restoring_twice_gives_the_same_state() -> None:
     inp = flawed_input(unchecked(reviews=4))
     parsed = today.parse(inp)
