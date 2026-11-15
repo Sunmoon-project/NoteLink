@@ -19,6 +19,7 @@ on:
       - 'package-lock.json'
       - 'tsconfig.base.json'
       - 'scripts/wait-http-ok.sh'
+      - 'scripts/webapp-deploy.sh'
       - '.github/workflows/deploy.yml'
   pull_request:
     branches: [develop, main]
@@ -30,6 +31,7 @@ on:
       - 'package-lock.json'
       - 'tsconfig.base.json'
       - 'scripts/wait-http-ok.sh'
+      - 'scripts/webapp-deploy.sh'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
@@ -132,7 +134,7 @@ jobs:
       github.event_name == 'pull_request' || (github.ref == 'refs/heads/main' &&
       vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '')
     runs-on: ubuntu-latest
-    timeout-minutes: 45 # 아래 az 추적 시간이 사실상 끝이 없어 작업 전체에 상한을 둡니다
+    timeout-minutes: 45 # 배포 확인(scripts/webapp-deploy.sh, 최대 30분)과 설치 · 묶음 확인을 합쳐 작업 전체에 상한을 둡니다
     steps:
       - uses: actions/checkout@v7
       - name: 배포 묶음 만들기
@@ -172,10 +174,8 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: 배포
         if: github.event_name != 'pull_request'
-        # AI 서버는 API 서버 IP만 받으므로 여기서 주소로 확인하지 못합니다.
-        # 설치 · 시작 실패는 이 명령이 실패로 알려 줍니다.
-        # 패키지 설치가 4분을 넘으면 동기 요청이 게이트웨이에서 504로 끊겨 성공한 배포도 실패로
-        # 남으므로(#384) 비동기로 올립니다. 올린 뒤에도 az가 배포 상태 API로 설치(BuildFailed)와
-        # 앱 시작(RuntimeSuccessful · RuntimeFailed)을 끝까지 따라가 결과를 알려 줍니다.
-        # --timeout을 빼면 az가 1000초 뒤 실패로 끝내므로 예전 값을 둡니다(az는 이 값을 초로 씀).
-        run: az webapp deploy --resource-group "$RESOURCE_GROUP" --name "$AI_APP" --src-path ai.zip --type zip --async true --timeout 1800000
+        # App Service가 배포 때 패키지를 설치하느라 몇 분 걸려서, 끝까지 붙잡고 기다리면 앞단 응답 한도(약 4분)에 걸려
+        # 504로 끊긴다. OneDeploy 비동기 배포로 시작하고, 이 배포의 id로 Azure 배포 상태 API를 최대 30분 확인해
+        # 패키지 설치(BuildFailed)와 앱 시작(RuntimeSuccessful · RuntimeFailed)까지 판정한다(scripts/webapp-deploy.sh).
+        # AI 서버는 API 서버 IP만 받으므로 주소(헬스 체크)로는 확인하지 못한다.
+        run: bash scripts/webapp-deploy.sh "$RESOURCE_GROUP" "$AI_APP" ai.zip 1800 20

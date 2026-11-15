@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     llm_effort: Literal["low", "medium", "high"] = "low"  # Claude output_config.effort
     # Claude에 쓸 전체 기간 비용 상한(달러). 작업마다 ai_jobs.llmUsd에 쌓은 합계가 닿으면 학교
     # LLM으로 넘김(SCHOOL_LLM_* 필요). 0이면 제한 없음(#298)
-    claude_budget_usd: float = Field(default=70.0, ge=0)
+    claude_budget_usd: float = Field(default=65.0, ge=0)
     # DB에 적지 못한 Claude 비용을 남겨 둘 파일(처리기 작업 폴더 기준). 다시 시작하면 읽어 다시 적음
     llm_cost_spool: str = "llm-cost-spool.json"
     school_llm_base_url: str = ""

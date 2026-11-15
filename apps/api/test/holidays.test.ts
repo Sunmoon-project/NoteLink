@@ -220,15 +220,15 @@ describe('공휴일 · 제외일 API (가짜 DB)', () => {
         expect((await post({ date: '2026-08-01' })).status).toBe(400);
     });
 
-    it('skipDates: 숨기지 않은 공휴일 + 내 제외일을 기간 안에서만 (양 끝 포함, 중복 없음, 정렬)', async () => {
+    it('skipDates: 공휴일(내가 숨긴 것도) + 내 제외일을 기간 안에서만 (양 끝 포함, 중복 없음, 정렬)', async () => {
         fetchYear.mockResolvedValue(fetched);
-        await api.hide('2026-02-17', true); // 내가 숨긴 공휴일은 제외
+        await api.hide('2026-02-17', true); // 내가 숨겨도 건너뛰기에는 그대로 포함(숨김은 표시 설정)
         await http().post('/api/v1/holidays/custom').set(AUTH_A).send({ name: '여행', date: '2026-01-01' }); // 공휴일과 겹침
         await http().post('/api/v1/holidays/custom').set(AUTH_A).send({ name: '방학', date: '2026-01-05' });
         await http().post('/api/v1/holidays/custom').set(AUTH_B).send({ name: '남', date: '2026-01-03' });
 
         const [a, b] = [stores.hid[0]!.userId.toString(), '000000000000000000000000'];
-        expect(await service.skipDates(a, '2026-01-01', '2026-02-28')).toEqual(['2026-01-01', '2026-01-05']);
+        expect(await service.skipDates(a, '2026-01-01', '2026-02-28')).toEqual(['2026-01-01', '2026-01-05', '2026-02-17']);
         expect(await service.skipDates(a, '2026-01-02', '2026-01-04')).toEqual([]);
         expect(await service.skipDates(a, '2026-03-01', '2026-01-01')).toEqual([]);
         expect(await service.skipDates(b, '2026-01-01', '2026-02-28')).toEqual(['2026-01-01', '2026-02-17']);

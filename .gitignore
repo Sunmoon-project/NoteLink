@@ -15,8 +15,10 @@ apps/mobile/android/
 apps/mobile/ios/
 
 # Python
+apps/ai/.venv/
 __pycache__/
 *.pyc
+*.py[cod]
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
@@ -35,3 +37,6 @@ llm-cost-spool.json*
 
 # 발표 자료 원본(대용량)은 저장소에 올리지 않는다
 docs/*.pdf
+
+# Turborepo 캐시
+.turbo/

@@ -90,15 +90,15 @@ export class HolidaysService {
 
     /**
      * 이 사용자가 [startDate, endDate](서울 기준 'YYYY-MM-DD', 양 끝 포함) 동안 건너뛸 날짜 목록(오름차순, 중복 없음):
-     * 내가 숨기지 않은 공휴일 + 내 제외일. 반복 목표 판정(FR-12-04)이 쓸 함수이고, 판정은 여기서 하지 않는다
+     * 모든 공휴일 + 내 제외일. 숨김(hidden)은 캘린더 표시 설정일 뿐이라 건너뛰기에는 영향이 없다(FR-12-05에서
+     * 표시와 스킵은 따로이고 앱 계약에는 스킵 설정이 없다). 반복 목표 판정(FR-12-04)이 쓸 함수이고, 판정은 여기서 하지 않는다
      */
     async skipDates(userId: string, startDate: string, endDate: string): Promise<string[]> {
         if (startDate > endDate) return [];
-        const hidden = await this.hiddenDates(userId, startDate, endDate);
         const dates = new Set<string>();
         for (let y = Number(startDate.slice(0, 4)); y <= Number(endDate.slice(0, 4)); y++) {
             for (const item of await this.yearItems(y)) {
-                if (item.date >= startDate && item.date <= endDate && !hidden.has(item.date)) dates.add(item.date);
+                if (item.date >= startDate && item.date <= endDate) dates.add(item.date);
             }
         }
         const customs = await this.customModel
