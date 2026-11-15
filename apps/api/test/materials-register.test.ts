@@ -62,6 +62,7 @@ function setup(over: { folder?: unknown; size?: number } = {}) {
     ),
     cancel: vi.fn(() => Promise.resolve()),
     findMine: vi.fn(),
+    findForTarget: vi.fn(() => Promise.resolve(null)),
   };
   const blobs = {
     createReadAccess: vi.fn((u: string, _ttl: number, verify?: { prefix: string }) =>
@@ -269,6 +270,25 @@ describe('노트 등록 (MaterialsService.register)', () => {
     await expect(t.service.register(me.toHexString(), dto(), 'key-1')).rejects.toThrow('db down');
     expect(t.materials.updateOne).not.toHaveBeenCalled();
     expect(t.materials.create.mock.calls[0]![0]).toMatchObject({ requestId: 'key-1' });
+  });
+
+  it('이 노트에 이미 넣은 작업이 있으면 새로 넣지 않고 그 작업을 연결한다(연결에 져도 취소하지 않는다)', async () => {
+    const earlier = {
+      _id: new Types.ObjectId().toString(),
+      type: 'handwriting_summary',
+      status: 'queued',
+    };
+    t.jobs.findForTarget.mockResolvedValue(earlier as never);
+
+    const res = await t.service.register(me.toHexString(), dto(), 'key-1');
+
+    expect(res.job._id).toBe(earlier._id);
+    expect(t.jobs.enqueue).not.toHaveBeenCalled();
+    expect(t.jobs.findForTarget).toHaveBeenCalledWith(
+      me.toHexString(),
+      expect.objectContaining({ type: 'handwriting_summary', targetType: 'material' }),
+    );
+    expect(t.jobs.cancel).not.toHaveBeenCalled();
   });
 
   it('같은 키의 둘째 요청은 새로 만들지 않고 처음 결과를, 다른 내용이면 409', async () => {

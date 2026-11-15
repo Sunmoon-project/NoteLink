@@ -272,6 +272,31 @@ export class AiJobsService {
   }
 
   /**
+   * 이 대상(targetType · targetId)에 이미 넣은, 취소되지 않은 가장 최근 작업(같은 종류만). 없으면 null.
+   * 작업을 넣은 뒤 대상에 연결하지 못하고 멈춘 요청이 다시 와도 같은 작업을 이어 쓰게 한다(중복 작업 방지).
+   * 실패한 작업도 돌려준다(대상이 그 작업을 다시 시도로 살릴 수 있다). 본인 작업만
+   */
+  async findForTarget(
+    userId: string,
+    query: { type: string; targetType: string; targetId: string },
+  ): Promise<AppAiJob | null> {
+    const row = await this.jobs
+      .findOne(
+        {
+          userId: serverObjectId(userId, 'userId'),
+          type: query.type,
+          targetType: query.targetType,
+          targetId: serverObjectId(query.targetId, 'targetId'),
+          status: { $ne: 'canceled' },
+        },
+        APP_PROJECTION,
+      )
+      .sort({ createdAt: -1, _id: -1 })
+      .lean<AiJobRow>();
+    return row ? toAppJob(row) : null;
+  }
+
+  /**
    * 아직 끝나지 않은 작업을 canceled로 바꾼다. 처리 중이면 처리기가 몇 초 안에 알아채 남은 LLM 호출을
    * 멈추고 결과를 버린다(apps/ai runner, #263).
    * 이미 끝난 작업(succeeded · failed · canceled)은 그대로 둔다(앱이 두 번 눌러도 같은 결과).

@@ -177,6 +177,87 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
     expect(await jobs.countDocuments()).toBe(1);
   });
 
+  it('작업을 넣은 뒤 노트 연결이 실패해도 같은 키로 다시 요청하면 작업이 하나만 남고 그 작업이 연결된다', async () => {
+    const link = vi.spyOn(materials, 'findOneAndUpdate').mockImplementationOnce((() => ({
+      lean: () => Promise.reject(new Error('link failed')),
+    })) as never);
+    await expect(service.register(me.toHexString(), dto(), 'half')).rejects.toThrow('link failed');
+    link.mockRestore();
+    // 작업은 들어갔고 노트에는 연결되지 않은 상태
+    const stuck = await materials.findOne({ requestId: 'half' }).lean();
+    expect(stuck?.processing.jobId).toBeNull();
+    expect(await jobs.countDocuments({ targetId: stuck!._id })).toBe(1);
+
+    const again = await service.register(me.toHexString(), dto(), 'half');
+
+    expect(await jobs.countDocuments({ targetId: stuck!._id })).toBe(1);
+    expect(await jobs.countDocuments({ status: 'canceled' })).toBe(0);
+    const only = await jobs.findOne({ targetId: stuck!._id }).lean();
+    expect(again.job._id).toBe(only!._id.toString());
+    expect((await materials.findById(stuck!._id).lean())?.processing.jobId?.toString()).toBe(
+      again.job._id,
+    );
+    // 한 번 더 요청해도 같다
+    const third = await service.register(me.toHexString(), dto(), 'half');
+    expect(third.job._id).toBe(again.job._id);
+    expect(await jobs.countDocuments()).toBe(1);
+  });
+
+  it('이어 쓸 작업이 취소된 것뿐이면 새로 넣는다. 다른 종류 · 다른 노트의 작업은 이어 쓰지 않는다', async () => {
+    const stuck = await materials.create({
+      ownerId: me,
+      folderId: new Types.ObjectId(folderId),
+      kind: 'handwriting',
+      source: 'camera',
+      title: '필기',
+      processing: { status: 'queued', progress: 0, jobId: null },
+      pages: [],
+      blobUrls: [url(1)],
+    });
+    const base = {
+      userId: me,
+      targetType: 'material',
+      progress: 0,
+      attempts: 0,
+      result: null,
+      input: {},
+    };
+    await jobs.create({
+      ...base,
+      type: 'handwriting_summary',
+      targetId: stuck._id,
+      status: 'canceled',
+    });
+    await jobs.create({ ...base, type: 'quiz_pregen', targetId: stuck._id, status: 'queued' });
+    await jobs.create({
+      ...base,
+      type: 'handwriting_summary',
+      targetId: new Types.ObjectId(),
+      status: 'queued',
+    });
+    const { AiJobsService: Jobs } = await import('../src/ai-jobs/ai-jobs.service.js');
+    const lookup = new Jobs(jobs as never);
+    const query = {
+      type: 'handwriting_summary',
+      targetType: 'material',
+      targetId: stuck._id.toHexString(),
+    };
+
+    expect(await lookup.findForTarget(me.toHexString(), query)).toBeNull();
+    expect(
+      await lookup.findForTarget(other.toHexString(), { ...query, type: 'quiz_pregen' }),
+    ).toBeNull();
+    const failed = await jobs.create({
+      ...base,
+      type: 'handwriting_summary',
+      targetId: stuck._id,
+      status: 'failed',
+    });
+    expect((await lookup.findForTarget(me.toHexString(), query))?._id).toBe(
+      failed._id.toHexString(),
+    );
+  });
+
   it('지운 노트의 키로 다시 요청하면 409 (되살리지 않는다)', async () => {
     const a = await service.register(me.toHexString(), dto(), 'gone');
     await materials.updateOne({ _id: a.material._id }, { $set: { deletedAt: new Date() } });

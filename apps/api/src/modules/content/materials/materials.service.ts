@@ -246,8 +246,10 @@ export class MaterialsService {
   }
 
   /**
-   * 정리 작업을 넣고 노트에 작업 id 를 연결한다. 연결은 아직 작업이 없을 때만 한다:
-   * 같은 키의 요청이 겹쳐 다른 쪽이 먼저 연결했으면 내가 넣은 작업은 취소하고 먼저 연결된 작업을 돌려준다
+   * 정리 작업을 노트에 연결한다. 이 노트에 이미 넣은(취소되지 않은) 작업이 있으면 새로 넣지 않고 그 작업을 쓴다:
+   * 작업을 넣은 뒤 연결하지 못하고 멈춘 요청이 다시 와도 작업이 하나만 남는다. 없을 때만 새로 넣는다.
+   * 연결은 아직 작업이 없을 때만 한다: 같은 키의 요청이 겹쳐 다른 쪽이 먼저 연결했으면, 내가 새로 넣은 작업이
+   * 연결되지 않은 경우에만 취소하고(이어 쓴 작업 · 다른 쪽이 연결한 작업은 취소하지 않는다) 먼저 연결된 작업을 돌려준다
    */
   private async startJob(
     userId: string,
@@ -256,6 +258,13 @@ export class MaterialsService {
     files: UploadedFile[],
   ): Promise<{ row: MaterialRow; job: AppAiJob }> {
     const kind = material.kind as keyof typeof JOB_TYPE;
+    const type = JOB_TYPE[kind];
+    const targetId = material._id.toString();
+    const reused = await this.jobs.findForTarget(userId, {
+      type,
+      targetType: 'material',
+      targetId,
+    });
     const input =
       kind === 'recording'
         ? { audioUrl: files[0]!.readUrl, sizeBytes: files[0]!.sizeBytes }
@@ -263,13 +272,9 @@ export class MaterialsService {
             pages: files.map((f, i) => ({ pageNo: i + 1, imageUrl: f.readUrl })),
             ...(subjectName ? { subject: subjectName } : {}),
           };
-    const job = await this.jobs.enqueue({
-      type: JOB_TYPE[kind],
-      userId,
-      targetType: 'material',
-      targetId: material._id.toString(),
-      input,
-    });
+    const job =
+      reused ??
+      (await this.jobs.enqueue({ type, userId, targetType: 'material', targetId, input }));
     const linked = await this.materials
       .findOneAndUpdate(
         { _id: material._id, 'processing.jobId': null },
@@ -278,10 +283,11 @@ export class MaterialsService {
       )
       .lean<MaterialRow>();
     if (linked) return { row: linked, job };
-    await this.jobs.cancel(userId, job._id);
     const current = await this.materials.findOne({ _id: material._id }).lean<MaterialRow>();
     const jobId = current?.processing.jobId;
     if (!current || !jobId) throw new Error('materials: 작업 연결이 계속 겹침');
+    // 내가 새로 넣은 작업이 연결되지 않았을 때만 취소한다(다른 요청이 이어 써 연결한 작업은 그대로 둔다)
+    if (!reused && jobId.toString() !== job._id) await this.jobs.cancel(userId, job._id);
     return { row: current, job: await this.jobs.findMine(userId, jobId.toString()) };
   }
 
