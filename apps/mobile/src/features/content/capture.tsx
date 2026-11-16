@@ -37,6 +37,7 @@ import {
   Zap,
 } from 'lucide-react-native';
 import { api, type ImageVerdict } from '@/lib/api';
+import { ApiError } from '@/lib/api/http';
 import { editPhoto } from '@/lib/image-edit';
 import { toast } from '@/stores/toast';
 import { checkFile, uploadToBlob, type LocalFile } from '@/lib/upload';
@@ -332,6 +333,18 @@ export function PhotoCheckScreen() {
   );
 }
 
+const IMAGE_VERDICTS: readonly ImageVerdict[] = ['ok', 'blurry', 'not_handwriting', 'not_allowed'];
+/** 사진을 동시에 올리는 수. 최대 50장(노트 등록 상한)을 한꺼번에 올리면 모바일 회선에서 멈추기 쉽다 */
+const UPLOAD_CONCURRENCY = 4;
+
+/** 순서를 지키며 size개씩 동시에 처리한다 */
+async function mapInBatches<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>) {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += size)
+    out.push(...(await Promise.all(items.slice(i, i + size).map(fn))));
+  return out;
+}
+
 /**
  * 사진 검사에 보낼 이름. 서버는 앞뒤 공백을 지우고(trim) 255자까지 받아 그 이름으로 결과를 돌려주므로,
  * 글자(코드 포인트) 단위로 잘라 이모지가 반쪽 나지 않게 하고 공백도 미리 지운다.
@@ -359,59 +372,68 @@ export function PickedScreen() {
   //    (MATERIAL_MAX_FILES)을 넘으면 어차피 등록하지 못하니 검사하지 않고 줄이라고 안내한다.
   const checkable = files.filter((f) => local[f.uri]?.ok);
   const tooMany = checkable.length > MATERIAL_MAX_FILES;
+  // 검사를 마친 사진의 판정(올린 주소 기준). 뒤 묶음이 실패해 다시 검사해도 앞 묶음은 다시 보내지 않는다
+  // (사진마다 AI 글자 인식 비용이 든다). 주소가 바뀌면(새로 올림) 새로 검사한다
+  const verdictCache = useRef(new Map<string, ImageVerdict>());
   const check = useQuery({
     queryKey: ['image-check', fileVersion],
-    queryFn: async () => {
-      const checked = await Promise.all(
-        checkable.map(async (f) => {
-          const cached = useDraft.getState().uploads.find((upload) => upload.file === f);
-          const uri = cached?.url ?? (await uploadToBlob('image', f));
-          useDraft.getState().rememberUpload(f, uri);
-          return {
-            // 원본 이름과도 충돌하지 않도록 모든 파일에 서로 다른 위치를 붙인다.
-            name: imageCheckName(files.indexOf(f), f.name),
-            localUri: f.uri,
-            sizeBytes: f.size ?? 0,
-            uri,
-          };
-        }),
-      );
-      const requests = checked.map(({ localUri: _localUri, ...request }) => request);
-      const result: Awaited<ReturnType<typeof api.content.checkImages>> = [];
-      try {
-        for (let i = 0; i < requests.length; i += IMAGE_CHECK_MAX_FILES)
-          result.push(
-            ...(await api.content.checkImages(requests.slice(i, i + IMAGE_CHECK_MAX_FILES))),
-          );
-      } catch (error) {
-        // 400: 올려 둔 파일을 서버가 받지 않았다(지워짐 · 저장된 형식이 다름 등). 같은 주소로 다시 검사하면
-        // 계속 실패하므로 기억한 주소를 지워 「다시 검사」가 새로 올리게 한다
-        if (
-          typeof error === 'object' &&
-          error !== null &&
-          'status' in error &&
-          error.status === 400
-        )
-          useDraft.setState((state) => ({
-            uploads: state.uploads.filter((upload) => !checkable.includes(upload.file)),
-          }));
-        throw error;
+    queryFn: async ({ signal }) => {
+      const checked: { name: string; verdict: ImageVerdict; localUri: string }[] = [];
+      // 묶음마다 올리고 → 검사한다. 묶음은 차례로 보낸다(AI 서버가 요청마다 글자 인식을 몇 개씩 동시에 하므로
+      // 한꺼번에 보내면 그 한도를 넘는다). 사진 목록이 바뀌면(새 검사 시작) 남은 묶음은 보내지 않는다
+      for (let i = 0; i < checkable.length; i += IMAGE_CHECK_MAX_FILES) {
+        if (signal.aborted) throw new Error('사진 목록이 바뀌어 검사를 멈췄어요');
+        const group = await mapInBatches(
+          checkable.slice(i, i + IMAGE_CHECK_MAX_FILES),
+          UPLOAD_CONCURRENCY,
+          async (f) => {
+            const cached = useDraft.getState().uploads.find((upload) => upload.file === f);
+            const uri = cached?.url ?? (await uploadToBlob('image', f));
+            useDraft.getState().rememberUpload(f, uri);
+            return {
+              file: f,
+              // 원본 이름과도 충돌하지 않도록 모든 파일에 서로 다른 위치를 붙인다.
+              name: imageCheckName(files.indexOf(f), f.name),
+              localUri: f.uri,
+              sizeBytes: f.size ?? 0,
+              uri,
+            };
+          },
+        );
+        const pending = group.filter((f) => !verdictCache.current.has(f.uri));
+        if (pending.length) {
+          if (signal.aborted) throw new Error('사진 목록이 바뀌어 검사를 멈췄어요');
+          let result: Awaited<ReturnType<typeof api.content.checkImages>>;
+          try {
+            result = await api.content.checkImages(
+              pending.map(({ name, sizeBytes, uri }) => ({ name, sizeBytes, uri })),
+            );
+          } catch (error) {
+            // 400: 올려 둔 파일을 서버가 받지 않았다(지워짐 · 저장된 형식이 다름 등). 같은 주소로 다시
+            // 검사하면 계속 실패하므로 이 묶음의 주소만 지워 「다시 검사」가 새로 올리게 한다
+            if (error instanceof ApiError && error.status === 400) {
+              const failed = new Set(pending.map((f) => f.file));
+              useDraft.setState((state) => ({
+                uploads: state.uploads.filter((upload) => !failed.has(upload.file)),
+              }));
+            }
+            throw error;
+          }
+          for (const f of pending) {
+            const verdict = result.find((v) => v.name === f.name)?.verdict;
+            if (!verdict || !IMAGE_VERDICTS.includes(verdict))
+              throw new Error('검사 결과가 누락됐어요');
+            verdictCache.current.set(f.uri, verdict);
+          }
+        }
+        for (const f of group)
+          checked.push({
+            name: f.name,
+            verdict: verdictCache.current.get(f.uri)!,
+            localUri: f.localUri,
+          });
       }
-      if (
-        checked.some(
-          (f) =>
-            !result.some(
-              (v) =>
-                v.name === f.name &&
-                ['ok', 'blurry', 'not_handwriting', 'not_allowed'].includes(v.verdict),
-            ),
-        )
-      )
-        throw new Error('검사 결과가 누락됐어요');
-      return checked.map((f) => ({
-        ...result.find((v) => v.name === f.name)!,
-        localUri: f.localUri,
-      }));
+      return checked;
     },
     retry: false,
     // 서버는 빈 목록을 받지 않는다(400). 형식 · 용량에서 모두 걸렸으면 부르지 않는다

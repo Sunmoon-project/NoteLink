@@ -3,6 +3,7 @@ import { Linking } from 'react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { imageCheckName, PhotoCheckScreen, PickedScreen } from '../features/content/capture';
+import { ApiError } from '../lib/api/http';
 import { DocDetailScreen, HandDetailScreen, RecDetailScreen } from '../features/content/detail';
 import { Player } from '../features/content/player';
 import { ConvertScreen, ResultScreen } from '../features/content/convert';
@@ -213,7 +214,13 @@ describe('PR36 사진 검사 경계', () => {
     expect(mockApi.content.checkImages).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
   });
+  // 실제 업로드처럼 사진마다 다른 주소
+  const uniqueUploads = () =>
+    mockUpload.mockImplementation(async (_kind: string, f: { name: string }) =>
+      Promise.resolve(`https://blob.example/${f.name}`),
+    );
   it('20장이 넘으면 서버 상한(20장)씩 나눠 차례로 검사하고 결과를 합친다', async () => {
+    uniqueUploads();
     useDraft.getState().set({ files: manyPhotos(45) });
     await renderScreen(<PickedScreen />, client());
     await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalledTimes(3));
@@ -223,9 +230,59 @@ describe('PR36 사진 검사 경계', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
     expect(screen.getAllByText('올릴 수 있어요')).toHaveLength(45);
   });
+  it('뒤 묶음이 실패해도 다시 검사할 때 이미 검사한 묶음은 다시 보내지 않는다', async () => {
+    uniqueUploads();
+    useDraft.getState().set({ files: manyPhotos(45) });
+    mockApi.content.checkImages
+      .mockImplementationOnce(async (files: { name: string }[]) =>
+        files.map((file) => ({ name: file.name, verdict: 'ok' })),
+      )
+      .mockImplementationOnce(async (files: { name: string }[]) =>
+        files.map((file) => ({ name: file.name, verdict: 'ok' })),
+      )
+      .mockRejectedValueOnce(new ApiError('AI_UNAVAILABLE', '사진 검사 실패', 503));
+    await renderScreen(<PickedScreen />, client());
+    await fireEvent.press(await screen.findByText('다시 검사'));
+    await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalledTimes(4));
+    expect(mockApi.content.checkImages.mock.calls[3][0]).toHaveLength(5);
+    expect(mockUpload).toHaveBeenCalledTimes(45);
+    await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
+  });
+  it('400이면 실패한 묶음의 사진만 다시 올리고, 통과한 묶음은 그대로 쓴다', async () => {
+    uniqueUploads();
+    useDraft.getState().set({ files: manyPhotos(45) });
+    mockApi.content.checkImages
+      .mockImplementationOnce(async (files: { name: string }[]) =>
+        files.map((file) => ({ name: file.name, verdict: 'ok' })),
+      )
+      .mockRejectedValueOnce(new ApiError('BAD_REQUEST', '사용할 수 없는 사진입니다.', 400));
+    await renderScreen(<PickedScreen />, client());
+    await fireEvent.press(await screen.findByText('다시 검사'));
+    await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
+    // 처음: 1 · 2묶음 40장 올림 → 다시: 2묶음 20장 다시 + 3묶음 5장
+    expect(mockUpload).toHaveBeenCalledTimes(65);
+    expect(mockApi.content.checkImages.mock.calls.map(([files]) => files.length)).toEqual([
+      20, 20, 20, 5,
+    ]);
+  });
+  it('사진은 4장씩 나눠 올린다', async () => {
+    let running = 0;
+    let most = 0;
+    mockUpload.mockImplementation(async (_kind: string, f: { name: string }) => {
+      running++;
+      most = Math.max(most, running);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      running--;
+      return `https://blob.example/${f.name}`;
+    });
+    useDraft.getState().set({ files: manyPhotos(10) });
+    await renderScreen(<PickedScreen />, client());
+    await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalledTimes(1));
+    expect(most).toBe(4);
+  });
   it('서버가 올린 파일을 받지 않으면(400) 다시 검사할 때 새로 올린다', async () => {
     mockApi.content.checkImages.mockRejectedValueOnce(
-      Object.assign(new Error('사용할 수 없는 사진입니다.'), { status: 400 }),
+      new ApiError('BAD_REQUEST', '사용할 수 없는 사진입니다.', 400),
     );
     await renderScreen(<PickedScreen />, client());
     await fireEvent.press(await screen.findByText('다시 검사'));
@@ -235,7 +292,7 @@ describe('PR36 사진 검사 경계', () => {
   });
   it('서버 오류(5xx)로 실패하면 다시 검사할 때 올린 파일을 다시 쓴다', async () => {
     mockApi.content.checkImages.mockRejectedValueOnce(
-      Object.assign(new Error('사진 검사 서비스를 사용할 수 없어요.'), { status: 503 }),
+      new ApiError('AI_UNAVAILABLE', '사진 검사 서비스를 사용할 수 없어요.', 503),
     );
     await renderScreen(<PickedScreen />, client());
     await fireEvent.press(await screen.findByText('다시 검사'));
@@ -446,6 +503,10 @@ describe('PR36 검사 Blob 재사용', () => {
     expect(mockApi.content.checkImages).toHaveBeenCalledTimes(2);
   });
   it('사진 추가는 기존 URL을 유지하고 같은 URI의 교체 파일은 새로 업로드한다', async () => {
+    // 실제 업로드처럼 올릴 때마다 다른 주소
+    mockUpload.mockImplementation(
+      async () => `https://blob.example/upload-${mockUpload.mock.calls.length}.jpg`,
+    );
     await renderScreen(<PickedScreen />, client());
     await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
     const second = { ...localPhoto, uri: 'file:///second.jpg', name: 'second.jpg' };
@@ -453,9 +514,16 @@ describe('PR36 검사 Blob 재사용', () => {
     await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
     expect(mockUpload).toHaveBeenCalledTimes(2);
+    // 이미 검사한 사진은 다시 보내지 않고 새 사진만 검사한다
+    expect(mockApi.content.checkImages.mock.calls[1][0]).toEqual([
+      expect.objectContaining({ name: `1-${second.name}` }),
+    ]);
     await act(async () => useDraft.getState().set({ files: [{ ...localPhoto }, second] }));
     await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalledTimes(3));
     expect(mockUpload).toHaveBeenCalledTimes(3);
+    expect(mockApi.content.checkImages.mock.calls[2][0]).toEqual([
+      expect.objectContaining({ name: `0-${localPhoto.name}` }),
+    ]);
   });
   it('제거·초기화한 사진과 뒤늦은 업로드 응답은 초안에 남기지 않는다', async () => {
     const pending = deferred<string>();

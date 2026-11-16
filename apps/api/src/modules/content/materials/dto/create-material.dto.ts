@@ -16,8 +16,6 @@ import {
 const trim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;
 
-/** 노트 등록 상한(packages/shared MATERIAL_MAX_FILES, 앱과 같은 값) */
-export { MATERIAL_MAX_FILES };
 export const MATERIAL_TITLE_MAX = 100;
 export const MATERIAL_DESCRIPTION_MAX = 500;
 
