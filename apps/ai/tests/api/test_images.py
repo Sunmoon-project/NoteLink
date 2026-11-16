@@ -1,4 +1,5 @@
 import threading
+import time
 from typing import Any, cast
 
 import pytest
@@ -194,6 +195,41 @@ def test_check_reads_files_concurrently_so_a_full_batch_stays_within_the_nest_ti
     assert [r.name for r in result] == names
     assert {r.verdict for r in result} == {"ok"}
     assert sorted(reader.read_names) == sorted(names)
+
+
+def test_check_batch_latency_follows_worker_waves_not_file_count() -> None:
+    """파일마다 OCR이 delay초 걸릴 때 20장 배치의 총 시간은 순차(20 x delay)가 아니라
+    ceil(20 / MAX_WORKERS) x delay 가까이여야 NestJS의 90초 제한 안에 머문다."""
+    delay = 0.1
+    names = [f"{i}.jpg" for i in range(MAX_FILES)]
+
+    class SlowReader(FakeReader):
+        def __init__(self, outcomes: dict[str, Any]) -> None:
+            super().__init__(outcomes)
+            self.active = 0
+            self.peak = 0
+
+        def read(self, url: str) -> dict[str, Any]:
+            with self._lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                time.sleep(delay)
+                return super().read(url)
+            finally:
+                with self._lock:
+                    self.active -= 1
+
+    reader = SlowReader({name: READABLE for name in names})
+
+    started = time.monotonic()
+    result = _check([file(name) for name in names], make(reader))
+    elapsed = time.monotonic() - started
+
+    sequential = delay * MAX_FILES  # 2.0초. 병렬이면 5번 나눠 읽어 약 0.5초
+    assert [r.name for r in result] == names
+    assert reader.peak == MAX_WORKERS  # 동시 호출은 한도까지 쓰되 넘지 않는다
+    assert elapsed < sequential / 2
 
 
 # ---------- POST /internal/v1/images/check ----------
