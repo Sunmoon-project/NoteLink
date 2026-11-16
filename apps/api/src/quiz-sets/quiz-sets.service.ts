@@ -565,26 +565,36 @@ export class QuizSetsService {
     if (row.srsSavedAt) return;
     const updates = job.result?.['srsUpdates'];
     if (!Array.isArray(updates)) return;
-    for (const u of updates as { quizSetId?: unknown; questionId?: unknown; srs?: unknown }[]) {
-      if (
-        typeof u.quizSetId !== 'string' ||
-        !OBJECT_ID.test(u.quizSetId) ||
-        typeof u.questionId !== 'string' ||
-        !OBJECT_ID.test(u.questionId) ||
-        !u.srs ||
-        typeof u.srs !== 'object'
-      )
-        continue;
-      await this.sets.updateOne(
-        { _id: new Types.ObjectId(u.quizSetId), ownerId: row.ownerId },
-        { $set: { 'questions.$[q].srs': u.srs } },
-        { arrayFilters: [{ 'q._id': new Types.ObjectId(u.questionId) }] },
-      );
-    }
-    // 옮긴 뒤에 표시한다(옮기다 실패하면 다음 조회가 다시 옮김). 동시에 옮긴 요청들은 같은 값을 쓴다
-    await this.sets
+    // 쓰기 전에 표시를 먼저 차지한다(조건부 갱신 하나): 동시에 온 조회 중 한 요청만 쓴다
+    const claimed = await this.sets
       .findOneAndUpdate({ _id: row._id, srsSavedAt: null }, { $set: { srsSavedAt: new Date() } })
       .lean();
+    if (!claimed) return;
+    try {
+      for (const u of updates as { quizSetId?: unknown; questionId?: unknown; srs?: unknown }[]) {
+        if (
+          typeof u.quizSetId !== 'string' ||
+          !OBJECT_ID.test(u.quizSetId) ||
+          typeof u.questionId !== 'string' ||
+          !OBJECT_ID.test(u.questionId) ||
+          !u.srs ||
+          typeof u.srs !== 'object'
+        )
+          continue;
+        await this.sets.updateOne(
+          { _id: new Types.ObjectId(u.quizSetId), ownerId: row.ownerId },
+          { $set: { 'questions.$[q].srs': u.srs } },
+          { arrayFilters: [{ 'q._id': new Types.ObjectId(u.questionId) }] },
+        );
+      }
+    } catch (e) {
+      // 다 쓰지 못했으면 표시를 거둬 다음 조회가 다시 옮긴다(같은 값이라 이미 쓴 문제는 그대로)
+      await this.sets
+        .findOneAndUpdate({ _id: row._id }, { $set: { srsSavedAt: null } })
+        .lean()
+        .catch(() => {});
+      throw e;
+    }
   }
 
   private async findJob(row: QuizSetRow): Promise<AppAiJob | null> {

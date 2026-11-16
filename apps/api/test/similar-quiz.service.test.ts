@@ -399,6 +399,44 @@ describe('복습 상태는 세트마다 한 번만 옮긴다', () => {
   });
 });
 
+describe('복습 상태 옮기기: 동시 조회 · 실패', () => {
+  const finishEmpty = (jobs: ReturnType<typeof setup>['jobs'], qid: string, set: string) =>
+    Object.assign(jobs.rows.at(-1)!, {
+      status: 'succeeded',
+      progress: 100,
+      result: {
+        reviewQuestions: [],
+        srsUpdates: [{ quizSetId: set, questionId: qid, srs: { step: 1 } }],
+      },
+    });
+
+  it('같은 세트를 동시에 조회해도 한 요청만 쓴다', async () => {
+    const { similar, seed, jobs, quizSets, updateOne } = setup();
+    const s = await seed();
+    const made = await similar.create(ME.toHexString(), s.set);
+    finishEmpty(jobs, s.qs[0]!._id.toHexString(), s.set);
+    await Promise.all([
+      quizSets.findMine(ME.toHexString(), made._id),
+      quizSets.findMine(ME.toHexString(), made._id),
+      quizSets.list(ME.toHexString()),
+    ]);
+    expect(updateOne).toHaveBeenCalledTimes(1);
+  });
+
+  it('쓰다 실패하면 표시를 거둬 다음 조회가 다시 옮긴다', async () => {
+    const { similar, seed, jobs, quizSets, updateOne, sets } = setup();
+    const s = await seed();
+    const made = await similar.create(ME.toHexString(), s.set);
+    finishEmpty(jobs, s.qs[0]!._id.toHexString(), s.set);
+    updateOne.mockRejectedValueOnce(new Error('DB 끊김'));
+    await expect(quizSets.findMine(ME.toHexString(), made._id)).rejects.toThrow('DB 끊김');
+    expect(sets.rows.find((r) => String(r._id) === made._id)!['srsSavedAt']).toBeNull();
+    await quizSets.findMine(ME.toHexString(), made._id);
+    expect(updateOne).toHaveBeenCalledTimes(2);
+    expect(sets.rows.find((r) => String(r._id) === made._id)!['srsSavedAt']).toBeInstanceOf(Date);
+  });
+});
+
 describe('처리기 입력 크기(fitReviewInput)', () => {
   const set = (id: string, materialId: string, n = 1) => ({
     id,
