@@ -45,6 +45,8 @@ export const CLAIM_TTL_MS = 60_000;
 export const CLAIM_WAIT_MS = 300;
 export const CLAIM_WAIT_TRIES = 5;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** 노트 하나에 담을 수 있는 북마크 수 */
+export const BOOKMARK_MAX = 200;
 /** Idempotency-Key 최대 길이 */
 export const IDEMPOTENCY_KEY_MAX = 128;
 
@@ -743,6 +745,45 @@ export class MaterialsService implements OnModuleInit {
       await this.materials.updateOne({ ...mine, savedAt: null }, { $set: { savedAt: new Date() } });
     }
     return this.findMine(userId, id);
+  }
+
+  /**
+   * 녹음 북마크를 더한다. 받은 시각을 그대로 저장하고, 같은 값이 이미 있으면 더하지 않고 끝낸다(오류 아님).
+   * 반올림하지 않는 이유: 앱이 재생 위치를 그대로 보내고 같은 값만 중복으로 보므로 서버도 반올림하지 않는다
+   * (반올림하면 앱 화면과 개수가 달라짐).
+   * 노트당 BOOKMARK_MAX 개까지(넘으면 400 VALIDATION_FAILED). 중복 · 상한 확인과 추가를 updateOne 하나로 해서
+   * 같은 시각을 동시에 보내도 한 번만, 다른 시각을 동시에 보내도 모두 저장된다. 저장은 시각 순($sort).
+   * 남의 노트 · 없는 노트 · 지운 노트 · 녹음이 아닌 노트 · 잘못된 id 는 모두 404
+   */
+  async addBookmark(userId: string, id: string, atSec: number): Promise<void> {
+    const mine = {
+      _id: objectId(id),
+      ownerId: new Types.ObjectId(userId),
+      deletedAt: null,
+      kind: 'recording',
+    };
+    // 매칭이 0일 때 사유를 가려 알린다. 갱신이 원자적이라 사유가 없는(그 사이 바뀐) 경우만 한 번 더 시도한다
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await this.materials.updateOne(
+        {
+          ...mine,
+          'bookmarks.atSec': { $ne: atSec },
+          [`bookmarks.${BOOKMARK_MAX - 1}`]: { $exists: false },
+        },
+        { $push: { bookmarks: { $each: [{ atSec }], $sort: { atSec: 1 } } } },
+      );
+      if (result.matchedCount > 0) return;
+      const row = await this.materials.findOne(mine, { bookmarks: 1 }).lean<MaterialRow>();
+      if (!row) throw notFound('노트');
+      const marks = row.bookmarks ?? [];
+      if (marks.some((b) => b.atSec === atSec)) return;
+      if (marks.length >= BOOKMARK_MAX)
+        throw invalid(`북마크는 노트당 ${BOOKMARK_MAX}개까지 추가할 수 있어요`);
+    }
+    throw new ServiceUnavailableException({
+      code: 'BOOKMARK_BUSY',
+      message: '북마크를 저장하지 못했어요. 잠시 뒤 다시 시도해 주세요',
+    });
   }
 
   /** 노트를 지운 것으로 표시한다(소프트 삭제). 진행 중인 작업 · 퀴즈 세트 · 원본 파일은 건드리지 않는다 */

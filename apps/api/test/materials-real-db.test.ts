@@ -16,6 +16,7 @@ import type { CreateMaterialDto } from '../src/modules/content/materials/dto/cre
 import {
   CLAIM_TTL_MS,
   fingerprintOf,
+  BOOKMARK_MAX,
   LIST_SYNC_MAX,
   MaterialsService,
 } from '../src/modules/content/materials/materials.service.js';
@@ -695,6 +696,112 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
     });
     expect(await materials.countDocuments()).toBe(2);
   });
+  describe('녹음 북마크 추가', () => {
+    const audio = `https://a.blob.core.windows.net/c/uploads/audio/${me.toHexString()}/550e8400-e29b-41d4-a716-446655440008.m4a`;
+    const rec = async (user = me) =>
+      (
+        await service.register(
+          user.toHexString(),
+          dto({
+            kind: 'recording',
+            source: 'audio_file',
+            blobUrls: [audio.replace(me.toHexString(), user.toHexString())],
+          }),
+        )
+      ).material;
+    const marks = async (id: string) =>
+      (await materials.findById(id).lean())!.bookmarks.map((b) => b.atSec);
+    const add = (id: string, at: number, user = me) =>
+      service.addBookmark(user.toHexString(), id, at);
+
+    it('추가하면 상세에 시각 순으로 보이고, 같은 값은 무시한다', async () => {
+      const { _id } = await rec();
+      await add(_id, 30);
+      await add(_id, 5.04);
+      await add(_id, 30);
+      expect(await marks(_id)).toEqual([5.04, 30]);
+      const detail = await service.findMine(me.toHexString(), _id);
+      expect(detail.bookmarks).toEqual([{ atSec: 5.04 }, { atSec: 30 }]);
+    });
+
+    it('12.31 과 12.34 를 차례로 추가하면 둘 다 저장되고 상세에 시각 순으로 보인다(반올림하지 않는다)', async () => {
+      const { _id } = await rec();
+      await add(_id, 12.34);
+      await add(_id, 12.31);
+      expect(await marks(_id)).toEqual([12.31, 12.34]);
+      const detail = await service.findMine(me.toHexString(), _id);
+      expect(detail.bookmarks).toEqual([{ atSec: 12.31 }, { atSec: 12.34 }]);
+    });
+
+    it('노트당 BOOKMARK_MAX 개까지. 넘으면 400, 이미 있는 시각은 가득 차도 그대로 통과', async () => {
+      const { _id } = await rec();
+      await materials.updateOne(
+        { _id },
+        {
+          $set: {
+            bookmarks: Array.from({ length: BOOKMARK_MAX - 1 }, (_, i) => ({ atSec: i })),
+          },
+        },
+      );
+      await add(_id, 1000); // 200번째
+      await expect(add(_id, 2000)).rejects.toMatchObject({
+        status: 400,
+        response: { code: 'VALIDATION_FAILED' },
+      });
+      await add(_id, 1000); // 이미 있음
+      await add(_id, 3);
+      expect(await marks(_id)).toHaveLength(BOOKMARK_MAX);
+    });
+
+    it('남의 노트 · 지운 노트 · 녹음이 아닌 노트 · 없는 노트 · 잘못된 id 는 404이고 바뀌지 않는다', async () => {
+      const mine = await rec();
+      const handwriting = (await service.register(me.toHexString(), dto())).material;
+      const deleted = await rec();
+      await service.remove(me.toHexString(), deleted._id);
+      const cases = [
+        () => add(mine._id, 1, other),
+        () => add(handwriting._id, 1),
+        () => add(deleted._id, 1),
+        () => add(new Types.ObjectId().toHexString(), 1),
+        () => add('nope', 1),
+      ];
+      for (const c of cases) await expect(c()).rejects.toMatchObject({ status: 404 });
+      expect(await marks(mine._id)).toEqual([]);
+      expect(await marks(handwriting._id)).toEqual([]);
+      expect(await marks(deleted._id)).toEqual([]);
+    });
+
+    it('마지막 한 자리를 서로 다른 시각 10개가 동시에 다투면 하나만 저장되고 나머지는 400, 최종 200개', async () => {
+      const { _id } = await rec();
+      await materials.updateOne(
+        { _id },
+        { $set: { bookmarks: Array.from({ length: BOOKMARK_MAX - 1 }, (_, i) => ({ atSec: i })) } },
+      );
+      const results = await Promise.allSettled(
+        Array.from({ length: 10 }, (_, i) => add(_id, 1000 + i)),
+      );
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(rejected).toHaveLength(9);
+      for (const r of rejected)
+        expect(r.reason).toMatchObject({ status: 400, response: { code: 'VALIDATION_FAILED' } });
+      expect(await marks(_id)).toHaveLength(BOOKMARK_MAX);
+    });
+
+    it('같은 시각을 동시에 두 번 보내도 하나만 저장된다', async () => {
+      const { _id } = await rec();
+      await Promise.all([add(_id, 42.5), add(_id, 42.5), add(_id, 42.5)]);
+      expect(await marks(_id)).toEqual([42.5]);
+    });
+
+    it('다른 시각을 동시에 여럿 보내면 모두 저장되고 시각 순이다', async () => {
+      const { _id } = await rec();
+      const ats = Array.from({ length: 30 }, (_, i) => 100 - i * 3);
+      await Promise.all(ats.map((at) => add(_id, at)));
+      expect(await marks(_id)).toEqual([...ats].sort((a, b) => a - b));
+    });
+  });
+
   describe('다시 시도할 때 입력 파일 읽기 주소 새로 만들기', () => {
     const audio = `https://a.blob.core.windows.net/c/uploads/audio/${me.toHexString()}/550e8400-e29b-41d4-a716-446655440008.m4a`;
     const me$ = () => me.toHexString();

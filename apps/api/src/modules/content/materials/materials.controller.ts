@@ -18,6 +18,7 @@ import type { Response } from 'express';
 
 import { requireUserId } from '../../../common/request-user.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../../auth/jwt-auth.guard.js';
+import { AddBookmarkDto } from './dto/add-bookmark.dto.js';
 import { CreateMaterialDto } from './dto/create-material.dto.js';
 import { ListMaterialsQuery } from './dto/list-materials.query.js';
 import { UpdateMaterialDto } from './dto/update-material.dto.js';
@@ -88,6 +89,17 @@ export class MaterialsController {
     @Body() body: UpdateMaterialDto,
   ): Promise<{ data: Material }> {
     return { data: (await this.materials.update(requireUserId(req), id, body)) as Material };
+  }
+
+  /** 녹음 북마크 추가(받은 시각 그대로, 같은 값은 한 번만, 노트당 BOOKMARK_MAX 개). 본문 없이 204 */
+  @Post('materials/:id/bookmarks')
+  @HttpCode(204)
+  async addBookmark(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: AddBookmarkDto,
+  ): Promise<void> {
+    await this.materials.addBookmark(requireUserId(req), id, body.atSec);
   }
 
   @Delete('materials/:id')
