@@ -67,7 +67,9 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       folders as never,
       new AiJobsService(jobs as never),
       {
-        createReadAccess: vi.fn((u: string) => Promise.resolve({ readUrl: `${u}?sig=SECRET` })),
+        createReadAccess: vi.fn((u: string) =>
+          Promise.resolve({ readUrl: `${u}?sig=SECRET`, sizeBytes: 100 }),
+        ),
       } as never,
       { pregenerate: vi.fn() } as never,
       conn,
@@ -86,6 +88,7 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       rooms.deleteMany({}),
       items.deleteMany({}),
       users.deleteMany({}),
+      jobs.deleteMany({}),
     ]);
   });
 
@@ -438,6 +441,24 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       await expect(materialsService.remove(me, a)).rejects.toMatchObject({ status: 404 });
       const row = await materials.findById(a).lean();
       expect(row).toMatchObject({ title: '원래 제목', deletedAt: null, savedAt: null });
+    });
+    it('작업 없이 남은 노트를 공유받은 멤버가 열면 복구도 노트 주인 기준으로 돈다', async () => {
+      const a = await note({
+        blobUrls: [blob],
+        pages: [{ pageNo: 1, imageUrl: blob, sizeBytes: 100, ocrText: null, takenAt: null }],
+        processing: { status: 'queued', progress: 0, jobId: null },
+      });
+      await materials.collection.updateOne(
+        { _id: new Types.ObjectId(a) },
+        { $set: { createdAt: new Date(Date.now() - 120_000) } },
+      );
+      const roomId = await room([joined(owner), joined(friend)]);
+      await share(owner, [a], roomId);
+      const { data } = await open(friend, a);
+      expect(data.processing.jobId).toBeTruthy();
+      const made = await jobs.find({}).lean();
+      expect(made).toHaveLength(1);
+      expect(made[0]).toMatchObject({ userId: owner, type: 'handwriting_summary' });
     });
   });
 });
