@@ -22,6 +22,7 @@ import { UsersModule } from './modules/users/users.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
 import { TimetableModule } from './modules/timetable/timetable.module.js';
+import { ImageCheckModule } from './modules/upload/image-check/image-check.module.js';
 import { UploadsModule } from './modules/upload/uploads.module.js';
 import { FriendsModule } from './modules/social/friends/friends.module.js';
 
@@ -72,6 +73,8 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
     FoldersModule,
     // 노트(자료) 등록 · 조회 · 수정 · 삭제(FR-19)
     MaterialsModule,
+    // 필기 사진 검사(FR-19)
+    ImageCheckModule,
   ],
   controllers: [HealthController],
 })
