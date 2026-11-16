@@ -1135,7 +1135,7 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       expect(row?.pages?.every((p) => p.imageUrl === pdf)).toBe(true);
     });
 
-    it('녹음은 슬라이드를 소제목으로 옮기고 퀴즈 미리 만들기를 부르지 않는다', async () => {
+    it('녹음은 슬라이드를 소제목으로 옮기고 퀴즈 미리 만들기를 한 번 부른다(FR-38)', async () => {
       const audio = `https://a.blob.core.windows.net/c/uploads/audio/${me.toHexString()}/550e8400-e29b-41d4-a716-446655440008.m4a`;
       const { material, job } = await service.register(
         me.toHexString(),
@@ -1148,7 +1148,8 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       const got = await service.findMine(me.toHexString(), material._id);
       expect(got.summary).toEqual({ sections: [{ heading: '도입', body: '시작' }], points: [] });
       expect(got.processing.status).toBe('done');
-      expect(quizSets.pregenerate).not.toHaveBeenCalled();
+      expect(quizSets.pregenerate).toHaveBeenCalledTimes(1);
+      expect(quizSets.pregenerate).toHaveBeenCalledWith(me.toHexString(), material._id);
     });
 
     it('응답의 쪽 이미지는 읽기 SAS 주소이고 DB 에는 SAS 없는 주소만 있다', async () => {

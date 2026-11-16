@@ -11,6 +11,7 @@ import {
   type ReviewInput,
   SimilarQuizService,
 } from '../src/quiz-sets/similar-quiz.service.js';
+import { RecordingNotePagesService } from '../src/quiz-sets/recording-note-pages.service.js';
 import { createFakeCollection, type Row } from './support/fake-collection.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
 
@@ -50,7 +51,13 @@ function setup() {
   Object.assign(sets.model, { updateOne });
   const jobs = createFakeJobs();
   const aiJobs = new AiJobsService(jobs.model);
-  const quizSets = new QuizSetsService(sets.model, materials.model, attempts.model, aiJobs);
+  const quizSets = new QuizSetsService(
+    sets.model,
+    materials.model,
+    attempts.model,
+    aiJobs,
+    new RecordingNotePagesService(jobs.model),
+  );
   const similar = new SimilarQuizService(
     sets.model,
     attempts.model,

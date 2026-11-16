@@ -23,6 +23,7 @@ import {
   QuizSetSchema,
   type QuizSetDocument,
 } from '../src/modules/quiz/schemas/quiz-set.schema.js';
+import { RecordingNotePagesService } from '../src/quiz-sets/recording-note-pages.service.js';
 import { createFakeCollection, type Row } from './support/fake-collection.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
 
@@ -74,7 +75,13 @@ function setup() {
   Object.assign(attempts.model, { aggregate });
   const jobs = createFakeJobs();
   const aiJobs = new AiJobsService(jobs.model);
-  const service = new QuizSetsService(sets.model, materials.model, attempts.model, aiJobs);
+  const service = new QuizSetsService(
+    sets.model,
+    materials.model,
+    attempts.model,
+    aiJobs,
+    new RecordingNotePagesService(jobs.model),
+  );
   const addNote = async (over: Record<string, unknown> = {}) => {
     const { _id } = (await materials.model.create({
       ownerId: ME,
