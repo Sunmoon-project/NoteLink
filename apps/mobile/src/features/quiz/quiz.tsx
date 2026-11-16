@@ -1203,7 +1203,9 @@ export function QuizSimilarScreen() {
     mutationFn: () => api.quiz.similar(setId ?? ''),
     retry: false,
     onSuccess: (data) => {
-      if (data.status !== 'generating') qc.setQueryData(['similar-result', setId], data);
+      // 다 만든 세트만 결과로 남긴다(만드는 중은 아래에서 기다리고, 실패는 다시 시도하게)
+      if (data.status !== 'generating' && data.status !== 'failed')
+        qc.setQueryData(['similar-result', setId], data);
     },
   });
   // 서버는 「다시 보기」 세트를 만드는 중(generating)으로 돌려준다: 다 만들 때까지 세트를 다시 읽는다
@@ -1218,7 +1220,7 @@ export function QuizSimilarScreen() {
     poll.data && poll.data.status !== 'generating' && poll.data.status !== 'failed'
       ? poll.data
       : null;
-  const failed = poll.data?.status === 'failed';
+  const failed = poll.data?.status === 'failed' || generate.data?.status === 'failed';
   useEffect(() => {
     if (done) qc.setQueryData(['similar-result', setId], done);
   }, [done, qc, setId]);
@@ -1226,8 +1228,9 @@ export function QuizSimilarScreen() {
   const sim = {
     data: (cached.data ??
       done ??
-      (generate.data && generate.data.status !== 'generating' ? generate.data : undefined)) as
-      Awaited<ReturnType<typeof api.quiz.similar>> | undefined,
+      (generate.data && generate.data.status !== 'generating' && !failed
+        ? generate.data
+        : undefined)) as Awaited<ReturnType<typeof api.quiz.similar>> | undefined,
   };
   const [open, setOpen] = useState<string[]>([]);
   const [saved, setSaved] = useState<string[]>([]);

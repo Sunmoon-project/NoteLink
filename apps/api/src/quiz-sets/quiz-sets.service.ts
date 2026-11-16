@@ -113,6 +113,7 @@ export interface QuizSetRow {
   materialId?: Types.ObjectId;
   folderId?: Types.ObjectId;
   sourceSetId?: Types.ObjectId | null;
+  sourceAttemptId?: Types.ObjectId | null;
   title: string;
   status: 'generating' | 'ready' | 'failed';
   progress?: number;
@@ -519,8 +520,9 @@ export class QuizSetsService {
     // 처리기가 뽑은 개념 이름은 세트를 ready로 바꾸기 전에 노트에 남긴다: 저장이 실패하면 세트도 그대로라
     // 다음 조회가 다시 옮기며 다시 저장한다(Codex 리뷰 #276). 같이 옮기는 요청이 모두 저장해도 같은 값
     if (update['status'] === 'ready' && job) await this.saveConcepts(row, job);
-    // 오답 복습은 틀린 문제들의 복습 상태(srsUpdates)를 세트를 ready로 바꾸기 전에 옮긴다(saveConcepts와 같은 이유)
-    if (update['status'] === 'ready' && job?.type === SIMILAR_TYPE) await this.saveSrs(row, job);
+    // 오답 복습은 틀린 문제들의 복습 상태(srsUpdates)를 세트를 바꾸기 전에 옮긴다(saveConcepts와 같은 이유).
+    // 새 문제를 하나도 못 만들어 세트가 failed가 되어도 처리기가 끝냈으면 복습 상태는 옮긴다
+    if (job?.type === SIMILAR_TYPE && job.status === 'succeeded') await this.saveSrs(row, job);
     const updated = await this.sets
       .findOneAndUpdate(
         { _id: row._id, status: row.status },

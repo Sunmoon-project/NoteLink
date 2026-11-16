@@ -70,6 +70,10 @@ export class QuizSet {
   @Prop({ type: Types.ObjectId, ref: 'QuizSet', default: null })
   sourceSetId?: Types.ObjectId | null;
 
+  // 유사 퀴즈(다시 보기) 세트를 만든 풀이. 오답 복습은 만들 때마다 복습 상태를 옮기므로 한 풀이에 한 번만 만든다
+  @Prop({ type: Types.ObjectId, ref: 'QuizAttempt', default: null })
+  sourceAttemptId?: Types.ObjectId | null;
+
   @Prop({ required: true, type: String })
   title: string;
 

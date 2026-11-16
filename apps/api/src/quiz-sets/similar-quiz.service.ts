@@ -1,6 +1,6 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { Model, mongo, Types } from 'mongoose';
 
 import { AiJobsService } from '../ai-jobs/ai-jobs.service.js';
 import { Material, type MaterialDocument } from '../modules/content/schemas/material.schema.js';
@@ -11,6 +11,8 @@ import {
 import { QuizSet, type QuizSetDocument } from '../modules/quiz/schemas/quiz-set.schema.js';
 import {
   type AppQuizSet,
+  INPUT_ATTEMPT_LIMIT,
+  INPUT_BYTE_LIMIT,
   INPUT_SET_LIMIT,
   isDuplicateKey,
   notFound,
@@ -74,6 +76,8 @@ export class SimilarQuizService {
       .lean<AttemptRow[]>();
     if (!attempt) throw conflict('먼저 이 퀴즈를 끝까지 풀어 주세요');
     if (!(attempt.answers ?? []).some((a) => !a.correct)) throw conflict('틀린 문제가 없어요');
+    const already = await this.madeFor(userId, owner, source, attempt);
+    if (already) return already;
 
     const newId = new Types.ObjectId();
     const job = await this.jobs.enqueue({
@@ -91,6 +95,7 @@ export class SimilarQuizService {
         folderId: source.folderId,
         source: 'ai_generated',
         sourceSetId: source._id,
+        sourceAttemptId: attempt._id,
         title: `${source.title} · 다시 보기`,
         status: 'generating',
         progress: 0,
@@ -111,6 +116,34 @@ export class SimilarQuizService {
       if (first) return this.quizSets.findMine(userId, first._id.toString());
       throw conflict('이 노트로 퀴즈를 만드는 중이에요. 끝나면 다시 시도해 주세요');
     }
+  }
+
+  /**
+   * 오답 복습은 만들 때마다 틀린 문제들의 복습 상태(srsUpdates)를 옮기므로 한 풀이에 한 번만 만든다.
+   * 이 풀이로 만든 세트가 남아 있고 만드는 중이거나 다 만들었으면 그 세트를 돌려준다(다시 만들지 않음).
+   * 처리기가 끝냈는데(복습 상태를 옮김) 세트를 지웠거나 새 문제를 못 만들었으면 409.
+   * 처리기가 실패 · 취소로 끝냈으면(옮긴 것 없음) null: 새로 만들게 둔다
+   */
+  private async madeFor(
+    userId: string,
+    owner: Types.ObjectId,
+    source: QuizSetRow,
+    attempt: AttemptRow,
+  ): Promise<AppQuizSet | null> {
+    const made = await this.sets
+      .find({ ownerId: owner, sourceSetId: source._id, sourceAttemptId: attempt._id })
+      .sort({ createdAt: -1 })
+      .lean<QuizSetRow[]>();
+    for (const prev of made) {
+      const job = prev.jobId
+        ? await this.jobs.findMine(userId, prev.jobId.toString()).catch(() => null)
+        : null;
+      if (!job || job.status === 'failed' || job.status === 'canceled') continue;
+      if (!prev.deletedAt && prev.status !== 'failed')
+        return this.quizSets.findMine(userId, prev._id.toString());
+      throw conflict('이번 풀이로는 이미 유사 퀴즈를 만들었어요. 퀴즈를 다시 풀고 시도해 주세요');
+    }
+    return null;
   }
 
   /**
@@ -143,6 +176,8 @@ export class SimilarQuizService {
         finishedAt: { $gte: since, $lte: attempt.finishedAt },
         _id: { $ne: attempt._id },
       })
+      .sort({ finishedAt: -1 })
+      .limit(INPUT_ATTEMPT_LIMIT)
       .lean<AttemptRow[]>();
     const materialIds = [...new Set(sets.map((s) => s.materialId!.toString()))];
     const notes = await this.materials
@@ -153,7 +188,7 @@ export class SimilarQuizService {
       .lean<{ _id: Types.ObjectId; pages?: PageRow[] }[]>();
     const answers = (a: AttemptRow) =>
       (a.answers ?? []).map((x) => ({ questionId: x.questionId.toString(), correct: x.correct }));
-    return {
+    return fitReviewInput({
       attemptId: attempt._id.toString(),
       quizSetId: source._id.toString(),
       finishedAt: attempt.finishedAt.toISOString(),
@@ -170,6 +205,65 @@ export class SimilarQuizService {
         answers: answers(h),
       })),
       notes: Object.fromEntries(notes.map((m) => [m._id.toString(), textPages(m.pages)])),
-    };
+    });
   }
+}
+
+/** 오답 복습 처리기 입력(apps/ai services/quiz/review.py 「input」) */
+export interface ReviewInput extends Record<string, unknown> {
+  attemptId: string;
+  quizSetId: string;
+  finishedAt: string;
+  answers: { questionId: string; correct: boolean }[];
+  sets: { id: string; materialId: string; questions: Record<string, unknown>[] }[];
+  history: { id: string; quizSetId: string; finishedAt: string; answers: unknown[] }[];
+  notes: Record<string, { pageNo: number; ocrText: string }[]>;
+}
+
+const bsonBytes = (key: string, value: unknown) => mongo.BSON.calculateObjectSize({ [key]: value });
+
+/**
+ * 입력을 limit 바이트(BSON) 안으로 줄인다(ai_jobs 문서가 MongoDB 한도를 넘지 않게, 맞춤 퀴즈 fitInput과 같은 방식).
+ * 이번 세트(sets[0]) · 그 노트 · 이번 풀이는 꼭 넣고, 넘으면 400. 나머지 세트는 최근 것부터 그 세트의 풀이 ·
+ * 노트 글과 함께 들어갈 만큼만 넣는다
+ */
+export function fitReviewInput(input: ReviewInput, limit = INPUT_BYTE_LIMIT): ReviewInput {
+  const [first, ...rest] = input.sets;
+  const historyOf = (id: string) => input.history.filter((h) => h.quizSetId === id);
+  const noteIds = new Set<string>(first ? [first.materialId] : []);
+  const base = {
+    ...input,
+    sets: first ? [first] : [],
+    history: first ? historyOf(first.id) : [],
+    notes:
+      first && input.notes[first.materialId]
+        ? { [first.materialId]: input.notes[first.materialId]! }
+        : {},
+  };
+  let total = mongo.BSON.calculateObjectSize(base);
+  if (total > limit) {
+    throw new BadRequestException({
+      code: VALIDATION_FAILED,
+      message: '노트가 너무 길어 유사 퀴즈를 만들 수 없어요. 노트를 나눠 올려 주세요',
+    });
+  }
+  const kept = new Set<string>(first ? [first.id] : []);
+  for (const set of rest) {
+    const note = input.notes[set.materialId];
+    const noteSize = note && !noteIds.has(set.materialId) ? bsonBytes(set.materialId, note) : 0;
+    const size =
+      bsonBytes('000', set) +
+      historyOf(set.id).reduce((n, h) => n + bsonBytes('000', h), 0) +
+      noteSize;
+    if (total + size > limit) continue;
+    total += size;
+    kept.add(set.id);
+    if (note) noteIds.add(set.materialId);
+  }
+  return {
+    ...input,
+    sets: input.sets.filter((x) => kept.has(x.id)),
+    history: input.history.filter((x) => kept.has(x.quizSetId)),
+    notes: Object.fromEntries(Object.entries(input.notes).filter(([id]) => noteIds.has(id))),
+  };
 }

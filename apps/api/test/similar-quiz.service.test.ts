@@ -6,7 +6,11 @@ import type { MaterialDocument } from '../src/modules/content/schemas/material.s
 import type { QuizAttemptDocument } from '../src/modules/quiz/schemas/quiz-attempt.schema.js';
 import type { QuizSetDocument } from '../src/modules/quiz/schemas/quiz-set.schema.js';
 import { QuizSetsService, SIMILAR_TYPE } from '../src/quiz-sets/quiz-sets.service.js';
-import { SimilarQuizService } from '../src/quiz-sets/similar-quiz.service.js';
+import {
+  fitReviewInput,
+  type ReviewInput,
+  SimilarQuizService,
+} from '../src/quiz-sets/similar-quiz.service.js';
 import { createFakeCollection, type Row } from './support/fake-collection.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
 
@@ -229,15 +233,125 @@ describe('다시 보기 세트 결과 옮기기(QuizSetsService.findMine)', () =
     );
   });
 
-  it('만들지 못했으면(reviewQuestions가 비었음) 세트를 failed로 둔다', async () => {
-    const { similar, seed, jobs, quizSets } = setup();
+  it('만들지 못했으면(reviewQuestions가 비었음) 세트를 failed로 두되 복습 상태는 옮긴다', async () => {
+    const { similar, seed, jobs, quizSets, updateOne } = setup();
     const s = await seed();
     const made = await similar.create(ME.toHexString(), s.set);
     Object.assign(jobs.rows.at(-1)!, {
       status: 'succeeded',
       progress: 100,
-      result: { reviewQuestions: [], srsUpdates: [] },
+      result: {
+        reviewQuestions: [],
+        srsUpdates: [
+          { quizSetId: s.set, questionId: s.qs[0]!._id.toHexString(), srs: { step: 1 } },
+        ],
+      },
     });
     expect(await quizSets.findMine(ME.toHexString(), made._id)).toMatchObject({ status: 'failed' });
+    // 새 문제를 못 만들어도 처리기가 끝냈으면 복습 상태는 옮긴다
+    expect(updateOne).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('한 풀이에 한 번(복습 상태를 두 번 옮기지 않게)', () => {
+  const finishJob = (jobs: ReturnType<typeof setup>['jobs'], questions: unknown[]) =>
+    Object.assign(jobs.rows.at(-1)!, {
+      status: 'succeeded',
+      progress: 100,
+      result: { reviewQuestions: questions, srsUpdates: [] },
+    });
+  const reviewQuestion = () => ({
+    id: new Types.ObjectId().toHexString(),
+    order: 1,
+    prompt: '세포를 둘러싼 막은?',
+    choices: ['세포막', '핵'],
+    answer: '세포막',
+    conceptTags: [],
+  });
+
+  it('다 만든 뒤 같은 풀이로 다시 요청하면 그 세트를 돌려주고 작업을 더 넣지 않는다', async () => {
+    const { similar, seed, jobs, quizSets } = setup();
+    const s = await seed();
+    const made = await similar.create(ME.toHexString(), s.set);
+    finishJob(jobs, [reviewQuestion()]);
+    await quizSets.findMine(ME.toHexString(), made._id);
+    const count = jobs.rows.length;
+    const again = await similar.create(ME.toHexString(), s.set);
+    expect(again).toMatchObject({ _id: made._id, status: 'ready' });
+    expect(jobs.rows).toHaveLength(count);
+  });
+
+  it('처리기가 끝낸 세트를 지웠거나 새 문제를 못 만들었으면 같은 풀이로는 409', async () => {
+    const { similar, seed, jobs, quizSets, sets } = setup();
+    const s = await seed();
+    const made = await similar.create(ME.toHexString(), s.set);
+    finishJob(jobs, []);
+    await quizSets.findMine(ME.toHexString(), made._id); // failed로 옮김
+    await expect(similar.create(ME.toHexString(), s.set)).rejects.toMatchObject({ status: 409 });
+    Object.assign(
+      sets.rows.find((r) => String(r._id) === made._id)!,
+      { deletedAt: new Date() },
+    );
+    await expect(similar.create(ME.toHexString(), s.set)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('처리기가 실패로 끝냈으면(옮긴 것 없음) 같은 풀이로 새로 만든다', async () => {
+    const { similar, seed, jobs, quizSets } = setup();
+    const s = await seed();
+    const made = await similar.create(ME.toHexString(), s.set);
+    Object.assign(jobs.rows.at(-1)!, { status: 'failed', error: 'LLM' });
+    await quizSets.findMine(ME.toHexString(), made._id);
+    const again = await similar.create(ME.toHexString(), s.set);
+    expect(again._id).not.toBe(made._id);
+    expect(again.status).toBe('generating');
+  });
+});
+
+describe('처리기 입력 크기(fitReviewInput)', () => {
+  const set = (id: string, materialId: string, n = 1) => ({
+    id,
+    materialId,
+    questions: Array.from({ length: n }, () => ({ prompt: 'x'.repeat(100) })),
+  });
+  const input = (over: Partial<ReviewInput> = {}): ReviewInput => ({
+    attemptId: 'a',
+    quizSetId: 's1',
+    finishedAt: '2026-11-16T00:00:00.000Z',
+    answers: [],
+    sets: [set('s1', 'm1'), set('s2', 'm2', 50), set('s3', 'm3')],
+    history: [
+      { id: 'h2', quizSetId: 's2', finishedAt: '2026-11-15T00:00:00.000Z', answers: [] },
+      { id: 'h3', quizSetId: 's3', finishedAt: '2026-11-15T00:00:00.000Z', answers: [] },
+    ],
+    notes: {
+      m1: [{ pageNo: 1, ocrText: '노트 1' }],
+      m2: [{ pageNo: 1, ocrText: '노트 2' }],
+      m3: [{ pageNo: 1, ocrText: '노트 3' }],
+    },
+    ...over,
+  });
+
+  it('한도 안이면 그대로', () => {
+    expect(fitReviewInput(input())).toEqual(input());
+  });
+
+  it('넘으면 이번 세트는 남기고, 들어가지 않는 다른 세트는 그 풀이 · 노트와 함께 뺀다', () => {
+    const base = fitReviewInput(
+      input({
+        sets: [set('s1', 'm1')],
+        history: [],
+        notes: { m1: [{ pageNo: 1, ocrText: '노트 1' }] },
+      }),
+    );
+    const fitted = fitReviewInput(input(), JSON.stringify(base).length + 1200);
+    expect(fitted.sets.map((x) => x.id)).toEqual(['s1', 's3']);
+    expect(fitted.history.map((x) => x.id)).toEqual(['h3']);
+    expect(Object.keys(fitted.notes).sort()).toEqual(['m1', 'm3']);
+  });
+
+  it('이번 세트만으로도 넘으면 400', () => {
+    expect(() => fitReviewInput(input(), 100)).toThrow(
+      expect.objectContaining({ status: 400 }) as unknown as Error,
+    );
   });
 });

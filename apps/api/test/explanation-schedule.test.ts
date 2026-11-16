@@ -6,6 +6,7 @@ import {
   SCHEDULE_START_HOUR,
 } from '../src/modules/studyroom/study-room-schedule.service.js';
 import { ExplanationsService } from '../src/quiz-sets/explanations.controller.js';
+import { StudyRoomScheduleService } from '../src/modules/studyroom/study-room-schedule.service.js';
 
 const ME = new Types.ObjectId().toHexString();
 
@@ -73,7 +74,7 @@ describe('스터디룸 공용 일정(buildSchedule)', () => {
     const { matches } = buildSchedule([busyMonday, []], 2);
     expect(matches[0]).toEqual({
       day: '화요일',
-      label: '화요일',
+      label: '화요일 09:00부터',
       start: '09:00',
       end: '23:00',
       best: true,
@@ -85,5 +86,78 @@ describe('스터디룸 공용 일정(buildSchedule)', () => {
 
   it('혼자면 추천 시간대가 없다', () => {
     expect(buildSchedule([[]], 1).matches).toEqual([]);
+  });
+});
+
+describe('스터디룸 공용 일정(StudyRoomScheduleService.schedule)', () => {
+  const ids = Array.from({ length: 4 }, () => new Types.ObjectId());
+  const [A, B, LEFT, GONE] = ids as [
+    Types.ObjectId,
+    Types.ObjectId,
+    Types.ObjectId,
+    Types.ObjectId,
+  ];
+  const setup = () => {
+    const requireMember = vi.fn().mockResolvedValue({
+      _id: new Types.ObjectId(),
+      members: [
+        { userId: A, status: 'joined' },
+        { userId: B, status: 'joined' },
+        { userId: LEFT, status: 'left' },
+        { userId: GONE, status: 'joined' }, // 탈퇴한 사용자(users에서 찾지 못함)
+      ],
+    });
+    const userFind = vi.fn(() => ({
+      lean: () =>
+        Promise.resolve([
+          { _id: A, nickname: '가' },
+          { _id: B, nickname: '나' },
+        ]),
+    }));
+    const tableFind = vi.fn(() => ({
+      lean: () =>
+        Promise.resolve([
+          { userId: A, classes: [{ days: [1], startTime: '09:00', endTime: '10:00' }] },
+          { userId: GONE, classes: [{ days: [2], startTime: '09:00', endTime: '10:00' }] },
+          { userId: LEFT, classes: [{ days: [3], startTime: '09:00', endTime: '10:00' }] },
+        ]),
+    }));
+    const svc = new StudyRoomScheduleService(
+      { find: tableFind } as never,
+      { find: userFind } as never,
+      { requireMember } as never,
+    );
+    return { svc, requireMember, userFind, tableFind };
+  };
+
+  it('참여 중인 멤버만 보고, 탈퇴 · 나간 멤버의 시간표는 세지 않는다', async () => {
+    const { svc, requireMember, tableFind } = setup();
+    const room = new Types.ObjectId().toHexString();
+    const me = A.toHexString();
+    const out = await svc.schedule(room, me);
+    expect(requireMember).toHaveBeenCalledWith(room, me);
+    expect(out.members).toEqual([
+      { nickname: '가', emoji: '✏️' },
+      { nickname: '나', emoji: '✏️' },
+    ]);
+    // 나간 멤버는 시간표를 읽지도 않는다
+    expect(tableFind).toHaveBeenCalledWith(
+      { userId: { $in: [A, B, GONE] } },
+      { userId: 1, classes: 1 },
+    );
+    expect(out.grid[0]![0]).toBe(1); // 월 9시: 멤버 가의 수업
+    expect(out.grid[0]![1]).toBe(2); // 화 9시: 탈퇴한 사용자의 수업은 세지 않음
+    expect(out.grid[0]![2]).toBe(2); // 수 9시: 나간 멤버의 수업도 세지 않음
+  });
+
+  it('멤버가 아니면(방이 없음 · 나감 · 강퇴) 404를 그대로 낸다', async () => {
+    const { svc, requireMember, userFind } = setup();
+    requireMember.mockRejectedValue(Object.assign(new Error('없음'), { status: 404 }));
+    await expect(
+      svc.schedule(new Types.ObjectId().toHexString(), A.toHexString()),
+    ).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(userFind).not.toHaveBeenCalled();
   });
 });

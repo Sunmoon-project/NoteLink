@@ -163,3 +163,11 @@ it('만들기가 실패하면(failed) 기다리기를 멈추고 다시 시도를
   expect(await screen.findByText('다시 시도')).toBeTruthy();
   expect(screen.getByText('생성 결과를 받지 못했어요. 다시 시도하면 새로 만들어요.')).toBeTruthy();
 });
+
+it('유사 퀴즈 요청이 바로 실패한 세트를 돌려주면 확인 대신 다시 시도를 보여 준다', async () => {
+  mockApi.quiz.similar.mockResolvedValue({ ...generated, status: 'failed', questions: [] });
+  await renderScreen(<QuizSimilarScreen />, client());
+  await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
+  expect(await screen.findByText('다시 시도')).toBeTruthy();
+  expect(screen.queryByText('확인')).toBeNull();
+});

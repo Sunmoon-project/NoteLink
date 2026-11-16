@@ -55,7 +55,8 @@ export function buildSchedule(timetables: ClassRow[][], memberCount: number) {
   runs.sort((a, b) => b.to - b.from - (a.to - a.from) || a.col - b.col || a.from - b.from);
   const matches = runs.slice(0, MATCH_LIMIT).map((r, i) => ({
     day: DAY_NAMES[r.col]!,
-    label: DAY_NAMES[r.col]!,
+    // 같은 요일에 구간이 여럿이어도 겹치지 않게(앱이 label을 목록 key로 쓴다)
+    label: `${DAY_NAMES[r.col]!} ${hh(SCHEDULE_START_HOUR + r.from)}부터`,
     start: hh(SCHEDULE_START_HOUR + r.from),
     end: hh(SCHEDULE_START_HOUR + r.to),
     ...(i === 0 ? { best: true } : {}),
