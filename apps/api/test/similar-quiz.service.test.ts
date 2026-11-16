@@ -12,6 +12,7 @@ import {
   SimilarQuizService,
 } from '../src/quiz-sets/similar-quiz.service.js';
 import { RecordingNotePagesService } from '../src/quiz-sets/recording-note-pages.service.js';
+import { recordingTranscriptOf, transcriptToPages } from '../src/quiz-sets/recording-pages.js';
 import { createFakeCollection, type Row } from './support/fake-collection.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
 
@@ -51,12 +52,13 @@ function setup() {
   Object.assign(sets.model, { updateOne });
   const jobs = createFakeJobs();
   const aiJobs = new AiJobsService(jobs.model);
+  const recordingPages = new RecordingNotePagesService(jobs.model);
   const quizSets = new QuizSetsService(
     sets.model,
     materials.model,
     attempts.model,
     aiJobs,
-    new RecordingNotePagesService(jobs.model),
+    recordingPages,
   );
   const similar = new SimilarQuizService(
     sets.model,
@@ -64,6 +66,7 @@ function setup() {
     materials.model,
     aiJobs,
     quizSets,
+    recordingPages,
   );
   /** 노트 하나와 그 노트로 만든 ready 세트, 그 세트를 끝낸 풀이(첫 문제를 틀림) */
   const seed = async (over: { owner?: Types.ObjectId; allCorrect?: boolean } = {}) => {
@@ -100,7 +103,7 @@ function setup() {
     } as never)) as unknown as { _id: Types.ObjectId };
     return { note: note._id, set: set._id.toHexString(), attempt: attempt._id, qs, finishedAt };
   };
-  return { sets, attempts, jobs, quizSets, similar, seed, updateOne };
+  return { sets, attempts, jobs, materials, quizSets, similar, seed, updateOne };
 }
 
 describe('SimilarQuizService.create', () => {
@@ -144,6 +147,43 @@ describe('SimilarQuizService.create', () => {
     expect((input['sets'] as { id: string }[])[0]!.id).toBe(s.set);
     expect(input['history']).toHaveLength(1);
     expect(sets.rows.find((r) => String(r._id) === out._id)!['jobId']).toBeTruthy();
+  });
+
+  it('녹음 노트 세트의 유사 퀴즈 입력 notes 에는 녹음 대본 쪽이 들어간다(필기 노트는 위 테스트처럼 쪽 글 그대로)', async () => {
+    const { similar, seed, jobs, materials } = setup();
+    const s = await seed();
+    const result = {
+      sentences: Array.from({ length: 8 }, (_, i) => ({
+        text: `녹음 문장 ${i}.`,
+        startMs: i,
+        endMs: i + 1,
+      })),
+      slides: [{ sentenceStart: 0, sentenceEnd: 8 }],
+    };
+    const summaryJob = {
+      _id: new Types.ObjectId(),
+      type: 'recording_summary',
+      userId: ME,
+      status: 'succeeded',
+      result,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    jobs.rows.push(summaryJob as never);
+    // 노트를 녹음 노트로 바꾼다: pages 가 없고 대본은 작업 결과에 있다
+    Object.assign(
+      materials.rows.find((r) => String(r._id) === s.note.toHexString())!,
+      {
+        kind: 'recording',
+        pages: [],
+        processing: { status: 'done', jobId: summaryJob._id },
+      },
+    );
+    await similar.create(ME.toHexString(), s.set);
+    const input = jobs.rows.at(-1)!['input'] as ReviewInput;
+    const expected = transcriptToPages(recordingTranscriptOf(result)!);
+    expect(expected.length).toBeGreaterThan(0);
+    expect(input.notes[s.note.toHexString()]).toEqual(expected);
   });
 
   it('같은 세트로 만드는 중이면 그 세트를 돌려주고 작업을 더 넣지 않는다', async () => {
