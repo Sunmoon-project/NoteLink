@@ -226,13 +226,23 @@ describe('GoalRemindersService 대상 고르기', () => {
   it('목표마다 선점 직전에 시계를 다시 보고, 서울 날짜가 바뀌었으면 남은 목표는 보내지 않는다', async () => {
     const a = goal({ remindTime: '23:00' });
     const b = goal({ remindTime: '23:00' });
-    const times = [seoul('23:59'), seoul('00:00', '2026-11-17')];
+    // 목표마다 선점 직전과 발송 직전에 한 번씩 읽는다(첫 목표 2번, 둘째 목표는 선점 직전에 자정을 넘김)
+    const times = [seoul('23:59'), seoul('23:59'), seoul('00:00', '2026-11-17')];
     const clock = vi.fn(() => times.shift() ?? seoul('00:05', '2026-11-17'));
     const { service, push, claims } = setup({ goals: [a, b] });
     await service.runOnce(seoul('23:59'), clock);
     expect(push.send).toHaveBeenCalledTimes(1);
     expect(claims).toHaveLength(1);
     expect(claims[0]).toMatchObject({ filter: { _id: a._id } });
+  });
+
+  it('발송 직전에 시계를 다시 읽어 발송 시간대(2시간)를 벗어났으면 보내지 않고 재시도 예약도 하지 않는다', async () => {
+    const times = [seoul('22:59'), seoul('23:00')]; // 선점 직전은 창 안, 발송 직전은 21:00 목표의 창(23:00) 끝
+    const clock = vi.fn(() => times.shift() ?? seoul('23:00'));
+    const { service, push, claims } = setup({ goals: [goal()] });
+    await service.runOnce(seoul('22:59'), clock);
+    expect(push.send).not.toHaveBeenCalled();
+    expect(claims).toHaveLength(1); // 선점만 있고 표시를 푸는 쓰기(재시도 예약)는 없다
   });
 
   it('공부를 아직 안 했으면 목표 전체가 남은 분이다', async () => {

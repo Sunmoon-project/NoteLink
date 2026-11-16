@@ -108,7 +108,7 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
           const current = tick();
           if (seoulDate(current) !== today) return;
           try {
-            await this.handle(goal, current, today, userDays);
+            await this.handle(goal, current, today, userDays, tick);
           } catch (error) {
             this.logger.warn(
               `목표 리마인드를 처리하지 못했어요(${String(goal._id)}): ${String(error)}`,
@@ -128,6 +128,7 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
     now: Date,
     today: string,
     userDays: Map<string, Promise<UserDay>>,
+    clock: () => Date,
   ): Promise<void> {
     if (!inRemindWindow(now, today, goal.remindTime)) return;
     // 리마인드 시각 이후에 만든 목표는 그날 건너뛴다
@@ -137,6 +138,7 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
     if (attempts >= REMIND_MAX_ATTEMPTS) return;
 
     const previous = goal.lastRemindedOn ?? null;
+    const claimedVersion = goal.remindVersion;
     const claimId = randomUUID();
     const claimed = await this.goals.updateOne(
       {
@@ -153,12 +155,12 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
     if (!claimed.matchedCount) return; // 다른 서버가 먼저 잡았다
 
     try {
-      const sent = await this.judgeAndSend(goal, now, today, userDays);
+      const sent = await this.judgeAndSend(goal, now, today, userDays, clock);
       if (sent) return;
     } catch (error) {
       this.logger.warn(`목표 리마인드 발송 중 오류(${String(goal._id)}): ${String(error)}`);
     }
-    await this.failed(goal, claimId, previous, attempts + 1, now, today);
+    await this.failed(goal, claimId, claimedVersion, previous, attempts + 1, now, today);
   }
 
   /** 판정하고 보낸다. 다시 시도할 만한 실패(보낼 기기가 있는데 전부 실패)면 false, 그 밖에는(보냈거나 보낼 게 없음) true */
@@ -167,6 +169,7 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
     now: Date,
     today: string,
     userDays: Map<string, Promise<UserDay>>,
+    clock: () => Date,
   ): Promise<boolean> {
     const userId = String(goal.userId);
     let day = userDays.get(userId);
@@ -186,6 +189,13 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
       EXPO_PUSH_TOKEN.test(t),
     );
     if (!tokens.length) return true; // 기기가 없다
+
+    // 선점 · 기록 · 기기 조회를 기다리는 사이 자정을 넘기거나 발송 시간대가 끝났을 수 있다. 그러면 보내지 않고 끝낸다.
+    // 표시(lastRemindedOn)는 선점한 날짜로 그대로 둔다: 자정을 넘겼다면 전날 날짜라 다음 날 판정에 영향이 없고,
+    // failed()를 거치지 않으므로 다시 시도할 예약도 생기지 않는다
+    const beforeSend = clock();
+    if (seoulDate(beforeSend) !== today || !inRemindWindow(beforeSend, today, goal.remindTime))
+      return true;
 
     const { title, body } = remindMessage(goal.name, goal.targetMin, todayMin);
     const id = String(goal._id);
@@ -238,12 +248,19 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
   private async failed(
     goal: GoalLean,
     claimId: string,
+    claimedVersion: number | undefined,
     previous: string | null,
     attempts: number,
     now: Date,
     today: string,
   ): Promise<void> {
-    const mine = { _id: goal._id, remindClaimId: claimId };
+    // 선점한 뒤 update()로 설정이 바뀌었으면(remindVersion이 달라졌으면) 아무것도 되돌리지 않는다. 그 변경이 오늘 건너뜀 표시를 남겼을 수 있다.
+    // 건너뜀 표시 없이 바뀐 설정(예: 목표 시간만 변경)에서 발송이 실패한 경우에도 그날은 다시 보내지 않는다
+    const mine = {
+      _id: goal._id,
+      remindClaimId: claimId,
+      remindVersion: versionFilter(claimedVersion),
+    };
     if (attempts >= REMIND_MAX_ATTEMPTS) {
       await this.goals.updateOne(mine, {
         $set: { remindAttempts: attempts, remindAttemptsOn: today, remindRetryAt: null },

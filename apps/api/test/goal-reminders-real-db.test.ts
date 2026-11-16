@@ -361,12 +361,82 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
     const first = await goal({ remindTime: '23:00', days: [MON, 2] });
     const second = await goal({ remindTime: '23:00', days: [MON, 2] });
     await device('a');
-    const times = [seoul('23:59'), seoul('00:00', '2026-11-17')];
+    // 목표마다 선점 직전과 발송 직전에 한 번씩 읽는다(첫 목표 2번, 둘째 목표는 선점 직전에 자정을 넘김)
+    const times = [seoul('23:59'), seoul('23:59'), seoul('00:00', '2026-11-17')];
     const clock = () => times.shift() ?? seoul('00:05', '2026-11-17');
     await makeService().runOnce(seoul('23:59'), clock);
     expect(sent).toHaveLength(1);
     expect((await row(first))!.lastRemindedOn).toBe(TODAY);
     expect((await row(second))!.lastRemindedOn).toBeNull();
+  });
+
+  it('선점 뒤 설정이 지난 시각으로 바뀌고 발송이 실패해도 오늘 건너뜀 표시를 지우지 않고 재시도하지 않는다', async () => {
+    const id = await goal();
+    await device('a');
+    const editor = makeGoalsService();
+    let edited = false;
+    sendImpl = async (messages) => {
+      if (!edited) {
+        edited = true; // 발송이 대기하는 동안 설정이 이미 지난 시각(20:00)으로 바뀐다
+        vi.useFakeTimers({ toFake: ['Date'], now: seoul('21:05') });
+        try {
+          await editor.update(user.toHexString(), id.toHexString(), { remindTime: '20:00' });
+        } finally {
+          vi.useRealTimers();
+        }
+      }
+      return { invalidTokens: [], failedTickets: messages.map((message) => ({ message, error: 'x' })) };
+    };
+    const service = makeService();
+    await service.runOnce(seoul('21:05'));
+    const doc = (await row(id))!;
+    expect(doc.lastRemindedOn).toBe(TODAY);
+    expect(doc.remindVersion).toBe(1);
+    expect(doc.remindAttempts ?? 0).toBe(0);
+    expect(doc.remindRetryAt ?? null).toBeNull();
+    await service.runOnce(seoul('21:07'));
+    await service.runOnce(seoul('21:30'));
+    expect(sent).toHaveLength(1);
+  });
+
+  it('설정을 바꾸지 않은(이름만 고친) 발송 실패는 지금처럼 표시가 풀려 재시도된다', async () => {
+    const id = await goal();
+    await device('a');
+    const editor = makeGoalsService();
+    let calls = 0;
+    sendImpl = async (messages) => {
+      if (++calls === 1) {
+        await editor.update(user.toHexString(), id.toHexString(), { name: '새 이름' });
+        return { invalidTokens: [], failedTickets: messages.map((message) => ({ message, error: 'x' })) };
+      }
+      return ok;
+    };
+    const service = makeService();
+    await service.runOnce(seoul('21:05'));
+    const doc = (await row(id))!;
+    expect(doc.lastRemindedOn).toBeNull();
+    expect(doc.remindAttempts).toBe(1);
+    expect(doc.remindRetryAt!.getTime()).toBe(seoul('21:07').getTime());
+    await service.runOnce(seoul('21:07'));
+    expect(sent).toHaveLength(2);
+    expect((await row(id))!.lastRemindedOn).toBe(TODAY);
+  });
+
+  it('목표 하나를 처리하는 도중 시계가 자정을 넘기면 보내지 않고, 다음 날에는 정상 발송한다', async () => {
+    const id = await goal({ remindTime: '23:00', days: [MON, 2] });
+    await device('a');
+    const times = [seoul('23:59'), seoul('00:00', '2026-11-17')]; // 선점 직전, 발송 직전
+    const clock = () => times.shift() ?? seoul('00:00', '2026-11-17');
+    const service = makeService();
+    await service.runOnce(seoul('23:59'), clock);
+    expect(sent).toHaveLength(0);
+    const doc = (await row(id))!;
+    expect(doc.lastRemindedOn).toBe(TODAY); // 전날 날짜로 남아 다음 날 판정에 영향이 없다
+    expect(doc.remindAttempts ?? 0).toBe(0);
+    expect(doc.remindRetryAt ?? null).toBeNull();
+    await service.runOnce(seoul('23:30', '2026-11-17')); // 화요일
+    expect(sent).toHaveLength(1);
+    expect((await row(id))!.lastRemindedOn).toBe('2026-11-17');
   });
 
   it('후보를 찾는 부분 인덱스가 있다', async () => {
