@@ -86,6 +86,36 @@ describe('ImagesService.check', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('AI 호출에 90초 제한을 걸고, 제한 시간이 지나 요청이 끊기면 서비스 오류로 처리한다', async () => {
+    // AbortSignal.timeout을 가로채 90초를 기다리지 않고 만료를 재현한다
+    const expiry = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(expiry.signal);
+    fetchMock.mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation timed out.', 'TimeoutError')),
+          );
+        }),
+    );
+
+    try {
+      const pending = service.check(userId, { files: [file] });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(timeout).toHaveBeenCalledExactlyOnceWith(90_000);
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ signal: expiry.signal }),
+      );
+
+      expiry.abort();
+      await expect(pending).rejects.toBeInstanceOf(ServiceUnavailableException);
+      await expect(pending).rejects.toMatchObject({ response: { code: 'AI_UNAVAILABLE' } });
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it('AI 설정 누락·서버 오류·누락 또는 변조된 결과를 서비스 오류로 처리한다', async () => {
     const unconfigured = new ImagesService({ get: () => undefined } as never, blobs as never);
     await expect(unconfigured.check(userId, { files: [file] })).rejects.toBeInstanceOf(
