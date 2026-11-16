@@ -1,6 +1,7 @@
 // 진짜 MongoDB에서 노트 등록의 멱등성 · 동시 요청 · 중단 복구를 보는 테스트.
 // MONGODB_VERIFY_URI가 있을 때만 돌고(없으면 건너뜀), localhost가 아니면 거부한다. 이번 실행에서만 쓰는 전용 DB를 만들고 끝나면 지운다.
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/materials-real-db.test.ts
+import { BadRequestException } from '@nestjs/common';
 import mongoose, { type Connection, type Model, Types } from 'mongoose';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -32,6 +33,7 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
   let folders: Model<Folder>;
   let jobs: Model<AiJob>;
   let service: MaterialsService;
+  let aiJobs: AiJobsService;
   let blobs: { createReadAccess: ReturnType<typeof vi.fn> };
   const quizSets = { pregenerate: vi.fn() };
   const me = new Types.ObjectId();
@@ -50,10 +52,11 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
         Promise.resolve({ readUrl: `${u}?sig=SECRET`, ...(verify ? { sizeBytes: 100 } : {}) }),
       ),
     };
+    aiJobs = new AiJobsService(jobs as never);
     service = new MaterialsService(
       materials as never,
       folders as never,
-      new AiJobsService(jobs as never),
+      aiJobs,
       blobs as never,
       quizSets as never,
       conn,
@@ -692,6 +695,113 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
     });
     expect(await materials.countDocuments()).toBe(2);
   });
+  describe('다시 시도할 때 입력 파일 읽기 주소 새로 만들기', () => {
+    const audio = `https://a.blob.core.windows.net/c/uploads/audio/${me.toHexString()}/550e8400-e29b-41d4-a716-446655440008.m4a`;
+    const me$ = () => me.toHexString();
+    beforeAll(() => service.onModuleInit());
+
+    /** 만료된 주소 · checkpoint 없음인 실패 작업으로 만든다 */
+    const expire = async (jobId: string, input: Record<string, unknown>) => {
+      await jobs.updateOne(
+        { _id: jobId },
+        { $set: { status: 'failed', error: 'x', input }, $unset: { checkpoint: '' } },
+      );
+    };
+    const stored = async (jobId: string) => (await jobs.findById(jobId).lean())!;
+
+    it('필기: 주소만 새 읽기 주소로 바뀌고 다른 필드 · 상태는 처리기 규칙대로', async () => {
+      const { job } = await service.register(me$(), dto({ blobUrls: [url(1), url(2)] }));
+      await expire(job._id, {
+        pages: [
+          { pageNo: 1, imageUrl: 'https://old/1?sig=EXPIRED' },
+          { pageNo: 2, imageUrl: 'https://old/2?sig=EXPIRED' },
+        ],
+        subject: '수학',
+        seeds: [{ topic: 't', terms: [] }],
+      });
+      blobs.createReadAccess.mockClear();
+      expect((await aiJobs.retry(me$(), job._id)).status).toBe('queued');
+      const row = await stored(job._id);
+      expect(row.status).toBe('queued');
+      expect(row.input).toEqual({
+        pages: [
+          { pageNo: 1, imageUrl: `${url(1)}?sig=SECRET` },
+          { pageNo: 2, imageUrl: `${url(2)}?sig=SECRET` },
+        ],
+        subject: '수학',
+        seeds: [{ topic: 't', terms: [] }],
+      });
+      // 등록 때와 같은 확인(내 업로드 경로 · 있는 파일)으로 만든다
+      expect(blobs.createReadAccess).toHaveBeenCalledTimes(2);
+      expect(blobs.createReadAccess.mock.calls[0]![2]).toEqual({
+        prefix: `uploads/image/${me$()}/`,
+      });
+    });
+
+    it('녹음: audioUrl만 바뀌고 sizeBytes · slidesUrl은 그대로', async () => {
+      const { job } = await service.register(
+        me$(),
+        dto({ kind: 'recording', source: 'audio_file', blobUrls: [audio] }),
+      );
+      await expire(job._id, {
+        audioUrl: 'https://old/a?sig=EXPIRED',
+        sizeBytes: 7,
+        slidesUrl: 'https://old/s?sig=KEEP',
+      });
+      await aiJobs.retry(me$(), job._id);
+      expect((await stored(job._id)).input).toEqual({
+        audioUrl: `${audio}?sig=SECRET`,
+        sizeBytes: 7,
+        slidesUrl: 'https://old/s?sig=KEEP',
+      });
+    });
+
+    it('녹음을 다시 정리하는 입력(sentences)은 저장소를 부르지 않고 그대로', async () => {
+      const { job } = await service.register(
+        me$(),
+        dto({ kind: 'recording', source: 'audio_file', blobUrls: [audio] }),
+      );
+      const input = { sentences: ['가', '나'], durationMs: 5 };
+      await expire(job._id, input);
+      blobs.createReadAccess.mockClear();
+      await aiJobs.retry(me$(), job._id);
+      expect(blobs.createReadAccess).not.toHaveBeenCalled();
+      expect((await stored(job._id)).input).toEqual(input);
+      expect((await stored(job._id)).status).toBe('queued');
+    });
+
+    it('input.pages 개수가 파일 수와 안 맞으면 오류 없이 input 그대로 다시 시도된다', async () => {
+      const { job } = await service.register(me$(), dto({ blobUrls: [url(1), url(2)] }));
+      const input = { pages: [{ pageNo: 1, imageUrl: 'https://old/1?sig=EXPIRED' }] };
+      await expire(job._id, input);
+      await aiJobs.retry(me$(), job._id);
+      const row = await stored(job._id);
+      expect(row.status).toBe('queued');
+      expect(row.input).toEqual(input);
+    });
+
+    it('노트를 지운 뒤 다시 시도하면 404이고 작업은 그대로', async () => {
+      const { material, job } = await service.register(me$(), dto());
+      const input = { pages: [{ pageNo: 1, imageUrl: 'https://old/1?sig=EXPIRED' }] };
+      await expire(job._id, input);
+      await service.remove(me$(), material._id);
+      const before = await stored(job._id);
+      await expect(aiJobs.retry(me$(), job._id)).rejects.toMatchObject({ status: 404 });
+      expect(await stored(job._id)).toEqual(before);
+    });
+
+    it('원본 파일이 없으면 400이고 작업은 그대로', async () => {
+      const { job } = await service.register(me$(), dto());
+      await expire(job._id, { pages: [{ pageNo: 1, imageUrl: 'https://old/1?sig=EXPIRED' }] });
+      const before = await stored(job._id);
+      blobs.createReadAccess.mockRejectedValueOnce(
+        new BadRequestException({ code: 'VALIDATION_FAILED', message: '파일이 없어요' }),
+      );
+      await expect(aiJobs.retry(me$(), job._id)).rejects.toMatchObject({ status: 400 });
+      expect(await stored(job._id)).toEqual(before);
+    });
+  });
+
   describe('조회할 때 끝난 작업 반영 (GET /materials/:id)', () => {
     const finish = (jobId: string, result: Record<string, unknown>) =>
       jobs.updateOne({ _id: jobId }, { $set: { status: 'succeeded', progress: 100, result } });

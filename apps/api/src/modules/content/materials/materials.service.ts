@@ -6,13 +6,18 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  type OnModuleInit,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES, UPLOAD_RULES } from '@notelink/shared';
 import { type Connection, Model, Types } from 'mongoose';
 
-import { type AppAiJob, AiJobsService } from '../../../ai-jobs/ai-jobs.service.js';
+import {
+  type AppAiJob,
+  AiJobsService,
+  type InputRefreshContext,
+} from '../../../ai-jobs/ai-jobs.service.js';
 import { QuizSetsService } from '../../../quiz-sets/quiz-sets.service.js';
 import { BlobStorageService } from '../../upload/blob-storage.service.js';
 import { Folder } from '../schemas/folder.schema.js';
@@ -152,7 +157,7 @@ export function downloadFileName(title: string, blobUrl: string): string {
  * 남의 노트 · 없는 노트는 같게 404 로 답한다.
  */
 @Injectable()
-export class MaterialsService {
+export class MaterialsService implements OnModuleInit {
   constructor(
     @InjectModel(Material.name) private readonly materials: Model<Material>,
     @InjectModel(Folder.name) private readonly folders: Model<Folder>,
@@ -163,6 +168,55 @@ export class MaterialsService {
   ) {}
 
   private readonly logger = new Logger(MaterialsService.name);
+
+  /** 노트 정리 작업을 다시 시도할 때 입력의 파일 읽기 주소를 새로 만들도록 ai-jobs 에 등록한다(의존은 노트 → ai-jobs 한 방향) */
+  onModuleInit(): void {
+    for (const type of new Set(Object.values(JOB_TYPE))) {
+      this.jobs.registerInputRefresher(type, (ctx) => this.refreshInput(type, ctx));
+    }
+  }
+
+  /**
+   * 다시 시도 전에 작업 입력의 원본 읽기 주소(필기 · 문서 pages[].imageUrl, 녹음 audioUrl)만 새로 만든다. 30일짜리 SAS 가
+   * 지난 뒤에도 원본을 읽게 하려는 것이다. 다른 필드(subject · seeds · sizeBytes · slidesUrl 등)는 그대로 둔다.
+   * 등록 때와 같은 확인(내 업로드 경로 · 파일이 있는지 · 크기)을 prepareFiles 로 다시 거친다. 노트가 지워졌으면 404,
+   * 파일이 없거나 경로가 맞지 않으면 prepareFiles 가 내는 400 을 그대로 올려 다시 시도가 작업을 바꾸지 않게 한다.
+   * 입력이 이 노트의 파일과 맞지 않는 경우(대상이 노트가 아님 · 다시 정리하기 입력 · 쪽 수 불일치)는 오류 없이
+   * 그대로 돌려줘 다시 시도는 되게 한다
+   */
+  private async refreshInput(
+    type: string,
+    ctx: InputRefreshContext,
+  ): Promise<Record<string, unknown>> {
+    if (ctx.targetType !== 'material') return ctx.input;
+    const note = await this.materials
+      .findOne(
+        { _id: objectId(ctx.targetId), ownerId: new Types.ObjectId(ctx.userId), deletedAt: null },
+        { kind: 1, blobUrls: 1 },
+      )
+      .lean<{ kind: string; blobUrls?: string[] }>();
+    if (!note) throw notFound('노트');
+    if (!(note.kind in JOB_TYPE) || JOB_TYPE[note.kind as keyof typeof JOB_TYPE] !== type)
+      return ctx.input;
+    const { input } = ctx;
+    if (note.kind === 'recording') {
+      // 다시 정리하기(sentences)는 원본을 읽지 않는다
+      if (typeof input['audioUrl'] !== 'string') return input;
+      const files = await this.prepareFiles(ctx.userId, note.kind, note.blobUrls ?? []);
+      return files.length === 1 ? { ...input, audioUrl: files[0]!.readUrl } : input;
+    }
+    const pages = input['pages'];
+    const blobUrls = note.blobUrls ?? [];
+    if (!Array.isArray(pages) || pages.length !== blobUrls.length) return input;
+    const files = await this.prepareFiles(ctx.userId, note.kind, blobUrls);
+    return {
+      ...input,
+      pages: pages.map((page: unknown, i) => ({
+        ...(page as Record<string, unknown>),
+        imageUrl: files[i]!.readUrl,
+      })),
+    };
+  }
 
   /**
    * 노트를 등록하고 정리 작업을 넣는다. 응답은 앱의 로컬 모의 API(content.createMaterial)와 같은 { material, job }.
