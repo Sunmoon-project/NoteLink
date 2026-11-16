@@ -125,6 +125,23 @@ describe('녹음 노트로 퀴즈 만들기', () => {
     expect(JSON.stringify(input)).not.toMatch(/embedding|"words"/);
   });
 
+  it('공백 없는 100자 문장 6개를 슬라이드 3개에 2개씩 나눈 대본도 400 없이 작업을 넣는다(합쳐서 5줄 이상인 쪽을 만든다)', async () => {
+    const { service, addRecording, queuedInputs } = setup();
+    const sentences = Array.from({ length: 6 }, (_, i) => ({
+      text: String.fromCharCode(0xac00 + i).repeat(99) + '.',
+      startMs: i,
+      endMs: i + 1,
+    }));
+    const slide = (sentenceStart: number, sentenceEnd: number) => ({ sentenceStart, sentenceEnd });
+    const result = { sentences, slides: [slide(0, 2), slide(2, 4), slide(4, 6)] };
+    const id = await addRecording({ result });
+    const { job } = await service.create(ME.toHexString(), id);
+    expect(job.type).toBe('quiz_generate');
+    const pages = queuedInputs()[0]!.material.pages;
+    expect(pages).toEqual(transcriptToPages(recordingTranscriptOf(result)!));
+    expect(pages.some((p) => p.ocrText.split('\n').length >= 5)).toBe(true);
+  });
+
   it('미리 만들기도 녹음 노트의 대본으로 quiz_pregen 을 넣는다', async () => {
     const { service, addRecording, queuedInputs } = setup();
     const job = await service.pregenerate(ME.toHexString(), await addRecording());

@@ -262,10 +262,143 @@ describe('transcriptToPages: 글이 충분한데 5줄이 안 되는 쪽은 긴 �
     expect(textOf(pagesOf(tiny))).toEqual(tiny);
   });
 
-  it('공백이 전혀 없는 긴 문장은 나눌 곳이 없어 줄 수를 늘리지 못한다(상한은 지킨다)', () => {
+  it('공백이 전혀 없는 긴 문장도 글이 충분하면 5줄로 채운다(마지막 수단: 글자 경계에서 자르기)', () => {
     const pages = pagesOf([solid(600), solid(600)]);
-    for (const p of pages) expect(p.ocrText.length).toBeLessThanOrEqual(RECORDING_PAGE_MAX_CHARS);
-    expect(textOf(pages).join('')).toBe(solid(600) + solid(600));
+    for (const p of pages) {
+      expect(lineCount(p)).toBeGreaterThanOrEqual(RECORDING_MIN_LINES);
+      expect(p.ocrText.length).toBeLessThanOrEqual(RECORDING_PAGE_MAX_CHARS);
+    }
+    expect(textOf(pages).join('')).toBe(solid(600) + solid(600)); // 이어 붙이면 원문 그대로
+  });
+});
+
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+const noSpace = (text: string) => text.replace(/\s/g, '');
+/** 줄바꿈을 뺀 글자 수(처리기가 보는 글의 양) */
+const charsOf = (p: { ocrText: string }) => p.ocrText.replace(/\n/g, '').length;
+const emoji = (units: number) => '😀'.repeat(units / 2); // UTF-16 으로 units 글자(서로게이트 쌍)
+
+describe('transcriptToPages: 묶음은 실제로 5줄이 될 때 확정한다(그 전에는 다음 슬라이드와 합친다)', () => {
+  it('Codex 사례: 공백 없는 100자 문장 6개를 슬라이드 3개에 2개씩 넣으면 합쳐 한 쪽(6줄 · 605자)이 된다', () => {
+    const texts = Array.from({ length: 6 }, (_, i) => solid(100, String.fromCharCode(0xac00 + i)));
+    const pages = pagesOf(texts, [slide(0, 2), slide(2, 4), slide(4, 6)]);
+    expect(pages).toHaveLength(1);
+    expect(lineCount(pages[0]!)).toBe(6);
+    expect(pages[0]!.ocrText).toHaveLength(605);
+    expect(textOf(pages)).toEqual(texts);
+  });
+
+  it('공백이 있으면 슬라이드마다 공백에서 나눠 5줄 쪽이 된다(합치지 않는다)', () => {
+    const texts = Array.from({ length: 6 }, () => spaced(100));
+    const pages = pagesOf(texts, [slide(0, 2), slide(2, 4), slide(4, 6)]);
+    expect(pages).toHaveLength(3);
+    for (const p of pages) expect(lineCount(p)).toBeGreaterThanOrEqual(RECORDING_MIN_LINES);
+  });
+
+  it('마지막 슬라이드가 5줄을 못 채우면 앞 묶음에 붙이고, 상한을 넘으면 균등 분할을 탄다', () => {
+    const texts = [...Array.from({ length: 23 }, () => solid(100)), solid(100), solid(100)];
+    const pages = pagesOf(texts, [slide(0, 23), slide(23, 25)]); // 마지막 슬라이드: 공백 없는 2줄(200자)
+    expect(pages).toHaveLength(2);
+    for (const p of pages) {
+      expect(p.ocrText.length).toBeLessThanOrEqual(RECORDING_PAGE_MAX_CHARS);
+      expect(lineCount(p)).toBeGreaterThanOrEqual(RECORDING_MIN_LINES);
+    }
+    expect(textOf(pages)).toEqual(texts);
+  });
+
+  it('슬라이드가 없는 대체 경로(문장 묶기 · 전체 대본 나누기)도 같다', () => {
+    const texts = Array.from({ length: 6 }, () => solid(100));
+    expect(transcriptToPages(make({ sentences: asSentences(texts) }))).toHaveLength(1);
+    const transcript = texts.map((t) => t + ' ').join('');
+    const pages = transcriptToPages(make({ transcript }));
+    expect(pages).toHaveLength(1);
+    expect(lineCount(pages[0]!)).toBe(6);
+  });
+});
+
+describe('transcriptToPages: 글이 200자 이상인 쪽은 항상 5줄 이상 · 2400자 이하(마지막 수단: 글자 경계에서 자르기)', () => {
+  it('공백 없는 600자 문장 6개(한 슬라이드)는 한계가 아니라 통과한다: 모든 쪽이 5줄 이상 · 2400자 이하이고 이어 붙이면 원문 그대로', () => {
+    const texts = Array.from({ length: 6 }, (_, i) => solid(600, String.fromCharCode(0xac00 + i)));
+    const pages = pagesOf(texts);
+    expect(pages.length).toBeGreaterThanOrEqual(2); // 3,605자라 상한 때문에 나뉜다
+    for (const p of pages) {
+      expect(lineCount(p)).toBeGreaterThanOrEqual(RECORDING_MIN_LINES);
+      expect(p.ocrText.length).toBeLessThanOrEqual(RECORDING_PAGE_MAX_CHARS);
+    }
+    expect(textOf(pages).join('')).toBe(texts.join(''));
+  });
+
+  it('상한 바로 아래(2399 · 2400자)의 공백 없는 한 줄도 5줄로 나눈 뒤 상한을 넘지 않는다', () => {
+    for (const n of [2395, 2396, 2399, 2400, 2401]) {
+      const pages = pagesOf([solid(n)]);
+      for (const p of pages) {
+        if (charsOf(p) >= RECORDING_ENOUGH_CHARS) expect(lineCount(p)).toBeGreaterThanOrEqual(5);
+        expect(p.ocrText.length).toBeLessThanOrEqual(RECORDING_PAGE_MAX_CHARS);
+      }
+      expect(textOf(pages).join('')).toBe(solid(n));
+    }
+  });
+
+  it('서로게이트 쌍(이모지)의 가운데는 자르지 않고, 이어 붙이면 원문과 같다', () => {
+    for (const texts of [[emoji(300), emoji(300)], [emoji(6000)], [emoji(2), emoji(500)]]) {
+      const pages = pagesOf(texts);
+      for (const p of pages) {
+        expect(LONE_SURROGATE.test(p.ocrText)).toBe(false);
+        expect(p.ocrText.length).toBeLessThanOrEqual(RECORDING_PAGE_MAX_CHARS);
+        if (charsOf(p) >= RECORDING_ENOUGH_CHARS) expect(lineCount(p)).toBeGreaterThanOrEqual(5);
+      }
+      expect(textOf(pages).join('')).toBe(texts.join(''));
+    }
+  });
+
+  it('글이 200자 미만인 쪽은 공백이 없어도 자르지 않고 그대로 둔다', () => {
+    const texts = [solid(60), solid(60), solid(60)]; // 180자 3줄
+    expect(textOf(pagesOf(texts))).toEqual(texts);
+  });
+
+  it('공백에서 나눌 수 있으면 글자 경계에서 자르지 않는다(공백 먼저)', () => {
+    const texts = [spaced(300), spaced(300)];
+    const pages = pagesOf(texts);
+    expect(textOf(pages).join(' ')).toBe(texts.join(' ')); // 잘린 단어가 없다
+  });
+
+  it('무작위 대본 300개: 글이 200자 이상인 쪽은 모두 5줄 이상 · 2400자 이하, 내용 · 순서 보존, 같은 입력은 같은 쪽', () => {
+    let seed = 20261117;
+    const rand = (n: number) => {
+      seed = (seed * 1664525 + 1013904223) % 4294967296;
+      return Math.floor((seed / 4294967296) * n);
+    };
+    for (let round = 0; round < 300; round++) {
+      const count = 1 + rand(40);
+      const texts = Array.from({ length: count }, () => {
+        const kind = rand(4);
+        const len = [3, 30, 100, 300, 700, 2500, 6000][rand(7)]!;
+        return kind === 0
+          ? solid(len)
+          : kind === 1
+            ? spaced(len)
+            : kind === 2
+              ? emoji(len)
+              : spaced(len / 3 + 5);
+      });
+      const slides: unknown[] = [];
+      for (let at = 0; at < count;) {
+        const end = Math.min(count, at + 1 + rand(5));
+        slides.push(rand(10) === 0 ? { sentenceStart: 'x', sentenceEnd: end } : slide(at, end));
+        at = end;
+      }
+      const pages = pagesOf(texts, slides);
+      expect(pages).toEqual(pagesOf(texts, slides));
+      pages.forEach((p, i) => {
+        expect(p.pageNo).toBe(i + 1);
+        expect(p.ocrText.length).toBeLessThanOrEqual(RECORDING_PAGE_MAX_CHARS);
+        expect(LONE_SURROGATE.test(p.ocrText)).toBe(false);
+        if (charsOf(p) >= RECORDING_ENOUGH_CHARS) {
+          expect(lineCount(p)).toBeGreaterThanOrEqual(RECORDING_MIN_LINES);
+        }
+      });
+      expect(noSpace(pages.map((p) => p.ocrText).join(''))).toBe(noSpace(texts.join('')));
+    }
   });
 });
 
