@@ -215,6 +215,9 @@ describe('필기 사진 검사 (POST /api/v1/images/check)', () => {
     ['음수 크기', { files: [{ name: 'a', sizeBytes: -1, uri: photo(1) }] }],
     ['모르는 필드', { files: [{ ...file('a', photo(1)), extra: 1 }] }],
     ['목록이 아님', { files: file('a', photo(1)) }],
+    ['원소가 배열', { files: [[]] }],
+    ['원소가 숫자', { files: [1] }],
+    ['원소가 null', { files: [null] }],
   ])('400: %s', async (_name, body) => {
     await post(body).expect(400);
     expect(getProperties).not.toHaveBeenCalled();

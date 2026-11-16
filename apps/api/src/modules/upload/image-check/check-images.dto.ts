@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   IsArray,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
   MaxLength,
@@ -33,6 +34,8 @@ export class ImageCheckFileDto {
 export class CheckImagesDto {
   @IsArray()
   @ArrayMaxSize(IMAGE_CHECK_MAX_FILES)
+  // ValidateNested 는 배열 원소([])를 그대로 통과시켜 서비스에서 500 이 난다 → 원소는 객체만
+  @IsObject({ each: true })
   @ValidateNested({ each: true })
   @Type(() => ImageCheckFileDto)
   files: ImageCheckFileDto[];

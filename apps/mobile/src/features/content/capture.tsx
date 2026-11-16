@@ -423,8 +423,9 @@ export function PickedScreen() {
   const tag = (f: LocalFile) => {
     const r = v(f);
     if (!r) return <Badge tone="gray">확인 중…</Badge>;
+    // 서버는 아직 저장 위치 · 형식 · 크기만 보고 필기 여부 · 흐림은 판정하지 않는다(POST /images/check, #436)
     return r === 'ok' ? (
-      <Badge>필기 확인됨</Badge>
+      <Badge>올릴 수 있어요</Badge>
     ) : r === 'not_allowed' ? (
       <Badge tone="danger">올릴 수 없는 파일</Badge>
     ) : r === 'not_handwriting' ? (
