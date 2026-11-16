@@ -54,7 +54,8 @@ export class SimilarQuizService {
     private readonly quizSets: QuizSetsService,
   ) {}
 
-  async create(userId: string, setId: string): Promise<AppQuizSet> {
+  /** needWrong = false(퀴즈를 끝낸 뒤 자동): 모두 맞혀도 작업을 넣는다. 처리기가 복습 상태만 옮기고 세트는 문제 없이 failed */
+  async create(userId: string, setId: string, needWrong = true): Promise<AppQuizSet> {
     const owner = objectId(userId, '퀴즈');
     const source = await this.sets
       .findOne({ _id: objectId(setId, '퀴즈'), ownerId: owner, deletedAt: null, status: 'ready' })
@@ -63,19 +64,20 @@ export class SimilarQuizService {
     if (!source.materialId)
       throw conflict('이 퀴즈는 노트가 정해지지 않아 유사 퀴즈를 만들 수 없어요');
 
-    // 같은 세트로 이미 만드는 중이면 그 세트(두 번 눌러도 작업을 하나만)
-    const pending = await this.sets
-      .findOne({ ownerId: owner, sourceSetId: source._id, status: 'generating', deletedAt: null })
-      .lean<QuizSetRow>();
-    if (pending) return this.quizSets.findMine(userId, pending._id.toString());
-
     const [attempt] = await this.attempts
       .find({ userId: owner, quizSetId: source._id, finishedAt: { $ne: null } })
       .sort({ finishedAt: -1 })
       .limit(1)
       .lean<AttemptRow[]>();
     if (!attempt) throw conflict('먼저 이 퀴즈를 끝까지 풀어 주세요');
-    if (!(attempt.answers ?? []).some((a) => !a.correct)) throw conflict('틀린 문제가 없어요');
+    if (needWrong && !(attempt.answers ?? []).some((a) => !a.correct))
+      throw conflict('틀린 문제가 없어요');
+
+    // 같은 세트로 이미 만드는 중이면 그 세트(두 번 눌러도 작업을 하나만)
+    const pending = await this.sets
+      .findOne({ ownerId: owner, sourceSetId: source._id, status: 'generating', deletedAt: null })
+      .lean<QuizSetRow>();
+    if (pending) return this.quizSets.findMine(userId, pending._id.toString());
     const already = await this.madeFor(userId, owner, source, attempt);
     if (already) return already;
 
@@ -119,7 +121,9 @@ export class SimilarQuizService {
   }
 
   /**
-   * 퀴즈를 끝내면 바로 오답 복습을 시작한다(풀이 끝내기 뒤에 부름). 틀린 문제가 없거나 노트가 없는 세트 ·
+   * 퀴즈를 끝내면 바로 오답 복습을 시작한다(풀이 끝내기 뒤에 부름). 모두 맞혀도 시작한다: 복습 상태(연속 정답 ·
+   * 다음 복습 날짜)는 이 처리기만 옮기므로, 안 하면 오늘의 복습을 다 맞혀도 다음 날 같은 문제가 나온다.
+   * 무효 풀이만 있거나 노트가 없는 세트 ·
    * 이미 만든 풀이 등 만들 수 없는 경우는 조용히 넘어간다: 풀이 끝내기 응답과 포인트에는 영향이 없다.
    * 결과 화면의 유사 퀴즈는 같은 세트를 이어받아(만드는 중 · 다 만든 세트) 기다리지 않고 바로 연다
    */
@@ -128,9 +132,9 @@ export class SimilarQuizService {
     const attempt = await this.attempts
       .findOne({ _id: objectId(attemptId, '퀴즈'), userId: owner, finishedAt: { $ne: null } })
       .lean<AttemptRow>();
-    if (!attempt || !(attempt.answers ?? []).some((a) => !a.correct && !a.void)) return null;
+    if (!attempt || !(attempt.answers ?? []).some((a) => !a.void)) return null;
     try {
-      return await this.create(userId, attempt.quizSetId.toString());
+      return await this.create(userId, attempt.quizSetId.toString(), false);
     } catch (e) {
       const status = (e as { status?: number }).status;
       if (status === 404 || status === 409 || status === 400) return null;

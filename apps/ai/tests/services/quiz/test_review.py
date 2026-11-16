@@ -326,6 +326,18 @@ def test_all_right_answers_make_nothing() -> None:
     assert result["weakConcepts"] == [] and result["noteLines"] == []
 
 
+def test_all_right_answers_still_move_review_dates_without_llm_calls() -> None:
+    # 오늘의 복습을 모두 맞혀도 복습 날짜는 넘어가야 함(같은 문제가 다음 날 다시 나오지 않게)
+    inp = job_input()
+    for a in inp["answers"]:
+        a["correct"] = True
+    llm = FakeLlm()
+    result, _ = run(llm, inp)  # history의 틀린 풀이로 약한 개념은 있음
+    assert result["weakConcepts"] and result["noteLines"] == [] and llm.calls == []
+    assert result["srsUpdates"]
+    assert all(u["srs"]["lastResult"] == "right" for u in result["srsUpdates"])
+
+
 def test_llm_down_for_every_question_raises_so_the_job_is_retried() -> None:
     llm = FakeLlm({"Review": [LlmError("HTTP 503")] * 6})
     with pytest.raises(LlmError):

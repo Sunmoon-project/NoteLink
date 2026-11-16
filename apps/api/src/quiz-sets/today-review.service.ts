@@ -120,6 +120,7 @@ export class TodayReviewService {
   async start(userId: string, now = new Date()): Promise<AppQuizSet> {
     const owner = objectId(userId, '퀴즈');
     const day = seoulDay(now);
+    await this.settlePending(userId, owner, day);
     const today = await this.sets
       .find({ ownerId: owner, reviewDay: day, deletedAt: null })
       .sort({ createdAt: -1 })
@@ -169,6 +170,28 @@ export class TodayReviewService {
       const first = await this.get(userId, now);
       if (first) return first;
       throw e;
+    }
+  }
+
+  /**
+   * 만드는 중인 세트의 결과를 먼저 옮긴다: 끝난 오답 복습 · 지난 오늘의 복습의 복습 상태가 이번 입력에 들어가게.
+   * 그래도 만드는 중인 지난날의 오늘의 복습은 닫는다: 노트 없는 만드는 중 세트는 하나라(고유 색인) 오늘 세트를 막는다.
+   * 닫은 세트는 조회되지 않아 그 작업이 나중에 끝나도 복습 상태를 옮기지 않는다(옮긴 것이 없음)
+   */
+  private async settlePending(userId: string, owner: Types.ObjectId, day: string): Promise<void> {
+    const pending = await this.sets
+      .find({ ownerId: owner, status: 'generating', deletedAt: null })
+      .lean<QuizSetRow[]>();
+    for (const row of pending) {
+      const synced = await this.quizSets.findMine(userId, row._id.toString()).catch(() => null);
+      if (synced?.status !== 'generating' || !row.reviewDay || row.reviewDay === day) continue;
+      await this.sets
+        .findOneAndUpdate(
+          { _id: row._id, ownerId: owner, deletedAt: null },
+          { $set: { deletedAt: new Date() } },
+        )
+        .lean();
+      if (row.jobId) await this.jobs.cancel(userId, row.jobId.toString()).catch(() => null);
     }
   }
 

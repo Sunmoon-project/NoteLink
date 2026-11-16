@@ -123,12 +123,35 @@ describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfter
     expect(answers[1]).toMatchObject({ void: '정답 둘' });
   });
 
-  it('모두 맞혔거나 없는 풀이면 아무것도 하지 않고, 이미 만들었으면 같은 세트', async () => {
-    const { similar, seed, jobs } = setup();
+  it('모두 맞혀도 작업을 넣어 복습 상태를 옮긴다(손으로 누른 유사 퀴즈는 409)', async () => {
+    const { similar, seed, jobs, quizSets, setUpdate } = setup();
     const perfect = await seed({ allCorrect: true });
-    expect(
-      await similar.startAfterFinish(ME.toHexString(), perfect.attempt.toHexString()),
-    ).toBeNull();
+    await expect(similar.create(ME.toHexString(), perfect.set.toHexString())).rejects.toMatchObject(
+      {
+        status: 409,
+      },
+    );
+    const made = await similar.startAfterFinish(ME.toHexString(), perfect.attempt.toHexString());
+    expect(made).toMatchObject({ status: 'generating' });
+    expect(jobs.rows.at(-1)!['type']).toBe(SIMILAR_TYPE);
+    // 처리기가 새 문제 없이 복습 상태만 돌려주면 세트는 failed(앱에 보이지 않음), 복습 상태는 쓴다
+    const qid = perfect.qs[0]!._id.toHexString();
+    Object.assign(jobs.rows.at(-1)!, {
+      status: 'succeeded',
+      progress: 100,
+      result: {
+        reviewQuestions: [],
+        srsUpdates: [{ quizSetId: perfect.set.toHexString(), questionId: qid, srs: { streak: 1 } }],
+      },
+    });
+    expect(await quizSets.findMine(ME.toHexString(), made!._id)).toMatchObject({
+      status: 'failed',
+    });
+    expect(setUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('없는 풀이면 아무것도 하지 않고, 이미 만들었으면 같은 세트', async () => {
+    const { similar, seed, jobs } = setup();
     expect(
       await similar.startAfterFinish(ME.toHexString(), new Types.ObjectId().toHexString()),
     ).toBeNull();
@@ -204,6 +227,30 @@ describe('오늘의 복습(TodayReviewService)', () => {
     const next = await today.start(ME.toHexString(), new Date('2026-11-17T03:00:00.000Z'));
     expect(next._id).not.toBe(first._id);
     expect(next.title).toBe('오늘의 복습 · 11-17');
+  });
+
+  it('전날 세트가 결과를 못 옮겨 만드는 중이면: 끝난 작업은 옮기고, 아직이면 닫고 오늘 세트를 만든다', async () => {
+    const { today, seed, jobs, sets } = setup();
+    await seed();
+    const tomorrow = new Date('2026-11-17T03:00:00.000Z');
+    const first = await today.start(ME.toHexString(), NOW);
+    const next = await today.start(ME.toHexString(), tomorrow);
+    expect(next._id).not.toBe(first._id);
+    expect(next.title).toBe('오늘의 복습 · 11-17');
+    expect(sets.rows.find((r) => String(r._id) === first._id)!['deletedAt']).toBeInstanceOf(Date);
+    expect(jobs.rows[0]!['status']).toBe('canceled');
+
+    // 끝났는데 아무도 조회하지 않은 전날 세트는 결과를 옮긴다(닫지 않음)
+    Object.assign(jobs.rows.at(-1)!, {
+      status: 'succeeded',
+      progress: 100,
+      result: { questions: [], srsUpdates: [] },
+    });
+    const third = await today.start(ME.toHexString(), new Date('2026-11-18T03:00:00.000Z'));
+    expect(third._id).not.toBe(next._id);
+    const prev = sets.rows.find((r) => String(r._id) === next._id)!;
+    expect(prev['status']).toBe('failed');
+    expect(prev['deletedAt'] ?? null).toBeNull();
   });
 
   it('결과를 옮기면 문제(복습 상태 유지) · 기준 세트의 노트 · 복습 상태 · 무효 풀이를 반영한다', async () => {
