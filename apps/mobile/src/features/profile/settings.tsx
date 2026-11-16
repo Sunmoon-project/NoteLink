@@ -22,6 +22,7 @@ import { useAuth } from '@/stores/auth';
 import { useDevicePrefs } from '@/stores/device-prefs';
 import { toast } from '@/stores/toast';
 import { interestLabels, interestSummary } from '@/lib/interest-categories';
+import { InterestPicker, selectableInterestIds } from './interest-picker';
 import { LoadError } from '../progress/load-error';
 import { forgetWrongNotes } from '../quiz/wrong-review';
 import {
@@ -484,8 +485,7 @@ export function InterestsScreen() {
   });
   const labels = interestLabels(categories.data ?? []);
   const saved = me.data?.interestCategoryIds ?? [];
-  const topLevelCategories = categories.data?.filter((category) => category.parentId == null) ?? [];
-  const selectableIds = new Set(topLevelCategories.map((category) => category._id));
+  const selectableIds = selectableInterestIds(categories.data ?? []);
   // 건드리기 전에는 저장된 값을 보여 준다(돌아와 다시 읽혀도 고르던 것이 덮이지 않게, 고른 뒤에는 내 값)
   const [picked, setPicked] = useState<{ userId: string; ids: string[] } | null>(null);
   const now = picked && picked.userId === me.data?._id ? picked.ids : saved;
@@ -559,27 +559,25 @@ export function InterestsScreen() {
         }
       >
         <Header title="관심 분야" sub="공부하고 있는 분야를 골라 주세요. 여러 개 골라도 돼요" />
-        <View className="mt-2 flex-row flex-wrap gap-2">
-          {topLevelCategories.map((x) => (
-            // 저장 중에 바꾸면 요청에 안 들어간 채 돌아가 버리므로 잠근다
-            <Chip
-              key={x._id}
-              on={now.includes(x._id)}
-              disabled={save.isPending}
-              onPress={() => toggle(x._id)}
-            >
-              {labels.get(x._id)}
-            </Chip>
-          ))}
-          {unavailable.map((id, index) => (
-            <Chip key={id} on disabled={save.isPending} onPress={() => toggle(id)}>
-              {labels.has(id)
-                ? `${labels.get(id)} · 제거`
-                : `사용할 수 없는 분야 ${index + 1} · 제거`}
-            </Chip>
-          ))}
-        </View>
-        {topLevelCategories.length === 0 && <Text>선택할 수 있는 관심 분야가 없어요.</Text>}
+        {/* 저장 중에 바꾸면 요청에 안 들어간 채 돌아가 버리므로 잠근다 */}
+        <InterestPicker
+          categories={categories.data}
+          selected={now}
+          onToggle={toggle}
+          disabled={save.isPending}
+        />
+        {unavailable.length > 0 && (
+          <View className="mt-3 flex-row flex-wrap gap-2">
+            {unavailable.map((id, index) => (
+              <Chip key={id} on disabled={save.isPending} onPress={() => toggle(id)}>
+                {labels.has(id)
+                  ? `${labels.get(id)} · 제거`
+                  : `사용할 수 없는 분야 ${index + 1} · 제거`}
+              </Chip>
+            ))}
+          </View>
+        )}
+        {selectableIds.size === 0 && <Text>선택할 수 있는 관심 분야가 없어요.</Text>}
         {unavailable.length > 0 && (
           <Text>현재 선택할 수 없는 관심 분야를 제거한 뒤 저장해 주세요.</Text>
         )}

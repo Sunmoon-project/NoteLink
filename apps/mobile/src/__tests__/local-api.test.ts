@@ -79,6 +79,29 @@ it('새 계정은 시드 없이 빈 상태로 시작한다', async () => {
   expect(await api.quiz.sets()).toEqual([]);
 });
 
+it('기기 저장 모드 관심 분야: 예전 여섯 분야 id(1~6)를 그대로 두고, 세부 분야는 모두 제 큰 분야에 달린다', async () => {
+  const { INTEREST_CATEGORY_GROUPS } =
+    jest.requireActual<typeof import('@notelink/shared')>('@notelink/shared');
+  const list = await api.me.interestCategories();
+  const id = (n: number) => String(n).padStart(24, '0');
+  // 예전 목록(자격증 · 수능 · 어학 · 전공 · 코딩 · 공무원)을 고른 계정이 같은 분야로 읽히도록
+  expect(list.slice(0, 6)).toEqual(
+    ['자격증', '수능', '어학', '전공', '코딩', '공무원'].map((name, i) => ({
+      _id: id(i + 1),
+      name,
+      parentId: null,
+    })),
+  );
+  const byId = new Map(list.map((c) => [c._id, c]));
+  expect(byId.size).toBe(list.length);
+  for (const group of INTEREST_CATEGORY_GROUPS) {
+    const top = list.find((c) => c.name === group.name && c.parentId === null)!;
+    const kids = list.filter((c) => c.parentId === top._id).map((c) => c.name);
+    expect(kids).toEqual([...group.children]);
+  }
+  expect(list.length).toBe(INTEREST_CATEGORY_GROUPS.reduce((n, g) => n + 1 + g.children.length, 0));
+});
+
 it('계정끼리 데이터가 섞이지 않고 다시 켜도 남는다', async () => {
   await signup('a@test.com');
   await api.study.addItem({ title: '수학', subjectName: '수학', goalMin: null });

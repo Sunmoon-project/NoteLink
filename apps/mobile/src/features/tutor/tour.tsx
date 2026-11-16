@@ -95,7 +95,7 @@ const measure = (name: string) =>
     view.measureInWindow((x, y, w, h) => resolve(w > 0 ? { x, y, w, h } : null));
   });
 
-type Spot = { tab: number } | { target: string; tab: number } | { buddy: true } | null;
+type Spot = { tab: number } | { target: string; tab: number } | null;
 type Step = {
   /** 이 단계를 보여 줄 화면. 없으면 지금 화면 그대로(폴더 안내) */
   route?: Href;
@@ -103,8 +103,11 @@ type Step = {
   /** 흐름(정리 0 · 학습 1 · 복습 2) 중 지금 단계 */
   flow: number | null;
   title: string;
-  body: string;
+  /** 한 줄에 한 가지씩. 카드에서 줄마다 점을 찍어 짧게 읽히게 한다 */
+  lines: string[];
 };
+/** 학습 단계가 실제 3D 선생님을 보여 주려고 잠깐 여는 화면(프로필 탭 안) */
+const TEACHER_ROUTE = '/(tabs)/profile/avatar-teacher';
 /** 실제 화면을 옮겨 다니며 정리 → 학습 → 복습에서 무엇을 누르는지 짚어 준다 */
 export const STEPS: Step[] = [
   {
@@ -112,56 +115,81 @@ export const STEPS: Step[] = [
     spot: null,
     flow: null,
     title: '안녕하세요, 아바타 선생님이에요',
-    body: '공부를 정리, 학습, 복습 순서로 이어 갈 수 있도록 실제 화면을 하나씩 보여 드릴게요.',
+    lines: ['공부는 정리 → 학습 → 복습 순서로 이어져요.', '실제 화면을 하나씩 보여 드릴게요.'],
   },
   {
     route: '/note',
     spot: { tab: 1 },
     flow: 0,
-    title: '정리: 노트 탭',
-    body: '강의 녹음, 필기 사진, 문서를 과목별 학습 폴더에 모아 두는 곳이에요.',
+    title: '노트 탭',
+    lines: [
+      '강의 녹음, 필기 사진, 문서를 모아 두는 곳이에요.',
+      '과목별 학습 폴더로 나눠 정리해요.',
+    ],
   },
   {
     route: '/note',
     spot: { target: 'note-add', tab: 1 },
     flow: 0,
-    title: '정리: 자료 올리기',
-    body: '여기를 눌러 과목별 학습 폴더를 먼저 만들어요. 만든 폴더에 들어가 + 버튼을 한 번 더 누르면 녹음 · 필기 · 문서를 올릴 수 있어요. 올린 자료는 제가 AI로 요약하고 핵심을 정리해 드려요.',
+    title: '자료 올리기',
+    lines: [
+      '여기를 눌러 학습 폴더를 먼저 만들어요.',
+      '폴더에 들어가 + 버튼으로 녹음 · 필기 · 문서를 올려요.',
+      '올린 자료는 제가 AI로 요약하고 핵심을 정리해 드려요.',
+    ],
   },
   {
-    route: '/note',
-    spot: { buddy: true },
+    // 노트가 없어도 실제 3D 선생님이 있는 화면(프로필 > 아바타 선생님)에서 저를 밝혀 보여 준다
+    route: TEACHER_ROUTE,
+    spot: { target: 'teacher-stage', tab: 4 },
     flow: 1,
-    title: '학습: 저에게 물어보기',
-    body: '정리가 끝난 노트를 열면 이 자리에 제가 있어요. 저를 누르고 궁금한 걸 물어보세요. 노트와 퀴즈에 있는 내용으로만 설명해 드려요.',
+    title: '저에게 물어보기',
+    lines: [
+      '정리된 노트를 열면 화면 구석에 제가 있어요.',
+      '저를 눌러 궁금한 걸 물어보세요.',
+      '노트와 퀴즈에 있는 내용으로만 설명해 드려요.',
+    ],
   },
   {
     route: '/quiz',
     spot: { tab: 2 },
     flow: 2,
-    title: '복습: 퀴즈 탭',
-    body: '정리한 노트로 퀴즈를 풀며 복습하는 곳이에요. 맞히면 칭찬하고, 틀리면 해설과 함께 응원해 드릴게요.',
+    title: '퀴즈 탭',
+    lines: ['정리한 노트로 퀴즈를 풀며 복습해요.', '맞히면 칭찬하고, 틀리면 해설과 함께 응원해요.'],
   },
   {
     route: '/quiz',
     spot: { target: 'quiz-make', tab: 2 },
     flow: 2,
-    title: '복습: 퀴즈 만들기',
-    body: '여기서 노트를 골라 퀴즈를 만들어요. 틀린 문제는 결과 화면에서 유사 퀴즈로 다시 풀고, 보관함에 모아 두고 다시 볼 수 있어요.',
+    title: '퀴즈 만들기',
+    lines: [
+      '여기서 노트를 골라 퀴즈를 만들어요.',
+      '틀린 문제는 결과 화면에서 유사 퀴즈로 다시 풀어요.',
+      '다시 볼 문제는 보관함에 모아 둬요.',
+    ],
   },
   {
     route: '/quiz',
     spot: { tab: 2 },
     flow: 2,
-    title: '복습: 틀린 문제',
-    body: '퀴즈에서 틀린 문제는 오답 노트에 모아 둬요. 하루에 처음 앱을 열면 지난번에 틀린 문제가 나와 다시 풀고, 맞힌 문제는 노트에서 빠져요.',
+    title: '틀린 문제 다시 풀기',
+    lines: [
+      '퀴즈에서 틀린 문제는 오답 노트에 모여요.',
+      '하루에 처음 앱을 열면 지난번에 틀린 문제를 다시 풀어요.',
+      '맞힌 문제는 오답 노트에서 빠져요.',
+    ],
   },
   {
     route: '/',
     spot: { tab: 0 },
     flow: null,
     title: '이제 시작해 볼까요?',
-    body: '정리하면 ① 노트 탭에서 폴더를 만들고 자료를 올려요 ② 정리된 노트를 저에게 묻고 퀴즈로 확인해요 ③ 틀린 문제는 결과 화면의 유사 퀴즈 · 보관함으로 다시 풀어요. 먼저 첫 학습 폴더를 만들어 봐요.',
+    lines: [
+      '① 노트 탭에서 폴더를 만들고 자료를 올려요',
+      '② 정리된 노트를 저에게 묻고 퀴즈로 확인해요',
+      '③ 틀린 문제는 유사 퀴즈 · 보관함으로 다시 풀어요',
+      '먼저 첫 학습 폴더를 만들어 봐요.',
+    ],
   },
 ];
 /** 첫 폴더를 만든 뒤 그 폴더 안에서 이어 가는 안내: + 버튼으로 올리는 방법과 그다음 */
@@ -170,13 +198,21 @@ export const FOLDER_STEPS: Step[] = [
     spot: { target: 'folder-add', tab: 1 },
     flow: 0,
     title: '폴더가 생겼어요! 이제 + 버튼',
-    body: '폴더 안의 + 버튼을 누르면 학습 자료 올리기(PDF · 사진 · 스캔), 녹음 올리기 · 실시간 녹음, 필기 올리기(촬영 · 갤러리)가 나와요. 하나를 골라 올리면 제가 AI로 요약하고 핵심을 정리해 드려요.',
+    lines: [
+      '+ 버튼을 누르면 세 가지로 올릴 수 있어요.',
+      '학습 자료(PDF · 사진 · 스캔), 녹음(파일 · 실시간), 필기(촬영 · 갤러리)',
+      '하나를 골라 올리면 제가 요약하고 핵심을 정리해 드려요.',
+    ],
   },
   {
     spot: null,
     flow: 1,
     title: '올린 다음에는',
-    body: '정리가 끝난 자료를 열면 저에게 물어볼 수 있고, 퀴즈 탭에서 그 노트로 퀴즈를 만들 수 있어요. 틀린 문제는 결과 화면에서 유사 퀴즈로 다시 풀 수 있어요.',
+    lines: [
+      '정리가 끝난 자료를 열면 저에게 물어볼 수 있어요.',
+      '퀴즈 탭에서 그 노트로 퀴즈를 만들어요.',
+      '틀린 문제는 결과 화면에서 유사 퀴즈로 다시 풀어요.',
+    ],
   },
 ];
 const FLOW = ['정리', '학습', '복습'];
@@ -227,23 +263,37 @@ export function TourCoach() {
   const last = step === steps.length - 1;
 
   // 단계마다 그 화면으로 옮기고, 화면이 바뀐 뒤 짚을 자리를 잰다
+  // 앞 단계에서 연 화면. 선생님 화면을 지나가면 프로필 탭을 첫 화면(설정)으로 되돌려 둔다
+  const shown = useRef<Href | undefined>(undefined);
   useEffect(() => {
     if (!on) return;
-    if (s.route) router.navigate(s.route);
+    if (s.route) {
+      if (shown.current === TEACHER_ROUTE && s.route !== TEACHER_ROUTE)
+        router.navigate('/(tabs)/profile');
+      router.navigate(s.route);
+      shown.current = s.route;
+    }
     let live = true;
     const tabRect = (i: number): Rect => {
       const cw = W / 5;
       return { x: cw * i + cw / 2 - 30, y: H - insets.bottom - TAB_BAR, w: 60, h: TAB_BAR };
     };
+    // 옮겨 간 화면이 아직 불러오는 중이면 짚을 자리가 없으므로 잠깐씩 다시 잰다(끝내 없으면 탭을 밝힘)
+    const find = async (target: string) => {
+      for (let i = 0; i < 6 && live; i++) {
+        const r = await measure(target);
+        if (r) return r;
+        await new Promise((ok) => setTimeout(ok, 250));
+      }
+      return null;
+    };
     const t = setTimeout(async () => {
       const sp = s.spot;
       const rect = !sp
         ? null
-        : 'buddy' in sp
-          ? { x: W - 16 - 64, y: H - insets.bottom - TAB_BAR - 16 - 64, w: 64, h: 64 }
-          : 'target' in sp
-            ? ((await measure(sp.target)) ?? tabRect(sp.tab))
-            : tabRect(sp.tab);
+        : 'target' in sp
+          ? ((await find(sp.target)) ?? tabRect(sp.tab))
+          : tabRect(sp.tab);
       if (live) setSpot(rect);
     }, 420);
     return () => {
@@ -346,9 +396,17 @@ export function TourCoach() {
               ))}
             </View>
             <Swap k={step}>
-              <View className="gap-1">
+              <View className="gap-1.5">
                 <Text className="text-headline font-bold text-ink">{s.title}</Text>
-                <Text className="text-footnote leading-5 text-sub">{s.body}</Text>
+                {s.lines.map((line) => (
+                  <View key={line} className="flex-row gap-2">
+                    {/* ①②③처럼 번호가 있는 줄은 점 없이 */}
+                    {!/^[①-⑳]/.test(line) && (
+                      <View className="mt-2 h-1.5 w-1.5 rounded-full bg-brand" />
+                    )}
+                    <Text className="flex-1 text-subhead text-ink">{line}</Text>
+                  </View>
+                ))}
               </View>
             </Swap>
           </View>

@@ -177,16 +177,27 @@ describe('PR36 편집 및 공유 회귀', () => {
 });
 
 describe('PR36 업로드 및 작업 복구 회귀', () => {
-  it('자료 등록 전 실패하면 원본 저장 완료라고 안내하거나 화면을 닫지 않는다', async () => {
+  it('자료 등록 전 실패하면 원본 저장 완료라고 안내하지 않고, 원본만 저장 대신 나가기를 준다', async () => {
     mockApi.content.createMaterial.mockRejectedValue(new Error('등록 실패'));
     await renderScreen(<ConvertScreen />, client());
-    await screen.findByText('정리에 실패했어요');
-    const save = screen.queryByText('원본만 저장');
-    if (save) await fireEvent.press(save);
-    await act(async () => {});
+    await screen.findByText('자료를 올리지 못했어요');
+    expect(screen.queryByText('정리에 실패했어요')).toBeNull();
+    expect(screen.queryByText('원본만 저장')).toBeNull();
     expect(mockApi.content.saveMaterial).not.toHaveBeenCalled();
-    expect(router.back).not.toHaveBeenCalled();
     expect(mockToast).not.toHaveBeenCalledWith('원본만 저장했어요');
+    await fireEvent.press(screen.getByText('나가기'));
+    expect(router.back).toHaveBeenCalledTimes(1);
+  });
+  it('서버에 자료 등록 경로가 없으면(404) 이유를 알리고, 다시 시도가 또 실패하면 나가기를 권한다', async () => {
+    mockApi.content.createMaterial.mockRejectedValue(
+      Object.assign(new Error('Cannot POST'), { status: 404 }),
+    );
+    await renderScreen(<ConvertScreen />, client());
+    expect(await screen.findByText(/서버가 아직 자료를 받을 준비가 안 됐어요/)).toBeTruthy();
+    expect(screen.queryByText(/계속 안 되면/)).toBeNull();
+    await fireEvent.press(screen.getByText('다시 시도'));
+    expect(await screen.findByText(/계속 안 되면 나가서 나중에 다시 올려 주세요/)).toBeTruthy();
+    expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(2);
   });
   it('소켓 완료 이벤트를 놓쳐도 조회 성공으로 결과 화면에 한 번만 이동한다', async () => {
     jest.useFakeTimers();
