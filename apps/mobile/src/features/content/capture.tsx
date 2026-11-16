@@ -23,6 +23,7 @@ import {
 import { useKeepAwake } from 'expo-keep-awake';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
+import { IMAGE_CHECK_MAX_FILES } from '@notelink/shared';
 import {
   Camera,
   Check,
@@ -120,6 +121,7 @@ export function CameraScreen() {
     const r = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsMultipleSelection: true,
+      selectionLimit: IMAGE_CHECK_MAX_FILES,
       quality: 0.85,
     });
     if (r.canceled) return;
@@ -337,26 +339,28 @@ export function PickedScreen() {
   // 1) 형식 · 용량은 기기에서 먼저
   const local = Object.fromEntries(files.map((f) => [f.uri, checkFile('image', f)]));
   const bad = files.filter((f) => !local[f.uri]?.ok);
-  // 2) 통과한 사진만 서버가 다시 확인(저장 위치 · 형식 · 크기). 필기 여부 · 흐림(not_handwriting · blurry)은
-  //    AI 판정이 생기면 오는 값이라 지금은 ok · not_allowed 만 온다(#436)
+  // 2) 통과한 사진만 서버가 다시 확인한다(POST /images/check). 서버는 저장 위치 · 형식 · 크기를 본 뒤
+  //    AI 글자 인식으로 필기 여부 · 흐림(not_handwriting · blurry)까지 판정한다(#448).
+  //    한 번에 IMAGE_CHECK_MAX_FILES장까지만 받으므로 넘으면 검사하지 않고 줄이라고 안내한다.
+  const checkable = files.filter((f) => local[f.uri]?.ok);
+  const tooMany = checkable.length > IMAGE_CHECK_MAX_FILES;
   const check = useQuery({
     queryKey: ['image-check', fileVersion],
     queryFn: async () => {
       const checked = await Promise.all(
-        files
-          .filter((f) => local[f.uri]?.ok)
-          .map(async (f) => {
-            const cached = useDraft.getState().uploads.find((upload) => upload.file === f);
-            const uri = cached?.url ?? (await uploadToBlob('image', f));
-            useDraft.getState().rememberUpload(f, uri);
-            return {
-              // 원본 이름과도 충돌하지 않도록 모든 파일에 서로 다른 위치를 붙인다.
-              name: `${files.indexOf(f)}-${f.name}`,
-              localUri: f.uri,
-              sizeBytes: f.size ?? 0,
-              uri,
-            };
-          }),
+        checkable.map(async (f) => {
+          const cached = useDraft.getState().uploads.find((upload) => upload.file === f);
+          const uri = cached?.url ?? (await uploadToBlob('image', f));
+          useDraft.getState().rememberUpload(f, uri);
+          return {
+            // 원본 이름과도 충돌하지 않도록 모든 파일에 서로 다른 위치를 붙인다.
+            // 서버는 이름을 255자까지 받는다. 앞의 위치가 달라서 잘라도 겹치지 않는다.
+            name: `${files.indexOf(f)}-${f.name}`.slice(0, 255),
+            localUri: f.uri,
+            sizeBytes: f.size ?? 0,
+            uri,
+          };
+        }),
       );
       const result = await api.content.checkImages(
         checked.map(({ localUri: _localUri, ...request }) => request),
@@ -378,7 +382,8 @@ export function PickedScreen() {
       }));
     },
     retry: false,
-    enabled: files.length > 0,
+    // 서버는 빈 목록을 받지 않는다(400). 형식 · 용량에서 모두 걸렸으면 부르지 않는다
+    enabled: checkable.length > 0 && !tooMany,
   });
   const verdicts: Record<string, ImageVerdict> = Object.fromEntries(
     (check.data ?? []).map((v) => [v.localUri, v.verdict]),
@@ -396,9 +401,12 @@ export function PickedScreen() {
   const blurry = files.find((f) => v(f) === 'blurry');
   const remove = (uri: string) => set({ files: files.filter((f) => f.uri !== uri) });
   const selectPhotos = async (append: boolean) => {
+    const room = append ? IMAGE_CHECK_MAX_FILES - files.length : IMAGE_CHECK_MAX_FILES;
+    if (room <= 0) return toast(`사진은 한 번에 ${IMAGE_CHECK_MAX_FILES}장까지 올릴 수 있어요`);
     const r = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsMultipleSelection: true,
+      selectionLimit: room,
       quality: 0.85,
     });
     if (!r.canceled)
@@ -417,14 +425,14 @@ export function PickedScreen() {
   const reselect = () => selectPhotos(false);
   const addPhotos = () => selectPhotos(true);
   const next = () => {
-    if (!check.isSuccess || check.isFetching || prohibited.length || notHand.length) return;
+    if (tooMany || !check.isSuccess || check.isFetching || prohibited.length || notHand.length)
+      return;
     if (blurry && dlg !== 'blurry') return setDlg('blurry');
     router.replace('/convert');
   };
   const tag = (f: LocalFile) => {
     const r = v(f);
-    if (!r) return <Badge tone="gray">확인 중…</Badge>;
-    // 서버는 아직 저장 위치 · 형식 · 크기만 보고 필기 여부 · 흐림은 판정하지 않는다(POST /images/check, #436)
+    if (!r) return <Badge tone="gray">{tooMany ? '검사 전' : '확인 중…'}</Badge>;
     return r === 'ok' ? (
       <Badge>올릴 수 있어요</Badge>
     ) : r === 'not_allowed' ? (
@@ -451,7 +459,11 @@ export function PickedScreen() {
           ) : (
             <Btn
               disabled={
-                !files.length || !!prohibited.length || check.isFetching || !check.isSuccess
+                !files.length ||
+                tooMany ||
+                !!prohibited.length ||
+                check.isFetching ||
+                !check.isSuccess
               }
               onPress={next}
             >
@@ -469,6 +481,16 @@ export function PickedScreen() {
           </View>
         )}
         <Header title={`선택한 사진 (${files.length}장)`} />
+        {tooMany && (
+          <View className="mb-3 rounded-2xl bg-sun/20 px-4 py-3">
+            <Text className="text-footnote font-semibold text-ink">
+              {`사진은 한 번에 ${IMAGE_CHECK_MAX_FILES}장까지 올릴 수 있어요`}
+            </Text>
+            <Text className="text-caption text-sub">
+              {`${checkable.length - IMAGE_CHECK_MAX_FILES}장을 빼면 검사를 시작해요`}
+            </Text>
+          </View>
+        )}
         {check.isError && (
           <View className="mb-3 items-center gap-3 rounded-card bg-white p-4">
             <Text className="text-center text-footnote leading-5 text-sub">

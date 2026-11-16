@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { UPLOAD_RULES } from '@notelink/shared';
+import { IMAGE_CHECK_MAX_FILES, UPLOAD_RULES } from '@notelink/shared';
 
 const imageFile = z.object({
   name: z.string().trim().min(1).max(255),
@@ -8,7 +8,7 @@ const imageFile = z.object({
 });
 
 export const CheckImagesBody = z
-  .object({ files: z.array(imageFile).min(1).max(20) })
+  .object({ files: z.array(imageFile).min(1).max(IMAGE_CHECK_MAX_FILES) })
   .superRefine(({ files }, ctx) => {
     if (new Set(files.map((file) => file.name)).size !== files.length)
       ctx.addIssue({ code: 'custom', message: '사진 이름이 중복되었습니다.', path: ['files'] });

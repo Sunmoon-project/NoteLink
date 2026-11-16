@@ -33,6 +33,7 @@ const mockApi = {
   },
 };
 const mockUpload = jest.fn();
+const mockCheckFile = jest.fn();
 jest.mock('../lib/socket', () => ({ socket: { emit: jest.fn(), on: () => () => {} } }));
 const mockEdit = jest.fn();
 const mockToast = jest.fn();
@@ -43,7 +44,7 @@ jest.mock('../lib/api', () => ({
   },
 }));
 jest.mock('../lib/upload', () => ({
-  checkFile: () => ({ ok: true }),
+  checkFile: (...args: unknown[]) => mockCheckFile(...args),
   uploadToBlob: (...args: unknown[]) => mockUpload(...args),
 }));
 jest.mock('../lib/image-edit', () => ({ editPhoto: (...args: unknown[]) => mockEdit(...args) }));
@@ -116,6 +117,7 @@ beforeEach(() => {
   useDraft.getState().set({ kind: 'handwriting', files: [localPhoto], folderId: 'folder1' });
   setParams({ id: 'material1' });
   mockUpload.mockResolvedValue(blobUrl);
+  mockCheckFile.mockReturnValue({ ok: true });
   mockEdit.mockResolvedValue(editedPhoto);
   mockApi.content.checkImages.mockImplementation(async (files: { name: string }[]) =>
     files.map((file) => ({ name: file.name, verdict: 'ok' })),
@@ -195,6 +197,52 @@ describe('PR36 사진 검사 경계', () => {
       await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
     },
   );
+  it('검사할 사진이 20장을 넘으면 검사하지 않고 줄이라고 안내한다', async () => {
+    const photos = Array.from({ length: 21 }, (_, i) => ({
+      ...localPhoto,
+      uri: `file:///picked-${i}.jpg`,
+      name: `picked-${i}.jpg`,
+    }));
+    useDraft.getState().set({ files: photos });
+    await renderScreen(<PickedScreen />, client());
+    expect(await screen.findByText('사진은 한 번에 20장까지 올릴 수 있어요')).toBeTruthy();
+    expect(screen.getByText('1장을 빼면 검사를 시작해요')).toBeTruthy();
+    expect(screen.getAllByText('검사 전')).toHaveLength(21);
+    expect(mockUpload).not.toHaveBeenCalled();
+    expect(mockApi.content.checkImages).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+  });
+  it('20장이면 한 번에 검사한다', async () => {
+    const photos = Array.from({ length: 20 }, (_, i) => ({
+      ...localPhoto,
+      uri: `file:///picked-${i}.jpg`,
+      name: `picked-${i}.jpg`,
+    }));
+    useDraft.getState().set({ files: photos });
+    await renderScreen(<PickedScreen />, client());
+    await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalledTimes(1));
+    expect(mockApi.content.checkImages.mock.calls[0][0]).toHaveLength(20);
+    await waitFor(() => expect(screen.getByRole('button', { name: '다음' })).not.toBeDisabled());
+  });
+  it('형식 · 용량에서 모두 걸리면 빈 목록으로 서버를 부르지 않는다', async () => {
+    mockCheckFile.mockReturnValue({ ok: false });
+    useDraft.getState().set({
+      files: [{ ...localPhoto, uri: 'file:///note.gif', name: 'note.gif', mimeType: 'image/gif' }],
+    });
+    await renderScreen(<PickedScreen />, client());
+    expect(await screen.findByText('올릴 수 없는 파일이에요')).toBeTruthy();
+    expect(mockApi.content.checkImages).not.toHaveBeenCalled();
+    expect(screen.queryByText('사진 검사에 실패했어요. 다시 시도해 주세요.')).toBeNull();
+  });
+  it('검사 이름은 서버 상한 255자로 자른다', async () => {
+    const longName = `${'가'.repeat(300)}.jpg`;
+    useDraft.getState().set({ files: [{ ...localPhoto, name: longName }] });
+    await renderScreen(<PickedScreen />, client());
+    await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalled());
+    expect(mockApi.content.checkImages.mock.calls[0][0][0].name).toBe(
+      `0-${longName}`.slice(0, 255),
+    );
+  });
   it('Blob 업로드가 실패하면 검사 요청이나 변환 이동 없이 다시 검사할 수 있다', async () => {
     mockUpload.mockRejectedValueOnce(new Error('업로드 실패'));
     await renderScreen(<PickedScreen />, client());

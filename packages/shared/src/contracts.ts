@@ -66,6 +66,9 @@ export const UPLOAD_RULES = {
   },
 } as const;
 
+/** 사진 검사(POST /images/check) 한 번에 보낼 수 있는 사진 수. AI 서버 판정(apps/ai images.py MAX_FILES)과 같다 */
+export const IMAGE_CHECK_MAX_FILES = 20;
+
 /** 경로 조각 인코딩 — id에 '/'나 '..'가 들어와도 다른 경로로 새지 않게 한다 */
 const seg = (v: string) => encodeURIComponent(v);
 
