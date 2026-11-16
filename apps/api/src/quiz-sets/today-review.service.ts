@@ -102,7 +102,10 @@ export class TodayReviewService {
     private readonly quizSets: QuizSetsService,
   ) {}
 
-  /** 오늘 만든 복습 세트(없으면 null). 만드는 중이면 결과를 먼저 옮긴다 */
+  /**
+   * 오늘 만든 복습 세트(없으면 null). 만드는 중이면 결과를 먼저 옮긴다.
+   * 처리기가 끝냈는데 문제가 없으면(복습할 문제 없음) null: failed는 처리기가 실패 · 취소했을 때만(앱이 다시 만들게 함)
+   */
   async get(userId: string, now = new Date()): Promise<AppQuizSet | null> {
     const owner = objectId(userId, '퀴즈');
     const [row] = await this.sets
@@ -110,7 +113,11 @@ export class TodayReviewService {
       .sort({ createdAt: -1 })
       .limit(1)
       .lean<QuizSetRow[]>();
-    return row ? this.quizSets.findMine(userId, row._id.toString()) : null;
+    if (!row) return null;
+    const set = await this.quizSets.findMine(userId, row._id.toString());
+    if (set.status !== 'failed' || !row.jobId) return set;
+    const job = await this.jobs.findMine(userId, row.jobId.toString()).catch(() => null);
+    return job?.status === 'succeeded' ? null : set;
   }
 
   /**

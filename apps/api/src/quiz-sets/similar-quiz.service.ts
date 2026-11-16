@@ -52,7 +52,9 @@ export class SimilarQuizService {
     @InjectModel(Material.name) private readonly materials: Model<MaterialDocument>,
     private readonly jobs: AiJobsService,
     private readonly quizSets: QuizSetsService,
-  ) {}
+  ) {
+    quizSets.afterReview = (row) => this.catchUp(row);
+  }
 
   /** needWrong = false(퀴즈를 끝낸 뒤 자동): 모두 맞혀도 작업을 넣는다. 처리기가 복습 상태만 옮기고 세트는 문제 없이 failed */
   async create(userId: string, setId: string, needWrong = true): Promise<AppQuizSet> {
@@ -73,11 +75,16 @@ export class SimilarQuizService {
     if (needWrong && !(attempt.answers ?? []).some((a) => !a.correct))
       throw conflict('틀린 문제가 없어요');
 
-    // 같은 세트로 이미 만드는 중이면 그 세트(두 번 눌러도 작업을 하나만)
+    // 같은 세트로 이미 만드는 중이면 그 세트(두 번 눌러도 작업을 하나만). 앞 풀이의 세트가 아직 만드는 중이면
+    // 이번 풀이는 그 결과를 옮길 때 이어 받는다(catchUp). 방금 끝났으면 이어 받은 세트(madeFor)로 넘어간다
     const pending = await this.sets
       .findOne({ ownerId: owner, sourceSetId: source._id, status: 'generating', deletedAt: null })
       .lean<QuizSetRow>();
-    if (pending) return this.quizSets.findMine(userId, pending._id.toString());
+    if (pending) {
+      const synced = await this.quizSets.findMine(userId, pending._id.toString());
+      if (synced.status === 'generating' || String(pending.sourceAttemptId) === String(attempt._id))
+        return synced;
+    }
     const already = await this.madeFor(userId, owner, source, attempt);
     if (already) return already;
 
@@ -140,6 +147,21 @@ export class SimilarQuizService {
       if (status === 404 || status === 409 || status === 400) return null;
       throw e;
     }
+  }
+
+  /**
+   * 오답 복습 세트에 결과를 옮긴 뒤(QuizSetsService.afterReview): 그 세트를 기다리는 사이 같은 퀴즈를 또 끝냈으면
+   * 마지막 풀이로 이어서 작업을 넣는다(앞 결과의 복습 상태 위에 쌓임). 사이의 풀이가 여럿이면 마지막 것만
+   */
+  private async catchUp(row: QuizSetRow): Promise<void> {
+    if (!row.sourceSetId) return;
+    const [latest] = await this.attempts
+      .find({ userId: row.ownerId, quizSetId: row.sourceSetId, finishedAt: { $ne: null } })
+      .sort({ finishedAt: -1 })
+      .limit(1)
+      .lean<AttemptRow[]>();
+    if (!latest || String(latest._id) === String(row.sourceAttemptId)) return;
+    await this.startAfterFinish(row.ownerId.toString(), latest._id.toString());
   }
 
   /**

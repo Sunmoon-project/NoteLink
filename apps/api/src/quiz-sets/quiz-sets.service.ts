@@ -275,6 +275,13 @@ export class QuizSetsService {
   ) {}
 
   /**
+   * 오답 복습 세트에 처리기 결과를 옮긴 뒤(세트마다 한 번) 부른다. SimilarQuizService가 넣는다: 그 작업을 기다리는
+   * 사이 같은 퀴즈를 또 끝낸 풀이를 이어 받는다(같은 노트로 만드는 중인 세트는 하나라 그때 넣지 못함).
+   * 주입 대신 넣는 이유: SimilarQuizService가 이 서비스를 받으므로 서로 받으면 순환 의존
+   */
+  afterReview?: (row: QuizSetRow) => Promise<unknown>;
+
+  /**
    * 노트로 맞춤 퀴즈 세트를 만든다. 응답 모양은 앱의 로컬 모의 API(quiz.createSet)와 같은 { quizSet, job }.
    * - 같은 노트에 만드는 중인 세트가 있으면 새로 만들지 않고 그 세트를 돌려준다(두 번 눌러도 한 번만 만듦).
    *   거의 동시에 두 번 와도 「노트마다 만드는 중인 세트 하나」 색인이 둘째를 막는다
@@ -544,6 +551,7 @@ export class QuizSetsService {
         { returnDocument: 'after' },
       )
       .lean<QuizSetRow>();
+    if (updated && job?.type === SIMILAR_TYPE) await this.afterReview?.(updated).catch(() => null);
     const current =
       updated ?? (await this.sets.findOne({ _id: row._id }).lean<QuizSetRow>()) ?? row;
     return { quizSet: toAppSet(current), job };
