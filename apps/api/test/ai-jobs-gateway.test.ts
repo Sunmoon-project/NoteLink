@@ -339,6 +339,37 @@ describe('AI 작업 진행률 소켓 (ai:subscribe)', () => {
     await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: finished }]));
   });
 
+  it('결과 읽기가 계속 실패하면 5번째에 그만 지켜본다', async () => {
+    const a = await connect('a');
+    await subscribe(a);
+    table.set(JOB, appJob({ status: 'succeeded', progress: 100 }));
+    const original = jobs.findMine.getMockImplementation()!;
+    jobs.findMine.mockRejectedValue(new Error('broken row'));
+    for (let i = 0; i < 5; i++) await gateway.poll();
+    jobs.findMine.mockImplementation(original);
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
+  it('구독을 확인하는 사이 소켓이 끊기면 방에 넣지 않는다', async () => {
+    const a = await connect('a');
+    let release!: () => void;
+    const original = jobs.findMine.getMockImplementation()!;
+    jobs.findMine.mockImplementationOnce(async (userId: string, jobId: string) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return original(userId, jobId);
+    });
+    a.emit('ai:subscribe', { jobId: JOB });
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    a.disconnect();
+    await settle();
+    release();
+    await settle();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
   it('끝난 작업을 결과 읽기 전에 지웠으면(404) 보내지 않고 더 지켜보지 않는다', async () => {
     const a = await connect('a');
     const got = record(a);

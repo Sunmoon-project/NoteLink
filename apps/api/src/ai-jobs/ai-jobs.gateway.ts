@@ -17,6 +17,8 @@ export const AI_PROGRESS_POLL_MS = 1000;
 const FINISHED = new Set(['succeeded', 'failed', 'canceled']);
 const ROOM_PREFIX = 'ai-job:';
 const roomOf = (jobId: string) => `${ROOM_PREFIX}${jobId}`;
+/** 끝난 작업의 결과를 읽지 못할 때(404 밖의 오류) 다시 해 보는 차례 수. 넘으면 그만 지켜본다 */
+const DONE_RETRY_LIMIT = 5;
 const signature = (p: AiJobProgress) => `${p.status}|${p.progress}|${p.step ?? ''}`;
 
 /**
@@ -33,7 +35,10 @@ const signature = (p: AiJobProgress) => `${p.status}|${p.progress}|${p.step ?? '
 export class AiJobsGateway implements OnModuleDestroy {
   private readonly logger = new Logger(AiJobsGateway.name);
   /** 작업마다 마지막으로 보낸 값 · 주인. 같은 값은 다시 보내지 않는다 */
-  private readonly watched = new Map<string, { userId: string; last?: string }>();
+  private readonly watched = new Map<
+    string,
+    { userId: string; last?: string; doneFailures?: number }
+  >();
   private timer: ReturnType<typeof setInterval> | undefined;
   private polling = false;
   /** 같은 소켓 · 작업의 구독과 해지를 받은 순서대로 처리한다(구독 확인 중에 온 해지가 먼저 끝나지 않게) */
@@ -91,6 +96,8 @@ export class AiJobsGateway implements OnModuleDestroy {
     }
     // 방 · 지켜보기 키는 DB가 돌려주는 id(소문자)로 둔다. 반복해 읽은 결과(progressOf)와 같아야 한다
     const jobId = job._id;
+    // 확인하는 사이 소켓이 끊겼으면 방에 넣지 않는다(끊긴 소켓을 넣으면 방에 남아 그 작업을 계속 읽음)
+    if (!socket.connected) return { ok: false };
     if (FINISHED.has(job.status)) {
       socket.emit('ai:done', { jobId, job });
       return { ok: true };
@@ -176,8 +183,14 @@ export class AiJobsGateway implements OnModuleDestroy {
       sockets = await this.server.in(roomOf(jobId)).fetchSockets();
     } catch (error) {
       // 그사이 지워졌으면 더 지켜보지 않는다. DB 일시 오류면 그대로 두어 다음 차례에 다시 보낸다
-      if (error instanceof NotFoundException) this.finish(jobId);
-      else this.logger.warn(`끝난 AI 작업을 보내지 못했습니다: ${(error as Error).message}`);
+      const watch = this.watched.get(jobId);
+      const failures = (watch?.doneFailures ?? 0) + 1;
+      if (error instanceof NotFoundException || failures >= DONE_RETRY_LIMIT) this.finish(jobId);
+      else if (watch) watch.doneFailures = failures;
+      if (!(error instanceof NotFoundException))
+        this.logger.warn(
+          `끝난 AI 작업을 보내지 못했습니다(${failures}번째): ${(error as Error).message}`,
+        );
       return;
     }
     await Promise.all(
