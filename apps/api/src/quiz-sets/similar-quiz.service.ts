@@ -122,7 +122,7 @@ export class SimilarQuizService {
    * 오답 복습은 만들 때마다 틀린 문제들의 복습 상태(srsUpdates)를 옮기므로 한 풀이에 한 번만 만든다.
    * 이 풀이로 만든 세트가 남아 있고 만드는 중이거나 다 만들었으면 그 세트를 돌려준다(다시 만들지 않음).
    * 처리기가 끝냈는데(복습 상태를 옮김) 세트를 지웠거나 새 문제를 못 만들었으면 409.
-   * 처리기가 실패 · 취소로 끝냈으면(옮긴 것 없음) null: 새로 만들게 둔다
+   * 처리기가 실패 · 취소로 끝냈으면(옮긴 것 없음) 그 세트를 닫고 null: 새로 만들게 둔다
    */
   private async madeFor(
     userId: string,
@@ -134,14 +134,28 @@ export class SimilarQuizService {
       .find({ ownerId: owner, sourceSetId: source._id, sourceAttemptId: attempt._id })
       .sort({ createdAt: -1 })
       .lean<QuizSetRow[]>();
+    const superseded: QuizSetRow[] = [];
     for (const prev of made) {
       const job = prev.jobId
         ? await this.jobs.findMine(userId, prev.jobId.toString()).catch(() => null)
         : null;
-      if (!job || job.status === 'failed' || job.status === 'canceled') continue;
+      if (!job || job.status === 'failed' || job.status === 'canceled') {
+        if (!prev.deletedAt) superseded.push(prev);
+        continue;
+      }
       if (!prev.deletedAt && prev.status !== 'failed')
         return this.quizSets.findMine(userId, prev._id.toString());
       throw conflict('이번 풀이로는 이미 유사 퀴즈를 만들었어요. 퀴즈를 다시 풀고 시도해 주세요');
+    }
+    // 새로 만들기 전에 실패로 끝난 세트를 닫는다(지움): 그 작업을 나중에 다시 시도(ai-jobs retry)해 성공해도
+    // 지운 세트는 조회되지 않아 결과(문제 · 복습 상태)를 옮기지 않으므로, 한 풀이의 복습 상태가 두 번 옮겨지지 않는다
+    for (const prev of superseded) {
+      await this.sets
+        .findOneAndUpdate(
+          { _id: prev._id, ownerId: owner, deletedAt: null },
+          { $set: { deletedAt: new Date() } },
+        )
+        .lean();
     }
     return null;
   }

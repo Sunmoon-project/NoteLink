@@ -501,7 +501,11 @@ export class QuizSetsService {
     const job = row.jobId ? await this.findJob(row) : null;
     if (row.status === 'failed') {
       const ready = job?.status === 'succeeded' ? readyUpdate(job) : null;
-      return ready ? this.settle(row, ready, job) : { quizSet: toAppSet(row), job };
+      if (ready) return this.settle(row, ready, job);
+      // 오답 복습을 다시 시도해 끝났는데 새 문제는 없으면(빈 reviewQuestions) 세트는 failed로 두고 복습 상태만 옮긴다.
+      // 같은 값을 쓰므로 조회가 거듭돼도 같다
+      if (job?.type === SIMILAR_TYPE && job.status === 'succeeded') await this.saveSrs(row, job);
+      return { quizSet: toAppSet(row), job };
     }
     if (job && (job.status === 'queued' || job.status === 'running')) {
       return { quizSet: toAppSet(row, job.progress), job };

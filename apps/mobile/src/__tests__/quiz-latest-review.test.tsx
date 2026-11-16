@@ -171,3 +171,16 @@ it('유사 퀴즈 요청이 바로 실패한 세트를 돌려주면 확인 대�
   expect(await screen.findByText('다시 시도')).toBeTruthy();
   expect(screen.queryByText('확인')).toBeNull();
 });
+
+it('만든 결과 조회가 계속 실패하면 알리고, 다시 확인으로 다시 읽는다', async () => {
+  const making = { ...generated, _id: 'similar-set', status: 'generating', questions: [] };
+  mockApi.quiz.similar.mockResolvedValue(making);
+  mockApi.quiz.set.mockRejectedValue(new NetworkError('연결 끊김'));
+  await renderScreen(<QuizSimilarScreen />, client(false));
+  await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
+  expect(await screen.findByText(/만든 결과를 확인하지 못했어요/)).toBeTruthy();
+  mockApi.quiz.set.mockResolvedValue({ ...generated, _id: 'similar-set', status: 'ready' });
+  await fireEvent.press(screen.getByText('다시 확인'));
+  expect(await screen.findByText('한 번 생성한 유사 문제')).toBeTruthy();
+  expect(mockApi.quiz.similar).toHaveBeenCalledTimes(1);
+});

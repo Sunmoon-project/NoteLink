@@ -307,6 +307,54 @@ describe('한 풀이에 한 번(복습 상태를 두 번 옮기지 않게)', () 
   });
 });
 
+describe('실패한 작업을 다시 시도해도 한 풀이의 복습 상태는 한 번만', () => {
+  it('A 실패 → 같은 풀이로 B를 만들면 A를 닫고, 나중에 A를 다시 시도해 성공해도 A는 옮기지 않는다', async () => {
+    const { similar, seed, jobs, quizSets, sets, updateOne } = setup();
+    const s = await seed();
+    const a = await similar.create(ME.toHexString(), s.set);
+    const jobA = jobs.rows.at(-1)!;
+    Object.assign(jobA, { status: 'failed', error: 'LLM' });
+    await quizSets.findMine(ME.toHexString(), a._id); // A → failed
+    const b = await similar.create(ME.toHexString(), s.set);
+    expect(b._id).not.toBe(a._id);
+    expect(sets.rows.find((r) => String(r._id) === a._id)!['deletedAt']).toBeInstanceOf(Date);
+    // A를 다시 시도(ai-jobs retry)해 성공으로 끝나도, 지운 세트라 조회 · 옮기기가 없다
+    Object.assign(jobA, {
+      status: 'succeeded',
+      result: {
+        reviewQuestions: [],
+        srsUpdates: [
+          { quizSetId: s.set, questionId: s.qs[0]!._id.toHexString(), srs: { step: 9 } },
+        ],
+      },
+    });
+    await expect(quizSets.findMine(ME.toHexString(), a._id)).rejects.toMatchObject({ status: 404 });
+    expect(updateOne).not.toHaveBeenCalled();
+  });
+
+  it('실패한 세트의 작업을 다시 시도해 새 문제 없이 끝나면 세트는 failed로 두고 복습 상태를 옮긴다', async () => {
+    const { similar, seed, jobs, quizSets, updateOne } = setup();
+    const s = await seed();
+    const made = await similar.create(ME.toHexString(), s.set);
+    const job = jobs.rows.at(-1)!;
+    Object.assign(job, { status: 'failed', error: 'LLM' });
+    expect(await quizSets.findMine(ME.toHexString(), made._id)).toMatchObject({ status: 'failed' });
+    expect(updateOne).not.toHaveBeenCalled();
+    Object.assign(job, {
+      status: 'succeeded',
+      error: null,
+      result: {
+        reviewQuestions: [],
+        srsUpdates: [
+          { quizSetId: s.set, questionId: s.qs[0]!._id.toHexString(), srs: { step: 1 } },
+        ],
+      },
+    });
+    expect(await quizSets.findMine(ME.toHexString(), made._id)).toMatchObject({ status: 'failed' });
+    expect(updateOne).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('처리기 입력 크기(fitReviewInput)', () => {
   const set = (id: string, materialId: string, n = 1) => ({
     id,

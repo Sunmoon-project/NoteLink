@@ -1224,7 +1224,9 @@ export function QuizSimilarScreen() {
   useEffect(() => {
     if (done) qc.setQueryData(['similar-result', setId], done);
   }, [done, qc, setId]);
-  const waiting = !!making && !done && !failed;
+  // 결과 조회가 실패하면(연결 끊김 · 서버 오류) 「만드는 중」만 되풀이하지 않고 알린 뒤 다시 확인하게 한다
+  const checkFailed = !!making && poll.isError && !poll.data;
+  const waiting = !!making && !done && !failed && !checkFailed;
   const sim = {
     data: (cached.data ??
       done ??
@@ -1264,8 +1266,15 @@ export function QuizSimilarScreen() {
           sim.data ? (
             <Btn onPress={() => router.back()}>확인</Btn>
           ) : (
-            <Btn loading={generate.isPending || waiting} onPress={() => generate.mutate()}>
-              {generate.isError || failed ? '다시 시도' : '유사 퀴즈 만들기'}
+            <Btn
+              loading={generate.isPending || waiting}
+              onPress={() => (checkFailed ? void poll.refetch() : generate.mutate())}
+            >
+              {checkFailed
+                ? '다시 확인'
+                : generate.isError || failed
+                  ? '다시 시도'
+                  : '유사 퀴즈 만들기'}
             </Btn>
           )
         }
@@ -1285,6 +1294,11 @@ export function QuizSimilarScreen() {
             title="틀린 문제와 비슷한 문제를 만들어요"
             body="원본과 같은 난이도로 새 문제를 만들어요. 다시 풀면서 헷갈린 개념을 확인해 보세요."
           />
+        )}
+        {checkFailed && (
+          <Text className="text-center text-footnote leading-5 text-danger">
+            만든 결과를 확인하지 못했어요. 연결을 확인하고 다시 확인해 주세요.
+          </Text>
         )}
         {waiting && (
           <Text className="text-center text-footnote leading-5 text-sub">
