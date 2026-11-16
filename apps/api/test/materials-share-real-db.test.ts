@@ -9,6 +9,8 @@ import {
   SHARED_ITEMS_MAX,
 } from '../src/modules/content/materials/material-sharing.service.js';
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
+import { RecordingController } from '../src/modules/content/materials/recording.controller.js';
+import { RecordingService } from '../src/modules/content/materials/recording.service.js';
 import { MaterialsController } from '../src/modules/content/materials/materials.controller.js';
 import { MaterialsService } from '../src/modules/content/materials/materials.service.js';
 import { Folder, FolderSchema } from '../src/modules/content/schemas/folder.schema.js';
@@ -35,7 +37,13 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
   let jobs: Model<AiJob>;
   let materialsService: MaterialsService;
   let controller: MaterialsController;
+  let recordingController: RecordingController;
   let sharing: MaterialSharingService;
+  const blobs = {
+    createReadAccess: vi.fn((u: string) =>
+      Promise.resolve({ readUrl: `${u}?sig=SECRET`, sizeBytes: 100 }),
+    ),
+  };
   const owner = new Types.ObjectId();
   const friend = new Types.ObjectId();
   const stranger = new Types.ObjectId();
@@ -66,15 +74,15 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       materials as never,
       folders as never,
       new AiJobsService(jobs as never),
-      {
-        createReadAccess: vi.fn((u: string) =>
-          Promise.resolve({ readUrl: `${u}?sig=SECRET`, sizeBytes: 100 }),
-        ),
-      } as never,
+      blobs as never,
       { pregenerate: vi.fn() } as never,
       conn,
     );
     controller = new MaterialsController(materialsService, sharing);
+    recordingController = new RecordingController(
+      new RecordingService(materials as never, jobs as never, materialsService, blobs as never),
+      sharing,
+    );
   });
 
   afterAll(async () => {
@@ -456,6 +464,24 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       expect((await materials.findById(a).lean())!.bookmarks.map((b) => b.atSec)).toEqual([
         5, 12.5,
       ]);
+    });
+
+    it('녹음 노트를 공유하면 공유받은 멤버가 재생 정보를 받고, 멤버가 아니면 404 (주인은 그대로)', async () => {
+      const audio = `https://a.blob.core.windows.net/c/uploads/audio/${owner.toHexString()}/550e8400-e29b-41d4-a716-446655440002.m4a`;
+      const a = await note({ kind: 'recording', source: 'audio_file', blobUrls: [audio] });
+      const roomId = await room([joined(owner), joined(friend)]);
+      const play = (userId: Types.ObjectId, id: string) =>
+        recordingController.findOne(asUser(userId), id);
+      // 공유 전에는 누구도 볼 수 없다
+      await expect(play(friend, a)).rejects.toMatchObject({ status: 404 });
+      await share(owner, [a], roomId);
+      expect((await play(friend, a)).data).toMatchObject({
+        _id: a,
+        materialId: a,
+        audioUrl: `${audio}?sig=SECRET`,
+      });
+      expect((await play(owner, a)).data.materialId).toBe(a);
+      await expect(play(stranger, a)).rejects.toMatchObject({ status: 404 });
     });
 
     it('작업 없이 남은 노트를 공유받은 멤버가 열면 복구도 노트 주인 기준으로 돈다', async () => {
