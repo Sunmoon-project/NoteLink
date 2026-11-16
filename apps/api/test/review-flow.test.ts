@@ -364,6 +364,99 @@ describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfter
     );
   });
 
+  it('작업이 새 문제까지 만든 뒤 완료 요청을 다시 보내도 같은 세트를 돌려주고 끝난다', async () => {
+    const { similar, seed, jobs, attempts } = setup();
+    const s = await seed();
+    const first = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    Object.assign(jobs.rows[0]!, {
+      status: 'succeeded',
+      progress: 100,
+      result: {
+        reviewQuestions: [
+          {
+            id: new Types.ObjectId().toHexString(),
+            order: 1,
+            prompt: '새 문제',
+            choices: ['가', '나'],
+            answer: '가',
+            conceptTags: ['세포막'],
+            srs: { step: 0 },
+          },
+        ],
+        srsUpdates: [],
+      },
+    });
+    // 완료 요청 재전송 = 같은 풀이로 다시 자동 시작
+    const again = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    expect(again!._id).toBe(first!._id);
+    expect(jobs.rows).toHaveLength(1);
+    const row = attempts.rows.find((r) => String(r._id) === String(s.attempt))!;
+    expect(row['reviewPending'] ?? false).toBe(false);
+  });
+
+  it('기다리던 풀이가 전부 무효가 되면 표시를 지우고 뒤의 풀이를 이어 받는다', async () => {
+    const { similar, seed, jobs, attempts, quizSets } = setup();
+    const s = await seed();
+    const first = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    const mk = async (sec: number) => {
+      const a = (await attempts.model.create({
+        quizSetId: s.set,
+        userId: ME,
+        finishedAt: new Date(NOW.getTime() - sec * 1000),
+        answers: s.qs.map((q) => ({ questionId: q._id, answer: '가', correct: true })),
+      } as never)) as unknown as { _id: Types.ObjectId };
+      await similar.startAfterFinish(ME.toHexString(), a._id.toHexString());
+      return a._id;
+    };
+    const voided = await mk(40);
+    const valid = await mk(30);
+    // 기다리는 사이 결함 문제로 답이 모두 무효가 됨(오늘의 복습 voidAnswers)
+    const v = attempts.rows.find((r) => String(r._id) === String(voided))!;
+    v['answers'] = (v['answers'] as Row[]).map((x) => ({ ...x, void: '정답 둘' }));
+    Object.assign(jobs.rows[0]!, {
+      status: 'succeeded',
+      progress: 100,
+      result: { reviewQuestions: [], srsUpdates: [] },
+    });
+    await quizSets.findMine(ME.toHexString(), first!._id);
+    expect(v['reviewPending']).toBe(false);
+    expect((jobs.rows.at(-1)!['input'] as { attemptId: string }).attemptId).toBe(
+      valid.toHexString(),
+    );
+  });
+
+  it('기다리는 풀이가 50개를 넘어 앞의 것을 모두 건너뛰어도 뒤의 풀이를 이어 받는다', async () => {
+    const { similar, seed, jobs, attempts, quizSets } = setup();
+    const s = await seed();
+    const first = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    for (let i = 0; i < 51; i++) {
+      await attempts.model.create({
+        quizSetId: s.set,
+        userId: ME,
+        finishedAt: new Date(NOW.getTime() - 50_000 + i * 100),
+        answers: [{ questionId: s.qs[0]!._id, answer: '가', correct: true, void: '정답 둘' }],
+        reviewPending: true,
+      } as never);
+    }
+    const valid = (await attempts.model.create({
+      quizSetId: s.set,
+      userId: ME,
+      finishedAt: new Date(NOW.getTime() - 1_000),
+      answers: s.qs.map((q) => ({ questionId: q._id, answer: '가', correct: true })),
+      reviewPending: true,
+    } as never)) as unknown as { _id: Types.ObjectId };
+    Object.assign(jobs.rows[0]!, {
+      status: 'succeeded',
+      progress: 100,
+      result: { reviewQuestions: [], srsUpdates: [] },
+    });
+    await quizSets.findMine(ME.toHexString(), first!._id);
+    expect((jobs.rows.at(-1)!['input'] as { attemptId: string }).attemptId).toBe(
+      valid._id.toHexString(),
+    );
+    expect(attempts.rows.filter((r) => r['reviewPending'] === true)).toHaveLength(0);
+  });
+
   it('이어 받을 풀이를 넣지 못하면 표시를 남겨 다음 조회가 다시 넣는다', async () => {
     const { similar, seed, jobs, attempts, quizSets, sets } = setup();
     const s = await seed();

@@ -91,6 +91,16 @@ export class SimilarQuizService {
     if (!attempt) throw conflict('먼저 이 퀴즈를 끝까지 풀어 주세요');
     if (needWrong && !(attempt.answers ?? []).some((a) => !a.correct))
       throw conflict('틀린 문제가 없어요');
+    // 자동 시작(attemptId)만 「기다림」을 쓴다. 이미 이 풀이로 만든 세트가 있으면 결과를 맞추기(findMine) 전에
+    // 표시부터 지운다: 맞추다 이어 받기(catchUp)가 돌아도 이 풀이를 다시 고르지 않게
+    const auto = attemptId !== undefined;
+    if (
+      attempt.reviewPending &&
+      (await this.sets
+        .findOne({ ownerId: owner, sourceAttemptId: attempt._id, deletedAt: null })
+        .lean<QuizSetRow>())
+    )
+      await this.markPending(attempt._id, false);
 
     // 같은 세트로 이미 만드는 중이면 그 세트(두 번 눌러도 작업을 하나만). 앞 풀이의 세트가 아직 만드는 중이면
     // 이번 풀이는 그 결과를 옮길 때 이어 받는다(catchUp). 방금 끝났으면 이어 받은 세트(madeFor)로 넘어간다
@@ -101,6 +111,8 @@ export class SimilarQuizService {
       const synced = await this.quizSets.findMine(userId, pending._id.toString());
       const mine = String(pending.sourceAttemptId) === String(attempt._id);
       if (mine) await this.markPending(attempt._id, false);
+      // 앞 풀이의 세트가 아직 만드는 중: 이번 풀이는 기다린다(그 세트가 끝날 때 이어 받음)
+      else if (auto && synced.status === 'generating') await this.markPending(attempt._id, true);
       if (synced.status === 'generating' || mine) return synced;
     }
     const already = await this.madeFor(userId, owner, source, attempt);
@@ -147,8 +159,11 @@ export class SimilarQuizService {
       if (first) {
         if (String(first.sourceAttemptId) === String(attempt._id))
           await this.markPending(attempt._id, false);
+        else if (auto) await this.markPending(attempt._id, true);
         return this.quizSets.findMine(userId, first._id.toString());
       }
+      // 같은 노트의 다른 세트(일반 퀴즈 등)가 만드는 중: 기다린다
+      if (auto) await this.markPending(attempt._id, true);
       throw new ReviewBlocked({
         code: VALIDATION_FAILED,
         message: '이 노트로 퀴즈를 만드는 중이에요. 끝나면 다시 시도해 주세요',
@@ -168,10 +183,14 @@ export class SimilarQuizService {
     const attempt = await this.attempts
       .findOne({ _id: objectId(attemptId, '퀴즈'), userId: owner, finishedAt: { $ne: null } })
       .lean<AttemptRow>();
-    if (!attempt || !(attempt.answers ?? []).some((a) => !a.void)) return null;
-    // 먼저 「기다림」을 적고, 이 풀이의 작업을 넣었으면(create가) 지운다. 같은 노트의 만드는 중 세트에 막히면 남아,
-    // 그 세트가 끝날 때 이어 받는다(catchUp). 다시 해도 안 되는 실패(지운 퀴즈 · 이미 만듦 등)는 지운다
-    await this.markPending(attempt._id, true);
+    if (!attempt) return null;
+    // 답이 모두 무효면(기다리는 사이 결함 문제로 무효가 됐어도) 넣을 것이 없다: 기다림도 지운다
+    if (!(attempt.answers ?? []).some((a) => !a.void)) {
+      if (attempt.reviewPending) await this.markPending(attempt._id, false);
+      return null;
+    }
+    // 같은 노트의 만드는 중 세트에 막히면 create가 「기다림」을 적고(그 세트가 끝날 때 catchUp이 이어 받음),
+    // 작업을 넣으면 지운다. 다시 해도 안 되는 실패(지운 퀴즈 · 이미 만듦 등)는 지운다
     try {
       return await this.create(userId, attempt.quizSetId.toString(), false, attemptId);
     } catch (e) {
@@ -202,24 +221,27 @@ export class SimilarQuizService {
     const sameNote = await this.sets
       .find({ ownerId: row.ownerId, materialId: row.materialId }, { _id: 1 })
       .lean<{ _id: Types.ObjectId }[]>();
-    // ponytail: 한 번에 50개까지. 그보다 많이 기다리면 남은 것은 다음 이어 받기에서
-    const waiting = await this.attempts
-      .find({
-        userId: row.ownerId,
-        quizSetId: { $in: sameNote.map((x) => x._id) },
-        reviewPending: true,
-      })
-      .sort({ finishedAt: 1, _id: 1 })
-      .limit(50)
-      .lean<AttemptRow[]>();
-    for (const a of waiting) {
-      await this.startAfterFinish(row.ownerId.toString(), a._id.toString());
-      const now = await this.attempts.findOne({ _id: a._id }).lean<AttemptRow>();
-      if (now?.reviewPending) return; // 다시 막힘: 막은 세트가 끝날 때 이어 간다
-      const started = await this.sets
-        .findOne({ sourceAttemptId: a._id, status: 'generating', deletedAt: null })
-        .lean<QuizSetRow>();
-      if (started) return; // 이 풀이의 작업이 돈다: 그 결과를 옮길 때 다음 것
+    // 50개씩 읽는다. 처리한 풀이는 표시가 지워지므로 다시 읽으면 다음 것들: 작업을 넣거나 다시 막히거나 남은 게 없을 때까지
+    for (;;) {
+      const waiting = await this.attempts
+        .find({
+          userId: row.ownerId,
+          quizSetId: { $in: sameNote.map((x) => x._id) },
+          reviewPending: true,
+        })
+        .sort({ finishedAt: 1, _id: 1 })
+        .limit(50)
+        .lean<AttemptRow[]>();
+      if (waiting.length === 0) return;
+      for (const a of waiting) {
+        await this.startAfterFinish(row.ownerId.toString(), a._id.toString());
+        const now = await this.attempts.findOne({ _id: a._id }).lean<AttemptRow>();
+        if (now?.reviewPending) return; // 다시 막힘: 막은 세트가 끝날 때 이어 간다
+        const started = await this.sets
+          .findOne({ sourceAttemptId: a._id, status: 'generating', deletedAt: null })
+          .lean<QuizSetRow>();
+        if (started) return; // 이 풀이의 작업이 돈다: 그 결과를 옮길 때 다음 것
+      }
     }
   }
 
