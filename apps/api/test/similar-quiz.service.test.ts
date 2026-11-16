@@ -196,7 +196,7 @@ describe('SimilarQuizService.create', () => {
 
 describe('다시 보기 세트 결과 옮기기(QuizSetsService.findMine)', () => {
   it('작업이 끝나면 reviewQuestions를 문제로 넣어 ready로 바꾸고, 복습 상태(srs)를 옮긴다', async () => {
-    const { similar, seed, jobs, quizSets, updateOne } = setup();
+    const { similar, seed, jobs, quizSets, updateOne, sets } = setup();
     const s = await seed();
     const made = await similar.create(ME.toHexString(), s.set);
     const job = jobs.rows.at(-1)!;
@@ -226,10 +226,11 @@ describe('다시 보기 세트 결과 옮기기(QuizSetsService.findMine)', () =
     const ready = await quizSets.findMine(ME.toHexString(), made._id);
     expect(ready).toMatchObject({ status: 'ready', questionCount: 1 });
     expect(ready.questions[0]).toMatchObject({ _id: newId, prompt: '세포를 둘러싼 막은?' });
+    const at = sets.rows.find((r) => String(r._id) === made._id)!['createdAt'] as Date;
     expect(updateOne).toHaveBeenCalledWith(
       { _id: new Types.ObjectId(s.set), ownerId: ME },
-      { $set: { 'questions.$[q].srs': srs } },
-      { arrayFilters: [{ 'q._id': s.qs[0]!._id }] },
+      { $set: { 'questions.$[q].srs': srs, 'questions.$[q].srsAt': at } },
+      { arrayFilters: [{ 'q._id': s.qs[0]!._id, 'q.srsAt': { $not: { $gt: at } } }] },
     );
   });
 
@@ -388,7 +389,7 @@ describe('복습 상태는 세트마다 한 번만 옮긴다', () => {
     });
     await quizSets.findMine(ME.toHexString(), b._id);
     expect(updateOne).toHaveBeenCalledTimes(2);
-    expect(updateOne.mock.calls.at(-1)![1]).toEqual({
+    expect(updateOne.mock.calls.at(-1)![1]).toMatchObject({
       $set: { 'questions.$[q].srs': { step: 2 } },
     });
 
@@ -410,27 +411,39 @@ describe('복습 상태 옮기기: 동시 조회 · 실패', () => {
       },
     });
 
-  it('같은 세트를 동시에 조회해도 한 요청만 쓴다', async () => {
-    const { similar, seed, jobs, quizSets, updateOne } = setup();
+  it('복습 상태는 이 세트보다 오래된(또는 없는) 상태만 덮는 조건으로 쓴다', async () => {
+    const { similar, seed, jobs, quizSets, updateOne, sets } = setup();
     const s = await seed();
     const made = await similar.create(ME.toHexString(), s.set);
     finishEmpty(jobs, s.qs[0]!._id.toHexString(), s.set);
+    const at = sets.rows.find((r) => String(r._id) === made._id)!['createdAt'] as Date;
     await Promise.all([
       quizSets.findMine(ME.toHexString(), made._id),
       quizSets.findMine(ME.toHexString(), made._id),
-      quizSets.list(ME.toHexString()),
     ]);
-    expect(updateOne).toHaveBeenCalledTimes(1);
+    // 같이 옮겨도 같은 값 · 같은 조건이라 몇 번 써도 결과가 같다
+    expect(updateOne).toHaveBeenCalledWith(
+      { _id: new Types.ObjectId(s.set), ownerId: ME },
+      { $set: { 'questions.$[q].srs': { step: 1 }, 'questions.$[q].srsAt': at } },
+      { arrayFilters: [{ 'q._id': s.qs[0]!._id, 'q.srsAt': { $not: { $gt: at } } }] },
+    );
+    expect(sets.rows.find((r) => String(r._id) === made._id)!['srsSavedAt']).toBeInstanceOf(Date);
+    // 다 옮긴 세트는 다시 쓰지 않는다
+    const calls = updateOne.mock.calls.length;
+    await quizSets.findMine(ME.toHexString(), made._id);
+    expect(updateOne).toHaveBeenCalledTimes(calls);
   });
 
-  it('쓰다 실패하면 표시를 거둬 다음 조회가 다시 옮긴다', async () => {
+  it('쓰다 실패하면 표시도 세트 상태도 그대로라 다음 조회가 다시 옮긴다', async () => {
     const { similar, seed, jobs, quizSets, updateOne, sets } = setup();
     const s = await seed();
     const made = await similar.create(ME.toHexString(), s.set);
     finishEmpty(jobs, s.qs[0]!._id.toHexString(), s.set);
     updateOne.mockRejectedValueOnce(new Error('DB 끊김'));
     await expect(quizSets.findMine(ME.toHexString(), made._id)).rejects.toThrow('DB 끊김');
-    expect(sets.rows.find((r) => String(r._id) === made._id)!['srsSavedAt']).toBeNull();
+    const row = () => sets.rows.find((r) => String(r._id) === made._id)!;
+    expect(row()['srsSavedAt'] ?? null).toBeNull();
+    expect(row()['status']).toBe('generating');
     await quizSets.findMine(ME.toHexString(), made._id);
     expect(updateOne).toHaveBeenCalledTimes(2);
     expect(sets.rows.find((r) => String(r._id) === made._id)!['srsSavedAt']).toBeInstanceOf(Date);

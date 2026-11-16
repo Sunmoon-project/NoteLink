@@ -557,44 +557,41 @@ export class QuizSetsService {
   }
 
   /**
-   * 오답 복습 결과의 복습 상태(result.srsUpdates: [{quizSetId, questionId, srs}])를 그 문제에 쓴다.
-   * 같은 값을 다시 써도 같아, 여러 요청이 같이 옮겨도 된다. 이 사용자의 세트만 고친다
+   * 오답 복습 결과의 복습 상태(result.srsUpdates: [{quizSetId, questionId, srs}])를 그 문제에 쓴다. 이 사용자의 세트만 고친다.
+   * 문제마다 그 상태를 만든 세트의 시각(srsAt = 세트 createdAt, 처리기 입력을 모은 때)을 함께 남기고, 남은 값보다
+   * 더 새 세트의 상태만 쓴다(조건부 쓰기 하나). 그래서 여러 요청이 같이 옮기거나 늦게 도착해도, 그 뒤에 만든
+   * 세트가 고친 상태를 되돌리지 않는다. 같은 세트가 다시 써도 같은 값이다.
+   * 다 쓴 뒤에만 srsSavedAt을 남긴다: 쓰다 실패하면 세트를 바꾸기 전이라(settle) 다음 조회가 다시 옮긴다
    */
   private async saveSrs(row: QuizSetRow, job: AppAiJob): Promise<void> {
-    // 이미 옮긴 세트는 다시 쓰지 않는다: 그 뒤 같은 문제를 다시 풀어 만든 세트가 고친 복습 상태를 되돌리지 않게
     if (row.srsSavedAt) return;
     const updates = job.result?.['srsUpdates'];
     if (!Array.isArray(updates)) return;
-    // 쓰기 전에 표시를 먼저 차지한다(조건부 갱신 하나): 동시에 온 조회 중 한 요청만 쓴다
-    const claimed = await this.sets
+    const at = row.createdAt ?? row._id.getTimestamp();
+    for (const u of updates as { quizSetId?: unknown; questionId?: unknown; srs?: unknown }[]) {
+      if (
+        typeof u.quizSetId !== 'string' ||
+        !OBJECT_ID.test(u.quizSetId) ||
+        typeof u.questionId !== 'string' ||
+        !OBJECT_ID.test(u.questionId) ||
+        !u.srs ||
+        typeof u.srs !== 'object'
+      )
+        continue;
+      await this.sets.updateOne(
+        { _id: new Types.ObjectId(u.quizSetId), ownerId: row.ownerId },
+        { $set: { 'questions.$[q].srs': u.srs, 'questions.$[q].srsAt': at } },
+        // srsAt이 없거나 이 세트보다 오래된 문제만(더 새 세트가 쓴 상태는 그대로)
+        {
+          arrayFilters: [
+            { 'q._id': new Types.ObjectId(u.questionId), 'q.srsAt': { $not: { $gt: at } } },
+          ],
+        },
+      );
+    }
+    await this.sets
       .findOneAndUpdate({ _id: row._id, srsSavedAt: null }, { $set: { srsSavedAt: new Date() } })
       .lean();
-    if (!claimed) return;
-    try {
-      for (const u of updates as { quizSetId?: unknown; questionId?: unknown; srs?: unknown }[]) {
-        if (
-          typeof u.quizSetId !== 'string' ||
-          !OBJECT_ID.test(u.quizSetId) ||
-          typeof u.questionId !== 'string' ||
-          !OBJECT_ID.test(u.questionId) ||
-          !u.srs ||
-          typeof u.srs !== 'object'
-        )
-          continue;
-        await this.sets.updateOne(
-          { _id: new Types.ObjectId(u.quizSetId), ownerId: row.ownerId },
-          { $set: { 'questions.$[q].srs': u.srs } },
-          { arrayFilters: [{ 'q._id': new Types.ObjectId(u.questionId) }] },
-        );
-      }
-    } catch (e) {
-      // 다 쓰지 못했으면 표시를 거둬 다음 조회가 다시 옮긴다(같은 값이라 이미 쓴 문제는 그대로)
-      await this.sets
-        .findOneAndUpdate({ _id: row._id }, { $set: { srsSavedAt: null } })
-        .lean()
-        .catch(() => {});
-      throw e;
-    }
   }
 
   private async findJob(row: QuizSetRow): Promise<AppAiJob | null> {
