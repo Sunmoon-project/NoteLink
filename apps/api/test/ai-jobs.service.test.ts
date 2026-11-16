@@ -204,6 +204,79 @@ describe('AiJobsService.retry', () => {
   });
 });
 
+describe('AiJobsService.retry 입력 새로 고치기', () => {
+  const TYPE = 'handwriting_summary';
+  const failedJob = async (
+    ctx: ReturnType<typeof setup>,
+    over: Partial<Parameters<ReturnType<typeof setup>['add']>[0]> = {},
+  ) => {
+    const { _id } = await ctx.add({
+      type: TYPE,
+      targetType: 'material',
+      targetId: NOTE,
+      input: { pages: [{ pageNo: 1, imageUrl: 'old' }], subject: '수학' },
+      ...over,
+    });
+    Object.assign(ctx.row(_id), { status: 'failed', error: 'x', lockedUntil: PAST });
+    return _id;
+  };
+
+  it('등록된 종류는 다시 시도할 때 새 input을 만들어 저장한다(그 밖의 값은 처리기 규칙대로)', async () => {
+    const ctx = setup();
+    const refresh = vi.fn(() =>
+      Promise.resolve({ pages: [{ pageNo: 1, imageUrl: 'new' }], subject: '수학' }),
+    );
+    ctx.service.registerInputRefresher(TYPE, refresh);
+    const _id = await failedJob(ctx);
+    Object.assign(ctx.row(_id), { checkpoint: { done: 1 } });
+    const job = await ctx.service.retry(ME, _id);
+    expect(refresh).toHaveBeenCalledWith({
+      userId: ME,
+      targetType: 'material',
+      targetId: NOTE,
+      input: { pages: [{ pageNo: 1, imageUrl: 'old' }], subject: '수학' },
+    });
+    expect(ctx.row(_id)).toMatchObject({
+      status: 'queued',
+      input: { pages: [{ pageNo: 1, imageUrl: 'new' }], subject: '수학' },
+      checkpoint: { done: 1 },
+    });
+    expect(job).not.toHaveProperty('input');
+  });
+
+  it('등록되지 않은 종류는 input을 그대로 두고 input을 읽지도 않는다', async () => {
+    const ctx = setup();
+    ctx.service.registerInputRefresher(TYPE, () => Promise.reject(new Error('부르면 안 됨')));
+    const _id = await failedJob(ctx, { type: 'quiz_generate', targetType: 'quiz_set' });
+    const findOne = vi.spyOn(ctx.model, 'findOne');
+    await ctx.service.retry(ME, _id);
+    expect(ctx.row(_id)).toMatchObject({ status: 'queued', input: { subject: '수학' } });
+    for (const call of findOne.mock.calls) expect(call[1]).not.toHaveProperty('input', 1);
+  });
+
+  it('새로 고치기가 실패하면 오류를 올리고 작업은 바뀌지 않는다', async () => {
+    const ctx = setup();
+    ctx.service.registerInputRefresher(TYPE, () => Promise.reject(new Error('노트가 없어요')));
+    const _id = await failedJob(ctx);
+    const before = { ...ctx.row(_id) };
+    await expect(ctx.service.retry(ME, _id)).rejects.toThrow('노트가 없어요');
+    expect(ctx.row(_id)).toEqual(before);
+  });
+
+  it.each(['queued', 'running', 'succeeded'])(
+    '%s 작업은 새로 고치지 않고 지금 상태를 돌려준다',
+    async (status) => {
+      const ctx = setup();
+      const refresh = vi.fn(() => Promise.reject(new Error('부르면 안 됨')));
+      ctx.service.registerInputRefresher(TYPE, refresh);
+      const _id = await failedJob(ctx);
+      Object.assign(ctx.row(_id), { status });
+      expect((await ctx.service.retry(ME, _id)).status).toBe(status);
+      expect(refresh).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('AiJobsService.takeOverPregen', () => {
   const pregen = { type: 'quiz_pregen', targetType: 'material', targetId: NOTE };
 
@@ -336,7 +409,8 @@ describe('toAppError', () => {
     // findMine 두 번(직접 · retry가 다시 넣지 않아 지금 상태를 읽음) + retry가 종류만 읽기 한 번,
     // retry · takeOverPregen 변경 한 번씩
     expect(findOne).toHaveBeenCalledTimes(3);
-    for (const call of findOne.mock.calls) expect([hidden, { type: 1 }]).toContainEqual(call[1]);
+    const kind = { type: 1, status: 1, targetType: 1, targetId: 1 };
+    for (const call of findOne.mock.calls) expect([hidden, kind]).toContainEqual(call[1]);
     expect(update).toHaveBeenCalledTimes(2);
     for (const call of update.mock.calls) {
       expect((call[2] as { projection?: unknown }).projection).toEqual(hidden);
