@@ -10,6 +10,7 @@ import { CalendarModule } from './modules/calendar/calendar.module.js';
 import { HolidaysModule } from './modules/calendar/holidays.module.js';
 import { CalendarSharesModule } from './modules/calendar/calendar-shares.module.js';
 import { FoldersModule } from './modules/content/folders/folders.module.js';
+import { ImagesModule } from './modules/content/images/images.module.js';
 import { MaterialsModule } from './modules/content/materials/materials.module.js';
 import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
 import { ProgressModule } from './modules/progress/progress.module.js';
@@ -70,6 +71,8 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
     CalendarSharesModule,
     // 학습 폴더 목록 · 만들기(FR-19)
     FoldersModule,
+    // 필기 자료 사진 검사(FR-19)
+    ImagesModule,
     // 노트(자료) 등록 · 조회 · 수정 · 삭제(FR-19)
     MaterialsModule,
   ],
