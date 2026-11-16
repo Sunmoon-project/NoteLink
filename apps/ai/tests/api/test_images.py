@@ -1,5 +1,5 @@
 import threading
-import time
+from functools import partial
 from typing import Any, cast
 
 import pytest
@@ -14,6 +14,9 @@ from app.core.config import settings
 from app.main import app
 
 TOKEN = "internal-secret"
+NEST_TIMEOUT_SEC = 90  # apps/api images.service.ts의 AbortSignal.timeout(90_000)과 같은 값
+OCR_SECONDS_PER_FILE = 15  # 파일 한 장을 읽는 데 걸린다고 가정한 시간(가상)
+WAIT_SEC = 5  # 시험이 스레드를 기다리는 실제 상한. 넘으면 실패
 READABLE = {
     "content": "abc",
     "styles": [{"isHandwritten": True, "spans": [{"offset": 0, "length": 3}]}],
@@ -171,7 +174,7 @@ def test_check_reports_the_first_failed_file_in_request_order() -> None:
     assert error.value.detail == "Image check is not configured"
 
 
-def test_check_reads_files_concurrently_so_a_full_batch_stays_within_the_nest_timeout() -> None:
+def test_check_starts_max_workers_reads_at_the_same_time() -> None:
     names = [f"{i}.jpg" for i in range(MAX_FILES)]
     barrier = threading.Barrier(MAX_WORKERS, timeout=5)
 
@@ -197,39 +200,97 @@ def test_check_reads_files_concurrently_so_a_full_batch_stays_within_the_nest_ti
     assert sorted(reader.read_names) == sorted(names)
 
 
-def test_check_batch_latency_follows_worker_waves_not_file_count() -> None:
-    """파일마다 OCR이 delay초 걸릴 때 20장 배치의 총 시간은 순차(20 x delay)가 아니라
-    ceil(20 / MAX_WORKERS) x delay 가까이여야 NestJS의 90초 제한 안에 머문다."""
-    delay = 0.1
-    names = [f"{i}.jpg" for i in range(MAX_FILES)]
+class GatedReader(FakeReader):
+    """read()가 시험이 풀어 줄 때까지 멈춘다. OCR 한 번이 걸리는 시간을 시험이 정한다.
 
-    class SlowReader(FakeReader):
-        def __init__(self, outcomes: dict[str, Any]) -> None:
-            super().__init__(outcomes)
-            self.active = 0
-            self.peak = 0
+    실제로 기다리지 않고, 풀어 주는 한 번을 "OCR 지연 한 번이 지남"으로 센다.
+    """
 
-        def read(self, url: str) -> dict[str, Any]:
-            with self._lock:
-                self.active += 1
-                self.peak = max(self.peak, self.active)
-            try:
-                time.sleep(delay)
-                return super().read(url)
-            finally:
-                with self._lock:
-                    self.active -= 1
+    def __init__(self, outcomes: dict[str, Any]) -> None:
+        super().__init__(outcomes)
+        self.cond = threading.Condition()
+        self.started = 0  # read()에 들어온 호출 수
+        self.waiting = 0  # 들어와서 풀어 주기를 기다리는 호출 수
+        self.permits = 0  # 시험이 풀어 준 뒤 아직 지나가지 않은 호출 수
 
-    reader = SlowReader({name: READABLE for name in names})
+    def read(self, url: str) -> dict[str, Any]:
+        with self.cond:
+            self.started += 1
+            self.waiting += 1
+            self.cond.notify_all()
+            if not self.cond.wait_for(lambda: self.permits > 0, timeout=WAIT_SEC):
+                raise AssertionError("시험이 OCR 호출을 풀어 주지 않았다")
+            self.permits -= 1
+            self.waiting -= 1
+            self.cond.notify_all()  # 시험 스레드가 바뀐 상태를 바로 다시 확인하게 한다
+        return super().read(url)
 
-    started = time.monotonic()
-    result = _check([file(name) for name in names], make(reader))
-    elapsed = time.monotonic() - started
+    def at_wave(self, started: int, waiting: int) -> bool:
+        """started개가 시작했고 그중 waiting개만 풀어 주기를 기다리는 상태인가."""
+        return self.started == started and self.waiting == waiting and self.permits == 0
 
-    sequential = delay * MAX_FILES  # 2.0초. 병렬이면 5번 나눠 읽어 약 0.5초
-    assert [r.name for r in result] == names
-    assert reader.peak == MAX_WORKERS  # 동시 호출은 한도까지 쓰되 넘지 않는다
-    assert elapsed < sequential / 2
+
+def run_batch_by_waves(count: int) -> tuple[list[str], int]:
+    """파일 count장을 _check로 처리하며 OCR 호출을 한 묶음(동시에 멈춘 호출)씩 풀어 준다.
+
+    돌려주는 값은 (결과 이름 순서, 풀어 준 묶음 수). 묶음 하나가 OCR 지연 한 번이다.
+    풀기 전에 정확히 묶음 크기만큼만 시작했는지 확인하므로, 동시 호출이 MAX_WORKERS를 넘거나
+    모자라면(순차 포함) 여기서 실패한다.
+    """
+    names = [f"{i}.jpg" for i in range(count)]
+    reader = GatedReader({name: READABLE for name in names})
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            outcome["result"] = _check([file(name) for name in names], make(reader))
+        except BaseException as error:  # 시험 스레드에서 확인하려고 담아 둔다
+            outcome["error"] = error
+
+    runner = threading.Thread(target=run, daemon=True)
+    runner.start()
+    done = waves = 0
+    try:
+        while done < count:
+            size = min(MAX_WORKERS, count - done)
+            with reader.cond:
+                reached = reader.cond.wait_for(
+                    partial(reader.at_wave, done + size, size), timeout=WAIT_SEC
+                )
+                assert reached, (
+                    f"{waves + 1}번째 묶음에서 동시 호출이 {size}개가 아니다 "
+                    f"(시작 {reader.started}, 대기 {reader.waiting})"
+                )
+                reader.permits += size  # OCR 지연 한 번이 지났다
+                reader.cond.notify_all()
+            done += size
+            waves += 1
+    finally:
+        with reader.cond:  # 실패해도 멈춘 스레드가 남지 않게 모두 풀어 준다
+            reader.permits += count
+            reader.cond.notify_all()
+    runner.join(WAIT_SEC)
+    assert not runner.is_alive()
+    assert "error" not in outcome, outcome.get("error")
+    return [r.name for r in outcome["result"]], waves
+
+
+@pytest.mark.parametrize("count", [1, MAX_WORKERS, MAX_WORKERS + 1, MAX_FILES])
+def test_check_batch_takes_one_ocr_delay_per_wave_of_max_workers_files(count: int) -> None:
+    names, waves = run_batch_by_waves(count)
+
+    assert names == [f"{i}.jpg" for i in range(count)]
+    assert waves == -(-count // MAX_WORKERS)  # ceil(count / MAX_WORKERS)
+
+
+def test_check_full_batch_cumulative_delay_fits_the_nest_timeout() -> None:
+    _, waves = run_batch_by_waves(MAX_FILES)
+
+    parallel = waves * OCR_SECONDS_PER_FILE
+    sequential = MAX_FILES * OCR_SECONDS_PER_FILE
+    assert parallel == 75  # 5묶음 x 15초
+    assert parallel <= NEST_TIMEOUT_SEC
+    assert sequential > NEST_TIMEOUT_SEC  # 순차였다면 제한을 넘는 지연이다
 
 
 # ---------- POST /internal/v1/images/check ----------
