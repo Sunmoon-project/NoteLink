@@ -28,6 +28,13 @@ const goalModel = {
         rows.push(row);
         return Promise.resolve({ toObject: () => row });
     }),
+    // 수정 전 값을 읽는다(리마인드 설정이 바뀌었는지 보려고). 이후 수정이 섞이지 않게 복사해서 준다
+    findOne: vi.fn((f: Filter) => ({
+        lean: vi.fn(() => {
+            const row = rows.find((r) => matches(r, f));
+            return Promise.resolve(row ? { ...row } : null);
+        }),
+    })),
     findOneAndUpdate: vi.fn((f: Filter, u: { $set: Record<string, unknown> }) => ({
         lean: vi.fn(() => {
             const row = rows.find((r) => matches(r, f));

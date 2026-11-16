@@ -12,7 +12,7 @@ import {
   normalizeRemindTime,
   remindEnd,
   remindMessage,
-  remindStart,
+  shouldSkipTodayAfterChange,
   weekdayOfDate,
 } from '../src/modules/progress/goal-remind.js';
 
@@ -59,6 +59,34 @@ describe('푸시 문구', () => {
       body: '영어 단어 · 30분 중 12분을 채웠어요',
     });
     expect(remindMessage('수학', 60, 0).title).toBe('오늘 목표까지 60분 남았어요');
+  });
+});
+
+describe('설정을 바꿀 때 오늘 리마인드를 건너뛸지 (FR-11-08)', () => {
+  const base = { remindEnabled: true, remindTime: '21:00', days: [MON], isActive: true };
+  const skip = (before: object, after: object, at: string) =>
+    shouldSkipTodayAfterChange({ ...base, ...before }, { ...base, ...after }, seoul(at), TODAY);
+
+  it('지난 시각으로 켜면 건너뛴다(켠 직후 바로 푸시가 가지 않게)', () => {
+    expect(skip({ remindEnabled: false }, {}, '21:40')).toBe(true);
+  });
+  it('아직 안 지난 시각으로 켜면 건너뛰지 않는다', () => {
+    expect(skip({ remindEnabled: false }, {}, '20:00')).toBe(false);
+  });
+  it('시각을 지난 시각으로 바꾸면 건너뛰고, 앞으로 바꾸면 건너뛰지 않는다', () => {
+    expect(skip({ remindTime: '22:00' }, { remindTime: '21:00' }, '21:40')).toBe(true);
+    expect(skip({ remindTime: '21:00' }, { remindTime: '23:00' }, '21:40')).toBe(false);
+  });
+  it('오늘 요일을 새로 넣거나 쉬던 목표를 다시 시작해도 같다', () => {
+    expect(skip({ days: [2] }, {}, '21:40')).toBe(true);
+    expect(skip({ isActive: false }, {}, '21:40')).toBe(true);
+  });
+  it('이름만 고치는 편집(설정 그대로)은 막지 않는다', () => {
+    expect(skip({}, {}, '21:40')).toBe(false);
+  });
+  it('끄거나 오늘이 목표 요일이 아니면 건너뛸 것이 없다', () => {
+    expect(skip({}, { remindEnabled: false }, '21:40')).toBe(false);
+    expect(skip({ days: [MON] }, { days: [2] }, '21:40')).toBe(false);
   });
 });
 

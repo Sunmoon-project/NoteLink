@@ -56,3 +56,32 @@ export function remindMessage(
     body: `${name} · ${targetMin}분 중 ${todayMin}분을 채웠어요`,
   };
 }
+
+/** 설정 변경 규칙에 쓰는 목표 모습 */
+export interface RemindSetting {
+  remindEnabled: boolean;
+  remindTime?: string | null;
+  days: number[];
+  isActive: boolean;
+}
+
+/**
+ * 설정을 바꾼 순간 오늘 리마인드를 건너뛰어야 하는지(FR-11-08). 바꾼 뒤 오늘 리마인드가 켜져 있는데(오늘이 목표 요일이고
+ * 켜져 있고 쉬는 목표가 아님), 그 설정이 이번에 새로 생겼거나(켬 · 시각 변경 · 오늘 요일 추가 · 다시 시작) 바뀌었고,
+ * 바뀐 시각이 이미 지났다면 설정 직후 바로 푸시가 가지 않게 오늘은 보낸 것으로 친다.
+ * 이름만 고치는 편집은 막지 않는다. 오늘 이미 보냈으면 다시 보내지 않는 것은 하루 한 번 표시가 따로 지킨다
+ */
+export function shouldSkipTodayAfterChange(
+  before: RemindSetting,
+  after: RemindSetting,
+  now: Date,
+  today: string,
+): boolean {
+  const weekday = weekdayOfDate(today);
+  const armed = (s: RemindSetting) => s.remindEnabled && s.isActive && s.days.includes(weekday);
+  if (!armed(after)) return false;
+  const changed =
+    !armed(before) ||
+    normalizeRemindTime(before.remindTime) !== normalizeRemindTime(after.remindTime);
+  return changed && now >= remindStart(today, after.remindTime);
+}

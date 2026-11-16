@@ -1,13 +1,14 @@
 // 진짜 MongoDB에서 반복 목표 리마인드 푸시(FR-11-07 · 08)를 확인하는 테스트.
 // 확인하는 것: 서버 둘이 같은 순간 runOnce 해도 푸시 1번, 발송이 모두 실패하면 다음 확인에서 다시 보내고 하루 3회에서 멈춤,
 // 만료 토큰 삭제, 기기 없음 · 이미 채움이면 표시만 남김, 하루 한 번(이미 보낸 날은 다시 안 보냄),
-// 인덱스.
+// 설정을 지난 시각으로 바꾸면 오늘 건너뜀(update), 이름만 고치면 막지 않음, 인덱스.
 // MONGODB_VERIFY_URI가 localhost일 때만 돌고, 이번 실행에서만 쓰는 전용 DB를 만들고 끝나면 지운다. ExpoPushService는 가짜다.
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/goal-reminders-real-db.test.ts
 import mongoose, { type Connection, type Model, Types } from 'mongoose';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GoalRemindersService } from '../src/modules/progress/goal-reminders.service.js';
+import { RecurringGoalsService } from '../src/modules/progress/recurring-goals.service.js';
 import {
   DailyRecord,
   DailyRecordSchema,
@@ -16,6 +17,7 @@ import {
   RecurringGoal,
   RecurringGoalSchema,
 } from '../src/modules/progress/schemas/recurring-goal.schema.js';
+import { Subject, SubjectSchema } from '../src/modules/session/schemas/subject.schema.js';
 import { Device, DeviceSchema } from '../src/modules/users/schemas/device.schema.js';
 
 const uri = process.env.MONGODB_VERIFY_URI;
@@ -288,5 +290,87 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
         partialFilterExpression: { remindEnabled: true, isActive: true },
       }),
     );
+  });
+
+  describe('설정을 바꿀 때 (FR-11-08)', () => {
+    let service: RecurringGoalsService;
+    beforeAll(() => {
+      const subjects = conn.model(Subject.name, SubjectSchema) as unknown as Model<Subject>;
+      service = new RecurringGoalsService(
+        goals as never,
+        subjects as never,
+        daily as never,
+        { skipDates: () => Promise.resolve([]) } as never,
+      );
+    });
+    const owner = () => user.toHexString();
+
+    it('지난 시각으로 알림을 켜면 오늘은 건너뛰고 푸시가 가지 않는다', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: seoul('21:40') });
+      try {
+        const id = await goal({ remindEnabled: false });
+        await device('a');
+        await service.update(owner(), id.toHexString(), { remindEnabled: true });
+        expect((await row(id))!.lastRemindedOn).toBe(TODAY);
+        await makeService().runOnce(seoul('21:41'));
+        expect(sent).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('아직 안 지난 시각으로 바꾸면 표시하지 않고 새 시각에 보낸다', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: seoul('20:00') });
+      try {
+        const id = await goal({ remindTime: '19:00', lastRemindedOn: null });
+        await device('a');
+        await service.update(owner(), id.toHexString(), { remindTime: '22:00' });
+        expect((await row(id))!.lastRemindedOn).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+      const service2 = makeService();
+      await service2.runOnce(seoul('21:30'));
+      expect(sent).toHaveLength(0);
+      await service2.runOnce(seoul('22:00'));
+      expect(sent).toHaveLength(1);
+    });
+
+    it('이미 보낸 날은 시각을 바꾸거나 껐다 켜도 다시 보내지 않는다', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: seoul('21:30') });
+      try {
+        const id = await goal();
+        await device('a');
+        await makeService().runOnce(seoul('21:05'));
+        expect(sent).toHaveLength(1);
+        await service.update(owner(), id.toHexString(), { remindTime: '21:10' });
+        await service.update(owner(), id.toHexString(), { remindEnabled: false });
+        await service.update(owner(), id.toHexString(), { remindEnabled: true });
+        await makeService().runOnce(seoul('21:31'));
+        expect(sent).toHaveLength(1);
+        expect((await row(id))!.lastRemindedOn).toBe(TODAY);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('이름만 고치는 편집은 오늘 리마인드를 막지 않는다', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: seoul('21:30') });
+      try {
+        const id = await goal();
+        await device('a');
+        await service.update(owner(), id.toHexString(), {
+          name: '새 이름',
+          remindEnabled: true,
+          remindTime: '21:00',
+          days: [MON],
+        });
+        expect((await row(id))!.lastRemindedOn).toBeNull();
+        await makeService().runOnce(seoul('21:31'));
+        expect(sent).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

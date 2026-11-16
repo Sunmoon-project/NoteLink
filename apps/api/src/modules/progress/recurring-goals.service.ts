@@ -6,7 +6,7 @@ import { HolidaysService } from '../calendar/holidays.service.js';
 import { Subject } from '../session/schemas/subject.schema.js';
 import { seoulDate } from '../session/study-time.js';
 import type { SaveRecurringGoalDto } from './dto/recurring-goal.dto.js';
-import { DEFAULT_REMIND_TIME } from './goal-remind.js';
+import { DEFAULT_REMIND_TIME, shouldSkipTodayAfterChange } from './goal-remind.js';
 import { todayStudyMin, weeklyStreak, type DayStudy, type GoalRule } from './goal-judge.js';
 import { DailyRecord } from './schemas/daily-record.schema.js';
 import { RecurringGoal } from './schemas/recurring-goal.schema.js';
@@ -96,11 +96,22 @@ export class RecurringGoalsService {
         const fields = toFields(dto);
         if (dto.name !== undefined) fields['name'] = dto.name;
         if (dto.days !== undefined) fields['days'] = sortedDays(dto.days);
+        // 리마인드와 관련된 설정을 보냈으면 바꾸기 전 값을 읽어 둔다(바뀐 설정으로 지난 시각의 리마인드가 바로 가지 않게 하려고)
+        const touchesRemind = ['remindEnabled', 'remindTime', 'days', 'isActive'].some((key) => key in fields);
+        const before = touchesRemind
+            ? await this.goalModel.findOne(ownedAlive(userId, id)).lean<GoalLean>()
+            : null;
         const saved = await this.goalModel
             .findOneAndUpdate(ownedAlive(userId, id), { $set: fields }, { returnDocument: 'after' })
             .lean<GoalLean>();
         if (!saved) throw new NotFoundException(NOT_FOUND);
-        const stats = await this.stats(userId, [saved], new Date());
+        const now = new Date();
+        const today = seoulDate(now);
+        // FR-11-08: 오늘 이미 보냈으면 다시 보내지 않는다(표시는 지우지 않는다). 지난 시각으로 바꾸거나 켜면 오늘은 건너뛴다
+        if (before && shouldSkipTodayAfterChange(before, saved, now, today)) {
+            await this.goalModel.updateOne({ _id: saved._id, lastRemindedOn: { $ne: today } }, { $set: { lastRemindedOn: today } });
+        }
+        const stats = await this.stats(userId, [saved], now);
         return toView(saved, stats.get(saved._id.toString()));
     }
 
