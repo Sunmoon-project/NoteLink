@@ -284,6 +284,9 @@ describe('PR36 사진 검사 경계', () => {
     expect(mockApi.content.checkImages.mock.calls[0][0]).toHaveLength(9);
     const names = mockUpload.mock.calls.map(([, f]) => (f as { name: string }).name);
     expect(names.filter((n) => n === 'picked-9.jpg')).toHaveLength(0);
+    // 올리던 사진에는 검사 취소 신호를 넘겨 함께 멈추게 한다
+    const signal = mockUpload.mock.calls[0]![3] as AbortSignal;
+    expect(signal.aborted).toBe(true);
   });
   it('사진은 4장씩 나눠 올린다', async () => {
     let running = 0;

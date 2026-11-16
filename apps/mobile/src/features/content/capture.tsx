@@ -397,7 +397,8 @@ export function PickedScreen() {
           signal,
           async (f) => {
             const cached = useDraft.getState().uploads.find((upload) => upload.file === f);
-            const uri = cached?.url ?? (await uploadToBlob('image', f));
+            // 검사가 취소되면(사진 목록이 바뀜 · 화면을 떠남) 올리던 사진도 멈춘다
+            const uri = cached?.url ?? (await uploadToBlob('image', f, undefined, signal));
             useDraft.getState().rememberUpload(f, uri);
             return {
               file: f,
