@@ -1,4 +1,4 @@
-import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, type OnModuleDestroy } from '@nestjs/common';
 import {
   ConnectedSocket,
   MessageBody,
@@ -36,6 +36,8 @@ export class AiJobsGateway implements OnModuleDestroy {
   private readonly watched = new Map<string, { userId: string; last?: string }>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private polling = false;
+  /** 같은 소켓 · 작업의 구독과 해지를 받은 순서대로 처리한다(구독 확인 중에 온 해지가 먼저 끝나지 않게) */
+  private readonly operations = new WeakMap<Socket, Map<string, Promise<unknown>>>();
 
   @WebSocketServer() private server: Server;
 
@@ -48,13 +50,34 @@ export class AiJobsGateway implements OnModuleDestroy {
     this.stop();
   }
 
+  private inOrder<T>(socket: Socket, key: string, operation: () => Promise<T>): Promise<T> {
+    let jobs = this.operations.get(socket);
+    if (!jobs) {
+      jobs = new Map();
+      this.operations.set(socket, jobs);
+    }
+    const current = (jobs.get(key) ?? Promise.resolve()).catch(() => undefined).then(operation);
+    jobs.set(key, current);
+    void current
+      .finally(() => {
+        if (jobs.get(key) === current) jobs.delete(key);
+      })
+      .catch(() => {});
+    return current;
+  }
+
   @SubscribeMessage('ai:subscribe')
-  async subscribe(
+  subscribe(
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { jobId?: unknown },
   ): Promise<{ ok: boolean }> {
     const jobId = data?.jobId;
-    if (typeof jobId !== 'string') return { ok: false };
+    if (typeof jobId !== 'string') return Promise.resolve({ ok: false });
+    // ObjectId는 대소문자를 가리지 않으므로 순서 · 방 이름은 소문자로 맞춘다
+    return this.inOrder(socket, jobId.toLowerCase(), () => this.join(socket, jobId));
+  }
+
+  private async join(socket: Socket, requested: string): Promise<{ ok: boolean }> {
     let userId: string;
     let job: Awaited<ReturnType<AiJobsService['findMine']>>;
     try {
@@ -62,10 +85,12 @@ export class AiJobsGateway implements OnModuleDestroy {
       if (typeof token !== 'string') return { ok: false };
       userId = (await this.tokens.verifyAccess(token)).userId;
       // 남의 작업 · 없는 작업 · 형식이 틀린 id는 모두 404라 같은 답을 준다
-      job = await this.jobs.findMine(userId, jobId);
+      job = await this.jobs.findMine(userId, requested);
     } catch {
       return { ok: false };
     }
+    // 방 · 지켜보기 키는 DB가 돌려주는 id(소문자)로 둔다. 반복해 읽은 결과(progressOf)와 같아야 한다
+    const jobId = job._id;
     if (FINISHED.has(job.status)) {
       socket.emit('ai:done', { jobId, job });
       return { ok: true };
@@ -82,7 +107,9 @@ export class AiJobsGateway implements OnModuleDestroy {
   /** 화면을 떠나면 그 작업 방에서 뺀다. 방이 비면 다음 차례에 더 읽지 않는다 */
   @SubscribeMessage('ai:unsubscribe')
   async unsubscribe(@ConnectedSocket() socket: Socket, @MessageBody() data: { jobId?: unknown }) {
-    if (typeof data?.jobId === 'string') await socket.leave(roomOf(data.jobId));
+    if (typeof data?.jobId !== 'string') return;
+    const jobId = data.jobId.toLowerCase();
+    await this.inOrder(socket, jobId, () => Promise.resolve(socket.leave(roomOf(jobId))));
   }
 
   /** 시험에서 기다리지 않고 한 번 돌린다. 겹쳐 돌지 않는다 */
@@ -135,8 +162,10 @@ export class AiJobsGateway implements OnModuleDestroy {
    * (StudyChatGateway.notifyDirectMessage와 같은 방식). 진행률만 보내는 ai:progress는 확인하지 않는다
    */
   private async done(jobId: string, userId: string) {
+    let job: Awaited<ReturnType<AiJobsService['findMine']>>;
+    let sockets: Awaited<ReturnType<ReturnType<Server['in']>['fetchSockets']>>;
     try {
-      const job = await this.jobs.findMine(userId, jobId);
+      job = await this.jobs.findMine(userId, jobId);
       // 끝난 것을 읽은 사이 다시 시도로 처리기에 다시 들어갔으면(같은 작업 id) 끝내지 않고 계속 지켜본다.
       // 다시 시도하며 구독한 소켓을 방에서 빼지 않게 한다
       if (!FINISHED.has(job.status)) {
@@ -144,22 +173,25 @@ export class AiJobsGateway implements OnModuleDestroy {
         if (watch) watch.last = undefined;
         return;
       }
-      const sockets = await this.server.in(roomOf(jobId)).fetchSockets();
-      await Promise.all(
-        sockets.map(async (recipient) => {
-          try {
-            const token = recipient.handshake.auth?.token;
-            if (typeof token !== 'string') return;
-            if ((await this.tokens.verifyAccess(token)).userId === userId)
-              recipient.emit('ai:done', { jobId, job });
-          } catch {
-            // 토큰이 끝난 소켓. 앱은 작업 조회(GET /ai-jobs/:id)로 끝을 확인한다
-          }
-        }),
-      );
-    } catch {
-      // 그사이 지워졌으면 보내지 않는다
+      sockets = await this.server.in(roomOf(jobId)).fetchSockets();
+    } catch (error) {
+      // 그사이 지워졌으면 더 지켜보지 않는다. DB 일시 오류면 그대로 두어 다음 차례에 다시 보낸다
+      if (error instanceof NotFoundException) this.finish(jobId);
+      else this.logger.warn(`끝난 AI 작업을 보내지 못했습니다: ${(error as Error).message}`);
+      return;
     }
+    await Promise.all(
+      sockets.map(async (recipient) => {
+        try {
+          const token = recipient.handshake.auth?.token;
+          if (typeof token !== 'string') return;
+          if ((await this.tokens.verifyAccess(token)).userId === userId)
+            recipient.emit('ai:done', { jobId, job });
+        } catch {
+          // 토큰이 끝난 소켓. 앱은 작업 조회(GET /ai-jobs/:id)로 끝을 확인한다
+        }
+      }),
+    );
     this.finish(jobId);
   }
 

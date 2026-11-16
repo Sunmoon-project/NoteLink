@@ -33,8 +33,9 @@ const appJob = (over: Partial<AppAiJob> = {}): AppAiJob => ({
 /** 작업 주인은 a. 상태는 시험이 jobs 표를 바꿔 처리기가 쓴 것처럼 만든다 */
 const table = new Map<string, AppAiJob>();
 const jobs = {
+  // 실제 서비스처럼 ObjectId는 대소문자를 가리지 않는다
   findMine: vi.fn(async (userId: string, jobId: string) => {
-    const job = table.get(jobId);
+    const job = table.get(jobId.toLowerCase());
     if (!job || userId !== 'a') throw new NotFoundException();
     return job;
   }),
@@ -322,6 +323,67 @@ describe('AI 작업 진행률 소켓 (ai:subscribe)', () => {
     table.set(JOB, appJob({ status: 'running', progress: 15, step: 'ocr' }));
     await gateway.poll();
     await vi.waitFor(() => expect(got.progress.at(-1)?.progress).toBe(15));
+  });
+
+  it('끝난 작업의 결과를 읽다가 DB가 잠깐 안 되면 지켜보기를 유지하고 다음 차례에 보낸다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    const finished = appJob({ status: 'succeeded', progress: 100 });
+    table.set(JOB, finished);
+    jobs.findMine.mockRejectedValueOnce(new Error('db down'));
+    await gateway.poll();
+    await settle();
+    expect(got.done).toEqual([]);
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: finished }]));
+  });
+
+  it('끝난 작업을 결과 읽기 전에 지웠으면(404) 보내지 않고 더 지켜보지 않는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    jobs.progressOf.mockResolvedValueOnce([{ jobId: JOB, status: 'succeeded', progress: 100 }]);
+    table.delete(JOB);
+    await gateway.poll();
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+    expect(got.done).toEqual([]);
+  });
+
+  it('대문자 id로 구독해도 같은 작업으로 계속 받는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await expect(subscribe(a, JOB.toUpperCase())).resolves.toEqual({ ok: true });
+    table.set(JOB, appJob({ progress: 45 }));
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.progress.at(-1)).toMatchObject({ jobId: JOB, progress: 45 }));
+  });
+
+  it('구독을 확인하는 중에 해지가 오면 해지가 나중에 적용된다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    let release!: () => void;
+    const original = jobs.findMine.getMockImplementation()!;
+    jobs.findMine.mockImplementationOnce(async (userId: string, jobId: string) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return original(userId, jobId);
+    });
+    const pending = subscribe(a);
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    a.emit('ai:unsubscribe', { jobId: JOB });
+    await settle();
+    release();
+    await pending;
+    await settle();
+    table.set(JOB, appJob({ progress: 88 }));
+    await gateway.poll();
+    await settle();
+    expect(got.progress.map((p) => p.progress)).not.toContain(88);
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
   });
 
   it('구독하면 1초 간격으로 스스로 다시 읽는다', async () => {
