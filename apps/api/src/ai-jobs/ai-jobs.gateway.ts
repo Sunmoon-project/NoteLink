@@ -28,11 +28,18 @@ const roomOf = (jobId: string) => `${ROOM_PREFIX}${jobId}`;
  * 차례 수. 넘으면 그만 지켜본다
  */
 const DONE_RETRY_LIMIT = 5;
-/** 앞 실행(끝난 뒤 다시 시도된 작업)에서 보낸 기록 · 실패 수는 새 실행과 상관없으므로 지운다 */
-const resetRun = (watch: { delivered?: Set<string>; doneFailures?: number }) => {
-  watch.delivered = undefined;
-  watch.doneFailures = undefined;
-};
+/** 지켜보는 작업 하나 */
+interface Watch {
+  userId: string;
+  /** 마지막으로 보낸 진행률(signature). 같은 값은 다시 보내지 않는다 */
+  last?: string;
+  /** ai:done을 보낸 실행. 다시 시도하면 작업의 updatedAt이 바뀌므로 그 값으로 실행을 가린다 */
+  run?: string;
+  /** 이 실행에서 ai:done을 이미 받은 소켓. 일시 오류로 다시 보낼 때 건너뛴다 */
+  delivered?: Set<string>;
+  /** 이 실행에서 끝난 작업을 보내다 일시 오류가 난 수 */
+  doneFailures?: number;
+}
 const signature = (p: AiJobProgress) => `${p.status}|${p.progress}|${p.step ?? ''}`;
 
 /**
@@ -48,11 +55,7 @@ const signature = (p: AiJobProgress) => `${p.status}|${p.progress}|${p.step ?? '
 @WebSocketGateway()
 export class AiJobsGateway implements OnModuleDestroy {
   private readonly logger = new Logger(AiJobsGateway.name);
-  /** 작업마다 마지막으로 보낸 값 · 주인. 같은 값은 다시 보내지 않는다 */
-  private readonly watched = new Map<
-    string,
-    { userId: string; last?: string; doneFailures?: number; delivered?: Set<string> }
-  >();
+  private readonly watched = new Map<string, Watch>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private polling = false;
   /** 같은 소켓 · 작업의 구독과 해지를 받은 순서대로 처리한다(구독 확인 중에 온 해지가 먼저 끝나지 않게) */
@@ -170,8 +173,6 @@ export class AiJobsGateway implements OnModuleDestroy {
         finished.push(this.done(row.jobId, watch.userId));
         continue;
       }
-      // 끝나지 않은 상태 = 새 실행(다시 시도). 앞 실행의 보낸 기록 · 실패 수를 지운다
-      resetRun(watch);
       const now = signature(row);
       if (watch.last === now) continue;
       watch.last = now;
@@ -193,10 +194,7 @@ export class AiJobsGateway implements OnModuleDestroy {
       // 다시 시도하며 구독한 소켓을 방에서 빼지 않게 한다
       if (!FINISHED.has(job.status)) {
         const watch = this.watched.get(jobId);
-        if (watch) {
-          watch.last = undefined;
-          resetRun(watch);
-        }
+        if (watch) watch.last = undefined;
         return;
       }
       sockets = await this.server.in(roomOf(jobId)).fetchSockets();
@@ -207,7 +205,16 @@ export class AiJobsGateway implements OnModuleDestroy {
       return;
     }
     const watch = this.watched.get(jobId);
-    const delivered = watch ? (watch.delivered ??= new Set()) : new Set<string>();
+    // 실행이 바뀌었으면(다시 시도된 작업이 다시 끝남) 앞 실행의 보낸 기록 · 실패 수를 버린다.
+    // 다시 시도를 진행 중 상태로 보지 못하고 바로 끝난 상태로 읽어도 맞게, 실행은 작업의 updatedAt으로 가린다
+    if (watch && watch.run !== job.updatedAt) {
+      watch.run = job.updatedAt;
+      watch.delivered = new Set();
+      watch.doneFailures = undefined;
+      // 다시 시도되면 진행률을 처음부터 다시 보내게 한다
+      watch.last = undefined;
+    }
+    const delivered = watch?.delivered ?? new Set<string>();
     let transient: { error: unknown } | undefined;
     await Promise.all(
       sockets.map(async (recipient) => {
