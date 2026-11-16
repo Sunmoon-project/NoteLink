@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 
+import { AiJobNoticesModule } from './ai-jobs/ai-job-notices.module.js';
 import { AiJobsModule } from './ai-jobs/ai-jobs.module.js';
 import { createMongooseOptions } from './config/mongo.config.js';
 import { HealthController } from './health/health.controller.js';
@@ -44,6 +45,8 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
 
     // ai_jobs 작업 넣기 · 진행 상태 · 취소 · 다시 시도(#175)
     AiJobsModule,
+    // 노트 변환이 끝나면 푸시(FR-65-02)
+    AiJobNoticesModule,
     // 상점 · 포인트(FR-59~63)
     RewardModule,
     StudyRoomsModule,
