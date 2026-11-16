@@ -45,15 +45,18 @@ describe('자동 요약을 편집 저장 상한 안으로 (FR-19)', () => {
     expect([SUMMARY_MAX_SECTIONS, SUMMARY_HEADING_MAX, SUMMARY_BODY_MAX]).toEqual([50, 100, 10000]);
   });
 
-  it('섹션 51개는 50개로 합쳐지고(뒤쪽 이웃과, 제목은 앞 섹션 것) 내용은 그대로 남는다', () => {
+  it('짧은 섹션 51개는 상한 안으로 다시 나뉘고 소제목 51개가 모두 heading 이나 본문에 남는다', () => {
     const chunks = Array.from({ length: 51 }, (_, i) => chunk(`제목 ${i}`, `본문 ${i}`, i));
     const { sections } = sectionsFromChunks(chunks);
     within(sections);
-    expect(sections).toHaveLength(50);
-    expect(sections.slice(0, 49).map((s) => s.heading)).toEqual(
-      chunks.slice(0, 49).map((c) => c.title),
-    );
-    expect(sections[49]).toEqual({ heading: '제목 49', body: '본문 49\n본문 50' });
+    const text = sections.map((s) => `${s.heading}\n${s.body}`).join('\n');
+    for (let i = 0; i < 51; i += 1) {
+      expect(text).toContain(`제목 ${i}`);
+      expect(text).toContain(`본문 ${i}`);
+    }
+    // 합쳐진 뒤 섹션의 소제목은 본문 안에 "■ 소제목" 한 줄로 남는다
+    expect(sections[0]!.heading).toBe('제목 0');
+    expect(sections[0]!.body).toContain('■ 제목 50\n본문 50');
     expect(passesPatchValidation(sections)).toEqual([]);
   });
 
@@ -121,17 +124,42 @@ describe('자동 요약을 편집 저장 상한 안으로 (FR-19)', () => {
     expect(passesPatchValidation(sections)).toEqual([]);
   });
 
-  it('합칠 수 없을 만큼 길면 마지막 섹션을 상한에서 끊고 안내를 붙인다(이 경우만 내용이 줄어든다)', () => {
+  it('6,000자 섹션 60개(36만 자)도 글자를 하나도 잃지 않고 50개 이하로 다시 나눈다', () => {
     const big = Array.from({ length: 60 }, (_, i) => ({
       heading: `큰 ${i}`,
       body: 'w'.repeat(6000),
     }));
     const out = fitSections(big);
     within(out);
+    expect(count(out, 'w')).toBe(360_000);
+    expect(out.some((s) => s.body.endsWith(TRUNCATED_NOTICE))).toBe(false);
+    const text = out.map((s) => `${s.heading}\n${s.body}`).join('\n');
+    for (let i = 0; i < 60; i += 1) expect(text).toContain(`큰 ${i}`);
+    expect(passesPatchValidation(out)).toEqual([]);
+  });
+
+  it('긴 본문 사이에 줄바꿈이 있어도 글자를 잃지 않는다', () => {
+    const lines = Array.from({ length: 60 }, (_, i) => ({
+      heading: `줄 ${i}`,
+      body: `${'가'.repeat(4000)}\n${'나'.repeat(3900)}`,
+    }));
+    const out = fitSections(lines);
+    within(out);
+    expect(count(out, '가')).toBe(240_000);
+    expect(count(out, '나')).toBe(234_000);
+  });
+
+  it('본문 합계가 50만 자를 넘을 때만 마지막 섹션을 상한에서 끊고 안내를 붙인다', () => {
+    const big = Array.from({ length: 60 }, (_, i) => ({
+      heading: `큰 ${i}`,
+      body: 'w'.repeat(9000),
+    }));
+    const out = fitSections(big);
+    within(out);
     expect(out).toHaveLength(50);
     expect(out[49]!.body.endsWith(TRUNCATED_NOTICE)).toBe(true);
     expect(out[49]!.body.length).toBeLessThanOrEqual(SUMMARY_BODY_MAX);
-    expect(out.slice(0, 49).every((s) => s.body === 'w'.repeat(6000))).toBe(true);
+    expect(out.slice(0, 49).every((s) => s.body === 'w'.repeat(9000))).toBe(true);
     expect(passesPatchValidation(out)).toEqual([]);
   });
 

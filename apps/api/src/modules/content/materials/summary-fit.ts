@@ -5,7 +5,7 @@ export interface Section {
   body: string;
 }
 
-/** 섹션이 너무 많고 합칠 수도 없을 때(본문 합계가 섹션 수 상한 × 본문 상한을 넘음) 마지막 섹션 끝에 붙이는 안내 */
+/** 섹션이 너무 많고 다시 나눌 수도 없을 때(본문 합계가 섹션 수 상한 × 본문 상한을 넘음) 마지막 섹션 끝에 붙이는 안내 */
 export const TRUNCATED_NOTICE = '\n(내용이 길어 여기까지만 담았어요)';
 
 /** 글자 수 at 에서 자르되 서로게이트 쌍의 가운데는 피한다 */
@@ -68,29 +68,76 @@ function splitSections(sections: Section[]): Section[] {
   return out;
 }
 
+/** 합쳐 이어 붙인 섹션의 소제목을 본문 안에 남기는 줄 */
+const headingLine = (heading: string) => `■ ${heading}
+`;
+
 /**
- * 섹션이 상한을 넘으면 뒤쪽부터 이웃 섹션과 합친다(제목은 앞 섹션 것, 본문은 줄바꿈으로 이어 붙임).
- * 합친 본문이 상한을 넘는 쌍은 건너뛰고, 더 합칠 수 없을 때까지 뒤에서 앞으로 훑기를 반복한다.
- * 그래도 넘으면(본문 합계가 섹션 수 상한 × 본문 상한을 넘는 극단적인 경우) 마지막 섹션에 남은 내용을
- * 이어 붙이다가 상한에서 끊고 안내 문구를 붙인다 — 이 경우에만 내용이 줄어든다
+ * 본문 합계가 섹션 수 상한 × 본문 상한 이하일 때 글자를 잃지 않고 다시 나눈다. 섹션을 순서대로 "소제목 줄 + 본문"
+ * 흐름으로 이어 놓고(첫 섹션은 본문만) 본문 상한 이하 덩어리로 다시 채운다. 덩어리의 제목은 그 덩어리가 시작하는 원래
+ * 섹션의 제목이고(그 섹션의 시작에서 시작하면 소제목 줄은 제목이 대신하므로 뺀다), 줄바꿈 근처에서 자르며
+ * 서로게이트 쌍은 가르지 않는다. 소제목 줄까지 더하면 섹션 수 상한에 담기지 않으면 null
+ */
+function repack(sections: Section[]): Section[] | null {
+  const starts: number[] = [];
+  let flow = '';
+  sections.forEach((section, i) => {
+    starts.push(flow.length);
+    flow +=
+      (i === 0 ? '' : headingLine(section.heading)) +
+      section.body +
+      (i === sections.length - 1 ? '' : '\n');
+  });
+  const chunks: { start: number; text: string }[] = [];
+  let offset = 0;
+  while (offset < flow.length) {
+    const rest = flow.slice(offset);
+    if (rest.length <= SUMMARY_BODY_MAX) {
+      chunks.push({ start: offset, text: rest });
+      break;
+    }
+    // 남은 덩어리 수 안에 나머지가 들어가도록 최소한 이만큼은 잘라야 한다
+    const left = SUMMARY_MAX_SECTIONS - chunks.length - 1;
+    const floor = Math.max(
+      rest.length - left * SUMMARY_BODY_MAX,
+      Math.floor(SUMMARY_BODY_MAX / 2) + 1,
+    );
+    const newline = rest.lastIndexOf('\n', SUMMARY_BODY_MAX - 1) + 1;
+    const cut = newline >= floor ? newline : safeCut(rest, SUMMARY_BODY_MAX);
+    chunks.push({ start: offset, text: rest.slice(0, cut) });
+    offset += cut;
+    if (chunks.length >= SUMMARY_MAX_SECTIONS && offset < flow.length) return null;
+  }
+  if (chunks.length > SUMMARY_MAX_SECTIONS) return null;
+  const reserved = new Set(sections.map((s) => s.heading));
+  const used = new Set<string>();
+  const taken = (name: string) => used.has(name) || reserved.has(name);
+  return chunks.map(({ start, text }) => {
+    let index = 0;
+    while (index + 1 < starts.length && starts[index + 1]! <= start) index += 1;
+    const base = sections[index]!.heading;
+    const heading = used.has(base) ? numbered(base, taken) : base;
+    used.add(heading);
+    const marker = index > 0 && start === starts[index] ? headingLine(base) : '';
+    const body = marker && text.length > marker.length ? text.slice(marker.length) : text;
+    return { heading, body };
+  });
+}
+
+/**
+ * 섹션이 상한을 넘으면 본문 합계가 50만 자(섹션 수 상한 × 본문 상한) 이하일 때 repack 으로 글자 · 소제목을 잃지 않고
+ * 다시 나눈다. 그보다 길면 마지막 섹션에 남은 내용을 이어 붙이다가 상한에서 끊고 안내 문구를 붙인다 — 이 경우에만
+ * 내용이 줄어든다
  */
 function mergeSections(sections: Section[]): Section[] {
-  const out = sections.map((s) => ({ ...s }));
-  for (let changed = true; changed && out.length > SUMMARY_MAX_SECTIONS;) {
-    changed = false;
-    for (let i = out.length - 1; i >= 1 && out.length > SUMMARY_MAX_SECTIONS; i -= 1) {
-      const prev = out[i - 1]!;
-      const cur = out[i]!;
-      if (prev.body.length + 1 + cur.body.length <= SUMMARY_BODY_MAX) {
-        prev.body = `${prev.body}\n${cur.body}`;
-        out.splice(i, 1);
-        changed = true;
-      }
-    }
+  if (sections.length <= SUMMARY_MAX_SECTIONS) return sections;
+  const total = sections.reduce((n, s) => n + s.body.length, 0);
+  if (total <= SUMMARY_MAX_SECTIONS * SUMMARY_BODY_MAX) {
+    const packed = repack(sections);
+    if (packed) return packed;
   }
-  if (out.length <= SUMMARY_MAX_SECTIONS) return out;
-  const kept = out.slice(0, SUMMARY_MAX_SECTIONS - 1);
-  const [head, ...tail] = out.slice(SUMMARY_MAX_SECTIONS - 1);
+  const kept = sections.slice(0, SUMMARY_MAX_SECTIONS - 1).map((s) => ({ ...s }));
+  const [head, ...tail] = sections.slice(SUMMARY_MAX_SECTIONS - 1);
   const all = [head!.body, ...tail.map((s) => `${s.heading}\n${s.body}`)].join('\n');
   const room = SUMMARY_BODY_MAX - TRUNCATED_NOTICE.length;
   return [
