@@ -12,15 +12,17 @@ interface Section {
   body: string;
 }
 
-const isRecord = (v: unknown): v is Record<string, unknown> =>
+export const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1;
-const text = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+/** 앞뒤 공백을 지운 글. 비었거나 글이 아니면 null */
+export const text = (v: unknown): string | null =>
+  typeof v === 'string' && v.trim() ? v.trim() : null;
 
 /**
  * 제목이 겹치지 않게 한다. 앱이 제목을 목록 키로 쓰므로(NoteBody) 같은 제목은 "(2)", "(3)"을 붙인다
  */
-function uniqueHeading(heading: string, used: Set<string>): string {
+export function uniqueHeading(heading: string, used: Set<string>): string {
   let out = heading;
   for (let n = 2; used.has(out); n += 1) out = `${heading} (${n})`;
   used.add(out);
