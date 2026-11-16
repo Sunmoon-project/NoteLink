@@ -505,20 +505,28 @@ it('새 초안이나 자료 내용 변경은 이전 등록 키를 재사용하�
   expect(useDraft.getState().getCreationId()).not.toBe(edited);
 });
 
-it('실서버 등록 결과가 불명확하면 재등록 버튼 대신 자료 확인 경로를 제공한다', async () => {
-  mockApi.content.createMaterial.mockRejectedValueOnce(
-    Object.assign(new Error('응답 유실'), { code: 'MATERIAL_REGISTRATION_UNCERTAIN' }),
-  );
+it('실서버 등록 결과가 불명확하면 같은 등록 키로 다시 시도하거나 자료 목록에서 확인할 수 있다', async () => {
+  mockApi.content.createMaterial
+    .mockRejectedValueOnce(
+      Object.assign(new Error('응답 유실'), { code: 'MATERIAL_REGISTRATION_UNCERTAIN' }),
+    )
+    .mockRejectedValueOnce(
+      Object.assign(new Error('응답 유실'), { code: 'MATERIAL_REGISTRATION_UNCERTAIN' }),
+    );
   await renderScreen(<ConvertScreen />, client());
   expect(await screen.findByText('등록 결과를 확인할 수 없어요')).toBeTruthy();
   expect(screen.queryByText('지금 다시 시도')).toBeNull();
-  expect(screen.queryByText('다시 시도')).toBeNull();
-  await fireEvent.press(screen.getByText('학습자료에서 확인'));
+  await fireEvent.press(screen.getByText('다시 시도'));
+  await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(2));
+  const [first, second] = mockApi.content.createMaterial.mock.calls.map((c) => c[0]);
+  expect(second.requestId).toBe(first.requestId);
+  expect(router.dismissTo).not.toHaveBeenCalled();
+  await fireEvent.press(await screen.findByText('학습자료에서 확인'));
   expect(router.dismissTo).toHaveBeenCalledWith({
     pathname: '/(tabs)/note/folder/[id]',
     params: { id: 'folder1' },
   });
-  expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1);
+  expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(2);
 });
 
 it.each([

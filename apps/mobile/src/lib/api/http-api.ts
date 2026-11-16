@@ -12,8 +12,9 @@ const registrations = new Map<
   { fingerprint: string; promise: Promise<MaterialResponse> }
 >();
 
-// 서버의 헤더 지원 여부와 무관하게 같은 등록은 실제 HTTP 요청을 한 번만 보낸다.
-// 결과가 불명확한 실패는 보존하고, 재전송 대신 목록 확인을 안내한다.
+// 진행 중인 같은 등록은 요청 하나를 공유한다(동시 중복 방지). 성공 결과는 남겨 같은 키의 재호출에 그대로 돌려준다.
+// 결과가 불명확한 실패(5xx · 408 · 네트워크 실패 · 결과 누락)는 캐시에서 지워, 다음 호출이 같은 Idempotency-Key 로
+// 다시 보낸다 — 서버는 같은 키의 재전송에 같은 결과를 돌려주므로(내용이 다르면 409) 중복 등록되지 않는다.
 async function registerMaterial({
   requestId,
   ...payload
@@ -44,9 +45,10 @@ async function registerMaterial({
         if (registrations.get(key)?.promise === pending) registrations.delete(key);
         throw error;
       }
+      if (registrations.get(key)?.promise === pending) registrations.delete(key);
       throw new ApiError(
         'MATERIAL_REGISTRATION_UNCERTAIN',
-        '등록 결과를 확인할 수 없어요. 학습자료 목록에서 확인해 주세요',
+        '등록 결과를 확인할 수 없어요. 다시 시도하면 같은 자료로 이어서 등록해요',
         0,
       );
     });
