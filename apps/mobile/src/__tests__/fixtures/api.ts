@@ -422,6 +422,7 @@ export const mockApi: Api = {
         pausedUntil: null,
         streak: 0,
         isActive: true,
+        todayMin: null,
         ...g,
         _id: uid('rg'),
       };
