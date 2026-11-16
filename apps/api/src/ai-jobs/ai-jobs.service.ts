@@ -57,6 +57,20 @@ export interface NewAiJob {
   input: Record<string, unknown>;
 }
 
+/** 다시 시도 전에 입력을 새로 고치는 함수가 받는 값(작업의 대상과 지금 input) */
+export interface InputRefreshContext {
+  userId: string;
+  targetType: string;
+  targetId: string;
+  input: Record<string, unknown>;
+}
+
+/**
+ * 작업 종류별로 등록하는 "다시 시도 전 입력 새로 고치기". 새 input을 돌려준다. 던지면 다시 시도는 작업을
+ * 바꾸지 않고 그 오류를 그대로 올린다(노트가 지워졌거나 원본 파일이 없을 때 등)
+ */
+export type InputRefresher = (ctx: InputRefreshContext) => Promise<Record<string, unknown>>;
+
 /** 앱에 보내는 작업 모양(packages/shared AiJob). input · 잠금 · 중간 결과는 보내지 않는다 */
 export interface AppAiJob {
   _id: string;
@@ -185,7 +199,19 @@ const unlocked = (now: Date) => [{ lockedUntil: null }, { lockedUntil: { $lte: n
  */
 @Injectable()
 export class AiJobsService {
+  /** 다시 시도 전에 input을 새로 만드는 함수(작업 종류별). 등록하지 않은 종류는 input을 그대로 쓴다 */
+  private readonly refreshers = new Map<string, InputRefresher>();
+
   constructor(@InjectModel(AiJob.name) private readonly jobs: Model<AiJobDocument>) {}
+
+  /**
+   * 이 종류의 작업을 다시 시도할 때 input을 새로 만드는 함수를 등록한다. input에 담긴 읽기 주소(SAS)는 시간이
+   * 지나면 만료되므로, 작업을 넣은 모듈이 그 주소를 새로 만들어 준다(의존은 그 모듈 → 이 서비스 한 방향).
+   * 같은 종류를 다시 등록하면 덮어쓴다
+   */
+  registerInputRefresher(type: string, refresher: InputRefresher): void {
+    this.refreshers.set(type, refresher);
+  }
 
   /**
    * 처리기가 가져갈 수 있게 queued로 넣는다. PENDING_LIMIT에 있는 종류는 처리기가 잡지 못하는 held로
@@ -349,9 +375,19 @@ export class AiJobsService {
       result: null,
       error: null,
     };
-    const current = await this.jobs.findOne(filter, { type: 1 }).lean<{ type: string }>();
+    const current = await this.jobs
+      .findOne(filter, { type: 1, status: 1, targetType: 1, targetId: 1 })
+      .lean<{ type: string; status: string; targetType: string; targetId: Types.ObjectId }>();
     if (!current) throw notFound();
     const limit = limitOf(current.type);
+    // 등록된 종류는 다시 넣을 수 있는 상태일 때만 input을 새로 만든다(처리 중 · 성공한 작업은 바꾸지 않으므로 부르지 않는다).
+    // 던지면 작업을 바꾸기 전이라 상태는 그대로다. 한도 초과로 giveBack 되어도 새 input은 되돌리지 않는다:
+    // 같은 파일의 유효한 새 주소이고, 다시 시도할 때마다 다시 만들기 때문이다
+    const refresh = this.refreshers.get(current.type);
+    const refreshed =
+      refresh !== undefined && (RETRYABLE.includes(current.status) || current.status === HELD)
+        ? await this.refreshedInput(refresh, userId, current, filter)
+        : undefined;
     // 한도 있는 종류만 처리기가 잡지 못하는 held로 바꾸고 한도를 센다(넘으면 되돌리므로 바꾸기 전 값을 받는다).
     // 확인 도중 멈춰 지난 held도 다시 넣을 수 있다. mine은 이 요청의 held 표시(release · giveBack이 확인)
     const mine = randomUUID();
@@ -366,10 +402,12 @@ export class AiJobsService {
           ],
         },
         {
-          $set:
-            limit === undefined
+          $set: {
+            ...(limit === undefined
               ? reset
-              : { ...reset, status: HELD, heldAt: new Date(), holdId: mine },
+              : { ...reset, status: HELD, heldAt: new Date(), holdId: mine }),
+            ...(refreshed ? { input: refreshed } : {}),
+          },
           $unset: { step: '', lockedBy: '' },
         },
         { projection: APP_PROJECTION },
@@ -404,6 +442,24 @@ export class AiJobsService {
     if ((await this.pending(before.userId, before.type)) > limit) return giveBack();
     if (!(await this.release(before._id, mine))) return giveBack();
     return toAppJob({ ...rest, ...reset });
+  }
+
+  /** 등록된 함수로 새 input을 만든다. 지금 input은 이 경우에만 읽는다(앱에 보내지 않는 큰 값이라) */
+  private async refreshedInput(
+    refresh: InputRefresher,
+    userId: string,
+    current: { targetType: string; targetId: Types.ObjectId },
+    filter: { _id: Types.ObjectId; userId: Types.ObjectId },
+  ): Promise<Record<string, unknown> | undefined> {
+    const row = await this.jobs.findOne(filter, { input: 1 }).lean<{ input?: unknown }>();
+    // 그 사이 지워졌거나 모양이 다르면 새로 만들 것이 없다 — 아래 갱신이 지금 상태를 판단한다
+    if (!row || typeof row.input !== 'object' || row.input === null) return undefined;
+    return refresh({
+      userId,
+      targetType: current.targetType,
+      targetId: current.targetId.toString(),
+      input: row.input as Record<string, unknown>,
+    });
   }
 
   /**
