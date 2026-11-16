@@ -6,6 +6,7 @@ import { HolidaysService } from '../calendar/holidays.service.js';
 import { Subject } from '../session/schemas/subject.schema.js';
 import { seoulDate } from '../session/study-time.js';
 import type { SaveRecurringGoalDto } from './dto/recurring-goal.dto.js';
+import { DEFAULT_REMIND_TIME } from './goal-remind.js';
 import { todayStudyMin, weeklyStreak, type DayStudy, type GoalRule } from './goal-judge.js';
 import { DailyRecord } from './schemas/daily-record.schema.js';
 import { RecurringGoal } from './schemas/recurring-goal.schema.js';
@@ -32,8 +33,8 @@ interface GoalStats {
     todayMin: number | null;
 }
 
-type GoalLean = RecurringGoal & { _id: Types.ObjectId; createdAt?: Date };
-type DayLean = {
+export type GoalLean = RecurringGoal & { _id: Types.ObjectId; createdAt?: Date };
+export type DayLean = {
     studyDate: string;
     totalSec: number;
     subjectSec?: Record<string, number> | null; // 날짜별 과목 시간(자정을 넘긴 몫 포함). 이 칸이 생기기 전 옛 기록에는 없다
@@ -46,8 +47,7 @@ export const MAX_LOOKBACK_DAYS = 730;
 const VALIDATION_FAILED = 'VALIDATION_FAILED';
 const NOT_FOUND = { code: 'NOT_FOUND', message: '존재하지 않는 반복 목표입니다.' };
 const DEFAULT_TARGET_MIN = 30; // 앱(local/api.ts)이 새 목표에 넣는 값
-/** 리마인드 시각의 기본값(요구사항 FR-11-07 "기본 21시"). 만들 때 안 보내면 이 값을 저장하고, 값이 비어 있는 옛 목표는 응답에서만 이 값으로 보인다 */
-export const DEFAULT_REMIND_TIME = '21:00';
+export { DEFAULT_REMIND_TIME }; // 값은 goal-remind.ts: 만들 때 안 보내면 저장하고, 값이 비어 있는 옛 목표는 응답에서만 이 값으로 보인다
 
 @Injectable()
 export class RecurringGoalsService {
@@ -192,7 +192,7 @@ function toFields(dto: SaveRecurringGoalDto): Record<string, unknown> {
  * 과목별 시간(subjectSec)이 있으면 그걸로 읽는다 — 자정을 넘긴 공부의 다음 날 몫도 들어 있다.
  * 없는 옛 기록은 항목(items)에서 읽고, 같은 과목 항목이 여러 개면 더한다
  */
-function toDayStudy(record: DayLean): DayStudy {
+export function toDayStudy(record: DayLean): DayStudy {
     if (record.subjectSec) return { totalSec: record.totalSec, bySubject: new Map(Object.entries(record.subjectSec)) };
     const bySubject = new Map<string, number>();
     for (const item of record.items ?? []) {
@@ -204,7 +204,7 @@ function toDayStudy(record: DayLean): DayStudy {
 }
 
 /** 저장된 목표를 판정 규칙으로. 날짜는 서울 날짜로 바꾼다(만든 시각 · pausedUntil 모두 순간으로 저장돼 있다) */
-function toRule(goal: GoalLean): GoalRule {
+export function toRule(goal: GoalLean): GoalRule {
     return {
         isActive: goal.isActive,
         days: goal.days,
