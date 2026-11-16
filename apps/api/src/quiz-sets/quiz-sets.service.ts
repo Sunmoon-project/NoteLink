@@ -19,6 +19,8 @@ export const VALIDATION_FAILED = 'VALIDATION_FAILED';
 
 /** 맞춤 퀴즈 작업(apps/ai services/quiz/generate.py TYPE) */
 export const GENERATE_TYPE = 'quiz_generate';
+/** 틀린 문제와 비슷한 문제 만들기 = 오답 복습 작업(apps/ai services/quiz/review.py TYPE). 결과는 reviewQuestions */
+export const SIMILAR_TYPE = 'similar_quiz';
 /**
  * 세트 하나의 문제 수. 처리기 입력 size로 보낸다(보내지 않으면 처리기 기본 10문제).
  * 처리기는 size개를 다 만들지 못하면 모자란 자리를 다시 돌리고, 그래도 모자라면 작업을 실패로
@@ -121,7 +123,7 @@ export interface QuizSetRow {
   createdAt: Date;
 }
 
-interface PageRow {
+export interface PageRow {
   pageNo: number;
   ocrText?: string | null;
 }
@@ -228,11 +230,11 @@ export function fromWorkerQuestion(raw: unknown): QuestionRow | null {
   };
 }
 
-const notFound = (what: string) =>
+export const notFound = (what: string) =>
   new NotFoundException({ code: NOT_FOUND, message: `${what}을 찾을 수 없어요` });
 
 /** 앱이 보낸 id. 형식이 틀리면 없는 것과 같게 404 */
-function objectId(id: string, what: string): Types.ObjectId {
+export function objectId(id: string, what: string): Types.ObjectId {
   if (!OBJECT_ID.test(id)) throw notFound(what);
   return new Types.ObjectId(id);
 }
@@ -246,7 +248,7 @@ export function nextSetId(id: Types.ObjectId): Types.ObjectId {
   return new Types.ObjectId(digest.subarray(0, 12).toString('hex'));
 }
 
-const isDuplicateKey = (e: unknown) =>
+export const isDuplicateKey = (e: unknown) =>
   typeof e === 'object' && e !== null && (e as { code?: unknown }).code === DUPLICATE_KEY;
 
 /**
@@ -517,6 +519,8 @@ export class QuizSetsService {
     // 처리기가 뽑은 개념 이름은 세트를 ready로 바꾸기 전에 노트에 남긴다: 저장이 실패하면 세트도 그대로라
     // 다음 조회가 다시 옮기며 다시 저장한다(Codex 리뷰 #276). 같이 옮기는 요청이 모두 저장해도 같은 값
     if (update['status'] === 'ready' && job) await this.saveConcepts(row, job);
+    // 오답 복습은 틀린 문제들의 복습 상태(srsUpdates)를 세트를 ready로 바꾸기 전에 옮긴다(saveConcepts와 같은 이유)
+    if (update['status'] === 'ready' && job?.type === SIMILAR_TYPE) await this.saveSrs(row, job);
     const updated = await this.sets
       .findOneAndUpdate(
         { _id: row._id, status: row.status },
@@ -544,6 +548,31 @@ export class QuizSetsService {
         { $set: { concepts: names } },
       )
       .lean();
+  }
+
+  /**
+   * 오답 복습 결과의 복습 상태(result.srsUpdates: [{quizSetId, questionId, srs}])를 그 문제에 쓴다.
+   * 같은 값을 다시 써도 같아, 여러 요청이 같이 옮겨도 된다. 이 사용자의 세트만 고친다
+   */
+  private async saveSrs(row: QuizSetRow, job: AppAiJob): Promise<void> {
+    const updates = job.result?.['srsUpdates'];
+    if (!Array.isArray(updates)) return;
+    for (const u of updates as { quizSetId?: unknown; questionId?: unknown; srs?: unknown }[]) {
+      if (
+        typeof u.quizSetId !== 'string' ||
+        !OBJECT_ID.test(u.quizSetId) ||
+        typeof u.questionId !== 'string' ||
+        !OBJECT_ID.test(u.questionId) ||
+        !u.srs ||
+        typeof u.srs !== 'object'
+      )
+        continue;
+      await this.sets.updateOne(
+        { _id: new Types.ObjectId(u.quizSetId), ownerId: row.ownerId },
+        { $set: { 'questions.$[q].srs': u.srs } },
+        { arrayFilters: [{ 'q._id': new Types.ObjectId(u.questionId) }] },
+      );
+    }
   }
 
   private async findJob(row: QuizSetRow): Promise<AppAiJob | null> {
@@ -797,14 +826,14 @@ const PY_SPACE_ONLY =
   /^[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/;
 
 /** 글이 있는 쪽만(정리 전 · 빈 쪽은 처리기가 문제를 낼 수 없다) */
-function textPages(pages: PageRow[] | undefined): { pageNo: number; ocrText: string }[] {
+export function textPages(pages: PageRow[] | undefined): { pageNo: number; ocrText: string }[] {
   return (pages ?? [])
     .filter((p): p is PageRow & { ocrText: string } => !!p.ocrText?.trim())
     .map((p) => ({ pageNo: p.pageNo, ocrText: p.ocrText }));
 }
 
 /** 저장한 문제 → 처리기 입력의 문제(apps/ai services/quiz/review.py parse_question) */
-function toWorkerQuestion(q: QuestionRow): Record<string, unknown> {
+export function toWorkerQuestion(q: QuestionRow): Record<string, unknown> {
   return {
     id: q._id.toString(),
     order: q.order,
@@ -826,12 +855,30 @@ function workerQuestions(raw: unknown): QuestionRow[] {
   return raw.map(fromWorkerQuestion).filter((q): q is QuestionRow => q !== null);
 }
 
+/** 오답 복습 결과의 새 문제들: 처리기가 정한 복습 상태(srs)를 그대로 둔다 */
+function reviewQuestions(raw: unknown): QuestionRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((r) => {
+    const q = fromWorkerQuestion(r);
+    if (!q) return [];
+    const srs = (r as { srs?: unknown }).srs;
+    return [
+      { ...q, srs: srs && typeof srs === 'object' ? (srs as Record<string, unknown>) : null },
+    ];
+  });
+}
+
 /**
  * 성공한 작업의 결과로 세트를 ready로 바꾸는 값. 쓸 문제가 없으면 null(세트를 failed로).
  * 모양이 틀린 문제를 빼면 번호가 비므로 처리기의 order 차례대로 1부터 다시 매긴다(/code-review)
  */
 function readyUpdate(job: AppAiJob): Record<string, unknown> | null {
-  const sorted = workerQuestions(job.result?.['questions']).sort((a, b) => a.order - b.order);
+  // 오답 복습(similar_quiz)은 새 문제를 reviewQuestions에 담고, 문제마다 처음 복습 상태(srs)를 준다
+  const similar = job.type === SIMILAR_TYPE;
+  const raw = job.result?.[similar ? 'reviewQuestions' : 'questions'];
+  const sorted = (similar ? reviewQuestions(raw) : workerQuestions(raw)).sort(
+    (a, b) => a.order - b.order,
+  );
   const questions = sorted.map((q, i) => ({
     ...q,
     order: i + 1,

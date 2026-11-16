@@ -133,3 +133,33 @@ it('성공한 유사 퀴즈 결과는 오래된 캐시로 재마운트해도 POS
   });
   expect(mockApi.quiz.similar).toHaveBeenCalledTimes(1);
 });
+
+it('서버가 「다시 보기」 세트를 만드는 중으로 주면 다 만들 때까지 세트를 다시 읽어 문제를 보여 준다', async () => {
+  const making = {
+    ...generated,
+    _id: 'similar-set',
+    status: 'generating',
+    progress: 40,
+    questions: [],
+  };
+  mockApi.quiz.similar.mockResolvedValue(making);
+  mockApi.quiz.set
+    .mockResolvedValueOnce(making)
+    .mockResolvedValue({ ...generated, _id: 'similar-set', status: 'ready' });
+  await renderScreen(<QuizSimilarScreen />, client());
+  await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
+  expect(await screen.findByText(/비슷한 문제를 만들고 있어요/)).toBeTruthy();
+  expect(await screen.findByText('한 번 생성한 유사 문제', {}, { timeout: 5000 })).toBeTruthy();
+  expect(mockApi.quiz.set).toHaveBeenCalledWith('similar-set');
+  expect(mockApi.quiz.similar).toHaveBeenCalledTimes(1);
+});
+
+it('만들기가 실패하면(failed) 기다리기를 멈추고 다시 시도를 보여 준다', async () => {
+  const making = { ...generated, _id: 'similar-set', status: 'generating', questions: [] };
+  mockApi.quiz.similar.mockResolvedValue(making);
+  mockApi.quiz.set.mockResolvedValue({ ...making, status: 'failed' });
+  await renderScreen(<QuizSimilarScreen />, client());
+  await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
+  expect(await screen.findByText('다시 시도')).toBeTruthy();
+  expect(screen.getByText('생성 결과를 받지 못했어요. 다시 시도하면 새로 만들어요.')).toBeTruthy();
+});

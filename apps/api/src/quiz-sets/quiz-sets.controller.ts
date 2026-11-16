@@ -13,6 +13,7 @@ import {
 import type { AppAiJob } from '../ai-jobs/ai-jobs.service.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../modules/auth/jwt-auth.guard.js';
 import { type AppQuizSet, QuizSetsService, VALIDATION_FAILED } from './quiz-sets.service.js';
+import { SimilarQuizService } from './similar-quiz.service.js';
 
 /** 가드를 통과한 요청에는 항상 user가 붙는다(JwtAuthGuard) */
 const userOf = (req: AuthenticatedRequest): string => req.user!.userId;
@@ -33,7 +34,10 @@ export function readMaterialId(body: unknown): string {
 @Controller('quiz-sets')
 @UseGuards(JwtAuthGuard)
 export class QuizSetsController {
-  constructor(private readonly quizSets: QuizSetsService) {}
+  constructor(
+    private readonly quizSets: QuizSetsService,
+    private readonly similar: SimilarQuizService,
+  ) {}
 
   /** 노트로 맞춤 퀴즈를 만든다. 진행 상태는 받은 job으로 `/ai-jobs/:id`에서 본다 */
   @Post()
@@ -57,5 +61,17 @@ export class QuizSetsController {
     @Param('id') id: string,
   ): Promise<{ data: AppQuizSet }> {
     return { data: await this.quizSets.findMine(userOf(req), id) };
+  }
+
+  /**
+   * 유사 퀴즈(packages/shared PATHS.similarQuiz). 마지막 풀이에서 틀린 문제마다 비슷한 문제를 만드는
+   * 「다시 보기」 세트를 만드는 중으로 돌려준다. 앱은 세트 조회로 ready가 될 때까지 기다린다
+   */
+  @Post(':id/similar')
+  async createSimilar(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ): Promise<{ data: AppQuizSet }> {
+    return { data: await this.similar.create(userOf(req), id) };
   }
 }

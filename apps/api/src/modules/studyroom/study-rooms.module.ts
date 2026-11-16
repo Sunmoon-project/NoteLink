@@ -19,6 +19,10 @@ import { ReportsService } from '../social/reports.service.js';
 import { UploadsModule } from '../upload/uploads.module.js';
 import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schema.js';
 
+import { Timetable, TimetableSchema } from '../calendar/schemas/timetable.schema.js';
+import { StudyRoomScheduleController } from './study-room-schedule.controller.js';
+import { StudyRoomScheduleService } from './study-room-schedule.service.js';
+
 @Module({
   imports: [
     AuthModule,
@@ -31,9 +35,16 @@ import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schem
       { name: StudyRoom.name, schema: StudyRoomSchema },
       { name: Report.name, schema: ReportSchema },
       { name: Friendship.name, schema: FriendshipSchema },
+      // 공용 일정(StudyRoomScheduleService)
+      { name: Timetable.name, schema: TimetableSchema },
     ]),
   ],
-  controllers: [StudyRoomsController, StudyChatController, ReportsController],
+  controllers: [
+    StudyRoomsController,
+    StudyChatController,
+    ReportsController,
+    StudyRoomScheduleController,
+  ],
   providers: [
     StudyRoomsService,
     StudyChatService,
@@ -41,6 +52,7 @@ import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schem
     StudyLiveService,
     StudyRoomCleanupService,
     ReportsService,
+    StudyRoomScheduleService,
   ],
 })
 export class StudyRoomsModule {}

@@ -8,6 +8,8 @@ import { QuizAttempt, QuizAttemptSchema } from '../modules/quiz/schemas/quiz-att
 import { QuizSet, QuizSetSchema } from '../modules/quiz/schemas/quiz-set.schema.js';
 import { QuizSetsController } from './quiz-sets.controller.js';
 import { QuizSetsService } from './quiz-sets.service.js';
+import { SimilarQuizService } from './similar-quiz.service.js';
+import { ExplanationsController, ExplanationsService } from './explanations.controller.js';
 
 /**
  * 맞춤 퀴즈 세트 만들기 · 조회(#175). 문제는 AI 작업(ai-jobs)으로 만들고, 노트(materials)와
@@ -24,7 +26,7 @@ import { QuizSetsService } from './quiz-sets.service.js';
     // JwtAuthGuard · TokenService
     AuthModule,
   ],
-  controllers: [QuizSetsController],
-  providers: [QuizSetsService],
+  controllers: [QuizSetsController, ExplanationsController],
+  providers: [QuizSetsService, SimilarQuizService, ExplanationsService],
 })
 export class QuizSetsModule {}

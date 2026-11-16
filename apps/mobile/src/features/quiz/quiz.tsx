@@ -1202,10 +1202,31 @@ export function QuizSimilarScreen() {
   const generate = useMutation({
     mutationFn: () => api.quiz.similar(setId ?? ''),
     retry: false,
-    onSuccess: (data) => qc.setQueryData(['similar-result', setId], data),
+    onSuccess: (data) => {
+      if (data.status !== 'generating') qc.setQueryData(['similar-result', setId], data);
+    },
   });
+  // 서버는 「다시 보기」 세트를 만드는 중(generating)으로 돌려준다: 다 만들 때까지 세트를 다시 읽는다
+  const making = generate.data?.status === 'generating' ? generate.data._id : null;
+  const poll = useQuery({
+    queryKey: ['quiz-set', making],
+    queryFn: () => api.quiz.set(making!),
+    enabled: !!making,
+    refetchInterval: (q) => (q.state.data && q.state.data.status !== 'generating' ? false : 1500),
+  });
+  const done =
+    poll.data && poll.data.status !== 'generating' && poll.data.status !== 'failed'
+      ? poll.data
+      : null;
+  const failed = poll.data?.status === 'failed';
+  useEffect(() => {
+    if (done) qc.setQueryData(['similar-result', setId], done);
+  }, [done, qc, setId]);
+  const waiting = !!making && !done && !failed;
   const sim = {
-    data: (cached.data ?? generate.data) as
+    data: (cached.data ??
+      done ??
+      (generate.data && generate.data.status !== 'generating' ? generate.data : undefined)) as
       Awaited<ReturnType<typeof api.quiz.similar>> | undefined,
   };
   const [open, setOpen] = useState<string[]>([]);
@@ -1240,8 +1261,8 @@ export function QuizSimilarScreen() {
           sim.data ? (
             <Btn onPress={() => router.back()}>확인</Btn>
           ) : (
-            <Btn loading={generate.isPending} onPress={() => generate.mutate()}>
-              {generate.isError ? '다시 시도' : '유사 퀴즈 만들기'}
+            <Btn loading={generate.isPending || waiting} onPress={() => generate.mutate()}>
+              {generate.isError || failed ? '다시 시도' : '유사 퀴즈 만들기'}
             </Btn>
           )
         }
@@ -1262,9 +1283,16 @@ export function QuizSimilarScreen() {
             body="원본과 같은 난이도로 새 문제를 만들어요. 다시 풀면서 헷갈린 개념을 확인해 보세요."
           />
         )}
-        {generate.isError && (
+        {waiting && (
+          <Text className="text-center text-footnote leading-5 text-sub">
+            틀린 문제와 비슷한 문제를 만들고 있어요 · {poll.data?.progress ?? 0}%
+          </Text>
+        )}
+        {(generate.isError || failed) && (
           <Text className="text-center text-footnote leading-5 text-danger">
-            생성 결과를 받지 못했어요. 다시 시도하면 새로 만들어요.
+            {generate.error instanceof ApiError && !failed
+              ? generate.error.message
+              : '생성 결과를 받지 못했어요. 다시 시도하면 새로 만들어요.'}
           </Text>
         )}
         <View className="gap-2">
