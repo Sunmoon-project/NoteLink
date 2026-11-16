@@ -117,36 +117,68 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
     expect(reinvitation.invitations[0]?.invitationId).not.toBe(first.invitations[0]?.invitationId);
     expect(stored.memberCount).toBe(1);
   });
-  it('친구를 확인하는 사이 초대한 사람이 강퇴되면 초대를 저장하지 않는다', async () => {
-    const created = await service.create(String(host), {
-      title: '강퇴 중 초대',
-      categoryName: '수학',
-      isPublic: true,
-    });
-    await service.joinRoom(String(other), created.inviteCode);
-    const userA = other.toHexString() < friend.toHexString() ? other : friend;
-    const userB = userA === other ? friend : other;
-    await friendships.create({ userA, userB, requesterId: other, status: 'accepted' });
+  describe('초대한 사람이 확인 뒤 방에서 빠지는 경우', () => {
+    // 참여자(other)가 친구(friend)를 초대할 수 있는 방
+    const roomWithInviter = async (title: string) => {
+      const created = await service.create(String(host), {
+        title,
+        categoryName: '수학',
+        isPublic: true,
+      });
+      await service.joinRoom(String(other), created.inviteCode);
+      const userA = other.toHexString() < friend.toHexString() ? other : friend;
+      const userB = userA === other ? friend : other;
+      await friendships.create({ userA, userB, requesterId: other, status: 'accepted' });
+      return created;
+    };
+    // 참여 확인 다음 단계(친구 확인)에서 초대한 사람을 실제 강퇴 · 퇴장 흐름으로 방에서 뺀다
+    const inviteWhile = async (roomId: string, remove: () => Promise<unknown>) => {
+      const count = friendships.countDocuments.bind(friendships);
+      const spy = vi.spyOn(friendships, 'countDocuments').mockImplementationOnce((async (
+        filter: never,
+      ) => {
+        await remove();
+        return count(filter);
+      }) as never);
+      try {
+        await expect(
+          service.invite(String(other), roomId, [String(friend)]),
+        ).rejects.toMatchObject({ status: 404, response: { code: 'ROOM_NOT_FOUND' } });
+      } finally {
+        spy.mockRestore();
+      }
+      return rooms.findById(roomId).lean().orFail();
+    };
+    const removals = [
+      ['강퇴', (roomId: string) => service.kickMember(String(host), roomId, String(other))],
+      ['퇴장', (roomId: string) => service.leaveRoom(String(other), roomId)],
+    ] as const;
 
-    // 참여 확인 다음 단계(친구 확인)에서 초대한 사람을 강퇴 상태로 바꾼다
-    const count = friendships.countDocuments.bind(friendships);
-    const spy = vi.spyOn(friendships, 'countDocuments').mockImplementationOnce((async (
-      filter: never,
-    ) => {
-      await rooms.updateOne(
-        { _id: created._id, 'members.userId': other },
-        { $set: { 'members.$.status': 'left', 'members.$.leaveReason': 'kicked' } },
+    it.each(removals)('%s되면 새 초대를 저장하지 않는다', async (name, remove) => {
+      const created = await roomWithInviter(`${name} 중 초대`);
+
+      const stored = await inviteWhile(created._id, () => remove(created._id));
+
+      expect(stored.members.some((member) => member.userId.equals(friend))).toBe(false);
+      expect(stored.members.find((member) => member.userId.equals(other))?.status).not.toBe(
+        'joined',
       );
-      return count(filter);
-    }) as never);
+    });
 
-    await expect(
-      service.invite(String(other), created._id, [String(friend)]),
-    ).rejects.toMatchObject({ status: 404, response: { code: 'ROOM_NOT_FOUND' } });
-    spy.mockRestore();
+    it.each(removals)('%s되면 초대 ID가 없는 기존 초대에 ID를 채우지 않는다', async (name, remove) => {
+      const created = await roomWithInviter(`${name} 중 초대 ID 채우기`);
+      await service.invite(String(other), created._id, [String(friend)]);
+      await rooms.updateOne(
+        { _id: created._id, 'members.userId': friend },
+        { $unset: { 'members.$.invitationId': 1 } },
+      );
 
-    const stored = await rooms.findById(created._id).lean().orFail();
-    expect(stored.members.some((member) => member.userId.equals(friend))).toBe(false);
+      const stored = await inviteWhile(created._id, () => remove(created._id));
+
+      const invited = stored.members.find((member) => member.userId.equals(friend));
+      expect(invited?.status).toBe('invited');
+      expect(invited?.invitationId ?? null).toBeNull();
+    });
   });
   afterAll(async () => {
     if (!connection) return;
