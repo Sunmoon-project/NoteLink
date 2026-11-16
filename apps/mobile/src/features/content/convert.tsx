@@ -36,6 +36,7 @@ import {
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
 import { Player } from './player';
+import { QuizFromNote } from './quiz-from-note';
 
 // p.66 AI 변환 중 · 정리 완료 / p.98 업로드 · 변환 중 연결 끊김 / p.99 LLM 오류
 
@@ -594,6 +595,8 @@ export function ResultScreen() {
             />
           </>
         )}
+        {/* 정리가 끝나면 바로 퀴즈로 */}
+        <QuizFromNote material={mat} className="mt-4" />
       </Screen>
     </Canvas>
   );

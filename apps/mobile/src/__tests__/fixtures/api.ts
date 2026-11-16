@@ -874,6 +874,8 @@ export const mockApi: Api = {
         },
         600,
       ),
+    today: () => ok(null),
+    startToday: () => ok({ ...S.makeQuizSet('m', '오늘의 복습'), status: 'generating' as const }),
     similar: (id) =>
       ok(
         {

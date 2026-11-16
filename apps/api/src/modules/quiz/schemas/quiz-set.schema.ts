@@ -82,6 +82,10 @@ export class QuizSet {
   @Prop({ type: Date, default: null })
   srsSavedAt?: Date | null;
 
+  // 오늘의 복습 세트의 날짜(서울 YYYY-MM-DD). 하루에 한 번만 만든다. 다른 세트는 null
+  @Prop({ type: String, default: null })
+  reviewDay?: string | null;
+
   @Prop({ required: true, type: String })
   title: string;
 

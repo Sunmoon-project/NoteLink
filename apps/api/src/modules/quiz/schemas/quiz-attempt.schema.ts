@@ -13,6 +13,10 @@ export class AttemptAnswer {
   @Prop({ required: true, type: Boolean, default: false })
   correct: boolean;
 
+  // 결함 문제라 셈에서 뺄 풀이(오늘의 복습 결과 voidAnswers): true 또는 무효 이유 글. 처리기 입력에 그대로 다시 넣는다
+  @Prop({ type: Object, default: undefined })
+  void?: boolean | string;
+
   @Prop({ required: true, type: Number, default: 1 })
   tries: number;
 }

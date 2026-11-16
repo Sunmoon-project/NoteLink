@@ -34,7 +34,7 @@ interface AttemptRow {
   _id: Types.ObjectId;
   quizSetId: Types.ObjectId;
   finishedAt: Date;
-  answers?: { questionId: Types.ObjectId; correct: boolean }[];
+  answers?: { questionId: Types.ObjectId; correct: boolean; void?: boolean | string }[];
 }
 
 const conflict = (message: string) => new ConflictException({ code: VALIDATION_FAILED, message });
@@ -115,6 +115,26 @@ export class SimilarQuizService {
         .lean<QuizSetRow>();
       if (first) return this.quizSets.findMine(userId, first._id.toString());
       throw conflict('이 노트로 퀴즈를 만드는 중이에요. 끝나면 다시 시도해 주세요');
+    }
+  }
+
+  /**
+   * 퀴즈를 끝내면 바로 오답 복습을 시작한다(풀이 끝내기 뒤에 부름). 틀린 문제가 없거나 노트가 없는 세트 ·
+   * 이미 만든 풀이 등 만들 수 없는 경우는 조용히 넘어간다: 풀이 끝내기 응답과 포인트에는 영향이 없다.
+   * 결과 화면의 유사 퀴즈는 같은 세트를 이어받아(만드는 중 · 다 만든 세트) 기다리지 않고 바로 연다
+   */
+  async startAfterFinish(userId: string, attemptId: string): Promise<AppQuizSet | null> {
+    const owner = objectId(userId, '퀴즈');
+    const attempt = await this.attempts
+      .findOne({ _id: objectId(attemptId, '퀴즈'), userId: owner, finishedAt: { $ne: null } })
+      .lean<AttemptRow>();
+    if (!attempt || !(attempt.answers ?? []).some((a) => !a.correct && !a.void)) return null;
+    try {
+      return await this.create(userId, attempt.quizSetId.toString());
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      if (status === 404 || status === 409 || status === 400) return null;
+      throw e;
     }
   }
 
@@ -200,8 +220,13 @@ export class SimilarQuizService {
         { pages: 1 },
       )
       .lean<{ _id: Types.ObjectId; pages?: PageRow[] }[]>();
+    // 무효 풀이(결함 문제, 오늘의 복습이 정함)는 처리기가 없는 풀이로 본다
     const answers = (a: AttemptRow) =>
-      (a.answers ?? []).map((x) => ({ questionId: x.questionId.toString(), correct: x.correct }));
+      (a.answers ?? []).map((x) => ({
+        questionId: x.questionId.toString(),
+        correct: x.correct,
+        ...(x.void ? { void: x.void } : {}),
+      }));
     return fitReviewInput({
       attemptId: attempt._id.toString(),
       quizSetId: source._id.toString(),

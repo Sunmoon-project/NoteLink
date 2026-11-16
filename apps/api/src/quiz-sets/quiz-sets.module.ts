@@ -9,6 +9,7 @@ import { QuizSet, QuizSetSchema } from '../modules/quiz/schemas/quiz-set.schema.
 import { QuizSetsController } from './quiz-sets.controller.js';
 import { QuizSetsService } from './quiz-sets.service.js';
 import { SimilarQuizService } from './similar-quiz.service.js';
+import { TodayReviewService } from './today-review.service.js';
 import { ExplanationsController, ExplanationsService } from './explanations.controller.js';
 
 /**
@@ -27,8 +28,9 @@ import { ExplanationsController, ExplanationsService } from './explanations.cont
     AuthModule,
   ],
   controllers: [QuizSetsController, ExplanationsController],
-  providers: [QuizSetsService, SimilarQuizService, ExplanationsService],
+  providers: [QuizSetsService, SimilarQuizService, ExplanationsService, TodayReviewService],
   // 노트 API 가 정리를 마친 노트의 첫 퀴즈를 미리 만든다(pregenerate)
-  exports: [QuizSetsService],
+  // 퀴즈를 끝내면 오답 복습을 시작한다(QuizAttemptsController)
+  exports: [QuizSetsService, SimilarQuizService],
 })
 export class QuizSetsModule {}

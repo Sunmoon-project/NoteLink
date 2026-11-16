@@ -233,6 +233,10 @@ export interface Api {
     finish(attemptId: string): Promise<{ pointsEarned: number; balance: number }>;
     explanation(questionId: string): Promise<{ text: string }>;
     similar(quizSetId: string): Promise<QuizSet>;
+    /** 오늘의 복습 세트(오늘 만든 것, 없으면 null) */
+    today(): Promise<QuizSet | null>;
+    /** 오늘의 복습 만들기(하루 한 번). 처음엔 만드는 중(generating) */
+    startToday(): Promise<QuizSet>;
     box(): Promise<Question[]>;
     /** 같은 문제 ID를 여러 번 저장해도 보관함에 한 번만 남긴다. */
     saveToBox(questionIds: string[]): Promise<Question[]>;
