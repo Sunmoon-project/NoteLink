@@ -1,14 +1,19 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { ERROR_CODES } from '@notelink/shared';
-import { Model, Types } from 'mongoose';
+import { ERROR_CODES, type RoomSharedItem as AppRoomSharedItem } from '@notelink/shared';
+import { isValidObjectId, Model, Types } from 'mongoose';
 
+import { User } from '../../auth/schemas/user.schema.js';
 import { RoomSharedItem } from '../../studyroom/schemas/room-shared-item.schema.js';
 import { StudyRoom } from '../../studyroom/schemas/study-room.schema.js';
 import { Material } from '../schemas/material.schema.js';
 import type { ShareMaterialsDto } from './dto/share-materials.dto.js';
 
 const DUPLICATE_KEY = 11000;
+/** 공유 자료 목록에 한 번에 담는 항목 수(최근 것부터) */
+export const SHARED_ITEMS_MAX = 100;
+/** 탈퇴 등으로 닉네임을 찾을 수 없을 때(스터디룸 멤버 목록과 같은 문구) */
+const UNKNOWN_NICKNAME = '알 수 없는 사용자';
 
 const notFound = (what: string) =>
   new NotFoundException({ code: ERROR_CODES.NOT_FOUND, message: `${what} 정보를 찾을 수 없어요` });
@@ -33,7 +38,89 @@ export class MaterialSharingService {
     @InjectModel(Material.name) private readonly materials: Model<Material>,
     @InjectModel(StudyRoom.name) private readonly rooms: Model<StudyRoom>,
     @InjectModel(RoomSharedItem.name) private readonly shared: Model<RoomSharedItem>,
+    @InjectModel(User.name) private readonly users: Model<User>,
   ) {}
+
+  /** 닫히지 않은 방에서 내가 현재 멤버(status: joined)인지. 방 id 형식이 틀려도 false */
+  private isCurrentMember(me: Types.ObjectId, roomId: string): Promise<boolean> {
+    if (!isValidObjectId(roomId)) return Promise.resolve(false);
+    return this.rooms
+      .exists({
+        _id: new Types.ObjectId(roomId),
+        closedAt: null,
+        members: { $elemMatch: { userId: me, status: 'joined' } },
+      })
+      .then((found) => found !== null);
+  }
+
+  /**
+   * 방에 공유된 자료(최근 것부터 SHARED_ITEMS_MAX 개). 현재 멤버만 볼 수 있고, 방이 없거나 멤버가 아니면
+   * (나감 · 강퇴 · 초대만 받음 · 잘못된 id 포함) 404. 지운 공유와 지운 노트는 뺀다(지운 노트를 뺀 뒤에 개수를 자른다).
+   * 제목은 노트의 현재 제목, 닉네임은 공유한 사람의 지금 닉네임이다.
+   *
+   * 지금은 노트(material) 항목만 담는다. 퀴즈 · 플래시카드 항목은 제목을 가져올 곳(퀴즈 세트 · 카드 묶음)과 그 공유를
+   * 만드는 쪽이 아직 없어서 빈 제목으로 내보내는 대신 뺀다 — 그 공유가 생기면 여기서 함께 내려준다.
+   * 같은 이유로 flashcards 는 항상 빈 배열이다
+   */
+  async listRoomItems(
+    userId: string,
+    roomId: string,
+  ): Promise<{ items: AppRoomSharedItem[]; flashcards: never[] }> {
+    const me = new Types.ObjectId(userId);
+    if (!(await this.isCurrentMember(me, roomId))) throw notFound('스터디룸');
+    const rows = await this.shared.aggregate<{
+      _id: Types.ObjectId;
+      roomId: Types.ObjectId;
+      sharedBy: Types.ObjectId;
+      materialId: Types.ObjectId;
+      folderId?: Types.ObjectId;
+      createdAt: Date;
+      note: { title: string }[];
+    }>([
+      { $match: { roomId: new Types.ObjectId(roomId), itemType: 'material', deletedAt: null } },
+      { $sort: { createdAt: -1, _id: -1 } },
+      {
+        $lookup: {
+          from: this.materials.collection.name,
+          let: { noteId: '$materialId' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$_id', '$$noteId'] }, deletedAt: null } },
+            { $project: { title: 1 } },
+          ],
+          as: 'note',
+        },
+      },
+      { $match: { 'note.0': { $exists: true } } },
+      { $limit: SHARED_ITEMS_MAX },
+    ]);
+    const sharers = [...new Set(rows.map((r) => r.sharedBy.toHexString()))];
+    const people = sharers.length
+      ? await this.users
+          .find(
+            { _id: { $in: sharers.map((id) => new Types.ObjectId(id)) }, deletedAt: null },
+            { nickname: 1 },
+          )
+          .lean<{ _id: Types.ObjectId; nickname: string }[]>()
+      : [];
+    const nicknames = new Map(people.map((u) => [u._id.toHexString(), u.nickname]));
+    return {
+      items: rows.map((r) => ({
+        _id: r._id.toHexString(),
+        roomId: r.roomId.toHexString(),
+        sharedBy: r.sharedBy.toHexString(),
+        sharedByNickname: nicknames.get(r.sharedBy.toHexString()) ?? UNKNOWN_NICKNAME,
+        itemType: 'material',
+        quizSetId: null,
+        folderId: r.folderId ? r.folderId.toHexString() : null,
+        materialId: r.materialId.toHexString(),
+        questionIds: [],
+        flashcardIds: [],
+        title: r.note[0]!.title,
+        createdAt: r.createdAt.toISOString(),
+      })),
+      flashcards: [],
+    };
+  }
 
   /**
    * 내 노트를 방에 공유한다. 노트가 하나라도 내 것이 아니거나 지웠으면, 방이 없거나 내가 현재 멤버가 아니면 404 이고
@@ -55,13 +142,8 @@ export class MaterialSharingService {
       .find({ _id: { $in: ids }, ownerId: me, deletedAt: null }, { folderId: 1 })
       .lean<{ _id: Types.ObjectId; folderId: Types.ObjectId }[]>();
     if (notes.length !== ids.length) throw notFound('노트');
+    if (!(await this.isCurrentMember(me, dto.target.id))) throw notFound('스터디룸');
     const roomId = new Types.ObjectId(dto.target.id);
-    const room = await this.rooms.exists({
-      _id: roomId,
-      closedAt: null,
-      members: { $elemMatch: { userId: me, status: 'joined' } },
-    });
-    if (!room) throw notFound('스터디룸');
     try {
       await this.shared.bulkWrite(
         notes.map((note) => ({

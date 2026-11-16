@@ -22,6 +22,7 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
   let app: INestApplication;
   let token: string;
   const share = vi.fn();
+  const listRoomItems = vi.fn();
 
   beforeAll(async () => {
     stubAppEnv();
@@ -31,7 +32,7 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
       .overrideProvider(MaterialsService)
       .useValue({})
       .overrideProvider(MaterialSharingService)
-      .useValue({ share })
+      .useValue({ share, listRoomItems })
       .compile();
     app = ref.createNestApplication();
     configureApp(app);
@@ -46,6 +47,7 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
 
   beforeEach(() => {
     share.mockReset();
+    listRoomItems.mockReset();
     share.mockResolvedValue(undefined);
   });
 
@@ -109,6 +111,37 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
     expect((await post(ok).expect(400)).body).toMatchObject({
       code: 'VALIDATION_FAILED',
       message: '친구에게 공유는 아직 지원하지 않아요',
+    });
+  });
+  describe('공유 자료 조회 (GET /api/v1/study-rooms/:id/shared-items)', () => {
+    const get = () => request(app.getHttpServer()).get(api(PATHS.roomShared(roomId)));
+
+    it('로그인하지 않으면 401', async () => {
+      await get().expect(401);
+      expect(listRoomItems).not.toHaveBeenCalled();
+    });
+
+    it('{ data: { items, flashcards } } 로 200', async () => {
+      const body = { items: [{ _id: 'i1', title: '노트' }], flashcards: [] };
+      listRoomItems.mockResolvedValue(body);
+      const res = await get().set('Authorization', `Bearer ${token}`).expect(200);
+      expect(res.body).toEqual({ data: body });
+      expect(listRoomItems).toHaveBeenCalledWith(me.toHexString(), roomId);
+    });
+
+    it('멤버가 아니면(서비스가 낸 404) { code, message } 로 404', async () => {
+      const { NotFoundException } = await import('@nestjs/common');
+      listRoomItems.mockRejectedValueOnce(
+        new NotFoundException({ code: 'NOT_FOUND', message: '스터디룸 정보를 찾을 수 없어요' }),
+      );
+      const res = await get().set('Authorization', `Bearer ${token}`).expect(404);
+      expect(res.body).toMatchObject({ code: 'NOT_FOUND' });
+    });
+
+    it('스터디룸 컨트롤러의 study-rooms/:id 와 겹치지 않는다(두 컨트롤러가 같은 접두어를 쓴다)', async () => {
+      listRoomItems.mockResolvedValue({ items: [], flashcards: [] });
+      await get().set('Authorization', `Bearer ${token}`).expect(200);
+      expect(listRoomItems).toHaveBeenCalledTimes(1);
     });
   });
 });

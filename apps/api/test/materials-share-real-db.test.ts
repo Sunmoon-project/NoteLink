@@ -4,7 +4,11 @@
 import mongoose, { type Connection, type Model, Types } from 'mongoose';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { MaterialSharingService } from '../src/modules/content/materials/material-sharing.service.js';
+import {
+  MaterialSharingService,
+  SHARED_ITEMS_MAX,
+} from '../src/modules/content/materials/material-sharing.service.js';
+import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { Material, MaterialSchema } from '../src/modules/content/schemas/material.schema.js';
 import {
   RoomSharedItem,
@@ -21,6 +25,7 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
   let materials: Model<Material>;
   let rooms: Model<StudyRoom>;
   let items: Model<RoomSharedItem>;
+  let users: Model<User>;
   let sharing: MaterialSharingService;
   const owner = new Types.ObjectId();
   const friend = new Types.ObjectId();
@@ -37,8 +42,14 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       RoomSharedItem.name,
       RoomSharedItemSchema,
     ) as unknown as Model<RoomSharedItem>;
+    users = conn.model(User.name, UserSchema) as unknown as Model<User>;
     await Promise.all([materials.syncIndexes(), rooms.syncIndexes(), items.syncIndexes()]);
-    sharing = new MaterialSharingService(materials as never, rooms as never, items as never);
+    sharing = new MaterialSharingService(
+      materials as never,
+      rooms as never,
+      items as never,
+      users as never,
+    );
   });
 
   afterAll(async () => {
@@ -47,7 +58,12 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
   });
 
   beforeEach(async () => {
-    await Promise.all([materials.deleteMany({}), rooms.deleteMany({}), items.deleteMany({})]);
+    await Promise.all([
+      materials.deleteMany({}),
+      rooms.deleteMany({}),
+      items.deleteMany({}),
+      users.deleteMany({}),
+    ]);
   });
 
   const note = async (over: Record<string, unknown> = {}) =>
@@ -173,6 +189,129 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
         unique: true,
         partialFilterExpression: { itemType: 'material', deletedAt: null },
       });
+    });
+  });
+  describe('공유 자료 조회', () => {
+    const person = async (nickname: string, over: Record<string, unknown> = {}) => {
+      const _id = new Types.ObjectId();
+      await users.collection.insertOne({ _id, nickname, deletedAt: null, ...over });
+      return _id;
+    };
+    const list = (userId: Types.ObjectId, roomId: string) =>
+      sharing.listRoomItems(userId.toHexString(), roomId);
+
+    it('다른 멤버가 보면 공유한 노트가 최신순으로, 노트의 현재 제목과 공유한 사람 닉네임으로 보인다', async () => {
+      const sharer = await person('공유왕');
+      const a = await note({ ownerId: sharer, title: '처음 제목' });
+      const b = await note({ ownerId: sharer, title: '두번째' });
+      const roomId = await room([joined(sharer), joined(friend)]);
+      await share(sharer, [a], roomId);
+      await share(sharer, [b], roomId);
+      await materials.updateOne({ _id: a }, { $set: { title: '바뀐 제목' } });
+      const res = await list(friend, roomId);
+      expect(res.flashcards).toEqual([]);
+      expect(res.items.map((i) => i.title)).toEqual(['두번째', '바뀐 제목']);
+      expect(res.items[0]).toEqual({
+        _id: expect.any(String),
+        roomId,
+        sharedBy: sharer.toHexString(),
+        sharedByNickname: '공유왕',
+        itemType: 'material',
+        quizSetId: null,
+        folderId: folderId.toHexString(),
+        materialId: b,
+        questionIds: [],
+        flashcardIds: [],
+        title: '두번째',
+        createdAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
+      });
+    });
+
+    it('공유한 사람이 탈퇴해 닉네임을 찾을 수 없으면 대체 문구', async () => {
+      const gone = await person('탈퇴자', { deletedAt: new Date() });
+      const a = await note({ ownerId: gone });
+      const roomId = await room([joined(gone), joined(friend)]);
+      await share(gone, [a], roomId);
+      expect((await list(friend, roomId)).items[0]?.sharedByNickname).toBe('알 수 없는 사용자');
+    });
+
+    it('노트를 지우면 목록에서 빠지고, 지운 공유(deletedAt)도 빠진다', async () => {
+      const a = await note();
+      const b = await note();
+      const c = await note();
+      const roomId = await room([joined(owner), joined(friend)]);
+      await share(owner, [a, b, c], roomId);
+      await materials.updateOne({ _id: a }, { $set: { deletedAt: new Date() } });
+      await items.updateOne(
+        { materialId: new Types.ObjectId(b) },
+        { $set: { deletedAt: new Date() } },
+      );
+      expect((await list(friend, roomId)).items.map((i) => i.materialId)).toEqual([c]);
+    });
+
+    it('다른 방의 공유는 보이지 않는다', async () => {
+      const a = await note();
+      const here = await room([joined(owner), joined(friend)]);
+      const there = await room([joined(owner), joined(friend)]);
+      await share(owner, [a], there);
+      expect((await list(friend, here)).items).toEqual([]);
+    });
+
+    it('항목은 최근 것부터 SHARED_ITEMS_MAX 개까지', async () => {
+      const roomId = await room([joined(owner), joined(friend)]);
+      const ids = await Promise.all(Array.from({ length: SHARED_ITEMS_MAX + 3 }, () => note()));
+      await items.insertMany(
+        ids.map((id, i) => ({
+          roomId: new Types.ObjectId(roomId),
+          sharedBy: owner,
+          itemType: 'material',
+          materialId: new Types.ObjectId(id),
+          folderId,
+          createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)),
+        })),
+      );
+      const res = await list(friend, roomId);
+      expect(res.items).toHaveLength(SHARED_ITEMS_MAX);
+      expect(res.items[0]?.materialId).toBe(ids.at(-1));
+    });
+
+    it('퀴즈 · 플래시카드 항목은 담지 않는다', async () => {
+      const roomId = await room([joined(owner), joined(friend)]);
+      await items.insertMany([
+        {
+          roomId: new Types.ObjectId(roomId),
+          sharedBy: owner,
+          itemType: 'quiz',
+          quizSetId: new Types.ObjectId(),
+        },
+        {
+          roomId: new Types.ObjectId(roomId),
+          sharedBy: owner,
+          itemType: 'flashcards',
+          flashcardIds: [new Types.ObjectId()],
+        },
+      ]);
+      expect(await list(friend, roomId)).toEqual({ items: [], flashcards: [] });
+    });
+
+    it('멤버가 아니거나 나갔거나 강퇴됐거나 초대만 받았거나 방이 없거나 id 가 틀리면 404', async () => {
+      const roomId = await room([
+        joined(owner),
+        { userId: friend, status: 'left' },
+        { userId: stranger, status: 'kicked' },
+      ]);
+      const invitee = new Types.ObjectId();
+      await rooms.updateOne(
+        { _id: roomId },
+        { $push: { members: { userId: invitee, status: 'invited', role: 'member' } } },
+      );
+      for (const user of [friend, stranger, invitee, new Types.ObjectId()])
+        await expect(list(user, roomId)).rejects.toMatchObject({ status: 404 });
+      await expect(list(owner, new Types.ObjectId().toHexString())).rejects.toMatchObject({
+        status: 404,
+      });
+      await expect(list(owner, 'nope')).rejects.toMatchObject({ status: 404 });
+      expect((await list(owner, roomId)).items).toEqual([]);
     });
   });
 });
