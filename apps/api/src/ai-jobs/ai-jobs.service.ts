@@ -88,6 +88,17 @@ export interface AppAiJob {
   updatedAt: string;
 }
 
+/** 소켓 진행률(ai:progress, packages/shared ServerToClient)에 보내는 값 */
+export interface AiJobProgress {
+  jobId: string;
+  status: string;
+  progress: number;
+  step?: string;
+}
+
+/** 진행률만 읽는 필드. 결과 · 입력은 크고 몇 초마다 읽으므로 빼고, 끝난 작업만 findMine으로 다시 읽는다 */
+const PROGRESS_PROJECTION = { status: 1, progress: 1, step: 1 };
+
 /** DB에서 읽은 작업 한 줄(lean). 서비스가 쓰는 필드만 적는다 */
 export interface AiJobRow {
   _id: Types.ObjectId;
@@ -286,6 +297,27 @@ export class AiJobsService {
       )
       .lean();
     return row !== null;
+  }
+
+  /**
+   * 소켓으로 지켜보는 작업들의 상태 · 진행률(AiJobsGateway). 구독할 때 본인 작업인지 확인했으므로 사용자는 보지 않는다.
+   * 형식이 틀린 id · 없는 작업은 빠진다. 상태는 앱 조회(toAppJob)와 같게 held를 queued로 보낸다
+   */
+  async progressOf(jobIds: string[]): Promise<AiJobProgress[]> {
+    const ids = jobIds.filter((id) => OBJECT_ID.test(id)).map((id) => new Types.ObjectId(id));
+    if (!ids.length) return [];
+    const rows = await this.jobs
+      .find({ _id: { $in: ids } }, PROGRESS_PROJECTION)
+      .lean<Pick<AiJobRow, '_id' | 'status' | 'progress' | 'step'>[]>();
+    return rows.map((row) => {
+      const progress: AiJobProgress = {
+        jobId: row._id.toString(),
+        status: row.status === HELD ? 'queued' : row.status,
+        progress: row.progress ?? 0,
+      };
+      if (typeof row.step === 'string') progress.step = row.step;
+      return progress;
+    });
   }
 
   /** 앱의 진행 상태 조회. 본인 작업만 */
