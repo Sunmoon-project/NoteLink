@@ -337,11 +337,20 @@ const IMAGE_VERDICTS: readonly ImageVerdict[] = ['ok', 'blurry', 'not_handwritin
 /** 사진을 동시에 올리는 수. 최대 50장(노트 등록 상한)을 한꺼번에 올리면 모바일 회선에서 멈추기 쉽다 */
 const UPLOAD_CONCURRENCY = 4;
 
-/** 순서를 지키며 size개씩 동시에 처리한다 */
-async function mapInBatches<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>) {
+const STALE_CHECK = '사진 목록이 바뀌어 검사를 멈췄어요';
+
+/** 순서를 지키며 size개씩 동시에 처리한다. 취소되면(signal) 다음 묶음을 시작하지 않는다 */
+async function mapInBatches<T, R>(
+  items: T[],
+  size: number,
+  signal: AbortSignal,
+  fn: (item: T) => Promise<R>,
+) {
   const out: R[] = [];
-  for (let i = 0; i < items.length; i += size)
+  for (let i = 0; i < items.length; i += size) {
+    if (signal.aborted) throw new Error(STALE_CHECK);
     out.push(...(await Promise.all(items.slice(i, i + size).map(fn))));
+  }
   return out;
 }
 
@@ -382,10 +391,10 @@ export function PickedScreen() {
       // 묶음마다 올리고 → 검사한다. 묶음은 차례로 보낸다(AI 서버가 요청마다 글자 인식을 몇 개씩 동시에 하므로
       // 한꺼번에 보내면 그 한도를 넘는다). 사진 목록이 바뀌면(새 검사 시작) 남은 묶음은 보내지 않는다
       for (let i = 0; i < checkable.length; i += IMAGE_CHECK_MAX_FILES) {
-        if (signal.aborted) throw new Error('사진 목록이 바뀌어 검사를 멈췄어요');
         const group = await mapInBatches(
           checkable.slice(i, i + IMAGE_CHECK_MAX_FILES),
           UPLOAD_CONCURRENCY,
+          signal,
           async (f) => {
             const cached = useDraft.getState().uploads.find((upload) => upload.file === f);
             const uri = cached?.url ?? (await uploadToBlob('image', f));
@@ -402,7 +411,7 @@ export function PickedScreen() {
         );
         const pending = group.filter((f) => !verdictCache.current.has(f.uri));
         if (pending.length) {
-          if (signal.aborted) throw new Error('사진 목록이 바뀌어 검사를 멈췄어요');
+          if (signal.aborted) throw new Error(STALE_CHECK);
           let result: Awaited<ReturnType<typeof api.content.checkImages>>;
           try {
             result = await api.content.checkImages(

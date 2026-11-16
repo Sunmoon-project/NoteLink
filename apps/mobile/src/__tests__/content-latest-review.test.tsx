@@ -265,6 +265,26 @@ describe('PR36 사진 검사 경계', () => {
       20, 20, 20, 5,
     ]);
   });
+  it('올리는 도중 사진 목록이 바뀌면 앞 검사의 남은 사진은 올리지 않는다', async () => {
+    const first = deferred<string>();
+    mockUpload.mockImplementationOnce(() => first.promise);
+    mockUpload.mockImplementation(async (_kind: string, f: { name: string }) =>
+      Promise.resolve(`https://blob.example/${f.name}`),
+    );
+    const photos = manyPhotos(10);
+    useDraft.getState().set({ files: photos });
+    await renderScreen(<PickedScreen />, client());
+    // 첫 4장을 올리는 중
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledTimes(4));
+    // 마지막 사진 1장을 빼면 새 검사가 9장으로 시작한다
+    await act(async () => useDraft.getState().set({ files: photos.slice(0, 9) }));
+    await act(async () => first.resolve('https://blob.example/picked-0.jpg'));
+    await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalledTimes(1));
+    // 앞 검사는 나머지 6장을 올리지 않고, 새 검사만 9장을 검사한다
+    expect(mockApi.content.checkImages.mock.calls[0][0]).toHaveLength(9);
+    const names = mockUpload.mock.calls.map(([, f]) => (f as { name: string }).name);
+    expect(names.filter((n) => n === 'picked-9.jpg')).toHaveLength(0);
+  });
   it('사진은 4장씩 나눠 올린다', async () => {
     let running = 0;
     let most = 0;
