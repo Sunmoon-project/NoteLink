@@ -1,4 +1,6 @@
 import threading
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
 from typing import Any, cast
 
@@ -206,8 +208,9 @@ class GatedReader(FakeReader):
     실제로 기다리지 않고, 풀어 주는 한 번을 "OCR 지연 한 번이 지남"으로 센다.
     """
 
-    def __init__(self, outcomes: dict[str, Any]) -> None:
+    def __init__(self, outcomes: dict[str, Any], ungated: frozenset[str] = frozenset()) -> None:
         super().__init__(outcomes)
+        self.ungated = ungated  # 멈추지 않고 바로 결과나 예외를 돌려주는 파일 이름
         self.cond = threading.Condition()
         self.started = 0  # read()에 들어온 호출 수
         self.waiting = 0  # 들어와서 풀어 주기를 기다리는 호출 수
@@ -216,6 +219,9 @@ class GatedReader(FakeReader):
     def read(self, url: str) -> dict[str, Any]:
         with self.cond:
             self.started += 1
+            if url.split("?")[0].rsplit("/", 1)[-1] in self.ungated:
+                self.cond.notify_all()
+                return super().read(url)
             self.waiting += 1
             self.cond.notify_all()
             if not self.cond.wait_for(lambda: self.permits > 0, timeout=WAIT_SEC):
@@ -230,8 +236,29 @@ class GatedReader(FakeReader):
         return self.started == started and self.waiting == waiting and self.permits == 0
 
 
-def run_batch_by_waves(count: int) -> tuple[list[str], int]:
-    """파일 count장을 _check로 처리하며 OCR 호출을 한 묶음(동시에 멈춘 호출)씩 풀어 준다.
+type BatchCall = Callable[[GatedReader, list[str]], list[str]]
+
+
+def check_directly(reader: GatedReader, names: list[str]) -> list[str]:
+    return [r.name for r in _check([file(name) for name in names], make(reader))]
+
+
+def check_via_endpoint(monkeypatch: pytest.MonkeyPatch) -> BatchCall:
+    """NestJS가 부르는 POST /internal/v1/images/check로 같은 배치를 처리한다."""
+
+    def call(reader: GatedReader, names: list[str]) -> list[str]:
+        monkeypatch.setattr(images, "docint", lambda: object())
+        monkeypatch.setattr(images, "Ocr", lambda _client: reader)
+        files = [{"name": n, "uri": f"https://blob.example.test/{n}?sig=read"} for n in names]
+        res = post(TestClient(app), files)
+        assert res.status_code == 200
+        return [item["name"] for item in res.json()["data"]]
+
+    return call
+
+
+def run_batch_by_waves(count: int, call: BatchCall = check_directly) -> tuple[list[str], int]:
+    """파일 count장을 call로 처리하며 OCR 호출을 한 묶음(동시에 멈춘 호출)씩 풀어 준다.
 
     돌려주는 값은 (결과 이름 순서, 풀어 준 묶음 수). 묶음 하나가 OCR 지연 한 번이다.
     풀기 전에 정확히 묶음 크기만큼만 시작했는지 확인하므로, 동시 호출이 MAX_WORKERS를 넘거나
@@ -243,7 +270,7 @@ def run_batch_by_waves(count: int) -> tuple[list[str], int]:
 
     def run() -> None:
         try:
-            outcome["result"] = _check([file(name) for name in names], make(reader))
+            outcome["result"] = call(reader, names)
         except BaseException as error:  # 시험 스레드에서 확인하려고 담아 둔다
             outcome["error"] = error
 
@@ -272,7 +299,7 @@ def run_batch_by_waves(count: int) -> tuple[list[str], int]:
     runner.join(WAIT_SEC)
     assert not runner.is_alive()
     assert "error" not in outcome, outcome.get("error")
-    return [r.name for r in outcome["result"]], waves
+    return outcome["result"], waves
 
 
 @pytest.mark.parametrize("count", [1, MAX_WORKERS, MAX_WORKERS + 1, MAX_FILES])
@@ -291,6 +318,85 @@ def test_check_full_batch_cumulative_delay_fits_the_nest_timeout() -> None:
     assert parallel == 75  # 5묶음 x 15초
     assert parallel <= NEST_TIMEOUT_SEC
     assert sequential > NEST_TIMEOUT_SEC  # 순차였다면 제한을 넘는 지연이다
+
+
+def test_endpoint_full_batch_takes_one_ocr_delay_per_wave(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "ai_internal_token", SecretStr(TOKEN))
+
+    names, waves = run_batch_by_waves(MAX_FILES, check_via_endpoint(monkeypatch))
+
+    assert names == [f"{i}.jpg" for i in range(MAX_FILES)]
+    assert waves == -(-MAX_FILES // MAX_WORKERS)
+    assert waves * OCR_SECONDS_PER_FILE <= NEST_TIMEOUT_SEC
+
+
+class CancelTrackingPool(ThreadPoolExecutor):
+    """submit한 작업마다 cancel()이 불렸는지 세어, 모두 취소한 시점을 시험이 알 수 있게 한다."""
+
+    cancel_calls = 0
+    all_cancelled = threading.Event()
+    submitted = 0
+
+    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future[Any]:
+        future = super().submit(fn, *args, **kwargs)
+        cls = type(self)
+        cls.submitted += 1
+        cancel = future.cancel
+
+        def tracked() -> bool:
+            result = cancel()
+            cls.cancel_calls += 1
+            if cls.cancel_calls == cls.submitted:
+                cls.all_cancelled.set()
+            return result
+
+        future.cancel = tracked  # type: ignore[method-assign]
+        return future
+
+
+def test_check_failure_ends_the_batch_without_paying_the_remaining_waves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """첫 묶음에서 파일 하나가 일시 오류(503)로 끝나면 나머지 묶음의 지연을 치르지 않는다.
+
+    0.jpg는 멈추지 않고 바로 실패하고, 같은 묶음의 나머지 호출은 풀어 주기 전까지 멈춰 있다.
+    _check가 남은 작업을 모두 취소한 뒤에 풀어 주므로, 그 뒤로는 새 파일을 읽지 않는다.
+    멈춘 호출은 다음 파일을 가져갈 수 없고, 실패한 0.jpg의 작업만 다음 파일 한 건(4.jpg)을
+    가져갈 수 있어서 시작한 호출은 MAX_WORKERS + 1을 넘지 않는다.
+    """
+    CancelTrackingPool.cancel_calls = CancelTrackingPool.submitted = 0
+    CancelTrackingPool.all_cancelled = threading.Event()
+    monkeypatch.setattr(images, "ThreadPoolExecutor", CancelTrackingPool)
+    names = [f"{i}.jpg" for i in range(MAX_FILES)]
+    outcomes: dict[str, Any] = {name: READABLE for name in names}
+    outcomes["0.jpg"] = OcrUnavailableError("HTTP 503")
+    reader = GatedReader(outcomes, ungated=frozenset({"0.jpg"}))
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            outcome["result"] = check_directly(reader, names)
+        except BaseException as error:
+            outcome["error"] = error
+
+    runner = threading.Thread(target=run, daemon=True)
+    runner.start()
+    try:
+        assert CancelTrackingPool.all_cancelled.wait(WAIT_SEC), "남은 작업을 취소하지 않았다"
+        started_at_cancel = reader.started
+    finally:
+        with reader.cond:  # 멈춘 호출이 끝나야 _check가 돌아온다
+            reader.permits += MAX_FILES
+            reader.cond.notify_all()
+    runner.join(WAIT_SEC)
+
+    assert not runner.is_alive()
+    error = outcome.get("error")
+    assert isinstance(error, HTTPException)
+    assert error.status_code == 503
+    assert started_at_cancel <= MAX_WORKERS + 1
+    assert reader.started == started_at_cancel  # 취소한 뒤로는 새 파일을 읽지 않았다
+    assert "result" not in outcome
 
 
 # ---------- POST /internal/v1/images/check ----------
