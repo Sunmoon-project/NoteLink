@@ -156,6 +156,71 @@ describe('Azure Blob 신고 첨부', () => {
     });
   });
 
+  describe('사진 검사 SAS (createImageCheckReadUrl)', () => {
+    const prefix = `uploads/image/${owner}/`;
+    const file = `${prefix}550e8400-e29b-41d4-a716-446655440000.jpg`;
+    const url = `https://${account}.blob.core.windows.net/${container}/${file}`;
+
+    it('같은 사용자가 올린 이미지에 15분짜리 읽기 전용 HTTPS SAS를 만든다', async () => {
+      const now = Date.now();
+      vi.spyOn(BlockBlobClient.prototype, 'getProperties').mockResolvedValue({
+        contentLength: 1234,
+        contentType: 'image/jpeg',
+      } as never);
+
+      const readUrl = await service().createImageCheckReadUrl(owner, url);
+      const sas = new URL(readUrl);
+
+      expect(`${sas.origin}${sas.pathname}`).toBe(url);
+      expect(sas.searchParams.get('sp')).toBe('r');
+      expect(sas.searchParams.get('spr')).toBe('https');
+      expect(new Date(sas.searchParams.get('se')!).getTime() - now).toBeGreaterThan(14 * 60_000);
+      expect(new Date(sas.searchParams.get('se')!).getTime() - now).toBeLessThanOrEqual(
+        15 * 60_000 + 100,
+      );
+    });
+
+    it('다른 사용자·외부 주소·쿼리 포함·비 UUID 경로를 Blob 조회 전에 거부한다', async () => {
+      const get = vi.spyOn(BlockBlobClient.prototype, 'getProperties');
+      const invalidUrls = [
+        `https://${account}.blob.core.windows.net/${container}/uploads/image/507f1f77bcf86cd799439012/550e8400-e29b-41d4-a716-446655440000.jpg`,
+        'https://example.com/image.jpg',
+        `${url}?already=signed`,
+        url.replace('550e8400-e29b-41d4-a716-446655440000.jpg', 'not-a-uuid.jpg'),
+      ];
+
+      for (const invalidUrl of invalidUrls)
+        await expect(service().createImageCheckReadUrl(owner, invalidUrl)).rejects.toBeInstanceOf(
+          BadRequestException,
+        );
+      expect(get).not.toHaveBeenCalled();
+    });
+
+    it('누락·크기 초과·MIME 불일치 이미지를 거부하고 저장소 장애를 구분한다', async () => {
+      const get = vi.spyOn(BlockBlobClient.prototype, 'getProperties');
+      get.mockRejectedValueOnce({ statusCode: 404 });
+      get.mockResolvedValueOnce({
+        contentLength: 21 * 1024 * 1024,
+        contentType: 'image/jpeg',
+      } as never);
+      get.mockResolvedValueOnce({ contentLength: 1234, contentType: 'image/png' } as never);
+      get.mockRejectedValueOnce(new Error('unavailable'));
+
+      await expect(service().createImageCheckReadUrl(owner, url)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      await expect(service().createImageCheckReadUrl(owner, url)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      await expect(service().createImageCheckReadUrl(owner, url)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      await expect(service().createImageCheckReadUrl(owner, url)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+    });
+  });
+
   it('빈 연결 문자열은 안전한 오류로 처리한다', async () => {
     const missing = new BlobStorageService({
       get: (key: string) => (key === 'AZURE_STORAGE_CONNECTION_STRING' ? '' : config.get(key)),
