@@ -23,6 +23,10 @@ import { Device, DeviceSchema } from '../users/schemas/device.schema.js';
 import { ExpoPushService } from '../notification/expo-push.service.js';
 import { RoomTimerNotificationsService } from './room-timer-notifications.service.js';
 
+import { Timetable, TimetableSchema } from '../calendar/schemas/timetable.schema.js';
+import { StudyRoomScheduleController } from './study-room-schedule.controller.js';
+import { StudyRoomScheduleService } from './study-room-schedule.service.js';
+
 @Module({
   imports: [
     AuthModule,
@@ -36,9 +40,16 @@ import { RoomTimerNotificationsService } from './room-timer-notifications.servic
       { name: Report.name, schema: ReportSchema },
       { name: Friendship.name, schema: FriendshipSchema },
       { name: Device.name, schema: DeviceSchema },
+      // 공용 일정(StudyRoomScheduleService)
+      { name: Timetable.name, schema: TimetableSchema },
     ]),
   ],
-  controllers: [StudyRoomsController, StudyChatController, ReportsController],
+  controllers: [
+    StudyRoomsController,
+    StudyChatController,
+    ReportsController,
+    StudyRoomScheduleController,
+  ],
   providers: [
     StudyRoomsService,
     StudyChatService,
@@ -49,6 +60,7 @@ import { RoomTimerNotificationsService } from './room-timer-notifications.servic
     RoomTimerNotificationsService,
     ReportsService,
     ReportImageSweeper,
+    StudyRoomScheduleService,
   ],
 })
 export class StudyRoomsModule {}

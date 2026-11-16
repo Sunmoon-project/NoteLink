@@ -11,7 +11,14 @@ const same = (a: unknown, b: unknown) =>
       ? a.getTime() === b.getTime()
       : a === b;
 
-type Ops = { $in?: unknown[]; $ne?: unknown; $lte?: Date; $gt?: Date; $lt?: number };
+type Ops = {
+  $in?: unknown[];
+  $ne?: unknown;
+  $lte?: Date;
+  $gt?: Date;
+  $gte?: Date;
+  $lt?: number;
+};
 const isOps = (v: unknown): v is Ops =>
   v !== null && typeof v === 'object' && !(v instanceof Types.ObjectId) && !(v instanceof Date);
 const time = (v: unknown) => (v instanceof Date ? v.getTime() : NaN);
@@ -38,7 +45,7 @@ function expr(row: Record<string, unknown>, e: Expr): boolean {
 }
 
 /**
- * 서비스가 넘긴 조건을 그대로 적용한다(같음 · $in · $ne · $lte · $gt · $lt · $or). ObjectId는 문자열로 비교하고,
+ * 서비스가 넘긴 조건을 그대로 적용한다(같음 · $in · $ne · $lte · $gt · $gte · $lt · $or). ObjectId는 문자열로 비교하고,
  * MongoDB처럼 `null` 조건은 필드가 없는 문서에도 맞는다. 모르는 조건은 맞지 않아 테스트가 잡아낸다
  */
 export function matches(row: Record<string, unknown>, filter: Filter): boolean {
@@ -48,15 +55,20 @@ export function matches(row: Record<string, unknown>, filter: Filter): boolean {
     const value = row[key];
     if (want === null) return value === null || value === undefined;
     if (!isOps(want)) return same(value, want);
+    // 연산자가 여럿이면 MongoDB처럼 모두 맞아야 한다(예: { $gte, $lte } 기간)
+    const checks: boolean[] = [];
     // MongoDB처럼 $in의 null은 필드가 없는 문서에도 맞는다
-    if (want.$in) return want.$in.some((w) => (w === null ? value == null : same(value, w)));
+    if (want.$in) checks.push(want.$in.some((w) => (w === null ? value == null : same(value, w))));
     if ('$ne' in want) {
-      return want.$ne === null ? value !== null && value !== undefined : !same(value, want.$ne);
+      checks.push(
+        want.$ne === null ? value !== null && value !== undefined : !same(value, want.$ne),
+      );
     }
-    if (want.$lte) return time(value) <= want.$lte.getTime();
-    if (want.$gt) return time(value) > want.$gt.getTime();
-    if (want.$lt !== undefined) return typeof value === 'number' && value < want.$lt;
-    return false;
+    if (want.$lte) checks.push(time(value) <= want.$lte.getTime());
+    if (want.$gt) checks.push(time(value) > want.$gt.getTime());
+    if (want.$gte) checks.push(time(value) >= want.$gte.getTime());
+    if (want.$lt !== undefined) checks.push(typeof value === 'number' && value < want.$lt);
+    return checks.length > 0 && checks.every(Boolean);
   });
 }
 

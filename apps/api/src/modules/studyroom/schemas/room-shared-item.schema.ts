@@ -37,3 +37,13 @@ export class RoomSharedItem {
 }
 
 export const RoomSharedItemSchema = SchemaFactory.createForClass(RoomSharedItem);
+
+// 같은 방에 같은 노트를 한 번만 공유한다(지우지 않은 것 기준). 동시에 같은 요청이 와도 중복이 생기지 않게 DB가 막는다
+RoomSharedItemSchema.index(
+  { roomId: 1, materialId: 1 },
+  {
+    name: 'room_material_unique',
+    unique: true,
+    partialFilterExpression: { itemType: 'material', deletedAt: null },
+  },
+);
