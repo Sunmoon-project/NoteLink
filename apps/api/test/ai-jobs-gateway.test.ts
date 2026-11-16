@@ -243,6 +243,72 @@ describe('AI 작업 진행률 소켓 (ai:subscribe)', () => {
     await vi.waitFor(() => expect(got.progress.at(-1)?.progress).toBe(40));
   });
 
+  it('읽는 동안 새로 구독한 작업은 지운 작업으로 보지 않는다', async () => {
+    const SECOND = '64b000000000000000000003';
+    table.set(SECOND, appJob({ _id: SECOND, progress: 5 }));
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    // 첫 작업을 읽는 도중에 두 번째 작업을 구독한다
+    let release!: () => void;
+    jobs.progressOf.mockImplementationOnce(async (ids: string[]) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return ids.map((id) => ({ jobId: id, status: 'running', progress: 10, step: 'ocr' }));
+    });
+    const polling = gateway.poll();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    await subscribe(a, SECOND);
+    release();
+    await polling;
+    table.set(SECOND, appJob({ _id: SECOND, progress: 60 }));
+    await gateway.poll();
+    await vi.waitFor(() =>
+      expect(got.progress.filter((p) => p.jobId === SECOND).at(-1)?.progress).toBe(60),
+    );
+  });
+
+  it('ai:unsubscribe 뒤에는 그 작업의 진행률을 받지 않고, 방이 비면 더 읽지 않는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    a.emit('ai:unsubscribe', { jobId: JOB });
+    await settle();
+    table.set(JOB, appJob({ progress: 77 }));
+    await gateway.poll();
+    await settle();
+    expect(got.progress.map((p) => p.progress)).toEqual([10]);
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
+  it('구독한 뒤 토큰이 끝난 소켓에는 결과(ai:done)를 보내지 않는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    tokens.verifyAccess.mockRejectedValue(new Error('expired'));
+    table.set(JOB, appJob({ status: 'succeeded', progress: 100, result: { secret: true } }));
+    await gateway.poll();
+    await settle();
+    expect(got.done).toEqual([]);
+  });
+
+  it('여러 작업이 함께 끝나도 남은 작업의 진행률을 같이 보낸다', async () => {
+    const SECOND = '64b000000000000000000003';
+    table.set(SECOND, appJob({ _id: SECOND, progress: 5 }));
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    await subscribe(a, SECOND);
+    table.set(JOB, appJob({ status: 'succeeded', progress: 100 }));
+    table.set(SECOND, appJob({ _id: SECOND, progress: 50 }));
+    await gateway.poll();
+    await vi.waitFor(() => {
+      expect(got.done.map((d) => d.jobId)).toEqual([JOB]);
+      expect(got.progress.filter((p) => p.jobId === SECOND).at(-1)?.progress).toBe(50);
+    });
+  });
+
   it('구독하면 1초 간격으로 스스로 다시 읽는다', async () => {
     const a = await connect('a');
     const got = record(a);

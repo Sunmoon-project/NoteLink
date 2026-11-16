@@ -9,7 +9,7 @@ import {
 import type { Server, Socket } from 'socket.io';
 
 import { TokenService } from '../modules/auth/token.service.js';
-import { type AiJobProgress, AiJobsService } from './ai-jobs.service.js';
+import { type AiJobProgress, AiJobsService, toProgress } from './ai-jobs.service.js';
 
 /** 지켜보는 작업을 다시 읽는 간격. 앱의 대체 조회(1.5초, features/content/convert.tsx)보다 짧게 둔다 */
 export const AI_PROGRESS_POLL_MS = 1000;
@@ -25,7 +25,8 @@ const signature = (p: AiJobProgress) => `${p.status}|${p.progress}|${p.step ?? '
  * 본인 작업이면 그 작업 방에 넣고 지금 상태를 바로 보낸다. 지켜보는 작업이 있는 동안에만 1초마다 상태 ·
  * 진행률만 한 번에 읽어(처리기는 ai_jobs에만 쓴다) 바뀌면 `ai:progress`, 끝나면 `GET /ai-jobs/:id`와 같은
  * 모양으로 `ai:done`을 보내고 방을 비운다. 변경 알림(change stream)은 로컬 단일 노드 MongoDB에서 쓸 수 없어 읽기로 한다.
- * 다시 연결되면 방이 사라지지만, 앱은 작업 조회(GET /ai-jobs/:id)로도 끝을 확인하므로 결과를 놓치지 않는다.
+ * 다시 연결되면 방이 사라지므로 앱이 다시 구독한다(hooks useAiJobSubscription). 화면을 떠나면 `ai:unsubscribe`.
+ * 앱은 작업 조회(GET /ai-jobs/:id)로도 끝을 확인하므로 소켓이 끊겨도 결과는 놓치지 않는다.
  */
 @Injectable()
 @WebSocketGateway()
@@ -70,13 +71,18 @@ export class AiJobsGateway implements OnModuleDestroy {
       return { ok: true };
     }
     await socket.join(roomOf(jobId));
-    const progress: AiJobProgress = { jobId, status: job.status, progress: job.progress };
-    if (job.step !== undefined) progress.step = job.step;
+    const progress = toProgress(job);
     socket.emit('ai:progress', progress);
     // 같은 작업을 다른 화면 · 기기가 이미 지켜보고 있으면 그 기록을 그대로 쓴다
     if (!this.watched.has(jobId)) this.watched.set(jobId, { userId, last: signature(progress) });
     this.start();
     return { ok: true };
+  }
+
+  /** 화면을 떠나면 그 작업 방에서 뺀다. 방이 비면 다음 차례에 더 읽지 않는다 */
+  @SubscribeMessage('ai:unsubscribe')
+  async unsubscribe(@ConnectedSocket() socket: Socket, @MessageBody() data: { jobId?: unknown }) {
+    if (typeof data?.jobId === 'string') await socket.leave(roomOf(data.jobId));
   }
 
   /** 시험에서 기다리지 않고 한 번 돌린다. 겹쳐 돌지 않는다 */
@@ -99,17 +105,21 @@ export class AiJobsGateway implements OnModuleDestroy {
       if (!this.server.sockets.adapter.rooms.get(roomOf(jobId))?.size) this.watched.delete(jobId);
     }
     if (!this.watched.size) return this.stop();
-    const rows = await this.jobs.progressOf([...this.watched.keys()]);
+    // 읽는 동안 새로 구독한 작업은 이번 결과에 없으므로, 보낸 id만 판단한다(다음 차례에 읽음)
+    const asked = [...this.watched.keys()];
+    const rows = await this.jobs.progressOf(asked);
     const found = new Set(rows.map((row) => row.jobId));
-    for (const jobId of [...this.watched.keys()]) {
+    for (const jobId of asked) {
       // 지운 작업(노트를 지움 등)은 더 지켜보지 않는다. 앱은 작업 조회의 404로 알게 된다
       if (!found.has(jobId)) this.finish(jobId);
     }
+    const finished: Promise<void>[] = [];
     for (const row of rows) {
       const watch = this.watched.get(row.jobId);
       if (!watch) continue;
       if (FINISHED.has(row.status)) {
-        await this.done(row.jobId, watch.userId);
+        // 끝난 작업은 결과를 다시 읽어야 해서, 남은 작업의 진행률을 늦추지 않게 함께 처리한다
+        finished.push(this.done(row.jobId, watch.userId));
         continue;
       }
       const now = signature(row);
@@ -117,12 +127,29 @@ export class AiJobsGateway implements OnModuleDestroy {
       watch.last = now;
       this.server.to(roomOf(row.jobId)).emit('ai:progress', row);
     }
+    await Promise.all(finished);
   }
 
+  /**
+   * 결과(result)까지 보내므로, 구독한 뒤 토큰이 끝났거나 다른 계정으로 바뀐 소켓에는 보내지 않는다
+   * (StudyChatGateway.notifyDirectMessage와 같은 방식). 진행률만 보내는 ai:progress는 확인하지 않는다
+   */
   private async done(jobId: string, userId: string) {
     try {
       const job = await this.jobs.findMine(userId, jobId);
-      this.server.to(roomOf(jobId)).emit('ai:done', { jobId, job });
+      const sockets = await this.server.in(roomOf(jobId)).fetchSockets();
+      await Promise.all(
+        sockets.map(async (recipient) => {
+          try {
+            const token = recipient.handshake.auth?.token;
+            if (typeof token !== 'string') return;
+            if ((await this.tokens.verifyAccess(token)).userId === userId)
+              recipient.emit('ai:done', { jobId, job });
+          } catch {
+            // 토큰이 끝난 소켓. 앱은 작업 조회(GET /ai-jobs/:id)로 끝을 확인한다
+          }
+        }),
+      );
     } catch {
       // 그사이 지워졌으면 보내지 않는다
     }

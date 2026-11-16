@@ -228,4 +228,6 @@ export type ClientToServer = {
   ) => void;
   'chat:read': (p: { chatRoomId: string }) => void;
   'ai:subscribe': (p: { jobId: string }) => void;
+  /** 화면을 떠나면 그 작업의 진행률을 그만 받는다 */
+  'ai:unsubscribe': (p: { jobId: string }) => void;
 };

@@ -96,6 +96,15 @@ export interface AiJobProgress {
   step?: string;
 }
 
+/** 앱에 보내는 작업(AppAiJob)에서 진행률 값을 만든다. 구독 때와 반복해 읽을 때 같은 모양이어야 같은 값을 다시 보내지 않는다 */
+export function toProgress(
+  job: Pick<AppAiJob, '_id' | 'status' | 'progress' | 'step'>,
+): AiJobProgress {
+  const progress: AiJobProgress = { jobId: job._id, status: job.status, progress: job.progress };
+  if (job.step !== undefined) progress.step = job.step;
+  return progress;
+}
+
 /** 진행률만 읽는 필드. 결과 · 입력은 크고 몇 초마다 읽으므로 빼고, 끝난 작업만 findMine으로 다시 읽는다 */
 const PROGRESS_PROJECTION = { status: 1, progress: 1, step: 1 };
 
@@ -309,15 +318,14 @@ export class AiJobsService {
     const rows = await this.jobs
       .find({ _id: { $in: ids } }, PROGRESS_PROJECTION)
       .lean<Pick<AiJobRow, '_id' | 'status' | 'progress' | 'step'>[]>();
-    return rows.map((row) => {
-      const progress: AiJobProgress = {
-        jobId: row._id.toString(),
+    return rows.map((row) =>
+      toProgress({
+        _id: row._id.toString(),
         status: row.status === HELD ? 'queued' : row.status,
         progress: row.progress ?? 0,
-      };
-      if (typeof row.step === 'string') progress.step = row.step;
-      return progress;
-    });
+        ...(typeof row.step === 'string' ? { step: row.step } : {}),
+      }),
+    );
   }
 
   /** 앱의 진행 상태 조회. 본인 작업만 */
