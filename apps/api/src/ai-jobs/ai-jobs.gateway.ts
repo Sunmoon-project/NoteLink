@@ -23,7 +23,10 @@ export const AI_PROGRESS_POLL_MS = 1000;
 const FINISHED = new Set(['succeeded', 'failed', 'canceled']);
 const ROOM_PREFIX = 'ai-job:';
 const roomOf = (jobId: string) => `${ROOM_PREFIX}${jobId}`;
-/** 끝난 작업의 결과를 읽지 못할 때(404 밖의 오류) 다시 해 보는 차례 수. 넘으면 그만 지켜본다 */
+/**
+ * 끝난 작업을 보내다 일시 오류가 날 때(결과 읽기의 404 밖 오류 · 받는 소켓의 토큰 확인 중 DB 오류) 다시 해 보는
+ * 차례 수. 넘으면 그만 지켜본다
+ */
 const DONE_RETRY_LIMIT = 5;
 const signature = (p: AiJobProgress) => `${p.status}|${p.progress}|${p.step ?? ''}`;
 
@@ -182,8 +185,13 @@ export class AiJobsGateway implements OnModuleDestroy {
       // 끝난 것을 읽은 사이 다시 시도로 처리기에 다시 들어갔으면(같은 작업 id) 끝내지 않고 계속 지켜본다.
       // 다시 시도하며 구독한 소켓을 방에서 빼지 않게 한다
       if (!FINISHED.has(job.status)) {
+        // 앞 실행에서 보낸 기록 · 실패 수는 새 실행과 상관없으므로 지운다
         const watch = this.watched.get(jobId);
-        if (watch) watch.last = undefined;
+        if (watch) {
+          watch.last = undefined;
+          watch.delivered = undefined;
+          watch.doneFailures = undefined;
+        }
         return;
       }
       sockets = await this.server.in(roomOf(jobId)).fetchSockets();
@@ -194,8 +202,8 @@ export class AiJobsGateway implements OnModuleDestroy {
       return;
     }
     const watch = this.watched.get(jobId);
-    const delivered = (watch && (watch.delivered ??= new Set())) || new Set<string>();
-    let transient: unknown;
+    const delivered = watch ? (watch.delivered ??= new Set()) : new Set<string>();
+    let transient: { error: unknown } | undefined;
     await Promise.all(
       sockets.map(async (recipient) => {
         // 앞 차례에 이미 보낸 소켓에는 다시 보내지 않는다
@@ -210,11 +218,11 @@ export class AiJobsGateway implements OnModuleDestroy {
         } catch (error) {
           // 토큰이 끝난 소켓(401)은 보내지 않는다. 앱은 작업 조회(GET /ai-jobs/:id)로 끝을 확인한다.
           // 토큰 확인 중 DB 일시 오류면 그 소켓은 다음 차례에 다시 보낸다
-          if (!(error instanceof UnauthorizedException)) transient = error;
+          if (!(error instanceof UnauthorizedException)) transient = { error };
         }
       }),
     );
-    if (transient) this.retryLater(jobId, transient);
+    if (transient) this.retryLater(jobId, transient.error);
     else this.finish(jobId);
   }
 

@@ -101,7 +101,8 @@ beforeEach(() => {
   table.clear();
   table.set(JOB, appJob());
   tokens.verifyAccess.mockImplementation(async (token: string) => {
-    if (token === 'bad') throw new Error('unauthorized');
+    // 실제 TokenService처럼 거절은 UnauthorizedException
+    if (token === 'bad') throw new UnauthorizedException();
     return { userId: token };
   });
 });
@@ -381,6 +382,38 @@ describe('AI 작업 진행률 소켓 (ai:subscribe)', () => {
     // 처음 받은 소켓은 다시 받지 않는다
     expect(got1.done).toHaveLength(1);
     expect(got2.done).toHaveLength(1);
+  });
+
+  it('보낸 기록이 남은 작업을 다시 시도하면 새 결과는 모든 소켓에 다시 보낸다', async () => {
+    tokens.verifyAccess.mockImplementation(async () => ({ userId: 'a' }));
+    const one = await connect('a');
+    const two = await connect('a2');
+    const got1 = record(one);
+    const got2 = record(two);
+    await subscribe(one);
+    await subscribe(two);
+    // 첫 실행: one은 받고 two는 토큰 확인이 일시 오류
+    table.set(JOB, appJob({ status: 'failed', progress: 30 }));
+    let failTwo = true;
+    tokens.verifyAccess.mockImplementation(async (token: string) => {
+      if (token === 'a2' && failTwo) throw new Error('db down');
+      return { userId: 'a' };
+    });
+    await gateway.poll();
+    await vi.waitFor(() => expect(got1.done).toHaveLength(1));
+    // 다시 시도로 처리기에 다시 들어감 → 다음 차례에 끝나지 않은 것을 봄
+    table.set(JOB, appJob({ status: 'queued', progress: 0 }));
+    jobs.progressOf.mockResolvedValueOnce([{ jobId: JOB, status: 'failed', progress: 30 }]);
+    await gateway.poll();
+    // 두 번째 실행이 끝남
+    failTwo = false;
+    const second = appJob({ status: 'succeeded', progress: 100 });
+    table.set(JOB, second);
+    await gateway.poll();
+    await vi.waitFor(() => {
+      expect(got1.done.at(-1)).toEqual({ jobId: JOB, job: second });
+      expect(got2.done.at(-1)).toEqual({ jobId: JOB, job: second });
+    });
   });
 
   it('토큰이 거절(401)된 소켓만 있으면 다시 시도하지 않고 끝낸다', async () => {
