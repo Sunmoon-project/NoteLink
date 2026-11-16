@@ -1,4 +1,10 @@
-import { Injectable, Logger, NotFoundException, type OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  type OnModuleDestroy,
+  UnauthorizedException,
+} from '@nestjs/common';
 import {
   ConnectedSocket,
   MessageBody,
@@ -37,7 +43,7 @@ export class AiJobsGateway implements OnModuleDestroy {
   /** 작업마다 마지막으로 보낸 값 · 주인. 같은 값은 다시 보내지 않는다 */
   private readonly watched = new Map<
     string,
-    { userId: string; last?: string; doneFailures?: number }
+    { userId: string; last?: string; doneFailures?: number; delivered?: Set<string> }
   >();
   private timer: ReturnType<typeof setInterval> | undefined;
   private polling = false;
@@ -183,29 +189,44 @@ export class AiJobsGateway implements OnModuleDestroy {
       sockets = await this.server.in(roomOf(jobId)).fetchSockets();
     } catch (error) {
       // 그사이 지워졌으면 더 지켜보지 않는다. DB 일시 오류면 그대로 두어 다음 차례에 다시 보낸다
-      const watch = this.watched.get(jobId);
-      const failures = (watch?.doneFailures ?? 0) + 1;
-      if (error instanceof NotFoundException || failures >= DONE_RETRY_LIMIT) this.finish(jobId);
-      else if (watch) watch.doneFailures = failures;
-      if (!(error instanceof NotFoundException))
-        this.logger.warn(
-          `끝난 AI 작업을 보내지 못했습니다(${failures}번째): ${(error as Error).message}`,
-        );
+      if (error instanceof NotFoundException) this.finish(jobId);
+      else this.retryLater(jobId, error);
       return;
     }
+    const watch = this.watched.get(jobId);
+    const delivered = (watch && (watch.delivered ??= new Set())) || new Set<string>();
+    let transient: unknown;
     await Promise.all(
       sockets.map(async (recipient) => {
+        // 앞 차례에 이미 보낸 소켓에는 다시 보내지 않는다
+        if (delivered.has(recipient.id)) return;
         try {
           const token = recipient.handshake.auth?.token;
           if (typeof token !== 'string') return;
-          if ((await this.tokens.verifyAccess(token)).userId === userId)
+          if ((await this.tokens.verifyAccess(token)).userId === userId) {
             recipient.emit('ai:done', { jobId, job });
-        } catch {
-          // 토큰이 끝난 소켓. 앱은 작업 조회(GET /ai-jobs/:id)로 끝을 확인한다
+            delivered.add(recipient.id);
+          }
+        } catch (error) {
+          // 토큰이 끝난 소켓(401)은 보내지 않는다. 앱은 작업 조회(GET /ai-jobs/:id)로 끝을 확인한다.
+          // 토큰 확인 중 DB 일시 오류면 그 소켓은 다음 차례에 다시 보낸다
+          if (!(error instanceof UnauthorizedException)) transient = error;
         }
       }),
     );
-    this.finish(jobId);
+    if (transient) this.retryLater(jobId, transient);
+    else this.finish(jobId);
+  }
+
+  /** 일시 오류로 끝난 작업을 보내지 못했다. 지켜보기를 유지해 다음 차례에 다시 보내고, 계속 실패하면 그만둔다 */
+  private retryLater(jobId: string, error: unknown) {
+    const watch = this.watched.get(jobId);
+    const failures = (watch?.doneFailures ?? 0) + 1;
+    if (!watch || failures >= DONE_RETRY_LIMIT) this.finish(jobId);
+    else watch.doneFailures = failures;
+    this.logger.warn(
+      `끝난 AI 작업을 보내지 못했습니다(${failures}번째): ${(error as Error)?.message ?? error}`,
+    );
   }
 
   private finish(jobId: string) {

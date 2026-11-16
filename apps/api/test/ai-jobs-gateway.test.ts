@@ -1,4 +1,4 @@
-import { type INestApplication, NotFoundException } from '@nestjs/common';
+import { type INestApplication, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { io, type Socket } from 'socket.io-client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -287,7 +287,7 @@ describe('AI 작업 진행률 소켓 (ai:subscribe)', () => {
     const a = await connect('a');
     const got = record(a);
     await subscribe(a);
-    tokens.verifyAccess.mockRejectedValue(new Error('expired'));
+    tokens.verifyAccess.mockRejectedValue(new UnauthorizedException());
     table.set(JOB, appJob({ status: 'succeeded', progress: 100, result: { secret: true } }));
     await gateway.poll();
     await settle();
@@ -337,6 +337,63 @@ describe('AI 작업 진행률 소켓 (ai:subscribe)', () => {
     expect(got.done).toEqual([]);
     await gateway.poll();
     await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: finished }]));
+  });
+
+  it('받는 소켓의 토큰 확인이 DB 일시 오류로 실패하면 다음 차례에 보낸다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    const finished = appJob({ status: 'succeeded', progress: 100 });
+    table.set(JOB, finished);
+    tokens.verifyAccess.mockRejectedValueOnce(new Error('db down'));
+    await gateway.poll();
+    await settle();
+    expect(got.done).toEqual([]);
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: finished }]));
+    // 보낸 뒤에는 더 지켜보지 않는다
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
+  it('두 소켓 중 하나만 일시 오류면 다음 차례에 그 소켓에만 보낸다', async () => {
+    // 두 소켓 모두 사용자 a (토큰 'a' · 'a2')
+    tokens.verifyAccess.mockImplementation(async () => ({ userId: 'a' }));
+    const one = await connect('a');
+    const two = await connect('a2');
+    const got1 = record(one);
+    const got2 = record(two);
+    await subscribe(one);
+    await subscribe(two);
+    table.set(JOB, appJob({ status: 'succeeded', progress: 100 }));
+    let failedOnce = false;
+    tokens.verifyAccess.mockImplementation(async (token: string) => {
+      if (token === 'a2' && !failedOnce) {
+        failedOnce = true;
+        throw new Error('db down');
+      }
+      return { userId: 'a' };
+    });
+    await gateway.poll();
+    await gateway.poll();
+    await settle();
+    // 처음 받은 소켓은 다시 받지 않는다
+    expect(got1.done).toHaveLength(1);
+    expect(got2.done).toHaveLength(1);
+  });
+
+  it('토큰이 거절(401)된 소켓만 있으면 다시 시도하지 않고 끝낸다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    table.set(JOB, appJob({ status: 'succeeded', progress: 100 }));
+    tokens.verifyAccess.mockRejectedValue(new UnauthorizedException());
+    await gateway.poll();
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+    expect(got.done).toEqual([]);
   });
 
   it('결과 읽기가 계속 실패하면 5번째에 그만 지켜본다', async () => {
