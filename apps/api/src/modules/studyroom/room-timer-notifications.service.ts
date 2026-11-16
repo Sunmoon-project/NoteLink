@@ -38,6 +38,8 @@ type TimerNotificationRetry = PendingTimerNotification & {
   attempts: number;
   nextAttemptAt: Date;
 };
+type TimerLeaseField = 'timerPendingLeaseUntil' | 'timerNotificationRetryLeaseUntil';
+type TimerLeaseHeartbeat = { current: () => Date; stop: () => Promise<void> };
 type DueTimerRoom = Pick<
   StudyRoom,
   'title' | 'members' | 'timerRule' | 'timerStartedAt' | 'timerNextNotificationAt' | 'timerRevision'
@@ -203,13 +205,20 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
     );
     if (!claimed.matchedCount) return;
 
-    const room = await this.rooms
-      .findOne({ _id: id, closedAt: null, timerRevision: revision })
-      .lean();
-    const pending = room?.timerPendingNotification as PendingTimerNotification | null | undefined;
-    if (!room || !pending) return;
+    const heartbeat = this.startLeaseHeartbeat(
+      id,
+      revision,
+      'timerPendingLeaseUntil',
+      new Date(leaseAcquiredAt.getTime() + PUSH_LEASE_MS),
+    );
 
     try {
+      const room = await this.rooms
+        .findOne({ _id: id, closedAt: null, timerRevision: revision })
+        .lean();
+      const pending = room?.timerPendingNotification as PendingTimerNotification | null | undefined;
+      if (!room || !pending) return;
+
       const joinedUserIds = room.members
         .filter((member) => member.status === 'joined')
         .map((member) => member.userId);
@@ -278,6 +287,8 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
       await this.clearPending(id, revision, pending.transitionAt);
     } catch (error) {
       this.logger.warn(`스터디룸 타이머 푸시 전송을 재시도합니다: ${String(error)}`);
+    } finally {
+      await heartbeat.stop();
     }
   }
 
@@ -346,7 +357,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
     if (!isValidObjectId(roomId)) return;
     const id = new Types.ObjectId(roomId);
     const leaseAcquiredAt = new Date();
-    const leaseUntil = new Date(leaseAcquiredAt.getTime() + PUSH_LEASE_MS);
+    const initialLeaseUntil = new Date(leaseAcquiredAt.getTime() + PUSH_LEASE_MS);
     const dueFilter = {
       nextAttemptAt: { $lte: now },
       attempts: { $lt: RETRY_MAX_ATTEMPTS },
@@ -363,9 +374,15 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
           { timerNotificationRetryLeaseUntil: { $lte: leaseAcquiredAt } },
         ],
       },
-      { $set: { timerNotificationRetryLeaseUntil: leaseUntil } },
+      { $set: { timerNotificationRetryLeaseUntil: initialLeaseUntil } },
     );
     if (!claimed.matchedCount) return;
+    const heartbeat = this.startLeaseHeartbeat(
+      id,
+      revision,
+      'timerNotificationRetryLeaseUntil',
+      initialLeaseUntil,
+    );
 
     try {
       const room = await this.rooms
@@ -380,7 +397,8 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
           new Date(retry.nextAttemptAt).getTime() <= now.getTime(),
       );
       if (!due.length) {
-        await this.releaseRetryLease(id, revision, leaseUntil);
+        await heartbeat.stop();
+        await this.releaseRetryLease(id, revision, heartbeat.current());
         return;
       }
 
@@ -427,6 +445,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
       const result = messages.length
         ? await this.push.send(messages)
         : { invalidTokens: [], failedTickets: [] };
+      await heartbeat.stop();
       if (result.invalidTokens.length)
         await this.devices.deleteMany({ pushToken: { $in: result.invalidTokens } });
       const failedByEvent = new Map<string, Set<string>>();
@@ -438,50 +457,69 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
         failedByEvent.set(eventId, failed);
       }
 
-      const dueEventIds = new Set(due.map((retry) => retry.eventId));
-      const nextRetries = retries.filter((retry) => !dueEventIds.has(retry.eventId));
       let exhausted = 0;
       for (const retry of due) {
         const failedTokens = failedByEvent.get(retry.eventId);
-        if (!failedTokens?.size) continue;
+        if (!failedTokens?.size) {
+          await this.removeRetry(id, revision, heartbeat.current(), retry.eventId);
+          continue;
+        }
         const recipients = (eligibleByEvent.get(retry.eventId) ?? []).filter(({ token }) =>
           failedTokens.has(token),
         );
-        if (!recipients.length) continue;
+        if (!recipients.length) {
+          await this.removeRetry(id, revision, heartbeat.current(), retry.eventId);
+          continue;
+        }
         const attempts = retry.attempts + 1;
         if (attempts >= RETRY_MAX_ATTEMPTS) {
           exhausted += recipients.length;
+          await this.removeRetry(id, revision, heartbeat.current(), retry.eventId);
           continue;
         }
         const delay = Math.min(RETRY_BASE_MS * 2 ** (attempts - 1), RETRY_MAX_MS);
-        nextRetries.push({
-          ...retry,
-          recipients,
-          attempts,
-          nextAttemptAt: new Date(Date.now() + delay),
-        });
+        await this.rooms.updateOne(
+          {
+            _id: id,
+            closedAt: null,
+            timerRevision: revision,
+            timerNotificationRetryLeaseUntil: heartbeat.current(),
+            timerNotificationRetries: { $elemMatch: { eventId: retry.eventId } },
+          },
+          {
+            $set: {
+              'timerNotificationRetries.$[retry].recipients': recipients,
+              'timerNotificationRetries.$[retry].attempts': attempts,
+              'timerNotificationRetries.$[retry].nextAttemptAt': new Date(Date.now() + delay),
+            },
+          },
+          { arrayFilters: [{ 'retry.eventId': retry.eventId }] },
+        );
       }
       if (exhausted)
         this.logger.warn(`스터디룸 타이머 푸시 재시도를 횟수 제한으로 종료했습니다 (${exhausted})`);
 
-      await this.rooms.updateOne(
-        {
-          _id: id,
-          closedAt: null,
-          timerRevision: revision,
-          timerNotificationRetryLeaseUntil: leaseUntil,
-        },
-        {
-          $set: {
-            timerNotificationRetries: nextRetries,
-            timerNotificationRetryLeaseUntil: null,
-          },
-        },
-      );
+      await this.releaseRetryLease(id, revision, heartbeat.current());
     } catch (error) {
       this.logger.warn(`스터디룸 타이머 푸시 재시도를 이어서 처리합니다: ${String(error)}`);
-      await this.releaseRetryLease(id, revision, leaseUntil);
+      await heartbeat.stop();
+      await this.releaseRetryLease(id, revision, heartbeat.current());
+    } finally {
+      await heartbeat.stop();
     }
+  }
+
+  private removeRetry(id: Types.ObjectId, revision: number, leaseUntil: Date, eventId: string) {
+    return this.rooms.updateOne(
+      {
+        _id: id,
+        closedAt: null,
+        timerRevision: revision,
+        timerNotificationRetryLeaseUntil: leaseUntil,
+        timerNotificationRetries: { $elemMatch: { eventId } },
+      },
+      { $pull: { timerNotificationRetries: { eventId } } },
+    );
   }
 
   private releaseRetryLease(id: Types.ObjectId, revision: number, leaseUntil: Date) {
@@ -493,6 +531,44 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
       },
       { $set: { timerNotificationRetryLeaseUntil: null } },
     );
+  }
+
+  private startLeaseHeartbeat(
+    id: Types.ObjectId,
+    revision: number,
+    field: TimerLeaseField,
+    initialLeaseUntil: Date,
+  ): TimerLeaseHeartbeat {
+    let leaseUntil = initialLeaseUntil;
+    let inFlight: Promise<void> | null = null;
+    const interval = setInterval(() => {
+      if (inFlight) return;
+      const nextLeaseUntil = new Date(Date.now() + PUSH_LEASE_MS);
+      inFlight = this.rooms
+        .updateOne(
+          { _id: id, timerRevision: revision, [field]: leaseUntil },
+          { $set: { [field]: nextLeaseUntil } },
+        )
+        .then((updated) => {
+          if (updated.matchedCount) leaseUntil = nextLeaseUntil;
+          else this.logger.warn('스터디룸 타이머 발송 잠금 갱신에 실패했습니다');
+        })
+        .catch((error: unknown) => {
+          this.logger.warn(`스터디룸 타이머 발송 잠금을 갱신하지 못했습니다: ${String(error)}`);
+        })
+        .finally(() => {
+          inFlight = null;
+        });
+    }, PUSH_LEASE_MS / 3);
+    interval.unref?.();
+
+    return {
+      current: () => leaseUntil,
+      stop: async () => {
+        clearInterval(interval);
+        await inFlight;
+      },
+    };
   }
 
   private logFailure(error: unknown): void {

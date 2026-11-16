@@ -207,6 +207,90 @@ describe('RoomTimerNotificationsService', () => {
     );
   });
 
+  it('30초가 넘는 발송 중 lease를 갱신해 두 번째 인스턴스의 중복 전송을 막는다', async () => {
+    const pendingRoom = {
+      ...dueRoom,
+      timerPendingNotification: {
+        transitionAt: nextAt,
+        phase: 'break',
+        title: '아침 집중방 타이머',
+        body: '집중 시간이 끝났어요. 잠시 쉬어 가세요.',
+      },
+    };
+    let activeLease: Date | null = null;
+    rooms.find.mockImplementation((filter: Record<string, unknown>) => ({
+      sort: () => ({
+        limit: () => ({ lean: async () => (filter.timerPendingNotification === null ? [] : []) }),
+      }),
+      limit: () => ({
+        lean: async () =>
+          filter.timerPendingNotification && typeof filter.timerPendingNotification === 'object'
+            ? [pendingRoom]
+            : [],
+      }),
+    }));
+    rooms.findOne.mockReturnValue(query(pendingRoom));
+    rooms.updateOne.mockImplementation(async (filter, update) => {
+      const requestedLease = update.$set?.timerPendingLeaseUntil;
+      if (requestedLease instanceof Date) {
+        if (Array.isArray(filter.$or)) {
+          if (activeLease && activeLease.getTime() > Date.now()) return { matchedCount: 0 };
+          activeLease = requestedLease;
+          return { matchedCount: 1 };
+        }
+        if (
+          filter.timerPendingLeaseUntil instanceof Date &&
+          activeLease?.getTime() === filter.timerPendingLeaseUntil.getTime()
+        ) {
+          activeLease = requestedLease;
+          return { matchedCount: 1 };
+        }
+      }
+      if (update.$set?.timerPendingNotification === null) activeLease = null;
+      return { matchedCount: 1 };
+    });
+    let finishPush!: (value: { invalidTokens: string[]; failedTickets: [] }) => void;
+    let signalPushStarted!: () => void;
+    const pushStarted = new Promise<void>((resolve) => {
+      signalPushStarted = resolve;
+    });
+    push.send.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishPush = resolve;
+          signalPushStarted();
+        }),
+    );
+    vi.useFakeTimers();
+    const leaseStart = new Date('2026-11-16T00:00:00.000Z');
+    vi.setSystemTime(leaseStart);
+
+    try {
+      const firstInstance = new RoomTimerNotificationsService(
+        rooms as never,
+        devices as never,
+        push as never,
+      );
+      const secondInstance = new RoomTimerNotificationsService(
+        rooms as never,
+        devices as never,
+        push as never,
+      );
+      const firstRun = firstInstance.runOnce(leaseStart);
+      await pushStarted;
+
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(activeLease!.getTime()).toBeGreaterThan(leaseStart.getTime() + 30_000);
+      await secondInstance.runOnce(new Date());
+      expect(push.send).toHaveBeenCalledTimes(1);
+
+      finishPush({ invalidTokens: [], failedTickets: [] });
+      await firstRun;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('개별 ticket 실패만 수신자별 재시도 큐에 넣고 성공 기기는 재전송하지 않는다', async () => {
     push.send.mockImplementationOnce(async (messages: { to: string }[]) => ({
       invalidTokens: ['ExponentPushToken[host-device]'],
@@ -296,16 +380,13 @@ describe('RoomTimerNotificationsService', () => {
     expect(push.send).toHaveBeenCalledWith([
       expect.objectContaining({ to: 'ExpoPushToken[member-device]' }),
     ]);
-    expect(rooms.updateOne).toHaveBeenLastCalledWith(
+    expect(rooms.updateOne).toHaveBeenCalledWith(
       expect.objectContaining({
         _id: roomId,
-        timerNotificationRetryLeaseUntil: expect.any(Date),
+        timerNotificationRetries: { $elemMatch: { eventId } },
       }),
       {
-        $set: {
-          timerNotificationRetries: [],
-          timerNotificationRetryLeaseUntil: null,
-        },
+        $pull: { timerNotificationRetries: { eventId } },
       },
     );
   });
@@ -373,15 +454,87 @@ describe('RoomTimerNotificationsService', () => {
         }),
       }),
     );
-    const retryUpdate = rooms.updateOne.mock.calls.at(-1)![1];
-    expect(retryUpdate.$set.timerNotificationRetries).toEqual([
+    expect(rooms.updateOne).toHaveBeenCalledWith(
       expect.objectContaining({
-        eventId: retry.eventId,
-        attempts: 2,
-        recipients: [{ userId: String(memberId), token: 'ExpoPushToken[member-device]' }],
-        nextAttemptAt: expect.any(Date),
+        _id: roomId,
+        timerNotificationRetries: { $elemMatch: { eventId: retry.eventId } },
       }),
-    ]);
+      {
+        $set: {
+          'timerNotificationRetries.$[retry].recipients': [
+            { userId: String(memberId), token: 'ExpoPushToken[member-device]' },
+          ],
+          'timerNotificationRetries.$[retry].attempts': 2,
+          'timerNotificationRetries.$[retry].nextAttemptAt': expect.any(Date),
+        },
+      },
+      { arrayFilters: [{ 'retry.eventId': retry.eventId }] },
+    );
+  });
+
+  it('재시도 저장 중 다른 인스턴스가 추가한 새 항목을 보존한다', async () => {
+    const retry = {
+      eventId: `${roomId}:old-transition`,
+      transitionAt: new Date(startedAt.getTime() - 60_000),
+      phase: 'break',
+      title: '아침 집중방 타이머',
+      body: '집중 시간이 끝났어요. 잠시 쉬어 가세요.',
+      timerRevision: 3,
+      recipients: [{ userId: String(memberId), token: 'ExpoPushToken[member-device]' }],
+      attempts: 1,
+      nextAttemptAt: new Date(0),
+    };
+    const concurrentlyAdded = {
+      ...retry,
+      eventId: `${roomId}:new-transition`,
+      recipients: [{ userId: String(hostId), token: 'ExpoPushToken[host-device]' }],
+    };
+    const retryRoom = {
+      ...dueRoom,
+      timerPendingNotification: null,
+      timerNotificationRetries: [retry],
+    };
+    rooms.find
+      .mockReset()
+      .mockReturnValueOnce({ limit: () => ({ lean: async () => [] }) })
+      .mockReturnValueOnce({ sort: () => ({ limit: () => ({ lean: async () => [] }) }) })
+      .mockReturnValueOnce({ limit: () => ({ lean: async () => [retryRoom] }) });
+    rooms.findOne.mockReset().mockReturnValue(query(retryRoom));
+    rooms.updateOne.mockReset().mockImplementation(async (_filter, update) => {
+      if (update.$set?.['timerNotificationRetries.$[retry].attempts'] !== undefined) {
+        retryRoom.timerNotificationRetries.push(concurrentlyAdded);
+        Object.assign(retry, {
+          attempts: update.$set['timerNotificationRetries.$[retry].attempts'],
+          recipients: update.$set['timerNotificationRetries.$[retry].recipients'],
+          nextAttemptAt: update.$set['timerNotificationRetries.$[retry].nextAttemptAt'],
+        });
+      }
+      return { matchedCount: 1 };
+    });
+    push.send.mockImplementationOnce(async (messages: { to: string }[]) => ({
+      invalidTokens: [],
+      failedTickets: [{ message: messages[0], error: 'MessageRateExceeded' }],
+    }));
+    const service = new RoomTimerNotificationsService(
+      rooms as never,
+      devices as never,
+      push as never,
+    );
+
+    await service.runOnce(new Date());
+
+    expect(retryRoom.timerNotificationRetries).toHaveLength(2);
+    expect(retryRoom.timerNotificationRetries[0]).toMatchObject({
+      eventId: retry.eventId,
+      attempts: 2,
+    });
+    expect(retryRoom.timerNotificationRetries[1]).toEqual(concurrentlyAdded);
+    expect(rooms.updateOne).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        $set: expect.objectContaining({ timerNotificationRetries: expect.any(Array) }),
+      }),
+    );
   });
 
   it('마지막 교시가 끝나면 다음 날 첫 교시를 다음 알림 시각으로 저장한다', async () => {
