@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     # ai_jobs 작업 처리기. FastAPI는 이 컬렉션만 읽고 씁니다(DB · 색인 관리는 NestJS).
     mongodb_uri: SecretStr = SecretStr("")
     mongodb_db: str = "notelink"
+    ai_internal_token: SecretStr = SecretStr("")
     ai_job_lock_sec: int = 900  # 잠금 시간. 진행률을 쓸 때마다 다시 늘어남
     ai_job_max_attempts: int = 3  # 일시 오류(LLM 응답 실패 · 처리기 멈춤) 포함 최대 시도
     ai_job_retry_delay_sec: int = 30  # 다시 시도까지 기다리는 시간 × 시도 횟수
