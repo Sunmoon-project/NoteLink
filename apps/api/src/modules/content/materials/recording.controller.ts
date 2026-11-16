@@ -1,15 +1,19 @@
-import { Controller, Get, Param, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, NotFoundException, Param, Req, UseGuards } from '@nestjs/common';
 import type { Recording } from '@notelink/shared';
 
 import { requireUserId } from '../../../common/request-user.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../../auth/jwt-auth.guard.js';
+import { MaterialSharingService } from './material-sharing.service.js';
 import { RecordingService } from './recording.service.js';
 
 /** 녹음 재생 정보 주소 (packages/shared PATHS.materialRecording) */
 @Controller()
 @UseGuards(JwtAuthGuard)
 export class RecordingController {
-  constructor(private readonly recordings: RecordingService) {}
+  constructor(
+    private readonly recordings: RecordingService,
+    private readonly sharing: MaterialSharingService,
+  ) {}
 
   /** 원본 녹음 읽기 주소(RECORDING_READ_SAS_MS, 6시간) + 정리가 끝났으면 대본 · 슬라이드 */
   @Get('materials/:id/recording')
@@ -17,6 +21,15 @@ export class RecordingController {
     @Req() req: AuthenticatedRequest,
     @Param('id') id: string,
   ): Promise<{ data: Recording }> {
-    return { data: await this.recordings.findMine(requireUserId(req), id) };
+    const userId = requireUserId(req);
+    try {
+      return { data: await this.recordings.findMine(userId, id) };
+    } catch (e) {
+      // 내 노트가 아니면(404) 내가 현재 멤버인 방에 공유된 녹음일 때만 노트 주인 기준으로 읽는다(읽기 전용)
+      if (!(e instanceof NotFoundException)) throw e;
+      const ownerId = await this.sharing.ownerOfShared(userId, id);
+      if (!ownerId) throw e;
+      return { data: await this.recordings.findMine(ownerId, id) };
+    }
   }
 }

@@ -1106,11 +1106,36 @@ export function RoomCardsScreen() {
   const openFeature = useFeatureNavigation();
   const shared = useQuery({ queryKey: ['room-shared', id], queryFn: () => api.rooms.shared(id) });
   const others = shared.data?.items.filter((i) => i.itemType !== 'flashcards') ?? [];
+  const qc = useQueryClient();
+  const opening = useRef(new Set<string>());
+  // 공유 항목에는 노트 종류가 없어서 노트를 조회해 종류에 맞는 화면으로 연다(상세 화면과 같은 캐시 키)
+  const openMaterial = async (item: RoomSharedItem, materialId: string) => {
+    if (opening.current.has(item._id)) return;
+    opening.current.add(item._id);
+    try {
+      const note = await qc.fetchQuery({
+        queryKey: ['material', materialId],
+        queryFn: () => api.content.material(materialId),
+        staleTime: 30_000,
+      });
+      const pathname =
+        note.kind === 'handwriting'
+          ? '/(tabs)/note/hand/[id]'
+          : note.kind === 'recording'
+            ? '/(tabs)/note/rec/[id]'
+            : '/(tabs)/note/doc/[id]';
+      openFeature({ pathname, params: { id: materialId } });
+    } catch {
+      toast('이 자료를 열 수 없어요');
+    } finally {
+      opening.current.delete(item._id);
+    }
+  };
   const openItem = (item: RoomSharedItem) => {
     if (item.itemType === 'quiz' && item.quizSetId)
       openFeature({ pathname: '/play/solve', params: { setId: item.quizSetId, from: 'room' } });
     else if (item.itemType === 'material' && item.materialId)
-      openFeature({ pathname: '/(tabs)/note/doc/[id]', params: { id: item.materialId } });
+      void openMaterial(item, item.materialId);
     else toast('이 자료를 열 수 없어요');
   };
   const [flip, setFlip] = useState<string[]>([]);
