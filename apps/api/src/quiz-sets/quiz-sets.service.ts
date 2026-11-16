@@ -571,8 +571,9 @@ export class QuizSetsService {
     // 오늘의 복습은 노트를 섞으므로 세트를 만들 때 노트가 없다: 첫 문제가 나온 세트(baseSetId)의 노트 · 폴더를 쓴다
     if (update['status'] === 'ready' && job?.type === TODAY_TYPE)
       Object.assign(update, await this.baseOf(row, job));
-    // 오답 복습은 세트를 바꾸며 「이어 받을 풀이 남음」을 함께 적고, 넣은 뒤에 지운다(실패하면 다음 조회가 다시)
-    if (job?.type === SIMILAR_TYPE && row.sourceSetId) update['followUpPending'] = true;
+    // 노트가 있는 만드는 중 세트(일반 퀴즈 · 오답 복습)가 끝나면 그 노트를 기다리던 풀이를 이어 받는다:
+    // 「이어 받을 풀이 남음」을 세트와 함께 적고, 넣은 뒤에 지운다(실패하면 다음 조회가 다시)
+    if (row.status === 'generating' && row.materialId) update['followUpPending'] = true;
     const updated = await this.sets
       .findOneAndUpdate(
         { _id: row._id, status: row.status },

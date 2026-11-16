@@ -261,18 +261,19 @@ describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfter
     expect((last['input'] as { attemptId: string }).attemptId).toBe(onB._id.toHexString());
   });
 
-  it('건너뛸 풀이가 한 쪽(20개)을 넘어도 끝까지 보고 이어 받는다', async () => {
+  it('무효 풀이만 있는 풀이는 기다리지 않고, 막힌 유효 풀이만 이어 받는다', async () => {
     const { similar, seed, jobs, attempts, quizSets } = setup();
     const s = await seed();
     const first = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
-    // 무효 풀이만 있는 풀이 20개 뒤에 유효한 풀이 하나
+    // 무효 풀이만 있는 풀이 20개 뒤에 유효한 풀이 하나(끝낼 때마다 자동 시작을 부름)
     for (let i = 0; i < 20; i++) {
-      await attempts.model.create({
+      const v = (await attempts.model.create({
         quizSetId: s.set,
         userId: ME,
         finishedAt: new Date(NOW.getTime() - 50_000 + i * 1000),
         answers: [{ questionId: s.qs[0]!._id, answer: '가', correct: true, void: '정답 둘' }],
-      } as never);
+      } as never)) as unknown as { _id: Types.ObjectId };
+      expect(await similar.startAfterFinish(ME.toHexString(), v._id.toHexString())).toBeNull();
     }
     const valid = (await attempts.model.create({
       quizSetId: s.set,
@@ -280,6 +281,8 @@ describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfter
       finishedAt: new Date(NOW.getTime() - 10_000),
       answers: s.qs.map((q) => ({ questionId: q._id, answer: '가', correct: true })),
     } as never)) as unknown as { _id: Types.ObjectId };
+    await similar.startAfterFinish(ME.toHexString(), valid._id.toHexString());
+    expect(attempts.rows.filter((r) => r['reviewPending'] === true)).toHaveLength(1);
     Object.assign(jobs.rows[0]!, {
       status: 'succeeded',
       progress: 100,
@@ -289,6 +292,75 @@ describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfter
     expect(jobs.rows).toHaveLength(2);
     expect((jobs.rows[1]!['input'] as { attemptId: string }).attemptId).toBe(
       valid._id.toHexString(),
+    );
+  });
+
+  it('같은 노트로 일반 퀴즈를 만드는 중이면 기다렸다가, 그 퀴즈가 끝날 때 이어 받는다', async () => {
+    const { similar, seed, jobs, attempts, quizSets, sets } = setup();
+    const s = await seed();
+    // 같은 노트로 만드는 중인 일반 퀴즈(고유 색인: 노트마다 만드는 중 세트는 하나)
+    const genJob = jobs.rows.length;
+    const gen = (await sets.model.create({
+      ownerId: ME,
+      materialId: s.note,
+      folderId: FOLDER,
+      source: 'ai_generated',
+      sourceSetId: null,
+      title: '세포 생물학 2',
+      status: 'generating',
+      questions: [],
+      questionCount: 0,
+      deletedAt: null,
+    } as never)) as unknown as { _id: Types.ObjectId };
+    await new AiJobsService(jobs.model).enqueue({
+      type: 'quiz_generate',
+      userId: ME.toHexString(),
+      targetType: 'quiz_set',
+      targetId: gen._id.toHexString(),
+      input: {},
+    });
+    Object.assign(
+      sets.rows.find((r) => String(r._id) === String(gen._id))!,
+      {
+        jobId: jobs.rows[genJob]!._id,
+      },
+    );
+    expect(await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString())).toBeNull();
+    const row = () => attempts.rows.find((r) => String(r._id) === String(s.attempt))!;
+    expect(row()['reviewPending']).toBe(true);
+    // 일반 퀴즈가 끝나면(결과를 옮길 때) 기다리던 풀이로 오답 복습을 넣는다
+    Object.assign(jobs.rows[genJob]!, { status: 'failed', error: 'x' });
+    await quizSets.findMine(ME.toHexString(), gen._id.toHexString());
+    const review = jobs.rows.filter(
+      (j) => j['type'] === SIMILAR_TYPE && j['status'] !== 'canceled',
+    );
+    expect(review).toHaveLength(1);
+    expect((review[0]!['input'] as { attemptId: string }).attemptId).toBe(s.attempt.toHexString());
+    expect(row()['reviewPending']).toBe(false);
+  });
+
+  it('같은 시각에 끝난 두 풀이도 빠지지 않고 이어 받는다', async () => {
+    const { similar, seed, jobs, attempts, quizSets } = setup();
+    const s = await seed();
+    const at = new Date(NOW.getTime() - 60_000); // seed 풀이와 같은 완료 시각
+    const twin = (await attempts.model.create({
+      quizSetId: s.set,
+      userId: ME,
+      finishedAt: at,
+      answers: s.qs.map((q) => ({ questionId: q._id, answer: '가', correct: true })),
+    } as never)) as unknown as { _id: Types.ObjectId };
+    const first = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    await similar.startAfterFinish(ME.toHexString(), twin._id.toHexString());
+    expect(jobs.rows).toHaveLength(1);
+    Object.assign(jobs.rows[0]!, {
+      status: 'succeeded',
+      progress: 100,
+      result: { reviewQuestions: [], srsUpdates: [] },
+    });
+    await quizSets.findMine(ME.toHexString(), first!._id);
+    expect(jobs.rows).toHaveLength(2);
+    expect((jobs.rows[1]!['input'] as { attemptId: string }).attemptId).toBe(
+      twin._id.toHexString(),
     );
   });
 
@@ -302,6 +374,8 @@ describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfter
       finishedAt: new Date(NOW.getTime() - 30_000),
       answers: s.qs.map((q) => ({ questionId: q._id, answer: '가', correct: true })),
     } as never)) as unknown as { _id: Types.ObjectId };
+    await similar.startAfterFinish(ME.toHexString(), next._id.toHexString());
+
     Object.assign(jobs.rows[0]!, {
       status: 'succeeded',
       progress: 100,

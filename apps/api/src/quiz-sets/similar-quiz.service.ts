@@ -35,9 +35,13 @@ interface AttemptRow {
   quizSetId: Types.ObjectId;
   finishedAt: Date;
   answers?: { questionId: Types.ObjectId; correct: boolean; void?: boolean | string }[];
+  reviewPending?: boolean;
 }
 
 const conflict = (message: string) => new ConflictException({ code: VALIDATION_FAILED, message });
+
+/** 같은 노트로 만드는 중인 세트가 있어 지금은 오답 복습을 넣지 못함(응답은 409 그대로). 자동 시작은 기다리게 둔다 */
+class ReviewBlocked extends ConflictException {}
 
 /**
  * 유사 퀴즈(POST /quiz-sets/:id/similar). 이 세트를 마지막으로 푼 풀이에서 틀린 문제마다 비슷한 문제를
@@ -95,11 +99,15 @@ export class SimilarQuizService {
       .lean<QuizSetRow>();
     if (pending) {
       const synced = await this.quizSets.findMine(userId, pending._id.toString());
-      if (synced.status === 'generating' || String(pending.sourceAttemptId) === String(attempt._id))
-        return synced;
+      const mine = String(pending.sourceAttemptId) === String(attempt._id);
+      if (mine) await this.markPending(attempt._id, false);
+      if (synced.status === 'generating' || mine) return synced;
     }
     const already = await this.madeFor(userId, owner, source, attempt);
-    if (already) return already;
+    if (already) {
+      await this.markPending(attempt._id, false);
+      return already;
+    }
 
     const newId = new Types.ObjectId();
     const job = await this.jobs.enqueue({
@@ -126,6 +134,7 @@ export class SimilarQuizService {
         jobId: new Types.ObjectId(job._id),
         deletedAt: null,
       });
+      await this.markPending(attempt._id, false);
       return toAppSet(created.toObject<QuizSetRow>(), job.progress);
     } catch (e) {
       // 세트를 저장하지 못했으면 넣은 작업은 거둔다. 같은 노트로 만드는 중인 세트가 있으면(고유 색인) 기다리게 한다
@@ -135,8 +144,15 @@ export class SimilarQuizService {
       const first = await this.sets
         .findOne({ ownerId: owner, sourceSetId: source._id, status: 'generating', deletedAt: null })
         .lean<QuizSetRow>();
-      if (first) return this.quizSets.findMine(userId, first._id.toString());
-      throw conflict('이 노트로 퀴즈를 만드는 중이에요. 끝나면 다시 시도해 주세요');
+      if (first) {
+        if (String(first.sourceAttemptId) === String(attempt._id))
+          await this.markPending(attempt._id, false);
+        return this.quizSets.findMine(userId, first._id.toString());
+      }
+      throw new ReviewBlocked({
+        code: VALIDATION_FAILED,
+        message: '이 노트로 퀴즈를 만드는 중이에요. 끝나면 다시 시도해 주세요',
+      });
     }
   }
 
@@ -153,51 +169,57 @@ export class SimilarQuizService {
       .findOne({ _id: objectId(attemptId, '퀴즈'), userId: owner, finishedAt: { $ne: null } })
       .lean<AttemptRow>();
     if (!attempt || !(attempt.answers ?? []).some((a) => !a.void)) return null;
+    // 먼저 「기다림」을 적고, 이 풀이의 작업을 넣었으면(create가) 지운다. 같은 노트의 만드는 중 세트에 막히면 남아,
+    // 그 세트가 끝날 때 이어 받는다(catchUp). 다시 해도 안 되는 실패(지운 퀴즈 · 이미 만듦 등)는 지운다
+    await this.markPending(attempt._id, true);
     try {
       return await this.create(userId, attempt.quizSetId.toString(), false, attemptId);
     } catch (e) {
+      if (e instanceof ReviewBlocked) return null;
       const status = (e as { status?: number }).status;
-      if (status === 404 || status === 409 || status === 400) return null;
+      if (status === 404 || status === 409 || status === 400) {
+        await this.markPending(attempt._id, false);
+        return null;
+      }
       throw e;
     }
   }
 
+  private async markPending(attemptId: Types.ObjectId, on: boolean): Promise<void> {
+    await this.attempts
+      .findOneAndUpdate({ _id: attemptId }, { $set: { reviewPending: on } })
+      .lean();
+  }
+
   /**
-   * 오답 복습 세트에 결과를 옮긴 뒤(QuizSetsService.afterReview): 그 세트를 기다리는 사이 같은 노트의 퀴즈(이 세트의
-   * 원본만이 아니라 같은 노트의 다른 세트도)를 끝낸 풀이를 끝낸 순서대로 하나씩 넣는다. 같은 노트로 만드는 중인
-   * 세트는 하나라(고유 색인) 그때는 넣지 못했다. 하나를 넣으면 그 세트의 결과를 옮길 때 다음 것.
-   * 이미 만든 풀이 · 무효 풀이만 있는 풀이 · 만들 수 없는 풀이(409 등)는 건너뛰고 끝까지 본다. 넣다 오류가 나면
-   * 던져 세트에 「이어 받을 풀이 남음」이 남는다(다음 조회가 다시)
+   * 같은 노트의 만드는 중 세트(일반 퀴즈 · 오답 복습)에 결과를 옮긴 뒤(QuizSetsService.afterReview): 그 세트에 막혀
+   * 기다리던 풀이(reviewPending)를 끝낸 순서대로 하나씩 넣는다(같은 노트로 만드는 중인 세트는 하나). 하나를 넣으면
+   * 그 세트의 결과를 옮길 때 다음 것. 다시 막히면 멈추고 다음에 이어 간다. 넣다 오류가 나면 던져
+   * 세트에 「이어 받을 풀이 남음」이 남는다(다음 조회가 다시). 완료 시각 경계가 아니라 표시로 찾아 같은 시각의 풀이도 빠지지 않는다
    */
   private async catchUp(row: QuizSetRow): Promise<void> {
-    if (!row.materialId || !row.sourceAttemptId) return;
-    const prev = await this.attempts.findOne({ _id: row.sourceAttemptId }).lean<AttemptRow>();
-    if (!prev) return;
+    if (!row.materialId) return;
     const sameNote = await this.sets
       .find({ ownerId: row.ownerId, materialId: row.materialId }, { _id: 1 })
       .lean<{ _id: Types.ObjectId }[]>();
-    const query = {
-      userId: row.ownerId,
-      quizSetId: { $in: sameNote.map((x) => x._id) },
-      finishedAt: { $gt: prev.finishedAt },
-    };
-    const PAGE = 20;
-    for (let skip = 0; ; skip += PAGE) {
-      const page = await this.attempts
-        .find(query)
-        .sort({ finishedAt: 1, _id: 1 })
-        .skip(skip)
-        .limit(PAGE)
-        .lean<AttemptRow[]>();
-      for (const a of page) {
-        const made = await this.sets
-          .findOne({ ownerId: row.ownerId, sourceAttemptId: a._id })
-          .lean<QuizSetRow>();
-        if (made) continue;
-        const started = await this.startAfterFinish(row.ownerId.toString(), a._id.toString());
-        if (started?.status === 'generating') return;
-      }
-      if (page.length < PAGE) return;
+    // ponytail: 한 번에 50개까지. 그보다 많이 기다리면 남은 것은 다음 이어 받기에서
+    const waiting = await this.attempts
+      .find({
+        userId: row.ownerId,
+        quizSetId: { $in: sameNote.map((x) => x._id) },
+        reviewPending: true,
+      })
+      .sort({ finishedAt: 1, _id: 1 })
+      .limit(50)
+      .lean<AttemptRow[]>();
+    for (const a of waiting) {
+      await this.startAfterFinish(row.ownerId.toString(), a._id.toString());
+      const now = await this.attempts.findOne({ _id: a._id }).lean<AttemptRow>();
+      if (now?.reviewPending) return; // 다시 막힘: 막은 세트가 끝날 때 이어 간다
+      const started = await this.sets
+        .findOne({ sourceAttemptId: a._id, status: 'generating', deletedAt: null })
+        .lean<QuizSetRow>();
+      if (started) return; // 이 풀이의 작업이 돈다: 그 결과를 옮길 때 다음 것
     }
   }
 

@@ -51,6 +51,11 @@ export class QuizAttempt {
 
   @Prop({ type: Date, default: null })
   finishedAt?: Date | null;
+
+  // 끝낸 뒤 오답 복습 작업을 아직 넣지 못함(같은 노트로 만드는 중인 세트가 있어 막힘). 그 세트가 끝나면
+  // 끝낸 순서대로 이어서 넣고 지운다(SimilarQuizService.catchUp)
+  @Prop({ type: Boolean, default: false })
+  reviewPending?: boolean;
 }
 
 export const QuizAttemptSchema = SchemaFactory.createForClass(QuizAttempt);
