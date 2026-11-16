@@ -512,6 +512,7 @@ export class StudyRoomsService {
             timerPendingLeaseUntil: null,
             timerNotificationRetries: [],
             timerNotificationRetryLeaseUntil: null,
+            timerNotificationRetryLeaseToken: null,
           },
           $inc: { timerRevision: 1 },
         },

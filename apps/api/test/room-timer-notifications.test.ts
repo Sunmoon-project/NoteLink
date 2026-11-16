@@ -383,6 +383,7 @@ describe('RoomTimerNotificationsService', () => {
     expect(rooms.updateOne).toHaveBeenCalledWith(
       expect.objectContaining({
         _id: roomId,
+        timerNotificationRetryLeaseToken: expect.any(String),
         timerNotificationRetries: { $elemMatch: { eventId } },
       }),
       {
@@ -535,6 +536,109 @@ describe('RoomTimerNotificationsService', () => {
         $set: expect.objectContaining({ timerNotificationRetries: expect.any(Array) }),
       }),
     );
+  });
+
+  it('푸시 전송 뒤 DB 정리가 30초 넘게 걸려도 heartbeat가 두 번째 인스턴스를 막는다', async () => {
+    const retry = {
+      eventId: `${roomId}:delayed-cleanup`,
+      transitionAt: new Date(startedAt.getTime() - 60_000),
+      phase: 'break',
+      title: '아침 집중방 타이머',
+      body: '집중 시간이 끝났어요. 잠시 쉬어 가세요.',
+      timerRevision: 3,
+      recipients: [{ userId: String(memberId), token: 'ExpoPushToken[member-device]' }],
+      attempts: 1,
+      nextAttemptAt: new Date(0),
+    };
+    const retryRoom = {
+      ...dueRoom,
+      timerPendingNotification: null,
+      timerNotificationRetries: [retry],
+    };
+    let queue = [retry];
+    let leaseUntil: Date | null = null;
+    let leaseToken: string | null = null;
+    let completeCleanup: (() => void) | null = null;
+    let signalCleanupStarted!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      signalCleanupStarted = resolve;
+    });
+    rooms.find.mockImplementation((filter: Record<string, unknown>) => {
+      if ('timerNotificationRetries' in filter)
+        return { limit: () => ({ lean: async () => (queue.length ? [retryRoom] : []) }) };
+      if (filter.timerPendingNotification === null)
+        return { sort: () => ({ limit: () => ({ lean: async () => [] }) }) };
+      return { limit: () => ({ lean: async () => [] }) };
+    });
+    rooms.findOne.mockImplementation(() =>
+      query({ ...retryRoom, timerNotificationRetries: [...queue] }),
+    );
+    rooms.updateOne.mockImplementation(async (filter, update) => {
+      if (update.$pull?.timerNotificationRetries) {
+        signalCleanupStarted();
+        return await new Promise((resolve) => {
+          completeCleanup = () => {
+            queue = [];
+            resolve({ matchedCount: 1 });
+          };
+        });
+      }
+      const requestedLease = update.$set?.timerNotificationRetryLeaseUntil;
+      if (requestedLease instanceof Date && Array.isArray(filter.$or)) {
+        if (leaseUntil && leaseUntil.getTime() > Date.now()) return { matchedCount: 0 };
+        leaseUntil = requestedLease;
+        leaseToken = update.$set?.timerNotificationRetryLeaseToken as string;
+        return { matchedCount: 1 };
+      }
+      if (
+        requestedLease instanceof Date &&
+        filter.timerNotificationRetryLeaseToken === leaseToken
+      ) {
+        leaseUntil = requestedLease;
+        return { matchedCount: 1 };
+      }
+      if (
+        update.$set?.timerNotificationRetryLeaseUntil === null &&
+        filter.timerNotificationRetryLeaseToken === leaseToken
+      ) {
+        leaseUntil = null;
+        leaseToken = null;
+      }
+      return { matchedCount: 1 };
+    });
+    push.send.mockResolvedValueOnce({ invalidTokens: [], failedTickets: [] });
+    vi.useFakeTimers();
+    const leaseStart = new Date('2026-11-16T01:00:00.000Z');
+    vi.setSystemTime(leaseStart);
+
+    try {
+      const firstInstance = new RoomTimerNotificationsService(
+        rooms as never,
+        devices as never,
+        push as never,
+      );
+      const secondInstance = new RoomTimerNotificationsService(
+        rooms as never,
+        devices as never,
+        push as never,
+      );
+      const firstRun = firstInstance.runOnce(leaseStart);
+      await cleanupStarted;
+
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(leaseUntil!.getTime()).toBeGreaterThan(Date.now());
+      await secondInstance.runOnce(new Date());
+      expect(push.send).toHaveBeenCalledTimes(1);
+      expect(queue).toHaveLength(1);
+
+      completeCleanup!();
+      await firstRun;
+      expect(queue).toHaveLength(0);
+      expect(leaseUntil).toBeNull();
+      expect(leaseToken).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('마지막 교시가 끝나면 다음 날 첫 교시를 다음 알림 시각으로 저장한다', async () => {

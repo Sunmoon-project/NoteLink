@@ -94,6 +94,9 @@ export class StudyRoom {
   @Prop({ type: Date, default: null })
   timerNotificationRetryLeaseUntil?: Date | null; // 여러 API 인스턴스의 재시도 중복을 막는다
 
+  @Prop({ type: String, default: null })
+  timerNotificationRetryLeaseToken?: string | null; // lease 갱신 중에도 재시도 큐 소유권을 확인한다
+
   @Prop({ type: [RoomMemberSchema], default: [] })
   members: RoomMember[]; // 참여 멤버 배열
 

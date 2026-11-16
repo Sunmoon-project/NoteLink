@@ -295,6 +295,7 @@ describe('스터디룸 타이머 규칙', () => {
         timerNextNotificationAt: new Date('2026-11-03T00:00:00.000Z'),
         timerNotificationRetries: [],
         timerNotificationRetryLeaseUntil: null,
+        timerNotificationRetryLeaseToken: null,
       },
     });
   });
