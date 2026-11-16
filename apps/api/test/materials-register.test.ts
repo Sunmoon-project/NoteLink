@@ -369,7 +369,7 @@ describe('노트 등록 (MaterialsService.register)', () => {
 });
 
 describe('읽기 주소 유효 시간', () => {
-  it('AI 입력용은 30일(앱의 다시 시도가 입력 주소를 새로 만들지 않는다), 응답용은 1시간', () => {
+  it('AI 입력용은 30일(다시 시도할 때는 refreshInput 이 주소를 새로 만든다), 응답용은 1시간', () => {
     expect(AI_READ_SAS_MS).toBe(30 * 24 * 60 * 60 * 1000);
     expect(APP_READ_SAS_MS).toBe(60 * 60 * 1000);
   });
