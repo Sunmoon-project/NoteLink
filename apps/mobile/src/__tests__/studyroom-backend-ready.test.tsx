@@ -3,11 +3,13 @@ import { QueryClient } from '@tanstack/react-query';
 import { RoomCardsScreen } from '../features/studyroom/room';
 import { InviteScreen, ScheduleScreen, TimerScreen } from '../features/studyroom/tools';
 import { useAuth } from '../stores/auth';
+import { useToast } from '../stores/toast';
 import { renderScreen, setParams } from '../test-utils';
 
 const mockApi = {
   rooms: { get: jest.fn(), schedule: jest.fn(), shared: jest.fn(), setTimer: jest.fn() },
   social: { friends: jest.fn() },
+  content: { material: jest.fn() },
 };
 const mockOpen = jest.fn();
 jest.mock('../lib/api', () => ({
@@ -76,11 +78,47 @@ it('공유된 퀴즈와 자료를 서버가 준 id로 연다', async () => {
     pathname: '/play/solve',
     params: { setId: 'set-1', from: 'room' },
   });
+  mockApi.content.material.mockResolvedValue({ _id: 'mat-1', kind: 'document' });
   await fireEvent.press(screen.getByText('필기 자료'));
-  expect(mockOpen).toHaveBeenCalledWith({
-    pathname: '/(tabs)/note/doc/[id]',
-    params: { id: 'mat-1' },
+  await waitFor(() =>
+    expect(mockOpen).toHaveBeenCalledWith({
+      pathname: '/(tabs)/note/doc/[id]',
+      params: { id: 'mat-1' },
+    }),
+  );
+});
+
+it.each([
+  ['handwriting', '/(tabs)/note/hand/[id]'],
+  ['document', '/(tabs)/note/doc/[id]'],
+  ['recording', '/(tabs)/note/rec/[id]'],
+] as const)('공유된 %s 노트는 종류에 맞는 화면으로 연다', async (kind, pathname) => {
+  mockApi.rooms.shared.mockResolvedValue({
+    items: [item({ _id: 'm', itemType: 'material', materialId: 'mat-9', title: '공유 노트' })],
+    flashcards: [],
   });
+  mockApi.content.material.mockResolvedValue({ _id: 'mat-9', kind });
+  await renderScreen(<RoomCardsScreen />);
+  await fireEvent.press(await screen.findByText('공유 노트'));
+  await waitFor(() => expect(mockOpen).toHaveBeenCalledWith({ pathname, params: { id: 'mat-9' } }));
+  expect(mockApi.content.material).toHaveBeenCalledWith('mat-9');
+});
+
+it('공유 노트를 조회하지 못하면 토스트로 알리고, 조회 중 같은 항목을 또 눌러도 한 번만 조회한다', async () => {
+  mockApi.rooms.shared.mockResolvedValue({
+    items: [item({ _id: 'm', itemType: 'material', materialId: 'mat-9', title: '공유 노트' })],
+    flashcards: [],
+  });
+  let fail!: (e: Error) => void;
+  mockApi.content.material.mockReturnValue(new Promise((_, reject) => (fail = reject)));
+  await renderScreen(<RoomCardsScreen />);
+  const row = await screen.findByText('공유 노트');
+  await fireEvent.press(row);
+  await fireEvent.press(row);
+  expect(mockApi.content.material).toHaveBeenCalledTimes(1);
+  await act(async () => fail(new Error('404')));
+  await waitFor(() => expect(useToast.getState().msg).toBe('이 자료를 열 수 없어요'));
+  expect(mockOpen).not.toHaveBeenCalled();
 });
 
 it('공유 자료가 없으면 비어 있다고 안내한다', async () => {
