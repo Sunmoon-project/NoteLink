@@ -7,6 +7,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
+import type { StudyRoom, TimerRule } from '@notelink/shared';
 import { TokenService } from '../auth/token.service.js';
 import { StudyChatService } from './study-chat.service.js';
 
@@ -35,6 +36,14 @@ export class StudyChatGateway {
   notifyMembersChanged(roomId: string) {
     this.server.to(`study-room:${roomId}`).emit('room:members-changed', {
       roomId,
+    });
+  }
+  notifyTimer(roomId: string, rule: TimerRule | null, state: StudyRoom['timerState']) {
+    this.server.to(`study-room:${roomId}`).emit('room:timer', {
+      roomId,
+      rule,
+      phase: state?.phase ?? 'focus',
+      endsAt: state?.endsAt ?? null,
     });
   }
   async notifyDirectMessage(message: { chatRoomId: string }) {

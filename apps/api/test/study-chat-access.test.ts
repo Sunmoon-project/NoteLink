@@ -23,6 +23,8 @@ const roomId = new Types.ObjectId();
 const chatId = new Types.ObjectId();
 const studyRooms = { findOne: vi.fn() };
 const chats = { findOneAndUpdate: vi.fn(), findOne: vi.fn() };
+const roomsService = { setTimerRule: vi.fn() };
+const gateway = { evict: vi.fn(), notifyTimer: vi.fn() };
 const live = { issueToken: vi.fn(), disconnect: vi.fn() };
 const lean = (value: unknown) => ({ lean: () => Promise.resolve(value) });
 let app: INestApplication;
@@ -33,8 +35,8 @@ beforeAll(async () => {
     providers: [
       StudyChatService,
       { provide: StudyLiveService, useValue: live },
-      { provide: StudyChatGateway, useValue: { evict: vi.fn() } },
-      { provide: StudyRoomsService, useValue: {} },
+      { provide: StudyChatGateway, useValue: gateway },
+      { provide: StudyRoomsService, useValue: roomsService },
       { provide: getModelToken(StudyRoom.name), useValue: studyRooms },
       { provide: getModelToken(ChatRoom.name), useValue: chats },
       { provide: getModelToken(Message.name), useValue: {} },
@@ -61,6 +63,18 @@ afterAll(async () => {
 });
 beforeEach(() => {
   vi.resetAllMocks();
+  roomsService.setTimerRule.mockResolvedValue({
+    _id: String(roomId),
+    timerRule: {
+      enabled: false,
+      type: 'pomodoro',
+      focusMin: 50,
+      breakMin: 10,
+      repeat: 4,
+      periods: [],
+    },
+    timerState: null,
+  });
   studyRooms.findOne.mockReturnValue(lean({ _id: roomId }));
   chats.findOneAndUpdate.mockReturnValue({
     lean: () => ({ orFail: async () => ({ _id: chatId }) }),
@@ -114,6 +128,54 @@ describe('스터디룸 채팅방 접근', () => {
     const res = await request(app.getHttpServer()).get(url).set('Authorization', 'Bearer valid');
     expect(res.status).toBe(200);
     expect(res.body.data.chatRoomId).toBe(String(chatId));
+  });
+});
+
+describe('스터디룸 타이머 API', () => {
+  it('인증된 방장 요청을 규칙 저장 서비스에 전달하고 타이머를 방송한다', async () => {
+    const rule = {
+      enabled: true,
+      type: 'pomodoro',
+      focusMin: 25,
+      breakMin: 5,
+      repeat: 4,
+      periods: [],
+    };
+    roomsService.setTimerRule.mockResolvedValueOnce({
+      _id: String(roomId),
+      timerRule: rule,
+      timerState: { phase: 'focus', endsAt: '2026-11-15T10:25:00.000Z' },
+    });
+
+    const response = await request(app.getHttpServer())
+      .put(`/api/v1/study-rooms/${roomId}/timer-rule`)
+      .set('Authorization', 'Bearer valid')
+      .send(rule);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.timerRule).toEqual(rule);
+    expect(roomsService.setTimerRule).toHaveBeenCalledWith(String(userId), String(roomId), rule);
+    expect(gateway.notifyTimer).toHaveBeenCalledWith(String(roomId), rule, {
+      phase: 'focus',
+      endsAt: '2026-11-15T10:25:00.000Z',
+    });
+  });
+
+  it('잘못된 타이머 범위는 저장 서비스에 전달하지 않는다', async () => {
+    const response = await request(app.getHttpServer())
+      .put(`/api/v1/study-rooms/${roomId}/timer-rule`)
+      .set('Authorization', 'Bearer valid')
+      .send({
+        enabled: true,
+        type: 'pomodoro',
+        focusMin: 0,
+        breakMin: 5,
+        repeat: 4,
+        periods: [],
+      });
+
+    expect(response.status).toBe(400);
+    expect(roomsService.setTimerRule).not.toHaveBeenCalled();
   });
 });
 

@@ -18,6 +18,9 @@ import { ReportsController } from '../social/reports.controller.js';
 import { ReportsService } from '../social/reports.service.js';
 import { UploadsModule } from '../upload/uploads.module.js';
 import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schema.js';
+import { Device, DeviceSchema } from '../users/schemas/device.schema.js';
+import { ExpoPushService } from '../notification/expo-push.service.js';
+import { RoomTimerNotificationsService } from './room-timer-notifications.service.js';
 
 @Module({
   imports: [
@@ -31,6 +34,7 @@ import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schem
       { name: StudyRoom.name, schema: StudyRoomSchema },
       { name: Report.name, schema: ReportSchema },
       { name: Friendship.name, schema: FriendshipSchema },
+      { name: Device.name, schema: DeviceSchema },
     ]),
   ],
   controllers: [StudyRoomsController, StudyChatController, ReportsController],
@@ -40,6 +44,8 @@ import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schem
     StudyChatGateway,
     StudyLiveService,
     StudyRoomCleanupService,
+    ExpoPushService,
+    RoomTimerNotificationsService,
     ReportsService,
   ],
 })

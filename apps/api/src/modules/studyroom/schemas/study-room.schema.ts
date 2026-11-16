@@ -73,6 +73,30 @@ export class StudyRoom {
   @Prop({ type: Object })
   timerRule?: Record<string, unknown>; // 뽀모도로 타이머 규칙
 
+  @Prop({ type: Date, default: null })
+  timerStartedAt?: Date | null; // 방 전체 뽀모도로의 공통 시작 시각
+
+  @Prop({ type: Date, default: null, index: true })
+  timerNextNotificationAt?: Date | null; // 서버가 다음 단계 알림을 처리할 시각
+
+  @Prop({ type: Number, default: 0 })
+  timerRevision?: number; // 타이머 규칙이 바뀌면 이전 대기 알림을 폐기한다
+
+  @Prop({ type: Object, default: null })
+  timerPendingNotification?: Record<string, unknown> | null; // 전송 재시도용 알림 outbox
+
+  @Prop({ type: Date, default: null })
+  timerPendingLeaseUntil?: Date | null; // 여러 API 인스턴스가 같은 알림을 보내지 않게 잠근다
+
+  @Prop({ type: [Object], default: [] })
+  timerNotificationRetries?: Record<string, unknown>[]; // 푸시 실패 수신자만 분리 재시도
+
+  @Prop({ type: Date, default: null })
+  timerNotificationRetryLeaseUntil?: Date | null; // 여러 API 인스턴스의 재시도 중복을 막는다
+
+  @Prop({ type: String, default: null })
+  timerNotificationRetryLeaseToken?: string | null; // lease 갱신 중에도 재시도 큐 소유권을 확인한다
+
   @Prop({ type: [RoomMemberSchema], default: [] })
   members: RoomMember[]; // 참여 멤버 배열
 
