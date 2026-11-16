@@ -35,6 +35,8 @@ import { RecordingService } from './recording.service.js';
       // 노트 공유: 스터디룸 · 공유 항목 스키마는 읽기만 한다(스터디룸 서비스는 쓰지 않는다)
       { name: StudyRoom.name, schema: StudyRoomSchema },
       { name: RoomSharedItem.name, schema: RoomSharedItemSchema },
+      // 공유한 사람의 닉네임
+      { name: User.name, schema: UserSchema },
     ]),
     AiJobsModule,
     QuizSetsModule,
