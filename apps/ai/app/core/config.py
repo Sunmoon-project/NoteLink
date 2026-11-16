@@ -33,8 +33,9 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
 
-    # 퀴즈 · 노트 · 녹음이 쓰는 LLM. claude(기본, #278) · school(학교 LLM, OpenAI 호환)
-    llm_provider: Literal["claude", "school"] = "claude"
+    # 퀴즈 · 노트 · 녹음이 쓰는 LLM. school(학교 LLM, OpenAI 호환) · claude(#278).
+    # 개발 · 테스트 기간에는 Claude 비용을 아끼려고 school이 기본. 실제 배포 때 claude로 바꿈
+    llm_provider: Literal["claude", "school"] = "school"
     anthropic_api_key: SecretStr = SecretStr("")
     llm_effort: Literal["low", "medium", "high"] = "low"  # Claude output_config.effort
     # Claude에 쓸 전체 기간 비용 상한(달러). 작업마다 ai_jobs.llmUsd에 쌓은 합계가 닿으면 학교

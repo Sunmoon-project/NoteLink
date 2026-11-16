@@ -91,7 +91,7 @@ it('모두 끄고 저장하면 빈 목록을 보낸다', async () => {
   await waitFor(() => expect(mockApi.me.update).toHaveBeenCalledWith({ interestCategoryIds: [] }));
 });
 
-it('현재는 상위 분야만 선택하고 하위 분야는 새로 선택하지 않는다', async () => {
+it('세부 분야가 있는 큰 분야는 펼쳐서 「전체」나 세부 분야를 고른다', async () => {
   const subId = '507f1f77bcf86cd799439007';
   mockApi.me.get.mockResolvedValue(user([]));
   mockApi.me.interestCategories.mockResolvedValue([
@@ -104,16 +104,19 @@ it('현재는 상위 분야만 선택하고 하위 분야는 새로 선택하지
     user(p.interestCategoryIds),
   );
   await renderScreen(<InterestsScreen />);
+  // 접혀 있을 때는 세부 분야가 보이지 않는다
+  expect(screen.queryByText('기초')).toBeNull();
   await fireEvent.press(await screen.findByText('코딩'));
-  expect(screen.queryByText('코딩 › 기초')).toBeNull();
-  expect(screen.queryByText('어학 › 기초')).toBeNull();
+  await fireEvent.press(screen.getByText('기초'));
+  await fireEvent.press(screen.getByText('코딩 전체'));
+  expect(screen.getByLabelText('코딩, 2개 골랐어요')).toBeTruthy();
   await fireEvent.press(screen.getByText('저장'));
   await waitFor(() =>
-    expect(mockApi.me.update).toHaveBeenCalledWith({ interestCategoryIds: [ids.코딩] }),
+    expect(mockApi.me.update).toHaveBeenCalledWith({ interestCategoryIds: [subId, ids.코딩] }),
   );
 });
 
-it('기존에 저장된 하위 분야는 자동으로 지우지 않고 제거를 안내한다', async () => {
+it('저장된 세부 분야는 고른 상태로 보이고 제거 안내를 띄우지 않는다', async () => {
   const subId = '507f1f77bcf86cd799439007';
   mockApi.me.get.mockResolvedValue(user([ids.코딩, subId]));
   mockApi.me.interestCategories.mockResolvedValue([
@@ -122,7 +125,10 @@ it('기존에 저장된 하위 분야는 자동으로 지우지 않고 제거를
   ]);
   mockApi.me.update.mockResolvedValue(user([ids.코딩]));
   await renderScreen(<InterestsScreen />);
-  await fireEvent.press(await screen.findByText('코딩 › 기초 · 제거'));
+  expect(await screen.findByLabelText('코딩, 2개 골랐어요')).toBeTruthy();
+  expect(screen.queryByText('코딩 › 기초 · 제거')).toBeNull();
+  await fireEvent.press(screen.getByText('코딩'));
+  await fireEvent.press(screen.getByText('기초'));
   await fireEvent.press(screen.getByText('저장'));
   await waitFor(() =>
     expect(mockApi.me.update).toHaveBeenCalledWith({ interestCategoryIds: [ids.코딩] }),

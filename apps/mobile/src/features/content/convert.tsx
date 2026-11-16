@@ -132,6 +132,8 @@ export function ConvertScreen() {
   const canceled = useRef(false);
   const checkingRegistration = useRef(false);
   const [checking, setChecking] = useState(false);
+  // 서버에 등록되기 전(올리기 · 등록 단계)에 실패한 이유와, 그 뒤 다시 시도한 횟수
+  const [uploadFail, setUploadFail] = useState<{ reason: string; tries: number } | null>(null);
 
   const requireFolder = () => {
     if (!draft.folderId) throw new Error('자료를 넣을 폴더가 없어요');
@@ -183,6 +185,8 @@ export function ConvertScreen() {
       setJob(r.job);
       setPhase('ai');
     } catch (e) {
+      if (!canceled.current && !(e instanceof NetworkError))
+        setUploadFail((f) => ({ reason: uploadFailReason(e), tries: (f?.tries ?? 0) + 1 }));
       if (!canceled.current)
         setPhase(
           e instanceof Error && 'code' in e && e.code === 'MATERIAL_REGISTRATION_UNCERTAIN'
@@ -418,8 +422,24 @@ export function ConvertScreen() {
           지금 다시 시도
         </Btn>
       </Sheet>
+      {/* 서버에 등록되기 전에 실패하면 저장할 원본 자료가 서버에 없으므로 「원본만 저장」 대신 나가기를 둔다.
+          다시 시도가 곧바로 또 실패해도 같은 창만 되풀이되지 않게 이유와 횟수를 보여 준다 */}
       <Alert
-        open={phase === 'failed' && !credit}
+        open={phase === 'failed' && !credit && !materialId && !job}
+        title="자료를 올리지 못했어요"
+        body={`${uploadFail?.reason ?? '서버에 올리지 못했어요.'}\n원본은 이 기기에 그대로 있어요.${
+          (uploadFail?.tries ?? 0) > 1 ? '\n계속 안 되면 나가서 나중에 다시 올려 주세요.' : ''
+        }`}
+        secondary="나가기"
+        onSecondary={() => router.back()}
+        primary="다시 시도"
+        onPrimary={() => {
+          setPhase('upload');
+          void run();
+        }}
+      />
+      <Alert
+        open={phase === 'failed' && !credit && (!!materialId || !!job)}
         title="정리에 실패했어요"
         body={`원본은 그대로 있어요.\n다시 시도하거나 원본만 저장할 수 있어요.`}
         secondary="원본만 저장"
@@ -640,4 +660,13 @@ export function DocSummary({
       )}
     </>
   );
+}
+
+/** 등록 전 실패 이유: 서버 응답 코드로 짧게(네트워크 끊김은 paused로 따로 다룬다) */
+function uploadFailReason(e: unknown) {
+  const status = (e as { status?: number } | null)?.status;
+  if (status === 404) return '서버가 아직 자료를 받을 준비가 안 됐어요.';
+  if (status === 503) return '서버의 파일 저장소에 연결하지 못했어요.';
+  if (status === 413) return '파일이 너무 커서 올리지 못했어요.';
+  return '서버에 올리지 못했어요.';
 }

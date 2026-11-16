@@ -583,9 +583,9 @@ describe('퀴즈 · 복습 문제의 아바타 한마디', () => {
 });
 
 it('처음 안내는 틀린 문제를 오답 노트로 매일 복습하는 방법도 알려 준다', () => {
-  const step = STEPS.find((s) => s.title === '복습: 틀린 문제');
+  const step = STEPS.find((s) => s.title === '틀린 문제 다시 풀기');
   expect(step).toMatchObject({ route: '/quiz', flow: 2 });
-  expect(step!.body).toMatch(/오답 노트.*하루에 처음/);
+  expect(step!.lines.join(' ')).toMatch(/오답 노트.*하루에 처음/);
 });
 
 describe('처음 안내', () => {
@@ -607,7 +607,8 @@ describe('처음 안내', () => {
       '/',
       '/note',
       '/note',
-      '/note',
+      // 노트가 없어도 실제 3D 선생님을 밝혀 보여 주는 화면
+      '/(tabs)/profile/avatar-teacher',
       '/quiz',
       '/quiz',
       '/quiz',
@@ -632,7 +633,7 @@ describe('처음 안내', () => {
     await renderScreen(<TourCoach />);
     expect(screen.getByText(FOLDER_STEPS[0]!.title)).toBeTruthy();
     expect(FOLDER_STEPS[0]!.spot).toEqual({ target: 'folder-add', tab: 1 });
-    expect(FOLDER_STEPS[0]!.body).toMatch(/학습 자료 .*녹음 .*필기/);
+    expect(FOLDER_STEPS[0]!.lines.join(' ')).toMatch(/학습 자료.*녹음.*필기/);
     expect(screen.getByText(`1 / ${FOLDER_STEPS.length}`)).toBeTruthy();
     await fireEvent.press(screen.getByText('다음'));
     expect(await screen.findByText(FOLDER_STEPS[1]!.title)).toBeTruthy();
@@ -643,15 +644,36 @@ describe('처음 안내', () => {
   });
 
   it('안내는 지금 있는 기능만 말한다: 노트 탭 + 는 폴더 만들기, 틀린 문제는 유사 퀴즈 · 보관함', () => {
-    const add = STEPS.find((s) => s.title === '정리: 자료 올리기')!;
-    expect(add.body).toMatch(/폴더를 먼저 만들어요.*폴더에 들어가 \+ 버튼/);
-    const make = STEPS.find((s) => s.title === '복습: 퀴즈 만들기')!;
-    expect(make.body).toMatch(/유사 퀴즈.*보관함/);
-    expect(STEPS.map((s) => s.body).join(' ')).not.toMatch(/오늘의 복습/);
+    const add = STEPS.find((s) => s.title === '자료 올리기')!;
+    expect(add.lines.join(' ')).toMatch(/폴더를 먼저 만들어요.*폴더에 들어가 \+ 버튼/);
+    const make = STEPS.find((s) => s.title === '퀴즈 만들기')!;
+    expect(make.lines.join(' ')).toMatch(/유사 퀴즈.*보관함/);
+    expect(STEPS.flatMap((s) => s.lines).join(' ')).not.toMatch(/오늘의 복습/);
+  });
+
+  it('학습 단계는 실제 3D 선생님이 있는 화면으로 가서 그 선생님을 밝힌다', () => {
+    const ask = STEPS.find((s) => s.title === '저에게 물어보기')!;
+    expect(ask).toMatchObject({
+      route: '/(tabs)/profile/avatar-teacher',
+      spot: { target: 'teacher-stage', tab: 4 },
+      flow: 1,
+    });
+  });
+
+  it('선생님 화면(프로필 탭 안)을 지나가면 프로필 탭을 첫 화면으로 되돌린 뒤 다음 화면으로 간다', async () => {
+    const ask = STEPS.findIndex((s) => s.title === '저에게 물어보기');
+    useTour.setState({ step: ask, kind: 'main', afterFolder: false });
+    jest.mocked(router.navigate).mockClear();
+    await renderScreen(<TourCoach />);
+    expect(router.navigate).toHaveBeenLastCalledWith('/(tabs)/profile/avatar-teacher');
+    await fireEvent.press(screen.getByText('다음'));
+    await screen.findByText(STEPS[ask + 1]!.title);
+    const calls = jest.mocked(router.navigate).mock.calls.map((c) => c[0]);
+    expect(calls.slice(-2)).toEqual(['/(tabs)/profile', STEPS[ask + 1]!.route]);
   });
 
   it('처음 안내 마지막 단계는 정리 · 학습 · 복습을 ①②③으로 요약한다', () => {
-    expect(STEPS.at(-1)!.body).toMatch(/① .*② .*③ /);
+    expect(STEPS.at(-1)!.lines.join(' ')).toMatch(/① .*② .*③ /);
   });
 
   it('건너뛰기는 한 번 더 묻고, 계속 보기를 고르면 안내에 남는다', async () => {

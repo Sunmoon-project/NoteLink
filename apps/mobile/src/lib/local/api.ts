@@ -23,6 +23,7 @@ import {
   type Todo,
   type User,
   type UserItem,
+  INTEREST_CATEGORY_GROUPS,
 } from '@notelink/shared';
 import { ApiError, NetworkError } from '../api/http';
 import type { Api, MonthDay, RoomSchedule } from '../api/types';
@@ -474,14 +475,24 @@ const api: Api = {
     logout: () => ok(undefined),
   },
   me: {
-    interestCategories: () =>
-      ok(
-        ['자격증', '수능', '어학', '전공', '코딩', '공무원'].map((name, index) => ({
-          _id: String(index + 1).padStart(24, '0'),
+    // 서버와 같은 공용 관심 분야(@notelink/shared). id는 큰 분야 1~, 이어서 세부 분야 순서 번호라
+    // 예전 여섯 분야(1~6)를 고른 계정도 같은 분야로 읽힌다
+    interestCategories: () => {
+      const groups = INTEREST_CATEGORY_GROUPS.map((g, i) => ({
+        _id: String(i + 1).padStart(24, '0'),
+        name: g.name,
+        parentId: null as string | null,
+      }));
+      let n = groups.length;
+      const children = INTEREST_CATEGORY_GROUPS.flatMap((g, i) =>
+        g.children.map((name) => ({
+          _id: String(++n).padStart(24, '0'),
           name,
-          parentId: null,
+          parentId: groups[i]!._id as string | null,
         })),
-      ),
+      );
+      return ok([...groups, ...children]);
+    },
     get: () => {
       return ok(withStats(db()));
     },

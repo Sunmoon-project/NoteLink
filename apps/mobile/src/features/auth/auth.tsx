@@ -14,7 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, Check, Sparkles } from 'lucide-react-native';
 import { ERROR_CODES, type LearnerType, type SocialProvider } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
-import { interestLabels } from '@/lib/interest-categories';
+import { InterestPicker } from '../profile/interest-picker';
 import { getProviderToken, socialLoginReady } from '@/lib/social-auth';
 import { clearAccountState } from '@/lib/account';
 import {
@@ -718,7 +718,6 @@ const TYPES: [LearnerType, string][] = [
   ['worker', '직장인'],
 ];
 /** 관심 분야(온보딩 · 프로필 > 계정 정보에서 고른다). 서버 카테고리 형식은 정해지면 맞춘다 */
-export const INTERESTS = ['자격증', '수능', '어학', '전공', '코딩', '공무원'];
 
 export function ProfileSetupScreen() {
   const qc = useQueryClient();
@@ -729,8 +728,6 @@ export function ProfileSetupScreen() {
     queryKey: ['interest-categories'],
     queryFn: api.me.interestCategories,
   });
-  const topLevelCategories = categories.data?.filter((category) => category.parentId == null) ?? [];
-  const categoryLabels = interestLabels(topLevelCategories);
   const save = useMutation({
     mutationFn: () =>
       api.me.update({ nickname: nick.trim(), learnerType: type!, interestCategoryIds: interests }),
@@ -778,30 +775,20 @@ export function ProfileSetupScreen() {
         </View>
         <FieldError msg={tried && !type ? '학습자 유형을 골라 주세요' : null} />
         <Label>관심 분야</Label>
-        <View className="flex-row flex-wrap gap-2">
-          {topLevelCategories.map((x) => (
-            <Chip
-              key={x._id}
-              on={interests.includes(x._id)}
-              onPress={() =>
-                setInterests((p) =>
-                  p.includes(x._id) ? p.filter((y) => y !== x._id) : [...p, x._id],
-                )
-              }
-            >
-              {categoryLabels.get(x._id)}
-            </Chip>
-          ))}
-        </View>
+        <InterestPicker
+          categories={categories.data ?? []}
+          selected={interests}
+          onToggle={(id) =>
+            setInterests((p) => (p.includes(id) ? p.filter((y) => y !== id) : [...p, id]))
+          }
+        />
         {categories.isLoading && <Text>관심 분야를 불러오는 중이에요</Text>}
         {categories.isError && (
           <Tap onPress={() => void categories.refetch()}>
             <Text>관심 분야를 불러오지 못했어요. 다시 시도</Text>
           </Tap>
         )}
-        {categories.data && topLevelCategories.length === 0 && (
-          <Text>선택할 관심 분야가 없어요</Text>
-        )}
+        {categories.data?.length === 0 && <Text>선택할 관심 분야가 없어요</Text>}
         {save.isError && <FieldError msg="프로필을 저장하지 못했어요. 다시 시도해 주세요" />}
       </Screen>
     </Canvas>
