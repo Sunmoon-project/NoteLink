@@ -15,28 +15,32 @@ def verdict_from_read(result: Mapping[str, Any]) -> ImageVerdict:
     if not isinstance(content, str) or not content.strip():
         return "not_handwriting"
 
-    handwritten_spans = [
-        (span.get("offset"), span.get("length"))
-        for style in result.get("styles") or []
-        if isinstance(style, Mapping) and style.get("isHandwritten") is True
-        for span in style.get("spans") or []
-        if isinstance(span, Mapping)
-        and isinstance(span.get("offset"), int)
-        and isinstance(span.get("length"), int)
-        and span["length"] > 0
-    ]
-    handwritten_chars = sum(length for _, length in handwritten_spans)
+    handwritten_chars = 0
+    for style in result.get("styles") or []:
+        if not isinstance(style, Mapping) or style.get("isHandwritten") is not True:
+            continue
+        for span in style.get("spans") or []:
+            if not isinstance(span, Mapping):
+                continue
+            offset = span.get("offset")
+            length = span.get("length")
+            if isinstance(offset, int) and isinstance(length, int) and length > 0:
+                handwritten_chars += length
 
-    confidences = [
-        word.get("confidence")
-        for page in result.get("pages") or []
-        if isinstance(page, Mapping)
-        for word in page.get("words") or []
-        if isinstance(word, Mapping)
-        and isinstance(word.get("confidence"), (int, float))
-        and 0 <= word["confidence"] <= 1
-    ]
-    if confidences and sum(confidences) / len(confidences) < MIN_OCR_CONFIDENCE:
+    confidence_total = 0.0
+    confidence_count = 0
+    for page in result.get("pages") or []:
+        if not isinstance(page, Mapping):
+            continue
+        for word in page.get("words") or []:
+            if not isinstance(word, Mapping):
+                continue
+            confidence = word.get("confidence")
+            if isinstance(confidence, (int, float)) and 0 <= confidence <= 1:
+                confidence_total += float(confidence)
+                confidence_count += 1
+
+    if confidence_count and confidence_total / confidence_count < MIN_OCR_CONFIDENCE:
         return "blurry"
 
     if handwritten_chars >= MIN_HANDWRITTEN_CHARS:
