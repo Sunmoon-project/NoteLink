@@ -10,12 +10,28 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Types, type Model } from 'mongoose';
+import {
+  TimerRule as TimerRuleSchema,
+  nextRoomTimerTransitionAt,
+  roomTimerState,
+  type TimerRule,
+} from '@notelink/shared';
 
 import { User } from '../auth/schemas/user.schema.js';
 import { Category } from '../content/schemas/category.schema.js';
 import { CreateStudyRoomDto } from './dto/create-study-room.dto.js';
 import { StudyRoom } from './schemas/study-room.schema.js';
 import { Friendship } from '../social/schemas/friendship.schema.js';
+import { SetRoomTimerDto } from './dto/set-room-timer.dto.js';
+
+function timerFields(room: Pick<StudyRoom, 'timerRule' | 'timerStartedAt'>) {
+  const parsed = TimerRuleSchema.safeParse(room.timerRule);
+  const rule = parsed.success ? parsed.data : null;
+  return {
+    timerRule: rule,
+    timerState: roomTimerState(rule, room.timerStartedAt),
+  };
+}
 
 @Injectable()
 export class StudyRoomsService {
@@ -383,7 +399,7 @@ export class StudyRoomsService {
       inviteCode: room.inviteCode,
       maxCapacity: room.maxCapacity,
       memberCount: room.memberCount,
-      timerRule: room.timerRule ?? null,
+      ...timerFields(room),
       members: room.members.map((member) => ({
         userId: String(member.userId),
         nickname: nicknames.get(String(member.userId)) ?? '알 수 없는 사용자',
@@ -430,7 +446,7 @@ export class StudyRoomsService {
       inviteCode: room.inviteCode,
       maxCapacity: room.maxCapacity,
       memberCount: room.memberCount,
-      timerRule: room.timerRule ?? null,
+      ...timerFields(room),
       members: joined.map((member) => ({
         userId: String(member.userId),
         nickname: nicknames.get(String(member.userId)) ?? '알 수 없는 사용자',
@@ -440,6 +456,94 @@ export class StudyRoomsService {
       createdAt: (room as typeof room & { createdAt: Date }).createdAt.toISOString(),
       closedAt: room.closedAt?.toISOString() ?? null,
     };
+  }
+
+  async setTimerRule(userId: string, roomId: string, input: SetRoomTimerDto) {
+    if (!isValidObjectId(userId))
+      throw new UnauthorizedException({
+        code: 'AUTH_TOKEN_EXPIRED',
+        message: '다시 로그인해 주세요',
+      });
+    if (!isValidObjectId(roomId))
+      throw new NotFoundException({
+        code: 'ROOM_NOT_FOUND',
+        message: '스터디룸을 찾을 수 없습니다.',
+      });
+
+    const hostId = new Types.ObjectId(userId);
+    const roomObjectId = new Types.ObjectId(roomId);
+    const current = await this.rooms
+      .findOne({
+        _id: roomObjectId,
+        closedAt: null,
+        members: { $elemMatch: { userId: hostId, status: 'joined' } },
+      })
+      .lean();
+    if (!current)
+      throw new NotFoundException({
+        code: 'ROOM_NOT_FOUND',
+        message: '참여 중인 스터디룸을 찾을 수 없습니다.',
+      });
+    if (!current.hostId.equals(hostId))
+      throw new ForbiddenException({
+        code: 'ROOM_HOST_ONLY',
+        message: '방장만 타이머를 변경할 수 있습니다.',
+      });
+
+    this.validateTimerPeriods(input);
+    const timerRule: TimerRule = TimerRuleSchema.parse(input);
+    const now = new Date();
+    const timerStartedAt = timerRule.enabled && timerRule.type === 'pomodoro' ? now : null;
+    const nextTransitionAt = nextRoomTimerTransitionAt(timerRule, timerStartedAt, now.getTime());
+    const updated = await this.rooms
+      .findOneAndUpdate(
+        {
+          _id: roomObjectId,
+          hostId,
+          closedAt: null,
+          members: { $elemMatch: { userId: hostId, status: 'joined' } },
+        },
+        {
+          $set: {
+            timerRule,
+            timerStartedAt,
+            timerNextNotificationAt: nextTransitionAt ? new Date(nextTransitionAt) : null,
+            timerPendingNotification: null,
+            timerPendingLeaseUntil: null,
+            timerNotificationRetries: [],
+            timerNotificationRetryLeaseUntil: null,
+            timerNotificationRetryLeaseToken: null,
+          },
+          $inc: { timerRevision: 1 },
+        },
+        { new: true, runValidators: true },
+      )
+      .lean();
+    if (!updated)
+      throw new NotFoundException({
+        code: 'ROOM_NOT_FOUND',
+        message: '참여 중인 스터디룸을 찾을 수 없습니다.',
+      });
+    return this.getRoom(userId, roomId);
+  }
+
+  private validateTimerPeriods(input: SetRoomTimerDto): void {
+    if (input.type === 'period' && input.periods.length === 0) {
+      throw new BadRequestException({
+        code: 'TIMER_RULE_INVALID',
+        message: '교시제 타이머에는 하나 이상의 교시를 설정해 주세요.',
+      });
+    }
+    const periods = [...input.periods].sort((a, b) => a.start.localeCompare(b.start));
+    for (let index = 0; index < periods.length; index++) {
+      const current = periods[index]!;
+      if (current.start >= current.end || (index > 0 && periods[index - 1]!.end > current.start)) {
+        throw new BadRequestException({
+          code: 'TIMER_RULE_INVALID',
+          message: '교시 시간은 겹치지 않도록 시작·종료 순서에 맞게 설정해 주세요.',
+        });
+      }
+    }
   }
 
   async joinRoom(userId: string, inviteCode: string) {

@@ -33,11 +33,15 @@ export class Processing {
   })
   status: string;
 
-  @Prop({ required: true, type: Number})
+  @Prop({ required: true, type: Number })
   progress: number;
 
   @Prop({ type: Types.ObjectId, ref: 'AiJob', default: null })
   jobId?: Types.ObjectId | null;
+
+  /** 목록 조회가 이 노트의 작업 상태를 마지막으로 확인한 시각. 서버 전용(앱 응답에는 없다). 실패한 노트를 돌아가며 확인하려고 쓴다 */
+  @Prop({ type: Date })
+  checkedAt?: Date;
 }
 
 export const ProcessingSchema = SchemaFactory.createForClass(Processing);
@@ -72,7 +76,7 @@ export class Bookmark {
   @Prop({ required: true, type: Number })
   atSec: number;
 
-  @Prop({ type: String } ) // 예: "중간고사"
+  @Prop({ type: String }) // 예: "중간고사"
   label?: string;
 }
 
@@ -89,10 +93,7 @@ export class Material {
   @Prop({ type: Types.ObjectId, ref: 'Folder', required: true })
   folderId: Types.ObjectId;
 
-  @Prop({ required: true, 
-    type: String, 
-    enum: ['handwriting', 'recording', 'document'] 
-  })
+  @Prop({ required: true, type: String, enum: ['handwriting', 'recording', 'document'] })
   kind: string;
 
   @Prop({
@@ -134,6 +135,32 @@ export class Material {
   @Prop({ type: [MaterialPageSchema], default: [] })
   pages: MaterialPage[];
 
+  /** 앱이 올린 원본 파일 주소(SAS 없는 blob 주소, 올린 순서). 앱 계약(Material)에는 없는 서버 값 */
+  @Prop({ type: [String], default: [] })
+  blobUrls: string[];
+
+  /** 앱의 "저장" 버튼을 누른 시각. 앱 계약(Material)에는 없는 서버 값 */
+  @Prop({ type: Date, default: null })
+  savedAt?: Date | null;
+
+  /** 등록 요청의 Idempotency-Key. 같은 키의 재요청이 같은 자료를 돌려받게 한다. 키 없이 만든 자료는 없다 */
+  @Prop({ type: String })
+  requestId?: string;
+
+  /** 등록 본문의 해시. 같은 키에 다른 내용을 보냈는지 가린다 */
+  @Prop({ type: String })
+  requestFingerprint?: string;
+
+  /**
+   * 정리 작업을 만드는 요청이 잡은 표시(작업 id 가 연결되면 지운다). 같은 노트에 요청이 겹쳐도 작업을 만드는 쪽을
+   * 하나로 하려는 서버 값이라 앱에는 보내지 않는다. 서버가 멈춰 남은 표시는 jobClaimedAt 으로부터 시간이 지나면 무효다
+   */
+  @Prop({ type: String })
+  jobClaimToken?: string;
+
+  @Prop({ type: Date })
+  jobClaimedAt?: Date;
+
   @Prop({ type: Date, default: null })
   deletedAt?: Date | null;
 }
@@ -142,3 +169,8 @@ export const MaterialSchema = SchemaFactory.createForClass(Material);
 
 // 폴더별 자료 수 세기 · 폴더 안 자료 찾기(내 것, 지우지 않은 것)
 MaterialSchema.index({ ownerId: 1, deletedAt: 1, folderId: 1 });
+// 같은 사용자의 같은 Idempotency-Key는 자료 하나(키 없이 만든 자료는 제외)
+MaterialSchema.index(
+  { ownerId: 1, requestId: 1 },
+  { unique: true, partialFilterExpression: { requestId: { $type: 'string' } } },
+);

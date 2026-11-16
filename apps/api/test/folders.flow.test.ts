@@ -102,6 +102,22 @@ describe('학습 폴더 (GET · POST /api/v1/folders)', () => {
       ...over,
     } as Row);
 
+  describe('삭제 (DELETE /api/v1/folders/:id)', () => {
+    it('로그인하지 않으면 401', async () => {
+      await request(app.getHttpServer())
+        .delete(api(PATHS.folder(String(new Types.ObjectId()))))
+        .expect(401);
+    });
+
+    it('잘못된 id 는 404 { code, message } (저장소를 건드리지 않는다)', async () => {
+      const res = await request(app.getHttpServer())
+        .delete(api(PATHS.folder('../users/me')))
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+      expect(res.body).toEqual({ code: ERROR_CODES.NOT_FOUND, message: expect.any(String) });
+    });
+  });
+
   it('로그인하지 않으면 401', async () => {
     await request(app.getHttpServer()).get(api(PATHS.folders)).expect(401);
     await request(app.getHttpServer())

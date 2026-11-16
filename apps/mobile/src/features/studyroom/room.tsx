@@ -551,6 +551,8 @@ export function RoomScreen() {
       if (r.ok) {
         flushPending();
         if (chatId.data) void history.refetch();
+        // 소켓 재접속 때도 서버가 계산한 현재 타이머 단계를 다시 받는다.
+        void room.refetch();
       }
       if (r.missed)
         setMsgs((p) => [...new Map([...p, ...r.missed!].map((m) => [m._id, m])).values()]);

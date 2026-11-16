@@ -7,8 +7,11 @@ import {
   StorageSharedKeyCredential,
   generateBlobSASQueryParameters,
 } from '@azure/storage-blob';
-import { UPLOAD_RULES } from '@notelink/shared';
+import { ERROR_CODES, UPLOAD_RULES } from '@notelink/shared';
 
+/** 앱이 올린 파일 이름: uuid(v4).확장자 (UploadsService.issue 가 randomUUID 로 만든다) */
+const UPLOADED_FILE_NAME =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.[a-z0-9]{2,5}$/;
 const SAS_LIFETIME_MS = 10 * 60 * 1000;
 const CLOCK_SKEW_MS = 60 * 1000;
 const REPORT_IMAGE_TYPES: Record<string, string> = {
@@ -91,6 +94,79 @@ export class BlobStorageService {
       throw new ServiceUnavailableException({
         code: 'UPLOAD_UNAVAILABLE',
         message: '사진 업로드를 준비하지 못했어요.',
+      });
+    }
+  }
+
+  /**
+   * 올린 파일 하나를 읽기만 할 수 있는 SAS 주소로 만든다(기존 createUpload 와 별개).
+   * 설정한 컨테이너 안의 파일 주소가 아니면 거절한다. verify 를 주면 주소가 prefix 아래의
+   * `<uuid>.<확장자>` 꼴인지 보고, 실제로 있는 파일인지 확인해 크기(sizeBytes)도 돌려준다
+   * (노트 등록). 없으면 저장된 주소를 서명만 한다(응답에 이미지를 담을 때).
+   * 오류 메시지 · 로그에는 주소와 SAS 를 넣지 않는다.
+   */
+  async createReadAccess(
+    blobUrl: string,
+    ttlMs: number,
+    verify?: { prefix: string },
+  ): Promise<{ readUrl: string; sizeBytes?: number }> {
+    const { container, client, credential } = await this.storage();
+    const containerClient = client.getContainerClient(container);
+    const base = `${containerClient.url}/`;
+    const blobName = blobUrl.startsWith(base) ? blobUrl.slice(base.length) : '';
+    const blob = blobName ? containerClient.getBlockBlobClient(blobName) : null;
+    const unusable = () =>
+      new BadRequestException({
+        code: ERROR_CODES.VALIDATION,
+        message: '사용할 수 없는 파일 주소예요',
+      });
+    if (!blob || blob.url !== blobUrl) throw unusable();
+    let sizeBytes: number | undefined;
+    if (verify) {
+      const rest = blobName.startsWith(verify.prefix) ? blobName.slice(verify.prefix.length) : '';
+      if (!UPLOADED_FILE_NAME.test(rest)) throw unusable();
+      try {
+        sizeBytes = (await blob.getProperties()).contentLength;
+      } catch (error) {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'statusCode' in error &&
+          error.statusCode === 404
+        )
+          throw new BadRequestException({
+            code: ERROR_CODES.VALIDATION,
+            message: '올린 파일을 찾을 수 없어요',
+          });
+        throw new ServiceUnavailableException({
+          code: 'UPLOAD_UNAVAILABLE',
+          message: '올린 파일을 확인하지 못했어요.',
+        });
+      }
+      if (!sizeBytes)
+        throw new BadRequestException({
+          code: ERROR_CODES.VALIDATION,
+          message: '빈 파일은 올릴 수 없어요',
+        });
+    }
+    const now = Date.now();
+    try {
+      const sas = generateBlobSASQueryParameters(
+        {
+          containerName: container,
+          blobName,
+          permissions: BlobSASPermissions.parse('r'),
+          protocol: SASProtocol.Https,
+          startsOn: new Date(now - CLOCK_SKEW_MS),
+          expiresOn: new Date(now + ttlMs),
+        },
+        credential,
+      ).toString();
+      return { readUrl: `${blob.url}?${sas}`, ...(sizeBytes === undefined ? {} : { sizeBytes }) };
+    } catch {
+      throw new ServiceUnavailableException({
+        code: 'UPLOAD_UNAVAILABLE',
+        message: '파일 읽기 주소를 만들지 못했어요.',
       });
     }
   }

@@ -65,6 +65,41 @@ beforeEach(async () => {
   );
 });
 describe('스터디룸 Socket.IO', () => {
+  it('방 타이머 변경을 같은 방의 모든 참여자에게 전달한다', async () => {
+    const receivedA = vi.fn();
+    const receivedB = vi.fn();
+    a.on('room:timer', receivedA);
+    b.on('room:timer', receivedB);
+    const rule = {
+      enabled: true,
+      type: 'pomodoro' as const,
+      focusMin: 25,
+      breakMin: 5,
+      repeat: 4,
+      periods: [],
+    };
+    const state = { phase: 'focus' as const, endsAt: '2026-11-15T10:25:00.000Z' };
+
+    app.get(StudyChatGateway).notifyTimer('room', rule, state);
+
+    await vi.waitFor(() => {
+      expect(receivedA).toHaveBeenCalledWith({
+        roomId: 'room',
+        rule,
+        phase: 'focus',
+        endsAt: state.endsAt,
+      });
+      expect(receivedB).toHaveBeenCalledWith({
+        roomId: 'room',
+        rule,
+        phase: 'focus',
+        endsAt: state.endsAt,
+      });
+    });
+    a.off('room:timer', receivedA);
+    b.off('room:timer', receivedB);
+  });
+
   it('이전 입장 요청이 늦게 실패해도 나중 입장의 구독을 해제하지 않는다', async () => {
     let failHistory!: (error: Error) => void;
     chat.history.mockReset();

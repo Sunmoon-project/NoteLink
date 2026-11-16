@@ -28,5 +28,7 @@ import { ExplanationsController, ExplanationsService } from './explanations.cont
   ],
   controllers: [QuizSetsController, ExplanationsController],
   providers: [QuizSetsService, SimilarQuizService, ExplanationsService],
+  // 노트 API 가 정리를 마친 노트의 첫 퀴즈를 미리 만든다(pregenerate)
+  exports: [QuizSetsService],
 })
 export class QuizSetsModule {}

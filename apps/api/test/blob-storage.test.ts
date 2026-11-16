@@ -80,6 +80,82 @@ describe('Azure Blob 신고 첨부', () => {
     await expect(mismatched.createUpload(name)).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
+  describe('읽기 SAS (createReadAccess)', () => {
+    const prefix = `uploads/image/${owner}/`;
+    const file = `${prefix}550e8400-e29b-41d4-a716-446655440000.jpg`;
+    const url = `https://${account}.blob.core.windows.net/${container}/${file}`;
+
+    it('읽기 권한만 가진 HTTPS SAS를 요청한 시간만큼만 만든다', async () => {
+      const now = Date.now();
+      const { readUrl, sizeBytes } = await service().createReadAccess(url, 3_600_000);
+      const sas = new URL(readUrl);
+      expect(`${sas.origin}${sas.pathname}`).toBe(url);
+      expect(sas.searchParams.get('sp')).toBe('r');
+      expect(sas.searchParams.get('sr')).toBe('b');
+      expect(sas.searchParams.get('spr')).toBe('https');
+      const expires = new Date(sas.searchParams.get('se')!).getTime();
+      expect(expires - now).toBeGreaterThan(3_590_000);
+      expect(expires - now).toBeLessThanOrEqual(3_600_100);
+      expect(sizeBytes).toBeUndefined();
+    });
+
+    it('verify를 주면 파일이 있는지 보고 크기를 돌려준다', async () => {
+      vi.spyOn(BlockBlobClient.prototype, 'getProperties').mockResolvedValue({
+        contentLength: 1234,
+      } as never);
+      const { sizeBytes } = await service().createReadAccess(url, 1000, { prefix });
+      expect(sizeBytes).toBe(1234);
+    });
+
+    it('컨테이너 밖 · 다른 사용자 · 이름 규칙이 다른 주소는 저장소 접근 없이 거절한다', async () => {
+      const get = vi.spyOn(BlockBlobClient.prototype, 'getProperties');
+      const bad = [
+        'https://example.com/a.jpg',
+        `https://${account}.blob.core.windows.net/other/${file}`,
+        `${url}?sv=x`,
+        url.replace(owner, '507f1f77bcf86cd799439012'),
+        url.replace('.jpg', '/../x.jpg'),
+        `https://${account}.blob.core.windows.net/${container}/${prefix}not-a-uuid.jpg`,
+      ];
+      for (const u of bad) {
+        await expect(service().createReadAccess(u, 1000, { prefix })).rejects.toBeInstanceOf(
+          BadRequestException,
+        );
+      }
+      expect(get).not.toHaveBeenCalled();
+    });
+
+    it('파일이 없으면 400, 저장소 장애면 503, 빈 파일은 400이다', async () => {
+      const get = vi.spyOn(BlockBlobClient.prototype, 'getProperties');
+      get.mockRejectedValueOnce({ statusCode: 404 });
+      get.mockRejectedValueOnce(new Error('unavailable'));
+      get.mockResolvedValueOnce({ contentLength: 0 } as never);
+      await expect(service().createReadAccess(url, 1000, { prefix })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      await expect(service().createReadAccess(url, 1000, { prefix })).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      await expect(service().createReadAccess(url, 1000, { prefix })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('오류 메시지에 주소를 넣지 않는다', async () => {
+      const error = await service()
+        .createReadAccess('https://example.com/secret.jpg', 1000)
+        .catch((e: Error) => e);
+      expect(JSON.stringify((error as BadRequestException).getResponse())).not.toContain('secret');
+    });
+
+    it('저장소 설정이 없으면 503이다', async () => {
+      const missing = new BlobStorageService({ get: () => undefined } as never);
+      await expect(missing.createReadAccess(url, 1000)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+    });
+  });
+
   it('빈 연결 문자열은 안전한 오류로 처리한다', async () => {
     const missing = new BlobStorageService({
       get: (key: string) => (key === 'AZURE_STORAGE_CONNECTION_STRING' ? '' : config.get(key)),

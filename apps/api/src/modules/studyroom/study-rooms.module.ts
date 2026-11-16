@@ -18,6 +18,9 @@ import { ReportsController } from '../social/reports.controller.js';
 import { ReportsService } from '../social/reports.service.js';
 import { UploadsModule } from '../upload/uploads.module.js';
 import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schema.js';
+import { Device, DeviceSchema } from '../users/schemas/device.schema.js';
+import { ExpoPushService } from '../notification/expo-push.service.js';
+import { RoomTimerNotificationsService } from './room-timer-notifications.service.js';
 
 import { Timetable, TimetableSchema } from '../calendar/schemas/timetable.schema.js';
 import { StudyRoomScheduleController } from './study-room-schedule.controller.js';
@@ -35,6 +38,7 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
       { name: StudyRoom.name, schema: StudyRoomSchema },
       { name: Report.name, schema: ReportSchema },
       { name: Friendship.name, schema: FriendshipSchema },
+      { name: Device.name, schema: DeviceSchema },
       // 공용 일정(StudyRoomScheduleService)
       { name: Timetable.name, schema: TimetableSchema },
     ]),
@@ -51,6 +55,8 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
     StudyChatGateway,
     StudyLiveService,
     StudyRoomCleanupService,
+    ExpoPushService,
+    RoomTimerNotificationsService,
     ReportsService,
     StudyRoomScheduleService,
   ],

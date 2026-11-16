@@ -1,7 +1,7 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES, FolderCreateBody } from '@notelink/shared';
-import { Model, Types } from 'mongoose';
+import { type Connection, Model, Types } from 'mongoose';
 
 import { Subject } from '../../session/schemas/subject.schema.js';
 import { Folder } from '../schemas/folder.schema.js';
@@ -41,6 +41,7 @@ export class FoldersService {
     @InjectModel(Folder.name) private readonly folders: Model<Folder>,
     @InjectModel(Material.name) private readonly materials: Model<Material>,
     @InjectModel(Subject.name) private readonly subjects: Model<Subject>,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
 
   /** 내 폴더(지우지 않은 것, 최근에 바뀐 순)와 폴더마다 지우지 않은 자료 수 */
@@ -78,5 +79,32 @@ export class FoldersService {
       subjectName,
     });
     return toAppFolder(created.toObject() as unknown as FolderRow);
+  }
+
+  /**
+   * 폴더와 그 안의 지우지 않은 노트를 한 트랜잭션으로 지운 것으로 표시한다(소프트 삭제): 둘 다 지워지거나 둘 다 그대로다.
+   * 이미 지운 노트의 지운 시각은 바꾸지 않는다. 노트의 진행 중인 작업 · 퀴즈 세트 · 원본 파일은 건드리지 않는다.
+   * 남의 폴더 · 지운 폴더 · 없는 폴더 · 잘못된 id 는 404
+   */
+  async remove(userId: string, id: string): Promise<void> {
+    const notFound = () =>
+      new NotFoundException({ code: ERROR_CODES.NOT_FOUND, message: '폴더 정보를 찾을 수 없어요' });
+    if (!/^[0-9a-f]{24}$/i.test(id)) throw notFound();
+    const _id = new Types.ObjectId(id);
+    const ownerId = new Types.ObjectId(userId);
+    await this.connection.transaction(async (session) => {
+      const now = new Date();
+      const folder = await this.folders.findOneAndUpdate(
+        { _id, ownerId, deletedAt: null },
+        { $set: { deletedAt: now } },
+        { session },
+      );
+      if (!folder) throw notFound();
+      await this.materials.updateMany(
+        { ownerId, folderId: _id, deletedAt: null },
+        { $set: { deletedAt: now } },
+        { session },
+      );
+    });
   }
 }
