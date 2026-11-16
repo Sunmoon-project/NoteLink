@@ -161,32 +161,41 @@ export class SimilarQuizService {
   }
 
   /**
-   * 오답 복습 세트에 결과를 옮긴 뒤(QuizSetsService.afterReview): 그 세트를 기다리는 사이 같은 퀴즈를 또 끝낸 풀이를
-   * 끝낸 순서대로 하나씩 넣는다(같은 노트로 만드는 중인 세트는 하나). 하나를 넣으면 그 세트의 결과를 옮길 때 다음 것.
-   * 이미 만든 풀이 · 무효 풀이만 있는 풀이 · 만들 수 없는 풀이(409 등)는 건너뛴다. 넣다 오류가 나면 던져
-   * 세트에 「이어 받을 풀이 남음」이 남는다(다음 조회가 다시)
+   * 오답 복습 세트에 결과를 옮긴 뒤(QuizSetsService.afterReview): 그 세트를 기다리는 사이 같은 노트의 퀴즈(이 세트의
+   * 원본만이 아니라 같은 노트의 다른 세트도)를 끝낸 풀이를 끝낸 순서대로 하나씩 넣는다. 같은 노트로 만드는 중인
+   * 세트는 하나라(고유 색인) 그때는 넣지 못했다. 하나를 넣으면 그 세트의 결과를 옮길 때 다음 것.
+   * 이미 만든 풀이 · 무효 풀이만 있는 풀이 · 만들 수 없는 풀이(409 등)는 건너뛰고 끝까지 본다. 넣다 오류가 나면
+   * 던져 세트에 「이어 받을 풀이 남음」이 남는다(다음 조회가 다시)
    */
   private async catchUp(row: QuizSetRow): Promise<void> {
-    if (!row.sourceSetId || !row.sourceAttemptId) return;
+    if (!row.materialId || !row.sourceAttemptId) return;
     const prev = await this.attempts.findOne({ _id: row.sourceAttemptId }).lean<AttemptRow>();
     if (!prev) return;
-    // ponytail: 한 번에 20개까지 살펴봄. 그 사이 20번 넘게 끝내면 나머지는 다음 이어 받기에서
-    const later = await this.attempts
-      .find({
-        userId: row.ownerId,
-        quizSetId: row.sourceSetId,
-        finishedAt: { $gt: prev.finishedAt },
-      })
-      .sort({ finishedAt: 1 })
-      .limit(20)
-      .lean<AttemptRow[]>();
-    for (const a of later) {
-      const made = await this.sets
-        .findOne({ ownerId: row.ownerId, sourceAttemptId: a._id })
-        .lean<QuizSetRow>();
-      if (made) continue;
-      const started = await this.startAfterFinish(row.ownerId.toString(), a._id.toString());
-      if (started?.status === 'generating') return;
+    const sameNote = await this.sets
+      .find({ ownerId: row.ownerId, materialId: row.materialId }, { _id: 1 })
+      .lean<{ _id: Types.ObjectId }[]>();
+    const query = {
+      userId: row.ownerId,
+      quizSetId: { $in: sameNote.map((x) => x._id) },
+      finishedAt: { $gt: prev.finishedAt },
+    };
+    const PAGE = 20;
+    for (let skip = 0; ; skip += PAGE) {
+      const page = await this.attempts
+        .find(query)
+        .sort({ finishedAt: 1, _id: 1 })
+        .skip(skip)
+        .limit(PAGE)
+        .lean<AttemptRow[]>();
+      for (const a of page) {
+        const made = await this.sets
+          .findOne({ ownerId: row.ownerId, sourceAttemptId: a._id })
+          .lean<QuizSetRow>();
+        if (made) continue;
+        const started = await this.startAfterFinish(row.ownerId.toString(), a._id.toString());
+        if (started?.status === 'generating') return;
+      }
+      if (page.length < PAGE) return;
     }
   }
 

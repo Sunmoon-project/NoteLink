@@ -203,6 +203,74 @@ describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfter
     expect(jobs.rows).toHaveLength(4);
   });
 
+  it('같은 노트의 다른 세트를 기다리는 사이 끝낸 풀이도 이어 받는다', async () => {
+    const { similar, seed, jobs, attempts, quizSets, sets } = setup();
+    const s = await seed();
+    // 같은 노트로 만든 다른 세트 B
+    const b = (await sets.model.create({
+      ownerId: ME,
+      materialId: s.note,
+      folderId: FOLDER,
+      source: 'ai_generated',
+      sourceSetId: null,
+      title: '세포 생물학 2',
+      status: 'ready',
+      questions: s.qs,
+      questionCount: 2,
+      deletedAt: null,
+    } as never)) as unknown as { _id: Types.ObjectId };
+    const first = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    const onB = (await attempts.model.create({
+      quizSetId: b._id,
+      userId: ME,
+      finishedAt: new Date(NOW.getTime() - 30_000),
+      answers: s.qs.map((q) => ({ questionId: q._id, answer: '가', correct: true })),
+    } as never)) as unknown as { _id: Types.ObjectId };
+    // 같은 노트로 만드는 중인 세트가 있어 지금은 넣지 못함(고유 색인)
+    expect(await similar.startAfterFinish(ME.toHexString(), onB._id.toHexString())).toBeNull();
+    expect(jobs.rows.filter((j) => j['status'] !== 'canceled')).toHaveLength(1);
+    Object.assign(jobs.rows[0]!, {
+      status: 'succeeded',
+      progress: 100,
+      result: { reviewQuestions: [], srsUpdates: [] },
+    });
+    await quizSets.findMine(ME.toHexString(), first!._id);
+    const last = jobs.rows.at(-1)!;
+    expect(last['status']).not.toBe('canceled');
+    expect((last['input'] as { attemptId: string }).attemptId).toBe(onB._id.toHexString());
+  });
+
+  it('건너뛸 풀이가 한 쪽(20개)을 넘어도 끝까지 보고 이어 받는다', async () => {
+    const { similar, seed, jobs, attempts, quizSets } = setup();
+    const s = await seed();
+    const first = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    // 무효 풀이만 있는 풀이 20개 뒤에 유효한 풀이 하나
+    for (let i = 0; i < 20; i++) {
+      await attempts.model.create({
+        quizSetId: s.set,
+        userId: ME,
+        finishedAt: new Date(NOW.getTime() - 50_000 + i * 1000),
+        answers: [{ questionId: s.qs[0]!._id, answer: '가', correct: true, void: '정답 둘' }],
+      } as never);
+    }
+    const valid = (await attempts.model.create({
+      quizSetId: s.set,
+      userId: ME,
+      finishedAt: new Date(NOW.getTime() - 10_000),
+      answers: s.qs.map((q) => ({ questionId: q._id, answer: '가', correct: true })),
+    } as never)) as unknown as { _id: Types.ObjectId };
+    Object.assign(jobs.rows[0]!, {
+      status: 'succeeded',
+      progress: 100,
+      result: { reviewQuestions: [], srsUpdates: [] },
+    });
+    await quizSets.findMine(ME.toHexString(), first!._id);
+    expect(jobs.rows).toHaveLength(2);
+    expect((jobs.rows[1]!['input'] as { attemptId: string }).attemptId).toBe(
+      valid._id.toHexString(),
+    );
+  });
+
   it('이어 받을 풀이를 넣지 못하면 표시를 남겨 다음 조회가 다시 넣는다', async () => {
     const { similar, seed, jobs, attempts, quizSets, sets } = setup();
     const s = await seed();
