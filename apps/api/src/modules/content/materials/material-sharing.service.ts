@@ -54,6 +54,31 @@ export class MaterialSharingService {
   }
 
   /**
+   * 이 노트가 내가 현재 멤버인 방에 공유돼 있으면 노트 주인의 id, 아니면 null. 공유받은 사람의 읽기(상세 · 원본 주소)에서
+   * 주인으로 읽기 위해 쓴다: 읽는 쪽은 이 id 를 노트 서비스에 그대로 넘겨 주인 기준으로 동작한다(작업 · 결과 옮기기가 주인 것).
+   * 지운 노트 · 지운 공유 · 닫힌 방 · 나감 · 강퇴 · 초대만 받음 · 잘못된 id 는 모두 null
+   */
+  async ownerOfShared(userId: string, materialId: string): Promise<string | null> {
+    if (!isValidObjectId(materialId)) return null;
+    const me = new Types.ObjectId(userId);
+    const noteId = new Types.ObjectId(materialId);
+    const note = await this.materials
+      .findOne({ _id: noteId, deletedAt: null }, { ownerId: 1 })
+      .lean<{ ownerId: Types.ObjectId }>();
+    if (!note) return null;
+    const sharedIn = await this.shared
+      .find({ materialId: noteId, itemType: 'material', deletedAt: null }, { roomId: 1 })
+      .lean<{ roomId: Types.ObjectId }[]>();
+    if (sharedIn.length === 0) return null;
+    const member = await this.rooms.exists({
+      _id: { $in: sharedIn.map((item) => item.roomId) },
+      closedAt: null,
+      members: { $elemMatch: { userId: me, status: 'joined' } },
+    });
+    return member ? note.ownerId.toHexString() : null;
+  }
+
+  /**
    * 방에 공유된 자료(최근 것부터 SHARED_ITEMS_MAX 개). 현재 멤버만 볼 수 있고, 방이 없거나 멤버가 아니면
    * (나감 · 강퇴 · 초대만 받음 · 잘못된 id 포함) 404. 지운 공유와 지운 노트는 뺀다(지운 노트를 뺀 뒤에 개수를 자른다).
    * 제목은 노트의 현재 제목, 닉네임은 공유한 사람의 지금 닉네임이다.

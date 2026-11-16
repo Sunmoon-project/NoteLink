@@ -23,6 +23,9 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
   let token: string;
   const share = vi.fn();
   const listRoomItems = vi.fn();
+  const ownerOfShared = vi.fn();
+  const findMine = vi.fn();
+  const downloadUrl = vi.fn();
 
   beforeAll(async () => {
     stubAppEnv();
@@ -30,9 +33,9 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
       .overrideProvider(getModelToken(RefreshToken.name))
       .useValue(createFakeRefreshTokens().model)
       .overrideProvider(MaterialsService)
-      .useValue({})
+      .useValue({ findMine, downloadUrl })
       .overrideProvider(MaterialSharingService)
-      .useValue({ share, listRoomItems })
+      .useValue({ share, listRoomItems, ownerOfShared })
       .compile();
     app = ref.createNestApplication();
     configureApp(app);
@@ -48,6 +51,9 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
   beforeEach(() => {
     share.mockReset();
     listRoomItems.mockReset();
+    ownerOfShared.mockReset();
+    findMine.mockReset();
+    downloadUrl.mockReset();
     share.mockResolvedValue(undefined);
   });
 
@@ -142,6 +148,56 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
       listRoomItems.mockResolvedValue({ items: [], flashcards: [] });
       await get().set('Authorization', `Bearer ${token}`).expect(200);
       expect(listRoomItems).toHaveBeenCalledTimes(1);
+    });
+  });
+  describe('공유받은 멤버의 노트 읽기 (GET /materials/:id · download-url)', () => {
+    const owner = new Types.ObjectId().toHexString();
+    const auth = () => ({ Authorization: `Bearer ${token}` });
+    const get = (path: string) => request(app.getHttpServer()).get(api(path)).set(auth());
+    const notFound = async () => {
+      const { NotFoundException } = await import('@nestjs/common');
+      return new NotFoundException({ code: 'NOT_FOUND', message: '노트 정보를 찾을 수 없어요' });
+    };
+
+    it('내 노트는 공유 여부를 묻지 않고 그대로 읽는다', async () => {
+      findMine.mockResolvedValue({ _id: 'n1' });
+      await get(PATHS.material('n1')).expect(200);
+      expect(findMine).toHaveBeenCalledTimes(1);
+      expect(findMine).toHaveBeenCalledWith(me.toHexString(), 'n1');
+      expect(ownerOfShared).not.toHaveBeenCalled();
+    });
+
+    it('내 노트가 아니고 공유받은 노트면 주인 id 로 읽는다', async () => {
+      findMine.mockRejectedValueOnce(await notFound());
+      findMine.mockResolvedValueOnce({ _id: 'n1', title: '남의 노트' });
+      ownerOfShared.mockResolvedValue(owner);
+      const res = await get(PATHS.material('n1')).expect(200);
+      expect(res.body).toEqual({ data: { _id: 'n1', title: '남의 노트' } });
+      expect(ownerOfShared).toHaveBeenCalledWith(me.toHexString(), 'n1');
+      expect(findMine).toHaveBeenLastCalledWith(owner, 'n1');
+    });
+
+    it('공유받지 않은 남의 노트는 처음 404 그대로', async () => {
+      findMine.mockRejectedValue(await notFound());
+      ownerOfShared.mockResolvedValue(null);
+      const res = await get(PATHS.material('n1')).expect(404);
+      expect(res.body).toMatchObject({ code: 'NOT_FOUND' });
+      expect(findMine).toHaveBeenCalledTimes(1);
+    });
+
+    it('원본 주소(download-url)도 같은 방식', async () => {
+      downloadUrl.mockRejectedValueOnce(await notFound());
+      downloadUrl.mockResolvedValueOnce({ url: 'https://x/y?sp=r', fileName: '노트.jpg' });
+      ownerOfShared.mockResolvedValue(owner);
+      const res = await get(PATHS.materialDownloadUrl('n1')).expect(200);
+      expect(res.body).toEqual({ data: { url: 'https://x/y?sp=r', fileName: '노트.jpg' } });
+      expect(downloadUrl).toHaveBeenLastCalledWith(owner, 'n1');
+    });
+
+    it('404 가 아닌 오류는 공유를 묻지 않고 그대로 올린다', async () => {
+      findMine.mockRejectedValue(new Error('db down'));
+      await get(PATHS.material('n1')).expect(500);
+      expect(ownerOfShared).not.toHaveBeenCalled();
     });
   });
 });

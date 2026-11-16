@@ -2,12 +2,17 @@
 // MONGODB_VERIFY_URI가 있을 때만 돌고(없으면 건너뜀), localhost가 아니면 거부한다. 이번 실행에서만 쓰는 전용 DB를 만들고 끝나면 지운다.
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/materials-share-real-db.test.ts
 import mongoose, { type Connection, type Model, Types } from 'mongoose';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   MaterialSharingService,
   SHARED_ITEMS_MAX,
 } from '../src/modules/content/materials/material-sharing.service.js';
+import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
+import { MaterialsController } from '../src/modules/content/materials/materials.controller.js';
+import { MaterialsService } from '../src/modules/content/materials/materials.service.js';
+import { Folder, FolderSchema } from '../src/modules/content/schemas/folder.schema.js';
+import { AiJob, AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { Material, MaterialSchema } from '../src/modules/content/schemas/material.schema.js';
 import {
@@ -26,6 +31,10 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
   let rooms: Model<StudyRoom>;
   let items: Model<RoomSharedItem>;
   let users: Model<User>;
+  let folders: Model<Folder>;
+  let jobs: Model<AiJob>;
+  let materialsService: MaterialsService;
+  let controller: MaterialsController;
   let sharing: MaterialSharingService;
   const owner = new Types.ObjectId();
   const friend = new Types.ObjectId();
@@ -43,6 +52,8 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       RoomSharedItemSchema,
     ) as unknown as Model<RoomSharedItem>;
     users = conn.model(User.name, UserSchema) as unknown as Model<User>;
+    folders = conn.model(Folder.name, FolderSchema) as unknown as Model<Folder>;
+    jobs = conn.model(AiJob.name, AiJobSchema) as unknown as Model<AiJob>;
     await Promise.all([materials.syncIndexes(), rooms.syncIndexes(), items.syncIndexes()]);
     sharing = new MaterialSharingService(
       materials as never,
@@ -50,6 +61,18 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       items as never,
       users as never,
     );
+    // 공유받은 멤버의 읽기: 노트 서비스는 진짜 DB 로, 저장소 · 퀴즈 미리 만들기만 대역
+    materialsService = new MaterialsService(
+      materials as never,
+      folders as never,
+      new AiJobsService(jobs as never),
+      {
+        createReadAccess: vi.fn((u: string) => Promise.resolve({ readUrl: `${u}?sig=SECRET` })),
+      } as never,
+      { pregenerate: vi.fn() } as never,
+      conn,
+    );
+    controller = new MaterialsController(materialsService, sharing);
   });
 
   afterAll(async () => {
@@ -312,6 +335,109 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       });
       await expect(list(owner, 'nope')).rejects.toMatchObject({ status: 404 });
       expect((await list(owner, roomId)).items).toEqual([]);
+    });
+  });
+  describe('공유받은 멤버의 노트 읽기', () => {
+    const asUser = (userId: Types.ObjectId) => ({
+      user: { userId: userId.toHexString() },
+      headers: {},
+    });
+    const open = (userId: Types.ObjectId, id: string) => controller.findOne(asUser(userId), id);
+    const url = (userId: Types.ObjectId, id: string) => controller.downloadUrl(asUser(userId), id);
+    const blob = `https://a.blob.core.windows.net/c/uploads/image/${owner.toHexString()}/550e8400-e29b-41d4-a716-446655440001.jpg`;
+
+    it('공유하면 다른 멤버가 노트를 열고 원본 주소도 받는다. 서버 값은 새지 않는다', async () => {
+      const a = await note({
+        title: '공유 노트',
+        blobUrls: [blob],
+        pages: [{ pageNo: 1, imageUrl: blob, sizeBytes: 1, ocrText: null, takenAt: null }],
+        bookmarks: [{ atSec: 3 }],
+      });
+      const roomId = await room([joined(owner), joined(friend)]);
+      await share(owner, [a], roomId);
+      const { data } = await open(friend, a);
+      expect(data).toMatchObject({ _id: a, title: '공유 노트', bookmarks: [{ atSec: 3 }] });
+      const json = JSON.stringify(data);
+      expect(json).not.toContain('blobUrls');
+      expect(json).not.toContain('ownerId');
+      expect(json).not.toContain('requestId');
+      // 이미지 주소의 업로드 경로에는 올린 사람 id 가 들어 있다(공유 목록의 sharedBy 로 이미 보이는 값)
+      expect((await url(friend, a)).data).toMatchObject({ url: `${blob}?sig=SECRET` });
+      // 주인은 지금처럼
+      expect((await open(owner, a)).data._id).toBe(a);
+    });
+
+    it('공유받은 사람이 열면 노트 주인의 작업 기준으로 진행 상태를 옮긴다', async () => {
+      const a = await note({ processing: { status: 'queued', progress: 0, jobId: null } });
+      const job = await jobs.create({
+        type: 'handwriting_summary',
+        userId: owner,
+        targetType: 'material',
+        targetId: new Types.ObjectId(a),
+        input: {},
+        status: 'running',
+        progress: 40,
+      });
+      await materials.updateOne({ _id: a }, { $set: { 'processing.jobId': job._id } });
+      const roomId = await room([joined(owner), joined(friend)]);
+      await share(owner, [a], roomId);
+      const { data } = await open(friend, a);
+      // 열람자의 작업으로 찾았다면 작업이 없는 것으로 보고 failed 가 됐을 것이다
+      expect(data.processing).toMatchObject({ status: 'processing', progress: 40 });
+    });
+
+    it('멤버가 아니거나 나갔거나 강퇴됐거나 초대만 받았으면 노트도 원본 주소도 404', async () => {
+      const a = await note({ blobUrls: [blob] });
+      const invitee = new Types.ObjectId();
+      const roomId = await room([
+        joined(owner),
+        { userId: friend, status: 'left' },
+        { userId: stranger, status: 'kicked' },
+        { userId: invitee, status: 'invited' },
+      ]);
+      await share(owner, [a], roomId);
+      for (const user of [friend, stranger, invitee, new Types.ObjectId()]) {
+        await expect(open(user, a)).rejects.toMatchObject({ status: 404 });
+        await expect(url(user, a)).rejects.toMatchObject({ status: 404 });
+      }
+    });
+
+    it('공유하지 않은 노트 · 다른 방에만 공유된 노트 · 닫힌 방 · 지운 노트 · 지운 공유는 404', async () => {
+      const unshared = await note();
+      const elsewhere = await note();
+      const inClosed = await note();
+      const deletedNote = await note();
+      const unshare = await note();
+      const here = await room([joined(owner), joined(friend)]);
+      const there = await room([joined(owner)]);
+      const closed = await room([joined(owner), joined(friend)]);
+      await share(owner, [elsewhere], there);
+      await share(owner, [inClosed], closed);
+      await rooms.updateOne({ _id: closed }, { $set: { closedAt: new Date() } });
+      await share(owner, [deletedNote, unshare], here);
+      await materials.updateOne({ _id: deletedNote }, { $set: { deletedAt: new Date() } });
+      await items.updateOne(
+        { materialId: new Types.ObjectId(unshare) },
+        { $set: { deletedAt: new Date() } },
+      );
+      for (const id of [unshared, elsewhere, inClosed, deletedNote, unshare, 'nope'])
+        await expect(open(friend, id)).rejects.toMatchObject({ status: 404 });
+    });
+
+    it('공유받은 사람의 수정 · 삭제는 404이고 노트는 그대로', async () => {
+      const a = await note({ title: '원래 제목' });
+      const roomId = await room([joined(owner), joined(friend)]);
+      await share(owner, [a], roomId);
+      const me = friend.toHexString();
+      await expect(materialsService.update(me, a, { saved: true })).rejects.toMatchObject({
+        status: 404,
+      });
+      await expect(
+        materialsService.update(me, a, { summary: { sections: [] } }),
+      ).rejects.toMatchObject({ status: 404 });
+      await expect(materialsService.remove(me, a)).rejects.toMatchObject({ status: 404 });
+      const row = await materials.findById(a).lean();
+      expect(row).toMatchObject({ title: '원래 제목', deletedAt: null, savedAt: null });
     });
   });
 });
