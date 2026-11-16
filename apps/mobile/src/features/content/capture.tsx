@@ -23,7 +23,7 @@ import {
 import { useKeepAwake } from 'expo-keep-awake';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
-import { IMAGE_CHECK_MAX_FILES } from '@notelink/shared';
+import { IMAGE_CHECK_MAX_FILES, MATERIAL_MAX_FILES } from '@notelink/shared';
 import {
   Camera,
   Check,
@@ -121,7 +121,7 @@ export function CameraScreen() {
     const r = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsMultipleSelection: true,
-      selectionLimit: IMAGE_CHECK_MAX_FILES,
+      selectionLimit: MATERIAL_MAX_FILES,
       quality: 0.85,
     });
     if (r.canceled) return;
@@ -332,6 +332,20 @@ export function PhotoCheckScreen() {
   );
 }
 
+/**
+ * 사진 검사에 보낼 이름. 서버는 앞뒤 공백을 지우고(trim) 255자까지 받아 그 이름으로 결과를 돌려주므로,
+ * 글자(코드 포인트) 단위로 잘라 이모지가 반쪽 나지 않게 하고 공백도 미리 지운다.
+ * 앞의 위치 번호가 사진마다 달라서 잘라도 겹치지 않는다
+ */
+export function imageCheckName(index: number, name: string): string {
+  let out = `${index}-`;
+  for (const ch of name) {
+    if (out.length + ch.length > 255) break;
+    out += ch;
+  }
+  return out.trim();
+}
+
 /** p.62 #13 선택 사진 확인 + p.102 이미지 검사 (기기 → 서버 POST /images/check) */
 export function PickedScreen() {
   const { files, fileVersion, set } = useDraft();
@@ -341,9 +355,10 @@ export function PickedScreen() {
   const bad = files.filter((f) => !local[f.uri]?.ok);
   // 2) 통과한 사진만 서버가 다시 확인한다(POST /images/check). 서버는 저장 위치 · 형식 · 크기를 본 뒤
   //    AI 글자 인식으로 필기 여부 · 흐림(not_handwriting · blurry)까지 판정한다(#448).
-  //    한 번에 IMAGE_CHECK_MAX_FILES장까지만 받으므로 넘으면 검사하지 않고 줄이라고 안내한다.
+  //    요청 한 번에 IMAGE_CHECK_MAX_FILES장까지 받으므로 나눠서 차례로 보낸다. 노트 등록 상한
+  //    (MATERIAL_MAX_FILES)을 넘으면 어차피 등록하지 못하니 검사하지 않고 줄이라고 안내한다.
   const checkable = files.filter((f) => local[f.uri]?.ok);
-  const tooMany = checkable.length > IMAGE_CHECK_MAX_FILES;
+  const tooMany = checkable.length > MATERIAL_MAX_FILES;
   const check = useQuery({
     queryKey: ['image-check', fileVersion],
     queryFn: async () => {
@@ -354,17 +369,34 @@ export function PickedScreen() {
           useDraft.getState().rememberUpload(f, uri);
           return {
             // 원본 이름과도 충돌하지 않도록 모든 파일에 서로 다른 위치를 붙인다.
-            // 서버는 이름을 255자까지 받는다. 앞의 위치가 달라서 잘라도 겹치지 않는다.
-            name: `${files.indexOf(f)}-${f.name}`.slice(0, 255),
+            name: imageCheckName(files.indexOf(f), f.name),
             localUri: f.uri,
             sizeBytes: f.size ?? 0,
             uri,
           };
         }),
       );
-      const result = await api.content.checkImages(
-        checked.map(({ localUri: _localUri, ...request }) => request),
-      );
+      const requests = checked.map(({ localUri: _localUri, ...request }) => request);
+      const result: Awaited<ReturnType<typeof api.content.checkImages>> = [];
+      try {
+        for (let i = 0; i < requests.length; i += IMAGE_CHECK_MAX_FILES)
+          result.push(
+            ...(await api.content.checkImages(requests.slice(i, i + IMAGE_CHECK_MAX_FILES))),
+          );
+      } catch (error) {
+        // 400: 올려 둔 파일을 서버가 받지 않았다(지워짐 · 저장된 형식이 다름 등). 같은 주소로 다시 검사하면
+        // 계속 실패하므로 기억한 주소를 지워 「다시 검사」가 새로 올리게 한다
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'status' in error &&
+          error.status === 400
+        )
+          useDraft.setState((state) => ({
+            uploads: state.uploads.filter((upload) => !checkable.includes(upload.file)),
+          }));
+        throw error;
+      }
       if (
         checked.some(
           (f) =>
@@ -401,8 +433,9 @@ export function PickedScreen() {
   const blurry = files.find((f) => v(f) === 'blurry');
   const remove = (uri: string) => set({ files: files.filter((f) => f.uri !== uri) });
   const selectPhotos = async (append: boolean) => {
-    const room = append ? IMAGE_CHECK_MAX_FILES - files.length : IMAGE_CHECK_MAX_FILES;
-    if (room <= 0) return toast(`사진은 한 번에 ${IMAGE_CHECK_MAX_FILES}장까지 올릴 수 있어요`);
+    // 기기에서 이미 걸러진 사진은 올리지 않으므로 세지 않는다
+    const room = append ? MATERIAL_MAX_FILES - checkable.length : MATERIAL_MAX_FILES;
+    if (room <= 0) return toast(`사진은 한 노트에 ${MATERIAL_MAX_FILES}장까지 올릴 수 있어요`);
     const r = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsMultipleSelection: true,
@@ -484,10 +517,10 @@ export function PickedScreen() {
         {tooMany && (
           <View className="mb-3 rounded-2xl bg-sun/20 px-4 py-3">
             <Text className="text-footnote font-semibold text-ink">
-              {`사진은 한 번에 ${IMAGE_CHECK_MAX_FILES}장까지 올릴 수 있어요`}
+              {`사진은 한 노트에 ${MATERIAL_MAX_FILES}장까지 올릴 수 있어요`}
             </Text>
             <Text className="text-caption text-sub">
-              {`${checkable.length - IMAGE_CHECK_MAX_FILES}장을 빼면 검사를 시작해요`}
+              {`${checkable.length - MATERIAL_MAX_FILES}장을 빼면 검사를 시작해요`}
             </Text>
           </View>
         )}
