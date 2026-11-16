@@ -82,6 +82,11 @@ export class QuizSet {
   @Prop({ type: Date, default: null })
   srsSavedAt?: Date | null;
 
+  // 오답 복습 결과를 옮긴 뒤 이어 받을 풀이(그 사이 같은 퀴즈를 또 끝낸 풀이)를 아직 넣지 못했으면 true.
+  // 세트 조회가 다시 넣어 보고 지운다(QuizSetsService.followUp)
+  @Prop({ type: Boolean, default: false })
+  followUpPending?: boolean;
+
   // 오늘의 복습 세트의 날짜(서울 YYYY-MM-DD). 하루에 한 번만 만든다. 다른 세트는 null
   @Prop({ type: String, default: null })
   reviewDay?: string | null;

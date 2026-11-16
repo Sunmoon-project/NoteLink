@@ -163,34 +163,76 @@ describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfter
     expect(jobs.rows).toHaveLength(1);
   });
 
-  it('앞 풀이의 작업을 기다리는 사이 또 끝낸 풀이는 앞 결과를 옮길 때 이어서 넣는다', async () => {
+  it('앞 작업을 기다리는 사이 끝낸 풀이들은 결과를 옮길 때마다 끝낸 순서대로 하나씩 넣는다', async () => {
     const { similar, seed, jobs, attempts, quizSets } = setup();
     const s = await seed();
     const first = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
-    const second = (await attempts.model.create({
+    const later = [];
+    for (const sec of [40, 30, 20]) {
+      const a = (await attempts.model.create({
+        quizSetId: s.set,
+        userId: ME,
+        finishedAt: new Date(NOW.getTime() - sec * 1000),
+        answers: s.qs.map((q) => ({ questionId: q._id, answer: '가', correct: true })),
+      } as never)) as unknown as { _id: Types.ObjectId };
+      later.push(a._id.toHexString());
+      // 같은 노트로 만드는 중인 세트는 하나: 지금은 앞 세트를 돌려주고 작업은 그대로 하나
+      const waiting = await similar.startAfterFinish(ME.toHexString(), a._id.toHexString());
+      expect(waiting!._id).toBe(first!._id);
+    }
+    expect(jobs.rows).toHaveLength(1);
+    const done = {
+      status: 'succeeded',
+      progress: 100,
+      result: { reviewQuestions: [], srsUpdates: [] },
+    };
+    const inputAttempt = (i: number) => (jobs.rows[i]!['input'] as { attemptId: string }).attemptId;
+    // 결과를 옮길 때마다 다음 풀이 하나(끝낸 순서)
+    let setId = first!._id;
+    for (const [n, attemptId] of later.entries()) {
+      Object.assign(jobs.rows.at(-1)!, done);
+      await quizSets.findMine(ME.toHexString(), setId);
+      expect(jobs.rows).toHaveLength(n + 2);
+      expect(inputAttempt(n + 1)).toBe(attemptId);
+      setId = String(jobs.rows.at(-1)!['targetId']);
+    }
+    // 다 옮기면 더 넣지 않는다
+    Object.assign(jobs.rows.at(-1)!, done);
+    await quizSets.findMine(ME.toHexString(), setId);
+    await quizSets.findMine(ME.toHexString(), first!._id);
+    expect(jobs.rows).toHaveLength(4);
+  });
+
+  it('이어 받을 풀이를 넣지 못하면 표시를 남겨 다음 조회가 다시 넣는다', async () => {
+    const { similar, seed, jobs, attempts, quizSets, sets } = setup();
+    const s = await seed();
+    const first = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    const next = (await attempts.model.create({
       quizSetId: s.set,
       userId: ME,
       finishedAt: new Date(NOW.getTime() - 30_000),
       answers: s.qs.map((q) => ({ questionId: q._id, answer: '가', correct: true })),
     } as never)) as unknown as { _id: Types.ObjectId };
-    // 같은 노트로 만드는 중인 세트는 하나: 지금은 앞 세트를 돌려주고 작업은 그대로 하나
-    const waiting = await similar.startAfterFinish(ME.toHexString(), second._id.toHexString());
-    expect(waiting!._id).toBe(first!._id);
-    expect(jobs.rows).toHaveLength(1);
-    // 앞 작업의 결과를 옮기면 이번 풀이로 작업을 넣는다
     Object.assign(jobs.rows[0]!, {
       status: 'succeeded',
       progress: 100,
       result: { reviewQuestions: [], srsUpdates: [] },
     });
+    const enqueue = vi
+      .spyOn(AiJobsService.prototype, 'enqueue')
+      .mockRejectedValueOnce(new Error('DB'));
+    await quizSets.findMine(ME.toHexString(), first!._id);
+    expect(jobs.rows).toHaveLength(1);
+    const row = () => sets.rows.find((r) => String(r._id) === first!._id)!;
+    expect(row()['followUpPending']).toBe(true);
+    // 다시 조회하면 넣고 표시를 지운다
     await quizSets.findMine(ME.toHexString(), first!._id);
     expect(jobs.rows).toHaveLength(2);
     expect((jobs.rows[1]!['input'] as { attemptId: string }).attemptId).toBe(
-      second._id.toHexString(),
+      next._id.toHexString(),
     );
-    // 다시 옮겨도(같은 세트) 더 넣지 않는다
-    await quizSets.findMine(ME.toHexString(), first!._id);
-    expect(jobs.rows).toHaveLength(2);
+    expect(row()['followUpPending']).toBe(false);
+    enqueue.mockRestore();
   });
 
   it('만들 수 없는 경우(409 등)는 조용히 넘어가 끝내기에 영향이 없다', async () => {

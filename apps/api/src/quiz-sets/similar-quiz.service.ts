@@ -56,8 +56,16 @@ export class SimilarQuizService {
     quizSets.afterReview = (row) => this.catchUp(row);
   }
 
-  /** needWrong = false(퀴즈를 끝낸 뒤 자동): 모두 맞혀도 작업을 넣는다. 처리기가 복습 상태만 옮기고 세트는 문제 없이 failed */
-  async create(userId: string, setId: string, needWrong = true): Promise<AppQuizSet> {
+  /**
+   * needWrong = false(퀴즈를 끝낸 뒤 자동): 모두 맞혀도 작업을 넣는다. 처리기가 복습 상태만 옮기고 세트는 문제 없이 failed.
+   * attemptId: 그 풀이로 만든다(자동 · 이어 받기). 없으면 이 세트를 마지막으로 푼 풀이(유사 퀴즈 버튼)
+   */
+  async create(
+    userId: string,
+    setId: string,
+    needWrong = true,
+    attemptId?: string,
+  ): Promise<AppQuizSet> {
     const owner = objectId(userId, '퀴즈');
     const source = await this.sets
       .findOne({ _id: objectId(setId, '퀴즈'), ownerId: owner, deletedAt: null, status: 'ready' })
@@ -66,11 +74,14 @@ export class SimilarQuizService {
     if (!source.materialId)
       throw conflict('이 퀴즈는 노트가 정해지지 않아 유사 퀴즈를 만들 수 없어요');
 
-    const [attempt] = await this.attempts
-      .find({ userId: owner, quizSetId: source._id, finishedAt: { $ne: null } })
-      .sort({ finishedAt: -1 })
-      .limit(1)
-      .lean<AttemptRow[]>();
+    const finished = { userId: owner, quizSetId: source._id, finishedAt: { $ne: null } };
+    const [attempt] = attemptId
+      ? [
+          await this.attempts
+            .findOne({ ...finished, _id: objectId(attemptId, '퀴즈') })
+            .lean<AttemptRow>(),
+        ]
+      : await this.attempts.find(finished).sort({ finishedAt: -1 }).limit(1).lean<AttemptRow[]>();
     if (!attempt) throw conflict('먼저 이 퀴즈를 끝까지 풀어 주세요');
     if (needWrong && !(attempt.answers ?? []).some((a) => !a.correct))
       throw conflict('틀린 문제가 없어요');
@@ -141,7 +152,7 @@ export class SimilarQuizService {
       .lean<AttemptRow>();
     if (!attempt || !(attempt.answers ?? []).some((a) => !a.void)) return null;
     try {
-      return await this.create(userId, attempt.quizSetId.toString(), false);
+      return await this.create(userId, attempt.quizSetId.toString(), false, attemptId);
     } catch (e) {
       const status = (e as { status?: number }).status;
       if (status === 404 || status === 409 || status === 400) return null;
@@ -150,18 +161,33 @@ export class SimilarQuizService {
   }
 
   /**
-   * 오답 복습 세트에 결과를 옮긴 뒤(QuizSetsService.afterReview): 그 세트를 기다리는 사이 같은 퀴즈를 또 끝냈으면
-   * 마지막 풀이로 이어서 작업을 넣는다(앞 결과의 복습 상태 위에 쌓임). 사이의 풀이가 여럿이면 마지막 것만
+   * 오답 복습 세트에 결과를 옮긴 뒤(QuizSetsService.afterReview): 그 세트를 기다리는 사이 같은 퀴즈를 또 끝낸 풀이를
+   * 끝낸 순서대로 하나씩 넣는다(같은 노트로 만드는 중인 세트는 하나). 하나를 넣으면 그 세트의 결과를 옮길 때 다음 것.
+   * 이미 만든 풀이 · 무효 풀이만 있는 풀이 · 만들 수 없는 풀이(409 등)는 건너뛴다. 넣다 오류가 나면 던져
+   * 세트에 「이어 받을 풀이 남음」이 남는다(다음 조회가 다시)
    */
   private async catchUp(row: QuizSetRow): Promise<void> {
-    if (!row.sourceSetId) return;
-    const [latest] = await this.attempts
-      .find({ userId: row.ownerId, quizSetId: row.sourceSetId, finishedAt: { $ne: null } })
-      .sort({ finishedAt: -1 })
-      .limit(1)
+    if (!row.sourceSetId || !row.sourceAttemptId) return;
+    const prev = await this.attempts.findOne({ _id: row.sourceAttemptId }).lean<AttemptRow>();
+    if (!prev) return;
+    // ponytail: 한 번에 20개까지 살펴봄. 그 사이 20번 넘게 끝내면 나머지는 다음 이어 받기에서
+    const later = await this.attempts
+      .find({
+        userId: row.ownerId,
+        quizSetId: row.sourceSetId,
+        finishedAt: { $gt: prev.finishedAt },
+      })
+      .sort({ finishedAt: 1 })
+      .limit(20)
       .lean<AttemptRow[]>();
-    if (!latest || String(latest._id) === String(row.sourceAttemptId)) return;
-    await this.startAfterFinish(row.ownerId.toString(), latest._id.toString());
+    for (const a of later) {
+      const made = await this.sets
+        .findOne({ ownerId: row.ownerId, sourceAttemptId: a._id })
+        .lean<QuizSetRow>();
+      if (made) continue;
+      const started = await this.startAfterFinish(row.ownerId.toString(), a._id.toString());
+      if (started?.status === 'generating') return;
+    }
   }
 
   /**

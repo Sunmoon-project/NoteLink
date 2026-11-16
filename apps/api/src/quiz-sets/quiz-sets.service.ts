@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, mongo, Types } from 'mongoose';
 
@@ -119,6 +119,7 @@ export interface QuizSetRow {
   sourceSetId?: Types.ObjectId | null;
   sourceAttemptId?: Types.ObjectId | null;
   srsSavedAt?: Date | null;
+  followUpPending?: boolean;
   reviewDay?: string | null;
   title: string;
   status: 'generating' | 'ready' | 'failed';
@@ -280,6 +281,7 @@ export class QuizSetsService {
    * 주입 대신 넣는 이유: SimilarQuizService가 이 서비스를 받으므로 서로 받으면 순환 의존
    */
   afterReview?: (row: QuizSetRow) => Promise<unknown>;
+  private readonly logger = new Logger(QuizSetsService.name);
 
   /**
    * 노트로 맞춤 퀴즈 세트를 만든다. 응답 모양은 앱의 로컬 모의 API(quiz.createSet)와 같은 { quizSet, job }.
@@ -510,6 +512,7 @@ export class QuizSetsService {
    * 되살린다. 다시 만드는 중으로는 되돌리지 않는다(그 사이 같은 노트에 새 세트가 있을 수 있다).
    */
   private async sync(row: QuizSetRow): Promise<{ quizSet: AppQuizSet; job: AppAiJob | null }> {
+    if (row.followUpPending && row.status !== 'generating') await this.followUp(row);
     if (row.status === 'ready') return { quizSet: toAppSet(row), job: null };
     const job = row.jobId ? await this.findJob(row) : null;
     if (row.status === 'failed') {
@@ -528,6 +531,18 @@ export class QuizSetsService {
     return this.settle(row, update, job);
   }
 
+  /** 이어 받을 풀이를 넣고(afterReview) 표시를 지운다. 실패하면 표시를 남겨 다음 조회가 다시 넣는다 */
+  private async followUp(row: QuizSetRow): Promise<void> {
+    if (!this.afterReview) return;
+    try {
+      await this.afterReview(row);
+    } catch (e) {
+      this.logger.warn(`이어 받을 오답 복습을 넣지 못했습니다(다음 조회에 다시): ${String(e)}`);
+      return;
+    }
+    await this.sets.findOneAndUpdate({ _id: row._id }, { $set: { followUpPending: false } }).lean();
+  }
+
   /** 세트가 아직 row.status일 때만 바꾼다(여러 요청이 같이 옮겨도 한 번만) */
   private async settle(
     row: QuizSetRow,
@@ -544,6 +559,8 @@ export class QuizSetsService {
     // 오늘의 복습은 노트를 섞으므로 세트를 만들 때 노트가 없다: 첫 문제가 나온 세트(baseSetId)의 노트 · 폴더를 쓴다
     if (update['status'] === 'ready' && job?.type === TODAY_TYPE)
       Object.assign(update, await this.baseOf(row, job));
+    // 오답 복습은 세트를 바꾸며 「이어 받을 풀이 남음」을 함께 적고, 넣은 뒤에 지운다(실패하면 다음 조회가 다시)
+    if (job?.type === SIMILAR_TYPE && row.sourceSetId) update['followUpPending'] = true;
     const updated = await this.sets
       .findOneAndUpdate(
         { _id: row._id, status: row.status },
@@ -551,7 +568,7 @@ export class QuizSetsService {
         { returnDocument: 'after' },
       )
       .lean<QuizSetRow>();
-    if (updated && job?.type === SIMILAR_TYPE) await this.afterReview?.(updated).catch(() => null);
+    if (updated?.followUpPending) await this.followUp(updated);
     const current =
       updated ?? (await this.sets.findOne({ _id: row._id }).lean<QuizSetRow>()) ?? row;
     return { quizSet: toAppSet(current), job };
