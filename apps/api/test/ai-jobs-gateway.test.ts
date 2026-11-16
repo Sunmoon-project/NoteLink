@@ -309,6 +309,21 @@ describe('AI 작업 진행률 소켓 (ai:subscribe)', () => {
     });
   });
 
+  it('끝난 것을 읽은 사이 다시 시도로 처리기에 다시 들어가면 끝내지 않고 계속 보낸다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    // 진행률 읽기는 실패를 보고, 결과를 다시 읽을 때는 이미 다시 시도(queued)
+    jobs.progressOf.mockResolvedValueOnce([{ jobId: JOB, status: 'failed', progress: 30 }]);
+    table.set(JOB, appJob({ status: 'queued', progress: 0, step: undefined }));
+    await gateway.poll();
+    await settle();
+    expect(got.done).toEqual([]);
+    table.set(JOB, appJob({ status: 'running', progress: 15, step: 'ocr' }));
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.progress.at(-1)?.progress).toBe(15));
+  });
+
   it('구독하면 1초 간격으로 스스로 다시 읽는다', async () => {
     const a = await connect('a');
     const got = record(a);

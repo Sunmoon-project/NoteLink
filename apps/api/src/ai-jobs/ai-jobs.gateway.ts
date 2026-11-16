@@ -137,6 +137,13 @@ export class AiJobsGateway implements OnModuleDestroy {
   private async done(jobId: string, userId: string) {
     try {
       const job = await this.jobs.findMine(userId, jobId);
+      // 끝난 것을 읽은 사이 다시 시도로 처리기에 다시 들어갔으면(같은 작업 id) 끝내지 않고 계속 지켜본다.
+      // 다시 시도하며 구독한 소켓을 방에서 빼지 않게 한다
+      if (!FINISHED.has(job.status)) {
+        const watch = this.watched.get(jobId);
+        if (watch) watch.last = undefined;
+        return;
+      }
       const sockets = await this.server.in(roomOf(jobId)).fetchSockets();
       await Promise.all(
         sockets.map(async (recipient) => {
