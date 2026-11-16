@@ -38,10 +38,13 @@ def _authorize(authorization: str | None) -> None:
     if not expected:
         raise HTTPException(status_code=503, detail="Internal service is not configured")
     supplied = authorization.removeprefix("Bearer ") if authorization else ""
+    # 토큰은 ASCII다. compare_digest는 비 ASCII 문자열을 비교하면 TypeError(500)를 내므로,
+    # 헤더에 비 ASCII 문자가 있으면 비교하지 않고 거부하고, 비교는 바이트로 한다.
     if (
         not authorization
         or not authorization.startswith("Bearer ")
-        or not compare_digest(supplied, expected)
+        or not supplied.isascii()
+        or not compare_digest(supplied.encode(), expected.encode())
     ):
         raise HTTPException(status_code=401, detail="Unauthorized")
 

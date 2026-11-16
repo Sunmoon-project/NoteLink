@@ -103,6 +103,35 @@ def test_authorize_rejects_missing_or_wrong_credentials(
     assert error.value.status_code == 401
 
 
+# 비교용 토큰이 ASCII여도 헤더에 비 ASCII 문자가 오면 compare_digest가 TypeError(500)를 냈다
+NON_ASCII_HEADERS = [
+    "Bearer 한글토큰",
+    f"Bearer {TOKEN}é",
+    f"Bearer é{TOKEN}",
+    "Bearer \u00ff",  # latin-1 범위(서버가 헤더를 latin-1로 읽을 때 나오는 문자)
+    "Bearer 🔑",
+]
+
+
+@pytest.mark.parametrize("header", NON_ASCII_HEADERS)
+def test_authorize_rejects_non_ascii_credentials_with_401_instead_of_crashing(
+    header: str, internal_token: None
+) -> None:
+    with pytest.raises(HTTPException) as error:
+        _authorize(header)
+    assert error.value.status_code == 401
+
+
+def test_authorize_still_returns_503_for_non_ascii_credentials_when_token_is_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "ai_internal_token", SecretStr(""))
+
+    with pytest.raises(HTTPException) as error:
+        _authorize("Bearer 한글토큰")
+    assert error.value.status_code == 503
+
+
 # ---------- _check ----------
 
 
@@ -437,6 +466,25 @@ def test_endpoint_rejects_bad_token_before_creating_the_ocr_client(
 
     assert res.status_code == 401
     assert created == []
+
+
+@pytest.mark.parametrize("raw", ["Bearer 한글토큰", f"Bearer {TOKEN}é", "Bearer 🔑"])
+def test_endpoint_rejects_non_ascii_authorization_header_with_401(
+    raw: str, monkeypatch: pytest.MonkeyPatch, internal_token: None
+) -> None:
+    created: list[object] = []
+    monkeypatch.setattr(images, "docint", lambda: created.append(object()))
+
+    # httpx는 문자열 헤더를 ASCII로만 보내므로, 실제 요청처럼 UTF-8 바이트로 직접 보낸다
+    res = TestClient(app).post(
+        "/internal/v1/images/check",
+        json={"files": [{"name": "a.jpg", "uri": "https://blob.example.test/a.jpg"}]},
+        headers={b"authorization": raw.encode()},
+    )
+
+    assert res.status_code == 401
+    assert res.json() == {"detail": "Unauthorized"}
+    assert created == []  # 인증에서 거부되어 OCR 클라이언트를 만들지 않는다
 
 
 @pytest.mark.parametrize(
