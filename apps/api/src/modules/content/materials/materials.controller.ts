@@ -91,7 +91,7 @@ export class MaterialsController {
     return { data: (await this.materials.update(requireUserId(req), id, body)) as Material };
   }
 
-  /** 녹음 북마크 추가(0.1초 단위로 반올림, 같은 시각은 한 번만, 노트당 BOOKMARK_MAX 개). 본문 없이 204 */
+  /** 녹음 북마크 추가(받은 시각 그대로, 같은 값은 한 번만, 노트당 BOOKMARK_MAX 개). 본문 없이 204 */
   @Post('materials/:id/bookmarks')
   @HttpCode(204)
   async addBookmark(
