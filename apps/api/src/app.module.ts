@@ -21,6 +21,7 @@ import { FlashcardsModule } from './modules/quiz/flashcards.module.js';
 import { QuizAttemptsModule } from './modules/quiz/quiz-attempts.module.js';
 import { QuizBoxModule } from './modules/quiz/quiz-box.module.js';
 import { UsersModule } from './modules/users/users.module.js';
+import { ReviewRemindersModule } from './review-reminders/review-reminders.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
 import { TimetableModule } from './modules/timetable/timetable.module.js';
@@ -52,6 +53,8 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
     StudyRoomsModule,
     // 맞춤 퀴즈 세트 만들기 · 조회 · 작업 결과 반영(#175)
     QuizSetsModule,
+    // 복습할 문제가 있는 날 푸시 알림(FR-37-08)
+    ReviewRemindersModule,
     NoteAskModule,
     // 공부 시간 · 타이머(FR-06~08)
     SessionModule,

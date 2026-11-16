@@ -365,6 +365,38 @@ describe.skipIf(!isLocal)('진짜 DB 노트 변환 완료 푸시', () => {
     expect((await row(live.id))!.notice?.state).toBe('claimed');
   });
 
+  it('기기를 읽는 동안 정리가 같은 claimId 의 선점을 gave_up 으로 닫았으면 보내지 않는다', async () => {
+    const { id } = await noteWithJob();
+    const before = (await row(id))!.updatedAt;
+    // 기기를 읽는 동안(발송 직전 조회 전에) closeExhausted 가 이 선점을 gave_up 으로 닫는다: claimId 는 그대로 남는다
+    const original = devices.find.bind(devices) as unknown as (...a: unknown[]) => {
+      lean: (...x: unknown[]) => Promise<unknown>;
+    };
+    let closed = false;
+    const spy = vi.spyOn(devices, 'find').mockImplementation(((...args: unknown[]) => {
+      const query = original(...args);
+      return {
+        lean: async (...x: unknown[]) => {
+          const rows = await query.lean(...x);
+          if (!closed) {
+            closed = true;
+            await jobs.collection.updateOne({ _id: id }, { $set: { 'notice.state': 'gave_up' } });
+          }
+          return rows;
+        },
+      };
+    }) as never);
+    try {
+      await makeService().runOnce(NOW);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sent).toHaveLength(0);
+    const done = (await row(id))!;
+    expect(done.notice?.state).toBe('gave_up'); // 보내지 않았고 다시 쓰지도 않았다
+    expect(done.updatedAt).toEqual(before);
+  });
+
   it('후보 조회용 인덱스(type · status · updatedAt)가 있다', async () => {
     const indexes = await jobs.collection.indexes();
     expect(
