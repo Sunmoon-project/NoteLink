@@ -171,6 +171,48 @@ export class BlobStorageService {
     }
   }
 
+  /**
+   * 앱이 올린 파일 여러 개가 쓸 수 있는지 본다(필기 사진 검사). 저장소 연결은 한 번만 하고 SAS 는 만들지 않는다.
+   * 주소마다 크기 · 저장된 형식(contentType)을 돌려준다. 설정한 컨테이너의 prefix 아래 `<uuid>.<확장자>` 꼴이
+   * 아니거나 파일이 없으면 null(저장소를 부르지 않거나 404). 저장소 설정이 없거나 확인하지 못하면 503.
+   * 오류 메시지 · 로그에는 주소를 넣지 않는다.
+   */
+  async inspectUploads(
+    blobUrls: string[],
+    prefix: string,
+  ): Promise<({ sizeBytes: number; contentType: string | null } | null)[]> {
+    const { container, client } = await this.storage();
+    const containerClient = client.getContainerClient(container);
+    const base = `${containerClient.url}/${prefix}`;
+    return Promise.all(
+      blobUrls.map(async (blobUrl) => {
+        const name = blobUrl.startsWith(base) ? blobUrl.slice(base.length) : '';
+        if (!UPLOADED_FILE_NAME.test(name)) return null;
+        const blob = containerClient.getBlockBlobClient(`${prefix}${name}`);
+        if (blob.url !== blobUrl) return null;
+        try {
+          const properties = await blob.getProperties();
+          return {
+            sizeBytes: properties.contentLength ?? 0,
+            contentType: properties.contentType ?? null,
+          };
+        } catch (error) {
+          if (
+            typeof error === 'object' &&
+            error !== null &&
+            'statusCode' in error &&
+            error.statusCode === 404
+          )
+            return null;
+          throw new ServiceUnavailableException({
+            code: 'UPLOAD_UNAVAILABLE',
+            message: '올린 파일을 확인하지 못했어요.',
+          });
+        }
+      }),
+    );
+  }
+
   async validateReportImages(userId: string, urls: string[]) {
     if (!urls.length) return;
     if (new Set(urls).size !== urls.length)
