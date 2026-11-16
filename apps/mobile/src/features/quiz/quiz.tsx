@@ -1225,7 +1225,8 @@ export function QuizSimilarScreen() {
     if (done) qc.setQueryData(['similar-result', setId], done);
   }, [done, qc, setId]);
   // 결과 조회가 실패하면(연결 끊김 · 서버 오류) 「만드는 중」만 되풀이하지 않고 알린 뒤 다시 확인하게 한다
-  const checkFailed = !!making && poll.isError && !poll.data;
+  // 앞서 받은 진행 상태(generating)가 남아 있어도 마지막 조회가 실패했으면 알린다(다 만든 · 실패한 세트는 제외)
+  const checkFailed = !!making && poll.isError && !done && !failed;
   const waiting = !!making && !done && !failed && !checkFailed;
   const sim = {
     data: (cached.data ??

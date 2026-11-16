@@ -184,3 +184,18 @@ it('만든 결과 조회가 계속 실패하면 알리고, 다시 확인으로 �
   expect(await screen.findByText('한 번 생성한 유사 문제')).toBeTruthy();
   expect(mockApi.quiz.similar).toHaveBeenCalledTimes(1);
 });
+
+it('만드는 중을 한 번 받은 뒤 조회가 계속 실패해도 알리고 다시 확인할 수 있다', async () => {
+  const making = { ...generated, _id: 'similar-set', status: 'generating', questions: [] };
+  mockApi.quiz.similar.mockResolvedValue(making);
+  mockApi.quiz.set.mockResolvedValueOnce(making).mockRejectedValue(new NetworkError('연결 끊김'));
+  await renderScreen(<QuizSimilarScreen />, client(false));
+  await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
+  expect(await screen.findByText(/비슷한 문제를 만들고 있어요/)).toBeTruthy();
+  expect(
+    await screen.findByText(/만든 결과를 확인하지 못했어요/, {}, { timeout: 5000 }),
+  ).toBeTruthy();
+  mockApi.quiz.set.mockResolvedValue({ ...generated, _id: 'similar-set', status: 'ready' });
+  await fireEvent.press(screen.getByText('다시 확인'));
+  expect(await screen.findByText('한 번 생성한 유사 문제')).toBeTruthy();
+});

@@ -74,6 +74,10 @@ export class QuizSet {
   @Prop({ type: Types.ObjectId, ref: 'QuizAttempt', default: null })
   sourceAttemptId?: Types.ObjectId | null;
 
+  // 오답 복습 결과의 복습 상태(srsUpdates)를 옮긴 시각. 한 번만 옮겨, 나중 조회가 더 새 복습 상태를 덮지 않게 한다
+  @Prop({ type: Date, default: null })
+  srsSavedAt?: Date | null;
+
   @Prop({ required: true, type: String })
   title: string;
 

@@ -114,6 +114,7 @@ export interface QuizSetRow {
   folderId?: Types.ObjectId;
   sourceSetId?: Types.ObjectId | null;
   sourceAttemptId?: Types.ObjectId | null;
+  srsSavedAt?: Date | null;
   title: string;
   status: 'generating' | 'ready' | 'failed';
   progress?: number;
@@ -502,8 +503,7 @@ export class QuizSetsService {
     if (row.status === 'failed') {
       const ready = job?.status === 'succeeded' ? readyUpdate(job) : null;
       if (ready) return this.settle(row, ready, job);
-      // 오답 복습을 다시 시도해 끝났는데 새 문제는 없으면(빈 reviewQuestions) 세트는 failed로 두고 복습 상태만 옮긴다.
-      // 같은 값을 쓰므로 조회가 거듭돼도 같다
+      // 오답 복습을 다시 시도해 끝났는데 새 문제는 없으면(빈 reviewQuestions) 세트는 failed로 두고 복습 상태만 옮긴다(한 번만)
       if (job?.type === SIMILAR_TYPE && job.status === 'succeeded') await this.saveSrs(row, job);
       return { quizSet: toAppSet(row), job };
     }
@@ -561,6 +561,8 @@ export class QuizSetsService {
    * 같은 값을 다시 써도 같아, 여러 요청이 같이 옮겨도 된다. 이 사용자의 세트만 고친다
    */
   private async saveSrs(row: QuizSetRow, job: AppAiJob): Promise<void> {
+    // 이미 옮긴 세트는 다시 쓰지 않는다: 그 뒤 같은 문제를 다시 풀어 만든 세트가 고친 복습 상태를 되돌리지 않게
+    if (row.srsSavedAt) return;
     const updates = job.result?.['srsUpdates'];
     if (!Array.isArray(updates)) return;
     for (const u of updates as { quizSetId?: unknown; questionId?: unknown; srs?: unknown }[]) {
@@ -579,6 +581,10 @@ export class QuizSetsService {
         { arrayFilters: [{ 'q._id': new Types.ObjectId(u.questionId) }] },
       );
     }
+    // 옮긴 뒤에 표시한다(옮기다 실패하면 다음 조회가 다시 옮김). 동시에 옮긴 요청들은 같은 값을 쓴다
+    await this.sets
+      .findOneAndUpdate({ _id: row._id, srsSavedAt: null }, { $set: { srsSavedAt: new Date() } })
+      .lean();
   }
 
   private async findJob(row: QuizSetRow): Promise<AppAiJob | null> {

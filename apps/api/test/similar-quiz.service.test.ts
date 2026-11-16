@@ -355,6 +355,50 @@ describe('실패한 작업을 다시 시도해도 한 풀이의 복습 상태는
   });
 });
 
+describe('복습 상태는 세트마다 한 번만 옮긴다', () => {
+  it('A(새 문제 없음)를 옮긴 뒤 다시 풀어 B를 만들어 옮기면, A를 다시 조회 · 목록 조회해도 A가 다시 쓰지 않는다', async () => {
+    const { similar, seed, jobs, quizSets, attempts, updateOne, sets } = setup();
+    const s = await seed();
+    const srsUpdates = (step: number) => [
+      { quizSetId: s.set, questionId: s.qs[0]!._id.toHexString(), srs: { step } },
+    ];
+    const a = await similar.create(ME.toHexString(), s.set);
+    Object.assign(jobs.rows.at(-1)!, {
+      status: 'succeeded',
+      progress: 100,
+      result: { reviewQuestions: [], srsUpdates: srsUpdates(1) },
+    });
+    expect(await quizSets.findMine(ME.toHexString(), a._id)).toMatchObject({ status: 'failed' });
+    expect(updateOne).toHaveBeenCalledTimes(1);
+    expect(sets.rows.find((r) => String(r._id) === a._id)!['srsSavedAt']).toBeInstanceOf(Date);
+
+    // 같은 퀴즈를 다시 풀어(새 풀이) B를 만들고 끝낸다
+    await attempts.model.create({
+      quizSetId: new Types.ObjectId(s.set),
+      userId: ME,
+      finishedAt: new Date(Date.now() + 1000),
+      answers: [{ questionId: s.qs[0]!._id, correct: false }],
+    } as never);
+    const b = await similar.create(ME.toHexString(), s.set);
+    expect(b._id).not.toBe(a._id);
+    Object.assign(jobs.rows.at(-1)!, {
+      status: 'succeeded',
+      progress: 100,
+      result: { reviewQuestions: [], srsUpdates: srsUpdates(2) },
+    });
+    await quizSets.findMine(ME.toHexString(), b._id);
+    expect(updateOne).toHaveBeenCalledTimes(2);
+    expect(updateOne.mock.calls.at(-1)![1]).toEqual({
+      $set: { 'questions.$[q].srs': { step: 2 } },
+    });
+
+    // A를 다시 열거나 목록을 읽어도 A의 옛 복습 상태(step 1)로 되돌리지 않는다
+    await quizSets.findMine(ME.toHexString(), a._id);
+    await quizSets.list(ME.toHexString());
+    expect(updateOne).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('처리기 입력 크기(fitReviewInput)', () => {
   const set = (id: string, materialId: string, n = 1) => ({
     id,
