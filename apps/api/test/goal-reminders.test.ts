@@ -12,6 +12,7 @@ import {
   normalizeRemindTime,
   remindEnd,
   remindMessage,
+  remindSettingsChanged,
   shouldSkipTodayAfterChange,
   weekdayOfDate,
 } from '../src/modules/progress/goal-remind.js';
@@ -87,6 +88,65 @@ describe('설정을 바꿀 때 오늘 리마인드를 건너뛸지 (FR-11-08)', 
   it('끄거나 오늘이 목표 요일이 아니면 건너뛸 것이 없다', () => {
     expect(skip({}, { remindEnabled: false }, '21:40')).toBe(false);
     expect(skip({ days: [MON] }, { days: [2] }, '21:40')).toBe(false);
+  });
+});
+
+describe('리마인드 판정 설정이 실제로 바뀌었는지', () => {
+  const subjectId = new Types.ObjectId();
+  const base = {
+    remindEnabled: true,
+    remindTime: '21:00' as string | null | undefined,
+    days: [1, 3, 5],
+    targetMin: 30,
+    pausedUntil: null as Date | null | undefined,
+    isActive: true,
+    subjectId: null as Types.ObjectId | string | null | undefined,
+  };
+  const changed = (over: Partial<typeof base>) => remindSettingsChanged(base, { ...base, ...over });
+
+  it('같은 값을 다시 보낸 것은 같음: 요일 순서 · 같은 날짜의 다른 Date · null 과 undefined · 기본 시각', () => {
+    expect(changed({})).toBe(false);
+    expect(changed({ days: [5, 1, 3] })).toBe(false);
+    expect(
+      remindSettingsChanged(
+        { ...base, pausedUntil: new Date('2026-12-01T00:00:00+09:00') },
+        { ...base, pausedUntil: new Date('2026-12-01T00:00:00+09:00') },
+      ),
+    ).toBe(false);
+    expect(changed({ pausedUntil: undefined })).toBe(false);
+    expect(changed({ subjectId: undefined })).toBe(false);
+    expect(
+      remindSettingsChanged({ ...base, remindTime: null }, { ...base, remindTime: '21:00' }),
+    ).toBe(false);
+    expect(
+      remindSettingsChanged({ ...base, remindTime: undefined }, { ...base, remindTime: null }),
+    ).toBe(false);
+  });
+
+  it('ObjectId 와 같은 문자열은 같음', () => {
+    expect(
+      remindSettingsChanged({ ...base, subjectId }, { ...base, subjectId: subjectId.toHexString() }),
+    ).toBe(false);
+  });
+
+  it('실제 값이 다르면 다름(필드마다)', () => {
+    expect(changed({ remindEnabled: false })).toBe(true);
+    expect(changed({ remindTime: '22:00' })).toBe(true);
+    expect(changed({ remindTime: null })).toBe(false); // 비어 있으면 21:00이라 같다
+    expect(changed({ days: [1, 3] })).toBe(true);
+    expect(changed({ targetMin: 45 })).toBe(true);
+    expect(changed({ pausedUntil: new Date('2026-12-01T00:00:00+09:00') })).toBe(true);
+    expect(changed({ isActive: false })).toBe(true);
+    expect(changed({ subjectId })).toBe(true);
+    expect(
+      remindSettingsChanged(
+        { ...base, pausedUntil: new Date('2026-12-01T00:00:00+09:00') },
+        { ...base, pausedUntil: new Date('2026-12-02T00:00:00+09:00') },
+      ),
+    ).toBe(true);
+    expect(
+      remindSettingsChanged({ ...base, subjectId }, { ...base, subjectId: new Types.ObjectId() }),
+    ).toBe(true);
   });
 });
 

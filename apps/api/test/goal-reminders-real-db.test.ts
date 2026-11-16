@@ -439,6 +439,38 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
     expect((await row(id))!.lastRemindedOn).toBe('2026-11-17');
   });
 
+  it('앱처럼 설정 값을 모두 그대로 보내며 이름만 바꾼 뒤 발송이 실패하면, 표시가 풀려 다음 확인에서 다시 보낸다', async () => {
+    const id = await goal();
+    await device('a');
+    const editor = makeGoalsService();
+    let calls = 0;
+    sendImpl = async (messages) => {
+      if (++calls === 1) {
+        await editor.update(user.toHexString(), id.toHexString(), {
+            name: '새 이름',
+            days: [MON],
+            targetMin: 30,
+            remindEnabled: true,
+            remindTime: '21:00',
+            isActive: true,
+            pausedUntil: null,
+            subjectId: null,
+          });
+        return { invalidTokens: [], failedTickets: messages.map((message) => ({ message, error: 'x' })) };
+      }
+      return ok;
+    };
+    const service = makeService();
+    await service.runOnce(seoul('21:05'));
+    const doc = (await row(id))!;
+    expect(doc.name).toBe('새 이름');
+    expect(doc.remindVersion ?? 0).toBe(0);
+    expect(doc.lastRemindedOn).toBeNull();
+    expect(doc.remindRetryAt!.getTime()).toBe(seoul('21:07').getTime());
+    await service.runOnce(seoul('21:07'));
+    expect(sent).toHaveLength(2);
+  });
+
   it('후보를 찾는 부분 인덱스가 있다', async () => {
     const indexes = await goals.collection.indexes();
     expect(indexes).toContainEqual(
@@ -523,6 +555,28 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
         response: { code: 'GOAL_UPDATE_BUSY', message: '다른 수정과 겹쳤어요. 잠시 후 다시 시도해 주세요' },
       });
       expect(spy).toHaveBeenCalledTimes(3);
+    });
+
+    it('같은 값만 다시 보낸 update() 는 버전을 올리지 않고 오늘 건너뜀 표시도 남기지 않는다', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: seoul('21:40') });
+      try {
+        const id = await goal();
+        await service.update(owner(), id.toHexString(), {
+          name: '영어 단어',
+          days: [MON],
+          targetMin: 30,
+          remindEnabled: true,
+          remindTime: '21:00',
+          isActive: true,
+          pausedUntil: null,
+          subjectId: null,
+        });
+        const doc = (await row(id))!;
+        expect(doc.remindVersion ?? 0).toBe(0);
+        expect(doc.lastRemindedOn).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('이름만 고치는 편집은 오늘 리마인드를 막지 않는다', async () => {

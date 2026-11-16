@@ -85,3 +85,36 @@ export function shouldSkipTodayAfterChange(
     normalizeRemindTime(before.remindTime) !== normalizeRemindTime(after.remindTime);
   return changed && now >= remindStart(today, after.remindTime);
 }
+
+/** 리마인드 판정에 쓰는 설정(바뀌면 remindVersion을 올리는 값 전부). ObjectId · Date도 받는다 */
+export interface RemindJudgeSetting {
+  remindEnabled?: boolean | null;
+  remindTime?: string | null;
+  days: number[];
+  targetMin: number;
+  pausedUntil?: Date | null;
+  isActive?: boolean | null;
+  subjectId?: { toString(): string } | string | null;
+}
+
+/**
+ * 판정에 쓰는 설정이 실제로 달라졌는지. 앱은 이름만 고쳐도 목표 전체를 보내므로, 요청에 필드가 들어 있는 것이 아니라 값이 달라졌을 때만 true.
+ * 요일은 순서와 상관없이 같은 집합이면 같고, 날짜는 순간(getTime), 과목은 문자열로 비교한다. null · undefined는 같고 비어 있는 시각은 기본값(21:00)이다
+ */
+export function remindSettingsChanged(
+  before: RemindJudgeSetting,
+  after: RemindJudgeSetting,
+): boolean {
+  const sortedDays = (days: number[]) => [...days].sort((a, b) => a - b).join(',');
+  const paused = (s: RemindJudgeSetting) => s.pausedUntil?.getTime() ?? null;
+  const subject = (s: RemindJudgeSetting) => (s.subjectId ? String(s.subjectId) : null);
+  return (
+    (before.remindEnabled ?? false) !== (after.remindEnabled ?? false) ||
+    normalizeRemindTime(before.remindTime) !== normalizeRemindTime(after.remindTime) ||
+    sortedDays(before.days) !== sortedDays(after.days) ||
+    before.targetMin !== after.targetMin ||
+    paused(before) !== paused(after) ||
+    (before.isActive ?? true) !== (after.isActive ?? true) ||
+    subject(before) !== subject(after)
+  );
+}

@@ -6,7 +6,7 @@ import { HolidaysService } from '../calendar/holidays.service.js';
 import { Subject } from '../session/schemas/subject.schema.js';
 import { seoulDate } from '../session/study-time.js';
 import type { SaveRecurringGoalDto } from './dto/recurring-goal.dto.js';
-import { DEFAULT_REMIND_TIME, shouldSkipTodayAfterChange } from './goal-remind.js';
+import { DEFAULT_REMIND_TIME, remindSettingsChanged, shouldSkipTodayAfterChange } from './goal-remind.js';
 import { todayStudyMin, weeklyStreak, type DayStudy, type GoalRule } from './goal-judge.js';
 import { DailyRecord } from './schemas/daily-record.schema.js';
 import { RecurringGoal } from './schemas/recurring-goal.schema.js';
@@ -124,7 +124,11 @@ export class RecurringGoalsService {
                 saved = await this.goalModel
                     .findOneAndUpdate(
                         { ...ownedAlive(userId, id), remindVersion: versionFilter(before.remindVersion) },
-                        { $set: skipToday ? { ...fields, lastRemindedOn: today } : fields, $inc: { remindVersion: 1 } },
+                        {
+                            $set: skipToday ? { ...fields, lastRemindedOn: today } : fields,
+                            // 앱은 이름만 고쳐도 목표 전체를 보내므로, 판정에 쓰는 값이 실제로 달라졌을 때만 버전을 올린다
+                            ...(remindSettingsChanged(before, after) ? { $inc: { remindVersion: 1 } } : {}),
+                        },
                         { returnDocument: 'after' },
                     )
                     .lean<GoalLean>();
