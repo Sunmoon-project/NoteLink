@@ -1,4 +1,4 @@
-# develop · main으로 가는 PR과 develop · main에 들어온 커밋마다 lint · typecheck · build · test를 돌립니다.
+# develop · main · design/redesign(디자인 개편 통합 브랜치)으로 가는 PR과 develop · main에 들어온 커밋마다 lint · typecheck · build · test를 돌립니다.
 # (기능 브랜치의 push에는 돌리지 않습니다. PR을 열면 PR에서 돌고, 커밋을 더 올리면 다시 돕니다.
 #  push와 PR 양쪽에서 같은 커밋을 두 번 검사하던 것을 없앴습니다.)
 # scripts/ 의 셸 스크립트는 bats 테스트(scripts/tests)로 검사합니다.
@@ -10,7 +10,7 @@ on:
   push:
     branches: [develop, main]
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, design/redesign]
 
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
@@ -40,6 +40,16 @@ jobs:
     needs: detect
     if: needs.detect.outputs.node == 'true'
     runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:8.0.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v7
       # Turborepo 캐시 복원
@@ -64,27 +74,47 @@ jobs:
         run: npm run lint
       - name: turbo 캐시 확인
         # 방금 돈 lint와 같은 입력이면 캐시가 적중하고(HIT), 루트 eslint 설정(globalDependencies)이 바뀌면 다시 돌아야(MISS) 한다.
-        # 실행 계획(--dry)만 보므로 검사를 다시 돌리지 않는다. 스크립트가 없는 워크스페이스(ai의 lint)는 뺀다
+        # 실행 계획(--dry)만 보므로 검사를 다시 돌리지 않는다. 스크립트가 없는 워크스페이스(ai의 lint)는 뺀다.
+        # dry-run 프로세스가 러너에서 네이티브로 중단되는 경우가 있어 계획을 파일로 받고 최대 3회 재시도한다.
+        # 설정 파일은 중간 명령 실패·중단에도 EXIT trap으로 복구한다.
         run: |
           status() {
-            npx turbo run lint --dry=json | node -e "
+            local plan="$RUNNER_TEMP/turbo-lint-plan.json"
+            local attempt code
+            for attempt in 1 2 3; do
+              if ./node_modules/.bin/turbo run lint --dry=json > "$plan"; then
+                node -e "
               const tasks = JSON.parse(require('fs').readFileSync(0, 'utf8')).tasks
                 .filter((t) => t.task === 'lint' && t.command !== '<NONEXISTENT>');
               console.log([...new Set(tasks.map((t) => t.cache.status))].join(','));
-            "
+                " < "$plan"
+                return
+              else
+                code=$?
+                if [ "$code" -ne 134 ]; then return "$code"; fi
+                echo "::warning::Turbo dry-run이 네이티브 종료(134)됨. 재시도 ${attempt}/3" >&2
+              fi
+            done
+            echo "::error::Turbo dry-run이 3회 연속 네이티브 종료(134)됨" >&2
+            return 134
           }
+          trap 'git checkout -- eslint.rules.mjs' EXIT
           same=$(status)
           echo "같은 입력: $same"
           [ "$same" = "HIT" ] || { echo "::error::같은 입력인데 lint 캐시가 적중하지 않았습니다($same)"; exit 1; }
           echo "// turbo 캐시 확인용" >> eslint.rules.mjs
           changed=$(status)
-          git checkout -- eslint.rules.mjs
           echo "루트 eslint 설정 변경 뒤: $changed"
           [ "$changed" = "MISS" ] || { echo "::error::루트 eslint 설정이 바뀌었는데 lint 캐시를 씁니다($changed)"; exit 1; }
       - name: Typecheck
         run: npm run typecheck
       - name: Build
-        run: npm run build
+        run: npm run build --workspaces --if-present
+      - name: Study room service MongoDB integration
+        env:
+          STUDYROOM_TEST_MONGO_URI: mongodb://127.0.0.1:27017/notelink_test
+          REQUIRE_STUDYROOM_MONGO_TESTS: 'true'
+        run: npm run test -w apps/api -- test/study-rooms-service-mongo.test.ts test/study-chat-access-mongo.test.ts
       - name: Test
         run: npm test
 
@@ -102,8 +132,14 @@ jobs:
         with:
           python-version: '3.13'
           cache: pip
-          cache-dependency-path: apps/ai/requirements*.txt
-      - run: pip install -r requirements-dev.txt
+          cache-dependency-path: apps/ai/requirements*.lock
+      # 간접 의존성까지 고정한 lock 파일로 설치(#278)
+      - run: pip install -r requirements-dev.lock
+      - name: Lock 파일 확인
+        # requirements*.txt를 바꾸고 lock 파일을 다시 만들지 않았으면 실패(bash apps/ai/lock.sh)
+        run: |
+          pip install uv==0.13.6
+          bash lock.sh --check
       - name: Lint
         run: |
           ruff check .

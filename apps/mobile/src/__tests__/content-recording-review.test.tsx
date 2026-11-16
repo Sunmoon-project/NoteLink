@@ -1,0 +1,210 @@
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { QueryClient } from '@tanstack/react-query';
+import { router } from 'expo-router';
+import { RecLiveScreen } from '../features/content/capture';
+import { useDraft } from '../stores/draft';
+import { renderScreen } from '../test-utils';
+
+const mockPermission = jest.fn();
+const mockAudioMode = jest.fn();
+const mockToast = jest.fn();
+const mockRecorder = {
+  uri: 'file:///actual-live-recording.m4a' as string | null,
+  prepareToRecordAsync: jest.fn(),
+  record: jest.fn(),
+  pause: jest.fn(),
+  stop: jest.fn(),
+};
+const mockRecorderState = {
+  durationMillis: 5200,
+  isRecording: false,
+  metering: -30 as number | undefined,
+};
+// 녹음 시간이 흐를 때 화면이 다시 그려지도록 상태 훅을 구독형으로 둔다
+const mockListeners = new Set<() => void>();
+jest.mock('../lib/api', () => ({
+  api: { me: { get: async () => ({ settings: { keepScreenOnWhileRecording: false } }) } },
+}));
+jest.mock('../lib/upload', () => ({ checkFile: jest.fn(), uploadToBlob: jest.fn() }));
+jest.mock('../lib/image-edit', () => ({ editPhoto: jest.fn() }));
+jest.mock('../stores/toast', () => ({ toast: (...args: unknown[]) => mockToast(...args) }));
+jest.mock('expo-camera', () => ({
+  CameraView: () => null,
+  useCameraPermissions: () => [null, jest.fn()],
+}));
+jest.mock('expo-keep-awake', () => ({ useKeepAwake: jest.fn() }));
+jest.mock('expo-audio', () => ({
+  AudioModule: {
+    requestRecordingPermissionsAsync: (...args: unknown[]) => mockPermission(...args),
+  },
+  RecordingPresets: { HIGH_QUALITY: {} },
+  setAudioModeAsync: (...args: unknown[]) => mockAudioMode(...args),
+  useAudioRecorder: () => mockRecorder,
+  useAudioRecorderState: () => {
+    const React = jest.requireActual<typeof import('react')>('react');
+    const [, rerender] = React.useReducer((n: number) => n + 1, 0);
+    React.useEffect(() => {
+      mockListeners.add(rerender);
+      return () => void mockListeners.delete(rerender);
+    }, []);
+    return { ...mockRecorderState };
+  },
+}));
+const clients: QueryClient[] = [];
+const client = () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  clients.push(qc);
+  return qc;
+};
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockRecorderState.durationMillis = 5200;
+  mockRecorderState.metering = -30;
+  for (const fn of [
+    mockPermission,
+    mockAudioMode,
+    mockRecorder.prepareToRecordAsync,
+    mockRecorder.record,
+    mockRecorder.pause,
+    mockRecorder.stop,
+  ])
+    fn.mockReset();
+  mockPermission.mockResolvedValue({ granted: true });
+  mockAudioMode.mockResolvedValue(undefined);
+  mockRecorder.prepareToRecordAsync.mockResolvedValue(undefined);
+  mockRecorder.stop.mockResolvedValue(undefined);
+  mockRecorder.uri = 'file:///actual-live-recording.m4a';
+  mockRecorderState.isRecording = false;
+  mockRecorder.record.mockImplementation(() => {
+    mockRecorderState.isRecording = true;
+  });
+  useDraft.getState().reset();
+});
+afterEach(() => clients.splice(0).forEach((qc) => qc.clear()));
+
+describe('PR36 실제 녹음 수명주기', () => {
+  it('마이크 권한을 거절하면 녹음을 준비하거나 시작하지 않는다', async () => {
+    mockPermission.mockResolvedValue({ granted: false });
+    await renderScreen(<RecLiveScreen />, client());
+    await screen.findByText('설정에서 허용하기');
+    expect(mockRecorder.prepareToRecordAsync).not.toHaveBeenCalled();
+    expect(mockRecorder.record).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalledWith('/convert');
+  });
+  it.each(['permission', 'prepare'] as const)(
+    '%s 요청 오류는 처리하고 녹음이나 변환을 시작하지 않는다',
+    async (stage) => {
+      if (stage === 'permission') mockPermission.mockRejectedValue(new Error('권한 API 실패'));
+      else mockRecorder.prepareToRecordAsync.mockRejectedValue(new Error('녹음 준비 실패'));
+      await renderScreen(<RecLiveScreen />, client());
+      await waitFor(() => expect(mockToast).toHaveBeenCalled());
+      expect(mockRecorder.record).not.toHaveBeenCalled();
+      expect(useDraft.getState().files).toEqual([]);
+      expect(router.replace).not.toHaveBeenCalledWith('/convert');
+    },
+  );
+  it('녹음 종료 실패를 안내하고 변환으로 이동하거나 초안을 저장하지 않는다', async () => {
+    await renderScreen(<RecLiveScreen />, client());
+    await waitFor(() => expect(mockRecorder.record).toHaveBeenCalledTimes(1));
+    mockRecorder.stop.mockRejectedValueOnce(new Error('파일 마감 실패'));
+    await expect(fireEvent.press(screen.getByText('변환 시작'))).resolves.toBeUndefined();
+    expect(mockToast).toHaveBeenCalled();
+    expect(useDraft.getState().files).toEqual([]);
+    expect(router.replace).not.toHaveBeenCalledWith('/convert');
+  });
+  it('준비 응답을 기다리다 화면을 나가면 뒤늦게 녹음을 시작하지 않는다', async () => {
+    const pending = deferred<void>();
+    mockRecorder.prepareToRecordAsync.mockReturnValue(pending.promise);
+    const rendered = await renderScreen(<RecLiveScreen />, client());
+    await waitFor(() => expect(mockRecorder.prepareToRecordAsync).toHaveBeenCalledTimes(1));
+    await rendered.unmount();
+    await act(async () => pending.resolve());
+    expect(mockRecorder.record).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalledWith('/convert');
+  });
+  it('실제 녹음 파일이 있어야 녹음 초안을 저장하고 변환으로 이동한다', async () => {
+    mockRecorderState.durationMillis = 5 * 60 * 1000; // 별 내용 없는 녹음으로 걸리지 않는 길이
+    const rendered = await renderScreen(<RecLiveScreen />, client());
+    await waitFor(() => expect(mockRecorder.record).toHaveBeenCalledTimes(1));
+    await fireEvent.press(screen.getByText('변환 시작'));
+    expect(useDraft.getState()).toMatchObject({
+      kind: 'recording',
+      source: 'live_recording',
+      files: [
+        expect.objectContaining({
+          uri: 'file:///actual-live-recording.m4a',
+          mimeType: 'audio/mp4',
+        }),
+      ],
+    });
+    expect(router.replace).toHaveBeenCalledWith('/convert');
+    await rendered.unmount();
+    await waitFor(() =>
+      expect(mockAudioMode).toHaveBeenLastCalledWith(
+        expect.objectContaining({ allowsRecording: false }),
+      ),
+    );
+  });
+  it('30초보다 짧은 녹음은 적절하지 않다고 알리고, 그래도 올리면 변환으로 간다', async () => {
+    mockRecorderState.durationMillis = 5200;
+    await renderScreen(<RecLiveScreen />, client());
+    await waitFor(() => expect(mockRecorder.record).toHaveBeenCalledTimes(1));
+    await fireEvent.press(screen.getByText('변환 시작'));
+    expect(await screen.findByText('정리하기에 적절하지 않은 녹음이에요')).toBeTruthy();
+    expect(router.replace).not.toHaveBeenCalledWith('/convert');
+    await fireEvent.press(screen.getByText('그래도 올리기'));
+    expect(router.replace).toHaveBeenCalledWith('/convert');
+  });
+  /** 녹음 시간을 1초씩 흘리며 그때마다 소리 크기를 알린다 */
+  const record = async (seconds: number, metering: number | undefined) => {
+    for (let i = 1; i <= seconds; i++) {
+      mockRecorderState.durationMillis = i * 1000;
+      mockRecorderState.metering = metering;
+      await act(async () => mockListeners.forEach((f) => f()));
+    }
+  };
+  it('30초 넘게 녹음하는 동안 소리 크기를 못 재도 무음으로 보지 않고 변환으로 간다', async () => {
+    mockRecorderState.durationMillis = 0;
+    await renderScreen(<RecLiveScreen />, client());
+    await waitFor(() => expect(mockRecorder.record).toHaveBeenCalledTimes(1));
+    await record(40, undefined);
+    await fireEvent.press(screen.getByText('변환 시작'));
+    expect(screen.queryByText('정리하기에 적절하지 않은 녹음이에요')).toBeNull();
+    expect(router.replace).toHaveBeenCalledWith('/convert');
+  });
+  it('30초 넘게 녹음해도 잰 소리 크기가 계속 무음이면 적절하지 않다고 알린다', async () => {
+    mockRecorderState.durationMillis = 0;
+    await renderScreen(<RecLiveScreen />, client());
+    await waitFor(() => expect(mockRecorder.record).toHaveBeenCalledTimes(1));
+    await record(40, -80);
+    await fireEvent.press(screen.getByText('변환 시작'));
+    expect(await screen.findByText(/소리가 거의 녹음되지 않았어요/)).toBeTruthy();
+    expect(router.replace).not.toHaveBeenCalledWith('/convert');
+  });
+  it('녹음 종료 후 파일 주소가 없으면 빈 변환 작업을 시작하지 않는다', async () => {
+    await renderScreen(<RecLiveScreen />, client());
+    await waitFor(() => expect(mockRecorder.record).toHaveBeenCalledTimes(1));
+    mockRecorder.uri = null;
+    await fireEvent.press(screen.getByText('변환 시작'));
+    expect(useDraft.getState().files).toEqual([]);
+    expect(router.replace).not.toHaveBeenCalledWith('/convert');
+    expect(mockToast).toHaveBeenCalled();
+  });
+});
+
+it('녹음 화면을 닫으려면 확인을 거치고, 계속 녹음을 고르면 머문다', async () => {
+  await renderScreen(<RecLiveScreen />);
+  await fireEvent.press(await screen.findByLabelText('닫기'));
+  await fireEvent.press(await screen.findByText('계속 녹음'));
+  expect(router.back).not.toHaveBeenCalled();
+  await fireEvent.press(await screen.findByLabelText('닫기'));
+  await fireEvent.press(await screen.findByText('그만두기'));
+  expect(router.back).toHaveBeenCalledTimes(1);
+});
