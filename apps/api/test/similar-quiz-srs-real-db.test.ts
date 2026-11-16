@@ -4,7 +4,7 @@
 import { getConnectionToken, getModelToken, MongooseModule } from '@nestjs/mongoose';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { type Connection, type Model, Types } from 'mongoose';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import { Material, MaterialSchema } from '../src/modules/content/schemas/material.schema.js';
@@ -111,6 +111,37 @@ describe.skipIf(!uri)('진짜 DB 오답 복습 상태 쓰기', () => {
   };
   const stepOfQ = async () =>
     ((await sets.findById(SOURCE).lean())!.questions[0]!.srs as { step: number } | null)?.step;
+  const setOf = (id: string) => sets.findById(id).lean();
+  /** 문제 Q의 복습 상태를 비운다(앞 테스트가 남긴 srs · srsAt) */
+  const resetQ = () =>
+    sets.updateOne(
+      { _id: SOURCE },
+      { $set: { 'questions.0.srs': null }, $unset: { 'questions.0.srsAt': 1 } },
+    );
+  /**
+   * 서비스의 첫 복습 상태 쓰기(updateOne) 하나를 붙잡아 둔다. arrived: 붙잡혔을 때, release(true): 그대로 쓴다,
+   * release(false): 실패시킨다. 나머지 쓰기는 바로 지나간다
+   */
+  const holdFirstWrite = () => {
+    const original = sets.updateOne.bind(sets);
+    let release!: (ok: boolean) => void;
+    const gate = new Promise<boolean>((r) => (release = r));
+    let reached!: () => void;
+    const arrived = new Promise<void>((r) => (reached = r));
+    let held = false;
+    const spy = vi.spyOn(sets, 'updateOne').mockImplementation(((
+      ...args: Parameters<typeof sets.updateOne>
+    ) => {
+      if (held) return original(...args);
+      held = true;
+      reached();
+      return gate.then(async (ok) => {
+        if (!ok) throw new Error('DB 끊김');
+        return original(...args);
+      });
+    }) as never);
+    return { arrived, release, restore: () => spy.mockRestore() };
+  };
 
   it('늦게 옮긴 오래된 세트(A)는 더 새 세트(B)가 쓴 상태를 되돌리지 않는다', async () => {
     const a = await reviewSet('2026-11-10T00:00:00Z', 1);
@@ -131,5 +162,65 @@ describe.skipIf(!uri)('진짜 DB 오답 복습 상태 쓰기', () => {
     );
     await service.findMine(ME.toHexString(), c);
     expect(await stepOfQ()).toBe(3);
+  });
+
+  it('A의 첫 쓰기가 멈춘 사이 다른 조회가 A를 끝내고 B가 반영된 뒤 A 쓰기가 재개돼도 B가 남는다', async () => {
+    await resetQ();
+    const a = await reviewSet('2026-11-20T00:00:00Z', 1);
+    const b = await reviewSet('2026-11-22T00:00:00Z', 2);
+    const hold = holdFirstWrite();
+    try {
+      const first = service.findMine(ME.toHexString(), a);
+      await hold.arrived;
+      // 둘째 조회가 A를 다 옮기고 세트를 바꾼다
+      await service.findMine(ME.toHexString(), a);
+      expect(await stepOfQ()).toBe(1);
+      expect((await setOf(a))!.srsSavedAt).toBeInstanceOf(Date);
+      // B를 옮긴다
+      await service.findMine(ME.toHexString(), b);
+      expect(await stepOfQ()).toBe(2);
+      // 멈췄던 A의 첫 쓰기가 이제 도착해도 B보다 오래돼 쓰지 않는다
+      hold.release(true);
+      await first;
+      expect(await stepOfQ()).toBe(2);
+    } finally {
+      hold.restore();
+    }
+  });
+
+  it('다른 조회가 A를 끝낸 뒤 A의 첫 쓰기가 실패해도 복습 상태는 남아 있다', async () => {
+    await resetQ();
+    const a = await reviewSet('2026-11-24T00:00:00Z', 4);
+    const hold = holdFirstWrite();
+    try {
+      const first = service.findMine(ME.toHexString(), a);
+      await hold.arrived;
+      await service.findMine(ME.toHexString(), a);
+      hold.release(false);
+      await expect(first).rejects.toThrow('DB 끊김');
+      expect(await stepOfQ()).toBe(4);
+      expect((await setOf(a))!.srsSavedAt).toBeInstanceOf(Date);
+    } finally {
+      hold.restore();
+    }
+  });
+
+  it('혼자 옮기던 A의 쓰기가 실패하면 세트 · 표시가 그대로라 다음 조회가 다시 옮긴다', async () => {
+    await resetQ();
+    const a = await reviewSet('2026-11-26T00:00:00Z', 5);
+    const hold = holdFirstWrite();
+    try {
+      const first = service.findMine(ME.toHexString(), a);
+      await hold.arrived;
+      hold.release(false);
+      await expect(first).rejects.toThrow('DB 끊김');
+    } finally {
+      hold.restore();
+    }
+    expect(await stepOfQ()).toBeUndefined();
+    expect(await setOf(a)).toMatchObject({ status: 'generating', srsSavedAt: null });
+    await service.findMine(ME.toHexString(), a);
+    expect(await stepOfQ()).toBe(5);
+    expect((await setOf(a))!.srsSavedAt).toBeInstanceOf(Date);
   });
 });
