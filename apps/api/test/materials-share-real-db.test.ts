@@ -442,6 +442,22 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       const row = await materials.findById(a).lean();
       expect(row).toMatchObject({ title: '원래 제목', deletedAt: null, savedAt: null });
     });
+    it('공유받은 멤버는 녹음 북마크를 추가할 수 없다(404, 주인은 추가할 수 있다)', async () => {
+      const a = await note({ kind: 'recording', source: 'audio_file', bookmarks: [{ atSec: 5 }] });
+      const roomId = await room([joined(owner), joined(friend)]);
+      await share(owner, [a], roomId);
+      // 읽기는 허용된다
+      expect((await open(friend, a)).data.bookmarks).toEqual([{ atSec: 5 }]);
+      await expect(
+        materialsService.addBookmark(friend.toHexString(), a, 12.5),
+      ).rejects.toMatchObject({ status: 404 });
+      expect((await materials.findById(a).lean())!.bookmarks.map((b) => b.atSec)).toEqual([5]);
+      await materialsService.addBookmark(owner.toHexString(), a, 12.5);
+      expect((await materials.findById(a).lean())!.bookmarks.map((b) => b.atSec)).toEqual([
+        5, 12.5,
+      ]);
+    });
+
     it('작업 없이 남은 노트를 공유받은 멤버가 열면 복구도 노트 주인 기준으로 돈다', async () => {
       const a = await note({
         blobUrls: [blob],
