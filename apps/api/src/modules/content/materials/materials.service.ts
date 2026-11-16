@@ -653,7 +653,7 @@ export class MaterialsService implements OnModuleInit {
         .findOne({ _id: row._id, ownerId: row.ownerId, deletedAt: null })
         .lean<MaterialRow>();
     }
-    if (update['processing.status'] === 'done' && updated.kind !== 'recording') {
+    if (update['processing.status'] === 'done') {
       await this.pregenerate(userId, updated);
     }
     return updated;

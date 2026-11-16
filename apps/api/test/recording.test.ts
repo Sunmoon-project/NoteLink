@@ -303,8 +303,8 @@ describe.skipIf(!uri)('진짜 DB 녹음 재생 정보 (RecordingService)', () =>
     const row = await materials.findById(id).lean();
     expect(row?.processing.status).toBe('done');
     expect(row?.summary?.sections[0]?.heading).toBe('미분 소개');
-    // 녹음은 첫 퀴즈를 미리 만들지 않는다(노트 조회와 같음)
-    expect(quizSets.pregenerate).not.toHaveBeenCalled();
+    // 녹음도 정리가 끝나면 첫 퀴즈를 미리 만든다(노트 조회와 같음, FR-38)
+    expect(quizSets.pregenerate).toHaveBeenCalledTimes(1);
   });
 
   it.each([
