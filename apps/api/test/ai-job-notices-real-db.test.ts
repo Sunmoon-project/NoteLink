@@ -5,7 +5,7 @@
 // MONGODB_VERIFY_URI가 localhost일 때만 돌고, 이번 실행에서만 쓰는 전용 DB를 만들고 끝나면 지운다. ExpoPushService는 가짜다.
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/ai-job-notices-real-db.test.ts
 import mongoose, { type Connection, type Model, Types } from 'mongoose';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import {
@@ -236,6 +236,133 @@ describe.skipIf(!isLocal)('진짜 DB 노트 변환 완료 푸시', () => {
     const done = (await row(id))!;
     expect(done.notice).toMatchObject({ state: 'gave_up', attempts: NOTICE_MAX_ATTEMPTS });
     expect(done.updatedAt).toEqual(before);
+  });
+
+  /** notice.state 를 쓰는 updateOne 을 앞에서부터 times 번 실패시킨다(나머지는 진짜 DB에 쓴다) */
+  const failWrites = (state: string, times: number) => {
+    const original = jobs.updateOne.bind(jobs);
+    let n = 0;
+    return vi.spyOn(jobs, 'updateOne').mockImplementation(((
+      filter: never,
+      update: { $set?: Record<string, unknown> },
+      options: never,
+    ) => {
+      if (n < times && update.$set?.['notice.state'] === state) {
+        n += 1;
+        return Promise.reject(new Error('db down'));
+      }
+      return original(filter, update, options);
+    }) as never);
+  };
+  const noWait = (svc: AiJobNoticesService) => {
+    svc.recordWait = () => Promise.resolve();
+    return svc;
+  };
+
+  it('발송 성공 뒤 sent 기록이 한 번 실패해도 푸시는 1번이고, 선점을 풀지 않고 sent 로 끝난다', async () => {
+    const { id } = await noteWithJob();
+    const spy = failWrites('sent', 1);
+    try {
+      const svc = noWait(makeService());
+      await svc.runOnce(NOW);
+      expect(sent).toHaveLength(1);
+      expect((await row(id))!.notice).toMatchObject({ state: 'sent', attempts: 1 });
+      await svc.runOnce(new Date(NOW.getTime() + 3 * 60_000));
+      expect(sent).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('sent 기록이 끝내 실패해도 다음 확인에서 먼저 다시 써서 sent 가 되고 푸시는 1번이다(updatedAt 은 그대로)', async () => {
+    const { id } = await noteWithJob();
+    const before = (await row(id))!.updatedAt;
+    const spy = failWrites('sent', 3); // 첫 확인의 기록 3번이 모두 실패
+    try {
+      const svc = noWait(makeService());
+      await svc.runOnce(NOW);
+      expect(sent).toHaveLength(1);
+      expect((await row(id))!.notice?.state).toBe('claimed'); // 선점이 남아 있다
+      await svc.runOnce(new Date(NOW.getTime() + 60_000)); // 선점이 아직 살아 있는 동안
+      expect(sent).toHaveLength(1);
+      const done = (await row(id))!;
+      expect(done.notice).toMatchObject({ state: 'sent', attempts: 1 });
+      expect(done.updatedAt).toEqual(before);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('기록이 2분 넘게 안 되면 보관분은 버려지고 다른 서버가 이어받는다(문서화한 한계: 푸시가 한 번 더 간다)', async () => {
+    const { id } = await noteWithJob();
+    const spy = failWrites('sent', 3);
+    try {
+      const svc = noWait(makeService());
+      await svc.runOnce(NOW);
+      const first = (await row(id))!.notice?.claimId;
+      await svc.runOnce(new Date(NOW.getTime() + NOTICE_LEASE_MS + 1000));
+      const done = (await row(id))!;
+      expect(done.notice?.claimId).not.toBe(first); // 옛 선점의 기록은 다시 쓰지 않았다
+      expect(done.notice).toMatchObject({ state: 'sent', attempts: 2 });
+      expect(sent).toHaveLength(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('후보를 읽은 뒤 다른 서버가 먼저 재시도해 횟수가 올랐어도, 실제 3번째 실패면 gave_up 으로 기록한다(updatedAt 은 그대로)', async () => {
+    const { id, materialId } = await noteWithJob({ status: 'failed' });
+    const before = (await row(id))!.updatedAt;
+    // 실제 DB: 이미 2번 시도하고 풀린 상태
+    await jobs.updateOne(
+      { _id: id },
+      { $set: { 'notice.state': null, 'notice.attempts': 2, 'notice.retryAt': null } },
+      { timestamps: false },
+    );
+    // 서버가 후보를 읽은 시점의 오래된 값: 시도 0번
+    const stale = [
+      { _id: id, status: 'failed', userId: user, targetId: materialId, notice: { attempts: 0 } },
+    ];
+    const chain = { sort: () => chain, limit: () => chain, lean: () => Promise.resolve(stale) };
+    const spy = vi.spyOn(jobs, 'find').mockImplementation((() => chain) as never);
+    sendImpl = () =>
+      Promise.resolve({
+        invalidTokens: [],
+        failedTickets: [{ message: { to: token('a') }, error: 'x' }],
+      });
+    try {
+      await makeService().runOnce(NOW);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sent).toHaveLength(1);
+    const done = (await row(id))!;
+    expect(done.notice).toMatchObject({ state: 'gave_up', attempts: NOTICE_MAX_ATTEMPTS });
+    expect(done.updatedAt).toEqual(before);
+  });
+
+  it('시도 횟수가 한도에 닿은 만료된 claimed 는 gave_up 으로 닫고, 살아 있는 선점은 건드리지 않는다', async () => {
+    const expired = await noteWithJob();
+    const live = await noteWithJob();
+    const before = (await row(expired.id))!.updatedAt;
+    const claimed = (claimedAt: Date) => ({
+      $set: {
+        'notice.state': 'claimed',
+        'notice.claimId': 'x',
+        'notice.claimedAt': claimedAt,
+        'notice.attempts': NOTICE_MAX_ATTEMPTS,
+      },
+    });
+    await jobs.updateOne({ _id: expired.id }, claimed(minutesAgo(3)), { timestamps: false });
+    await jobs.updateOne({ _id: live.id }, claimed(new Date(NOW.getTime() - 30_000)), {
+      timestamps: false,
+    });
+    await makeService().runOnce(NOW);
+    expect(sent).toHaveLength(0);
+    const closed = (await row(expired.id))!;
+    expect(closed.notice?.state).toBe('gave_up');
+    expect(closed.updatedAt).toEqual(before);
+    expect((await row(live.id))!.notice?.state).toBe('claimed');
   });
 
   it('후보 조회용 인덱스(type · status · updatedAt)가 있다', async () => {

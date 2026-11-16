@@ -28,6 +28,10 @@ export const NOTICE_LEASE_MS = 2 * 60 * 1000;
 export const NOTICE_MAX_ATTEMPTS = 3;
 /** 실패한 n번째 시도(1부터) 뒤 다음 시도까지 기다리는 시간: 2분, 10분 */
 export const NOTICE_RETRY_DELAYS_MS = [2 * 60 * 1000, 10 * 60 * 1000];
+/** 결과 기록(notice 쓰기)이 실패했을 때 다시 쓰기 전에 기다리는 시간: 0.2초, 0.5초(그 뒤에도 실패하면 보관해 다음 확인에서 다시 쓴다) */
+export const NOTICE_RECORD_RETRY_DELAYS_MS = [200, 500];
+/** 기록하지 못한 sent 를 메모리에 보관하는 최대 개수(넘으면 오래된 것부터 버린다) */
+export const NOTICE_UNRECORDED_MAX = 200;
 
 const SUMMARY_TYPES = ['handwriting_summary', 'recording_summary', 'document_summary'];
 const EXPO_PUSH_TOKEN = /^(?:Expo|Exponent)PushToken\[[^\]]+\]$/;
@@ -46,7 +50,19 @@ interface JobLean {
   status: 'succeeded' | 'failed';
   userId: Types.ObjectId;
   targetId: Types.ObjectId;
+  /** 후보를 읽은 때의 값이라 오래됐을 수 있다. 시도 횟수 판정에는 선점 응답의 값을 쓴다 */
   notice?: { attempts?: number } | null;
+}
+
+type Outcome = 'sent' | 'skipped' | 'retry';
+
+/** 푸시는 보냈는데 sent 를 기록하지 못한 작업(메모리 보관). 다음 확인에서 먼저 다시 쓴다 */
+interface Unrecorded {
+  job: JobLean;
+  claimId: string;
+  /** 선점한 시각: 이 시각 + NOTICE_LEASE_MS 가 지나면 다른 서버가 이어받았을 수 있어 다시 쓰지 않고 버린다 */
+  claimedAt: Date;
+  attempts: number;
 }
 
 /**
@@ -61,12 +77,27 @@ interface JobLean {
  * - 노트가 지워졌거나 노트가 이 작업을 가리키지 않으면(다른 작업으로 다시 연결됨) 푸시 없이 skipped로 끝낸다.
  * - 기준 시각은 updatedAt이다(처리기가 끝낼 때 쓰고, 이후 이 서비스는 timestamps:false로만 쓴다).
  * - 무효 토큰 정리가 실패해도 발송은 성공으로 본다(재발송 금지). 발송이 전부 실패하면 NOTICE_MAX_ATTEMPTS까지 다시 시도한다.
+ * - 발송 결과와 기록 오류는 따로 다룬다: 푸시를 보낸 뒤 sent 기록이 실패해도 선점을 풀지 않고 sent 만 다시 쓴다
+ *   (0.2초 · 0.5초 뒤, 그래도 실패하면 메모리에 보관했다가 다음 확인 때 먼저 다시 쓴다. 선점 만료 뒤에는 버린다).
+ * - 시도 횟수는 후보를 읽을 때의 값이 아니라 선점 응답(returnDocument: after)의 실제 값으로 판정한다.
+ * - 시도 횟수가 한도에 닿은 채 선점이 만료된 claimed 는 gave_up 으로 닫는다.
+ *
+ * 남는 한계: 푸시를 보낸 뒤 sent 기록이 선점 만료(NOTICE_LEASE_MS, 2분) 넘게 실패하거나 그 사이 서버가 죽으면,
+ * 다른 서버가 이어받아 같은 알림을 한 번 더 보낼 수 있다(누락보다 중복을 택했다. 같은 collapseId라 기기에서는 보통
+ * 한 알림으로 합쳐진다). 한도에 닿은 만료된 claimed 를 gave_up 으로 닫을 때도 푸시는 실제로 갔을 수 있다.
  */
 @Injectable()
 export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(AiJobNoticesService.name);
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  /** 푸시는 보냈지만 sent 를 기록하지 못한 작업(작업 id → 보관 항목). 오래된 것이 앞에 있다 */
+  private readonly unrecorded = new Map<string, Unrecorded>();
+  /** 기록하지 못한 sent 를 보관하는 최대 개수(테스트에서 바꿔 끼운다) */
+  unrecordedLimit = NOTICE_UNRECORDED_MAX;
+  /** 기록을 다시 쓰기 전 기다림(테스트에서 실제로 기다리지 않게 바꿔 끼운다) */
+  recordWait: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
 
   constructor(
     @InjectModel(AiJob.name) private readonly jobs: Model<AiJob>,
@@ -85,6 +116,7 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
 
   onModuleDestroy(): void {
     if (this.timer) clearInterval(this.timer);
+    this.unrecorded.clear();
   }
 
   /** 테스트와 운영 스케줄러가 공유하는 한 번의 확인. 겹쳐 부르면 뒤의 호출은 바로 끝난다 */
@@ -93,6 +125,9 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
     this.running = true;
     try {
       const tick = clock ?? (startedAt ? () => startedAt : () => new Date());
+      // 먼저 지난 확인에서 기록하지 못한 sent 를 다시 쓰고, 한도에 닿은 만료된 선점을 닫는다(실패해도 이어서 확인한다)
+      await this.flushUnrecorded(tick()).catch((e: unknown) => this.logFailure(e));
+      await this.closeExhausted(tick()).catch((e: unknown) => this.logFailure(e));
       let after: Types.ObjectId | null = null;
       for (;;) {
         const now = tick();
@@ -105,6 +140,11 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
               status: { $in: ['succeeded', 'failed'] },
               updatedAt: { $gte: new Date(now.getTime() - NOTICE_WINDOW_MS) },
               'notice.state': { $nin: FINAL_STATES },
+              // 한도에 닿은 작업은 고르지 않는다(만료된 claimed 는 closeExhausted 가 닫는다)
+              $or: [
+                { 'notice.attempts': null },
+                { 'notice.attempts': { $lt: NOTICE_MAX_ATTEMPTS } },
+              ],
             },
             { status: 1, userId: 1, targetId: 1, notice: 1 },
           )
@@ -130,53 +170,142 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
 
   private async handle(job: JobLean, clock: () => Date): Promise<void> {
     const now = clock();
-    const attempts = (job.notice?.attempts ?? 0) + 1;
-    if (attempts > NOTICE_MAX_ATTEMPTS) return;
+    if ((job.notice?.attempts ?? 0) >= NOTICE_MAX_ATTEMPTS) return; // 읽은 값으로 하는 빠른 걸러내기
 
     const claimId = randomUUID();
-    const claimed = await this.jobs.updateOne(
-      {
-        _id: job._id,
-        status: job.status, // 읽은 뒤 다시 시도되어 바뀌었으면 잡지 않는다
-        updatedAt: { $gte: new Date(now.getTime() - NOTICE_WINDOW_MS) },
-        $and: [
-          { 'notice.state': { $nin: FINAL_STATES } },
-          {
-            $or: [
-              { 'notice.state': null },
-              {
-                'notice.state': 'claimed',
-                'notice.claimedAt': { $lte: new Date(now.getTime() - NOTICE_LEASE_MS) },
-              },
-            ],
-          },
-          { $or: [{ 'notice.retryAt': null }, { 'notice.retryAt': { $lte: now } }] },
-          {
-            $or: [{ 'notice.attempts': null }, { 'notice.attempts': { $lt: NOTICE_MAX_ATTEMPTS } }],
-          },
-        ],
-      },
-      {
-        $set: {
-          'notice.state': 'claimed',
-          'notice.claimId': claimId,
-          'notice.claimedAt': now,
-          'notice.retryAt': null,
+    // 선점하면서 증가된 문서를 돌려받는다: 시도 횟수는 후보를 읽은 뒤 다른 서버가 올렸을 수 있어 이 값으로 판정한다
+    const claimed = await this.jobs
+      .findOneAndUpdate(
+        {
+          _id: job._id,
+          status: job.status, // 읽은 뒤 다시 시도되어 바뀌었으면 잡지 않는다
+          updatedAt: { $gte: new Date(now.getTime() - NOTICE_WINDOW_MS) },
+          $and: [
+            { 'notice.state': { $nin: FINAL_STATES } },
+            {
+              $or: [
+                { 'notice.state': null },
+                {
+                  'notice.state': 'claimed',
+                  'notice.claimedAt': { $lte: new Date(now.getTime() - NOTICE_LEASE_MS) },
+                },
+              ],
+            },
+            { $or: [{ 'notice.retryAt': null }, { 'notice.retryAt': { $lte: now } }] },
+            {
+              $or: [
+                { 'notice.attempts': null },
+                { 'notice.attempts': { $lt: NOTICE_MAX_ATTEMPTS } },
+              ],
+            },
+          ],
         },
-        $inc: { 'notice.attempts': 1 },
-      },
-      NO_TIMESTAMPS,
-    );
-    if (!claimed.matchedCount) return; // 다른 서버가 먼저 잡았다
+        {
+          $set: {
+            'notice.state': 'claimed',
+            'notice.claimId': claimId,
+            'notice.claimedAt': now,
+            'notice.retryAt': null,
+          },
+          $inc: { 'notice.attempts': 1 },
+        },
+        { ...NO_TIMESTAMPS, returnDocument: 'after', projection: { notice: 1 } },
+      )
+      .lean<{ notice?: { attempts?: number } | null } | null>();
+    if (!claimed) return; // 다른 서버가 먼저 잡았다
+    const attempts = claimed.notice?.attempts ?? 1;
 
+    // 발송 결과와 기록 오류를 나눈다: 발송 중 오류만 'retry'이고, 기록 오류는 결과를 바꾸지 않는다
+    let outcome: Outcome | 'abandoned';
     try {
-      const outcome = await this.send(job, claimId, clock);
-      if (outcome === 'abandoned') return; // 내 선점이 사라졌다(다시 시도됨): 아무것도 쓰지 않는다
-      await this.record(job, claimId, outcome, attempts, clock());
+      outcome = await this.send(job, claimId, clock);
     } catch (error) {
       this.logger.warn(`노트 변환 알림 발송 중 오류(${String(job._id)}): ${String(error)}`);
-      await this.record(job, claimId, 'retry', attempts, clock());
+      outcome = 'retry';
     }
+    if (outcome === 'abandoned') return; // 내 선점이 사라졌다(다시 시도됨): 아무것도 쓰지 않는다
+    await this.recordResult(job, claimId, outcome, attempts, now, clock);
+  }
+
+  /**
+   * 결과를 기록한다. 기록이 실패하면 같은 결과로 0.2초 · 0.5초 뒤 다시 쓴다(선점을 풀지 않는다: 푸시를 이미 보냈을 수 있다).
+   * 그래도 실패하면 sent 는 메모리에 보관해 다음 확인에서 먼저 다시 쓰고, 다른 결과는 선점이 만료되면 이어받는다
+   */
+  private async recordResult(
+    job: JobLean,
+    claimId: string,
+    outcome: Outcome,
+    attempts: number,
+    claimedAt: Date,
+    clock: () => Date,
+  ): Promise<void> {
+    for (let i = 0; ; i++) {
+      try {
+        await this.record(job, claimId, outcome, attempts, clock());
+        return;
+      } catch (error) {
+        const delay = NOTICE_RECORD_RETRY_DELAYS_MS[i];
+        if (delay === undefined) {
+          this.logger.warn(
+            `노트 변환 알림 결과(${outcome})를 기록하지 못했어요(${String(job._id)}): ${String(error)}`,
+          );
+          if (outcome === 'sent') this.keepUnrecorded({ job, claimId, claimedAt, attempts });
+          return;
+        }
+        await this.recordWait(delay);
+      }
+    }
+  }
+
+  /** 기록하지 못한 sent 를 보관한다. 상한을 넘으면 오래된 것부터 버린다 */
+  private keepUnrecorded(item: Unrecorded): void {
+    const key = String(item.job._id);
+    this.unrecorded.delete(key);
+    this.unrecorded.set(key, item);
+    while (this.unrecorded.size > this.unrecordedLimit) {
+      this.unrecorded.delete(this.unrecorded.keys().next().value!);
+    }
+  }
+
+  /**
+   * 지난 확인에서 기록하지 못한 sent 를 먼저 다시 쓴다. 내 선점(claimId) 조건으로 쓰므로 그사이 다시 시도되었거나
+   * 다른 서버가 이어받았으면 아무것도 바꾸지 않는다. 선점이 만료된 것(NOTICE_LEASE_MS 이상)은 이미 다른 서버가
+   * 이어받았을 수 있어 다시 쓰지 않고 버린다
+   */
+  private async flushUnrecorded(now: Date): Promise<void> {
+    for (const [key, item] of [...this.unrecorded]) {
+      if (now.getTime() - item.claimedAt.getTime() >= NOTICE_LEASE_MS) {
+        this.unrecorded.delete(key);
+        continue;
+      }
+      try {
+        await this.record(item.job, item.claimId, 'sent', item.attempts, now);
+        this.unrecorded.delete(key);
+      } catch (error) {
+        this.logger.warn(`보관한 알림 기록을 다시 쓰지 못했어요(${key}): ${String(error)}`);
+      }
+    }
+  }
+
+  /**
+   * 시도 횟수가 한도에 닿은 채 선점이 만료된 claimed 를 gave_up 으로 닫는다(한도에 닿으면 더는 선점하지 못해 끝난 상태가
+   * 되지 못한다). 선점이 아직 살아 있는 것(다른 서버가 처리 중)은 건드리지 않는다.
+   * 이 경우 푸시는 실제로 갔을 수도 있다(보낸 뒤 기록이 실패했거나 서버가 죽음)
+   */
+  private async closeExhausted(now: Date): Promise<void> {
+    await this.jobs.updateMany(
+      {
+        type: { $in: SUMMARY_TYPES },
+        targetType: 'material',
+        status: { $in: ['succeeded', 'failed'] },
+        updatedAt: { $gte: new Date(now.getTime() - NOTICE_WINDOW_MS) },
+        'notice.state': 'claimed',
+        'notice.claimedAt': { $lte: new Date(now.getTime() - NOTICE_LEASE_MS) },
+        'notice.attempts': { $gte: NOTICE_MAX_ATTEMPTS },
+      },
+      { $set: { 'notice.state': 'gave_up' } },
+      NO_TIMESTAMPS,
+    );
   }
 
   /** 확인하고 보낸다. 끝낼 상태(sent · skipped) / 다시 시도할 만한 실패(retry) / 내 선점이 사라짐(abandoned) */
@@ -254,7 +383,7 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
   private async record(
     job: JobLean,
     claimId: string,
-    outcome: 'sent' | 'skipped' | 'retry',
+    outcome: Outcome,
     attempts: number,
     now: Date,
   ): Promise<void> {
