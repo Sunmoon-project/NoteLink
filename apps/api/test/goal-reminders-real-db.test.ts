@@ -5,7 +5,7 @@
 // MONGODB_VERIFY_URI가 localhost일 때만 돌고, 이번 실행에서만 쓰는 전용 DB를 만들고 끝나면 지운다. ExpoPushService는 가짜다.
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/goal-reminders-real-db.test.ts
 import mongoose, { type Connection, type Model, Types } from 'mongoose';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GoalRemindersService } from '../src/modules/progress/goal-reminders.service.js';
 import { RecurringGoalsService } from '../src/modules/progress/recurring-goals.service.js';
@@ -71,6 +71,18 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
     await conn?.dropDatabase();
     await conn?.close();
   });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const makeGoalsService = () =>
+    new RecurringGoalsService(
+      goals as never,
+      conn.model(Subject.name, SubjectSchema) as never,
+      daily as never,
+      { skipDates: () => Promise.resolve([]) } as never,
+    );
 
   beforeEach(async () => {
     sent = [];
@@ -282,6 +294,81 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
     expect((await row(id))!.lastRemindedOn).toBe(TODAY);
   });
 
+  it('후보를 읽은 뒤 설정이 바뀌면 이번 확인에서는 보내지 않고, 새 시각에 정상 발송한다', async () => {
+    const id = await goal();
+    await device('a');
+    const editor = makeGoalsService();
+    const original = goals.updateOne.bind(goals) as (...args: unknown[]) => unknown;
+    let changed = false;
+    vi.spyOn(goals, 'updateOne').mockImplementation(((...args: unknown[]) => {
+      if (changed) return original(...args);
+      changed = true; // 후보를 읽은 뒤 · 선점 직전에 설정이 바뀐다
+      vi.useFakeTimers({ toFake: ['Date'], now: seoul('21:05') });
+      return editor
+        .update(user.toHexString(), id.toHexString(), { remindTime: '22:00' })
+        .finally(() => vi.useRealTimers())
+        .then(() => original(...args));
+    }) as never);
+    const service = makeService();
+    await service.runOnce(seoul('21:05'));
+    expect(sent).toHaveLength(0);
+    expect((await row(id))!.lastRemindedOn).toBeNull();
+    await service.runOnce(seoul('21:06')); // 새 시각(22:00) 전
+    expect(sent).toHaveLength(0);
+    await service.runOnce(seoul('22:00'));
+    expect(sent).toHaveLength(1);
+    expect((await row(id))!.lastRemindedOn).toBe(TODAY);
+  });
+
+  it('update() 는 설정 저장과 오늘 건너뜀 표시를 한 번의 쓰기로 반영한다', async () => {
+    const id = await goal({ remindEnabled: false });
+    const writes = [
+      vi.spyOn(goals, 'updateOne'),
+      vi.spyOn(goals, 'findOneAndUpdate'),
+      vi.spyOn(goals, 'updateMany'),
+      vi.spyOn(goals, 'replaceOne'),
+    ];
+    vi.useFakeTimers({ toFake: ['Date'], now: seoul('21:40') });
+    try {
+      await makeGoalsService().update(user.toHexString(), id.toHexString(), { remindEnabled: true });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(writes.reduce((n, spy) => n + spy.mock.calls.length, 0)).toBe(1);
+    const doc = (await row(id))!;
+    expect(doc.remindEnabled).toBe(true);
+    expect(doc.lastRemindedOn).toBe(TODAY);
+    expect(doc.remindVersion).toBe(1);
+  });
+
+  it('만료 토큰 삭제가 실패해도 재발송하지 않고 완료로 남긴다', async () => {
+    const id = await goal();
+    await device('dead');
+    await device('live');
+    sendImpl = () => Promise.resolve({ invalidTokens: [token('dead')], failedTickets: [] });
+    vi.spyOn(devices, 'deleteMany').mockImplementation((() =>
+      Promise.reject(new Error('db down'))) as never);
+    const service = makeService();
+    await service.runOnce(seoul('21:05'));
+    await service.runOnce(seoul('21:10'));
+    expect(sent).toHaveLength(2); // 두 기기에 한 번씩
+    const doc = (await row(id))!;
+    expect(doc.lastRemindedOn).toBe(TODAY);
+    expect(doc.remindRetryAt ?? null).toBeNull();
+  });
+
+  it('순회 중 시계가 자정을 넘기면 남은 목표는 보내지 않는다', async () => {
+    const first = await goal({ remindTime: '23:00', days: [MON, 2] });
+    const second = await goal({ remindTime: '23:00', days: [MON, 2] });
+    await device('a');
+    const times = [seoul('23:59'), seoul('00:00', '2026-11-17')];
+    const clock = () => times.shift() ?? seoul('00:05', '2026-11-17');
+    await makeService().runOnce(seoul('23:59'), clock);
+    expect(sent).toHaveLength(1);
+    expect((await row(first))!.lastRemindedOn).toBe(TODAY);
+    expect((await row(second))!.lastRemindedOn).toBeNull();
+  });
+
   it('후보를 찾는 부분 인덱스가 있다', async () => {
     const indexes = await goals.collection.indexes();
     expect(indexes).toContainEqual(
@@ -352,6 +439,20 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it('다른 수정과 3번 연속 겹치면 503 GOAL_UPDATE_BUSY 로 답한다(없는 목표의 404 와 구분)', async () => {
+      const id = await goal();
+      const spy = vi
+        .spyOn(goals, 'findOneAndUpdate')
+        .mockImplementation((() => ({ lean: () => Promise.resolve(null) })) as never);
+      await expect(
+        service.update(owner(), id.toHexString(), { remindTime: '22:00' }),
+      ).rejects.toMatchObject({
+        status: 503,
+        response: { code: 'GOAL_UPDATE_BUSY', message: '다른 수정과 겹쳤어요. 잠시 후 다시 시도해 주세요' },
+      });
+      expect(spy).toHaveBeenCalledTimes(3);
     });
 
     it('이름만 고치는 편집은 오늘 리마인드를 막지 않는다', async () => {

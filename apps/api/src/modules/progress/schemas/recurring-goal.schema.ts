@@ -54,6 +54,10 @@ export class RecurringGoal {
   @Prop({ type: String, default: null })
   remindClaimId?: string | null;
 
+  // 리마인드 판정에 쓰는 설정(켬 · 시각 · 요일 · 목표 시간 · 과목 · 일시정지 · 쉼)을 바꿀 때마다 1씩 올린다. 필드가 없는 옛 목표는 0으로 본다
+  @Prop({ type: Number, default: 0 })
+  remindVersion?: number;
+
   @Prop({ required: true, type: Number, default: 0 })
   streak: number; // 연속 달성 일수
 

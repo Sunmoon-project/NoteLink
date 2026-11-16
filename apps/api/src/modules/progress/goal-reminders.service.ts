@@ -21,7 +21,13 @@ import {
   remindStart,
   weekdayOfDate,
 } from './goal-remind.js';
-import { toDayStudy, toRule, type DayLean, type GoalLean } from './recurring-goals.service.js';
+import {
+  toDayStudy,
+  toRule,
+  versionFilter,
+  type DayLean,
+  type GoalLean,
+} from './recurring-goals.service.js';
 import { DailyRecord } from './schemas/daily-record.schema.js';
 import { RecurringGoal } from './schemas/recurring-goal.schema.js';
 
@@ -42,6 +48,8 @@ interface UserDay {
  * 오늘 공부 시간이 목표보다 적으면 "오늘 목표까지 O분 남았어요"를 하루 한 번 보낸다.
  * 서버가 여러 대여도 목표 문서의 lastRemindedOn(서울 날짜)을 조건부 갱신으로 먼저 잡은 서버만 판정 · 발송한다.
  * 발송이 모두 실패하면 표시를 풀어 다음 확인에서 다시 시도한다(하루 3회까지, 2분 · 10분 간격).
+ * 후보를 읽은 뒤 설정이 바뀌면(remindVersion이 달라지면) 잡지 않고 넘어가 다음 확인에서 새 설정으로 다시 판단한다.
+ * 잡은 뒤에 바뀐 설정은 그 발송에 반영하지 않고, 그날은 다시 보내지 않는다(FR-11-08: 보낸 날은 다시 안 보냄).
  * 서버가 잡은 직후 죽으면 그날은 보내지 못할 수 있다(중복 푸시보다 누락을 택했다)
  */
 @Injectable()
@@ -71,10 +79,13 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
   }
 
   /** 테스트와 운영 스케줄러가 공유하는 한 번의 확인. 겹쳐 부르면 뒤의 호출은 바로 끝난다 */
-  async runOnce(now = new Date()): Promise<void> {
+  async runOnce(startedAt?: Date, clock?: () => Date): Promise<void> {
     if (this.running) return;
     this.running = true;
     try {
+      // 시각을 직접 준 호출(테스트)은 그 시각으로 고정하고, 운영은 목표마다 실제 시계를 다시 읽는다
+      const tick = clock ?? (startedAt ? () => startedAt : () => new Date());
+      const now = startedAt ?? tick();
       const today = seoulDate(now);
       const weekday = weekdayOfDate(today);
       let after: Types.ObjectId | null = null;
@@ -93,8 +104,11 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
           .lean<GoalLean[]>();
         const userDays = new Map<string, Promise<UserDay>>();
         for (const goal of page) {
+          // 선점 직전에 시계를 다시 읽는다. 자정을 넘겼으면 오늘(시작 때 날짜) 기준 판정은 더 하지 않는다
+          const current = tick();
+          if (seoulDate(current) !== today) return;
           try {
-            await this.handle(goal, now, today, userDays);
+            await this.handle(goal, current, today, userDays);
           } catch (error) {
             this.logger.warn(
               `목표 리마인드를 처리하지 못했어요(${String(goal._id)}): ${String(error)}`,
@@ -131,6 +145,7 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
         remindEnabled: true,
         deletedAt: null,
         lastRemindedOn: { $ne: today },
+        remindVersion: versionFilter(goal.remindVersion),
         $or: [{ remindRetryAt: null }, { remindRetryAt: { $lte: now } }],
       },
       { $set: { lastRemindedOn: today, remindClaimId: claimId } },
@@ -185,8 +200,14 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
       threadId: `goal-remind-${id}`,
     }));
     const result = await this.push.send(messages);
-    if (result.invalidTokens.length)
-      await this.devices.deleteMany({ pushToken: { $in: result.invalidTokens } });
+    if (result.invalidTokens.length) {
+      // 만료 토큰 정리가 실패해도 이미 보낸 푸시는 성공이다(재발송하지 않는다). 다음 발송 때 다시 정리된다
+      try {
+        await this.devices.deleteMany({ pushToken: { $in: result.invalidTokens } });
+      } catch (error) {
+        this.logger.warn(`만료된 푸시 토큰을 지우지 못했어요(${String(goal._id)}): ${String(error)}`);
+      }
+    }
     const failed = new Set(result.failedTickets.map(({ message }) => message.to));
     // 한 기기라도 보냈거나 모두 만료 토큰이면 끝. 보낼 수 있는 기기가 있었는데 전부 실패했을 때만 다시 시도한다
     return !(failed.size > 0 && failed.size >= tokens.length - result.invalidTokens.length);

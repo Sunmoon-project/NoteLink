@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
@@ -46,6 +46,11 @@ export const MAX_LOOKBACK_DAYS = 730;
 
 const VALIDATION_FAILED = 'VALIDATION_FAILED';
 const NOT_FOUND = { code: 'NOT_FOUND', message: '존재하지 않는 반복 목표입니다.' };
+/** 바꾸면 리마인드 판정이 달라져 remindVersion을 올리는 값(이름은 판정에 쓰지 않는다) */
+const REMIND_JUDGE_KEYS = ['remindEnabled', 'remindTime', 'days', 'targetMin', 'pausedUntil', 'isActive', 'subjectId'];
+const UPDATE_MAX_ATTEMPTS = 3;
+/** remindVersion이 없는 옛 목표는 0으로 본다 */
+export const versionFilter = (version: number | undefined) => (version ? version : { $in: [0, null] });
 const DEFAULT_TARGET_MIN = 30; // 앱(local/api.ts)이 새 목표에 넣는 값
 export { DEFAULT_REMIND_TIME }; // 값은 goal-remind.ts: 만들 때 안 보내면 저장하고, 값이 비어 있는 옛 목표는 응답에서만 이 값으로 보인다
 
@@ -90,27 +95,52 @@ export class RecurringGoalsService {
         return toView(goal, stats.get(goal._id.toString()));
     }
 
-    /** 보낸 필드만 바꾼다. 남의 목표 · 지운 목표 · 없는 목표는 404 */
+    /**
+     * 보낸 필드만 바꾼다. 남의 목표 · 지운 목표 · 없는 목표는 404.
+     * 리마인드 판정에 쓰는 값을 바꾸면 remindVersion을 올리고(발송 서비스는 후보를 읽은 뒤 설정이 바뀌었는지 이 값으로 안다),
+     * 오늘 건너뜀 표시(lastRemindedOn)도 같은 쓰기에 담는다. 읽고 쓰는 사이에 다른 수정이 끼면 버전이 달라 다시 읽고 계산한다
+     */
     async update(userId: string, id: string, dto: SaveRecurringGoalDto): Promise<RecurringGoalView> {
         await this.requireActiveSubject(dto.subjectId);
         const fields = toFields(dto);
         if (dto.name !== undefined) fields['name'] = dto.name;
         if (dto.days !== undefined) fields['days'] = sortedDays(dto.days);
-        // 리마인드와 관련된 설정을 보냈으면 바꾸기 전 값을 읽어 둔다(바뀐 설정으로 지난 시각의 리마인드가 바로 가지 않게 하려고)
-        const touchesRemind = ['remindEnabled', 'remindTime', 'days', 'isActive'].some((key) => key in fields);
-        const before = touchesRemind
-            ? await this.goalModel.findOne(ownedAlive(userId, id)).lean<GoalLean>()
-            : null;
-        const saved = await this.goalModel
-            .findOneAndUpdate(ownedAlive(userId, id), { $set: fields }, { returnDocument: 'after' })
-            .lean<GoalLean>();
-        if (!saved) throw new NotFoundException(NOT_FOUND);
+        const touchesRemind = REMIND_JUDGE_KEYS.some((key) => key in fields);
         const now = new Date();
         const today = seoulDate(now);
-        // FR-11-08: 오늘 이미 보냈으면 다시 보내지 않는다(표시는 지우지 않는다). 지난 시각으로 바꾸거나 켜면 오늘은 건너뛴다
-        if (before && shouldSkipTodayAfterChange(before, saved, now, today)) {
-            await this.goalModel.updateOne({ _id: saved._id, lastRemindedOn: { $ne: today } }, { $set: { lastRemindedOn: today } });
+
+        let saved: GoalLean | null = null;
+        if (!touchesRemind) {
+            saved = await this.goalModel
+                .findOneAndUpdate(ownedAlive(userId, id), { $set: fields }, { returnDocument: 'after' })
+                .lean<GoalLean>();
+        } else {
+            for (let attempt = 0; attempt < UPDATE_MAX_ATTEMPTS && !saved; attempt++) {
+                const before = await this.goalModel.findOne(ownedAlive(userId, id)).lean<GoalLean>();
+                if (!before) break;
+                // FR-11-08: 오늘 이미 보냈으면 다시 보내지 않는다(표시는 지우지 않는다). 지난 시각으로 바꾸거나 켜면 오늘은 건너뛴다
+                const after = { ...before, ...fields } as GoalLean;
+                const skipToday = shouldSkipTodayAfterChange(before, after, now, today);
+                saved = await this.goalModel
+                    .findOneAndUpdate(
+                        { ...ownedAlive(userId, id), remindVersion: versionFilter(before.remindVersion) },
+                        { $set: skipToday ? { ...fields, lastRemindedOn: today } : fields, $inc: { remindVersion: 1 } },
+                        { returnDocument: 'after' },
+                    )
+                    .lean<GoalLean>();
+                if (!saved && attempt === UPDATE_MAX_ATTEMPTS - 1) {
+                    // 같은 목표를 계속 동시에 고치는 경우. 없는 목표(404)와 구분한다
+                    const stillThere = await this.goalModel.findOne(ownedAlive(userId, id)).lean<GoalLean>();
+                    if (stillThere) {
+                        throw new ServiceUnavailableException({
+                            code: 'GOAL_UPDATE_BUSY',
+                            message: '다른 수정과 겹쳤어요. 잠시 후 다시 시도해 주세요',
+                        });
+                    }
+                }
+            }
         }
+        if (!saved) throw new NotFoundException(NOT_FOUND);
         const stats = await this.stats(userId, [saved], now);
         return toView(saved, stats.get(saved._id.toString()));
     }

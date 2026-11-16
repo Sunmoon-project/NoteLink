@@ -127,6 +127,20 @@ describe('반복 목표 API (/goals/recurring)', () => {
         expect(list.body.data[0]).toMatchObject({ days: [0, 6], remindTime: '07:30' });
     });
 
+    it('리마인드 설정을 고치면 한 번의 쓰기로 remindVersion 을 올리고, 이름만 고치면 올리지 않는다', async () => {
+        const created = await create({ name: '운동', days: [1], remindEnabled: true });
+        goalModel.findOneAndUpdate.mockClear();
+        goalModel.updateOne.mockClear();
+        await http().patch(url(`/${created.body.data._id}`)).set(AUTH).send({ remindTime: '22:00' });
+        expect(goalModel.findOneAndUpdate).toHaveBeenCalledTimes(1);
+        expect(goalModel.findOneAndUpdate.mock.calls[0]?.[1]).toMatchObject({ $set: { remindTime: '22:00' }, $inc: { remindVersion: 1 } });
+        expect(goalModel.updateOne).not.toHaveBeenCalled();
+
+        goalModel.findOneAndUpdate.mockClear();
+        await http().patch(url(`/${created.body.data._id}`)).set(AUTH).send({ name: '새 이름' });
+        expect(goalModel.findOneAndUpdate.mock.calls[0]?.[1]).not.toHaveProperty('$inc');
+    });
+
     it('앱이 보내는 모양(_id 포함)으로 수정해도 받아 주되 _id · streak은 무시한다', async () => {
         const created = await create({ name: '독서', days: [2] });
         const res = await http()

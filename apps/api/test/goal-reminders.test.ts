@@ -115,6 +115,7 @@ describe('GoalRemindersService 대상 고르기', () => {
     skip?: string[];
     devices?: string[];
     send?: (messages: { to: string }[]) => unknown;
+    deleteFails?: boolean;
   }) {
     const filters: Record<string, unknown>[] = [];
     const claims: unknown[] = [];
@@ -148,7 +149,9 @@ describe('GoalRemindersService 대상 고르기', () => {
             (opts.devices ?? ['ExponentPushToken[aaa]']).map((pushToken) => ({ pushToken })),
           ),
       }),
-      deleteMany: vi.fn(),
+      deleteMany: vi.fn(() =>
+        opts.deleteFails ? Promise.reject(new Error('db down')) : Promise.resolve(),
+      ),
     };
     const holidays = { skipDates: () => Promise.resolve(opts.skip ?? []) };
     const push = {
@@ -196,6 +199,40 @@ describe('GoalRemindersService 대상 고르기', () => {
     expect(messages[0]).not.toHaveProperty('channelId');
     expect(claims).toHaveLength(1); // 오늘 날짜로 표시를 잡았다
     expect(claims[0]).toMatchObject({ update: { $set: { lastRemindedOn: TODAY } } });
+  });
+
+  it('선점 조건에 후보를 읽을 때의 remindVersion 이 들어간다(필드가 없는 옛 목표는 0으로 본다)', async () => {
+    const versioned = goal({ remindVersion: 3 });
+    const legacy = goal();
+    const { service, claims } = setup({ goals: [versioned, legacy] });
+    await service.runOnce(seoul('21:05'));
+    expect(claims).toHaveLength(2);
+    expect(claims[0]).toMatchObject({ filter: { _id: versioned._id, remindVersion: 3 } });
+    expect(claims[1]).toMatchObject({ filter: { _id: legacy._id, remindVersion: { $in: [0, null] } } });
+  });
+
+  it('만료 토큰 삭제가 실패해도 발송은 성공으로 보고 표시를 풀지 않는다', async () => {
+    const { service, push, claims, devices } = setup({
+      goals: [goal()],
+      deleteFails: true,
+      send: () => ({ invalidTokens: ['ExponentPushToken[aaa]'], failedTickets: [] }),
+    });
+    await service.runOnce(seoul('21:05'));
+    expect(push.send).toHaveBeenCalledTimes(1);
+    expect(devices.deleteMany).toHaveBeenCalledTimes(1);
+    expect(claims).toHaveLength(1); // 선점 하나뿐, 표시를 푸는 쓰기(재시도 예약)가 없다
+  });
+
+  it('목표마다 선점 직전에 시계를 다시 보고, 서울 날짜가 바뀌었으면 남은 목표는 보내지 않는다', async () => {
+    const a = goal({ remindTime: '23:00' });
+    const b = goal({ remindTime: '23:00' });
+    const times = [seoul('23:59'), seoul('00:00', '2026-11-17')];
+    const clock = vi.fn(() => times.shift() ?? seoul('00:05', '2026-11-17'));
+    const { service, push, claims } = setup({ goals: [a, b] });
+    await service.runOnce(seoul('23:59'), clock);
+    expect(push.send).toHaveBeenCalledTimes(1);
+    expect(claims).toHaveLength(1);
+    expect(claims[0]).toMatchObject({ filter: { _id: a._id } });
   });
 
   it('공부를 아직 안 했으면 목표 전체가 남은 분이다', async () => {
