@@ -5,8 +5,15 @@ import { AiJobsModule } from '../../../ai-jobs/ai-jobs.module.js';
 import { QuizSetsModule } from '../../../quiz-sets/quiz-sets.module.js';
 import { AuthModule } from '../../auth/auth.module.js';
 import { UploadsModule } from '../../upload/uploads.module.js';
+import {
+  RoomSharedItem,
+  RoomSharedItemSchema,
+} from '../../studyroom/schemas/room-shared-item.schema.js';
+import { StudyRoom, StudyRoomSchema } from '../../studyroom/schemas/study-room.schema.js';
 import { Folder, FolderSchema } from '../schemas/folder.schema.js';
 import { Material, MaterialSchema } from '../schemas/material.schema.js';
+import { MaterialSharingController } from './material-sharing.controller.js';
+import { MaterialSharingService } from './material-sharing.service.js';
 import { MaterialsController } from './materials.controller.js';
 import { MaterialsService } from './materials.service.js';
 
@@ -19,6 +26,9 @@ import { MaterialsService } from './materials.service.js';
     MongooseModule.forFeature([
       { name: Material.name, schema: MaterialSchema },
       { name: Folder.name, schema: FolderSchema },
+      // 노트 공유: 스터디룸 · 공유 항목 스키마는 읽기만 한다(스터디룸 서비스는 쓰지 않는다)
+      { name: StudyRoom.name, schema: StudyRoomSchema },
+      { name: RoomSharedItem.name, schema: RoomSharedItemSchema },
     ]),
     AiJobsModule,
     QuizSetsModule,
@@ -26,7 +36,7 @@ import { MaterialsService } from './materials.service.js';
     // JwtAuthGuard · TokenService
     AuthModule,
   ],
-  controllers: [MaterialsController],
-  providers: [MaterialsService],
+  controllers: [MaterialsController, MaterialSharingController],
+  providers: [MaterialsService, MaterialSharingService],
 })
 export class MaterialsModule {}
