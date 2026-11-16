@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from secrets import compare_digest
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import AnyHttpUrl, BaseModel, Field, StringConstraints
@@ -34,7 +34,11 @@ def _authorize(authorization: str | None) -> None:
     if not expected:
         raise HTTPException(status_code=503, detail="Internal service is not configured")
     supplied = authorization.removeprefix("Bearer ") if authorization else ""
-    if not authorization or not authorization.startswith("Bearer ") or not compare_digest(supplied, expected):
+    if (
+        not authorization
+        or not authorization.startswith("Bearer ")
+        or not compare_digest(supplied, expected)
+    ):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -48,7 +52,9 @@ def _check(files: list[ImageCheckFile], make_ocr: Callable[[], Ocr]) -> list[Ima
         try:
             result = reader.read(str(file.uri))
         except OcrUnavailableError:
-            raise HTTPException(status_code=503, detail="Image check temporarily unavailable") from None
+            raise HTTPException(
+                status_code=503, detail="Image check temporarily unavailable"
+            ) from None
         except OcrSetupError:
             raise HTTPException(status_code=503, detail="Image check is not configured") from None
         except OcrError:
