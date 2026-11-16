@@ -416,6 +416,35 @@ describe('AI 작업 진행률 소켓 (ai:subscribe)', () => {
     });
   });
 
+  it('다시 시도된 작업을 진행 중(queued)으로 먼저 읽어도 새 결과는 모든 소켓에 보낸다', async () => {
+    tokens.verifyAccess.mockImplementation(async () => ({ userId: 'a' }));
+    const one = await connect('a');
+    const two = await connect('a2');
+    const got1 = record(one);
+    const got2 = record(two);
+    await subscribe(one);
+    await subscribe(two);
+    table.set(JOB, appJob({ status: 'failed', progress: 30 }));
+    let failTwo = true;
+    tokens.verifyAccess.mockImplementation(async (token: string) => {
+      if (token === 'a2' && failTwo) throw new Error('db down');
+      return { userId: 'a' };
+    });
+    await gateway.poll();
+    await vi.waitFor(() => expect(got1.done).toHaveLength(1));
+    // 다시 시도: 1초마다 읽는 쪽이 queued를 그대로 본다
+    table.set(JOB, appJob({ status: 'queued', progress: 0 }));
+    await gateway.poll();
+    failTwo = false;
+    const second = appJob({ status: 'succeeded', progress: 100 });
+    table.set(JOB, second);
+    await gateway.poll();
+    await vi.waitFor(() => {
+      expect(got1.done.at(-1)).toEqual({ jobId: JOB, job: second });
+      expect(got2.done.at(-1)).toEqual({ jobId: JOB, job: second });
+    });
+  });
+
   it('토큰이 거절(401)된 소켓만 있으면 다시 시도하지 않고 끝낸다', async () => {
     const a = await connect('a');
     const got = record(a);

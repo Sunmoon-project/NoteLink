@@ -28,6 +28,11 @@ const roomOf = (jobId: string) => `${ROOM_PREFIX}${jobId}`;
  * 차례 수. 넘으면 그만 지켜본다
  */
 const DONE_RETRY_LIMIT = 5;
+/** 앞 실행(끝난 뒤 다시 시도된 작업)에서 보낸 기록 · 실패 수는 새 실행과 상관없으므로 지운다 */
+const resetRun = (watch: { delivered?: Set<string>; doneFailures?: number }) => {
+  watch.delivered = undefined;
+  watch.doneFailures = undefined;
+};
 const signature = (p: AiJobProgress) => `${p.status}|${p.progress}|${p.step ?? ''}`;
 
 /**
@@ -165,6 +170,8 @@ export class AiJobsGateway implements OnModuleDestroy {
         finished.push(this.done(row.jobId, watch.userId));
         continue;
       }
+      // 끝나지 않은 상태 = 새 실행(다시 시도). 앞 실행의 보낸 기록 · 실패 수를 지운다
+      resetRun(watch);
       const now = signature(row);
       if (watch.last === now) continue;
       watch.last = now;
@@ -185,12 +192,10 @@ export class AiJobsGateway implements OnModuleDestroy {
       // 끝난 것을 읽은 사이 다시 시도로 처리기에 다시 들어갔으면(같은 작업 id) 끝내지 않고 계속 지켜본다.
       // 다시 시도하며 구독한 소켓을 방에서 빼지 않게 한다
       if (!FINISHED.has(job.status)) {
-        // 앞 실행에서 보낸 기록 · 실패 수는 새 실행과 상관없으므로 지운다
         const watch = this.watched.get(jobId);
         if (watch) {
           watch.last = undefined;
-          watch.delivered = undefined;
-          watch.doneFailures = undefined;
+          resetRun(watch);
         }
         return;
       }
