@@ -9,6 +9,7 @@ import {
   type QuizAttemptDocument,
 } from '../modules/quiz/schemas/quiz-attempt.schema.js';
 import { QuizSet, type QuizSetDocument } from '../modules/quiz/schemas/quiz-set.schema.js';
+import { RecordingNotePagesService } from './recording-note-pages.service.js';
 import {
   type AppQuizSet,
   INPUT_ATTEMPT_LIMIT,
@@ -21,7 +22,6 @@ import {
   type QuizSetRow,
   QuizSetsService,
   SIMILAR_TYPE,
-  textPages,
   toAppSet,
   toWorkerQuestion,
   VALIDATION_FAILED,
@@ -52,6 +52,8 @@ export class SimilarQuizService {
     @InjectModel(Material.name) private readonly materials: Model<MaterialDocument>,
     private readonly jobs: AiJobsService,
     private readonly quizSets: QuizSetsService,
+    /** 노트 글 만들기(녹음 노트는 대본에서). 맞춤 퀴즈와 같은 한 곳을 쓴다 */
+    private readonly notePages: RecordingNotePagesService,
   ) {
     quizSets.afterReview = (row) => this.catchUp(row);
   }
@@ -278,9 +280,16 @@ export class SimilarQuizService {
     const notes = await this.materials
       .find(
         { _id: { $in: materialIds.map((id) => new Types.ObjectId(id)) }, ownerId: owner },
-        { pages: 1 },
+        { pages: 1, kind: 1, processing: 1 },
       )
-      .lean<{ _id: Types.ObjectId; pages?: PageRow[] }[]>();
+      .lean<
+        {
+          _id: Types.ObjectId;
+          kind?: string;
+          pages?: PageRow[];
+          processing?: { jobId?: Types.ObjectId | null };
+        }[]
+      >();
     // 무효 풀이(결함 문제, 오늘의 복습이 정함)는 처리기가 없는 풀이로 본다
     const answers = (a: AttemptRow) =>
       (a.answers ?? []).map((x) => ({
@@ -304,7 +313,13 @@ export class SimilarQuizService {
         finishedAt: h.finishedAt.toISOString(),
         answers: answers(h),
       })),
-      notes: Object.fromEntries(notes.map((m) => [m._id.toString(), textPages(m.pages)])),
+      notes: Object.fromEntries(
+        await Promise.all(
+          notes.map(
+            async (m) => [m._id.toString(), await this.notePages.notePages(owner, m)] as const,
+          ),
+        ),
+      ),
     });
   }
 }

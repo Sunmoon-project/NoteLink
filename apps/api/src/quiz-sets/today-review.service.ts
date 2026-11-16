@@ -20,11 +20,11 @@ import {
   QuizSetsService,
   seoulDay,
   TODAY_TYPE,
-  textPages,
   toAppSet,
   toWorkerQuestion,
   VALIDATION_FAILED,
 } from './quiz-sets.service.js';
+import { RecordingNotePagesService } from './recording-note-pages.service.js';
 
 /** 오늘의 복습 세트 문제 수(apps/ai services/quiz/today.py REVIEW_SET_SIZE와 같은 5) */
 export const TODAY_SIZE = 5;
@@ -100,6 +100,7 @@ export class TodayReviewService {
     @InjectModel(Material.name) private readonly materials: Model<MaterialDocument>,
     private readonly jobs: AiJobsService,
     private readonly quizSets: QuizSetsService,
+    private readonly notePages: RecordingNotePagesService,
   ) {}
 
   /**
@@ -224,9 +225,16 @@ export class TodayReviewService {
     const notes = await this.materials
       .find(
         { _id: { $in: materialIds.map((id) => new Types.ObjectId(id)) }, ownerId: owner },
-        { pages: 1 },
+        { pages: 1, kind: 1, processing: 1 },
       )
-      .lean<{ _id: Types.ObjectId; pages?: PageRow[] }[]>();
+      .lean<
+        {
+          _id: Types.ObjectId;
+          kind?: string;
+          pages?: PageRow[];
+          processing?: { jobId?: Types.ObjectId | null };
+        }[]
+      >();
     return fitTodayInput({
       day,
       size: TODAY_SIZE,
@@ -247,7 +255,14 @@ export class TodayReviewService {
           ...(x.void ? { void: x.void } : {}),
         })),
       })),
-      notes: Object.fromEntries(notes.map((m) => [m._id.toString(), textPages(m.pages)])),
+      // 녹음 노트는 대본에서(유사 퀴즈 · 맞춤 퀴즈와 같은 한 곳)
+      notes: Object.fromEntries(
+        await Promise.all(
+          notes.map(
+            async (m) => [m._id.toString(), await this.notePages.notePages(owner, m)] as const,
+          ),
+        ),
+      ),
     });
   }
 }

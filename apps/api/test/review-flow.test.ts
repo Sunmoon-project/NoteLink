@@ -11,6 +11,7 @@ import {
   SIMILAR_TYPE,
   TODAY_TYPE,
 } from '../src/quiz-sets/quiz-sets.service.js';
+import { RecordingNotePagesService } from '../src/quiz-sets/recording-note-pages.service.js';
 import { SimilarQuizService } from '../src/quiz-sets/similar-quiz.service.js';
 import {
   fitTodayInput,
@@ -58,13 +59,21 @@ function setup() {
   Object.assign(attempts.model, { updateOne: attemptUpdate });
   const jobs = createFakeJobs();
   const aiJobs = new AiJobsService(jobs.model);
-  const quizSets = new QuizSetsService(sets.model, materials.model, attempts.model, aiJobs);
+  const notePages = new RecordingNotePagesService(jobs.model);
+  const quizSets = new QuizSetsService(
+    sets.model,
+    materials.model,
+    attempts.model,
+    aiJobs,
+    notePages,
+  );
   const similar = new SimilarQuizService(
     sets.model,
     attempts.model,
     materials.model,
     aiJobs,
     quizSets,
+    notePages,
   );
   const today = new TodayReviewService(
     sets.model,
@@ -72,6 +81,7 @@ function setup() {
     materials.model,
     aiJobs,
     quizSets,
+    notePages,
   );
   /** 노트 · ready 세트 · 끝낸 풀이(첫 문제 틀림 또는 모두 맞음) */
   const seed = async (over: { allCorrect?: boolean; deleted?: boolean } = {}) => {
@@ -108,7 +118,18 @@ function setup() {
     } as never)) as unknown as { _id: Types.ObjectId };
     return { note: note._id, set: set._id, attempt: attempt._id, qs };
   };
-  return { sets, attempts, jobs, quizSets, similar, today, seed, setUpdate, attemptUpdate };
+  return {
+    sets,
+    attempts,
+    jobs,
+    quizSets,
+    similar,
+    today,
+    seed,
+    setUpdate,
+    attemptUpdate,
+    notePages,
+  };
 }
 
 describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfterFinish)', () => {
@@ -356,6 +377,18 @@ describe('오늘의 복습(TodayReviewService)', () => {
       result: { questions: [], srsUpdates: [] },
     });
     expect(await today.get(ME.toHexString(), NOW)).toBeNull();
+  });
+
+  it('노트 글은 녹음 노트면 대본에서 읽는다(유사 퀴즈 · 맞춤 퀴즈와 같은 곳)', async () => {
+    const { today, seed, jobs, notePages } = setup();
+    const s = await seed();
+    const transcript = [{ pageNo: 1, ocrText: '녹음 대본' }];
+    const read = vi.spyOn(notePages, 'notePages').mockResolvedValue(transcript);
+    await today.start(ME.toHexString(), NOW);
+    expect(read).toHaveBeenCalled();
+    expect((jobs.rows.at(-1)!['input'] as TodayInput).notes[s.note.toHexString()]).toEqual(
+      transcript,
+    );
   });
 
   it('처리기가 실패로 끝냈으면 그 세트를 닫고 다시 만든다', async () => {

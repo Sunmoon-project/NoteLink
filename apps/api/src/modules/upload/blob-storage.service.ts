@@ -13,6 +13,7 @@ import { ERROR_CODES, UPLOAD_RULES } from '@notelink/shared';
 const UPLOADED_FILE_NAME =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.[a-z0-9]{2,5}$/;
 const SAS_LIFETIME_MS = 10 * 60 * 1000;
+const IMAGE_CHECK_SAS_LIFETIME_MS = 15 * 60 * 1000;
 const CLOCK_SKEW_MS = 60 * 1000;
 const REPORT_IMAGE_TYPES: Record<string, string> = {
   jpg: 'image/jpeg',
@@ -276,5 +277,79 @@ export class BlobStorageService {
         });
       }
     }
+  }
+
+  /** AI 사진 검사에 전달할 사용자 소유 이미지의 짧은 읽기 전용 SAS 주소를 만든다. */
+  async createImageCheckReadUrl(userId: string, rawUrl: string): Promise<string> {
+    const { container, client, credential } = await this.storage();
+    const containerClient = client.getContainerClient(container);
+    const prefix = `${containerClient.url}/uploads/image/${userId.toLowerCase()}/`;
+    if (!rawUrl.startsWith(prefix)) this.invalidImage();
+
+    const fileName = rawUrl.slice(prefix.length);
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:jpg|jpeg|png|heic)$/.test(
+        fileName,
+      )
+    )
+      this.invalidImage();
+
+    const blob = containerClient.getBlockBlobClient(
+      `uploads/image/${userId.toLowerCase()}/${fileName}`,
+    );
+    if (blob.url !== rawUrl) this.invalidImage();
+    let properties;
+    try {
+      properties = await blob.getProperties();
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'statusCode' in error &&
+        error.statusCode === 404
+      )
+        this.invalidImage();
+      throw new ServiceUnavailableException({
+        code: 'UPLOAD_UNAVAILABLE',
+        message: '사진 업로드를 확인하지 못했어요.',
+      });
+    }
+
+    const extension = fileName.split('.').pop()!;
+    const contentType = REPORT_IMAGE_TYPES[extension];
+    if (
+      !properties.contentLength ||
+      properties.contentLength > UPLOAD_RULES.image.maxBytes ||
+      properties.contentType !== contentType
+    )
+      this.invalidImage();
+
+    const now = Date.now();
+    try {
+      const sas = generateBlobSASQueryParameters(
+        {
+          containerName: container,
+          blobName: `uploads/image/${userId.toLowerCase()}/${fileName}`,
+          permissions: BlobSASPermissions.parse('r'),
+          protocol: SASProtocol.Https,
+          startsOn: new Date(now - CLOCK_SKEW_MS),
+          expiresOn: new Date(now + IMAGE_CHECK_SAS_LIFETIME_MS),
+        },
+        credential,
+      ).toString();
+      return `${blob.url}?${sas}`;
+    } catch {
+      throw new ServiceUnavailableException({
+        code: 'UPLOAD_UNAVAILABLE',
+        message: '사진 읽기 주소를 만들지 못했어요.',
+      });
+    }
+  }
+
+  private invalidImage(): never {
+    throw new BadRequestException({
+      code: 'BAD_REQUEST',
+      message: '검사할 사진을 확인할 수 없습니다.',
+    });
   }
 }
