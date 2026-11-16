@@ -917,6 +917,28 @@ def test_a_concept_learned_again_after_it_stopped_is_mastered() -> None:
     assert (per[1].wrong, per[1].mastered) == (0, 1)
 
 
+def test_the_time_a_question_ended_decides_even_when_its_answers_are_voided() -> None:
+    # #113 1번: 익힌 문제(q7)의 풀이가 무효가 되면 마지막으로 푼 시각이 없어져 멈춘 문제(q5)가
+    # 나중으로 보였음. 상태가 바뀐 시각(endedAt)으로 비교해 다 익힌 개념으로 봄
+    q5 = stored("q5", "이질 아메바", "이질 아메바", "stopped")
+    q7 = stored("q7", "이질 아메바", "이질 아메바", "mastered")
+    q5["srs"]["endedAt"] = "2026-11-01T06:00:00Z"
+    q7["srs"]["endedAt"] = "2026-11-03T06:00:00Z"
+    voided = {**attempt("q7", True, void="문제 오류"), "finishedAt": "2026-11-03T06:00:00Z"}
+    wrong = [attempt("q5", False) for _ in range(5)]
+    inp = job(
+        sets=[{"id": "s1", "materialId": "m1", "questions": [q5, q7]}], attempts=[*wrong, voided]
+    )
+    g = generate.parse(inp)
+    per = generate.history(g.sets, g.attempts, "m1", {"m1": generate.note_pages(g.material)})
+    assert (per[1].wrong, per[1].mastered) == (0, 1)
+    # 거꾸로 익힌 뒤에 멈췄으면 약한 개념(마지막으로 푼 시각은 같아도)
+    q5["srs"]["endedAt"], q7["srs"]["endedAt"] = q7["srs"]["endedAt"], q5["srs"]["endedAt"]
+    g = generate.parse(inp)
+    per = generate.history(g.sets, g.attempts, "m1", {"m1": generate.note_pages(g.material)})
+    assert (per[1].wrong, per[1].mastered) == (5, 0)
+
+
 def test_a_concept_still_in_review_is_not_mastered_by_a_question_learned_later() -> None:
     # 복습 중인 문제가 있으면 다른 문제를 나중에 익혀도 약한 개념(/code-review #94)
     qs = [

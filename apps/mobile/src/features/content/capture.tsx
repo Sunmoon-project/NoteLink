@@ -330,14 +330,15 @@ export function PhotoCheckScreen() {
   );
 }
 
-/** p.62 #13 선택 사진 확인 + p.102 이미지 검사 (기기 → AI 서버) */
+/** p.62 #13 선택 사진 확인 + p.102 이미지 검사 (기기 → 서버 POST /images/check) */
 export function PickedScreen() {
   const { files, fileVersion, set } = useDraft();
   const [dlg, setDlg] = useState<null | 'bad' | 'blurry'>(null);
   // 1) 형식 · 용량은 기기에서 먼저
   const local = Object.fromEntries(files.map((f) => [f.uri, checkFile('image', f)]));
   const bad = files.filter((f) => !local[f.uri]?.ok);
-  // 2) 통과한 사진만 AI 서버가 필기 여부 · 글씨 신뢰도 판별
+  // 2) 통과한 사진만 서버가 다시 확인(저장 위치 · 형식 · 크기). 필기 여부 · 흐림(not_handwriting · blurry)은
+  //    AI 판정이 생기면 오는 값이라 지금은 ok · not_allowed 만 온다(#436)
   const check = useQuery({
     queryKey: ['image-check', fileVersion],
     queryFn: async () => {
@@ -423,8 +424,9 @@ export function PickedScreen() {
   const tag = (f: LocalFile) => {
     const r = v(f);
     if (!r) return <Badge tone="gray">확인 중…</Badge>;
+    // 서버는 아직 저장 위치 · 형식 · 크기만 보고 필기 여부 · 흐림은 판정하지 않는다(POST /images/check, #436)
     return r === 'ok' ? (
-      <Badge>필기 확인됨</Badge>
+      <Badge>올릴 수 있어요</Badge>
     ) : r === 'not_allowed' ? (
       <Badge tone="danger">올릴 수 없는 파일</Badge>
     ) : r === 'not_handwriting' ? (

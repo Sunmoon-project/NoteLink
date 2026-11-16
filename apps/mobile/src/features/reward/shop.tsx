@@ -69,17 +69,25 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
 }
 
 /** 상품 그림: 이미지 주소면 그림으로, 아니면 이모지 글자로(small은 아바타 선생님 고르기 칸 크기) */
-/** 상세 창 미리보기: 아바타는 선생님이 될 3D 얼굴로, 그 밖의 상품은 그림으로 */
-function DetailPreview({ item }: { item: ShopItem }) {
+/** 상세 창 · 보관함 「현재 아바타」 미리보기: 아바타는 선생님이 될 3D 얼굴로, 그 밖의 상품은 그림으로 */
+function DetailPreview({
+  item,
+  background = C.fill,
+  size = 128,
+}: {
+  item: ShopItem;
+  background?: string;
+  size?: number;
+}) {
   if (item.category !== 'avatar') return <ItemPreview item={item} large />;
   return (
     <View accessibilityLabel={`${item.name} 3D 미리보기`}>
-      {/* 상자(bg-fill)와 같은 색으로 칠해 네모난 3D 바탕이 보이지 않게 */}
+      {/* 상자와 같은 색으로 칠해 네모난 3D 바탕이 보이지 않게 */}
       <Avatar3D
         mood="idle"
         avatarId={avatarModel(item._id, [item])}
-        size={128}
-        background={C.fill}
+        size={size}
+        background={background}
       />
     </View>
   );
@@ -646,8 +654,9 @@ export function BoxScreen() {
               <Text className="text-callout font-bold text-ink">보관함</Text>
             </Pressable>
           )}
-          <View className="mt-3 h-32 items-center justify-center rounded-2xl bg-mint">
-            <ItemPreview item={cur} large />
+          <View className="mt-3 h-32 items-center justify-center overflow-hidden rounded-2xl bg-mint">
+            {/* 장착한 아바타는 선생님이 될 3D 얼굴로 (상자 bg-mint와 같은 바탕, 상자 안에 들어가는 크기) */}
+            <DetailPreview item={cur} background={C.mint} size={112} />
             <View className="absolute right-3 bottom-3 rounded-full bg-white px-2 py-0.5">
               <Text className="text-caption2 text-ink">현재 아바타</Text>
             </View>

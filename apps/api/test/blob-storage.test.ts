@@ -257,3 +257,97 @@ describe('대기 복사본 정리 (sweepReportImages)', () => {
     expect(tag).not.toHaveBeenCalled();
   });
 });
+
+describe('읽기 SAS (createReadAccess)', () => {
+  const prefix = `uploads/image/${owner}/`;
+  const url = `${base}/${prefix}${file}`;
+
+  it('읽기 권한만 가진 HTTPS SAS를 요청한 시간만큼만 만든다', async () => {
+    const now = Date.now();
+    const { readUrl, sizeBytes } = await service().createReadAccess(url, 3_600_000);
+    const sas = new URL(readUrl);
+    expect(`${sas.origin}${sas.pathname}`).toBe(url);
+    expect(sas.searchParams.get('sp')).toBe('r');
+    expect(sas.searchParams.get('sr')).toBe('b');
+    expect(sas.searchParams.get('spr')).toBe('https');
+    const expires = new Date(sas.searchParams.get('se')!).getTime();
+    expect(expires - now).toBeGreaterThan(3_590_000);
+    expect(expires - now).toBeLessThanOrEqual(3_600_100);
+    expect(sizeBytes).toBeUndefined();
+  });
+
+  it('verify를 주면 파일이 있는지 보고 크기를 돌려준다', async () => {
+    stubBlob({ contentLength: 1234 });
+    const { sizeBytes } = await service().createReadAccess(url, 1000, { prefix });
+    expect(sizeBytes).toBe(1234);
+  });
+
+  it('컨테이너 밖 · 다른 사용자 · 이름 규칙이 다른 주소는 저장소 접근 없이 거절한다', async () => {
+    const { get } = stubBlob();
+    const bad = [
+      'https://example.com/a.jpg',
+      `${config.blobEndpoint}/other/${prefix}${file}`,
+      `${url}?sv=x`,
+      url.replace(owner, '507f1f77bcf86cd799439012'),
+      url.replace('.jpg', '/../x.jpg'),
+      `${base}/${prefix}not-a-uuid.jpg`,
+      // 신고 사진 임시 경로의 파일은 노트로 쓸 수 없다
+      incoming,
+    ];
+    for (const u of bad)
+      await expect(service().createReadAccess(u, 1000, { prefix })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('파일이 없으면 400, 저장소 장애면 503, 빈 파일은 400이다', async () => {
+    const { get } = stubBlob();
+    get.mockRejectedValueOnce({ statusCode: 404 });
+    get.mockRejectedValueOnce(new Error('unavailable'));
+    get.mockResolvedValueOnce({ contentLength: 0 } as never);
+    const read = () => service().createReadAccess(url, 1000, { prefix });
+    await expect(read()).rejects.toBeInstanceOf(BadRequestException);
+    await expect(read()).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await expect(read()).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('오류 메시지에 주소를 넣지 않고, 저장소 설정이 없으면 503이다', async () => {
+    const error = await service()
+      .createReadAccess('https://example.com/secret.jpg', 1000)
+      .catch((e: Error) => e);
+    expect(JSON.stringify((error as BadRequestException).getResponse())).not.toContain('secret');
+    await expect(new BlobStorageService(null).createReadAccess(url, 1000)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+  });
+});
+
+describe('올린 파일 확인 (inspectUploads)', () => {
+  const prefix = `uploads/image/${owner}/`;
+  const url = `${base}/${prefix}${file}`;
+
+  it('내 폴더의 파일은 크기 · 형식을 돌려주고, 폴더 밖 · 없는 파일은 null이다', async () => {
+    const { get } = stubBlob({ contentLength: 10, contentType: 'image/jpeg' });
+    get.mockResolvedValueOnce({ contentLength: 10, contentType: 'image/jpeg' } as never);
+    get.mockRejectedValueOnce({ statusCode: 404 });
+    const other = url.replace('550e8400', '660e8400');
+
+    expect(await service().inspectUploads([url, incoming, other], prefix)).toEqual([
+      { sizeBytes: 10, contentType: 'image/jpeg' },
+      null,
+      null,
+    ]);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('저장소 장애 · 설정 없음은 503이다', async () => {
+    stubBlob(new Error('장애'));
+    await expect(service().inspectUploads([url], prefix)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+    await expect(new BlobStorageService(null).inspectUploads([url], prefix)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+  });
+});

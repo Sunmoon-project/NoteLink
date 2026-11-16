@@ -110,8 +110,11 @@ it('테마가 먼저 장착 목록에 있어도 현재 아바타는 아바타 �
   await renderScreen(<BoxScreen />, client());
   await screen.findByText(avatar.name);
   await waitFor(() => {
+    // 위 「현재 아바타」 칸은 테마가 아닌 아바타를 선생님이 될 3D 얼굴로 보여 준다
+    expect(screen.getByLabelText(`${avatar.name} 3D 미리보기`)).toBeTruthy();
+    expect(screen.queryByLabelText(`${theme.name} 3D 미리보기`)).toBeNull();
     const previews = screen.getAllByLabelText(`${avatar.name} 미리보기`);
-    expect(previews).toHaveLength(2);
+    expect(previews).toHaveLength(1);
     expect(previews[0]!.props.source.uri).toBe(avatar.thumbnailUrl);
   });
 });

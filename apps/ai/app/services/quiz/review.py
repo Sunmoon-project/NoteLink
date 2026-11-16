@@ -154,12 +154,14 @@ def parse_srs(raw: object, where: str) -> srs.Srs | None:
         raise InputError(where)
     for key in ("step", "streak", "reviews"):
         need(raw, key, int, where)
-    for key in ("flawTries", "voidedReviews"):  # 오늘의 복습이 셈에 씀: 있으면 정수
+    for key in ("flawTries", "voidedReviews", "carriedReviews"):  # 셈에 씀: 있으면 정수
         if key in raw:
             need(raw, key, int, where)
     # srs.moved가 dueAt을 dueBefore로 옮김. state가 없던 예전 기록은 복습 중으로
     s = {"dueAt": None, "lastResult": None, "state": "active", **raw}
-    for key in ("dueAt", "dueBefore"):
+    if s.get("endedAt") is None:  # 예전 기록에는 없음: 마지막으로 푼 시각으로 봄(#113)
+        s.pop("endedAt", None)
+    for key in ("dueAt", "dueBefore", "endedAt"):
         if s.get(key) is not None:
             s[key] = utc_date(s[key], f"{where}.{key}")
     return cast(srs.Srs, s)
@@ -497,7 +499,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         if not void:
             q = qmap[qid]
             judged.append(Judged(q, correct, judge(correct), concept_of(q)))
-    after = {j.q["id"]: srs.update(j.q.get("srs"), j.correct, today) for j in judged}
+    after = {j.q["id"]: srs.update(j.q.get("srs"), j.correct, today, f) for j in judged}
     report(15, "틀린 문제 고르기")
 
     # 2. 코드: 약한 개념 — 이번 풀이와 같은 사용자의 최근 30일 풀이(노트를 가리지 않음)
@@ -585,6 +587,16 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         fresh = srs.fresh(today, carry=after[t.q["id"]])
         if m.unchecked:  # 검사하지 못하고 다시 낸 기존 문제
             del fresh["checked"]
+        if m.reused_from:
+            # 기존 문제를 다시 낸 문제는 글이 같아 오늘의 복습이 그 문제의 풀이도 이 문제 것으로
+            # 셈(today._copy_of). 방금 틀린 그 문제면 그 문제가 이어받은 횟수를 그대로 씀(그 문제의
+            # 풀이는 다시 셈). 다른 문제면 어느 풀이가 이미 들었는지 몰라 예전처럼 저장값으로
+            # 거꾸로 셈(#113)
+            own = after[t.q["id"]].get("carriedReviews")
+            if m.reused_from == t.q["id"] and own is not None:
+                fresh["carriedReviews"] = own
+            else:
+                del fresh["carriedReviews"]
         new_qs.append(
             {
                 "id": qid,

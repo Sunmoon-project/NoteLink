@@ -105,6 +105,7 @@ describe.skipIf(!connection)('진짜 저장소 확인(실행마다 전용 컨테
 
     it('다른 사용자 경로 · 임시 경로 밖에는 올리지 못한다', async () => {
       expect(await put(target.uploadUrl.replace(USER, OTHER))).toBe(403);
+      expect(target.blobUrl).toContain(`/${CONTAINER}/${UPLOAD_PREFIX}/image/${USER}/`);
       expect(await put(target.uploadUrl.replace(`/${UPLOAD_PREFIX}/`, '/materials/'))).toBe(403);
     });
 

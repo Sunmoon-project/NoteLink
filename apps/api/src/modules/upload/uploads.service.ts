@@ -8,7 +8,7 @@ import {
 import { BadRequestException, HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { ERROR_CODES, UPLOAD_RULES, UploadSasBody, type UploadTarget } from '@notelink/shared';
 
-import { BlobStorageService, TYPE_BY_EXT, UPLOAD_PREFIX } from './blob-storage.service.js';
+import { BlobStorageService, TYPE_BY_EXT, uploadFolder } from './blob-storage.service.js';
 import { UploadQuotaService } from './upload-quota.service.js';
 
 /** 올릴 주소가 유효한 시간 */
@@ -25,8 +25,8 @@ export class UploadsService {
   ) {}
 
   /**
-   * 앱이 Blob에 바로 올릴 주소. 임시 경로의 사용자 폴더 아래 새 이름으로 한 번만 올라간다.
-   * sizeBytes는 앱이 알린 값이고 SAS로는 크기를 묶을 수 없다. 쓰는 곳(자료 등록 · 신고)이 실제 크기를 확인하고 보관 경로로 옮긴다
+   * 앱이 Blob에 바로 올릴 주소. 사용자 폴더 아래 새 이름으로 한 번만 올라간다(노트는 종류별 경로, 신고 사진은 임시 경로).
+   * sizeBytes는 앱이 알린 값이고 SAS로는 크기를 묶을 수 없다. 쓰는 곳(노트 등록 · 사진 검사 · 신고)이 실제 크기를 확인한다
    */
   async createTarget(userId: string, raw: unknown, now: Date = new Date()): Promise<UploadTarget> {
     const body = UploadSasBody.safeParse(raw);
@@ -70,7 +70,7 @@ export class UploadsService {
       : (TYPE_BY_EXT[ext] ?? 'application/octet-stream');
 
     // 원래 파일 이름은 경로에 넣지 않는다(이름 노출 · 인코딩 문제)
-    const blobName = `${UPLOAD_PREFIX}/${userId}/${randomUUID()}.${ext}`;
+    const blobName = `${uploadFolder(kind, userId, purpose)}${randomUUID()}.${ext}`;
     const expiresOn = new Date(now.getTime() + UPLOAD_SAS_MINUTES * 60_000);
     const sas = generateBlobSASQueryParameters(
       {

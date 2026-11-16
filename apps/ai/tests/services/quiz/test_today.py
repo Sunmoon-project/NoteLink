@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmRejectedError
 from app.services.quiz import today
 from app.services.quiz.review import InputError, seoul_midnight
 from tests.fakes import FakeLlm, fits
@@ -440,6 +440,55 @@ def test_answers_voided_before_still_restore_the_review_state() -> None:
     assert (s["reviews"], s["step"], s["voidedReviews"]) == (1, 0, 1)
 
 
+def test_an_answer_void_from_the_start_does_not_lower_the_carried_reviews() -> None:
+    # #113 2번: 처음부터 void로 저장된 풀이(오답 복습이 세지 않음)가 있어도 이어받은 횟수는
+    # 저장된 carriedReviews(2)로 셈. 저장된 reviews 4 = 이어받은 2 + 맞힘 1 + secured 오답 1
+    inp = flawed_input(unchecked(reviews=4, step=2, carriedReviews=2))
+    never = {"questionId": "q1", "answer": "w1", "correct": False, "void": True}
+    inp["attempts"].append(
+        {"id": "a9", "quizSetId": "s1", "finishedAt": "2026-10-15T06:00:00Z", "answers": [never]}
+    )
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
+    s = updates(run(llm, inp))["q1"]
+    # 이어받은 2 + 남은 맞힘 1. 예전 셈(4 − 무효 2 − 남은 1 = 1)이면 2가 됨
+    assert (s["reviews"], s["carriedReviews"], s["voidedReviews"]) == (3, 2, 2)
+
+
+def test_a_broken_carried_count_is_not_below_zero() -> None:
+    s = updates(
+        run(
+            FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]}),
+            flawed_input(unchecked(carriedReviews=-3)),
+        )
+    )["q1"]
+    assert s["reviews"] == 1  # 남은 맞힘 1번만
+
+
+def test_old_records_without_carried_reviews_count_back_as_before() -> None:
+    inp = flawed_input(unchecked(reviews=4, step=2))
+    never = {"questionId": "q1", "answer": "w1", "correct": False, "void": True}
+    inp["attempts"].append(
+        {"id": "a9", "quizSetId": "s1", "finishedAt": "2026-10-15T06:00:00Z", "answers": [never]}
+    )
+    llm = FakeLlm({"Naturals": SECURED, "Review": [{}, {}, {}]})
+    s = updates(run(llm, inp))["q1"]
+    assert s["reviews"] == 2 and "carriedReviews" not in s  # 알려진 한계 그대로(하나 적음)
+
+
+def test_a_restored_question_that_becomes_mastered_ends_at_its_last_answer() -> None:
+    inp = flawed_input(unchecked())
+    inp["attempts"].append(
+        {
+            "id": "a2",
+            "quizSetId": "s1",
+            "finishedAt": "2026-10-25T06:00:00Z",
+            "answers": [{"questionId": "q1", "answer": "fastened", "correct": True}],
+        }
+    )
+    s = updates(run(FakeLlm({"Naturals": SECURED}), inp))["q1"]
+    assert (s["state"], s["endedAt"]) == ("mastered", datetime(2026, 10, 25, 6))
+
+
 def test_restoring_twice_gives_the_same_state() -> None:
     inp = flawed_input(unchecked(reviews=4))
     parsed = today.parse(inp)
@@ -555,6 +604,31 @@ def test_sentence_answer_does_not_avoid_note_group_words() -> None:
     assert "오답 보기로" not in llm.named("Review")[0].user
 
 
+@pytest.mark.parametrize(
+    "before",
+    [unchecked(), unchecked(lastResult="right", streak=2, reviews=4)],
+    ids=["last-wrong", "streak-2"],
+)
+def test_answer_side_flaw_keeps_the_attempts_and_carries_the_review(before: JsonObject) -> None:
+    # 정답 쪽 결함(정답을 빈칸에 넣으면 문장이 틀림): 걸린 보기가 없어 풀이를 무효로 하지 않고,
+    # 학생 잘못이 아니므로 복습 기록(streak · reviews)을 새 문제로 그대로 이어 감(#113에서 정함).
+    # 연속 정답이 있는 경우도 봄: 0으로 되돌리는 회귀를 잡도록
+    def naturals(user: str) -> JsonObject:
+        old = re.search(r"^\d+\. secured$", user, re.M)  # 저장된 문제: 정답도 오답도 맞지 않음
+        return fits()(user) if old else SECURED(user)
+
+    llm = FakeLlm({"Naturals": naturals, "Review": [FASTENED], "Check": [CHECK_A]})
+    result = run(llm, flawed_input(copy.deepcopy(before)))
+    [new] = result["questions"]
+    assert result["voidAnswers"] == []
+    [d] = result["dropped"]
+    assert "정답을 빈칸에 넣으면 문장이 틀림" in d["flaw"] and d["replacedBy"] == new["id"]
+    s = updates(result)["q1"]
+    assert (s["state"], s["movedTo"]) == ("flawed", new["id"])
+    carried = {k: new["srs"][k] for k in ("streak", "reviews", "lastResult")}
+    assert carried == {k: before[k] for k in ("streak", "reviews", "lastResult")}
+
+
 def test_new_question_counts_its_own_flaw_tries() -> None:
     llm = FakeLlm({"Naturals": SECURED, "Review": [FASTENED], "Check": [CHECK_A]})
     [new] = run(llm, flawed_input(unchecked(flawTries=1)))["questions"]
@@ -631,6 +705,93 @@ def test_question_put_off_the_day_before_is_not_handed_to_a_same_word_copy() -> 
     up = updates(result)
     assert "q1" not in up and up["q2"]["state"] == "moved" and result["merged"] == 0
     assert not llm.calls
+
+
+REFUSED = LlmRejectedError("HTTP 400")
+PUT_OFF = "빈칸에 넣어도 말이 되는 오답 보기: secured"
+
+
+def test_refused_replacement_counts_as_a_day_without_a_new_question() -> None:
+    # 새 문제 만들기가 모두 서버 거절: 다시 해도 같으므로 장애로 보지 않고 못 만든 날로 셈(#423)
+    llm = FakeLlm({"Naturals": SECURED, "Review": [REFUSED] * 3})
+    result = run(llm, flawed_input(unchecked()))
+    assert result["questions"] == []
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"], s["flawTries"]) == ("active", TOMORROW, 1)
+
+
+def test_refused_replacement_on_the_last_try_stops_the_question() -> None:
+    llm = FakeLlm({"Naturals": SECURED, "Review": [REFUSED] * 3})
+    result = run(llm, flawed_input(unchecked(flawTries=today.FLAW_TRIES - 1)))
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"]) == ("flawed", None)
+    assert [(d["state"], d["replacedBy"]) for d in result["dropped"]] == [("flawed", None)]
+
+
+def test_replacement_with_a_failure_besides_refusals_is_still_llm_down() -> None:
+    # 거절과 일시 장애가 섞이면 장애: 지금처럼 내일 다시 만들어 보고 시도 수는 그대로
+    review = [REFUSED, LlmError("HTTP 503"), REFUSED]
+    llm = FakeLlm({"Naturals": SECURED, "Review": review})
+    result = run(llm, flawed_input(unchecked()))
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"], s.get("flawTries")) == ("active", TOMORROW, None)
+
+
+def refuse_old(user: str) -> JsonObject | LlmError:
+    """저장된 문제(보기에 secured가 있음)의 검사만 서버가 거절하고, 새 문제는 SECURED로 판정."""
+    return REFUSED if re.search(r"^\d+\. secured$", user, re.M) else SECURED(user)
+
+
+def test_refused_check_of_a_question_put_off_tries_a_new_question_that_day() -> None:
+    # 전날 미룬 문제의 검사 거절: 다시 해도 같으므로 미루지 않고 전날 결함으로 새 문제를 만듦(#423)
+    llm = FakeLlm({"Naturals": refuse_old, "Review": [FASTENED], "Check": [CHECK_A]})
+    result = run(llm, flawed_input(unchecked(flaw=PUT_OFF, flawTries=1)))
+    [new] = result["questions"]
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"], s["flaw"], s["movedTo"]) == ("flawed", None, PUT_OFF, new["id"])
+    assert [(d["state"], d["replacedBy"]) for d in result["dropped"]] == [("flawed", new["id"])]
+
+
+def test_refused_check_and_refused_replacement_counts_a_try() -> None:
+    llm = FakeLlm({"Naturals": lambda _: REFUSED, "Review": [REFUSED] * 3})
+    result = run(llm, flawed_input(unchecked(flaw=PUT_OFF, flawTries=1)))
+    assert result["questions"] == []
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"], s["flawTries"]) == ("active", TOMORROW, 2)
+    assert [d["state"] for d in result["dropped"]] == ["active"]
+
+
+def test_refused_check_and_replacement_on_the_last_try_stops_the_question() -> None:
+    llm = FakeLlm({"Naturals": lambda _: REFUSED, "Review": [REFUSED] * 3})
+    result = run(llm, flawed_input(unchecked(flaw=PUT_OFF, flawTries=today.FLAW_TRIES - 1)))
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"], s["flaw"]) == ("flawed", None, PUT_OFF)
+    assert [(d["state"], d["replacedBy"]) for d in result["dropped"]] == [("flawed", None)]
+
+
+def test_check_of_a_question_put_off_with_refusal_and_outage_still_waits() -> None:
+    # 거절과 일시 장애가 섞이면 검사 못 함(down): 지금처럼 하루 더 미루고 시도 수는 그대로
+    llm = FakeLlm({"Naturals": [REFUSED, LlmError("HTTP 503")]})
+    result = run(llm, flawed_input(unchecked(flaw=PUT_OFF, flawTries=1)))
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"], s["flawTries"]) == ("active", TOMORROW, 1)
+    assert not llm.named("Review")
+
+
+def test_replacement_whose_draft_checks_are_refused_counts_a_try() -> None:
+    # 초안 검사(검사 모델)의 거절도 llm_refused에 셈(오답 복습 #272와 같은 기준)
+    review = [FASTENED, REFUSED, FASTENED]
+    llm = FakeLlm({"Naturals": SECURED, "Review": review, "Check": [REFUSED] * 2})
+    result = run(llm, flawed_input(unchecked()))
+    s = updates(result)["q1"]
+    assert (s["state"], s["dueAt"], s["flawTries"]) == ("active", TOMORROW, 1)
+
+
+def test_refused_check_of_a_never_checked_question_still_asks_it_unchecked() -> None:
+    # 검사한 적 없는 문제의 검사 거절은 지금처럼 검사하지 않은 그대로 냄(알려진 한계)
+    llm = FakeLlm({"Naturals": [REFUSED] * 2})
+    [x] = run(llm, flawed_input(unchecked()))["questions"]
+    assert x["answer"] == "fastened" and "checked" not in x["srs"]
 
 
 def test_check_call_failing_leaves_the_question_unchecked() -> None:

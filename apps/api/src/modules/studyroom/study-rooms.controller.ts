@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -19,6 +20,7 @@ import { StudyChatService } from './study-chat.service.js';
 import { StudyChatGateway } from './study-chat.gateway.js';
 import { StudyLiveService } from './study-live.service.js';
 import { InviteStudyRoomDto } from './dto/invite-study-room.dto.js';
+import { SetRoomTimerDto } from './dto/set-room-timer.dto.js';
 
 @Controller('study-rooms')
 @UseGuards(JwtAuthGuard)
@@ -61,6 +63,17 @@ export class StudyRoomsController {
   @Get(':id')
   async get(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
     return { data: await this.rooms.getRoom(requireUserId(req), id) };
+  }
+
+  @Put(':id/timer-rule')
+  async setTimerRule(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: SetRoomTimerDto,
+  ) {
+    const room = await this.rooms.setTimerRule(requireUserId(req), id, body);
+    this.gateway.notifyTimer(room._id, room.timerRule, room.timerState ?? null);
+    return { data: room };
   }
 
   @Post(':id/invites')

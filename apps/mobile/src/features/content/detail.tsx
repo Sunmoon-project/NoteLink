@@ -109,6 +109,11 @@ function OriginalFile({ m }: { m: Material }) {
   );
 }
 
+/** 원본이 PDF인지: 쪽 주소의 경로가 .pdf로 끝나는지(?쿼리 · #조각은 빼고, 대소문자 구분 없이) */
+export function isPdfOriginal(pages: Material['pages']): boolean {
+  return !!pages?.some((p) => /\.pdf$/i.test(p.imageUrl.split(/[?#]/)[0] ?? ''));
+}
+
 /** 자료가 든 폴더의 과목 이름 */
 function useSubject(folderId?: string) {
   const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
@@ -532,7 +537,11 @@ export function DocDetailScreen() {
           </View>
         ) : (
           <View className="mt-4 gap-3">
-            {!!m.pages?.length && <PageImages pages={m.pages} mode={pageTurn} />}
+            {isPdfOriginal(m.pages) ? (
+              <Text className="text-caption text-sub">PDF는 원본 파일 열기로 볼 수 있어요</Text>
+            ) : (
+              !!m.pages?.length && <PageImages pages={m.pages} mode={pageTurn} />
+            )}
             <OriginalFile m={m} />
           </View>
         )}

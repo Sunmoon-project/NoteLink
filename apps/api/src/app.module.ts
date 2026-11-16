@@ -10,6 +10,7 @@ import { CalendarModule } from './modules/calendar/calendar.module.js';
 import { HolidaysModule } from './modules/calendar/holidays.module.js';
 import { CalendarSharesModule } from './modules/calendar/calendar-shares.module.js';
 import { FoldersModule } from './modules/content/folders/folders.module.js';
+import { MaterialsModule } from './modules/content/materials/materials.module.js';
 import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
 import { ProgressModule } from './modules/progress/progress.module.js';
 import { RewardModule } from './modules/reward/reward.module.js';
@@ -21,6 +22,7 @@ import { UsersModule } from './modules/users/users.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
 import { TimetableModule } from './modules/timetable/timetable.module.js';
+import { ImageCheckModule } from './modules/upload/image-check/image-check.module.js';
 import { UploadsModule } from './modules/upload/uploads.module.js';
 import { FriendsModule } from './modules/social/friends/friends.module.js';
 
@@ -71,6 +73,10 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
     CalendarSharesModule,
     // 학습 폴더 목록 · 만들기(FR-19)
     FoldersModule,
+    // 노트(자료) 등록 · 조회 · 수정 · 삭제(FR-19)
+    MaterialsModule,
+    // 필기 사진 검사(FR-19)
+    ImageCheckModule,
   ],
   controllers: [HealthController],
 })

@@ -4,6 +4,7 @@ import {
   BlobSASPermissions,
   BlobServiceClient,
   generateBlobSASQueryParameters,
+  SASProtocol,
   StorageSharedKeyCredential,
 } from '@azure/storage-blob';
 import {
@@ -19,10 +20,15 @@ import type { StorageConfig } from '../../config/storage.config.js';
 
 export const STORAGE_CONFIG = Symbol('STORAGE_CONFIG');
 /**
- * 앱이 올린 파일이 놓이는 임시 경로. 아직 확인되지 않은 파일이라 그대로 쓰지 않는다.
- * 쓰는 곳이 실제 크기 · 형식을 확인하고 보관 경로로 복사하며, 남은 파일은 스토리지 수명 주기 규칙이 하루 뒤 지운다
+ * 앱이 올린 노트 파일의 경로: uploads/{종류}/{사용자}/{무작위}.{확장자}.
+ * 노트 등록(MaterialsService) · 필기 사진 검사(ImageCheckService)가 이 경로의 주소를 확인하고 그대로 저장하므로 지우지 않는다
  */
-export const UPLOAD_PREFIX = 'incoming';
+export const UPLOAD_PREFIX = 'uploads';
+/**
+ * 앱이 올린 신고 사진의 임시 경로: incoming/{사용자}/{무작위}.{확장자}. 그대로 쓰지 않고, 신고를 접수할 때
+ * 실제 크기 · 형식을 확인해 보관 경로로 복사한다. 남은 파일은 스토리지 수명 주기 규칙이 하루 뒤 지운다
+ */
+export const REPORT_UPLOAD_PREFIX = 'incoming';
 /** 접수된 신고 사진의 보관 경로: reports/{신고자}/{신고 ID}/{무작위}.{확장자} */
 export const REPORT_PREFIX = 'reports';
 /**
@@ -59,6 +65,11 @@ export const TYPE_BY_EXT: Record<string, string> = {
   m4a: 'audio/mp4',
   wav: 'audio/wav',
 };
+/** 앱이 올린 파일 이름: uuid(v4).확장자 */
+const UPLOADED_FILE_NAME =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.[a-z0-9]{2,5}$/;
+/** 읽기 주소의 시작 시각을 앞당기는 폭(서버 · 저장소 시계 차이) */
+const CLOCK_SKEW_MS = 60_000;
 const REPORT_FILE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:jpg|jpeg|png|heic)$/;
 const SCOPE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -72,6 +83,18 @@ export interface BlobStore {
 }
 
 const badReport = (message: string) => new BadRequestException({ code: 'BAD_REQUEST', message });
+const badFile = (message: string) =>
+  new BadRequestException({ code: ERROR_CODES.VALIDATION, message });
+const unavailable = (message: string) =>
+  new ServiceUnavailableException({ code: ERROR_CODES.UPLOAD_UNAVAILABLE, message });
+
+/** 앱이 올리는 폴더(끝에 '/'): 신고 사진은 임시 경로, 그 밖에는 종류별 노트 경로 */
+export function uploadFolder(kind: string, userId: string, purpose?: 'report'): string {
+  const owner = userId.toLowerCase();
+  return purpose === 'report'
+    ? `${REPORT_UPLOAD_PREFIX}/${owner}/`
+    : `${UPLOAD_PREFIX}/${kind}/${owner}/`;
+}
 
 @Injectable()
 export class BlobStorageService {
@@ -126,7 +149,7 @@ export class BlobStorageService {
     if (!/^[0-9a-f]{24}$/.test(owner) || !/^[0-9a-f]{24}$/.test(reportId))
       throw new Error('신고자 · 신고 ID는 ObjectId 문자열이어야 합니다');
     if (!SCOPE.test(scope)) throw new Error('DB 구분값이 올바르지 않습니다');
-    const prefix = this.urlOf(`${UPLOAD_PREFIX}/${owner}/`);
+    const prefix = this.urlOf(`${REPORT_UPLOAD_PREFIX}/${owner}/`);
     const tags = {
       [REPORT_PENDING_TAG]: pendingStamp(Date.now()),
       [REPORT_SCOPE_TAG]: scope,
@@ -212,6 +235,86 @@ export class BlobStorageService {
     return counts;
   }
 
+  /**
+   * 올린 파일 하나를 읽기만 할 수 있는 SAS 주소로 만든다.
+   * 설정한 컨테이너 안의 파일 주소가 아니면 거절한다. verify를 주면 주소가 prefix 아래의
+   * `<uuid>.<확장자>` 꼴인지 보고, 실제로 있는 파일인지 확인해 크기(sizeBytes)도 돌려준다(노트 등록).
+   * 없으면 저장된 주소를 서명만 한다(응답에 이미지를 담을 때). 오류 메시지 · 로그에는 주소와 SAS를 넣지 않는다
+   */
+  async createReadAccess(
+    blobUrl: string,
+    ttlMs: number,
+    verify?: { prefix: string },
+  ): Promise<{ readUrl: string; sizeBytes?: number }> {
+    const store = this.requireStore();
+    const containerClient = store.client.getContainerClient(store.config.container);
+    const base = `${containerClient.url}/`;
+    const blobName = blobUrl.startsWith(base) ? blobUrl.slice(base.length) : '';
+    const blob = blobName ? containerClient.getBlockBlobClient(blobName) : null;
+    if (!blob || blob.url !== blobUrl) throw badFile('사용할 수 없는 파일 주소예요');
+    let sizeBytes: number | undefined;
+    if (verify) {
+      const rest = blobName.startsWith(verify.prefix) ? blobName.slice(verify.prefix.length) : '';
+      if (!UPLOADED_FILE_NAME.test(rest)) throw badFile('사용할 수 없는 파일 주소예요');
+      try {
+        sizeBytes = (await blob.getProperties()).contentLength;
+      } catch (error) {
+        if (statusOf(error) === 404) throw badFile('올린 파일을 찾을 수 없어요');
+        throw unavailable('올린 파일을 확인하지 못했어요.');
+      }
+      if (!sizeBytes) throw badFile('빈 파일은 올릴 수 없어요');
+    }
+    const now = Date.now();
+    try {
+      const sas = generateBlobSASQueryParameters(
+        {
+          containerName: store.config.container,
+          blobName,
+          permissions: BlobSASPermissions.parse('r'),
+          protocol: store.https ? SASProtocol.Https : SASProtocol.HttpsAndHttp,
+          startsOn: new Date(now - CLOCK_SKEW_MS),
+          expiresOn: new Date(now + ttlMs),
+        },
+        store.credential,
+      ).toString();
+      return { readUrl: `${blob.url}?${sas}`, ...(sizeBytes === undefined ? {} : { sizeBytes }) };
+    } catch {
+      throw unavailable('파일 읽기 주소를 만들지 못했어요.');
+    }
+  }
+
+  /**
+   * 앱이 올린 파일 여러 개가 쓸 수 있는지 본다(필기 사진 검사). SAS는 만들지 않는다.
+   * 주소마다 크기 · 저장된 형식(contentType)을 돌려준다. 설정한 컨테이너의 prefix 아래 `<uuid>.<확장자>` 꼴이
+   * 아니거나 파일이 없으면 null. 저장소 설정이 없거나 확인하지 못하면 503. 오류 메시지 · 로그에는 주소를 넣지 않는다
+   */
+  async inspectUploads(
+    blobUrls: string[],
+    prefix: string,
+  ): Promise<({ sizeBytes: number; contentType: string | null } | null)[]> {
+    const store = this.requireStore();
+    const containerClient = store.client.getContainerClient(store.config.container);
+    const base = `${containerClient.url}/${prefix}`;
+    return Promise.all(
+      blobUrls.map(async (blobUrl) => {
+        const name = blobUrl.startsWith(base) ? blobUrl.slice(base.length) : '';
+        if (!UPLOADED_FILE_NAME.test(name)) return null;
+        const blob = containerClient.getBlockBlobClient(`${prefix}${name}`);
+        if (blob.url !== blobUrl) return null;
+        try {
+          const properties = await blob.getProperties();
+          return {
+            sizeBytes: properties.contentLength ?? 0,
+            contentType: properties.contentType ?? null,
+          };
+        } catch (error) {
+          if (statusOf(error) === 404) return null;
+          throw unavailable('올린 파일을 확인하지 못했어요.');
+        }
+      }),
+    );
+  }
+
   /** 이 저장소 컨테이너 안의 Blob 주소 → 클라이언트 */
   private blobOf(url: string) {
     const { client, config } = this.requireStore();
@@ -227,7 +330,7 @@ export class BlobStorageService {
     tags: Record<string, string>,
   ) {
     const container = store.client.getContainerClient(store.config.container);
-    const source = container.getBlockBlobClient(`${UPLOAD_PREFIX}/${owner}/${fileName}`);
+    const source = container.getBlockBlobClient(`${REPORT_UPLOAD_PREFIX}/${owner}/${fileName}`);
     const ext = fileName.slice(fileName.lastIndexOf('.') + 1);
     try {
       const properties = await source.getProperties();

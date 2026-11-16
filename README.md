@@ -17,7 +17,7 @@
 | 모바일 앱        | Expo (React Native) + TypeScript  | Expo SDK 57 · RN 0.86.3 · TS 6.0.3 |
 | 메인 서버        | NestJS (Node.js)                  | NestJS 12 · Node 24                |
 | AI 서버          | FastAPI (Python)                  | FastAPI 0.142 · Python 3.13        |
-| 데이터베이스     | MongoDB Atlas (Azure 코리아 중부) | MongoDB 8.0                        |
+| 데이터베이스     | MongoDB Atlas (AWS 서울)          | MongoDB 8.0                        |
 | 파일 저장소      | Azure Blob Storage                | —                                  |
 | 배포             | Azure App Service (Linux)         | —                                  |
 | 실시간           | Socket.IO (NestJS 서버에 직접)    | 4.8                                |

@@ -13,7 +13,7 @@ import {
   UPLOAD_ISSUE_LIMIT,
   UPLOAD_ISSUE_WINDOW_MS,
 } from '../src/modules/upload/upload-quota.service.js';
-import { UPLOAD_PREFIX } from '../src/modules/upload/blob-storage.service.js';
+import { REPORT_UPLOAD_PREFIX, UPLOAD_PREFIX } from '../src/modules/upload/blob-storage.service.js';
 import { UPLOAD_SAS_MINUTES } from '../src/modules/upload/uploads.service.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
@@ -73,12 +73,12 @@ describe('파일 올리기 주소 발급 (POST /api/v1/uploads/sas)', () => {
     await request(app.getHttpServer()).post(api(PATHS.uploadSas)).send(image).expect(401);
   });
 
-  it('공용 UploadTarget 모양으로 돌려주고, 경로는 임시 경로의 내 폴더 아래 새 이름이다', async () => {
+  it('공용 UploadTarget 모양으로 돌려주고, 경로는 종류별 노트 경로의 내 폴더 아래 새 이름이다', async () => {
     const res = await sas(image).expect(200);
     const target = UploadTarget.parse(res.body.data);
     expect(target.blobUrl).toMatch(
       new RegExp(
-        `^https://notelinktest\\.blob\\.core\\.windows\\.net/raw/${UPLOAD_PREFIX}/${me}/${UUID}\\.jpg$`,
+        `^https://notelinktest\\.blob\\.core\\.windows\\.net/raw/${UPLOAD_PREFIX}/image/${me}/${UUID}\\.jpg$`,
       ),
     );
     expect(target.uploadUrl.startsWith(`${target.blobUrl}?`)).toBe(true);
@@ -232,10 +232,10 @@ describe('파일 올리기 주소 발급 (POST /api/v1/uploads/sas)', () => {
   describe('신고 사진 (purpose: report)', () => {
     const report = { ...image, purpose: 'report' };
 
-    it('다른 파일처럼 임시 경로의 내 폴더에 올린다(접수 때 보관 경로로 복사)', async () => {
+    it('노트 경로가 아니라 임시 경로의 내 폴더에 올린다(접수 때 보관 경로로 복사)', async () => {
       const res = await sas(report).expect(200);
       expect(UploadTarget.parse(res.body.data).blobUrl).toMatch(
-        new RegExp(`/raw/${UPLOAD_PREFIX}/${me}/${UUID}\\.jpg$`),
+        new RegExp(`/raw/${REPORT_UPLOAD_PREFIX}/${me}/${UUID}\\.jpg$`),
       );
     });
 

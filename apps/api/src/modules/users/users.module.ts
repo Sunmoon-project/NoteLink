@@ -10,6 +10,7 @@ import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schem
 import { Device, DeviceSchema } from './schemas/device.schema.js';
 import { UsersController } from './users.controller.js';
 import { UsersService } from './users.service.js';
+import { InterestCategorySeedService } from './interest-category-seed.service.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { ProgressModule } from '../progress/progress.module.js';
 
@@ -26,6 +27,6 @@ import { ProgressModule } from '../progress/progress.module.js';
     ]),
   ],
   controllers: [UsersController],
-  providers: [UsersService],
+  providers: [UsersService, InterestCategorySeedService],
 })
 export class UsersModule {}

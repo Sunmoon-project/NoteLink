@@ -23,6 +23,8 @@ export const ERROR_CODES = {
   NOT_FOUND: 'NOT_FOUND',
   /** 아직 정리되지 않았거나 글이 없는 노트라 아바타가 설명할 수 없다 (409) */
   NOTE_NOT_READY: 'NOTE_NOT_READY',
+  /** 같은 Idempotency-Key로 다른 내용을 보냈거나, 그 키로 만든 자료를 이미 지웠다 (409) */
+  IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
   /** 입력 형식 오류 (이메일 · 필수 값 등) */
   VALIDATION: 'VALIDATION_FAILED',
   EMAIL_TAKEN: 'EMAIL_TAKEN',
