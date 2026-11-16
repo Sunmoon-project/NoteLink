@@ -1,4 +1,4 @@
-import type { INestApplication } from '@nestjs/common';
+import { BadRequestException, type INestApplication, NotFoundException } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
 import { PATHS } from '@notelink/shared';
 import { Types } from 'mongoose';
@@ -33,6 +33,7 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
   const update = vi.fn();
   const remove = vi.fn();
   const downloadUrl = vi.fn();
+  const addBookmark = vi.fn();
 
   beforeAll(async () => {
     stubAppEnv();
@@ -40,7 +41,7 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
       .overrideProvider(getModelToken(RefreshToken.name))
       .useValue(createFakeRefreshTokens().model)
       .overrideProvider(MaterialsService)
-      .useValue({ register, findMine, listPage, update, remove, downloadUrl })
+      .useValue({ register, findMine, listPage, update, remove, downloadUrl, addBookmark })
       .compile();
     app = ref.createNestApplication();
     configureApp(app);
@@ -153,6 +154,57 @@ describe('노트 등록 요청 검사 (POST /api/v1/materials)', () => {
       expect(res.body).toEqual({ data: [{ _id: 'm1' }] });
       expect(res.headers['x-next-cursor']).toBeUndefined();
       expect(listPage).toHaveBeenCalledWith(me.toHexString(), 'f1', {});
+    });
+
+    describe('북마크 추가 (POST /materials/:id/bookmarks)', () => {
+      const post = (payload: unknown) =>
+        request(app.getHttpServer())
+          .post(api(PATHS.materialBookmarks('m1')))
+          .set(auth())
+          .send(payload as object);
+      beforeEach(() => {
+        addBookmark.mockReset();
+        addBookmark.mockResolvedValue(undefined);
+      });
+
+      it('로그인이 없으면 401', async () => {
+        await request(app.getHttpServer())
+          .post(api(PATHS.materialBookmarks('m1')))
+          .send({ atSec: 1 })
+          .expect(401);
+        expect(addBookmark).not.toHaveBeenCalled();
+      });
+
+      it.each([0, 12.34, 86400])('atSec %s: 204, 본문 없음', async (atSec) => {
+        const res = await post({ atSec }).expect(204);
+        expect(res.text).toBe('');
+        expect(addBookmark).toHaveBeenCalledWith(me.toHexString(), 'm1', atSec);
+      });
+
+      it.each([
+        ['음수', { atSec: -0.1 }],
+        ['86400 초과', { atSec: 86400.1 }],
+        ['글자', { atSec: '12' }],
+        ['null', { atSec: null }],
+        ['없음', {}],
+        ['다른 필드', { atSec: 1, label: '중간고사' }],
+      ])('%s는 400이고 서비스를 부르지 않는다', async (_name, payload) => {
+        await post(payload).expect(400);
+        expect(addBookmark).not.toHaveBeenCalled();
+      });
+
+      it('서비스가 낸 404 · 400 은 { code, message } 로 나간다', async () => {
+        addBookmark.mockRejectedValueOnce(
+          new NotFoundException({ code: 'NOT_FOUND', message: '노트 정보를 찾을 수 없어요' }),
+        );
+        const notFound = await post({ atSec: 1 }).expect(404);
+        expect(notFound.body).toMatchObject({ code: 'NOT_FOUND' });
+        addBookmark.mockRejectedValueOnce(
+          new BadRequestException({ code: 'VALIDATION_FAILED', message: '200개까지' }),
+        );
+        const full = await post({ atSec: 1 }).expect(400);
+        expect(full.body).toMatchObject({ code: 'VALIDATION_FAILED', message: '200개까지' });
+      });
     });
 
     describe('페이지 나누기 (limit · cursor)', () => {
