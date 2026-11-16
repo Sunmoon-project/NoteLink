@@ -43,6 +43,14 @@ interface Opts {
   send?: () => unknown;
   deleteFails?: boolean;
   recheck?: object | null;
+  /** 보내기 직전 선점 조회의 결과를 호출 차례대로(null 은 선점을 잃음). 모자라면 내 선점이 그대로 */
+  rechecks?: (object | null)[];
+  /** 선점을 잃었거나 못 잡은 사용자의 문서 읽기(holderWait) 결과를 호출 차례대로 */
+  stateDocs?: (object | null)[];
+  /** n번째 정리(updateMany) 호출에서 그 사용자들이 끝난 상태(gave_up)가 된다 */
+  closeOnCleanup?: { call: number; users: string[] };
+  /** 보내기 직전 선점 조회를 기다리는 사이 날짜가 바뀐다 */
+  lateAfterRecheck?: boolean;
   aggregateFails?: number;
   /** 이 상태를 쓰는 updateOne 을 앞에서부터 times 번 실패시킨다 */
   failWrite?: { state: string | null; times: number };
@@ -59,6 +67,10 @@ function setup(opts: Opts = {}) {
   const cleanups: Write[] = [];
   const finals = opts.finals ?? new Set<string>();
   const state = { late: false };
+  const recheckFilters: Record<string, unknown>[] = [];
+  let recheckCalls = 0;
+  let stateCalls = 0;
+  let cleanupCalls = 0;
   let claimCalls = 0;
   let aggregateFailed = 0;
   let failed = 0;
@@ -102,8 +114,23 @@ function setup(opts: Opts = {}) {
         },
       };
     }),
-    findOne: vi.fn(() => ({
-      lean: () => Promise.resolve(opts.recheck === undefined ? { state: 'claimed' } : opts.recheck),
+    findOne: vi.fn((filter: Record<string, unknown>) => ({
+      lean: () => {
+        if ('claimId' in filter) {
+          // 보내기 직전: 내 선점이 그대로인지
+          recheckFilters.push(filter);
+          if (opts.lateAfterRecheck) state.late = true;
+          if (opts.rechecks) {
+            const at = recheckCalls++;
+            return Promise.resolve(
+              at < opts.rechecks.length ? opts.rechecks[at] : { state: 'claimed' },
+            );
+          }
+          return Promise.resolve(opts.recheck === undefined ? { state: 'claimed' } : opts.recheck);
+        }
+        // 선점을 잃었거나 못 잡은 사용자의 문서 읽기(holderWait)
+        return Promise.resolve(opts.stateDocs?.[stateCalls++] ?? null);
+      },
     })),
     updateOne: vi.fn((filter: Write['filter'], update: Write['update'], options: object) => {
       writes.push({ filter, update, options });
@@ -120,6 +147,10 @@ function setup(opts: Opts = {}) {
     }),
     updateMany: vi.fn((filter: Write['filter'], update: Write['update'], options: object) => {
       cleanups.push({ filter, update, options });
+      cleanupCalls += 1;
+      if (opts.closeOnCleanup?.call === cleanupCalls) {
+        for (const u of opts.closeOnCleanup.users) finals.add(u);
+      }
       return Promise.resolve({ modifiedCount: 0 });
     }),
   };
@@ -185,6 +216,7 @@ function setup(opts: Opts = {}) {
     clock,
     states,
     sentWrites,
+    recheckFilters,
   };
 }
 
@@ -550,5 +582,128 @@ describe('한도에 닿은 만료된 선점 정리', () => {
       attempts: { $gte: REVIEW_REMIND_MAX_ATTEMPTS },
     });
     expect(cleanup!.update).toEqual({ $set: { state: 'gave_up' } });
+  });
+});
+
+describe('선점을 잃은 사용자는 목록에 남겨 이어받기를 시도한다', () => {
+  it('선점을 잃으면 다른 서버의 선점이 만료될 때까지 선점 시도도 하지 않고, 만료 정각에 이어받아 정확히 1번 보낸다', async () => {
+    const { service, push, reminders } = setup({
+      rechecks: [null], // 첫 선점은 보내기 직전에 다른 서버(B)가 가져갔다. 다음 선점부터는 내 선점이 그대로
+      stateDocs: [{ state: 'claimed', claimedAt: NOW, attempts: 2 }], // B 가 선점했고 보내기 전에 죽는다
+    });
+    await service.runOnce(NOW);
+    expect(push.send).not.toHaveBeenCalled();
+    expect(reminders.findOneAndUpdate).toHaveBeenCalledTimes(1);
+    await service.runOnce(new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS - 1000));
+    expect(reminders.findOneAndUpdate).toHaveBeenCalledTimes(1); // B 의 선점이 살아 있는 동안은 건너뛴다
+    await service.runOnce(new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS));
+    expect(reminders.findOneAndUpdate).toHaveBeenCalledTimes(2);
+    expect(push.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('선점을 못 잡은 사용자도 다른 서버의 선점이 살아 있는 동안은 매 확인마다 건드리지 않는다', async () => {
+    const { service, push, reminders } = setup({
+      claimResults: [false, true],
+      stateDocs: [{ state: 'claimed', claimedAt: NOW, attempts: 1 }],
+    });
+    await service.runOnce(NOW);
+    for (const sec of [60, 120 - 1]) await service.runOnce(new Date(NOW.getTime() + sec * 1000));
+    expect(reminders.findOneAndUpdate).toHaveBeenCalledTimes(1);
+    await service.runOnce(new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS));
+    expect(reminders.findOneAndUpdate).toHaveBeenCalledTimes(2);
+    expect(push.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('다른 서버가 보냈다면(문서가 끝난 상태) 목록에서 지우고 더 건드리지 않는다', async () => {
+    const { service, push, reminders } = setup({
+      rechecks: [null],
+      stateDocs: [{ state: 'sent' }],
+    });
+    await service.runOnce(NOW);
+    expect(service['plan']!.pending).toHaveLength(0);
+    await service.runOnce(new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS + 1000));
+    expect(reminders.findOneAndUpdate).toHaveBeenCalledTimes(1);
+    expect(push.send).not.toHaveBeenCalled();
+  });
+
+  it('연속으로 두 서버가 죽으면 보내지 않고 gave_up 으로 끝난다(시도 한도 3의 의도된 한계): 헛돌지 않고 목록에서도 지운다', async () => {
+    const T2 = new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS); // 두 번째 서버(C)의 선점 시각
+    const { service, push, reminders, cleanups } = setup({
+      rechecks: [null], // 내(A) 첫 선점(#1)을 B(#2)가 가져가 죽는다
+      claimResults: [true, 'dup'], // 이어받으려는 사이 C(#3)가 먼저 가져가 죽는다
+      stateDocs: [
+        { state: 'claimed', claimedAt: NOW, attempts: 2 },
+        { state: 'claimed', claimedAt: T2, attempts: REVIEW_REMIND_MAX_ATTEMPTS },
+      ],
+      closeOnCleanup: { call: 3, users: [String(id(1))] }, // 한도에 닿은 만료된 선점을 정리가 gave_up 으로 닫는다
+    });
+    await service.runOnce(NOW);
+    await service.runOnce(T2); // B 의 선점이 만료되어 이어받으려 했지만 C 가 먼저 가져갔다
+    expect(reminders.findOneAndUpdate).toHaveBeenCalledTimes(2);
+    await service.runOnce(new Date(T2.getTime() + REVIEW_REMIND_LEASE_MS)); // C 의 선점도 만료: 한도(3)라 더 이어받지 못한다
+    expect(cleanups.at(-1)!.filter).toMatchObject({
+      state: 'claimed',
+      attempts: { $gte: REVIEW_REMIND_MAX_ATTEMPTS },
+    });
+    expect(reminders.findOneAndUpdate).toHaveBeenCalledTimes(2); // 더 선점하려 하지 않는다
+    expect(service['plan']!.pending).toHaveLength(0); // 끝난 상태(gave_up)가 되어 목록에서 지워졌다
+    await service.runOnce(new Date(T2.getTime() + 2 * REVIEW_REMIND_LEASE_MS));
+    expect(reminders.findOneAndUpdate).toHaveBeenCalledTimes(2);
+    expect(push.send).not.toHaveBeenCalled(); // 알림은 가지 않는다
+  });
+
+  it('기다릴 시각이 날짜를 넘어가면(자정 이후) 그 사용자는 목록에서 지운다', async () => {
+    const late = seoul('23:59');
+    const { service, push, reminders } = setup({
+      claimResults: [false],
+      stateDocs: [{ state: 'claimed', claimedAt: seoul('23:59') }], // 만료 시각은 다음 날 00:01
+    });
+    await service.runOnce(late);
+    expect(service['plan']!.pending).toHaveLength(0);
+    expect(service['waitUntil'].size).toBe(0);
+    await service.runOnce(new Date(late.getTime() + 30_000));
+    expect(reminders.findOneAndUpdate).toHaveBeenCalledTimes(1);
+    expect(push.send).not.toHaveBeenCalled();
+  });
+
+  it('발송 실패 뒤 다시 시도 시각이 날짜를 넘어가는 사용자도 목록에서 지운다', async () => {
+    const { service } = setup({ send: failAll });
+    await service.runOnce(seoul('23:59')); // 다시 시도는 2분 뒤 = 다음 날 00:01
+    expect(service['plan']!.pending).toHaveLength(0);
+    expect(service['waitUntil'].size).toBe(0);
+  });
+
+  it('날짜가 바뀌면 메모리 목록과 대기 항목을 모두 비운다', async () => {
+    const { service } = setup({
+      claimResults: [false],
+      stateDocs: [{ state: 'claimed', claimedAt: NOW }],
+    });
+    await service.runOnce(NOW);
+    expect(service['plan']!.pending).toHaveLength(1);
+    expect(service['waitUntil'].size).toBe(1);
+    await service.runOnce(seoul('00:30', NEXT_DAY)); // 서울 자정이 지났다
+    expect(service['plan']).toBeNull();
+    expect(service['waitUntil'].size).toBe(0);
+  });
+});
+
+describe('발송 직전 마지막 조회 뒤에 날짜를 다시 확인한다', () => {
+  it('선점 조회를 기다리는 사이 자정을 넘기면 보내지 않는다', async () => {
+    const { service, push, clock, states } = setup({ lateAfterRecheck: true });
+    await service.runOnce(undefined, clock(seoul('23:59'), seoul('00:00', NEXT_DAY)));
+    expect(push.send).not.toHaveBeenCalled();
+    expect(states()).toEqual(['claimed']); // 기록하지 않는다(전날 것이 다음 날로 넘어가지 않는다)
+    expect(service['plan']!.pending).toHaveLength(0);
+  });
+
+  it('발송 직전 선점 조회는 state 가 claimed 인 내 선점만 본다(gave_up 으로 닫힌 선점은 보내지 않는다)', async () => {
+    const { service, recheckFilters } = setup();
+    await service.runOnce(NOW);
+    expect(recheckFilters[0]).toMatchObject({
+      userId: id(1),
+      day: DAY,
+      claimId: expect.any(String),
+      state: 'claimed',
+    });
   });
 });

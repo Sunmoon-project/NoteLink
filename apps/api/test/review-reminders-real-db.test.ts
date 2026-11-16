@@ -374,8 +374,8 @@ describe.skipIf(!isLocal)('진짜 DB 복습 알림', () => {
     const svc = makeService();
     await svc.runOnce(new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS - 1000));
     expect(sent).toHaveLength(0);
-    // 선점이 만료된 뒤 첫 확인(한 번의 확인 간격 안)에서 이어받는다
-    await svc.runOnce(new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS + 61_000));
+    // 선점이 만료되는 시각(대기 시각)이 되면 바로 이어받는다
+    await svc.runOnce(new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS + 1000));
     expect(sent).toHaveLength(1);
     expect(await row(owner)).toMatchObject({ state: 'sent', attempts: 2 });
   });
@@ -437,6 +437,159 @@ describe.skipIf(!isLocal)('진짜 DB 복습 알림', () => {
     expect((await row(expired))!.state).toBe('gave_up');
     expect((await row(live))!.state).toBe('claimed');
     expect(sent).toHaveLength(0);
+  });
+
+  /** 보내는 쪽이 기기를 읽는 동안(발송 직전 선점 조회 전에) 한 번 실행할 일을 끼운다(다른 서버가 끼어드는 상황) */
+  const whileReadingDevices = (job: () => Promise<unknown>) => {
+    const original = devices.find.bind(devices) as unknown as (...a: unknown[]) => {
+      lean: (...x: unknown[]) => Promise<unknown>;
+    };
+    let ran = false;
+    return vi.spyOn(devices, 'find').mockImplementation(((...args: unknown[]) => {
+      const query = original(...args);
+      return {
+        lean: async (...x: unknown[]) => {
+          const rows = await query.lean(...x);
+          if (!ran) {
+            ran = true;
+            await job();
+          }
+          return rows;
+        },
+      };
+    }) as never);
+  };
+  const takeOver = (owner: Types.ObjectId, claimId: string, claimedAt: Date, attempts?: number) =>
+    reminders.collection.updateOne(
+      { userId: owner, day: DAY },
+      {
+        $set: { state: 'claimed', claimId, claimedAt },
+        ...(attempts ? {} : { $inc: { attempts: 1 } }),
+      },
+    );
+
+  it('선점을 잃은 사용자는 목록에 남고, 가져간 서버가 보내기 전에 죽으면 그 선점 만료 정각에 이어받아 1번 보낸다', async () => {
+    const owner = await user();
+    await quizSet(owner, [dueQuestion()]);
+    // A 가 선점(#1)했는데 B 가 만료로 보고 가져가(#2) 보내기 전에 죽는다
+    const spy = whileReadingDevices(() => takeOver(owner, 'B', NOW));
+    const a = makeService();
+    try {
+      await a.runOnce(NOW);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sent).toHaveLength(0);
+    expect(await row(owner)).toMatchObject({ state: 'claimed', claimId: 'B', attempts: 2 });
+    // B 의 선점이 살아 있는 동안은 선점 시도도 하지 않는다
+    await a.runOnce(new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS - 1000));
+    expect(sent).toHaveLength(0);
+    expect(await row(owner)).toMatchObject({ claimId: 'B', attempts: 2 });
+    // 만료 정각에 이어받아 1번 보낸다
+    await a.runOnce(new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS));
+    expect(sentTo(owner)).toHaveLength(1);
+    expect(await row(owner)).toMatchObject({ state: 'sent', attempts: 3 });
+  });
+
+  it('연속으로 두 서버가 죽으면 보내지 않고 gave_up 으로 끝나며 목록에서도 지워진다(시도 한도 3의 의도된 한계)', async () => {
+    const owner = await user();
+    await quizSet(owner, [dueQuestion()]);
+    const spy = whileReadingDevices(() => takeOver(owner, 'B', NOW)); // A(#1) → B(#2)가 가져가 죽는다
+    const a = makeService();
+    try {
+      await a.runOnce(NOW);
+    } finally {
+      spy.mockRestore();
+    }
+    // B 의 선점이 만료되기 직전에 C(#3)가 먼저 이어받아 역시 죽는다
+    const t2 = new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS);
+    await reminders.collection.updateOne(
+      { userId: owner, day: DAY },
+      {
+        $set: {
+          state: 'claimed',
+          claimId: 'C',
+          claimedAt: t2,
+          attempts: REVIEW_REMIND_MAX_ATTEMPTS,
+        },
+      },
+    );
+    await a.runOnce(t2); // 한도(3)에 닿아 더 선점하지 못한다
+    expect(sent).toHaveLength(0);
+    expect(await row(owner)).toMatchObject({ claimId: 'C', attempts: REVIEW_REMIND_MAX_ATTEMPTS });
+    // C 의 선점이 만료되면 정리가 gave_up 으로 닫고, A 는 목록에서 지우고 더 건드리지 않는다
+    await a.runOnce(new Date(t2.getTime() + REVIEW_REMIND_LEASE_MS));
+    expect(await row(owner)).toMatchObject({
+      state: 'gave_up',
+      attempts: REVIEW_REMIND_MAX_ATTEMPTS,
+    });
+    expect(a['plan']!.pending).toHaveLength(0);
+    await a.runOnce(new Date(t2.getTime() + 3 * REVIEW_REMIND_LEASE_MS));
+    expect(sent).toHaveLength(0);
+    expect(await row(owner)).toMatchObject({
+      state: 'gave_up',
+      attempts: REVIEW_REMIND_MAX_ATTEMPTS,
+    });
+  });
+
+  it('선점을 잃은 뒤 가져간 서버가 보냈으면(문서가 sent) 더 건드리지 않고 목록에서 지운다', async () => {
+    const owner = await user();
+    await quizSet(owner, [dueQuestion()]);
+    const spy = whileReadingDevices(async () => {
+      await reminders.collection.updateOne(
+        { userId: owner, day: DAY },
+        { $set: { state: 'sent', claimId: 'B' }, $inc: { attempts: 1 } },
+      );
+    });
+    const a = makeService();
+    try {
+      await a.runOnce(NOW);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sent).toHaveLength(0);
+    expect(a['plan']!.pending).toHaveLength(0);
+    await a.runOnce(new Date(NOW.getTime() + REVIEW_REMIND_LEASE_MS + 1000));
+    expect(await row(owner)).toMatchObject({ state: 'sent', attempts: 2 });
+    expect(sent).toHaveLength(0);
+  });
+
+  it('선점 조회를 기다리는 사이 서울 자정을 넘기면 보내지 않는다(조회 뒤에 날짜를 다시 확인)', async () => {
+    const owner = await user();
+    await quizSet(owner, [dueQuestion()]);
+    let late = false;
+    const original = reminders.findOne.bind(reminders) as unknown as (...a: unknown[]) => unknown;
+    const spy = vi.spyOn(reminders, 'findOne').mockImplementation(((
+      filter: Record<string, unknown>,
+      ...rest: unknown[]
+    ) => {
+      if ('claimId' in filter) late = true; // 발송 직전 선점 조회
+      return original(filter, ...rest);
+    }) as never);
+    try {
+      await makeService().runOnce(undefined, () =>
+        late ? seoul('00:00', NEXT_DAY) : seoul('23:59'),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sent).toHaveLength(0);
+    expect((await row(owner))!.state).toBe('claimed'); // 기록하지 않았다(다음 날로 넘기지 않는다)
+  });
+
+  it('기기를 읽는 동안 정리가 같은 claimId 의 선점을 gave_up 으로 닫았으면 보내지 않는다', async () => {
+    const owner = await user();
+    await quizSet(owner, [dueQuestion()]);
+    const spy = whileReadingDevices(() =>
+      reminders.collection.updateOne({ userId: owner, day: DAY }, { $set: { state: 'gave_up' } }),
+    );
+    try {
+      await makeService().runOnce(NOW);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sent).toHaveLength(0);
+    expect((await row(owner))!.state).toBe('gave_up');
   });
 
   it('review_reminders 에는 (userId, day) 유니크 색인과 TTL 색인이 있다', async () => {

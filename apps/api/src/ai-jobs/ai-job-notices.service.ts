@@ -337,13 +337,15 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
     );
     if (!tokens.length) return 'sent'; // 기기가 없다
 
-    // 선점 · 노트 · 기기 조회를 기다리는 사이 다시 시도되었을 수 있다: 내 선점과 상태가 그대로일 때만 보낸다
+    // 선점 · 노트 · 기기 조회를 기다리는 사이 다시 시도되었을 수 있다: 내 선점과 상태가 그대로일 때만 보낸다.
+    // notice.state 가 claimed 인 것만 본다: closeExhausted() 는 같은 claimId 를 둔 채 gave_up 으로 닫으므로 claimId 만으로는 걸러지지 않는다
     const current = await this.jobs
       .findOne(
         {
           _id: job._id,
           status: job.status,
           'notice.claimId': claimId,
+          'notice.state': 'claimed',
           updatedAt: { $gte: new Date(clock().getTime() - NOTICE_WINDOW_MS) },
         },
         { _id: 1 },

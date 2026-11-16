@@ -84,6 +84,13 @@ interface Unrecorded {
  * - 시도 횟수가 한도에 닿은 채 선점이 만료된 claimed 는 gave_up 으로 닫는다.
  * - 푸시를 받을 기기가 없는 사용자는 조용히 건너뛴다(skipped). 사용자별 푸시 끄기 설정은 아직 없다.
  *
+ * - 선점을 잃은 사용자는 목록에 남긴다: 선점을 가져간 서버가 보내기 전에 죽으면 집계가 하루 한 번이라 아무도 다시 보지 않기 때문이다.
+ *   그 서버의 선점이 살아 있는 동안은 건드리지 않고 만료 정각에 이어받는다. 문서가 끝난 상태가 되거나 기다릴 시각이 날짜를
+ *   넘으면 목록에서 지운다. 날짜가 바뀌면 목록과 대기 항목을 모두 비운다.
+ *
+ * 남는 한계(의도): 선점을 가져간 서버가 연속으로 죽는 경우 — 죽은 선점도 시도 횟수(REVIEW_REMIND_MAX_ATTEMPTS = 3)에 들어가므로, 서버
+ * 두 대가 연속으로 보내기 전에 죽으면 세 번째 선점이 한도에 닿아 이어받지 못하고, 만료된 선점이 gave_up 으로 닫혀 그날 알림은
+ * 가지 않는다(헛돌지는 않고 목록에서도 지워진다). 서버가 죽는 일이 드물고, 발송 실패 재시도 횟수를 늘리지 않으려고 한도를 3으로 두었다.
  * 남는 한계: 푸시를 보낸 뒤 sent 기록이 선점 만료(2분) 넘게 실패하거나 그 사이 서버가 죽으면, 다른 서버가 이어받아 같은 알림을
  * 한 번 더 보낼 수 있다(누락보다 중복을 택했다. 같은 collapseId 라 기기에서는 보통 한 알림으로 합쳐진다). 한도에 닿은 만료된
  * claimed 를 gave_up 으로 닫을 때도 푸시는 실제로 갔을 수 있다. 알림의 문제 수는 처리기가 같은 낱말 문제를 하나로 합치거나 결함
@@ -229,11 +236,18 @@ export class ReviewRemindersService implements OnApplicationBootstrap, OnModuleD
     const done = new Set(finished.map((f) => String(f.userId)));
 
     const stillPending: DueUser[] = [...keep];
+    const end = dayEnd(plan.day).getTime();
     for (const user of ready) {
-      if (done.has(String(user.userId))) continue;
+      if (done.has(String(user.userId))) {
+        this.waitUntil.delete(String(user.userId));
+        continue;
+      }
       try {
         const next = await this.handle(plan.day, user, tick);
-        if (next !== 'done') {
+        if (next === 'done' || next.getTime() >= end) {
+          // 끝났거나(DB에 끝난 상태가 기록됨 · 날짜가 지남), 기다릴 시각이 날짜를 넘어가면(자정 이후) 목록에서 지운다
+          this.waitUntil.delete(String(user.userId));
+        } else {
           this.waitUntil.set(String(user.userId), next.getTime());
           stillPending.push(user);
         }
@@ -246,7 +260,11 @@ export class ReviewRemindersService implements OnApplicationBootstrap, OnModuleD
     plan.pending = stillPending;
   }
 
-  /** 사용자 한 명을 처리한다. 끝났으면 'done', 나중에 다시 해야 하면 그 시각 */
+  /**
+   * 사용자 한 명을 처리한다. 끝났으면 'done'(DB에 끝난 상태가 기록되었거나 그날이 지남), 나중에 다시 봐야 하면 그 시각.
+   * 선점을 잃었거나 못 잡은 사용자는 끝난 것이 아니다: 선점을 가져간 서버가 보내기 전에 죽을 수 있고 집계는 하루 한 번이라
+   * 목록에서 지우면 아무도 다시 보지 않는다. 그래서 목록에 남기고 holderWait 가 정한 시각에 다시 본다
+   */
   private async handle(day: string, user: DueUser, clock: () => Date): Promise<'done' | Date> {
     const now = clock();
     const claimId = randomUUID();
@@ -282,25 +300,26 @@ export class ReviewRemindersService implements OnApplicationBootstrap, OnModuleD
           { upsert: true, returnDocument: 'after', projection: { attempts: 1 } },
         )
         .lean<{ attempts?: number } | null>();
-      if (!claimed) return new Date(now.getTime() + CONTENDED_WAIT_MS);
+      if (!claimed) return this.holderWait(day, user, now);
       attempts = claimed.attempts ?? 1;
     } catch (error) {
       if ((error as { code?: number }).code === 11000) {
-        // 다른 서버가 먼저 잡았거나 이미 끝났다: 한 번의 확인 간격 뒤에 다시 본다(끝났으면 그때 걸러진다)
-        return new Date(now.getTime() + CONTENDED_WAIT_MS);
+        // 다른 서버가 먼저 잡았거나 이미 끝났다: 그 문서를 읽어 언제 다시 볼지 정한다
+        return this.holderWait(day, user, now);
       }
       throw error;
     }
 
     // 발송 결과와 기록 오류를 나눈다: 발송 중 오류만 'retry'이고, 기록 오류는 결과를 바꾸지 않는다
-    let outcome: Outcome | 'abandoned';
+    let outcome: Outcome | 'lost' | 'late';
     try {
       outcome = await this.send(day, user, claimId, clock);
     } catch (error) {
       this.logger.warn(`복습 알림 발송 중 오류(${String(user.userId)}): ${String(error)}`);
       outcome = 'retry';
     }
-    if (outcome === 'abandoned') return 'done'; // 내 선점이 사라졌거나 날짜가 바뀌었다: 아무것도 쓰지 않는다
+    if (outcome === 'late') return 'done'; // 날짜가 바뀌었다(그날 알림은 끝): 아무것도 쓰지 않는다
+    if (outcome === 'lost') return this.holderWait(day, user, clock()); // 내 선점을 다른 서버가 가져갔다: 아무것도 쓰지 않고 목록에 남긴다
     await this.recordResult(day, user, claimId, outcome, attempts, now, clock);
     if (outcome !== 'retry' || attempts >= REVIEW_REMIND_MAX_ATTEMPTS) return 'done';
     const delay =
@@ -308,13 +327,16 @@ export class ReviewRemindersService implements OnApplicationBootstrap, OnModuleD
     return new Date(now.getTime() + delay);
   }
 
-  /** 확인하고 보낸다. 끝낼 상태(sent · skipped) / 다시 시도할 만한 실패(retry) / 내 선점이 사라짐 · 날짜가 바뀜(abandoned) */
+  /**
+   * 확인하고 보낸다. 끝낼 상태(sent · skipped) / 다시 시도할 만한 실패(retry) / 내 선점이 사라짐(lost) / 날짜가 바뀜(late).
+   * 순서: 읽기들 → 선점 확인(마지막 DB 조회) → 날짜 확인 → push.send. 날짜 확인과 push.send 사이에는 await 가 없다
+   */
   private async send(
     day: string,
     user: DueUser,
     claimId: string,
     clock: () => Date,
-  ): Promise<Outcome | 'abandoned'> {
+  ): Promise<Outcome | 'lost' | 'late'> {
     // 탈퇴 중 · 탈퇴한 사용자(기기 등록과 같은 기준: deletedAt · withdrawingAt)에게는 보내지 않는다
     const account = await this.users
       .findOne({ _id: user.userId }, { deletedAt: 1, withdrawingAt: 1 })
@@ -336,14 +358,17 @@ export class ReviewRemindersService implements OnApplicationBootstrap, OnModuleD
     );
     if (!tokens.length) return 'skipped'; // 기기가 없다: 조용히 건너뛴다
 
-    // 기다리는 사이 날짜가 바뀌었거나 시간대가 끝났으면 보내지 않는다. 다음 날 것으로 넘기지 않는다
-    const beforeSend = clock();
-    if (seoulDate(beforeSend) !== day || !inRemindWindow(beforeSend, day)) return 'abandoned';
-    // 내 선점이 그대로일 때만 보낸다(그사이 다른 서버가 이어받았으면 보내지 않는다)
+    // 내 선점이 그대로일 때만 보낸다(그사이 다른 서버가 이어받았으면 보내지 않는다). state 가 claimed 인 것만 본다:
+    // closeExhausted() 는 같은 claimId 를 둔 채 gave_up 으로 닫으므로 claimId 만으로는 걸러지지 않는다
     const mine = await this.reminders
-      .findOne({ userId: user.userId, day, claimId }, { state: 1 })
+      .findOne({ userId: user.userId, day, claimId, state: 'claimed' }, { state: 1 })
       .lean<{ state?: string } | null>();
-    if (!mine) return 'abandoned';
+    if (!mine) return 'lost';
+
+    // 마지막 DB 조회가 끝난 뒤 날짜를 다시 확인한다(조회를 기다리는 사이 서울 자정을 넘기면 전날 알림이 다음 날 간다).
+    // 시간대가 끝났으면 보내지 않고, 다음 날 것으로 넘기지도 않는다. 이 아래에는 push.send 까지 await 가 없다
+    const beforeSend = clock();
+    if (seoulDate(beforeSend) !== day || !inRemindWindow(beforeSend, day)) return 'late';
 
     const { title, body } = remindMessage(Math.min(count, REVIEW_REMIND_MAX_COUNT));
     const userId = String(user.userId);
@@ -372,6 +397,30 @@ export class ReviewRemindersService implements OnApplicationBootstrap, OnModuleD
     return failed.size > 0 && failed.size >= tokens.length - result.invalidTokens.length
       ? 'retry'
       : 'sent';
+  }
+
+  /**
+   * 선점을 잃었거나 못 잡은 사용자를 언제 다시 볼지 정한다: 그 사용자의 문서를 읽어
+   * - 끝난 상태(sent · skipped · gave_up)면 'done'(목록에서 지운다)
+   * - claimed 면 그 선점이 만료되는 시각(claimedAt + 선점 만료): 그 서버가 살아 있는 동안은 건드리지 않고 만료 정각에 이어받는다
+   * - 대기(다시 시도 예약)면 retryAt
+   * - 그 밖(문서가 없음 · 이미 만료된 선점인데 한도에 닿아 못 잡음)이면 한 번의 확인 간격 뒤
+   *   (한도에 닿은 만료된 선점은 다음 확인의 closeExhausted 가 gave_up 으로 닫고, 그러면 끝난 사용자로 걸러진다)
+   * 돌려준 시각이 날짜를 넘으면(자정 이후) 호출한 processPage 가 목록에서 지운다
+   */
+  private async holderWait(day: string, user: DueUser, now: Date): Promise<'done' | Date> {
+    const fallback = new Date(now.getTime() + CONTENDED_WAIT_MS);
+    const doc = await this.reminders
+      .findOne({ userId: user.userId, day }, { state: 1, claimedAt: 1, retryAt: 1 })
+      .lean<{ state?: string | null; claimedAt?: Date; retryAt?: Date | null } | null>();
+    if (!doc) return fallback;
+    if (doc.state && FINAL_STATES.includes(doc.state)) return 'done';
+    if (doc.state === 'claimed' && doc.claimedAt) {
+      const expiresAt = new Date(doc.claimedAt.getTime() + REVIEW_REMIND_LEASE_MS);
+      return expiresAt > now ? expiresAt : fallback;
+    }
+    if (!doc.state && doc.retryAt && doc.retryAt > now) return doc.retryAt;
+    return fallback;
   }
 
   /**
