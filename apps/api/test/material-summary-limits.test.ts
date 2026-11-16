@@ -149,7 +149,64 @@ describe('자동 요약을 편집 저장 상한 안으로 (FR-19)', () => {
     expect(count(out, '나')).toBe(234_000);
   });
 
-  it('본문 합계가 50만 자를 넘을 때만 마지막 섹션을 상한에서 끊고 안내를 붙인다', () => {
+  it('Codex 사례: 고유한 100자 제목 · 4,900자 본문 × 100개도 글자 · 소제목을 잃지 않고 50개로 담긴다', () => {
+    const title = (i: number) => `${'가'.repeat(97)}${String(i).padStart(3, '0')}`;
+    const input = Array.from({ length: 100 }, (_, i) => ({
+      heading: title(i),
+      body: 'w'.repeat(4900),
+    }));
+    const out = fitSections(input);
+    within(out);
+    expect(out).toHaveLength(50);
+    expect(count(out, 'w')).toBe(490_000);
+    expect(out.some((s) => s.body.endsWith(TRUNCATED_NOTICE))).toBe(false);
+    // 두 섹션씩 묶인다: 앞 섹션 제목은 덩어리 heading, 뒤 섹션 제목만 본문의 "■ 제목" 줄
+    expect(out[0]!.heading).toBe(title(0));
+    expect(out[0]!.body).toBe(`${'w'.repeat(4900)}\n■ ${title(1)}\n${'w'.repeat(4900)}`);
+    for (let i = 0; i < 100; i += 1) {
+      const kept = out.some((s) => s.heading === title(i) || s.body.includes(`■ ${title(i)}\n`));
+      expect(kept).toBe(true);
+    }
+    expect(passesPatchValidation(out)).toEqual([]);
+  });
+
+  // 섹션 51개(제목 3자): 이어 붙인 흐름 길이 = 본문 합계 + 50 × (줄바꿈 1 + "■ " 2 + 제목 3 + 줄바꿈 1)
+  const flowCase = (extra: number) => {
+    const lineLen = 1 + 2 + 3 + 1;
+    const bodyTotal = 500_000 - 50 * lineLen + extra;
+    const base = Math.floor(bodyTotal / 51);
+    return Array.from({ length: 51 }, (_, i) => ({
+      heading: `h${String(i).padStart(2, '0')}`,
+      body: 'w'.repeat(i === 50 ? bodyTotal - base * 50 : base),
+    }));
+  };
+
+  it('이어 붙인 흐름이 정확히 50만 자여도 50개를 꽉 채워 글자 · 소제목 손실이 없다', () => {
+    const input = flowCase(0);
+    const out = fitSections(input);
+    within(out);
+    expect(out).toHaveLength(50);
+    expect(out.reduce((n, s) => n + s.body.length, 0)).toBe(500_000);
+    expect(count(out, 'w')).toBe(input.reduce((n, s) => n + s.body.length, 0));
+    expect(out.some((s) => s.body.includes(TRUNCATED_NOTICE))).toBe(false);
+    const text = out.map((s) => `${s.heading}\n${s.body}`).join('\n');
+    for (const s of input) expect(text).toContain(s.heading);
+    expect(passesPatchValidation(out)).toEqual([]);
+  });
+
+  it('흐름이 50만 자를 넘으면 50개를 꽉 채우고 안내 문구 자리만큼만 줄인다', () => {
+    const input = flowCase(1);
+    const out = fitSections(input);
+    within(out);
+    expect(out).toHaveLength(50);
+    expect(out.reduce((n, s) => n + s.body.length, 0)).toBe(500_000);
+    expect(out.slice(0, 49).every((s) => s.body.length === SUMMARY_BODY_MAX)).toBe(true);
+    expect(out[49]!.body.endsWith(TRUNCATED_NOTICE)).toBe(true);
+    expect(out[49]!.body.length).toBe(SUMMARY_BODY_MAX);
+    expect(passesPatchValidation(out)).toEqual([]);
+  });
+
+  it('본문 합계가 50만 자를 넘는 입력(9,000자 × 60개)은 50개를 꽉 채우고 안내 문구로 끝난다', () => {
     const big = Array.from({ length: 60 }, (_, i) => ({
       heading: `큰 ${i}`,
       body: 'w'.repeat(9000),
@@ -157,9 +214,9 @@ describe('자동 요약을 편집 저장 상한 안으로 (FR-19)', () => {
     const out = fitSections(big);
     within(out);
     expect(out).toHaveLength(50);
+    expect(out.reduce((n, s) => n + s.body.length, 0)).toBe(50 * SUMMARY_BODY_MAX);
     expect(out[49]!.body.endsWith(TRUNCATED_NOTICE)).toBe(true);
-    expect(out[49]!.body.length).toBeLessThanOrEqual(SUMMARY_BODY_MAX);
-    expect(out.slice(0, 49).every((s) => s.body === 'w'.repeat(9000))).toBe(true);
+    expect(out[0]!.heading).toBe('큰 0');
     expect(passesPatchValidation(out)).toEqual([]);
   });
 

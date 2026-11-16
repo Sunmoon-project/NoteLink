@@ -68,47 +68,50 @@ function splitSections(sections: Section[]): Section[] {
   return out;
 }
 
-/** 합쳐 이어 붙인 섹션의 소제목을 본문 안에 남기는 줄 */
-const headingLine = (heading: string) => `■ ${heading}
-`;
+/** 이어 붙는 섹션의 소제목을 본문 안에 남기는 줄 */
+const headingLine = (heading: string) => `■ ${heading}\n`;
 
 /**
- * 본문 합계가 섹션 수 상한 × 본문 상한 이하일 때 글자를 잃지 않고 다시 나눈다. 섹션을 순서대로 "소제목 줄 + 본문"
- * 흐름으로 이어 놓고(첫 섹션은 본문만) 본문 상한 이하 덩어리로 다시 채운다. 덩어리의 제목은 그 덩어리가 시작하는 원래
- * 섹션의 제목이고(그 섹션의 시작에서 시작하면 소제목 줄은 제목이 대신하므로 뺀다), 줄바꿈 근처에서 자르며
- * 서로게이트 쌍은 가르지 않는다. 소제목 줄까지 더하면 섹션 수 상한에 담기지 않으면 null
+ * 1단계: 섹션을 순서대로 덩어리에 채운다. 덩어리 첫 섹션의 제목은 덩어리 제목이고 본문에는 넣지 않는다.
+ * 이어 붙는 섹션은 "■ 소제목" 줄 + 본문을 줄바꿈으로 붙이고, 남은 공간에 안 들어가면 새 덩어리를 시작한다.
+ * (섹션 본문은 이미 splitSections 가 상한 이하로 나눴고 제목도 겹치지 않는다)
  */
-function repack(sections: Section[]): Section[] | null {
+function packGreedy(sections: Section[]): Section[] {
+  const out: Section[] = [];
+  for (const section of sections) {
+    const last = out[out.length - 1];
+    const addition = `\n${headingLine(section.heading)}${section.body}`;
+    if (last && last.body.length + addition.length <= SUMMARY_BODY_MAX) last.body += addition;
+    else out.push({ ...section });
+  }
+  return out;
+}
+
+/**
+ * 2 · 3단계: 전체를 "첫 본문 + (줄바꿈 + 소제목 줄 + 본문)…" 흐름으로 이어 정확히 본문 상한 길이씩(서로게이트 쌍만 피해서)
+ * 꽉 채워 자른다. 덩어리 제목은 그 덩어리가 시작하는 원래 섹션의 제목이다(같은 섹션에서 둘 이상 시작하면 번호를 붙인다).
+ * 흐름이 섹션 수 상한 × 본문 상한 이하이면 글자를 잃지 않는다. 넘으면 마지막 덩어리를 안내 문구 자리만큼 줄여
+ * 상한에서 끊고 안내 문구를 붙인다 — 이 경우에만 내용이 줄어든다
+ */
+function packFlow(sections: Section[]): Section[] {
   const starts: number[] = [];
   let flow = '';
   sections.forEach((section, i) => {
-    starts.push(flow.length);
-    flow +=
-      (i === 0 ? '' : headingLine(section.heading)) +
-      section.body +
-      (i === sections.length - 1 ? '' : '\n');
+    starts.push(flow.length + (i === 0 ? 0 : 1)); // 섹션의 시작은 앞의 줄바꿈 다음(소제목 줄이 있는 자리)
+    flow += (i === 0 ? '' : `\n${headingLine(section.heading)}`) + section.body;
   });
   const chunks: { start: number; text: string }[] = [];
-  let offset = 0;
-  while (offset < flow.length) {
+  for (let offset = 0; offset < flow.length;) {
     const rest = flow.slice(offset);
-    if (rest.length <= SUMMARY_BODY_MAX) {
-      chunks.push({ start: offset, text: rest });
+    if (chunks.length === SUMMARY_MAX_SECTIONS - 1 && rest.length > SUMMARY_BODY_MAX) {
+      const room = SUMMARY_BODY_MAX - TRUNCATED_NOTICE.length;
+      chunks.push({ start: offset, text: rest.slice(0, safeCut(rest, room)) + TRUNCATED_NOTICE });
       break;
     }
-    // 남은 덩어리 수 안에 나머지가 들어가도록 최소한 이만큼은 잘라야 한다
-    const left = SUMMARY_MAX_SECTIONS - chunks.length - 1;
-    const floor = Math.max(
-      rest.length - left * SUMMARY_BODY_MAX,
-      Math.floor(SUMMARY_BODY_MAX / 2) + 1,
-    );
-    const newline = rest.lastIndexOf('\n', SUMMARY_BODY_MAX - 1) + 1;
-    const cut = newline >= floor ? newline : safeCut(rest, SUMMARY_BODY_MAX);
-    chunks.push({ start: offset, text: rest.slice(0, cut) });
-    offset += cut;
-    if (chunks.length >= SUMMARY_MAX_SECTIONS && offset < flow.length) return null;
+    const text = rest.slice(0, safeCut(rest, Math.min(SUMMARY_BODY_MAX, rest.length)));
+    chunks.push({ start: offset, text });
+    offset += text.length;
   }
-  if (chunks.length > SUMMARY_MAX_SECTIONS) return null;
   const reserved = new Set(sections.map((s) => s.heading));
   const used = new Set<string>();
   const taken = (name: string) => used.has(name) || reserved.has(name);
@@ -118,35 +121,18 @@ function repack(sections: Section[]): Section[] | null {
     const base = sections[index]!.heading;
     const heading = used.has(base) ? numbered(base, taken) : base;
     used.add(heading);
-    const marker = index > 0 && start === starts[index] ? headingLine(base) : '';
-    const body = marker && text.length > marker.length ? text.slice(marker.length) : text;
-    return { heading, body };
+    return { heading, body: text };
   });
 }
 
-/**
- * 섹션이 상한을 넘으면 본문 합계가 50만 자(섹션 수 상한 × 본문 상한) 이하일 때 repack 으로 글자 · 소제목을 잃지 않고
- * 다시 나눈다. 그보다 길면 마지막 섹션에 남은 내용을 이어 붙이다가 상한에서 끊고 안내 문구를 붙인다 — 이 경우에만
- * 내용이 줄어든다
- */
+/** 섹션이 상한을 넘으면 먼저 packGreedy 로 합치고, 그래도 50개를 넘으면 packFlow 로 꽉 채워 다시 나눈다 */
 function mergeSections(sections: Section[]): Section[] {
   if (sections.length <= SUMMARY_MAX_SECTIONS) return sections;
-  const total = sections.reduce((n, s) => n + s.body.length, 0);
-  if (total <= SUMMARY_MAX_SECTIONS * SUMMARY_BODY_MAX) {
-    const packed = repack(sections);
-    if (packed) return packed;
-  }
-  const kept = sections.slice(0, SUMMARY_MAX_SECTIONS - 1).map((s) => ({ ...s }));
-  const [head, ...tail] = sections.slice(SUMMARY_MAX_SECTIONS - 1);
-  const all = [head!.body, ...tail.map((s) => `${s.heading}\n${s.body}`)].join('\n');
-  const room = SUMMARY_BODY_MAX - TRUNCATED_NOTICE.length;
-  return [
-    ...kept,
-    { heading: head!.heading, body: all.slice(0, safeCut(all, room)) + TRUNCATED_NOTICE },
-  ];
+  const greedy = packGreedy(sections);
+  return greedy.length <= SUMMARY_MAX_SECTIONS ? greedy : packFlow(sections);
 }
 
-/** 자동 요약이 편집 저장 상한(섹션 50 · 제목 100자 · 본문 1만 자) 안에 들게 한다. 내용은 잃지 않는다(극단적인 경우 제외) */
+/** 자동 요약이 편집 저장 상한(섹션 50 · 제목 100자 · 본문 1만 자) 안에 들게 한다. 내용은 잃지 않는다(흐름이 50 × 1만 자를 넘는 극단적인 경우 제외) */
 export function fitSections(sections: Section[]): Section[] {
   return mergeSections(splitSections(sections));
 }
