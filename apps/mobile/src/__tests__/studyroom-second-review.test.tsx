@@ -10,7 +10,7 @@ import { useMockFlags } from './fixtures/flags';
 import { renderScreen, setParams } from '../test-utils';
 
 const mockApi = {
-  rooms: { get: jest.fn(), chatRoomId: jest.fn(), report: jest.fn() },
+  rooms: { get: jest.fn(), chatRoomId: jest.fn(), report: jest.fn(), sharedItem: jest.fn() },
   social: { messages: jest.fn() },
 };
 const mockUpload = jest.fn();
@@ -129,6 +129,30 @@ beforeEach(() => {
 });
 afterEach(() => {
   clients.splice(0).forEach((qc) => qc.clear());
+});
+
+it('스터디룸 채팅의 공유 퀴즈를 누르면 현재 방의 공유 항목을 조회해 연다', async () => {
+  mockApi.social.messages.mockResolvedValue([
+    {
+      _id: 'msg',
+      chatRoomId: 'chat-1',
+      senderId: 'friend-1',
+      type: 'shared_item',
+      text: '공유 퀴즈',
+      sharedItemId: 'shared-1',
+      createdAt: '2026-11-01T09:00:00.000Z',
+    },
+  ]);
+  mockApi.rooms.sharedItem.mockResolvedValue({ itemType: 'quiz', quiz: {} });
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText(room.title);
+  await fireEvent.press(await screen.findByText('멤버: 공유 퀴즈'));
+  await fireEvent.press(await screen.findByText('공유 자료 열기'));
+  await waitFor(() => expect(mockApi.rooms.sharedItem).toHaveBeenCalledWith('room-1', 'shared-1'));
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/room/shared',
+    params: { id: 'room-1', itemId: 'shared-1' },
+  });
 });
 
 it.each([

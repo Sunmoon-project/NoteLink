@@ -1,17 +1,27 @@
 import { useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { ChevronRight } from 'lucide-react-native';
 
 import { Text } from '@/components/text';
 import { Btn, Canvas, Header, Loading, Screen, cx } from '@/components/ui';
 import { api } from '@/lib/api';
 import { C, ICON } from '@/theme';
+import { toast } from '@/stores/toast';
 
 /** 스터디룸을 떠나지 않고 내 폴더의 퀴즈 또는 저장한 플래시카드를 연다. */
 export function RoomLibraryScreen() {
-  const { type } = useLocalSearchParams<{ id: string; type?: string }>();
+  const { id, type } = useLocalSearchParams<{ id: string; type?: string }>();
+  const share = useMutation({
+    mutationFn: ({ kind, itemId }: { kind: 'quiz' | 'flashcards'; itemId: string }) =>
+      api.rooms.shareStudyItem(id, kind, itemId),
+    onSuccess: () => {
+      toast('스터디룸 채팅에 공유했어요');
+      router.dismissTo({ pathname: '/room/[id]', params: { id } });
+    },
+    onError: () => toast('공유하지 못했어요. 다시 시도해 주세요'),
+  });
   const isQuiz = type === 'quiz';
   const isCards = type === 'flashcards';
   const [folderId, setFolderId] = useState<string | null>(null);
@@ -118,23 +128,32 @@ export function RoomLibraryScreen() {
           readyQuizzes
             .filter((quiz) => inFolder(quiz.folderId))
             .map((quiz) => (
-              <Pressable
-                key={quiz._id}
-                accessibilityRole="button"
-                onPress={() =>
-                  router.push({
-                    pathname: '/play/solve',
-                    params: { setId: quiz._id, from: 'room' },
-                  })
-                }
-                className="mt-3 flex-row items-center justify-between rounded-xl bg-white px-4 py-4"
-              >
-                <View className="flex-1">
-                  <Text className="text-callout font-semibold text-ink">{quiz.title}</Text>
-                  <Text className="mt-1 text-caption text-sub">{quiz.questionCount}문제</Text>
-                </View>
-                <ChevronRight size={ICON.sm} color={C.sub} />
-              </Pressable>
+              <View key={quiz._id}>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() =>
+                    router.push({
+                      pathname: '/play/solve',
+                      params: { setId: quiz._id, from: 'room' },
+                    })
+                  }
+                  className="mt-3 flex-row items-center justify-between rounded-xl bg-white px-4 py-4"
+                >
+                  <View className="flex-1">
+                    <Text className="text-callout font-semibold text-ink">{quiz.title}</Text>
+                    <Text className="mt-1 text-caption text-sub">{quiz.questionCount}문제</Text>
+                  </View>
+                  <ChevronRight size={ICON.sm} color={C.sub} />
+                </Pressable>
+                <Btn
+                  small
+                  kind="outline"
+                  disabled={share.isPending}
+                  onPress={() => share.mutate({ kind: 'quiz', itemId: quiz._id })}
+                >
+                  퀴즈 공유하기
+                </Btn>
+              </View>
             ))}
         {selected &&
           isCards &&
@@ -143,29 +162,38 @@ export function RoomLibraryScreen() {
             .map((card) => {
               const back = flipped.includes(card._id);
               return (
-                <Pressable
-                  key={card._id}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${back ? '정답' : '문제'}: ${back ? card.back : card.front}. 눌러서 카드를 뒤집기`}
-                  onPress={() =>
-                    setFlipped((prev) =>
-                      back ? prev.filter((id) => id !== card._id) : [...prev, card._id],
-                    )
-                  }
-                  className={cx('mt-3 rounded-xl px-4 py-5', back ? 'bg-brand' : 'bg-white')}
-                >
-                  <Text className={cx('text-caption', back ? 'text-white' : 'text-sub')}>
-                    {back ? '정답' : '문제'}
-                  </Text>
-                  <Text
-                    className={cx(
-                      'mt-2 text-callout font-semibold',
-                      back ? 'text-white' : 'text-ink',
-                    )}
+                <View key={card._id}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${back ? '정답' : '문제'}: ${back ? card.back : card.front}. 눌러서 카드를 뒤집기`}
+                    onPress={() =>
+                      setFlipped((prev) =>
+                        back ? prev.filter((id) => id !== card._id) : [...prev, card._id],
+                      )
+                    }
+                    className={cx('mt-3 rounded-xl px-4 py-5', back ? 'bg-brand' : 'bg-white')}
                   >
-                    {back ? card.back : card.front}
-                  </Text>
-                </Pressable>
+                    <Text className={cx('text-caption', back ? 'text-white' : 'text-sub')}>
+                      {back ? '정답' : '문제'}
+                    </Text>
+                    <Text
+                      className={cx(
+                        'mt-2 text-callout font-semibold',
+                        back ? 'text-white' : 'text-ink',
+                      )}
+                    >
+                      {back ? card.back : card.front}
+                    </Text>
+                  </Pressable>
+                  <Btn
+                    small
+                    kind="outline"
+                    disabled={share.isPending}
+                    onPress={() => share.mutate({ kind: 'flashcards', itemId: card._id })}
+                  >
+                    플래시 카드 공유하기
+                  </Btn>
+                </View>
               );
             })}
       </Screen>

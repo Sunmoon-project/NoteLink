@@ -183,6 +183,10 @@ export const PATHS = {
   roomSchedule: (id: string) => `/study-rooms/${seg(id)}/schedule`,
   roomInvites: (id: string) => `/study-rooms/${seg(id)}/invites`,
   roomShared: (id: string) => `/study-rooms/${seg(id)}/shared-items`,
+  roomSharedItem: (id: string, itemId: string) =>
+    `/study-rooms/${seg(id)}/shared-items/${seg(itemId)}`,
+  directSharedItem: (id: string, itemId: string) =>
+    `/chat-rooms/${seg(id)}/shared-items/${seg(itemId)}`,
   livekitToken: (id: string) => `/study-rooms/${seg(id)}/livekit-token`,
   roomChatRoom: (id: string) => `/study-rooms/${seg(id)}/chat-room`,
   reports: '/reports',

@@ -1,4 +1,5 @@
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useEffect, useRef, useState } from 'react';
 import { FlatList, Pressable, View } from 'react-native';
 import { Text, TextInput } from '@/components/text';
@@ -209,6 +210,7 @@ export function RequestsScreen() {
 }
 
 export function ChatScreen() {
+  const openFeature = useFeatureNavigation();
   const myId = useAuth((s) => s.userId);
   const {
     id,
@@ -217,6 +219,20 @@ export function ChatScreen() {
   } = useLocalSearchParams<{ id: string; name?: string; status?: User['status'] }>();
   const qc = useQueryClient();
   const room = useQuery({ queryKey: ['dm', id], queryFn: () => api.social.openDirect(id) });
+  const openShared = async (chatId: string, itemId: string) => {
+    try {
+      const item = await api.social.sharedItem(chatId, itemId);
+      const pathname =
+        item.kind === 'handwriting'
+          ? '/(tabs)/note/hand/[id]'
+          : item.kind === 'recording'
+            ? '/(tabs)/note/rec/[id]'
+            : '/(tabs)/note/doc/[id]';
+      openFeature({ pathname, params: { id: item.materialId } });
+    } catch {
+      toast('이 자료를 열 수 없어요');
+    }
+  };
   const pageRequestGeneration = useRef(0);
   const history = useQuery({
     queryKey: ['messages', room.data?._id],
@@ -279,8 +295,7 @@ export function ChatScreen() {
         setOlderError(false);
         qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
           messages: mergeMessages(previous?.messages ?? [], result.missed!),
-          hasMore:
-            result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE || previous?.hasMore === true,
+          hasMore: result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE || previous?.hasMore === true,
           nextBefore:
             result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE
               ? result.missed![0]?._id
@@ -302,12 +317,7 @@ export function ChatScreen() {
     if (!chatRoomId) return;
     const current = qc.getQueryData<DirectHistory>(['messages', chatRoomId]) ?? history.data;
     const nextBefore = current?.nextBefore;
-    if (
-      !current?.hasMore ||
-      !nextBefore ||
-      olderLoadingRef.current ||
-      (olderError && !manualRetry)
-    )
+    if (!current?.hasMore || !nextBefore || olderLoadingRef.current || (olderError && !manualRetry))
       return;
 
     const requestGeneration = pageRequestGeneration.current;
@@ -317,7 +327,10 @@ export function ChatScreen() {
     try {
       const older = await api.social.messages(chatRoomId, nextBefore);
       if (requestGeneration !== pageRequestGeneration.current) return;
-      restoreScroll.current = { offset: scrollOffset.current, contentHeight: contentHeight.current };
+      restoreScroll.current = {
+        offset: scrollOffset.current,
+        contentHeight: contentHeight.current,
+      };
       qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
         messages: mergeMessages(older, previous?.messages ?? []),
         hasMore: older.length === DIRECT_MESSAGE_PAGE_SIZE,
@@ -450,8 +463,7 @@ export function ChatScreen() {
           onScroll={(event) => {
             const offset = event.nativeEvent.contentOffset.y;
             scrollOffset.current = offset;
-            nearBottom.current =
-              contentHeight.current - viewportHeight.current - offset < 80;
+            nearBottom.current = contentHeight.current - viewportHeight.current - offset < 80;
             if (offset < 48) void loadOlderMessages();
           }}
           scrollEventThrottle={100}
@@ -488,6 +500,17 @@ export function ChatScreen() {
                     </Btn>
                   </View>
                 </View>
+              );
+            if (m.type === 'shared_item' && m.sharedItemId)
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void openShared(m.chatRoomId, m.sharedItemId!)}
+                  className={cx('max-w-[75%] rounded-2xl bg-white px-3.5 py-2', mine && 'self-end')}
+                >
+                  <Text className="text-footnote text-ink">{m.text ?? '공유 자료'}</Text>
+                  <Text className="text-caption text-brand">공유 자료 열기</Text>
+                </Pressable>
               );
             return (
               <View className={cx('flex-row', mine && 'justify-end')}>

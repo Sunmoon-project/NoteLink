@@ -6,12 +6,15 @@ import { QuizSetsModule } from '../../../quiz-sets/quiz-sets.module.js';
 import { User, UserSchema } from '../../auth/schemas/user.schema.js';
 import { AuthModule } from '../../auth/auth.module.js';
 import { AiJob, AiJobSchema } from '../../quiz/schemas/ai-job.schema.js';
+import { QuizSet, QuizSetSchema } from '../../quiz/schemas/quiz-set.schema.js';
+import { Flashcard, FlashcardSchema } from '../../quiz/schemas/flashcard.schema.js';
 import { UploadsModule } from '../../upload/uploads.module.js';
 import {
   RoomSharedItem,
   RoomSharedItemSchema,
 } from '../../studyroom/schemas/room-shared-item.schema.js';
 import { StudyRoom, StudyRoomSchema } from '../../studyroom/schemas/study-room.schema.js';
+import { StudyRoomsModule } from '../../studyroom/study-rooms.module.js';
 import { Folder, FolderSchema } from '../schemas/folder.schema.js';
 import { Material, MaterialSchema } from '../schemas/material.schema.js';
 import { MaterialSharingController } from './material-sharing.controller.js';
@@ -29,6 +32,8 @@ import { RecordingService } from './recording.service.js';
   imports: [
     MongooseModule.forFeature([
       { name: Material.name, schema: MaterialSchema },
+      { name: QuizSet.name, schema: QuizSetSchema },
+      { name: Flashcard.name, schema: FlashcardSchema },
       { name: Folder.name, schema: FolderSchema },
       // 녹음 재생 정보가 정리 결과에서 필요한 부분만 읽는다(RecordingService)
       { name: AiJob.name, schema: AiJobSchema },
@@ -43,6 +48,7 @@ import { RecordingService } from './recording.service.js';
     UploadsModule,
     // JwtAuthGuard · TokenService
     AuthModule,
+    StudyRoomsModule,
   ],
   controllers: [MaterialsController, RecordingController, MaterialSharingController],
   providers: [MaterialsService, RecordingService, MaterialSharingService],

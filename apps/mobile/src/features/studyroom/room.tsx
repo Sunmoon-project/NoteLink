@@ -336,9 +336,28 @@ export function RoomCreateScreen() {
 }
 
 export function RoomScreen() {
+  const openFeature = useFeatureNavigation();
   const insets = useSafeAreaInsets();
   const myId = useAuth((s) => s.userId);
   const { id } = useLocalSearchParams<{ id: string }>();
+  const openSharedMessage = async (itemId: string) => {
+    try {
+      const item = await api.rooms.sharedItem(id, itemId);
+      if (item.itemType !== 'material') {
+        router.push({ pathname: '/room/shared', params: { id, itemId } });
+        return;
+      }
+      const pathname =
+        item.kind === 'handwriting'
+          ? '/(tabs)/note/hand/[id]'
+          : item.kind === 'recording'
+            ? '/(tabs)/note/rec/[id]'
+            : '/(tabs)/note/doc/[id]';
+      openFeature({ pathname, params: { id: item.materialId } });
+    } catch {
+      toast('이 자료를 열 수 없어요');
+    }
+  };
   const timerGeneration = useRef(0);
   const [timer, setTimer] = useState<{ label: string; endsAt: number } | null>(null);
   const room = useQuery({
@@ -862,11 +881,19 @@ export function RoomScreen() {
                       <Text className="text-caption2 text-sub">{m.senderNickname ?? '멤버'}</Text>
                     </View>
                   )}
-                  <View className="max-w-[78%] rounded-2xl bg-white px-3 py-2">
+                  <Pressable
+                    disabled={m.type !== 'shared_item' || !m.sharedItemId}
+                    accessibilityRole={m.type === 'shared_item' ? 'button' : undefined}
+                    onPress={() => m.sharedItemId && void openSharedMessage(m.sharedItemId)}
+                    className="max-w-[78%] rounded-2xl bg-white px-3 py-2"
+                  >
                     <Text className="text-footnote text-ink">
                       {m.text ?? '공유 자료를 보냈어요'}
                     </Text>
-                  </View>
+                    {m.type === 'shared_item' && (
+                      <Text className="text-caption2 text-brand">공유 자료 열기</Text>
+                    )}
+                  </Pressable>
                   {failedIds.includes(m._id) && (
                     <Pressable
                       accessibilityRole="button"

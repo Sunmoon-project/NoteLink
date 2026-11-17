@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES, type RoomSharedItem as AppRoomSharedItem } from '@notelink/shared';
 import { isValidObjectId, Model, Types } from 'mongoose';
@@ -6,6 +6,11 @@ import { isValidObjectId, Model, Types } from 'mongoose';
 import { User } from '../../auth/schemas/user.schema.js';
 import { RoomSharedItem } from '../../studyroom/schemas/room-shared-item.schema.js';
 import { StudyRoom } from '../../studyroom/schemas/study-room.schema.js';
+import { StudyChatService } from '../../studyroom/study-chat.service.js';
+import { StudyChatGateway } from '../../studyroom/study-chat.gateway.js';
+import { QuizSet } from '../../quiz/schemas/quiz-set.schema.js';
+import { Flashcard } from '../../quiz/schemas/flashcard.schema.js';
+import { toAppSet, type QuizSetRow } from '../../../quiz-sets/quiz-sets.service.js';
 import { Material } from '../schemas/material.schema.js';
 import type { ShareMaterialsDto } from './dto/share-materials.dto.js';
 
@@ -39,6 +44,10 @@ export class MaterialSharingService {
     @InjectModel(StudyRoom.name) private readonly rooms: Model<StudyRoom>,
     @InjectModel(RoomSharedItem.name) private readonly shared: Model<RoomSharedItem>,
     @InjectModel(User.name) private readonly users: Model<User>,
+    private readonly chat: StudyChatService,
+    private readonly gateway: StudyChatGateway,
+    @InjectModel(QuizSet.name) private readonly quizzes: Model<QuizSet>,
+    @InjectModel(Flashcard.name) private readonly cards: Model<Flashcard>,
   ) {}
 
   /** 닫히지 않은 방에서 내가 현재 멤버(status: joined)인지. 방 id 형식이 틀려도 false */
@@ -69,13 +78,16 @@ export class MaterialSharingService {
     const sharedIn = await this.shared
       .find({ materialId: noteId, itemType: 'material', deletedAt: null }, { roomId: 1 })
       .lean<{ roomId: Types.ObjectId }[]>();
-    if (sharedIn.length === 0) return null;
-    const member = await this.rooms.exists({
-      _id: { $in: sharedIn.map((item) => item.roomId) },
-      closedAt: null,
-      members: { $elemMatch: { userId: me, status: 'joined' } },
-    });
-    return member ? note.ownerId.toHexString() : null;
+    const member =
+      sharedIn.length &&
+      (await this.rooms.exists({
+        _id: { $in: sharedIn.map((item) => item.roomId) },
+        closedAt: null,
+        members: { $elemMatch: { userId: me, status: 'joined' } },
+      }));
+    return member || (await this.chat.hasDirectMaterialAccess(userId, materialId))
+      ? note.ownerId.toHexString()
+      : null;
   }
 
   /**
@@ -148,25 +160,32 @@ export class MaterialSharingService {
   }
 
   /**
-   * 내 노트를 방에 공유한다. 노트가 하나라도 내 것이 아니거나 지웠으면, 방이 없거나 내가 현재 멤버가 아니면 404 이고
-   * 아무것도 저장하지 않는다(확인을 모두 마친 뒤에만 쓴다). 이미 공유된 노트는 건너뛴다.
-   * 트랜잭션 없이 노트마다 upsert 라, 쓰는 도중 실패해도 같은 요청을 다시 보내면 빠진 것만 채워진다.
-   * 동시에 같은 요청이 와도 부분 unique 인덱스(room_material_unique)가 하나만 남긴다
+   * 내 노트를 스터디룸 또는 친구 채팅에 공유한다. 모든 노트의 소유권을 먼저 확인한다.
+   * 스터디룸의 공유 항목은 upsert로 중복을 막고, 공유할 때마다 채팅 메시지는 새로 만든다.
    */
   async share(userId: string, dto: ShareMaterialsDto): Promise<void> {
-    if (dto.target.type === 'friend')
-      throw new BadRequestException({
-        code: ERROR_CODES.VALIDATION,
-        message: '친구에게 공유는 아직 지원하지 않아요',
-      });
     const me = new Types.ObjectId(userId);
     const ids = [...new Set(dto.materialIds.map((id) => id.toLowerCase()))].map(
       (id) => new Types.ObjectId(id),
     );
     const notes = await this.materials
-      .find({ _id: { $in: ids }, ownerId: me, deletedAt: null }, { folderId: 1 })
-      .lean<{ _id: Types.ObjectId; folderId: Types.ObjectId }[]>();
+      .find({ _id: { $in: ids }, ownerId: me, deletedAt: null }, { folderId: 1, title: 1 })
+      .lean<{ _id: Types.ObjectId; folderId: Types.ObjectId; title: string }[]>();
     if (notes.length !== ids.length) throw notFound('노트');
+    if (dto.target.type === 'friend') {
+      // 메시지 하나를 쓰기 전에 친구 관계를 확인한다.
+      await this.chat.getDirectChat(userId, dto.target.id);
+      for (const note of notes) {
+        const message = await this.chat.sendDirectMaterial(
+          userId,
+          dto.target.id,
+          String(note._id),
+          note.title,
+        );
+        await this.gateway.notifyDirectMessage(message);
+      }
+      return;
+    }
     if (!(await this.isCurrentMember(me, dto.target.id))) throw notFound('스터디룸');
     const roomId = new Types.ObjectId(dto.target.id);
     try {
@@ -191,5 +210,92 @@ export class MaterialSharingService {
       // 같은 노트를 동시에 공유한 다른 요청이 먼저 넣었다 — 이미 공유된 것과 같다
       if (!onlyDuplicateKeys(e)) throw e;
     }
+    for (const note of notes) {
+      const item = await this.shared
+        .findOne({ roomId, itemType: 'material', materialId: note._id, deletedAt: null })
+        .lean();
+      if (!item) throw notFound('공유 자료');
+      const message = await this.chat.sendSharedItem(
+        dto.target.id,
+        userId,
+        String(item._id),
+        note.title,
+      );
+      await this.gateway.notifyStudyMessage(message);
+    }
+  }
+
+  /** 채팅의 공유 ID를 현재 방의 항목으로만 해석한다. 목록의 100개 제한과 무관하다. */
+  async findRoomItem(userId: string, roomId: string, itemId: string) {
+    const me = new Types.ObjectId(userId);
+    if (!(await this.isCurrentMember(me, roomId)) || !isValidObjectId(itemId))
+      throw notFound('공유 자료');
+    const item = await this.shared
+      .findOne({
+        _id: new Types.ObjectId(itemId),
+        roomId: new Types.ObjectId(roomId),
+        deletedAt: null,
+      })
+      .lean();
+    if (item?.itemType === 'quiz' && item.quizSetId) {
+      const quiz = await this.quizzes
+        .findOne({ _id: item.quizSetId, deletedAt: null, status: 'ready' })
+        .lean<QuizSetRow>();
+      if (!quiz) throw notFound('공유 자료');
+      return { itemType: 'quiz' as const, quiz: toAppSet(quiz) };
+    }
+    if (item?.itemType === 'flashcards' && item.flashcardIds.length) {
+      const cards = await this.cards
+        .find({ _id: { $in: item.flashcardIds }, deletedAt: null })
+        .lean();
+      if (!cards.length) throw notFound('공유 자료');
+      return {
+        itemType: 'flashcards' as const,
+        cards: cards.map((card) => ({ front: card.front, back: card.back })),
+      };
+    }
+    if (!item?.materialId || item.itemType !== 'material') throw notFound('공유 자료');
+    const note = await this.materials
+      .findOne({ _id: item.materialId, deletedAt: null }, { kind: 1 })
+      .lean();
+    if (!note) throw notFound('공유 자료');
+    return { itemType: 'material' as const, materialId: String(item.materialId), kind: note.kind };
+  }
+
+  async shareStudyItem(
+    userId: string,
+    roomId: string,
+    kind: 'quiz' | 'flashcards',
+    itemId: string,
+  ) {
+    const me = new Types.ObjectId(userId);
+    if (!(await this.isCurrentMember(me, roomId)) || !isValidObjectId(itemId))
+      throw notFound('공유 자료');
+    const objectId = new Types.ObjectId(itemId);
+    const source =
+      kind === 'quiz'
+        ? await this.quizzes
+            .findOne({ _id: objectId, ownerId: me, status: 'ready', deletedAt: null })
+            .lean()
+        : await this.cards.findOne({ _id: objectId, ownerId: me, deletedAt: null }).lean();
+    if (!source) throw notFound('공유 자료');
+    const title = kind === 'quiz' ? (source as QuizSet).title : '플래시 카드';
+    const item = await this.shared.create({
+      roomId: new Types.ObjectId(roomId),
+      sharedBy: me,
+      itemType: kind,
+      ...(kind === 'quiz' ? { quizSetId: objectId } : { flashcardIds: [objectId] }),
+    });
+    const message = await this.chat.sendSharedItem(roomId, userId, String(item._id), title);
+    await this.gateway.notifyStudyMessage(message);
+  }
+
+  async findDirectItem(userId: string, chatId: string, itemId: string) {
+    const materialId = await this.chat.directSharedMaterial(userId, chatId, itemId);
+    const note = await this.materials
+      .findOne({ _id: new Types.ObjectId(materialId), deletedAt: null }, { kind: 1 })
+      .lean();
+    if (!note) throw notFound('공유 자료');
+    return { itemType: 'material' as const, materialId, kind: note.kind };
   }
 }

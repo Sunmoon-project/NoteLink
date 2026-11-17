@@ -5,6 +5,12 @@ import { requireUserId } from '../../../common/request-user.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../../auth/jwt-auth.guard.js';
 import { ShareMaterialsDto } from './dto/share-materials.dto.js';
 import { MaterialSharingService } from './material-sharing.service.js';
+import { IsIn, IsMongoId } from 'class-validator';
+
+class ShareStudyItemDto {
+  @IsIn(['quiz', 'flashcards']) kind: 'quiz' | 'flashcards';
+  @IsMongoId() itemId: string;
+}
 
 /** 노트 공유 주소 (packages/shared PATHS.materialShare · roomShared) */
 @Controller()
@@ -29,5 +35,33 @@ export class MaterialSharingController {
     @Param('id') id: string,
   ): Promise<{ data: { items: RoomSharedItem[]; flashcards: never[] } }> {
     return { data: await this.sharing.listRoomItems(requireUserId(req), id) };
+  }
+
+  @Get('study-rooms/:id/shared-items/:itemId')
+  async roomItem(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Param('itemId') itemId: string,
+  ) {
+    return { data: await this.sharing.findRoomItem(requireUserId(req), id, itemId) };
+  }
+
+  @Post('study-rooms/:id/shared-items')
+  @HttpCode(204)
+  async shareStudyItem(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: ShareStudyItemDto,
+  ) {
+    await this.sharing.shareStudyItem(requireUserId(req), id, body.kind, body.itemId);
+  }
+
+  @Get('chat-rooms/:id/shared-items/:itemId')
+  async directItem(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Param('itemId') itemId: string,
+  ) {
+    return { data: await this.sharing.findDirectItem(requireUserId(req), id, itemId) };
   }
 }

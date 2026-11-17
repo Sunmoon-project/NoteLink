@@ -181,6 +181,10 @@ export interface Api {
     remove(userId: string): Promise<void>;
     openDirect(userId: string): Promise<ChatRoom>;
     messages(chatRoomId: string, before?: string): Promise<Message[]>;
+    sharedItem(
+      chatRoomId: string,
+      itemId: string,
+    ): Promise<{ itemType: 'material'; materialId: string; kind: Material['kind'] }>;
   };
   content: {
     folders(): Promise<(Folder & { materialCount: number })[]>;
@@ -256,6 +260,15 @@ export interface Api {
     schedule(id: string): Promise<RoomSchedule>;
     invite(id: string, userIds: string[]): Promise<void>;
     shared(id: string): Promise<{ items: RoomSharedItem[]; flashcards: Flashcard[] }>;
+    sharedItem(
+      id: string,
+      itemId: string,
+    ): Promise<
+      | { itemType: 'material'; materialId: string; kind: Material['kind'] }
+      | { itemType: 'quiz'; quiz: QuizSet }
+      | { itemType: 'flashcards'; cards: { front: string; back: string }[] }
+    >;
+    shareStudyItem(id: string, kind: 'quiz' | 'flashcards', itemId: string): Promise<void>;
     livekitToken(id: string): Promise<{ token: string; url: string }>;
     report(p: {
       roomId: string;

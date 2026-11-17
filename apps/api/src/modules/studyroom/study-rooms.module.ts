@@ -62,5 +62,6 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
     ReportImageSweeper,
     StudyRoomScheduleService,
   ],
+  exports: [StudyChatService, StudyChatGateway],
 })
 export class StudyRoomsModule {}

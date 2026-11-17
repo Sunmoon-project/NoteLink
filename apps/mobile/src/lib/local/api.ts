@@ -853,6 +853,7 @@ const api: Api = {
     shares: () => ok([] as TimetableShare[]),
   },
   social: {
+    sharedItem: () => needServer('공유 자료'),
     friends: () => ok([]),
     search: () => needServer('친구 찾기'),
     sendRequest: () => needServer('친구 요청'),
@@ -1310,6 +1311,14 @@ const api: Api = {
       const cardIds = new Set(items.flatMap((x) => x.flashcardIds));
       return ok({ items, flashcards: d.flashcards.filter((f) => cardIds.has(f._id)) });
     },
+    sharedItem: (id, itemId) => {
+      const d = db();
+      const item = d.roomShared.find((x) => x.roomId === id && x._id === itemId);
+      const material = d.materials.find((x) => x._id === item?.materialId);
+      if (!material) return needServer('공유 자료');
+      return ok({ itemType: 'material' as const, materialId: material._id, kind: material.kind });
+    },
+    shareStudyItem: () => needServer('학습 자료 공유'),
     livekitToken: () => needServer('캠 · 음성'),
     report: () => needServer('신고'),
     chatRoomId: (id) => ok(`room-chat-${id}`),

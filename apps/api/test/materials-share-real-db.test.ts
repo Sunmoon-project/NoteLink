@@ -68,6 +68,15 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       rooms as never,
       items as never,
       users as never,
+      {
+        sendSharedItem: vi.fn().mockResolvedValue({}),
+        hasDirectMaterialAccess: vi.fn().mockResolvedValue(false),
+        getDirectChat: vi.fn(),
+        sendDirectMaterial: vi.fn().mockResolvedValue({}),
+      } as never,
+      { notifyStudyMessage: vi.fn(), notifyDirectMessage: vi.fn() } as never,
+      {} as never,
+      {} as never,
     );
     // 공유받은 멤버의 읽기: 노트 서비스는 진짜 DB 로, 저장소 · 퀴즈 미리 만들기만 대역
     materialsService = new MaterialsService(
@@ -203,17 +212,14 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       expect(await saved()).toEqual([]);
     });
 
-    it('친구에게 공유는 400 VALIDATION_FAILED 이고 아무것도 저장하지 않는다', async () => {
+    it('친구에게 공유하면 스터디룸 공유 항목은 만들지 않는다', async () => {
       const a = await note();
       await expect(
         sharing.share(owner.toHexString(), {
           materialIds: [a],
           target: { type: 'friend', id: friend.toHexString() },
         }),
-      ).rejects.toMatchObject({
-        status: 400,
-        response: { code: 'VALIDATION_FAILED', message: '친구에게 공유는 아직 지원하지 않아요' },
-      });
+      ).resolves.toBeUndefined();
       expect(await saved()).toEqual([]);
     });
 

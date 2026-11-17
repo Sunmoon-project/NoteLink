@@ -576,6 +576,7 @@ export const mockApi: Api = {
     shares: () => ok(db.timetableShares),
   },
   social: {
+    sharedItem: () => fail(ERROR_CODES.NOT_FOUND, '공유 자료를 찾을 수 없어요'),
     friends: () => ok(db.friends),
     search: (q) => ok(S.searchable.filter((f) => q.trim() && f.nickname === q.trim())),
     sendRequest: () => ok(undefined),
@@ -930,6 +931,8 @@ export const mockApi: Api = {
     },
   },
   rooms: {
+    sharedItem: () => fail(ERROR_CODES.NOT_FOUND, '공유 자료를 찾을 수 없어요'),
+    shareStudyItem: () => ok(undefined),
     recommended: () => ok(S.RECOMMENDED),
     mine: () => ok(db.rooms),
     create: async (p) => {

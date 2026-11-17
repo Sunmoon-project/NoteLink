@@ -40,6 +40,7 @@ export const MessageSchema = SchemaFactory.createForClass(Message);
 
 // 대화 기록은 생성 시각과 _id를 함께 정렬·페이지 처리한다.
 MessageSchema.index({ chatRoomId: 1, createdAt: -1, _id: -1 });
+MessageSchema.index({ 'sharePreview.materialId': 1, type: 1, deletedAt: 1 });
 MessageSchema.index(
   { chatRoomId: 1, senderId: 1, clientId: 1 },
   { unique: true, partialFilterExpression: { clientId: { $type: 'string' } } },

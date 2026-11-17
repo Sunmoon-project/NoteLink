@@ -141,6 +141,7 @@ export const httpApi: Api = {
     shares: () => http.get(P.timetableShares),
   },
   social: {
+    sharedItem: (id, itemId) => http.get(P.directSharedItem(id, itemId)),
     friends: () => http.get(P.friends),
     search: (nickname) => http.get(P.userSearch, { nickname }),
     sendRequest: (userId) => http.post(P.friendRequests, { userId }),
@@ -202,6 +203,8 @@ export const httpApi: Api = {
     schedule: (id) => http.get(P.roomSchedule(id)),
     invite: (id, userIds) => http.post(P.roomInvites(id), { userIds }),
     shared: (id) => http.get(P.roomShared(id)),
+    sharedItem: (id, itemId) => http.get(P.roomSharedItem(id, itemId)),
+    shareStudyItem: (id, kind, itemId) => http.post(P.roomShared(id), { kind, itemId }),
     livekitToken: (id) => http.post(P.livekitToken(id)),
     report: (p) => http.post(P.reports, p),
     chatRoomId: async (id) =>

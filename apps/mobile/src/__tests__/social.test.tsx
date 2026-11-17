@@ -11,6 +11,7 @@ const mockApi = {
     sendRequest: jest.fn(async () => {}),
     openDirect: jest.fn(async () => ({ _id: 'room1' })),
     messages: jest.fn(),
+    sharedItem: jest.fn(),
   },
 };
 jest.mock('../lib/api', () => ({
@@ -76,6 +77,29 @@ describe('친구 추가', () => {
 });
 
 describe('1:1 채팅', () => {
+  it('공유 노트를 누르면 1:1 채팅의 공유 항목을 확인하고 연다', async () => {
+    setParams({ id: 'u1', name: '지우' });
+    mockApi.social.messages.mockResolvedValue([
+      {
+        _id: 'm1',
+        chatRoomId: 'room1',
+        senderId: 'u1',
+        type: 'shared_item',
+        text: '공유 필기',
+        sharedItemId: 'shared1',
+        createdAt: '2026-10-27T00:00:00.000Z',
+      },
+    ]);
+    mockApi.social.sharedItem.mockResolvedValue({
+      itemType: 'material',
+      materialId: 'note1',
+      kind: 'handwriting',
+    });
+    await renderScreen(<ChatScreen />);
+    await fireEvent.press(await screen.findByText('공유 자료 열기'));
+    await waitFor(() => expect(mockApi.social.sharedItem).toHaveBeenCalledWith('room1', 'shared1'));
+  });
+
   it('로그인한 사용자 ID로 내 메시지를 가린다', async () => {
     useAuth.setState({ userId: '665f0c1a2b3c4d5e6f708192' });
     setParams({ id: 'u1', name: '지우' });

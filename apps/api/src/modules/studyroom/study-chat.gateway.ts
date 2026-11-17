@@ -48,7 +48,10 @@ export class StudyChatGateway {
   }
   async notifyDirectMessage(message: { chatRoomId: string }) {
     const channel = `direct-chat:${message.chatRoomId}`;
-    const recipients = await this.server.in(channel).fetchSockets().catch(() => []);
+    const recipients = await this.server
+      .in(channel)
+      .fetchSockets()
+      .catch(() => []);
     for (const recipient of recipients) {
       try {
         const token = recipient.handshake.auth?.token;
@@ -56,6 +59,26 @@ export class StudyChatGateway {
         const { userId } = await this.tokens.verifyAccess(token);
         const chat = await this.chat.requireChat(message.chatRoomId, userId);
         if (chat.type !== 'direct') throw new Error('not a direct chat member');
+        recipient.emit('chat:message', message);
+      } catch {
+        await recipient.leave(channel);
+      }
+    }
+  }
+  async notifyStudyMessage(message: { chatRoomId: string }) {
+    if (!this.server) return;
+    const channel = `study-chat:${message.chatRoomId}`;
+    const recipients = await this.server
+      .in(channel)
+      .fetchSockets()
+      .catch(() => []);
+    for (const recipient of recipients) {
+      try {
+        const token = recipient.handshake.auth?.token;
+        if (typeof token !== 'string') throw new Error('unauthorized');
+        const { userId } = await this.tokens.verifyAccess(token);
+        const chat = await this.chat.requireChat(message.chatRoomId, userId);
+        if (chat.type !== 'study_room') throw new Error('not a study room');
         recipient.emit('chat:message', message);
       } catch {
         await recipient.leave(channel);

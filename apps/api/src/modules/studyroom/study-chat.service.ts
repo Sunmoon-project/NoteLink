@@ -274,6 +274,88 @@ export class StudyChatService {
     return this.serialize(message, user?.nickname);
   }
 
+  /** 공유 항목은 서버에서만 메시지로 만들고 채팅의 스터디룸 권한을 다시 확인한다. */
+  async sendSharedItem(roomId: string, userId: string, sharedItemId: string, title: string) {
+    const chat = await this.getChat(roomId, userId);
+    const senderId = new Types.ObjectId(userId);
+    const message = await this.messages.create({
+      chatRoomId: chat._id,
+      senderId,
+      type: 'shared_item',
+      text: title,
+      sharedItemId: new Types.ObjectId(sharedItemId),
+    });
+    const user = await this.users.findById(senderId, { nickname: 1 }).lean();
+    return this.serialize(message, user?.nickname);
+  }
+
+  async sendDirectMaterial(userId: string, friendId: string, materialId: string, title: string) {
+    const chat = await this.getDirectChat(userId, friendId);
+    const senderId = new Types.ObjectId(userId);
+    const sharedItemId = new Types.ObjectId();
+    const message = await this.messages.create({
+      chatRoomId: chat._id,
+      senderId,
+      type: 'shared_item',
+      text: title,
+      sharedItemId,
+      sharePreview: { materialId },
+    });
+    await this.chats.updateOne(
+      { _id: chat._id },
+      {
+        $set: {
+          lastMessage: {
+            type: 'shared_item',
+            text: title,
+            senderId,
+            createdAt: new Date(),
+          },
+        },
+      },
+    );
+    const user = await this.users.findById(senderId, { nickname: 1 }).lean();
+    return this.serialize(message, user?.nickname);
+  }
+
+  async directSharedMaterial(userId: string, chatId: string, sharedItemId: string) {
+    const chat = await this.requireChat(chatId, userId);
+    if (chat.type !== 'direct' || !isValidObjectId(sharedItemId)) throw this.notFound();
+    const message = await this.messages
+      .findOne({
+        chatRoomId: chat._id,
+        sharedItemId: new Types.ObjectId(sharedItemId),
+        type: 'shared_item',
+        deletedAt: null,
+      })
+      .lean();
+    const materialId = message?.sharePreview?.materialId;
+    if (typeof materialId !== 'string' || !isValidObjectId(materialId)) throw this.notFound();
+    return materialId;
+  }
+
+  async hasDirectMaterialAccess(userId: string, materialId: string): Promise<boolean> {
+    const messages = await this.messages
+      .find(
+        {
+          type: 'shared_item',
+          'sharePreview.materialId': materialId,
+          deletedAt: null,
+        },
+        { chatRoomId: 1 },
+      )
+      .lean();
+    for (const message of messages) {
+      try {
+        const chat = await this.requireChat(String(message.chatRoomId), userId);
+        if (chat.type === 'direct') return true;
+      } catch {
+        // 탈퇴하거나 친구 관계가 끝난 대화는 접근 권한을 주지 않는다.
+      }
+    }
+    return false;
+  }
+
   private serialize(m: Message & { _id: Types.ObjectId; createdAt?: Date }, nickname?: string) {
     return {
       _id: String(m._id),
