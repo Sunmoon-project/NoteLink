@@ -15,6 +15,7 @@ import { StudyLiveService } from './study-live.service.js';
 import { StudyRoomCleanupService } from './study-room-cleanup.service.js';
 import { Report, ReportSchema } from '../social/schemas/report.schema.js';
 import { ReportsController } from '../social/reports.controller.js';
+import { ReportImageSweeper } from '../social/report-image-sweeper.service.js';
 import { ReportsService } from '../social/reports.service.js';
 import { UploadsModule } from '../upload/uploads.module.js';
 import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schema.js';
@@ -58,6 +59,7 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
     ExpoPushService,
     RoomTimerNotificationsService,
     ReportsService,
+    ReportImageSweeper,
     StudyRoomScheduleService,
   ],
 })

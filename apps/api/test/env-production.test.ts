@@ -7,6 +7,7 @@ import { createJwtConfig } from '../src/config/jwt.config.js';
 import { createKakaoConfig } from '../src/config/kakao.config.js';
 import { createNaverConfig } from '../src/config/naver.config.js';
 import { type ConfigReader, createMongooseOptions } from '../src/config/mongo.config.js';
+import { createStorageConfig } from '../src/config/storage.config.js';
 import { createMailSender } from '../src/modules/mail/create-mail-sender.js';
 import { SmtpMailSender } from '../src/modules/mail/smtp-mail-sender.js';
 
@@ -51,6 +52,11 @@ describe('.env.production', () => {
     }));
 
     expect(sender).toBeInstanceOf(SmtpMailSender);
+  });
+
+  it('그대로 복사해 쓰면 파일 저장소 설정이 비어 있어도 서버가 뜬다', () => {
+    expect(readEnvExample().get('AZURE_STORAGE_CONNECTION_STRING')).toBe('');
+    expect(createStorageConfig(readEnvExample())).toBeNull();
   });
 
   it('PORT 예시가 있다', () => {

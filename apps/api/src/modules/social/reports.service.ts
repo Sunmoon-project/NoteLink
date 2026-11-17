@@ -6,6 +6,7 @@ import { CreateReportDto } from './dto/create-report.dto.js';
 import { Report } from './schemas/report.schema.js';
 import { REPORT_STATUS } from './report.constants.js';
 import { BlobStorageService } from '../upload/blob-storage.service.js';
+import { StorageScopeService } from '../upload/storage-scope.service.js';
 
 @Injectable()
 export class ReportsService {
@@ -13,6 +14,7 @@ export class ReportsService {
     @InjectModel(Report.name) private readonly reports: Model<Report>,
     private readonly chat: StudyChatService,
     private readonly storage: BlobStorageService,
+    private readonly scopes: StorageScopeService,
   ) {}
 
   async create(reporterId: string, input: CreateReportDto) {
@@ -30,19 +32,30 @@ export class ReportsService {
         message: '신고할 참여자를 찾을 수 없습니다.',
       });
     }
-    await this.storage.validateReportImages(
-      String(new Types.ObjectId(reporterId)),
-      input.imageUrls ?? [],
-    );
+    // 신고 ID를 먼저 정해 사진 복사본을 그 신고 아래에 둔다. 저장이 실패해도 여기서 지우지 않는다:
+    // 오류만으로는 저장 여부를 확정할 수 없어, 정리 작업이 나중에 신고 문서를 보고 판단한다
+    // 복사본에는 이 DB의 구분값을 달아, 같은 저장소를 쓰는 다른 DB의 정리 작업이 건드리지 않게 한다
+    const reportId = new Types.ObjectId();
+    const urls = input.imageUrls ?? [];
+    const imageUrls = urls.length
+      ? await this.storage.keepReportImages(
+          String(new Types.ObjectId(reporterId)),
+          urls,
+          String(reportId),
+          await this.scopes.get(),
+        )
+      : [];
     const report = await this.reports.create({
+      _id: reportId,
       roomId: new Types.ObjectId(input.roomId),
       reporterId: new Types.ObjectId(reporterId),
       targetUserId: targetId,
       reportType: input.reportType,
       details: input.details,
-      imageUrls: input.imageUrls ?? [],
+      imageUrls,
       status: REPORT_STATUS.PENDING,
     });
+    if (imageUrls.length) await this.storage.confirmReportImages(imageUrls);
     return { _id: String(report._id), status: report.status };
   }
 }
