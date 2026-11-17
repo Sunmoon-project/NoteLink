@@ -96,10 +96,10 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 확인', () => {
         expect(res.status).toBe(201);
         expect(res.body.data).toMatchObject({
             name: '영어 단어', days: [1, 3], targetMin: 30, subjectId: null, remindEnabled: false,
-            remindTime: null, pausedUntil: null, streak: 0, isActive: true,
+            remindTime: '21:00', pausedUntil: null, streak: 0, isActive: true, // 리마인드 시각을 안 보내면 기본 21시
         });
         const saved = await col('recurring_goals').findOne({ _id: new Types.ObjectId(res.body.data._id) });
-        expect(saved).toMatchObject({ userId: me, name: '영어 단어', days: [1, 3], targetMin: 30, deletedAt: null });
+        expect(saved).toMatchObject({ userId: me, name: '영어 단어', days: [1, 3], targetMin: 30, remindTime: '21:00', deletedAt: null });
     });
 
     it('2) 수정하면 바뀐 값이 나오고 DB에도 반영된다', async () => {

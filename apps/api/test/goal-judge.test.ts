@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { judgeDay, weeklyStreak, type DayStudy, type GoalRule } from '../src/modules/progress/goal-judge.js';
+import { judgeDay, todayStudyMin, weeklyStreak, type DayStudy, type GoalRule } from '../src/modules/progress/goal-judge.js';
 import { seoulDate } from '../src/modules/session/study-time.js';
 import { weekStartOf } from '../src/modules/progress/week.js';
 
@@ -164,5 +164,55 @@ describe('서울 주 경계 (일요일 23:59 · 월요일 0시)', () => {
     it('UTC 날짜로는 아직 일요일이어도 서울은 월요일이면 서울 기준으로 판정한다', () => {
         // UTC 11-15 20:00 = 서울 11-16 05:00
         expect(today('2026-11-15T20:00:00Z')).toBe('2026-11-16');
+    });
+});
+
+describe('todayStudyMin (오늘 이 목표로 센 공부 분)', () => {
+    // 2026-11-09(월)가 오늘. 목표 요일은 월 · 수, 하루 30분
+    const TODAY = '2026-11-09';
+    const min = (g: GoalRule, entries: Parameters<typeof study>[0], skip = none) => todayStudyMin(g, TODAY, study(entries), skip);
+
+    it('오늘이 목표 요일이면 공부한 분을 내림해서 돌려준다 (공부가 없으면 0)', () => {
+        expect(min(goal(), {})).toBe(0);
+        expect(min(goal(), { [TODAY]: 600 })).toBe(10);
+        expect(min(goal(), { [TODAY]: 1799 })).toBe(29); // 59초는 버린다
+        expect(min(goal(), { [TODAY]: 59 })).toBe(0);
+    });
+
+    it('목표 시간을 넘겨도 센 분 그대로 돌려준다 (남은 분은 앱이 targetMin에서 뺀다)', () => {
+        expect(min(goal(), { [TODAY]: 7200 })).toBe(120);
+    });
+
+    it('오늘이 목표 요일이 아니거나 만든 날 이전이면 null', () => {
+        expect(todayStudyMin(goal(), '2026-11-10', study({ '2026-11-10': 600 }), none)).toBeNull(); // 화요일
+        expect(min(goal({ createdDate: '2026-11-10' }), { [TODAY]: 600 })).toBeNull();
+        expect(min(goal({ createdDate: TODAY }), { [TODAY]: 600 })).toBe(10); // 만든 날 당일은 대상
+    });
+
+    it('공휴일 · 제외일이거나 일시 정지 중이면 null (그 날 공부해도)', () => {
+        expect(min(goal(), { [TODAY]: 600 }, new Set([TODAY]))).toBeNull();
+        expect(min(goal({ pausedUntil: TODAY }), { [TODAY]: 600 })).toBeNull(); // 그 날 포함
+        expect(min(goal({ pausedUntil: '2026-11-08' }), { [TODAY]: 600 })).toBe(10);
+    });
+
+    it('쉬는 목표(isActive=false)는 null', () => {
+        expect(min(goal({ isActive: false }), { [TODAY]: 600 })).toBeNull();
+    });
+
+    it('과목 목표는 그 과목 시간만 센다 (다른 과목 · 총 시간은 세지 않는다)', () => {
+        const entries = { [TODAY]: { total: 7200, subject: { math: 1500, eng: 3600 } } };
+        expect(min(goal({ subjectId: 'math' }), entries)).toBe(25);
+        expect(min(goal({ subjectId: 'eng' }), entries)).toBe(60);
+        expect(min(goal({ subjectId: 'bio' }), entries)).toBe(0);
+        expect(min(goal(), entries)).toBe(120);
+    });
+
+    it('판정과 같은 기준이다: 분이 목표 이상이면 달성, 아니면 미달성(오늘은 보류)', () => {
+        for (const sec of [0, 1799, 1800, 1859, 5000]) {
+            const s = study({ [TODAY]: sec });
+            const verdict = judgeDay(goal(), TODAY, TODAY, s, none);
+            const minutes = todayStudyMin(goal(), TODAY, s, none)!;
+            expect(minutes >= 30).toBe(verdict === 'achieved');
+        }
     });
 });

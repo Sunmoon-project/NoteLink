@@ -46,6 +46,10 @@ export class Question {
   // 오답 복습(similar_quiz)의 srsUpdates를 NestJS가 여기에 반영한다. 공용 스키마에는 아직 없다.
   @Prop({ type: Object, default: null })
   srs?: Record<string, unknown> | null;
+
+  // srs를 쓴 오답 복습 세트를 만든 시각. 더 새 세트의 상태만 덮어써, 늦게 옮긴 오래된 결과가 되돌리지 않게 한다
+  @Prop({ type: Date, default: undefined })
+  srsAt?: Date;
 }
 
 export const QuestionSchema = SchemaFactory.createForClass(Question);
@@ -69,6 +73,14 @@ export class QuizSet {
 
   @Prop({ type: Types.ObjectId, ref: 'QuizSet', default: null })
   sourceSetId?: Types.ObjectId | null;
+
+  // 유사 퀴즈(다시 보기) 세트를 만든 풀이. 오답 복습은 만들 때마다 복습 상태를 옮기므로 한 풀이에 한 번만 만든다
+  @Prop({ type: Types.ObjectId, ref: 'QuizAttempt', default: null })
+  sourceAttemptId?: Types.ObjectId | null;
+
+  // 오답 복습 결과의 복습 상태(srsUpdates)를 다 옮긴 시각. 옮긴 세트는 다시 쓰지 않는다
+  @Prop({ type: Date, default: null })
+  srsSavedAt?: Date | null;
 
   @Prop({ required: true, type: String })
   title: string;

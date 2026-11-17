@@ -39,6 +39,8 @@ export const AI_READ_SAS_MS = 30 * 24 * 60 * 60 * 1000;
 export const APP_READ_SAS_MS = 60 * 60 * 1000;
 /** 목록 조회 한 번에 끝난 작업 결과를 옮기는 노트 수 상한 */
 export const LIST_SYNC_MAX = 20;
+/** 목록 조회 한 번에 작업 없이 남은 노트를 다시 만들어 연결하는 노트 수 상한(목록 응답이 느려지지 않게) */
+export const RECOVER_MAX = 3;
 /** 작업을 만드는 중 표시가 유효한 시간. 서버가 멈춰 남은 표시는 이 시간이 지나면 다른 요청이 다시 잡는다 */
 export const CLAIM_TTL_MS = 60_000;
 /** 표시를 못 잡은 요청이 다른 요청의 작업 연결을 기다리는 간격 · 횟수 */
@@ -245,7 +247,7 @@ export class MaterialsService implements OnModuleInit {
       .findOne({ _id: new Types.ObjectId(body.folderId), ownerId: owner, deletedAt: null })
       .lean<{ _id: Types.ObjectId; subjectName?: string }>();
     if (!folder) throw notFound('폴더');
-    const files = await this.prepareFiles(userId, body.kind, body.blobUrls);
+    const files = await this.prepareFiles(userId, body.kind, body.blobUrls, true);
 
     let created: MaterialRow;
     try {
@@ -493,12 +495,14 @@ export class MaterialsService implements OnModuleInit {
   /**
    * 올린 파일을 검사하고 AI 입력에 넣을 읽기 주소를 만든다.
    * 개수 · 확장자 · PDF 단독 규칙을 먼저 보고(저장소를 부르기 전), 파일이 내 폴더 경로
-   * uploads/<업로드 종류>/<내 userId>/ 에 실제로 있는지 · 크기 한도(UPLOAD_RULES)를 본다
+   * uploads/<업로드 종류>/<내 userId>/ 에 실제로 있는지 · 크기 한도(UPLOAD_RULES)를 본다.
+   * discardOversized 면 한도를 넘은 파일을 지운다(새로 등록할 때만. 다시 시도는 등록된 노트의 원본이라 남긴다)
    */
   private async prepareFiles(
     userId: string,
     kind: string,
     blobUrls: string[],
+    discardOversized = false,
   ): Promise<UploadedFile[]> {
     if (!(kind in UPLOAD_KIND)) throw invalid('자료 종류를 확인해 주세요');
     const uploadKind = UPLOAD_KIND[kind as keyof typeof UPLOAD_KIND];
@@ -527,15 +531,34 @@ export class MaterialsService implements OnModuleInit {
         const { readUrl, sizeBytes } = await this.blobs.createReadAccess(blobUrl, AI_READ_SAS_MS, {
           prefix,
         });
-        if (sizeBytes === undefined || sizeBytes > rule.maxBytes)
+        if (sizeBytes === undefined || sizeBytes > rule.maxBytes) {
+          if (discardOversized && sizeBytes !== undefined)
+            await this.discardUpload(userId, blobUrl, prefix);
           throw new BadRequestException({
             code: ERROR_CODES.FILE_NOT_ALLOWED,
             message: '파일이 너무 커요',
           });
+        }
         return { blobUrl, readUrl, sizeBytes };
       }),
     );
     return files;
+  }
+
+  /**
+   * 등록이 거절한 파일을 저장소에서 지운다. 내 노트(지운 노트 포함)가 이미 쓰는 주소면 남긴다.
+   * 지우지 못해도 등록 거절(400)은 그대로 알린다
+   */
+  private async discardUpload(userId: string, blobUrl: string, prefix: string) {
+    try {
+      const used = await this.materials.exists({
+        ownerId: new Types.ObjectId(userId),
+        blobUrls: blobUrl,
+      });
+      if (!used) await this.blobs.deleteUpload(blobUrl, prefix);
+    } catch {
+      // 남은 파일은 어느 노트에도 연결되지 않는다
+    }
   }
 
   /** 내 노트 한 개. 정리 중이면 끝난 작업의 결과를 먼저 옮긴다. 남의 것 · 지운 것 · 없는 것 · 잘못된 id 는 404 */
@@ -551,6 +574,73 @@ export class MaterialsService implements OnModuleInit {
   }
 
   /**
+   * 작업 없이 남은 노트인지: 지우지 않았고, 작업 id 가 없고(등록 직후의 queued 에서만 생긴다), 만든 지 CLAIM_TTL_MS 가
+   * 지났고, 작업 만드는 중 표시가 없거나 만료됐다. 방금 등록하는 요청이나 작업을 만드는 중인 요청과 겹치지 않게 한다
+   */
+  private isStuck(row: MaterialRow): boolean {
+    const cutoff = Date.now() - CLAIM_TTL_MS;
+    return (
+      !row.deletedAt &&
+      !row.processing.jobId &&
+      row.processing.status === 'queued' &&
+      row.createdAt.getTime() <= cutoff &&
+      (!row.jobClaimedAt || row.jobClaimedAt.getTime() <= cutoff)
+    );
+  }
+
+  /**
+   * 작업 없이 남은 노트(isStuck)의 작업을 다시 만들어 연결한다. 같은 키로 다시 요청했을 때(replay)와 같은 순서로,
+   * 파일 확인 → startJob(원자적 표시 잡기 → 자기 작업 넣기 → 조건부 연결)을 그대로 쓴다. 표시를 못 잡으면 이번에는 넘어간다.
+   * 원본 파일 확인이 400 으로 실패하면(원본 없음 · 경로 불일치 · 크기 초과) 다시 만들 수 없으므로 노트를 failed 로 바꾼다
+   * (작업 id 가 없어 앱의 다시 시도는 못 하고 지우고 다시 올려야 한다. 영원히 "정리 중"으로 남는 것보다 낫다).
+   * 그 밖의 오류(저장소 일시 장애 등)는 노트를 그대로 두고 다음 조회에서 다시 시도한다. 조회 자체는 실패시키지 않는다
+   */
+  private async recoverJob(userId: string, row: MaterialRow): Promise<MaterialRow | null> {
+    let files: UploadedFile[];
+    let subjectName: string | undefined;
+    try {
+      const folder = await this.folders
+        .findOne({ _id: row.folderId, ownerId: row.ownerId, deletedAt: null })
+        .lean<{ subjectName?: string }>();
+      subjectName = folder?.subjectName;
+      files = await this.prepareFiles(userId, row.kind, row.blobUrls ?? []);
+    } catch (e) {
+      if (!(e instanceof BadRequestException)) return this.recoverSkipped(row, e);
+      const failed = await this.materials
+        .findOneAndUpdate(
+          {
+            _id: row._id,
+            ownerId: row.ownerId,
+            deletedAt: null,
+            'processing.jobId': null,
+            'processing.status': 'queued',
+          },
+          { $set: { 'processing.status': 'failed' } },
+          { returnDocument: 'after' },
+        )
+        .lean<MaterialRow>();
+      return failed ?? this.currentRow(row);
+    }
+    try {
+      return (await this.startJob(userId, row, subjectName, files)).row;
+    } catch (e) {
+      return this.recoverSkipped(row, e);
+    }
+  }
+
+  private async recoverSkipped(row: MaterialRow, e: unknown): Promise<MaterialRow | null> {
+    const reason = e instanceof Error ? e.message : '알 수 없는 오류';
+    this.logger.warn(`노트 ${row._id.toString()} 작업을 다시 만들지 못했어요: ${reason}`);
+    return this.currentRow(row);
+  }
+
+  private currentRow(row: MaterialRow): Promise<MaterialRow | null> {
+    return this.materials
+      .findOne({ _id: row._id, ownerId: row.ownerId, deletedAt: null })
+      .lean<MaterialRow>();
+  }
+
+  /**
    * 정리 작업의 상태 · 결과를 노트에 옮긴다(quiz-sets 의 sync 와 같은 방식: 조회할 때, 지금 상태일 때만 바꿔
    * 여러 요청이 같이 옮겨도 한 번만 반영). 이미 끝난 노트는 작업을 읽지 않는다.
    * 처리 완료로 바뀐 필기 · 문서는 이어서 첫 맞춤 퀴즈를 미리 만든다(실패해도 노트 조회는 성공).
@@ -558,6 +648,8 @@ export class MaterialsService implements OnModuleInit {
    */
   async sync(userId: string, row: MaterialRow): Promise<MaterialRow | null> {
     const jobId = row.processing.jobId;
+    // 노트만 만들고 작업을 넣기 전에 요청이 끊긴 노트: 영원히 대기 상태로 남지 않게 작업을 다시 만들어 연결한다
+    if (!jobId && this.isStuck(row)) return this.recoverJob(userId, row);
     if (!jobId || row.processing.status === 'done') return row;
     const job = await this.findJob(userId, jobId);
     // 작업이 없어졌으면 정리가 끝날 수 없다. 처리 중이던 노트는 실패로
@@ -582,7 +674,7 @@ export class MaterialsService implements OnModuleInit {
         .findOne({ _id: row._id, ownerId: row.ownerId, deletedAt: null })
         .lean<MaterialRow>();
     }
-    if (update['processing.status'] === 'done' && updated.kind !== 'recording') {
+    if (update['processing.status'] === 'done') {
       await this.pregenerate(userId, updated);
     }
     return updated;
@@ -651,8 +743,24 @@ export class MaterialsService implements OnModuleInit {
       .sort({ 'processing.checkedAt': 1, ...newestFirst })
       .limit(LIST_SYNC_MAX)
       .lean<{ _id: Types.ObjectId }[]>();
+    // 작업 없이 남은 노트(등록 중 요청이 끊김)도 몇 개만 함께 다시 만든다. 위 대상은 작업이 있는 노트라 겹치지 않는다
+    const staleBefore = new Date(Date.now() - CLAIM_TTL_MS);
+    const stuck = await this.materials
+      .find(
+        {
+          ...inFolder,
+          'processing.jobId': null,
+          'processing.status': 'queued',
+          createdAt: { $lte: staleBefore },
+          $or: [{ jobClaimedAt: null }, { jobClaimedAt: { $lte: staleBefore } }],
+        },
+        { _id: 1 },
+      )
+      .sort({ createdAt: 1, _id: 1 })
+      .limit(RECOVER_MAX)
+      .lean<{ _id: Types.ObjectId }[]>();
     await Promise.all(
-      targets.map(async (target) => {
+      [...targets, ...stuck].map(async (target) => {
         try {
           // 옮기려면 원본 쪽 정보가 필요해 이 노트만 전체를 읽는다
           const full = await this.materials

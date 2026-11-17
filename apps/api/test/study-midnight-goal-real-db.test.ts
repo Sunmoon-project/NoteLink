@@ -166,6 +166,36 @@ describe.skipIf(!isLocal)('진짜 DB 자정을 넘긴 공부와 과목 반복 �
         expect(await streakAt(userId, new Date('2026-11-15T03:00:00Z'))).toBe(1);
     });
 
+    it('a2) 자정을 넘긴 공부의 오늘(토요일) 몫이 반복 목표의 todayMin에 반영된다 (과목 · 전체 목표 모두)', async () => {
+        const { userId, itemId } = await setup();
+        await col('recurring_goals').insertOne({
+            _id: new Types.ObjectId(),
+            userId,
+            name: '전체 토요일',
+            days: [6],
+            targetMin: 60,
+            subjectId: null,
+            remindEnabled: true,
+            remindTime: '21:00',
+            pausedUntil: null,
+            isActive: true,
+            deletedAt: null,
+            createdAt: CREATED,
+            updatedAt: CREATED,
+        });
+        await studyOverMidnight(userId, itemId);
+        vi.useRealTimers();
+
+        const saturdayNoon = new Date('2026-11-14T03:00:00Z');
+        const list = await goals.list(userId.toString(), saturdayNoon);
+        // 금요일 밤 10분 + 토요일 새벽 30분: 오늘(토) 몫인 30분만 센다
+        expect(Object.fromEntries(list.map((g) => [g.name, g.todayMin]))).toEqual({ '수학 토요일': 30, '전체 토요일': 30 });
+        // 금요일에서 보면 금요일 몫 10분만이다(대상 요일이 아니면 null)
+        const fridayNoon = new Date('2026-11-13T03:00:00Z');
+        const onFriday = await goals.list(userId.toString(), fridayNoon);
+        expect(onFriday.every((g) => g.todayMin === null)).toBe(true);
+    });
+
     it('b) 과목이 없는 항목은 과목 시간을 쌓지 않는다 (총 시간은 쌓는다)', async () => {
         const { userId, itemId } = await setup(false);
         await studyOverMidnight(userId, itemId);

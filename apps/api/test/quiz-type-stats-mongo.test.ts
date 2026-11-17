@@ -16,7 +16,13 @@ suite('MongoDB 전체 유형별 통계', () => {
   beforeAll(async () => {
     connection = await mongoose.createConnection(uri!).asPromise();
     const attempts = connection.model(QuizAttempt.name, QuizAttemptSchema);
-    service = new QuizSetsService({} as never, {} as never, attempts as never, {} as never);
+    service = new QuizSetsService(
+      {} as never,
+      {} as never,
+      attempts as never,
+      {} as never,
+      {} as never,
+    );
     await connection.collection('quiz_sets').insertMany([
       {
         _id: setId,

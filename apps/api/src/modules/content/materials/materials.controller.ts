@@ -5,6 +5,7 @@ import {
   Get,
   Headers,
   HttpCode,
+  NotFoundException,
   Param,
   Patch,
   Post,
@@ -23,13 +24,36 @@ import { CreateMaterialDto } from './dto/create-material.dto.js';
 import { ListMaterialsQuery } from './dto/list-materials.query.js';
 import { UpdateMaterialDto } from './dto/update-material.dto.js';
 import { encodeCursor, NEXT_CURSOR_HEADER, parseListQuery } from './list-cursor.js';
+import { MaterialSharingService } from './material-sharing.service.js';
 import { MaterialsService, parseIdempotencyKey } from './materials.service.js';
 
 /** 노트(자료) 주소 (packages/shared PATHS.materials · material · folderMaterials) */
 @Controller()
 @UseGuards(JwtAuthGuard)
 export class MaterialsController {
-  constructor(private readonly materials: MaterialsService) {}
+  constructor(
+    private readonly materials: MaterialsService,
+    private readonly sharing: MaterialSharingService,
+  ) {}
+
+  /**
+   * 노트를 읽는다. 내 노트면 그대로, 아니면(404) 내가 현재 멤버인 방에 공유된 노트일 때만 노트 주인 기준으로 읽는다.
+   * 공유받은 사람은 읽기만 한다 — 수정 · 삭제 · 북마크 · 목록 등 나머지는 주인만(여기를 거치지 않는다)
+   */
+  private async readAsOwnerOrSharedMember<T>(
+    userId: string,
+    id: string,
+    read: (ownerId: string) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await read(userId);
+    } catch (e) {
+      if (!(e instanceof NotFoundException)) throw e;
+      const ownerId = await this.sharing.ownerOfShared(userId, id);
+      if (!ownerId) throw e;
+      return read(ownerId);
+    }
+  }
 
   /** 노트 등록. Idempotency-Key 헤더가 있으면 같은 키의 재요청은 같은 결과를 돌려준다 */
   @Post('materials')
@@ -52,7 +76,10 @@ export class MaterialsController {
     @Req() req: AuthenticatedRequest,
     @Param('id') id: string,
   ): Promise<{ data: Material }> {
-    return { data: (await this.materials.findMine(requireUserId(req), id)) as Material };
+    const data = await this.readAsOwnerOrSharedMember(requireUserId(req), id, (owner) =>
+      this.materials.findMine(owner, id),
+    );
+    return { data: data as Material };
   }
 
   /** 원본 파일(올린 첫 파일)의 내려받기 주소: 읽기 SAS 1시간 + 파일 이름 */
@@ -61,7 +88,11 @@ export class MaterialsController {
     @Req() req: AuthenticatedRequest,
     @Param('id') id: string,
   ): Promise<{ data: { url: string; fileName: string } }> {
-    return { data: await this.materials.downloadUrl(requireUserId(req), id) };
+    return {
+      data: await this.readAsOwnerOrSharedMember(requireUserId(req), id, (owner) =>
+        this.materials.downloadUrl(owner, id),
+      ),
+    };
   }
 
   /**

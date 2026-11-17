@@ -1,0 +1,591 @@
+import { type INestApplication, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import { io, type Socket } from 'socket.io-client';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { AiJobsGateway } from '../src/ai-jobs/ai-jobs.gateway.js';
+import {
+  type AiJobProgress,
+  type AppAiJob,
+  AiJobsService,
+} from '../src/ai-jobs/ai-jobs.service.js';
+import { TokenService } from '../src/modules/auth/token.service.js';
+
+const JOB = '64b000000000000000000001';
+const OTHER_JOB = '64b000000000000000000002';
+
+const appJob = (over: Partial<AppAiJob> = {}): AppAiJob => ({
+  _id: JOB,
+  type: 'handwriting_summary',
+  status: 'running',
+  targetType: 'material',
+  targetId: '64b0000000000000000000aa',
+  progress: 10,
+  attempts: 1,
+  step: 'ocr',
+  result: null,
+  error: null,
+  createdAt: '2026-11-16T00:00:00.000Z',
+  updatedAt: '2026-11-16T00:00:00.000Z',
+  ...over,
+});
+
+/** 작업 주인은 a. 상태는 시험이 jobs 표를 바꿔 처리기가 쓴 것처럼 만든다 */
+const table = new Map<string, AppAiJob>();
+const jobs = {
+  // 실제 서비스처럼 ObjectId는 대소문자를 가리지 않는다
+  findMine: vi.fn(async (userId: string, jobId: string) => {
+    const job = table.get(jobId.toLowerCase());
+    if (!job || userId !== 'a') throw new NotFoundException();
+    return job;
+  }),
+  progressOf: vi.fn(async (ids: string[]): Promise<AiJobProgress[]> =>
+    ids.flatMap((id) => {
+      const job = table.get(id);
+      if (!job) return [];
+      const p: AiJobProgress = { jobId: id, status: job.status, progress: job.progress };
+      if (job.step !== undefined) p.step = job.step;
+      return [p];
+    }),
+  ),
+};
+const tokens = { verifyAccess: vi.fn() };
+
+let app: INestApplication;
+let gateway: AiJobsGateway;
+let url: string;
+const sockets: Socket[] = [];
+
+async function connect(token: string) {
+  const socket = io(url, { transports: ['websocket'], auth: { token }, forceNew: true });
+  sockets.push(socket);
+  await new Promise<void>((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('connect_error', reject);
+  });
+  return socket;
+}
+
+function record(socket: Socket) {
+  const progress: AiJobProgress[] = [];
+  const done: { jobId: string; job: AppAiJob }[] = [];
+  socket.on('ai:progress', (p: AiJobProgress) => progress.push(p));
+  socket.on('ai:done', (d: { jobId: string; job: AppAiJob }) => done.push(d));
+  return { progress, done };
+}
+
+const subscribe = (socket: Socket, jobId: unknown = JOB) =>
+  socket.timeout(1000).emitWithAck('ai:subscribe', { jobId }) as Promise<{ ok: boolean }>;
+
+/** 소켓 이벤트가 도착할 틈을 준다 */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+beforeAll(async () => {
+  const module = await Test.createTestingModule({
+    providers: [
+      AiJobsGateway,
+      { provide: AiJobsService, useValue: jobs },
+      { provide: TokenService, useValue: tokens },
+    ],
+  }).compile();
+  app = module.createNestApplication();
+  await app.listen(0, '127.0.0.1');
+  gateway = app.get(AiJobsGateway);
+  url = `http://127.0.0.1:${app.getHttpServer().address().port}`;
+});
+afterAll(async () => {
+  await app?.close();
+});
+beforeEach(() => {
+  vi.clearAllMocks();
+  table.clear();
+  table.set(JOB, appJob());
+  tokens.verifyAccess.mockImplementation(async (token: string) => {
+    // 실제 TokenService처럼 거절은 UnauthorizedException
+    if (token === 'bad') throw new UnauthorizedException();
+    return { userId: token };
+  });
+});
+afterEach(async () => {
+  sockets.splice(0).forEach((s) => s.disconnect());
+  await settle();
+  // 남은 구독(끊긴 소켓)을 비운다
+  await gateway.poll();
+});
+
+describe('AI 작업 진행률 소켓 (ai:subscribe)', () => {
+  it('본인 작업을 구독하면 지금 상태를 바로 보낸다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await expect(subscribe(a)).resolves.toEqual({ ok: true });
+    await vi.waitFor(() =>
+      expect(got.progress).toEqual([{ jobId: JOB, status: 'running', progress: 10, step: 'ocr' }]),
+    );
+    expect(jobs.findMine).toHaveBeenCalledWith('a', JOB);
+  });
+
+  it('바뀐 진행률만 보내고, 같은 값은 다시 보내지 않는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    await gateway.poll();
+    await settle();
+    expect(got.progress).toHaveLength(1);
+
+    table.set(JOB, appJob({ progress: 55, step: 'summary' }));
+    await gateway.poll();
+    await vi.waitFor(() =>
+      expect(got.progress.at(-1)).toEqual({
+        jobId: JOB,
+        status: 'running',
+        progress: 55,
+        step: 'summary',
+      }),
+    );
+    expect(got.progress).toHaveLength(2);
+  });
+
+  it('끝나면 작업 조회와 같은 모양으로 ai:done을 보내고 더 읽지 않는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    const finished = appJob({ status: 'succeeded', progress: 100, result: { ok: true } });
+    table.set(JOB, finished);
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: finished }]));
+
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
+  it('이미 끝난 작업을 구독하면 바로 ai:done을 보내고 지켜보지 않는다', async () => {
+    const failed = appJob({ status: 'failed', error: 'AI_JOB_FAILED' });
+    table.set(JOB, failed);
+    const a = await connect('a');
+    const got = record(a);
+    await expect(subscribe(a)).resolves.toEqual({ ok: true });
+    await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: failed }]));
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+    expect(got.progress).toEqual([]);
+  });
+
+  it.each([
+    ['남의 작업', 'b', JOB],
+    ['없는 작업', 'a', OTHER_JOB],
+    ['문자열이 아닌 id', 'a', 123],
+    ['검증에 실패한 토큰', 'bad', JOB],
+  ])('%s은 구독하지 않는다', async (_name, token, jobId) => {
+    const socket = await connect(token);
+    const got = record(socket);
+    await expect(subscribe(socket, jobId)).resolves.toEqual({ ok: false });
+    table.set(JOB, appJob({ progress: 70 }));
+    await gateway.poll();
+    await settle();
+    expect(got).toEqual({ progress: [], done: [] });
+  });
+
+  it('남의 작업 방의 진행률은 다른 사용자에게 가지 않는다', async () => {
+    const a = await connect('a');
+    const b = await connect('b');
+    const gotB = record(b);
+    await subscribe(a);
+    await subscribe(b);
+    table.set(JOB, appJob({ progress: 80 }));
+    await gateway.poll();
+    await settle();
+    expect(gotB).toEqual({ progress: [], done: [] });
+  });
+
+  it('같은 작업을 두 소켓이 지켜보면 둘 다 받는다', async () => {
+    const one = await connect('a');
+    const two = await connect('a');
+    const got1 = record(one);
+    const got2 = record(two);
+    await subscribe(one);
+    await subscribe(two);
+    table.set(JOB, appJob({ progress: 90 }));
+    await gateway.poll();
+    await vi.waitFor(() => {
+      expect(got1.progress.at(-1)?.progress).toBe(90);
+      expect(got2.progress.at(-1)?.progress).toBe(90);
+    });
+  });
+
+  it('지켜보던 소켓이 모두 끊기면 더 읽지 않는다', async () => {
+    const a = await connect('a');
+    await subscribe(a);
+    a.disconnect();
+    await settle();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
+  it('작업이 지워지면 더 지켜보지 않는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    table.delete(JOB);
+    await gateway.poll();
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+    expect(got.done).toEqual([]);
+  });
+
+  it('읽기가 한 번 실패해도 다음 차례에 이어서 보낸다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    jobs.progressOf.mockRejectedValueOnce(new Error('db down'));
+    await expect(gateway.poll()).resolves.toBeUndefined();
+    table.set(JOB, appJob({ progress: 40 }));
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.progress.at(-1)?.progress).toBe(40));
+  });
+
+  it('읽는 동안 새로 구독한 작업은 지운 작업으로 보지 않는다', async () => {
+    const SECOND = '64b000000000000000000003';
+    table.set(SECOND, appJob({ _id: SECOND, progress: 5 }));
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    // 첫 작업을 읽는 도중에 두 번째 작업을 구독한다
+    let release!: () => void;
+    jobs.progressOf.mockImplementationOnce(async (ids: string[]) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return ids.map((id) => ({ jobId: id, status: 'running', progress: 10, step: 'ocr' }));
+    });
+    const polling = gateway.poll();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    await subscribe(a, SECOND);
+    release();
+    await polling;
+    table.set(SECOND, appJob({ _id: SECOND, progress: 60 }));
+    await gateway.poll();
+    await vi.waitFor(() =>
+      expect(got.progress.filter((p) => p.jobId === SECOND).at(-1)?.progress).toBe(60),
+    );
+  });
+
+  it('ai:unsubscribe 뒤에는 그 작업의 진행률을 받지 않고, 방이 비면 더 읽지 않는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    a.emit('ai:unsubscribe', { jobId: JOB });
+    await settle();
+    table.set(JOB, appJob({ progress: 77 }));
+    await gateway.poll();
+    await settle();
+    expect(got.progress.map((p) => p.progress)).toEqual([10]);
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
+  it('구독한 뒤 토큰이 끝난 소켓에는 결과(ai:done)를 보내지 않는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    tokens.verifyAccess.mockRejectedValue(new UnauthorizedException());
+    table.set(JOB, appJob({ status: 'succeeded', progress: 100, result: { secret: true } }));
+    await gateway.poll();
+    await settle();
+    expect(got.done).toEqual([]);
+  });
+
+  it('여러 작업이 함께 끝나도 남은 작업의 진행률을 같이 보낸다', async () => {
+    const SECOND = '64b000000000000000000003';
+    table.set(SECOND, appJob({ _id: SECOND, progress: 5 }));
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    await subscribe(a, SECOND);
+    table.set(JOB, appJob({ status: 'succeeded', progress: 100 }));
+    table.set(SECOND, appJob({ _id: SECOND, progress: 50 }));
+    await gateway.poll();
+    await vi.waitFor(() => {
+      expect(got.done.map((d) => d.jobId)).toEqual([JOB]);
+      expect(got.progress.filter((p) => p.jobId === SECOND).at(-1)?.progress).toBe(50);
+    });
+  });
+
+  it('끝난 것을 읽은 사이 다시 시도로 처리기에 다시 들어가면 끝내지 않고 계속 보낸다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    // 진행률 읽기는 실패를 보고, 결과를 다시 읽을 때는 이미 다시 시도(queued)
+    jobs.progressOf.mockResolvedValueOnce([{ jobId: JOB, status: 'failed', progress: 30 }]);
+    table.set(JOB, appJob({ status: 'queued', progress: 0, step: undefined }));
+    await gateway.poll();
+    await settle();
+    expect(got.done).toEqual([]);
+    table.set(JOB, appJob({ status: 'running', progress: 15, step: 'ocr' }));
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.progress.at(-1)?.progress).toBe(15));
+  });
+
+  it('끝난 작업의 결과를 읽다가 DB가 잠깐 안 되면 지켜보기를 유지하고 다음 차례에 보낸다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    const finished = appJob({ status: 'succeeded', progress: 100 });
+    table.set(JOB, finished);
+    jobs.findMine.mockRejectedValueOnce(new Error('db down'));
+    await gateway.poll();
+    await settle();
+    expect(got.done).toEqual([]);
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: finished }]));
+  });
+
+  it('받는 소켓의 토큰 확인이 DB 일시 오류로 실패하면 다음 차례에 보낸다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    const finished = appJob({ status: 'succeeded', progress: 100 });
+    table.set(JOB, finished);
+    tokens.verifyAccess.mockRejectedValueOnce(new Error('db down'));
+    await gateway.poll();
+    await settle();
+    expect(got.done).toEqual([]);
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: finished }]));
+    // 보낸 뒤에는 더 지켜보지 않는다
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
+  it('두 소켓 중 하나만 일시 오류면 다음 차례에 그 소켓에만 보낸다', async () => {
+    // 두 소켓 모두 사용자 a (토큰 'a' · 'a2')
+    tokens.verifyAccess.mockImplementation(async () => ({ userId: 'a' }));
+    const one = await connect('a');
+    const two = await connect('a2');
+    const got1 = record(one);
+    const got2 = record(two);
+    await subscribe(one);
+    await subscribe(two);
+    table.set(JOB, appJob({ status: 'succeeded', progress: 100 }));
+    let failedOnce = false;
+    tokens.verifyAccess.mockImplementation(async (token: string) => {
+      if (token === 'a2' && !failedOnce) {
+        failedOnce = true;
+        throw new Error('db down');
+      }
+      return { userId: 'a' };
+    });
+    await gateway.poll();
+    await gateway.poll();
+    await settle();
+    // 처음 받은 소켓은 다시 받지 않는다
+    expect(got1.done).toHaveLength(1);
+    expect(got2.done).toHaveLength(1);
+  });
+
+  it('보낸 기록이 남은 작업을 다시 시도하면 새 결과는 모든 소켓에 다시 보낸다', async () => {
+    tokens.verifyAccess.mockImplementation(async () => ({ userId: 'a' }));
+    const one = await connect('a');
+    const two = await connect('a2');
+    const got1 = record(one);
+    const got2 = record(two);
+    await subscribe(one);
+    await subscribe(two);
+    // 첫 실행: one은 받고 two는 토큰 확인이 일시 오류
+    table.set(JOB, appJob({ status: 'failed', progress: 30 }));
+    let failTwo = true;
+    tokens.verifyAccess.mockImplementation(async (token: string) => {
+      if (token === 'a2' && failTwo) throw new Error('db down');
+      return { userId: 'a' };
+    });
+    await gateway.poll();
+    await vi.waitFor(() => expect(got1.done).toHaveLength(1));
+    // 다시 시도로 처리기에 다시 들어감 → 다음 차례에 끝나지 않은 것을 봄
+    table.set(JOB, appJob({ status: 'queued', progress: 0 }));
+    jobs.progressOf.mockResolvedValueOnce([{ jobId: JOB, status: 'failed', progress: 30 }]);
+    await gateway.poll();
+    // 두 번째 실행이 끝남
+    failTwo = false;
+    const second = appJob({
+      status: 'succeeded',
+      progress: 100,
+      updatedAt: '2026-11-16T00:05:00.000Z',
+    });
+    table.set(JOB, second);
+    await gateway.poll();
+    await vi.waitFor(() => {
+      expect(got1.done.at(-1)).toEqual({ jobId: JOB, job: second });
+      expect(got2.done.at(-1)).toEqual({ jobId: JOB, job: second });
+    });
+    expect(got1.done.filter((d) => d.job.updatedAt === second.updatedAt)).toHaveLength(1);
+    expect(got2.done.filter((d) => d.job.updatedAt === second.updatedAt)).toHaveLength(1);
+  });
+
+  it('다시 시도된 작업을 진행 중(queued)으로 먼저 읽어도 새 결과는 모든 소켓에 보낸다', async () => {
+    tokens.verifyAccess.mockImplementation(async () => ({ userId: 'a' }));
+    const one = await connect('a');
+    const two = await connect('a2');
+    const got1 = record(one);
+    const got2 = record(two);
+    await subscribe(one);
+    await subscribe(two);
+    table.set(JOB, appJob({ status: 'failed', progress: 30 }));
+    let failTwo = true;
+    tokens.verifyAccess.mockImplementation(async (token: string) => {
+      if (token === 'a2' && failTwo) throw new Error('db down');
+      return { userId: 'a' };
+    });
+    await gateway.poll();
+    await vi.waitFor(() => expect(got1.done).toHaveLength(1));
+    // 다시 시도: 1초마다 읽는 쪽이 queued를 그대로 본다
+    table.set(JOB, appJob({ status: 'queued', progress: 0 }));
+    await gateway.poll();
+    failTwo = false;
+    const second = appJob({
+      status: 'succeeded',
+      progress: 100,
+      updatedAt: '2026-11-16T00:05:00.000Z',
+    });
+    table.set(JOB, second);
+    await gateway.poll();
+    await vi.waitFor(() => {
+      expect(got1.done.at(-1)).toEqual({ jobId: JOB, job: second });
+      expect(got2.done.at(-1)).toEqual({ jobId: JOB, job: second });
+    });
+    expect(got1.done.filter((d) => d.job.updatedAt === second.updatedAt)).toHaveLength(1);
+    expect(got2.done.filter((d) => d.job.updatedAt === second.updatedAt)).toHaveLength(1);
+  });
+
+  it('다시 시도가 두 번 읽는 사이에 시작해 끝나도 새 결과는 모든 소켓에 보낸다', async () => {
+    tokens.verifyAccess.mockImplementation(async () => ({ userId: 'a' }));
+    const one = await connect('a');
+    const two = await connect('a2');
+    const got1 = record(one);
+    const got2 = record(two);
+    await subscribe(one);
+    await subscribe(two);
+    table.set(JOB, appJob({ status: 'failed', progress: 30 }));
+    let failTwo = true;
+    tokens.verifyAccess.mockImplementation(async (token: string) => {
+      if (token === 'a2' && failTwo) throw new Error('db down');
+      return { userId: 'a' };
+    });
+    await gateway.poll();
+    await vi.waitFor(() => expect(got1.done).toHaveLength(1));
+    // 진행 중 상태를 한 번도 보지 못하고, 다음 차례에 이미 끝난 두 번째 실행을 읽는다
+    failTwo = false;
+    const second = appJob({
+      status: 'succeeded',
+      progress: 100,
+      updatedAt: '2026-11-16T00:05:00.000Z',
+    });
+    table.set(JOB, second);
+    await gateway.poll();
+    await vi.waitFor(() => {
+      expect(got1.done.at(-1)).toEqual({ jobId: JOB, job: second });
+      expect(got2.done.at(-1)).toEqual({ jobId: JOB, job: second });
+    });
+    expect(got1.done).toHaveLength(2);
+    expect(got2.done).toHaveLength(1);
+  });
+
+  it('토큰이 거절(401)된 소켓만 있으면 다시 시도하지 않고 끝낸다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    table.set(JOB, appJob({ status: 'succeeded', progress: 100 }));
+    tokens.verifyAccess.mockRejectedValue(new UnauthorizedException());
+    await gateway.poll();
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+    expect(got.done).toEqual([]);
+  });
+
+  it('결과 읽기가 계속 실패하면 5번째에 그만 지켜본다', async () => {
+    const a = await connect('a');
+    await subscribe(a);
+    table.set(JOB, appJob({ status: 'succeeded', progress: 100 }));
+    const original = jobs.findMine.getMockImplementation()!;
+    jobs.findMine.mockRejectedValue(new Error('broken row'));
+    for (let i = 0; i < 5; i++) await gateway.poll();
+    jobs.findMine.mockImplementation(original);
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
+  it('구독을 확인하는 사이 소켓이 끊기면 방에 넣지 않는다', async () => {
+    const a = await connect('a');
+    let release!: () => void;
+    const original = jobs.findMine.getMockImplementation()!;
+    jobs.findMine.mockImplementationOnce(async (userId: string, jobId: string) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return original(userId, jobId);
+    });
+    a.emit('ai:subscribe', { jobId: JOB });
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    a.disconnect();
+    await settle();
+    release();
+    await settle();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
+  it('끝난 작업을 결과 읽기 전에 지웠으면(404) 보내지 않고 더 지켜보지 않는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    jobs.progressOf.mockResolvedValueOnce([{ jobId: JOB, status: 'succeeded', progress: 100 }]);
+    table.delete(JOB);
+    await gateway.poll();
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+    expect(got.done).toEqual([]);
+  });
+
+  it('대문자 id로 구독해도 같은 작업으로 계속 받는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await expect(subscribe(a, JOB.toUpperCase())).resolves.toEqual({ ok: true });
+    table.set(JOB, appJob({ progress: 45 }));
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.progress.at(-1)).toMatchObject({ jobId: JOB, progress: 45 }));
+  });
+
+  it('구독을 확인하는 중에 해지가 오면 해지가 나중에 적용된다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    let release!: () => void;
+    const original = jobs.findMine.getMockImplementation()!;
+    jobs.findMine.mockImplementationOnce(async (userId: string, jobId: string) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return original(userId, jobId);
+    });
+    const pending = subscribe(a);
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    a.emit('ai:unsubscribe', { jobId: JOB });
+    await settle();
+    release();
+    await pending;
+    await settle();
+    table.set(JOB, appJob({ progress: 88 }));
+    await gateway.poll();
+    await settle();
+    expect(got.progress.map((p) => p.progress)).not.toContain(88);
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
+  it('구독하면 1초 간격으로 스스로 다시 읽는다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    table.set(JOB, appJob({ progress: 33 }));
+    await vi.waitFor(() => expect(got.progress.at(-1)?.progress).toBe(33), { timeout: 3000 });
+  });
+});

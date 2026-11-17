@@ -284,4 +284,102 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 연속 달성 주 수', () =>
         expect(created.body.data.streak).toBe(1); // 이번 주 대상 날(오늘)을 이미 달성
         expect((await list(me)).find((g) => g.name === '토요일 공부')!.streak).toBe(created.body.data.streak);
     });
+
+    describe('오늘 공부 시간 (todayMin)', () => {
+        // 시계는 서울 2026-11-14(토) 정오. 오늘(토) 기록을 넣는다
+        const SAT = '2026-11-14';
+        const todayOf = async (u: TestUser, name = '목표') => (await list(u)).find((g) => g.name === name) as unknown as { todayMin: number | null };
+
+        it('12) 오늘이 목표 요일이면 오늘 센 분(내림), 요일이 아니면 null. 판정(달성)과 같은 기준이다', async () => {
+            const me = await newUser();
+            await addGoal(me, { name: '토요일', days: [6] });
+            await addGoal(me, { name: '월 수', days: [1, 3] });
+            await addStudy(me, [SAT], 2759); // 45분 59초
+            expect((await todayOf(me, '토요일')).todayMin).toBe(45);
+            expect((await todayOf(me, '월 수')).todayMin).toBeNull();
+
+            // 목표 30분: 29분 59초는 아직, 30분은 달성 — todayMin도 같은 경계
+            const you = await newUser();
+            await addGoal(you, { name: '토요일', days: [6] });
+            await addStudy(you, [SAT], 1799);
+            expect((await todayOf(you, '토요일')).todayMin).toBe(29);
+            expect(await streakOf(you, '토요일')).toBe(0);
+            await col('daily_records').updateOne({ userId: you.id, studyDate: SAT }, { $set: { totalSec: 1800 } });
+            expect((await todayOf(you, '토요일')).todayMin).toBe(30);
+            expect(await streakOf(you, '토요일')).toBe(1);
+        });
+
+        it('13) 기록이 없으면 0, 공휴일 · 제외일 · 일시 정지 · 쉬는 목표면 null', async () => {
+            const me = await newUser();
+            await addGoal(me, { name: '기록 없음', days: [6] });
+            expect((await todayOf(me, '기록 없음')).todayMin).toBe(0);
+
+            await addGoal(me, { name: '쉬는 중', days: [6], pausedUntil: new Date('2026-11-13T15:00:00Z') }); // 서울 11-14까지
+            await addGoal(me, { name: '쉬는 목표', days: [6], isActive: false });
+            await addStudy(me, [SAT], 1800);
+            expect((await todayOf(me, '쉬는 중')).todayMin).toBeNull();
+            expect((await todayOf(me, '쉬는 목표')).todayMin).toBeNull();
+            expect((await todayOf(me, '기록 없음')).todayMin).toBe(30);
+
+            await col('custom_holidays').insertOne({ userId: me.id, name: '제외', date: SAT, createdAt: new Date() });
+            expect((await todayOf(me, '기록 없음')).todayMin).toBeNull();
+        });
+
+        it('13b) 오늘이 공휴일이면 null (그 날 공부해도)', async () => {
+            fetchYear.mockResolvedValue([{ date: SAT, name: '임시 공휴일' }]); // 공휴일 원본은 처음 읽을 때 한 해씩 받아 저장한다
+            const me = await newUser();
+            await addGoal(me, { name: '공휴일', days: [6] });
+            await addStudy(me, [SAT], 1800);
+            expect((await todayOf(me, '공휴일')).todayMin).toBeNull();
+        });
+
+        it('14) 과목 목표는 그 과목 시간만 센다 — 자정을 넘긴 공부의 오늘 몫(subjectSec)도 포함한다', async () => {
+            const me = await newUser();
+            const math = new Types.ObjectId();
+            const eng = new Types.ObjectId();
+            await addGoal(me, { name: '수학', days: [6], subjectId: math });
+            await addGoal(me, { name: '영어', days: [6], subjectId: eng });
+            await addGoal(me, { name: '전체', days: [6] });
+            // 금요일 밤 23:30에 시작해 토요일 00:20까지 한 수학 공부 중 오늘(토) 몫 20분 + 오늘 한 영어 15분
+            await col('daily_records').insertOne({
+                userId: me.id,
+                studyDate: SAT,
+                totalSec: 2100,
+                personalSec: 2100,
+                roomSec: 0,
+                streakOk: false,
+                subjectSec: { [math.toString()]: 1200, [eng.toString()]: 900 },
+                items: [],
+            });
+            expect((await todayOf(me, '수학')).todayMin).toBe(20);
+            expect((await todayOf(me, '영어')).todayMin).toBe(15);
+            expect((await todayOf(me, '전체')).todayMin).toBe(35);
+        });
+
+        it('15) 다른 사람의 기록은 섞이지 않고, 기록은 todayMin 때문에 더 읽지 않는다', async () => {
+            const me = await newUser();
+            const other = await newUser();
+            await addGoal(me, { name: '가', days: [6] });
+            await addGoal(me, { name: '나', days: [6] });
+            await addStudy(other, [SAT], 3600);
+            await addStudy(me, [SAT], 600);
+            const find = vi.spyOn(dailyModel, 'find');
+            const goals = await list(me);
+            expect(goals.map((g) => (g as unknown as { todayMin: number }).todayMin)).toEqual([10, 10]);
+            expect(find).toHaveBeenCalledTimes(1);
+        });
+
+        it('16) 만들기 · 수정 응답의 todayMin은 바로 뒤 목록과 같다', async () => {
+            const me = await newUser();
+            await addStudy(me, [SAT], 1500); // 오늘 25분
+            const created = await http().post('/api/v1/goals/recurring').set(me.auth).send({ name: '토요일 공부', days: [6], targetMin: 60 });
+            expect(created.status).toBe(201);
+            expect(SharedRecurringGoal.safeParse(created.body.data).success).toBe(true);
+            expect(created.body.data.todayMin).toBe(25);
+            expect((await todayOf(me, '토요일 공부')).todayMin).toBe(25);
+            const patched = await http().patch(`/api/v1/goals/recurring/${created.body.data._id}`).set(me.auth).send({ days: [1] });
+            expect(patched.body.data.todayMin).toBeNull();
+            expect((await todayOf(me, '토요일 공부')).todayMin).toBeNull();
+        });
+    });
 });

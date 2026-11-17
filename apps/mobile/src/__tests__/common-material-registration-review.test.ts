@@ -85,9 +85,18 @@ it('실서버 자료 등록에 동일한 Idempotency-Key를 헤더로 전달한�
   }
 });
 
-it('실서버 등록 응답이 유실되면 같은 키의 동시 요청·재시도는 POST를 다시 보내지 않는다', async () => {
+it('실서버 등록 응답이 유실되면 진행 중 동시 요청은 POST 1번을 공유하고, 다시 부르면 같은 키로 다시 보낸다', async () => {
   const original = globalThis.fetch;
-  const fetch = jest.fn().mockRejectedValue(new Error('서버 처리 후 응답 유실'));
+  const fetch = jest
+    .fn()
+    .mockRejectedValueOnce(new Error('서버 처리 후 응답 유실'))
+    .mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => ({
+        data: { material: { _id: 'retried-material' }, job: { _id: 'retried-job' } },
+      }),
+    });
   globalThis.fetch = fetch;
   const request = { ...input, requestId: 'real-http-lost-reply-key' };
   try {
@@ -105,10 +114,43 @@ it('실서버 등록 응답이 유실되면 같은 키의 동시 요청·재시�
         reason: expect.objectContaining({ code: 'MATERIAL_REGISTRATION_UNCERTAIN' }),
       }),
     ]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const retried = await httpApi.content.createMaterial(request);
+    expect(retried.material._id).toBe('retried-material');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for (const call of fetch.mock.calls)
+      expect(call[1].headers['Idempotency-Key']).toBe('real-http-lost-reply-key');
+    // 성공한 뒤에는 다시 보내지 않는다
+    await httpApi.content.createMaterial(request);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  } finally {
+    globalThis.fetch = original;
+    useNet.setState({ state: 'ok' });
+  }
+});
+
+it('5xx 실패도 불확실한 실패라 같은 키로 다시 보낸다', async () => {
+  const original = globalThis.fetch;
+  const fetch = jest
+    .fn()
+    .mockResolvedValueOnce({
+      status: 503,
+      ok: false,
+      json: async () => ({ code: 'UNAVAILABLE', message: '잠시 후' }),
+    })
+    .mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => ({ data: { material: { _id: 'm5' }, job: { _id: 'j5' } } }),
+    });
+  globalThis.fetch = fetch;
+  const request = { ...input, requestId: 'real-http-5xx-key' };
+  try {
     await expect(httpApi.content.createMaterial(request)).rejects.toMatchObject({
       code: 'MATERIAL_REGISTRATION_UNCERTAIN',
     });
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect((await httpApi.content.createMaterial(request)).material._id).toBe('m5');
+    expect(fetch).toHaveBeenCalledTimes(2);
   } finally {
     globalThis.fetch = original;
     useNet.setState({ state: 'ok' });
@@ -206,7 +248,7 @@ it('서로 다른 계정은 같은 요청 키의 응답을 공유하지 않는�
   }
 });
 
-it('성공 상태여도 등록 결과가 누락되면 불명확한 응답으로 안내하고 POST를 반복하지 않는다', async () => {
+it('성공 상태여도 등록 결과가 누락되면 불명확한 응답으로 안내하고, 다시 부르면 같은 키로 다시 보낸다', async () => {
   const original = globalThis.fetch;
   const fetch = jest.fn().mockResolvedValue({ status: 204, ok: true });
   globalThis.fetch = fetch;
@@ -218,7 +260,7 @@ it('성공 상태여도 등록 결과가 누락되면 불명확한 응답으로 
     await expect(httpApi.content.createMaterial(request)).rejects.toMatchObject({
       code: 'MATERIAL_REGISTRATION_UNCERTAIN',
     });
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
   } finally {
     globalThis.fetch = original;
   }

@@ -3,6 +3,26 @@ import { HydratedDocument, Types } from 'mongoose';
 
 export type AiJobDocument = HydratedDocument<AiJob>;
 
+/** 완료 푸시 상태: 없음(null) / claimed(선점) / sent / skipped(보내지 않고 끝) / gave_up(발송 실패로 포기) */
+@Schema({ _id: false })
+export class AiJobNotice {
+  @Prop({ type: String, enum: ['claimed', 'sent', 'skipped', 'gave_up'], default: null })
+  state?: string | null;
+
+  @Prop({ type: String })
+  claimId?: string;
+
+  @Prop({ type: Date })
+  claimedAt?: Date;
+
+  @Prop({ type: Number, default: 0 })
+  attempts?: number;
+
+  @Prop({ type: Date, default: null })
+  retryAt?: Date | null;
+}
+const NoticeSchema = SchemaFactory.createForClass(AiJobNotice);
+
 // ai_jobs: NestJS가 작업을 넣고, FastAPI 처리기가 꺼내 처리한 뒤 결과를 같은 문서에 씁니다.
 // 상태·필드 이름은 공용 스키마(packages/shared AiJob)와 처리기(apps/ai jobs.py)를 따릅니다.
 @Schema({ collection: 'ai_jobs', timestamps: true })
@@ -88,11 +108,18 @@ export class AiJob {
 
   @Prop({ type: Date, default: null })
   retryAt?: Date | null; // 예: "2026-01-01 12:00:00" 이후 재시도
+
+  // 노트 변환 완료 푸시 상태(NestJS AiJobNoticesService가 관리). 다시 시도(retry)가 통째로 지운다.
+  // 이 필드를 쓰는 쓰기는 timestamps:false 로 써서 updatedAt(처리기가 끝낸 시각)을 바꾸지 않는다
+  @Prop({ type: NoticeSchema })
+  notice?: AiJobNotice;
 }
 
 export const AiJobSchema = SchemaFactory.createForClass(AiJob);
 
 // 처리기가 상태 · 종류별로 가장 먼저 들어온 작업을 가져간다(apps/ai jobs.py)
 AiJobSchema.index({ status: 1, type: 1, createdAt: 1 });
+// 끝난 노트 변환 작업 중 최근 것 찾기(AiJobNoticesService 완료 푸시)
+AiJobSchema.index({ type: 1, status: 1, updatedAt: -1 });
 // 같은 노트의 끝나지 않은 미리 만들기 찾기(AiJobsService.takeOverPregen)
 AiJobSchema.index({ userId: 1, type: 1, targetType: 1, targetId: 1, status: 1, createdAt: -1 });
