@@ -123,6 +123,8 @@ export interface Api {
     startSession(p: { studyItemId: string; mode: StudySession['mode'] }): Promise<StudySession>;
     pauseSession(id: string): Promise<void>;
     resumeSession(id: string): Promise<void>;
+    /** 세션이 열려 있는 동안 서버에 "앱이 살아 있다"고 알린다(1분마다 · 앞으로 올 때). 실패해도 화면에는 영향이 없다 */
+    heartbeatSession(id: string): Promise<void>;
     /** 시간 · 포인트는 서버가 startedAt · pause/resume 기록으로 계산한다. clientDurationSec는 표시 비교용 참고값일 뿐 */
     endSession(
       id: string,

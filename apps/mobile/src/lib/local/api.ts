@@ -611,6 +611,8 @@ const api: Api = {
       if (p && !p.endedAt) p.endedAt = now();
       return ok(undefined);
     },
+    // 기기 저장 모드는 서버가 없어 보낼 곳이 없다
+    heartbeatSession: () => ok(undefined),
     endSession: (id, p) => {
       const d = db();
       const s = d.sessions.find((x) => x._id === id);
