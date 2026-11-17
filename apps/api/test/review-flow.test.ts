@@ -767,6 +767,30 @@ describe('오늘의 복습(TodayReviewService)', () => {
     expect(input.attempts.some((a) => a.quizSetId === s.set.toHexString())).toBe(true);
   });
 
+  // Codex 3차 리뷰: 복습 상태(세트)를 읽은 뒤에만 「도는 복습」을 보면, 그 사이 끝나 결과를 저장한 복습을 놓쳐
+  // 결과 전 상태로 만든 오늘의 복습이 방금 푼 결과를 덮는다
+  it('세트를 읽는 사이 오답 복습이 끝나도 그 원본은 고르지 않는다', async () => {
+    const { today, similar, seed, jobs, sets } = setup();
+    const s = await seed();
+    await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    const review = sets.rows.find(
+      (r) => r['status'] === 'generating' && String(r['sourceSetId']) === s.set.toHexString(),
+    )!;
+    const realFind = sets.model.find.bind(sets.model);
+    const find = vi.spyOn(sets.model, 'find').mockImplementation(((
+      filter: Record<string, unknown>,
+      ...rest: unknown[]
+    ) => {
+      // 오늘의 복습이 세트(복습 상태)를 읽는 바로 그때 오답 복습이 끝나 결과를 저장한다
+      if (filter['status'] === 'ready' && filter['materialId']) review['status'] = 'ready';
+      return (realFind as (...a: unknown[]) => unknown)(filter, ...rest);
+    }) as never);
+    await today.start(ME.toHexString(), NOW);
+    find.mockRestore();
+    const input = jobs.rows.find((j) => j['type'] === TODAY_TYPE)!['input'] as TodayInput;
+    expect(input.sets.find((x) => x.id === s.set.toHexString())!.deletedAt).toBeTruthy();
+  });
+
   it('복습할 문제가 없으면 조회는 null, 처리기가 실패했으면 failed(앱이 다시 만들게)', async () => {
     const { today, seed, jobs } = setup();
     await seed();
