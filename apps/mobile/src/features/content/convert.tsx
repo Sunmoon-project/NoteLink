@@ -76,6 +76,34 @@ async function cancelLateJob(jobId: string) {
   }
 }
 
+/** 등록 결과를 알 수 없는 실패(서버에 저장됐을 수 있음): 응답 유실 · 연결 끊김 */
+const isUncertain = (e: unknown) =>
+  e instanceof NetworkError ||
+  (e instanceof Error && 'code' in e && e.code === 'MATERIAL_REGISTRATION_UNCERTAIN');
+
+/**
+ * 등록 중에 취소했는데 응답이 유실됐을 때. 같은 요청 번호 · 본문으로 다시 보내면 서버가 저장한 결과를 돌려주고
+ * (저장하지 않았다면 이때 저장된다 — 원본은 폴더에 남는다), 그 작업을 멈춘다. 끝내 되찾지 못하면 알린다
+ */
+async function cancelLostRegistration(request: Parameters<typeof api.content.createMaterial>[0]) {
+  for (let i = 0; ; i++) {
+    try {
+      const r = await api.content.createMaterial(request);
+      await cancelLateJob(r.job._id);
+      return;
+    } catch (e) {
+      // 결과가 확실한 실패(입력 오류 등)면 서버에 남은 작업이 없다
+      if (!isUncertain(e)) return;
+      const wait = LATE_CANCEL_RETRY_MS[i];
+      if (wait === undefined) {
+        toast('변환 취소를 마치지 못했어요. 정리본이 생기면 폴더에서 지워 주세요');
+        return;
+      }
+      await new Promise((res) => setTimeout(res, wait));
+    }
+  }
+}
+
 const pickedScreen = (kind: keyof typeof DETAIL, source: string) =>
   kind === 'document'
     ? '/capture/picked-file'
@@ -181,6 +209,7 @@ export function ConvertScreen() {
   const run = async () => {
     if (running.current || canceled.current) return;
     running.current = true;
+    let sent: Parameters<typeof api.content.createMaterial>[0] | null = null;
     setPhase('upload');
     try {
       // 1) 끊긴 지점부터: 이미 올린 파일은 건너뛴다 (원본은 기기에 보관)
@@ -205,16 +234,18 @@ export function ConvertScreen() {
       }
       // 2) 서버에 자료 등록 → ai_jobs 큐에 작업이 들어간다
       registering.current = true;
-      const r = await api.content.createMaterial({
+      // 보낸 요청(번호 · 본문)을 남겨 둔다: 취소한 뒤 응답이 유실되면 같은 요청으로 결과를 되찾아 멈춘다
+      sent = {
         requestId: useDraft.getState().getCreationId(),
         folderId: requireFolder(),
         kind: draft.kind,
         source: draft.source,
         title: draft.title.trim() || defaultTitle(draft.kind, draft.files[0]?.name, draft.source),
         description: draft.description,
-        blobUrls: blobs.current,
+        blobUrls: [...blobs.current],
         avatarItemId: draft.avatar,
-      });
+      };
+      const r = await api.content.createMaterial(sent);
       if (canceled.current) {
         // 등록 중에 취소했다. 요청 번호는 취소할 때 이미 떼어 냈다(doCancel) — 여기서 다시 지우면 그사이 다시 올린
         // 새 초안의 번호를 지운다. 늦게 받은 작업만 멈춘다(실패하면 다시 보내고, 끝내 못 멈추면 알린다)
@@ -226,6 +257,8 @@ export function ConvertScreen() {
       setJob(r.job);
       setPhase('ai');
     } catch (e) {
+      // 등록 중에 취소했는데 응답이 유실됐다: 서버에 저장됐을 수 있으니 같은 요청으로 결과를 되찾아 작업을 멈춘다
+      if (canceled.current && sent && isUncertain(e)) void cancelLostRegistration(sent);
       if (!canceled.current && !(e instanceof NetworkError))
         setUploadFail((f) => ({ reason: uploadFailReason(e), tries: (f?.tries ?? 0) + 1 }));
       if (!canceled.current)

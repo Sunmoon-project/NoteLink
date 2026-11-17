@@ -110,10 +110,12 @@ const client = () => {
 };
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 };
 beforeEach(() => {
   jest.clearAllMocks();
@@ -1028,6 +1030,42 @@ describe('변환 화면: 다 올린 뒤에 변환으로 넘어가고, 취소하�
     await act(async () => created.resolve({ material: { _id: 'm' }, job: { _id: 'late-job' } }));
     expect(mockApi.ai.cancel).toHaveBeenCalledWith('late-job');
     expect(useDraft.getState().getCreationId()).toBe(next);
+  });
+
+  // Codex #490 5차 리뷰: 등록 중 취소 뒤 등록 응답이 유실되면(서버엔 저장됐을 수 있음) 아무것도 멈추지 않았다
+  it('등록 중 취소 뒤 응답이 유실되면 같은 요청으로 결과를 되찾아 그 작업을 멈춘다', async () => {
+    const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
+    mockApi.content.createMaterial
+      .mockReturnValueOnce(created.promise)
+      .mockResolvedValueOnce({ material: { _id: 'm' }, job: { _id: 'lost-job' } });
+    await renderScreen(<ConvertScreen />, client());
+    await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1));
+    const first = mockApi.content.createMaterial.mock.calls[0][0];
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    const next = useDraft.getState().getCreationId();
+    await act(async () =>
+      created.reject(
+        new ApiError('MATERIAL_REGISTRATION_UNCERTAIN', '등록 결과를 확인할 수 없어요', 0),
+      ),
+    );
+    await waitFor(() => expect(mockApi.ai.cancel).toHaveBeenCalledWith('lost-job'));
+    // 같은 번호 · 본문으로 되찾는다(새 초안의 번호는 그대로)
+    expect(mockApi.content.createMaterial.mock.calls[1][0]).toEqual(first);
+    expect(useDraft.getState().getCreationId()).toBe(next);
+  });
+
+  it('등록 중 취소 뒤 결과가 확실한 실패(입력 오류)면 다시 보내지 않는다', async () => {
+    const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
+    mockApi.content.createMaterial.mockReturnValueOnce(created.promise);
+    await renderScreen(<ConvertScreen />, client());
+    await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1));
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    await act(async () => created.reject(new ApiError('VALIDATION_FAILED', '형식 오류', 400)));
+    await act(async () => {});
+    expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1);
+    expect(mockApi.ai.cancel).not.toHaveBeenCalled();
   });
 
   it('늦게 받은 작업을 멈추지 못하면 몇 번 더 보내고, 끝내 못 멈추면 알린다', async () => {
