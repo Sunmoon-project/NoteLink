@@ -58,3 +58,19 @@ describe('요금제', () => {
     expect(canChangePlan('max')).toBe(false);
   });
 });
+
+// Codex #490 리뷰: 문서가 안내한 철회 경로가 앱에 실제로 있어야 한다(없는 「설정에서 끄기」를 안내하던 문제)
+describe('약관이 안내하는 경로', () => {
+  const all = (doc: keyof typeof LEGAL_DOCS) =>
+    LEGAL_DOCS[doc].sections.flatMap((s) => s.body).join('\n');
+
+  it('마케팅 철회는 앱에 있는 「도움말 및 지원」으로 안내하고, 없는 설정 메뉴를 안내하지 않는다', () => {
+    expect(all('marketing')).toContain('도움말 및 지원');
+    expect(all('marketing')).not.toMatch(/설정에서 마케팅/);
+  });
+
+  it('아이디를 가입 이메일로 설명하지 않는다(아이디는 따로 정한다)', () => {
+    expect(all('service')).not.toContain('회원의 아이디는 가입한 이메일입니다');
+    expect(all('privacy')).not.toContain('이메일(아이디)');
+  });
+});

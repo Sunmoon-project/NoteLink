@@ -56,15 +56,19 @@ export class AppLoginService {
    * (계정이 없다고 비교를 건너뛰면 빨리 끝나서 응답 시간으로 가입 여부를 알아낼 수 있다).
    */
   async login(id: AccountId, password: string): Promise<AppLoginResult> {
+    // 잠금은 두 겹이다(Codex #490 3차 리뷰).
+    // ① 입력한 값(아이디 또는 이메일) 기준: 잠기면 429. 입력한 값에만 달려 있어 다른 계정 정보를 드러내지 않는다.
+    // ② 계정 기준: 아이디 · 이메일을 번갈아 넣어 횟수를 나눠 쓰지 못하게 한다. 계정이 잠겨도 429 대신 일반 실패(401)로
+    //    답한다 — 429로 답하면 「아이디로 잠근 뒤 이메일을 넣어 보기」로 아이디와 이메일의 짝을 알아낼 수 있다
+    const inputKey = 'loginId' in id ? `id:${id.loginId}` : id.email;
+    const slot = await this.throttle.reserve(inputKey);
+    if (!slot.ok) throw loginLocked(slot.retryAfterMs);
+
     // 비밀번호를 읽기 직전 시각. 확인하는 사이에 비밀번호가 재설정되면 이 로그인의 토큰은 거절된다(TokenService.issue)
     const authorizedAt = new Date();
     const user = await this.users.findOne({ ...accountFilter(id), deletedAt: null }).lean();
-    // 잠금은 계정 기준이다: 아이디와 가입 이메일을 번갈아 넣어도 같은 계정이면 같은 횟수를 쓴다(Codex #496 리뷰).
-    // 없는 계정은 입력한 값 기준으로 똑같이 잠가, 잠금 여부로 가입 여부를 알아낼 수 없게 한다
-    const key = user ? `user:${String(user._id)}` : 'loginId' in id ? `id:${id.loginId}` : id.email;
-    // 비밀번호를 확인하기 전에 시도를 하나 먼저 쓴다
-    const slot = await this.throttle.reserve(key);
-    if (!slot.ok) throw loginLocked(slot.retryAfterMs);
+    const accountKey = user ? `user:${String(user._id)}` : null;
+    const accountOk = accountKey ? (await this.throttle.reserve(accountKey)).ok : true;
 
     // 비교할 해시: 비밀번호를 가진 계정이면 그 해시, 아니면 같은 비용의 가짜 해시
     const storedHash = user?.passwordHash ?? null;
@@ -74,10 +78,13 @@ export class AppLoginService {
     const tooLong = Buffer.byteLength(password, 'utf8') > PASSWORD_MAX_BYTES;
     const matched = await compare(password, target);
 
-    if (!user || storedHash === null || tooLong || !matched) throw invalidCredentials();
+    // 계정이 잠겼으면 비밀번호가 맞아도 일반 실패로 답한다(비교는 이미 해서 응답 시간은 같다)
+    if (!user || storedHash === null || tooLong || !matched || !accountOk)
+      throw invalidCredentials();
 
     // 성공하면 횟수를 지운다(정상 사용자가 몇 번 틀리고 맞춘 경우)
-    await this.throttle.clear(key);
+    await this.throttle.clear(inputKey);
+    if (accountKey) await this.throttle.clear(accountKey);
     await this.users.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } });
     const { accessToken, refreshToken } = await this.tokens.issue(
       String(user._id),

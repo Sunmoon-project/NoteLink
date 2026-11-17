@@ -715,7 +715,7 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
       expect(retry.status).toBe(204);
     });
 
-    it('아이디와 가입 이메일을 번갈아 넣어도 같은 계정이면 같은 잠금 횟수를 쓴다', async () => {
+    it('아이디와 가입 이메일을 번갈아 넣어도 같은 계정이면 같은 잠금 횟수를 쓴다(맞는 비밀번호도 막힌다)', async () => {
       await post(SEND, { email: 'lock@example.com' });
       const token = (await post(VERIFY, { email: 'lock@example.com', code: lastCode() })).body.data
         .verificationToken;
@@ -724,10 +724,26 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
         const id = i % 2 === 0 ? 'lock_id' : 'lock@example.com';
         expect((await post(LOGIN, { id, password: 'Wrong1234' })).status).toBe(401);
       }
-      // 잠겼다 — 다른 쪽(이메일)으로 맞는 비밀번호를 넣어도 들어가지 못한다
-      const locked = await post(LOGIN, { id: 'lock@example.com', password: PASSWORD });
-      expect(locked.status).toBe(429);
-      expect((await post(LOGIN, { id: 'lock_id', password: PASSWORD })).status).toBe(429);
+      // 계정이 잠겼다 — 어느 쪽으로 맞는 비밀번호를 넣어도 들어가지 못한다
+      const byEmail = await post(LOGIN, { id: 'lock@example.com', password: PASSWORD });
+      expect(byEmail.status).not.toBe(200);
+      expect(byEmail.body.data).toBeUndefined();
+      const byId = await post(LOGIN, { id: 'lock_id', password: PASSWORD });
+      expect(byId.status).not.toBe(200);
+    });
+
+    // Codex #490 3차 리뷰: 아이디로 잠근 뒤 이메일을 넣었을 때 429가 나면 아이디 · 이메일의 짝이 드러난다
+    it('아이디로 잠근 뒤 이메일을 넣어도 같은 계정인지 응답으로 알 수 없다', async () => {
+      await post(SEND, { email: 'pair@example.com' });
+      const token = (await post(VERIFY, { email: 'pair@example.com', code: lastCode() })).body.data
+        .verificationToken;
+      await post(SIGNUP, { loginId: 'pair_id', verificationToken: token, password: PASSWORD });
+      for (let i = 0; i < 6; i++) await post(LOGIN, { id: 'pair_id', password: 'Wrong1234' });
+      // 같은 계정의 이메일과 상관없는 이메일이 똑같이 답한다
+      const linked = await post(LOGIN, { id: 'pair@example.com', password: 'Wrong1234' });
+      const unrelated = await post(LOGIN, { id: 'nobody@example.com', password: 'Wrong1234' });
+      expect(linked.status).toBe(unrelated.status);
+      expect(linked.body).toEqual(unrelated.body);
     });
 
     it('아이디를 쓸 수 있는지 알려 준다', async () => {

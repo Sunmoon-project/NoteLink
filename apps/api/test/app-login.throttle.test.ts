@@ -254,13 +254,16 @@ describe('이메일마다 따로 센다', () => {
     await expect(service.login({ email: 'other@example.com' }, PASSWORD)).resolves.toBeDefined();
   });
 
-  it('한 계정에 틀려도 다른 계정의 횟수는 늘지 않는다 (잠금은 계정 기준)', async () => {
+  it('한 계정에 틀려도 다른 계정의 횟수는 늘지 않는다 (입력한 값 · 그 계정에만 센다)', async () => {
     const first = user();
     const { service, attempts } = setup([first, user({ email: 'other@example.com' })]);
 
     await failTimes(service, 3);
 
-    expect(attempts.map((a) => [a.email, a.attempts])).toEqual([[`user:${String(first._id)}`, 3]]);
+    expect(attempts.map((a) => [a.email, a.attempts])).toEqual([
+      [EMAIL, 3],
+      [`user:${String(first._id)}`, 3],
+    ]);
   });
 });
 

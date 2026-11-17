@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import { ERROR_CODES } from '@notelink/shared';
 import {
@@ -761,4 +761,48 @@ it('인증을 마친 뒤 아이디만 겹치면, 인증번호를 다시 받지 �
   );
   expect(signup).toHaveBeenLastCalledWith('proof-keep', 'keep_two', 'abcd1234');
   expect(send).toHaveBeenCalledTimes(1);
+});
+
+// Codex #490 3차 리뷰: 받아 둔 증표로 바로 가입하는 중에 새 흐름을 시작하면 옛 응답이 새 상태를 건드리면 안 된다
+describe('받아 둔 증표로 바로 가입하는 중 새 흐름', () => {
+  const pending = () => {
+    let settle!: { ok: () => void; fail: (e: unknown) => void };
+    jest.spyOn(api.auth, 'emailSignup').mockImplementationOnce(
+      () =>
+        new Promise<void>((ok, fail) => {
+          settle = { ok, fail };
+        }),
+    );
+    return () => settle;
+  };
+  const startJoin = async () => {
+    useSignup.getState().reset();
+    useSignup.setState({ sentTo: 'j@test.com', proof: { email: 'j@test.com', token: 'proof-j' } });
+    await fill('j@test.com', 'abcd1234');
+    await fireEvent.press(screen.getByText('이 아이디로 가입하기'));
+    await waitFor(() => expect(api.auth.emailSignup).toHaveBeenCalled());
+    // 다른 이메일로 바꿔 새 흐름을 시작한다
+    await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'k@test.com');
+  };
+
+  it('옛 가입이 늦게 성공해도 화면을 옮기거나 새 흐름을 지우지 않는다', async () => {
+    const settle = pending();
+    await startJoin();
+    const flow = useSignup.getState().flow;
+    useSignup.setState({ proof: { email: 'k@test.com', token: 'proof-k' } });
+    await act(async () => settle().ok());
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(useSignup.getState().flow).toBe(flow);
+    expect(useSignup.getState().proof).toEqual({ email: 'k@test.com', token: 'proof-k' });
+  });
+
+  it('옛 가입이 늦게 증표 오류로 끝나도 새 증표를 지우지 않는다', async () => {
+    const settle = pending();
+    await startJoin();
+    useSignup.setState({ proof: { email: 'k@test.com', token: 'proof-k' } });
+    await act(async () =>
+      settle().fail(new ApiError(ERROR_CODES.EMAIL_PROOF_EXPIRED, '인증 시간이 지났어요.', 401)),
+    );
+    expect(useSignup.getState().proof).toEqual({ email: 'k@test.com', token: 'proof-k' });
+  });
 });

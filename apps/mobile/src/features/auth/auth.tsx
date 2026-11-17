@@ -373,20 +373,23 @@ export function SignupScreen() {
   // 인증번호를 다시 보내면 증표가 무효가 되고, 발송 제한에 걸리면 가입을 이어 갈 수 없다(Codex #496 리뷰)
   const proof = useSignup((st) => st.proof);
   const verified = !!proof && proof.email === email.trim();
+  // 요청을 보낸 흐름 번호를 함께 넘겨, 그사이 새 흐름(다른 이메일 · 새 인증번호)이 시작됐으면 옛 응답은 버린다
+  // (인증번호 화면의 가입과 같은 규칙. Codex #490 3차 리뷰)
   const join = useMutation({
-    mutationFn: async ({ id, pw: checked }: { id: string; pw: string }) => {
+    mutationFn: async ({ id, pw: checked, flow }: { id: string; pw: string; flow: number }) => {
       const token = useSignup.getState().proof?.token;
       if (!token) return false;
       await api.auth.emailSignup(token, id, checked);
-      return true;
+      return useSignup.getState().flow === flow;
     },
-    onSuccess: (done, { id }) => {
-      if (!done) return;
+    onSuccess: (done, { id, flow }) => {
+      if (!done || useSignup.getState().flow !== flow) return;
       useSignup.getState().reset();
       toast('가입했어요. 로그인해 주세요');
       router.replace({ pathname: '/(auth)/login', params: { id } });
     },
-    onError: (e, { id }) => {
+    onError: (e, { id, flow }) => {
+      if (useSignup.getState().flow !== flow) return;
       if (e instanceof ApiError && e.code === ERROR_CODES.LOGIN_ID_TAKEN) return setTakenId(id);
       if (
         e instanceof ApiError &&
@@ -401,7 +404,7 @@ export function SignupScreen() {
   });
   const sendCode = () => {
     if (send.isPending || join.isPending || !formOk()) return;
-    if (verified) join.mutate({ id: normalizedId, pw });
+    if (verified) join.mutate({ id: normalizedId, pw, flow: useSignup.getState().flow });
     else send.mutate({ to: email.trim(), id: normalizedId, pw });
   };
   return (

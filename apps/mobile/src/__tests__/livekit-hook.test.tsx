@@ -4,6 +4,12 @@ import { useToast } from '../stores/toast';
 import type { MediaConnection } from '../lib/livekit-native';
 
 let mockUseMock = false;
+const mockDevice = { isDevice: true };
+jest.mock('expo-device', () => ({
+  get isDevice() {
+    return mockDevice.isDevice;
+  },
+}));
 const mockConnectMedia = jest.fn();
 const mockEmit = jest.fn();
 jest.mock('../lib/env', () => ({
@@ -41,6 +47,7 @@ function media() {
 }
 beforeEach(() => {
   mockUseMock = false;
+  mockDevice.isDevice = true;
   mockConnectMedia.mockReset();
   mockEmit.mockClear();
   useToast.setState({ msg: null });
@@ -248,5 +255,54 @@ it('room:state에 전달받은 오늘 학습 시간을 보낸다', async () => {
     micOn: false,
     camOn: false,
     todaySec: 120,
+  });
+});
+
+// Codex #490 리뷰: 캠 켜기 실패 안내가 실기기 · 시뮬레이터에 맞게 갈리는지
+describe('미디어 켜기 실패 안내', () => {
+  const failing = () => {
+    const m = media();
+    m.toggleCam.mockRejectedValue(new Error('no camera'));
+    m.toggleMic.mockRejectedValue(new Error('denied'));
+    return m;
+  };
+  const connect = async () => {
+    mockConnectMedia.mockResolvedValue(failing());
+    const hook = await renderHook(() => useLiveRoom('room-1'));
+    await waitFor(() => expect(hook.result.current.connected).toBe(true));
+    return hook;
+  };
+
+  it('실기기에서 캠을 못 켜면 권한 · 연결을 확인하라고 한다', async () => {
+    mockDevice.isDevice = true;
+    const { result } = await connect();
+    await act(async () => {
+      await result.current.toggleCam();
+    });
+    expect(useToast.getState().msg).toBe(
+      '미디어 설정을 바꾸지 못했어요. 권한과 연결을 확인해 주세요',
+    );
+  });
+
+  it('시뮬레이터에서 캠을 못 켜면 카메라가 없다고 한다', async () => {
+    mockDevice.isDevice = false;
+    const { result } = await connect();
+    await act(async () => {
+      await result.current.toggleCam();
+    });
+    expect(useToast.getState().msg).toBe(
+      '시뮬레이터에는 카메라가 없어 캠을 켤 수 없어요 · 실제 기기에서 확인해 주세요',
+    );
+  });
+
+  it('시뮬레이터여도 마이크 실패는 권한 · 연결 안내다(카메라 안내는 캠에만)', async () => {
+    mockDevice.isDevice = false;
+    const { result } = await connect();
+    await act(async () => {
+      await result.current.toggleMic();
+    });
+    expect(useToast.getState().msg).toBe(
+      '미디어 설정을 바꾸지 못했어요. 권한과 연결을 확인해 주세요',
+    );
   });
 });
