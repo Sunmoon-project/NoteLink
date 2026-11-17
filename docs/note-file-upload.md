@@ -68,13 +68,15 @@
   "uploadUrl": "https://<계정>.blob.core.windows.net/<컨테이너>/uploads/image/<userId>/<uuid>.jpg?<sas>",
   "blobUrl":   "https://<계정>.blob.core.windows.net/<컨테이너>/uploads/image/<userId>/<uuid>.jpg",
   "expiresAt": "2026-…Z",
-  "headers": { "x-ms-blob-type": "BlockBlob" }
+  "headers": { "x-ms-blob-type": "BlockBlob", "Content-Type": "image/jpeg" }
 } }
 ```
 
-- 서버는 확장자 · `contentType` · 크기를 `UPLOAD_RULES`로 다시 검증합니다. 맞지 않으면 400입니다.
-- 파일 이름은 서버가 UUID로 새로 만듭니다. 경로는 `uploads/{kind}/{userId}/{uuid}.{확장자}`입니다.
-- SAS는 **만들기(`c`) 권한만**, **HTTPS만**, **10분**, 시계 오차 1분을 허용합니다.
+- 서버는 확장자 · 크기를 `UPLOAD_RULES`로 다시 검증합니다. 맞지 않으면 `400 FILE_NOT_ALLOWED`입니다. `contentType`이 허용 목록에 없으면 거절하지 않고 확장자의 표준 형식을 `headers`의 `Content-Type`으로 돌려줍니다.
+- 적어 보낸 `sizeBytes`는 앱이 알린 값일 뿐이고 SAS로는 크기를 묶을 수 없습니다. 실제 크기는 쓰는 곳(노트 등록 · 사진 검사 · 신고 접수)이 저장소에서 다시 확인합니다.
+- 파일 이름은 서버가 UUID로 새로 만듭니다. 경로는 `uploads/{kind}/{userId}/{uuid}.{확장자}`입니다. 신고 사진(`"purpose": "report"`, 이미지만)은 임시 경로 `incoming/{userId}/{uuid}.{확장자}`에 올립니다.
+- SAS는 **만들기(`c`) 권한만**, **HTTPS만**(로컬 에뮬레이터 주소일 때만 http 허용), **15분**(`UPLOAD_SAS_MINUTES`)입니다. 같은 주소로 덮어쓰거나 읽거나 지울 수 없습니다.
+- 발급은 사용자마다 10분에 100번까지입니다(`UPLOAD_ISSUE_LIMIT`). 넘으면 `429 RATE_LIMITED`와 `retryAfterSeconds`를 돌려줍니다. 거절한 요청은 세지 않습니다.
 - 서버는 이 주소를 **자기 키로 계산**할 뿐 Azure에 묻지 않습니다. 그래서 서버에 스토리지 키(연결 문자열)가 있어야 합니다.
 
 ### ③ Blob에 직접 올리기 (앱 → Azure)
@@ -169,7 +171,7 @@
 ```
 앱                       NestJS                        Azure Blob        FastAPI(ai)       Azure DocInt
 │ 사진 고름(형식·크기 확인)
-│── POST /uploads/sas ──▶ 검증 + SAS 계산(10분)
+│── POST /uploads/sas ──▶ 검증 + SAS 계산(15분)
 │◀─ uploadUrl, blobUrl ──┘
 │── PUT uploadUrl ─────────────────────────────────────▶ 저장
 │── POST /images/check ─▶ 내 파일인지 확인(getProperties) ──▶
@@ -210,9 +212,8 @@ Nest와 FastAPI는 같은 값의 `AI_INTERNAL_TOKEN`을 양쪽 환경 변수에 
 
 | 변수 | 어디에 | 용도 |
 | --- | --- | --- |
-| `AZURE_BLOB_ACCOUNT_URL` | api | 스토리지 계정 주소. `https://<소문자·숫자 3~24자>.blob.core.windows.net` 형식만 허용 |
-| `AZURE_BLOB_CONTAINER` | api | 컨테이너 이름(소문자 · 숫자 · 하이픈 3~63자) |
-| `AZURE_STORAGE_CONNECTION_STRING` | api, ai | **AccountKey 방식**이어야 하고, 계정 주소와 같은 계정이어야 함 |
+| `AZURE_BLOB_CONTAINER` | api | 컨테이너 이름(소문자 · 숫자 · 하이픈 3~63자). 비우면 `raw` |
+| `AZURE_STORAGE_CONNECTION_STRING` | api, ai | **AccountKey 방식**(`AccountName` · `AccountKey` 필수). api는 계정 주소를 따로 받지 않고 여기서 읽습니다. `BlobEndpoint`가 있으면 그 주소를 쓰고, http는 로컬 에뮬레이터(`localhost` · `127.0.0.1`)만 받습니다. 비우면 서버는 뜨고 올리기만 503 |
 | `AI_INTERNAL_URL` | api | FastAPI(AI App Service) 주소 |
 | `AI_INTERNAL_TOKEN` | api, ai | 두 서버 사이 인증 토큰(`openssl rand -hex 32`로 만든 값을 양쪽에 같게) |
 | `AZURE_DOCINT_ENDPOINT` · `AZURE_DOCINT_KEY` | ai | Document Intelligence(OCR) |
@@ -227,9 +228,10 @@ Nest와 FastAPI는 같은 값의 `AI_INTERNAL_TOKEN`을 양쪽 환경 변수에 
 
 | 증상 | 원인 | 해결 |
 | --- | --- | --- |
-| `POST /uploads/sas`가 `503 UPLOAD_UNAVAILABLE` ("사진 저장소가 설정되지 않았어요") | api의 Azure 설정이 없거나 형식이 틀림. 로컬 `.env`에 `AZURE_STORAGE_CONNECTION_STRING`이 빠져 있기 쉬움. Azurite 주소는 형식 검사를 통과하지 못함 | 연결 문자열(AccountKey)을 `env-vault.sh pull api`로 받거나 `.env`에 넣고, 계정 주소와 같은 계정인지 확인 |
-| `POST /uploads/sas`가 400 "파일 형식이나 크기가 올바르지 않습니다" | 확장자 · `contentType` · 크기가 `UPLOAD_RULES`와 다름 (예: `image/jpg`는 허용되지 않음, 허용 값은 `image/jpeg`) | 앱의 `guessType`이 만든 `contentType`과 `UPLOAD_RULES.*.types`를 맞춘다 |
-| Blob PUT이 403 | SAS가 만료됨(10분) 또는 업로드를 늦게 시작, 서버와 단말의 시계 차이 | 올리기 직전에 SAS를 새로 받는다. 앱은 `HTTP 403`을 `UploadError`로 보여 준다 |
+| `POST /uploads/sas`가 `503 UPLOAD_UNAVAILABLE` ("지금은 파일을 올릴 수 없어요") | api에 `AZURE_STORAGE_CONNECTION_STRING`이 없음(로컬 `.env`에 빠져 있기 쉬움). 값이 있는데 형식이 틀리면 503이 아니라 서버가 시작할 때 실패함 | 연결 문자열(AccountKey)을 `env-vault.sh pull api`로 받거나 `.env`에 넣는다. 로컬에서는 Azurite 연결 문자열(`BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1`)도 쓸 수 있다 |
+| `POST /uploads/sas`가 `400 FILE_NOT_ALLOWED` ("JPG · … 만 올릴 수 있어요" / "…MB 이하만 올릴 수 있어요") | 확장자 · 크기가 `UPLOAD_RULES`와 다름. 신고 사진은 `contentType`이 확장자와 다를 때도 거절함("사진 형식과 확장자가 맞지 않아요") | 파일 이름의 확장자와 크기를 `UPLOAD_RULES`에 맞춘다. 신고 사진은 `contentType`도 확장자의 형식으로 보낸다 |
+| `POST /uploads/sas`가 `429 RATE_LIMITED` | 10분 동안 100번 넘게 발급받음 | 응답의 `retryAfterSeconds`만큼 기다린 뒤 다시 요청한다 |
+| Blob PUT이 403 | SAS가 만료됨(15분) 또는 업로드를 늦게 시작, 같은 주소로 두 번 올림(덮어쓰기 불가) | 올리기 직전에 SAS를 새로 받는다. 앱은 `HTTP 403`을 `UploadError`로 보여 준다 |
 | Blob PUT이 400 · 필수 헤더 오류 | `x-ms-blob-type: BlockBlob` 헤더 누락 | 응답의 `headers`를 그대로 붙인다 |
 | 올린 뒤 사진 검사가 400 "사용할 수 없는 사진" | 내 업로드가 아니거나, 파일이 없거나, Content-Type이 확장자와 다름(예: `.jpg`인데 `image/png`로 올림) | SAS 요청 때 쓴 `contentType`을 PUT의 `Content-Type`에도 똑같이 쓴다. 다른 사용자의 `blobUrl`은 거부되는 게 정상 |
 | 사진 검사가 `503 AI_UNAVAILABLE` | ① `AI_INTERNAL_URL`/`TOKEN` 미설정 ② AI 서버 다운 · 5xx ③ **90초 제한 초과** ④ 응답의 이름이 요청과 다르거나 모르는 판정 | 설정 확인 → AI 서버 로그 확인. 20장이 느리면 `MAX_WORKERS`를 올릴 수 있는지 OCR 호출 한도를 확인(§8) |
