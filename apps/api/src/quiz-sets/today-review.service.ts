@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, mongo, Types } from 'mongoose';
 
@@ -134,8 +134,13 @@ export class TodayReviewService {
       .sort({ createdAt: -1 })
       .lean<QuizSetRow[]>();
     for (const prev of today) {
+      // 없는 작업(404)만 「옮긴 것 없음」으로 본다. 그 밖의 조회 오류는 던진다: 결과를 옮긴 세트를 닫으면
+      // 문제(원본은 moved)가 복습에서 빠진다
       const job = prev.jobId
-        ? await this.jobs.findMine(userId, prev.jobId.toString()).catch(() => null)
+        ? await this.jobs.findMine(userId, prev.jobId.toString()).catch((e: unknown) => {
+            if (e instanceof NotFoundException) return null;
+            throw e;
+          })
         : null;
       if (job && job.status !== 'failed' && job.status !== 'canceled')
         return this.quizSets.findMine(userId, prev._id.toString());

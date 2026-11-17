@@ -370,6 +370,54 @@ describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfter
     expect(row()['reviewPending']).toBe(false);
   });
 
+  it('작업을 거두는 사이 막던 일반 퀴즈가 끝나 버려도 기다리지 않고 다시 만든다', async () => {
+    const { similar, seed, jobs, attempts, quizSets, sets } = setup();
+    const s = await seed();
+    const genJob = jobs.rows.length;
+    const gen = (await sets.model.create({
+      ownerId: ME,
+      materialId: s.note,
+      folderId: FOLDER,
+      source: 'ai_generated',
+      sourceSetId: null,
+      title: '세포 생물학 2',
+      status: 'generating',
+      questions: [],
+      questionCount: 0,
+      deletedAt: null,
+    } as never)) as unknown as { _id: Types.ObjectId };
+    await new AiJobsService(jobs.model).enqueue({
+      type: 'quiz_generate',
+      userId: ME.toHexString(),
+      targetType: 'quiz_set',
+      targetId: gen._id.toHexString(),
+      input: {},
+    });
+    Object.assign(
+      sets.rows.find((r) => String(r._id) === String(gen._id))!,
+      {
+        jobId: jobs.rows[genJob]!._id,
+      },
+    );
+    // 고유 색인에 막혀 넣은 작업을 거두는 사이 일반 퀴즈가 끝나고 그 이어 받기도 돈다(아직 기다림 표시 전)
+    const aiJobs = (similar as unknown as { jobs: AiJobsService }).jobs;
+    const cancel = aiJobs.cancel.bind(aiJobs);
+    vi.spyOn(aiJobs, 'cancel').mockImplementationOnce(async (user, id) => {
+      Object.assign(jobs.rows[genJob]!, { status: 'failed', error: 'x' });
+      await quizSets.findMine(ME.toHexString(), gen._id.toHexString());
+      return cancel(user, id);
+    });
+    const made = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    expect(made?.status).toBe('generating');
+    const review = jobs.rows.filter(
+      (j) => j['type'] === SIMILAR_TYPE && j['status'] !== 'canceled',
+    );
+    expect(review).toHaveLength(1);
+    expect(attempts.rows.find((r) => String(r._id) === String(s.attempt))!['reviewPending']).toBe(
+      false,
+    );
+  });
+
   it('같은 시각에 끝난 두 풀이도 빠지지 않고 이어 받는다', async () => {
     const { similar, seed, jobs, attempts, quizSets } = setup();
     const s = await seed();
@@ -597,6 +645,18 @@ describe('오늘의 복습(TodayReviewService)', () => {
     const second = await today.start(ME.toHexString(), NOW);
     expect(second._id).not.toBe(first._id);
     expect(sets.rows.find((r) => String(r._id) === first._id)!['deletedAt']).toBeInstanceOf(Date);
+  });
+
+  it('작업 조회가 잠시 실패하면 오늘 세트를 닫지 않고 오류를 낸다', async () => {
+    const { today, seed, sets } = setup();
+    await seed();
+    const first = await today.start(ME.toHexString(), NOW);
+    const aiJobs = (today as unknown as { jobs: AiJobsService }).jobs;
+    const read = vi.spyOn(aiJobs, 'findMine').mockRejectedValue(new Error('DB'));
+    await expect(today.start(ME.toHexString(), NOW)).rejects.toThrow('DB');
+    read.mockRestore();
+    expect(sets.rows.find((r) => String(r._id) === first._id)!['deletedAt']).toBeNull();
+    expect((await today.start(ME.toHexString(), NOW))._id).toBe(first._id);
   });
 
   it('다음 날에는 새로 만든다', async () => {

@@ -176,8 +176,21 @@ export class SimilarQuizService {
         else if (auto) await this.markPending(attempt._id, true);
         return this.quizSets.findMine(userId, first._id.toString());
       }
-      // 같은 노트의 다른 세트(일반 퀴즈 등)가 만드는 중: 기다린다
-      if (auto) await this.markPending(attempt._id, true);
+      // 같은 노트의 다른 세트(일반 퀴즈 등)가 만드는 중: 기다린다. 적은 뒤 그 세트가 아직 만드는 중인지 다시 본다:
+      // 작업을 거두는 사이 끝나(이어 받기까지 돌아) 버렸으면 기다려도 아무도 이어 받지 않으므로 다시 만든다
+      if (auto) {
+        await this.markPending(attempt._id, true);
+        const blocker = await this.sets
+          .findOne({
+            ownerId: owner,
+            materialId: source.materialId,
+            status: 'generating',
+            deletedAt: null,
+          })
+          .lean<QuizSetRow>();
+        // ponytail: 겹칠 때마다 다시 부른다. 새 만드는 중 세트가 그때마다 끼어들어야만 이어지므로 끝이 있다
+        if (!blocker) return this.create(userId, setId, needWrong, attemptId);
+      }
       throw new ReviewBlocked({
         code: VALIDATION_FAILED,
         message: '이 노트로 퀴즈를 만드는 중이에요. 끝나면 다시 시도해 주세요',
