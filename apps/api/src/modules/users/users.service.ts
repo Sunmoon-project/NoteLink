@@ -252,6 +252,7 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
     const changes: Record<string, unknown> = {};
     if (dto.nickname !== undefined) changes.nickname = dto.nickname;
     if (dto.learnerType !== undefined) changes.learnerType = dto.learnerType;
+    if (dto.toured !== undefined) changes.touredAt = dto.toured ? new Date() : null;
     if (dto.interestCategoryIds !== undefined) {
       // 같은 ID가 두 번 와도 한 번만 검사하고 저장한다 (개수 비교가 어긋나지 않게)
       // (대소문자만 다른 같은 ID도 합치려고 ObjectId 값 기준으로 비교한다)

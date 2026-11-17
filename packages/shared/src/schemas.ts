@@ -51,6 +51,10 @@ export const User = z.object({
     })
     .optional(),
   createdAt: date,
+  /** 약관 동의 · 프로필 설정을 마친 계정(서버가 계정 기준으로 계산). 기기를 바꿔도 같다 */
+  onboarded: z.boolean().optional(),
+  /** 처음 안내를 본 계정 */
+  toured: z.boolean().optional(),
 });
 
 export const AuthTokens = z.object({

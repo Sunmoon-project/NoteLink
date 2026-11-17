@@ -701,6 +701,16 @@ describe('처음 안내', () => {
     await act(async () => {});
     expect(useTour.getState().step).toBe(-1);
   });
+
+  it('다른 기기에서 안내를 본 계정(서버 기록)이면 이 기기에서도 열지 않는다', async () => {
+    useTour.setState({ step: -1 });
+    useAuth.setState({ userId: 'u3', user: { _id: 'u3', toured: true } as never });
+    (SecureStore.getItemAsync as jest.Mock).mockResolvedValueOnce('[]');
+    await renderHook(() => useTourOnce(true));
+    await act(async () => {});
+    expect(useTour.getState().step).toBe(-1);
+    useAuth.setState({ user: null });
+  });
 });
 
 describe('아바타 선생님 고르기', () => {

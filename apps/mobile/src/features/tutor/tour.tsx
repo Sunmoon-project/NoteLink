@@ -16,12 +16,13 @@ import * as SecureStore from 'expo-secure-store';
 import { create } from 'zustand';
 import { Text } from '@/components/text';
 import { Alert, Btn, Swap, cx } from '@/components/ui';
+import { api } from '@/lib/api';
 import { useAuth } from '@/stores/auth';
 import { Avatar3D, type Mood } from './avatar3d';
 import { useEquippedAvatar } from './buddy';
 
 // 이 기기에서 처음 안내를 본(또는 건너뛴) 계정. 로그아웃해도 남겨 다시 보여 주지 않는다
-// ponytail: 기기 단위 기록(auth의 notelink.onboarded와 같은 방식) — 서버가 계정 값을 주면 바꾼다
+// 계정 기록(User.toured)이 우선이고, 이 기기 기록은 서버에 못 적었을 때를 받쳐 준다
 const TOURED_KEY = 'notelink.toured';
 async function touredIds() {
   try {
@@ -31,8 +32,16 @@ async function touredIds() {
     return [];
   }
 }
-/** 못 적으면 다음에 한 번 더 보여 줄 뿐이라 막지 않는다 */
+/** 못 적으면 다음에 한 번 더 보여 줄 뿐이라 막지 않는다. 계정에도 적어 다른 기기에서 다시 열리지 않게 한다 */
 export async function rememberToured(id: string) {
+  if (useAuth.getState().userId === id)
+    // 계정에 못 적어도(오프라인 등) 이 기기 기록은 남긴다
+    void Promise.resolve()
+      .then(() => api.me.update({ toured: true }))
+      .then((u) => {
+        if (useAuth.getState().userId === u._id) useAuth.getState().setUser(u);
+      })
+      .catch(() => {});
   const ids = await touredIds();
   if (!ids.includes(id))
     await SecureStore.setItemAsync(TOURED_KEY, JSON.stringify([...ids, id])).catch(() => {});
@@ -61,8 +70,10 @@ export const useTour = create<{
 /** 가입을 마치고 처음 들어오면 한 번 안내를 연다(탭 화면에서 부름) */
 export function useTourOnce(ready: boolean) {
   const userId = useAuth((s) => s.userId);
+  // 다른 기기에서 이미 본 계정(서버 기록)이면 열지 않는다
+  const toured = useAuth((s) => s.user?._id === s.userId && s.user?.toured === true);
   useEffect(() => {
-    if (!ready || !userId) return;
+    if (!ready || !userId || toured) return;
     let live = true;
     void touredIds().then((ids) => {
       if (live && !ids.includes(userId)) useTour.getState().start('main');
@@ -70,7 +81,7 @@ export function useTourOnce(ready: boolean) {
     return () => {
       live = false;
     };
-  }, [ready, userId]);
+  }, [ready, userId, toured]);
 }
 
 /* ── 짚어 줄 자리: 화면이 ref를 걸어 두면 안내가 그 자리를 재서 밝힌다 ── */
