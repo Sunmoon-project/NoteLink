@@ -289,12 +289,13 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
 
         it('이미 열려 있는 세션이 있으면 먼저 정산하며 닫고 새 세션을 만든다 (동시에 여러 세션 방지)', async () => {
             const oldId = new Types.ObjectId();
-            // 11분 40초 전에 시작해 50초째 쉬는 중 → 순공 650초
+            // 11분 40초 전에 시작해 50초째 쉬는 중 → 순공 650초. 앱은 쉬기 시작한 때까지 살아 있었다(lastSeenAt)
             openRows = [
                 makeRow({
                     _id: oldId,
                     status: 'paused',
                     startedAt: secondsAgo(700),
+                    lastSeenAt: secondsAgo(50),
                     pauses: [{ startedAt: secondsAgo(50), endedAt: null, reason: 'manual' }],
                 }),
             ];
@@ -346,6 +347,42 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
             );
         });
 
+        it('새 세션은 마지막 신호 시각(lastSeenAt)을 시작 시각으로 시작한다', async () => {
+            await start({ studyItemId: itemId.toString(), mode: 'personal' });
+            const created = sessionModel.create.mock.calls[0]?.[0] as Record<string, unknown>[];
+            expect(created[0]).toMatchObject({ startedAt: NOW, lastSeenAt: NOW });
+        });
+
+        it('앱이 꺼진 세션을 새 타이머가 닫을 때는 (lastSeenAt 없으면 startedAt) + 2분까지만 인정하고, 그 뒤에 시작한 정지는 순공을 늘리지 않는다', async () => {
+            const oldId = new Types.ObjectId();
+            // 700초 전에 시작, 신호 기록 없음 → 580초 전(시작 + 2분)까지만. 그 뒤인 300초 전~100초 전 정지는 잘려야 한다
+            openRows = [
+                makeRow({
+                    _id: oldId,
+                    startedAt: secondsAgo(700),
+                    pauses: [{ startedAt: secondsAgo(300), endedAt: secondsAgo(100), reason: 'manual' }],
+                }),
+            ];
+
+            const res = await start({ studyItemId: itemId.toString(), mode: 'personal' });
+
+            expect(res.status).toBe(201);
+            expect(sessionModel.updateOne).toHaveBeenCalledWith(
+                { _id: oldId, status: { $ne: 'ended' } },
+                {
+                    $set: expect.objectContaining({
+                        status: 'ended',
+                        endReason: 'replaced',
+                        endedAt: secondsAgo(580),
+                        durationSec: 120,
+                        pointsEarned: 0,
+                    }),
+                },
+                expect.anything(),
+            );
+            expect(points.earn).not.toHaveBeenCalled();
+        });
+
         it('다시 실행해도 중복 키 오류가 나면 오류를 그대로 던진다 (두 번만 시도)', async () => {
             const duplicate = () => Object.assign(new Error('E11000 duplicate key'), { code: 11000 });
             sessionModel.create.mockRejectedValueOnce(duplicate()).mockRejectedValueOnce(duplicate());
@@ -384,6 +421,7 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
                 {
                     $set: { status: 'paused' },
                     $push: { pauses: { startedAt: NOW, endedAt: null, reason: 'manual' } },
+                    $max: { lastSeenAt: NOW },
                 },
             );
         });
@@ -423,7 +461,7 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
             expect(res.status).toBe(204);
             expect(sessionModel.updateOne).toHaveBeenCalledWith(
                 { _id: sessionId, status: 'paused' },
-                { $set: { status: 'running', 'pauses.$[open].endedAt': NOW } },
+                { $set: { status: 'running', 'pauses.$[open].endedAt': NOW }, $max: { lastSeenAt: NOW } },
                 { arrayFilters: [{ 'open.endedAt': null }] },
             );
         });
@@ -438,6 +476,51 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
             row = null;
             const res = await resume(new Types.ObjectId().toString());
             expect(res.status).toBe(404);
+        });
+    });
+
+    describe('lastSeenAt 갱신 (일시정지 · 재개)', () => {
+        it('일시정지가 lastSeenAt을 지금으로 올린다(뒤로 가지 않게 $max)', async () => {
+            await request(app.getHttpServer()).post(api(`/study-sessions/${sessionId.toString()}/pause`)).set(AUTH);
+            expect(sessionModel.updateOne.mock.calls[0]?.[1]).toMatchObject({ $max: { lastSeenAt: NOW } });
+        });
+
+        it('재개가 lastSeenAt을 지금으로 올린다(뒤로 가지 않게 $max)', async () => {
+            row = makeRow({ status: 'paused', pauses: [{ startedAt: secondsAgo(30), endedAt: null, reason: 'manual' }] });
+            await request(app.getHttpServer()).post(api(`/study-sessions/${sessionId.toString()}/resume`)).set(AUTH);
+            expect(sessionModel.updateOne.mock.calls[0]?.[1]).toMatchObject({ $max: { lastSeenAt: NOW } });
+        });
+    });
+
+    describe('POST /study-sessions/:id/heartbeat', () => {
+        const beat = (id: string) => request(app.getHttpServer()).post(api(`/study-sessions/${id}/heartbeat`)).set(AUTH);
+
+        it('내 열린 세션이면 lastSeenAt을 지금으로 올리고(뒤로 가지 않게 $max) 204', async () => {
+            sessionModel.updateOne.mockResolvedValueOnce({ matchedCount: 1, modifiedCount: 1 });
+            const res = await beat(sessionId.toString());
+            expect(res.status).toBe(204);
+            expect(sessionModel.updateOne).toHaveBeenCalledWith(
+                { _id: sessionId, userId: owner, status: { $ne: 'ended' } },
+                { $max: { lastSeenAt: NOW } },
+            );
+        });
+
+        it('남의 세션 · 끝난 세션 · 없는 세션은 조건에 맞지 않아 404', async () => {
+            sessionModel.updateOne.mockResolvedValueOnce({ matchedCount: 0, modifiedCount: 0 });
+            const res = await beat(new Types.ObjectId().toString());
+            expect(res.status).toBe(404);
+            expect(res.body).toEqual({ code: 'NOT_FOUND', message: expect.any(String) });
+        });
+
+        it('ID 모양이 틀리면 DB에 묻지 않고 404', async () => {
+            const res = await beat('not-an-id');
+            expect(res.status).toBe(404);
+            expect(sessionModel.updateOne).not.toHaveBeenCalled();
+        });
+
+        it('로그인하지 않으면 401', async () => {
+            const res = await request(app.getHttpServer()).post(api(`/study-sessions/${sessionId.toString()}/heartbeat`));
+            expect(res.status).toBe(401);
         });
     });
 

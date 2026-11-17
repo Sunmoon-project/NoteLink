@@ -60,6 +60,9 @@ export interface StudySessionView {
     pauses: { startedAt: string; endedAt: string | null; reason: string | null }[];
 }
 
+/** 앱이 꺼진 세션을 새 타이머가 닫을 때, 마지막 신호 뒤로 더 인정하는 시간 */
+export const LAST_SEEN_GRACE_MS = 2 * 60 * 1000;
+
 export interface EndResult {
     durationSec: number;
     pointsEarned: number;
@@ -137,8 +140,12 @@ export class StudyService {
             const open = await this.sessionModel
                 .find({ userId: owner, status: { $ne: 'ended' } }, null, { session: tx })
                 .lean<StudySessionLean[]>();
+            const now = new Date();
             for (const row of open) {
-                await this.settle(userId, owner, row, 'replaced', tx);
+                // 앱이 꺼져 열린 채 남은 세션: 마지막으로 앱이 살아 있던 시각(없으면 시작) + 2분까지만 인정한다
+                const lastSeen = row.lastSeenAt ?? row.startedAt;
+                const endedAt = new Date(Math.min(now.getTime(), lastSeen.getTime() + LAST_SEEN_GRACE_MS));
+                await this.settle(userId, owner, row, 'replaced', tx, endedAt);
             }
 
             const session: StudySessionLean = {
@@ -149,7 +156,8 @@ export class StudyService {
                 roomId: null,
                 mode: dto.mode,
                 status: 'running',
-                startedAt: new Date(),
+                startedAt: now,
+                lastSeenAt: now,
                 endedAt: null,
                 durationSec: 0,
                 departureCount: 0,
@@ -183,11 +191,13 @@ export class StudyService {
         if (row.status !== 'running') return true;
 
         // 읽은 뒤에도 running일 때만 바꾼다 → 거의 동시에 두 번 눌러도 정지는 한 번만 기록됨
+        const now = new Date();
         await this.sessionModel.updateOne(
             { _id: row._id, status: 'running' },
             {
                 $set: { status: 'paused' },
-                $push: { pauses: { startedAt: new Date(), endedAt: null, reason: 'manual' } },
+                $push: { pauses: { startedAt: now, endedAt: null, reason: 'manual' } },
+                $max: { lastSeenAt: now },
             },
         );
         return true;
@@ -200,12 +210,27 @@ export class StudyService {
         if (row.status !== 'paused') return true;
 
         // 아직 끝나지 않은 정지(endedAt: null)의 끝 시각을 지금으로 채운다
+        const now = new Date();
         await this.sessionModel.updateOne(
             { _id: row._id, status: 'paused' },
-            { $set: { status: 'running', 'pauses.$[open].endedAt': new Date() } },
+            { $set: { status: 'running', 'pauses.$[open].endedAt': now }, $max: { lastSeenAt: now } },
             { arrayFilters: [{ 'open.endedAt': null }] },
         );
         return true;
+    }
+
+    /**
+     * 앱이 열려 있다는 신호(측정 중 · 일시정지 모두). 내 세션이고 끝나지 않았을 때만 lastSeenAt을 지금(서버 시계)으로 올린다.
+     * $max라 늦게 도착한 신호가 값을 뒤로 돌리지 않는다. 남의 세션 · 끝난 세션 · 없는 세션이면 false.
+     * 조건에 맞는지만 보므로 값이 그대로여도 맞은 것(matchedCount)으로 센다
+     */
+    async heartbeat(userId: string, sessionId: string): Promise<boolean> {
+        if (!isValidObjectId(sessionId)) return false;
+        const result = await this.sessionModel.updateOne(
+            { _id: new Types.ObjectId(sessionId), userId: new Types.ObjectId(userId), status: { $ne: 'ended' } },
+            { $max: { lastSeenAt: new Date() } },
+        );
+        return result.matchedCount > 0;
     }
 
     /**
@@ -232,7 +257,9 @@ export class StudyService {
 
     /**
      * 끝나지 않은 세션 하나를 정산한다: 시간 계산 · 세션 마감 · 하루 기록 · 포인트 적립.
-     * 트랜잭션 안에서 부른다 (end와 startSession이 함께 쓴다)
+     * 트랜잭션 안에서 부른다 (end와 startSession이 함께 쓴다).
+     * endedAtOverride: 끝난 시각을 지금 대신 이 시각으로 본다(앱이 꺼진 세션을 마지막 신호까지만 정산할 때). 시간 나누기 ·
+     * 상한 · 방치 판정 · 포인트 · 저장하는 endedAt · 열린 정지의 끝이 모두 이 시각을 따른다
      */
     private async settle(
         userId: string,
@@ -240,12 +267,19 @@ export class StudyService {
         row: StudySessionLean,
         endReason: string,
         tx: ClientSession,
+        endedAtOverride?: Date,
     ): Promise<EndResult> {
-        const endedAt = new Date();
-        const days = secondsBySeoulDay(row.startedAt, endedAt, row.pauses);
+        const endedAt = endedAtOverride ?? new Date();
+        // 끝 시각 뒤에 시작한 정지는 없는 것으로, 뒤에 끝난 정지는 끝 시각에서 자른다. 안 그러면 정지 시간이 음수가 되어 순공이 늘어난다
+        const pauses = row.pauses
+            .filter((pause) => pause.startedAt.getTime() < endedAt.getTime())
+            .map((pause) =>
+                pause.endedAt && pause.endedAt.getTime() > endedAt.getTime() ? { ...pause, endedAt } : pause,
+            );
+        const days = secondsBySeoulDay(row.startedAt, endedAt, pauses);
         // 24시간 넘게 이어진 세션은 방치로 본다 (FR-06-16). 지우지 않고 표시만 하고 통계·포인트에서 뺀다.
         // 날짜별로 나누면 날짜마다 초 아래가 버려져 합계가 모자라므로, 방치 판정은 전체 순공 시간으로 한다
-        const isAbuse = netDurationSec(row.startedAt, row.pauses, endedAt) >= ABUSE_SEC;
+        const isAbuse = netDurationSec(row.startedAt, pauses, endedAt) >= ABUSE_SEC;
 
         // 날짜마다 하루 상한(16시간)까지만 쌓는다 (FR-06-15). 트랜잭션 안이라 await를 순서대로 쓴다
         let durationSec = 0;

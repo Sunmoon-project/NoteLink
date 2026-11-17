@@ -49,6 +49,13 @@ export class StudySessionsController {
         if (!(await this.study.resume(requireUserId(req), id))) throw sessionNotFound();
     }
 
+    /** POST /api/v1/study-sessions/:id/heartbeat — 앱이 열려 있는 동안 1분마다. 내 열린 세션이 아니면 404 */
+    @Post(':id/heartbeat')
+    @HttpCode(204)
+    async heartbeat(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
+        if (!(await this.study.heartbeat(requireUserId(req), id))) throw sessionNotFound();
+    }
+
     /** POST /api/v1/study-sessions/:id/end { clientDurationSec, endReason } */
     @Post(':id/end')
     @HttpCode(200)
