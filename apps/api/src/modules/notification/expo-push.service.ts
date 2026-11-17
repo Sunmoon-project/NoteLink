@@ -7,7 +7,8 @@ export interface ExpoPushMessage {
   data: Record<string, unknown>;
   sound: 'default';
   priority: 'high';
-  channelId: string;
+  /** Android 알림 채널. 비우면 Expo 기본 채널을 쓴다(기기에 없는 채널 id는 알림이 표시되지 않는다) */
+  channelId?: string;
   collapseId: string;
   threadId: string;
 }

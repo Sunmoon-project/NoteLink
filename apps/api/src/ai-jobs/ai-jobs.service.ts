@@ -408,7 +408,8 @@ export class AiJobsService {
               : { ...reset, status: HELD, heldAt: new Date(), holdId: mine }),
             ...(refreshed ? { input: refreshed } : {}),
           },
-          $unset: { step: '', lockedBy: '' },
+          // notice: 완료 푸시 상태도 지워, 이번 시도가 끝났을 때 다시 알린다(AiJobNoticesService)
+          $unset: { step: '', lockedBy: '', notice: '' },
         },
         { projection: APP_PROJECTION },
       )

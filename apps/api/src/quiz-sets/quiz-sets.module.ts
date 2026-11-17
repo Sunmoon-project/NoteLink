@@ -4,10 +4,12 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AiJobsModule } from '../ai-jobs/ai-jobs.module.js';
 import { AuthModule } from '../modules/auth/auth.module.js';
 import { Material, MaterialSchema } from '../modules/content/schemas/material.schema.js';
+import { AiJob, AiJobSchema } from '../modules/quiz/schemas/ai-job.schema.js';
 import { QuizAttempt, QuizAttemptSchema } from '../modules/quiz/schemas/quiz-attempt.schema.js';
 import { QuizSet, QuizSetSchema } from '../modules/quiz/schemas/quiz-set.schema.js';
 import { QuizSetsController } from './quiz-sets.controller.js';
 import { QuizSetsService } from './quiz-sets.service.js';
+import { RecordingNotePagesService } from './recording-note-pages.service.js';
 import { SimilarQuizService } from './similar-quiz.service.js';
 import { ExplanationsController, ExplanationsService } from './explanations.controller.js';
 
@@ -21,13 +23,14 @@ import { ExplanationsController, ExplanationsService } from './explanations.cont
       { name: QuizSet.name, schema: QuizSetSchema },
       { name: Material.name, schema: MaterialSchema },
       { name: QuizAttempt.name, schema: QuizAttemptSchema },
+      { name: AiJob.name, schema: AiJobSchema }, // 녹음 노트의 대본(녹음 정리 작업 결과)을 읽는다
     ]),
     AiJobsModule,
     // JwtAuthGuard · TokenService
     AuthModule,
   ],
   controllers: [QuizSetsController, ExplanationsController],
-  providers: [QuizSetsService, SimilarQuizService, ExplanationsService],
+  providers: [QuizSetsService, SimilarQuizService, ExplanationsService, RecordingNotePagesService],
   // 노트 API 가 정리를 마친 노트의 첫 퀴즈를 미리 만든다(pregenerate)
   exports: [QuizSetsService],
 })

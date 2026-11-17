@@ -70,6 +70,8 @@ const UPLOADED_FILE_NAME =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.[a-z0-9]{2,5}$/;
 /** 읽기 주소의 시작 시각을 앞당기는 폭(서버 · 저장소 시계 차이) */
 const CLOCK_SKEW_MS = 60_000;
+/** AI 사진 검사에 넘기는 읽기 주소가 유효한 시간 */
+const IMAGE_CHECK_SAS_LIFETIME_MS = 15 * 60_000;
 const REPORT_FILE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:jpg|jpeg|png|heic)$/;
 const SCOPE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -363,6 +365,62 @@ export class BlobStorageService {
         message: '신고 사진을 확인하지 못했어요.',
       });
     }
+  }
+
+  /** AI 사진 검사에 전달할 사용자 소유 이미지의 짧은 읽기 전용 SAS 주소를 만든다. */
+  async createImageCheckReadUrl(userId: string, rawUrl: string): Promise<string> {
+    const store = this.requireStore();
+    const container = store.config.container;
+    const containerClient = store.client.getContainerClient(container);
+    const folder = uploadFolder('image', userId);
+    const prefix = `${containerClient.url}/${folder}`;
+    if (!rawUrl.startsWith(prefix)) this.invalidImage();
+
+    const fileName = rawUrl.slice(prefix.length);
+    if (!REPORT_FILE.test(fileName)) this.invalidImage();
+
+    const blob = containerClient.getBlockBlobClient(`${folder}${fileName}`);
+    if (blob.url !== rawUrl) this.invalidImage();
+    let properties;
+    try {
+      properties = await blob.getProperties();
+    } catch (error) {
+      if (statusOf(error) === 404) this.invalidImage();
+      throw unavailable('사진 업로드를 확인하지 못했어요.');
+    }
+
+    const contentType = TYPE_BY_EXT[fileName.slice(fileName.lastIndexOf('.') + 1)];
+    if (
+      !properties.contentLength ||
+      properties.contentLength > UPLOAD_RULES.image.maxBytes ||
+      properties.contentType !== contentType
+    )
+      this.invalidImage();
+
+    const now = Date.now();
+    try {
+      const sas = generateBlobSASQueryParameters(
+        {
+          containerName: container,
+          blobName: blob.name,
+          permissions: BlobSASPermissions.parse('r'),
+          protocol: store.https ? SASProtocol.Https : SASProtocol.HttpsAndHttp,
+          startsOn: new Date(now - CLOCK_SKEW_MS),
+          expiresOn: new Date(now + IMAGE_CHECK_SAS_LIFETIME_MS),
+        },
+        store.credential,
+      ).toString();
+      return `${blob.url}?${sas}`;
+    } catch {
+      throw unavailable('사진 읽기 주소를 만들지 못했어요.');
+    }
+  }
+
+  private invalidImage(): never {
+    throw new BadRequestException({
+      code: 'BAD_REQUEST',
+      message: '검사할 사진을 확인할 수 없습니다.',
+    });
   }
 }
 

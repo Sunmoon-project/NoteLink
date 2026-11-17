@@ -183,6 +183,7 @@ export const seedRecurring = (): RecurringGoal[] => [
     pausedUntil: null,
     streak: 12,
     isActive: true,
+    todayMin: null,
   },
 ];
 

@@ -55,18 +55,16 @@ export class StudyRoomsService {
       });
     const inviterId = new Types.ObjectId(userId);
     const roomObjectId = new Types.ObjectId(roomId);
-    const room = await this.rooms
-      .findOne({
-        _id: roomObjectId,
-        closedAt: null,
-        members: { $elemMatch: { userId: inviterId, status: 'joined' } },
-      })
-      .lean();
-    if (!room)
-      throw new NotFoundException({
+    const inviterJoined = { $elemMatch: { userId: inviterId, status: 'joined' } };
+    const notJoined = () =>
+      new NotFoundException({
         code: 'ROOM_NOT_FOUND',
         message: '참여 중인 스터디룸을 찾을 수 없습니다.',
       });
+    const room = await this.rooms
+      .findOne({ _id: roomObjectId, closedAt: null, members: inviterJoined })
+      .lean();
+    if (!room) throw notJoined();
 
     const targetObjectIds = [...new Set(targetIds)].map((id) => new Types.ObjectId(id));
     if (targetObjectIds.some((id) => id.equals(inviterId)))
@@ -146,6 +144,8 @@ export class StudyRoomsService {
         {
           _id: roomObjectId,
           closedAt: null,
+          // 처음 확인한 뒤 초대한 사람이 강퇴 · 퇴장했으면 저장하지 않는다
+          members: inviterJoined,
           $and: eligibility,
           $expr: {
             $lte: [
@@ -237,6 +237,12 @@ export class StudyRoomsService {
       );
       if (!result.modifiedCount) {
         const latest = await this.rooms.findById(roomObjectId).lean();
+        const stillJoined =
+          latest?.closedAt == null &&
+          latest?.members.some(
+            (item) => item.userId.equals(inviterId) && item.status === 'joined',
+          );
+        if (!stillJoined) throw notJoined();
         const hasUninvitedTarget = targetsToInvite.some((targetId) => {
           const member = latest?.members.find((item) => item.userId.equals(targetId));
           return member?.status !== 'joined' && member?.status !== 'invited';
@@ -258,10 +264,22 @@ export class StudyRoomsService {
           _id: roomObjectId,
           closedAt: null,
           members: { $elemMatch: { userId: targetId, status: 'invited', invitationId: null } },
+          $and: [{ members: inviterJoined }],
         },
-        { $set: { 'members.$.invitationId': randomUUID() } },
+        // 조건이 멤버 둘(초대한 사람 · 대상)을 보므로 바꿀 멤버를 직접 지정한다
+        { $set: { 'members.$[target].invitationId': randomUUID() } },
+        {
+          arrayFilters: [
+            { 'target.userId': targetId, 'target.status': 'invited', 'target.invitationId': null },
+          ],
+        },
       );
     }
+    if (
+      legacyInvitedIds.length &&
+      !(await this.rooms.exists({ _id: roomObjectId, closedAt: null, members: inviterJoined }))
+    )
+      throw notJoined();
     const latestRoom = targetsToInvite.length || legacyInvitedIds.length
       ? await this.rooms.findById(roomObjectId).lean()
       : room;

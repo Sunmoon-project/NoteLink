@@ -11,6 +11,7 @@ import {
   type QuizAttemptDocument,
 } from '../modules/quiz/schemas/quiz-attempt.schema.js';
 import { QuizSet, type QuizSetDocument } from '../modules/quiz/schemas/quiz-set.schema.js';
+import { RecordingNotePagesService } from './recording-note-pages.service.js';
 
 /** 노트 · 세트가 없거나 남의 것일 때(packages/shared ERROR_CODES.NOT_FOUND) */
 export const NOT_FOUND = 'NOT_FOUND';
@@ -136,6 +137,9 @@ interface MaterialRow {
   title: string;
   pages?: PageRow[];
   concepts?: string[];
+  /** 노트 종류. 녹음 노트(recording)는 pages 가 없고 대본이 녹음 정리 작업 결과에 있다. 없는 옛 노트는 필기처럼 본다 */
+  kind?: string;
+  processing?: { status?: string; jobId?: Types.ObjectId | null };
 }
 
 interface AttemptRow {
@@ -267,6 +271,8 @@ export class QuizSetsService {
     @InjectModel(Material.name) private readonly materials: Model<MaterialDocument>,
     @InjectModel(QuizAttempt.name) private readonly attempts: Model<QuizAttemptDocument>,
     private readonly jobs: AiJobsService,
+    /** 녹음 노트의 대본을 퀴즈 입력 쪽으로(FR-38). 필기 노트는 쓰지 않는다 */
+    private readonly recordingPages: RecordingNotePagesService,
   ) {}
 
   /**
@@ -286,7 +292,13 @@ export class QuizSetsService {
       .findOne({ _id: objectId(materialId, '노트'), ownerId: owner, deletedAt: null })
       .lean<MaterialRow>();
     if (!material) throw notFound('노트');
-    const pages = textPages(material.pages);
+    if (material.kind === 'recording' && material.processing?.status === 'failed') {
+      throw new BadRequestException({
+        code: VALIDATION_FAILED,
+        message: '녹음 정리에 실패한 노트예요. 다시 정리한 뒤 퀴즈를 만들어 주세요',
+      });
+    }
+    const pages = await this.recordingPages.notePages(owner, material);
     // 같은 노트의 세트를 다른 요청이 먼저 만들었는데 그 세트가 이미 끝났으면(드묾) 한 번 더 만든다
     const made =
       (await this.createOnce(userId, owner, material, pages)) ??
@@ -438,7 +450,7 @@ export class QuizSetsService {
       .findOne({ _id: objectId(materialId, '노트'), ownerId: owner, deletedAt: null })
       .lean<MaterialRow>();
     if (!material) throw notFound('노트');
-    const pages = textPages(material.pages);
+    const pages = await this.recordingPages.notePages(owner, material);
     if (!pages.some(askable)) return null;
     const pending =
       (await this.jobs.activePregen(userId, 'material', materialId)) ??
@@ -671,7 +683,13 @@ export class QuizSetsService {
           correct: x.correct,
         })),
       })),
-      notes: Object.fromEntries(others.map((m) => [m._id.toString(), textPages(m.pages)])),
+      notes: Object.fromEntries(
+        await Promise.all(
+          others.map(
+            async (m) => [m._id.toString(), await this.recordingPages.notePages(owner, m)] as const,
+          ),
+        ),
+      ),
       typeStats: await this.typeStats(),
     });
   }
@@ -844,12 +862,8 @@ const PY_SPACE_ONLY =
   // eslint-disable-next-line no-control-regex -- Python isspace가 공백으로 보는 제어 글자 0x1C~0x1F
   /^[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/;
 
-/** 글이 있는 쪽만(정리 전 · 빈 쪽은 처리기가 문제를 낼 수 없다) */
-export function textPages(pages: PageRow[] | undefined): { pageNo: number; ocrText: string }[] {
-  return (pages ?? [])
-    .filter((p): p is PageRow & { ocrText: string } => !!p.ocrText?.trim())
-    .map((p) => ({ pageNo: p.pageNo, ocrText: p.ocrText }));
-}
+// 필기 노트 글 고르기는 note-pages.ts 로 옮겼다(녹음 노트 서비스도 쓰므로). 기존 import 경로를 위해 다시 내보낸다
+export { textPages } from './note-pages.js';
 
 /** 저장한 문제 → 처리기 입력의 문제(apps/ai services/quiz/review.py parse_question) */
 export function toWorkerQuestion(q: QuestionRow): Record<string, unknown> {

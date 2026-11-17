@@ -28,6 +28,13 @@ const goalModel = {
         rows.push(row);
         return Promise.resolve({ toObject: () => row });
     }),
+    // 수정 전 값을 읽는다(리마인드 설정이 바뀌었는지 보려고). 이후 수정이 섞이지 않게 복사해서 준다
+    findOne: vi.fn((f: Filter) => ({
+        lean: vi.fn(() => {
+            const row = rows.find((r) => matches(r, f));
+            return Promise.resolve(row ? { ...row } : null);
+        }),
+    })),
     findOneAndUpdate: vi.fn((f: Filter, u: { $set: Record<string, unknown> }) => ({
         lean: vi.fn(() => {
             const row = rows.find((r) => matches(r, f));
@@ -76,13 +83,30 @@ describe('반복 목표 API (/goals/recurring)', () => {
             targetMin: 30,
             subjectId: null,
             remindEnabled: false,
-            remindTime: null,
+            remindTime: '21:00', // 안 보내면 기본 21시
             pausedUntil: null,
             streak: 0,
             isActive: true,
         });
         expect(RecurringGoal.safeParse(res.body.data).success).toBe(true);
         expect(String(rows[0]?.userId)).toBe(TEST_USER_ID);
+    });
+
+    it('리마인드 시각: 안 보내면 21:00을 저장하고, 보내면 그 값, 비어 있는(null) 옛 목표는 응답에서만 21:00으로 보이며 저장된 값은 그대로다', async () => {
+        const plain = await create({ name: 'a', days: [1] });
+        expect(plain.body.data.remindTime).toBe('21:00');
+        expect(rows[0]?.['remindTime']).toBe('21:00');
+
+        const custom = await create({ name: 'b', days: [1], remindTime: '07:30' });
+        expect(custom.body.data.remindTime).toBe('07:30');
+
+        // 시각이 비어 있던 옛 목표(저장된 값 null)
+        const cleared = await create({ name: 'c', days: [1], remindTime: null });
+        expect(rows[2]?.['remindTime']).toBeNull();
+        expect(cleared.body.data.remindTime).toBe('21:00');
+        const list = await http().get(url()).set(AUTH);
+        expect(list.body.data.map((g: { remindTime: string }) => g.remindTime)).toEqual(['21:00', '07:30', '21:00']);
+        expect(rows[2]?.['remindTime']).toBeNull(); // 조회해도 저장된 값은 바꾸지 않는다
     });
 
     it('요일은 정렬되어 저장되고, 보낸 값(목표 시간 · 알림 · 과목)이 그대로 나온다', async () => {
@@ -101,6 +125,20 @@ describe('반복 목표 API (/goals/recurring)', () => {
         expect(res.body.data).toMatchObject({ name: '운동', days: [0, 6], targetMin: 40, remindEnabled: true, remindTime: '07:30' });
         const list = await http().get(url()).set(AUTH);
         expect(list.body.data[0]).toMatchObject({ days: [0, 6], remindTime: '07:30' });
+    });
+
+    it('리마인드 설정을 고치면 한 번의 쓰기로 remindVersion 을 올리고, 이름만 고치면 올리지 않는다', async () => {
+        const created = await create({ name: '운동', days: [1], remindEnabled: true });
+        goalModel.findOneAndUpdate.mockClear();
+        goalModel.updateOne.mockClear();
+        await http().patch(url(`/${created.body.data._id}`)).set(AUTH).send({ remindTime: '22:00' });
+        expect(goalModel.findOneAndUpdate).toHaveBeenCalledTimes(1);
+        expect(goalModel.findOneAndUpdate.mock.calls[0]?.[1]).toMatchObject({ $set: { remindTime: '22:00' }, $inc: { remindVersion: 1 } });
+        expect(goalModel.updateOne).not.toHaveBeenCalled();
+
+        goalModel.findOneAndUpdate.mockClear();
+        await http().patch(url(`/${created.body.data._id}`)).set(AUTH).send({ name: '새 이름' });
+        expect(goalModel.findOneAndUpdate.mock.calls[0]?.[1]).not.toHaveProperty('$inc');
     });
 
     it('앱이 보내는 모양(_id 포함)으로 수정해도 받아 주되 _id · streak은 무시한다', async () => {
@@ -383,5 +421,110 @@ describe('반복 목표 streak 계산 연결 (가짜 DB)', () => {
         const res = await request(app.getHttpServer()).patch(`/api/v1/goals/recurring/${id}`).set(AUTH).send({ name: '운동2' });
         expect(res.status).toBe(200);
         expect(res.body.data.streak).toBe(2);
+    });
+
+    describe('오늘 공부 시간 (todayMin)', () => {
+        const get = async () => (await request(app.getHttpServer()).get('/api/v1/goals/recurring').set(AUTH)).body.data as { name: string; todayMin: number | null }[];
+        const SAT = '2026-11-14'; // 오늘(서울 토요일)
+
+        it('오늘이 목표 요일이면 오늘 센 분(내림), 아니면 null. 응답은 shared RecurringGoal 모양이다', async () => {
+            seed({ name: '토요일', days: [6] });
+            seed({ name: '월 수', days: [1, 3] });
+            records.push(day(SAT, 2759), day('2026-11-09', 3600)); // 오늘 45분 59초, 월요일 60분
+            const res = await request(app.getHttpServer()).get('/api/v1/goals/recurring').set(AUTH);
+            for (const g of res.body.data) expect(RecurringGoal.safeParse(g).success).toBe(true);
+            expect(res.body.data.map((g: { todayMin: number | null }) => g.todayMin)).toEqual([45, null]);
+        });
+
+        it('공부 기록이 없는 요일이면 0', async () => {
+            seed({ days: [6] });
+            expect((await get())[0]!.todayMin).toBe(0);
+        });
+
+        it('공휴일 · 제외일이면 null (그 날 공부해도)', async () => {
+            seed({ days: [6] });
+            records.push(day(SAT, 600));
+            skipDates.mockResolvedValueOnce([SAT]);
+            expect((await get())[0]!.todayMin).toBeNull();
+        });
+
+        it('일시 정지 중이면 null, 정지가 어제까지면 센다', async () => {
+            seed({ name: '쉬는 중', days: [6], pausedUntil: new Date('2026-11-13T15:00:00Z') }); // 서울 11-14까지 쉼
+            seed({ name: '어제까지', days: [6], pausedUntil: new Date('2026-11-12T15:00:00Z') }); // 서울 11-13까지 쉼
+            records.push(day(SAT, 600));
+            const byName = Object.fromEntries((await get()).map((g) => [g.name, g.todayMin]));
+            expect(byName).toEqual({ '쉬는 중': null, 어제까지: 10 });
+        });
+
+        it('쉬는 목표(isActive=false)는 null이고 기록도 읽지 않는다', async () => {
+            seed({ days: [6], isActive: false });
+            expect((await get())[0]!.todayMin).toBeNull();
+            expect(dailyFind).not.toHaveBeenCalled();
+        });
+
+        it('과목 목표는 그 과목 시간만 센다 (자정을 넘긴 몫이 든 subjectSec 포함)', async () => {
+            const math = new Types.ObjectId();
+            const eng = new Types.ObjectId();
+            seed({ name: '수학', days: [6], subjectId: math });
+            seed({ name: '영어', days: [6], subjectId: eng });
+            seed({ name: '전체', days: [6] });
+            // 오늘 기록: 총 50분. 수학 30분은 어제 밤에 시작해 자정을 넘긴 공부의 오늘 몫이다
+            records.push({ studyDate: SAT, totalSec: 3000, subjectSec: { [math.toString()]: 1800 }, items: [] });
+            const byName = Object.fromEntries((await get()).map((g) => [g.name, g.todayMin]));
+            expect(byName).toEqual({ 수학: 30, 영어: 0, 전체: 50 });
+        });
+
+        it('subjectSec이 없는 옛 기록은 항목 시간으로 센다 (같은 과목 항목은 더한다)', async () => {
+            const math = new Types.ObjectId();
+            seed({ name: '수학', days: [6], subjectId: math });
+            records.push({
+                studyDate: SAT,
+                totalSec: 2400,
+                items: [
+                    { subjectId: math, accumulatedSec: 600 },
+                    { subjectId: math, accumulatedSec: 900 },
+                ],
+            });
+            expect((await get())[0]!.todayMin).toBe(25);
+        });
+
+        it('기록과 건너뛸 날은 todayMin 때문에 더 읽지 않는다 (목표가 여러 개여도 한 번씩)', async () => {
+            seed({ days: [6] });
+            seed({ name: '독서', days: [6] });
+            records.push(day(SAT, 600));
+            await get();
+            expect(dailyFind).toHaveBeenCalledTimes(1);
+            expect(skipDates).toHaveBeenCalledTimes(1);
+        });
+
+        it('만들기 · 수정 응답의 todayMin은 바로 뒤 목록과 같다', async () => {
+            records.push(day(SAT, 1260)); // 오늘 21분
+            const created = await request(app.getHttpServer()).post('/api/v1/goals/recurring').set(AUTH).send({ name: '토요일', days: [6], targetMin: 30 });
+            expect(created.status).toBe(201);
+            expect(created.body.data.todayMin).toBe(21);
+            expect((await get())[0]!.todayMin).toBe(21);
+
+            const id = created.body.data._id;
+            const moved = await request(app.getHttpServer()).patch(`/api/v1/goals/recurring/${id}`).set(AUTH).send({ days: [1] }); // 월요일로 옮기면 오늘은 대상이 아니다
+            expect(moved.body.data.todayMin).toBeNull();
+            expect((await get())[0]!.todayMin).toBeNull();
+            const back = await request(app.getHttpServer()).patch(`/api/v1/goals/recurring/${id}`).set(AUTH).send({ days: [6] });
+            expect(back.body.data.todayMin).toBe(21);
+        });
+
+        it('앱이 응답(todayMin 포함)을 그대로 보내 수정해도 받아 주되 무시한다', async () => {
+            records.push(day(SAT, 600));
+            const created = await request(app.getHttpServer()).post('/api/v1/goals/recurring').set(AUTH).send({ name: '토요일', days: [6] });
+            for (const todayMin of [null, 7, 10]) {
+                const res = await request(app.getHttpServer())
+                    .patch(`/api/v1/goals/recurring/${created.body.data._id}`)
+                    .set(AUTH)
+                    .send({ ...created.body.data, todayMin });
+                expect(res.status).toBe(200);
+                expect(res.body.data.todayMin).toBe(10); // 보낸 값이 아니라 서버 계산
+            }
+            const bad = await request(app.getHttpServer()).patch(`/api/v1/goals/recurring/${created.body.data._id}`).set(AUTH).send({ todayMin: 'x' });
+            expect(bad.status).toBe(400);
+        });
     });
 });

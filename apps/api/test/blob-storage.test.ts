@@ -351,3 +351,59 @@ describe('올린 파일 확인 (inspectUploads)', () => {
     );
   });
 });
+
+describe('사진 검사 SAS (createImageCheckReadUrl)', () => {
+  const url = `${base}/uploads/image/${owner}/${file}`;
+  const read = (target = url) => service().createImageCheckReadUrl(owner, target);
+
+  it('같은 사용자가 올린 이미지에 15분짜리 읽기 전용 HTTPS SAS를 만든다', async () => {
+    const now = Date.now();
+    stubBlob({ contentLength: 1234, contentType: 'image/jpeg' });
+
+    const sas = new URL(await read());
+
+    expect(`${sas.origin}${sas.pathname}`).toBe(url);
+    expect(sas.searchParams.get('sp')).toBe('r');
+    expect(sas.searchParams.get('spr')).toBe('https');
+    const expires = new Date(sas.searchParams.get('se')!).getTime();
+    expect(expires - now).toBeGreaterThan(14 * 60_000);
+    expect(expires - now).toBeLessThanOrEqual(15 * 60_000 + 100);
+  });
+
+  it('다른 사용자·외부 주소·쿼리 포함·비 UUID 경로·신고 사진 임시 경로를 Blob 조회 전에 거부한다', async () => {
+    const { get } = stubBlob();
+    const invalidUrls = [
+      url.replace(owner, '507f1f77bcf86cd799439012'),
+      'https://example.com/image.jpg',
+      `${url}?already=signed`,
+      url.replace(file, 'not-a-uuid.jpg'),
+      incoming,
+    ];
+
+    for (const invalidUrl of invalidUrls)
+      await expect(read(invalidUrl)).rejects.toBeInstanceOf(BadRequestException);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('누락·크기 초과·MIME 불일치 이미지를 거부하고 저장소 장애를 구분한다', async () => {
+    const { get } = stubBlob();
+    get.mockRejectedValueOnce({ statusCode: 404 });
+    get.mockResolvedValueOnce({
+      contentLength: 21 * 1024 * 1024,
+      contentType: 'image/jpeg',
+    } as never);
+    get.mockResolvedValueOnce({ contentLength: 1234, contentType: 'image/png' } as never);
+    get.mockRejectedValueOnce(new Error('unavailable'));
+
+    await expect(read()).rejects.toBeInstanceOf(BadRequestException);
+    await expect(read()).rejects.toBeInstanceOf(BadRequestException);
+    await expect(read()).rejects.toBeInstanceOf(BadRequestException);
+    await expect(read()).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+
+  it('저장소 설정이 없으면 503이다', async () => {
+    await expect(
+      new BlobStorageService(null).createImageCheckReadUrl(owner, url),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+});

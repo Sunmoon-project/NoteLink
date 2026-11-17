@@ -30,6 +30,11 @@ const MAX_WEEKS = 520;
 /** 그 날짜의 요일 번호 (0=일 ... 6=토) */
 const weekdayOf = (day: string): number => new Date(`${day}T00:00:00Z`).getUTCDay();
 
+/** 그날 이 목표로 센 공부 초: 과목 목표면 그 과목에서 쌓은 시간만, 아니면 하루 총 시간. 판정과 오늘 공부 시간이 같은 기준을 쓴다 */
+export function studiedSec(goal: GoalRule, record: DayStudy | undefined): number {
+    return goal.subjectId === null ? (record?.totalSec ?? 0) : (record?.bySubject.get(goal.subjectId) ?? 0);
+}
+
 /** 하루를 판정한다. today는 서울 기준 오늘 */
 export function judgeDay(
     goal: GoalRule,
@@ -43,9 +48,25 @@ export function judgeDay(
     if (day > today) return 'pending';
 
     const record = study.get(day);
-    const sec = goal.subjectId === null ? (record?.totalSec ?? 0) : (record?.bySubject.get(goal.subjectId) ?? 0);
+    const sec = studiedSec(goal, record);
     if (sec >= goal.targetSec) return 'achieved';
     return day === today ? 'pending' : 'missed'; // 오늘은 하루가 끝나기 전이라 미달성으로 단정하지 않는다
+}
+
+/**
+ * 오늘 이 목표로 센 공부 시간(분, 내림). 오늘이 목표 요일이고 판정 대상인 날일 때만 값이 있다.
+ * 요일이 아니거나(만들기 전 포함), 공휴일 · 제외일 · 일시 정지 중이거나, 쉬는 목표(isActive=false)면 null
+ */
+export function todayStudyMin(
+    goal: GoalRule,
+    today: string,
+    study: ReadonlyMap<string, DayStudy>,
+    skipDates: ReadonlySet<string>,
+): number | null {
+    if (!goal.isActive) return null;
+    const verdict = judgeDay(goal, today, today, study, skipDates);
+    if (verdict === 'none' || verdict === 'skipped') return null;
+    return Math.floor(studiedSec(goal, study.get(today)) / 60);
 }
 
 /**
