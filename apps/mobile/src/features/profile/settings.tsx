@@ -4,15 +4,7 @@ import { Linking, Pressable, ScrollView, View } from 'react-native';
 import { Text } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  CalendarDays,
-  Check,
-  ChevronRight,
-  CircleAlert,
-  ExternalLink,
-  Gift,
-  Zap,
-} from 'lucide-react-native';
+import { CalendarDays, Check, ChevronRight, CircleAlert, Gift, Zap } from 'lucide-react-native';
 import type { PlanTier, UserSettings } from '@notelink/shared';
 import { api } from '@/lib/api';
 import { nicknameError } from '@/lib/validation';
@@ -269,14 +261,14 @@ export function SettingsScreen() {
             도움말 및 지원
           </Row>
           <Row
-            onPress={() => Linking.openURL('https://notelink.app/terms')}
-            right={<ExternalLink size={ICON.sm} color={C.sub} />}
+            chevron
+            onPress={() => router.push({ pathname: '/legal/[doc]', params: { doc: 'service' } })}
           >
             서비스 이용약관
           </Row>
           <Row
-            onPress={() => Linking.openURL('https://notelink.app/privacy')}
-            right={<ExternalLink size={ICON.sm} color={C.sub} />}
+            chevron
+            onPress={() => router.push({ pathname: '/legal/[doc]', params: { doc: 'privacy' } })}
           >
             개인정보처리방침
           </Row>

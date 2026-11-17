@@ -1,11 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Linking,
-  Pressable,
-  View,
-  type TextInput as RNTextInput,
-} from 'react-native';
+import { ActivityIndicator, Pressable, View, type TextInput as RNTextInput } from 'react-native';
 import { create } from 'zustand';
 import { Text, TextInput } from '@/components/text';
 import Animated, { FadeIn } from 'react-native-reanimated';
@@ -639,9 +633,10 @@ export function SignupCodeScreen() {
 }
 
 const TERMS = [
-  ['service', '이용약관 (필수)', true, 'https://notelink.app/terms'],
-  ['privacy', '개인정보 처리 (필수)', true, 'https://notelink.app/privacy'],
-  ['marketing', '마케팅 수신 (선택)', false, 'https://notelink.app/marketing'],
+  // 전문은 앱 안 화면(/legal/[doc])으로 연다. 예전 외부 주소(notelink.app)는 우리 사이트가 아니었다
+  ['service', '이용약관 (필수)', true, 'service'],
+  ['privacy', '개인정보 처리 (필수)', true, 'privacy'],
+  ['marketing', '마케팅 수신 (선택)', false, 'marketing'],
 ] as const;
 
 const Box = ({ on }: { on: boolean }) => (
@@ -681,7 +676,7 @@ export function TermsScreen() {
           <Text className="text-callout font-bold text-ink">전체 동의</Text>
         </Pressable>
         <View className="mt-2 gap-2">
-          {TERMS.map(([k, l, , url]) => {
+          {TERMS.map(([k, l, , doc]) => {
             const on = agreed.includes(k);
             // 동의 체크와 '보기'(전문 열기)는 따로 누른다
             return (
@@ -698,7 +693,7 @@ export function TermsScreen() {
                 <Pressable
                   accessibilityRole="link"
                   accessibilityLabel={`${l} 전문 보기`}
-                  onPress={() => Linking.openURL(url)}
+                  onPress={() => router.push({ pathname: '/legal/[doc]', params: { doc } })}
                   className="px-2 py-3.5"
                 >
                   <Text className="text-caption text-sub">보기</Text>
