@@ -12,6 +12,8 @@ import { MailUnavailableError, type MailSender } from './mail-sender.js';
 
 /** 메일 발송을 요청하고 결과를 기다리는 최대 시간. 넘기면 가입 화면이 오래 멈추지 않도록 포기한다 */
 export const SMTP_SEND_TIMEOUT_MS = 15_000;
+/** 일시적인 실패면 한 번 더 보낸다(같은 인증번호라 두 통이 가도 쓰는 데 문제가 없다) */
+export const SMTP_SEND_ATTEMPTS = 2;
 
 /** 호출하는 쪽에 돌려주는 고정 문구. 라이브러리 오류 문구에는 서버 주소나 받는 사람이 섞일 수 있어 그대로 쓰지 않는다 */
 export const MAIL_SEND_FAILED_MESSAGE = '메일을 보내지 못했습니다';
@@ -63,6 +65,7 @@ export class SmtpMailSender implements MailSender {
     private readonly openTransport: SmtpTransportFactory,
     private readonly from: string,
     private readonly timeoutMs: number = SMTP_SEND_TIMEOUT_MS,
+    private readonly attempts: number = SMTP_SEND_ATTEMPTS,
   ) {}
 
   sendVerificationCode(to: string, code: string): Promise<void> {
@@ -82,13 +85,32 @@ export class SmtpMailSender implements MailSender {
   }
 
   private async send(to: string, message: MailMessage): Promise<void> {
+    if (!isSingleRecipient(to)) {
+      // 라이브러리에 넘기기 전에 거부한다(받는 사람 값은 오류 문구와 로그에 넣지 않는다)
+      this.logger.error('SMTP 메일 발송 실패 (EENVELOPE)');
+      throw new MailUnavailableError(MAIL_SEND_FAILED_MESSAGE);
+    }
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await this.sendOnce(to, message);
+        return;
+      } catch (error) {
+        // 오류 종류와 응답 코드만 남긴다(오류 문구에는 서버 주소나 받는 사람이 섞일 수 있다)
+        this.logger.error(`SMTP 메일 발송 실패 (${describeFailure(error)})`);
+        // 연결이 잠깐 막히거나 늦은 것은 한 번 더 보내면 대개 나간다(운영에서 한 번 ETIMEDOUT 뒤 바로 성공).
+        // 인증 실패 · 영구 거절(5xx)은 다시 보내도 같아서 바로 실패로 돌려준다
+        if (attempt >= this.attempts || !isTransient(error)) {
+          throw new MailUnavailableError(MAIL_SEND_FAILED_MESSAGE);
+        }
+      }
+    }
+  }
+
+  /** 한 번 보내 본다. 실패하면 그 발송의 연결을 끊고 원래 오류를 던진다 */
+  private async sendOnce(to: string, message: MailMessage): Promise<void> {
     let transport: SmtpTransport | undefined;
     let timer: NodeJS.Timeout | undefined;
     try {
-      if (!isSingleRecipient(to)) {
-        // 라이브러리에 넘기기 전에 거부한다(받는 사람 값은 오류 문구와 로그에 넣지 않는다)
-        throw Object.assign(new Error('invalid recipient'), { code: 'EENVELOPE' });
-      }
       transport = this.openTransport();
       const sending = transport.sendMail({
         from: this.from,
@@ -107,14 +129,21 @@ export class SmtpMailSender implements MailSender {
     } catch (error) {
       // 기다림만 끝내면 연결이 살아 있어 메일이 나중에 나갈 수 있다. 이 발송의 연결을 끊는다
       abortQuietly(transport);
-      // 오류 종류와 응답 코드만 남긴다(오류 문구에는 서버 주소나 받는 사람이 섞일 수 있다)
-      this.logger.error(`SMTP 메일 발송 실패 (${describeFailure(error)})`);
-      throw new MailUnavailableError(MAIL_SEND_FAILED_MESSAGE);
+      throw error;
     } finally {
       clearTimeout(timer);
     }
   }
 }
+
+/** 다시 보내 볼 만한 실패인지: 연결 · 시간 초과 · 일시 거절(4xx). 인증 실패 · 영구 거절(5xx)은 아니다 */
+function isTransient(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { code, responseCode } = error as Record<string, unknown>;
+  if (typeof responseCode === 'number') return responseCode >= 400 && responseCode < 500;
+  return typeof code === 'string' && TRANSIENT_CODES.has(code);
+}
+const TRANSIENT_CODES = new Set(['ETIMEDOUT', 'ECONNECTION', 'ESOCKET', 'EDNS', 'ECONNRESET']);
 
 /** 받는 사람 하나로 쓸 수 있는 주소인지 */
 function isSingleRecipient(address: unknown): address is string {

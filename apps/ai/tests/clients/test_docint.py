@@ -20,10 +20,13 @@ from azure.core.exceptions import (
 from azure.storage.blob import BlobServiceClient
 from pydantic import SecretStr
 
+from app.clients import docint as docint_module
 from app.clients.docint import (
     DOWNLOAD_READ_TIMEOUT_SEC,
     DOWNLOAD_TIMEOUT_SEC,
+    MAX_RETRY_AFTER_SEC,
     SAS_MINUTES,
+    CappedRetryPolicy,
     DownloadError,
     Ocr,
     OcrError,
@@ -438,3 +441,39 @@ def test_unexpected_error_in_the_download_thread_is_raised_as_is() -> None:
 
     with pytest.raises(ZeroDivisionError):
         download(SAS_URL, transport=httpx2.MockTransport(broken))
+
+
+def _response(status: int, headers: dict[str, str]) -> Any:
+    return SimpleNamespace(
+        http_response=SimpleNamespace(status_code=status, headers=headers),
+        http_request=SimpleNamespace(method="POST"),
+    )
+
+
+def test_long_retry_after_is_not_waited_for() -> None:
+    # 월 한도 초과: 403 + Retry-After 약 2주. 기다리면 처리기가 멈춰 다른 작업까지 막힘(11/17)
+    policy = CappedRetryPolicy()
+    s = policy.configure_retries({})
+    assert policy.is_retry(s, _response(403, {"Retry-After": "1167152"})) is False
+    assert (
+        policy.is_retry(s, _response(429, {"Retry-After": str(int(MAX_RETRY_AFTER_SEC) + 1)}))
+        is False
+    )
+    # 짧은 대기 · 일시 오류는 SDK가 지금처럼 다시 보냄
+    assert policy.is_retry(s, _response(429, {"Retry-After": "5"})) is True
+    assert policy.is_retry(s, _response(503, {})) is True
+    assert policy.is_retry(s, _response(400, {})) is False
+
+
+def test_docint_client_uses_capped_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_client(endpoint: str, credential: Any, **kwargs: Any) -> object:
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(docint_module, "DocumentIntelligenceClient", fake_client)
+    monkeypatch.setattr(settings, "azure_docint_endpoint", "https://di.example")
+    monkeypatch.setattr(settings, "azure_docint_key", SecretStr("k"))
+    docint_module.docint()
+    assert isinstance(seen.get("retry_policy"), CappedRetryPolicy)
