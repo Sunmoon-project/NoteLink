@@ -80,6 +80,35 @@ describe('Azure Blob 신고 첨부', () => {
     await expect(mismatched.createUpload(name)).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
+  describe('올린 파일 지우기 (deleteUpload)', () => {
+    const prefix = `uploads/image/${owner}/`;
+    const root = `https://${account}.blob.core.windows.net/${container}`;
+    const url = `${root}/${prefix}550e8400-e29b-41d4-a716-446655440000.jpg`;
+
+    it('prefix 아래 올린 파일만 지운다', async () => {
+      const remove = vi
+        .spyOn(BlockBlobClient.prototype, 'deleteIfExists')
+        .mockResolvedValue({ succeeded: true } as never);
+      await service().deleteUpload(url, prefix);
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(remove.mock.contexts[0]).toMatchObject({ url });
+    });
+
+    it('남의 폴더 · 다른 종류 · 하위 경로 · 외부 주소는 저장소를 부르지 않는다', async () => {
+      const remove = vi.spyOn(BlockBlobClient.prototype, 'deleteIfExists');
+      const file = '550e8400-e29b-41d4-a716-446655440000.jpg';
+      for (const other of [
+        `${root}/uploads/image/507f1f77bcf86cd799439012/${file}`,
+        `${root}/uploads/audio/${owner}/${file}`,
+        `${root}/${prefix}sub/${file}`,
+        `${root}/${prefix}../${owner}/${file}`,
+        `https://example.com/${container}/${prefix}${file}`,
+      ])
+        await service().deleteUpload(other, prefix);
+      expect(remove).not.toHaveBeenCalled();
+    });
+  });
+
   describe('읽기 SAS (createReadAccess)', () => {
     const prefix = `uploads/image/${owner}/`;
     const file = `${prefix}550e8400-e29b-41d4-a716-446655440000.jpg`;

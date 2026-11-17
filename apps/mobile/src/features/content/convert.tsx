@@ -9,8 +9,7 @@ import { api, NetworkError } from '@/lib/api';
 import { uploadToBlob } from '@/lib/upload';
 import { aiWaiting } from '@/lib/ai';
 import { notifyLocal } from '@/lib/push';
-import { socket } from '@/lib/socket';
-import { useSocket } from '@/hooks';
+import { useAiJobSubscription, useSocket } from '@/hooks';
 import { useDraft } from '@/stores/draft';
 import { scanTitle } from '@/lib/scan-title';
 import { useAuth } from '@/stores/auth';
@@ -213,10 +212,10 @@ export function ConvertScreen() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 작업이 바뀔 때마다(처음 등록 · 다시 시도로 새 작업) 그 작업의 진행 상황을 구독한다
-  useEffect(() => {
-    if (job?._id) socket.emit('ai:subscribe', { jobId: job._id });
-  }, [job?._id]);
+  // 작업이 바뀔 때마다(처음 등록 · 다시 시도) 그 작업의 진행 상황을 구독한다. 다시 시도는 같은 작업 id를
+  // 다시 쓰므로 횟수로 다시 구독한다. 소켓이 다시 연결되면 훅이 다시 구독한다
+  const [retries, setRetries] = useState(0);
+  useAiJobSubscription(job?._id, retries);
 
   useSocket(
     'ai:progress',
@@ -276,6 +275,7 @@ export function ConvertScreen() {
     onSuccess: (j) => {
       handled.current = false;
       setJob(j);
+      setRetries((n) => n + 1);
       setPhase('ai');
       setAttempts(1);
     },

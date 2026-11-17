@@ -66,6 +66,14 @@ export const UPLOAD_RULES = {
   },
 } as const;
 
+/** 노트 하나에 올릴 수 있는 파일 수(POST /materials). 노트 정리 처리기의 업로드 수 상한(NOTE_MAX_PAGES)과 같다 */
+export const MATERIAL_MAX_FILES = 50;
+/**
+ * 사진 검사(POST /images/check) 요청 한 번에 보낼 수 있는 사진 수. AI 서버 판정(apps/ai images.py MAX_FILES)과 같다.
+ * 앱은 이보다 많으면 나눠서 보낸다
+ */
+export const IMAGE_CHECK_MAX_FILES = 20;
+
 /** 경로 조각 인코딩 — id에 '/'나 '..'가 들어와도 다른 경로로 새지 않게 한다 */
 const seg = (v: string) => encodeURIComponent(v);
 
@@ -230,4 +238,6 @@ export type ClientToServer = {
   ) => void;
   'chat:read': (p: { chatRoomId: string }) => void;
   'ai:subscribe': (p: { jobId: string }) => void;
+  /** 화면을 떠나면 그 작업의 진행률을 그만 받는다 */
+  'ai:unsubscribe': (p: { jobId: string }) => void;
 };

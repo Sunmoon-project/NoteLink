@@ -35,8 +35,7 @@ import {
 import { ERROR_CODES, type AiJob, type Question } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
-import { socket } from '@/lib/socket';
-import { useSocket, useTabRefresh } from '@/hooks';
+import { useAiJobSubscription, useSocket, useTabRefresh } from '@/hooks';
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
@@ -400,7 +399,6 @@ export function QuizGenScreen() {
         activeJob.current = r.job._id;
         setJob(r.job);
         setSetId(r.quizSet._id);
-        socket.emit('ai:subscribe', { jobId: r.job._id });
       })
       .catch((e) => {
         if (!disposed && !canceled.current) {
@@ -412,6 +410,8 @@ export function QuizGenScreen() {
       disposed = true;
     };
   }, [materialId]);
+  // 진행 상황 구독(소켓이 다시 연결되면 다시 구독)
+  useAiJobSubscription(job?._id);
   useSocket(
     'ai:progress',
     (p) => p.jobId === job?._id && setJob((j) => (j ? { ...j, progress: p.progress } : j)),

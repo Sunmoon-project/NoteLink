@@ -1,4 +1,4 @@
-import { MaterialKind, MaterialSource } from '@notelink/shared';
+import { MATERIAL_MAX_FILES, MaterialKind, MaterialSource } from '@notelink/shared';
 import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -16,8 +16,6 @@ import {
 const trim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;
 
-/** 노트 등록 상한. 노트 정리 처리기의 업로드 수 상한(NOTE_MAX_PAGES)과 같다 */
-export const MATERIAL_MAX_FILES = 50;
 export const MATERIAL_TITLE_MAX = 100;
 export const MATERIAL_DESCRIPTION_MAX = 500;
 

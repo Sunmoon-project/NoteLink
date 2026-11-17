@@ -25,6 +25,26 @@ export function useSocket<E extends keyof ServerToClient>(
   useEffect(() => socket.on(ev, fn), deps); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
+/**
+ * AI 작업 진행률 구독(서버 AiJobsGateway: `ai:subscribe` → `ai:progress` · `ai:done`).
+ * 서버 구독은 소켓 연결마다 따로라 다시 연결되면(토큰 갱신 · 회선 끊김) 사라지므로 연결될 때마다 다시 보낸다.
+ * 같은 작업을 다시 시도하면(작업 id는 그대로) `again`을 바꿔 다시 구독한다. 화면을 떠나면 `ai:unsubscribe`
+ */
+export function useAiJobSubscription(jobId: string | null | undefined, again?: unknown) {
+  useEffect(() => {
+    if (!jobId) return;
+    const subscribe = (connected: boolean) => {
+      if (connected) socket.emit('ai:subscribe', { jobId });
+    };
+    const off = socket.onConnection?.(subscribe);
+    if (!socket.onConnection) subscribe(true);
+    return () => {
+      off?.();
+      socket.emit('ai:unsubscribe', { jobId });
+    };
+  }, [jobId, again]);
+}
+
 type Refetchable = { dataUpdatedAt: number; refetch: () => Promise<unknown> };
 
 /**

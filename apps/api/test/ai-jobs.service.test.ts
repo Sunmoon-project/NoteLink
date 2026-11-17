@@ -99,6 +99,36 @@ describe('AiJobsService.findMine', () => {
   });
 });
 
+describe('AiJobsService.progressOf (소켓 진행률)', () => {
+  it('여러 작업의 상태 · 진행률 · 단계만 돌려주고, held는 queued로 보낸다', async () => {
+    const { service, add, row } = setup();
+    const a = await add();
+    const b = await add();
+    Object.assign(row(a._id), { status: 'running', progress: 40, step: '문제 만들기' });
+    Object.assign(row(b._id), { status: 'held', step: null, result: { big: true } });
+    const list = await service.progressOf([a._id, b._id]);
+    expect(list).toEqual(
+      expect.arrayContaining([
+        { jobId: a._id, status: 'running', progress: 40, step: '문제 만들기' },
+        { jobId: b._id, status: 'queued', progress: 0 },
+      ]),
+    );
+    expect(list).toHaveLength(2);
+  });
+
+  it('형식이 틀린 id · 없는 작업은 빼고, 남은 게 없으면 DB를 읽지 않는다', async () => {
+    const { service, add, model } = setup();
+    const { _id } = await add();
+    const find = vi.spyOn(model, 'find');
+    await expect(
+      service.progressOf([_id, 'not-an-id', new Types.ObjectId().toString()]),
+    ).resolves.toEqual([{ jobId: _id, status: 'queued', progress: 0 }]);
+    find.mockClear();
+    await expect(service.progressOf(['abcdefghijkl'])).resolves.toEqual([]);
+    expect(find).not.toHaveBeenCalled();
+  });
+});
+
 describe('AiJobsService.cancel', () => {
   it.each(['queued', 'running'])('%s 작업은 canceled로', async (status) => {
     const { service, add, row } = setup();

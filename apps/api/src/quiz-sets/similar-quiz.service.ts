@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, mongo, Types } from 'mongoose';
 
@@ -151,9 +156,16 @@ export class SimilarQuizService {
       await this.markPending(attempt._id, false);
       return toAppSet(created.toObject<QuizSetRow>(), job.progress);
     } catch (e) {
-      // 세트를 저장하지 못했으면 넣은 작업은 거둔다. 같은 노트로 만드는 중인 세트가 있으면(고유 색인) 기다리게 한다
+      if (!isDuplicateKey(e)) {
+        // 저장됐는지 알 수 없는 오류(쓰기는 반영됐는데 응답만 실패했을 수 있다): 세트를 읽어 확인한다
+        const saved = await this.savedSet(newId, owner);
+        if (saved === 'unknown') throw e; // 확인하지 못하면 작업을 거두지 않는다(저장된 세트의 작업일 수 있다)
+        if (saved?.jobId?.toString() === job._id) return toAppSet(saved, job.progress);
+        await this.cancelQuietly(userId, job._id);
+        throw e;
+      }
+      // 고유 색인에 막혔으면 저장되지 않은 것이 확실하다: 넣은 작업은 거두고, 만드는 중인 세트를 기다리게 한다
       await this.jobs.cancel(userId, job._id);
-      if (!isDuplicateKey(e)) throw e;
       // 같은 세트로 동시에 온 다른 요청이 먼저 만들었으면 그 세트를 돌려준다
       const first = await this.sets
         .findOne({ ownerId: owner, sourceSetId: source._id, status: 'generating', deletedAt: null })
@@ -247,11 +259,29 @@ export class SimilarQuizService {
     }
   }
 
+  /** 방금 만들려던 세트가 저장돼 있는지. 있으면 그 세트, 없으면 null, 읽지 못했으면 'unknown' */
+  private async savedSet(
+    id: Types.ObjectId,
+    owner: Types.ObjectId,
+  ): Promise<QuizSetRow | null | 'unknown'> {
+    try {
+      return await this.sets.findOne({ _id: id, ownerId: owner }).lean<QuizSetRow>();
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  /** 세트 저장 오류를 먼저 알리려고, 작업을 거두다 난 오류는 삼킨다(남은 작업은 세트가 없어 결과를 옮기지 않는다) */
+  private async cancelQuietly(userId: string, jobId: string): Promise<void> {
+    await this.jobs.cancel(userId, jobId).catch(() => undefined);
+  }
+
   /**
    * 오답 복습은 만들 때마다 틀린 문제들의 복습 상태(srsUpdates)를 옮기므로 한 풀이에 한 번만 만든다.
    * 이 풀이로 만든 세트가 남아 있고 만드는 중이거나 다 만들었으면 그 세트를 돌려준다(다시 만들지 않음).
    * 처리기가 끝냈는데(복습 상태를 옮김) 세트를 지웠거나 새 문제를 못 만들었으면 409.
-   * 처리기가 실패 · 취소로 끝냈으면(옮긴 것 없음) 그 세트를 닫고 null: 새로 만들게 둔다
+   * 처리기가 실패 · 취소로 끝냈으면(옮긴 것 없음) 그 세트를 닫고 null: 새로 만들게 둔다.
+   * 작업을 읽지 못하면(일시적인 DB 오류) 세트를 닫지 않고 오류를 그대로 알린다: 다 만든 세트를 지우지 않게
    */
   private async madeFor(
     userId: string,
@@ -265,9 +295,7 @@ export class SimilarQuizService {
       .lean<QuizSetRow[]>();
     const superseded: QuizSetRow[] = [];
     for (const prev of made) {
-      const job = prev.jobId
-        ? await this.jobs.findMine(userId, prev.jobId.toString()).catch(() => null)
-        : null;
+      const job = prev.jobId ? await this.jobOf(userId, prev.jobId.toString()) : null;
       if (!job || job.status === 'failed' || job.status === 'canceled') {
         if (!prev.deletedAt) superseded.push(prev);
         continue;
@@ -287,6 +315,16 @@ export class SimilarQuizService {
         .lean();
     }
     return null;
+  }
+
+  /** 내 작업. 없는 작업(404)만 null이고, 그 밖의 조회 오류는 그대로 던진다 */
+  private async jobOf(userId: string, jobId: string) {
+    try {
+      return await this.jobs.findMine(userId, jobId);
+    } catch (e) {
+      if (e instanceof NotFoundException) return null;
+      throw e;
+    }
   }
 
   /**

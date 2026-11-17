@@ -545,3 +545,113 @@ describe('처리기 입력 크기(fitReviewInput)', () => {
     );
   });
 });
+
+describe('작업 조회가 실패하면 만든 세트를 닫지 않는다(madeFor)', () => {
+  const ready = async (t: ReturnType<typeof setup>) => {
+    const s = await t.seed();
+    const made = await t.similar.create(ME.toHexString(), s.set);
+    Object.assign(t.jobs.rows.at(-1)!, {
+      status: 'succeeded',
+      progress: 100,
+      result: {
+        reviewQuestions: [
+          {
+            id: new Types.ObjectId().toHexString(),
+            order: 1,
+            prompt: '세포를 둘러싼 막은?',
+            choices: ['세포막', '핵'],
+            answer: '세포막',
+            conceptTags: [],
+          },
+        ],
+        srsUpdates: [],
+      },
+    });
+    await t.quizSets.findMine(ME.toHexString(), made._id);
+    const row = () => t.sets.rows.find((r) => String(r._id) === made._id)!;
+    expect(row()['status']).toBe('ready');
+    return { s, made, row };
+  };
+
+  it('일시적인 조회 오류는 그대로 알리고, 다 만든 세트는 지우지 않으며 작업도 더 넣지 않는다', async () => {
+    const t = setup();
+    const { s, made, row } = await ready(t);
+    const count = t.jobs.rows.length;
+    const find = vi
+      .spyOn(AiJobsService.prototype, 'findMine')
+      .mockRejectedValueOnce(new Error('DB 끊김'));
+    try {
+      await expect(t.similar.create(ME.toHexString(), s.set)).rejects.toThrow('DB 끊김');
+    } finally {
+      find.mockRestore();
+    }
+    expect(row()['deletedAt'] ?? null).toBeNull();
+    expect(t.jobs.rows).toHaveLength(count);
+    // 조회가 돌아오면 같은 세트를 그대로 돌려준다
+    expect(await t.similar.create(ME.toHexString(), s.set)).toMatchObject({
+      _id: made._id,
+      status: 'ready',
+    });
+  });
+
+  it('작업이 없어진 세트(404)는 전처럼 닫고 새로 만든다', async () => {
+    const t = setup();
+    const { s, made, row } = await ready(t);
+    t.jobs.rows.length = 0;
+    const again = await t.similar.create(ME.toHexString(), s.set);
+    expect(again._id).not.toBe(made._id);
+    expect(row()['deletedAt']).toBeInstanceOf(Date);
+  });
+});
+
+describe('세트 저장 결과가 불명확할 때 작업 거두기(create)', () => {
+  /** 세트 저장이 한 번 실패하게 한다. saved 면 저장은 반영되고 응답만 실패한 것처럼 */
+  const failCreate = (t: ReturnType<typeof setup>, saved: boolean) => {
+    const original = t.sets.model.create.bind(t.sets.model);
+    return vi.spyOn(t.sets.model, 'create').mockImplementationOnce((async (doc: never) => {
+      if (saved) await original(doc);
+      throw new Error('쓰기 확인 실패');
+    }) as never);
+  };
+
+  it('저장은 됐는데 응답만 실패했으면 작업을 거두지 않고 그 세트를 돌려준다', async () => {
+    const t = setup();
+    const s = await t.seed();
+    failCreate(t, true);
+    const out = await t.similar.create(ME.toHexString(), s.set);
+    const job = t.jobs.rows.at(-1)!;
+    expect(out).toMatchObject({ status: 'generating', sourceSetId: s.set });
+    expect(String(job['targetId'])).toBe(out._id);
+    expect(job['status']).not.toBe('canceled');
+    // 다시 눌러도 같은 세트(작업을 더 넣지 않는다)
+    const count = t.jobs.rows.length;
+    expect((await t.similar.create(ME.toHexString(), s.set))._id).toBe(out._id);
+    expect(t.jobs.rows).toHaveLength(count);
+  });
+
+  it('저장되지 않았으면 넣은 작업을 거두고 오류를 알린다', async () => {
+    const t = setup();
+    const s = await t.seed();
+    failCreate(t, false);
+    await expect(t.similar.create(ME.toHexString(), s.set)).rejects.toThrow('쓰기 확인 실패');
+    expect(t.jobs.rows.at(-1)!['status']).toBe('canceled');
+    expect(t.sets.rows.some((r) => String(r['sourceSetId']) === s.set)).toBe(false);
+  });
+
+  it('저장됐는지 확인하지 못하면 작업을 거두지 않고 원래 오류를 알린다', async () => {
+    const t = setup();
+    const s = await t.seed();
+    failCreate(t, true);
+    const findOne = t.sets.model.findOne.bind(t.sets.model);
+    let calls = 0;
+    // 저장 실패 뒤의 확인 조회만 실패하게 한다(그 앞의 원래 세트 · 만드는 중 조회 두 번은 그대로)
+    vi.spyOn(t.sets.model, 'findOne').mockImplementation(((filter: never) => {
+      calls += 1;
+      if (calls === 3) return { lean: () => Promise.reject(new Error('DB 끊김')) };
+      return findOne(filter);
+    }) as never);
+    await expect(t.similar.create(ME.toHexString(), s.set)).rejects.toThrow('쓰기 확인 실패');
+    expect(calls).toBe(3);
+    expect(t.jobs.rows.at(-1)!['status']).not.toBe('canceled');
+  });
+});

@@ -69,6 +69,10 @@ describe('ImagesService.check', () => {
     await expect(service.check(userId, { files: [file, file] })).rejects.toBeInstanceOf(
       BadRequestException,
     );
+    // 이름이 달라도 같은 사진(주소)을 두 번 보내면 거절한다(AI 글자 인식을 두 번 하지 않게)
+    await expect(
+      service.check(userId, { files: [file, { ...file, name: 'other.jpg' }] }),
+    ).rejects.toBeInstanceOf(BadRequestException);
     await expect(
       service.check(userId, {
         files: [{ ...file, sizeBytes: UPLOAD_RULES.image.maxBytes + 1 }],

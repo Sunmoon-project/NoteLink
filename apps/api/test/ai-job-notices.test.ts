@@ -46,6 +46,8 @@ function setup(
     deleteFails?: boolean;
     /** 이 상태를 쓰는 updateOne을 앞에서부터 times번 실패시킨다 */
     failWrite?: { state: string | null; times: number };
+    /** 기기를 읽는 동안 정리가 같은 claimId 의 선점을 gave_up 으로 닫는다(DB 문서의 notice.state 가 claimed 가 아니게 된다) */
+    gaveUpDuringDevices?: boolean;
   } = {},
 ) {
   const makeJob = () => ({
@@ -64,6 +66,8 @@ function setup(
   const writes: Write[] = []; // 선점(findOneAndUpdate) · 기록(updateOne)을 부른 차례대로
   const cleanups: Write[] = [];
   let claimCalls = 0;
+  let gaveUp = false;
+  const recheckFilters: Record<string, unknown>[] = [];
   let failed = 0;
   const jobs = {
     find: (filter: Record<string, unknown>) => {
@@ -105,9 +109,17 @@ function setup(
         return Promise.resolve({ modifiedCount: 0 });
       },
     ),
-    findOne: () => ({
-      lean: () =>
-        Promise.resolve(opts.recheck === undefined ? { status: job.status } : opts.recheck),
+    findOne: vi.fn((filter: Record<string, unknown>) => {
+      recheckFilters.push(filter);
+      return {
+        lean: () => {
+          // DB 처럼 조건을 본다: notice.state 가 claimed 여야 한다고 물었는데 이미 gave_up 이면 문서가 없다
+          if (gaveUp && filter['notice.state'] === 'claimed') return Promise.resolve(null);
+          return Promise.resolve(
+            opts.recheck === undefined ? { status: job.status } : opts.recheck,
+          );
+        },
+      };
     }),
   };
   const materials = {
@@ -125,10 +137,12 @@ function setup(
   };
   const devices = {
     find: () => ({
-      lean: () =>
-        Promise.resolve(
+      lean: () => {
+        if (opts.gaveUpDuringDevices) gaveUp = true;
+        return Promise.resolve(
           (opts.devices ?? ['ExponentPushToken[aaa]']).map((pushToken) => ({ pushToken })),
-        ),
+        );
+      },
     }),
     deleteMany: vi.fn(() =>
       opts.deleteFails ? Promise.reject(new Error('db down')) : Promise.resolve(),
@@ -152,7 +166,19 @@ function setup(
   const noticeState = () =>
     writes.map((u) => u.update.$set?.['notice.state']).filter((s) => s !== undefined);
   const sentWrites = () => writes.filter((w) => w.update.$set?.['notice.state'] === 'sent');
-  return { service, job, jobList, push, filters, writes, cleanups, waits, noticeState, sentWrites };
+  return {
+    service,
+    job,
+    jobList,
+    push,
+    filters,
+    writes,
+    cleanups,
+    waits,
+    noticeState,
+    sentWrites,
+    recheckFilters,
+  };
 }
 
 const failAll = () =>
@@ -423,5 +449,25 @@ describe('한도에 닿은 만료된 선점 정리', () => {
     });
     expect(cleanup!.update).toEqual({ $set: { 'notice.state': 'gave_up' } });
     expect(cleanup!.options).toEqual({ timestamps: false });
+  });
+});
+
+describe('발송 직전 선점 조회는 claimed 인 내 선점만 본다', () => {
+  it('기기를 읽는 동안 정리가 같은 claimId 의 선점을 gave_up 으로 닫았으면 보내지 않고 아무것도 쓰지 않는다', async () => {
+    const { service, push, noticeState } = setup({ gaveUpDuringDevices: true });
+    await service.runOnce(NOW);
+    expect(push.send).not.toHaveBeenCalled();
+    expect(noticeState()).toEqual(['claimed']);
+  });
+
+  it('조회 조건에 notice.state: claimed 가 들어간다', async () => {
+    const { service, recheckFilters, job } = setup();
+    await service.runOnce(NOW);
+    expect(recheckFilters[0]).toMatchObject({
+      _id: job._id,
+      status: job.status,
+      'notice.claimId': expect.any(String),
+      'notice.state': 'claimed',
+    });
   });
 });
