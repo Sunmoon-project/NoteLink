@@ -221,6 +221,36 @@ describe('내 프로필 API', () => {
   });
 });
 
+describe('처음 안내를 계정에 적는다 (기기를 바꿔도 다시 열리지 않게)', () => {
+  it('toured: true면 안내 시각을, false면 null(안내 전)을 적는다', async () => {
+    const seen = await patch({ toured: true });
+    expect(seen.status).toBe(200);
+    const [, update] = model.findOneAndUpdate.mock.calls.at(-1) as unknown as [
+      unknown,
+      { $set: { touredAt: unknown } },
+    ];
+    expect(update.$set.touredAt).toBeInstanceOf(Date);
+
+    expect((await patch({ toured: false })).status).toBe(200);
+    expect(model.findOneAndUpdate).toHaveBeenLastCalledWith(
+      expect.anything(),
+      { $set: { touredAt: null } },
+      expect.anything(),
+    );
+  });
+
+  it('참 · 거짓이 아니면 400', async () => {
+    expect((await patch({ toured: 'yes' })).status).toBe(400);
+    expect((await patch({ toured: null })).status).toBe(400);
+  });
+
+  it('내 정보에 설정 · 안내 완료 여부를 함께 내려준다', async () => {
+    const res = await get();
+    expect(res.body.data).toHaveProperty('onboarded');
+    expect(res.body.data).toHaveProperty('toured');
+  });
+});
+
 describe('관심 분야는 공용 카테고리만 저장한다 (#287 리뷰)', () => {
   const publicId = new Types.ObjectId();
   const otherOwnerId = new Types.ObjectId();

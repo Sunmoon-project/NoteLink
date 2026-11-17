@@ -111,6 +111,10 @@ export class User {
   @Prop({ type: [TermAgreementSchema], default: [] })
   termAgreements: TermAgreement[];
 
+  // 처음 안내를 마친 시각. 기본값을 두지 않는다 — 필드가 없으면 이 기록이 생기기 전 계정이다(to-app-user.ts)
+  @Prop({ type: Date })
+  touredAt?: Date | null;
+
   @Prop({ type: SubscriptionSchema })
   subscription?: Subscription;
 

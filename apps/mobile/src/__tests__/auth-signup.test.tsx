@@ -599,6 +599,8 @@ it('초기 설정은 미리 고른 값이 없고, 닉네임과 학습자 유형�
       nickname: '한결',
       learnerType: 'university',
       interestCategoryIds: [],
+      // 처음 설정을 막 마친 계정은 안내 전으로 적어, 다른 기기에서도 안내를 이어 연다
+      toured: false,
     }),
   );
 });

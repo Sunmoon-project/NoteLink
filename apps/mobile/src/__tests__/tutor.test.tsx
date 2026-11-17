@@ -8,7 +8,14 @@ import * as SecureStore from 'expo-secure-store';
 import { BUDDY_LINES, TutorBuddy, useTuckOnScroll } from '../features/tutor/buddy';
 import { AvatarCheer, ENCOURAGE, PRAISE } from '../features/tutor/cheer';
 import { AvatarTeacherScreen } from '../features/tutor/teacher';
-import { FOLDER_STEPS, STEPS, TourCoach, useTour, useTourOnce } from '../features/tutor/tour';
+import {
+  FOLDER_STEPS,
+  STEPS,
+  TourCoach,
+  rememberToured,
+  useTour,
+  useTourOnce,
+} from '../features/tutor/tour';
 import { useAuth } from '../stores/auth';
 import { TutorScreen, nextSuggest, type Msg } from '../features/tutor/tutor';
 import { renderScreen, setParams } from '../test-utils';
@@ -50,6 +57,7 @@ const mockApi = {
   content: { material: jest.fn(), ask: jest.fn() },
   ai: { job: jest.fn() },
   shop: { myItems: jest.fn(), items: jest.fn(), equip: jest.fn() },
+  me: { get: jest.fn(), update: jest.fn() },
 };
 jest.mock('../lib/api', () => ({
   get api() {
@@ -700,6 +708,84 @@ describe('처음 안내', () => {
     await renderHook(() => useTourOnce(true));
     await act(async () => {});
     expect(useTour.getState().step).toBe(-1);
+  });
+
+  it('다른 기기에서 안내를 본 계정(서버 기록)이면 이 기기에서도 열지 않는다', async () => {
+    useTour.setState({ step: -1 });
+    useAuth.setState({ userId: 'u3', user: { _id: 'u3', toured: true } as never });
+    await renderHook(() => useTourOnce(true));
+    await act(async () => {});
+    expect(useTour.getState().step).toBe(-1);
+    useAuth.setState({ user: null });
+  });
+});
+
+// Codex #495 리뷰: 서버 기록으로 건너뛴 뒤 다시 켜면 안내가 다시 열리고, 서버에 못 적은 기록은 다시 보내지 않았다
+describe('처음 안내 기록을 계정과 맞추기', () => {
+  beforeEach(() => {
+    mockApi.me.get.mockReset();
+    mockApi.me.update.mockReset();
+    useTour.setState({ step: -1 });
+  });
+  afterEach(() => useAuth.setState({ user: null }));
+  /** 앱을 한 번 켠다: 안내 훅을 그리고 저장소 · 서버 응답을 기다린 뒤 닫는다 */
+  const run = async () => {
+    const hook = await renderHook(() => useTourOnce(true));
+    for (let i = 0; i < 5; i++) await act(async () => {});
+    await hook.unmount();
+  };
+
+  it('서버 기록으로 건너뛰면 이 기기에도 적어, 다시 켜서 서버에 못 물어봐도 열지 않는다', async () => {
+    useAuth.setState({ userId: 'u5', user: { _id: 'u5', toured: true } as never });
+    await run();
+    expect(JSON.parse(mockSecure.get('notelink.toured')!)).toEqual(['u5']);
+    // 다시 켬: 계정 정보가 없고 서버도 응답하지 않음
+    useAuth.setState({ user: null });
+    mockApi.me.get.mockRejectedValue(new Error('offline'));
+    await run();
+    expect(useTour.getState().step).toBe(-1);
+  });
+
+  it('다시 켜서 계정 정보가 없으면 서버에 물어보고, 본 계정이면 열지 않고 기록한다', async () => {
+    useAuth.setState({ userId: 'u6', user: null });
+    mockApi.me.get.mockResolvedValue({ _id: 'u6', toured: true });
+    await run();
+    expect(mockApi.me.get).toHaveBeenCalled();
+    expect(useTour.getState().step).toBe(-1);
+    expect(JSON.parse(mockSecure.get('notelink.toured')!)).toEqual(['u6']);
+  });
+
+  it('서버도 안 봤다고 하면 안내를 연다', async () => {
+    useAuth.setState({ userId: 'u7', user: null });
+    mockApi.me.get.mockResolvedValue({ _id: 'u7', toured: false });
+    await run();
+    expect(useTour.getState().step).toBe(0);
+  });
+
+  it('안내를 마칠 때 서버에 못 적었으면, 다음에 켤 때 다시 적는다', async () => {
+    useAuth.setState({ userId: 'u8', user: { _id: 'u8', toured: false } as never });
+    mockApi.me.update.mockRejectedValueOnce(new Error('offline'));
+    await rememberToured('u8');
+    await act(async () => {});
+    expect(mockApi.me.update).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(mockSecure.get('notelink.toured')!)).toEqual(['u8']);
+    // 다음 실행: 이 기기 기록은 있고 서버는 아직 안 봤다고 함 → 안내는 열지 않고 다시 적는다
+    mockApi.me.update.mockResolvedValue({ _id: 'u8', toured: true });
+    await run();
+    expect(useTour.getState().step).toBe(-1);
+    expect(mockApi.me.update).toHaveBeenCalledTimes(2);
+    expect(mockApi.me.update).toHaveBeenLastCalledWith({ toured: true });
+    expect(useAuth.getState().user?.toured).toBe(true);
+  });
+
+  it('서버 응답이 오기 전에 다른 계정으로 바뀌면 그 응답으로 지금 계정 정보를 덮지 않는다', async () => {
+    useAuth.setState({ userId: 'u9', user: { _id: 'u9', toured: false } as never });
+    let reply!: (u: unknown) => void;
+    mockApi.me.update.mockImplementationOnce(() => new Promise((r) => (reply = r)));
+    await rememberToured('u9');
+    useAuth.setState({ userId: 'u10', user: { _id: 'u10', toured: false } as never });
+    await act(async () => reply({ _id: 'u9', toured: true }));
+    expect(useAuth.getState().user).toEqual({ _id: 'u10', toured: false });
   });
 });
 
