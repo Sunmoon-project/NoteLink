@@ -153,6 +153,10 @@ export class TodayReviewService {
     }
 
     const newId = new Types.ObjectId();
+    // 이 세트의 시각은 입력(복습 상태)을 모으기 **시작한** 때로 둔다. 결과를 저장할 때 문제마다 이 시각(srsAt)을 남기고
+    // 더 새 세트가 쓴 상태는 덮지 않으므로(QuizSetsService.saveSrs), 입력을 모은 뒤에 시작한 오답 복습은 시작 시각이
+    // 더 늦어 그 결과가 이긴다. 그보다 먼저 시작해 아직 도는 복습은 input()이 고르지 않는다(Codex #482 4차 리뷰)
+    const snapshotAt = new Date();
     const job = await this.jobs.enqueue({
       type: TODAY_TYPE,
       userId,
@@ -174,6 +178,8 @@ export class TodayReviewService {
         questions: [],
         jobId: new Types.ObjectId(job._id),
         deletedAt: null,
+        // 스키마의 timestamps가 채우는 값이라 클래스에는 없다. 지정하면 mongoose가 그대로 둔다
+        ...{ createdAt: snapshotAt },
       });
       return toAppSet(created.toObject<QuizSetRow>(), job.progress);
     } catch (e) {
@@ -232,11 +238,30 @@ export class TodayReviewService {
    * 처리기 입력: 사용자의 세트 전부(지운 세트도 deletedAt과 함께: 그 풀이를 약한 개념 · 무효 풀이에 셈) ·
    * 끝낸 풀이 · 노트 글. 노트가 없는 세트(만드는 중인 오늘의 복습 등)는 처리기가 받지 않아 뺀다
    */
+  /** 오답 복습(비슷한 문제 세트)을 아직 만드는 중인 원본 세트 id */
+  private async reviewingSources(owner: Types.ObjectId): Promise<string[]> {
+    const rows = await this.sets
+      .find(
+        { ownerId: owner, status: 'generating', deletedAt: null, sourceSetId: { $ne: null } },
+        { sourceSetId: 1 },
+      )
+      .lean<{ sourceSetId: Types.ObjectId }[]>();
+    return rows.map((r) => r.sourceSetId.toString());
+  }
+
   private async input(owner: Types.ObjectId, day: string): Promise<TodayInput> {
+    // 오답 복습이 아직 도는 세트는 그 결과가 곧 복습 상태를 바꾼다. 지금 상태로 그 문제를 고르면(사본으로 넘김)
+    // 더 늦게 만든 이 세트의 상태가 우선이라 방금 푼 결과(정답 횟수 · 다음 날짜)가 사라진다. 그래서 지운 세트처럼
+    // 넘겨 문제는 고르지 않고 풀이만 센다(처리기 today.py: deletedAt이 있으면 문제를 내지 않음). 다음 날 고른다.
+    // 세트(복습 상태)를 읽기 **전과 후** 모두 본다: 전에만 보면 읽은 뒤 시작한 복습을, 후에만 보면 그 사이 끝나
+    // 결과를 저장한 복습(읽은 상태는 그 결과 전 값)을 놓친다(Codex 3차 리뷰)
+    const before = await this.reviewingSources(owner);
     const sets = await this.sets
       .find({ ownerId: owner, status: 'ready', materialId: { $ne: null } })
       .sort({ createdAt: 1 })
       .lean<QuizSetRow[]>();
+    const reviewing = new Set([...before, ...(await this.reviewingSources(owner))]);
+    const now = new Date().toISOString();
     const attempts = await this.attempts
       .find({
         userId: owner,
@@ -266,7 +291,11 @@ export class TodayReviewService {
       sets: sets.map((s) => ({
         id: s._id.toString(),
         materialId: s.materialId!.toString(),
-        ...(s.deletedAt ? { deletedAt: s.deletedAt.toISOString() } : {}),
+        ...(s.deletedAt
+          ? { deletedAt: s.deletedAt.toISOString() }
+          : reviewing.has(s._id.toString())
+            ? { deletedAt: now }
+            : {}),
         questions: (s.questions ?? []).map(toWorkerQuestion),
       })),
       attempts: attempts.map((a) => ({
