@@ -638,6 +638,26 @@ describe('세트 저장 결과가 불명확할 때 작업 거두기(create)', ()
     expect(t.sets.rows.some((r) => String(r['sourceSetId']) === s.set)).toBe(false);
   });
 
+  it('세트 저장과 작업 취소가 모두 실패하면 최초 저장 오류를 알린다', async () => {
+    const t = setup();
+    const s = await t.seed();
+    const saveError = new Error('세트 저장 실패');
+    vi.spyOn(t.sets.model, 'create').mockRejectedValueOnce(saveError as never);
+    const cancel = vi
+      .spyOn(AiJobsService.prototype, 'cancel')
+      .mockRejectedValueOnce(new Error('취소 실패'));
+    try {
+      await expect(t.similar.create(ME.toHexString(), s.set)).rejects.toBe(saveError);
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(
+        ME.toHexString(),
+        String(t.jobs.rows.at(-1)!['_id']),
+      );
+      expect(t.sets.rows.some((r) => String(r['sourceSetId']) === s.set)).toBe(false);
+    } finally {
+      cancel.mockRestore();
+    }
+  });
+
   it('저장됐는지 확인하지 못하면 작업을 거두지 않고 원래 오류를 알린다', async () => {
     const t = setup();
     const s = await t.seed();
