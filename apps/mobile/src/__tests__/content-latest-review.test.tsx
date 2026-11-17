@@ -977,7 +977,12 @@ describe('변환 화면: 다 올린 뒤에 변환으로 넘어가고, 취소하�
     });
     await renderScreen(<ConvertScreen />, client());
     expect(await screen.findByText('원본을 올리고 있어요')).toBeTruthy();
-    expect(screen.getByText('60%')).toBeTruthy();
+    // 진행률은 부드럽게 따라가므로(useSmoothProgress) 업로드 값 60%까지 차오르는지 본다(기다리는 동안 +4%까지만)
+    await waitFor(() => {
+      const value = parseInt([screen.getByText(/^\d+%$/).props.children].flat().join(''), 10);
+      expect(value).toBeGreaterThanOrEqual(59);
+      expect(value).toBeLessThanOrEqual(64);
+    });
     expect(screen.queryByText('필기를 학습 자료로 변환하고 있어요')).toBeNull();
     await act(async () => upload.resolve(blobUrl));
     expect(await screen.findByText('필기를 학습 자료로 변환하고 있어요')).toBeTruthy();
