@@ -46,6 +46,7 @@ interface UserRow {
   sessionVersion?: number;
   _id: Types.ObjectId;
   email: string;
+  loginId?: string;
   passwordHash: string | null;
   deletedAt: Date | null;
 }
@@ -154,7 +155,25 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
     expect(noAccount).toEqual(['nobody@example.com']);
   });
 
-  it('아이디 찾기: 인증번호가 맞으면 아이디(가입 이메일)를 알려 주고, 같은 인증번호는 다시 못 쓴다', async () => {
+  it('아이디 찾기: 아이디를 정한 계정은 그 아이디를 알려 준다', async () => {
+    users[0]!.loginId = 'note_user';
+    await post(SEND, { email: EMAIL });
+    const ok = await post(FIND, { email: EMAIL, code: code() });
+    expect(ok.body).toEqual({ data: { id: 'note_user' } });
+  });
+
+  it('비밀번호 재설정: 아이디를 두기 전 계정은 이메일을 아이디로 쓴다', async () => {
+    await post(SEND, { email: EMAIL });
+    const res = await post(RESET, {
+      id: EMAIL,
+      email: EMAIL,
+      code: code(),
+      password: NEW_PASSWORD,
+    });
+    expect(res.status).toBe(204);
+  });
+
+  it('아이디 찾기: 인증번호가 맞으면 아이디(아이디를 두기 전 계정은 가입 이메일)를 알려 주고, 같은 인증번호는 다시 못 쓴다', async () => {
     await post(SEND, { email: 'Student@Example.com ' });
     const ok = await post(FIND, { email: EMAIL, code: code() });
     expect(ok.status).toBe(200);
@@ -182,13 +201,14 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
     expect(res.status).toBe(400);
   });
 
-  it('비밀번호 재설정: 아이디와 이메일이 다르면 거절하고, 맞으면 바꾼 뒤 모든 기기 로그인을 끊는다', async () => {
+  it('비밀번호 재설정: 그 이메일의 아이디가 아니면 거절하고(인증번호는 쓴 것이 된다), 맞으면 바꾼 뒤 모든 기기 로그인을 끊는다', async () => {
     const user = users[0]!;
+    user.loginId = 'note_user';
     const before = await tokens.issue(user._id.toString());
     await post(SEND, { email: EMAIL });
     const mismatch = await post(RESET, {
-      id: EMAIL,
-      email: 'other@example.com',
+      id: 'someone_else',
+      email: EMAIL,
       code: code(),
       password: NEW_PASSWORD,
     });
@@ -196,8 +216,15 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
     expect(mismatch.body.code).toBe(ERROR_CODES.VALIDATION);
     expect(user.passwordHash).toBe('old');
 
+    // 확인한 인증번호는 다시 못 쓴다 — 새로 받아 아이디로 재설정한다
+    expect(
+      (await post(RESET, { id: 'note_user', email: EMAIL, code: code(), password: NEW_PASSWORD }))
+        .status,
+    ).toBe(400);
+    vi.setSystemTime(new Date(Date.now() + 61_000));
+    await post(SEND, { email: EMAIL });
     const res = await post(RESET, {
-      id: EMAIL,
+      id: 'Note_User',
       email: EMAIL,
       code: code(),
       password: NEW_PASSWORD,

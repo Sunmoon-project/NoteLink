@@ -89,7 +89,7 @@ beforeEach(() => {
 
 it('탈퇴가 DB 삭제에서 실패한 뒤 앱을 다시 켜도 자료 원본은 남고, 다시 탈퇴하면 지운다', async () => {
   let { api, login } = boot();
-  await api.auth.emailSignup('a@test.com', 'pw12345678');
+  await api.auth.emailSignup('a@test.com', 'user_a', 'pw12345678');
   const user = await login('a@test.com');
   const folder = await api.content.createFolder({ title: '수학', subjectName: '수학' } as never);
   mockDisk.set('file:///doc/files/a.pdf', '원본');
@@ -122,7 +122,7 @@ it('탈퇴가 DB 삭제에서 실패한 뒤 앱을 다시 켜도 자료 원본�
 
 it('소유자가 적히지 않은 예전 형식 목록은 앱을 켤 때 아무 파일도 지우지 않고 목록만 정리한다', async () => {
   let { api, login } = boot();
-  await api.auth.emailSignup('a@test.com', 'pw12345678');
+  await api.auth.emailSignup('a@test.com', 'user_a', 'pw12345678');
   const user = await login('a@test.com');
   const folder = await api.content.createFolder({ title: '수학', subjectName: '수학' } as never);
   mockDisk.set('file:///doc/files/a.pdf', '원본');
@@ -148,7 +148,7 @@ it('소유자가 적히지 않은 예전 형식 목록은 앱을 켤 때 아무 
 
 it('탈퇴 실패 뒤 앱을 켤 때 계정 목록 · 계정 DB를 읽지 못해도 원본과 정리 목록을 지킨다', async () => {
   let { api, login } = boot();
-  await api.auth.emailSignup('a@test.com', 'pw12345678');
+  await api.auth.emailSignup('a@test.com', 'user_a', 'pw12345678');
   const user = await login('a@test.com');
   const folder = await api.content.createFolder({ title: '수학', subjectName: '수학' } as never);
   mockDisk.set('file:///doc/files/a.pdf', '원본');
@@ -173,7 +173,7 @@ it('탈퇴 실패 뒤 앱을 켤 때 계정 목록 · 계정 DB를 읽지 못해
 
 it('계정 목록을 읽지 못하면 가입을 멈추고, 읽기가 돌아오면 기존 계정으로 그대로 로그인한다', async () => {
   let { api, login } = boot();
-  await api.auth.emailSignup('a@test.com', 'pw12345678');
+  await api.auth.emailSignup('a@test.com', 'user_a', 'pw12345678');
   await login('a@test.com');
   const folder = await api.content.createFolder({ title: '수학', subjectName: '수학' } as never);
   const accountsFile = 'file:///doc/notelink-accounts.json';
@@ -181,7 +181,7 @@ it('계정 목록을 읽지 못하면 가입을 멈추고, 읽기가 돌아오�
 
   mockFailRead = (uri) => uri === accountsFile;
   ({ api, login } = boot());
-  await expect(api.auth.emailSignup('b@test.com', 'pw12345678')).rejects.toThrow(
+  await expect(api.auth.emailSignup('b@test.com', 'user_b', 'pw12345678')).rejects.toThrow(
     '계정 정보를 읽지 못했어요',
   );
   expect(mockDisk.get(accountsFile)).toBe(before);
@@ -194,14 +194,14 @@ it('계정 목록을 읽지 못하면 가입을 멈추고, 읽기가 돌아오�
 
 it('기존 계정 DB를 읽지 못하면 같은 이메일로 가입해도 연결을 덮어쓰지 않는다', async () => {
   let { api, login } = boot();
-  await api.auth.emailSignup('a@test.com', 'pw12345678');
+  await api.auth.emailSignup('a@test.com', 'user_a', 'pw12345678');
   const user = await login('a@test.com');
   const accountsFile = 'file:///doc/notelink-accounts.json';
   const before = mockDisk.get(accountsFile);
 
   mockFailRead = (uri) => uri === `file:///doc/notelink-user-${user._id}.json`;
   ({ api, login } = boot());
-  await expect(api.auth.emailSignup('a@test.com', 'pw12345678')).rejects.toThrow(
+  await expect(api.auth.emailSignup('a@test.com', 'user_a', 'pw12345678')).rejects.toThrow(
     '기록을 읽지 못했어요',
   );
   expect(mockDisk.get(accountsFile)).toBe(before);

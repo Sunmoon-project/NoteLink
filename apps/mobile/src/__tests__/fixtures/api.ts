@@ -218,6 +218,8 @@ export const mockApi: Api = {
       proof === `proof:${db.user.email}`
         ? fail(ERROR_CODES.EMAIL_TAKEN, '이미 가입한 이메일이에요', 409)
         : ok(undefined, 700),
+    // 'taken_id'는 이미 쓰는 아이디로 둔다
+    loginIdAvailable: (loginId) => ok(loginId !== 'taken_id'),
     recoverySendCode: () => ok(undefined),
     findId: (email) => ok({ id: email }),
     passwordReset: () => ok(undefined),

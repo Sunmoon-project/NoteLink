@@ -275,21 +275,37 @@ describe('parseVerifyCodeBody', () => {
 });
 
 describe('parseSignupBody', () => {
-  it('{ verificationToken, password }를 돌려준다', () => {
-    expect(parseSignupBody({ verificationToken: PROOF, password: 'Passw0rdOK' })).toEqual({
-      verificationToken: PROOF,
-      password: 'Passw0rdOK',
-    });
+  it('{ verificationToken, loginId, password }를 돌려준다 (아이디는 소문자 · 공백 제거)', () => {
+    expect(
+      parseSignupBody({ verificationToken: PROOF, loginId: ' Note_01 ', password: 'Passw0rdOK' }),
+    ).toEqual({ verificationToken: PROOF, loginId: 'note_01', password: 'Passw0rdOK' });
+  });
+
+  it.each([
+    ['비어 있음', ''],
+    ['3자', 'abc'],
+    ['21자', `a${'b'.repeat(20)}`],
+    ['숫자로 시작', '1note'],
+    ['한글', '노트링크'],
+    ['특수문자', 'note-link'],
+    ['이메일', 'a@b.com'],
+  ])('아이디가 %s이면 400이다', (_reason, loginId) => {
+    expect(
+      rejection(() =>
+        parseSignupBody({ verificationToken: PROOF, loginId, password: 'Passw0rdOK' }),
+      ).code,
+    ).toBe('VALIDATION_FAILED');
   });
 
   it('이메일을 받지 않는다 (인증한 이메일은 증표 안에만 있다. 본문에 이메일이 와도 무시한다)', () => {
     const parsed = parseSignupBody({
       verificationToken: PROOF,
+      loginId: 'note',
       password: 'Passw0rdOK',
       email: 'attacker@evil.com',
     });
 
-    expect(Object.keys(parsed).sort()).toEqual(['password', 'verificationToken']);
+    expect(Object.keys(parsed).sort()).toEqual(['loginId', 'password', 'verificationToken']);
   });
 
   it.each([
@@ -306,7 +322,9 @@ describe('parseSignupBody', () => {
 
   it('비밀번호 규칙을 어기면 400이다', () => {
     expect(
-      rejection(() => parseSignupBody({ verificationToken: PROOF, password: 'short1' })).message,
+      rejection(() =>
+        parseSignupBody({ verificationToken: PROOF, loginId: 'note', password: 'short1' }),
+      ).message,
     ).toBe('password 가 너무 짧습니다');
   });
 
@@ -326,9 +344,20 @@ describe('parseSignupBody', () => {
 });
 
 describe('parseLoginBody', () => {
-  it('{ email, password }를 돌려준다 (이메일만 소문자 · 공백 제거)', () => {
+  it('{ id, password }: 아이디로 로그인한다 (소문자 · 공백 제거)', () => {
+    expect(parseLoginBody({ id: ' Note_01 ', password: ' Pw ' })).toEqual({
+      id: { loginId: 'note_01' },
+      password: ' Pw ',
+    });
+  });
+
+  it('id에 @가 있으면 가입 이메일로 로그인한다 (아이디를 두기 전 계정)', () => {
+    expect(parseLoginBody({ id: ' A@B.com ', password: 'x' }).id).toEqual({ email: 'a@b.com' });
+  });
+
+  it('예전 앱이 보내는 { email, password }도 받는다', () => {
     expect(parseLoginBody({ email: ' A@B.com ', password: ' Pw ' })).toEqual({
-      email: 'a@b.com',
+      id: { email: 'a@b.com' },
       password: ' Pw ',
     });
   });

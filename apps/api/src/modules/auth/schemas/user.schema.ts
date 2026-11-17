@@ -115,6 +115,10 @@ export class User {
   @Prop({ type: Date })
   touredAt?: Date | null;
 
+  // 로그인 아이디(소문자). 이메일과 따로 정한다. 간편 로그인 계정과 아이디를 두기 전 이메일 가입 계정은 없다
+  @Prop({ type: String })
+  loginId?: string;
+
   @Prop({ type: SubscriptionSchema })
   subscription?: Subscription;
 
@@ -150,6 +154,12 @@ export const UserSchema = SchemaFactory.createForClass(User);
 UserSchema.index(
   { email: 1 },
   { unique: true, partialFilterExpression: { email: { $type: 'string' } } },
+);
+
+// 아이디는 하나뿐이다(탈퇴한 계정도 포함 — 이메일과 같다). 아이디가 없는 계정은 건너뛴다
+UserSchema.index(
+  { loginId: 1 },
+  { unique: true, partialFilterExpression: { loginId: { $type: 'string' } } },
 );
 
 // 같은 소셜 계정(제공자 + 제공자 고유 번호)은 한 사용자에게만 연결된다.

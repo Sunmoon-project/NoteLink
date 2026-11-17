@@ -2,6 +2,7 @@ import { Body, Controller, Header, HttpCode, HttpStatus, Post } from '@nestjs/co
 
 import {
   parseLoginBody,
+  parseLoginIdBody,
   parseSendCodeBody,
   parseSignupBody,
   parseVerifyCodeBody,
@@ -58,20 +59,29 @@ export class AppLoginController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @Header('Cache-Control', 'no-store')
   async register(@Body() body: unknown): Promise<void> {
-    const { verificationToken, password } = parseSignupBody(body);
-    await this.signup.signup(verificationToken, password);
+    const { verificationToken, loginId, password } = parseSignupBody(body);
+    await this.signup.signup(verificationToken, loginId, password);
+  }
+
+  /** 아이디를 쓸 수 있는지. 응답: `{ data: { available } }`. 가입 화면에서 인증번호를 받기 전에 확인한다 */
+  @Post('login-id-available')
+  @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'no-store')
+  async loginIdAvailable(@Body() body: unknown): Promise<{ data: { available: boolean } }> {
+    const { loginId } = parseLoginIdBody(body);
+    return { data: { available: await this.signup.loginIdAvailable(loginId) } };
   }
 
   /**
    * 이메일과 비밀번호로 로그인한다. 응답: `{ data: { accessToken, refreshToken, user } }`.
-   * 이메일 또는 비밀번호가 맞지 않으면(계정이 없는 경우 포함) 401 INVALID_CREDENTIALS,
+   * 아이디(또는 가입 이메일) · 비밀번호가 맞지 않으면(계정이 없는 경우 포함) 401 INVALID_CREDENTIALS,
    * 5번 틀려 잠기면 429 LOGIN_LOCKED + retryAfterSeconds.
    */
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
   async signIn(@Body() body: unknown): Promise<{ data: AppLoginResult }> {
-    const { email, password } = parseLoginBody(body);
-    return { data: await this.login.login(email, password) };
+    const { id, password } = parseLoginBody(body);
+    return { data: await this.login.login(id, password) };
   }
 }

@@ -9,14 +9,14 @@ jest.mock('expo-secure-store', () => ({
   deleteItemAsync: jest.fn(async () => {}),
 }));
 
-it('로그인은 이메일 · 비밀번호 칸이 먼저, 그 아래 카카오 · Google · 네이버, 맨 아래 회원가입 순서다', async () => {
+it('로그인은 아이디 · 비밀번호 칸이 먼저, 그 아래 카카오 · Google · 네이버, 맨 아래 회원가입 순서다', async () => {
   await renderScreen(<LoginScreen />);
   // 시트를 열지 않아도 바로 입력할 수 있다
-  expect(screen.getByPlaceholderText('you@example.com')).toBeTruthy();
+  expect(screen.getByPlaceholderText('아이디')).toBeTruthy();
   expect(screen.getByPlaceholderText('8자 이상')).toBeTruthy();
   const tree = JSON.stringify(screen.toJSON());
   const order = [
-    'you@example.com',
+    '아이디',
     '카카오로 시작하기',
     'Google로 시작하기',
     '네이버로 시작하기',
