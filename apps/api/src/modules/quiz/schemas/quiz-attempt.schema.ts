@@ -13,6 +13,10 @@ export class AttemptAnswer {
   @Prop({ required: true, type: Boolean, default: false })
   correct: boolean;
 
+  // 결함 문제라 셈에서 뺄 풀이(오늘의 복습 결과 voidAnswers): true 또는 무효 이유 글. 처리기 입력에 그대로 다시 넣는다
+  @Prop({ type: Object, default: undefined })
+  void?: boolean | string;
+
   @Prop({ required: true, type: Number, default: 1 })
   tries: number;
 }
@@ -47,6 +51,11 @@ export class QuizAttempt {
 
   @Prop({ type: Date, default: null })
   finishedAt?: Date | null;
+
+  // 끝낸 뒤 오답 복습 작업을 아직 넣지 못함(같은 노트로 만드는 중인 세트가 있어 막힘). 그 세트가 끝나면
+  // 끝낸 순서대로 이어서 넣고 지운다(SimilarQuizService.catchUp)
+  @Prop({ type: Boolean, default: false })
+  reviewPending?: boolean;
 }
 
 export const QuizAttemptSchema = SchemaFactory.createForClass(QuizAttempt);

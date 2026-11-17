@@ -564,8 +564,9 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         raise LlmError("문제 만들기 호출이 모두 실패")
 
     # 4. LLM: 약한 개념(상위 3개)마다 노트 줄, 코드가 노트에 있는지 확인
+    # 모두 맞힌 풀이는 복습 상태만 옮김(앱이 다시 보기를 안 보여 줌): 노트 줄 LLM 호출도 안 함
     lines = []
-    for concept, _ in weak_rank[:NOTE_LINES] if has_notes else []:
+    for concept, _ in weak_rank[:NOTE_LINES] if has_notes and now_w else []:
         qs = [t.q for t in targets if t.concept == concept] or [
             q for s in sets.values() for q in s.questions if concept_of(q) == concept
         ]
