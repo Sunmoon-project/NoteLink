@@ -54,6 +54,28 @@ const STEPS = {
 const DETAIL = { handwriting: 'hand', recording: 'rec', document: 'doc' } as const;
 
 /** 서버에 등록하기 전에 취소하면 고른 원본을 다시 보여 주는 화면으로 돌아간다 */
+/** 등록 중 취소로 늦게 받은 작업을 멈출 때 다시 시도할 간격(화면은 이미 떠났으므로 알아서 다시 보낸다) */
+export const LATE_CANCEL_RETRY_MS = [500, 1500];
+/**
+ * 화면을 떠난 뒤 늦게 받은 작업을 멈춘다. 실패하면 몇 번 더 보내고, 끝내 못 멈추면 알린다
+ * (작업은 계속돌아 정리본이 생길 수 있으니 폴더에서 지우면 된다)
+ */
+async function cancelLateJob(jobId: string) {
+  for (let i = 0; ; i++) {
+    try {
+      await api.ai.cancel(jobId);
+      return;
+    } catch {
+      const wait = LATE_CANCEL_RETRY_MS[i];
+      if (wait === undefined) {
+        toast('변환 취소를 마치지 못했어요. 정리본이 생기면 폴더에서 지워 주세요');
+        return;
+      }
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+}
+
 const pickedScreen = (kind: keyof typeof DETAIL, source: string) =>
   kind === 'document'
     ? '/capture/picked-file'
@@ -144,6 +166,8 @@ export function ConvertScreen() {
   const running = useRef(false);
   const handled = useRef(false);
   const canceled = useRef(false);
+  // 서버에 자료 등록 요청을 보내 응답을 기다리는 중
+  const registering = useRef(false);
   const checkingRegistration = useRef(false);
   const [checking, setChecking] = useState(false);
   // 서버에 등록되기 전(올리기 · 등록 단계)에 실패한 이유와, 그 뒤 다시 시도한 횟수
@@ -180,6 +204,7 @@ export function ConvertScreen() {
         setUploaded(blobs.current.length);
       }
       // 2) 서버에 자료 등록 → ai_jobs 큐에 작업이 들어간다
+      registering.current = true;
       const r = await api.content.createMaterial({
         requestId: useDraft.getState().getCreationId(),
         folderId: requireFolder(),
@@ -191,9 +216,9 @@ export function ConvertScreen() {
         avatarItemId: draft.avatar,
       });
       if (canceled.current) {
-        // 등록 중에 취소했다: 고른 원본 화면에서 다시 올리면 취소한 작업을 다시 받지 않게 새 요청으로 보낸다
-        useDraft.getState().set({});
-        await api.ai.cancel(r.job._id);
+        // 등록 중에 취소했다. 요청 번호는 취소할 때 이미 떼어 냈다(doCancel) — 여기서 다시 지우면 그사이 다시 올린
+        // 새 초안의 번호를 지운다. 늦게 받은 작업만 멈춘다(실패하면 다시 보내고, 끝내 못 멈추면 알린다)
+        void cancelLateJob(r.job._id);
         return;
       }
       handled.current = false;
@@ -212,6 +237,7 @@ export function ConvertScreen() {
               : 'failed',
         );
     } finally {
+      registering.current = false;
       running.current = false;
     }
   };
@@ -303,6 +329,9 @@ export function ConvertScreen() {
     if (!job) {
       canceled.current = true;
       abort.current.abort();
+      // 등록 요청이 아직 오가는 중이면 그 요청 번호를 지금 떼어 낸다. 남겨 두면 곧바로 다시 올릴 때 같은 번호의
+      // 진행 중 요청을 함께 받아(registerMaterial), 옛 등록을 멈추려는 취소가 새로 올린 작업까지 멈춘다
+      if (registering.current) useDraft.getState().set({});
       // 아직 서버에 없다: 초안을 그대로 두고 고른 원본 화면으로 돌아가 바로 확인 · 다시 올릴 수 있게 한다
       router.replace(pickedScreen(draft.kind, draft.source));
       return;
