@@ -63,6 +63,42 @@ export interface StudySessionView {
 /** 앱이 꺼진 세션을 새 타이머가 닫을 때, 마지막 신호 뒤로 더 인정하는 시간 */
 export const LAST_SEEN_GRACE_MS = 2 * 60 * 1000;
 
+type PauseLean = StudySessionLean['pauses'][number];
+
+/**
+ * 앱이 마지막으로 살아 있던 시각: lastSeenAt · 시작 시각 · 모든 정지의 시작 · 끝 중 가장 늦은 것.
+ * 일시정지 · 재개도 앱이 보낸 요청이라 살아 있던 증거다(lastSeenAt이 없는 옛 세션도 정지 기록으로 알 수 있다)
+ */
+export function lastAliveAt(row: Pick<StudySessionLean, 'startedAt' | 'lastSeenAt' | 'pauses'>): Date {
+    let latest = Math.max(row.startedAt.getTime(), row.lastSeenAt?.getTime() ?? 0);
+    for (const pause of row.pauses) {
+        latest = Math.max(latest, pause.startedAt.getTime(), pause.endedAt?.getTime() ?? 0);
+    }
+    return new Date(latest);
+}
+
+/**
+ * 끝 시각(endedAt)까지로 맞춘 정지 목록. 끝 시각 이후에 시작한 정지는 빼고, 끝 시각에 걸친 정지는 끝 시각으로 자른다
+ * (안 그러면 정지 시간이 음수가 되어 순공이 늘어난다). 열린 정지는 그대로 둔다(계산은 끝 시각까지로 본다).
+ * changed: 빼거나 자른 정지가 있는지
+ */
+function pausesUntil(pauses: PauseLean[], endedAt: Date): { list: PauseLean[]; changed: boolean } {
+    const end = endedAt.getTime();
+    const list: PauseLean[] = [];
+    let changed = false;
+    for (const pause of pauses) {
+        if (pause.startedAt.getTime() >= end) {
+            changed = true;
+        } else if (pause.endedAt && pause.endedAt.getTime() > end) {
+            list.push({ ...pause, endedAt });
+            changed = true;
+        } else {
+            list.push(pause);
+        }
+    }
+    return { list, changed };
+}
+
 export interface EndResult {
     durationSec: number;
     pointsEarned: number;
@@ -142,9 +178,8 @@ export class StudyService {
                 .lean<StudySessionLean[]>();
             const now = new Date();
             for (const row of open) {
-                // 앱이 꺼져 열린 채 남은 세션: 마지막으로 앱이 살아 있던 시각(없으면 시작) + 2분까지만 인정한다
-                const lastSeen = row.lastSeenAt ?? row.startedAt;
-                const endedAt = new Date(Math.min(now.getTime(), lastSeen.getTime() + LAST_SEEN_GRACE_MS));
+                // 앱이 꺼져 열린 채 남은 세션: 마지막으로 앱이 살아 있던 시각(lastSeenAt · 시작 · 정지 기록 중 가장 늦은 것) + 2분까지만 인정한다
+                const endedAt = new Date(Math.min(now.getTime(), lastAliveAt(row).getTime() + LAST_SEEN_GRACE_MS));
                 await this.settle(userId, owner, row, 'replaced', tx, endedAt);
             }
 
@@ -270,12 +305,8 @@ export class StudyService {
         endedAtOverride?: Date,
     ): Promise<EndResult> {
         const endedAt = endedAtOverride ?? new Date();
-        // 끝 시각 뒤에 시작한 정지는 없는 것으로, 뒤에 끝난 정지는 끝 시각에서 자른다. 안 그러면 정지 시간이 음수가 되어 순공이 늘어난다
-        const pauses = row.pauses
-            .filter((pause) => pause.startedAt.getTime() < endedAt.getTime())
-            .map((pause) =>
-                pause.endedAt && pause.endedAt.getTime() > endedAt.getTime() ? { ...pause, endedAt } : pause,
-            );
+        // 계산에 쓰는 정지와 저장하는 정지를 같게 한다(끝 시각 뒤의 정지는 빼고, 걸친 정지는 끝 시각에서 자름)
+        const { list: pauses, changed: pausesChanged } = pausesUntil(row.pauses, endedAt);
         const days = secondsBySeoulDay(row.startedAt, endedAt, pauses);
         // 24시간 넘게 이어진 세션은 방치로 본다 (FR-06-16). 지우지 않고 표시만 하고 통계·포인트에서 뺀다.
         // 날짜별로 나누면 날짜마다 초 아래가 버려져 합계가 모자라므로, 방치 판정은 전체 순공 시간으로 한다
@@ -302,21 +333,23 @@ export class StudyService {
         }
         const pointsEarned = reward?.amount ?? 0;
 
-        // 끝나지 않은 세션일 때만 마감 + 열려 있는 정지가 있으면 지금 시각으로 닫는다
+        // 끝나지 않은 세션일 때만 마감 + 열려 있는 정지가 있으면 끝 시각으로 닫는다.
+        // 빼거나 자른 정지가 있으면 계산에 쓴 정지 목록을 그대로 저장한다(트랜잭션 안이라 읽은 뒤 다른 요청이 정지를
+        // 바꿨으면 쓰기 충돌로 다시 실행된다). 없으면 열린 정지만 닫는 기존 방식이다
+        const closed = {
+            status: 'ended',
+            endedAt,
+            durationSec,
+            isAbuse,
+            endReason,
+            pointsEarned,
+        };
         await this.sessionModel.updateOne(
             { _id: row._id, status: { $ne: 'ended' } },
-            {
-                $set: {
-                    status: 'ended',
-                    endedAt,
-                    durationSec,
-                    isAbuse,
-                    endReason,
-                    pointsEarned,
-                    'pauses.$[open].endedAt': endedAt,
-                },
-            },
-            { arrayFilters: [{ 'open.endedAt': null }], session: tx },
+            pausesChanged
+                ? { $set: { ...closed, pauses: pauses.map((pause) => (pause.endedAt ? pause : { ...pause, endedAt })) } }
+                : { $set: { ...closed, 'pauses.$[open].endedAt': endedAt } },
+            pausesChanged ? { session: tx } : { arrayFilters: [{ 'open.endedAt': null }], session: tx },
         );
 
         if (reward) {

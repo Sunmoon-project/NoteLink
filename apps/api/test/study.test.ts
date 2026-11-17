@@ -353,9 +353,10 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
             expect(created[0]).toMatchObject({ startedAt: NOW, lastSeenAt: NOW });
         });
 
-        it('앱이 꺼진 세션을 새 타이머가 닫을 때는 (lastSeenAt 없으면 startedAt) + 2분까지만 인정하고, 그 뒤에 시작한 정지는 순공을 늘리지 않는다', async () => {
+        it('앱이 꺼진 세션의 마지막 신호는 정지 · 재개 시각도 쳐서 그 + 2분까지 인정하고, 줄일 정지가 없으면 정지는 기존 방식(열린 정지만 닫기)으로 저장한다', async () => {
             const oldId = new Types.ObjectId();
-            // 700초 전에 시작, 신호 기록 없음 → 580초 전(시작 + 2분)까지만. 그 뒤인 300초 전~100초 전 정지는 잘려야 한다
+            // 700초 전에 시작, lastSeenAt 없음. 300초 전~100초 전 정지가 있으니 마지막 신호는 100초 전이고, +2분은 지금을 넘으므로
+            // 지금까지 인정한다(옛 규칙은 시작 + 2분인 580초 전까지만 인정했다). 정지가 모두 그 안에 있으므로 정지 목록은 바꾸지 않는다
             openRows = [
                 makeRow({
                     _id: oldId,
@@ -367,20 +368,54 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
             const res = await start({ studyItemId: itemId.toString(), mode: 'personal' });
 
             expect(res.status).toBe(201);
-            expect(sessionModel.updateOne).toHaveBeenCalledWith(
-                { _id: oldId, status: { $ne: 'ended' } },
-                {
-                    $set: expect.objectContaining({
-                        status: 'ended',
-                        endReason: 'replaced',
-                        endedAt: secondsAgo(580),
-                        durationSec: 120,
-                        pointsEarned: 0,
-                    }),
-                },
-                expect.anything(),
-            );
+            const call = sessionModel.updateOne.mock.calls[0] as unknown[];
+            expect(call[0]).toEqual({ _id: oldId, status: { $ne: 'ended' } });
+            expect(call[1]).toEqual({
+                $set: expect.objectContaining({
+                    status: 'ended',
+                    endReason: 'replaced',
+                    endedAt: NOW,
+                    durationSec: 500, // 700초 - 정지 200초
+                    pointsEarned: 0,
+                    'pauses.$[open].endedAt': NOW,
+                }),
+            });
+            expect((call[1] as { $set: Record<string, unknown> }).$set).not.toHaveProperty('pauses');
+            expect(call[2]).toMatchObject({ arrayFilters: [{ 'open.endedAt': null }] });
             expect(points.earn).not.toHaveBeenCalled();
+        });
+
+        it('끝 시각 뒤에 시작한 정지(시계 이상)는 순공을 늘리지 않고 저장에서도 빠지며, 끝 시각에 걸친 정지는 끝 시각으로 닫아 저장한다', async () => {
+            const oldId = new Types.ObjectId();
+            // 서버 시계가 앞선 곳이 쓴 미래 시각의 정지. 끝 시각은 지금을 넘지 않는다
+            openRows = [
+                makeRow({
+                    _id: oldId,
+                    status: 'paused',
+                    startedAt: secondsAgo(700),
+                    pauses: [
+                        { startedAt: secondsAgo(30), endedAt: secondsAgo(-60), reason: 'manual' }, // 끝 시각에 걸침
+                        { startedAt: secondsAgo(-60), endedAt: null, reason: 'manual' }, // 끝 시각 뒤에 시작(열림)
+                    ],
+                }),
+            ];
+
+            const res = await start({ studyItemId: itemId.toString(), mode: 'personal' });
+
+            expect(res.status).toBe(201);
+            const call = sessionModel.updateOne.mock.calls[0] as unknown[];
+            expect(call[1]).toEqual({
+                $set: expect.objectContaining({
+                    status: 'ended',
+                    endedAt: NOW,
+                    durationSec: 670, // 700초 - 걸친 정지 30초
+                    pointsEarned: 20,
+                    pauses: [{ startedAt: secondsAgo(30), endedAt: NOW, reason: 'manual' }],
+                }),
+            });
+            // 정지 목록을 통째로 쓰므로 위치 필터는 쓰지 않는다
+            expect(call[1]).not.toHaveProperty('$set.pauses.$[open].endedAt');
+            expect(call[2]).not.toHaveProperty('arrayFilters');
         });
 
         it('다시 실행해도 중복 키 오류가 나면 오류를 그대로 던진다 (두 번만 시도)', async () => {

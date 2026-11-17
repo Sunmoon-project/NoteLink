@@ -200,6 +200,56 @@ describe.skipIf(!uri)('진짜 DB 세션 동시 시작 확인', () => {
         expect((doc?.pauses as { endedAt: Date | null }[])[0]?.endedAt).toEqual(cutoff);
     });
 
+    // 정산한 정지는 계산에 쓴 것과 같게 저장된다: 모두 startedAt ~ endedAt 안에 있고 끝이 시작보다 앞서지 않는다
+    const expectPausesInside = (doc: Record<string, unknown> | null) => {
+        const startedAt = (doc?.startedAt as Date).getTime();
+        const endedAt = (doc?.endedAt as Date).getTime();
+        for (const p of (doc?.pauses ?? []) as { startedAt: Date; endedAt: Date | null }[]) {
+            expect(p.endedAt).not.toBeNull();
+            expect(p.startedAt.getTime()).toBeGreaterThanOrEqual(startedAt);
+            expect(p.endedAt!.getTime()).toBeLessThanOrEqual(endedAt);
+            expect(p.endedAt!.getTime()).toBeGreaterThanOrEqual(p.startedAt.getTime());
+        }
+    };
+
+    it('h) lastSeenAt 없는 70분 전 세션의 10분 전 열린 정지는 마지막 신호로 쳐서 정지 시작 + 2분까지 인정하고, 저장된 정지도 앞뒤가 맞는다', async () => {
+        const { userId, itemId } = await newUserWithItem();
+        const now = Date.now();
+        const startedAt = new Date(now - 70 * MIN);
+        const pausedAt = new Date(now - 10 * MIN);
+        const old = await insertOpen(userId, itemId, {
+            startedAt,
+            status: 'paused',
+            pauses: [{ startedAt: pausedAt, endedAt: null, reason: 'manual' }],
+        });
+
+        await study.startSession(userId.toString(), { studyItemId: itemId.toString(), mode: 'personal' });
+
+        const doc = await sessionDoc(old);
+        expect(doc).toMatchObject({ status: 'ended', endReason: 'replaced', durationSec: 3600 }); // 70분 전 ~ 정지 시작(10분 전)
+        expect(doc?.endedAt).toEqual(new Date(pausedAt.getTime() + 2 * MIN));
+        expect((doc?.pauses as unknown[]).length).toBe(1);
+        expectPausesInside(doc);
+    });
+
+    it('i) lastSeenAt보다 뒤에 시작한 정지가 있는 데이터 이상이어도 정지를 신호로 치고, 저장된 정지가 세션 범위 안에 있다', async () => {
+        const { userId, itemId } = await newUserWithItem();
+        const now = Date.now();
+        const old = await insertOpen(userId, itemId, {
+            startedAt: new Date(now - 70 * MIN),
+            lastSeenAt: new Date(now - 60 * MIN),
+            pauses: [{ startedAt: new Date(now - 30 * MIN), endedAt: new Date(now - 20 * MIN), reason: 'manual' }],
+        });
+
+        await study.startSession(userId.toString(), { studyItemId: itemId.toString(), mode: 'personal' });
+
+        const doc = await sessionDoc(old);
+        expect(doc?.endedAt).toEqual(new Date(now - 18 * MIN)); // 마지막 신호 = 정지 끝(20분 전) + 2분
+        expect(doc?.durationSec).toBe(52 * 60 - 10 * 60); // 70분 전 ~ 18분 전 = 52분, 정지 10분 제외
+        expectPausesInside(doc);
+        expect((doc?.pauses as unknown[]).length).toBe(1);
+    });
+
     it('f) 정상 종료(end)는 신호가 오래돼도 종료 시각까지 그대로 센다', async () => {
         const { userId, itemId } = await newUserWithItem();
         const now = Date.now();
