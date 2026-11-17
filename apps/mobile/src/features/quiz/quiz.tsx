@@ -704,9 +704,13 @@ export function QuizSolveScreen() {
     useQuizProgress.getState().reset();
     router.replace({
       pathname: '/play/review',
-      params: { setId: completedSetId, points: String(completed.pointsEarned) },
+      params: {
+        setId: completedSetId,
+        points: String(completed.pointsEarned),
+        ...(from === 'room' ? { from: 'room' } : {}),
+      },
     });
-  }, [completed, attemptId, completedSetId, ownsProgress]);
+  }, [completed, attemptId, completedSetId, ownsProgress, from]);
   if (set.isError && !set.data)
     return (
       <Canvas>
@@ -959,7 +963,11 @@ export function QuizSolveScreen() {
 }
 
 export function QuizReviewScreen() {
-  const { setId, points } = useLocalSearchParams<{ setId?: string; points?: string }>();
+  const { setId, points, from } = useLocalSearchParams<{
+    setId?: string;
+    points?: string;
+    from?: string;
+  }>();
   const set = useQuery({
     queryKey: ['quiz-set', setId ?? 'latest'],
     queryFn: () => api.quiz.set(setId ?? ''),
@@ -1026,7 +1034,11 @@ export function QuizReviewScreen() {
                 </Btn>
               </View>
             ) : (
-              <Btn onPress={() => router.dismissTo('/(tabs)/quiz')}>확인</Btn>
+              <Btn
+                onPress={() => (from === 'room' ? router.back() : router.dismissTo('/(tabs)/quiz'))}
+              >
+                확인
+              </Btn>
             )}
             <Pressable
               onPress={() => router.push({ pathname: '/play/similar', params: { setId } })}

@@ -89,6 +89,24 @@ async function submit() {
   await fireEvent.press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
   await waitFor(() => expect(mockApi.quiz.finish).toHaveBeenCalledTimes(1));
 }
+it('스터디룸에서 퀴즈를 마치면 결과 화면에도 복귀 경로를 유지한다', async () => {
+  setParams({ setId: quizSet._id, from: 'room' });
+  await renderScreen(<QuizSolveScreen />, client());
+  await submit();
+  await waitFor(() =>
+    expect(router.replace).toHaveBeenCalledWith({
+      pathname: '/play/review',
+      params: { setId: quizSet._id, points: '120', from: 'room' },
+    }),
+  );
+});
+it('스터디룸에서 연 퀴즈 결과를 확인하면 이전 화면으로 돌아간다', async () => {
+  setParams({ setId: quizSet._id, from: 'room' });
+  await renderScreen(<QuizReviewScreen />, client());
+  await fireEvent.press(await screen.findByRole('button', { name: '확인' }));
+  expect(router.back).toHaveBeenCalled();
+  expect(router.dismissTo).not.toHaveBeenCalled();
+});
 it.each([
   [false, false],
   [true, false],
