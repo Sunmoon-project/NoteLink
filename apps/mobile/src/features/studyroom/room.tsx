@@ -1032,7 +1032,7 @@ export function RoomScreen() {
             <Pressable
               onPress={() => {
                 setPick(false);
-                router.push({ pathname: '/room/cards', params: { id } });
+                router.push({ pathname: '/room/library', params: { id, type: 'quiz' } });
               }}
               className="h-20 flex-1 items-center justify-center rounded-2xl bg-mint"
             >
@@ -1044,7 +1044,7 @@ export function RoomScreen() {
             <Pressable
               onPress={() => {
                 setPick(false);
-                router.push({ pathname: '/room/cards', params: { id } });
+                router.push({ pathname: '/room/library', params: { id, type: 'flashcards' } });
               }}
               className="h-20 flex-1 items-center justify-center rounded-2xl bg-mint"
             >

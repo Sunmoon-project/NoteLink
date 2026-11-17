@@ -131,6 +131,21 @@ afterEach(() => {
   clients.splice(0).forEach((qc) => qc.clear());
 });
 
+it.each([
+  ['퀴즈', 'quiz'],
+  ['🃏 플래시 카드', 'flashcards'],
+] as const)('스터디룸 도구에서 %s를 내 자료 화면으로 연다', async (label, type) => {
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText(room.title);
+  await fireEvent.press(screen.getByLabelText('도구'));
+  await fireEvent.press(screen.getByText('퀴즈'));
+  await fireEvent.press(screen.getByText(label));
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/room/library',
+    params: { id: room._id, type },
+  });
+});
+
 it('늦게 입장해도 임의 집중 카운트다운을 만들지 않고 서버 종료시각만 유지한다', async () => {
   const qc = client();
   await renderScreen(<RoomScreen />, qc);
