@@ -231,21 +231,47 @@ function sendHeartbeat(sessionId: string): void {
   }
 }
 
-function syncHeartbeat(sessionId: string | null): void {
-  if (beat?.sessionId === sessionId) return;
-  if (beat) {
-    clearInterval(beat.timer);
-    beat.stop();
-    beat = null;
+// 정리는 무슨 일이 있어도 interval을 먼저 끊고, 구독 해제가 안 되거나 터져도 세션 reset · 종료를 막지 않는다
+function stopHeartbeat(): void {
+  const current = beat;
+  beat = null;
+  if (!current) return;
+  clearInterval(current.timer);
+  try {
+    current.stop();
+  } catch {
+    // 구독을 풀다 난 오류는 무시한다
   }
-  if (!sessionId) return;
+}
+
+function startHeartbeat(sessionId: string): void {
   const timer = setInterval(() => sendHeartbeat(sessionId), HEARTBEAT_MS);
   // 테스트 · 서버 환경에서 이 타이머만 남아 프로세스를 붙잡지 않게 한다
   (timer as { unref?: () => void }).unref?.();
-  const sub = AppState.addEventListener('change', (state) => {
-    if (state === 'active') sendHeartbeat(sessionId);
-  });
-  beat = { sessionId, timer, stop: () => sub.remove() };
+  let stop = () => {};
+  try {
+    // 앱 상태 구독을 못 만들어도(없거나 던져도) 1분마다 보내는 것은 계속한다
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') sendHeartbeat(sessionId);
+    }) as { remove?: () => void } | undefined;
+    stop = () => sub?.remove?.();
+  } catch {
+    // 구독 없이 진행
+  }
+  beat = { sessionId, timer, stop };
 }
 
-useSession.subscribe((state) => syncHeartbeat(state.sessionId));
+function syncHeartbeat(sessionId: string | null): void {
+  if (beat?.sessionId === sessionId) return;
+  stopHeartbeat();
+  if (sessionId) startHeartbeat(sessionId);
+}
+
+// 하트비트는 부가 기능이다: 여기서 난 오류가 세션 상태 변경(set)을 호출한 쪽으로 번지지 않게 한다
+useSession.subscribe((state) => {
+  try {
+    syncHeartbeat(state.sessionId);
+  } catch {
+    // 무시
+  }
+});

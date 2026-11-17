@@ -119,6 +119,35 @@ describe('공부 세션 하트비트', () => {
     expect(study.heartbeatSession).not.toHaveBeenCalled();
   });
 
+  it('앱 상태 구독이 없어도(addEventListener가 undefined) 시작 · 초기화가 오류 없이 되고 타이머는 정리된다', async () => {
+    jest.spyOn(AppState, 'addEventListener').mockReturnValue(undefined as never);
+
+    await startSession();
+    expect(jest.getTimerCount()).toBe(1);
+    await jest.advanceTimersByTimeAsync(HEARTBEAT_MS);
+    expect(study.heartbeatSession).toHaveBeenCalledTimes(1);
+
+    expect(() => useSession.getState().reset()).not.toThrow();
+    expect(useSession.getState().sessionId).toBeNull();
+    expect(jest.getTimerCount()).toBe(0);
+
+    await jest.advanceTimersByTimeAsync(HEARTBEAT_MS * 2);
+    expect(study.heartbeatSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('구독을 풀다 오류가 나도 종료는 끝까지 되고 타이머는 정리된다', async () => {
+    jest.spyOn(AppState, 'addEventListener').mockReturnValue({
+      remove: () => {
+        throw new Error('remove 실패');
+      },
+    } as never);
+
+    await startSession();
+    await expect(useSession.getState().end('manual')).resolves.toMatchObject({ pointsEarned: 0 });
+    expect(useSession.getState().sessionId).toBeNull();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
   it('보내기에 실패해도 조용히 넘어가고 다음 신호를 이어 간다', async () => {
     study.heartbeatSession.mockRejectedValue(new Error('offline'));
     await startSession();
