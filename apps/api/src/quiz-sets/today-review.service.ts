@@ -198,13 +198,28 @@ export class TodayReviewService {
     for (const row of pending) {
       const synced = await this.quizSets.findMine(userId, row._id.toString()).catch(() => null);
       if (synced?.status !== 'generating' || !row.reviewDay || row.reviewDay === day) continue;
+      // 작업을 먼저 취소하고 다시 읽는다. 그 사이 처리기가 끝냈으면(성공은 취소되지 않음) 결과(원본 → 사본 넘김)가
+      // 옮겨지는 중일 수 있어 지우지 않고 옮긴다. 취소 · 실패로 끝났을 때만 닫는다(옮긴 것이 없음)
+      if (row.jobId) {
+        const jobId = row.jobId.toString();
+        await this.jobs.cancel(userId, jobId).catch((e: unknown) => {
+          if (!(e instanceof NotFoundException)) throw e;
+        });
+        const job = await this.jobs.findMine(userId, jobId).catch((e: unknown) => {
+          if (e instanceof NotFoundException) return null;
+          throw e;
+        });
+        if (job?.status === 'succeeded') {
+          await this.quizSets.findMine(userId, row._id.toString());
+          continue;
+        }
+      }
       await this.sets
         .findOneAndUpdate(
           { _id: row._id, ownerId: owner, deletedAt: null },
           { $set: { deletedAt: new Date() } },
         )
         .lean();
-      if (row.jobId) await this.jobs.cancel(userId, row.jobId.toString()).catch(() => null);
     }
   }
 

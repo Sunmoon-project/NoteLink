@@ -173,7 +173,14 @@ export class SimilarQuizService {
       if (first) {
         if (String(first.sourceAttemptId) === String(attempt._id))
           await this.markPending(attempt._id, false);
-        else if (auto) await this.markPending(attempt._id, true);
+        else if (auto) {
+          // 적은 뒤 그 세트가 아직 만드는 중인지 다시 본다: 그 사이 끝나(이어 받기까지 돌아) 버렸으면 다시 만든다
+          await this.markPending(attempt._id, true);
+          const still = await this.sets
+            .findOne({ _id: first._id, status: 'generating', deletedAt: null })
+            .lean<QuizSetRow>();
+          if (!still) return this.create(userId, setId, needWrong, attemptId);
+        }
         return this.quizSets.findMine(userId, first._id.toString());
       }
       // 같은 노트의 다른 세트(일반 퀴즈 등)가 만드는 중: 기다린다. 적은 뒤 그 세트가 아직 만드는 중인지 다시 본다:

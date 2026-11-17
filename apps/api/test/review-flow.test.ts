@@ -536,6 +536,66 @@ describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfter
     expect(attempts.rows.filter((r) => r['reviewPending'] === true)).toHaveLength(0);
   });
 
+  it('동시에 만든 같은 원본의 복습 세트가 대기를 적기 직전에 끝나도 이번 풀이를 다시 만든다', async () => {
+    const { similar, seed, jobs, attempts, sets } = setup();
+    const s = await seed();
+    const other = (await attempts.model.create({
+      quizSetId: s.set,
+      userId: ME,
+      finishedAt: new Date(NOW.getTime() - 90_000),
+      answers: s.qs.map((q) => ({ questionId: q._id, answer: '가', correct: true })),
+    } as never)) as unknown as { _id: Types.ObjectId };
+    const xId = new Types.ObjectId();
+    // 저장하려는 순간 다른 요청이 같은 원본으로 먼저 만든 세트(X) → 고유 색인에 막힘
+    const realCreate = sets.model.create.bind(sets.model);
+    vi.spyOn(sets.model, 'create').mockImplementationOnce((async (data: Row) => {
+      await realCreate({
+        _id: xId,
+        ownerId: ME,
+        materialId: s.note,
+        folderId: FOLDER,
+        source: 'ai_generated',
+        sourceSetId: s.set,
+        sourceAttemptId: other._id,
+        title: 'X',
+        status: 'generating',
+        questions: [],
+        questionCount: 0,
+        deletedAt: null,
+      } as never);
+      return realCreate(data as never);
+    }) as never);
+    // 기다림을 적기 직전에 X가 끝나고 이어 받기까지 돌아 버림
+    const realUpdate = attempts.model.findOneAndUpdate.bind(attempts.model);
+    let raced = false;
+    vi.spyOn(attempts.model, 'findOneAndUpdate').mockImplementation(((
+      filter: Row,
+      update: { $set?: Row },
+      opts?: Row,
+    ) => {
+      if (!raced && update.$set?.['reviewPending'] === true) {
+        raced = true;
+        Object.assign(
+          sets.rows.find((r) => String(r._id) === String(xId))!,
+          { status: 'ready' },
+        );
+      }
+      return realUpdate(filter as never, update as never, opts as never);
+    }) as never);
+    const out = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    expect(raced).toBe(true);
+    const mine = jobs.rows.filter(
+      (j) =>
+        j['type'] === SIMILAR_TYPE &&
+        j['status'] !== 'canceled' &&
+        (j['input'] as { attemptId: string }).attemptId === s.attempt.toHexString(),
+    );
+    expect(mine).toHaveLength(1);
+    expect(out).toMatchObject({ status: 'generating' });
+    const row = attempts.rows.find((r) => String(r._id) === String(s.attempt))!;
+    expect(row['reviewPending']).toBe(false);
+  });
+
   it('이어 받을 풀이를 넣지 못하면 표시를 남겨 다음 조회가 다시 넣는다', async () => {
     const { similar, seed, jobs, attempts, quizSets, sets } = setup();
     const s = await seed();
@@ -608,6 +668,46 @@ describe('오늘의 복습(TodayReviewService)', () => {
     expect(again._id).toBe(made._id);
     expect(jobs.rows).toHaveLength(1);
     expect((await today.get(ME.toHexString(), NOW))!._id).toBe(made._id);
+  });
+
+  it('지난날 세트를 닫으려는 순간 처리기가 끝내면 지우지 않고 결과를 옮긴다', async () => {
+    const { today, seed, jobs, sets } = setup();
+    const s = await seed();
+    const first = await today.start(ME.toHexString(), NOW);
+    const job = jobs.rows.at(-1)!;
+    const realCancel = AiJobsService.prototype.cancel;
+    const cancel = vi
+      .spyOn(AiJobsService.prototype, 'cancel')
+      .mockImplementationOnce(async function (this: AiJobsService, userId: string, jobId: string) {
+        // 취소 직전에 처리기가 끝냄(성공은 취소되지 않음)
+        Object.assign(job, {
+          status: 'succeeded',
+          progress: 100,
+          result: {
+            questions: [
+              {
+                id: new Types.ObjectId().toHexString(),
+                order: 1,
+                prompt: '문제 1',
+                choices: ['가', '나'],
+                answer: '가',
+                conceptTags: ['세포막'],
+                srs: { step: 1 },
+              },
+            ],
+            title: '오늘의 복습 · 11-16',
+            baseSetId: s.set.toHexString(),
+            srsUpdates: [],
+          },
+        });
+        return realCancel.call(this, userId, jobId);
+      });
+    const next = await today.start(ME.toHexString(), new Date('2026-11-17T03:00:00.000Z'));
+    cancel.mockRestore();
+    expect(next.title).toBe('오늘의 복습 · 11-17');
+    const prev = sets.rows.find((r) => String(r._id) === first._id)!;
+    expect(prev['deletedAt'] ?? null).toBeNull();
+    expect(prev['status']).toBe('ready');
   });
 
   it('복습할 문제가 없으면 조회는 null, 처리기가 실패했으면 failed(앱이 다시 만들게)', async () => {
