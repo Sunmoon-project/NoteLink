@@ -83,7 +83,7 @@ export async function uploadToBlob(
   const task = file.createUploadTask(sas.uploadUrl, {
     httpMethod: 'PUT',
     uploadType: UploadType.BINARY_CONTENT,
-    headers: sas.headers,
+    headers: { ...sas.headers, 'Content-Type': contentType },
     mimeType: contentType,
     signal,
     onProgress: ({ bytesSent, totalBytes }) =>

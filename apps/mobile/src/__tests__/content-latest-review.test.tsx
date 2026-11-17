@@ -45,6 +45,7 @@ jest.mock('../lib/api', () => ({
   },
 }));
 jest.mock('../lib/upload', () => ({
+  UploadError: class UploadError extends Error {},
   checkFile: (...args: unknown[]) => mockCheckFile(...args),
   uploadToBlob: (...args: unknown[]) => mockUpload(...args),
 }));
@@ -242,6 +243,7 @@ describe('PR36 사진 검사 경계', () => {
       )
       .mockRejectedValueOnce(new ApiError('AI_UNAVAILABLE', '사진 검사 실패', 503));
     await renderScreen(<PickedScreen />, client());
+    expect(await screen.findByText('사진 검사 요청에 실패했어요 (HTTP 503).')).toBeTruthy();
     await fireEvent.press(await screen.findByText('다시 검사'));
     await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalledTimes(4));
     expect(mockApi.content.checkImages.mock.calls[3][0]).toHaveLength(5);
@@ -354,6 +356,7 @@ describe('PR36 사진 검사 경계', () => {
     mockUpload.mockRejectedValueOnce(new Error('업로드 실패'));
     await renderScreen(<PickedScreen />, client());
     expect(await screen.findByText('다시 검사')).toBeTruthy();
+    expect(screen.getByText('사진을 저장소에 업로드하지 못했어요.')).toBeTruthy();
     expect(mockApi.content.checkImages).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
     expect(router.replace).not.toHaveBeenCalledWith('/convert');
