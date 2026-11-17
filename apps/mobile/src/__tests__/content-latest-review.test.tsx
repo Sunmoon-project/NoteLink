@@ -22,6 +22,7 @@ jest.mock('expo-router', () => ({
 }));
 
 const mockApi = {
+  ai: { cancel: jest.fn(), job: jest.fn() },
   content: {
     checkImages: jest.fn(),
     material: jest.fn(),
@@ -961,4 +962,46 @@ it('받아 둔 자료 목록이 있으면 다시 읽기가 404여도 빈 폴더�
   });
   expect(screen.getByText('받아 둔 자료')).toBeTruthy();
   expect(screen.queryByText('아직 학습 자료가 없어요')).toBeNull();
+});
+
+describe('변환 화면: 다 올린 뒤에 변환으로 넘어가고, 취소하면 원본을 보여 준다', () => {
+  beforeEach(() => {
+    mockApi.ai.cancel.mockResolvedValue(undefined);
+    mockApi.ai.job.mockReturnValue(new Promise(() => {}));
+  });
+  it('올리는 동안은 업로드 진행률을 0→100%로 보이고, 등록된 뒤에야 변환 문구로 바뀐다', async () => {
+    const upload = deferred<string>();
+    mockUpload.mockImplementation((_k: string, _f: unknown, onProgress: (p: number) => void) => {
+      onProgress(60);
+      return upload.promise;
+    });
+    await renderScreen(<ConvertScreen />, client());
+    expect(await screen.findByText('원본을 올리고 있어요')).toBeTruthy();
+    expect(screen.getByText('60%')).toBeTruthy();
+    expect(screen.queryByText('필기를 학습 자료로 변환하고 있어요')).toBeNull();
+    await act(async () => upload.resolve(blobUrl));
+    expect(await screen.findByText('필기를 학습 자료로 변환하고 있어요')).toBeTruthy();
+  });
+  it('등록 전에 취소하면 서버 작업 없이 고른 원본 화면으로 돌아가고 초안은 그대로 둔다', async () => {
+    mockUpload.mockReturnValue(new Promise(() => {}));
+    await renderScreen(<ConvertScreen />, client());
+    await fireEvent.press(await screen.findByText('취소'));
+    expect(await screen.findByText('올리기를 멈출까요?')).toBeTruthy();
+    await fireEvent.press(screen.getByText('취소하기'));
+    expect(router.replace).toHaveBeenCalledWith('/capture/picked');
+    expect(mockApi.ai.cancel).not.toHaveBeenCalled();
+    expect(useDraft.getState().files).toEqual([localPhoto]);
+  });
+  it('등록 뒤에 취소하면 작업만 멈추고 원본이 남은 폴더로 이동한다', async () => {
+    await renderScreen(<ConvertScreen />, client());
+    expect(await screen.findByText('필기를 학습 자료로 변환하고 있어요')).toBeTruthy();
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    await waitFor(() => expect(mockApi.ai.cancel).toHaveBeenCalledWith('job1'));
+    expect(router.dismissTo).toHaveBeenCalledWith({
+      pathname: '/(tabs)/note/folder/[id]',
+      params: { id: 'folder1' },
+    });
+    expect(mockToast).toHaveBeenCalledWith('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
+  });
 });

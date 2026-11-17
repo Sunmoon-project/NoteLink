@@ -52,6 +52,16 @@ const STEPS = {
 
 const DETAIL = { handwriting: 'hand', recording: 'rec', document: 'doc' } as const;
 
+/** 서버에 등록하기 전에 취소하면 고른 원본을 다시 보여 주는 화면으로 돌아간다 */
+const pickedScreen = (kind: keyof typeof DETAIL, source: string) =>
+  kind === 'document'
+    ? '/capture/picked-file'
+    : kind === 'recording'
+      ? '/capture/rec-upload'
+      : source === 'scan'
+        ? '/capture/scan-check'
+        : '/capture/picked';
+
 /** 원본은 저장됐고 AI 정리는 서버를 기다리는 상태 */
 function SavedForLater({
   kind,
@@ -283,8 +293,20 @@ export function ConvertScreen() {
   const doCancel = async () => {
     canceled.current = true;
     abort.current.abort();
-    if (job) await api.ai.cancel(job._id).catch(() => {});
-    router.back();
+    if (!job) {
+      // 아직 서버에 없다: 초안을 그대로 두고 고른 원본 화면으로 돌아가 바로 확인 · 다시 올릴 수 있게 한다
+      router.replace(pickedScreen(draft.kind, draft.source));
+      return;
+    }
+    await api.ai.cancel(job._id).catch(() => {});
+    // 원본은 서버의 폴더에 남는다. 그 폴더로 가서 바로 보이게 한다
+    const folder = draft.folderId;
+    qc.invalidateQueries({ queryKey: ['materials'] });
+    useDraft.getState().reset();
+    router.dismissTo(
+      folder ? { pathname: '/(tabs)/note/folder/[id]', params: { id: folder } } : '/(tabs)/note',
+    );
+    toast('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
   };
 
   const confirmRegistration = async () => {
@@ -313,13 +335,11 @@ export function ConvertScreen() {
     }
   };
   const credit = job?.error === ERROR_CODES.AI_CREDIT_EXHAUSTED;
-  const pct =
-    phase === 'upload'
-      ? Math.round(uploadPct * 0.25)
-      : phase === 'paused'
-        ? 0
-        : (job?.progress ?? 0);
-  const step = phase === 'upload' ? 0 : pct < 50 ? 1 : pct < 85 ? 2 : 3;
+  // 등록 전(작업이 없을 때)은 올리기 화면: 원 그래프가 업로드를 0→100%로 보여 주고,
+  // 다 올려 서버가 작업을 받은 뒤에야 변환 화면(작업 진행률)으로 넘어간다
+  const uploading = !job;
+  const pct = uploading ? uploadPct : (job?.progress ?? 0);
+  const step = uploading ? 0 : pct < 50 ? 1 : pct < 85 ? 2 : 3;
   const steps = STEPS[draft.kind];
   // AI 서버가 없으면(기기 저장 모드) 원본만 저장하고 정리는 서버 연결 후에 한다 (FR-65-05)
   if (phase === 'ai' && aiWaiting(job) && materialId)
@@ -355,10 +375,12 @@ export function ConvertScreen() {
             <Pie value={pct} size={112} />
           </View>
           <Text className="mt-2 text-title2 font-bold text-brand">{pct}%</Text>
-          <Text className="mt-3 text-body font-bold text-ink">{TITLE[draft.kind]}</Text>
+          <Text className="mt-3 text-body font-bold text-ink">
+            {uploading ? '원본을 올리고 있어요' : TITLE[draft.kind]}
+          </Text>
           <Text className="text-footnote text-sub">
-            {phase === 'upload'
-              ? `원본을 올리는 중이에요 · ${uploadPct}%`
+            {uploading
+              ? `${Math.min(uploaded + 1, draft.files.length)} / ${draft.files.length}개 · 다 올리면 변환을 시작해요`
               : '잠시만 기다려주세요...'}
           </Text>
         </View>
@@ -484,9 +506,13 @@ export function ConvertScreen() {
       <Alert
         open={cancel}
         tone="sun"
-        title="변환을 취소할까요?"
-        body="올린 원본은 기기에 남아 있어요."
-        secondary="계속 변환"
+        title={job ? '변환을 취소할까요?' : '올리기를 멈출까요?'}
+        body={
+          job
+            ? '올린 원본은 폴더에 남겨 둘게요. 취소하면 그 폴더로 이동해요.'
+            : '아직 서버에 저장하지 않았어요. 고른 원본 화면으로 돌아가요.'
+        }
+        secondary={job ? '계속 변환' : '계속 올리기'}
         onSecondary={() => setCancel(false)}
         primary="취소하기"
         onPrimary={doCancel}
