@@ -32,19 +32,31 @@ async function touredIds() {
     return [];
   }
 }
-/** 못 적으면 다음에 한 번 더 보여 줄 뿐이라 막지 않는다. 계정에도 적어 다른 기기에서 다시 열리지 않게 한다 */
-export async function rememberToured(id: string) {
-  if (useAuth.getState().userId === id)
-    // 계정에 못 적어도(오프라인 등) 이 기기 기록은 남긴다
-    void Promise.resolve()
-      .then(() => api.me.update({ toured: true }))
-      .then((u) => {
-        if (useAuth.getState().userId === u._id) useAuth.getState().setUser(u);
-      })
-      .catch(() => {});
+/** 이 기기에 「본 계정」으로 적는다. 못 적으면 다음에 한 번 더 보여 줄 뿐이라 막지 않는다 */
+async function rememberLocal(id: string) {
   const ids = await touredIds();
   if (!ids.includes(id))
     await SecureStore.setItemAsync(TOURED_KEY, JSON.stringify([...ids, id])).catch(() => {});
+}
+
+/**
+ * 계정에 「안내를 봄」을 적는다. 못 적으면(오프라인 등) 다음에 앱을 열 때 useTourOnce가 다시 적는다.
+ * 응답이 오기 전에 다른 계정으로 바뀌었으면 그 응답으로 지금 계정 정보를 덮지 않는다
+ */
+async function syncToured(id: string) {
+  if (useAuth.getState().userId !== id) return;
+  try {
+    const u = await api.me.update({ toured: true });
+    if (useAuth.getState().userId === u._id) useAuth.getState().setUser(u);
+  } catch {
+    // 이 기기 기록이 남아 있어 다음 실행 때 다시 적는다
+  }
+}
+
+/** 안내를 마치거나 건너뛰면 이 기기와 계정 모두에 적는다 */
+export async function rememberToured(id: string) {
+  void syncToured(id);
+  await rememberLocal(id);
 }
 
 /**
@@ -67,21 +79,42 @@ export const useTour = create<{
   setAfterFolder: (afterFolder) => set({ afterFolder }),
 }));
 
-/** 가입을 마치고 처음 들어오면 한 번 안내를 연다(탭 화면에서 부름) */
+/**
+ * 가입을 마치고 처음 들어오면 한 번 안내를 연다(탭 화면에서 부름).
+ * - 계정 기록(User.toured)이 있으면 열지 않고 이 기기에도 적는다(앱을 다시 켜면 계정 정보가 없어도 건너뛰게).
+ * - 이 기기에서 이미 봤는데 계정에는 아직 없으면(그때 서버에 못 적음) 지금 다시 적는다.
+ * - 둘 다 모르면(다시 켜서 계정 정보가 없음) 서버에 물어본 뒤 연다. 물어보지 못하면 연다
+ */
 export function useTourOnce(ready: boolean) {
   const userId = useAuth((s) => s.userId);
-  // 다른 기기에서 이미 본 계정(서버 기록)이면 열지 않는다
-  const toured = useAuth((s) => s.user?._id === s.userId && s.user?.toured === true);
+  // 지금 계정의 서버 기록. 계정 정보가 없거나 다른 계정 것이면 모른다(undefined)
+  const serverToured = useAuth((s) => (s.user?._id === s.userId ? s.user?.toured : undefined));
   useEffect(() => {
-    if (!ready || !userId || toured) return;
+    if (!ready || !userId) return;
     let live = true;
-    void touredIds().then((ids) => {
-      if (live && !ids.includes(userId)) useTour.getState().start('main');
-    });
+    void (async () => {
+      if (serverToured === true) return rememberLocal(userId);
+      const seenHere = (await touredIds()).includes(userId);
+      // 서버 기록을 모르면(다시 켜서 계정 정보가 없음) 물어본다
+      let toured: boolean | undefined = serverToured;
+      if (toured === undefined) {
+        try {
+          const me = await api.me.get();
+          if (me._id === userId) toured = me.toured;
+        } catch {
+          // 물어보지 못하면: 이 기기에서 봤으면 그대로 두고, 아니면 안내를 연다(한 번 더 보는 쪽이 낫다)
+        }
+      }
+      if (!live || useAuth.getState().userId !== userId) return;
+      if (toured === true) return rememberLocal(userId);
+      // 이 기기에서는 봤는데 계정에는 없다(그때 서버에 못 적음) — 지금 다시 적는다
+      if (seenHere) return void (toured === false && syncToured(userId));
+      useTour.getState().start('main');
+    })();
     return () => {
       live = false;
     };
-  }, [ready, userId, toured]);
+  }, [ready, userId, serverToured]);
 }
 
 /* ── 짚어 줄 자리: 화면이 ref를 걸어 두면 안내가 그 자리를 재서 밝힌다 ── */
