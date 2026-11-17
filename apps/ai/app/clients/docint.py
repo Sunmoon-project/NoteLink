@@ -16,6 +16,8 @@ from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError, ServiceRequestError, ServiceResponseError
+from azure.core.pipeline import PipelineResponse
+from azure.core.pipeline.policies import RetryPolicy
 from azure.storage.blob import BlobSasPermissions, BlobServiceClient, generate_blob_sas
 
 from app.clients.llm import USER_AGENT
@@ -26,6 +28,8 @@ log = logging.getLogger(__name__)
 type OcrModel = Literal["prebuilt-read", "prebuilt-layout"]
 
 SAS_MINUTES = 15
+# 이보다 긴 Retry-After는 기다리지 않고 바로 오류로 올림(무료 요금제 월 한도 초과 403은 약 2주를 줌)
+MAX_RETRY_AFTER_SEC = 60.0
 IMAGE_MAX_BYTES = 20 * 1024 * 1024  # 색 찾기용으로 내려받는 사진의 최대 크기(20MB)
 DOWNLOAD_TIMEOUT_SEC = 60.0  # 내려받기 전체 마감
 DOWNLOAD_READ_TIMEOUT_SEC = 10.0  # 연결 · 읽기 한 번의 상한(httpx2 timeout)
@@ -207,11 +211,31 @@ class _Download:
                 log.debug("내려받기를 닫다가 오류", exc_info=False)
 
 
+class CappedRetryPolicy(RetryPolicy[Any, Any]):
+    """Retry-After가 너무 길면 기다리지 않는 재시도 정책.
+
+    azure-core는 400 이상 응답에 Retry-After가 있으면 상태와 상관없이 그만큼 기다렸다 다시 보낸다.
+    한도 초과 403은 Retry-After가 약 2주라 처리기가 그대로 멈춰 다른 작업까지 막혔다(11/17 배포).
+    MAX_RETRY_AFTER_SEC보다 길면 다시 보내지 않아 오류가 바로 ocr()로 올라온다
+    (403이면 OcrSetupError).
+    """
+
+    def is_retry(self, settings: dict[str, Any], response: PipelineResponse[Any, Any]) -> bool:
+        after = self.get_retry_after(response)
+        if after is not None and after > MAX_RETRY_AFTER_SEC:
+            return False
+        return super().is_retry(settings, response)
+
+
 def docint() -> DocumentIntelligenceClient:
     key = settings.azure_docint_key.get_secret_value()
     if not settings.azure_docint_endpoint or not key:
         raise OcrSetupError("AZURE_DOCINT_ENDPOINT · AZURE_DOCINT_KEY가 비어 있음")
-    return DocumentIntelligenceClient(settings.azure_docint_endpoint, AzureKeyCredential(key))
+    return DocumentIntelligenceClient(
+        settings.azure_docint_endpoint,
+        AzureKeyCredential(key),
+        retry_policy=CappedRetryPolicy(),
+    )
 
 
 def blob_service() -> BlobServiceClient:
