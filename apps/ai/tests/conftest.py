@@ -1,6 +1,7 @@
 import pytest
 
 from app.core.config import LLM_DEFAULTS, settings
+from app.worker import handlers
 
 
 @pytest.fixture(autouse=True)
@@ -12,5 +13,9 @@ def claude_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     그 시험 안에서 settings를 바꿉니다.
     """
     monkeypatch.setattr(settings, "llm_provider", "claude")
+    monkeypatch.setattr(settings, "note_split_provider", None)
     for field, model in LLM_DEFAULTS["claude"].items():
         monkeypatch.setattr(settings, field, model)
+    # 문단 나누기도 시험이 바꿔 끼운 handlers._llm을 씀(따로 보는 시험은 그 안에서 바꿈)
+    monkeypatch.setattr(handlers, "make_split_llm", lambda spend: None)
+    handlers._split_client.cache_clear()

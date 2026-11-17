@@ -1027,22 +1027,25 @@ MODEL_FIELDS = (
 
 
 def llm_setup_problem(provider: str | None = None) -> str | None:
-    """LLM_PROVIDER에 필요한 설정이 비었거나 모델 이름이 다른 제공자 것이면 그 이유.
+    """쓰는 LLM 제공자에 필요한 설정이 비었거나 모델 이름이 다른 제공자 것이면 그 이유.
 
+    provider를 주면 그 제공자와 그 제공자를 쓰는 모델 항목만 봄(문단 나누기는 NOTE_SPLIT_PROVIDER).
     처리기가 시작할 때 보고(__main__), 클라이언트를 만들 때도 봅니다. 예전 .env에 학교 LLM
     모델 이름(QUIZ_CHECK_MODEL=qwen-27b 등)이 남은 채 Claude로 바뀌면 모든 호출이 404로
     시도 한도까지 돌다 실패했음(/code-review #278).
     """
-    provider = provider or settings.llm_provider
-    claude = provider == "claude"
-    if claude and not settings.anthropic_api_key.get_secret_value():
-        return "ANTHROPIC_API_KEY가 비어 있음"
-    if not claude and not settings.school_llm_base_url:
-        return "SCHOOL_LLM_BASE_URL이 비어 있음"
-    for field in MODEL_FIELDS:
-        model = getattr(settings, field)
-        if model.startswith("claude-") != claude:
-            return f"{field.upper()}={model}가 LLM_PROVIDER={provider}의 모델이 아님"
+    used = [provider] if provider else list(dict.fromkeys(map(settings.provider_of, MODEL_FIELDS)))
+    for p in used:
+        claude = p == "claude"
+        if claude and not settings.anthropic_api_key.get_secret_value():
+            return "ANTHROPIC_API_KEY가 비어 있음"
+        if not claude and not settings.school_llm_base_url:
+            return "SCHOOL_LLM_BASE_URL이 비어 있음"
+        for field in MODEL_FIELDS:
+            model = getattr(settings, field)
+            if settings.provider_of(field) == p and model.startswith("claude-") != claude:
+                env = "NOTE_SPLIT_PROVIDER" if field == "note_split_model" else "LLM_PROVIDER"
+                return f"{field.upper()}={model}가 {env}={p}의 모델이 아님"
     return None
 
 
@@ -1064,12 +1067,12 @@ def school_llm() -> SchoolLlm:
     return _school_client(settings.call_gap_sec)
 
 
-def claude_llm() -> ClaudeLlm:
+def claude_llm(gap_sec: float | None = None) -> ClaudeLlm:
     _check_setup("claude")
     return ClaudeLlm(
         settings.anthropic_api_key.get_secret_value(),
         effort=settings.llm_effort,
-        gap_sec=settings.call_gap_sec,
+        gap_sec=settings.call_gap_sec if gap_sec is None else gap_sec,
     )
 
 
@@ -1090,10 +1093,12 @@ def school_models() -> dict[str, str]:
 
     서비스는 모델 이름만 넘기므로, 여러 설정 항목이 같은 Claude 모델을 쓰면(예: QUIZ_CHECK_MODEL도
     Sonnet) 그 항목들의 학교 모델 중 가장 많은 것(같으면 MODEL_FIELDS 앞쪽)으로(/code-review #298).
+    문단 나누기는 따로 연결하므로(make_split_llm) 빼고 셈.
     """
     picks: dict[str, list[str]] = {}
     for f in MODEL_FIELDS:
-        picks.setdefault(getattr(settings, f), []).append(LLM_DEFAULTS["school"][f])
+        if f != "note_split_model":
+            picks.setdefault(getattr(settings, f), []).append(LLM_DEFAULTS["school"][f])
     return {model: max(names, key=names.count) for model, names in picks.items()}
 
 
@@ -1109,3 +1114,22 @@ def make_llm(spend: Spend | None = None) -> Paced:
     if spend is None or settings.claude_budget_usd <= 0:
         return claude
     return Budgeted(claude, fallback_school_llm, spend, settings.claude_budget_usd, school_models())
+
+
+def make_split_llm(spend: Spend | None = None) -> Paced | None:
+    """문단 나누기 전용 클라이언트. 학교 LLM을 다른 작업과 같이 쓰면 None(make_llm 것을 씀).
+
+    Claude는 비용 상한을 다른 작업과 함께 세고, 닿으면 학교 LLM의 문단 나누기 기본 모델로 넘김.
+    """
+    provider = settings.split_provider
+    gap = settings.call_gap_sec if provider == settings.llm_provider else GAP_DEFAULTS[provider]
+    if provider == "school":
+        if settings.llm_provider == "school":
+            return None
+        _check_setup("school")
+        return _school_client(gap)
+    claude = claude_llm(gap)
+    if spend is None or settings.claude_budget_usd <= 0:
+        return claude
+    school = {settings.note_split_model: LLM_DEFAULTS["school"]["note_split_model"]}
+    return Budgeted(claude, fallback_school_llm, spend, settings.claude_budget_usd, school)

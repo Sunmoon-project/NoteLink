@@ -30,6 +30,7 @@ from app.clients.llm import (
     claude_cost,
     fallback_school_llm,
     make_llm,
+    make_split_llm,
     metering,
     school_models,
     stop_on,
@@ -359,7 +360,7 @@ def test_school_models_map_each_setting() -> None:
 def test_a_claude_model_shared_by_settings_maps_to_their_most_common_school_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # 검사도 Sonnet이면: Sonnet을 쓰는 항목 6개 중 5개가 gemma
+    # 검사도 Sonnet이면: Sonnet을 쓰는 항목 5개 중 4개가 gemma(문단 나누기는 따로 연결해 빼고 셈)
     monkeypatch.setattr(settings, "quiz_check_model", "claude-sonnet-5-5")
     assert school_models() == {"claude-sonnet-5-5": "gemma-4-26b"}
     # 같은 수면 MODEL_FIELDS 앞쪽: Haiku를 검사(qwen)와 노트 묻기(gemma)가 함께 쓰면 qwen
@@ -377,6 +378,21 @@ def test_make_llm_budgets_claude_only_with_a_spend_and_a_limit(
     assert isinstance(make_llm(), ClaudeLlm)  # 비용을 읽을 곳이 없으면 제한 없음
     monkeypatch.setattr(settings, "claude_budget_usd", 0.0)
     assert isinstance(make_llm(spend), ClaudeLlm)
+
+
+def test_the_split_llm_shares_the_budget_and_falls_back_to_the_split_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 문단 나누기만 Claude여도 같은 비용 합계로 상한을 보고, 넘기면 학교 LLM의
+    # 문단 나누기 모델(gemma)로. 검사와 같은 Haiku라도 qwen(호출 1~3분)으로 가지 않게 따로 연결함
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr("k"))
+    monkeypatch.setattr(settings, "note_split_provider", "claude")
+    spend = Spend(lambda: 0.0)
+    split = make_split_llm(spend)
+    assert isinstance(split, Budgeted) and split.spend is spend
+    assert split.school_model("claude-haiku-5-5") == "gemma-4-26b"
+    assert school_models()["claude-haiku-5-5"] == "qwen-27b"  # 검사 쪽 연결은 그대로
+    assert isinstance(make_split_llm(), ClaudeLlm)  # 비용을 읽을 곳이 없으면 제한 없음
 
 
 # ---------- ai_jobs에 쌓기 ----------
@@ -428,6 +444,21 @@ def test_use_spend_budgets_the_process_llm(monkeypatch: pytest.MonkeyPatch) -> N
     finally:
         handlers._spend.clear()
         handlers._llm.cache_clear()
+
+
+def test_use_spend_also_budgets_the_split_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr("k"))
+    monkeypatch.setattr(handlers, "make_split_llm", make_split_llm)
+    handlers._split_client.cache_clear()
+    try:
+        assert isinstance(handlers._split_llm(), ClaudeLlm)  # 비용을 읽기 전: 제한 없음
+        spend = handlers.use_spend(lambda: 0.0)  # 만든 연결을 버리고 다시 만듦
+        split = handlers._split_llm()
+        assert isinstance(split, Budgeted) and split.spend is spend
+    finally:
+        handlers._spend.clear()
+        handlers._llm.cache_clear()
+        handlers._split_client.cache_clear()
 
 
 def test_a_real_claude_answer_is_metered_end_to_end() -> None:

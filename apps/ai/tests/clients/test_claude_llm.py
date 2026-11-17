@@ -26,6 +26,7 @@ from app.clients.llm import (
     claude_llm,
     llm_setup_problem,
     make_llm,
+    make_split_llm,
 )
 from app.core.config import LLM_DEFAULTS, Settings, settings
 
@@ -440,12 +441,65 @@ def test_models_and_gap_follow_the_provider() -> None:
         "claude-sonnet-5-5",
         "claude-haiku-5-5",
     )
-    assert claude.recording_model == claude.note_split_model == "claude-sonnet-5-5"
+    assert claude.recording_model == "claude-sonnet-5-5"
+    assert claude.note_split_model == "claude-haiku-5-5"
     assert claude.call_gap_sec == 0.2
 
     school = Settings(_env_file=None, llm_provider="school")  # type: ignore[call-arg]
     assert (school.quiz_gen_model, school.quiz_check_model) == ("gemma-4-26b", "qwen-27b")
     assert school.call_gap_sec == 2.2
+
+
+@pytest.mark.usefixtures("no_llm_env")
+def test_split_provider_picks_only_the_split_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NOTE_SPLIT_PROVIDER", raising=False)
+    s = Settings(_env_file=None, llm_provider="school", note_split_provider="claude")  # type: ignore[call-arg]
+    assert (s.split_provider, s.note_split_model) == ("claude", "claude-haiku-5-5")
+    assert (s.quiz_gen_model, s.note_refine_model) == ("gemma-4-26b", "gemma-4-26b")
+    assert s.call_gap_sec == 2.2
+
+    blank = Settings(_env_file=None, llm_provider="school", note_split_provider="")  # type: ignore[call-arg]
+    assert (blank.split_provider, blank.note_split_model) == ("school", "gemma-4-26b")
+
+
+def test_split_on_claude_needs_the_key_and_a_claude_model(provider: Callable[..., None]) -> None:
+    school = {f: "gemma-4-26b" for f in MODEL_FIELDS}
+    provider(
+        "school",
+        school_llm_base_url="https://llm.test",
+        note_split_provider="claude",
+        anthropic_api_key=SecretStr(""),
+        **school,
+    )
+    assert llm_setup_problem() == "ANTHROPIC_API_KEY가 비어 있음"
+    provider("school", anthropic_api_key=SecretStr("k"))
+    assert llm_setup_problem() == (
+        "NOTE_SPLIT_MODEL=gemma-4-26b가 NOTE_SPLIT_PROVIDER=claude의 모델이 아님"
+    )
+    provider("school", note_split_model="claude-haiku-5-5")
+    assert llm_setup_problem() is None
+    assert isinstance(make_llm(), SchoolLlm)  # 다른 작업은 그대로 학교 LLM
+
+
+def test_make_split_llm_follows_the_split_provider(provider: Callable[..., None]) -> None:
+    school = {f: "gemma-4-26b" for f in MODEL_FIELDS}
+    provider("school", school_llm_base_url="https://llm.test", note_split_provider=None, **school)
+    assert make_split_llm() is None  # 학교 LLM은 다른 작업과 같은 연결
+
+    provider(
+        "school",
+        note_split_provider="claude",
+        note_split_model="claude-haiku-5-5",
+        anthropic_api_key=SecretStr("k"),
+    )
+    split = make_split_llm()
+    assert isinstance(split, ClaudeLlm) and split._gap == 0.2  # Claude 간격
+
+    claude = {**LLM_DEFAULTS["claude"], "note_split_model": "gemma-4-26b"}
+    provider("claude", note_split_provider="school", **claude)
+    assert llm_setup_problem() is None
+    split = make_split_llm()
+    assert isinstance(split, SchoolLlm) and split._gap == 2.2
 
 
 def test_model_and_gap_set_in_env_are_kept() -> None:

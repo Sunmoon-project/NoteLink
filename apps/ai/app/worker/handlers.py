@@ -7,7 +7,17 @@ import threading
 from collections.abc import Callable
 
 from app.clients.docint import Ocr, OcrUnavailableError, docint, download
-from app.clients.llm import JsonObject, Llm, LlmError, Metered, Paced, Spend, Stopping, make_llm
+from app.clients.llm import (
+    JsonObject,
+    Llm,
+    LlmError,
+    Metered,
+    Paced,
+    Spend,
+    Stopping,
+    make_llm,
+    make_split_llm,
+)
 from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
 from app.services.note import ask
@@ -50,6 +60,7 @@ def use_spend(read_total: Callable[[], float]) -> Spend:
     부르지 않으면 예산 제한 없음(시험 · 처리기 밖)."""
     _spend[:] = [Spend(read_total)]
     _llm.cache_clear()
+    _split_client.cache_clear()
     return _spend[0]
 
 
@@ -59,6 +70,16 @@ def _llm() -> Paced:
 
     Claude 비용이 CLAUDE_BUDGET_USD에 닿으면 학교 LLM으로 넘기는 연결(#298)."""
     return make_llm(_spend[0] if _spend else None)
+
+
+@_Once
+def _split_client() -> Paced | None:
+    """노트 문단 나누기 전용 연결(NOTE_SPLIT_PROVIDER). 따로 둘 필요가 없으면 None."""
+    return make_split_llm(_spend[0] if _spend else None)
+
+
+def _split_llm() -> Paced:
+    return _split_client() or _llm()
 
 
 @_Once
@@ -149,8 +170,11 @@ def handwriting_summary(inp: JsonObject, report: JobReport) -> JsonObject:
     작업이 취소되면 남은 LLM 호출을 보내지 않고, OCR은 쪽마다 진행률을 쓸 때 멈춥니다.
     """
     llm = Stopping(Metered(_llm(), report.add_cost), report.canceled())
+    split = Stopping(Metered(_split_llm(), report.add_cost), report.canceled())
     try:
-        return note_job.run(llm, _ocr, _voyage(), inp, report, checkpoint=report, fetch=download)
+        return note_job.run(
+            llm, _ocr, _voyage(), inp, report, checkpoint=report, fetch=download, split_llm=split
+        )
     except note_job.InputError as e:
         raise JobInputError(str(e), code=e.code) from e
     except OcrUnavailableError as e:

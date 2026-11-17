@@ -126,8 +126,11 @@ def run(
     *,
     checkpoint: Checkpoint | None = None,
     fetch: Callable[[str], bytes] = download,
+    split_llm: Llm | None = None,
 ) -> JsonObject:
-    """ocr는 OCR을 할 때만 만듭니다. fetch는 색 찾기용 사진을 내려받음(시험에서 바꿈)."""
+    """ocr는 OCR을 할 때만 만듭니다. fetch는 색 찾기용 사진을 내려받음(시험에서 바꿈).
+
+    split_llm은 문단 나누기에만 씀(없으면 llm)."""
     pages = _pages(inp.get("pages"))
     subject = inp.get("subject")
     if subject is not None and not isinstance(subject, str):
@@ -139,7 +142,7 @@ def run(
     numbers = [n for u in uploads for n in range(u.page_no, u.page_no + u.pages)]
     note = result_from_layouts(layouts_from_lines(lines, numbers))
     report(OCR_END, "split")
-    chunks = split_with_llm(llm, settings.note_split_model, note["chunks"])
+    chunks = split_with_llm(split_llm or llm, settings.note_split_model, note["chunks"])
     report(SPLIT_END, "refine")
     chunks = refine_note(llm, settings.note_refine_model, chunks, subject or "", seeds)
     report(REFINE_END, "embed")
