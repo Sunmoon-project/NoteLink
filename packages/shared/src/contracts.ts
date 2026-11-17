@@ -167,6 +167,8 @@ export const PATHS = {
   quizSets: '/quiz-sets',
   quizSet: (id: string) => `/quiz-sets/${seg(id)}`,
   similarQuiz: (id: string) => `/quiz-sets/${seg(id)}/similar`,
+  /** 오늘의 복습: GET 오늘 만든 세트(없으면 null) · POST 만들기(하루 한 번, 만드는 중이면 세트 조회로 기다림) */
+  todayReview: '/quiz-sets/today',
   quizAttempts: '/quiz-attempts',
   attemptAnswer: (id: string) => `/quiz-attempts/${seg(id)}/answers`,
   attemptFinish: (id: string) => `/quiz-attempts/${seg(id)}/finish`,

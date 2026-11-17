@@ -49,6 +49,7 @@ import { Player } from './player';
 import { PageImages, usePageTurn } from './page-images';
 import { TutorBuddy, useTuckOnScroll } from '@/features/tutor/buddy';
 import { seoul } from '@/lib/dates';
+import { QuizFromNote } from './quiz-from-note';
 
 // p.67~73 필기 · 녹음 · 문서 상세 / 편집 / 다운로드 / 공유 / 삭제
 
@@ -267,6 +268,7 @@ export function HandDetailScreen() {
           large={false}
           right={<More onPress={() => setOpt(true)} />}
         />
+        <QuizFromNote material={m} className="mb-3" />
         <Segment items={['정리된 노트', '원본 이미지'] as const} value={tab} onChange={setTab} />
         <View className="mt-4">
           {tab === '정리된 노트' ? (
@@ -449,6 +451,7 @@ export function RecDetailScreen() {
           large={false}
           right={<More onPress={() => setOpt(true)} />}
         />
+        <QuizFromNote material={m} className="mb-3" />
         <View className="-mt-2 mb-3 flex-row items-center gap-2">
           {view === 'text' && <Text className="text-caption text-sub">{m.title}</Text>}
           {subject && <Badge>{subject}</Badge>}
@@ -520,6 +523,7 @@ export function DocDetailScreen() {
           large={false}
           right={<More onPress={() => setOpt(true)} />}
         />
+        <QuizFromNote material={m} className="mb-3" />
         <Segment items={['요약', '원본 문서'] as const} value={tab} onChange={setTab} />
         {tab === '요약' ? (
           <View className="mt-4">
