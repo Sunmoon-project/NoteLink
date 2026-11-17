@@ -16,6 +16,7 @@ import {
   QuizSetSchema,
 } from '../src/modules/quiz/schemas/quiz-set.schema.js';
 import { QuizSetsService } from '../src/quiz-sets/quiz-sets.service.js';
+import { RecordingNotePagesService } from '../src/quiz-sets/recording-note-pages.service.js';
 
 const uri = process.env.MONGODB_VERIFY_URI;
 const isLocal = !!uri && /^mongodb:\/\/([^@/]*@)?(localhost|127\.0\.0\.1)[:/]/.test(uri);
@@ -42,7 +43,7 @@ describe.skipIf(!uri)('진짜 DB 오답 복습 상태 쓰기', () => {
           { name: AiJob.name, schema: AiJobSchema },
         ]),
       ],
-      providers: [QuizSetsService, AiJobsService],
+      providers: [QuizSetsService, AiJobsService, RecordingNotePagesService],
     }).compile();
     conn = moduleRef.get<Connection>(getConnectionToken());
     sets = moduleRef.get<Model<QuizSetDocument>>(getModelToken(QuizSet.name));
