@@ -201,7 +201,8 @@ describe('시간 초과와 연결 종료', () => {
     server.setMode('silent');
     const before = server.totalConnections();
 
-    await new SmtpMailSender(plainFactory(), FROM, 300)
+    // 일시 실패는 한 번 더 보내 보므로 이 시험은 한 번만 시도하게 둔다
+    await new SmtpMailSender(plainFactory(), FROM, 300, 1)
       .sendVerificationCode('user@example.com', '123456')
       .catch(() => undefined);
     await WAIT(500);
@@ -223,7 +224,7 @@ describe('시간 초과와 연결 종료', () => {
 
 describe('동시 발송은 서로 영향을 주지 않는다', () => {
   it('한 발송이 시간 초과로 끊겨도 같은 시각에 진행 중인 다른 발송은 성공한다', async () => {
-    const sender = new SmtpMailSender(plainFactory(), FROM, 1500);
+    const sender = new SmtpMailSender(plainFactory(), FROM, 1500, 1);
 
     // 첫 연결만 응답하지 않게 하고, 그 직후 연결부터는 정상 응답하게 한다
     server.setMode('silent');

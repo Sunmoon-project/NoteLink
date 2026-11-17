@@ -141,7 +141,7 @@ describe.each([
     const started = Date.now();
 
     await expect(
-      new SmtpMailSender(makeFactory(server), FROM, 500).sendVerificationCode(
+      new SmtpMailSender(makeFactory(server), FROM, 500, 1).sendVerificationCode(
         'stuck@example.com',
         '123456',
       ),
@@ -154,7 +154,7 @@ describe.each([
   });
 
   it('포기한 뒤에는 나중에도 메일이 마저 나가지 않고 연결도 다시 열리지 않는다', async () => {
-    await new SmtpMailSender(makeFactory(server), FROM, 400)
+    await new SmtpMailSender(makeFactory(server), FROM, 400, 1)
       .sendVerificationCode('stuck@example.com', '123456')
       .catch(() => undefined);
     const connections = server.totalConnections();
@@ -236,7 +236,7 @@ describe('암호화로 올라가는 도중 멈추는 서버', () => {
     const started = Date.now();
 
     await expect(
-      new SmtpMailSender(smtpsFactory(silent), FROM, 400).sendVerificationCode(
+      new SmtpMailSender(smtpsFactory(silent), FROM, 400, 1).sendVerificationCode(
         'user@example.com',
         '123456',
       ),
@@ -252,7 +252,7 @@ describe('암호화로 올라가는 도중 멈추는 서버', () => {
     const started = Date.now();
 
     await expect(
-      new SmtpMailSender(starttlsFactory(stalling), FROM, 400).sendVerificationCode(
+      new SmtpMailSender(starttlsFactory(stalling), FROM, 400, 1).sendVerificationCode(
         'user@example.com',
         '123456',
       ),
