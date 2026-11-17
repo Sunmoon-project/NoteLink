@@ -18,6 +18,7 @@ const mockApi = {
   },
 };
 const mockUpload = jest.fn();
+const mockCreateUploadTask = jest.fn((..._args: unknown[]) => ({ uploadAsync: mockUpload }));
 const mockStore = new Map<string, string>();
 jest.mock('../lib/api', () => ({
   get api() {
@@ -29,7 +30,7 @@ jest.mock('expo-file-system', () => ({
   UploadType: { BINARY_CONTENT: 0 },
   File: jest.fn().mockImplementation(() => ({
     size: 10,
-    createUploadTask: () => ({ uploadAsync: mockUpload }),
+    createUploadTask: (...args: unknown[]) => mockCreateUploadTask(...args),
   })),
 }));
 jest.mock('expo-secure-store', () => ({
@@ -97,6 +98,14 @@ describe('upload: Blob 응답 확인', () => {
     mockUpload.mockResolvedValueOnce({ status: 201, body: '' });
     await expect(uploadToBlob('image', { uri: 'f', name: 'a.jpg', size: 10 })).resolves.toBe(
       'https://blob/a',
+    );
+  });
+  it('바이너리 업로드에 파일 Content-Type을 명시한다', async () => {
+    mockUpload.mockResolvedValueOnce({ status: 201, body: '' });
+    await uploadToBlob('image', { uri: 'f', name: 'a.jpg', size: 10 });
+    expect(mockCreateUploadTask).toHaveBeenLastCalledWith(
+      'https://blob/sas',
+      expect.objectContaining({ headers: expect.objectContaining({ 'Content-Type': 'image/jpeg' }) }),
     );
   });
 });

@@ -3,7 +3,8 @@ import { Linking } from 'react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { imageCheckName, PhotoCheckScreen, PickedScreen } from '../features/content/capture';
-import { ApiError } from '../lib/api/http';
+import { ApiError, NetworkError as HttpNetworkError } from '../lib/api/http';
+import { UploadError } from '../lib/upload';
 import { DocDetailScreen, HandDetailScreen, RecDetailScreen } from '../features/content/detail';
 import { Player } from '../features/content/player';
 import { ConvertScreen, ResultScreen } from '../features/content/convert';
@@ -45,6 +46,7 @@ jest.mock('../lib/api', () => ({
   },
 }));
 jest.mock('../lib/upload', () => ({
+  UploadError: class UploadError extends Error {},
   checkFile: (...args: unknown[]) => mockCheckFile(...args),
   uploadToBlob: (...args: unknown[]) => mockUpload(...args),
 }));
@@ -242,6 +244,7 @@ describe('PR36 사진 검사 경계', () => {
       )
       .mockRejectedValueOnce(new ApiError('AI_UNAVAILABLE', '사진 검사 실패', 503));
     await renderScreen(<PickedScreen />, client());
+    expect(await screen.findByText('사진 검사 요청에 실패했어요 (HTTP 503).')).toBeTruthy();
     await fireEvent.press(await screen.findByText('다시 검사'));
     await waitFor(() => expect(mockApi.content.checkImages).toHaveBeenCalledTimes(4));
     expect(mockApi.content.checkImages.mock.calls[3][0]).toHaveLength(5);
@@ -354,9 +357,38 @@ describe('PR36 사진 검사 경계', () => {
     mockUpload.mockRejectedValueOnce(new Error('업로드 실패'));
     await renderScreen(<PickedScreen />, client());
     expect(await screen.findByText('다시 검사')).toBeTruthy();
+    expect(screen.getByText('사진을 저장소에 업로드하지 못했어요.')).toBeTruthy();
     expect(mockApi.content.checkImages).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
     expect(router.replace).not.toHaveBeenCalledWith('/convert');
+  });
+  it('업로드 준비 중 네트워크 오류를 구분해 표시한다', async () => {
+    mockUpload.mockRejectedValueOnce(new HttpNetworkError('network'));
+    await renderScreen(<PickedScreen />, client());
+    expect(await screen.findByText('사진 업로드 서버에 연결하지 못했어요.')).toBeTruthy();
+    expect(mockApi.content.checkImages).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+  });
+  it('업로드 준비 API 오류의 HTTP 상태를 표시한다', async () => {
+    mockUpload.mockRejectedValueOnce(new ApiError('UPLOAD_UNAVAILABLE', '준비 실패', 503));
+    await renderScreen(<PickedScreen />, client());
+    expect(await screen.findByText('사진 업로드 준비에 실패했어요 (HTTP 503).')).toBeTruthy();
+    expect(mockApi.content.checkImages).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+  });
+  it('업로드 오류의 안내 메시지를 그대로 표시한다', async () => {
+    mockUpload.mockRejectedValueOnce(new UploadError('업로드에 실패했어요 (HTTP 403)'));
+    await renderScreen(<PickedScreen />, client());
+    expect(await screen.findByText('업로드에 실패했어요 (HTTP 403)')).toBeTruthy();
+    expect(mockApi.content.checkImages).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+  });
+  it('사진 검사 중 네트워크 오류를 구분해 표시한다', async () => {
+    mockApi.content.checkImages.mockRejectedValueOnce(new HttpNetworkError('network'));
+    await renderScreen(<PickedScreen />, client());
+    expect(await screen.findByText('사진 검사 서버에 연결하지 못했어요.')).toBeTruthy();
+    expect(mockUpload).toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
   });
   it('보정한 실제 파일을 draft와 다음 검사 업로드에 반영한다', async () => {
     const rendered = await renderScreen(<PhotoCheckScreen />, client());
