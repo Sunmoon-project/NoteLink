@@ -80,11 +80,14 @@ export async function uploadToBlob(
     sizeBytes,
     ...(purpose ? { purpose } : {}),
   });
+  // 서버가 확장자에 맞게 바로잡은 형식(예: .heic의 image/heif → image/heic)으로 올린다. 기기가 추측한 형식으로
+  // 덮어쓰면 그 뒤 사진 검사 · 노트 등록이 형식이 다르다고 거절한다. 서버가 주지 않을 때만 기기 형식
+  const putType = sas.headers['Content-Type'] ?? contentType;
   const task = file.createUploadTask(sas.uploadUrl, {
     httpMethod: 'PUT',
     uploadType: UploadType.BINARY_CONTENT,
-    headers: { ...sas.headers, 'Content-Type': contentType },
-    mimeType: contentType,
+    headers: { ...sas.headers, 'Content-Type': putType },
+    mimeType: putType,
     signal,
     onProgress: ({ bytesSent, totalBytes }) =>
       onProgress?.(Math.round((bytesSent / Math.max(1, totalBytes)) * 100)),
