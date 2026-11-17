@@ -3,7 +3,12 @@ import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Types, type Model } from 'mongoose';
 
 import { User } from '../schemas/user.schema.js';
-import { REQUIRED_TERM_CODES, TERM_CODES, TERMS_REQUIRED, TERMS_VERSION } from './terms.constants.js';
+import {
+  REQUIRED_TERM_CODES,
+  TERM_CODES,
+  TERMS_REQUIRED,
+  TERMS_VERSION,
+} from './terms.constants.js';
 
 interface StoredAgreement {
   termCode: string;
@@ -43,7 +48,8 @@ export class TermsService {
     const termAgreements: StoredAgreement[] = TERM_CODES.map((termCode) => {
       const isAgreed = agreed.has(termCode);
       const prev = before.get(termCode);
-      const unchanged = prev !== undefined && prev.agreed === isAgreed && prev.version === TERMS_VERSION;
+      const unchanged =
+        prev !== undefined && prev.agreed === isAgreed && prev.version === TERMS_VERSION;
       return {
         termCode,
         version: TERMS_VERSION,
@@ -52,7 +58,10 @@ export class TermsService {
       };
     });
 
-    const result = await this.userModel.updateOne({ _id, deletedAt: null }, { $set: { termAgreements } });
+    const result = await this.userModel.updateOne(
+      { _id, deletedAt: null },
+      { $set: { termAgreements } },
+    );
     return result.matchedCount > 0;
   }
 }

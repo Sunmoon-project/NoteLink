@@ -208,7 +208,7 @@ describe('AppLoginService.login 실패: 이유를 알리지 않는다', () => {
 
     const result = await failure(service.login({ email: EMAIL }, 'WrongPassw0rd'));
 
-    expect(result.body['message']).toBe('이메일 또는 비밀번호가 맞지 않아요');
+    expect(result.body['message']).toBe('아이디 또는 비밀번호가 맞지 않아요');
   });
 
   it('토큰 만료 코드(AUTH_TOKEN_EXPIRED)를 쓰지 않는다 (앱이 토큰 갱신을 시도하지 않는다)', async () => {

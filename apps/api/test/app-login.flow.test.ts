@@ -80,6 +80,8 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
   const refreshRows = fakeRefresh.rows;
   /** true이면 메일 발송 수단을 쓸 수 없는 상태를 흉내 낸다 */
   let mailDown = false;
+  /** 다음 아이디 확인 한 번을 「없음」으로 답한다(확인과 생성 사이에 다른 사람이 같은 아이디로 가입한 상황) */
+  let missNextLoginIdCheck = false;
 
   beforeAll(async () => {
     stubAppEnv();
@@ -101,7 +103,8 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
       exists: (f: { email: string; deletedAt: null } | { loginId: string }) =>
         'loginId' in f
           ? Promise.resolve(
-              users.some((u) => (u as { loginId?: string }).loginId === f.loginId)
+              !(missNextLoginIdCheck ? ((missNextLoginIdCheck = false), true) : false) &&
+                users.some((u) => (u as { loginId?: string }).loginId === f.loginId)
                 ? { _id: new Types.ObjectId() }
                 : null,
             )
@@ -684,6 +687,47 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
         (await post(SIGNUP, { loginId: 'other_id', verificationToken: second, password: PASSWORD }))
           .status,
       ).toBe(204);
+    });
+
+    // Codex #496 리뷰: 확인을 통과한 뒤 같은 아이디가 먼저 쓰이면, 증표를 이미 써 버려 다른 아이디로도 가입할 수 없었다
+    it('확인과 생성 사이에 같은 아이디가 먼저 쓰여도 409이고, 같은 증표로 다른 아이디를 정해 가입할 수 있다', async () => {
+      await post(SEND, { email: 'race1@example.com' });
+      const first = (await post(VERIFY, { email: 'race1@example.com', code: lastCode() })).body.data
+        .verificationToken;
+      await post(SIGNUP, { loginId: 'race_id', verificationToken: first, password: PASSWORD });
+
+      await post(SEND, { email: 'race2@example.com' });
+      const second = (await post(VERIFY, { email: 'race2@example.com', code: lastCode() })).body
+        .data.verificationToken;
+      missNextLoginIdCheck = true;
+      const taken = await post(SIGNUP, {
+        loginId: 'race_id',
+        verificationToken: second,
+        password: PASSWORD,
+      });
+      expect(taken.status).toBe(409);
+      expect(taken.body.code).toBe(ERROR_CODES.LOGIN_ID_TAKEN);
+      const retry = await post(SIGNUP, {
+        loginId: 'race_id2',
+        verificationToken: second,
+        password: PASSWORD,
+      });
+      expect(retry.status).toBe(204);
+    });
+
+    it('아이디와 가입 이메일을 번갈아 넣어도 같은 계정이면 같은 잠금 횟수를 쓴다', async () => {
+      await post(SEND, { email: 'lock@example.com' });
+      const token = (await post(VERIFY, { email: 'lock@example.com', code: lastCode() })).body.data
+        .verificationToken;
+      await post(SIGNUP, { loginId: 'lock_id', verificationToken: token, password: PASSWORD });
+      for (let i = 0; i < 5; i++) {
+        const id = i % 2 === 0 ? 'lock_id' : 'lock@example.com';
+        expect((await post(LOGIN, { id, password: 'Wrong1234' })).status).toBe(401);
+      }
+      // 잠겼다 — 다른 쪽(이메일)으로 맞는 비밀번호를 넣어도 들어가지 못한다
+      const locked = await post(LOGIN, { id: 'lock@example.com', password: PASSWORD });
+      expect(locked.status).toBe(429);
+      expect((await post(LOGIN, { id: 'lock_id', password: PASSWORD })).status).toBe(429);
     });
 
     it('아이디를 쓸 수 있는지 알려 준다', async () => {

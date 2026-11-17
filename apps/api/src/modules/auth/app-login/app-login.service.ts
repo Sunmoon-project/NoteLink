@@ -31,7 +31,7 @@ export interface AppLoginResult {
   user: AppUser;
 }
 
-const INVALID_CREDENTIALS_MESSAGE = '이메일 또는 비밀번호가 맞지 않아요';
+const INVALID_CREDENTIALS_MESSAGE = '아이디 또는 비밀번호가 맞지 않아요';
 
 /** 이메일 + 비밀번호로 로그인한다(앱 자체 가입 계정) */
 @Injectable()
@@ -56,15 +56,15 @@ export class AppLoginService {
    * (계정이 없다고 비교를 건너뛰면 빨리 끝나서 응답 시간으로 가입 여부를 알아낼 수 있다).
    */
   async login(id: AccountId, password: string): Promise<AppLoginResult> {
-    // 아이디(예전 계정은 이메일) 그대로를 잠금 기준으로 쓴다
-    const key = 'loginId' in id ? `id:${id.loginId}` : id.email;
-    // 비밀번호를 확인하기 전에 시도를 하나 먼저 쓴다. 입력 기준이라 계정이 있는지와 상관없이 똑같이 잠긴다
-    const slot = await this.throttle.reserve(key);
-    if (!slot.ok) throw loginLocked(slot.retryAfterMs);
-
     // 비밀번호를 읽기 직전 시각. 확인하는 사이에 비밀번호가 재설정되면 이 로그인의 토큰은 거절된다(TokenService.issue)
     const authorizedAt = new Date();
     const user = await this.users.findOne({ ...accountFilter(id), deletedAt: null }).lean();
+    // 잠금은 계정 기준이다: 아이디와 가입 이메일을 번갈아 넣어도 같은 계정이면 같은 횟수를 쓴다(Codex #496 리뷰).
+    // 없는 계정은 입력한 값 기준으로 똑같이 잠가, 잠금 여부로 가입 여부를 알아낼 수 없게 한다
+    const key = user ? `user:${String(user._id)}` : 'loginId' in id ? `id:${id.loginId}` : id.email;
+    // 비밀번호를 확인하기 전에 시도를 하나 먼저 쓴다
+    const slot = await this.throttle.reserve(key);
+    if (!slot.ok) throw loginLocked(slot.retryAfterMs);
 
     // 비교할 해시: 비밀번호를 가진 계정이면 그 해시, 아니면 같은 비용의 가짜 해시
     const storedHash = user?.passwordHash ?? null;

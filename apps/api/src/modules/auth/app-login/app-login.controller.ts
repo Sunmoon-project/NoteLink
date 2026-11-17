@@ -74,7 +74,7 @@ export class AppLoginController {
 
   /**
    * 이메일과 비밀번호로 로그인한다. 응답: `{ data: { accessToken, refreshToken, user } }`.
-   * 이메일 또는 비밀번호가 맞지 않으면(계정이 없는 경우 포함) 401 INVALID_CREDENTIALS,
+   * 아이디(또는 가입 이메일) · 비밀번호가 맞지 않으면(계정이 없는 경우 포함) 401 INVALID_CREDENTIALS,
    * 5번 틀려 잠기면 429 LOGIN_LOCKED + retryAfterSeconds.
    */
   @Post('login')

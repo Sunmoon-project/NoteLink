@@ -375,15 +375,47 @@ export function SignupScreen() {
       toast(e instanceof ApiError ? e.message : '인증번호를 보내지 못했어요. 다시 시도해 주세요');
     },
   });
+  // 이 이메일로 인증을 이미 마쳤으면(아이디만 겹쳐 돌아온 경우) 받아 둔 증표로 아이디만 바꿔 바로 가입한다.
+  // 인증번호를 다시 보내면 증표가 무효가 되고, 발송 제한에 걸리면 가입을 이어 갈 수 없다(Codex #496 리뷰)
+  const proof = useSignup((st) => st.proof);
+  const verified = !!proof && proof.email === email.trim();
+  const join = useMutation({
+    mutationFn: async ({ id, pw: checked }: { id: string; pw: string }) => {
+      const token = useSignup.getState().proof?.token;
+      if (!token) return false;
+      await api.auth.emailSignup(token, id, checked);
+      return true;
+    },
+    onSuccess: (done, { id }) => {
+      if (!done) return;
+      useSignup.getState().reset();
+      toast('가입했어요. 로그인해 주세요');
+      router.replace({ pathname: '/(auth)/login', params: { id } });
+    },
+    onError: (e, { id }) => {
+      if (e instanceof ApiError && e.code === ERROR_CODES.LOGIN_ID_TAKEN) return setTakenId(id);
+      if (
+        e instanceof ApiError &&
+        (e.code === ERROR_CODES.EMAIL_PROOF_EXPIRED || e.code === ERROR_CODES.EMAIL_PROOF_INVALID)
+      ) {
+        // 증표를 더 쓸 수 없다 — 다음에 누르면 인증번호를 새로 받는다
+        useSignup.setState({ proof: null, sentAt: 0 });
+        return toast(`${e.message} 인증번호를 다시 받아 주세요`);
+      }
+      toast(e instanceof ApiError ? e.message : '가입하지 못했어요. 다시 시도해 주세요');
+    },
+  });
   const sendCode = () => {
-    if (!send.isPending && formOk()) send.mutate({ to: email.trim(), id: normalizedId, pw });
+    if (send.isPending || join.isPending || !formOk()) return;
+    if (verified) join.mutate({ id: normalizedId, pw });
+    else send.mutate({ to: email.trim(), id: normalizedId, pw });
   };
   return (
     <Canvas cream>
       <Screen
         footer={
-          <Btn loading={send.isPending} onPress={sendCode}>
-            인증번호 받기
+          <Btn loading={send.isPending || join.isPending} onPress={sendCode}>
+            {verified ? '이 아이디로 가입하기' : '인증번호 받기'}
           </Btn>
         }
       >

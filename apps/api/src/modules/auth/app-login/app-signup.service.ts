@@ -154,8 +154,12 @@ export class AppSignupService {
           if (attempt + 1 === NICKNAME_CREATE_ATTEMPTS) throw error;
           continue;
         }
-        // 앞에서 확인한 사이 같은 아이디로 먼저 가입한 사람이 있다
-        if (isLoginIdConflict(error)) throw loginIdTaken();
+        // 앞에서 확인한 사이 같은 아이디로 먼저 가입한 사람이 있다. 증표는 되돌려, 이메일 인증을 다시 하지 않고
+        // 다른 아이디로 가입할 수 있게 한다(Codex #496 리뷰)
+        if (isLoginIdConflict(error)) {
+          await this.codes.release(proof.email, proof.purpose, proof.verifiedAt);
+          throw loginIdTaken();
+        }
         // 닉네임 · 아이디 충돌은 위에서 걸렀으므로, 남은 중복 키 오류는 이메일 유일 인덱스 위반이다.
         // 이미 가입했거나, 같은 이메일을 가진 다른 계정(소셜 포함)이 있다. 유일 인덱스가 마지막 방어선이다.
         // keyPattern 유무에 기대지 않는다: 오류에 keyPattern이 없어도 409로 바꾼다.

@@ -254,12 +254,13 @@ describe('이메일마다 따로 센다', () => {
     await expect(service.login({ email: 'other@example.com' }, PASSWORD)).resolves.toBeDefined();
   });
 
-  it('한 이메일에 틀려도 다른 이메일의 횟수는 늘지 않는다', async () => {
-    const { service, attempts } = setup([user(), user({ email: 'other@example.com' })]);
+  it('한 계정에 틀려도 다른 계정의 횟수는 늘지 않는다 (잠금은 계정 기준)', async () => {
+    const first = user();
+    const { service, attempts } = setup([first, user({ email: 'other@example.com' })]);
 
     await failTimes(service, 3);
 
-    expect(attempts.map((a) => [a.email, a.attempts])).toEqual([[EMAIL, 3]]);
+    expect(attempts.map((a) => [a.email, a.attempts])).toEqual([[`user:${String(first._id)}`, 3]]);
   });
 });
 
@@ -320,17 +321,19 @@ describe('저장소 오류', () => {
     await expect(service.login({ email: EMAIL }, PASSWORD)).rejects.toThrow('DB 연결 끊김');
   });
 
-  it('제한 저장소가 실패하면 비밀번호를 확인하지도 않는다', async () => {
-    const findOne = vi.fn();
+  it('제한 저장소가 실패하면 비밀번호를 확인하지도, 토큰을 내지도 않는다', async () => {
+    // 잠금을 계정 기준으로 하려고 계정은 먼저 찾지만, 시도를 쓰지 못하면 거기서 멈춘다
+    const issue = vi.fn();
     const service = new AppLoginService(
-      { findOne } as never,
-      {} as never,
+      { findOne: () => ({ lean: () => Promise.resolve(user()) }) } as never,
+      { issue } as never,
       { reserve: () => Promise.reject(new Error('x')), clear: () => Promise.resolve() } as never,
       TEST_COST,
     );
 
-    await service.login({ email: EMAIL }, PASSWORD).catch(() => {});
+    const error = await service.login({ email: EMAIL }, PASSWORD).catch((e: unknown) => e);
 
-    expect(findOne).not.toHaveBeenCalled();
+    expect((error as Error).message).toBe('x');
+    expect(issue).not.toHaveBeenCalled();
   });
 });

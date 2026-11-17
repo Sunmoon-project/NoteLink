@@ -722,3 +722,41 @@ describe('아이디', () => {
     expect(router.push).not.toHaveBeenCalled();
   });
 });
+
+// Codex #496 리뷰: 아이디만 겹쳐 돌아오면 인증번호를 다시 보내 받아 둔 증표가 무효가 됐다(발송 제한이면 가입을 못 이어 감)
+it('인증을 마친 뒤 아이디만 겹치면, 인증번호를 다시 받지 않고 아이디만 바꿔 받아 둔 증표로 가입한다', async () => {
+  const send = jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
+  jest
+    .spyOn(api.auth, 'emailVerifyCode')
+    .mockResolvedValue({ verificationToken: 'proof-keep', expiresInSeconds: 600 });
+  const signup = jest
+    .spyOn(api.auth, 'emailSignup')
+    .mockRejectedValueOnce(
+      new ApiError(
+        ERROR_CODES.LOGIN_ID_TAKEN,
+        '이미 쓰는 아이디예요. 다른 아이디를 정해 주세요',
+        409,
+      ),
+    )
+    .mockResolvedValueOnce(undefined);
+  await fireEvent.changeText(await toCode('keep@test.com', 'abcd1234'), '123456');
+  await fireEvent.press(screen.getByText('가입하기'));
+  await waitFor(() => expect(router.back).toHaveBeenCalled());
+  expect(send).toHaveBeenCalledTimes(1);
+
+  // 가입 화면으로 돌아와 아이디만 바꾼다
+  await fill('keep@test.com', 'abcd1234');
+  await fireEvent.changeText(
+    screen.getByPlaceholderText('영문 소문자로 시작 · 4~20자'),
+    'keep_two',
+  );
+  await fireEvent.press(screen.getByText('이 아이디로 가입하기'));
+  await waitFor(() =>
+    expect(router.replace).toHaveBeenCalledWith({
+      pathname: '/(auth)/login',
+      params: { id: 'keep_two' },
+    }),
+  );
+  expect(signup).toHaveBeenLastCalledWith('proof-keep', 'keep_two', 'abcd1234');
+  expect(send).toHaveBeenCalledTimes(1);
+});
