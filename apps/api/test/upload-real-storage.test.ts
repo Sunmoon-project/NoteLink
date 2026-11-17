@@ -1,4 +1,4 @@
-// 진짜 Azure Blob에서 발급한 주소의 권한을 보는 테스트.
+// 진짜 Azure Blob에서 발급한 주소의 권한 · 신고 사진 보관 · 노트 등록의 실제 크기 확인을 보는 테스트.
 // AZURE_STORAGE_VERIFY_CONNECTION_STRING이 있을 때만 돈다(없으면 건너뜀).
 // 이번 실행에서만 쓰는 컨테이너를 만들어 그 안에서만 올리고 지우며, 끝나면 컨테이너째 지운다(다른 파일은 건드리지 않음).
 // 실행: $env:AZURE_STORAGE_VERIFY_CONNECTION_STRING = "<개발 스토리지 연결 문자열>"; npm run test -w @notelink/api -- test/upload-real-storage.test.ts
@@ -9,10 +9,12 @@ import {
   type ContainerClient,
   StorageSharedKeyCredential,
 } from '@azure/storage-blob';
-import type { UploadTarget } from '@notelink/shared';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ERROR_CODES, UPLOAD_RULES, type UploadTarget } from '@notelink/shared';
+import { Types } from 'mongoose';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createStorageConfig, type StorageConfig } from '../src/config/storage.config.js';
+import { MaterialsService } from '../src/modules/content/materials/materials.service.js';
 import type { UploadQuotaService } from '../src/modules/upload/upload-quota.service.js';
 import {
   BlobStorageService,
@@ -220,5 +222,125 @@ describe.skipIf(!connection)('진짜 저장소 확인(실행마다 전용 컨테
         blobs.keepReportImages(OTHER, [target.blobUrl], REPORT, SCOPE),
       ).rejects.toThrow();
     });
+  });
+
+  // 올리기 주소는 크기를 강제하지 못한다(발급 때 적은 크기와 다르게 올릴 수 있음).
+  // 그래서 노트 등록이 저장소의 실제 크기를 보고 거절 · 정리하는지 본다. DB · 작업 큐만 가짜다
+  describe('노트 등록: 실제 크기 확인 · 거절한 파일 정리', () => {
+    const DECLARED = 300;
+    const folderId = new Types.ObjectId();
+    const existsBlob = (url: string) =>
+      container.getBlobClient(url.split(`/${CONTAINER}/`)[1]!).exists();
+
+    /** 발급 때는 DECLARED 바이트라고 적고, 실제로는 size 바이트를 올린다 */
+    async function upload(size: number): Promise<string> {
+      const target = await new UploadsService(new BlobStorageService(storage), quota).createTarget(
+        USER,
+        { kind: 'image', fileName: 'note.png', contentType: 'image/png', sizeBytes: DECLARED },
+      );
+      const res = await fetch(target.uploadUrl, {
+        method: 'PUT',
+        headers: target.headers,
+        body: new Uint8Array(size),
+      });
+      expect(res.status).toBe(201);
+      return target.blobUrl;
+    }
+
+    /** 진짜 저장소 + 가짜 DB · 작업 큐. used 면 그 주소를 내 노트가 이미 쓰는 것으로 답한다 */
+    function setup(used = false) {
+      let saved: Record<string, unknown> | null = null;
+      const lean = <T>(v: T) => ({ lean: () => Promise.resolve(v) });
+      const folder = { _id: folderId, subjectName: '수학' };
+      const materials = {
+        findOne: vi.fn(() => lean(saved)),
+        create: vi.fn((docs: Record<string, unknown>[]) => {
+          saved = { _id: new Types.ObjectId(), createdAt: new Date(), ...docs[0] };
+          return Promise.resolve([{ toObject: () => saved }]);
+        }),
+        updateOne: vi.fn(() => Promise.resolve()),
+        exists: vi.fn(() => Promise.resolve(used ? { _id: new Types.ObjectId() } : null)),
+        findOneAndUpdate: vi.fn((_f: unknown, u: { $set: Record<string, unknown> }) => {
+          if ('processing.jobId' in u.$set) {
+            saved = {
+              ...saved!,
+              processing: {
+                ...(saved!['processing'] as object),
+                jobId: u.$set['processing.jobId'],
+              },
+            };
+          }
+          return lean(saved);
+        }),
+      };
+      const folders = {
+        findOne: vi.fn(() => lean(folder)),
+        findOneAndUpdate: vi.fn(() => lean(folder)),
+      };
+      const jobs = {
+        enqueue: vi.fn((j: { type: string; targetId: string }) =>
+          Promise.resolve({
+            _id: new Types.ObjectId().toString(),
+            type: j.type,
+            targetId: j.targetId,
+            status: 'queued',
+          }),
+        ),
+        cancel: vi.fn(() => Promise.resolve()),
+        findMine: vi.fn(),
+        findForTarget: vi.fn(() => Promise.resolve(null)),
+      };
+      const connection = {
+        transaction: vi.fn((work: (s: unknown) => Promise<unknown>) => work({ id: 'session' })),
+      };
+      const service = new MaterialsService(
+        materials as never,
+        folders as never,
+        jobs as never,
+        new BlobStorageService(storage),
+        { pregenerate: vi.fn() } as never,
+        connection as never,
+      );
+      const register = (blobUrl: string) =>
+        service.register(USER, {
+          folderId: folderId.toHexString(),
+          kind: 'handwriting',
+          source: 'camera',
+          title: '필기',
+          blobUrls: [blobUrl],
+        });
+      return { register, materials };
+    }
+
+    it('적은 크기와 다르게 올려도 한도 안이면 저장소의 실제 크기로 등록한다', async () => {
+      const actual = DECLARED + 400;
+      const blobUrl = await upload(actual);
+      const { register, materials } = setup();
+
+      await register(blobUrl);
+
+      const stored = (materials.create.mock.calls[0]![0] as unknown[])[0] as {
+        pages: { imageUrl: string; sizeBytes: number }[];
+      };
+      expect(stored.pages).toMatchObject([{ imageUrl: blobUrl, sizeBytes: actual }]);
+      expect(await existsBlob(blobUrl)).toBe(true);
+    });
+
+    it('실제 크기가 한도를 넘으면 거절하고 그 파일을 지운다. 내 노트가 이미 쓰는 파일은 남긴다', async () => {
+      const blobUrl = await upload(UPLOAD_RULES.image.maxBytes + 1);
+
+      const inUse = setup(true);
+      await expect(inUse.register(blobUrl)).rejects.toMatchObject({
+        response: { code: ERROR_CODES.FILE_NOT_ALLOWED },
+      });
+      expect(await existsBlob(blobUrl)).toBe(true);
+
+      const fresh = setup();
+      await expect(fresh.register(blobUrl)).rejects.toMatchObject({
+        response: { code: ERROR_CODES.FILE_NOT_ALLOWED },
+      });
+      expect(fresh.materials.create).not.toHaveBeenCalled();
+      expect(await existsBlob(blobUrl)).toBe(false);
+    }, 120_000);
   });
 });
