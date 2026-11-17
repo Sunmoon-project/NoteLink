@@ -77,7 +77,7 @@ async function failure(promise: Promise<unknown>) {
 /** 틀린 비밀번호로 n번 시도한다 */
 async function failTimes(service: AppLoginService, n: number, email = EMAIL, password = WRONG) {
   const out = [];
-  for (let i = 0; i < n; i++) out.push(await failure(service.login(email, password)));
+  for (let i = 0; i < n; i++) out.push(await failure(service.login({ email: email }, password)));
   return out;
 }
 
@@ -105,7 +105,7 @@ describe('로그인 시도 제한 (5번 실패하면 잠긴다)', () => {
     const { service } = setup([user()]);
     await failTimes(service, LOGIN_MAX_ATTEMPTS);
 
-    const result = await failure(service.login(EMAIL, WRONG));
+    const result = await failure(service.login({ email: EMAIL }, WRONG));
 
     expect(result.status).toBe(429);
     expect(result.body).toMatchObject({
@@ -118,7 +118,7 @@ describe('로그인 시도 제한 (5번 실패하면 잠긴다)', () => {
     const { service, issued } = setup([user()]);
     await failTimes(service, LOGIN_MAX_ATTEMPTS);
 
-    const result = await failure(service.login(EMAIL, PASSWORD));
+    const result = await failure(service.login({ email: EMAIL }, PASSWORD));
 
     expect(result.status).toBe(429);
     expect(issued).toHaveLength(0);
@@ -128,14 +128,14 @@ describe('로그인 시도 제한 (5번 실패하면 잠긴다)', () => {
     const { service, issued } = setup([user()]);
     await failTimes(service, LOGIN_MAX_ATTEMPTS - 1);
 
-    await expect(service.login(EMAIL, PASSWORD)).resolves.toBeDefined();
+    await expect(service.login({ email: EMAIL }, PASSWORD)).resolves.toBeDefined();
     expect(issued).toHaveLength(1);
   });
 
   it('성공하면 횟수가 지워져서 다시 5번을 쓸 수 있다', async () => {
     const { service, attempts } = setup([user()]);
     await failTimes(service, LOGIN_MAX_ATTEMPTS - 1);
-    await service.login(EMAIL, PASSWORD);
+    await service.login({ email: EMAIL }, PASSWORD);
 
     expect(attempts).toHaveLength(0);
     const results = await failTimes(service, LOGIN_MAX_ATTEMPTS);
@@ -147,7 +147,7 @@ describe('로그인 시도 제한 (5번 실패하면 잠긴다)', () => {
     await failTimes(service, LOGIN_MAX_ATTEMPTS);
     vi.setSystemTime(new Date(START.getTime() + LOGIN_LOCK_MS));
 
-    await expect(service.login(EMAIL, PASSWORD)).resolves.toBeDefined();
+    await expect(service.login({ email: EMAIL }, PASSWORD)).resolves.toBeDefined();
   });
 
   it('잠긴 동안 계속 시도해도 잠금이 늘어나지 않는다', async () => {
@@ -155,18 +155,18 @@ describe('로그인 시도 제한 (5번 실패하면 잠긴다)', () => {
     await failTimes(service, LOGIN_MAX_ATTEMPTS);
     for (let i = 1; i <= 10; i++) {
       vi.setSystemTime(new Date(START.getTime() + i * 60_000));
-      await failure(service.login(EMAIL, WRONG));
+      await failure(service.login({ email: EMAIL }, WRONG));
     }
 
     vi.setSystemTime(new Date(START.getTime() + LOGIN_LOCK_MS));
-    await expect(service.login(EMAIL, PASSWORD)).resolves.toBeDefined();
+    await expect(service.login({ email: EMAIL }, PASSWORD)).resolves.toBeDefined();
   });
 
   it('실패 시도가 잠금 응답을 포함해도 응답에 비밀번호를 넣지 않는다', async () => {
     const { service } = setup([user()]);
     await failTimes(service, LOGIN_MAX_ATTEMPTS);
 
-    const result = await failure(service.login(EMAIL, WRONG));
+    const result = await failure(service.login({ email: EMAIL }, WRONG));
 
     expect(JSON.stringify(result.body)).not.toContain(WRONG);
     expect(JSON.stringify(result.body)).not.toContain(PASSWORD);
@@ -179,7 +179,7 @@ describe('재시도 시간은 올림으로 알린다 (내림하면 클라이언�
     await failTimes(service, LOGIN_MAX_ATTEMPTS);
     vi.setSystemTime(new Date(START.getTime() + LOGIN_LOCK_MS - 1_500));
 
-    const result = await failure(service.login(EMAIL, WRONG));
+    const result = await failure(service.login({ email: EMAIL }, WRONG));
 
     expect(result.body['retryAfterSeconds']).toBe(2);
   });
@@ -189,7 +189,7 @@ describe('재시도 시간은 올림으로 알린다 (내림하면 클라이언�
     await failTimes(service, LOGIN_MAX_ATTEMPTS);
     vi.setSystemTime(new Date(START.getTime() + LOGIN_LOCK_MS - 1));
 
-    const result = await failure(service.login(EMAIL, WRONG));
+    const result = await failure(service.login({ email: EMAIL }, WRONG));
 
     expect(result.body['retryAfterSeconds']).toBe(1);
   });
@@ -207,7 +207,7 @@ describe('잠금은 계정이 있는지와 상관없이 똑같다 (잠금 여부
     const { service } = setup(rows());
 
     const first = await failTimes(service, LOGIN_MAX_ATTEMPTS);
-    const sixth = await failure(service.login(EMAIL, WRONG));
+    const sixth = await failure(service.login({ email: EMAIL }, WRONG));
 
     expect(first.every((r) => r.status === 401)).toBe(true);
     expect(sixth.status).toBe(429);
@@ -219,7 +219,7 @@ describe('잠금은 계정이 있는지와 상관없이 똑같다 (잠금 여부
     for (const [, rows] of SCENARIOS) {
       const { service } = setup(rows());
       await failTimes(service, LOGIN_MAX_ATTEMPTS);
-      results.push(await failure(service.login(EMAIL, WRONG)));
+      results.push(await failure(service.login({ email: EMAIL }, WRONG)));
     }
 
     for (const r of results) expect(r).toEqual(results[0]);
@@ -239,7 +239,7 @@ describe('잠금은 계정이 있는지와 상관없이 똑같다 (잠금 여부
   it('없는 이메일에도 시도 기록이 남는다 (존재하는 계정에만 기록하면 기록 유무로 드러난다)', async () => {
     const { service, attempts } = setup([]);
 
-    await failure(service.login('nobody@example.com', WRONG));
+    await failure(service.login({ email: 'nobody@example.com' }, WRONG));
 
     expect(attempts.map((a) => a.email)).toEqual(['nobody@example.com']);
   });
@@ -251,7 +251,7 @@ describe('이메일마다 따로 센다', () => {
     const { service } = setup([user(), other]);
     await failTimes(service, LOGIN_MAX_ATTEMPTS);
 
-    await expect(service.login('other@example.com', PASSWORD)).resolves.toBeDefined();
+    await expect(service.login({ email: 'other@example.com' }, PASSWORD)).resolves.toBeDefined();
   });
 
   it('한 이메일에 틀려도 다른 이메일의 횟수는 늘지 않는다', async () => {
@@ -269,8 +269,8 @@ describe('비밀번호 확인 전에 시도를 먼저 쓴다', () => {
     await failTimes(service, LOGIN_MAX_ATTEMPTS - 1);
 
     const results = await Promise.allSettled([
-      service.login(EMAIL, PASSWORD),
-      ...Array.from({ length: 10 }, () => service.login(EMAIL, WRONG)),
+      service.login({ email: EMAIL }, PASSWORD),
+      ...Array.from({ length: 10 }, () => service.login({ email: EMAIL }, WRONG)),
     ]);
 
     // 남은 시도는 1번뿐이라, 동시에 시작한 11개 중 비밀번호 확인까지 가는 건 1개다(나머지 10개는 확인 없이 429)
@@ -289,7 +289,7 @@ describe('비밀번호 확인 전에 시도를 먼저 쓴다', () => {
     const { service, attempts } = setup([user()]);
 
     const results = await Promise.allSettled(
-      Array.from({ length: 100 }, () => service.login(EMAIL, WRONG)),
+      Array.from({ length: 100 }, () => service.login({ email: EMAIL }, WRONG)),
     );
 
     const unauthorized = results.filter(
@@ -317,7 +317,7 @@ describe('저장소 오류', () => {
       TEST_COST,
     );
 
-    await expect(service.login(EMAIL, PASSWORD)).rejects.toThrow('DB 연결 끊김');
+    await expect(service.login({ email: EMAIL }, PASSWORD)).rejects.toThrow('DB 연결 끊김');
   });
 
   it('제한 저장소가 실패하면 비밀번호를 확인하지도 않는다', async () => {
@@ -329,7 +329,7 @@ describe('저장소 오류', () => {
       TEST_COST,
     );
 
-    await service.login(EMAIL, PASSWORD).catch(() => {});
+    await service.login({ email: EMAIL }, PASSWORD).catch(() => {});
 
     expect(findOne).not.toHaveBeenCalled();
   });

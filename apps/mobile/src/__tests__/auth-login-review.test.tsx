@@ -61,7 +61,7 @@ function saveProgress() {
   });
 }
 async function submitLogin() {
-  await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'learner@example.com');
+  await fireEvent.changeText(screen.getByPlaceholderText('아이디'), 'learner@example.com');
   await fireEvent.changeText(screen.getByPlaceholderText('8자 이상'), 'password-a');
   await fireEvent.press(screen.getByText('로그인'));
   await screen.findByRole('button', { name: '로그인' });

@@ -8,7 +8,13 @@ import {
   SignupScreen,
   useSignup,
 } from '../features/auth/auth';
-import { confirmError, emailError, nicknameError, passwordError } from '../lib/validation';
+import {
+  confirmError,
+  emailError,
+  loginIdError,
+  nicknameError,
+  passwordError,
+} from '../lib/validation';
 import { api, ApiError } from '../lib/api';
 import { useToast } from '../stores/toast';
 import { useAuth } from '../stores/auth';
@@ -23,6 +29,10 @@ jest.mock('expo-secure-store', () => ({
 
 async function fill(email: string, pw: string, confirm = pw) {
   await renderScreen(<SignupScreen />);
+  await fireEvent.changeText(
+    screen.getByPlaceholderText('영문 소문자로 시작 · 4~20자'),
+    'New_User',
+  );
   await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), email);
   await fireEvent.changeText(screen.getByPlaceholderText('영문 · 숫자 포함 8자 이상'), pw);
   await fireEvent.changeText(screen.getByPlaceholderText('한 번 더 입력해 주세요'), confirm);
@@ -93,7 +103,7 @@ describe('입력 검사', () => {
 // 작은 화면(iPhone SE 667pt)에서도 스크롤 없이 한 화면에 들어가게 칸 간격을 줄이고 간편 로그인을 한 줄로 둔다
 it('회원가입은 칸 간격이 좁고, 간편 로그인 버튼은 두지 않는다(로그인 화면에만)', async () => {
   await renderScreen(<SignupScreen />);
-  for (const l of ['이메일 (아이디)', '비밀번호', '비밀번호 확인'])
+  for (const l of ['아이디', '이메일 (인증용)', '비밀번호', '비밀번호 확인'])
     expect(String(screen.getByText(l).props.className)).not.toMatch(/\bmt-8\b/);
   for (const l of ['카카오로 시작하기', 'Google로 시작하기', '네이버로 시작하기'])
     expect(screen.queryByLabelText(l)).toBeNull();
@@ -130,7 +140,7 @@ it('입력이 맞지 않으면 안내하고 인증번호를 보내지 않는다'
   expect(send).not.toHaveBeenCalled();
 });
 
-it('인증번호 받기 → 확인으로 받은 증표로 가입하고, 바로 로그인시키지 않고 이메일을 채운 로그인으로 보낸다', async () => {
+it('인증번호 받기 → 확인으로 받은 증표로 가입하고, 바로 로그인시키지 않고 아이디를 채운 로그인으로 보낸다', async () => {
   const send = jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
   const verify = jest
     .spyOn(api.auth, 'emailVerifyCode')
@@ -144,11 +154,12 @@ it('인증번호 받기 → 확인으로 받은 증표로 가입하고, 바로 �
   await waitFor(() =>
     expect(router.replace).toHaveBeenCalledWith({
       pathname: '/(auth)/login',
-      params: { email: 'new@test.com' },
+      params: { id: 'new_user' },
     }),
   );
   expect(verify).toHaveBeenCalledWith('new@test.com', '123456');
-  expect(signup).toHaveBeenCalledWith('proof-1', 'abcd1234');
+  // 정한 아이디(소문자)로 가입한다
+  expect(signup).toHaveBeenCalledWith('proof-1', 'new_user', 'abcd1234');
   expect(useAuth.getState().tokens).toBeFalsy();
 });
 
@@ -227,6 +238,8 @@ it('보내는 사이 이메일을 고치면 늦게 온 옛 주소의 발송 응�
   useToast.setState({ msg: null });
   await fill('a@test.com', 'abcd1234');
   await fireEvent.press(screen.getByText('인증번호 받기'));
+  // 아이디를 먼저 확인한 뒤 인증번호를 보낸다
+  await waitFor(() => expect(api.auth.emailSendCode).toHaveBeenCalled());
   await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'b@test.com');
   done();
   await waitFor(() => expect(screen.getByText('인증번호 받기')).toBeTruthy());
@@ -252,7 +265,7 @@ it('인증은 됐는데 가입 요청만 실패하면 다시 누를 때 받아 �
   await fireEvent.press(screen.getByText('가입하기'));
   await waitFor(() => expect(router.replace).toHaveBeenCalled());
   expect(verify).toHaveBeenCalledTimes(1);
-  expect(signup).toHaveBeenNthCalledWith(2, 'proof-1', 'abcd1234');
+  expect(signup).toHaveBeenNthCalledWith(2, 'proof-1', 'new_user', 'abcd1234');
 });
 
 it('가입 요청만 실패한 뒤 인증번호를 다시 받으면, 받아 둔 증표를 버리고 새 번호로 확인해 가입한다', async () => {
@@ -276,7 +289,7 @@ it('가입 요청만 실패한 뒤 인증번호를 다시 받으면, 받아 둔 
   await waitFor(() => expect(router.replace).toHaveBeenCalled());
   expect(verify).toHaveBeenCalledTimes(2);
   expect(verify).toHaveBeenLastCalledWith('new@test.com', '654321');
-  expect(signup).toHaveBeenLastCalledWith('proof-2', 'abcd1234');
+  expect(signup).toHaveBeenLastCalledWith('proof-2', 'new_user', 'abcd1234');
 });
 
 it('인증번호를 다시 받다 메일 발송이 실패해도, 서버가 무효로 한 옛 증표는 버리고 새로 확인한다', async () => {
@@ -488,6 +501,8 @@ it('보내는 사이 비밀번호를 고쳐도 누를 때 검사한 비밀번호
     .mockImplementationOnce(() => new Promise<void>((r) => (sent = r)));
   await fill('new@test.com', 'abcd1234');
   await fireEvent.press(screen.getByText('인증번호 받기'));
+  // 아이디를 먼저 확인한 뒤 인증번호를 보낸다
+  await waitFor(() => expect(api.auth.emailSendCode).toHaveBeenCalled());
   await fireEvent.changeText(screen.getByPlaceholderText('영문 · 숫자 포함 8자 이상'), '');
   sent();
   await waitFor(() => expect(router.push).toHaveBeenCalled());
@@ -529,7 +544,7 @@ it.each([ERROR_CODES.EMAIL_PROOF_EXPIRED, ERROR_CODES.EMAIL_PROOF_INVALID])(
     await fireEvent.press(screen.getByText('가입하기'));
     await waitFor(() => expect(router.replace).toHaveBeenCalled());
     expect(verify).toHaveBeenLastCalledWith('new@test.com', '654321');
-    expect(signup).toHaveBeenLastCalledWith('proof-2', 'abcd1234');
+    expect(signup).toHaveBeenLastCalledWith('proof-2', 'new_user', 'abcd1234');
   },
 );
 
@@ -553,7 +568,7 @@ it('가입만 실패한 뒤 다시 받기가 발송 제한에 걸리면, 서버�
   await fireEvent.press(screen.getByText('가입하기'));
   await waitFor(() => expect(router.replace).toHaveBeenCalled());
   expect(verify).toHaveBeenCalledTimes(1);
-  expect(signup).toHaveBeenLastCalledWith('proof-1', 'abcd1234');
+  expect(signup).toHaveBeenLastCalledWith('proof-1', 'new_user', 'abcd1234');
 });
 
 it('인증번호를 너무 빨리 다시 받으면 서버 안내를 보여 준다', async () => {
@@ -567,10 +582,10 @@ it('인증번호를 너무 빨리 다시 받으면 서버 안내를 보여 준�
   expect(send).toHaveBeenLastCalledWith('new@test.com');
 });
 
-it('가입 후 돌아온 로그인은 이메일이 채워진 창을 연다', async () => {
-  setParams({ email: 'new@test.com' });
+it('가입 후 돌아온 로그인은 아이디가 채워진 창을 연다', async () => {
+  setParams({ id: 'new_user' });
   await renderScreen(<LoginScreen />);
-  expect(await screen.findByDisplayValue('new@test.com')).toBeTruthy();
+  expect(await screen.findByDisplayValue('new_user')).toBeTruthy();
   setParams({});
 });
 
@@ -580,7 +595,7 @@ it('새 계정은 로그인하면 약관을 거쳐 초기 설정으로 간다', 
     .spyOn(api.auth, 'emailLogin')
     .mockResolvedValue({ accessToken: 'a', refreshToken: 'r', user: { ...user, _id: 'new' } });
   await renderScreen(<LoginScreen />);
-  await fireEvent.changeText(await screen.findByPlaceholderText('you@example.com'), 'n@test.com');
+  await fireEvent.changeText(await screen.findByPlaceholderText('아이디'), 'n_user');
   await fireEvent.changeText(screen.getByPlaceholderText('8자 이상'), 'abcd1234');
   await fireEvent.press(screen.getByText('로그인'));
   await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/(auth)/terms'));
@@ -634,7 +649,7 @@ it('이미 있는 이메일이면 로그인으로 돌아갈 길을 보여 준다
   await fireEvent.press(screen.getByText('로그인하기'));
   expect(router.replace).toHaveBeenCalledWith({
     pathname: '/(auth)/login',
-    params: { email: 'old@test.com' },
+    params: { id: 'old@test.com' },
   });
 });
 
@@ -667,17 +682,43 @@ it('초기 설정은 닉네임 규칙과 빠진 학습자 유형을 칸 아래�
   expect(update).not.toHaveBeenCalled();
 });
 
-it('로그인은 가입 규칙과 별개로 기존 계정 주소(퓨니코드 최상위 도메인 등)를 막지 않는다', async () => {
+it('로그인은 아이디를 두기 전 계정의 가입 이메일(퓨니코드 최상위 도메인 등)도 막지 않는다', async () => {
   const user = await api.me.get();
   const login = jest
     .spyOn(api.auth, 'emailLogin')
     .mockResolvedValue({ accessToken: 'a', refreshToken: 'r', user });
   await renderScreen(<LoginScreen />);
-  await fireEvent.changeText(
-    await screen.findByPlaceholderText('you@example.com'),
-    'user@example.xn--p1ai',
-  );
+  await fireEvent.changeText(await screen.findByPlaceholderText('아이디'), 'user@example.xn--p1ai');
   await fireEvent.changeText(screen.getByPlaceholderText('8자 이상'), 'oldpass1');
   await fireEvent.press(screen.getByText('로그인'));
   await waitFor(() => expect(login).toHaveBeenCalledWith('user@example.xn--p1ai', 'oldpass1'));
+});
+
+describe('아이디', () => {
+  it.each([
+    ['', '아이디를 입력해 주세요'],
+    ['abc', '아이디는 4~20자로 정해 주세요'],
+    ['1note', '아이디는 영문으로 시작해 주세요'],
+    ['note-link', '아이디는 영문 · 숫자 · _만 쓸 수 있어요'],
+    ['Note_01', null],
+  ])('%s → %s', (v, expected) => expect(loginIdError(v)).toBe(expected));
+
+  it('이미 쓰는 아이디면 인증번호를 보내지 않고 칸 아래에 알린다', async () => {
+    const send = jest.spyOn(api.auth, 'emailSendCode').mockResolvedValue(undefined);
+    await renderScreen(<SignupScreen />);
+    await fireEvent.changeText(
+      screen.getByPlaceholderText('영문 소문자로 시작 · 4~20자'),
+      'taken_id',
+    );
+    await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'a@test.com');
+    await fireEvent.changeText(
+      screen.getByPlaceholderText('영문 · 숫자 포함 8자 이상'),
+      'abcd1234',
+    );
+    await fireEvent.changeText(screen.getByPlaceholderText('한 번 더 입력해 주세요'), 'abcd1234');
+    await fireEvent.press(screen.getByText('인증번호 받기'));
+    expect(await screen.findByText('이미 쓰는 아이디예요. 다른 아이디를 정해 주세요')).toBeTruthy();
+    expect(send).not.toHaveBeenCalled();
+    expect(router.push).not.toHaveBeenCalled();
+  });
 });

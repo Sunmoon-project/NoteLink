@@ -15,6 +15,7 @@ import { Model } from 'mongoose';
 
 import { User, type UserDocument } from '../schemas/user.schema.js';
 import { type AppUser, toAppUser } from '../to-app-user.js';
+import { type AccountId, accountFilter } from './app-login-input.js';
 import { TokenService } from '../token.service.js';
 import { APP_LOGIN_ERRORS } from './app-login-errors.js';
 import { PASSWORD_HASH_COST, PASSWORD_HASH_COST_TOKEN } from './app-signup.service.js';
@@ -54,14 +55,16 @@ export class AppLoginService {
    * 모두 같은 401이다. 응답 시간도 같게 하려고, 어떤 경우든 bcrypt 비교를 한 번씩 한다
    * (계정이 없다고 비교를 건너뛰면 빨리 끝나서 응답 시간으로 가입 여부를 알아낼 수 있다).
    */
-  async login(email: string, password: string): Promise<AppLoginResult> {
-    // 비밀번호를 확인하기 전에 시도를 하나 먼저 쓴다. 이메일 기준이라 계정이 있는지와 상관없이 똑같이 잠긴다
-    const slot = await this.throttle.reserve(email);
+  async login(id: AccountId, password: string): Promise<AppLoginResult> {
+    // 아이디(예전 계정은 이메일) 그대로를 잠금 기준으로 쓴다
+    const key = 'loginId' in id ? `id:${id.loginId}` : id.email;
+    // 비밀번호를 확인하기 전에 시도를 하나 먼저 쓴다. 입력 기준이라 계정이 있는지와 상관없이 똑같이 잠긴다
+    const slot = await this.throttle.reserve(key);
     if (!slot.ok) throw loginLocked(slot.retryAfterMs);
 
     // 비밀번호를 읽기 직전 시각. 확인하는 사이에 비밀번호가 재설정되면 이 로그인의 토큰은 거절된다(TokenService.issue)
     const authorizedAt = new Date();
-    const user = await this.users.findOne({ email, deletedAt: null }).lean();
+    const user = await this.users.findOne({ ...accountFilter(id), deletedAt: null }).lean();
 
     // 비교할 해시: 비밀번호를 가진 계정이면 그 해시, 아니면 같은 비용의 가짜 해시
     const storedHash = user?.passwordHash ?? null;
@@ -74,7 +77,7 @@ export class AppLoginService {
     if (!user || storedHash === null || tooLong || !matched) throw invalidCredentials();
 
     // 성공하면 횟수를 지운다(정상 사용자가 몇 번 틀리고 맞춘 경우)
-    await this.throttle.clear(email);
+    await this.throttle.clear(key);
     await this.users.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } });
     const { accessToken, refreshToken } = await this.tokens.issue(
       String(user._id),

@@ -76,10 +76,14 @@ function setup(rows: UserRow[] = []) {
   };
   const model = {
     // 실제 Mongo처럼 필터에 적힌 항목만 따진다
-    findOne: (f: { email: string; deletedAt: null }) => ({
+    findOne: (f: { email?: string; loginId?: unknown; deletedAt: null }) => ({
       lean: () =>
         Promise.resolve(
-          rows.find((r) => r.email === f.email && r.deletedAt === f.deletedAt) ?? null,
+          rows.find((r) =>
+            typeof f.loginId === 'string'
+              ? (r as { loginId?: string }).loginId === f.loginId && r.deletedAt === f.deletedAt
+              : r.email === f.email && r.deletedAt === f.deletedAt,
+          ) ?? null,
         ),
     }),
     updateOne: (f: { _id: Types.ObjectId }, update: { $set: { lastLoginAt: Date } }) => {
@@ -111,7 +115,7 @@ describe('AppLoginService.login 성공', () => {
     const row = userRow();
     const { service } = setup([row]);
 
-    const result = await service.login(EMAIL, PASSWORD);
+    const result = await service.login({ email: EMAIL }, PASSWORD);
 
     expect(result.accessToken).toBe(`access-${row._id}`);
     expect(result.refreshToken).toBe(`refresh-${row._id}`);
@@ -122,7 +126,7 @@ describe('AppLoginService.login 성공', () => {
     const row = userRow();
     const { service, issued } = setup([row]);
 
-    await service.login(EMAIL, PASSWORD);
+    await service.login({ email: EMAIL }, PASSWORD);
 
     expect(issued).toEqual([String(row._id)]);
   });
@@ -132,7 +136,7 @@ describe('AppLoginService.login 성공', () => {
     const { service } = setup([row]);
     const before = Date.now();
 
-    await service.login(EMAIL, PASSWORD);
+    await service.login({ email: EMAIL }, PASSWORD);
 
     expect(row.lastLoginAt).toBeInstanceOf(Date);
     expect(row.lastLoginAt!.getTime()).toBeGreaterThanOrEqual(before);
@@ -143,7 +147,7 @@ describe('AppLoginService.login 성공', () => {
       userRow({ socialAccounts: [{ provider: 'google', providerUid: 'uid-secret' }] }),
     ]);
 
-    const result = await service.login(EMAIL, PASSWORD);
+    const result = await service.login({ email: EMAIL }, PASSWORD);
 
     const text = JSON.stringify(result);
     expect(text).not.toContain(goodHash);
@@ -155,7 +159,7 @@ describe('AppLoginService.login 성공', () => {
     const mine = userRow();
     const { service } = setup([other, mine]);
 
-    const result = await service.login(EMAIL, PASSWORD);
+    const result = await service.login({ email: EMAIL }, PASSWORD);
 
     expect(result.user._id).toBe(String(mine._id));
   });
@@ -163,7 +167,7 @@ describe('AppLoginService.login 성공', () => {
   it('성공해도 bcrypt 비교는 한 번만 한다', async () => {
     const { service } = setup([userRow()]);
 
-    await service.login(EMAIL, PASSWORD);
+    await service.login({ email: EMAIL }, PASSWORD);
 
     expect(compare).toHaveBeenCalledTimes(1);
   });
@@ -183,7 +187,7 @@ describe('AppLoginService.login 실패: 이유를 알리지 않는다', () => {
     const { rows, email = EMAIL, password = PASSWORD } = make();
     const { service } = setup(rows);
 
-    const result = await failure(service.login(email, password));
+    const result = await failure(service.login({ email: email }, password));
 
     expect(result.status).toBe(401);
     expect(result.body['code']).toBe(APP_LOGIN_ERRORS.INVALID_CREDENTIALS);
@@ -193,7 +197,7 @@ describe('AppLoginService.login 실패: 이유를 알리지 않는다', () => {
     const results = [];
     for (const [, make] of CASES) {
       const { rows, email = EMAIL, password = PASSWORD } = make();
-      results.push(await failure(setup(rows).service.login(email, password)));
+      results.push(await failure(setup(rows).service.login({ email: email }, password)));
     }
 
     for (const r of results) expect(r).toEqual(results[0]);
@@ -202,7 +206,7 @@ describe('AppLoginService.login 실패: 이유를 알리지 않는다', () => {
   it('응답 문구는 어느 쪽이 틀렸는지 알려 주지 않는다', async () => {
     const { service } = setup([userRow()]);
 
-    const result = await failure(service.login(EMAIL, 'WrongPassw0rd'));
+    const result = await failure(service.login({ email: EMAIL }, 'WrongPassw0rd'));
 
     expect(result.body['message']).toBe('이메일 또는 비밀번호가 맞지 않아요');
   });
@@ -210,7 +214,7 @@ describe('AppLoginService.login 실패: 이유를 알리지 않는다', () => {
   it('토큰 만료 코드(AUTH_TOKEN_EXPIRED)를 쓰지 않는다 (앱이 토큰 갱신을 시도하지 않는다)', async () => {
     const { service } = setup([userRow()]);
 
-    const result = await failure(service.login(EMAIL, 'WrongPassw0rd'));
+    const result = await failure(service.login({ email: EMAIL }, 'WrongPassw0rd'));
 
     expect(result.body['code']).not.toBe('AUTH_TOKEN_EXPIRED');
   });
@@ -219,7 +223,7 @@ describe('AppLoginService.login 실패: 이유를 알리지 않는다', () => {
     const row = userRow();
     const { service, issued } = setup([row]);
 
-    await failure(service.login(EMAIL, 'WrongPassw0rd'));
+    await failure(service.login({ email: EMAIL }, 'WrongPassw0rd'));
 
     expect(issued).toHaveLength(0);
     expect(row.lastLoginAt).toBeNull();
@@ -228,7 +232,7 @@ describe('AppLoginService.login 실패: 이유를 알리지 않는다', () => {
   it('오류 응답에 입력한 비밀번호 · 해시가 들어 있지 않다', async () => {
     const { service } = setup([userRow()]);
 
-    const result = await failure(service.login(EMAIL, 'WrongPassw0rd'));
+    const result = await failure(service.login({ email: EMAIL }, 'WrongPassw0rd'));
 
     const text = JSON.stringify(result.body);
     expect(text).not.toContain('WrongPassw0rd');
@@ -250,7 +254,7 @@ describe('응답 시간 평준화: 어떤 경우에도 bcrypt 비교를 한 번 
       const { rows, email = EMAIL, password = PASSWORD } = make();
       const { service } = setup(rows);
 
-      await failure(service.login(email, password));
+      await failure(service.login({ email: email }, password));
 
       expect(compare).toHaveBeenCalledTimes(1);
     },
@@ -259,7 +263,7 @@ describe('응답 시간 평준화: 어떤 경우에도 bcrypt 비교를 한 번 
   it('계정이 없을 때는 실제 계정과 같은 비용의 가짜 해시와 비교한다', async () => {
     const { service } = setup([]);
 
-    await failure(service.login(EMAIL, PASSWORD));
+    await failure(service.login({ email: EMAIL }, PASSWORD));
 
     const target = vi.mocked(compare).mock.calls[0]![1] as string;
     expect(target).toMatch(/^\$2[aby]\$04\$/); // 주입한 비용(4)과 같다
@@ -273,7 +277,7 @@ describe('응답 시간 평준화: 어떤 경우에도 bcrypt 비교를 한 번 
       5,
     );
 
-    await failure(service.login(EMAIL, PASSWORD));
+    await failure(service.login({ email: EMAIL }, PASSWORD));
 
     expect(vi.mocked(compare).mock.calls[0]![1]).toMatch(/^\$2[aby]\$05\$/);
   });
@@ -281,9 +285,9 @@ describe('응답 시간 평준화: 어떤 경우에도 bcrypt 비교를 한 번 
   it('가짜 해시는 한 번 만들어 재사용한다 (요청마다 새로 만들지 않는다)', async () => {
     const { service } = setup([]);
 
-    await failure(service.login(EMAIL, PASSWORD));
-    await failure(service.login(EMAIL, PASSWORD));
-    await failure(service.login('other@example.com', PASSWORD));
+    await failure(service.login({ email: EMAIL }, PASSWORD));
+    await failure(service.login({ email: EMAIL }, PASSWORD));
+    await failure(service.login({ email: 'other@example.com' }, PASSWORD));
 
     const targets = vi.mocked(compare).mock.calls.map((c) => c[1]);
     expect(new Set(targets).size).toBe(1);
@@ -293,14 +297,16 @@ describe('응답 시간 평준화: 어떤 경우에도 bcrypt 비교를 한 번 
     const { service } = setup([userRow({ passwordHash: null })]);
 
     for (const guess of [PASSWORD, '', 'dummy', 'Passw0rd', '12345678a']) {
-      await expect(service.login(EMAIL, guess)).rejects.toMatchObject({ status: 401 });
+      await expect(service.login({ email: EMAIL }, guess)).rejects.toMatchObject({ status: 401 });
     }
   });
 
   it('동시에 처음 요청이 여러 개 와도 가짜 해시는 하나만 만든다', async () => {
     const { service } = setup([]);
 
-    await Promise.allSettled(Array.from({ length: 5 }, () => service.login(EMAIL, PASSWORD)));
+    await Promise.allSettled(
+      Array.from({ length: 5 }, () => service.login({ email: EMAIL }, PASSWORD)),
+    );
 
     const targets = vi.mocked(compare).mock.calls.map((c) => c[1]);
     expect(new Set(targets).size).toBe(1);
@@ -317,7 +323,7 @@ describe('소셜 전용 계정은 두 겹으로 막는다 (한쪽이 없어져�
     const { service } = setup([userRow({ passwordHash: null })]);
     withCompareAlwaysTrue();
 
-    const result = await failure(service.login(EMAIL, 'anything'));
+    const result = await failure(service.login({ email: EMAIL }, 'anything'));
 
     expect(result.status).toBe(401);
   });
@@ -326,7 +332,7 @@ describe('소셜 전용 계정은 두 겹으로 막는다 (한쪽이 없어져�
     const { service, issued } = setup([]);
     withCompareAlwaysTrue();
 
-    const result = await failure(service.login(EMAIL, 'anything'));
+    const result = await failure(service.login({ email: EMAIL }, 'anything'));
 
     expect(result.status).toBe(401);
     expect(issued).toHaveLength(0);
@@ -336,8 +342,8 @@ describe('소셜 전용 계정은 두 겹으로 막는다 (한쪽이 없어져�
     const a = setup([]);
     const b = setup([]);
 
-    await failure(a.service.login(EMAIL, PASSWORD));
-    await failure(b.service.login(EMAIL, PASSWORD));
+    await failure(a.service.login({ email: EMAIL }, PASSWORD));
+    await failure(b.service.login({ email: EMAIL }, PASSWORD));
 
     const [hashA, hashB] = vi.mocked(compare).mock.calls.map((c) => c[1] as string);
     expect(hashA).not.toBe(hashB);
@@ -345,7 +351,7 @@ describe('소셜 전용 계정은 두 겹으로 막는다 (한쪽이 없어져�
 
   it('가짜 해시의 원문은 고정값이 아니다 (알려진 값으로 비교하면 가짜 해시와 맞지 않는다)', async () => {
     const { service } = setup([]);
-    await failure(service.login(EMAIL, PASSWORD));
+    await failure(service.login({ email: EMAIL }, PASSWORD));
     const dummy = vi.mocked(compare).mock.calls[0]![1] as string;
     const actual = await vi.importActual<typeof import('bcrypt')>('bcrypt');
 
@@ -357,7 +363,7 @@ describe('소셜 전용 계정은 두 겹으로 막는다 (한쪽이 없어져�
   it('가짜 해시와 비교할 때 사용자 해시가 아닌 다른 해시를 쓴다', async () => {
     const { service } = setup([userRow({ passwordHash: null })]);
 
-    await failure(service.login(EMAIL, PASSWORD));
+    await failure(service.login({ email: EMAIL }, PASSWORD));
 
     const target = vi.mocked(compare).mock.calls[0]![1] as string;
     expect(target).not.toBe(goodHash);
@@ -372,8 +378,8 @@ describe('72바이트를 넘는 입력', () => {
     const row = userRow({ passwordHash: await hash(base, TEST_COST) });
     const { service } = setup([row]);
 
-    await expect(service.login(EMAIL, base)).resolves.toBeDefined();
-    const result = await failure(service.login(EMAIL, `${base}EXTRA`));
+    await expect(service.login({ email: EMAIL }, base)).resolves.toBeDefined();
+    const result = await failure(service.login({ email: EMAIL }, `${base}EXTRA`));
 
     expect(result.status).toBe(401);
   });
@@ -381,7 +387,7 @@ describe('72바이트를 넘는 입력', () => {
   it('72바이트를 넘는 입력도 bcrypt 비교는 한 번 한다 (시간 차이를 만들지 않는다)', async () => {
     const { service } = setup([userRow()]);
 
-    await failure(service.login(EMAIL, 'a'.repeat(100)));
+    await failure(service.login({ email: EMAIL }, 'a'.repeat(100)));
 
     expect(compare).toHaveBeenCalledTimes(1);
   });
@@ -390,7 +396,7 @@ describe('72바이트를 넘는 입력', () => {
     const exact = `${'a'.repeat(71)}1`;
     const { service } = setup([userRow({ passwordHash: await hash(exact, TEST_COST) })]);
 
-    await expect(service.login(EMAIL, exact)).resolves.toBeDefined();
+    await expect(service.login({ email: EMAIL }, exact)).resolves.toBeDefined();
   });
 
   it('한글 등 여러 바이트 글자로 72바이트를 넘으면 거부한다 (글자 수가 아니라 바이트 기준)', async () => {
@@ -401,8 +407,8 @@ describe('72바이트를 넘는 입력', () => {
     expect(tooLongByBytes.length).toBeLessThanOrEqual(64);
     const { service } = setup([userRow({ passwordHash: await hash(stored, TEST_COST) })]);
 
-    await expect(service.login(EMAIL, stored)).resolves.toBeDefined();
-    const result = await failure(service.login(EMAIL, tooLongByBytes));
+    await expect(service.login({ email: EMAIL }, stored)).resolves.toBeDefined();
+    const result = await failure(service.login({ email: EMAIL }, tooLongByBytes));
 
     expect(result.status).toBe(401);
   });
@@ -412,7 +418,7 @@ describe('72바이트를 넘는 입력', () => {
     const { service } = setup([userRow({ passwordHash: await hash(stored, TEST_COST) })]);
 
     // bcrypt는 앞 72바이트만 보므로, 73바이트 입력은 해시 비교로는 맞아 버린다. 직접 막아야 한다
-    const result = await failure(service.login(EMAIL, `${stored}x`));
+    const result = await failure(service.login({ email: EMAIL }, `${stored}x`));
 
     expect(result.status).toBe(401);
   });
@@ -427,7 +433,7 @@ describe('저장소 오류', () => {
       TEST_COST,
     );
 
-    await expect(service.login(EMAIL, PASSWORD)).rejects.toThrow('DB 읽기 실패');
+    await expect(service.login({ email: EMAIL }, PASSWORD)).rejects.toThrow('DB 읽기 실패');
   });
 
   it('토큰 발급이 실패하면 그대로 던진다', async () => {
@@ -442,6 +448,6 @@ describe('저장소 오류', () => {
       TEST_COST,
     );
 
-    await expect(service.login(EMAIL, PASSWORD)).rejects.toThrow('토큰 발급 실패');
+    await expect(service.login({ email: EMAIL }, PASSWORD)).rejects.toThrow('토큰 발급 실패');
   });
 });

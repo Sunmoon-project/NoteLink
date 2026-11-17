@@ -20,6 +20,7 @@ import { clearAccountState } from '@/lib/account';
 import {
   confirmError,
   emailError,
+  loginIdError,
   looksLikeEmail,
   nicknameError,
   passwordError,
@@ -150,8 +151,8 @@ function SocialButtons() {
 }
 
 export function LoginScreen() {
-  // 가입을 마치고 오면 가입한 이메일이 채워져 있다
-  const { email: joined } = useLocalSearchParams<{ email?: string }>();
+  // 가입을 마치고 오면 가입한 아이디가 채워져 있다
+  const { id: joined } = useLocalSearchParams<{ id?: string }>();
   const [email, setEmail] = useState(joined ?? '');
   const [pw, setPw] = useState('');
   const done = useFinishSignIn();
@@ -175,19 +176,20 @@ export function LoginScreen() {
           </Text>
         </View>
 
-        {/* 1. 이메일 · 비밀번호 로그인이 맨 먼저 */}
+        {/* 1. 아이디 · 비밀번호 로그인이 맨 먼저 */}
         <View className="mt-8">
-          <Label>이메일</Label>
+          <Label>아이디</Label>
           <Input
             value={email}
             onChangeText={(v) => {
               setEmail(v);
               setLoginError(null);
             }}
-            placeholder="you@example.com"
-            keyboardType="email-address"
+            placeholder="아이디"
             autoCapitalize="none"
-            autoComplete="email"
+            autoCorrect={false}
+            autoComplete="username"
+            textContentType="username"
           />
           <Label>비밀번호</Label>
           <Input
@@ -203,7 +205,8 @@ export function LoginScreen() {
           {!!loginError && <Text className="mt-3 text-footnote text-danger">{loginError}</Text>}
           <Btn
             className="mt-6"
-            disabled={!looksLikeEmail(email) || pw.length < 8}
+            // 아이디를 두기 전 계정은 가입 이메일로도 들어온다
+            disabled={(email.trim().length < 4 && !looksLikeEmail(email)) || pw.length < 8}
             loading={byEmail.isPending}
             onPress={() => byEmail.mutate()}
           >
@@ -246,7 +249,7 @@ const FormLabel = ({ children }: { children: string }) => (
   <Text className="mt-4 mb-2 px-1 text-footnote text-sub">{children}</Text>
 );
 
-type SignupField = 'email' | 'pw' | 'confirm';
+type SignupField = 'loginId' | 'email' | 'pw' | 'confirm';
 
 /** 가입 인증번호: 숫자 6자리 */
 const CODE = /^\d{6}$/;
@@ -258,6 +261,8 @@ const CODE = /^\d{6}$/;
  */
 export const useSignup = create<{
   email: string;
+  /** 정한 아이디(인증번호를 받기 전에 쓸 수 있는지 확인한다) */
+  loginId: string;
   pw: string;
   sentTo: string | null;
   /** 마지막으로 인증번호를 보낸 시각(다시 받기 대기 계산) */
@@ -271,6 +276,7 @@ export const useSignup = create<{
   reset: () => void;
 }>((set, get) => ({
   email: '',
+  loginId: '',
   pw: '',
   sentTo: null,
   sentAt: 0,
@@ -281,7 +287,15 @@ export const useSignup = create<{
     return get().flow;
   },
   reset: () =>
-    set((s) => ({ email: '', pw: '', sentTo: null, sentAt: 0, proof: null, flow: s.flow + 1 })),
+    set((s) => ({
+      email: '',
+      loginId: '',
+      pw: '',
+      sentTo: null,
+      sentAt: 0,
+      proof: null,
+      flow: s.flow + 1,
+    })),
 }));
 
 /** 인증번호를 새로 보내기 시작한다: 흐름을 올리고 증표를 버린다. 발송 제한에 걸리면 되돌릴 수 있게 앞의 증표도 돌려준다 */
@@ -300,6 +314,9 @@ function keepProofIfLimited(e: unknown, prev: { email: string; token: string } |
  * (verify-code) → ③ 증표 + 비밀번호로 가입(signup). 이 화면은 ①까지 하고 인증번호 화면으로 넘긴다
  */
 export function SignupScreen() {
+  const [loginId, setLoginId] = useState(() => useSignup.getState().loginId);
+  // 서버에서 이미 쓰는 아이디라고 한 값(바꾸면 지운다)
+  const [takenId, setTakenId] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -307,12 +324,17 @@ export function SignupScreen() {
   const emailNow = useRef('');
   // 안내는 칸을 벗어나거나 버튼을 누른 뒤부터 보여 준다 (쓰는 중인 칸을 탓하지 않는다)
   const [touched, setTouched] = useState<Record<SignupField, boolean>>({
+    loginId: false,
     email: false,
     pw: false,
     confirm: false,
   });
   const touch = (f: SignupField) => () => setTouched((t) => ({ ...t, [f]: true }));
+  const normalizedId = loginId.trim().toLowerCase();
   const errors = {
+    loginId:
+      loginIdError(loginId) ??
+      (takenId === normalizedId ? '이미 쓰는 아이디예요. 다른 아이디를 정해 주세요' : null),
     email: emailError(email),
     pw: passwordError(pw),
     confirm: confirmError(pw, confirm),
@@ -322,19 +344,28 @@ export function SignupScreen() {
   const confirmShown =
     shown('confirm') ?? (confirm.length >= pw.length && confirm ? errors.confirm : null);
   const formOk = () => {
-    setTouched({ email: true, pw: true, confirm: true });
-    return !errors.email && !errors.pw && !errors.confirm;
+    setTouched({ loginId: true, email: true, pw: true, confirm: true });
+    return !errors.loginId && !errors.email && !errors.pw && !errors.confirm;
   };
   const send = useMutation({
     // 서버는 메일을 보내기 전에 번호를 새로 내며 앞서 받은 증표를 무효로 한다 —
     // 메일 발송이 실패해도 그 증표는 못 쓰니 요청을 보내는 순간 버린다(발송 제한만 되살린다)
     onMutate: startSend,
     // 비밀번호는 누를 때 검사한 값으로 고정한다(보내는 사이 고쳐도 검사 안 한 값이 넘어가지 않게)
-    mutationFn: ({ to }: { to: string; pw: string }) => api.auth.emailSendCode(to),
-    onSuccess: (_, { to, pw: checked }, sent) => {
+    // 아이디를 먼저 확인한다 — 이미 쓰는 아이디면 인증번호를 보내지 않는다
+    mutationFn: async ({ to, id }: { to: string; id: string; pw: string }) => {
+      if (!(await api.auth.loginIdAvailable(id))) return false;
+      await api.auth.emailSendCode(to);
+      return true;
+    },
+    onSuccess: (ok, { to, id, pw: checked }, sent) => {
       // 보내는 사이 이메일을 고쳤거나, 화면을 나갔다 와 새 흐름이 시작됐으면 옛 응답은 버린다
       if (to !== emailNow.current || useSignup.getState().flow !== sent.flow) return;
-      useSignup.setState({ email: to, pw: checked, sentTo: to, sentAt: Date.now() });
+      if (!ok) {
+        setTakenId(id);
+        return;
+      }
+      useSignup.setState({ email: to, loginId: id, pw: checked, sentTo: to, sentAt: Date.now() });
       toast('인증번호를 보냈어요. 메일을 확인해 주세요');
       router.push({ pathname: '/(auth)/signup-code', params: { email: to } });
     },
@@ -345,7 +376,7 @@ export function SignupScreen() {
     },
   });
   const sendCode = () => {
-    if (!send.isPending && formOk()) send.mutate({ to: email.trim(), pw });
+    if (!send.isPending && formOk()) send.mutate({ to: email.trim(), id: normalizedId, pw });
   };
   return (
     <Canvas cream>
@@ -356,8 +387,25 @@ export function SignupScreen() {
           </Btn>
         }
       >
-        <Header title="회원가입" sub="아이디로 쓸 이메일과 비밀번호를 정해 주세요" />
-        <FormLabel>이메일 (아이디)</FormLabel>
+        <Header title="회원가입" sub="아이디와 비밀번호를 정하고, 이메일로 본인 인증을 해 주세요" />
+        <FormLabel>아이디</FormLabel>
+        <Input
+          value={loginId}
+          onChangeText={(v) => {
+            setLoginId(v);
+            setTakenId(null);
+          }}
+          onBlur={touch('loginId')}
+          invalid={!!shown('loginId')}
+          placeholder="영문 소문자로 시작 · 4~20자"
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="username-new"
+          textContentType="username"
+          maxLength={20}
+        />
+        <FieldError msg={shown('loginId') ?? (takenId === normalizedId ? errors.loginId : null)} />
+        <FormLabel>이메일 (인증용)</FormLabel>
         <Input
           value={email}
           onChangeText={(v) => {
@@ -484,8 +532,7 @@ export function SignupCodeScreen() {
     return () => clearTimeout(t);
   }, [wait, now]);
 
-  const toLogin = (to: string) =>
-    router.replace({ pathname: '/(auth)/login', params: { email: to } });
+  const toLogin = (id: string) => router.replace({ pathname: '/(auth)/login', params: { id } });
   const failed = (e: unknown, fallback: string) =>
     toast(e instanceof ApiError ? e.message : fallback);
 
@@ -518,22 +565,27 @@ export function SignupCodeScreen() {
       }
       const s = useSignup.getState();
       if (s.flow !== flow || !s.proof) return false;
-      await api.auth.emailSignup(s.proof.token, s.pw);
+      await api.auth.emailSignup(s.proof.token, s.loginId, s.pw);
       return true;
     },
     onSuccess: (done, { to, flow }) => {
       // 옛 흐름의 가입이 늦게 끝났으면 지금 가입 정보를 지우거나 화면을 떠나지 않는다
       if (!done || useSignup.getState().flow !== flow) return;
+      const joinedId = useSignup.getState().loginId;
       useSignup.getState().reset();
       toast('가입했어요. 로그인해 주세요');
-      // 실제로 가입한 이메일로 로그인을 채운다
-      toLogin(to);
+      // 정한 아이디로 로그인을 채운다
+      toLogin(joinedId || to);
     },
     onError: (e, { flow }) => {
       // 그사이 새 흐름이 시작됐으면 옛 실패가 새 증표 · 다시 받기 대기를 건드리지 않게 버린다
       if (useSignup.getState().flow !== flow) return;
       if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_TAKEN) setTaken(true);
-      else if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_CODE_INVALID)
+      else if (e instanceof ApiError && e.code === ERROR_CODES.LOGIN_ID_TAKEN) {
+        // 확인한 사이 다른 사람이 같은 아이디로 가입했다 — 증표는 그대로라 아이디만 바꿔 다시 가입한다
+        toast(e.message);
+        router.back();
+      } else if (e instanceof ApiError && e.code === ERROR_CODES.EMAIL_CODE_INVALID)
         setCodeMsg(e.message);
       else if (
         e instanceof ApiError &&

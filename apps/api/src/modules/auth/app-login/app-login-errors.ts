@@ -12,6 +12,8 @@ export const APP_LOGIN_ERRORS = {
   EMAIL_PROOF_INVALID: 'EMAIL_PROOF_INVALID',
   /** 이미 가입한 이메일(공유 계약 ERROR_CODES.EMAIL_TAKEN 과 같은 값) */
   EMAIL_TAKEN: 'EMAIL_TAKEN',
+  /** 이미 쓰는 아이디(공유 계약 ERROR_CODES.LOGIN_ID_TAKEN 과 같은 값) */
+  LOGIN_ID_TAKEN: 'LOGIN_ID_TAKEN',
   /** 메일 발송 수단을 쓸 수 없다 */
   MAIL_UNAVAILABLE: 'MAIL_UNAVAILABLE',
   /**

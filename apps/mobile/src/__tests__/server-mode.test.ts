@@ -45,7 +45,7 @@ it('설정이 없으면 기기 저장이 아니라 메인 API로 요청한다', 
   const [url, init] = fetchMock.mock.calls[0]!;
   expect(url).toBe(`https://api.test/api/v1${PATHS.emailLogin}`);
   expect(init.method).toBe('POST');
-  expect(JSON.parse(init.body)).toEqual({ email: 'a@test.com', password: '12345678' });
+  expect(JSON.parse(init.body)).toEqual({ id: 'a@test.com', password: '12345678' });
 });
 
 it('가입도 공용 계약의 주소로 보내고, 서버 오류는 code · message로 받는다', async () => {
@@ -53,7 +53,9 @@ it('가입도 공용 계약의 주소로 보내고, 서버 오류는 code · mes
     respond(409, { code: 'EMAIL_TAKEN', message: '이미 가입한 이메일이에요' }),
   );
   const { api, ApiError } = load();
-  const failure = await api.auth.emailSignup('proof-1', '12345678').catch((e: unknown) => e);
+  const failure = await api.auth
+    .emailSignup('proof-1', 'note_user', '12345678')
+    .catch((e: unknown) => e);
   expect(failure).toBeInstanceOf(ApiError);
   expect(failure).toMatchObject({ code: 'EMAIL_TAKEN', status: 409 });
   expect(fetchMock.mock.calls[0]![0]).toBe(`https://api.test/api/v1${PATHS.emailSignup}`);
@@ -70,14 +72,17 @@ it('가입은 인증번호 보내기 → 확인(증표 받기) → 증표와 비
   const { api } = load();
   await api.auth.emailSendCode('a@test.com');
   const proof = await api.auth.emailVerifyCode('a@test.com', '123456');
-  await api.auth.emailSignup(proof.verificationToken, 'abcd1234');
+  await api.auth.emailSignup(proof.verificationToken, 'note_user', 'abcd1234');
   const sent = fetchMock.mock.calls.map(([url, init]) => [url, JSON.parse(init.body)]);
   const base = 'https://api.test/api/v1';
   expect(sent).toEqual([
     [`${base}${PATHS.emailSendCode}`, { email: 'a@test.com' }],
     [`${base}${PATHS.emailVerifyCode}`, { email: 'a@test.com', code: '123456' }],
     // 서버는 이메일을 받지 않고 증표 안의 값만 쓴다
-    [`${base}${PATHS.emailSignup}`, { verificationToken: 'proof-1', password: 'abcd1234' }],
+    [
+      `${base}${PATHS.emailSignup}`,
+      { verificationToken: 'proof-1', loginId: 'note_user', password: 'abcd1234' },
+    ],
   ]);
 });
 

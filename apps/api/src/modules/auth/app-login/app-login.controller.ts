@@ -2,6 +2,7 @@ import { Body, Controller, Header, HttpCode, HttpStatus, Post } from '@nestjs/co
 
 import {
   parseLoginBody,
+  parseLoginIdBody,
   parseSendCodeBody,
   parseSignupBody,
   parseVerifyCodeBody,
@@ -58,8 +59,17 @@ export class AppLoginController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @Header('Cache-Control', 'no-store')
   async register(@Body() body: unknown): Promise<void> {
-    const { verificationToken, password } = parseSignupBody(body);
-    await this.signup.signup(verificationToken, password);
+    const { verificationToken, loginId, password } = parseSignupBody(body);
+    await this.signup.signup(verificationToken, loginId, password);
+  }
+
+  /** 아이디를 쓸 수 있는지. 응답: `{ data: { available } }`. 가입 화면에서 인증번호를 받기 전에 확인한다 */
+  @Post('login-id-available')
+  @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'no-store')
+  async loginIdAvailable(@Body() body: unknown): Promise<{ data: { available: boolean } }> {
+    const { loginId } = parseLoginIdBody(body);
+    return { data: { available: await this.signup.loginIdAvailable(loginId) } };
   }
 
   /**
@@ -71,7 +81,7 @@ export class AppLoginController {
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
   async signIn(@Body() body: unknown): Promise<{ data: AppLoginResult }> {
-    const { email, password } = parseLoginBody(body);
-    return { data: await this.login.login(email, password) };
+    const { id, password } = parseLoginBody(body);
+    return { data: await this.login.login(id, password) };
   }
 }

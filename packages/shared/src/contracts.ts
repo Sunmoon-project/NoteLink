@@ -28,6 +28,8 @@ export const ERROR_CODES = {
   /** 입력 형식 오류 (이메일 · 필수 값 등) */
   VALIDATION: 'VALIDATION_FAILED',
   EMAIL_TAKEN: 'EMAIL_TAKEN',
+  /** 이미 쓰는 아이디 (409) */
+  LOGIN_ID_TAKEN: 'LOGIN_ID_TAKEN',
   // 이메일 가입 · 로그인 (서버 apps/api/src/modules/auth/app-login/app-login-errors.ts 와 같은 값)
   /** 너무 빨리 다시 요청했거나 한도를 넘었다. 본문의 retryAfterSeconds 뒤에 다시 시도한다 (429) */
   RATE_LIMITED: 'RATE_LIMITED',
@@ -89,13 +91,16 @@ export const PATHS = {
   /** 인증번호를 확인하고 가입 증표를 받는다. 응답 { data: { verificationToken, expiresInSeconds } } */
   emailVerifyCode: '/auth/email/verify-code',
   emailLogin: '/auth/email/login',
+  /** 가입 { verificationToken, loginId, password } → 204. 아이디가 이미 있으면 409 LOGIN_ID_TAKEN */
   emailSignup: '/auth/email/signup',
+  /** 아이디를 쓸 수 있는지 { loginId } → { data: { available } } */
+  loginIdAvailable: '/auth/email/login-id-available',
   refresh: '/auth/refresh',
   logout: '/auth/logout',
   terms: '/auth/terms',
   /** 아이디 찾기 · 비밀번호 재설정 인증번호 받기 { email } → 204. 가입하지 않은 이메일이어도 응답은 같다 */
   recoverySendCode: '/auth/recovery/send-code',
-  /** 아이디 찾기 { email, code } → { data: { id } } (아이디 = 가입 이메일, 계정이 없으면 null) */
+  /** 아이디 찾기 { email, code } → { data: { id } } (그 이메일로 가입한 아이디. 없거나 간편 로그인 계정이면 null) */
   findId: '/auth/find-id',
   /** 비밀번호 재설정 { id, email, code, password } → 204. 모든 기기 로그인을 끊는다 */
   passwordReset: '/auth/password/reset',
@@ -243,3 +248,9 @@ export type ClientToServer = {
   /** 화면을 떠나면 그 작업의 진행률을 그만 받는다 */
   'ai:unsubscribe': (p: { jobId: string }) => void;
 };
+
+/**
+ * 로그인 아이디: 영문 소문자로 시작하는 4~20자 · 영문 소문자 · 숫자 · 밑줄(_).
+ * 이메일과 따로 정한다(이메일은 인증 · 계정 찾기에만 쓴다). 서버와 앱이 같은 규칙을 쓴다
+ */
+export const LOGIN_ID_PATTERN = /^[a-z][a-z0-9_]{3,19}$/;

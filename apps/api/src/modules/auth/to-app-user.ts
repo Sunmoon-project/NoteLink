@@ -28,6 +28,7 @@ const DEFAULT_LEARNER_TYPE: LearnerType = 'university';
 export interface UserSource {
   _id: Types.ObjectId;
   email?: string | null;
+  loginId?: string | null;
   nickname: string;
   role?: string;
   learnerType?: string | null;
@@ -45,6 +46,8 @@ const PLAN_TIERS = ['free', 'pro', 'max'] as const;
 export interface AppUser {
   _id: string;
   email: string | null;
+  /** 로그인 아이디. 간편 로그인 계정과 아이디를 두기 전 이메일 가입 계정은 null */
+  loginId: string | null;
   nickname: string;
   role: string;
   learnerType: LearnerType;
@@ -70,6 +73,7 @@ export function toAppUser(user: UserSource, streakDays = 0): AppUser {
   return {
     _id: String(user._id),
     email: user.email ?? null,
+    loginId: user.loginId ?? null,
     nickname: user.nickname,
     role: user.role ?? 'user',
     learnerType: oneOf(LEARNER_TYPES, user.learnerType, DEFAULT_LEARNER_TYPE),

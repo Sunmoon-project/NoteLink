@@ -5,6 +5,10 @@ import { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** 가입마다 다른 아이디(아이디 충돌이 이메일 중복 시험을 가리지 않게) */
+let loginIdSeq = 0;
+const nextLoginId = () => `user${++loginIdSeq}`;
+
 import { configureApp } from '../src/app.setup.js';
 import {
   EMAIL_CODE_MAX_ATTEMPTS,
@@ -94,13 +98,27 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
       sendNoAccount: () => Promise.resolve(),
     };
     const usersModel = {
-      exists: (f: { email: string; deletedAt: null }) =>
-        Promise.resolve(
-          users.find((u) => u.email === f.email && u.deletedAt === f.deletedAt)
-            ? { _id: new Types.ObjectId() }
-            : null,
-        ),
-      create: (data: Partial<UserRow>) => {
+      exists: (f: { email: string; deletedAt: null } | { loginId: string }) =>
+        'loginId' in f
+          ? Promise.resolve(
+              users.some((u) => (u as { loginId?: string }).loginId === f.loginId)
+                ? { _id: new Types.ObjectId() }
+                : null,
+            )
+          : Promise.resolve(
+              users.find((u) => u.email === f.email && u.deletedAt === f.deletedAt)
+                ? { _id: new Types.ObjectId() }
+                : null,
+            ),
+      create: (data: Partial<UserRow> & { loginId?: string }) => {
+        if (
+          data.loginId &&
+          users.some((u) => (u as { loginId?: string }).loginId === data.loginId)
+        ) {
+          return Promise.reject(
+            Object.assign(new Error('E11000'), { code: 11000, keyPattern: { loginId: 1 } }),
+          );
+        }
         if (data.email && users.some((u) => u.email === data.email)) {
           return Promise.reject(
             Object.assign(new Error('E11000'), { code: 11000, keyPattern: { email: 1 } }),
@@ -126,12 +144,21 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
         users.push(row);
         return Promise.resolve(row);
       },
-      // 이메일로 찾기(로그인) · id로 찾기(토큰 검사) 둘 다
-      findOne: (f: { email?: string; deletedAt?: null; _id?: Types.ObjectId }) => ({
+      // 아이디 · 이메일로 찾기(로그인) · id로 찾기(토큰 검사)
+      findOne: (f: {
+        email?: string;
+        loginId?: string;
+        deletedAt?: null;
+        _id?: Types.ObjectId;
+      }) => ({
         lean: () =>
           Promise.resolve(
             users.find((u) =>
-              f._id ? u._id.equals(f._id) : u.email === f.email && u.deletedAt === f.deletedAt,
+              f._id
+                ? u._id.equals(f._id)
+                : f.loginId !== undefined
+                  ? (u as { loginId?: string }).loginId === f.loginId && u.deletedAt === f.deletedAt
+                  : u.email === f.email && u.deletedAt === f.deletedAt,
             ) ?? null,
           ),
       }),
@@ -199,7 +226,7 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
   /** 가입까지 끝낸다 */
   async function registered(email = EMAIL, password = PASSWORD) {
     const token = await verifiedToken(email);
-    return post(SIGNUP, { verificationToken: token, password });
+    return post(SIGNUP, { loginId: nextLoginId(), verificationToken: token, password });
   }
 
   describe('전체 흐름', () => {
@@ -213,7 +240,11 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
       const { verificationToken, expiresInSeconds } = verifyRes.body.data;
       expect(expiresInSeconds).toBe(600);
 
-      const signupRes = await post(SIGNUP, { verificationToken, password: PASSWORD });
+      const signupRes = await post(SIGNUP, {
+        loginId: nextLoginId(),
+        verificationToken,
+        password: PASSWORD,
+      });
       expect(signupRes.status).toBe(204);
 
       const loginRes = await post(LOGIN, { email: EMAIL, password: PASSWORD });
@@ -376,7 +407,11 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
     it('204이고 본문이 없다 (토큰을 주지 않는다)', async () => {
       const token = await verifiedToken();
 
-      const res = await post(SIGNUP, { verificationToken: token, password: PASSWORD });
+      const res = await post(SIGNUP, {
+        loginId: nextLoginId(),
+        verificationToken: token,
+        password: PASSWORD,
+      });
 
       expect(res.status).toBe(204);
       expect(res.text).toBe('');
@@ -387,6 +422,7 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
       const token = await verifiedToken('real@example.com');
 
       await post(SIGNUP, {
+        loginId: nextLoginId(),
         verificationToken: token,
         password: PASSWORD,
         email: 'attacker@evil.com',
@@ -397,9 +433,13 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
 
     it('같은 증표로 두 번 가입하면 두 번째는 401 EMAIL_PROOF_INVALID', async () => {
       const token = await verifiedToken();
-      await post(SIGNUP, { verificationToken: token, password: PASSWORD });
+      await post(SIGNUP, { loginId: nextLoginId(), verificationToken: token, password: PASSWORD });
 
-      const res = await post(SIGNUP, { verificationToken: token, password: PASSWORD });
+      const res = await post(SIGNUP, {
+        loginId: nextLoginId(),
+        verificationToken: token,
+        password: PASSWORD,
+      });
 
       expect(res.status).toBe(401);
       expect(res.body.code).toBe(ERROR_CODES.EMAIL_PROOF_INVALID);
@@ -410,7 +450,11 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
       const token = await verifiedToken();
       vi.setSystemTime(new Date(START.getTime() + 11 * 60 * 1000));
 
-      const res = await post(SIGNUP, { verificationToken: token, password: PASSWORD });
+      const res = await post(SIGNUP, {
+        loginId: nextLoginId(),
+        verificationToken: token,
+        password: PASSWORD,
+      });
 
       expect(res.status).toBe(401);
       expect(res.body.code).toBe(ERROR_CODES.EMAIL_PROOF_EXPIRED);
@@ -420,6 +464,7 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
       const token = await verifiedToken();
 
       const res = await post(SIGNUP, {
+        loginId: nextLoginId(),
         verificationToken: `${token.slice(0, -3)}abc`,
         password: PASSWORD,
       });
@@ -433,7 +478,11 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
       const token = await verifiedToken();
       users.push({ ...userRow(), email: EMAIL });
 
-      const res = await post(SIGNUP, { verificationToken: token, password: PASSWORD });
+      const res = await post(SIGNUP, {
+        loginId: nextLoginId(),
+        verificationToken: token,
+        password: PASSWORD,
+      });
 
       expect(res.status).toBe(409);
       expect(res.body.code).toBe(ERROR_CODES.EMAIL_TAKEN);
@@ -450,8 +499,16 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
       async (_r, password) => {
         const token = await verifiedToken();
 
-        const bad = await post(SIGNUP, { verificationToken: token, password });
-        const good = await post(SIGNUP, { verificationToken: token, password: PASSWORD });
+        const bad = await post(SIGNUP, {
+          loginId: nextLoginId(),
+          verificationToken: token,
+          password,
+        });
+        const good = await post(SIGNUP, {
+          loginId: nextLoginId(),
+          verificationToken: token,
+          password: PASSWORD,
+        });
 
         expect(bad.status).toBe(400);
         expect(bad.body.code).toBe(ERROR_CODES.VALIDATION);
@@ -474,7 +531,11 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
       const token = await verifiedToken();
       users.push({ ...userRow(), email: EMAIL });
 
-      const res = await post(SIGNUP, { verificationToken: token, password: PASSWORD });
+      const res = await post(SIGNUP, {
+        loginId: nextLoginId(),
+        verificationToken: token,
+        password: PASSWORD,
+      });
 
       expect(res.text).not.toContain(PASSWORD);
       expect(res.text).not.toContain(token);
@@ -570,12 +631,70 @@ describe('이메일 가입 · 로그인 HTTP 전체 흐름 (DB와 메일 발송�
       ['본문 없음', undefined],
       ['이메일 없음', { password: PASSWORD }],
       ['비밀번호 없음', { email: EMAIL }],
-      ['이메일 형식 오류', { email: 'nope', password: PASSWORD }],
+      ['이메일 형식 오류', { email: 'nope@', password: PASSWORD }],
+      ['아이디 형식 오류(숫자로 시작)', { id: '1note', password: PASSWORD }],
+      ['아이디 형식 오류(너무 짧음)', { id: 'abc', password: PASSWORD }],
     ])('%s이면 400 VALIDATION_FAILED이다', async (_reason, body) => {
       const res = await post(LOGIN, body);
 
       expect(res.status).toBe(400);
       expect(res.body.code).toBe(ERROR_CODES.VALIDATION);
+    });
+
+    it('가입 때 정한 아이디로 로그인하고, 가입 이메일로도 로그인할 수 있다', async () => {
+      await post(SEND, { email: 'idlogin@example.com' });
+      const token = (await post(VERIFY, { email: 'idlogin@example.com', code: lastCode() })).body
+        .data.verificationToken;
+      expect(
+        (
+          await post(SIGNUP, {
+            loginId: 'Note_Login',
+            verificationToken: token,
+            password: PASSWORD,
+          })
+        ).status,
+      ).toBe(204);
+
+      const byId = await post(LOGIN, { id: 'note_login', password: PASSWORD });
+      expect(byId.status).toBe(200);
+      expect(byId.body.data.user.loginId).toBe('note_login');
+      expect((await post(LOGIN, { id: 'idlogin@example.com', password: PASSWORD })).status).toBe(
+        200,
+      );
+    });
+
+    it('이미 쓰는 아이디로 가입하면 409 LOGIN_ID_TAKEN이고, 이메일 인증 증표는 쓰지 않는다', async () => {
+      await post(SEND, { email: 'first@example.com' });
+      const first = (await post(VERIFY, { email: 'first@example.com', code: lastCode() })).body.data
+        .verificationToken;
+      await post(SIGNUP, { loginId: 'same_id', verificationToken: first, password: PASSWORD });
+
+      await post(SEND, { email: 'second@example.com' });
+      const second = (await post(VERIFY, { email: 'second@example.com', code: lastCode() })).body
+        .data.verificationToken;
+      const taken = await post(SIGNUP, {
+        loginId: 'same_id',
+        verificationToken: second,
+        password: PASSWORD,
+      });
+      expect(taken.status).toBe(409);
+      expect(taken.body.code).toBe(ERROR_CODES.LOGIN_ID_TAKEN);
+      // 같은 증표로 다른 아이디를 정하면 그대로 가입된다
+      expect(
+        (await post(SIGNUP, { loginId: 'other_id', verificationToken: second, password: PASSWORD }))
+          .status,
+      ).toBe(204);
+    });
+
+    it('아이디를 쓸 수 있는지 알려 준다', async () => {
+      await post(SEND, { email: 'avail@example.com' });
+      const token = (await post(VERIFY, { email: 'avail@example.com', code: lastCode() })).body.data
+        .verificationToken;
+      await post(SIGNUP, { loginId: 'used_id', verificationToken: token, password: PASSWORD });
+      const check = (loginId: string) => post('/api/v1/auth/email/login-id-available', { loginId });
+      expect((await check('USED_ID')).body).toEqual({ data: { available: false } });
+      expect((await check('fresh_id')).body).toEqual({ data: { available: true } });
+      expect((await check('1bad')).status).toBe(400);
     });
 
     it('형식 오류 요청은 시도 횟수를 쓰지 않는다 (잘못된 요청으로 남의 계정을 잠그지 못한다)', async () => {
