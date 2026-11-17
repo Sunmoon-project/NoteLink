@@ -7,7 +7,7 @@
     "base": {
       "node": "24.16.0",
       "env": {
-        "EXPO_PUBLIC_SOCIAL_LOGIN": "false"
+        "EXPO_PUBLIC_SOCIAL_LOGIN": "true"
       }
     },
     "preview-local": {
