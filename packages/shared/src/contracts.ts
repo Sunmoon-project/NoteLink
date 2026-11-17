@@ -111,7 +111,7 @@ export const PATHS = {
   studyItems: '/study/items',
   studySessions: '/study-sessions',
   studySession: (id: string) => `/study-sessions/${seg(id)}`,
-  studySessionAction: (id: string, action: 'pause' | 'resume' | 'end') =>
+  studySessionAction: (id: string, action: 'pause' | 'resume' | 'heartbeat' | 'end') =>
     `/study-sessions/${seg(id)}/${action}`,
   studyMonth: '/study/month',
   subjects: '/subjects',
