@@ -187,6 +187,8 @@ export function ConvertScreen() {
         avatarItemId: draft.avatar,
       });
       if (canceled.current) {
+        // 등록 중에 취소했다: 고른 원본 화면에서 다시 올리면 취소한 작업을 다시 받지 않게 새 요청으로 보낸다
+        useDraft.getState().set({});
         await api.ai.cancel(r.job._id);
         return;
       }

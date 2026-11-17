@@ -992,6 +992,20 @@ describe('변환 화면: 다 올린 뒤에 변환으로 넘어가고, 취소하�
     expect(mockApi.ai.cancel).not.toHaveBeenCalled();
     expect(useDraft.getState().files).toEqual([localPhoto]);
   });
+  it('등록 요청 중에 취소하면 작업을 멈추고, 다시 올릴 때는 새 요청 번호를 쓴다', async () => {
+    const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
+    mockApi.content.createMaterial.mockReturnValueOnce(created.promise);
+    await renderScreen(<ConvertScreen />, client());
+    await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1));
+    const first = useDraft.getState().getCreationId();
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    expect(router.replace).toHaveBeenCalledWith('/capture/picked');
+    await act(async () => created.resolve({ material: { _id: 'm' }, job: { _id: 'late-job' } }));
+    expect(mockApi.ai.cancel).toHaveBeenCalledWith('late-job');
+    expect(useDraft.getState().getCreationId()).not.toBe(first);
+    expect(useDraft.getState().files).toEqual([localPhoto]);
+  });
   it('등록 뒤에 취소하면 작업만 멈추고 원본이 남은 폴더로 이동한다', async () => {
     await renderScreen(<ConvertScreen />, client());
     expect(await screen.findByText('필기를 학습 자료로 변환하고 있어요')).toBeTruthy();
