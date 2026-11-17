@@ -237,6 +237,20 @@ export class TodayReviewService {
       .find({ ownerId: owner, status: 'ready', materialId: { $ne: null } })
       .sort({ createdAt: 1 })
       .lean<QuizSetRow[]>();
+    // 오답 복습이 아직 도는 세트는 그 결과가 곧 복습 상태를 바꾼다. 지금 상태로 그 문제를 고르면(사본으로 넘김)
+    // 더 늦게 만든 이 세트의 상태가 우선이라 방금 푼 결과(정답 횟수 · 다음 날짜)가 사라진다. 그래서 지운 세트처럼
+    // 넘겨 문제는 고르지 않고 풀이만 센다(처리기 today.py: deletedAt이 있으면 문제를 내지 않음). 다음 날 고른다
+    const reviewing = new Set(
+      (
+        await this.sets
+          .find(
+            { ownerId: owner, status: 'generating', deletedAt: null, sourceSetId: { $ne: null } },
+            { sourceSetId: 1 },
+          )
+          .lean<{ sourceSetId: Types.ObjectId }[]>()
+      ).map((r) => r.sourceSetId.toString()),
+    );
+    const now = new Date().toISOString();
     const attempts = await this.attempts
       .find({
         userId: owner,
@@ -266,7 +280,11 @@ export class TodayReviewService {
       sets: sets.map((s) => ({
         id: s._id.toString(),
         materialId: s.materialId!.toString(),
-        ...(s.deletedAt ? { deletedAt: s.deletedAt.toISOString() } : {}),
+        ...(s.deletedAt
+          ? { deletedAt: s.deletedAt.toISOString() }
+          : reviewing.has(s._id.toString())
+            ? { deletedAt: now }
+            : {}),
         questions: (s.questions ?? []).map(toWorkerQuestion),
       })),
       attempts: attempts.map((a) => ({

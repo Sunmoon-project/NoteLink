@@ -752,6 +752,21 @@ describe('오늘의 복습(TodayReviewService)', () => {
     expect(jobs.rows[0]!['status']).toBe('canceled'); // 늦은 요청의 작업
   });
 
+  it('오답 복습이 아직 도는 세트는 문제를 고르지 않게(지운 세트처럼) 넘겨, 방금 푼 복습 상태를 덮지 않는다', async () => {
+    const { today, similar, seed, jobs } = setup();
+    const s = await seed();
+    const other = await seed();
+    // s의 풀이로 오답 복습이 아직 도는 중(결과가 곧 s 세트 문제의 복습 상태를 바꿈)
+    await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    await today.start(ME.toHexString(), NOW);
+    const input = jobs.rows.find((j) => j['type'] === TODAY_TYPE)!['input'] as TodayInput;
+    const byId = (id: Types.ObjectId) => input.sets.find((x) => x.id === id.toHexString())!;
+    expect(byId(s.set).deletedAt).toBeTruthy();
+    expect(byId(other.set).deletedAt).toBeUndefined();
+    // 풀이는 그대로 넘겨 약한 개념에는 센다
+    expect(input.attempts.some((a) => a.quizSetId === s.set.toHexString())).toBe(true);
+  });
+
   it('복습할 문제가 없으면 조회는 null, 처리기가 실패했으면 failed(앱이 다시 만들게)', async () => {
     const { today, seed, jobs } = setup();
     await seed();
