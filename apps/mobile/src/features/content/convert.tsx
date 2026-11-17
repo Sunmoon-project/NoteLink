@@ -36,6 +36,7 @@ import {
 import { C, ICON } from '@/theme';
 import { Player } from './player';
 import { QuizFromNote } from './quiz-from-note';
+import { useSmoothProgress } from '@/hooks/smooth-progress';
 
 // p.66 AI 변환 중 · 정리 완료 / p.98 업로드 · 변환 중 연결 끊김 / p.99 LLM 오류
 
@@ -351,10 +352,7 @@ export function ConvertScreen() {
           </Pressable>
         </View>
         <View className="mt-10 items-center">
-          <View className="h-36 w-36 items-center justify-center rounded-full border-4 border-mint">
-            <Pie value={pct} size={112} />
-          </View>
-          <Text className="mt-2 text-title2 font-bold text-brand">{pct}%</Text>
+          <SmoothProgress value={pct} />
           <Text className="mt-3 text-body font-bold text-ink">{TITLE[draft.kind]}</Text>
           <Text className="text-footnote text-sub">
             {phase === 'upload'
@@ -677,4 +675,16 @@ function uploadFailReason(e: unknown) {
   if (status === 503) return '서버의 파일 저장소에 연결하지 못했어요.';
   if (status === 413) return '파일이 너무 커서 올리지 못했어요.';
   return '서버에 올리지 못했어요.';
+}
+
+function SmoothProgress({ value }: { value: number }) {
+  const shown = useSmoothProgress(value);
+  return (
+    <>
+      <View className="h-36 w-36 items-center justify-center rounded-full border-4 border-mint">
+        <Pie value={shown} size={112} />
+      </View>
+      <Text className="mt-2 text-title2 font-bold text-brand">{Math.floor(shown)}%</Text>
+    </>
+  );
 }

@@ -191,8 +191,9 @@ export function QuizHomeScreen() {
               <Text className="text-caption text-sub">
                 노트를 업로드하면 자동으로 퀴즈가 생성돼요
               </Text>
-              <View ref={makeTarget} collapsable={false}>
-                <Btn small className="mt-5 w-56" onPress={() => router.push('/(tabs)/quiz/notes')}>
+              {/* 여백은 바깥에: 처음 안내가 재는 영역(makeTarget)이 버튼과 꼭 맞게 */}
+              <View ref={makeTarget} collapsable={false} className="mt-5">
+                <Btn small className="w-56" onPress={() => router.push('/(tabs)/quiz/notes')}>
                   노트 업로드하고 퀴즈 만들기
                 </Btn>
               </View>
