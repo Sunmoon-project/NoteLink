@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { Logger } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
@@ -646,15 +647,16 @@ describe('세트 저장 결과가 불명확할 때 작업 거두기(create)', ()
     const cancel = vi
       .spyOn(AiJobsService.prototype, 'cancel')
       .mockRejectedValueOnce(new Error('취소 실패'));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     try {
       await expect(t.similar.create(ME.toHexString(), s.set)).rejects.toBe(saveError);
-      expect(cancel).toHaveBeenCalledExactlyOnceWith(
-        ME.toHexString(),
-        String(t.jobs.rows.at(-1)!['_id']),
-      );
+      const jobId = String(t.jobs.rows.at(-1)!['_id']);
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(ME.toHexString(), jobId);
+      expect(warn).toHaveBeenCalledExactlyOnceWith(`유사 퀴즈 작업 취소 실패 (작업 ID: ${jobId})`);
       expect(t.sets.rows.some((r) => String(r['sourceSetId']) === s.set)).toBe(false);
     } finally {
       cancel.mockRestore();
+      warn.mockRestore();
     }
   });
 

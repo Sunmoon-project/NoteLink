@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -51,6 +52,8 @@ const conflict = (message: string) => new ConflictException({ code: VALIDATION_F
  */
 @Injectable()
 export class SimilarQuizService {
+  private readonly logger = new Logger(SimilarQuizService.name);
+
   constructor(
     @InjectModel(QuizSet.name) private readonly sets: Model<QuizSetDocument>,
     @InjectModel(QuizAttempt.name) private readonly attempts: Model<QuizAttemptDocument>,
@@ -146,7 +149,11 @@ export class SimilarQuizService {
 
   /** 세트 저장 오류를 먼저 알리려고, 작업을 거두다 난 오류는 삼킨다(남은 작업은 세트가 없어 결과를 옮기지 않는다) */
   private async cancelQuietly(userId: string, jobId: string): Promise<void> {
-    await this.jobs.cancel(userId, jobId).catch(() => undefined);
+    try {
+      await this.jobs.cancel(userId, jobId);
+    } catch {
+      this.logger.warn(`유사 퀴즈 작업 취소 실패 (작업 ID: ${jobId})`);
+    }
   }
 
   /**
