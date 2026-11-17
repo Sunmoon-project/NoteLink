@@ -79,6 +79,36 @@ describe('POST /api/v1/shop/items/:itemId/wish', () => {
         expect(res.body).toEqual({ data: { isWished: false } });
     });
 
+    it('조건부 업데이트가 반영되지 않으면(matchedCount 0) 다시 읽은 실제 찜 상태를 응답한다', async () => {
+        // 읽은 값은 true(뒤집으면 false). 그 사이 다른 요청들이 두 번 뒤집어 DB는 여전히 true라 조건이 안 맞는다
+        row!.isWished = true;
+        userItemModel.updateOne.mockImplementationOnce(() =>
+            Promise.resolve({ matchedCount: 0, modifiedCount: 0 }),
+        );
+        userItemModel.findOne.mockReturnValueOnce({ lean: vi.fn(() => Promise.resolve(row)) });
+
+        const res = await request(app.getHttpServer())
+            .post(`/api/v1/shop/items/${purpleId}/wish`)
+            .set(AUTH);
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ data: { isWished: true } });
+        expect(row?.isWished).toBe(true);
+    });
+
+    it('조건부 업데이트가 반영되면 뒤집은 값을 응답하고 다시 읽지 않는다', async () => {
+        row!.isWished = true;
+        userItemModel.findOne.mockClear();
+
+        const res = await request(app.getHttpServer())
+            .post(`/api/v1/shop/items/${purpleId}/wish`)
+            .set(AUTH);
+
+        expect(res.body).toEqual({ data: { isWished: false } });
+        expect(row?.isWished).toBe(false);
+        expect(userItemModel.findOne).not.toHaveBeenCalled();
+    });
+
     it('없는 아이템이면 404와 { code, message }', async () => {
         const otherId = new Types.ObjectId().toString();
         const res = await request(app.getHttpServer())
