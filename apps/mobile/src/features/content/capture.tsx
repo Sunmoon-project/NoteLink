@@ -23,6 +23,7 @@ import {
 import { useKeepAwake } from 'expo-keep-awake';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
+import { IMAGE_CHECK_MAX_FILES, MATERIAL_MAX_FILES } from '@notelink/shared';
 import {
   Camera,
   Check,
@@ -36,6 +37,7 @@ import {
   Zap,
 } from 'lucide-react-native';
 import { api, type ImageVerdict } from '@/lib/api';
+import { ApiError } from '@/lib/api/http';
 import { editPhoto } from '@/lib/image-edit';
 import { toast } from '@/stores/toast';
 import { checkFile, uploadToBlob, type LocalFile } from '@/lib/upload';
@@ -120,6 +122,7 @@ export function CameraScreen() {
     const r = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsMultipleSelection: true,
+      selectionLimit: MATERIAL_MAX_FILES,
       quality: 0.85,
     });
     if (r.canceled) return;
@@ -330,6 +333,41 @@ export function PhotoCheckScreen() {
   );
 }
 
+const IMAGE_VERDICTS: readonly ImageVerdict[] = ['ok', 'blurry', 'not_handwriting', 'not_allowed'];
+/** 사진을 동시에 올리는 수. 최대 50장(노트 등록 상한)을 한꺼번에 올리면 모바일 회선에서 멈추기 쉽다 */
+const UPLOAD_CONCURRENCY = 4;
+
+const STALE_CHECK = '사진 목록이 바뀌어 검사를 멈췄어요';
+
+/** 순서를 지키며 size개씩 동시에 처리한다. 취소되면(signal) 다음 묶음을 시작하지 않는다 */
+async function mapInBatches<T, R>(
+  items: T[],
+  size: number,
+  signal: AbortSignal,
+  fn: (item: T) => Promise<R>,
+) {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += size) {
+    if (signal.aborted) throw new Error(STALE_CHECK);
+    out.push(...(await Promise.all(items.slice(i, i + size).map(fn))));
+  }
+  return out;
+}
+
+/**
+ * 사진 검사에 보낼 이름. 서버는 앞뒤 공백을 지우고(trim) 255자까지 받아 그 이름으로 결과를 돌려주므로,
+ * 글자(코드 포인트) 단위로 잘라 이모지가 반쪽 나지 않게 하고 공백도 미리 지운다.
+ * 앞의 위치 번호가 사진마다 달라서 잘라도 겹치지 않는다
+ */
+export function imageCheckName(index: number, name: string): string {
+  let out = `${index}-`;
+  for (const ch of name) {
+    if (out.length + ch.length > 255) break;
+    out += ch;
+  }
+  return out.trim();
+}
+
 /** p.62 #13 선택 사진 확인 + p.102 이미지 검사 (기기 → 서버 POST /images/check) */
 export function PickedScreen() {
   const { files, fileVersion, set } = useDraft();
@@ -337,48 +375,79 @@ export function PickedScreen() {
   // 1) 형식 · 용량은 기기에서 먼저
   const local = Object.fromEntries(files.map((f) => [f.uri, checkFile('image', f)]));
   const bad = files.filter((f) => !local[f.uri]?.ok);
-  // 2) 통과한 사진만 서버가 다시 확인(저장 위치 · 형식 · 크기). 필기 여부 · 흐림(not_handwriting · blurry)은
-  //    AI 판정이 생기면 오는 값이라 지금은 ok · not_allowed 만 온다(#436)
+  // 2) 통과한 사진만 서버가 다시 확인한다(POST /images/check). 서버는 저장 위치 · 형식 · 크기를 본 뒤
+  //    AI 글자 인식으로 필기 여부 · 흐림(not_handwriting · blurry)까지 판정한다(#448).
+  //    요청 한 번에 IMAGE_CHECK_MAX_FILES장까지 받으므로 나눠서 차례로 보낸다. 노트 등록 상한
+  //    (MATERIAL_MAX_FILES)을 넘으면 어차피 등록하지 못하니 검사하지 않고 줄이라고 안내한다.
+  const checkable = files.filter((f) => local[f.uri]?.ok);
+  const tooMany = checkable.length > MATERIAL_MAX_FILES;
+  // 검사를 마친 사진의 판정(올린 주소 기준). 뒤 묶음이 실패해 다시 검사해도 앞 묶음은 다시 보내지 않는다
+  // (사진마다 AI 글자 인식 비용이 든다). 주소가 바뀌면(새로 올림) 새로 검사한다
+  const verdictCache = useRef(new Map<string, ImageVerdict>());
   const check = useQuery({
     queryKey: ['image-check', fileVersion],
-    queryFn: async () => {
-      const checked = await Promise.all(
-        files
-          .filter((f) => local[f.uri]?.ok)
-          .map(async (f) => {
+    queryFn: async ({ signal }) => {
+      const checked: { name: string; verdict: ImageVerdict; localUri: string }[] = [];
+      // 묶음마다 올리고 → 검사한다. 묶음은 차례로 보낸다(AI 서버가 요청마다 글자 인식을 몇 개씩 동시에 하므로
+      // 한꺼번에 보내면 그 한도를 넘는다). 사진 목록이 바뀌면(새 검사 시작) 남은 묶음은 보내지 않는다
+      for (let i = 0; i < checkable.length; i += IMAGE_CHECK_MAX_FILES) {
+        const group = await mapInBatches(
+          checkable.slice(i, i + IMAGE_CHECK_MAX_FILES),
+          UPLOAD_CONCURRENCY,
+          signal,
+          async (f) => {
             const cached = useDraft.getState().uploads.find((upload) => upload.file === f);
-            const uri = cached?.url ?? (await uploadToBlob('image', f));
+            // 검사가 취소되면(사진 목록이 바뀜 · 화면을 떠남) 올리던 사진도 멈춘다
+            const uri = cached?.url ?? (await uploadToBlob('image', f, undefined, signal));
             useDraft.getState().rememberUpload(f, uri);
             return {
+              file: f,
               // 원본 이름과도 충돌하지 않도록 모든 파일에 서로 다른 위치를 붙인다.
-              name: `${files.indexOf(f)}-${f.name}`,
+              name: imageCheckName(files.indexOf(f), f.name),
               localUri: f.uri,
               sizeBytes: f.size ?? 0,
               uri,
             };
-          }),
-      );
-      const result = await api.content.checkImages(
-        checked.map(({ localUri: _localUri, ...request }) => request),
-      );
-      if (
-        checked.some(
-          (f) =>
-            !result.some(
-              (v) =>
-                v.name === f.name &&
-                ['ok', 'blurry', 'not_handwriting', 'not_allowed'].includes(v.verdict),
-            ),
-        )
-      )
-        throw new Error('검사 결과가 누락됐어요');
-      return checked.map((f) => ({
-        ...result.find((v) => v.name === f.name)!,
-        localUri: f.localUri,
-      }));
+          },
+        );
+        const pending = group.filter((f) => !verdictCache.current.has(f.uri));
+        if (pending.length) {
+          if (signal.aborted) throw new Error(STALE_CHECK);
+          let result: Awaited<ReturnType<typeof api.content.checkImages>>;
+          try {
+            result = await api.content.checkImages(
+              pending.map(({ name, sizeBytes, uri }) => ({ name, sizeBytes, uri })),
+            );
+          } catch (error) {
+            // 400: 올려 둔 파일을 서버가 받지 않았다(지워짐 · 저장된 형식이 다름 등). 같은 주소로 다시
+            // 검사하면 계속 실패하므로 이 묶음의 주소만 지워 「다시 검사」가 새로 올리게 한다
+            if (error instanceof ApiError && error.status === 400) {
+              const failed = new Set(pending.map((f) => f.file));
+              useDraft.setState((state) => ({
+                uploads: state.uploads.filter((upload) => !failed.has(upload.file)),
+              }));
+            }
+            throw error;
+          }
+          for (const f of pending) {
+            const verdict = result.find((v) => v.name === f.name)?.verdict;
+            if (!verdict || !IMAGE_VERDICTS.includes(verdict))
+              throw new Error('검사 결과가 누락됐어요');
+            verdictCache.current.set(f.uri, verdict);
+          }
+        }
+        for (const f of group)
+          checked.push({
+            name: f.name,
+            verdict: verdictCache.current.get(f.uri)!,
+            localUri: f.localUri,
+          });
+      }
+      return checked;
     },
     retry: false,
-    enabled: files.length > 0,
+    // 서버는 빈 목록을 받지 않는다(400). 형식 · 용량에서 모두 걸렸으면 부르지 않는다
+    enabled: checkable.length > 0 && !tooMany,
   });
   const verdicts: Record<string, ImageVerdict> = Object.fromEntries(
     (check.data ?? []).map((v) => [v.localUri, v.verdict]),
@@ -396,9 +465,13 @@ export function PickedScreen() {
   const blurry = files.find((f) => v(f) === 'blurry');
   const remove = (uri: string) => set({ files: files.filter((f) => f.uri !== uri) });
   const selectPhotos = async (append: boolean) => {
+    // 기기에서 이미 걸러진 사진은 올리지 않으므로 세지 않는다
+    const room = append ? MATERIAL_MAX_FILES - checkable.length : MATERIAL_MAX_FILES;
+    if (room <= 0) return toast(`사진은 한 노트에 ${MATERIAL_MAX_FILES}장까지 올릴 수 있어요`);
     const r = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsMultipleSelection: true,
+      selectionLimit: room,
       quality: 0.85,
     });
     if (!r.canceled)
@@ -417,14 +490,14 @@ export function PickedScreen() {
   const reselect = () => selectPhotos(false);
   const addPhotos = () => selectPhotos(true);
   const next = () => {
-    if (!check.isSuccess || check.isFetching || prohibited.length || notHand.length) return;
+    if (tooMany || !check.isSuccess || check.isFetching || prohibited.length || notHand.length)
+      return;
     if (blurry && dlg !== 'blurry') return setDlg('blurry');
     router.replace('/convert');
   };
   const tag = (f: LocalFile) => {
     const r = v(f);
-    if (!r) return <Badge tone="gray">확인 중…</Badge>;
-    // 서버는 아직 저장 위치 · 형식 · 크기만 보고 필기 여부 · 흐림은 판정하지 않는다(POST /images/check, #436)
+    if (!r) return <Badge tone="gray">{tooMany ? '검사 전' : '확인 중…'}</Badge>;
     return r === 'ok' ? (
       <Badge>올릴 수 있어요</Badge>
     ) : r === 'not_allowed' ? (
@@ -451,7 +524,11 @@ export function PickedScreen() {
           ) : (
             <Btn
               disabled={
-                !files.length || !!prohibited.length || check.isFetching || !check.isSuccess
+                !files.length ||
+                tooMany ||
+                !!prohibited.length ||
+                check.isFetching ||
+                !check.isSuccess
               }
               onPress={next}
             >
@@ -469,6 +546,16 @@ export function PickedScreen() {
           </View>
         )}
         <Header title={`선택한 사진 (${files.length}장)`} />
+        {tooMany && (
+          <View className="mb-3 rounded-2xl bg-sun/20 px-4 py-3">
+            <Text className="text-footnote font-semibold text-ink">
+              {`사진은 한 노트에 ${MATERIAL_MAX_FILES}장까지 올릴 수 있어요`}
+            </Text>
+            <Text className="text-caption text-sub">
+              {`${checkable.length - MATERIAL_MAX_FILES}장을 빼면 검사를 시작해요`}
+            </Text>
+          </View>
+        )}
         {check.isError && (
           <View className="mb-3 items-center gap-3 rounded-card bg-white p-4">
             <Text className="text-center text-footnote leading-5 text-sub">

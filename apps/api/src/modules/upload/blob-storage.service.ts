@@ -21,7 +21,7 @@ import type { StorageConfig } from '../../config/storage.config.js';
 export const STORAGE_CONFIG = Symbol('STORAGE_CONFIG');
 /**
  * 앱이 올린 노트 파일의 경로: uploads/{종류}/{사용자}/{무작위}.{확장자}.
- * 노트 등록(MaterialsService) · 필기 사진 검사(ImageCheckService)가 이 경로의 주소를 확인하고 그대로 저장하므로 지우지 않는다
+ * 노트 등록(MaterialsService) · 필기 사진 검사(ImagesService)가 이 경로의 주소를 확인하고 그대로 저장하므로 지우지 않는다
  */
 export const UPLOAD_PREFIX = 'uploads';
 /**
