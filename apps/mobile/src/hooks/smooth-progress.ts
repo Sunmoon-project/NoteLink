@@ -12,8 +12,18 @@ export function useSmoothProgress(target: number): number {
   const reduce = useReducedMotion();
   const [shown, setShown] = useState(target);
   const cur = useRef(target);
+  // 줄었는지는 표시 값이 아니라 앞의 서버 값과 비교한다. 표시 값은 기다리는 동안 목표보다 조금 앞서 있어서,
+  // 표시 값과 비교하면 서버 값이 그대로여도 목표로 되돌아가며 앞뒤로 흔들린다(Codex 3차 리뷰)
+  const prevTarget = useRef(target);
   useEffect(() => {
+    const dropped = target < prevTarget.current;
+    prevTarget.current = target;
     if (reduce) return;
+    if (dropped) {
+      // 다시 시도 등으로 서버 값이 줄었다 — 바로 맞춘다
+      cur.current = target;
+      setShown(target);
+    }
     let raf = 0;
     let last = Date.now();
     const tick = () => {
@@ -22,9 +32,10 @@ export function useSmoothProgress(target: number): number {
       last = now;
       const c = cur.current;
       let next: number;
-      if (target < c - 0.5) next = target;
-      else if (target - c > 0.3) next = c + (target - c) * Math.min(1, dt * 5);
-      else if (target > 0 && target < 100) next = Math.min(c + dt * 0.5, target + CREEP_MAX, 99);
+      if (target - c > 0.3) next = c + (target - c) * Math.min(1, dt * 5);
+      else if (target > 0 && target < 100)
+        // 앞서 차오른 값은 깎지 않는다(이미 상한이면 그대로)
+        next = Math.max(c, Math.min(c + dt * 0.5, target + CREEP_MAX, 99));
       else next = target;
       if (next !== c) {
         cur.current = next;
