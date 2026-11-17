@@ -153,6 +153,10 @@ export class TodayReviewService {
     }
 
     const newId = new Types.ObjectId();
+    // 이 세트의 시각은 입력(복습 상태)을 모으기 **시작한** 때로 둔다. 결과를 저장할 때 문제마다 이 시각(srsAt)을 남기고
+    // 더 새 세트가 쓴 상태는 덮지 않으므로(QuizSetsService.saveSrs), 입력을 모은 뒤에 시작한 오답 복습은 시작 시각이
+    // 더 늦어 그 결과가 이긴다. 그보다 먼저 시작해 아직 도는 복습은 input()이 고르지 않는다(Codex #482 4차 리뷰)
+    const snapshotAt = new Date();
     const job = await this.jobs.enqueue({
       type: TODAY_TYPE,
       userId,
@@ -174,6 +178,8 @@ export class TodayReviewService {
         questions: [],
         jobId: new Types.ObjectId(job._id),
         deletedAt: null,
+        // 스키마의 timestamps가 채우는 값이라 클래스에는 없다. 지정하면 mongoose가 그대로 둔다
+        ...{ createdAt: snapshotAt },
       });
       return toAppSet(created.toObject<QuizSetRow>(), job.progress);
     } catch (e) {

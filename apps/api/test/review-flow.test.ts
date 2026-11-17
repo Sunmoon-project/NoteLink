@@ -791,6 +791,35 @@ describe('오늘의 복습(TodayReviewService)', () => {
     expect(input.sets.find((x) => x.id === s.set.toHexString())!.deletedAt).toBeTruthy();
   });
 
+  // Codex #482 4차 리뷰: 첫 확인 뒤에 시작해 두 번째 확인 전에 끝난 오답 복습은 어느 확인에도 걸리지 않는다.
+  // 세트 시각(결과 저장 때 문제마다 남기는 srsAt)을 입력을 모으기 시작한 때로 두면, 그 복습은 시작 시각이 더 늦어
+  // 결과 저장 규칙(더 새 세트의 상태는 덮지 않음)으로 이긴다
+  it('오늘의 복습 세트 시각은 입력을 모으기 시작한 때다(그 뒤에 시작한 오답 복습의 결과를 덮지 않게)', async () => {
+    const { today, seed, sets } = setup();
+    await seed();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const startedAt = new Date('2026-11-16T05:00:00.000Z');
+      vi.setSystemTime(startedAt);
+      const realFind = sets.model.find.bind(sets.model);
+      const find = vi.spyOn(sets.model, 'find').mockImplementation(((
+        filter: Record<string, unknown>,
+        ...rest: unknown[]
+      ) => {
+        // 세트를 읽는 사이 시간이 흐른다(이때 오답 복습이 시작해 끝날 수 있다)
+        if (filter['status'] === 'ready' && filter['materialId'])
+          vi.setSystemTime(new Date(startedAt.getTime() + 5_000));
+        return (realFind as (...a: unknown[]) => unknown)(filter, ...rest);
+      }) as never);
+      const made = await today.start(ME.toHexString(), NOW);
+      find.mockRestore();
+      const row = sets.rows.find((r) => String(r._id) === made._id)!;
+      expect((row['createdAt'] as Date).getTime()).toBe(startedAt.getTime());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('복습할 문제가 없으면 조회는 null, 처리기가 실패했으면 failed(앱이 다시 만들게)', async () => {
     const { today, seed, jobs } = setup();
     await seed();
