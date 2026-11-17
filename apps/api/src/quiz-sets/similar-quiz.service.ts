@@ -108,11 +108,13 @@ export class SimilarQuizService {
       .findOne({ ownerId: owner, sourceSetId: source._id, status: 'generating', deletedAt: null })
       .lean<QuizSetRow>();
     if (pending) {
-      const synced = await this.quizSets.findMine(userId, pending._id.toString());
       const mine = String(pending.sourceAttemptId) === String(attempt._id);
+      // 앞 풀이의 세트가 만드는 중: 결과를 맞추기(findMine) 전에 「기다림」부터 적는다. 맞추는 사이 이 요청이나
+      // 다른 요청이 그 세트를 끝내도 그때 도는 이어 받기(catchUp)가 이 풀이를 고른다. 이미 끝나 있었으면 아래에서
+      // 바로 넣거나(작업을 넣으면 지움) 이어 받은 세트(madeFor)로 넘어간다
       if (mine) await this.markPending(attempt._id, false);
-      // 앞 풀이의 세트가 아직 만드는 중: 이번 풀이는 기다린다(그 세트가 끝날 때 이어 받음)
-      else if (auto && synced.status === 'generating') await this.markPending(attempt._id, true);
+      else if (auto) await this.markPending(attempt._id, true);
+      const synced = await this.quizSets.findMine(userId, pending._id.toString());
       if (synced.status === 'generating' || mine) return synced;
     }
     const already = await this.madeFor(userId, owner, source, attempt);

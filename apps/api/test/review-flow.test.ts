@@ -224,6 +224,37 @@ describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfter
     expect(jobs.rows).toHaveLength(4);
   });
 
+  it('결과를 맞추는 사이 다른 요청이 앞 세트를 끝내도 기다리던 풀이를 이어 받는다', async () => {
+    const { similar, seed, jobs, attempts, quizSets } = setup();
+    const s = await seed();
+    const first = await similar.startAfterFinish(ME.toHexString(), s.attempt.toHexString());
+    const later = (await attempts.model.create({
+      quizSetId: s.set,
+      userId: ME,
+      finishedAt: NOW,
+      answers: s.qs.map((q) => ({ questionId: q._id, answer: '가', correct: true })),
+    } as never)) as unknown as { _id: Types.ObjectId };
+    Object.assign(jobs.rows[0]!, {
+      status: 'succeeded',
+      progress: 100,
+      result: { reviewQuestions: [], srsUpdates: [] },
+    });
+    // 이 요청이 읽기 전에 다른 요청(followUp)이 앞 세트를 끝내고, 이 요청은 끝나기 전 모습(generating)을 본다
+    const real = quizSets.findMine.bind(quizSets);
+    vi.spyOn(quizSets, 'findMine').mockImplementationOnce(async (user, id) => {
+      await real(user, id); // 다른 요청이 끝냄(이어 받기가 돈다)
+      return { ...first!, status: 'generating' };
+    });
+    await similar.startAfterFinish(ME.toHexString(), later._id.toHexString());
+    expect(jobs.rows).toHaveLength(2);
+    expect((jobs.rows[1]!['input'] as { attemptId: string }).attemptId).toBe(
+      later._id.toHexString(),
+    );
+    expect((await attempts.model.findOne({ _id: later._id }).lean())?.['reviewPending']).toBe(
+      false,
+    );
+  });
+
   it('같은 노트의 다른 세트를 기다리는 사이 끝낸 풀이도 이어 받는다', async () => {
     const { similar, seed, jobs, attempts, quizSets, sets } = setup();
     const s = await seed();
