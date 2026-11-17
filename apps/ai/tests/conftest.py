@@ -17,5 +17,6 @@ def claude_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     for field, model in LLM_DEFAULTS["claude"].items():
         monkeypatch.setattr(settings, field, model)
     # 문단 나누기도 시험이 바꿔 끼운 handlers._llm을 씀(따로 보는 시험은 그 안에서 바꿈)
-    monkeypatch.setattr(handlers, "make_split_llm", lambda spend: None)
+    monkeypatch.setattr(handlers, "make_split_llm", lambda *args: None)
     handlers._split_client.cache_clear()
+    handlers._clients.cache_clear()  # 앞 시험의 설정으로 만든 클라이언트를 남기지 않음

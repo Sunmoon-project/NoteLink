@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 from app.clients.docint import Ocr, OcrUnavailableError, docint, download
 from app.clients.llm import (
+    Clients,
     JsonObject,
     Llm,
     LlmError,
@@ -64,18 +65,22 @@ def use_spend(read_total: Callable[[], float]) -> Spend:
     return _spend[0]
 
 
+# 제공자마다 클라이언트 하나: 아래 두 연결이 호출 간격 · 사용자 우선을 같이 씀
+_clients = _Once(Clients)
+
+
 @_Once
 def _llm() -> Paced:
     """프로세스에 하나만 둡니다. LLM 호출 간격(LLM_CALL_GAP_SEC)을 작업 사이에도 지키게.
 
     Claude 비용이 CLAUDE_BUDGET_USD에 닿으면 학교 LLM으로 넘기는 연결(#298)."""
-    return make_llm(_spend[0] if _spend else None)
+    return make_llm(_spend[0] if _spend else None, _clients())
 
 
 @_Once
 def _split_client() -> Paced | None:
-    """노트 문단 나누기 전용 연결(NOTE_SPLIT_PROVIDER). 따로 둘 필요가 없으면 None."""
-    return make_split_llm(_spend[0] if _spend else None)
+    """노트 문단 나누기 연결(NOTE_SPLIT_PROVIDER). _llm()과 같으면 None."""
+    return make_split_llm(_spend[0] if _spend else None, _clients())
 
 
 def _split_llm() -> Paced:

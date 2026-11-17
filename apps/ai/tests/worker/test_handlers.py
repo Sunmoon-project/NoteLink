@@ -222,12 +222,12 @@ def test_split_llm_is_made_once_or_shares_the_main_llm(monkeypatch: pytest.Monke
     main, own = FakeLlm(), FakeLlm()
     made: list[object] = []
     monkeypatch.setattr(handlers, "_llm", lambda: main)
-    monkeypatch.setattr(handlers, "make_split_llm", lambda spend: made.append(spend))
+    monkeypatch.setattr(handlers, "make_split_llm", lambda spend, clients: made.append(spend))
     assert handlers._split_llm() is main and handlers._split_llm() is main
     assert made == [None]  # 따로 둘 필요가 없다는 답도 한 번만 받음
 
     handlers._split_client.cache_clear()
-    monkeypatch.setattr(handlers, "make_split_llm", lambda spend: own)
+    monkeypatch.setattr(handlers, "make_split_llm", lambda spend, clients: own)
     assert handlers._split_llm() is own
 
 
