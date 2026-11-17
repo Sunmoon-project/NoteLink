@@ -93,7 +93,10 @@ export interface Api {
     get(): Promise<User>;
     update(
       patch: Partial<
-        Pick<User, 'nickname' | 'learnerType' | 'interestCategoryIds' | 'school' | 'grade'>
+        Pick<
+          User,
+          'nickname' | 'learnerType' | 'interestCategoryIds' | 'school' | 'grade' | 'toured'
+        >
       > & { settings?: Partial<User['settings']> },
     ): Promise<User>;
     setStatus(status: User['status']): Promise<void>;

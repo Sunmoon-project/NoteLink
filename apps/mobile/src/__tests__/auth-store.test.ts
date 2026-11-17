@@ -39,6 +39,25 @@ describe('auth mockStore', () => {
     expect(useAuth.getState().onboarded).toBe(true);
   });
 
+  // 맥(시뮬레이터)에서 설정을 마친 계정으로 아이폰에서 처음 로그인하자 이름 설정을 다시 했다
+  it('서버가 설정을 마친 계정이라고 하면 처음 쓰는 기기에서도 건너뛴다', async () => {
+    await useAuth.getState().signIn(tokens, { ...user('u1'), onboarded: true });
+    expect(useAuth.getState().onboarded).toBe(true);
+  });
+
+  it('서버가 설정 전이라고 하고 이 기기 기록도 없으면 설정을 한다', async () => {
+    await useAuth.getState().signIn(tokens, { ...user('u1'), onboarded: false });
+    expect(useAuth.getState().onboarded).toBe(false);
+  });
+
+  it('나중에 받은 내 정보가 설정을 마쳤다고 하면 건너뛴다(다른 계정 정보는 무시)', async () => {
+    await useAuth.getState().signIn(tokens, user('u1'));
+    useAuth.getState().setUser({ ...user('u2'), onboarded: true });
+    expect(useAuth.getState().onboarded).toBe(false);
+    useAuth.getState().setUser({ ...user('u1'), onboarded: true });
+    expect(useAuth.getState().onboarded).toBe(true);
+  });
+
   it('다른 계정으로 로그인하면 온보딩을 다시 한다', async () => {
     await useAuth.getState().signIn(tokens, user('u1'));
     await useAuth.getState().finishOnboarding();

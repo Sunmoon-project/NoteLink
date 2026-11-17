@@ -725,7 +725,13 @@ export function ProfileSetupScreen() {
   });
   const save = useMutation({
     mutationFn: () =>
-      api.me.update({ nickname: nick.trim(), learnerType: type!, interestCategoryIds: interests }),
+      api.me.update({
+        nickname: nick.trim(),
+        learnerType: type!,
+        interestCategoryIds: interests,
+        // 처음 설정을 막 마쳤으니 계정에 「안내 전」을 적는다(예전 계정은 이 값이 없어 본 것으로 친다)
+        toured: false,
+      }),
     onSuccess: async (u) => {
       qc.setQueryData(['me'], u);
       await useAuth.getState().finishOnboarding();
