@@ -146,7 +146,7 @@ export function RoomLibraryScreen() {
                 <Pressable
                   key={card._id}
                   accessibilityRole="button"
-                  accessibilityLabel="카드 뒤집기"
+                  accessibilityLabel={`${back ? '정답' : '문제'}: ${back ? card.back : card.front}. 눌러서 카드를 뒤집기`}
                   onPress={() =>
                     setFlipped((prev) =>
                       back ? prev.filter((id) => id !== card._id) : [...prev, card._id],

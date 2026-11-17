@@ -48,8 +48,15 @@ it('내 플래시카드를 폴더별로 불러와 뒤집고 폴더 없는 카드
   await renderScreen(<RoomLibraryScreen />);
   await fireEvent.press(await screen.findByText('화학'));
   expect(screen.getByText('원자란?')).toBeTruthy();
-  await fireEvent.press(screen.getByRole('button', { name: '카드 뒤집기' }));
+  await fireEvent.press(
+    screen.getByRole('button', { name: '문제: 원자란?. 눌러서 카드를 뒤집기' }),
+  );
   expect(screen.getByText('물질의 구성 단위')).toBeTruthy();
+  const back = screen.getByRole('button', {
+    name: '정답: 물질의 구성 단위. 눌러서 카드를 뒤집기',
+  });
+  await fireEvent.press(back);
+  expect(screen.getByRole('button', { name: '문제: 원자란?. 눌러서 카드를 뒤집기' })).toBeTruthy();
   await fireEvent.press(screen.getByText('폴더 목록'));
   await fireEvent.press(screen.getByText('폴더 없음'));
   expect(screen.getByText('분류 없는 카드')).toBeTruthy();
