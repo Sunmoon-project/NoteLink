@@ -25,7 +25,7 @@ const NoticeSchema = SchemaFactory.createForClass(AiJobNotice);
 
 // ai_jobs: NestJS가 작업을 넣고, FastAPI 처리기가 꺼내 처리한 뒤 결과를 같은 문서에 씁니다.
 // 상태·필드 이름은 공용 스키마(packages/shared AiJob)와 처리기(apps/ai jobs.py)를 따릅니다.
-@Schema({ collection: 'ai_jobs', timestamps: true })
+@Schema({ collection: 'ai_jobs', timestamps: true, minimize: false })
 export class AiJob {
   @Prop({
     required: true,

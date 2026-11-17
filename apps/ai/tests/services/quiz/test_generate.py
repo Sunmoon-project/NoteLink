@@ -726,11 +726,18 @@ def test_drafts_whose_two_answer_check_could_not_run_are_an_outage() -> None:
 # ---------- input ----------
 
 
+def test_missing_empty_history_notes_is_accepted() -> None:
+    inp = job()
+    del inp["notes"]
+    assert generate.parse(inp).notes == generate.parse(job()).notes
+
+
 @pytest.mark.parametrize(
     ("change", "where"),
     [
         (lambda i: i.update(day="2026/11/04"), "input.day"),
         (lambda i: i.update(size=0), "input.size"),
+        (lambda i: i.update(notes=None), "input.notes"),
         (lambda i: i.pop("material"), "input.material.pages"),
         (lambda i: i["material"].update(concepts="이질"), "input.material.concepts"),
         (lambda i: i["material"].update(chunks=[{"order": 1}]), "input.material.chunks[0].text"),
