@@ -317,6 +317,21 @@ export class BlobStorageService {
     );
   }
 
+  /**
+   * 앱이 올린 파일 하나를 지운다(노트 등록이 거절한 파일 정리). 설정한 컨테이너의 prefix 아래
+   * `<uuid>.<확장자>` 꼴이 아니면 저장소를 부르지 않는다. 이미 없으면 그대로 끝난다.
+   */
+  async deleteUpload(blobUrl: string, prefix: string): Promise<void> {
+    const store = this.requireStore();
+    const containerClient = store.client.getContainerClient(store.config.container);
+    const base = `${containerClient.url}/${prefix}`;
+    const name = blobUrl.startsWith(base) ? blobUrl.slice(base.length) : '';
+    if (!UPLOADED_FILE_NAME.test(name)) return;
+    const blob = containerClient.getBlockBlobClient(`${prefix}${name}`);
+    if (blob.url !== blobUrl) return;
+    await blob.deleteIfExists();
+  }
+
   /** 이 저장소 컨테이너 안의 Blob 주소 → 클라이언트 */
   private blobOf(url: string) {
     const { client, config } = this.requireStore();

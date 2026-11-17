@@ -407,3 +407,29 @@ describe('사진 검사 SAS (createImageCheckReadUrl)', () => {
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 });
+
+describe('올린 파일 지우기 (deleteUpload)', () => {
+  const prefix = `uploads/image/${owner}/`;
+  const url = `${base}/${prefix}${file}`;
+
+  it('prefix 아래 올린 파일만 지운다', async () => {
+    const { remove } = stubBlob();
+    await service().deleteUpload(url, prefix);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove.mock.contexts[0]).toMatchObject({ url });
+  });
+
+  it('남의 폴더 · 다른 종류 · 하위 경로 · 외부 주소 · 신고 사진 임시 경로는 저장소를 부르지 않는다', async () => {
+    const { remove } = stubBlob();
+    for (const other of [
+      `${base}/uploads/image/507f1f77bcf86cd799439012/${file}`,
+      `${base}/uploads/audio/${owner}/${file}`,
+      `${base}/${prefix}sub/${file}`,
+      `${base}/${prefix}../${owner}/${file}`,
+      `https://example.com/${config.container}/${prefix}${file}`,
+      incoming,
+    ])
+      await service().deleteUpload(other, prefix);
+    expect(remove).not.toHaveBeenCalled();
+  });
+});

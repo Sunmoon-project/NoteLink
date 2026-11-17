@@ -247,7 +247,7 @@ export class MaterialsService implements OnModuleInit {
       .findOne({ _id: new Types.ObjectId(body.folderId), ownerId: owner, deletedAt: null })
       .lean<{ _id: Types.ObjectId; subjectName?: string }>();
     if (!folder) throw notFound('폴더');
-    const files = await this.prepareFiles(userId, body.kind, body.blobUrls);
+    const files = await this.prepareFiles(userId, body.kind, body.blobUrls, true);
 
     let created: MaterialRow;
     try {
@@ -495,12 +495,14 @@ export class MaterialsService implements OnModuleInit {
   /**
    * 올린 파일을 검사하고 AI 입력에 넣을 읽기 주소를 만든다.
    * 개수 · 확장자 · PDF 단독 규칙을 먼저 보고(저장소를 부르기 전), 파일이 내 폴더 경로
-   * uploads/<업로드 종류>/<내 userId>/ 에 실제로 있는지 · 크기 한도(UPLOAD_RULES)를 본다
+   * uploads/<업로드 종류>/<내 userId>/ 에 실제로 있는지 · 크기 한도(UPLOAD_RULES)를 본다.
+   * discardOversized 면 한도를 넘은 파일을 지운다(새로 등록할 때만. 다시 시도는 등록된 노트의 원본이라 남긴다)
    */
   private async prepareFiles(
     userId: string,
     kind: string,
     blobUrls: string[],
+    discardOversized = false,
   ): Promise<UploadedFile[]> {
     if (!(kind in UPLOAD_KIND)) throw invalid('자료 종류를 확인해 주세요');
     const uploadKind = UPLOAD_KIND[kind as keyof typeof UPLOAD_KIND];
@@ -529,15 +531,34 @@ export class MaterialsService implements OnModuleInit {
         const { readUrl, sizeBytes } = await this.blobs.createReadAccess(blobUrl, AI_READ_SAS_MS, {
           prefix,
         });
-        if (sizeBytes === undefined || sizeBytes > rule.maxBytes)
+        if (sizeBytes === undefined || sizeBytes > rule.maxBytes) {
+          if (discardOversized && sizeBytes !== undefined)
+            await this.discardUpload(userId, blobUrl, prefix);
           throw new BadRequestException({
             code: ERROR_CODES.FILE_NOT_ALLOWED,
             message: '파일이 너무 커요',
           });
+        }
         return { blobUrl, readUrl, sizeBytes };
       }),
     );
     return files;
+  }
+
+  /**
+   * 등록이 거절한 파일을 저장소에서 지운다. 내 노트(지운 노트 포함)가 이미 쓰는 주소면 남긴다.
+   * 지우지 못해도 등록 거절(400)은 그대로 알린다
+   */
+  private async discardUpload(userId: string, blobUrl: string, prefix: string) {
+    try {
+      const used = await this.materials.exists({
+        ownerId: new Types.ObjectId(userId),
+        blobUrls: blobUrl,
+      });
+      if (!used) await this.blobs.deleteUpload(blobUrl, prefix);
+    } catch {
+      // 남은 파일은 어느 노트에도 연결되지 않는다
+    }
   }
 
   /** 내 노트 한 개. 정리 중이면 끝난 작업의 결과를 먼저 옮긴다. 남의 것 · 지운 것 · 없는 것 · 잘못된 id 는 404 */
