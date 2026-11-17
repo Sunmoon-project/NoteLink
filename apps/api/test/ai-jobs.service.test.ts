@@ -1,5 +1,5 @@
 import { AiJob } from '@notelink/shared';
-import { Types } from 'mongoose';
+import { model, Types } from 'mongoose';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -67,6 +67,12 @@ describe('AiJobsService.enqueue', () => {
 
   it('result의 기본값은 공용 계약처럼 null', () => {
     expect(AiJobSchema.path('result').options.default).toBeNull();
+  });
+
+  it('퀴즈 작업 입력의 빈 노트 이력을 저장할 때 보존한다', () => {
+    const JobModel = model('AiJobEmptyInputTest', AiJobSchema);
+    const row = new JobModel({ input: { notes: {} } }).toObject();
+    expect(row.input).toEqual({ notes: {} });
   });
 });
 

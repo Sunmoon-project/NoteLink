@@ -463,7 +463,8 @@ def parse(raw: JsonObject) -> GenerateInput:
                 (need(x, "questionId", str, wx), need(x, "correct", bool, wx), is_void(void))
             )
         attempts.append(Attempt(need(a, "quizSetId", str, w), at, answers))
-    notes = parse_notes(need(raw, "notes", dict, "input"))
+    # 이전에 MongoDB가 빈 객체를 생략해 저장한 작업도 처리한다. 잘못된 형식은 그대로 거절한다.
+    notes = parse_notes(need({"notes": raw.get("notes", {})}, "notes", dict, "input"))
     return GenerateInput(day, size, material, sets, attempts, notes, _type_stats(raw))
 
 
