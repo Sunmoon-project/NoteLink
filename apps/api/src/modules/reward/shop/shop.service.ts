@@ -171,7 +171,9 @@ export class ShopService {
             }
 
             // 포인트 차감 + 장부 기록 (모자라면 여기서 400)
-            const balance = await this.points.spend(userId, current.price, 'purchase', `${current.name} 구매`, session);
+            const balance = await this.points.spend(userId, current.price, 'purchase', `${current.name} 구매`, session, {
+                itemId: current._id,
+            });
 
             // 보유 처리: 찜 행이 있으면 갱신하고, 없으면 새로 만든다
             await this.userItemModel.updateOne(

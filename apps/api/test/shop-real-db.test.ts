@@ -106,6 +106,7 @@ describe.skipIf(!uri)('진짜 DB 구매·장착 확인', () => {
         const ledger = await col('point_ledgers').find({ userId }).toArray();
         expect(ledger).toHaveLength(1);
         expect(ledger[0]).toMatchObject({ amount: -700, balanceAfter: 300, reasonType: 'purchase' });
+        expect(ledger[0]!.itemId).toEqual(itemA); // 어떤 아이템을 샀는지 장부에 남는다
         expect(await col('user_items').findOne({ userId, itemId: itemA })).toMatchObject({ isOwned: true });
         expect(await col('shop_items').findOne({ _id: itemA })).toMatchObject({ purchaseCount: 1 });
     });
@@ -181,5 +182,26 @@ describe.skipIf(!uri)('진짜 DB 구매·장착 확인', () => {
         const again = await buy(itemF);
         expect(again.status).toBe(201);
         expect(await balance()).toBe(before - 50);
+    });
+
+    it('8) 같은 사용자가 같은 아이템을 동시에 두 번 사면 한 번만 성공하고(201), 나머지는 409 ITEM_ALREADY_OWNED다', async () => {
+        const itemG = new Types.ObjectId();
+        await col('shop_items').insertOne({
+            _id: itemG, category: 'avatar', name: 'G', price: 20, assetUrl: 'x', purchaseCount: 0,
+            isActive: true, isDefault: false, badge: null, createdAt: new Date(), updatedAt: new Date(),
+        });
+        const before = await balance();
+        const ledgerBefore = await col('point_ledgers').countDocuments({ userId });
+
+        const results = await Promise.all([buy(itemG), buy(itemG)]);
+
+        expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+        const rejected = results.find((r) => r.status === 409)!;
+        expect(rejected.body.code).toBe('ITEM_ALREADY_OWNED');
+        expect(await balance()).toBe(before - 20); // 한 번만 차감
+        expect(await col('point_ledgers').countDocuments({ userId, itemId: itemG })).toBe(1);
+        expect(await col('point_ledgers').countDocuments({ userId })).toBe(ledgerBefore + 1);
+        expect(await col('user_items').countDocuments({ userId, itemId: itemG, isOwned: true })).toBe(1);
+        expect(await col('shop_items').findOne({ _id: itemG })).toMatchObject({ purchaseCount: 1 });
     });
 });

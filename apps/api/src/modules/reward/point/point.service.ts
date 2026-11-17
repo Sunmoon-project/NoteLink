@@ -30,6 +30,11 @@ export interface EarnRef {
     studyDate?: string; // 서울 기준 'YYYY-MM-DD'
 }
 
+/** 사용이 어떤 일로 생겼는지 장부에 남기는 선택 정보 (구매한 아이템) */
+export interface SpendRef {
+    itemId?: Types.ObjectId;
+}
+
 export interface ListLedgerOptions {
     type?: LedgerType;
     cursor?: string;
@@ -77,6 +82,7 @@ export class PointService {
         reasonType: PointReasonType,
         description: string | null,
         session: ClientSession,
+        refs?: SpendRef,
     ): Promise<number> {
         const owner = new Types.ObjectId(userId);
 
@@ -98,7 +104,7 @@ export class PointService {
         // 0포인트(무료 아이템)는 장부에 남길 변화가 없다
         if (amount > 0) {
             await this.ledgerModel.create(
-                [{ userId: owner, amount: -amount, balanceAfter: user.pointBalance, reasonType, description }],
+                [{ userId: owner, amount: -amount, balanceAfter: user.pointBalance, reasonType, description, ...refs }],
                 { session },
             );
         }

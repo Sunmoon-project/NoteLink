@@ -103,6 +103,7 @@ describe('POST /api/v1/shop/purchases', () => {
                     balanceAfter: 300,
                     reasonType: 'purchase',
                     description: '보라 구매',
+                    itemId: purpleId, // 어떤 아이템을 샀는지
                 },
             ],
             { session },
