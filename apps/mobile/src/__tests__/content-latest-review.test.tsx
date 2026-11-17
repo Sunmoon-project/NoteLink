@@ -1018,4 +1018,30 @@ describe('변환 화면: 다 올린 뒤에 변환으로 넘어가고, 취소하�
     });
     expect(mockToast).toHaveBeenCalledWith('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
   });
+
+  // Codex #503 리뷰: 취소 요청이 실패해도 취소했다고 안내하고 초안을 지웠다(서버 작업은 계속 돎)
+  it('취소 요청이 실패하면 취소했다고 하지 않고 이 화면에 남아, 다시 눌러 취소할 수 있다', async () => {
+    mockApi.ai.cancel.mockRejectedValueOnce(new Error('offline'));
+    const qc = client();
+    const invalidate = jest.spyOn(qc, 'invalidateQueries');
+    await renderScreen(<ConvertScreen />, qc);
+    expect(await screen.findByText('필기를 학습 자료로 변환하고 있어요')).toBeTruthy();
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    await waitFor(() =>
+      expect(mockToast).toHaveBeenCalledWith(
+        '변환을 취소하지 못했어요. 연결을 확인하고 다시 눌러 주세요',
+      ),
+    );
+    expect(mockToast).not.toHaveBeenCalledWith('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
+    expect(router.dismissTo).not.toHaveBeenCalled();
+    expect(screen.getByText('필기를 학습 자료로 변환하고 있어요')).toBeTruthy();
+    // 다시 누르면 취소된다(폴더 목록도 새로 읽는다)
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    await waitFor(() => expect(router.dismissTo).toHaveBeenCalled());
+    expect(mockApi.ai.cancel).toHaveBeenCalledTimes(2);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['folders'] });
+    invalidate.mockRestore();
+  });
 });

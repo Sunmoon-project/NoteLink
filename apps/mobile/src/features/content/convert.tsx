@@ -130,6 +130,9 @@ export function ConvertScreen() {
   const [job, setJob] = useState<AiJob | null>(null);
   const [materialId, setMaterialId] = useState<string | null>(null);
   const [cancel, setCancel] = useState(false);
+  // 변환 취소 요청을 보내는 중 · 그동안 끝난 작업(취소가 실패하면 이어 처리)
+  const cancelling = useRef(false);
+  const doneWhileCancelling = useRef<AiJob | null>(null);
   const [notify, setNotify] = useState(true);
   const [attempts, setAttempts] = useState(1);
   const blobs = useRef<string[]>([]);
@@ -238,6 +241,9 @@ export function ConvertScreen() {
     [job?._id],
   );
   const finish = (done: AiJob) => {
+    // 취소를 보내는 중에 끝났으면 기억해 두었다가, 취소가 실패하면 이어 처리한다
+    if (cancelling.current && ['succeeded', 'failed', 'canceled'].includes(done.status))
+      doneWhileCancelling.current = done;
     if (
       canceled.current ||
       handled.current ||
@@ -293,17 +299,35 @@ export function ConvertScreen() {
     },
   });
   const doCancel = async () => {
-    canceled.current = true;
-    abort.current.abort();
     if (!job) {
+      canceled.current = true;
+      abort.current.abort();
       // 아직 서버에 없다: 초안을 그대로 두고 고른 원본 화면으로 돌아가 바로 확인 · 다시 올릴 수 있게 한다
       router.replace(pickedScreen(draft.kind, draft.source));
       return;
     }
-    await api.ai.cancel(job._id).catch(() => {});
-    // 원본은 서버의 폴더에 남는다. 그 폴더로 가서 바로 보이게 한다
+    if (cancelling.current) return;
+    cancelling.current = true;
+    // 취소를 보내는 동안 끝나도 결과 화면으로 넘어가지 않게 막아 둔다(실패하면 풀고 그 결과를 이어 처리한다)
+    canceled.current = true;
+    try {
+      await api.ai.cancel(job._id);
+    } catch {
+      // 서버에 닿지 않았으면 작업은 계속 돈다 — 취소했다고 하지 않고 이 화면에 남아 다시 누를 수 있게 한다
+      canceled.current = false;
+      cancelling.current = false;
+      setCancel(false);
+      toast('변환을 취소하지 못했어요. 연결을 확인하고 다시 눌러 주세요');
+      const done = doneWhileCancelling.current;
+      doneWhileCancelling.current = null;
+      if (done) finish(done);
+      return;
+    }
+    abort.current.abort();
+    // 원본은 서버의 폴더에 남는다. 그 폴더로 가서 바로 보이게 한다(폴더별 자료 수 · 순서도 새로 읽는다)
     const folder = draft.folderId;
     qc.invalidateQueries({ queryKey: ['materials'] });
+    qc.invalidateQueries({ queryKey: ['folders'] });
     useDraft.getState().reset();
     router.dismissTo(
       folder ? { pathname: '/(tabs)/note/folder/[id]', params: { id: folder } } : '/(tabs)/note',
