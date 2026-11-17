@@ -1,0 +1,889 @@
+import pytest
+
+from app.services.quiz.checks import (
+    META,
+    SAME_FACT,
+    Seen,
+    Target,
+    code_check,
+    fact_lines,
+    form_giveaway,
+    number_values,
+    reversed_of,
+    same_fact,
+    same_value,
+    seen_draft,
+    seen_question,
+    too_close,
+)
+from app.services.quiz.models import Draft
+from app.services.quiz.text import tidy
+
+PAGE = "쌓다 = stack\nfasten - 고정하다\nThe rope was fastened to the post.\norganize = arrange"
+NEW = Target("new")
+
+
+def draft(**extra: object) -> Draft:
+    d: Draft = {
+        "stem": "다음 빈칸에 들어갈 알맞은 말을 고르시오.",
+        "passage": "The boxes are ____ in the corner.",
+        "options": ["stacked", "folded", "painted", "cleared", "printed"],
+        "answer": "stacked",
+    }
+    d.update(extra)  # type: ignore[typeddict-item]
+    return d
+
+
+def why(d: Draft, ty: str = "빈칸", t: Target = NEW, seen: list[Seen] | None = None) -> list[str]:
+    return code_check(d, t, PAGE, ty, seen or [])[0]
+
+
+# ---------- 통과 · 정답 위치 ----------
+
+
+def test_good_draft_passes_and_returns_answer_position() -> None:
+    assert code_check(draft(), NEW, PAGE, "빈칸", []) == ([], 0)
+    d = draft(options=["folded", "painted", "stacked", "cleared", "printed"])
+    assert code_check(d, NEW, PAGE, "빈칸", [])[1] == 2
+
+
+# ---------- 보기 ----------
+
+
+def test_options_must_be_five_and_distinct() -> None:
+    assert "보기 5개가 아니거나 겹침" in why(draft(options=["stacked", "a", "b", "c"]))
+    assert "보기 5개가 아니거나 겹침" in why(
+        draft(options=["stacked", "Folded", "folded", "c", "d"])
+    )
+
+
+def test_answer_must_be_exactly_one_option() -> None:
+    reasons, k = code_check(draft(answer="stack up"), NEW, PAGE, "빈칸", [])
+    assert "정답 글이 보기와 안 맞음" in reasons
+    assert k is None
+
+
+@pytest.mark.parametrize(
+    ("text", "value"),
+    [("350,000 CFU/mL", 350000.0), ("3.5×10^5", 350000.0), ("3.5x10^5", 350000.0)]
+    + [("1.5e3", 1500.0), ("10", 10.0), ("없음", None)],
+)
+def test_number_values_reads_every_form(text: str, value: float | None) -> None:
+    vals = number_values(text)[0]
+    assert (float(vals[0]) if vals else None) == value
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("3×10^-7 M", "4×10^-7 M"),  # 반올림하면 둘 다 0이던 작은 수
+        ("37℃에서 24시간", "37℃에서 48시간"),  # 첫 수만 같음
+        ("10x100", "10x40"),  # 배율
+        ("Two men are carrying 2 boxes.", "Two men are opening 2 boxes."),  # 문장 속 같은 수
+        ("-5℃", "5℃"),  # 부호
+        ("1/2", "1-2"),  # 기호
+        ("2×10^3 ~ 5 mL", "5 ~ 2×10^3 mL"),  # 순서
+        (".5 mg", "5 mg"),
+        ("1e-999", "1e999"),  # 넘침 없이 비교
+    ],
+)
+def test_different_options_are_not_same_value(a: str, b: str) -> None:
+    assert not same_value(a, b)
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("3.5 × 10^5 CFU/mL", "350,000 CFU/mL"),  # 띄어 쓴 지수
+        ("350,000 CFU/mL.", "3.5×10^5 CFU/mL"),  # 끝 마침표
+        ("약3.5×10^5 CFU", "약350,000 CFU"),  # 한국어에 붙은 수
+        ("0.5 mg", ".5 mg"),
+        ("1.5E3 cells", "1,500 cells"),  # 대문자 E 지수
+        ("1.5E+3 cells", "1,500 cells"),  # + 부호 지수
+        ("1.5×10^+3 cells", "1,500 cells"),
+    ],
+)
+def test_same_value_in_different_forms(a: str, b: str) -> None:
+    assert same_value(a, b)
+
+
+@pytest.mark.parametrize("other", ["3.5×10^5 CFU/mL", "3.5E+5 CFU/mL", "3.5×10^+5 CFU/mL"])
+def test_same_number_in_two_forms_fails(other: str) -> None:
+    opts = ["350,000 CFU/mL", other, "1,000 CFU/mL", "10 CFU/mL", "100 CFU/mL"]
+    d = draft(stem="기준 균 수는?", passage="", options=opts, answer="1,000 CFU/mL")
+    assert "값이 같은 숫자 보기" in why(d, "규칙")
+
+
+# ---------- 빈칸 · 형태 ----------
+
+
+def test_form_giveaway() -> None:
+    # 정답만 -ing: 문법만 보고 풀림 (오늘의 복습 10/23)
+    assert form_giveaway(
+        draft(options=["organizing", "clothing", "adjust", "counter", "shelf"], answer="organizing")
+    )
+    assert not form_giveaway(
+        draft(options=["organizing", "wiping", "mowing", "adjust", "shelf"], answer="organizing")
+    )
+    assert not form_giveaway(draft(options=["String of pearl", "a", "b", "c", "d"], answer="a"))
+
+
+def test_blank_type_needs_blank_and_no_korean_gloss() -> None:
+    assert "빈칸 문장 없음" in why(draft(passage="The boxes are in the corner."))
+    assert "빈칸 문장에 한국어 뜻 노출" in why(draft(passage="상자를 ____ 쌓았다"))
+    # 정의 유형은 한국어 빈칸 문장이 정상
+    assert "빈칸 문장에 한국어 뜻 노출" not in why(
+        draft(passage="____는 산소 없이 증식한다"), "정의"
+    )
+
+
+def test_answer_in_passage_is_a_giveaway() -> None:
+    assert "제시문에 정답 노출" in why(draft(passage="stacked boxes ____ here"))
+    # 한국어 어미를 떼고 비교 (살아간다 / 살아가는)
+    d = draft(
+        stem="다음 용어의 특징은?",
+        passage="산소가 없는 환경에서 살아가는 세균",
+        options=["산소가 없는 환경에서 살아간다", "빛", "열", "물", "흙"],
+        answer="산소가 없는 환경에서 살아간다",
+    )
+    assert "제시문에 정답 노출" in why(d, "특징")
+
+
+# ---------- 문제 글 · 유형별 ----------
+
+
+def test_options_judging_right_or_wrong_are_a_meta_question() -> None:
+    # 토익 규칙 초안(11/11, #291): 보기가 규칙을 적용한 문장이 아니라 정답 · 오답 판단 자체
+    meta = draft(
+        stem="다음 상황에서 사진을 보고 들리는 문장이 정답인지 판단할 때, 가장 적절한 것은?",
+        passage="사람이 없는 사진에서 be being p.p.가 들린다.",
+        options=[
+            "정답인 문장이다",
+            "오답인 문장이다",
+            "사람의 동작을 나타낸다",
+            "사람의 상태를 나타낸다",
+            "사람이 있는 사진이다",
+        ],
+        answer="오답인 문장이다",
+    )
+    assert META in why(meta, "규칙")
+    assert META in why(meta, "정의")  # 유형과 상관없이
+    # 다른 말로 쓴 판단도: 맞는 · 틀린 · 옳은 · correct(/code-review #291)
+    for pair in (["맞는 문장이다", "틀린 문장이다"], ["옳은 표현", "옳지 않은 표현"],
+                 ["Correct sentence.", "Incorrect sentence"], ["정답이다", "오답이다"],
+                 ["'정답인 문장이다'", "오답이다!"], ["“정답”", "(오답)"]):  # fmt: skip
+        assert META in why(draft(options=[*pair, "folded", "painted", "cleared"])), pair
+
+
+def test_subject_words_with_right_or_wrong_are_not_a_meta_question() -> None:
+    # 정답 · 오답이라는 말을 쓰는 과목 낱말은 좋은 보기(교육평가 · 토익 전략, /code-review #291)
+    words = [
+        "정답률이 높을수록 쉬운 문항이다",
+        "오답지 매력도가 낮다",
+        "오답 소거법",
+        "정답 근거 찾기",
+    ]
+    assert META not in why(draft(options=[*words, "문항 변별도"]), "특징")
+    # 어휘 문제의 반대말 보기: 낱말만 있으면 판단이 아님
+    assert META not in why(draft(options=["correct", "incorrect", "accurate", "precise", "exact"]))
+    assert META not in why(draft(options=["바른", "틀린", "고운", "굳은", "옳은"]), "정의")
+    # 판단 보기가 하나뿐이면 판단 자체가 아님
+    assert META not in why(draft(options=["stacked", "folded", "painted", "cleared", "정답이다"]))
+    assert META not in why(draft())
+
+
+def test_stem_must_be_korean_and_not_negative() -> None:
+    assert "부정 질문" in why(draft(stem="다음 중 알맞지 않은 것을 고르시오."))
+    assert "문제 글이 한국어가 아님" in why(draft(stem="Choose the best word."))
+
+
+def test_scene_type_needs_korean_scene() -> None:
+    d = draft(passage="The man is walking a dog", options=["A", "B", "C", "D", "E"], answer="A")
+    reasons = why(d, "묘사")
+    assert "장면 설명 없음" in reasons
+    assert "장면 설명에 영어 문장이 섞임" in reasons
+
+
+def test_term_types() -> None:
+    assert "설명 문장 없음" in why(draft(passage="짧음"), "정의")
+    assert "물을 용어 없음" in why(draft(passage=""), "특징")
+    d = draft(passage="무산소성 세균은 산소 없이 증식하는 세균이다", answer="무산소성 세균")
+    d["options"] = ["무산소성 세균", "호기성 세균", "통성 세균", "미호기성 세균", "내생포자"]
+    assert "설명에 정답 용어 노출" in why(d, "정의")
+
+
+def test_answer_must_be_in_the_note() -> None:
+    d = draft(options=["wrapped", "folded", "painted", "cleared", "printed"], answer="wrapped")
+    assert "정답이 노트에 없음" in why(d)
+    assert "정답이 노트에 없음" not in why(draft())
+
+
+# ---------- 다시 보기 대상 ----------
+
+
+def test_wrong_target_must_ask_the_same_word_again() -> None:
+    t = Target("wrong", answer="fastened", concept="fasten의 의미")
+    assert "틀린 낱말('fastened')을 다시 묻지 않음" in why(draft(), t=t)
+    # 개념 이름에 적힌 낱말은 같은 개념으로 봄 (organizing 대신 arranging)
+    t = Target("wrong", answer="organizing", concept="divide, separate, stacked의 유의어")
+    assert not any("틀린 낱말" in r for r in why(draft(), t=t))
+
+
+@pytest.mark.parametrize(
+    ("original", "concept"),
+    [
+        ("stack", "stack의 뜻"),  # 굴절형(stacked)도 다른 답: 새 문제가 이 낱말의 복습을 이어 감
+        ("tacked", "tack의 뜻"),  # 한쪽이 다른 쪽 안에 있음(port ~ report)
+        ("organizing", "divide, separate, stacked의 유의어"),  # 개념 이름의 다른 낱말도 안 됨
+    ],
+)
+def test_keep_answer_asks_the_very_same_answer(original: str, concept: str) -> None:
+    t = Target("right", answer=original, concept=concept, keep_answer=True)
+    assert f"원래 낱말('{original}')을 다시 묻지 않음" in why(draft(), t=t)
+
+
+def test_keep_answer_takes_the_same_answer() -> None:
+    t = Target("right", answer="stacked", concept="stack의 뜻", keep_answer=True)
+    assert not any("원래 낱말" in r for r in why(draft(), t=t))
+    t = Target("right", answer="stacked", concept="stack의 뜻")  # 오답 복습: 맞힌 문제는 보지 않음
+    assert not any("낱말(" in r for r in why(draft(answer="folded"), t=t))
+
+
+def test_wrong_target_without_answer_does_not_reject_every_draft() -> None:
+    assert not any("틀린 낱말" in r for r in why(draft(), t=Target("wrong", concept="x")))
+
+
+def test_answer_with_different_case_is_not_counted_as_wrong_option() -> None:
+    opts = ["Organizing", "clothing", "adjust", "counter", "shelf"]
+    assert form_giveaway(draft(options=opts, answer="organizing"))
+
+
+def test_answer_used_in_the_set_fails() -> None:
+    assert "세트 안에서 정답이 겹침" in why(draft(), t=Target("new", used_answers=["stack"]))
+
+
+# ---------- 겹침 ----------
+
+
+def test_too_close_to_existing_question() -> None:
+    seen = [seen_draft(draft())]
+    assert too_close(draft(stem="다음 빈칸에 들어갈 알맞은 말을 고르시오!"), seen)
+    assert not too_close(
+        draft(stem="완전히 다른 문제 글", passage="Different sentence ____."), seen
+    )
+
+
+def test_same_stem_with_different_short_passage_is_not_too_close() -> None:
+    # 로컬 DB에서 같은 문제로 보던 '쌓다' / '계약을 성공하다' (10/27 측정)
+    stem = "다음 한국어 뜻에 해당하는 영어 표현으로 가장 알맞은 것을 고르시오."
+    seen = [seen_draft(draft(stem=stem, passage="쌓다"))]
+    assert not too_close(draft(stem=stem, passage="계약을 성공하다"), seen)
+    assert too_close(draft(stem="다른 문제 글", passage="쌓다"), seen)
+
+
+def test_reversed_question_in_this_run_fails() -> None:
+    made = draft(passage="무산소성 세균", answer="산소 없이 증식한다")
+    reverse = draft(passage="산소 없이 증식하는 세균", answer="무산소성 세균")
+    assert reversed_of(reverse, [seen_draft(made)])
+    # 저장된 문제는 보지 않음
+    stored = seen_question(
+        {"id": "q", "order": 1, "prompt": "", "choices": None, "answer": "산소 없이 증식한다"}
+    )
+    stored["passage"] = "무산소성세균"
+    assert not reversed_of(reverse, [stored])
+
+
+def test_decimal_options_are_distinct() -> None:
+    opts = ["1.5 mL", "15 mL", "0.15 mL", "150 mL", "3 mL"]
+    d = draft(stem="알맞은 양은?", passage="", options=opts, answer="1.5 mL")
+    assert code_check(d, NEW, "1.5 mL", "규칙", [])[1] == 0
+    reasons = why(d, "규칙")
+    assert "보기 5개가 아니거나 겹침" not in reasons
+    assert "정답 글이 보기와 안 맞음" not in reasons
+
+
+def test_unreadable_exponent_is_kept_as_text() -> None:
+    long_exp = "1e" + "9" * 30
+    assert number_values(long_exp)[0] == []
+    assert not same_value(long_exp, "1e9")
+
+
+def test_option_key_keeps_sign_and_decimal_but_ignores_spacing() -> None:
+    opts = ["-20℃", "20℃", "4℃", "37℃", "-70℃"]
+    d = draft(stem="보관 온도는?", passage="", options=opts, answer="-20℃")
+    assert code_check(d, NEW, "-20℃", "규칙", [])[1] == 0
+    assert "보기 5개가 아니거나 겹침" not in why(d, "규칙")
+    opts = ["No.5", "No.6", "No.7", "No.8", "No.9"]
+    assert (
+        code_check(
+            draft(stem="번호는?", passage="", options=opts, answer="No. 5"), NEW, "No.5", "규칙", []
+        )[1]
+        == 0
+    )
+
+
+def test_a_bare_blank_is_no_term() -> None:
+    assert "물을 용어 없음" in why(draft(passage="____"), "특징")  # 미생 초안 9개(10/29)
+
+
+def test_one_answer_fills_one_blank() -> None:
+    d = draft(passage="The boxes are ____ and ____ in the corner.")
+    assert "빈칸이 여러 개" in why(d)
+    assert "빈칸이 여러 개" not in why(draft())
+
+
+def test_code_parentheses_are_not_several_blanks() -> None:
+    d = draft(passage="useState()와 useEffect()를 함께 쓴다", answer="stacked")
+    assert "빈칸이 여러 개" not in why(tidy(d), "규칙")
+
+
+def test_class_questions_are_not_judged_by_the_last_syllable() -> None:
+    # 끝 글자로 분류 이름을 가리던 검사는 기생충에 맞춘 규칙이라 뺌(Codex 재리뷰 #94)
+    for passage, answer, wrong in [
+        ("표고버섯", "균류", ["동물", "식물", "원생생물", "원핵생물"]),
+        ("포도당", "탄수화물", ["지방", "단백질", "비타민", "무기질"]),
+    ]:
+        d = draft(
+            stem="다음 용어가 속하는 분류는?",
+            passage=passage,
+            answer=answer,
+            options=[answer, *wrong],
+        )
+        assert not any("분류 이름" in w for w in why(d, "분류"))
+
+
+def test_code_calls_and_indexes_are_not_blanks() -> None:
+    # 코드의 ()·[]를 빈칸으로 바꾸면 정의 · 빈칸 문제가 '빈칸이 여러 개'로 버려짐(/code-review #94)
+    for code in [
+        "useState()로 만든 값을 useEffect()에서 읽고 arr[]와 f(x)[]도 쓴다",
+        "useEffect(() => {}, [])는 마운트할 때 한 번 실행되고 useState([])는 빈 목록",
+        "const list = []로 시작해 () => list.length를 넘긴다",
+    ]:
+        d = tidy(draft(passage=code, answer="stacked"))
+        assert d["passage"] == code
+        for ty in ("정의", "빈칸", "어휘"):
+            assert "빈칸이 여러 개" not in why(d, ty)
+
+
+def test_spaced_brackets_are_blanks_wherever_they_are() -> None:
+    # 숫자 · 로마자 바로 뒤의 '( )'도 빈칸이고, 이어 쓴 빈칸 둘은 둘로 셈
+    assert tidy(draft(passage="정상 혈당은 70~100( )이다, Na[ ] 이온"))["passage"] == (
+        "정상 혈당은 70~100____이다, Na____ 이온"
+    )
+    # 붙어 있던 빈칸 둘은 tidy 뒤에도 둘(검사는 tidy 뒤에 돎)
+    d = tidy(draft(passage="( )( )는 짝을 이룬다"))
+    assert d["passage"] == "____ ____는 짝을 이룬다"
+    assert "빈칸이 여러 개" in why(d, "정의")
+    # 빈 ()·[]는 어디서든 코드로 봄(생성 안내는 빈칸을 ____로 쓰게 함)
+    for code in ["함수는 ()를 붙여 부르고 return ()로 끝낸다", "x = []와 f ()"]:
+        assert tidy(draft(passage=code))["passage"] == code
+
+
+def test_a_rule_question_with_two_blanks_is_caught() -> None:
+    # 규칙 유형을 빼고 보던 것은 코드의 ()가 빈칸으로 바뀌던 때문이라 이제는 모든 유형
+    # (/code-review #94)
+    assert "빈칸이 여러 개" in why(draft(passage="The boxes are ____ and ____"), "규칙")
+
+
+def test_an_option_joining_other_options_fails() -> None:
+    joined = draft(
+        stem="다음 설명이 나타내는 용어는 무엇입니까?",
+        passage="일정 압력 조건에서 온도의 변화에 따른 binary system을 나타내는 그래프입니다.",
+        options=[
+            "TXY 다이어그램",
+            "에탄올 상태 변화",
+            "압력과 끓는점 관계",
+            "물과 에탄올 예시",
+            "TXY 다이어그램, 에탄올 상태 변화, 압력과 끓는점 관계, 물과 에탄올 예시, 기체 분율",
+        ],
+        answer="TXY 다이어그램",
+    )
+    assert "다른 보기를 이어 붙인 보기" in why(joined, "정의")
+    english = draft(
+        options=["stacked", "extended", "fastened", "docked", "stacked, fastened, extended, docked"]
+    )
+    assert "다른 보기를 이어 붙인 보기" in why(english)
+    numbers = draft(options=["1,000", "2,000", "3,000", "4,000", "1,000, 2,000, 3,000"])
+    assert "다른 보기를 이어 붙인 보기" in why(numbers)  # 천 단위 쉼표는 나누지 않음
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["분율", "몰 분율", "질량 분율", "부피 분율", "기상 조성"],
+        ["deliver", "delivering", "delivered", "delivery", "deliverable"],
+        ["H2O", "H2O2 (과산화수소)", "CO2 (이산화탄소)", "NH3", "CH4"],
+        ["15", "1.5 (반감기)", "150", "10", "1,000"],
+        ["ㄱ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄴ, ㄷ", "ㄱ, ㄴ, ㄷ"],
+        ["ㄱ", "ㄴ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄴ, ㄷ"],
+        ["ㄱ", "ㄴ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄴ, ㄷ."],  # 문장부호가 붙어도 조합 (Codex #136)
+        ["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㄱ, ㄴ, ㄷ"],  # 조합 보기가 하나뿐 (Codex #136 3차)
+        ["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㄱ, ㄴ, ㄷ."],
+        ["I", "II", "III", "I, II", "I, II, III"],  # 여러 글자 조합 (/code-review #136)
+        ["산소", "질소", "수소", "산소, 질소", "산소, 질소, 수소"],
+        ["물", "물질의 상태 변화를 나타낸다", "기체", "액체", "고체"],
+        ["map", "flatMap()", "filter", "reduce", "forEach"],
+        ["의사의 지시사항을 확인한다", "혈압을 잰다", "체온을 잰다", "맥박을 잰다", "호흡을 센다"],
+    ],
+)
+def test_options_that_only_contain_other_options_pass(options: list[str]) -> None:
+    d = draft(options=options, answer=options[0])
+    assert "다른 보기를 이어 붙인 보기" not in why(d, "특징")
+
+
+# ---------- 부정설명 · 조합 (#268) ----------
+
+KO_PAGE = "1. 이질 아메바\n- 영양형: 위족으로 운동하고 적혈구를 먹는다\n- 포낭형: 4핵, 인체 감염형"
+
+
+def negative(**extra: object) -> Draft:
+    d: Draft = {
+        "stem": "다음 중 이질 아메바에 대한 설명으로 옳지 않은 것은?",
+        "passage": "이질 아메바",
+        "options": [
+            "포낭형은 8핵이다",
+            "위족으로 운동한다",
+            "적혈구를 먹는다",
+            "포낭형이 인체 감염형이다",
+            "영양형과 포낭형이 있다",
+        ],
+        "answer": "포낭형은 8핵이다",
+    }
+    d.update(extra)  # type: ignore[typeddict-item]
+    return d
+
+
+def ko_why(d: Draft, ty: str, t: Target = NEW) -> list[str]:
+    return code_check(d, t, KO_PAGE, ty, [])[0]
+
+
+def test_a_negative_question_is_asked_only_as_its_own_type() -> None:
+    assert ko_why(negative(), "부정설명") == []
+    assert "부정 질문" in ko_why(negative(), "특징")
+    positive = negative(stem="다음 중 이질 아메바에 대한 설명으로 옳은 것은?")
+    assert "부정 질문이 아님" in ko_why(positive, "부정설명")
+
+
+def test_a_negative_question_needs_the_term() -> None:
+    assert "물을 용어 없음" in ko_why(negative(passage=""), "부정설명")
+
+
+def test_an_overstated_wrong_statement_is_rejected() -> None:
+    d = negative(answer="모든 원충은 포낭형이 8핵이다")
+    d["options"][0] = d["answer"]
+    assert any(w.startswith("과장으로 틀린 티") for w in ko_why(d, "부정설명"))
+    # 옳은 보기에도 같은 말이 있으면 티가 나지 않음
+    d["options"][1] = "모든 영양형은 위족으로 운동한다"
+    assert not any(w.startswith("과장으로 틀린 티") for w in ko_why(d, "부정설명"))
+
+
+def combo_draft(**extra: object) -> Draft:
+    d: Draft = {
+        "stem": "다음 중 이질 아메바에 대한 설명으로 옳은 것을 모두 고른 것은?",
+        "passage": "ㄱ. 위족으로 운동한다.\nㄴ. 포낭형은 8핵이다.\nㄷ. 적혈구를 먹는다.",
+        "options": ["ㄱ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄷ", "ㄱ, ㄴ, ㄷ"],
+        "answer": "ㄱ, ㄷ",
+    }
+    d.update(extra)  # type: ignore[typeddict-item]
+    return d
+
+
+def test_a_combination_answer_may_repeat_in_the_set_and_is_not_a_note_word() -> None:
+    t = Target("new", used_answers=["ㄱ, ㄷ", "ㄱ"])
+    assert code_check(combo_draft(), t, KO_PAGE, "조합", []) == ([], 3)
+
+
+def test_a_combination_needs_its_options_and_three_lines() -> None:
+    bad = combo_draft(options=["ㄱ", "ㄷ", "ㄱ, ㄴ", "ㄱ, ㄷ", "이질 아메바"])
+    assert "조합 보기 모양이 아님" in ko_why(bad, "조합")
+    one_line = combo_draft(passage="ㄱ. 위족으로 운동한다. ㄴ. 8핵이다. ㄷ. 적혈구를 먹는다.")
+    assert "ㄱ · ㄴ · ㄷ 문장 없음" in ko_why(one_line, "조합")
+
+
+def test_a_combination_answer_is_not_compared_as_a_reversed_question() -> None:
+    assert seen_draft(combo_draft())["answer"] == ""
+    assert seen_draft(draft())["answer"] == "stacked"
+
+
+def test_three_shared_sentence_options_are_too_close() -> None:
+    # 개념 이름만 다르고 옳은 설명 보기 넷이 같은 두 부정설명(0928 학습 노트 실행)
+    first = negative(passage="액티브 인디케이터 제어")
+    again = negative(passage="ActivityIndicator와 서버 통신 제어")
+    assert too_close(again, [seen_draft(first)])
+    stored = seen_question(
+        {"id": "q1", "order": 1, "prompt": "?", "choices": first["options"], "answer": "x"}
+    )
+    assert too_close(again, [stored])
+    # 둘만 같으면 다른 문제
+    two = negative(
+        passage="ActivityIndicator", options=[*first["options"][:2], "가다", "나다", "다다"]
+    )
+    assert not too_close(two, [seen_draft(first)])
+
+
+def test_shared_term_or_combination_options_are_not_too_close() -> None:
+    # 같은 노트의 용어 보기 · 조합 보기는 겹치는 것이 보통
+    a = draft(passage="위족으로 운동하고 적혈구를 먹는 원충", options=["이질 아메바", "대장 아메바",
+              "람블편모충", "질편모충", "말라리아"], answer="이질 아메바")  # fmt: skip
+    b = draft(passage="포낭형의 핵이 8개인 원충", options=a["options"], answer="대장 아메바")
+    assert not too_close(b, [seen_draft(a)])
+    other = combo_draft(passage="ㄱ. 포낭형이 있다.\nㄴ. 섬모가 있다.\nㄷ. 원충이다.")
+    assert not too_close(other, [seen_draft(combo_draft())])
+
+
+def test_a_combination_shares_its_statements_with_sentence_options() -> None:
+    # 조합형 설명은 제시문에 있음: 같은 설명을 보기로 쓴 특징 · 부정설명과 겹침
+    c = combo_draft()
+    same = negative(
+        options=["위족으로 운동한다.", "포낭형은 8핵이다.", "적혈구를 먹는다.", "원충이다", "가다"]
+    )
+    assert too_close(same, [seen_draft(c)])
+    assert too_close(c, [seen_draft(same)])
+
+
+def test_many_options_like_one_sentence_count_once() -> None:
+    # 온도만 다른 새 보기 셋이 기존 온도 설명 하나에 모두 걸려도 한 쌍(Codex 리뷰 #288)
+    old = negative(
+        passage="황색포도알균",
+        options=[
+            "37℃에서 24시간 배양한다",
+            "혈액 한천에서 자란다",
+            "그람 양성이다",
+            "가다",
+            "나다",
+        ],
+    )
+    new = negative(
+        passage="대장균",
+        options=[
+            "35℃에서 24시간 배양한다",
+            "36℃에서 24시간 배양한다",
+            "38℃에서 24시간 배양한다",
+            "포자를 만든다",
+            "운동성이 있다",
+        ],
+    )
+    assert not too_close(new, [seen_draft(old)])
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_sentence_pairs_are_counted_whatever_the_order(swap: bool) -> None:
+    # 먼저 걸린 짝을 확정하면 '37℃ 24시간'이 '37℃ 60시간'을 가져가 두 쌍만 셌음. 짝을 바꿔
+    # 세 쌍을 찾음(Codex 재리뷰 #288)
+    theirs = ["37℃에서 60시간 동안 배양한다", "35℃에서 24시간 동안 배양한다"]
+    old = negative(
+        passage="황색포도알균",
+        options=[*(theirs[::-1] if swap else theirs), "그람 양성으로 염색된다", "가다", "나다"],
+    )
+    new = negative(
+        passage="대장균",
+        options=[
+            "37℃에서 24시간 동안 배양한다",
+            "37℃에서 60시간 동안 배양한다",
+            "그람 양성으로 염색된다",
+            "포자를 만든다",
+            "운동성이 있다",
+        ],
+    )
+    assert too_close(new, [seen_draft(old)])
+
+
+# ---------- 같은 개념을 다른 유형으로 다시 묻기 (#268) ----------
+
+
+def tagged(d: Draft, concept: str, ty: str) -> Seen:
+    s = seen_draft(d)
+    s["concept"], s["type"] = concept, ty
+    return s
+
+
+def test_the_same_concept_asked_with_another_type_is_not_too_close_by_its_passage() -> None:
+    # 마지막 단계: 이질 아메바를 특징으로 물은 뒤 부정설명으로 다시 물음. 둘 다 제시문이 용어
+    # 이름뿐이라 제시문 비교로는 늘 '거의 같음'이었음(개념 3개 노트, 11/12 학교 LLM)
+    feature = negative(
+        stem="다음 중 이질 아메바에 대한 설명으로 옳은 것은?",
+        options=["위족으로 운동한다", "섬모로 움직인다", "세균이다", "곰팡이다", "바이러스다"],
+        answer="위족으로 운동한다",
+    )
+    before = [tagged(feature, "이질 아메바", "특징")]
+    again = negative()
+    assert not too_close(again, before, "이질 아메바", "부정설명")
+    assert too_close(again, before)  # 개념 · 유형을 모르면 전과 같이 제시문으로 봄
+    assert too_close(again, before, "이질 아메바", "특징")  # 같은 유형
+    assert too_close(again, before, "대장 아메바", "부정설명")  # 다른 개념인데 제시문이 같음
+    # 개념을 모르는 앞 문제(저장된 문제 · 다른 퀴즈)는 전과 같이 제시문으로 봄
+    assert too_close(again, [seen_draft(feature)], "이질 아메바", "부정설명")
+
+
+def test_the_same_concept_with_another_type_still_may_not_repeat_three_sentences() -> None:
+    # 같은 사실을 늘어놓은 두 문제(부정설명 · 조합)는 유형이 달라도 거의 같은 문제
+    first = negative()
+    combo = combo_draft(
+        passage="ㄱ. 포낭형은 8핵이다.\nㄴ. 위족으로 운동한다.\nㄷ. 적혈구를 먹는다.",
+    )
+    assert too_close(combo, [tagged(first, "이질 아메바", "부정설명")], "이질 아메바", "조합")
+
+
+def test_a_term_shown_again_for_the_same_concept_with_another_type_is_not_reversed() -> None:
+    # 정의(설명 → 이질 아메바) 뒤 같은 개념의 특징(이질 아메바 → 설명): 앞 문제의 정답(용어)이
+    # 새 문제의 제시문이라 늘 '거꾸로'였음. 용어가 보인다고 정답이 보이지는 않음(#268)
+    definition = draft(
+        stem="다음 설명에 해당하는 원충은?",
+        passage="위족으로 운동하고 적혈구를 먹는 원충",
+        options=["이질 아메바", "대장 아메바", "람블편모충", "질편모충", "말라리아"],
+        answer="이질 아메바",
+    )
+    before = [tagged(definition, "이질 아메바", "정의")]
+    feature = negative(stem="다음 중 이질 아메바에 대한 설명으로 옳은 것은?")
+    assert not reversed_of(feature, before, "이질 아메바", "특징")
+    assert reversed_of(feature, before)  # 개념 · 유형을 모르면 전과 같음
+    # 차례가 반대(특징 뒤 정의)여도 용어끼리는 보지 않음
+    after = [tagged(feature, "이질 아메바", "특징")]
+    assert not reversed_of(definition, after, "이질 아메바", "정의")
+    assert reversed_of(definition, after, "이질 아메바", "특징")  # 같은 유형이면 전과 같음
+
+
+def test_a_description_giving_away_the_answer_is_reversed_even_with_another_type() -> None:
+    # 앞 정의 문제의 설명이 새 문제의 정답: 앞 문제를 보면 답이 보임
+    definition = draft(
+        stem="다음 설명에 해당하는 원충은?",
+        passage="위족으로 운동하고 적혈구를 먹는 원충",
+        options=["이질 아메바", "대장 아메바", "람블편모충", "질편모충", "말라리아"],
+        answer="이질 아메바",
+    )
+    giveaway = negative(
+        stem="다음 중 이질 아메바에 대한 설명으로 옳은 것은?",
+        options=["위족으로 운동하고 적혈구를 먹는다", "섬모로 움직인다", "세균이다", "곰팡이다",
+                 "바이러스다"],
+        answer="위족으로 운동하고 적혈구를 먹는다",
+    )  # fmt: skip
+    assert reversed_of(giveaway, [tagged(definition, "이질 아메바", "정의")], "이질 아메바", "특징")
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        "람다",  # 끝 글자가 '다'라 short_answer는 문장으로 봄
+        "액티비티 인디케이터 애니메이션 제어 속성",  # 15자가 넘는 한국어 용어
+    ],
+)
+def test_a_term_that_looks_like_a_sentence_is_still_a_term_by_its_type(term: str) -> None:
+    # 용어인지는 유형으로 정함: 정의는 정답이, 특징 · 분류는 제시문이 용어(Codex 리뷰 #303)
+    definition = draft(
+        stem="다음 설명에 해당하는 것은?",
+        passage="이름 없이 그 자리에서 정의해 쓰는 짧은 함수",
+        options=[term, "클로저", "콜백", "제너레이터", "데코레이터"],
+        answer=term,
+    )
+    feature = negative(
+        stem=f"다음 중 {term}에 대한 설명으로 옳은 것은?",
+        passage=term,
+        options=[
+            "이름 없이 쓴다",
+            "클래스를 만든다",
+            "모듈을 불러온다",
+            "값을 지운다",
+            "줄을 넘긴다",
+        ],
+        answer="이름 없이 쓴다",
+    )
+    assert not reversed_of(feature, [tagged(definition, term, "정의")], term, "특징")
+    assert not reversed_of(definition, [tagged(feature, term, "특징")], term, "정의")
+    assert not reversed_of(feature, [tagged(definition, term, "정의")], term, "분류")
+    # 같은 유형이거나 개념을 모르면 전과 같음
+    assert reversed_of(feature, [tagged(definition, term, "정의")])
+    assert reversed_of(definition, [tagged(feature, term, "특징")], term, "특징")
+
+
+# ---------- 같은 노트 문장을 같은 유형으로 다시 묻기 (#351) ----------
+
+FACT_PAGE = """ActivityIndicator
+서버에 요청을 보낼 때 animating 값을 true로 바꾸고, 응답이 오면 false로 바꾼다.
+앱은 서버 안에서 일이 얼마나 진행됐는지 알 수 없어 요청과 응답 시점으로만 표시를 제어한다.
+resizeMode는 이미지 크기와 화면 영역이 다를 때 이미지를 어떻게 맞출지 정한다.
+onLoadEnd는 이미지를 다 불러온 뒤에 한 번 불린다."""
+REQUEST = "서버에 요청을 보낼 때 animating 값을 true로 바꾼다"
+RESPONSE = "응답이 오면 animating 값을 false로 바꾼다"
+FLIPPED = "서버에 요청을 보낼 때 animating 값을 false로 바꾼다"  # 같은 줄을 틀리게 바꾼 문장
+UNKNOWN = "앱은 서버 안의 진행 정도를 알 수 없어 요청과 응답 시점으로 표시를 제어한다"
+RESIZE = "resizeMode는 이미지 크기와 화면 영역이 다를 때 맞추는 방식을 정한다"
+LOAD_END = "onLoadEnd는 이미지를 다 불러온 뒤에 불린다"
+
+
+def lines(*sentences: str) -> Draft:
+    """ㄱ · ㄴ · ㄷ 문장으로 만든 조합형 초안."""
+    passage = "\n".join(f"{m}. {x}" for m, x in zip("ㄱㄴㄷ", sentences, strict=True))
+    return combo_draft(stem="다음 중 옳은 것을 모두 고른 것은?", passage=passage)
+
+
+def made(d: Draft, concept: str, ty: str) -> Seen:
+    """이 세트에서 받은 문제(generate._seen_made처럼 개념 · 유형이 붙음)."""
+    return tagged(d, concept, ty)
+
+
+def test_two_combinations_asking_the_same_note_lines_are_the_same_fact() -> None:
+    # 0928 학습 노트(#288): 개념이 다른 두 조합 문제('상태값 true/false 제어' · '애니메이션 제어')가
+    # 둘 다 '요청 때 true, 응답이 오면 false' 줄을 말만 바꿔 물음. 문장끼리 85%가 안 돼
+    # too_close로는 통과했음
+    before = [made(lines(REQUEST, UNKNOWN, RESPONSE), "상태값 제어", "조합")]
+    again = lines(FLIPPED, RESPONSE, REQUEST)
+    assert not too_close(again, before)
+    assert same_fact(again, before, FACT_PAGE, "조합")
+    assert SAME_FACT in code_check(again, NEW, FACT_PAGE, "조합", before, "애니메이션 제어")[0]
+
+
+def test_the_same_fact_is_found_whichever_question_came_first() -> None:
+    # 근거 줄 하나에 문장 셋을 모두 쓴 문제와, 그 줄과 다른 줄을 쓴 문제: 어느 쪽을 먼저 받아도
+    # 겹침(한쪽 문장만 세면 뒤에 온 문제의 문장 하나만 걸려 차례에 따라 달라짐)
+    one_line = lines(REQUEST, RESPONSE, FLIPPED)
+    two_lines = lines(REQUEST, UNKNOWN, LOAD_END)
+    assert same_fact(two_lines, [made(one_line, "상태값 제어", "조합")], FACT_PAGE, "조합")
+    assert same_fact(one_line, [made(two_lines, "애니메이션 제어", "조합")], FACT_PAGE, "조합")
+
+
+def test_sharing_one_sentence_each_is_not_the_same_fact() -> None:
+    # 문장 하나씩만 같은 줄을 물으면 다른 문제(0928 '애니메이션 제어' · '이미지 로딩 상태 연동'처럼
+    # 한 줄만 겹친 두 문제는 사람이 봐도 다른 내용)
+    first = lines(REQUEST, RESIZE, LOAD_END)
+    second = lines(RESPONSE, UNKNOWN, "앱은 서버 안의 진행 정도를 직접 알 수 있다")
+    assert not same_fact(second, [made(first, "애니메이션 제어", "조합")], FACT_PAGE, "조합")
+
+
+def test_sharing_one_sentence_with_a_question_of_another_page_is_not_the_same_fact() -> None:
+    # 앞 문제는 다른 쪽(resizeMode · onLoadEnd 줄이 있는 쪽)에서 만듦: 이 쪽 글로는 근거가 문장
+    # 하나(REQUEST)만 남음. 기준을 근거가 남은 문장 수(1)로 낮추면 문장 하나만 겹쳐도 같은
+    # 사실이 됐음(Codex 리뷰 #354)
+    first = lines(REQUEST, RESIZE, LOAD_END)
+    second = lines(RESPONSE, UNKNOWN, "앱은 서버 안의 진행 정도를 직접 알 수 있다")
+    this_page = "\n".join(FACT_PAGE.split("\n")[:3])  # 제목 · 요청 줄 · 서버 상태 줄
+    assert not same_fact(second, [made(first, "애니메이션 제어", "조합")], this_page, "조합")
+    # 문장 둘이 겹치면 그대로 같은 사실
+    third = lines(RESPONSE, FLIPPED, UNKNOWN)
+    assert same_fact(third, [made(first, "애니메이션 제어", "조합")], this_page, "조합")
+
+
+def test_other_note_lines_are_not_the_same_fact() -> None:
+    before = [made(lines(REQUEST, RESPONSE, UNKNOWN), "상태값 제어", "조합")]
+    assert not same_fact(lines(RESIZE, LOAD_END, RESIZE), before, FACT_PAGE, "조합")
+
+
+def test_note_lines_joined_into_one_line_keep_their_facts_apart() -> None:
+    # OCR이 줄바꿈 없이 여러 문장을 한 줄로 주는 쪽: 줄 전체를 근거로 보면 서로 다른 사실(REQUEST ·
+    # RESIZE)이 모두 같은 근거가 됨(Codex 리뷰 #362). 문장 끝(. ! ? 。)에서 나눠 줄바꿈이 있는 쪽과
+    # 같게 판정
+    one_line = FACT_PAGE.replace("\n", " ")
+
+    def feature(term: str, answer: str) -> Draft:
+        return negative(
+            stem=f"다음 중 {term}에 대한 설명으로 옳은 것은?",
+            passage=term,
+            options=[answer, "이미지를 지운다", "글꼴을 바꾼다", "앱을 끈다", "소리를 낸다"],
+            answer=answer,
+        )
+
+    before = [made(feature("ActivityIndicator", REQUEST), "상태값 제어", "특징")]
+    for page in (FACT_PAGE, one_line):
+        assert not same_fact(feature("resizeMode", RESIZE), before, page, "특징")
+        assert same_fact(feature("animating", FLIPPED), before, page, "특징")
+    combo = [made(lines(REQUEST, RESPONSE, UNKNOWN), "상태값 제어", "조합")]
+    assert not same_fact(lines(RESIZE, LOAD_END, RESIZE), combo, one_line, "조합")
+    assert same_fact(lines(FLIPPED, RESPONSE, REQUEST), combo, one_line, "조합")
+
+
+def test_note_text_is_split_at_sentence_ends_only() -> None:
+    # 소수점 · 점이 든 이름은 문장 끝이 아님: 마침표 뒤에 공백이 올 때만 나눔. 짧은 줄(제목)은 뺌
+    page = "Image.prefetch는 이미지를 3.5초 안에 미리 받는다. 받은 이미지는 캐시에 넣어 둔다!\n제목"
+    assert fact_lines(page) == [
+        "imageprefetch는이미지를35초안에미리받는다",
+        "받은이미지는캐시에넣어둔다",
+    ]
+    text = "상태가 바뀌면 다시 그릴까? 그렇다면 useEffect를 쓴다。화면이 새로 갱신된다"
+    assert fact_lines(text) == [
+        "상태가바뀌면다시그릴까",
+        "그렇다면useeffect를쓴다",
+        "화면이새로갱신된다",
+    ]
+
+
+def test_short_pieces_stay_with_their_line() -> None:
+    # 번호 · 물음표 앞의 짧은 조각을 버리면 번호 매긴 줄은 근거가 하나도 안 남음: 같은 줄에 붙임
+    assert fact_lines("1. 정의는 이렇다 2. 특징은 저렇다") == ["1정의는이렇다2특징은저렇다"]
+    assert fact_lines("조건 ? 참일 때 값 : 거짓일 때 값을 돌려준다") == [
+        "조건참일때값거짓일때값을돌려준다"
+    ]
+    assert fact_lines("1. 짧다") == []
+
+
+def test_one_question_sentence_joining_two_note_sentences_has_no_fact() -> None:
+    # 문장 둘을 합쳐 물으면 어느 한 문장도 FACT_COVER를 못 넘어 근거가 없음: 줄바꿈으로 나뉜 노트와
+    # 같고, 같은 사실을 못 잡는 쪽(쪽을 닫지 않음)
+    def feature(answer: str) -> Draft:
+        return negative(
+            stem="다음 중 useState에 대한 설명으로 옳은 것은?",
+            passage="useState",
+            options=[answer, "이미지를 지운다", "글꼴을 바꾼다", "앱을 끈다", "소리를 낸다"],
+            answer=answer,
+        )
+
+    joined = feature("useState는 상태를 만들고 값이 바뀌면 다시 그린다")
+    one = feature("useState는 상태를 만든다")
+    for page in (
+        "useState는 상태를 만든다. 값이 바뀌면 다시 그린다.",
+        "useState는 상태를 만든다.\n값이 바뀌면 다시 그린다.",
+    ):
+        assert not same_fact(joined, [made(joined, "상태", "특징")], page, "특징")
+        assert same_fact(one, [made(one, "상태", "특징")], page, "특징")
+
+
+def test_the_same_fact_with_another_type_is_asked_from_another_angle() -> None:
+    # 다른 유형이면 같은 줄을 물어도 됨: 내용이 모자란 노트를 다른 유형으로 채움(#268)
+    feature = negative(
+        stem="다음 중 ActivityIndicator에 대한 설명으로 옳지 않은 것은?",
+        passage="ActivityIndicator",
+        options=[FLIPPED, REQUEST, RESPONSE, UNKNOWN, LOAD_END],
+        answer=FLIPPED,
+    )
+    before = [made(lines(REQUEST, RESPONSE, UNKNOWN), "상태값 제어", "조합")]
+    assert not same_fact(feature, before, FACT_PAGE, "부정설명")
+    # 같은 유형(부정설명)이면 겹침: 옳은 설명 · 바꾼 설명이 모두 그 줄들
+    assert same_fact(feature, [made(feature, "상태값 제어", "부정설명")], FACT_PAGE, "부정설명")
+
+
+def test_the_answer_of_a_feature_question_is_its_fact() -> None:
+    def feature(term: str, answer: str) -> Draft:
+        return negative(
+            stem=f"다음 중 {term}에 대한 설명으로 옳은 것은?",
+            passage=term,
+            options=[answer, "이미지를 지운다", "글꼴을 바꾼다", "앱을 끈다", "소리를 낸다"],
+            answer=answer,
+        )
+
+    before = [made(feature("ActivityIndicator", REQUEST), "상태값 제어", "특징")]
+    # 오답 보기는 다른 개념의 설명이라 근거로 보지 않음: 정답이 같은 줄이면 겹침
+    assert same_fact(feature("animating", FLIPPED), before, FACT_PAGE, "특징")
+    assert not same_fact(feature("resizeMode", RESIZE), before, FACT_PAGE, "특징")
+
+
+def test_questions_of_earlier_sets_and_untyped_drafts_are_not_compared() -> None:
+    # 지난 세트에서 같은 사실을 물은 것은 다시 익히기(막으면 사실이 적은 노트는 몇 세트 만에
+    # 바닥남). 유형을 모르는 초안(오답 복습 · 오늘의 복습)도 보지 않음
+    old = lines(REQUEST, RESPONSE, UNKNOWN)
+    saved = seen_question(
+        {
+            "id": "q1",
+            "order": 1,
+            "type": "조합",
+            "prompt": old["stem"],
+            "passage": old["passage"],
+            "choices": old["options"],
+            "answer": old["answer"],
+        }
+    )
+    again = lines(FLIPPED, RESPONSE, REQUEST)
+    assert not same_fact(again, [saved, seen_draft(old)], FACT_PAGE, "조합")
+
+
+def test_lines_of_another_page_are_not_facts_of_this_page() -> None:
+    before = [made(lines(REQUEST, RESPONSE, UNKNOWN), "상태값 제어", "조합")]
+    other_page = "resizeMode는 이미지 크기와 화면 영역이 다를 때 이미지를 어떻게 맞출지 정한다."
+    assert not same_fact(lines(FLIPPED, RESPONSE, REQUEST), before, other_page, "조합")

@@ -1,0 +1,276 @@
+import { useEffect, useRef } from 'react';
+import { Pressable, View } from 'react-native';
+import { Text } from '@/components/text';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useQuery } from '@tanstack/react-query';
+import { Accelerometer } from 'expo-sensors';
+import { useKeepAwake } from 'expo-keep-awake';
+import * as ScreenOrientation from 'expo-screen-orientation';
+import { Mic, PartyPopper, PenLine, X } from 'lucide-react-native';
+import { api } from '@/lib/api';
+import { useFeatureNavigation } from '@/lib/feature-navigation';
+import { WD, diffLabel, goalLabel, hm, hms, seoul, ymd, today as seoulToday } from '@/lib/dates';
+
+import { useNow } from '@/hooks';
+import { useSession } from '@/stores/session';
+import { toast } from '@/stores/toast';
+import { Btn, Canvas, Card, Progress, RollUp, Screen } from '@/components/ui';
+import { C, ICON } from '@/theme';
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+// p.48 #6 공부 종료 요약
+
+export function SummaryScreen() {
+  const openFeature = useFeatureNavigation();
+  const { sec, points } = useLocalSearchParams<{ sec?: string; points?: string }>();
+  const today = useQuery({ queryKey: ['study', 'today', seoulToday()], queryFn: api.study.today });
+  const weekly = useQuery({
+    queryKey: ['study', 'weekly', seoulToday()],
+    queryFn: api.study.weekly,
+  });
+  const goal = useQuery({
+    queryKey: ['goal', 'weekly', seoulToday()],
+    queryFn: api.study.weeklyGoal,
+  });
+  const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
+  const items = today.data?.items ?? [];
+  const total = today.data?.totalSec ?? 0;
+  const done = items.filter((i) => i.goalMin && i.accumulatedSec >= i.goalMin * 60).length;
+  const goalMin = goal.data?.targetMin;
+  const pct =
+    goalMin && weekly.data ? Math.round((weekly.data.totalSec / 60 / goalMin) * 100) : null;
+  useEffect(() => {
+    if (Number(points) > 0) toast(`순공 세션 완료 +${points}P`);
+  }, [points]);
+  const home = () => router.dismissTo('/');
+  return (
+    <Canvas>
+      <Screen
+        footer={
+          <>
+            <Btn onPress={home}>홈으로</Btn>
+            <Pressable onPress={() => openFeature('/record', 'replace')} className="mt-2">
+              <Text className="text-center text-footnote text-brand">학습 기록 보기 ›</Text>
+            </Pressable>
+          </>
+        }
+      >
+        <View className="items-end pt-3">
+          <Pressable accessibilityLabel="닫기" onPress={home} hitSlop={10}>
+            <X size={ICON.md} color={C.sub} />
+          </Pressable>
+        </View>
+        <View className="items-center">
+          <View className="mb-3 h-16 w-16 items-center justify-center rounded-full bg-mint">
+            <PartyPopper size={ICON.xl} color={C.brand} />
+          </View>
+          <Text className="text-title3 font-bold text-ink">수고했어요, {me.data?.nickname} 님</Text>
+          <Text className="text-caption text-sub">
+            오늘 순공시간{sec ? ` · 이번 세션 ${hm(Number(sec))}` : ''}
+          </Text>
+          <View className="mt-2">
+            <RollUp
+              value={hms(total)}
+              from="00:00:00"
+              className="text-large font-bold text-brand"
+            />
+          </View>
+        </View>
+        {today.isError && !today.data && (
+          <View className="mt-4 gap-2">
+            <Text className="text-footnote text-sub">오늘 기록을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void today.refetch()}>
+              오늘 기록 다시 시도
+            </Btn>
+          </View>
+        )}
+        {/* 눌러서 하는 일이 없어 카드가 아니라 구획으로 (디자인 점검: 카드는 누르는 단위만) */}
+        <View className="mt-10 px-1">
+          <View className="flex-row justify-between">
+            <Text className="text-subhead font-semibold text-ink">항목별 목표</Text>
+            <Text className="text-footnote text-brand">
+              {items.length}개 중 {done}개 달성
+            </Text>
+          </View>
+          {items.map((i) => (
+            <View key={i._id} className="mt-4">
+              <View className="flex-row justify-between">
+                <Text className="text-footnote text-ink">
+                  {i.title} · {i.subjectName}
+                </Text>
+                <Text className="text-footnote text-ink">
+                  <Text className="font-bold">{Math.floor(i.accumulatedSec / 60)}분</Text>
+                  <Text className="text-sub">
+                    {' '}
+                    / {goalLabel(i.goalMin)}
+                    {i.goalMin && i.accumulatedSec >= i.goalMin * 60 ? ' ✓' : ''}
+                  </Text>
+                </Text>
+              </View>
+              <Progress
+                value={i.goalMin ? (i.accumulatedSec / (i.goalMin * 60)) * 100 : 0}
+                className="mt-1.5"
+              />
+            </View>
+          ))}
+        </View>
+        {!!goalMin && pct !== null && (
+          <>
+            <View className="mt-8 flex-row justify-between px-1">
+              <Text className="text-subhead font-semibold text-ink">
+                이번주 목표 {goalMin / 60}시간
+              </Text>
+              <Text className="text-subhead font-semibold text-brand">{pct}%</Text>
+            </View>
+            <Progress value={pct} className="mt-1.5" />
+          </>
+        )}
+        {weekly.data ? (
+          <Text className="mt-2 px-1 text-caption text-sub">
+            {hm(weekly.data.totalSec)} · {diffLabel(weekly.data.diffFromLastWeekSec)}
+          </Text>
+        ) : (
+          weekly.isError && (
+            <View className="mt-2 gap-2">
+              <Text className="text-caption text-sub">이번주 기록을 불러오지 못했어요</Text>
+              <Btn small onPress={() => void weekly.refetch()}>
+                이번주 기록 다시 시도
+              </Btn>
+            </View>
+          )
+        )}
+        <Card className="mt-8 p-6">
+          <Text className="text-subhead font-semibold text-ink">
+            오늘 공부를 노트로 남겨둘까요?
+          </Text>
+          <Text className="text-caption text-sub">
+            올린 필기·녹음은 오늘 공부한 시간과 함께 기록돼요
+          </Text>
+          <View className="mt-4 flex-row gap-3">
+            <Card
+              tone="mint"
+              className="flex-1 items-center gap-1 py-4"
+              onPress={() =>
+                openFeature(
+                  { pathname: '/(tabs)/note', params: { upload: 'hand' } },
+                  'navigate',
+                  '/capture/camera',
+                )
+              }
+            >
+              <PenLine size={ICON.md} color={C.brand} />
+              <Text className="text-footnote font-semibold text-ink">필기 사진</Text>
+              <Text className="text-caption2 text-sub">촬영 · 갤러리</Text>
+            </Card>
+            <Card
+              tone="mint"
+              className="flex-1 items-center gap-1 py-4"
+              onPress={() =>
+                openFeature(
+                  { pathname: '/(tabs)/note', params: { upload: 'rec' } },
+                  'navigate',
+                  '/capture/rec-upload',
+                )
+              }
+            >
+              <Mic size={ICON.md} color={C.brand} />
+              <Text className="text-footnote font-semibold text-ink">녹음</Text>
+              <Text className="text-caption2 text-sub">파일 · 실시간</Text>
+            </Card>
+          </View>
+        </Card>
+      </Screen>
+    </Canvas>
+  );
+}
+
+/** p.49 #8 가로로 돌리면 자동 측정 — 세로로 세우면 측정을 멈추고 돌아간다 */
+function DeskAwake() {
+  useKeepAwake('desk-clock');
+  return null;
+}
+
+export function LandscapeScreen() {
+  const s = useSession();
+  const now = useNow();
+  const day = ymd(seoul(now));
+  const midnight = Date.parse(`${day}T00:00:00+09:00`);
+  const today = useQuery({ queryKey: ['study', 'today', day], queryFn: api.study.today });
+  const active = today.data?.items.find((i) => i._id === s.itemId);
+  // 지금 공부하는 항목의 오늘 시간 (다른 항목 시간은 더하지 않는다)
+  const total = (active?.accumulatedSec ?? 0) + s.elapsedSince(midnight, now);
+  const leaving = useRef(false);
+  const exit = () => {
+    if (leaving.current) return;
+    leaving.current = true;
+    if (s.itemId) s.pause(); // 탁상 시계(측정 없음)는 멈출 것이 없다
+    router.back();
+  };
+  useEffect(() => {
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
+    // 이전 화면의 정지 요청이 대기 중이어도 마지막 가로 진입 의도를 전달한다.
+    if (s.itemId) void s.resume();
+    Accelerometer.setUpdateInterval(400);
+    const sub = Accelerometer.addListener(({ y }) => Math.abs(y) > 0.8 && exit());
+    return () => {
+      sub.remove();
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // 측정 중이 아니면 탁상 시계: 지금 시각 · 날짜와 오늘 순공시간
+  if (!s.itemId) {
+    const t = seoul(now);
+    const date = `${t.getMonth() + 1}월 ${t.getDate()}일 (${WD[t.getDay()]})`;
+    const time = `${pad2(t.getHours())}:${pad2(t.getMinutes())}`;
+    // 불러오기 전 · 실패 때 0으로 보이면 공부한 사람에게 틀린 값이라, 받은 뒤에만 보인다
+    const studied = today.data ? `오늘 순공시간 ${hms(today.data.totalSec)}` : '';
+    return (
+      <Pressable
+        onPress={exit}
+        // 화면 읽기에도 보이는 정보(날짜 · 시각 · 순공시간)를 그대로 읽어 주고, 돌아가는 방법은 힌트로
+        accessibilityRole="button"
+        accessibilityLabel={['탁상 시계', `${date} ${time}`, studied].filter(Boolean).join(', ')}
+        accessibilityHint="누르거나 세로로 돌리면 돌아가요"
+        className="flex-1 items-center justify-center bg-black px-10"
+      >
+        {/* 시계로 세워 두는 화면이라 기기 자동 잠금으로 꺼지지 않게 */}
+        <DeskAwake />
+        <Text className="text-body font-semibold text-white/70">{date}</Text>
+        <Text
+          className="tabular-nums text-timer font-bold text-white"
+          style={{ fontVariant: ['tabular-nums'] }}
+        >
+          {time}
+        </Text>
+        {!!studied && <Text className="text-footnote text-orange">{studied}</Text>}
+        <Text className="absolute bottom-8 text-caption text-white/60">세로로 돌리면 돌아가요</Text>
+      </Pressable>
+    );
+  }
+  return (
+    <Pressable onPress={exit} className="flex-1 items-center justify-center bg-black px-10">
+      <View className="absolute top-8 left-10 flex-row items-center gap-1.5">
+        <View
+          className="h-1.5 w-1.5 rounded-full"
+          style={{ backgroundColor: s.since ? C.sun : C.sub }}
+        />
+        <Text className="text-footnote text-white">
+          {s.since ? '자동 측정 중' : s.sessionId ? '일시정지' : '측정 시작 대기'}
+        </Text>
+      </View>
+      <Text className="text-body font-semibold text-white">
+        {active ? `${active.title} · ${active.subjectName}` : '순공시간'}
+      </Text>
+      <Text
+        className="tabular-nums text-timer font-bold text-orange"
+        style={{ fontVariant: ['tabular-nums'] }}
+      >
+        {hms(total)}
+      </Text>
+      <Text className="absolute bottom-8 text-caption text-white/60">
+        세로로 돌리면 측정을 멈춰요
+      </Text>
+    </Pressable>
+  );
+}

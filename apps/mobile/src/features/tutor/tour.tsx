@@ -1,0 +1,453 @@
+import { useEffect, useRef, useState, type RefObject } from 'react';
+import { View, useWindowDimensions } from 'react-native';
+import Animated, {
+  ReduceMotion,
+  useAnimatedProps,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+  type SharedValue,
+} from 'react-native-reanimated';
+import Svg, { Path } from 'react-native-svg';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router, type Href } from 'expo-router';
+import * as SecureStore from 'expo-secure-store';
+import { create } from 'zustand';
+import { Text } from '@/components/text';
+import { Alert, Btn, Swap, cx } from '@/components/ui';
+import { useAuth } from '@/stores/auth';
+import { Avatar3D, type Mood } from './avatar3d';
+import { useEquippedAvatar } from './buddy';
+
+// 이 기기에서 처음 안내를 본(또는 건너뛴) 계정. 로그아웃해도 남겨 다시 보여 주지 않는다
+// ponytail: 기기 단위 기록(auth의 notelink.onboarded와 같은 방식) — 서버가 계정 값을 주면 바꾼다
+const TOURED_KEY = 'notelink.toured';
+async function touredIds() {
+  try {
+    const v = JSON.parse((await SecureStore.getItemAsync(TOURED_KEY)) ?? '[]');
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+/** 못 적으면 다음에 한 번 더 보여 줄 뿐이라 막지 않는다 */
+export async function rememberToured(id: string) {
+  const ids = await touredIds();
+  if (!ids.includes(id))
+    await SecureStore.setItemAsync(TOURED_KEY, JSON.stringify([...ids, id])).catch(() => {});
+}
+
+/**
+ * 안내 진행 상태. step이 -1이면 닫혀 있다. kind: 처음 안내(main) · 첫 폴더를 만든 뒤 폴더 안 + 버튼 안내(folder).
+ * afterFolder: 처음 안내 끝에 「첫 학습 폴더 만들기」를 눌러, 폴더를 만들면 폴더 안내를 이어 연다
+ */
+export const useTour = create<{
+  step: number;
+  kind: 'main' | 'folder';
+  afterFolder: boolean;
+  go: (step: number) => void;
+  start: (kind: 'main' | 'folder') => void;
+  setAfterFolder: (v: boolean) => void;
+}>((set) => ({
+  step: -1,
+  kind: 'main',
+  afterFolder: false,
+  go: (step) => set({ step }),
+  start: (kind) => set({ kind, step: 0 }),
+  setAfterFolder: (afterFolder) => set({ afterFolder }),
+}));
+
+/** 가입을 마치고 처음 들어오면 한 번 안내를 연다(탭 화면에서 부름) */
+export function useTourOnce(ready: boolean) {
+  const userId = useAuth((s) => s.userId);
+  useEffect(() => {
+    if (!ready || !userId) return;
+    let live = true;
+    void touredIds().then((ids) => {
+      if (live && !ids.includes(userId)) useTour.getState().start('main');
+    });
+    return () => {
+      live = false;
+    };
+  }, [ready, userId]);
+}
+
+/* ── 짚어 줄 자리: 화면이 ref를 걸어 두면 안내가 그 자리를 재서 밝힌다 ── */
+
+const targets = new Map<string, RefObject<View | null>>();
+/** 안내가 짚을 버튼에 건다(예: 노트 탭의 + 버튼) */
+export function useTourTarget(name: string) {
+  const ref = useRef<View>(null);
+  useEffect(() => {
+    targets.set(name, ref);
+    return () => {
+      if (targets.get(name) === ref) targets.delete(name);
+    };
+  }, [name]);
+  return ref;
+}
+type Rect = { x: number; y: number; w: number; h: number };
+const measure = (name: string) =>
+  new Promise<Rect | null>((resolve) => {
+    const view = targets.get(name)?.current;
+    if (!view) return resolve(null);
+    view.measureInWindow((x, y, w, h) => resolve(w > 0 ? { x, y, w, h } : null));
+  });
+
+type Spot = { tab: number } | { target: string; tab: number } | null;
+type Step = {
+  /** 이 단계를 보여 줄 화면. 없으면 지금 화면 그대로(폴더 안내) */
+  route?: Href;
+  spot: Spot;
+  /** 흐름(정리 0 · 학습 1 · 복습 2) 중 지금 단계 */
+  flow: number | null;
+  title: string;
+  /** 한 줄에 한 가지씩. 카드에서 줄마다 점을 찍어 짧게 읽히게 한다 */
+  lines: string[];
+};
+/** 학습 단계가 실제 3D 선생님을 보여 주려고 잠깐 여는 화면(프로필 탭 안) */
+const TEACHER_ROUTE = '/(tabs)/profile/avatar-teacher';
+/** 실제 화면을 옮겨 다니며 정리 → 학습 → 복습에서 무엇을 누르는지 짚어 준다 */
+export const STEPS: Step[] = [
+  {
+    route: '/',
+    spot: null,
+    flow: null,
+    title: '안녕하세요, 아바타 선생님이에요',
+    lines: ['공부는 정리 → 학습 → 복습 순서로 이어져요.', '실제 화면을 하나씩 보여 드릴게요.'],
+  },
+  {
+    route: '/note',
+    spot: { tab: 1 },
+    flow: 0,
+    title: '노트 탭',
+    lines: [
+      '강의 녹음, 필기 사진, 문서를 모아 두는 곳이에요.',
+      '과목별 학습 폴더로 나눠 정리해요.',
+    ],
+  },
+  {
+    route: '/note',
+    spot: { target: 'note-add', tab: 1 },
+    flow: 0,
+    title: '자료 올리기',
+    lines: [
+      '여기를 눌러 학습 폴더를 먼저 만들어요.',
+      '폴더에 들어가 + 버튼으로 녹음 · 필기 · 문서를 올려요.',
+      '올린 자료는 제가 AI로 요약하고 핵심을 정리해 드려요.',
+    ],
+  },
+  {
+    // 노트가 없어도 실제 3D 선생님이 있는 화면(프로필 > 아바타 선생님)에서 저를 밝혀 보여 준다
+    route: TEACHER_ROUTE,
+    spot: { target: 'teacher-stage', tab: 4 },
+    flow: 1,
+    title: '저에게 물어보기',
+    lines: [
+      '정리된 노트를 열면 화면 구석에 제가 있어요.',
+      '저를 눌러 궁금한 걸 물어보세요.',
+      '노트와 퀴즈에 있는 내용으로만 설명해 드려요.',
+    ],
+  },
+  {
+    route: '/quiz',
+    spot: { tab: 2 },
+    flow: 2,
+    title: '퀴즈 탭',
+    lines: ['정리한 노트로 퀴즈를 풀며 복습해요.', '맞히면 칭찬하고, 틀리면 해설과 함께 응원해요.'],
+  },
+  {
+    route: '/quiz',
+    spot: { target: 'quiz-make', tab: 2 },
+    flow: 2,
+    title: '퀴즈 만들기',
+    lines: [
+      '여기서 노트를 골라 퀴즈를 만들어요.',
+      '틀린 문제는 결과 화면에서 유사 퀴즈로 다시 풀어요.',
+      '다시 볼 문제는 보관함에 모아 둬요.',
+    ],
+  },
+  {
+    route: '/quiz',
+    spot: { tab: 2 },
+    flow: 2,
+    title: '틀린 문제 다시 풀기',
+    lines: [
+      '퀴즈에서 틀린 문제는 오답 노트에 모여요.',
+      '하루에 처음 앱을 열면 지난번에 틀린 문제를 다시 풀어요.',
+      '맞힌 문제는 오답 노트에서 빠져요.',
+    ],
+  },
+  {
+    route: '/',
+    spot: { tab: 0 },
+    flow: null,
+    title: '이제 시작해 볼까요?',
+    lines: [
+      '① 노트 탭에서 폴더를 만들고 자료를 올려요',
+      '② 정리된 노트를 저에게 묻고 퀴즈로 확인해요',
+      '③ 틀린 문제는 유사 퀴즈 · 보관함으로 다시 풀어요',
+      '먼저 첫 학습 폴더를 만들어 봐요.',
+    ],
+  },
+];
+/** 첫 폴더를 만든 뒤 그 폴더 안에서 이어 가는 안내: + 버튼으로 올리는 방법과 그다음 */
+export const FOLDER_STEPS: Step[] = [
+  {
+    spot: { target: 'folder-add', tab: 1 },
+    flow: 0,
+    title: '폴더가 생겼어요! 이제 + 버튼',
+    lines: [
+      '+ 버튼을 누르면 세 가지로 올릴 수 있어요.',
+      '학습 자료(PDF · 사진 · 스캔), 녹음(파일 · 실시간), 필기(촬영 · 갤러리)',
+      '하나를 골라 올리면 제가 요약하고 핵심을 정리해 드려요.',
+    ],
+  },
+  {
+    spot: null,
+    flow: 1,
+    title: '올린 다음에는',
+    lines: [
+      '정리가 끝난 자료를 열면 저에게 물어볼 수 있어요.',
+      '퀴즈 탭에서 그 노트로 퀴즈를 만들어요.',
+      '틀린 문제는 결과 화면에서 유사 퀴즈로 다시 풀어요.',
+    ],
+  },
+];
+const FLOW = ['정리', '학습', '복습'];
+
+const TAB_BAR = 49; // iOS 기본 탭 막대 높이(홈 표시줄 제외)
+const PAD = 8; // 밝힌 자리 둘레 여백
+const R = ReduceMotion.System;
+// 자리를 옮길 때: 빠르게 떠나 살짝 넘었다 돌아오며 멈춘다(stageshow motion.md: 작은 표시만 튕김)
+const TRAVEL = { duration: 520, dampingRatio: 0.7, reduceMotion: R };
+const AnimatedPath = Animated.createAnimatedComponent(Path);
+
+/** 화면 전체를 어둡게 덮고 밝힐 자리만 둥근 사각형으로 뚫는다(evenodd) */
+function hole(W: number, H: number, x: number, y: number, w: number, h: number) {
+  'worklet';
+  const r = Math.min(16, w / 2, h / 2);
+  return (
+    `M0 0H${W}V${H}H0Z ` +
+    `M${x + r} ${y}H${x + w - r}Q${x + w} ${y} ${x + w} ${y + r}V${y + h - r}` +
+    `Q${x + w} ${y + h} ${x + w - r} ${y + h}H${x + r}Q${x} ${y + h} ${x} ${y + h - r}` +
+    `V${y + r}Q${x} ${y} ${x + r} ${y}Z`
+  );
+}
+
+function useSpring(v: SharedValue<number>, to: number) {
+  useEffect(() => {
+    v.set(withSpring(to, TRAVEL));
+  }, [v, to]);
+}
+
+/**
+ * 처음 안내(코치 마크). 탭 화면 위에 떠서 단계마다 실제 화면으로 옮겨 가고, 눌러야 할 자리를
+ * 밝힌 채 아바타가 설명한다. 밝힌 자리는 다음 자리로 "슉" 옮겨 가고, 설명 카드는 그 자리를
+ * 가리지 않게 위아래로 비켜 선다. 아래 '건너뛰기'는 한 번 더 묻는다.
+ */
+export function TourCoach() {
+  const step = useTour((s) => s.step);
+  const go = useTour((s) => s.go);
+  const userId = useAuth((s) => s.userId);
+  const avatar = useEquippedAvatar();
+  const { width: W, height: H } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const [spot, setSpot] = useState<Rect | null>(null);
+  const [skip, setSkip] = useState(false);
+  const on = step >= 0;
+  const kind = useTour((t) => t.kind);
+  const steps = kind === 'folder' ? FOLDER_STEPS : STEPS;
+  const s = steps[Math.min(Math.max(0, step), steps.length - 1)]!;
+  const last = step === steps.length - 1;
+
+  // 단계마다 그 화면으로 옮기고, 화면이 바뀐 뒤 짚을 자리를 잰다
+  // 앞 단계에서 연 화면. 선생님 화면을 지나가면 프로필 탭을 첫 화면(설정)으로 되돌려 둔다
+  const shown = useRef<Href | undefined>(undefined);
+  useEffect(() => {
+    if (!on) return;
+    if (s.route) {
+      if (shown.current === TEACHER_ROUTE && s.route !== TEACHER_ROUTE)
+        router.navigate('/(tabs)/profile');
+      router.navigate(s.route);
+      shown.current = s.route;
+    }
+    let live = true;
+    const tabRect = (i: number): Rect => {
+      const cw = W / 5;
+      return { x: cw * i + cw / 2 - 30, y: H - insets.bottom - TAB_BAR, w: 60, h: TAB_BAR };
+    };
+    // 옮겨 간 화면이 아직 불러오는 중이면 짚을 자리가 없으므로 잠깐씩 다시 잰다(끝내 없으면 탭을 밝힘)
+    const find = async (target: string) => {
+      for (let i = 0; i < 6 && live; i++) {
+        const r = await measure(target);
+        if (r) return r;
+        await new Promise((ok) => setTimeout(ok, 250));
+      }
+      return null;
+    };
+    const t = setTimeout(async () => {
+      const sp = s.spot;
+      const rect = !sp
+        ? null
+        : 'target' in sp
+          ? ((await find(sp.target)) ?? tabRect(sp.tab))
+          : tabRect(sp.tab);
+      if (live) setSpot(rect);
+    }, 420);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [on, step, s, W, H, insets.bottom]);
+
+  // 밝힌 자리: 없으면 화면 가운데 점으로 오므라든다
+  const box = spot
+    ? { x: spot.x - PAD, y: spot.y - PAD, w: spot.w + PAD * 2, h: spot.h + PAD * 2 }
+    : { x: W / 2, y: H / 2, w: 0, h: 0 };
+  const x = useSharedValue(box.x);
+  const y = useSharedValue(box.y);
+  const w = useSharedValue(box.w);
+  const h = useSharedValue(box.h);
+  useSpring(x, box.x);
+  useSpring(y, box.y);
+  useSpring(w, box.w);
+  useSpring(h, box.h);
+  const dim = useAnimatedProps(() => ({ d: hole(W, H, x.get(), y.get(), w.get(), h.get()) }));
+  const ring = useAnimatedStyle(() => ({
+    left: x.get(),
+    top: y.get(),
+    width: w.get(),
+    height: h.get(),
+    opacity: w.get() > 4 ? 1 : 0,
+  }));
+
+  // 설명 카드: 밝힌 자리가 아래쪽이면 위로, 아니면 아래로 비켜 선다
+  const below = !spot || spot.y + spot.h / 2 < H * 0.55;
+  const cardAt = useSharedValue(0);
+  useEffect(() => {
+    cardAt.set(withTiming(below ? 1 : 0, { duration: 260, reduceMotion: R }));
+  }, [below, cardAt]);
+  const [cardH, setCardH] = useState(0);
+  const card = useAnimatedStyle(() => {
+    const top = insets.top + 56;
+    const bottom = H - insets.bottom - TAB_BAR - 16 - cardH;
+    return { top: top + (bottom - top) * cardAt.get() };
+  });
+
+  // 단계가 바뀌면 잠깐 말하고 멈춘다
+  const [quiet, setQuiet] = useState(-1);
+  useEffect(() => {
+    const t = setTimeout(() => setQuiet(step), 1800);
+    return () => clearTimeout(t);
+  }, [step]);
+  const mood: Mood = quiet === step ? 'idle' : 'talking';
+
+  if (!on) return null;
+  const done = async (to?: Href) => {
+    go(-1);
+    setSpot(null);
+    if (userId) await rememberToured(userId);
+    if (to) router.navigate(to);
+  };
+
+  return (
+    <View className="absolute inset-0" accessibilityViewIsModal>
+      <Svg width={W} height={H} style={{ position: 'absolute' }} pointerEvents="none">
+        <AnimatedPath animatedProps={dim} fill="rgba(20,24,22,0.62)" fillRule="evenodd" />
+      </Svg>
+      <Animated.View
+        pointerEvents="none"
+        className="absolute rounded-2xl border-2 border-white"
+        style={ring}
+      />
+      <Animated.View
+        className="absolute inset-x-4 rounded-card bg-white p-4"
+        style={card}
+        onLayout={(e) => setCardH(e.nativeEvent.layout.height)}
+      >
+        <View className="flex-row items-start gap-3">
+          <View className="h-14 w-14 items-center justify-center overflow-hidden rounded-full bg-mint">
+            <Avatar3D mood={mood} avatarId={avatar} size={52} framing="head" />
+          </View>
+          <View className="flex-1">
+            {/* 정리 → 학습 → 복습: 지금 설명하는 단계가 채워진다 */}
+            <View className="mb-1.5 flex-row items-center gap-1">
+              {FLOW.map((f, n) => (
+                <View key={f} className="flex-row items-center gap-1">
+                  {n > 0 && <Text className="text-caption2 text-sub">→</Text>}
+                  <View
+                    className={cx(
+                      'rounded-full px-2 py-0.5',
+                      s.flow === n ? 'bg-brand' : 'bg-fill',
+                    )}
+                  >
+                    <Text
+                      className={cx(
+                        'text-caption2 font-semibold',
+                        s.flow === n ? 'text-white' : 'text-sub',
+                      )}
+                    >
+                      {f}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+            <Swap k={step}>
+              <View className="gap-1.5">
+                <Text className="text-headline font-bold text-ink">{s.title}</Text>
+                {s.lines.map((line) => (
+                  <View key={line} className="flex-row gap-2">
+                    {/* ①②③처럼 번호가 있는 줄은 점 없이 */}
+                    {!/^[①-⑳]/.test(line) && (
+                      <View className="mt-2 h-1.5 w-1.5 rounded-full bg-brand" />
+                    )}
+                    <Text className="flex-1 text-subhead text-ink">{line}</Text>
+                  </View>
+                ))}
+              </View>
+            </Swap>
+          </View>
+        </View>
+        <View className="mt-4 flex-row items-center gap-2">
+          <Text className="flex-1 text-caption text-sub">
+            {step + 1} / {steps.length}
+          </Text>
+          {!last && (
+            <Btn small kind="ghost" onPress={() => setSkip(true)}>
+              건너뛰기
+            </Btn>
+          )}
+          <Btn
+            small
+            onPress={() => {
+              if (!last) return go(step + 1);
+              if (kind === 'folder') return void done();
+              // 노트 탭으로 간 뒤 폴더 만들기를 바로 연다(버튼 이름대로). 폴더를 만들면 폴더 안내로 잇는다
+              useTour.getState().setAfterFolder(true);
+              void done('/note').then(() => router.push('/note-new/tag'));
+            }}
+          >
+            {!last ? '다음' : kind === 'folder' ? '시작하기' : '첫 학습 폴더 만들기'}
+          </Btn>
+        </View>
+      </Animated.View>
+      <Alert
+        open={skip}
+        tone="brand"
+        icon="?"
+        title="안내를 건너뛰시겠습니까?"
+        body="아바타 선생님은 정리된 노트에서 언제든 다시 만날 수 있어요."
+        primary="건너뛰기"
+        secondary="계속 보기"
+        onPrimary={() => {
+          setSkip(false);
+          void done();
+        }}
+        onSecondary={() => setSkip(false)}
+      />
+    </View>
+  );
+}

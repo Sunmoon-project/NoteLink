@@ -23,14 +23,20 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 
-# 비밀값 (.env.example만 커밋)
+# 비밀값 (배포 기준 예시 .env.production만 커밋. 실제 값은 넣지 않음)
 .env
 .env.*
-!.env.example
+!.env.production
+
+# AI 처리기가 DB에 적지 못한 Claude 비용을 남기는 파일(apps/ai, #298)
+llm-cost-spool.json*
 
 # 기타
 .DS_Store
 *.log
+
+# 발표 자료 원본(대용량)은 저장소에 올리지 않는다
+docs/*.pdf
 
 # Turborepo 캐시
 .turbo/

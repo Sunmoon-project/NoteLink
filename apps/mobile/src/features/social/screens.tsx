@@ -1,0 +1,541 @@
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import { useEffect, useRef, useState } from 'react';
+import { FlatList, Pressable, View } from 'react-native';
+import { Text, TextInput } from '@/components/text';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { MoreHorizontal, Search as SearchIcon } from 'lucide-react-native';
+import type { Message, User } from '@notelink/shared';
+import { api, ApiError } from '@/lib/api';
+import { socket } from '@/lib/socket';
+import { timeAgo } from '@/lib/dates';
+import { useSocket } from '@/hooks';
+import { toast } from '@/stores/toast';
+import {
+  Avatar,
+  Btn,
+  Canvas,
+  Card,
+  Dialog,
+  Group,
+  Header,
+  LIST_LAYOUT,
+  Row,
+  Screen,
+  Search,
+  Sheet,
+  Two,
+  cx,
+} from '@/components/ui';
+import { useAuth } from '@/stores/auth';
+import { C, ICON, MOTION } from '@/theme';
+import { StatusText } from './drawer';
+
+// p.53~55 친구 추가 · 요청 · 채팅 · 삭제
+
+const DIRECT_MESSAGE_PAGE_SIZE = 50;
+
+type DirectHistory = { messages: Message[]; hasMore: boolean; nextBefore?: string };
+
+function mergeMessages(...groups: Message[][]): Message[] {
+  return [...new Map(groups.flat().map((message) => [message._id, message])).values()].sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a._id.localeCompare(b._id),
+  );
+}
+
+export function FriendAddScreen() {
+  const [q, setQ] = useState('');
+  const [sent, setSent] = useState<string[]>([]);
+  const result = useQuery({
+    queryKey: ['user-search', q],
+    queryFn: () => api.social.search(q),
+    enabled: q.trim().length > 0,
+  });
+  const send = useMutation({
+    mutationFn: (userId: string) => api.social.sendRequest(userId),
+    // 서버가 이유를 알려 주면(이미 친구예요 · 나에게는 보낼 수 없어요 등) 그 문구를 보여 준다
+    onError: (e) =>
+      toast(
+        e instanceof ApiError && e.status < 500
+          ? e.message
+          : '친구 요청을 보내지 못했어요. 다시 시도해주세요',
+      ),
+    onSuccess: (_, userId) => {
+      setSent((p) => [...p, userId]);
+      toast('친구 요청을 보냈어요');
+    },
+  });
+  const found = result.data ?? [];
+  return (
+    <Canvas>
+      <Screen>
+        <Header title="친구 추가" />
+        <Search
+          value={q}
+          onChangeText={(v) => {
+            setQ(v);
+          }}
+          placeholder="닉네임을 입력해주세요."
+        />
+        {!q && (
+          <Text className="mt-4 text-center text-caption text-sub">
+            닉네임으로 친구를 찾아보세요 · 예) 홍길동
+          </Text>
+        )}
+        {q.trim() && result.isError && (
+          <View className="gap-2 py-3">
+            <Text className="text-footnote text-sub">친구를 찾지 못했어요</Text>
+            <Btn small onPress={() => void result.refetch()}>
+              검색 다시 시도
+            </Btn>
+          </View>
+        )}
+        {q.trim() && result.isSuccess && found.length === 0 && (
+          <Card className="mt-3 items-center py-10">
+            <SearchIcon size={ICON.lg} color={C.sub} />
+            <Text className="mt-2 text-subhead font-semibold text-ink">해당 친구는 없습니다.</Text>
+            <Text className="text-caption text-sub">닉네임을 정확히 입력했는지 확인해주세요</Text>
+          </Card>
+        )}
+        {found.length > 0 && (
+          <Text className="mt-4 text-caption text-sub">검색 결과 {found.length}</Text>
+        )}
+        {found.map((u) => {
+          const done = sent.includes(u.userId);
+          return (
+            <View key={u.userId} className="mt-2 gap-2 border-b border-fill py-3">
+              <View className="flex-row items-center gap-3">
+                <Avatar name={u.nickname} size={40} tone="mint" />
+                <View>
+                  <Text className="text-callout font-semibold text-ink">{u.nickname}</Text>
+                  <Text className="text-caption text-sub">
+                    {u.handle} · 함께 아는 친구 {u.mutualCount ?? 0}명
+                  </Text>
+                </View>
+              </View>
+              <Btn
+                small
+                kind={done ? 'outline' : 'primary'}
+                disabled={done}
+                loading={send.isPending && send.variables === u.userId}
+                onPress={() => send.mutate(u.userId)}
+              >
+                {done ? '요청 보냄' : '친구 요청 보내기'}
+              </Btn>
+            </View>
+          );
+        })}
+      </Screen>
+    </Canvas>
+  );
+}
+
+export function RequestsScreen() {
+  const qc = useQueryClient();
+  const reqs = useQuery({ queryKey: ['friend-requests'], queryFn: api.social.received });
+  const respond = useMutation({
+    mutationFn: ({ id, ok }: { id: string; ok: boolean; name: string }) =>
+      api.social.respond(id, ok),
+    onSuccess: (_, v) => {
+      qc.invalidateQueries({ queryKey: ['friend-requests'] });
+      qc.invalidateQueries({ queryKey: ['friends'] });
+      if (v.ok) toast(`${v.name}님과 친구가 됐어요`);
+    },
+    onError: () => toast('친구 요청 처리에 실패했어요. 다시 시도해주세요'),
+  });
+  return (
+    <Canvas>
+      <Screen>
+        <Header title={`받은 친구 요청 (${reqs.data?.length ?? 0})`} />
+        {reqs.isError && !reqs.data && (
+          <View className="gap-2 py-3">
+            <Text className="text-footnote text-sub">친구 요청을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void reqs.refetch()}>
+              친구 요청 다시 시도
+            </Btn>
+          </View>
+        )}
+        {reqs.data?.length === 0 && (
+          <Text className="py-16 text-center text-footnote text-sub">받은 친구 요청이 없어요</Text>
+        )}
+        <View className="gap-5">
+          {reqs.data?.map((r) => (
+            <Animated.View
+              key={r._id}
+              layout={LIST_LAYOUT}
+              entering={FadeIn.duration(MOTION.enter)}
+              exiting={FadeOut.duration(MOTION.exit)}
+            >
+              <View key={r._id}>
+                <View className="flex-row items-center gap-3">
+                  <Avatar name={r.requester.nickname} size={36} tone="mint" />
+                  <View>
+                    <Text className="text-callout font-semibold text-ink">
+                      {r.requester.nickname}
+                    </Text>
+                    <Text className="text-caption text-sub">
+                      {r.requester.handle} · {timeAgo(r.requestedAt)} 요청
+                    </Text>
+                  </View>
+                </View>
+                <View className="mt-2">
+                  <Two>
+                    <Btn
+                      small
+                      onPress={() =>
+                        respond.mutate({ id: r._id, ok: true, name: r.requester.nickname })
+                      }
+                    >
+                      수락
+                    </Btn>
+                    <Btn
+                      small
+                      kind="outline"
+                      onPress={() =>
+                        respond.mutate({ id: r._id, ok: false, name: r.requester.nickname })
+                      }
+                    >
+                      거절
+                    </Btn>
+                  </Two>
+                </View>
+              </View>
+            </Animated.View>
+          ))}
+        </View>
+      </Screen>
+    </Canvas>
+  );
+}
+
+export function ChatScreen() {
+  const myId = useAuth((s) => s.userId);
+  const {
+    id,
+    name = '',
+    status = 'resting',
+  } = useLocalSearchParams<{ id: string; name?: string; status?: User['status'] }>();
+  const qc = useQueryClient();
+  const room = useQuery({ queryKey: ['dm', id], queryFn: () => api.social.openDirect(id) });
+  const pageRequestGeneration = useRef(0);
+  const history = useQuery({
+    queryKey: ['messages', room.data?._id],
+    queryFn: async (): Promise<DirectHistory> => {
+      const requestGeneration = pageRequestGeneration.current;
+      const roomId = room.data!._id;
+      const fetched = await api.social.messages(roomId);
+      const cached = qc.getQueryData<DirectHistory>(['messages', roomId]);
+      const reconnectedDuringRequest = requestGeneration !== pageRequestGeneration.current;
+      return {
+        messages: mergeMessages(fetched, cached?.messages ?? []),
+        hasMore: reconnectedDuringRequest
+          ? (cached?.hasMore ?? fetched.length === DIRECT_MESSAGE_PAGE_SIZE)
+          : fetched.length === DIRECT_MESSAGE_PAGE_SIZE || cached?.hasMore === true,
+        nextBefore:
+          reconnectedDuringRequest || fetched.length !== DIRECT_MESSAGE_PAGE_SIZE
+            ? cached?.nextBefore
+            : fetched[0]?._id,
+      };
+    },
+    enabled: !!room.data,
+    refetchOnMount: 'always',
+  });
+  const [v, setV] = useState('');
+  const [menu, setMenu] = useState(false);
+  const [del, setDel] = useState(false);
+  const [olderLoading, setOlderLoading] = useState(false);
+  const [olderError, setOlderError] = useState(false);
+  const list = useRef<FlatList<Message>>(null);
+  const olderLoadingRef = useRef(false);
+  const contentHeight = useRef(0);
+  const scrollOffset = useRef(0);
+  const viewportHeight = useRef(0);
+  const restoreScroll = useRef<{ offset: number; contentHeight: number } | null>(null);
+  const didInitialScroll = useRef(false);
+  const nearBottom = useRef(true);
+  const receiveMessage = (m: Message) => {
+    if (m.chatRoomId !== room.data?._id) return;
+    qc.setQueryData<DirectHistory>(['messages', m.chatRoomId], (previous) => ({
+      messages: mergeMessages(previous?.messages ?? [], [m]),
+      hasMore: previous?.hasMore ?? false,
+      nextBefore: previous?.nextBefore,
+    }));
+  };
+  useSocket('chat:message', (m) => m.chatRoomId === room.data?._id && receiveMessage(m), [
+    room.data?._id,
+  ]);
+
+  useEffect(() => {
+    const chatRoomId = room.data?._id;
+    if (!chatRoomId) return;
+    const join = (connected: boolean) => {
+      if (!connected) return;
+      socket.emit('chat:join', { chatRoomId }, (result) => {
+        if (!result.ok || !result.missed) return;
+        // 재접속 이전에 시작한 페이지 요청은 더 이상 최신 커서를 결정할 수 없다.
+        pageRequestGeneration.current++;
+        olderLoadingRef.current = false;
+        setOlderLoading(false);
+        setOlderError(false);
+        qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
+          messages: mergeMessages(previous?.messages ?? [], result.missed!),
+          hasMore:
+            result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE || previous?.hasMore === true,
+          nextBefore:
+            result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE
+              ? result.missed![0]?._id
+              : previous?.nextBefore,
+        }));
+      });
+    };
+    const unsubscribe = socket.onConnection?.(join);
+    if (!socket.onConnection) join(true);
+    return () => {
+      unsubscribe?.();
+      pageRequestGeneration.current++;
+      socket.emit('chat:leave', { chatRoomId });
+    };
+  }, [room.data?._id, qc]);
+
+  const loadOlderMessages = async (manualRetry = false) => {
+    const chatRoomId = room.data?._id;
+    if (!chatRoomId) return;
+    const current = qc.getQueryData<DirectHistory>(['messages', chatRoomId]) ?? history.data;
+    const nextBefore = current?.nextBefore;
+    if (
+      !current?.hasMore ||
+      !nextBefore ||
+      olderLoadingRef.current ||
+      (olderError && !manualRetry)
+    )
+      return;
+
+    const requestGeneration = pageRequestGeneration.current;
+    olderLoadingRef.current = true;
+    setOlderLoading(true);
+    setOlderError(false);
+    try {
+      const older = await api.social.messages(chatRoomId, nextBefore);
+      if (requestGeneration !== pageRequestGeneration.current) return;
+      restoreScroll.current = { offset: scrollOffset.current, contentHeight: contentHeight.current };
+      qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
+        messages: mergeMessages(older, previous?.messages ?? []),
+        hasMore: older.length === DIRECT_MESSAGE_PAGE_SIZE,
+        nextBefore: older.length === DIRECT_MESSAGE_PAGE_SIZE ? older[0]?._id : undefined,
+      }));
+    } catch {
+      if (requestGeneration === pageRequestGeneration.current) setOlderError(true);
+    } finally {
+      if (requestGeneration === pageRequestGeneration.current) {
+        olderLoadingRef.current = false;
+        setOlderLoading(false);
+      }
+    }
+  };
+
+  const handleContentSizeChange = (_width: number, height: number) => {
+    const anchor = restoreScroll.current;
+    if (anchor) {
+      const addedHeight = Math.max(0, height - anchor.contentHeight);
+      list.current?.scrollToOffset({ offset: anchor.offset + addedHeight, animated: false });
+      restoreScroll.current = null;
+    } else if (!didInitialScroll.current && history.isSuccess) {
+      didInitialScroll.current = true;
+      list.current?.scrollToEnd({ animated: false });
+    } else if (nearBottom.current) {
+      list.current?.scrollToEnd({ animated: true });
+    }
+    contentHeight.current = height;
+  };
+
+  const send = () => {
+    if (!v.trim() || !room.data) return;
+    socket.emit(
+      'chat:send',
+      { chatRoomId: room.data._id, text: v.trim(), clientId: `c${Date.now()}` },
+      receiveMessage,
+    );
+    setV('');
+  };
+  const remove = useMutation({
+    mutationFn: () => api.social.remove(id),
+    onSuccess: async () => {
+      await qc.cancelQueries({ queryKey: ['dm', id], exact: true });
+      if (room.data?._id) {
+        await qc.cancelQueries({ queryKey: ['messages', room.data._id], exact: true });
+        qc.removeQueries({ queryKey: ['messages', room.data._id], exact: true });
+      }
+      qc.removeQueries({ queryKey: ['dm', id], exact: true });
+      qc.invalidateQueries({ queryKey: ['friends'] });
+      setDel(false);
+      router.back();
+      toast(`${name}님을 친구에서 삭제했어요`);
+    },
+    onError: () => toast('친구 삭제에 실패했어요. 다시 시도해주세요'),
+  });
+  const joinInvite = useMutation({
+    mutationFn: (inviteCode: string) => api.rooms.join(inviteCode),
+    onSuccess: async (joined) => {
+      await qc.invalidateQueries({ queryKey: ['rooms'] });
+      router.push({ pathname: '/room/[id]', params: { id: joined._id } });
+    },
+    onError: (error) =>
+      toast(error instanceof ApiError ? error.message : '스터디룸에 참여하지 못했어요'),
+  });
+
+  if (room.isError && !room.data)
+    return (
+      <Canvas>
+        <Screen>
+          <Header title={name} />
+          <Text className="mt-8 text-center text-body">대화를 불러오지 못했어요</Text>
+          <Btn className="mt-4" onPress={() => void room.refetch()}>
+            다시 시도
+          </Btn>
+        </Screen>
+      </Canvas>
+    );
+  return (
+    <Canvas>
+      <Screen
+        scroll={false}
+        footer={
+          <View className="flex-row items-center rounded-full bg-white px-4">
+            <TextInput
+              value={v}
+              onChangeText={setV}
+              onSubmitEditing={send}
+              returnKeyType="send"
+              placeholder="메시지 보내기"
+              placeholderTextColor={C.sub}
+              className="h-11 flex-1 text-subhead text-ink"
+            />
+            <Pressable onPress={send} hitSlop={8}>
+              <Text className="text-footnote font-semibold text-brand">전송</Text>
+            </Pressable>
+          </View>
+        }
+      >
+        <Header
+          right={
+            <Pressable accessibilityLabel="더보기" onPress={() => setMenu(true)} hitSlop={10}>
+              <MoreHorizontal size={ICON.md} color={C.sub} />
+            </Pressable>
+          }
+        />
+        <View className="-mt-2 mb-4 flex-row items-center gap-2">
+          <Avatar name={name} size={34} tone="mint" />
+          <View>
+            <Text className="text-callout font-bold text-ink">{name}</Text>
+            <StatusText status={status} />
+          </View>
+        </View>
+        {history.isError && !history.data && (
+          <View className="gap-2 py-3">
+            <Text className="text-footnote text-sub">대화 기록을 불러오지 못했어요</Text>
+            <Btn small onPress={() => void history.refetch()}>
+              대화 기록 다시 시도
+            </Btn>
+          </View>
+        )}
+        <FlatList
+          ref={list}
+          testID="direct-chat-messages"
+          data={history.data?.messages ?? []}
+          keyExtractor={(m) => m._id}
+          onContentSizeChange={handleContentSizeChange}
+          onLayout={(event) => {
+            viewportHeight.current = event.nativeEvent.layout.height;
+          }}
+          onScroll={(event) => {
+            const offset = event.nativeEvent.contentOffset.y;
+            scrollOffset.current = offset;
+            nearBottom.current =
+              contentHeight.current - viewportHeight.current - offset < 80;
+            if (offset < 48) void loadOlderMessages();
+          }}
+          scrollEventThrottle={100}
+          ListHeaderComponent={
+            olderError ? (
+              <Btn small kind="outline" onPress={() => void loadOlderMessages(true)}>
+                이전 대화를 불러오지 못했어요 · 다시 시도
+              </Btn>
+            ) : olderLoading ? (
+              <Text className="py-2 text-center text-caption text-sub">이전 대화 불러오는 중</Text>
+            ) : null
+          }
+          contentContainerClassName="gap-3 pb-4"
+          renderItem={({ item: m }) => {
+            const mine = m.senderId === myId;
+            if (m.type === 'study_room_invite' && m.studyRoomInvite)
+              return (
+                <View className={cx('flex-row', mine && 'justify-end')}>
+                  <View className="max-w-[85%] rounded-2xl bg-white p-4">
+                    <Text className="text-caption text-sub">스터디룸 초대</Text>
+                    <Text className="mt-1 text-footnote font-bold text-ink">
+                      {m.studyRoomInvite.title}
+                    </Text>
+                    <Text className="mt-1 text-caption text-sub">
+                      참여 코드 {m.studyRoomInvite.inviteCode}
+                    </Text>
+                    <Btn
+                      small
+                      className="mt-3"
+                      loading={joinInvite.isPending}
+                      onPress={() => joinInvite.mutate(m.studyRoomInvite!.inviteCode)}
+                    >
+                      스터디룸 참여하기
+                    </Btn>
+                  </View>
+                </View>
+              );
+            return (
+              <View className={cx('flex-row', mine && 'justify-end')}>
+                <View
+                  className={cx(
+                    'max-w-[75%] rounded-2xl px-3.5 py-2',
+                    mine ? 'bg-brand' : 'bg-white',
+                  )}
+                >
+                  <Text className={cx('text-footnote', mine ? 'text-white' : 'text-ink')}>
+                    {m.text}
+                  </Text>
+                </View>
+              </View>
+            );
+          }}
+        />
+        <Sheet open={menu} onClose={() => setMenu(false)}>
+          <Group>
+            <Row>알림 설정은 준비 중이에요</Row>
+            <Row
+              danger
+              onPress={() => {
+                setMenu(false);
+                setDel(true);
+              }}
+            >
+              친구 삭제
+            </Row>
+          </Group>
+        </Sheet>
+        <Dialog open={del} onClose={() => setDel(false)}>
+          <Text className="text-body font-bold text-ink">{name}님을 친구에서 삭제할까요?</Text>
+          <Text className="mt-1.5 text-caption text-sub">
+            대화 내용과 공유한 시간표도 함께 사라져요
+          </Text>
+          <View className="mt-5 w-full">
+            <Two>
+              <Btn small kind="cream" onPress={() => setDel(false)}>
+                취소
+              </Btn>
+              <Btn small kind="danger" loading={remove.isPending} onPress={() => remove.mutate()}>
+                삭제
+              </Btn>
+            </Two>
+          </View>
+        </Dialog>
+      </Screen>
+    </Canvas>
+  );
+}
