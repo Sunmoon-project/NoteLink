@@ -37,10 +37,10 @@ import {
   Zap,
 } from 'lucide-react-native';
 import { api, type ImageVerdict } from '@/lib/api';
-import { ApiError } from '@/lib/api/http';
+import { ApiError, NetworkError } from '@/lib/api/http';
 import { editPhoto } from '@/lib/image-edit';
 import { toast } from '@/stores/toast';
-import { checkFile, uploadToBlob, type LocalFile } from '@/lib/upload';
+import { checkFile, uploadToBlob, UploadError, type LocalFile } from '@/lib/upload';
 import { audioFileIssue, CONTENT_MIN, documentIssue, recordingIssue } from '@/lib/content-check';
 import { useDraft } from '@/stores/draft';
 import { scanTitle } from '@/lib/scan-title';
@@ -398,7 +398,17 @@ export function PickedScreen() {
           async (f) => {
             const cached = useDraft.getState().uploads.find((upload) => upload.file === f);
             // 검사가 취소되면(사진 목록이 바뀜 · 화면을 떠남) 올리던 사진도 멈춘다
-            const uri = cached?.url ?? (await uploadToBlob('image', f, undefined, signal));
+            let uri: string;
+            try {
+              uri = cached?.url ?? (await uploadToBlob('image', f, undefined, signal));
+            } catch (error) {
+              if (signal.aborted) throw error;
+              if (error instanceof NetworkError) throw new Error('사진 업로드 서버에 연결하지 못했어요.');
+              if (error instanceof ApiError)
+                throw new Error(`사진 업로드 준비에 실패했어요 (HTTP ${error.status}).`);
+              if (error instanceof UploadError) throw error;
+              throw new Error('사진을 저장소에 업로드하지 못했어요.');
+            }
             useDraft.getState().rememberUpload(f, uri);
             return {
               file: f,
@@ -427,7 +437,10 @@ export function PickedScreen() {
                 uploads: state.uploads.filter((upload) => !failed.has(upload.file)),
               }));
             }
-            throw error;
+            if (error instanceof NetworkError) throw new Error('사진 검사 서버에 연결하지 못했어요.');
+            if (error instanceof ApiError)
+              throw new Error(`사진 검사 요청에 실패했어요 (HTTP ${error.status}).`);
+            throw new Error('사진 검사 요청에 실패했어요.');
           }
           for (const f of pending) {
             const verdict = result.find((v) => v.name === f.name)?.verdict;
@@ -559,7 +572,7 @@ export function PickedScreen() {
         {check.isError && (
           <View className="mb-3 items-center gap-3 rounded-card bg-white p-4">
             <Text className="text-center text-footnote leading-5 text-sub">
-              사진 검사에 실패했어요. 다시 시도해 주세요.
+              {check.error instanceof Error ? check.error.message : '사진 검사에 실패했어요.'}
             </Text>
             <Btn small onPress={() => check.refetch()}>
               다시 검사
