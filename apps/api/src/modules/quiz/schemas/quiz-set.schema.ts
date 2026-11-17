@@ -132,5 +132,14 @@ QuizSetSchema.index(
     partialFilterExpression: { status: 'generating', deletedAt: { $type: 'null' } },
   },
 );
+// 오늘의 복습은 사용자 · 날짜마다 하나(TodayReviewService.start). 동시 요청이 둘 다 「오늘 세트 없음」을 읽어도
+// 늦은 쪽의 생성은 이 색인에 막혀 먼저 만든 세트를 돌려준다. 닫은(지운) 세트는 세지 않아 실패한 날은 다시 만든다
+QuizSetSchema.index(
+  { ownerId: 1, reviewDay: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { reviewDay: { $type: 'string' }, deletedAt: { $type: 'null' } },
+  },
+);
 // 내 퀴즈 세트 목록(최근 것부터)
 QuizSetSchema.index({ ownerId: 1, createdAt: -1 });

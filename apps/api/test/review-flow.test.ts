@@ -39,14 +39,15 @@ const question = (order: number) => ({
   srs: null,
 });
 
-// quiz-set.schema.ts 고유 색인: 같은 노트(노트 없음 포함)로 만드는 중인 세트는 하나
-const live = (r: Row) => r['status'] === 'generating' && (r['deletedAt'] ?? null) === null;
+// quiz-set.schema.ts 고유 색인: 같은 노트(노트 없음 포함)로 만드는 중인 세트는 하나 · 오늘의 복습은 날마다 하나
+const open = (r: Row) => (r['deletedAt'] ?? null) === null;
+const live = (r: Row) => r['status'] === 'generating' && open(r);
+const day = (r: Row) => (typeof r['reviewDay'] === 'string' && open(r) ? r['reviewDay'] : null);
 const unique = (a: Row, b: Row) =>
   String(a._id) === String(b._id) ||
-  (live(a) &&
-    live(b) &&
-    String(a['ownerId']) === String(b['ownerId']) &&
-    String(a['materialId'] ?? null) === String(b['materialId'] ?? null));
+  (String(a['ownerId']) === String(b['ownerId']) &&
+    ((live(a) && live(b) && String(a['materialId'] ?? null) === String(b['materialId'] ?? null)) ||
+      (day(a) !== null && day(a) === day(b))));
 
 function setup() {
   const sets = createFakeCollection<QuizSetDocument>(unique);
@@ -708,6 +709,47 @@ describe('오늘의 복습(TodayReviewService)', () => {
     const prev = sets.rows.find((r) => String(r._id) === first._id)!;
     expect(prev['deletedAt'] ?? null).toBeNull();
     expect(prev['status']).toBe('ready');
+  });
+
+  it('동시 요청의 앞 세트가 다 만들어진 뒤 늦은 요청이 만들려 해도 오늘 세트는 하나', async () => {
+    const { today, seed, jobs, sets, quizSets } = setup();
+    await seed();
+    let first = '';
+    const realCreate = sets.model.create.bind(sets.model);
+    const create = vi
+      .spyOn(sets.model, 'create')
+      .mockImplementationOnce(async (...args: unknown[]) => {
+        // 늦은 요청이 「오늘 세트 없음」을 읽은 뒤, 앞 요청이 세트를 만들고 결과까지 옮김(ready)
+        first = (await today.start(ME.toHexString(), NOW))._id;
+        Object.assign(jobs.rows.at(-1)!, {
+          status: 'succeeded',
+          progress: 100,
+          result: {
+            questions: [
+              {
+                id: new Types.ObjectId().toHexString(),
+                order: 1,
+                prompt: '문제 1',
+                choices: ['가', '나'],
+                answer: '가',
+                conceptTags: ['세포막'],
+                srs: { step: 1 },
+              },
+            ],
+            title: '오늘의 복습 · 11-16',
+            srsUpdates: [],
+          },
+        });
+        expect((await quizSets.findMine(ME.toHexString(), first)).status).toBe('ready');
+        return (realCreate as (...a: unknown[]) => unknown)(...args) as never;
+      });
+    const late = await today.start(ME.toHexString(), NOW);
+    create.mockRestore();
+    expect(late._id).toBe(first);
+    expect(late.status).toBe('ready');
+    const todays = sets.rows.filter((r) => r['reviewDay'] === '2026-11-16' && !r['deletedAt']);
+    expect(todays).toHaveLength(1);
+    expect(jobs.rows[0]!['status']).toBe('canceled'); // 늦은 요청의 작업
   });
 
   it('복습할 문제가 없으면 조회는 null, 처리기가 실패했으면 failed(앱이 다시 만들게)', async () => {

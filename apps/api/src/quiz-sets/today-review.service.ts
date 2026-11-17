@@ -179,9 +179,14 @@ export class TodayReviewService {
     } catch (e) {
       await this.jobs.cancel(userId, job._id);
       if (!isDuplicateKey(e)) throw e;
-      // 동시에 온 다른 요청이 먼저 만들었으면(노트 없는 만드는 중 세트는 하나: 고유 색인) 그 세트
-      const first = await this.get(userId, now);
-      if (first) return first;
+      // 동시에 온 다른 요청이 먼저 만들었으면(오늘 세트는 하나 · 노트 없는 만드는 중 세트는 하나: 고유 색인) 그 세트.
+      // 이미 다 만들었어도(복습할 문제 없음 포함) 같은 날 다시 만들지 않는다
+      const [first] = await this.sets
+        .find({ ownerId: owner, reviewDay: day, deletedAt: null })
+        .sort({ createdAt: -1 })
+        .limit(1)
+        .lean<QuizSetRow[]>();
+      if (first) return this.quizSets.findMine(userId, first._id.toString());
       throw e;
     }
   }
