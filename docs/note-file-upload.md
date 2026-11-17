@@ -233,7 +233,7 @@ Nest와 FastAPI는 같은 값의 `AI_INTERNAL_TOKEN`을 양쪽 환경 변수에 
 | `POST /uploads/sas`가 `429 RATE_LIMITED` | 10분 동안 100번 넘게 발급받음 | 응답의 `retryAfterSeconds`만큼 기다린 뒤 다시 요청한다 |
 | Blob PUT이 403 | SAS가 만료됨(15분) 또는 업로드를 늦게 시작, 같은 주소로 두 번 올림(덮어쓰기 불가) | 올리기 직전에 SAS를 새로 받는다. 앱은 `HTTP 403`을 `UploadError`로 보여 준다 |
 | Blob PUT이 400 · 필수 헤더 오류 | `x-ms-blob-type: BlockBlob` 헤더 누락 | 응답의 `headers`를 그대로 붙인다 |
-| 올린 뒤 사진 검사가 400 "사용할 수 없는 사진" | 내 업로드가 아니거나, 파일이 없거나, Content-Type이 확장자와 다름(예: `.jpg`인데 `image/png`로 올림) | SAS 요청 때 쓴 `contentType`을 PUT의 `Content-Type`에도 똑같이 쓴다. 다른 사용자의 `blobUrl`은 거부되는 게 정상 |
+| 올린 뒤 사진 검사가 400 "사용할 수 없는 사진" | 내 업로드가 아니거나, 파일이 없거나, Content-Type이 확장자와 다름(예: `.jpg`인데 `image/png`로 올림) | PUT에는 응답의 `headers`(`x-ms-blob-type` · `Content-Type`)를 그대로 붙인다. 서버가 `Content-Type`을 확장자의 형식으로 고쳐 줄 수 있으니 요청에 보낸 `contentType`을 다시 쓰지 않는다. 다른 사용자의 `blobUrl`은 거부되는 게 정상 |
 | 사진 검사가 `503 AI_UNAVAILABLE` | ① `AI_INTERNAL_URL`/`TOKEN` 미설정 ② AI 서버 다운 · 5xx ③ **90초 제한 초과** ④ 응답의 이름이 요청과 다르거나 모르는 판정 | 설정 확인 → AI 서버 로그 확인. 20장이 느리면 `MAX_WORKERS`를 올릴 수 있는지 OCR 호출 한도를 확인(§8) |
 | AI 서버 로그에 401 | 두 서버의 `AI_INTERNAL_TOKEN`이 다름 | 양쪽을 같은 값으로 맞춘다. 앞뒤 공백 · 줄바꿈이 섞이지 않았는지 확인 |
 | AI 서버가 사진 검사에서 **500** | (고침) 비 ASCII 헤더가 `compare_digest`에서 `TypeError`를 냄 | §5의 수정 적용. 같은 증상이 남으면 `_authorize` 외의 예외인지 로그 확인 |
