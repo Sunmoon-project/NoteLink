@@ -7,6 +7,7 @@ import {
   downloadFileName,
   MaterialsService,
 } from '../src/modules/content/materials/materials.service.js';
+import { createStorageConfig } from '../src/config/storage.config.js';
 import { BlobStorageService } from '../src/modules/upload/blob-storage.service.js';
 
 const account = 'stnotelinkdev01';
@@ -36,7 +37,7 @@ interface Row {
 }
 
 /** 모델만 가짜이고 저장소 서비스는 진짜다(SAS 를 실제로 만든다) */
-function setup(rows: Row[], storage = new BlobStorageService(config as never)) {
+function setup(rows: Row[], storage = new BlobStorageService(createStorageConfig(config))) {
   const find = vi.fn((filter: Record<string, unknown>) => ({
     lean: () =>
       Promise.resolve(
@@ -136,7 +137,7 @@ describe('원본 다운로드 주소 (MaterialsService.downloadUrl)', () => {
 
   it('저장소 설정이 없으면 503이고, 오류에 주소 · SAS 를 넣지 않는다', async () => {
     const row = note();
-    const { service } = setup([row], new BlobStorageService({ get: () => undefined } as never));
+    const { service } = setup([row], new BlobStorageService(null));
 
     const error = await service.downloadUrl(me.toHexString(), String(row._id)).catch((e) => e);
 
