@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 
+import { AiJobNoticesModule } from './ai-jobs/ai-job-notices.module.js';
 import { AiJobsModule } from './ai-jobs/ai-jobs.module.js';
 import { createMongooseOptions } from './config/mongo.config.js';
 import { HealthController } from './health/health.controller.js';
@@ -10,6 +11,7 @@ import { CalendarModule } from './modules/calendar/calendar.module.js';
 import { HolidaysModule } from './modules/calendar/holidays.module.js';
 import { CalendarSharesModule } from './modules/calendar/calendar-shares.module.js';
 import { FoldersModule } from './modules/content/folders/folders.module.js';
+import { ImagesModule } from './modules/content/images/images.module.js';
 import { MaterialsModule } from './modules/content/materials/materials.module.js';
 import { NoteAskModule } from './modules/content/note-ask/note-ask.module.js';
 import { ProgressModule } from './modules/progress/progress.module.js';
@@ -19,10 +21,10 @@ import { FlashcardsModule } from './modules/quiz/flashcards.module.js';
 import { QuizAttemptsModule } from './modules/quiz/quiz-attempts.module.js';
 import { QuizBoxModule } from './modules/quiz/quiz-box.module.js';
 import { UsersModule } from './modules/users/users.module.js';
+import { ReviewRemindersModule } from './review-reminders/review-reminders.module.js';
 import { QuizSetsModule } from './quiz-sets/quiz-sets.module.js';
 import { SessionModule } from './modules/session/session.module.js';
 import { TimetableModule } from './modules/timetable/timetable.module.js';
-import { ImageCheckModule } from './modules/upload/image-check/image-check.module.js';
 import { UploadsModule } from './modules/upload/uploads.module.js';
 import { FriendsModule } from './modules/social/friends/friends.module.js';
 
@@ -43,11 +45,15 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
 
     // ai_jobs 작업 넣기 · 진행 상태 · 취소 · 다시 시도(#175)
     AiJobsModule,
+    // 노트 변환이 끝나면 푸시(FR-65-02)
+    AiJobNoticesModule,
     // 상점 · 포인트(FR-59~63)
     RewardModule,
     StudyRoomsModule,
     // 맞춤 퀴즈 세트 만들기 · 조회 · 작업 결과 반영(#175)
     QuizSetsModule,
+    // 복습할 문제가 있는 날 푸시 알림(FR-37-08)
+    ReviewRemindersModule,
     NoteAskModule,
     // 공부 시간 · 타이머(FR-06~08)
     SessionModule,
@@ -71,10 +77,10 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
     CalendarSharesModule,
     // 학습 폴더 목록 · 만들기(FR-19)
     FoldersModule,
+    // 필기 자료 사진 검사(FR-19)
+    ImagesModule,
     // 노트(자료) 등록 · 조회 · 수정 · 삭제(FR-19)
     MaterialsModule,
-    // 필기 사진 검사(FR-19)
-    ImageCheckModule,
   ],
   controllers: [HealthController],
 })

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import mongoose, { Types } from 'mongoose';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { Category, CategorySchema } from '../src/modules/content/schemas/category.schema.js';
 import { StudyRoom, StudyRoomSchema } from '../src/modules/studyroom/schemas/study-room.schema.js';
@@ -116,6 +116,69 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
     expect(reinvitation.invitations[0]?.invitationId).toBeTruthy();
     expect(reinvitation.invitations[0]?.invitationId).not.toBe(first.invitations[0]?.invitationId);
     expect(stored.memberCount).toBe(1);
+  });
+  describe('초대한 사람이 확인 뒤 방에서 빠지는 경우', () => {
+    // 참여자(other)가 친구(friend)를 초대할 수 있는 방
+    const roomWithInviter = async (title: string) => {
+      const created = await service.create(String(host), {
+        title,
+        categoryName: '수학',
+        isPublic: true,
+      });
+      await service.joinRoom(String(other), created.inviteCode);
+      const userA = other.toHexString() < friend.toHexString() ? other : friend;
+      const userB = userA === other ? friend : other;
+      await friendships.create({ userA, userB, requesterId: other, status: 'accepted' });
+      return created;
+    };
+    // 참여 확인 다음 단계(친구 확인)에서 초대한 사람을 실제 강퇴 · 퇴장 흐름으로 방에서 뺀다
+    const inviteWhile = async (roomId: string, remove: () => Promise<unknown>) => {
+      const count = friendships.countDocuments.bind(friendships);
+      const spy = vi.spyOn(friendships, 'countDocuments').mockImplementationOnce((async (
+        filter: never,
+      ) => {
+        await remove();
+        return count(filter);
+      }) as never);
+      try {
+        await expect(
+          service.invite(String(other), roomId, [String(friend)]),
+        ).rejects.toMatchObject({ status: 404, response: { code: 'ROOM_NOT_FOUND' } });
+      } finally {
+        spy.mockRestore();
+      }
+      return rooms.findById(roomId).lean().orFail();
+    };
+    const removals = [
+      ['강퇴', (roomId: string) => service.kickMember(String(host), roomId, String(other))],
+      ['퇴장', (roomId: string) => service.leaveRoom(String(other), roomId)],
+    ] as const;
+
+    it.each(removals)('%s되면 새 초대를 저장하지 않는다', async (name, remove) => {
+      const created = await roomWithInviter(`${name} 중 초대`);
+
+      const stored = await inviteWhile(created._id, () => remove(created._id));
+
+      expect(stored.members.some((member) => member.userId.equals(friend))).toBe(false);
+      expect(stored.members.find((member) => member.userId.equals(other))?.status).not.toBe(
+        'joined',
+      );
+    });
+
+    it.each(removals)('%s되면 초대 ID가 없는 기존 초대에 ID를 채우지 않는다', async (name, remove) => {
+      const created = await roomWithInviter(`${name} 중 초대 ID 채우기`);
+      await service.invite(String(other), created._id, [String(friend)]);
+      await rooms.updateOne(
+        { _id: created._id, 'members.userId': friend },
+        { $unset: { 'members.$.invitationId': 1 } },
+      );
+
+      const stored = await inviteWhile(created._id, () => remove(created._id));
+
+      const invited = stored.members.find((member) => member.userId.equals(friend));
+      expect(invited?.status).toBe('invited');
+      expect(invited?.invitationId ?? null).toBeNull();
+    });
   });
   afterAll(async () => {
     if (!connection) return;

@@ -1,5 +1,6 @@
 import type { AppAiJob } from '../../../ai-jobs/ai-jobs.service.js';
 import type { MaterialRow } from './material-view.js';
+import { fitSections, type Section } from './summary-fit.js';
 
 /** 문서 요약의 핵심 요약(points) 개수 상한 */
 export const POINTS_MAX = 20;
@@ -7,10 +8,6 @@ export const POINTS_MAX = 20;
 export const KEYWORDS_MAX = 30;
 
 type Page = NonNullable<MaterialRow['pages']>[number];
-interface Section {
-  heading: string;
-  body: string;
-}
 
 export const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -58,7 +55,7 @@ export function sectionsFromChunks(raw: unknown): { sections: Section[]; titles:
       sections.push({ heading: uniqueHeading(`내용 ${sections.length + 1}`, used), body });
     }
   }
-  return { sections, titles };
+  return { sections: fitSections(sections), titles };
 }
 
 /** 개념 태그(concept)에서 키워드. 퀴즈 처리기처럼 자동으로 붙인 것(conceptStatus === 'auto')만, 중복 없이 */
@@ -82,7 +79,7 @@ export function sectionsFromSlides(raw: unknown): Section[] {
     const heading = text(slide['title']) ?? `내용 ${sections.length + 1}`;
     sections.push({ heading: uniqueHeading(heading, used), body });
   }
-  return sections;
+  return fitSections(sections);
 }
 
 /** 원본이 PDF 한 개인지(여러 쪽으로 펼쳐지는 경우) */

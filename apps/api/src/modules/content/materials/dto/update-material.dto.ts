@@ -12,10 +12,10 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-/** 요약 수정 상한 */
-export const SUMMARY_MAX_SECTIONS = 50;
-export const SUMMARY_HEADING_MAX = 100;
-export const SUMMARY_BODY_MAX = 10000;
+import { SUMMARY_BODY_MAX, SUMMARY_HEADING_MAX, SUMMARY_MAX_SECTIONS } from '../summary-limits.js';
+
+/** 요약 수정 상한. 자동 요약 생성(material-sync)과 같은 값을 쓴다(summary-limits) */
+export { SUMMARY_BODY_MAX, SUMMARY_HEADING_MAX, SUMMARY_MAX_SECTIONS };
 
 const trim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;

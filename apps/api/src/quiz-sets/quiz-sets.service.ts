@@ -11,6 +11,7 @@ import {
   type QuizAttemptDocument,
 } from '../modules/quiz/schemas/quiz-attempt.schema.js';
 import { QuizSet, type QuizSetDocument } from '../modules/quiz/schemas/quiz-set.schema.js';
+import { RecordingNotePagesService } from './recording-note-pages.service.js';
 
 /** 노트 · 세트가 없거나 남의 것일 때(packages/shared ERROR_CODES.NOT_FOUND) */
 export const NOT_FOUND = 'NOT_FOUND';
@@ -19,6 +20,8 @@ export const VALIDATION_FAILED = 'VALIDATION_FAILED';
 
 /** 맞춤 퀴즈 작업(apps/ai services/quiz/generate.py TYPE) */
 export const GENERATE_TYPE = 'quiz_generate';
+/** 틀린 문제와 비슷한 문제 만들기 = 오답 복습 작업(apps/ai services/quiz/review.py TYPE). 결과는 reviewQuestions */
+export const SIMILAR_TYPE = 'similar_quiz';
 /**
  * 세트 하나의 문제 수. 처리기 입력 size로 보낸다(보내지 않으면 처리기 기본 10문제).
  * 처리기는 size개를 다 만들지 못하면 모자란 자리를 다시 돌리고, 그래도 모자라면 작업을 실패로
@@ -111,6 +114,8 @@ export interface QuizSetRow {
   materialId?: Types.ObjectId;
   folderId?: Types.ObjectId;
   sourceSetId?: Types.ObjectId | null;
+  sourceAttemptId?: Types.ObjectId | null;
+  srsSavedAt?: Date | null;
   title: string;
   status: 'generating' | 'ready' | 'failed';
   progress?: number;
@@ -121,7 +126,7 @@ export interface QuizSetRow {
   createdAt: Date;
 }
 
-interface PageRow {
+export interface PageRow {
   pageNo: number;
   ocrText?: string | null;
 }
@@ -132,6 +137,9 @@ interface MaterialRow {
   title: string;
   pages?: PageRow[];
   concepts?: string[];
+  /** 노트 종류. 녹음 노트(recording)는 pages 가 없고 대본이 녹음 정리 작업 결과에 있다. 없는 옛 노트는 필기처럼 본다 */
+  kind?: string;
+  processing?: { status?: string; jobId?: Types.ObjectId | null };
 }
 
 interface AttemptRow {
@@ -228,11 +236,11 @@ export function fromWorkerQuestion(raw: unknown): QuestionRow | null {
   };
 }
 
-const notFound = (what: string) =>
+export const notFound = (what: string) =>
   new NotFoundException({ code: NOT_FOUND, message: `${what}을 찾을 수 없어요` });
 
 /** 앱이 보낸 id. 형식이 틀리면 없는 것과 같게 404 */
-function objectId(id: string, what: string): Types.ObjectId {
+export function objectId(id: string, what: string): Types.ObjectId {
   if (!OBJECT_ID.test(id)) throw notFound(what);
   return new Types.ObjectId(id);
 }
@@ -246,7 +254,7 @@ export function nextSetId(id: Types.ObjectId): Types.ObjectId {
   return new Types.ObjectId(digest.subarray(0, 12).toString('hex'));
 }
 
-const isDuplicateKey = (e: unknown) =>
+export const isDuplicateKey = (e: unknown) =>
   typeof e === 'object' && e !== null && (e as { code?: unknown }).code === DUPLICATE_KEY;
 
 /**
@@ -263,6 +271,8 @@ export class QuizSetsService {
     @InjectModel(Material.name) private readonly materials: Model<MaterialDocument>,
     @InjectModel(QuizAttempt.name) private readonly attempts: Model<QuizAttemptDocument>,
     private readonly jobs: AiJobsService,
+    /** 녹음 노트의 대본을 퀴즈 입력 쪽으로(FR-38). 필기 노트는 쓰지 않는다 */
+    private readonly recordingPages: RecordingNotePagesService,
   ) {}
 
   /**
@@ -282,7 +292,13 @@ export class QuizSetsService {
       .findOne({ _id: objectId(materialId, '노트'), ownerId: owner, deletedAt: null })
       .lean<MaterialRow>();
     if (!material) throw notFound('노트');
-    const pages = textPages(material.pages);
+    if (material.kind === 'recording' && material.processing?.status === 'failed') {
+      throw new BadRequestException({
+        code: VALIDATION_FAILED,
+        message: '녹음 정리에 실패한 노트예요. 다시 정리한 뒤 퀴즈를 만들어 주세요',
+      });
+    }
+    const pages = await this.recordingPages.notePages(owner, material);
     // 같은 노트의 세트를 다른 요청이 먼저 만들었는데 그 세트가 이미 끝났으면(드묾) 한 번 더 만든다
     const made =
       (await this.createOnce(userId, owner, material, pages)) ??
@@ -434,7 +450,7 @@ export class QuizSetsService {
       .findOne({ _id: objectId(materialId, '노트'), ownerId: owner, deletedAt: null })
       .lean<MaterialRow>();
     if (!material) throw notFound('노트');
-    const pages = textPages(material.pages);
+    const pages = await this.recordingPages.notePages(owner, material);
     if (!pages.some(askable)) return null;
     const pending =
       (await this.jobs.activePregen(userId, 'material', materialId)) ??
@@ -498,7 +514,10 @@ export class QuizSetsService {
     const job = row.jobId ? await this.findJob(row) : null;
     if (row.status === 'failed') {
       const ready = job?.status === 'succeeded' ? readyUpdate(job) : null;
-      return ready ? this.settle(row, ready, job) : { quizSet: toAppSet(row), job };
+      if (ready) return this.settle(row, ready, job);
+      // 오답 복습을 다시 시도해 끝났는데 새 문제는 없으면(빈 reviewQuestions) 세트는 failed로 두고 복습 상태만 옮긴다(한 번만)
+      if (job?.type === SIMILAR_TYPE && job.status === 'succeeded') await this.saveSrs(row, job);
+      return { quizSet: toAppSet(row), job };
     }
     if (job && (job.status === 'queued' || job.status === 'running')) {
       return { quizSet: toAppSet(row, job.progress), job };
@@ -517,6 +536,9 @@ export class QuizSetsService {
     // 처리기가 뽑은 개념 이름은 세트를 ready로 바꾸기 전에 노트에 남긴다: 저장이 실패하면 세트도 그대로라
     // 다음 조회가 다시 옮기며 다시 저장한다(Codex 리뷰 #276). 같이 옮기는 요청이 모두 저장해도 같은 값
     if (update['status'] === 'ready' && job) await this.saveConcepts(row, job);
+    // 오답 복습은 틀린 문제들의 복습 상태(srsUpdates)를 세트를 바꾸기 전에 옮긴다(saveConcepts와 같은 이유).
+    // 새 문제를 하나도 못 만들어 세트가 failed가 되어도 처리기가 끝냈으면 복습 상태는 옮긴다
+    if (job?.type === SIMILAR_TYPE && job.status === 'succeeded') await this.saveSrs(row, job);
     const updated = await this.sets
       .findOneAndUpdate(
         { _id: row._id, status: row.status },
@@ -543,6 +565,44 @@ export class QuizSetsService {
         { _id: row.materialId, ownerId: row.ownerId, deletedAt: null },
         { $set: { concepts: names } },
       )
+      .lean();
+  }
+
+  /**
+   * 오답 복습 결과의 복습 상태(result.srsUpdates: [{quizSetId, questionId, srs}])를 그 문제에 쓴다. 이 사용자의 세트만 고친다.
+   * 문제마다 그 상태를 만든 세트의 시각(srsAt = 세트 createdAt, 처리기 입력을 모은 때)을 함께 남기고, 남은 값보다
+   * 더 새 세트의 상태만 쓴다(조건부 쓰기 하나). 그래서 여러 요청이 같이 옮기거나 늦게 도착해도, 그 뒤에 만든
+   * 세트가 고친 상태를 되돌리지 않는다. 같은 세트가 다시 써도 같은 값이다.
+   * 다 쓴 뒤에만 srsSavedAt을 남긴다: 쓰다 실패하면 세트를 바꾸기 전이라(settle) 다음 조회가 다시 옮긴다
+   */
+  private async saveSrs(row: QuizSetRow, job: AppAiJob): Promise<void> {
+    if (row.srsSavedAt) return;
+    const updates = job.result?.['srsUpdates'];
+    if (!Array.isArray(updates)) return;
+    const at = row.createdAt ?? row._id.getTimestamp();
+    for (const u of updates as { quizSetId?: unknown; questionId?: unknown; srs?: unknown }[]) {
+      if (
+        typeof u.quizSetId !== 'string' ||
+        !OBJECT_ID.test(u.quizSetId) ||
+        typeof u.questionId !== 'string' ||
+        !OBJECT_ID.test(u.questionId) ||
+        !u.srs ||
+        typeof u.srs !== 'object'
+      )
+        continue;
+      await this.sets.updateOne(
+        { _id: new Types.ObjectId(u.quizSetId), ownerId: row.ownerId },
+        { $set: { 'questions.$[q].srs': u.srs, 'questions.$[q].srsAt': at } },
+        // srsAt이 없거나 이 세트보다 오래된 문제만(더 새 세트가 쓴 상태는 그대로)
+        {
+          arrayFilters: [
+            { 'q._id': new Types.ObjectId(u.questionId), 'q.srsAt': { $not: { $gt: at } } },
+          ],
+        },
+      );
+    }
+    await this.sets
+      .findOneAndUpdate({ _id: row._id, srsSavedAt: null }, { $set: { srsSavedAt: new Date() } })
       .lean();
   }
 
@@ -623,7 +683,13 @@ export class QuizSetsService {
           correct: x.correct,
         })),
       })),
-      notes: Object.fromEntries(others.map((m) => [m._id.toString(), textPages(m.pages)])),
+      notes: Object.fromEntries(
+        await Promise.all(
+          others.map(
+            async (m) => [m._id.toString(), await this.recordingPages.notePages(owner, m)] as const,
+          ),
+        ),
+      ),
       typeStats: await this.typeStats(),
     });
   }
@@ -796,15 +862,11 @@ const PY_SPACE_ONLY =
   // eslint-disable-next-line no-control-regex -- Python isspace가 공백으로 보는 제어 글자 0x1C~0x1F
   /^[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/;
 
-/** 글이 있는 쪽만(정리 전 · 빈 쪽은 처리기가 문제를 낼 수 없다) */
-function textPages(pages: PageRow[] | undefined): { pageNo: number; ocrText: string }[] {
-  return (pages ?? [])
-    .filter((p): p is PageRow & { ocrText: string } => !!p.ocrText?.trim())
-    .map((p) => ({ pageNo: p.pageNo, ocrText: p.ocrText }));
-}
+// 필기 노트 글 고르기는 note-pages.ts 로 옮겼다(녹음 노트 서비스도 쓰므로). 기존 import 경로를 위해 다시 내보낸다
+export { textPages } from './note-pages.js';
 
 /** 저장한 문제 → 처리기 입력의 문제(apps/ai services/quiz/review.py parse_question) */
-function toWorkerQuestion(q: QuestionRow): Record<string, unknown> {
+export function toWorkerQuestion(q: QuestionRow): Record<string, unknown> {
   return {
     id: q._id.toString(),
     order: q.order,
@@ -826,12 +888,30 @@ function workerQuestions(raw: unknown): QuestionRow[] {
   return raw.map(fromWorkerQuestion).filter((q): q is QuestionRow => q !== null);
 }
 
+/** 오답 복습 결과의 새 문제들: 처리기가 정한 복습 상태(srs)를 그대로 둔다 */
+function reviewQuestions(raw: unknown): QuestionRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((r) => {
+    const q = fromWorkerQuestion(r);
+    if (!q) return [];
+    const srs = (r as { srs?: unknown }).srs;
+    return [
+      { ...q, srs: srs && typeof srs === 'object' ? (srs as Record<string, unknown>) : null },
+    ];
+  });
+}
+
 /**
  * 성공한 작업의 결과로 세트를 ready로 바꾸는 값. 쓸 문제가 없으면 null(세트를 failed로).
  * 모양이 틀린 문제를 빼면 번호가 비므로 처리기의 order 차례대로 1부터 다시 매긴다(/code-review)
  */
 function readyUpdate(job: AppAiJob): Record<string, unknown> | null {
-  const sorted = workerQuestions(job.result?.['questions']).sort((a, b) => a.order - b.order);
+  // 오답 복습(similar_quiz)은 새 문제를 reviewQuestions에 담고, 문제마다 처음 복습 상태(srs)를 준다
+  const similar = job.type === SIMILAR_TYPE;
+  const raw = job.result?.[similar ? 'reviewQuestions' : 'questions'];
+  const sorted = (similar ? reviewQuestions(raw) : workerQuestions(raw)).sort(
+    (a, b) => a.order - b.order,
+  );
   const questions = sorted.map((q, i) => ({
     ...q,
     order: i + 1,

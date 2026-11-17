@@ -18,6 +18,7 @@ import {
   fingerprintOf,
   BOOKMARK_MAX,
   LIST_SYNC_MAX,
+  RECOVER_MAX,
   MaterialsService,
 } from '../src/modules/content/materials/materials.service.js';
 import { Folder, FolderSchema } from '../src/modules/content/schemas/folder.schema.js';
@@ -802,6 +803,109 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
     });
   });
 
+  describe('작업 없이 남은 노트 복구', () => {
+    /** 노트만 만들고 작업을 넣기 전에 요청이 끊긴 노트(jobId 없음). ageMs 전에 만든 것으로 한다 */
+    const stuck = async (ageMs: number, over: Record<string, unknown> = {}) => {
+      const n = await materials.create({
+        ownerId: me,
+        folderId: new Types.ObjectId(folderId),
+        kind: 'handwriting',
+        source: 'camera',
+        title: '멈춘 노트',
+        blobUrls: [url(1)],
+        pages: [{ pageNo: 1, imageUrl: url(1), sizeBytes: 100, ocrText: null, takenAt: null }],
+        processing: { status: 'queued', progress: 0, jobId: null },
+        ...over,
+      });
+      await materials.collection.updateOne(
+        { _id: n._id },
+        { $set: { createdAt: new Date(Date.now() - ageMs) } },
+      );
+      return n._id.toHexString();
+    };
+    const row = async (id: string) => (await materials.findById(id).lean())!;
+    const MIN = 60_000;
+
+    it('상세 조회하면 작업이 만들어져 연결된다(입력은 등록 때와 같다)', async () => {
+      const id = await stuck(2 * MIN);
+      const detail = await service.findMine(me.toHexString(), id);
+      const jobId = (await row(id)).processing.jobId;
+      expect(jobId).toBeTruthy();
+      expect(detail.processing.jobId).toBe(String(jobId));
+      const all = await jobs.find({}).lean();
+      expect(all).toHaveLength(1);
+      expect(all[0]).toMatchObject({
+        type: 'handwriting_summary',
+        status: 'queued',
+        targetType: 'material',
+        userId: me,
+        input: { pages: [{ pageNo: 1, imageUrl: `${url(1)}?sig=SECRET` }], subject: '수학' },
+      });
+    });
+
+    it('만든 지 얼마 안 된 노트와 작업 만드는 중 표시가 신선한 노트는 건드리지 않는다', async () => {
+      const fresh = await stuck(10_000);
+      const claimed = await stuck(2 * MIN, { jobClaimToken: 'other', jobClaimedAt: new Date() });
+      await service.findMine(me.toHexString(), fresh);
+      await service.findMine(me.toHexString(), claimed);
+      expect((await row(fresh)).processing.jobId).toBeNull();
+      expect((await row(claimed)).processing.jobId).toBeNull();
+      expect(await jobs.countDocuments({})).toBe(0);
+    });
+
+    it('동시에 여러 번 조회해도 작업은 하나만 연결된다', async () => {
+      const id = await stuck(2 * MIN);
+      await Promise.all([1, 2, 3].map(() => service.findMine(me.toHexString(), id)));
+      expect(await jobs.countDocuments({})).toBe(1);
+      expect((await row(id)).processing.jobId).toBeTruthy();
+    });
+
+    it('목록 조회로도 복구되고, 한 번에 RECOVER_MAX 개까지만 복구한다', async () => {
+      const ids = await Promise.all([1, 2, 3, 4, 5].map(() => stuck(2 * MIN)));
+      await service.listInFolder(me.toHexString(), folderId);
+      const linked = await materials.countDocuments({
+        _id: { $in: ids },
+        'processing.jobId': { $ne: null },
+      });
+      expect(linked).toBe(RECOVER_MAX);
+      expect(await jobs.countDocuments({})).toBe(RECOVER_MAX);
+      await service.listInFolder(me.toHexString(), folderId);
+      expect(await jobs.countDocuments({})).toBe(5);
+    });
+
+    it('원본 확인이 400 으로 실패하면 노트를 failed 로 바꾸고 작업은 만들지 않는다. 다시 시도하지도 않는다', async () => {
+      const id = await stuck(2 * MIN);
+      blobs.createReadAccess.mockRejectedValueOnce(
+        new BadRequestException({ code: 'VALIDATION_FAILED', message: '파일이 없어요' }),
+      );
+      const detail = await service.findMine(me.toHexString(), id);
+      expect(detail.processing.status).toBe('failed');
+      expect((await row(id)).processing.jobId).toBeNull();
+      await service.findMine(me.toHexString(), id);
+      await service.listInFolder(me.toHexString(), folderId);
+      expect(await jobs.countDocuments({})).toBe(0);
+      expect((await row(id)).processing.status).toBe('failed');
+    });
+
+    it('400 이 아닌 오류(저장소 일시 장애)는 노트를 그대로 두고 오류 없이 조회되며, 다음 조회에서 다시 시도한다', async () => {
+      const id = await stuck(2 * MIN);
+      blobs.createReadAccess.mockRejectedValueOnce(new Error('storage down'));
+      const detail = await service.findMine(me.toHexString(), id);
+      expect(detail.processing.status).toBe('queued');
+      expect((await row(id)).processing.jobId).toBeNull();
+      await service.findMine(me.toHexString(), id);
+      expect((await row(id)).processing.jobId).toBeTruthy();
+      expect(await jobs.countDocuments({})).toBe(1);
+    });
+
+    it('지운 노트와 이미 작업이 있는 노트는 건드리지 않는다', async () => {
+      const gone = await stuck(2 * MIN, { deletedAt: new Date() });
+      await service.listInFolder(me.toHexString(), folderId);
+      expect((await row(gone)).processing.jobId).toBeNull();
+      expect(await jobs.countDocuments({})).toBe(0);
+    });
+  });
+
   describe('다시 시도할 때 입력 파일 읽기 주소 새로 만들기', () => {
     const audio = `https://a.blob.core.windows.net/c/uploads/audio/${me.toHexString()}/550e8400-e29b-41d4-a716-446655440008.m4a`;
     const me$ = () => me.toHexString();
@@ -1031,7 +1135,7 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       expect(row?.pages?.every((p) => p.imageUrl === pdf)).toBe(true);
     });
 
-    it('녹음은 슬라이드를 소제목으로 옮기고 퀴즈 미리 만들기를 부르지 않는다', async () => {
+    it('녹음은 슬라이드를 소제목으로 옮기고 퀴즈 미리 만들기를 한 번 부른다(FR-38)', async () => {
       const audio = `https://a.blob.core.windows.net/c/uploads/audio/${me.toHexString()}/550e8400-e29b-41d4-a716-446655440008.m4a`;
       const { material, job } = await service.register(
         me.toHexString(),
@@ -1044,7 +1148,8 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       const got = await service.findMine(me.toHexString(), material._id);
       expect(got.summary).toEqual({ sections: [{ heading: '도입', body: '시작' }], points: [] });
       expect(got.processing.status).toBe('done');
-      expect(quizSets.pregenerate).not.toHaveBeenCalled();
+      expect(quizSets.pregenerate).toHaveBeenCalledTimes(1);
+      expect(quizSets.pregenerate).toHaveBeenCalledWith(me.toHexString(), material._id);
     });
 
     it('응답의 쪽 이미지는 읽기 SAS 주소이고 DB 에는 SAS 없는 주소만 있다', async () => {

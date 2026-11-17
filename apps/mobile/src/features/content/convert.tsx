@@ -9,8 +9,7 @@ import { api, NetworkError } from '@/lib/api';
 import { uploadToBlob } from '@/lib/upload';
 import { aiWaiting } from '@/lib/ai';
 import { notifyLocal } from '@/lib/push';
-import { socket } from '@/lib/socket';
-import { useSocket } from '@/hooks';
+import { useAiJobSubscription, useSocket } from '@/hooks';
 import { useDraft } from '@/stores/draft';
 import { scanTitle } from '@/lib/scan-title';
 import { useAuth } from '@/stores/auth';
@@ -212,10 +211,10 @@ export function ConvertScreen() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 작업이 바뀔 때마다(처음 등록 · 다시 시도로 새 작업) 그 작업의 진행 상황을 구독한다
-  useEffect(() => {
-    if (job?._id) socket.emit('ai:subscribe', { jobId: job._id });
-  }, [job?._id]);
+  // 작업이 바뀔 때마다(처음 등록 · 다시 시도) 그 작업의 진행 상황을 구독한다. 다시 시도는 같은 작업 id를
+  // 다시 쓰므로 횟수로 다시 구독한다. 소켓이 다시 연결되면 훅이 다시 구독한다
+  const [retries, setRetries] = useState(0);
+  useAiJobSubscription(job?._id, retries);
 
   useSocket(
     'ai:progress',
@@ -275,6 +274,7 @@ export function ConvertScreen() {
     onSuccess: (j) => {
       handled.current = false;
       setJob(j);
+      setRetries((n) => n + 1);
       setPhase('ai');
       setAttempts(1);
     },
@@ -392,9 +392,14 @@ export function ConvertScreen() {
       <Alert
         open={phase === 'uncertain'}
         title="등록 결과를 확인할 수 없어요"
-        body="같은 자료를 중복 등록하지 않도록 다시 보내지 않았어요. 학습자료 목록에서 등록 여부를 확인해 주세요."
-        primary={checking ? '목록 확인 중…' : '학습자료에서 확인'}
+        body="다시 시도하면 같은 등록 키로 보내서 같은 자료를 중복 등록하지 않고 이어서 등록해요. 학습자료 목록에서 먼저 확인할 수도 있어요."
+        primary="다시 시도"
         onPrimary={() => {
+          void run();
+        }}
+        onClose={() => {}}
+        secondary={checking ? '목록 확인 중…' : '학습자료에서 확인'}
+        onSecondary={() => {
           void confirmRegistration();
         }}
       />

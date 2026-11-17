@@ -27,7 +27,7 @@ const dto = (over: Partial<CreateMaterialDto> = {}): CreateMaterialDto => ({
 });
 
 /** 모델 · 작업 · 저장소를 대신하는 가짜. 저장한 노트는 마지막 한 건만 기억한다 */
-function setup(over: { folder?: unknown; size?: number } = {}) {
+function setup(over: { folder?: unknown; size?: number; used?: boolean } = {}) {
   let saved: Record<string, unknown> | null = null;
   const lean = <T>(v: T) => ({ lean: () => Promise.resolve(v) });
   const materials = {
@@ -37,6 +37,7 @@ function setup(over: { folder?: unknown; size?: number } = {}) {
       return Promise.resolve([{ toObject: () => saved }]);
     }),
     updateOne: vi.fn(() => Promise.resolve()),
+    exists: vi.fn(() => Promise.resolve(over.used ? { _id: new Types.ObjectId() } : null)),
     // 첫 호출은 "작업 만드는 중" 표시 잡기, 다음은 작업 id 연결
     findOneAndUpdate: vi.fn((_f: unknown, u: { $set: Record<string, unknown> }) => {
       if ('processing.jobId' in u.$set) {
@@ -74,6 +75,7 @@ function setup(over: { folder?: unknown; size?: number } = {}) {
         ...(verify ? { sizeBytes: over.size ?? 1000 } : {}),
       }),
     ),
+    deleteUpload: vi.fn(() => Promise.resolve()),
   };
   const quizSets = { pregenerate: vi.fn() };
   const session = { id: 'session' };
@@ -239,6 +241,66 @@ describe('노트 등록 (MaterialsService.register)', () => {
     expect(await code(t.service.register(me.toHexString(), dto()))).toBe('FILE_NOT_ALLOWED');
     expect(t.jobs.enqueue).not.toHaveBeenCalled();
     expect(t.materials.create).not.toHaveBeenCalled();
+  });
+
+  describe('너무 큰 파일 정리', () => {
+    const tooBig = 21 * 1024 * 1024;
+    const prefix = `uploads/image/${me.toHexString()}/`;
+
+    it('등록이 거절한 파일은 저장소에서 지운다', async () => {
+      t = setup({ size: tooBig });
+      expect(await code(t.service.register(me.toHexString(), dto()))).toBe('FILE_NOT_ALLOWED');
+      expect(t.materials.exists).toHaveBeenCalledWith({ ownerId: me, blobUrls: dto().blobUrls[0] });
+      expect(t.blobs.deleteUpload).toHaveBeenCalledExactlyOnceWith(dto().blobUrls[0], prefix);
+    });
+
+    it('여러 파일 중 한도를 넘은 파일만 지운다', async () => {
+      const urls = [url('image', 1, 'jpg'), url('image', 2, 'jpg')];
+      t.blobs.createReadAccess.mockImplementation((u: string) =>
+        Promise.resolve({ readUrl: `${u}?sig=SECRET`, sizeBytes: u === urls[1] ? tooBig : 1000 }),
+      );
+      expect(await code(t.service.register(me.toHexString(), dto({ blobUrls: urls })))).toBe(
+        'FILE_NOT_ALLOWED',
+      );
+      expect(t.blobs.deleteUpload).toHaveBeenCalledExactlyOnceWith(urls[1], prefix);
+    });
+
+    it('내 노트가 이미 쓰는 파일이면 남긴다', async () => {
+      t = setup({ size: tooBig, used: true });
+      expect(await code(t.service.register(me.toHexString(), dto()))).toBe('FILE_NOT_ALLOWED');
+      expect(t.blobs.deleteUpload).not.toHaveBeenCalled();
+    });
+
+    it('지우지 못해도 400은 그대로 알린다', async () => {
+      t = setup({ size: tooBig });
+      t.blobs.deleteUpload.mockRejectedValue(new Error('unavailable'));
+      expect(await code(t.service.register(me.toHexString(), dto()))).toBe('FILE_NOT_ALLOWED');
+      expect(t.materials.create).not.toHaveBeenCalled();
+    });
+
+    it('다시 시도에서 한도를 넘어도 등록된 노트의 원본은 지우지 않는다', async () => {
+      t = setup({ size: tooBig });
+      const blobUrls = dto().blobUrls;
+      t.materials.findOne.mockReturnValue({
+        lean: () => Promise.resolve({ kind: 'handwriting', blobUrls }),
+      } as never);
+      const refresh = (
+        t.service as unknown as {
+          refreshInput: (type: string, ctx: Record<string, unknown>) => Promise<unknown>;
+        }
+      ).refreshInput.bind(t.service);
+      expect(
+        await code(
+          refresh('handwriting_summary', {
+            userId: me.toHexString(),
+            targetType: 'material',
+            targetId: new Types.ObjectId().toHexString(),
+            input: { pages: [{ pageNo: 1, imageUrl: 'old' }] },
+          }),
+        ),
+      ).toBe('FILE_NOT_ALLOWED');
+      expect(t.blobs.deleteUpload).not.toHaveBeenCalled();
+    });
   });
 
   it('저장소가 거절한 파일(남의 경로 · 없는 파일)이면 노트를 만들지 않는다', async () => {

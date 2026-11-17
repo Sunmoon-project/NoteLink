@@ -35,8 +35,7 @@ import {
 import { ERROR_CODES, type AiJob, type Question } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
-import { socket } from '@/lib/socket';
-import { useSocket, useTabRefresh } from '@/hooks';
+import { useAiJobSubscription, useSocket, useTabRefresh } from '@/hooks';
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
@@ -396,7 +395,6 @@ export function QuizGenScreen() {
         activeJob.current = r.job._id;
         setJob(r.job);
         setSetId(r.quizSet._id);
-        socket.emit('ai:subscribe', { jobId: r.job._id });
       })
       .catch((e) => {
         if (!disposed && !canceled.current) {
@@ -408,6 +406,8 @@ export function QuizGenScreen() {
       disposed = true;
     };
   }, [materialId]);
+  // 진행 상황 구독(소켓이 다시 연결되면 다시 구독)
+  useAiJobSubscription(job?._id);
   useSocket(
     'ai:progress',
     (p) => p.jobId === job?._id && setJob((j) => (j ? { ...j, progress: p.progress } : j)),
@@ -1202,11 +1202,38 @@ export function QuizSimilarScreen() {
   const generate = useMutation({
     mutationFn: () => api.quiz.similar(setId ?? ''),
     retry: false,
-    onSuccess: (data) => qc.setQueryData(['similar-result', setId], data),
+    onSuccess: (data) => {
+      // 다 만든 세트만 결과로 남긴다(만드는 중은 아래에서 기다리고, 실패는 다시 시도하게)
+      if (data.status !== 'generating' && data.status !== 'failed')
+        qc.setQueryData(['similar-result', setId], data);
+    },
   });
+  // 서버는 「다시 보기」 세트를 만드는 중(generating)으로 돌려준다: 다 만들 때까지 세트를 다시 읽는다
+  const making = generate.data?.status === 'generating' ? generate.data._id : null;
+  const poll = useQuery({
+    queryKey: ['quiz-set', making],
+    queryFn: () => api.quiz.set(making!),
+    enabled: !!making,
+    refetchInterval: (q) => (q.state.data && q.state.data.status !== 'generating' ? false : 1500),
+  });
+  const done =
+    poll.data && poll.data.status !== 'generating' && poll.data.status !== 'failed'
+      ? poll.data
+      : null;
+  const failed = poll.data?.status === 'failed' || generate.data?.status === 'failed';
+  useEffect(() => {
+    if (done) qc.setQueryData(['similar-result', setId], done);
+  }, [done, qc, setId]);
+  // 결과 조회가 실패하면(연결 끊김 · 서버 오류) 「만드는 중」만 되풀이하지 않고 알린 뒤 다시 확인하게 한다
+  // 앞서 받은 진행 상태(generating)가 남아 있어도 마지막 조회가 실패했으면 알린다(다 만든 · 실패한 세트는 제외)
+  const checkFailed = !!making && poll.isError && !done && !failed;
+  const waiting = !!making && !done && !failed && !checkFailed;
   const sim = {
-    data: (cached.data ?? generate.data) as
-      Awaited<ReturnType<typeof api.quiz.similar>> | undefined,
+    data: (cached.data ??
+      done ??
+      (generate.data && generate.data.status !== 'generating' && !failed
+        ? generate.data
+        : undefined)) as Awaited<ReturnType<typeof api.quiz.similar>> | undefined,
   };
   const [open, setOpen] = useState<string[]>([]);
   const [saved, setSaved] = useState<string[]>([]);
@@ -1240,8 +1267,15 @@ export function QuizSimilarScreen() {
           sim.data ? (
             <Btn onPress={() => router.back()}>확인</Btn>
           ) : (
-            <Btn loading={generate.isPending} onPress={() => generate.mutate()}>
-              {generate.isError ? '다시 시도' : '유사 퀴즈 만들기'}
+            <Btn
+              loading={generate.isPending || waiting}
+              onPress={() => (checkFailed ? void poll.refetch() : generate.mutate())}
+            >
+              {checkFailed
+                ? '다시 확인'
+                : generate.isError || failed
+                  ? '다시 시도'
+                  : '유사 퀴즈 만들기'}
             </Btn>
           )
         }
@@ -1262,9 +1296,21 @@ export function QuizSimilarScreen() {
             body="원본과 같은 난이도로 새 문제를 만들어요. 다시 풀면서 헷갈린 개념을 확인해 보세요."
           />
         )}
-        {generate.isError && (
+        {checkFailed && (
           <Text className="text-center text-footnote leading-5 text-danger">
-            생성 결과를 받지 못했어요. 다시 시도하면 새로 만들어요.
+            만든 결과를 확인하지 못했어요. 연결을 확인하고 다시 확인해 주세요.
+          </Text>
+        )}
+        {waiting && (
+          <Text className="text-center text-footnote leading-5 text-sub">
+            틀린 문제와 비슷한 문제를 만들고 있어요 · {poll.data?.progress ?? 0}%
+          </Text>
+        )}
+        {(generate.isError || failed) && (
+          <Text className="text-center text-footnote leading-5 text-danger">
+            {generate.error instanceof ApiError && !failed
+              ? generate.error.message
+              : '생성 결과를 받지 못했어요. 다시 시도하면 새로 만들어요.'}
           </Text>
         )}
         <View className="gap-2">
