@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { Logger } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
@@ -636,6 +637,27 @@ describe('세트 저장 결과가 불명확할 때 작업 거두기(create)', ()
     await expect(t.similar.create(ME.toHexString(), s.set)).rejects.toThrow('쓰기 확인 실패');
     expect(t.jobs.rows.at(-1)!['status']).toBe('canceled');
     expect(t.sets.rows.some((r) => String(r['sourceSetId']) === s.set)).toBe(false);
+  });
+
+  it('세트 저장과 작업 취소가 모두 실패하면 최초 저장 오류를 알린다', async () => {
+    const t = setup();
+    const s = await t.seed();
+    const saveError = new Error('세트 저장 실패');
+    vi.spyOn(t.sets.model, 'create').mockRejectedValueOnce(saveError as never);
+    const cancel = vi
+      .spyOn(AiJobsService.prototype, 'cancel')
+      .mockRejectedValueOnce(new Error('취소 실패'));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(t.similar.create(ME.toHexString(), s.set)).rejects.toBe(saveError);
+      const jobId = String(t.jobs.rows.at(-1)!['_id']);
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(ME.toHexString(), jobId);
+      expect(warn).toHaveBeenCalledExactlyOnceWith(`유사 퀴즈 작업 취소 실패 (작업 ID: ${jobId})`);
+      expect(t.sets.rows.some((r) => String(r['sourceSetId']) === s.set)).toBe(false);
+    } finally {
+      cancel.mockRestore();
+      warn.mockRestore();
+    }
   });
 
   it('저장됐는지 확인하지 못하면 작업을 거두지 않고 원래 오류를 알린다', async () => {
