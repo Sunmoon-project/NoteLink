@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronRight, FileText, Image, Pin } from 'lucide-react-native';
 import { ERROR_CODES, type AiJob } from '@notelink/shared';
 import { api, NetworkError } from '@/lib/api';
-import { uploadToBlob } from '@/lib/upload';
+import { uploadToBlob, UploadError } from '@/lib/upload';
 import { aiWaiting } from '@/lib/ai';
 import { notifyLocal } from '@/lib/push';
 import { useAiJobSubscription, useSocket } from '@/hooks';
@@ -784,6 +784,8 @@ export function DocSummary({
 
 /** 등록 전 실패 이유: 서버 응답 코드로 짧게(네트워크 끊김은 paused로 따로 다룬다) */
 function uploadFailReason(e: unknown) {
+  // 올리기 전 기기 검사(형식 · 용량)나 Blob 응답 오류는 상태 코드가 없다: 그 이유를 그대로 보여 준다(#508)
+  if (e instanceof UploadError) return e.message;
   const status = (e as { status?: number } | null)?.status;
   if (status === 404) return '서버가 아직 자료를 받을 준비가 안 됐어요.';
   if (status === 503) return '서버의 파일 저장소에 연결하지 못했어요.';
