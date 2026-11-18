@@ -20,16 +20,19 @@ import {
   codeRejected,
   rateLimited,
 } from './app-signup.service.js';
+import type { AccountId } from './app-login-input.js';
 import { EmailCodeService } from './email-code.service.js';
 import { MAIL_SENDER, MailUnavailableError, type MailSender } from '../../mail/mail-sender.js';
 
 /**
- * 아이디 찾기 · 비밀번호 재설정(FR-01). 로그인 아이디는 가입 이메일이다.
+ * 아이디 찾기 · 비밀번호 재설정(FR-01). 아이디는 가입 때 따로 정하고, 이메일은 인증에만 쓴다(아이디를 두기 전 계정은 이메일이 아이디).
  *
  * ① 인증번호 받기(`recovery` 목적): 가입한 이메일이면 인증번호를, 아니면 「가입한 계정이 없어요」 메일을 보낸다.
  *    응답은 두 경우가 같아서 가입 여부를 응답으로 알아낼 수 없다. 발송 제한은 가입과 같은 규칙(60초 · 1시간 5번).
  * ② 아이디 찾기: 이메일 + 인증번호가 맞으면 그 이메일로 가입한 아이디를 알려 준다(인증번호는 한 번 쓰면 끝).
- * ③ 비밀번호 재설정: 아이디와 이메일이 같은 계정이고 인증번호가 맞으면 새 비밀번호로 바꾸고, 모든 기기 로그인을 끊는다.
+ * ③ 비밀번호 재설정: 인증번호가 맞고 아이디가 그 이메일의 계정이면 새 비밀번호로 바꾸고, 모든 기기 로그인을 끊는다.
+ *    아이디 · 이메일이 맞는지는 인증번호를 확인한 뒤에 본다(인증번호 없이 아이디 · 이메일 짝을 알아낼 수 없게).
+ *    맞지 않으면 그 인증번호는 이미 쓴 것이라 새로 받아야 한다.
  */
 @Injectable()
 export class AccountRecoveryService {
@@ -60,25 +63,29 @@ export class AccountRecoveryService {
     }
   }
 
-  /** 인증번호가 맞으면 그 이메일로 가입한 아이디(가입 이메일). 그사이 탈퇴했으면 null */
+  /** 인증번호가 맞으면 그 이메일로 가입한 아이디(아이디를 두기 전 계정은 가입 이메일). 없거나 간편 로그인 계정이면 null */
   async findId(email: string, code: string): Promise<{ id: string | null }> {
     await this.useCode(email, code);
-    return { id: (await this.findUser(email)) ? email : null };
+    return { id: loginIdOf(await this.findUser(email)) };
   }
 
-  async resetPassword(id: string, email: string, code: string, password: string): Promise<void> {
-    if (id !== email) {
-      throw new BadRequestException({
-        code: ERROR_CODES.VALIDATION,
-        message: '아이디와 이메일이 같은 계정이 아니에요',
-      });
-    }
+  async resetPassword(id: AccountId, email: string, code: string, password: string): Promise<void> {
+    // 인증번호를 먼저 확인한다(맞으면 한 번 쓴 것이 된다) — 인증번호 없이 아이디 · 이메일 짝을 알아낼 수 없게
     await this.useCode(email, code);
     const user = await this.findUser(email);
-    if (!user) {
+    if (!user || loginIdOf(user) === null) {
       throw new BadRequestException({
         code: APP_LOGIN_ERRORS.EMAIL_CODE_INVALID,
         message: '가입한 계정이 없어요',
+      });
+    }
+    // 로그인처럼 아이디 대신 가입 이메일을 넣어도 같은 계정이다
+    const matches = 'loginId' in id ? user.loginId === id.loginId : user.email === id.email;
+    if (!matches) {
+      throw new BadRequestException({
+        code: ERROR_CODES.VALIDATION,
+        message:
+          '이 이메일로 가입한 아이디가 아니에요. 아이디 찾기로 확인한 뒤 인증번호를 다시 받아 주세요',
       });
     }
     const passwordHash = await hash(password, this.hashCost);
@@ -98,4 +105,16 @@ export class AccountRecoveryService {
   private findUser(email: string) {
     return this.users.findOne({ email, deletedAt: null }).lean();
   }
+}
+
+/**
+ * 계정의 로그인 아이디. 아이디를 두기 전 이메일 가입 계정은 이메일이 아이디다.
+ * 간편 로그인만 쓰는 계정(비밀번호 없음)은 아이디로 로그인할 수 없어 null이다
+ */
+function loginIdOf(
+  user: { loginId?: string | null; email?: string | null; passwordHash?: string | null } | null,
+): string | null {
+  if (!user) return null;
+  if (user.loginId) return user.loginId;
+  return user.passwordHash && user.email ? user.email : null;
 }

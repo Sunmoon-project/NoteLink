@@ -1,3 +1,4 @@
+import { Keyboard } from 'react-native';
 import { useAuth } from '../stores/auth';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
@@ -41,9 +42,18 @@ jest.mock('expo-file-system', () => ({ File: jest.fn(), UploadType: { BINARY_CON
 jest.mock('expo-image-picker', () => ({}));
 jest.mock('expo-calendar', () => ({}));
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn() }));
+const mockFocus = new Set<() => (() => void) | void>();
 jest.mock('expo-router', () => ({
   useIsFocused: () => true,
-  router: { push: jest.fn(), replace: jest.fn(), back: jest.fn(), dismissTo: jest.fn() },
+  // 포커스 콜백을 모아 두고, 시험에서 다른 화면으로 다녀온 것처럼 정리 함수를 부른다
+  useFocusEffect: (cb: () => (() => void) | void) => mockFocus.add(cb),
+  router: {
+    push: jest.fn(),
+    replace: jest.fn(),
+    back: jest.fn(),
+    dismissTo: jest.fn(),
+    canGoBack: () => true,
+  },
   useLocalSearchParams: () => globalThis.mockParams,
   useSegments: () => [],
   useSitemap: () => null,
@@ -235,7 +245,9 @@ describe('RoomSettingsScreen', () => {
     await renderScreen(<RoomSettingsScreen />, qc);
     await waitFor(() => expect(qc.getQueryData(['room', room._id])).toBeTruthy());
     await fireEvent.press(screen.getByText('채팅방 나가기'));
-    expect(screen.getByText('마지막으로 나가면 방이 닫히고 7일 후 방과 채팅 기록이 삭제돼요.')).toBeTruthy();
+    expect(
+      screen.getByText('마지막으로 나가면 방이 닫히고 7일 후 방과 채팅 기록이 삭제돼요.'),
+    ).toBeTruthy();
   });
   it('퇴장 성공 시 해당 방을 떠나고 방 목록 캐시 갱신 후 목록으로 돌아간다', async () => {
     const qc = client();
@@ -361,5 +373,47 @@ describe('교시 시간표 편집', () => {
     await fireEvent.press(screen.getByRole('button', { name: '취소' }));
     expect(screen.getByText('2교시')).toBeTruthy();
     expect(screen.queryByText('취소할 내용')).toBeNull();
+  });
+});
+
+// Codex #490 리뷰: 채팅 중 뒤로 가기 · 다른 화면에 다녀온 뒤의 채팅 정리를 검증한다
+describe('스터디룸 뒤로 가기와 채팅', () => {
+  beforeEach(() => {
+    mockFocus.clear();
+    jest.mocked(router.back).mockClear();
+    jest.mocked(router.replace).mockClear();
+  });
+
+  it('채팅 중 뒤로 가기는 채팅만 닫고 키보드를 내리며, 캠 화면에서 누르면 방을 나간다', async () => {
+    mockConnectMedia.mockResolvedValue(media());
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText(room.title);
+    await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+    await fireEvent.press(await screen.findByLabelText('채팅 닫기'));
+    expect(dismiss).toHaveBeenCalled();
+    expect(router.back).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
+    // 캠 화면에서는 방을 나간다
+    await fireEvent.press(await screen.findByLabelText('나가기'));
+    expect(router.back).toHaveBeenCalledTimes(1);
+    dismiss.mockRestore();
+  });
+
+  it('채팅을 연 채로 다른 화면에 다녀오면 채팅이 닫혀 있다', async () => {
+    mockConnectMedia.mockResolvedValue(media());
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText(room.title);
+    await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+    expect(await screen.findByLabelText('채팅 닫기')).toBeTruthy();
+    // 다른 화면으로 나간다(포커스 해제 정리 함수)
+    await act(async () => {
+      for (const cb of mockFocus) (cb() as (() => void) | undefined)?.();
+    });
+    expect(await screen.findByLabelText('나가기')).toBeTruthy();
+    expect(screen.queryByLabelText('채팅 닫기')).toBeNull();
+    expect(dismiss).toHaveBeenCalled();
+    dismiss.mockRestore();
   });
 });

@@ -27,7 +27,7 @@ export class AccountRecoveryController {
   }
 
   /**
-   * 아이디 찾기. 응답: `{ data: { id } }` (아이디 = 가입 이메일, 계정이 없으면 null).
+   * 아이디 찾기. 응답: `{ data: { id } }` (그 이메일로 가입한 아이디. 아이디를 두기 전 계정은 가입 이메일, 없거나 간편 로그인 계정이면 null).
    * 틀리면 400 EMAIL_CODE_INVALID(+ 남은 횟수), 횟수를 다 쓰면 429 EMAIL_CODE_LOCKED.
    */
   @Post('find-id')

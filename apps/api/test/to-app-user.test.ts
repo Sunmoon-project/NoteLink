@@ -8,6 +8,7 @@ import { toAppUser, type UserSource } from '../src/modules/auth/to-app-user.js';
 const USER_FIELDS = [
   '_id',
   'email',
+  'loginId',
   'nickname',
   'role',
   'learnerType',

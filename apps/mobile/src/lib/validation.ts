@@ -1,3 +1,5 @@
+import { LOGIN_ID_PATTERN } from '@notelink/shared';
+
 // 가입 · 프로필 입력 검사. 문제가 없으면 null, 있으면 칸 아래에 보여 줄 안내를 돌려준다
 
 /** 아이디@도메인.최상위(영문 2자 이상 · 퓨니코드 xn--) · 공백 · 연속 점 없이 · 254자 이하 */
@@ -7,6 +9,16 @@ export function emailError(email: string): string | null {
   if (v.length > 254) return '이메일이 너무 길어요';
   if (!/^[^\s@]+@[^\s@]+\.(?:[A-Za-z]{2,}|xn--[A-Za-z0-9-]+)$/.test(v) || v.includes('..'))
     return '이메일 형식을 확인해 주세요 (예: you@example.com)';
+  return null;
+}
+
+/** 아이디: 영문 소문자로 시작하는 4~20자 · 영문 소문자 · 숫자 · _ (서버 LOGIN_ID_PATTERN과 같다) */
+export function loginIdError(id: string): string | null {
+  const v = id.trim().toLowerCase();
+  if (!v) return '아이디를 입력해 주세요';
+  if (v.length < 4 || v.length > 20) return '아이디는 4~20자로 정해 주세요';
+  if (!/^[a-z]/.test(v)) return '아이디는 영문으로 시작해 주세요';
+  if (!LOGIN_ID_PATTERN.test(v)) return '아이디는 영문 · 숫자 · _만 쓸 수 있어요';
   return null;
 }
 

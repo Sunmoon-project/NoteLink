@@ -26,6 +26,8 @@ export const UserSettings = z.object({
 export const User = z.object({
   _id: id,
   email: z.string().nullable(),
+  /** 로그인 아이디. 간편 로그인 계정과 아이디를 따로 두기 전에 이메일로 가입한 계정은 null */
+  loginId: z.string().nullable().optional(),
   nickname: z.string(),
   role: z.string(),
   learnerType: LearnerType,

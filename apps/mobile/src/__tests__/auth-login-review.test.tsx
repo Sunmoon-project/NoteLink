@@ -61,7 +61,7 @@ function saveProgress() {
   });
 }
 async function submitLogin() {
-  await fireEvent.changeText(screen.getByPlaceholderText('you@example.com'), 'learner@example.com');
+  await fireEvent.changeText(screen.getByPlaceholderText('아이디'), 'learner@example.com');
   await fireEvent.changeText(screen.getByPlaceholderText('8자 이상'), 'password-a');
   await fireEvent.press(screen.getByText('로그인'));
   await screen.findByRole('button', { name: '로그인' });
@@ -159,11 +159,11 @@ it('온보딩 완료 동일 계정의 미완료 풀이가 있으면 해당 세�
 
 it('로그인 실패는 시트 안에 안내하고, 입력을 고치면 지운다', async () => {
   const failure = new ApiError('VALIDATION_FAILED', '', 400);
-  failure.message = '이메일 또는 비밀번호가 맞지 않아요';
+  failure.message = '아이디 또는 비밀번호가 맞지 않아요';
   mockApi.auth.emailLogin.mockRejectedValueOnce(failure);
   await renderScreen(<LoginScreen />, client());
   await submitLogin();
-  expect(await screen.findByText('이메일 또는 비밀번호가 맞지 않아요')).toBeTruthy();
+  expect(await screen.findByText('아이디 또는 비밀번호가 맞지 않아요')).toBeTruthy();
   await fireEvent.changeText(screen.getByPlaceholderText('8자 이상'), '123456789');
-  expect(screen.queryByText('이메일 또는 비밀번호가 맞지 않아요')).toBeNull();
+  expect(screen.queryByText('아이디 또는 비밀번호가 맞지 않아요')).toBeNull();
 });

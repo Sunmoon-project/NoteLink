@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { View } from 'react-native';
 import { router } from 'expo-router';
 import { useMutation } from '@tanstack/react-query';
+import { ERROR_CODES } from '@notelink/shared';
 import { Text } from '@/components/text';
 import { Btn, Canvas, Header, Input, Label, Screen, Segment } from '@/components/ui';
 import { api, ApiError } from '@/lib/api';
@@ -9,7 +10,6 @@ import { looksLikeEmail, passwordError } from '@/lib/validation';
 import { toast } from '@/stores/toast';
 
 const TABS = ['아이디 찾기', '비밀번호 찾기'] as const;
-const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 /** 서버에 아직 경로가 없으면(404) 준비 중, 그 밖에는 서버가 준 문구 */
 const failText = (e: unknown, fallback: string) =>
@@ -20,8 +20,8 @@ const failText = (e: unknown, fallback: string) =>
     : fallback;
 
 /**
- * 로그인 화면의 「아이디 · 비밀번호 찾기」. 아이디는 가입 이메일이라, 아이디 찾기는 이메일 인증번호로
- * 그 이메일로 가입한 아이디가 있는지 확인한다. 비밀번호 찾기는 아이디와 이메일을 둘 다 받아 같은
+ * 로그인 화면의 「아이디 · 비밀번호 찾기」. 아이디는 가입 때 따로 정하고 이메일은 인증에만 쓴다.
+ * 아이디 찾기는 이메일 인증번호로 그 이메일로 가입한 아이디를 알려 준다. 비밀번호 찾기는 아이디와 이메일을 둘 다 받아 같은
  * 계정일 때 인증번호 뒤 새 비밀번호를 정한다.
  */
 export function FindAccountScreen() {
@@ -155,9 +155,7 @@ function FindId() {
             <Btn
               kind="cream"
               className="mt-2"
-              onPress={() =>
-                router.replace({ pathname: '/(auth)/login', params: { email: found } })
-              }
+              onPress={() => router.replace({ pathname: '/(auth)/login', params: { id: found } })}
             >
               이 아이디로 로그인
             </Btn>
@@ -178,11 +176,17 @@ function ResetPassword() {
     mutationFn: () => api.auth.passwordReset(id.trim(), email.trim(), code, pw),
     onSuccess: () => {
       toast('비밀번호를 바꿨어요. 새 비밀번호로 로그인해 주세요');
-      router.replace({ pathname: '/(auth)/login', params: { email: id.trim() } });
+      router.replace({ pathname: '/(auth)/login', params: { id: id.trim().toLowerCase() } });
+    },
+    onError: (e) => {
+      // 아이디가 그 이메일의 아이디가 아니면 확인한 인증번호는 이미 쓴 것이라 새로 받아야 한다
+      if (e instanceof ApiError && e.code === ERROR_CODES.VALIDATION) {
+        setCode('');
+        send.reset();
+        toast(e.message);
+      }
     },
   });
-  // 아이디는 가입 이메일이라, 두 칸이 같은 계정을 가리켜야 인증번호를 보낸다
-  const mismatchIdEmail = !!id.trim() && looksLikeEmail(email) && !same(id, email);
   const pwMsg = pw ? passwordError(pw) : null;
   const mismatch = !!pw2 && pw !== pw2;
   const edit = (set: (v: string) => void) => (v: string) => {
@@ -192,16 +196,16 @@ function ResetPassword() {
   return (
     <View className="mt-4">
       <Text className="text-footnote leading-5 text-sub">
-        아이디와 가입한 이메일을 둘 다 입력해 주세요. 같은 계정이면 이메일로 인증번호를 보내 드리고,
-        확인하면 새 비밀번호를 정할 수 있어요.
+        아이디와 가입할 때 인증한 이메일을 입력해 주세요. 이메일로 인증번호를 보내 드리고, 확인하면
+        새 비밀번호를 정할 수 있어요. 아이디가 기억나지 않으면 아이디 찾기를 먼저 해 주세요.
       </Text>
       <Label>아이디</Label>
       <Input
         value={id}
         onChangeText={edit(setId)}
-        placeholder="아이디(가입한 이메일)"
-        keyboardType="email-address"
+        placeholder="아이디"
         autoCapitalize="none"
+        autoCorrect={false}
         autoComplete="username"
         editable={!reset.isPending && !send.isPending}
       />
@@ -209,21 +213,15 @@ function ResetPassword() {
       <Input
         value={email}
         onChangeText={edit(setEmail)}
-        invalid={mismatchIdEmail}
         placeholder="you@example.com"
         keyboardType="email-address"
         autoCapitalize="none"
         autoComplete="email"
         editable={!reset.isPending && !send.isPending}
       />
-      {mismatchIdEmail && (
-        <Text className="mt-1 text-caption text-danger">
-          아이디와 이메일이 같은 계정이 아니에요. 가입할 때 쓴 이메일을 입력해 주세요
-        </Text>
-      )}
       <SendButton
         sent={sent}
-        disabled={!id.trim() || !looksLikeEmail(email) || mismatchIdEmail}
+        disabled={id.trim().length < 4 || !looksLikeEmail(email)}
         send={send}
         onPress={sendNow}
       />

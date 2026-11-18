@@ -73,11 +73,13 @@ async function postDeleteInChunks(path: string, key: 'ids' | 'questionIds', ids:
 export const httpApi: Api = {
   auth: {
     socialLogin: (provider, proof) => http.post(P.socialLogin(provider), proof),
-    emailLogin: (email, password) => http.post(P.emailLogin, { email, password }),
+    emailLogin: (id, password) => http.post(P.emailLogin, { id, password }),
     emailSendCode: (email) => http.post(P.emailSendCode, { email }),
     emailVerifyCode: (email, code) => http.post(P.emailVerifyCode, { email, code }),
-    emailSignup: (verificationToken, password) =>
-      http.post(P.emailSignup, { verificationToken, password }),
+    emailSignup: (verificationToken, loginId, password) =>
+      http.post(P.emailSignup, { verificationToken, loginId, password }),
+    loginIdAvailable: async (loginId) =>
+      (await http.post<{ available: boolean }>(P.loginIdAvailable, { loginId })).available,
     recoverySendCode: (email) => http.post(P.recoverySendCode, { email }),
     findId: (email, code) => http.post(P.findId, { email, code }),
     passwordReset: (id, email, code, password) =>
