@@ -10,6 +10,7 @@ import { api, NetworkError } from '@/lib/api';
 import { uploadToBlob, UploadError } from '@/lib/upload';
 import { aiWaiting } from '@/lib/ai';
 import { notifyLocal } from '@/lib/push';
+import { useBgJobs } from '@/stores/bg-jobs';
 import { useAiJobSubscription, useSocket } from '@/hooks';
 import { useDraft } from '@/stores/draft';
 import { scanTitle } from '@/lib/scan-title';
@@ -399,6 +400,26 @@ export function ConvertScreen() {
     toast('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
   };
 
+  // 기다리지 않고 폴더로: 서버는 계속 정리하고, 끝나면 전역에서 알려 준다(stores/bg-jobs)
+  const leaveToFolder = () => {
+    if (!job) return;
+    canceled.current = true;
+    abort.current.abort();
+    useBgJobs.getState().add({
+      jobId: job._id,
+      kind: 'material',
+      title: draft.title.trim() || defaultTitle(draft.kind, draft.files[0]?.name, draft.source),
+    });
+    const folder = draft.folderId;
+    qc.invalidateQueries({ queryKey: ['materials'] });
+    qc.invalidateQueries({ queryKey: ['folders'] });
+    useDraft.getState().reset();
+    router.dismissTo(
+      folder ? { pathname: '/(tabs)/note/folder/[id]', params: { id: folder } } : '/(tabs)/note',
+    );
+    toast('정리가 끝나면 알려 드릴게요');
+  };
+
   const confirmRegistration = async () => {
     if (checkingRegistration.current) return;
     checkingRegistration.current = true;
@@ -493,6 +514,16 @@ export function ConvertScreen() {
             </Text>
             <Toggle label="완료 알림" on={notify} onChange={setNotify} />
           </Card>
+        )}
+        {phase === 'ai' && job && (
+          <View className="mt-8 px-4">
+            <Btn kind="outline" onPress={leaveToFolder}>
+              폴더에서 기다리기
+            </Btn>
+            <Text className="mt-2 text-center text-caption2 text-sub">
+              다른 화면을 써도 정리는 계속되고, 끝나면 알려 드려요
+            </Text>
+          </View>
         )}
         {attempts > 1 && (
           <Text className="mt-6 text-center text-caption2 text-sub">

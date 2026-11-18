@@ -39,6 +39,7 @@ import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useAiJobSubscription, useSocket, useTabRefresh } from '@/hooks';
 import { useQuizProgress } from '@/stores/quiz-progress';
+import { useBgJobs } from '@/stores/bg-jobs';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
 import { toast } from '@/stores/toast';
@@ -521,6 +522,26 @@ export function QuizGenScreen() {
           <Progress value={pct} className="mt-5 w-40" />
           <Text className="mt-2 text-caption2 text-sub">{pct}%</Text>
         </View>
+        {job && (
+          <View className="mt-10 px-4">
+            <Btn
+              kind="outline"
+              onPress={() => {
+                // 기다리지 않고 퀴즈 탭으로: 서버는 계속 만들고, 끝나면 전역에서 알려 준다(stores/bg-jobs)
+                canceled.current = true;
+                useBgJobs.getState().add({ jobId: job._id, kind: 'quiz', title: title || '노트' });
+                qc.invalidateQueries({ queryKey: ['quiz-sets'] });
+                router.dismissTo('/(tabs)/quiz');
+                toast('다 만들면 알려 드릴게요');
+              }}
+            >
+              퀴즈 탭에서 기다리기
+            </Btn>
+            <Text className="mt-2 text-center text-caption2 text-sub">
+              다른 공부를 해도 문제는 계속 만들어지고, 끝나면 알려 드려요
+            </Text>
+          </View>
+        )}
       </Screen>
       <Alert
         open={credit}
