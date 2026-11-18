@@ -119,6 +119,8 @@ describe('파일 올리기 주소 발급 (POST /api/v1/uploads/sas)', () => {
     ['image', 'a.heic', 'image/heif', 'image/heic'],
     ['audio', 'a.wav', 'audio/x-wav', 'audio/wav'],
     ['audio', 'a.m4a', '', 'audio/mp4'],
+    ['audio', '녹음본.aac', 'audio/vnd.dlna.adts', 'audio/aac'],
+    ['audio', 'a.m4a.mp4', 'video/mp4', 'audio/mp4'],
     ['document', 'a.pdf', 'application/octet-stream', 'application/pdf'],
     ['document', 'a.jpg', 'IMAGE/JPEG', 'image/jpeg'],
   ])(
@@ -133,7 +135,8 @@ describe('파일 올리기 주소 발급 (POST /api/v1/uploads/sas)', () => {
     ['image', 'a.pdf'],
     ['image', 'a.gif'],
     ['document', 'a.heic'],
-    ['audio', 'a.mp4'],
+    ['audio', 'a.ogg'],
+    ['image', 'a.mp4'],
     ['image', 'noext'],
     ['image', 'a.jpg.exe'],
     ['image', 'jpg'],

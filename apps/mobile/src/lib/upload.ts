@@ -44,6 +44,8 @@ const guessType = (name: string) => {
         pdf: 'application/pdf',
         mp3: 'audio/mpeg',
         m4a: 'audio/mp4',
+        aac: 'audio/aac',
+        mp4: 'audio/mp4',
         wav: 'audio/wav',
       } as Record<string, string>
     )[ext ?? ''] ?? 'application/octet-stream'
