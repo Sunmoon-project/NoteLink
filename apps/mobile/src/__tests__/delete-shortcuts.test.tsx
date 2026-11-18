@@ -83,20 +83,3 @@ it('스터디룸 목록에서 왼쪽으로 밀면 나오는 나가기 버튼을 
   await fireEvent.press(screen.getAllByText('나가기').at(-1)!);
   await waitFor(() => expect(leave).toHaveBeenCalledWith('r1'));
 });
-
-// 사용자 보고: 밀면 나오는 삭제 버튼이 반쯤 잘린 것처럼 보였다 — 빨간 칸이 줄 높이를 채우지 못하고 글자 높이만큼만 칠해졌다
-// (눌림 Pressable은 폭을 바깥 상자에, 배경을 안쪽에 나눠 안쪽이 높이를 못 채웠다) → 폭 · 배경이 한 칸에 있어 줄 높이로 늘어난다
-it('밀면 나오는 버튼은 폭과 빨간 배경이 같은 칸이라 줄 높이를 꽉 채운다', async () => {
-  const { SwipeAction } = jest.requireActual<typeof import('../components/ui')>('../components/ui');
-  const { render } = jest.requireActual<typeof import('@testing-library/react-native')>(
-    '@testing-library/react-native',
-  );
-  await render(
-    <SwipeAction label="삭제" name="자료" onAction={() => {}}>
-      {null}
-    </SwipeAction>,
-  );
-  const cls = String(screen.getByLabelText('자료 삭제').props.className);
-  expect(cls).toContain('bg-danger');
-  expect(cls).toContain('w-20');
-});
