@@ -413,6 +413,8 @@ describe('toAppError', () => {
     ['NO_SPEECH: 말소리를 찾지 못함', 'NO_SPEECH'],
     ['INVALID_FILE: 녹음이 3분보다 짧음', 'INVALID_FILE'],
     ['NO_QUESTIONS: 만든 문제가 없음(검사 탈락(검수자 답 E))', 'NO_QUESTIONS'],
+    // 노트가 50쪽을 넘음: 앱이 「50쪽 이하로 나눠 올려 주세요」로 알린다
+    ['TOO_MANY_PAGES: 노트가 50쪽을 넘음(60쪽 이상)', 'TOO_MANY_PAGES'],
     // 앱이 모르는 코드 모양 문구(예외 이름 등)는 내보내지 않는다
     ['HTTP: 502 Bad Gateway', AI_JOB_FAILED],
     ['', AI_JOB_FAILED],

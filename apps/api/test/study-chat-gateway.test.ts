@@ -22,6 +22,7 @@ const chat = {
   requireActiveUser: vi.fn(),
   history: vi.fn(),
   send: vi.fn(),
+  sendAttachment: vi.fn(),
 };
 const tokens = { verifyAccess: vi.fn() };
 let app: INestApplication;
@@ -177,6 +178,30 @@ describe('스터디룸 Socket.IO', () => {
     finish(message);
     expect(await ack).toEqual(message);
     await vi.waitFor(() => expect(onMessage).toHaveBeenCalledWith(message));
+    b.off('chat:message', onMessage);
+  });
+  // 스터디룸 채팅 사진 · 파일: 같은 chat:send에 attachment를 담아 보낸다
+  it('attachment를 담아 보내면 첨부 메시지로 저장해 참여자에게 전달한다', async () => {
+    const photo = { ...message, type: 'image', text: null };
+    chat.sendAttachment.mockResolvedValue(photo);
+    const onMessage = vi.fn();
+    b.on('chat:message', onMessage);
+    const attachment = {
+      blobUrl: 'https://store/raw/chat/image/a/x.jpg',
+      kind: 'image',
+      name: 'x.jpg',
+    };
+    const ack = await a
+      .timeout(1000)
+      .emitWithAck('chat:send', { chatRoomId: 'chat', clientId: 'client2', attachment });
+    expect(chat.sendAttachment).toHaveBeenCalledWith(
+      'chat',
+      expect.any(String),
+      attachment,
+      'client2',
+    );
+    expect(ack).toEqual(photo);
+    await vi.waitFor(() => expect(onMessage).toHaveBeenCalledWith(photo));
     b.off('chat:message', onMessage);
   });
   it('퇴장한 참여자는 방송에서 제외한다', async () => {

@@ -16,6 +16,8 @@ export const ERROR_CODES = {
   MAINTENANCE: 'SERVER_MAINTENANCE',
   AI_MAINTENANCE: 'AI_MAINTENANCE',
   AI_CREDIT_EXHAUSTED: 'AI_CREDIT_EXHAUSTED',
+  /** 노트 정리 실패: 올린 자료가 모두 합쳐 MATERIAL_MAX_FILES(50)쪽을 넘음 */
+  TOO_MANY_PAGES: 'TOO_MANY_PAGES',
   POINTS_INSUFFICIENT: 'POINTS_INSUFFICIENT',
   ALREADY_OWNED: 'ITEM_ALREADY_OWNED',
   FILE_NOT_ALLOWED: 'FILE_NOT_ALLOWED',
@@ -70,6 +72,24 @@ export const UPLOAD_RULES = {
     maxBytes: 500 * 1024 * 1024,
   },
 } as const;
+
+/**
+ * 채팅 첨부의 용량 상한. 노트 파일(UPLOAD_RULES)은 AI 서버가 읽을 수 있는 크기에 묶이지만,
+ * 채팅 첨부는 저장만 하므로 더 크게 받는다
+ */
+export const CHAT_ATTACHMENT_MAX_BYTES = {
+  image: 50 * 1024 * 1024,
+  document: 100 * 1024 * 1024,
+} as const;
+
+/** 쓰는 곳에 맞는 업로드 용량 상한. chat이면 CHAT_ATTACHMENT_MAX_BYTES, 아니면 UPLOAD_RULES */
+export function uploadMaxBytes(
+  kind: keyof typeof UPLOAD_RULES,
+  purpose?: 'report' | 'chat',
+): number {
+  if (purpose === 'chat' && kind !== 'audio') return CHAT_ATTACHMENT_MAX_BYTES[kind];
+  return UPLOAD_RULES[kind].maxBytes;
+}
 
 /** 노트 하나에 올릴 수 있는 파일 수(POST /materials). 노트 정리 처리기의 업로드 수 상한(NOTE_MAX_PAGES)과 같다 */
 export const MATERIAL_MAX_FILES = 50;
@@ -240,8 +260,14 @@ export type ClientToServer = {
   ) => void;
   'room:leave': (p: { roomId: string }) => void;
   'room:state': (p: { roomId: string; micOn: boolean; camOn: boolean; todaySec: number }) => void;
+  /** 글은 text, 사진 · 파일은 채팅 경로에 먼저 올린 뒤 attachment로 보낸다 */
   'chat:send': (
-    p: { chatRoomId: string; text: string; clientId: string },
+    p: {
+      chatRoomId: string;
+      clientId: string;
+      text?: string;
+      attachment?: { blobUrl: string; kind: 'image' | 'file'; name: string };
+    },
     ack?: (m: Message) => void,
   ) => void;
   'chat:read': (p: { chatRoomId: string }) => void;

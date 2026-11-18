@@ -1,5 +1,5 @@
 import { File, UploadType } from 'expo-file-system';
-import { UPLOAD_RULES } from '@notelink/shared';
+import { UPLOAD_RULES, uploadMaxBytes } from '@notelink/shared';
 import { api } from './api';
 import { env } from './env';
 import { keepFile } from './local/storage';
@@ -16,18 +16,23 @@ export type LocalFile = {
 type Kind = keyof typeof UPLOAD_RULES;
 
 /** 형식 · 용량은 올리기 전에 기기에서 먼저 확인한다 (p.102) */
-export function checkFile(kind: Kind, f: LocalFile): { ok: true } | { ok: false; reason: string } {
+export function checkFile(
+  kind: Kind,
+  f: LocalFile,
+  purpose?: 'report' | 'chat',
+): { ok: true } | { ok: false; reason: string } {
   const rule = UPLOAD_RULES[kind];
+  const maxBytes = uploadMaxBytes(kind, purpose);
   const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
   if (!(rule.exts as readonly string[]).includes(ext))
     return {
       ok: false,
       reason: `${rule.exts.map((e) => e.toUpperCase()).join(' · ')}만 올릴 수 있어요`,
     };
-  if ((f.size ?? 0) > rule.maxBytes)
+  if ((f.size ?? 0) > maxBytes)
     return {
       ok: false,
-      reason: `${Math.round(rule.maxBytes / 1024 / 1024)}MB 이하만 올릴 수 있어요`,
+      reason: `${Math.round(maxBytes / 1024 / 1024)}MB 이하만 올릴 수 있어요`,
     };
   return { ok: true };
 }
@@ -60,13 +65,13 @@ export async function uploadToBlob(
   f: LocalFile,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal,
-  purpose?: 'report',
+  purpose?: 'report' | 'chat',
 ): Promise<string> {
   const file = new File(f.uri);
   const contentType = f.mimeType ?? guessType(f.name);
   const sizeBytes = f.size ?? file.size ?? 0;
   // 호출하는 화면이 빠뜨려도 형식 · 용량 검사를 거친다
-  const check = checkFile(kind, { ...f, size: sizeBytes });
+  const check = checkFile(kind, { ...f, size: sizeBytes }, purpose);
   if (!check.ok) throw new UploadError(check.reason);
   if (env.localData) {
     // 기기 저장 모드: 고른 파일을 앱 저장 공간에 복사해 두고 그 주소를 쓴다 (원본을 지워도 남게)

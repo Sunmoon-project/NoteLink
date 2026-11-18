@@ -71,6 +71,24 @@ def lane_store(col: Any, worker: str) -> JobStore:
     return JobStore(col, worker, lock_sec=60, max_attempts=3, retry_delay_sec=30)
 
 
+def stop_when_settled(col: Any, stop: threading.Event, within: float = 10.0) -> threading.Thread:
+    """처리할 작업(queued · running)이 없어지거나 within초가 지나면 stop을 켜는 스레드.
+
+    작업이 실패해도 멈추게: 성공 수만 기다리면 처리 함수가 실패할 때 run_lanes가 끝나지 않음
+    (/code-review #521)."""
+
+    def watch() -> None:
+        end = time.monotonic() + within
+        while col.count_documents({"status": {"$in": ["queued", "running"]}}) > 0:
+            if stop.wait(0.01) or time.monotonic() > end:
+                break
+        stop.set()
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    return watcher
+
+
 def test_a_user_job_starts_while_a_pregen_is_running(col: Any) -> None:
     # 미리 만들기(p1)가 먼저 들어와 처리 중: j1은 그 작업이 끝나기를 기다리지 않고 시작(#138)
     col.insert_one(
@@ -93,14 +111,7 @@ def test_a_user_job_starts_while_a_pregen_is_running(col: Any) -> None:
         user_done.set()
         return {"user": True}
 
-    def stop_when_both_done() -> None:
-        while col.count_documents({"status": "succeeded"}) < 2:
-            if stop.wait(0.01):
-                return
-        stop.set()
-
-    watcher = threading.Thread(target=stop_when_both_done, daemon=True)
-    watcher.start()
+    watcher = stop_when_settled(col, stop)
     lanes = [
         Lane("background", lane_store(col, "w1:bg"), {"quiz_pregen": pregen}),
         Lane("user", lane_store(col, "w1"), {"quiz_generate": user}),
@@ -117,7 +128,7 @@ def test_a_user_job_starts_while_a_pregen_is_running(col: Any) -> None:
 
 def test_a_lane_that_breaks_stops_the_others_and_raises(col: Any) -> None:
     class Broken(JobStore):
-        def claim(self, types: Any, awaited_types: Any = ()) -> Any:
+        def claim(self, types: Any, awaited_types: Any = (), first: Any = ()) -> Any:
             raise RuntimeError("고장")
 
     stop = threading.Event()
@@ -441,12 +452,12 @@ def test_run_forever_keeps_going_after_db_error_and_stops_on_request(col: Any) -
     calls: list[str] = []
 
     class FlakyStore(JobStore):
-        def claim(self, types: Any, awaited_types: Any = ()) -> Any:
+        def claim(self, types: Any, awaited_types: Any = (), first: Any = ()) -> Any:
             calls.append("claim")
             if len(calls) == 1:
                 raise AutoReconnect("연결 끊김")
             stop.set()
-            return super().claim(types, awaited_types)
+            return super().claim(types, awaited_types, first)
 
     flaky = FlakyStore(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30, now=lambda: T0)
     run_forever(flaky, {"quiz_generate": lambda inp, report: {"ok": True}}, poll_sec=0, stop=stop)
@@ -517,3 +528,79 @@ def test_report_does_not_wait_while_another_thread_reads_awaited(col: Any) -> No
     with report._lock:  # 다른 스레드가 읽는 중
         assert report.awaited() is False and s.reads == 0
     assert report.awaited() is True and s.reads == 1
+
+
+class _AtomicClaim(JobStore):
+    """mongomock의 find_one_and_update는 스레드 사이에 원자적이지 않아, 같은 종류를 두 반복이
+    함께 가져가는 시험에서만 가져가기를 한 줄로 세움(실제 MongoDB는 원자적)."""
+
+    _claiming = threading.Lock()
+
+    def claim(self, types: Any, awaited_types: Any = (), first: Any = ()) -> Any:
+        with self._claiming:
+            return super().claim(types, awaited_types, first)
+
+
+def test_two_user_lanes_run_two_jobs_together(col: Any) -> None:
+    # 사용자 반복 둘(#521): 앞 작업을 기다리지 않고 함께 처리, 같은 작업을 둘이 가져가지 않음
+    col.insert_one(
+        {**col.find_one({"_id": "j1"}), "_id": "j2", "createdAt": T0 + timedelta(seconds=1)}
+    )
+    together = threading.Barrier(2, timeout=5)
+    seen: list[str] = []
+    stop = threading.Event()
+
+    def light(inp: JsonObject, report: Report) -> JsonObject:
+        together.wait()  # 하나씩 처리하면 여기서 시간이 다 되어 실패
+        seen.append(threading.current_thread().name)
+        return {"ok": True}
+
+    def lane(name: str, worker: str) -> Lane:
+        store = _AtomicClaim(col, worker, lock_sec=60, max_attempts=3, retry_delay_sec=30)
+        return Lane(name, store, {"quiz_generate": light})
+
+    watcher = stop_when_settled(col, stop)
+    run_lanes([lane("user", "w1"), lane("user-2", "w1:u2")], poll_sec=0.01, stop=stop)
+    watcher.join(5)
+    assert col.count_documents({"status": "succeeded"}) == 2
+    assert sorted(seen) == ["MainThread", "lane-user"]
+
+
+def test_a_lane_takes_awaited_then_first_kinds_then_older_jobs(col: Any) -> None:
+    # 첫 사용자 반복의 가져가는 차례(#521): 이어받은 미리 만들기 → 노트 · 녹음 정리 → 먼저 들어온
+    # 작업. 이어받지 않은 미리 만들기는 가장 먼저 들어왔어도 가져가지 않음(Codex 리뷰 #522)
+    base = col.find_one({"_id": "j1"})
+    for job_id, kind, sec, awaited in [
+        ("p0", "quiz_pregen", -1, False),
+        ("h1", "handwriting_summary", 1, False),
+        ("p1", "quiz_pregen", 2, True),
+    ]:
+        col.insert_one(
+            {
+                **base,
+                "_id": job_id,
+                "type": kind,
+                "awaited": awaited,
+                "createdAt": T0 + timedelta(seconds=sec),
+            }
+        )
+    done: list[str] = []
+
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        return {}
+
+    def run(st: JobStore) -> bool:
+        before = {d["_id"] for d in col.find({"status": "succeeded"})}
+        busy = run_once(
+            st,
+            {k: handler for k in ("quiz_generate", "handwriting_summary", "quiz_pregen")},
+            awaited_only=frozenset({"quiz_pregen"}),
+            first=frozenset({"handwriting_summary"}),
+        )
+        done.extend(d["_id"] for d in col.find({"status": "succeeded"}) if d["_id"] not in before)
+        return busy
+
+    while run(store(col)):
+        pass
+    assert done == ["p1", "h1", "j1"]
+    assert col.find_one({"_id": "p0"})["status"] == "queued"

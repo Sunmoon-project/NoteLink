@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
+import { View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
+import { Pressable } from '@/components/press';
 import Animated, {
   Easing,
   FadeIn,

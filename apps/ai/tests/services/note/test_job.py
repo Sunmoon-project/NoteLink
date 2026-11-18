@@ -500,7 +500,11 @@ def test_pdf_pages_over_the_limit_are_rejected_after_ocr(monkeypatch: pytest.Mon
     )
 
     assert (doc["status"], doc["attempts"]) == ("failed", 1)
-    assert doc["error"].startswith("INVALID_FILE: ")
+    # 앱이 「50쪽 이하로 나눠 올려 주세요」로 알릴 수 있게 따로 TOO_MANY_PAGES, 실제 쪽 수도 남긴다
+    assert (
+        doc["error"]
+        == f"TOO_MANY_PAGES: 노트가 {NOTE_MAX_PAGES}쪽을 넘음({NOTE_MAX_PAGES + 1}쪽 이상)"
+    )
     assert "checkpoint" not in doc
 
 
@@ -823,7 +827,8 @@ def test_pages_saved_so_far_count_toward_the_page_limit(monkeypatch: pytest.Monk
     doc = attempt(monkeypatch, col, ocr=FakeOcr({URL2: note_read()}))
 
     assert doc["status"] == "failed"
-    assert doc["error"] == f"INVALID_FILE: 노트가 {NOTE_MAX_PAGES}쪽을 넘음"
+    # 앱이 이유를 알 수 있게 쪽 수 초과는 따로 TOO_MANY_PAGES로 알린다
+    assert doc["error"].startswith(f"TOO_MANY_PAGES: 노트가 {NOTE_MAX_PAGES}쪽을 넘음(")
 
 
 def test_hand_written_partial_checkpoint_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
