@@ -4,7 +4,10 @@ import { router } from 'expo-router';
 import type { Question } from '@notelink/shared';
 import { Text } from '@/components/text';
 import { Btn, Canvas, Chip, Header, Input, Screen } from '@/components/ui';
+import { api } from '@/lib/api';
 import { today } from '@/lib/dates';
+import { env } from '@/lib/env';
+import { queryClient } from '@/lib/query';
 import { dropDb, readDb, writeDb } from '@/lib/local/storage';
 import { useAuth } from '@/stores/auth';
 import { AvatarCheer } from '@/features/tutor/cheer';
@@ -116,7 +119,16 @@ export function useDailyWrongReview(ready: boolean) {
       // 그날 처음 열었을 때 확인했다고 적는다. 오답이 없어 띄우지 않은 날도 적어서, 그날 늦게 틀린 문제는
       // 다음 날 처음 열 때 복습한다(#341 리뷰)
       save(userId, (n) => ({ ...n, shownOn: day }));
-      if (dueOn(notes, day)) router.push('/play/wrong');
+      // 서버에 연결돼 있으면 오늘의 복습(AI가 복습 날짜가 된 문제를 모든 퀴즈에서 모음)을 만들고 퀴즈 탭 카드로 보여 준다.
+      // 서버가 만들지 못하면(연결 · 서버 오류) 지금처럼 기기 오답 노트로 복습한다
+      const local = () => {
+        if (dueOn(notes, day)) router.push('/play/wrong');
+      };
+      if (env.localData) return local();
+      api.quiz
+        .startToday()
+        .then(() => queryClient.invalidateQueries({ queryKey: ['today-review'] }))
+        .catch(local);
     }, 600);
     return () => clearTimeout(t);
   }, [ready, userId, touring, active]);

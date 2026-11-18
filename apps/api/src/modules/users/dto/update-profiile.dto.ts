@@ -44,6 +44,11 @@ export class UpdateProfileDto {
   @IsIn(['middle_high', 'university', 'worker'])
   learnerType?: string;
 
+  /** 처음 안내를 마쳤으면 true, 처음 설정을 막 마쳐 아직 안내 전이면 false */
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsBoolean()
+  toured?: boolean;
+
   @ValidateIf((_object, value) => value !== undefined)
   @IsArray()
   @ArrayUnique()

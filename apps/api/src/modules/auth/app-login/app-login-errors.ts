@@ -12,10 +12,12 @@ export const APP_LOGIN_ERRORS = {
   EMAIL_PROOF_INVALID: 'EMAIL_PROOF_INVALID',
   /** 이미 가입한 이메일(공유 계약 ERROR_CODES.EMAIL_TAKEN 과 같은 값) */
   EMAIL_TAKEN: 'EMAIL_TAKEN',
+  /** 이미 쓰는 아이디(공유 계약 ERROR_CODES.LOGIN_ID_TAKEN 과 같은 값) */
+  LOGIN_ID_TAKEN: 'LOGIN_ID_TAKEN',
   /** 메일 발송 수단을 쓸 수 없다 */
   MAIL_UNAVAILABLE: 'MAIL_UNAVAILABLE',
   /**
-   * 이메일 또는 비밀번호가 맞지 않다. 없는 이메일 · 소셜로만 가입한 계정 · 탈퇴한 계정 · 틀린 비밀번호를
+   * 아이디 또는 비밀번호가 맞지 않다. 없는 아이디 · 이메일 · 소셜로만 가입한 계정 · 탈퇴한 계정 · 틀린 비밀번호를
    * 구분하지 않고 모두 이 코드 하나로 알린다(응답으로 가입 여부를 알아내지 못하게 한다).
    * 토큰 만료 코드(AUTH_TOKEN_EXPIRED)와 달라서, 앱은 이 응답을 받아도 토큰 갱신을 시도하지 않는다.
    */

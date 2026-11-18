@@ -387,11 +387,18 @@ const accountOf = (email: string) => {
 const pwKey = (id: string) => `notelink-pw-${id}`;
 
 /** DB를 먼저 쓰고 계정 목록에 올린다. 어느 쪽이든 실패하면 계정은 없던 일이 된다 */
-function createAccount(email: string, id: string) {
+/** 아이디는 계정 목록에 `id:아이디`로 함께 둔다(이메일과 겹치지 않게) */
+const loginIdKey = (loginId: string) => `id:${loginId.trim().toLowerCase()}`;
+/** 아이디(@가 없으면) 또는 가입 이메일로 계정을 찾는다 */
+const accountByLogin = (value: string) =>
+  value.includes('@') ? accountOf(value) : accountOf(loginIdKey(value));
+
+function createAccount(email: string, id: string, loginId: string) {
   const key = email.trim().toLowerCase();
   const d = newDb(id, key);
+  d.user.loginId = loginId.trim().toLowerCase();
   writeDb(`user-${id}`, d);
-  const next = { ...accountsMap(), [key]: id };
+  const next = { ...accountsMap(), [key]: id, [loginIdKey(loginId)]: id };
   try {
     writeDb('accounts', next);
   } catch (e) {
@@ -412,13 +419,12 @@ function signInAs(id: string) {
 const api: Api = {
   auth: {
     socialLogin: () => needServer('소셜 로그인'),
-    emailLogin: async (email, password) => {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
-        return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
+    emailLogin: async (login, password) => {
+      if (!login.trim()) return fail(ERROR_CODES.VALIDATION, '아이디를 입력해 주세요');
       if (!password) return fail(ERROR_CODES.VALIDATION, '비밀번호를 입력해 주세요');
-      const id = accountOf(email);
+      const id = accountByLogin(login);
       if (!id || (await SecureStore.getItemAsync(pwKey(id))) !== password)
-        return fail(ERROR_CODES.VALIDATION, '이메일 또는 비밀번호가 맞지 않아요');
+        return fail(ERROR_CODES.VALIDATION, '아이디 또는 비밀번호가 맞지 않아요');
       return signInAs(id);
     },
     // 기기 저장 모드는 메일을 보낼 수 없어, 인증번호는 6자리 숫자면 통과하고 증표 자리에 이메일을 그대로 쓴다
@@ -431,17 +437,24 @@ const api: Api = {
         return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요', 400);
       return { verificationToken: email.trim(), expiresInSeconds: 600 };
     },
-    emailSignup: async (proof, password) => {
+    loginIdAvailable: async (loginId) => !accountOf(loginIdKey(loginId)),
+    emailSignup: async (proof, loginId, password) => {
       const email = proof;
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
         return fail(ERROR_CODES.VALIDATION, '이메일 형식을 확인해 주세요');
       if (password.length < 8)
         return fail(ERROR_CODES.VALIDATION, '비밀번호는 8자 이상이어야 해요');
       if (accountOf(email)) return fail(ERROR_CODES.EMAIL_TAKEN, '이미 가입한 이메일이에요', 409);
+      if (accountOf(loginIdKey(loginId)))
+        return fail(
+          ERROR_CODES.LOGIN_ID_TAKEN,
+          '이미 쓰는 아이디예요. 다른 아이디를 정해 주세요',
+          409,
+        );
       const id = uid('user');
       try {
         await SecureStore.setItemAsync(pwKey(id), password);
-        createAccount(email, id);
+        createAccount(email, id, loginId);
       } catch {
         // 비밀번호 없는 계정이나 계정 없는 비밀번호를 남기지 않아 같은 이메일로 다시 가입할 수 있다
         await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
@@ -456,17 +469,19 @@ const api: Api = {
     findId: async (email, code) => {
       if (!/^\d{6}$/.test(code))
         return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요', 400);
-      // 로그인 아이디는 가입 이메일이다
-      return { id: accountOf(email) ? email.trim().toLowerCase() : null };
+      // 아이디를 정한 계정은 그 아이디, 아이디를 두기 전 계정은 가입 이메일
+      const id = accountOf(email);
+      return { id: id ? (readUserDb(id)?.user.loginId ?? email.trim().toLowerCase()) : null };
     },
     passwordReset: async (id, email, code, password) => {
-      if (id.trim().toLowerCase() !== email.trim().toLowerCase() || !accountOf(id))
-        return fail(ERROR_CODES.VALIDATION, '아이디와 이메일이 같은 계정이 아니에요');
+      const owner = accountOf(email);
+      if (!owner || accountByLogin(id) !== owner)
+        return fail(ERROR_CODES.VALIDATION, '이 이메일로 가입한 아이디가 아니에요');
       if (!/^\d{6}$/.test(code))
         return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요', 400);
       if (password.length < 8)
         return fail(ERROR_CODES.VALIDATION, '비밀번호는 8자 이상이어야 해요');
-      await SecureStore.setItemAsync(pwKey(accountOf(id)!), password);
+      await SecureStore.setItemAsync(pwKey(owner), password);
     },
     agreeTerms: (codes) => {
       db().terms = codes;
@@ -1167,6 +1182,9 @@ const api: Api = {
     },
     explanation: () => needServer('AI 설명'),
     similar: () => needServer('유사 퀴즈'),
+    // 기기 저장 모드의 오늘 복습은 기기 오답 노트(wrong-review)가 맡는다
+    today: () => ok(null),
+    startToday: () => needServer('오늘의 복습'),
     box: () => ok(db().quizBox),
     saveToBox: (questionIds) => {
       const d = db();

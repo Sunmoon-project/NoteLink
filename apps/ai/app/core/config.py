@@ -8,7 +8,7 @@ LLM_DEFAULTS: dict[str, dict[str, str]] = {
     "claude": {
         "quiz_gen_model": "claude-sonnet-5-5",
         "quiz_check_model": "claude-haiku-5-5",
-        "note_split_model": "claude-sonnet-5-5",
+        "note_split_model": "claude-haiku-5-5",  # 줄 번호만 고름
         "note_refine_model": "claude-sonnet-5-5",
         "recording_model": "claude-sonnet-5-5",
         "note_ask_model": "claude-sonnet-5-5",
@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     quiz_check_model: str = ""  # 만든 문제를 직접 풀어 보는 검사
     llm_call_gap_sec: float | None = None
     note_split_model: str = ""  # 노트 문단 경계 고르기 (글자는 고치지 않음)
+    # 문단 나누기만 다른 LLM으로. 비우면 LLM_PROVIDER를 따름
+    note_split_provider: Literal["claude", "school"] | None = None
     # 노트 후처리(오타 고치기 · 개념 태그). 과목 용어 사전이 준비될 때까지 꺼 둠
     note_refine_enabled: bool = False
     note_refine_model: str = ""
@@ -79,18 +81,27 @@ class Settings(BaseSettings):
     # 2시간 녹음: LLM 약 39번 × (간격 2.2초 + 응답 약 75초) ≈ 50분 + STT 약 10분
     recording_job_max_sec: int = 3600
 
-    @field_validator("llm_call_gap_sec", mode="before")
+    @field_validator("llm_call_gap_sec", "note_split_provider", mode="before")
     @classmethod
-    def _blank_gap_is_default(cls, value: object) -> object:
-        """LLM_CALL_GAP_SEC= 처럼 비워 두면 제공자 기본값(.env.production 예시대로 써도 되게)."""
+    def _blank_is_default(cls, value: object) -> object:
+        """LLM_CALL_GAP_SEC= 처럼 비워 두면 기본값(.env.production 예시대로 써도 되게)."""
         return None if isinstance(value, str) and not value.strip() else value
 
     @model_validator(mode="after")
     def _fill_llm_defaults(self) -> Self:
-        for field, model in LLM_DEFAULTS[self.llm_provider].items():
+        for field in LLM_DEFAULTS[self.llm_provider]:
             if not getattr(self, field):
-                setattr(self, field, model)
+                setattr(self, field, LLM_DEFAULTS[self.provider_of(field)][field])
         return self
+
+    @property
+    def split_provider(self) -> Literal["claude", "school"]:
+        """문단 나누기가 쓰는 LLM 제공자."""
+        return self.note_split_provider or self.llm_provider
+
+    def provider_of(self, field: str) -> Literal["claude", "school"]:
+        """모델 설정 항목이 쓰는 LLM 제공자."""
+        return self.split_provider if field == "note_split_model" else self.llm_provider
 
     @property
     def call_gap_sec(self) -> float:

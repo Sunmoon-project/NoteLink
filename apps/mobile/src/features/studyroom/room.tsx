@@ -7,10 +7,10 @@ import {
   type QueuedChatMessage,
 } from '@/lib/chat-outbox';
 import { loadCompleteChatHistory } from '@/lib/chat-history';
-import { useEffect, useRef, useState } from 'react';
-import { FlatList, Pressable, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { FlatList, Keyboard, Pressable, View } from 'react-native';
 import { Text, TextInput } from '@/components/text';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -406,6 +406,23 @@ export function RoomScreen() {
   const [menu, setMenu] = useState(false);
   const [pick, setPick] = useState(false);
   const [chat, setChat] = useState(false);
+  // 방을 떠나면(설정 · 카드 · 초대 등 다른 화면으로) 채팅을 닫고 키보드를 내린다. 돌아왔을 때 채팅 화면이 아니라
+  // 캠 화면이 보이게: 채팅을 연 채로 다녀오면 뒤로 가기를 눌러도 계속 채팅 화면으로 돌아오는 것처럼 보였다
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        setChat(false);
+        Keyboard.dismiss();
+      },
+      [],
+    ),
+  );
+  // 채팅 중의 뒤로 가기는 채팅을 닫고 캠 화면으로, 캠 화면에서는 방을 나간다
+  const back = () => {
+    if (!chat) return leaveRoom();
+    setChat(false);
+    Keyboard.dismiss();
+  };
   const [conn, setConn] = useState<'ok' | 'lost' | 'back' | 'kicked'>('ok');
   const [socketConnected, setSocketConnected] = useState<boolean | null>(null);
   const [chatJoinFailed, setChatJoinFailed] = useState(false);
@@ -756,20 +773,24 @@ export function RoomScreen() {
             </Text>
           </View>
         )}
-        {!chat && (
-          <View className="px-5">
-            <View className="h-11 flex-row items-center justify-between">
-              <Pressable accessibilityLabel="나가기" onPress={leaveRoom} hitSlop={10}>
-                <ArrowLeft size={ICON.lg} color={C.ink} />
-              </Pressable>
-              <Pressable
-                accessibilityLabel="세부 설정"
-                onPress={() => router.push({ pathname: '/room/settings', params: { id } })}
-                hitSlop={10}
-              >
-                <Settings size={ICON.md} color={C.ink} />
-              </Pressable>
-            </View>
+        <View className="px-5">
+          <View className="h-11 flex-row items-center justify-between">
+            <Pressable
+              accessibilityLabel={chat ? '채팅 닫기' : '나가기'}
+              onPress={back}
+              hitSlop={10}
+            >
+              <ArrowLeft size={ICON.lg} color={C.ink} />
+            </Pressable>
+            <Pressable
+              accessibilityLabel="세부 설정"
+              onPress={() => router.push({ pathname: '/room/settings', params: { id } })}
+              hitSlop={10}
+            >
+              <Settings size={ICON.md} color={C.ink} />
+            </Pressable>
+          </View>
+          {!chat && (
             <View className="flex-row items-center justify-between">
               <Text className="text-title3 font-bold text-ink">{room.data.title}</Text>
               <View className="flex-row gap-1">
@@ -779,8 +800,8 @@ export function RoomScreen() {
                 <Badge tone="gray">{`${members.length}명 접속중`}</Badge>
               </View>
             </View>
-          </View>
-        )}
+          )}
+        </View>
         <View className="flex-row flex-wrap justify-between gap-y-2.5 px-4 pt-3">
           {tiles.map((m) => {
             const me = m.userId === myId;
@@ -793,7 +814,7 @@ export function RoomScreen() {
                 key={m.userId}
                 className={cx(
                   'w-[48.5%] items-center justify-center rounded-2xl',
-                  chat ? 'h-20' : 'h-[118px]',
+                  'h-[118px]',
                   camOn ? 'bg-night' : 'bg-white',
                 )}
               >
@@ -801,7 +822,7 @@ export function RoomScreen() {
                 {camOn && (
                   <View className="absolute top-2.5 right-2.5 h-1.5 w-1.5 rounded-full bg-sun" />
                 )}
-                {!video && <Avatar uri={m.avatarUrl} name={m.nickname} size={chat ? 28 : 44} />}
+                {!video && <Avatar uri={m.avatarUrl} name={m.nickname} size={44} />}
                 <Text className={cx('text-footnote font-bold', camOn ? 'text-white' : 'text-ink')}>
                   {m.nickname}
                 </Text>
@@ -825,7 +846,7 @@ export function RoomScreen() {
                                   )),
                       )}
                 </Text>
-                {!chat && !micOn && (
+                {!micOn && (
                   <View
                     accessibilityLabel={`${m.nickname} 마이크 꺼짐`}
                     className="absolute bottom-2.5 left-2.5"
@@ -1032,7 +1053,7 @@ export function RoomScreen() {
             <Pressable
               onPress={() => {
                 setPick(false);
-                router.push({ pathname: '/room/cards', params: { id } });
+                router.push({ pathname: '/room/library', params: { id, type: 'quiz' } });
               }}
               className="h-20 flex-1 items-center justify-center rounded-2xl bg-mint"
             >
@@ -1044,7 +1065,7 @@ export function RoomScreen() {
             <Pressable
               onPress={() => {
                 setPick(false);
-                router.push({ pathname: '/room/cards', params: { id } });
+                router.push({ pathname: '/room/library', params: { id, type: 'flashcards' } });
               }}
               className="h-20 flex-1 items-center justify-center rounded-2xl bg-mint"
             >

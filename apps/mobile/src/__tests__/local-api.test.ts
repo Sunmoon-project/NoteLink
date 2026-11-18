@@ -58,7 +58,12 @@ async function login(email: string) {
 async function signup(email: string) {
   await api.auth.emailSendCode(email);
   const { verificationToken } = await api.auth.emailVerifyCode(email, '123456');
-  await api.auth.emailSignup(verificationToken, 'pw12345678');
+  // 아이디는 이메일 앞부분으로 정한다(student@ → user_student)
+  const loginId = `user_${email
+    .split('@')[0]!
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')}`;
+  await api.auth.emailSignup(verificationToken, loginId, 'pw12345678');
   return login(email);
 }
 
@@ -117,7 +122,9 @@ it('가입한 적 없거나 비밀번호가 다르면 로그인할 수 없고, �
   await expect(api.auth.emailLogin('none@test.com', 'pw12345678')).rejects.toThrow(/맞지 않아요/);
   await signup('a@test.com');
   await expect(api.auth.emailLogin('a@test.com', 'wrong-password')).rejects.toThrow(/맞지 않아요/);
-  await expect(api.auth.emailSignup('A@test.com ', 'pw12345678')).rejects.toThrow(/이미 가입/);
+  await expect(api.auth.emailSignup('A@test.com ', 'user_a', 'pw12345678')).rejects.toThrow(
+    /이미 가입/,
+  );
   await expect(login('a@test.com')).resolves.toBeTruthy();
 });
 
@@ -142,7 +149,7 @@ it('파일에 쓰지 못하면 실패로 알리고, 그 변경을 남기지 않�
 it('키체인 저장이 실패하면 계정을 남기지 않아 같은 이메일로 다시 가입할 수 있다', async () => {
   const SecureStore = jest.requireMock<typeof import('expo-secure-store')>('expo-secure-store');
   jest.mocked(SecureStore.setItemAsync).mockRejectedValueOnce(new Error('keychain'));
-  await expect(api.auth.emailSignup('a@test.com', 'pw12345678')).rejects.toThrow(
+  await expect(api.auth.emailSignup('a@test.com', 'user_a', 'pw12345678')).rejects.toThrow(
     '저장하지 못했어요',
   );
   await expect(signup('a@test.com')).resolves.toBeTruthy();
@@ -150,7 +157,7 @@ it('키체인 저장이 실패하면 계정을 남기지 않아 같은 이메일
 
 it('DB 저장이 실패해도 계정과 비밀번호를 남기지 않는다', async () => {
   mockWriteFails = true;
-  await expect(api.auth.emailSignup('a@test.com', 'pw12345678')).rejects.toThrow(
+  await expect(api.auth.emailSignup('a@test.com', 'user_a', 'pw12345678')).rejects.toThrow(
     '저장하지 못했어요',
   );
   mockWriteFails = false;
@@ -557,9 +564,8 @@ describe('아이디 · 비밀번호 찾기(기기 저장 모드)', () => {
     await expect(api.auth.findId('student@example.com', '12')).rejects.toMatchObject({
       code: ERROR_CODES.EMAIL_CODE_INVALID,
     });
-    expect(await api.auth.findId('Student@example.com ', '123456')).toEqual({
-      id: 'student@example.com',
-    });
+    // 가입 때 정한 아이디를 알려 준다
+    expect(await api.auth.findId('Student@example.com ', '123456')).toEqual({ id: 'user_student' });
     expect(await api.auth.findId('nobody@example.com', '123456')).toEqual({ id: null });
 
     // 아이디와 이메일이 다르면 거절
@@ -582,5 +588,13 @@ describe('아이디 · 비밀번호 찾기(기기 저장 모드)', () => {
     await expect(
       api.auth.passwordReset('nobody@example.com', 'nobody@example.com', '123456', 'newpass123'),
     ).rejects.toBeTruthy();
+    // 아이디로도 바꾸고, 아이디로 로그인한다
+    await expect(
+      api.auth.passwordReset('someone_else', 'student@example.com', '123456', 'newpass999'),
+    ).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION });
+    await api.auth.passwordReset('User_Student', 'student@example.com', '123456', 'newpass999');
+    expect((await api.auth.emailLogin('user_student', 'newpass999')).user.loginId).toBe(
+      'user_student',
+    );
   });
 });

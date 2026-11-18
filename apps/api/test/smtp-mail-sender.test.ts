@@ -5,6 +5,7 @@ import { EMAIL_CODE_TTL_MS } from '../src/modules/auth/app-login/email-code.serv
 import { MailUnavailableError } from '../src/modules/mail/mail-sender.js';
 import {
   MAIL_SEND_FAILED_MESSAGE,
+  SMTP_SEND_ATTEMPTS,
   SMTP_SEND_TIMEOUT_MS,
   SmtpMailSender,
   type SmtpOutgoingMail,
@@ -263,14 +264,16 @@ describe('SmtpMailSender 연결 종료와 전송 수단', () => {
     expect(abort).toHaveBeenCalledOnce();
   });
 
-  it('시간 초과로 포기한 발송은 그 발송의 연결을 끊는다', async () => {
+  it('시간 초과로 포기한 발송은 시도마다 그 발송의 연결을 끊는다', async () => {
     const { open, abort } = factoryOf(() => new Promise(() => undefined));
 
     await new SmtpMailSender(open, FROM, 20)
       .sendVerificationCode('a@example.com', '111111')
       .catch(() => {});
 
-    expect(abort).toHaveBeenCalledOnce();
+    // 시간 초과는 한 번 더 보내 보므로 두 번 열고 두 번 끊는다
+    expect(open).toHaveBeenCalledTimes(SMTP_SEND_ATTEMPTS);
+    expect(abort).toHaveBeenCalledTimes(SMTP_SEND_ATTEMPTS);
   });
 
   it('연결을 끊다가 오류가 나도 원래 실패(MailUnavailableError)를 그대로 돌려준다', async () => {
@@ -384,5 +387,61 @@ describe('SmtpMailSender 시간 제한', () => {
     process.off('unhandledRejection', onUnhandled);
 
     expect(unhandled).toEqual([]);
+  });
+});
+
+// 운영에서 Gmail SMTP가 한 번 ETIMEDOUT으로 실패한 뒤 바로 다음 요청은 2초 만에 나갔다(인증번호 화면에 「보내지 못했어요」)
+describe('SmtpMailSender 일시 실패 재시도', () => {
+  const failOnceWith = (error: object) => {
+    const sendMail = vi
+      .fn<SmtpTransport['sendMail']>()
+      .mockRejectedValueOnce(Object.assign(new Error('x'), error))
+      .mockResolvedValue({ accepted: ['x'] });
+    return { sendMail, ...factoryOf(sendMail) };
+  };
+
+  it.each([
+    ['연결 시간 초과', { code: 'ETIMEDOUT', command: 'CONN' }],
+    ['연결 실패', { code: 'ECONNECTION' }],
+    ['소켓 오류', { code: 'ESOCKET' }],
+    ['일시 거절(421)', { code: 'EENVELOPE', responseCode: 421 }],
+  ])('%s는 한 번 더 보내 성공하면 오류 없이 끝난다', async (_name, error) => {
+    const { sendMail, open, abort } = failOnceWith(error);
+
+    await new SmtpMailSender(open, FROM).sendVerificationCode('a@example.com', '123456');
+
+    expect(sendMail).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(abort).toHaveBeenCalledOnce();
+    // 두 번째도 같은 사람에게 같은 인증번호다
+    expect(sendMail.mock.calls[1]![0].to).toEqual({ address: 'a@example.com' });
+    expect(sendMail.mock.calls[1]![0].text).toContain('123456');
+  });
+
+  it.each([
+    ['인증 실패', { code: 'EAUTH', responseCode: 535 }],
+    ['영구 거절(550)', { code: 'EENVELOPE', responseCode: 550 }],
+    ['알 수 없는 오류', {}],
+  ])('%s는 다시 보내지 않고 바로 실패한다', async (_name, error) => {
+    const { sendMail, open } = failOnceWith(error);
+
+    await expect(
+      new SmtpMailSender(open, FROM).sendVerificationCode('a@example.com', '123456'),
+    ).rejects.toBeInstanceOf(MailUnavailableError);
+
+    expect(sendMail).toHaveBeenCalledOnce();
+  });
+
+  it('두 번 다 일시 실패면 MailUnavailableError로 끝나고 더 보내지 않는다', async () => {
+    const sendMail = vi.fn(() =>
+      Promise.reject(Object.assign(new Error('x'), { code: 'ECONNECTION' })),
+    );
+    const { open } = factoryOf(sendMail);
+
+    await expect(
+      new SmtpMailSender(open, FROM).sendVerificationCode('a@example.com', '123456'),
+    ).rejects.toBeInstanceOf(MailUnavailableError);
+
+    expect(sendMail).toHaveBeenCalledTimes(SMTP_SEND_ATTEMPTS);
   });
 });

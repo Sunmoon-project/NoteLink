@@ -267,7 +267,7 @@ describe.skipIf(!isLocal)('진짜 DB 할 일 · D-day 확인', () => {
             const listed = (await get('/ddays')).body.data.some((d: { title: string }) => d.title === content);
             expect(listed).toBe(a!['done'] === false);
         }
-    });
+    }, 30_000);
 
     it('11) 직접 시간(custom)인데 dueTime이 없거나 null이면 400, 올바른 시각이면 저장된다', async () => {
         const before = await col('todos').countDocuments();

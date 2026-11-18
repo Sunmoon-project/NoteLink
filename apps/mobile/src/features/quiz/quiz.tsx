@@ -67,6 +67,7 @@ import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
 import { AvatarCheer } from '@/features/tutor/cheer';
 import { recordWrong } from './wrong-review';
+import { TodayReviewCard, useTodayReview } from './today-review';
 import { useTourTarget } from '@/features/tutor/tour';
 import { seoul } from '@/lib/dates';
 import { aiWaiting } from '@/lib/ai';
@@ -110,12 +111,15 @@ export function QuizHomeScreen() {
         questionCount: 0,
       })
     : sets.data?.find((s) => s.status === 'ready');
-  const waiting = sets.data?.filter((s) => s.status === 'generating') ?? [];
+  // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」에는 넣지 않는다
+  const todayId = useTodayReview().data?._id;
+  const waiting = sets.data?.filter((s) => s.status === 'generating' && s._id !== todayId) ?? [];
   return (
     <Canvas>
       <Screen refresh={refresh}>
         <NetBanner />
         <Title>학습 퀴즈</Title>
+        <TodayReviewCard />
         {waiting.length > 0 && (
           <View className="mt-4">
             <AiPending
@@ -187,8 +191,9 @@ export function QuizHomeScreen() {
               <Text className="text-caption text-sub">
                 노트를 업로드하면 자동으로 퀴즈가 생성돼요
               </Text>
-              <View ref={makeTarget} collapsable={false}>
-                <Btn small className="mt-5 w-56" onPress={() => router.push('/(tabs)/quiz/notes')}>
+              {/* 여백은 바깥에: 처음 안내가 재는 영역(makeTarget)이 버튼과 꼭 맞게 */}
+              <View ref={makeTarget} collapsable={false} className="mt-5">
+                <Btn small className="w-56" onPress={() => router.push('/(tabs)/quiz/notes')}>
                   노트 업로드하고 퀴즈 만들기
                 </Btn>
               </View>
@@ -700,9 +705,13 @@ export function QuizSolveScreen() {
     useQuizProgress.getState().reset();
     router.replace({
       pathname: '/play/review',
-      params: { setId: completedSetId, points: String(completed.pointsEarned) },
+      params: {
+        setId: completedSetId,
+        points: String(completed.pointsEarned),
+        ...(from === 'room' ? { from: 'room' } : {}),
+      },
     });
-  }, [completed, attemptId, completedSetId, ownsProgress]);
+  }, [completed, attemptId, completedSetId, ownsProgress, from]);
   if (set.isError && !set.data)
     return (
       <Canvas>
@@ -955,7 +964,11 @@ export function QuizSolveScreen() {
 }
 
 export function QuizReviewScreen() {
-  const { setId, points } = useLocalSearchParams<{ setId?: string; points?: string }>();
+  const { setId, points, from } = useLocalSearchParams<{
+    setId?: string;
+    points?: string;
+    from?: string;
+  }>();
   const set = useQuery({
     queryKey: ['quiz-set', setId ?? 'latest'],
     queryFn: () => api.quiz.set(setId ?? ''),
@@ -1022,7 +1035,11 @@ export function QuizReviewScreen() {
                 </Btn>
               </View>
             ) : (
-              <Btn onPress={() => router.dismissTo('/(tabs)/quiz')}>확인</Btn>
+              <Btn
+                onPress={() => (from === 'room' ? router.back() : router.dismissTo('/(tabs)/quiz'))}
+              >
+                확인
+              </Btn>
             )}
             <Pressable
               onPress={() => router.push({ pathname: '/play/similar', params: { setId } })}
