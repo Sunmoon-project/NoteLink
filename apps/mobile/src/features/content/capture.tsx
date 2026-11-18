@@ -23,7 +23,7 @@ import {
 import { useKeepAwake } from 'expo-keep-awake';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
-import { IMAGE_CHECK_MAX_FILES, MATERIAL_MAX_FILES } from '@notelink/shared';
+import { IMAGE_CHECK_MAX_FILES, MATERIAL_MAX_FILES, UPLOAD_RULES } from '@notelink/shared';
 import {
   Camera,
   Check,
@@ -713,7 +713,9 @@ export function RecUploadScreen() {
           <Text className={cx('text-caption2', rejected || issue ? 'text-danger' : 'text-sub')}>
             {rejected ??
               issue ??
-              (file?.size ? `${(file.size / 1024 / 1024).toFixed(1)}MB` : 'mp3 · m4a · wav')}
+              (file?.size
+                ? `${(file.size / 1024 / 1024).toFixed(1)}MB`
+                : UPLOAD_RULES.audio.exts.join(' · '))}
           </Text>
         </Pressable>
       </Screen>
