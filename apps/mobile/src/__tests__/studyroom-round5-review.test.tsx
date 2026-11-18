@@ -420,16 +420,19 @@ describe('스터디룸 뒤로 가기와 채팅', () => {
 
 // 실기기 테스트: 채팅 입력줄의 + 와 이모지가 그림만 있어 눌러도 반응이 없었다
 describe('채팅 입력줄 + · 이모지', () => {
-  it('+ 를 누르면 자료 · 도구 메뉴가 열리고 키보드를 내린다', async () => {
+  it('+ 를 누르면 사진 · 파일 첨부 고르기가 열리고 키보드를 내린다', async () => {
     mockConnectMedia.mockResolvedValue(media());
     const dismiss = jest.spyOn(Keyboard, 'dismiss');
     await renderScreen(<RoomScreen />, client());
     await screen.findByText(room.title);
-    expect(screen.queryByText('시간표')).toBeNull();
-    await fireEvent.press(screen.getByLabelText('자료 · 도구 열기'));
-    expect(screen.getByText('시간표')).toBeTruthy();
-    expect(screen.getByText('퀴즈')).toBeTruthy();
+    expect(screen.queryByLabelText('사진 보내기')).toBeNull();
+    await fireEvent.press(screen.getByLabelText('사진 · 파일 첨부'));
+    expect(screen.getByLabelText('사진 보내기')).toBeTruthy();
+    expect(screen.getByLabelText('파일 (PDF) 보내기')).toBeTruthy();
     expect(dismiss).toHaveBeenCalled();
+    // 다시 누르면 닫힌다
+    await fireEvent.press(screen.getByLabelText('사진 · 파일 첨부'));
+    expect(screen.queryByLabelText('사진 보내기')).toBeNull();
     dismiss.mockRestore();
   });
 

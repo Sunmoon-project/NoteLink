@@ -58,7 +58,7 @@ export async function uploadToBlob(
   f: LocalFile,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal,
-  purpose?: 'report',
+  purpose?: 'report' | 'chat',
 ): Promise<string> {
   const file = new File(f.uri);
   const contentType = f.mimeType ?? guessType(f.name);

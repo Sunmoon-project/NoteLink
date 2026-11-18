@@ -239,8 +239,14 @@ export type ClientToServer = {
   ) => void;
   'room:leave': (p: { roomId: string }) => void;
   'room:state': (p: { roomId: string; micOn: boolean; camOn: boolean; todaySec: number }) => void;
+  /** 글은 text, 사진 · 파일은 채팅 경로에 먼저 올린 뒤 attachment로 보낸다 */
   'chat:send': (
-    p: { chatRoomId: string; text: string; clientId: string },
+    p: {
+      chatRoomId: string;
+      clientId: string;
+      text?: string;
+      attachment?: { blobUrl: string; kind: 'image' | 'file'; name: string };
+    },
     ack?: (m: Message) => void,
   ) => void;
   'chat:read': (p: { chatRoomId: string }) => void;

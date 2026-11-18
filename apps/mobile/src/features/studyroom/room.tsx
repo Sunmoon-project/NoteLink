@@ -19,6 +19,8 @@ import {
   CalendarDays,
   Camera,
   CameraOff,
+  FileText,
+  ImageIcon,
   Layers,
   Lock,
   MessageCircle,
@@ -37,6 +39,11 @@ import {
   X,
 } from 'lucide-react-native';
 import type { Message, RoomMember, RoomSharedItem } from '@notelink/shared';
+import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
+import * as WebBrowser from 'expo-web-browser';
+import { Image } from 'react-native';
+import { UploadError, uploadToBlob, type LocalFile } from '@/lib/upload';
 import { api, ApiError } from '@/lib/api';
 import { socket } from '@/lib/socket';
 import { hms, seoul, ymd } from '@/lib/dates';
@@ -455,8 +462,13 @@ export function RoomScreen() {
   const [menu, setMenu] = useState(false);
   const [pick, setPick] = useState(false);
   const [chat, setChat] = useState(false);
-  // 채팅 입력줄의 이모지 고르기 칸
+  // 채팅 입력줄의 이모지 고르기 칸 · + 로 여는 첨부(사진 · 파일) 고르기
   const [emoji, setEmoji] = useState(false);
+  const [attach, setAttach] = useState(false);
+  // 보내는 중인 첨부: 다시 보낼 때 고른 파일 · 이미 올린 주소를 다시 쓴다
+  const attachments = useRef(
+    new Map<string, { kind: 'image' | 'file'; file: LocalFile; blobUrl?: string }>(),
+  );
   const keyboardFrame = useRef<View>(null);
   const keyboardInset = useKeyboardInset(keyboardFrame);
   // 방을 떠나면(설정 · 카드 · 초대 등 다른 화면으로) 채팅을 닫고 키보드를 내린다. 돌아왔을 때 채팅 화면이 아니라
@@ -740,6 +752,89 @@ export function RoomScreen() {
     return () => clearTimeout(t);
   }, [conn]);
 
+  /** 고른 사진 · 파일을 채팅 경로에 올린 뒤 첨부 메시지로 보낸다. 실패하면 말풍선 아래 「다시 보내기」 */
+  const deliverAttachment = async (clientId: string) => {
+    const entry = attachments.current.get(clientId);
+    const chatRoomId = chatId.data;
+    if (!entry || !chatRoomId || inFlight.current.has(clientId)) return;
+    inFlight.current.add(clientId);
+    setFailedIds((ids) => ids.filter((x) => x !== clientId));
+    try {
+      entry.blobUrl ??= await uploadToBlob(
+        entry.kind === 'image' ? 'image' : 'document',
+        entry.file,
+        undefined,
+        undefined,
+        'chat',
+      );
+      const blobUrl = entry.blobUrl;
+      const m = await new Promise<Message>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('timeout')), ACK_TIMEOUT_MS);
+        socket.emit(
+          'chat:send',
+          {
+            chatRoomId,
+            clientId,
+            attachment: { blobUrl, kind: entry.kind, name: entry.file.name },
+          },
+          (sent) => {
+            clearTimeout(timer);
+            resolve(sent);
+          },
+        );
+      });
+      attachments.current.delete(clientId);
+      receiveMessage(m, clientId);
+    } catch (e) {
+      setFailedIds((ids) => [...new Set([...ids, clientId])]);
+      if (e instanceof UploadError) toast(e.message);
+    } finally {
+      inFlight.current.delete(clientId);
+    }
+  };
+  /** + → 사진 · 파일 고르기. 고르면 바로 말풍선을 띄우고(올리는 중) 보낸다 */
+  const pickAttachment = async (kind: 'image' | 'file') => {
+    setAttach(false);
+    if (!chatId.data) {
+      void chatId.refetch();
+      return toast('채팅을 준비하고 있어요. 잠시 후 다시 보내 주세요');
+    }
+    if (!myId) return toast('로그인 상태를 확인해 주세요');
+    if (conn === 'lost' || !joinedChat.current) return toast('채팅에 연결된 뒤 다시 보내 주세요');
+    let file: LocalFile | undefined;
+    if (kind === 'image') {
+      const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
+      const a = r.canceled ? undefined : r.assets[0];
+      // 형식은 파일 이름(확장자)으로 정한다 — 서버가 확장자와 형식이 같은지 본다
+      if (a) file = { uri: a.uri, name: a.fileName ?? photoName(), size: a.fileSize };
+    } else {
+      const r = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        copyToCacheDirectory: true,
+      });
+      const a = r.canceled ? undefined : r.assets[0];
+      if (a) file = { uri: a.uri, name: a.name, mimeType: a.mimeType, size: a.size };
+    }
+    if (!file || !chatId.data) return;
+    const clientId = newClientId(++messageSeq.current);
+    attachments.current.set(clientId, { kind, file });
+    setChat(true);
+    setMsgs((p) => [
+      ...p,
+      {
+        _id: clientId,
+        clientId,
+        chatRoomId: chatId.data!,
+        senderId: myId,
+        type: kind,
+        text: null,
+        attachment: { kind, name: file.name, sizeBytes: file.size ?? 0, url: file.uri },
+        sharedItemId: null,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    void deliverAttachment(clientId);
+  };
   const send = () => {
     const text = v.trim();
     if (!text) return;
@@ -944,15 +1039,15 @@ export function RoomScreen() {
                         <Text className="text-caption2 text-sub">{m.senderNickname ?? '멤버'}</Text>
                       </View>
                     )}
-                    <View className="max-w-[78%] rounded-2xl bg-white px-3 py-2">
-                      <Text className="text-footnote text-ink">
-                        {m.text ?? '공유 자료를 보냈어요'}
-                      </Text>
-                    </View>
+                    <ChatBubble m={m} />
                     {failedIds.includes(m._id) && (
                       <Pressable
                         accessibilityRole="button"
-                        onPress={() => deliver(m.chatRoomId, m._id, m.text ?? '')}
+                        onPress={() =>
+                          m.type === 'image' || m.type === 'file'
+                            ? void deliverAttachment(m._id)
+                            : deliver(m.chatRoomId, m._id, m.text ?? '')
+                        }
                       >
                         <Text className="mt-1 text-caption2 text-danger">
                           전송하지 못했어요 · 다시 보내기
@@ -1021,7 +1116,7 @@ export function RoomScreen() {
                   <MessageCircle size={ICON.sm} color={C.sub} />
                   <Text numberOfLines={1} className="flex-1 text-caption text-sub">
                     {last
-                      ? `${last.senderId === myId ? '나' : (last.senderNickname ?? '멤버')}: ${last.text ?? '공유 자료'}`
+                      ? `${last.senderId === myId ? '나' : (last.senderNickname ?? '멤버')}: ${previewOf(last)}`
                       : '채팅을 시작해 보세요'}
                   </Text>
                 </Pressable>
@@ -1047,6 +1142,27 @@ export function RoomScreen() {
               <Text className="text-caption text-danger">채팅 연결에 실패했어요 · 다시 연결</Text>
             </Pressable>
           )}
+          {attach && (
+            <View className="mx-5 mt-2 flex-row gap-2 rounded-2xl bg-white p-2">
+              {(
+                [
+                  ['image', ImageIcon, '사진'],
+                  ['file', FileText, '파일 (PDF)'],
+                ] as const
+              ).map(([kind, Ic, label]) => (
+                <Pressable
+                  key={kind}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${label} 보내기`}
+                  onPress={() => void pickAttachment(kind)}
+                  className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-mint py-3"
+                >
+                  <Ic size={ICON.sm} color={C.brand} />
+                  <Text className="text-subhead font-semibold text-ink">{label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
           {emoji && (
             <View className="mx-5 mt-2 flex-row flex-wrap justify-between gap-y-1 rounded-2xl bg-white px-2 py-2">
               {CHAT_EMOJIS.map((e) => (
@@ -1071,15 +1187,15 @@ export function RoomScreen() {
             style={{ paddingBottom: keyboardInset > 0 ? 8 : Math.max(insets.bottom, 12) + 8 }}
           >
             <View className="flex-1 flex-row items-center gap-2 rounded-full bg-white px-4">
-              {/* 예전엔 그림만 있어 눌러도 반응이 없었다: 자료 공유 · 도구 메뉴를 연다(키보드는 내린다) */}
+              {/* 사진 · 파일 첨부를 고른다(키보드는 내린다) */}
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="자료 · 도구 열기"
+                accessibilityLabel="사진 · 파일 첨부"
                 hitSlop={8}
                 onPress={() => {
                   Keyboard.dismiss();
                   setEmoji(false);
-                  setMenu((m) => !m);
+                  setAttach((x) => !x);
                 }}
                 className="h-6 w-6 items-center justify-center rounded-full bg-ink"
               >
@@ -1100,7 +1216,7 @@ export function RoomScreen() {
                 accessibilityLabel={emoji ? '이모지 닫기' : '이모지'}
                 hitSlop={8}
                 onPress={() => {
-                  setMenu(false);
+                  setAttach(false);
                   setEmoji((x) => !x);
                 }}
               >
@@ -1331,3 +1447,74 @@ export function RoomCardsScreen() {
     </Canvas>
   );
 }
+
+/** 채팅 목록 위 한 줄 미리보기 */
+const previewOf = (m: Message) =>
+  m.type === 'image'
+    ? '사진'
+    : m.type === 'file'
+      ? `파일 · ${m.attachment?.name ?? ''}`
+      : (m.text ?? '공유 자료');
+
+const sizeLabel = (bytes: number) =>
+  bytes >= 1024 * 1024
+    ? `${(bytes / 1024 / 1024).toFixed(1)}MB`
+    : `${Math.max(1, Math.round(bytes / 1024))}KB`;
+
+/** 말풍선: 글 · 사진(눌러서 크게) · 파일(눌러서 열기) */
+function ChatBubble({ m }: { m: Message }) {
+  const a = m.attachment;
+  const open = () => {
+    if (a?.url) void WebBrowser.openBrowserAsync(a.url).catch(() => toast('파일을 열지 못했어요'));
+  };
+  if (m.type === 'image' && a)
+    return (
+      <Pressable
+        accessibilityRole="imagebutton"
+        accessibilityLabel={`사진 ${a.name} 크게 보기`}
+        onPress={open}
+      >
+        <Image
+          source={{ uri: a.url }}
+          className="h-44 w-44 rounded-2xl bg-fill"
+          resizeMode="cover"
+        />
+      </Pressable>
+    );
+  if (m.type === 'file' && a)
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`파일 ${a.name} 열기`}
+        onPress={open}
+        className="max-w-[78%] flex-row items-center gap-2.5 rounded-2xl bg-white px-3 py-2.5"
+      >
+        <View className="h-9 w-9 items-center justify-center rounded-xl bg-mint">
+          <FileText size={ICON.sm} color={C.brand} />
+        </View>
+        <View className="shrink">
+          <Text numberOfLines={1} className="text-footnote font-semibold text-ink">
+            {a.name}
+          </Text>
+          {a.sizeBytes > 0 && (
+            <Text className="text-caption2 text-sub">{sizeLabel(a.sizeBytes)}</Text>
+          )}
+        </View>
+      </Pressable>
+    );
+  return (
+    <View className="max-w-[78%] rounded-2xl bg-white px-3 py-2">
+      <Text className="text-footnote text-ink">
+        {m.type === 'image' || m.type === 'file'
+          ? '첨부를 불러오지 못했어요'
+          : (m.text ?? '공유 자료를 보냈어요')}
+      </Text>
+    </View>
+  );
+}
+
+/** 보낼 메시지의 기기 쪽 식별자(재전송 때 같은 메시지로 묶는다) */
+const newClientId = (seq: number) =>
+  `c${Date.now()}-${seq}-${Math.random().toString(36).slice(2, 10)}`;
+/** 이름 없이 고른 사진의 파일 이름 */
+const photoName = () => `photo-${Date.now()}.jpg`;

@@ -29,6 +29,8 @@ export const UPLOAD_PREFIX = 'uploads';
  * 실제 크기 · 형식을 확인해 보관 경로로 복사한다. 남은 파일은 스토리지 수명 주기 규칙이 하루 뒤 지운다
  */
 export const REPORT_UPLOAD_PREFIX = 'incoming';
+/** 채팅에 보낸 사진 · 파일: chat/{종류}/{사용자}/{무작위}.{확장자}. 메시지가 이 주소를 저장하므로 지우지 않는다 */
+export const CHAT_UPLOAD_PREFIX = 'chat';
 /** 접수된 신고 사진의 보관 경로: reports/{신고자}/{신고 ID}/{무작위}.{확장자} */
 export const REPORT_PREFIX = 'reports';
 /**
@@ -90,12 +92,12 @@ const badFile = (message: string) =>
 const unavailable = (message: string) =>
   new ServiceUnavailableException({ code: ERROR_CODES.UPLOAD_UNAVAILABLE, message });
 
-/** 앱이 올리는 폴더(끝에 '/'): 신고 사진은 임시 경로, 그 밖에는 종류별 노트 경로 */
-export function uploadFolder(kind: string, userId: string, purpose?: 'report'): string {
+/** 앱이 올리는 폴더(끝에 '/'): 신고 사진은 임시 경로, 채팅 첨부는 채팅 경로, 그 밖에는 종류별 노트 경로 */
+export function uploadFolder(kind: string, userId: string, purpose?: 'report' | 'chat'): string {
   const owner = userId.toLowerCase();
-  return purpose === 'report'
-    ? `${REPORT_UPLOAD_PREFIX}/${owner}/`
-    : `${UPLOAD_PREFIX}/${kind}/${owner}/`;
+  if (purpose === 'report') return `${REPORT_UPLOAD_PREFIX}/${owner}/`;
+  if (purpose === 'chat') return `${CHAT_UPLOAD_PREFIX}/${kind}/${owner}/`;
+  return `${UPLOAD_PREFIX}/${kind}/${owner}/`;
 }
 
 @Injectable()
