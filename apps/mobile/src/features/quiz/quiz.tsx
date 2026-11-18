@@ -565,11 +565,12 @@ export function QuizReadyScreen() {
             <Btn onPress={() => router.replace({ pathname: '/play/solve', params: { setId } })}>
               퀴즈 시작하기
             </Btn>
+            {/* 시작 버튼과 붙어 보이지 않게 띄우고, 화면 아래 끝에서 조금 올린다 */}
             <Pressable
               onPress={() => router.dismissTo('/(tabs)/quiz')}
-              className="mt-2 self-center rounded-full bg-white px-3 py-1"
+              className="mt-4 mb-6 self-center rounded-full bg-white px-4 py-2"
             >
-              <Text className="text-caption text-sub">나중에 풀기</Text>
+              <Text className="text-footnote text-sub">나중에 풀기</Text>
             </Pressable>
           </>
         }
@@ -585,7 +586,9 @@ export function QuizReadyScreen() {
             {count ? `총 ${count}문제가 생성됐어요!` : '문제가 생성됐어요!'}
           </Text>
           {!!title && (
-            <Text className="text-caption text-sub">{title} 노트를 기반으로 만들었어요</Text>
+            <Text className="mt-2 px-8 text-center text-footnote leading-5 text-sub">
+              {title} 노트를 기반으로 만들었어요
+            </Text>
           )}
         </View>
       </Screen>
@@ -1292,12 +1295,8 @@ export function QuizSimilarScreen() {
       toast('플래시카드에 저장했어요');
     },
   });
-  // 문제를 받으면 첫 문제를 펼친다 (렌더 중 상태 조정)
-  const [loaded, setLoaded] = useState<typeof sim.data>();
-  if (sim.data && sim.data !== loaded) {
-    setLoaded(sim.data);
-    if (sim.data.questions[0]) setOpen([sim.data.questions[0]._id]);
-  }
+  // 문제마다 고른 보기(객관식). 고르면 맞았는지 · 정답을 보여 준다. 정답은 먼저 보이지 않는다
+  const [picked, setPicked] = useState<Record<string, string>>({});
   return (
     <Canvas>
       <Screen
@@ -1356,6 +1355,49 @@ export function QuizSimilarScreen() {
             <View key={q._id} className="rounded-card bg-white p-4">
               <Text className="text-caption font-semibold text-brand">문제 {i + 1}</Text>
               <Text className="mt-1 text-subhead leading-6 text-ink">{q.prompt}</Text>
+              {!!q.choices?.length && (
+                <View className="mt-3 gap-2">
+                  {q.choices.map((c, n) => {
+                    const chosen = picked[q._id];
+                    const right = c === q.answer;
+                    return (
+                      <Pressable
+                        key={`${n}-${c}`}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: chosen === c, disabled: !!chosen }}
+                        disabled={!!chosen}
+                        onPress={() => {
+                          setPicked((p) => ({ ...p, [q._id]: c }));
+                          setOpen((p) => (p.includes(q._id) ? p : [...p, q._id]));
+                        }}
+                        className={cx(
+                          'flex-row items-center gap-2.5 rounded-xl border px-3 py-2.5',
+                          !chosen
+                            ? 'border-line bg-white'
+                            : right
+                              ? 'border-brand bg-mint'
+                              : chosen === c
+                                ? 'border-danger bg-danger/10'
+                                : 'border-line bg-white opacity-60',
+                        )}
+                      >
+                        <Text className="text-footnote font-semibold text-sub">{n + 1}</Text>
+                        <Text className="flex-1 text-footnote leading-5 text-ink">{c}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+              {!!picked[q._id] && (
+                <Text
+                  className={cx(
+                    'mt-2 text-footnote font-semibold',
+                    picked[q._id] === q.answer ? 'text-brand' : 'text-danger',
+                  )}
+                >
+                  {picked[q._id] === q.answer ? '정답이에요!' : '아쉬워요, 다시 확인해 보세요'}
+                </Text>
+              )}
               {open.includes(q._id) && (
                 <Animated.View entering={FadeIn} className="mt-2 rounded-xl bg-sun/25 px-3 py-2">
                   <Text className="text-caption font-semibold text-ink">문제 {i + 1} 정답</Text>
@@ -1396,12 +1438,13 @@ export function FlashScreen() {
   const [i, setI] = useState(() =>
     Math.max(0, Number.isFinite(Number(start)) ? Math.floor(Number(start)) : 0),
   );
-  const [back, setBack] = useState(true);
+  // 카드는 문제(앞면)부터 보이고, 누르면 정답(뒷면)으로 뒤집는다
+  const [back, setBack] = useState(false);
   const list = cards.data ?? [];
   const index = Math.max(0, Math.min(i, list.length - 1));
   if (cards.isSuccess && i !== index) {
     setI(index);
-    setBack(true);
+    setBack(false);
   }
   const c = list[index];
   return (
@@ -1462,7 +1505,7 @@ export function FlashScreen() {
               disabled={i === 0}
               onPress={() => {
                 setI((x) => x - 1);
-                setBack(true);
+                setBack(false);
               }}
               className={cx(
                 'h-11 w-11 items-center justify-center rounded-full bg-white',
@@ -1480,7 +1523,7 @@ export function FlashScreen() {
               disabled={i >= list.length - 1}
               onPress={() => {
                 setI((x) => x + 1);
-                setBack(true);
+                setBack(false);
               }}
               className={cx(
                 'h-11 w-11 items-center justify-center rounded-full bg-white',
