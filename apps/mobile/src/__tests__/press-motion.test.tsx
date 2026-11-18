@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react-native';
-import { Text } from 'react-native';
-import { Pressable, isBackdrop, splitPressClass } from '../components/press';
+import { StyleSheet, Text } from 'react-native';
+import { Pressable, isBackdrop, splitPressClass, splitPressStyle } from '../components/press';
 
 const mockReduce = { value: false };
 jest.mock('react-native-reanimated', () => ({
@@ -24,6 +24,41 @@ const wrapped = (label: string) => {
 
 // 실기기 테스트: 대부분의 버튼이 눌러도 눌린 느낌이 없었다(공용 Btn · Chip · Card만 Tap으로 줄었다)
 describe('눌림 모션 Pressable', () => {
+  // Codex #507 재리뷰(4차): absolute는 바깥으로 옮기고 style의 백분율 left · width는 안쪽에 남아 시간표 수업 블록이 어긋났다
+  it('style의 위치 · 크기는 바깥 상자로, 색은 누르는 요소에 두고 안쪽은 높이를 채운다', async () => {
+    await render(
+      <Pressable
+        accessibilityLabel="수업"
+        className="absolute rounded-md px-1"
+        style={{ left: '50%', width: '50%', top: 10, height: 40, backgroundColor: 'red' }}
+        onPress={() => {}}
+      >
+        <Text>수업</Text>
+      </Pressable>,
+    );
+    const inner = screen.getByLabelText('수업');
+    expect(StyleSheet.flatten(inner.props.style)).toEqual({ backgroundColor: 'red', flexGrow: 1 });
+    let node = inner.parent;
+    while (node && !StyleSheet.flatten(node.props.style)?.left) node = node.parent;
+    expect(StyleSheet.flatten(node?.props.style)).toMatchObject({
+      left: '50%',
+      width: '50%',
+      top: 10,
+      height: 40,
+    });
+  });
+
+  it('splitPressStyle: 바깥이 위아래로 늘어나면 안쪽은 채우고, 함수형 style은 나누지 않는다', () => {
+    expect(splitPressStyle({ top: 0, bottom: 0, padding: 4 })).toEqual([
+      { top: 0, bottom: 0 },
+      { padding: 4, flexGrow: 1 },
+    ]);
+    const fn = () => ({ left: 1 });
+    expect(splitPressStyle(fn)).toEqual([undefined, fn]);
+    const plain = { padding: 4 };
+    expect(splitPressStyle(plain)).toEqual([undefined, plain]);
+  });
+
   // Codex #507 재리뷰: 자식의 hitSlop은 부모 경계 밖에서 잡히지 않아, 감싸면 아이콘 버튼의 터치 영역이 줄었다
   it('hitSlop은 줄어드는 상자에도 같이 줘 아이콘 바깥 터치 영역을 지킨다', async () => {
     await render(

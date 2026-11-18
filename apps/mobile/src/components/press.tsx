@@ -1,5 +1,5 @@
 import { forwardRef, type ComponentProps, type ElementRef } from 'react';
-import { Pressable as RNPressable } from 'react-native';
+import { Pressable as RNPressable, StyleSheet, type ViewStyle } from 'react-native';
 import Animated, {
   useAnimatedStyle,
   useReducedMotion,
@@ -29,6 +29,59 @@ export const splitPressClass = (className = '') => {
   return [outer.join(' '), inner.join(' ')] as const;
 };
 
+/** 바깥 상자로 옮길 배치 스타일(위치 · 크기 · 여백 · flex). 백분율 left · width가 부모 열 기준으로 계산되게 한다 */
+const OUTER_STYLE = new Set<string>([
+  'position',
+  'top',
+  'right',
+  'bottom',
+  'left',
+  'start',
+  'end',
+  'inset',
+  'width',
+  'minWidth',
+  'maxWidth',
+  'height',
+  'minHeight',
+  'maxHeight',
+  'margin',
+  'marginTop',
+  'marginRight',
+  'marginBottom',
+  'marginLeft',
+  'marginHorizontal',
+  'marginVertical',
+  'marginStart',
+  'marginEnd',
+  'flex',
+  'flexGrow',
+  'flexShrink',
+  'flexBasis',
+  'alignSelf',
+  'zIndex',
+]);
+/**
+ * style도 className처럼 배치(바깥)와 모양(안쪽)으로 나눈다. 눌림 상태에 따라 바뀌는 함수형 style은 나누지 않는다.
+ * 바깥에 높이가 정해지면(height · top과 bottom · flex) 안쪽이 채우도록 grow를 준다
+ */
+export const splitPressStyle = (style: unknown) => {
+  if (!style || typeof style === 'function') return [undefined, style] as const;
+  const flat = (StyleSheet.flatten(style as ViewStyle) ?? {}) as Record<string, unknown>;
+  const outer: Record<string, unknown> = {};
+  const inner: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(flat)) (OUTER_STYLE.has(k) ? outer : inner)[k] = v;
+  if (!Object.keys(outer).length) return [undefined, style] as const;
+  if (
+    'height' in outer ||
+    'flex' in outer ||
+    'flexGrow' in outer ||
+    ('top' in outer && 'bottom' in outer)
+  )
+    inner.flexGrow = 1;
+  return [outer as ViewStyle, inner as ViewStyle] as const;
+};
+
 type Props = ComponentProps<typeof RNPressable> & {
   className?: string;
   /** 눌렀을 때 크기(기본 MOTION.press.scale). 1이면 줄지 않는다 */
@@ -41,7 +94,16 @@ type Props = ComponentProps<typeof RNPressable> & {
  * 누를 수 없을 때(disabled)는 감싸되 줄지 않는다(상태가 바뀔 때 배치가 흔들리지 않게)
  */
 export const Pressable = forwardRef<ElementRef<typeof RNPressable>, Props>(function Pressable(
-  { className, onPressIn, onPressOut, disabled, scaleTo = MOTION.press.scale, hitSlop, ...props },
+  {
+    className,
+    style,
+    onPressIn,
+    onPressOut,
+    disabled,
+    scaleTo = MOTION.press.scale,
+    hitSlop,
+    ...props
+  },
   ref,
 ) {
   const reduce = useReducedMotion();
@@ -53,6 +115,7 @@ export const Pressable = forwardRef<ElementRef<typeof RNPressable>, Props>(funct
         ref={ref}
         {...props}
         hitSlop={hitSlop}
+        style={style}
         className={className}
         disabled={disabled}
         onPressIn={onPressIn}
@@ -60,14 +123,21 @@ export const Pressable = forwardRef<ElementRef<typeof RNPressable>, Props>(funct
       />
     );
   const [outer, inner] = splitPressClass(className);
+  // className의 absolute를 바깥으로 옮기면 style의 left · width(백분율)도 같은 상자에 있어야 위치가 맞는다(Codex #507 재리뷰)
+  const [outerStyle, innerStyle] = splitPressStyle(style);
   return (
     // 바깥 상자에도 같은 hitSlop을 준다. 자식의 터치 확장은 부모 경계 밖에서 잡히지 않아, 감싸면 아이콘 버튼의
     // 터치 영역이 아이콘 크기로 줄었다(Codex #507 재리뷰)
-    <Animated.View className={outer} style={anim} hitSlop={hitSlop ?? undefined}>
+    <Animated.View
+      className={outer}
+      style={outerStyle ? [outerStyle, anim] : anim}
+      hitSlop={hitSlop ?? undefined}
+    >
       <RNPressable
         ref={ref}
         {...props}
         hitSlop={hitSlop}
+        style={innerStyle as ComponentProps<typeof RNPressable>['style']}
         className={inner}
         disabled={disabled}
         onPressIn={(e) => {

@@ -53,6 +53,11 @@ jest.mock('expo-document-picker', () => ({
   getDocumentAsync: (...a: unknown[]) => mockPickDoc(...a),
 }));
 jest.mock('expo-web-browser', () => ({ openBrowserAsync: (url: string) => mockOpen(url) }));
+const mockShare = jest.fn(async (_url: string) => {});
+jest.mock('expo-sharing', () => ({
+  isAvailableAsync: jest.fn(async () => true),
+  shareAsync: (url: string) => mockShare(url),
+}));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),
@@ -283,5 +288,16 @@ describe('만료된 첨부 주소', () => {
     await fireEvent.press(await screen.findByLabelText('사진 x.jpg 크게 보기'));
     await waitFor(() => expect(mockOpen).toHaveBeenCalledWith(fresh));
     expect(mockOpen).not.toHaveBeenCalledWith(old);
+  });
+
+  // Codex #507 재리뷰: 기기 저장 모드의 file:// 첨부를 브라우저로 열어 실패했다(iOS는 http(s)만)
+  it('기기에 저장된(file://) 첨부는 브라우저 대신 공유 시트 미리보기로 연다', async () => {
+    mockApi.social.messages.mockResolvedValue([photo('file:///local/x.jpg')]);
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText(room.title);
+    await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+    await fireEvent.press(await screen.findByLabelText('사진 x.jpg 크게 보기'));
+    await waitFor(() => expect(mockShare).toHaveBeenCalledWith('file:///local/x.jpg'));
+    expect(mockOpen).not.toHaveBeenCalled();
   });
 });

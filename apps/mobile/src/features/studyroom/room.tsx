@@ -41,6 +41,7 @@ import {
 import type { Message, RoomMember, RoomSharedItem } from '@notelink/shared';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
+import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
 import { Image } from 'react-native';
 import { UploadError, uploadToBlob, type LocalFile } from '@/lib/upload';
@@ -860,6 +861,12 @@ export function RoomScreen() {
       const fresh = await history.refetch();
       url = fresh.data?.find((x) => x._id === m._id)?.attachment?.url ?? url;
       if (urlExpired(url)) return toast('첨부를 다시 불러오지 못했어요. 잠시 뒤 다시 눌러 주세요');
+    }
+    // 기기 저장 모드의 file:// 첨부는 브라우저가 열지 못한다(iOS는 http(s)만). 공유 시트의 미리보기로 연다(Codex #507 재리뷰)
+    if (url.startsWith('file:')) {
+      const ok = await Sharing.isAvailableAsync().catch(() => false);
+      if (!ok) return toast('이 기기에서는 파일을 열 수 없어요');
+      return void (await Sharing.shareAsync(url).catch(() => toast('파일을 열지 못했어요')));
     }
     await WebBrowser.openBrowserAsync(url).catch(() => toast('파일을 열지 못했어요'));
   };
