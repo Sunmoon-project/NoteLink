@@ -251,7 +251,7 @@ export class BlobStorageService {
     blobUrl: string,
     ttlMs: number,
     verify?: { prefix: string },
-  ): Promise<{ readUrl: string; sizeBytes?: number }> {
+  ): Promise<{ readUrl: string; sizeBytes?: number; contentType?: string | null }> {
     const store = this.requireStore();
     const containerClient = store.client.getContainerClient(store.config.container);
     const base = `${containerClient.url}/`;
@@ -259,11 +259,14 @@ export class BlobStorageService {
     const blob = blobName ? containerClient.getBlockBlobClient(blobName) : null;
     if (!blob || blob.url !== blobUrl) throw badFile('사용할 수 없는 파일 주소예요');
     let sizeBytes: number | undefined;
+    let contentType: string | null | undefined;
     if (verify) {
       const rest = blobName.startsWith(verify.prefix) ? blobName.slice(verify.prefix.length) : '';
       if (!UPLOADED_FILE_NAME.test(rest)) throw badFile('사용할 수 없는 파일 주소예요');
       try {
-        sizeBytes = (await blob.getProperties()).contentLength;
+        const properties = await blob.getProperties();
+        sizeBytes = properties.contentLength;
+        contentType = properties.contentType ?? null;
       } catch (error) {
         if (statusOf(error) === 404) throw badFile('올린 파일을 찾을 수 없어요');
         throw unavailable('올린 파일을 확인하지 못했어요.');
@@ -283,7 +286,11 @@ export class BlobStorageService {
         },
         store.credential,
       ).toString();
-      return { readUrl: `${blob.url}?${sas}`, ...(sizeBytes === undefined ? {} : { sizeBytes }) };
+      return {
+        readUrl: `${blob.url}?${sas}`,
+        ...(sizeBytes === undefined ? {} : { sizeBytes }),
+        ...(contentType === undefined ? {} : { contentType }),
+      };
     } catch {
       throw unavailable('파일 읽기 주소를 만들지 못했어요.');
     }

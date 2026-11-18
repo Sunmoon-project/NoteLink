@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import type { Material } from '@notelink/shared';
 import { useToast } from '../stores/toast';
-import { FolderScreen } from '../features/content/notes';
+import { FolderScreen, materialsPollMs } from '../features/content/notes';
 import { api } from '../lib/api';
 import { renderScreen, setParams } from '../test-utils';
 
@@ -91,4 +91,22 @@ it('다시 요약 요청이 실패하면 알린다', async () => {
   await waitFor(() =>
     expect(useToast.getState().msg).toBe('다시 요약하지 못했어요. 잠시 뒤 다시 눌러 주세요'),
   );
+});
+
+// Codex #519 리뷰: 다시 요약 뒤 목록을 한 번만 읽어, 화면에 있으면 진행 표시가 계속 남고 버튼이 돌아오지 않았다
+it('정리 중인 자료가 있으면 3초마다 목록을 다시 읽고, 모두 끝나면 멈춘다', () => {
+  expect(
+    materialsPollMs([
+      material('a', 'document', 'processing', 'j1'),
+      material('b', 'document', 'done', 'j2'),
+    ]),
+  ).toBe(3000);
+  expect(materialsPollMs([material('a', 'document', 'queued', 'j1')])).toBe(3000);
+  expect(
+    materialsPollMs([
+      material('a', 'document', 'failed', 'j1'),
+      material('b', 'document', 'done', 'j2'),
+    ]),
+  ).toBe(false);
+  expect(materialsPollMs(undefined)).toBe(false);
 });

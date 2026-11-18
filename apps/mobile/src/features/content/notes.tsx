@@ -307,6 +307,12 @@ const summaryState = (m: Material) =>
       ? '요약 실패'
       : '요약 중';
 
+/** 정리 중(대기 queued · 처리 중)인 자료가 있으면 3초마다 목록을 다시 읽는다. 모두 끝났으면 멈춘다 */
+export const materialsPollMs = (list: Material[] | undefined) =>
+  list?.some((m) => m.processing?.status === 'queued' || m.processing?.status === 'processing')
+    ? 3000
+    : false;
+
 export function FolderScreen() {
   // 첫 폴더 안내가 짚는 + 버튼
   const addTarget = useTourTarget('folder-add');
@@ -314,7 +320,12 @@ export function FolderScreen() {
   const qc = useQueryClient();
   const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
   const folder = folders.data?.find((f) => f._id === id);
-  const mats = useQuery({ queryKey: ['materials', id], queryFn: () => api.content.materials(id) });
+  const mats = useQuery({
+    queryKey: ['materials', id],
+    queryFn: () => api.content.materials(id),
+    // 정리 중인 자료가 있으면(다시 요약 포함) 끝날 때까지 다시 읽어 진행 표시 · 다시 요약 버튼을 바로잡는다(Codex #519 리뷰)
+    refetchInterval: (q) => materialsPollMs(q.state.data),
+  });
   // 서버에 폴더 자료 목록 경로가 아직 없을 때(404) 폴더 목록이 센 자료가 0개면 실패가 아니라 빈 폴더다.
   // 자료가 있다고 세었는데 목록을 못 읽으면 지금처럼 실패를 보여 준다(지운 폴더는 목록에 없어 여기도 실패).
   // 앞서 받아 둔 자료 목록이 있으면 다시 읽기가 404여도 그 목록을 그대로 보여 준다(빈 폴더로 덮지 않음)
