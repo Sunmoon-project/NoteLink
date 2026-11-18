@@ -23,6 +23,7 @@ const mockApi = {
     startAttempt: jest.fn(),
     answer: jest.fn(),
     finish: jest.fn(),
+    saveToBox: jest.fn(),
   },
 };
 jest.mock('../lib/api', () => ({
@@ -104,6 +105,7 @@ beforeEach(() => {
   mockApi.quiz.startAttempt.mockResolvedValue({ _id: attemptId });
   mockApi.quiz.answer.mockResolvedValue({ correct: true, correctAnswer: '정답' });
   mockApi.quiz.finish.mockResolvedValue({ pointsEarned: 120, balance: 120 });
+  mockApi.quiz.saveToBox.mockResolvedValue([]);
 });
 afterEach(() => {
   clients.forEach((qc) => qc.clear());
@@ -159,4 +161,10 @@ it('만료 안내→로그인→풀이 재마운트 후 기존 풀이 ID·문제
   await fireEvent.press(await screen.findByText('다음 문제 풀기'));
   await waitFor(() => expect(mockApi.quiz.finish).toHaveBeenCalledWith(attemptId));
   await waitFor(() => expect(useQuizProgress.getState().progress).toBeNull());
+  // 복원한 풀이도 마치면 세트 문제를 모두 보관함에 담고, 두 문제 다 맞힌 결과를 넘긴다
+  expect(mockApi.quiz.saveToBox).toHaveBeenCalledWith(['first', 'second']);
+  expect(router.replace).toHaveBeenLastCalledWith({
+    pathname: '/play/review',
+    params: { setId, points: '120', results: '11' },
+  });
 });

@@ -12,6 +12,7 @@ import { FolderScreen } from '../features/content/notes';
 import { NetworkError } from '../lib/api';
 import { useAuth } from '../stores/auth';
 import { useDraft } from '../stores/draft';
+import { useBgJobs } from '../stores/bg-jobs';
 import { renderScreen, setParams } from '../test-utils';
 
 jest.mock('expo-router', () => ({
@@ -1174,6 +1175,21 @@ describe('변환 화면: 다 올린 뒤에 변환으로 넘어가고, 취소하�
       params: { id: 'folder1' },
     });
     expect(mockToast).toHaveBeenCalledWith('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
+  });
+
+  it('폴더에서 기다리기를 누르면 작업은 그대로 두고 폴더로 가며, 끝나면 알릴 작업으로 남긴다', async () => {
+    useBgJobs.setState({ jobs: [] });
+    await renderScreen(<ConvertScreen />, client());
+    await fireEvent.press(await screen.findByText('폴더에서 기다리기'));
+    expect(mockApi.ai.cancel).not.toHaveBeenCalled();
+    expect(router.dismissTo).toHaveBeenCalledWith({
+      pathname: '/(tabs)/note/folder/[id]',
+      params: { id: 'folder1' },
+    });
+    expect(useBgJobs.getState().jobs).toEqual([
+      expect.objectContaining({ jobId: 'job1', kind: 'material' }),
+    ]);
+    expect(mockToast).toHaveBeenCalledWith('정리가 끝나면 알려 드릴게요');
   });
 
   // Codex #503 리뷰: 취소 요청이 실패해도 취소했다고 안내하고 초안을 지웠다(서버 작업은 계속 돎)

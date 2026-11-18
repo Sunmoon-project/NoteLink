@@ -6,7 +6,9 @@ import { useAuth } from '../stores/auth';
 import { useQuizProgress, type QuizProgress } from '../stores/quiz-progress';
 import { renderScreen, setParams } from '../test-utils';
 
-const mockApi = { quiz: { set: jest.fn(), startAttempt: jest.fn(), finish: jest.fn() } };
+const mockApi = {
+  quiz: { set: jest.fn(), startAttempt: jest.fn(), finish: jest.fn(), saveToBox: jest.fn() },
+};
 jest.mock('../lib/api', () => ({
   get api() {
     return mockApi;
@@ -70,6 +72,7 @@ beforeEach(() => {
   useQuizProgress.getState().save(progressA);
   mockApi.quiz.set.mockResolvedValue(quizSet);
   mockApi.quiz.finish.mockResolvedValue({ pointsEarned: 120, balance: 120 });
+  mockApi.quiz.saveToBox.mockResolvedValue([]);
   setParams({ setId });
 });
 afterEach(() => {
@@ -115,8 +118,9 @@ it('화면과 저장 상태의 세트·풀이 ID가 일치하면 화면의 풀�
   await waitFor(() =>
     expect(router.replace).toHaveBeenCalledWith({
       pathname: '/play/review',
-      params: { setId, points: '120' },
+      params: { setId, points: '120', results: '1' },
     }),
   );
   expect(useQuizProgress.getState().progress).toBeNull();
+  expect(mockApi.quiz.saveToBox).toHaveBeenCalledWith(['last-a-question']);
 });

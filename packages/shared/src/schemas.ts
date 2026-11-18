@@ -239,6 +239,8 @@ export const QuizSet = z.object({
   questionCount: z.number(),
   questions: z.array(Question),
   createdAt: date,
+  // 오늘의 복습만: 오늘 세트를 끝까지 푼 적이 있으면 true
+  completed: z.boolean().optional(),
 });
 
 export const AttemptAnswer = z.object({

@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
+import { router } from 'expo-router';
 import { QuizSimilarScreen, QuizSolveScreen } from '../features/quiz/quiz';
 import { NetworkError } from '../lib/api';
 import { queryClient } from '../lib/query';
@@ -10,7 +11,6 @@ const mockApi = {
     set: jest.fn(),
     startAttempt: jest.fn(),
     similar: jest.fn(),
-    saveFlashcard: jest.fn(),
   },
 };
 jest.mock('../lib/api', () => ({
@@ -48,6 +48,8 @@ const quizSet = {
 };
 const generated = {
   ...quizSet,
+  _id: 'similar-ready',
+  status: 'ready',
   questions: [{ ...quizSet.questions[0], prompt: '한 번 생성한 유사 문제' }],
 };
 const clients: QueryClient[] = [];
@@ -68,6 +70,11 @@ function client(automaticQueryRetry = true) {
   clients.push(qc);
   return qc;
 }
+/** 다 만든 유사 퀴즈는 일반 퀴즈처럼 풀이 화면으로 바로 넘어간다 */
+const toSolve = (setId: string) =>
+  waitFor(() =>
+    expect(router.replace).toHaveBeenCalledWith({ pathname: '/play/solve', params: { setId } }),
+  );
 async function startSimilarIfExplicit() {
   // 새 화면은 명시적 생성 버튼, 수정 전 화면은 마운트 즉시 POST를 보낸다.
   const button = screen.queryByText('유사 퀴즈 만들기');
@@ -102,7 +109,7 @@ it('유사 퀴즈 생성은 사용자가 누르기 전에는 POST를 보내지 �
   await act(async () => {});
   expect(mockApi.quiz.similar).not.toHaveBeenCalled();
   await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
-  expect(await screen.findByText('한 번 생성한 유사 문제')).toBeTruthy();
+  await toSolve('similar-ready');
   expect(mockApi.quiz.similar).toHaveBeenCalledTimes(1);
 });
 
@@ -119,22 +126,22 @@ it('응답이 유실된 유사 퀴즈 POST는 전역 재시도 정책이 있어�
   expect(await screen.findByText('다시 시도')).toBeTruthy();
 });
 
-it('성공한 유사 퀴즈 결과는 오래된 캐시로 재마운트해도 POST를 다시 보내지 않는다', async () => {
+it('다 만든 유사 퀴즈는 풀이 화면으로 한 번만 넘기고 POST를 다시 보내지 않는다', async () => {
   const qc = client();
-  const first = await renderScreen(<QuizSimilarScreen />, qc);
-  await startSimilarIfExplicit();
-  expect(await screen.findByText('한 번 생성한 유사 문제')).toBeTruthy();
-  await first.unmount();
   await renderScreen(<QuizSimilarScreen />, qc);
-  expect(await screen.findByText('한 번 생성한 유사 문제')).toBeTruthy();
+  await startSimilarIfExplicit();
+  await toSolve('similar-ready');
   await waitFor(() => {
     expect(qc.isFetching()).toBe(0);
     expect(qc.isMutating()).toBe(0);
   });
+  expect(router.replace).toHaveBeenCalledTimes(1);
   expect(mockApi.quiz.similar).toHaveBeenCalledTimes(1);
+  // 문제를 이 화면에 늘어놓지 않는다(풀이 화면에서 푼다)
+  expect(screen.queryByText('한 번 생성한 유사 문제')).toBeNull();
 });
 
-it('서버가 「다시 보기」 세트를 만드는 중으로 주면 다 만들 때까지 세트를 다시 읽어 문제를 보여 준다', async () => {
+it('서버가 「다시 보기」 세트를 만드는 중으로 주면 다 만들 때까지 세트를 다시 읽고 풀이 화면으로 넘어간다', async () => {
   const making = {
     ...generated,
     _id: 'similar-set',
@@ -149,7 +156,14 @@ it('서버가 「다시 보기」 세트를 만드는 중으로 주면 다 만�
   await renderScreen(<QuizSimilarScreen />, client());
   await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
   expect(await screen.findByText(/비슷한 문제를 만들고 있어요/)).toBeTruthy();
-  expect(await screen.findByText('한 번 생성한 유사 문제', {}, { timeout: 5000 })).toBeTruthy();
+  await waitFor(
+    () =>
+      expect(router.replace).toHaveBeenCalledWith({
+        pathname: '/play/solve',
+        params: { setId: 'similar-set' },
+      }),
+    { timeout: 5000 },
+  );
   expect(mockApi.quiz.set).toHaveBeenCalledWith('similar-set');
   expect(mockApi.quiz.similar).toHaveBeenCalledTimes(1);
 });
@@ -181,7 +195,7 @@ it('만든 결과 조회가 계속 실패하면 알리고, 다시 확인으로 �
   expect(await screen.findByText(/만든 결과를 확인하지 못했어요/)).toBeTruthy();
   mockApi.quiz.set.mockResolvedValue({ ...generated, _id: 'similar-set', status: 'ready' });
   await fireEvent.press(screen.getByText('다시 확인'));
-  expect(await screen.findByText('한 번 생성한 유사 문제')).toBeTruthy();
+  await toSolve('similar-set');
   expect(mockApi.quiz.similar).toHaveBeenCalledTimes(1);
 });
 
@@ -197,5 +211,5 @@ it('만드는 중을 한 번 받은 뒤 조회가 계속 실패해도 알리고 
   ).toBeTruthy();
   mockApi.quiz.set.mockResolvedValue({ ...generated, _id: 'similar-set', status: 'ready' });
   await fireEvent.press(screen.getByText('다시 확인'));
-  expect(await screen.findByText('한 번 생성한 유사 문제')).toBeTruthy();
+  await toSolve('similar-set');
 });
