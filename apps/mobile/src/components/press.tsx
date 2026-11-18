@@ -41,7 +41,7 @@ type Props = ComponentProps<typeof RNPressable> & {
  * 누를 수 없을 때(disabled)는 감싸되 줄지 않는다(상태가 바뀔 때 배치가 흔들리지 않게)
  */
 export const Pressable = forwardRef<ElementRef<typeof RNPressable>, Props>(function Pressable(
-  { className, onPressIn, onPressOut, disabled, scaleTo = MOTION.press.scale, ...props },
+  { className, onPressIn, onPressOut, disabled, scaleTo = MOTION.press.scale, hitSlop, ...props },
   ref,
 ) {
   const reduce = useReducedMotion();
@@ -52,6 +52,7 @@ export const Pressable = forwardRef<ElementRef<typeof RNPressable>, Props>(funct
       <RNPressable
         ref={ref}
         {...props}
+        hitSlop={hitSlop}
         className={className}
         disabled={disabled}
         onPressIn={onPressIn}
@@ -60,10 +61,13 @@ export const Pressable = forwardRef<ElementRef<typeof RNPressable>, Props>(funct
     );
   const [outer, inner] = splitPressClass(className);
   return (
-    <Animated.View className={outer} style={anim}>
+    // 바깥 상자에도 같은 hitSlop을 준다. 자식의 터치 확장은 부모 경계 밖에서 잡히지 않아, 감싸면 아이콘 버튼의
+    // 터치 영역이 아이콘 크기로 줄었다(Codex #507 재리뷰)
+    <Animated.View className={outer} style={anim} hitSlop={hitSlop ?? undefined}>
       <RNPressable
         ref={ref}
         {...props}
+        hitSlop={hitSlop}
         className={inner}
         disabled={disabled}
         onPressIn={(e) => {

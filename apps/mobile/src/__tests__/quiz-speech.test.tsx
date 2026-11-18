@@ -140,6 +140,32 @@ describe('읽기 준비 중 취소', () => {
     expect(screen.getByText('음성으로 듣기')).toBeTruthy();
   });
 
+  // Codex #507 재리뷰: 준비 중 답하고 다음 문제로 넘어가면 앞 문제를 읽었다
+  it('준비 중에 다음 문제로 넘어가면 앞 문제를 읽지 않는다', async () => {
+    await renderScreen(<QuizSolveScreen />, qc());
+    expect(await screen.findByText('중간 난이도 문제')).toBeTruthy();
+    await fireEvent.press(screen.getByText('음성으로 듣기'));
+    await fireEvent.press(screen.getByText(/정답/));
+    await fireEvent.press(await screen.findByText('다음 문제 풀기'));
+    expect(await screen.findByText('난이도가 없는 문제')).toBeTruthy();
+    await act(async () => release());
+    expect(mockSpeak).not.toHaveBeenCalled();
+    expect(screen.getByText('음성으로 듣기')).toBeTruthy();
+  });
+
+  // Codex #507 재리뷰: 취소된 요청이 준비를 마친 뒤 멈추기를 불러 새로 시작한 읽기를 끊었다
+  it('취소된 요청은 준비가 끝나도 멈추기를 부르지 않는다', async () => {
+    const Speech = jest.requireMock('expo-speech') as { stop: jest.Mock };
+    await renderScreen(<QuizSolveScreen />, qc());
+    expect(await screen.findByText('중간 난이도 문제')).toBeTruthy();
+    await fireEvent.press(screen.getByText('음성으로 듣기'));
+    await fireEvent.press(screen.getByText('읽어주는 중… (탭해서 멈춤)'));
+    const stops = Speech.stop.mock.calls.length;
+    await act(async () => release());
+    expect(Speech.stop.mock.calls.length).toBe(stops);
+    expect(mockSpeak).not.toHaveBeenCalled();
+  });
+
   it('준비 중에 화면을 떠나면 읽지 않는다', async () => {
     const view = await renderScreen(<QuizSolveScreen />, qc());
     expect(await screen.findByText('중간 난이도 문제')).toBeTruthy();

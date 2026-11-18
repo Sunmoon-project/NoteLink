@@ -767,6 +767,8 @@ export function QuizSolveScreen() {
     // 아이폰 무음 스위치가 켜져 있어도 들리게 한다(기본 오디오 설정은 무음 모드에서 소리를 내지 않아
     // 「음성으로 듣기」를 눌러도 아무 소리가 나지 않았다)
     await setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
+    // 취소된 요청이 여기서 멈추기를 부르면 그사이 시작한 새 읽기가 끊긴다. 멈추기 전에도 확인한다(Codex #507 재리뷰)
+    if (token !== speechToken.current) return;
     // 앞에서 멈추지 못한 읽기가 남아 있으면 새 읽기가 뒤로 밀려 들리지 않는다
     await Speech.stop()?.catch?.(() => {});
     if (token !== speechToken.current) return;
@@ -811,6 +813,12 @@ export function QuizSolveScreen() {
   const next = () => {
     if (!ownsProgress()) return toast('다른 풀이를 진행 중이에요. 풀던 퀴즈를 다시 열어주세요');
     if (finishing.current || completing) return;
+    // 읽던 · 읽으려고 준비 중인 앞 문제는 무효로 하고 멈춘다(다음 문제에서 앞 문제를 읽지 않게)
+    speechToken.current++;
+    if (speaking) {
+      setSpeaking(false);
+      void Speech.stop();
+    }
     if (i >= qs.length - 1) {
       const progress = useQuizProgress.getState().progress;
       if (!attemptId || progress?.attemptId !== attemptId || progress.setId !== set.data?._id) {

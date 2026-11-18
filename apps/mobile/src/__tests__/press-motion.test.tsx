@@ -24,6 +24,20 @@ const wrapped = (label: string) => {
 
 // 실기기 테스트: 대부분의 버튼이 눌러도 눌린 느낌이 없었다(공용 Btn · Chip · Card만 Tap으로 줄었다)
 describe('눌림 모션 Pressable', () => {
+  // Codex #507 재리뷰: 자식의 hitSlop은 부모 경계 밖에서 잡히지 않아, 감싸면 아이콘 버튼의 터치 영역이 줄었다
+  it('hitSlop은 줄어드는 상자에도 같이 줘 아이콘 바깥 터치 영역을 지킨다', async () => {
+    await render(
+      <Pressable accessibilityLabel="뒤로" hitSlop={12} onPress={() => {}}>
+        <Text>뒤로</Text>
+      </Pressable>,
+    );
+    const inner = screen.getByLabelText('뒤로');
+    expect(inner.props.hitSlop).toBe(12);
+    let node = inner.parent;
+    while (node && node.props.hitSlop === undefined) node = node.parent;
+    expect(node?.props.hitSlop).toBe(12);
+  });
+
   it('바깥 배치(여백 · 위치 · flex)는 줄어드는 상자로, 모양은 누르는 요소에 둔다', async () => {
     await render(
       <Pressable
