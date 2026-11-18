@@ -47,6 +47,8 @@ export const ERROR_CODES = {
   UPLOAD_UNAVAILABLE: 'UPLOAD_UNAVAILABLE',
   /** 인증 메일을 보내지 못했다 (503) */
   MAIL_UNAVAILABLE: 'MAIL_UNAVAILABLE',
+  /** 이메일 본인 인증을 하려는데 계정에 이메일이 없다(간편 로그인 계정 등) (400) */
+  NO_EMAIL: 'NO_EMAIL',
   /** 이메일 또는 비밀번호가 맞지 않다. 어느 쪽이 틀렸는지 · 가입 여부는 알려 주지 않는다 (401, 토큰 갱신을 시도하지 않는다) */
   INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',
   /** 로그인을 너무 많이 시도해 잠겼다. 본문의 retryAfterSeconds 뒤에 다시 시도한다 (429) */
@@ -127,6 +129,10 @@ export const PATHS = {
   passwordReset: '/auth/password/reset',
   me: '/users/me',
   myStatus: '/users/me/status',
+  /** 계정 이메일로 본인 인증번호를 보낸다 → 204. 이메일이 없으면 400 NO_EMAIL */
+  myEmailSendCode: '/users/me/email/send-code',
+  /** 본인 인증번호 확인 { code } → { data: User }(emailVerified: true) */
+  myEmailVerifyCode: '/users/me/email/verify-code',
   myDevices: '/users/me/devices',
   mySubscription: '/users/me/subscription',
   userSearch: '/users/search',

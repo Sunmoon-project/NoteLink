@@ -16,6 +16,8 @@ export const APP_LOGIN_ERRORS = {
   LOGIN_ID_TAKEN: 'LOGIN_ID_TAKEN',
   /** 메일 발송 수단을 쓸 수 없다 */
   MAIL_UNAVAILABLE: 'MAIL_UNAVAILABLE',
+  /** 이메일 본인 인증을 하려는데 계정에 이메일이 없다(UsersService.sendEmailCode) */
+  NO_EMAIL: 'NO_EMAIL',
   /**
    * 아이디 또는 비밀번호가 맞지 않다. 없는 아이디 · 이메일 · 소셜로만 가입한 계정 · 탈퇴한 계정 · 틀린 비밀번호를
    * 구분하지 않고 모두 이 코드 하나로 알린다(응답으로 가입 여부를 알아내지 못하게 한다).

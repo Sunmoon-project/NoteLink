@@ -65,6 +65,7 @@ function setup(options: { mailFails?: boolean; random?: (max: number) => number 
     // 계정 찾기 메일은 이 시험의 대상이 아니다
     sendRecoveryCode: () => Promise.resolve(),
     sendNoAccount: () => Promise.resolve(),
+    sendIdentityCode: () => Promise.resolve(),
   };
   const usersModel = {
     exists: (f: { email?: string; loginId?: string; deletedAt?: null }) =>
@@ -344,6 +345,7 @@ describe('AppSignupService.sendCode', () => {
           sendAlreadyRegistered: () => Promise.resolve(),
           sendRecoveryCode: () => Promise.resolve(),
           sendNoAccount: () => Promise.resolve(),
+          sendIdentityCode: () => Promise.resolve(),
         },
         { exists: () => Promise.resolve(null) } as never,
         TEST_COST,
@@ -737,6 +739,7 @@ describe('AppSignupService.signup', () => {
           sendAlreadyRegistered: () => Promise.resolve(),
           sendRecoveryCode: () => Promise.resolve(),
           sendNoAccount: () => Promise.resolve(),
+          sendIdentityCode: () => Promise.resolve(),
         },
         {
           exists: () => Promise.resolve(null),
@@ -770,6 +773,7 @@ describe('비밀번호 해시 비용', () => {
         sendAlreadyRegistered: () => Promise.resolve(),
         sendRecoveryCode: () => Promise.resolve(),
         sendNoAccount: () => Promise.resolve(),
+        sendIdentityCode: () => Promise.resolve(),
       },
       {
         exists: () => Promise.resolve(null),

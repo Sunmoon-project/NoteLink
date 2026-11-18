@@ -103,6 +103,8 @@ beforeEach(() => {
     friendships as never,
     shares as never,
     rooms as never,
+    {} as never,
+    {} as never,
   );
 });
 

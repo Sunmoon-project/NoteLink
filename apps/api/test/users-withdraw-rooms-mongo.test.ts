@@ -66,6 +66,8 @@ describe.skipIf(!local)('회원 탈퇴 · 스터디룸 나가기 실제 MongoDB'
       nothing as never,
       nothing as never,
       membership,
+      nothing as never,
+      nothing as never,
     );
   });
   beforeEach(async () => {
