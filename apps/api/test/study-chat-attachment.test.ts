@@ -24,10 +24,22 @@ function setup(over: { stored?: Record<string, unknown>; signFails?: boolean } =
   const messages = { findOneAndUpdate: vi.fn().mockReturnValue(leanResult(stored)) };
   const users = { findById: vi.fn().mockReturnValue({ lean: async () => ({ nickname: '나' }) }) };
   const blobs = {
-    createReadAccess: vi.fn(async (_url: string, _ttl: number, verify?: { prefix: string }) => {
-      if (over.signFails && !verify) throw new Error('sign');
-      return verify ? { readUrl: 'x', sizeBytes: 2048 } : { readUrl: `${_url}?sig` };
-    }),
+    createReadAccess: vi.fn(
+      async (
+        _url: string,
+        _ttl: number,
+        verify?: { prefix: string },
+      ): Promise<{ readUrl: string; sizeBytes?: number; contentType?: string | null }> => {
+        if (over.signFails && !verify) throw new Error('sign');
+        return verify
+          ? {
+              readUrl: 'x',
+              sizeBytes: 2048,
+              contentType: _url.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg',
+            }
+          : { readUrl: `${_url}?sig` };
+      },
+    ),
   };
   const service = new StudyChatService(
     {} as never,
@@ -127,7 +139,11 @@ describe('스터디룸 채팅 사진 · 파일 메시지', () => {
     '실제로 올라간 %s이 상한(%d바이트)을 넘으면 저장하지 않는다',
     async (_, kind, max) => {
       const { service, messages, blobs } = setup();
-      blobs.createReadAccess.mockResolvedValueOnce({ readUrl: 'x', sizeBytes: max + 1 });
+      blobs.createReadAccess.mockResolvedValueOnce({
+        readUrl: 'x',
+        sizeBytes: max + 1,
+        contentType: 'image/jpeg',
+      });
       await expect(
         service.sendAttachment(String(chatId), String(me), { blobUrl, kind, name: 'big' }, 'c1'),
       ).rejects.toBeInstanceOf(BadRequestException);
@@ -142,7 +158,11 @@ describe('스터디룸 채팅 사진 · 파일 메시지', () => {
       ['file', 80 * 1024 * 1024],
     ] as const) {
       const { service, messages, blobs } = setup({ stored: { type: kind } });
-      blobs.createReadAccess.mockResolvedValueOnce({ readUrl: 'x', sizeBytes: size });
+      blobs.createReadAccess.mockResolvedValueOnce({
+        readUrl: 'x',
+        sizeBytes: size,
+        contentType: 'image/jpeg',
+      });
       await service.sendAttachment(
         String(chatId),
         String(me),
@@ -152,6 +172,28 @@ describe('스터디룸 채팅 사진 · 파일 메시지', () => {
       expect(messages.findOneAndUpdate).toHaveBeenCalled();
     }
   });
+
+  // Codex #519 리뷰: 올리기 주소와 다른 형식(text/html)으로 직접 올려도 첨부로 저장돼 브라우저에서 열렸다
+  it.each([['text/html'], [null]])(
+    '저장된 형식이 확장자와 다르면(%s) 저장하지 않는다',
+    async (type) => {
+      const { service, messages, blobs } = setup();
+      blobs.createReadAccess.mockResolvedValueOnce({
+        readUrl: 'x',
+        sizeBytes: 10,
+        contentType: type,
+      });
+      await expect(
+        service.sendAttachment(
+          String(chatId),
+          String(me),
+          { blobUrl, kind: 'image', name: 'a' },
+          'c1',
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(messages.findOneAndUpdate).not.toHaveBeenCalled();
+    },
+  );
 
   it('같은 clientId로 다른 파일을 보내면 400(이미 쓴 식별자)', async () => {
     const { service } = setup({
