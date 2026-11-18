@@ -332,6 +332,9 @@ export const mockApi: Api = {
       if (p) p.endedAt = now();
       return structuredClone(undefined);
     },
+    heartbeatSession: async () => {
+      await ok(undefined);
+    },
     endSession: async (id, p) => {
       await ok(undefined);
       const previous = endedSessions.get(id);

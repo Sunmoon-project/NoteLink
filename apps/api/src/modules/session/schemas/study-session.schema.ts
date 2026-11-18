@@ -67,6 +67,11 @@ export class StudySession {
 
     @Prop({ type: [SessionPauseSchema], default: [] })
     pauses: SessionPause[];
+
+    // 앱이 살아 있다고 마지막으로 알린 시각(서버 시계). 시작 · 일시정지 · 재개 · 하트비트 때 $max로 올린다.
+    // 앱이 꺼져 열린 채 남은 세션을 새 타이머가 닫을 때는 이 시각 + 2분까지만 인정한다. 이 칸이 생기기 전 세션은 없다(null)
+    @Prop({ type: Date, default: null })
+    lastSeenAt: Date | null;
 }
 
 export const StudySessionSchema = SchemaFactory.createForClass(StudySession);

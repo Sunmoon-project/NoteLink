@@ -4,7 +4,7 @@ import { Text } from '@/components/text';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { toast } from '@/stores/toast';
-import { Btn, Card, Chip, Input, Label, Loading, Sheet, Toggle } from '@/components/ui';
+import { Btn, Card, Chip, Input, Label, Loading, Sheet, Toggle, cx } from '@/components/ui';
 import { TrendingUp } from 'lucide-react-native';
 import { ICON, C } from '@/theme';
 import { hm, seoul, ymd } from '@/lib/dates';
@@ -262,15 +262,28 @@ export function WeekGoalSheet({ open, onClose }: { open: boolean; onClose: () =>
           </Chip>
         </View>
       </View>
+      {/* 직접 입력은 빠른 선택 칩과 붙지 않게 띄우고, 범위 안내는 입력 칸 바로 아래 작은 글씨로 둔다.
+          목표가 아직 없을 때(0시간)는 저장 버튼이 꺼져 있으니 따로 경고하지 않는다 */}
       {manual && (
-        <Input
-          placeholder="목표 시간"
-          value={inputH}
-          onChangeText={setInputH}
-          keyboardType="decimal-pad"
-        />
+        <>
+          <Input
+            className="mt-3"
+            placeholder="목표 시간(예: 14 또는 10.5)"
+            value={inputH}
+            onChangeText={setInputH}
+            keyboardType="decimal-pad"
+            invalid={!valid && !!inputH}
+          />
+          <Text
+            className={cx(
+              'mt-1.5 px-1 text-caption',
+              valid || !inputH ? 'text-sub' : 'text-danger',
+            )}
+          >
+            1~168시간 사이를 30분 단위로 입력해 주세요
+          </Text>
+        </>
       )}
-      {!valid && <Text>1~168시간을 30분 단위로 입력해주세요</Text>}
       <View className="mt-4 rounded-xl bg-sun/15 px-3 py-2.5">
         <View className="flex-row items-center gap-1.5">
           <TrendingUp size={ICON.xs} color={C.brand} />

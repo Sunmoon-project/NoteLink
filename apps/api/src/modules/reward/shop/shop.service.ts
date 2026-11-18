@@ -82,12 +82,17 @@ export class ShopService {
 
         const row = await this.ensureUserItem(new Types.ObjectId(userId), item);
         const next = !row.isWished;
-        // 읽은 값(row.isWished)이 그대로일 때만 바꾼다
-        // → 거의 동시에 두 번 눌러도 한 번만 뒤집힘
-        await this.userItemModel.updateOne(
+        // 읽은 값(row.isWished)이 그대로일 때만 뒤집는다(조건부 갱신).
+        // 같은 값을 읽은 두 요청이 겹치면 하나만 반영되고, 나머지는 조건이 맞지 않아 아래에서 DB의 실제 값을 다시 읽어 응답한다
+        const result = await this.userItemModel.updateOne(
             { _id: row._id, isWished: row.isWished },
             { $set: { isWished: next } },
         );
+        if (result.modifiedCount === 0) {
+            // 읽은 뒤 다른 요청이 먼저 바꿔 조건이 맞지 않았다: 뒤집지 못했으니 DB의 실제 값을 돌려준다
+            const current = await this.userItemModel.findOne({ _id: row._id }).lean<UserItemLean>();
+            return { isWished: current?.isWished ?? row.isWished };
+        }
         return { isWished: next };
     }
 

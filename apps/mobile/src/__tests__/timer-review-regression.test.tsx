@@ -127,11 +127,33 @@ it('직접 입력한 주간 목표를 실제 입력값으로 저장한다', asyn
   const save = jest.spyOn(api.study, 'setWeeklyGoal');
   await renderScreen(<WeekGoalSheet open onClose={jest.fn()} />, client());
   await fireEvent.press(await screen.findByText('직접 입력'));
-  await fireEvent.changeText(screen.getByPlaceholderText('목표 시간'), '32.5');
+  await fireEvent.changeText(screen.getByPlaceholderText('목표 시간(예: 14 또는 10.5)'), '32.5');
   await fireEvent.press(screen.getByText('저장하기'));
   await waitFor(() =>
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ targetMin: 1950 })),
   );
+});
+// 실기기 테스트: 목표가 없을 때(0시간) 범위 안내가 칩 바로 아래 큰 글씨로 붙어 보였고, 직접 입력 칸이 칩에 붙었다
+it('범위 안내는 직접 입력 칸 아래 작은 글씨로만 보이고, 칸은 칩과 띄운다', async () => {
+  const goal = await api.study.weeklyGoal();
+  jest.spyOn(api.study, 'weeklyGoal').mockResolvedValue({ ...goal, targetMin: 0 });
+  await renderScreen(<WeekGoalSheet open onClose={jest.fn()} />, client());
+  await screen.findByText('0시간');
+  // 목표가 없을 때는 저장 버튼만 꺼 두고 안내를 띄우지 않는다
+  expect(screen.queryByText(/1~168시간/)).toBeNull();
+  expect(screen.getByText('저장하기')).toBeTruthy();
+  await fireEvent.press(screen.getByText('직접 입력'));
+  const input = screen.getByPlaceholderText('목표 시간(예: 14 또는 10.5)');
+  expect(
+    String(input.props.className ?? '') + JSON.stringify(input.parent?.props.className ?? ''),
+  ).toMatch(/mt-3/);
+  const hint = screen.getByText('1~168시간 사이를 30분 단위로 입력해 주세요');
+  expect(String(hint.props.className)).toMatch(/text-caption/);
+  // 범위를 벗어나면 같은 안내를 빨간 글씨로
+  await fireEvent.changeText(input, '200');
+  expect(
+    String(screen.getByText('1~168시간 사이를 30분 단위로 입력해 주세요').props.className),
+  ).toMatch(/text-danger/);
 });
 it('주간 목표를 정하지 않은 새 계정은 NaN% 없이 이번주 시간만 보여 준다', async () => {
   const goal = await api.study.weeklyGoal();
