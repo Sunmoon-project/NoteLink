@@ -13,6 +13,7 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
+  Pressable as RNPressable,
   RefreshControl,
   ScrollView,
   Switch,
@@ -594,7 +595,9 @@ export function SwipeAction({
       rightThreshold={40}
       overshootRight={false}
       renderRightActions={() => (
-        <Pressable
+        // 기본 Pressable: 눌림 Pressable은 폭을 바깥 상자에, 배경을 안쪽에 나눠 빨간 칸이 줄 높이를 못 채웠다
+        // (글자 높이만큼만 칠해져 반쯤 잘려 보임). 한 칸이면 줄 높이로 늘어난다
+        <RNPressable
           accessibilityRole="button"
           accessibilityLabel={`${name} ${label}`}
           onPress={() => {
@@ -605,7 +608,7 @@ export function SwipeAction({
         >
           <Trash2 size={ICON.sm} color="#fff" />
           <Text className="text-caption font-semibold text-white">{label}</Text>
-        </Pressable>
+        </RNPressable>
       )}
     >
       {children}
