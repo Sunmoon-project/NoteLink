@@ -208,7 +208,17 @@ export const Recording = z.object({
   durationSec: z.number(),
   transcript: z.object({
     text: z.string(),
-    segments: z.array(z.object({ startSec: z.number(), endSec: z.number(), text: z.string() })),
+    segments: z.array(
+      z.object({
+        startSec: z.number(),
+        endSec: z.number(),
+        text: z.string(),
+        // 단어별 시각(STT). 옛 결과 · 로컬 모드에는 없다 → 앱은 글자 비례로 대신한다
+        words: z
+          .array(z.object({ text: z.string(), startSec: z.number(), endSec: z.number() }))
+          .optional(),
+      }),
+    ),
   }),
   slides: z.array(Slide),
   visemeUrl: z.string().nullable(), // Rhubarb 입 모양 9종(A–H, X) 타임라인 (p.35)
