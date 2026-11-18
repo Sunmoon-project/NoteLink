@@ -13,14 +13,15 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
-  Pressable,
   RefreshControl,
   ScrollView,
   Switch,
   View,
   type ScrollViewProps,
   type TextInputProps,
+  Pressable as RNPressable,
 } from 'react-native';
+import { Pressable } from './press';
 import { Text, TextInput } from './text';
 import Animated, {
   Easing,
@@ -107,13 +108,13 @@ export function Tap({
   onPressOut,
   style,
   ...props
-}: ComponentProps<typeof Pressable> & { scaleTo?: number; className?: string }) {
+}: ComponentProps<typeof RNPressable> & { scaleTo?: number; className?: string }) {
   const scale = useSharedValue(1);
   const anim = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
   const [outer, inner] = splitClass(className);
   return (
     <Animated.View className={outer} style={anim}>
-      <Pressable
+      <RNPressable
         {...props}
         className={inner}
         style={(state) => [
@@ -612,6 +613,8 @@ export function Row({
     <Pressable
       accessibilityRole="button"
       onPress={onPress}
+      // 꽉 찬 목록 행은 줄이지 않고 바탕만 어둡게(iOS 목록처럼)
+      scaleTo={1}
       className={cx(cls, 'active:bg-black/5')}
     >
       {inner}

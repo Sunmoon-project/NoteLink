@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Image as RNImage, Pressable, ScrollView, View } from 'react-native';
+import { Image as RNImage, ScrollView, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { useQuery } from '@tanstack/react-query';
 import type { Material } from '@notelink/shared';
 import { Text } from '@/components/text';

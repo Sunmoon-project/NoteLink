@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Image, Pressable, ScrollView, View } from 'react-native';
+import { Image, ScrollView, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import Animated, { FadeIn, FadeInUp, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';

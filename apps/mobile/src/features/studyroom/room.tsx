@@ -8,7 +8,8 @@ import {
 } from '@/lib/chat-outbox';
 import { loadCompleteChatHistory } from '@/lib/chat-history';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Keyboard, Platform, Pressable, View, type KeyboardEvent } from 'react-native';
+import { FlatList, Keyboard, Platform, View, type KeyboardEvent } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';

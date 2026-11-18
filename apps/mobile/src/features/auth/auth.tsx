@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, View, type TextInput as RNTextInput } from 'react-native';
+import { ActivityIndicator, View, type TextInput as RNTextInput } from 'react-native';
+import { Pressable } from '@/components/press';
 import { create } from 'zustand';
 import { Text, TextInput } from '@/components/text';
 import Animated, { FadeIn } from 'react-native-reanimated';

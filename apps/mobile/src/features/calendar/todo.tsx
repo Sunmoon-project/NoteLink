@@ -1,6 +1,7 @@
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useState } from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarDays, Check } from 'lucide-react-native';
@@ -88,9 +89,7 @@ export function TodoSheet({
                 <Text className={cx('text-subhead', t.done ? 'text-sub line-through' : 'text-ink')}>
                   {t.content}
                 </Text>
-                <Text className="text-caption2 text-sub">
-                  {todoMeta(t)}
-                </Text>
+                <Text className="text-caption2 text-sub">{todoMeta(t)}</Text>
               </View>
             </Pressable>
           </Animated.View>

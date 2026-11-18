@@ -1,6 +1,7 @@
 import { useTour, useTourTarget } from '@/features/tutor/tour';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, View } from 'react-native';
+import { ActivityIndicator, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import Animated, { FadeIn, FadeInDown, FadeOut } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';

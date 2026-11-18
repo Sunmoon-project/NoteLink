@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, TextInput, View } from 'react-native';
+import { TextInput, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import Animated, {
   FadeIn,

@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
-import { Image, Linking, Pressable, View } from 'react-native';
+import { Image, Linking, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import Animated, {
   Easing,
@@ -403,7 +404,8 @@ export function PickedScreen() {
               uri = cached?.url ?? (await uploadToBlob('image', f, undefined, signal));
             } catch (error) {
               if (signal.aborted) throw error;
-              if (error instanceof NetworkError) throw new Error('사진 업로드 서버에 연결하지 못했어요.');
+              if (error instanceof NetworkError)
+                throw new Error('사진 업로드 서버에 연결하지 못했어요.');
               if (error instanceof ApiError)
                 throw new Error(`사진 업로드 준비에 실패했어요 (HTTP ${error.status}).`);
               if (error instanceof UploadError) throw error;
@@ -437,7 +439,8 @@ export function PickedScreen() {
                 uploads: state.uploads.filter((upload) => !failed.has(upload.file)),
               }));
             }
-            if (error instanceof NetworkError) throw new Error('사진 검사 서버에 연결하지 못했어요.');
+            if (error instanceof NetworkError)
+              throw new Error('사진 검사 서버에 연결하지 못했어요.');
             if (error instanceof ApiError)
               throw new Error(`사진 검사 요청에 실패했어요 (HTTP ${error.status}).`);
             throw new Error('사진 검사 요청에 실패했어요.');

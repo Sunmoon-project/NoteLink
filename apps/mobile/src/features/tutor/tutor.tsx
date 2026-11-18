@@ -1,13 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  AccessibilityInfo,
-  FlatList,
-  Keyboard,
-  Platform,
-  Pressable,
-  TextInput,
-  View,
-} from 'react-native';
+import { AccessibilityInfo, FlatList, Keyboard, Platform, TextInput, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import Animated, {
   Extrapolation,
   FadeIn,

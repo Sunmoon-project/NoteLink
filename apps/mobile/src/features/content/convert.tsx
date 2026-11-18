@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { AppState, Pressable, View } from 'react-native';
+import { AppState, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
