@@ -55,6 +55,16 @@ it('제목을 비운 섹션은 서버 규칙(제목 1자 이상)에 맞게 「�
     { heading: '정리', body: '본문' },
     { heading: '내용 2', body: '제목 없는 메모' },
   ]);
+  // 이미 「내용 2」라는 제목이 있으면 다음 번호를 쓴다
+  expect(
+    summaryForSave([
+      { heading: '내용 2', body: '직접 쓴 제목' },
+      { heading: '', body: '제목 없음' },
+    ]),
+  ).toEqual([
+    { heading: '내용 2', body: '직접 쓴 제목' },
+    { heading: '내용 3', body: '제목 없음' },
+  ]);
 });
 
 const material = {

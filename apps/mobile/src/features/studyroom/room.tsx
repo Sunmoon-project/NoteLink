@@ -85,11 +85,10 @@ const ACK_TIMEOUT_MS = 8000;
 
 // 채팅 열기 · 캠 보기 전환. 바뀌는 쪽만 짧게(들어오기 MOTION.enter · 나가기 MOTION.exit) 투명도 · 세로 이동으로 움직인다.
 // 레이아웃 애니메이션은 UI 스레드에서 돌고, 기기의 「동작 줄이기」가 켜져 있으면 움직이지 않는다(ReduceMotion.System 기본값)
-const CHAT_FADE_IN = FadeIn.duration(MOTION.enter);
-const CHAT_FADE_OUT = FadeOut.duration(MOTION.exit);
-const CHAT_IN = FadeInDown.duration(MOTION.enter);
-const CAM_IN = FadeInDown.duration(MOTION.enter);
-const CAM_OUT = FadeOutDown.duration(MOTION.exit);
+const SWAP_IN = FadeIn.duration(MOTION.enter);
+const SWAP_OUT = FadeOut.duration(MOTION.exit);
+const RISE_IN = FadeInDown.duration(MOTION.enter);
+const SINK_OUT = FadeOutDown.duration(MOTION.exit);
 
 export function RoomListScreen() {
   const mine = useQuery({ queryKey: ['rooms', 'mine'], queryFn: api.rooms.mine });
@@ -972,7 +971,9 @@ export function RoomScreen() {
   const last = msgs[msgs.length - 1];
   // 서버 멤버 목록은 참여 기록이라 뒤로 가서 나간 사람도 남는다. 미디어에 연결돼 있으면 지금 접속한 사람(+나)만 보인다
   const here = live.connected
-    ? members.filter((m) => m.userId === myId || live.participantState(m.userId).present !== false)
+    ? members.filter(
+        (m) => m.userId === myId || live.participantState?.(m.userId)?.present !== false,
+      )
     : members;
   const tiles = chat ? here.slice(0, 2) : here;
   const remain = timer ? Math.max(0, Math.floor((timer.endsAt - now) / 1000)) : 0;
@@ -987,7 +988,7 @@ export function RoomScreen() {
           style={{ paddingBottom: keyboardInset }}
         >
           {/* 캠 · 음성이 끊겨도 같은 노란 띠로 알린다(미디어는 알아서 다시 붙는다 — useLiveRoom 재시도) */}
-          {(conn === 'lost' || (!!live.error && conn !== 'kicked')) && (
+          {(conn === 'lost' || (!!live.reconnecting && conn !== 'kicked')) && (
             <View className="bg-sun/25 px-5 py-2">
               <Text className="text-caption font-semibold text-ink">
                 ● 연결이 끊겼어요 · 다시 연결 중…
@@ -1021,8 +1022,8 @@ export function RoomScreen() {
             </View>
             {!chat && (
               <Animated.View
-                entering={CHAT_FADE_IN}
-                exiting={CHAT_FADE_OUT}
+                entering={SWAP_IN}
+                exiting={SWAP_OUT}
                 className="flex-row items-center justify-between"
               >
                 <Text className="text-title3 font-bold text-ink">{room.data.title}</Text>
@@ -1049,8 +1050,8 @@ export function RoomScreen() {
                 <Animated.View
                   key={m.userId}
                   layout={LIST_LAYOUT}
-                  entering={CHAT_FADE_IN}
-                  exiting={CHAT_FADE_OUT}
+                  entering={SWAP_IN}
+                  exiting={SWAP_OUT}
                   className={cx(
                     'w-[48.5%] items-center justify-center rounded-2xl',
                     'h-[118px] border-2',
@@ -1122,8 +1123,8 @@ export function RoomScreen() {
             // 채팅은 아래에서 올라오고, 캠 조작은 아래로 내려가며 사라진다(동작 줄이기 설정이면 바로 바뀐다)
             <Animated.View
               testID="room-chat"
-              entering={CHAT_IN}
-              exiting={CHAT_FADE_OUT}
+              entering={RISE_IN}
+              exiting={SWAP_OUT}
               className="mt-2 flex-1"
             >
               <FlatList
@@ -1177,7 +1178,7 @@ export function RoomScreen() {
               />
             </Animated.View>
           ) : (
-            <Animated.View entering={CAM_IN} exiting={CAM_OUT} className="mt-auto px-5 pb-2">
+            <Animated.View entering={RISE_IN} exiting={SINK_OUT} className="mt-auto px-5 pb-2">
               <View className="flex-row gap-3">
                 <Ctl
                   on={live.micOn}
@@ -1351,8 +1352,8 @@ export function RoomScreen() {
           </View>
           {chat && (
             <Animated.View
-              entering={CHAT_FADE_IN}
-              exiting={CHAT_FADE_OUT}
+              entering={SWAP_IN}
+              exiting={SWAP_OUT}
               className="absolute top-2 right-14"
             >
               <Pressable

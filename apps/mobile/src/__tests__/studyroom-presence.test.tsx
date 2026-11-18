@@ -107,11 +107,13 @@ it('말하는 사람 타일에 「말하는 중」 표시가 붙는다', async (
 });
 
 it('캠 · 음성 연결이 끊기면 「미디어 다시 연결」 대신 노란 「다시 연결 중」 띠를 보인다', async () => {
-  jest
-    .mocked(useLiveRoom)
-    .mockReturnValue(
-      live({ connected: false, error: '캠·음성 연결이 종료됐어요. 다시 연결해 주세요' }),
-    );
+  jest.mocked(useLiveRoom).mockReturnValue(
+    live({
+      connected: false,
+      reconnecting: true,
+      error: '캠·음성 연결이 종료됐어요. 다시 연결해 주세요',
+    }),
+  );
   await renderScreen(<RoomScreen />, client());
   expect(await screen.findByText('● 연결이 끊겼어요 · 다시 연결 중…')).toBeTruthy();
   expect(screen.queryByText('미디어 다시 연결')).toBeNull();
@@ -128,4 +130,16 @@ it('미디어가 연결되지 않은 동안(기기 저장 모드 등)은 방 멤
   await renderScreen(<RoomScreen />, client());
   expect(await screen.findByText('나간이')).toBeTruthy();
   expect(screen.getByText('3명 접속중')).toBeTruthy();
+});
+
+// 강퇴 · 인증 만료처럼 다시 시도하지 않는 실패에는 「다시 연결 중」이라고 하지 않는다(code-review)
+it('다시 시도하지 않는 미디어 실패에는 「다시 연결 중」 띠를 띄우지 않는다', async () => {
+  jest
+    .mocked(useLiveRoom)
+    .mockReturnValue(
+      live({ connected: false, reconnecting: false, error: '캠·음성을 연결하지 못했어요' }),
+    );
+  await renderScreen(<RoomScreen />, client());
+  expect(await screen.findByText('알고리즘 스터디')).toBeTruthy();
+  expect(screen.queryByText('● 연결이 끊겼어요 · 다시 연결 중…')).toBeNull();
 });

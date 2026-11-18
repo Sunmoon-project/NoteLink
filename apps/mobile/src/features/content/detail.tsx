@@ -332,10 +332,18 @@ export function applyFormat(
  * 서버는 제목 1자 이상만 받아(UpdateMaterialDto) 제목을 비운 채 저장하면 400으로 거절해 고친 글이 저장되지 않았다.
  * 「내용 N」은 서버가 자동 요약에서 제목 없는 조각에 붙이는 이름과 같다(material-sync)
  */
-export const summaryForSave = (sections: { heading: string; body: string }[]) =>
-  sections
-    .filter((s) => s.heading.trim() || s.body.trim())
-    .map((s, i) => (s.heading.trim() ? s : { ...s, heading: `내용 ${i + 1}` }));
+export function summaryForSave(sections: { heading: string; body: string }[]) {
+  const kept = sections.filter((s) => s.heading.trim() || s.body.trim());
+  // 사용자가 직접 「내용 2」라고 쓴 제목과 겹치지 않게 다음 번호로 넘긴다(서버 uniqueHeading과 같은 뜻)
+  const used = new Set(kept.map((s) => s.heading.trim()).filter(Boolean));
+  return kept.map((s, i) => {
+    if (s.heading.trim()) return s;
+    let n = i + 1;
+    while (used.has(`내용 ${n}`)) n++;
+    used.add(`내용 ${n}`);
+    return { ...s, heading: `내용 ${n}` };
+  });
+}
 
 const TOOLS = [
   [Bold, '굵게', 'bold'],
