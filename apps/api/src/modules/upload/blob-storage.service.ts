@@ -63,6 +63,8 @@ export const TYPE_BY_EXT: Record<string, string> = {
   pdf: 'application/pdf',
   mp3: 'audio/mpeg',
   m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  mp4: 'audio/mp4',
   wav: 'audio/wav',
 };
 /** 앱이 올린 파일 이름: uuid(v4).확장자 */

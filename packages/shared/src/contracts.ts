@@ -64,8 +64,9 @@ export const UPLOAD_RULES = {
     maxBytes: 50 * 1024 * 1024,
   },
   audio: {
-    types: ['audio/mpeg', 'audio/mp4', 'audio/x-m4a', 'audio/wav'],
-    exts: ['mp3', 'm4a', 'wav'],
+    types: ['audio/mpeg', 'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/x-aac', 'audio/wav'],
+    // aac · mp4: 기기 녹음 앱이 이 확장자로 저장하는 경우가 있다(#508). 형식 변환 없이 Azure Speech에 넘긴다
+    exts: ['mp3', 'm4a', 'aac', 'mp4', 'wav'],
     maxBytes: 500 * 1024 * 1024,
   },
 } as const;

@@ -25,4 +25,8 @@ describe('checkFile', () => {
     expect(checkFile('audio', { uri: 'a', name: 'lecture.m4a', size: 1024 }).ok).toBe(true);
     expect(checkFile('audio', { uri: 'a', name: 'lecture.exe', size: 1024 }).ok).toBe(false);
   });
+
+  it.each(['녹음본.aac', 'lecture.m4a.mp4', 'REC.AAC'])('녹음 %s 도 허용한다 (#508)', (name) => {
+    expect(checkFile('audio', { uri: 'a', name, size: 1024 }).ok).toBe(true);
+  });
 });
