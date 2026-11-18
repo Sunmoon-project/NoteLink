@@ -4,7 +4,6 @@ import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import Animated, {
   FadeIn,
-  FadeInDown,
   FadeOut,
   ReduceMotion,
   useAnimatedStyle,
@@ -66,6 +65,8 @@ import {
   cx,
   BACKDROP_IN,
   BACKDROP_OUT,
+  FADE_IN,
+  popInFrom,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
@@ -346,8 +347,8 @@ export function QuizNotesScreen() {
                 ],
                 ['퀴즈 만들기', PenLine, make],
               ] as const
-            ).map(([l, Ic, fn], i) => (
-              <Animated.View key={l} entering={FadeInDown.duration(180).delay(i * 30)}>
+            ).map(([l, Ic, fn], i, all) => (
+              <Animated.View key={l} entering={popInFrom(all.length - 1 - i)}>
                 <Pressable
                   onPress={() => {
                     setMenu(false);
@@ -577,7 +578,7 @@ export function QuizReadyScreen() {
       >
         <View className="items-center pt-40">
           <Animated.View
-            entering={FadeIn}
+            entering={FADE_IN}
             className="h-20 w-20 items-center justify-center rounded-full bg-mint"
           >
             <CircleCheck size={ICON.xl} color={C.brand} />
@@ -904,7 +905,7 @@ export function QuizSolveScreen() {
           <Tutor size={pick === null ? 76 : 70} />
         </View>
         {pick === null || right === null ? (
-          <Animated.View entering={FadeIn}>
+          <Animated.View entering={FADE_IN}>
             <Text className="mt-7 text-callout leading-6 font-bold text-ink">{q.prompt}</Text>
             <View className="mt-6 gap-3.5">
               {(!q.choices || q.choices.length === 0) && (
@@ -941,7 +942,7 @@ export function QuizSolveScreen() {
             </View>
           </Animated.View>
         ) : (
-          <Animated.View entering={FadeIn}>
+          <Animated.View entering={FADE_IN}>
             {/* 정답은 채워지며 체크, 오답은 좌우로 살짝 흔들림 (240ms · 4px × 2) */}
             <Shake on={!right}>
               <View
@@ -977,7 +978,7 @@ export function QuizSolveScreen() {
                   key={n}
                   className={cx(
                     'h-3 w-3 rounded-full',
-                    n < results.length ? (results[n] ? 'bg-correct' : 'bg-danger') : 'bg-cream-2',
+                    n < results.length ? (results[n] ? 'bg-correct' : 'bg-danger') : 'bg-fill',
                   )}
                 />
               ))}
@@ -1144,7 +1145,7 @@ export function QuizReviewScreen() {
         >
           <Tutor size={96} />
           <Text className="mt-4 text-headline font-bold text-white">퀴즈 풀기 성공!</Text>
-          <Animated.View entering={FadeIn} className="mt-3 rounded-2xl bg-white px-10 py-3">
+          <Animated.View entering={FADE_IN} className="mt-3 rounded-2xl bg-white px-10 py-3">
             <RollUp
               value={`+${points}P`}
               from="+0P"
@@ -1413,7 +1414,7 @@ export function QuizSimilarScreen() {
                 </Text>
               )}
               {open.includes(q._id) && (
-                <Animated.View entering={FadeIn} className="mt-2 rounded-xl bg-sun/25 px-3 py-2">
+                <Animated.View entering={FADE_IN} className="mt-2 rounded-xl bg-sun/25 px-3 py-2">
                   <Text className="text-caption font-semibold text-ink">문제 {i + 1} 정답</Text>
                   <Text className="text-caption text-ink">{q.answer}</Text>
                 </Animated.View>
@@ -1499,7 +1500,7 @@ export function FlashScreen() {
             >
               <Animated.Text
                 key={`${i}-${back}`}
-                entering={FadeIn}
+                entering={FADE_IN}
                 className="text-center text-title3 leading-8 font-bold text-ink"
               >
                 {back ? c.back : c.front}
@@ -1724,7 +1725,7 @@ export function QuizBoxScreen() {
                   <Text className="flex-1 text-subhead leading-6 text-ink">{q.prompt}</Text>
                 </View>
                 {shown.includes(q._id) && (
-                  <Animated.View entering={FadeIn} className="mt-2 rounded-lg bg-mint px-3 py-2">
+                  <Animated.View entering={FADE_IN} className="mt-2 rounded-lg bg-mint px-3 py-2">
                     <Text className="text-footnote font-semibold text-brand">
                       정답 · {q.answer}
                     </Text>

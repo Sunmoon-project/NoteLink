@@ -3,7 +3,7 @@ import { ActivityIndicator, View, type TextInput as RNTextInput } from 'react-na
 import { Pressable } from '@/components/press';
 import { create } from 'zustand';
 import { Text, TextInput } from '@/components/text';
-import Animated, { FadeIn } from 'react-native-reanimated';
+import Animated from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, Check, Sparkles } from 'lucide-react-native';
@@ -23,7 +23,19 @@ import {
 import { useQuizProgress } from '@/stores/quiz-progress';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
-import { Btn, Canvas, Chip, Header, Input, Label, Screen, Tap, Title, cx } from '@/components/ui';
+import {
+  Btn,
+  Canvas,
+  Chip,
+  FADE_IN,
+  Header,
+  Input,
+  Label,
+  Screen,
+  Tap,
+  Title,
+  cx,
+} from '@/components/ui';
 import { GoogleLogo, KakaoLogo, NaverLogo } from '@/components/brand-logos';
 import { C, ICON } from '@/theme';
 
@@ -49,7 +61,7 @@ export function OnboardingScreen() {
         }
       >
         <View className="items-center pt-28">
-          <Animated.View key={i} entering={FadeIn} className="items-center">
+          <Animated.View key={i} entering={FADE_IN} className="items-center">
             <View className="h-40 w-40 items-center justify-center rounded-full bg-white">
               <Sparkles size={56} color={C.brand} />
             </View>

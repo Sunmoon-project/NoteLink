@@ -121,13 +121,13 @@ export function useResume(
 function LipSyncAvatar({ playing }: { playing: boolean }) {
   const open = useSharedValue(0.4);
   useEffect(() => {
-    if (playing) open.value = withRepeat(withTiming(1.6, { duration: 280 }), -1, true);
+    if (playing) open.set(withRepeat(withTiming(1.6, { duration: 280 }), -1, true));
     else {
       cancelAnimation(open);
-      open.value = withTiming(0.4);
+      open.set(withTiming(0.4));
     }
   }, [playing]); // eslint-disable-line react-hooks/exhaustive-deps
-  const mouth = useAnimatedStyle(() => ({ transform: [{ scaleY: open.value }] }));
+  const mouth = useAnimatedStyle(() => ({ transform: [{ scaleY: open.get() }] }));
   return (
     <View
       accessibilityLabel="아바타"
