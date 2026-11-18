@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import re
 import threading
@@ -1460,4 +1461,80 @@ def test_a_round_stops_waiting_for_drafts_at_its_time_limit(
     finally:
         release.set()
     assert time.monotonic() - started < 5
+    join_threads("quiz-draft")
+
+
+def test_a_stuck_check_call_ends_at_the_total_time_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 검사 호출도 전체 상한 안에서만 기다림(Codex 재리뷰 #513): 첫 판이면 장애로 다시 시도
+    monkeypatch.setattr(generate, "TOTAL_SEC", 0.3)
+    release = threading.Event()
+    llm = happy([GOOD["이질 아메바"]])
+    llm.answers[generate.CHECK_NAME] = lambda u: (release.wait(10), {"results": []})[1]
+    started = time.monotonic()
+    try:
+        with pytest.raises(LlmError, match=generate.TIMEOUT):
+            run(llm, page1_job(size=1))
+    finally:
+        release.set()
+    assert time.monotonic() - started < 5
+    assert len(llm.named(generate.CHECK_NAME)) == 1  # 끊은 묶음은 다시 보내지 않음
+    join_threads("quiz-check")
+
+
+def test_rejected_and_failed_check_batches_together_are_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 모든 묶음이 실패해도 일시 장애가 섞이면 거절(다시 시도 없음)로 보지 않음(Codex 재리뷰 #513)
+    monkeypatch.setattr(generate, "CHECK_BATCH", 1)
+    llm = happy([GOOD["이질 아메바"], GOOD["람블편모충"]])
+    first = GOOD["이질 아메바"]["question"]["passage"]
+    llm.answers[generate.CHECK_NAME] = lambda u: (
+        LlmRejectedError("HTTP 413") if first in u else LlmError("응답 없음")
+    )
+    with pytest.raises(LlmError) as e:
+        run(llm, job(size=2))
+    assert not isinstance(e.value, LlmRejectedError)
+
+
+def test_every_check_batch_rejected_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(generate, "CHECK_BATCH", 1)
+    llm = happy([GOOD["이질 아메바"], GOOD["람블편모충"]])
+    llm.answers[generate.CHECK_NAME] = refused
+    with pytest.raises(LlmRejectedError):
+        run(llm, job(size=2))
+    assert len(llm.named(generate.CHECK_NAME)) == 2  # 묶음마다 한 번, 다시 보내지 않음
+
+
+def test_draft_calls_left_from_the_first_round_count_toward_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 판마다 새 풀을 쓰면 지난 판에 남은 호출과 새 판 호출이 겹쳐 WORKERS를 넘음(Codex 재리뷰 #513)
+    monkeypatch.setattr(generate, "WORKERS", 2)
+    monkeypatch.setattr(generate, "ROUND_SEC", 0.3)
+    release = threading.Event()
+    lock = threading.Lock()
+    calls = [0]
+    running = [0]
+    most = [0]
+
+    def quiz(user: str) -> JsonObject:
+        with lock:
+            calls[0] += 1
+            k = calls[0]
+            running[0] += 1
+            most[0] = max(most[0], running[0])
+        try:
+            if k == 2:  # 첫 판의 한 자리는 판 상한을 넘겨도 응답을 기다림
+                release.wait(10)
+            return BAD if k == 1 else by_page(user)
+        finally:
+            with lock:
+                running[0] -= 1
+
+    try:
+        with contextlib.suppress(generate.NoQuestionsError):
+            run(parallel_llm(quiz), job(size=2))
+    finally:
+        release.set()
+    assert calls[0] >= 3 and most[0] <= 2
     join_threads("quiz-draft")

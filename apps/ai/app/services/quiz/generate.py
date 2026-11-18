@@ -100,7 +100,7 @@ import threading
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, FIRST_EXCEPTION, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Any, Literal
@@ -173,6 +173,9 @@ CHECK_NAME = "CheckAll"  # 묶은 검사 호출 이름
 # 한 판의 초안을 기다리는 상한(초). 미리 만들기는 사용자 작업에 차례를 양보하므로 Mode.patience배
 ROUND_SEC = 150
 SPARE_WAIT_SEC = 20  # 필요한 초안이 다 나온 뒤 남은 여분 초안을 기다리는 상한(초)
+# 만들기 · 검사를 합친 작업 전체 상한(초, 미리 만들기는 Mode.patience배). 사용자가 기다리는 상한
+# 5분(#247)과 같음. 넘으면 남은 호출은 보내지 않고 검사 못 한 초안은 쓰지 않음(Codex 재리뷰 #513)
+TOTAL_SEC = 300
 TIMEOUT = "시간 상한"
 _clock = time.monotonic  # 시험에서 바꿔 끼움
 CHECK_BATCH = 10  # 묶은 검사 한 호출의 문제 수
@@ -793,7 +796,9 @@ CHECK_SYS = (
 Verdict = Literal["pass", "unsure", "wrong", "bad"]
 
 
-def check_all(llm: Llm, made: list[Made], pages: dict[int, str]) -> list[tuple[Verdict, str]]:
+def check_all(
+    llm: Llm, made: list[Made], pages: dict[int, str], end: float = math.inf
+) -> list[tuple[Verdict, str]]:
     """초안들을 검사 모델이 한 호출로 풂(#512). 초안마다 (판정, 고른 답 또는 이유).
 
     pass    정답을 골랐고 정답이 하나뿐 · 노트로 정해짐
@@ -805,8 +810,10 @@ def check_all(llm: Llm, made: list[Made], pages: dict[int, str]) -> list[tuple[V
     초안이 많거나 쪽 글이 길면 CHECK_BATCH문제 · 쪽 글 CHECK_CHARS자씩 나눠 묻습니다(30문제 · 21쪽
     노트를 한 호출에 넣으면 학교 LLM 문맥을 넘음, /code-review #512).
     호출이 실패하거나 답 전체의 모양이 틀리면 한 번 더 보냄. 다시 실패한 묶음은 모두 bad(다른
-    묶음의 결과는 그대로, Codex 리뷰 #513). 모든 묶음의 호출이 실패하면 첫 LlmError를 올림(거절은
-    다시 보내지 않음).
+    묶음의 결과는 그대로, Codex 리뷰 #513). 모든 묶음의 호출이 실패하면 LlmError를 올림: 모두
+    서버가 거절했을 때만 LlmRejectedError(다시 시도 없음), 일시 장애가 섞이면 다시 시도되는
+    오류(Codex 재리뷰 #513). 거절은 다시 보내지 않음.
+    end(_clock 값)를 넘기면 그 묶음은 기다리지 않고 시간 상한 장애로 셈(남은 호출은 보내지 않음).
     """
     groups: list[list[Made]] = []
     for m in made:
@@ -818,14 +825,29 @@ def check_all(llm: Llm, made: list[Made], pages: dict[int, str]) -> list[tuple[V
             group.append(m)
     out: list[tuple[Verdict, str]] = []
     errors: list[LlmError] = []
-    for group in groups:
-        try:
-            out += _check_group(llm, group, pages)
-        except LlmError as e:
-            errors.append(e)
-            out += [("bad", f"{UNCHECKED}({e})")] * len(group)
+    stop = threading.Event()
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quiz-check")
+    try:
+        for group in groups:
+            try:
+                left = end - _clock()
+                if left <= 0:
+                    raise LlmError(TIMEOUT)
+                f = pool.submit(_check_group, _until(llm, stop), group, pages)
+                done, _ = wait([f], timeout=left)
+                if not done:
+                    stop.set()  # 끊은 묶음은 다시 보내지 않음
+                    raise LlmError(TIMEOUT)
+                out += f.result()
+            except LlmError as e:
+                errors.append(e)
+                out += [("bad", f"{UNCHECKED}({e})")] * len(group)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     if groups and len(errors) == len(groups):
-        raise errors[0]
+        if all(isinstance(e, LlmRejectedError) for e in errors):
+            raise errors[0]
+        raise next(e for e in errors if not isinstance(e, LlmRejectedError))
     return out
 
 
@@ -905,11 +927,14 @@ def _draft_all(
     used: list[str],
     base: int,
     need: int,
-    limit: float,
+    end: float,
+    pool: ThreadPoolExecutor,
 ) -> list[Made]:
-    """자리마다 초안 1개를 동시에(WORKERS개씩).
+    """자리마다 초안 1개를 동시에(pool의 WORKERS개씩).
 
-    시간 상한(Codex 리뷰 #513): 판 전체는 limit초, 초안 need개(여분을 뺀 자리 수)가 나온 뒤에는
+    pool은 판끼리 함께 씀: 지난 판에 남아 응답을 기다리는 호출도 WORKERS 안에 들어, 동시 생성
+    호출이 판 수만큼 늘지 않게(Codex 재리뷰 #513, #247과 같음).
+    시간 상한(Codex 리뷰 #513): 판은 end(_clock 값)까지, 초안 need개(여분 뺀 자리 수)가 나온 뒤에는
     SPARE_WAIT_SEC초까지만 더 기다림. 학교 LLM은 호출 하나가 180초 · 다시 보내기 2번까지 걸려,
     여분 초안 하나가 멈춰도 나머지 검사가 몇 분 밀렸음. 끝나지 않은 자리는 TIMEOUT(응답 없음으로
     셈)이고, 그 자리의 남은 호출은 멈춤 신호로 보내지 않음(_until).
@@ -920,10 +945,9 @@ def _draft_all(
         return []
     stop = threading.Event()
     until = _until(llm, stop)
-    pool = ThreadPoolExecutor(max_workers=min(WORKERS, len(slots)), thread_name_prefix="quiz-draft")
-    end = _clock() + limit
+    futures: list[Future[Made]] = []
     try:
-        futures = [
+        futures += [
             pool.submit(draft_one, until, s, pages[s.page], list(used), base + i)
             for i, s in enumerate(slots)
         ]
@@ -943,13 +967,12 @@ def _draft_all(
             else:
                 why = str(f.exception()) if f.done() else TIMEOUT
                 out.append(Made(s.page, s.level, s.type, why=[why], down=True))
-        stop.set()  # 시간 상한에 끊긴 자리는 다음 호출을 보내지 않음
         return out
-    except BaseException:
-        stop.set()
-        raise
     finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+        # 끊긴 자리는 다음 호출을 보내지 않고, 시작하지 않은 자리는 취소
+        stop.set()
+        for f in futures:
+            f.cancel()
 
 
 # ---------------------------------------------------------------- run
@@ -1222,83 +1245,92 @@ def _make_all(
     want = [(p, lv_, "") for p, lv_ in zip(first, levels_for(len(first), target), strict=True)]
     want += [(p, lv_, "") for p, lv_ in zip(*_spares(n, backups, target), strict=True)]
     need = len(first)  # 이번 판에 채울 자리(여분 제외)
-    for rnd in range(ROUNDS):
-        if rnd and cur is not FAST and hurry is not None and hurry():
-            cur = FAST
-            log.info("맞춤 퀴즈: 이어받아 빠른 모드로(%d/%d문제)", len(taken), n)
-        limit = ROUND_SEC * cur.patience
-        made = _draft_all(llm, plan(want), pages, used, len(taken), need, limit)
-        report(15 + (45 if rnd == 0 else 70), "문제 만들기")
-        if rnd == 0 and made and all(r.down for r in made):  # 학교 LLM 장애: 작업 처리기에 맡김
-            if all(r.rejected for r in made):  # 모두 서버가 거절: 다시 해도 같음(Codex #264)
-                raise LlmRejectedError("문제 만들기 요청을 모두 거절함")
-            raise LlmError("문제 만들기 호출이 모두 실패함")
-        missed: list[Made] = [r for r in made if r.question is None]
-        ready = []
-        for r in made:
-            if r.question is None:
-                continue
-            if too_close(r.question, seen_now, r.concept or "", r.asked_as):
-                r.why, r.fault = [NEAR_SAME], True
+    deadline = _clock() + TOTAL_SEC * mode.patience
+    pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="quiz-draft")
+    try:
+        for rnd in range(ROUNDS):
+            if rnd and cur is not FAST and hurry is not None and hurry():
+                cur = FAST
+                log.info("맞춤 퀴즈: 이어받아 빠른 모드로(%d/%d문제)", len(taken), n)
+            if rnd and _clock() >= deadline:  # 둘째 판을 띄울 시간이 없음: 남겨 둔 초안으로
+                break
+            end = min(_clock() + ROUND_SEC * cur.patience, deadline)
+            made = _draft_all(llm, plan(want), pages, used, len(taken), need, end, pool)
+            report(15 + (45 if rnd == 0 else 70), "문제 만들기")
+            if rnd == 0 and made and all(r.down for r in made):  # 학교 LLM 장애: 작업 처리기에 맡김
+                if all(r.rejected for r in made):  # 모두 서버가 거절: 다시 해도 같음(Codex #264)
+                    raise LlmRejectedError("문제 만들기 요청을 모두 거절함")
+                raise LlmError("문제 만들기 호출이 모두 실패함")
+            missed: list[Made] = [r for r in made if r.question is None]
+            ready = []
+            for r in made:
+                if r.question is None:
+                    continue
+                if too_close(r.question, seen_now, r.concept or "", r.asked_as):
+                    r.why, r.fault = [NEAR_SAME], True
+                    missed.append(r)
+                else:
+                    ready.append(r)
+            try:
+                verdicts = check_all(llm, ready, pages, deadline)
+            except LlmError:
+                if rnd == 0 or not (taken or kept):
+                    raise
+                # 문제를 받은 뒤의 장애: 받은 · 남겨 둔 문제를 버리고 처음부터 다시 돌리지 않게
+                # 남겨 둔 초안으로 채움(/code-review #512)
+                verdicts = [("bad", UNCHECKED)] * len(ready)
+            report(15 + (55 if rnd == 0 else 80), "문제 검사")
+            passed = []
+            for r, (v, said) in zip(ready, verdicts, strict=True):
+                if v == "pass":
+                    passed.append(r)
+                    continue
+                r.why = (
+                    [NOT_SURE]
+                    if v == "unsure"
+                    else [UNCHECKED]
+                    if v == "bad"
+                    else [f"검사 탈락(검수자 답 {said})"]
+                )
+                r.fault = v != "bad"
+                if v == "unsure":
+                    kept.append((1, r))
                 missed.append(r)
-            else:
-                ready.append(r)
-        try:
-            verdicts = check_all(llm, ready, pages)
-        except LlmError:
-            if rnd == 0 or not (taken or kept):
-                raise
-            # 문제를 받은 뒤의 장애: 받은 · 남겨 둔 문제를 버리고 처음부터 다시 돌리지 않게
-            # 남겨 둔 초안으로 채움(/code-review #512)
-            verdicts = [("bad", UNCHECKED)] * len(ready)
-        report(15 + (55 if rnd == 0 else 80), "문제 검사")
-        passed = []
-        for r, (v, said) in zip(ready, verdicts, strict=True):
-            if v == "pass":
-                passed.append(r)
-                continue
-            r.why = (
-                [NOT_SURE]
-                if v == "unsure"
-                else [UNCHECKED]
-                if v == "bad"
-                else [f"검사 탈락(검수자 답 {said})"]
-            )
-            r.fault = v != "bad"
-            if v == "unsure":
-                kept.append((1, r))
-            missed.append(r)
-        # 목표보다 모자란 난이도의 초안부터: 넣을 때마다 다시 봄(한 난이도가 남은 자리를 다
-        # 차지하지 않게, /code-review #512)
-        while passed and len(taken) < n:
-            got = Counter(lv.get(x.type or "", "중") for x in taken)
-            short = {k for k, c in (mix or {}).items() if got[k] < c}
-            r = next((x for x in passed if lv.get(x.type or "", "중") in short), passed[0])
-            passed.remove(r)
-            if why := overlap(r):
-                r.why, r.fault = [why], True
-                if why != NEAR_SAME:
-                    kept.append((0, r))
-                missed.append(r)
-            else:
-                admit(r)
-        failed[:0] = missed
-        missing = need = n - len(taken)
-        if missing <= 0:
-            break
-        # 다음 판: 못 채운 자리만(앞 초안의 문제점을 알려 줌, 장애 · 모양 오류는 빼고) + 여분
-        redo = [r for r in missed if r.fault] + [r for r in missed if not r.fault]
-        redo = redo[:missing] or [Made(p, "중", "") for p in backups[:missing]]
-        levels_now = levels_for(missing, lacking())
-        want = [
-            (r.page, levels_now[i % missing], _notes(r) if r.fault else "")
-            for i, r in enumerate(redo)
-        ]
-        want += [
-            (backups[(i + 1) % len(backups)], levels_now[i % missing], "")
-            for i in range(missing - len(want))
-        ]
-        want += [(p, lv_, "") for p, lv_ in zip(*_spares(missing, backups, lacking()), strict=True)]
+            # 목표보다 모자란 난이도의 초안부터: 넣을 때마다 다시 봄(한 난이도가 남은 자리를 다
+            # 차지하지 않게, /code-review #512)
+            while passed and len(taken) < n:
+                got = Counter(lv.get(x.type or "", "중") for x in taken)
+                short = {k for k, c in (mix or {}).items() if got[k] < c}
+                r = next((x for x in passed if lv.get(x.type or "", "중") in short), passed[0])
+                passed.remove(r)
+                if why := overlap(r):
+                    r.why, r.fault = [why], True
+                    if why != NEAR_SAME:
+                        kept.append((0, r))
+                    missed.append(r)
+                else:
+                    admit(r)
+            failed[:0] = missed
+            missing = need = n - len(taken)
+            if missing <= 0:
+                break
+            # 다음 판: 못 채운 자리만(앞 초안의 문제점을 알려 줌, 장애 · 모양 오류는 빼고) + 여분
+            redo = [r for r in missed if r.fault] + [r for r in missed if not r.fault]
+            redo = redo[:missing] or [Made(p, "중", "") for p in backups[:missing]]
+            levels_now = levels_for(missing, lacking())
+            want = [
+                (r.page, levels_now[i % missing], _notes(r) if r.fault else "")
+                for i, r in enumerate(redo)
+            ]
+            want += [
+                (backups[(i + 1) % len(backups)], levels_now[i % missing], "")
+                for i in range(missing - len(want))
+            ]
+            want += [
+                (p, lv_, "") for p, lv_ in zip(*_spares(missing, backups, lacking()), strict=True)
+            ]
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     # 모자라면 남겨 둔 초안으로 채움: 겹침(정답은 맞음) → 애매함 차례. 거의 같은 문제는 그래도 뺌
     for _, r in sorted(kept, key=lambda x: x[0]):
         if len(taken) >= n:
