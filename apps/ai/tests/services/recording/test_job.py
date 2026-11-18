@@ -31,7 +31,7 @@ from app.services.recording.job import (
     run,
 )
 from app.services.recording.models import Sentence
-from app.services.recording.pipeline import WINDOW_CHARS
+from app.services.recording.pipeline import WINDOW_CHARS, WORKERS
 from app.worker import handlers, runner
 from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobGoneError, JobStore
@@ -748,7 +748,8 @@ def test_cancel_stops_at_the_next_window() -> None:
             speech=FakeSpeech(long_transcript()),
             report=cancel,
         )
-    assert len(llm.windows) == 1
+    # 창은 WORKERS개까지 함께 보내므로 취소를 알아챌 때 이미 보낸 창은 남지만, 새 창은 보내지 않음
+    assert 1 <= len(llm.windows) <= WORKERS
 
 
 def test_a_cancel_stops_the_next_llm_call_before_any_progress_write(

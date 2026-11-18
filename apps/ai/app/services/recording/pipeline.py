@@ -14,14 +14,27 @@ again = organize(llm, result["sentences"], result["durationMs"])  # 다시 정�
 
 강의 자료(material)가 있으면 창 · 글 다시 받기 모두 시스템 프롬프트 뒤에 <material> 블록을
 붙입니다(material.system_with). 없으면 프롬프트는 그대로입니다.
+
+창 · 글 다시 받기 묶음은 서로 독립이라 WORKERS개까지 동시에 묻습니다(_in_order). 호출 간격 ·
+429 대기는 PacedLlm이 프로세스 전체로 지키므로, 동시에 묻는 것은 응답(호출 하나 15~25초)을
+기다리는 시간만 겹칩니다.
 """
 
 import re
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from itertools import takewhile
 
-from app.clients.llm import JsonObject, Llm, LlmCutError, LlmError, LlmRejectedError
+from app.clients.llm import (
+    JsonObject,
+    Llm,
+    LlmCutError,
+    LlmError,
+    LlmRejectedError,
+    Stopping,
+)
 from app.clients.speech import NoSpeechError, Phrase, Transcript
 from app.core.config import settings
 from app.services.recording.material import Material, system_with
@@ -47,6 +60,10 @@ SLIDE_MAX_MS = 60_000
 SLIDE_MAX_CHARS = 600  # 60초 분량의 말(초당 8자 안팎)보다 조금 넉넉하게
 TOKENS_PER_SLIDE = 300  # 제목 · 요약 · 도식 · JSON 모양
 FILL_BATCH_SLIDES = 12  # 글을 다시 받을 때 한 번에 묶는 슬라이드 수
+# 창 · 묶음을 동시에 묻는 수. 학교 LLM(호출 간격 2.2초 · 호출 15~25초)에서 응답을 기다리는 동안
+# 다음 호출을 보낼 수 있을 만큼. 호출 간격 · 429 대기는 PacedLlm이 지키므로 더 늘려도
+# 빨리 보내지는 않음
+WORKERS = 4
 SUMMARY_MAX_CHARS = 300
 SUMMARY_MAX_SENTENCES = 3
 TITLE_MAX_CHARS = 30
@@ -347,6 +364,64 @@ def _parse_relations(raw: object, terms: list[str]) -> list[list[int]]:
     return out
 
 
+PEER_FAILED = "같이 묻던 다른 호출이 실패함"
+
+
+def _in_order[T](
+    tasks: Sequence[Callable[[Llm], T]],
+    llm: Llm,
+    *,
+    workers: int = WORKERS,
+    should_stop: Callable[[], bool] | None = None,
+    on_done: Callable[[int, int], None] | None = None,
+) -> list[T]:
+    """tasks를 앞에서부터 내어 최대 workers개를 동시에 돌리고, 낸 일의 결과를 낸 순서대로.
+
+    첫 일은 항상 내고, 그 뒤로는 낼 때마다 should_stop을 봐 참이면 더 내지 않습니다(이미 낸 일은
+    끝까지 기다림). 그래서 결과는 언제나 앞에서부터 이어진 일들입니다. on_done(끝난 수, 전체 수)은
+    일이 끝날 때마다 부르는 스레드에서 부릅니다. 하나가 실패하면 더 내지 않고, 도는 일의 남은 호출을
+    멈춘 뒤(Stopping) 그 예외를 올립니다. workers가 1이면 지금 스레드에서 차례로 돌립니다.
+    """
+    total = len(tasks)
+
+    def stopped(sent: int) -> bool:
+        return sent > 0 and should_stop is not None and should_stop()
+
+    if workers <= 1:
+        out: list[T] = []
+        for task in tasks:
+            if stopped(len(out)):
+                break
+            out.append(task(llm))
+            if on_done is not None:
+                on_done(len(out), total)
+        return out
+    failed = threading.Event()
+    guarded = Stopping(llm, failed, PEER_FAILED)
+    results: dict[int, T] = {}
+    running: dict[Future[T], int] = {}
+    sent = 0
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="recording")
+    try:
+        while True:
+            while sent < total and len(running) < workers and not stopped(sent):
+                running[pool.submit(tasks[sent], guarded)] = sent
+                sent += 1
+            if not running:
+                break
+            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            for f in sorted(done, key=running.__getitem__):  # 함께 끝나면 앞 일의 실패를 먼저
+                results[running.pop(f)] = f.result()
+                if on_done is not None:
+                    on_done(len(results), total)
+    except BaseException:
+        failed.set()  # 도는 일은 다음 호출에서 멈춤(이미 보낸 호출은 응답을 기다림)
+        raise
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return [results[i] for i in range(sent)]
+
+
 def assemble_slides(
     llm: Llm,
     sentences: list[Sentence],
@@ -355,11 +430,12 @@ def assemble_slides(
     *,
     should_stop: Callable[[], bool] | None = None,
     material: Material | None = None,
+    workers: int = WORKERS,
 ) -> list[Slide]:
     """창별 답을 합쳐 슬라이드 목록으로. 범위와 맞는 글이 없는 슬라이드만 다시 받습니다.
 
-    묶음 사이에 should_stop이 참이면 남은 묶음을 부르지 않고, 앞에서부터 글이 끊기지 않는
-    슬라이드까지만 돌려줍니다(묶음 하나는 항상 부름).
+    묶음은 workers개까지 동시에 묻습니다. 새 묶음을 내기 전에 should_stop이 참이면 남은 묶음을
+    부르지 않고, 앞에서부터 글이 끊기지 않는 슬라이드까지만 돌려줍니다(묶음 하나는 항상 부름).
     """
     picked: set[int] = set()
     bodies: dict[SentenceRange, SlideBody] = {}
@@ -373,10 +449,12 @@ def assemble_slides(
                 bodies.setdefault(at, body)  # 목록에서 잘린 문장이 있으면 끝까지 읽은 글이 아님
     ranges = _ranges(_limit_slides(sentences, picked), len(sentences))
     missing = [r for r in ranges if r not in bodies]
-    for i, batch in enumerate(_fill_batches(sentences, missing)):
-        if i and should_stop is not None and should_stop():
-            break
-        bodies.update(_fill_batch(llm, sentences, batch, material))
+    fills = [
+        (lambda c, b=batch: _fill_batch(c, sentences, b, material))
+        for batch in _fill_batches(sentences, missing)
+    ]
+    for filled in _in_order(fills, llm, workers=workers, should_stop=should_stop):
+        bodies.update(filled)
     return [_slide(sentences, r, bodies[r]) for r in takewhile(lambda r: r in bodies, ranges)]
 
 
@@ -505,21 +583,18 @@ def organize(
     on_window: Callable[[int, int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     material: Material | None = None,
+    workers: int = WORKERS,
 ) -> RecordingResult:
     """문장 목록 → 슬라이드(후처리 한 단계). STT를 다시 하지 않음. material은 함께 넣는 자료.
 
-    on_window(끝난 창 수, 전체 창 수)는 창이 끝날 때마다 부릅니다. 창 사이에 should_stop이 참이면
-    남은 창을 부르지 않고, 끝난 창까지의 슬라이드에 PARTIAL 경고를 답니다(창 하나는 항상 처리).
-    글을 다시 받는 묶음 사이에 멈춰도 같습니다. sentences · transcript는 언제나 전체입니다.
+    창은 workers개까지 동시에 묻습니다(_in_order). on_window(끝난 창 수, 전체 창 수)는 창이 끝날
+    때마다 부릅니다. 새 창을 내기 전에 should_stop이 참이면 남은 창을 부르지 않고, 앞에서부터 이어진
+    끝난 창까지의 슬라이드에 PARTIAL 경고를 답니다(창 하나는 항상 처리). 글을 다시 받는 묶음에서
+    멈춰도 같습니다. sentences · transcript는 언제나 전체입니다.
     """
     windows = slide_windows(sentences)
-    answers: list[WindowAnswer] = []
-    for window in windows:
-        if answers and should_stop is not None and should_stop():
-            break
-        answers.append(read_window(llm, sentences, window, material))
-        if on_window is not None:
-            on_window(len(answers), len(windows))
+    reads = [(lambda c, w=window: read_window(c, sentences, w, material)) for window in windows]
+    answers = _in_order(reads, llm, workers=workers, should_stop=should_stop, on_done=on_window)
     done = windows[: len(answers)]
     slides = assemble_slides(
         llm,
@@ -528,6 +603,7 @@ def organize(
         answers,
         should_stop=should_stop,
         material=material,
+        workers=workers,
     )
     result = result_from(sentences, slides, duration_ms)
     if slides[-1]["sentenceEnd"] < len(sentences):
