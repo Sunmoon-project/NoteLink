@@ -238,7 +238,7 @@ export function RecordScreen() {
                 <View className="flex-1">
                   <Text className="text-subhead font-semibold text-ink">반복 목표</Text>
                   <Text className="text-caption text-sub">
-                    {goal.name} · 연속 {goal.streak}일째
+                    {goal.name} · 연속 {goal.streak}주 달성 중
                   </Text>
                 </View>
                 <ChevronRight size={ICON.md} color={C.sub} />
