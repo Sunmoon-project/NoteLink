@@ -1055,6 +1055,56 @@ describe('변환 화면: 다 올린 뒤에 변환으로 넘어가고, 취소하�
     expect(useDraft.getState().getCreationId()).toBe(next);
   });
 
+  // Codex #490 6차 리뷰: 되찾기 요청이 실패하면 처음 등록이 저장됐어도 조용히 끝났다
+  describe('등록 중 취소 뒤 응답 유실 — 되찾기가 실패하면 알린다', () => {
+    const lost = () =>
+      new ApiError('MATERIAL_REGISTRATION_UNCERTAIN', '등록 결과를 확인할 수 없어요', 0);
+    /** 처음 등록은 응답을 기다리게 하고, 되찾기 요청의 응답은 recover로 정한다 */
+    const cancelDuringRegistration = async (recover: () => void) => {
+      const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
+      mockApi.content.createMaterial.mockReset();
+      mockApi.content.createMaterial.mockReturnValueOnce(created.promise);
+      recover();
+      await renderScreen(<ConvertScreen />, client());
+      await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1));
+      await fireEvent.press(screen.getByText('취소'));
+      await fireEvent.press(await screen.findByText('취소하기'));
+      await act(async () => created.reject(lost()));
+    };
+    const saved = [...LATE_CANCEL_RETRY_MS];
+    beforeEach(() => LATE_CANCEL_RETRY_MS.splice(0, LATE_CANCEL_RETRY_MS.length, 0, 0));
+    afterEach(() => LATE_CANCEL_RETRY_MS.splice(0, LATE_CANCEL_RETRY_MS.length, ...saved));
+
+    it('되찾기가 로그인 만료(401)로 거절되면 다시 보내지 않고 취소를 마치지 못했다고 알린다', async () => {
+      await cancelDuringRegistration(() =>
+        mockApi.content.createMaterial.mockRejectedValueOnce(
+          new ApiError('AUTH_TOKEN_EXPIRED', '다시 로그인해 주세요', 401),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockToast).toHaveBeenCalledWith(
+          '변환 취소를 마치지 못했어요. 정리본이 생기면 폴더에서 지워 주세요',
+        ),
+      );
+      expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(2);
+      expect(mockApi.ai.cancel).not.toHaveBeenCalled();
+    });
+
+    it('되찾기도 계속 결과를 알 수 없으면 정한 횟수만큼 다시 보낸 뒤 알린다', async () => {
+      await cancelDuringRegistration(() =>
+        mockApi.content.createMaterial.mockRejectedValue(lost()),
+      );
+      await waitFor(() =>
+        expect(mockToast).toHaveBeenCalledWith(
+          '변환 취소를 마치지 못했어요. 정리본이 생기면 폴더에서 지워 주세요',
+        ),
+      );
+      // 처음 등록 1번 + 되찾기 3번(바로 · 두 번 더)
+      expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(4);
+      expect(mockApi.ai.cancel).not.toHaveBeenCalled();
+    });
+  });
+
   it('등록 중 취소 뒤 결과가 확실한 실패(입력 오류)면 다시 보내지 않는다', async () => {
     const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
     mockApi.content.createMaterial.mockReturnValueOnce(created.promise);

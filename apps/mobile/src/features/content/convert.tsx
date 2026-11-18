@@ -92,9 +92,9 @@ async function cancelLostRegistration(request: Parameters<typeof api.content.cre
       await cancelLateJob(r.job._id);
       return;
     } catch (e) {
-      // 결과가 확실한 실패(입력 오류 등)면 서버에 남은 작업이 없다
-      if (!isUncertain(e)) return;
-      const wait = LATE_CANCEL_RETRY_MS[i];
+      // 처음 등록은 저장됐을 수 있다. 되찾기가 거절(로그인 만료 · 권한 등)되거나 끝내 안 되면 작업이 남아 있을 수
+      // 있으니 알린다 — 되찾기 실패만으로 작업이 없다고 보지 않는다(Codex #490 6차 리뷰)
+      const wait = isUncertain(e) ? LATE_CANCEL_RETRY_MS[i] : undefined;
       if (wait === undefined) {
         toast('변환 취소를 마치지 못했어요. 정리본이 생기면 폴더에서 지워 주세요');
         return;
