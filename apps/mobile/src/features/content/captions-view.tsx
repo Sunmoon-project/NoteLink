@@ -18,7 +18,7 @@ import { scheduleOnRN } from 'react-native-worklets';
 import { Text } from '@/components/text';
 import { filled, lineAt, type Line } from './captions';
 
-// 녹음 자막(FR-20): 지금 문장 하나를 읽는 속도대로 회색 → 흰색으로 채우고, 아래에 다음 문장을 한 줄로 미리 보인다.
+// 녹음 자막(FR-20): 지금 문장 하나를 읽는 속도대로 회색 → 흰색으로 채우고, 아래에 다음 문장을 두 줄까지 흐리게 미리 보인다.
 // 다 읽으면 지금 문장은 위로 빠지고 다음 문장이 제자리로 올라온다
 
 const EASE = Easing.bezier(0.23, 1, 0.32, 1);
@@ -87,7 +87,7 @@ export function Captions({
   return (
     // 두 문장 넘게 건너뛰면(되감기 · 북마크) 넘김 없이 바로 바꾼다
     <LayoutAnimationConfig key={s.epoch} skipEntering skipExiting>
-      <View>
+      <View testID="captions" style={BOX}>
         {rows.map(
           (line, k) =>
             line && (
@@ -103,7 +103,7 @@ export function Captions({
                 ) : (
                   <Text
                     testID="caption-next"
-                    numberOfLines={1}
+                    numberOfLines={2}
                     accessibilityLabel={`다음 문장, ${line.text}`}
                     className="mt-1.5 text-footnote text-white/30"
                   >
@@ -126,6 +126,8 @@ const jump = (c: Shown, lines: readonly Line[], i: number) =>
   c.lines !== lines || (i !== c.i && i !== c.i + 1);
 
 const NOW = 'text-callout font-semibold leading-6';
+/** 짧은 문장에도 상자가 줄지 않게 지금 문장 4줄(24 × 4) 높이를 둔다(바뀌기 전 대본 상자 길이) */
+const BOX = { minHeight: 96 };
 
 /**
  * 지금 문장. 여러 줄 글은 한 덩어리로 칠할 수 없어 줄마다 흰 글을 겹쳐 놓고, 겹친 줄을 transform 두 겹으로

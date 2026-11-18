@@ -51,7 +51,7 @@ it.each([
   if (next) {
     const n = screen.getByTestId('caption-next');
     expect(n.props.children).toBe(next);
-    expect(n.props.numberOfLines).toBe(1);
+    expect(n.props.numberOfLines).toBe(2); // 바뀌기 전 상자 길이에 가깝게 두 줄까지
     expect(n.props.accessibilityLabel).toBe(`다음 문장, ${next}`);
   } else expect(screen.queryByTestId('caption-next')).toBeNull();
   // 앞 문장은 어디에도 없다
@@ -91,4 +91,11 @@ it('프레임 시계가 살짝 뒤로 가도(상태 기준점 흔들림) 앞 문
   expect(screen.getByTestId('caption-now').props.children).toBe('두 번째 짧은 구간');
   await view.rerender(<At sec={1} />); // 되감기
   expect(screen.getByTestId('caption-now').props.children).toBe('처음 짧은 구간');
+});
+
+it('짧은 문장이어도 자막 상자가 줄어들지 않게 최소 높이(4줄)를 둔다', async () => {
+  await render(<At sec={1} />);
+  expect(screen.getByTestId('captions').props.style).toEqual(
+    expect.objectContaining({ minHeight: 96 }),
+  );
 });

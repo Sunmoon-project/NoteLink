@@ -261,7 +261,8 @@ export function Player({
                     mood={p.playing ? 'talking' : 'idle'}
                     avatarId={avatar}
                     size={64}
-                    framing="head"
+                    // head 구도는 얼굴을 꽉 채워 둥근 상자에서 귀 · 볼이 잘렸다 → 여백 있는 전체 구도
+                    framing="full"
                     background={C.night}
                     lips={() => (p.playing ? lipsAt(lines, posNow()) : CLOSED)}
                   />

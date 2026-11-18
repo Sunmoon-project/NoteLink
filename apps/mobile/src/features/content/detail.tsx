@@ -507,7 +507,7 @@ export function RecDetailScreen() {
           right={<More onPress={() => setOpt(true)} />}
         />
         <QuizFromNote material={m} className="mb-3" />
-        <View className="-mt-2 mb-3 flex-row items-center gap-2">
+        <View className="mb-3 flex-row items-center gap-2">
           {view === 'text' && <Text className="text-caption text-sub">{m.title}</Text>}
           {subject && <Badge>{subject}</Badge>}
           {m.description ? (
