@@ -291,8 +291,11 @@ export function Screen({
   onScroll,
   canvas,
   refresh,
+  avoidKeyboard = true,
 }: {
   children: ReactNode;
+  /** 키보드에 가리지 않게 화면을 줄인다(기본). 화면이 직접 키보드 높이를 다루면 false */
+  avoidKeyboard?: boolean;
   footer?: ReactNode;
   /** 본문 위에 떠 있는 것(스크롤하지 않고, 아래 버튼 위에서 끝난다). 예: 아바타 선생님 */
   overlay?: ReactNode;
@@ -338,7 +341,8 @@ export function Screen({
   );
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' && avoidKeyboard ? 'padding' : undefined}
+      enabled={avoidKeyboard}
       className={cx(
         'flex-1',
         dark
