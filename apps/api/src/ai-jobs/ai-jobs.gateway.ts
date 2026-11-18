@@ -207,11 +207,14 @@ export class AiJobsGateway implements OnModuleDestroy {
     // 시작할 때의 지켜보기 · 다시 시도 세대. 보내기 전에 바뀌었으면 이 처리는 앞 실행의 것이다
     const started = this.watched.get(jobId);
     const generation = started?.generation;
+    const stale = () => this.watched.get(jobId) !== started || started?.generation !== generation;
     let sockets: Awaited<ReturnType<ReturnType<Server['in']>['fetchSockets']>>;
     try {
       sockets = await this.server.in(roomOf(jobId)).fetchSockets();
     } catch (error) {
-      return this.retryLater(jobId, error);
+      // 그사이 다시 시도됐으면 앞 실행의 오류로 세지 않는다(다음 차례에 다시 판단)
+      if (!stale()) this.retryLater(jobId, error);
+      return;
     }
     const allowed: typeof sockets = [];
     // 토큰 확인 중 DB 일시 오류가 난 소켓. 이미 받은 소켓이 아니면 다음 차례에 다시 보낸다
@@ -232,16 +235,17 @@ export class AiJobsGateway implements OnModuleDestroy {
     try {
       job = await this.jobs.findMine(userId, jobId);
     } catch (error) {
-      // 그사이 지워졌으면 더 지켜보지 않는다. DB 일시 오류면 그대로 두어 다음 차례에 다시 보낸다
+      // 그사이 지워졌으면 더 지켜보지 않는다. DB 일시 오류면 그대로 두어 다음 차례에 다시 보낸다.
+      // 그사이 다시 시도됐으면 앞 실행의 오류로 세지 않는다: 한도에 닿아 finish()가 새 구독까지 지우지 않게
       if (error instanceof NotFoundException) this.finish(jobId);
-      else this.retryLater(jobId, error);
+      else if (!stale()) this.retryLater(jobId, error);
       return;
     }
     const watch = this.watched.get(jobId);
     // 끝나지 않았거나(다시 시도로 처리기에 다시 들어감) 그사이 다시 시도됐으면(결과 읽기가 다시 시도를 쓰기 전에 나갔을 수
     // 있음) 보내지도 · 방에서 빼지도 않고 계속 지켜본다. 다시 시도하며 다시 구독한 소켓 · 다른 기기가 새 실행을 받게 한다.
     // 이 검사 뒤에는 기다리지 않고 보내므로, 다시 시도 응답이 나간 뒤에 앞 실행의 결과가 나가지 않는다
-    if (!FINISHED.has(job.status) || watch !== started || watch?.generation !== generation) {
+    if (!FINISHED.has(job.status) || stale()) {
       if (watch) watch.last = undefined;
       return;
     }

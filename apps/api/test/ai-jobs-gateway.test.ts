@@ -630,6 +630,45 @@ describe('AI 작업 진행률 소켓 (ai:subscribe)', () => {
     });
   });
 
+  it('일시 오류가 쌓인 뒤 결과 읽기를 기다리는 사이 다시 시도 · 다시 구독되고 그 읽기가 실패해도 새 구독을 지킨다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    table.set(JOB, appJob({ status: 'failed', progress: 30, error: 'AI_JOB_FAILED' }));
+    // 결과 읽기가 4번 일시 오류(한도 5번의 바로 앞)
+    jobs.findMine
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockRejectedValueOnce(new Error('db down'));
+    for (let i = 0; i < 4; i++) await gateway.poll();
+    // 다섯 번째 읽기: 기다리는 사이 다시 시도 · 다시 구독, 그 뒤 일시 오류로 실패
+    let releaseRead!: () => void;
+    jobs.findMine.mockImplementationOnce(async () => {
+      await blocked((release) => (releaseRead = release));
+      throw new Error('db down');
+    });
+    const polling = gateway.poll();
+    await vi.waitFor(() => expect(releaseRead).toBeTypeOf('function'));
+    retryJob(
+      appJob({
+        status: 'queued',
+        progress: 0,
+        step: undefined,
+        updatedAt: '2026-11-16T00:05:00.000Z',
+      }),
+    );
+    a.emit('ai:unsubscribe', { jobId: JOB });
+    await expect(subscribe(a)).resolves.toEqual({ ok: true });
+    releaseRead();
+    await polling;
+    // 앞 실행의 일시 오류로 그만 지켜보지 않는다: 새 실행의 진행률을 받는다
+    table.set(JOB, appJob({ progress: 15, updatedAt: '2026-11-16T00:05:00.000Z' }));
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.progress.at(-1)?.progress).toBe(15));
+    expect(got.done).toEqual([]);
+  });
+
   it('다시 구독을 확인하는 중에 앞 실행의 토큰 확인이 끝나도 그 소켓에 앞 결과를 보내지 않는다', async () => {
     const a = await connect('a');
     const got = record(a);
