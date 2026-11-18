@@ -469,11 +469,18 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
     });
 
     it.each([
-      ['탈퇴(deletedAt)', { deletedAt: new Date() }],
-      ['탈퇴 유예(withdrawingAt)', { withdrawingAt: new Date() }],
+      [
+        '탈퇴(deletedAt)',
+        () => users.collection.updateOne({ _id: owner }, { $set: { deletedAt: new Date() } }),
+      ],
+      [
+        '탈퇴 유예(withdrawingAt)',
+        () => users.collection.updateOne({ _id: owner }, { $set: { withdrawingAt: new Date() } }),
+      ],
+      ['계정 문서 없음(users 문서 삭제)', () => users.collection.deleteOne({ _id: owner })],
     ])(
       '노트 주인이 %s 상태면 공유받은 멤버도 목록에서 못 보고 상세 · 원본 주소 · 녹음 읽기는 404',
-      async (_label, state) => {
+      async (_label, changeOwner) => {
         const audio = `https://a.blob.core.windows.net/c/uploads/audio/${owner.toHexString()}/550e8400-e29b-41d4-a716-446655440003.m4a`;
         const text = await note({ blobUrls: [blob] });
         const rec = await note({ kind: 'recording', source: 'audio_file', blobUrls: [audio] });
@@ -486,8 +493,8 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
         expect((await open(friend, text)).data._id).toBe(text);
         expect((await url(friend, text)).data).toMatchObject({ url: `${blob}?sig=SECRET` });
         expect((await play(friend, rec)).data.materialId).toBe(rec);
-        // 주인이 탈퇴하면(또는 유예에 들어가면) 공유는 없는 것과 같다
-        await users.collection.updateOne({ _id: owner }, { $set: state });
+        // 주인이 탈퇴하거나 유예에 들어가거나 계정 문서가 없어지면 공유는 없는 것과 같다
+        await changeOwner();
         expect((await sharing.listRoomItems(friend.toHexString(), roomId)).items).toEqual([]);
         for (const id of [text, rec])
           await expect(open(friend, id)).rejects.toMatchObject({ status: 404 });
