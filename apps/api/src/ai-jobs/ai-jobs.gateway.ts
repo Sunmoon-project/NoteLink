@@ -77,7 +77,10 @@ export class AiJobsGateway implements OnModuleDestroy {
   ) {
     this.offRetry = jobs.onRetry((jobId) => {
       const watch = this.watched.get(jobId);
-      if (watch) watch.generation += 1;
+      if (!watch) return;
+      watch.generation += 1;
+      // 앞 실행에서 쌓인 일시 오류 수는 새 실행에 넘기지 않는다(한도에 바로 닿아 새 구독을 끝내지 않게)
+      watch.doneFailures = undefined;
     });
   }
 
