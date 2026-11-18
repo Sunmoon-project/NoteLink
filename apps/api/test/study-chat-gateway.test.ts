@@ -174,6 +174,8 @@ describe('스터디룸 Socket.IO', () => {
           expect((await serverSocket())?.rooms).toContain('study-chat:chat'),
         );
         recheck().mockRejectedValueOnce(new Error('changed while loading history'));
+        // 탈퇴 정리의 강제 구독 해제(evict)도 같은 사이에 실행된다: 아직 기록이 없어 채팅 채널은 못 찾아도 입장 쪽 재확인이 마저 뺀다
+        await app.get(StudyChatGateway).evict('room', 'c');
         finishHistory([message]);
         expect(await join).toEqual({ ok: false });
         const after = await serverSocket();

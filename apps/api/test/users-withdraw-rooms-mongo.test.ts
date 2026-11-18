@@ -5,6 +5,7 @@ import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { StudyRoom, StudyRoomSchema } from '../src/modules/studyroom/schemas/study-room.schema.js';
 import { StudyRoomsService } from '../src/modules/studyroom/study-rooms.service.js';
 import { StudyRoomMembershipService } from '../src/modules/studyroom/study-room-membership.service.js';
+import { StudyRoomWithdrawnSweeper } from '../src/modules/studyroom/study-room-withdrawn-sweeper.service.js';
 import { UsersService } from '../src/modules/users/users.service.js';
 
 // 회원 탈퇴가 스터디룸에서 나가는 것(기존 leaveRoom)까지 실제 MongoDB로 확인한다.
@@ -23,6 +24,9 @@ describe.skipIf(!local)('회원 탈퇴 · 스터디룸 나가기 실제 MongoDB'
   let rooms: mongoose.Model<StudyRoom>;
   let users: mongoose.Model<User>;
   let service: UsersService;
+  let roomsService: StudyRoomsService;
+  let wiredRollback: StudyRoomsService['rollbackMembership'];
+  let sweeper: StudyRoomWithdrawnSweeper;
   let sequence = 0;
   // 소켓 · LiveKit 은 가짜: 어느 방에서 어떤 순서로 불렸는지만 본다
   let calls: string[];
@@ -41,7 +45,18 @@ describe.skipIf(!local)('회원 탈퇴 · 스터디룸 나가기 실제 MongoDB'
     rooms = connection.model(StudyRoom.name, StudyRoomSchema, names[0]);
     users = connection.model(User.name, UserSchema, names[1]);
     await rooms.init();
-    const roomsService = new StudyRoomsService(rooms, users, {} as never, {} as never);
+    // 방 만들기(create)가 카테고리를 한 건 찾을 수 있게 가짜를 둔다
+    const categories = {
+      find: () => ({ limit: () => ({ lean: async () => [{ _id: category }] }) }),
+    };
+    roomsService = new StudyRoomsService(rooms, users, categories as never, {} as never);
+    const membership = new StudyRoomMembershipService(
+      roomsService,
+      gateway as never,
+      live as never,
+    );
+    wiredRollback = roomsService.rollbackMembership;
+    sweeper = new StudyRoomWithdrawnSweeper(rooms, users, membership);
     const nothing = { deleteMany: async () => ({ deletedCount: 0 }) };
     service = new UsersService(
       users,
@@ -50,7 +65,7 @@ describe.skipIf(!local)('회원 탈퇴 · 스터디룸 나가기 실제 MongoDB'
       { revokeAll: async () => undefined } as never,
       nothing as never,
       nothing as never,
-      new StudyRoomMembershipService(roomsService, gateway as never, live as never),
+      membership,
     );
   });
   beforeEach(async () => {
@@ -178,5 +193,124 @@ describe.skipIf(!local)('회원 탈퇴 · 스터디룸 나가기 실제 MongoDB'
     );
     expect((await saved(others._id)).memberCount).toBe(2);
     expect(await users.findById(first).lean()).toMatchObject({ nickname: `탈퇴-${first}` });
+  });
+
+  // 입장 · 생성이 저장되기 직전에 탈퇴가 끝나면(탈퇴는 그 참여를 못 본다), 입장 쪽의 저장 뒤 재확인이 참여를 되돌려야 한다.
+  // 그 정리 단계가 실패해 joined 로 남은 참여를 스위퍼가 다음 주기에 복구하는지 본다
+  describe('탈퇴와 겹친 입장 · 생성의 정리가 실패해 남은 참여를 스위퍼가 복구한다', () => {
+    type Entry = 'join' | 'create';
+    type Failure = 'reread' | 'rollback';
+
+    /** 저장 직전에 탈퇴를 끝내고, 저장 뒤 정리 단계(reread: 사용자 다시 읽기 · rollback: 되돌리기)를 실패시킨 입장 · 생성을 돌린다 */
+    const racedEntry = async (entry: Entry, failure: Failure, userId: Types.ObjectId) => {
+      const target = await room([[first, true]]);
+      const inviteCode = target.inviteCode;
+      const originalFindOne = users.findOne.bind(users) as (...args: unknown[]) => unknown;
+      let withdrawn = false;
+      let withdrawalDone = false;
+      let reread = false;
+      // 사용자 확인 뒤 · 첫 저장 직전에 탈퇴가 끝난다(이 시점엔 이 참여가 없어 탈퇴가 못 본다)
+      const beforeSave =
+        (original: (...args: unknown[]) => unknown) =>
+        (...args: unknown[]) => {
+          if (withdrawn) return original(...args);
+          withdrawn = true;
+          return service.withdraw(String(userId)).then(() => {
+            withdrawalDone = true;
+            return original(...args);
+          });
+        };
+      // 원본은 spy 를 걸기 전에 잡아 둔다(걸고 나면 같은 이름이 spy 자신이라 재귀한다)
+      const originalFindOneAndUpdate = rooms.findOneAndUpdate.bind(rooms) as never;
+      const originalCreate = rooms.create.bind(rooms) as never;
+      const saveSpy =
+        entry === 'join'
+          ? vi
+              .spyOn(rooms, 'findOneAndUpdate')
+              .mockImplementation(beforeSave(originalFindOneAndUpdate) as never)
+          : vi.spyOn(rooms, 'create').mockImplementation(beforeSave(originalCreate) as never);
+      const findOneSpy = vi.spyOn(users, 'findOne').mockImplementation(((...args: unknown[]) => {
+        if (failure === 'reread' && withdrawalDone && !reread) {
+          reread = true; // 저장 뒤 사용자 다시 읽기(ensureNotWithdrawing)가 실패한다
+          return { lean: () => Promise.reject(new Error('재조회 실패')) };
+        }
+        return originalFindOne(...args);
+      }) as never);
+      if (failure === 'rollback')
+        roomsService.rollbackMembership = async () => {
+          throw new Error('보상 실패');
+        };
+      try {
+        const attempt =
+          entry === 'join'
+            ? roomsService.joinRoom(String(userId), inviteCode)
+            : roomsService.create(String(userId), {
+                title: `생성 경합-${suffix}`,
+                categoryName: '수학',
+                isPublic: true,
+              });
+        await expect(attempt).rejects.toThrow(failure === 'reread' ? '재조회 실패' : '보상 실패');
+      } finally {
+        saveSpy.mockRestore();
+        findOneSpy.mockRestore();
+        roomsService.rollbackMembership = wiredRollback;
+      }
+      expect(withdrawalDone).toBe(true);
+      return entry === 'join'
+        ? target._id
+        : (
+            await rooms
+              .findOne({ title: `생성 경합-${suffix}` })
+              .lean()
+              .orFail()
+          )._id;
+    };
+
+    const failures: [string, Failure][] = [
+      ['저장 뒤 사용자 다시 읽기가 실패하면', 'reread'],
+      ['다시 읽기는 성공했지만 되돌리기가 실패하면', 'rollback'],
+    ];
+
+    it.each(failures)('입장: %s 멤버로 남고, 스위퍼가 나가게 한다', async (_name, failure) => {
+      const roomId = await racedEntry('join', failure, second);
+      expect(await users.findById(second).lean()).toMatchObject({ nickname: `탈퇴-${second}` });
+      const before = await saved(roomId);
+      expect(before.memberCount).toBe(2);
+      expect(before.members.find((m) => m.userId.equals(second))?.status).toBe('joined');
+
+      calls = [];
+      await sweeper.sweep();
+      const after = await saved(roomId);
+      expect(after.members.find((m) => m.userId.equals(second))).toMatchObject({
+        status: 'left',
+        leaveReason: 'voluntary',
+      });
+      expect(after.memberCount).toBe(1);
+      expect(after.hostId).toEqual(first);
+      expect(after.closedAt ?? null).toBeNull();
+      expect(calls).toEqual([
+        `evict:${roomId}`,
+        `disconnect:${roomId}`,
+        `evict:${roomId}`,
+        `notify:${roomId}`,
+      ]);
+    });
+
+    it.each(failures)(
+      '생성: %s 혼자 방장으로 남고, 스위퍼가 방을 닫는다',
+      async (_name, failure) => {
+        const roomId = await racedEntry('create', failure, second);
+        const before = await saved(roomId);
+        expect(before.memberCount).toBe(1);
+        expect(before.closedAt ?? null).toBeNull();
+
+        await sweeper.sweep();
+        const after = await saved(roomId);
+        expect(after.closedAt).toBeInstanceOf(Date);
+        expect(after.deleteAfter).toBeInstanceOf(Date);
+        expect(after.memberCount).toBe(0);
+        expect(after.members.find((m) => m.userId.equals(second))?.status).toBe('left');
+      },
+    );
   });
 });
