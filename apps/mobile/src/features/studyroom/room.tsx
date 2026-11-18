@@ -66,6 +66,7 @@ import {
   Loading,
   Screen,
   Search,
+  SwipeAction,
   Title,
   Two,
   cx,
@@ -101,6 +102,20 @@ export function RoomListScreen() {
     },
     onError: (e) => toast(e instanceof ApiError ? e.message : '입장하지 못했어요'),
   });
+  // 목록에서 왼쪽으로 밀어 나가기(방 설정의 「채팅방 나가기」와 같은 동작 · 확인을 거친다)
+  const [leaving, setLeaving] = useState<{
+    _id: string;
+    title: string;
+    memberCount: number;
+  } | null>(null);
+  const leave = useMutation({
+    mutationFn: (roomId: string) => api.rooms.leave(roomId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['rooms'] });
+      toast('스터디룸에서 나왔어요');
+    },
+    onError: () => toast('스터디룸에서 나가지 못했어요. 다시 시도해주세요'),
+  });
   const joined = mine.data ?? [];
   const recList = (rec.data ?? []).filter(
     (r) => r.title.includes(q) && !joined.some((j) => j._id === r._id),
@@ -123,23 +138,26 @@ export function RoomListScreen() {
                 layout={LIST_LAYOUT}
                 entering={FadeIn.duration(MOTION.enter)}
                 exiting={FadeOut.duration(MOTION.exit)}
+                className="mb-4 overflow-hidden rounded-card"
               >
-                <Card
-                  key={r._id}
-                  onPress={() => router.push({ pathname: '/room/[id]', params: { id: r._id } })}
-                  className="mb-4 flex-row items-center gap-3 p-6"
-                >
-                  <View className="flex-1">
-                    <View className="flex-row items-center gap-2">
-                      <Text className="text-callout font-bold text-ink">{r.title}</Text>
-                      {r.timerState?.phase === 'focus' && <Badge tone="sun">집중 중</Badge>}
+                <SwipeAction label="나가기" name={r.title} onAction={() => setLeaving(r)}>
+                  <Card
+                    key={r._id}
+                    onPress={() => router.push({ pathname: '/room/[id]', params: { id: r._id } })}
+                    className="flex-row items-center gap-3 p-6"
+                  >
+                    <View className="flex-1">
+                      <View className="flex-row items-center gap-2">
+                        <Text className="text-callout font-bold text-ink">{r.title}</Text>
+                        {r.timerState?.phase === 'focus' && <Badge tone="sun">집중 중</Badge>}
+                      </View>
+                      <Text className="text-caption text-sub">
+                        {r.memberCount}명 · 코드 {r.inviteCode}
+                      </Text>
                     </View>
-                    <Text className="text-caption text-sub">
-                      {r.memberCount}명 · 코드 {r.inviteCode}
-                    </Text>
-                  </View>
-                  <Faces members={r.members} />
-                </Card>
+                    <Faces members={r.members} />
+                  </Card>
+                </SwipeAction>
               </Animated.View>
             ))}
             <View className="mt-2 flex-row gap-2.5">
@@ -215,6 +233,22 @@ export function RoomListScreen() {
           ))}
         </View>
       </Screen>
+      <Alert
+        open={!!leaving}
+        title="스터디룸에서 나갈까요?"
+        body={
+          leaving?.memberCount === 1
+            ? `${leaving.title}의 마지막 멤버예요. 나가면 방이 닫히고 7일 후 방과 채팅 기록이 삭제돼요.`
+            : `${leaving?.title ?? '이 방'}에서 나가요. 코드로 다시 들어올 수 있어요.`
+        }
+        secondary="취소"
+        onSecondary={() => setLeaving(null)}
+        primary="나가기"
+        onPrimary={() => {
+          if (leaving) leave.mutate(leaving._id);
+          setLeaving(null);
+        }}
+      />
       <Dialog open={code} onClose={() => setCode(false)}>
         <View className="h-11 w-11 items-center justify-center rounded-full bg-mint">
           <Lock size={ICON.md} color={C.brand} />

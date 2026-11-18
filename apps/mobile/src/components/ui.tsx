@@ -39,6 +39,9 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Path, SvgXml } from 'react-native-svg';
+import ReanimatedSwipeable, {
+  type SwipeableMethods,
+} from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { router, useIsFocused, useSegments } from 'expo-router';
 import {
   Check,
@@ -48,6 +51,7 @@ import {
   Eye,
   EyeOff,
   Search as SearchIcon,
+  Trash2,
   X,
 } from 'lucide-react-native';
 import { C, ICON, MOTION } from '@/theme';
@@ -561,11 +565,14 @@ export function Card({
   children,
   className,
   onPress,
+  onLongPress,
   tone = 'cream',
 }: {
   children: ReactNode;
   className?: string;
   onPress?: () => void;
+  /** 꾹 누르기(예: 폴더 삭제). onPress가 있을 때만 쓴다 */
+  onLongPress?: () => void;
   /** cream: 면에 맞춘 기본 카드 (캔버스 위 흰 카드 · 흰 면 안 채움 · 개편 전 크림) */
   tone?: 'cream' | 'white' | 'mint' | 'night';
 }) {
@@ -582,9 +589,53 @@ export function Card({
   const body = tone === 'night' ? children : <OnWhite>{children}</OnWhite>;
   if (!onPress) return <View className={shape}>{body}</View>;
   return (
-    <Tap scaleTo={0.98} onPress={onPress} className={shape}>
+    <Tap scaleTo={0.98} onPress={onPress} onLongPress={onLongPress} className={shape}>
       {body}
     </Tap>
+  );
+}
+
+/**
+ * 왼쪽으로 밀면 오른쪽에 빨간 동작 버튼(삭제 · 나가기)이 나온다. 누르면 줄을 닫고 onAction을 부른다.
+ * 되돌릴 수 없는 동작이면 onAction에서 확인 대화상자를 연다(버튼을 바로 실행하지 않는다)
+ */
+export function SwipeAction({
+  label,
+  name,
+  onAction,
+  children,
+}: {
+  /** 버튼 글자: 삭제 · 나가기 */
+  label: string;
+  /** 읽기 도구가 읽는 대상 이름(예: 자료 제목) → 「제목 삭제」 */
+  name: string;
+  onAction: () => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<SwipeableMethods>(null);
+  return (
+    <ReanimatedSwipeable
+      ref={ref}
+      friction={2}
+      rightThreshold={40}
+      overshootRight={false}
+      renderRightActions={() => (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${name} ${label}`}
+          onPress={() => {
+            ref.current?.close();
+            onAction();
+          }}
+          className="w-20 items-center justify-center gap-1 bg-danger"
+        >
+          <Trash2 size={ICON.sm} color="#fff" />
+          <Text className="text-caption font-semibold text-white">{label}</Text>
+        </Pressable>
+      )}
+    >
+      {children}
+    </ReanimatedSwipeable>
   );
 }
 

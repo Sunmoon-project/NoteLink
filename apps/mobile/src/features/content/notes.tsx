@@ -49,6 +49,7 @@ import {
   Screen,
   Search,
   Sheet,
+  SwipeAction,
   Tap,
   Title,
   cx,
@@ -125,6 +126,17 @@ export function NoteListScreen() {
     (f) => (tag === '전체' || f.subjectName === tag) && f.title.includes(q),
   );
   const tags = ['전체', ...new Set((folders.data ?? []).map((f) => f.subjectName ?? ''))];
+  // 폴더를 꾹 누르면 삭제 확인(폴더 안 ⋯ 메뉴와 같은 삭제)
+  const qc = useQueryClient();
+  const [removing, setRemoving] = useState<{ _id: string; title: string } | null>(null);
+  const delFolder = useMutation({
+    mutationFn: (folderId: string) => api.content.deleteFolder(folderId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['folders'] });
+      toast('폴더를 삭제했어요');
+    },
+    onError: () => toast('폴더를 삭제하지 못했어요. 다시 시도해 주세요'),
+  });
 
   const consumedUpload = useRef<string | undefined>(undefined);
   // 종료 요약에서 "필기 사진 / 녹음"을 누르고 들어온 경우 첫 폴더로 바로 이동
@@ -184,6 +196,7 @@ export function NoteListScreen() {
                   onPress={() =>
                     router.push({ pathname: '/(tabs)/note/folder/[id]', params: { id: f._id } })
                   }
+                  onLongPress={() => setRemoving(f)}
                   className="w-[47.5%] p-3.5"
                 >
                   <View className="h-20 items-center justify-center rounded-xl bg-mint">
@@ -208,6 +221,18 @@ export function NoteListScreen() {
       {!!folders.data?.length && (
         <Fab tour={addTarget} onPress={() => router.push('/note-new/tag')} />
       )}
+      <Alert
+        open={!!removing}
+        title="폴더를 삭제할까요?"
+        body={`${removing?.title ?? '이 폴더'}를 삭제하면 복구할 수 없어요.`}
+        secondary="취소"
+        onSecondary={() => setRemoving(null)}
+        primary="삭제"
+        onPrimary={() => {
+          if (removing) delFolder.mutate(removing._id);
+          setRemoving(null);
+        }}
+      />
     </Canvas>
   );
 }
@@ -377,6 +402,20 @@ export function FolderScreen() {
   const [dial, setDial] = useState(false);
   const [sheet, setSheet] = useState<null | 'hand' | 'rec' | 'doc' | 'more'>(upload ?? null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // 왼쪽으로 밀어 지울 자료(확인 대화상자를 거친다)
+  const [removing, setRemoving] = useState<Material | null>(null);
+  const delMaterial = useMutation({
+    mutationFn: (m: Material) => api.content.deleteMaterial(m._id),
+    onSuccess: (_, m) => {
+      qc.setQueryData<Material[]>(['materials', id], (list) =>
+        list?.filter((x) => x._id !== m._id),
+      );
+      void qc.invalidateQueries({ queryKey: ['materials', id] });
+      void qc.invalidateQueries({ queryKey: ['folders'] });
+      toast('자료를 삭제했어요');
+    },
+    onError: () => toast('삭제하지 못했어요. 다시 시도해 주세요'),
+  });
   const draft = useDraft();
   const del = useMutation({
     mutationFn: () => api.content.deleteFolder(id),
@@ -521,48 +560,50 @@ export function FolderScreen() {
                     exiting={FadeOut.duration(MOTION.exit)}
                     className={cx(i > 0 && 'border-t border-fill')}
                   >
-                    <Tap
-                      scaleTo={0.99}
-                      onPress={() => open(m)}
-                      className="flex-row items-center gap-3.5 px-5 py-4"
-                    >
-                      <View
-                        className={cx('h-10 w-10 items-center justify-center rounded-xl', tile)}
+                    <SwipeAction label="삭제" name={m.title} onAction={() => setRemoving(m)}>
+                      <Tap
+                        scaleTo={0.99}
+                        onPress={() => open(m)}
+                        className="flex-row items-center gap-3.5 bg-white px-5 py-4"
                       >
-                        <KindIcon size={ICON.md} color={tint} />
-                      </View>
-                      <View className="flex-1">
-                        <Text className="text-subhead font-semibold text-ink">{m.title}</Text>
-                        <Text className="text-caption2 text-sub">
-                          {KIND[m.kind][1]} · {seoul(m.createdAt).getMonth() + 1}/
-                          {seoul(m.createdAt).getDate()} 업로드
-                          {m.kind === 'recording' && st !== 'failed' && ` · ${summaryState(m)}`}
-                          {st === 'failed' && <Text className="text-danger"> · 요약 실패</Text>}
-                        </Text>
-                      </View>
-                      {/* AI가 아직 처리 중인 자료는 화살표 대신 진행 표시, 요약에 실패한 자료는 다시 요약 */}
-                      {busy ? (
-                        <ActivityIndicator size="small" color={C.brand} />
-                      ) : st === 'failed' && m.processing.jobId ? (
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={`${m.title} 다시 요약`}
-                          hitSlop={8}
-                          disabled={resummarize.isPending}
-                          onPress={() => resummarize.mutate(m)}
-                          className="flex-row items-center gap-1 rounded-full bg-mint px-3 py-1.5"
+                        <View
+                          className={cx('h-10 w-10 items-center justify-center rounded-xl', tile)}
                         >
-                          {resummarize.isPending && resummarize.variables?._id === m._id ? (
-                            <ActivityIndicator size="small" color={C.brand} />
-                          ) : (
-                            <RotateCcw size={ICON.xs} color={C.brand} />
-                          )}
-                          <Text className="text-caption font-semibold text-brand">다시 요약</Text>
-                        </Pressable>
-                      ) : (
-                        <ChevronRight size={ICON.sm} color={C.sub} />
-                      )}
-                    </Tap>
+                          <KindIcon size={ICON.md} color={tint} />
+                        </View>
+                        <View className="flex-1">
+                          <Text className="text-subhead font-semibold text-ink">{m.title}</Text>
+                          <Text className="text-caption2 text-sub">
+                            {KIND[m.kind][1]} · {seoul(m.createdAt).getMonth() + 1}/
+                            {seoul(m.createdAt).getDate()} 업로드
+                            {m.kind === 'recording' && st !== 'failed' && ` · ${summaryState(m)}`}
+                            {st === 'failed' && <Text className="text-danger"> · 요약 실패</Text>}
+                          </Text>
+                        </View>
+                        {/* AI가 아직 처리 중인 자료는 화살표 대신 진행 표시, 요약에 실패한 자료는 다시 요약 */}
+                        {busy ? (
+                          <ActivityIndicator size="small" color={C.brand} />
+                        ) : st === 'failed' && m.processing.jobId ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`${m.title} 다시 요약`}
+                            hitSlop={8}
+                            disabled={resummarize.isPending}
+                            onPress={() => resummarize.mutate(m)}
+                            className="flex-row items-center gap-1 rounded-full bg-mint px-3 py-1.5"
+                          >
+                            {resummarize.isPending && resummarize.variables?._id === m._id ? (
+                              <ActivityIndicator size="small" color={C.brand} />
+                            ) : (
+                              <RotateCcw size={ICON.xs} color={C.brand} />
+                            )}
+                            <Text className="text-caption font-semibold text-brand">다시 요약</Text>
+                          </Pressable>
+                        ) : (
+                          <ChevronRight size={ICON.sm} color={C.sub} />
+                        )}
+                      </Tap>
+                    </SwipeAction>
                   </Animated.View>
                 );
               })}
@@ -692,6 +733,18 @@ export function FolderScreen() {
         onPrimary={() => {
           setConfirmDelete(false);
           del.mutate();
+        }}
+      />
+      <Alert
+        open={!!removing}
+        title="자료를 삭제할까요?"
+        body={`${removing?.title ?? '이 자료'}를 삭제하면 복구할 수 없어요.`}
+        secondary="취소"
+        onSecondary={() => setRemoving(null)}
+        primary="삭제"
+        onPrimary={() => {
+          if (removing) delMaterial.mutate(removing);
+          setRemoving(null);
         }}
       />
     </Canvas>
