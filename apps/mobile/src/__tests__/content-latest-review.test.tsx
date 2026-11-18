@@ -697,6 +697,24 @@ it.each(['recording', 'document'])(
   },
 );
 
+// 녹음 화면은 자막 옆 3D 아바타가 말한다 → 떠 있는 아바타는 숨긴다(GL 화면 하나 · 시선 하나)
+it('녹음 상세에는 떠 있는 아바타 선생님을 띄우지 않는다', async () => {
+  mockApi.content.material.mockResolvedValue({
+    _id: 'material1',
+    folderId: 'folder1',
+    title: '녹음 자료',
+    kind: 'recording',
+    status: 'ready',
+    createdAt: '2026-11-01T00:00:00Z',
+    keywords: [],
+    bookmarks: [],
+    summary: { sections: [{ heading: '요약', body: '내용' }], points: [] },
+  });
+  await renderScreen(<RecDetailScreen />, client());
+  expect(await screen.findByText('녹음 자료')).toBeTruthy();
+  expect(screen.queryByLabelText('아바타 선생님에게 물어보기')).toBeNull();
+});
+
 it('새 초안이나 자료 내용 변경은 이전 등록 키를 재사용하지 않는다', () => {
   const first = useDraft.getState().getCreationId();
   expect(useDraft.getState().getCreationId()).toBe(first);
@@ -776,6 +794,42 @@ it('요약 아래 대본은 지금 슬라이드의 문장만, 전체 대본은 �
   expect(await screen.findByText(/지금 문장/)).toBeTruthy();
   expect(screen.queryByText(/앞 문장/)).toBeNull();
   expect(screen.queryByText(/다음 문장/)).toBeNull();
+});
+
+it('같은 슬라이드 구간의 다음 문장만 미리 보이고 다른 구간 문장은 숨긴다', async () => {
+  mockApi.content.recording.mockResolvedValue({
+    audioUrl: 'https://blob.example/audio.m4a',
+    durationSec: 180,
+    slides: [
+      { index: 0, title: '지금 구간', bullets: [], startSec: 40, endSec: 90 },
+      { index: 1, title: '빈 구간', bullets: [], startSec: 90, endSec: 120 },
+    ],
+    transcript: {
+      text: '',
+      segments: [
+        { startSec: 41, endSec: 45, text: '지금 문장' },
+        { startSec: 50, endSec: 55, text: '같은 구간 다음 문장' },
+        { startSec: 125, endSec: 130, text: '다른 구간 문장' },
+      ],
+    },
+  });
+  const qc = client();
+  await renderScreen(<Player materialId="material1" />, qc); // 42초
+  expect((await screen.findByTestId('caption-now')).props.children).toBe('지금 문장');
+  expect(screen.getByTestId('caption-next').props.children).toBe('같은 구간 다음 문장');
+  expect(screen.queryByText('다른 구간 문장')).toBeNull();
+});
+
+it('지금 구간에 문장이 없으면 자막 대신 빈 구간 문구', async () => {
+  mockApi.content.recording.mockResolvedValue({
+    audioUrl: 'https://blob.example/audio.m4a',
+    durationSec: 180,
+    slides: [{ index: 0, title: '지금 구간', bullets: [], startSec: 40, endSec: 90 }],
+    transcript: { text: '', segments: [{ startSec: 95, endSec: 99, text: '다른 구간 문장' }] },
+  });
+  await renderScreen(<Player materialId="material1" />, client());
+  expect(await screen.findByText('이 구간에는 말한 내용이 없어요')).toBeTruthy();
+  expect(screen.queryByTestId('caption-now')).toBeNull();
 });
 
 it.each([

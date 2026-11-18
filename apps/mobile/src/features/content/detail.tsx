@@ -494,15 +494,12 @@ export function RecDetailScreen() {
   const { id, m, isError, refetch } = useMaterial();
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
-  const buddy = useTuckOnScroll();
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
     <Canvas>
-      <Screen
-        onScroll={buddy.onScroll}
-        overlay={canAsk(m) && <TutorBuddy id={id} tucked={buddy.tucked} />}
-      >
+      {/* 떠 있는 아바타 선생님은 두지 않는다: 플레이어 자막 옆 3D 아바타가 녹음에 맞춰 말한다(GL 화면 하나) */}
+      <Screen>
         <Header
           title={view === 'text' ? '원문 텍스트 보기' : m.title}
           sub={dateLabel(m, '녹음')}

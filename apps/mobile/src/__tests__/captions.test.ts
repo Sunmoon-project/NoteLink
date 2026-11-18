@@ -1,6 +1,6 @@
 // 녹음 자막: 문장 나누기 · 지금 문장 · 채움 비율 · 재생 위치 이어 붙이기(순수 함수)
 import { filled, lineAt, splitLines } from '../features/content/captions';
-import { extrapolate } from '../features/content/clock';
+import { extrapolate, steady } from '../features/content/clock';
 
 const words = [
   { text: '안녕하세요.', startSec: 0, endSec: 1.2 },
@@ -78,4 +78,12 @@ describe('extrapolate', () => {
     expect(extrapolate({ pos: 10, at: 1000, rate: 1, playing: true }, 500)).toBe(10));
   it('상태가 1초 넘게 안 오면(끊김) 더 달리지 않는다', () =>
     expect(extrapolate({ pos: 10, at: 0, rate: 1, playing: true }, 5000)).toBe(11));
+});
+
+describe('steady', () => {
+  it('재생 중 0.3초 안쪽으로 뒤로 가면(상태 기준점 흔들림) 그 자리에 머문다', () =>
+    expect(steady(10.2, 10, true)).toBe(10.2));
+  it('크게 뒤로 가면(되감기) 따른다', () => expect(steady(20, 10, true)).toBe(10));
+  it('앞으로는 그대로', () => expect(steady(10, 10.5, true)).toBe(10.5));
+  it('멈춰 있으면 받은 자리', () => expect(steady(10.2, 10, false)).toBe(10));
 });

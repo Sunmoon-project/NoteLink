@@ -2,10 +2,13 @@
 // 화면 테스트는 서버 없이 돈다. 서버 모드는 server-mode.test.ts가 따로 본다
 process.env.EXPO_PUBLIC_USE_LOCAL_DATA = 'true';
 // 화면 테스트용: 애니메이션 · 워클릿 네이티브 모듈 대신 목을 쓴다
-// 공식 mock에 없는 useReducedMotion은 '동작 줄이기 꺼짐'으로 둔다
+// 공식 mock에서 빠지는 것: useReducedMotion은 '동작 줄이기 꺼짐', LayoutAnimationConfig는 자식만 그림,
+// useFrameCallback은 프레임을 돌리지 않음(녹음 재생 시계는 멈춘 위치 그대로)
 jest.mock('react-native-reanimated', () => ({
   ...require('react-native-reanimated/mock'),
   useReducedMotion: () => false,
+  LayoutAnimationConfig: ({ children }) => children,
+  useFrameCallback: () => ({ setActive: () => {}, isActive: false, callbackId: -1 }),
 }));
 // 화면 테스트는 기기 저장소 대신 시드가 든 가짜 API를 쓴다 (앱 번들에는 들어가지 않는다)
 jest.mock('./src/lib/local/api', () => ({

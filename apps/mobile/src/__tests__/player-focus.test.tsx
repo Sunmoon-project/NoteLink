@@ -29,6 +29,14 @@ jest.mock('expo-audio', () => ({
   }),
   useAudioPlayerStatus: () => mockStatus,
 }));
+// 자막 옆 3D 아바타 선생님: 받은 값(표정 · 입 모양 함수)만 적어 둔다
+const mockAvatar: { props?: Record<string, unknown> } = {};
+jest.mock('../features/tutor/avatar3d', () => ({
+  Avatar3D: (props: Record<string, unknown>) => {
+    mockAvatar.props = props;
+    return null;
+  },
+}));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),
@@ -87,4 +95,14 @@ it('배속 칩은 누르는 높이가 44pt 이상이고 글자는 caption이다'
   const h = Number(cls.match(/\bh-(\d+)\b/)?.[1]) * 4;
   const slop = Number(node?.props.hitSlop?.top ?? node?.props.hitSlop);
   expect(h + slop * 2).toBeGreaterThanOrEqual(44);
+});
+
+// 사용자 요청: 2D 초록 얼굴 대신 3D 아바타 선생님이 실제 말에 맞춰 입을 움직인다
+it('자막 옆에 3D 아바타 선생님(머리 구도 64)을 띄우고 입 모양 함수를 넘긴다', async () => {
+  await renderScreen(<Player materialId="m-avatar" />);
+  await screen.findByLabelText('일시정지');
+  expect(screen.queryByLabelText('아바타')).toBeNull(); // 옛 2D 얼굴
+  expect(mockAvatar.props).toMatchObject({ mood: 'talking', framing: 'head', size: 64 });
+  const lips = (mockAvatar.props!.lips as () => { open: number; wide: number })();
+  expect(lips).toEqual({ open: 0, wide: 1 }); // 대본이 없으면 입을 다문다
 });

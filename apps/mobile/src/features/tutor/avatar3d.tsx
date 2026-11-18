@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { C } from '@/theme';
+import type { Lips } from './lips';
 
 // Hermes에는 FinalizationRegistry가 없다(three의 WebGLRenderer가 GPU 자원 정리에 씀).
 // 화면을 떠날 때 renderer.dispose()로 직접 정리하므로 등록만 받는 대체로 둔다
@@ -181,6 +182,7 @@ export function Avatar3D({
   framing = 'full',
   background = C.mint,
   onReady,
+  lips,
 }: {
   mood: Mood;
   avatarId?: string | null;
@@ -190,12 +192,19 @@ export function Avatar3D({
   background?: string;
   /** 첫 프레임을 그렸거나 2D로 대신했을 때(한 번). 빈 자리가 먼저 움직이지 않게 기다리는 데 쓴다 */
   onReady?: () => void;
+  /**
+   * 녹음 재생처럼 실제 소리에 입을 맞출 때: 그리기 반복이 프레임마다 동기로 부른다(await 금지).
+   * 넘기면 입은 talking 사인파 대신 이 모양을 따른다(눈 · 고개는 mood대로)
+   */
+  lips?: () => Lips;
 }) {
   const id = modelId(avatarId);
   const moodRef = useRef(mood);
   const ready = useRef(onReady);
+  const lipsRef = useRef(lips);
   useEffect(() => {
     ready.current = onReady;
+    lipsRef.current = lips;
   });
   // 실패는 그 모델에만: 다른 아바타로 바꾸면 다시 3D로 읽어 본다
   const [failedId, setFailedId] = useState<string | null>(null);
@@ -309,7 +318,11 @@ export function Avatar3D({
             0.3,
           );
         }
-        if (mouth) {
+        const said = lipsRef.current?.();
+        if (mouth && said) {
+          mouth.scale.y = approach(mouth.scale.y, mouthY * (1 + 2.4 * said.open), 0.5);
+          mouth.scale.x = approach(mouth.scale.x, mouthX * said.wide, 0.5);
+        } else if (mouth) {
           // 말할 때는 두 박자를 섞어 같은 모양이 반복되지 않게
           const open = 0.5 + 0.5 * Math.sin(t * 13) * Math.sin(t * 4.3 + 1);
           mouth.scale.y =

@@ -15,6 +15,13 @@ export function extrapolate(a: Anchor, now: number): number {
   return a.pos + (ms / 1000) * a.rate;
 }
 
+/** 기준점 흔들림(상태가 UI에 닿는 시각 차)으로 0.3초 안쪽 뒤로 가면 머문다. 그보다 크면 되감기라 따른다 */
+const JITTER_SEC = 0.3;
+export function steady(prev: number, next: number, playing: boolean): number {
+  'worklet';
+  return playing && next < prev && prev - next < JITTER_SEC ? prev : next;
+}
+
 /**
  * 재생 위치 시계. expo-audio 상태는 0.25초마다 오므로, 그 사이를 프레임마다 이어 붙여(보간)
  * 자막 채움 · 입 모양이 끊기지 않게 한다. clock은 UI 스레드용, posNow는 JS(아바타 그리기 반복)용.
@@ -32,7 +39,7 @@ export function usePlaybackClock(p: { pos: number; playing: boolean; rate: numbe
   const frames = useFrameCallback(({ timestamp }) => {
     const a = anchor.get();
     if (base.get().seq !== a.seq) base.set({ seq: a.seq, at: timestamp });
-    clock.set(extrapolate({ ...a, at: base.get().at }, timestamp));
+    clock.set(steady(clock.get(), extrapolate({ ...a, at: base.get().at }, timestamp), a.playing));
   }, false);
   const seq = useRef(0);
   useEffect(() => {
