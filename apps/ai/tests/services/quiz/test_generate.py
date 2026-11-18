@@ -1333,3 +1333,67 @@ def test_quiz_checks_all_rejected_fail_without_retry(monkeypatch: pytest.MonkeyP
     doc = run_job(monkeypatch, llm, one_page_job(), generate.TYPE)
     assert (doc["status"], doc["attempts"]) == ("failed", 1)
     assert len(llm.named(generate.CHECK_NAME)) == 1  # 거절은 다시 보내지 않음
+
+
+def test_many_drafts_are_checked_in_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 30문제 · 긴 노트를 한 호출에 넣으면 학교 LLM 문맥을 넘음(/code-review #512)
+    monkeypatch.setattr(generate, "CHECK_BATCH", 1)
+    llm = happy([GOOD["이질 아메바"], GOOD["람블편모충"]])
+    result, _ = run(llm, job(size=2))
+    assert len(result["questions"]) == 2
+    checks = llm.named(generate.CHECK_NAME)
+    assert len(checks) == 2 and all(c.count("문제 1 (") == 1 for c in checks)
+    assert '<노트 쪽="2">' not in checks[0] and '<노트 쪽="1">' not in checks[1]
+
+
+def test_long_page_text_starts_a_new_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(generate, "CHECK_CHARS", len(PAGE1) + 1)
+    llm = happy([GOOD["이질 아메바"], GOOD["람블편모충"]])
+    run(llm, job(size=2))
+    assert len(llm.named(generate.CHECK_NAME)) == 2
+
+
+def test_a_draft_the_checker_finds_no_answer_for_is_never_used() -> None:
+    # '없음'은 다른 답과 같이 봄: 정답이 틀렸을 수 있어 모자라도 채우지 않음
+    nothing = GOOD["이질 아메바"]["question"]["passage"]
+    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"]])
+    check = llm.answers[generate.CHECK_NAME]
+
+    def answer(user: str) -> JsonObject:
+        r = check(user)
+        assert not isinstance(r, LlmError)
+        for b, row in zip(blocks(user), r["results"], strict=True):
+            if nothing in b:
+                row.update(answer="없음", only_one=False, supported=False)
+        return r
+
+    llm.answers[generate.CHECK_NAME] = answer
+    wrong_for(GOOD["대장 아메바"]["question"]["passage"], llm)
+    with pytest.raises(generate.NoQuestionsError, match="검수자 답 없음"):
+        run(llm, page1_job(size=1))
+
+
+def test_a_second_round_check_outage_fills_from_kept_drafts_alone() -> None:
+    # 첫 판이 애매한 초안뿐이어도 둘째 판 장애로 작업을 처음부터 다시 돌리지 않음
+    unsure = GOOD["이질 아메바"]["question"]["passage"]
+    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"]], sure=lambda b: unsure not in b)
+    check = llm.answers[generate.CHECK_NAME]
+    llm.answers[generate.CHECK_NAME] = lambda u: (
+        check(u) if len(llm.named(generate.CHECK_NAME)) == 1 else LlmError("응답 없음")
+    )
+    result, _ = run(llm, page1_job(size=1))
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
+
+
+def test_a_draft_filled_from_kept_is_not_reported_as_not_made(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    only_definitions(monkeypatch)
+    inp = page1_job(size=3)
+    inp["material"]["concepts"] = ["이질 아메바"]
+    again = draft("이질 아메바", "적혈구를 먹으며 위족으로 움직이는 근족충류 원충이다")
+    llm = happy([GOOD["이질 아메바"], again, BAD, BAD, BAD])
+    with pytest.raises(generate.NoQuestionsError) as e:
+        run(llm, inp)
+    assert str(e.value).startswith("2/3문제만 만듦")
+    assert generate.SAME_TYPE_ANSWER not in str(e.value)

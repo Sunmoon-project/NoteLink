@@ -29,7 +29,9 @@ ai_jobs.type = 'quiz_pregen': 노트를 만들 때 NestJS가 넣는 첫 맞춤 �
   #512 전에는 문제마다 생성 → 정답 둘 검사 → 검사 모델 풀기(미리 만들기는 생성 모델 2차 풀기도)를
   거치고, 떨어지면 그 자리만 다시 만들기를 5판까지 했습니다. 겹침도 한 개념 1문제 · 같은 정답 ·
   같은 노트 문장 · 거꾸로 묻기를 모두 막아, 1쪽 노트 미리 만들기가 6.3분 뒤 3/5로 실패했습니다
-  (11/18 학교 LLM). 이제는 거의 같은 문제만 늘 막고, 나머지 겹침은 모자랄 때 허용합니다.
+  (11/18 학교 LLM). 이제는 거의 같은 문제만 늘 막고, 같은 노트 문장 · 거꾸로 묻기(checks.same_fact
+  · reversed_of)는 보지 않으며, 같은 정답 · 같은 유형과 한 개념 PER_CONCEPT문제 넘게는 모자랄 때만
+  허용합니다.
   개념 이름이 없는 노트는 먼저 쪽마다 이름을 뽑습니다(concepts.for_page, 쪽마다 동시에). 뽑은
   이름은 result.concepts로 노트에 저장되어 다음 퀴즈부터는 뽑지 않습니다.
 
@@ -168,6 +170,8 @@ SPARE = 0.4  # 판마다 여분 초안: 모자란 수 × SPARE(올림). 5문제�
 ROUNDS = 2  # 만들고 한 번에 검사하는 판: 첫 판 + 못 채운 자리 한 번 더(#512)
 PER_CONCEPT = 2  # 세트에서 한 개념을 물을 수 있는 문제 수(모자라서 채울 때는 넘어도 됨)
 CHECK_NAME = "CheckAll"  # 묶은 검사 호출 이름
+CHECK_BATCH = 10  # 묶은 검사 한 호출의 문제 수
+CHECK_CHARS = 12000  # 묶은 검사 한 호출의 쪽 글 글자 수(쪽 CHECK_CAP자 4쪽)
 BAD_SHAPE = "문제 모양이 맞지 않음"  # 서버 모양 검사(fromWorkerQuestion)에 걸림
 NEAR_SAME = "이미 있는 문제와 거의 같음"
 SAME_TYPE_ANSWER = "같은 정답을 같은 유형으로 다시 물음"
@@ -616,8 +620,8 @@ def page_types(text: str, korean_subject: bool, extra: tuple[str, ...] = ()) -> 
 
     '(A)' 줄 수만 세면 RC Part 5/6 쪽도 걸렸습니다(2일차 시험).
     extra(안정적 모드의 부정설명 · 조합)는 한국어 용어 과목 쪽에만: 둘 다 용어에 대한 한국어 설명
-    문장을 묻는 유형입니다. 시도는 이 순서로 이어지므로(gen_one) 어느 유형에서 시작해도 세 번의
-    시도에 쉬운 유형이 섞이게 사이사이에 둡니다.
+    문장을 묻는 유형입니다. 자리마다 · 판마다 유형을 이 순서로 돌리므로(levels.order_types) 어려운
+    유형이 몰리지 않게 사이사이에 둡니다.
     """
     if len(_PHOTO.findall(text)) >= 3:
         return ["묘사", "어휘"]
@@ -786,16 +790,29 @@ def check_all(llm: Llm, made: list[Made], pages: dict[int, str]) -> list[tuple[V
     """초안들을 검사 모델이 한 호출로 풂(#512). 초안마다 (판정, 고른 답 또는 이유).
 
     pass    정답을 골랐고 정답이 하나뿐 · 노트로 정해짐
-    unsure  정답을 골랐지만 정답이 하나뿐이 아니거나 노트로 정해지지 않음, 또는 '없음'을 고름
-    wrong   다른 답을 고름(정답이 틀렸을 수 있음)
+    unsure  정답을 골랐지만 정답이 하나뿐이 아니거나 노트로 정해지지 않음
+    wrong   다른 답 · '없음'을 고름(정답이 틀렸을 수 있음)
     bad     그 문제의 답 모양이 틀림
     문제마다 따로 묻던 정답 둘 검사(quality.screen) · 검사 모델 풀기(similar.solved) · 생성 모델
     2차 풀기를 이 한 호출의 '정답이 하나뿐인지'로 대신합니다. 쪽 글은 쪽마다 한 번만 보여 줍니다.
+    초안이 많거나 쪽 글이 길면 CHECK_BATCH문제 · 쪽 글 CHECK_CHARS자씩 나눠 묻습니다(30문제 · 21쪽
+    노트를 한 호출에 넣으면 학교 LLM 문맥을 넘음, /code-review #512).
     호출이 실패하거나 답 전체의 모양이 틀리면 한 번 더 보냄. 다시 실패하면 LlmError를 그대로
-    올리고(거절은 바로), 모양이 다시 틀리면 모두 bad.
+    올리고(거절은 바로), 모양이 다시 틀리면 그 묶음은 모두 bad.
     """
-    if not made:
-        return []
+    out: list[tuple[Verdict, str]] = []
+    group: list[Made] = []
+    for m in made:
+        chars = sum(len(pages[p][:CHECK_CAP]) for p in {x.page for x in [*group, m]})
+        if group and (len(group) >= CHECK_BATCH or chars > CHECK_CHARS):
+            out += _check_group(llm, group, pages)
+            group = []
+        group.append(m)
+    return out + (_check_group(llm, group, pages) if group else [])
+
+
+def _check_group(llm: Llm, made: list[Made], pages: dict[int, str]) -> list[tuple[Verdict, str]]:
+    """check_all의 한 호출."""
     notes = "\n\n".join(
         f'<노트 쪽="{p}">\n{pages[p][:CHECK_CAP]}\n</노트>' for p in sorted({m.page for m in made})
     )
@@ -858,9 +875,7 @@ def check_all(llm: Llm, made: list[Made], pages: dict[int, str]) -> list[tuple[V
             out.append(("bad", UNCHECKED))
         elif m.key is not None and said == LETTERS[m.key]:
             out.append(("pass" if one and sure else "unsure", str(said)))
-        elif said == "없음":
-            out.append(("unsure", str(said)))
-        else:
+        else:  # 다른 답 · '없음': 정답이 틀렸을 수 있어 남겨 두지도 않음
             out.append(("wrong", str(said)))
     return out
 
@@ -1035,8 +1050,8 @@ def run(
 def _shape_ok(d: Draft) -> bool:
     """세트에 넣을 수 있는 모양인지(#247). 서버 검사(apps/api quiz-sets.service.ts
     fromWorkerQuestion: 질문 · 답이 글, 보기는 글 배열)보다 좁게 봄: 빈 질문 · 빈 답 · 빈 보기도
-    빼고, 앱은 보기 중 하나를 고르므로 보기 CHOICES개 안에 정답이 있어야 함. 빈 질문 · 답은
-    gen_one이 검사 호출 전에도 거름."""
+    빼고, 앱은 보기 중 하나를 고르므로 보기 CHOICES개 안에 정답이 있어야 함. draft_one이 검사
+    호출 전에 거름."""
     stem, answer, options = d.get("stem"), d.get("answer"), d.get("options")
     return (
         isinstance(stem, str)
@@ -1131,11 +1146,13 @@ def _make_all(
             slots.append(Slot(page, level, ty, mine, info, notes))
         return slots
 
+    seen_now = list(seen)  # 겹침 검사: 이미 있는 문제 + 세트에 넣은 문제(admit이 더함)
+
     def overlap(r: Made) -> str | None:
         """이미 넣은 문제와의 겹침: 거의 같음(버림) · 같은 정답과 유형 · 개념 수(남겨 둠)."""
         d = r.question
         assert d is not None and r.concept is not None
-        if too_close(d, seen + [_seen_made(x) for x in taken], r.concept, r.asked_as):
+        if too_close(d, seen_now, r.concept, r.asked_as):
             return NEAR_SAME
         if asked[r.concept] >= PER_CONCEPT:
             return CONCEPT_FULL
@@ -1153,6 +1170,7 @@ def _make_all(
         asked_as[r.concept].append(r.asked_as)
         if _listed(r):
             used.append(r.question["answer"])
+        seen_now.append(_seen_made(r))
         taken.append(r)
 
     first = [p for p in sorted(share, key=lambda p: -share[p]) for _ in range(share[p])]
@@ -1173,9 +1191,7 @@ def _make_all(
         for r in made:
             if r.question is None:
                 continue
-            if too_close(
-                r.question, seen + [_seen_made(x) for x in taken], r.concept or "", r.asked_as
-            ):
+            if too_close(r.question, seen_now, r.concept or "", r.asked_as):
                 r.why, r.fault = [NEAR_SAME], True
                 missed.append(r)
             else:
@@ -1183,9 +1199,10 @@ def _make_all(
         try:
             verdicts = check_all(llm, ready, pages)
         except LlmError:
-            if rnd == 0 or not taken:
+            if rnd == 0 or not (taken or kept):
                 raise
-            # 문제를 받은 뒤의 장애: 받은 문제를 버리고 처음부터 다시 돌리지 않게 남겨 둔 초안으로
+            # 문제를 받은 뒤의 장애: 받은 · 남겨 둔 문제를 버리고 처음부터 다시 돌리지 않게
+            # 남겨 둔 초안으로 채움(/code-review #512)
             verdicts = [("bad", UNCHECKED)] * len(ready)
         report(15 + (55 if rnd == 0 else 80), "문제 검사")
         passed = []
@@ -1204,11 +1221,13 @@ def _make_all(
             if v == "unsure":
                 kept.append((1, r))
             missed.append(r)
-        order = lacking()
-        passed.sort(key=lambda r: lv.get(r.type or "", "중") not in order[: n - len(taken)])
-        for r in passed:
-            if len(taken) >= n:
-                break
+        # 목표보다 모자란 난이도의 초안부터: 넣을 때마다 다시 봄(한 난이도가 남은 자리를 다
+        # 차지하지 않게, /code-review #512)
+        while passed and len(taken) < n:
+            got = Counter(lv.get(x.type or "", "중") for x in taken)
+            short = {k for k, c in (mix or {}).items() if got[k] < c}
+            r = next((x for x in passed if lv.get(x.type or "", "중") in short), passed[0])
+            passed.remove(r)
             if why := overlap(r):
                 r.why, r.fault = [why], True
                 if why != NEAR_SAME:
@@ -1238,7 +1257,7 @@ def _make_all(
         if len(taken) >= n:
             break
         assert r.question is not None and r.concept is not None
-        if not too_close(r.question, seen + [_seen_made(x) for x in taken], r.concept, r.asked_as):
+        if not too_close(r.question, seen_now, r.concept, r.asked_as):
             admit(r)
     if len(taken) >= n:
         report(100, "문제 만들기")
@@ -1247,7 +1266,9 @@ def _make_all(
         assert q is not None
         options, _ = place(q["options"], q["options"].index(q["answer"]), i)
         r.question = {**q, "options": options}
-    return taken, ([{"pageNo": r.page, "why": r.why} for r in failed] if len(taken) < n else [])
+    # 남겨 둔 초안으로 채운 자리는 못 만든 자리가 아님
+    left = [r for r in failed if all(r is not x for x in taken)]
+    return taken, ([{"pageNo": r.page, "why": r.why} for r in left] if len(taken) < n else [])
 
 
 def _spares(missing: int, backups: list[int], order: list[str]) -> tuple[list[int], list[str]]:
