@@ -126,3 +126,19 @@ it('다시 요약한 자료는 그 자료만 다시 읽어 목록에 바로 정�
   await waitFor(() => expect(one).toHaveBeenCalledWith('doc'));
   await waitFor(() => expect(screen.queryByLabelText('doc 자료 다시 요약')).toBeNull());
 });
+
+// Codex #520 재리뷰: 그 자료 읽기만 실패하면 계속 실패로 보이고 다시 읽기도 시작되지 않았다
+it('다시 요약 뒤 그 자료 읽기가 실패해도 정리 중으로 보이고 목록을 다시 읽는다', async () => {
+  const list = jest
+    .spyOn(api.content, 'materials')
+    .mockResolvedValue([material('doc', 'document', 'failed', 'job-doc')]);
+  jest.spyOn(api.ai, 'retry').mockResolvedValue({} as never);
+  jest.spyOn(api.content, 'material').mockRejectedValue(new Error('network'));
+  setParams({ id: 'folder1' });
+  await renderScreen(<FolderScreen />);
+  await fireEvent.press(await screen.findByLabelText('doc 자료 다시 요약'));
+  await waitFor(() => expect(screen.queryByLabelText('doc 자료 다시 요약')).toBeNull());
+  // 정리 중이라 3초 뒤 목록을 다시 읽는다
+  const calls = list.mock.calls.length;
+  await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(calls), { timeout: 5000 });
+});
