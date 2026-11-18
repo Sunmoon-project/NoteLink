@@ -44,6 +44,17 @@ export class UpdateProfileDto {
   @IsIn(['middle_high', 'university', 'worker'])
   learnerType?: string;
 
+  /** 학교 · 학년: 본인 인증 없이 바꾼다. 빈 글이면 지운다(앞뒤 공백은 저장할 때 지운다) */
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsString()
+  @MaxLength(40)
+  school?: string;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsString()
+  @MaxLength(10)
+  grade?: string;
+
   /** 처음 안내를 마쳤으면 true, 처음 설정을 막 마쳐 아직 안내 전이면 false */
   @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()

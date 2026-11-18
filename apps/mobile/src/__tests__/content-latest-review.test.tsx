@@ -12,6 +12,7 @@ import { FolderScreen } from '../features/content/notes';
 import { NetworkError } from '../lib/api';
 import { useAuth } from '../stores/auth';
 import { useDraft } from '../stores/draft';
+import { useBgJobs } from '../stores/bg-jobs';
 import { renderScreen, setParams } from '../test-utils';
 
 jest.mock('expo-router', () => ({
@@ -754,6 +755,29 @@ it.each([
   },
 );
 
+it('요약 아래 대본은 지금 슬라이드의 문장만, 전체 대본은 슬라이드별 문단으로 보인다', async () => {
+  mockApi.content.recording.mockResolvedValue({
+    audioUrl: 'https://blob.example/audio.m4a',
+    durationSec: 180,
+    slides: [
+      { index: 0, title: '첫 구간', bullets: [], startSec: 0, endSec: 40 },
+      { index: 1, title: '지금 구간', bullets: [], startSec: 40, endSec: 90 },
+    ],
+    transcript: {
+      text: '앞 문장 지금 문장 다음 문장',
+      segments: [
+        { startSec: 5, endSec: 10, text: '앞 문장' },
+        { startSec: 41, endSec: 45, text: '지금 문장' },
+        { startSec: 95, endSec: 99, text: '다음 문장' },
+      ],
+    },
+  });
+  await renderScreen(<Player materialId="material1" />, client()); // 재생 위치 42초(위 expo-audio 모의)
+  expect(await screen.findByText(/지금 문장/)).toBeTruthy();
+  expect(screen.queryByText(/앞 문장/)).toBeNull();
+  expect(screen.queryByText(/다음 문장/)).toBeNull();
+});
+
 it.each([
   { startSec: 40, endSec: 50, visible: true },
   { startSec: 42, endSec: 50, visible: true },
@@ -1174,6 +1198,21 @@ describe('변환 화면: 다 올린 뒤에 변환으로 넘어가고, 취소하�
       params: { id: 'folder1' },
     });
     expect(mockToast).toHaveBeenCalledWith('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
+  });
+
+  it('폴더에서 기다리기를 누르면 작업은 그대로 두고 폴더로 가며, 끝나면 알릴 작업으로 남긴다', async () => {
+    useBgJobs.setState({ jobs: [] });
+    await renderScreen(<ConvertScreen />, client());
+    await fireEvent.press(await screen.findByText('폴더에서 기다리기'));
+    expect(mockApi.ai.cancel).not.toHaveBeenCalled();
+    expect(router.dismissTo).toHaveBeenCalledWith({
+      pathname: '/(tabs)/note/folder/[id]',
+      params: { id: 'folder1' },
+    });
+    expect(useBgJobs.getState().jobs).toEqual([
+      expect.objectContaining({ jobId: 'job1', kind: 'material' }),
+    ]);
+    expect(mockToast).toHaveBeenCalledWith('정리가 끝나면 알려 드릴게요');
   });
 
   // Codex #503 리뷰: 취소 요청이 실패해도 취소했다고 안내하고 초안을 지웠다(서버 작업은 계속 돎)

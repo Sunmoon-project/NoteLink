@@ -36,58 +36,39 @@ describe('퀴즈 만들 노트 고르기', () => {
   });
 });
 
-describe('유사 퀴즈 플래시카드 저장', () => {
-  it('저장하면 플래시카드 목록 캐시를 갱신한다', async () => {
+// 유사 퀴즈는 이 화면에서 풀지 않고, 다 만들면 일반 퀴즈처럼 풀이 화면에서 푼다(정답 · 해설은 결과 화면)
+describe('유사 퀴즈 풀기', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('다 만들면 문제를 늘어놓지 않고 풀이 화면으로 넘어가며, 퀴즈 목록을 다시 읽는다', async () => {
+    jest.spyOn(api.quiz, 'similar').mockResolvedValue({
+      _id: 'sim1',
+      status: 'ready',
+      questionCount: 1,
+      questions: [
+        {
+          _id: 'q1',
+          type: 'multiple_choice',
+          prompt: '첫 문제',
+          choices: ['가', '나'],
+          answer: '나',
+        },
+      ],
+    } as never);
     const qc = new QueryClient();
     const spy = jest.spyOn(qc, 'invalidateQueries');
     setParams({ setId: 'qs1' });
     await renderScreen(<QuizSimilarScreen />, qc);
     await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
-    await fireEvent.press(
-      (await screen.findAllByText('플래시카드 저장', {}, { timeout: 8000 }))[0]!,
+    await waitFor(() =>
+      expect(router.replace).toHaveBeenCalledWith({
+        pathname: '/play/solve',
+        params: { setId: 'sim1' },
+      }),
     );
-    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: ['flashcards'] }));
-  });
-});
-
-// 실기기 테스트: 유사 퀴즈가 첫 문제 정답을 바로 보였고, 객관식 보기가 나오지 않아 고를 수 없었다
-describe('유사 퀴즈 풀기', () => {
-  const similar = {
-    _id: 'sim1',
-    questionCount: 2,
-    questions: [
-      {
-        _id: 'q1',
-        type: 'multiple_choice',
-        prompt: '첫 문제',
-        choices: ['가', '나', '다'],
-        answer: '나',
-      },
-      { _id: 'q2', type: 'short_answer', prompt: '둘째 문제', choices: [], answer: '답' },
-    ],
-  };
-  const open = async () => {
-    jest.spyOn(api.quiz, 'similar').mockResolvedValue(similar as never);
-    setParams({ setId: 'qs1' });
-    await renderScreen(<QuizSimilarScreen />, new QueryClient());
-    await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
-    expect(await screen.findByText('첫 문제', {}, { timeout: 8000 })).toBeTruthy();
-  };
-  afterEach(() => jest.restoreAllMocks());
-
-  it('정답은 먼저 보이지 않고, 객관식 보기를 보여 준다', async () => {
-    await open();
-    expect(screen.queryByText('문제 1 정답')).toBeNull();
-    for (const c of ['가', '나', '다']) expect(screen.getByText(c)).toBeTruthy();
-  });
-
-  it('보기를 고르면 맞았는지와 정답을 보여 주고 다시 고를 수 없다', async () => {
-    await open();
-    await fireEvent.press(screen.getByText('가'));
-    expect(screen.getByText('아쉬워요, 다시 확인해 보세요')).toBeTruthy();
-    expect(screen.getByText('문제 1 정답')).toBeTruthy();
-    await fireEvent.press(screen.getAllByText('나')[0]!);
-    expect(screen.queryByText('정답이에요!')).toBeNull();
+    expect(spy).toHaveBeenCalledWith({ queryKey: ['quiz-sets'] });
+    expect(screen.queryByText('첫 문제')).toBeNull();
+    expect(screen.queryByText('플래시카드 저장')).toBeNull();
   });
 });
 

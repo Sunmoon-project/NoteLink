@@ -17,7 +17,7 @@ import { emptyPlayback, playbackFromResult } from './recording-view.js';
  */
 export const RECORDING_READ_SAS_MS = 6 * 60 * 60 * 1000;
 
-/** 녹음 정리 작업에서 재생 화면에 쓰는 값만 읽는다(단어 시각 · 조각 embedding 은 크고 쓰지 않는다) */
+/** 녹음 정리 작업에서 재생 화면에 쓰는 값만 읽는다(단어 시각은 자막 채움 · 립싱크에 쓴다. 조각 embedding 은 크고 쓰지 않는다) */
 const JOB_PROJECTION = {
   status: 1,
   'input.sizeBytes': 1,
@@ -26,6 +26,7 @@ const JOB_PROJECTION = {
   'result.sentences.text': 1,
   'result.sentences.startMs': 1,
   'result.sentences.endMs': 1,
+  'result.sentences.words': 1,
   'result.slides.title': 1,
   'result.slides.summary': 1,
   'result.slides.startMs': 1,

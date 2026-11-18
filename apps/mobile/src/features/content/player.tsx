@@ -16,6 +16,7 @@ import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
 import { Bookmark, Pause, Play, Repeat, Sparkles } from 'lucide-react-native';
 import { api } from '@/lib/api';
+import { paragraphs, rangeAt, segmentsIn } from '@/lib/transcript';
 import { toast } from '@/stores/toast';
 import { Btn, Chip, Loading, Sheet, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
@@ -183,7 +184,11 @@ export function Player({
 
   const slide = rec.data?.slides.find((s) => p.pos >= s.startSec && p.pos < s.endSec);
   const segs = rec.data?.transcript.segments ?? [];
-  const cap = segs.findIndex((s) => p.pos >= s.startSec && p.pos < s.endSec);
+  // 요약 화면 아래 대본은 지금 슬라이드(또는 슬라이드 사이 구간)의 문장만. 전체를 한 덩어리로 보이면
+  // 42분 녹음은 읽을 수 없었다. 전체 대본은 「대본」 화면에서 슬라이드별 문단으로 본다
+  const range = rangeAt(rec.data?.slides ?? [], p.pos);
+  const near = segmentsIn(segs, range.lo, range.hi);
+  const cap = near.findIndex((s) => p.pos >= s.startSec && p.pos < s.endSec);
   const marking = useRef(false);
   const addMark = async () => {
     if (marking.current) return;
@@ -265,22 +270,45 @@ export function Player({
                 </Text>
               </View>
               <Text className="mt-1 text-caption leading-5 text-white/60">
-                {segs.length
-                  ? segs.map((s, i) => (
-                      <Text key={i} className={cx(i === cap && 'font-bold text-white')}>
-                        {s.text}{' '}
-                      </Text>
-                    ))
-                  : '대본은 AI 서버가 연결되면 음성 인식으로 만들어져요. 원본 녹음은 지금 들을 수 있어요.'}
+                {!segs.length
+                  ? '대본은 AI 서버가 연결되면 음성 인식으로 만들어져요. 원본 녹음은 지금 들을 수 있어요.'
+                  : near.length
+                    ? near.map((s, i) => (
+                        <Text key={s.startSec} className={cx(i === cap && 'font-bold text-white')}>
+                          {s.text}{' '}
+                        </Text>
+                      ))
+                    : '이 구간에는 말한 내용이 없어요'}
               </Text>
             </View>
           </>
         ) : (
           <ScrollView className="max-h-64 p-3" nestedScrollEnabled>
             <Text className="text-footnote font-bold text-white">전체 대본</Text>
-            <Text className="mt-2 text-caption leading-5 text-white/80">
-              {rec.data?.transcript.text || '아직 대본이 없어요 · AI 서버 연결 후 만들어져요'}
-            </Text>
+            {segs.length ? (
+              // 슬라이드별 문단(제목 · 시작 시각). 문단을 누르면 그 시각으로 옮겨 요약 슬라이드와 맞춰 볼 수 있다
+              paragraphs(rec.data.slides, segs).map((para) => (
+                <Pressable
+                  key={para.key}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${mmss(para.startSec)} ${para.title ?? '구간'}으로 이동`}
+                  onPress={() => p.seek(para.startSec)}
+                  className="mt-3"
+                >
+                  <Text className="text-caption2 font-semibold text-white/50">
+                    {mmss(para.startSec)}
+                    {para.title ? ` · ${para.title}` : ''}
+                  </Text>
+                  <Text className="mt-0.5 text-caption leading-5 text-white/80">
+                    {para.segments.map((s) => s.text).join(' ')}
+                  </Text>
+                </Pressable>
+              ))
+            ) : (
+              <Text className="mt-2 text-caption leading-5 text-white/80">
+                {rec.data?.transcript.text || '아직 대본이 없어요 · AI 서버 연결 후 만들어져요'}
+              </Text>
+            )}
           </ScrollView>
         )}
 

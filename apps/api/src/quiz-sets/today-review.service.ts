@@ -116,6 +116,12 @@ export class TodayReviewService {
       .lean<QuizSetRow[]>();
     if (!row) return null;
     const set = await this.quizSets.findMine(userId, row._id.toString());
+    if (set.status === 'ready') {
+      const finished = await this.attempts
+        .findOne({ userId: owner, quizSetId: row._id, finishedAt: { $ne: null } }, { _id: 1 })
+        .lean();
+      return finished ? { ...set, completed: true } : set;
+    }
     if (set.status !== 'failed' || !row.jobId) return set;
     const job = await this.jobs.findMine(userId, row.jobId.toString()).catch(() => null);
     return job?.status === 'succeeded' ? null : set;

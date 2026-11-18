@@ -6,10 +6,12 @@ import { router } from 'expo-router';
 import { MOTION } from '@/theme';
 import { toast, useToast } from '@/stores/toast';
 import { useAuth } from '@/stores/auth';
+import { useWatchBgJobs } from '@/stores/bg-jobs';
 import { Alert } from './ui';
 
-/** 전역 오버레이: 로그인 만료 안내 + 토스트 */
+/** 전역 오버레이: 로그인 만료 안내 + 토스트 + 화면을 떠나 기다리는 AI 작업 알림 */
 export function AppOverlays() {
+  useWatchBgJobs();
   return (
     <>
       <ExpiredDialog />

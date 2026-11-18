@@ -1,5 +1,5 @@
 import { useFeatureNavigation } from '@/lib/feature-navigation';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Linking, ScrollView, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
@@ -7,7 +7,8 @@ import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarDays, Check, ChevronRight, CircleAlert, Gift, Zap } from 'lucide-react-native';
 import type { PlanTier, UserSettings } from '@notelink/shared';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
+import { CodeBoxes } from '@/components/code-boxes';
 import { nicknameError } from '@/lib/validation';
 import { env } from '@/lib/env';
 import { clearAccountState } from '@/lib/account';
@@ -374,7 +375,8 @@ export function AccountScreen() {
   });
   const labels = interestLabels(categories.data ?? []);
   const u = me.data;
-  const rows: [string, string | undefined, (() => void) | null][] = [
+  const [verify, setVerify] = useState<'email' | 'phone' | null>(null);
+  const rows: [string, ReactNode, () => void][] = [
     ['닉네임', u?.nickname, () => router.push('/(tabs)/profile/nickname')],
     [
       '관심 분야',
@@ -387,10 +389,23 @@ export function AccountScreen() {
         : '선택 안 함',
       () => router.push('/(tabs)/profile/interests'),
     ],
-    ['이메일', u?.email ?? undefined, null],
-    ['전화번호', u?.phone, null],
-    ['학교', u?.school, null],
-    ['학년', u?.grade, null],
+    [
+      '이메일',
+      u && (
+        <View className="flex-row items-center gap-2">
+          <Text className="text-callout text-ink">{u.email ?? '없음'}</Text>
+          {u.email && (
+            <Badge tone={u.emailVerified ? 'mint' : 'gray'}>
+              {u.emailVerified ? '인증됨' : '인증 전'}
+            </Badge>
+          )}
+        </View>
+      ),
+      () => setVerify('email'),
+    ],
+    ['전화번호', u && (u.phone || '등록 안 함'), () => setVerify('phone')],
+    ['학교', u && (u.school || '입력 안 함'), () => router.push('/(tabs)/profile/school')],
+    ['학년', u && (u.grade || '입력 안 함'), () => router.push('/(tabs)/profile/grade')],
   ];
   return (
     <Canvas>
@@ -410,21 +425,225 @@ export function AccountScreen() {
           {rows.map(([k, v, go], i) => (
             <Pressable
               key={k}
-              onPress={go ?? (() => toast(`${k} 변경은 본인 인증 후 가능해요`))}
+              onPress={go}
               className={cx('flex-row items-center px-5 py-4', i > 0 && 'border-t border-fill')}
             >
               <View className="flex-1">
                 <Text className="text-caption2 text-sub">{k}</Text>
-                <Text className="text-callout text-ink">{v}</Text>
+                {typeof v === 'string' || v == null ? (
+                  <Text className="text-callout text-ink">{v}</Text>
+                ) : (
+                  v
+                )}
               </View>
               <ChevronRight size={ICON.md} color={C.sub} />
             </Pressable>
           ))}
         </View>
       </Screen>
+      {u && (
+        <EmailVerifySheet
+          open={verify === 'email'}
+          onClose={() => setVerify(null)}
+          email={u.email}
+          verified={!!u.emailVerified}
+        />
+      )}
+      <PhoneVerifySheet open={verify === 'phone'} onClose={() => setVerify(null)} />
     </Canvas>
   );
 }
+
+/** 이메일로 본인 인증: 계정 이메일로 인증번호를 받아 확인한다(이메일은 여기서 바꾸지 않는다) */
+function EmailVerifySheet({
+  open,
+  onClose,
+  email,
+  verified,
+}: {
+  open: boolean;
+  onClose: () => void;
+  email: string | null;
+  verified: boolean;
+}) {
+  const qc = useQueryClient();
+  const [sent, setSent] = useState(false);
+  const [code, setCode] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const close = () => {
+    setSent(false);
+    setCode('');
+    setMsg(null);
+    onClose();
+  };
+  const fail = (e: unknown, fallback: string) =>
+    setMsg(e instanceof ApiError ? e.message : fallback);
+  const send = useMutation({
+    mutationFn: api.me.emailSendCode,
+    onSuccess: () => {
+      setSent(true);
+      setCode('');
+      setMsg(null);
+    },
+    onError: (e) => fail(e, '인증번호를 보내지 못했어요. 다시 시도해 주세요'),
+  });
+  const check = useMutation({
+    mutationFn: () => api.me.emailVerifyCode(code),
+    onSuccess: (u) => {
+      qc.setQueryData(['me'], u);
+      toast('이메일 인증을 마쳤어요');
+      close();
+    },
+    onError: (e) => {
+      setCode('');
+      fail(e, '인증하지 못했어요. 다시 시도해 주세요');
+    },
+  });
+  return (
+    <Sheet open={open} onClose={close} title="이메일로 본인 인증">
+      {!email ? (
+        <Text className="text-callout text-sub">
+          계정에 이메일이 없어요. 간편 로그인 계정은 이메일 인증을 할 수 없어요.
+        </Text>
+      ) : verified ? (
+        <Text className="text-callout text-sub">{email}은 인증을 마쳤어요.</Text>
+      ) : (
+        <>
+          <Text className="text-callout text-sub">
+            {sent
+              ? `${email}로 보낸 인증번호 6자리를 입력해 주세요.`
+              : `${email}로 인증번호를 보내 본인인지 확인해요.`}
+          </Text>
+          {sent && (
+            <CodeBoxes
+              value={code}
+              onChange={(c) => {
+                setCode(c);
+                setMsg(null);
+              }}
+              invalid={!!msg}
+            />
+          )}
+          {msg && <Text className="mt-2 text-caption text-danger">{msg}</Text>}
+          <View className="mt-6 gap-2">
+            {sent ? (
+              <>
+                <Btn
+                  disabled={code.length < 6}
+                  loading={check.isPending}
+                  onPress={() => check.mutate()}
+                >
+                  확인
+                </Btn>
+                <Btn kind="ghost" loading={send.isPending} onPress={() => send.mutate()}>
+                  인증번호 다시 받기
+                </Btn>
+              </>
+            ) : (
+              <Btn loading={send.isPending} onPress={() => send.mutate()}>
+                인증번호 받기
+              </Btn>
+            )}
+          </View>
+        </>
+      )}
+    </Sheet>
+  );
+}
+
+/** 전화번호로 본인 인증: 문자 발송 업체가 아직 없어 번호만 받고 「준비 중」으로 막는다(인증됨으로 표시하지 않는다) */
+function PhoneVerifySheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [phone, setPhone] = useState('');
+  const [tried, setTried] = useState(false);
+  const close = () => {
+    setPhone('');
+    setTried(false);
+    onClose();
+  };
+  return (
+    <Sheet open={open} onClose={close} title="전화번호로 본인 인증">
+      <Label>전화번호</Label>
+      <Input
+        value={phone}
+        onChangeText={(x) => setPhone(x.replace(/\D/g, '').slice(0, 11))}
+        placeholder="01012345678"
+        keyboardType="number-pad"
+        textContentType="telephoneNumber"
+      />
+      {tried && <Text className="mt-2 text-caption text-danger">문자 인증은 준비 중이에요</Text>}
+      <View className="mt-6">
+        <Btn disabled={!/^01\d{8,9}$/.test(phone)} onPress={() => setTried(true)}>
+          인증번호 받기
+        </Btn>
+      </View>
+    </Sheet>
+  );
+}
+
+/** 학교 · 학년 고치기(본인 인증 없이). 닉네임 화면과 같은 꼴, 비우면 지운다 */
+function ProfileTextScreen({
+  field,
+  label,
+  max,
+  placeholder,
+}: {
+  field: 'school' | 'grade';
+  label: string;
+  max: number;
+  placeholder: string;
+}) {
+  const qc = useQueryClient();
+  const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
+  // 고치기 전에는 저장된 값을 보인다(내 정보를 늦게 받아도 빈 값으로 시작해 지워지지 않게)
+  const [typed, setV] = useState<string | null>(null);
+  const v = typed ?? me.data?.[field] ?? '';
+  const save = useMutation({
+    mutationFn: () => api.me.update({ [field]: v.trim() }),
+    onSuccess: (u) => {
+      qc.setQueryData(['me'], u);
+      router.back();
+      toast(`${label} 정보를 저장했어요`);
+    },
+    onError: (e) => toast(e instanceof ApiError ? e.message : '저장하지 못했어요'),
+  });
+  return (
+    <Canvas>
+      <Screen
+        footer={
+          <Btn
+            disabled={!me.data || typed === null}
+            loading={save.isPending}
+            onPress={() => save.mutate()}
+          >
+            저장
+          </Btn>
+        }
+      >
+        <Header title={`${label} 변경`} />
+        <Label>{label}</Label>
+        <Input
+          value={v}
+          onChangeText={(x) => setV(x.slice(0, max))}
+          placeholder={placeholder}
+          autoFocus
+        />
+        <View className="mt-2 flex-row justify-between">
+          <Text className="text-caption text-sub">비워 두면 지워져요</Text>
+          <Text className="text-caption text-sub">
+            {v.length}/{max}
+          </Text>
+        </View>
+      </Screen>
+    </Canvas>
+  );
+}
+
+export const SchoolScreen = () => (
+  <ProfileTextScreen field="school" label="학교" max={40} placeholder="예: 선문고등학교" />
+);
+export const GradeScreen = () => (
+  <ProfileTextScreen field="grade" label="학년" max={10} placeholder="예: 3학년" />
+);
 
 export function NicknameScreen() {
   const qc = useQueryClient();

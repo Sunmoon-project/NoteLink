@@ -54,6 +54,18 @@ export function TodayReviewCard() {
         </Text>
       </Card>
     );
+  // 오늘 세트를 끝까지 풀었으면 다시 풀게 하지 않는다(내일 새로 모은다)
+  if (s.status === 'ready' && s.completed)
+    return (
+      <Card tone="white" className="mt-4 p-5">
+        <View className="flex-row items-center gap-2">
+          <CalendarCheck size={ICON.sm} color={C.correct} />
+          <Text className="text-caption font-semibold text-correct">오늘의 복습</Text>
+        </View>
+        <Text className="mt-1 text-body font-bold text-ink">오늘의 복습을 마쳤어요</Text>
+        <Text className="mt-0.5 text-caption text-sub">내일 복습할 문제를 다시 모아 둘게요</Text>
+      </Card>
+    );
   const ready = s.status === 'ready';
   return (
     <Card

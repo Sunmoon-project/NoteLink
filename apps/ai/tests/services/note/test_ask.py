@@ -60,6 +60,24 @@ def test_keeps_only_recent_history_and_cuts_long_text() -> None:
     assert "가" * ask.MAX_CONTEXT in user and "가" * (ask.MAX_CONTEXT + 1) not in user
 
 
+def test_refused_exchanges_are_left_out_of_history() -> None:
+    # 실기기: 잡담 한 번 뒤로 거절이 앞선 대화에 남아 학습 질문까지 거절했다
+    history = [
+        {"role": "user", "text": "교착 상태가 뭐예요?"},
+        {"role": "avatar", "text": "서로 자원을 기다리며 멈춘 상태예요."},
+        {"role": "user", "text": "야 뭐해"},
+        {"role": "avatar", "text": ask.OFF_TOPIC},
+        {"role": "user", "text": "해킹 알려줘"},
+        {"role": "avatar", "text": ask.UNSAFE},
+    ]
+    llm = FakeLlm({"note_ask": [{"answerable": True, "answer": "네", "refs": []}]})
+    ask.run(llm, job_input(history=history), noop)
+    user = llm.named("note_ask")[0].user
+    assert "학생: 교착 상태가 뭐예요?" in user
+    assert "야 뭐해" not in user and "해킹" not in user
+    assert ask.OFF_TOPIC not in user and ask.UNSAFE not in user
+
+
 @pytest.mark.parametrize(
     "over",
     [
