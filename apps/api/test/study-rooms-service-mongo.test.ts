@@ -263,6 +263,67 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
     expect(await service.list(String(host), 'recommended', 1)).toHaveLength(1);
   });
 
+  describe('회원 탈퇴가 시작된 사용자(withdrawingAt)', () => {
+    const withdrawing = () =>
+      users.updateOne({ _id: other }, { $set: { withdrawingAt: new Date() } });
+    const body = (title: string) => ({ title, categoryName: '수학', isPublic: true });
+    const gone = { status: 404, response: { code: 'NOT_FOUND' } };
+
+    it('방을 만들 수 없고 입장도 거절된다(없는 사용자와 같은 404)', async () => {
+      const created = await service.create(String(host), body('입장 대상'));
+      const inviteCode = (await rooms.findById(created._id).lean().orFail()).inviteCode;
+      await withdrawing();
+      await expect(service.create(String(other), body('탈퇴 중 생성'))).rejects.toMatchObject(gone);
+      expect(await rooms.countDocuments({ title: '탈퇴 중 생성' })).toBe(0);
+      await expect(service.joinRoom(String(other), inviteCode)).rejects.toMatchObject(gone);
+      const after = await rooms.findById(created._id).lean().orFail();
+      expect(after.members.map((m) => String(m.userId))).toEqual([String(host)]);
+      expect(after.memberCount).toBe(1);
+    });
+
+    it('입장: 확인을 통과한 뒤 저장 전에 탈퇴가 시작되면 저장 뒤 재확인에서 참여를 되돌리고 같은 오류를 던진다', async () => {
+      const created = await service.create(String(host), body('입장 경합'));
+      const inviteCode = (await rooms.findById(created._id).lean().orFail()).inviteCode;
+      const original = rooms.findOneAndUpdate.bind(rooms) as (...args: unknown[]) => unknown;
+      let started = false;
+      vi.spyOn(rooms, 'findOneAndUpdate').mockImplementation(((...args: unknown[]) => {
+        if (started) return original(...args);
+        started = true; // 사용자 확인 뒤 · 첫 저장 직전에 탈퇴가 시작된다
+        return withdrawing().then(() => original(...args));
+      }) as never);
+      const rollback = vi.fn((userId: string, roomId: string) => service.leaveRoom(userId, roomId));
+      service.rollbackMembership = rollback;
+      try {
+        await expect(service.joinRoom(String(other), inviteCode)).rejects.toMatchObject(gone);
+      } finally {
+        service.rollbackMembership = undefined;
+        vi.restoreAllMocks();
+      }
+      expect(started).toBe(true);
+      expect(rollback).toHaveBeenCalledWith(String(other), String(created._id));
+      const after = await rooms.findById(created._id).lean().orFail();
+      expect(after.memberCount).toBe(1);
+      expect(after.members.find((m) => m.userId.equals(other))).toMatchObject({
+        status: 'left',
+        leaveReason: 'voluntary',
+      });
+    });
+
+    it('생성: 저장 전에 탈퇴가 시작되면 재확인에서 방을 되돌리고(혼자라 닫힘) 같은 오류를 던진다', async () => {
+      const original = rooms.create.bind(rooms) as (...args: unknown[]) => unknown;
+      vi.spyOn(rooms, 'create').mockImplementation(((...args: unknown[]) =>
+        withdrawing().then(() => original(...args))) as never);
+      try {
+        await expect(service.create(String(other), body('생성 경합'))).rejects.toMatchObject(gone);
+      } finally {
+        vi.restoreAllMocks();
+      }
+      const room = await rooms.findOne({ title: '생성 경합' }).lean().orFail();
+      expect(room.closedAt).toBeInstanceOf(Date);
+      expect(room.memberCount).toBe(0);
+    });
+  });
+
   it('목록(내 방 · 추천)은 나간 · 강퇴된 · 초대만 받은 멤버를 내려주지 않고 참여 중인 멤버만 준다', async () => {
     const left = new Types.ObjectId();
     const kicked = new Types.ObjectId();

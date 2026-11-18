@@ -19,6 +19,7 @@ import { StudyRoomsService } from './study-rooms.service.js';
 import { StudyChatService } from './study-chat.service.js';
 import { StudyChatGateway } from './study-chat.gateway.js';
 import { StudyLiveService } from './study-live.service.js';
+import { StudyRoomMembershipService } from './study-room-membership.service.js';
 import { InviteStudyRoomDto } from './dto/invite-study-room.dto.js';
 import { SetRoomTimerDto } from './dto/set-room-timer.dto.js';
 
@@ -30,6 +31,7 @@ export class StudyRoomsController {
     private readonly chat: StudyChatService,
     private readonly gateway: StudyChatGateway,
     private readonly live: StudyLiveService,
+    private readonly membership: StudyRoomMembershipService,
   ) {}
 
   @Post()
@@ -95,13 +97,7 @@ export class StudyRoomsController {
   @Post(':id/leave')
   async leave(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
     const userId = requireUserId(req);
-    await this.rooms.leaveRoom(userId, id);
-    await this.gateway.evict(id, userId);
-
-    // 남아 있는 참가자에게 목록이 변경됐다고 알림
-    this.gateway.notifyMembersChanged(id);
-
-    await this.live.disconnect(id, userId);
+    await this.membership.leave(userId, id);
 
     return { data: null };
   }

@@ -47,10 +47,9 @@ let devices: ReturnType<typeof model>;
 let tokens: ReturnType<typeof model>;
 let friendships: ReturnType<typeof model>;
 let shares: ReturnType<typeof model>;
-// 참여 중인 방 목록(list)과 나가기(leaveRoom)만 쓰는 가짜 스터디룸 서비스
-let joinedRooms: string[];
-let leftRooms: string[];
-let rooms: { list: ReturnType<typeof vi.fn>; leaveRoom: ReturnType<typeof vi.fn> };
+// 탈퇴가 쓰는 스터디룸 나가기(StudyRoomMembershipService.leaveAllForWithdrawal)만 갖춘 가짜. 방별 순서는 study-room-membership.test.ts
+let leftUsers: string[];
+let rooms: { leaveAllForWithdrawal: ReturnType<typeof vi.fn> };
 let service: UsersService;
 let revokedUsers: Types.ObjectId[];
 let me: Types.ObjectId;
@@ -59,12 +58,10 @@ const other = new Types.ObjectId();
 beforeEach(() => {
   me = new Types.ObjectId();
   revokedUsers = [];
-  joinedRooms = [];
-  leftRooms = [];
+  leftUsers = [];
   rooms = {
-    list: vi.fn(async () => joinedRooms.map((_id) => ({ _id }))),
-    leaveRoom: vi.fn(async (_userId: string, roomId: string) => {
-      leftRooms.push(roomId);
+    leaveAllForWithdrawal: vi.fn(async (userId: string) => {
+      leftUsers.push(userId);
     }),
   };
   users = model([
@@ -367,28 +364,24 @@ describe('회원 탈퇴', () => {
     expect(shares.rows).toHaveLength(0);
   });
 
-  it('참여 중인 스터디룸마다 기존 나가기(leaveRoom)를 부르고, 친구 · 시간표 공유 정리 뒤 탈퇴 표시 전에 한다', async () => {
-    joinedRooms = [new Types.ObjectId().toHexString(), new Types.ObjectId().toHexString()];
-    rooms.leaveRoom.mockImplementationOnce(async (_userId: string, roomId: string) => {
+  it('참여 중인 스터디룸에서 나가기를 친구 · 시간표 공유 정리 뒤 탈퇴 표시 전에 한다', async () => {
+    rooms.leaveAllForWithdrawal.mockImplementationOnce(async (userId: string) => {
       // 나갈 때는 아직 탈퇴 표시 전이고, 친구 · 공유 정리는 끝나 있다
       expect(users.rows[0]).toMatchObject({ deletedAt: null });
       expect(shares.rows).toHaveLength(0);
-      leftRooms.push(roomId);
+      leftUsers.push(userId);
     });
     await service.withdraw(me.toHexString(), NOW);
-    expect(rooms.list).toHaveBeenCalledWith(me.toHexString(), 'mine');
-    expect(leftRooms).toEqual(joinedRooms);
-    expect(rooms.leaveRoom).toHaveBeenCalledWith(me.toHexString(), joinedRooms[0]);
+    expect(leftUsers).toEqual([me.toHexString()]);
     expect(users.rows[0]).toMatchObject({ deletedAt: NOW });
   });
 
   it('스터디룸 나가기가 실패하면 탈퇴 표시를 하지 않고, 다시 시도하면 끝낸다', async () => {
-    joinedRooms = [new Types.ObjectId().toHexString()];
-    rooms.leaveRoom.mockRejectedValueOnce(new Error('방 오류'));
+    rooms.leaveAllForWithdrawal.mockRejectedValueOnce(new Error('방 오류'));
     await expect(service.withdraw(me.toHexString(), NOW)).rejects.toThrow('방 오류');
     expect(users.rows[0]).toMatchObject({ deletedAt: null, email: 'me@example.com' });
     await service.withdraw(me.toHexString(), NOW);
-    expect(leftRooms).toEqual(joinedRooms);
+    expect(leftUsers).toEqual([me.toHexString()]);
     expect(users.rows[0]).toMatchObject({ deletedAt: NOW, email: null });
   });
 });

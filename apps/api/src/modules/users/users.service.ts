@@ -20,7 +20,7 @@ import type { ChangePlanDto, RegisterDeviceDto, UpdateStatusDto } from './dto/ac
 import { toAppUser } from '../auth/to-app-user.js';
 import { TokenService } from '../auth/token.service.js';
 import { ProgressService } from '../progress/progress.service.js';
-import { StudyRoomsService } from '../studyroom/study-rooms.service.js';
+import { StudyRoomMembershipService } from '../studyroom/study-room-membership.service.js';
 import type { UpdateProfileDto } from './dto/update-profiile.dto.js';
 
 @Injectable()
@@ -37,7 +37,7 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly tokens: TokenService,
     @InjectModel(Friendship.name) private readonly friendships: Model<Friendship>,
     @InjectModel(TimetableShare.name) private readonly shares: Model<TimetableShare>,
-    private readonly rooms: StudyRoomsService,
+    private readonly rooms: StudyRoomMembershipService,
   ) {}
 
   /** 탈퇴하지 않은 내 계정 id. 없으면 404 */
@@ -194,10 +194,9 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
     await this.devices.deleteMany({ userId: id });
     await this.friendships.deleteMany({ $or: [{ userA: id }, { userB: id }] });
     await this.shares.deleteMany({ $or: [{ ownerId: id }, { friendId: id }] });
-    // 참여 중인 스터디룸에서 나간다: 방장이면 다음 멤버에게 넘기고, 마지막 사람이면 방을 닫는다(leaveRoom).
-    // 다른 정리처럼 실패하면 던져서 탈퇴를 다시 시도하게 한다(이미 나간 방은 다시 목록에 없다)
-    for (const room of await this.rooms.list(userId, 'mine'))
-      await this.rooms.leaveRoom(userId, room._id);
+    // 참여 중인 스터디룸에서 나간다(방장이면 다음 멤버에게 넘기고, 마지막 사람이면 방을 닫는다). 소켓 · LiveKit 연결도 끊는다.
+    // 다른 정리처럼 실패하면 던져서 탈퇴를 다시 시도하게 한다(연결 끊기를 먼저 해서 다시 시도해도 그 방을 다시 처리한다)
+    await this.rooms.leaveAllForWithdrawal(userId);
     await this.userModel.updateOne(
       { _id: id, deletedAt: null },
       {

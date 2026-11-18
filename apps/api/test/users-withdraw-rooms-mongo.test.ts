@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import mongoose, { Types } from 'mongoose';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { StudyRoom, StudyRoomSchema } from '../src/modules/studyroom/schemas/study-room.schema.js';
 import { StudyRoomsService } from '../src/modules/studyroom/study-rooms.service.js';
+import { StudyRoomMembershipService } from '../src/modules/studyroom/study-room-membership.service.js';
 import { UsersService } from '../src/modules/users/users.service.js';
 
 // 회원 탈퇴가 스터디룸에서 나가는 것(기존 leaveRoom)까지 실제 MongoDB로 확인한다.
@@ -23,6 +24,15 @@ describe.skipIf(!local)('회원 탈퇴 · 스터디룸 나가기 실제 MongoDB'
   let users: mongoose.Model<User>;
   let service: UsersService;
   let sequence = 0;
+  // 소켓 · LiveKit 은 가짜: 어느 방에서 어떤 순서로 불렸는지만 본다
+  let calls: string[];
+  const gateway = {
+    evict: vi.fn(async (roomId: string) => void calls.push(`evict:${roomId}`)),
+    notifyMembersChanged: vi.fn((roomId: string) => void calls.push(`notify:${roomId}`)),
+  };
+  const live = {
+    disconnect: vi.fn(async (roomId: string) => void calls.push(`disconnect:${roomId}`)),
+  };
 
   beforeAll(async () => {
     connection = await mongoose
@@ -40,10 +50,12 @@ describe.skipIf(!local)('회원 탈퇴 · 스터디룸 나가기 실제 MongoDB'
       { revokeAll: async () => undefined } as never,
       nothing as never,
       nothing as never,
-      roomsService,
+      new StudyRoomMembershipService(roomsService, gateway as never, live as never),
     );
   });
   beforeEach(async () => {
+    calls = [];
+    vi.clearAllMocks();
     await Promise.all([rooms.deleteMany({}), users.deleteMany({})]);
     await users.collection.insertMany(
       [first, second, third].map((_id, index) => ({
@@ -91,6 +103,12 @@ describe.skipIf(!local)('회원 탈퇴 · 스터디룸 나가기 실제 MongoDB'
       [second, false],
     ]);
     await service.withdraw(String(second));
+    // 연결 끊기 → 나가기 → 알림 순서(탈퇴 경로)
+    expect(calls).toEqual([
+      `evict:${created._id}`,
+      `disconnect:${created._id}`,
+      `notify:${created._id}`,
+    ]);
     const after = await saved(created._id);
     expect(after.memberCount).toBe(1);
     expect(after.hostId).toEqual(first);

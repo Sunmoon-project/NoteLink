@@ -14,7 +14,7 @@ import { TokenService } from '../src/modules/auth/token.service.js';
 import { ProgressService } from '../src/modules/progress/progress.service.js';
 import { UsersController } from '../src/modules/users/users.controller.js';
 import { UsersService } from '../src/modules/users/users.service.js';
-import { StudyRoomsService } from '../src/modules/studyroom/study-rooms.service.js';
+import { StudyRoomMembershipService } from '../src/modules/studyroom/study-room-membership.service.js';
 
 const userId = new Types.ObjectId();
 const otherUserId = new Types.ObjectId();
@@ -79,7 +79,10 @@ beforeAll(async () => {
       { provide: getModelToken(Friendship.name), useValue: cleanup },
       { provide: getModelToken(TimetableShare.name), useValue: cleanup },
       // 탈퇴가 참여 중인 스터디룸에서 나간다(참여 중인 방이 없는 계정)
-      { provide: StudyRoomsService, useValue: { list: vi.fn(async () => []), leaveRoom: vi.fn() } },
+      {
+        provide: StudyRoomMembershipService,
+        useValue: { leaveAllForWithdrawal: vi.fn(async () => undefined) },
+      },
       {
         provide: TokenService,
         useValue: {

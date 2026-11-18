@@ -6,6 +6,7 @@ import { Category, CategorySchema } from '../content/schemas/category.schema.js'
 import { StudyRoom, StudyRoomSchema } from './schemas/study-room.schema.js';
 import { StudyRoomsController } from './study-rooms.controller.js';
 import { StudyRoomsService } from './study-rooms.service.js';
+import { StudyRoomMembershipService } from './study-room-membership.service.js';
 import { ChatRoom, ChatRoomSchema } from '../social/schemas/chat-room.schema.js';
 import { Message, MessageSchema } from '../social/schemas/message.schema.js';
 import { StudyChatService } from './study-chat.service.js';
@@ -50,10 +51,11 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
     ReportsController,
     StudyRoomScheduleController,
   ],
-  // 회원 탈퇴가 스터디룸에서 나가기(leaveRoom)를 쓴다(UsersModule)
-  exports: [StudyRoomsService],
+  // 회원 탈퇴가 스터디룸에서 나가기를 쓴다(UsersModule). 소켓 · LiveKit 은 이 묶음 서비스 안에 둔다
+  exports: [StudyRoomMembershipService],
   providers: [
     StudyRoomsService,
+    StudyRoomMembershipService,
     StudyChatService,
     StudyChatGateway,
     StudyLiveService,

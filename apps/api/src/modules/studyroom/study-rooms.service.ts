@@ -35,6 +35,12 @@ function timerFields(room: Pick<StudyRoom, 'timerRule' | 'timerStartedAt'>) {
 
 @Injectable()
 export class StudyRoomsService {
+  /**
+   * 입장 · 생성을 저장한 뒤 그사이 회원 탈퇴가 시작됐으면 방금 만든 참여를 되돌리는 함수.
+   * StudyRoomMembershipService 가 생성자에서 넣는다(그쪽이 이 서비스를 받으므로 서로 받으면 순환). 없으면 leaveRoom 만 한다
+   */
+  rollbackMembership?: (userId: string, roomId: string) => Promise<void>;
+
   constructor(
     @InjectModel(StudyRoom.name) private readonly rooms: Model<StudyRoom>,
     @InjectModel(User.name) private readonly users: Model<User>,
@@ -296,6 +302,12 @@ export class StudyRoomsService {
   }
 
   async create(userId: string, input: CreateStudyRoomDto) {
+    const room = await this.createRoom(userId, input);
+    await this.ensureNotWithdrawing(userId, room._id);
+    return room;
+  }
+
+  private async createRoom(userId: string, input: CreateStudyRoomDto) {
     if (!isValidObjectId(userId)) {
       throw new UnauthorizedException({
         code: 'AUTH_TOKEN_EXPIRED',
@@ -311,7 +323,9 @@ export class StudyRoomsService {
       });
     }
     const hostId = new Types.ObjectId(userId);
-    const host = await this.users.findOne({ _id: hostId, deletedAt: null }).lean();
+    const host = await this.users
+      .findOne({ _id: hostId, deletedAt: null, withdrawingAt: null })
+      .lean();
     if (!host)
       throw new NotFoundException({ code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' });
     const categories = await this.categories
@@ -568,6 +582,25 @@ export class StudyRoomsService {
   }
 
   async joinRoom(userId: string, inviteCode: string) {
+    const room = await this.enterRoom(userId, inviteCode);
+    await this.ensureNotWithdrawing(userId, room._id);
+    return room;
+  }
+
+  /**
+   * 저장이 끝난 뒤 사용자를 다시 읽는다. 사용자를 확인한 뒤 저장하는 사이에 탈퇴가 시작됐으면(withdraw 는 withdrawingAt 을 먼저
+   * 쓰고 참여 중인 방을 읽으므로 이 재확인이 그 틈을 메운다) 방금 만든 참여를 되돌리고 같은 오류를 던진다
+   */
+  private async ensureNotWithdrawing(userId: string, roomId: string): Promise<void> {
+    const user = await this.users
+      .findOne({ _id: new Types.ObjectId(userId), deletedAt: null, withdrawingAt: null })
+      .lean();
+    if (user) return;
+    await (this.rollbackMembership ?? ((id, room) => this.leaveRoom(id, room)))(userId, roomId);
+    throw new NotFoundException({ code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' });
+  }
+
+  private async enterRoom(userId: string, inviteCode: string) {
     if (!isValidObjectId(userId)) {
       throw new UnauthorizedException({
         code: 'AUTH_TOKEN_EXPIRED',
@@ -575,7 +608,9 @@ export class StudyRoomsService {
       });
     }
     const memberId = new Types.ObjectId(userId);
-    const user = await this.users.findOne({ _id: memberId, deletedAt: null }).lean();
+    const user = await this.users
+      .findOne({ _id: memberId, deletedAt: null, withdrawingAt: null })
+      .lean();
     if (!user)
       throw new NotFoundException({ code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' });
     const code = inviteCode.trim().toUpperCase();
