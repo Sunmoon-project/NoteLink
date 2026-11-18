@@ -648,8 +648,12 @@ export function PickedScreen() {
 export function RecUploadScreen() {
   const { files, set } = useDraft();
   const file = files[0];
+  // 고르기 창은 audio/*면 다 보여 주므로(.aac · .mp4 등) 올릴 수 없는 형식 · 용량은 여기서 막는다(#508).
+  // 막지 않으면 변환 화면의 업로드에서야 거절되고 이유 없이 「서버에 올리지 못했어요」만 보였다
+  const ok = file ? checkFile('audio', file) : null;
+  const rejected = ok && !ok.ok ? ok.reason : null;
   // 별 내용 없는 녹음이면 알리고, 그래도 올릴지 고르게 한다
-  const issue = file ? audioFileIssue(file.size) : null;
+  const issue = file && !rejected ? audioFileIssue(file.size) : null;
   const [warn, setWarn] = useState(false);
   const pick = async () => {
     const r = await DocumentPicker.getDocumentAsync({
@@ -669,7 +673,7 @@ export function RecUploadScreen() {
       <Screen
         footer={
           <Btn
-            disabled={!file}
+            disabled={!file || !!rejected}
             onPress={() => (issue ? setWarn(true) : router.replace('/convert'))}
           >
             다음
@@ -706,8 +710,9 @@ export function RecUploadScreen() {
           <Text className="mt-2 text-footnote font-semibold text-ink">
             {file?.name ?? '탭해서 녹음 파일 선택'}
           </Text>
-          <Text className={cx('text-caption2', issue ? 'text-danger' : 'text-sub')}>
-            {issue ??
+          <Text className={cx('text-caption2', rejected || issue ? 'text-danger' : 'text-sub')}>
+            {rejected ??
+              issue ??
               (file?.size ? `${(file.size / 1024 / 1024).toFixed(1)}MB` : 'mp3 · m4a · wav')}
           </Text>
         </Pressable>
