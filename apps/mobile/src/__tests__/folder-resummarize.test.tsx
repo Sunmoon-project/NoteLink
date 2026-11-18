@@ -3,7 +3,7 @@ import { useState } from 'react';
 import type { Material } from '@notelink/shared';
 import { useToast } from '../stores/toast';
 import { useRetrying } from '../stores/retrying';
-import { FolderScreen, materialsPollMs } from '../features/content/notes';
+import { FolderScreen, materialsPollMs, readFolderMaterials } from '../features/content/notes';
 import { api } from '../lib/api';
 import { renderScreen, setParams } from '../test-utils';
 
@@ -203,5 +203,22 @@ describe('다시 요약한 자료 따로 읽기', () => {
     await renderScreen(<FolderScreen />);
     await waitFor(() => expect(useRetrying.getState().byFolder.folder1 ?? []).toEqual([]));
     expect(one).not.toHaveBeenCalled();
+  });
+
+  // 자체 리뷰: 다시 요약 직후 invalidate로 취소된 이전 읽기가 늦게 끝나며 끝난 상태(이전 실패)를 보고 새 추적을 풀던 경쟁
+  it('취소된 읽기는 끝난 상태를 봤어도 추적을 풀지 않는다', async () => {
+    useRetrying.setState({ byFolder: { folder1: ['doc'] } });
+    jest
+      .spyOn(api.content, 'materials')
+      .mockResolvedValue([material('doc', 'document', 'failed', 'job-doc')]);
+    jest
+      .spyOn(api.content, 'material')
+      .mockResolvedValue(material('doc', 'document', 'failed', 'job-doc'));
+    const aborted = new AbortController();
+    aborted.abort();
+    await readFolderMaterials('folder1', aborted.signal);
+    expect(useRetrying.getState().byFolder.folder1).toEqual(['doc']);
+    await readFolderMaterials('folder1', new AbortController().signal);
+    expect(useRetrying.getState().byFolder.folder1 ?? []).toEqual([]);
   });
 });

@@ -326,7 +326,10 @@ const asQueued = (m: Material): Material => ({
  * 다시 읽기도 멈췄다(Codex #520 리뷰). 끝나면(done · failed) 또는 목록에서 없어지면 추적을 풀고, 읽지 못하면 정리 중으로
  * 둔 채 다음에 다시 읽는다. 추적은 폴더별 store에 있어 화면을 닫았다 열어도 이어진다(5차 리뷰)
  */
-export async function readFolderMaterials(folderId: string): Promise<Material[]> {
+export async function readFolderMaterials(
+  folderId: string,
+  signal?: AbortSignal,
+): Promise<Material[]> {
   const list = await api.content.materials(folderId);
   const retrying = retryingIn(folderId);
   if (!retrying.length) return list;
@@ -345,7 +348,8 @@ export async function readFolderMaterials(folderId: string): Promise<Material[]>
       }
     }),
   );
-  if (ended.length) useRetrying.getState().untrack(folderId, ended);
+  // 취소된 읽기(다시 요약 직후 invalidate 등)는 결과가 버려지므로, 그 사이 새로 넣은 추적을 풀지 않는다
+  if (ended.length && !signal?.aborted) useRetrying.getState().untrack(folderId, ended);
   return out;
 }
 
@@ -358,7 +362,7 @@ export function FolderScreen() {
   const folder = folders.data?.find((f) => f._id === id);
   const mats = useQuery({
     queryKey: ['materials', id],
-    queryFn: () => readFolderMaterials(id),
+    queryFn: ({ signal }) => readFolderMaterials(id, signal),
     // 정리 중인 자료가 있으면(다시 요약 포함) 끝날 때까지 다시 읽어 진행 표시 · 다시 요약 버튼을 바로잡는다(Codex #519 리뷰)
     refetchInterval: (q) => (retryingIn(id).length ? 3000 : materialsPollMs(q.state.data)),
   });
