@@ -65,6 +65,7 @@ function setup(options: { mailFails?: boolean; random?: (max: number) => number 
     // 계정 찾기 메일은 이 시험의 대상이 아니다
     sendRecoveryCode: () => Promise.resolve(),
     sendNoAccount: () => Promise.resolve(),
+    sendIdentityCode: () => Promise.resolve(),
   };
   const usersModel = {
     exists: (f: { email?: string; loginId?: string; deletedAt?: null }) =>
@@ -344,6 +345,7 @@ describe('AppSignupService.sendCode', () => {
           sendAlreadyRegistered: () => Promise.resolve(),
           sendRecoveryCode: () => Promise.resolve(),
           sendNoAccount: () => Promise.resolve(),
+          sendIdentityCode: () => Promise.resolve(),
         },
         { exists: () => Promise.resolve(null) } as never,
         TEST_COST,
@@ -551,6 +553,14 @@ describe('AppSignupService.signup', () => {
       expect(await compare(PASSWORD, row.passwordHash!)).toBe(true);
     });
 
+    it('가입 인증번호로 확인한 이메일은 인증된 것으로 적는다(계정 화면에서 다시 인증하지 않게)', async () => {
+      const ctx = setup();
+      await ctx.service.signup(await verifiedToken(ctx), nextLoginId(), PASSWORD);
+      expect(
+        (ctx.users[0] as unknown as { emailVerifiedAt?: unknown }).emailVerifiedAt,
+      ).toBeInstanceOf(Date);
+    });
+
     it('같은 비밀번호도 계정마다 해시가 다르다 (솔트)', async () => {
       const ctx = setup();
       await ctx.service.signup(await verifiedToken(ctx, 'a@example.com'), nextLoginId(), PASSWORD);
@@ -737,6 +747,7 @@ describe('AppSignupService.signup', () => {
           sendAlreadyRegistered: () => Promise.resolve(),
           sendRecoveryCode: () => Promise.resolve(),
           sendNoAccount: () => Promise.resolve(),
+          sendIdentityCode: () => Promise.resolve(),
         },
         {
           exists: () => Promise.resolve(null),
@@ -770,6 +781,7 @@ describe('비밀번호 해시 비용', () => {
         sendAlreadyRegistered: () => Promise.resolve(),
         sendRecoveryCode: () => Promise.resolve(),
         sendNoAccount: () => Promise.resolve(),
+        sendIdentityCode: () => Promise.resolve(),
       },
       {
         exists: () => Promise.resolve(null),

@@ -38,6 +38,8 @@ export const User = z.object({
   school: z.string().optional(),
   grade: z.string().optional(),
   phone: z.string().optional(),
+  /** 계정 이메일을 인증번호로 본인 인증했는지(서버 계산). 전화번호 인증은 아직 없다 */
+  emailVerified: z.boolean().optional(),
   avatarUrl: z.string().optional(),
   /** 지금까지 이어진 연속 학습일 (서울 자정 기준, 서버 계산 · FR-09-08) */
   streakDays: z.number().int().nonnegative(),

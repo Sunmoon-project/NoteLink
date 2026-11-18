@@ -27,6 +27,8 @@ export interface MailSender {
   sendRecoveryCode(to: string, code: string): Promise<void>;
   /** 가입하지 않은 이메일로 계정 찾기를 요청했을 때 알린다(응답은 같게 두고 메일로만 알린다) */
   sendNoAccount(to: string): Promise<void>;
+  /** 로그인한 계정의 이메일 본인 인증 인증번호를 보낸다(`code`는 저장 · 기록하지 않는다) */
+  sendIdentityCode(to: string, code: string): Promise<void>;
 }
 
 /**
@@ -59,6 +61,11 @@ export class LogMailSender implements MailSender {
   async sendNoAccount(to: string): Promise<void> {
     this.ensureEnabled();
     this.logger.warn(`[개발용 메일] 가입한 계정이 없는 이메일입니다 → ${to}`);
+  }
+
+  async sendIdentityCode(to: string, code: string): Promise<void> {
+    this.ensureEnabled();
+    this.logger.warn(`[개발용 메일] 본인 인증 인증번호 → ${to}: ${code}`);
   }
 
   private ensureEnabled(): void {

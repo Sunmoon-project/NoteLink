@@ -2,8 +2,8 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { type HydratedDocument } from 'mongoose';
 
 /** 인증번호를 받는 목적. 같은 이메일이라도 목적이 다르면 서로 다른 인증번호다 */
-/** signup: 가입 · recovery: 아이디 찾기 · 비밀번호 재설정 */
-export const AUTH_CODE_PURPOSES = ['signup', 'recovery'] as const;
+/** signup: 가입 · recovery: 아이디 찾기 · 비밀번호 재설정 · identity: 로그인한 계정의 이메일 본인 인증 */
+export const AUTH_CODE_PURPOSES = ['signup', 'recovery', 'identity'] as const;
 export type AuthCodePurpose = (typeof AUTH_CODE_PURPOSES)[number];
 
 export type AuthCodeDocument = HydratedDocument<AuthCode>;

@@ -144,6 +144,7 @@ import { JWT_CONFIG, TokenService } from './token.service.js';
     SocialExchangeService,
   ],
   // 이메일 · 소셜 로그인이 같은 토큰 발급 로직을 쓰고, 다른 모듈이 JwtAuthGuard로 요청을 인증할 수 있도록 내보낸다
-  exports: [TokenService, JwtAuthGuard],
+  // 이메일 인증번호는 계정 화면의 본인 인증(UsersService)도 쓴다
+  exports: [TokenService, JwtAuthGuard, EmailCodeService],
 })
 export class AuthModule {}

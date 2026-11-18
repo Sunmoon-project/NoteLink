@@ -12,7 +12,12 @@ import {
 } from '@nestjs/common';
 import { requireUserId } from '../../common/request-user.js';
 import { JwtAuthGuard, type AuthenticatedRequest } from '../auth/jwt-auth.guard.js';
-import { ChangePlanDto, RegisterDeviceDto, UpdateStatusDto } from './dto/account.dto.js';
+import {
+  ChangePlanDto,
+  RegisterDeviceDto,
+  UpdateStatusDto,
+  VerifyIdentityCodeDto,
+} from './dto/account.dto.js';
 import { UpdateProfileDto } from './dto/update-profiile.dto.js';
 import { UsersService } from './users.service.js';
 
@@ -60,6 +65,20 @@ export class UsersController {
     @Body() body: RegisterDeviceDto,
   ): Promise<void> {
     await this.users.registerDevice(requireUserId(req), body);
+  }
+
+  /** 계정 이메일로 본인 인증번호 보내기 → 204. 이메일이 없으면 400 NO_EMAIL */
+  @Post('me/email/send-code')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async sendEmailCode(@Req() req: AuthenticatedRequest): Promise<void> {
+    await this.users.sendEmailCode(requireUserId(req));
+  }
+
+  /** 본인 인증번호 확인 { code } → 인증된 내 정보 */
+  @Post('me/email/verify-code')
+  @HttpCode(HttpStatus.OK)
+  async verifyEmailCode(@Req() req: AuthenticatedRequest, @Body() body: VerifyIdentityCodeDto) {
+    return { data: await this.users.verifyEmailCode(requireUserId(req), body.code) };
   }
 
   /** 요금제 바꾸기 { tier } → 바뀐 내 정보. 결제 연동 전에는 free만(유료는 402) */
