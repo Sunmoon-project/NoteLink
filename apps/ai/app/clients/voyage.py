@@ -1,7 +1,10 @@
 """Voyage 임베딩 클라이언트. 문서는 'document', 검색어는 'query'."""
 
+import email.utils
+import math
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Literal
 
 import httpx2
@@ -63,12 +66,35 @@ class Voyage:
                 continue
             if res.status_code == 429 or res.status_code >= 500:
                 err = f"HTTP {res.status_code}"
-                self._sleep(float(res.headers.get("retry-after") or 2 * (attempt + 1)))
+                self._sleep(_retry_after(res.headers.get("retry-after"), 2 * (attempt + 1)))
                 continue
             if res.status_code != 200:
                 raise EmbedError(f"HTTP {res.status_code}")  # 키 · 입력 오류는 다시 보내도 같음
             return _vectors(res, len(texts))
         raise EmbedUnavailableError(err)
+
+
+def _retry_after(value: str | None, fallback: float, now: datetime | None = None) -> float:
+    """Retry-After(초 또는 HTTP 날짜)를 기다릴 초로. 없거나 읽지 못하면 fallback, 지난 날짜면 1초.
+
+    float()로만 읽으면 날짜 형식에서 ValueError가 작업 처리기까지 올라가 작업이 다시 시도 없이
+    실패했음(#498, 학교 LLM은 #262에서 같은 수정).
+    """
+    if not value:
+        return fallback
+    try:
+        sec = float(value)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return fallback
+        if when.tzinfo is None:  # '-0000'처럼 시간대가 없으면 UTC
+            when = when.replace(tzinfo=UTC)
+        sec = (when - (now or datetime.now(UTC))).total_seconds()
+    if not math.isfinite(sec):
+        return fallback
+    return max(sec, 1.0)
 
 
 def _vectors(res: httpx2.Response, n: int) -> list[list[float]]:
