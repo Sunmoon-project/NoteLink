@@ -88,52 +88,29 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       status: 'ready',
       deletedAt: null,
       questions: [
-        {
-          _id: q1,
-          order: 0,
-          type: 'short_answer',
-          prompt: '핵에 있는 것은?',
-          answer: 'DNA',
-          choices: null,
-        },
-        {
-          _id: q2,
-          order: 1,
-          type: 'multiple_choice',
-          prompt: '단백질을 만드는 곳은?',
-          answer: '리보솜',
-          choices: ['핵', '리보솜'],
-        },
+        { _id: q1, order: 0, type: 'short_answer', prompt: '핵에 있는 것은?', answer: 'DNA', choices: null },
+        { _id: q2, order: 1, type: 'multiple_choice', prompt: '단백질을 만드는 곳은?', answer: '리보솜', choices: ['핵', '리보솜'] },
       ],
       ...extra,
     } as never)) as unknown as { _id: Types.ObjectId };
     return created._id.toHexString();
   };
   const start = async (quizSetId: string) =>
-    (await http().post(api(PATHS.quizAttempts)).set(auth).send({ quizSetId }).expect(201)).body
-      .data as {
+    (await http().post(api(PATHS.quizAttempts)).set(auth).send({ quizSetId }).expect(201)).body.data as {
       _id: string;
     };
   const submit = (attemptId: string, body: unknown) =>
-    http()
-      .post(api(PATHS.attemptAnswer(attemptId)))
-      .set(auth)
-      .send(body as object);
-  const stored = () =>
-    attempts.rows[0] as unknown as {
-      correctCount: number;
-      finishedAt: Date | null;
-      answers: { questionId: Types.ObjectId; answer: string; correct: boolean; tries: number }[];
-    };
+    http().post(api(PATHS.attemptAnswer(attemptId))).set(auth).send(body as object);
+  const stored = () => attempts.rows[0] as unknown as {
+    correctCount: number;
+    finishedAt: Date | null;
+    answers: { questionId: Types.ObjectId; answer: string; correct: boolean; tries: number }[];
+  };
 
   describe('풀이 시작 POST /quiz-attempts', () => {
     it('내 ready 세트면 201 { data }에 공용 QuizAttempt 모양으로 돌려주고 저장한다', async () => {
       const quizSetId = await addSet();
-      const res = await http()
-        .post(api(PATHS.quizAttempts))
-        .set(auth)
-        .send({ quizSetId })
-        .expect(201);
+      const res = await http().post(api(PATHS.quizAttempts)).set(auth).send({ quizSetId }).expect(201);
 
       const attempt = res.body.data;
       expect(SharedQuizAttempt.parse(attempt)).toEqual(attempt);
@@ -151,15 +128,8 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       expect(String(attempts.rows[0]!._id)).toBe(attempt._id);
     });
 
-    it.each([
-      ['형식이 틀린 id', 'not-an-id'],
-      ['없는 세트', hex()],
-    ])('%s는 404 NOT_FOUND', async (_name, quizSetId) => {
-      const res = await http()
-        .post(api(PATHS.quizAttempts))
-        .set(auth)
-        .send({ quizSetId })
-        .expect(404);
+    it.each([['형식이 틀린 id', 'not-an-id'], ['없는 세트', hex()]])('%s는 404 NOT_FOUND', async (_name, quizSetId) => {
+      const res = await http().post(api(PATHS.quizAttempts)).set(auth).send({ quizSetId }).expect(404);
       expect(res.body).toMatchObject({ code: 'NOT_FOUND' });
       expect(attempts.rows).toHaveLength(0);
     });
@@ -168,11 +138,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       const others = await addSet({ ownerId: new Types.ObjectId() });
       const deleted = await addSet({ deletedAt: new Date() });
       for (const quizSetId of [others, deleted]) {
-        const res = await http()
-          .post(api(PATHS.quizAttempts))
-          .set(auth)
-          .send({ quizSetId })
-          .expect(404);
+        const res = await http().post(api(PATHS.quizAttempts)).set(auth).send({ quizSetId }).expect(404);
         expect(res.body).toMatchObject({ code: 'NOT_FOUND' });
       }
       expect(attempts.rows).toHaveLength(0);
@@ -180,11 +146,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
 
     it.each(['generating', 'failed'])('%s 세트는 400 VALIDATION_FAILED', async (status) => {
       const quizSetId = await addSet({ status });
-      const res = await http()
-        .post(api(PATHS.quizAttempts))
-        .set(auth)
-        .send({ quizSetId })
-        .expect(400);
+      const res = await http().post(api(PATHS.quizAttempts)).set(auth).send({ quizSetId }).expect(400);
       expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
       expect(attempts.rows).toHaveLength(0);
     });
@@ -201,9 +163,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
   describe('답 제출 POST /quiz-attempts/:id/answers', () => {
     it('정답이면 { correct: true, correctAnswer }이고 풀이에 1번 푼 기록이 남는다', async () => {
       const attempt = await start(await addSet());
-      const res = await submit(attempt._id, { questionId: q1.toHexString(), answer: 'DNA' }).expect(
-        200,
-      );
+      const res = await submit(attempt._id, { questionId: q1.toHexString(), answer: 'DNA' }).expect(200);
 
       expect(res.body).toEqual({ data: { correct: true, correctAnswer: 'DNA' } });
       expect(stored().correctCount).toBe(1);
@@ -214,9 +174,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
 
     it('오답이면 { correct: false, 정답 }이고 correctCount는 그대로 0', async () => {
       const attempt = await start(await addSet());
-      const res = await submit(attempt._id, { questionId: q2.toHexString(), answer: '핵' }).expect(
-        200,
-      );
+      const res = await submit(attempt._id, { questionId: q2.toHexString(), answer: '핵' }).expect(200);
 
       expect(res.body).toEqual({ data: { correct: false, correctAnswer: '리보솜' } });
       expect(stored().correctCount).toBe(0);
@@ -237,10 +195,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       await submit(attempt._id, { questionId: q2.toHexString(), answer: '리보솜' }).expect(200);
       expect(stored().correctCount).toBe(1);
 
-      const again = await submit(attempt._id, {
-        questionId: q1.toHexString(),
-        answer: 'DNA',
-      }).expect(200);
+      const again = await submit(attempt._id, { questionId: q1.toHexString(), answer: 'DNA' }).expect(200);
 
       expect(again.body.data).toEqual({ correct: true, correctAnswer: 'DNA' });
       expect(stored().answers).toHaveLength(2);
@@ -250,18 +205,13 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
 
       // 정답이던 것을 오답으로 바꾸면 다시 줄어든다
       await submit(attempt._id, { questionId: q1.toHexString(), answer: 'RNA' }).expect(200);
-      expect(stored().answers.find((a) => String(a.questionId) === q1.toHexString())).toMatchObject(
-        { tries: 3, correct: false },
-      );
+      expect(stored().answers.find((a) => String(a.questionId) === q1.toHexString())).toMatchObject({ tries: 3, correct: false });
       expect(stored().correctCount).toBe(1);
     });
 
     it('대문자 16진수 questionId로 처음 내도 200이고 정답으로 채점한다 (Codex #287)', async () => {
       const attempt = await start(await addSet());
-      const res = await submit(attempt._id, {
-        questionId: q1.toHexString().toUpperCase(),
-        answer: 'DNA',
-      }).expect(200);
+      const res = await submit(attempt._id, { questionId: q1.toHexString().toUpperCase(), answer: 'DNA' }).expect(200);
 
       expect(res.body).toEqual({ data: { correct: true, correctAnswer: 'DNA' } });
       expect(stored().answers).toHaveLength(1);
@@ -270,10 +220,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
 
     it('같은 문제를 대문자로 한 번 · 소문자로 한 번 내도 답은 하나만 남고 tries가 오른다 (Codex #287)', async () => {
       const attempt = await start(await addSet());
-      await submit(attempt._id, {
-        questionId: q1.toHexString().toUpperCase(),
-        answer: 'RNA',
-      }).expect(200);
+      await submit(attempt._id, { questionId: q1.toHexString().toUpperCase(), answer: 'RNA' }).expect(200);
       await submit(attempt._id, { questionId: q1.toHexString(), answer: 'DNA' }).expect(200);
 
       expect(stored().answers).toHaveLength(1);
@@ -289,14 +236,9 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       expect(stored().answers).toHaveLength(0);
     });
 
-    it.each([
-      ['형식이 틀린 id', 'nope'],
-      ['없는 풀이', hex()],
-    ])('%s는 404 NOT_FOUND', async (_name, attemptId) => {
+    it.each([['형식이 틀린 id', 'nope'], ['없는 풀이', hex()]])('%s는 404 NOT_FOUND', async (_name, attemptId) => {
       await addSet();
-      const res = await submit(attemptId, { questionId: q1.toHexString(), answer: 'DNA' }).expect(
-        404,
-      );
+      const res = await submit(attemptId, { questionId: q1.toHexString(), answer: 'DNA' }).expect(404);
       expect(res.body).toMatchObject({ code: 'NOT_FOUND' });
     });
 
@@ -313,10 +255,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
         finishedAt: null,
       } as never)) as unknown as { _id: Types.ObjectId };
 
-      const res = await submit(theirs._id.toHexString(), {
-        questionId: q1.toHexString(),
-        answer: 'DNA',
-      }).expect(404);
+      const res = await submit(theirs._id.toHexString(), { questionId: q1.toHexString(), answer: 'DNA' }).expect(404);
       expect(res.body).toMatchObject({ code: 'NOT_FOUND' });
       expect(stored().answers).toHaveLength(0);
     });
@@ -325,9 +264,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       const attempt = await start(await addSet());
       stored().finishedAt = new Date();
 
-      const res = await submit(attempt._id, { questionId: q1.toHexString(), answer: 'DNA' }).expect(
-        400,
-      );
+      const res = await submit(attempt._id, { questionId: q1.toHexString(), answer: 'DNA' }).expect(400);
       expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
       expect(stored().answers).toHaveLength(0);
     });
@@ -348,10 +285,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
   });
 
   describe('풀이 끝내기 POST /quiz-attempts/:id/finish', () => {
-    const finish = (attemptId: string) =>
-      http()
-        .post(api(PATHS.attemptFinish(attemptId)))
-        .set(auth);
+    const finish = (attemptId: string) => http().post(api(PATHS.attemptFinish(attemptId))).set(auth);
     const balance = () => (users.rows[0] as unknown as { pointBalance: number }).pointBalance;
     const startWithCorrect = async (answers: string[]) => {
       const attempt = await start(await addSet());
@@ -396,10 +330,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       expect((attempts.rows[0] as unknown as { pointsEarned: number }).pointsEarned).toBe(0);
     });
 
-    it.each([
-      ['형식이 틀린 id', 'nope'],
-      ['없는 풀이', hex()],
-    ])('%s는 404 NOT_FOUND', async (_name, attemptId) => {
+    it.each([['형식이 틀린 id', 'nope'], ['없는 풀이', hex()]])('%s는 404 NOT_FOUND', async (_name, attemptId) => {
       const res = await finish(attemptId).expect(404);
       expect(res.body).toMatchObject({ code: 'NOT_FOUND' });
       expect(earnQuiz).not.toHaveBeenCalled();
@@ -428,10 +359,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       const attempt = await startWithCorrect(['DNA']);
       await finish(attempt._id).expect(200);
 
-      const res = await submit(attempt._id, {
-        questionId: q2.toHexString(),
-        answer: '리보솜',
-      }).expect(400);
+      const res = await submit(attempt._id, { questionId: q2.toHexString(), answer: '리보솜' }).expect(400);
       expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
     });
   });

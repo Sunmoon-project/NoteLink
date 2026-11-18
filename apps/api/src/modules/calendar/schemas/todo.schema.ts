@@ -29,7 +29,7 @@ export class Todo {
   @Prop({ required: true, type: Boolean, default: false })
   done: boolean;
 
-  @Prop({ type: Date, default: null }) // 완료 시각
+  @Prop({ type: Date, default: null } ) // 완료 시각
   doneAt?: Date;
 
   // 아래 세 필드는 할 일 · D-day API(FR-10)에서 추가했다

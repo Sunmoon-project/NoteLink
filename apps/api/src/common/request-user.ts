@@ -10,10 +10,7 @@ import type { AuthenticatedRequest } from '../modules/auth/jwt-auth.guard.js';
 export function requireUserId(req: AuthenticatedRequest): string {
   const userId = req.user?.userId;
   if (userId === undefined) {
-    throw new UnauthorizedException({
-      code: 'AUTH_TOKEN_EXPIRED',
-      message: '다시 로그인해 주세요',
-    });
+    throw new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: '다시 로그인해 주세요' });
   }
   return userId;
 }

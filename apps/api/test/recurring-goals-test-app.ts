@@ -18,42 +18,37 @@ const TEST_TOKEN = 'test-token';
 
 /** 진짜 DB 대신 가짜 모델을 넣은 반복 목표 테스트용 서버 */
 export async function createRecurringGoalsTestApp(fakes: {
-  recurringGoal: object;
-  subject: object;
-  dailyRecord?: object;
-  skipDates?: (userId: string, from: string, to: string) => Promise<string[]>;
+    recurringGoal: object;
+    subject: object;
+    dailyRecord?: object;
+    skipDates?: (userId: string, from: string, to: string) => Promise<string[]>;
 }): Promise<INestApplication> {
-  const moduleRef = await Test.createTestingModule({
-    controllers: [RecurringGoalsController],
-    providers: [
-      RecurringGoalsService,
-      { provide: getModelToken(RecurringGoal.name), useValue: fakes.recurringGoal },
-      { provide: getModelToken(Subject.name), useValue: fakes.subject },
-      // 판정에 쓰는 하루 기록과 건너뛸 날. 안 주면 기록 · 건너뛸 날이 없는 것으로 본다
-      {
-        provide: getModelToken(DailyRecord.name),
-        useValue: fakes.dailyRecord ?? { find: () => ({ lean: () => Promise.resolve([]) }) },
-      },
-      {
-        provide: HolidaysService,
-        useValue: { skipDates: fakes.skipDates ?? (() => Promise.resolve([])) },
-      },
-      {
-        provide: TokenService,
-        useValue: {
-          verifyAccess: (token: string) =>
-            token === TEST_TOKEN
-              ? Promise.resolve({ userId: TEST_USER_ID })
-              : Promise.reject(
-                  new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: 'x' }),
-                ),
-        },
-      },
-    ],
-  }).compile();
+    const moduleRef = await Test.createTestingModule({
+        controllers: [RecurringGoalsController],
+        providers: [
+            RecurringGoalsService,
+            { provide: getModelToken(RecurringGoal.name), useValue: fakes.recurringGoal },
+            { provide: getModelToken(Subject.name), useValue: fakes.subject },
+            // 판정에 쓰는 하루 기록과 건너뛸 날. 안 주면 기록 · 건너뛸 날이 없는 것으로 본다
+            {
+                provide: getModelToken(DailyRecord.name),
+                useValue: fakes.dailyRecord ?? { find: () => ({ lean: () => Promise.resolve([]) }) },
+            },
+            { provide: HolidaysService, useValue: { skipDates: fakes.skipDates ?? (() => Promise.resolve([])) } },
+            {
+                provide: TokenService,
+                useValue: {
+                    verifyAccess: (token: string) =>
+                        token === TEST_TOKEN
+                            ? Promise.resolve({ userId: TEST_USER_ID })
+                            : Promise.reject(new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: 'x' })),
+                },
+            },
+        ],
+    }).compile();
 
-  const app = moduleRef.createNestApplication();
-  configureApp(app);
-  await app.init();
-  return app;
+    const app = moduleRef.createNestApplication();
+    configureApp(app);
+    await app.init();
+    return app;
 }

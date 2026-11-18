@@ -10,20 +10,20 @@ import { StudyService, type DailyRecordView, type StudyItemView } from './study.
 @Controller('study')
 @UseGuards(JwtAuthGuard)
 export class StudyController {
-  constructor(private readonly study: StudyService) {}
+    constructor(private readonly study: StudyService) { }
 
-  /** GET /api/v1/study/today */
-  @Get('today')
-  async today(@Req() req: AuthenticatedRequest): Promise<{ data: DailyRecordView }> {
-    return { data: await this.study.today(requireUserId(req)) };
-  }
+    /** GET /api/v1/study/today */
+    @Get('today')
+    async today(@Req() req: AuthenticatedRequest): Promise<{ data: DailyRecordView }> {
+        return { data: await this.study.today(requireUserId(req)) };
+    }
 
-  /** POST /api/v1/study/items { title, subjectName, goalMin } */
-  @Post('items')
-  async addItem(
-    @Req() req: AuthenticatedRequest,
-    @Body() body: CreateStudyItemDto,
-  ): Promise<{ data: StudyItemView }> {
-    return { data: await this.study.addItem(requireUserId(req), body) };
-  }
+    /** POST /api/v1/study/items { title, subjectName, goalMin } */
+    @Post('items')
+    async addItem(
+        @Req() req: AuthenticatedRequest,
+        @Body() body: CreateStudyItemDto,
+    ): Promise<{ data: StudyItemView }> {
+        return { data: await this.study.addItem(requireUserId(req), body) };
+    }
 }

@@ -12,36 +12,32 @@ export const QUIZ_DAILY_POINT_LIMIT = 40; // 퀴즈 보상은 하루 40포인트
 
 /** 오늘(서울 날짜, DAY_RESET_HOUR=0이라 자정에 바뀜) YYYY-MM-DD. 하루 한도를 셀 날짜 키로 쓴다 */
 export function seoulDay(now: Date): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Seoul',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(now);
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Seoul',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).format(now);
 }
 
 export interface PointReward {
-  amount: number;
-  reasonType: PointReasonType;
-  description: string;
+    amount: number;
+    reasonType: PointReasonType;
+    description: string;
 }
 
 /** 순공 세션이 끝났을 때의 보상. 10분이 안 되면 undefined(적립 없음). 하루 횟수 한도는 부르는 쪽이 확인한다 */
 export function sessionReward(durationSec: number): PointReward | undefined {
-  if (!Number.isFinite(durationSec) || durationSec < SESSION_COMPLETE_MIN_SEC) return undefined;
-  return {
-    amount: SESSION_COMPLETE_POINTS,
-    reasonType: 'session_complete',
-    description: '순공 세션 완료',
-  };
+    if (!Number.isFinite(durationSec) || durationSec < SESSION_COMPLETE_MIN_SEC) return undefined;
+    return { amount: SESSION_COMPLETE_POINTS, reasonType: 'session_complete', description: '순공 세션 완료' };
 }
 
 /** 퀴즈에서 맞힌 개수만큼의 보상. 맞힌 게 없으면 undefined. 하루 한도는 부르는 쪽이 확인한다 */
 export function quizReward(correctCount: number): PointReward | undefined {
-  if (!Number.isInteger(correctCount) || correctCount <= 0) return undefined;
-  return {
-    amount: QUIZ_CORRECT_POINTS * correctCount,
-    reasonType: 'quiz_correct',
-    description: `퀴즈 정답 ${correctCount}개`,
-  };
+    if (!Number.isInteger(correctCount) || correctCount <= 0) return undefined;
+    return {
+        amount: QUIZ_CORRECT_POINTS * correctCount,
+        reasonType: 'quiz_correct',
+        description: `퀴즈 정답 ${correctCount}개`,
+    };
 }

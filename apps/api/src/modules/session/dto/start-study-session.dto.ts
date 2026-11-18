@@ -4,9 +4,9 @@ import { SESSION_MODES, type SessionMode } from '../schemas/study-session.schema
 
 // POST /study-sessions { studyItemId, mode }
 export class StartStudySessionDto {
-  @IsMongoId()
-  studyItemId!: string;
+    @IsMongoId()
+    studyItemId!: string;
 
-  @IsIn(SESSION_MODES)
-  mode!: SessionMode;
+    @IsIn(SESSION_MODES)
+    mode!: SessionMode;
 }

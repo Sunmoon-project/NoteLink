@@ -49,9 +49,7 @@ beforeAll(async () => {
           verifyAccess: (token: string) =>
             token === TOKEN
               ? Promise.resolve({ userId: USER_ID })
-              : Promise.reject(
-                  new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: 'x' }),
-                ),
+              : Promise.reject(new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: 'x' })),
         },
       },
     ],
@@ -78,10 +76,7 @@ afterEach(() => {
 });
 
 const post = (body: unknown, headers: Record<string, string> = AUTH) =>
-  request(app.getHttpServer())
-    .post('/api/v1/auth/terms')
-    .set(headers)
-    .send(body as object);
+  request(app.getHttpServer()).post('/api/v1/auth/terms').set(headers).send(body as object);
 
 describe('POST /auth/terms (FR-01-05)', () => {
   it('필수 약관에만 동의하면 204이고 선택 약관은 agreed: false로 남긴다', async () => {

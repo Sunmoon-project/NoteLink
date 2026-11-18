@@ -146,9 +146,7 @@ describe.skipIf(!local)('실제 MongoDB 채팅방 생성', () => {
       type: 'study_room_invite',
       clientId: 'room_invite_attempt-retry',
     });
-    expect(await messages.countDocuments({ chatRoomId: chat._id, type: 'study_room_invite' })).toBe(
-      2,
-    );
+    expect(await messages.countDocuments({ chatRoomId: chat._id, type: 'study_room_invite' })).toBe(2);
   });
   it('탈퇴·강퇴한 멤버와 종료된 방은 조회할 수 없다', async () => {
     for (const status of ['left', 'kicked']) {

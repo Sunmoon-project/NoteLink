@@ -4,18 +4,18 @@ import { addDays, weekStartOf } from './week.js';
 
 /** 판정에 쓰는 목표 정보 */
 export interface GoalRule {
-  isActive: boolean; // false면 연속 달성 주 수는 0
-  days: number[]; // 0=일 ... 6=토
-  targetSec: number;
-  subjectId: string | null; // 있으면 그 과목에서 쌓은 시간만 센다
-  createdDate: string; // 만든 날(서울). 이전 날짜는 판정하지 않는다
-  pausedUntil: string | null; // 이 날(서울 날짜)까지 쉰다(그 날 포함)
+    isActive: boolean; // false면 연속 달성 주 수는 0
+    days: number[]; // 0=일 ... 6=토
+    targetSec: number;
+    subjectId: string | null; // 있으면 그 과목에서 쌓은 시간만 센다
+    createdDate: string; // 만든 날(서울). 이전 날짜는 판정하지 않는다
+    pausedUntil: string | null; // 이 날(서울 날짜)까지 쉰다(그 날 포함)
 }
 
 /** 하루 공부 기록 (daily_records에서 필요한 것만) */
 export interface DayStudy {
-  totalSec: number;
-  bySubject: Map<string, number>; // 과목 id -> 그날 쌓인 초
+    totalSec: number;
+    bySubject: Map<string, number>; // 과목 id -> 그날 쌓인 초
 }
 
 /**
@@ -32,28 +32,25 @@ const weekdayOf = (day: string): number => new Date(`${day}T00:00:00Z`).getUTCDa
 
 /** 그날 이 목표로 센 공부 초: 과목 목표면 그 과목에서 쌓은 시간만, 아니면 하루 총 시간. 판정과 오늘 공부 시간이 같은 기준을 쓴다 */
 export function studiedSec(goal: GoalRule, record: DayStudy | undefined): number {
-  return goal.subjectId === null
-    ? (record?.totalSec ?? 0)
-    : (record?.bySubject.get(goal.subjectId) ?? 0);
+    return goal.subjectId === null ? (record?.totalSec ?? 0) : (record?.bySubject.get(goal.subjectId) ?? 0);
 }
 
 /** 하루를 판정한다. today는 서울 기준 오늘 */
 export function judgeDay(
-  goal: GoalRule,
-  day: string,
-  today: string,
-  study: ReadonlyMap<string, DayStudy>,
-  skipDates: ReadonlySet<string>,
+    goal: GoalRule,
+    day: string,
+    today: string,
+    study: ReadonlyMap<string, DayStudy>,
+    skipDates: ReadonlySet<string>,
 ): Verdict {
-  if (!goal.days.includes(weekdayOf(day)) || day < goal.createdDate) return 'none';
-  if (skipDates.has(day) || (goal.pausedUntil !== null && day <= goal.pausedUntil))
-    return 'skipped';
-  if (day > today) return 'pending';
+    if (!goal.days.includes(weekdayOf(day)) || day < goal.createdDate) return 'none';
+    if (skipDates.has(day) || (goal.pausedUntil !== null && day <= goal.pausedUntil)) return 'skipped';
+    if (day > today) return 'pending';
 
-  const record = study.get(day);
-  const sec = studiedSec(goal, record);
-  if (sec >= goal.targetSec) return 'achieved';
-  return day === today ? 'pending' : 'missed'; // 오늘은 하루가 끝나기 전이라 미달성으로 단정하지 않는다
+    const record = study.get(day);
+    const sec = studiedSec(goal, record);
+    if (sec >= goal.targetSec) return 'achieved';
+    return day === today ? 'pending' : 'missed'; // 오늘은 하루가 끝나기 전이라 미달성으로 단정하지 않는다
 }
 
 /**
@@ -61,15 +58,15 @@ export function judgeDay(
  * 요일이 아니거나(만들기 전 포함), 공휴일 · 제외일 · 일시 정지 중이거나, 쉬는 목표(isActive=false)면 null
  */
 export function todayStudyMin(
-  goal: GoalRule,
-  today: string,
-  study: ReadonlyMap<string, DayStudy>,
-  skipDates: ReadonlySet<string>,
+    goal: GoalRule,
+    today: string,
+    study: ReadonlyMap<string, DayStudy>,
+    skipDates: ReadonlySet<string>,
 ): number | null {
-  if (!goal.isActive) return null;
-  const verdict = judgeDay(goal, today, today, study, skipDates);
-  if (verdict === 'none' || verdict === 'skipped') return null;
-  return Math.floor(studiedSec(goal, study.get(today)) / 60);
+    if (!goal.isActive) return null;
+    const verdict = judgeDay(goal, today, today, study, skipDates);
+    if (verdict === 'none' || verdict === 'skipped') return null;
+    return Math.floor(studiedSec(goal, study.get(today)) / 60);
 }
 
 /**
@@ -80,28 +77,25 @@ export function todayStudyMin(
  * - since: 기록을 읽은 시작 날짜. 이 날 이전은 기록이 없는 것이지 못 한 것이 아니므로, 이 날부터 시작하는 온전한 주까지만 본다
  */
 export function weeklyStreak(
-  goal: GoalRule,
-  today: string,
-  study: ReadonlyMap<string, DayStudy>,
-  skipDates: ReadonlySet<string>,
-  since?: string,
+    goal: GoalRule,
+    today: string,
+    study: ReadonlyMap<string, DayStudy>,
+    skipDates: ReadonlySet<string>,
+    since?: string,
 ): number {
-  if (!goal.isActive) return 0;
-  const thisWeek = weekStartOf(today);
-  const start = since !== undefined && since > goal.createdDate ? since : goal.createdDate;
-  let firstWeek = weekStartOf(start);
-  if (since !== undefined && since > goal.createdDate && firstWeek < since)
-    firstWeek = addDays(firstWeek, 7); // 잘린 주는 판정하지 않는다
+    if (!goal.isActive) return 0;
+    const thisWeek = weekStartOf(today);
+    const start = since !== undefined && since > goal.createdDate ? since : goal.createdDate;
+    let firstWeek = weekStartOf(start);
+    if (since !== undefined && since > goal.createdDate && firstWeek < since) firstWeek = addDays(firstWeek, 7); // 잘린 주는 판정하지 않는다
 
-  let streak = 0;
-  let week = thisWeek;
-  for (let i = 0; i < MAX_WEEKS && week >= firstWeek; i++, week = addDays(week, -7)) {
-    const verdicts = Array.from({ length: 7 }, (_, d) =>
-      judgeDay(goal, addDays(week, d), today, study, skipDates),
-    );
-    if (verdicts.includes('missed')) return week === thisWeek ? 0 : streak;
-    if (verdicts.includes('pending')) continue; // 진행 중인 주
-    if (verdicts.includes('achieved')) streak += 1; // 전부 건너뛴 주 · 대상 날이 없는 주는 여기서 넘어간다
-  }
-  return streak;
+    let streak = 0;
+    let week = thisWeek;
+    for (let i = 0; i < MAX_WEEKS && week >= firstWeek; i++, week = addDays(week, -7)) {
+        const verdicts = Array.from({ length: 7 }, (_, d) => judgeDay(goal, addDays(week, d), today, study, skipDates));
+        if (verdicts.includes('missed')) return week === thisWeek ? 0 : streak;
+        if (verdicts.includes('pending')) continue; // 진행 중인 주
+        if (verdicts.includes('achieved')) streak += 1; // 전부 건너뛴 주 · 대상 날이 없는 주는 여기서 넘어간다
+    }
+    return streak;
 }

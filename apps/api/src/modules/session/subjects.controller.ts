@@ -6,11 +6,11 @@ import { StudyService, type SubjectView } from './study.service.js';
 @Controller('subjects')
 @UseGuards(JwtAuthGuard)
 export class SubjectsController {
-  constructor(private readonly study: StudyService) {}
+    constructor(private readonly study: StudyService) { }
 
-  /** GET /api/v1/subjects */
-  @Get()
-  async list(): Promise<{ data: SubjectView[] }> {
-    return { data: await this.study.listSubjects() };
-  }
+    /** GET /api/v1/subjects */
+    @Get()
+    async list(): Promise<{ data: SubjectView[] }> {
+        return { data: await this.study.listSubjects() };
+    }
 }

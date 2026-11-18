@@ -426,14 +426,10 @@ describe('스터디룸 친구 초대', () => {
       members: { $elemMatch: { userId, status: 'joined' } },
     });
 
-    rooms.findById.mockReturnValue(
-      query({ closedAt: new Date(), members: [{ userId, status: 'joined' }] }),
-    );
+    rooms.findById.mockReturnValue(query({ closedAt: new Date(), members: [{ userId, status: 'joined' }] }));
     await expect(invite()).rejects.toMatchObject({ status: 404 });
 
-    rooms.findById.mockReturnValue(
-      query({ closedAt: null, members: [{ userId, status: 'joined' }] }),
-    );
+    rooms.findById.mockReturnValue(query({ closedAt: null, members: [{ userId, status: 'joined' }] }));
     await expect(invite()).rejects.toMatchObject({
       status: 409,
       response: { code: 'ROOM_FULL' },
@@ -458,10 +454,7 @@ describe('스터디룸 친구 초대', () => {
     });
 
     await expect(
-      service.invite(String(userId), String(roomId), [
-        String(firstFriendId),
-        String(secondFriendId),
-      ]),
+      service.invite(String(userId), String(roomId), [String(firstFriendId), String(secondFriendId)]),
     ).rejects.toMatchObject({
       status: 409,
       response: { code: 'ROOM_FULL' },

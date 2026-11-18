@@ -24,39 +24,37 @@ export const AUTH = { Authorization: `Bearer ${TEST_TOKEN}` };
 
 /** 진짜 DB 대신 가짜 모델을 넣은 상점·포인트 테스트용 서버 */
 export async function createShopTestApp(models: {
-  shopItem: object;
-  userItem: object;
-  pointLedger?: object; // 포인트 내역·구매 테스트에서만 넘긴다
-  user?: object; // 구매 테스트에서만 넘긴다 (포인트 잔액)
-  connection?: object; // 구매 테스트에서만 넘긴다 (트랜잭션)
+    shopItem: object;
+    userItem: object;
+    pointLedger?: object; // 포인트 내역·구매 테스트에서만 넘긴다
+    user?: object; // 구매 테스트에서만 넘긴다 (포인트 잔액)
+    connection?: object; // 구매 테스트에서만 넘긴다 (트랜잭션)
 }): Promise<INestApplication> {
-  const moduleRef = await Test.createTestingModule({
-    controllers: [ShopController, MyItemsController, PurchaseController, PointController],
-    providers: [
-      ShopService,
-      PointService,
-      { provide: getModelToken(ShopItem.name), useValue: models.shopItem },
-      { provide: getModelToken(UserItem.name), useValue: models.userItem },
-      { provide: getModelToken(PointLedger.name), useValue: models.pointLedger ?? {} },
-      { provide: getModelToken(User.name), useValue: models.user ?? {} },
-      { provide: getConnectionToken(), useValue: models.connection ?? {} },
-      // 로그인 확인(JwtAuthGuard)이 쓰는 도구의 가짜: TEST_TOKEN만 통과시킨다
-      {
-        provide: TokenService,
-        useValue: {
-          verifyAccess: (token: string) =>
-            token === TEST_TOKEN
-              ? Promise.resolve({ userId: TEST_USER_ID })
-              : Promise.reject(
-                  new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: 'x' }),
-                ),
-        },
-      },
-    ],
-  }).compile();
+    const moduleRef = await Test.createTestingModule({
+        controllers: [ShopController, MyItemsController, PurchaseController, PointController],
+        providers: [
+            ShopService,
+            PointService,
+            { provide: getModelToken(ShopItem.name), useValue: models.shopItem },
+            { provide: getModelToken(UserItem.name), useValue: models.userItem },
+            { provide: getModelToken(PointLedger.name), useValue: models.pointLedger ?? {} },
+            { provide: getModelToken(User.name), useValue: models.user ?? {} },
+            { provide: getConnectionToken(), useValue: models.connection ?? {} },
+            // 로그인 확인(JwtAuthGuard)이 쓰는 도구의 가짜: TEST_TOKEN만 통과시킨다
+            {
+                provide: TokenService,
+                useValue: {
+                    verifyAccess: (token: string) =>
+                        token === TEST_TOKEN
+                            ? Promise.resolve({ userId: TEST_USER_ID })
+                            : Promise.reject(new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: 'x' })),
+                },
+            },
+        ],
+    }).compile();
 
-  const app = moduleRef.createNestApplication();
-  configureApp(app);
-  await app.init();
-  return app;
+    const app = moduleRef.createNestApplication();
+    configureApp(app);
+    await app.init();
+    return app;
 }

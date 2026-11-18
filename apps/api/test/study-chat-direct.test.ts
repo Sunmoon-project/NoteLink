@@ -56,12 +56,7 @@ describe('1:1 채팅 스터디룸 초대 메시지', () => {
     const { service, chats, messages } = setup();
     const invite = { _id: '64b000000000000000000001', title: '함께 공부방', inviteCode: 'AB12CD' };
 
-    const sent = await service.sendRoomInvite(
-      String(me),
-      String(friend),
-      invite,
-      'invite-attempt-1',
-    );
+    const sent = await service.sendRoomInvite(String(me), String(friend), invite, 'invite-attempt-1');
 
     expect(chats.findOneAndUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ directKey: expect.stringMatching(/^[a-f0-9]{24}:[a-f0-9]{24}$/) }),
@@ -127,9 +122,7 @@ describe('1:1 채팅 스터디룸 초대 메시지', () => {
     await expect(service.requireChat(String(chatId), String(me))).resolves.toMatchObject({
       type: 'direct',
     });
-    await expect(
-      service.requireChat(String(chatId), String(new Types.ObjectId())),
-    ).rejects.toMatchObject({
+    await expect(service.requireChat(String(chatId), String(new Types.ObjectId()))).rejects.toMatchObject({
       status: 404,
     });
 
