@@ -103,10 +103,11 @@ describe.skipIf(!local)('회원 탈퇴 · 스터디룸 나가기 실제 MongoDB'
       [second, false],
     ]);
     await service.withdraw(String(second));
-    // 연결 끊기 → 나가기 → 알림 순서(탈퇴 경로)
+    // 소켓 해제 → 연결 끊기 → 나가기 → 소켓 해제 → 알림 순서(탈퇴 경로). 나가기는 가짜가 아니라 실제 DB라 calls 에는 안 보인다
     expect(calls).toEqual([
       `evict:${created._id}`,
       `disconnect:${created._id}`,
+      `evict:${created._id}`,
       `notify:${created._id}`,
     ]);
     const after = await saved(created._id);

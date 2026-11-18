@@ -54,13 +54,16 @@ export class StudyRoomMembershipService {
   }
 
   /**
-   * 방 하나를 탈퇴용 순서(소켓 구독 해제 → LiveKit 연결 종료 → 나가기 → 알림)로 처리한다. 탈퇴 일괄 처리와 입장 · 생성 뒤
-   * 되돌리기가 같이 쓴다: 연결 끊기가 실패하면 멤버십이 남아 있어서, 탈퇴를 다시 시도할 때 이 방이 목록에 다시 나온다
+   * 방 하나를 탈퇴용 순서(소켓 구독 해제 → LiveKit 연결 종료 → 나가기 → 소켓 구독 해제 한 번 더 → 알림)로 처리한다.
+   * 탈퇴 일괄 처리와 입장 · 생성 뒤 되돌리기가 같이 쓴다: 연결 끊기가 실패하면 멤버십이 남아 있어서, 탈퇴를 다시 시도할 때
+   * 이 방이 목록에 다시 나온다. 나가기 전까지는 아직 멤버라 그 사이에 새 소켓 구독이 끼어들 수 있으므로, 나간 뒤(이제 구독이
+   * 막힌다)에 한 번 더 풀어 그 구독을 정리한다
    */
   private async leaveRoomForWithdrawal(userId: string, roomId: string): Promise<void> {
     await this.gateway.evict(roomId, userId);
     await this.live.disconnect(roomId, userId);
     await this.rooms.leaveRoom(userId, roomId);
+    await this.gateway.evict(roomId, userId);
     this.gateway.notifyMembersChanged(roomId);
   }
 }

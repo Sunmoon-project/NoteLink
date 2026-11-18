@@ -46,11 +46,11 @@ describe('입장 · 생성 뒤 되돌리기(rollbackMembership)', () => {
   const rollback = (rooms: { rollbackMembership: unknown }) =>
     rooms.rollbackMembership as (u: string, r: string) => Promise<void>;
 
-  it('탈퇴용 순서(소켓 해제 → 연결 종료 → 나가기 → 알림)로 StudyRoomsService 에 연결된다', async () => {
+  it('탈퇴용 순서(소켓 해제 → 연결 종료 → 나가기 → 소켓 해제 → 알림)로 StudyRoomsService 에 연결된다', async () => {
     const { rooms, calls } = setup(['r9']);
     expect(typeof rooms.rollbackMembership).toBe('function');
     await rollback(rooms)('u1', 'r9');
-    expect(calls).toEqual(['evict:r9', 'disconnect:r9', 'leaveRoom:r9', 'notify:r9']);
+    expect(calls).toEqual(['evict:r9', 'disconnect:r9', 'leaveRoom:r9', 'evict:r9', 'notify:r9']);
   });
 
   it('연결 끊기가 실패하면 멤버십이 남아서 탈퇴를 다시 시도할 때 그 방을 다시 처리한다', async () => {
@@ -61,12 +61,12 @@ describe('입장 · 생성 뒤 되돌리기(rollbackMembership)', () => {
     expect((await rooms.list()).map((room) => room._id)).toEqual(['r9']);
     calls.length = 0;
     await service.leaveAllForWithdrawal('u1');
-    expect(calls).toEqual(['evict:r9', 'disconnect:r9', 'leaveRoom:r9', 'notify:r9']);
+    expect(calls).toEqual(['evict:r9', 'disconnect:r9', 'leaveRoom:r9', 'evict:r9', 'notify:r9']);
   });
 });
 
 describe('탈퇴용 나가기(leaveAllForWithdrawal)', () => {
-  it('방마다 소켓 구독 해제 → LiveKit 연결 종료 → 나가기 → 알림 순서로 한다', async () => {
+  it('방마다 소켓 해제 → LiveKit 연결 종료 → 나가기 → 소켓 해제 → 알림 순서로 한다', async () => {
     const { service, rooms, calls } = setup(['r1', 'r2']);
     await service.leaveAllForWithdrawal('u1');
     expect(rooms.list).toHaveBeenCalledWith('u1', 'mine');
@@ -74,12 +74,31 @@ describe('탈퇴용 나가기(leaveAllForWithdrawal)', () => {
       'evict:r1',
       'disconnect:r1',
       'leaveRoom:r1',
+      'evict:r1',
       'notify:r1',
       'evict:r2',
       'disconnect:r2',
       'leaveRoom:r2',
+      'evict:r2',
       'notify:r2',
     ]);
+  });
+
+  it('첫 소켓 해제 뒤에 끼어든 구독은 나간 뒤의 두 번째 소켓 해제로 정리된다', async () => {
+    const { service, gateway, live, calls } = setup(['r1']);
+    const subscribed = new Set(['r1']);
+    gateway.evict.mockImplementation(async (roomId: string) => {
+      subscribed.delete(roomId);
+      calls.push(`evict:${roomId}`);
+    });
+    // 첫 소켓 해제 뒤, 아직 멤버인 사이에 같은 사용자가 방을 다시 구독했다
+    live.disconnect.mockImplementationOnce(async (roomId: string) => {
+      subscribed.add(roomId);
+      calls.push(`disconnect:${roomId}`);
+    });
+    await service.leaveAllForWithdrawal('u1');
+    expect(subscribed.size).toBe(0);
+    expect(calls).toEqual(['evict:r1', 'disconnect:r1', 'leaveRoom:r1', 'evict:r1', 'notify:r1']);
   });
 
   it('참여 중인 방이 없으면 아무것도 하지 않는다', async () => {
@@ -96,7 +115,7 @@ describe('탈퇴용 나가기(leaveAllForWithdrawal)', () => {
     expect(calls).toEqual(['evict:r1']);
     calls.length = 0;
     await service.leaveAllForWithdrawal('u1');
-    expect(calls).toEqual(['evict:r1', 'disconnect:r1', 'leaveRoom:r1', 'notify:r1']);
+    expect(calls).toEqual(['evict:r1', 'disconnect:r1', 'leaveRoom:r1', 'evict:r1', 'notify:r1']);
   });
 
   it('나가기가 실패하면 알리지 않고 던진다(연결은 이미 끊겼고, 다시 시도하면 이어서 한다)', async () => {
@@ -120,10 +139,12 @@ describe('탈퇴용 나가기(leaveAllForWithdrawal)', () => {
       'evict:r1',
       'disconnect:r1',
       'leaveRoom:r1',
+      'evict:r1',
       'notify:r1',
       'evict:r2',
       'disconnect:r2',
       'leaveRoom:r2',
+      'evict:r2',
       'notify:r2',
     ]);
   });
