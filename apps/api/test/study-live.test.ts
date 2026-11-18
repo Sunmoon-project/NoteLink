@@ -14,10 +14,12 @@ const values: Record<string, string> = {
 };
 const setup = () => {
   const requireMember = vi.fn().mockResolvedValue({});
+  const requireActiveUser = vi.fn().mockResolvedValue(undefined);
   const config = { get: (key: string) => values[key] };
   return {
     requireMember,
-    service: new StudyLiveService(config as never, { requireMember } as never),
+    requireActiveUser,
+    service: new StudyLiveService(config as never, { requireMember, requireActiveUser } as never),
   };
 };
 describe('스터디 라이브 토큰', () => {
@@ -39,6 +41,19 @@ describe('스터디 라이브 토큰', () => {
   it('참여자가 아닌 사용자는 토큰을 받지 못한다', async () => {
     const { service, requireMember } = setup();
     requireMember.mockRejectedValueOnce(new NotFoundException());
+    await expect(service.issueToken(ROOM, USER)).rejects.toBeInstanceOf(NotFoundException);
+  });
+  it('탈퇴 중인 사용자는 토큰을 받지 못한다', async () => {
+    const { service, requireActiveUser } = setup();
+    requireActiveUser.mockRejectedValueOnce(new NotFoundException());
+    await expect(service.issueToken(ROOM, USER)).rejects.toBeInstanceOf(NotFoundException);
+    expect(requireActiveUser).toHaveBeenCalledWith(USER);
+  });
+  it('토큰 생성 도중 탈퇴를 시작한 사용자에게는 토큰을 돌려주지 않는다', async () => {
+    const { service, requireActiveUser } = setup();
+    requireActiveUser
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new NotFoundException());
     await expect(service.issueToken(ROOM, USER)).rejects.toBeInstanceOf(NotFoundException);
   });
   it('토큰 생성 도중 퇴장한 사용자에게는 토큰을 돌려주지 않는다', async () => {

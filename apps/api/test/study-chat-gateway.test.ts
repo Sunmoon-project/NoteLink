@@ -16,7 +16,13 @@ const message = {
   createdAt: '2026-01-01T00:00:00.000Z',
   clientId: 'client1',
 };
-const chat = { getChat: vi.fn(), requireChat: vi.fn(), history: vi.fn(), send: vi.fn() };
+const chat = {
+  getChat: vi.fn(),
+  requireChat: vi.fn(),
+  requireActiveUser: vi.fn(),
+  history: vi.fn(),
+  send: vi.fn(),
+};
 const tokens = { verifyAccess: vi.fn() };
 let app: INestApplication;
 let a: Socket;
@@ -98,6 +104,16 @@ describe('스터디룸 Socket.IO', () => {
     });
     a.off('room:timer', receivedA);
     b.off('room:timer', receivedB);
+  });
+
+  it('탈퇴 중인 사용자의 방 구독(room:join)은 거절한다', async () => {
+    chat.requireActiveUser.mockRejectedValueOnce(new Error('withdrawing'));
+    chat.getChat.mockClear();
+    expect(await a.timeout(2000).emitWithAck('room:join', { roomId: 'room' })).toEqual({
+      ok: false,
+    });
+    expect(chat.requireActiveUser).toHaveBeenCalledWith('a');
+    expect(chat.getChat).not.toHaveBeenCalled();
   });
 
   it('이전 입장 요청이 늦게 실패해도 나중 입장의 구독을 해제하지 않는다', async () => {

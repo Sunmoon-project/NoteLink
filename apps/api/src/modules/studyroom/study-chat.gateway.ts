@@ -94,6 +94,7 @@ export class StudyChatGateway {
     let channel: string | undefined;
     try {
       const userId = await this.identity(socket);
+      await this.chat.requireActiveUser(userId);
       const chat = await this.chat.getChat(roomId, userId);
       channel = `study-chat:${String(chat._id)}`;
       await socket.join(channel);
