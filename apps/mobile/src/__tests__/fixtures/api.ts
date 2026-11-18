@@ -259,6 +259,14 @@ export const mockApi: Api = {
       return structuredClone(db.user);
     },
     withdraw: () => ok(undefined),
+    emailSendCode: () =>
+      db.user.email ? ok(undefined) : fail(ERROR_CODES.NO_EMAIL, '계정에 이메일이 없어요'),
+    emailVerifyCode: async (code) => {
+      await ok(undefined);
+      if (code !== '123456') return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요');
+      db.user.emailVerified = true;
+      return structuredClone(db.user);
+    },
   },
   upload: {
     getSas: (p) => {

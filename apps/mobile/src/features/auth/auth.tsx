@@ -490,7 +490,7 @@ const CODE_LEN = 6;
 const RESEND_SEC = 60; // 다시 받기를 너무 빨리 누르지 않게(서버도 RATE_LIMITED로 막는다)
 
 /** 인증번호 6칸. 보이지 않는 입력 하나를 받아 칸마다 한 자리씩 보여 준다(문자 자동 채우기 지원) */
-function CodeBoxes({
+export function CodeBoxes({
   value,
   onChange,
   invalid,
