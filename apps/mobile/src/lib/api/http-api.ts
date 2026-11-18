@@ -105,6 +105,7 @@ export const httpApi: Api = {
     startSession: (p) => http.post(P.studySessions, p),
     pauseSession: (id) => http.post(P.studySessionAction(id, 'pause')),
     resumeSession: (id) => http.post(P.studySessionAction(id, 'resume')),
+    heartbeatSession: (id) => http.post(P.studySessionAction(id, 'heartbeat')),
     endSession: (id, p) => http.post(P.studySessionAction(id, 'end'), p),
     weekly: () => http.get(P.studyWeekly),
     month: (ym) => http.get(P.studyMonth, { ym }),
