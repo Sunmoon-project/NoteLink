@@ -21,8 +21,11 @@ function setup(over: { stored?: Record<string, unknown>; signFails?: boolean } =
     createdAt: new Date('2026-11-18T00:00:00Z'),
     ...over.stored,
   };
-  const messages = { findOneAndUpdate: vi.fn().mockReturnValue(leanResult(stored)) };
-  const users = { findById: vi.fn().mockReturnValue({ lean: async () => ({ nickname: '나' }) }) };
+  const messages = { findOneAndUpdate: vi.fn().mockReturnValue(leanResult(stored)), find: vi.fn() };
+  const users = {
+    findById: vi.fn().mockReturnValue({ lean: async () => ({ nickname: '나' }) }),
+    find: vi.fn(),
+  };
   const blobs = {
     createReadAccess: vi.fn(async (_url: string, _ttl: number, verify?: { prefix: string }) => {
       if (over.signFails && !verify) throw new Error('sign');
@@ -38,10 +41,39 @@ function setup(over: { stored?: Record<string, unknown>; signFails?: boolean } =
     blobs as never,
   );
   vi.spyOn(service, 'requireChat').mockResolvedValue({} as never);
-  return { service, messages, blobs };
+  return { service, messages, blobs, users, stored };
 }
 
 describe('스터디룸 채팅 사진 · 파일 메시지', () => {
+  it('공유 자료와 사진이 섞인 기록을 모두 직렬화하고 사진에만 읽기 주소를 붙인다', async () => {
+    const x = setup();
+    const sharedId = new Types.ObjectId();
+    const shared = {
+      ...x.stored,
+      _id: sharedId,
+      type: 'shared_item',
+      attachment: undefined,
+      sharedItemId: sharedId,
+    };
+    x.messages.find.mockReturnValue({
+      sort: () => ({ limit: () => ({ lean: async () => [x.stored, shared] }) }),
+    });
+    x.users.find.mockReturnValue({ lean: async () => [{ _id: me, nickname: '나' }] });
+    const history = await x.service.history(String(chatId), String(me));
+    expect(history).toHaveLength(2);
+    expect(history[0]).toMatchObject({
+      type: 'shared_item',
+      sharedItemId: String(sharedId),
+      senderNickname: '나',
+    });
+    expect(history[0]).not.toHaveProperty('attachment');
+    expect(history[1]).toMatchObject({
+      type: 'image',
+      attachment: { url: `${blobUrl}?sig`, name: '필기.jpg' },
+    });
+    expect(x.blobs.createReadAccess).toHaveBeenCalledTimes(1);
+  });
+
   it('보낸 사람 본인의 채팅 경로에 실제로 있는 파일만 받아 저장하고, 잠깐 읽을 수 있는 주소로 돌려준다', async () => {
     const { service, messages, blobs } = setup();
 
