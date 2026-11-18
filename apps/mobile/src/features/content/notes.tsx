@@ -350,9 +350,18 @@ export function FolderScreen() {
   const items = (mats.data ?? []).filter((m) => filter === '전체' || KIND[m.kind][1] === filter);
   // 요약에 실패한 자료마다 「다시 요약」: 그 자료의 정리 작업을 다시 넣는다(서버가 자료 상태도 함께 되돌린다)
   const resummarize = useMutation({
-    mutationFn: (jobId: string) => api.ai.retry(jobId),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['materials'] });
+    mutationFn: async (m: Material) => {
+      await api.ai.retry(m.processing.jobId!);
+      // 목록은 한 번에 일부 자료만 작업 상태를 맞추므로, 실패한 자료가 많으면 다시 넣은 자료가 계속 실패로 보여
+      // 다시 읽기(materialsPollMs)가 시작되지 않았다. 이 자료만 따로 읽어(서버가 작업 상태를 맞춘다) 목록에 넣는다(Codex #520 리뷰)
+      return api.content.material(m._id).catch(() => null);
+    },
+    onSuccess: (fresh) => {
+      if (fresh)
+        qc.setQueryData<Material[]>(['materials', id], (list) =>
+          list?.map((x) => (x._id === fresh._id ? fresh : x)),
+        );
+      void qc.invalidateQueries({ queryKey: ['materials'], refetchType: 'none' });
       toast('다시 요약하고 있어요. 끝나면 알려 드릴게요');
     },
     onError: (e) =>
@@ -504,10 +513,10 @@ export function FolderScreen() {
                           accessibilityLabel={`${m.title} 다시 요약`}
                           hitSlop={8}
                           disabled={resummarize.isPending}
-                          onPress={() => resummarize.mutate(m.processing.jobId!)}
+                          onPress={() => resummarize.mutate(m)}
                           className="flex-row items-center gap-1 rounded-full bg-mint px-3 py-1.5"
                         >
-                          {resummarize.isPending && resummarize.variables === m.processing.jobId ? (
+                          {resummarize.isPending && resummarize.variables?._id === m._id ? (
                             <ActivityIndicator size="small" color={C.brand} />
                           ) : (
                             <RotateCcw size={ICON.xs} color={C.brand} />

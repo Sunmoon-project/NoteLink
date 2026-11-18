@@ -110,3 +110,19 @@ it('정리 중인 자료가 있으면 3초마다 목록을 다시 읽고, 모두
   ).toBe(false);
   expect(materialsPollMs(undefined)).toBe(false);
 });
+
+// Codex #520 리뷰: 목록은 한 번에 일부 자료만 작업 상태를 맞춰, 실패한 자료가 많으면 다시 넣은 자료가 계속 실패로 보였다
+it('다시 요약한 자료는 그 자료만 다시 읽어 목록에 바로 정리 중으로 보인다', async () => {
+  jest
+    .spyOn(api.content, 'materials')
+    .mockResolvedValue([material('doc', 'document', 'failed', 'job-doc')]);
+  jest.spyOn(api.ai, 'retry').mockResolvedValue({} as never);
+  const one = jest
+    .spyOn(api.content, 'material')
+    .mockResolvedValue(material('doc', 'document', 'queued', 'job-doc'));
+  setParams({ id: 'folder1' });
+  await renderScreen(<FolderScreen />);
+  await fireEvent.press(await screen.findByLabelText('doc 자료 다시 요약'));
+  await waitFor(() => expect(one).toHaveBeenCalledWith('doc'));
+  await waitFor(() => expect(screen.queryByLabelText('doc 자료 다시 요약')).toBeNull());
+});
