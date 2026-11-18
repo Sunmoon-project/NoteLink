@@ -517,3 +517,35 @@ def test_report_does_not_wait_while_another_thread_reads_awaited(col: Any) -> No
     with report._lock:  # 다른 스레드가 읽는 중
         assert report.awaited() is False and s.reads == 0
     assert report.awaited() is True and s.reads == 1
+
+
+def test_two_user_lanes_run_two_jobs_together(col: Any) -> None:
+    # 사용자 반복 둘(#521): 앞 작업을 기다리지 않고 함께 처리, 같은 작업을 둘이 가져가지 않음
+    col.insert_one(
+        {**col.find_one({"_id": "j1"}), "_id": "j2", "createdAt": T0 + timedelta(seconds=1)}
+    )
+    together = threading.Barrier(2, timeout=5)
+    seen: list[str] = []
+    stop = threading.Event()
+
+    def light(inp: JsonObject, report: Report) -> JsonObject:
+        together.wait()  # 하나씩 처리하면 여기서 시간이 다 되어 실패
+        seen.append(threading.current_thread().name)
+        return {"ok": True}
+
+    def stop_when_both_done() -> None:
+        while col.count_documents({"status": "succeeded"}) < 2:
+            if stop.wait(0.01):
+                return
+        stop.set()
+
+    watcher = threading.Thread(target=stop_when_both_done, daemon=True)
+    watcher.start()
+    lanes = [
+        Lane("user", lane_store(col, "w1"), {"quiz_generate": light}),
+        Lane("user-2", lane_store(col, "w1:u2"), {"quiz_generate": light}),
+    ]
+    run_lanes(lanes, poll_sec=0.01, stop=stop)
+    watcher.join(5)
+    assert col.count_documents({"status": "succeeded"}) == 2
+    assert sorted(seen) == ["MainThread", "lane-user"]
