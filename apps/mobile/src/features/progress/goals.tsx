@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -129,6 +130,8 @@ export function DDayScreen() {
   );
 }
 
+/** 리마인드 시각 기본값 — 서버 DEFAULT_REMIND_TIME(apps/api goal-remind.ts)과 같은 값 */
+const DEFAULT_REMIND_TIME = '21:00';
 const DAYS = ['월', '화', '수', '목', '금', '토', '일'];
 const dayNum = (i: number) => (i + 1) % 7;
 
@@ -163,7 +166,8 @@ export function RepeatGoalScreen() {
         days,
         targetMin: min,
         remindEnabled: remind,
-        remindTime: '20:00',
+        // 새 목표는 안 보내서 서버 기본값(21:00)을 쓰고, 고칠 때는 기존 시각을 그대로 둔다
+        ...(g?.remindTime ? { remindTime: g.remindTime } : {}),
       });
     },
     onSuccess: () => {
@@ -263,7 +267,9 @@ export function RepeatGoalScreen() {
         <Card tone="white" className="mt-3 flex-row items-center px-4 py-3">
           <View className="flex-1">
             <Text className="text-subhead font-semibold text-ink">리마인드 알림</Text>
-            <Text className="text-caption text-sub">고른 요일 20:00에 알려드려요</Text>
+            <Text className="text-caption text-sub">
+              고른 요일 {g?.remindTime || DEFAULT_REMIND_TIME}에 알려드려요
+            </Text>
           </View>
           <Toggle label="리마인드 알림" on={remind} onChange={setRemind} />
         </Card>

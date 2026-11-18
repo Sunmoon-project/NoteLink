@@ -205,7 +205,8 @@ export class StudyChatGateway {
   @SubscribeMessage('chat:send')
   async send(
     @ConnectedSocket() socket: Socket,
-    @MessageBody() data: { chatRoomId?: unknown; text?: unknown; clientId?: unknown },
+    @MessageBody()
+    data: { chatRoomId?: unknown; text?: unknown; clientId?: unknown; attachment?: unknown },
   ) {
     const userId = await this.identity(socket);
     if (
@@ -214,7 +215,11 @@ export class StudyChatGateway {
         !socket.rooms.has(`direct-chat:${data.chatRoomId}`))
     )
       throw new Error('not joined');
-    const message = await this.chat.send(data.chatRoomId, userId, data.text, data.clientId);
+    // 사진 · 파일은 attachment로, 글은 text로 보낸다
+    const message =
+      data.attachment !== undefined
+        ? await this.chat.sendAttachment(data.chatRoomId, userId, data.attachment, data.clientId)
+        : await this.chat.send(data.chatRoomId, userId, data.text, data.clientId);
     const channel = socket.rooms.has(`study-chat:${data.chatRoomId}`)
       ? `study-chat:${data.chatRoomId}`
       : `direct-chat:${data.chatRoomId}`;

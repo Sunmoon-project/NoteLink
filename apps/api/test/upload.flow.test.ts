@@ -264,6 +264,57 @@ describe('파일 올리기 주소 발급 (POST /api/v1/uploads/sas)', () => {
       expect(started.quotas.rows[0]?.count).toBe(2);
     });
   });
+
+  // 스터디룸 채팅에 사진 · PDF 파일 첨부(실기기 테스트에서 + 로 사진 · 파일을 보내고 싶다고 함)
+  describe('채팅 첨부 (purpose: chat)', () => {
+    it.each([
+      ['사진', image, 'image', 'jpg'],
+      [
+        'PDF',
+        { kind: 'document', fileName: 'a.pdf', contentType: 'application/pdf' },
+        'document',
+        'pdf',
+      ],
+    ])('%s은 채팅 경로의 내 폴더에 올린다', async (_, file, folder, ext) => {
+      const res = await sas({ ...image, ...file, purpose: 'chat' }).expect(200);
+      expect(UploadTarget.parse(res.body.data).blobUrl).toMatch(
+        new RegExp(`/raw/chat/${folder}/${me}/${UUID}\\.${ext}$`),
+      );
+    });
+
+    it.each([
+      ['사진 50MB', { sizeBytes: 50 * 1024 * 1024 }],
+      [
+        'PDF 100MB',
+        {
+          kind: 'document',
+          fileName: 'a.pdf',
+          contentType: 'application/pdf',
+          sizeBytes: 100 * 1024 * 1024,
+        },
+      ],
+    ])('채팅 첨부는 노트 상한보다 큰 %s까지 올린다', async (_, over) => {
+      await sas({ ...image, ...over, purpose: 'chat' }).expect(200);
+    });
+
+    it.each([
+      ['녹음', { kind: 'audio', fileName: 'a.m4a', contentType: 'audio/mp4' }],
+      ['확장자와 다른 형식', { fileName: 'a.png', contentType: 'image/jpeg' }],
+      ['50MB를 넘는 사진', { sizeBytes: 50 * 1024 * 1024 + 1 }],
+      [
+        '100MB를 넘는 PDF',
+        {
+          kind: 'document',
+          fileName: 'a.pdf',
+          contentType: 'application/pdf',
+          sizeBytes: 100 * 1024 * 1024 + 1,
+        },
+      ],
+    ])('%s은 FILE_NOT_ALLOWED', async (_, over) => {
+      const res = await sas({ ...image, ...over, purpose: 'chat' }).expect(400);
+      expect(res.body.code).toBe(ERROR_CODES.FILE_NOT_ALLOWED);
+    });
+  });
 });
 
 describe('파일 저장소가 설정되지 않은 서버', () => {

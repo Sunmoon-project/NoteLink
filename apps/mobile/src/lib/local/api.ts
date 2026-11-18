@@ -1448,7 +1448,12 @@ localSocket.onClient = (ev, args) => {
   }
   if (ev !== 'chat:send') return;
   const [p, ack] = args as [
-    { chatRoomId: string; text: string; clientId: string },
+    {
+      chatRoomId: string;
+      text?: string;
+      clientId: string;
+      attachment?: { blobUrl: string; kind: 'image' | 'file'; name: string };
+    },
     ((m: Message) => void) | undefined,
   ];
   const d = db();
@@ -1457,8 +1462,19 @@ localSocket.onClient = (ev, args) => {
     chatRoomId: p.chatRoomId,
     senderId: d.user._id,
     senderNickname: me(d).nickname,
-    type: 'text',
-    text: p.text,
+    // 기기 저장 모드는 올린 파일을 기기 주소 그대로 보여 준다
+    type: p.attachment ? p.attachment.kind : 'text',
+    text: p.attachment ? null : (p.text ?? ''),
+    ...(p.attachment
+      ? {
+          attachment: {
+            kind: p.attachment.kind,
+            name: p.attachment.name,
+            sizeBytes: 0,
+            url: p.attachment.blobUrl,
+          },
+        }
+      : {}),
     sharedItemId: null,
     createdAt: now(),
     clientId: p.clientId,

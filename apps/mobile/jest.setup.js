@@ -43,3 +43,7 @@ jest.mock('expo-router', () => ({
 
 // 아바타 선생님 3D(expo-gl · three · GLB)는 기기에서만 그린다. 화면 테스트는 자리만 둔다
 jest.mock('./src/features/tutor/avatar3d', () => ({ Avatar3D: () => null }));
+
+// expo-audio는 네이티브 모듈이라 시험 환경에 없다. 퀴즈 「음성으로 듣기」가 무음 모드 설정에 쓰므로 기본 대역을 둔다
+// (녹음 · 재생 시험은 파일마다 더 자세한 대역으로 덮어쓴다)
+jest.mock('expo-audio', () => ({ setAudioModeAsync: jest.fn(async () => {}) }));

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Types, type ClientSession, type Model } from 'mongoose';
 
@@ -7,6 +7,14 @@ import { ChatRoom } from '../social/schemas/chat-room.schema.js';
 import { Message } from '../social/schemas/message.schema.js';
 import { StudyRoom } from './schemas/study-room.schema.js';
 import { Friendship } from '../social/schemas/friendship.schema.js';
+import { uploadMaxBytes } from '@notelink/shared';
+import { BlobStorageService, uploadFolder } from '../upload/blob-storage.service.js';
+
+/** 채팅 첨부를 읽을 수 있는 시간. 지나면 대화 기록을 다시 받아 새 주소를 쓴다 */
+const ATTACHMENT_READ_MS = 60 * 60_000;
+/** 첨부 종류 → 올린 경로의 종류(uploadFolder) */
+const ATTACHMENT_STORAGE = { image: 'image', file: 'document' } as const;
+type AttachmentKind = keyof typeof ATTACHMENT_STORAGE;
 
 @Injectable()
 export class StudyChatService {
@@ -16,6 +24,8 @@ export class StudyChatService {
     @InjectModel(Message.name) private readonly messages: Model<Message>,
     @InjectModel(User.name) private readonly users: Model<User>,
     @InjectModel(Friendship.name) private readonly friendships: Model<Friendship>,
+    // 채팅 첨부(사진 · 파일)의 주소를 확인하고 읽기 주소를 만든다. 없으면(저장소 미설정) 첨부를 받지 않는다
+    @Optional() private readonly blobs?: BlobStorageService,
   ) {}
 
   async getDirectChat(userId: string, targetUserId: string) {
@@ -231,7 +241,9 @@ export class StudyChatService {
       .find({ _id: { $in: messages.map((m) => m.senderId) } }, { nickname: 1 })
       .lean();
     const names = new Map(users.map((u) => [String(u._id), u.nickname]));
-    return messages.reverse().map((m) => this.serialize(m, names.get(String(m.senderId))));
+    return Promise.all(
+      messages.reverse().map((m) => this.serialize(m, names.get(String(m.senderId)))),
+    );
   }
 
   async send(chatId: string, userId: string, text: unknown, clientId: unknown) {
@@ -393,6 +405,7 @@ export class StudyChatService {
       text: m.text ?? null,
       sharedItemId: m.sharedItemId ? String(m.sharedItemId) : null,
       ...(m.studyRoomInvite ? { studyRoomInvite: m.studyRoomInvite } : {}),
+      ...(attachment ? { attachment } : {}),
       createdAt: m.createdAt?.toISOString(),
       ...(m.clientId ? { clientId: m.clientId } : {}),
     };

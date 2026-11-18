@@ -568,8 +568,17 @@ export const Message = z.object({
   chatRoomId: id,
   senderId: id,
   senderNickname: z.string().optional(),
-  type: z.enum(['text', 'shared_item', 'system', 'study_room_invite']),
+  type: z.enum(['text', 'shared_item', 'system', 'study_room_invite', 'image', 'file']),
   text: z.string().nullable(),
+  /** 사진 · 파일 메시지의 첨부. url은 잠깐(1시간) 읽을 수 있는 주소라 다시 받으면 새로 받는다 */
+  attachment: z
+    .object({
+      kind: z.enum(['image', 'file']),
+      name: z.string(),
+      sizeBytes: z.number(),
+      url: z.string(),
+    })
+    .optional(),
   sharedItemId: id.nullable(),
   studyRoomInvite: z
     .object({ roomId: id, title: z.string(), inviteCode: z.string() })
@@ -601,7 +610,8 @@ export const UploadSasBody = z.object({
   contentType: z.string().trim().max(100),
   sizeBytes: z.number().int().positive(),
   /** 쓰는 곳. report: 스터디룸 신고 사진(이미지만) */
-  purpose: z.enum(['report']).optional(),
+  /** report: 신고 사진(임시 경로) · chat: 채팅 첨부(사진은 image, 파일은 document) */
+  purpose: z.enum(['report', 'chat']).optional(),
 });
 
 export const UploadTarget = z.object({

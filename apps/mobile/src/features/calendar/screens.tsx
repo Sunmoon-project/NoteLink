@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Pressable, Share, View } from 'react-native';
+import { Share, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';

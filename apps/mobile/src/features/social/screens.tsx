@@ -1,7 +1,8 @@
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useEffect, useRef, useState } from 'react';
-import { FlatList, Pressable, View } from 'react-native';
+import { FlatList, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';

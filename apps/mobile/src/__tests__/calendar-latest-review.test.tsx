@@ -228,7 +228,7 @@ it('두 번째 반복 목표도 기록에서 편집할 수 있다', async () => 
     { _id: 'two', name: '둘째 목표', streak: 2, days: [2], targetMin: 30 },
   ] as never);
   await renderScreen(<RecordScreen />, client());
-  await fireEvent.press(await screen.findByText('둘째 목표 · 연속 2일째'));
+  await fireEvent.press(await screen.findByText('둘째 목표 · 연속 2주 달성 중'));
   expect(router.push).toHaveBeenCalledWith({ pathname: '/repeat', params: { id: 'two' } });
 });
 it('시간표는 이른 아침과 늦은 밤 수업도 그리드 안에 배치한다', async () => {

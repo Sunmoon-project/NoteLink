@@ -1,4 +1,5 @@
-import { Pressable, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { useSitemap } from 'expo-router';
 import { featureRouteExists, useFeatureNavigation } from '@/lib/feature-navigation';
 import { Text } from '@/components/text';
