@@ -98,6 +98,8 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       users.deleteMany({}),
       jobs.deleteMany({}),
     ]);
+    // 노트 주인은 평소처럼 가입해 있는 사용자(탈퇴하지 않음). 탈퇴 · 유예 케이스는 각 테스트에서 바꾼다
+    await users.collection.insertOne({ _id: owner, nickname: '주인', deletedAt: null });
   });
 
   const note = async (over: Record<string, unknown> = {}) =>
@@ -261,12 +263,43 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       });
     });
 
-    it('공유한 사람이 탈퇴해 닉네임을 찾을 수 없으면 대체 문구', async () => {
+    it('공유한 사람이 탈퇴(deletedAt)했거나 탈퇴 유예(withdrawingAt) 중이면 그 항목은 목록에 없고, 정상인 사람 것은 그대로 (FR-03-08)', async () => {
       const gone = await person('탈퇴자', { deletedAt: new Date() });
-      const a = await note({ ownerId: gone });
-      const roomId = await room([joined(gone), joined(friend)]);
-      await share(gone, [a], roomId);
-      expect((await list(friend, roomId)).items[0]?.sharedByNickname).toBe('알 수 없는 사용자');
+      const waiting = await person('유예자', { withdrawingAt: new Date() });
+      const fine = await person('정상');
+      const roomId = await room([joined(gone), joined(waiting), joined(fine), joined(friend)]);
+      const goneNote = await note({ ownerId: gone });
+      const waitingNote = await note({ ownerId: waiting });
+      const fineNote = await note({ ownerId: fine });
+      await share(gone, [goneNote], roomId);
+      await share(waiting, [waitingNote], roomId);
+      await share(fine, [fineNote], roomId);
+      const res = await list(friend, roomId);
+      expect(res.items.map((i) => i.materialId)).toEqual([fineNote]);
+      expect(res.items[0]?.sharedByNickname).toBe('정상');
+    });
+
+    it('탈퇴한 사람의 항목은 개수를 자르기 전에 빠진다(최근 것이 탈퇴자 것이어도 정상 항목이 SHARED_ITEMS_MAX 개 채워진다)', async () => {
+      const gone = await person('탈퇴자', { deletedAt: new Date() });
+      const roomId = await room([joined(owner), joined(gone), joined(friend)]);
+      const mine = await Promise.all(Array.from({ length: SHARED_ITEMS_MAX }, () => note()));
+      const theirs = await Promise.all(Array.from({ length: 5 }, () => note({ ownerId: gone })));
+      const row = (sharedBy: Types.ObjectId, id: string, sec: number) => ({
+        roomId: new Types.ObjectId(roomId),
+        sharedBy,
+        itemType: 'material',
+        materialId: new Types.ObjectId(id),
+        folderId,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, sec)),
+      });
+      // 정상 항목이 오래됐고, 탈퇴자 항목 5개가 가장 최근이다
+      await items.insertMany([
+        ...mine.map((id, i) => row(owner, id, i)),
+        ...theirs.map((id, i) => row(gone, id, 1000 + i)),
+      ]);
+      const res = await list(friend, roomId);
+      expect(res.items).toHaveLength(SHARED_ITEMS_MAX);
+      expect(res.items.every((i) => i.sharedBy === owner.toHexString())).toBe(true);
     });
 
     it('노트를 지우면 목록에서 빠지고, 지운 공유(deletedAt)도 빠진다', async () => {
@@ -434,6 +467,43 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       for (const id of [unshared, elsewhere, inClosed, deletedNote, unshare, 'nope'])
         await expect(open(friend, id)).rejects.toMatchObject({ status: 404 });
     });
+
+    it.each([
+      [
+        '탈퇴(deletedAt)',
+        () => users.collection.updateOne({ _id: owner }, { $set: { deletedAt: new Date() } }),
+      ],
+      [
+        '탈퇴 유예(withdrawingAt)',
+        () => users.collection.updateOne({ _id: owner }, { $set: { withdrawingAt: new Date() } }),
+      ],
+      ['계정 문서 없음(users 문서 삭제)', () => users.collection.deleteOne({ _id: owner })],
+    ])(
+      '노트 주인이 %s 상태면 공유받은 멤버도 목록에서 못 보고 상세 · 원본 주소 · 녹음 읽기는 404',
+      async (_label, changeOwner) => {
+        const audio = `https://a.blob.core.windows.net/c/uploads/audio/${owner.toHexString()}/550e8400-e29b-41d4-a716-446655440003.m4a`;
+        const text = await note({ blobUrls: [blob] });
+        const rec = await note({ kind: 'recording', source: 'audio_file', blobUrls: [audio] });
+        const roomId = await room([joined(owner), joined(friend)]);
+        await share(owner, [text, rec], roomId);
+        const play = (userId: Types.ObjectId, id: string) =>
+          recordingController.findOne(asUser(userId), id);
+        // 정상인 주인: 기존 동작 그대로
+        expect((await sharing.listRoomItems(friend.toHexString(), roomId)).items).toHaveLength(2);
+        expect((await open(friend, text)).data._id).toBe(text);
+        expect((await url(friend, text)).data).toMatchObject({ url: `${blob}?sig=SECRET` });
+        expect((await play(friend, rec)).data.materialId).toBe(rec);
+        // 주인이 탈퇴하거나 유예에 들어가거나 계정 문서가 없어지면 공유는 없는 것과 같다
+        await changeOwner();
+        expect((await sharing.listRoomItems(friend.toHexString(), roomId)).items).toEqual([]);
+        for (const id of [text, rec])
+          await expect(open(friend, id)).rejects.toMatchObject({ status: 404 });
+        await expect(url(friend, text)).rejects.toMatchObject({ status: 404 });
+        await expect(play(friend, rec)).rejects.toMatchObject({ status: 404 });
+        // 공유 기록과 노트 자체는 건드리지 않는다
+        expect(await items.countDocuments({ deletedAt: null })).toBe(2);
+      },
+    );
 
     it('공유받은 사람의 수정 · 삭제는 404이고 노트는 그대로', async () => {
       const a = await note({ title: '원래 제목' });

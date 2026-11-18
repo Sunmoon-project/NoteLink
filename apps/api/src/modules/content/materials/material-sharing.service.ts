@@ -56,7 +56,7 @@ export class MaterialSharingService {
   /**
    * 이 노트가 내가 현재 멤버인 방에 공유돼 있으면 노트 주인의 id, 아니면 null. 공유받은 사람의 읽기(상세 · 원본 주소)에서
    * 주인으로 읽기 위해 쓴다: 읽는 쪽은 이 id 를 노트 서비스에 그대로 넘겨 주인 기준으로 동작한다(작업 · 결과 옮기기가 주인 것).
-   * 지운 노트 · 지운 공유 · 닫힌 방 · 나감 · 강퇴 · 초대만 받음 · 잘못된 id 는 모두 null
+   * 지운 노트 · 지운 공유 · 닫힌 방 · 나감 · 강퇴 · 초대만 받음 · 잘못된 id · 주인이 탈퇴(탈퇴 유예 포함)한 노트는 모두 null
    */
   async ownerOfShared(userId: string, materialId: string): Promise<string | null> {
     if (!isValidObjectId(materialId)) return null;
@@ -75,12 +75,20 @@ export class MaterialSharingService {
       closedAt: null,
       members: { $elemMatch: { userId: me, status: 'joined' } },
     });
-    return member ? note.ownerId.toHexString() : null;
+    if (!member) return null;
+    // 주인이 탈퇴했거나(탈퇴 유예 포함) 계정이 없으면 공유도 없는 것과 같다(FR-03-08). 캘린더 공유와 같은 조건
+    const ownerActive = await this.users.exists({
+      _id: note.ownerId,
+      deletedAt: null,
+      withdrawingAt: null,
+    });
+    return ownerActive ? note.ownerId.toHexString() : null;
   }
 
   /**
    * 방에 공유된 자료(최근 것부터 SHARED_ITEMS_MAX 개). 현재 멤버만 볼 수 있고, 방이 없거나 멤버가 아니면
-   * (나감 · 강퇴 · 초대만 받음 · 잘못된 id 포함) 404. 지운 공유와 지운 노트는 뺀다(지운 노트를 뺀 뒤에 개수를 자른다).
+   * (나감 · 강퇴 · 초대만 받음 · 잘못된 id 포함) 404. 지운 공유 · 지운 노트 · 탈퇴(탈퇴 유예 포함)한 사람이 공유한 것은 뺀다
+   * (뺀 뒤에 개수를 자른다).
    * 제목은 노트의 현재 제목, 닉네임은 공유한 사람의 지금 닉네임이다.
    *
    * 지금은 노트(material) 항목만 담는다. 퀴즈 · 플래시카드 항목은 제목을 가져올 곳(퀴즈 세트 · 카드 묶음)과 그 공유를
@@ -116,6 +124,25 @@ export class MaterialSharingService {
         },
       },
       { $match: { 'note.0': { $exists: true } } },
+      // 탈퇴했거나(탈퇴 유예 포함) 계정이 없는 사람이 공유한 항목은 $limit 앞에서 뺀다(뒤에서 빼면 개수가 줄어든다)
+      {
+        $lookup: {
+          from: this.users.collection.name,
+          let: { sharerId: '$sharedBy' },
+          pipeline: [
+            {
+              $match: {
+                $expr: { $eq: ['$_id', '$$sharerId'] },
+                deletedAt: null,
+                withdrawingAt: null,
+              },
+            },
+            { $project: { _id: 1 } },
+          ],
+          as: 'sharer',
+        },
+      },
+      { $match: { 'sharer.0': { $exists: true } } },
       { $limit: SHARED_ITEMS_MAX },
     ]);
     const sharers = [...new Set(rows.map((r) => r.sharedBy.toHexString()))];
