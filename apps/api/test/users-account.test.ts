@@ -47,6 +47,9 @@ let devices: ReturnType<typeof model>;
 let tokens: ReturnType<typeof model>;
 let friendships: ReturnType<typeof model>;
 let shares: ReturnType<typeof model>;
+// 탈퇴가 쓰는 스터디룸 나가기(StudyRoomMembershipService.leaveAllForWithdrawal)만 갖춘 가짜. 방별 순서는 study-room-membership.test.ts
+let leftUsers: string[];
+let rooms: { leaveAllForWithdrawal: ReturnType<typeof vi.fn> };
 let service: UsersService;
 let revokedUsers: Types.ObjectId[];
 let me: Types.ObjectId;
@@ -55,6 +58,12 @@ const other = new Types.ObjectId();
 beforeEach(() => {
   me = new Types.ObjectId();
   revokedUsers = [];
+  leftUsers = [];
+  rooms = {
+    leaveAllForWithdrawal: vi.fn(async (userId: string) => {
+      leftUsers.push(userId);
+    }),
+  };
   users = model([
     {
       _id: me,
@@ -93,6 +102,7 @@ beforeEach(() => {
     } as never,
     friendships as never,
     shares as never,
+    rooms as never,
   );
 });
 
@@ -352,5 +362,26 @@ describe('회원 탈퇴', () => {
     expect(users.rows[0]).toMatchObject({ deletedAt: NOW, email: null });
     expect(friendships.rows).toHaveLength(1);
     expect(shares.rows).toHaveLength(0);
+  });
+
+  it('참여 중인 스터디룸에서 나가기를 친구 · 시간표 공유 정리 뒤 탈퇴 표시 전에 한다', async () => {
+    rooms.leaveAllForWithdrawal.mockImplementationOnce(async (userId: string) => {
+      // 나갈 때는 아직 탈퇴 표시 전이고, 친구 · 공유 정리는 끝나 있다
+      expect(users.rows[0]).toMatchObject({ deletedAt: null });
+      expect(shares.rows).toHaveLength(0);
+      leftUsers.push(userId);
+    });
+    await service.withdraw(me.toHexString(), NOW);
+    expect(leftUsers).toEqual([me.toHexString()]);
+    expect(users.rows[0]).toMatchObject({ deletedAt: NOW });
+  });
+
+  it('스터디룸 나가기가 실패하면 탈퇴 표시를 하지 않고, 다시 시도하면 끝낸다', async () => {
+    rooms.leaveAllForWithdrawal.mockRejectedValueOnce(new Error('방 오류'));
+    await expect(service.withdraw(me.toHexString(), NOW)).rejects.toThrow('방 오류');
+    expect(users.rows[0]).toMatchObject({ deletedAt: null, email: 'me@example.com' });
+    await service.withdraw(me.toHexString(), NOW);
+    expect(leftUsers).toEqual([me.toHexString()]);
+    expect(users.rows[0]).toMatchObject({ deletedAt: NOW, email: null });
   });
 });

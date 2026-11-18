@@ -1,10 +1,13 @@
 """ai_jobs 처리기 실행: python -m app.worker
 
 API 서버(uvicorn)와 따로 띄웁니다.
-  - 사용자가 기다리는 작업과 미리 해 두는 작업(handlers.BACKGROUND)을 따로 도는 반복이 하나씩
+  - 사용자가 기다리는 작업과 미리 해 두는 작업(handlers.BACKGROUND)을 따로 도는 반복이
     처리합니다. 미리 만들기를 처리하는 중에도 사용자 작업이 바로 시작됩니다(#138).
+  - 사용자 작업 반복은 AI_JOB_USER_LANES개입니다(#521). 여러 사람의 작업이 앞 작업을 기다리지
+    않게, 늘린 반복은 가벼운 작업을 함께 처리합니다. 노트 · 녹음 정리(handlers.HEAVY)는 메모리를
+    많이 써서 첫 반복만 가져갑니다(동시에 하나).
   - 여러 개를 띄워도 같은 작업을 함께 가져가지 않습니다. 다만 LLM의 분당 한도는 프로세스마다
-    따로 지키므로(LLM_CALL_GAP_SEC), 처리기는 하나만 띄웁니다.
+    따로 지키므로(LLM_CALL_GAP_SEC), 처리기는 하나만 띄우고 반복 수로 늘립니다.
   - SIGINT · SIGTERM을 받으면 처리 중인 작업을 끝낸 뒤 멈춥니다. 한 번 더 받으면 바로 끝납니다
     (그 작업은 잠금이 끝난 뒤 다시 처리됨). 배포 환경의 종료 대기 시간이 짧으면 작업 중간에
     끝날 수 있으니, 대기 시간을 길게 두거나 다시 처리되는 것을 감안합니다.
@@ -15,12 +18,13 @@ import os
 import signal
 import socket
 import threading
+from collections.abc import Callable
 
 from pymongo import MongoClient
 
 from app.clients.llm import JsonObject, llm_setup_problem
 from app.core.config import settings
-from app.worker.handlers import BACKGROUND, HANDLERS, use_spend
+from app.worker.handlers import BACKGROUND, HANDLERS, HEAVY, use_spend
 from app.worker.jobs import JobStore, use_spool
 from app.worker.runner import Lane, run_lanes
 
@@ -41,6 +45,32 @@ def stop_on_signal(stop: threading.Event) -> None:
 
     for sig in STOP_SIGNALS:
         signal.signal(sig, on_signal)
+
+
+def make_lanes(store: Callable[[str], JobStore], user_lanes: int) -> list[Lane]:
+    """미리 만들기 반복 하나와 사용자 작업 반복 user_lanes개(#521).
+
+    store(접미사)는 반복마다 따로 만든 JobStore(잠금 주인 이름 = 처리기 + 접미사). 첫 사용자
+    반복은 모든 종류, 늘린 반복은 무거운 종류(HEAVY)를 뺀 나머지를 가져갑니다. 반복이 둘 이상이면
+    첫 반복은 무거운 종류를 먼저 가져갑니다: 가벼운 작업은 늘린 반복이 받으므로, 노트 · 녹음
+    정리가 먼저 들어온 가벼운 작업 뒤에서 기다리지 않게.
+    """
+    light = {t: h for t, h in HANDLERS.items() if t not in HEAVY}
+    return [
+        Lane("background", store(":bg"), {t: h for t, h in HANDLERS.items() if t in BACKGROUND}),
+        # 사용자가 이어받은(awaited) 미리 만들기도 가져감: 다른 미리 만들기 뒤에서 기다리지 않게
+        Lane(
+            "user",
+            store(""),
+            HANDLERS,
+            awaited_only=BACKGROUND,
+            first=HEAVY if user_lanes > 1 else frozenset(),
+        ),
+        *(
+            Lane(f"user-{i}", store(f":u{i}"), light, awaited_only=BACKGROUND)
+            for i in range(2, user_lanes + 1)
+        ),
+    ]
 
 
 def main() -> None:
@@ -80,11 +110,7 @@ def main() -> None:
             log.warning(
                 "SCHOOL_LLM_BASE_URL이 비어 있음: Claude 한도에 닿으면 작업이 설정 오류로 끝남"
             )
-    lanes = [
-        Lane("background", store(":bg"), {t: h for t, h in HANDLERS.items() if t in BACKGROUND}),
-        # 사용자가 이어받은(awaited) 미리 만들기도 가져감: 다른 미리 만들기 뒤에서 기다리지 않게
-        Lane("user", store(""), HANDLERS, awaited_only=BACKGROUND),
-    ]
+    lanes = make_lanes(store, settings.ai_job_user_lanes)
     stop = threading.Event()
     stop_on_signal(stop)
     for lane in lanes:

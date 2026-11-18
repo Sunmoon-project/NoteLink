@@ -8,7 +8,7 @@ import { Message } from '../social/schemas/message.schema.js';
 import { StudyRoom } from './schemas/study-room.schema.js';
 import { Friendship } from '../social/schemas/friendship.schema.js';
 import { uploadMaxBytes } from '@notelink/shared';
-import { BlobStorageService, uploadFolder } from '../upload/blob-storage.service.js';
+import { BlobStorageService, TYPE_BY_EXT, uploadFolder } from '../upload/blob-storage.service.js';
 
 /** 채팅 첨부를 읽을 수 있는 시간. 지나면 대화 기록을 다시 받아 새 주소를 쓴다 */
 const ATTACHMENT_READ_MS = 60 * 60_000;
@@ -111,6 +111,23 @@ export class StudyChatService {
     );
     const user = await this.users.findById(sender, { nickname: 1 }).lean();
     return this.serialize(message, user?.nickname);
+  }
+
+  /** 탈퇴 중이거나 탈퇴한 사용자는 방 멤버가 아닐 때와 같은 오류로 거절한다(라이브 토큰 · 소켓 입장 앞에서 쓴다). */
+  async requireActiveUser(userId: string) {
+    const active =
+      isValidObjectId(userId) &&
+      (await this.users.exists({
+        _id: new Types.ObjectId(userId),
+        deletedAt: null,
+        withdrawingAt: null,
+      }));
+    if (!active) {
+      throw new NotFoundException({
+        code: 'NOT_FOUND',
+        message: '스터디룸을 찾을 수 없습니다.',
+      });
+    }
   }
 
   async requireMember(roomId: string, userId: string) {
@@ -421,7 +438,7 @@ export class StudyChatService {
     if (!this.blobs)
       throw new BadRequestException({ code: 'BAD_REQUEST', message: '첨부를 보낼 수 없어요.' });
     const kind = a.kind as AttachmentKind;
-    const { sizeBytes } = await this.blobs.createReadAccess(a.blobUrl, 60_000, {
+    const { sizeBytes, contentType } = await this.blobs.createReadAccess(a.blobUrl, 60_000, {
       prefix: uploadFolder(ATTACHMENT_STORAGE[kind], userId, 'chat'),
     });
     // 올리기 주소는 앱이 알린 크기로만 내준다. 실제로 올라간 파일이 상한을 넘으면 받지 않는다(Codex #507 리뷰)
@@ -430,6 +447,14 @@ export class StudyChatService {
       throw new BadRequestException({
         code: 'BAD_REQUEST',
         message: `${Math.round(maxBytes / 1024 / 1024)}MB 이하 파일만 보낼 수 있어요.`,
+      });
+    // 올리기 주소와 다른 형식(예: text/html)으로 직접 올린 파일은 브라우저에서 웹 페이지로 열리므로 받지 않는다.
+    // 채팅 올리기 주소는 확장자의 형식으로만 내준다(uploads.service)(Codex #519 리뷰)
+    const ext = a.blobUrl.slice(a.blobUrl.lastIndexOf('.') + 1).toLowerCase();
+    if (!contentType || contentType.toLowerCase() !== TYPE_BY_EXT[ext])
+      throw new BadRequestException({
+        code: 'BAD_REQUEST',
+        message: '파일 형식이 올바르지 않아요.',
       });
     const senderId = new Types.ObjectId(userId);
     const key = { chatRoomId: new Types.ObjectId(chatId), senderId, clientId };

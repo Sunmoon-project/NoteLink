@@ -1,7 +1,7 @@
 import { type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { io, type Socket } from 'socket.io-client';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TokenService } from '../src/modules/auth/token.service.js';
 import { StudyChatGateway } from '../src/modules/studyroom/study-chat.gateway.js';
 import { StudyChatService } from '../src/modules/studyroom/study-chat.service.js';
@@ -19,6 +19,8 @@ const message = {
 const chat = {
   getChat: vi.fn(),
   requireChat: vi.fn(),
+  requireActiveUser: vi.fn(),
+  requireMember: vi.fn(),
   history: vi.fn(),
   send: vi.fn(),
   sendAttachment: vi.fn(),
@@ -164,6 +166,84 @@ describe('스터디룸 Socket.IO', () => {
     });
     a.off('room:timer', receivedA);
     b.off('room:timer', receivedB);
+  });
+
+  it('탈퇴 중인 사용자의 방 구독(room:join)은 거절한다', async () => {
+    chat.requireActiveUser.mockRejectedValueOnce(new Error('withdrawing'));
+    chat.getChat.mockClear();
+    expect(await a.timeout(2000).emitWithAck('room:join', { roomId: 'room' })).toEqual({
+      ok: false,
+    });
+    expect(chat.requireActiveUser).toHaveBeenCalledWith('a');
+    expect(chat.getChat).not.toHaveBeenCalled();
+  });
+
+  describe('채팅 기록을 불러오는 동안 상태가 바뀌는 입장(room:join)', () => {
+    // 같은 사용자의 이전 구독 기록이 없도록 새 사용자(c)로 연결한다
+    let c: Socket;
+    const serverSocket = async () => {
+      const { server } = app.get(StudyChatGateway) as unknown as {
+        server: {
+          fetchSockets: () => Promise<
+            {
+              handshake: { auth: { token?: string } };
+              rooms: Set<string>;
+              data: { studyChats?: Record<string, string> };
+            }[]
+          >;
+        };
+      };
+      return (await server.fetchSockets()).find((socket) => socket.handshake.auth.token === 'c');
+    };
+    beforeEach(async () => {
+      c = io(serverUrl, { transports: ['websocket'], auth: { token: 'c' } });
+      await new Promise<void>((resolve, reject) => {
+        c.once('connect', resolve);
+        c.once('connect_error', reject);
+      });
+    });
+    afterEach(() => void c.disconnect());
+
+    it('정상 입장은 { ok: true } 와 놓친 메시지를 돌려주고 구독을 기록한다', async () => {
+      chat.history.mockResolvedValue([message]);
+      expect(await c.timeout(2000).emitWithAck('room:join', { roomId: 'room' })).toEqual({
+        ok: true,
+        missed: [message],
+      });
+      const joined = await serverSocket();
+      expect(joined?.rooms).toContain('study-chat:chat');
+      expect(joined?.rooms).toContain('study-room:room');
+      expect(joined?.data.studyChats).toEqual({ room: 'study-chat:chat' });
+    });
+
+    it.each([
+      ['탈퇴를 시작했으면', () => chat.requireActiveUser],
+      ['방 멤버가 아니게 됐으면', () => chat.requireMember],
+    ])(
+      'history 를 기다리는 사이 사용자가 %s 실패하고 채널에서 빠지며 기록하지 않는다',
+      async (_name, recheck) => {
+        let finishHistory!: (messages: unknown[]) => void;
+        chat.history.mockReturnValueOnce(
+          new Promise((resolve) => {
+            finishHistory = resolve;
+          }),
+        );
+        const join = c.timeout(2000).emitWithAck('room:join', { roomId: 'room' });
+        // history 를 기다리는 동안 이미 채널에는 들어가 있다(evict 가 아직 못 찾는 구간)
+        await vi.waitFor(async () =>
+          expect((await serverSocket())?.rooms).toContain('study-chat:chat'),
+        );
+        recheck().mockRejectedValueOnce(new Error('changed while loading history'));
+        // 탈퇴 정리의 강제 구독 해제(evict)도 같은 사이에 실행된다: 아직 기록이 없어 채팅 채널은 못 찾아도 입장 쪽 재확인이 마저 뺀다
+        await app.get(StudyChatGateway).evict('room', 'c');
+        finishHistory([message]);
+        expect(await join).toEqual({ ok: false });
+        const after = await serverSocket();
+        expect(after?.rooms).not.toContain('study-chat:chat');
+        expect(after?.rooms).not.toContain('study-room:room');
+        expect(after?.data.studyChats?.room).toBeUndefined();
+      },
+    );
   });
 
   it('이전 입장 요청이 늦게 실패해도 나중 입장의 구독을 해제하지 않는다', async () => {

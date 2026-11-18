@@ -117,11 +117,16 @@ export class StudyChatGateway {
     let channel: string | undefined;
     try {
       const userId = await this.identity(socket);
+      await this.chat.requireActiveUser(userId);
       const chat = await this.chat.getChat(roomId, userId);
       channel = `study-chat:${String(chat._id)}`;
       await socket.join(channel);
       await socket.join(`study-room:${roomId}`);
       const missed = await this.chat.history(String(chat._id), userId);
+      // history 를 기다리는 사이 탈퇴 정리 · 퇴장이 있었으면 구독을 확정하지 않는다(실패하면 아래 catch 가 채널에서 뺀다).
+      // 확인 직후 바로 기록해야 그 뒤의 evict 가 이 구독을 찾을 수 있으니 이 둘 사이에는 await 를 두지 않는다
+      await this.chat.requireActiveUser(userId);
+      await this.chat.requireMember(roomId, userId);
       const subscriptions = (socket.data.studyChats ??= {});
       subscriptions[roomId] = channel;
       return { ok: true, missed };

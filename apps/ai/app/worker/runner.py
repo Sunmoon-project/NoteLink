@@ -194,13 +194,15 @@ def run_once(
     handlers: Mapping[str, Handler],
     *,
     awaited_only: Collection[str] = (),
+    first: Collection[str] = (),
     heartbeat_sec: float | None = None,
 ) -> bool:
     """작업 하나를 가져와 처리합니다. 할 일이 없었으면 False.
 
     awaited_only에 든 종류는 사용자가 이어받은(awaited) 작업만 가져갑니다(#138).
+    first에 든 종류는 먼저 들어온 다른 종류보다 먼저 가져갑니다(#521).
     """
-    job = store.claim([t for t in handlers if t not in awaited_only], awaited_only)
+    job = store.claim([t for t in handlers if t not in awaited_only], awaited_only, first)
     if job is None:
         return False
 
@@ -263,11 +265,12 @@ def run_forever(
     poll_sec: float,
     stop: threading.Event,
     awaited_only: Collection[str] = (),
+    first: Collection[str] = (),
 ) -> None:
     """stop이 켜질 때까지 반복합니다. 처리 중인 작업은 끝까지 처리한 뒤 멈춥니다."""
     while not stop.is_set():
         try:
-            busy = run_once(store, handlers, awaited_only=awaited_only)
+            busy = run_once(store, handlers, awaited_only=awaited_only, first=first)
         except PyMongoError:
             # DB 연결이 끊김: 쓰지 못한 작업은 잠금이 끝나면 다시 가져가므로 기다렸다 계속
             log.exception("ai_jobs 처리 중 DB 오류")
@@ -281,12 +284,14 @@ class Lane:
     """따로 도는 처리 반복 하나: 이 store로 handlers에 든 종류만 가져가 하나씩 처리합니다.
 
     awaited_only에 든 종류는 사용자가 이어받은 작업만 가져갑니다(#138).
+    first에 든 종류는 먼저 들어온 다른 종류보다 먼저 가져갑니다(#521).
     """
 
     name: str
     store: JobStore
     handlers: Mapping[str, Handler]
     awaited_only: frozenset[str] = frozenset()
+    first: frozenset[str] = frozenset()
 
 
 def run_lanes(lanes: Sequence[Lane], *, poll_sec: float, stop: threading.Event) -> None:
@@ -306,6 +311,7 @@ def run_lanes(lanes: Sequence[Lane], *, poll_sec: float, stop: threading.Event) 
                 poll_sec=poll_sec,
                 stop=stop,
                 awaited_only=lane.awaited_only,
+                first=lane.first,
             )
         except BaseException as e:
             log.exception("처리 반복 %s이 멈춤", lane.name)
