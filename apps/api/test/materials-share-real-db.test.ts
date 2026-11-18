@@ -77,6 +77,7 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       { notifyStudyMessage: vi.fn(), notifyDirectMessage: vi.fn() } as never,
       {} as never,
       {} as never,
+      conn,
     );
     // 공유받은 멤버의 읽기: 노트 서비스는 진짜 DB 로, 저장소 · 퀴즈 미리 만들기만 대역
     materialsService = new MaterialsService(

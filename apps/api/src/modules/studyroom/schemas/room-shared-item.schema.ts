@@ -14,6 +14,9 @@ export class RoomSharedItem {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   sharedBy: Types.ObjectId;
 
+  @Prop({ type: String })
+  requestId?: string;
+
   @Prop({ required: true, type: String, enum: SHARED_ITEM_TYPES })
   itemType: string; // quiz · flashcards · material
 
@@ -37,6 +40,11 @@ export class RoomSharedItem {
 }
 
 export const RoomSharedItemSchema = SchemaFactory.createForClass(RoomSharedItem);
+
+RoomSharedItemSchema.index(
+  { roomId: 1, sharedBy: 1, requestId: 1 },
+  { unique: true, partialFilterExpression: { requestId: { $type: 'string' } } },
+);
 
 // 같은 방에 같은 노트를 한 번만 공유한다(지우지 않은 것 기준). 동시에 같은 요청이 와도 중복이 생기지 않게 DB가 막는다
 RoomSharedItemSchema.index(

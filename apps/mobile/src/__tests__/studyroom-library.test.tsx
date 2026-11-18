@@ -43,7 +43,7 @@ it.each([
   await fireEvent.press(await screen.findByText(folder));
   await fireEvent.press(screen.getByText(button));
   await waitFor(() =>
-    expect(mockApi.rooms.shareStudyItem).toHaveBeenCalledWith('room1', type, itemId),
+    expect(mockApi.rooms.shareStudyItem).toHaveBeenCalledWith('room1', type, itemId, expect.any(String)),
   );
   await waitFor(() =>
     expect(router.dismissTo).toHaveBeenCalledWith({ pathname: '/room/[id]', params: { id: 'room1' } }),
@@ -60,6 +60,10 @@ it('공유가 실패하면 스터디룸 화면으로 이동하지 않는다', as
   await waitFor(() => expect(useToast.getState().msg).toBe('공유하지 못했어요. 다시 시도해 주세요'));
   expect(screen.getByText('세포 퀴즈')).toBeTruthy();
   expect(router.dismissTo).not.toHaveBeenCalled();
+  const firstRequestId = mockApi.rooms.shareStudyItem.mock.calls[0]![3];
+  await fireEvent.press(screen.getByText('퀴즈 공유하기'));
+  await waitFor(() => expect(mockApi.rooms.shareStudyItem).toHaveBeenCalledTimes(2));
+  expect(mockApi.rooms.shareStudyItem.mock.calls[1]![3]).toBe(firstRequestId);
 });
 
 it('내 폴더의 완료된 퀴즈를 선택해 방에서 풀이한다', async () => {

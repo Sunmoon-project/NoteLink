@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -13,10 +13,19 @@ import { toast } from '@/stores/toast';
 /** 스터디룸을 떠나지 않고 내 폴더의 퀴즈 또는 저장한 플래시카드를 연다. */
 export function RoomLibraryScreen() {
   const { id, type } = useLocalSearchParams<{ id: string; type?: string }>();
+  const shareRequests = useRef(new Map<string, string>());
   const share = useMutation({
-    mutationFn: ({ kind, itemId }: { kind: 'quiz' | 'flashcards'; itemId: string }) =>
-      api.rooms.shareStudyItem(id, kind, itemId),
-    onSuccess: () => {
+    mutationFn: ({ kind, itemId }: { kind: 'quiz' | 'flashcards'; itemId: string }) => {
+      const key = `${id}:${kind}:${itemId}`;
+      let requestId = shareRequests.current.get(key);
+      if (!requestId) {
+        requestId = `share-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+        shareRequests.current.set(key, requestId);
+      }
+      return api.rooms.shareStudyItem(id, kind, itemId, requestId);
+    },
+    onSuccess: (_result, { kind, itemId }) => {
+      shareRequests.current.delete(`${id}:${kind}:${itemId}`);
       toast('스터디룸 채팅에 공유했어요');
       router.dismissTo({ pathname: '/room/[id]', params: { id } });
     },

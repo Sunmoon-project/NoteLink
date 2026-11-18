@@ -280,7 +280,7 @@ export interface Api {
       | { itemType: 'quiz'; quiz: QuizSet }
       | { itemType: 'flashcards'; cards: { front: string; back: string }[] }
     >;
-    shareStudyItem(id: string, kind: 'quiz' | 'flashcards', itemId: string): Promise<void>;
+    shareStudyItem(id: string, kind: 'quiz' | 'flashcards', itemId: string, requestId: string): Promise<void>;
     livekitToken(id: string): Promise<{ token: string; url: string }>;
     report(p: {
       roomId: string;

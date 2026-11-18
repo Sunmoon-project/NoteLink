@@ -1,10 +1,11 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Param, Post, Req, UseGuards } from '@nestjs/common';
 import type { RoomSharedItem } from '@notelink/shared';
 
 import { requireUserId } from '../../../common/request-user.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../../auth/jwt-auth.guard.js';
 import { ShareMaterialsDto } from './dto/share-materials.dto.js';
 import { MaterialSharingService } from './material-sharing.service.js';
+import { parseIdempotencyKey } from './materials.service.js';
 import { IsIn, IsMongoId } from 'class-validator';
 
 class ShareStudyItemDto {
@@ -52,8 +53,11 @@ export class MaterialSharingController {
     @Req() req: AuthenticatedRequest,
     @Param('id') id: string,
     @Body() body: ShareStudyItemDto,
+    @Headers('idempotency-key') rawKey?: string,
   ) {
-    await this.sharing.shareStudyItem(requireUserId(req), id, body.kind, body.itemId);
+    const key = parseIdempotencyKey(rawKey);
+    if (!key) throw new BadRequestException({ code: 'VALIDATION_FAILED', message: '요청 식별자가 필요해요' });
+    await this.sharing.shareStudyItem(requireUserId(req), id, body.kind, body.itemId, key);
   }
 
   @Get('chat-rooms/:id/shared-items/:itemId')

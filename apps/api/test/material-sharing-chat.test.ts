@@ -19,10 +19,13 @@ function setup() {
     sendDirectMaterial: vi.fn(),
     hasDirectMaterialAccess: vi.fn(),
     directSharedMaterial: vi.fn(),
+    findSharedMessage: vi.fn(),
   };
   const gateway = { notifyStudyMessage: vi.fn(), notifyDirectMessage: vi.fn() };
   const quizzes = { findOne: vi.fn() };
   const cards = { findOne: vi.fn(), find: vi.fn() };
+  const transaction = vi.fn((callback: (session: object) => Promise<unknown>) => callback({}));
+  shared.findOne.mockReturnValue(lean(null));
   const service = new MaterialSharingService(
     materials as never,
     rooms as never,
@@ -32,8 +35,9 @@ function setup() {
     gateway as never,
     quizzes as never,
     cards as never,
+    { transaction } as never,
   );
-  return { service, materials, rooms, shared, chat, gateway, quizzes, cards };
+  return { service, materials, rooms, shared, chat, gateway, quizzes, cards, transaction };
 }
 
 describe('채팅 학습 자료 공유', () => {
@@ -44,15 +48,16 @@ describe('채팅 학습 자료 공유', () => {
       (kind === 'quiz' ? x.quizzes : x.cards).findOne.mockReturnValue(
         lean({ _id: itemId, title: '퀴즈' }),
       );
-      x.shared.create.mockResolvedValue({ _id: sharedId });
+      x.shared.create.mockResolvedValue([{ _id: sharedId }]);
       x.chat.sendSharedItem.mockResolvedValue({ chatRoomId: 'chat' });
-      await x.service.shareStudyItem(owner, room, kind, String(itemId));
-      expect(x.shared.create).toHaveBeenCalledWith(expect.objectContaining({ itemType: kind }));
+      await x.service.shareStudyItem(owner, room, kind, String(itemId), 'request-1');
+      expect(x.shared.create).toHaveBeenCalledWith([expect.objectContaining({ itemType: kind, requestId: 'request-1' })], { session: expect.anything() });
       expect(x.chat.sendSharedItem).toHaveBeenCalledWith(
         room,
         owner,
         String(sharedId),
         kind === 'quiz' ? '퀴즈' : '플래시 카드',
+        expect.anything(),
       );
       expect(x.gateway.notifyStudyMessage).toHaveBeenCalledWith({ chatRoomId: 'chat' });
     },
@@ -62,14 +67,54 @@ describe('채팅 학습 자료 공유', () => {
     const x = setup();
     x.rooms.exists.mockResolvedValueOnce(null);
     await expect(
-      x.service.shareStudyItem(owner, room, 'quiz', String(itemId)),
+      x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1'),
     ).rejects.toMatchObject({ status: 404 });
     x.quizzes.findOne.mockReturnValue(lean(null));
     await expect(
-      x.service.shareStudyItem(owner, room, 'quiz', String(itemId)),
+      x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1'),
     ).rejects.toMatchObject({ status: 404 });
     expect(x.shared.create).not.toHaveBeenCalled();
     expect(x.chat.sendSharedItem).not.toHaveBeenCalled();
+  });
+
+  it('메시지 저장이 실패하면 트랜잭션을 실패시키고 방송하지 않는다', async () => {
+    const x = setup();
+    x.quizzes.findOne.mockReturnValue(lean({ _id: itemId, title: '퀴즈' }));
+    x.shared.create.mockResolvedValue([{ _id: sharedId }]);
+    const failure = new Error('message write failed');
+    x.chat.sendSharedItem.mockRejectedValue(failure);
+    await expect(x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1')).rejects.toBe(failure);
+    expect(x.transaction).toHaveBeenCalledTimes(1);
+    expect(x.gateway.notifyStudyMessage).not.toHaveBeenCalled();
+  });
+
+  it('같은 요청을 재시도하면 기존 항목과 메시지를 사용한다', async () => {
+    const x = setup();
+    x.quizzes.findOne.mockReturnValue(lean({ _id: itemId, title: '퀴즈' }));
+    x.shared.findOne.mockReturnValue(lean({ _id: sharedId, itemType: 'quiz', quizSetId: itemId }));
+    x.chat.findSharedMessage.mockResolvedValue({ _id: 'message', chatRoomId: 'chat' });
+    await x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1');
+    expect(x.shared.create).not.toHaveBeenCalled();
+    expect(x.chat.findSharedMessage).toHaveBeenCalledWith(room, owner, String(sharedId));
+    expect(x.gateway.notifyStudyMessage).toHaveBeenCalledWith({ _id: 'message', chatRoomId: 'chat' });
+  });
+
+  it('중복 요청이 동시에 저장돼도 먼저 저장한 메시지를 재사용한다', async () => {
+    const x = setup();
+    x.quizzes.findOne.mockReturnValue(lean({ _id: itemId, title: '퀴즈' }));
+    x.shared.findOne.mockReturnValueOnce(lean(null)).mockReturnValueOnce(lean({ _id: sharedId, itemType: 'quiz', quizSetId: itemId }));
+    x.transaction.mockRejectedValueOnce({ code: 11000 });
+    x.chat.findSharedMessage.mockResolvedValue({ _id: 'message', chatRoomId: 'chat' });
+    await x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1');
+    expect(x.chat.findSharedMessage).toHaveBeenCalledWith(room, owner, String(sharedId));
+  });
+
+  it('다른 자료에 같은 요청 식별자를 쓰면 거부한다', async () => {
+    const x = setup();
+    x.quizzes.findOne.mockReturnValue(lean({ _id: itemId, title: '퀴즈' }));
+    x.shared.findOne.mockReturnValue(lean({ _id: sharedId, itemType: 'quiz', quizSetId: new Types.ObjectId() }));
+    await expect(x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1')).rejects.toMatchObject({ status: 409 });
+    expect(x.gateway.notifyStudyMessage).not.toHaveBeenCalled();
   });
 
   it('친구에게 노트를 공유하면 1:1 채팅을 만들고 메시지를 알린다', async () => {

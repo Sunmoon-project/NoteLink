@@ -1,7 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES, type RoomSharedItem as AppRoomSharedItem } from '@notelink/shared';
-import { isValidObjectId, Model, Types } from 'mongoose';
+import { isValidObjectId, Model, Types, type Connection } from 'mongoose';
 
 import { User } from '../../auth/schemas/user.schema.js';
 import { RoomSharedItem } from '../../studyroom/schemas/room-shared-item.schema.js';
@@ -48,6 +48,7 @@ export class MaterialSharingService {
     private readonly gateway: StudyChatGateway,
     @InjectModel(QuizSet.name) private readonly quizzes: Model<QuizSet>,
     @InjectModel(Flashcard.name) private readonly cards: Model<Flashcard>,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
 
   /** 닫히지 않은 방에서 내가 현재 멤버(status: joined)인지. 방 id 형식이 틀려도 false */
@@ -267,6 +268,7 @@ export class MaterialSharingService {
     roomId: string,
     kind: 'quiz' | 'flashcards',
     itemId: string,
+    requestId: string,
   ) {
     const me = new Types.ObjectId(userId);
     if (!(await this.isCurrentMember(me, roomId)) || !isValidObjectId(itemId))
@@ -280,13 +282,35 @@ export class MaterialSharingService {
         : await this.cards.findOne({ _id: objectId, ownerId: me, deletedAt: null }).lean();
     if (!source) throw notFound('공유 자료');
     const title = kind === 'quiz' ? (source as QuizSet).title : '플래시 카드';
-    const item = await this.shared.create({
-      roomId: new Types.ObjectId(roomId),
-      sharedBy: me,
-      itemType: kind,
-      ...(kind === 'quiz' ? { quizSetId: objectId } : { flashcardIds: [objectId] }),
-    });
-    const message = await this.chat.sendSharedItem(roomId, userId, String(item._id), title);
+    const key = { roomId: new Types.ObjectId(roomId), sharedBy: me, requestId };
+    const replay = async (item: RoomSharedItem & { _id: Types.ObjectId }) => {
+      const matches = item.itemType === kind && (kind === 'quiz'
+        ? String(item.quizSetId) === itemId.toLowerCase()
+        : item.flashcardIds.length === 1 && String(item.flashcardIds[0]) === itemId.toLowerCase());
+      if (!matches) throw new ConflictException({ code: 'IDEMPOTENCY_CONFLICT', message: '이미 사용한 요청 식별자입니다.' });
+      return this.chat.findSharedMessage(roomId, userId, String(item._id));
+    };
+    const existing = await this.shared.findOne(key).lean();
+    if (existing) {
+      await this.gateway.notifyStudyMessage(await replay(existing));
+      return;
+    }
+    let message;
+    try {
+      message = await this.connection.transaction(async (session) => {
+        const [item] = await this.shared.create([{
+          ...key,
+          itemType: kind,
+          ...(kind === 'quiz' ? { quizSetId: objectId } : { flashcardIds: [objectId] }),
+        }], { session });
+        return this.chat.sendSharedItem(roomId, userId, String(item!._id), title, session);
+      });
+    } catch (error) {
+      if (!onlyDuplicateKeys(error)) throw error;
+      const item = await this.shared.findOne(key).lean();
+      if (!item) throw error;
+      message = await replay(item);
+    }
     await this.gateway.notifyStudyMessage(message);
   }
 
