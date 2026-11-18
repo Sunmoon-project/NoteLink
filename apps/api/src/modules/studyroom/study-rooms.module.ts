@@ -50,6 +50,8 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
     ReportsController,
     StudyRoomScheduleController,
   ],
+  // 회원 탈퇴가 스터디룸에서 나가기(leaveRoom)를 쓴다(UsersModule)
+  exports: [StudyRoomsService],
   providers: [
     StudyRoomsService,
     StudyChatService,
