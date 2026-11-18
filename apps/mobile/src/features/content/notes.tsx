@@ -50,6 +50,8 @@ import {
   Tap,
   Title,
   cx,
+  BACKDROP_IN,
+  BACKDROP_OUT,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
 import { useTabRefresh } from '@/hooks';
@@ -486,7 +488,11 @@ export function FolderScreen() {
       </Screen>
 
       {dial && (
-        <View className="absolute inset-0 z-20">
+        <Animated.View
+          entering={BACKDROP_IN}
+          exiting={BACKDROP_OUT}
+          className="absolute inset-0 z-20"
+        >
           <Pressable className="absolute inset-0 bg-black/45" onPress={() => setDial(false)} />
           <View className="absolute right-5 bottom-24 items-end gap-3">
             {(
@@ -514,7 +520,7 @@ export function FolderScreen() {
               </Animated.View>
             ))}
           </View>
-        </View>
+        </Animated.View>
       )}
       <Fab tour={addTarget} open={dial} onPress={() => setDial((d) => !d)} />
 

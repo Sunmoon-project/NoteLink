@@ -63,6 +63,8 @@ import {
   Tap,
   Title,
   cx,
+  BACKDROP_IN,
+  BACKDROP_OUT,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
@@ -323,7 +325,11 @@ export function QuizNotesScreen() {
         )}
       </Screen>
       {menu && (
-        <View className="absolute inset-0 z-20">
+        <Animated.View
+          entering={BACKDROP_IN}
+          exiting={BACKDROP_OUT}
+          className="absolute inset-0 z-20"
+        >
           <Pressable className="absolute inset-0 bg-black/45" onPress={() => setMenu(false)} />
           <View
             className={cx('absolute right-5 items-end gap-3', chosen ? 'bottom-44' : 'bottom-24')}
@@ -358,7 +364,7 @@ export function QuizNotesScreen() {
               </Animated.View>
             ))}
           </View>
-        </View>
+        </Animated.View>
       )}
       <Pressable
         accessibilityLabel={menu ? '닫기' : '메뉴'}

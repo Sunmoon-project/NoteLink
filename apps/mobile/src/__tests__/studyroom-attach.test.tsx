@@ -217,3 +217,36 @@ it('올리기가 실패하면 다시 보내기를 보이고, 누르면 다시 �
   );
   expect(mockUpload).toHaveBeenCalledTimes(2);
 });
+
+// 앱 전체 부드러운 모션: 새로 보낸 말풍선만 떠오르며 나타나고, 불러온 이전 기록은 움직이지 않는다
+it('불러온 이전 기록은 움직이지 않고, 새로 보낸 말풍선만 떠오르며 나타난다', async () => {
+  mockApi.social.messages.mockResolvedValue([
+    {
+      _id: 'old-1',
+      chatRoomId: 'chat-1',
+      senderId: 'friend',
+      senderNickname: '친구',
+      type: 'text',
+      text: '예전 메시지',
+      sharedItemId: null,
+      createdAt: '2026-11-17T00:00:00.000Z',
+    },
+  ]);
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText(room.title);
+  await waitFor(() =>
+    expect(mockEmit).toHaveBeenCalledWith('room:join', expect.anything(), expect.any(Function)),
+  );
+  await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+  const bubbleOf = (text: string) => {
+    let node = screen.getByText(text).parent;
+    while (node && node.props.entering === undefined && !('entering' in node.props))
+      node = node.parent;
+    return node;
+  };
+  expect(await screen.findByText('예전 메시지')).toBeTruthy();
+  expect(bubbleOf('예전 메시지')?.props.entering).toBeUndefined();
+  await fireEvent.changeText(screen.getByPlaceholderText('채팅을 입력해 주세요'), '새 메시지');
+  await fireEvent.press(screen.getByLabelText('전송'));
+  expect(bubbleOf('새 메시지')?.props.entering).toBeDefined();
+});

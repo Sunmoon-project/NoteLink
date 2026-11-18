@@ -68,6 +68,8 @@ import {
   Title,
   Two,
   cx,
+  Pop,
+  POP_IN,
 } from '@/components/ui';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
@@ -511,9 +513,12 @@ export function RoomScreen() {
     const timers = ackTimers.current;
     return () => timers.forEach(clearTimeout);
   }, []);
+  // 이 화면에서 새로 보내거나 받은 메시지(말풍선이 떠오르며 나타난다). 불러온 이전 기록 · 서버가 확인해 바뀐 내 메시지는 넣지 않는다
+  const fresh = useRef(new Set<string>());
   const receiveMessage = (m: Message, clientId?: string) =>
     setMsgs((messages) => {
       const local = clientId ?? (m.senderId === myId ? m.clientId : undefined);
+      if (!local && !messages.some((x) => x._id === m._id)) fresh.current.add(m._id);
       const confirmed = local ? messages.filter((x) => x._id !== local) : messages;
       return confirmed.some((x) => x._id === m._id) ? confirmed : [...confirmed, m];
     });
@@ -818,6 +823,7 @@ export function RoomScreen() {
     if (!file || !chatId.data) return;
     const clientId = newClientId(++messageSeq.current);
     attachments.current.set(clientId, { kind, file });
+    fresh.current.add(clientId);
     setChat(true);
     setMsgs((p) => [
       ...p,
@@ -852,6 +858,7 @@ export function RoomScreen() {
       return toast('메시지를 기기에 저장하지 못했어요. 다시 시도해 주세요');
     }
     pending.current.push(entry);
+    fresh.current.add(clientId);
     setMsgs((p) => [
       ...p,
       {
@@ -1032,7 +1039,10 @@ export function RoomScreen() {
               renderItem={({ item: m }) => {
                 const mine = m.senderId === myId;
                 return (
-                  <View className={cx(mine && 'items-end')}>
+                  <Animated.View
+                    entering={fresh.current.has(m._id) ? POP_IN : undefined}
+                    className={cx(mine && 'items-end')}
+                  >
                     {!mine && (
                       <View className="flex-row items-center gap-1.5 mb-1">
                         <MessageCircle size={ICON.xs} color={C.sub} />
@@ -1062,7 +1072,7 @@ export function RoomScreen() {
                     {mine && conn === 'back' && m === msgs[msgs.length - 1] && (
                       <Text className="mt-1 text-caption2 text-brand">자동으로 전송했어요</Text>
                     )}
-                  </View>
+                  </Animated.View>
                 );
               }}
             />
@@ -1143,7 +1153,7 @@ export function RoomScreen() {
             </Pressable>
           )}
           {attach && (
-            <View className="mx-5 mt-2 flex-row gap-2 rounded-2xl bg-white p-2">
+            <Pop className="mx-5 mt-2 flex-row gap-2 rounded-2xl bg-white p-2">
               {(
                 [
                   ['image', ImageIcon, '사진'],
@@ -1161,10 +1171,10 @@ export function RoomScreen() {
                   <Text className="text-subhead font-semibold text-ink">{label}</Text>
                 </Pressable>
               ))}
-            </View>
+            </Pop>
           )}
           {emoji && (
-            <View className="mx-5 mt-2 flex-row flex-wrap justify-between gap-y-1 rounded-2xl bg-white px-2 py-2">
+            <Pop className="mx-5 mt-2 flex-row flex-wrap justify-between gap-y-1 rounded-2xl bg-white px-2 py-2">
               {CHAT_EMOJIS.map((e) => (
                 <Pressable
                   key={e}
@@ -1179,7 +1189,7 @@ export function RoomScreen() {
                   <Text className="text-title3">{e}</Text>
                 </Pressable>
               ))}
-            </View>
+            </Pop>
           )}
           <View
             className="flex-row items-center gap-3 px-5 pt-3"
@@ -1241,7 +1251,7 @@ export function RoomScreen() {
           )}
 
           {menu && (
-            <View className="absolute right-5 bottom-[178px] z-20 gap-1 rounded-2xl bg-white p-1.5 shadow-lg">
+            <Pop className="absolute right-5 bottom-[178px] z-20 gap-1 rounded-2xl bg-white p-1.5 shadow-lg">
               {(
                 [
                   [
@@ -1266,7 +1276,7 @@ export function RoomScreen() {
                   <Text className="text-caption2 text-ink">{l}</Text>
                 </Pressable>
               ))}
-            </View>
+            </Pop>
           )}
           <Dialog open={pick} onClose={() => setPick(false)}>
             <Text className="mb-4 text-callout font-bold text-ink">학습 자료 유형 선택</Text>

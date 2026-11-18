@@ -138,6 +138,21 @@ const EASE = Easing.out(Easing.cubic);
 /** 목록에서 행이 빠지거나 들어올 때 남은 행이 자리를 메우며 움직인다 (화면에서 직접 만든 목록도 layout에 쓴다) */
 export const LIST_LAYOUT = LinearTransition.duration(MOTION.enter).easing(EASE);
 
+/**
+ * 눌러서 여는 작은 메뉴 · 패널(도구 메뉴 · 첨부 · 이모지 칸)이 갑자기 튀어나오지 않게, 아래에서 살짝 떠오르며 나타나고
+ * 빠르게 사라진다. 가끔 여는 것이라 짧게(열기 160ms · 닫기 120ms). 동작 줄이기를 켜면 Reanimated가 생략한다
+ */
+export const POP_IN = FadeInDown.duration(160).easing(EASE);
+export const POP_OUT = FadeOut.duration(120);
+export const Pop = ({ children, className }: { children: ReactNode; className?: string }) => (
+  <Animated.View entering={POP_IN} exiting={POP_OUT} className={className}>
+    {children}
+  </Animated.View>
+);
+/** 메뉴 뒤 어두운 막: 나타날 때 · 사라질 때 함께 흐려진다(항목만 떠오르고 막은 갑자기 생기던 것) */
+export const BACKDROP_IN = FadeIn.duration(MOTION.exit);
+export const BACKDROP_OUT = FadeOut.duration(120);
+
 /** 목록 항목이 차례로 떠오르며 나타난다 (index마다 MOTION.stagger, 8번째부터는 같이) */
 export const Appear = ({
   index = 0,
