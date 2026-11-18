@@ -63,5 +63,6 @@ jest.mock('react-native-gesture-handler/ReanimatedSwipeable', () => {
     const h = React['create' + 'Element'];
     return h(React.Fragment, null, children, renderRightActions?.());
   });
+  Swipeable.displayName = 'ReanimatedSwipeable';
   return { __esModule: true, default: Swipeable };
 });

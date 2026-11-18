@@ -1,4 +1,5 @@
 import { useTour, useTourTarget } from '@/features/tutor/tour';
+import { InterestPicker } from '@/features/profile/interest-picker';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { Pressable } from '@/components/press';
@@ -249,25 +250,40 @@ const Steps = ({ n }: { n: 0 | 1 }) => (
 );
 
 export function NoteTagScreen() {
-  const [tag, setTag] = useState('수학');
+  // 관심 분야 고르기(가입 · 프로필)와 같은 목록 · 칩을 쓴다. 고른 분야 이름이 폴더의 과목(subjectName)이 된다
+  const categories = useQuery({
+    queryKey: ['interest-categories'],
+    queryFn: api.me.interestCategories,
+  });
+  // 목록을 못 받으면 예전 기본 과목으로 고른다
+  const list = categories.data?.length
+    ? categories.data
+    : categories.isError
+      ? TAGS.map((name) => ({ _id: name, name, parentId: null }))
+      : [];
+  const [picked, setPicked] = useState<string | null>(null);
+  const tag = list.find((c) => c._id === picked)?.name;
   return (
     <Canvas>
       <Screen
         footer={
-          <Btn onPress={() => router.push({ pathname: '/note-new/title', params: { tag } })}>
+          <Btn
+            disabled={!tag}
+            onPress={() => router.push({ pathname: '/note-new/title', params: { tag } })}
+          >
             다음
           </Btn>
         }
       >
         <Header title="태그 설정" right={<Steps n={0} />} />
-        <Text className="mt-4 mb-3 text-subhead font-semibold text-ink">과목을 선택해주세요</Text>
-        <View className="flex-row flex-wrap gap-2">
-          {TAGS.map((t) => (
-            <Chip key={t} on={tag === t} onPress={() => setTag(t)}>
-              {t}
-            </Chip>
-          ))}
-        </View>
+        <Text className="mt-4 mb-1 text-subhead font-semibold text-ink">과목을 선택해주세요</Text>
+        {categories.isPending && <Text className="text-caption text-sub">불러오는 중이에요</Text>}
+        {/* 한 폴더에 과목은 하나: 다른 칩을 누르면 바꾸고, 고른 칩을 다시 누르면 풀린다 */}
+        <InterestPicker
+          categories={list}
+          selected={picked ? [picked] : []}
+          onToggle={(id) => setPicked((p) => (p === id ? null : id))}
+        />
       </Screen>
     </Canvas>
   );
