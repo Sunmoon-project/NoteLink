@@ -96,6 +96,25 @@ it('프레임 시계가 살짝 뒤로 가도(상태 기준점 흔들림) 앞 문
 it('짧은 문장이어도 자막 상자가 줄어들지 않게 최소 높이(4줄)를 둔다', async () => {
   await render(<At sec={1} />);
   expect(screen.getByTestId('captions').props.style).toEqual(
-    expect.objectContaining({ minHeight: 96 }),
+    expect.objectContaining({ minHeight: 112 }),
   );
+});
+
+it('가독성: 안 읽은 글 · 미리보기도 어두운 배경에서 읽히는 밝기, 줄 간격은 넉넉하게', async () => {
+  await render(<At sec={1} />);
+  const now = String(screen.getByTestId('caption-now').props.className);
+  expect(now).toContain('text-white/60');
+  expect(now).toContain('leading-7');
+  expect(now).not.toContain('font-semibold');
+  expect(String(screen.getByTestId('caption-next').props.className)).toContain('text-white/45');
+});
+
+it('지금 문장이 구간의 마지막이면 다음 구간의 첫 문장(then)을 미리 보인다', async () => {
+  function Last() {
+    const clock = useSharedValue(42);
+    const [then] = splitLines([{ startSec: 60, endSec: 62, text: '다음 구간 첫 문장' }]);
+    return <Captions lines={lines} clock={clock} pos={42} then={then} />;
+  }
+  await render(<Last />);
+  expect(screen.getByTestId('caption-next').props.children).toBe('다음 구간 첫 문장');
 });

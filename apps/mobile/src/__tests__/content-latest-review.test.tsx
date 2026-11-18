@@ -773,7 +773,7 @@ it.each([
   },
 );
 
-it('요약 아래 대본은 지금 슬라이드의 문장만, 전체 대본은 슬라이드별 문단으로 보인다', async () => {
+it('요약 아래 대본은 지금 문장 하나(앞 문장 없음)와 다음 문장 미리보기, 전체 대본은 슬라이드별 문단', async () => {
   mockApi.content.recording.mockResolvedValue({
     audioUrl: 'https://blob.example/audio.m4a',
     durationSec: 180,
@@ -793,7 +793,8 @@ it('요약 아래 대본은 지금 슬라이드의 문장만, 전체 대본은 �
   await renderScreen(<Player materialId="material1" />, client()); // 재생 위치 42초(위 expo-audio 모의)
   expect(await screen.findByText(/지금 문장/)).toBeTruthy();
   expect(screen.queryByText(/앞 문장/)).toBeNull();
-  expect(screen.queryByText(/다음 문장/)).toBeNull();
+  // 지금 문장이 구간의 마지막이면 다음 구간의 첫 문장을 미리 보인다(사용자 신고: 긴 문장 뒤 미리보기가 안 나옴)
+  expect(screen.getByTestId('caption-next').props.children).toBe('다음 문장');
 });
 
 it('같은 슬라이드 구간의 다음 문장만 미리 보이고 다른 구간 문장은 숨긴다', async () => {

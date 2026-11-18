@@ -43,17 +43,19 @@ const EXIT_UP = () => {
 type Shown = { lines: readonly Line[]; from: number; i: number; epoch: number };
 
 /**
- * lines는 지금 슬라이드 구간의 문장들(비어 있지 않음). pos는 0.25초마다 오는 재생 위치(되감기 · 북마크 이동을
+ * lines는 지금 슬라이드 구간의 문장들(비어 있지 않음), then은 다음 구간의 첫 문장(구간 끝에서 미리보기로). pos는 0.25초마다 오는 재생 위치(되감기 · 북마크 이동을
  * 바로 따른다), clock은 프레임마다 이어 붙인 위치(채움 · 문장 넘김을 소리에 맞춘다)
  */
 export function Captions({
   lines,
   clock,
   pos,
+  then,
 }: {
   lines: readonly Line[];
   clock: SharedValue<number>;
   pos: number;
+  then?: Line;
 }) {
   const reduce = useReducedMotion();
   const from = lineAt(lines, pos);
@@ -83,7 +85,8 @@ export function Captions({
     [lines, advance],
   );
 
-  const rows = [lines[s.i], lines[s.i + 1]];
+  // 구간의 마지막 문장이면 다음 구간 첫 문장을 미리 보인다(긴 문장 뒤에 미리보기가 비지 않게)
+  const rows = [lines[s.i], lines[s.i + 1] ?? (s.i === lines.length - 1 ? then : undefined)];
   return (
     // 두 문장 넘게 건너뛰면(되감기 · 북마크) 넘김 없이 바로 바꾼다
     <LayoutAnimationConfig key={s.epoch} skipEntering skipExiting>
@@ -105,7 +108,7 @@ export function Captions({
                     testID="caption-next"
                     numberOfLines={2}
                     accessibilityLabel={`다음 문장, ${line.text}`}
-                    className="mt-1.5 text-footnote text-white/30"
+                    className="mt-2 text-footnote leading-5 text-white/45"
                   >
                     {line.text}
                   </Text>
@@ -125,9 +128,10 @@ export function Captions({
 const jump = (c: Shown, lines: readonly Line[], i: number) =>
   c.lines !== lines || (i !== c.i && i !== c.i + 1);
 
-const NOW = 'text-callout font-semibold leading-6';
-/** 짧은 문장에도 상자가 줄지 않게 지금 문장 4줄(24 × 4) 높이를 둔다(바뀌기 전 대본 상자 길이) */
-const BOX = { minHeight: 96 };
+// 어두운 상자에서 4줄을 읽기 쉽게: 굵기 medium, 줄 간격 28, 안 읽은 글도 60% 밝기
+const NOW = 'text-callout font-medium leading-7';
+/** 짧은 문장에도 상자가 줄지 않게 지금 문장 4줄(28 × 4) 높이를 둔다(바뀌기 전 대본 상자 길이) */
+const BOX = { minHeight: 112 };
 
 /**
  * 지금 문장. 여러 줄 글은 한 덩어리로 칠할 수 없어 줄마다 흰 글을 겹쳐 놓고, 겹친 줄을 transform 두 겹으로
@@ -147,7 +151,7 @@ function NowLine({ line, clock }: { line: Line; clock: SharedValue<number> }) {
       <Text
         testID="caption-now"
         onTextLayout={(e) => setRows(e.nativeEvent.lines)}
-        className={`${NOW} text-white/40`}
+        className={`${NOW} text-white/60`}
       >
         {line.text}
       </Text>

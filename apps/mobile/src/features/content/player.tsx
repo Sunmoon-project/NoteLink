@@ -163,11 +163,20 @@ export function Player({
   // 요약 화면 아래 대본은 지금 슬라이드(또는 슬라이드 사이 구간)의 문장만. 전체를 한 덩어리로 보이면
   // 42분 녹음은 읽을 수 없었다. 전체 대본은 「대본」 화면에서 슬라이드별 문단으로 본다
   const range = rangeAt(rec.data?.slides ?? [], p.pos);
-  // 한 문장씩 띄운다(긴 구간도 상자가 짧게). 다음 문장은 같은 구간 안에서만 미리 보인다
-  const lines = useMemo(
-    () => splitLines(segmentsIn(rec.data?.transcript.segments ?? [], range.lo, range.hi)),
-    [rec.data, range.lo, range.hi],
-  );
+  // 한 문장씩 띄운다(긴 구간도 상자가 짧게). 구간 끝에서는 다음 구간의 첫 문장을 미리 보인다
+  const [lines, then] = useMemo(() => {
+    const all = rec.data?.transcript.segments ?? [];
+    const next = all
+      .filter((s) => s.startSec >= range.hi)
+      .reduce<(typeof all)[number] | undefined>(
+        (a, s) => (!a || s.startSec < a.startSec ? s : a),
+        undefined,
+      );
+    return [
+      splitLines(segmentsIn(all, range.lo, range.hi)),
+      next ? splitLines([next])[0] : undefined,
+    ] as const;
+  }, [rec.data, range.lo, range.hi]);
   // 버퍼링 중에는 소리가 멈춰 있으니 시계도 세운다(앞질러 달렸다가 뒤로 튀지 않게)
   const { clock, posNow } = usePlaybackClock({
     pos: p.pos,
@@ -269,7 +278,7 @@ export function Player({
                 </View>
                 <View className="flex-1 justify-center">
                   {lines.length ? (
-                    <Captions lines={lines} clock={clock} pos={p.pos} />
+                    <Captions lines={lines} clock={clock} pos={p.pos} then={then} />
                   ) : (
                     <Text className="text-caption leading-5 text-white/60">
                       {!segs.length
