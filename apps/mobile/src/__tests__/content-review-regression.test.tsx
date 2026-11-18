@@ -234,6 +234,19 @@ describe('PR36 업로드 및 작업 복구 회귀', () => {
       expect(mockApi.ai.job).toHaveBeenCalledTimes(calls);
     },
   );
+  // 실기기 테스트: 50쪽이 넘는 PDF가 「정리에 실패했어요」만 떠 이유를 몰랐다(실제로는 60쪽)
+  it('쪽 수 초과(TOO_MANY_PAGES)로 실패하면 50쪽 이하로 나눠 올리라고 알린다', async () => {
+    jest.useFakeTimers();
+    mockApi.ai.job.mockResolvedValue({ ...job('failed'), error: 'TOO_MANY_PAGES' });
+    await renderScreen(<ConvertScreen />, client());
+    await act(async () => {});
+    await act(async () => {
+      jest.advanceTimersByTime(1600);
+    });
+    expect(screen.getByText('50쪽이 넘는 자료예요')).toBeTruthy();
+    expect(screen.getByText(/PDF를 50쪽 이하로 나눠 올려 주세요/)).toBeTruthy();
+    expect(screen.queryByText('정리에 실패했어요')).toBeNull();
+  });
   it('끊긴 업로드의 다시 시도를 연속으로 눌러도 업로드가 중복되지 않는다', async () => {
     const { NetworkError } = jest.requireMock('../lib/api') as { NetworkError: new () => Error };
     const pending = deferred<string>();

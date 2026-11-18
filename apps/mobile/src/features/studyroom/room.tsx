@@ -444,6 +444,10 @@ export function RoomScreen() {
   const now = useNow();
   const [membersAt, setMembersAt] = useState(() => Date.now());
   const [members, setMembers] = useState<RoomMember[]>([]);
+  const membersAtRef = useRef(membersAt);
+  useEffect(() => {
+    membersAtRef.current = membersAt;
+  }, [membersAt]);
   const [msgs, setMsgs] = useState<Message[]>([]);
   const timerEnd = timer?.endsAt;
   const requestedTimerEnd = useRef<number | null>(null);
@@ -588,7 +592,9 @@ export function RoomScreen() {
   const [loadedRoom, setLoadedRoom] = useState<typeof room.data>();
   if (room.data && room.data !== loadedRoom) {
     setLoadedRoom(room.data);
-    setMembers(room.data.members);
+    // 서버가 공부시간(todaySec)을 주지 않으면 지금까지 센 시간을 이어 간다 — 새 멤버가 들어와 목록을 다시 받을 때마다
+    // 모두의 시간이 0으로 돌아가던 문제
+    setMembers(carryStudyTime(members, membersAt, room.data.members, now));
     setMembersAt(now);
   }
   useEffect(() => {
@@ -679,8 +685,10 @@ export function RoomScreen() {
     'room:presence',
     (p) => {
       if (p.roomId !== id) return;
-      setMembers(p.members);
-      setMembersAt(Date.now());
+      const at = Date.now();
+      // 소켓 처리 함수는 처음 값을 기억하므로 이전 목록 · 시각은 최신 값(함수형 갱신 · ref)으로 읽는다
+      setMembers((prev) => carryStudyTime(prev, membersAtRef.current, p.members, at));
+      setMembersAt(at);
     },
     [id],
   );
@@ -1530,3 +1538,31 @@ const newClientId = (seq: number) =>
   `c${Date.now()}-${seq}-${Math.random().toString(36).slice(2, 10)}`;
 /** 이름 없이 고른 사진의 파일 이름 */
 const photoName = () => `photo-${Date.now()}.jpg`;
+
+/**
+ * 멤버 목록을 새로 받을 때 각자의 오늘 공부시간(todaySec)을 이어 간다.
+ * 서버가 값을 주면 그 값을 쓰고, 주지 않으면 이전 목록의 값 + 그 뒤 흐른 시간(서울 날짜가 바뀌었으면 자정부터)을 쓴다.
+ * 새로 들어온 멤버는 0부터 센다
+ */
+export function carryStudyTime(
+  prev: RoomMember[],
+  prevAt: number,
+  next: RoomMember[],
+  at: number,
+): RoomMember[] {
+  const today = ymd(seoul(at));
+  const midnight = Date.parse(`${today}T00:00:00+09:00`);
+  const sameDay = ymd(seoul(prevAt)) === today;
+  const counted = new Map(
+    prev.map((m) => [
+      m.userId,
+      (sameDay ? (m.todaySec ?? 0) : 0) +
+        Math.max(0, Math.floor((at - Math.max(prevAt, midnight)) / 1000)),
+    ]),
+  );
+  return next.map((m) =>
+    m.todaySec !== undefined || !counted.has(m.userId)
+      ? m
+      : { ...m, todaySec: counted.get(m.userId)! },
+  );
+}

@@ -5,7 +5,7 @@ import { Text } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronRight, FileText, Image, Pin } from 'lucide-react-native';
-import { ERROR_CODES, type AiJob } from '@notelink/shared';
+import { ERROR_CODES, MATERIAL_MAX_FILES, type AiJob } from '@notelink/shared';
 import { api, NetworkError } from '@/lib/api';
 import { uploadToBlob } from '@/lib/upload';
 import { aiWaiting } from '@/lib/ai';
@@ -425,6 +425,8 @@ export function ConvertScreen() {
     }
   };
   const credit = job?.error === ERROR_CODES.AI_CREDIT_EXHAUSTED;
+  // 올린 자료가 모두 합쳐 50쪽을 넘었다: 다시 시도해도 같으니 나눠 올리라고 알린다
+  const tooManyPages = job?.error === ERROR_CODES.TOO_MANY_PAGES;
   // 등록 전(작업이 없을 때)은 올리기 화면: 원 그래프가 업로드를 0→100%로 보여 주고,
   // 다 올려 서버가 작업을 받은 뒤에야 변환 화면(작업 진행률)으로 넘어간다
   const uploading = !job;
@@ -555,8 +557,12 @@ export function ConvertScreen() {
       />
       <Alert
         open={phase === 'failed' && !credit && (!!materialId || !!job)}
-        title="정리에 실패했어요"
-        body={`원본은 그대로 있어요.\n다시 시도하거나 원본만 저장할 수 있어요.`}
+        title={tooManyPages ? `${MATERIAL_MAX_FILES}쪽이 넘는 자료예요` : '정리에 실패했어요'}
+        body={
+          tooManyPages
+            ? `한 노트는 ${MATERIAL_MAX_FILES}쪽까지 정리할 수 있어요.\nPDF를 ${MATERIAL_MAX_FILES}쪽 이하로 나눠 올려 주세요. 원본은 그대로 있어요.`
+            : `원본은 그대로 있어요.\n다시 시도하거나 원본만 저장할 수 있어요.`
+        }
         secondary="원본만 저장"
         onSecondary={async () => {
           if (!materialId) {
