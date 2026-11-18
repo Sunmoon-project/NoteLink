@@ -1,6 +1,7 @@
 import { useTour, useTourTarget } from '@/features/tutor/tour';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, View } from 'react-native';
+import { ActivityIndicator, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import Animated, { FadeIn, FadeInDown, FadeOut } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -21,13 +22,14 @@ import {
   Paperclip,
   PenLine,
   Plus,
+  RotateCcw,
   ScanLine,
   Share2,
   Trash2,
   X,
 } from 'lucide-react-native';
 import type { Material } from '@notelink/shared';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { toast } from '@/stores/toast';
 import { useDraft } from '@/stores/draft';
 import {
@@ -49,6 +51,8 @@ import {
   Tap,
   Title,
   cx,
+  BACKDROP_IN,
+  BACKDROP_OUT,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
 import { useTabRefresh } from '@/hooks';
@@ -333,6 +337,16 @@ export function FolderScreen() {
   });
 
   const items = (mats.data ?? []).filter((m) => filter === '전체' || KIND[m.kind][1] === filter);
+  // 요약에 실패한 자료마다 「다시 요약」: 그 자료의 정리 작업을 다시 넣는다(서버가 자료 상태도 함께 되돌린다)
+  const resummarize = useMutation({
+    mutationFn: (jobId: string) => api.ai.retry(jobId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['materials'] });
+      toast('다시 요약하고 있어요. 끝나면 알려 드릴게요');
+    },
+    onError: (e) =>
+      toast(e instanceof ApiError ? e.message : '다시 요약하지 못했어요. 잠시 뒤 다시 눌러 주세요'),
+  });
   const open = (m: Material) =>
     router.push({
       pathname:
@@ -466,12 +480,29 @@ export function FolderScreen() {
                         <Text className="text-caption2 text-sub">
                           {KIND[m.kind][1]} · {seoul(m.createdAt).getMonth() + 1}/
                           {seoul(m.createdAt).getDate()} 업로드
-                          {m.kind === 'recording' && ` · ${summaryState(m)}`}
+                          {m.kind === 'recording' && st !== 'failed' && ` · ${summaryState(m)}`}
+                          {st === 'failed' && <Text className="text-danger"> · 요약 실패</Text>}
                         </Text>
                       </View>
-                      {/* AI가 아직 처리 중인 자료는 화살표 대신 진행 표시 */}
+                      {/* AI가 아직 처리 중인 자료는 화살표 대신 진행 표시, 요약에 실패한 자료는 다시 요약 */}
                       {busy ? (
                         <ActivityIndicator size="small" color={C.brand} />
+                      ) : st === 'failed' && m.processing.jobId ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`${m.title} 다시 요약`}
+                          hitSlop={8}
+                          disabled={resummarize.isPending}
+                          onPress={() => resummarize.mutate(m.processing.jobId!)}
+                          className="flex-row items-center gap-1 rounded-full bg-mint px-3 py-1.5"
+                        >
+                          {resummarize.isPending && resummarize.variables === m.processing.jobId ? (
+                            <ActivityIndicator size="small" color={C.brand} />
+                          ) : (
+                            <RotateCcw size={ICON.xs} color={C.brand} />
+                          )}
+                          <Text className="text-caption font-semibold text-brand">다시 요약</Text>
+                        </Pressable>
                       ) : (
                         <ChevronRight size={ICON.sm} color={C.sub} />
                       )}
@@ -485,7 +516,11 @@ export function FolderScreen() {
       </Screen>
 
       {dial && (
-        <View className="absolute inset-0 z-20">
+        <Animated.View
+          entering={BACKDROP_IN}
+          exiting={BACKDROP_OUT}
+          className="absolute inset-0 z-20"
+        >
           <Pressable className="absolute inset-0 bg-black/45" onPress={() => setDial(false)} />
           <View className="absolute right-5 bottom-24 items-end gap-3">
             {(
@@ -513,7 +548,7 @@ export function FolderScreen() {
               </Animated.View>
             ))}
           </View>
-        </View>
+        </Animated.View>
       )}
       <Fab tour={addTarget} open={dial} onPress={() => setDial((d) => !d)} />
 

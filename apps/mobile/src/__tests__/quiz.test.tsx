@@ -50,6 +50,47 @@ describe('유사 퀴즈 플래시카드 저장', () => {
   });
 });
 
+// 실기기 테스트: 유사 퀴즈가 첫 문제 정답을 바로 보였고, 객관식 보기가 나오지 않아 고를 수 없었다
+describe('유사 퀴즈 풀기', () => {
+  const similar = {
+    _id: 'sim1',
+    questionCount: 2,
+    questions: [
+      {
+        _id: 'q1',
+        type: 'multiple_choice',
+        prompt: '첫 문제',
+        choices: ['가', '나', '다'],
+        answer: '나',
+      },
+      { _id: 'q2', type: 'short_answer', prompt: '둘째 문제', choices: [], answer: '답' },
+    ],
+  };
+  const open = async () => {
+    jest.spyOn(api.quiz, 'similar').mockResolvedValue(similar as never);
+    setParams({ setId: 'qs1' });
+    await renderScreen(<QuizSimilarScreen />, new QueryClient());
+    await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
+    expect(await screen.findByText('첫 문제', {}, { timeout: 8000 })).toBeTruthy();
+  };
+  afterEach(() => jest.restoreAllMocks());
+
+  it('정답은 먼저 보이지 않고, 객관식 보기를 보여 준다', async () => {
+    await open();
+    expect(screen.queryByText('문제 1 정답')).toBeNull();
+    for (const c of ['가', '나', '다']) expect(screen.getByText(c)).toBeTruthy();
+  });
+
+  it('보기를 고르면 맞았는지와 정답을 보여 주고 다시 고를 수 없다', async () => {
+    await open();
+    await fireEvent.press(screen.getByText('가'));
+    expect(screen.getByText('아쉬워요, 다시 확인해 보세요')).toBeTruthy();
+    expect(screen.getByText('문제 1 정답')).toBeTruthy();
+    await fireEvent.press(screen.getAllByText('나')[0]!);
+    expect(screen.queryByText('정답이에요!')).toBeNull();
+  });
+});
+
 // PR #240 리뷰: 항목을 Animated.View로 감싼 뒤에도 2열 배치가 유지된다
 it('노트 격자는 2열 폭을 목록 바로 아래 래퍼가 갖고, 카드는 래퍼를 채운다', async () => {
   mockDemo.seedFolder();

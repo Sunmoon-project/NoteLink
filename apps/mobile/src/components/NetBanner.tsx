@@ -1,4 +1,5 @@
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
+import { Pressable } from './press';
 import { Text } from '@/components/text';
 import { X } from 'lucide-react-native';
 import { useNet } from '@/stores/net';

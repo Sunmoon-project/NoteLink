@@ -1,0 +1,94 @@
+import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import type { Material } from '@notelink/shared';
+import { useToast } from '../stores/toast';
+import { FolderScreen } from '../features/content/notes';
+import { api } from '../lib/api';
+import { renderScreen, setParams } from '../test-utils';
+
+jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
+jest.mock('expo-secure-store', () => ({
+  getItemAsync: jest.fn(async () => null),
+  setItemAsync: jest.fn(),
+  deleteItemAsync: jest.fn(),
+}));
+jest.mock('expo-file-system', () => ({ Directory: jest.fn(), File: jest.fn(), Paths: {} }));
+jest.mock('expo-sharing', () => ({ isAvailableAsync: jest.fn(), shareAsync: jest.fn() }));
+
+jest.mock('../lib/image-edit', () => ({ editPhoto: jest.fn() }));
+jest.mock('../lib/push', () => ({ notifyLocal: jest.fn() }));
+jest.mock('expo-camera', () => ({
+  CameraView: () => null,
+  useCameraPermissions: () => [null, jest.fn()],
+}));
+jest.mock('expo-keep-awake', () => ({ useKeepAwake: jest.fn() }));
+jest.mock('expo-audio', () => ({
+  AudioModule: {},
+  RecordingPresets: {},
+  setAudioModeAsync: jest.fn(),
+  useAudioRecorder: jest.fn(),
+  useAudioRecorderState: jest.fn(),
+  useAudioPlayer: () => ({
+    loop: false,
+    play: jest.fn(),
+    pause: jest.fn(),
+    seekTo: jest.fn(),
+    setPlaybackRate: jest.fn(),
+  }),
+  useAudioPlayerStatus: () => ({ currentTime: 42, duration: 180, playing: false, playbackRate: 1 }),
+}));
+jest.mock('expo-haptics', () => ({
+  impactAsync: jest.fn(),
+  selectionAsync: jest.fn(),
+  ImpactFeedbackStyle: { Light: 'light' },
+}));
+
+afterEach(() => jest.restoreAllMocks());
+
+// 실기기 테스트: 요약에 실패한 자료를 다시 요약할 방법이 자료마다 없었다
+const material = (_id: string, kind: string, status: string, jobId: string | null) =>
+  ({
+    _id,
+    folderId: 'folder1',
+    title: `${_id} 자료`,
+    kind,
+    createdAt: '2026-11-18T00:00:00Z',
+    processing: { status, progress: 0, jobId },
+  }) as unknown as Material;
+
+it('요약에 실패한 자료마다 「요약 실패」와 다시 요약 버튼이 있고, 누르면 그 자료의 작업을 다시 넣는다', async () => {
+  useToast.setState({ msg: null });
+  jest
+    .spyOn(api.content, 'materials')
+    .mockResolvedValue([
+      material('doc', 'document', 'failed', 'job-doc'),
+      material('rec', 'recording', 'failed', 'job-rec'),
+      material('ok', 'handwriting', 'done', 'job-ok'),
+    ]);
+  const retry = jest.spyOn(api.ai, 'retry').mockResolvedValue({} as never);
+  setParams({ id: 'folder1' });
+  await renderScreen(<FolderScreen />);
+  expect(await screen.findByLabelText('doc 자료 다시 요약')).toBeTruthy();
+  expect(screen.getByLabelText('rec 자료 다시 요약')).toBeTruthy();
+  // 요약이 끝난 자료에는 없다
+  expect(screen.queryByLabelText('ok 자료 다시 요약')).toBeNull();
+  expect(screen.getAllByText(/요약 실패/)).toHaveLength(2);
+  await fireEvent.press(screen.getByLabelText('doc 자료 다시 요약'));
+  await waitFor(() => expect(retry).toHaveBeenCalledWith('job-doc'));
+  await waitFor(() =>
+    expect(useToast.getState().msg).toBe('다시 요약하고 있어요. 끝나면 알려 드릴게요'),
+  );
+});
+
+it('다시 요약 요청이 실패하면 알린다', async () => {
+  useToast.setState({ msg: null });
+  jest
+    .spyOn(api.content, 'materials')
+    .mockResolvedValue([material('doc', 'document', 'failed', 'job-doc')]);
+  jest.spyOn(api.ai, 'retry').mockRejectedValue(new Error('offline'));
+  setParams({ id: 'folder1' });
+  await renderScreen(<FolderScreen />);
+  await fireEvent.press(await screen.findByLabelText('doc 자료 다시 요약'));
+  await waitFor(() =>
+    expect(useToast.getState().msg).toBe('다시 요약하지 못했어요. 잠시 뒤 다시 눌러 주세요'),
+  );
+});

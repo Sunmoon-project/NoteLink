@@ -32,6 +32,10 @@ export class Message {
   @Prop({ type: Object })
   sharePreview?: Record<string, unknown>;
 
+  // 사진 · 파일 메시지(type image · file)의 첨부. 주소는 저장소 주소 그대로 두고, 보낼 때 잠깐 읽을 수 있게 서명한다
+  @Prop({ type: Object, default: undefined })
+  attachment?: { blobUrl: string; name: string; sizeBytes: number };
+
   @Prop({ type: Date, default: null })
   deletedAt?: Date | null;
 }

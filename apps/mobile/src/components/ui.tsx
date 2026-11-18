@@ -13,14 +13,15 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
-  Pressable,
   RefreshControl,
   ScrollView,
   Switch,
   View,
   type ScrollViewProps,
   type TextInputProps,
+  Pressable as RNPressable,
 } from 'react-native';
+import { Pressable } from './press';
 import { Text, TextInput } from './text';
 import Animated, {
   Easing,
@@ -107,13 +108,13 @@ export function Tap({
   onPressOut,
   style,
   ...props
-}: ComponentProps<typeof Pressable> & { scaleTo?: number; className?: string }) {
+}: ComponentProps<typeof RNPressable> & { scaleTo?: number; className?: string }) {
   const scale = useSharedValue(1);
   const anim = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
   const [outer, inner] = splitClass(className);
   return (
     <Animated.View className={outer} style={anim}>
-      <Pressable
+      <RNPressable
         {...props}
         className={inner}
         style={(state) => [
@@ -136,6 +137,21 @@ export function Tap({
 const EASE = Easing.out(Easing.cubic);
 /** 목록에서 행이 빠지거나 들어올 때 남은 행이 자리를 메우며 움직인다 (화면에서 직접 만든 목록도 layout에 쓴다) */
 export const LIST_LAYOUT = LinearTransition.duration(MOTION.enter).easing(EASE);
+
+/**
+ * 눌러서 여는 작은 메뉴 · 패널(도구 메뉴 · 첨부 · 이모지 칸)이 갑자기 튀어나오지 않게, 아래에서 살짝 떠오르며 나타나고
+ * 빠르게 사라진다. 가끔 여는 것이라 짧게(열기 160ms · 닫기 120ms). 동작 줄이기를 켜면 Reanimated가 생략한다
+ */
+export const POP_IN = FadeInDown.duration(160).easing(EASE);
+export const POP_OUT = FadeOut.duration(120);
+export const Pop = ({ children, className }: { children: ReactNode; className?: string }) => (
+  <Animated.View entering={POP_IN} exiting={POP_OUT} className={className}>
+    {children}
+  </Animated.View>
+);
+/** 메뉴 뒤 어두운 막: 나타날 때 · 사라질 때 함께 흐려진다(항목만 떠오르고 막은 갑자기 생기던 것) */
+export const BACKDROP_IN = FadeIn.duration(MOTION.exit);
+export const BACKDROP_OUT = FadeOut.duration(120);
 
 /** 목록 항목이 차례로 떠오르며 나타난다 (index마다 MOTION.stagger, 8번째부터는 같이) */
 export const Appear = ({
@@ -291,8 +307,11 @@ export function Screen({
   onScroll,
   canvas,
   refresh,
+  avoidKeyboard = true,
 }: {
   children: ReactNode;
+  /** 키보드에 가리지 않게 화면을 줄인다(기본). 화면이 직접 키보드 높이를 다루면 false */
+  avoidKeyboard?: boolean;
   footer?: ReactNode;
   /** 본문 위에 떠 있는 것(스크롤하지 않고, 아래 버튼 위에서 끝난다). 예: 아바타 선생님 */
   overlay?: ReactNode;
@@ -338,7 +357,8 @@ export function Screen({
   );
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' && avoidKeyboard ? 'padding' : undefined}
+      enabled={avoidKeyboard}
       className={cx(
         'flex-1',
         dark
@@ -608,6 +628,8 @@ export function Row({
     <Pressable
       accessibilityRole="button"
       onPress={onPress}
+      // 꽉 찬 목록 행은 줄이지 않고 바탕만 어둡게(iOS 목록처럼)
+      scaleTo={1}
       className={cx(cls, 'active:bg-black/5')}
     >
       {inner}
@@ -753,6 +775,8 @@ export function Segment<T extends string>({
           accessibilityRole="tab"
           accessibilityState={{ selected: value === it }}
           onPress={() => onChange(it)}
+          // 고른 칸 판이 미끄러지는 모션이 있어 칸 자체는 줄이지 않는다
+          scaleTo={1}
           className={cx(
             'h-control-sm flex-1 items-center justify-center rounded-lg',
             // 폭을 재기 전(첫 그림)에는 판 대신 칸 자체를 칠한다
