@@ -962,7 +962,11 @@ export function RoomScreen() {
     );
   if (!room.data) return <Loading />;
   const last = msgs[msgs.length - 1];
-  const tiles = chat ? members.slice(0, 2) : members;
+  // 서버 멤버 목록은 참여 기록이라 뒤로 가서 나간 사람도 남는다. 미디어에 연결돼 있으면 지금 접속한 사람(+나)만 보인다
+  const here = live.connected
+    ? members.filter((m) => m.userId === myId || live.participantState(m.userId).present !== false)
+    : members;
+  const tiles = chat ? here.slice(0, 2) : here;
   const remain = timer ? Math.max(0, Math.floor((timer.endsAt - now) / 1000)) : 0;
 
   return (
@@ -974,22 +978,8 @@ export function RoomScreen() {
           // 키보드가 가리는 만큼 화면 아래를 띄워 채팅 입력줄이 키보드 바로 위에 오게 한다
           style={{ paddingBottom: keyboardInset }}
         >
-          {live.error && (
-            <View className="gap-2 p-4">
-              <Text>{live.error}</Text>
-              {conn !== 'kicked' && (
-                <Btn
-                  onPress={() => {
-                    if (lost) return toast('연결을 복구한 뒤 다시 시도해 주세요');
-                    setMediaGeneration((n) => n + 1);
-                  }}
-                >
-                  미디어 다시 연결
-                </Btn>
-              )}
-            </View>
-          )}
-          {conn === 'lost' && (
+          {/* 캠 · 음성이 끊겨도 같은 노란 띠로 알린다(미디어는 알아서 다시 붙는다 — useLiveRoom 재시도) */}
+          {(conn === 'lost' || (!!live.error && conn !== 'kicked')) && (
             <View className="bg-sun/25 px-5 py-2">
               <Text className="text-caption font-semibold text-ink">
                 ● 연결이 끊겼어요 · 다시 연결 중…
@@ -1028,7 +1018,7 @@ export function RoomScreen() {
                   {timer && (
                     <Badge tone="dark">{`${timer.label} ${remain >= 3600 ? hms(remain) : hms(remain).slice(3)}`}</Badge>
                   )}
-                  <Badge tone="gray">{`${members.length}명 접속중`}</Badge>
+                  <Badge tone="gray">{`${here.length}명 접속중`}</Badge>
                 </View>
               </View>
             )}
@@ -1036,20 +1026,31 @@ export function RoomScreen() {
           <View className="flex-row flex-wrap justify-between gap-y-2.5 px-4 pt-3">
             {tiles.map((m) => {
               const me = m.userId === myId;
-              const remote = me ? null : live.participantState?.(m.userId);
+              const state = live.participantState?.(m.userId);
+              const remote = me ? null : state;
               const camOn = me ? live.camOn : (remote?.camOn ?? false);
               const micOn = me ? live.micOn : (remote?.micOn ?? false);
+              const speaking = micOn && !!state?.speaking;
               const video = live.video(m.userId);
               return (
                 <View
                   key={m.userId}
                   className={cx(
                     'w-[48.5%] items-center justify-center rounded-2xl',
-                    'h-[118px]',
+                    'h-[118px] border-2',
                     camOn ? 'bg-night' : 'bg-white',
+                    speaking ? 'border-brand' : 'border-transparent',
                   )}
                 >
                   {video}
+                  {speaking && (
+                    <View
+                      accessibilityLabel={`${m.nickname} 말하는 중`}
+                      className="absolute top-2 left-2 rounded-full bg-brand p-1"
+                    >
+                      <Volume2 size={ICON.xs} color="#fff" />
+                    </View>
+                  )}
                   {camOn && (
                     <View className="absolute top-2.5 right-2.5 h-1.5 w-1.5 rounded-full bg-sun" />
                   )}
@@ -1070,7 +1071,10 @@ export function RoomScreen() {
                       : hms(
                           me
                             ? mySec
-                            : (ymd(seoul(membersAt)) === day ? (m.todaySec ?? 0) : 0) +
+                            : remote?.joinedAt !== undefined
+                              ? // 그 사람이 들어온 때부터 센다(내가 들어온 때가 아니라)
+                                Math.max(0, Math.floor((now - remote.joinedAt) / 1000))
+                              : (ymd(seoul(membersAt)) === day ? (m.todaySec ?? 0) : 0) +
                                 (conn === 'lost'
                                   ? 0
                                   : Math.max(

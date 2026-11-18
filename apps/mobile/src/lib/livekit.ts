@@ -5,7 +5,7 @@ import { loadMedia } from './livekit-loader';
 import { env } from './env';
 import { socket } from './socket';
 import { toast } from '@/stores/toast';
-import type { MediaConnection } from './livekit-native';
+import type { MediaConnection, ParticipantState } from './livekit-native';
 
 /** 실제 미디어 연결이 성공한 후에만 제어 상태를 표시한다. */
 export function useLiveRoom(roomId: string, enabled = true, generation = 0, todaySec = 0) {
@@ -132,7 +132,8 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0, toda
     toggleMic: () => control('toggleMic'),
     toggleCam: () => control('toggleCam'),
     toggleHearing: () => control('toggleHearing'),
-    participantState: (userId: string) =>
+    // 미디어에 연결되지 않았으면 누가 접속해 있는지 모른다(present 없음) — 화면은 방 멤버를 모두 보인다
+    participantState: (userId: string): ParticipantState =>
       room?.connected ? room.participantState(userId) : { camOn: false, micOn: false },
     video: (userId: string) => (room?.connected ? room.video(userId) : null),
   };

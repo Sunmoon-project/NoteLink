@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { fireEvent, screen } from '@testing-library/react-native';
 import type { Material } from '@notelink/shared';
 import { EditScreen, applyFormat, summaryForSave } from '../features/content/detail';
 import { NoteBody } from '../features/content/convert';
