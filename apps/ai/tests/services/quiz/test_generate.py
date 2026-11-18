@@ -1204,14 +1204,25 @@ def test_there_are_at_most_two_rounds_and_a_wrong_answer_is_never_used() -> None
     assert len(llm.named("Quiz")) == 2  # 셋째 초안은 만들지 않음
 
 
-def test_an_unsure_draft_fills_the_set_when_the_second_round_fails() -> None:
-    # 정답은 맞혔지만 애매한 초안은 남겨 두었다가 다음 판도 모자라면 씀
+@pytest.mark.parametrize("flag", ["only_one", "supported"])
+def test_an_unsure_draft_never_fills_the_set_when_the_second_round_fails(flag: str) -> None:
+    # 유일성 · 근거 중 하나라도 탈락하면 마지막 채우기 후보에서도 제외
     unsure = GOOD["이질 아메바"]["question"]["passage"]
-    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"]], sure=lambda b: unsure not in b)
+    llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"]])
+    check = llm.answers[generate.CHECK_NAME]
+
+    def answer(user: str) -> JsonObject:
+        result = check(user)
+        assert not isinstance(result, LlmError)
+        for block, row in zip(blocks(user), result["results"], strict=True):
+            if unsure in block:
+                row[flag] = False
+        return result
+
+    llm.answers[generate.CHECK_NAME] = answer
     wrong_for(GOOD["대장 아메바"]["question"]["passage"], llm)
-    result, _ = run(llm, page1_job(size=1))
-    assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
-    assert result["failed"] == []
+    with pytest.raises(generate.NoQuestionsError):
+        run(llm, page1_job(size=1))
 
 
 def test_an_unsure_draft_is_not_used_when_the_second_round_passes() -> None:
@@ -1297,7 +1308,7 @@ def test_a_check_call_failing_twice_in_the_first_round_retries_the_job() -> None
     assert len(llm.named(generate.CHECK_NAME)) == 2
 
 
-def test_a_check_outage_after_questions_were_taken_fills_from_what_was_kept() -> None:
+def test_a_check_outage_never_adds_unsure_drafts_to_passed_questions() -> None:
     # 문제를 받은 뒤의 장애: 받은 문제를 버리고 작업을 처음부터 다시 돌리지 않음
     unsure = GOOD["람블편모충"]["question"]["passage"]
     llm = happy(
@@ -1307,8 +1318,8 @@ def test_a_check_outage_after_questions_were_taken_fills_from_what_was_kept() ->
     llm.answers[generate.CHECK_NAME] = lambda u: (
         check(u) if len(llm.named(generate.CHECK_NAME)) == 1 else LlmError("응답 없음")
     )
-    result, _ = run(llm, job(size=2))
-    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "람블편모충"]
+    with pytest.raises(generate.NoQuestionsError, match="1/2문제만 만듦"):
+        run(llm, job(size=2))
 
 
 def test_a_pregen_taken_over_makes_the_next_round_with_the_fast_types(
@@ -1323,7 +1334,7 @@ def test_a_pregen_taken_over_makes_the_next_round_with_the_fast_types(
 
     monkeypatch.setattr(generate, "page_types", spy)
     llm = happy([BAD, GOOD["이질 아메바"]])
-    make(llm, page1_job(size=1), mode=generate.STABLE, hurry=lambda: True)
+    make(llm, page1_job(size=1), mode=generate.STABLE, hurry=lambda: bool(llm.named("Quiz")))
     # 첫 판은 안정적 모드 유형, 이어받은 뒤 둘째 판은 빠른 모드 유형
     assert extras[-2:] == [generate.STABLE.extra, ()]
 
@@ -1374,16 +1385,16 @@ def test_a_draft_the_checker_finds_no_answer_for_is_never_used() -> None:
         run(llm, page1_job(size=1))
 
 
-def test_a_second_round_check_outage_fills_from_kept_drafts_alone() -> None:
-    # 첫 판이 애매한 초안뿐이어도 둘째 판 장애로 작업을 처음부터 다시 돌리지 않음
+def test_a_second_round_check_outage_with_only_unsure_drafts_retries_the_job() -> None:
+    # 첫 판에 통과한 문제가 없으면 애매한 초안으로 성공하지 않고 장애를 전파
     unsure = GOOD["이질 아메바"]["question"]["passage"]
     llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"]], sure=lambda b: unsure not in b)
     check = llm.answers[generate.CHECK_NAME]
     llm.answers[generate.CHECK_NAME] = lambda u: (
         check(u) if len(llm.named(generate.CHECK_NAME)) == 1 else LlmError("응답 없음")
     )
-    result, _ = run(llm, page1_job(size=1))
-    assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
+    with pytest.raises(LlmError, match="응답 없음"):
+        run(llm, page1_job(size=1))
 
 
 def test_a_draft_filled_from_kept_is_not_reported_as_not_made(
@@ -1560,3 +1571,69 @@ def test_a_setup_error_stops_waiting_drafts_even_before_the_main_thread_notices(
         run(llm, job(size=4))
     assert len(llm.named("Quiz")) == 1
     join_threads("quiz-draft")
+
+
+def test_takeover_caps_the_running_round_and_total_without_extending_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    claimed = [False]
+    monkeypatch.setattr(generate, "_clock", lambda: now[0])
+    draft_all = generate._draft_all
+    check_all_real = generate.check_all
+    limits = []
+
+    def drafts(*args: Any, **kwargs: Any) -> list[generate.Made]:
+        assert args[6] == generate.ROUND_SEC * generate.STABLE.patience
+        now[0] = 100.0
+        claimed[0] = True
+        limit = args[8]
+        limits.append(limit())
+        return draft_all(*args, **kwargs)
+
+    def checks(llm: Any, made: Any, pages: Any, end: Any) -> Any:
+        assert end() == 400.0
+        now[0] += 10
+        assert end() == 400.0  # 반복 감지가 대기 시간을 계속 연장하지 않음
+        return check_all_real(llm, made, pages, end)
+
+    monkeypatch.setattr(generate, "_draft_all", drafts)
+    monkeypatch.setattr(generate, "check_all", checks)
+    make(
+        happy([GOOD["이질 아메바"]]),
+        page1_job(size=1),
+        mode=generate.STABLE,
+        hurry=lambda: claimed[0],
+    )
+    assert limits == [250.0]
+
+
+@pytest.mark.parametrize("taken_at", [100.0, 1190.0])
+def test_takeover_during_check_applies_the_user_deadline_and_never_extends_it(
+    monkeypatch: pytest.MonkeyPatch,
+    taken_at: float,
+) -> None:
+    now = [0.0]
+    claimed = [False]
+    monkeypatch.setattr(generate, "_clock", lambda: now[0])
+    check_all_real = generate.check_all
+    limits = []
+
+    def checks(llm: Any, made: Any, pages: Any, end: Any) -> Any:
+        now[0] = taken_at
+        claimed[0] = True
+        limits.append(end())
+        now[0] += 1
+        assert end() == limits[-1]
+        return check_all_real(llm, made, pages, end)
+
+    monkeypatch.setattr(generate, "check_all", checks)
+    make(
+        happy([GOOD["이질 아메바"]]),
+        page1_job(size=1),
+        mode=generate.STABLE,
+        hurry=lambda: claimed[0],
+    )
+    assert limits == [
+        min(generate.TOTAL_SEC * generate.STABLE.patience, taken_at + generate.TOTAL_SEC)
+    ]

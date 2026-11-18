@@ -21,11 +21,11 @@ ai_jobs.type = 'quiz_pregen': 노트를 만들 때 NestJS가 넣는 첫 맞춤 �
      초안은 버림
   2. 이미 있는 문제 · 이 세트에 넣은 문제와 거의 같은 초안(checks.too_close)은 버림
   3. 남은 초안을 검사 모델이 한 호출로 모두 풂(check_all): 문제마다 고른 답 · 정답이 하나뿐인지 ·
-     노트로 정해지는지. 다른 답을 고른 초안은 버리고, 정답은 골랐지만 애매한 초안은 남겨 둠
+     노트로 정해지는지. 다른 답을 고르거나 정답의 유일성 · 노트 근거가 불확실한 초안은 버림
   4. 통과한 초안을 세트에 넣음. 이미 넣은 문제와 같은 정답을 같은 유형으로 묻거나 한 개념을
      PER_CONCEPT문제 넘게 묻는 초안은 남겨 둠
   5. 모자라면 못 채운 자리만 한 번 더 만들어 검사함(ROUNDS판, 앞 초안의 문제점을 알려 줌). 그래도
-     모자라면 남겨 둔 초안(겹침 → 애매함 차례)으로 채움
+     모자라면 검사를 통과했지만 겹침 때문에 남겨 둔 초안으로만 채움
   #512 전에는 문제마다 생성 → 정답 둘 검사 → 검사 모델 풀기(미리 만들기는 생성 모델 2차 풀기도)를
   거치고, 떨어지면 그 자리만 다시 만들기를 5판까지 했습니다. 겹침도 한 개념 1문제 · 같은 정답 ·
   같은 노트 문장 · 거꾸로 묻기를 모두 막아, 1쪽 노트 미리 만들기가 6.3분 뒤 3/5로 실패했습니다
@@ -797,7 +797,7 @@ Verdict = Literal["pass", "unsure", "wrong", "bad"]
 
 
 def check_all(
-    llm: Llm, made: list[Made], pages: dict[int, str], end: float = math.inf
+    llm: Llm, made: list[Made], pages: dict[int, str], end: float | Callable[[], float] = math.inf
 ) -> list[tuple[Verdict, str]]:
     """초안들을 검사 모델이 한 호출로 풂(#512). 초안마다 (판정, 고른 답 또는 이유).
 
@@ -814,6 +814,7 @@ def check_all(
     서버가 거절했을 때만 LlmRejectedError(다시 시도 없음), 일시 장애가 섞이면 다시 시도되는
     오류(Codex 재리뷰 #513). 거절은 다시 보내지 않음.
     end(_clock 값)를 넘기면 그 묶음은 기다리지 않고 시간 상한 장애로 셈(남은 호출은 보내지 않음).
+    end가 함수면 대기 중에도 1초마다 다시 읽어 사용자 이어받기의 짧아진 상한을 반영함.
     """
     groups: list[list[Made]] = []
     for m in made:
@@ -826,16 +827,20 @@ def check_all(
     out: list[tuple[Verdict, str]] = []
     errors: list[LlmError] = []
     stop = threading.Event()
+
+    def remaining() -> float:
+        return (end() if callable(end) else end) - _clock()
+
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quiz-check")
     try:
         for group in groups:
             try:
-                left = end - _clock()
-                if left <= 0:
+                if remaining() <= 0:
                     raise LlmError(TIMEOUT)
                 f = pool.submit(_check_group, _until(llm, stop), group, pages)
-                done, _ = wait([f], timeout=left)
-                if not done:
+                while not f.done() and (left := remaining()) > 0:
+                    wait([f], timeout=min(1.0, left))
+                if not f.done():
                     stop.set()  # 끊은 묶음은 다시 보내지 않음
                     raise LlmError(TIMEOUT)
                 out += f.result()
@@ -929,6 +934,7 @@ def _draft_all(
     need: int,
     end: float,
     pool: ThreadPoolExecutor,
+    limit: Callable[[], float] | None = None,
 ) -> list[Made]:
     """자리마다 초안 1개를 동시에(pool의 WORKERS개씩).
 
@@ -961,7 +967,12 @@ def _draft_all(
     try:
         futures += [pool.submit(guarded, s, base + i) for i, s in enumerate(slots)]
         pending = set(futures)
-        while pending and (left := end - _clock()) > 0:
+        while pending:
+            if limit is not None:
+                end = min(end, limit())
+            left = end - _clock()
+            if left <= 0:
+                break
             done, pending = wait(pending, timeout=min(1.0, left), return_when=FIRST_COMPLETED)
             for f in done:
                 if (e := f.exception()) is not None and not isinstance(e, LlmError):
@@ -1171,7 +1182,7 @@ def _make_all(
     lv = lv or dict(similar.DIFFICULTY)
     target = levels.slot_levels(mix or {}) or ["중"]  # 자리마다 난이도(첫 판의 차례)
     taken: list[Made] = []  # 세트에 넣은 차례대로
-    kept: list[tuple[int, Made]] = []  # 남겨 둔 초안(차례: 0 겹침 · 1 애매함)
+    kept: list[Made] = []  # 검사를 통과했지만 겹침 때문에 남겨 둔 초안
     failed: list[Made] = []  # 못 채운 자리(오류 글, 마지막 판 먼저)
     used: list[str] = []  # 이 세트에서 쓴 정답(다음 판 초안 지시)
     asked: Counter[str] = Counter()  # 세트에서 개념마다 물은 수
@@ -1255,16 +1266,33 @@ def _make_all(
     want += [(p, lv_, "") for p, lv_ in zip(*_spares(n, backups, target), strict=True)]
     need = len(first)  # 이번 판에 채울 자리(여분 제외)
     deadline = _clock() + TOTAL_SEC * mode.patience
+    round_end = math.inf
+
+    def refresh_deadline() -> float:
+        nonlocal cur, deadline, round_end
+        if cur is not FAST and hurry is not None and hurry():
+            now = _clock()
+            cur = FAST
+            # 사용자가 이어받은 뒤에는 이미 진행 중인 판 · 검사도 사용자 대기 상한으로 줄임.
+            # 기존 상한이 더 가까우면 늘리지 않는다.
+            deadline = min(deadline, now + TOTAL_SEC)
+            round_end = min(round_end, now + ROUND_SEC)
+            log.info("맞춤 퀴즈: 이어받아 빠른 모드로(%d/%d문제)", len(taken), n)
+        return deadline
+
+    def draft_deadline() -> float:
+        return min(refresh_deadline(), round_end)
+
     pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="quiz-draft")
     try:
         for rnd in range(ROUNDS):
-            if rnd and cur is not FAST and hurry is not None and hurry():
-                cur = FAST
-                log.info("맞춤 퀴즈: 이어받아 빠른 모드로(%d/%d문제)", len(taken), n)
+            refresh_deadline()
             if rnd and _clock() >= deadline:  # 둘째 판을 띄울 시간이 없음: 남겨 둔 초안으로
                 break
-            end = min(_clock() + ROUND_SEC * cur.patience, deadline)
-            made = _draft_all(llm, plan(want), pages, used, len(taken), need, end, pool)
+            round_end = min(_clock() + ROUND_SEC * cur.patience, deadline)
+            made = _draft_all(
+                llm, plan(want), pages, used, len(taken), need, round_end, pool, draft_deadline
+            )
             report(15 + (45 if rnd == 0 else 70), "문제 만들기")
             if rnd == 0 and made and all(r.down for r in made):  # 학교 LLM 장애: 작업 처리기에 맡김
                 if all(r.rejected for r in made):  # 모두 서버가 거절: 다시 해도 같음(Codex #264)
@@ -1281,7 +1309,7 @@ def _make_all(
                 else:
                     ready.append(r)
             try:
-                verdicts = check_all(llm, ready, pages, deadline)
+                verdicts = check_all(llm, ready, pages, refresh_deadline)
             except LlmError:
                 if rnd == 0 or not (taken or kept):
                     raise
@@ -1302,8 +1330,6 @@ def _make_all(
                     else [f"검사 탈락(검수자 답 {said})"]
                 )
                 r.fault = v != "bad"
-                if v == "unsure":
-                    kept.append((1, r))
                 missed.append(r)
             # 목표보다 모자란 난이도의 초안부터: 넣을 때마다 다시 봄(한 난이도가 남은 자리를 다
             # 차지하지 않게, /code-review #512)
@@ -1315,7 +1341,7 @@ def _make_all(
                 if why := overlap(r):
                     r.why, r.fault = [why], True
                     if why != NEAR_SAME:
-                        kept.append((0, r))
+                        kept.append(r)
                     missed.append(r)
                 else:
                     admit(r)
@@ -1340,8 +1366,8 @@ def _make_all(
             ]
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-    # 모자라면 남겨 둔 초안으로 채움: 겹침(정답은 맞음) → 애매함 차례. 거의 같은 문제는 그래도 뺌
-    for _, r in sorted(kept, key=lambda x: x[0]):
+    # 모자라면 검사를 통과한 겹침 초안으로만 채움. 애매하거나 거의 같은 문제는 뺌
+    for r in kept:
         if len(taken) >= n:
             break
         assert r.question is not None and r.concept is not None
