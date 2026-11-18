@@ -1,4 +1,4 @@
-import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, FadeOut, FadeOutDown } from 'react-native-reanimated';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import {
   addChatOutbox,
@@ -82,6 +82,14 @@ import { LoadError } from './tools';
 // p.75 스터디룸 입장 · 만들기 / p.76 진입 · 채팅 / p.77 카드 / p.100 연결 끊김
 
 const ACK_TIMEOUT_MS = 8000;
+
+// 채팅 열기 · 캠 보기 전환. 바뀌는 쪽만 짧게(들어오기 MOTION.enter · 나가기 MOTION.exit) 투명도 · 세로 이동으로 움직인다.
+// 레이아웃 애니메이션은 UI 스레드에서 돌고, 기기의 「동작 줄이기」가 켜져 있으면 움직이지 않는다(ReduceMotion.System 기본값)
+const CHAT_FADE_IN = FadeIn.duration(MOTION.enter);
+const CHAT_FADE_OUT = FadeOut.duration(MOTION.exit);
+const CHAT_IN = FadeInDown.duration(MOTION.enter);
+const CAM_IN = FadeInDown.duration(MOTION.enter);
+const CAM_OUT = FadeOutDown.duration(MOTION.exit);
 
 export function RoomListScreen() {
   const mine = useQuery({ queryKey: ['rooms', 'mine'], queryFn: api.rooms.mine });
@@ -1012,7 +1020,11 @@ export function RoomScreen() {
               </Pressable>
             </View>
             {!chat && (
-              <View className="flex-row items-center justify-between">
+              <Animated.View
+                entering={CHAT_FADE_IN}
+                exiting={CHAT_FADE_OUT}
+                className="flex-row items-center justify-between"
+              >
                 <Text className="text-title3 font-bold text-ink">{room.data.title}</Text>
                 <View className="flex-row gap-1">
                   {timer && (
@@ -1020,7 +1032,7 @@ export function RoomScreen() {
                   )}
                   <Badge tone="gray">{`${here.length}명 접속중`}</Badge>
                 </View>
-              </View>
+              </Animated.View>
             )}
           </View>
           <View className="flex-row flex-wrap justify-between gap-y-2.5 px-4 pt-3">
@@ -1033,8 +1045,12 @@ export function RoomScreen() {
               const speaking = micOn && !!state?.speaking;
               const video = live.video(m.userId);
               return (
-                <View
+                // 채팅을 열면 셋째 타일부터 사라지고 남은 타일이 제자리로 옮겨 간다(닫으면 반대로)
+                <Animated.View
                   key={m.userId}
+                  layout={LIST_LAYOUT}
+                  entering={CHAT_FADE_IN}
+                  exiting={CHAT_FADE_OUT}
                   className={cx(
                     'w-[48.5%] items-center justify-center rounded-2xl',
                     'h-[118px] border-2',
@@ -1091,7 +1107,7 @@ export function RoomScreen() {
                       <MicOff size={ICON.xs} color={camOn ? 'rgba(255,255,255,.5)' : C.sub} />
                     </View>
                   )}
-                </View>
+                </Animated.View>
               );
             })}
           </View>
@@ -1103,55 +1119,65 @@ export function RoomScreen() {
             <LoadError message="대화 기록을 불러오지 못했어요" retry={history.refetch} />
           )}
           {chat ? (
-            <FlatList
-              ref={list}
-              data={msgs}
-              keyExtractor={(m) => m._id}
-              onContentSizeChange={() => list.current?.scrollToEnd()}
+            // 채팅은 아래에서 올라오고, 캠 조작은 아래로 내려가며 사라진다(동작 줄이기 설정이면 바로 바뀐다)
+            <Animated.View
+              testID="room-chat"
+              entering={CHAT_IN}
+              exiting={CHAT_FADE_OUT}
               className="mt-2 flex-1"
-              contentContainerClassName="gap-3 px-4 py-3"
-              renderItem={({ item: m }) => {
-                const mine = m.senderId === myId;
-                return (
-                  <Animated.View
-                    entering={fresh.current.has(m._id) ? POP_IN : undefined}
-                    className={cx(mine && 'items-end')}
-                  >
-                    {!mine && (
-                      <View className="flex-row items-center gap-1.5 mb-1">
-                        <MessageCircle size={ICON.xs} color={C.sub} />
-                        <Text className="text-caption2 text-sub">{m.senderNickname ?? '멤버'}</Text>
-                      </View>
-                    )}
-                    <ChatBubble m={m} onOpen={openAttachment} onStale={refreshStale} />
-                    {failedIds.includes(m._id) && (
-                      <Pressable
-                        accessibilityRole="button"
-                        onPress={() =>
-                          m.type === 'image' || m.type === 'file'
-                            ? void deliverAttachment(m._id)
-                            : deliver(m.chatRoomId, m._id, m.text ?? '')
-                        }
-                      >
-                        <Text className="mt-1 text-caption2 text-danger">
-                          전송하지 못했어요 · 다시 보내기
+            >
+              <FlatList
+                ref={list}
+                data={msgs}
+                keyExtractor={(m) => m._id}
+                onContentSizeChange={() => list.current?.scrollToEnd()}
+                className="flex-1"
+                contentContainerClassName="gap-3 px-4 py-3"
+                renderItem={({ item: m }) => {
+                  const mine = m.senderId === myId;
+                  return (
+                    <Animated.View
+                      entering={fresh.current.has(m._id) ? POP_IN : undefined}
+                      className={cx(mine && 'items-end')}
+                    >
+                      {!mine && (
+                        <View className="flex-row items-center gap-1.5 mb-1">
+                          <MessageCircle size={ICON.xs} color={C.sub} />
+                          <Text className="text-caption2 text-sub">
+                            {m.senderNickname ?? '멤버'}
+                          </Text>
+                        </View>
+                      )}
+                      <ChatBubble m={m} onOpen={openAttachment} onStale={refreshStale} />
+                      {failedIds.includes(m._id) && (
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() =>
+                            m.type === 'image' || m.type === 'file'
+                              ? void deliverAttachment(m._id)
+                              : deliver(m.chatRoomId, m._id, m.text ?? '')
+                          }
+                        >
+                          <Text className="mt-1 text-caption2 text-danger">
+                            전송하지 못했어요 · 다시 보내기
+                          </Text>
+                        </Pressable>
+                      )}
+                      {mine && m.clientId === m._id && !failedIds.includes(m._id) && (
+                        <Text className="mt-1 text-caption2 text-sub">
+                          {conn === 'lost' || joinedRoom !== id ? '연결 후 전송 대기' : '전송 중'}
                         </Text>
-                      </Pressable>
-                    )}
-                    {mine && m.clientId === m._id && !failedIds.includes(m._id) && (
-                      <Text className="mt-1 text-caption2 text-sub">
-                        {conn === 'lost' || joinedRoom !== id ? '연결 후 전송 대기' : '전송 중'}
-                      </Text>
-                    )}
-                    {mine && conn === 'back' && m === msgs[msgs.length - 1] && (
-                      <Text className="mt-1 text-caption2 text-brand">자동으로 전송했어요</Text>
-                    )}
-                  </Animated.View>
-                );
-              }}
-            />
+                      )}
+                      {mine && conn === 'back' && m === msgs[msgs.length - 1] && (
+                        <Text className="mt-1 text-caption2 text-brand">자동으로 전송했어요</Text>
+                      )}
+                    </Animated.View>
+                  );
+                }}
+              />
+            </Animated.View>
           ) : (
-            <View className="mt-auto px-5 pb-2">
+            <Animated.View entering={CAM_IN} exiting={CAM_OUT} className="mt-auto px-5 pb-2">
               <View className="flex-row gap-3">
                 <Ctl
                   on={live.micOn}
@@ -1219,7 +1245,7 @@ export function RoomScreen() {
                   )}
                 </Pressable>
               </View>
-            </View>
+            </Animated.View>
           )}
           {chatJoinFailed && conn !== 'lost' && conn !== 'kicked' && (
             <Pressable accessibilityRole="button" onPress={joinRoom} className="px-5 py-2">
@@ -1324,13 +1350,19 @@ export function RoomScreen() {
             </Pressable>
           </View>
           {chat && (
-            <Pressable
-              onPress={() => setChat(false)}
-              // 오른쪽 위 설정 버튼과 겹치지 않게 그 왼쪽에 둔다
-              className="absolute top-2 right-14 rounded-full bg-black/40 px-2 py-0.5"
+            <Animated.View
+              entering={CHAT_FADE_IN}
+              exiting={CHAT_FADE_OUT}
+              className="absolute top-2 right-14"
             >
-              <Text className="text-caption2 text-white">캠 보기</Text>
-            </Pressable>
+              <Pressable
+                onPress={() => setChat(false)}
+                // 오른쪽 위 설정 버튼과 겹치지 않게 그 왼쪽에 둔다
+                className="rounded-full bg-black/40 px-2 py-0.5"
+              >
+                <Text className="text-caption2 text-white">캠 보기</Text>
+              </Pressable>
+            </Animated.View>
           )}
 
           {menu && (
