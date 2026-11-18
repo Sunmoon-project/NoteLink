@@ -1,4 +1,5 @@
-import { act, screen } from '@testing-library/react-native';
+import { act, fireEvent, screen } from '@testing-library/react-native';
+import { router } from 'expo-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Player } from '../features/content/player';
@@ -15,7 +16,7 @@ jest.mock('../lib/api', () => ({
         slides: [],
         transcript: { text: '', segments: [] },
       })),
-      material: jest.fn(async () => ({ bookmarks: [] })),
+      material: jest.fn(async () => ({ bookmarks: [], processing: { status: 'done' } })),
     },
   },
 }));
@@ -105,4 +106,14 @@ it('자막 옆에 3D 아바타 선생님(얼굴 전체가 보이는 구도 64)�
   expect(mockAvatar.props).toMatchObject({ mood: 'talking', framing: 'full', size: 64 });
   const lips = (mockAvatar.props!.lips as () => { open: number; wide: number })();
   expect(lips).toEqual({ open: 0, wide: 1 }); // 대본이 없으면 입을 다문다
+});
+
+// 사용자 결정: 떠 있는 아바타를 숨긴 대신 자막 옆 아바타를 누르면 이 자료의 선생님 대화를 연다(재생은 먼저 멈춤)
+it('자막 옆 아바타를 누르면 재생을 멈추고 이 자료의 선생님 대화를 연다', async () => {
+  await renderScreen(<Player materialId="m-ask" />);
+  const avatar = await screen.findByRole('button', { name: '아바타 선생님에게 물어보기' });
+  expect(screen.getByText('물어보기')).toBeTruthy();
+  await fireEvent.press(avatar);
+  expect(mockPause).toHaveBeenCalled();
+  expect(router.push).toHaveBeenCalledWith({ pathname: '/tutor/[id]', params: { id: 'm-ask' } });
 });

@@ -18,7 +18,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as SecureStore from 'expo-secure-store';
 import * as Haptics from 'expo-haptics';
 import { Text } from '@/components/text';
-import type { ShopItem } from '@notelink/shared';
+import type { Material, ShopItem } from '@notelink/shared';
 import { api } from '@/lib/api';
 import { BASE_AVATAR, SHOP } from '@/lib/local/catalog';
 import { C } from '@/theme';
@@ -31,6 +31,13 @@ export function useEquippedItem() {
   const mine = useQuery({ queryKey: ['my-items'], queryFn: () => api.shop.myItems() });
   return mine.data?.find((u) => u.isEquipped && u.itemCategory === 'avatar')?.itemId ?? 'base';
 }
+
+/** 아바타가 설명할 글이 있는 노트: 정리가 끝났거나 요약 · 쪽 글이 있음(서버 NOTE_NOT_READY 전에 숨김) */
+export const canAsk = (m: Pick<Material, 'processing' | 'summary' | 'pages'>) =>
+  m.processing?.status === 'done' ||
+  !!m.summary?.sections.length ||
+  !!m.summary?.points.length ||
+  !!m.pages?.some((p) => p.ocrText?.trim());
 
 export const LOCAL_AVATARS = [BASE_AVATAR, ...SHOP.filter((i) => i.category === 'avatar')];
 /**

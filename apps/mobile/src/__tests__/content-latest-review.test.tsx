@@ -698,7 +698,7 @@ it.each(['recording', 'document'])(
 );
 
 // 녹음 화면은 자막 옆 3D 아바타가 말한다 → 떠 있는 아바타는 숨긴다(GL 화면 하나 · 시선 하나)
-it('녹음 상세에는 떠 있는 아바타 선생님을 띄우지 않는다', async () => {
+it('녹음 상세에는 떠 있는 아바타 선생님 대신 자막 옆 아바타가 물어보기 입구다', async () => {
   mockApi.content.material.mockResolvedValue({
     _id: 'material1',
     folderId: 'folder1',
@@ -712,7 +712,10 @@ it('녹음 상세에는 떠 있는 아바타 선생님을 띄우지 않는다', 
   });
   await renderScreen(<RecDetailScreen />, client());
   expect(await screen.findByText('녹음 자료')).toBeTruthy();
-  expect(screen.queryByLabelText('아바타 선생님에게 물어보기')).toBeNull();
+  // 물어보기 입구는 자막 옆 아바타 하나뿐(떠 있는 아바타의 「누르면 인사하고…」 버튼은 없음)
+  const ask = await screen.findAllByLabelText('아바타 선생님에게 물어보기');
+  expect(ask).toHaveLength(1);
+  expect(ask[0]!.props.accessibilityHint).toBeUndefined();
 });
 
 it('새 초안이나 자료 내용 변경은 이전 등록 키를 재사용하지 않는다', () => {

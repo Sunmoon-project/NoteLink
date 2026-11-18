@@ -95,7 +95,8 @@ export function Captions({
           (line, k) =>
             line && (
               <Animated.View
-                key={line.startSec}
+                // 시작 시각이 같은 문장이 있어 순번과 합친다. 다음 문장은 넘김 뒤에도 같은 key(s.i + 1)라 제자리로 올라온다
+                key={`${s.i + k}:${line.startSec}`}
                 testID={`caption-row-${k}`}
                 layout={reduce ? undefined : MOVE}
                 entering={reduce ? FADE_IN : ENTER}

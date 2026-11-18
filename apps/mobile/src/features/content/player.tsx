@@ -4,7 +4,7 @@ import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
-import { useIsFocused } from 'expo-router';
+import { router, useIsFocused } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
 import { Bookmark, Pause, Play, Repeat, Sparkles } from 'lucide-react-native';
@@ -12,7 +12,7 @@ import { api } from '@/lib/api';
 import { paragraphs, rangeAt, segmentsIn } from '@/lib/transcript';
 import { toast } from '@/stores/toast';
 import { Avatar3D } from '@/features/tutor/avatar3d';
-import { useEquippedAvatar } from '@/features/tutor/buddy';
+import { canAsk, useEquippedAvatar } from '@/features/tutor/buddy';
 import { CLOSED, lipsAt } from '@/features/tutor/lips';
 import { splitLines } from './captions';
 import { Captions } from './captions-view';
@@ -47,6 +47,7 @@ function usePlayback(url: string | undefined, knownDuration: number) {
     rate: status.playbackRate || 1,
     loop: player.loop,
     toggle: () => (status.playing ? player.pause() : player.play()),
+    pause: () => player.pause(),
     seek: (s: number) => player.seekTo(Math.max(0, Math.min(duration, s))),
     setRate: (r: number) => player.setPlaybackRate(r),
     // expo-audio는 loop를 속성으로만 바꾼다
@@ -228,6 +229,8 @@ export function Player({
       </View>
     );
   if (!mat.data || !rec.data) return <Loading />;
+  // 정리가 끝난 자료만 선생님에게 물을 수 있다(떠 있는 아바타와 같은 조건)
+  const ask = canAsk(mat.data);
   return (
     <>
       <View className="rounded-3xl bg-night p-3">
@@ -265,17 +268,31 @@ export function Player({
               </View>
               <View className="mt-2 flex-row gap-3">
                 {/* 말하는 사람과 글이 붙어 보이게 자막 왼쪽에. 입은 단어 시각 · 한글 모음으로 맞춘다 */}
-                <View className="h-16 w-16 overflow-hidden rounded-2xl">
-                  <Avatar3D
-                    mood={p.playing ? 'talking' : 'idle'}
-                    avatarId={avatar}
-                    size={64}
-                    // head 구도는 얼굴을 꽉 채워 둥근 상자에서 귀 · 볼이 잘렸다 → 여백 있는 전체 구도
-                    framing="full"
-                    background={C.night}
-                    lips={() => (p.playing ? lipsAt(lines, posNow()) : CLOSED)}
-                  />
-                </View>
+                {/* 누르면 이 자료의 선생님 대화(떠 있는 아바타 대신 여기가 입구). 소리가 겹치지 않게 재생은 먼저 멈춘다 */}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="아바타 선생님에게 물어보기"
+                  disabled={!ask}
+                  onPress={() => {
+                    p.pause();
+                    void Haptics.selectionAsync().catch(() => {});
+                    router.push({ pathname: '/tutor/[id]', params: { id: materialId } });
+                  }}
+                  className="items-center self-start"
+                >
+                  <View className="h-16 w-16 overflow-hidden rounded-2xl">
+                    <Avatar3D
+                      mood={p.playing ? 'talking' : 'idle'}
+                      avatarId={avatar}
+                      size={64}
+                      // head 구도는 얼굴을 꽉 채워 둥근 상자에서 귀 · 볼이 잘렸다 → 여백 있는 전체 구도
+                      framing="full"
+                      background={C.night}
+                      lips={() => (p.playing ? lipsAt(lines, posNow()) : CLOSED)}
+                    />
+                  </View>
+                  {ask && <Text className="mt-1 text-caption2 text-white/60">물어보기</Text>}
+                </Pressable>
                 <View className="flex-1 justify-center">
                   {lines.length ? (
                     <Captions lines={lines} clock={clock} pos={p.pos} then={then} />

@@ -118,3 +118,22 @@ it('지금 문장이 구간의 마지막이면 다음 구간의 첫 문장(then)
   await render(<Last />);
   expect(screen.getByTestId('caption-next').props.children).toBe('다음 구간 첫 문장');
 });
+
+// 검증 지적: 시작 시각이 같은 문장 둘이면 key가 겹쳐 한 줄이 사라지거나 엉뚱한 줄이 애니메이션된다
+it('시작 시각이 같은 문장이 둘이어도 key가 겹치지 않는다', async () => {
+  const err = jest.spyOn(console, 'error').mockImplementation(() => {});
+  const same = splitLines([
+    { startSec: 1, endSec: 2, text: '같은 시각 하나' },
+    { startSec: 1, endSec: 3, text: '같은 시각 둘' },
+  ]);
+  // 첫 문장 전(빈 구간)이면 지금 자리에 첫 문장, 미리보기에 같은 시각의 둘째 문장이 함께 온다
+  function Same() {
+    const clock = useSharedValue(0.5);
+    return <Captions lines={same} clock={clock} pos={0.5} />;
+  }
+  await render(<Same />);
+  expect(screen.getByTestId('caption-now')).toBeTruthy();
+  expect(screen.getByTestId('caption-next')).toBeTruthy();
+  expect(err.mock.calls.some((c) => String(c[0]).includes('same key'))).toBe(false);
+  err.mockRestore();
+});
