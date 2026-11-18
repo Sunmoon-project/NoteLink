@@ -403,7 +403,10 @@ export class StudyRoomsService {
     const query = this.rooms.find(filter).sort({ _id: -1 });
     if (limit !== undefined || kind === 'recommended') query.limit(limit ?? 50);
     const rooms = await query.lean();
-    const memberIds = rooms.flatMap((room) => room.members.map((member) => member.userId));
+    // 나간 · 강퇴된 · 초대만 받은 멤버는 목록에 내려주지 않는다(getRoom과 같게 joined만)
+    const joinedOf = (room: (typeof rooms)[number]) =>
+      room.members.filter((member) => member.status === 'joined');
+    const memberIds = rooms.flatMap((room) => joinedOf(room).map((member) => member.userId));
     const users = memberIds.length
       ? await this.users.find({ _id: { $in: memberIds }, deletedAt: null }, { nickname: 1 }).lean()
       : [];
@@ -418,7 +421,7 @@ export class StudyRoomsService {
       maxCapacity: room.maxCapacity,
       memberCount: room.memberCount,
       ...timerFields(room),
-      members: room.members.map((member) => ({
+      members: joinedOf(room).map((member) => ({
         userId: String(member.userId),
         nickname: nicknames.get(String(member.userId)) ?? '알 수 없는 사용자',
         role: member.role,

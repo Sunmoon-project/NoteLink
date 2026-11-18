@@ -263,6 +263,50 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
     expect(await service.list(String(host), 'recommended', 1)).toHaveLength(1);
   });
 
+  it('목록(내 방 · 추천)은 나간 · 강퇴된 · 초대만 받은 멤버를 내려주지 않고 참여 중인 멤버만 준다', async () => {
+    const left = new Types.ObjectId();
+    const kicked = new Types.ObjectId();
+    const invited = new Types.ObjectId();
+    await users.collection.insertMany(
+      [left, kicked, invited].map((_id, i) => ({
+        _id,
+        nickname: `지난멤버${i}`,
+        deletedAt: null,
+      })),
+    );
+    const created = await service.create(String(host), {
+      title: '멤버 상태 방',
+      categoryName: '수학',
+      isPublic: true,
+    });
+    await rooms.updateOne(
+      { _id: created._id },
+      {
+        $push: {
+          members: {
+            $each: [
+              { userId: other, role: 'member', status: 'joined' },
+              { userId: left, role: 'member', status: 'left' },
+              { userId: kicked, role: 'member', status: 'kicked' },
+              { userId: invited, role: 'member', status: 'invited' },
+            ],
+          },
+        },
+      },
+    );
+    const joined = [String(host), String(other)];
+    // 내 방 목록
+    const mine = await service.list(String(host), 'mine');
+    expect(mine[0]!.members.map((m) => m.userId)).toEqual(joined);
+    expect(mine[0]!.members.every((m) => m.status === 'joined')).toBe(true);
+    // 추천 목록(참여하지 않은 사람이 본다): 방장과 참여자만 보이고, 지난 멤버의 아이디 · 닉네임은 없다
+    const recommended = await service.list(String(friend), 'recommended');
+    expect(recommended[0]!.members.map((m) => m.userId)).toEqual(joined);
+    expect(JSON.stringify(recommended)).not.toContain('지난멤버');
+    // memberCount 등 다른 값은 그대로다
+    expect(recommended[0]!.memberCount).toBe(1);
+  });
+
   it('상세는 현재 참여자만 조회하며 퇴장한 멤버를 제외한다', async () => {
     const created = await service.create(String(host), {
       title: '상세',
