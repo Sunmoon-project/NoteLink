@@ -280,8 +280,33 @@ describe('파일 올리기 주소 발급 (POST /api/v1/uploads/sas)', () => {
     });
 
     it.each([
+      ['사진 50MB', { sizeBytes: 50 * 1024 * 1024 }],
+      [
+        'PDF 100MB',
+        {
+          kind: 'document',
+          fileName: 'a.pdf',
+          contentType: 'application/pdf',
+          sizeBytes: 100 * 1024 * 1024,
+        },
+      ],
+    ])('채팅 첨부는 노트 상한보다 큰 %s까지 올린다', async (_, over) => {
+      await sas({ ...image, ...over, purpose: 'chat' }).expect(200);
+    });
+
+    it.each([
       ['녹음', { kind: 'audio', fileName: 'a.m4a', contentType: 'audio/mp4' }],
       ['확장자와 다른 형식', { fileName: 'a.png', contentType: 'image/jpeg' }],
+      ['50MB를 넘는 사진', { sizeBytes: 50 * 1024 * 1024 + 1 }],
+      [
+        '100MB를 넘는 PDF',
+        {
+          kind: 'document',
+          fileName: 'a.pdf',
+          contentType: 'application/pdf',
+          sizeBytes: 100 * 1024 * 1024 + 1,
+        },
+      ],
     ])('%s은 FILE_NOT_ALLOWED', async (_, over) => {
       const res = await sas({ ...image, ...over, purpose: 'chat' }).expect(400);
       expect(res.body.code).toBe(ERROR_CODES.FILE_NOT_ALLOWED);

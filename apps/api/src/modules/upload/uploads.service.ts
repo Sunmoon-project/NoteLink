@@ -6,7 +6,13 @@ import {
   SASProtocol,
 } from '@azure/storage-blob';
 import { BadRequestException, HttpException, HttpStatus, Injectable } from '@nestjs/common';
-import { ERROR_CODES, UPLOAD_RULES, UploadSasBody, type UploadTarget } from '@notelink/shared';
+import {
+  ERROR_CODES,
+  UPLOAD_RULES,
+  UploadSasBody,
+  uploadMaxBytes,
+  type UploadTarget,
+} from '@notelink/shared';
 
 import { BlobStorageService, TYPE_BY_EXT, uploadFolder } from './blob-storage.service.js';
 import { UploadQuotaService } from './upload-quota.service.js';
@@ -45,8 +51,9 @@ export class UploadsService {
     const ext = dot < 0 ? '' : fileName.slice(dot + 1).toLowerCase();
     if (!(rule.exts as readonly string[]).includes(ext))
       throw notAllowed(`${rule.exts.map((e) => e.toUpperCase()).join(' · ')}만 올릴 수 있어요`);
-    if (sizeBytes > rule.maxBytes)
-      throw notAllowed(`${Math.round(rule.maxBytes / 1024 / 1024)}MB 이하만 올릴 수 있어요`);
+    const maxBytes = uploadMaxBytes(kind, purpose);
+    if (sizeBytes > maxBytes)
+      throw notAllowed(`${Math.round(maxBytes / 1024 / 1024)}MB 이하만 올릴 수 있어요`);
 
     const sent = body.data.contentType.toLowerCase();
     // 신고 사진은 접수할 때 확장자의 형식과 같은지 보므로, 다르면 지금 알린다

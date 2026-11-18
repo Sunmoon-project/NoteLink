@@ -7,7 +7,7 @@ import { ChatRoom } from '../social/schemas/chat-room.schema.js';
 import { Message } from '../social/schemas/message.schema.js';
 import { StudyRoom } from './schemas/study-room.schema.js';
 import { Friendship } from '../social/schemas/friendship.schema.js';
-import { UPLOAD_RULES } from '@notelink/shared';
+import { uploadMaxBytes } from '@notelink/shared';
 import { BlobStorageService, uploadFolder } from '../upload/blob-storage.service.js';
 
 /** 채팅 첨부를 읽을 수 있는 시간. 지나면 대화 기록을 다시 받아 새 주소를 쓴다 */
@@ -316,7 +316,7 @@ export class StudyChatService {
       prefix: uploadFolder(ATTACHMENT_STORAGE[kind], userId, 'chat'),
     });
     // 올리기 주소는 앱이 알린 크기로만 내준다. 실제로 올라간 파일이 상한을 넘으면 받지 않는다(Codex #507 리뷰)
-    const maxBytes = UPLOAD_RULES[ATTACHMENT_STORAGE[kind]].maxBytes;
+    const maxBytes = uploadMaxBytes(ATTACHMENT_STORAGE[kind], 'chat');
     if (sizeBytes !== undefined && sizeBytes > maxBytes)
       throw new BadRequestException({
         code: 'BAD_REQUEST',
