@@ -79,6 +79,73 @@ describe('POST /api/v1/shop/items/:itemId/wish', () => {
         expect(res.body).toEqual({ data: { isWished: false } });
     });
 
+    it('조건부 업데이트가 반영되지 않으면(matchedCount 0) 처음 읽은 행이 아니라 같은 _id로 다시 읽은 행의 찜 상태를 응답한다', async () => {
+        // 실행 순서:
+        //  1) 이 요청이 isWished=false를 읽는다(뒤집으려는 값은 true)
+        //  2) 다른 요청이 true로 바꾼다
+        //  3) 이 요청의 조건부 갱신(조건 isWished: false)이 맞지 않아 반영되지 않는다(matchedCount 0)
+        //  4) 이 요청이 같은 _id로 다시 읽어 true를 얻고 그대로 응답한다
+        // 다시 읽은 행은 다른 객체 · 다른 값(true)이다: 처음 읽은 값(false)을 그대로 응답하면 실패한다
+        const first = { _id: new Types.ObjectId(), userId: new Types.ObjectId(TEST_USER_ID), isWished: false };
+        const reread = { _id: first._id, userId: first.userId, isWished: true };
+        expect(reread).not.toBe(first);
+        userItemModel.findOneAndUpdate.mockReturnValueOnce({ lean: vi.fn(() => Promise.resolve(first)) });
+        userItemModel.updateOne.mockImplementationOnce(() =>
+            Promise.resolve({ matchedCount: 0, modifiedCount: 0 }),
+        );
+        userItemModel.findOne.mockClear();
+        userItemModel.findOne.mockReturnValueOnce({ lean: vi.fn(() => Promise.resolve(reread)) });
+
+        const res = await request(app.getHttpServer())
+            .post(`/api/v1/shop/items/${purpleId}/wish`)
+            .set(AUTH);
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ data: { isWished: true } });
+        // 처음 읽은 값(false)일 때만 뒤집으려 했고, 다시 읽기는 그 행의 _id로 불린다
+        expect(userItemModel.updateOne).toHaveBeenLastCalledWith(
+            { _id: first._id, isWished: false },
+            { $set: { isWished: true } },
+        );
+        expect(userItemModel.findOne).toHaveBeenCalledTimes(1);
+        expect(userItemModel.findOne).toHaveBeenCalledWith({ _id: first._id });
+    });
+
+    it('반영되지 않았을 때 다시 읽은 값이 뒤집은 값과 다르면 다시 읽은 값을 응답한다(뒤집은 값을 그대로 응답하면 실패)', async () => {
+        // 실행 순서:
+        //  1) 이 요청이 isWished=true를 읽는다(뒤집으려는 값은 false)
+        //  2) 다른 요청이 false로 바꾼다
+        //  3) 이 요청의 조건부 갱신(조건 isWished: true)이 맞지 않아 반영되지 않는다(matchedCount 0)
+        //  4) 또 다른 요청이 true로 바꾼다
+        //  5) 이 요청이 다시 읽어 true를 얻고 그대로 응답한다(뒤집으려던 false가 아님)
+        const first = { _id: new Types.ObjectId(), userId: new Types.ObjectId(TEST_USER_ID), isWished: true };
+        const reread = { _id: first._id, userId: first.userId, isWished: true };
+        userItemModel.findOneAndUpdate.mockReturnValueOnce({ lean: vi.fn(() => Promise.resolve(first)) });
+        userItemModel.updateOne.mockImplementationOnce(() =>
+            Promise.resolve({ matchedCount: 0, modifiedCount: 0 }),
+        );
+        userItemModel.findOne.mockReturnValueOnce({ lean: vi.fn(() => Promise.resolve(reread)) });
+
+        const res = await request(app.getHttpServer())
+            .post(`/api/v1/shop/items/${purpleId}/wish`)
+            .set(AUTH);
+
+        expect(res.body).toEqual({ data: { isWished: true } });
+    });
+
+    it('조건부 업데이트가 반영되면 뒤집은 값을 응답하고 다시 읽지 않는다', async () => {
+        row!.isWished = true;
+        userItemModel.findOne.mockClear();
+
+        const res = await request(app.getHttpServer())
+            .post(`/api/v1/shop/items/${purpleId}/wish`)
+            .set(AUTH);
+
+        expect(res.body).toEqual({ data: { isWished: false } });
+        expect(row?.isWished).toBe(false);
+        expect(userItemModel.findOne).not.toHaveBeenCalled();
+    });
+
     it('없는 아이템이면 404와 { code, message }', async () => {
         const otherId = new Types.ObjectId().toString();
         const res = await request(app.getHttpServer())
