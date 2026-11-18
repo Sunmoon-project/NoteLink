@@ -51,13 +51,21 @@ def make_lanes(store: Callable[[str], JobStore], user_lanes: int) -> list[Lane]:
     """미리 만들기 반복 하나와 사용자 작업 반복 user_lanes개(#521).
 
     store(접미사)는 반복마다 따로 만든 JobStore(잠금 주인 이름 = 처리기 + 접미사). 첫 사용자
-    반복은 모든 종류, 늘린 반복은 무거운 종류(HEAVY)를 뺀 나머지를 가져갑니다.
+    반복은 모든 종류, 늘린 반복은 무거운 종류(HEAVY)를 뺀 나머지를 가져갑니다. 반복이 둘 이상이면
+    첫 반복은 무거운 종류를 먼저 가져갑니다: 가벼운 작업은 늘린 반복이 받으므로, 노트 · 녹음
+    정리가 먼저 들어온 가벼운 작업 뒤에서 기다리지 않게.
     """
     light = {t: h for t, h in HANDLERS.items() if t not in HEAVY}
     return [
         Lane("background", store(":bg"), {t: h for t, h in HANDLERS.items() if t in BACKGROUND}),
         # 사용자가 이어받은(awaited) 미리 만들기도 가져감: 다른 미리 만들기 뒤에서 기다리지 않게
-        Lane("user", store(""), HANDLERS, awaited_only=BACKGROUND),
+        Lane(
+            "user",
+            store(""),
+            HANDLERS,
+            awaited_only=BACKGROUND,
+            first=HEAVY if user_lanes > 1 else frozenset(),
+        ),
         *(
             Lane(f"user-{i}", store(f":u{i}"), light, awaited_only=BACKGROUND)
             for i in range(2, user_lanes + 1)

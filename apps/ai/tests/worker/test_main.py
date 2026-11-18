@@ -8,12 +8,12 @@ import mongomock
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from app.clients.llm import MODEL_FIELDS
+from app.clients.llm import MODEL_FIELDS, JsonObject
 from app.core.config import Settings, settings
 from app.worker import __main__ as entry
 from app.worker.handlers import BACKGROUND, HANDLERS, HEAVY
 from app.worker.jobs import JobStore
-from app.worker.runner import Lane
+from app.worker.runner import Handler, JobReport, Lane, run_once
 
 
 def test_worker_refuses_to_start_without_db_address(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,7 +96,7 @@ def lanes_on(col: Any, user_lanes: int) -> tuple[list[Lane], list[str]]:
 def test_one_user_lane_is_the_same_as_before() -> None:
     lanes, workers = lanes_on(mongomock.MongoClient(tz_aware=True).db.ai_jobs, 1)
     assert [lane.name for lane in lanes] == ["background", "user"]
-    assert workers == ["w1:bg", "w1"]  # 잠금 주인 이름도 그대로(배포 중 처리하던 작업을 이어 봄)
+    assert workers == ["w1:bg", "w1"]  # AI_JOB_USER_LANES=1이면 #521 전과 같은 구성
     assert lanes[0].handlers.keys() == BACKGROUND
     assert lanes[1].handlers is HANDLERS and lanes[1].awaited_only == BACKGROUND
 
@@ -112,12 +112,15 @@ def test_extra_user_lanes_take_light_jobs_and_leave_heavy_ones_to_the_first() ->
         assert lane.awaited_only == BACKGROUND  # 이어받은 미리 만들기는 가져감
 
 
-def test_an_extra_lane_skips_an_older_heavy_job_for_a_light_one() -> None:
+def test_heavy_jobs_go_first_to_the_first_lane_and_light_ones_to_the_others() -> None:
+    # 가벼운 작업 둘 뒤에 노트 정리가 들어옴: 첫 반복은 노트 정리를 먼저, 늘린 반복은 가벼운 작업
     col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
-    for i, kind in enumerate(["handwriting_summary", "quiz_generate"]):
+    for i, (job_id, kind) in enumerate(
+        [("q1", "quiz_generate"), ("q2", "note_ask"), ("h1", "handwriting_summary")]
+    ):
         col.insert_one(
             {
-                "_id": kind,
+                "_id": job_id,
                 "type": kind,
                 "status": "queued",
                 "input": {},
@@ -126,15 +129,23 @@ def test_an_extra_lane_skips_an_older_heavy_job_for_a_light_one() -> None:
                 "createdAt": T0 + timedelta(seconds=i),
             }
         )
-    lanes, _ = lanes_on(col, 2)
-    first, extra = lanes[1], lanes[2]
+    _, first, extra = lanes_on(col, 2)[0]
+    done: list[tuple[str, str]] = []
 
-    def claim(lane: Lane) -> Any:  # run_once가 가져가는 것과 같게
-        kinds = [t for t in lane.handlers if t not in lane.awaited_only]
-        return lane.store.claim(kinds, lane.awaited_only)
+    def fake(lane: Lane, kind: str) -> Handler:
+        def handle(inp: JsonObject, report: JobReport) -> JsonObject:
+            done.append((lane.name, kind))
+            return {}
 
-    assert claim(extra).type == "quiz_generate"  # 먼저 들어온 노트 정리는 건너뜀
-    assert claim(first).type == "handwriting_summary"
+        return handle
+
+    def run(lane: Lane) -> None:  # 처리 함수만 바꾸고 가져가기는 runner 그대로
+        handlers = {t: fake(lane, t) for t in lane.handlers}
+        assert run_once(lane.store, handlers, awaited_only=lane.awaited_only, first=lane.first)
+
+    run(first)
+    run(extra)
+    assert done == [("user", "handwriting_summary"), ("user-2", "quiz_generate")]
 
 
 @pytest.mark.parametrize("value", ["0", "5"])

@@ -199,11 +199,14 @@ class JobStore:
     def lock_sec(self) -> float:
         return self._lock.total_seconds()
 
-    def claim(self, types: Iterable[str], awaited_types: Iterable[str] = ()) -> Job | None:
+    def claim(
+        self, types: Iterable[str], awaited_types: Iterable[str] = (), first: Iterable[str] = ()
+    ) -> Job | None:
         """작업 하나를 잠그고 가져옵니다. 없으면 None.
 
         awaited_types 중 사용자가 이어받은(awaited) 작업이 있으면 그중 가장 먼저 들어온 것(노트를
-        만들 때부터 기다린 사용자), 없으면 types 중 가장 먼저 들어온 것. 질의를 나눠 각각
+        만들 때부터 기다린 사용자), 없으면 types 중 first에 든 종류(#521: 첫 사용자 반복의 노트 ·
+        녹음 정리), 그다음 types 중 가장 먼저 들어온 것. 질의를 나눠 각각
         색인({status, type, createdAt})을 그대로 탐(/code-review #138).
         """
         kinds = list(types)
@@ -216,6 +219,11 @@ class JobStore:
             self._next_sweep = now + SWEEP_EVERY
         if awaited:
             job = self._claim({"type": {"$in": awaited}, "awaited": True}, now)
+            if job is not None:
+                return job
+        firsts = set(first)
+        if preferred := [t for t in kinds if t in firsts]:
+            job = self._claim({"type": {"$in": preferred}}, now)
             if job is not None:
                 return job
         return self._claim({"type": {"$in": kinds}}, now) if kinds else None
