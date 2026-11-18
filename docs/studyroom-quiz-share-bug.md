@@ -51,3 +51,5 @@
 - `Info.plist`의 URL scheme에 `notelink`와 현재 Bundle ID를 등록한다. 모바일 설정과 일치하는 scheme이 Expo Constants에도 포함돼야 Expo Router가 standalone 앱에서 시작된다.
 - LiveKitWebRTC 설치를 위해 LiveKit 공식 Pod 저장소와 CocoaPods trunk를 명시한다. Pods 설치 후 lock 파일과 프로젝트의 리소스·프레임워크 연결도 갱신한다.
 - 네이티브 설정 변경 후에는 workspace에서 Clean Build Folder를 실행하고 Release로 다시 빌드·설치한다. 자동 검증 통과가 실제 기기 전체 기능 검증을 대신하지는 않는다.
+
+- 루트 Xcode 프로젝트에도 마이크·카메라·사진 보관함·캘린더(기존/전체 접근)의 사용 목적 설명을 포함한다. Expo 설정의 권한 문구만으로 기존 네이티브 프로젝트가 자동 갱신되지는 않으며, 설명 누락 상태에서 권한 API를 사용하면 앱이 종료될 수 있다. 변경 후 실제 기기에서 권한 허용·거부 동작을 확인해야 한다.

@@ -45,6 +45,16 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>강의 녹음과 스터디룸 음성 대화를 위해 마이크를 사용해요.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>필기와 문서를 촬영하고 스터디룸에서 캠을 켜기 위해 카메라를 사용해요.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>갤러리의 필기 사진을 올리기 위해 사진 접근이 필요해요.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>스터디 일정을 기기 캘린더에 추가하기 위해 필요해요.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>스터디 일정을 기기 캘린더에 추가하기 위해 필요해요.</string>
 	<key>RCTMetroPort</key>
 	<string>$(RCT_METRO_PORT)</string>
 	<key>RCTNewArchEnabled</key>

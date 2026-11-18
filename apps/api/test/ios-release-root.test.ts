@@ -7,6 +7,28 @@ import { describe, expect, it } from 'vitest';
 const root = resolve(import.meta.dirname, '../../..');
 
 describe('저장소 iOS 프로젝트 Release 번들', () => {
+  it.each([
+    'NSMicrophoneUsageDescription',
+    'NSCameraUsageDescription',
+    'NSPhotoLibraryUsageDescription',
+    'NSCalendarsUsageDescription',
+    'NSCalendarsFullAccessUsageDescription',
+  ])('기기 권한 요청 시 종료되지 않도록 %s 설명을 포함한다', (key) => {
+    const plist = JSON.parse(
+      execFileSync(
+        'python3',
+        [
+          '-c',
+          'import plistlib,json,sys; print(json.dumps(plistlib.load(open(sys.argv[1], "rb"))))',
+          resolve(root, 'ios/notelink/Info.plist'),
+        ],
+        { encoding: 'utf8' },
+      ),
+    );
+    expect(typeof plist[key]).toBe('string');
+    expect(plist[key].trim().length).toBeGreaterThan(0);
+  });
+
   it('Expo Scene delegate를 등록하고 AppDelegate에서 윈도우를 중복 시작하지 않는다', () => {
     const plist = JSON.parse(
       execFileSync(
