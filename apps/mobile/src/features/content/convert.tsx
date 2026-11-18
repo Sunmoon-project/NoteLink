@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { AppState, View } from 'react-native';
+import { AppState, Linking, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -723,14 +723,74 @@ export function ResultScreen() {
 
 export const NoteBody = ({ sections }: { sections: { heading: string; body: string }[] }) => (
   <Card className="gap-5 p-5">
-    {sections.map((s) => (
-      <View key={s.heading}>
+    {sections.map((s, i) => (
+      // 제목이 같은(또는 빈) 섹션이 있어도 겹치지 않게 순서로 구분한다
+      <View key={i}>
         <Text className="text-subhead font-bold text-ink">{s.heading}</Text>
-        <Text className="mt-0.5 text-caption text-ink/70">{s.body}</Text>
+        <RichBody body={s.body} />
       </View>
     ))}
   </Card>
 );
+
+/** 편집기 툴바가 넣는 표시(# 제목 · - 목록 · **굵게** · [글](주소))를 기호 없이 그린다 */
+function RichBody({ body }: { body: string }) {
+  return (
+    <View className="mt-0.5 gap-0.5">
+      {body.split('\n').map((line, i) =>
+        line.startsWith('# ') ? (
+          <Text key={i} className="mt-1 text-callout font-bold text-ink">
+            <Inline text={line.slice(2)} />
+          </Text>
+        ) : (
+          <Text key={i} className="text-caption text-ink/70">
+            {line.startsWith('- ') ? (
+              <>
+                {'• '}
+                <Inline text={line.slice(2)} />
+              </>
+            ) : (
+              <Inline text={line} />
+            )}
+          </Text>
+        ),
+      )}
+    </View>
+  );
+}
+
+const INLINE = /\*\*([^*]+)\*\*|\[([^\]]+)\]\((https?:\/\/[^)\s]*)\)/g;
+
+/** 한 줄 안의 **굵게** · [글](주소). 주소는 http(s)만 연다 */
+function Inline({ text }: { text: string }) {
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(INLINE)) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    if (m[1] !== undefined)
+      parts.push(
+        <Text key={m.index} className="font-bold text-ink">
+          {m[1]}
+        </Text>,
+      );
+    else {
+      const url = m[3]!;
+      parts.push(
+        <Text
+          key={m.index}
+          accessibilityRole="link"
+          onPress={() => void Linking.openURL(url).catch(() => toast('링크를 열지 못했어요'))}
+          className="text-brand underline"
+        >
+          {m[2]}
+        </Text>,
+      );
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return <>{parts}</>;
+}
 
 export function DocSummary({
   points,
