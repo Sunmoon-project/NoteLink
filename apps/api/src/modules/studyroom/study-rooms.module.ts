@@ -14,6 +14,7 @@ import { StudyChatController } from './study-chat.controller.js';
 import { StudyChatGateway } from './study-chat.gateway.js';
 import { StudyLiveService } from './study-live.service.js';
 import { StudyRoomCleanupService } from './study-room-cleanup.service.js';
+import { StudyRoomWithdrawnSweeper } from './study-room-withdrawn-sweeper.service.js';
 import { Report, ReportSchema } from '../social/schemas/report.schema.js';
 import { ReportsController } from '../social/reports.controller.js';
 import { ReportImageSweeper } from '../social/report-image-sweeper.service.js';
@@ -60,6 +61,7 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
     StudyChatGateway,
     StudyLiveService,
     StudyRoomCleanupService,
+    StudyRoomWithdrawnSweeper,
     ExpoPushService,
     RoomTimerNotificationsService,
     ReportsService,
