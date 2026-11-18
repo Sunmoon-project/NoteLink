@@ -22,6 +22,7 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
   let app: INestApplication;
   let token: string;
   const share = vi.fn();
+  const shareStudyItem = vi.fn();
   const listRoomItems = vi.fn();
   const ownerOfShared = vi.fn();
   const findMine = vi.fn();
@@ -35,7 +36,7 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
       .overrideProvider(MaterialsService)
       .useValue({ findMine, downloadUrl })
       .overrideProvider(MaterialSharingService)
-      .useValue({ share, listRoomItems, ownerOfShared })
+      .useValue({ share, shareStudyItem, listRoomItems, ownerOfShared })
       .compile();
     app = ref.createNestApplication();
     configureApp(app);
@@ -50,6 +51,7 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
 
   beforeEach(() => {
     share.mockReset();
+    shareStudyItem.mockReset();
     listRoomItems.mockReset();
     ownerOfShared.mockReset();
     findMine.mockReset();
@@ -63,6 +65,36 @@ describe('노트 공유 요청 검사 (POST /api/v1/materials/share)', () => {
       .set('Authorization', `Bearer ${token}`)
       .send(payload as object);
   const ok = { materialIds: [noteId], target: { type: 'room', id: roomId } };
+
+  describe('퀴즈 공유 요청 식별자', () => {
+    const send = (key?: string) => {
+      const req = request(app.getHttpServer())
+        .post(api(PATHS.roomShared(roomId)))
+        .set('Authorization', `Bearer ${token}`);
+      if (key !== undefined) req.set('Idempotency-Key', key);
+      return req.send({ kind: 'quiz', itemId: noteId });
+    };
+
+    it.each([undefined, 'invalid key', 'x'.repeat(129)])(
+      '누락되거나 잘못된 식별자 %s는 저장 전에 거부한다',
+      async (key) => {
+        const res = await send(key).expect(400);
+        expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
+        expect(shareStudyItem).not.toHaveBeenCalled();
+      },
+    );
+
+    it('유효한 식별자를 서비스에 그대로 전달한다', async () => {
+      await send('share-request-1').expect(204);
+      expect(shareStudyItem).toHaveBeenCalledWith(
+        me.toHexString(),
+        roomId,
+        'quiz',
+        noteId,
+        'share-request-1',
+      );
+    });
+  });
 
   it('로그인하지 않으면 401', async () => {
     await request(app.getHttpServer()).post(api(PATHS.materialShare)).send(ok).expect(401);

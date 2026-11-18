@@ -275,23 +275,41 @@ export class StudyChatService {
   }
 
   /** 공유 항목은 서버에서만 메시지로 만들고 채팅의 스터디룸 권한을 다시 확인한다. */
-  async sendSharedItem(roomId: string, userId: string, sharedItemId: string, title: string, session?: ClientSession) {
+  async sendSharedItem(
+    roomId: string,
+    userId: string,
+    sharedItemId: string,
+    title: string,
+    session?: ClientSession,
+  ) {
     const chat = await this.getChat(roomId, userId);
     const senderId = new Types.ObjectId(userId);
-    const [message] = await this.messages.create([{
-      chatRoomId: chat._id,
-      senderId,
-      type: 'shared_item',
-      text: title,
-      sharedItemId: new Types.ObjectId(sharedItemId),
-    }], { session });
+    const [message] = await this.messages.create(
+      [
+        {
+          chatRoomId: chat._id,
+          senderId,
+          type: 'shared_item',
+          text: title,
+          sharedItemId: new Types.ObjectId(sharedItemId),
+        },
+      ],
+      { session },
+    );
     const user = await this.users.findById(senderId, { nickname: 1 }).lean();
     return this.serialize(message!, user?.nickname);
   }
 
   async findSharedMessage(roomId: string, userId: string, sharedItemId: string) {
     const chat = await this.getChat(roomId, userId);
-    const message = await this.messages.findOne({ chatRoomId: chat._id, sharedItemId: new Types.ObjectId(sharedItemId), type: 'shared_item', deletedAt: null }).lean();
+    const message = await this.messages
+      .findOne({
+        chatRoomId: chat._id,
+        sharedItemId: new Types.ObjectId(sharedItemId),
+        type: 'shared_item',
+        deletedAt: null,
+      })
+      .lean();
     if (!message) throw this.notFound();
     const user = await this.users.findById(message.senderId, { nickname: 1 }).lean();
     return this.serialize(message, user?.nickname);
@@ -353,9 +371,10 @@ export class StudyChatService {
         { chatRoomId: 1 },
       )
       .lean();
-    for (const message of messages) {
+    const chatRoomIds = new Set(messages.map((message) => String(message.chatRoomId)));
+    for (const chatRoomId of chatRoomIds) {
       try {
-        const chat = await this.requireChat(String(message.chatRoomId), userId);
+        const chat = await this.requireChat(chatRoomId, userId);
         if (chat.type === 'direct') return true;
       } catch {
         // 탈퇴하거나 친구 관계가 끝난 대화는 접근 권한을 주지 않는다.

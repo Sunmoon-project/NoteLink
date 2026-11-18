@@ -64,6 +64,35 @@ describe('1:1 공유 자료 권한', () => {
     expect(x.messages.findOne).not.toHaveBeenCalled();
   });
 
+  it('같은 대화의 여러 공유 메시지는 권한을 한 번만 확인하고 다음 대화도 검사한다', async () => {
+    const x = setup();
+    const nextChatId = new Types.ObjectId();
+    x.messages.find.mockReturnValue(
+      lean([
+        { chatRoomId: chatId },
+        { chatRoomId: new Types.ObjectId(String(chatId)) },
+        { chatRoomId: nextChatId },
+      ]),
+    );
+    const requireChat = vi
+      .spyOn(x.service, 'requireChat')
+      .mockRejectedValueOnce(new Error('친구 관계 종료'))
+      .mockResolvedValueOnce({ type: 'direct' } as never);
+    expect(await x.service.hasDirectMaterialAccess(String(userId), String(materialId))).toBe(true);
+    expect(requireChat.mock.calls).toEqual([
+      [String(chatId), String(userId)],
+      [String(nextChatId), String(userId)],
+    ]);
+  });
+
+  it('중복 메시지가 있는 대화도 권한이 없으면 접근을 허용하지 않는다', async () => {
+    const x = setup();
+    x.messages.find.mockReturnValue(lean([{ chatRoomId: chatId }, { chatRoomId: chatId }]));
+    const requireChat = vi.spyOn(x.service, 'requireChat').mockRejectedValue(new Error('탈퇴'));
+    expect(await x.service.hasDirectMaterialAccess(String(userId), String(materialId))).toBe(false);
+    expect(requireChat).toHaveBeenCalledTimes(1);
+  });
+
   it('친구 관계가 끝난 공유는 노트 접근 권한을 주지 않는다', async () => {
     const x = setup();
     x.messages.find.mockReturnValue(lean([{ chatRoomId: chatId }]));

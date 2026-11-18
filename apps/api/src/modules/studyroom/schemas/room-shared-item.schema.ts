@@ -36,7 +36,7 @@ export class RoomSharedItem {
   flashcardIds: Types.ObjectId[];
 
   @Prop({ type: Date, default: null })
-  deletedAt?: Date |null;
+  deletedAt?: Date | null;
 }
 
 export const RoomSharedItemSchema = SchemaFactory.createForClass(RoomSharedItem);

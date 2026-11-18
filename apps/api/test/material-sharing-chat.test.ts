@@ -51,7 +51,10 @@ describe('채팅 학습 자료 공유', () => {
       x.shared.create.mockResolvedValue([{ _id: sharedId }]);
       x.chat.sendSharedItem.mockResolvedValue({ chatRoomId: 'chat' });
       await x.service.shareStudyItem(owner, room, kind, String(itemId), 'request-1');
-      expect(x.shared.create).toHaveBeenCalledWith([expect.objectContaining({ itemType: kind, requestId: 'request-1' })], { session: expect.anything() });
+      expect(x.shared.create).toHaveBeenCalledWith(
+        [expect.objectContaining({ itemType: kind, requestId: 'request-1' })],
+        { session: expect.anything() },
+      );
       expect(x.chat.sendSharedItem).toHaveBeenCalledWith(
         room,
         owner,
@@ -83,7 +86,9 @@ describe('채팅 학습 자료 공유', () => {
     x.shared.create.mockResolvedValue([{ _id: sharedId }]);
     const failure = new Error('message write failed');
     x.chat.sendSharedItem.mockRejectedValue(failure);
-    await expect(x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1')).rejects.toBe(failure);
+    await expect(
+      x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1'),
+    ).rejects.toBe(failure);
     expect(x.transaction).toHaveBeenCalledTimes(1);
     expect(x.gateway.notifyStudyMessage).not.toHaveBeenCalled();
   });
@@ -96,13 +101,18 @@ describe('채팅 학습 자료 공유', () => {
     await x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1');
     expect(x.shared.create).not.toHaveBeenCalled();
     expect(x.chat.findSharedMessage).toHaveBeenCalledWith(room, owner, String(sharedId));
-    expect(x.gateway.notifyStudyMessage).toHaveBeenCalledWith({ _id: 'message', chatRoomId: 'chat' });
+    expect(x.gateway.notifyStudyMessage).toHaveBeenCalledWith({
+      _id: 'message',
+      chatRoomId: 'chat',
+    });
   });
 
   it('중복 요청이 동시에 저장돼도 먼저 저장한 메시지를 재사용한다', async () => {
     const x = setup();
     x.quizzes.findOne.mockReturnValue(lean({ _id: itemId, title: '퀴즈' }));
-    x.shared.findOne.mockReturnValueOnce(lean(null)).mockReturnValueOnce(lean({ _id: sharedId, itemType: 'quiz', quizSetId: itemId }));
+    x.shared.findOne
+      .mockReturnValueOnce(lean(null))
+      .mockReturnValueOnce(lean({ _id: sharedId, itemType: 'quiz', quizSetId: itemId }));
     x.transaction.mockRejectedValueOnce({ code: 11000 });
     x.chat.findSharedMessage.mockResolvedValue({ _id: 'message', chatRoomId: 'chat' });
     await x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1');
@@ -112,8 +122,12 @@ describe('채팅 학습 자료 공유', () => {
   it('다른 자료에 같은 요청 식별자를 쓰면 거부한다', async () => {
     const x = setup();
     x.quizzes.findOne.mockReturnValue(lean({ _id: itemId, title: '퀴즈' }));
-    x.shared.findOne.mockReturnValue(lean({ _id: sharedId, itemType: 'quiz', quizSetId: new Types.ObjectId() }));
-    await expect(x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1')).rejects.toMatchObject({ status: 409 });
+    x.shared.findOne.mockReturnValue(
+      lean({ _id: sharedId, itemType: 'quiz', quizSetId: new Types.ObjectId() }),
+    );
+    await expect(
+      x.service.shareStudyItem(owner, room, 'quiz', String(itemId), 'request-1'),
+    ).rejects.toMatchObject({ status: 409 });
     expect(x.gateway.notifyStudyMessage).not.toHaveBeenCalled();
   });
 

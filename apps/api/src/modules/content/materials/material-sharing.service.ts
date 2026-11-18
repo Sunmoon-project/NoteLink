@@ -284,10 +284,17 @@ export class MaterialSharingService {
     const title = kind === 'quiz' ? (source as QuizSet).title : '플래시 카드';
     const key = { roomId: new Types.ObjectId(roomId), sharedBy: me, requestId };
     const replay = async (item: RoomSharedItem & { _id: Types.ObjectId }) => {
-      const matches = item.itemType === kind && (kind === 'quiz'
-        ? String(item.quizSetId) === itemId.toLowerCase()
-        : item.flashcardIds.length === 1 && String(item.flashcardIds[0]) === itemId.toLowerCase());
-      if (!matches) throw new ConflictException({ code: 'IDEMPOTENCY_CONFLICT', message: '이미 사용한 요청 식별자입니다.' });
+      const matches =
+        item.itemType === kind &&
+        (kind === 'quiz'
+          ? String(item.quizSetId) === itemId.toLowerCase()
+          : item.flashcardIds.length === 1 &&
+            String(item.flashcardIds[0]) === itemId.toLowerCase());
+      if (!matches)
+        throw new ConflictException({
+          code: 'IDEMPOTENCY_CONFLICT',
+          message: '이미 사용한 요청 식별자입니다.',
+        });
       return this.chat.findSharedMessage(roomId, userId, String(item._id));
     };
     const existing = await this.shared.findOne(key).lean();
@@ -298,11 +305,16 @@ export class MaterialSharingService {
     let message;
     try {
       message = await this.connection.transaction(async (session) => {
-        const [item] = await this.shared.create([{
-          ...key,
-          itemType: kind,
-          ...(kind === 'quiz' ? { quizSetId: objectId } : { flashcardIds: [objectId] }),
-        }], { session });
+        const [item] = await this.shared.create(
+          [
+            {
+              ...key,
+              itemType: kind,
+              ...(kind === 'quiz' ? { quizSetId: objectId } : { flashcardIds: [objectId] }),
+            },
+          ],
+          { session },
+        );
         return this.chat.sendSharedItem(roomId, userId, String(item!._id), title, session);
       });
     } catch (error) {

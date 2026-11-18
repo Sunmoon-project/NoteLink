@@ -1,4 +1,15 @@
-import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Param, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Headers,
+  HttpCode,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import type { RoomSharedItem } from '@notelink/shared';
 
 import { requireUserId } from '../../../common/request-user.js';
@@ -56,7 +67,11 @@ export class MaterialSharingController {
     @Headers('idempotency-key') rawKey?: string,
   ) {
     const key = parseIdempotencyKey(rawKey);
-    if (!key) throw new BadRequestException({ code: 'VALIDATION_FAILED', message: '요청 식별자가 필요해요' });
+    if (!key)
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: '요청 식별자가 필요해요',
+      });
     await this.sharing.shareStudyItem(requireUserId(req), id, body.kind, body.itemId, key);
   }
 

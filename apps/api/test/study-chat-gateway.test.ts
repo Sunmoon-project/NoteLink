@@ -65,37 +65,50 @@ beforeEach(async () => {
   );
 });
 describe('스터디룸 Socket.IO', () => {
-  it.each(['expired', 'removed'] as const)('공유 알림은 %s 수신자를 제외하고 구독도 해제한다', async (reason) => {
-    const receivedA = vi.fn();
-    const receivedB = vi.fn();
-    a.on('chat:message', receivedA);
-    b.on('chat:message', receivedB);
-    tokens.verifyAccess.mockImplementation(async (token: string) => {
-      if (reason === 'expired' && token === 'b') throw new Error('expired');
-      return { userId: token };
-    });
-    chat.requireChat.mockImplementation(async (_chatId: string, userId: string) => {
-      if (reason === 'removed' && userId === 'b') throw new Error('removed');
-      return { type: 'study_room' };
-    });
-    const shared = { ...message, type: 'shared_item', sharedItemId: 'item' };
-    await app.get(StudyChatGateway).notifyStudyMessage(shared);
-    await vi.waitFor(() => expect(receivedA).toHaveBeenCalledWith(shared));
-    expect(receivedB).not.toHaveBeenCalled();
-    tokens.verifyAccess.mockImplementation(async (token: string) => ({ userId: token }));
-    chat.requireChat.mockResolvedValue({ type: 'study_room' });
-    await app.get(StudyChatGateway).notifyStudyMessage(shared);
-    expect(receivedB).not.toHaveBeenCalled();
-    a.off('chat:message', receivedA);
-    b.off('chat:message', receivedB);
-  });
+  it.each(['expired', 'removed'] as const)(
+    '공유 알림은 %s 수신자를 제외하고 구독도 해제한다',
+    async (reason) => {
+      const receivedA = vi.fn();
+      const receivedB = vi.fn();
+      a.on('chat:message', receivedA);
+      b.on('chat:message', receivedB);
+      tokens.verifyAccess.mockImplementation(async (token: string) => {
+        if (reason === 'expired' && token === 'b') throw new Error('expired');
+        return { userId: token };
+      });
+      chat.requireChat.mockImplementation(async (_chatId: string, userId: string) => {
+        if (reason === 'removed' && userId === 'b') throw new Error('removed');
+        return { type: 'study_room' };
+      });
+      const shared = { ...message, type: 'shared_item', sharedItemId: 'item' };
+      await app.get(StudyChatGateway).notifyStudyMessage(shared);
+      await vi.waitFor(() => expect(receivedA).toHaveBeenCalledWith(shared));
+      expect(receivedB).not.toHaveBeenCalled();
+      tokens.verifyAccess.mockImplementation(async (token: string) => ({ userId: token }));
+      chat.requireChat.mockResolvedValue({ type: 'study_room' });
+      await app.get(StudyChatGateway).notifyStudyMessage(shared);
+      await vi.waitFor(() => expect(receivedA).toHaveBeenCalledTimes(2));
+      expect(receivedB).not.toHaveBeenCalled();
+      a.off('chat:message', receivedA);
+      b.off('chat:message', receivedB);
+    },
+  );
 
   it('공유 메시지는 다른 방에 구독한 사용자에게 전달하지 않는다', async () => {
-    const other = io(serverUrl, { transports: ['websocket'], auth: { token: 'other' }, reconnection: false });
-    await new Promise<void>((resolve, reject) => { other.once('connect', resolve); other.once('connect_error', reject); });
+    const other = io(serverUrl, {
+      transports: ['websocket'],
+      auth: { token: 'other' },
+      reconnection: false,
+    });
+    await new Promise<void>((resolve, reject) => {
+      other.once('connect', resolve);
+      other.once('connect_error', reject);
+    });
     try {
       chat.getChat.mockResolvedValueOnce({ _id: 'other-chat' });
-      expect(await other.timeout(1000).emitWithAck('room:join', { roomId: 'other-room' })).toMatchObject({ ok: true });
+      expect(
+        await other.timeout(1000).emitWithAck('room:join', { roomId: 'other-room' }),
+      ).toMatchObject({ ok: true });
       chat.requireChat.mockResolvedValue({ type: 'study_room' });
       const receivedA = vi.fn();
       const receivedOther = vi.fn();
@@ -107,7 +120,9 @@ describe('스터디룸 Socket.IO', () => {
       expect(receivedOther).not.toHaveBeenCalled();
       a.off('chat:message', receivedA);
       other.off('chat:message', receivedOther);
-    } finally { other.disconnect(); }
+    } finally {
+      other.disconnect();
+    }
   });
 
   it('방 타이머 변경을 같은 방의 모든 참여자에게 전달한다', async () => {

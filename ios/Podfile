@@ -1,3 +1,9 @@
+# LiveKitWebRTC is published to LiveKit's CocoaPods repository.
+source 'https://github.com/livekit/podspecs.git'
+source 'https://cdn.cocoapods.org/'
+
+app_root = File.expand_path('../apps/mobile', __dir__)
+
 require File.join(File.dirname(`node --print "require.resolve('expo/package.json')"`), "scripts/autolinking")
 require File.join(File.dirname(`node --print "require.resolve('react-native/package.json')"`), "scripts/react_native_pods")
 
@@ -25,7 +31,7 @@ platform :ios, podfile_properties['ios.deploymentTarget'] || '16.4'
 prepare_react_native_project!
 
 target 'notelink' do
-  use_expo_modules!
+  use_expo_modules!(:projectRoot => app_root)
 
   if ENV['EXPO_USE_COMMUNITY_AUTOLINKING'] == '1'
     config_command = ['node', '-e', "process.argv=['', '', 'config'];require('@react-native-community/cli').run()"];
@@ -39,7 +45,11 @@ target 'notelink' do
       'react-native-config',
       '--json',
       '--platform',
-      'ios'
+      'ios',
+      '--project-root',
+      app_root,
+      '--source-dir',
+      __dir__
     ]
   end
 
@@ -52,11 +62,19 @@ target 'notelink' do
     :path => config[:reactNativePath],
     :hermes_enabled => podfile_properties['expo.jsEngine'] == nil || podfile_properties['expo.jsEngine'] == 'hermes',
     # An absolute path to your application root.
-    :app_path => "#{Pod::Config.instance.installation_root}/..",
+    :app_path => app_root,
     :privacy_file_aggregation_enabled => podfile_properties['apple.privacyManifestAggregationEnabled'] != 'false',
   )
 
   post_install do |installer|
+    # Expo Constants generates app.config in a separate Pods build phase.
+    # It must read the same mobile workspace as the JavaScript bundler.
+    installer.pods_project.targets.each do |pod_target|
+      pod_target.build_configurations.each do |build_config|
+        build_config.build_settings['PROJECT_ROOT'] = app_root
+      end
+    end
+
     react_native_post_install(
       installer,
       config[:reactNativePath],
