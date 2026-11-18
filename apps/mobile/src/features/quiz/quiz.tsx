@@ -34,11 +34,12 @@ import {
   Volume2,
   X,
 } from 'lucide-react-native';
-import { ERROR_CODES, type AiJob, type Question } from '@notelink/shared';
+import { ERROR_CODES, type AiJob } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useAiJobSubscription, useSocket, useTabRefresh } from '@/hooks';
 import { useQuizProgress } from '@/stores/quiz-progress';
+import { queryClient } from '@/lib/query';
 import { useBgJobs } from '@/stores/bg-jobs';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
@@ -617,6 +618,9 @@ export function QuizReadyScreen() {
   );
 }
 
+/** 채점 결과를 보여 주는 시간. 그 뒤 저절로 다음 문제로 */
+export const AUTO_NEXT_MS = 1200;
+
 export function QuizSolveScreen() {
   const { setId, from } = useLocalSearchParams<{ setId?: string; from?: string }>();
   const [previous] = useState(() => {
@@ -675,10 +679,23 @@ export function QuizSolveScreen() {
       attemptGeneration: number;
       setId: string;
       attemptId: string;
+      questionIds: string[];
     }) => api.quiz.finish(request.attemptId),
     // 완료는 포인트를 적립하므로 응답 유실 시 자동으로 재전송하지 않는다.
     retry: false,
     onSuccess: (r, request) => {
+      // 다 푼 퀴즈는 보관함에 자동으로 담는다(이미 담긴 문제는 서버가 건너뜀). 오늘의 복습은 이미 가진 문제의
+      // 사본이라 담지 않고, 끝냈다고 다시 읽어 카드가 「마쳤어요」로 바뀌게 한다
+      // 그사이 다른 계정으로 바뀌었으면 담지 않는다(새 계정 보관함에 앞 계정 문제가 들어가지 않게)
+      if (useAuth.getState().userId !== request.owner) return;
+      const today = queryClient.getQueryData<{ _id: string } | null>(['today-review']);
+      if (today?._id === request.setId)
+        void queryClient.invalidateQueries({ queryKey: ['today-review'] });
+      else
+        api.quiz
+          .saveToBox(request.questionIds)
+          .then(() => queryClient.invalidateQueries({ queryKey: ['quiz-box'] }))
+          .catch(() => toast('푼 문제를 보관함에 담지 못했어요. 연결을 확인해 주세요'));
       const state = useQuizProgress.getState();
       if (
         useAuth.getState().userId !== request.owner ||
@@ -737,16 +754,22 @@ export function QuizSolveScreen() {
   );
   useEffect(() => {
     if (!completed || !completedSetId || !ownsProgress() || !attemptId) return;
+    const answered = useQuizProgress.getState().progress?.results ?? [];
     useQuizProgress.getState().reset();
     router.replace({
       pathname: '/play/review',
       params: {
         setId: completedSetId,
         points: String(completed.pointsEarned),
+        // 문제마다 맞음(1) · 틀림(0): 결과 화면이 번호를 초록 · 빨강으로 칠한다
+        results: answered.map(Number).join(''),
         ...(from === 'room' ? { from: 'room' } : {}),
       },
     });
   }, [completed, attemptId, completedSetId, ownsProgress, from]);
+  // 채점이 끝나면 잠깐 결과를 보여 주고 다음 문제로(마지막 문제면 결과로) 넘어간다. 다시 풀기는 두지 않는다
+  const autoNext = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(autoNext.current), []);
   if (set.isError && !set.data)
     return (
       <Canvas>
@@ -815,6 +838,8 @@ export function QuizSolveScreen() {
       if (!r.correct) recordWrong(screenOwner, q, set.data?.title);
       setRight(r.correct);
       setResults((x) => [...x, r.correct]);
+      clearTimeout(autoNext.current);
+      autoNext.current = setTimeout(next, AUTO_NEXT_MS);
       Haptics.notificationAsync(
         r.correct
           ? Haptics.NotificationFeedbackType.Success
@@ -833,6 +858,7 @@ export function QuizSolveScreen() {
   };
   const next = () => {
     if (!ownsProgress()) return toast('다른 풀이를 진행 중이에요. 풀던 퀴즈를 다시 열어주세요');
+    clearTimeout(autoNext.current);
     if (finishing.current || completing) return;
     // 읽던 · 읽으려고 준비 중인 앞 문제는 무효로 하고 멈춘다(다음 문제에서 앞 문제를 읽지 않게)
     speechToken.current++;
@@ -852,6 +878,7 @@ export function QuizSolveScreen() {
         attemptGeneration: useQuizProgress.getState().attemptGeneration,
         setId: set.data._id,
         attemptId,
+        questionIds: qs.map((x) => x._id),
       });
       return;
     }
@@ -859,12 +886,6 @@ export function QuizSolveScreen() {
     setAnswerText('');
     setPick(null);
     setRight(null);
-  };
-  const retry = () => {
-    if (!ownsProgress()) return toast('다른 풀이를 진행 중이에요. 풀던 퀴즈를 다시 열어주세요');
-    setPick(null);
-    setRight(null);
-    setResults((r) => r.slice(0, -1));
   };
   return (
     <Canvas>
@@ -878,19 +899,11 @@ export function QuizSolveScreen() {
             >
               {speaking ? '읽어주는 중… (탭해서 멈춤)' : '음성으로 듣기'}
             </Btn>
-          ) : right ? (
+          ) : right !== null ? (
+            // 맞든 틀리든 잠깐 결과를 보여 준 뒤 저절로 넘어간다(기다리지 않으려면 눌러서 바로)
             <Btn loading={finish.isPending || completing} onPress={next}>
               다음 문제 풀기
             </Btn>
-          ) : right === false ? (
-            <View className="gap-2">
-              <Btn kind="cream" disabled={finish.isPending || completing} onPress={retry}>
-                다시 풀기
-              </Btn>
-              <Btn loading={finish.isPending || completing} onPress={next}>
-                다음 문제 풀기
-              </Btn>
-            </View>
           ) : (
             <Btn loading>채점 중</Btn>
           )
@@ -982,12 +995,14 @@ export function QuizSolveScreen() {
                     right ? 'text-correct' : 'text-danger',
                   )}
                 >
-                  {right ? '정답이에요' : '오답이에요, 다시 풀어보세요'}
+                  {right ? '정답이에요' : '오답이에요'}
                 </Text>
               </View>
             </Shake>
             {!right && (
-              <Text className="mt-3 text-center text-caption text-sub">내가 고른 답: {pick}</Text>
+              <Text className="mt-3 text-center text-caption text-sub">
+                내가 고른 답: {pick} · 정답: {q.answer}
+              </Text>
             )}
             {/* 아바타 선생님: 맞히면 칭찬, 틀리면 격려 */}
             <AvatarCheer right={!!right} index={i} />
@@ -1023,10 +1038,11 @@ export function QuizSolveScreen() {
 }
 
 export function QuizReviewScreen() {
-  const { setId, points, from } = useLocalSearchParams<{
+  const { setId, points, from, results } = useLocalSearchParams<{
     setId?: string;
     points?: string;
     from?: string;
+    results?: string;
   }>();
   const set = useQuery({
     queryKey: ['quiz-set', setId ?? 'latest'],
@@ -1034,19 +1050,6 @@ export function QuizReviewScreen() {
   });
   const qc = useQueryClient();
   const [reward, setReward] = useState(Number(points) > 0);
-  const [select, setSelect] = useState(false);
-  // 선택 모드에서는 문제 하나를 골라 AI 설명을 본다 (FR-52-01 ~ 05)
-  const [sel, setSel] = useState<string | null>(null);
-  const storeInBox = useMutation({
-    mutationFn: (questionIds: string[]) => api.quiz.saveToBox(questionIds),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['quiz-box'] });
-      setSel(null);
-      setSelect(false);
-      toast('퀴즈 보관함에 저장했어요');
-    },
-    onError: () => toast('보관함에 저장하지 못했어요. 다시 시도해 주세요'),
-  });
   useEffect(() => {
     if (points) qc.invalidateQueries({ queryKey: ['me'] });
   }, [points]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1071,35 +1074,11 @@ export function QuizReviewScreen() {
       <Screen
         footer={
           <>
-            {select ? (
-              <View className="gap-2">
-                <Btn
-                  disabled={!sel}
-                  loading={storeInBox.isPending}
-                  onPress={() => sel && storeInBox.mutate([sel])}
-                >
-                  보관함에 저장
-                </Btn>
-                <Btn
-                  disabled={!sel}
-                  onPress={() =>
-                    sel &&
-                    router.push({
-                      pathname: '/play/explain',
-                      params: { qid: sel, setId: set.data._id },
-                    })
-                  }
-                >
-                  AI 설명 보기
-                </Btn>
-              </View>
-            ) : (
-              <Btn
-                onPress={() => (from === 'room' ? router.back() : router.dismissTo('/(tabs)/quiz'))}
-              >
-                확인
-              </Btn>
-            )}
+            <Btn
+              onPress={() => (from === 'room' ? router.back() : router.dismissTo('/(tabs)/quiz'))}
+            >
+              확인
+            </Btn>
             <Pressable
               onPress={() => router.push({ pathname: '/play/similar', params: { setId } })}
               className="mt-3 self-center rounded-full bg-white px-4 py-2"
@@ -1111,17 +1090,11 @@ export function QuizReviewScreen() {
       >
         <View className="flex-row items-center justify-between pt-6">
           <Text className="text-title3 font-bold text-ink">퀴즈 결과</Text>
-          <Pressable
-            onPress={() => {
-              setSelect((x) => !x);
-              setSel(null);
-            }}
-            className={cx('rounded-full px-3 py-1', select ? 'bg-brand' : 'bg-white')}
-          >
-            <Text className={cx('text-caption', select ? 'text-white' : 'text-ink')}>
-              {select ? '취소' : '선택'}
+          {!!results && (
+            <Text className="text-footnote font-semibold text-sub">
+              {[...results].filter((r) => r === '1').length} / {qs.length} 맞힘
             </Text>
-          </Pressable>
+          )}
         </View>
         <View className="mt-5 rounded-2xl bg-mint px-4 py-3.5">
           <View className="flex-row items-center gap-2">
@@ -1130,23 +1103,37 @@ export function QuizReviewScreen() {
               미션 완료! {qs.length}문제를 모두 풀었어요
             </Text>
           </View>
+          <Text className="mt-1 text-caption text-sub">
+            문제를 누르면 AI 해설을 볼 수 있어요 · 푼 퀴즈는 보관함에 담았어요
+          </Text>
         </View>
         <View className="mt-5 gap-3">
           {qs.map((q, n) => (
             <Pressable
               key={q._id}
               onPress={() =>
-                select
-                  ? setSel(q._id)
-                  : router.push({
-                      pathname: '/play/explain',
-                      params: { qid: q._id, setId: set.data._id },
-                    })
+                router.push({
+                  pathname: '/play/explain',
+                  params: { qid: q._id, setId: set.data._id },
+                })
               }
-              className={cx('rounded-card bg-white p-5', sel === q._id && 'border-2 border-brand')}
+              className="rounded-card bg-white p-5"
             >
               <View className="flex-row items-start gap-2">
-                <View className="h-5 w-5 items-center justify-center rounded-full bg-brand">
+                {/* 맞힌 문제는 초록, 틀린 문제는 빨강(결과를 모르면 기본색) */}
+                <View
+                  accessibilityLabel={`${n + 1}번 ${
+                    results?.[n] === '1' ? '맞음' : results?.[n] === '0' ? '틀림' : ''
+                  }`}
+                  className={cx(
+                    'h-5 w-5 items-center justify-center rounded-full',
+                    results?.[n] === '1'
+                      ? 'bg-correct'
+                      : results?.[n] === '0'
+                        ? 'bg-danger'
+                        : 'bg-brand',
+                  )}
+                >
                   <Text className="text-caption2 text-white">{n + 1}</Text>
                 </View>
                 <Text className="flex-1 text-footnote text-ink">Q. {q.prompt}</Text>
@@ -1270,19 +1257,9 @@ export function QuizExplainScreen() {
 export function QuizSimilarScreen() {
   const { setId } = useLocalSearchParams<{ setId?: string }>();
   const qc = useQueryClient();
-  const cached = useQuery({
-    queryKey: ['similar-result', setId],
-    queryFn: () => Promise.resolve(null),
-    enabled: false,
-  });
   const generate = useMutation({
     mutationFn: () => api.quiz.similar(setId ?? ''),
     retry: false,
-    onSuccess: (data) => {
-      // 다 만든 세트만 결과로 남긴다(만드는 중은 아래에서 기다리고, 실패는 다시 시도하게)
-      if (data.status !== 'generating' && data.status !== 'failed')
-        qc.setQueryData(['similar-result', setId], data);
-    },
   });
   // 서버는 「다시 보기」 세트를 만드는 중(generating)으로 돌려준다: 다 만들 때까지 세트를 다시 읽는다
   const making = generate.data?.status === 'generating' ? generate.data._id : null;
@@ -1293,90 +1270,56 @@ export function QuizSimilarScreen() {
     refetchInterval: (q) => (q.state.data && q.state.data.status !== 'generating' ? false : 1500),
   });
   const done =
-    poll.data && poll.data.status !== 'generating' && poll.data.status !== 'failed'
+    poll.data && poll.data.status === 'ready'
       ? poll.data
-      : null;
+      : generate.data?.status === 'ready'
+        ? generate.data
+        : null;
   const failed = poll.data?.status === 'failed' || generate.data?.status === 'failed';
+  // 다 만들면 일반 퀴즈와 같은 흐름: 풀이 화면에서 풀고, 마지막에 결과 · 정답 · AI 해설을 본다
   useEffect(() => {
-    if (done) qc.setQueryData(['similar-result', setId], done);
-  }, [done, qc, setId]);
+    if (!done) return;
+    qc.invalidateQueries({ queryKey: ['quiz-sets'] });
+    router.replace({ pathname: '/play/solve', params: { setId: done._id } });
+  }, [done?._id]); // eslint-disable-line react-hooks/exhaustive-deps
   // 결과 조회가 실패하면(연결 끊김 · 서버 오류) 「만드는 중」만 되풀이하지 않고 알린 뒤 다시 확인하게 한다
   // 앞서 받은 진행 상태(generating)가 남아 있어도 마지막 조회가 실패했으면 알린다(다 만든 · 실패한 세트는 제외)
   const checkFailed = !!making && poll.isError && !done && !failed;
-  const waiting = !!making && !done && !failed && !checkFailed;
-  const sim = {
-    data: (cached.data ??
-      done ??
-      (generate.data && generate.data.status !== 'generating' && !failed
-        ? generate.data
-        : undefined)) as Awaited<ReturnType<typeof api.quiz.similar>> | undefined,
-  };
-  const [open, setOpen] = useState<string[]>([]);
-  const [saved, setSaved] = useState<string[]>([]);
-  const saving = useRef(new Set<string>());
-  const [pendingIds, setPendingIds] = useState<string[]>([]);
-  const save = useMutation({
-    mutationFn: (q: Question) =>
-      api.quiz.saveFlashcard({ front: q.prompt, back: q.answer, sourceQuestionId: q._id }),
-    onError: () => toast('카드를 저장하지 못했어요. 다시 시도해주세요'),
-    onSettled: (_, __, q) => {
-      saving.current.delete(q._id);
-      setPendingIds([...saving.current]);
-    },
-    onSuccess: (_, q) => {
-      setSaved((p) => [...p, q._id]);
-      // 플래시 카드 화면을 다시 열면 새 카드가 보이게
-      qc.invalidateQueries({ queryKey: ['flashcards'] });
-      toast('플래시카드에 저장했어요');
-    },
-  });
-  // 문제마다 고른 보기(객관식). 고르면 맞았는지 · 정답을 보여 준다. 정답은 먼저 보이지 않는다
-  const [picked, setPicked] = useState<Record<string, string>>({});
+  const waiting = (!!making && !done && !failed && !checkFailed) || !!done;
   return (
     <Canvas>
       <Screen
         footer={
-          sim.data ? (
-            <Btn onPress={() => router.back()}>확인</Btn>
-          ) : (
-            <Btn
-              loading={generate.isPending || waiting}
-              onPress={() => (checkFailed ? void poll.refetch() : generate.mutate())}
-            >
-              {checkFailed
-                ? '다시 확인'
-                : generate.isError || failed
-                  ? '다시 시도'
-                  : '유사 퀴즈 만들기'}
-            </Btn>
-          )
+          <Btn
+            loading={generate.isPending || waiting}
+            onPress={() => (checkFailed ? void poll.refetch() : generate.mutate())}
+          >
+            {checkFailed
+              ? '다시 확인'
+              : generate.isError || failed
+                ? '다시 시도'
+                : '유사 퀴즈 만들기'}
+          </Btn>
         }
       >
-        <Header
-          title="유사 퀴즈"
-          sub={
-            sim.data
-              ? `원본과 같은 난이도로 ${sim.data.questionCount}문제를 새로 만들었어요`
-              : undefined
-          }
-          large={false}
+        <Header title="유사 퀴즈" large={false} />
+        <Empty
+          icon={<Sparkles size={ICON.lg} color={C.brand} />}
+          title="틀린 문제와 비슷한 문제를 만들어요"
+          body="원본과 같은 난이도로 새 문제를 만들어요. 다 만들면 바로 풀고, 마지막에 정답과 AI 해설을 볼 수 있어요."
         />
-        {!sim.data && (
-          <Empty
-            icon={<Sparkles size={ICON.lg} color={C.brand} />}
-            title="틀린 문제와 비슷한 문제를 만들어요"
-            body="원본과 같은 난이도로 새 문제를 만들어요. 다시 풀면서 헷갈린 개념을 확인해 보세요."
-          />
-        )}
         {checkFailed && (
           <Text className="text-center text-footnote leading-5 text-danger">
             만든 결과를 확인하지 못했어요. 연결을 확인하고 다시 확인해 주세요.
           </Text>
         )}
         {waiting && (
-          <Text className="text-center text-footnote leading-5 text-sub">
-            틀린 문제와 비슷한 문제를 만들고 있어요 · {poll.data?.progress ?? 0}%
-          </Text>
+          <View className="items-center">
+            <Progress value={poll.data?.progress ?? 0} className="w-40" />
+            <Text className="mt-2 text-center text-footnote leading-5 text-sub">
+              틀린 문제와 비슷한 문제를 만들고 있어요 · {poll.data?.progress ?? 0}%
+            </Text>
+          </View>
         )}
         {(generate.isError || failed) && (
           <Text className="text-center text-footnote leading-5 text-danger">
@@ -1385,83 +1328,6 @@ export function QuizSimilarScreen() {
               : '생성 결과를 받지 못했어요. 다시 시도하면 새로 만들어요.'}
           </Text>
         )}
-        <View className="gap-2">
-          {sim.data?.questions.map((q, i) => (
-            <View key={q._id} className="rounded-card bg-white p-4">
-              <Text className="text-caption font-semibold text-brand">문제 {i + 1}</Text>
-              <Text className="mt-1 text-subhead leading-6 text-ink">{q.prompt}</Text>
-              {!!q.choices?.length && (
-                <View className="mt-3 gap-2">
-                  {q.choices.map((c, n) => {
-                    const chosen = picked[q._id];
-                    const right = c === q.answer;
-                    return (
-                      <Pressable
-                        key={`${n}-${c}`}
-                        accessibilityRole="button"
-                        accessibilityState={{ selected: chosen === c, disabled: !!chosen }}
-                        disabled={!!chosen}
-                        onPress={() => {
-                          setPicked((p) => ({ ...p, [q._id]: c }));
-                          setOpen((p) => (p.includes(q._id) ? p : [...p, q._id]));
-                        }}
-                        className={cx(
-                          'flex-row items-center gap-2.5 rounded-xl border px-3 py-2.5',
-                          !chosen
-                            ? 'border-line bg-white'
-                            : right
-                              ? 'border-brand bg-mint'
-                              : chosen === c
-                                ? 'border-danger bg-danger/10'
-                                : 'border-line bg-white opacity-60',
-                        )}
-                      >
-                        <Text className="text-footnote font-semibold text-sub">{n + 1}</Text>
-                        <Text className="flex-1 text-footnote leading-5 text-ink">{c}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              )}
-              {!!picked[q._id] && (
-                <Text
-                  className={cx(
-                    'mt-2 text-footnote font-semibold',
-                    picked[q._id] === q.answer ? 'text-brand' : 'text-danger',
-                  )}
-                >
-                  {picked[q._id] === q.answer ? '정답이에요!' : '아쉬워요, 다시 확인해 보세요'}
-                </Text>
-              )}
-              {open.includes(q._id) && (
-                <Animated.View entering={FadeIn} className="mt-2 rounded-xl bg-sun/25 px-3 py-2">
-                  <Text className="text-caption font-semibold text-ink">문제 {i + 1} 정답</Text>
-                  <Text className="text-caption text-ink">{q.answer}</Text>
-                </Animated.View>
-              )}
-              <View className="mt-3 flex-row gap-2">
-                {!open.includes(q._id) && (
-                  <Chip small onPress={() => setOpen((p) => [...p, q._id])}>
-                    정답 보기
-                  </Chip>
-                )}
-                <Chip
-                  small
-                  on={saved.includes(q._id)}
-                  onPress={() => {
-                    if (saving.current.has(q._id) || saved.includes(q._id)) return;
-                    if (pendingIds.includes(q._id)) return;
-                    saving.current.add(q._id);
-                    setPendingIds([...saving.current]);
-                    save.mutate(q);
-                  }}
-                >
-                  {saved.includes(q._id) ? '저장됨' : '플래시카드 저장'}
-                </Chip>
-              </View>
-            </View>
-          ))}
-        </View>
       </Screen>
     </Canvas>
   );

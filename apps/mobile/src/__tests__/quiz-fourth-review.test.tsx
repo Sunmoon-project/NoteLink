@@ -1,13 +1,19 @@
 import { act, fireEvent, screen, userEvent, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import { QuizSolveScreen } from '../features/quiz/quiz';
+import { AUTO_NEXT_MS, QuizSolveScreen } from '../features/quiz/quiz';
 import { useAuth } from '../stores/auth';
 import { useQuizProgress, type QuizProgress } from '../stores/quiz-progress';
 import { renderScreen, setParams } from '../test-utils';
 
 const mockApi = {
-  quiz: { set: jest.fn(), startAttempt: jest.fn(), answer: jest.fn(), finish: jest.fn() },
+  quiz: {
+    set: jest.fn(),
+    startAttempt: jest.fn(),
+    answer: jest.fn(),
+    finish: jest.fn(),
+    saveToBox: jest.fn(),
+  },
 };
 jest.mock('../lib/api', () => ({
   get api() {
@@ -93,6 +99,7 @@ beforeEach(() => {
   mockApi.quiz.set.mockResolvedValue(quizSet);
   mockApi.quiz.startAttempt.mockResolvedValue({ _id: attemptId });
   mockApi.quiz.answer.mockResolvedValue({ correct: true, correctAnswer: '정답' });
+  mockApi.quiz.saveToBox.mockResolvedValue([]);
   setParams({ setId });
 });
 afterEach(() => {
@@ -100,6 +107,11 @@ afterEach(() => {
   clients.length = 0;
   useQuizProgress.getState().reset();
 });
+/** 채점 뒤 저절로 넘어가는 시간만큼 기다린다 */
+const waitAutoNext = () =>
+  act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, AUTO_NEXT_MS + 100));
+  });
 async function saveB() {
   await act(async () => {
     useQuizProgress.getState().save(progressB);
@@ -117,13 +129,16 @@ it('중간 문제의 A 화면에서 B 진행 저장 후 다음 문제를 눌러�
   expect(router.replace).not.toHaveBeenCalled();
 });
 
-it('A 오답 화면에서 다시 풀기를 눌러도 새로 저장된 B 진행을 덮어쓰지 않는다', async () => {
-  useQuizProgress.getState().save({ ...progressA, pick: '오답', right: false, results: [false] });
+it('A 채점 뒤 저절로 넘어가기 전에 B 진행이 저장되면 자동 넘김이 B 진행을 덮어쓰지 않는다', async () => {
+  mockApi.quiz.answer.mockResolvedValue({ correct: false, correctAnswer: '정답' });
   await renderScreen(<QuizSolveScreen />, client());
-  const retry = await screen.findByRole('button', { name: '다시 풀기' });
+  await fireEvent.changeText(await screen.findByPlaceholderText('답을 입력해주세요'), '오답');
+  await fireEvent.press(screen.getByText('답 제출'));
+  expect(await screen.findByText('오답이에요')).toBeTruthy();
   await saveB();
-  await userEvent.setup().press(retry);
+  await waitAutoNext();
   expect(useQuizProgress.getState().progress).toEqual(progressB);
+  expect(mockApi.quiz.finish).not.toHaveBeenCalled();
 });
 
 it('소유권을 잃은 A 화면의 답안 입력·제출은 B 진행을 덮거나 A 답안을 전송하지 않는다', async () => {
@@ -200,16 +215,14 @@ it('완료 대기 중 동일 풀이의 저장·재조회로 객체만 바뀌면 
   await waitFor(() =>
     expect(router.replace).toHaveBeenCalledWith({
       pathname: '/play/review',
-      params: { setId, points: '120' },
+      params: { setId, points: '120', results: '11' },
     }),
   );
   expect(useQuizProgress.getState().progress).toBeNull();
 });
 
-it('틀린 문제는 오답 노트에 넣고, 다시 풀기로 맞혀도 빼지 않는다(오답 복습에서 맞혀야 빠짐)', async () => {
-  mockApi.quiz.answer
-    .mockResolvedValueOnce({ correct: false, correctAnswer: '정답' })
-    .mockResolvedValueOnce({ correct: true, correctAnswer: '정답' });
+it('틀리면 오답 노트에 넣고 고른 답과 정답을 보여 준 뒤, 잠시 후 저절로 다음 문제로 넘어간다', async () => {
+  mockApi.quiz.answer.mockResolvedValueOnce({ correct: false, correctAnswer: '정답' });
   await renderScreen(<QuizSolveScreen />, client());
   const input = await screen.findByPlaceholderText('답을 입력해주세요');
   await fireEvent.changeText(input, '오답');
@@ -217,9 +230,34 @@ it('틀린 문제는 오답 노트에 넣고, 다시 풀기로 맞혀도 빼지 
   await waitFor(() =>
     expect(mockRecordWrong).toHaveBeenCalledWith('fourth-review-user', question, 'A 세트'),
   );
-  await fireEvent.press(await screen.findByRole('button', { name: '다시 풀기' }));
-  await fireEvent.changeText(await screen.findByPlaceholderText('답을 입력해주세요'), '정답');
-  await fireEvent.press(screen.getByText('답 제출'));
-  await waitFor(() => expect(mockApi.quiz.answer).toHaveBeenCalledTimes(2));
+  expect(screen.getByText('오답이에요')).toBeTruthy();
+  expect(screen.getByText('내가 고른 답: 오답 · 정답: 정답')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: '다시 풀기' })).toBeNull();
+  expect(screen.getByRole('button', { name: '다음 문제 풀기' })).toBeTruthy();
+  await waitAutoNext();
+  expect(await screen.findByText('A 마지막 문제')).toBeTruthy();
+  expect(useQuizProgress.getState().progress).toMatchObject({ index: 1, results: [false] });
   expect(mockRecordWrong).toHaveBeenCalledTimes(1);
+});
+
+it('마지막 문제를 채점하면 잠시 후 저절로 완료하고, 맞음 · 틀림을 결과 화면에 넘긴다', async () => {
+  mockApi.quiz.finish.mockResolvedValue({ pointsEarned: 120, balance: 120 });
+  mockApi.quiz.answer.mockResolvedValueOnce({ correct: false, correctAnswer: '정답' });
+  useQuizProgress
+    .getState()
+    .save({ ...progressA, index: 1, pick: null, right: null, answerText: '' });
+  await renderScreen(<QuizSolveScreen />, client());
+  await fireEvent.changeText(await screen.findByPlaceholderText('답을 입력해주세요'), '오답');
+  await fireEvent.press(screen.getByText('답 제출'));
+  expect(await screen.findByText('오답이에요')).toBeTruthy();
+  expect(mockApi.quiz.finish).not.toHaveBeenCalled();
+  await waitAutoNext();
+  await waitFor(() => expect(mockApi.quiz.finish).toHaveBeenCalledWith(attemptId));
+  await waitFor(() =>
+    expect(router.replace).toHaveBeenCalledWith({
+      pathname: '/play/review',
+      params: { setId, points: '120', results: '10' },
+    }),
+  );
+  expect(mockApi.quiz.finish).toHaveBeenCalledTimes(1);
 });

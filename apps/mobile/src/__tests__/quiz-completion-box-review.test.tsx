@@ -7,6 +7,7 @@ import {
   QuizReviewScreen,
   QuizBoxScreen,
 } from '../features/quiz/quiz';
+import { queryClient } from '../lib/query';
 import { useAuth } from '../stores/auth';
 import { useQuizProgress } from '../stores/quiz-progress';
 import { useToast } from '../stores/toast';
@@ -82,6 +83,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   clients.splice(0).forEach((qc) => qc.clear());
+  queryClient.clear();
   useQuizProgress.getState().reset();
 });
 async function submit() {
@@ -96,7 +98,7 @@ it('스터디룸에서 퀴즈를 마치면 결과 화면에도 복귀 경로를 
   await waitFor(() =>
     expect(router.replace).toHaveBeenCalledWith({
       pathname: '/play/review',
-      params: { setId: quizSet._id, points: '120', from: 'room' },
+      params: { setId: quizSet._id, points: '120', results: '1', from: 'room' },
     }),
   );
 });
@@ -137,7 +139,7 @@ it.each([
     await waitFor(() =>
       expect(router.replace).toHaveBeenCalledWith({
         pathname: '/play/review',
-        params: { setId: quizSet._id, points: '120' },
+        params: { setId: quizSet._id, points: '120', results: '1' },
       }),
     );
     expect(mockApi.quiz.finish).toHaveBeenCalledTimes(1);
@@ -165,20 +167,72 @@ it('완료 대기 중 다른 풀이로 전환하면 이전 성공 응답이 새 
   expect(useQuizProgress.getState().progress).toEqual(other);
   expect(router.replace).not.toHaveBeenCalled();
 });
-it('선택한 문제를 보관하고 캐시를 갱신하며 실패하면 선택을 유지해 재시도한다', async () => {
+it('퀴즈를 마치면 세트의 모든 문제를 보관함에 담고 보관함 캐시를 갱신한다', async () => {
+  const second = { ...question, _id: 'box-q2', order: 2, prompt: '두 번째 문제' };
+  mockApi.quiz.set.mockResolvedValue({
+    ...quizSet,
+    questionCount: 2,
+    questions: [question, second],
+  });
+  queryClient.setQueryData(['quiz-box'], []);
+  await renderScreen(<QuizSolveScreen />, client());
+  await fireEvent.press(await screen.findByText('① 답'));
+  await fireEvent.press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
+  await fireEvent.press(await screen.findByText('① 답'));
+  await fireEvent.press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
+  await waitFor(() =>
+    expect(mockApi.quiz.saveToBox).toHaveBeenCalledWith([question._id, second._id]),
+  );
+  expect(mockApi.quiz.saveToBox).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(queryClient.getQueryState(['quiz-box'])?.isInvalidated).toBe(true));
+});
+it('보관함에 담지 못하면 안내하고, 결과 화면으로는 그대로 넘어간다', async () => {
   mockApi.quiz.saveToBox.mockRejectedValueOnce(new Error('저장 실패'));
-  const qc = client();
-  qc.setQueryData(['quiz-box'], []);
-  await renderScreen(<QuizReviewScreen />, qc);
-  await fireEvent.press(await screen.findByText('선택'));
-  await fireEvent.press(await screen.findByText(`Q. ${question.prompt}`));
-  await fireEvent.press(screen.getByRole('button', { name: '보관함에 저장' }));
-  await waitFor(() => expect(mockApi.quiz.saveToBox).toHaveBeenCalledWith([question._id]));
-  await waitFor(() => expect(useToast.getState().msg).toContain('저장하지 못'));
-  expect(qc.getQueryState(['quiz-box'])?.isInvalidated).toBe(false);
-  await fireEvent.press(screen.getByRole('button', { name: '보관함에 저장' }));
-  await waitFor(() => expect(mockApi.quiz.saveToBox).toHaveBeenCalledTimes(2));
-  await waitFor(() => expect(qc.getQueryState(['quiz-box'])?.isInvalidated).toBe(true));
+  await renderScreen(<QuizSolveScreen />, client());
+  await submit();
+  await waitFor(() => expect(useToast.getState().msg).toContain('보관함에 담지 못했어요'));
+  expect(router.replace).toHaveBeenCalledWith({
+    pathname: '/play/review',
+    params: { setId: quizSet._id, points: '120', results: '1' },
+  });
+});
+it('오늘의 복습 세트를 마치면 보관함에 담지 않고 오늘의 복습을 다시 읽는다', async () => {
+  queryClient.setQueryData(['today-review'], { _id: quizSet._id, status: 'ready' });
+  await renderScreen(<QuizSolveScreen />, client());
+  await submit();
+  await waitFor(() =>
+    expect(queryClient.getQueryState(['today-review'])?.isInvalidated).toBe(true),
+  );
+  expect(mockApi.quiz.saveToBox).not.toHaveBeenCalled();
+});
+it('완료 응답 전에 다른 계정으로 바뀌면 새 계정 보관함에 담지 않는다', async () => {
+  const pending = deferred<{ pointsEarned: number; balance: number }>();
+  mockApi.quiz.finish.mockReturnValueOnce(pending.promise);
+  await renderScreen(<QuizSolveScreen />, client());
+  await submit();
+  useAuth.setState({ userId: 'other-owner' });
+  await act(async () => pending.resolve({ pointsEarned: 120, balance: 120 }));
+  expect(mockApi.quiz.saveToBox).not.toHaveBeenCalled();
+});
+it('결과 화면은 맞힌 문제 번호를 초록, 틀린 문제 번호를 빨강으로 칠하고 맞힌 수를 보여 준다', async () => {
+  const second = { ...question, _id: 'box-q2', order: 2, prompt: '두 번째 문제' };
+  mockApi.quiz.set.mockResolvedValue({
+    ...quizSet,
+    questionCount: 2,
+    questions: [question, second],
+  });
+  setParams({ setId: quizSet._id, results: '10' });
+  await renderScreen(<QuizReviewScreen />, client());
+  expect(await screen.findByText('1 / 2 맞힘')).toBeTruthy();
+  expect(String(screen.getByLabelText('1번 맞음').props.className)).toContain('bg-correct');
+  expect(String(screen.getByLabelText('2번 틀림').props.className)).toContain('bg-danger');
+  expect(screen.queryByText('선택')).toBeNull();
+  expect(screen.queryByRole('button', { name: '보관함에 저장' })).toBeNull();
+});
+it('결과를 모르면(results 없음) 번호를 기본색으로 두고 맞힌 수를 보여 주지 않는다', async () => {
+  await renderScreen(<QuizReviewScreen />, client());
+  expect(String((await screen.findByLabelText(/^1번/)).props.className)).toContain('bg-brand');
+  expect(screen.queryByText(/맞힘/)).toBeNull();
 });
 it('보관함 선택 모드에서 실제 선택 항목만 삭제하고 실패하면 그대로 재시도한다', async () => {
   mockApi.quiz.deleteFromBox.mockRejectedValueOnce(new Error('삭제 실패'));
