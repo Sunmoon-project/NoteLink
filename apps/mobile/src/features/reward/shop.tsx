@@ -57,7 +57,7 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
   }, [msg]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <Animated.View
-      entering={FadeInUp}
+      entering={FadeInUp.duration(MOTION.exit)}
       className="mt-2 flex-row items-center rounded-xl bg-ink px-4 py-2.5"
     >
       <CircleCheck size={ICON.sm} color="#fff" />

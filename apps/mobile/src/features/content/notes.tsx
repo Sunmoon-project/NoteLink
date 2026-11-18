@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
-import Animated, { FadeIn, FadeInDown, FadeOut } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
@@ -56,6 +56,8 @@ import {
   cx,
   BACKDROP_IN,
   BACKDROP_OUT,
+  FADE_IN,
+  popInFrom,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
 import { useTabRefresh } from '@/hooks';
@@ -642,8 +644,8 @@ export function FolderScreen() {
                 ['rec', '녹음 올리기 · 실시간 녹음', Mic],
                 ['hand', '필기 올리기', PenLine],
               ] as const
-            ).map(([k, l, Ic], i) => (
-              <Animated.View key={k} entering={FadeInDown.duration(180).delay(i * 30)}>
+            ).map(([k, l, Ic], i, all) => (
+              <Animated.View key={k} entering={popInFrom(all.length - 1 - i)}>
                 <Pressable
                   onPress={() => {
                     setDial(false);
@@ -778,7 +780,7 @@ const UploadOpt = ({
   sub: string;
   onPress: () => void;
 }) => (
-  <Animated.View entering={FadeIn}>
+  <Animated.View entering={FADE_IN}>
     <Card onPress={onPress} className="mb-2 flex-row items-center gap-3 px-4 py-3.5">
       <View className="h-10 w-10 items-center justify-center rounded-xl bg-white">
         <Icon size={ICON.md} color={C.brand} />

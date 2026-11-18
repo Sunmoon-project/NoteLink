@@ -11,6 +11,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
+import { useIsFocused } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
 import { Bookmark, Pause, Play, Repeat, Sparkles } from 'lucide-react-native';
@@ -31,6 +32,11 @@ const SPEEDS = [1, 1.25, 1.5, 2];
 function usePlayback(url: string | undefined, knownDuration: number) {
   const player = useAudioPlayer(url ? { uri: url } : null);
   const status = useAudioPlayerStatus(player);
+  // 탭 안의 스택 화면은 탭을 바꾸거나 다른 화면을 올려도 내려가지 않아 소리가 계속 났다 → 가려지면 일시정지
+  const focused = useIsFocused();
+  useEffect(() => {
+    if (!focused) player.pause();
+  }, [focused, player]);
   const duration = knownDuration || status.duration || 0;
   return {
     ready: !!url,
@@ -122,13 +128,13 @@ export function useResume(
 function LipSyncAvatar({ playing }: { playing: boolean }) {
   const open = useSharedValue(0.4);
   useEffect(() => {
-    if (playing) open.value = withRepeat(withTiming(1.6, { duration: 280 }), -1, true);
+    if (playing) open.set(withRepeat(withTiming(1.6, { duration: 280 }), -1, true));
     else {
       cancelAnimation(open);
-      open.value = withTiming(0.4);
+      open.set(withTiming(0.4));
     }
   }, [playing]); // eslint-disable-line react-hooks/exhaustive-deps
-  const mouth = useAnimatedStyle(() => ({ transform: [{ scaleY: open.value }] }));
+  const mouth = useAnimatedStyle(() => ({ transform: [{ scaleY: open.get() }] }));
   return (
     <View
       accessibilityLabel="아바타"
@@ -332,25 +338,27 @@ export function Player({
           </Text>
           <Pressable
             onPress={() => p.setRate(SPEEDS[(SPEEDS.indexOf(p.rate) + 1) % SPEEDS.length] ?? 1)}
-            className="rounded-full bg-white/15 px-2 py-0.5"
+            // 보이는 칩은 32, 위아래 6씩 넓혀 누르는 높이 44(시간 줄 높이는 거의 그대로)
+            hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+            className="h-8 justify-center rounded-full bg-white/15 px-3"
           >
-            <Text className="text-caption2 font-semibold text-white">{p.rate}x 배속</Text>
+            <Text className="text-caption font-semibold text-white">{p.rate}x 배속</Text>
           </Pressable>
         </View>
         <View className="mt-2 flex-row items-center justify-center gap-3 pb-1">
           <Pressable
             accessibilityLabel="북마크 추가"
             onPress={addMark}
-            className="h-10 w-10 items-center justify-center rounded-full bg-white"
+            className="h-12 w-12 items-center justify-center rounded-full bg-white"
           >
-            <Bookmark size={ICON.sm} color={C.danger} />
+            <Bookmark size={ICON.md} color={C.danger} />
           </Pressable>
           <Pressable
             accessibilityLabel="5초 뒤로"
             onPress={() => p.seek(p.pos - 5)}
-            className="h-10 w-10 items-center justify-center rounded-full bg-white/10"
+            className="h-12 w-12 items-center justify-center rounded-full bg-white/10"
           >
-            <Text className="text-caption2 font-bold text-white">◀5</Text>
+            <Text className="text-footnote font-bold text-white">◀5</Text>
           </Pressable>
           <Pressable
             accessibilityLabel={p.playing ? '일시정지' : '재생'}
@@ -366,19 +374,19 @@ export function Player({
           <Pressable
             accessibilityLabel="5초 앞으로"
             onPress={() => p.seek(p.pos + 5)}
-            className="h-10 w-10 items-center justify-center rounded-full bg-white/10"
+            className="h-12 w-12 items-center justify-center rounded-full bg-white/10"
           >
-            <Text className="text-caption2 font-bold text-white">5▶</Text>
+            <Text className="text-footnote font-bold text-white">5▶</Text>
           </Pressable>
           <Pressable
             accessibilityLabel="구간 반복"
             onPress={() => p.setLoop(!p.loop)}
             className={cx(
-              'h-10 w-10 items-center justify-center rounded-full',
+              'h-12 w-12 items-center justify-center rounded-full',
               p.loop ? 'bg-sun' : 'bg-brand',
             )}
           >
-            <Repeat size={ICON.sm} color={p.loop ? C.ink : '#fff'} />
+            <Repeat size={ICON.md} color={p.loop ? C.ink : '#fff'} />
           </Pressable>
         </View>
       </View>
