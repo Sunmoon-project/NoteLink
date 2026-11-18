@@ -566,27 +566,41 @@ def test_two_user_lanes_run_two_jobs_together(col: Any) -> None:
     assert sorted(seen) == ["MainThread", "lane-user"]
 
 
-def test_a_lane_takes_its_first_kinds_before_older_jobs(col: Any) -> None:
-    # 첫 사용자 반복은 노트 · 녹음 정리를 먼저(#521): 가벼운 작업은 늘린 반복이 받음
-    col.insert_one(
-        {
-            **col.find_one({"_id": "j1"}),
-            "_id": "h1",
-            "type": "handwriting_summary",
-            "createdAt": T0 + timedelta(seconds=1),
-        }
-    )
+def test_a_lane_takes_awaited_then_first_kinds_then_older_jobs(col: Any) -> None:
+    # 첫 사용자 반복의 가져가는 차례(#521): 이어받은 미리 만들기 → 노트 · 녹음 정리 → 먼저 들어온
+    # 작업. 이어받지 않은 미리 만들기는 가장 먼저 들어왔어도 가져가지 않음(Codex 리뷰 #522)
+    base = col.find_one({"_id": "j1"})
+    for job_id, kind, sec, awaited in [
+        ("p0", "quiz_pregen", -1, False),
+        ("h1", "handwriting_summary", 1, False),
+        ("p1", "quiz_pregen", 2, True),
+    ]:
+        col.insert_one(
+            {
+                **base,
+                "_id": job_id,
+                "type": kind,
+                "awaited": awaited,
+                "createdAt": T0 + timedelta(seconds=sec),
+            }
+        )
     done: list[str] = []
 
-    def handler(kind: str) -> Handler:
-        def handle(inp: JsonObject, report: JobReport) -> JsonObject:
-            done.append(kind)
-            return {}
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        return {}
 
-        return handle
+    def run(st: JobStore) -> bool:
+        before = {d["_id"] for d in col.find({"status": "succeeded"})}
+        busy = run_once(
+            st,
+            {k: handler for k in ("quiz_generate", "handwriting_summary", "quiz_pregen")},
+            awaited_only=frozenset({"quiz_pregen"}),
+            first=frozenset({"handwriting_summary"}),
+        )
+        done.extend(d["_id"] for d in col.find({"status": "succeeded"}) if d["_id"] not in before)
+        return busy
 
-    handlers = {k: handler(k) for k in ("quiz_generate", "handwriting_summary")}
-    first = frozenset({"handwriting_summary"})
-    assert run_once(store(col), handlers, first=first)
-    assert run_once(store(col), handlers, first=first)
-    assert done == ["handwriting_summary", "quiz_generate"]
+    while run(store(col)):
+        pass
+    assert done == ["p1", "h1", "j1"]
+    assert col.find_one({"_id": "p0"})["status"] == "queued"
