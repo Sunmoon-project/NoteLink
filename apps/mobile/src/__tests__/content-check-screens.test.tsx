@@ -38,18 +38,19 @@ describe('올린 자료 내용 검사', () => {
     expect(useDraft.getState().files).toEqual([]);
     expect(router.replace).not.toHaveBeenCalledWith('/convert');
   });
+  // 허용 목록(UPLOAD_RULES.audio)에 들어갈 일이 없는 형식으로 본다. 안내 문구는 허용 목록으로 만들어지므로 끝만 맞춘다
   it.each([
-    ['녹음본.aac', 21 * 1024 * 1024],
-    ['lecture.m4a.mp4', 16 * 1024 * 1024],
+    ['voice.ogg', 'audio/ogg', 21 * 1024 * 1024],
+    ['call.amr', 'audio/amr', 16 * 1024 * 1024],
   ])(
     '올릴 수 없는 확장자(%s)는 고를 때 이유를 보여 주고 다음으로 넘어가지 않는다 (#508)',
-    async (name, size) => {
+    async (name, mimeType, size) => {
       useDraft.getState().set({
         kind: 'recording',
-        files: [{ uri: `file:///${name}`, name, mimeType: 'audio/mp4', size }],
+        files: [{ uri: `file:///${name}`, name, mimeType, size }],
       });
       await renderScreen(<RecUploadScreen />);
-      expect(screen.getByText('MP3 · M4A · WAV만 올릴 수 있어요')).toBeTruthy();
+      expect(screen.getByText(/^MP3 · M4A .*만 올릴 수 있어요$/)).toBeTruthy();
       expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
       await fireEvent.press(screen.getByText('다음'));
       expect(router.replace).not.toHaveBeenCalledWith('/convert');
