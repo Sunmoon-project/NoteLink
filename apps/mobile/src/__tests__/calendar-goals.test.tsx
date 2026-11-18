@@ -47,6 +47,64 @@ describe('반복 목표', () => {
     expect(screen.getByPlaceholderText('매일 30분 영어 단어 암기').props.value).toBe('');
     expect(screen.queryByText('목표 삭제')).toBeNull();
   });
+
+  describe('리마인드 시각 저장 (FR-11-07)', () => {
+    afterEach(() => jest.restoreAllMocks());
+    const goal = (remindTime: string | null) => ({
+      _id: 'remind-goal',
+      name: '시각 목표',
+      days: [1],
+      targetMin: 30,
+      subjectId: null,
+      remindEnabled: true,
+      remindTime,
+      pausedUntil: null,
+      streak: 2,
+      isActive: true,
+      todayMin: null,
+    });
+    const openEdit = async (remindTime: string | null) => {
+      jest.spyOn(api.study, 'recurringGoals').mockResolvedValue([goal(remindTime)] as never);
+      const save = jest.spyOn(api.study, 'saveRecurringGoal').mockResolvedValue(goal(remindTime));
+      setParams({ id: 'remind-goal' });
+      await renderScreen(<RepeatGoalScreen />);
+      await screen.findByDisplayValue('시각 목표');
+      return save;
+    };
+
+    it('새 목표는 remindTime을 보내지 않는다(서버 기본값 사용)', async () => {
+      const save = jest.spyOn(api.study, 'saveRecurringGoal').mockResolvedValue(goal(null));
+      setParams({});
+      await renderScreen(<RepeatGoalScreen />);
+      expect(screen.getByText(/21:00/)).toBeTruthy();
+      await fireEvent.changeText(
+        screen.getByPlaceholderText('매일 30분 영어 단어 암기'),
+        '새 목표',
+      );
+      await fireEvent.press(screen.getByLabelText('월요일'));
+      await fireEvent.press(screen.getByText('저장하기'));
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      expect(save.mock.calls[0]![0]).not.toHaveProperty('remindTime');
+    });
+
+    it('사용자 지정 시각이 있는 목표를 고쳐 저장하면 그 시각을 그대로 보내고 안내에도 보인다', async () => {
+      const save = await openEdit('07:30');
+      expect(screen.getByText(/07:30/)).toBeTruthy();
+      expect(screen.queryByText(/21:00|20:00/)).toBeNull();
+      await fireEvent.press(screen.getByText('저장하기'));
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      expect(save.mock.calls[0]![0]).toMatchObject({ _id: 'remind-goal', remindTime: '07:30' });
+    });
+
+    it('remindTime이 없는 기존 목표는 안내에 21:00을 보이고 저장할 때 remindTime을 보내지 않는다', async () => {
+      const save = await openEdit(null);
+      expect(screen.getByText(/21:00/)).toBeTruthy();
+      await fireEvent.press(screen.getByText('저장하기'));
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      expect(save.mock.calls[0]![0]).toMatchObject({ _id: 'remind-goal' });
+      expect(save.mock.calls[0]![0]).not.toHaveProperty('remindTime');
+    });
+  });
 });
 
 describe('시간표 공유', () => {
