@@ -8,7 +8,7 @@ import { Check, ChevronRight, FileText, Image, Pin } from 'lucide-react-native';
 import { ERROR_CODES, MATERIAL_MAX_FILES, type AiJob } from '@notelink/shared';
 import { api, NetworkError } from '@/lib/api';
 import { uploadToBlob, UploadError } from '@/lib/upload';
-import { aiWaiting } from '@/lib/ai';
+import { aiWaiting, stageOf } from '@/lib/ai';
 import { notifyLocal } from '@/lib/push';
 import { useBgJobs } from '@/stores/bg-jobs';
 import { useAiJobSubscription, useSocket } from '@/hooks';
@@ -452,7 +452,7 @@ export function ConvertScreen() {
   // 다 올려 서버가 작업을 받은 뒤에야 변환 화면(작업 진행률)으로 넘어간다
   const uploading = !job;
   const pct = uploading ? uploadPct : (job?.progress ?? 0);
-  const step = uploading ? 0 : pct < 50 ? 1 : pct < 85 ? 2 : 3;
+  const step = uploading ? 0 : stageOf(job?.step, pct);
   const steps = STEPS[draft.kind];
   // AI 서버가 없으면(기기 저장 모드) 원본만 저장하고 정리는 서버 연결 후에 한다 (FR-65-05)
   if (phase === 'ai' && aiWaiting(job) && materialId)
