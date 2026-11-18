@@ -567,6 +567,53 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
       expect(sent).toHaveLength(1);
     });
 
+    it('측정 중이라 미루는 사이 다른 수정이 설정을 바꾸면, 그 수정이 남긴 표시와 설정을 되돌리지 않는다', async () => {
+      const id = await goal();
+      await device('a');
+      await open();
+      const editor = makeGoalsService();
+      const original = sessions.findOne.bind(sessions) as (...args: unknown[]) => {
+        lean: () => Promise<unknown>;
+      };
+      let edited = false;
+      // 측정 중임을 확인한 직후 · defer()가 표시를 되돌리기 전에 설정이 지난 시각(20:00)으로 바뀐다.
+      // 이 수정은 설정 버전을 올리고 오늘 건너뜀 표시(lastRemindedOn = 오늘)를 남긴다
+      vi.spyOn(sessions, 'findOne').mockImplementation(((...args: unknown[]) => {
+        const query = original(...args);
+        return {
+          lean: async () => {
+            const found = await query.lean();
+            if (!edited) {
+              edited = true;
+              vi.useFakeTimers({ toFake: ['Date'], now: seoul('21:05') });
+              try {
+                await editor.update(user.toHexString(), id.toHexString(), { remindTime: '20:00' });
+              } finally {
+                vi.useRealTimers();
+              }
+            }
+            return found;
+          },
+        };
+      }) as never);
+      const service = makeService();
+      await service.runOnce(seoul('21:05'));
+      expect(edited).toBe(true);
+      expect(sent).toHaveLength(0);
+      const doc = (await row(id))!;
+      expect(doc.remindTime).toBe('20:00'); // 다른 수정의 설정이 그대로다
+      expect(doc.remindVersion).toBe(1);
+      expect(doc.lastRemindedOn).toBe(TODAY); // 다른 수정의 오늘 건너뜀 표시를 null로 되돌리지 않았다
+      expect(doc.remindAttempts ?? 0).toBe(0);
+      expect(doc.remindRetryAt ?? null).toBeNull();
+      // 세션이 끝나 미달이어도 오늘은 건너뛴 날이라 다시 보내지 않는다
+      await sessions.updateMany({}, { $set: { status: 'ended', endedAt: seoul('21:10') } });
+      await service.runOnce(seoul('21:11'));
+      await service.runOnce(seoul('21:30'));
+      expect(sent).toHaveLength(0);
+      expect((await row(id))!.lastRemindedOn).toBe(TODAY);
+    });
+
     it('세션이 없고 미달성이면 보낸다(기존)', async () => {
       await goal();
       await device('a');
