@@ -41,7 +41,10 @@ export function RoomLibraryScreen() {
     );
   }
   const data = isQuiz ? quizzes : cards;
-  const readyQuizzes = (quizzes.data ?? []).filter((quiz) => quiz.status === 'ready');
+  // 유사 퀴즈(sourceSetId)는 정답 확인용이라 채점 풀이로 열리지 않게 뺀다
+  const readyQuizzes = (quizzes.data ?? []).filter(
+    (quiz) => quiz.status === 'ready' && !quiz.sourceSetId,
+  );
   const cardList = cards.data ?? [];
   const items = isQuiz ? readyQuizzes : cardList;
   const groups = (folders.data ?? [])

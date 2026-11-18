@@ -253,6 +253,26 @@ it('홈 이어서 풀기는 첫 ready 세트 대신 저장된 세트·풀이 ID�
   expect(mockApi.quiz.startAttempt).not.toHaveBeenCalled();
 });
 
+it('가장 최근 ready 세트가 유사 퀴즈(sourceSetId 있음)여도 카드는 그 전의 내 퀴즈를 보여준다', async () => {
+  mockApi.quiz.sets.mockResolvedValue([
+    {
+      ...quizSet,
+      _id: 'similar-set',
+      title: '내 퀴즈 · 다시 보기',
+      status: 'ready',
+      sourceSetId: 'my-set',
+    },
+    { ...quizSet, _id: 'my-set', title: '내 퀴즈', status: 'ready', sourceSetId: null },
+  ]);
+  await renderScreen(<QuizHomeScreen />, client());
+  await fireEvent.press(await screen.findByText('퀴즈 풀기'));
+  expect(screen.queryByText(/다시 보기/)).toBeNull();
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/play/solve',
+    params: { setId: 'my-set' },
+  });
+});
+
 it('느린 생성 상태 조회가 끝날 때까지 다음 폴링을 시작하지 않는다', async () => {
   jest.useFakeTimers();
   const slow = deferred<AiJob>();

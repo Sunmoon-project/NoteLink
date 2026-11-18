@@ -43,6 +43,25 @@ it('내 폴더의 완료된 퀴즈를 선택해 방에서 풀이한다', async (
   expect(mockApi.quiz.flashcards).not.toHaveBeenCalled();
 });
 
+it('유사 퀴즈 세트는 자료실 퀴즈 목록에 나오지 않는다', async () => {
+  setParams({ id: 'room1', type: 'quiz' });
+  mockApi.quiz.sets.mockResolvedValue([
+    { _id: 'q1', folderId: 'f1', title: '세포 퀴즈', status: 'ready', questionCount: 5 },
+    {
+      _id: 'q3',
+      folderId: 'f1',
+      sourceSetId: 'q1',
+      title: '세포 퀴즈 · 다시 보기',
+      status: 'ready',
+      questionCount: 3,
+    },
+  ]);
+  await renderScreen(<RoomLibraryScreen />);
+  await fireEvent.press(await screen.findByText('생물'));
+  expect(screen.getByText('세포 퀴즈')).toBeTruthy();
+  expect(screen.queryByText('세포 퀴즈 · 다시 보기')).toBeNull();
+});
+
 it('내 플래시카드를 폴더별로 불러와 뒤집고 폴더 없는 카드도 표시한다', async () => {
   setParams({ id: 'room1', type: 'flashcards' });
   await renderScreen(<RoomLibraryScreen />);

@@ -151,6 +151,25 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       expect(attempts.rows).toHaveLength(0);
     });
 
+    it('유사 퀴즈 세트(sourceSetId 있음)는 400 VALIDATION_FAILED로 풀이를 시작하지 않는다', async () => {
+      const quizSetId = await addSet({ sourceSetId: new Types.ObjectId() });
+      const res = await http().post(api(PATHS.quizAttempts)).set(auth).send({ quizSetId }).expect(400);
+      expect(res.body).toMatchObject({
+        code: 'VALIDATION_FAILED',
+        message: '유사 퀴즈는 풀이 대신 정답 확인으로 볼 수 있어요',
+      });
+      expect(attempts.rows).toHaveLength(0);
+    });
+
+    it.each([
+      ['일반 세트', { sourceSetId: null }],
+      ['오늘의 복습 세트', { sourceSetId: null, reviewDay: '2026-11-19' }],
+    ])('%s는 기존처럼 201로 풀이를 시작한다', async (_name, extra) => {
+      const quizSetId = await addSet(extra);
+      await http().post(api(PATHS.quizAttempts)).set(auth).send({ quizSetId }).expect(201);
+      expect(attempts.rows).toHaveLength(1);
+    });
+
     it.each([[{}], [{ quizSetId: 3 }], [{ quizSetId: '' }], [{ quizSetId: hex(), extra: 1 }]])(
       '잘못된 본문 %j는 400',
       async (body) => {

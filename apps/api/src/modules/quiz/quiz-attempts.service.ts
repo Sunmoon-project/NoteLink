@@ -45,6 +45,7 @@ interface AttemptRow {
 
 interface SetRow {
     status: string;
+    sourceSetId?: Types.ObjectId | null;
     questions?: { _id: Types.ObjectId; answer: string }[];
 }
 
@@ -75,6 +76,8 @@ export class QuizAttemptsService {
             .lean<SetRow & { _id: Types.ObjectId }>();
         if (!set) throw notFound('퀴즈');
         if (set.status !== 'ready') throw invalid('아직 풀 수 없는 퀴즈예요');
+        // FR-53-08: 유사 퀴즈는 정답 확인 · 플래시카드 저장만 하고 풀이 · 채점은 하지 않는다 (오늘의 복습은 sourceSetId 가 없다)
+        if (set.sourceSetId) throw invalid('유사 퀴즈는 풀이 대신 정답 확인으로 볼 수 있어요');
 
         const startedAt = new Date();
         const total = set.questions?.length ?? 0;
