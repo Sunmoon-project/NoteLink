@@ -1,9 +1,10 @@
 import json
+from datetime import UTC, datetime
 
 import httpx2
 import pytest
 
-from app.clients.voyage import BATCH, EmbedError, EmbedUnavailableError, Voyage
+from app.clients.voyage import BATCH, EmbedError, EmbedUnavailableError, Voyage, _retry_after
 
 
 class Server:
@@ -52,6 +53,35 @@ def test_embed_retries_rate_limit_then_succeeds() -> None:
     s = Server(httpx2.Response(429, headers={"retry-after": "3"}), vectors(1))
     assert len(s.client().embed(["글"], "query")) == 1
     assert s.slept == [3.0]
+
+
+@pytest.mark.parametrize("value", ["Wed, 21 Oct 2026 07:28:00 GMT", "soon", "nan", "inf", ""])
+def test_embed_retries_odd_retry_after_instead_of_failing(value: str) -> None:
+    # 날짜 형식 · 읽을 수 없는 Retry-After가 ValueError로 작업을 실패시키지 않음(#498)
+    s = Server(httpx2.Response(503, headers={"retry-after": value}), vectors(1))
+    assert len(s.client().embed(["글"], "query")) == 1
+    assert len(s.slept) == 1
+    assert s.slept[0] >= 1.0
+
+
+def test_embed_gives_up_as_unavailable_with_date_retry_after() -> None:
+    date = "Wed, 21 Oct 2026 07:28:00 GMT"
+    s = Server(*(httpx2.Response(429, headers={"retry-after": date}) for _ in range(3)))
+    with pytest.raises(EmbedUnavailableError, match="429"):
+        s.client().embed(["글"], "document")
+
+
+def test_retry_after_reads_seconds_and_http_date() -> None:
+    now = datetime(2026, 10, 21, 7, 28, 0, tzinfo=UTC)
+    assert _retry_after("3", 2.0) == 3.0
+    assert _retry_after("Wed, 21 Oct 2026 07:28:30 GMT", 2.0, now) == 30.0
+    assert _retry_after("Wed, 21 Oct 2026 07:28:30 -0000", 2.0, now) == 30.0  # 시간대 없음 → UTC
+    assert _retry_after("Wed, 21 Oct 2026 07:27:00 GMT", 2.0, now) == 1.0  # 지난 날짜
+    assert _retry_after("0", 2.0) == 1.0
+    assert _retry_after(None, 4.0) == 4.0  # 없으면 지금처럼 2 * (시도 + 1)
+    assert _retry_after("곧", 4.0) == 4.0
+    assert _retry_after("inf", 4.0) == 4.0
+    assert _retry_after("nan", 4.0) == 4.0
 
 
 def test_embed_does_not_retry_bad_key() -> None:

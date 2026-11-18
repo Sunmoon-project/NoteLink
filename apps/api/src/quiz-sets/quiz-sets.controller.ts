@@ -14,6 +14,7 @@ import type { AppAiJob } from '../ai-jobs/ai-jobs.service.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../modules/auth/jwt-auth.guard.js';
 import { type AppQuizSet, QuizSetsService, VALIDATION_FAILED } from './quiz-sets.service.js';
 import { SimilarQuizService } from './similar-quiz.service.js';
+import { TodayReviewService } from './today-review.service.js';
 
 /** 가드를 통과한 요청에는 항상 user가 붙는다(JwtAuthGuard) */
 const userOf = (req: AuthenticatedRequest): string => req.user!.userId;
@@ -37,6 +38,7 @@ export class QuizSetsController {
   constructor(
     private readonly quizSets: QuizSetsService,
     private readonly similar: SimilarQuizService,
+    private readonly todayReview: TodayReviewService,
   ) {}
 
   /** 노트로 맞춤 퀴즈를 만든다. 진행 상태는 받은 job으로 `/ai-jobs/:id`에서 본다 */
@@ -52,6 +54,19 @@ export class QuizSetsController {
   @Header('Cache-Control', 'no-store')
   async list(@Req() req: AuthenticatedRequest): Promise<{ data: AppQuizSet[] }> {
     return { data: await this.quizSets.list(userOf(req)) };
+  }
+
+  /** 오늘의 복습(packages/shared PATHS.todayReview). 오늘 만든 세트, 없으면 null. ':id'보다 먼저 둔다 */
+  @Get('today')
+  @Header('Cache-Control', 'no-store')
+  async today(@Req() req: AuthenticatedRequest): Promise<{ data: AppQuizSet | null }> {
+    return { data: await this.todayReview.get(userOf(req)) };
+  }
+
+  /** 오늘의 복습 만들기(하루 한 번). 만드는 중이면 세트 조회로 기다린다 */
+  @Post('today')
+  async startToday(@Req() req: AuthenticatedRequest): Promise<{ data: AppQuizSet }> {
+    return { data: await this.todayReview.start(userOf(req)) };
   }
 
   @Get(':id')

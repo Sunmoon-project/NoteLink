@@ -284,7 +284,7 @@ Apple 개발자 계정이 있어야 합니다. 등록한 기기에 바로 까는
 
 - 모든 패키지는 정확한 버전으로 고정하고, lock 파일은 커밋합니다.
 - Expo 패키지는 `npx expo install`로 설치합니다.
-- `.env`는 커밋하지 않습니다. 커밋하는 것은 배포 기준 예시 `.env.production`뿐이고, 실제 값은 넣지 않습니다(배포 값은 Azure App Service 앱 설정 · EAS에). API 키 같은 비밀값이 들어간 커밋은 GitHub push protection이 push 단계에서 막습니다.
+- `.env`는 커밋하지 않습니다. 커밋하는 것은 배포 기준 예시 `.env.production`뿐이고, 실제 값은 넣지 않습니다(배포 값은 Azure App Service 앱 설정 · EAS에). 다만 앱(`apps/mobile/.env.production`)의 `EXPO_PUBLIC_API_URL`은 앱에 그대로 들어가는 공개값이라 배포 API 서버 주소를 넣어 둡니다(다른 서버로 빌드할 때는 커밋하지 않는 `.env.production.local`로 덮어씀). API 키 같은 비밀값이 들어간 커밋은 GitHub push protection이 push 단계에서 막습니다.
 - 소셜 로그인 시크릿 같은 비밀값은 **서버에만** 두고 앱에는 넣지 않습니다.
 - **비밀값은 Azure Key Vault `kv-notelink-dev` 하나에 둡니다(개발 · 배포가 같은 값, #393).** 배포 App Service는 Key Vault 참조(`@Microsoft.KeyVault(SecretUri=…)`)로, 로컬 개발은 `pull`로 받은 `.env`로 읽습니다. 키를 메시지나 파일로 따로 나누지 않고, 각자 자기 Azure 계정으로 엽니다(팀 키 하나를 나눠 갖지 않음).
 

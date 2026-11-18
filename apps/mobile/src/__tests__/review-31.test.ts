@@ -105,7 +105,34 @@ describe('upload: Blob 응답 확인', () => {
     await uploadToBlob('image', { uri: 'f', name: 'a.jpg', size: 10 });
     expect(mockCreateUploadTask).toHaveBeenLastCalledWith(
       'https://blob/sas',
-      expect.objectContaining({ headers: expect.objectContaining({ 'Content-Type': 'image/jpeg' }) }),
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'Content-Type': 'image/jpeg' }),
+      }),
+    );
+  });
+});
+
+describe('upload: 서버가 바로잡은 형식으로 올리기', () => {
+  it('SAS 응답의 Content-Type으로 올리고, 기기가 추측한 형식으로 덮어쓰지 않는다', async () => {
+    mockApi.upload.getSas.mockResolvedValueOnce({
+      uploadUrl: 'https://blob/sas',
+      blobUrl: 'https://blob/a',
+      headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': 'image/heic' },
+    } as never);
+    mockUpload.mockResolvedValueOnce({ status: 201 });
+    await uploadToBlob('image', { uri: 'f', name: 'a.heic', mimeType: 'image/heif', size: 10 });
+    expect(mockApi.upload.getSas).toHaveBeenLastCalledWith(
+      expect.objectContaining({ contentType: 'image/heif' }),
+    );
+    expect(mockCreateUploadTask).toHaveBeenLastCalledWith(
+      'https://blob/sas',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Content-Type': 'image/heic',
+          'x-ms-blob-type': 'BlockBlob',
+        }),
+        mimeType: 'image/heic',
+      }),
     );
   });
 });

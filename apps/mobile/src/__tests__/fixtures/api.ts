@@ -218,6 +218,8 @@ export const mockApi: Api = {
       proof === `proof:${db.user.email}`
         ? fail(ERROR_CODES.EMAIL_TAKEN, '이미 가입한 이메일이에요', 409)
         : ok(undefined, 700),
+    // 'taken_id'는 이미 쓰는 아이디로 둔다
+    loginIdAvailable: (loginId) => ok(loginId !== 'taken_id'),
     recoverySendCode: () => ok(undefined),
     findId: (email) => ok({ id: email }),
     passwordReset: () => ok(undefined),
@@ -329,6 +331,9 @@ export const mockApi: Api = {
       const p = db.sessions.get(id)?.pauses.at(-1);
       if (p) p.endedAt = now();
       return structuredClone(undefined);
+    },
+    heartbeatSession: async () => {
+      await ok(undefined);
     },
     endSession: async (id, p) => {
       await ok(undefined);
@@ -876,6 +881,8 @@ export const mockApi: Api = {
         },
         600,
       ),
+    today: () => ok(null),
+    startToday: () => ok({ ...S.makeQuizSet('m', '오늘의 복습'), status: 'generating' as const }),
     similar: (id) =>
       ok(
         {

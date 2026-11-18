@@ -650,6 +650,21 @@ def test_long_paragraph_is_split_by_the_llm() -> None:
     assert [c["order"] for c in result["chunks"]] == [1, 2]
 
 
+def test_split_llm_is_used_only_for_splitting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "note_refine_enabled", True)
+    rows = [f"- 내용 {i} " + "가" * 40 for i in range(30)]
+    ocr = FakeOcr({URL1: read(ocr_page(*rows[:15]))})
+    llm = FakeLlm({"note_topics": [{"topics": []}]})
+    split = FakeLlm({"note_split": lambda user: {"starts": [1, 4]}})
+    seeds = [{"topic": "원충류", "terms": [{"term": "이질 아메바"}]}]
+    inp = {"pages": [{"pageNo": 1, "imageUrl": URL1}], "seeds": seeds}
+
+    note_job.run(llm, lambda: ocr, FakeVoyage(), inp, lambda *a: None, split_llm=split)
+
+    assert [c.name for c in split.calls] == ["note_split"]
+    assert [c.name for c in llm.calls] == ["note_topics"]
+
+
 def test_llm_unavailable_is_retried_later(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "note_refine_enabled", True)
     llm = FakeLlm({"note_topics": [LlmError("HTTP 503")]})

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, mongo, Types } from 'mongoose';
 
@@ -22,6 +22,10 @@ export const VALIDATION_FAILED = 'VALIDATION_FAILED';
 export const GENERATE_TYPE = 'quiz_generate';
 /** 틀린 문제와 비슷한 문제 만들기 = 오답 복습 작업(apps/ai services/quiz/review.py TYPE). 결과는 reviewQuestions */
 export const SIMILAR_TYPE = 'similar_quiz';
+/** 오늘의 복습(apps/ai services/quiz/today.py TYPE). 결과는 questions(복습 상태를 가진 사본) · baseSetId */
+export const TODAY_TYPE = 'today_review';
+/** 결과로 복습 상태(srsUpdates) · 무효 풀이(voidAnswers)를 옮기는 작업 */
+const REVIEW_TYPES: readonly string[] = [SIMILAR_TYPE, TODAY_TYPE];
 /**
  * 세트 하나의 문제 수. 처리기 입력 size로 보낸다(보내지 않으면 처리기 기본 10문제).
  * 처리기는 size개를 다 만들지 못하면 모자란 자리를 다시 돌리고, 그래도 모자라면 작업을 실패로
@@ -116,6 +120,8 @@ export interface QuizSetRow {
   sourceSetId?: Types.ObjectId | null;
   sourceAttemptId?: Types.ObjectId | null;
   srsSavedAt?: Date | null;
+  followUpPending?: boolean;
+  reviewDay?: string | null;
   title: string;
   status: 'generating' | 'ready' | 'failed';
   progress?: number;
@@ -274,6 +280,14 @@ export class QuizSetsService {
     /** 녹음 노트의 대본을 퀴즈 입력 쪽으로(FR-38). 필기 노트는 쓰지 않는다 */
     private readonly recordingPages: RecordingNotePagesService,
   ) {}
+
+  /**
+   * 오답 복습 세트에 처리기 결과를 옮긴 뒤(세트마다 한 번) 부른다. SimilarQuizService가 넣는다: 그 작업을 기다리는
+   * 사이 같은 퀴즈를 또 끝낸 풀이를 이어 받는다(같은 노트로 만드는 중인 세트는 하나라 그때 넣지 못함).
+   * 주입 대신 넣는 이유: SimilarQuizService가 이 서비스를 받으므로 서로 받으면 순환 의존
+   */
+  afterReview?: (row: QuizSetRow) => Promise<unknown>;
+  private readonly logger = new Logger(QuizSetsService.name);
 
   /**
    * 노트로 맞춤 퀴즈 세트를 만든다. 응답 모양은 앱의 로컬 모의 API(quiz.createSet)와 같은 { quizSet, job }.
@@ -510,13 +524,15 @@ export class QuizSetsService {
    * 되살린다. 다시 만드는 중으로는 되돌리지 않는다(그 사이 같은 노트에 새 세트가 있을 수 있다).
    */
   private async sync(row: QuizSetRow): Promise<{ quizSet: AppQuizSet; job: AppAiJob | null }> {
+    if (row.followUpPending && row.status !== 'generating') await this.followUp(row);
     if (row.status === 'ready') return { quizSet: toAppSet(row), job: null };
     const job = row.jobId ? await this.findJob(row) : null;
     if (row.status === 'failed') {
       const ready = job?.status === 'succeeded' ? readyUpdate(job) : null;
       if (ready) return this.settle(row, ready, job);
       // 오답 복습을 다시 시도해 끝났는데 새 문제는 없으면(빈 reviewQuestions) 세트는 failed로 두고 복습 상태만 옮긴다(한 번만)
-      if (job?.type === SIMILAR_TYPE && job.status === 'succeeded') await this.saveSrs(row, job);
+      if (job && REVIEW_TYPES.includes(job.type) && job.status === 'succeeded')
+        await this.saveSrs(row, job);
       return { quizSet: toAppSet(row), job };
     }
     if (job && (job.status === 'queued' || job.status === 'running')) {
@@ -525,6 +541,18 @@ export class QuizSetsService {
     // 작업이 없어졌거나 실패 · 취소, 또는 쓸 문제가 없음(처리기 result.questions가 [])
     const update = (job?.status === 'succeeded' ? readyUpdate(job) : null) ?? { status: 'failed' };
     return this.settle(row, update, job);
+  }
+
+  /** 이어 받을 풀이를 넣고(afterReview) 표시를 지운다. 실패하면 표시를 남겨 다음 조회가 다시 넣는다 */
+  private async followUp(row: QuizSetRow): Promise<void> {
+    if (!this.afterReview) return;
+    try {
+      await this.afterReview(row);
+    } catch (e) {
+      this.logger.warn(`이어 받을 오답 복습을 넣지 못했습니다(다음 조회에 다시): ${String(e)}`);
+      return;
+    }
+    await this.sets.findOneAndUpdate({ _id: row._id }, { $set: { followUpPending: false } }).lean();
   }
 
   /** 세트가 아직 row.status일 때만 바꾼다(여러 요청이 같이 옮겨도 한 번만) */
@@ -538,7 +566,14 @@ export class QuizSetsService {
     if (update['status'] === 'ready' && job) await this.saveConcepts(row, job);
     // 오답 복습은 틀린 문제들의 복습 상태(srsUpdates)를 세트를 바꾸기 전에 옮긴다(saveConcepts와 같은 이유).
     // 새 문제를 하나도 못 만들어 세트가 failed가 되어도 처리기가 끝냈으면 복습 상태는 옮긴다
-    if (job?.type === SIMILAR_TYPE && job.status === 'succeeded') await this.saveSrs(row, job);
+    if (job && REVIEW_TYPES.includes(job.type) && job.status === 'succeeded')
+      await this.saveSrs(row, job);
+    // 오늘의 복습은 노트를 섞으므로 세트를 만들 때 노트가 없다: 첫 문제가 나온 세트(baseSetId)의 노트 · 폴더를 쓴다
+    if (update['status'] === 'ready' && job?.type === TODAY_TYPE)
+      Object.assign(update, await this.baseOf(row, job));
+    // 노트가 있는 만드는 중 세트(일반 퀴즈 · 오답 복습)가 끝나면 그 노트를 기다리던 풀이를 이어 받는다:
+    // 「이어 받을 풀이 남음」을 세트와 함께 적고, 넣은 뒤에 지운다(실패하면 다음 조회가 다시)
+    if (row.status === 'generating' && row.materialId) update['followUpPending'] = true;
     const updated = await this.sets
       .findOneAndUpdate(
         { _id: row._id, status: row.status },
@@ -546,6 +581,7 @@ export class QuizSetsService {
         { returnDocument: 'after' },
       )
       .lean<QuizSetRow>();
+    if (updated?.followUpPending) await this.followUp(updated);
     const current =
       updated ?? (await this.sets.findOne({ _id: row._id }).lean<QuizSetRow>()) ?? row;
     return { quizSet: toAppSet(current), job };
@@ -601,9 +637,43 @@ export class QuizSetsService {
         },
       );
     }
+    // 오늘의 복습이 결함 문제라 무효로 한 풀이(voidAnswers: [{attemptId, questionId, void}])
+    const voids = job.result?.['voidAnswers'];
+    for (const v of (Array.isArray(voids) ? voids : []) as {
+      attemptId?: unknown;
+      questionId?: unknown;
+      void?: unknown;
+    }[]) {
+      if (
+        typeof v.attemptId !== 'string' ||
+        !OBJECT_ID.test(v.attemptId) ||
+        typeof v.questionId !== 'string' ||
+        !OBJECT_ID.test(v.questionId) ||
+        (v.void !== true && typeof v.void !== 'string')
+      )
+        continue;
+      await this.attempts.updateOne(
+        { _id: new Types.ObjectId(v.attemptId), userId: row.ownerId },
+        { $set: { 'answers.$[a].void': v.void } },
+        { arrayFilters: [{ 'a.questionId': new Types.ObjectId(v.questionId) }] },
+      );
+    }
     await this.sets
       .findOneAndUpdate({ _id: row._id, srsSavedAt: null }, { $set: { srsSavedAt: new Date() } })
       .lean();
+  }
+
+  /** 오늘의 복습 결과의 baseSetId 세트에서 노트 · 폴더를 가져온다(이 사용자의 세트만) */
+  private async baseOf(row: QuizSetRow, job: AppAiJob): Promise<Record<string, unknown>> {
+    const id = job.result?.['baseSetId'];
+    if (typeof id !== 'string' || !OBJECT_ID.test(id)) return {};
+    const base = await this.sets
+      .findOne(
+        { _id: new Types.ObjectId(id), ownerId: row.ownerId },
+        { materialId: 1, folderId: 1 },
+      )
+      .lean<Pick<QuizSetRow, 'materialId' | 'folderId'>>();
+    return base?.materialId ? { materialId: base.materialId, folderId: base.folderId } : {};
   }
 
   private async findJob(row: QuizSetRow): Promise<AppAiJob | null> {
@@ -907,9 +977,11 @@ function reviewQuestions(raw: unknown): QuestionRow[] {
  */
 function readyUpdate(job: AppAiJob): Record<string, unknown> | null {
   // 오답 복습(similar_quiz)은 새 문제를 reviewQuestions에 담고, 문제마다 처음 복습 상태(srs)를 준다
+  // 오늘의 복습도 문제마다 복습 상태(srs)를 가진 사본을 questions에 담는다
   const similar = job.type === SIMILAR_TYPE;
+  const keepSrs = similar || job.type === TODAY_TYPE;
   const raw = job.result?.[similar ? 'reviewQuestions' : 'questions'];
-  const sorted = (similar ? reviewQuestions(raw) : workerQuestions(raw)).sort(
+  const sorted = (keepSrs ? reviewQuestions(raw) : workerQuestions(raw)).sort(
     (a, b) => a.order - b.order,
   );
   const questions = sorted.map((q, i) => ({

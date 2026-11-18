@@ -11,6 +11,9 @@ describe('PATHS', () => {
 
   it('평범한 id는 그대로 둔다', () => {
     expect(PATHS.studySessionAction('abc123', 'end')).toBe('/study-sessions/abc123/end');
+    expect(PATHS.studySessionAction('abc123', 'heartbeat')).toBe(
+      '/study-sessions/abc123/heartbeat',
+    );
   });
 });
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import * as Device from 'expo-device';
 import { AppState } from 'react-native';
 import { loadMedia } from './livekit-loader';
 import { env } from './env';
@@ -104,6 +105,11 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0, toda
       await room[action]();
       update((n) => n + 1);
     } catch {
+      // 시뮬레이터에는 카메라 장치가 없어 캠은 늘 실패한다: 권한 · 연결 문제로 오해하지 않게 따로 알린다
+      if (action === 'toggleCam' && !Device.isDevice)
+        return toast(
+          '시뮬레이터에는 카메라가 없어 캠을 켤 수 없어요 · 실제 기기에서 확인해 주세요',
+        );
       toast('미디어 설정을 바꾸지 못했어요. 권한과 연결을 확인해 주세요');
     }
   };

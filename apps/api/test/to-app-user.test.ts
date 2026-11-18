@@ -8,6 +8,7 @@ import { toAppUser, type UserSource } from '../src/modules/auth/to-app-user.js';
 const USER_FIELDS = [
   '_id',
   'email',
+  'loginId',
   'nickname',
   'role',
   'learnerType',
@@ -17,6 +18,8 @@ const USER_FIELDS = [
   'interestCategoryIds',
   'streakDays',
   'createdAt',
+  'onboarded',
+  'toured',
 ];
 const SETTINGS_FIELDS = [
   'resumePlayback',
@@ -235,7 +238,7 @@ describe('toAppUser', () => {
         ...fresh(),
         passwordHash: '$2b$10$secret-hash-value',
         socialAccounts: [{ provider: 'google', providerUid: 'secret-uid' }],
-        termAgreements: [{ termCode: 'x' }],
+        termAgreements: [{ termCode: 'x', agreed: true }],
         deletedAt: new Date(),
         lastLoginAt: new Date(),
         __v: 0,
@@ -257,6 +260,59 @@ describe('toAppUser', () => {
 
       expect(user.settings['futureFlag']).toBe(true);
       expect(user.settings.theme).toBe('light');
+    });
+  });
+
+  // 맥(시뮬레이터)에서 설정을 마친 계정으로 아이폰에서 로그인하자 이름 설정 · 처음 안내를 다시 했다
+  describe('계정 기준 초기 설정 · 처음 안내', () => {
+    const agreed = (...codes: string[]) => codes.map((termCode) => ({ termCode, agreed: true }));
+
+    it('필수 약관에 동의하고 학습자 유형을 골랐으면 설정을 마친 계정이다', () => {
+      const user = toAppUser({
+        ...fresh(),
+        learnerType: 'worker',
+        termAgreements: agreed('service', 'privacy'),
+      });
+      expect(user.onboarded).toBe(true);
+    });
+
+    it.each([
+      [
+        '학습자 유형이 없다(가입 직후)',
+        { learnerType: null, termAgreements: agreed('service', 'privacy') },
+      ],
+      [
+        '필수 약관 하나가 빠졌다',
+        { learnerType: 'worker', termAgreements: agreed('service', 'marketing') },
+      ],
+      [
+        '필수 약관을 동의하지 않음으로 남겼다',
+        {
+          learnerType: 'worker',
+          termAgreements: [...agreed('service'), { termCode: 'privacy', agreed: false }],
+        },
+      ],
+      ['약관 기록이 없다', { learnerType: 'worker' }],
+    ])('%s면 설정 전이다', (_name, patch) => {
+      expect(toAppUser({ ...fresh(), ...patch }).onboarded).toBe(false);
+    });
+
+    const done = { learnerType: 'worker', termAgreements: agreed('service', 'privacy') };
+
+    it('안내 시각이 있으면 본 계정이다', () => {
+      expect(toAppUser({ ...fresh(), ...done, touredAt: new Date() }).toured).toBe(true);
+    });
+
+    it('막 설정을 마쳐 안내 시각이 null이면 아직 안 본 계정이다', () => {
+      expect(toAppUser({ ...fresh(), ...done, touredAt: null }).toured).toBe(false);
+    });
+
+    it('기록이 생기기 전에 설정을 마친 계정(필드 없음)은 본 것으로 친다', () => {
+      expect(toAppUser({ ...fresh(), ...done }).toured).toBe(true);
+    });
+
+    it('설정 전 계정은 안내를 본 것으로 치지 않는다', () => {
+      expect(toAppUser(fresh()).toured).toBe(false);
     });
   });
 });

@@ -26,6 +26,8 @@ export const UserSettings = z.object({
 export const User = z.object({
   _id: id,
   email: z.string().nullable(),
+  /** 로그인 아이디. 간편 로그인 계정과 아이디를 따로 두기 전에 이메일로 가입한 계정은 null */
+  loginId: z.string().nullable().optional(),
   nickname: z.string(),
   role: z.string(),
   learnerType: LearnerType,
@@ -51,6 +53,10 @@ export const User = z.object({
     })
     .optional(),
   createdAt: date,
+  /** 약관 동의 · 프로필 설정을 마친 계정(서버가 계정 기준으로 계산). 기기를 바꿔도 같다 */
+  onboarded: z.boolean().optional(),
+  /** 처음 안내를 본 계정 */
+  toured: z.boolean().optional(),
 });
 
 export const AuthTokens = z.object({

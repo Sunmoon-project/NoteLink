@@ -249,6 +249,17 @@ export class EmailCodeService {
     return result.matchedCount === 1;
   }
 
+  /**
+   * 소비한 증표를 되돌린다. 아이디가 동시에 먼저 쓰여 계정을 만들지 못했을 때, 같은 증표로 다른 아이디를 정해
+   * 다시 가입할 수 있게 한다. 그 사이 인증번호를 다시 받았다면(`usedAt`이 바뀜) 되돌리지 않는다
+   */
+  async release(email: string, purpose: AuthCodePurpose, verifiedAt: Date): Promise<void> {
+    await this.codes.updateOne(
+      { email, purpose, usedAt: verifiedAt, consumedAt: { $ne: null } },
+      { $set: { consumedAt: null } },
+    );
+  }
+
   private blocked(
     existing: { lastSentAt: Date; sendCount: number; windowEndsAt: Date },
     now: Date,

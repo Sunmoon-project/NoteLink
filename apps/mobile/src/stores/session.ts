@@ -1,3 +1,4 @@
+import { AppState } from 'react-native';
 import { create } from 'zustand';
 import { api } from '@/lib/api';
 import { toast } from '@/stores/toast';
@@ -6,6 +7,8 @@ import { toast } from '@/stores/toast';
 // 앱이 백그라운드로 가도 시간이 어긋나지 않는다.
 
 export const AUTO_END_MS = 10 * 60 * 1000; // 쉬는 중 10분이 지나면 자동 종료 (p.48)
+/** 세션이 열려 있는 동안 서버에 "앱이 살아 있다"고 알리는 간격. 앱이 꺼지면 서버는 마지막 신호 + 2분까지만 인정한다 */
+export const HEARTBEAT_MS = 60 * 1000;
 
 type Session = {
   segments: { start: number; end: number }[];
@@ -213,3 +216,62 @@ function changePause(pausing: boolean): Promise<void> {
   })();
   return request.promise;
 }
+
+// ── 하트비트 ──
+// 서버 세션(sessionId)이 있는 동안(측정 중 · 일시정지 모두) 1분마다, 그리고 앱이 앞으로 올 때 한 번 신호를 보낸다.
+// 종료 · 대기(sessionId 없음) · 초기화가 되면 멈춘다. 실패는 조용히 무시한다(다음 신호가 이어 간다)
+let beat: { sessionId: string; timer: ReturnType<typeof setInterval>; stop: () => void } | null =
+  null;
+
+function sendHeartbeat(sessionId: string): void {
+  try {
+    void Promise.resolve(api.study.heartbeatSession(sessionId)).catch(() => {});
+  } catch {
+    // 동기 오류도 무시한다
+  }
+}
+
+// 정리는 무슨 일이 있어도 interval을 먼저 끊고, 구독 해제가 안 되거나 터져도 세션 reset · 종료를 막지 않는다
+function stopHeartbeat(): void {
+  const current = beat;
+  beat = null;
+  if (!current) return;
+  clearInterval(current.timer);
+  try {
+    current.stop();
+  } catch {
+    // 구독을 풀다 난 오류는 무시한다
+  }
+}
+
+function startHeartbeat(sessionId: string): void {
+  const timer = setInterval(() => sendHeartbeat(sessionId), HEARTBEAT_MS);
+  // 테스트 · 서버 환경에서 이 타이머만 남아 프로세스를 붙잡지 않게 한다
+  (timer as { unref?: () => void }).unref?.();
+  let stop = () => {};
+  try {
+    // 앱 상태 구독을 못 만들어도(없거나 던져도) 1분마다 보내는 것은 계속한다
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') sendHeartbeat(sessionId);
+    }) as { remove?: () => void } | undefined;
+    stop = () => sub?.remove?.();
+  } catch {
+    // 구독 없이 진행
+  }
+  beat = { sessionId, timer, stop };
+}
+
+function syncHeartbeat(sessionId: string | null): void {
+  if (beat?.sessionId === sessionId) return;
+  stopHeartbeat();
+  if (sessionId) startHeartbeat(sessionId);
+}
+
+// 하트비트는 부가 기능이다: 여기서 난 오류가 세션 상태 변경(set)을 호출한 쪽으로 번지지 않게 한다
+useSession.subscribe((state) => {
+  try {
+    syncHeartbeat(state.sessionId);
+  } catch {
+    // 무시
+  }
+});
