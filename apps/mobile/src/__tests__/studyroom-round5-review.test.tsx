@@ -417,3 +417,33 @@ describe('스터디룸 뒤로 가기와 채팅', () => {
     dismiss.mockRestore();
   });
 });
+
+// 실기기 테스트: 채팅 입력줄의 + 와 이모지가 그림만 있어 눌러도 반응이 없었다
+describe('채팅 입력줄 + · 이모지', () => {
+  it('+ 를 누르면 자료 · 도구 메뉴가 열리고 키보드를 내린다', async () => {
+    mockConnectMedia.mockResolvedValue(media());
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText(room.title);
+    expect(screen.queryByText('시간표')).toBeNull();
+    await fireEvent.press(screen.getByLabelText('자료 · 도구 열기'));
+    expect(screen.getByText('시간표')).toBeTruthy();
+    expect(screen.getByText('퀴즈')).toBeTruthy();
+    expect(dismiss).toHaveBeenCalled();
+    dismiss.mockRestore();
+  });
+
+  it('이모지를 누르면 고르기 칸이 열리고, 고른 이모지가 입력 중인 글 뒤에 붙는다', async () => {
+    mockConnectMedia.mockResolvedValue(media());
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText(room.title);
+    const input = screen.getByPlaceholderText('채팅을 입력해 주세요');
+    await fireEvent.changeText(input, '화이팅');
+    await fireEvent.press(screen.getByLabelText('이모지'));
+    await fireEvent.press(screen.getByLabelText('👍 넣기'));
+    expect(screen.getByPlaceholderText('채팅을 입력해 주세요').props.value).toBe('화이팅👍');
+    // 다시 누르면 닫힌다
+    await fireEvent.press(screen.getByLabelText('이모지 닫기'));
+    expect(screen.queryByLabelText('👍 넣기')).toBeNull();
+  });
+});

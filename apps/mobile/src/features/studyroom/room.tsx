@@ -335,6 +335,26 @@ export function RoomCreateScreen() {
   );
 }
 
+/** 채팅 입력줄 이모지 고르기 칸에 보이는 이모지(공부하며 자주 쓰는 것) */
+export const CHAT_EMOJIS = [
+  '😀',
+  '😂',
+  '😭',
+  '🥲',
+  '🤔',
+  '👍',
+  '👏',
+  '🙏',
+  '💪',
+  '🔥',
+  '✅',
+  '📚',
+  '✍️',
+  '☕',
+  '🎉',
+  '❤️',
+];
+
 /** 화면 아래끝(창 기준)과 키보드 위끝이 겹치는 높이. 겹치지 않으면 0 */
 export const keyboardOverlap = (frame: { y: number; height: number }, keyboardTop: number) =>
   Math.max(0, Math.round(frame.y + frame.height - keyboardTop));
@@ -434,6 +454,8 @@ export function RoomScreen() {
   const [menu, setMenu] = useState(false);
   const [pick, setPick] = useState(false);
   const [chat, setChat] = useState(false);
+  // 채팅 입력줄의 이모지 고르기 칸
+  const [emoji, setEmoji] = useState(false);
   const keyboardFrame = useRef<View>(null);
   const keyboardInset = useKeyboardInset(keyboardFrame);
   // 방을 떠나면(설정 · 카드 · 초대 등 다른 화면으로) 채팅을 닫고 키보드를 내린다. 돌아왔을 때 채팅 화면이 아니라
@@ -1024,15 +1046,44 @@ export function RoomScreen() {
               <Text className="text-caption text-danger">채팅 연결에 실패했어요 · 다시 연결</Text>
             </Pressable>
           )}
+          {emoji && (
+            <View className="mx-5 mt-2 flex-row flex-wrap justify-between gap-y-1 rounded-2xl bg-white px-2 py-2">
+              {CHAT_EMOJIS.map((e) => (
+                <Pressable
+                  key={e}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${e} 넣기`}
+                  onPress={() => {
+                    setChat(true);
+                    setV((x) => x + e);
+                  }}
+                  className="h-10 w-10 items-center justify-center rounded-xl active:bg-fill"
+                >
+                  <Text className="text-title3">{e}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
           <View
             className="flex-row items-center gap-3 px-5 pt-3"
             // 키보드가 올라오면 홈 표시줄 여백은 필요 없다(키보드 바로 위에 붙인다)
             style={{ paddingBottom: keyboardInset > 0 ? 8 : Math.max(insets.bottom, 12) + 8 }}
           >
             <View className="flex-1 flex-row items-center gap-2 rounded-full bg-white px-4">
-              <View className="h-6 w-6 items-center justify-center rounded-full bg-ink">
+              {/* 예전엔 그림만 있어 눌러도 반응이 없었다: 자료 공유 · 도구 메뉴를 연다(키보드는 내린다) */}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="자료 · 도구 열기"
+                hitSlop={8}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setEmoji(false);
+                  setMenu((m) => !m);
+                }}
+                className="h-6 w-6 items-center justify-center rounded-full bg-ink"
+              >
                 <Plus size={ICON.xs} color="#fff" />
-              </View>
+              </Pressable>
               <TextInput
                 value={v}
                 onFocus={() => setChat(true)}
@@ -1043,7 +1094,17 @@ export function RoomScreen() {
                 placeholderTextColor={C.sub}
                 className="h-11 flex-1 text-footnote text-ink"
               />
-              <Smile size={ICON.md} color={C.sun} />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={emoji ? '이모지 닫기' : '이모지'}
+                hitSlop={8}
+                onPress={() => {
+                  setMenu(false);
+                  setEmoji((x) => !x);
+                }}
+              >
+                <Smile size={ICON.md} color={emoji ? C.brand : C.sun} />
+              </Pressable>
             </View>
             <Pressable
               accessibilityLabel="전송"
