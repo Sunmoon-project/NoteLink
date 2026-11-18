@@ -946,11 +946,20 @@ def _draft_all(
     stop = threading.Event()
     until = _until(llm, stop)
     futures: list[Future[Made]] = []
+
+    def guarded(s: Slot, k: int) -> Made:
+        """설정 · 코드 오류는 그 자리에서 바로 멈춤 신호를 켬: 주 스레드가 알아채기 전에 기다리던
+        다음 자리가 호출하지 않게(Codex 재리뷰 #513, 예전 guarded와 같음)."""
+        try:
+            return draft_one(until, s, pages[s.page], list(used), k)
+        except LlmError:
+            raise
+        except BaseException:
+            stop.set()
+            raise
+
     try:
-        futures += [
-            pool.submit(draft_one, until, s, pages[s.page], list(used), base + i)
-            for i, s in enumerate(slots)
-        ]
+        futures += [pool.submit(guarded, s, base + i) for i, s in enumerate(slots)]
         pending = set(futures)
         while pending and (left := end - _clock()) > 0:
             done, pending = wait(pending, timeout=min(1.0, left), return_when=FIRST_COMPLETED)

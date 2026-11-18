@@ -1538,3 +1538,25 @@ def test_draft_calls_left_from_the_first_round_count_toward_workers(
         release.set()
     assert calls[0] >= 3 and most[0] <= 2
     join_threads("quiz-draft")
+
+
+def test_a_setup_error_stops_waiting_drafts_even_before_the_main_thread_notices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 주 스레드가 오류를 늦게 봐도 기다리던 초안은 호출하지 않음(Codex 재리뷰 #513)
+    real_wait = generate.wait
+
+    def late_wait(*a: Any, **k: Any) -> Any:
+        time.sleep(0.3)  # 그사이 WORKERS=1의 다음 자리가 시작됨
+        return real_wait(*a, **k)
+
+    monkeypatch.setattr(generate, "wait", late_wait)
+
+    def quiz(user: str) -> JsonObject:
+        raise LlmSetupError("HTTP 401")
+
+    llm = parallel_llm(quiz)
+    with pytest.raises(LlmSetupError):
+        run(llm, job(size=4))
+    assert len(llm.named("Quiz")) == 1
+    join_threads("quiz-draft")
