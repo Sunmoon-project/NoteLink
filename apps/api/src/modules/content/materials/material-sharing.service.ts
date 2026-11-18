@@ -86,16 +86,7 @@ export class MaterialSharingService {
         closedAt: null,
         members: { $elemMatch: { userId: me, status: 'joined' } },
       }));
-    return member || (await this.chat.hasDirectMaterialAccess(userId, materialId))
-      ? note.ownerId.toHexString()
-      : null;
-    if (sharedIn.length === 0) return null;
-    const member = await this.rooms.exists({
-      _id: { $in: sharedIn.map((item) => item.roomId) },
-      closedAt: null,
-      members: { $elemMatch: { userId: me, status: 'joined' } },
-    });
-    if (!member) return null;
+    if (!member && !(await this.chat.hasDirectMaterialAccess(userId, materialId))) return null;
     // 주인이 탈퇴했거나(탈퇴 유예 포함) 계정이 없으면 공유도 없는 것과 같다(FR-03-08). 캘린더 공유와 같은 조건
     const ownerActive = await this.users.exists({
       _id: note.ownerId,

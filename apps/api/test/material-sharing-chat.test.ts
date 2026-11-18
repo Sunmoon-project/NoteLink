@@ -21,6 +21,7 @@ function setup() {
     directSharedMaterial: vi.fn(),
     findSharedMessage: vi.fn(),
   };
+  const users = { exists: vi.fn().mockResolvedValue({ _id: owner }) };
   const gateway = { notifyStudyMessage: vi.fn(), notifyDirectMessage: vi.fn() };
   const quizzes = { findOne: vi.fn() };
   const cards = { findOne: vi.fn(), find: vi.fn() };
@@ -30,17 +31,56 @@ function setup() {
     materials as never,
     rooms as never,
     shared as never,
-    {} as never,
+    users as never,
     chat as never,
     gateway as never,
     quizzes as never,
     cards as never,
     { transaction } as never,
   );
-  return { service, materials, rooms, shared, chat, gateway, quizzes, cards, transaction };
+  return { service, materials, rooms, shared, chat, gateway, quizzes, cards, transaction, users };
 }
 
 describe('채팅 학습 자료 공유', () => {
+  it.each(['room', 'direct'] as const)(
+    '%s 공유 노트는 현재 접근 권한과 정상 소유자가 모두 있을 때만 읽는다',
+    async (kind) => {
+      const x = setup();
+      x.materials.findOne.mockReturnValue(lean({ ownerId: new Types.ObjectId(owner) }));
+      x.shared.find.mockReturnValue(
+        lean(kind === 'room' ? [{ roomId: new Types.ObjectId(room) }] : []),
+      );
+      x.chat.hasDirectMaterialAccess.mockResolvedValue(kind === 'direct');
+      expect(await x.service.ownerOfShared(friend, String(itemId))).toBe(owner);
+      expect(x.users.exists).toHaveBeenCalledWith({
+        _id: new Types.ObjectId(owner),
+        deletedAt: null,
+        withdrawingAt: null,
+      });
+      x.users.exists.mockResolvedValue(null);
+      expect(await x.service.ownerOfShared(friend, String(itemId))).toBeNull();
+      if (kind === 'room') expect(x.chat.hasDirectMaterialAccess).not.toHaveBeenCalled();
+      else expect(x.chat.hasDirectMaterialAccess).toHaveBeenCalledWith(friend, String(itemId));
+    },
+  );
+
+  it('방과 1:1 대화 모두 접근 권한이 없으면 소유자 ID를 반환하지 않는다', async () => {
+    const x = setup();
+    x.materials.findOne.mockReturnValue(lean({ ownerId: new Types.ObjectId(owner) }));
+    x.shared.find.mockReturnValue(lean([{ roomId: new Types.ObjectId(room) }]));
+    x.rooms.exists.mockResolvedValue(null);
+    x.chat.hasDirectMaterialAccess.mockResolvedValue(false);
+    expect(await x.service.ownerOfShared(friend, String(itemId))).toBeNull();
+    expect(x.users.exists).not.toHaveBeenCalled();
+  });
+
+  it('삭제된 노트는 공유 권한이 있어도 읽지 않는다', async () => {
+    const x = setup();
+    x.materials.findOne.mockReturnValue(lean(null));
+    expect(await x.service.ownerOfShared(friend, String(itemId))).toBeNull();
+    expect(x.shared.find).not.toHaveBeenCalled();
+  });
+
   it.each(['quiz', 'flashcards'] as const)(
     '%s는 소유권과 방 멤버십을 확인하고 해당 방 채팅으로 전송한다',
     async (kind) => {

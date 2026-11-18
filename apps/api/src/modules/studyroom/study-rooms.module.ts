@@ -53,7 +53,7 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
     StudyRoomScheduleController,
   ],
   // 회원 탈퇴가 스터디룸에서 나가기를 쓴다(UsersModule). 소켓 · LiveKit 은 이 묶음 서비스 안에 둔다
-  exports: [StudyRoomMembershipService],
+  exports: [StudyRoomMembershipService, StudyChatService, StudyChatGateway],
   providers: [
     StudyRoomsService,
     StudyRoomMembershipService,
@@ -68,6 +68,5 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
     ReportImageSweeper,
     StudyRoomScheduleService,
   ],
-  exports: [StudyChatService, StudyChatGateway],
 })
 export class StudyRoomsModule {}
