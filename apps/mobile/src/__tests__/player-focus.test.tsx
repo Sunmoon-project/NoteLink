@@ -75,3 +75,16 @@ it.each(['북마크 추가', '5초 뒤로', '5초 앞으로', '구간 반복'])(
     expect(w).toBeGreaterThanOrEqual(44);
   },
 );
+
+// 사용자 요청: 배속 칩도 작아 누르기 불편했다 → 보이는 크기 + hitSlop으로 누르는 높이 44pt 이상, 글자 한 단계 키움
+it('배속 칩은 누르는 높이가 44pt 이상이고 글자는 caption이다', async () => {
+  await renderScreen(<Player materialId="m-rate" />);
+  const label = await screen.findByText(/배속/);
+  expect(String(label.props.className)).toMatch(/\btext-caption\b/);
+  let node = label.parent;
+  while (node && node.props.hitSlop === undefined) node = node.parent;
+  const cls = [node, node?.parent].map((n) => String(n?.props.className ?? '')).join(' ');
+  const h = Number(cls.match(/\bh-(\d+)\b/)?.[1]) * 4;
+  const slop = Number(node?.props.hitSlop?.top ?? node?.props.hitSlop);
+  expect(h + slop * 2).toBeGreaterThanOrEqual(44);
+});

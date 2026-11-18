@@ -310,9 +310,11 @@ export function Player({
           </Text>
           <Pressable
             onPress={() => p.setRate(SPEEDS[(SPEEDS.indexOf(p.rate) + 1) % SPEEDS.length] ?? 1)}
-            className="rounded-full bg-white/15 px-2 py-0.5"
+            // 보이는 칩은 32, 위아래 6씩 넓혀 누르는 높이 44(시간 줄 높이는 거의 그대로)
+            hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+            className="h-8 justify-center rounded-full bg-white/15 px-3"
           >
-            <Text className="text-caption2 font-semibold text-white">{p.rate}x 배속</Text>
+            <Text className="text-caption font-semibold text-white">{p.rate}x 배속</Text>
           </Pressable>
         </View>
         <View className="mt-2 flex-row items-center justify-center gap-3 pb-1">
