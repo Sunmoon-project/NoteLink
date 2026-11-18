@@ -41,7 +41,8 @@ interface SetRow {
   folderId?: Types.ObjectId | null;
 }
 
-const idOrNull = (id: Types.ObjectId | null | undefined): string | null => (id ? id.toString() : null);
+const idOrNull = (id: Types.ObjectId | null | undefined): string | null =>
+  id ? id.toString() : null;
 
 function toApp(row: FlashcardRow): AppFlashcard {
   return {
@@ -122,7 +123,9 @@ export class FlashcardsService {
 
   /** 내 카드만 지운다(deletedAt). 없거나 남의 카드 id, 형식이 틀린 id는 조용히 넘어간다 */
   async remove(userId: string, ids: string[]): Promise<void> {
-    const valid = [...new Set(ids.filter((id) => OBJECT_ID.test(id)))].map((id) => new Types.ObjectId(id));
+    const valid = [...new Set(ids.filter((id) => OBJECT_ID.test(id)))].map(
+      (id) => new Types.ObjectId(id),
+    );
     if (valid.length === 0) return;
     await this.cards.updateMany(
       { _id: { $in: valid }, ownerId: new Types.ObjectId(userId), deletedAt: null },

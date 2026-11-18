@@ -553,6 +553,14 @@ describe('AppSignupService.signup', () => {
       expect(await compare(PASSWORD, row.passwordHash!)).toBe(true);
     });
 
+    it('가입 인증번호로 확인한 이메일은 인증된 것으로 적는다(계정 화면에서 다시 인증하지 않게)', async () => {
+      const ctx = setup();
+      await ctx.service.signup(await verifiedToken(ctx), nextLoginId(), PASSWORD);
+      expect(
+        (ctx.users[0] as unknown as { emailVerifiedAt?: unknown }).emailVerifiedAt,
+      ).toBeInstanceOf(Date);
+    });
+
     it('같은 비밀번호도 계정마다 해시가 다르다 (솔트)', async () => {
       const ctx = setup();
       await ctx.service.signup(await verifiedToken(ctx, 'a@example.com'), nextLoginId(), PASSWORD);

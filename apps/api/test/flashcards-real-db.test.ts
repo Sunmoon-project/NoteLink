@@ -59,7 +59,11 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
           // 'user-<id>' 토큰이면 그 사용자로 로그인한 것으로 본다
           useValue: {
             verifyAccess: (t: string) =>
-              t.startsWith('user-') ? Promise.resolve({ userId: t.slice(5) }) : Promise.reject(new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: 'x' })),
+              t.startsWith('user-')
+                ? Promise.resolve({ userId: t.slice(5) })
+                : Promise.reject(
+                    new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: 'x' }),
+                  ),
           },
         },
       ],
@@ -92,7 +96,15 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
       title: '세포',
       status: 'ready',
       deletedAt: null,
-      questions: [{ _id: questionId, order: 0, type: 'short_answer', prompt: '핵에 있는 것은?', answer: 'DNA' }],
+      questions: [
+        {
+          _id: questionId,
+          order: 0,
+          type: 'short_answer',
+          prompt: '핵에 있는 것은?',
+          answer: 'DNA',
+        },
+      ],
       ...extra,
     });
     return { setId: set.insertedId, questionId };
@@ -104,7 +116,11 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
     const folderId = new Types.ObjectId();
     const { setId, questionId } = await addSet(me, { materialId, folderId });
 
-    const card = await service.save(me, { front: '핵에 있는 것은?', back: 'DNA', sourceQuestionId: questionId.toString() });
+    const card = await service.save(me, {
+      front: '핵에 있는 것은?',
+      back: 'DNA',
+      sourceQuestionId: questionId.toString(),
+    });
 
     expect(card).toMatchObject({
       materialId: materialId.toString(),
@@ -113,17 +129,30 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
       sourceQuestionId: questionId.toString(),
     });
     const row = await col('flashcards').findOne({ _id: new Types.ObjectId(card._id) });
-    expect(row).toMatchObject({ ownerId: new Types.ObjectId(me), deletedAt: null, lastResult: null });
+    expect(row).toMatchObject({
+      ownerId: new Types.ObjectId(me),
+      deletedAt: null,
+      lastResult: null,
+    });
     expect(SharedFlashcard.safeParse(card).success).toBe(true);
   });
 
   it('세트에 폴더가 없으면 자료(materials)의 폴더를 쓴다', async () => {
     const me = await newUser();
     const folderId = new Types.ObjectId();
-    const material = await col('materials').insertOne({ ownerId: new Types.ObjectId(me), folderId, title: '노트', deletedAt: null });
+    const material = await col('materials').insertOne({
+      ownerId: new Types.ObjectId(me),
+      folderId,
+      title: '노트',
+      deletedAt: null,
+    });
     const { questionId } = await addSet(me, { materialId: material.insertedId });
 
-    const card = await service.save(me, { front: 'a', back: 'b', sourceQuestionId: questionId.toString() });
+    const card = await service.save(me, {
+      front: 'a',
+      back: 'b',
+      sourceQuestionId: questionId.toString(),
+    });
 
     expect(card.folderId).toBe(folderId.toString());
     expect(card.materialId).toBe(material.insertedId.toString());
@@ -133,9 +162,20 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
     const me = await newUser();
     const card = await service.save(me, { front: '앞', back: '뒤', sourceQuestionId: null });
 
-    expect(card).toMatchObject({ materialId: null, folderId: null, sourceQuizSetId: null, sourceQuestionId: null, lastResult: null });
+    expect(card).toMatchObject({
+      materialId: null,
+      folderId: null,
+      sourceQuizSetId: null,
+      sourceQuestionId: null,
+      lastResult: null,
+    });
     const row = await col('flashcards').findOne({ _id: new Types.ObjectId(card._id) });
-    expect(row).toMatchObject({ materialId: null, folderId: null, sourceQuizSetId: null, sourceQuestionId: null });
+    expect(row).toMatchObject({
+      materialId: null,
+      folderId: null,
+      sourceQuizSetId: null,
+      sourceQuestionId: null,
+    });
     expect(SharedFlashcard.safeParse(card).success).toBe(true); // 폴더 없는 카드도 공용 계약(folderId null 허용)에 맞는다
     const listed = await service.list(me);
     expect(listed).toHaveLength(1);
@@ -148,9 +188,9 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
     const theirs = await addSet(other);
 
     for (const q of [theirs.questionId, new Types.ObjectId()]) {
-      await expect(service.save(me, { front: 'a', back: 'b', sourceQuestionId: q.toString() })).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.save(me, { front: 'a', back: 'b', sourceQuestionId: q.toString() }),
+      ).rejects.toBeInstanceOf(NotFoundException);
     }
     expect(await col('flashcards').countDocuments({ ownerId: new Types.ObjectId(me) })).toBe(0);
   });
@@ -182,43 +222,86 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
   it('여러 장을 지우고, 남의 카드 id가 섞여도 내 것만 지워진다', async () => {
     const me = await newUser();
     const other = await newUser();
-    const mine = [await service.save(me, { front: '1', back: 'a' }), await service.save(me, { front: '2', back: 'b' })];
+    const mine = [
+      await service.save(me, { front: '1', back: 'a' }),
+      await service.save(me, { front: '2', back: 'b' }),
+    ];
     const theirs = await service.save(other, { front: '남', back: 'x' });
 
-    await service.remove(me, [...mine.map((m) => m._id), theirs._id, new Types.ObjectId().toString()]);
+    await service.remove(me, [
+      ...mine.map((m) => m._id),
+      theirs._id,
+      new Types.ObjectId().toString(),
+    ]);
 
     expect(await service.list(me)).toEqual([]);
     expect(await service.list(other)).toHaveLength(1);
-    expect((await col('flashcards').findOne({ _id: new Types.ObjectId(theirs._id) }))?.['deletedAt']).toBeNull();
+    expect(
+      (await col('flashcards').findOne({ _id: new Types.ObjectId(theirs._id) }))?.['deletedAt'],
+    ).toBeNull();
   });
 
-  it.each([201, FLASHCARD_DELETE_MAX])('%i장을 한 번에 지워도 되고 내 카드만 지워진다 (남의 카드 · 없는 id · 중복 id가 섞여도)', async (n) => {
-    const me = await newUser();
-    const other = await newUser();
-    const now = new Date();
-    const mine = Array.from({ length: n }, (_, i) => ({ ownerId: new Types.ObjectId(me), front: `앞${i}`, back: '뒤', deletedAt: null, createdAt: now }));
-    const mineIds = Object.values((await col('flashcards').insertMany(mine)).insertedIds).map(String);
-    const theirs = await service.save(other, { front: '남', back: 'x' });
-    // 남의 카드 · 없는 id · 중복 id를 섞되 전체 개수는 n개 (실제 id 길이 그대로라 본문 크기도 앱과 같다)
-    const ids = [...mineIds.slice(0, n - 5), theirs._id, new Types.ObjectId().toString(), mineIds[0]!, mineIds[1]!, mineIds[2]!];
-    expect(ids).toHaveLength(n);
+  it.each([201, FLASHCARD_DELETE_MAX])(
+    '%i장을 한 번에 지워도 되고 내 카드만 지워진다 (남의 카드 · 없는 id · 중복 id가 섞여도)',
+    async (n) => {
+      const me = await newUser();
+      const other = await newUser();
+      const now = new Date();
+      const mine = Array.from({ length: n }, (_, i) => ({
+        ownerId: new Types.ObjectId(me),
+        front: `앞${i}`,
+        back: '뒤',
+        deletedAt: null,
+        createdAt: now,
+      }));
+      const mineIds = Object.values((await col('flashcards').insertMany(mine)).insertedIds).map(
+        String,
+      );
+      const theirs = await service.save(other, { front: '남', back: 'x' });
+      // 남의 카드 · 없는 id · 중복 id를 섞되 전체 개수는 n개 (실제 id 길이 그대로라 본문 크기도 앱과 같다)
+      const ids = [
+        ...mineIds.slice(0, n - 5),
+        theirs._id,
+        new Types.ObjectId().toString(),
+        mineIds[0]!,
+        mineIds[1]!,
+        mineIds[2]!,
+      ];
+      expect(ids).toHaveLength(n);
 
-    const res = await request(app.getHttpServer()).post('/api/v1/flashcards/delete').set({ Authorization: `Bearer user-${me}` }).send({ ids });
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/flashcards/delete')
+        .set({ Authorization: `Bearer user-${me}` })
+        .send({ ids });
 
-    expect(res.status).toBe(204);
-    // 앞의 n-5장만 보냈으므로 마지막 5장은 남고(단, 중복으로 보낸 앞의 3장은 이미 지워짐), 남의 카드는 그대로
-    expect(await col('flashcards').countDocuments({ ownerId: new Types.ObjectId(me), deletedAt: null })).toBe(5);
-    expect((await service.list(other))).toHaveLength(1);
-    expect((await col('flashcards').findOne({ _id: new Types.ObjectId(theirs._id) }))?.['deletedAt']).toBeNull();
-  });
+      expect(res.status).toBe(204);
+      // 앞의 n-5장만 보냈으므로 마지막 5장은 남고(단, 중복으로 보낸 앞의 3장은 이미 지워짐), 남의 카드는 그대로
+      expect(
+        await col('flashcards').countDocuments({
+          ownerId: new Types.ObjectId(me),
+          deletedAt: null,
+        }),
+      ).toBe(5);
+      expect(await service.list(other)).toHaveLength(1);
+      expect(
+        (await col('flashcards').findOne({ _id: new Types.ObjectId(theirs._id) }))?.['deletedAt'],
+      ).toBeNull();
+    },
+  );
 
   it('상한을 넘는 요청은 400이고 아무것도 지워지지 않는다 (상한 + 1개, 실제 HTTP)', async () => {
     const me = await newUser();
     const card = await service.save(me, { front: '1', back: 'a' });
-    const ids = [card._id, ...Array.from({ length: FLASHCARD_DELETE_MAX }, () => new Types.ObjectId().toString())];
+    const ids = [
+      card._id,
+      ...Array.from({ length: FLASHCARD_DELETE_MAX }, () => new Types.ObjectId().toString()),
+    ];
     expect(ids).toHaveLength(FLASHCARD_DELETE_MAX + 1);
 
-    const res = await request(app.getHttpServer()).post('/api/v1/flashcards/delete').set({ Authorization: `Bearer user-${me}` }).send({ ids });
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/flashcards/delete')
+      .set({ Authorization: `Bearer user-${me}` })
+      .send({ ids });
 
     expect(res.status).toBe(400);
     expect(await service.list(me)).toHaveLength(1);

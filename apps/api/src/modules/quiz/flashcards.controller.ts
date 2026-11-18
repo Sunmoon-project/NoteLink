@@ -21,7 +21,10 @@ export class FlashcardsController {
   /** POST /api/v1/flashcards { front, back, sourceQuestionId? } → 201 { data: Flashcard } */
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  async save(@Req() req: AuthenticatedRequest, @Body() body: SaveFlashcardDto): Promise<{ data: AppFlashcard }> {
+  async save(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: SaveFlashcardDto,
+  ): Promise<{ data: AppFlashcard }> {
     return { data: await this.flashcards.save(requireUserId(req), body) };
   }
 

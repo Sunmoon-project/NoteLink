@@ -7,11 +7,11 @@ export type ShopSort = (typeof SHOP_SORTS)[number];
 
 /** GET /shop/items?category=avatar&sort=price 의 쿼리 */
 export class ListShopItemsDto {
-    @IsOptional()
-    @IsIn(SHOP_CATEGORIES)
-    category?: ShopCategory;
+  @IsOptional()
+  @IsIn(SHOP_CATEGORIES)
+  category?: ShopCategory;
 
-    @IsOptional()
-    @IsIn(SHOP_SORTS)
-    sort?: ShopSort;
+  @IsOptional()
+  @IsIn(SHOP_SORTS)
+  sort?: ShopSort;
 }

@@ -14,38 +14,38 @@ export type ShopItemDocument = HydratedDocument<ShopItem>;
 // timestamps: createdAt이 자동으로 생겨서 "최신순" 정렬에 쓴다
 @Schema({ collection: 'shop_items', timestamps: true })
 export class ShopItem {
-    @Prop({ type: String, required: true, enum: SHOP_CATEGORIES })
-    category: ShopCategory;
+  @Prop({ type: String, required: true, enum: SHOP_CATEGORIES })
+  category: ShopCategory;
 
-    @Prop({ required: true })
-    name: string;
+  @Prop({ required: true })
+  name: string;
 
-    @Prop({ type: String, default: null })
-    description: string | null;
+  @Prop({ type: String, default: null })
+  description: string | null;
 
-    @Prop({ required: true, min: 0 })
-    price: number;
+  @Prop({ required: true, min: 0 })
+  price: number;
 
-    @Prop({ type: String, default: null })
-    avatarStyle: string | null; // 아바타일 때만 씀
+  @Prop({ type: String, default: null })
+  avatarStyle: string | null; // 아바타일 때만 씀
 
-    @Prop({ type: String, default: null })
-    thumbnailUrl: string | null;
+  @Prop({ type: String, default: null })
+  thumbnailUrl: string | null;
 
-    @Prop({ required: true })
-    assetUrl: string;
+  @Prop({ required: true })
+  assetUrl: string;
 
-    @Prop({ required: true, default: 0, min: 0 })
-    purchaseCount: number; // 인기순 정렬 기준
+  @Prop({ required: true, default: 0, min: 0 })
+  purchaseCount: number; // 인기순 정렬 기준
 
-    @Prop({ required: true, default: true })
-    isActive: boolean; // false면 목록에서 숨김
+  @Prop({ required: true, default: true })
+  isActive: boolean; // false면 목록에서 숨김
 
-    @Prop({ required: true, default: false })
-    isDefault: boolean; // 가입 시 기본 지급 아이템
+  @Prop({ required: true, default: false })
+  isDefault: boolean; // 가입 시 기본 지급 아이템
 
-    @Prop({ type: String, enum: SHOP_BADGES, default: null })
-    badge: ShopBadge | null;
+  @Prop({ type: String, enum: SHOP_BADGES, default: null })
+  badge: ShopBadge | null;
 }
 
 export const ShopItemSchema = SchemaFactory.createForClass(ShopItem);

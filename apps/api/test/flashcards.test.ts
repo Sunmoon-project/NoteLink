@@ -2,7 +2,11 @@ import { BadRequestException, NotFoundException, ValidationPipe } from '@nestjs/
 import { Types } from 'mongoose';
 import { describe, expect, it } from 'vitest';
 
-import { DeleteFlashcardsDto, FLASHCARD_DELETE_MAX, SaveFlashcardDto } from '../src/modules/quiz/dto/flashcard.dto.js';
+import {
+  DeleteFlashcardsDto,
+  FLASHCARD_DELETE_MAX,
+  SaveFlashcardDto,
+} from '../src/modules/quiz/dto/flashcard.dto.js';
 import { FlashcardsService } from '../src/modules/quiz/flashcards.service.js';
 import { FlashcardSchema } from '../src/modules/quiz/schemas/flashcard.schema.js';
 
@@ -15,11 +19,18 @@ function fakeModels() {
   const sets: Row[] = [];
   const materials: Row[] = [];
   let clock = 0;
-  const lean = <T>(value: T) => ({ lean: () => Promise.resolve(value), select: () => ({ lean: () => Promise.resolve(value) }) });
+  const lean = <T>(value: T) => ({
+    lean: () => Promise.resolve(value),
+    select: () => ({ lean: () => Promise.resolve(value) }),
+  });
 
   const cardModel = {
     create: (data: Record<string, unknown>) => {
-      const row: Row = { createdAt: new Date(Date.UTC(2026, 10, 8, 0, 0, clock++)), ...data, _id: new Types.ObjectId() };
+      const row: Row = {
+        createdAt: new Date(Date.UTC(2026, 10, 8, 0, 0, clock++)),
+        ...data,
+        _id: new Types.ObjectId(),
+      };
       cards.push(row);
       return Promise.resolve({ toObject: () => row });
     },
@@ -29,9 +40,16 @@ function fakeModels() {
         .sort((a, b) => (a['createdAt'] as Date).getTime() - (b['createdAt'] as Date).getTime());
       return { sort: () => lean(found) };
     },
-    updateMany: (filter: { _id: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId }, update: { $set: Row }) => {
+    updateMany: (
+      filter: { _id: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId },
+      update: { $set: Row },
+    ) => {
       for (const c of cards) {
-        if (filter._id.$in.some((i) => same(i, c._id)) && same(c['ownerId'], filter.ownerId) && !c['deletedAt']) {
+        if (
+          filter._id.$in.some((i) => same(i, c._id)) &&
+          same(c['ownerId'], filter.ownerId) &&
+          !c['deletedAt']
+        ) {
           Object.assign(c, update.$set);
         }
       }
@@ -51,7 +69,10 @@ function fakeModels() {
   };
   const materialModel = {
     findOne: (filter: { _id: Types.ObjectId; ownerId: Types.ObjectId }) =>
-      lean(materials.find((m) => same(m._id, filter._id) && same(m['ownerId'], filter.ownerId)) ?? null),
+      lean(
+        materials.find((m) => same(m._id, filter._id) && same(m['ownerId'], filter.ownerId)) ??
+          null,
+      ),
   };
   const service = new FlashcardsService(
     cardModel as unknown as never,
@@ -72,7 +93,13 @@ describe('플래시카드 서비스', () => {
   ): { setId: Types.ObjectId; questionId: Types.ObjectId } => {
     const setId = new Types.ObjectId();
     const questionId = new Types.ObjectId();
-    f.sets.push({ _id: setId, ownerId: new Types.ObjectId(owner), deletedAt: null, questions: [{ _id: questionId }], ...extra });
+    f.sets.push({
+      _id: setId,
+      ownerId: new Types.ObjectId(owner),
+      deletedAt: null,
+      questions: [{ _id: questionId }],
+      ...extra,
+    });
     return { setId, questionId };
   };
 
@@ -82,7 +109,11 @@ describe('플래시카드 서비스', () => {
     const folderId = new Types.ObjectId();
     const { setId, questionId } = addSet(f, me, { materialId, folderId });
 
-    const card = await f.service.save(me, { front: '핵에 있는 것은?', back: 'DNA', sourceQuestionId: questionId.toString() });
+    const card = await f.service.save(me, {
+      front: '핵에 있는 것은?',
+      back: 'DNA',
+      sourceQuestionId: questionId.toString(),
+    });
 
     expect(card).toMatchObject({
       materialId: materialId.toString(),
@@ -103,7 +134,11 @@ describe('플래시카드 서비스', () => {
     f.materials.push({ _id: materialId, ownerId: new Types.ObjectId(me), folderId });
     const { questionId } = addSet(f, me, { materialId });
 
-    const card = await f.service.save(me, { front: 'a', back: 'b', sourceQuestionId: questionId.toString() });
+    const card = await f.service.save(me, {
+      front: 'a',
+      back: 'b',
+      sourceQuestionId: questionId.toString(),
+    });
 
     expect(card.folderId).toBe(folderId.toString());
   });
@@ -111,14 +146,27 @@ describe('플래시카드 서비스', () => {
   it('세트에 자료도 폴더도 없으면 folderId · materialId는 null', async () => {
     const f = fakeModels();
     const { questionId, setId } = addSet(f, me);
-    const card = await f.service.save(me, { front: 'a', back: 'b', sourceQuestionId: questionId.toString() });
-    expect(card).toMatchObject({ folderId: null, materialId: null, sourceQuizSetId: setId.toString() });
+    const card = await f.service.save(me, {
+      front: 'a',
+      back: 'b',
+      sourceQuestionId: questionId.toString(),
+    });
+    expect(card).toMatchObject({
+      folderId: null,
+      materialId: null,
+      sourceQuizSetId: setId.toString(),
+    });
   });
 
   it('문제 없이 저장하면 세트 · 자료 · 폴더가 모두 null', async () => {
     const f = fakeModels();
     const card = await f.service.save(me, { front: 'a', back: 'b' });
-    expect(card).toMatchObject({ materialId: null, folderId: null, sourceQuizSetId: null, sourceQuestionId: null });
+    expect(card).toMatchObject({
+      materialId: null,
+      folderId: null,
+      sourceQuizSetId: null,
+      sourceQuestionId: null,
+    });
     const again = await f.service.save(me, { front: 'a', back: 'b', sourceQuestionId: null });
     expect(again.sourceQuestionId).toBeNull();
   });
@@ -129,9 +177,9 @@ describe('플래시카드 서비스', () => {
     const gone = addSet(f, me, { deletedAt: new Date() });
 
     for (const q of [questionId, new Types.ObjectId(), gone.questionId]) {
-      await expect(f.service.save(me, { front: 'a', back: 'b', sourceQuestionId: q.toString() })).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        f.service.save(me, { front: 'a', back: 'b', sourceQuestionId: q.toString() }),
+      ).rejects.toBeInstanceOf(NotFoundException);
     }
     expect(f.cards).toHaveLength(0);
   });
@@ -139,8 +187,16 @@ describe('플래시카드 서비스', () => {
   it('같은 문제로 두 번 저장하면 두 장이 생긴다(앱도 막지 않는다)', async () => {
     const f = fakeModels();
     const { questionId } = addSet(f, me);
-    const a = await f.service.save(me, { front: 'a', back: 'b', sourceQuestionId: questionId.toString() });
-    const b = await f.service.save(me, { front: 'a', back: 'b', sourceQuestionId: questionId.toString() });
+    const a = await f.service.save(me, {
+      front: 'a',
+      back: 'b',
+      sourceQuestionId: questionId.toString(),
+    });
+    const b = await f.service.save(me, {
+      front: 'a',
+      back: 'b',
+      sourceQuestionId: questionId.toString(),
+    });
     expect(a._id).not.toBe(b._id);
     expect(await f.service.list(me)).toHaveLength(2);
   });
@@ -165,7 +221,13 @@ describe('플래시카드 서비스', () => {
     const b = await f.service.save(me, { front: '2', back: 'b' });
     const theirs = await f.service.save(other, { front: '남', back: 'x' });
 
-    await f.service.remove(me, [a._id, b._id, theirs._id, new Types.ObjectId().toString(), 'fc_not-an-id']);
+    await f.service.remove(me, [
+      a._id,
+      b._id,
+      theirs._id,
+      new Types.ObjectId().toString(),
+      'fc_not-an-id',
+    ]);
 
     expect(await f.service.list(me)).toEqual([]);
     expect(await f.service.list(other)).toHaveLength(1);
@@ -175,11 +237,17 @@ describe('플래시카드 서비스', () => {
 
 describe('플래시카드 요청 검사(DTO)', () => {
   const pipe = new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true });
-  const save = (body: unknown) => pipe.transform(body, { type: 'body', metatype: SaveFlashcardDto });
-  const del = (body: unknown) => pipe.transform(body, { type: 'body', metatype: DeleteFlashcardsDto });
+  const save = (body: unknown) =>
+    pipe.transform(body, { type: 'body', metatype: SaveFlashcardDto });
+  const del = (body: unknown) =>
+    pipe.transform(body, { type: 'body', metatype: DeleteFlashcardsDto });
 
   it('앞뒤 공백은 지우고 저장 요청을 받는다', async () => {
-    const dto = (await save({ front: ' 앞 ', back: ' 뒤 ', sourceQuestionId: new Types.ObjectId().toString() })) as SaveFlashcardDto;
+    const dto = (await save({
+      front: ' 앞 ',
+      back: ' 뒤 ',
+      sourceQuestionId: new Types.ObjectId().toString(),
+    })) as SaveFlashcardDto;
     expect(dto.front).toBe('앞');
     expect(dto.back).toBe('뒤');
   });
@@ -205,10 +273,16 @@ describe('플래시카드 요청 검사(DTO)', () => {
   it('삭제 요청은 문자열 배열이어야 한다', async () => {
     await expect(del({ ids: [] })).resolves.toBeDefined();
     await expect(del({ ids: ['a', 'b'] })).resolves.toBeDefined();
-    for (const n of [201, FLASHCARD_DELETE_MAX]) { // 앱이 한 번에 많이 골라 보내도 된다
+    for (const n of [201, FLASHCARD_DELETE_MAX]) {
+      // 앱이 한 번에 많이 골라 보내도 된다
       await expect(del({ ids: Array.from({ length: n }, () => 'a') })).resolves.toBeDefined();
     }
-    for (const body of [{}, { ids: 'a' }, { ids: [1] }, { ids: Array.from({ length: FLASHCARD_DELETE_MAX + 1 }, () => 'a') }]) {
+    for (const body of [
+      {},
+      { ids: 'a' },
+      { ids: [1] },
+      { ids: Array.from({ length: FLASHCARD_DELETE_MAX + 1 }, () => 'a') },
+    ]) {
       await expect(del(body)).rejects.toBeInstanceOf(BadRequestException);
     }
   });
@@ -221,6 +295,10 @@ describe('플래시카드 스키마', () => {
       expect(type.isRequired, path).toBeFalsy();
       expect((type.options as { default?: unknown }).default, path).toBeNull();
     }
-    expect(FlashcardSchema.indexes().some(([keys]) => 'ownerId' in keys && 'deletedAt' in keys && 'createdAt' in keys)).toBe(true);
+    expect(
+      FlashcardSchema.indexes().some(
+        ([keys]) => 'ownerId' in keys && 'deletedAt' in keys && 'createdAt' in keys,
+      ),
+    ).toBe(true);
   });
 });

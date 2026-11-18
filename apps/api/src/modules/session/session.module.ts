@@ -12,16 +12,16 @@ import { StudyService } from './study.service.js';
 import { SubjectsController } from './subjects.controller.js';
 
 @Module({
-    imports: [
-        MongooseModule.forFeature([
-            { name: StudySession.name, schema: StudySessionSchema },
-            { name: DailyRecord.name, schema: DailyRecordSchema },
-            { name: Subject.name, schema: SubjectSchema },
-        ]),
-        AuthModule, // 로그인 확인(JwtAuthGuard)에 필요한 도구를 가져온다
-        RewardModule, // 세션이 끝날 때 포인트를 적립하려고 PointService를 가져온다
-    ],
-    controllers: [StudyController, SubjectsController, StudySessionsController],
-    providers: [StudyService],
+  imports: [
+    MongooseModule.forFeature([
+      { name: StudySession.name, schema: StudySessionSchema },
+      { name: DailyRecord.name, schema: DailyRecordSchema },
+      { name: Subject.name, schema: SubjectSchema },
+    ]),
+    AuthModule, // 로그인 확인(JwtAuthGuard)에 필요한 도구를 가져온다
+    RewardModule, // 세션이 끝날 때 포인트를 적립하려고 PointService를 가져온다
+  ],
+  controllers: [StudyController, SubjectsController, StudySessionsController],
+  providers: [StudyService],
 })
-export class SessionModule { }
+export class SessionModule {}

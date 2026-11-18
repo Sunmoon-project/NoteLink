@@ -1,8 +1,17 @@
 import { Transform } from 'class-transformer';
-import { ArrayMaxSize, IsArray, IsMongoId, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsMongoId,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 /** 앞뒤 공백을 지운다. 공백뿐인 글은 빈 글이 되어 IsNotEmpty에서 걸린다 */
-const trim = ({ value }: { value: unknown }): unknown => (typeof value === 'string' ? value.trim() : value);
+const trim = ({ value }: { value: unknown }): unknown =>
+  typeof value === 'string' ? value.trim() : value;
 
 export const FLASHCARD_FRONT_MAX = 1000;
 export const FLASHCARD_BACK_MAX = 2000;

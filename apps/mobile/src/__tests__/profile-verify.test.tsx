@@ -52,6 +52,14 @@ it('학교 화면은 앞뒤 공백을 지워 저장한다', async () => {
   expect(router.back).toHaveBeenCalled();
 });
 
+it('학교 화면은 저장된 값으로 시작하고, 고치기 전에는 저장하지 않는다(늦게 받아도 지우지 않게)', async () => {
+  mockApi.me.get.mockResolvedValue(user({ school: '선문고' }));
+  await renderScreen(<SchoolScreen />);
+  expect(await screen.findByDisplayValue('선문고')).toBeTruthy();
+  await fireEvent.press(screen.getByText('저장'));
+  expect(mockApi.me.update).not.toHaveBeenCalled();
+});
+
 it('이메일을 누르면 인증 창이 뜨고, 인증번호를 확인하면 「인증됨」을 보인다', async () => {
   mockApi.me.get.mockResolvedValue(user());
   mockApi.me.emailVerifyCode.mockResolvedValue(user({ emailVerified: true }));

@@ -12,17 +12,17 @@ import { QuizAttemptsService } from './quiz-attempts.service.js';
 
 /** 퀴즈 풀이 시작 · 답 제출 채점(FR-49·50). 끝내기 · 정답 포인트(FR-51) */
 @Module({
-    imports: [
-        MongooseModule.forFeature([
-            { name: QuizAttempt.name, schema: QuizAttemptSchema },
-            { name: QuizSet.name, schema: QuizSetSchema }, // 내 세트인지 · 문제 정답을 읽기만 한다
-            { name: User.name, schema: UserSchema }, // 끝낸 뒤 잔액을 읽기만 한다
-        ]),
-        RewardModule, // 정답 포인트 적립(PointService.earnQuiz)
-        AuthModule, // 로그인 확인(JwtAuthGuard)에 필요한 도구를 가져온다
-        QuizSetsModule, // 끝낸 뒤 오답 복습 시작(SimilarQuizService.startAfterFinish)
-    ],
-    controllers: [QuizAttemptsController],
-    providers: [QuizAttemptsService],
+  imports: [
+    MongooseModule.forFeature([
+      { name: QuizAttempt.name, schema: QuizAttemptSchema },
+      { name: QuizSet.name, schema: QuizSetSchema }, // 내 세트인지 · 문제 정답을 읽기만 한다
+      { name: User.name, schema: UserSchema }, // 끝낸 뒤 잔액을 읽기만 한다
+    ]),
+    RewardModule, // 정답 포인트 적립(PointService.earnQuiz)
+    AuthModule, // 로그인 확인(JwtAuthGuard)에 필요한 도구를 가져온다
+    QuizSetsModule, // 끝낸 뒤 오답 복습 시작(SimilarQuizService.startAfterFinish)
+  ],
+  controllers: [QuizAttemptsController],
+  providers: [QuizAttemptsService],
 })
-export class QuizAttemptsModule { }
+export class QuizAttemptsModule {}

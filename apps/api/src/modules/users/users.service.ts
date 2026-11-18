@@ -7,7 +7,6 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  ServiceUnavailableException,
   type OnApplicationBootstrap,
   type OnModuleDestroy,
 } from '@nestjs/common';
@@ -22,9 +21,10 @@ import type { ChangePlanDto, RegisterDeviceDto, UpdateStatusDto } from './dto/ac
 import { toAppUser } from '../auth/to-app-user.js';
 import { TokenService } from '../auth/token.service.js';
 import { EmailCodeService } from '../auth/app-login/email-code.service.js';
+import { APP_LOGIN_ERRORS } from '../auth/app-login/app-login-errors.js';
 import {
-  APP_LOGIN_ERRORS,
   codeRejected,
+  mailUnavailable,
   rateLimited,
 } from '../auth/app-login/app-signup.service.js';
 import { MAIL_SENDER, MailUnavailableError, type MailSender } from '../mail/mail-sender.js';
@@ -72,11 +72,7 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
     try {
       await this.mail.sendIdentityCode(email, issued.code);
     } catch (error) {
-      if (!(error instanceof MailUnavailableError)) throw error;
-      throw new ServiceUnavailableException({
-        code: APP_LOGIN_ERRORS.MAIL_UNAVAILABLE,
-        message: '인증 메일을 보내지 못했어요. 잠시 뒤 다시 시도해 주세요',
-      });
+      throw error instanceof MailUnavailableError ? mailUnavailable() : error;
     }
   }
 

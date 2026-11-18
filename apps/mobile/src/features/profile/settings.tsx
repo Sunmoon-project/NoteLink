@@ -8,7 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarDays, Check, ChevronRight, CircleAlert, Gift, Zap } from 'lucide-react-native';
 import type { PlanTier, UserSettings } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
-import { CodeBoxes } from '../auth/auth';
+import { CodeBoxes } from '@/components/code-boxes';
 import { nicknameError } from '@/lib/validation';
 import { env } from '@/lib/env';
 import { clearAccountState } from '@/lib/account';
@@ -403,9 +403,9 @@ export function AccountScreen() {
       ),
       () => setVerify('email'),
     ],
-    ['전화번호', u && (u.phone ?? '등록 안 함'), () => setVerify('phone')],
-    ['학교', u && (u.school ?? '입력 안 함'), () => router.push('/(tabs)/profile/school')],
-    ['학년', u && (u.grade ?? '입력 안 함'), () => router.push('/(tabs)/profile/grade')],
+    ['전화번호', u && (u.phone || '등록 안 함'), () => setVerify('phone')],
+    ['학교', u && (u.school || '입력 안 함'), () => router.push('/(tabs)/profile/school')],
+    ['학년', u && (u.grade || '입력 안 함'), () => router.push('/(tabs)/profile/grade')],
   ];
   return (
     <Canvas>
@@ -514,7 +514,16 @@ function EmailVerifySheet({
               ? `${email}로 보낸 인증번호 6자리를 입력해 주세요.`
               : `${email}로 인증번호를 보내 본인인지 확인해요.`}
           </Text>
-          {sent && <CodeBoxes value={code} onChange={setCode} invalid={!!msg} />}
+          {sent && (
+            <CodeBoxes
+              value={code}
+              onChange={(c) => {
+                setCode(c);
+                setMsg(null);
+              }}
+              invalid={!!msg}
+            />
+          )}
           {msg && <Text className="mt-2 text-caption text-danger">{msg}</Text>}
           <View className="mt-6 gap-2">
             {sent ? (
@@ -585,7 +594,9 @@ function ProfileTextScreen({
 }) {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get });
-  const [v, setV] = useState(me.data?.[field] ?? '');
+  // 고치기 전에는 저장된 값을 보인다(내 정보를 늦게 받아도 빈 값으로 시작해 지워지지 않게)
+  const [typed, setV] = useState<string | null>(null);
+  const v = typed ?? me.data?.[field] ?? '';
   const save = useMutation({
     mutationFn: () => api.me.update({ [field]: v.trim() }),
     onSuccess: (u) => {
@@ -599,7 +610,11 @@ function ProfileTextScreen({
     <Canvas>
       <Screen
         footer={
-          <Btn loading={save.isPending} onPress={() => save.mutate()}>
+          <Btn
+            disabled={!me.data || typed === null}
+            loading={save.isPending}
+            onPress={() => save.mutate()}
+          >
             저장
           </Btn>
         }

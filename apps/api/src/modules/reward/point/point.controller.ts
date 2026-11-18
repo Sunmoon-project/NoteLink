@@ -10,14 +10,14 @@ import { requireUserId } from '../../../common/request-user.js';
 @Controller('points/ledger')
 @UseGuards(JwtAuthGuard)
 export class PointController {
-    constructor(private readonly points: PointService) { }
+  constructor(private readonly points: PointService) {}
 
-    /** GET /api/v1/points/ledger?type=earn|spend&limit&cursor */
-    @Get()
-    async list(
-        @Req() req: AuthenticatedRequest,
-        @Query() query: ListPointLedgerDto,
-    ): Promise<{ data: PointLedgerView[] }> {
-        return { data: await this.points.listLedger(requireUserId(req), query) };
-    }
+  /** GET /api/v1/points/ledger?type=earn|spend&limit&cursor */
+  @Get()
+  async list(
+    @Req() req: AuthenticatedRequest,
+    @Query() query: ListPointLedgerDto,
+  ): Promise<{ data: PointLedgerView[] }> {
+    return { data: await this.points.listLedger(requireUserId(req), query) };
+  }
 }

@@ -19,33 +19,38 @@ const TEST_TOKEN = 'test-token';
 
 /** 진짜 DB 대신 가짜 모델을 넣은 이번 주 목표·요약 테스트용 서버 */
 export async function createProgressTestApp(fakes: {
-    dailyRecord: object;
-    weeklyGoal: object;
-    studySession?: object;
-    todo?: object; // 월간 hasTodo 테스트에서만 넘긴다
+  dailyRecord: object;
+  weeklyGoal: object;
+  studySession?: object;
+  todo?: object; // 월간 hasTodo 테스트에서만 넘긴다
 }): Promise<INestApplication> {
-    const moduleRef = await Test.createTestingModule({
-        controllers: [GoalsController, StudyProgressController],
-        providers: [
-            ProgressService,
-            { provide: getModelToken(DailyRecord.name), useValue: fakes.dailyRecord },
-            { provide: getModelToken(WeeklyGoal.name), useValue: fakes.weeklyGoal },
-            { provide: getModelToken(StudySession.name), useValue: fakes.studySession ?? {} },
-            { provide: getModelToken(Todo.name), useValue: fakes.todo ?? { distinct: () => Promise.resolve([]) } },
-            {
-                provide: TokenService,
-                useValue: {
-                    verifyAccess: (token: string) =>
-                        token === TEST_TOKEN
-                            ? Promise.resolve({ userId: TEST_USER_ID })
-                            : Promise.reject(new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: 'x' })),
-                },
-            },
-        ],
-    }).compile();
+  const moduleRef = await Test.createTestingModule({
+    controllers: [GoalsController, StudyProgressController],
+    providers: [
+      ProgressService,
+      { provide: getModelToken(DailyRecord.name), useValue: fakes.dailyRecord },
+      { provide: getModelToken(WeeklyGoal.name), useValue: fakes.weeklyGoal },
+      { provide: getModelToken(StudySession.name), useValue: fakes.studySession ?? {} },
+      {
+        provide: getModelToken(Todo.name),
+        useValue: fakes.todo ?? { distinct: () => Promise.resolve([]) },
+      },
+      {
+        provide: TokenService,
+        useValue: {
+          verifyAccess: (token: string) =>
+            token === TEST_TOKEN
+              ? Promise.resolve({ userId: TEST_USER_ID })
+              : Promise.reject(
+                  new UnauthorizedException({ code: 'AUTH_TOKEN_EXPIRED', message: 'x' }),
+                ),
+        },
+      },
+    ],
+  }).compile();
 
-    const app = moduleRef.createNestApplication();
-    configureApp(app);
-    await app.init();
-    return app;
+  const app = moduleRef.createNestApplication();
+  configureApp(app);
+  await app.init();
+  return app;
 }

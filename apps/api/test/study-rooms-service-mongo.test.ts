@@ -141,9 +141,9 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
         return count(filter);
       }) as never);
       try {
-        await expect(
-          service.invite(String(other), roomId, [String(friend)]),
-        ).rejects.toMatchObject({ status: 404, response: { code: 'ROOM_NOT_FOUND' } });
+        await expect(service.invite(String(other), roomId, [String(friend)])).rejects.toMatchObject(
+          { status: 404, response: { code: 'ROOM_NOT_FOUND' } },
+        );
       } finally {
         spy.mockRestore();
       }
@@ -165,20 +165,23 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
       );
     });
 
-    it.each(removals)('%s되면 초대 ID가 없는 기존 초대에 ID를 채우지 않는다', async (name, remove) => {
-      const created = await roomWithInviter(`${name} 중 초대 ID 채우기`);
-      await service.invite(String(other), created._id, [String(friend)]);
-      await rooms.updateOne(
-        { _id: created._id, 'members.userId': friend },
-        { $unset: { 'members.$.invitationId': 1 } },
-      );
+    it.each(removals)(
+      '%s되면 초대 ID가 없는 기존 초대에 ID를 채우지 않는다',
+      async (name, remove) => {
+        const created = await roomWithInviter(`${name} 중 초대 ID 채우기`);
+        await service.invite(String(other), created._id, [String(friend)]);
+        await rooms.updateOne(
+          { _id: created._id, 'members.userId': friend },
+          { $unset: { 'members.$.invitationId': 1 } },
+        );
 
-      const stored = await inviteWhile(created._id, () => remove(created._id));
+        const stored = await inviteWhile(created._id, () => remove(created._id));
 
-      const invited = stored.members.find((member) => member.userId.equals(friend));
-      expect(invited?.status).toBe('invited');
-      expect(invited?.invitationId ?? null).toBeNull();
-    });
+        const invited = stored.members.find((member) => member.userId.equals(friend));
+        expect(invited?.status).toBe('invited');
+        expect(invited?.invitationId ?? null).toBeNull();
+      },
+    );
   });
   afterAll(async () => {
     if (!connection) return;

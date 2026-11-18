@@ -2,7 +2,7 @@ import mongoose, { Types, type Connection } from 'mongoose';
 import { ConflictException } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-/** 이 시험이 쓰지 않는 기기 · 토큰 · 친구 · 시간표 공유 모델 자리 */
+/** 이 시험이 쓰지 않는 기기 · 토큰 · 친구 · 시간표 공유 모델 · 스터디룸 · 인증번호 · 메일 자리 */
 const UNUSED_MODELS = [{}, {}, {}, {}, {}, {}, {}] as [
   never,
   never,

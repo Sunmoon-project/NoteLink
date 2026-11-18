@@ -9,7 +9,7 @@ export class Notification {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
 
-  @Prop({ required: true, type: String})
+  @Prop({ required: true, type: String })
   type: string;
 
   @Prop({ required: true, type: String })

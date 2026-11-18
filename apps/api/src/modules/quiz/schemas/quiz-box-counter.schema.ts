@@ -6,11 +6,11 @@ import { Types } from 'mongoose';
 // 담기가 도중에 실패해도 번호가 남을 뿐(빈 번호) 순서에는 영향이 없다
 @Schema({ collection: 'quiz_box_counters', timestamps: false })
 export class QuizBoxCounter {
-    @Prop({ type: Types.ObjectId, ref: 'User', required: true })
-    _id: Types.ObjectId;
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  _id: Types.ObjectId;
 
-    @Prop({ type: Number, required: true, default: 0 })
-    seq: number;
+  @Prop({ type: Number, required: true, default: 0 })
+  seq: number;
 }
 
 export const QuizBoxCounterSchema = SchemaFactory.createForClass(QuizBoxCounter);

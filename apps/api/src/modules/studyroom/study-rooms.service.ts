@@ -114,13 +114,17 @@ export class StudyRoomsService {
     );
     const ineligibleMember = targetsToInvite.some((targetId) => {
       const existing = room.members.find((member) => member.userId.equals(targetId));
-      return !!existing && (
-        existing.status !== 'left' ||
-        (existing.leaveReason !== 'voluntary' && existing.leaveReason != null)
+      return (
+        !!existing &&
+        (existing.status !== 'left' ||
+          (existing.leaveReason !== 'voluntary' && existing.leaveReason != null))
       );
     });
     if (ineligibleMember)
-      throw new ForbiddenException({ code: 'ROOM_BANNED', message: '퇴장 조치된 사용자는 초대할 수 없습니다.' });
+      throw new ForbiddenException({
+        code: 'ROOM_BANNED',
+        message: '퇴장 조치된 사용자는 초대할 수 없습니다.',
+      });
     const activeMemberCount = room.members.filter((member) =>
       ['joined', 'invited'].includes(member.status),
     ).length;
@@ -130,7 +134,10 @@ export class StudyRoomsService {
 
     if (targetsToInvite.length) {
       const invitedAt = new Date();
-      const reinviteInvitations = reinviteIds.map((userId) => ({ userId, invitationId: randomUUID() }));
+      const reinviteInvitations = reinviteIds.map((userId) => ({
+        userId,
+        invitationId: randomUUID(),
+      }));
       const newInvitations = newInviteIds.map((userId) => ({ userId, invitationId: randomUUID() }));
       const eligibility = [
         ...newInviteIds.map((targetId) => ({
@@ -223,11 +230,11 @@ export class StudyRoomsService {
                   },
                   {
                     $map: {
-                    input: { $literal: newInvitations },
-                    as: 'invitation',
+                      input: { $literal: newInvitations },
+                      as: 'invitation',
                       in: {
-                      userId: '$$invitation.userId',
-                      invitationId: '$$invitation.invitationId',
+                        userId: '$$invitation.userId',
+                        invitationId: '$$invitation.invitationId',
                         role: 'member',
                         status: 'invited',
                         invitedAt: { $literal: invitedAt },
@@ -245,9 +252,7 @@ export class StudyRoomsService {
         const latest = await this.rooms.findById(roomObjectId).lean();
         const stillJoined =
           latest?.closedAt == null &&
-          latest?.members.some(
-            (item) => item.userId.equals(inviterId) && item.status === 'joined',
-          );
+          latest?.members.some((item) => item.userId.equals(inviterId) && item.status === 'joined');
         if (!stillJoined) throw notJoined();
         const hasUninvitedTarget = targetsToInvite.some((targetId) => {
           const member = latest?.members.find((item) => item.userId.equals(targetId));
@@ -286,9 +291,10 @@ export class StudyRoomsService {
       !(await this.rooms.exists({ _id: roomObjectId, closedAt: null, members: inviterJoined }))
     )
       throw notJoined();
-    const latestRoom = targetsToInvite.length || legacyInvitedIds.length
-      ? await this.rooms.findById(roomObjectId).lean()
-      : room;
+    const latestRoom =
+      targetsToInvite.length || legacyInvitedIds.length
+        ? await this.rooms.findById(roomObjectId).lean()
+        : room;
     const invitations = targetObjectIds.flatMap((targetId) => {
       const member = latestRoom?.members.find((item) => item.userId.equals(targetId));
       return member?.status === 'invited' && member.invitationId

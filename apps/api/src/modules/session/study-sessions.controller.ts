@@ -1,12 +1,12 @@
 import {
-    Body,
-    Controller,
-    HttpCode,
-    NotFoundException,
-    Param,
-    Post,
-    Req,
-    UseGuards,
+  Body,
+  Controller,
+  HttpCode,
+  NotFoundException,
+  Param,
+  Post,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
@@ -20,56 +20,56 @@ import { StudyService, type EndResult, type StudySessionView } from './study.ser
 @Controller('study-sessions')
 @UseGuards(JwtAuthGuard)
 export class StudySessionsController {
-    constructor(private readonly study: StudyService) { }
+  constructor(private readonly study: StudyService) {}
 
-    /** POST /api/v1/study-sessions { studyItemId, mode } */
-    @Post()
-    async start(
-        @Req() req: AuthenticatedRequest,
-        @Body() body: StartStudySessionDto,
-    ): Promise<{ data: StudySessionView }> {
-        const session = await this.study.startSession(requireUserId(req), body);
-        if (!session) {
-            throw new NotFoundException({ code: 'NOT_FOUND', message: '존재하지 않는 공부 항목입니다.' });
-        }
-        return { data: session };
+  /** POST /api/v1/study-sessions { studyItemId, mode } */
+  @Post()
+  async start(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: StartStudySessionDto,
+  ): Promise<{ data: StudySessionView }> {
+    const session = await this.study.startSession(requireUserId(req), body);
+    if (!session) {
+      throw new NotFoundException({ code: 'NOT_FOUND', message: '존재하지 않는 공부 항목입니다.' });
     }
+    return { data: session };
+  }
 
-    /** POST /api/v1/study-sessions/:id/pause */
-    @Post(':id/pause')
-    @HttpCode(204)
-    async pause(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
-        if (!(await this.study.pause(requireUserId(req), id))) throw sessionNotFound();
-    }
+  /** POST /api/v1/study-sessions/:id/pause */
+  @Post(':id/pause')
+  @HttpCode(204)
+  async pause(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
+    if (!(await this.study.pause(requireUserId(req), id))) throw sessionNotFound();
+  }
 
-    /** POST /api/v1/study-sessions/:id/resume */
-    @Post(':id/resume')
-    @HttpCode(204)
-    async resume(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
-        if (!(await this.study.resume(requireUserId(req), id))) throw sessionNotFound();
-    }
+  /** POST /api/v1/study-sessions/:id/resume */
+  @Post(':id/resume')
+  @HttpCode(204)
+  async resume(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
+    if (!(await this.study.resume(requireUserId(req), id))) throw sessionNotFound();
+  }
 
-    /** POST /api/v1/study-sessions/:id/heartbeat — 앱이 열려 있는 동안 1분마다. 내 열린 세션이 아니면 404 */
-    @Post(':id/heartbeat')
-    @HttpCode(204)
-    async heartbeat(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
-        if (!(await this.study.heartbeat(requireUserId(req), id))) throw sessionNotFound();
-    }
+  /** POST /api/v1/study-sessions/:id/heartbeat — 앱이 열려 있는 동안 1분마다. 내 열린 세션이 아니면 404 */
+  @Post(':id/heartbeat')
+  @HttpCode(204)
+  async heartbeat(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
+    if (!(await this.study.heartbeat(requireUserId(req), id))) throw sessionNotFound();
+  }
 
-    /** POST /api/v1/study-sessions/:id/end { clientDurationSec, endReason } */
-    @Post(':id/end')
-    @HttpCode(200)
-    async end(
-        @Req() req: AuthenticatedRequest,
-        @Param('id') id: string,
-        @Body() body: EndStudySessionDto,
-    ): Promise<{ data: EndResult }> {
-        const result = await this.study.end(requireUserId(req), id, body);
-        if (!result) throw sessionNotFound();
-        return { data: result };
-    }
+  /** POST /api/v1/study-sessions/:id/end { clientDurationSec, endReason } */
+  @Post(':id/end')
+  @HttpCode(200)
+  async end(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: EndStudySessionDto,
+  ): Promise<{ data: EndResult }> {
+    const result = await this.study.end(requireUserId(req), id, body);
+    if (!result) throw sessionNotFound();
+    return { data: result };
+  }
 }
 
 function sessionNotFound(): NotFoundException {
-    return new NotFoundException({ code: 'NOT_FOUND', message: '존재하지 않는 세션입니다.' });
+  return new NotFoundException({ code: 'NOT_FOUND', message: '존재하지 않는 세션입니다.' });
 }

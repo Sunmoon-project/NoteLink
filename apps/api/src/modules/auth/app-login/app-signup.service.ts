@@ -77,12 +77,7 @@ export class AppSignupService {
         await this.mail.sendVerificationCode(email, issued.code);
       }
     } catch (error) {
-      if (error instanceof MailUnavailableError) {
-        throw new ServiceUnavailableException({
-          code: APP_LOGIN_ERRORS.MAIL_UNAVAILABLE,
-          message: '인증 메일을 보내지 못했어요. 잠시 뒤 다시 시도해 주세요',
-        });
-      }
+      if (error instanceof MailUnavailableError) throw mailUnavailable();
       throw error;
     }
   }
@@ -144,6 +139,8 @@ export class AppSignupService {
       try {
         await this.users.create({
           email: proof.email,
+          // 가입 인증번호로 이 이메일을 이미 확인했다(계정 화면에서 다시 인증하지 않아도 「인증됨」)
+          emailVerifiedAt: proof.verifiedAt,
           loginId,
           passwordHash,
           nickname: initialNickname(null),
@@ -210,6 +207,14 @@ export function codeRejected(result: Extract<VerifyResult, { ok: false }>): Http
     message: '인증번호가 맞지 않아요',
     // 틀린 경우에만 남은 횟수를 알려 준다(없음 · 만료 · 이미 씀과 구분되지 않게 그 경우엔 넣지 않는다)
     ...(result.reason === 'wrong' ? { attemptsLeft: result.attemptsLeft } : {}),
+  });
+}
+
+/** 인증 메일을 보내지 못했을 때의 오류(가입 · 계정 찾기 · 본인 인증 공통) */
+export function mailUnavailable(): ServiceUnavailableException {
+  return new ServiceUnavailableException({
+    code: APP_LOGIN_ERRORS.MAIL_UNAVAILABLE,
+    message: '인증 메일을 보내지 못했어요. 잠시 뒤 다시 시도해 주세요',
   });
 }
 

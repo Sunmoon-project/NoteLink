@@ -5,13 +5,13 @@ export type StatsRange = (typeof STATS_RANGES)[number];
 
 /** GET /study/month?ym=2026-11 */
 export class MonthQueryDto {
-    @IsString()
-    @Matches(/^\d{4}-(0[1-9]|1[0-2])$/)
-    ym!: string;
+  @IsString()
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/)
+  ym!: string;
 }
 
 /** GET /study/stats?range=all|90d|30d */
 export class StatsQueryDto {
-    @IsIn(STATS_RANGES)
-    range!: StatsRange;
+  @IsIn(STATS_RANGES)
+  range!: StatsRange;
 }
