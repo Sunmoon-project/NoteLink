@@ -10,6 +10,8 @@ import { type Model, Types } from 'mongoose';
 
 import { HolidaysService } from '../calendar/holidays.service.js';
 import { ExpoPushService, type ExpoPushMessage } from '../notification/expo-push.service.js';
+import { StudySession } from '../session/schemas/study-session.schema.js';
+import { LAST_SEEN_GRACE_MS, lastAliveAt } from '../session/study.service.js';
 import { seoulDate } from '../session/study-time.js';
 import { Device } from '../users/schemas/device.schema.js';
 import { todayStudyMin, type DayStudy } from './goal-judge.js';
@@ -50,7 +52,10 @@ interface UserDay {
  * 발송이 모두 실패하면 표시를 풀어 다음 확인에서 다시 시도한다(하루 3회까지, 2분 · 10분 간격).
  * 후보를 읽은 뒤 설정이 바뀌면(remindVersion이 달라지면) 잡지 않고 넘어가 다음 확인에서 새 설정으로 다시 판단한다.
  * 잡은 뒤에 바뀐 설정은 그 발송에 반영하지 않고, 그날은 다시 보내지 않는다(FR-11-08: 보낸 날은 다시 안 보냄).
- * 서버가 잡은 직후 죽으면 그날은 보내지 못할 수 있다(중복 푸시보다 누락을 택했다)
+ * 서버가 잡은 직후 죽으면 그날은 보내지 못할 수 있다(중복 푸시보다 누락을 택했다).
+ * 지금 타이머를 켜고 공부 중이면(열린 세션의 마지막 생존 시각이 LAST_SEEN_GRACE_MS 안) 보내지 않는다: 세션은 끝나야 하루 기록에
+ * 정산되므로 기록만 보면 이미 채웠어도 미달로 보이기 때문이다. 이때는 표시를 풀어 다음 확인에서 다시 판단한다(그날 보낸 것으로 치지 않고
+ * 시도 횟수도 쓰지 않는다). 신호가 끊긴 열린 세션(앱 강제 종료 등)은 측정 중으로 보지 않는다
  */
 @Injectable()
 export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDestroy {
@@ -61,6 +66,7 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
   constructor(
     @InjectModel(RecurringGoal.name) private readonly goals: Model<RecurringGoal>,
     @InjectModel(DailyRecord.name) private readonly daily: Model<DailyRecord>,
+    @InjectModel(StudySession.name) private readonly sessions: Model<StudySession>,
     @InjectModel(Device.name) private readonly devices: Model<Device>,
     private readonly holidays: HolidaysService,
     private readonly push: ExpoPushService,
@@ -155,22 +161,29 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
     if (!claimed.matchedCount) return; // 다른 서버가 먼저 잡았다
 
     try {
-      const sent = await this.judgeAndSend(goal, now, today, userDays, clock);
-      if (sent) return;
+      const outcome = await this.judgeAndSend(goal, now, today, userDays, clock);
+      if (outcome === 'done') return;
+      if (outcome === 'measuring') {
+        await this.defer(goal, claimId, claimedVersion, previous);
+        return;
+      }
     } catch (error) {
       this.logger.warn(`목표 리마인드 발송 중 오류(${String(goal._id)}): ${String(error)}`);
     }
     await this.failed(goal, claimId, claimedVersion, previous, attempts + 1, now, today);
   }
 
-  /** 판정하고 보낸다. 다시 시도할 만한 실패(보낼 기기가 있는데 전부 실패)면 false, 그 밖에는(보냈거나 보낼 게 없음) true */
+  /**
+   * 판정하고 보낸다. 결과: 'done' 보냈거나 보낼 게 없음(표시 유지), 'retry' 다시 시도할 만한 실패(보낼 기기가 있는데 전부 실패),
+   * 'measuring' 지금 타이머를 켜고 공부 중이라 보내지 않음(표시를 풀어 다음 확인에서 다시 판단)
+   */
   private async judgeAndSend(
     goal: GoalLean,
     now: Date,
     today: string,
     userDays: Map<string, Promise<UserDay>>,
     clock: () => Date,
-  ): Promise<boolean> {
+  ): Promise<'done' | 'retry' | 'measuring'> {
     const userId = String(goal.userId);
     let day = userDays.get(userId);
     if (!day) {
@@ -180,7 +193,9 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
     const { study, skipDates } = await day;
     const todayMin = todayStudyMin(toRule(goal), today, study, skipDates);
     // 오늘 판정 대상이 아니거나 이미 채웠으면 표시만 남긴다
-    if (todayMin === null || todayMin >= goal.targetMin) return true;
+    if (todayMin === null || todayMin >= goal.targetMin) return 'done';
+    // 미달로 보이는 사람에게만 확인한다. 공부 중이면 아직 정산되지 않은 시간이 있으니 지금은 판단하지 않는다
+    if (await this.isMeasuring(goal.userId, now)) return 'measuring';
 
     const devices = await this.devices
       .find({ userId: goal.userId }, { pushToken: 1 })
@@ -188,14 +203,14 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
     const tokens = [...new Set(devices.map((d) => d.pushToken))].filter((t) =>
       EXPO_PUSH_TOKEN.test(t),
     );
-    if (!tokens.length) return true; // 기기가 없다
+    if (!tokens.length) return 'done'; // 기기가 없다
 
     // 선점 · 기록 · 기기 조회를 기다리는 사이 자정을 넘기거나 발송 시간대가 끝났을 수 있다. 그러면 보내지 않고 끝낸다.
     // 표시(lastRemindedOn)는 선점한 날짜로 그대로 둔다: 자정을 넘겼다면 전날 날짜라 다음 날 판정에 영향이 없고,
     // failed()를 거치지 않으므로 다시 시도할 예약도 생기지 않는다
     const beforeSend = clock();
     if (seoulDate(beforeSend) !== today || !inRemindWindow(beforeSend, today, goal.remindTime))
-      return true;
+      return 'done';
 
     const { title, body } = remindMessage(goal.name, goal.targetMin, todayMin);
     const id = String(goal._id);
@@ -215,12 +230,51 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
       try {
         await this.devices.deleteMany({ pushToken: { $in: result.invalidTokens } });
       } catch (error) {
-        this.logger.warn(`만료된 푸시 토큰을 지우지 못했어요(${String(goal._id)}): ${String(error)}`);
+        this.logger.warn(
+          `만료된 푸시 토큰을 지우지 못했어요(${String(goal._id)}): ${String(error)}`,
+        );
       }
     }
     const failed = new Set(result.failedTickets.map(({ message }) => message.to));
     // 한 기기라도 보냈거나 모두 만료 토큰이면 끝. 보낼 수 있는 기기가 있었는데 전부 실패했을 때만 다시 시도한다
-    return !(failed.size > 0 && failed.size >= tokens.length - result.invalidTokens.length);
+    return failed.size > 0 && failed.size >= tokens.length - result.invalidTokens.length
+      ? 'retry'
+      : 'done';
+  }
+
+  /**
+   * 지금 타이머로 공부 중인지. 열린 세션(끝나지 않은 것 — 사용자당 하나)의 마지막 생존 시각(lastAliveAt: 마지막 신호 ·
+   * 시작 · 정지 기록 중 가장 늦은 것)이 LAST_SEEN_GRACE_MS 안이면 측정 중이다. 정산이 꺼진 세션을 닫을 때 쓰는 기준(#504)과 같다.
+   * 일시정지 중이어도 앱이 신호를 보내는 동안은 측정 중이다(앱은 10분 쉬면 알아서 끝낸다)
+   */
+  private async isMeasuring(userId: Types.ObjectId, now: Date): Promise<boolean> {
+    const open = await this.sessions
+      .findOne({ userId, status: { $ne: 'ended' } }, { startedAt: 1, lastSeenAt: 1, pauses: 1 })
+      .lean<Pick<StudySession, 'startedAt' | 'lastSeenAt' | 'pauses'> | null>();
+    return open !== null && now.getTime() - lastAliveAt(open).getTime() <= LAST_SEEN_GRACE_MS;
+  }
+
+  /**
+   * 측정 중이라 이번에는 보내지 않았다: 선점한 표시만 이전 값으로 푼다. 시도 횟수 · 다시 시도 예약은 쓰지 않으니
+   * 다음 확인(1분 뒤)에서 새로 판단한다. 설정이 그사이 바뀌었으면(remindVersion) failed()처럼 아무것도 되돌리지 않는다.
+   * 되돌리지 못하면 그날은 못 보낼 수 있다(중복보다 누락을 택한 기존 규칙과 같다)
+   */
+  private async defer(
+    goal: GoalLean,
+    claimId: string,
+    claimedVersion: number | undefined,
+    previous: string | null,
+  ): Promise<void> {
+    try {
+      await this.goals.updateOne(
+        { _id: goal._id, remindClaimId: claimId, remindVersion: versionFilter(claimedVersion) },
+        { $set: { lastRemindedOn: previous } },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `측정 중인 목표의 리마인드 표시를 풀지 못했어요(${String(goal._id)}): ${String(error)}`,
+      );
+    }
   }
 
   private loadDay(userId: Types.ObjectId, today: string): Promise<UserDay> {

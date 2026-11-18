@@ -125,7 +125,10 @@ describe('리마인드 판정 설정이 실제로 바뀌었는지', () => {
 
   it('ObjectId 와 같은 문자열은 같음', () => {
     expect(
-      remindSettingsChanged({ ...base, subjectId }, { ...base, subjectId: subjectId.toHexString() }),
+      remindSettingsChanged(
+        { ...base, subjectId },
+        { ...base, subjectId: subjectId.toHexString() },
+      ),
     ).toBe(false);
   });
 
@@ -176,6 +179,12 @@ describe('GoalRemindersService 대상 고르기', () => {
     devices?: string[];
     send?: (messages: { to: string }[]) => unknown;
     deleteFails?: boolean;
+    /** 이 사람의 열린(끝나지 않은) 세션. 없으면 null */
+    session?: {
+      startedAt: Date;
+      lastSeenAt?: Date | null;
+      pauses?: { startedAt: Date; endedAt: Date | null }[];
+    } | null;
   }) {
     const filters: Record<string, unknown>[] = [];
     const claims: unknown[] = [];
@@ -213,6 +222,18 @@ describe('GoalRemindersService 대상 고르기', () => {
         opts.deleteFails ? Promise.reject(new Error('db down')) : Promise.resolve(),
       ),
     };
+    const sessionFilters: Record<string, unknown>[] = [];
+    const sessions = {
+      findOne: (filter: Record<string, unknown>) => {
+        sessionFilters.push(filter);
+        return {
+          lean: () =>
+            Promise.resolve(
+              opts.session ? { lastSeenAt: null, pauses: [], ...opts.session } : null,
+            ),
+        };
+      },
+    };
     const holidays = { skipDates: () => Promise.resolve(opts.skip ?? []) };
     const push = {
       send: vi.fn(
@@ -223,11 +244,12 @@ describe('GoalRemindersService 대상 고르기', () => {
     const service = new GoalRemindersService(
       goals as never,
       daily as never,
+      sessions as never,
       devices as never,
       holidays as never,
       push as never,
     );
-    return { service, push, filters, claims, devices };
+    return { service, push, filters, claims, devices, sessionFilters };
   }
 
   it('요일 · 켬 · 쉬지 않음 · 안 지움 · 오늘 안 보냄을 조건으로 찾는다', async () => {
@@ -268,7 +290,9 @@ describe('GoalRemindersService 대상 고르기', () => {
     await service.runOnce(seoul('21:05'));
     expect(claims).toHaveLength(2);
     expect(claims[0]).toMatchObject({ filter: { _id: versioned._id, remindVersion: 3 } });
-    expect(claims[1]).toMatchObject({ filter: { _id: legacy._id, remindVersion: { $in: [0, null] } } });
+    expect(claims[1]).toMatchObject({
+      filter: { _id: legacy._id, remindVersion: { $in: [0, null] } },
+    });
   });
 
   it('만료 토큰 삭제가 실패해도 발송은 성공으로 보고 표시를 풀지 않는다', async () => {
@@ -385,5 +409,90 @@ describe('GoalRemindersService 대상 고르기', () => {
     await service.runOnce(seoul('21:05'));
     expect(push.send).not.toHaveBeenCalled();
     expect(claims).toHaveLength(0);
+  });
+
+  describe('지금 타이머로 공부 중이면 보내지 않는다 (정산 전 시간이 있다)', () => {
+    it('측정 중(마지막 신호가 2분 안)이면 보내지 않고, 표시를 풀어 다음 확인에서 다시 본다', async () => {
+      const g = goal();
+      const { service, push, claims, sessionFilters } = setup({
+        goals: [g],
+        totalSec: 0,
+        session: { startedAt: seoul('20:00'), lastSeenAt: seoul('21:04') },
+      });
+      await service.runOnce(seoul('21:05'));
+      expect(push.send).not.toHaveBeenCalled();
+      // 끝나지 않은 이 사람의 세션을 본다
+      expect(sessionFilters[0]).toMatchObject({ userId, status: { $ne: 'ended' } });
+      // 선점(오늘 표시) 뒤에 표시만 이전 값으로 푼다. 시도 횟수 · 다시 시도 예약은 쓰지 않는다
+      expect(claims).toHaveLength(2);
+      expect(claims[1]).toMatchObject({
+        filter: { _id: g._id },
+        update: { $set: { lastRemindedOn: null } },
+      });
+      expect(Object.keys((claims[1] as { update: { $set: object } }).update.$set)).toEqual([
+        'lastRemindedOn',
+      ]);
+    });
+
+    it('마지막 신호가 딱 2분 전이면 측정 중, 2분을 넘기면 아니다', async () => {
+      const edge = setup({
+        goals: [goal()],
+        session: { startedAt: seoul('20:00'), lastSeenAt: seoul('21:03') },
+      });
+      await edge.service.runOnce(seoul('21:05'));
+      expect(edge.push.send).not.toHaveBeenCalled();
+      const over = setup({
+        goals: [goal()],
+        session: {
+          startedAt: seoul('20:00'),
+          lastSeenAt: new Date(seoul('21:03').getTime() - 1000),
+        },
+      });
+      await over.service.runOnce(seoul('21:05'));
+      expect(over.push.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('열린 세션이 있어도 신호가 2분 넘게 끊겼으면(앱 강제 종료 등) 기존대로 보낸다', async () => {
+      const { service, push, claims } = setup({
+        goals: [goal()],
+        session: { startedAt: seoul('19:00'), lastSeenAt: seoul('20:30') },
+      });
+      await service.runOnce(seoul('21:05'));
+      expect(push.send).toHaveBeenCalledTimes(1);
+      expect(claims).toHaveLength(1); // 선점만, 표시를 푸는 쓰기 없음
+    });
+
+    it('신호(lastSeenAt)가 없는 옛 세션도 정지 기록의 시각으로 살아 있음을 본다', async () => {
+      const alive = setup({
+        goals: [goal()],
+        session: {
+          startedAt: seoul('20:00'),
+          pauses: [{ startedAt: seoul('21:00'), endedAt: seoul('21:04') }],
+        },
+      });
+      await alive.service.runOnce(seoul('21:05'));
+      expect(alive.push.send).not.toHaveBeenCalled();
+      const stale = setup({ goals: [goal()], session: { startedAt: seoul('20:00') } });
+      await stale.service.runOnce(seoul('21:05'));
+      expect(stale.push.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('세션이 없고 미달성이면 기존대로 보낸다', async () => {
+      const { service, push, sessionFilters } = setup({ goals: [goal()], session: null });
+      await service.runOnce(seoul('21:05'));
+      expect(sessionFilters).toHaveLength(1);
+      expect(push.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('이미 목표를 채운 사람은 세션을 찾아보지도 않는다', async () => {
+      const { service, push, sessionFilters } = setup({
+        goals: [goal()],
+        totalSec: 30 * 60,
+        session: { startedAt: seoul('20:00'), lastSeenAt: seoul('21:04') },
+      });
+      await service.runOnce(seoul('21:05'));
+      expect(push.send).not.toHaveBeenCalled();
+      expect(sessionFilters).toHaveLength(0);
+    });
   });
 });

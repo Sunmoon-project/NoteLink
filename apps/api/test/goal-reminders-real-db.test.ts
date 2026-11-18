@@ -17,6 +17,10 @@ import {
   RecurringGoal,
   RecurringGoalSchema,
 } from '../src/modules/progress/schemas/recurring-goal.schema.js';
+import {
+  StudySession,
+  StudySessionSchema,
+} from '../src/modules/session/schemas/study-session.schema.js';
 import { Subject, SubjectSchema } from '../src/modules/session/schemas/subject.schema.js';
 import { Device, DeviceSchema } from '../src/modules/users/schemas/device.schema.js';
 
@@ -39,6 +43,7 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
   let goals: Model<RecurringGoal>;
   let daily: Model<DailyRecord>;
   let devices: Model<Device>;
+  let sessions: Model<StudySession>;
   let sent: { to: string; title: string; data: Record<string, unknown> }[];
   let sendImpl: (messages: { to: string }[]) => Promise<SendResult>;
   const user = new Types.ObjectId();
@@ -48,6 +53,7 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
     new GoalRemindersService(
       goals as never,
       daily as never,
+      sessions as never,
       devices as never,
       { skipDates: () => Promise.resolve([]) } as never,
       {
@@ -64,6 +70,7 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
     goals = conn.model(RecurringGoal.name, RecurringGoalSchema) as unknown as Model<RecurringGoal>;
     daily = conn.model(DailyRecord.name, DailyRecordSchema) as unknown as Model<DailyRecord>;
     devices = conn.model(Device.name, DeviceSchema) as unknown as Model<Device>;
+    sessions = conn.model(StudySession.name, StudySessionSchema) as unknown as Model<StudySession>;
     await Promise.all([goals.syncIndexes(), devices.syncIndexes()]);
   });
 
@@ -87,7 +94,12 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
   beforeEach(async () => {
     sent = [];
     sendImpl = () => Promise.resolve(ok);
-    await Promise.all([goals.deleteMany({}), daily.deleteMany({}), devices.deleteMany({})]);
+    await Promise.all([
+      goals.deleteMany({}),
+      daily.deleteMany({}),
+      devices.deleteMany({}),
+      sessions.deleteMany({}),
+    ]);
   });
 
   const goal = async (over: Record<string, unknown> = {}) =>
@@ -330,7 +342,9 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
     ];
     vi.useFakeTimers({ toFake: ['Date'], now: seoul('21:40') });
     try {
-      await makeGoalsService().update(user.toHexString(), id.toHexString(), { remindEnabled: true });
+      await makeGoalsService().update(user.toHexString(), id.toHexString(), {
+        remindEnabled: true,
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -385,7 +399,10 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
           vi.useRealTimers();
         }
       }
-      return { invalidTokens: [], failedTickets: messages.map((message) => ({ message, error: 'x' })) };
+      return {
+        invalidTokens: [],
+        failedTickets: messages.map((message) => ({ message, error: 'x' })),
+      };
     };
     const service = makeService();
     await service.runOnce(seoul('21:05'));
@@ -407,7 +424,10 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
     sendImpl = async (messages) => {
       if (++calls === 1) {
         await editor.update(user.toHexString(), id.toHexString(), { name: '새 이름' });
-        return { invalidTokens: [], failedTickets: messages.map((message) => ({ message, error: 'x' })) };
+        return {
+          invalidTokens: [],
+          failedTickets: messages.map((message) => ({ message, error: 'x' })),
+        };
       }
       return ok;
     };
@@ -447,16 +467,19 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
     sendImpl = async (messages) => {
       if (++calls === 1) {
         await editor.update(user.toHexString(), id.toHexString(), {
-            name: '새 이름',
-            days: [MON],
-            targetMin: 30,
-            remindEnabled: true,
-            remindTime: '21:00',
-            isActive: true,
-            pausedUntil: null,
-            subjectId: null,
-          });
-        return { invalidTokens: [], failedTickets: messages.map((message) => ({ message, error: 'x' })) };
+          name: '새 이름',
+          days: [MON],
+          targetMin: 30,
+          remindEnabled: true,
+          remindTime: '21:00',
+          isActive: true,
+          pausedUntil: null,
+          subjectId: null,
+        });
+        return {
+          invalidTokens: [],
+          failedTickets: messages.map((message) => ({ message, error: 'x' })),
+        };
       }
       return ok;
     };
@@ -469,6 +492,87 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
     expect(doc.remindRetryAt!.getTime()).toBe(seoul('21:07').getTime());
     await service.runOnce(seoul('21:07'));
     expect(sent).toHaveLength(2);
+  });
+
+  describe('지금 타이머로 공부 중이면 보내지 않는다 (정산 전 시간이 있다)', () => {
+    const open = (over: Record<string, unknown> = {}) =>
+      sessions.create({
+        userId: user,
+        studyDate: TODAY,
+        mode: 'personal',
+        status: 'running',
+        startedAt: seoul('20:00'),
+        lastSeenAt: seoul('21:04'),
+        ...over,
+      } as never);
+
+    it('측정 중이면 안 보내고 표시를 남기지 않는다. 세션이 끝난 뒤 미달이면 다음 확인에서 보내고, 채웠으면 안 보낸다', async () => {
+      const id = await goal();
+      await device('a');
+      const session = await open();
+      const service = makeService();
+      await service.runOnce(seoul('21:05'));
+      expect(sent).toHaveLength(0);
+      const doc = (await row(id))!;
+      expect(doc.lastRemindedOn).toBeNull(); // 보낸 것으로 치지 않는다
+      expect(doc.remindAttempts ?? 0).toBe(0); // 시도 횟수도 쓰지 않는다
+      expect(doc.remindRetryAt ?? null).toBeNull();
+
+      // 이어서 확인해도 계속 측정 중이면 계속 안 보낸다
+      await sessions.updateOne({ _id: session._id }, { $set: { lastSeenAt: seoul('21:09') } });
+      await service.runOnce(seoul('21:10'));
+      expect(sent).toHaveLength(0);
+
+      // 공부를 끝냈지만 목표를 못 채웠다 → 다음 확인에서 보낸다
+      await sessions.updateOne(
+        { _id: session._id },
+        { $set: { status: 'ended', endedAt: seoul('21:10') } },
+      );
+      await studied(10);
+      await service.runOnce(seoul('21:11'));
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({ title: '오늘 목표까지 20분 남았어요' });
+      expect((await row(id))!.lastRemindedOn).toBe(TODAY);
+    });
+
+    it('측정하다 목표를 채우고 끝냈으면 보내지 않는다', async () => {
+      const id = await goal();
+      await device('a');
+      const session = await open();
+      const service = makeService();
+      await service.runOnce(seoul('21:05'));
+      await sessions.updateOne(
+        { _id: session._id },
+        { $set: { status: 'ended', endedAt: seoul('21:20') } },
+      );
+      await studied(45);
+      await service.runOnce(seoul('21:21'));
+      expect(sent).toHaveLength(0);
+      expect((await row(id))!.lastRemindedOn).toBe(TODAY); // 채운 날은 표시만 남는다(기존)
+    });
+
+    it('열린 세션이 있지만 신호가 2분 넘게 끊겼으면(앱 강제 종료 등) 보낸다', async () => {
+      await goal();
+      await device('a');
+      await open({ startedAt: seoul('19:00'), lastSeenAt: seoul('20:30') });
+      await makeService().runOnce(seoul('21:05'));
+      expect(sent).toHaveLength(1);
+    });
+
+    it('남의 열린 세션은 보지 않는다', async () => {
+      await goal();
+      await device('a');
+      await open({ userId: new Types.ObjectId() });
+      await makeService().runOnce(seoul('21:05'));
+      expect(sent).toHaveLength(1);
+    });
+
+    it('세션이 없고 미달성이면 보낸다(기존)', async () => {
+      await goal();
+      await device('a');
+      await makeService().runOnce(seoul('21:05'));
+      expect(sent).toHaveLength(1);
+    });
   });
 
   it('후보를 찾는 부분 인덱스가 있다', async () => {
@@ -552,7 +656,10 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
         service.update(owner(), id.toHexString(), { remindTime: '22:00' }),
       ).rejects.toMatchObject({
         status: 503,
-        response: { code: 'GOAL_UPDATE_BUSY', message: '다른 수정과 겹쳤어요. 잠시 후 다시 시도해 주세요' },
+        response: {
+          code: 'GOAL_UPDATE_BUSY',
+          message: '다른 수정과 겹쳤어요. 잠시 후 다시 시도해 주세요',
+        },
       });
       expect(spy).toHaveBeenCalledTimes(3);
     });
