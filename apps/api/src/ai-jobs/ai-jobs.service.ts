@@ -134,7 +134,8 @@ export const AI_JOB_FAILED = 'AI_JOB_FAILED';
  * 만들지 못함 services/quiz/generate.py NoQuestionsError). 새 코드를
  * 처리기에 더하면 여기에도 더한다. 원인 문구는 처리기 내부 내용이 섞일 수 있어 보내지 않는다
  */
-const APP_ERROR_CODES = new Set(['NO_SPEECH', 'INVALID_FILE', 'NO_QUESTIONS']);
+// TOO_MANY_PAGES: 노트가 50쪽을 넘음(apps/ai services/note/job.py)
+const APP_ERROR_CODES = new Set(['NO_SPEECH', 'INVALID_FILE', 'NO_QUESTIONS', 'TOO_MANY_PAGES']);
 const CODED_ERROR = /^([A-Z][A-Z0-9_]*): /;
 
 /**

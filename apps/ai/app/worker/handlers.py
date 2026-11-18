@@ -200,3 +200,5 @@ HANDLERS[note_job.TYPE] = handwriting_summary
 HANDLERS[ask.TYPE] = note_ask
 # 사용자 작업과 따로 도는 반복이 하나씩 처리하는 종류(__main__ · runner.run_lanes, #138)
 BACKGROUND: frozenset[str] = frozenset({generate.PREGEN_TYPE})
+# 이미지 · 오디오를 메모리에 올리는 종류: 첫 사용자 반복만 가져가 동시에 하나만 돔(#521)
+HEAVY: frozenset[str] = frozenset({note_job.TYPE, recording_job.TYPE})

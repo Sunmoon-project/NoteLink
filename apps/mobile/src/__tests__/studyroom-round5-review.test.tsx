@@ -417,3 +417,50 @@ describe('스터디룸 뒤로 가기와 채팅', () => {
     dismiss.mockRestore();
   });
 });
+
+// 실기기 테스트: 채팅 입력줄의 + 와 이모지가 그림만 있어 눌러도 반응이 없었다
+describe('채팅 입력줄 + · 이모지', () => {
+  it('+ 를 누르면 사진 · 파일 첨부 고르기가 열리고 키보드를 내린다', async () => {
+    mockConnectMedia.mockResolvedValue(media());
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText(room.title);
+    expect(screen.queryByLabelText('사진 보내기')).toBeNull();
+    await fireEvent.press(screen.getByLabelText('사진 · 파일 첨부'));
+    expect(screen.getByLabelText('사진 보내기')).toBeTruthy();
+    expect(screen.getByLabelText('파일 (PDF) 보내기')).toBeTruthy();
+    expect(dismiss).toHaveBeenCalled();
+    // 다시 누르면 닫힌다
+    await fireEvent.press(screen.getByLabelText('사진 · 파일 첨부'));
+    expect(screen.queryByLabelText('사진 보내기')).toBeNull();
+    dismiss.mockRestore();
+  });
+
+  // Codex #507 리뷰: 이모지 칸을 키보드와 함께 열면 작은 화면에서 입력줄이 키보드 아래로 밀렸다
+  it('이모지 칸은 키보드 대신 열리고, 입력칸을 누르면 이모지 칸을 닫는다', async () => {
+    mockConnectMedia.mockResolvedValue(media());
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText(room.title);
+    await fireEvent.press(screen.getByLabelText('이모지'));
+    expect(dismiss).toHaveBeenCalled();
+    expect(screen.getByLabelText('👍 넣기')).toBeTruthy();
+    await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+    expect(screen.queryByLabelText('👍 넣기')).toBeNull();
+    dismiss.mockRestore();
+  });
+
+  it('이모지를 누르면 고르기 칸이 열리고, 고른 이모지가 입력 중인 글 뒤에 붙는다', async () => {
+    mockConnectMedia.mockResolvedValue(media());
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText(room.title);
+    const input = screen.getByPlaceholderText('채팅을 입력해 주세요');
+    await fireEvent.changeText(input, '화이팅');
+    await fireEvent.press(screen.getByLabelText('이모지'));
+    await fireEvent.press(screen.getByLabelText('👍 넣기'));
+    expect(screen.getByPlaceholderText('채팅을 입력해 주세요').props.value).toBe('화이팅👍');
+    // 다시 누르면 닫힌다
+    await fireEvent.press(screen.getByLabelText('이모지 닫기'));
+    expect(screen.queryByLabelText('👍 넣기')).toBeNull();
+  });
+});

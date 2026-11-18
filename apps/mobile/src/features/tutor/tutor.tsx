@@ -1,13 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  AccessibilityInfo,
-  FlatList,
-  Keyboard,
-  Platform,
-  Pressable,
-  TextInput,
-  View,
-} from 'react-native';
+import { AccessibilityInfo, FlatList, Keyboard, Platform, TextInput, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import Animated, {
   Extrapolation,
   FadeIn,
@@ -29,6 +22,7 @@ import { Canvas, Chip, Header, Screen, Swap, cx } from '@/components/ui';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/api/http';
 import { C, ICON } from '@/theme';
+import { AnswerText } from './answer-text';
 import { Avatar3D, type Mood } from './avatar3d';
 import { useEquippedAvatar, useFocused } from './buddy';
 
@@ -291,10 +285,11 @@ function Typing({ text, onDone }: { text: string; onDone: () => void }) {
       clearInterval(timer);
     };
   }, [text]);
+  // 차례로 나오는 중에도 문단 · 목록으로 정리해 보인다(읽는 사람에게는 전체 답을 한 번에 읽어 준다)
   return (
-    <Text className="text-footnote text-ink" accessibilityLabel={text}>
-      {text.slice(0, n)}
-    </Text>
+    <View accessibilityLabel={text.replace(/\*\*/g, '')}>
+      <AnswerText text={text.slice(0, n)} />
+    </View>
   );
 }
 
@@ -486,11 +481,7 @@ export function TutorScreen() {
                     }}
                   />
                 ) : (
-                  <Text
-                    className={cx('text-footnote', m.error || m.refused ? 'text-sub' : 'text-ink')}
-                  >
-                    {m.text}
-                  </Text>
+                  <AnswerText text={m.text} muted={m.error || m.refused} />
                 )}
                 {!!m.refs?.length && m.id !== live && (
                   <Text className="text-caption2 text-sub">근거 · {m.refs.join(', ')}</Text>

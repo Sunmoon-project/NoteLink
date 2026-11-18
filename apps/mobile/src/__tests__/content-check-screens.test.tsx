@@ -38,6 +38,41 @@ describe('올린 자료 내용 검사', () => {
     expect(useDraft.getState().files).toEqual([]);
     expect(router.replace).not.toHaveBeenCalledWith('/convert');
   });
+  // 허용 목록(UPLOAD_RULES.audio)에 들어갈 일이 없는 형식으로 본다. 안내 문구는 허용 목록으로 만들어지므로 끝만 맞춘다
+  it.each([
+    ['voice.ogg', 'audio/ogg', 21 * 1024 * 1024],
+    ['call.amr', 'audio/amr', 16 * 1024 * 1024],
+  ])(
+    '올릴 수 없는 확장자(%s)는 고를 때 이유를 보여 주고 다음으로 넘어가지 않는다 (#508)',
+    async (name, mimeType, size) => {
+      useDraft.getState().set({
+        kind: 'recording',
+        files: [{ uri: `file:///${name}`, name, mimeType, size }],
+      });
+      await renderScreen(<RecUploadScreen />);
+      expect(screen.getByText(/^MP3 · M4A .*만 올릴 수 있어요$/)).toBeTruthy();
+      expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+      await fireEvent.press(screen.getByText('다음'));
+      expect(router.replace).not.toHaveBeenCalledWith('/convert');
+    },
+  );
+  it('허용된 녹음(m4a)은 그대로 다음으로 넘어간다', async () => {
+    useDraft.getState().set({
+      kind: 'recording',
+      files: [
+        {
+          uri: 'file:///ok.m4a',
+          name: 'ok.m4a',
+          mimeType: 'audio/mp4a-latm',
+          size: 5 * 1024 * 1024,
+        },
+      ],
+    });
+    await renderScreen(<RecUploadScreen />);
+    expect(screen.queryByText(/만 올릴 수 있어요/)).toBeNull();
+    await fireEvent.press(screen.getByText('다음'));
+    expect(router.replace).toHaveBeenCalledWith('/convert');
+  });
   it('빈 페이지 수준의 PDF도 알린다', async () => {
     useDraft.getState().set({
       kind: 'document',

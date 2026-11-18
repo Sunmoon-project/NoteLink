@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, TextInput, View } from 'react-native';
+import { TextInput, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import Animated, {
   FadeIn,
@@ -14,6 +15,7 @@ import Animated, {
 import { router, useLocalSearchParams } from 'expo-router';
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Speech from 'expo-speech';
+import { setAudioModeAsync } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import {
   Archive,
@@ -62,6 +64,8 @@ import {
   Tap,
   Title,
   cx,
+  BACKDROP_IN,
+  BACKDROP_OUT,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
@@ -322,7 +326,11 @@ export function QuizNotesScreen() {
         )}
       </Screen>
       {menu && (
-        <View className="absolute inset-0 z-20">
+        <Animated.View
+          entering={BACKDROP_IN}
+          exiting={BACKDROP_OUT}
+          className="absolute inset-0 z-20"
+        >
           <Pressable className="absolute inset-0 bg-black/45" onPress={() => setMenu(false)} />
           <View
             className={cx('absolute right-5 items-end gap-3', chosen ? 'bottom-44' : 'bottom-24')}
@@ -357,7 +365,7 @@ export function QuizNotesScreen() {
               </Animated.View>
             ))}
           </View>
-        </View>
+        </Animated.View>
       )}
       <Pressable
         accessibilityLabel={menu ? '닫기' : '메뉴'}
@@ -557,11 +565,12 @@ export function QuizReadyScreen() {
             <Btn onPress={() => router.replace({ pathname: '/play/solve', params: { setId } })}>
               퀴즈 시작하기
             </Btn>
+            {/* 시작 버튼과 붙어 보이지 않게 띄우고, 화면 아래 끝에서 조금 올린다 */}
             <Pressable
               onPress={() => router.dismissTo('/(tabs)/quiz')}
-              className="mt-2 self-center rounded-full bg-white px-3 py-1"
+              className="mt-4 mb-6 self-center rounded-full bg-white px-4 py-2"
             >
-              <Text className="text-caption text-sub">나중에 풀기</Text>
+              <Text className="text-footnote text-sub">나중에 풀기</Text>
             </Pressable>
           </>
         }
@@ -577,7 +586,9 @@ export function QuizReadyScreen() {
             {count ? `총 ${count}문제가 생성됐어요!` : '문제가 생성됐어요!'}
           </Text>
           {!!title && (
-            <Text className="text-caption text-sub">{title} 노트를 기반으로 만들었어요</Text>
+            <Text className="mt-2 px-8 text-center text-footnote leading-5 text-sub">
+              {title} 노트를 기반으로 만들었어요
+            </Text>
           )}
         </View>
       </Screen>
@@ -623,6 +634,15 @@ export function QuizSolveScreen() {
   const [right, setRight] = useState<boolean | null>(previous?.right ?? null);
   const [results, setResults] = useState<boolean[]>(previous?.results ?? []);
   const [speaking, setSpeaking] = useState(false);
+  // 지금 유효한 읽기 요청 번호. 멈추기 · 화면 떠나기 · 다음 문제로 넘어가기에서 올려 준비 중인 읽기를 무효로 한다
+  const speechToken = useRef(0);
+  useEffect(
+    () => () => {
+      speechToken.current++;
+      void Speech.stop();
+    },
+    [],
+  );
   const expired = useAuth((s) => s.expired);
   const finishing = useRef(false);
   const completionKey = ['quiz-finish', screenOwner, attemptId];
@@ -682,12 +702,6 @@ export function QuizSolveScreen() {
       active = false;
     };
   }, [set.data?._id, startRound]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(
-    () => () => {
-      Speech.stop();
-    },
-    [],
-  );
   useEffect(() => {
     if (set.data && !finish.isSuccess && ownsProgress()) {
       useQuizProgress
@@ -742,16 +756,30 @@ export function QuizSolveScreen() {
         </Screen>
       </Canvas>
     );
-  const speak = () => {
+  const speak = async () => {
+    // 읽기 요청마다 번호를 매겨, 준비(오디오 설정)를 기다리는 사이 멈추거나 화면을 떠나면 읽지 않는다(Codex #507 리뷰)
+    const token = ++speechToken.current;
     if (speaking) {
-      Speech.stop();
+      void Speech.stop();
       return setSpeaking(false);
     }
     setSpeaking(true);
+    // 아이폰 무음 스위치가 켜져 있어도 들리게 한다(기본 오디오 설정은 무음 모드에서 소리를 내지 않아
+    // 「음성으로 듣기」를 눌러도 아무 소리가 나지 않았다)
+    await setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
+    // 취소된 요청이 여기서 멈추기를 부르면 그사이 시작한 새 읽기가 끊긴다. 멈추기 전에도 확인한다(Codex #507 재리뷰)
+    if (token !== speechToken.current) return;
+    // 앞에서 멈추지 못한 읽기가 남아 있으면 새 읽기가 뒤로 밀려 들리지 않는다
+    await Speech.stop()?.catch?.(() => {});
+    if (token !== speechToken.current) return;
     Speech.speak(`${q.prompt}. ${(q.choices ?? []).map((c, n) => `${n + 1}번, ${c}`).join('. ')}`, {
       language: 'ko-KR',
       onDone: () => setSpeaking(false),
       onStopped: () => setSpeaking(false),
+      onError: () => {
+        setSpeaking(false);
+        toast('음성을 재생하지 못했어요. 기기 소리 설정을 확인해 주세요');
+      },
     });
   };
   const choose = async (c: string) => {
@@ -785,6 +813,12 @@ export function QuizSolveScreen() {
   const next = () => {
     if (!ownsProgress()) return toast('다른 풀이를 진행 중이에요. 풀던 퀴즈를 다시 열어주세요');
     if (finishing.current || completing) return;
+    // 읽던 · 읽으려고 준비 중인 앞 문제는 무효로 하고 멈춘다(다음 문제에서 앞 문제를 읽지 않게)
+    speechToken.current++;
+    if (speaking) {
+      setSpeaking(false);
+      void Speech.stop();
+    }
     if (i >= qs.length - 1) {
       const progress = useQuizProgress.getState().progress;
       if (!attemptId || progress?.attemptId !== attemptId || progress.setId !== set.data?._id) {
@@ -816,7 +850,11 @@ export function QuizSolveScreen() {
       <Screen
         footer={
           pick === null ? (
-            <Btn kind="cream" icon={<Volume2 size={ICON.sm} color={C.ink} />} onPress={speak}>
+            <Btn
+              kind="cream"
+              icon={<Volume2 size={ICON.sm} color={C.ink} />}
+              onPress={() => void speak()}
+            >
               {speaking ? '읽어주는 중… (탭해서 멈춤)' : '음성으로 듣기'}
             </Btn>
           ) : right ? (
@@ -1271,12 +1309,8 @@ export function QuizSimilarScreen() {
       toast('플래시카드에 저장했어요');
     },
   });
-  // 문제를 받으면 첫 문제를 펼친다 (렌더 중 상태 조정)
-  const [loaded, setLoaded] = useState<typeof sim.data>();
-  if (sim.data && sim.data !== loaded) {
-    setLoaded(sim.data);
-    if (sim.data.questions[0]) setOpen([sim.data.questions[0]._id]);
-  }
+  // 문제마다 고른 보기(객관식). 고르면 맞았는지 · 정답을 보여 준다. 정답은 먼저 보이지 않는다
+  const [picked, setPicked] = useState<Record<string, string>>({});
   return (
     <Canvas>
       <Screen
@@ -1335,6 +1369,49 @@ export function QuizSimilarScreen() {
             <View key={q._id} className="rounded-card bg-white p-4">
               <Text className="text-caption font-semibold text-brand">문제 {i + 1}</Text>
               <Text className="mt-1 text-subhead leading-6 text-ink">{q.prompt}</Text>
+              {!!q.choices?.length && (
+                <View className="mt-3 gap-2">
+                  {q.choices.map((c, n) => {
+                    const chosen = picked[q._id];
+                    const right = c === q.answer;
+                    return (
+                      <Pressable
+                        key={`${n}-${c}`}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: chosen === c, disabled: !!chosen }}
+                        disabled={!!chosen}
+                        onPress={() => {
+                          setPicked((p) => ({ ...p, [q._id]: c }));
+                          setOpen((p) => (p.includes(q._id) ? p : [...p, q._id]));
+                        }}
+                        className={cx(
+                          'flex-row items-center gap-2.5 rounded-xl border px-3 py-2.5',
+                          !chosen
+                            ? 'border-line bg-white'
+                            : right
+                              ? 'border-brand bg-mint'
+                              : chosen === c
+                                ? 'border-danger bg-danger/10'
+                                : 'border-line bg-white opacity-60',
+                        )}
+                      >
+                        <Text className="text-footnote font-semibold text-sub">{n + 1}</Text>
+                        <Text className="flex-1 text-footnote leading-5 text-ink">{c}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+              {!!picked[q._id] && (
+                <Text
+                  className={cx(
+                    'mt-2 text-footnote font-semibold',
+                    picked[q._id] === q.answer ? 'text-brand' : 'text-danger',
+                  )}
+                >
+                  {picked[q._id] === q.answer ? '정답이에요!' : '아쉬워요, 다시 확인해 보세요'}
+                </Text>
+              )}
               {open.includes(q._id) && (
                 <Animated.View entering={FadeIn} className="mt-2 rounded-xl bg-sun/25 px-3 py-2">
                   <Text className="text-caption font-semibold text-ink">문제 {i + 1} 정답</Text>
@@ -1375,12 +1452,13 @@ export function FlashScreen() {
   const [i, setI] = useState(() =>
     Math.max(0, Number.isFinite(Number(start)) ? Math.floor(Number(start)) : 0),
   );
-  const [back, setBack] = useState(true);
+  // 카드는 문제(앞면)부터 보이고, 누르면 정답(뒷면)으로 뒤집는다
+  const [back, setBack] = useState(false);
   const list = cards.data ?? [];
   const index = Math.max(0, Math.min(i, list.length - 1));
   if (cards.isSuccess && i !== index) {
     setI(index);
-    setBack(true);
+    setBack(false);
   }
   const c = list[index];
   return (
@@ -1441,7 +1519,7 @@ export function FlashScreen() {
               disabled={i === 0}
               onPress={() => {
                 setI((x) => x - 1);
-                setBack(true);
+                setBack(false);
               }}
               className={cx(
                 'h-11 w-11 items-center justify-center rounded-full bg-white',
@@ -1459,7 +1537,7 @@ export function FlashScreen() {
               disabled={i >= list.length - 1}
               onPress={() => {
                 setI((x) => x + 1);
-                setBack(true);
+                setBack(false);
               }}
               className={cx(
                 'h-11 w-11 items-center justify-center rounded-full bg-white',

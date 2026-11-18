@@ -1,6 +1,7 @@
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useEffect, useRef, useState } from 'react';
-import { FlatList, Pressable, View } from 'react-native';
+import { FlatList, View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -279,8 +280,7 @@ export function ChatScreen() {
         setOlderError(false);
         qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
           messages: mergeMessages(previous?.messages ?? [], result.missed!),
-          hasMore:
-            result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE || previous?.hasMore === true,
+          hasMore: result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE || previous?.hasMore === true,
           nextBefore:
             result.missed!.length === DIRECT_MESSAGE_PAGE_SIZE
               ? result.missed![0]?._id
@@ -302,12 +302,7 @@ export function ChatScreen() {
     if (!chatRoomId) return;
     const current = qc.getQueryData<DirectHistory>(['messages', chatRoomId]) ?? history.data;
     const nextBefore = current?.nextBefore;
-    if (
-      !current?.hasMore ||
-      !nextBefore ||
-      olderLoadingRef.current ||
-      (olderError && !manualRetry)
-    )
+    if (!current?.hasMore || !nextBefore || olderLoadingRef.current || (olderError && !manualRetry))
       return;
 
     const requestGeneration = pageRequestGeneration.current;
@@ -317,7 +312,10 @@ export function ChatScreen() {
     try {
       const older = await api.social.messages(chatRoomId, nextBefore);
       if (requestGeneration !== pageRequestGeneration.current) return;
-      restoreScroll.current = { offset: scrollOffset.current, contentHeight: contentHeight.current };
+      restoreScroll.current = {
+        offset: scrollOffset.current,
+        contentHeight: contentHeight.current,
+      };
       qc.setQueryData<DirectHistory>(['messages', chatRoomId], (previous) => ({
         messages: mergeMessages(older, previous?.messages ?? []),
         hasMore: older.length === DIRECT_MESSAGE_PAGE_SIZE,
@@ -450,8 +448,7 @@ export function ChatScreen() {
           onScroll={(event) => {
             const offset = event.nativeEvent.contentOffset.y;
             scrollOffset.current = offset;
-            nearBottom.current =
-              contentHeight.current - viewportHeight.current - offset < 80;
+            nearBottom.current = contentHeight.current - viewportHeight.current - offset < 80;
             if (offset < 48) void loadOlderMessages();
           }}
           scrollEventThrottle={100}

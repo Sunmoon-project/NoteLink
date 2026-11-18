@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
+import { Pressable } from '@/components/press';
 import { ChevronDown, ChevronRight } from 'lucide-react-native';
 import { Text } from '@/components/text';
 import { Chip } from '@/components/ui';

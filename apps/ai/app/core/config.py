@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     ai_job_max_attempts: int = 3  # 일시 오류(LLM 응답 실패 · 처리기 멈춤) 포함 최대 시도
     ai_job_retry_delay_sec: int = 30  # 다시 시도까지 기다리는 시간 × 시도 횟수
     ai_job_poll_sec: float = 2.0  # 할 일이 없을 때 다시 볼 간격
+    # 사용자 작업 반복 수(#521). 늘린 반복은 가벼운 작업만 가져가고, 노트 · 녹음 정리는 첫 반복만.
+    # API와 같은 플랜(2코어 · 약 3.9GB)을 쓰므로 4까지만
+    ai_job_user_lanes: int = Field(default=2, ge=1, le=4)
 
     # 노트 쪽: OCR(Azure Document Intelligence) · 파일(Blob) · 임베딩(Voyage). 키는 .env에만.
     azure_docint_endpoint: str = ""

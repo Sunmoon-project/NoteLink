@@ -6,7 +6,13 @@ import {
   SASProtocol,
 } from '@azure/storage-blob';
 import { BadRequestException, HttpException, HttpStatus, Injectable } from '@nestjs/common';
-import { ERROR_CODES, UPLOAD_RULES, UploadSasBody, type UploadTarget } from '@notelink/shared';
+import {
+  ERROR_CODES,
+  UPLOAD_RULES,
+  UploadSasBody,
+  uploadMaxBytes,
+  type UploadTarget,
+} from '@notelink/shared';
 
 import { BlobStorageService, TYPE_BY_EXT, uploadFolder } from './blob-storage.service.js';
 import { UploadQuotaService } from './upload-quota.service.js';
@@ -38,18 +44,21 @@ export class UploadsService {
     const { kind, fileName, sizeBytes, purpose } = body.data;
     if (purpose === 'report' && kind !== 'image')
       throw notAllowed('신고에는 사진만 붙일 수 있어요');
+    if (purpose === 'chat' && kind === 'audio')
+      throw notAllowed('채팅에는 사진과 PDF 파일만 보낼 수 있어요');
     const rule = UPLOAD_RULES[kind];
     const dot = fileName.lastIndexOf('.');
     const ext = dot < 0 ? '' : fileName.slice(dot + 1).toLowerCase();
     if (!(rule.exts as readonly string[]).includes(ext))
       throw notAllowed(`${rule.exts.map((e) => e.toUpperCase()).join(' · ')}만 올릴 수 있어요`);
-    if (sizeBytes > rule.maxBytes)
-      throw notAllowed(`${Math.round(rule.maxBytes / 1024 / 1024)}MB 이하만 올릴 수 있어요`);
+    const maxBytes = uploadMaxBytes(kind, purpose);
+    if (sizeBytes > maxBytes)
+      throw notAllowed(`${Math.round(maxBytes / 1024 / 1024)}MB 이하만 올릴 수 있어요`);
 
     const sent = body.data.contentType.toLowerCase();
     // 신고 사진은 접수할 때 확장자의 형식과 같은지 보므로, 다르면 지금 알린다
-    if (purpose === 'report' && sent !== TYPE_BY_EXT[ext])
-      throw notAllowed('사진 형식과 확장자가 맞지 않아요');
+    if ((purpose === 'report' || purpose === 'chat') && sent !== TYPE_BY_EXT[ext])
+      throw notAllowed('파일 형식과 확장자가 맞지 않아요');
 
     const store = this.storage.requireStore();
 

@@ -29,6 +29,8 @@ export const UPLOAD_PREFIX = 'uploads';
  * 실제 크기 · 형식을 확인해 보관 경로로 복사한다. 남은 파일은 스토리지 수명 주기 규칙이 하루 뒤 지운다
  */
 export const REPORT_UPLOAD_PREFIX = 'incoming';
+/** 채팅에 보낸 사진 · 파일: chat/{종류}/{사용자}/{무작위}.{확장자}. 메시지가 이 주소를 저장하므로 지우지 않는다 */
+export const CHAT_UPLOAD_PREFIX = 'chat';
 /** 접수된 신고 사진의 보관 경로: reports/{신고자}/{신고 ID}/{무작위}.{확장자} */
 export const REPORT_PREFIX = 'reports';
 /**
@@ -63,6 +65,8 @@ export const TYPE_BY_EXT: Record<string, string> = {
   pdf: 'application/pdf',
   mp3: 'audio/mpeg',
   m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  mp4: 'audio/mp4',
   wav: 'audio/wav',
 };
 /** 앱이 올린 파일 이름: uuid(v4).확장자 */
@@ -90,12 +94,12 @@ const badFile = (message: string) =>
 const unavailable = (message: string) =>
   new ServiceUnavailableException({ code: ERROR_CODES.UPLOAD_UNAVAILABLE, message });
 
-/** 앱이 올리는 폴더(끝에 '/'): 신고 사진은 임시 경로, 그 밖에는 종류별 노트 경로 */
-export function uploadFolder(kind: string, userId: string, purpose?: 'report'): string {
+/** 앱이 올리는 폴더(끝에 '/'): 신고 사진은 임시 경로, 채팅 첨부는 채팅 경로, 그 밖에는 종류별 노트 경로 */
+export function uploadFolder(kind: string, userId: string, purpose?: 'report' | 'chat'): string {
   const owner = userId.toLowerCase();
-  return purpose === 'report'
-    ? `${REPORT_UPLOAD_PREFIX}/${owner}/`
-    : `${UPLOAD_PREFIX}/${kind}/${owner}/`;
+  if (purpose === 'report') return `${REPORT_UPLOAD_PREFIX}/${owner}/`;
+  if (purpose === 'chat') return `${CHAT_UPLOAD_PREFIX}/${kind}/${owner}/`;
+  return `${UPLOAD_PREFIX}/${kind}/${owner}/`;
 }
 
 @Injectable()
@@ -247,7 +251,7 @@ export class BlobStorageService {
     blobUrl: string,
     ttlMs: number,
     verify?: { prefix: string },
-  ): Promise<{ readUrl: string; sizeBytes?: number }> {
+  ): Promise<{ readUrl: string; sizeBytes?: number; contentType?: string | null }> {
     const store = this.requireStore();
     const containerClient = store.client.getContainerClient(store.config.container);
     const base = `${containerClient.url}/`;
@@ -255,11 +259,14 @@ export class BlobStorageService {
     const blob = blobName ? containerClient.getBlockBlobClient(blobName) : null;
     if (!blob || blob.url !== blobUrl) throw badFile('사용할 수 없는 파일 주소예요');
     let sizeBytes: number | undefined;
+    let contentType: string | null | undefined;
     if (verify) {
       const rest = blobName.startsWith(verify.prefix) ? blobName.slice(verify.prefix.length) : '';
       if (!UPLOADED_FILE_NAME.test(rest)) throw badFile('사용할 수 없는 파일 주소예요');
       try {
-        sizeBytes = (await blob.getProperties()).contentLength;
+        const properties = await blob.getProperties();
+        sizeBytes = properties.contentLength;
+        contentType = properties.contentType ?? null;
       } catch (error) {
         if (statusOf(error) === 404) throw badFile('올린 파일을 찾을 수 없어요');
         throw unavailable('올린 파일을 확인하지 못했어요.');
@@ -279,7 +286,11 @@ export class BlobStorageService {
         },
         store.credential,
       ).toString();
-      return { readUrl: `${blob.url}?${sas}`, ...(sizeBytes === undefined ? {} : { sizeBytes }) };
+      return {
+        readUrl: `${blob.url}?${sas}`,
+        ...(sizeBytes === undefined ? {} : { sizeBytes }),
+        ...(contentType === undefined ? {} : { contentType }),
+      };
     } catch {
       throw unavailable('파일 읽기 주소를 만들지 못했어요.');
     }

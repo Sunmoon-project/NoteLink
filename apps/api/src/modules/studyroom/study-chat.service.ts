@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Types, type Model } from 'mongoose';
 
@@ -7,6 +7,14 @@ import { ChatRoom } from '../social/schemas/chat-room.schema.js';
 import { Message } from '../social/schemas/message.schema.js';
 import { StudyRoom } from './schemas/study-room.schema.js';
 import { Friendship } from '../social/schemas/friendship.schema.js';
+import { uploadMaxBytes } from '@notelink/shared';
+import { BlobStorageService, TYPE_BY_EXT, uploadFolder } from '../upload/blob-storage.service.js';
+
+/** 채팅 첨부를 읽을 수 있는 시간. 지나면 대화 기록을 다시 받아 새 주소를 쓴다 */
+const ATTACHMENT_READ_MS = 60 * 60_000;
+/** 첨부 종류 → 올린 경로의 종류(uploadFolder) */
+const ATTACHMENT_STORAGE = { image: 'image', file: 'document' } as const;
+type AttachmentKind = keyof typeof ATTACHMENT_STORAGE;
 
 @Injectable()
 export class StudyChatService {
@@ -16,6 +24,8 @@ export class StudyChatService {
     @InjectModel(Message.name) private readonly messages: Model<Message>,
     @InjectModel(User.name) private readonly users: Model<User>,
     @InjectModel(Friendship.name) private readonly friendships: Model<Friendship>,
+    // 채팅 첨부(사진 · 파일)의 주소를 확인하고 읽기 주소를 만든다. 없으면(저장소 미설정) 첨부를 받지 않는다
+    @Optional() private readonly blobs?: BlobStorageService,
   ) {}
 
   async getDirectChat(userId: string, targetUserId: string) {
@@ -231,7 +241,9 @@ export class StudyChatService {
       .find({ _id: { $in: messages.map((m) => m.senderId) } }, { nickname: 1 })
       .lean();
     const names = new Map(users.map((u) => [String(u._id), u.nickname]));
-    return messages.reverse().map((m) => this.serialize(m, names.get(String(m.senderId))));
+    return Promise.all(
+      messages.reverse().map((m) => this.serialize(m, names.get(String(m.senderId)))),
+    );
   }
 
   async send(chatId: string, userId: string, text: unknown, clientId: unknown) {
@@ -274,7 +286,101 @@ export class StudyChatService {
     return this.serialize(message, user?.nickname);
   }
 
-  private serialize(m: Message & { _id: Types.ObjectId; createdAt?: Date }, nickname?: string) {
+  /**
+   * 사진 · 파일 메시지. 앱이 채팅 경로(uploadFolder(…, 'chat'))에 먼저 올린 파일의 주소를 받는다.
+   * 보낸 사람 본인의 채팅 경로 아래 `<uuid>.<확장자>`이고 실제로 있는 파일인지 확인한다(남의 파일 · 노트 파일을 보내지 못하게).
+   * 같은 clientId로 다시 보내면 같은 메시지를 돌려준다(재연결 뒤 다시 보내기)
+   */
+  async sendAttachment(chatId: string, userId: string, attachment: unknown, clientId: unknown) {
+    await this.requireChat(chatId, userId);
+    const a = attachment as { blobUrl?: unknown; kind?: unknown; name?: unknown } | null;
+    if (
+      !a ||
+      typeof a.blobUrl !== 'string' ||
+      (a.kind !== 'image' && a.kind !== 'file') ||
+      typeof a.name !== 'string' ||
+      !a.name.trim() ||
+      a.name.length > 200 ||
+      typeof clientId !== 'string' ||
+      !/^[a-zA-Z0-9_-]{1,100}$/.test(clientId)
+    ) {
+      throw new BadRequestException({
+        code: 'BAD_REQUEST',
+        message: '첨부 형식이 올바르지 않습니다.',
+      });
+    }
+    if (!this.blobs)
+      throw new BadRequestException({ code: 'BAD_REQUEST', message: '첨부를 보낼 수 없어요.' });
+    const kind = a.kind as AttachmentKind;
+    const { sizeBytes, contentType } = await this.blobs.createReadAccess(a.blobUrl, 60_000, {
+      prefix: uploadFolder(ATTACHMENT_STORAGE[kind], userId, 'chat'),
+    });
+    // 올리기 주소는 앱이 알린 크기로만 내준다. 실제로 올라간 파일이 상한을 넘으면 받지 않는다(Codex #507 리뷰)
+    const maxBytes = uploadMaxBytes(ATTACHMENT_STORAGE[kind], 'chat');
+    if (sizeBytes !== undefined && sizeBytes > maxBytes)
+      throw new BadRequestException({
+        code: 'BAD_REQUEST',
+        message: `${Math.round(maxBytes / 1024 / 1024)}MB 이하 파일만 보낼 수 있어요.`,
+      });
+    // 올리기 주소와 다른 형식(예: text/html)으로 직접 올린 파일은 브라우저에서 웹 페이지로 열리므로 받지 않는다.
+    // 채팅 올리기 주소는 확장자의 형식으로만 내준다(uploads.service)(Codex #519 리뷰)
+    const ext = a.blobUrl.slice(a.blobUrl.lastIndexOf('.') + 1).toLowerCase();
+    if (!contentType || contentType.toLowerCase() !== TYPE_BY_EXT[ext])
+      throw new BadRequestException({
+        code: 'BAD_REQUEST',
+        message: '파일 형식이 올바르지 않아요.',
+      });
+    const senderId = new Types.ObjectId(userId);
+    const key = { chatRoomId: new Types.ObjectId(chatId), senderId, clientId };
+    const stored = { blobUrl: a.blobUrl, name: a.name.trim(), sizeBytes: sizeBytes ?? 0 };
+    let message;
+    try {
+      message = await this.messages
+        .findOneAndUpdate(
+          key,
+          { $setOnInsert: { ...key, type: kind, text: null, attachment: stored } },
+          { upsert: true, new: true, setDefaultsOnInsert: true },
+        )
+        .lean()
+        .orFail();
+    } catch (error) {
+      if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 11000)
+        throw error;
+      message = await this.messages.findOne(key).lean().orFail();
+    }
+    if (message.type !== kind || message.attachment?.blobUrl !== a.blobUrl)
+      throw new BadRequestException({
+        code: 'BAD_REQUEST',
+        message: '이미 사용한 메시지 식별자입니다.',
+      });
+    const user = await this.users.findById(senderId, { nickname: 1 }).lean();
+    return this.serialize(message, user?.nickname);
+  }
+
+  /** 저장한 첨부를 앱이 바로 열 수 있게 잠깐 읽을 수 있는 주소로 바꾼다. 만들지 못하면 첨부를 빼고 보낸다 */
+  private async attachmentOf(m: Message) {
+    if ((m.type !== 'image' && m.type !== 'file') || !m.attachment || !this.blobs) return undefined;
+    try {
+      const { readUrl } = await this.blobs.createReadAccess(
+        m.attachment.blobUrl,
+        ATTACHMENT_READ_MS,
+      );
+      return {
+        kind: m.type as AttachmentKind,
+        name: m.attachment.name,
+        sizeBytes: m.attachment.sizeBytes,
+        url: readUrl,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async serialize(
+    m: Message & { _id: Types.ObjectId; createdAt?: Date },
+    nickname?: string,
+  ) {
+    const attachment = await this.attachmentOf(m);
     return {
       _id: String(m._id),
       chatRoomId: String(m.chatRoomId),
@@ -284,6 +390,7 @@ export class StudyChatService {
       text: m.text ?? null,
       sharedItemId: m.sharedItemId ? String(m.sharedItemId) : null,
       ...(m.studyRoomInvite ? { studyRoomInvite: m.studyRoomInvite } : {}),
+      ...(attachment ? { attachment } : {}),
       createdAt: m.createdAt?.toISOString(),
       ...(m.clientId ? { clientId: m.clientId } : {}),
     };

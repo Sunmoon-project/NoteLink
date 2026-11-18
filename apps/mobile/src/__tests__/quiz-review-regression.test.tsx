@@ -137,11 +137,11 @@ it('마지막 카드를 삭제하면 남은 마지막 카드와 올바른 위치
   qc.setQueryData(['flashcards'], cards);
   setParams({ i: '2' });
   await renderScreen(<FlashScreen />, qc);
-  expect(await screen.findByText('뒤 3')).toBeTruthy();
+  expect(await screen.findByText('앞 3')).toBeTruthy();
   await act(async () => {
     qc.setQueryData(['flashcards'], cards.slice(0, 2));
   });
-  expect(await screen.findByText('뒤 2')).toBeTruthy();
+  expect(await screen.findByText('앞 2')).toBeTruthy();
   expect(screen.getByText('2 / 2')).toBeTruthy();
   expect(screen.queryByText('3 / 2')).toBeNull();
 });
@@ -152,7 +152,7 @@ it('카드가 모두 삭제되면 빈 상태를 표시하고 위치를 1 / 0으�
   const qc = client();
   qc.setQueryData(['flashcards'], cards);
   await renderScreen(<FlashScreen />, qc);
-  expect(await screen.findByText('뒤 1')).toBeTruthy();
+  expect(await screen.findByText('앞 1')).toBeTruthy();
   await act(async () => {
     qc.setQueryData(['flashcards'], []);
   });
@@ -167,8 +167,18 @@ it('카드 최초 조회를 기다리는 동안 요청한 세 번째 카드 위�
   setParams({ i: '2' });
   await renderScreen(<FlashScreen />, client());
   await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-  expect(screen.queryByText('뒤 1')).toBeNull();
+  expect(screen.queryByText('앞 1')).toBeNull();
   await act(async () => delayed.resolve(cards));
-  expect(await screen.findByText('뒤 3')).toBeTruthy();
+  expect(await screen.findByText('앞 3')).toBeTruthy();
   expect(screen.getByText('3 / 3')).toBeTruthy();
+});
+
+// 실기기 테스트: 플래시카드가 정답(뒷면)부터 보였다 — 문제(앞면)부터 보이고 누르면 정답으로 뒤집힌다
+it('플래시카드는 문제부터 보이고, 누르면 정답이 보인다', async () => {
+  jest.spyOn(api.quiz, 'flashcards').mockResolvedValue([flash('1')]);
+  await renderScreen(<FlashScreen />, client());
+  expect(await screen.findByText('앞 1')).toBeTruthy();
+  expect(screen.queryByText('뒤 1')).toBeNull();
+  await fireEvent.press(screen.getByText('앞 1'));
+  expect(await screen.findByText('뒤 1')).toBeTruthy();
 });

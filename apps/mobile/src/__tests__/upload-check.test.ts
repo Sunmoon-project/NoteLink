@@ -20,9 +20,32 @@ describe('checkFile', () => {
     expect(r).toEqual({ ok: false, reason: '20MB 이하만 올릴 수 있어요' });
   });
 
+  it('채팅 첨부는 사진 50MB · 파일 100MB까지 받는다(노트 상한보다 크게)', () => {
+    const mb = 1024 * 1024;
+    expect(checkFile('image', { uri: 'a', name: 'big.jpg', size: 30 * mb }, 'chat').ok).toBe(true);
+    expect(checkFile('image', { uri: 'a', name: 'big.jpg', size: 51 * mb }, 'chat')).toEqual({
+      ok: false,
+      reason: '50MB 이하만 올릴 수 있어요',
+    });
+    expect(checkFile('document', { uri: 'a', name: 'a.pdf', size: 80 * mb }, 'chat').ok).toBe(true);
+    expect(checkFile('document', { uri: 'a', name: 'a.pdf', size: 101 * mb }, 'chat')).toEqual({
+      ok: false,
+      reason: '100MB 이하만 올릴 수 있어요',
+    });
+    // 노트 · 신고는 그대로
+    expect(checkFile('document', { uri: 'a', name: 'a.pdf', size: 80 * mb }).ok).toBe(false);
+    expect(checkFile('image', { uri: 'a', name: 'big.jpg', size: 30 * mb }, 'report').ok).toBe(
+      false,
+    );
+  });
+
   it('문서는 PDF를 허용하고 녹음 파일은 m4a를 허용한다', () => {
     expect(checkFile('document', { uri: 'a', name: '연습문제.pdf', size: 1024 }).ok).toBe(true);
     expect(checkFile('audio', { uri: 'a', name: 'lecture.m4a', size: 1024 }).ok).toBe(true);
     expect(checkFile('audio', { uri: 'a', name: 'lecture.exe', size: 1024 }).ok).toBe(false);
+  });
+
+  it.each(['녹음본.aac', 'lecture.m4a.mp4', 'REC.AAC'])('녹음 %s 도 허용한다 (#508)', (name) => {
+    expect(checkFile('audio', { uri: 'a', name, size: 1024 }).ok).toBe(true);
   });
 });

@@ -17,7 +17,8 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_USE_LOCAL_DATA": "true"
+        "EXPO_PUBLIC_USE_LOCAL_DATA": "true",
+        "EXPO_PUBLIC_SOCIAL_LOGIN": "false"
       }
     },
     "preview-server": {

@@ -37,7 +37,7 @@
 | --- | --- | --- | --- | --- | --- |
 | `handwriting` (필기) | 사진 여러 장 | `image` | jpg · jpeg · png · heic | 20MB | `handwriting_summary` |
 | `document` (문서) | PDF 1개 또는 사진 여러 장 | `document` | pdf · jpg · jpeg · png | 50MB | `handwriting_summary` |
-| `recording` (녹음) | 오디오 1개 | `audio` | mp3 · m4a · wav | 500MB | `recording_summary` |
+| `recording` (녹음) | 오디오 1개 | `audio` | mp3 · m4a · aac · mp4 · wav | 500MB | `recording_summary` |
 
 - 한 번에 올리는 파일은 최대 50개(`MATERIAL_MAX_FILES`)입니다.
 - PDF는 다른 파일과 함께 올릴 수 없고, 녹음은 파일 하나만 올릴 수 있습니다.

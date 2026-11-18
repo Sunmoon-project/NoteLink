@@ -55,6 +55,9 @@ log = logging.getLogger(__name__)
 TYPE = "handwriting_summary"
 NOTE_MAX_PAGES = 50  # 업로드 수, 그리고 OCR 뒤 여러 쪽 PDF를 펼친 쪽 수의 상한
 INVALID_FILE = "INVALID_FILE"
+# 노트 전체 쪽 수가 NOTE_MAX_PAGES를 넘음. 앱이 「50쪽 이하로 나눠 올려 주세요」로 알린다
+# (그냥 INVALID_FILE이면 앱이 이유를 모름)
+TOO_MANY_PAGES = "TOO_MANY_PAGES"
 NO_TEXT = "NO_TEXT"
 NO_COLOR = "NO_COLOR"
 # 색 찾기용 사진의 최대 픽셀 수(폭 × 높이). 20MB 압축 파일도 풀면 훨씬 커질 수 있어 OCR 쪽
@@ -240,7 +243,9 @@ def _read(
         span = page_span(read)
         total += span
         if total > NOTE_MAX_PAGES:
-            raise InputError(f"노트가 {NOTE_MAX_PAGES}쪽을 넘음", code=INVALID_FILE)
+            raise InputError(
+                f"노트가 {NOTE_MAX_PAGES}쪽을 넘음({total}쪽 이상)", code=TOO_MANY_PAGES
+            )
         page: NotePage = {"pageNo": start, "read": read}
         image = _image(fetch, url, read)
         if isinstance(image, str):

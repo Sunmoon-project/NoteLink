@@ -1,13 +1,19 @@
 import signal
 import threading
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+import mongomock
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
-from app.clients.llm import MODEL_FIELDS
-from app.core.config import settings
+from app.clients.llm import MODEL_FIELDS, JsonObject
+from app.core.config import Settings, settings
 from app.worker import __main__ as entry
+from app.worker.handlers import BACKGROUND, HANDLERS, HEAVY
+from app.worker.jobs import JobStore
+from app.worker.runner import Handler, JobReport, Lane, run_once
 
 
 def test_worker_refuses_to_start_without_db_address(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,3 +78,78 @@ def test_first_signal_asks_to_stop_and_the_next_one_ends_at_once(first: signal.S
     handler(first, None)
     assert stop.is_set()  # 지금 작업을 끝낸 뒤 멈춤
     assert all(signal.getsignal(sig) == signal.SIG_DFL for sig in entry.STOP_SIGNALS)
+
+
+T0 = datetime(2026, 11, 18, 9, 0, tzinfo=UTC)
+
+
+def lanes_on(col: Any, user_lanes: int) -> tuple[list[Lane], list[str]]:
+    workers: list[str] = []
+
+    def store(suffix: str) -> JobStore:
+        workers.append("w1" + suffix)
+        return JobStore(col, workers[-1], lock_sec=60, max_attempts=3, retry_delay_sec=30)
+
+    return entry.make_lanes(store, user_lanes), workers
+
+
+def test_one_user_lane_is_the_same_as_before() -> None:
+    lanes, workers = lanes_on(mongomock.MongoClient(tz_aware=True).db.ai_jobs, 1)
+    assert [lane.name for lane in lanes] == ["background", "user"]
+    assert workers == ["w1:bg", "w1"]  # AI_JOB_USER_LANES=1이면 #521 전과 같은 구성
+    assert lanes[0].handlers.keys() == BACKGROUND
+    assert lanes[1].handlers is HANDLERS and lanes[1].awaited_only == BACKGROUND
+
+
+def test_extra_user_lanes_take_light_jobs_and_leave_heavy_ones_to_the_first() -> None:
+    # 노트 · 녹음 정리는 첫 사용자 반복만: 동시에 하나만 돌아 API와 같이 쓰는 메모리를 지킴(#521)
+    lanes, workers = lanes_on(mongomock.MongoClient(tz_aware=True).db.ai_jobs, 3)
+    assert [lane.name for lane in lanes] == ["background", "user", "user-2", "user-3"]
+    assert len(set(workers)) == len(workers)  # 반복마다 잠금 주인이 다름
+    assert HEAVY and HEAVY <= HANDLERS.keys() and not HEAVY & BACKGROUND
+    for lane in lanes[2:]:
+        assert lane.handlers.keys() == HANDLERS.keys() - HEAVY
+        assert lane.awaited_only == BACKGROUND  # 이어받은 미리 만들기는 가져감
+
+
+def test_heavy_jobs_go_first_to_the_first_lane_and_light_ones_to_the_others() -> None:
+    # 가벼운 작업 둘 뒤에 노트 정리가 들어옴: 첫 반복은 노트 정리를 먼저, 늘린 반복은 가벼운 작업
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    for i, (job_id, kind) in enumerate(
+        [("q1", "quiz_generate"), ("q2", "note_ask"), ("h1", "handwriting_summary")]
+    ):
+        col.insert_one(
+            {
+                "_id": job_id,
+                "type": kind,
+                "status": "queued",
+                "input": {},
+                "progress": 0,
+                "attempts": 0,
+                "createdAt": T0 + timedelta(seconds=i),
+            }
+        )
+    _, first, extra = lanes_on(col, 2)[0]
+    done: list[tuple[str, str]] = []
+
+    def fake(lane: Lane, kind: str) -> Handler:
+        def handle(inp: JsonObject, report: JobReport) -> JsonObject:
+            done.append((lane.name, kind))
+            return {}
+
+        return handle
+
+    def run(lane: Lane) -> None:  # 처리 함수만 바꾸고 가져가기는 runner 그대로
+        handlers = {t: fake(lane, t) for t in lane.handlers}
+        assert run_once(lane.store, handlers, awaited_only=lane.awaited_only, first=lane.first)
+
+    run(first)
+    run(extra)
+    assert done == [("user", "handwriting_summary"), ("user-2", "quiz_generate")]
+
+
+@pytest.mark.parametrize("value", ["0", "5"])
+def test_user_lanes_out_of_range_are_refused(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("AI_JOB_USER_LANES", value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]

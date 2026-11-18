@@ -29,7 +29,10 @@ jest.mock('../lib/api', () => ({
   },
   NetworkError: class NetworkError extends Error {},
 }));
-jest.mock('../lib/upload', () => ({ uploadToBlob: (...args: unknown[]) => mockUpload(...args) }));
+jest.mock('../lib/upload', () => ({
+  UploadError: class UploadError extends Error {},
+  uploadToBlob: (...args: unknown[]) => mockUpload(...args),
+}));
 jest.mock('../stores/toast', () => ({ toast: (...args: unknown[]) => mockToast(...args) }));
 jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('../lib/socket', () => ({ socket: { emit: jest.fn(), on: () => () => {} } }));
@@ -199,6 +202,17 @@ describe('PR36 업로드 및 작업 복구 회귀', () => {
     expect(await screen.findByText(/계속 안 되면 나가서 나중에 다시 올려 주세요/)).toBeTruthy();
     expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(2);
   });
+  it('올리기 전 기기 검사 · Blob 오류(UploadError)는 「서버에 올리지 못했어요」 대신 그 이유를 보여 준다 (#508)', async () => {
+    const { UploadError } = jest.requireMock<{ UploadError: new (m: string) => Error }>(
+      '../lib/upload',
+    );
+    mockUpload.mockRejectedValueOnce(new UploadError('MP3 · M4A · WAV만 올릴 수 있어요'));
+    await renderScreen(<ConvertScreen />, client());
+    await screen.findByText('자료를 올리지 못했어요');
+    expect(screen.getByText(/MP3 · M4A · WAV만 올릴 수 있어요/)).toBeTruthy();
+    expect(screen.queryByText(/서버에 올리지 못했어요/)).toBeNull();
+    expect(mockApi.content.createMaterial).not.toHaveBeenCalled();
+  });
   it('소켓 완료 이벤트를 놓쳐도 조회 성공으로 결과 화면에 한 번만 이동한다', async () => {
     jest.useFakeTimers();
     mockApi.ai.job.mockResolvedValue(job('succeeded'));
@@ -234,6 +248,19 @@ describe('PR36 업로드 및 작업 복구 회귀', () => {
       expect(mockApi.ai.job).toHaveBeenCalledTimes(calls);
     },
   );
+  // 실기기 테스트: 50쪽이 넘는 PDF가 「정리에 실패했어요」만 떠 이유를 몰랐다(실제로는 60쪽)
+  it('쪽 수 초과(TOO_MANY_PAGES)로 실패하면 50쪽 이하로 나눠 올리라고 알린다', async () => {
+    jest.useFakeTimers();
+    mockApi.ai.job.mockResolvedValue({ ...job('failed'), error: 'TOO_MANY_PAGES' });
+    await renderScreen(<ConvertScreen />, client());
+    await act(async () => {});
+    await act(async () => {
+      jest.advanceTimersByTime(1600);
+    });
+    expect(screen.getByText('50쪽이 넘는 자료예요')).toBeTruthy();
+    expect(screen.getByText(/PDF를 50쪽 이하로 나눠 올려 주세요/)).toBeTruthy();
+    expect(screen.queryByText('정리에 실패했어요')).toBeNull();
+  });
   it('끊긴 업로드의 다시 시도를 연속으로 눌러도 업로드가 중복되지 않는다', async () => {
     const { NetworkError } = jest.requireMock('../lib/api') as { NetworkError: new () => Error };
     const pending = deferred<string>();

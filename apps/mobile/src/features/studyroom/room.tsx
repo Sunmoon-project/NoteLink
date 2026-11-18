@@ -8,7 +8,8 @@ import {
 } from '@/lib/chat-outbox';
 import { loadCompleteChatHistory } from '@/lib/chat-history';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Keyboard, Pressable, View } from 'react-native';
+import { FlatList, Keyboard, Platform, View, type KeyboardEvent } from 'react-native';
+import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -18,6 +19,8 @@ import {
   CalendarDays,
   Camera,
   CameraOff,
+  FileText,
+  ImageIcon,
   Layers,
   Lock,
   MessageCircle,
@@ -36,6 +39,12 @@ import {
   X,
 } from 'lucide-react-native';
 import type { Message, RoomMember, RoomSharedItem } from '@notelink/shared';
+import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
+import * as Sharing from 'expo-sharing';
+import * as WebBrowser from 'expo-web-browser';
+import { Image } from 'react-native';
+import { UploadError, uploadToBlob, type LocalFile } from '@/lib/upload';
 import { api, ApiError } from '@/lib/api';
 import { socket } from '@/lib/socket';
 import { hms, seoul, ymd } from '@/lib/dates';
@@ -60,6 +69,8 @@ import {
   Title,
   Two,
   cx,
+  Pop,
+  POP_IN,
 } from '@/components/ui';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
@@ -335,6 +346,54 @@ export function RoomCreateScreen() {
   );
 }
 
+/** 채팅 입력줄 이모지 고르기 칸에 보이는 이모지(공부하며 자주 쓰는 것) */
+export const CHAT_EMOJIS = [
+  '😀',
+  '😂',
+  '😭',
+  '🥲',
+  '🤔',
+  '👍',
+  '👏',
+  '🙏',
+  '💪',
+  '🔥',
+  '✅',
+  '📚',
+  '✍️',
+  '☕',
+  '🎉',
+  '❤️',
+];
+
+/** 화면 아래끝(창 기준)과 키보드 위끝이 겹치는 높이. 겹치지 않으면 0 */
+export const keyboardOverlap = (frame: { y: number; height: number }, keyboardTop: number) =>
+  Math.max(0, Math.round(frame.y + frame.height - keyboardTop));
+
+/**
+ * 키보드가 이 화면을 가리는 높이. 공용 KeyboardAvoidingView는 부모 기준 위치로 계산해 실기기에서 입력줄이
+ * 덜 올라가 채팅을 치는 내용이 키보드에 가렸다. 창 기준(measureInWindow)으로 재서 그만큼 올린다
+ */
+export function useKeyboardInset(ref: React.RefObject<View | null>) {
+  const [inset, setInset] = useState(0);
+  useEffect(() => {
+    const ios = Platform.OS === 'ios';
+    const show = (e: KeyboardEvent) => {
+      const top = e.endCoordinates.screenY;
+      const node = ref.current;
+      if (!node) return;
+      node.measureInWindow((_x, y, _w, height) => setInset(keyboardOverlap({ y, height }, top)));
+    };
+    const subs = [
+      Keyboard.addListener(ios ? 'keyboardWillShow' : 'keyboardDidShow', show),
+      Keyboard.addListener(ios ? 'keyboardWillChangeFrame' : 'keyboardDidShow', show),
+      Keyboard.addListener(ios ? 'keyboardWillHide' : 'keyboardDidHide', () => setInset(0)),
+    ];
+    return () => subs.forEach((sub) => sub.remove());
+  }, [ref]);
+  return inset;
+}
+
 export function RoomScreen() {
   const insets = useSafeAreaInsets();
   const myId = useAuth((s) => s.userId);
@@ -386,6 +445,10 @@ export function RoomScreen() {
   const now = useNow();
   const [membersAt, setMembersAt] = useState(() => Date.now());
   const [members, setMembers] = useState<RoomMember[]>([]);
+  const membersAtRef = useRef(membersAt);
+  useEffect(() => {
+    membersAtRef.current = membersAt;
+  }, [membersAt]);
   const [msgs, setMsgs] = useState<Message[]>([]);
   const timerEnd = timer?.endsAt;
   const requestedTimerEnd = useRef<number | null>(null);
@@ -406,6 +469,15 @@ export function RoomScreen() {
   const [menu, setMenu] = useState(false);
   const [pick, setPick] = useState(false);
   const [chat, setChat] = useState(false);
+  // 채팅 입력줄의 이모지 고르기 칸 · + 로 여는 첨부(사진 · 파일) 고르기
+  const [emoji, setEmoji] = useState(false);
+  const [attach, setAttach] = useState(false);
+  // 보내는 중인 첨부: 다시 보낼 때 고른 파일 · 이미 올린 주소를 다시 쓴다
+  const attachments = useRef(
+    new Map<string, { kind: 'image' | 'file'; file: LocalFile; blobUrl?: string }>(),
+  );
+  const keyboardFrame = useRef<View>(null);
+  const keyboardInset = useKeyboardInset(keyboardFrame);
   // 방을 떠나면(설정 · 카드 · 초대 등 다른 화면으로) 채팅을 닫고 키보드를 내린다. 돌아왔을 때 채팅 화면이 아니라
   // 캠 화면이 보이게: 채팅을 연 채로 다녀오면 뒤로 가기를 눌러도 계속 채팅 화면으로 돌아오는 것처럼 보였다
   useFocusEffect(
@@ -446,9 +518,12 @@ export function RoomScreen() {
     const timers = ackTimers.current;
     return () => timers.forEach(clearTimeout);
   }, []);
+  // 이 화면에서 새로 보내거나 받은 메시지(말풍선이 떠오르며 나타난다). 불러온 이전 기록 · 서버가 확인해 바뀐 내 메시지는 넣지 않는다
+  const fresh = useRef(new Set<string>());
   const receiveMessage = (m: Message, clientId?: string) =>
     setMsgs((messages) => {
       const local = clientId ?? (m.senderId === myId ? m.clientId : undefined);
+      if (!local && !messages.some((x) => x._id === m._id)) fresh.current.add(m._id);
       const confirmed = local ? messages.filter((x) => x._id !== local) : messages;
       return confirmed.some((x) => x._id === m._id) ? confirmed : [...confirmed, m];
     });
@@ -518,7 +593,9 @@ export function RoomScreen() {
   const [loadedRoom, setLoadedRoom] = useState<typeof room.data>();
   if (room.data && room.data !== loadedRoom) {
     setLoadedRoom(room.data);
-    setMembers(room.data.members);
+    // 서버가 공부시간(todaySec)을 주지 않으면 지금까지 센 시간을 이어 간다 — 새 멤버가 들어와 목록을 다시 받을 때마다
+    // 모두의 시간이 0으로 돌아가던 문제
+    setMembers(carryStudyTime(members, membersAt, room.data.members, now));
     setMembersAt(now);
   }
   useEffect(() => {
@@ -536,12 +613,15 @@ export function RoomScreen() {
         }
       }
     // 네트워크에서 읽은 기록과 화면의 대기 메시지를 합친다.
+    // 같은 메시지는 서버에서 새로 읽은 값을 쓴다(첨부의 읽기 주소는 1시간 뒤 만료돼, 다시 읽으면 새 주소가 온다)
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMsgs((current) => [
-      ...new Map(
-        [...history.data!, ...current.filter((m) => !confirmed.has(m._id))].map((m) => [m._id, m]),
-      ).values(),
-    ]);
+    setMsgs((current) => {
+      const fromServer = new Set(history.data!.map((m) => m._id));
+      return [
+        ...history.data!,
+        ...current.filter((m) => !confirmed.has(m._id) && !fromServer.has(m._id)),
+      ];
+    });
   }, [history.data, myId, id]);
   // 방 구독(room:join). 소켓이 다시 붙을 때와, 소켓은 살아 있는데 HTTP 실패로만 끊김 상태였다가 돌아올 때
   // 모두 부른다. 마지막으로 보낸 요청의 응답만 반영해, 둘이 겹쳐도 대기 메시지를 한 번만 보낸다
@@ -609,8 +689,10 @@ export function RoomScreen() {
     'room:presence',
     (p) => {
       if (p.roomId !== id) return;
-      setMembers(p.members);
-      setMembersAt(Date.now());
+      const at = Date.now();
+      // 소켓 처리 함수는 처음 값을 기억하므로 이전 목록 · 시각은 최신 값(함수형 갱신 · ref)으로 읽는다
+      setMembers((prev) => carryStudyTime(prev, membersAtRef.current, p.members, at));
+      setMembersAt(at);
     },
     [id],
   );
@@ -687,6 +769,114 @@ export function RoomScreen() {
     return () => clearTimeout(t);
   }, [conn]);
 
+  /** 고른 사진 · 파일을 채팅 경로에 올린 뒤 첨부 메시지로 보낸다. 실패하면 말풍선 아래 「다시 보내기」 */
+  const deliverAttachment = async (clientId: string) => {
+    const entry = attachments.current.get(clientId);
+    const chatRoomId = chatId.data;
+    if (!entry || !chatRoomId || inFlight.current.has(clientId)) return;
+    inFlight.current.add(clientId);
+    setFailedIds((ids) => ids.filter((x) => x !== clientId));
+    try {
+      entry.blobUrl ??= await uploadToBlob(
+        entry.kind === 'image' ? 'image' : 'document',
+        entry.file,
+        undefined,
+        undefined,
+        'chat',
+      );
+      const blobUrl = entry.blobUrl;
+      const m = await new Promise<Message>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('timeout')), ACK_TIMEOUT_MS);
+        socket.emit(
+          'chat:send',
+          {
+            chatRoomId,
+            clientId,
+            attachment: { blobUrl, kind: entry.kind, name: entry.file.name },
+          },
+          (sent) => {
+            clearTimeout(timer);
+            resolve(sent);
+          },
+        );
+      });
+      attachments.current.delete(clientId);
+      receiveMessage(m, clientId);
+    } catch (e) {
+      setFailedIds((ids) => [...new Set([...ids, clientId])]);
+      if (e instanceof UploadError) toast(e.message);
+    } finally {
+      inFlight.current.delete(clientId);
+    }
+  };
+  /** + → 사진 · 파일 고르기. 고르면 바로 말풍선을 띄우고(올리는 중) 보낸다 */
+  const pickAttachment = async (kind: 'image' | 'file') => {
+    setAttach(false);
+    if (!chatId.data) {
+      void chatId.refetch();
+      return toast('채팅을 준비하고 있어요. 잠시 후 다시 보내 주세요');
+    }
+    if (!myId) return toast('로그인 상태를 확인해 주세요');
+    if (conn === 'lost' || !joinedChat.current) return toast('채팅에 연결된 뒤 다시 보내 주세요');
+    let file: LocalFile | undefined;
+    if (kind === 'image') {
+      const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
+      const a = r.canceled ? undefined : r.assets[0];
+      // 형식은 파일 이름(확장자)으로 정한다 — 서버가 확장자와 형식이 같은지 본다
+      if (a) file = { uri: a.uri, name: a.fileName ?? photoName(), size: a.fileSize };
+    } else {
+      const r = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        copyToCacheDirectory: true,
+      });
+      const a = r.canceled ? undefined : r.assets[0];
+      if (a) file = { uri: a.uri, name: a.name, mimeType: a.mimeType, size: a.size };
+    }
+    if (!file || !chatId.data) return;
+    const clientId = newClientId(++messageSeq.current);
+    attachments.current.set(clientId, { kind, file });
+    fresh.current.add(clientId);
+    setChat(true);
+    setMsgs((p) => [
+      ...p,
+      {
+        _id: clientId,
+        clientId,
+        chatRoomId: chatId.data!,
+        senderId: myId,
+        type: kind,
+        text: null,
+        attachment: { kind, name: file.name, sizeBytes: file.size ?? 0, url: file.uri },
+        sharedItemId: null,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    void deliverAttachment(clientId);
+  };
+  /** 첨부 열기: 읽기 주소가 만료됐으면(1시간) 기록을 다시 읽어 새 주소로 연다 */
+  const openAttachment = async (m: Message) => {
+    let url = m.attachment?.url;
+    if (!url) return;
+    if (urlExpired(url) && !url.startsWith('file:')) {
+      const fresh = await history.refetch();
+      url = fresh.data?.find((x) => x._id === m._id)?.attachment?.url ?? url;
+      if (urlExpired(url)) return toast('첨부를 다시 불러오지 못했어요. 잠시 뒤 다시 눌러 주세요');
+    }
+    // 기기 저장 모드의 file:// 첨부는 브라우저가 열지 못한다(iOS는 http(s)만). 공유 시트의 미리보기로 연다(Codex #507 재리뷰)
+    if (url.startsWith('file:')) {
+      const ok = await Sharing.isAvailableAsync().catch(() => false);
+      if (!ok) return toast('이 기기에서는 파일을 열 수 없어요');
+      return void (await Sharing.shareAsync(url).catch(() => toast('파일을 열지 못했어요')));
+    }
+    await WebBrowser.openBrowserAsync(url).catch(() => toast('파일을 열지 못했어요'));
+  };
+  // 사진이 만료된 주소라 보이지 않으면 기록을 한 번 다시 읽어 새 주소를 받는다(연달아 다시 읽지 않게 30초 간격)
+  const staleAt = useRef(0);
+  const refreshStale = () => {
+    if (Date.now() - staleAt.current < 30_000) return;
+    staleAt.current = Date.now();
+    void history.refetch();
+  };
   const send = () => {
     const text = v.trim();
     if (!text) return;
@@ -704,6 +894,7 @@ export function RoomScreen() {
       return toast('메시지를 기기에 저장하지 못했어요. 다시 시도해 주세요');
     }
     pending.current.push(entry);
+    fresh.current.add(clientId);
     setMsgs((p) => [
       ...p,
       {
@@ -742,350 +933,436 @@ export function RoomScreen() {
 
   return (
     <Canvas>
-      <Screen scroll={false} pad={false}>
-        {live.error && (
-          <View className="gap-2 p-4">
-            <Text>{live.error}</Text>
-            {conn !== 'kicked' && (
-              <Btn
-                onPress={() => {
-                  if (lost) return toast('연결을 복구한 뒤 다시 시도해 주세요');
-                  setMediaGeneration((n) => n + 1);
-                }}
-              >
-                미디어 다시 연결
-              </Btn>
-            )}
-          </View>
-        )}
-        {conn === 'lost' && (
-          <View className="bg-sun/25 px-5 py-2">
-            <Text className="text-caption font-semibold text-ink">
-              ● 연결이 끊겼어요 · 다시 연결 중…
-            </Text>
-          </View>
-        )}
-        {conn === 'back' && (
-          <View className="mx-4 mt-2 rounded-xl bg-ink px-4 py-2.5">
-            <Text className="text-caption font-bold text-white">다시 연결됐어요</Text>
-            <Text className="text-caption text-white/60">
-              멤버와 대화 기록을 다시 확인하고 있어요
-            </Text>
-          </View>
-        )}
-        <View className="px-5">
-          <View className="h-11 flex-row items-center justify-between">
-            <Pressable
-              accessibilityLabel={chat ? '채팅 닫기' : '나가기'}
-              onPress={back}
-              hitSlop={10}
-            >
-              <ArrowLeft size={ICON.lg} color={C.ink} />
-            </Pressable>
-            <Pressable
-              accessibilityLabel="세부 설정"
-              onPress={() => router.push({ pathname: '/room/settings', params: { id } })}
-              hitSlop={10}
-            >
-              <Settings size={ICON.md} color={C.ink} />
-            </Pressable>
-          </View>
-          {!chat && (
-            <View className="flex-row items-center justify-between">
-              <Text className="text-title3 font-bold text-ink">{room.data.title}</Text>
-              <View className="flex-row gap-1">
-                {timer && (
-                  <Badge tone="dark">{`${timer.label} ${remain >= 3600 ? hms(remain) : hms(remain).slice(3)}`}</Badge>
-                )}
-                <Badge tone="gray">{`${members.length}명 접속중`}</Badge>
-              </View>
+      <Screen scroll={false} pad={false} avoidKeyboard={false}>
+        <View
+          ref={keyboardFrame}
+          className="flex-1"
+          // 키보드가 가리는 만큼 화면 아래를 띄워 채팅 입력줄이 키보드 바로 위에 오게 한다
+          style={{ paddingBottom: keyboardInset }}
+        >
+          {live.error && (
+            <View className="gap-2 p-4">
+              <Text>{live.error}</Text>
+              {conn !== 'kicked' && (
+                <Btn
+                  onPress={() => {
+                    if (lost) return toast('연결을 복구한 뒤 다시 시도해 주세요');
+                    setMediaGeneration((n) => n + 1);
+                  }}
+                >
+                  미디어 다시 연결
+                </Btn>
+              )}
             </View>
           )}
-        </View>
-        <View className="flex-row flex-wrap justify-between gap-y-2.5 px-4 pt-3">
-          {tiles.map((m) => {
-            const me = m.userId === myId;
-            const remote = me ? null : live.participantState?.(m.userId);
-            const camOn = me ? live.camOn : (remote?.camOn ?? false);
-            const micOn = me ? live.micOn : (remote?.micOn ?? false);
-            const video = live.video(m.userId);
-            return (
-              <View
-                key={m.userId}
-                className={cx(
-                  'w-[48.5%] items-center justify-center rounded-2xl',
-                  'h-[118px]',
-                  camOn ? 'bg-night' : 'bg-white',
-                )}
+          {conn === 'lost' && (
+            <View className="bg-sun/25 px-5 py-2">
+              <Text className="text-caption font-semibold text-ink">
+                ● 연결이 끊겼어요 · 다시 연결 중…
+              </Text>
+            </View>
+          )}
+          {conn === 'back' && (
+            <View className="mx-4 mt-2 rounded-xl bg-ink px-4 py-2.5">
+              <Text className="text-caption font-bold text-white">다시 연결됐어요</Text>
+              <Text className="text-caption text-white/60">
+                멤버와 대화 기록을 다시 확인하고 있어요
+              </Text>
+            </View>
+          )}
+          <View className="px-5">
+            <View className="h-11 flex-row items-center justify-between">
+              <Pressable
+                accessibilityLabel={chat ? '채팅 닫기' : '나가기'}
+                onPress={back}
+                hitSlop={10}
               >
-                {video}
-                {camOn && (
-                  <View className="absolute top-2.5 right-2.5 h-1.5 w-1.5 rounded-full bg-sun" />
-                )}
-                {!video && <Avatar uri={m.avatarUrl} name={m.nickname} size={44} />}
-                <Text className={cx('text-footnote font-bold', camOn ? 'text-white' : 'text-ink')}>
-                  {m.nickname}
-                </Text>
-                <Text
+                <ArrowLeft size={ICON.lg} color={C.ink} />
+              </Pressable>
+              <Pressable
+                accessibilityLabel="세부 설정"
+                onPress={() => router.push({ pathname: '/room/settings', params: { id } })}
+                hitSlop={10}
+              >
+                <Settings size={ICON.md} color={C.ink} />
+              </Pressable>
+            </View>
+            {!chat && (
+              <View className="flex-row items-center justify-between">
+                <Text className="text-title3 font-bold text-ink">{room.data.title}</Text>
+                <View className="flex-row gap-1">
+                  {timer && (
+                    <Badge tone="dark">{`${timer.label} ${remain >= 3600 ? hms(remain) : hms(remain).slice(3)}`}</Badge>
+                  )}
+                  <Badge tone="gray">{`${members.length}명 접속중`}</Badge>
+                </View>
+              </View>
+            )}
+          </View>
+          <View className="flex-row flex-wrap justify-between gap-y-2.5 px-4 pt-3">
+            {tiles.map((m) => {
+              const me = m.userId === myId;
+              const remote = me ? null : live.participantState?.(m.userId);
+              const camOn = me ? live.camOn : (remote?.camOn ?? false);
+              const micOn = me ? live.micOn : (remote?.micOn ?? false);
+              const video = live.video(m.userId);
+              return (
+                <View
+                  key={m.userId}
                   className={cx(
-                    'tabular-nums text-caption',
-                    camOn ? 'text-white/70' : 'text-ink/60',
+                    'w-[48.5%] items-center justify-center rounded-2xl',
+                    'h-[118px]',
+                    camOn ? 'bg-night' : 'bg-white',
                   )}
                 >
-                  {conn === 'lost' && !me
-                    ? '연결 확인 중'
-                    : hms(
-                        me
-                          ? mySec
-                          : (ymd(seoul(membersAt)) === day ? (m.todaySec ?? 0) : 0) +
-                              (conn === 'lost'
-                                ? 0
-                                : Math.max(
-                                    0,
-                                    Math.floor((now - Math.max(membersAt, midnight)) / 1000),
-                                  )),
-                      )}
-                </Text>
-                {!micOn && (
-                  <View
-                    accessibilityLabel={`${m.nickname} 마이크 꺼짐`}
-                    className="absolute bottom-2.5 left-2.5"
+                  {video}
+                  {camOn && (
+                    <View className="absolute top-2.5 right-2.5 h-1.5 w-1.5 rounded-full bg-sun" />
+                  )}
+                  {!video && <Avatar uri={m.avatarUrl} name={m.nickname} size={44} />}
+                  <Text
+                    className={cx('text-footnote font-bold', camOn ? 'text-white' : 'text-ink')}
                   >
-                    <MicOff size={ICON.xs} color={camOn ? 'rgba(255,255,255,.5)' : C.sub} />
-                  </View>
-                )}
-              </View>
-            );
-          })}
-        </View>
-
-        {chat && chatId.isError && !chatId.data && (
-          <LoadError message="채팅방을 불러오지 못했어요" retry={chatId.refetch} />
-        )}
-        {chat && history.isError && !history.data && (
-          <LoadError message="대화 기록을 불러오지 못했어요" retry={history.refetch} />
-        )}
-        {chat ? (
-          <FlatList
-            ref={list}
-            data={msgs}
-            keyExtractor={(m) => m._id}
-            onContentSizeChange={() => list.current?.scrollToEnd()}
-            className="mt-2 flex-1"
-            contentContainerClassName="gap-3 px-4 py-3"
-            renderItem={({ item: m }) => {
-              const mine = m.senderId === myId;
-              return (
-                <View className={cx(mine && 'items-end')}>
-                  {!mine && (
-                    <View className="flex-row items-center gap-1.5 mb-1">
-                      <MessageCircle size={ICON.xs} color={C.sub} />
-                      <Text className="text-caption2 text-sub">{m.senderNickname ?? '멤버'}</Text>
-                    </View>
-                  )}
-                  <View className="max-w-[78%] rounded-2xl bg-white px-3 py-2">
-                    <Text className="text-footnote text-ink">
-                      {m.text ?? '공유 자료를 보냈어요'}
-                    </Text>
-                  </View>
-                  {failedIds.includes(m._id) && (
-                    <Pressable
-                      accessibilityRole="button"
-                      onPress={() => deliver(m.chatRoomId, m._id, m.text ?? '')}
+                    {m.nickname}
+                  </Text>
+                  <Text
+                    className={cx(
+                      'tabular-nums text-caption',
+                      camOn ? 'text-white/70' : 'text-ink/60',
+                    )}
+                  >
+                    {conn === 'lost' && !me
+                      ? '연결 확인 중'
+                      : hms(
+                          me
+                            ? mySec
+                            : (ymd(seoul(membersAt)) === day ? (m.todaySec ?? 0) : 0) +
+                                (conn === 'lost'
+                                  ? 0
+                                  : Math.max(
+                                      0,
+                                      Math.floor((now - Math.max(membersAt, midnight)) / 1000),
+                                    )),
+                        )}
+                  </Text>
+                  {!micOn && (
+                    <View
+                      accessibilityLabel={`${m.nickname} 마이크 꺼짐`}
+                      className="absolute bottom-2.5 left-2.5"
                     >
-                      <Text className="mt-1 text-caption2 text-danger">
-                        전송하지 못했어요 · 다시 보내기
-                      </Text>
-                    </Pressable>
-                  )}
-                  {mine && m.clientId === m._id && !failedIds.includes(m._id) && (
-                    <Text className="mt-1 text-caption2 text-sub">
-                      {conn === 'lost' || joinedRoom !== id ? '연결 후 전송 대기' : '전송 중'}
-                    </Text>
-                  )}
-                  {mine && conn === 'back' && m === msgs[msgs.length - 1] && (
-                    <Text className="mt-1 text-caption2 text-brand">자동으로 전송했어요</Text>
+                      <MicOff size={ICON.xs} color={camOn ? 'rgba(255,255,255,.5)' : C.sub} />
+                    </View>
                   )}
                 </View>
               );
+            })}
+          </View>
+
+          {chat && chatId.isError && !chatId.data && (
+            <LoadError message="채팅방을 불러오지 못했어요" retry={chatId.refetch} />
+          )}
+          {chat && history.isError && !history.data && (
+            <LoadError message="대화 기록을 불러오지 못했어요" retry={history.refetch} />
+          )}
+          {chat ? (
+            <FlatList
+              ref={list}
+              data={msgs}
+              keyExtractor={(m) => m._id}
+              onContentSizeChange={() => list.current?.scrollToEnd()}
+              className="mt-2 flex-1"
+              contentContainerClassName="gap-3 px-4 py-3"
+              renderItem={({ item: m }) => {
+                const mine = m.senderId === myId;
+                return (
+                  <Animated.View
+                    entering={fresh.current.has(m._id) ? POP_IN : undefined}
+                    className={cx(mine && 'items-end')}
+                  >
+                    {!mine && (
+                      <View className="flex-row items-center gap-1.5 mb-1">
+                        <MessageCircle size={ICON.xs} color={C.sub} />
+                        <Text className="text-caption2 text-sub">{m.senderNickname ?? '멤버'}</Text>
+                      </View>
+                    )}
+                    <ChatBubble m={m} onOpen={openAttachment} onStale={refreshStale} />
+                    {failedIds.includes(m._id) && (
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() =>
+                          m.type === 'image' || m.type === 'file'
+                            ? void deliverAttachment(m._id)
+                            : deliver(m.chatRoomId, m._id, m.text ?? '')
+                        }
+                      >
+                        <Text className="mt-1 text-caption2 text-danger">
+                          전송하지 못했어요 · 다시 보내기
+                        </Text>
+                      </Pressable>
+                    )}
+                    {mine && m.clientId === m._id && !failedIds.includes(m._id) && (
+                      <Text className="mt-1 text-caption2 text-sub">
+                        {conn === 'lost' || joinedRoom !== id ? '연결 후 전송 대기' : '전송 중'}
+                      </Text>
+                    )}
+                    {mine && conn === 'back' && m === msgs[msgs.length - 1] && (
+                      <Text className="mt-1 text-caption2 text-brand">자동으로 전송했어요</Text>
+                    )}
+                  </Animated.View>
+                );
+              }}
+            />
+          ) : (
+            <View className="mt-auto px-5 pb-2">
+              <View className="flex-row gap-3">
+                <Ctl
+                  on={live.micOn}
+                  onPress={live.toggleMic}
+                  icon={
+                    live.micOn ? (
+                      <Mic size={ICON.sm} color={C.ink} />
+                    ) : (
+                      <MicOff size={ICON.sm} color={C.sub} />
+                    )
+                  }
+                  label={`내 마이크 ${live.micOn ? '켜짐' : '꺼짐'}`}
+                />
+                <Ctl
+                  on={live.camOn}
+                  onPress={live.toggleCam}
+                  icon={
+                    live.camOn ? (
+                      <Camera size={ICON.sm} color={C.ink} />
+                    ) : (
+                      <CameraOff size={ICON.sm} color={C.sub} />
+                    )
+                  }
+                  label={`내 카메라 ${live.camOn ? '켜짐' : '꺼짐'}`}
+                />
+                <Ctl
+                  on={live.hearing}
+                  onPress={live.toggleHearing}
+                  icon={
+                    live.hearing ? (
+                      <Volume2 size={ICON.sm} color={C.ink} />
+                    ) : (
+                      <VolumeX size={ICON.sm} color={C.sub} />
+                    )
+                  }
+                  label={`듣기 ${live.hearing ? '켜짐' : '꺼짐'}`}
+                  sub="내 학습하는 소리만"
+                  strong
+                />
+              </View>
+              <View className="mt-3 flex-row items-center rounded-2xl bg-white px-4 py-3">
+                <Pressable
+                  onPress={() => setChat(true)}
+                  className="flex-1 flex-row items-center gap-2"
+                >
+                  <MessageCircle size={ICON.sm} color={C.sub} />
+                  <Text numberOfLines={1} className="flex-1 text-caption text-sub">
+                    {last
+                      ? `${last.senderId === myId ? '나' : (last.senderNickname ?? '멤버')}: ${previewOf(last)}`
+                      : '채팅을 시작해 보세요'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityLabel="도구"
+                  onPress={() => setMenu((m) => !m)}
+                  className={cx(
+                    'h-8 w-8 items-center justify-center rounded-full',
+                    menu ? 'bg-brand' : 'bg-mint',
+                  )}
+                >
+                  {menu ? (
+                    <X size={ICON.sm} color="#fff" />
+                  ) : (
+                    <Plus size={ICON.sm} color={C.brand} />
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          )}
+          {chatJoinFailed && conn !== 'lost' && conn !== 'kicked' && (
+            <Pressable accessibilityRole="button" onPress={joinRoom} className="px-5 py-2">
+              <Text className="text-caption text-danger">채팅 연결에 실패했어요 · 다시 연결</Text>
+            </Pressable>
+          )}
+          {attach && (
+            <Pop className="mx-5 mt-2 flex-row gap-2 rounded-2xl bg-white p-2">
+              {(
+                [
+                  ['image', ImageIcon, '사진'],
+                  ['file', FileText, '파일 (PDF)'],
+                ] as const
+              ).map(([kind, Ic, label]) => (
+                <Pressable
+                  key={kind}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${label} 보내기`}
+                  onPress={() => void pickAttachment(kind)}
+                  className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-mint py-3"
+                >
+                  <Ic size={ICON.sm} color={C.brand} />
+                  <Text className="text-subhead font-semibold text-ink">{label}</Text>
+                </Pressable>
+              ))}
+            </Pop>
+          )}
+          {emoji && (
+            <Pop className="mx-5 mt-2 flex-row flex-wrap gap-y-1 rounded-2xl bg-white px-1 py-2">
+              {CHAT_EMOJIS.map((e) => (
+                <Pressable
+                  key={e}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${e} 넣기`}
+                  onPress={() => {
+                    setChat(true);
+                    setV((x) => x + e);
+                  }}
+                  // 한 줄 8칸 격자(16개 = 두 줄)
+                  className="h-10 w-[12.5%] items-center justify-center rounded-xl active:bg-fill"
+                >
+                  <Text className="text-title3">{e}</Text>
+                </Pressable>
+              ))}
+            </Pop>
+          )}
+          <View
+            className="flex-row items-center gap-3 px-5 pt-3"
+            // 키보드가 올라오면 홈 표시줄 여백은 필요 없다(키보드 바로 위에 붙인다)
+            style={{ paddingBottom: keyboardInset > 0 ? 8 : Math.max(insets.bottom, 12) + 8 }}
+          >
+            <View className="flex-1 flex-row items-center gap-2 rounded-full bg-white px-4">
+              {/* 사진 · 파일 첨부를 고른다(키보드는 내린다) */}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="사진 · 파일 첨부"
+                hitSlop={8}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setEmoji(false);
+                  setAttach((x) => !x);
+                }}
+                className="h-6 w-6 items-center justify-center rounded-full bg-ink"
+              >
+                <Plus size={ICON.xs} color="#fff" />
+              </Pressable>
+              <TextInput
+                value={v}
+                onFocus={() => {
+                  setChat(true);
+                  setEmoji(false);
+                  setAttach(false);
+                }}
+                onChangeText={setV}
+                onSubmitEditing={send}
+                returnKeyType="send"
+                placeholder="채팅을 입력해 주세요"
+                placeholderTextColor={C.sub}
+                className="h-11 flex-1 text-footnote text-ink"
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={emoji ? '이모지 닫기' : '이모지'}
+                hitSlop={8}
+                onPress={() => {
+                  setAttach(false);
+                  // 이모지 칸은 키보드 자리를 대신한다(메신저처럼): 키보드와 함께 열면 작은 화면에서 입력줄이
+                  // 다시 키보드 아래로 밀린다(Codex #507 리뷰). 입력칸을 누르면 이모지 칸을 닫고 키보드를 연다
+                  if (!emoji) Keyboard.dismiss();
+                  setEmoji((x) => !x);
+                }}
+              >
+                <Smile size={ICON.md} color={emoji ? C.brand : C.sun} />
+              </Pressable>
+            </View>
+            <Pressable
+              accessibilityLabel="전송"
+              onPress={send}
+              className="h-11 w-11 items-center justify-center rounded-full bg-ink"
+            >
+              <Send size={ICON.sm} color="#fff" />
+            </Pressable>
+          </View>
+          {chat && (
+            <Pressable
+              onPress={() => setChat(false)}
+              // 오른쪽 위 설정 버튼과 겹치지 않게 그 왼쪽에 둔다
+              className="absolute top-2 right-14 rounded-full bg-black/40 px-2 py-0.5"
+            >
+              <Text className="text-caption2 text-white">캠 보기</Text>
+            </Pressable>
+          )}
+
+          {menu && (
+            <Pop className="absolute right-5 bottom-[178px] z-20 gap-1 rounded-2xl bg-white p-1.5 shadow-lg">
+              {(
+                [
+                  [
+                    CalendarDays,
+                    '시간표',
+                    () => router.push({ pathname: '/room/schedule', params: { id } }),
+                  ],
+                  [Siren, '신고', () => router.push({ pathname: '/room/report', params: { id } })],
+                  [Timer, '타이머', () => router.push({ pathname: '/room/timer', params: { id } })],
+                  [Layers, '퀴즈', () => setPick(true)],
+                ] as const
+              ).map(([Ic, l, fn]) => (
+                <Pressable
+                  key={l}
+                  onPress={() => {
+                    setMenu(false);
+                    fn();
+                  }}
+                  className="items-center rounded-xl px-3 py-1.5 active:bg-fill"
+                >
+                  <Ic size={ICON.md} color={C.brand} />
+                  <Text className="text-caption2 text-ink">{l}</Text>
+                </Pressable>
+              ))}
+            </Pop>
+          )}
+          <Dialog open={pick} onClose={() => setPick(false)}>
+            <Text className="mb-4 text-callout font-bold text-ink">학습 자료 유형 선택</Text>
+            <View className="w-full flex-row gap-2">
+              <Pressable
+                onPress={() => {
+                  setPick(false);
+                  router.push({ pathname: '/room/library', params: { id, type: 'quiz' } });
+                }}
+                className="h-20 flex-1 items-center justify-center rounded-2xl bg-mint"
+              >
+                <View className="flex-row items-center gap-1.5">
+                  <NotebookPen size={ICON.sm} color={C.sub} />
+                  <Text className="text-subhead font-semibold text-ink">퀴즈</Text>
+                </View>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setPick(false);
+                  router.push({ pathname: '/room/library', params: { id, type: 'flashcards' } });
+                }}
+                className="h-20 flex-1 items-center justify-center rounded-2xl bg-mint"
+              >
+                <Text className="text-subhead font-semibold text-ink">🃏 플래시 카드</Text>
+              </Pressable>
+            </View>
+          </Dialog>
+          <Alert
+            open={conn === 'kicked'}
+            title="스터디룸에서 나갔어요"
+            body={`5분 넘게 연결되지 않아 자동으로 퇴장했어요.\n공부 시간 기록은 저장돼 있어요.`}
+            secondary="홈으로"
+            onSecondary={() => router.dismissTo('/')}
+            primary="다시 입장"
+            onPrimary={() => {
+              if (lost) return toast('연결을 복구한 뒤 다시 입장해 주세요');
+              setMediaGeneration((n) => n + 1);
+              setConn('back');
             }}
           />
-        ) : (
-          <View className="mt-auto px-5 pb-2">
-            <View className="flex-row gap-3">
-              <Ctl
-                on={live.micOn}
-                onPress={live.toggleMic}
-                icon={
-                  live.micOn ? (
-                    <Mic size={ICON.sm} color={C.ink} />
-                  ) : (
-                    <MicOff size={ICON.sm} color={C.sub} />
-                  )
-                }
-                label={`내 마이크 ${live.micOn ? '켜짐' : '꺼짐'}`}
-              />
-              <Ctl
-                on={live.camOn}
-                onPress={live.toggleCam}
-                icon={
-                  live.camOn ? (
-                    <Camera size={ICON.sm} color={C.ink} />
-                  ) : (
-                    <CameraOff size={ICON.sm} color={C.sub} />
-                  )
-                }
-                label={`내 카메라 ${live.camOn ? '켜짐' : '꺼짐'}`}
-              />
-              <Ctl
-                on={live.hearing}
-                onPress={live.toggleHearing}
-                icon={
-                  live.hearing ? (
-                    <Volume2 size={ICON.sm} color={C.ink} />
-                  ) : (
-                    <VolumeX size={ICON.sm} color={C.sub} />
-                  )
-                }
-                label={`듣기 ${live.hearing ? '켜짐' : '꺼짐'}`}
-                sub="내 학습하는 소리만"
-                strong
-              />
-            </View>
-            <View className="mt-3 flex-row items-center rounded-2xl bg-white px-4 py-3">
-              <Pressable
-                onPress={() => setChat(true)}
-                className="flex-1 flex-row items-center gap-2"
-              >
-                <MessageCircle size={ICON.sm} color={C.sub} />
-                <Text numberOfLines={1} className="flex-1 text-caption text-sub">
-                  {last
-                    ? `${last.senderId === myId ? '나' : (last.senderNickname ?? '멤버')}: ${last.text ?? '공유 자료'}`
-                    : '채팅을 시작해 보세요'}
-                </Text>
-              </Pressable>
-              <Pressable
-                accessibilityLabel="도구"
-                onPress={() => setMenu((m) => !m)}
-                className={cx(
-                  'h-8 w-8 items-center justify-center rounded-full',
-                  menu ? 'bg-brand' : 'bg-mint',
-                )}
-              >
-                {menu ? <X size={ICON.sm} color="#fff" /> : <Plus size={ICON.sm} color={C.brand} />}
-              </Pressable>
-            </View>
-          </View>
-        )}
-        {chatJoinFailed && conn !== 'lost' && conn !== 'kicked' && (
-          <Pressable accessibilityRole="button" onPress={joinRoom} className="px-5 py-2">
-            <Text className="text-caption text-danger">채팅 연결에 실패했어요 · 다시 연결</Text>
-          </Pressable>
-        )}
-        <View
-          className="flex-row items-center gap-3 px-5 pt-3"
-          style={{ paddingBottom: Math.max(insets.bottom, 12) + 8 }}
-        >
-          <View className="flex-1 flex-row items-center gap-2 rounded-full bg-white px-4">
-            <View className="h-6 w-6 items-center justify-center rounded-full bg-ink">
-              <Plus size={ICON.xs} color="#fff" />
-            </View>
-            <TextInput
-              value={v}
-              onFocus={() => setChat(true)}
-              onChangeText={setV}
-              onSubmitEditing={send}
-              returnKeyType="send"
-              placeholder="채팅을 입력해 주세요"
-              placeholderTextColor={C.sub}
-              className="h-11 flex-1 text-footnote text-ink"
-            />
-            <Smile size={ICON.md} color={C.sun} />
-          </View>
-          <Pressable
-            accessibilityLabel="전송"
-            onPress={send}
-            className="h-11 w-11 items-center justify-center rounded-full bg-ink"
-          >
-            <Send size={ICON.sm} color="#fff" />
-          </Pressable>
         </View>
-        {chat && (
-          <Pressable
-            onPress={() => setChat(false)}
-            className="absolute top-2 right-3 rounded-full bg-black/40 px-2 py-0.5"
-          >
-            <Text className="text-caption2 text-white">캠 보기</Text>
-          </Pressable>
-        )}
-
-        {menu && (
-          <View className="absolute right-5 bottom-[178px] z-20 gap-1 rounded-2xl bg-white p-1.5 shadow-lg">
-            {(
-              [
-                [
-                  CalendarDays,
-                  '시간표',
-                  () => router.push({ pathname: '/room/schedule', params: { id } }),
-                ],
-                [Siren, '신고', () => router.push({ pathname: '/room/report', params: { id } })],
-                [Timer, '타이머', () => router.push({ pathname: '/room/timer', params: { id } })],
-                [Layers, '퀴즈', () => setPick(true)],
-              ] as const
-            ).map(([Ic, l, fn]) => (
-              <Pressable
-                key={l}
-                onPress={() => {
-                  setMenu(false);
-                  fn();
-                }}
-                className="items-center rounded-xl px-3 py-1.5 active:bg-fill"
-              >
-                <Ic size={ICON.md} color={C.brand} />
-                <Text className="text-caption2 text-ink">{l}</Text>
-              </Pressable>
-            ))}
-          </View>
-        )}
-        <Dialog open={pick} onClose={() => setPick(false)}>
-          <Text className="mb-4 text-callout font-bold text-ink">학습 자료 유형 선택</Text>
-          <View className="w-full flex-row gap-2">
-            <Pressable
-              onPress={() => {
-                setPick(false);
-                router.push({ pathname: '/room/library', params: { id, type: 'quiz' } });
-              }}
-              className="h-20 flex-1 items-center justify-center rounded-2xl bg-mint"
-            >
-              <View className="flex-row items-center gap-1.5">
-                <NotebookPen size={ICON.sm} color={C.sub} />
-                <Text className="text-subhead font-semibold text-ink">퀴즈</Text>
-              </View>
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                setPick(false);
-                router.push({ pathname: '/room/library', params: { id, type: 'flashcards' } });
-              }}
-              className="h-20 flex-1 items-center justify-center rounded-2xl bg-mint"
-            >
-              <Text className="text-subhead font-semibold text-ink">🃏 플래시 카드</Text>
-            </Pressable>
-          </View>
-        </Dialog>
-        <Alert
-          open={conn === 'kicked'}
-          title="스터디룸에서 나갔어요"
-          body={`5분 넘게 연결되지 않아 자동으로 퇴장했어요.\n공부 시간 기록은 저장돼 있어요.`}
-          secondary="홈으로"
-          onSecondary={() => router.dismissTo('/')}
-          primary="다시 입장"
-          onPrimary={() => {
-            if (lost) return toast('연결을 복구한 뒤 다시 입장해 주세요');
-            setMediaGeneration((n) => n + 1);
-            setConn('back');
-          }}
-        />
       </Screen>
     </Canvas>
   );
@@ -1223,5 +1500,121 @@ export function RoomCardsScreen() {
         </View>
       </Screen>
     </Canvas>
+  );
+}
+
+/** 채팅 목록 위 한 줄 미리보기 */
+const previewOf = (m: Message) =>
+  m.type === 'image'
+    ? '사진'
+    : m.type === 'file'
+      ? `파일 · ${m.attachment?.name ?? ''}`
+      : (m.text ?? '공유 자료');
+
+const sizeLabel = (bytes: number) =>
+  bytes >= 1024 * 1024
+    ? `${(bytes / 1024 / 1024).toFixed(1)}MB`
+    : `${Math.max(1, Math.round(bytes / 1024))}KB`;
+
+/** 서명된 읽기 주소(SAS)의 만료 시각(se)이 지났거나 1분 안에 지나는지. se가 없으면 만료되지 않는 주소로 본다 */
+export const urlExpired = (url: string, now = Date.now()) => {
+  const se = /[?&]se=([^&]+)/.exec(url)?.[1];
+  if (!se) return false;
+  const at = Date.parse(decodeURIComponent(se));
+  return Number.isFinite(at) && at - now < 60_000;
+};
+
+/** 말풍선: 글 · 사진(눌러서 크게) · 파일(눌러서 열기) */
+function ChatBubble({
+  m,
+  onOpen,
+  onStale,
+}: {
+  m: Message;
+  onOpen: (m: Message) => void;
+  onStale: () => void;
+}) {
+  const a = m.attachment;
+  const open = () => onOpen(m);
+  if (m.type === 'image' && a)
+    return (
+      <Pressable
+        accessibilityRole="imagebutton"
+        accessibilityLabel={`사진 ${a.name} 크게 보기`}
+        onPress={open}
+      >
+        <Image
+          source={{ uri: a.url }}
+          className="h-44 w-44 rounded-2xl bg-fill"
+          resizeMode="cover"
+          onError={() => {
+            if (urlExpired(a.url)) onStale();
+          }}
+        />
+      </Pressable>
+    );
+  if (m.type === 'file' && a)
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`파일 ${a.name} 열기`}
+        onPress={open}
+        className="max-w-[78%] flex-row items-center gap-2.5 rounded-2xl bg-white px-3 py-2.5"
+      >
+        <View className="h-9 w-9 items-center justify-center rounded-xl bg-mint">
+          <FileText size={ICON.sm} color={C.brand} />
+        </View>
+        <View className="shrink">
+          <Text numberOfLines={1} className="text-footnote font-semibold text-ink">
+            {a.name}
+          </Text>
+          {a.sizeBytes > 0 && (
+            <Text className="text-caption2 text-sub">{sizeLabel(a.sizeBytes)}</Text>
+          )}
+        </View>
+      </Pressable>
+    );
+  return (
+    <View className="max-w-[78%] rounded-2xl bg-white px-3 py-2">
+      <Text className="text-footnote text-ink">
+        {m.type === 'image' || m.type === 'file'
+          ? '첨부를 불러오지 못했어요'
+          : (m.text ?? '공유 자료를 보냈어요')}
+      </Text>
+    </View>
+  );
+}
+
+/** 보낼 메시지의 기기 쪽 식별자(재전송 때 같은 메시지로 묶는다) */
+const newClientId = (seq: number) =>
+  `c${Date.now()}-${seq}-${Math.random().toString(36).slice(2, 10)}`;
+/** 이름 없이 고른 사진의 파일 이름 */
+const photoName = () => `photo-${Date.now()}.jpg`;
+
+/**
+ * 멤버 목록을 새로 받을 때 각자의 오늘 공부시간(todaySec)을 이어 간다.
+ * 서버가 값을 주면 그 값을 쓰고, 주지 않으면 이전 목록의 값 + 그 뒤 흐른 시간(서울 날짜가 바뀌었으면 자정부터)을 쓴다.
+ * 새로 들어온 멤버는 0부터 센다
+ */
+export function carryStudyTime(
+  prev: RoomMember[],
+  prevAt: number,
+  next: RoomMember[],
+  at: number,
+): RoomMember[] {
+  const today = ymd(seoul(at));
+  const midnight = Date.parse(`${today}T00:00:00+09:00`);
+  const sameDay = ymd(seoul(prevAt)) === today;
+  const counted = new Map(
+    prev.map((m) => [
+      m.userId,
+      (sameDay ? (m.todaySec ?? 0) : 0) +
+        Math.max(0, Math.floor((at - Math.max(prevAt, midnight)) / 1000)),
+    ]),
+  );
+  return next.map((m) =>
+    m.todaySec !== undefined || !counted.has(m.userId)
+      ? m
+      : { ...m, todaySec: counted.get(m.userId)! },
   );
 }
