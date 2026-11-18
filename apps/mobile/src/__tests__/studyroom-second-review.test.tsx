@@ -131,6 +131,13 @@ afterEach(() => {
   clients.splice(0).forEach((qc) => qc.clear());
 });
 
+it('멤버 타일은 참여자 정보를 표시하고 채팅 공유 버튼을 만들지 않는다', async () => {
+  await renderScreen(<RoomScreen />, client());
+  expect(await screen.findByText('신고할 친구')).toBeTruthy();
+  expect(screen.getByText('내 계정')).toBeTruthy();
+  expect(screen.queryByText('공유 자료 열기')).toBeNull();
+});
+
 it('스터디룸 채팅의 공유 퀴즈를 누르면 현재 방의 공유 항목을 조회해 연다', async () => {
   mockApi.social.messages.mockResolvedValue([
     {

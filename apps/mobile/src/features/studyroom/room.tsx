@@ -1026,35 +1026,12 @@ export function RoomScreen() {
               const micOn = me ? live.micOn : (remote?.micOn ?? false);
               const video = live.video(m.userId);
               return (
-                <View className={cx(mine && 'items-end')}>
-                  {!mine && (
-                    <View className="flex-row items-center gap-1.5 mb-1">
-                      <MessageCircle size={ICON.xs} color={C.sub} />
-                      <Text className="text-caption2 text-sub">{m.senderNickname ?? '멤버'}</Text>
-                    </View>
-                  )}
-                  <Pressable
-                    disabled={m.type !== 'shared_item' || !m.sharedItemId}
-                    accessibilityRole={m.type === 'shared_item' ? 'button' : undefined}
-                    onPress={() => m.sharedItemId && void openSharedMessage(m.sharedItemId)}
-                    className="max-w-[78%] rounded-2xl bg-white px-3 py-2"
-                  >
-                    <Text className="text-footnote text-ink">
-                      {m.text ?? '공유 자료를 보냈어요'}
-                    </Text>
-                    {m.type === 'shared_item' && (
-                      <Text className="text-caption2 text-brand">공유 자료 열기</Text>
-                    )}
-                  </Pressable>
-                  {failedIds.includes(m._id) && (
-                    <Pressable
-                      accessibilityRole="button"
-                      onPress={() => deliver(m.chatRoomId, m._id, m.text ?? '')}
-                    >
-                      <Text className="mt-1 text-caption2 text-danger">
-                        전송하지 못했어요 · 다시 보내기
-                      </Text>
-                    </Pressable>
+                <View
+                  key={m.userId}
+                  className={cx(
+                    'w-[48.5%] items-center justify-center rounded-2xl',
+                    'h-[118px]',
+                    camOn ? 'bg-night' : 'bg-white',
                   )}
                 >
                   {video}
@@ -1127,7 +1104,20 @@ export function RoomScreen() {
                         <Text className="text-caption2 text-sub">{m.senderNickname ?? '멤버'}</Text>
                       </View>
                     )}
-                    <ChatBubble m={m} onOpen={openAttachment} onStale={refreshStale} />
+                    {m.type === 'shared_item' && m.sharedItemId ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() => void openSharedMessage(m.sharedItemId!)}
+                        className="max-w-[78%] rounded-2xl bg-white px-3 py-2"
+                      >
+                        <Text className="text-footnote text-ink">
+                          {m.text ?? '공유 자료를 보냈어요'}
+                        </Text>
+                        <Text className="text-caption2 text-brand">공유 자료 열기</Text>
+                      </Pressable>
+                    ) : (
+                      <ChatBubble m={m} onOpen={openAttachment} onStale={refreshStale} />
+                    )}
                     {failedIds.includes(m._id) && (
                       <Pressable
                         accessibilityRole="button"
