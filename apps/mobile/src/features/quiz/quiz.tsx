@@ -634,6 +634,15 @@ export function QuizSolveScreen() {
   const [right, setRight] = useState<boolean | null>(previous?.right ?? null);
   const [results, setResults] = useState<boolean[]>(previous?.results ?? []);
   const [speaking, setSpeaking] = useState(false);
+  // 지금 유효한 읽기 요청 번호. 멈추기 · 화면 떠나기 · 다음 문제로 넘어가기에서 올려 준비 중인 읽기를 무효로 한다
+  const speechToken = useRef(0);
+  useEffect(
+    () => () => {
+      speechToken.current++;
+      void Speech.stop();
+    },
+    [],
+  );
   const expired = useAuth((s) => s.expired);
   const finishing = useRef(false);
   const completionKey = ['quiz-finish', screenOwner, attemptId];
@@ -693,12 +702,6 @@ export function QuizSolveScreen() {
       active = false;
     };
   }, [set.data?._id, startRound]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(
-    () => () => {
-      Speech.stop();
-    },
-    [],
-  );
   useEffect(() => {
     if (set.data && !finish.isSuccess && ownsProgress()) {
       useQuizProgress
@@ -754,6 +757,8 @@ export function QuizSolveScreen() {
       </Canvas>
     );
   const speak = async () => {
+    // 읽기 요청마다 번호를 매겨, 준비(오디오 설정)를 기다리는 사이 멈추거나 화면을 떠나면 읽지 않는다(Codex #507 리뷰)
+    const token = ++speechToken.current;
     if (speaking) {
       void Speech.stop();
       return setSpeaking(false);
@@ -764,6 +769,7 @@ export function QuizSolveScreen() {
     await setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
     // 앞에서 멈추지 못한 읽기가 남아 있으면 새 읽기가 뒤로 밀려 들리지 않는다
     await Speech.stop()?.catch?.(() => {});
+    if (token !== speechToken.current) return;
     Speech.speak(`${q.prompt}. ${(q.choices ?? []).map((c, n) => `${n + 1}번, ${c}`).join('. ')}`, {
       language: 'ko-KR',
       onDone: () => setSpeaking(false),

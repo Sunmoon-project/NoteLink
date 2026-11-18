@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
-import { RoomScreen } from '../features/studyroom/room';
+import { RoomScreen, urlExpired } from '../features/studyroom/room';
 import { useAuth } from '../stores/auth';
 import { useNet } from '../stores/net';
 import { useToast } from '../stores/toast';
@@ -249,4 +249,39 @@ it('불러온 이전 기록은 움직이지 않고, 새로 보낸 말풍선만 �
   await fireEvent.changeText(screen.getByPlaceholderText('채팅을 입력해 주세요'), '새 메시지');
   await fireEvent.press(screen.getByLabelText('전송'));
   expect(bubbleOf('새 메시지')?.props.entering).toBeDefined();
+});
+
+// Codex #507 리뷰: 첨부 주소는 1시간 뒤 만료되는데 그대로 열었고, 기록을 다시 읽어도 옛 주소가 새 주소를 덮었다
+describe('만료된 첨부 주소', () => {
+  const photo = (url: string) => ({
+    _id: 'p1',
+    chatRoomId: 'chat-1',
+    senderId: 'friend',
+    senderNickname: '친구',
+    type: 'image',
+    text: null,
+    sharedItemId: null,
+    attachment: { kind: 'image', name: 'x.jpg', sizeBytes: 10, url },
+    createdAt: '2026-11-17T00:00:00.000Z',
+  });
+  const old = 'https://store/x.jpg?se=2020-01-01T00%3A00%3A00Z&sig=old';
+  const fresh = 'https://store/x.jpg?se=2099-01-01T00%3A00%3A00Z&sig=new';
+
+  it('만료 판정: 주소의 se가 지났거나 1분 안이면 만료, se가 없으면 만료 아님', () => {
+    const now = Date.parse('2026-11-18T00:00:00Z');
+    expect(urlExpired(old, now)).toBe(true);
+    expect(urlExpired(fresh, now)).toBe(false);
+    expect(urlExpired('https://store/x.jpg?se=2026-11-18T00%3A00%3A30Z', now)).toBe(true);
+    expect(urlExpired('file:///local.jpg', now)).toBe(false);
+  });
+
+  it('만료된 사진을 누르면 기록을 다시 읽어 새 주소로 연다', async () => {
+    mockApi.social.messages.mockResolvedValueOnce([photo(old)]).mockResolvedValue([photo(fresh)]);
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText(room.title);
+    await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+    await fireEvent.press(await screen.findByLabelText('사진 x.jpg 크게 보기'));
+    await waitFor(() => expect(mockOpen).toHaveBeenCalledWith(fresh));
+    expect(mockOpen).not.toHaveBeenCalledWith(old);
+  });
 });

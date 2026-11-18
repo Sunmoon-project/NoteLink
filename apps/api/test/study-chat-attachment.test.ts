@@ -119,6 +119,22 @@ describe('스터디룸 채팅 사진 · 파일 메시지', () => {
     expect(messages.findOneAndUpdate).not.toHaveBeenCalled();
   });
 
+  // Codex #507 리뷰: 올리기 주소는 앱이 알린 크기로만 내주므로, 실제 크기가 상한을 넘는 파일은 여기서 막는다
+  it.each([
+    ['사진', 'image', 20 * 1024 * 1024],
+    ['파일', 'file', 50 * 1024 * 1024],
+  ] as const)(
+    '실제로 올라간 %s이 상한(%d바이트)을 넘으면 저장하지 않는다',
+    async (_, kind, max) => {
+      const { service, messages, blobs } = setup();
+      blobs.createReadAccess.mockResolvedValueOnce({ readUrl: 'x', sizeBytes: max + 1 });
+      await expect(
+        service.sendAttachment(String(chatId), String(me), { blobUrl, kind, name: 'big' }, 'c1'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(messages.findOneAndUpdate).not.toHaveBeenCalled();
+    },
+  );
+
   it('같은 clientId로 다른 파일을 보내면 400(이미 쓴 식별자)', async () => {
     const { service } = setup({
       stored: { attachment: { blobUrl: 'other', name: 'b', sizeBytes: 1 } },

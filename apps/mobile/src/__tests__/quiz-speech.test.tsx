@@ -35,8 +35,10 @@ jest.mock('expo-speech', () => ({
   },
   stop: jest.fn(async () => {}),
 }));
+let mockAudioGate: Promise<void> | null = null;
 const mockAudioMode = jest.fn(async (_mode: unknown) => {
   mockOrder.push('audio');
+  if (mockAudioGate) await mockAudioGate;
 });
 jest.mock('expo-audio', () => ({ setAudioModeAsync: (m: unknown) => mockAudioMode(m) }));
 jest.mock('expo-haptics', () => ({
@@ -116,4 +118,34 @@ it('읽기에 실패하면 알리고 버튼을 되돌린다', async () => {
   await act(async () => options.onError(new Error('no voice')));
   expect(useToast.getState().msg).toBe('음성을 재생하지 못했어요. 기기 소리 설정을 확인해 주세요');
   expect(screen.getByText('음성으로 듣기')).toBeTruthy();
+});
+
+// Codex #507 리뷰: 오디오 설정을 기다리는 사이 멈추거나 화면을 떠나도 그 뒤에 읽기가 시작됐다
+describe('읽기 준비 중 취소', () => {
+  let release!: () => void;
+  beforeEach(() => {
+    mockAudioGate = new Promise<void>((r) => (release = r));
+  });
+  afterEach(() => {
+    mockAudioGate = null;
+  });
+
+  it('준비 중에 멈추면 읽지 않는다', async () => {
+    await renderScreen(<QuizSolveScreen />, qc());
+    expect(await screen.findByText('중간 난이도 문제')).toBeTruthy();
+    await fireEvent.press(screen.getByText('음성으로 듣기'));
+    await fireEvent.press(screen.getByText('읽어주는 중… (탭해서 멈춤)'));
+    await act(async () => release());
+    expect(mockSpeak).not.toHaveBeenCalled();
+    expect(screen.getByText('음성으로 듣기')).toBeTruthy();
+  });
+
+  it('준비 중에 화면을 떠나면 읽지 않는다', async () => {
+    const view = await renderScreen(<QuizSolveScreen />, qc());
+    expect(await screen.findByText('중간 난이도 문제')).toBeTruthy();
+    await fireEvent.press(screen.getByText('음성으로 듣기'));
+    await view.unmount();
+    await act(async () => release());
+    expect(mockSpeak).not.toHaveBeenCalled();
+  });
 });

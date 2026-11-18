@@ -612,12 +612,15 @@ export function RoomScreen() {
         }
       }
     // 네트워크에서 읽은 기록과 화면의 대기 메시지를 합친다.
+    // 같은 메시지는 서버에서 새로 읽은 값을 쓴다(첨부의 읽기 주소는 1시간 뒤 만료돼, 다시 읽으면 새 주소가 온다)
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMsgs((current) => [
-      ...new Map(
-        [...history.data!, ...current.filter((m) => !confirmed.has(m._id))].map((m) => [m._id, m]),
-      ).values(),
-    ]);
+    setMsgs((current) => {
+      const fromServer = new Set(history.data!.map((m) => m._id));
+      return [
+        ...history.data!,
+        ...current.filter((m) => !confirmed.has(m._id) && !fromServer.has(m._id)),
+      ];
+    });
   }, [history.data, myId, id]);
   // 방 구독(room:join). 소켓이 다시 붙을 때와, 소켓은 살아 있는데 HTTP 실패로만 끊김 상태였다가 돌아올 때
   // 모두 부른다. 마지막으로 보낸 요청의 응답만 반영해, 둘이 겹쳐도 대기 메시지를 한 번만 보낸다
@@ -849,6 +852,24 @@ export function RoomScreen() {
     ]);
     void deliverAttachment(clientId);
   };
+  /** 첨부 열기: 읽기 주소가 만료됐으면(1시간) 기록을 다시 읽어 새 주소로 연다 */
+  const openAttachment = async (m: Message) => {
+    let url = m.attachment?.url;
+    if (!url) return;
+    if (urlExpired(url) && !url.startsWith('file:')) {
+      const fresh = await history.refetch();
+      url = fresh.data?.find((x) => x._id === m._id)?.attachment?.url ?? url;
+      if (urlExpired(url)) return toast('첨부를 다시 불러오지 못했어요. 잠시 뒤 다시 눌러 주세요');
+    }
+    await WebBrowser.openBrowserAsync(url).catch(() => toast('파일을 열지 못했어요'));
+  };
+  // 사진이 만료된 주소라 보이지 않으면 기록을 한 번 다시 읽어 새 주소를 받는다(연달아 다시 읽지 않게 30초 간격)
+  const staleAt = useRef(0);
+  const refreshStale = () => {
+    if (Date.now() - staleAt.current < 30_000) return;
+    staleAt.current = Date.now();
+    void history.refetch();
+  };
   const send = () => {
     const text = v.trim();
     if (!text) return;
@@ -1057,7 +1078,7 @@ export function RoomScreen() {
                         <Text className="text-caption2 text-sub">{m.senderNickname ?? '멤버'}</Text>
                       </View>
                     )}
-                    <ChatBubble m={m} />
+                    <ChatBubble m={m} onOpen={openAttachment} onStale={refreshStale} />
                     {failedIds.includes(m._id) && (
                       <Pressable
                         accessibilityRole="button"
@@ -1222,7 +1243,11 @@ export function RoomScreen() {
               </Pressable>
               <TextInput
                 value={v}
-                onFocus={() => setChat(true)}
+                onFocus={() => {
+                  setChat(true);
+                  setEmoji(false);
+                  setAttach(false);
+                }}
                 onChangeText={setV}
                 onSubmitEditing={send}
                 returnKeyType="send"
@@ -1236,6 +1261,9 @@ export function RoomScreen() {
                 hitSlop={8}
                 onPress={() => {
                   setAttach(false);
+                  // 이모지 칸은 키보드 자리를 대신한다(메신저처럼): 키보드와 함께 열면 작은 화면에서 입력줄이
+                  // 다시 키보드 아래로 밀린다(Codex #507 리뷰). 입력칸을 누르면 이모지 칸을 닫고 키보드를 연다
+                  if (!emoji) Keyboard.dismiss();
                   setEmoji((x) => !x);
                 }}
               >
@@ -1481,12 +1509,26 @@ const sizeLabel = (bytes: number) =>
     ? `${(bytes / 1024 / 1024).toFixed(1)}MB`
     : `${Math.max(1, Math.round(bytes / 1024))}KB`;
 
+/** 서명된 읽기 주소(SAS)의 만료 시각(se)이 지났거나 1분 안에 지나는지. se가 없으면 만료되지 않는 주소로 본다 */
+export const urlExpired = (url: string, now = Date.now()) => {
+  const se = /[?&]se=([^&]+)/.exec(url)?.[1];
+  if (!se) return false;
+  const at = Date.parse(decodeURIComponent(se));
+  return Number.isFinite(at) && at - now < 60_000;
+};
+
 /** 말풍선: 글 · 사진(눌러서 크게) · 파일(눌러서 열기) */
-function ChatBubble({ m }: { m: Message }) {
+function ChatBubble({
+  m,
+  onOpen,
+  onStale,
+}: {
+  m: Message;
+  onOpen: (m: Message) => void;
+  onStale: () => void;
+}) {
   const a = m.attachment;
-  const open = () => {
-    if (a?.url) void WebBrowser.openBrowserAsync(a.url).catch(() => toast('파일을 열지 못했어요'));
-  };
+  const open = () => onOpen(m);
   if (m.type === 'image' && a)
     return (
       <Pressable
@@ -1498,6 +1540,9 @@ function ChatBubble({ m }: { m: Message }) {
           source={{ uri: a.url }}
           className="h-44 w-44 rounded-2xl bg-fill"
           resizeMode="cover"
+          onError={() => {
+            if (urlExpired(a.url)) onStale();
+          }}
         />
       </Pressable>
     );
