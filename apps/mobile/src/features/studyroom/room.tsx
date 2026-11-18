@@ -1174,7 +1174,7 @@ export function RoomScreen() {
             </Pop>
           )}
           {emoji && (
-            <Pop className="mx-5 mt-2 flex-row flex-wrap justify-between gap-y-1 rounded-2xl bg-white px-2 py-2">
+            <Pop className="mx-5 mt-2 flex-row flex-wrap gap-y-1 rounded-2xl bg-white px-1 py-2">
               {CHAT_EMOJIS.map((e) => (
                 <Pressable
                   key={e}
@@ -1184,7 +1184,8 @@ export function RoomScreen() {
                     setChat(true);
                     setV((x) => x + e);
                   }}
-                  className="h-10 w-10 items-center justify-center rounded-xl active:bg-fill"
+                  // 한 줄 8칸 격자(16개 = 두 줄)
+                  className="h-10 w-[12.5%] items-center justify-center rounded-xl active:bg-fill"
                 >
                   <Text className="text-title3">{e}</Text>
                 </Pressable>
@@ -1244,7 +1245,8 @@ export function RoomScreen() {
           {chat && (
             <Pressable
               onPress={() => setChat(false)}
-              className="absolute top-2 right-3 rounded-full bg-black/40 px-2 py-0.5"
+              // 오른쪽 위 설정 버튼과 겹치지 않게 그 왼쪽에 둔다
+              className="absolute top-2 right-14 rounded-full bg-black/40 px-2 py-0.5"
             >
               <Text className="text-caption2 text-white">캠 보기</Text>
             </Pressable>

@@ -775,6 +775,8 @@ export function Segment<T extends string>({
           accessibilityRole="tab"
           accessibilityState={{ selected: value === it }}
           onPress={() => onChange(it)}
+          // 고른 칸 판이 미끄러지는 모션이 있어 칸 자체는 줄이지 않는다
+          scaleTo={1}
           className={cx(
             'h-control-sm flex-1 items-center justify-center rounded-lg',
             // 폭을 재기 전(첫 그림)에는 판 대신 칸 자체를 칠한다

@@ -1,6 +1,5 @@
-import { forwardRef, useState, type ComponentProps, type ElementRef } from 'react';
-import { Pressable as RNPressable, type PressableStateCallbackType } from 'react-native';
-import { cssInterop } from 'nativewind';
+import { forwardRef, type ComponentProps, type ElementRef } from 'react';
+import { Pressable as RNPressable } from 'react-native';
 import Animated, {
   useAnimatedStyle,
   useReducedMotion,
@@ -9,14 +8,26 @@ import Animated, {
 } from 'react-native-reanimated';
 import { MOTION } from '@/theme';
 
-// 같은 요소에 눌림 모션만 더한 Pressable. 기본 Pressable과 쓰는 법이 같아 import만 바꿔 쓴다.
-// Tap과 달리 감싸는 상자를 더하지 않고(배치 · 크기 그대로) 그 요소 자체를 줄인다.
-const AnimatedPressable = Animated.createAnimatedComponent(RNPressable);
-// 앱에서는 className을 스타일로 바꿔 준다. 시험(jest)은 NativeWind 변환 없이 className을 그대로 읽어 모양을 확인하므로
-// 등록하지 않는다(등록하면 className이 지워져 다른 Pressable과 같은 방식으로 확인할 수 없다)
-if (process.env.NODE_ENV !== 'test') cssInterop(AnimatedPressable, { className: 'style' });
+// 눌림 모션을 더한 Pressable. 기본 Pressable과 쓰는 법이 같아 import만 바꿔 쓴다.
+// 줄어드는 상자(Animated.View)가 바깥 배치(여백 · 위치 · flex · 폭)를, 안쪽 Pressable이 모양을 맡는다(공용 Tap과 같은 구조).
+// NativeWind className을 Reanimated로 감싼 Pressable에 등록(cssInterop)하면 실제 앱에서 스타일이 빠져 이 구조를 쓴다
 
 const SPRING = { damping: MOTION.press.damping, stiffness: MOTION.press.stiffness };
+
+/** 바깥 상자로 옮길 배치 클래스(여백 · 위치 · 크기 · flex) */
+const OUTER =
+  /^-?(m[trblxy]?-|flex-1$|flex-\[|basis-|grow|shrink|w-|min-w-|max-w-|self-|absolute$|relative$|inset-|top-|left-|right-|bottom-|z-)/;
+export const splitPressClass = (className = '') => {
+  const all = className.split(/\s+/).filter(Boolean);
+  const outer = all.filter((c) => OUTER.test(c));
+  const inner = all.filter((c) => !OUTER.test(c));
+  // 바깥이 늘어나거나 가득 채우면 안쪽도 같이 채운다. 안쪽에 flex-1(basis 0)을 주면 높이가 정해지지 않은 바깥(가로 줄의 칸)에서
+  // 높이가 0으로 줄어 내용이 잘리므로, 내용 높이는 지키고 남는 만큼만 늘어나는 grow로 채운다(폭은 바깥 폭을 따른다)
+  const fills =
+    outer.includes('flex-1') || outer.includes('grow') || outer.some((c) => c.startsWith('inset-'));
+  if (fills) inner.push('grow');
+  return [outer.join(' '), inner.join(' ')] as const;
+};
 
 type Props = ComponentProps<typeof RNPressable> & {
   className?: string;
@@ -25,41 +36,46 @@ type Props = ComponentProps<typeof RNPressable> & {
 };
 
 /**
- * 누르면 살짝(MOTION.press.scale) 작아졌다 돌아온다. 손가락을 대는 순간 줄고(press-in) 떼면 돌아온다.
- * 자주 누르는 곳이라 눈에 거의 띄지 않을 만큼만 · 손가락을 따라가게 스프링으로.
- * 동작 줄이기를 켜면 · 누를 수 없을 때(disabled)는 줄지 않는다
+ * 누르면 살짝(MOTION.press.scale) 작아졌다 돌아온다. 손가락을 대는 순간 줄고(press-in) 떼면 스프링으로 돌아온다.
+ * 동작 줄이기 · 1을 주면 · 화면을 덮는 어두운 배경은 감싸지 않고 기본 Pressable 그대로 쓴다(배치도 그대로).
+ * 누를 수 없을 때(disabled)는 감싸되 줄지 않는다(상태가 바뀔 때 배치가 흔들리지 않게)
  */
 export const Pressable = forwardRef<ElementRef<typeof RNPressable>, Props>(function Pressable(
-  { style, onPressIn, onPressOut, disabled, scaleTo = MOTION.press.scale, ...props },
+  { className, onPressIn, onPressOut, disabled, scaleTo = MOTION.press.scale, ...props },
   ref,
 ) {
   const reduce = useReducedMotion();
   const scale = useSharedValue(1);
   const anim = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
-  // style이 함수면(눌림 상태에 따라 다른 모양) 그 상태를 직접 넘긴다
-  const [pressed, setPressed] = useState(false);
-  const state: PressableStateCallbackType = { pressed, hovered: false };
-  const base = typeof style === 'function' ? style(state) : style;
-  // 화면을 덮는 배경(시트 · 메뉴 뒤 어두운 막)은 줄이지 않는다 — 화면 전체가 움찔해 보인다
-  const backdrop = isBackdrop(props.className);
-  const moves = !reduce && !disabled && scaleTo !== 1 && !backdrop;
+  if (reduce || scaleTo === 1 || isBackdrop(className))
+    return (
+      <RNPressable
+        ref={ref}
+        {...props}
+        className={className}
+        disabled={disabled}
+        onPressIn={onPressIn}
+        onPressOut={onPressOut}
+      />
+    );
+  const [outer, inner] = splitPressClass(className);
   return (
-    <AnimatedPressable
-      ref={ref}
-      {...props}
-      disabled={disabled}
-      style={moves ? [base, anim] : base}
-      onPressIn={(e) => {
-        if (typeof style === 'function') setPressed(true);
-        if (moves) scale.set(withSpring(scaleTo, SPRING));
-        onPressIn?.(e);
-      }}
-      onPressOut={(e) => {
-        if (typeof style === 'function') setPressed(false);
-        if (moves) scale.set(withSpring(1, SPRING));
-        onPressOut?.(e);
-      }}
-    />
+    <Animated.View className={outer} style={anim}>
+      <RNPressable
+        ref={ref}
+        {...props}
+        className={inner}
+        disabled={disabled}
+        onPressIn={(e) => {
+          if (!disabled) scale.set(withSpring(scaleTo, SPRING));
+          onPressIn?.(e);
+        }}
+        onPressOut={(e) => {
+          scale.set(withSpring(1, SPRING));
+          onPressOut?.(e);
+        }}
+      />
+    </Animated.View>
   );
 });
 
