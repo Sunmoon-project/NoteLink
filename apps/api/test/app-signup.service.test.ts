@@ -3,6 +3,10 @@ import { compare } from 'bcrypt';
 import { Types } from 'mongoose';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** 가입마다 다른 아이디(아이디 충돌이 이메일 중복 시험을 가리지 않게) */
+let loginIdSeq = 0;
+const nextLoginId = () => `user${++loginIdSeq}`;
+
 import {
   APP_LOGIN_ERRORS,
   AppSignupService,
@@ -63,9 +67,13 @@ function setup(options: { mailFails?: boolean; random?: (max: number) => number 
     sendNoAccount: () => Promise.resolve(),
   };
   const usersModel = {
-    exists: (f: { email: string; deletedAt: null }) =>
+    exists: (f: { email?: string; loginId?: string; deletedAt?: null }) =>
       Promise.resolve(
-        users.find((u) => u.email === f.email && u.deletedAt === f.deletedAt)
+        users.find((u) =>
+          f.loginId !== undefined
+            ? (u as { loginId?: string }).loginId === f.loginId
+            : u.email === f.email && u.deletedAt === f.deletedAt,
+        )
           ? { _id: new Types.ObjectId() }
           : null,
       ),
@@ -509,7 +517,7 @@ describe('AppSignupService.signup', () => {
     const create = vi
       .spyOn(ctx.usersModel, 'create')
       .mockRejectedValueOnce({ code: 11000, keyPattern: { nickname: 1 } });
-    await ctx.service.signup(token, PASSWORD);
+    await ctx.service.signup(token, nextLoginId(), PASSWORD);
     expect(create).toHaveBeenCalledTimes(2);
     expect(ctx.users).toHaveLength(1);
   });
@@ -518,7 +526,7 @@ describe('AppSignupService.signup', () => {
       const ctx = setup();
       const token = await verifiedToken(ctx);
 
-      await ctx.service.signup(token, PASSWORD);
+      await ctx.service.signup(token, nextLoginId(), PASSWORD);
 
       expect(ctx.users).toHaveLength(1);
       expect(ctx.users[0]).toMatchObject({ email: EMAIL, deletedAt: null });
@@ -528,14 +536,14 @@ describe('AppSignupService.signup', () => {
       const ctx = setup();
       const token = await verifiedToken(ctx);
 
-      expect(await ctx.service.signup(token, PASSWORD)).toBeUndefined();
+      expect(await ctx.service.signup(token, nextLoginId(), PASSWORD)).toBeUndefined();
     });
 
     it('비밀번호는 bcrypt 해시로만 저장하고 원문은 저장하지 않는다', async () => {
       const ctx = setup();
       const token = await verifiedToken(ctx);
 
-      await ctx.service.signup(token, PASSWORD);
+      await ctx.service.signup(token, nextLoginId(), PASSWORD);
 
       const row = ctx.users[0]!;
       expect(row.passwordHash).toMatch(/^\$2[aby]\$\d{2}\$/);
@@ -545,22 +553,22 @@ describe('AppSignupService.signup', () => {
 
     it('같은 비밀번호도 계정마다 해시가 다르다 (솔트)', async () => {
       const ctx = setup();
-      await ctx.service.signup(await verifiedToken(ctx, 'a@example.com'), PASSWORD);
-      await ctx.service.signup(await verifiedToken(ctx, 'b@example.com'), PASSWORD);
+      await ctx.service.signup(await verifiedToken(ctx, 'a@example.com'), nextLoginId(), PASSWORD);
+      await ctx.service.signup(await verifiedToken(ctx, 'b@example.com'), nextLoginId(), PASSWORD);
 
       expect(ctx.users[0]!.passwordHash).not.toBe(ctx.users[1]!.passwordHash);
     });
 
     it('틀린 비밀번호는 해시와 맞지 않는다', async () => {
       const ctx = setup();
-      await ctx.service.signup(await verifiedToken(ctx), PASSWORD);
+      await ctx.service.signup(await verifiedToken(ctx), nextLoginId(), PASSWORD);
 
       expect(await compare('WrongPassw0rd', ctx.users[0]!.passwordHash!)).toBe(false);
     });
 
     it('초기 닉네임을 만든다 (앱 닉네임 규칙: 한글 · 영문 · 숫자 2~10자)', async () => {
       const ctx = setup();
-      await ctx.service.signup(await verifiedToken(ctx), PASSWORD);
+      await ctx.service.signup(await verifiedToken(ctx), nextLoginId(), PASSWORD);
 
       expect(ctx.users[0]!.nickname).toMatch(/^[가-힣A-Za-z0-9]{2,10}$/);
     });
@@ -572,7 +580,7 @@ describe('AppSignupService.signup', () => {
       const token = await verifiedToken(ctx);
       const forged = `${token.slice(0, -3)}abc`;
 
-      const result = await failure(ctx.service.signup(forged, PASSWORD));
+      const result = await failure(ctx.service.signup(forged, nextLoginId(), PASSWORD));
 
       expect(result.status).toBe(401);
       expect(result.body['code']).toBe(APP_LOGIN_ERRORS.EMAIL_PROOF_INVALID);
@@ -582,7 +590,7 @@ describe('AppSignupService.signup', () => {
     it('엉뚱한 문자열도 같은 401이다', async () => {
       const { service, users } = setup();
 
-      const result = await failure(service.signup('not-a-token', PASSWORD));
+      const result = await failure(service.signup('not-a-token', nextLoginId(), PASSWORD));
 
       expect(result.body['code']).toBe(APP_LOGIN_ERRORS.EMAIL_PROOF_INVALID);
       expect(users).toHaveLength(0);
@@ -593,7 +601,7 @@ describe('AppSignupService.signup', () => {
       const token = await verifiedToken(ctx);
       vi.setSystemTime(new Date(START.getTime() + EMAIL_PROOF_TTL_MS + 1_000));
 
-      const result = await failure(ctx.service.signup(token, PASSWORD));
+      const result = await failure(ctx.service.signup(token, nextLoginId(), PASSWORD));
 
       expect(result.status).toBe(401);
       expect(result.body['code']).toBe(APP_LOGIN_ERRORS.EMAIL_PROOF_EXPIRED);
@@ -603,9 +611,9 @@ describe('AppSignupService.signup', () => {
     it('같은 증표로 두 번 가입할 수 없다 (두 번째는 거부)', async () => {
       const ctx = setup();
       const token = await verifiedToken(ctx);
-      await ctx.service.signup(token, PASSWORD);
+      await ctx.service.signup(token, nextLoginId(), PASSWORD);
 
-      const result = await failure(ctx.service.signup(token, PASSWORD));
+      const result = await failure(ctx.service.signup(token, nextLoginId(), PASSWORD));
 
       expect(result.body['code']).toBe(APP_LOGIN_ERRORS.EMAIL_PROOF_INVALID);
       expect(ctx.users).toHaveLength(1);
@@ -616,7 +624,7 @@ describe('AppSignupService.signup', () => {
       const token = await verifiedToken(ctx);
 
       const results = await Promise.allSettled(
-        Array.from({ length: 10 }, () => ctx.service.signup(token, PASSWORD)),
+        Array.from({ length: 10 }, () => ctx.service.signup(token, nextLoginId(), PASSWORD)),
       );
 
       expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
@@ -629,7 +637,7 @@ describe('AppSignupService.signup', () => {
       vi.setSystemTime(new Date(START.getTime() + EMAIL_CODE_RESEND_COOLDOWN_MS));
       await ctx.service.sendCode(EMAIL);
 
-      const result = await failure(ctx.service.signup(oldToken, PASSWORD));
+      const result = await failure(ctx.service.signup(oldToken, nextLoginId(), PASSWORD));
 
       expect(result.body['code']).toBe(APP_LOGIN_ERRORS.EMAIL_PROOF_INVALID);
       expect(ctx.users).toHaveLength(0);
@@ -639,7 +647,7 @@ describe('AppSignupService.signup', () => {
       const ctx = setup();
       const tokenForB = await verifiedToken(ctx, 'b@example.com');
 
-      await ctx.service.signup(tokenForB, PASSWORD);
+      await ctx.service.signup(tokenForB, nextLoginId(), PASSWORD);
 
       expect(ctx.users.map((u) => u.email)).toEqual(['b@example.com']);
     });
@@ -658,7 +666,7 @@ describe('AppSignupService.signup', () => {
         deletedAt: null,
       });
 
-      const result = await failure(ctx.service.signup(token, PASSWORD));
+      const result = await failure(ctx.service.signup(token, nextLoginId(), PASSWORD));
 
       expect(result.status).toBe(409);
       expect(result.body['code']).toBe(APP_LOGIN_ERRORS.EMAIL_TAKEN);
@@ -676,7 +684,7 @@ describe('AppSignupService.signup', () => {
         deletedAt: null,
       });
 
-      const result = await failure(ctx.service.signup(token, PASSWORD));
+      const result = await failure(ctx.service.signup(token, nextLoginId(), PASSWORD));
 
       expect(result.body['code']).toBe(APP_LOGIN_ERRORS.EMAIL_TAKEN);
       expect(ctx.users[0]!.passwordHash).toBeNull();
@@ -693,7 +701,7 @@ describe('AppSignupService.signup', () => {
         deletedAt: new Date(),
       });
 
-      const result = await failure(ctx.service.signup(token, PASSWORD));
+      const result = await failure(ctx.service.signup(token, nextLoginId(), PASSWORD));
 
       expect(result.body['code']).toBe(APP_LOGIN_ERRORS.EMAIL_TAKEN);
     });
@@ -709,7 +717,7 @@ describe('AppSignupService.signup', () => {
         deletedAt: null,
       });
 
-      const result = await failure(ctx.service.signup(token, PASSWORD));
+      const result = await failure(ctx.service.signup(token, nextLoginId(), PASSWORD));
 
       expect(result.body['message']).toBe(
         '이미 가입한 이메일이에요. 처음 가입한 방법으로 로그인해 주세요',
@@ -730,14 +738,17 @@ describe('AppSignupService.signup', () => {
           sendRecoveryCode: () => Promise.resolve(),
           sendNoAccount: () => Promise.resolve(),
         },
-        { create: () => Promise.reject(new Error('DB 쓰기 실패')) } as never,
+        {
+          exists: () => Promise.resolve(null),
+          create: () => Promise.reject(new Error('DB 쓰기 실패')),
+        } as never,
         TEST_COST,
       );
 
-      await expect(broken.signup(token, PASSWORD)).rejects.toThrow('DB 쓰기 실패');
+      await expect(broken.signup(token, nextLoginId(), PASSWORD)).rejects.toThrow('DB 쓰기 실패');
 
       // 증표를 먼저 소비하는 설계라서 같은 증표로 다시 시도하면 거부된다: 사용자는 이메일 인증부터 다시 해야 한다
-      const retry = await failure(ctx.service.signup(token, PASSWORD));
+      const retry = await failure(ctx.service.signup(token, nextLoginId(), PASSWORD));
       expect(retry.body['code']).toBe(APP_LOGIN_ERRORS.EMAIL_PROOF_INVALID);
     });
   });
@@ -761,6 +772,7 @@ describe('비밀번호 해시 비용', () => {
         sendNoAccount: () => Promise.resolve(),
       },
       {
+        exists: () => Promise.resolve(null),
         create: (data: { passwordHash: string }) => {
           ctx.users.push({
             _id: new Types.ObjectId(),
@@ -774,14 +786,14 @@ describe('비밀번호 해시 비용', () => {
       } as never,
     );
 
-    await service.signup(token, PASSWORD);
+    await service.signup(token, nextLoginId(), PASSWORD);
 
     expect(ctx.users[0]!.passwordHash).toMatch(/^\$2[aby]\$12\$/);
   });
 
   it('주입한 비용을 따른다 (시험에서 빠른 비용을 쓸 수 있다)', async () => {
     const ctx = setup();
-    await ctx.service.signup(await verifiedToken(ctx), PASSWORD);
+    await ctx.service.signup(await verifiedToken(ctx), nextLoginId(), PASSWORD);
 
     expect(ctx.users[0]!.passwordHash).toMatch(/^\$2[aby]\$04\$/);
   });
@@ -799,7 +811,7 @@ describe('공통 보안', () => {
       deletedAt: null,
     });
 
-    const result = await failure(ctx.service.signup(token, PASSWORD));
+    const result = await failure(ctx.service.signup(token, nextLoginId(), PASSWORD));
 
     expect(JSON.stringify(result.body)).not.toContain(PASSWORD);
     expect(JSON.stringify(result.body)).not.toContain(token);

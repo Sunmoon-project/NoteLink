@@ -1,5 +1,7 @@
 import type { Types } from 'mongoose';
 
+import { REQUIRED_TERM_CODES } from './terms/terms.constants.js';
+
 /** 앱이 읽는 설정의 기본값. 앱의 로컬 모드 기본값(apps/mobile/src/lib/local/api.ts newDb)과 같게 맞춘다 */
 const DEFAULT_SETTINGS = {
   resumePlayback: true,
@@ -28,11 +30,15 @@ const DEFAULT_LEARNER_TYPE: LearnerType = 'university';
 export interface UserSource {
   _id: Types.ObjectId;
   email?: string | null;
+  loginId?: string | null;
   nickname: string;
   role?: string;
   learnerType?: string | null;
   pointBalance?: number;
   settings?: Record<string, unknown>;
+  termAgreements?: { termCode: string; agreed: boolean }[] | null;
+  /** 처음 안내를 마친 시각. null이면 아직, 필드가 없으면 이 기록이 생기기 전 계정 */
+  touredAt?: Date | null;
   status?: string;
   interestCategoryIds?: Types.ObjectId[];
   subscription?: { tier?: string; status?: string; currentPeriodEnd?: Date | null } | null;
@@ -45,6 +51,8 @@ const PLAN_TIERS = ['free', 'pro', 'max'] as const;
 export interface AppUser {
   _id: string;
   email: string | null;
+  /** 로그인 아이디. 간편 로그인 계정과 아이디를 두기 전 이메일 가입 계정은 null */
+  loginId: string | null;
   nickname: string;
   role: string;
   learnerType: LearnerType;
@@ -56,6 +64,10 @@ export interface AppUser {
   /** 요금제(packages/shared User.subscription). 기록이 없으면 보내지 않는다(앱은 Free로 본다) */
   subscription?: { tier: (typeof PLAN_TIERS)[number]; status: string; currentPeriodEnd?: string };
   createdAt: string;
+  /** 약관 동의와 프로필 설정(학습자 유형)을 마친 계정. 어느 기기로 로그인해도 같은 값이다 */
+  onboarded: boolean;
+  /** 처음 안내를 본 계정 */
+  toured: boolean;
 }
 
 function oneOf<T extends string>(allowed: readonly T[], value: unknown, fallback: T): T {
@@ -67,9 +79,11 @@ function oneOf<T extends string>(allowed: readonly T[], value: unknown, fallback
  * 허용 목록에 있는 필드만 골라 담는 방식이라, 스키마에 필드가 늘어도 자동으로 새어 나가지 않는다.
  */
 export function toAppUser(user: UserSource, streakDays = 0): AppUser {
+  const onboarded = isOnboarded(user);
   return {
     _id: String(user._id),
     email: user.email ?? null,
+    loginId: user.loginId ?? null,
     nickname: user.nickname,
     role: user.role ?? 'user',
     learnerType: oneOf(LEARNER_TYPES, user.learnerType, DEFAULT_LEARNER_TYPE),
@@ -92,5 +106,19 @@ export function toAppUser(user: UserSource, streakDays = 0): AppUser {
         }
       : {}),
     createdAt: (user.createdAt ?? new Date()).toISOString(),
+    onboarded,
+    // 기록이 생기기 전에 설정을 마친 계정은 그 기기에서 안내까지 봤다(설정을 마치면 바로 안내가 열린다)
+    toured: user.touredAt instanceof Date || (user.touredAt === undefined && onboarded),
   };
+}
+
+/** 필수 약관에 동의했고 학습자 유형을 직접 골랐는지(가입 직후 학습자 유형은 null) */
+function isOnboarded(user: UserSource): boolean {
+  const agreed = new Set(
+    (user.termAgreements ?? []).filter((t) => t.agreed).map((t) => t.termCode),
+  );
+  return (
+    LEARNER_TYPES.includes(user.learnerType as LearnerType) &&
+    REQUIRED_TERM_CODES.every((code) => agreed.has(code))
+  );
 }

@@ -66,7 +66,8 @@ def main() -> None:
             retry_delay_sec=settings.ai_job_retry_delay_sec,
         )
 
-    if settings.llm_provider == "claude" and settings.claude_budget_usd > 0:
+    uses_claude = "claude" in (settings.llm_provider, settings.split_provider)
+    if uses_claude and settings.claude_budget_usd > 0:
         if left := use_spool(settings.llm_cost_spool, client[settings.mongodb_db]["ai_jobs"]):
             log.warning("지난번에 DB에 적지 못한 Claude 비용 %d건을 다시 적습니다", left)
         spend = use_spend(store(":spend").claude_spent)

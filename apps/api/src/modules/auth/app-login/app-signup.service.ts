@@ -107,11 +107,18 @@ export class AppSignupService {
     throw codeRejected(result);
   }
 
+  /** 아이디를 쓸 수 있는지(탈퇴한 계정의 아이디도 다시 쓰지 않는다) */
+  async loginIdAvailable(loginId: string): Promise<boolean> {
+    return (await this.users.exists({ loginId })) === null;
+  }
+
   /**
-   * 인증을 마친 이메일로 비밀번호를 정해 계정을 만든다. 로그인은 하지 않는다(토큰을 주지 않는다).
+   * 인증을 마친 이메일로 아이디 · 비밀번호를 정해 계정을 만든다. 로그인은 하지 않는다(토큰을 주지 않는다).
    * 이메일은 요청에서 받지 않고 증표 안의 값만 쓴다: 인증한 이메일과 다른 이메일로 가입할 수 없다.
    */
-  async signup(verificationToken: string, password: string): Promise<void> {
+  async signup(verificationToken: string, loginId: string, password: string): Promise<void> {
+    // 증표를 쓰기 전에 아이디부터 본다 — 아이디 때문에 실패하면 이메일 인증을 다시 하지 않아도 된다
+    if (!(await this.loginIdAvailable(loginId))) throw loginIdTaken();
     const proof = await this.proofs.verify(verificationToken);
     if (!proof.ok) {
       throw new UnauthorizedException(
@@ -137,6 +144,7 @@ export class AppSignupService {
       try {
         await this.users.create({
           email: proof.email,
+          loginId,
           passwordHash,
           nickname: initialNickname(null),
         });
@@ -146,7 +154,13 @@ export class AppSignupService {
           if (attempt + 1 === NICKNAME_CREATE_ATTEMPTS) throw error;
           continue;
         }
-        // 닉네임 충돌은 위에서 걸렀으므로, 남은 중복 키 오류는 이메일 유일 인덱스 위반이다.
+        // 앞에서 확인한 사이 같은 아이디로 먼저 가입한 사람이 있다. 증표는 되돌려, 이메일 인증을 다시 하지 않고
+        // 다른 아이디로 가입할 수 있게 한다(Codex #496 리뷰)
+        if (isLoginIdConflict(error)) {
+          await this.codes.release(proof.email, proof.purpose, proof.verifiedAt);
+          throw loginIdTaken();
+        }
+        // 닉네임 · 아이디 충돌은 위에서 걸렀으므로, 남은 중복 키 오류는 이메일 유일 인덱스 위반이다.
         // 이미 가입했거나, 같은 이메일을 가진 다른 계정(소셜 포함)이 있다. 유일 인덱스가 마지막 방어선이다.
         // keyPattern 유무에 기대지 않는다: 오류에 keyPattern이 없어도 409로 바꾼다.
         if (isDuplicateKey(error)) throw emailTaken();
@@ -158,6 +172,19 @@ export class AppSignupService {
   private async isRegistered(email: string): Promise<boolean> {
     return (await this.users.exists({ email, deletedAt: null })) !== null;
   }
+}
+
+function loginIdTaken(): ConflictException {
+  return new ConflictException({
+    code: APP_LOGIN_ERRORS.LOGIN_ID_TAKEN,
+    message: '이미 쓰는 아이디예요. 다른 아이디를 정해 주세요',
+  });
+}
+
+function isLoginIdConflict(error: unknown): boolean {
+  if (!isDuplicateKey(error)) return false;
+  const pattern = (error as { keyPattern?: Record<string, unknown> }).keyPattern;
+  return !!pattern && 'loginId' in pattern;
 }
 
 function emailTaken(): ConflictException {

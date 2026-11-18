@@ -51,7 +51,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import anthropic
 import httpx2
@@ -867,6 +867,8 @@ class Spend:
         self._at: float | None = None  # 마지막으로 읽기를 시작한 시각
         self._reading = False
         self._lock = threading.Lock()
+        # Claude가 사용 한도 오류를 돌려줌: 이 합계를 보는 연결 모두 다시 Claude로 가지 않음
+        self.exhausted = False
 
     def add(self, usd: float) -> None:
         with self._lock:
@@ -963,7 +965,6 @@ class Budgeted:
         self._school: Paced | None = None
         self._lock = threading.Lock()
         self._told = False
-        self._exhausted = False  # Claude가 사용 한도 오류를 돌려줌: 다시 Claude로 가지 않음
         self._routed = _Routed(self, claude, self._school_llm)
         # 차례를 기다리는 동안 한도를 넘기면 보내기 직전에 멈추고 학교 LLM으로(Codex 리뷰 #299)
         self.hooked = isinstance(claude, PacedLlm)
@@ -972,12 +973,12 @@ class Budgeted:
             claude.set_cost_hook(self.spend.add)
 
     def exhaust(self) -> None:
-        self._exhausted = True
+        self.spend.exhausted = True
 
     def over(self) -> bool:
         # 넘긴 뒤에도 합계를 읽음: 읽을 때 모아 둔 비용을 다시 적으므로(Codex 재리뷰 #299)
         total = self.spend.total()
-        over = self._exhausted or total >= self._limit
+        over = self.spend.exhausted or total >= self._limit
         if over and not self._told:
             self._told = True
             log.warning(
@@ -1027,22 +1028,25 @@ MODEL_FIELDS = (
 
 
 def llm_setup_problem(provider: str | None = None) -> str | None:
-    """LLM_PROVIDER에 필요한 설정이 비었거나 모델 이름이 다른 제공자 것이면 그 이유.
+    """쓰는 LLM 제공자에 필요한 설정이 비었거나 모델 이름이 다른 제공자 것이면 그 이유.
 
+    provider를 주면 그 제공자와 그 제공자를 쓰는 모델 항목만 봄(문단 나누기는 NOTE_SPLIT_PROVIDER).
     처리기가 시작할 때 보고(__main__), 클라이언트를 만들 때도 봅니다. 예전 .env에 학교 LLM
     모델 이름(QUIZ_CHECK_MODEL=qwen-27b 등)이 남은 채 Claude로 바뀌면 모든 호출이 404로
     시도 한도까지 돌다 실패했음(/code-review #278).
     """
-    provider = provider or settings.llm_provider
-    claude = provider == "claude"
-    if claude and not settings.anthropic_api_key.get_secret_value():
-        return "ANTHROPIC_API_KEY가 비어 있음"
-    if not claude and not settings.school_llm_base_url:
-        return "SCHOOL_LLM_BASE_URL이 비어 있음"
-    for field in MODEL_FIELDS:
-        model = getattr(settings, field)
-        if model.startswith("claude-") != claude:
-            return f"{field.upper()}={model}가 LLM_PROVIDER={provider}의 모델이 아님"
+    used = [provider] if provider else list(dict.fromkeys(map(settings.provider_of, MODEL_FIELDS)))
+    for p in used:
+        claude = p == "claude"
+        if claude and not settings.anthropic_api_key.get_secret_value():
+            return "ANTHROPIC_API_KEY가 비어 있음"
+        if not claude and not settings.school_llm_base_url:
+            return "SCHOOL_LLM_BASE_URL이 비어 있음"
+        for field in MODEL_FIELDS:
+            model = getattr(settings, field)
+            if settings.provider_of(field) == p and model.startswith("claude-") != claude:
+                env = "NOTE_SPLIT_PROVIDER" if field == "note_split_model" else "LLM_PROVIDER"
+                return f"{field.upper()}={model}가 {env}={p}의 모델이 아님"
     return None
 
 
@@ -1064,12 +1068,12 @@ def school_llm() -> SchoolLlm:
     return _school_client(settings.call_gap_sec)
 
 
-def claude_llm() -> ClaudeLlm:
+def claude_llm(gap_sec: float | None = None) -> ClaudeLlm:
     _check_setup("claude")
     return ClaudeLlm(
         settings.anthropic_api_key.get_secret_value(),
         effort=settings.llm_effort,
-        gap_sec=settings.call_gap_sec,
+        gap_sec=settings.call_gap_sec if gap_sec is None else gap_sec,
     )
 
 
@@ -1090,22 +1094,75 @@ def school_models() -> dict[str, str]:
 
     서비스는 모델 이름만 넘기므로, 여러 설정 항목이 같은 Claude 모델을 쓰면(예: QUIZ_CHECK_MODEL도
     Sonnet) 그 항목들의 학교 모델 중 가장 많은 것(같으면 MODEL_FIELDS 앞쪽)으로(/code-review #298).
+    문단 나누기는 따로 연결하므로(make_split_llm) 빼고 셈.
     """
     picks: dict[str, list[str]] = {}
     for f in MODEL_FIELDS:
-        picks.setdefault(getattr(settings, f), []).append(LLM_DEFAULTS["school"][f])
+        if f != "note_split_model":
+            picks.setdefault(getattr(settings, f), []).append(LLM_DEFAULTS["school"][f])
     return {model: max(names, key=names.count) for model, names in picks.items()}
 
 
-def make_llm(spend: Spend | None = None) -> Paced:
+class Clients:
+    """제공자마다 클라이언트를 하나씩 만들어 둠(make_llm · make_split_llm이 함께 씀).
+
+    연결이 여럿이어도 같은 제공자는 호출 간격 · 429 대기 · 사용자 우선을 같이 지킴(Codex #486).
+    간격은 LLM_PROVIDER의 제공자면 LLM_CALL_GAP_SEC, 아니면 그 제공자 기본값.
+    """
+
+    def __init__(self) -> None:
+        self._made: dict[str, PacedLlm] = {}
+        self._lock = threading.Lock()
+
+    def _get[T: PacedLlm](self, provider: str, make: Callable[[], T]) -> T:
+        with self._lock:
+            if provider not in self._made:
+                self._made[provider] = make()
+            return cast(T, self._made[provider])
+
+    def claude(self) -> ClaudeLlm:
+        main = settings.llm_provider == "claude"
+        return self._get("claude", lambda: claude_llm(None if main else GAP_DEFAULTS["claude"]))
+
+    def school(self) -> SchoolLlm:
+        return self._get("school", _shared_school)
+
+
+def _shared_school() -> SchoolLlm:
+    if settings.llm_provider == "school":
+        return school_llm()
+    if settings.split_provider == "school":
+        _check_setup("school")
+        return _school_client(GAP_DEFAULTS["school"])
+    return fallback_school_llm()
+
+
+def make_llm(spend: Spend | None = None, clients: Clients | None = None) -> Paced:
     """LLM_PROVIDER(claude · school)에 맞는 클라이언트.
 
     Claude이고 spend(지금까지 쓴 비용)가 있으면 CLAUDE_BUDGET_USD(0이면 제한 없음)에 닿은 뒤
     학교 LLM으로 넘김(#298).
     """
+    clients = clients or Clients()
     if settings.llm_provider == "school":
-        return school_llm()
-    claude = claude_llm()
+        return clients.school()
+    claude = clients.claude()
     if spend is None or settings.claude_budget_usd <= 0:
         return claude
-    return Budgeted(claude, fallback_school_llm, spend, settings.claude_budget_usd, school_models())
+    return Budgeted(claude, clients.school, spend, settings.claude_budget_usd, school_models())
+
+
+def make_split_llm(spend: Spend | None = None, clients: Clients | None = None) -> Paced | None:
+    """문단 나누기 연결. 모두 학교 LLM이면 None(make_llm 것을 씀).
+
+    Claude는 비용 상한을 다른 작업과 함께 세고, 닿으면 학교 LLM의 문단 나누기 기본 모델로 넘김.
+    clients를 make_llm과 같이 쓰면 클라이언트도 같음.
+    """
+    clients = clients or Clients()
+    if settings.split_provider == "school":
+        return None if settings.llm_provider == "school" else clients.school()
+    claude = clients.claude()
+    if spend is None or settings.claude_budget_usd <= 0:
+        return claude
+    school = {settings.note_split_model: LLM_DEFAULTS["school"]["note_split_model"]}
+    return Budgeted(claude, clients.school, spend, settings.claude_budget_usd, school)

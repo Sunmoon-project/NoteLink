@@ -87,10 +87,10 @@ describe.skipIf(!isLocal)('진짜 DB 이번 주 목표 · 요약 확인', () => 
         expect(indexes).toContainEqual(expect.objectContaining({ key: { userId: 1, weekStart: 1 }, unique: true }));
     });
 
-    it('목표가 없으면 targetMin 0 · notify80 true · recentAvgMin 0이고 DB에는 아무것도 만들지 않는다', async () => {
+    it('목표가 없으면 targetMin 0 · notify80 true · notified80 false · recentAvgMin 0이고 DB에는 아무것도 만들지 않는다', async () => {
         const userId = new Types.ObjectId();
         const goal = await progress.getWeeklyGoal(userId.toString(), NOW);
-        expect(goal).toEqual({ _id: `wg-${WEEK}`, weekStart: WEEK, targetMin: 0, notify80: true, recentAvgMin: 0 });
+        expect(goal).toEqual({ _id: `wg-${WEEK}`, weekStart: WEEK, targetMin: 0, notify80: true, notified80: false, recentAvgMin: 0 });
         expect(await col('weekly_goals').countDocuments({ userId })).toBe(0);
     });
 

@@ -63,7 +63,8 @@ export interface Api {
       provider: SocialProvider,
       proof: { token: string; codeVerifier: string },
     ): Promise<AuthTokens>;
-    emailLogin(email: string, password: string): Promise<AuthTokens>;
+    /** 아이디(아이디를 두기 전 계정은 가입 이메일)와 비밀번호로 로그인한다 */
+    emailLogin(id: string, password: string): Promise<AuthTokens>;
     /** 가입 ① 인증번호를 메일로 보낸다. 가입한 이메일이어도 응답은 같다. 너무 빨리 다시 보내면 429 RATE_LIMITED */
     emailSendCode(email: string): Promise<void>;
     /** 가입 ② 인증번호를 확인하고 가입 증표를 받는다. 틀리면 400 EMAIL_CODE_INVALID, 횟수를 다 쓰면 429 EMAIL_CODE_LOCKED */
@@ -72,17 +73,19 @@ export interface Api {
       code: string,
     ): Promise<{ verificationToken: string; expiresInSeconds: number }>;
     /**
-     * 가입 ③ 증표와 비밀번호로 계정을 만든다(이메일은 증표 안의 값). 토큰은 주지 않고 로그인으로 이어진다.
-     * 이미 있으면 409 EMAIL_TAKEN
+     * 가입 ③ 증표 · 아이디 · 비밀번호로 계정을 만든다(이메일은 증표 안의 값). 토큰은 주지 않고 로그인으로 이어진다.
+     * 이메일이 이미 있으면 409 EMAIL_TAKEN, 아이디가 이미 있으면 409 LOGIN_ID_TAKEN
      */
-    emailSignup(verificationToken: string, password: string): Promise<void>;
+    emailSignup(verificationToken: string, loginId: string, password: string): Promise<void>;
+    /** 아이디를 쓸 수 있는지(가입 화면에서 인증번호를 받기 전에 확인한다) */
+    loginIdAvailable(loginId: string): Promise<boolean>;
     /** 아이디 · 비밀번호 찾기 ① 이메일로 인증번호를 보낸다. 가입하지 않은 이메일이어도 응답은 같다 */
     recoverySendCode(email: string): Promise<void>;
     /** 아이디 찾기 ② 이메일과 인증번호가 맞으면 그 이메일로 가입한 아이디(없으면 null). 틀리면 400 EMAIL_CODE_INVALID */
     findId(email: string, code: string): Promise<{ id: string | null }>;
     /**
-     * 비밀번호 찾기 ② 아이디 · 이메일이 같은 계정이고 인증번호가 맞으면 새 비밀번호로 바꾼다.
-     * 아이디와 이메일이 맞지 않으면 400 VALIDATION, 인증번호가 틀리면 400 EMAIL_CODE_INVALID
+     * 비밀번호 찾기 ② 인증번호가 맞고 아이디가 그 이메일로 가입한 아이디면 새 비밀번호로 바꾼다.
+     * 아이디가 맞지 않으면 400 VALIDATION(그 인증번호는 쓴 것이 된다), 인증번호가 틀리면 400 EMAIL_CODE_INVALID
      */
     passwordReset(id: string, email: string, code: string, password: string): Promise<void>;
     agreeTerms(termCodes: string[]): Promise<void>;
@@ -93,7 +96,10 @@ export interface Api {
     get(): Promise<User>;
     update(
       patch: Partial<
-        Pick<User, 'nickname' | 'learnerType' | 'interestCategoryIds' | 'school' | 'grade'>
+        Pick<
+          User,
+          'nickname' | 'learnerType' | 'interestCategoryIds' | 'school' | 'grade' | 'toured'
+        >
       > & { settings?: Partial<User['settings']> },
     ): Promise<User>;
     setStatus(status: User['status']): Promise<void>;

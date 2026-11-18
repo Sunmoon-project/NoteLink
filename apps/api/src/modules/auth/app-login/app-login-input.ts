@@ -13,6 +13,8 @@ import { VALIDATION_FAILED } from '../social-login/social-start-query.js';
 /** 아이디@도메인.최상위(영문 2자 이상 · 퓨니코드 xn--) · 공백 · 연속 점 없이 · 254자 이하 (앱 emailError와 같다) */
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.(?:[A-Za-z]{2,}|xn--[A-Za-z0-9-]+)$/;
 const EMAIL_MAX_LENGTH = 254;
+/** 로그인 아이디(packages/shared LOGIN_ID_PATTERN과 같다). 서버는 공용 패키지에 의존하지 않아 여기에 둔다 */
+export const LOGIN_ID_PATTERN = /^[a-z][a-z0-9_]{3,19}$/;
 
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 64;
@@ -118,28 +120,65 @@ export function parseVerifyCodeBody(body: unknown): { email: string; code: strin
   return { email: readEmail(record), code: readCode(record) };
 }
 
-/** `POST /auth/email/signup` 본문: `{ verificationToken, password }` (이메일은 증표에 들어 있다) */
-export function parseSignupBody(body: unknown): { verificationToken: string; password: string } {
-  const record = asRecord(body);
-  return { verificationToken: readProof(record), password: readNewPassword(record) };
+/** 새 아이디를 검증하고 저장 형식(앞뒤 공백 제거 + 소문자)으로 돌려준다 */
+export function readLoginId(body: Record<string, unknown>, field = 'loginId'): string {
+  const loginId = text(body, field).trim().toLowerCase();
+  if (loginId === '') throw invalid(field, '가 필요합니다');
+  if (!LOGIN_ID_PATTERN.test(loginId)) {
+    throw invalid(field, '는 영문 소문자로 시작하는 4~20자(영문 소문자 · 숫자 · _)여야 합니다');
+  }
+  return loginId;
 }
 
-/** `POST /auth/email/login` 본문: `{ email, password }` */
-export function parseLoginBody(body: unknown): { email: string; password: string } {
-  const record = asRecord(body);
-  return { email: readEmail(record), password: readLoginPassword(record) };
+/** 로그인 · 비밀번호 재설정에 쓰는 아이디. 아이디를 따로 두기 전 계정은 이메일이 아이디라 이메일도 받는다 */
+export type AccountId = { loginId: string } | { email: string };
+/** 아이디로 계정을 찾는 조건. 이메일로 들어오면 가입 이메일로 찾는다(아이디를 두기 전 계정 · 이메일로 로그인하는 사람) */
+export function accountFilter(id: AccountId): Record<string, unknown> {
+  return 'loginId' in id ? { loginId: id.loginId } : { email: id.email };
 }
 
-/** `POST /auth/password/reset` 본문: `{ id, email, code, password }` (아이디는 가입 이메일) */
+function readAccountId(body: Record<string, unknown>, field: string): AccountId {
+  const value = text(body, field).trim();
+  if (value.includes('@')) return { email: readEmail(body, field) };
+  return { loginId: readLoginId(body, field) };
+}
+
+/** `POST /auth/email/signup` 본문: `{ verificationToken, loginId, password }` (이메일은 증표에 들어 있다) */
+export function parseSignupBody(body: unknown): {
+  verificationToken: string;
+  loginId: string;
+  password: string;
+} {
+  const record = asRecord(body);
+  return {
+    verificationToken: readProof(record),
+    loginId: readLoginId(record),
+    password: readNewPassword(record),
+  };
+}
+
+/** `POST /auth/email/login-id-available` 본문: `{ loginId }` */
+export function parseLoginIdBody(body: unknown): { loginId: string } {
+  return { loginId: readLoginId(asRecord(body)) };
+}
+
+/** `POST /auth/email/login` 본문: `{ id, password }`. 예전 앱이 보내는 `{ email, password }`도 받는다 */
+export function parseLoginBody(body: unknown): { id: AccountId; password: string } {
+  const record = asRecord(body);
+  const field = record['id'] !== undefined ? 'id' : 'email';
+  return { id: readAccountId(record, field), password: readLoginPassword(record) };
+}
+
+/** `POST /auth/password/reset` 본문: `{ id, email, code, password }` (id는 아이디, 예전 계정은 이메일) */
 export function parsePasswordResetBody(body: unknown): {
-  id: string;
+  id: AccountId;
   email: string;
   code: string;
   password: string;
 } {
   const record = asRecord(body);
   return {
-    id: readEmail(record, 'id'),
+    id: readAccountId(record, 'id'),
     email: readEmail(record),
     code: readCode(record),
     password: readNewPassword(record),

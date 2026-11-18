@@ -53,6 +53,66 @@ const STEPS = {
 
 const DETAIL = { handwriting: 'hand', recording: 'rec', document: 'doc' } as const;
 
+/** 서버에 등록하기 전에 취소하면 고른 원본을 다시 보여 주는 화면으로 돌아간다 */
+/** 등록 중 취소로 늦게 받은 작업을 멈출 때 다시 시도할 간격(화면은 이미 떠났으므로 알아서 다시 보낸다) */
+export const LATE_CANCEL_RETRY_MS = [500, 1500];
+/**
+ * 화면을 떠난 뒤 늦게 받은 작업을 멈춘다. 실패하면 몇 번 더 보내고, 끝내 못 멈추면 알린다
+ * (작업은 계속돌아 정리본이 생길 수 있으니 폴더에서 지우면 된다)
+ */
+async function cancelLateJob(jobId: string) {
+  for (let i = 0; ; i++) {
+    try {
+      await api.ai.cancel(jobId);
+      return;
+    } catch {
+      const wait = LATE_CANCEL_RETRY_MS[i];
+      if (wait === undefined) {
+        toast('변환 취소를 마치지 못했어요. 정리본이 생기면 폴더에서 지워 주세요');
+        return;
+      }
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+}
+
+/** 등록 결과를 알 수 없는 실패(서버에 저장됐을 수 있음): 응답 유실 · 연결 끊김 */
+const isUncertain = (e: unknown) =>
+  e instanceof NetworkError ||
+  (e instanceof Error && 'code' in e && e.code === 'MATERIAL_REGISTRATION_UNCERTAIN');
+
+/**
+ * 등록 중에 취소했는데 응답이 유실됐을 때. 같은 요청 번호 · 본문으로 다시 보내면 서버가 저장한 결과를 돌려주고
+ * (저장하지 않았다면 이때 저장된다 — 원본은 폴더에 남는다), 그 작업을 멈춘다. 끝내 되찾지 못하면 알린다
+ */
+async function cancelLostRegistration(request: Parameters<typeof api.content.createMaterial>[0]) {
+  for (let i = 0; ; i++) {
+    try {
+      const r = await api.content.createMaterial(request);
+      await cancelLateJob(r.job._id);
+      return;
+    } catch (e) {
+      // 처음 등록은 저장됐을 수 있다. 되찾기가 거절(로그인 만료 · 권한 등)되거나 끝내 안 되면 작업이 남아 있을 수
+      // 있으니 알린다 — 되찾기 실패만으로 작업이 없다고 보지 않는다(Codex #490 6차 리뷰)
+      const wait = isUncertain(e) ? LATE_CANCEL_RETRY_MS[i] : undefined;
+      if (wait === undefined) {
+        toast('변환 취소를 마치지 못했어요. 정리본이 생기면 폴더에서 지워 주세요');
+        return;
+      }
+      await new Promise((res) => setTimeout(res, wait));
+    }
+  }
+}
+
+const pickedScreen = (kind: keyof typeof DETAIL, source: string) =>
+  kind === 'document'
+    ? '/capture/picked-file'
+    : kind === 'recording'
+      ? '/capture/rec-upload'
+      : source === 'scan'
+        ? '/capture/scan-check'
+        : '/capture/picked';
+
 /** 원본은 저장됐고 AI 정리는 서버를 기다리는 상태 */
 function SavedForLater({
   kind,
@@ -121,6 +181,9 @@ export function ConvertScreen() {
   const [job, setJob] = useState<AiJob | null>(null);
   const [materialId, setMaterialId] = useState<string | null>(null);
   const [cancel, setCancel] = useState(false);
+  // 변환 취소 요청을 보내는 중 · 그동안 끝난 작업(취소가 실패하면 이어 처리)
+  const cancelling = useRef(false);
+  const doneWhileCancelling = useRef<AiJob | null>(null);
   const [notify, setNotify] = useState(true);
   const [attempts, setAttempts] = useState(1);
   const blobs = useRef<string[]>([]);
@@ -131,6 +194,8 @@ export function ConvertScreen() {
   const running = useRef(false);
   const handled = useRef(false);
   const canceled = useRef(false);
+  // 서버에 자료 등록 요청을 보내 응답을 기다리는 중
+  const registering = useRef(false);
   const checkingRegistration = useRef(false);
   const [checking, setChecking] = useState(false);
   // 서버에 등록되기 전(올리기 · 등록 단계)에 실패한 이유와, 그 뒤 다시 시도한 횟수
@@ -144,6 +209,7 @@ export function ConvertScreen() {
   const run = async () => {
     if (running.current || canceled.current) return;
     running.current = true;
+    let sent: Parameters<typeof api.content.createMaterial>[0] | null = null;
     setPhase('upload');
     try {
       // 1) 끊긴 지점부터: 이미 올린 파일은 건너뛴다 (원본은 기기에 보관)
@@ -167,18 +233,23 @@ export function ConvertScreen() {
         setUploaded(blobs.current.length);
       }
       // 2) 서버에 자료 등록 → ai_jobs 큐에 작업이 들어간다
-      const r = await api.content.createMaterial({
+      registering.current = true;
+      // 보낸 요청(번호 · 본문)을 남겨 둔다: 취소한 뒤 응답이 유실되면 같은 요청으로 결과를 되찾아 멈춘다
+      sent = {
         requestId: useDraft.getState().getCreationId(),
         folderId: requireFolder(),
         kind: draft.kind,
         source: draft.source,
         title: draft.title.trim() || defaultTitle(draft.kind, draft.files[0]?.name, draft.source),
         description: draft.description,
-        blobUrls: blobs.current,
+        blobUrls: [...blobs.current],
         avatarItemId: draft.avatar,
-      });
+      };
+      const r = await api.content.createMaterial(sent);
       if (canceled.current) {
-        await api.ai.cancel(r.job._id);
+        // 등록 중에 취소했다. 요청 번호는 취소할 때 이미 떼어 냈다(doCancel) — 여기서 다시 지우면 그사이 다시 올린
+        // 새 초안의 번호를 지운다. 늦게 받은 작업만 멈춘다(실패하면 다시 보내고, 끝내 못 멈추면 알린다)
+        void cancelLateJob(r.job._id);
         return;
       }
       handled.current = false;
@@ -186,6 +257,8 @@ export function ConvertScreen() {
       setJob(r.job);
       setPhase('ai');
     } catch (e) {
+      // 등록 중에 취소했는데 응답이 유실됐다: 서버에 저장됐을 수 있으니 같은 요청으로 결과를 되찾아 작업을 멈춘다
+      if (canceled.current && sent && isUncertain(e)) void cancelLostRegistration(sent);
       if (!canceled.current && !(e instanceof NetworkError))
         setUploadFail((f) => ({ reason: uploadFailReason(e), tries: (f?.tries ?? 0) + 1 }));
       if (!canceled.current)
@@ -197,6 +270,7 @@ export function ConvertScreen() {
               : 'failed',
         );
     } finally {
+      registering.current = false;
       running.current = false;
     }
   };
@@ -227,6 +301,9 @@ export function ConvertScreen() {
     [job?._id],
   );
   const finish = (done: AiJob) => {
+    // 취소를 보내는 중에 끝났으면 기억해 두었다가, 취소가 실패하면 이어 처리한다
+    if (cancelling.current && ['succeeded', 'failed', 'canceled'].includes(done.status))
+      doneWhileCancelling.current = done;
     if (
       canceled.current ||
       handled.current ||
@@ -282,10 +359,43 @@ export function ConvertScreen() {
     },
   });
   const doCancel = async () => {
+    if (!job) {
+      canceled.current = true;
+      abort.current.abort();
+      // 등록 요청이 아직 오가는 중이면 그 요청 번호를 지금 떼어 낸다. 남겨 두면 곧바로 다시 올릴 때 같은 번호의
+      // 진행 중 요청을 함께 받아(registerMaterial), 옛 등록을 멈추려는 취소가 새로 올린 작업까지 멈춘다
+      if (registering.current) useDraft.getState().set({});
+      // 아직 서버에 없다: 초안을 그대로 두고 고른 원본 화면으로 돌아가 바로 확인 · 다시 올릴 수 있게 한다
+      router.replace(pickedScreen(draft.kind, draft.source));
+      return;
+    }
+    if (cancelling.current) return;
+    cancelling.current = true;
+    // 취소를 보내는 동안 끝나도 결과 화면으로 넘어가지 않게 막아 둔다(실패하면 풀고 그 결과를 이어 처리한다)
     canceled.current = true;
+    try {
+      await api.ai.cancel(job._id);
+    } catch {
+      // 서버에 닿지 않았으면 작업은 계속 돈다 — 취소했다고 하지 않고 이 화면에 남아 다시 누를 수 있게 한다
+      canceled.current = false;
+      cancelling.current = false;
+      setCancel(false);
+      toast('변환을 취소하지 못했어요. 연결을 확인하고 다시 눌러 주세요');
+      const done = doneWhileCancelling.current;
+      doneWhileCancelling.current = null;
+      if (done) finish(done);
+      return;
+    }
     abort.current.abort();
-    if (job) await api.ai.cancel(job._id).catch(() => {});
-    router.back();
+    // 원본은 서버의 폴더에 남는다. 그 폴더로 가서 바로 보이게 한다(폴더별 자료 수 · 순서도 새로 읽는다)
+    const folder = draft.folderId;
+    qc.invalidateQueries({ queryKey: ['materials'] });
+    qc.invalidateQueries({ queryKey: ['folders'] });
+    useDraft.getState().reset();
+    router.dismissTo(
+      folder ? { pathname: '/(tabs)/note/folder/[id]', params: { id: folder } } : '/(tabs)/note',
+    );
+    toast('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
   };
 
   const confirmRegistration = async () => {
@@ -314,13 +424,11 @@ export function ConvertScreen() {
     }
   };
   const credit = job?.error === ERROR_CODES.AI_CREDIT_EXHAUSTED;
-  const pct =
-    phase === 'upload'
-      ? Math.round(uploadPct * 0.25)
-      : phase === 'paused'
-        ? 0
-        : (job?.progress ?? 0);
-  const step = phase === 'upload' ? 0 : pct < 50 ? 1 : pct < 85 ? 2 : 3;
+  // 등록 전(작업이 없을 때)은 올리기 화면: 원 그래프가 업로드를 0→100%로 보여 주고,
+  // 다 올려 서버가 작업을 받은 뒤에야 변환 화면(작업 진행률)으로 넘어간다
+  const uploading = !job;
+  const pct = uploading ? uploadPct : (job?.progress ?? 0);
+  const step = uploading ? 0 : pct < 50 ? 1 : pct < 85 ? 2 : 3;
   const steps = STEPS[draft.kind];
   // AI 서버가 없으면(기기 저장 모드) 원본만 저장하고 정리는 서버 연결 후에 한다 (FR-65-05)
   if (phase === 'ai' && aiWaiting(job) && materialId)
@@ -353,10 +461,12 @@ export function ConvertScreen() {
         </View>
         <View className="mt-10 items-center">
           <SmoothProgress value={pct} />
-          <Text className="mt-3 text-body font-bold text-ink">{TITLE[draft.kind]}</Text>
+          <Text className="mt-3 text-body font-bold text-ink">
+            {uploading ? '원본을 올리고 있어요' : TITLE[draft.kind]}
+          </Text>
           <Text className="text-footnote text-sub">
-            {phase === 'upload'
-              ? `원본을 올리는 중이에요 · ${uploadPct}%`
+            {uploading
+              ? `${Math.min(uploaded + 1, draft.files.length)} / ${draft.files.length}개 · 다 올리면 변환을 시작해요`
               : '잠시만 기다려주세요...'}
           </Text>
         </View>
@@ -482,9 +592,13 @@ export function ConvertScreen() {
       <Alert
         open={cancel}
         tone="sun"
-        title="변환을 취소할까요?"
-        body="올린 원본은 기기에 남아 있어요."
-        secondary="계속 변환"
+        title={job ? '변환을 취소할까요?' : '올리기를 멈출까요?'}
+        body={
+          job
+            ? '올린 원본은 폴더에 남겨 둘게요. 취소하면 그 폴더로 이동해요.'
+            : '아직 서버에 저장하지 않았어요. 고른 원본 화면으로 돌아가요.'
+        }
+        secondary={job ? '계속 변환' : '계속 올리기'}
         onSecondary={() => setCancel(false)}
         primary="취소하기"
         onPrimary={doCancel}

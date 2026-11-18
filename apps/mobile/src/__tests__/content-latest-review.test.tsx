@@ -7,7 +7,7 @@ import { ApiError, NetworkError as HttpNetworkError } from '../lib/api/http';
 import { UploadError } from '../lib/upload';
 import { DocDetailScreen, HandDetailScreen, RecDetailScreen } from '../features/content/detail';
 import { Player } from '../features/content/player';
-import { ConvertScreen, ResultScreen } from '../features/content/convert';
+import { ConvertScreen, LATE_CANCEL_RETRY_MS, ResultScreen } from '../features/content/convert';
 import { FolderScreen } from '../features/content/notes';
 import { NetworkError } from '../lib/api';
 import { useAuth } from '../stores/auth';
@@ -22,6 +22,7 @@ jest.mock('expo-router', () => ({
 }));
 
 const mockApi = {
+  ai: { cancel: jest.fn(), job: jest.fn() },
   content: {
     checkImages: jest.fn(),
     material: jest.fn(),
@@ -109,10 +110,12 @@ const client = () => {
 };
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 };
 beforeEach(() => {
   jest.clearAllMocks();
@@ -961,4 +964,241 @@ it('받아 둔 자료 목록이 있으면 다시 읽기가 404여도 빈 폴더�
   });
   expect(screen.getByText('받아 둔 자료')).toBeTruthy();
   expect(screen.queryByText('아직 학습 자료가 없어요')).toBeNull();
+});
+
+describe('변환 화면: 다 올린 뒤에 변환으로 넘어가고, 취소하면 원본을 보여 준다', () => {
+  beforeEach(() => {
+    mockApi.ai.cancel.mockResolvedValue(undefined);
+    mockApi.ai.job.mockReturnValue(new Promise(() => {}));
+  });
+  it('올리는 동안은 업로드 진행률을 0→100%로 보이고, 등록된 뒤에야 변환 문구로 바뀐다', async () => {
+    const upload = deferred<string>();
+    mockUpload.mockImplementation((_k: string, _f: unknown, onProgress: (p: number) => void) => {
+      onProgress(60);
+      return upload.promise;
+    });
+    await renderScreen(<ConvertScreen />, client());
+    expect(await screen.findByText('원본을 올리고 있어요')).toBeTruthy();
+    // 진행률은 부드럽게 따라가므로(useSmoothProgress) 업로드 값 60%까지 차오르는지 본다(기다리는 동안 +4%까지만)
+    await waitFor(() => {
+      const value = parseInt([screen.getByText(/^\d+%$/).props.children].flat().join(''), 10);
+      expect(value).toBeGreaterThanOrEqual(59);
+      expect(value).toBeLessThanOrEqual(64);
+    });
+    expect(screen.queryByText('필기를 학습 자료로 변환하고 있어요')).toBeNull();
+    await act(async () => upload.resolve(blobUrl));
+    expect(await screen.findByText('필기를 학습 자료로 변환하고 있어요')).toBeTruthy();
+  });
+  it('등록 전에 취소하면 서버 작업 없이 고른 원본 화면으로 돌아가고 초안은 그대로 둔다', async () => {
+    mockUpload.mockReturnValue(new Promise(() => {}));
+    await renderScreen(<ConvertScreen />, client());
+    await fireEvent.press(await screen.findByText('취소'));
+    expect(await screen.findByText('올리기를 멈출까요?')).toBeTruthy();
+    await fireEvent.press(screen.getByText('취소하기'));
+    expect(router.replace).toHaveBeenCalledWith('/capture/picked');
+    expect(mockApi.ai.cancel).not.toHaveBeenCalled();
+    expect(useDraft.getState().files).toEqual([localPhoto]);
+  });
+  it('등록 요청 중에 취소하면 작업을 멈추고, 다시 올릴 때는 새 요청 번호를 쓴다', async () => {
+    const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
+    mockApi.content.createMaterial.mockReturnValueOnce(created.promise);
+    await renderScreen(<ConvertScreen />, client());
+    await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1));
+    const first = useDraft.getState().getCreationId();
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    expect(router.replace).toHaveBeenCalledWith('/capture/picked');
+    await act(async () => created.resolve({ material: { _id: 'm' }, job: { _id: 'late-job' } }));
+    expect(mockApi.ai.cancel).toHaveBeenCalledWith('late-job');
+    expect(useDraft.getState().getCreationId()).not.toBe(first);
+    expect(useDraft.getState().files).toEqual([localPhoto]);
+  });
+  // Codex #490 4차 리뷰: 요청 번호를 옛 등록 응답이 올 때 바꾸면, 그전에 다시 올린 시도가 같은 번호의 진행 중
+  // 요청을 함께 받아 옛 등록의 취소가 새 시도까지 멈췄다. 옛 응답이 새 초안의 번호를 지우는 것도 막는다
+  it('등록 요청 중에 취소하면 그 자리에서 요청 번호를 떼어, 옛 응답 전에 다시 올려도 새 번호를 쓰고 옛 응답이 지우지 않는다', async () => {
+    const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
+    mockApi.content.createMaterial.mockReturnValueOnce(created.promise);
+    await renderScreen(<ConvertScreen />, client());
+    await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1));
+    const first = mockApi.content.createMaterial.mock.calls[0][0].requestId;
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    // 옛 응답이 오기 전인데도 새 번호다
+    const next = useDraft.getState().getCreationId();
+    expect(next).not.toBe(first);
+    // 옛 응답이 늦게 와도 새 초안의 번호를 지우지 않는다
+    await act(async () => created.resolve({ material: { _id: 'm' }, job: { _id: 'late-job' } }));
+    expect(mockApi.ai.cancel).toHaveBeenCalledWith('late-job');
+    expect(useDraft.getState().getCreationId()).toBe(next);
+  });
+
+  // Codex #490 5차 리뷰: 등록 중 취소 뒤 등록 응답이 유실되면(서버엔 저장됐을 수 있음) 아무것도 멈추지 않았다
+  it('등록 중 취소 뒤 응답이 유실되면 같은 요청으로 결과를 되찾아 그 작업을 멈춘다', async () => {
+    const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
+    mockApi.content.createMaterial
+      .mockReturnValueOnce(created.promise)
+      .mockResolvedValueOnce({ material: { _id: 'm' }, job: { _id: 'lost-job' } });
+    await renderScreen(<ConvertScreen />, client());
+    await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1));
+    const first = mockApi.content.createMaterial.mock.calls[0][0];
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    const next = useDraft.getState().getCreationId();
+    await act(async () =>
+      created.reject(
+        new ApiError('MATERIAL_REGISTRATION_UNCERTAIN', '등록 결과를 확인할 수 없어요', 0),
+      ),
+    );
+    await waitFor(() => expect(mockApi.ai.cancel).toHaveBeenCalledWith('lost-job'));
+    // 같은 번호 · 본문으로 되찾는다(새 초안의 번호는 그대로)
+    expect(mockApi.content.createMaterial.mock.calls[1][0]).toEqual(first);
+    expect(useDraft.getState().getCreationId()).toBe(next);
+  });
+
+  // Codex #490 6차 리뷰: 되찾기 요청이 실패하면 처음 등록이 저장됐어도 조용히 끝났다
+  describe('등록 중 취소 뒤 응답 유실 — 되찾기가 실패하면 알린다', () => {
+    const lost = () =>
+      new ApiError('MATERIAL_REGISTRATION_UNCERTAIN', '등록 결과를 확인할 수 없어요', 0);
+    /** 처음 등록은 응답을 기다리게 하고, 되찾기 요청의 응답은 recover로 정한다 */
+    const cancelDuringRegistration = async (recover: () => void) => {
+      const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
+      mockApi.content.createMaterial.mockReset();
+      mockApi.content.createMaterial.mockReturnValueOnce(created.promise);
+      recover();
+      await renderScreen(<ConvertScreen />, client());
+      await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1));
+      await fireEvent.press(screen.getByText('취소'));
+      await fireEvent.press(await screen.findByText('취소하기'));
+      await act(async () => created.reject(lost()));
+    };
+    const saved = [...LATE_CANCEL_RETRY_MS];
+    beforeEach(() => LATE_CANCEL_RETRY_MS.splice(0, LATE_CANCEL_RETRY_MS.length, 0, 0));
+    afterEach(() => LATE_CANCEL_RETRY_MS.splice(0, LATE_CANCEL_RETRY_MS.length, ...saved));
+
+    it('되찾기가 로그인 만료(401)로 거절되면 다시 보내지 않고 취소를 마치지 못했다고 알린다', async () => {
+      await cancelDuringRegistration(() =>
+        mockApi.content.createMaterial.mockRejectedValueOnce(
+          new ApiError('AUTH_TOKEN_EXPIRED', '다시 로그인해 주세요', 401),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockToast).toHaveBeenCalledWith(
+          '변환 취소를 마치지 못했어요. 정리본이 생기면 폴더에서 지워 주세요',
+        ),
+      );
+      expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(2);
+      expect(mockApi.ai.cancel).not.toHaveBeenCalled();
+    });
+
+    it('되찾기도 계속 결과를 알 수 없으면 정한 횟수만큼 다시 보낸 뒤 알린다', async () => {
+      await cancelDuringRegistration(() =>
+        mockApi.content.createMaterial.mockRejectedValue(lost()),
+      );
+      await waitFor(() =>
+        expect(mockToast).toHaveBeenCalledWith(
+          '변환 취소를 마치지 못했어요. 정리본이 생기면 폴더에서 지워 주세요',
+        ),
+      );
+      // 처음 등록 1번 + 되찾기 3번(바로 · 두 번 더)
+      expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(4);
+      expect(mockApi.ai.cancel).not.toHaveBeenCalled();
+    });
+  });
+
+  it('등록 중 취소 뒤 결과가 확실한 실패(입력 오류)면 다시 보내지 않는다', async () => {
+    const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
+    mockApi.content.createMaterial.mockReturnValueOnce(created.promise);
+    await renderScreen(<ConvertScreen />, client());
+    await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1));
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    await act(async () => created.reject(new ApiError('VALIDATION_FAILED', '형식 오류', 400)));
+    await act(async () => {});
+    expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1);
+    expect(mockApi.ai.cancel).not.toHaveBeenCalled();
+  });
+
+  it('늦게 받은 작업을 멈추지 못하면 몇 번 더 보내고, 끝내 못 멈추면 알린다', async () => {
+    const saved = [...LATE_CANCEL_RETRY_MS];
+    LATE_CANCEL_RETRY_MS.splice(0, LATE_CANCEL_RETRY_MS.length, 0, 0);
+    try {
+      const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
+      mockApi.content.createMaterial.mockReturnValueOnce(created.promise);
+      mockApi.ai.cancel.mockRejectedValue(new Error('offline'));
+      await renderScreen(<ConvertScreen />, client());
+      await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1));
+      await fireEvent.press(screen.getByText('취소'));
+      await fireEvent.press(await screen.findByText('취소하기'));
+      await act(async () => created.resolve({ material: { _id: 'm' }, job: { _id: 'late-job' } }));
+      await waitFor(() =>
+        expect(mockToast).toHaveBeenCalledWith(
+          '변환 취소를 마치지 못했어요. 정리본이 생기면 폴더에서 지워 주세요',
+        ),
+      );
+      expect(mockApi.ai.cancel).toHaveBeenCalledTimes(3);
+      expect(mockApi.ai.cancel).toHaveBeenCalledWith('late-job');
+    } finally {
+      LATE_CANCEL_RETRY_MS.splice(0, LATE_CANCEL_RETRY_MS.length, ...saved);
+    }
+  });
+
+  it('늦게 받은 작업 취소가 다시 보내 성공하면 알리지 않는다', async () => {
+    const saved = [...LATE_CANCEL_RETRY_MS];
+    LATE_CANCEL_RETRY_MS.splice(0, LATE_CANCEL_RETRY_MS.length, 0, 0);
+    try {
+      const created = deferred<{ material: { _id: string }; job: { _id: string } }>();
+      mockApi.content.createMaterial.mockReturnValueOnce(created.promise);
+      mockApi.ai.cancel.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(undefined);
+      await renderScreen(<ConvertScreen />, client());
+      await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalledTimes(1));
+      await fireEvent.press(screen.getByText('취소'));
+      await fireEvent.press(await screen.findByText('취소하기'));
+      await act(async () => created.resolve({ material: { _id: 'm' }, job: { _id: 'late-job' } }));
+      await waitFor(() => expect(mockApi.ai.cancel).toHaveBeenCalledTimes(2));
+      expect(mockToast).not.toHaveBeenCalledWith(
+        '변환 취소를 마치지 못했어요. 정리본이 생기면 폴더에서 지워 주세요',
+      );
+    } finally {
+      LATE_CANCEL_RETRY_MS.splice(0, LATE_CANCEL_RETRY_MS.length, ...saved);
+    }
+  });
+
+  it('등록 뒤에 취소하면 작업만 멈추고 원본이 남은 폴더로 이동한다', async () => {
+    await renderScreen(<ConvertScreen />, client());
+    expect(await screen.findByText('필기를 학습 자료로 변환하고 있어요')).toBeTruthy();
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    await waitFor(() => expect(mockApi.ai.cancel).toHaveBeenCalledWith('job1'));
+    expect(router.dismissTo).toHaveBeenCalledWith({
+      pathname: '/(tabs)/note/folder/[id]',
+      params: { id: 'folder1' },
+    });
+    expect(mockToast).toHaveBeenCalledWith('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
+  });
+
+  // Codex #503 리뷰: 취소 요청이 실패해도 취소했다고 안내하고 초안을 지웠다(서버 작업은 계속 돎)
+  it('취소 요청이 실패하면 취소했다고 하지 않고 이 화면에 남아, 다시 눌러 취소할 수 있다', async () => {
+    mockApi.ai.cancel.mockRejectedValueOnce(new Error('offline'));
+    const qc = client();
+    const invalidate = jest.spyOn(qc, 'invalidateQueries');
+    await renderScreen(<ConvertScreen />, qc);
+    expect(await screen.findByText('필기를 학습 자료로 변환하고 있어요')).toBeTruthy();
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    await waitFor(() =>
+      expect(mockToast).toHaveBeenCalledWith(
+        '변환을 취소하지 못했어요. 연결을 확인하고 다시 눌러 주세요',
+      ),
+    );
+    expect(mockToast).not.toHaveBeenCalledWith('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
+    expect(router.dismissTo).not.toHaveBeenCalled();
+    expect(screen.getByText('필기를 학습 자료로 변환하고 있어요')).toBeTruthy();
+    // 다시 누르면 취소된다(폴더 목록도 새로 읽는다)
+    await fireEvent.press(screen.getByText('취소'));
+    await fireEvent.press(await screen.findByText('취소하기'));
+    await waitFor(() => expect(router.dismissTo).toHaveBeenCalled());
+    expect(mockApi.ai.cancel).toHaveBeenCalledTimes(2);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['folders'] });
+    invalidate.mockRestore();
+  });
 });

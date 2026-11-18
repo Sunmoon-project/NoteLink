@@ -88,13 +88,21 @@ export const useAuth = create<Auth>((set, get) => {
     },
     signIn: async (tokens, user) => {
       // 온보딩 완료 여부는 같은 계정일 때만 이어 간다 (로그아웃 뒤에도 이 기기에서 마친 계정이면 이어 간다)
+      // 서버가 계정 기준으로 마쳤다고 하면 처음 쓰는 기기여도 건너뛴다(맥 · 아이폰 등 기기마다 다시 하지 않게)
       const onboarded =
+        user.onboarded === true ||
         (get().userId === user._id && get().onboarded) ||
         (await readOnboardedIds()).includes(user._id);
       set({ tokens, user, userId: user._id, onboarded, expired: false });
       await persist();
     },
-    setUser: (user) => set({ user }),
+    // 다른 기기에서 설정을 마친 것이 나중에 받은 내 정보로 확인돼도 건너뛴다
+    setUser: (user) =>
+      set(
+        user?.onboarded === true && user._id === get().userId
+          ? { user, onboarded: true }
+          : { user },
+      ),
     setTokens: async (tokens, forUser) => {
       // 갱신을 시작한 계정과 지금 계정이 다르면 쓰지 않는다 (확인과 반영 사이에 기다림이 없다)
       if (forUser !== undefined && get().userId !== forUser) return false;
