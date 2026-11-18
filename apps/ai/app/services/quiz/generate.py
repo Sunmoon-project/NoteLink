@@ -100,7 +100,7 @@ import threading
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable
-from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Any, Literal
@@ -170,6 +170,11 @@ SPARE = 0.4  # 판마다 여분 초안: 모자란 수 × SPARE(올림). 5문제�
 ROUNDS = 2  # 만들고 한 번에 검사하는 판: 첫 판 + 못 채운 자리 한 번 더(#512)
 PER_CONCEPT = 2  # 세트에서 한 개념을 물을 수 있는 문제 수(모자라서 채울 때는 넘어도 됨)
 CHECK_NAME = "CheckAll"  # 묶은 검사 호출 이름
+# 한 판의 초안을 기다리는 상한(초). 미리 만들기는 사용자 작업에 차례를 양보하므로 Mode.patience배
+ROUND_SEC = 150
+SPARE_WAIT_SEC = 20  # 필요한 초안이 다 나온 뒤 남은 여분 초안을 기다리는 상한(초)
+TIMEOUT = "시간 상한"
+_clock = time.monotonic  # 시험에서 바꿔 끼움
 CHECK_BATCH = 10  # 묶은 검사 한 호출의 문제 수
 CHECK_CHARS = 12000  # 묶은 검사 한 호출의 쪽 글 글자 수(쪽 CHECK_CAP자 4쪽)
 BAD_SHAPE = "문제 모양이 맞지 않음"  # 서버 모양 검사(fromWorkerQuestion)에 걸림
@@ -202,17 +207,19 @@ GEN_SYS = similar.GEN_SYS.replace("복습용 ", "").replace(
 class Mode:
     """문제를 만드는 방식(#274).
 
-    extra  더 쓰는 유형(similar.STABLE_TYPES 중). 한국어 용어 과목 쪽에만 붙음(page_types)
+    extra     더 쓰는 유형(similar.STABLE_TYPES 중). 한국어 용어 과목 쪽에만 붙음(page_types)
+    patience  판 시간 상한 배수
     """
 
     name: str
     extra: tuple[str, ...] = ()
+    patience: int = 1  # 판 시간 상한(ROUND_SEC) 배수
 
 
 # 바로 요청(quiz_generate): 사용자가 기다리므로 지금 유형만
 FAST = Mode("fast")
 # 미리 만들기(quiz_pregen): 새 유형 부정설명 · 조합(#268). 사용자가 이어받으면 다음 판부터 FAST
-STABLE = Mode("stable", similar.STABLE_TYPES)
+STABLE = Mode("stable", similar.STABLE_TYPES, 4)
 
 
 @dataclass(frozen=True)
@@ -797,18 +804,29 @@ def check_all(llm: Llm, made: list[Made], pages: dict[int, str]) -> list[tuple[V
     2차 풀기를 이 한 호출의 '정답이 하나뿐인지'로 대신합니다. 쪽 글은 쪽마다 한 번만 보여 줍니다.
     초안이 많거나 쪽 글이 길면 CHECK_BATCH문제 · 쪽 글 CHECK_CHARS자씩 나눠 묻습니다(30문제 · 21쪽
     노트를 한 호출에 넣으면 학교 LLM 문맥을 넘음, /code-review #512).
-    호출이 실패하거나 답 전체의 모양이 틀리면 한 번 더 보냄. 다시 실패하면 LlmError를 그대로
-    올리고(거절은 바로), 모양이 다시 틀리면 그 묶음은 모두 bad.
+    호출이 실패하거나 답 전체의 모양이 틀리면 한 번 더 보냄. 다시 실패한 묶음은 모두 bad(다른
+    묶음의 결과는 그대로, Codex 리뷰 #513). 모든 묶음의 호출이 실패하면 첫 LlmError를 올림(거절은
+    다시 보내지 않음).
     """
-    out: list[tuple[Verdict, str]] = []
-    group: list[Made] = []
+    groups: list[list[Made]] = []
     for m in made:
+        group = groups[-1] if groups else []
         chars = sum(len(pages[p][:CHECK_CAP]) for p in {x.page for x in [*group, m]})
-        if group and (len(group) >= CHECK_BATCH or chars > CHECK_CHARS):
+        if not group or len(group) >= CHECK_BATCH or chars > CHECK_CHARS:
+            groups.append([m])
+        else:
+            group.append(m)
+    out: list[tuple[Verdict, str]] = []
+    errors: list[LlmError] = []
+    for group in groups:
+        try:
             out += _check_group(llm, group, pages)
-            group = []
-        group.append(m)
-    return out + (_check_group(llm, group, pages) if group else [])
+        except LlmError as e:
+            errors.append(e)
+            out += [("bad", f"{UNCHECKED}({e})")] * len(group)
+    if groups and len(errors) == len(groups):
+        raise errors[0]
+    return out
 
 
 def _check_group(llm: Llm, made: list[Made], pages: dict[int, str]) -> list[tuple[Verdict, str]]:
@@ -881,25 +899,52 @@ def _check_group(llm: Llm, made: list[Made], pages: dict[int, str]) -> list[tupl
 
 
 def _draft_all(
-    llm: Llm, slots: list[Slot], pages: dict[int, str], used: list[str], base: int
+    llm: Llm,
+    slots: list[Slot],
+    pages: dict[int, str],
+    used: list[str],
+    base: int,
+    need: int,
+    limit: float,
 ) -> list[Made]:
-    """자리마다 초안 1개를 동시에(WORKERS개씩). LlmError가 아닌 오류(학교 LLM 설정 오류 · 코드
-    오류)는 남은 자리를 멈추고 그대로 올림: 남은 자리도 같으므로(#262 · Codex 리뷰 #264)."""
+    """자리마다 초안 1개를 동시에(WORKERS개씩).
+
+    시간 상한(Codex 리뷰 #513): 판 전체는 limit초, 초안 need개(여분을 뺀 자리 수)가 나온 뒤에는
+    SPARE_WAIT_SEC초까지만 더 기다림. 학교 LLM은 호출 하나가 180초 · 다시 보내기 2번까지 걸려,
+    여분 초안 하나가 멈춰도 나머지 검사가 몇 분 밀렸음. 끝나지 않은 자리는 TIMEOUT(응답 없음으로
+    셈)이고, 그 자리의 남은 호출은 멈춤 신호로 보내지 않음(_until).
+    LlmError가 아닌 오류(학교 LLM 설정 오류 · 코드 오류)는 남은 자리를 멈추고 그대로 올림: 남은
+    자리도 같으므로(#262 · Codex 리뷰 #264).
+    """
     if not slots:
         return []
     stop = threading.Event()
     until = _until(llm, stop)
     pool = ThreadPoolExecutor(max_workers=min(WORKERS, len(slots)), thread_name_prefix="quiz-draft")
+    end = _clock() + limit
     try:
         futures = [
             pool.submit(draft_one, until, s, pages[s.page], list(used), base + i)
             for i, s in enumerate(slots)
         ]
-        done, _ = wait(futures, return_when=FIRST_EXCEPTION)
-        for f in futures:  # 기다림을 끝낸 오류(그 뒤에 끝난 자리가 아니라)
-            if f in done and (e := f.exception()) is not None:
-                raise e
-        return [f.result() for f in futures]
+        pending = set(futures)
+        while pending and (left := end - _clock()) > 0:
+            done, pending = wait(pending, timeout=min(1.0, left), return_when=FIRST_COMPLETED)
+            for f in done:
+                if (e := f.exception()) is not None and not isinstance(e, LlmError):
+                    raise e
+            made = sum(1 for f in futures if f.done() and not f.exception() and f.result().question)
+            if made >= need:
+                end = min(end, _clock() + SPARE_WAIT_SEC)
+        out = []
+        for f, s in zip(futures, slots, strict=True):
+            if f.done() and f.exception() is None:
+                out.append(f.result())
+            else:
+                why = str(f.exception()) if f.done() else TIMEOUT
+                out.append(Made(s.page, s.level, s.type, why=[why], down=True))
+        stop.set()  # 시간 상한에 끊긴 자리는 다음 호출을 보내지 않음
+        return out
     except BaseException:
         stop.set()
         raise
@@ -1176,11 +1221,13 @@ def _make_all(
     first = [p for p in sorted(share, key=lambda p: -share[p]) for _ in range(share[p])]
     want = [(p, lv_, "") for p, lv_ in zip(first, levels_for(len(first), target), strict=True)]
     want += [(p, lv_, "") for p, lv_ in zip(*_spares(n, backups, target), strict=True)]
+    need = len(first)  # 이번 판에 채울 자리(여분 제외)
     for rnd in range(ROUNDS):
         if rnd and cur is not FAST and hurry is not None and hurry():
             cur = FAST
             log.info("맞춤 퀴즈: 이어받아 빠른 모드로(%d/%d문제)", len(taken), n)
-        made = _draft_all(llm, plan(want), pages, used, len(taken))
+        limit = ROUND_SEC * cur.patience
+        made = _draft_all(llm, plan(want), pages, used, len(taken), need, limit)
         report(15 + (45 if rnd == 0 else 70), "문제 만들기")
         if rnd == 0 and made and all(r.down for r in made):  # 학교 LLM 장애: 작업 처리기에 맡김
             if all(r.rejected for r in made):  # 모두 서버가 거절: 다시 해도 같음(Codex #264)
@@ -1236,7 +1283,7 @@ def _make_all(
             else:
                 admit(r)
         failed[:0] = missed
-        missing = n - len(taken)
+        missing = need = n - len(taken)
         if missing <= 0:
             break
         # 다음 판: 못 채운 자리만(앞 초안의 문제점을 알려 줌, 장애 · 모양 오류는 빼고) + 여분

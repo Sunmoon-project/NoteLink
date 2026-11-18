@@ -1397,3 +1397,67 @@ def test_a_draft_filled_from_kept_is_not_reported_as_not_made(
         run(llm, inp)
     assert str(e.value).startswith("2/3문제만 만듦")
     assert generate.SAME_TYPE_ANSWER not in str(e.value)
+
+
+def test_a_later_check_batch_failing_keeps_the_earlier_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 뒤 묶음 장애로 앞 묶음에서 통과한 초안까지 버리고 작업을 다시 돌리지 않음(Codex 리뷰 #513)
+    monkeypatch.setattr(generate, "CHECK_BATCH", 1)
+    llm = happy([GOOD["이질 아메바"], GOOD["람블편모충"], GOOD["질편모충"]])
+    check = llm.answers[generate.CHECK_NAME]
+    flaky = GOOD["람블편모충"]["question"]["passage"]
+    llm.answers[generate.CHECK_NAME] = lambda u: LlmError("응답 없음") if flaky in u else check(u)
+    result, _ = run(llm, job(size=2))
+    assert [q["answer"] for q in result["questions"]] == ["이질 아메바", "질편모충"]
+    # 앞 묶음 1번 + 뒤 묶음 2번(다시 보내기) + 둘째 판 1번
+    assert len(llm.named(generate.CHECK_NAME)) == 4
+
+
+def test_a_stuck_spare_draft_does_not_hold_up_the_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 여분 초안 하나가 응답하지 않아도 필요한 초안이 나오면 SPARE_WAIT_SEC 뒤 검사로(Codex #513)
+    monkeypatch.setattr(generate, "WORKERS", 8)
+    monkeypatch.setattr(generate, "SPARE", 0.4)  # 2문제에 여분 1개(1쪽)
+    monkeypatch.setattr(generate, "SPARE_WAIT_SEC", 0.2)
+    release = threading.Event()
+    lock = threading.Lock()
+    page1 = [0]
+
+    def quiz(user: str) -> JsonObject:
+        if '<노트 쪽="1">' in user:
+            with lock:
+                page1[0] += 1
+                stuck = page1[0] == 2
+            if stuck:
+                release.wait(10)
+        return by_page(user)
+
+    started = time.monotonic()
+    try:
+        result, _ = run(parallel_llm(quiz), job(size=2))
+    finally:
+        release.set()
+    assert time.monotonic() - started < 5
+    assert sorted(q["answer"] for q in result["questions"]) == ["람블편모충", "이질 아메바"]
+    join_threads("quiz-draft")
+
+
+def test_a_round_stops_waiting_for_drafts_at_its_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 응답하지 않는 학교 LLM: 판 상한에 끊고 응답 없음(장애)으로 작업 처리기에 맡김
+    monkeypatch.setattr(generate, "ROUND_SEC", 0.3)
+    release = threading.Event()
+
+    def quiz(user: str) -> JsonObject:
+        release.wait(10)
+        return by_page(user)
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(LlmError, match="모두 실패"):
+            run(parallel_llm(quiz), job(size=1))
+    finally:
+        release.set()
+    assert time.monotonic() - started < 5
+    join_threads("quiz-draft")
