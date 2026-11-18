@@ -313,6 +313,40 @@ export const materialsPollMs = (list: Material[] | undefined) =>
     ? 3000
     : false;
 
+/** 정리 중으로 보이게 바꾼 자료(다시 요약을 넣었는데 아직 그 상태를 읽지 못함) */
+const asQueued = (m: Material): Material => ({
+  ...m,
+  processing: { ...m.processing, status: 'queued', progress: 0 },
+});
+
+/**
+ * 폴더 자료 목록을 읽는다. 다시 요약한 자료(retrying)는 목록 값 대신 그 자료만 따로 읽는다(서버가 이 자료의 작업 상태를
+ * 맞춘다). 목록은 한 번에 일부 자료만 작업 상태를 맞춰, 실패한 자료가 많으면 다시 넣은 자료가 계속 실패로 보이고
+ * 다시 읽기도 멈췄다(Codex #520 리뷰). 끝나면(done · failed) 목록에서 빼고, 읽지 못하면 정리 중으로 둔 채 다음에 다시 읽는다
+ */
+export async function readFolderMaterials(
+  folderId: string,
+  retrying: Set<string>,
+): Promise<Material[]> {
+  const list = await api.content.materials(folderId);
+  if (!retrying.size) return list;
+  const seen = new Set(list.map((m) => m._id));
+  for (const key of [...retrying]) if (!seen.has(key)) retrying.delete(key);
+  return Promise.all(
+    list.map(async (m) => {
+      if (!retrying.has(m._id)) return m;
+      try {
+        const fresh = await api.content.material(m._id);
+        if (fresh.processing.status === 'done' || fresh.processing.status === 'failed')
+          retrying.delete(m._id);
+        return fresh;
+      } catch {
+        return asQueued(m);
+      }
+    }),
+  );
+}
+
 export function FolderScreen() {
   // 첫 폴더 안내가 짚는 + 버튼
   const addTarget = useTourTarget('folder-add');
@@ -320,11 +354,13 @@ export function FolderScreen() {
   const qc = useQueryClient();
   const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
   const folder = folders.data?.find((f) => f._id === id);
+  // 다시 요약을 넣고 아직 끝난 상태를 읽지 못한 자료
+  const retrying = useRef(new Set<string>());
   const mats = useQuery({
     queryKey: ['materials', id],
-    queryFn: () => api.content.materials(id),
+    queryFn: () => readFolderMaterials(id, retrying.current),
     // 정리 중인 자료가 있으면(다시 요약 포함) 끝날 때까지 다시 읽어 진행 표시 · 다시 요약 버튼을 바로잡는다(Codex #519 리뷰)
-    refetchInterval: (q) => materialsPollMs(q.state.data),
+    refetchInterval: (q) => (retrying.current.size ? 3000 : materialsPollMs(q.state.data)),
   });
   // 서버에 폴더 자료 목록 경로가 아직 없을 때(404) 폴더 목록이 센 자료가 0개면 실패가 아니라 빈 폴더다.
   // 자료가 있다고 세었는데 목록을 못 읽으면 지금처럼 실패를 보여 준다(지운 폴더는 목록에 없어 여기도 실패).
@@ -350,23 +386,14 @@ export function FolderScreen() {
   const items = (mats.data ?? []).filter((m) => filter === '전체' || KIND[m.kind][1] === filter);
   // 요약에 실패한 자료마다 「다시 요약」: 그 자료의 정리 작업을 다시 넣는다(서버가 자료 상태도 함께 되돌린다)
   const resummarize = useMutation({
-    mutationFn: async (m: Material) => {
-      await api.ai.retry(m.processing.jobId!);
-      // 목록은 한 번에 일부 자료만 작업 상태를 맞추므로, 실패한 자료가 많으면 다시 넣은 자료가 계속 실패로 보여
-      // 다시 읽기(materialsPollMs)가 시작되지 않았다. 이 자료만 따로 읽어(서버가 작업 상태를 맞춘다) 목록에 넣는다(Codex #520 리뷰)
-      // 이 읽기만 실패해도 작업은 다시 들어갔으므로 정리 중으로 보여 다시 읽기가 이어지게 한다(Codex #520 재리뷰)
-      return api.content
-        .material(m._id)
-        .catch((): Material => ({
-          ...m,
-          processing: { ...m.processing, status: 'queued', progress: 0 },
-        }));
-    },
-    onSuccess: (fresh) => {
+    mutationFn: (m: Material) => api.ai.retry(m.processing.jobId!),
+    onSuccess: (_job, m) => {
+      // 바로 정리 중으로 보이고, 끝날 때까지 이 자료는 따로 읽는다(readFolderMaterials)
+      retrying.current.add(m._id);
       qc.setQueryData<Material[]>(['materials', id], (list) =>
-        list?.map((x) => (x._id === fresh._id ? fresh : x)),
+        list?.map((x) => (x._id === m._id ? asQueued(x) : x)),
       );
-      void qc.invalidateQueries({ queryKey: ['materials'], refetchType: 'none' });
+      void qc.invalidateQueries({ queryKey: ['materials'] });
       toast('다시 요약하고 있어요. 끝나면 알려 드릴게요');
     },
     onError: (e) =>
