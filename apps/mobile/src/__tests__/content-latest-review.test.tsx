@@ -755,6 +755,29 @@ it.each([
   },
 );
 
+it('요약 아래 대본은 지금 슬라이드의 문장만, 전체 대본은 슬라이드별 문단으로 보인다', async () => {
+  mockApi.content.recording.mockResolvedValue({
+    audioUrl: 'https://blob.example/audio.m4a',
+    durationSec: 180,
+    slides: [
+      { index: 0, title: '첫 구간', bullets: [], startSec: 0, endSec: 40 },
+      { index: 1, title: '지금 구간', bullets: [], startSec: 40, endSec: 90 },
+    ],
+    transcript: {
+      text: '앞 문장 지금 문장 다음 문장',
+      segments: [
+        { startSec: 5, endSec: 10, text: '앞 문장' },
+        { startSec: 41, endSec: 45, text: '지금 문장' },
+        { startSec: 95, endSec: 99, text: '다음 문장' },
+      ],
+    },
+  });
+  await renderScreen(<Player materialId="material1" />, client()); // 재생 위치 42초(위 expo-audio 모의)
+  expect(await screen.findByText(/지금 문장/)).toBeTruthy();
+  expect(screen.queryByText(/앞 문장/)).toBeNull();
+  expect(screen.queryByText(/다음 문장/)).toBeNull();
+});
+
 it.each([
   { startSec: 40, endSec: 50, visible: true },
   { startSec: 42, endSec: 50, visible: true },
