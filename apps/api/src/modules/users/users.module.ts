@@ -13,11 +13,13 @@ import { UsersService } from './users.service.js';
 import { InterestCategorySeedService } from './interest-category-seed.service.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { ProgressModule } from '../progress/progress.module.js';
+import { StudyRoomsModule } from '../studyroom/study-rooms.module.js';
 
 @Module({
   imports: [
     AuthModule,
     ProgressModule, // 프로필의 연속 학습일(streakDays)
+    StudyRoomsModule, // 탈퇴할 때 스터디룸에서 나간다(leaveRoom)
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
       { name: Device.name, schema: DeviceSchema },

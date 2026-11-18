@@ -113,6 +113,23 @@ export class StudyChatService {
     return this.serialize(message, user?.nickname);
   }
 
+  /** 탈퇴 중이거나 탈퇴한 사용자는 방 멤버가 아닐 때와 같은 오류로 거절한다(라이브 토큰 · 소켓 입장 앞에서 쓴다). */
+  async requireActiveUser(userId: string) {
+    const active =
+      isValidObjectId(userId) &&
+      (await this.users.exists({
+        _id: new Types.ObjectId(userId),
+        deletedAt: null,
+        withdrawingAt: null,
+      }));
+    if (!active) {
+      throw new NotFoundException({
+        code: 'NOT_FOUND',
+        message: '스터디룸을 찾을 수 없습니다.',
+      });
+    }
+  }
+
   async requireMember(roomId: string, userId: string) {
     if (!isValidObjectId(roomId) || !isValidObjectId(userId)) {
       throw new NotFoundException({
