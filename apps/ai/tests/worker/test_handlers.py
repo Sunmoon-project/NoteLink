@@ -14,7 +14,7 @@ from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobStore
 from app.worker.runner import JobInputError, run_once
 from tests.fakes import FakeLlm
-from tests.services.note.test_job import FakeFetch, FakeOcr, note_read
+from tests.services.note.test_job import FakeFetch, FakeOcr, note_read, ocr_page, read
 from tests.services.quiz.test_review import BE, STACK, happy_llm, job_input
 from tests.services.recording.test_job import FakeVoyage
 
@@ -201,6 +201,34 @@ def test_a_canceled_handwriting_job_sends_no_llm_call(monkeypatch: pytest.Monkey
     with pytest.raises(LlmError):
         handlers.handwriting_summary(note_input(), report)
     assert llm.calls == []
+
+
+def test_handwriting_splits_with_the_split_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(handlers.note_job.settings, "note_refine_enabled", True)
+    rows = [f"- 내용 {i} " + "가" * 40 for i in range(15)]
+    llm = FakeLlm({"note_topics": [{"topics": []}]})
+    split = FakeLlm({"note_split": lambda user: {"starts": [1, 4]}})
+    url = note_input()["pages"][0]["imageUrl"]
+    note_fakes(monkeypatch, llm, FakeOcr({url: read(ocr_page(*rows))}))
+    monkeypatch.setattr(handlers, "_split_llm", lambda: split)
+
+    handlers.handwriting_summary(note_input(), StubReport(awaited=False))
+
+    assert [c.name for c in split.calls] == ["note_split"]
+    assert [c.name for c in llm.calls] == ["note_topics"]
+
+
+def test_split_llm_is_made_once_or_shares_the_main_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    main, own = FakeLlm(), FakeLlm()
+    made: list[object] = []
+    monkeypatch.setattr(handlers, "_llm", lambda: main)
+    monkeypatch.setattr(handlers, "make_split_llm", lambda spend, clients: made.append(spend))
+    assert handlers._split_llm() is main and handlers._split_llm() is main
+    assert made == [None]  # 따로 둘 필요가 없다는 답도 한 번만 받음
+
+    handlers._split_client.cache_clear()
+    monkeypatch.setattr(handlers, "make_split_llm", lambda spend, clients: own)
+    assert handlers._split_llm() is own
 
 
 def test_only_pregen_runs_in_the_background_lane() -> None:

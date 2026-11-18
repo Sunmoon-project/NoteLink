@@ -5,6 +5,7 @@ from collections.abc import Iterator
 import pytest
 from pydantic import SecretStr
 
+from app.clients.llm import MODEL_FIELDS
 from app.core.config import settings
 from app.worker import __main__ as entry
 
@@ -31,6 +32,22 @@ def test_worker_with_jobs_refuses_to_start_without_claude_key(
 ) -> None:
     monkeypatch.setattr(settings, "mongodb_uri", SecretStr("mongodb://127.0.0.1:27017"))
     monkeypatch.setattr(settings, "llm_provider", "claude")
+    monkeypatch.setattr(settings, "anthropic_api_key", SecretStr(""))
+    monkeypatch.setitem(entry.HANDLERS, "quiz_generate", lambda inp, report: {})
+    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY"):
+        entry.main()
+
+
+def test_worker_refuses_to_start_when_only_the_split_needs_a_missing_claude_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "mongodb_uri", SecretStr("mongodb://127.0.0.1:27017"))
+    monkeypatch.setattr(settings, "llm_provider", "school")
+    monkeypatch.setattr(settings, "school_llm_base_url", "https://llm.test")
+    for field in MODEL_FIELDS:
+        if field != "note_split_model":
+            monkeypatch.setattr(settings, field, "gemma-4-26b")
+    monkeypatch.setattr(settings, "note_split_provider", "claude")
     monkeypatch.setattr(settings, "anthropic_api_key", SecretStr(""))
     monkeypatch.setitem(entry.HANDLERS, "quiz_generate", lambda inp, report: {})
     with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY"):
