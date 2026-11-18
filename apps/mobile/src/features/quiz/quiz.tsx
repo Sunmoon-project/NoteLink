@@ -15,6 +15,7 @@ import Animated, {
 import { router, useLocalSearchParams } from 'expo-router';
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Speech from 'expo-speech';
+import { setAudioModeAsync } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import {
   Archive,
@@ -749,16 +750,25 @@ export function QuizSolveScreen() {
         </Screen>
       </Canvas>
     );
-  const speak = () => {
+  const speak = async () => {
     if (speaking) {
-      Speech.stop();
+      void Speech.stop();
       return setSpeaking(false);
     }
     setSpeaking(true);
+    // 아이폰 무음 스위치가 켜져 있어도 들리게 한다(기본 오디오 설정은 무음 모드에서 소리를 내지 않아
+    // 「음성으로 듣기」를 눌러도 아무 소리가 나지 않았다)
+    await setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
+    // 앞에서 멈추지 못한 읽기가 남아 있으면 새 읽기가 뒤로 밀려 들리지 않는다
+    await Speech.stop()?.catch?.(() => {});
     Speech.speak(`${q.prompt}. ${(q.choices ?? []).map((c, n) => `${n + 1}번, ${c}`).join('. ')}`, {
       language: 'ko-KR',
       onDone: () => setSpeaking(false),
       onStopped: () => setSpeaking(false),
+      onError: () => {
+        setSpeaking(false);
+        toast('음성을 재생하지 못했어요. 기기 소리 설정을 확인해 주세요');
+      },
     });
   };
   const choose = async (c: string) => {
@@ -823,7 +833,11 @@ export function QuizSolveScreen() {
       <Screen
         footer={
           pick === null ? (
-            <Btn kind="cream" icon={<Volume2 size={ICON.sm} color={C.ink} />} onPress={speak}>
+            <Btn
+              kind="cream"
+              icon={<Volume2 size={ICON.sm} color={C.ink} />}
+              onPress={() => void speak()}
+            >
               {speaking ? '읽어주는 중… (탭해서 멈춤)' : '음성으로 듣기'}
             </Btn>
           ) : right ? (
