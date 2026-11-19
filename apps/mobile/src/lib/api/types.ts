@@ -50,7 +50,15 @@ import type {
 export type MonthDay = { studyDate: string; level: number; hasTodo: boolean };
 export type ImageVerdict = 'ok' | 'not_allowed' | 'not_handwriting' | 'blurry';
 export type RoomSchedule = {
-  members: { nickname: string; emoji: string }[];
+  /** id · blocks는 멤버별 일정을 주는 서버부터 온다. blocks.day 0 = 월요일, title은 공개하지 않았으면 null */
+  members: {
+    id?: string;
+    nickname: string;
+    emoji: string;
+    /** 이 방에서 수업 시간을 숨긴 멤버(blocks는 빈 배열, 격자 · 추천 계산에서도 빠진다) */
+    hidden?: boolean;
+    blocks?: { day: number; start: string; end: string; title: string | null }[];
+  }[];
   /** [시간대][요일] 0 비어있음 · 1 바쁨 · 2 공통 가능 */
   grid: number[][];
   startHour: number;
@@ -285,6 +293,8 @@ export interface Api {
     leave(id: string): Promise<void>;
     setTimer(id: string, rule: TimerRule): Promise<StudyRoom>;
     schedule(id: string): Promise<RoomSchedule>;
+    /** 이 방 시간표에서 내 수업 시간을 숨기거나 다시 보인다 */
+    setScheduleHidden(id: string, hidden: boolean): Promise<{ hidden: boolean }>;
     invite(id: string, userIds: string[]): Promise<void>;
     shared(id: string): Promise<{ items: RoomSharedItem[]; flashcards: Flashcard[] }>;
     livekitToken(id: string): Promise<{ token: string; url: string }>;

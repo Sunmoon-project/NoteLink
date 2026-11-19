@@ -227,6 +227,7 @@ export const PATHS = {
   leaveRoom: (id: string) => `/study-rooms/${seg(id)}/leave`,
   roomTimer: (id: string) => `/study-rooms/${seg(id)}/timer-rule`,
   roomSchedule: (id: string) => `/study-rooms/${seg(id)}/schedule`,
+  roomScheduleVisibility: (id: string) => `/study-rooms/${seg(id)}/schedule/visibility`,
   roomInvites: (id: string) => `/study-rooms/${seg(id)}/invites`,
   roomShared: (id: string) => `/study-rooms/${seg(id)}/shared-items`,
   livekitToken: (id: string) => `/study-rooms/${seg(id)}/livekit-token`,

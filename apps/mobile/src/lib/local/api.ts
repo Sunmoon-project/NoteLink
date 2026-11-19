@@ -1383,13 +1383,29 @@ const api: Api = {
         ),
       );
       const out: RoomSchedule = {
-        members: [{ nickname: me(d).nickname, emoji: '✏️' }],
+        members: [
+          {
+            id: me(d).userId,
+            nickname: me(d).nickname,
+            emoji: '✏️',
+            blocks: d.classes.flatMap((c) =>
+              c.days.map((wd) => ({
+                day: (wd + 6) % 7,
+                start: c.startTime,
+                end: c.endTime,
+                title: c.subjectName,
+              })),
+            ),
+          },
+        ],
         grid,
         startHour,
         matches: [],
       };
       return ok(out);
     },
+    // 기기 저장 모드는 나 혼자라 숨길 상대가 없다
+    setScheduleHidden: (_id, hidden) => ok({ hidden }),
     invite: () => needServer('친구 초대'),
     shared: (id) => {
       const d = db();

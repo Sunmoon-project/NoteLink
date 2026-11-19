@@ -219,6 +219,7 @@ export const httpApi: Api = {
     leave: (id) => http.post(P.leaveRoom(id)),
     setTimer: (id, rule) => http.put(P.roomTimer(id), rule),
     schedule: (id) => http.get(P.roomSchedule(id)),
+    setScheduleHidden: (id, hidden) => http.patch(P.roomScheduleVisibility(id), { hidden }),
     invite: (id, userIds) => http.post(P.roomInvites(id), { userIds }),
     shared: (id) => http.get(P.roomShared(id)),
     livekitToken: (id) => http.post(P.livekitToken(id)),

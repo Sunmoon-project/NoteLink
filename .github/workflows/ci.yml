@@ -114,7 +114,7 @@ jobs:
         env:
           STUDYROOM_TEST_MONGO_URI: mongodb://127.0.0.1:27017/notelink_test
           REQUIRE_STUDYROOM_MONGO_TESTS: 'true'
-        run: npm run test -w apps/api -- test/study-rooms-service-mongo.test.ts test/study-chat-access-mongo.test.ts
+        run: npm run test -w apps/api -- test/study-rooms-service-mongo.test.ts test/study-chat-access-mongo.test.ts test/study-room-schedule-mongo.test.ts
       - name: Shared material MongoDB integration
         env:
           MONGODB_VERIFY_URI: mongodb://127.0.0.1:27017/?directConnection=true
