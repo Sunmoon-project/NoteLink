@@ -712,6 +712,10 @@ export function ScheduleScreen() {
           멤버들이 시간표에 적은 수업을 사람마다 다른 색으로 보여 줘요. 칸을 누르면 누가 무엇을
           하는지 볼 수 있고, 초록 테두리는 모두 비는 가장 긴 시간이에요.
         </Text>
+        <Text className="mt-1 text-caption text-sub">
+          내 수업 시간은 이 방 멤버에게 보여요. 수업 제목은 시간표를 공유한 친구에게만 보여요. 방
+          설정에서 이 방에만 시간을 숨길 수 있어요.
+        </Text>
         <View className="mt-2 flex-row flex-wrap gap-1.5">
           {s?.members.map((m, k) => (
             <View
@@ -720,7 +724,9 @@ export function ScheduleScreen() {
               className="flex-row items-center gap-1.5 rounded-full bg-white px-3 py-1"
             >
               {perMember ? <MemberDot k={k} name={m.nickname} /> : <Text>{m.emoji}</Text>}
-              <Text className="text-caption2 text-ink">{m.nickname}</Text>
+              <Text className="text-caption2 text-ink">
+                {m.hidden ? `${m.nickname} · 비공개` : m.nickname}
+              </Text>
             </View>
           ))}
         </View>
@@ -737,12 +743,16 @@ export function ScheduleScreen() {
               <Text className="w-9 text-caption2 text-sub">{s.startHour + r}:00</Text>
               {row.map((c, i) => {
                 const busy = busyAt(r, i);
+                // 시간을 숨긴 멤버만 바쁜 칸: 누구인지 · 무엇인지 없이 「비공개 일정 있음」으로만
+                const secret = perMember && !busy.length && c === 1;
                 const label = perMember
                   ? busy.length
                     ? busy.map((x) => x.m.nickname).join(', ')
-                    : c === 2
-                      ? '모두 비어 있음'
-                      : '비어 있음'
+                    : secret
+                      ? '비공개 일정 있음'
+                      : c === 2
+                        ? '모두 비어 있음'
+                        : '비어 있음'
                   : c === 1
                     ? '누군가 일정 있음'
                     : c === 2
@@ -757,11 +767,15 @@ export function ScheduleScreen() {
                     className={cx(
                       'mx-0.5 h-7 flex-1 flex-row items-center justify-center gap-0.5 rounded-md',
                       // 혼자 바쁜 칸은 그 사람 색 바탕, 겹친 칸은 색 점만, 빈 칸은 바탕 없이 연한 선만
-                      one ? memberColor(one.k).tint : !perMember && c === 1 && 'bg-brand/30',
+                      one
+                        ? memberColor(one.k).tint
+                        : secret
+                          ? 'bg-fill'
+                          : !perMember && c === 1 && 'bg-brand/30',
                       // 테두리 색은 하나만 붙인다(둘 다 붙으면 tailwind 순서로 연한 선이 이긴다)
                       inBest(r, i)
                         ? 'border border-brand'
-                        : !one && (perMember || c !== 1) && 'border border-line',
+                        : !one && !secret && (perMember || c !== 1) && 'border border-line',
                     )}
                   >
                     {one && <MemberDot k={one.k} name={one.m.nickname} />}
@@ -830,7 +844,9 @@ export function ScheduleScreen() {
                     {m.nickname}
                   </Text>
                   <View className="flex-1">
-                    {mine.length ? (
+                    {m.hidden ? (
+                      <Text className="text-subhead text-sub">시간 비공개</Text>
+                    ) : mine.length ? (
                       mine.map((b, j) => (
                         <Text key={j} className="text-subhead text-ink">
                           {`${b.title || '수업 있음'} · ${b.start}–${b.end}`}
@@ -874,6 +890,15 @@ export function RoomSettingsScreen() {
   const room = useQuery({ queryKey: ['room', id], queryFn: () => api.rooms.get(id) });
   const chatId = useQuery({ queryKey: ['room-chat', id], queryFn: () => api.rooms.chatRoomId(id) });
   const mute = useChatMute(chatId.data);
+  // 이 방 시간표에서 내 수업 시간 보이기(멤버별 일정을 주는 서버에서만 켜고 끈다)
+  const myId = useAuth((st) => st.userId);
+  const sch = useQuery({ queryKey: ['room-schedule', id], queryFn: () => api.rooms.schedule(id) });
+  const mine = sch.data?.members.find((m) => m.id && m.id === myId);
+  const hide = useMutation({
+    mutationFn: (hidden: boolean) => api.rooms.setScheduleHidden(id, hidden),
+    onError: () => toast('설정을 바꾸지 못했어요. 다시 시도해주세요'),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['room-schedule', id] }),
+  });
   const [code, setCode] = useState(false);
   const [leave, setLeave] = useState(false);
   const out = useMutation({
@@ -902,6 +927,18 @@ export function RoomSettingsScreen() {
               on={!mute.muted}
               disabled={!mute.ready}
               onChange={mute.toggle}
+            />
+          </View>
+          <View className="flex-row items-center gap-3 border-t border-fill px-5 py-4">
+            <CalendarDays size={ICON.md} color={C.ink} />
+            <Text className="flex-1 text-subhead font-semibold text-ink">
+              이 방에 내 시간표 시간 보이기
+            </Text>
+            <Toggle
+              label="이 방에 내 시간표 시간 보이기"
+              on={hide.isPending ? !hide.variables : !mine?.hidden}
+              disabled={!mine || hide.isPending}
+              onChange={(v) => hide.mutate(!v)}
             />
           </View>
           <Pressable

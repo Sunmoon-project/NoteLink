@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
@@ -6,6 +6,7 @@ import { User } from '../auth/schemas/user.schema.js';
 import { TimetableShare } from '../calendar/schemas/timetable-share.schema.js';
 import { Timetable } from '../calendar/schemas/timetable.schema.js';
 import { Friendship } from '../social/schemas/friendship.schema.js';
+import { StudyRoom } from './schemas/study-room.schema.js';
 import { StudyChatService } from './study-chat.service.js';
 
 /** 공용 일정 격자: 9시부터 14칸(9 ~ 23시), 월요일부터 7일(앱 tools.tsx · 로컬 api schedule과 같다) */
@@ -78,6 +79,7 @@ export class StudyRoomScheduleService {
     @InjectModel(User.name) private readonly users: Model<User>,
     @InjectModel(TimetableShare.name) private readonly shares: Model<TimetableShare>,
     @InjectModel(Friendship.name) private readonly friendships: Model<Friendship>,
+    @InjectModel(StudyRoom.name) private readonly rooms: Model<StudyRoom>,
     private readonly chat: StudyChatService,
   ) {}
 
@@ -122,7 +124,12 @@ export class StudyRoomScheduleService {
   /** GET /study-rooms/:id/schedule */
   async schedule(roomId: string, userId: string) {
     const room = await this.chat.requireMember(roomId, userId);
-    const ids = room.members.filter((m) => m.status === 'joined').map((m) => m.userId);
+    const joined = room.members.filter((m) => m.status === 'joined');
+    const ids = joined.map((m) => m.userId);
+    // 이 방에서 시간을 숨긴 멤버: blocks는 비우고, 격자(누군가 바쁨) · 추천 시간 계산에는 그대로 넣는다
+    const hiddenIds = new Set(
+      joined.filter((m) => m.hideSchedule === true).map((m) => String(m.userId)),
+    );
     const [people, tables, shown] = await Promise.all([
       this.users.find({ _id: { $in: ids }, deletedAt: null }, { nickname: 1 }).lean(),
       this.timetables.find({ userId: { $in: ids } }, { userId: 1, classes: 1 }).lean(),
@@ -138,7 +145,8 @@ export class StudyRoomScheduleService {
         id: String(id),
         nickname: nick.get(String(id))!,
         emoji: '✏️',
-        blocks: (classesOf.get(String(id)) ?? []).flatMap((c) =>
+        hidden: hiddenIds.has(String(id)),
+        blocks: (hiddenIds.has(String(id)) ? [] : (classesOf.get(String(id)) ?? [])).flatMap((c) =>
           c.days.map((d) => ({
             day: (d + 6) % 7, // 0 = 월요일(격자 열과 같다)
             start: c.startTime,
@@ -157,5 +165,21 @@ export class StudyRoomScheduleService {
         members.length,
       ),
     };
+  }
+
+  /** PATCH /study-rooms/:id/schedule/visibility — 이 방에서 내 수업 시간을 숨기거나 다시 보인다(내 줄만 바꾼다) */
+  async setScheduleHidden(roomId: string, userId: string, hidden: boolean) {
+    await this.chat.requireMember(roomId, userId);
+    const done = await this.rooms.updateOne(
+      {
+        _id: new Types.ObjectId(roomId),
+        closedAt: null,
+        members: { $elemMatch: { userId: new Types.ObjectId(userId), status: 'joined' } },
+      },
+      { $set: { 'members.$.hideSchedule': hidden } },
+    );
+    if (done.matchedCount === 0)
+      throw new NotFoundException({ code: 'NOT_FOUND', message: '스터디룸을 찾을 수 없습니다.' });
+    return { hidden };
   }
 }

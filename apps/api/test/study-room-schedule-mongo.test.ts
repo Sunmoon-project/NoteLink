@@ -102,7 +102,7 @@ describe.skipIf(!local)('스터디룸 시간표 멤버별 일정 · 제목 공�
     ]);
     const users2 = users as never;
     const chat = new StudyChatService(rooms, {} as never, {} as never, users2, friendships);
-    service = new StudyRoomScheduleService(timetables, users, shares, friendships, chat);
+    service = new StudyRoomScheduleService(timetables, users, shares, friendships, rooms, chat);
   });
   afterAll(async () => {
     if (!connection) return;
@@ -145,5 +145,28 @@ describe.skipIf(!local)('스터디룸 시간표 멤버별 일정 · 제목 공�
       남: null,
       재친구: null,
     });
+  });
+
+  it('내 시간표 시간을 이 방에서 숨기면 blocks는 비고 공통 빈 시간 계산에는 그대로 들어간다 · 남의 설정은 못 바꾼다', async () => {
+    await service.setScheduleHidden(String(roomId), String(fullFriend), true);
+    const s = await service.schedule(String(roomId), String(me));
+    const hidden = s.members.find((m) => m.nickname === '전체')!;
+    expect(hidden).toMatchObject({ hidden: true, blocks: [] });
+    expect(JSON.stringify(s)).not.toContain('비밀과목1');
+    // 다른 멤버는 그대로
+    expect(s.members.find((m) => m.nickname === '나')).toMatchObject({ hidden: false });
+    // 모두 월 10:00 – 11:30 바쁨: 숨겨도 격자에서는 바쁜 칸
+    expect(s.grid[1]![0]).toBe(1);
+    // 방 멤버가 아니면 404, 내 설정은 남이 못 바꾼다(요청한 사람 자신의 줄만 바뀐다)
+    await expect(
+      service.setScheduleHidden(String(roomId), String(new Types.ObjectId()), true),
+    ).rejects.toMatchObject({ status: 404 });
+    const again = await service.schedule(String(roomId), String(fullFriend));
+    expect(again.members.filter((m) => m.hidden).map((m) => m.nickname)).toEqual(['전체']);
+    // 다시 켜면 보인다
+    await service.setScheduleHidden(String(roomId), String(fullFriend), false);
+    const back = await service.schedule(String(roomId), String(me));
+    expect(back.members.find((m) => m.nickname === '전체')).toMatchObject({ hidden: false });
+    expect(back.members.find((m) => m.nickname === '전체')!.blocks[0]!.title).toBe('비밀과목1');
   });
 });

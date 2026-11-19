@@ -55,6 +55,8 @@ export type RoomSchedule = {
     id?: string;
     nickname: string;
     emoji: string;
+    /** 이 방에서 수업 시간을 숨긴 멤버(blocks는 빈 배열, 격자에는 「누군가 바쁨」으로만 들어간다) */
+    hidden?: boolean;
     blocks?: { day: number; start: string; end: string; title: string | null }[];
   }[];
   /** [시간대][요일] 0 비어있음 · 1 바쁨 · 2 공통 가능 */
@@ -289,6 +291,8 @@ export interface Api {
     leave(id: string): Promise<void>;
     setTimer(id: string, rule: TimerRule): Promise<StudyRoom>;
     schedule(id: string): Promise<RoomSchedule>;
+    /** 이 방 시간표에서 내 수업 시간을 숨기거나 다시 보인다 */
+    setScheduleHidden(id: string, hidden: boolean): Promise<{ hidden: boolean }>;
     invite(id: string, userIds: string[]): Promise<void>;
     shared(id: string): Promise<{ items: RoomSharedItem[]; flashcards: Flashcard[] }>;
     livekitToken(id: string): Promise<{ token: string; url: string }>;

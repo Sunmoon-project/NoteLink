@@ -1029,6 +1029,7 @@ export const mockApi: Api = {
       });
       return structuredClone(room);
     },
+    setScheduleHidden: (_id: string, hidden: boolean) => ok({ hidden }),
     schedule: () =>
       ok({
         members: [

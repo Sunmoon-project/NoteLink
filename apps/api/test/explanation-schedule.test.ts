@@ -129,6 +129,7 @@ describe('스터디룸 공용 일정(StudyRoomScheduleService.schedule)', () => 
       { find: userFind } as never,
       none as never,
       none as never,
+      {} as never,
       { requireMember } as never,
     );
     return { svc, requireMember, userFind, tableFind };
@@ -145,10 +146,11 @@ describe('스터디룸 공용 일정(StudyRoomScheduleService.schedule)', () => 
         id: A.toHexString(),
         nickname: '가',
         emoji: '✏️',
+        hidden: false,
         // 내 일정이라 제목이 보이지만, 이 수업에는 제목이 없다
         blocks: [{ day: 0, start: '09:00', end: '10:00', title: null }],
       },
-      { id: B.toHexString(), nickname: '나', emoji: '✏️', blocks: [] },
+      { id: B.toHexString(), nickname: '나', emoji: '✏️', hidden: false, blocks: [] },
     ]);
     // 나간 멤버는 시간표를 읽지도 않는다
     expect(tableFind).toHaveBeenCalledWith(

@@ -1,9 +1,18 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react-native';
 import * as Calendar from 'expo-calendar';
-import { ScheduleScreen } from '../features/studyroom/tools';
+import { RoomSettingsScreen, ScheduleScreen } from '../features/studyroom/tools';
+import { useAuth } from '../stores/auth';
 import { renderScreen, setParams } from '../test-utils';
 
-const mockApi = { rooms: { get: jest.fn(), schedule: jest.fn() } };
+const mockApi = {
+  rooms: {
+    get: jest.fn(),
+    schedule: jest.fn(),
+    setScheduleHidden: jest.fn(),
+    chatRoomId: jest.fn(async () => 'chat-1'),
+  },
+  me: { get: jest.fn(async () => ({ _id: 'u1', settings: {} })), update: jest.fn() },
+};
 jest.mock('../lib/api', () => ({
   get api() {
     return mockApi;
@@ -56,8 +65,10 @@ beforeEach(() => {
 
 it('화면 설명과 멤버 범례를 보여 주고, 아무도 없는 칸은 비워 둔다', async () => {
   await renderScreen(<ScheduleScreen />);
-  expect(await screen.findByText(/칸을 누르면/)).toBeTruthy();
-  for (const n of ['노트', '구글', '한결']) expect(screen.getByLabelText(`범례 ${n}`)).toBeTruthy();
+  expect(screen.getByText(/칸을 누르면/)).toBeTruthy();
+  // 설명은 바로, 범례는 일정을 받은 뒤에 그려진다
+  for (const n of ['노트', '구글', '한결'])
+    expect(await screen.findByLabelText(`범례 ${n}`)).toBeTruthy();
   const empty = screen.getByLabelText('월 11:00 · 모두 비어 있음');
   expect(within(empty).queryByText(/./)).toBeNull();
   // 혼자 있는 칸은 그 사람 이니셜, 겹친 칸은 두 사람 이니셜
@@ -91,4 +102,38 @@ it('예전 서버(멤버별 일정 없음)면 바쁜 칸을 한 가지 색으로
   });
   await renderScreen(<ScheduleScreen />);
   expect(await screen.findByLabelText('월 9:00 · 누군가 일정 있음')).toBeTruthy();
+});
+
+it('화면 위에 공개 범위를 알리고, 시간을 숨긴 멤버는 범례에 「비공개」 · 칸은 「비공개 일정 있음」 · 시트는 「시간 비공개」로 보인다', async () => {
+  mockApi.rooms.schedule.mockResolvedValue({
+    ...schedule,
+    members: [
+      ...schedule.members,
+      { id: 'u4', nickname: '별', emoji: '✏️', hidden: true, blocks: [] },
+    ],
+    // 화 9시: 숨긴 별만 바쁨
+    grid: [
+      [1, 1, 2, 2, 2, 2, 2],
+      [1, 2, 2, 2, 2, 2, 2],
+      [2, 2, 2, 2, 2, 2, 2],
+    ],
+  });
+  await renderScreen(<ScheduleScreen />);
+  expect(screen.getByText(/내 수업 시간은 이 방 멤버에게 보여요/)).toBeTruthy();
+  expect(await screen.findByText('별 · 비공개')).toBeTruthy();
+  fireEvent.press(screen.getByLabelText('화 9:00 · 비공개 일정 있음'));
+  expect(await screen.findByText('시간 비공개')).toBeTruthy();
+  expect(screen.queryByText('기기 캘린더에 추가')).toBeNull();
+});
+
+it('방 설정에서 「이 방에 내 시간표 시간 보이기」를 끄면 내 설정만 바꾼다', async () => {
+  useAuth.setState({ userId: 'u1' });
+  mockApi.rooms.setScheduleHidden.mockResolvedValue({ hidden: true });
+  await renderScreen(<RoomSettingsScreen />);
+  const toggle = await screen.findByLabelText('이 방에 내 시간표 시간 보이기');
+  await waitFor(() => expect(toggle.props.value).toBe(true));
+  await act(async () => {
+    fireEvent(toggle, 'valueChange', false);
+  });
+  await waitFor(() => expect(mockApi.rooms.setScheduleHidden).toHaveBeenCalledWith('r1', true));
 });

@@ -1379,6 +1379,8 @@ const api: Api = {
       };
       return ok(out);
     },
+    // 기기 저장 모드는 나 혼자라 숨길 상대가 없다
+    setScheduleHidden: (_id, hidden) => ok({ hidden }),
     invite: () => needServer('친구 초대'),
     shared: (id) => {
       const d = db();
