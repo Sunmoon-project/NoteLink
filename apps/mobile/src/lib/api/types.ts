@@ -110,6 +110,10 @@ export interface Api {
     }): Promise<void>;
     changePlan(tier: PlanTier): Promise<User>;
     withdraw(): Promise<void>;
+    /** 계정 이메일로 본인 인증번호를 보낸다. 이메일이 없으면 400 NO_EMAIL */
+    emailSendCode(): Promise<void>;
+    /** 본인 인증번호를 확인한다 → 인증된 내 정보(emailVerified: true) */
+    emailVerifyCode(code: string): Promise<User>;
   };
   upload: {
     getSas(p: {
@@ -260,7 +264,8 @@ export interface Api {
   rooms: {
     recommended(): Promise<StudyRoom[]>;
     mine(): Promise<StudyRoom[]>;
-    create(p: { title: string; categoryName: string; isPublic: boolean }): Promise<StudyRoom>;
+    /** categoryIds: 관심 분야와 같은 공용 카테고리 1~3개, 첫 번째가 대표 */
+    create(p: { title: string; categoryIds: string[]; isPublic: boolean }): Promise<StudyRoom>;
     join(inviteCode: string): Promise<StudyRoom>;
     get(id: string): Promise<StudyRoom>;
     leave(id: string): Promise<void>;
@@ -280,13 +285,15 @@ export interface Api {
   };
   shop: {
     items(p: {
-      category?: 'avatar' | 'theme';
+      category?: ShopItem['category'];
       sort?: 'latest' | 'price' | 'popular';
     }): Promise<ShopItem[]>;
     myItems(): Promise<UserItem[]>;
     wish(itemId: string): Promise<boolean>;
     purchase(itemId: string): Promise<{ balance: number }>;
     equip(itemId: string): Promise<void>;
+    /** 벗기(치장 · 테마). 보유하면 이미 벗었어도 성공, 보유 안 하면 NOT_FOUND */
+    unequip(itemId: string): Promise<void>;
     ledger(type?: 'earn' | 'spend'): Promise<PointLedger[]>;
   };
 }

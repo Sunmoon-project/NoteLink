@@ -16,6 +16,7 @@ const USER_FIELDS = [
   'settings',
   'status',
   'interestCategoryIds',
+  'emailVerified',
   'streakDays',
   'createdAt',
   'onboarded',
@@ -53,6 +54,20 @@ describe('toAppUser', () => {
   describe('앱이 기대하는 User 모양', () => {
     it('필수 필드를 모두 가진다', () => {
       expect(Object.keys(toAppUser(fresh())).sort()).toEqual([...USER_FIELDS].sort());
+    });
+
+    it('이메일 인증은 이메일과 인증 시각이 둘 다 있을 때만 참이다', () => {
+      const at = new Date();
+      expect(toAppUser({ ...fresh(), emailVerifiedAt: at }).emailVerified).toBe(true);
+      expect(toAppUser({ ...fresh(), emailVerifiedAt: null }).emailVerified).toBe(false);
+      expect(toAppUser({ ...fresh(), email: null, emailVerifiedAt: at }).emailVerified).toBe(false);
+    });
+
+    it('학교 · 학년은 적은 값만 내려준다', () => {
+      expect(toAppUser({ ...fresh(), school: '선문고', grade: null })).toMatchObject({
+        school: '선문고',
+      });
+      expect(toAppUser({ ...fresh(), grade: null })).not.toHaveProperty('grade');
     });
 
     it('설정은 앱이 읽는 8개 필드가 모두 채워진다 (비어 있는 DB 기본값 {}여도)', () => {

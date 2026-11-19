@@ -295,6 +295,25 @@ function queueJob(type: AiJobType, targetType: string, targetId: string): AiJob 
 
 const subjectsOf = (d: Db) => [...DEFAULT_SUBJECTS, ...d.subjects];
 
+// 서버와 같은 공용 관심 분야(@notelink/shared). id는 큰 분야 1~, 이어서 세부 분야 순서 번호라
+// 예전 여섯 분야(1~6)를 고른 계정도 같은 분야로 읽힌다
+function interestList() {
+  const groups = INTEREST_CATEGORY_GROUPS.map((g, i) => ({
+    _id: String(i + 1).padStart(24, '0'),
+    name: g.name,
+    parentId: null as string | null,
+  }));
+  let n = groups.length;
+  const children = INTEREST_CATEGORY_GROUPS.flatMap((g, i) =>
+    g.children.map((name) => ({
+      _id: String(++n).padStart(24, '0'),
+      name,
+      parentId: groups[i]!._id as string | null,
+    })),
+  );
+  return [...groups, ...children];
+}
+
 function subjectId(d: Db, name: string) {
   const found = subjectsOf(d).find((s) => s.name === name);
   if (found) return found._id;
@@ -490,24 +509,7 @@ const api: Api = {
     logout: () => ok(undefined),
   },
   me: {
-    // 서버와 같은 공용 관심 분야(@notelink/shared). id는 큰 분야 1~, 이어서 세부 분야 순서 번호라
-    // 예전 여섯 분야(1~6)를 고른 계정도 같은 분야로 읽힌다
-    interestCategories: () => {
-      const groups = INTEREST_CATEGORY_GROUPS.map((g, i) => ({
-        _id: String(i + 1).padStart(24, '0'),
-        name: g.name,
-        parentId: null as string | null,
-      }));
-      let n = groups.length;
-      const children = INTEREST_CATEGORY_GROUPS.flatMap((g, i) =>
-        g.children.map((name) => ({
-          _id: String(++n).padStart(24, '0'),
-          name,
-          parentId: groups[i]!._id as string | null,
-        })),
-      );
-      return ok([...groups, ...children]);
-    },
+    interestCategories: () => ok(interestList()),
     get: () => {
       return ok(withStats(db()));
     },
@@ -517,6 +519,16 @@ const api: Api = {
       return ok(withStats(d));
     },
     setStatus: (status) => ok(void (db().user.status = status)),
+    // 기기 저장 모드는 메일을 보내지 않는다(가입 인증과 같게 6자리면 통과)
+    emailSendCode: () =>
+      db().user.email ? ok(undefined) : fail(ERROR_CODES.NO_EMAIL, '계정에 이메일이 없어요'),
+    emailVerifyCode: (code) => {
+      if (!/^\d{6}$/.test(code))
+        return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요', 400);
+      const d = db();
+      d.user.emailVerified = true;
+      return ok(withStats(d));
+    },
     registerDevice: () => ok(undefined),
     changePlan: (tier) => {
       const d = db();
@@ -1232,11 +1244,17 @@ const api: Api = {
     mine: () => ok(db().rooms.filter((r) => !r.closedAt)),
     create: (p) => {
       const d = db();
+      const list = interestList();
+      const names = p.categoryIds.flatMap((id) => list.find((c) => c._id === id)?.name ?? []);
       const r: StudyRoom = {
         _id: uid('room'),
         title: p.title,
-        categoryId: subjectId(d, p.categoryName),
-        categoryName: p.categoryName,
+        // 서버와 같은 규칙: 첫 번째가 대표, 대상은 만들 때 내 learnerType을 복사
+        categoryId: p.categoryIds[0]!,
+        categoryName: names[0],
+        categoryIds: p.categoryIds,
+        categoryNames: names,
+        learnerType: d.user.learnerType ?? null,
         hostId: d.user._id,
         isPublic: p.isPublic,
         inviteCode: Math.random().toString(36).slice(2, 8).toUpperCase().padEnd(6, 'X'),
@@ -1400,9 +1418,15 @@ const api: Api = {
       }
       const target = d.userItems.find((u) => u.itemId === itemId && u.isOwned);
       if (!target) return fail(ERROR_CODES.NOT_FOUND, '보유한 아이템이 아니에요', 404);
-      // 같은 종류(아바타 · 테마)끼리만 바꿔 낀다
+      // 같은 종류(아바타 · 테마 · 모자 · 안경 · 목도리)끼리만 바꿔 낀다
       for (const u of d.userItems)
         if (u.itemCategory === target.itemCategory) u.isEquipped = u === target;
+      return ok(undefined);
+    },
+    unequip: (itemId) => {
+      const target = db().userItems.find((u) => u.itemId === itemId && u.isOwned);
+      if (!target) return fail(ERROR_CODES.NOT_FOUND, '보유한 아이템이 아니에요', 404);
+      target.isEquipped = false;
       return ok(undefined);
     },
     ledger: (type) =>

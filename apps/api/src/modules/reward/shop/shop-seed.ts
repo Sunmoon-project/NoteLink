@@ -15,7 +15,8 @@ export interface ShopSeedItem extends ShopItem {
 const idOf = (n: number) => `6e6f74656c696e6b7368${String(n).padStart(4, '0')}`;
 
 /**
- * 상점 기본 아이템 6개. 앱의 기본 상품 목록(apps/mobile/src/lib/local/catalog.ts SHOP)과 같은 값이다.
+ * 상점 기본 아이템 11개(아바타 5 · 테마 1 · 치장 5). 앱의 기본 상품 목록(apps/mobile/src/lib/local/catalog.ts SHOP)과 같은 값이다.
+ * 앱이 고정 id로 테마 색 · 치장 모양을 찾으므로 id(번호)는 바꾸지 않는다.
  * 기본 아바타 'base'는 서버가 특별 처리(장착 해제)하므로 넣지 않는다. purchaseCount는 0에서 시작한다
  */
 export const SHOP_SEED_ITEMS: readonly ShopSeedItem[] = [
@@ -93,7 +94,7 @@ export const SHOP_SEED_ITEMS: readonly ShopSeedItem[] = [
         id: idOf(6),
         category: 'theme',
         name: '바다 테마',
-        description: '시원한 파란 물결이 앱 전체를 감싸요.',
+        description: '앱 바탕이 시원한 바다색으로 바뀌어요.',
         price: 1000,
         avatarStyle: null,
         thumbnailUrl: '🌊',
@@ -103,7 +104,89 @@ export const SHOP_SEED_ITEMS: readonly ShopSeedItem[] = [
         isDefault: false,
         badge: null,
     },
+    {
+        id: idOf(7),
+        category: 'glasses',
+        name: '동그란 안경',
+        description: '책 읽는 선생님처럼 동그란 안경을 씌워요.',
+        price: 300,
+        avatarStyle: null,
+        thumbnailUrl: '👓',
+        assetUrl: '👓',
+        purchaseCount: 0,
+        isActive: true,
+        isDefault: false,
+        badge: 'NEW',
+    },
+    {
+        id: idOf(8),
+        category: 'glasses',
+        name: '선글라스',
+        description: '햇살 아래서도 멋진 까만 선글라스예요.',
+        price: 300,
+        avatarStyle: null,
+        thumbnailUrl: '🕶️',
+        assetUrl: '🕶️',
+        purchaseCount: 0,
+        isActive: true,
+        isDefault: false,
+        badge: null,
+    },
+    {
+        id: idOf(9),
+        category: 'hat',
+        name: '털모자',
+        description: '방울이 달린 포근한 털모자예요.',
+        price: 400,
+        avatarStyle: null,
+        thumbnailUrl: '🧶',
+        assetUrl: '🧶',
+        purchaseCount: 0,
+        isActive: true,
+        isDefault: false,
+        badge: null,
+    },
+    {
+        id: idOf(10),
+        category: 'hat',
+        name: '학사모',
+        description: '공부 끝판왕에게 어울리는 학사모예요.',
+        price: 600,
+        avatarStyle: null,
+        thumbnailUrl: '🎓',
+        assetUrl: '🎓',
+        purchaseCount: 0,
+        isActive: true,
+        isDefault: false,
+        badge: null,
+    },
+    {
+        id: idOf(11),
+        category: 'scarf',
+        name: '빨간 목도리',
+        description: '목을 따뜻하게 감싸는 빨간 목도리예요.',
+        price: 400,
+        avatarStyle: null,
+        thumbnailUrl: '🧣',
+        assetUrl: '🧣',
+        purchaseCount: 0,
+        isActive: true,
+        isDefault: false,
+        badge: null,
+    },
 ];
+
+/**
+ * 이미 넣은 DB의 문구 고침. $setOnInsert는 기존 아이템을 건드리지 않으므로, 옛 문구 그대로일 때만 새 문구로 바꾼다
+ * (운영자가 따로 고친 문구는 그대로 둔다). 바다 테마: 물결 그림 없이 바탕색만 바뀌므로 설명을 실제에 맞춘다
+ */
+const TEXT_FIXES = [
+    {
+        id: idOf(6),
+        from: '시원한 파란 물결이 앱 전체를 감싸요.',
+        to: '앱 바탕이 시원한 바다색으로 바뀌어요.',
+    },
+] as const;
 
 /** SHOP_SEED=off(대소문자 무시)일 때만 끈다. 비어 있거나 다른 값이면 켜짐 */
 export function isShopSeedEnabled(value: string | undefined): boolean {
@@ -135,6 +218,10 @@ export async function seedShopItems(model: Model<ShopItem>): Promise<number> {
         } catch (e) {
             if (!isDuplicateKey(e)) throw e;
         }
+    }
+    for (const { id, from, to } of TEXT_FIXES) {
+        // 문구가 바뀌면 updatedAt도 새로(timestamps 기본값). _id 하나만 맞으므로 많아야 1건
+        await model.updateMany({ _id: new Types.ObjectId(id), description: from }, { $set: { description: to } });
     }
     return inserted;
 }

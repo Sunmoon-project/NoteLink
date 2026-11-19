@@ -12,6 +12,7 @@ import { FolderScreen } from '../features/content/notes';
 import { NetworkError } from '../lib/api';
 import { useAuth } from '../stores/auth';
 import { useDraft } from '../stores/draft';
+import { useBgJobs } from '../stores/bg-jobs';
 import { renderScreen, setParams } from '../test-utils';
 
 jest.mock('expo-router', () => ({
@@ -696,6 +697,27 @@ it.each(['recording', 'document'])(
   },
 );
 
+// 녹음 화면은 자막 옆 3D 아바타가 말한다 → 떠 있는 아바타는 숨긴다(GL 화면 하나 · 시선 하나)
+it('녹음 상세에는 떠 있는 아바타 선생님 대신 자막 옆 아바타가 물어보기 입구다', async () => {
+  mockApi.content.material.mockResolvedValue({
+    _id: 'material1',
+    folderId: 'folder1',
+    title: '녹음 자료',
+    kind: 'recording',
+    status: 'ready',
+    createdAt: '2026-11-01T00:00:00Z',
+    keywords: [],
+    bookmarks: [],
+    summary: { sections: [{ heading: '요약', body: '내용' }], points: [] },
+  });
+  await renderScreen(<RecDetailScreen />, client());
+  expect(await screen.findByText('녹음 자료')).toBeTruthy();
+  // 물어보기 입구는 자막 옆 아바타 하나뿐(떠 있는 아바타의 「누르면 인사하고…」 버튼은 없음)
+  const ask = await screen.findAllByLabelText('아바타 선생님에게 물어보기');
+  expect(ask).toHaveLength(1);
+  expect(ask[0]!.props.accessibilityHint).toBeUndefined();
+});
+
 it('새 초안이나 자료 내용 변경은 이전 등록 키를 재사용하지 않는다', () => {
   const first = useDraft.getState().getCreationId();
   expect(useDraft.getState().getCreationId()).toBe(first);
@@ -753,6 +775,66 @@ it.each([
     expect(screen.queryByText('슬라이드 3 / 0')).toBeNull();
   },
 );
+
+it('요약 아래 대본은 지금 문장 하나(앞 문장 없음)와 다음 문장 미리보기, 전체 대본은 슬라이드별 문단', async () => {
+  mockApi.content.recording.mockResolvedValue({
+    audioUrl: 'https://blob.example/audio.m4a',
+    durationSec: 180,
+    slides: [
+      { index: 0, title: '첫 구간', bullets: [], startSec: 0, endSec: 40 },
+      { index: 1, title: '지금 구간', bullets: [], startSec: 40, endSec: 90 },
+    ],
+    transcript: {
+      text: '앞 문장 지금 문장 다음 문장',
+      segments: [
+        { startSec: 5, endSec: 10, text: '앞 문장' },
+        { startSec: 41, endSec: 45, text: '지금 문장' },
+        { startSec: 95, endSec: 99, text: '다음 문장' },
+      ],
+    },
+  });
+  await renderScreen(<Player materialId="material1" />, client()); // 재생 위치 42초(위 expo-audio 모의)
+  expect(await screen.findByText(/지금 문장/)).toBeTruthy();
+  expect(screen.queryByText(/앞 문장/)).toBeNull();
+  // 지금 문장이 구간의 마지막이면 다음 구간의 첫 문장을 미리 보인다(사용자 신고: 긴 문장 뒤 미리보기가 안 나옴)
+  expect(screen.getByTestId('caption-next').props.children).toBe('다음 문장');
+});
+
+it('같은 슬라이드 구간의 다음 문장만 미리 보이고 다른 구간 문장은 숨긴다', async () => {
+  mockApi.content.recording.mockResolvedValue({
+    audioUrl: 'https://blob.example/audio.m4a',
+    durationSec: 180,
+    slides: [
+      { index: 0, title: '지금 구간', bullets: [], startSec: 40, endSec: 90 },
+      { index: 1, title: '빈 구간', bullets: [], startSec: 90, endSec: 120 },
+    ],
+    transcript: {
+      text: '',
+      segments: [
+        { startSec: 41, endSec: 45, text: '지금 문장' },
+        { startSec: 50, endSec: 55, text: '같은 구간 다음 문장' },
+        { startSec: 125, endSec: 130, text: '다른 구간 문장' },
+      ],
+    },
+  });
+  const qc = client();
+  await renderScreen(<Player materialId="material1" />, qc); // 42초
+  expect((await screen.findByTestId('caption-now')).props.children).toBe('지금 문장');
+  expect(screen.getByTestId('caption-next').props.children).toBe('같은 구간 다음 문장');
+  expect(screen.queryByText('다른 구간 문장')).toBeNull();
+});
+
+it('지금 구간에 문장이 없으면 자막 대신 빈 구간 문구', async () => {
+  mockApi.content.recording.mockResolvedValue({
+    audioUrl: 'https://blob.example/audio.m4a',
+    durationSec: 180,
+    slides: [{ index: 0, title: '지금 구간', bullets: [], startSec: 40, endSec: 90 }],
+    transcript: { text: '', segments: [{ startSec: 95, endSec: 99, text: '다른 구간 문장' }] },
+  });
+  await renderScreen(<Player materialId="material1" />, client());
+  expect(await screen.findByText('이 구간에는 말한 내용이 없어요')).toBeTruthy();
+  expect(screen.queryByTestId('caption-now')).toBeNull();
+});
 
 it.each([
   { startSec: 40, endSec: 50, visible: true },
@@ -1174,6 +1256,21 @@ describe('변환 화면: 다 올린 뒤에 변환으로 넘어가고, 취소하�
       params: { id: 'folder1' },
     });
     expect(mockToast).toHaveBeenCalledWith('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
+  });
+
+  it('폴더에서 기다리기를 누르면 작업은 그대로 두고 폴더로 가며, 끝나면 알릴 작업으로 남긴다', async () => {
+    useBgJobs.setState({ jobs: [] });
+    await renderScreen(<ConvertScreen />, client());
+    await fireEvent.press(await screen.findByText('폴더에서 기다리기'));
+    expect(mockApi.ai.cancel).not.toHaveBeenCalled();
+    expect(router.dismissTo).toHaveBeenCalledWith({
+      pathname: '/(tabs)/note/folder/[id]',
+      params: { id: 'folder1' },
+    });
+    expect(useBgJobs.getState().jobs).toEqual([
+      expect.objectContaining({ jobId: 'job1', kind: 'material' }),
+    ]);
+    expect(mockToast).toHaveBeenCalledWith('정리가 끝나면 알려 드릴게요');
   });
 
   // Codex #503 리뷰: 취소 요청이 실패해도 취소했다고 안내하고 초안을 지웠다(서버 작업은 계속 돎)

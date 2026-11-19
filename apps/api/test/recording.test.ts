@@ -136,6 +136,73 @@ describe('녹음 정리 결과 → 재생 정보 (playbackFromResult)', () => {
     ]);
   });
 
+  it('문장의 단어 시각(words)을 초로 바꿔 대본 구간에 함께 넘긴다(앱 자막 채움 · 립싱크)', () => {
+    const out = playbackFromResult({
+      sentences: [
+        {
+          text: '가 나',
+          startMs: 0,
+          endMs: 2000,
+          words: [
+            { text: '가', startMs: 0, endMs: 800 },
+            { text: '나', startMs: 900, endMs: 2000 },
+          ],
+        },
+      ],
+    });
+    expect(out.transcript.segments).toEqual([
+      {
+        startSec: 0,
+        endSec: 2,
+        text: '가 나',
+        words: [
+          { text: '가', startSec: 0, endSec: 0.8 },
+          { text: '나', startSec: 0.9, endSec: 2 },
+        ],
+      },
+    ]);
+    const rec = { _id: 'm', materialId: 'm', audioUrl: 'x', audioSizeBytes: 1, ...out };
+    expect(Recording.safeParse({ ...rec, visemeUrl: null }).success).toBe(true);
+  });
+
+  it('구간이 틀리거나 글이 빈 단어는 빼고, 남는 단어가 없거나 words 가 없으면 words 필드를 두지 않는다(옛 결과)', () => {
+    const out = playbackFromResult({
+      sentences: [
+        {
+          text: '하나',
+          startMs: 0,
+          endMs: 1000,
+          words: [
+            { text: '거꾸로', startMs: 500, endMs: 100 },
+            { text: '길이 0', startMs: 500, endMs: 500 },
+            { text: ' ', startMs: 0, endMs: 100 },
+            'x',
+            { text: '남음', startMs: 100, endMs: 900 },
+          ],
+        },
+        {
+          text: '둘',
+          startMs: 1000,
+          endMs: 2000,
+          words: [{ text: '틀림', startMs: -1, endMs: 5 }],
+        },
+        { text: '셋', startMs: 2000, endMs: 3000, words: 'x' },
+        { text: '넷', startMs: 3000, endMs: 4000 },
+      ],
+    });
+    expect(out.transcript.segments).toEqual([
+      {
+        startSec: 0,
+        endSec: 1,
+        text: '하나',
+        words: [{ text: '남음', startSec: 0.1, endSec: 0.9 }],
+      },
+      { startSec: 1, endSec: 2, text: '둘' },
+      { startSec: 2, endSec: 3, text: '셋' },
+      { startSec: 3, endSec: 4, text: '넷' },
+    ]);
+  });
+
   it('글머리: 문장 끝(. ! ? 。) 뒤 공백에서 나눈다', () => {
     expect(bulletsOf('첫째다! 둘째인가? 셋째。 넷째')).toEqual([
       '첫째다!',
@@ -361,14 +428,27 @@ describe.skipIf(!uri)('진짜 DB 녹음 재생 정보 (RecordingService)', () =>
     }
   });
 
-  it('작업의 단어 시각 · 조각 embedding 은 읽지 않는다', async () => {
-    const id = await seed({ job: { status: 'succeeded', result: RESULT } });
+  it('작업의 단어 시각은 대본 구간에 실어 주고, 조각 embedding 은 읽지 않는다', async () => {
+    const words = [
+      { text: '안녕', startMs: 0, endMs: 600 },
+      { text: '하세요.', startMs: 600, endMs: 1500 },
+    ];
+    const id = await seed({
+      job: {
+        status: 'succeeded',
+        result: { ...RESULT, sentences: [{ ...RESULT.sentences[0], words }] },
+      },
+    });
     const spy = vi.spyOn(jobs, 'findOne');
-    await service.findMine(me.toHexString(), id);
+    const rec = await service.findMine(me.toHexString(), id);
+    expect(rec.transcript.segments[0]?.words).toEqual([
+      { text: '안녕', startSec: 0, endSec: 0.6 },
+      { text: '하세요.', startSec: 0.6, endSec: 1.5 },
+    ]);
     const projections = spy.mock.calls.map((c) => c[1] as Record<string, number> | undefined);
     const mine = projections.find((p) => p && 'result.sentences.text' in p);
     expect(mine).toBeDefined();
-    expect(Object.keys(mine!).some((k) => k.includes('words') || k.includes('chunks'))).toBe(false);
+    expect(Object.keys(mine!).some((k) => k.includes('chunks'))).toBe(false);
     spy.mockRestore();
   });
 });

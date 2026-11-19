@@ -5,8 +5,10 @@ import { File } from 'expo-file-system';
 import { GLView, type ExpoWebGLRenderingContext } from 'expo-gl';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { C } from '@/theme';
+import type { Lips } from './lips';
+import { ACCESSORIES, accessoryNames, attachAccessories } from './accessories';
+import { bake, matcap } from './bake';
 
 // Hermes에는 FinalizationRegistry가 없다(three의 WebGLRenderer가 GPU 자원 정리에 씀).
 // 화면을 떠날 때 renderer.dispose()로 직접 정리하므로 등록만 받는 대체로 둔다
@@ -66,68 +68,6 @@ const fakeCanvas = (w: number, h: number) =>
     removeEventListener: () => {},
   }) as unknown as HTMLCanvasElement;
 
-/** 왼쪽 위에서 빛이 드는 공 음영(matcap). 부품 색이 곱해진다 */
-function matcap(size = 64) {
-  const px = new Uint8Array(size * size * 4);
-  for (let y = 0; y < size; y++)
-    for (let x = 0; x < size; x++) {
-      const nx = (x / (size - 1)) * 2 - 1;
-      const ny = (y / (size - 1)) * 2 - 1; // 아래가 +(텍스처 v는 위로)
-      const nz = Math.sqrt(Math.max(0, 1 - nx * nx - ny * ny));
-      const light = Math.max(0, -0.45 * nx + 0.55 * ny + 0.7 * nz); // 빛: 왼쪽 위 앞
-      const rim = Math.pow(1 - nz, 3) * 0.12;
-      const v = Math.min(255, Math.round((0.62 + 0.42 * light + rim) * 235));
-      const i = (y * size + x) * 4;
-      px[i] = px[i + 1] = px[i + 2] = v;
-      px[i + 3] = 255;
-    }
-  const tex = new THREE.DataTexture(px, size, size, THREE.RGBAFormat);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-/** 따로 움직이는 부품. 나머지는 한 덩어리로 합친다 */
-const MOVING = new Set(['eyeL', 'eyeR', 'mouth']);
-
-/**
- * 머리의 움직이지 않는 부품(얼굴 · 귀 · 머리카락 · 볼)을 색을 꼭짓점에 담아 한 메시로 합치고,
- * 모든 부품을 음영 그림(matcap) 재질로 바꾼다. 부품이 많은 아바타(긴 머리 · 곱슬)는 expo-gl에서
- * 프레임이 화면에 오르지 않았는데, 그리기를 눈 · 입 · 얼굴 넷으로 줄이니 모두 그려졌다(시뮬레이터)
- */
-function bake(root: THREE.Object3D, shade: THREE.Texture) {
-  root.updateMatrixWorld(true);
-  const head = root.getObjectByName('head') ?? root;
-  const toHead = head.matrixWorld.clone().invert();
-  const parts: THREE.BufferGeometry[] = [];
-  const still: THREE.Mesh[] = [];
-  head.traverse((o) => {
-    const mesh = o as THREE.Mesh;
-    if (!mesh.isMesh) return;
-    const color = (mesh.material as THREE.MeshStandardMaterial).color;
-    if (MOVING.has(mesh.name)) {
-      mesh.material = new THREE.MeshMatcapMaterial({ color, matcap: shade });
-      return;
-    }
-    const g = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
-    g.applyMatrix4(toHead.clone().multiply(mesh.matrixWorld));
-    const n = g.getAttribute('position').count;
-    const rgb = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) rgb.set([color.r, color.g, color.b], i * 3);
-    g.setAttribute('color', new THREE.BufferAttribute(rgb, 3));
-    for (const name of Object.keys(g.attributes))
-      if (!['position', 'normal', 'color'].includes(name)) g.deleteAttribute(name);
-    parts.push(g);
-    still.push(mesh);
-  });
-  for (const m of still) m.removeFromParent();
-  const merged = mergeGeometries(parts);
-  if (merged)
-    head.add(
-      new THREE.Mesh(merged, new THREE.MeshMatcapMaterial({ vertexColors: true, matcap: shade })),
-    );
-}
-
 /** expo-gl과 three의 차이를 메운다(시뮬레이터에서 하나씩 확인. @react-three/fiber/native도 비슷하게 감싼다) */
 function patchGl(gl: ExpoWebGLRenderingContext, canvas: HTMLCanvasElement) {
   // 모르는 pixelStorei 값은 걸러 낸다
@@ -164,10 +104,17 @@ export function eyeOpen(mood: Mood, n: number, blink: number) {
   if (mood === 'wink') return n === 0 ? 0.1 : 1;
   return blink;
 }
-const CAMERA: Record<Framing, { pos: [number, number, number]; at: number }> = {
+type Camera = { pos: [number, number, number]; at: number };
+const CAMERA: Record<Framing, Camera> = {
   full: { pos: [0, 0.5, 3.5], at: 0.44 },
   head: { pos: [0, 0.56, 2.9], at: 0.5 },
 };
+/** 모자를 쓰면 위로 높아지니 조금 물러나 올려 본다(곱슬 정수리 위 털모자 방울까지 화면 안에) */
+const HAT_CAMERA: Record<Framing, Camera> = {
+  full: { pos: [0, 0.64, 4.0], at: 0.56 },
+  head: { pos: [0, 0.7, 3.5], at: 0.64 },
+};
+export const cameraFor = (framing: Framing, hat: boolean) => (hat ? HAT_CAMERA : CAMERA)[framing];
 
 /**
  * 아바타 선생님 3D(expo-gl + three). 장착한 상점 아바타의 모델을 그린다. 그리기는 GL 쪽에서
@@ -181,26 +128,40 @@ export function Avatar3D({
   framing = 'full',
   background = C.mint,
   onReady,
+  lips,
+  accessories,
 }: {
   mood: Mood;
   avatarId?: string | null;
+  /** 씌울 치장(악세서리 id, features/tutor/accessories). 칸마다 하나, 모르는 id는 무시 */
+  accessories?: string[];
   size?: number;
   framing?: Framing;
   /** 둘레와 같은 색으로 칠한다(투명 합성은 expo-gl에서 비어 보였다) */
   background?: string;
   /** 첫 프레임을 그렸거나 2D로 대신했을 때(한 번). 빈 자리가 먼저 움직이지 않게 기다리는 데 쓴다 */
   onReady?: () => void;
+  /**
+   * 녹음 재생처럼 실제 소리에 입을 맞출 때: 그리기 반복이 프레임마다 동기로 부른다(await 금지).
+   * 넘기면 입은 talking 사인파 대신 이 모양을 따른다(눈 · 고개는 mood대로)
+   */
+  lips?: () => Lips;
 }) {
   const id = modelId(avatarId);
+  // 모습(아바타 + 치장)이 같으면 새 배열이 와도 다시 읽지 않게 글자로 비교한다
+  const acc = accessories?.join(',') ?? '';
+  const look = `${id}|${acc}`;
   const moodRef = useRef(mood);
   const ready = useRef(onReady);
+  const lipsRef = useRef(lips);
   useEffect(() => {
     ready.current = onReady;
+    lipsRef.current = lips;
   });
   // 실패는 그 모델에만: 다른 아바타로 바꾸면 다시 3D로 읽어 본다
   const [failedId, setFailedId] = useState<string | null>(null);
   const failed = failedId === id;
-  const [model, setModel] = useState<{ id: string; root: THREE.Group } | null>(null);
+  const [model, setModel] = useState<{ look: string; root: THREE.Group } | null>(null);
   const reduce = useRef(false);
   // 그리기 반복을 멈추는 정리 함수(모델이 바뀌거나 화면을 떠날 때)
   const stop = useRef<(() => void) | null>(null);
@@ -213,14 +174,17 @@ export function Avatar3D({
   }, []);
   // 아바타 · 구도가 바뀌어 옛 GL 화면을 내리거나 화면을 떠나면 그리기 반복을 바로 멈춘다.
   // 커밋 중에 도는 layout 정리라, 새 GL 화면의 onContextCreate보다 늦게 돌아 새 반복을 멈추는 일이 없다
-  useLayoutEffect(() => () => stop.current?.(), [id, framing]);
+  useLayoutEffect(() => () => stop.current?.(), [look, framing]);
   useEffect(() => {
     let live = true;
     loadModel(id)
       .then((buf) => new GLTFLoader().parseAsync(buf, ''))
       .then((g) => {
         if (!live) return;
-        setModel({ id, root: g.scene });
+        // 치장은 GL 전에 머리에 붙여 둔다 → bake가 움직이지 않는 부품과 한 메시로 합쳐 그리기 횟수가 그대로다
+        const head = g.scene.getObjectByName('head');
+        if (head && acc) attachAccessories(head, acc.split(','), id);
+        setModel({ look, root: g.scene });
         // 전에 실패했던 모델을 다시 골라 이번에 읽었으면 2D에서 3D로 돌아온다
         setFailedId((f) => (f === id ? null : f));
       })
@@ -232,7 +196,7 @@ export function Avatar3D({
     return () => {
       live = false;
     };
-  }, [id]);
+  }, [id, acc, look]);
 
   const onContextCreate = (gl: ExpoWebGLRenderingContext, root: THREE.Group) => {
     try {
@@ -250,7 +214,10 @@ export function Avatar3D({
       renderer.outputColorSpace = THREE.SRGBColorSpace;
 
       const scene = new THREE.Scene();
-      const cam = CAMERA[framing];
+      const cam = cameraFor(
+        framing,
+        acc.split(',').some((a) => ACCESSORIES[a]?.slot === 'hat'),
+      );
       const camera = new THREE.PerspectiveCamera(30, w / h, 0.1, 50);
       camera.position.set(...cam.pos);
       camera.lookAt(0, cam.at, 0);
@@ -309,7 +276,11 @@ export function Avatar3D({
             0.3,
           );
         }
-        if (mouth) {
+        const said = lipsRef.current?.();
+        if (mouth && said) {
+          mouth.scale.y = approach(mouth.scale.y, mouthY * (1 + 2.4 * said.open), 0.5);
+          mouth.scale.x = approach(mouth.scale.x, mouthX * said.wide, 0.5);
+        } else if (mouth) {
           // 말할 때는 두 박자를 섞어 같은 모양이 반복되지 않게
           const open = 0.5 + 0.5 * Math.sin(t * 13) * Math.sin(t * 4.3 + 1);
           mouth.scale.y =
@@ -349,10 +320,12 @@ export function Avatar3D({
     }
   };
 
-  const loaded = model?.id === id ? model.root : null;
+  const loaded = model?.look === look ? model.root : null;
   return (
     <View
-      accessibilityLabel="아바타 선생님"
+      accessibilityLabel={
+        acc ? `아바타 선생님, ${accessoryNames(acc.split(','))} 착용` : '아바타 선생님'
+      }
       accessibilityRole="image"
       style={{ width: size, height: size }}
     >
@@ -360,8 +333,8 @@ export function Avatar3D({
         <FlatFace mood={mood} size={size} />
       ) : loaded ? (
         <GLView
-          // 아바타를 바꾸면 GL 화면을 새로 만든다
-          key={`${id}-${framing}`}
+          // 아바타 · 치장을 바꾸면 GL 화면을 새로 만든다
+          key={`${look}-${framing}`}
           style={{ width: size, height: size }}
           msaaSamples={0}
           onContextCreate={(gl) => onContextCreate(gl, loaded)}

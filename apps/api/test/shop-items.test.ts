@@ -54,6 +54,12 @@ describe('GET /api/v1/shop/items', () => {
         expect(model.find).toHaveBeenCalledWith({ isActive: true, category: 'theme' });
     });
 
+    it.each(['hat', 'glasses', 'scarf'])('category=%s(치장)도 받는다', async (category) => {
+        const res = await request(app.getHttpServer()).get(`/api/v1/shop/items?category=${category}`);
+        expect(res.status).toBe(200);
+        expect(model.find).toHaveBeenCalledWith({ isActive: true, category });
+    });
+
     it('sort=price이면 가격 오름차순으로 정렬한다', async () => {
         await request(app.getHttpServer()).get('/api/v1/shop/items?sort=price');
         expect(sort).toHaveBeenCalledWith({ price: 1, createdAt: -1 });

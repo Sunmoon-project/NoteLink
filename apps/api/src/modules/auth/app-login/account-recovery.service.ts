@@ -1,12 +1,6 @@
 import { hash } from 'bcrypt';
 
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  Optional,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES } from '@notelink/shared';
 import { Model } from 'mongoose';
@@ -18,6 +12,7 @@ import {
   PASSWORD_HASH_COST,
   PASSWORD_HASH_COST_TOKEN,
   codeRejected,
+  mailUnavailable,
   rateLimited,
 } from './app-signup.service.js';
 import type { AccountId } from './app-login-input.js';
@@ -53,12 +48,7 @@ export class AccountRecoveryService {
       if (await this.findUser(email)) await this.mail.sendRecoveryCode(email, issued.code);
       else await this.mail.sendNoAccount(email);
     } catch (error) {
-      if (error instanceof MailUnavailableError) {
-        throw new ServiceUnavailableException({
-          code: APP_LOGIN_ERRORS.MAIL_UNAVAILABLE,
-          message: '인증 메일을 보내지 못했어요. 잠시 뒤 다시 시도해 주세요',
-        });
-      }
+      if (error instanceof MailUnavailableError) throw mailUnavailable();
       throw error;
     }
   }

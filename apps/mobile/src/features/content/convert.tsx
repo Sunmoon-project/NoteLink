@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { AppState, View } from 'react-native';
+import { AppState, Linking, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -8,8 +8,9 @@ import { Check, ChevronRight, FileText, Image, Pin } from 'lucide-react-native';
 import { ERROR_CODES, MATERIAL_MAX_FILES, type AiJob } from '@notelink/shared';
 import { api, NetworkError } from '@/lib/api';
 import { uploadToBlob, UploadError } from '@/lib/upload';
-import { aiWaiting } from '@/lib/ai';
+import { aiWaiting, stageOf } from '@/lib/ai';
 import { notifyLocal } from '@/lib/push';
+import { useBgJobs } from '@/stores/bg-jobs';
 import { useAiJobSubscription, useSocket } from '@/hooks';
 import { useDraft } from '@/stores/draft';
 import { scanTitle } from '@/lib/scan-title';
@@ -399,6 +400,26 @@ export function ConvertScreen() {
     toast('정리를 취소했어요. 원본은 이 폴더에 남겨 뒀어요');
   };
 
+  // 기다리지 않고 폴더로: 서버는 계속 정리하고, 끝나면 전역에서 알려 준다(stores/bg-jobs)
+  const leaveToFolder = () => {
+    if (!job) return;
+    canceled.current = true;
+    abort.current.abort();
+    useBgJobs.getState().add({
+      jobId: job._id,
+      kind: 'material',
+      title: draft.title.trim() || defaultTitle(draft.kind, draft.files[0]?.name, draft.source),
+    });
+    const folder = draft.folderId;
+    qc.invalidateQueries({ queryKey: ['materials'] });
+    qc.invalidateQueries({ queryKey: ['folders'] });
+    useDraft.getState().reset();
+    router.dismissTo(
+      folder ? { pathname: '/(tabs)/note/folder/[id]', params: { id: folder } } : '/(tabs)/note',
+    );
+    toast('정리가 끝나면 알려 드릴게요');
+  };
+
   const confirmRegistration = async () => {
     if (checkingRegistration.current) return;
     checkingRegistration.current = true;
@@ -431,7 +452,7 @@ export function ConvertScreen() {
   // 다 올려 서버가 작업을 받은 뒤에야 변환 화면(작업 진행률)으로 넘어간다
   const uploading = !job;
   const pct = uploading ? uploadPct : (job?.progress ?? 0);
-  const step = uploading ? 0 : pct < 50 ? 1 : pct < 85 ? 2 : 3;
+  const step = uploading ? 0 : stageOf(job?.step, pct);
   const steps = STEPS[draft.kind];
   // AI 서버가 없으면(기기 저장 모드) 원본만 저장하고 정리는 서버 연결 후에 한다 (FR-65-05)
   if (phase === 'ai' && aiWaiting(job) && materialId)
@@ -493,6 +514,16 @@ export function ConvertScreen() {
             </Text>
             <Toggle label="완료 알림" on={notify} onChange={setNotify} />
           </Card>
+        )}
+        {phase === 'ai' && job && (
+          <View className="mt-8 px-4">
+            <Btn kind="outline" onPress={leaveToFolder}>
+              폴더에서 기다리기
+            </Btn>
+            <Text className="mt-2 text-center text-caption2 text-sub">
+              다른 화면을 써도 정리는 계속되고, 끝나면 알려 드려요
+            </Text>
+          </View>
         )}
         {attempts > 1 && (
           <Text className="mt-6 text-center text-caption2 text-sub">
@@ -723,14 +754,74 @@ export function ResultScreen() {
 
 export const NoteBody = ({ sections }: { sections: { heading: string; body: string }[] }) => (
   <Card className="gap-5 p-5">
-    {sections.map((s) => (
-      <View key={s.heading}>
+    {sections.map((s, i) => (
+      // 제목이 같은(또는 빈) 섹션이 있어도 겹치지 않게 순서로 구분한다
+      <View key={i}>
         <Text className="text-subhead font-bold text-ink">{s.heading}</Text>
-        <Text className="mt-0.5 text-caption text-ink/70">{s.body}</Text>
+        <RichBody body={s.body} />
       </View>
     ))}
   </Card>
 );
+
+/** 편집기 툴바가 넣는 표시(# 제목 · - 목록 · **굵게** · [글](주소))를 기호 없이 그린다 */
+function RichBody({ body }: { body: string }) {
+  return (
+    <View className="mt-0.5 gap-0.5">
+      {body.split('\n').map((line, i) =>
+        line.startsWith('# ') ? (
+          <Text key={i} className="mt-1 text-callout font-bold text-ink">
+            <Inline text={line.slice(2)} />
+          </Text>
+        ) : (
+          <Text key={i} className="text-caption text-ink/70">
+            {line.startsWith('- ') ? (
+              <>
+                {'• '}
+                <Inline text={line.slice(2)} />
+              </>
+            ) : (
+              <Inline text={line} />
+            )}
+          </Text>
+        ),
+      )}
+    </View>
+  );
+}
+
+const INLINE = /\*\*([^*]+)\*\*|\[([^\]]+)\]\((https?:\/\/[^)\s]*)\)/g;
+
+/** 한 줄 안의 **굵게** · [글](주소). 주소는 http(s)만 연다 */
+function Inline({ text }: { text: string }) {
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(INLINE)) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    if (m[1] !== undefined)
+      parts.push(
+        <Text key={m.index} className="font-bold text-ink">
+          {m[1]}
+        </Text>,
+      );
+    else {
+      const url = m[3]!;
+      parts.push(
+        <Text
+          key={m.index}
+          accessibilityRole="link"
+          onPress={() => void Linking.openURL(url).catch(() => toast('링크를 열지 못했어요'))}
+          className="text-brand underline"
+        >
+          {m[2]}
+        </Text>,
+      );
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return <>{parts}</>;
+}
 
 export function DocSummary({
   points,

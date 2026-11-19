@@ -19,11 +19,12 @@ import {
   ShoppingBasket,
   X,
 } from 'lucide-react-native';
-import { ERROR_CODES, type ShopItem } from '@notelink/shared';
+import { ERROR_CODES, type ShopItem, type UserItem } from '@notelink/shared';
 import { api, ApiError, NetworkError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { clock } from '@/lib/dates';
-import { BASE_AVATAR } from '@/lib/shop-items';
+import { BASE_AVATAR, BASE_THEME } from '@/lib/shop-items';
+import { themeOf } from '@/lib/shop-themes';
 import {
   Alert,
   Badge,
@@ -38,12 +39,24 @@ import {
   cx,
 } from '@/components/ui';
 import { C, ICON, MOTION } from '@/theme';
+import { ACCESSORIES, accessoryId } from '../tutor/accessories';
+import { itemArt } from './item-art';
 import { Avatar3D } from '../tutor/avatar3d';
-import { avatarModel } from '../tutor/buddy';
+import { avatarModel, useEquippedAccessories, useEquippedAvatar } from '../tutor/buddy';
 
 // p.91~95 상점 · 정렬 · 상세 · 구매 · 포인트 내역 · 보관함 / p.101 구매 중 연결 끊김
 
 type Sort = 'latest' | 'price' | 'popular';
+/** 아바타 선생님 치장(모자 · 안경 · 목도리). 상점 · 보관함에서는 「치장」 탭 하나로 묶는다 */
+const isDress = (i: ShopItem) =>
+  i.category === 'hat' || i.category === 'glasses' || i.category === 'scarf';
+const inTab = (i: ShopItem, tab: string) =>
+  tab === '전체' ||
+  (tab === '아바타'
+    ? i.category === 'avatar'
+    : tab === '치장'
+      ? isDress(i)
+      : i.category === 'theme');
 const SORT_LABEL: Record<Sort, string> = {
   latest: '최신순',
   price: '낮은 가격순',
@@ -57,7 +70,7 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
   }, [msg]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <Animated.View
-      entering={FadeInUp}
+      entering={FadeInUp.duration(MOTION.exit)}
       className="mt-2 flex-row items-center rounded-xl bg-ink px-4 py-2.5"
     >
       <CircleCheck size={ICON.sm} color="#fff" />
@@ -71,25 +84,84 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
 
 /** 상품 그림: 이미지 주소면 그림으로, 아니면 이모지 글자로(small은 아바타 선생님 고르기 칸 크기) */
 /** 상세 창 · 보관함 「현재 아바타」 미리보기: 아바타는 선생님이 될 3D 얼굴로, 그 밖의 상품은 그림으로 */
+/** 지금 내 선생님 모습(장착 아바타의 3D 모델 + 장착 치장). 시트가 열릴 때 조회가 새로 붙지 않게 화면에서 읽는다 */
+type Look = { face: string; worn: string[] };
+const useLook = (): Look => ({ face: useEquippedAvatar(), worn: useEquippedAccessories() });
+/** 판매가 끝나 상품 목록에 없는 보유 치장: 보관함에 남겨 벗을 수 있게 이름만 채운 상품으로 */
+const goneDress = (u: UserItem): ShopItem | null => {
+  const a = ACCESSORIES[accessoryId(u.itemId) ?? ''];
+  if (!a || !u.isOwned) return null;
+  return {
+    _id: u.itemId,
+    category: a.slot,
+    name: a.name,
+    description: '판매가 끝난 치장이에요.',
+    price: 0,
+    avatarStyle: null,
+    thumbnailUrl: null,
+    assetUrl: '',
+    purchaseCount: 0,
+    isActive: false,
+    isDefault: false,
+  };
+};
+
 function DetailPreview({
   item,
+  look: { face, worn },
+  asWorn = false,
   background = C.fill,
   size = 128,
 }: {
   item: ShopItem;
+  look: Look;
+  /** 보관함 「현재 아바타」처럼 지금 실제 모습(장착 치장 포함). 아니면 그 상품 하나만 입혀 본다 */
+  asWorn?: boolean;
   background?: string;
   size?: number;
 }) {
-  if (item.category !== 'avatar') return <ItemPreview item={item} large />;
+  // 테마는 그 바탕색 위 미니 화면 모형(기본 바탕은 원래 바탕색)
+  const theme =
+    item._id === BASE_THEME._id
+      ? { canvas: C.canvas }
+      : item.category === 'theme'
+        ? themeOf(item._id)
+        : null;
+  if (theme) return <ThemePreview name={item.name} canvas={theme.canvas} />;
+  // 상품 미리보기는 그 상품만: 치장은 지금 아바타에 그 치장 하나, 아바타는 치장 없이
+  const dress = isDress(item) ? accessoryId(item._id) : null;
+  if (item.category !== 'avatar' && !dress) return <ItemPreview item={item} large />;
   return (
     <View accessibilityLabel={`${item.name} 3D 미리보기`}>
       {/* 상자와 같은 색으로 칠해 네모난 3D 바탕이 보이지 않게 */}
       <Avatar3D
         mood="idle"
-        avatarId={avatarModel(item._id, [item])}
+        avatarId={dress ? face : avatarModel(item._id, [item])}
+        accessories={asWorn ? worn : dress ? [dress] : []}
         size={size}
         background={background}
       />
+    </View>
+  );
+}
+
+/** 테마 미리보기: 그 바탕색 위에 흰 카드 두 줄 + 탭바를 올린 작은 화면 모형 */
+function ThemePreview({ name, canvas }: { name: string; canvas: string }) {
+  return (
+    <View
+      accessible
+      accessibilityRole="image"
+      accessibilityLabel={`${name} 바탕 미리보기`}
+      className="h-32 w-20 overflow-hidden rounded-xl p-2"
+      style={{ backgroundColor: canvas }}
+    >
+      <View className="h-6 rounded-xl bg-white" />
+      <View className="mt-1.5 h-10 rounded-xl bg-white" />
+      <View className="absolute right-0 bottom-0 left-0 h-5 flex-row items-center justify-around bg-white">
+        {[0, 1, 2].map((i) => (
+          <View key={i} className={cx('h-1.5 w-1.5 rounded-full', i ? 'bg-line' : 'bg-brand')} />
+        ))}
+      </View>
     </View>
   );
 }
@@ -111,6 +183,27 @@ export function ItemPreview({
         accessibilityRole="image"
         accessibilityLabel={label}
         source={{ uri: item.thumbnailUrl }}
+        style={{ width: size, height: size }}
+        resizeMode="contain"
+      />
+    );
+  const art = itemArt(item);
+  if (art && 'swatch' in art)
+    // 바탕색 견본. 흰 카드 위에서도 보이게 얇은 테두리
+    return (
+      <View
+        accessibilityRole="image"
+        accessibilityLabel={label}
+        className="rounded-2xl border border-line"
+        style={{ width: size, height: size, backgroundColor: art.swatch }}
+      />
+    );
+  if (art)
+    return (
+      <Image
+        accessibilityRole="image"
+        accessibilityLabel={label}
+        source={art.image}
         style={{ width: size, height: size }}
         resizeMode="contain"
       />
@@ -151,7 +244,12 @@ function useShopData() {
   const equippedIds = new Set((mine.data ?? []).filter((u) => u.isEquipped).map((u) => u.itemId));
   const equipped =
     mine.data?.find((u) => u.isEquipped && u.itemCategory === 'avatar')?.itemId ?? 'base';
+  // 테마는 판매 목록이 아니라 내 아이템에서 본다(판매가 끝난 테마도 벗을 수 있게)
+  const themes = (mine.data ?? []).filter((u) => u.isOwned && u.itemCategory === 'theme');
   return {
+    mine: mine.data ?? [],
+    wornThemeId: themes.find((u) => u.isEquipped)?.itemId ?? null,
+    hasTheme: themes.length > 0,
     points: me.data?.pointBalance ?? 0,
     owned,
     wished,
@@ -169,17 +267,19 @@ export function ShopScreen() {
   const openFeature = useFeatureNavigation();
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
-  const [tab, setTab] = useState<'전체' | '아바타' | '테마' | '찜'>('전체');
+  const [tab, setTab] = useState<'전체' | '아바타' | '치장' | '테마' | '찜'>('전체');
   const [sort, setSort] = useState<Sort>('latest');
   const items = useQuery({
     queryKey: ['shop', tab, sort],
     queryFn: () =>
       api.shop.items({
+        // 치장은 종류가 셋이라 전체를 받아 앱에서 거른다
         category: tab === '아바타' ? 'avatar' : tab === '테마' ? 'theme' : undefined,
         sort,
       }),
   });
   const shop = useShopData();
+  const look = useLook();
   const { points, owned, wished } = shop;
   const [sortOpen, setSortOpen] = useState(false);
   const [detail, setDetail] = useState<ShopItem | null>(null);
@@ -252,7 +352,9 @@ export function ShopScreen() {
   };
   // 찜 탭도 고른 정렬을 따른다 — '찜'은 카테고리가 없으므로 items가 정렬된 전체 목록이다
   const list =
-    tab === '찜' ? (items.data ?? []).filter((i) => wished.has(i._id)) : (items.data ?? []);
+    tab === '찜'
+      ? (items.data ?? []).filter((i) => wished.has(i._id))
+      : (items.data ?? []).filter((i) => inTab(i, tab));
   const tryBuy = (it: ShopItem) => {
     if (buying.current || owned.has(it._id) || purchased.current.has(it._id)) return;
     // 잔액과 보유 내역을 읽기 전에는 포인트가 0인 것처럼 판단하지 않는다
@@ -303,7 +405,7 @@ export function ShopScreen() {
           </Pressable>
           {(shop.pending || items.isPending) && <Loading />}
           <View className="mt-4 flex-row gap-1">
-            {(['전체', '아바타', '테마', '찜'] as const).map((t) => (
+            {(['전체', '아바타', '치장', '테마', '찜'] as const).map((t) => (
               <Pressable
                 key={t}
                 onPress={() => setTab(t)}
@@ -406,7 +508,7 @@ export function ShopScreen() {
           {detail && (
             <>
               <View className="h-36 items-center justify-center rounded-2xl bg-fill">
-                <DetailPreview item={detail} />
+                <DetailPreview item={detail} look={look} />
               </View>
               <View className="mt-3 flex-row items-center justify-between">
                 <Text className="text-body font-bold text-ink">{detail.name}</Text>
@@ -609,9 +711,10 @@ export function BoxScreen() {
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
   const shop = useShopData();
-  const { owned, equipped, equippedIds, loaded } = shop;
+  const look = useLook();
+  const { owned, equipped, equippedIds, loaded, wornThemeId, hasTheme } = shop;
   const all = useQuery({ queryKey: ['shop', 'all'], queryFn: () => api.shop.items({}) });
-  const [tab, setTab] = useState<'전체' | '아바타' | '테마'>('전체');
+  const [tab, setTab] = useState<'전체' | '아바타' | '치장' | '테마'>('전체');
   const [pick, setPick] = useState<ShopItem | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const { equip: eq } = useLocalSearchParams<{ equip?: string }>();
@@ -622,22 +725,38 @@ export function BoxScreen() {
     setOpened(key);
     setPick(owned.has(eq!) ? (all.data?.find((i) => i._id === eq) ?? null) : null);
   }
-  const items = [BASE_AVATAR, ...(all.data ?? []).filter((i) => owned.has(i._id))].filter(
-    (i) => tab === '전체' || (tab === '아바타' ? i.category === 'avatar' : i.category === 'theme'),
+  const onSale = all.data ?? [];
+  // 판매가 끝나 목록에서 빠진 치장도 내 아이템 기준으로 남겨 벗을 수 있게
+  const gone = shop.mine
+    .filter((u) => !onSale.some((i) => i._id === u.itemId))
+    .map(goneDress)
+    .filter((i): i is ShopItem => !!i);
+  const mineList = [...onSale.filter((i) => owned.has(i._id)), ...gone];
+  // 테마를 하나라도 가졌을 때만 「기본 바탕」(= 장착한 테마 벗기)을 둔다
+  const items = [BASE_AVATAR, ...(hasTheme ? [BASE_THEME] : []), ...mineList].filter((i) =>
+    inTab(i, tab),
   );
   const cur = [BASE_AVATAR, ...(all.data ?? [])].find((i) => i._id === equipped) ?? BASE_AVATAR;
-  const isEquipped = (it: ShopItem) => equippedIds.has(it._id) || it._id === equipped;
+  const isEquipped = (it: ShopItem) =>
+    it._id === BASE_THEME._id ? !wornThemeId : equippedIds.has(it._id) || it._id === equipped;
+  // 장착 중인 치장은 시트에서 벗는다
+  const takeOff = (it: ShopItem) => isDress(it) && isEquipped(it);
+  // 벗기인지는 누른 순간에 정해 넘긴다(완료 뒤 다시 계산하면 그새 갱신된 목록 때문에 문구가 뒤바뀔 수 있다)
   const equip = useMutation({
-    mutationFn: (it: ShopItem) => {
+    mutationFn: ({ it, off }: { it: ShopItem; off: boolean }) => {
+      // 기본 바탕 = 장착한 테마 벗기
+      if (it._id === BASE_THEME._id)
+        return wornThemeId ? api.shop.unequip(wornThemeId) : Promise.resolve();
       if (it._id !== BASE_AVATAR._id && !owned.has(it._id))
         throw new Error('보유한 아이템만 장착할 수 있어요');
-      return api.shop.equip(it._id);
+      return off ? api.shop.unequip(it._id) : api.shop.equip(it._id);
     },
-    onError: () => setMsg('장착하지 못했어요. 다시 시도해주세요'),
-    onSuccess: (_, it) => {
+    onError: (_, { off }) =>
+      setMsg(off ? '벗지 못했어요. 다시 시도해주세요' : '장착하지 못했어요. 다시 시도해주세요'),
+    onSuccess: (_, { it, off }) => {
       qc.invalidateQueries({ queryKey: ['my-items'] });
       setPick(null);
-      setMsg(`장착 완료 · ${it.name}`);
+      setMsg(off ? `벗기 완료 · ${it.name}` : `장착 완료 · ${it.name}`);
     },
   });
   if (shop.error || (all.isError && !all.data))
@@ -657,13 +776,13 @@ export function BoxScreen() {
           )}
           <View className="mt-3 h-32 items-center justify-center overflow-hidden rounded-2xl bg-mint">
             {/* 장착한 아바타는 선생님이 될 3D 얼굴로 (상자 bg-mint와 같은 바탕, 상자 안에 들어가는 크기) */}
-            <DetailPreview item={cur} background={C.mint} size={112} />
+            <DetailPreview item={cur} look={look} asWorn background={C.mint} size={112} />
             <View className="absolute right-3 bottom-3 rounded-full bg-white px-2 py-0.5">
               <Text className="text-caption2 text-ink">현재 아바타</Text>
             </View>
           </View>
           <View className="mt-3 flex-row gap-1">
-            {(['전체', '아바타', '테마'] as const).map((t) => (
+            {(['전체', '아바타', '치장', '테마'] as const).map((t) => (
               <Pressable
                 key={t}
                 onPress={() => setTab(t)}
@@ -698,7 +817,8 @@ export function BoxScreen() {
               {items.map((it) => (
                 <Pressable
                   key={it._id}
-                  onPress={() => !isEquipped(it) && setPick(it)}
+                  onPress={() => (!isEquipped(it) || isDress(it)) && setPick(it)}
+                  accessibilityHint={takeOff(it) ? '눌러서 벗을 수 있어요' : undefined}
                   className="w-[47.5%] rounded-card bg-white p-2.5"
                 >
                   <View className="h-24 items-center justify-center rounded-xl bg-white">
@@ -726,15 +846,20 @@ export function BoxScreen() {
           {pick && (
             <>
               <View className="h-36 items-center justify-center rounded-2xl bg-fill">
-                <DetailPreview item={pick} />
+                <DetailPreview item={pick} look={look} />
               </View>
               <View className="mt-3 flex-row items-center justify-between">
                 <Text className="text-body font-bold text-ink">{pick.name}</Text>
                 <Badge>보유중</Badge>
               </View>
               <Text className="mt-1 text-caption text-sub">{pick.description}</Text>
-              <Btn className="mt-4" loading={equip.isPending} onPress={() => equip.mutate(pick)}>
-                장착하기
+              <Btn
+                className="mt-4"
+                kind={takeOff(pick) ? 'outline' : 'primary'}
+                loading={equip.isPending}
+                onPress={() => equip.mutate({ it: pick, off: takeOff(pick) })}
+              >
+                {takeOff(pick) ? '벗기' : '장착하기'}
               </Btn>
             </>
           )}

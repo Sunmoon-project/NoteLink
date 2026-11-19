@@ -50,15 +50,33 @@ it('타이머 활성화만 바꿔도 기존 반복과 교시표를 보존한다'
   const [brief] = await api.rooms.recommended();
   const full = await api.rooms.get(brief!._id);
   const periods = [{ start: '14:00', end: '14:40', label: '개별 수업' }];
-  jest.spyOn(api.rooms, 'get').mockResolvedValue({
-    ...full,
-    timerRule: { enabled: true, type: 'period', focusMin: 25, breakMin: 5, repeat: 7, periods },
-  });
+  jest.spyOn(api.rooms, 'get').mockImplementation(
+    () =>
+      new Promise((r) =>
+        setTimeout(
+          () =>
+            r({
+              ...full,
+              timerRule: {
+                enabled: true,
+                type: 'period',
+                focusMin: 25,
+                breakMin: 5,
+                repeat: 7,
+                periods,
+              },
+            } as never),
+          100,
+        ),
+      ),
+  );
   const save = jest.spyOn(api.rooms, 'setTimer').mockResolvedValue(full);
   setParams({ id: full._id });
   useAuth.setState({ userId: full.hostId });
   await renderScreen(<TimerScreen />, client());
-  await waitFor(() => expect(screen.getByLabelText('방 시간 규칙').props.value).toBe(true));
+  // 스위치 기본값도 켜짐이라 값만 보면 방을 불러오기 전에 통과한다. 불러온 교시표가 보일 때까지 기다린다
+  // (안 기다리면 늦게 온 방 설정이 바꾼 스위치를 덮어써 병렬 jest에서 가끔 실패했다)
+  expect(await screen.findByText('개별 수업')).toBeTruthy();
   await fireEvent(screen.getByLabelText('방 시간 규칙'), 'valueChange', false);
   await fireEvent.press(screen.getByText('저장하기'));
   await waitFor(() =>
@@ -230,6 +248,7 @@ it('서울 자정 뒤 오늘 시간은 전날 입장 경과 시간을 포함하�
 it('방을 만들면 만들기 화면을 닫고 방을 위에 연다 (탭 스택을 갈아 끼우지 않는다)', async () => {
   await renderScreen(<RoomCreateScreen />, client());
   await fireEvent.changeText(screen.getByPlaceholderText('예) 파이썬 기초 스터디'), '토익 스터디');
+  await fireEvent.press(await screen.findByText('코딩'));
   const buttons = screen.getAllByText('스터디룸 만들기');
   await fireEvent.press(buttons[buttons.length - 1]!);
   await waitFor(() =>

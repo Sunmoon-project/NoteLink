@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Linking, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
@@ -12,7 +12,6 @@ import {
   FileText,
   Folder,
   Heading1,
-  ImageIcon,
   Link2,
   List,
   MoreHorizontal,
@@ -22,7 +21,7 @@ import {
   Users,
 } from 'lucide-react-native';
 import type { Material } from '@notelink/shared';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { toast } from '@/stores/toast';
 import { AiPending } from '@/components/AiPending';
 import {
@@ -48,18 +47,11 @@ import { C, ICON } from '@/theme';
 import { DocSummary, NoteBody } from './convert';
 import { Player } from './player';
 import { PageImages, usePageTurn } from './page-images';
-import { TutorBuddy, useTuckOnScroll } from '@/features/tutor/buddy';
+import { TutorBuddy, canAsk, useTuckOnScroll } from '@/features/tutor/buddy';
 import { seoul } from '@/lib/dates';
 import { QuizFromNote } from './quiz-from-note';
 
 // p.67~73 필기 · 녹음 · 문서 상세 / 편집 / 다운로드 / 공유 / 삭제
-
-/** 아바타가 설명할 글이 있는 노트: 정리가 끝났거나 요약 · 쪽 글이 있음(서버 NOTE_NOT_READY 전에 숨김) */
-const canAsk = (m: Material) =>
-  m.processing?.status === 'done' ||
-  !!m.summary?.sections.length ||
-  !!m.summary?.points.length ||
-  !!m.pages?.some((p) => p.ocrText?.trim());
 
 function useMaterial() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -297,10 +289,74 @@ export function HandDetailScreen() {
   );
 }
 
-const Toolbar = () => (
-  <View className="flex-row items-center justify-center gap-6 rounded-xl bg-white py-3">
-    {[Bold, Heading1, List, ImageIcon, Link2].map((I, i) => (
-      <I key={i} size={ICON.sm} color={C.ink} />
+export type Format = 'bold' | 'heading' | 'list' | 'link';
+type Selection = { start: number; end: number };
+
+/**
+ * 툴바 서식을 글에 넣는다. 노트는 글자로만 저장하므로 마크다운 기호를 쓰고 상세 화면(NoteBody)이 그 표시대로 그린다.
+ * 굵게 · 링크는 고른 글자를 감싸고(없으면 틀을 넣는다), 제목 · 목록은 커서가 있는 줄 앞에 붙이거나(이미 있으면) 뗀다
+ */
+export function applyFormat(
+  text: string,
+  sel: Selection,
+  format: Format,
+): { text: string; sel: Selection } {
+  const start = Math.min(sel.start, sel.end, text.length);
+  const end = Math.min(Math.max(sel.start, sel.end), text.length);
+  if (format === 'bold' || format === 'link') {
+    const picked = text.slice(start, end) || (format === 'bold' ? '굵게' : '링크');
+    const wrapped = format === 'bold' ? `**${picked}**` : `[${picked}](https://)`;
+    const next = text.slice(0, start) + wrapped + text.slice(end);
+    return { text: next, sel: { start: start + wrapped.length, end: start + wrapped.length } };
+  }
+  const mark = format === 'heading' ? '# ' : '- ';
+  const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+  const has = text.startsWith(mark, lineStart);
+  const next = has
+    ? text.slice(0, lineStart) + text.slice(lineStart + mark.length)
+    : text.slice(0, lineStart) + mark + text.slice(lineStart);
+  const shift = has ? -mark.length : mark.length;
+  const at = Math.max(lineStart, end + shift);
+  return { text: next, sel: { start: at, end: at } };
+}
+
+/**
+ * 저장할 섹션. 아무것도 쓰지 않은 섹션은 빼고, 제목 없이 본문만 쓴 섹션은 「내용 N」 제목을 붙인다 —
+ * 서버는 제목 1자 이상만 받아(UpdateMaterialDto) 제목을 비운 채 저장하면 400으로 거절해 고친 글이 저장되지 않았다.
+ * 「내용 N」은 서버가 자동 요약에서 제목 없는 조각에 붙이는 이름과 같다(material-sync)
+ */
+export function summaryForSave(sections: { heading: string; body: string }[]) {
+  const kept = sections.filter((s) => s.heading.trim() || s.body.trim());
+  // 사용자가 직접 「내용 2」라고 쓴 제목과 겹치지 않게 다음 번호로 넘긴다(서버 uniqueHeading과 같은 뜻)
+  const used = new Set(kept.map((s) => s.heading.trim()).filter(Boolean));
+  return kept.map((s, i) => {
+    if (s.heading.trim()) return s;
+    let n = i + 1;
+    while (used.has(`내용 ${n}`)) n++;
+    used.add(`내용 ${n}`);
+    return { ...s, heading: `내용 ${n}` };
+  });
+}
+
+const TOOLS = [
+  [Bold, '굵게', 'bold'],
+  [Heading1, '제목', 'heading'],
+  [List, '목록', 'list'],
+  [Link2, '링크', 'link'],
+] as const;
+
+const Toolbar = ({ onFormat }: { onFormat: (f: Format) => void }) => (
+  <View className="flex-row items-center justify-center gap-2 rounded-xl bg-white py-1.5">
+    {TOOLS.map(([I, label, f]) => (
+      <Pressable
+        key={f}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        onPress={() => onFormat(f)}
+        className="h-11 w-14 items-center justify-center rounded-lg active:bg-fill"
+      >
+        <I size={ICON.sm} color={C.ink} />
+      </Pressable>
     ))}
   </View>
 );
@@ -310,24 +366,33 @@ export function EditScreen() {
   const qc = useQueryClient();
   const [sections, setSections] = useState<{ heading: string; body: string }[]>([]);
   const [editing, setEditing] = useState(false);
+  // 툴바가 바꿀 곳: 마지막으로 누른 본문 칸과 그 안의 커서 · 고른 범위
+  const target = useRef<{ index: number; sel: Selection }>({ index: 0, sel: { start: 0, end: 0 } });
   // 자료를 처음 불러왔을 때만 편집할 본문을 채운다 — 재조회가 고치던 글을 덮어쓰지 않게 (렌더 중 상태 조정)
   const [loaded, setLoaded] = useState<string>();
   if (m && m._id !== loaded) {
     setLoaded(m._id);
     setSections((m.summary?.sections ?? []).map((section) => ({ ...section })));
   }
+  const format = (f: Format) => {
+    const { index } = target.current;
+    const section = sections[index];
+    if (!section) return toast('서식을 넣을 본문을 먼저 눌러 주세요');
+    const next = applyFormat(section.body, target.current.sel, f);
+    target.current = { index, sel: next.sel };
+    setSections((all) => all.map((s, i) => (i === index ? { ...s, body: next.text } : s)));
+  };
   const save = useMutation({
     mutationFn: () => {
       if (!m || loaded !== id) throw new Error('자료를 먼저 불러와 주세요');
-      // 아무것도 쓰지 않은 섹션은 저장하지 않는다
-      return api.content.updateSummary(
-        id,
-        sections.filter((s) => s.heading.trim() || s.body.trim()),
-      );
+      return api.content.updateSummary(id, summaryForSave(sections));
     },
-    onError: () => toast('노트를 저장하지 못했어요. 다시 시도해주세요'),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['material', id] });
+    onError: (e) =>
+      toast(e instanceof ApiError ? e.message : '노트를 저장하지 못했어요. 다시 시도해주세요'),
+    onSuccess: (saved) => {
+      // 상세 화면이 저장한 글을 바로 보이게 응답으로 캐시를 바꾸고 다시 읽는다
+      if (saved) qc.setQueryData(['material', id], saved);
+      void qc.invalidateQueries({ queryKey: ['material', id] });
       router.back();
       toast('노트를 저장했어요');
     },
@@ -336,48 +401,28 @@ export function EditScreen() {
   return (
     <Canvas>
       <Screen
+        // 키보드가 올라와도 툴바 · 취소 · 저장은 키보드 바로 위에 남는다(Screen이 키보드만큼 줄인다)
         footer={
-          !editing && (
-            <>
-              <Toolbar />
-              <View className="mt-3">
-                <Two>
-                  <Btn kind="outline" onPress={() => router.back()}>
-                    취소
-                  </Btn>
-                  <Btn
-                    disabled={!m || loaded !== id}
-                    loading={save.isPending}
-                    onPress={() => save.mutate()}
-                  >
-                    저장
-                  </Btn>
-                </Two>
-              </View>
-            </>
-          )
+          <>
+            <Toolbar onFormat={format} />
+            <View className="mt-3">
+              <Two>
+                <Btn kind="outline" onPress={() => router.back()}>
+                  취소
+                </Btn>
+                <Btn
+                  disabled={!m || loaded !== id}
+                  loading={save.isPending}
+                  onPress={() => save.mutate()}
+                >
+                  저장
+                </Btn>
+              </Two>
+            </View>
+          </>
         }
       >
-        <Header
-          title="노트 편집"
-          large={false}
-          right={
-            <Pressable
-              disabled={!m || loaded !== id || save.isPending}
-              onPress={() => save.mutate()}
-              className={cx(
-                'rounded-full px-3 py-1',
-                editing ? 'bg-brand' : 'border border-brand/40',
-              )}
-            >
-              <Text
-                className={cx('text-footnote font-semibold', editing ? 'text-white' : 'text-brand')}
-              >
-                저장
-              </Text>
-            </Pressable>
-          }
-        />
+        <Header title="노트 편집" large={false} />
         <View className="-mt-2 mb-3 flex-row items-center gap-1">
           <Text className="text-caption2 text-sub">필기 · 업로드 · 수정 중</Text>
           {editing && <Badge tone="danger">● 편집 중</Badge>}
@@ -398,6 +443,7 @@ export function EditScreen() {
                 }
                 onFocus={() => setEditing(true)}
                 onBlur={() => setEditing(false)}
+                className="text-subhead font-bold text-ink"
               />
               <TextInput
                 accessibilityLabel={index === 0 ? '노트 내용' : `섹션 ${index + 1} 본문`}
@@ -408,7 +454,16 @@ export function EditScreen() {
                 onChangeText={(body) =>
                   setSections((all) => all.map((s, i) => (i === index ? { ...s, body } : s)))
                 }
-                onFocus={() => setEditing(true)}
+                onSelectionChange={(e) => {
+                  target.current = { index, sel: e.nativeEvent.selection };
+                }}
+                onFocus={() => {
+                  setEditing(true);
+                  if (target.current.index !== index) {
+                    const end = section.body.length;
+                    target.current = { index, sel: { start: end, end } };
+                  }
+                }}
                 onBlur={() => setEditing(false)}
                 className="min-h-32 text-footnote leading-5 text-ink"
                 style={{ textAlignVertical: 'top' }}
@@ -422,11 +477,6 @@ export function EditScreen() {
         >
           <Text className="text-caption text-brand">+ 섹션 추가</Text>
         </Pressable>
-        {editing && (
-          <View className="mt-4">
-            <Toolbar />
-          </View>
-        )}
       </Screen>
     </Canvas>
   );
@@ -437,15 +487,12 @@ export function RecDetailScreen() {
   const { id, m, isError, refetch } = useMaterial();
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
-  const buddy = useTuckOnScroll();
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
     <Canvas>
-      <Screen
-        onScroll={buddy.onScroll}
-        overlay={canAsk(m) && <TutorBuddy id={id} tucked={buddy.tucked} />}
-      >
+      {/* 떠 있는 아바타 선생님은 두지 않는다: 플레이어 자막 옆 3D 아바타가 녹음에 맞춰 말한다(GL 화면 하나) */}
+      <Screen>
         <Header
           title={view === 'text' ? '원문 텍스트 보기' : m.title}
           sub={dateLabel(m, '녹음')}
@@ -453,7 +500,7 @@ export function RecDetailScreen() {
           right={<More onPress={() => setOpt(true)} />}
         />
         <QuizFromNote material={m} className="mb-3" />
-        <View className="-mt-2 mb-3 flex-row items-center gap-2">
+        <View className="mb-3 flex-row items-center gap-2">
           {view === 'text' && <Text className="text-caption text-sub">{m.title}</Text>}
           {subject && <Badge>{subject}</Badge>}
           {m.description ? (
@@ -532,6 +579,13 @@ export function DocDetailScreen() {
               <DocSummary points={m.summary.points} keywords={m.keywords} />
             ) : (
               <AiPending what="문서 요약" />
+            )}
+            {/* 편집하기로 고친 글(섹션)도 보인다 — 전에는 핵심 요약만 보여 문서를 고쳐도 바뀐 게 없어 보였다 */}
+            {!!m.summary?.sections.length && (
+              <>
+                <Label>정리된 내용</Label>
+                <NoteBody sections={m.summary.sections} />
+              </>
             )}
             {subject && (
               <>

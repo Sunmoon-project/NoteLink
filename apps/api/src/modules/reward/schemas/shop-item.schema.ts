@@ -2,7 +2,8 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import type { HydratedDocument } from 'mongoose';
 
 // 정해진 값만 쓰도록 목록으로 둔다 (DTO 검사와 스키마가 같은 목록을 씀)
-export const SHOP_CATEGORIES = ['avatar', 'theme'] as const;
+// hat · glasses · scarf: 아바타 선생님 치장. 종류마다 하나씩 장착(user_items 종류별 장착 1개 인덱스)
+export const SHOP_CATEGORIES = ['avatar', 'theme', 'hat', 'glasses', 'scarf'] as const;
 export type ShopCategory = (typeof SHOP_CATEGORIES)[number];
 
 export const SHOP_BADGES = ['NEW', 'BEST'] as const;

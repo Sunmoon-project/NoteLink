@@ -97,6 +97,8 @@ export const httpApi: Api = {
     registerDevice: (d) => http.post(P.myDevices, d),
     changePlan: (tier) => http.patch(P.mySubscription, { tier }),
     withdraw: () => http.del(P.me),
+    emailSendCode: () => http.post(P.myEmailSendCode),
+    emailVerifyCode: (code) => http.post(P.myEmailVerifyCode, { code }),
   },
   upload: { getSas: (p) => http.post(P.uploadSas, p) },
   study: {
@@ -218,6 +220,7 @@ export const httpApi: Api = {
     wish: async (itemId) => (await http.post<{ isWished: boolean }>(P.wish(itemId))).isWished,
     purchase: (itemId) => http.post(P.purchases, { itemId }),
     equip: (itemId) => http.post(P.equip(itemId)),
+    unequip: (itemId) => http.del(P.equip(itemId)),
     ledger: (type) => http.get(P.pointLedger, { type }),
   },
 };

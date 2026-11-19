@@ -1,5 +1,6 @@
 import {
     Controller,
+    Delete,
     Get,
     HttpCode,
     NotFoundException,
@@ -31,6 +32,16 @@ export class MyItemsController {
     @HttpCode(204)
     async equip(@Req() req: AuthenticatedRequest, @Param('itemId') itemId: string): Promise<void> {
         const ok = await this.shop.equip(requireUserId(req), itemId);
+        if (!ok) {
+            throw new NotFoundException({ code: 'NOT_FOUND', message: '보유하지 않은 아이템입니다.' });
+        }
+    }
+
+    /** DELETE /api/v1/users/me/items/:itemId/equip — 벗기 */
+    @Delete(':itemId/equip')
+    @HttpCode(204)
+    async unequip(@Req() req: AuthenticatedRequest, @Param('itemId') itemId: string): Promise<void> {
+        const ok = await this.shop.unequip(requireUserId(req), itemId);
         if (!ok) {
             throw new NotFoundException({ code: 'NOT_FOUND', message: '보유하지 않은 아이템입니다.' });
         }

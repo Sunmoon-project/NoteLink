@@ -245,9 +245,10 @@ it('불러온 이전 기록은 움직이지 않고, 새로 보낸 말풍선만 �
   await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
   const bubbleOf = (text: string) => {
     let node = screen.getByText(text).parent;
-    while (node && node.props.entering === undefined && !('entering' in node.props))
+    // 채팅 목록 전체도 열릴 때 움직이므로(entering) 그 바깥까지는 올라가지 않는다
+    while (node && node.props.testID !== 'room-chat' && !('entering' in node.props))
       node = node.parent;
-    return node;
+    return node?.props.testID === 'room-chat' ? null : node;
   };
   expect(await screen.findByText('예전 메시지')).toBeTruthy();
   expect(bubbleOf('예전 메시지')?.props.entering).toBeUndefined();

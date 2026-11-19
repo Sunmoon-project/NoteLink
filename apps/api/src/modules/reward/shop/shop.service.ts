@@ -132,6 +132,16 @@ export class ShopService {
         }
     }
 
+    /** 벗기(장착 해제). 보유한 아이템이면 true(이미 벗었어도 true — 두 번 눌러도 같은 결과), 아니면 false */
+    async unequip(userId: string, itemId: string): Promise<boolean> {
+        if (!isValidObjectId(itemId)) return false;
+        const res = await this.userItemModel.updateOne(
+            { userId: new Types.ObjectId(userId), itemId: new Types.ObjectId(itemId), isOwned: true },
+            { $set: { isEquipped: false } },
+        );
+        return res.matchedCount > 0;
+    }
+
     private equipOnce(owner: Types.ObjectId, itemObjectId: Types.ObjectId): Promise<boolean> {
         return this.connection.transaction(async (session) => {
             const target = await this.userItemModel

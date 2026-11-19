@@ -98,24 +98,32 @@ it('생성 응답 전 취소해도 뒤늦게 생긴 서버 작업을 취소하�
   expect(router.replace).not.toHaveBeenCalled();
 });
 
-it('유사 퀴즈 저장 응답 대기 중 같은 문제를 연속 저장하지 않는다', async () => {
-  const sim = await api.quiz.similar('qs1');
-  const card = await api.quiz.saveFlashcard({ front: '앞', back: '뒤' });
-  jest.spyOn(api.quiz, 'similar').mockResolvedValue(sim);
-  const delayed = deferred<typeof card>();
-  const save = jest.spyOn(api.quiz, 'saveFlashcard').mockReturnValue(delayed.promise);
+it('유사 퀴즈가 다 만들어지면 풀이 화면으로 바로 넘어가고, 응답 대기 중 연속으로 눌러도 한 번만 만든다', async () => {
+  const delayed = deferred<Awaited<ReturnType<typeof api.quiz.similar>>>();
+  const similar = jest.spyOn(api.quiz, 'similar').mockReturnValue(delayed.promise);
   setParams({ setId: 'qs1' });
   await renderScreen(<QuizSimilarScreen />, client());
-  await fireEvent.press(screen.getByText('유사 퀴즈 만들기'));
-  const button = (await screen.findAllByText('플래시카드 저장'))[0]!;
+  const button = screen.getByText('유사 퀴즈 만들기');
   const user = userEvent.setup();
-  try {
-    await user.press(button);
-    await user.press(button);
-    expect(save).toHaveBeenCalledTimes(1);
-  } finally {
-    await act(async () => delayed.resolve(card));
-  }
+  await user.press(button);
+  await user.press(button);
+  expect(similar).toHaveBeenCalledTimes(1);
+  await act(async () =>
+    delayed.resolve({
+      _id: 'similar-ready',
+      title: '유사 퀴즈',
+      status: 'ready',
+      questionCount: 0,
+      questions: [],
+    } as never),
+  );
+  await waitFor(() =>
+    expect(router.replace).toHaveBeenCalledWith({
+      pathname: '/play/solve',
+      params: { setId: 'similar-ready' },
+    }),
+  );
+  expect(router.replace).toHaveBeenCalledTimes(1);
 });
 
 const flash = (id: string): Flashcard => ({

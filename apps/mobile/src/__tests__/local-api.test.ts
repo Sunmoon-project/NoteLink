@@ -319,7 +319,11 @@ it('같은 세션을 다시 끝내도 처음 정산을 돌려주고 포인트를
 
 it('방 타이머를 정하면 끝나는 시각을 계산해 소켓과 방 정보로 준다', async () => {
   await signup('a@test.com');
-  const room = await api.rooms.create({ title: '방', categoryName: '수학', isPublic: true });
+  const room = await api.rooms.create({
+    title: '방',
+    categoryIds: ['000000000000000000000001'],
+    isPublic: true,
+  });
   const heard: { endsAt: string | null; phase: string }[] = [];
   const { localSocket } = jest.requireActual<typeof import('../lib/socket')>('../lib/socket');
   const push = jest
@@ -357,7 +361,11 @@ it('같은 키로 동시에 등록해도 자료는 하나만 만들고, 다른 �
 
 it('방 타이머 저장이 실패하면 참여자에게 알리지 않는다', async () => {
   await signup('a@test.com');
-  const room = await api.rooms.create({ title: '방', categoryName: '수학', isPublic: true });
+  const room = await api.rooms.create({
+    title: '방',
+    categoryIds: ['000000000000000000000001'],
+    isPublic: true,
+  });
   const { localSocket } = jest.requireActual<typeof import('../lib/socket')>('../lib/socket');
   const push = jest.spyOn(localSocket, 'push').mockImplementation(() => {});
   const rule = {
@@ -438,6 +446,33 @@ it('테마를 끼워도 장착한 아바타는 그대로이고, 같은 종류끼
   expect(on(theme._id)).toBe(true);
   expect(after.filter((u) => u.isEquipped && u.itemCategory === 'avatar')).toHaveLength(1);
   await expect(api.shop.equip('없는-아이템')).rejects.toThrow('보유한');
+});
+
+it('치장: 칸마다 하나씩 함께 끼고, 같은 칸은 바뀌며, 벗기면 그 칸만 풀린다', async () => {
+  const user = await signup('a@test.com');
+  const file = `user-${user._id}`;
+  const saved = JSON.parse(mockFiles.get(file)!);
+  saved.user.pointBalance = 100000;
+  mockFiles.set(file, JSON.stringify(saved));
+  resetLocalForTests();
+  await login('a@test.com');
+  for (const id of ['beanie', 'gradCap', 'roundGlasses', 'redScarf']) await api.shop.purchase(id);
+  for (const id of ['beanie', 'roundGlasses', 'redScarf']) await api.shop.equip(id);
+  await api.shop.equip('gradCap');
+  const on = async () =>
+    (await api.shop.myItems())
+      .filter((u) => u.isEquipped)
+      .map((u) => u.itemId)
+      .sort();
+  expect(await on()).toEqual(['gradCap', 'redScarf', 'roundGlasses']);
+  await api.shop.unequip('roundGlasses');
+  await api.shop.unequip('roundGlasses'); // 두 번 눌러도 그대로
+  expect(await on()).toEqual(['gradCap', 'redScarf']);
+  await expect(api.shop.unequip('sunglasses')).rejects.toThrow('보유한');
+  // 앱을 다시 켜도 남는다
+  resetLocalForTests();
+  await login('a@test.com');
+  expect(await on()).toEqual(['gradCap', 'redScarf']);
 });
 
 it('구매한 아바타를 낀 뒤 기본 아바타로 돌아갈 수 있고, 테마는 그대로다', async () => {
@@ -597,4 +632,26 @@ describe('아이디 · 비밀번호 찾기(기기 저장 모드)', () => {
       'user_student',
     );
   });
+});
+
+it('기기 저장 모드도 방을 만들 때 고른 분야(첫 번째가 대표) 이름과 내 학습자 구분을 방에 담는다', async () => {
+  await signup('a@test.com');
+  await api.me.update({ learnerType: 'worker' });
+  const list = await api.me.interestCategories();
+  const [suneung, cert] = [
+    list.find((c) => c.name === '수능')!,
+    list.find((c) => c.name === '자격증')!,
+  ];
+  const room = await api.rooms.create({
+    title: '분야 방',
+    categoryIds: [suneung._id, cert._id],
+    isPublic: true,
+  });
+  expect(room).toMatchObject({
+    categoryId: suneung._id,
+    categoryIds: [suneung._id, cert._id],
+    categoryNames: ['수능', '자격증'],
+    learnerType: 'worker',
+  });
+  expect((await api.rooms.mine())[0]).toMatchObject({ categoryNames: ['수능', '자격증'] });
 });
