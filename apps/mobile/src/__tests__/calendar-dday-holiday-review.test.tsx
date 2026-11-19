@@ -226,3 +226,52 @@ describe('PR35 공휴일 숨김 저장', () => {
     expect(api.calendar.holidays).toHaveBeenCalledTimes(2);
   });
 });
+
+// 실기기 피드백: D-day 추가는 있는데 삭제가 없었다
+describe('D-day 삭제', () => {
+  const dday = (over: Partial<DDay>): DDay => ({
+    _id: 'd1',
+    title: '기말고사',
+    date: '2032-07-01',
+    source: 'manual',
+    kind: '목표일',
+    daysLeft: 30,
+    ...over,
+  });
+  beforeEach(() => {
+    ddayRecords = [
+      dday({}),
+      dday({ _id: 'd2', title: '리포트', source: 'todo', kind: '과제', daysLeft: 3 }),
+    ];
+    jest.spyOn(api.calendar, 'removeDday').mockImplementation(async (id) => {
+      ddayRecords = ddayRecords.filter((d) => d._id !== id);
+    });
+  });
+
+  it('확인한 뒤 고른 D-day만 지우고 목록을 다시 읽는다', async () => {
+    await renderDday();
+    await fireEvent.press(await screen.findByLabelText('기말고사 삭제'));
+    expect(api.calendar.removeDday).not.toHaveBeenCalled();
+    await fireEvent.press(await screen.findByRole('button', { name: '삭제' }));
+    await waitFor(() => expect(screen.queryByText('기말고사')).toBeNull());
+    expect(api.calendar.removeDday).toHaveBeenCalledWith('d1');
+    expect(screen.getByText('리포트')).toBeTruthy();
+  });
+
+  it('할 일에서 온 D-day도 지울 수 있고, 할 일은 남는다고 알려 준다', async () => {
+    await renderDday();
+    await fireEvent.press(await screen.findByLabelText('리포트 삭제'));
+    expect(await screen.findByText(/할 일은 그대로/)).toBeTruthy();
+    await fireEvent.press(screen.getByRole('button', { name: '삭제' }));
+    await waitFor(() => expect(api.calendar.removeDday).toHaveBeenCalledWith('d2'));
+  });
+
+  it('삭제가 실패하면 알리고 목록을 그대로 둔다', async () => {
+    jest.spyOn(api.calendar, 'removeDday').mockRejectedValue(new Error('x'));
+    await renderDday();
+    await fireEvent.press(await screen.findByLabelText('기말고사 삭제'));
+    await fireEvent.press(await screen.findByRole('button', { name: '삭제' }));
+    await expectErrorToast();
+    expect(screen.getByText('기말고사')).toBeTruthy();
+  });
+});
