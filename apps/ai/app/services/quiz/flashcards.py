@@ -19,7 +19,8 @@ result — NestJS가 사용자가 플래시카드 목록을 열 때 flashcards�
   flashcardsReason  COUNT장을 못 채운 이유('N/5장만 만듦(이유)'), 다 채우면 null
 
 검사(코드): 모양 · 쪽(보여 준 쪽만) · 길이 · 앞뒤가 같음 · 앞면 겹침, 앞면 낱말이 그 쪽 글에 있음,
-뒷면 글이 그 쪽 노트 글에 있음(grounded). 떨어진 카드는 빼고, 모자라면 보충 호출은 한 번까지(앞
+뒷면 글이 그 쪽 노트 글에 있음(grounded). 그다음 검사 모델이 한 호출로 앞뒤 짝을 봄(뒷면이 그 앞면의
+뜻 · 답인지, _verify). 떨어진 카드는 빼고, 모자라면 보충 호출은 한 번까지(앞
 카드의 문제점 · 이미 만든 앞면을 알려 줌).
 
 카드는 퀴즈의 덤입니다: 호출 실패 · 시간 초과 · 설정 오류 · 코드 오류가 나도 예외를 올리지 않고
@@ -32,6 +33,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -77,6 +79,8 @@ COVER = 0.6
 # 맨 끝 '다' 한 글자는 빼지 않음('바다' · '많다'는 그 낱말이 노트에 그대로 있음, /code-review)
 _END = re.compile(r"(?:입니다|합니다|됩니다|이다|한다|된다|는다|있다|없다|이며|이고)[\s.!]*$")
 _LATIN = re.compile(r"([a-z]+)")
+# text.norm이 지우는 글자(소문자로는 바꾸지 않음)
+_FRONT_PUNCT = re.compile(r"[\s\-_.·:()\[\]'\"~/,!?]+")
 RUN = 4  # 뒷면에 쪽 글 그대로 있어야 하는 구간 길이(글자)
 # 카드 한 장 몫의 출력 토큰: 앞 80자 + 뒤 200자 + 개념 · JSON 키(한글은 글자당 1토큰 안팎)
 CARD_TOKENS = 700  # 한글이 글자당 2토큰 가까운 토크나이저도 덮게 넉넉히(상한일 뿐, /code-review)
@@ -93,8 +97,17 @@ SAME_SIDES = "앞뒤가 같음"
 SAME_FRONT = "앞면이 겹침"
 FRONT_NOT_IN_NOTE = "앞면 낱말이 그 쪽에 없음"
 NOT_IN_NOTE = "뒷면이 노트 글에 없음"
+NOT_PAIRED = "뒷면이 앞면의 뜻 · 답이 아님"  # 검사 모델의 앞뒤 짝 검사(_verify)
+UNCHECKED = "짝 검사의 답 모양이 맞지 않음"
+VERIFY_NAME = "CheckCards"  # 앞뒤 짝 검사 호출 이름
 WHY_SHOWN = 4  # 이유 글에 담는 탈락 이유 수
 
+VERIFY_SYS = (
+    "너는 플래시카드 검수자다. 카드마다 그 카드에 적힌 쪽의 노트만 근거로, 뒷면이 앞면(용어나 "
+    "질문)의 뜻이나 답으로 맞는지 판단한다. 뒷면이 다른 용어 · 다른 항목의 설명이거나 노트로 "
+    "확인할 수 없으면 false. 카드마다 따로 판단해 results에 카드 순서대로 넣는다. "
+    "JSON으로만 답한다."
+)
 CARD_SYS = (
     "너는 학습용 플래시카드를 만든다. 주어진 노트 쪽의 글만 근거로, 외울 만한 용어 · 개념마다 "
     "카드 한 장을 만든다. front는 용어나 짧은 질문 한 줄, back은 그 뜻이나 답을 노트 문장을 살려 "
@@ -152,6 +165,12 @@ def _front_in_note(front: str, page_text: str) -> bool:
     return sum(t in page for t in found) * 2 > len(found)
 
 
+def _front_key(front: str) -> str:
+    """앞면 겹침 비교 값: 공백 · 문장부호만 뺌. 대소문자는 살림(CO 일산화탄소 · Co 코발트,
+    Codex 리뷰 #559). norm은 소문자로 바꿔 쓰지 않음."""
+    return _FRONT_PUNCT.sub("", unicodedata.normalize("NFC", front))
+
+
 def _check(raw: object, pages: dict[int, str], fronts: set[str]) -> tuple[JsonObject | None, str]:
     """카드 하나: (통과한 카드, '') 또는 (None, 이유)."""
     if not isinstance(raw, dict):
@@ -171,7 +190,7 @@ def _check(raw: object, pages: dict[int, str], fronts: set[str]) -> tuple[JsonOb
         return None, TOO_LONG
     if norm(front) == norm(back):
         return None, SAME_SIDES
-    if norm(front) in fronts:
+    if _front_key(front) in fronts:
         return None, SAME_FRONT
     if not _front_in_note(front, pages[page]):
         return None, FRONT_NOT_IN_NOTE
@@ -221,6 +240,44 @@ def _shown(pages: dict[int, str], scope: list[tuple[int, str]]) -> tuple[dict[in
     return shown, names
 
 
+def _ask(
+    llm: Llm,
+    model: str,
+    system: str,
+    user: str,
+    schema: JsonObject,
+    name: str,
+    max_tokens: int,
+    end: Callable[[], float],
+    clock: Callable[[], float],
+    temperature: float = 0.0,
+) -> JsonObject:
+    """LLM 호출 하나. end()(clock 값)까지만 기다리고(POLL_SEC마다 봄), 넘으면 남은 호출을 멈추고
+    LlmError(TIMEOUT). 이미 보낸 호출은 응답을 기다리는 스레드에 남음(Stopping, 알려진 한계)."""
+    stop = threading.Event()
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quiz-cards")
+    try:
+        f = pool.submit(
+            Stopping(llm, stop, STOPPED).call,
+            model,
+            system,
+            user,
+            schema,
+            name,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        while not f.done():
+            left = end() - clock()
+            if left <= 0:
+                stop.set()
+                raise LlmError(TIMEOUT)
+            wait([f], timeout=min(POLL_SEC, left))
+        return f.result()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 def _call(
     llm: Llm,
     user: str,
@@ -229,31 +286,62 @@ def _call(
     end: Callable[[], float],
     clock: Callable[[], float],
 ) -> object:
-    """카드 호출 하나. end()(clock 값)까지만 기다리고(POLL_SEC마다 봄), 넘으면 남은 호출을 멈추고
-    LlmError(TIMEOUT). 이미 보낸 호출은 응답을 기다리는 스레드에 남음(Stopping, 알려진 한계)."""
-    stop = threading.Event()
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quiz-cards")
-    try:
-        f = pool.submit(
-            Stopping(llm, stop, STOPPED).call,
-            settings.quiz_gen_model,
-            CARD_SYS,
-            user,
-            _schema(pages, k),
-            NAME,
-            max_tokens=200 + CARD_TOKENS * k,
-            temperature=0.3,
-        )
-        while not f.done():
-            left = end() - clock()
-            if left <= 0:
-                stop.set()
-                raise LlmError(TIMEOUT)
-            wait([f], timeout=min(POLL_SEC, left))
-        r = f.result()
-        return r.get("cards") if isinstance(r, dict) else None
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+    """카드 만들기 호출 하나(생성 모델). 답의 cards."""
+    r = _ask(
+        llm, settings.quiz_gen_model, CARD_SYS, user, _schema(pages, k), NAME,
+        200 + CARD_TOKENS * k, end, clock, temperature=0.3,
+    )  # fmt: skip
+    return r.get("cards") if isinstance(r, dict) else None
+
+
+def _verify(
+    llm: Llm,
+    cards: list[JsonObject],
+    pages: dict[int, str],
+    end: Callable[[], float],
+    clock: Callable[[], float],
+) -> list[bool] | None:
+    """코드 검사를 통과한 카드들의 앞뒤 짝을 검사 모델이 한 호출로 봄(Codex 리뷰 #559).
+
+    카드마다 뒷면이 앞면(용어 · 질문)의 뜻 · 답이 맞는지. 뒷면 글이 그 쪽 노트에 있어도(grounded)
+    다른 용어의 설명을 붙일 수 있어서: '이질 아메바 포낭형의 핵 수' ↔ 대장 아메바의
+    '포낭형이 8핵이고 비병원성'. 답 모양이 틀리면 None(이 판의 카드를 쓰지 않음).
+    """
+    notes = "\n\n".join(
+        f'<노트 쪽="{p}">\n{pages[p]}\n</노트>' for p in sorted({c["pageNo"] for c in cards})
+    )
+    shown = "\n\n".join(
+        f"카드 {i} (노트 쪽 {c['pageNo']})\n앞: {c['front']}\n뒤: {c['back']}"
+        for i, c in enumerate(cards, 1)
+    )
+    schema: JsonObject = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["results"],
+        "properties": {
+            "results": {
+                "type": "array",
+                "minItems": len(cards),
+                "maxItems": len(cards),
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["matches"],
+                    "properties": {"matches": {"type": "boolean"}},
+                },
+            }
+        },
+    }
+    r = _ask(
+        llm, settings.quiz_check_model, VERIFY_SYS, f"{notes}\n\n{shown}", schema, VERIFY_NAME,
+        100 + 30 * len(cards), end, clock,
+    )  # fmt: skip
+    rows = r.get("results") if isinstance(r, dict) else None
+    if not isinstance(rows, list) or len(rows) != len(cards):
+        return None
+    out = [row.get("matches") if isinstance(row, dict) else None for row in rows]
+    ok = [x for x in out if isinstance(x, bool)]
+    return ok if len(ok) == len(out) else None
 
 
 def make(
@@ -298,6 +386,21 @@ def make(
             user += f"\n앞서 만든 카드의 문제점: {'; '.join(dict.fromkeys(faults))}"
         try:
             got = _call(llm, user, sorted(shown), k, limit, now)
+            if not isinstance(got, list):
+                why.append(BAD_SHAPE)
+                faults.append(BAD_SHAPE)
+                continue
+            picked: list[JsonObject] = []  # 코드 검사를 통과한 카드(앞뒤 짝 검사 전)
+            for raw in got:
+                if len(cards) + len(picked) >= COUNT:
+                    break
+                c, bad = _check(raw, shown, fronts | {_front_key(x["front"]) for x in picked})
+                if c is None:
+                    why.append(bad)
+                    faults.append(bad)
+                    continue
+                picked.append(c)
+            matches = _verify(llm, picked, shown, limit, now) if picked else []
         except LlmRejectedError as e:  # 다시 보내도 같음
             why.append(f"카드 요청 거절({e})")
             break
@@ -308,29 +411,23 @@ def make(
             why.append(f"카드 호출 실패({e})")
             continue
         except LlmSetupError as e:
-            if (
-                e.retry
-            ):  # 서버 거절(401 · 403 · 404): 작업 처리기가 시도 한도 안에서 다시(/code-review)
+            if e.retry:  # 서버 거절(401 · 403 · 404): 작업 처리기가 시도 한도 안에서 다시
                 raise
             why.append(f"카드 만들기 오류({type(e).__name__})")  # 설정 값 없음 · 사용 한도
             break
         except Exception as e:  # 코드 오류: 다시 해도 같음
             why.append(f"카드 만들기 오류({type(e).__name__})")
             break
-        if not isinstance(got, list):
-            why.append(BAD_SHAPE)
-            faults.append(BAD_SHAPE)
+        if matches is None:
+            why.append(UNCHECKED)
             continue
-        for raw in got:
-            if len(cards) >= COUNT:
-                break
-            c, bad = _check(raw, shown, fronts)
-            if c is None:
-                why.append(bad)
-                faults.append(bad)
+        for c, ok in zip(picked, matches, strict=True):
+            if not ok:
+                why.append(NOT_PAIRED)
+                faults.append(NOT_PAIRED)
                 continue
             cards.append(c)
-            fronts.add(norm(c["front"]))
+            fronts.add(_front_key(c["front"]))
         if len(cards) >= COUNT:
             return cards, None
     shown_why = "; ".join(list(dict.fromkeys(why))[:WHY_SHOWN])

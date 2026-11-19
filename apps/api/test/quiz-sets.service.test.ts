@@ -1400,8 +1400,43 @@ describe('QuizSetsService 개념 카드 작업(#558)', () => {
     expect(line).toContain('Error');
     expect(line).not.toContain('세포막');
     expect(cardJobs(t)).toHaveLength(0);
+    expect(t.set(quizSet._id)['cardsPending']).toBe(true); // 다음 조회가 다시 넣는다
+
+    // 다음 조회(세트 하나 · 목록)가 한 번만 다시 넣고 표시를 지운다
+    await Promise.all([
+      t.service.findMine(ME.toHexString(), quizSet._id),
+      t.service.list(ME.toHexString()),
+    ]);
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+    expect(cardJobs(t)).toHaveLength(1);
+    expect(t.set(quizSet._id)['cardsPending']).toBe(false);
     warn.mockRestore();
     enqueue.mockRestore();
+  });
+
+  it('표시를 지우기 전에 멈춘 요청(카드 작업은 이미 있음)은 다시 넣지 않고 표시만 지운다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    t.finish(job._id, { questions: fullSet() });
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+    expect(cardJobs(t)).toHaveLength(1);
+    t.set(quizSet._id)['cardsPending'] = true; // 작업을 넣은 뒤 표시를 지우지 못하고 멈춤
+
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+
+    expect(cardJobs(t)).toHaveLength(1);
+    expect(t.set(quizSet._id)['cardsPending']).toBe(false);
+  });
+
+  it('카드 표시는 앱 응답에 나가지 않는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    t.finish(job._id, { questions: fullSet() });
+    const ready = await t.service.findMine(ME.toHexString(), quizSet._id);
+    expect(ready).not.toHaveProperty('cardsPending');
+    expect(QuizSet.parse(ready)).toEqual(ready);
   });
 
   it('실패한 퀴즈 작업은 카드 작업을 넣지 않는다', async () => {

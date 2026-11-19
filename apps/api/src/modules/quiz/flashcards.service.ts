@@ -93,8 +93,11 @@ function errorName(e: unknown): string {
   return `${e instanceof Error ? e.name : typeof e}${code === undefined ? '' : ` ${String(code)}`}`;
 }
 
-/** 앞면이 같은 카드인지 비교하는 값: 공백 · 대소문자는 보지 않는다 */
-const frontKey = (front: string): string => front.replace(/\s+/g, '').toLowerCase();
+/**
+ * 앞면이 같은 카드인지 비교하는 값: 공백만 보지 않는다. 대소문자는 살린다(CO 일산화탄소 · Co 코발트처럼
+ * 대소문자로 다른 용어가 있음, Codex 리뷰 #559)
+ */
+const frontKey = (front: string): string => front.normalize('NFC').replace(/\s+/g, '');
 
 /** 모든 쓰기 오류가 중복 키(같은 id를 다른 요청이 먼저 넣음)인지 */
 function onlyDuplicates(e: unknown): boolean {

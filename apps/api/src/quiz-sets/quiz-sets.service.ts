@@ -130,6 +130,7 @@ export interface QuizSetRow {
   sourceAttemptId?: Types.ObjectId | null;
   srsSavedAt?: Date | null;
   followUpPending?: boolean;
+  cardsPending?: boolean;
   reviewDay?: string | null;
   title: string;
   status: 'generating' | 'ready' | 'failed';
@@ -534,6 +535,7 @@ export class QuizSetsService {
    */
   private async sync(row: QuizSetRow): Promise<{ quizSet: AppQuizSet; job: AppAiJob | null }> {
     if (row.followUpPending && row.status !== 'generating') await this.followUp(row);
+    if (row.cardsPending && row.status === 'ready') await this.ensureCards(row);
     if (row.status === 'ready') return { quizSet: toAppSet(row), job: null };
     const job = row.jobId ? await this.findJob(row) : null;
     if (row.status === 'failed') {
@@ -583,6 +585,10 @@ export class QuizSetsService {
     // 노트가 있는 만드는 중 세트(일반 퀴즈 · 오답 복습)가 끝나면 그 노트를 기다리던 풀이를 이어 받는다:
     // 「이어 받을 풀이 남음」을 세트와 함께 적고, 넣은 뒤에 지운다(실패하면 다음 조회가 다시)
     if (row.status === 'generating' && row.materialId) update['followUpPending'] = true;
+    // 맞춤 퀴즈 · 미리 만들기 세트가 ready가 되면 같은 범위의 개념 카드 작업을 넣는다(#558): 「카드 작업 남음」을
+    // 세트와 함께 적고, 넣은 뒤에 지운다. 넣지 못하면(일시 오류 · 서버가 그 사이 멈춤) 다음 조회가 다시 넣는다.
+    // 카드는 처리기가 따로 만들어 퀴즈 작업을 늦추지 않는다
+    if (update['status'] === 'ready' && job && CARD_TYPES.includes(job.type)) update['cardsPending'] = true;
     const updated = await this.sets
       .findOneAndUpdate(
         { _id: row._id, status: row.status },
@@ -591,39 +597,47 @@ export class QuizSetsService {
       )
       .lean<QuizSetRow>();
     if (updated?.followUpPending) await this.followUp(updated);
-    // 맞춤 퀴즈 · 미리 만들기 세트가 ready가 되면 같은 범위의 개념 카드 작업을 넣는다(#558). 세트를 바꾼 이
-    // 요청만(조건부 갱신을 이긴 요청) 넣어 작업이 한 번만 생긴다. 카드는 처리기가 따로 만들어 퀴즈 작업을 늦추지
-    // 않는다(이 요청은 작업 넣기 · 노트 읽기 두 번만 더 기다림)
-    if (updated && update['status'] === 'ready' && job && CARD_TYPES.includes(job.type))
-      await this.enqueueCards(updated, job);
+    // 개념 카드 작업도 세트를 바꾼 뒤 바로 넣어 본다(표시는 위 갱신에 같이 적었다)
+    if (updated?.cardsPending) await this.ensureCards(updated);
     const current =
       updated ?? (await this.sets.findOne({ _id: row._id }).lean<QuizSetRow>()) ?? row;
     return { quizSet: toAppSet(current), job };
   }
 
   /**
-   * 개념 카드 작업(quiz_flashcards, #558)을 넣는다. 입력은 퀴즈 작업에 넣었던 노트(input.material)와 세트의 문제.
-   * 카드는 퀴즈의 덤이라 넣지 못해도 세트는 그대로 둔다(경고 로그만, 노트 · 문제 글은 넣지 않음).
-   * 그 세트의 카드는 다시 만들지 않는다(알려진 한계: 다시 넣을 표시를 두려면 세트에 필드가 필요)
+   * 「카드 작업 남음」(cardsPending)인 세트의 개념 카드 작업(quiz_flashcards, #558)을 넣고 표시를 지운다.
+   * 표시를 조건부로 먼저 지워(그 요청만 넣음) 여러 요청이 같이 와도 한 번만 넣고, 그 세트의 카드 작업이 이미 있으면
+   * 넣지 않는다(표시를 지우기 전에 멈춘 요청). 넣지 못하면 표시를 되살려 다음 조회가 다시 넣는다(경고 로그만,
+   * 노트 · 문제 글은 넣지 않음). 카드는 퀴즈의 덤이라 실패해도 세트 상태 · 문제는 그대로.
+   * 입력은 퀴즈 작업에 넣었던 노트(input.material)와 세트의 문제
    */
-  private async enqueueCards(set: QuizSetRow, job: AppAiJob): Promise<void> {
+  private async ensureCards(set: QuizSetRow): Promise<void> {
+    const claimed = await this.sets
+      .findOneAndUpdate({ _id: set._id, cardsPending: true }, { $set: { cardsPending: false } })
+      .lean<QuizSetRow>();
+    if (!claimed) return;
+    const owner = set.ownerId.toHexString();
+    const target = { type: CARDS_TYPE, targetType: 'quiz_set', targetId: set._id.toHexString() };
     try {
-      const material = await this.jobs.materialInputOf(set.ownerId.toHexString(), job._id);
+      if (await this.jobs.findForTarget(owner, target)) return;
+      const material = set.jobId ? await this.jobs.materialInputOf(owner, set.jobId.toHexString()) : null;
       const questions = set.questions ?? [];
       if (!material || questions.length === 0) return;
       await this.jobs.enqueue({
-        type: CARDS_TYPE,
-        userId: set.ownerId.toHexString(),
-        targetType: 'quiz_set',
-        targetId: set._id.toHexString(),
+        ...target,
+        userId: owner,
         input: { material, questions: questions.map(toWorkerQuestion) },
       });
     } catch (e) {
       this.logger.warn(
-        `개념 카드 작업을 넣지 못했습니다(퀴즈는 그대로, 세트 ${set._id.toHexString()}): ${
+        `개념 카드 작업을 넣지 못했습니다(퀴즈는 그대로, 다음 조회에 다시, 세트 ${set._id.toHexString()}): ${
           e instanceof Error ? e.name : typeof e
         }`,
       );
+      await this.sets
+        .findOneAndUpdate({ _id: set._id }, { $set: { cardsPending: true } })
+        .lean()
+        .catch(() => undefined);
     }
   }
 

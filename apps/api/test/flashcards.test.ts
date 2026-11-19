@@ -451,6 +451,13 @@ describe('맞춤 퀴즈 개념 카드 저장(saveFromQuizSet, #558)', () => {
     await expect(f.service.saveFromQuizSet(set({}, f), five())).rejects.toBe(down);
   });
 
+  it('대소문자만 다른 앞면(CO 일산화탄소 · Co 코발트)은 다른 카드로 둘 다 쓴다(Codex 리뷰)', async () => {
+    const f = fakeModels();
+    await f.service.saveFromQuizSet(set({}, f), [card(1, { front: 'CO', back: '일산화탄소' })]);
+    await f.service.saveFromQuizSet(set({}, f), [card(1, { front: 'Co', back: '코발트' }), card(2, { front: ' C O ' })]);
+    expect(f.cards.map((c) => c['front'])).toEqual(['CO', 'Co']); // 공백만 다른 'C O'는 같은 카드
+  });
+
   it('같은 노트의 다른 세트에 앞면이 같은 카드가 있으면(지운 카드 포함) 빼고 쓴다', async () => {
     const f = fakeModels();
     const first = set({}, f);

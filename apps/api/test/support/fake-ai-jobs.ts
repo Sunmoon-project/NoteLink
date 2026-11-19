@@ -23,11 +23,14 @@ export function createFakeJobs() {
       rows.push(row);
       return Promise.resolve({ toObject: () => ({ ...row }) });
     },
-    // 두 번째 인자(projection)는 무시하고, sort는 createdAt 내림차순만(서비스가 쓰는 것)
+    // 두 번째 인자(projection)는 무시하고, sort는 createdAt 내림차순만(서비스가 쓰는 것: options.sort ·
+    // .sort() 둘 다, findForTarget)
     findOne: (filter: Filter, _projection?: unknown, options: Options = {}) => {
       const found = rows.filter((r) => matches(r, filter));
-      if (options.sort) found.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-      return query(found[0] ?? null);
+      const newest = () =>
+        [...found].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
+      if (options.sort) return query(newest());
+      return { ...query(found[0] ?? null), sort: () => query(newest()) };
     },
     // 두 번째 인자(projection)는 무시한다
     find: (filter: Filter, _projection?: unknown) =>
