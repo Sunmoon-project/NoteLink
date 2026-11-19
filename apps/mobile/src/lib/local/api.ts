@@ -835,6 +835,13 @@ const api: Api = {
       db().manualDdays.push(x);
       return ok({ ...x, source: 'manual' as const, daysLeft: daysBetween(today(), p.date) });
     },
+    removeDday: (id) => {
+      const d = db();
+      d.manualDdays = d.manualDdays.filter((x) => x._id !== id);
+      // 할 일에서 온 D-day는 D-day용 한 건만 지운다(날짜별 할 일은 남는다)
+      d.todos = d.todos.filter((t) => !(t.isDday && t._id === id));
+      return ok(undefined);
+    },
     holidays: (year) => {
       const hidden = new Set(db().hiddenHolidays);
       return ok(

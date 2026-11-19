@@ -127,6 +127,7 @@ export const httpApi: Api = {
     toggleTodo: (id, done) => http.patch(P.todo(id), { done }),
     ddays: () => http.get(P.ddays),
     addDday: (p) => http.post(P.ddays, p),
+    removeDday: (id) => http.del(P.dday(id)),
     holidays: (year) => http.get(P.holidays, { year }),
     setHolidayHidden: (date, hidden) => http.patch(P.holiday(date), { hidden }),
     customHolidays: () => http.get(P.customHolidays),

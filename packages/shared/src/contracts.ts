@@ -157,6 +157,7 @@ export const PATHS = {
   todos: '/todos',
   todo: (id: string) => `/todos/${seg(id)}`,
   ddays: '/ddays',
+  dday: (id: string) => `/ddays/${seg(id)}`,
   holidays: '/holidays',
   holiday: (date: string) => `/holidays/${seg(date)}`,
   customHolidays: '/holidays/custom',
