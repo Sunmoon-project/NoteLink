@@ -953,7 +953,8 @@ export const mockApi: Api = {
       const r = S.makeRoom({
         _id: uid('room'),
         title: p.title,
-        categoryName: p.categoryName,
+        categoryId: p.categoryIds[0],
+        categoryIds: p.categoryIds,
         isPublic: p.isPublic,
         inviteCode: Math.random().toString(36).slice(2, 8).toUpperCase(),
         hostId: 'u-me',

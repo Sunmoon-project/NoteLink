@@ -248,6 +248,7 @@ it('서울 자정 뒤 오늘 시간은 전날 입장 경과 시간을 포함하�
 it('방을 만들면 만들기 화면을 닫고 방을 위에 연다 (탭 스택을 갈아 끼우지 않는다)', async () => {
   await renderScreen(<RoomCreateScreen />, client());
   await fireEvent.changeText(screen.getByPlaceholderText('예) 파이썬 기초 스터디'), '토익 스터디');
+  await fireEvent.press(await screen.findByText('코딩'));
   const buttons = screen.getAllByText('스터디룸 만들기');
   await fireEvent.press(buttons[buttons.length - 1]!);
   await waitFor(() =>

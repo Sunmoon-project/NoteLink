@@ -264,7 +264,8 @@ export interface Api {
   rooms: {
     recommended(): Promise<StudyRoom[]>;
     mine(): Promise<StudyRoom[]>;
-    create(p: { title: string; categoryName: string; isPublic: boolean }): Promise<StudyRoom>;
+    /** categoryIds: 관심 분야와 같은 공용 카테고리 1~3개, 첫 번째가 대표 */
+    create(p: { title: string; categoryIds: string[]; isPublic: boolean }): Promise<StudyRoom>;
     join(inviteCode: string): Promise<StudyRoom>;
     get(id: string): Promise<StudyRoom>;
     leave(id: string): Promise<void>;
