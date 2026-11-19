@@ -67,10 +67,11 @@ export class FriendsService {
     if (!name) return [];
     const user = await this.users
       .findOne({ nickname: name, deletedAt: null })
-      .select('_id nickname status lastActiveAt')
+      .select('_id nickname')
       .lean<UserBrief>();
     if (!user || user._id.equals(me)) return [];
-    return [toFriend(user._id, user)];
+    // 찾기는 친구가 아닌 사람도 보므로 접속 상태를 알려 주지 않는다(친구 목록에서만 보인다)
+    return [toFriend(user._id, user, false)];
   }
 
   /**
@@ -157,7 +158,7 @@ export class FriendsService {
         ? [
             {
               _id: d._id.toHexString(),
-              requester: toFriend(d._id, user),
+              requester: toFriend(d._id, user, false),
               requestedAt: d.requestedAt.toISOString(),
             },
           ]
@@ -197,7 +198,7 @@ export class FriendsService {
     return docs
       .flatMap((d) => {
         const user = people.get(other(d).toHexString());
-        return user ? [toFriend(d._id, user)] : [];
+        return user ? [toFriend(d._id, user, true)] : [];
       })
       .sort((a, b) => a.nickname.localeCompare(b.nickname, 'ko'));
   }
@@ -233,7 +234,8 @@ export class FriendsService {
 
 const STATUSES = ['active', 'busy', 'resting', 'offline'] as const;
 
-function toFriend(id: Types.ObjectId, user: UserBrief): Friend {
+/** live: 친구에게만 접속 상태를 보여 준다. 아니면(찾기 · 받은 요청) 늘 'offline' */
+function toFriend(id: Types.ObjectId, user: UserBrief, live: boolean): Friend {
   return {
     _id: id.toHexString(),
     userId: user._id.toHexString(),
@@ -241,6 +243,7 @@ function toFriend(id: Types.ObjectId, user: UserBrief): Friend {
     // 앱이 최근에 신호를 보냈을 때만 고른 상태를 보여 준다(앱을 나갔거나 꺼졌으면 오프라인).
     // 상태가 계약 밖 값이어도(옛 데이터) 오프라인
     status:
+      live &&
       user.lastActiveAt &&
       Date.now() - user.lastActiveAt.getTime() <= PRESENCE_TTL_MS &&
       (STATUSES as readonly string[]).includes(user.status)

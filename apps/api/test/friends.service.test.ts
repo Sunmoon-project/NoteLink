@@ -91,7 +91,8 @@ describe('친구 찾기', () => {
     const jiwoo = person('지우', { lastActiveAt: new Date() });
     person('탈퇴', { deletedAt: NOW });
     expect(await service.search(me, ' 지우 ')).toEqual([
-      { _id: jiwoo, userId: jiwoo, nickname: '지우', status: 'active' },
+      // 친구가 아닌 사람에게는 접속 상태를 알려 주지 않는다
+      { _id: jiwoo, userId: jiwoo, nickname: '지우', status: 'offline' },
     ]);
     expect(await service.search(me, '나')).toEqual([]);
     expect(await service.search(me, '탈퇴')).toEqual([]);
@@ -330,9 +331,8 @@ describe('친구에게 보이는 상태', () => {
       나감: 'offline',
       신호없음: 'offline',
     });
-    // 찾기 결과도 같은 기준
-    expect((await service.search(me, '오래전'))[0]!.status).toBe('offline');
-    expect((await service.search(me, '방금'))[0]!.status).toBe('busy');
+    // 찾기(친구 아닌 사람도 봄)는 접속 상태를 드러내지 않는다
+    expect((await service.search(me, '방금'))[0]!.status).toBe('offline');
   });
 });
 
