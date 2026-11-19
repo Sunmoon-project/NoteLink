@@ -48,9 +48,13 @@ it('대상 시트를 스터디룸 · 친구 칸으로 나누고 친구는 「곧
   expect(await screen.findByText('민지')).toBeTruthy();
   expect(screen.getByText('곧 지원')).toBeTruthy();
   expect(screen.queryByText(/친구 · /)).toBeNull();
-  await fireEvent.press(screen.getByText('민지'));
-  // 눌러도 대상이 정해지지 않는다(서버가 아직 친구 공유를 막는다)
+  const row = screen.getByLabelText('민지, 곧 지원');
+  expect(row.props.accessibilityState).toEqual({ disabled: true });
+  await fireEvent.press(row);
+  // 눌러도 대상이 정해지지 않아 공유하기를 눌러도 보내지 않는다(서버가 아직 친구 공유를 막는다)
   expect(screen.getByText(/공유 대상을 선택해주세요/)).toBeTruthy();
+  await fireEvent.press(screen.getByRole('button', { name: '공유하기' }));
+  expect(mockApi.content.share).not.toHaveBeenCalled();
 });
 
 it('스터디룸으로 보내면 완료 화면에 스터디룸 이름이 간다', async () => {

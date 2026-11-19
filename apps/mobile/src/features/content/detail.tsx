@@ -808,9 +808,15 @@ export function ShareScreen() {
             (friends.data.length ? (
               <Group>
                 {friends.data.map((f) => (
-                  <Row key={f.userId} right={<Badge tone="gray">곧 지원</Badge>}>
-                    {f.nickname}
-                  </Row>
+                  // 이름과 「곧 지원」을 한 번에 읽고, 고를 수 없는 줄임을 알린다
+                  <View
+                    key={f.userId}
+                    accessible
+                    accessibilityLabel={`${f.nickname}, 곧 지원`}
+                    accessibilityState={{ disabled: true }}
+                  >
+                    <Row right={<Badge tone="gray">곧 지원</Badge>}>{f.nickname}</Row>
+                  </View>
                 ))}
               </Group>
             ) : (
