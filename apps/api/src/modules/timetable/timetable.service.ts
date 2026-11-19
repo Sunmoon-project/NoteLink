@@ -1,7 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
+import { User } from '../auth/schemas/user.schema.js';
+import { NotificationService } from '../notification/notification.service.js';
 import { Friendship } from '../social/schemas/friendship.schema.js';
 import type { AddClassDto, ShareTimetableDto } from './dto/timetable.dto.js';
 import { Timetable, type TimetableClass } from '../calendar/schemas/timetable.schema.js';
@@ -41,10 +43,14 @@ const NOT_FOUND = { code: 'NOT_FOUND', message: '존재하지 않는 수업입�
 
 @Injectable()
 export class TimetableService {
+    private readonly logger = new Logger(TimetableService.name);
+
     constructor(
         @InjectModel(Timetable.name) private readonly timetableModel: Model<Timetable>,
         @InjectModel(TimetableShare.name) private readonly shareModel: Model<TimetableShare>,
         @InjectModel(Friendship.name) private readonly friendshipModel: Model<Friendship>,
+        @InjectModel(User.name) private readonly userModel: Model<User>,
+        private readonly notifications: NotificationService,
     ) { }
 
     /** 내 시간표. 아직 수업을 하나도 안 넣었으면 빈 시간표를 돌려준다 (이때는 저장하지 않는다) */
@@ -98,6 +104,19 @@ export class TimetableService {
         if (strangers.length > 0) {
             throw new BadRequestException({ code: 'NOT_FRIEND', message: '친구가 아닌 사용자에게는 시간표를 공유할 수 없습니다.' });
         }
+        // 알림은 새로 공유하거나 공개 방식이 바뀐 친구에게만 보낸다(같은 방식으로 다시 누르면 조용히).
+        // 끊긴 예전 관계에서 남은 공유는 없던 것으로 본다(다시 친구가 되어 공유하면 새 공유다)
+        const before = await this.shareModel
+            .find(
+                { ownerId: owner, friendId: { $in: requested.map((id) => new Types.ObjectId(id)) } },
+                { friendId: 1, mode: 1, friendshipId: 1 },
+            )
+            .lean<{ friendId: Types.ObjectId; mode: ShareMode; friendshipId?: Types.ObjectId | null }[]>();
+        const modeBefore = new Map(
+            before
+                .filter((s) => !s.friendshipId || s.friendshipId.equals(friends.get(s.friendId.toHexString())!))
+                .map((s) => [s.friendId.toHexString(), s.mode]),
+        );
         // 이 관계(또는 관계 id가 없는 예전 공유)의 줄에만 쓴다. 다른 관계의 공유가 이미 있으면 — 이 요청이 늦게 쓰는 사이
         // 친구를 끊었다 다시 맺고 새로 공유했다 — 덮어쓰지 않고 건너뛴다(유일 인덱스가 중복 오류를 낸다). 예전 공유가 끊기며
         // 지워진 뒤 새 공유가 생긴 것과 같은 결과다
@@ -133,6 +152,28 @@ export class TimetableService {
                 ownerId: owner,
                 $or: gone.map((id) => ({ friendId: new Types.ObjectId(id), friendshipId: friends.get(id) })),
             });
+        }
+        const changed = requested.filter((id) => modeBefore.get(id) !== dto.mode && !gone.includes(id));
+        // 알림은 응답을 기다리게 하지 않는다
+        if (changed.length > 0) void this.notifyShared(owner, changed, dto.mode);
+    }
+
+    /** 「○○님이 시간표를 공유했어요」(빈 시간만이면 「빈 시간을」). 실패해도 공유는 성공이다 */
+    private async notifyShared(owner: Types.ObjectId, friendIds: string[], mode: ShareMode): Promise<void> {
+        try {
+            const me = await this.userModel.findById(owner, { nickname: 1 }).lean<{ nickname: string }>();
+            await this.notifications.notify({
+                userIds: friendIds,
+                category: 'friend',
+                type: 'timetable-shared',
+                title: '시간표 공유',
+                body: `${me?.nickname ?? '알 수 없는 사용자'}님이 ${mode === 'free_only' ? '빈 시간을' : '시간표를'} 공유했어요`,
+                data: { userId: owner.toHexString(), mode },
+                collapseId: `timetable-share:${owner.toHexString()}`,
+            });
+        } catch (error) {
+            // 알림은 덤이다: 공유는 이미 끝났다
+            this.logger.warn(`시간표 공유 알림 실패: ${String(error)}`);
         }
     }
 

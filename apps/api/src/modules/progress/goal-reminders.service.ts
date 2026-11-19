@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { type Model, Types } from 'mongoose';
 
 import { HolidaysService } from '../calendar/holidays.service.js';
+import { NotificationService } from '../notification/notification.service.js';
 import { ExpoPushService, type ExpoPushMessage } from '../notification/expo-push.service.js';
 import { StudySession } from '../session/schemas/study-session.schema.js';
 import { LAST_SEEN_GRACE_MS, lastAliveAt } from '../session/study.service.js';
@@ -70,6 +71,7 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
     @InjectModel(Device.name) private readonly devices: Model<Device>,
     private readonly holidays: HolidaysService,
     private readonly push: ExpoPushService,
+    private readonly notifications: NotificationService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -196,6 +198,9 @@ export class GoalRemindersService implements OnApplicationBootstrap, OnModuleDes
     if (todayMin === null || todayMin >= goal.targetMin) return 'done';
     // 미달로 보이는 사람에게만 확인한다. 공부 중이면 아직 정산되지 않은 시간이 있으니 지금은 판단하지 않는다
     if (await this.isMeasuring(goal.userId, now)) return 'measuring';
+
+    // 공부 알림을 껐거나 조용한 시간이면 그날은 보내지 않는다(#560 알림 설정)
+    if (!(await this.notifications.pushAllowed([goal.userId], 'study', now)).length) return 'done';
 
     const devices = await this.devices
       .find({ userId: goal.userId }, { pushToken: 1 })
