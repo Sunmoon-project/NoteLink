@@ -115,6 +115,16 @@ function useSubject(folderId?: string) {
   return folders.data?.find((f) => f._id === folderId)?.subjectName;
 }
 
+/** 정리본을 마크다운으로: 제목 · 핵심 요약 · 정리된 내용 · 키워드 (서버에는 정리본 파일이 없어 앱이 만든다) */
+export function summaryMarkdown(m: Pick<Material, 'title' | 'summary' | 'keywords'>): string {
+  const out = [`# ${m.title}`];
+  if (m.summary?.points.length)
+    out.push('## 핵심 요약', m.summary.points.map((p) => `- ${p}`).join('\n'));
+  for (const s of m.summary?.sections ?? []) out.push(`## ${s.heading}`, s.body);
+  if (m.keywords.length) out.push('## 키워드', m.keywords.join(' · '));
+  return out.join('\n\n') + '\n';
+}
+
 /** 원본 파일을 시스템 미리보기 · 공유 시트로 연다 (파일 앱에 저장 · 다른 앱으로 열기) */
 async function openOriginal(id: string) {
   const { url } = await api.content.downloadUrl(id);
@@ -527,8 +537,21 @@ export function DocDetailScreen() {
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
   const buddy = useTuckOnScroll();
+  const [pick, setPick] = useState(false);
   const download = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (what: 'summary' | 'original') => {
+      if (what === 'summary') {
+        // 파일 이름에 쓸 수 없는 글자는 뺀다
+        const fileName = `${m!.title.replace(/[\\/:*?"<>|]/g, ' ').trim() || '정리본'}.md`;
+        const dir = new Directory(Paths.document, 'downloads');
+        if (!dir.exists) dir.create();
+        const out = new File(dir, fileName);
+        if (out.exists) out.delete();
+        out.create();
+        out.write(summaryMarkdown(m!));
+        if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(out.uri);
+        return fileName;
+      }
       const { url, fileName } = await api.content.downloadUrl(id);
       // 기기에 있는 원본은 바로 공유 시트로 → '파일에 저장'
       if (url.startsWith('file://')) {
@@ -560,7 +583,7 @@ export function DocDetailScreen() {
             >
               공유하기
             </Btn>
-            <Btn loading={download.isPending} onPress={() => download.mutate()}>
+            <Btn loading={download.isPending} onPress={() => setPick(true)}>
               다운로드
             </Btn>
           </Two>
@@ -607,6 +630,27 @@ export function DocDetailScreen() {
         )}
       </Screen>
       <FileOptions m={m} open={opt} onClose={() => setOpt(false)} />
+      {/* 다운로드는 원본만 받았다(실기기 피드백 2026-11-20). 정리본 · 원본 중 고른다 */}
+      <Sheet open={pick} onClose={() => setPick(false)} title="무엇을 받을까요?">
+        <Group>
+          {/* 정리가 아직 없으면 원본만 */}
+          {(m.summary?.points.length || m.summary?.sections.length
+            ? (['summary', 'original'] as const)
+            : (['original'] as const)
+          ).map((what) => (
+            <Row
+              key={what}
+              chevron
+              onPress={() => {
+                setPick(false);
+                download.mutate(what);
+              }}
+            >
+              {what === 'summary' ? '정리본 (.md)' : '원본 파일'}
+            </Row>
+          ))}
+        </Group>
+      </Sheet>
     </Canvas>
   );
 }
