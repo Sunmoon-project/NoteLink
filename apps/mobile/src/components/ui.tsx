@@ -950,7 +950,10 @@ function useMounted(open: boolean) {
   useEffect(() => {
     if (open && !mounted) {
       const left = closingLeft();
+      // 모든 시트가 렌더된 뒤에야 닫힘 여부를 알 수 있어 여기서 띄운다(타이머로 미루면 여는 순간마다 한 틱 늦다)
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (left === 0) return void setMounted(true);
+      // 타이머가 조금 일찍 깨면 woken이 바뀌어 다시 확인한다
       const t = setTimeout(() => wake((n) => n + 1), left);
       return () => clearTimeout(t);
     }
