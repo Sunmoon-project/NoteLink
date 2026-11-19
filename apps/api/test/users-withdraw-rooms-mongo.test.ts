@@ -45,10 +45,9 @@ describe.skipIf(!local)('회원 탈퇴 · 스터디룸 나가기 실제 MongoDB'
     rooms = connection.model(StudyRoom.name, StudyRoomSchema, names[0]);
     users = connection.model(User.name, UserSchema, names[1]);
     await rooms.init();
-    // 방 만들기(create)가 카테고리를 한 건 찾을 수 있게 가짜를 둔다
-    const categories = {
-      find: () => ({ limit: () => ({ lean: async () => [{ _id: category }] }) }),
-    };
+    // 방 만들기(create) · 목록의 카테고리 이름 읽기가 카테고리를 한 건 찾을 수 있게 가짜를 둔다
+    const found = async () => [{ _id: category, name: '수학' }];
+    const categories = { find: () => ({ limit: () => ({ lean: found }), lean: found }) };
     roomsService = new StudyRoomsService(rooms, users, categories as never, {} as never);
     const membership = new StudyRoomMembershipService(
       roomsService,

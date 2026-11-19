@@ -53,7 +53,15 @@ export class StudyRoom {
   title: string;
 
   @Prop({ type: Types.ObjectId, ref: 'Category', required: true })
-  categoryId: Types.ObjectId; // categories 참조
+  categoryId: Types.ObjectId; // categories 참조 — 대표 카테고리(categoryIds의 첫 번째)
+
+  // 관심 분야와 같은 공용 카테고리 최대 3개. 예전 방은 없으므로 읽을 때 [categoryId]로 본다.
+  @Prop({ type: [{ type: Types.ObjectId, ref: 'Category' }], default: undefined })
+  categoryIds?: Types.ObjectId[];
+
+  // 대상(공용 LearnerType). 만들 때 방장 프로필에서 복사한다. 예전 방은 읽을 때 방장 값으로 본다.
+  @Prop({ type: String, enum: ['middle_high', 'university', 'worker'], default: undefined })
+  learnerType?: string | null;
 
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   hostId: Types.ObjectId; // users 참조
