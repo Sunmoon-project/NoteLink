@@ -1090,8 +1090,32 @@ const api: Api = {
       for (const materialId of p.materialIds) {
         const m = d.materials.find((x) => x._id === materialId);
         if (!m) continue;
+        // 서버처럼 이미 공유된 노트는 건너뛰고, 새로 공유한 노트는 방 채팅에 자료 카드를 남긴다
+        if (
+          d.roomShared.some(
+            (x) =>
+              x.roomId === p.target.id && x.itemType === 'material' && x.materialId === materialId,
+          )
+        )
+          continue;
+        const sharedId = uid('rs');
+        const chatRoomId = `room-chat-${p.target.id}`;
+        d.messages[chatRoomId] = [
+          ...(d.messages[chatRoomId] ?? []),
+          {
+            _id: uid('msg'),
+            chatRoomId,
+            senderId: d.user._id,
+            senderNickname: me(d).nickname,
+            type: 'shared_item',
+            text: m.title,
+            sharedItemId: sharedId,
+            createdAt: now(),
+            clientId: `room_share_${sharedId}`,
+          },
+        ];
         d.roomShared.push({
-          _id: uid('rs'),
+          _id: sharedId,
           roomId: p.target.id,
           sharedBy: d.user._id,
           sharedByNickname: me(d).nickname,

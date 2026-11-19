@@ -19,6 +19,8 @@ import {
   CalendarDays,
   Camera,
   CameraOff,
+  FileText,
+  ImageIcon,
   Layers,
   Lock,
   MessageCircle,
@@ -68,6 +70,7 @@ import {
   Canvas,
   Card,
   Dialog,
+  Group,
   Header,
   Input,
   LIST_LAYOUT,
@@ -81,6 +84,7 @@ import {
   cx,
   Pop,
   POP_IN,
+  Row,
 } from '@/components/ui';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
@@ -899,11 +903,14 @@ export function RoomScreen() {
     void deliverAttachment(clientId);
   };
   /** 첨부 열기: 읽기 주소가 만료됐으면(1시간) 기록을 다시 읽어 새 주소로 연다 */
+  const openShared = useOpenShared(id);
   const openAttachment = (m: Message) =>
-    openChatAttachment(m, async () => {
-      const fresh = await history.refetch();
-      return fresh.data?.find((x) => x._id === m._id)?.attachment?.url;
-    });
+    m.type === 'shared_item' && m.sharedItemId
+      ? openShared.openById(m.sharedItemId)
+      : openChatAttachment(m, async () => {
+          const fresh = await history.refetch();
+          return fresh.data?.find((x) => x._id === m._id)?.attachment?.url;
+        });
   // 사진이 만료된 주소라 보이지 않으면 기록을 한 번 다시 읽어 새 주소를 받는다(연달아 다시 읽지 않게 30초 간격)
   const staleAt = useRef(0);
   const refreshStale = () => {
@@ -1468,11 +1475,9 @@ const Ctl = ({
   </Pressable>
 );
 
-export function RoomCardsScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+/** 방에 공유된 자료를 종류에 맞는 화면으로 연다(공유 자료 화면 · 방 채팅 자료 카드가 같이 쓴다) */
+function useOpenShared(roomId: string) {
   const openFeature = useFeatureNavigation();
-  const shared = useQuery({ queryKey: ['room-shared', id], queryFn: () => api.rooms.shared(id) });
-  const others = shared.data?.items.filter((i) => i.itemType !== 'flashcards') ?? [];
   const qc = useQueryClient();
   const opening = useRef(new Set<string>());
   // 공유 항목에는 노트 종류가 없어서 노트를 조회해 종류에 맞는 화면으로 연다(상세 화면과 같은 캐시 키)
@@ -1505,6 +1510,43 @@ export function RoomCardsScreen() {
       void openMaterial(item, item.materialId);
     else toast('이 자료를 열 수 없어요');
   };
+  /** 방 채팅 자료 카드: 공유 항목 id 로 방 공유 자료에서 찾아 연다(공유를 지웠거나 볼 수 없으면 안내) */
+  const openById = async (sharedItemId: string) => {
+    try {
+      const list = await qc.fetchQuery({
+        queryKey: ['room-shared', roomId],
+        queryFn: () => api.rooms.shared(roomId),
+      });
+      const item = list.items.find((i) => i._id === sharedItemId);
+      if (item) openItem(item);
+      else toast('지워졌거나 더 볼 수 없는 자료예요');
+    } catch {
+      toast('이 자료를 열 수 없어요');
+    }
+  };
+  return { openItem, openById };
+}
+
+export function RoomCardsScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const shared = useQuery({ queryKey: ['room-shared', id], queryFn: () => api.rooms.shared(id) });
+  const others = shared.data?.items.filter((i) => i.itemType !== 'flashcards') ?? [];
+  const { openItem } = useOpenShared(id);
+  // 방 채팅에 올린 사진 · 파일도 여기서 모아 본다(1:1 채팅 「주고받은 자료」와 같은 방식, 최근 것부터)
+  const chatId = useQuery({ queryKey: ['room-chat', id], queryFn: () => api.rooms.chatRoomId(id) });
+  const files = useQuery({
+    queryKey: ['room-files', chatId.data],
+    queryFn: () => loadCompleteChatHistory((before) => api.social.messages(chatId.data!, before)),
+    enabled: !!chatId.data,
+  });
+  const attachments = (files.data ?? [])
+    .filter((m) => (m.type === 'image' || m.type === 'file') && m.attachment)
+    .reverse();
+  const openFile = (m: Message) =>
+    openChatAttachment(m, async () => {
+      const fresh = await files.refetch();
+      return fresh.data?.find((x) => x._id === m._id)?.attachment?.url;
+    });
   const [flip, setFlip] = useState<string[]>([]);
   const owner = shared.data?.items.find((i) => i.itemType === 'flashcards')?.sharedByNickname;
   return (
@@ -1520,11 +1562,15 @@ export function RoomCardsScreen() {
         {shared.isError && !shared.data && (
           <LoadError message="공유 자료를 불러오지 못했어요" retry={shared.refetch} />
         )}
-        {shared.isSuccess && others.length === 0 && shared.data.flashcards.length === 0 && (
-          <Text className="py-12 text-center text-footnote text-sub">
-            아직 공유된 자료가 없어요
-          </Text>
-        )}
+        {shared.isSuccess &&
+          others.length === 0 &&
+          shared.data.flashcards.length === 0 &&
+          attachments.length === 0 && (
+            <Text className="py-12 text-center text-footnote text-sub">
+              아직 공유된 자료가 없어요
+            </Text>
+          )}
+        {others.length > 0 && <Label>공유한 노트</Label>}
         {others.map((item) => (
           <Pressable
             key={item._id}
@@ -1538,6 +1584,23 @@ export function RoomCardsScreen() {
             </Text>
           </Pressable>
         ))}
+        {attachments.length > 0 && (
+          <>
+            <Label>채팅에 올린 사진 · 파일</Label>
+            <Group>
+              {attachments.map((m) => (
+                <Row
+                  key={m._id}
+                  icon={m.type === 'image' ? ImageIcon : FileText}
+                  sub={`${m.senderNickname ?? '멤버'} · ${ymd(seoul(m.createdAt)).slice(5).replace('-', '/')}`}
+                  onPress={() => void openFile(m)}
+                >
+                  {m.attachment!.name}
+                </Row>
+              ))}
+            </Group>
+          </>
+        )}
         {!!shared.data?.flashcards.length && (
           <Text className="mt-3 text-caption text-sub">
             {owner ? `${owner}님이 공유한 플래시 카드` : '공유된 플래시 카드'} · 탭해서 뒤집기
