@@ -42,6 +42,10 @@ export class Todo {
   // 과제 · 시험은 두 건(그날 할 일용 isDday=false, D-day 목록용 isDday=true)이 한 쌍으로 만들어진다. 둘의 pairId가 같다
   @Prop({ type: Types.ObjectId, default: null })
   pairId?: Types.ObjectId | null;
+
+  // D-day 리마인드를 보낸 서울 날짜(DdayRemindersService). 그날 한 번만 보내는 표시
+  @Prop({ type: String, default: null })
+  ddayRemindedOn?: string | null;
 }
 
 export const TodoSchema = SchemaFactory.createForClass(Todo);
@@ -50,3 +54,5 @@ export const TodoSchema = SchemaFactory.createForClass(Todo);
 TodoSchema.index({ userId: 1, dueDate: 1 });
 TodoSchema.index({ userId: 1, isDday: 1, done: 1 });
 TodoSchema.index({ userId: 1, pairId: 1 }, { sparse: true });
+// D-day 리마인드: 날짜로 끝내지 않은 D-day 찾기
+TodoSchema.index({ isDday: 1, done: 1, dueDate: 1 });
