@@ -13,8 +13,11 @@ import {
   ExpoPushService,
   type ExpoPushMessage,
 } from '../modules/notification/expo-push.service.js';
+import { NotificationService } from '../modules/notification/notification.service.js';
 import { AiJob } from '../modules/quiz/schemas/ai-job.schema.js';
+import { QuizSet } from '../modules/quiz/schemas/quiz-set.schema.js';
 import { Device } from '../modules/users/schemas/device.schema.js';
+import { PREGEN_TYPE } from './ai-jobs.service.js';
 
 /** 끝난 작업을 확인하는 간격 */
 const NOTICE_SCAN_MS = 60_000;
@@ -34,6 +37,16 @@ export const NOTICE_RECORD_RETRY_DELAYS_MS = [200, 500];
 export const NOTICE_UNRECORDED_MAX = 200;
 
 const SUMMARY_TYPES = ['handwriting_summary', 'recording_summary', 'document_summary'];
+/** 퀴즈 세트를 만드는 작업(대상은 그 세트). 미리 만들기(quiz_pregen)는 사용자가 기다리게 된 것(awaited)만 알린다 */
+const QUIZ_TYPES = ['quiz_generate', 'similar_quiz'];
+/** 알릴 작업: 노트 정리 · 퀴즈 만들기 · 사용자가 기다린 미리 만들기 */
+const NOTICE_TARGETS = {
+  $or: [
+    { type: { $in: SUMMARY_TYPES }, targetType: 'material' },
+    { type: { $in: QUIZ_TYPES }, targetType: 'quiz_set' },
+    { type: PREGEN_TYPE, awaited: true },
+  ],
+};
 const EXPO_PUSH_TOKEN = /^(?:Expo|Exponent)PushToken\[[^\]]+\]$/;
 /** notice를 쓰는 모든 쓰기: updatedAt이 처리기가 끝낸 시각 그대로 남아야 30분 기준이 맞는다 */
 const NO_TIMESTAMPS = { timestamps: false } as const;
@@ -41,12 +54,20 @@ const NO_TIMESTAMPS = { timestamps: false } as const;
 const FINAL_STATES = ['sent', 'skipped', 'gave_up'];
 
 const MESSAGES = {
-  succeeded: '노트 정리가 끝났어요',
-  failed: '노트 정리에 실패했어요. 다시 시도해 주세요',
+  summary: {
+    succeeded: '노트 정리가 끝났어요',
+    failed: '노트 정리에 실패했어요. 다시 시도해 주세요',
+  },
+  quiz: { succeeded: '퀴즈가 준비됐어요', failed: '퀴즈를 만들지 못했어요. 다시 시도해 주세요' },
+  similar: {
+    succeeded: '유사 문제가 준비됐어요',
+    failed: '유사 문제를 만들지 못했어요. 다시 시도해 주세요',
+  },
 } as const;
 
 interface JobLean {
   _id: Types.ObjectId;
+  type: string;
   status: 'succeeded' | 'failed';
   userId: Types.ObjectId;
   targetId: Types.ObjectId;
@@ -66,7 +87,8 @@ interface Unrecorded {
 }
 
 /**
- * 노트 변환(요약 작업)이 끝나면 푸시로 알린다(FR-65-02). AI 처리기가 ai_jobs 상태를 DB에 직접 쓰므로 서버는
+ * 노트 변환(요약 작업) · 퀴즈 만들기(quiz_generate · similar_quiz · 사용자가 기다린 quiz_pregen)가 끝나면
+ * 알림함에 남기고 푸시로 알린다(FR-65-02, #560). AI 처리기가 ai_jobs 상태를 DB에 직접 쓰므로 서버는
  * 끝난 시점을 스스로 알 수 없어, goal-reminders.service.ts처럼 주기적으로 끝난 작업을 찾아 보낸다.
  *
  * - status는 succeeded · failed만 본다. failed는 처리기가 자동 재시도 한도를 다 쓴 뒤에만 쓰는 최종 상태다
@@ -75,6 +97,9 @@ interface Unrecorded {
  *   선점한 서버가 죽으면 NOTICE_LEASE_MS 뒤 다른 서버가 이어받는다(이때 기기에서는 collapseId로 하나로 합쳐진다).
  * - 보내기 직전에 작업을 다시 읽어, 그사이 다시 시도되어 상태가 바뀌었으면(retry가 notice를 지운다) 보내지 않는다.
  * - 노트가 지워졌거나 노트가 이 작업을 가리키지 않으면(다른 작업으로 다시 연결됨) 푸시 없이 skipped로 끝낸다.
+ *   퀴즈는 이 작업을 가리키는(jobId) 지우지 않은 세트가 없으면 skipped(미리 만들기는 세트를 만들기 전이라 다시 시도).
+ * - 알림함(NotificationService.saveToInbox): 같은 collapseId라 다시 시도해도 한 줄. AI 알림을 껐거나 탈퇴했으면 저장 · 푸시 없이
+ *   skipped, 기기가 없거나 조용한 시간이면 알림함에만 남기고 sent.
  * - 기준 시각은 updatedAt이다(처리기가 끝낼 때 쓰고, 이후 이 서비스는 timestamps:false로만 쓴다).
  * - 무효 토큰 정리가 실패해도 발송은 성공으로 본다(재발송 금지). 발송이 전부 실패하면 NOTICE_MAX_ATTEMPTS까지 다시 시도한다.
  * - 발송 결과와 기록 오류는 따로 다룬다: 푸시를 보낸 뒤 sent 기록이 실패해도 선점을 풀지 않고 sent 만 다시 쓴다
@@ -104,6 +129,8 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
     @InjectModel(Material.name) private readonly materials: Model<Material>,
     @InjectModel(Device.name) private readonly devices: Model<Device>,
     private readonly push: ExpoPushService,
+    @InjectModel(QuizSet.name) private readonly sets: Model<QuizSet>,
+    private readonly notifications: NotificationService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -135,18 +162,21 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
           .find(
             {
               ...(after ? { _id: { $gt: after } } : {}),
-              type: { $in: SUMMARY_TYPES },
-              targetType: 'material',
               status: { $in: ['succeeded', 'failed'] },
               updatedAt: { $gte: new Date(now.getTime() - NOTICE_WINDOW_MS) },
               'notice.state': { $nin: FINAL_STATES },
-              // 한도에 닿은 작업은 고르지 않는다(만료된 claimed 는 closeExhausted 가 닫는다)
-              $or: [
-                { 'notice.attempts': null },
-                { 'notice.attempts': { $lt: NOTICE_MAX_ATTEMPTS } },
+              $and: [
+                NOTICE_TARGETS,
+                // 한도에 닿은 작업은 고르지 않는다(만료된 claimed 는 closeExhausted 가 닫는다)
+                {
+                  $or: [
+                    { 'notice.attempts': null },
+                    { 'notice.attempts': { $lt: NOTICE_MAX_ATTEMPTS } },
+                  ],
+                },
               ],
             },
-            { status: 1, userId: 1, targetId: 1, notice: 1 },
+            { type: 1, status: 1, userId: 1, targetId: 1, notice: 1 },
           )
           .sort({ _id: 1 })
           .limit(NOTICE_PAGE)
@@ -295,8 +325,7 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
   private async closeExhausted(now: Date): Promise<void> {
     await this.jobs.updateMany(
       {
-        type: { $in: SUMMARY_TYPES },
-        targetType: 'material',
+        $and: [NOTICE_TARGETS],
         status: { $in: ['succeeded', 'failed'] },
         updatedAt: { $gte: new Date(now.getTime() - NOTICE_WINDOW_MS) },
         'notice.state': 'claimed',
@@ -314,20 +343,9 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
     claimId: string,
     clock: () => Date,
   ): Promise<'sent' | 'skipped' | 'retry' | 'abandoned'> {
-    // 지운 노트 · 다른 작업에 다시 연결된 노트에는 보내지 않는다
-    const material = await this.materials
-      .findOne({ _id: job.targetId }, { deletedAt: 1, title: 1, 'processing.jobId': 1 })
-      .lean<{
-        deletedAt?: Date | null;
-        title?: string | null;
-        processing?: { jobId?: Types.ObjectId | null };
-      } | null>();
-    if (
-      !material ||
-      material.deletedAt ||
-      String(material.processing?.jobId ?? '') !== String(job._id)
-    )
-      return 'skipped';
+    const notice = await this.contentOf(job);
+    if (!notice) return 'skipped';
+    if (notice === 'later') return 'retry';
 
     const devices = await this.devices
       .find({ userId: job.userId }, { pushToken: 1 })
@@ -335,7 +353,6 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
     const tokens = [...new Set(devices.map((d) => d.pushToken))].filter((t) =>
       EXPO_PUSH_TOKEN.test(t),
     );
-    if (!tokens.length) return 'sent'; // 기기가 없다
 
     // 선점 · 노트 · 기기 조회를 기다리는 사이 다시 시도되었을 수 있다: 내 선점과 상태가 그대로일 때만 보낸다.
     // notice.state 가 claimed 인 것만 본다: closeExhausted() 는 같은 claimId 를 둔 채 gave_up 으로 닫으므로 claimId 만으로는 걸러지지 않는다
@@ -354,16 +371,31 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
     if (!current) return 'abandoned';
 
     const id = String(job._id);
-    const materialId = String(job.targetId);
+    const collapseId = `ai-job-done:${id}`;
+    // 알림함에 남긴다(같은 collapseId라 다시 시도해도 하나). AI 알림을 껐으면 저장 · 푸시 모두 없다
+    const inbox = await this.notifications.saveToInbox({
+      userIds: [job.userId],
+      category: 'ai',
+      type: notice.data.type,
+      title: notice.title,
+      body: notice.body,
+      data: notice.data,
+      collapseId,
+    });
+    const notificationId = inbox.get(String(job.userId));
+    if (!notificationId) return 'skipped';
+    // 기기가 없거나 조용한 시간이면 알림함에만 남긴다
+    if (!tokens.length) return 'sent';
+    if (!(await this.notifications.pushAllowed([job.userId], 'ai', clock())).length) return 'sent';
     const messages: ExpoPushMessage[] = tokens.map((to) => ({
       to,
-      title: MESSAGES[job.status],
-      body: material.title ?? '', // 제목이 없으면 본문은 비운다
-      data: { type: 'note-summary', materialId, status: job.status },
+      title: notice.title,
+      body: notice.body,
+      data: { ...notice.data, notificationId },
       sound: 'default',
       priority: 'high',
-      collapseId: `ai-job-done:${id}`,
-      threadId: `note-summary-${materialId}`,
+      collapseId,
+      threadId: notice.threadId,
     }));
     const result = await this.push.send(messages);
     if (result.invalidTokens.length) {
@@ -379,6 +411,57 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
     return failed.size > 0 && failed.size >= tokens.length - result.invalidTokens.length
       ? 'retry'
       : 'sent';
+  }
+
+  /**
+   * 알림 내용. 지운 노트 · 다른 작업에 다시 연결된 노트, 지운 퀴즈 세트 · 이 작업의 것이 아닌 세트면 null(보내지 않는다).
+   * 이어받은 미리 만들기의 세트가 아직 없으면 'later'(다시 시도)
+   */
+  private async contentOf(job: JobLean): Promise<
+    | {
+        title: string;
+        body: string;
+        threadId: string;
+        data: { type: string; status: string } & Record<string, string>;
+      }
+    | 'later'
+    | null
+  > {
+    if (SUMMARY_TYPES.includes(job.type)) {
+      const material = await this.materials
+        .findOne({ _id: job.targetId }, { deletedAt: 1, title: 1, 'processing.jobId': 1 })
+        .lean<{
+          deletedAt?: Date | null;
+          title?: string | null;
+          processing?: { jobId?: Types.ObjectId | null };
+        } | null>();
+      if (
+        !material ||
+        material.deletedAt ||
+        String(material.processing?.jobId ?? '') !== String(job._id)
+      )
+        return null;
+      const materialId = String(job.targetId);
+      return {
+        title: MESSAGES.summary[job.status],
+        body: material.title ?? '', // 제목이 없으면 본문은 비운다
+        threadId: `note-summary-${materialId}`,
+        data: { type: 'note-summary', materialId, status: job.status },
+      };
+    }
+    // 퀴즈 만들기 · 미리 만들기 모두 세트가 이 작업(jobId)을 가리킨다
+    const set = await this.sets
+      .findOne({ jobId: job._id, ownerId: job.userId, deletedAt: null }, { title: 1 })
+      .lean<{ _id: Types.ObjectId; title?: string | null } | null>();
+    // 미리 만들기는 이어받은(awaited) 뒤 세트를 만든다: 그 사이에 확인했으면 조금 뒤 다시 본다
+    if (!set) return job.type === PREGEN_TYPE ? 'later' : null;
+    const quizSetId = String(set._id);
+    return {
+      title: MESSAGES[job.type === 'similar_quiz' ? 'similar' : 'quiz'][job.status],
+      body: set.title ?? '',
+      threadId: `quiz-${quizSetId}`,
+      data: { type: 'quiz-ready', quizSetId, status: job.status },
+    };
   }
 
   /** 결과를 기록한다. 내 선점(claimId)일 때만 쓴다: 그사이 다시 시도로 notice가 지워졌으면 아무것도 바꾸지 않는다 */
