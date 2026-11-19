@@ -765,7 +765,9 @@ describe('QuizSetsService 조회', () => {
     await attempts.model.create({ userId: ME, quizSetId: done, finishedAt: at } as never);
     await attempts.model.create({ userId: ME, quizSetId: solving, finishedAt: null } as never);
     await attempts.model.create({ userId: OTHER, quizSetId: theirs, finishedAt: at } as never);
-    const find = vi.spyOn(attempts.model, 'find');
+    // 같은 세트를 두 번 끝내도 한 번만
+    await attempts.model.create({ userId: ME, quizSetId: done, finishedAt: at } as never);
+    const find = vi.spyOn(attempts.model, 'distinct');
     const list = await service.list(ME.toHexString());
     const completed = Object.fromEntries(list.map((s) => [s.title, s.completed]));
     expect(completed).toEqual({
@@ -779,7 +781,7 @@ describe('QuizSetsService 조회', () => {
 
   it('세트가 없으면 풀이를 읽지 않는다(#561)', async () => {
     const { service, attempts } = setup();
-    const find = vi.spyOn(attempts.model, 'find');
+    const find = vi.spyOn(attempts.model, 'distinct');
     expect(await service.list(ME.toHexString())).toEqual([]);
     expect(find).not.toHaveBeenCalled();
   });

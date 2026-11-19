@@ -111,6 +111,8 @@ export function QuizHomeScreen() {
   const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
   const refresh = useTabRefresh(sets);
   const progress = useQuizProgress((s) => s.progress);
+  // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」 · 맨 위 카드에는 넣지 않는다
+  const todayId = useTodayReview().data?._id;
   // 바로가기(유사 퀴즈 등)는 다 푼 세트도 쓰므로 가장 최근 ready 세트, 맨 위 카드는 아직 끝까지 풀지 않은 세트(#561)
   const recent = sets.data?.find((s) => s.status === 'ready');
   const latest = progress
@@ -119,10 +121,8 @@ export function QuizHomeScreen() {
         title: '풀던 퀴즈',
         questionCount: 0,
       })
-    : sets.data?.find((s) => s.status === 'ready' && !s.completed);
+    : sets.data?.find((s) => s.status === 'ready' && !s.completed && s._id !== todayId);
   const shortcutSetId = progress ? latest?._id : recent?._id;
-  // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」에는 넣지 않는다
-  const todayId = useTodayReview().data?._id;
   const waiting = sets.data?.filter((s) => s.status === 'generating' && s._id !== todayId) ?? [];
   return (
     <Canvas>

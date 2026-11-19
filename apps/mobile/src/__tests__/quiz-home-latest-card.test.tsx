@@ -56,6 +56,17 @@ it('끝까지 푼 세트는 건너뛰고 아직 안 푼 가장 최근 세트를 
   });
 });
 
+it('오늘의 복습 세트는 오늘의 복습 카드가 보여 주므로 맨 위 카드로 고르지 않는다', async () => {
+  const today = quizSet('today', '오늘의 복습 · 11-19');
+  jest.spyOn(api.quiz, 'sets').mockResolvedValue([today, quizSet('next', '안 푼 퀴즈')]);
+  // 시험은 기기 저장 모드(localData)라 오늘의 복습 조회가 꺼져 있어, 서버에서 받은 것처럼 미리 넣는다
+  const qc = client();
+  qc.setQueryData(['today-review'], today);
+  await renderScreen(<QuizHomeScreen />, qc);
+  expect(await screen.findByText('안 푼 퀴즈 · 2문제')).toBeTruthy();
+  expect(screen.queryByText('오늘의 복습 · 11-19 · 2문제')).toBeNull();
+});
+
 it('모두 풀었으면 카드만 숨기고 바로가기는 남긴다(유사 퀴즈는 가장 최근 세트로)', async () => {
   jest
     .spyOn(api.quiz, 'sets')
@@ -92,11 +103,12 @@ it('풀던 진행이 있으면 다 푼 표시와 상관없이 그 세트를 이�
     results: [true],
   });
   await renderScreen(<QuizHomeScreen />, client());
-  expect(await screen.findByText('이어서 풀기')).toBeTruthy();
-  expect(screen.getByText('다 푼 퀴즈 · 2문제')).toBeTruthy();
+  // 목록이 오기 전에는 「풀던 퀴즈」로 먼저 그리므로 제목이 바뀔 때까지 기다린다
+  expect(await screen.findByText('다 푼 퀴즈 · 2문제')).toBeTruthy();
+  expect(screen.getByText('이어서 풀기')).toBeTruthy();
 });
 
-it('세트가 정말 없을 때만 빈 상태를 보여 준다', async () => {
+it('ready 세트가 없을 때만 빈 상태를 보여 준다', async () => {
   jest.spyOn(api.quiz, 'sets').mockResolvedValue([]);
   await renderScreen(<QuizHomeScreen />, client());
   expect(await screen.findByText('아직 만들어진 퀴즈가 없어요')).toBeTruthy();

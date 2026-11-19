@@ -86,7 +86,7 @@ function clone<T>(value: T): T {
 export const query = <T>(value: T) => ({ lean: () => Promise.resolve(value) });
 
 /**
- * 메모리 컬렉션. 서비스가 쓰는 create · find(.sort · .skip · .limit) · findOne · findOneAndUpdate($set)만 만든다.
+ * 메모리 컬렉션. 서비스가 쓰는 create · find(.sort · .skip · .limit) · findOne · distinct · findOneAndUpdate($set)만 만든다.
  * unique는 MongoDB 고유 색인처럼 create를 E11000으로 막는다(같은 키의 행이 이미 있으면).
  */
 /** D는 서비스가 받는 모델의 문서 타입(예: QuizSetDocument) */
@@ -134,6 +134,15 @@ export function createFakeCollection<D>(unique?: (a: Row, b: Row) => boolean) {
         lean: () => Promise.resolve(found.map((r) => clone(r))),
       };
       return chain;
+    },
+    /** MongoDB distinct처럼 조건에 맞는 행의 필드 값을 겹치지 않게(ObjectId는 문자열로 비교) */
+    distinct: (field: string, filter: Filter = {}) => {
+      const seen = new Map<string, unknown>();
+      for (const r of rows.filter((row) => matches(row, filter))) {
+        const v = r[field];
+        if (v !== undefined && !seen.has(String(v))) seen.set(String(v), v);
+      }
+      return Promise.resolve([...seen.values()]);
     },
     findOneAndUpdate: (
       filter: Filter,

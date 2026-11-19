@@ -94,8 +94,9 @@ export interface AppQuizSet {
   questions: AppQuestion[];
   createdAt: string;
   /**
-   * 세트를 끝까지 푼 풀이(finishedAt)가 있으면 true, 없으면 넣지 않는다(withCompleted). 오늘의 복습 카드는
-   * 다시 풀게 하지 않고 마쳤다고 보여 주고, 퀴즈 탭 맨 위 카드는 이 세트를 건너뛴다(#561)
+   * 세트를 끝까지 푼 풀이(finishedAt)가 있으면 true, 없으면 넣지 않는다(withCompleted). 세트 목록 · 오늘의 복습
+   * 응답만 채운다(세트 하나 조회 등은 넣지 않음). 오늘의 복습 카드는 다시 풀게 하지 않고 마쳤다고 보여 주고,
+   * 퀴즈 탭 맨 위 카드는 이 세트를 건너뛴다(#561)
    */
   completed?: boolean;
 }
@@ -506,13 +507,13 @@ export class QuizSetsService {
   async withCompleted(owner: Types.ObjectId, sets: AppQuizSet[]): Promise<AppQuizSet[]> {
     const ready = sets.filter((s) => s.status === 'ready').map((s) => new Types.ObjectId(s._id));
     if (ready.length === 0) return sets;
-    const finished = await this.attempts
-      .find(
-        { userId: owner, quizSetId: { $in: ready }, finishedAt: { $ne: null } },
-        { quizSetId: 1 },
-      )
-      .lean<{ quizSetId: Types.ObjectId }[]>();
-    const done = new Set(finished.map((a) => a.quizSetId.toString()));
+    // 같은 세트를 여러 번 끝냈어도 세트마다 한 줄(distinct)
+    const finished = (await this.attempts.distinct('quizSetId', {
+      userId: owner,
+      quizSetId: { $in: ready },
+      finishedAt: { $ne: null },
+    })) as Types.ObjectId[];
+    const done = new Set(finished.map((id) => id.toString()));
     return sets.map((s) =>
       s.status === 'ready' && done.has(s._id) ? { ...s, completed: true } : s,
     );
