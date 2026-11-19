@@ -58,6 +58,15 @@ const walk = (node: Node): number[] => {
 };
 /** 그려진 화면의 View들이 가진 아래 여백(paddingBottom) 값 */
 const paddings = () => walk(screen.root as unknown as Node);
+type LayoutNode = { props: { onLayout?: (e: unknown) => void }; children: (LayoutNode | string)[] };
+/** 그려진 View들의 onLayout을 모두 부른다(자리가 바뀐 것처럼) */
+const layoutAll = (node = screen.root as unknown as LayoutNode) => {
+  node.props.onLayout?.({
+    nativeEvent: { layout: { x: 0, y: frame.y, width: 390, height: frame.height } },
+    persist: () => {},
+  });
+  node.children.forEach((c) => typeof c !== 'string' && layoutAll(c));
+};
 
 describe('useKeyboardInset — 공용 훅(스터디룸에서 옮김)', () => {
   it('화면 아래끝과 키보드 위끝이 겹치는 만큼만 계산한다', () => {
@@ -149,12 +158,31 @@ describe('useKeyboardInset — 공용 훅(스터디룸에서 옮김)', () => {
     expect(paddings()).not.toContain(KEYBOARD);
   });
 
+  it('키보드가 떠 있는 동안 잴 View의 자리가 바뀌면(onLayout) 다시 잰다', async () => {
+    Platform.OS = 'android';
+    frame = { y: 0, height: 0 }; // 아직 자리 잡지 않음
+    await renderScreen(
+      <Screen>
+        <Text>본문</Text>
+      </Screen>,
+    );
+    await showKeyboard();
+    expect(paddings()).not.toContain(KEYBOARD);
+    frame = { y: 0, height: WINDOW };
+    await act(async () => layoutAll());
+    expect(paddings()).toContain(KEYBOARD);
+    // 창이 키보드만큼 줄면(겹침 없음) 여백을 없앤다 — 두 번 띄우지 않는다
+    frame = { y: 0, height: WINDOW - KEYBOARD };
+    await act(async () => layoutAll());
+    expect(paddings()).not.toContain(KEYBOARD);
+  });
+
   it('끄면(enabled=false) 키보드를 듣지 않고 0을 돌려준다', async () => {
     Platform.OS = 'android';
     const ref = { current: {} as View };
     const { result } = await renderHook(() => useKeyboardInset(ref, false));
     expect(listen).not.toHaveBeenCalled();
-    expect(result.current).toBe(0);
+    expect(result.current[0]).toBe(0);
   });
 
   it('안드로이드는 keyboardDidShow 하나만 듣는다(같은 이벤트를 두 번 듣지 않는다)', async () => {
@@ -232,6 +260,23 @@ describe('Screen — 안드로이드에서 키보드만큼 아래를 띄운다',
     await showKeyboard();
     expect(measure).not.toHaveBeenCalled();
     expect(paddings()).not.toContain(KEYBOARD);
+  });
+
+  it('보이지 않는 화면(스택 뒤 · 다른 탭)은 재지 않는다', async () => {
+    Platform.OS = 'android';
+    globalThis.mockFocused = false;
+    try {
+      await renderScreen(
+        <Screen>
+          <Text>본문</Text>
+        </Screen>,
+      );
+      await showKeyboard();
+      expect(measure).not.toHaveBeenCalled();
+      expect(paddings()).not.toContain(KEYBOARD);
+    } finally {
+      globalThis.mockFocused = undefined;
+    }
   });
 
   it('iOS는 지금처럼 KeyboardAvoidingView(padding)가 맡고, 직접 재서 한 번 더 띄우지 않는다', async () => {

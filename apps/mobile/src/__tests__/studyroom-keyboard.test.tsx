@@ -34,9 +34,9 @@ describe('스터디룸 채팅 입력줄 — 키보드만큼 올리기', () => {
         endCoordinates: { screenY: 844 - 336, height: 336, screenX: 0, width: 390 },
       }),
     );
-    expect(result.current).toBe(336);
+    expect(result.current[0]).toBe(336);
     await act(async () => handlers.get(ios ? 'keyboardWillHide' : 'keyboardDidHide')!({}));
-    expect(result.current).toBe(0);
+    expect(result.current[0]).toBe(0);
     spy.mockRestore();
   });
 });

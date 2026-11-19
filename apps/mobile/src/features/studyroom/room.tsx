@@ -527,7 +527,7 @@ export function RoomScreen() {
     new Map<string, { kind: 'image' | 'file'; file: LocalFile; blobUrl?: string }>(),
   );
   const keyboardFrame = useRef<View>(null);
-  const keyboardInset = useKeyboardInset(keyboardFrame);
+  const [keyboardInset, onKeyboardFrameLayout] = useKeyboardInset(keyboardFrame);
   // 방을 떠나면(설정 · 카드 · 초대 등 다른 화면으로) 채팅을 닫고 키보드를 내린다. 돌아왔을 때 채팅 화면이 아니라
   // 캠 화면이 보이게: 채팅을 연 채로 다녀오면 뒤로 가기를 눌러도 계속 채팅 화면으로 돌아오는 것처럼 보였다
   useFocusEffect(
@@ -992,6 +992,7 @@ export function RoomScreen() {
       <Screen scroll={false} pad={false} avoidKeyboard={false}>
         <View
           ref={keyboardFrame}
+          onLayout={onKeyboardFrameLayout}
           className="flex-1"
           // 키보드가 가리는 만큼 화면 아래를 띄워 채팅 입력줄이 키보드 바로 위에 오게 한다
           style={{ paddingBottom: keyboardInset }}

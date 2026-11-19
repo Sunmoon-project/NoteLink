@@ -322,8 +322,13 @@ export function Screen({
   const inTabs = useInTabs();
   // 안드로이드는 edge-to-edge라 창이 키보드만큼 줄지 않고 KeyboardAvoidingView도 움직이지 않는다(#567).
   // 화면 아래끝이 키보드에 가리는 만큼을 직접 재서 띄운다. iOS는 KeyboardAvoidingView(padding)가 맡는다
+  // 보이는 화면만 듣는다(스택 뒤 · 다른 탭 화면은 키보드마다 다시 재고 그리지 않게)
+  const focused = useIsFocused();
   const keyboardFrame = useRef<View>(null);
-  const keyboard = useKeyboardInset(keyboardFrame, Platform.OS === 'android' && avoidKeyboard);
+  const [keyboard, onKeyboardFrameLayout] = useKeyboardInset(
+    keyboardFrame,
+    Platform.OS === 'android' && avoidKeyboard && focused,
+  );
   const footerPad = inTabs ? 20 : Math.max(insets.bottom + 12, 24);
   // Canvas 안의 Screen은 canvas를 따로 주지 않아도 회색 바탕
   const outer = useSurface();
@@ -369,6 +374,7 @@ export function Screen({
     >
       <View
         ref={keyboardFrame}
+        onLayout={onKeyboardFrameLayout}
         className="flex-1"
         // 키보드가 가리는 만큼 아래를 띄워 입력칸 · 아래 버튼이 키보드 바로 위에 오게 한다(안드로이드)
         style={keyboard > 0 ? { paddingBottom: keyboard } : undefined}
@@ -1002,7 +1008,7 @@ export function Sheet({
   const focused = useIsFocused();
   // 안드로이드: 시트(Modal)도 edge-to-edge라 키보드만큼 줄지 않는다. 키보드가 가리는 만큼 시트 아래 여백을 늘린다(#567)
   const keyboardFrame = useRef<View>(null);
-  const keyboard = useKeyboardInset(
+  const [keyboard, onKeyboardFrameLayout] = useKeyboardInset(
     keyboardFrame,
     // 내용(잴 View)이 실제로 그려진 뒤에 켠다: 닫히는 시트가 남아 있으면 mounted가 늦게 켜진다
     Platform.OS === 'android' && open && mounted && focused,
@@ -1019,7 +1025,7 @@ export function Sheet({
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         className="flex-1 justify-end"
       >
-        <View ref={keyboardFrame} className="flex-1 justify-end">
+        <View ref={keyboardFrame} onLayout={onKeyboardFrameLayout} className="flex-1 justify-end">
           {open && (
             <Animated.View
               entering={FadeIn.duration(MOTION.enter)}
