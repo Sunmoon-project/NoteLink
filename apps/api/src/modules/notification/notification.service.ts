@@ -26,6 +26,7 @@ export type NotifyInput = {
   type: string;
   title: string;
   body: string;
+  /** 화면 이동용 값. 알림을 일으킨 사람이 있으면 `userId`에 그 id를 넣는다(탈퇴하면 그 알림을 지운다 — UsersService.withdraw) */
   data?: Record<string, unknown>;
   /** 같은 값의 푸시는 기기에서 하나로 바뀐다(아이폰 collapseId) */
   collapseId?: string;

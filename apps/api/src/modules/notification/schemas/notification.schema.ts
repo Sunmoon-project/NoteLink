@@ -35,5 +35,7 @@ export const NotificationSchema = SchemaFactory.createForClass(Notification);
 NotificationSchema.index({ userId: 1, _id: -1 });
 NotificationSchema.index({ userId: 1, readAt: 1 });
 NotificationSchema.index({ userId: 1, collapseKey: 1 });
+// 탈퇴할 때 그 사람이 일으킨 알림 찾기
+NotificationSchema.index({ 'data.userId': 1 }, { sparse: true });
 // ponytail: 알림함은 90일만 둔다(TTL). 오래된 알림을 남겨야 하면 늘린다
 NotificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 3600 });

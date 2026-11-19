@@ -52,7 +52,10 @@ export function matches(row: Record<string, unknown>, filter: Filter): boolean {
   return Object.entries(filter).every(([key, want]) => {
     if (key === '$or') return (want as Filter[]).some((f) => matches(row, f));
     if (key === '$expr') return expr(row, want as Expr);
-    const value = row[key];
+    // 'data.userId'처럼 점으로 이은 경로는 MongoDB처럼 안쪽 필드를 본다
+    const value = key
+      .split('.')
+      .reduce<unknown>((v, k) => (v as Record<string, unknown> | undefined)?.[k], row);
     if (want === null) return value === null || value === undefined;
     if (!isOps(want)) return same(value, want);
     // 연산자가 여럿이면 MongoDB처럼 모두 맞아야 한다(예: { $gte, $lte } 기간)
