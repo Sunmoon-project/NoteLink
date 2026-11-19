@@ -56,13 +56,11 @@ import {
   LIST_LAYOUT,
   Label,
   Loading,
-  OnFill,
   Progress,
   RollUp,
   Row,
   Screen,
   Search,
-  Tap,
   Title,
   cx,
   BACKDROP_IN,
@@ -73,6 +71,7 @@ import {
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
 import { AvatarCheer } from '@/features/tutor/cheer';
+import { ChoiceRow, splitPrompt } from './choice';
 import { recordWrong } from './wrong-review';
 import { TodayReviewCard, useTodayReview } from './today-review';
 import { useTourTarget } from '@/features/tutor/tour';
@@ -127,6 +126,9 @@ export function QuizHomeScreen() {
         (s) => s.status === 'ready' && !s.completed && !s.reviewDay && s._id !== todayId,
       );
   const shortcutSetId = progress ? latest?._id : recent?._id;
+  // 유사 퀴즈는 서버가 끝까지 푼 풀이로 만들므로 끝낸 세트(completed) 중 가장 최근 것을 넘긴다. 가장 최근 세트는
+  // 안 푼 「다시 보기」 · 풀던 세트일 수 있어 「먼저 이 퀴즈를 끝까지 풀어 주세요」가 떴다
+  const similarSetId = sets.data?.find((s) => s.status === 'ready' && s.completed)?._id;
   const waiting = sets.data?.filter((s) => s.status === 'generating' && s._id !== todayId) ?? [];
   return (
     <Canvas>
@@ -188,7 +190,10 @@ export function QuizHomeScreen() {
                     sub={sub}
                     chevron
                     onPress={() =>
-                      router.push({ pathname: href as never, params: { setId: shortcutSetId } })
+                      router.push({
+                        pathname: href as never,
+                        params: { setId: href === '/play/similar' ? similarSetId : shortcutSetId },
+                      })
                     }
                   >
                     {l}
@@ -973,16 +978,9 @@ export function QuizSolveScreen() {
                 </>
               )}
               {(q.choices ?? []).map((c, n) => (
-                <Tap
-                  key={c}
-                  onPress={() => choose(c)}
-                  className="min-h-14 justify-center overflow-hidden rounded-2xl bg-white px-5 py-4"
-                >
-                  <OnFill on={pick === c} fill="bg-mint" />
-                  <Text className="text-subhead text-ink">
-                    {'①②③④⑤'[n]} {c}
-                  </Text>
-                </Tap>
+                <ChoiceRow key={c} n={n} on={pick === c} onPress={() => choose(c)}>
+                  {c}
+                </ChoiceRow>
               ))}
             </View>
           </Animated.View>
@@ -1272,6 +1270,8 @@ export function QuizSimilarScreen() {
   const generate = useMutation({
     mutationFn: () => api.quiz.similar(setId ?? ''),
     retry: false,
+    // 실패 문구는 화면 아래에 직접 보여 주므로 공용 토스트는 띄우지 않는다
+    onError: () => {},
   });
   // 서버는 「다시 보기」 세트를 만드는 중(generating)으로 돌려준다: 다 만들 때까지 세트를 다시 읽는다
   const making = generate.data?.status === 'generating' ? generate.data._id : null;
@@ -1607,7 +1607,7 @@ export function QuizBoxScreen() {
             body="퀴즈를 풀고 다시 보고 싶은 문제를 보관하면 여기에 모여요."
           />
         )}
-        <View className="gap-2">
+        <View className="gap-3">
           {box.data?.map((q, n) => (
             <Animated.View
               key={q._id}
@@ -1620,8 +1620,24 @@ export function QuizBoxScreen() {
                   <View className="h-5 w-5 items-center justify-center rounded-full bg-brand">
                     <Text className="text-caption2 text-white">{n + 1}</Text>
                   </View>
-                  <Text className="flex-1 text-subhead leading-6 text-ink">{q.prompt}</Text>
+                  <Text className="flex-1 text-subhead leading-6 text-ink">
+                    {splitPrompt(q.prompt)[0]}
+                  </Text>
                 </View>
+                {!!splitPrompt(q.prompt)[1] && (
+                  <Text className="mt-2 pl-7 text-footnote leading-5 text-sub">
+                    {splitPrompt(q.prompt)[1]}
+                  </Text>
+                )}
+                {!!q.choices?.length && (
+                  <View className="mt-3 gap-2 pl-7">
+                    {q.choices.map((c, i) => (
+                      <ChoiceRow key={c} n={i} fill="bg-canvas">
+                        {c}
+                      </ChoiceRow>
+                    ))}
+                  </View>
+                )}
                 {shown.includes(q._id) && (
                   <Animated.View entering={FADE_IN} className="mt-2 rounded-lg bg-mint px-3 py-2">
                     <Text className="text-footnote font-semibold text-brand">
