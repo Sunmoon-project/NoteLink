@@ -6,7 +6,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronRight, FileText, Image, Pin } from 'lucide-react-native';
 import { ERROR_CODES, MATERIAL_MAX_FILES, type AiJob } from '@notelink/shared';
-import { api, NetworkError } from '@/lib/api';
+import { api, ApiError, NetworkError } from '@/lib/api';
 import { uploadToBlob, UploadError } from '@/lib/upload';
 import { aiWaiting, stageOf } from '@/lib/ai';
 import { notifyLocal, pushRegistered } from '@/lib/push';
@@ -36,6 +36,7 @@ import {
   cx,
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
+import { AiPending } from '@/components/AiPending';
 import { Player } from './player';
 import { QuizFromNote } from './quiz-from-note';
 import { useSmoothProgress } from '@/hooks/smooth-progress';
@@ -668,6 +669,41 @@ export function ResultScreen() {
       toast('학습자료에 저장했어요');
     },
   });
+  // 다시 만들기: 서버가 새 작업을 넣고, 성공할 때까지 노트는 지금 결과 그대로다(실패하면 지금 결과가 남는다)
+  const [askRegen, setAskRegen] = useState(false);
+  const [regenJob, setRegenJob] = useState<string | null>(null);
+  const regen = useMutation({
+    mutationFn: () => api.content.regenerate(id),
+    onSuccess: ({ job }) => setRegenJob(job._id),
+    // 하루 한도(429) · 이미 다시 만드는 중(409)은 서버 문구 그대로
+    onError: (e) =>
+      toast(e instanceof ApiError ? e.message : '다시 만들지 못했어요. 연결을 확인해 주세요'),
+  });
+  useEffect(() => {
+    if (!regenJob) return;
+    let over = false;
+    const t = setInterval(async () => {
+      try {
+        const j = await api.ai.job(regenJob);
+        if (over || !['succeeded', 'failed', 'canceled'].includes(j.status)) return;
+        over = true;
+        setRegenJob(null);
+        // 노트 조회가 끝난 작업의 결과를 옮긴다
+        await m.refetch();
+        toast(
+          j.status === 'succeeded'
+            ? '결과를 새로 만들었어요'
+            : '다시 만들지 못했어요. 지금 결과는 그대로예요',
+        );
+      } catch {
+        // 연결이 잠깐 끊겨도 다음 확인에서 이어 본다
+      }
+    }, 1500);
+    return () => {
+      over = true;
+      clearInterval(t);
+    };
+  }, [regenJob]); // eslint-disable-line react-hooks/exhaustive-deps
   if (m.isError && !m.data)
     return (
       <Canvas>
@@ -691,11 +727,29 @@ export function ResultScreen() {
     <Canvas>
       <Screen
         footer={
-          <Btn loading={save.isPending} onPress={() => save.mutate()}>
-            학습자료에 저장
-          </Btn>
+          <View className="gap-2">
+            <Btn loading={save.isPending} disabled={!!regenJob} onPress={() => save.mutate()}>
+              학습자료에 저장
+            </Btn>
+            <Btn
+              kind="cream"
+              loading={regen.isPending || !!regenJob}
+              disabled={save.isPending}
+              onPress={() => setAskRegen(true)}
+            >
+              다시 만들기
+            </Btn>
+          </View>
         }
       >
+        {regenJob && (
+          <View className="mb-3">
+            <AiPending
+              what="다시 만들기"
+              hint="새 결과가 나오면 바로 바꿔 보여 드려요. 그때까지 지금 결과는 그대로예요."
+            />
+          </View>
+        )}
         {mat.kind === 'handwriting' && (
           <>
             <Header title="노트 정리 완료" large={false} />
@@ -749,6 +803,19 @@ export function ResultScreen() {
         {/* 정리가 끝나면 바로 퀴즈로 */}
         <QuizFromNote material={mat} className="mt-4" />
       </Screen>
+      <Alert
+        open={askRegen}
+        tone="sun"
+        title="결과를 다시 만들까요?"
+        body="새 결과가 나오면 지금 결과는 사라져요. 다시 만들기는 하루 3번까지 할 수 있어요."
+        secondary="그대로 두기"
+        onSecondary={() => setAskRegen(false)}
+        primary="다시 만들기"
+        onPrimary={() => {
+          setAskRegen(false);
+          regen.mutate();
+        }}
+      />
     </Canvas>
   );
 }

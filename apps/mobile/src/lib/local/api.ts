@@ -1077,6 +1077,8 @@ const api: Api = {
         ?.bookmarks.push({ atSec });
       return ok(undefined);
     },
+    // 기기 저장 모드는 AI 정리를 하지 않는다
+    regenerate: () => needServer('정리 결과 다시 만들기'),
     downloadUrl: (id) => {
       const m = db().materials.find((x) => x._id === id);
       const f = m?.files[0];
