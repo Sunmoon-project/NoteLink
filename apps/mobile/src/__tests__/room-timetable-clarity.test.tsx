@@ -130,9 +130,13 @@ it('방 설정에서 「이 방에 내 시간표 시간 보이기」를 끄면 �
   expect(
     screen.getByText('끄면 이 방에서 내 시간이 시간표와 추천 시간에 쓰이지 않아요'),
   ).toBeTruthy();
-  await waitFor(() => expect(toggle.props.value).toBe(true));
+  // 일정을 받기 전에는 꺼져 있다(disabled) — 받은 뒤에 누른다
+  await waitFor(() =>
+    expect(screen.getByLabelText('이 방에 내 시간표 시간 보이기').props.disabled).toBe(false),
+  );
+  expect(toggle.props.value).toBe(true);
   await act(async () => {
-    fireEvent(toggle, 'valueChange', false);
+    fireEvent(screen.getByLabelText('이 방에 내 시간표 시간 보이기'), 'valueChange', false);
   });
   await waitFor(() => expect(mockApi.rooms.setScheduleHidden).toHaveBeenCalledWith('r1', true));
 });
