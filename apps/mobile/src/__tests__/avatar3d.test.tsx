@@ -200,6 +200,25 @@ it('움직이는 부품(눈 · 입)은 따로 두고 나머지는 한 메시로 
   add.mockRestore();
 });
 
+it('lips를 넘기면 사인파 대신 그 입 모양으로 다가가고, 다문 입은 원래 크기', async () => {
+  const { Scene } = jest.requireActual('three');
+  const add = jest.spyOn(Scene.prototype, 'add');
+  let lips = { open: 0, wide: 1 };
+  await render(<Avatar3D mood="talking" avatarId="base" lips={() => lips} />);
+  await glReady(1);
+  await createContext(0);
+  const root = add.mock.calls[0]![0] as import('three').Object3D;
+  const mouth = root.getObjectByName('mouth')!;
+  const [y0, x0] = [mouth.scale.y, mouth.scale.x];
+  await wait(150);
+  expect(mouth.scale.y).toBeCloseTo(y0, 5); // 말하는 표정이어도 소리가 없으면 다문다
+  lips = { open: 1, wide: 1.1 };
+  await wait(400);
+  expect(mouth.scale.y / y0).toBeCloseTo(3.4, 1);
+  expect(mouth.scale.x / x0).toBeCloseTo(1.1, 2);
+  add.mockRestore();
+});
+
 describe('표정', () => {
   const { eyeOpen, FlatFace, MOUTH_WIDE } = jest.requireActual<
     typeof import('../features/tutor/avatar3d')

@@ -47,18 +47,11 @@ import { C, ICON } from '@/theme';
 import { DocSummary, NoteBody } from './convert';
 import { Player } from './player';
 import { PageImages, usePageTurn } from './page-images';
-import { TutorBuddy, useTuckOnScroll } from '@/features/tutor/buddy';
+import { TutorBuddy, canAsk, useTuckOnScroll } from '@/features/tutor/buddy';
 import { seoul } from '@/lib/dates';
 import { QuizFromNote } from './quiz-from-note';
 
 // p.67~73 필기 · 녹음 · 문서 상세 / 편집 / 다운로드 / 공유 / 삭제
-
-/** 아바타가 설명할 글이 있는 노트: 정리가 끝났거나 요약 · 쪽 글이 있음(서버 NOTE_NOT_READY 전에 숨김) */
-const canAsk = (m: Material) =>
-  m.processing?.status === 'done' ||
-  !!m.summary?.sections.length ||
-  !!m.summary?.points.length ||
-  !!m.pages?.some((p) => p.ocrText?.trim());
 
 function useMaterial() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -494,15 +487,12 @@ export function RecDetailScreen() {
   const { id, m, isError, refetch } = useMaterial();
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
-  const buddy = useTuckOnScroll();
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
     <Canvas>
-      <Screen
-        onScroll={buddy.onScroll}
-        overlay={canAsk(m) && <TutorBuddy id={id} tucked={buddy.tucked} />}
-      >
+      {/* 떠 있는 아바타 선생님은 두지 않는다: 플레이어 자막 옆 3D 아바타가 녹음에 맞춰 말한다(GL 화면 하나) */}
+      <Screen>
         <Header
           title={view === 'text' ? '원문 텍스트 보기' : m.title}
           sub={dateLabel(m, '녹음')}
@@ -510,7 +500,7 @@ export function RecDetailScreen() {
           right={<More onPress={() => setOpt(true)} />}
         />
         <QuizFromNote material={m} className="mb-3" />
-        <View className="-mt-2 mb-3 flex-row items-center gap-2">
+        <View className="mb-3 flex-row items-center gap-2">
           {view === 'text' && <Text className="text-caption text-sub">{m.title}</Text>}
           {subject && <Badge>{subject}</Badge>}
           {m.description ? (
