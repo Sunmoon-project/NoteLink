@@ -39,6 +39,13 @@ export class Processing {
   @Prop({ type: Types.ObjectId, ref: 'AiJob', default: null })
   jobId?: Types.ObjectId | null;
 
+  /**
+   * 「다시 만들기」로 넣은 새 정리 작업(서버 전용, 앱 응답에는 없다). 그동안 노트는 jobId 의 옛 결과를 그대로 보이고,
+   * 새 작업이 성공하면 결과와 jobId 를 바꾸고, 실패 · 취소면 이 값만 지운다. 기존 문서는 없음 = null
+   */
+  @Prop({ type: Types.ObjectId, ref: 'AiJob', default: null })
+  regenJobId?: Types.ObjectId | null;
+
   /** 목록 조회가 이 노트의 작업 상태를 마지막으로 확인한 시각. 서버 전용(앱 응답에는 없다). 실패한 노트를 돌아가며 확인하려고 쓴다 */
   @Prop({ type: Date })
   checkedAt?: Date;

@@ -2,20 +2,21 @@ import { View } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { Text } from '@/components/text';
 import { Canvas, Header, Screen } from '@/components/ui';
-import { LEGAL_DOCS, type LegalDocKey } from './legal-docs';
+import { HELP_DOCS } from '@/features/profile/help-docs';
+import { LEGAL_DOCS, type LegalDoc } from './legal-docs';
 
-const isKey = (v: unknown): v is LegalDocKey =>
-  v === 'service' || v === 'privacy' || v === 'marketing';
+// 약관과 도움말(자주 묻는 질문 · 사용 가이드)을 같은 화면으로 보여 준다
+const DOCS: Record<string, LegalDoc> = { ...LEGAL_DOCS, ...HELP_DOCS };
 
-/** 약관 · 개인정보 처리방침 · 마케팅 수신 동의 전문. 가입 전(약관 동의)과 로그인 뒤(설정) 모두에서 연다 */
+/** 약관 · 개인정보 처리방침 · 마케팅 수신 동의 전문과 도움말. 가입 전(약관 동의)과 로그인 뒤(설정) 모두에서 연다 */
 export function LegalDocScreen() {
   const { doc } = useLocalSearchParams<{ doc?: string }>();
-  const d = LEGAL_DOCS[isKey(doc) ? doc : 'service'];
+  const d = (doc && Object.hasOwn(DOCS, doc) ? DOCS[doc] : undefined) ?? LEGAL_DOCS.service;
   return (
     <Canvas>
       <Screen>
         <Header title={d.title} large={false} />
-        <Text className="mt-1 text-caption text-sub">{d.updated}</Text>
+        {!!d.updated && <Text className="mt-1 text-caption text-sub">{d.updated}</Text>}
         {d.intro && <Text className="mt-4 text-footnote leading-6 text-ink">{d.intro}</Text>}
         {d.sections.map((s) => (
           <View key={s.heading} className="mt-6">

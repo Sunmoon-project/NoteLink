@@ -8,7 +8,12 @@ export type QuizProgress = {
   pick: string | null;
   right: boolean | null;
   results: boolean[];
-  completed?: { pointsEarned: number; balance: number };
+  completed?: {
+    pointsEarned: number;
+    balance: number;
+    scheduled?: number;
+    nextReviewDay?: string | null;
+  };
 };
 /** 인증 만료로 화면이 교체되어도 같은 계정의 미완료 풀이를 보존한다. */
 export const useQuizProgress = create<{

@@ -50,7 +50,15 @@ import type {
 export type MonthDay = { studyDate: string; level: number; hasTodo: boolean };
 export type ImageVerdict = 'ok' | 'not_allowed' | 'not_handwriting' | 'blurry';
 export type RoomSchedule = {
-  members: { nickname: string; emoji: string }[];
+  /** id · blocks는 멤버별 일정을 주는 서버부터 온다. blocks.day 0 = 월요일, title은 공개하지 않았으면 null */
+  members: {
+    id?: string;
+    nickname: string;
+    emoji: string;
+    /** 이 방에서 수업 시간을 숨긴 멤버(blocks는 빈 배열, 격자 · 추천 계산에서도 빠진다) */
+    hidden?: boolean;
+    blocks?: { day: number; start: string; end: string; title: string | null }[];
+  }[];
   /** [시간대][요일] 0 비어있음 · 1 바쁨 · 2 공통 가능 */
   grid: number[][];
   startHour: number;
@@ -201,6 +209,8 @@ export interface Api {
     search(nickname: string): Promise<Friend[]>;
     sendRequest(userId: string): Promise<void>;
     received(): Promise<FriendRequest[]>;
+    /** 내가 보내고 아직 대기 중인 요청의 상대 userId(「요청 보냄」 표시) */
+    sent(): Promise<string[]>;
     respond(requestId: string, accept: boolean): Promise<void>;
     remove(userId: string): Promise<void>;
     openDirect(userId: string): Promise<ChatRoom>;
@@ -229,6 +239,8 @@ export interface Api {
     recording(materialId: string): Promise<Recording>;
     addBookmark(materialId: string, atSec: number): Promise<void>;
     downloadUrl(materialId: string): Promise<{ url: string; fileName: string }>;
+    /** 정리 결과 다시 만들기. 새 작업이 성공할 때까지 노트는 지금 결과 그대로 */
+    regenerate(materialId: string): Promise<{ material: Material; job: AiJob }>;
     share(p: {
       materialIds: string[];
       target: { type: 'room' | 'friend'; id: string };
@@ -254,7 +266,15 @@ export interface Api {
       questionId: string,
       answer: string,
     ): Promise<{ correct: boolean; correctAnswer: string }>;
-    finish(attemptId: string): Promise<{ pointsEarned: number; balance: number }>;
+    /** scheduled · nextReviewDay: 이번에 복습 일정에 넣은 문제 수 · 그 날짜(서울 YYYY-MM-DD, FR-37). 옛 서버 · 기기 저장은 없음 */
+    finish(
+      attemptId: string,
+    ): Promise<{
+      pointsEarned: number;
+      balance: number;
+      scheduled?: number;
+      nextReviewDay?: string | null;
+    }>;
     explanation(questionId: string): Promise<{ text: string }>;
     similar(quizSetId: string): Promise<QuizSet>;
     /** 오늘의 복습 세트(오늘 만든 것, 없으면 null) */
@@ -283,6 +303,8 @@ export interface Api {
     leave(id: string): Promise<void>;
     setTimer(id: string, rule: TimerRule): Promise<StudyRoom>;
     schedule(id: string): Promise<RoomSchedule>;
+    /** 이 방 시간표에서 내 수업 시간을 숨기거나 다시 보인다 */
+    setScheduleHidden(id: string, hidden: boolean): Promise<{ hidden: boolean }>;
     invite(id: string, userIds: string[]): Promise<void>;
     shared(id: string): Promise<{ items: RoomSharedItem[]; flashcards: Flashcard[] }>;
     livekitToken(id: string): Promise<{ token: string; url: string }>;

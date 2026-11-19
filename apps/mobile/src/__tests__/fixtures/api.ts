@@ -615,6 +615,7 @@ export const mockApi: Api = {
     search: (q) => ok(S.searchable.filter((f) => q.trim() && f.nickname === q.trim())),
     sendRequest: () => ok(undefined),
     received: () => ok(db.requests),
+    sent: () => ok([]),
     respond: async (id, accept) => {
       await ok(undefined);
 
@@ -771,6 +772,25 @@ export const mockApi: Api = {
         url: 'https://notelinkblob.blob.core.windows.net/uploads/sample.pdf',
         fileName: db.materials.find((m) => m._id === id)?.title ?? '연습문제.pdf',
       }),
+    regenerate: (id) => {
+      const material = db.materials.find((m) => m._id === id)!;
+      return ok({
+        material: structuredClone(material),
+        job: {
+          _id: `regen-${id}`,
+          type: 'handwriting_summary',
+          status: 'queued',
+          targetType: 'material',
+          targetId: id,
+          progress: 0,
+          attempts: 0,
+          result: null,
+          error: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      });
+    },
     share: () => ok(undefined),
     checkImages: (files) =>
       ok(
@@ -1029,6 +1049,7 @@ export const mockApi: Api = {
       });
       return structuredClone(room);
     },
+    setScheduleHidden: (_id: string, hidden: boolean) => ok({ hidden }),
     schedule: () =>
       ok({
         members: [

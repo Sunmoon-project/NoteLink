@@ -185,6 +185,7 @@ export const PATHS = {
   friend: (userId: string) => `/friends/${seg(userId)}`,
   friendRequests: '/friend-requests',
   friendRequestsReceived: '/friend-requests/received',
+  friendRequestsSent: '/friend-requests/sent',
   friendRequestAction: (id: string, action: 'accept' | 'reject') =>
     `/friend-requests/${seg(id)}/${action}`,
   directChat: '/chat-rooms/direct',
@@ -198,6 +199,8 @@ export const PATHS = {
   materialRecording: (id: string) => `/materials/${seg(id)}/recording`,
   materialBookmarks: (id: string) => `/materials/${seg(id)}/bookmarks`,
   materialDownloadUrl: (id: string) => `/materials/${seg(id)}/download-url`,
+  /** 정리 결과 다시 만들기: 새 작업을 넣고, 성공할 때까지 노트는 옛 결과 그대로(하루 3회, 동시 1개) */
+  materialRegenerate: (id: string) => `/materials/${seg(id)}/regenerate`,
   materialShare: '/materials/share',
   /** 아바타에게 노트 묻기 → note_ask 작업(AiJob)을 돌려준다. 답은 aiJob으로 받아 result(NoteAskResult)에서 읽는다 */
   materialAsk: (id: string) => `/materials/${seg(id)}/ask`,
@@ -226,6 +229,7 @@ export const PATHS = {
   leaveRoom: (id: string) => `/study-rooms/${seg(id)}/leave`,
   roomTimer: (id: string) => `/study-rooms/${seg(id)}/timer-rule`,
   roomSchedule: (id: string) => `/study-rooms/${seg(id)}/schedule`,
+  roomScheduleVisibility: (id: string) => `/study-rooms/${seg(id)}/schedule/visibility`,
   roomInvites: (id: string) => `/study-rooms/${seg(id)}/invites`,
   roomShared: (id: string) => `/study-rooms/${seg(id)}/shared-items`,
   livekitToken: (id: string) => `/study-rooms/${seg(id)}/livekit-token`,
@@ -255,6 +259,8 @@ export type ServerToClient = {
   'chat:message': (m: Message) => void;
   'room:presence': (p: { roomId: string; members: RoomMember[] }) => void;
   'room:members-changed': (payload: { roomId: string }) => void;
+  /** 스터디룸 목록(rooms:watch): 그 방 화면에 지금 들어와 있는 사람이 바뀌었다 */
+  'room:live': (p: { roomId: string; userIds: string[] }) => void;
   'room:timer': (p: {
     roomId: string;
     rule: TimerRule | null;
@@ -276,6 +282,12 @@ export type ClientToServer = {
     ack?: (r: { ok: boolean; missed?: Message[] }) => void,
   ) => void;
   'room:leave': (p: { roomId: string }) => void;
+  /** 스터디룸 목록이 보이는 동안 내 방들의 접속 현황을 받는다(멤버가 아닌 방은 live 에서 빠진다) */
+  'rooms:watch': (
+    p: { roomIds: string[] },
+    ack?: (r: { ok: boolean; live: Record<string, string[]> }) => void,
+  ) => void;
+  'rooms:unwatch': (p: { roomIds: string[] }) => void;
   'room:state': (p: { roomId: string; micOn: boolean; camOn: boolean; todaySec: number }) => void;
   /** 글은 text, 사진 · 파일은 채팅 경로에 먼저 올린 뒤 attachment로 보낸다 */
   'chat:send': (

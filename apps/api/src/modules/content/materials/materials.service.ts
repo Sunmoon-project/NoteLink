@@ -3,6 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -18,7 +20,7 @@ import {
   AiJobsService,
   type InputRefreshContext,
 } from '../../../ai-jobs/ai-jobs.service.js';
-import { QuizSetsService } from '../../../quiz-sets/quiz-sets.service.js';
+import { QuizSetsService, seoulDay } from '../../../quiz-sets/quiz-sets.service.js';
 import { BlobStorageService } from '../../upload/blob-storage.service.js';
 import { Folder } from '../schemas/folder.schema.js';
 import { Material } from '../schemas/material.schema.js';
@@ -27,6 +29,7 @@ import type { UpdateMaterialDto } from './dto/update-material.dto.js';
 import { type ListCursor } from './list-cursor.js';
 import { syncFromJob } from './material-sync.js';
 import { type MaterialRow, toAppMaterial } from './material-view.js';
+import { RegenQuota } from './regen-quota.schema.js';
 
 type AppMaterial = ReturnType<typeof toAppMaterial>;
 
@@ -70,8 +73,34 @@ const invalid = (message: string) =>
   new BadRequestException({ code: ERROR_CODES.VALIDATION, message });
 const conflict = (message: string) =>
   new ConflictException({ code: ERROR_CODES.IDEMPOTENCY_CONFLICT, message });
+/** 정리 결과 「다시 만들기」를 한 사람이 하루(서울 날짜)에 할 수 있는 횟수 */
+export const REGENERATE_DAILY_LIMIT = 3;
+const notReady = (message: string) =>
+  new ConflictException({ code: ERROR_CODES.NOTE_NOT_READY, message });
+const regenExhausted = () =>
+  new HttpException(
+    {
+      code: ERROR_CODES.RATE_LIMITED,
+      message: `오늘은 다시 만들기를 ${REGENERATE_DAILY_LIMIT}번 다 썼어요. 내일 다시 해 주세요`,
+    },
+    HttpStatus.TOO_MANY_REQUESTS,
+  );
 const isDuplicateKey = (e: unknown) =>
   typeof e === 'object' && e !== null && (e as { code?: unknown }).code === DUPLICATE_KEY;
+
+/** 정리 작업 입력. 등록과 「다시 만들기」가 같은 입력을 쓴다(처리기는 다른 컬렉션을 읽지 않는다) */
+function jobInput(
+  kind: keyof typeof JOB_TYPE,
+  files: UploadedFile[],
+  subjectName: string | undefined,
+): Record<string, unknown> {
+  return kind === 'recording'
+    ? { audioUrl: files[0]!.readUrl, sizeBytes: files[0]!.sizeBytes }
+    : {
+        pages: files.map((f, i) => ({ pageNo: i + 1, imageUrl: f.readUrl })),
+        ...(subjectName ? { subject: subjectName } : {}),
+      };
+}
 
 /** 앱이 보낸 id. 형식이 틀리면 없는 것과 같게 404 */
 export function objectId(id: string, what = '노트'): Types.ObjectId {
@@ -169,6 +198,8 @@ export class MaterialsService implements OnModuleInit {
     private readonly blobs: BlobStorageService,
     private readonly quizSets: QuizSetsService,
     @InjectConnection() private readonly connection: Connection,
+    // 다시 만들기만 쓴다(Nest 가 늘 넣는다. 다시 만들기를 부르지 않는 시험은 넘기지 않아도 된다)
+    @InjectModel(RegenQuota.name) private readonly regenQuotas?: Model<RegenQuota>,
   ) {}
 
   private readonly logger = new Logger(MaterialsService.name);
@@ -413,19 +444,12 @@ export class MaterialsService implements OnModuleInit {
     const kind = material.kind as keyof typeof JOB_TYPE;
     let mine: AppAiJob | null = null;
     try {
-      const input =
-        kind === 'recording'
-          ? { audioUrl: files[0]!.readUrl, sizeBytes: files[0]!.sizeBytes }
-          : {
-              pages: files.map((f, i) => ({ pageNo: i + 1, imageUrl: f.readUrl })),
-              ...(subjectName ? { subject: subjectName } : {}),
-            };
       mine = await this.jobs.enqueue({
         type: JOB_TYPE[kind],
         userId,
         targetType: 'material',
         targetId: material._id.toString(),
-        input,
+        input: jobInput(kind, files, subjectName),
       });
       const linked = await this.materials
         .findOneAndUpdate(
@@ -647,6 +671,8 @@ export class MaterialsService implements OnModuleInit {
    * 그 사이 지웠으면 null
    */
   async sync(userId: string, row: MaterialRow): Promise<MaterialRow | null> {
+    if (row.processing.status === 'done' && row.processing.regenJobId)
+      return this.syncRegen(userId, row, row.processing.regenJobId);
     const jobId = row.processing.jobId;
     // 노트만 만들고 작업을 넣기 전에 요청이 끊긴 노트: 영원히 대기 상태로 남지 않게 작업을 다시 만들어 연결한다
     if (!jobId && this.isStuck(row)) return this.recoverJob(userId, row);
@@ -678,6 +704,126 @@ export class MaterialsService implements OnModuleInit {
       await this.pregenerate(userId, updated);
     }
     return updated;
+  }
+
+  /**
+   * 「다시 만들기」 작업을 노트에 옮긴다. 성공하고 결과를 쓸 수 있을 때만 결과와 jobId 를 새 작업으로 바꾸고,
+   * 실패 · 취소 · 쓸 수 없는 결과면 regenJobId 만 지워 옛 결과를 그대로 둔다. 처리 중이면 그대로.
+   * 작업이 없으면: 방금 자리를 잡고 작업을 넣는 중일 수 있어 CLAIM_TTL_MS 가 지난 뒤에만(작업 id 의 만든 시각) 지운다
+   */
+  private async syncRegen(
+    userId: string,
+    row: MaterialRow,
+    regenId: Types.ObjectId,
+  ): Promise<MaterialRow | null> {
+    const job = await this.findJob(userId, regenId);
+    if (!job && Date.now() - regenId.getTimestamp().getTime() < CLAIM_TTL_MS) return row;
+    if (job && job.status !== 'succeeded' && job.status !== 'failed' && job.status !== 'canceled')
+      return row;
+    const update =
+      job?.status === 'succeeded'
+        ? syncFromJob({ ...row, processing: { ...row.processing, status: 'processing' } }, job)
+        : null;
+    const applied = update?.['processing.status'] === 'done';
+    const updated = await this.materials
+      .findOneAndUpdate(
+        { _id: row._id, ownerId: row.ownerId, deletedAt: null, 'processing.regenJobId': regenId },
+        {
+          $set: applied
+            ? { ...update, 'processing.jobId': regenId, 'processing.regenJobId': null }
+            : { 'processing.regenJobId': null },
+        },
+        { returnDocument: 'after' },
+      )
+      .lean<MaterialRow>();
+    return updated ?? this.currentRow(row);
+  }
+
+  /**
+   * 정리를 마친 노트의 결과를 같은 원본 · 같은 입력으로 다시 만든다(POST /materials/:id/regenerate). 새 작업을 넣어
+   * processing.regenJobId 에 걸고, 노트는 끝날 때까지 옛 결과를 보인다(바꾸기는 sync → syncRegen).
+   * 남의 노트 · 없는 노트 404, 정리 중이거나 다시 만드는 중이면 409, 하루 REGENERATE_DAILY_LIMIT 회를 넘으면 429.
+   * 자리(regenJobId)를 먼저 원자적으로 잡아 동시에 눌러도 작업은 하나이고, 거절 · 실패한 요청은 한도를 쓰지 않는다
+   */
+  async regenerate(userId: string, id: string): Promise<{ material: AppMaterial; job: AppAiJob }> {
+    const owner = new Types.ObjectId(userId);
+    const _id = objectId(id);
+    const found = await this.materials
+      .findOne({ _id, ownerId: owner, deletedAt: null })
+      .lean<MaterialRow>();
+    // 끝난 다시 만들기가 있으면 먼저 옮겨 자리를 비운다
+    const row = found ? await this.sync(userId, found) : null;
+    if (!row) throw notFound('노트');
+    if (row.processing.status !== 'done' || !(row.kind in JOB_TYPE))
+      throw notReady('정리가 끝난 노트만 다시 만들 수 있어요');
+    const kind = row.kind as keyof typeof JOB_TYPE;
+    const regenId = new Types.ObjectId();
+    const claimed = await this.materials
+      .findOneAndUpdate(
+        {
+          _id,
+          ownerId: owner,
+          deletedAt: null,
+          'processing.status': 'done',
+          'processing.regenJobId': null,
+        },
+        { $set: { 'processing.regenJobId': regenId } },
+        { returnDocument: 'after' },
+      )
+      .lean<MaterialRow>();
+    if (!claimed) throw notReady('다시 만드는 중이에요. 끝나면 다시 해 주세요');
+    const release = () =>
+      this.materials.updateOne(
+        { _id, 'processing.regenJobId': regenId },
+        { $set: { 'processing.regenJobId': null } },
+      );
+    const day = seoulDay(new Date());
+    if (!(await this.reserveRegen(owner, day))) {
+      await release();
+      throw regenExhausted();
+    }
+    try {
+      const folder = await this.folders
+        .findOne({ _id: claimed.folderId, ownerId: owner, deletedAt: null })
+        .lean<{ subjectName?: string }>();
+      const files = await this.prepareFiles(userId, kind, claimed.blobUrls ?? []);
+      const job = await this.jobs.enqueue({
+        id: regenId.toString(),
+        type: JOB_TYPE[kind],
+        userId,
+        targetType: 'material',
+        targetId: id,
+        input: jobInput(kind, files, folder?.subjectName),
+      });
+      return { material: await this.view(claimed), job };
+    } catch (e) {
+      await release();
+      await this.regenQuotas!.updateOne(
+        { ownerId: owner, day, count: { $gt: 0 } },
+        { $inc: { count: -1 } },
+      );
+      throw e;
+    }
+  }
+
+  /** 오늘 다시 만들기 한 번을 쓴다. 한도 안일 때만 하나 올린다(UploadQuotaService.reserve 와 같은 방식) */
+  private async reserveRegen(ownerId: Types.ObjectId, day: string): Promise<boolean> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await this.regenQuotas!.updateOne(
+          { ownerId, day, count: { $lt: REGENERATE_DAILY_LIMIT } },
+          {
+            $inc: { count: 1 },
+            $setOnInsert: { expiresAt: new Date(Date.now() + 2 * 86_400_000) },
+          },
+          { upsert: true },
+        );
+        return true;
+      } catch (e) {
+        if (!isDuplicateKey(e)) throw e;
+      }
+    }
+    return false;
   }
 
   private async findJob(userId: string, jobId: Types.ObjectId): Promise<AppAiJob | null> {
