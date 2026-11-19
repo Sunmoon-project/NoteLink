@@ -266,7 +266,15 @@ export interface Api {
       questionId: string,
       answer: string,
     ): Promise<{ correct: boolean; correctAnswer: string }>;
-    finish(attemptId: string): Promise<{ pointsEarned: number; balance: number }>;
+    /** scheduled · nextReviewDay: 이번에 복습 일정에 넣은 문제 수 · 그 날짜(서울 YYYY-MM-DD, FR-37). 옛 서버 · 기기 저장은 없음 */
+    finish(
+      attemptId: string,
+    ): Promise<{
+      pointsEarned: number;
+      balance: number;
+      scheduled?: number;
+      nextReviewDay?: string | null;
+    }>;
     explanation(questionId: string): Promise<{ text: string }>;
     similar(quizSetId: string): Promise<QuizSet>;
     /** 오늘의 복습 세트(오늘 만든 것, 없으면 null) */

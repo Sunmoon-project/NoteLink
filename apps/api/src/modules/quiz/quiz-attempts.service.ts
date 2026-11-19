@@ -1,9 +1,12 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
-import { type Connection, Model, Types } from 'mongoose';
+import { type ClientSession, type Connection, Model, Types } from 'mongoose';
 
 import { User, type UserDocument } from '../auth/schemas/user.schema.js';
 import { PointService } from '../reward/point/point.service.js';
+import { seoulDate } from '../session/study-time.js';
+import { firstReview } from '../../quiz-sets/first-review.js';
+import { dayEnd } from '../../review-reminders/review-remind.js';
 import { QuizAttempt, type QuizAttemptDocument } from './schemas/quiz-attempt.schema.js';
 import { QuizSet, type QuizSetDocument } from './schemas/quiz-set.schema.js';
 
@@ -31,10 +34,23 @@ export interface AnswerResult {
     correctAnswer: string;
 }
 
-/** 풀이를 끝낸 결과: 이번에 받은 포인트와 적립 후 잔액 */
+/**
+ * 풀이를 끝낸 결과: 이번에 받은 포인트와 적립 후 잔액, 이번에 복습 일정에 넣은 문제 수와 그 복습 날짜(서울 'YYYY-MM-DD',
+ * 넣은 문제가 없으면 null). 복습 필드는 FR-37에서 더했다(옛 앱은 읽지 않음)
+ */
 export interface FinishResult {
     pointsEarned: number;
     balance: number;
+    scheduled: number;
+    nextReviewDay: string | null;
+}
+
+interface ClosedAttempt {
+    _id: Types.ObjectId;
+    quizSetId: Types.ObjectId;
+    correctCount: number;
+    finishedAt: Date;
+    answers?: { questionId: Types.ObjectId; correct: boolean }[];
 }
 
 interface AttemptRow {
@@ -167,10 +183,12 @@ export class QuizAttemptsService {
                     { $set: { finishedAt: new Date() } },
                     { returnDocument: 'after', session },
                 )
-                .lean<{ correctCount: number }>();
+                .lean<ClosedAttempt>();
 
             let pointsEarned = 0;
+            let review = { scheduled: 0, nextReviewDay: null as string | null };
             if (closed) {
+                review = await this.scheduleFirstReview(owner, closed, session);
                 pointsEarned = await this.points.earnQuiz(userId, closed.correctCount, session);
                 if (pointsEarned > 0) {
                     await this.attempts
@@ -184,7 +202,45 @@ export class QuizAttemptsService {
             }
 
             const user = await this.users.findOne({ _id: owner }, null, { session }).lean<{ pointBalance?: number }>();
-            return { pointsEarned, balance: user?.pointBalance ?? 0 };
+            return { pointsEarned, balance: user?.pointBalance ?? 0, ...review };
         });
+    }
+
+    /**
+     * 처음 끝낸 풀이의 푼 문제 중 복습 상태가 없는 문제에 처음 복습 상태(firstReview, 처리기 srs.py와 같은 값)를 쓴다(FR-37).
+     * 맞힌 문제도 넣는다: 처리기도 처음 푼 문제는 맞힘 · 틀림 모두 1일 뒤로 잡는다(오답 복습 review.py와 같음).
+     * 오늘의 복습 · 복습 알림이 고르는 세트(ready, 노트 있음)만 넣는다. 이미 복습 중인 문제(오늘의 복습 · 다시 보기 문제 등)는
+     * 그대로 둔다. 같은 트랜잭션이라 포인트와 함께 한 번만 쓴다
+     */
+    private async scheduleFirstReview(owner: Types.ObjectId, attempt: ClosedAttempt, session: ClientSession) {
+        const none = { scheduled: 0, nextReviewDay: null };
+        const set = await this.sets
+            .findOne(
+                { _id: attempt.quizSetId, ownerId: owner, deletedAt: null, status: 'ready', materialId: { $ne: null } },
+                { questions: 1 },
+                { session },
+            )
+            .lean<{ questions?: { _id: Types.ObjectId; srs?: unknown }[] }>();
+        const unscheduled = new Set((set?.questions ?? []).filter((q) => q.srs == null).map((q) => q._id.toString()));
+        const picks = (attempt.answers ?? []).filter((a) => unscheduled.has(a.questionId.toString()));
+        if (!picks.length) return none;
+        const at = attempt.finishedAt;
+        const result = await this.sets.bulkWrite(
+            picks.map((a) => ({
+                updateOne: {
+                    filter: { _id: attempt.quizSetId, questions: { $elemMatch: { _id: a.questionId, srs: null } } },
+                    update: {
+                        $set: {
+                            'questions.$.srs': firstReview(a.correct, at),
+                            'questions.$.srsAt': at,
+                            'questions.$.srsAttemptId': attempt._id,
+                        },
+                    },
+                },
+            })),
+            { session },
+        );
+        const scheduled = result.modifiedCount;
+        return scheduled ? { scheduled, nextReviewDay: seoulDate(dayEnd(seoulDate(at))) } : none;
     }
 }

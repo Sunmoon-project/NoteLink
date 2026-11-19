@@ -74,6 +74,7 @@ import { AvatarCheer } from '@/features/tutor/cheer';
 import { ChoiceRow, Passage, splitPrompt } from './choice';
 import { recordWrong } from './wrong-review';
 import { TodayReviewCard, useTodayReview } from './today-review';
+import { NextStepCard, reviewDayWord, type NextStep } from './next-step';
 import { useTourTarget } from '@/features/tutor/tour';
 import { seoul } from '@/lib/dates';
 import { aiWaiting } from '@/lib/ai';
@@ -785,6 +786,10 @@ export function QuizSolveScreen() {
         points: String(completed.pointsEarned),
         // 문제마다 맞음(1) · 틀림(0): 결과 화면이 번호를 초록 · 빨강으로 칠한다
         results: answered.map(Number).join(''),
+        // 서버가 이번에 복습 일정에 넣은 문제 수 · 날짜(FR-37). 넣지 않았거나 옛 서버면 넘기지 않는다
+        ...(completed.scheduled && completed.nextReviewDay
+          ? { scheduled: String(completed.scheduled), nextReviewDay: completed.nextReviewDay }
+          : {}),
         ...(from === 'room' ? { from: 'room' } : {}),
       },
     });
@@ -1053,11 +1058,13 @@ export function QuizSolveScreen() {
 }
 
 export function QuizReviewScreen() {
-  const { setId, points, from, results } = useLocalSearchParams<{
+  const { setId, points, from, results, scheduled, nextReviewDay } = useLocalSearchParams<{
     setId?: string;
     points?: string;
     from?: string;
     results?: string;
+    scheduled?: string;
+    nextReviewDay?: string;
   }>();
   const set = useQuery({
     queryKey: ['quiz-set', setId ?? 'latest'],
@@ -1094,12 +1101,6 @@ export function QuizReviewScreen() {
             >
               확인
             </Btn>
-            <Pressable
-              onPress={() => router.push({ pathname: '/play/similar', params: { setId } })}
-              className="mt-3 self-center rounded-full bg-white px-4 py-2"
-            >
-              <Text className="text-caption text-sub">유사 퀴즈 생성하기</Text>
-            </Pressable>
           </>
         }
       >
@@ -1121,6 +1122,14 @@ export function QuizReviewScreen() {
           <Text className="mt-1 text-caption text-sub">
             문제를 누르면 AI 해설을 볼 수 있어요 · 푼 퀴즈는 보관함에 담았어요
           </Text>
+        </View>
+        <View className="mt-3">
+          <QuizNextStep
+            setId={set.data._id}
+            results={results}
+            reviewDay={Number(scheduled) > 0 ? nextReviewDay : undefined}
+            room={from === 'room'}
+          />
         </View>
         <View className="mt-5 gap-3">
           {qs.map((q, n) => (
@@ -1179,6 +1188,51 @@ export function QuizReviewScreen() {
       )}
     </Canvas>
   );
+}
+
+/**
+ * 퀴즈 결과의 다음 단계(FR-37): 틀린 문제는 비슷한 문제 복습(유사 퀴즈)으로, 그다음은 새 퀴즈로 잇는다.
+ * 복습 날짜는 서버가 이번에 일정에 넣었을 때만 말한다(오늘의 복습 · 기기 저장은 넣지 않음)
+ */
+function QuizNextStep({
+  setId,
+  results,
+  reviewDay,
+  room,
+}: {
+  setId: string;
+  results?: string;
+  reviewDay?: string;
+  room: boolean;
+}) {
+  const wrong = results ? [...results].filter((r) => r === '0').length : null;
+  const when = reviewDay ? reviewDayWord(reviewDay) : null;
+  const line =
+    wrong === null
+      ? undefined
+      : wrong > 0
+        ? when
+          ? // 이번에 일정에 넣은 문제가 틀린 문제라는 보장은 없다(이미 복습 중이던 문제는 날짜가 다름): 넣은 문제로 말한다
+            `복습할 문제는 ${when} 다시 물어볼게요`
+          : `틀린 ${wrong}문제, 비슷한 문제로 한 번 더 풀어 봐요`
+        : when
+          ? `다 맞혔어요! ${when} 한 번 더 확인해요`
+          : '다 맞혔어요!';
+  const steps: NextStep[] = [];
+  if (wrong !== 0)
+    steps.push({
+      icon: Sparkles,
+      label: wrong ? `틀린 ${wrong}문제 비슷한 문제로 지금 복습` : '비슷한 문제로 지금 복습',
+      sub: '틀린 개념을 다른 문제로 다시 풀어요',
+      onPress: () => router.push({ pathname: '/play/similar', params: { setId } }),
+    });
+  if (!room)
+    steps.push({
+      icon: Plus,
+      label: '다른 노트로 새 퀴즈',
+      onPress: () => router.dismissTo('/(tabs)/quiz/notes'),
+    });
+  return <NextStepCard line={line} reviewDay={reviewDay} steps={steps} />;
 }
 
 export function QuizExplainScreen() {
