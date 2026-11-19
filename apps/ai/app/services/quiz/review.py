@@ -499,6 +499,7 @@ def _similar_for(
         unchecked=unchecked,
         steps=m.steps,
         rejected=m.rejected,
+        refused=m.refused,
     )
 
 
@@ -547,7 +548,13 @@ def _retry_empty(report: Progress) -> bool:
 
     checkpoint가 없는 report(시험의 진행률 함수)는 횟수를 셀 수 없어 늘 다시 시도합니다.
     앱의 '다시 시도'는 checkpoint를 남겨 두므로(ai-jobs.service.ts) 그때는 바로 성공으로 끝냅니다.
+    시도 한도가 1이거나 횟수를 저장하지 못하면 다시 시도하지 않습니다: 다시 넣지 못하거나 횟수가
+    남지 않아 한도까지 되풀이해 실패하면 복습 상태가 옮겨지지 않음(/code-review).
+    알려진 한계: 앞 시도를 다른 장애(모두 llm_down · 처리기 멈춤)로 써 이번이 마지막 시도여도
+    처리 함수는 시도 횟수를 몰라 다시 시도를 올립니다. 그러면 작업이 실패합니다(모두 장애와 같음).
     """
+    if settings.ai_job_max_attempts <= 1:
+        return False
     if not isinstance(report, Checkpoint):
         return True
     saved = report.load_checkpoint()
@@ -555,7 +562,13 @@ def _retry_empty(report: Progress) -> bool:
     tried = n if isinstance(n, int) and not isinstance(n, bool) else 0
     if tried >= EMPTY_RETRIES:
         return False
-    report.save_checkpoint({"emptyRetries": tried + 1})
+    try:
+        report.save_checkpoint({"emptyRetries": tried + 1})
+    except Exception as e:  # DB 오류 등: 성공으로 끝내 복습 상태를 옮김
+        log.warning(
+            "오답 복습: 다시 시도 횟수를 저장하지 못해 다시 시도하지 않음(%s)", type(e).__name__
+        )
+        return False
     return True
 
 
@@ -564,9 +577,11 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
 
     생성 호출이 모두 실패하면(LLM 장애) LlmError를 올려 작업 처리기가 나중에 다시 시도하게 합니다.
     한 문제도 못 만들었는데 정상 탈락 · 거절 없이 끝난 대상(일부 장애 · 답 모양 오류)이 있으면
-    한 번(EMPTY_RETRIES) 다시 시도합니다(#553). 그 밖의 0문제(틀린 문제 없음 · 모두 검사 탈락 ·
-    다시 해도 장애 등)는 이유(emptyReason)를 남기고 성공으로 끝냅니다: 작업이 실패하면 NestJS가
-    복습 상태(srsUpdates)를 옮기지 않습니다. 끝날 때 만든 수 · 못 쓴 단계를 로그로 남깁니다.
+    한 번(EMPTY_RETRIES) 다시 시도합니다(#553, _retry_empty). 그 밖의 0문제(틀린 문제 없음 · 모두
+    검사 탈락 · 한 번 다시 해도 일부 장애 등)는 이유(emptyReason)를 남기고 성공으로 끝냅니다: 작업이
+    실패하면 NestJS가 복습 상태(srsUpdates)를 옮기지 않습니다. 모든 대상이 장애(llm_down)면 지금처럼
+    시도할 때마다 다시 시도하고, 한도를 넘기면 작업이 실패합니다. 끝날 때 만든 수 · 못 쓴 단계를
+    로그로 남깁니다.
     """
     inp = parse(raw)
     attempt, sets, notes = inp.attempt, inp.sets, inp.notes
@@ -644,10 +659,11 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         made.append(m)
         report(25 + 55 * (i + 1) // len(targets), "비슷한 문제 만들기")
     if made and all(m.llm_down for m in made):
-        log.warning("%s — 다시 시도", _summary(judged, stopped, made))
         # 모두 서버가 거절: 다시 해도 같아 다시 넣지 않게(#272)
         if all(m.llm_refused for m in made):
+            log.warning("%s — 모두 거절, 다시 시도 안 함", _summary(judged, stopped, made))
             raise LlmRejectedError("문제 만들기 요청을 모두 거절함")
+        log.warning("%s — 모두 장애, 다시 시도", _summary(judged, stopped, made))
         raise LlmError("문제 만들기 호출이 모두 실패")
     # 한 문제도 못 만들었고, 일시적인 원인(장애 · 답 모양 오류)으로만 끝난 대상이 있음(#553)
     if all(m.question is None for m in made) and any(_passing(m) for m in made):

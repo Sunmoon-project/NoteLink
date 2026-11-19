@@ -446,6 +446,23 @@ def test_a_missing_or_odd_checkpoint_counts_as_no_retry_yet(saved: object) -> No
     assert report.saved == {"emptyRetries": 1}
 
 
+class BrokenCheckpoint(CheckpointReport):
+    def save_checkpoint(self, value: JsonObject) -> None:
+        raise RuntimeError("DB 끊김")
+
+
+def test_a_retry_count_that_cannot_be_saved_ends_the_job_instead() -> None:
+    # 횟수가 남지 않으면 한도까지 되풀이할 수 있어 성공으로 끝내 복습 상태를 옮김
+    result = review.run(outage_llm(), job_input(), BrokenCheckpoint())
+    assert result["emptyReason"] == "transient" and result["srsUpdates"]
+
+
+def test_no_retry_when_the_job_may_run_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(review.settings, "ai_job_max_attempts", 1)
+    result = review.run(outage_llm(), job_input(), CheckpointReport())
+    assert result["emptyReason"] == "transient"
+
+
 def test_a_target_with_any_refused_try_is_not_retried() -> None:
     # q2: 거절 2번 + 답 모양 오류 1번 → 다시 보내도 거절되기 쉬움. q1은 정상 탈락
     review_ = [LlmRejectedError("HTTP 413"), {}, LlmRejectedError("HTTP 413")] + [BE] * 3
