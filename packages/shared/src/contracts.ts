@@ -172,6 +172,14 @@ export const PATHS = {
   timetableClasses: '/timetable/classes',
   timetableClass: (id: string) => `/timetable/classes/${seg(id)}`,
   timetableShares: '/timetable/shares',
+  // 알림함. 목록 ?before=<알림 id>&limit= → { data: { items: Notification[], nextCursor: string | null } }(최근 것부터)
+  notifications: '/notifications',
+  /** → { data: { count } } */
+  notificationsUnreadCount: '/notifications/unread-count',
+  /** → 204 */
+  notificationsReadAll: '/notifications/read-all',
+  /** PATCH → 204. 내 알림이 아니면 404 */
+  notificationRead: (id: string) => `/notifications/${seg(id)}/read`,
   // 소셜 · 채팅
   friends: '/friends',
   friend: (userId: string) => `/friends/${seg(userId)}`,

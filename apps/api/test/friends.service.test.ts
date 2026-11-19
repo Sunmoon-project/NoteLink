@@ -82,7 +82,41 @@ beforeEach(() => {
     (a, b) => String(a.userA) === String(b.userA) && String(a.userB) === String(b.userB),
   );
   shares = model([]);
-  service = new FriendsService(friendships as never, model(users) as never, shares as never);
+  // 알림은 notifications-real-db.test.ts에서 확인한다. 여기서는 받는 쪽 자리만 채운다
+  const notifier = { notify: async () => {} };
+  service = new FriendsService(
+    friendships as never,
+    model(users) as never,
+    shares as never,
+    notifier as never,
+  );
+});
+
+describe('알림 실패', () => {
+  it('알림 쪽(닉네임 조회 · 발송)이 실패해도 요청 · 수락은 성공한다', async () => {
+    const me = person('나');
+    const you = person('너');
+    const broken = model(users);
+    const findOne = broken.findOne;
+    // 존재 확인(exists)은 되고, 알림 문구용 닉네임 조회만 실패한다
+    broken.findOne = () => {
+      throw new Error('DB 오류');
+    };
+    const failing = new FriendsService(
+      friendships as never,
+      broken as never,
+      shares as never,
+      { notify: () => Promise.reject(new Error('push')) } as never,
+    );
+    await expect(failing.request(me, you, NOW)).resolves.toBeUndefined();
+    broken.findOne = findOne;
+    const [request] = await service.received(you);
+    broken.findOne = () => {
+      throw new Error('DB 오류');
+    };
+    await expect(failing.respond(you, request!._id, true, NOW)).resolves.toBeUndefined();
+    expect((await service.friends(me)).map((f) => f.nickname)).toEqual(['너']);
+  });
 });
 
 describe('친구 찾기', () => {
