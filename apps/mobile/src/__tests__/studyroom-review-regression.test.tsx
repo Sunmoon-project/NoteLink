@@ -207,7 +207,8 @@ it('오전 9시 그리드를 누르면 유효한 서울 일정으로 추가한�
     .spyOn(api.rooms, 'schedule')
     .mockResolvedValue({ ...schedule, startHour: 9, grid: [[2, 0, 0, 0, 0, 0, 0]] });
   await renderScreen(<ScheduleScreen />, client());
-  await fireEvent.press(await screen.findByLabelText('월 9:00 일정 추가'));
+  await fireEvent.press(await screen.findByLabelText('월 9:00 · 모두 비어 있음'));
+  await fireEvent.press(await screen.findByText('기기 캘린더에 추가'));
   await waitFor(() => expect(Calendar.createEventInCalendarAsync).toHaveBeenCalled());
   const event = jest.mocked(Calendar.createEventInCalendarAsync).mock.calls[0]![0]!;
   expect(new Date(event.startDate!).toISOString().slice(11, 16)).toBe('00:00');

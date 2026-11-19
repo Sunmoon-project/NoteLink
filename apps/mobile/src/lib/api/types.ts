@@ -50,7 +50,13 @@ import type {
 export type MonthDay = { studyDate: string; level: number; hasTodo: boolean };
 export type ImageVerdict = 'ok' | 'not_allowed' | 'not_handwriting' | 'blurry';
 export type RoomSchedule = {
-  members: { nickname: string; emoji: string }[];
+  /** id · blocks는 멤버별 일정을 주는 서버부터 온다. blocks.day 0 = 월요일, title은 공개하지 않았으면 null */
+  members: {
+    id?: string;
+    nickname: string;
+    emoji: string;
+    blocks?: { day: number; start: string; end: string; title: string | null }[];
+  }[];
   /** [시간대][요일] 0 비어있음 · 1 바쁨 · 2 공통 가능 */
   grid: number[][];
   startHour: number;

@@ -122,9 +122,13 @@ describe('스터디룸 공용 일정(StudyRoomScheduleService.schedule)', () => 
           { userId: LEFT, classes: [{ days: [3], startTime: '09:00', endTime: '10:00' }] },
         ]),
     }));
+    // 제목 공개 범위(시간표 공유 · 친구)는 study-room-schedule-mongo 실제 DB 시험이 본다. 여기서는 공유 없음
+    const none = { find: vi.fn(() => ({ lean: () => Promise.resolve([]) })) };
     const svc = new StudyRoomScheduleService(
       { find: tableFind } as never,
       { find: userFind } as never,
+      none as never,
+      none as never,
       { requireMember } as never,
     );
     return { svc, requireMember, userFind, tableFind };
@@ -137,8 +141,14 @@ describe('스터디룸 공용 일정(StudyRoomScheduleService.schedule)', () => 
     const out = await svc.schedule(room, me);
     expect(requireMember).toHaveBeenCalledWith(room, me);
     expect(out.members).toEqual([
-      { nickname: '가', emoji: '✏️' },
-      { nickname: '나', emoji: '✏️' },
+      {
+        id: A.toHexString(),
+        nickname: '가',
+        emoji: '✏️',
+        // 내 일정이라 제목이 보이지만, 이 수업에는 제목이 없다
+        blocks: [{ day: 0, start: '09:00', end: '10:00', title: null }],
+      },
+      { id: B.toHexString(), nickname: '나', emoji: '✏️', blocks: [] },
     ]);
     // 나간 멤버는 시간표를 읽지도 않는다
     expect(tableFind).toHaveBeenCalledWith(

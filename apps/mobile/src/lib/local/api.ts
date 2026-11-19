@@ -1358,7 +1358,21 @@ const api: Api = {
         ),
       );
       const out: RoomSchedule = {
-        members: [{ nickname: me(d).nickname, emoji: '✏️' }],
+        members: [
+          {
+            id: me(d).userId,
+            nickname: me(d).nickname,
+            emoji: '✏️',
+            blocks: d.classes.flatMap((c) =>
+              c.days.map((wd) => ({
+                day: (wd + 6) % 7,
+                start: c.startTime,
+                end: c.endTime,
+                title: c.subjectName,
+              })),
+            ),
+          },
+        ],
         grid,
         startHour,
         matches: [],
