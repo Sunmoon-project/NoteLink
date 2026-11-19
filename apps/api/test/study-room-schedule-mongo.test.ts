@@ -33,6 +33,7 @@ describe.skipIf(!local)('스터디룸 시간표 멤버별 일정 · 제목 공�
   const roomId = new Types.ObjectId();
   let connection: mongoose.Connection;
   let service: StudyRoomScheduleService;
+  let timetablesModel: mongoose.Model<Timetable>;
   const cls = (subjectName: string, days: number[], startTime: string, endTime: string) => ({
     _id: new Types.ObjectId(),
     subjectName,
@@ -52,6 +53,7 @@ describe.skipIf(!local)('스터디룸 시간표 멤버별 일정 · 제목 공�
     const rooms = connection.model(StudyRoom.name, StudyRoomSchema, names[0]);
     const users = connection.model(User.name, UserSchema, names[1]);
     const timetables = connection.model(Timetable.name, TimetableSchema, names[2]);
+    timetablesModel = timetables;
     const shares = connection.model(TimetableShare.name, TimetableShareSchema, names[3]);
     const friendships = connection.model(Friendship.name, FriendshipSchema, names[4]);
     const people = [me, fullFriend, freeFriend, exFriend, stranger, refriend];
@@ -79,7 +81,11 @@ describe.skipIf(!local)('스터디룸 시간표 멤버별 일정 · 제목 공�
       people.map((userId, i) => ({
         userId,
         // 월요일(1) 10:00 – 11:30, 사람마다 다른 제목
-        classes: [cls(`비밀과목${i}`, [1], '10:00', '11:30')],
+        classes: [
+          cls(`비밀과목${i}`, [1], '10:00', '11:30'),
+          // 전체(fullFriend)만 화요일 15시에 혼자 바쁘다(숨기면 드러나지 않아야 한다)
+          ...(i === 1 ? [cls('혼자수업', [2], '15:00', '16:00')] : []),
+        ],
       })),
     );
     await friendships.collection.insertMany([
@@ -147,26 +153,42 @@ describe.skipIf(!local)('스터디룸 시간표 멤버별 일정 · 제목 공�
     });
   });
 
-  it('내 시간표 시간을 이 방에서 숨기면 blocks는 비고 공통 빈 시간 계산에는 그대로 들어간다 · 남의 설정은 못 바꾼다', async () => {
+  it('이 방에서 시간을 숨기면 blocks뿐 아니라 격자 · 추천 시간에서도 빠진다(혼자 바쁜 칸으로 유추 불가) · 남의 설정은 못 바꾼다', async () => {
+    const shownGrid = await service.schedule(String(roomId), String(me));
+    expect(shownGrid.grid[6]![1]).toBe(1); // 화 15시: 전체만 바쁨
+
     await service.setScheduleHidden(String(roomId), String(fullFriend), true);
     const s = await service.schedule(String(roomId), String(me));
     const hidden = s.members.find((m) => m.nickname === '전체')!;
     expect(hidden).toMatchObject({ hidden: true, blocks: [] });
     expect(JSON.stringify(s)).not.toContain('비밀과목1');
-    // 다른 멤버는 그대로
     expect(s.members.find((m) => m.nickname === '나')).toMatchObject({ hidden: false });
-    // 모두 월 10:00 – 11:30 바쁨: 숨겨도 격자에서는 바쁜 칸
-    expect(s.grid[1]![0]).toBe(1);
-    // 방 멤버가 아니면 404, 내 설정은 남이 못 바꾼다(요청한 사람 자신의 줄만 바뀐다)
+    expect(s.grid[6]![1]).toBe(2); // 숨긴 사람만 바쁜 칸은 「모두 빔」
+
+    // 격자 · 추천은 그 사람 시간표가 아예 없을 때와 똑같다(차집합으로도 알 수 없다)
+    const saved = await timetablesModel.findOne({ userId: fullFriend }).lean().orFail();
+    await timetablesModel.updateOne({ userId: fullFriend }, { $set: { classes: [] } });
+    await service.setScheduleHidden(String(roomId), String(fullFriend), false);
+    const empty = await service.schedule(String(roomId), String(me));
+    expect({ grid: s.grid, matches: s.matches }).toEqual({
+      grid: empty.grid,
+      matches: empty.matches,
+    });
+    await timetablesModel.updateOne({ userId: fullFriend }, { $set: { classes: saved.classes } });
+    await service.setScheduleHidden(String(roomId), String(fullFriend), true);
+
+    // 방 멤버가 아니면 404, 요청한 사람 자신의 줄만 바뀐다
     await expect(
       service.setScheduleHidden(String(roomId), String(new Types.ObjectId()), true),
     ).rejects.toMatchObject({ status: 404 });
     const again = await service.schedule(String(roomId), String(fullFriend));
     expect(again.members.filter((m) => m.hidden).map((m) => m.nickname)).toEqual(['전체']);
-    // 다시 켜면 보인다
+
+    // 다시 켜면 시간 · 제목 · 격자에 다시 반영된다
     await service.setScheduleHidden(String(roomId), String(fullFriend), false);
     const back = await service.schedule(String(roomId), String(me));
     expect(back.members.find((m) => m.nickname === '전체')).toMatchObject({ hidden: false });
     expect(back.members.find((m) => m.nickname === '전체')!.blocks[0]!.title).toBe('비밀과목1');
+    expect(back.grid[6]![1]).toBe(1);
   });
 });

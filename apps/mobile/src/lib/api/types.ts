@@ -55,7 +55,7 @@ export type RoomSchedule = {
     id?: string;
     nickname: string;
     emoji: string;
-    /** 이 방에서 수업 시간을 숨긴 멤버(blocks는 빈 배열, 격자에는 「누군가 바쁨」으로만 들어간다) */
+    /** 이 방에서 수업 시간을 숨긴 멤버(blocks는 빈 배열, 격자 · 추천 계산에서도 빠진다) */
     hidden?: boolean;
     blocks?: { day: number; start: string; end: string; title: string | null }[];
   }[];

@@ -126,7 +126,8 @@ export class StudyRoomScheduleService {
     const room = await this.chat.requireMember(roomId, userId);
     const joined = room.members.filter((m) => m.status === 'joined');
     const ids = joined.map((m) => m.userId);
-    // 이 방에서 시간을 숨긴 멤버: blocks는 비우고, 격자(누군가 바쁨) · 추천 시간 계산에는 그대로 넣는다
+    // 이 방에서 시간을 숨긴 멤버: blocks도, 격자 · 추천 시간 계산에도 넣지 않는다(시간표가 없는 사람과 똑같이 —
+    // 혼자 바쁜 칸이나 차집합으로 그 사람 시간을 알아낼 수 없게)
     const hiddenIds = new Set(
       joined.filter((m) => m.hideSchedule === true).map((m) => String(m.userId)),
     );
@@ -158,9 +159,9 @@ export class StudyRoomScheduleService {
     return {
       members,
       ...buildSchedule(
-        // 탈퇴한 멤버의 시간표는 세지 않는다(목록에 보이는 멤버만)
+        // 탈퇴한 멤버 · 시간을 숨긴 멤버의 시간표는 세지 않는다
         tables
-          .filter((t) => nick.has(String(t.userId)))
+          .filter((t) => nick.has(String(t.userId)) && !hiddenIds.has(String(t.userId)))
           .map((t) => (t.classes ?? []) as ClassRow[]),
         members.length,
       ),

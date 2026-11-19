@@ -104,26 +104,22 @@ it('예전 서버(멤버별 일정 없음)면 바쁜 칸을 한 가지 색으로
   expect(await screen.findByLabelText('월 9:00 · 누군가 일정 있음')).toBeTruthy();
 });
 
-it('화면 위에 공개 범위를 알리고, 시간을 숨긴 멤버는 범례에 「비공개」 · 칸은 「비공개 일정 있음」 · 시트는 「시간 비공개」로 보인다', async () => {
+it('공개 범위를 알리고, 시간을 숨긴 멤버는 범례에 「비공개」 · 시트에 「시간 비공개」 · 추천 시간에 「n명은 빼고 계산」으로만 보인다', async () => {
   mockApi.rooms.schedule.mockResolvedValue({
     ...schedule,
+    // 숨긴 별은 서버가 격자에서도 뺀다(화 9시 = 모두 빔)
     members: [
       ...schedule.members,
       { id: 'u4', nickname: '별', emoji: '✏️', hidden: true, blocks: [] },
-    ],
-    // 화 9시: 숨긴 별만 바쁨
-    grid: [
-      [1, 1, 2, 2, 2, 2, 2],
-      [1, 2, 2, 2, 2, 2, 2],
-      [2, 2, 2, 2, 2, 2, 2],
     ],
   });
   await renderScreen(<ScheduleScreen />);
   expect(screen.getByText(/내 수업 시간은 이 방 멤버에게 보여요/)).toBeTruthy();
   expect(await screen.findByText('별 · 비공개')).toBeTruthy();
-  fireEvent.press(screen.getByLabelText('화 9:00 · 비공개 일정 있음'));
+  expect(screen.getByText('시간을 숨긴 1명은 빼고 계산했어요')).toBeTruthy();
+  expect(screen.queryByText(/비공개 일정 있음/)).toBeNull();
+  fireEvent.press(screen.getByLabelText('화 9:00 · 모두 비어 있음'));
   expect(await screen.findByText('시간 비공개')).toBeTruthy();
-  expect(screen.queryByText('기기 캘린더에 추가')).toBeNull();
 });
 
 it('방 설정에서 「이 방에 내 시간표 시간 보이기」를 끄면 내 설정만 바꾼다', async () => {
@@ -131,6 +127,9 @@ it('방 설정에서 「이 방에 내 시간표 시간 보이기」를 끄면 �
   mockApi.rooms.setScheduleHidden.mockResolvedValue({ hidden: true });
   await renderScreen(<RoomSettingsScreen />);
   const toggle = await screen.findByLabelText('이 방에 내 시간표 시간 보이기');
+  expect(
+    screen.getByText('끄면 이 방에서 내 시간이 시간표와 추천 시간에 쓰이지 않아요'),
+  ).toBeTruthy();
   await waitFor(() => expect(toggle.props.value).toBe(true));
   await act(async () => {
     fireEvent(toggle, 'valueChange', false);

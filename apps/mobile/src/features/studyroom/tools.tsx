@@ -668,6 +668,8 @@ export function ScheduleScreen() {
       .filter((x) => x.b.length);
   };
   const best = s?.matches.find((m) => m.best);
+  // 시간을 숨긴 멤버는 서버가 격자 · 추천 계산에서 뺀다
+  const hiddenCount = s?.members.filter((m) => m.hidden).length ?? 0;
   const inBest = (r: number, i: number) =>
     !!best &&
     best.day.startsWith(DAYS[i]!) &&
@@ -743,16 +745,12 @@ export function ScheduleScreen() {
               <Text className="w-9 text-caption2 text-sub">{s.startHour + r}:00</Text>
               {row.map((c, i) => {
                 const busy = busyAt(r, i);
-                // 시간을 숨긴 멤버만 바쁜 칸: 누구인지 · 무엇인지 없이 「비공개 일정 있음」으로만
-                const secret = perMember && !busy.length && c === 1;
                 const label = perMember
                   ? busy.length
                     ? busy.map((x) => x.m.nickname).join(', ')
-                    : secret
-                      ? '비공개 일정 있음'
-                      : c === 2
-                        ? '모두 비어 있음'
-                        : '비어 있음'
+                    : c === 2
+                      ? '모두 비어 있음'
+                      : '비어 있음'
                   : c === 1
                     ? '누군가 일정 있음'
                     : c === 2
@@ -767,15 +765,11 @@ export function ScheduleScreen() {
                     className={cx(
                       'mx-0.5 h-7 flex-1 flex-row items-center justify-center gap-0.5 rounded-md',
                       // 혼자 바쁜 칸은 그 사람 색 바탕, 겹친 칸은 색 점만, 빈 칸은 바탕 없이 연한 선만
-                      one
-                        ? memberColor(one.k).tint
-                        : secret
-                          ? 'bg-fill'
-                          : !perMember && c === 1 && 'bg-brand/30',
+                      one ? memberColor(one.k).tint : !perMember && c === 1 && 'bg-brand/30',
                       // 테두리 색은 하나만 붙인다(둘 다 붙으면 tailwind 순서로 연한 선이 이긴다)
                       inBest(r, i)
                         ? 'border border-brand'
-                        : !one && !secret && (perMember || c !== 1) && 'border border-line',
+                        : !one && (perMember || c !== 1) && 'border border-line',
                     )}
                   >
                     {one && <MemberDot k={one.k} name={one.m.nickname} />}
@@ -795,6 +789,11 @@ export function ScheduleScreen() {
         </View>
         <View className="mt-3 rounded-card bg-white p-4">
           <Text className="text-footnote font-bold text-ink">모두 비는 시간</Text>
+          {hiddenCount > 0 && (
+            <Text className="mt-0.5 text-caption text-sub">
+              {`시간을 숨긴 ${hiddenCount}명은 빼고 계산했어요`}
+            </Text>
+          )}
           {s?.matches.length === 0 && (
             <Text className="py-3 text-center text-caption text-sub">
               아직 공통 가능 시간이 없어요
@@ -931,9 +930,14 @@ export function RoomSettingsScreen() {
           </View>
           <View className="flex-row items-center gap-3 border-t border-fill px-5 py-4">
             <CalendarDays size={ICON.md} color={C.ink} />
-            <Text className="flex-1 text-subhead font-semibold text-ink">
-              이 방에 내 시간표 시간 보이기
-            </Text>
+            <View className="flex-1">
+              <Text className="text-subhead font-semibold text-ink">
+                이 방에 내 시간표 시간 보이기
+              </Text>
+              <Text className="text-caption text-sub">
+                끄면 이 방에서 내 시간이 시간표와 추천 시간에 쓰이지 않아요
+              </Text>
+            </View>
             <Toggle
               label="이 방에 내 시간표 시간 보이기"
               on={hide.isPending ? !hide.variables : !mine?.hidden}
