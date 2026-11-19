@@ -175,7 +175,7 @@ describe('오답 복습 화면', () => {
     // 오래된 오답(a)부터
     expect(screen.getByText('Q. 문제 a')).toBeTruthy();
     expect(screen.getByText('광합성 퀴즈')).toBeTruthy();
-    await fireEvent.press(screen.getByText('나'));
+    await fireEvent.press(screen.getByText('② 나'));
     expect(screen.getByText('정답이에요')).toBeTruthy();
     expect(screen.getByText('해설 a')).toBeTruthy();
     await fireEvent.press(screen.getByText('다음 문제'));

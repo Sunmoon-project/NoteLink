@@ -201,6 +201,8 @@ export interface Api {
     search(nickname: string): Promise<Friend[]>;
     sendRequest(userId: string): Promise<void>;
     received(): Promise<FriendRequest[]>;
+    /** 내가 보내고 아직 대기 중인 요청의 상대 userId(「요청 보냄」 표시) */
+    sent(): Promise<string[]>;
     respond(requestId: string, accept: boolean): Promise<void>;
     remove(userId: string): Promise<void>;
     openDirect(userId: string): Promise<ChatRoom>;

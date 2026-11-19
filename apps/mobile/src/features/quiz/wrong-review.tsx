@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import type { Question } from '@notelink/shared';
 import { Plus } from 'lucide-react-native';
 import { Text } from '@/components/text';
-import { Btn, Canvas, Chip, Header, Input, Screen } from '@/components/ui';
+import { Btn, Canvas, Header, Input, Screen } from '@/components/ui';
 import { api } from '@/lib/api';
 import { today } from '@/lib/dates';
 import { env } from '@/lib/env';
@@ -12,6 +12,7 @@ import { queryClient } from '@/lib/query';
 import { dropDb, readDb, writeDb } from '@/lib/local/storage';
 import { useAuth } from '@/stores/auth';
 import { AvatarCheer } from '@/features/tutor/cheer';
+import { ChoiceRow, Passage, splitPrompt } from './choice';
 import { Avatar3D } from '@/features/tutor/avatar3d';
 import { useEquippedAccessories, useEquippedAvatar } from '@/features/tutor/buddy';
 import { useTour } from '@/features/tutor/tour';
@@ -237,18 +238,22 @@ export function WrongReviewScreen() {
           q && (
             <View className="mt-2">
               {!!q.setTitle && <Text className="text-caption text-sub">{q.setTitle}</Text>}
-              <Text className="mt-1 text-body font-bold leading-6 text-ink">Q. {q.prompt}</Text>
+              <Text className="mt-1 text-body font-bold leading-6 text-ink">
+                Q. {splitPrompt(q.prompt)[0]}
+              </Text>
+              <Passage prompt={q.prompt} mc={!!options} />
               {options ? (
-                <View className="mt-4 gap-2">
-                  {options.map((c) => (
-                    <Chip
+                <View className="mt-4 gap-3.5">
+                  {options.map((c, n) => (
+                    <ChoiceRow
                       key={c}
+                      n={n}
                       on={picked === c}
                       onPress={() => answer(c)}
                       disabled={picked !== null}
                     >
                       {c}
-                    </Chip>
+                    </ChoiceRow>
                   ))}
                 </View>
               ) : (

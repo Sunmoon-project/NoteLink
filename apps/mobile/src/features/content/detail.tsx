@@ -115,6 +115,16 @@ function useSubject(folderId?: string) {
   return folders.data?.find((f) => f._id === folderId)?.subjectName;
 }
 
+/** 정리본을 마크다운으로: 제목 · 핵심 요약 · 정리된 내용 · 키워드 (서버에는 정리본 파일이 없어 앱이 만든다) */
+export function summaryMarkdown(m: Pick<Material, 'title' | 'summary' | 'keywords'>): string {
+  const out = [`# ${m.title}`];
+  if (m.summary?.points.length)
+    out.push('## 핵심 요약', m.summary.points.map((p) => `- ${p}`).join('\n'));
+  for (const s of m.summary?.sections ?? []) out.push(`## ${s.heading}`, s.body);
+  if (m.keywords.length) out.push('## 키워드', m.keywords.join(' · '));
+  return out.join('\n\n') + '\n';
+}
+
 /** 원본 파일을 시스템 미리보기 · 공유 시트로 연다 (파일 앱에 저장 · 다른 앱으로 열기) */
 async function openOriginal(id: string) {
   const { url } = await api.content.downloadUrl(id);
@@ -527,8 +537,21 @@ export function DocDetailScreen() {
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
   const buddy = useTuckOnScroll();
+  const [pick, setPick] = useState(false);
   const download = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (what: 'summary' | 'original') => {
+      if (what === 'summary') {
+        // 파일 이름에 쓸 수 없는 글자는 뺀다
+        const fileName = `${m!.title.replace(/[\\/:*?"<>|]/g, ' ').trim() || '정리본'}.md`;
+        const dir = new Directory(Paths.document, 'downloads');
+        if (!dir.exists) dir.create();
+        const out = new File(dir, fileName);
+        if (out.exists) out.delete();
+        out.create();
+        out.write(summaryMarkdown(m!));
+        if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(out.uri);
+        return fileName;
+      }
       const { url, fileName } = await api.content.downloadUrl(id);
       // 기기에 있는 원본은 바로 공유 시트로 → '파일에 저장'
       if (url.startsWith('file://')) {
@@ -543,7 +566,13 @@ export function DocDetailScreen() {
       return fileName;
     },
     onSuccess: (fileName) => router.push({ pathname: '/downloaded', params: { name: fileName } }),
-    onError: () => toast('다운로드하지 못했어요. 연결을 확인해 주세요'),
+    // 정리본은 기기에서 파일을 만드는 일이라 연결 문제가 아니다
+    onError: (_e, what) =>
+      toast(
+        what === 'summary'
+          ? '정리본을 저장하지 못했어요. 기기 저장 공간을 확인해 주세요'
+          : '다운로드하지 못했어요. 연결을 확인해 주세요',
+      ),
   });
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
@@ -560,7 +589,7 @@ export function DocDetailScreen() {
             >
               공유하기
             </Btn>
-            <Btn loading={download.isPending} onPress={() => download.mutate()}>
+            <Btn loading={download.isPending} onPress={() => setPick(true)}>
               다운로드
             </Btn>
           </Two>
@@ -607,6 +636,27 @@ export function DocDetailScreen() {
         )}
       </Screen>
       <FileOptions m={m} open={opt} onClose={() => setOpt(false)} />
+      {/* 다운로드는 원본만 받았다(실기기 피드백 2026-11-20). 정리본 · 원본 중 고른다 */}
+      <Sheet open={pick} onClose={() => setPick(false)} title="무엇을 받을까요?">
+        <Group>
+          {/* 정리가 아직 없으면 원본만 */}
+          {(m.summary?.points.length || m.summary?.sections.length
+            ? (['summary', 'original'] as const)
+            : (['original'] as const)
+          ).map((what) => (
+            <Row
+              key={what}
+              chevron
+              onPress={() => {
+                setPick(false);
+                download.mutate(what);
+              }}
+            >
+              {what === 'summary' ? '정리본 (.md)' : '원본 파일'}
+            </Row>
+          ))}
+        </Group>
+      </Sheet>
     </Canvas>
   );
 }
@@ -647,6 +697,7 @@ const TABS = { 필기: 'handwriting', 학습자료: 'document', 녹음본: 'reco
 
 export function ShareScreen() {
   const { id, folderId } = useLocalSearchParams<{ id?: string; folderId?: string }>();
+  const qc = useQueryClient();
   const material = useQuery({
     queryKey: ['material', id],
     queryFn: () => api.content.material(id!),
@@ -683,8 +734,16 @@ export function ShareScreen() {
         throw new Error('공유 대상을 선택해주세요');
       return api.content.share({ materialIds: selectedIds, target: { type: to.type, id: to.id } });
     },
-    onError: () => toast('공유하지 못했어요. 대상과 연결을 확인해주세요'),
-    onSuccess: () =>
+    // 서버가 이유를 들어 거절(4xx)했으면 그 문구, 아니면 연결 문제로 안내한다
+    onError: (e) =>
+      toast(
+        e instanceof ApiError && e.status >= 400 && e.status < 500 && e.message
+          ? e.message
+          : '공유하지 못했어요. 연결을 확인하고 다시 시도해 주세요',
+      ),
+    onSuccess: () => {
+      // 방의 「공유 자료」가 옛 목록을 들고 있지 않게
+      if (to?.type === 'room') void qc.invalidateQueries({ queryKey: ['room-shared', to.id] });
       router.replace({
         pathname: '/note-shared',
         params: {
@@ -693,7 +752,8 @@ export function ShareScreen() {
           tab,
           name: selected[0]?.title,
         },
-      }),
+      });
+    },
   });
   // 친구에게 보내기는 서버가 아직 막는다(400). 고를 수 없게 「곧 지원」으로만 보여 준다(#554)
   const targets = (rooms.data ?? []).map((r) => ({
@@ -797,11 +857,9 @@ export function ShareScreen() {
             </Group>
           )}
           <Label>친구</Label>
-          {env.localData ? (
-            <Text className="px-1 text-footnote text-sub">
-              서버에 연결하면 친구에게 보낼 수 있어요
-            </Text>
-          ) : friends.isError && !friends.data ? (
+          {/* 친구에게 보내기는 아직 열리지 않았다(#554). 연결 문제처럼 읽히지 않게 모드와 상관없이 같은 안내 */}
+          <Text className="mb-2 px-1 text-footnote text-sub">친구에게 보내기는 곧 열려요</Text>
+          {env.localData ? null : friends.isError && !friends.data ? (
             <Text className="px-1 text-footnote text-sub">친구 목록을 불러오지 못했어요</Text>
           ) : (
             friends.isSuccess &&

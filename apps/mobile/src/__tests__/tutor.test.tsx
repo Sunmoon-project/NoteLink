@@ -13,6 +13,7 @@ import {
   STEPS,
   TourCoach,
   rememberToured,
+  tourCardBelow,
   useTour,
   useTourOnce,
 } from '../features/tutor/tour';
@@ -594,6 +595,17 @@ it('처음 안내는 틀린 문제를 오답 노트로 매일 복습하는 방�
   const step = STEPS.find((s) => s.title === '틀린 문제 다시 풀기');
   expect(step).toMatchObject({ route: '/quiz', flow: 2 });
   expect(step!.lines.join(' ')).toMatch(/오답 노트.*하루에 처음/);
+});
+
+// 실기기 피드백(2026-11-20): 단계마다 아바타 카드가 위아래로 오가 어지러웠다
+it('처음 안내 카드는 탭 막대 위에 머물고, 밝힌 자리를 가릴 때만 위로 비킨다', () => {
+  // 화면 844, 아래 여백 34, 카드 높이 200 → 카드는 y 545~745, 탭 막대는 761부터
+  const at = (y: number, h = 40) => tourCardBelow({ x: 20, y, w: 100, h }, 844, 34, 200);
+  expect(tourCardBelow(null, 844, 34, 200)).toBe(true); // 밝힌 자리가 없음
+  expect(at(120)).toBe(true); // 위쪽 버튼
+  expect(at(761, 49)).toBe(true); // 탭 막대(카드 아래)
+  expect(at(480)).toBe(true); // 카드 바로 위에서 끝남
+  expect(at(560)).toBe(false); // 카드 자리와 겹침 → 위로
 });
 
 describe('처음 안내', () => {
