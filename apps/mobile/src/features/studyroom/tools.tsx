@@ -757,12 +757,11 @@ export function ScheduleScreen() {
                     className={cx(
                       'mx-0.5 h-7 flex-1 flex-row items-center justify-center gap-0.5 rounded-md',
                       // 혼자 바쁜 칸은 그 사람 색 바탕, 겹친 칸은 색 점만, 빈 칸은 바탕 없이 연한 선만
-                      one
-                        ? memberColor(one.k).tint
-                        : !perMember && c === 1
-                          ? 'bg-brand/30'
-                          : 'border border-line',
-                      inBest(r, i) && 'border border-brand',
+                      one ? memberColor(one.k).tint : !perMember && c === 1 && 'bg-brand/30',
+                      // 테두리 색은 하나만 붙인다(둘 다 붙으면 tailwind 순서로 연한 선이 이긴다)
+                      inBest(r, i)
+                        ? 'border border-brand'
+                        : !one && (perMember || c !== 1) && 'border border-line',
                     )}
                   >
                     {one && <MemberDot k={one.k} name={one.m.nickname} />}
