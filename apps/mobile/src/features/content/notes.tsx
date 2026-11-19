@@ -30,10 +30,11 @@ import {
   X,
 } from 'lucide-react-native';
 import type { Material } from '@notelink/shared';
-import { api, ApiError } from '@/lib/api';
+import { api } from '@/lib/api';
 import { toast } from '@/stores/toast';
 import { useDraft } from '@/stores/draft';
 import { retryingIn, useRetrying } from '@/stores/retrying';
+import { asQueued, useResummarize } from './resummarize';
 import {
   afterSheetClosed,
   Alert,
@@ -357,12 +358,6 @@ export const materialsPollMs = (list: Material[] | undefined) =>
     ? 3000
     : false;
 
-/** 정리 중으로 보이게 바꾼 자료(다시 요약을 넣었는데 아직 그 상태를 읽지 못함) */
-const asQueued = (m: Material): Material => ({
-  ...m,
-  processing: { ...m.processing, status: 'queued', progress: 0 },
-});
-
 /**
  * 폴더 자료 목록을 읽는다. 다시 요약한 자료(useRetrying)는 목록 값 대신 그 자료만 따로 읽는다(서버가 이 자료의 작업 상태를
  * 맞춘다). 목록은 한 번에 일부 자료만 작업 상태를 맞춰, 실패한 자료가 많으면 다시 넣은 자료가 계속 실패로 보이고
@@ -445,21 +440,8 @@ export function FolderScreen() {
   });
 
   const items = (mats.data ?? []).filter((m) => filter === '전체' || KIND[m.kind][1] === filter);
-  // 요약에 실패한 자료마다 「다시 요약」: 그 자료의 정리 작업을 다시 넣는다(서버가 자료 상태도 함께 되돌린다)
-  const resummarize = useMutation({
-    mutationFn: (m: Material) => api.ai.retry(m.processing.jobId!),
-    onSuccess: (_job, m) => {
-      // 바로 정리 중으로 보이고, 끝날 때까지 이 자료는 따로 읽는다(readFolderMaterials)
-      useRetrying.getState().track(id, m._id);
-      qc.setQueryData<Material[]>(['materials', id], (list) =>
-        list?.map((x) => (x._id === m._id ? asQueued(x) : x)),
-      );
-      void qc.invalidateQueries({ queryKey: ['materials'] });
-      toast('다시 요약하고 있어요. 끝나면 알려 드릴게요');
-    },
-    onError: (e) =>
-      toast(e instanceof ApiError ? e.message : '다시 요약하지 못했어요. 잠시 뒤 다시 눌러 주세요'),
-  });
+  // 요약에 실패한 자료마다 「다시 요약」(노트 상세와 같은 경로)
+  const resummarize = useResummarize();
   const open = (m: Material) =>
     router.push({
       pathname:
