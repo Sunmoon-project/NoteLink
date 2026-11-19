@@ -262,14 +262,15 @@ export class StudyChatGateway {
         const token = socket.handshake.auth?.token;
         if (typeof token !== 'string') continue;
         if ((await this.tokens.verifyAccess(token)).userId !== userId) continue;
-        await socket.leave(`study-room:${roomId}`);
+        // 지켜보기부터 뺀다: study-room 에서 빠지면 접속 현황(room:live)이 지켜보는 채널로 나가는데, 강퇴된 사람이 받지 않게
         await socket.leave(`${WATCH_PREFIX}${roomId}`);
+        await socket.leave(`study-room:${roomId}`);
         const channel = socket.data.studyChats?.[roomId];
         if (typeof channel === 'string') await socket.leave(channel);
       } catch {
         // 유효하지 않은 토큰도 더 이상 방 이벤트를 받지 못하게 한다.
-        await socket.leave(`study-room:${roomId}`);
         await socket.leave(`${WATCH_PREFIX}${roomId}`);
+        await socket.leave(`study-room:${roomId}`);
         const channel = socket.data.studyChats?.[roomId];
         if (typeof channel === 'string') await socket.leave(channel);
       }

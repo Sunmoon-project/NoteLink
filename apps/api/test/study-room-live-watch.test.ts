@@ -137,6 +137,21 @@ describe('강퇴(evict)', () => {
   });
 });
 
+describe('강퇴(evict) 순간', () => {
+  it('강퇴된 사람은 그 순간의 접속 현황(room:live)도 받지 않는다', async () => {
+    const kicked = await connect('k');
+    const a = await connect('a');
+    await a.timeout(2000).emitWithAck('room:join', { roomId: 'r1' });
+    await kicked.timeout(2000).emitWithAck('room:join', { roomId: 'r1' });
+    await kicked.timeout(2000).emitWithAck('rooms:watch', { roomIds: ['r1'] });
+    const live = vi.fn();
+    kicked.on('room:live', live);
+    await app.get(StudyChatGateway).evict('r1', 'k');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(live).not.toHaveBeenCalled();
+  });
+});
+
 describe('입장 확정 전', () => {
   it('멤버 확인이 끝나지 않은 입장은 세지도 알리지도 않고, 확인에 실패하면 끝까지 빠진다', async () => {
     let release!: () => void;
