@@ -246,6 +246,64 @@ describe('작업 상태 → 노트 (syncFromJob)', () => {
     ).toEqual(['서론', '본론', '서론 (2)']);
   });
 
+  it('AI 가 만든 핵심 요약 · 키워드가 있으면 그것을 쓴다(필기도, 개념 키워드 뒤에 중복 없이)', () => {
+    for (const kind of ['document', 'handwriting'] as const) {
+      const update = syncFromJob(
+        row({ kind }),
+        job('succeeded', {
+          result: {
+            pages: [{ pageNo: 1, ocrText: 'a' }],
+            chunks: [chunk(1, 'P.138 Q.8', 'a', { concept: '미분', conceptStatus: 'auto' })],
+            summary: {
+              points: ['미분은 순간 변화율이다.', ' [?]적분은 넓이다. ', '미분은 순간 변화율이다.'],
+              keywords: ['적분', '미분', 3, ''],
+            },
+          },
+        }),
+      )!;
+      expect(update['summary']).toMatchObject({
+        points: ['미분은 순간 변화율이다.', '적분은 넓이다.'],
+      });
+      expect(update['keywords']).toEqual(['미분', '적분']);
+    }
+  });
+
+  it('핵심 요약이 없으면 문서는 쪽 · 문제 번호만 있거나 글자가 적은 제목을 빼고 쓴다', () => {
+    const titles = [
+      'P- 137 Q. 7',
+      'P.138 Q.8',
+      '139.p [?]Q: 5',
+      '5)',
+      '요구 / 요청 V',
+      '보기) 영사 5',
+    ];
+    const update = syncFromJob(
+      row({ kind: 'document' }),
+      job('succeeded', {
+        result: {
+          pages: [{ pageNo: 1, ocrText: 'a' }],
+          chunks: titles.map((t, i) => chunk(i + 1, t, `본문 ${i}`)),
+          summary: null,
+        },
+      }),
+    )!;
+    expect(update['summary']).toMatchObject({ points: ['요구 / 요청 V', '보기) 영사 5'] });
+  });
+
+  it('요약 소제목 · 본문의 [?] 는 지우고 쪽 글에는 남긴다', () => {
+    const update = syncFromJob(
+      row({ pages: [page(1)], blobUrls: ['https://b/c/1.jpg'] }),
+      job('succeeded', {
+        result: {
+          pages: [{ pageNo: 1, ocrText: '[?]미분 정의' }],
+          chunks: [chunk(1, '[?]미분', '[?]정의 [?] 끝')],
+        },
+      }),
+    )!;
+    expect(update['summary']).toMatchObject({ sections: [{ heading: '미분', body: '정의 끝' }] });
+    expect((update['pages'] as { ocrText: string }[])[0]!.ocrText).toBe('[?]미분 정의');
+  });
+
   it('조각이 없으면 요약은 null 이지만 쪽 글이 있으면 완료', () => {
     const update = syncFromJob(
       row(),
