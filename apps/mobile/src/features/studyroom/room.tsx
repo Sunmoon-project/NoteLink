@@ -8,7 +8,15 @@ import {
 } from '@/lib/chat-outbox';
 import { loadCompleteChatHistory } from '@/lib/chat-history';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Keyboard, Platform, View, type KeyboardEvent } from 'react-native';
+import {
+  FlatList,
+  Keyboard,
+  Platform,
+  ScrollView,
+  View,
+  useWindowDimensions,
+  type KeyboardEvent,
+} from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -476,6 +484,15 @@ export function RoomScreen() {
   useRoomOrientation();
   const openFeature = useFeatureNavigation();
   const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
+  const landscape = width > height;
+  const columns = landscape ? 3 : 2;
+  const tileGap = landscape ? 8 : 10;
+  const tileWidth = Math.max(
+    0,
+    (width - insets.left - insets.right - 32 - tileGap * (columns - 1)) / columns,
+  );
+  const tileHeight = landscape ? (height < 380 ? 100 : 140) : 118;
   const myId = useAuth((s) => s.userId);
   const { id } = useLocalSearchParams<{ id: string }>();
   const openSharedMessage = async (itemId: string) => {
@@ -1032,7 +1049,7 @@ export function RoomScreen() {
         (m) => m.userId === myId || live.participantState?.(m.userId)?.present !== false,
       )
     : members;
-  const tiles = chat ? here.slice(0, 2) : here;
+  const tiles = chat ? here.slice(0, columns) : here;
   const remain = timer ? Math.max(0, Math.floor((timer.endsAt - now) / 1000)) : 0;
 
   return (
@@ -1042,7 +1059,11 @@ export function RoomScreen() {
           ref={keyboardFrame}
           className="flex-1"
           // 키보드가 가리는 만큼 화면 아래를 띄워 채팅 입력줄이 키보드 바로 위에 오게 한다
-          style={{ paddingBottom: keyboardInset }}
+          style={{
+            paddingBottom: keyboardInset,
+            paddingLeft: insets.left,
+            paddingRight: insets.right,
+          }}
         >
           {/* 캠 · 음성이 끊겨도 같은 노란 띠로 알린다(미디어는 알아서 다시 붙는다 — useLiveRoom 재시도) */}
           {(conn === 'lost' || (!!live.reconnecting && conn !== 'kicked')) && (
@@ -1060,8 +1081,10 @@ export function RoomScreen() {
               </Text>
             </View>
           )}
-          <View className="px-5">
-            <View className="h-11 flex-row items-center justify-between">
+          <View className={landscape ? 'px-4' : 'px-5'}>
+            <View
+              className={cx('flex-row items-center justify-between', landscape ? 'h-10' : 'h-11')}
+            >
               <Pressable
                 accessibilityLabel={chat ? '채팅 닫기' : '나가기'}
                 onPress={back}
@@ -1069,6 +1092,17 @@ export function RoomScreen() {
               >
                 <ArrowLeft size={ICON.lg} color={C.ink} />
               </Pressable>
+              {landscape && (
+                <View className="flex-1 flex-row items-center gap-3 px-3">
+                  <Text numberOfLines={1} className="flex-1 text-subhead font-bold text-ink">
+                    {room.data.title}
+                  </Text>
+                  {timer && (
+                    <Badge tone="dark">{`${timer.label} ${remain >= 3600 ? hms(remain) : hms(remain).slice(3)}`}</Badge>
+                  )}
+                  <Badge tone="gray">{`${here.length}명 접속중`}</Badge>
+                </View>
+              )}
               <Pressable
                 accessibilityLabel="세부 설정"
                 onPress={() => router.push({ pathname: '/room/settings', params: { id } })}
@@ -1077,7 +1111,7 @@ export function RoomScreen() {
                 <Settings size={ICON.md} color={C.ink} />
               </Pressable>
             </View>
-            {!chat && (
+            {!chat && !landscape && (
               <Animated.View
                 entering={SWAP_IN}
                 exiting={SWAP_OUT}
@@ -1093,7 +1127,20 @@ export function RoomScreen() {
               </Animated.View>
             )}
           </View>
-          <View className="flex-row flex-wrap justify-between gap-y-2.5 px-4 pt-3">
+          <ScrollView
+            testID="room-member-grid"
+            style={chat ? { maxHeight: tileHeight + 16, flexGrow: 0, flexShrink: 1 } : { flex: 1 }}
+            contentContainerStyle={{
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              gap: tileGap,
+              paddingHorizontal: 16,
+              paddingTop: landscape ? 4 : 12,
+              paddingBottom: 8,
+            }}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
             {tiles.map((m) => {
               const me = m.userId === myId;
               const state = live.participantState?.(m.userId);
@@ -1106,9 +1153,10 @@ export function RoomScreen() {
                 // 카메라 회전 문제를 분리 확인하기 위해 영상 타일은 애니메이션 없는 View로 표시한다.
                 <View
                   key={m.userId}
+                  testID={`room-member-tile-${m.userId}`}
+                  style={{ width: tileWidth, height: tileHeight }}
                   className={cx(
-                    'w-[48.5%] items-center justify-center rounded-2xl',
-                    'h-[118px] border-2',
+                    'items-center justify-center rounded-2xl border-2 overflow-hidden',
                     camOn ? 'bg-night' : 'bg-white',
                     speaking ? 'border-brand' : 'border-transparent',
                   )}
@@ -1165,7 +1213,7 @@ export function RoomScreen() {
                 </View>
               );
             })}
-          </View>
+          </ScrollView>
 
           {chat && chatId.isError && !chatId.data && (
             <LoadError message="채팅방을 불러오지 못했어요" retry={chatId.refetch} />
@@ -1245,9 +1293,15 @@ export function RoomScreen() {
               />
             </Animated.View>
           ) : (
-            <Animated.View entering={RISE_IN} exiting={SINK_OUT} className="mt-auto px-5 pb-2">
-              <View className="flex-row gap-3">
+            <Animated.View
+              testID="room-controls"
+              entering={RISE_IN}
+              exiting={SINK_OUT}
+              className={landscape ? 'flex-row items-center gap-3 px-4 py-1' : 'px-5 pb-2'}
+            >
+              <View className={cx('flex-row gap-2', landscape && 'flex-[2]')}>
                 <Ctl
+                  compact={landscape}
                   on={live.micOn}
                   onPress={live.toggleMic}
                   icon={
@@ -1260,6 +1314,7 @@ export function RoomScreen() {
                   label={`내 마이크 ${live.micOn ? '켜짐' : '꺼짐'}`}
                 />
                 <Ctl
+                  compact={landscape}
                   on={live.camOn}
                   onPress={live.toggleCam}
                   icon={
@@ -1272,6 +1327,7 @@ export function RoomScreen() {
                   label={`내 카메라 ${live.camOn ? '켜짐' : '꺼짐'}`}
                 />
                 <Ctl
+                  compact={landscape}
                   on={live.hearing}
                   onPress={live.toggleHearing}
                   icon={
@@ -1286,10 +1342,20 @@ export function RoomScreen() {
                   strong
                 />
               </View>
-              <View className="mt-3 flex-row items-center rounded-2xl bg-white px-4 py-3">
+              <View
+                className={cx(
+                  'flex-row items-center rounded-2xl bg-white',
+                  landscape ? 'h-11 flex-1 px-3' : 'mt-2 px-4 py-2',
+                )}
+              >
                 <Pressable
                   onPress={() => setChat(true)}
-                  className="flex-1 flex-row items-center gap-2"
+                  accessibilityRole="button"
+                  accessibilityLabel="채팅 열기"
+                  className={cx(
+                    'flex-1 flex-row items-center gap-2',
+                    landscape ? 'h-11' : 'min-h-8',
+                  )}
                 >
                   <MessageCircle size={ICON.sm} color={C.sub} />
                   <Text numberOfLines={1} className="flex-1 text-caption text-sub">
@@ -1300,6 +1366,7 @@ export function RoomScreen() {
                 </Pressable>
                 <Pressable
                   accessibilityLabel="도구"
+                  hitSlop={6}
                   onPress={() => setMenu((m) => !m)}
                   className={cx(
                     'h-8 w-8 items-center justify-center rounded-full',
@@ -1361,9 +1428,16 @@ export function RoomScreen() {
             </Pop>
           )}
           <View
-            className="flex-row items-center gap-3 px-5 pt-3"
+            className={cx('flex-row items-center gap-3', landscape ? 'px-4 pt-1' : 'px-5 pt-3')}
             // 키보드가 올라오면 홈 표시줄 여백은 필요 없다(키보드 바로 위에 붙인다)
-            style={{ paddingBottom: keyboardInset > 0 ? 8 : Math.max(insets.bottom, 12) + 8 }}
+            style={{
+              paddingBottom:
+                keyboardInset > 0
+                  ? landscape
+                    ? 4
+                    : 8
+                  : Math.max(insets.bottom, landscape ? 4 : 12) + (landscape ? 4 : 8),
+            }}
           >
             <View className="flex-1 flex-row items-center gap-2 rounded-full bg-white px-4">
               {/* 사진 · 파일 첨부를 고른다(키보드는 내린다) */}
@@ -1513,6 +1587,7 @@ const Ctl = ({
   label,
   sub,
   strong,
+  compact = false,
 }: {
   on: boolean;
   onPress: () => void;
@@ -1520,20 +1595,32 @@ const Ctl = ({
   label: string;
   sub?: string;
   strong?: boolean;
+  compact?: boolean;
 }) => (
   <Pressable
     onPress={onPress}
+    accessibilityRole="button"
+    accessibilityLabel={label}
+    accessibilityHint={sub}
     accessibilityState={{ selected: on }}
     className={cx(
-      'h-16 flex-1 items-center justify-center gap-0.5 rounded-2xl',
+      'flex-1 items-center justify-center',
+      compact ? 'h-11 flex-row gap-1.5 rounded-xl px-2' : 'h-14 gap-0.5 rounded-2xl',
       strong && on ? 'border border-brand/30 bg-mint' : 'bg-white',
     )}
   >
     {icon}
-    <Text className={cx('mt-0.5 text-caption2 font-semibold', on ? 'text-ink' : 'text-sub')}>
+    <Text
+      numberOfLines={1}
+      className={cx(
+        'text-caption2 font-semibold',
+        !compact && 'mt-0.5',
+        on ? 'text-ink' : 'text-sub',
+      )}
+    >
       {label}
     </Text>
-    {sub && <Text className="text-caption2 text-sub">{sub}</Text>}
+    {sub && !compact && <Text className="text-caption2 text-sub">{sub}</Text>}
   </Pressable>
 );
 

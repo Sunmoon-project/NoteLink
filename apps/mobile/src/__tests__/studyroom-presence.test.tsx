@@ -1,10 +1,17 @@
-import { screen } from '@testing-library/react-native';
+import { fireEvent, screen } from '@testing-library/react-native';
+import * as ReactNative from 'react-native';
+import * as SafeArea from 'react-native-safe-area-context';
 import { QueryClient } from '@tanstack/react-query';
 import { RoomScreen } from '../features/studyroom/room';
 import { useLiveRoom } from '../lib/livekit';
 import { useAuth } from '../stores/auth';
 import { useNet } from '../stores/net';
 import { renderScreen, setParams } from '../test-utils';
+
+jest.mock('react-native-safe-area-context', () => {
+  const actual = jest.requireActual('react-native-safe-area-context');
+  return { ...actual, useSafeAreaInsets: jest.fn(actual.useSafeAreaInsets) };
+});
 
 const mockApi = {
   rooms: { get: jest.fn(), chatRoomId: jest.fn() },
@@ -69,6 +76,9 @@ const live = (over: Partial<ReturnType<typeof useLiveRoom>> = {}) =>
   }) as ReturnType<typeof useLiveRoom>;
 
 beforeEach(() => {
+  jest
+    .mocked(SafeArea.useSafeAreaInsets)
+    .mockImplementation(jest.requireActual('react-native-safe-area-context').useSafeAreaInsets);
   jest.spyOn(Date, 'now').mockImplementation(() => mockNow);
   useAuth.setState({ userId: 'me' });
   useNet.setState({ state: 'ok' });
@@ -77,7 +87,12 @@ beforeEach(() => {
   mockApi.social.messages.mockResolvedValue([]);
   setParams({ id: 'r1' });
 });
-afterEach(() => jest.restoreAllMocks());
+const initialWindow = ReactNative.Dimensions.get('window');
+const initialScreen = ReactNative.Dimensions.get('screen');
+afterEach(() => {
+  ReactNative.Dimensions.set({ window: initialWindow, screen: initialScreen });
+  jest.restoreAllMocks();
+});
 
 const client = () =>
   new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
@@ -143,3 +158,54 @@ it('다시 시도하지 않는 미디어 실패에는 「다시 연결 중」 �
   expect(await screen.findByText('알고리즘 스터디')).toBeTruthy();
   expect(screen.queryByText('● 연결이 끊겼어요 · 다시 연결 중…')).toBeNull();
 });
+
+it.each([
+  { width: 844, height: 390, columns: 3, tileWidth: 236, tileHeight: 140, side: 44 },
+  { width: 390, height: 844, columns: 2, tileWidth: 174, tileHeight: 118, side: 0 },
+])(
+  '$width × $height 화면에서 $columns 열로 모든 참가자를 표시하고 버튼 기능을 유지한다',
+  async (size) => {
+    ReactNative.Dimensions.set({
+      window: { width: size.width, height: size.height, scale: 3, fontScale: 1 },
+      screen: { width: size.width, height: size.height, scale: 3, fontScale: 1 },
+    });
+    jest
+      .mocked(SafeArea.useSafeAreaInsets)
+      .mockReturnValue({ top: 0, bottom: 21, left: size.side, right: size.side });
+    const all = [
+      member('me', '나'),
+      ...Array.from({ length: 5 }, (_, i) => member(`peer-${i}`, `참가자 ${i}`)),
+    ];
+    mockApi.rooms.get.mockResolvedValue({ ...room, members: all });
+    const media = live({ participantState: () => ({ present: true, camOn: false, micOn: true }) });
+    jest.mocked(useLiveRoom).mockReturnValue(media);
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText('6명 접속중');
+    for (const person of all) {
+      expect(screen.getByTestId(`room-member-tile-${person.userId}`)).toHaveStyle({
+        width: size.tileWidth,
+        height: size.tileHeight,
+      });
+    }
+    const camera = screen.getByRole('button', { name: '내 카메라 꺼짐' });
+    if (size.columns === 3) expect(screen.queryByText('내 학습하는 소리만')).toBeNull();
+    else expect(screen.getByText('내 학습하는 소리만')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '듣기 켜짐' })).toHaveProp(
+      'accessibilityHint',
+      '내 학습하는 소리만',
+    );
+    await fireEvent.press(camera);
+    expect(media.toggleCam).toHaveBeenCalledTimes(1);
+    await fireEvent.press(screen.getByRole('button', { name: '내 마이크 켜짐' }));
+    expect(media.toggleMic).toHaveBeenCalledTimes(1);
+    await fireEvent.press(screen.getByRole('button', { name: '듣기 켜짐' }));
+    expect(media.toggleHearing).toHaveBeenCalledTimes(1);
+
+    await fireEvent.press(screen.getByRole('button', { name: '채팅 열기' }));
+    expect(screen.getByTestId('room-member-tile-me')).toBeTruthy();
+    expect(screen.getByTestId('room-member-tile-peer-0')).toBeTruthy();
+    if (size.columns === 3) expect(screen.getByTestId('room-member-tile-peer-1')).toBeTruthy();
+    else expect(screen.queryByTestId('room-member-tile-peer-1')).toBeNull();
+    expect(screen.queryByTestId('room-member-tile-peer-2')).toBeNull();
+  },
+);
