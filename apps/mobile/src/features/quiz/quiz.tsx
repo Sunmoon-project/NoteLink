@@ -111,16 +111,15 @@ export function QuizHomeScreen() {
   const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
   const refresh = useTabRefresh(sets);
   const progress = useQuizProgress((s) => s.progress);
-  // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」에는 넣지 않는다
-  const todayId = useTodayReview().data?._id;
   const latest = progress
     ? (sets.data?.find((s) => s._id === progress.setId) ?? {
         _id: progress.setId,
         title: '풀던 퀴즈',
         questionCount: 0,
       })
-    : // 유사 퀴즈(sourceSetId)와 오늘의 복습은 채점 풀이로 열지 않는다
-      sets.data?.find((s) => s.status === 'ready' && !s.sourceSetId && s._id !== todayId);
+    : sets.data?.find((s) => s.status === 'ready');
+  // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」에는 넣지 않는다
+  const todayId = useTodayReview().data?._id;
   const waiting = sets.data?.filter((s) => s.status === 'generating' && s._id !== todayId) ?? [];
   return (
     <Canvas>
