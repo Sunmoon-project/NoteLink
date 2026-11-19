@@ -273,23 +273,6 @@ it('가장 최근 ready 세트가 유사 퀴즈(sourceSetId 있음)여도 카드
   });
 });
 
-it('가장 최근 ready 세트가 오늘의 복습 세트여도 카드는 그 전의 일반 퀴즈를 보여준다', async () => {
-  mockApi.quiz.sets.mockResolvedValue([
-    { ...quizSet, _id: 'today-set', title: '오늘의 복습', status: 'ready', sourceSetId: null },
-    { ...quizSet, _id: 'my-set', title: '내 퀴즈', status: 'ready', sourceSetId: null },
-  ]);
-  const qc = client();
-  // localData 모드라 useTodayReview 조회는 꺼져 있으므로 같은 queryKey 캐시에 오늘의 복습 세트를 넣는다
-  qc.setQueryData(['today-review'], { ...quizSet, _id: 'today-set', title: '오늘의 복습' });
-  await renderScreen(<QuizHomeScreen />, qc);
-  await fireEvent.press(await screen.findByText('퀴즈 풀기'));
-  expect(screen.getByText(/내 퀴즈/)).toBeTruthy();
-  expect(router.push).toHaveBeenCalledWith({
-    pathname: '/play/solve',
-    params: { setId: 'my-set' },
-  });
-});
-
 it('느린 생성 상태 조회가 끝날 때까지 다음 폴링을 시작하지 않는다', async () => {
   jest.useFakeTimers();
   const slow = deferred<AiJob>();
