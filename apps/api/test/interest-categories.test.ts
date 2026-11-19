@@ -2,8 +2,16 @@ import { Types } from 'mongoose';
 import { BadRequestException } from '@nestjs/common';
 import { expect, it, vi } from 'vitest';
 
-/** 이 시험이 쓰지 않는 기기 · 토큰 · 친구 · 시간표 공유 모델 자리 */
-const UNUSED_MODELS = [{}, {}, {}, {}] as [never, never, never, never];
+/** 이 시험이 쓰지 않는 기기 · 토큰 · 친구 · 시간표 공유 모델 · 스터디룸 · 인증번호 · 메일 자리 */
+const UNUSED_MODELS = [{}, {}, {}, {}, {}, {}, {}] as [
+  never,
+  never,
+  never,
+  never,
+  never,
+  never,
+  never,
+];
 import { UsersService } from '../src/modules/users/users.service.js';
 
 it('활성 공용 분야를 정렬해 부모 ID와 함께 반환한다', async () => {

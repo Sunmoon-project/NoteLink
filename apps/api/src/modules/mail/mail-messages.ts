@@ -70,3 +70,19 @@ export function noAccountMessage(): MailMessage {
     ].join('\n'),
   };
 }
+
+/** 로그인한 계정의 이메일 본인 인증 인증번호 안내 */
+export function identityCodeMessage(code: string): MailMessage {
+  const minutes = Math.round(EMAIL_CODE_TTL_MS / 60_000);
+  return {
+    subject: '[NoteLink] 본인 인증번호 안내',
+    text: [
+      'NoteLink 이메일 본인 인증번호입니다.',
+      '',
+      code,
+      '',
+      `이 번호는 ${minutes}분 동안만 유효합니다.`,
+      '직접 요청하지 않았다면 이 메일을 무시해 주세요.',
+    ].join('\n'),
+  };
+}

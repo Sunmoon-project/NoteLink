@@ -4,7 +4,7 @@ import Animated, { FadeInRight, ReduceMotion } from 'react-native-reanimated';
 import { Text } from '@/components/text';
 import { cx } from '@/components/ui';
 import { Avatar3D, type Mood } from './avatar3d';
-import { useEquippedAvatar } from './buddy';
+import { useEquippedAccessories, useEquippedAvatar } from './buddy';
 
 // 맞히면 칭찬, 틀리면 격려. 다음 학습(복습)으로 이어지는 말로
 export const PRAISE = [
@@ -24,6 +24,7 @@ export const ENCOURAGE = [
  */
 export function AvatarCheer({ right, index }: { right: boolean; index: number }) {
   const avatar = useEquippedAvatar();
+  const acc = useEquippedAccessories();
   // 이 문제의 한마디를 말한 뒤에만 입을 닫는다(문제가 바뀌면 다시 말함)
   const key = `${index}-${right}`;
   const [quiet, setQuiet] = useState<string | null>(null);
@@ -42,7 +43,7 @@ export function AvatarCheer({ right, index }: { right: boolean; index: number })
       className="mt-4 flex-row items-center gap-2"
     >
       <View className="h-14 w-14 items-center justify-center overflow-hidden rounded-full bg-mint">
-        <Avatar3D mood={mood} avatarId={avatar} size={52} framing="head" />
+        <Avatar3D mood={mood} avatarId={avatar} accessories={acc} size={52} framing="head" />
       </View>
       <View
         className={cx(

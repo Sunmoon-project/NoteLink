@@ -909,6 +909,54 @@ describe('오늘의 복습(TodayReviewService)', () => {
     expect(prev['deletedAt'] ?? null).toBeNull();
   });
 
+  it('오늘 세트를 끝까지 풀었으면 조회에 completed를 붙인다(앱이 다시 풀게 하지 않음)', async () => {
+    const { today, seed, jobs, quizSets, attempts } = setup();
+    const s = await seed();
+    const made = await today.start(ME.toHexString(), NOW);
+    Object.assign(jobs.rows.at(-1)!, {
+      status: 'succeeded',
+      progress: 100,
+      result: {
+        questions: [
+          {
+            id: new Types.ObjectId().toHexString(),
+            order: 1,
+            prompt: '문제 1',
+            choices: ['가', '나'],
+            answer: '가',
+            conceptTags: ['세포막'],
+            srs: { step: 1 },
+          },
+        ],
+        title: '오늘의 복습 · 11-16',
+        baseSetId: s.set.toHexString(),
+        srsUpdates: [],
+        voidAnswers: [],
+      },
+    });
+    await quizSets.findMine(ME.toHexString(), made._id);
+    expect((await today.get(ME.toHexString(), NOW))!.completed).toBeUndefined();
+    await attempts.model.create({
+      quizSetId: new Types.ObjectId(made._id),
+      userId: ME,
+      answers: [],
+      startedAt: NOW,
+      finishedAt: null,
+    });
+    expect((await today.get(ME.toHexString(), NOW))!.completed).toBeUndefined();
+    await attempts.model.create({
+      quizSetId: new Types.ObjectId(made._id),
+      userId: ME,
+      answers: [],
+      startedAt: NOW,
+      finishedAt: NOW,
+    });
+    expect(await today.get(ME.toHexString(), NOW)).toMatchObject({
+      status: 'ready',
+      completed: true,
+    });
+  });
+
   it('결과를 옮기면 문제(복습 상태 유지) · 기준 세트의 노트 · 복습 상태 · 무효 풀이를 반영한다', async () => {
     const { today, seed, jobs, quizSets, setUpdate, attemptUpdate } = setup();
     const s = await seed();

@@ -14,6 +14,9 @@ import { TokenService } from '../src/modules/auth/token.service.js';
 import { ProgressService } from '../src/modules/progress/progress.service.js';
 import { UsersController } from '../src/modules/users/users.controller.js';
 import { UsersService } from '../src/modules/users/users.service.js';
+import { StudyRoomMembershipService } from '../src/modules/studyroom/study-room-membership.service.js';
+import { EmailCodeService } from '../src/modules/auth/app-login/email-code.service.js';
+import { MAIL_SENDER, MailUnavailableError } from '../src/modules/mail/mail-sender.js';
 
 const userId = new Types.ObjectId();
 const otherUserId = new Types.ObjectId();
@@ -66,6 +69,9 @@ const devices = { updateOne: vi.fn(async () => ({})), deleteMany: vi.fn(async ()
 /** 탈퇴 정리(친구 · 시간표 공유)만 받는다 */
 const revokeAll = vi.fn(async () => undefined);
 const cleanup = { updateMany: vi.fn(async () => ({})), deleteMany: vi.fn(async () => ({})) };
+/** 본인 인증 인증번호 · 메일(이메일 인증번호 흐름을 그대로 쓴다) */
+const codes = { issue: vi.fn(), verify: vi.fn() };
+const mail = { sendIdentityCode: vi.fn(async () => undefined) };
 let app: INestApplication;
 beforeAll(async () => {
   const module = await Test.createTestingModule({
@@ -77,6 +83,13 @@ beforeAll(async () => {
       { provide: getModelToken(Device.name), useValue: devices },
       { provide: getModelToken(Friendship.name), useValue: cleanup },
       { provide: getModelToken(TimetableShare.name), useValue: cleanup },
+      // 탈퇴가 참여 중인 스터디룸에서 나간다(참여 중인 방이 없는 계정)
+      {
+        provide: StudyRoomMembershipService,
+        useValue: { leaveAllForWithdrawal: vi.fn(async () => undefined) },
+      },
+      { provide: EmailCodeService, useValue: codes },
+      { provide: MAIL_SENDER, useValue: mail },
       {
         provide: TokenService,
         useValue: {
@@ -218,6 +231,37 @@ describe('내 프로필 API', () => {
   it('다른 인덱스 충돌은 닉네임 중복으로 잘못 표시하지 않는다', async () => {
     model.findOneAndUpdate.mockRejectedValueOnce({ code: 11000, keyPattern: { email: 1 } });
     expect((await patch({ nickname: '새닉네임' })).status).toBe(500);
+  });
+});
+
+describe('학교 · 학년은 본인 인증 없이 바꾼다', () => {
+  it('학교 · 학년을 앞뒤 공백을 지워 저장하고 응답에 내려준다', async () => {
+    const res = await patch({ school: ' 선문고등학교 ', grade: '3학년' });
+    expect(res.status).toBe(200);
+    expect(model.findOneAndUpdate).toHaveBeenLastCalledWith(
+      expect.anything(),
+      { $set: { school: '선문고등학교', grade: '3학년' } },
+      expect.anything(),
+    );
+    expect(res.body.data).toMatchObject({ school: '선문고등학교', grade: '3학년' });
+  });
+
+  it('빈 값이면 지우고, 너무 길거나 문자열이 아니면 400', async () => {
+    expect((await patch({ school: '' })).status).toBe(200);
+    expect(model.findOneAndUpdate).toHaveBeenLastCalledWith(
+      expect.anything(),
+      { $set: { school: null } },
+      expect.anything(),
+    );
+    expect((await patch({ school: '가'.repeat(41) })).status).toBe(400);
+    expect((await patch({ grade: '가'.repeat(11) })).status).toBe(400);
+    expect((await patch({ grade: 3 })).status).toBe(400);
+  });
+
+  it('값이 없는 계정은 응답에서 학교 · 학년을 빼고, 이메일 · 전화는 이 경로로 바꿀 수 없다', async () => {
+    expect((await get()).body.data).not.toHaveProperty('school');
+    expect((await patch({ email: 'a@b.co' })).status).toBe(400);
+    expect((await patch({ phone: '01012345678' })).status).toBe(400);
   });
 });
 
@@ -366,5 +410,65 @@ describe('내 계정: 상태 · 기기 · 요금제 · 탈퇴', () => {
     expect(revokeAll).toHaveBeenCalled();
     expect(cleanup.deleteMany).toHaveBeenCalled();
     await http().delete('/api/v1/users/me').expect(401);
+  });
+});
+
+describe('이메일로 본인 인증 (로그인한 계정의 지금 이메일)', () => {
+  const post = (path: string, body: object = {}) =>
+    request(app.getHttpServer())
+      .post(`/api/v1/users/me/email/${path}`)
+      .set('Authorization', 'Bearer valid')
+      .send(body);
+  beforeEach(() => {
+    user!.email = 'me@notelink.app';
+    codes.issue.mockResolvedValue({ ok: true, code: '123456' });
+  });
+
+  it('계정 이메일로 인증번호를 보낸다(본인 인증 목적, 로그인 없이는 401)', async () => {
+    expect((await post('send-code')).status).toBe(204);
+    expect(codes.issue).toHaveBeenCalledWith('me@notelink.app', 'identity');
+    expect(mail.sendIdentityCode).toHaveBeenCalledWith('me@notelink.app', '123456');
+    expect(
+      (await request(app.getHttpServer()).post('/api/v1/users/me/email/send-code')).status,
+    ).toBe(401);
+  });
+
+  it('이메일이 없는 계정은 400 NO_EMAIL이고 인증번호를 만들지 않는다', async () => {
+    user!.email = null;
+    const res = await post('send-code');
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('NO_EMAIL');
+    expect(codes.issue).not.toHaveBeenCalled();
+  });
+
+  it('발송 제한은 429, 메일 수단이 없으면 503', async () => {
+    codes.issue.mockResolvedValueOnce({ ok: false, reason: 'cooldown', retryAfterMs: 30_000 });
+    expect((await post('send-code')).status).toBe(429);
+    mail.sendIdentityCode.mockRejectedValueOnce(new MailUnavailableError('x'));
+    expect((await post('send-code')).status).toBe(503);
+  });
+
+  it('맞는 인증번호면 인증 시각을 적고 emailVerified를 내려준다', async () => {
+    expect((await get()).body.data.emailVerified).toBe(false);
+    const at = new Date('2026-11-19T00:00:00Z');
+    codes.verify.mockResolvedValueOnce({ ok: true, verifiedAt: at });
+    const res = await post('verify-code', { code: '123456' });
+    expect(res.status).toBe(200);
+    expect(codes.verify).toHaveBeenCalledWith('me@notelink.app', 'identity', '123456');
+    expect(model.updateOne).toHaveBeenCalledWith(
+      expect.objectContaining({ email: 'me@notelink.app', deletedAt: null }),
+      { $set: { emailVerifiedAt: at } },
+    );
+    user!.emailVerifiedAt = at;
+    expect((await get()).body.data.emailVerified).toBe(true);
+  });
+
+  it('틀린 인증번호는 400 EMAIL_CODE_INVALID, 형식이 틀리면 400이고 적지 않는다', async () => {
+    codes.verify.mockResolvedValueOnce({ ok: false, reason: 'wrong', attemptsLeft: 4 });
+    const res = await post('verify-code', { code: '000000' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('EMAIL_CODE_INVALID');
+    expect((await post('verify-code', { code: '12' })).status).toBe(400);
+    expect(model.updateOne).not.toHaveBeenCalled();
   });
 });

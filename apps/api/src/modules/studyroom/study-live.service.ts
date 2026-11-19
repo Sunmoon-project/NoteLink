@@ -11,6 +11,7 @@ export class StudyLiveService {
   ) {}
 
   async issueToken(roomId: string, userId: string) {
+    await this.chat.requireActiveUser(userId);
     await this.chat.requireMember(roomId, userId);
     const url = this.config.get<string>('LIVEKIT_URL')?.trim();
     const apiKey = this.config.get<string>('LIVEKIT_API_KEY')?.trim();
@@ -29,7 +30,8 @@ export class StudyLiveService {
       canSubscribe: true,
     });
     const signed = await token.toJwt();
-    // 발급 중 퇴장한 사용자는 이미 만든 토큰을 받지 못한다.
+    // 발급 중 퇴장하거나 탈퇴를 시작한 사용자는 이미 만든 토큰을 받지 못한다.
+    await this.chat.requireActiveUser(userId);
     await this.chat.requireMember(roomId, userId);
     return { url, token: signed };
   }

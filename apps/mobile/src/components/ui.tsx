@@ -13,18 +13,17 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
+  Pressable as RNPressable,
   RefreshControl,
   ScrollView,
   Switch,
   View,
   type ScrollViewProps,
   type TextInputProps,
-  Pressable as RNPressable,
 } from 'react-native';
 import { Pressable } from './press';
 import { Text, TextInput } from './text';
 import Animated, {
-  Easing,
   FadeIn,
   FadeInDown,
   FadeOut,
@@ -34,11 +33,13 @@ import Animated, {
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
-  withSpring,
   withTiming,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Path, SvgXml } from 'react-native-svg';
+import ReanimatedSwipeable, {
+  type SwipeableMethods,
+} from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { router, useIsFocused, useSegments } from 'expo-router';
 import {
   Check,
@@ -48,9 +49,11 @@ import {
   Eye,
   EyeOff,
   Search as SearchIcon,
+  Trash2,
   X,
 } from 'lucide-react-native';
-import { C, ICON, MOTION } from '@/theme';
+import { C, EASE, EASE_SHEET, ICON, MOTION } from '@/theme';
+import { useEquippedTheme } from '@/lib/shop-themes';
 
 // 공통 UI. 웹 프로토타입(ui.tsx)과 같은 이름 · 같은 모양으로 맞췄다.
 
@@ -70,12 +73,22 @@ const FILL: Record<Surface, string> = { canvas: 'bg-white', white: 'bg-fill', le
  * 개편된 화면의 바깥 틀: 회색 바탕 + 그 안 전부(Screen 밖에 붙는 Sheet · Dialog 포함)를 캔버스 면으로.
  * 시트를 Screen 밖에 두는 화면은 Screen canvas 대신 이것으로 감싼다
  */
-export const Canvas = ({ children, cream }: { children: ReactNode; cream?: boolean }) => (
-  <SurfaceCtx.Provider value="canvas">
-    {/* cream: 온보딩 · 로그인처럼 브랜드 인상을 남기는 화면 (그 위 칸 · 버튼은 캔버스와 같은 흰색) */}
-    <View className={cx('flex-1', cream ? 'bg-cream' : 'bg-canvas')}>{children}</View>
-  </SurfaceCtx.Provider>
-);
+export function Canvas({ children, cream }: { children: ReactNode; cream?: boolean }) {
+  // 상점에서 장착한 테마가 바탕색을 바꾼다(온보딩 · 로그인 크림은 그대로)
+  const theme = useEquippedTheme(!cream);
+  return (
+    <SurfaceCtx.Provider value="canvas">
+      {/* cream: 온보딩 · 로그인처럼 브랜드 인상을 남기는 화면 (그 위 칸 · 버튼은 캔버스와 같은 흰색) */}
+      <View
+        testID="canvas"
+        className={cx('flex-1', cream ? 'bg-cream' : 'bg-canvas')}
+        style={!cream && theme ? { backgroundColor: theme.canvas } : undefined}
+      >
+        {children}
+      </View>
+    </SurfaceCtx.Provider>
+  );
+}
 /** 흰 면(카드 · 시트) 안의 내용 — 칩 · 입력이 채움 바탕이 된다. 개편 전 화면에서는 그대로 둔다 */
 export const OnWhite = ({ children }: { children: ReactNode }) => {
   const surface = useSurface();
@@ -86,55 +99,22 @@ export const OnWhite = ({ children }: { children: ReactNode }) => {
 // ── 모션 ─────────────────────────────────────────────
 // 모든 움직임은 MOTION 토큰을 쓴다. Reanimated는 기본으로 시스템의 '동작 줄이기'를 따른다.
 
-const PRESS = { damping: MOTION.press.damping, stiffness: MOTION.press.stiffness };
-
-// 바깥(스케일이 걸리는 상자)에 둘 클래스: 위치 · 바깥 여백 · 너비 · 늘어남. 나머지는 안쪽 Pressable에 둔다
-const OUTER =
-  /^-?(m[trblxy]?-|flex-1$|flex-\[|basis-|grow|shrink|w-|min-w-|max-w-|self-|absolute$|relative$|inset-|top-|left-|right-|bottom-|z-)/;
-const splitClass = (className = '') => {
-  const all = className.split(/\s+/).filter(Boolean);
-  const outer = all.filter((c) => OUTER.test(c));
-  const inner = all.filter((c) => !OUTER.test(c));
-  // 바깥이 늘어나면 안쪽도 같이 채운다
-  if (outer.includes('flex-1')) inner.push('flex-1');
-  return [outer.join(' '), inner.join(' ')] as const;
-};
-
-/** 누르면 살짝 작아졌다 돌아오는 Pressable (버튼 · 카드 · 칩 공통 눌림 피드백) */
-export function Tap({
-  scaleTo = MOTION.press.scale,
-  className,
-  onPressIn,
-  onPressOut,
-  style,
-  ...props
-}: ComponentProps<typeof RNPressable> & { scaleTo?: number; className?: string }) {
-  const scale = useSharedValue(1);
-  const anim = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
-  const [outer, inner] = splitClass(className);
+/**
+ * 누르면 살짝 작아졌다 돌아오는 Pressable (버튼 · 카드 · 칩 공통 눌림 피드백).
+ * 눌림 모션 · 동작 줄이기 · 비활성 · hitSlop은 press.tsx의 Pressable이 맡고, 여기서는 최소 44 터치 영역만 더한다
+ */
+export function Tap({ style, ...props }: ComponentProps<typeof Pressable>) {
   return (
-    <Animated.View className={outer} style={anim}>
-      <RNPressable
-        {...props}
-        className={inner}
-        style={(state) => [
-          typeof style === 'function' ? style(state) : style,
-          { minWidth: 44, minHeight: 44 },
-        ]}
-        onPressIn={(e) => {
-          scale.set(withSpring(scaleTo, PRESS));
-          onPressIn?.(e);
-        }}
-        onPressOut={(e) => {
-          scale.set(withSpring(1, PRESS));
-          onPressOut?.(e);
-        }}
-      />
-    </Animated.View>
+    <Pressable
+      {...props}
+      style={(state) => [
+        typeof style === 'function' ? style(state) : style,
+        { minWidth: 44, minHeight: 44 },
+      ]}
+    />
   );
 }
 
-const EASE = Easing.out(Easing.cubic);
 /** 목록에서 행이 빠지거나 들어올 때 남은 행이 자리를 메우며 움직인다 (화면에서 직접 만든 목록도 layout에 쓴다) */
 export const LIST_LAYOUT = LinearTransition.duration(MOTION.enter).easing(EASE);
 
@@ -142,13 +122,23 @@ export const LIST_LAYOUT = LinearTransition.duration(MOTION.enter).easing(EASE);
  * 눌러서 여는 작은 메뉴 · 패널(도구 메뉴 · 첨부 · 이모지 칸)이 갑자기 튀어나오지 않게, 아래에서 살짝 떠오르며 나타나고
  * 빠르게 사라진다. 가끔 여는 것이라 짧게(열기 160ms · 닫기 120ms). 동작 줄이기를 켜면 Reanimated가 생략한다
  */
-export const POP_IN = FadeInDown.duration(160).easing(EASE);
+/**
+ * 빠른 메뉴(+ 버튼) 항목처럼 차례로 펼칠 때: 버튼에 가까운 것부터 30ms씩 떠오른다(order 0 = 버튼 바로 위).
+ * 공용 POP_IN에 .delay()를 붙이면 그 인스턴스 값이 바뀌므로 항목마다 새로 만든다
+ */
+export const popInFrom = (order: number) =>
+  FadeInDown.duration(160)
+    .easing(EASE)
+    .delay(order * 30);
+export const POP_IN = popInFrom(0);
 export const POP_OUT = FadeOut.duration(120);
 export const Pop = ({ children, className }: { children: ReactNode; className?: string }) => (
   <Animated.View entering={POP_IN} exiting={POP_OUT} className={className}>
     {children}
   </Animated.View>
 );
+/** 기본 페이드 등장(MOTION.enter · EASE). 기본값 FadeIn(300ms)은 쓰지 않는다 */
+export const FADE_IN = FadeIn.duration(MOTION.enter).easing(EASE);
 /** 메뉴 뒤 어두운 막: 나타날 때 · 사라질 때 함께 흐려진다(항목만 떠오르고 막은 갑자기 생기던 것) */
 export const BACKDROP_IN = FadeIn.duration(MOTION.exit);
 export const BACKDROP_OUT = FadeOut.duration(120);
@@ -561,11 +551,14 @@ export function Card({
   children,
   className,
   onPress,
+  onLongPress,
   tone = 'cream',
 }: {
   children: ReactNode;
   className?: string;
   onPress?: () => void;
+  /** 꾹 누르기(예: 폴더 삭제). onPress가 있을 때만 쓴다 */
+  onLongPress?: () => void;
   /** cream: 면에 맞춘 기본 카드 (캔버스 위 흰 카드 · 흰 면 안 채움 · 개편 전 크림) */
   tone?: 'cream' | 'white' | 'mint' | 'night';
 }) {
@@ -582,9 +575,55 @@ export function Card({
   const body = tone === 'night' ? children : <OnWhite>{children}</OnWhite>;
   if (!onPress) return <View className={shape}>{body}</View>;
   return (
-    <Tap scaleTo={0.98} onPress={onPress} className={shape}>
+    <Tap scaleTo={0.98} onPress={onPress} onLongPress={onLongPress} className={shape}>
       {body}
     </Tap>
+  );
+}
+
+/**
+ * 왼쪽으로 밀면 오른쪽에 빨간 동작 버튼(삭제 · 나가기)이 나온다. 누르면 줄을 닫고 onAction을 부른다.
+ * 되돌릴 수 없는 동작이면 onAction에서 확인 대화상자를 연다(버튼을 바로 실행하지 않는다)
+ */
+export function SwipeAction({
+  label,
+  name,
+  onAction,
+  children,
+}: {
+  /** 버튼 글자: 삭제 · 나가기 */
+  label: string;
+  /** 읽기 도구가 읽는 대상 이름(예: 자료 제목) → 「제목 삭제」 */
+  name: string;
+  onAction: () => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<SwipeableMethods>(null);
+  return (
+    <ReanimatedSwipeable
+      ref={ref}
+      friction={2}
+      rightThreshold={40}
+      overshootRight={false}
+      renderRightActions={() => (
+        // 기본 Pressable: 눌림 Pressable은 폭을 바깥 상자에, 배경을 안쪽에 나눠 빨간 칸이 줄 높이를 못 채웠다
+        // (글자 높이만큼만 칠해져 반쯤 잘려 보임). 한 칸이면 줄 높이로 늘어난다
+        <RNPressable
+          accessibilityRole="button"
+          accessibilityLabel={`${name} ${label}`}
+          onPress={() => {
+            ref.current?.close();
+            onAction();
+          }}
+          className="w-20 items-center justify-center gap-1 bg-danger"
+        >
+          <Trash2 size={ICON.sm} color="#fff" />
+          <Text className="text-caption font-semibold text-white">{label}</Text>
+        </RNPressable>
+      )}
+    >
+      {children}
+    </ReanimatedSwipeable>
   );
 }
 
@@ -681,9 +720,9 @@ export function Toggle({
       accessibilityLabel={label}
       value={on}
       onValueChange={onChange}
-      trackColor={{ true: C.brand, false: C['cream-2'] }}
+      trackColor={{ true: C.brand, false: C.fill }}
       thumbColor="#fff"
-      ios_backgroundColor={C['cream-2']}
+      ios_backgroundColor={C.fill}
     />
   );
 }
@@ -968,8 +1007,8 @@ export function Sheet({
         )}
         {open && (
           <Animated.View
-            entering={SlideInDown.duration(MOTION.enter).easing(Easing.out(Easing.cubic))}
-            exiting={SlideOutDown.duration(MOTION.exit).easing(Easing.in(Easing.cubic))}
+            entering={SlideInDown.duration(MOTION.enter).easing(EASE)}
+            exiting={SlideOutDown.duration(MOTION.exit).easing(EASE_SHEET)}
             // 올라오는 동안 내용(불러온 목록 등)이 늘어나면 새 높이로 자리를 옮긴다.
             // 없으면 처음 높이에 머물러 늘어난 만큼 아래가 화면 밖으로 잘린다(날짜별 할 일)
             layout={LIST_LAYOUT}
@@ -1036,7 +1075,7 @@ export function Dialog({
         )}
         {open && (
           <Animated.View
-            entering={FadeInDown.duration(MOTION.enter).easing(Easing.out(Easing.cubic))}
+            entering={FadeInDown.duration(MOTION.enter).easing(EASE)}
             exiting={FadeOut.duration(MOTION.exit)}
             accessibilityViewIsModal
             className="w-full items-center rounded-sheet bg-white p-6"
@@ -1264,18 +1303,21 @@ export function Progress({
   onDark?: boolean;
 }) {
   const v = Math.max(0, Math.min(100, value)) / 100;
-  const scale = useSharedValue(v);
+  const at = useSharedValue(v);
   useEffect(() => {
-    scale.set(withTiming(v, { duration: MOTION.enter, easing: Easing.out(Easing.cubic) }));
-  }, [v, scale]);
-  const anim = useAnimatedStyle(() => ({ transform: [{ scaleX: scale.value }] }));
+    at.set(withTiming(v, { duration: MOTION.enter, easing: EASE }));
+  }, [v, at]);
+  // 가로로 줄이면(scaleX) 둥근 끝도 눌려 납작해진다 → 꽉 찬 막대를 왼쪽 밖에서 밀어 넣는다(바탕이 overflow-hidden)
+  const anim = useAnimatedStyle(() => ({
+    transform: [{ translateX: `${(at.get() - 1) * 100}%` }],
+  }));
   return (
     <View
       accessibilityRole="progressbar"
       accessibilityValue={{ min: 0, max: 100, now: Math.round(v * 100) }}
       className={cx(
         'h-1.5 overflow-hidden rounded-full',
-        onDark ? 'bg-white/10' : 'bg-cream-2',
+        onDark ? 'bg-white/10' : 'bg-fill',
         className,
       )}
     >
@@ -1284,7 +1326,7 @@ export function Progress({
           'h-full w-full rounded-full',
           { brand: 'bg-brand', sun: 'bg-sun', danger: 'bg-danger' }[tone],
         )}
-        style={[{ transformOrigin: 'left' }, anim]}
+        style={anim}
       />
     </View>
   );
@@ -1379,7 +1421,7 @@ export const Dashed = ({ children, onPress }: { children: string; onPress: () =>
 );
 
 export const Fade = ({ children, className }: { children: ReactNode; className?: string }) => (
-  <Animated.View entering={FadeIn} className={className}>
+  <Animated.View entering={FADE_IN} className={className}>
     {children}
   </Animated.View>
 );
@@ -1389,24 +1431,6 @@ export const Loading = () => (
     <ActivityIndicator color={C.brand} />
   </View>
 );
-
-/** 0→100 으로 차오르는 진행률 (로컬 연출용) */
-export function useProgress(ms: number, onDone?: () => void, start = 0) {
-  const [v, setV] = useState(start);
-  const done = useRef(onDone);
-  useEffect(() => {
-    done.current = onDone;
-  });
-  useEffect(() => {
-    const step = 100 / (ms / 60);
-    const id = setInterval(() => setV((p) => Math.min(100, p + step)), 60);
-    return () => clearInterval(id);
-  }, [ms]);
-  useEffect(() => {
-    if (v >= 100) done.current?.();
-  }, [v]);
-  return Math.round(v);
-}
 
 /** 아래에 고정되지 않는 두 버튼 가로 배치 */
 export const Two = ({ children }: { children: [ReactNode, ReactNode] }) => (

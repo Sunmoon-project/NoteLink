@@ -93,6 +93,8 @@ export interface AppQuizSet {
   questionCount: number;
   questions: AppQuestion[];
   createdAt: string;
+  /** 오늘의 복습만: 오늘 세트를 끝까지 푼 적이 있으면 true(앱은 다시 풀게 하지 않고 마쳤다고 보여 준다) */
+  completed?: boolean;
 }
 
 /** DB에 저장한 문제 한 개(lean) */

@@ -35,6 +35,12 @@ function timerFields(room: Pick<StudyRoom, 'timerRule' | 'timerStartedAt'>) {
 
 @Injectable()
 export class StudyRoomsService {
+  /**
+   * 입장 · 생성을 저장한 뒤 그사이 회원 탈퇴가 시작됐으면 방금 만든 참여를 되돌리는 함수.
+   * StudyRoomMembershipService 가 생성자에서 넣는다(그쪽이 이 서비스를 받으므로 서로 받으면 순환). 없으면 leaveRoom 만 한다
+   */
+  rollbackMembership?: (userId: string, roomId: string) => Promise<void>;
+
   constructor(
     @InjectModel(StudyRoom.name) private readonly rooms: Model<StudyRoom>,
     @InjectModel(User.name) private readonly users: Model<User>,
@@ -296,6 +302,12 @@ export class StudyRoomsService {
   }
 
   async create(userId: string, input: CreateStudyRoomDto) {
+    const room = await this.createRoom(userId, input);
+    await this.ensureNotWithdrawing(userId, room._id);
+    return room;
+  }
+
+  private async createRoom(userId: string, input: CreateStudyRoomDto) {
     if (!isValidObjectId(userId)) {
       throw new UnauthorizedException({
         code: 'AUTH_TOKEN_EXPIRED',
@@ -303,22 +315,41 @@ export class StudyRoomsService {
       });
     }
     const title = input.title.trim();
-    const name = input.categoryName.trim();
-    if (!title || !name) {
+    const name = input.categoryName?.trim();
+    // 대소문자만 다른 같은 id는 하나로 본다(관심 분야 저장과 같은 방식)
+    const requestedIds = input.categoryIds?.map((id) =>
+      isValidObjectId(id) ? new Types.ObjectId(id).toHexString() : '',
+    );
+    const uniqueIds = requestedIds && [...new Set(requestedIds)];
+    if (
+      !title ||
+      (uniqueIds ? !uniqueIds.length || uniqueIds.length > 3 || uniqueIds.includes('') : !name)
+    ) {
       throw new BadRequestException({
         code: 'BAD_REQUEST',
         message: '방 이름과 카테고리를 입력해 주세요.',
       });
     }
     const hostId = new Types.ObjectId(userId);
-    const host = await this.users.findOne({ _id: hostId, deletedAt: null }).lean();
+    const host = await this.users
+      .findOne({ _id: hostId, deletedAt: null, withdrawingAt: null })
+      .lean();
     if (!host)
       throw new NotFoundException({ code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' });
-    const categories = await this.categories
-      .find({ name, ownerId: null, isActive: true, deletedAt: null })
-      .limit(2)
-      .lean();
-    if (categories.length !== 1) {
+    const usable = { ownerId: null, isActive: true, deletedAt: null };
+    const found = uniqueIds
+      ? await this.categories
+          .find({ _id: { $in: uniqueIds.map((id) => new Types.ObjectId(id)) }, ...usable })
+          .lean()
+      : await this.categories
+          .find({ name, ...usable })
+          .limit(2)
+          .lean();
+    // 요청 순서대로(첫 번째가 대표)
+    const categories = uniqueIds
+      ? uniqueIds.flatMap((id) => found.filter((category) => String(category._id) === id))
+      : found;
+    if (categories.length !== (uniqueIds?.length ?? 1)) {
       throw new BadRequestException({
         code: 'INVALID_CATEGORY',
         message: '사용할 수 없는 카테고리입니다.',
@@ -333,6 +364,8 @@ export class StudyRoomsService {
         const room = await this.rooms.create({
           title,
           categoryId: categories[0]!._id,
+          categoryIds: categories.map((category) => category._id),
+          learnerType: host.learnerType ?? null,
           hostId,
           isPublic: input.isPublic,
           maxCapacity: input.maxCapacity ?? 6,
@@ -344,7 +377,10 @@ export class StudyRoomsService {
           _id: String(room._id),
           title: room.title,
           categoryId: String(room.categoryId),
-          categoryName: name,
+          categoryName: categories[0]!.name,
+          categoryIds: categories.map((category) => String(category._id)),
+          categoryNames: categories.map((category) => category.name),
+          learnerType: host.learnerType ?? null,
           hostId: userId,
           isPublic: room.isPublic,
           inviteCode: room.inviteCode,
@@ -400,25 +436,35 @@ export class StudyRoomsService {
       kind === 'mine'
         ? { closedAt: null, members: { $elemMatch: member } }
         : { closedAt: null, isPublic: true, members: { $not: { $elemMatch: member } } };
-    const query = this.rooms.find(filter).sort({ _id: -1 });
-    if (limit !== undefined || kind === 'recommended') query.limit(limit ?? 50);
-    const rooms = await query.lean();
-    const memberIds = rooms.flatMap((room) => room.members.map((member) => member.userId));
+    const rooms =
+      kind === 'mine'
+        ? await (
+            limit === undefined
+              ? this.rooms.find(filter).sort({ _id: -1 })
+              : this.rooms.find(filter).sort({ _id: -1 }).limit(limit)
+          ).lean()
+        : await this.recommendedRooms(userId, filter, limit ?? 50);
+    // 나간 · 강퇴된 · 초대만 받은 멤버는 목록에 내려주지 않는다(getRoom과 같게 joined만)
+    const joinedOf = (room: (typeof rooms)[number]) =>
+      room.members.filter((member) => member.status === 'joined');
+    const memberIds = rooms.flatMap((room) => joinedOf(room).map((member) => member.userId));
     const users = memberIds.length
       ? await this.users.find({ _id: { $in: memberIds }, deletedAt: null }, { nickname: 1 }).lean()
       : [];
     const nicknames = new Map(users.map((user) => [String(user._id), user.nickname]));
+    const labels = await this.roomLabels(rooms);
     return rooms.map((room) => ({
       _id: String(room._id),
       title: room.title,
       categoryId: String(room.categoryId),
+      ...labels(room),
       hostId: String(room.hostId),
       isPublic: room.isPublic,
       inviteCode: room.inviteCode,
       maxCapacity: room.maxCapacity,
       memberCount: room.memberCount,
       ...timerFields(room),
-      members: room.members.map((member) => ({
+      members: joinedOf(room).map((member) => ({
         userId: String(member.userId),
         nickname: nicknames.get(String(member.userId)) ?? '알 수 없는 사용자',
         role: member.role,
@@ -427,6 +473,63 @@ export class StudyRoomsService {
       createdAt: (room as typeof room & { createdAt: Date }).createdAt.toISOString(),
       closedAt: room.closedAt?.toISOString() ?? null,
     }));
+  }
+
+  /** 추천: 내 관심 분야와 겹치는 방을 먼저(최신순), 남는 자리는 나머지 방을 최신순으로 채운다. */
+  private async recommendedRooms(userId: string, filter: object, max: number) {
+    const me = await this.users.findById(userId, { interestCategoryIds: 1 }).lean();
+    const interests = me?.interestCategoryIds ?? [];
+    if (!interests.length) return this.rooms.find(filter).sort({ _id: -1 }).limit(max).lean();
+    // 예전 방은 categoryIds가 없어 대표 categoryId로도 본다
+    const overlap = {
+      $or: [{ categoryIds: { $in: interests } }, { categoryId: { $in: interests } }],
+    };
+    const first = await this.rooms
+      .find({ ...filter, ...overlap })
+      .sort({ _id: -1 })
+      .limit(max)
+      .lean();
+    if (first.length >= max) return first;
+    const rest = await this.rooms
+      .find({ ...filter, $nor: [overlap] })
+      .sort({ _id: -1 })
+      .limit(max - first.length)
+      .lean();
+    return [...first, ...rest];
+  }
+
+  /**
+   * 방 카드에 보일 카테고리 이름 · 대상. 예전 방(필드 없음)은 [categoryId] · 방장 현재 learnerType으로 보정한다.
+   * 이름은 한 번에 $in으로 찾고, 지워져 이름을 못 찾은 카테고리는 이름 목록에서 뺀다.
+   */
+  private async roomLabels(
+    rooms: Pick<StudyRoom, 'categoryId' | 'categoryIds' | 'learnerType' | 'hostId'>[],
+  ) {
+    const idsOf = (room: (typeof rooms)[number]) =>
+      room.categoryIds?.length ? room.categoryIds : [room.categoryId];
+    const categoryIds = rooms.flatMap(idsOf);
+    const legacyHosts = rooms.filter((room) => room.learnerType === undefined).map((r) => r.hostId);
+    const [categories, hosts] = await Promise.all([
+      categoryIds.length
+        ? this.categories.find({ _id: { $in: categoryIds } }, { name: 1 }).lean()
+        : [],
+      legacyHosts.length
+        ? this.users.find({ _id: { $in: legacyHosts }, deletedAt: null }, { learnerType: 1 }).lean()
+        : [],
+    ]);
+    const names = new Map(categories.map((category) => [String(category._id), category.name]));
+    const hostTypes = new Map(hosts.map((user) => [String(user._id), user.learnerType ?? null]));
+    return (room: (typeof rooms)[number]) => {
+      const ids = idsOf(room).map(String);
+      return {
+        categoryIds: ids,
+        categoryNames: ids.flatMap((id) => names.get(id) ?? []),
+        learnerType:
+          room.learnerType === undefined
+            ? (hostTypes.get(String(room.hostId)) ?? null)
+            : (room.learnerType ?? null),
+      };
+    };
   }
 
   async getRoom(userId: string, roomId: string) {
@@ -455,10 +558,12 @@ export class StudyRoomsService {
       )
       .lean();
     const nicknames = new Map(users.map((user) => [String(user._id), user.nickname]));
+    const labels = await this.roomLabels([room]);
     return {
       _id: String(room._id),
       title: room.title,
       categoryId: String(room.categoryId),
+      ...labels(room),
       hostId: String(room.hostId),
       isPublic: room.isPublic,
       inviteCode: room.inviteCode,
@@ -565,6 +670,25 @@ export class StudyRoomsService {
   }
 
   async joinRoom(userId: string, inviteCode: string) {
+    const room = await this.enterRoom(userId, inviteCode);
+    await this.ensureNotWithdrawing(userId, room._id);
+    return room;
+  }
+
+  /**
+   * 저장이 끝난 뒤 사용자를 다시 읽는다. 사용자를 확인한 뒤 저장하는 사이에 탈퇴가 시작됐으면(withdraw 는 withdrawingAt 을 먼저
+   * 쓰고 참여 중인 방을 읽으므로 이 재확인이 그 틈을 메운다) 방금 만든 참여를 되돌리고 같은 오류를 던진다
+   */
+  private async ensureNotWithdrawing(userId: string, roomId: string): Promise<void> {
+    const user = await this.users
+      .findOne({ _id: new Types.ObjectId(userId), deletedAt: null, withdrawingAt: null })
+      .lean();
+    if (user) return;
+    await (this.rollbackMembership ?? ((id, room) => this.leaveRoom(id, room)))(userId, roomId);
+    throw new NotFoundException({ code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' });
+  }
+
+  private async enterRoom(userId: string, inviteCode: string) {
     if (!isValidObjectId(userId)) {
       throw new UnauthorizedException({
         code: 'AUTH_TOKEN_EXPIRED',
@@ -572,7 +696,9 @@ export class StudyRoomsService {
       });
     }
     const memberId = new Types.ObjectId(userId);
-    const user = await this.users.findOne({ _id: memberId, deletedAt: null }).lean();
+    const user = await this.users
+      .findOne({ _id: memberId, deletedAt: null, withdrawingAt: null })
+      .lean();
     if (!user)
       throw new NotFoundException({ code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' });
     const code = inviteCode.trim().toUpperCase();

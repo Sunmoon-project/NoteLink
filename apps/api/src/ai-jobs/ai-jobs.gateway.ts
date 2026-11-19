@@ -39,6 +39,11 @@ interface Watch {
   delivered?: Set<string>;
   /** 이 실행에서 끝난 작업을 보내다 일시 오류가 난 수 */
   doneFailures?: number;
+  /**
+   * 다시 시도(AiJobsService.retry)될 때마다 늘린다. done()이 보내는 사이 바뀌면 읽은 결과는 앞 실행의 것일 수 있어
+   * 보내지도 · 방에서 빼지도 않는다
+   */
+  generation: number;
 }
 const signature = (p: AiJobProgress) => `${p.status}|${p.progress}|${p.step ?? ''}`;
 
@@ -63,12 +68,24 @@ export class AiJobsGateway implements OnModuleDestroy {
 
   @WebSocketServer() private server: Server;
 
+  /** 다시 시도 알림 등록을 푸는 함수 */
+  private readonly offRetry: () => void;
+
   constructor(
     private readonly tokens: TokenService,
     private readonly jobs: AiJobsService,
-  ) {}
+  ) {
+    this.offRetry = jobs.onRetry((jobId) => {
+      const watch = this.watched.get(jobId);
+      if (!watch) return;
+      watch.generation += 1;
+      // 앞 실행에서 쌓인 일시 오류 수는 새 실행에 넘기지 않는다(한도에 바로 닿아 새 구독을 끝내지 않게)
+      watch.doneFailures = undefined;
+    });
+  }
 
   onModuleDestroy() {
+    this.offRetry();
     this.stop();
   }
 
@@ -123,7 +140,8 @@ export class AiJobsGateway implements OnModuleDestroy {
     const progress = toProgress(job);
     socket.emit('ai:progress', progress);
     // 같은 작업을 다른 화면 · 기기가 이미 지켜보고 있으면 그 기록을 그대로 쓴다
-    if (!this.watched.has(jobId)) this.watched.set(jobId, { userId, last: signature(progress) });
+    if (!this.watched.has(jobId))
+      this.watched.set(jobId, { userId, last: signature(progress), generation: 0 });
     this.start();
     return { ok: true };
   }
@@ -183,28 +201,57 @@ export class AiJobsGateway implements OnModuleDestroy {
 
   /**
    * 결과(result)까지 보내므로, 구독한 뒤 토큰이 끝났거나 다른 계정으로 바뀐 소켓에는 보내지 않는다
-   * (StudyChatGateway.notifyDirectMessage와 같은 방식). 진행률만 보내는 ai:progress는 확인하지 않는다
+   * (StudyChatGateway.notifyDirectMessage와 같은 방식). 진행률만 보내는 ai:progress는 확인하지 않는다.
+   * 결과는 토큰을 모두 확인한 뒤 보내기 바로 전에 읽는다. 먼저 읽으면 토큰을 확인하는 사이 다시 시도된 작업(같은 작업 id)의
+   * 앞 실행 결과를 보내고, finish()로 다시 시도하며 다시 구독한 소켓까지 방에서 뺀다(#523). 앱(ConvertScreen.finish)은
+   * 작업 id만 보므로 그 결과를 지금 실행의 실패로 받는다
    */
   private async done(jobId: string, userId: string) {
-    let job: Awaited<ReturnType<AiJobsService['findMine']>>;
+    // 시작할 때의 지켜보기 · 다시 시도 세대. 보내기 전에 바뀌었으면 이 처리는 앞 실행의 것이다
+    const started = this.watched.get(jobId);
+    const generation = started?.generation;
+    const stale = () => this.watched.get(jobId) !== started || started?.generation !== generation;
     let sockets: Awaited<ReturnType<ReturnType<Server['in']>['fetchSockets']>>;
     try {
-      job = await this.jobs.findMine(userId, jobId);
-      // 끝난 것을 읽은 사이 다시 시도로 처리기에 다시 들어갔으면(같은 작업 id) 끝내지 않고 계속 지켜본다.
-      // 다시 시도하며 구독한 소켓을 방에서 빼지 않게 한다
-      if (!FINISHED.has(job.status)) {
-        const watch = this.watched.get(jobId);
-        if (watch) watch.last = undefined;
-        return;
-      }
       sockets = await this.server.in(roomOf(jobId)).fetchSockets();
     } catch (error) {
-      // 그사이 지워졌으면 더 지켜보지 않는다. DB 일시 오류면 그대로 두어 다음 차례에 다시 보낸다
+      // 그사이 다시 시도됐으면 앞 실행의 오류로 세지 않는다(다음 차례에 다시 판단)
+      if (!stale()) this.retryLater(jobId, error);
+      return;
+    }
+    const allowed: typeof sockets = [];
+    // 토큰 확인 중 DB 일시 오류가 난 소켓. 이미 받은 소켓이 아니면 다음 차례에 다시 보낸다
+    const transient = new Map<string, unknown>();
+    await Promise.all(
+      sockets.map(async (recipient) => {
+        try {
+          const token = recipient.handshake.auth?.token;
+          if (typeof token !== 'string') return;
+          if ((await this.tokens.verifyAccess(token)).userId === userId) allowed.push(recipient);
+        } catch (error) {
+          // 토큰이 끝난 소켓(401)은 보내지 않는다. 앱은 작업 조회(GET /ai-jobs/:id)로 끝을 확인한다
+          if (!(error instanceof UnauthorizedException)) transient.set(recipient.id, error);
+        }
+      }),
+    );
+    let job: Awaited<ReturnType<AiJobsService['findMine']>>;
+    try {
+      job = await this.jobs.findMine(userId, jobId);
+    } catch (error) {
+      // 그사이 지워졌으면 더 지켜보지 않는다. DB 일시 오류면 그대로 두어 다음 차례에 다시 보낸다.
+      // 그사이 다시 시도됐으면 앞 실행의 오류로 세지 않는다: 한도에 닿아 finish()가 새 구독까지 지우지 않게
       if (error instanceof NotFoundException) this.finish(jobId);
-      else this.retryLater(jobId, error);
+      else if (!stale()) this.retryLater(jobId, error);
       return;
     }
     const watch = this.watched.get(jobId);
+    // 끝나지 않았거나(다시 시도로 처리기에 다시 들어감) 그사이 다시 시도됐으면(결과 읽기가 다시 시도를 쓰기 전에 나갔을 수
+    // 있음) 보내지도 · 방에서 빼지도 않고 계속 지켜본다. 다시 시도하며 다시 구독한 소켓 · 다른 기기가 새 실행을 받게 한다.
+    // 이 검사 뒤에는 기다리지 않고 보내므로, 다시 시도 응답이 나간 뒤에 앞 실행의 결과가 나가지 않는다
+    if (!FINISHED.has(job.status) || stale()) {
+      if (watch) watch.last = undefined;
+      return;
+    }
     // 실행이 바뀌었으면(다시 시도된 작업이 다시 끝남) 앞 실행의 보낸 기록 · 실패 수를 버린다.
     // 다시 시도를 진행 중 상태로 보지 못하고 바로 끝난 상태로 읽어도 맞게, 실행은 작업의 updatedAt으로 가린다
     if (watch && watch.run !== job.updatedAt) {
@@ -215,27 +262,29 @@ export class AiJobsGateway implements OnModuleDestroy {
       watch.last = undefined;
     }
     const delivered = watch?.delivered ?? new Set<string>();
-    let transient: { error: unknown } | undefined;
-    await Promise.all(
-      sockets.map(async (recipient) => {
-        // 앞 차례에 이미 보낸 소켓에는 다시 보내지 않는다
-        if (delivered.has(recipient.id)) return;
-        try {
-          const token = recipient.handshake.auth?.token;
-          if (typeof token !== 'string') return;
-          if ((await this.tokens.verifyAccess(token)).userId === userId) {
-            recipient.emit('ai:done', { jobId, job });
-            delivered.add(recipient.id);
-          }
-        } catch (error) {
-          // 토큰이 끝난 소켓(401)은 보내지 않는다. 앱은 작업 조회(GET /ai-jobs/:id)로 끝을 확인한다.
-          // 토큰 확인 중 DB 일시 오류면 그 소켓은 다음 차례에 다시 보낸다
-          if (!(error instanceof UnauthorizedException)) transient = { error };
-        }
-      }),
-    );
-    if (transient) this.retryLater(jobId, transient.error);
-    else this.finish(jobId);
+    for (const recipient of allowed) {
+      // 앞 차례에 이미 보낸 소켓 · 확인하는 사이 해지(ai:unsubscribe)한 소켓에는 보내지 않는다.
+      // 해지한 뒤 다시 구독하면 join()이 끝난 결과를 바로 보낸다
+      if (delivered.has(recipient.id) || !this.inRoom(recipient.id, jobId)) continue;
+      recipient.emit('ai:done', { jobId, job });
+      delivered.add(recipient.id);
+    }
+    // 그사이 해지해 방을 떠난 소켓의 일시 오류는 다시 보낼 곳이 없으므로 세지 않는다
+    const failed = [...transient].find(([id]) => !delivered.has(id) && this.inRoom(id, jobId));
+    if (failed) return this.retryLater(jobId, failed[1]);
+    // 처음 목록의 소켓만 방에서 뺀다. 토큰을 확인하는 사이 들어온 소켓(다시 시도된 새 실행을 구독)은 남겨 다음 차례에
+    // 보낸다. 방이 비었으면 지켜보기도 지운다
+    for (const recipient of sockets) void recipient.leave(roomOf(jobId));
+    if (!this.server.sockets.adapter.rooms.get(roomOf(jobId))?.size) this.watched.delete(jobId);
+  }
+
+  /**
+   * 소켓이 지금 그 작업 방에 있는가. 이 서버에 없는 소켓(그사이 끊김 · 다른 서버)은 알 수 없어 있는 것으로 본다
+   * (끊긴 소켓에는 보내도 닿지 않는다)
+   */
+  private inRoom(socketId: string, jobId: string) {
+    const socket = this.server.sockets.sockets.get(socketId);
+    return !socket || socket.rooms.has(roomOf(jobId));
   }
 
   /** 일시 오류로 끝난 작업을 보내지 못했다. 지켜보기를 유지해 다음 차례에 다시 보내고, 계속 실패하면 그만둔다 */

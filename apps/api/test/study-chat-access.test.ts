@@ -15,6 +15,7 @@ import { StudyRoom } from '../src/modules/studyroom/schemas/study-room.schema.js
 import { StudyChatService } from '../src/modules/studyroom/study-chat.service.js';
 import { StudyChatGateway } from '../src/modules/studyroom/study-chat.gateway.js';
 import { StudyRoomsController } from '../src/modules/studyroom/study-rooms.controller.js';
+import { StudyRoomMembershipService } from '../src/modules/studyroom/study-room-membership.service.js';
 import { StudyRoomsService } from '../src/modules/studyroom/study-rooms.service.js';
 import { StudyLiveService } from '../src/modules/studyroom/study-live.service.js';
 
@@ -26,6 +27,7 @@ const chats = { findOneAndUpdate: vi.fn(), findOne: vi.fn() };
 const roomsService = { setTimerRule: vi.fn() };
 const gateway = { evict: vi.fn(), notifyTimer: vi.fn() };
 const live = { issueToken: vi.fn(), disconnect: vi.fn() };
+const membership = { leave: vi.fn() };
 const lean = (value: unknown) => ({ lean: () => Promise.resolve(value) });
 let app: INestApplication;
 
@@ -37,6 +39,7 @@ beforeAll(async () => {
       { provide: StudyLiveService, useValue: live },
       { provide: StudyChatGateway, useValue: gateway },
       { provide: StudyRoomsService, useValue: roomsService },
+      { provide: StudyRoomMembershipService, useValue: membership },
       { provide: getModelToken(StudyRoom.name), useValue: studyRooms },
       { provide: getModelToken(ChatRoom.name), useValue: chats },
       { provide: getModelToken(Message.name), useValue: {} },
@@ -128,6 +131,25 @@ describe('스터디룸 채팅방 접근', () => {
     const res = await request(app.getHttpServer()).get(url).set('Authorization', 'Bearer valid');
     expect(res.status).toBe(200);
     expect(res.body.data.chatRoomId).toBe(String(chatId));
+  });
+});
+
+describe('스터디룸 나가기 API', () => {
+  const url = `/api/v1/study-rooms/${roomId}/leave`;
+  it('묶음 나가기(membership.leave)를 부르고 기존과 같이 { data: null }을 돌려준다', async () => {
+    membership.leave.mockResolvedValue(undefined);
+    const res = await request(app.getHttpServer()).post(url).set('Authorization', 'Bearer valid');
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ data: null });
+    expect(membership.leave).toHaveBeenCalledWith(String(userId), String(roomId));
+  });
+  it('나가기가 실패하면 오류를 그대로 돌려주고, 인증 없이는 부르지 않는다', async () => {
+    membership.leave.mockRejectedValue(new Error('연결 끊기 실패'));
+    const res = await request(app.getHttpServer()).post(url).set('Authorization', 'Bearer valid');
+    expect(res.status).toBe(500);
+    membership.leave.mockClear();
+    expect((await request(app.getHttpServer()).post(url)).status).toBe(401);
+    expect(membership.leave).not.toHaveBeenCalled();
   });
 });
 

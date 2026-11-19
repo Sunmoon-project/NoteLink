@@ -3,12 +3,15 @@ import { Text } from '@/components/text';
 import Animated, { FadeInUp, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import { MOTION } from '@/theme';
 import { toast, useToast } from '@/stores/toast';
 import { useAuth } from '@/stores/auth';
+import { useWatchBgJobs } from '@/stores/bg-jobs';
 import { Alert } from './ui';
 
-/** 전역 오버레이: 로그인 만료 안내 + 토스트 */
+/** 전역 오버레이: 로그인 만료 안내 + 토스트 + 화면을 떠나 기다리는 AI 작업 알림 */
 export function AppOverlays() {
+  useWatchBgJobs();
   return (
     <>
       <ExpiredDialog />
@@ -42,6 +45,7 @@ function ExpiredDialog() {
 
 function Toast() {
   const msg = useToast((s) => s.msg);
+  const id = useToast((s) => s.id);
   const insets = useSafeAreaInsets();
   if (!msg) return null;
   return (
@@ -50,9 +54,11 @@ function Toast() {
       className="absolute inset-x-6"
       style={{ bottom: insets.bottom + 90 }}
     >
+      {/* 연달아 띄우면 앞 토스트는 나가고 새 토스트가 들어온다(같은 상자에서 글자만 바뀌지 않게) */}
       <Animated.View
-        entering={FadeInUp.duration(180)}
-        exiting={FadeOut}
+        key={id}
+        entering={FadeInUp.duration(MOTION.exit)}
+        exiting={FadeOut.duration(MOTION.exit)}
         className="rounded-2xl bg-ink/90 px-4 py-3"
       >
         <Text className="text-center text-footnote font-medium text-white">{msg}</Text>

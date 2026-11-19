@@ -108,7 +108,7 @@ export const Pressable = forwardRef<ElementRef<typeof RNPressable>, Props>(funct
 ) {
   const reduce = useReducedMotion();
   const scale = useSharedValue(1);
-  const anim = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  const anim = useAnimatedStyle(() => ({ transform: [{ scale: scale.get() }] }));
   if (reduce || scaleTo === 1 || isBackdrop(className))
     return (
       <RNPressable

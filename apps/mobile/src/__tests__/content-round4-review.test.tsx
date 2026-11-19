@@ -130,7 +130,12 @@ describe('PR36 서버 사진 판정과 식별', () => {
 
 describe('PR36 편집 원문 보존', () => {
   it.each([
-    { name: '빈 제목의 본문', sections: [{ heading: '', body: '제목 없이 보존해야 할 본문' }] },
+    // 서버는 빈 제목을 400으로 거절한다(apps/api/test/materials.flow.test.ts) — 본문은 그대로 두고 「내용 N」 제목만 붙인다
+    {
+      name: '빈 제목의 본문',
+      sections: [{ heading: '', body: '제목 없이 보존해야 할 본문' }],
+      sent: [{ heading: '내용 1', body: '제목 없이 보존해야 할 본문' }],
+    },
     {
       name: '본문 줄바꿈과 빈 문단',
       sections: [
@@ -138,24 +143,37 @@ describe('PR36 편집 원문 보존', () => {
         { heading: '다음 절', body: '끝\n마지막' },
       ],
     },
-  ])('$name을 수정 없이 저장하면 구조와 문자열을 그대로 보존한다', async ({ sections }) => {
-    mockApi.content.material.mockResolvedValue(material(sections));
-    await renderScreen(<EditScreen />, client());
-    await waitFor(() =>
-      expect(screen.getByLabelText('노트 내용').props.value).toContain(sections[0]!.body),
-    );
-    await fireEvent.press(screen.getAllByText('저장')[0]!);
-    await waitFor(() =>
-      expect(mockApi.content.updateSummary).toHaveBeenCalledWith('material-round4', sections),
-    );
-  });
+  ])(
+    '$name을 수정 없이 저장하면 구조와 문자열을 그대로 보존한다',
+    async ({
+      sections,
+      sent,
+    }: {
+      sections: { heading: string; body: string }[];
+      sent?: { heading: string; body: string }[];
+    }) => {
+      mockApi.content.material.mockResolvedValue(material(sections));
+      await renderScreen(<EditScreen />, client());
+      await waitFor(() =>
+        expect(screen.getByLabelText('노트 내용').props.value).toContain(sections[0]!.body),
+      );
+      await fireEvent.press(screen.getAllByText('저장')[0]!);
+      await waitFor(() =>
+        expect(mockApi.content.updateSummary).toHaveBeenCalledWith(
+          'material-round4',
+          sent ?? sections,
+        ),
+      );
+    },
+  );
 });
 
 describe('PR36 녹음 대본 시간 구간', () => {
   it.each([
-    { time: 42, active: 2 },
-    { time: 20, active: -1 },
-  ])('$time초에는 실제 시작·종료 구간만 강조한다', async ({ time, active }) => {
+    { time: 42, now: '현재 긴 구간', next: null },
+    { time: 20, now: '현재 긴 구간', next: null }, // 빈 구간은 다음 문장(채움 0)
+    { time: 1, now: '처음 짧은 구간', next: '두 번째 짧은 구간' },
+  ])('$time초에는 지금 문장 하나와 다음 문장 미리보기만 보인다', async ({ time, now, next }) => {
     mockPlayback.currentTime = time;
     const segments = [
       { startSec: 0, endSec: 2, text: '처음 짧은 구간' },
@@ -169,13 +187,12 @@ describe('PR36 녹음 대본 시간 구간', () => {
       transcript: { text: '', segments },
     });
     await renderScreen(<Player materialId="material-round4" />, client());
-    await screen.findByText('현재 긴 구간');
-    for (const [index, segment] of segments.entries()) {
-      const emphasized = String(screen.getByText(segment.text).props.className ?? '').includes(
-        'font-bold',
-      );
-      expect(emphasized).toBe(index === active);
-    }
+    expect((await screen.findByTestId('caption-now')).props.children).toBe(now);
+    if (next) expect(screen.getByTestId('caption-next').props.children).toBe(next);
+    else expect(screen.queryByTestId('caption-next')).toBeNull();
+    // 전체 문단을 한꺼번에 이어 붙이지 않는다
+    for (const s of segments)
+      if (s.text !== now && s.text !== next) expect(screen.queryByText(s.text)).toBeNull();
     await act(async () => {});
   });
 });

@@ -1,4 +1,4 @@
-import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, FadeOut, FadeOutDown } from 'react-native-reanimated';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import {
   addChatOutbox,
@@ -38,7 +38,7 @@ import {
   VolumeX,
   X,
 } from 'lucide-react-native';
-import type { Message, RoomMember, RoomSharedItem } from '@notelink/shared';
+import type { Message, RoomMember, RoomSharedItem, StudyRoom } from '@notelink/shared';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as Sharing from 'expo-sharing';
@@ -57,7 +57,6 @@ import {
   Btn,
   Canvas,
   Card,
-  Chip,
   Dialog,
   Header,
   Input,
@@ -66,6 +65,7 @@ import {
   Loading,
   Screen,
   Search,
+  SwipeAction,
   Title,
   Two,
   cx,
@@ -77,10 +77,19 @@ import { useNet } from '@/stores/net';
 import { C, ICON, MOTION } from '@/theme';
 import { useLiveRoom } from '@/lib/livekit';
 import { LoadError } from './tools';
+import { InterestPicker } from '@/features/profile/interest-picker';
+import { learnerTypeLabel } from '@/lib/learner-type';
 
 // p.75 스터디룸 입장 · 만들기 / p.76 진입 · 채팅 / p.77 카드 / p.100 연결 끊김
 
 const ACK_TIMEOUT_MS = 8000;
+
+// 채팅 열기 · 캠 보기 전환. 바뀌는 쪽만 짧게(들어오기 MOTION.enter · 나가기 MOTION.exit) 투명도 · 세로 이동으로 움직인다.
+// 레이아웃 애니메이션은 UI 스레드에서 돌고, 기기의 「동작 줄이기」가 켜져 있으면 움직이지 않는다(ReduceMotion.System 기본값)
+const SWAP_IN = FadeIn.duration(MOTION.enter);
+const SWAP_OUT = FadeOut.duration(MOTION.exit);
+const RISE_IN = FadeInDown.duration(MOTION.enter);
+const SINK_OUT = FadeOutDown.duration(MOTION.exit);
 
 export function RoomListScreen() {
   const mine = useQuery({ queryKey: ['rooms', 'mine'], queryFn: api.rooms.mine });
@@ -100,6 +109,20 @@ export function RoomListScreen() {
       router.push({ pathname: '/room/[id]', params: { id: r._id } });
     },
     onError: (e) => toast(e instanceof ApiError ? e.message : '입장하지 못했어요'),
+  });
+  // 목록에서 왼쪽으로 밀어 나가기(방 설정의 「채팅방 나가기」와 같은 동작 · 확인을 거친다)
+  const [leaving, setLeaving] = useState<{
+    _id: string;
+    title: string;
+    memberCount: number;
+  } | null>(null);
+  const leave = useMutation({
+    mutationFn: (roomId: string) => api.rooms.leave(roomId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['rooms'] });
+      toast('스터디룸에서 나왔어요');
+    },
+    onError: () => toast('스터디룸에서 나가지 못했어요. 다시 시도해주세요'),
   });
   const joined = mine.data ?? [];
   const recList = (rec.data ?? []).filter(
@@ -123,23 +146,27 @@ export function RoomListScreen() {
                 layout={LIST_LAYOUT}
                 entering={FadeIn.duration(MOTION.enter)}
                 exiting={FadeOut.duration(MOTION.exit)}
+                className="mb-4 overflow-hidden rounded-card"
               >
-                <Card
-                  key={r._id}
-                  onPress={() => router.push({ pathname: '/room/[id]', params: { id: r._id } })}
-                  className="mb-4 flex-row items-center gap-3 p-6"
-                >
-                  <View className="flex-1">
-                    <View className="flex-row items-center gap-2">
-                      <Text className="text-callout font-bold text-ink">{r.title}</Text>
-                      {r.timerState?.phase === 'focus' && <Badge tone="sun">집중 중</Badge>}
+                <SwipeAction label="나가기" name={r.title} onAction={() => setLeaving(r)}>
+                  <Card
+                    key={r._id}
+                    onPress={() => router.push({ pathname: '/room/[id]', params: { id: r._id } })}
+                    className="flex-row items-center gap-3 p-6"
+                  >
+                    <View className="flex-1">
+                      <View className="flex-row items-center gap-2">
+                        <Text className="text-callout font-bold text-ink">{r.title}</Text>
+                        {r.timerState?.phase === 'focus' && <Badge tone="sun">집중 중</Badge>}
+                      </View>
+                      <Text className="text-caption text-sub">
+                        {r.memberCount}명 · 코드 {r.inviteCode}
+                      </Text>
+                      <RoomLabels room={r} className="mt-2" />
                     </View>
-                    <Text className="text-caption text-sub">
-                      {r.memberCount}명 · 코드 {r.inviteCode}
-                    </Text>
-                  </View>
-                  <Faces members={r.members} />
-                </Card>
+                    <Faces members={r.members} />
+                  </Card>
+                </SwipeAction>
               </Animated.View>
             ))}
             <View className="mt-2 flex-row gap-2.5">
@@ -204,17 +231,31 @@ export function RoomListScreen() {
                   <Text className="text-subhead font-bold text-ink">{r.title}</Text>
                   <Badge>{`${r.memberCount}명 참여`}</Badge>
                 </View>
-                <View className="mt-2.5 flex-row gap-1">
-                  {r.tags?.map((t) => (
-                    <Badge key={t}>{t}</Badge>
-                  ))}
-                </View>
-                <Text className="mt-2.5 text-caption text-sub">{r.description}</Text>
+                <RoomLabels room={r} className="mt-2.5" />
+                {!!r.description && (
+                  <Text className="mt-2.5 text-caption text-sub">{r.description}</Text>
+                )}
               </Card>
             </Animated.View>
           ))}
         </View>
       </Screen>
+      <Alert
+        open={!!leaving}
+        title="스터디룸에서 나갈까요?"
+        body={
+          leaving?.memberCount === 1
+            ? `${leaving.title}의 마지막 멤버예요. 나가면 방이 닫히고 7일 후 방과 채팅 기록이 삭제돼요.`
+            : `${leaving?.title ?? '이 방'}에서 나가요. 코드로 다시 들어올 수 있어요.`
+        }
+        secondary="취소"
+        onSecondary={() => setLeaving(null)}
+        primary="나가기"
+        onPrimary={() => {
+          if (leaving) leave.mutate(leaving._id);
+          setLeaving(null);
+        }}
+      />
       <Dialog open={code} onClose={() => setCode(false)}>
         <View className="h-11 w-11 items-center justify-center rounded-full bg-mint">
           <Lock size={ICON.md} color={C.brand} />
@@ -257,6 +298,24 @@ export function RoomListScreen() {
   );
 }
 
+/**
+ * 방 카드의 카테고리 칩 + 대상 배지. 이름은 categoryNames만 쓴다(서버가 지워진 분야 이름을 빼므로
+ * categoryIds와 순서로 짝짓지 않는다). 예전 응답은 categoryName 하나, 대상이 없으면 배지를 숨긴다
+ */
+function RoomLabels({ room, className }: { room: StudyRoom; className?: string }) {
+  const names = room.categoryNames ?? (room.categoryName ? [room.categoryName] : []);
+  const target = learnerTypeLabel(room.learnerType);
+  if (!names.length && !target) return null;
+  return (
+    <View className={cx('flex-row flex-wrap gap-1', className)}>
+      {names.map((name) => (
+        <Badge key={name}>{name}</Badge>
+      ))}
+      {target && <Badge tone="gray">{target}</Badge>}
+    </View>
+  );
+}
+
 /** 참여 중인 방의 참여자 얼굴을 겹쳐 보인다 (3명까지, 나머지는 +n) */
 function Faces({ members }: { members: RoomMember[] }) {
   const on = members.filter((m) => m.status === 'joined');
@@ -276,13 +335,29 @@ function Faces({ members }: { members: RoomMember[] }) {
 /** 딥링크 · 알림으로 바로 들어오면 뒤로 갈 화면이 없다 — 그때는 스터디룸 탭으로 */
 const leaveRoom = () => (router.canGoBack() ? router.back() : router.replace('/(tabs)/studyroom'));
 
+const MAX_ROOM_CATEGORIES = 3;
+
 export function RoomCreateScreen() {
   const qc = useQueryClient();
   const [name, setName] = useState('');
-  const [cat, setCat] = useState('코딩');
+  // 관심 분야와 같은 목록 · 선택기에서 최대 3개, 먼저 고른 것이 대표
+  const categories = useQuery({
+    queryKey: ['interest-categories'],
+    queryFn: api.me.interestCategories,
+  });
+  const [cats, setCats] = useState<string[]>([]);
+  const toggle = (id: string) =>
+    setCats((cur) => {
+      if (cur.includes(id)) return cur.filter((c) => c !== id);
+      if (cur.length >= MAX_ROOM_CATEGORIES) {
+        toast(`카테고리는 ${MAX_ROOM_CATEGORIES}개까지 고를 수 있어요`);
+        return cur;
+      }
+      return [...cur, id];
+    });
   const [pub, setPub] = useState(true);
   const create = useMutation({
-    mutationFn: () => api.rooms.create({ title: name.trim(), categoryName: cat, isPublic: pub }),
+    mutationFn: () => api.rooms.create({ title: name.trim(), categoryIds: cats, isPublic: pub }),
     onError: () => toast('스터디룸을 만들지 못했어요. 다시 시도해주세요'),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ['rooms'] });
@@ -301,15 +376,17 @@ export function RoomCreateScreen() {
         </Label>
         <Input value={name} onChangeText={setName} placeholder="예) 파이썬 기초 스터디" autoFocus />
         <Label>
-          <Text className="text-footnote font-bold text-ink">카테고리</Text>
+          <Text className="text-footnote font-bold text-ink">
+            카테고리 <Text className="text-caption text-sub">최대 {MAX_ROOM_CATEGORIES}개</Text>
+          </Text>
         </Label>
-        <View className="flex-row gap-2">
-          {['코딩', '자격증', '수학', '영어'].map((c) => (
-            <Chip key={c} small on={cat === c} onPress={() => setCat(c)}>
-              {c}
-            </Chip>
-          ))}
-        </View>
+        {categories.isPending ? (
+          <Loading />
+        ) : categories.isError ? (
+          <LoadError message="카테고리를 불러오지 못했어요" retry={categories.refetch} />
+        ) : (
+          <InterestPicker categories={categories.data} selected={cats} onToggle={toggle} />
+        )}
         <Label>
           <Text className="text-footnote font-bold text-ink">공개 여부</Text>
         </Label>
@@ -335,7 +412,7 @@ export function RoomCreateScreen() {
         </View>
         <Btn
           className="mt-8"
-          disabled={!name.trim()}
+          disabled={!name.trim() || !cats.length}
           loading={create.isPending}
           onPress={() => create.mutate()}
         >
@@ -928,7 +1005,13 @@ export function RoomScreen() {
     );
   if (!room.data) return <Loading />;
   const last = msgs[msgs.length - 1];
-  const tiles = chat ? members.slice(0, 2) : members;
+  // 서버 멤버 목록은 참여 기록이라 뒤로 가서 나간 사람도 남는다. 미디어에 연결돼 있으면 지금 접속한 사람(+나)만 보인다
+  const here = live.connected
+    ? members.filter(
+        (m) => m.userId === myId || live.participantState?.(m.userId)?.present !== false,
+      )
+    : members;
+  const tiles = chat ? here.slice(0, 2) : here;
   const remain = timer ? Math.max(0, Math.floor((timer.endsAt - now) / 1000)) : 0;
 
   return (
@@ -940,22 +1023,8 @@ export function RoomScreen() {
           // 키보드가 가리는 만큼 화면 아래를 띄워 채팅 입력줄이 키보드 바로 위에 오게 한다
           style={{ paddingBottom: keyboardInset }}
         >
-          {live.error && (
-            <View className="gap-2 p-4">
-              <Text>{live.error}</Text>
-              {conn !== 'kicked' && (
-                <Btn
-                  onPress={() => {
-                    if (lost) return toast('연결을 복구한 뒤 다시 시도해 주세요');
-                    setMediaGeneration((n) => n + 1);
-                  }}
-                >
-                  미디어 다시 연결
-                </Btn>
-              )}
-            </View>
-          )}
-          {conn === 'lost' && (
+          {/* 캠 · 음성이 끊겨도 같은 노란 띠로 알린다(미디어는 알아서 다시 붙는다 — useLiveRoom 재시도) */}
+          {(conn === 'lost' || (!!live.reconnecting && conn !== 'kicked')) && (
             <View className="bg-sun/25 px-5 py-2">
               <Text className="text-caption font-semibold text-ink">
                 ● 연결이 끊겼어요 · 다시 연결 중…
@@ -988,34 +1057,53 @@ export function RoomScreen() {
               </Pressable>
             </View>
             {!chat && (
-              <View className="flex-row items-center justify-between">
+              <Animated.View
+                entering={SWAP_IN}
+                exiting={SWAP_OUT}
+                className="flex-row items-center justify-between"
+              >
                 <Text className="text-title3 font-bold text-ink">{room.data.title}</Text>
                 <View className="flex-row gap-1">
                   {timer && (
                     <Badge tone="dark">{`${timer.label} ${remain >= 3600 ? hms(remain) : hms(remain).slice(3)}`}</Badge>
                   )}
-                  <Badge tone="gray">{`${members.length}명 접속중`}</Badge>
+                  <Badge tone="gray">{`${here.length}명 접속중`}</Badge>
                 </View>
-              </View>
+              </Animated.View>
             )}
           </View>
           <View className="flex-row flex-wrap justify-between gap-y-2.5 px-4 pt-3">
             {tiles.map((m) => {
               const me = m.userId === myId;
-              const remote = me ? null : live.participantState?.(m.userId);
+              const state = live.participantState?.(m.userId);
+              const remote = me ? null : state;
               const camOn = me ? live.camOn : (remote?.camOn ?? false);
               const micOn = me ? live.micOn : (remote?.micOn ?? false);
+              const speaking = micOn && !!state?.speaking;
               const video = live.video(m.userId);
               return (
-                <View
+                // 채팅을 열면 셋째 타일부터 사라지고 남은 타일이 제자리로 옮겨 간다(닫으면 반대로)
+                <Animated.View
                   key={m.userId}
+                  layout={LIST_LAYOUT}
+                  entering={SWAP_IN}
+                  exiting={SWAP_OUT}
                   className={cx(
                     'w-[48.5%] items-center justify-center rounded-2xl',
-                    'h-[118px]',
+                    'h-[118px] border-2',
                     camOn ? 'bg-night' : 'bg-white',
+                    speaking ? 'border-brand' : 'border-transparent',
                   )}
                 >
                   {video}
+                  {speaking && (
+                    <View
+                      accessibilityLabel={`${m.nickname} 말하는 중`}
+                      className="absolute top-2 left-2 rounded-full bg-brand p-1"
+                    >
+                      <Volume2 size={ICON.xs} color="#fff" />
+                    </View>
+                  )}
                   {camOn && (
                     <View className="absolute top-2.5 right-2.5 h-1.5 w-1.5 rounded-full bg-sun" />
                   )}
@@ -1036,7 +1124,10 @@ export function RoomScreen() {
                       : hms(
                           me
                             ? mySec
-                            : (ymd(seoul(membersAt)) === day ? (m.todaySec ?? 0) : 0) +
+                            : remote?.joinedAt !== undefined
+                              ? // 그 사람이 들어온 때부터 센다(내가 들어온 때가 아니라)
+                                Math.max(0, Math.floor((now - remote.joinedAt) / 1000))
+                              : (ymd(seoul(membersAt)) === day ? (m.todaySec ?? 0) : 0) +
                                 (conn === 'lost'
                                   ? 0
                                   : Math.max(
@@ -1053,7 +1144,7 @@ export function RoomScreen() {
                       <MicOff size={ICON.xs} color={camOn ? 'rgba(255,255,255,.5)' : C.sub} />
                     </View>
                   )}
-                </View>
+                </Animated.View>
               );
             })}
           </View>
@@ -1065,55 +1156,65 @@ export function RoomScreen() {
             <LoadError message="대화 기록을 불러오지 못했어요" retry={history.refetch} />
           )}
           {chat ? (
-            <FlatList
-              ref={list}
-              data={msgs}
-              keyExtractor={(m) => m._id}
-              onContentSizeChange={() => list.current?.scrollToEnd()}
+            // 채팅은 아래에서 올라오고, 캠 조작은 아래로 내려가며 사라진다(동작 줄이기 설정이면 바로 바뀐다)
+            <Animated.View
+              testID="room-chat"
+              entering={RISE_IN}
+              exiting={SWAP_OUT}
               className="mt-2 flex-1"
-              contentContainerClassName="gap-3 px-4 py-3"
-              renderItem={({ item: m }) => {
-                const mine = m.senderId === myId;
-                return (
-                  <Animated.View
-                    entering={fresh.current.has(m._id) ? POP_IN : undefined}
-                    className={cx(mine && 'items-end')}
-                  >
-                    {!mine && (
-                      <View className="flex-row items-center gap-1.5 mb-1">
-                        <MessageCircle size={ICON.xs} color={C.sub} />
-                        <Text className="text-caption2 text-sub">{m.senderNickname ?? '멤버'}</Text>
-                      </View>
-                    )}
-                    <ChatBubble m={m} onOpen={openAttachment} onStale={refreshStale} />
-                    {failedIds.includes(m._id) && (
-                      <Pressable
-                        accessibilityRole="button"
-                        onPress={() =>
-                          m.type === 'image' || m.type === 'file'
-                            ? void deliverAttachment(m._id)
-                            : deliver(m.chatRoomId, m._id, m.text ?? '')
-                        }
-                      >
-                        <Text className="mt-1 text-caption2 text-danger">
-                          전송하지 못했어요 · 다시 보내기
+            >
+              <FlatList
+                ref={list}
+                data={msgs}
+                keyExtractor={(m) => m._id}
+                onContentSizeChange={() => list.current?.scrollToEnd()}
+                className="flex-1"
+                contentContainerClassName="gap-3 px-4 py-3"
+                renderItem={({ item: m }) => {
+                  const mine = m.senderId === myId;
+                  return (
+                    <Animated.View
+                      entering={fresh.current.has(m._id) ? POP_IN : undefined}
+                      className={cx(mine && 'items-end')}
+                    >
+                      {!mine && (
+                        <View className="flex-row items-center gap-1.5 mb-1">
+                          <MessageCircle size={ICON.xs} color={C.sub} />
+                          <Text className="text-caption2 text-sub">
+                            {m.senderNickname ?? '멤버'}
+                          </Text>
+                        </View>
+                      )}
+                      <ChatBubble m={m} onOpen={openAttachment} onStale={refreshStale} />
+                      {failedIds.includes(m._id) && (
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() =>
+                            m.type === 'image' || m.type === 'file'
+                              ? void deliverAttachment(m._id)
+                              : deliver(m.chatRoomId, m._id, m.text ?? '')
+                          }
+                        >
+                          <Text className="mt-1 text-caption2 text-danger">
+                            전송하지 못했어요 · 다시 보내기
+                          </Text>
+                        </Pressable>
+                      )}
+                      {mine && m.clientId === m._id && !failedIds.includes(m._id) && (
+                        <Text className="mt-1 text-caption2 text-sub">
+                          {conn === 'lost' || joinedRoom !== id ? '연결 후 전송 대기' : '전송 중'}
                         </Text>
-                      </Pressable>
-                    )}
-                    {mine && m.clientId === m._id && !failedIds.includes(m._id) && (
-                      <Text className="mt-1 text-caption2 text-sub">
-                        {conn === 'lost' || joinedRoom !== id ? '연결 후 전송 대기' : '전송 중'}
-                      </Text>
-                    )}
-                    {mine && conn === 'back' && m === msgs[msgs.length - 1] && (
-                      <Text className="mt-1 text-caption2 text-brand">자동으로 전송했어요</Text>
-                    )}
-                  </Animated.View>
-                );
-              }}
-            />
+                      )}
+                      {mine && conn === 'back' && m === msgs[msgs.length - 1] && (
+                        <Text className="mt-1 text-caption2 text-brand">자동으로 전송했어요</Text>
+                      )}
+                    </Animated.View>
+                  );
+                }}
+              />
+            </Animated.View>
           ) : (
-            <View className="mt-auto px-5 pb-2">
+            <Animated.View entering={RISE_IN} exiting={SINK_OUT} className="mt-auto px-5 pb-2">
               <View className="flex-row gap-3">
                 <Ctl
                   on={live.micOn}
@@ -1181,7 +1282,7 @@ export function RoomScreen() {
                   )}
                 </Pressable>
               </View>
-            </View>
+            </Animated.View>
           )}
           {chatJoinFailed && conn !== 'lost' && conn !== 'kicked' && (
             <Pressable accessibilityRole="button" onPress={joinRoom} className="px-5 py-2">
@@ -1286,13 +1387,19 @@ export function RoomScreen() {
             </Pressable>
           </View>
           {chat && (
-            <Pressable
-              onPress={() => setChat(false)}
-              // 오른쪽 위 설정 버튼과 겹치지 않게 그 왼쪽에 둔다
-              className="absolute top-2 right-14 rounded-full bg-black/40 px-2 py-0.5"
+            <Animated.View
+              entering={SWAP_IN}
+              exiting={SWAP_OUT}
+              className="absolute top-2 right-14"
             >
-              <Text className="text-caption2 text-white">캠 보기</Text>
-            </Pressable>
+              <Pressable
+                onPress={() => setChat(false)}
+                // 오른쪽 위 설정 버튼과 겹치지 않게 그 왼쪽에 둔다
+                className="rounded-full bg-black/40 px-2 py-0.5"
+              >
+                <Text className="text-caption2 text-white">캠 보기</Text>
+              </Pressable>
+            </Animated.View>
           )}
 
           {menu && (

@@ -42,6 +42,9 @@ export interface UserSource {
   status?: string;
   interestCategoryIds?: Types.ObjectId[];
   subscription?: { tier?: string; status?: string; currentPeriodEnd?: Date | null } | null;
+  school?: string | null;
+  grade?: string | null;
+  emailVerifiedAt?: Date | null;
   createdAt?: Date;
 }
 
@@ -60,6 +63,11 @@ export interface AppUser {
   settings: typeof DEFAULT_SETTINGS & Record<string, unknown>;
   status: Status;
   interestCategoryIds: string[];
+  /** 학교 · 학년. 적지 않았으면 보내지 않는다 */
+  school?: string;
+  grade?: string;
+  /** 계정 이메일을 본인 인증했는지 */
+  emailVerified: boolean;
   streakDays: number;
   /** 요금제(packages/shared User.subscription). 기록이 없으면 보내지 않는다(앱은 Free로 본다) */
   subscription?: { tier: (typeof PLAN_TIERS)[number]; status: string; currentPeriodEnd?: string };
@@ -92,6 +100,9 @@ export function toAppUser(user: UserSource, streakDays = 0): AppUser {
     settings: { ...DEFAULT_SETTINGS, ...(user.settings ?? {}) },
     status: oneOf(STATUSES, user.status, 'active'),
     interestCategoryIds: (user.interestCategoryIds ?? []).map(String),
+    ...(user.school ? { school: user.school } : {}),
+    ...(user.grade ? { grade: user.grade } : {}),
+    emailVerified: Boolean(user.email) && user.emailVerifiedAt instanceof Date,
     // 연속 학습일은 학습 기록(ProgressService.streakDays)에서 서울 자정 기준으로 계산해 넘겨받는다. 안 넘기면 0이다
     streakDays,
     ...(user.subscription?.tier

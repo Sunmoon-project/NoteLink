@@ -5,7 +5,7 @@ import { loadMedia } from './livekit-loader';
 import { env } from './env';
 import { socket } from './socket';
 import { toast } from '@/stores/toast';
-import type { MediaConnection } from './livekit-native';
+import type { MediaConnection, ParticipantState } from './livekit-native';
 
 /** 실제 미디어 연결이 성공한 후에만 제어 상태를 표시한다. */
 export function useLiveRoom(roomId: string, enabled = true, generation = 0, todaySec = 0) {
@@ -19,6 +19,8 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0, toda
     id: string;
     generation: number;
     message: string;
+    /** 강퇴 · 인증 만료 · 없는 방(401 · 403 · 404)이라 다시 시도하지 않는 실패 */
+    final?: boolean;
   } | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const retryCount = useRef(0);
@@ -69,17 +71,19 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0, toda
         })
         .catch((error: unknown) => {
           if (alive) {
-            setFailure({
-              id: roomId,
-              generation,
-              message: '캠·음성을 연결하지 못했어요. 다시 입장해 주세요',
-            });
             const status =
               typeof error === 'object' && error !== null && 'status' in error
                 ? error.status
                 : undefined;
             // 방에서 강퇴됐거나 인증이 만료된 경우에는 자동 재접속을 반복하지 않는다.
-            if (status !== 401 && status !== 403 && status !== 404) retry();
+            const final = status === 401 || status === 403 || status === 404;
+            setFailure({
+              id: roomId,
+              generation,
+              message: '캠·음성을 연결하지 못했어요. 다시 입장해 주세요',
+              final,
+            });
+            if (!final) retry();
           }
         });
     }
@@ -118,8 +122,11 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0, toda
   useEffect(() => {
     if (room?.connected) socket.emit('room:state', { roomId, micOn, camOn, todaySec });
   }, [roomId, micOn, camOn, room]); // eslint-disable-line react-hooks/exhaustive-deps -- 시간이 흐를 때마다 보내지 않는다
+  const failed = failure?.id === roomId && failure.generation === generation ? failure : null;
   return {
     connected: room?.connected ?? false,
+    /** 미디어가 끊겨 알아서 다시 붙는 중(화면은 노란 「다시 연결 중」 띠). 다시 시도하지 않는 실패는 false */
+    reconnecting: enabled && !env.localData && (failed ? !failed.final : !!room && !room.connected),
     micOn,
     camOn,
     hearing: room?.hearing ?? false,
@@ -132,7 +139,8 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0, toda
     toggleMic: () => control('toggleMic'),
     toggleCam: () => control('toggleCam'),
     toggleHearing: () => control('toggleHearing'),
-    participantState: (userId: string) =>
+    // 미디어에 연결되지 않았으면 누가 접속해 있는지 모른다(present 없음) — 화면은 방 멤버를 모두 보인다
+    participantState: (userId: string): ParticipantState =>
       room?.connected ? room.participantState(userId) : { camOn: false, micOn: false },
     video: (userId: string) => (room?.connected ? room.video(userId) : null),
   };

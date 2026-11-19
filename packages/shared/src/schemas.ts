@@ -38,6 +38,8 @@ export const User = z.object({
   school: z.string().optional(),
   grade: z.string().optional(),
   phone: z.string().optional(),
+  /** 계정 이메일을 인증번호로 본인 인증했는지(서버 계산). 전화번호 인증은 아직 없다 */
+  emailVerified: z.boolean().optional(),
   avatarUrl: z.string().optional(),
   /** 지금까지 이어진 연속 학습일 (서울 자정 기준, 서버 계산 · FR-09-08) */
   streakDays: z.number().int().nonnegative(),
@@ -88,7 +90,8 @@ export const Notification = z.object({
 
 export const ShopItem = z.object({
   _id: id,
-  category: z.enum(['avatar', 'theme']),
+  // hat · glasses · scarf: 아바타 선생님 치장(종류마다 하나씩 장착)
+  category: z.enum(['avatar', 'theme', 'hat', 'glasses', 'scarf']),
   name: z.string(),
   description: z.string().nullable(),
   price: z.number().int(),
@@ -206,7 +209,17 @@ export const Recording = z.object({
   durationSec: z.number(),
   transcript: z.object({
     text: z.string(),
-    segments: z.array(z.object({ startSec: z.number(), endSec: z.number(), text: z.string() })),
+    segments: z.array(
+      z.object({
+        startSec: z.number(),
+        endSec: z.number(),
+        text: z.string(),
+        // 단어별 시각(STT). 옛 결과 · 로컬 모드에는 없다 → 앱은 글자 비례로 대신한다
+        words: z
+          .array(z.object({ text: z.string(), startSec: z.number(), endSec: z.number() }))
+          .optional(),
+      }),
+    ),
   }),
   slides: z.array(Slide),
   visemeUrl: z.string().nullable(), // Rhubarb 입 모양 9종(A–H, X) 타임라인 (p.35)
@@ -239,6 +252,8 @@ export const QuizSet = z.object({
   questionCount: z.number(),
   questions: z.array(Question),
   createdAt: date,
+  // 오늘의 복습만: 오늘 세트를 끝까지 푼 적이 있으면 true
+  completed: z.boolean().optional(),
 });
 
 export const AttemptAnswer = z.object({
@@ -499,8 +514,14 @@ export const RoomMember = z.object({
 export const StudyRoom = z.object({
   _id: id,
   title: z.string(),
+  /** 대표 카테고리(categoryIds의 첫 번째) */
   categoryId: id,
   categoryName: z.string().optional(),
+  /** 관심 분야와 같은 공용 카테고리 최대 3개. 서버가 예전 방도 [categoryId]로 채워 준다. */
+  categoryIds: z.array(id).optional(),
+  categoryNames: z.array(z.string()).optional(),
+  /** 대상: 방 만들 때 방장 프로필에서 복사. 방장이 정하지 않았으면 null */
+  learnerType: LearnerType.nullable().optional(),
   hostId: id,
   isPublic: z.boolean(),
   inviteCode: z.string(),

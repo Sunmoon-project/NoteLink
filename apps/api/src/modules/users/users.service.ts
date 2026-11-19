@@ -3,6 +3,7 @@ import {
   ConflictException,
   HttpException,
   HttpStatus,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -19,7 +20,16 @@ import { Device } from './schemas/device.schema.js';
 import type { ChangePlanDto, RegisterDeviceDto, UpdateStatusDto } from './dto/account.dto.js';
 import { toAppUser } from '../auth/to-app-user.js';
 import { TokenService } from '../auth/token.service.js';
+import { EmailCodeService } from '../auth/app-login/email-code.service.js';
+import { APP_LOGIN_ERRORS } from '../auth/app-login/app-login-errors.js';
+import {
+  codeRejected,
+  mailUnavailable,
+  rateLimited,
+} from '../auth/app-login/app-signup.service.js';
+import { MAIL_SENDER, MailUnavailableError, type MailSender } from '../mail/mail-sender.js';
 import { ProgressService } from '../progress/progress.service.js';
+import { StudyRoomMembershipService } from '../studyroom/study-room-membership.service.js';
 import type { UpdateProfileDto } from './dto/update-profiile.dto.js';
 
 @Injectable()
@@ -36,7 +46,49 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly tokens: TokenService,
     @InjectModel(Friendship.name) private readonly friendships: Model<Friendship>,
     @InjectModel(TimetableShare.name) private readonly shares: Model<TimetableShare>,
+    private readonly rooms: StudyRoomMembershipService,
+    private readonly codes: EmailCodeService,
+    @Inject(MAIL_SENDER) private readonly mail: MailSender,
   ) {}
+
+  /** 본인 인증할 계정 이메일. 탈퇴했으면 404, 이메일이 없는 계정(간편 로그인 등)은 400 NO_EMAIL */
+  private async accountEmail(userId: string): Promise<{ id: Types.ObjectId; email: string }> {
+    const id = await this.activeId(userId);
+    const user = await this.userModel.findOne({ _id: id, deletedAt: null });
+    if (!user?.email) {
+      throw new BadRequestException({
+        code: APP_LOGIN_ERRORS.NO_EMAIL,
+        message: '계정에 이메일이 없어요',
+      });
+    }
+    return { id, email: user.email };
+  }
+
+  /** 계정 이메일로 본인 인증번호를 보낸다(가입 인증번호와 같은 발송 제한 · 저장 방식, 목적만 다르다) */
+  async sendEmailCode(userId: string): Promise<void> {
+    const { email } = await this.accountEmail(userId);
+    const issued = await this.codes.issue(email, 'identity');
+    if (!issued.ok) throw rateLimited(issued);
+    try {
+      await this.mail.sendIdentityCode(email, issued.code);
+    } catch (error) {
+      throw error instanceof MailUnavailableError ? mailUnavailable() : error;
+    }
+  }
+
+  /**
+   * 본인 인증번호를 확인하고 맞으면 인증 시각을 적는다. 확인하는 사이 이메일이 바뀌었으면(조건의 email) 적지 않는다
+   */
+  async verifyEmailCode(userId: string, code: string) {
+    const { id, email } = await this.accountEmail(userId);
+    const result = await this.codes.verify(email, 'identity', code);
+    if (!result.ok) throw codeRejected(result);
+    await this.userModel.updateOne(
+      { _id: id, email, deletedAt: null },
+      { $set: { emailVerifiedAt: result.verifiedAt } },
+    );
+    return this.getMe(userId);
+  }
 
   /** 탈퇴하지 않은 내 계정 id. 없으면 404 */
   private async activeId(userId: string): Promise<Types.ObjectId> {
@@ -176,7 +228,7 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
   /**
    * 회원 탈퇴. 계정 문서는 남기되(기록 · 정산 대조용) 로그인 수단과 개인 정보를 지운다:
    * 이메일 · 비밀번호 · 소셜 연동을 비우고 닉네임을 바꿔 같은 이메일 · 닉네임으로 다시 가입할 수 있게 한다.
-   * 모든 기기 로그인(access · refresh 토큰)을 끊고, 푸시 기기 · 친구 관계 · 시간표 공유를 지운다.
+   * 모든 기기 로그인(access · refresh 토큰)을 끊고, 푸시 기기 · 친구 관계 · 시간표 공유를 지우고 스터디룸에서 나간다.
    *
    * 순서: 탈퇴 시작 표시(withdrawingAt, 새 기기를 막는다) → 정리 → 탈퇴 표시(deletedAt)와 개인 정보 지우기.
    * 탈퇴 표시를 마지막에 해서, 중간에 실패하면 계정이 아직 살아 있어 다시 로그인해 탈퇴를 다시 시도할 수 있다.
@@ -192,12 +244,16 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
     await this.devices.deleteMany({ userId: id });
     await this.friendships.deleteMany({ $or: [{ userA: id }, { userB: id }] });
     await this.shares.deleteMany({ $or: [{ ownerId: id }, { friendId: id }] });
+    // 참여 중인 스터디룸에서 나간다(방장이면 다음 멤버에게 넘기고, 마지막 사람이면 방을 닫는다). 소켓 · LiveKit 연결도 끊는다.
+    // 다른 정리처럼 실패하면 던져서 탈퇴를 다시 시도하게 한다(연결 끊기를 먼저 해서 다시 시도해도 그 방을 다시 처리한다)
+    await this.rooms.leaveAllForWithdrawal(userId);
     await this.userModel.updateOne(
       { _id: id, deletedAt: null },
       {
         $set: {
           deletedAt: now,
           email: null,
+          emailVerifiedAt: null,
           passwordHash: null,
           socialAccounts: [],
           nickname: `탈퇴-${id.toHexString()}`,
@@ -252,6 +308,8 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
     const changes: Record<string, unknown> = {};
     if (dto.nickname !== undefined) changes.nickname = dto.nickname;
     if (dto.learnerType !== undefined) changes.learnerType = dto.learnerType;
+    if (dto.school !== undefined) changes.school = dto.school.trim() || null;
+    if (dto.grade !== undefined) changes.grade = dto.grade.trim() || null;
     if (dto.toured !== undefined) changes.touredAt = dto.toured ? new Date() : null;
     if (dto.interestCategoryIds !== undefined) {
       // 같은 ID가 두 번 와도 한 번만 검사하고 저장한다 (개수 비교가 어긋나지 않게)

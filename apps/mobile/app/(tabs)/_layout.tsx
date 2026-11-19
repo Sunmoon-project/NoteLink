@@ -3,8 +3,9 @@ import { BookOpen, Home, NotebookPen, User, Users, type LucideIcon } from 'lucid
 import { View } from 'react-native';
 import { TourCoach, useTourOnce } from '@/features/tutor/tour';
 import { useDailyWrongReview } from '@/features/quiz/wrong-review';
+import { useScreenBackground } from '@/lib/shop-themes';
 import { useAuth } from '@/stores/auth';
-import { C, ICON } from '@/theme';
+import { C, FONT, ICON } from '@/theme';
 
 // 하단 탭 5개: 홈 · 노트 · 퀴즈 · 스터디룸 · 프로필 (세팅안 v2 6장)
 const TABS: [string, string, LucideIcon][] = [
@@ -22,6 +23,8 @@ export default function TabsLayout() {
   useTourOnce(!!tokens && onboarded);
   // 하루에 처음 열면 지난번에 틀린 문제를 다시 풀게 한다(안내가 끝난 뒤)
   useDailyWrongReview(!!tokens && onboarded);
+  // 탭바도 장착한 상점 테마 바탕을 따른다
+  const screenBg = useScreenBackground();
   // 로그인 전이면 온보딩, 가입 절차가 남았으면 약관 동의로 (p.104)
   if (!tokens) return <Redirect href="/onboarding" />;
   if (!onboarded) return <Redirect href="/terms" />;
@@ -34,8 +37,9 @@ export default function TabsLayout() {
           animation: 'shift',
           tabBarActiveTintColor: C.brand,
           tabBarInactiveTintColor: C.sub,
-          tabBarStyle: { backgroundColor: '#fff', borderTopColor: C.fill },
-          tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
+          tabBarStyle: { backgroundColor: screenBg, borderTopColor: C.fill },
+          // 탭 이름도 앱 글꼴(Pretendard)로. 없으면 여기만 시스템 글꼴로 나온다
+          tabBarLabelStyle: { fontFamily: FONT, fontSize: 11, fontWeight: '600' },
         }}
       >
         {TABS.map(([name, title, Icon]) => (

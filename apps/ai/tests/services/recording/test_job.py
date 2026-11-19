@@ -2,6 +2,7 @@ import json
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any
 
 import bson
@@ -20,6 +21,7 @@ from app.clients.speech import (
 )
 from app.clients.voyage import EmbedError, EmbedUnavailableError, InputType
 from app.core.config import settings
+from app.services.recording import job as recording_job
 from app.services.recording.job import (
     RECORDING_MAX_BYTES,
     RECORDING_MAX_CHARS,
@@ -31,7 +33,13 @@ from app.services.recording.job import (
     run,
 )
 from app.services.recording.models import Sentence
-from app.services.recording.pipeline import WINDOW_CHARS
+from app.services.recording.pipeline import (
+    WINDOW_CHARS,
+    WORKERS,
+    organize,
+    sentences_from,
+    slide_windows,
+)
 from app.worker import handlers, runner
 from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobGoneError, JobStore
@@ -736,6 +744,10 @@ def test_organizing_again_accepts_saved_result(monkeypatch: pytest.MonkeyPatch) 
 
 def test_cancel_stops_at_the_next_window() -> None:
     llm = WindowLlm(all_starts)
+    data = long_transcript()
+    # 창이 동시에 보내는 수보다 많아야 「새 창을 더 내지 않음」을 볼 수 있음(#535 리뷰)
+    total = len(slide_windows(sentences_from(data)))
+    assert total > WORKERS
 
     def cancel(value: int, step: str | None) -> None:
         if step == "organize" and value > 20:
@@ -745,10 +757,11 @@ def test_cancel_stops_at_the_next_window() -> None:
         run_direct(
             {"audioUrl": AUDIO_URL},
             llm=llm,
-            speech=FakeSpeech(long_transcript()),
+            speech=FakeSpeech(data),
             report=cancel,
         )
-    assert len(llm.windows) == 1
+    # 창은 WORKERS개까지 함께 보내므로 취소를 알아챌 때 이미 보낸 창은 남지만, 새 창은 보내지 않음
+    assert 1 <= len(llm.windows) <= WORKERS < total
 
 
 def test_a_cancel_stops_the_next_llm_call_before_any_progress_write(
@@ -1050,6 +1063,10 @@ class TickingLlm(WindowLlm):
 
 def test_time_limit_stops_between_windows_with_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "recording_job_max_sec", 100)
+    # 시계가 창을 부를 때마다 흐르는 가짜라, 동시에 보내면 어느 창이 언제 시작했는지가
+    # 스레드 순서에 따라 달라짐(#535 리뷰: 10번 중 9번 실패).
+    # 시간 상한 뜻(앞쪽까지만 · PARTIAL)은 한 번에 하나로 봄
+    monkeypatch.setattr(recording_job, "organize", partial(organize, workers=1))
     now = [0.0]
     llm = TickingLlm(now, 40.0)
     voyage = FakeVoyage()

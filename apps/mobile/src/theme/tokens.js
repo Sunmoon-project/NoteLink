@@ -1,11 +1,12 @@
 // 디자인 규격 (tailwind.config.js와 앱 코드가 같이 쓴다)
 // 화면에서는 임의 값(text-[13px], h-[50px], 색 hex) 대신 아래 이름만 쓴다.
 
-/** 색 — 글자색은 흰 · 캔버스 · 채움 · 크림 · 민트 배경에서 4.5:1 이상 (sub · danger · blue 조정) */
+/** 색 — 글자색은 흰 · 캔버스 · 채움 · 크림 · 민트 · 바다 배경에서 4.5:1 이상 (sub · danger · blue 조정) */
 const colors = {
   canvas: '#f3f4f1', // 화면 바탕. 그 위에 테두리 없는 흰 카드를 올린다
   fill: '#eceee9', // 흰 카드 안의 입력 · 세그먼트 · 진행 막대 바탕
   cream: '#f1ede1', // 온보딩 · 빈 화면에만
+  sea: '#e6f1f5', // 상점 「바다 테마」를 장착했을 때의 화면 바탕(canvas 대신). 글자색 대비 4.5:1 이상
   'cream-2': '#e8e2d1',
   line: '#e7e3d7',
   brand: '#3b6e5b',
@@ -78,6 +79,9 @@ const motion = {
   enter: 280,
   exit: 180,
   stagger: 40,
+  // 곡선(cubic-bezier). ease: 들어옴 · 나감 · 자리 옮김 기본(Easing.out(cubic)보다 출발이 빠르다), sheet: iOS 시트 곡선
+  ease: [0.23, 1, 0.32, 1],
+  sheet: [0.32, 0.72, 0, 1],
 };
 
 // 그림자는 화면마다 주인공 하나에만 (홈 집중 카드). React Native boxShadow 값
