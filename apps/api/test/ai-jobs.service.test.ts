@@ -238,6 +238,48 @@ describe('AiJobsService.retry', () => {
     await expect(service.retry(OTHER, _id)).rejects.toMatchObject(notFound);
     expect(row(_id)['status']).toBe('failed');
   });
+
+  it('다시 넣으면 응답하기 전에 onRetry로 알리고, 바꾸지 않았으면 알리지 않는다(진행률 소켓 #523)', async () => {
+    const { service, add, row } = setup();
+    const { _id } = await add();
+    const listener = vi.fn((jobId: string) => {
+      // 알릴 때는 이미 다시 넣은 뒤다
+      expect(row(jobId)['status']).toBe('queued');
+    });
+    const off = service.onRetry(listener);
+    // 처리 중이면 바꾸지 않으므로 알리지 않는다
+    row(_id)['status'] = 'running';
+    await service.retry(ME, _id);
+    expect(listener).not.toHaveBeenCalled();
+    row(_id)['status'] = 'failed';
+    await service.retry(ME, _id);
+    expect(listener).toHaveBeenCalledExactlyOnceWith(_id);
+    // 등록을 풀면 더 알리지 않는다
+    off();
+    row(_id)['status'] = 'failed';
+    await service.retry(ME, _id);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('알림을 받는 쪽이 던져도 다시 시도는 그대로 응답한다', async () => {
+    const { service, add, row } = setup();
+    const { _id } = await add();
+    service.onRetry(() => {
+      throw new Error('gateway broken');
+    });
+    row(_id)['status'] = 'failed';
+    await expect(service.retry(ME, _id)).resolves.toMatchObject({ status: 'queued' });
+  });
+
+  it('한도 있는 종류는 확인 중(held)으로 바꾼 때 알린다', async () => {
+    const { service, add, row } = setup();
+    const { _id } = await add({ type: 'note_ask', targetType: 'material', targetId: NOTE });
+    const listener = vi.fn();
+    service.onRetry(listener);
+    row(_id)['status'] = 'failed';
+    await service.retry(ME, _id);
+    expect(listener).toHaveBeenCalledExactlyOnceWith(_id);
+  });
 });
 
 describe('AiJobsService.retry 입력 새로 고치기', () => {

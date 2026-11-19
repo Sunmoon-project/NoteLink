@@ -223,7 +223,19 @@ export class AiJobsService {
   /** 다시 시도 전에 input을 새로 만드는 함수(작업 종류별). 등록하지 않은 종류는 input을 그대로 쓴다 */
   private readonly refreshers = new Map<string, InputRefresher>();
 
+  /** 다시 시도로 같은 작업 id가 처리기에 다시 들어갔을 때 부를 함수(AiJobsGateway) */
+  private readonly retried = new Set<(jobId: string) => void>();
+
   constructor(@InjectModel(AiJob.name) private readonly jobs: Model<AiJobDocument>) {}
+
+  /**
+   * 다시 시도로 끝난 작업이 처리기에 다시 들어갈 때(같은 작업 id) 알림을 받는다. 진행률 소켓(AiJobsGateway)이 그 전에
+   * 읽어 둔 앞 실행의 결과를 보내지 않게 한다(#523). 등록을 푸는 함수를 돌려준다
+   */
+  onRetry(listener: (jobId: string) => void): () => void {
+    this.retried.add(listener);
+    return () => this.retried.delete(listener);
+  }
 
   /**
    * 이 종류의 작업을 다시 시도할 때 input을 새로 만드는 함수를 등록한다. input에 담긴 읽기 주소(SAS)는 시간이
@@ -456,6 +468,15 @@ export class AiJobsService {
       )
       .lean<AiJobRow & { userId: Types.ObjectId }>();
     if (!before) return this.findMine(userId, jobId);
+    // 응답하기 전에 알린다: 앱은 다시 시도 응답을 받은 뒤부터 같은 작업 id의 결과를 새 실행의 것으로 본다.
+    // 작업은 이미 바꿨으므로 알림이 실패해도 다시 시도는 그대로 이어 간다(앱은 작업 조회로도 확인한다)
+    for (const listener of this.retried) {
+      try {
+        listener(before._id.toString());
+      } catch {
+        // 알림을 받는 쪽(진행률 소켓)의 문제는 다시 시도 응답에 섞지 않는다
+      }
+    }
     const { step: _step, ...rest } = before;
     if (limit === undefined) return toAppJob({ ...rest, ...reset });
     // 한도를 넘었거나 확인이 늦어 held가 지났으면 바꾸기 전으로 되돌리고 429. 지난 held에서 왔으면 canceled로
