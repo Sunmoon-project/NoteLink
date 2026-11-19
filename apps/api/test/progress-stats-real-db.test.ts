@@ -24,6 +24,8 @@ import { StudySession, StudySessionSchema } from '../src/modules/session/schemas
 import { Subject, SubjectSchema } from '../src/modules/session/schemas/subject.schema.js';
 import { StudyService } from '../src/modules/session/study.service.js';
 import { StudyRoomMembershipService } from '../src/modules/studyroom/study-room-membership.service.js';
+import { EmailCodeService } from '../src/modules/auth/app-login/email-code.service.js';
+import { MAIL_SENDER } from '../src/modules/mail/mail-sender.js';
 
 const uri = process.env.MONGODB_VERIFY_URI;
 const isLocal = !!uri && /^mongodb:\/\/([^@/]*@)?(localhost|127\.0\.0\.1)[:/]/.test(uri);
@@ -97,9 +99,11 @@ describe.skipIf(!isLocal)('진짜 DB 월간 캘린더 · 누적 기록 확인', 
                 StudyService,
                 PointService,
                 UsersService,
-                // 이 테스트는 토큰 · 탈퇴(스터디룸 나가기, #518 이후 UsersService가 주입받음)를 쓰지 않는다
+                // 이 테스트는 토큰 · 탈퇴(스터디룸 나가기, #518 이후 UsersService가 주입받음) · 이메일 본인 인증(#532 이후)을 쓰지 않는다
                 { provide: TokenService, useValue: {} },
                 { provide: StudyRoomMembershipService, useValue: {} },
+                { provide: EmailCodeService, useValue: {} },
+                { provide: MAIL_SENDER, useValue: {} },
             ],
         }).compile();
         await moduleRef.init();
