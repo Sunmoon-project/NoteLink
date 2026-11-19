@@ -341,6 +341,21 @@ export class AiJobsService {
     );
   }
 
+  /**
+   * 내 작업 input의 노트(input.material, 앱에는 보내지 않는 값). 없거나 남의 작업이면 null.
+   * 맞춤 퀴즈 작업에 넣었던 노트를 개념 카드 작업(quiz_flashcards, #558)에 그대로 넘길 때 쓴다.
+   * 다른 세트 · 풀이 · 노트 글은 읽지 않는다(input.material만). 서버 안에서 넘긴 id라 형식이 틀리면 서버 오류
+   */
+  async materialInputOf(userId: string, jobId: string): Promise<unknown> {
+    const row = await this.jobs
+      .findOne(
+        { _id: serverObjectId(jobId, 'jobId'), userId: serverObjectId(userId, 'userId') },
+        { 'input.material': 1 },
+      )
+      .lean<{ input?: { material?: unknown } | null }>();
+    return row?.input?.material ?? null;
+  }
+
   /** 앱의 진행 상태 조회. 본인 작업만 */
   async findMine(userId: string, jobId: string): Promise<AppAiJob> {
     const row = await this.jobs

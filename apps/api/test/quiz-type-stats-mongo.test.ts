@@ -22,7 +22,6 @@ suite('MongoDB 전체 유형별 통계', () => {
       attempts as never,
       {} as never,
       {} as never,
-      {} as never,
     );
     await connection.collection('quiz_sets').insertMany([
       {

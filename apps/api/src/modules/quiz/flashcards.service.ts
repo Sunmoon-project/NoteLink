@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, mongo, Types } from 'mongoose';
 
 import { Material, type MaterialDocument } from '../content/schemas/material.schema.js';
 import { FLASHCARD_BACK_MAX, FLASHCARD_FRONT_MAX } from './dto/flashcard.dto.js';
+import { AiJob, type AiJobDocument } from './schemas/ai-job.schema.js';
 import { Flashcard, type FlashcardDocument } from './schemas/flashcard.schema.js';
 import { QuizSet, type QuizSetDocument } from './schemas/quiz-set.schema.js';
 
@@ -49,6 +50,10 @@ interface SetRow {
  * (apps/ai services/quiz/flashcards.py COUNT). 결과가 이상해도 카드가 쏟아지지 않게 넉넉히 막는다
  */
 export const AUTO_CARD_MAX = 10;
+/** 개념 카드 작업(apps/ai services/quiz/flashcards.py TYPE, quiz-sets.service.ts CARDS_TYPE와 같음) */
+const CARDS_TYPE = 'quiz_flashcards';
+/** 목록을 열 때 한 번에 옮기는 끝난 카드 작업 수(오래된 것부터, 남은 작업은 다음 조회에) */
+export const CARD_JOB_PULL_LIMIT = 50;
 const DUPLICATE_KEY = 11000;
 
 /** 자동 카드가 저장할 세트(quiz_sets 한 줄 중 쓰는 필드) */
@@ -80,6 +85,12 @@ function autoCard(raw: unknown): { front: string; back: string } | null {
   if (!card.front || !card.back) return null;
   if (card.front.length > FLASHCARD_FRONT_MAX || card.back.length > FLASHCARD_BACK_MAX) return null;
   return card;
+}
+
+/** 로그에 남기는 오류: 이름 · 코드만(카드 · 노트 글이 섞이지 않게) */
+function errorName(e: unknown): string {
+  const code = typeof e === 'object' && e !== null ? (e as { code?: unknown }).code : undefined;
+  return `${e instanceof Error ? e.name : typeof e}${code === undefined ? '' : ` ${String(code)}`}`;
 }
 
 /** 앞면이 같은 카드인지 비교하는 값: 공백 · 대소문자는 보지 않는다 */
@@ -114,12 +125,20 @@ export class FlashcardsService {
     @InjectModel(Flashcard.name) private readonly cards: Model<FlashcardDocument>,
     @InjectModel(QuizSet.name) private readonly sets: Model<QuizSetDocument>, // 내 세트의 문제인지 읽기만 한다
     @InjectModel(Material.name) private readonly materials: Model<MaterialDocument>, // 폴더를 알아내려고 읽기만 한다
+    @InjectModel(AiJob.name) private readonly jobs: Model<AiJobDocument>, // 끝난 개념 카드 작업을 읽기만 한다
   ) {}
 
-  /** 내 플래시카드. 지운 카드는 빼고, 앱처럼 저장한 순서(오래된 것부터)로 준다 */
+  private readonly logger = new Logger(FlashcardsService.name);
+
+  /**
+   * 내 플래시카드. 지운 카드는 빼고, 앱처럼 저장한 순서(오래된 것부터)로 준다.
+   * 먼저 끝난 개념 카드 작업의 카드를 옮긴다(pullCards). 옮기다 실패해도 목록은 그대로 준다
+   */
   async list(userId: string): Promise<AppFlashcard[]> {
+    const ownerId = new Types.ObjectId(userId);
+    await this.pullCards(ownerId);
     const rows = await this.cards
-      .find({ ownerId: new Types.ObjectId(userId), deletedAt: null })
+      .find({ ownerId, deletedAt: null })
       .sort({ createdAt: 1, _id: 1 })
       .lean<FlashcardRow[]>();
     return rows.map(toApp);
@@ -172,12 +191,52 @@ export class FlashcardsService {
   }
 
   /**
-   * 맞춤 퀴즈 결과의 개념 카드(처리기 result.flashcards, #558)를 그 세트 주인의 카드로 저장한다.
-   * 세트를 ready로 옮길 때(quiz-sets.service.ts settle) 부른다. 출처는 세트 · 노트 · 폴더이고 문제는 없다
+   * 끝난 개념 카드 작업(quiz_flashcards, #558)의 카드를 옮긴다. 작업은 세트가 ready가 될 때 NestJS가 넣고
+   * (quiz-sets.service.ts settle), 처리기는 ai_jobs에만 쓰므로 카드는 여기서 flashcards로 옮긴다.
+   * 플래시카드 목록(GET /flashcards)이 카드를 보는 곳이라 열 때 옮긴다.
+   * 옮긴 작업은 result.flashcardsSavedAt을 남겨 다시 읽지 않는다(result는 자유 객체라 스키마는 그대로, 처리기는
+   * 끝난 작업을 다시 쓰지 않음). 카드를 하나도 쓰지 않은 작업(지운 세트 · 앞면이 모두 겹침)도 남긴다. 쓰다 실패하면
+   * 남기지 않아 다음 조회가 다시 옮긴다(이미 넣은 카드는 id로 건너뛰고 남은 카드만 들어감).
+   * 오래된 것부터 CARD_JOB_PULL_LIMIT개씩. 작업마다 따로: 하나가 실패해도 나머지는 옮긴다
+   */
+  private async pullCards(ownerId: Types.ObjectId): Promise<void> {
+    let jobs: { _id: Types.ObjectId; targetId: Types.ObjectId; result?: Record<string, unknown> | null }[];
+    try {
+      jobs = await this.jobs
+        .find({ userId: ownerId, type: CARDS_TYPE, status: 'succeeded', 'result.flashcardsSavedAt': null })
+        .sort({ createdAt: 1 })
+        .limit(CARD_JOB_PULL_LIMIT)
+        .select({ targetId: 1, 'result.flashcards': 1 })
+        .lean<{ _id: Types.ObjectId; targetId: Types.ObjectId; result?: Record<string, unknown> | null }[]>();
+    } catch (e) {
+      this.logger.warn(`끝난 개념 카드 작업을 읽지 못했습니다(목록은 그대로): ${errorName(e)}`);
+      return;
+    }
+    for (const job of jobs) {
+      try {
+        const set = await this.sets
+          .findOne({ _id: job.targetId, ownerId, deletedAt: null })
+          .select({ ownerId: 1, materialId: 1, folderId: 1 })
+          .lean<CardSet | null>();
+        if (set) await this.saveFromQuizSet(set, job.result?.['flashcards']);
+        await this.jobs.updateOne(
+          { _id: job._id, status: 'succeeded' },
+          { $set: { 'result.flashcardsSavedAt': new Date() } },
+        );
+      } catch (e) {
+        this.logger.warn(
+          `개념 카드를 옮기지 못했습니다(다음 조회에 다시, 세트 ${job.targetId.toHexString()}): ${errorName(e)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * 개념 카드 작업 결과(처리기 result.flashcards, #558)를 그 세트 주인의 카드로 저장한다(pullCards). 출처는 세트 · 노트 · 폴더이고 문제는 없다
    * (sourceQuestionId null: 퀴즈 문제가 아니라 같은 범위의 따로 만든 카드).
    * id는 세트와 처리기 순번에서 정해(autoCardId) 없을 때만 넣는다: 여러 번 · 동시에 옮겨도 한 번만, 지운 카드는
    * 되살리지 않는다. 모양이 틀린 카드는 빼고(순번은 처리기 차례 그대로), AUTO_CARD_MAX장까지만.
-   * 그 사이 지운 세트에는 쓰지 않는다. 동시에 넣다 생긴 중복 키 말고 쓰기 오류는 올린다(settle이 로그만 남김)
+   * 그 사이 지운 세트 · 노트에는 쓰지 않는다. 동시에 넣다 생긴 중복 키 말고 쓰기 오류는 올린다(pullCards가 로그만 남김)
    */
   async saveFromQuizSet(set: CardSet, raw: unknown): Promise<void> {
     if (!Array.isArray(raw)) return;

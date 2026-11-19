@@ -8,6 +8,7 @@ import pytest
 
 from app.clients.llm import CANCELED, JsonObject, LlmError, LlmSetupError
 from app.services.quiz import flashcards
+from app.services.quiz.review import InputError
 from tests.fakes import FakeLlm
 
 PAGE1 = """Ⅰ. 근족충류
@@ -132,7 +133,7 @@ def test_a_broken_answer_or_call_does_not_raise() -> None:
 
 
 def test_a_setup_error_or_code_error_does_not_fail_the_quiz() -> None:
-    for e in (LlmSetupError("사용 한도"), RuntimeError("버그")):
+    for e in (LlmSetupError("설정 값 없음", retry=False), RuntimeError("버그")):
 
         def boom(_: str, e: Exception = e) -> JsonObject:
             raise e
@@ -259,29 +260,6 @@ def test_the_refill_prompt_does_not_repeat_call_errors() -> None:
     assert "HTTP 503" not in again and "문제점" not in again
 
 
-def test_a_limit_that_shrinks_while_waiting_cuts_the_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(flashcards, "MIN_SEC", 0)
-    monkeypatch.setattr(flashcards, "POLL_SEC", 0.05)
-    gate = threading.Event()
-    asked = threading.Event()
-    start = time.monotonic()
-
-    def slow(_: str) -> JsonObject:
-        asked.set()
-        gate.wait(5)
-        return {"cards": GOOD}
-
-    def end() -> float:  # 호출이 나간 뒤 상한이 지금으로 줄어듦(미리 만들기를 이어받음)
-        return start if asked.is_set() else start + 60
-
-    try:
-        cards, why = make(FakeLlm({flashcards.NAME: slow}), end=end)
-    finally:
-        gate.set()
-    assert cards == [] and why is not None and flashcards.TIMEOUT in why
-    assert time.monotonic() - start < 2
-
-
 def test_a_canceled_job_stops_the_cards_without_a_refill() -> None:
     llm = FakeLlm({flashcards.NAME: [LlmError(CANCELED), {"cards": GOOD}]})
     cards, why = make(llm)
@@ -301,3 +279,95 @@ def test_a_short_english_back_in_the_note_is_grounded() -> None:
     assert flashcards.grounded("ATP이다", page)
     assert flashcards.grounded("DNA", page)
     assert not flashcards.grounded("RNA", page)
+
+
+# ---------- 카드 작업(quiz_flashcards) ----------
+
+
+def question(
+    qid: str, answer: str, concept: str, prompt: str = "다음 설명에 해당하는 원충은?"
+) -> JsonObject:
+    return {
+        "id": qid,
+        "order": 1,
+        "prompt": prompt,
+        "choices": [answer, "말라리아", "회충", "요충", "편충"],
+        "answer": answer,
+        "explanation": "노트에 적힌 특징입니다.",
+        "conceptTags": [concept],
+    }
+
+
+def card_job(**more: Any) -> JsonObject:
+    return {
+        "material": {
+            "id": "m1",
+            "title": "기생충 1 원충류",
+            "pages": [{"pageNo": 1, "ocrText": PAGE1}, {"pageNo": 2, "ocrText": PAGE2}],
+            "concepts": ["이질 아메바", "람블편모충"],
+        },
+        "questions": [
+            question("a" * 24, "이질 아메바", "이질 아메바"),
+            question("b" * 24, "람블편모충", "람블편모충"),
+        ],
+        **more,
+    }
+
+
+def test_the_card_job_uses_the_pages_and_concepts_of_the_questions() -> None:
+    steps: list[tuple[int, str | None]] = []
+    llm = FakeLlm({flashcards.NAME: [{"cards": GOOD}]})
+    out = flashcards.run(llm, card_job(), lambda v, step=None: steps.append((v, step)))
+    assert out == {"flashcards": GOOD, "flashcardsReason": None}
+    user = llm.calls[0].user
+    assert '<노트 쪽="1">' in user and '<노트 쪽="2">' in user  # 문제마다 정답이 있는 쪽
+    assert "이질 아메바, 람블편모충" in user
+    assert steps[-1] == (100, "개념 카드 만들기")
+
+
+def test_the_card_job_shows_only_the_pages_of_its_questions() -> None:
+    inp = card_job(questions=[question("a" * 24, "이질 아메바", "이질 아메바")])
+    llm = FakeLlm({flashcards.NAME: [{"cards": GOOD[:3]}, {"cards": []}]})
+    out = flashcards.run(llm, inp, lambda v, step=None: None)
+    assert '<노트 쪽="2">' not in llm.calls[0].user
+    assert len(out["flashcards"]) == 3 and out["flashcardsReason"] == "3/5장만 만듦"
+
+
+def test_a_failing_card_call_still_ends_the_job_with_a_reason() -> None:
+    llm = FakeLlm({flashcards.NAME: [LlmError("HTTP 503"), LlmError("HTTP 503")]})
+    out = flashcards.run(llm, card_job(), lambda v, step=None: None)
+    assert out["flashcards"] == [] and "카드 호출 실패" in out["flashcardsReason"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda inp: inp.pop("questions"),
+        lambda inp: inp.update(questions=[]),
+        lambda inp: inp.update(questions=[{"id": "x"}]),
+        lambda inp: inp.pop("material"),
+        lambda inp: inp["material"].update(pages=[{"pageNo": 1, "ocrText": None}]),
+    ],
+)
+def test_bad_card_input_fails_without_a_retry(change: Any) -> None:
+    inp = card_job()
+    change(inp)
+    llm = FakeLlm({})
+    with pytest.raises(InputError):
+        flashcards.run(llm, inp, lambda v, step=None: None)
+    assert llm.calls == []
+
+
+def test_the_card_job_runs_in_the_background_lane() -> None:
+    from app.worker import handlers
+
+    assert handlers.HANDLERS[flashcards.TYPE] is handlers.quiz_flashcards
+    assert flashcards.TYPE in handlers.BACKGROUND
+
+
+def test_a_retryable_setup_error_is_raised_for_the_job_retry() -> None:
+    def refused(_: str) -> JsonObject:
+        raise LlmSetupError("HTTP 403")  # retry=True: 작업 처리기가 다시 시도
+
+    with pytest.raises(LlmSetupError):
+        make(FakeLlm({flashcards.NAME: refused}))

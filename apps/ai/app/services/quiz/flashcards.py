@@ -1,20 +1,34 @@
-"""맞춤 퀴즈 끝에 만드는 개념 카드(#558, 상위 #557).
+"""개념 카드 작업(#558, 상위 #557): 맞춤 퀴즈와 같은 범위의 플래시카드 5장.
+
+ai_jobs.type = 'quiz_flashcards' (공용 계약 AiJobType). 맞춤 퀴즈 · 미리 만들기 세트가 ready가 되면
+NestJS가 넣습니다(quiz-sets.service.ts settle). 퀴즈 작업과 따로 돌아 퀴즈 응답을 늦추지 않습니다
+(앱은 퀴즈 작업이 succeeded가 되어야 퀴즈를 엶). 미리 만들기처럼 사용자 작업과 따로 도는 반복이
+가져가고, LLM 호출 차례도 사용자 작업에 양보합니다(worker/handlers.py BACKGROUND).
 
 회의(09-27) 결정: 문제 5개를 만들 때 같은 범위에서 플래시카드도 따로 5장. 퀴즈 문제를 카드로 옮기지
-않고, 퀴즈가 문제를 나눈 쪽 · 그 쪽 개념으로 카드(앞 = 용어 · 짧은 질문, 뒤 = 뜻 · 답 1~2문장)를
-LLM 한 호출로 묶어 만듭니다. generate.run이 문제 초안과 함께 부르고(generate._Cards), 결과는
-result.flashcards로 나가 NestJS가 세트를 ready로 옮길 때 flashcards에 저장합니다(settle).
+않고, 퀴즈 문제가 나온 쪽 · 그 문제의 개념으로 카드(앞 = 용어 · 짧은 질문, 뒤 = 뜻 · 답 1~2문장)를
+LLM 한 호출로 묶어 만듭니다.
+
+input — NestJS가 작업을 만들 때 담습니다
+  material   퀴즈 작업의 input.material 그대로({id, title, pages, concepts?, chunks?}, generate.py)
+  questions  [{id, order, prompt, choices, answer, explanation?, conceptTags}] 그 세트의 문제.
+             문제마다 나온 쪽을 낱말로 찾습니다(text.locate, DB에 문제의 쪽이 없음)
+
+result — NestJS가 사용자가 플래시카드 목록을 열 때 flashcards에 저장합니다(flashcards.service.ts)
+  flashcards        [{front, back, pageNo, concept}] 근거 검사를 통과한 카드(최대 COUNT장)
+  flashcardsReason  COUNT장을 못 채운 이유('N/5장만 만듦(이유)'), 다 채우면 null
 
 검사(코드): 모양 · 쪽(보여 준 쪽만) · 길이 · 앞뒤가 같음 · 앞면 겹침, 앞면 낱말이 그 쪽 글에 있음,
-뒷면 글이 그 쪽 노트 글에 있음(grounded: 노트 글에 있는 글자 2개 묶음이 덮는 글자가 COVER 이상).
-떨어진 카드는 빼고, 모자라면
-보충 호출은 한 번까지(앞 카드의 문제점 · 이미 만든 앞면을 알려 줌).
+뒷면 글이 그 쪽 노트 글에 있음(grounded). 떨어진 카드는 빼고, 모자라면 보충 호출은 한 번까지(앞
+카드의 문제점 · 이미 만든 앞면을 알려 줌).
 
 카드는 퀴즈의 덤입니다: 호출 실패 · 시간 초과 · 설정 오류 · 코드 오류가 나도 예외를 올리지 않고
-만든 만큼과 이유를 돌려줍니다(퀴즈 작업은 그대로 성공). 이유 글에는 노트 · 카드 글을 넣지 않습니다
-(로그 · ai_jobs.result에 남으므로).
+(다시 하면 되는 서버 거절 401 · 403 · 404만 올려 작업 처리기가 다시 시도)
+만든 만큼과 이유를 돌려줍니다(작업은 성공). input 모양이 틀릴 때만 InputError(바로 실패).
+이유 글에는 노트 · 카드 글을 넣지 않습니다(로그 · ai_jobs.result에 남으므로).
 """
 
+import logging
 import re
 import threading
 import time
@@ -29,10 +43,24 @@ from app.clients.llm import (
     Llm,
     LlmError,
     LlmRejectedError,
+    LlmSetupError,
     Stopping,
 )
 from app.core.config import settings
-from app.services.quiz.text import norm, terms
+from app.services.quiz import generate
+from app.services.quiz.review import (
+    OTHER,
+    InputError,
+    Progress,
+    concept_of,
+    need_list,
+    parse_question,
+)
+from app.services.quiz.text import locate, norm, terms
+
+log = logging.getLogger(__name__)
+
+TYPE = "quiz_flashcards"
 
 NAME = "Flashcards"  # 카드 호출 이름
 COUNT = 5  # 세트마다 카드 수(회의 결정)
@@ -52,11 +80,10 @@ _LATIN = re.compile(r"([a-z]+)")
 RUN = 4  # 뒷면에 쪽 글 그대로 있어야 하는 구간 길이(글자)
 # 카드 한 장 몫의 출력 토큰: 앞 80자 + 뒤 200자 + 개념 · JSON 키(한글은 글자당 1토큰 안팎)
 CARD_TOKENS = 700  # 한글이 글자당 2토큰 가까운 토크나이저도 덮게 넉넉히(상한일 뿐, /code-review)
-POLL_SEC = 1.0  # 호출을 기다리며 상한(이어받기로 줄 수 있음)을 다시 보는 간격
-# 퀴즈가 끝난 뒤 카드를 더 기다리는 상한(초). 카드는 퀴즈와 함께 만들므로(generate._Cards) 보통은
-# 퀴즈보다 먼저 끝남. 바로 요청은 사용자가 기다리므로 WAIT_SEC, 미리 만들기는 CARD_SEC
-WAIT_SEC = 5
-CARD_SEC = 45
+POLL_SEC = 1.0  # 호출을 기다리며 상한을 보는 간격
+# 작업 하나의 상한(초): 학교 LLM 호출 하나가 길면 180초 · 다시 보내기까지 걸리고, background 호출은
+# 사용자 작업이 도는 동안 차례를 기다림. 넘으면 만든 만큼으로 끝냄(작업을 오래 잡지 않게)
+JOB_SEC = 240
 MIN_SEC = 15  # 남은 시간이 이보다 짧으면 호출하지 않음: 호출 하나도 끝나기 어려움
 TIMEOUT = "시간 상한"
 BAD_SHAPE = "카드 모양이 맞지 않음"
@@ -202,8 +229,8 @@ def _call(
     end: Callable[[], float],
     clock: Callable[[], float],
 ) -> object:
-    """카드 호출 하나. end()(clock 값, 기다리는 동안 POLL_SEC마다 다시 봄)까지만 기다리고, 넘으면
-    남은 호출을 멈추고 LlmError(TIMEOUT)."""
+    """카드 호출 하나. end()(clock 값)까지만 기다리고(POLL_SEC마다 봄), 넘으면 남은 호출을 멈추고
+    LlmError(TIMEOUT). 이미 보낸 호출은 응답을 기다리는 스레드에 남음(Stopping, 알려진 한계)."""
     stop = threading.Event()
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quiz-cards")
     try:
@@ -234,16 +261,19 @@ def make(
     pages: dict[int, str],
     scope: list[tuple[int, str]],
     *,
-    end: float | Callable[[], float],
+    end: float,
     clock: Callable[[], float] | None = None,
 ) -> tuple[list[JsonObject], str | None]:
-    """퀴즈가 물은 (쪽, 개념)들(scope)로 카드 COUNT장. (카드, 모자란 이유 또는 None).
+    """퀴즈 문제가 나온 (쪽, 개념)들(scope)로 카드 COUNT장. (카드, 모자란 이유 또는 None).
 
-    end는 clock 값으로 카드 단계가 끝나야 하는 때. 함수면 볼 때마다 다시 부름(미리 만들기를 사용자가
-    이어받으면 generate가 줄임). 예외를 올리지 않습니다(모듈 설명).
+    end는 clock 값으로 카드 단계가 끝나야 하는 때. 다시 하면 되는 설정 오류(LlmSetupError retry)만
+    올리고, 그 밖의 실패는 예외를 올리지 않습니다(모듈 설명).
     """
     now = clock or time.monotonic
-    limit: Callable[[], float] = end if callable(end) else (lambda: end)
+
+    def limit() -> float:
+        return end
+
     shown, names = _shown(pages, scope)
     if not shown:
         return [], "퀴즈 쪽이 없음"
@@ -277,7 +307,14 @@ def make(
                 break
             why.append(f"카드 호출 실패({e})")
             continue
-        except Exception as e:  # 설정 · 코드 오류: 퀴즈는 그대로 성공(다시 해도 같음)
+        except LlmSetupError as e:
+            if (
+                e.retry
+            ):  # 서버 거절(401 · 403 · 404): 작업 처리기가 시도 한도 안에서 다시(/code-review)
+                raise
+            why.append(f"카드 만들기 오류({type(e).__name__})")  # 설정 값 없음 · 사용 한도
+            break
+        except Exception as e:  # 코드 오류: 다시 해도 같음
             why.append(f"카드 만들기 오류({type(e).__name__})")
             break
         if not isinstance(got, list):
@@ -299,3 +336,26 @@ def make(
     shown_why = "; ".join(list(dict.fromkeys(why))[:WHY_SHOWN])
     got = f"{len(cards)}/{COUNT}장만 만듦"
     return cards, f"{got}({shown_why})" if shown_why else got
+
+
+def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
+    """quiz_flashcards 작업 하나(모듈 설명). input이 틀리면 InputError."""
+    m = generate.parse_material(raw.get("material"))
+    qs = [
+        parse_question(q, f"input.questions[{i}]")
+        for i, q in enumerate(need_list(raw, "questions", "input"))
+    ]
+    pages = generate.note_pages(m)
+    if not pages or not qs:
+        raise InputError("카드를 낼 노트 글 · 문제가 없음")
+    notes = {m.id: pages}
+    scope = [
+        (locate(q, notes, m.id)[1], "" if concept_of(q) == OTHER else concept_of(q)) for q in qs
+    ]
+    report(10, "개념 카드 만들기")
+    t0 = time.monotonic()
+    cards, why = make(llm, pages, scope, end=t0 + JOB_SEC)
+    if why:
+        log.info("개념 카드: %d/%d장, %.0f초(%s)", len(cards), COUNT, time.monotonic() - t0, why)
+    report(100, "개념 카드 만들기")
+    return {"flashcards": cards, "flashcardsReason": why}

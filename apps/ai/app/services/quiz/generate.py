@@ -71,9 +71,6 @@ result — NestJS가 quiz_sets에 새 세트로 저장합니다(materialId · fo
              상)는 유형으로 정한 처음 난이도(similar.difficulty_of, #268). 저장은 NestJS와 맞춘 뒤
   title      '<노트 제목> 맞춤 퀴즈 · MM-DD'
   concepts   새로 뽑은 개념 이름(materials.concepts에 저장). 노트에 이름이 있었으면 null
-  flashcards [{front, back, pageNo, concept}] 같은 쪽 · 개념의 개념 카드(flashcards.py, #558).
-             최대 5장, 근거 검사를 통과한 것만. NestJS가 세트를 ready로 옮길 때 flashcards에 저장
-  flashcardsReason  5장을 못 채운 이유(없으면 null). 카드를 못 만들어도 퀴즈는 성공
   pages      [{pageNo, weight, plain, share, wrong, mastered}] 쪽마다 배분(앱 안내 · 확인용).
              plain은 기록 없이 고르게 나눴을 때, share는 실제로 나눈 문제 수
   failed     [{pageNo, why}] 못 만든 자리(마지막으로 시도한 쪽과 탈락 이유). 다 채우므로 늘 []
@@ -117,7 +114,7 @@ from app.clients.llm import (
     Stopping,
 )
 from app.core.config import settings
-from app.services.quiz import combo, concepts, flashcards, levels, similar
+from app.services.quiz import combo, concepts, levels, similar
 from app.services.quiz.checks import Seen, Target, code_check, seen_draft, seen_question, too_close
 from app.services.quiz.models import CHOICES, LETTERS, Draft, Notes, Page, Question
 from app.services.quiz.review import (
@@ -341,6 +338,11 @@ def _chunk(raw: object, where: str) -> Chunk:
     status = raw.get("conceptStatus") if isinstance(raw, dict) else None
     auto = concept if isinstance(concept, str) and concept and status == "auto" else None
     return Chunk(order, title, list(path or []), text, page, auto)
+
+
+def parse_material(raw: object) -> Material:
+    """input.material을 확인해 꺼냅니다(개념 카드 작업도 씀, flashcards.run)."""
+    return _material(raw)
 
 
 def _material(raw: object) -> Material:
@@ -1088,29 +1090,15 @@ def run(
         if t in lv
     }
     mix = levels.level_mix(n, usable, user)
-    budget_end = _clock() + TOTAL_SEC * mode.patience  # 만들기 · 검사 상한과 같은 때(_make_all)
-    # 개념 카드(#558)는 퀴즈와 같은 쪽(문제를 나눈 쪽) · 그 쪽 개념으로, 문제 초안과 함께 만듦
-    scope = [
-        (p, c)
-        for p in sorted(share, key=lambda p: -share[p])
-        for _ in range(share[p])
-        for c in concepts.for_text(names_all, pages[p], subject)
-    ]
-    cards = _Cards(llm, pages, scope, budget_end, mode, hurry)
-    try:
-        made, failed = _make_all(
-            llm, pages, names_all, subject, per_page, weight, share, korean, seen, n, report,
-            mode, hurry, mix, lv,
-        )  # fmt: skip
-    except BaseException:
-        cards.drop()
-        raise
+    made, failed = _make_all(
+        llm, pages, names_all, subject, per_page, weight, share, korean, seen, n, report,
+        mode, hurry, mix, lv,
+    )  # fmt: skip
     log.info("맞춤 퀴즈(%s): %d/%d문제, %.0f초", mode.name, len(made), n, time.monotonic() - t0)
     if len(made) < n:  # 모자란 세트는 돌려주지 않음(앱은 작업 상태로 성공 화면을 고름, #247)
         # 자리마다 이유가 다를 수 있어 모두 담음(겹치면 한 번)
         why = "; ".join(list(dict.fromkeys(w for f in failed for w in f["why"]))[:WHY_SHOWN])
         got = f"{len(made)}/{n}문제만 만듦" if made else "만든 문제가 없음"
-        cards.drop()
         raise NoQuestionsError(f"{got}({why})" if why else got)
     qs = [
         {
@@ -1132,8 +1120,6 @@ def run(
         if r.question is not None
     ]
     out = _result(qs, title, new_names, weight, share, plain, per_page, [])
-    report(100, "개념 카드 만들기")  # 문제는 다 됨: 카드를 잠깐 기다리는 동안
-    out["flashcards"], out["flashcardsReason"] = cards.result()
     # 앱 안내 · 확인용: 목표 비율, 약한 난이도, 이 사용자의 난이도별 (푼 수, 틀린 수)
     out["levels"] = {
         "target": mix,
@@ -1141,71 +1127,6 @@ def run(
         "user": {k: [t.answered, t.count] for k, t in user.items()},
     }
     return out
-
-
-class _Cards:
-    """퀴즈와 함께 도는 개념 카드(flashcards.make, #558).
-
-    카드 호출은 문제 초안을 만들 때 같이 보냄: 학교 LLM 클라이언트는 보내는 간격만 지키고 응답은
-    동시에 기다리므로(PacedLlm), 퀴즈는 보내기 차례 한 칸(호출 간격)만큼만 늦어짐. 문제를 다 만든
-    뒤에 부르면 사용자가 기다리는 맞춤 퀴즈(지금 약 115초)가 카드 호출만큼 더 늦어졌음(최대 45초).
-    퀴즈가 끝나면 카드를 기다리는 상한: 바로 요청 · 사용자가 이어받은 미리 만들기는
-    flashcards.WAIT_SEC, 미리 만들기는 flashcards.CARD_SEC(사용자가 기다리지 않음). 작업 상한
-    (budget_end)은 넘지 않음. 상한은 카드 호출을 기다리는 동안에도 다시 봄(이어받기).
-    퀴즈가 실패하면 drop으로 남은 호출을 멈춤. 카드가 실패해도 퀴즈는 성공(만든 만큼 + 이유, 로그에
-    노트 · 카드 글 없음).
-    """
-
-    def __init__(
-        self,
-        llm: Llm,
-        pages: dict[int, str],
-        scope: list[tuple[int, str]],
-        budget_end: float,
-        mode: Mode,
-        hurry: Callable[[], bool] | None,
-    ) -> None:
-        self._budget_end, self._mode, self._hurry = budget_end, mode, hurry
-        self._t0 = _clock()
-        self._done_at: float | None = None  # 퀴즈가 끝난 때
-        self._dropped = False
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quiz-cards-job")
-        self._future = self._pool.submit(
-            flashcards.make, llm, pages, scope, end=self.end, clock=lambda: _clock()
-        )
-
-    def end(self) -> float:
-        """카드 단계가 끝나야 하는 때(_clock 값)."""
-        if self._dropped:
-            return -math.inf
-        if self._done_at is None:
-            return self._budget_end
-        fast = self._mode.patience == 1 or (self._hurry is not None and self._hurry())
-        wait = flashcards.WAIT_SEC if fast else flashcards.CARD_SEC
-        return min(self._budget_end, self._done_at + wait)
-
-    def drop(self) -> None:
-        self._dropped = True
-        self._pool.shutdown(wait=False, cancel_futures=True)
-
-    def result(self) -> tuple[list[JsonObject], str | None]:
-        """퀴즈가 끝났을 때: 상한까지 카드를 기다려 (카드, 모자란 이유)."""
-        self._done_at = _clock()
-        try:
-            # make는 상한을 POLL_SEC마다 보고 끝나므로 조금 더 기다림
-            left = max(0.0, self.end() - _clock()) + flashcards.POLL_SEC + 1
-            cards, why = self._future.result(timeout=left)
-        except Exception as e:  # 기다림 초과 · 예상 밖 오류: 퀴즈는 그대로
-            self._dropped = True
-            cards, why = [], f"0/{flashcards.COUNT}장만 만듦({type(e).__name__})"
-        finally:
-            self._pool.shutdown(wait=False, cancel_futures=True)
-        if why:
-            log.info(
-                "개념 카드: %d/%d장, %.0f초(%s)",
-                len(cards), flashcards.COUNT, _clock() - self._t0, why,
-            )  # fmt: skip
-        return cards, why
 
 
 def _shape_ok(d: Draft) -> bool:

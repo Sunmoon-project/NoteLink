@@ -15,7 +15,6 @@ import {
   type QuizSetDocument,
   QuizSetSchema,
 } from '../src/modules/quiz/schemas/quiz-set.schema.js';
-import { FlashcardsService } from '../src/modules/quiz/flashcards.service.js';
 import { QuizSetsService } from '../src/quiz-sets/quiz-sets.service.js';
 import { RecordingNotePagesService } from '../src/quiz-sets/recording-note-pages.service.js';
 
@@ -44,13 +43,7 @@ describe.skipIf(!uri)('진짜 DB 오답 복습 상태 쓰기', () => {
           { name: AiJob.name, schema: AiJobSchema },
         ]),
       ],
-      providers: [
-        QuizSetsService,
-        AiJobsService,
-        RecordingNotePagesService,
-        // 개념 카드(#558)는 이 시험 밖
-        { provide: FlashcardsService, useValue: { saveFromQuizSet: async () => undefined } },
-      ],
+      providers: [QuizSetsService, AiJobsService, RecordingNotePagesService],
     }).compile();
     conn = moduleRef.get<Connection>(getConnectionToken());
     sets = moduleRef.get<Model<QuizSetDocument>>(getModelToken(QuizSet.name));

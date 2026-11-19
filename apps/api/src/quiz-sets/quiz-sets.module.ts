@@ -4,7 +4,6 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AiJobsModule } from '../ai-jobs/ai-jobs.module.js';
 import { AuthModule } from '../modules/auth/auth.module.js';
 import { Material, MaterialSchema } from '../modules/content/schemas/material.schema.js';
-import { FlashcardsModule } from '../modules/quiz/flashcards.module.js';
 import { AiJob, AiJobSchema } from '../modules/quiz/schemas/ai-job.schema.js';
 import { QuizAttempt, QuizAttemptSchema } from '../modules/quiz/schemas/quiz-attempt.schema.js';
 import { QuizSet, QuizSetSchema } from '../modules/quiz/schemas/quiz-set.schema.js';
@@ -28,8 +27,6 @@ import { ExplanationsController, ExplanationsService } from './explanations.cont
       { name: AiJob.name, schema: AiJobSchema }, // 녹음 노트의 대본(녹음 정리 작업 결과)을 읽는다
     ]),
     AiJobsModule,
-    // 맞춤 퀴즈 결과의 개념 카드를 flashcards에 저장한다(#558)
-    FlashcardsModule,
     // JwtAuthGuard · TokenService
     AuthModule,
   ],

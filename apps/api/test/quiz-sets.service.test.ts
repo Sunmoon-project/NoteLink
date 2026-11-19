@@ -76,21 +76,12 @@ function setup() {
   Object.assign(attempts.model, { aggregate });
   const jobs = createFakeJobs();
   const aiJobs = new AiJobsService(jobs.model);
-  // 개념 카드 저장(#558): 부를 때의 세트 상태도 남긴다(세트를 ready로 바꾸기 전에 쓰는지)
-  const savedCards: { setId: string; status: unknown; row: unknown; cards: unknown }[] = [];
-  const flashcards = {
-    saveFromQuizSet: vi.fn(async (row: { _id: Types.ObjectId }, cards: unknown) => {
-      const now = sets.rows.find((r) => String(r._id) === String(row._id));
-      savedCards.push({ setId: String(row._id), status: now?.['status'], row, cards });
-    }),
-  };
   const service = new QuizSetsService(
     sets.model,
     materials.model,
     attempts.model,
     aiJobs,
     new RecordingNotePagesService(jobs.model),
-    flashcards as never,
   );
   const addNote = async (over: Record<string, unknown> = {}) => {
     const { _id } = (await materials.model.create({
@@ -123,12 +114,13 @@ function setup() {
     set,
     finish,
     aggregate,
-    flashcards,
-    savedCards,
   };
 }
 
 const notFound = { status: 404, response: { code: 'NOT_FOUND' } };
+/** 퀴즈 작업만(세트가 ready가 되면 따로 넣는 개념 카드 작업 quiz_flashcards는 빼고, #558) */
+const quizJobs = (t: ReturnType<typeof setup>) =>
+  t.jobs.rows.filter((r) => r['type'] !== 'quiz_flashcards');
 
 describe('QuizSetsService.create', () => {
   it('일반 생성과 미리 만들기 모두 전체 유형별 통계를 AI 작업에 전달한다', async () => {
@@ -887,7 +879,7 @@ describe('QuizSetsService 끝난 미리 만들기 바로 쓰기(#274)', () => {
 
     expect(QuizSet.parse(quizSet)).toEqual(quizSet);
     expect(AiJob.parse(job)).toEqual(job);
-    expect(t.jobs.rows).toHaveLength(1);
+    expect(quizJobs(t)).toHaveLength(1);
     expect(job).toMatchObject({ _id: p._id, type: 'quiz_pregen', status: 'succeeded' });
     expect(quizSet).toMatchObject({
       _id: p._id,
@@ -929,7 +921,7 @@ describe('QuizSetsService 끝난 미리 만들기 바로 쓰기(#274)', () => {
     expect(b.quizSet._id).toBe(p._id);
     expect(b.quizSet.status).toBe('ready');
     expect(t.sets.rows).toHaveLength(1);
-    expect(t.jobs.rows).toHaveLength(1);
+    expect(quizJobs(t)).toHaveLength(1);
   });
 
   it('이어받아 만든 세트가 그 작업을 가리키면 끝난 뒤 다시 쓰지 않는다', async () => {
@@ -1057,7 +1049,7 @@ describe('QuizSetsService 리뷰 반영(Codex #276)', () => {
     expect(b.quizSet).toMatchObject({ _id: p._id, status: 'ready' });
     expect(late.quizSet).toMatchObject({ _id: p._id, status: 'ready' });
     expect(t.sets.rows).toHaveLength(1);
-    expect(t.jobs.rows).toHaveLength(1);
+    expect(quizJobs(t)).toHaveLength(1);
   });
 
   it('지운 세트가 그 미리 만들기 id를 쓰고 있으면 이어받는 새 세트는 새 id로 만든다', async () => {
@@ -1122,7 +1114,7 @@ describe('QuizSetsService 리뷰 반영(Codex #276)', () => {
     expect(shown).toMatchObject({ status: 'ready' });
     expect(late.quizSet).toMatchObject({ _id: b.quizSet._id, status: 'ready' });
     expect(t.sets.rows.filter((r) => !r['deletedAt'])).toHaveLength(1);
-    expect(t.jobs.rows).toHaveLength(1);
+    expect(quizJobs(t)).toHaveLength(1);
   });
 
   it('개념 저장이 실패하면 세트도 그대로 두어 다음 조회가 다시 옮기며 저장한다', async () => {
@@ -1338,96 +1330,98 @@ describe('seoulDay', () => {
   });
 });
 
-describe('QuizSetsService 개념 카드(#558)', () => {
-  /** 처리기 result.flashcards(apps/ai services/quiz/flashcards.py) */
-  const CARDS = [
-    { front: '세포막', back: '세포를 둘러싼다.', pageNo: 1, concept: '세포막' },
-    { front: '리보솜', back: '단백질을 만든다.', pageNo: 1, concept: '리보솜' },
-  ];
+describe('QuizSetsService 개념 카드 작업(#558)', () => {
+  const cardJobs = (t: ReturnType<typeof setup>) => t.jobs.rows.filter((r) => r['type'] === 'quiz_flashcards');
 
-  it('맞춤 퀴즈 결과의 카드를 세트를 ready로 바꾸기 전에 그 세트 · 노트 · 폴더로 저장한다', async () => {
+  it('퀴즈 작업이 끝나면 세트는 바로 ready, 그다음 같은 범위의 카드 작업을 하나 넣는다', async () => {
     const t = setup();
     const materialId = await t.addNote();
     const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
-    t.finish(job._id, { questions: fullSet(), flashcards: CARDS, flashcardsReason: '2/5장만 만듦' });
+    const quizInput = t.job(job._id)['input'] as WorkerInput;
+    t.finish(job._id, { questions: fullSet() }); // 퀴즈 작업은 카드와 무관하게 끝남
 
     const ready = await t.service.findMine(ME.toHexString(), quizSet._id);
 
     expect(ready.status).toBe('ready');
-    expect(t.savedCards).toHaveLength(1);
-    expect(t.savedCards[0]).toMatchObject({ setId: quizSet._id, status: 'generating', cards: CARDS });
-    expect(t.savedCards[0]!.row).toMatchObject({ ownerId: ME, folderId: FOLDER });
-    expect(String((t.savedCards[0]!.row as { materialId: unknown }).materialId)).toBe(materialId);
-    // ready가 된 뒤의 조회는 다시 옮기지 않는다
+    const [cards, ...more] = cardJobs(t);
+    expect(more).toHaveLength(0);
+    expect(cards).toMatchObject({ status: 'queued', targetType: 'quiz_set' });
+    expect(String(cards!['targetId'])).toBe(quizSet._id);
+    expect(String(cards!['userId'])).toBe(ME.toHexString());
+    const input = cards!['input'] as { material: unknown; questions: { id: string; answer: string }[] };
+    expect(input.material).toEqual(quizInput.material);
+    expect(input.questions.map((q) => q.id)).toEqual(ready.questions.map((q) => q._id));
+    // ready가 된 뒤의 조회는 다시 넣지 않는다
     await t.service.findMine(ME.toHexString(), quizSet._id);
-    expect(t.savedCards).toHaveLength(1);
+    await t.service.list(ME.toHexString());
+    expect(cardJobs(t)).toHaveLength(1);
   });
 
-  it('카드 저장이 실패해도 퀴즈는 ready가 되고, 경고 로그에는 카드 글이 없다', async () => {
+  it('여러 요청이 같이 옮겨도 세트를 바꾼 한 요청만 카드 작업을 넣는다', async () => {
     const t = setup();
-    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     const materialId = await t.addNote();
     const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
-    t.finish(job._id, { questions: fullSet(), flashcards: CARDS });
-    t.flashcards.saveFromQuizSet.mockRejectedValueOnce(
-      Object.assign(new Error(`write failed ${CARDS[0]!.back}`), { code: 121 }),
-    );
+    t.finish(job._id, { questions: fullSet() });
 
-    expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
-    expect(warn).toHaveBeenCalledTimes(1);
-    const line = String(warn.mock.calls[0]![0]);
-    expect(line).toContain('Error 121');
-    expect(line).not.toContain(CARDS[0]!.back);
-    // ready가 된 세트는 다시 옮기지 않으므로 카드도 다시 쓰지 않는다(덤이라 버림)
-    await t.service.findMine(ME.toHexString(), quizSet._id);
-    expect(t.flashcards.saveFromQuizSet).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
+    const [a, b, all] = await Promise.all([
+      t.service.findMine(ME.toHexString(), quizSet._id),
+      t.service.findMine(ME.toHexString(), quizSet._id),
+      t.service.list(ME.toHexString()),
+    ]);
+
+    expect([a.status, b.status, all[0]!.status]).toEqual(['ready', 'ready', 'ready']);
+    expect(cardJobs(t)).toHaveLength(1);
   });
 
-  it('끝난 미리 만들기로 바로 만든 세트도 카드를 저장한다', async () => {
+  it('끝난 미리 만들기로 바로 만든 세트도 카드 작업을 넣는다', async () => {
     const t = setup();
     const materialId = await t.addNote();
     const p = await t.service.pregenerate(ME.toHexString(), materialId);
-    t.finish(p!._id, { questions: fullSet(), flashcards: CARDS });
+    t.finish(p!._id, { questions: fullSet() });
 
     const { quizSet } = await t.service.create(ME.toHexString(), materialId);
 
     expect(quizSet.status).toBe('ready');
-    expect(t.savedCards).toEqual([expect.objectContaining({ setId: p!._id, cards: CARDS })]);
+    expect(cardJobs(t).map((r) => String(r['targetId']))).toEqual([p!._id]);
   });
 
-  it('카드가 없는 결과(예전 처리기 · 카드를 못 만듦)도 세트는 ready, 카드는 쓰지 않는다', async () => {
+  it('카드 작업을 넣지 못해도 퀴즈는 ready 그대로, 경고 로그에는 오류 이름만', async () => {
     const t = setup();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     const materialId = await t.addNote();
     const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
-    t.finish(job._id, { questions: fullSet(), flashcards: [], flashcardsReason: '시간 상한' });
+    t.finish(job._id, { questions: fullSet() });
+    const enqueue = vi.spyOn(t.aiJobs, 'enqueue').mockRejectedValueOnce(new Error(`down ${NOTE_TEXT}`));
+
     expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
-
-    const other = await t.addNote();
-    const second = await t.service.create(ME.toHexString(), other);
-    t.finish(second.job._id, { questions: fullSet() });
-    expect((await t.service.findMine(ME.toHexString(), second.quizSet._id)).status).toBe('ready');
-    expect(t.flashcards.saveFromQuizSet).not.toHaveBeenCalled();
+    expect(t.set(quizSet._id)['questionCount']).toBe(QUIZ_SET_SIZE);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('개념 카드'));
+    expect(line).toContain('Error');
+    expect(line).not.toContain('세포막');
+    expect(cardJobs(t)).toHaveLength(0);
+    warn.mockRestore();
+    enqueue.mockRestore();
   });
 
-  it('실패한 작업은 카드를 쓰지 않는다', async () => {
+  it('실패한 퀴즈 작업은 카드 작업을 넣지 않는다', async () => {
     const t = setup();
     const materialId = await t.addNote();
     const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
-    Object.assign(t.job(job._id), { status: 'failed', result: { flashcards: CARDS } });
+    Object.assign(t.job(job._id), { status: 'failed', error: 'x' });
     expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('failed');
-    expect(t.flashcards.saveFromQuizSet).not.toHaveBeenCalled();
+    expect(cardJobs(t)).toHaveLength(0);
   });
 
-  it.each(['similar_quiz', 'today_review'])('%s 결과에 카드가 있어도 쓰지 않는다', async (type) => {
+  it.each(['similar_quiz', 'today_review'])('%s 세트는 카드 작업을 넣지 않는다', async (type) => {
     const t = setup();
     const materialId = await t.addNote();
     const job = await t.aiJobs.enqueue({
-      type: type as 'similar_quiz',
+      type,
       userId: ME.toHexString(),
       targetType: 'quiz_set',
       targetId: new Types.ObjectId().toHexString(),
-      input: {},
+      input: { material: { id: materialId } },
     });
     const setId = new Types.ObjectId();
     await t.sets.model.create({
@@ -1445,12 +1439,9 @@ describe('QuizSetsService 개념 카드(#558)', () => {
       deletedAt: null,
     } as never);
     const questions = fullSet().map((q) => ({ ...q, srs: { state: 'learning' } }));
-    t.finish(job._id, {
-      [type === 'similar_quiz' ? 'reviewQuestions' : 'questions']: questions,
-      flashcards: CARDS,
-    });
+    t.finish(job._id, { [type === 'similar_quiz' ? 'reviewQuestions' : 'questions']: questions });
 
     expect((await t.service.findMine(ME.toHexString(), setId.toHexString())).status).toBe('ready');
-    expect(t.flashcards.saveFromQuizSet).not.toHaveBeenCalled();
+    expect(cardJobs(t)).toHaveLength(0);
   });
 });

@@ -23,7 +23,7 @@ from app.clients.speech import Speech, SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
 from app.services.note import ask
 from app.services.note import job as note_job
-from app.services.quiz import generate, review, today
+from app.services.quiz import flashcards, generate, review, today
 from app.services.recording import job as recording_job
 from app.services.recording.slides import download_slides
 from app.worker.runner import Handler, JobInputError, JobReport
@@ -139,6 +139,8 @@ def _pregen(llm: Llm, inp: JsonObject, report: JobReport) -> JsonObject:
 
 # 노트를 만들 때 미리 만드는 첫 맞춤 퀴즈(#134). 안정적 모드로 만들고 LLM 차례를 양보(#138)
 quiz_pregen = _handler(_pregen, background=True)
+# 맞춤 퀴즈 세트와 같은 범위의 개념 카드(#558). 사용자가 기다리지 않아 LLM 차례를 양보
+quiz_flashcards = _handler(flashcards.run, background=True)
 
 
 def _fetch_slides(url: str) -> bytes:
@@ -198,7 +200,8 @@ HANDLERS: dict[str, Handler] = {
 HANDLERS[generate.PREGEN_TYPE] = quiz_pregen
 HANDLERS[note_job.TYPE] = handwriting_summary
 HANDLERS[ask.TYPE] = note_ask
+HANDLERS[flashcards.TYPE] = quiz_flashcards
 # 사용자 작업과 따로 도는 반복이 하나씩 처리하는 종류(__main__ · runner.run_lanes, #138)
-BACKGROUND: frozenset[str] = frozenset({generate.PREGEN_TYPE})
+BACKGROUND: frozenset[str] = frozenset({generate.PREGEN_TYPE, flashcards.TYPE})
 # 이미지 · 오디오를 메모리에 올리는 종류: 첫 사용자 반복만 가져가 동시에 하나만 돔(#521)
 HEAVY: frozenset[str] = frozenset({note_job.TYPE, recording_job.TYPE})
