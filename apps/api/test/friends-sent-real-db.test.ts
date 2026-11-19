@@ -6,7 +6,7 @@ import { getConnectionToken, MongooseModule } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
 import { type Connection, Types } from 'mongoose';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { configureApp } from '../src/app.setup.js';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
@@ -34,6 +34,7 @@ describe.skipIf(!isLocal)('진짜 DB 내가 보낸 친구 요청', () => {
     rejecter: new Types.ObjectId(),
   };
   const token = (name: keyof typeof people) => `token-${name}`;
+  const notify = vi.fn(async () => {});
   let app: INestApplication;
   let conn: Connection;
   const http = () => request(app.getHttpServer());
@@ -62,7 +63,7 @@ describe.skipIf(!isLocal)('진짜 DB 내가 보낸 친구 요청', () => {
       controllers: [FriendsController],
       providers: [
         FriendsService,
-        { provide: NotificationService, useValue: { notify: async () => {} } },
+        { provide: NotificationService, useValue: { notify } },
         {
           provide: TokenService,
           useValue: {
@@ -110,10 +111,28 @@ describe.skipIf(!isLocal)('진짜 DB 내가 보낸 친구 요청', () => {
     await app?.close();
   });
 
-  it('내가 보내고 아직 받아들여지지 않은 상대만 돌려준다(받은 요청 · 친구 · 탈퇴한 사람은 빼고)', async () => {
+  it('내가 보내고 아직 대기 중인 상대만 돌려준다(받은 요청 · 친구 · 탈퇴 · 거절당한 사람은 빼고)', async () => {
     const res = await http().get('/api/v1/friend-requests/sent').set(as('me')).expect(200);
-    // 거절당한 요청도 보낸 쪽에는 「요청 보냄」 그대로(거절 · 차단 여부를 알리지 않는다)
-    expect([...res.body.data].sort()).toEqual(
+    // 거절당하면 「친구 요청」으로 돌아가 다시 보낼 수 있다
+    expect(res.body.data).toEqual([people.pending.toHexString()]);
+  });
+
+  it('거절당한 뒤 다시 요청하면 대기로 돌아가 상대의 받은 요청에 보이고 알림은 한 번 간다', async () => {
+    notify.mockClear();
+    await send('me', 'rejecter');
+    const received = await http()
+      .get('/api/v1/friend-requests/received')
+      .set(as('rejecter'))
+      .expect(200);
+    expect(
+      (received.body.data as { requester: { userId: string } }[]).map((r) => r.requester.userId),
+    ).toEqual([people.me.toHexString()]);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'friend-request', userIds: [people.rejecter] }),
+    );
+    const sent = await http().get('/api/v1/friend-requests/sent').set(as('me')).expect(200);
+    expect([...sent.body.data].sort()).toEqual(
       [people.pending, people.rejecter].map((id) => id.toHexString()).sort(),
     );
   });
