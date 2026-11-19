@@ -10,12 +10,14 @@ export const PRESENCE_MS = 60_000;
  * 앱이 꺼져 거두지 못해도 서버가 2분 뒤 오프라인으로 본다. 실패는 다음 신호가 메운다. 멈추는 함수를 돌려준다
  */
 let stopCurrent: (() => void) | undefined;
+/** 이 앱 실행의 표시. 서버가 기기별로 신호를 따로 두어, 다른 기기가 나가도 이 기기의 접속 상태가 지워지지 않는다 */
+const DEVICE = Math.random().toString(36).slice(2, 12);
 
 export function startPresence(): () => void {
   if (env.localData) return () => {};
   stopCurrent?.();
   let timer: ReturnType<typeof setInterval> | undefined;
-  const send = (active: boolean) => void api.me.presence(active).catch(() => {});
+  const send = (active: boolean) => void api.me.presence(active, DEVICE).catch(() => {});
   const start = () => {
     clearInterval(timer);
     send(true);
@@ -46,5 +48,5 @@ export function startPresence(): () => void {
 export async function leavePresence(): Promise<void> {
   stopCurrent?.();
   if (env.localData) return;
-  await api.me.presence(false).catch(() => {});
+  await api.me.presence(false, DEVICE).catch(() => {});
 }

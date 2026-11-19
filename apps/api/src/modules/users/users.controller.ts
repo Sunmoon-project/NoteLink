@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -61,15 +62,21 @@ export class UsersController {
   /** 앱이 앞에 있다는 신호 → 204. 앱은 앞에 있는 동안 1분마다 보낸다 */
   @Put('me/presence')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async markActive(@Req() req: AuthenticatedRequest): Promise<void> {
-    await this.users.setPresence(requireUserId(req), true);
+  async markActive(
+    @Req() req: AuthenticatedRequest,
+    @Query('device') device?: string,
+  ): Promise<void> {
+    await this.users.setPresence(requireUserId(req), true, device);
   }
 
   /** 앱이 백그라운드로 갔다는 신호 → 204. 친구에게 바로 오프라인으로 보인다 */
   @Delete('me/presence')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async markAway(@Req() req: AuthenticatedRequest): Promise<void> {
-    await this.users.setPresence(requireUserId(req), false);
+  async markAway(
+    @Req() req: AuthenticatedRequest,
+    @Query('device') device?: string,
+  ): Promise<void> {
+    await this.users.setPresence(requireUserId(req), false, device);
   }
 
   /** 푸시 받을 기기 등록 { platform, pushToken, locale } → 204 */

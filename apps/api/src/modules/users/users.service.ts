@@ -27,6 +27,7 @@ import {
   mailUnavailable,
   rateLimited,
 } from '../auth/app-login/app-signup.service.js';
+import { PRESENCE_TTL_MS } from '../social/friends/friends.service.js';
 import { MAIL_SENDER, MailUnavailableError, type MailSender } from '../mail/mail-sender.js';
 import { ProgressService } from '../progress/progress.service.js';
 import { StudyRoomMembershipService } from '../studyroom/study-room-membership.service.js';
@@ -106,14 +107,37 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   /**
-   * 앱이 앞에 있다는 신호(active)와 앱을 나갔다는 신호. 친구 목록은 이 시각으로 오프라인을 가린다
-   * (FriendsService PRESENCE_TTL_MS). 고른 상태(status)는 건드리지 않는다. 한 번의 쓰기로 끝낸다(1분마다 온다)
+   * 앱이 앞에 있다는 신호(active)와 앱을 나갔다는 신호. 친구 목록은 lastActiveAt으로 오프라인을 가린다
+   * (FriendsService PRESENCE_TTL_MS). 고른 상태(status)는 건드리지 않는다.
+   * 기기마다 마지막 신호를 presenceDevices에 따로 둔다: 한 기기가 나가도 다른 기기가 앞에 있으면 접속 상태를 남긴다
    */
-  async setPresence(userId: string, active: boolean): Promise<void> {
+  async setPresence(userId: string, active: boolean, device?: string): Promise<void> {
     if (!isValidObjectId(userId)) return;
+    const _id = new Types.ObjectId(userId);
+    const key = device && /^[A-Za-z0-9_-]{1,64}$/.test(device) ? device : 'default';
+    if (active) {
+      const now = new Date();
+      await this.userModel.updateOne(
+        { _id, deletedAt: null },
+        { $set: { lastActiveAt: now, [`presenceDevices.${key}`]: now } },
+      );
+      return;
+    }
+    const user = await this.userModel
+      .findOne({ _id, deletedAt: null })
+      .select('lastActiveAt presenceDevices')
+      .lean<{ lastActiveAt?: Date | null; presenceDevices?: Record<string, Date> }>();
+    if (!user) return;
+    // 나간 기기를 빼고, 2분 안에 신호를 보낸 기기만 남긴다(꺼져서 거두지 못한 기기도 여기서 정리된다)
+    const fresh = Object.entries(user.presenceDevices ?? {}).filter(
+      ([k, at]) => k !== key && Date.now() - new Date(at).getTime() <= PRESENCE_TTL_MS,
+    );
+    const last = fresh.reduce<Date | null>((m, [, at]) => (!m || at > m ? new Date(at) : m), null);
+    // ponytail: 읽고 쓰는 사이 다른 기기의 신호가 오면(lastActiveAt이 바뀜) 덮어쓰지 않고 그 신호를 살린다.
+    // 그때 나간 기기의 기록은 남아 최대 2분 '활동 중'으로 보일 수 있다. 정확히 하려면 파이프라인 업데이트로 한 번에
     await this.userModel.updateOne(
-      { _id: new Types.ObjectId(userId), deletedAt: null },
-      { $set: { lastActiveAt: active ? new Date() : null } },
+      { _id, deletedAt: null, lastActiveAt: user.lastActiveAt ?? null },
+      { $set: { lastActiveAt: last, presenceDevices: Object.fromEntries(fresh) } },
     );
   }
 

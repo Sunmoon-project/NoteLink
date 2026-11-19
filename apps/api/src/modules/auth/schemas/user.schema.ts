@@ -104,6 +104,10 @@ export class User {
   @Prop({ type: Date, default: null })
   lastActiveAt?: Date | null;
 
+  // 기기(앱 실행)별 마지막 접속 신호. 한 기기가 나가도 다른 기기의 신호로 lastActiveAt을 남긴다
+  @Prop({ type: Object, default: {} })
+  presenceDevices?: Record<string, Date>;
+
   // 다른 컬렉션(categories) 참조 배열
   @Prop({ type: [{ type: Types.ObjectId, ref: 'Category' }], default: [] })
   interestCategoryIds: Types.ObjectId[];

@@ -110,6 +110,19 @@ describe.skipIf(!isLocal)('진짜 DB 접속 신호 → 친구 목록 상태', ()
     expect(await friendStatus()).toBe('offline');
   });
 
+  it('같은 계정의 두 기기 중 하나만 나가면 다른 기기의 접속 상태가 남는다', async () => {
+    const put = (d: string) =>
+      http().put(`/api/v1/users/me/presence?device=${d}`).set(as('token-friend')).expect(204);
+    const del = (d: string) =>
+      http().delete(`/api/v1/users/me/presence?device=${d}`).set(as('token-friend')).expect(204);
+    await put('phone');
+    await put('tablet');
+    await del('phone');
+    expect(await friendStatus()).toBe('busy');
+    await del('tablet');
+    expect(await friendStatus()).toBe('offline');
+  });
+
   it('앱이 꺼져 거두지 못해도 마지막 신호가 2분 넘으면 오프라인', async () => {
     await http().put('/api/v1/users/me/presence').set(as('token-friend')).expect(204);
     await conn

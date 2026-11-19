@@ -32,17 +32,17 @@ afterEach(() => {
 
 it('앞에 있으면 바로 · 그 뒤 1분마다 신호를 보내고, 백그라운드로 가면 거두고 멈춘다', async () => {
   const stop = startPresence();
-  expect(presence).toHaveBeenLastCalledWith(true);
+  expect(presence).toHaveBeenLastCalledWith(true, expect.any(String));
   await jest.advanceTimersByTimeAsync(PRESENCE_MS);
   expect(presence).toHaveBeenCalledTimes(2);
 
   goTo('background');
-  expect(presence).toHaveBeenLastCalledWith(false);
+  expect(presence).toHaveBeenLastCalledWith(false, expect.any(String));
   await jest.advanceTimersByTimeAsync(PRESENCE_MS * 3);
   expect(presence).toHaveBeenCalledTimes(3);
 
   goTo('active');
-  expect(presence).toHaveBeenLastCalledWith(true);
+  expect(presence).toHaveBeenLastCalledWith(true, expect.any(String));
   stop();
   expect(remove).toHaveBeenCalled();
   await jest.advanceTimersByTimeAsync(PRESENCE_MS * 3);
@@ -62,9 +62,9 @@ it('백그라운드에서 시작하면 앞에 나올 때까지 보내지 않고,
 
 it('로그아웃(leavePresence)은 타이머를 먼저 멈추고 신호를 거둬, 뒤에 신호가 다시 가지 않는다', async () => {
   startPresence();
-  expect(presence).toHaveBeenLastCalledWith(true);
+  expect(presence).toHaveBeenLastCalledWith(true, expect.any(String));
   await leavePresence();
-  expect(presence).toHaveBeenLastCalledWith(false);
+  expect(presence).toHaveBeenLastCalledWith(false, expect.any(String));
   expect(remove).toHaveBeenCalled();
   const calls = presence.mock.calls.length;
   await jest.advanceTimersByTimeAsync(PRESENCE_MS * 3);

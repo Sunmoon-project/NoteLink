@@ -94,7 +94,10 @@ export const httpApi: Api = {
     get: () => http.get(P.me),
     update: (patch) => http.patch(P.me, patch),
     setStatus: (status) => http.patch(P.myStatus, { status }),
-    presence: (active) => (active ? http.put(P.myPresence, {}) : http.del(P.myPresence)),
+    presence: (active, device) => {
+      const path = device ? `${P.myPresence}?device=${encodeURIComponent(device)}` : P.myPresence;
+      return active ? http.put(path, {}) : http.del(path);
+    },
     registerDevice: (d) => http.post(P.myDevices, d),
     changePlan: (tier) => http.patch(P.mySubscription, { tier }),
     withdraw: () => http.del(P.me),
