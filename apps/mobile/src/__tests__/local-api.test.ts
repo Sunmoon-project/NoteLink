@@ -582,6 +582,22 @@ it('퀴즈 포인트는 하루 40P까지 쌓이고(28 → 12 → 0), 서울 자�
   jest.useRealTimers();
 });
 
+it('기기 저장 모드 퀴즈 목록: 풀이를 끝낸 세트에만 completed를 붙인다(#561)', async () => {
+  await signup('a@test.com');
+  const done = seedQuizForTests(['가']);
+  const other = seedQuizForTests(['나']);
+  const completed = async () =>
+    Object.fromEntries((await api.quiz.sets()).map((s) => [s._id, s.completed]));
+  expect(await completed()).toEqual({ [done._id]: undefined, [other._id]: undefined });
+  const a = await api.quiz.startAttempt(done._id);
+  await api.quiz.startAttempt(other._id);
+  await api.quiz.answer(a._id, done.questions[0]!._id, '가');
+  // 시작만 한 풀이는 끝낸 것이 아니다
+  expect(await completed()).toEqual({ [done._id]: undefined, [other._id]: undefined });
+  await api.quiz.finish(a._id);
+  expect(await completed()).toEqual({ [done._id]: true, [other._id]: undefined });
+});
+
 it('기기 저장 모드 가입: 인증번호가 6자리 숫자가 아니면 EMAIL_CODE_INVALID, 이메일 형식이 틀리면 보내지 않는다', async () => {
   await expect(api.auth.emailVerifyCode('a@test.com', '12ab56')).rejects.toMatchObject({
     code: ERROR_CODES.EMAIL_CODE_INVALID,

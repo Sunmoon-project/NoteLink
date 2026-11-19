@@ -14,6 +14,7 @@ import { Friendship } from '../src/modules/social/schemas/friendship.schema.js';
 import { StudyRoom } from '../src/modules/studyroom/schemas/study-room.schema.js';
 import { StudyChatService } from '../src/modules/studyroom/study-chat.service.js';
 import { StudyChatGateway } from '../src/modules/studyroom/study-chat.gateway.js';
+import { StudyRoomNoticesService } from '../src/modules/studyroom/study-room-notices.service.js';
 import { StudyRoomsController } from '../src/modules/studyroom/study-rooms.controller.js';
 import { StudyRoomMembershipService } from '../src/modules/studyroom/study-room-membership.service.js';
 import { StudyRoomsService } from '../src/modules/studyroom/study-rooms.service.js';
@@ -28,6 +29,7 @@ const roomsService = { setTimerRule: vi.fn() };
 const gateway = { evict: vi.fn(), notifyTimer: vi.fn() };
 const live = { issueToken: vi.fn(), disconnect: vi.fn() };
 const membership = { leave: vi.fn() };
+const notices = { kicked: vi.fn(async () => {}), chatMessage: vi.fn(async () => {}) };
 const lean = (value: unknown) => ({ lean: () => Promise.resolve(value) });
 let app: INestApplication;
 
@@ -40,6 +42,7 @@ beforeAll(async () => {
       { provide: StudyChatGateway, useValue: gateway },
       { provide: StudyRoomsService, useValue: roomsService },
       { provide: StudyRoomMembershipService, useValue: membership },
+      { provide: StudyRoomNoticesService, useValue: notices },
       { provide: getModelToken(StudyRoom.name), useValue: studyRooms },
       { provide: getModelToken(ChatRoom.name), useValue: chats },
       { provide: getModelToken(Message.name), useValue: {} },

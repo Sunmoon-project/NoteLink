@@ -8,7 +8,11 @@ const mockToast = jest.fn();
 const mockNotify = jest.fn(async () => {});
 jest.mock('../lib/api', () => ({ api: { ai: { job: (...a: unknown[]) => mockJob(...a) } } }));
 jest.mock('../stores/toast', () => ({ toast: (...a: unknown[]) => mockToast(...a) }));
-jest.mock('../lib/push', () => ({ notifyLocal: (...a: unknown[]) => mockNotify(...(a as [])) }));
+let mockRegistered = false;
+jest.mock('../lib/push', () => ({
+  notifyLocal: (...a: unknown[]) => mockNotify(...(a as [])),
+  pushRegistered: () => mockRegistered,
+}));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(),
@@ -52,6 +56,20 @@ describe('화면을 떠나 기다리는 AI 작업', () => {
     );
     expect(mockToast).not.toHaveBeenCalled();
     expect(useBgJobs.getState().jobs).toEqual([]);
+  });
+
+  it('서버 푸시를 받는 기기면 로컬 알림을 띄우지 않는다(서버가 같은 알림을 보낸다, #560)', async () => {
+    Object.defineProperty(AppState, 'currentState', { value: 'background', configurable: true });
+    mockRegistered = true;
+    try {
+      useBgJobs.getState().add({ jobId: 'q1', kind: 'quiz', title: '자료구조' });
+      mockJob.mockImplementation(async () => ({ status: 'succeeded' }));
+      await checkBgJobs();
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(useBgJobs.getState().jobs).toEqual([]);
+    } finally {
+      mockRegistered = false;
+    }
   });
 
   it('조회가 실패하면 남겨 두고, 다른 계정으로 바뀌면 알리지 않고 뺀다', async () => {

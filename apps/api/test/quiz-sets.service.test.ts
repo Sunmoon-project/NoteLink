@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { AiJob, QuizSet } from '@notelink/shared';
 import { mongo, Types } from 'mongoose';
 import { describe, expect, it, vi } from 'vitest';
@@ -7,6 +8,7 @@ import {
   fitInput,
   INPUT_ATTEMPT_LIMIT,
   INPUT_BYTE_LIMIT,
+  cardsJobId,
   nextSetId,
   QUIZ_MIN_LINES,
   QUIZ_SET_SIZE,
@@ -101,10 +103,25 @@ function setup() {
   const set = (id: string) => sets.rows.find((r) => r._id.toString() === id)!;
   const finish = (id: string, result: Record<string, unknown>) =>
     Object.assign(job(id), { status: 'succeeded', progress: 100, result });
-  return { service, aiJobs, sets, materials, attempts, jobs, addNote, job, set, finish, aggregate };
+  return {
+    service,
+    aiJobs,
+    sets,
+    materials,
+    attempts,
+    jobs,
+    addNote,
+    job,
+    set,
+    finish,
+    aggregate,
+  };
 }
 
 const notFound = { status: 404, response: { code: 'NOT_FOUND' } };
+/** 퀴즈 작업만(세트가 ready가 되면 따로 넣는 개념 카드 작업 quiz_flashcards는 빼고, #558) */
+const quizJobs = (t: ReturnType<typeof setup>) =>
+  t.jobs.rows.filter((r) => r['type'] !== 'quiz_flashcards');
 
 describe('QuizSetsService.create', () => {
   it('일반 생성과 미리 만들기 모두 전체 유형별 통계를 AI 작업에 전달한다', async () => {
@@ -752,6 +769,65 @@ describe('QuizSetsService 조회', () => {
     expect(list[1]).toMatchObject({ status: 'ready', title: '첫 번째 퀴즈' });
   });
 
+  it('목록은 끝까지 푼 세트에 completed를 붙인다: 내 끝낸 풀이만, 풀이 조회는 한 번(#561)', async () => {
+    const { service, addNote, finish, attempts } = setup();
+    const made = [];
+    for (const title of ['끝냄', '푸는 중', '남이 끝냄', '안 풂']) {
+      const m = await service.create(ME.toHexString(), await addNote({ title }));
+      finish(m.job._id, { questions: fullSet(), title });
+      made.push(new Types.ObjectId(m.quizSet._id));
+    }
+    const [done, solving, theirs] = made;
+    const at = new Date('2026-11-19T03:00:00.000Z');
+    await attempts.model.create({ userId: ME, quizSetId: done, finishedAt: at } as never);
+    await attempts.model.create({ userId: ME, quizSetId: solving, finishedAt: null } as never);
+    await attempts.model.create({ userId: OTHER, quizSetId: theirs, finishedAt: at } as never);
+    // 같은 세트를 두 번 끝내도 한 번만
+    await attempts.model.create({ userId: ME, quizSetId: done, finishedAt: at } as never);
+    const find = vi.spyOn(attempts.model, 'distinct');
+    const list = await service.list(ME.toHexString());
+    const completed = Object.fromEntries(list.map((s) => [s.title, s.completed]));
+    expect(completed).toEqual({
+      끝냄: true,
+      '푸는 중': undefined,
+      '남이 끝냄': undefined,
+      '안 풂': undefined,
+    });
+    expect(find).toHaveBeenCalledTimes(1);
+  });
+
+  it('목록은 오늘의 복습 세트에 그 복습 날짜(reviewDay)를, 다른 세트에는 null을 싣는다(#561)', async () => {
+    const { service, addNote, finish, sets } = setup();
+    const m = await service.create(ME.toHexString(), await addNote());
+    finish(m.job._id, { questions: fullSet(), title: '맞춤 퀴즈' });
+    await sets.model.create({
+      ownerId: ME,
+      materialId: new Types.ObjectId(),
+      folderId: FOLDER,
+      sourceSetId: null,
+      reviewDay: '2026-11-16',
+      title: '오늘의 복습 · 11-16',
+      status: 'ready',
+      questionCount: 0,
+      questions: [],
+      jobId: null,
+      deletedAt: null,
+    } as never);
+    const list = await service.list(ME.toHexString());
+    expect(Object.fromEntries(list.map((s) => [s.title, s.reviewDay]))).toEqual({
+      '맞춤 퀴즈': null,
+      '오늘의 복습 · 11-16': '2026-11-16',
+    });
+    expect(list.every((s) => QuizSet.safeParse(s).success)).toBe(true);
+  });
+
+  it('세트가 없으면 풀이를 읽지 않는다(#561)', async () => {
+    const { service, attempts } = setup();
+    const find = vi.spyOn(attempts.model, 'distinct');
+    expect(await service.list(ME.toHexString())).toEqual([]);
+    expect(find).not.toHaveBeenCalled();
+  });
+
   it('남의 세트 · 없는 세트 · 형식이 틀린 id는 404', async () => {
     const { service, addNote } = setup();
     const theirs = await service.create(OTHER.toHexString(), await addNote({ ownerId: OTHER }));
@@ -863,7 +939,7 @@ describe('QuizSetsService 끝난 미리 만들기 바로 쓰기(#274)', () => {
 
     expect(QuizSet.parse(quizSet)).toEqual(quizSet);
     expect(AiJob.parse(job)).toEqual(job);
-    expect(t.jobs.rows).toHaveLength(1);
+    expect(quizJobs(t)).toHaveLength(1);
     expect(job).toMatchObject({ _id: p._id, type: 'quiz_pregen', status: 'succeeded' });
     expect(quizSet).toMatchObject({
       _id: p._id,
@@ -905,7 +981,7 @@ describe('QuizSetsService 끝난 미리 만들기 바로 쓰기(#274)', () => {
     expect(b.quizSet._id).toBe(p._id);
     expect(b.quizSet.status).toBe('ready');
     expect(t.sets.rows).toHaveLength(1);
-    expect(t.jobs.rows).toHaveLength(1);
+    expect(quizJobs(t)).toHaveLength(1);
   });
 
   it('이어받아 만든 세트가 그 작업을 가리키면 끝난 뒤 다시 쓰지 않는다', async () => {
@@ -1033,7 +1109,7 @@ describe('QuizSetsService 리뷰 반영(Codex #276)', () => {
     expect(b.quizSet).toMatchObject({ _id: p._id, status: 'ready' });
     expect(late.quizSet).toMatchObject({ _id: p._id, status: 'ready' });
     expect(t.sets.rows).toHaveLength(1);
-    expect(t.jobs.rows).toHaveLength(1);
+    expect(quizJobs(t)).toHaveLength(1);
   });
 
   it('지운 세트가 그 미리 만들기 id를 쓰고 있으면 이어받는 새 세트는 새 id로 만든다', async () => {
@@ -1098,7 +1174,7 @@ describe('QuizSetsService 리뷰 반영(Codex #276)', () => {
     expect(shown).toMatchObject({ status: 'ready' });
     expect(late.quizSet).toMatchObject({ _id: b.quizSet._id, status: 'ready' });
     expect(t.sets.rows.filter((r) => !r['deletedAt'])).toHaveLength(1);
-    expect(t.jobs.rows).toHaveLength(1);
+    expect(quizJobs(t)).toHaveLength(1);
   });
 
   it('개념 저장이 실패하면 세트도 그대로 두어 다음 조회가 다시 옮기며 저장한다', async () => {
@@ -1311,5 +1387,190 @@ describe('seoulDay', () => {
     ['2026-11-08T15:00:00Z', '2026-11-09'],
   ])('%s → %s', (at, day) => {
     expect(seoulDay(new Date(at))).toBe(day);
+  });
+});
+
+describe('QuizSetsService 개념 카드 작업(#558)', () => {
+  const cardJobs = (t: ReturnType<typeof setup>) => t.jobs.rows.filter((r) => r['type'] === 'quiz_flashcards');
+
+  it('퀴즈 작업이 끝나면 세트는 바로 ready, 그다음 같은 범위의 카드 작업을 하나 넣는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    const quizInput = t.job(job._id)['input'] as WorkerInput;
+    t.finish(job._id, { questions: fullSet() }); // 퀴즈 작업은 카드와 무관하게 끝남
+
+    const ready = await t.service.findMine(ME.toHexString(), quizSet._id);
+
+    expect(ready.status).toBe('ready');
+    const [cards, ...more] = cardJobs(t);
+    expect(more).toHaveLength(0);
+    expect(cards).toMatchObject({ status: 'queued', targetType: 'quiz_set' });
+    expect(String(cards!['targetId'])).toBe(quizSet._id);
+    expect(String(cards!['userId'])).toBe(ME.toHexString());
+    const input = cards!['input'] as { material: unknown; questions: { id: string; answer: string }[] };
+    expect(input.material).toEqual(quizInput.material);
+    expect(input.questions.map((q) => q.id)).toEqual(ready.questions.map((q) => q._id));
+    // ready가 된 뒤의 조회는 다시 넣지 않는다
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+    await t.service.list(ME.toHexString());
+    expect(cardJobs(t)).toHaveLength(1);
+  });
+
+  it('여러 요청이 같이 옮겨도 세트를 바꾼 한 요청만 카드 작업을 넣는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    t.finish(job._id, { questions: fullSet() });
+
+    const [a, b, all] = await Promise.all([
+      t.service.findMine(ME.toHexString(), quizSet._id),
+      t.service.findMine(ME.toHexString(), quizSet._id),
+      t.service.list(ME.toHexString()),
+    ]);
+
+    expect([a.status, b.status, all[0]!.status]).toEqual(['ready', 'ready', 'ready']);
+    expect(cardJobs(t)).toHaveLength(1);
+  });
+
+  it('끝난 미리 만들기로 바로 만든 세트도 카드 작업을 넣는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await t.service.pregenerate(ME.toHexString(), materialId);
+    t.finish(p!._id, { questions: fullSet() });
+
+    const { quizSet } = await t.service.create(ME.toHexString(), materialId);
+
+    expect(quizSet.status).toBe('ready');
+    expect(cardJobs(t).map((r) => String(r['targetId']))).toEqual([p!._id]);
+  });
+
+  it('카드 작업을 넣지 못해도 퀴즈는 ready 그대로, 경고 로그에는 오류 이름만', async () => {
+    const t = setup();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    t.finish(job._id, { questions: fullSet() });
+    const enqueue = vi.spyOn(t.aiJobs, 'enqueue').mockRejectedValueOnce(new Error(`down ${NOTE_TEXT}`));
+
+    expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
+    expect(t.set(quizSet._id)['questionCount']).toBe(QUIZ_SET_SIZE);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('개념 카드'));
+    expect(line).toContain('Error');
+    expect(line).not.toContain('세포막');
+    expect(cardJobs(t)).toHaveLength(0);
+    expect(t.set(quizSet._id)['cardsPending']).toBe(true); // 다음 조회가 다시 넣는다
+
+    // 다음 조회(세트 하나 · 목록)가 한 번만 다시 넣고 표시를 지운다
+    await Promise.all([
+      t.service.findMine(ME.toHexString(), quizSet._id),
+      t.service.list(ME.toHexString()),
+    ]);
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+    expect(cardJobs(t)).toHaveLength(1);
+    expect(t.set(quizSet._id)['cardsPending']).toBe(false);
+    warn.mockRestore();
+    enqueue.mockRestore();
+  });
+
+  it('표시를 지우기 전에 멈춘 요청(카드 작업은 이미 있음)은 다시 넣지 않고 표시만 지운다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    t.finish(job._id, { questions: fullSet() });
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+    expect(cardJobs(t)).toHaveLength(1);
+    t.set(quizSet._id)['cardsPending'] = true; // 작업을 넣은 뒤 표시를 지우지 못하고 멈춤
+
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+
+    expect(cardJobs(t)).toHaveLength(1);
+    expect(t.set(quizSet._id)['cardsPending']).toBe(false);
+  });
+
+  it('카드 작업 id는 세트에서 정해져, 넣은 뒤 표시를 지우기 전에 멈춰도 다음 조회가 같은 작업을 다시 넣지 않는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    t.finish(job._id, { questions: fullSet() });
+    // 표시 지우기(카드 표시가 조건에 든 갱신)만 한 번 실패: 작업은 넣었고 표시가 남음
+    const update = t.sets.model.findOneAndUpdate.bind(t.sets.model);
+    const spy = vi.spyOn(t.sets.model, 'findOneAndUpdate').mockImplementation(((filter: Record<string, unknown>, ...rest: unknown[]) =>
+      'cardsPending' in filter && spy.mock.calls.filter(([f]) => 'cardsPending' in (f as object)).length === 1
+        ? { lean: () => Promise.reject(new Error('write failed')) }
+        : (update as (...a: unknown[]) => unknown)(filter, ...rest)) as never);
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+    expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready'); // 조회는 그대로
+    expect(cardJobs(t).map((r) => String(r._id))).toEqual([cardsJobId(new Types.ObjectId(quizSet._id)).toHexString()]);
+    expect(t.set(quizSet._id)['cardsPending']).toBe(true);
+
+    // 표시 지우기가 또 실패해도 목록도 그대로 준다(Codex 재리뷰 3차 제안)
+    spy.mockImplementation(((filter: Record<string, unknown>, ...rest: unknown[]) =>
+      'cardsPending' in filter
+        ? { lean: () => Promise.reject(new Error('write failed')) }
+        : (update as (...a: unknown[]) => unknown)(filter, ...rest)) as never);
+    const all = await t.service.list(ME.toHexString());
+    expect(all.map((x) => [x._id, x.status])).toEqual([[quizSet._id, 'ready']]);
+    expect(t.set(quizSet._id)['cardsPending']).toBe(true);
+    spy.mockImplementation(update as never);
+
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+    expect(cardJobs(t)).toHaveLength(1); // 같은 id라 둘째는 막힘(이미 넣음)
+    expect(t.set(quizSet._id)['cardsPending']).toBe(false);
+    spy.mockRestore();
+    warn.mockRestore();
+  });
+
+  it('카드 표시는 앱 응답에 나가지 않는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    t.finish(job._id, { questions: fullSet() });
+    const ready = await t.service.findMine(ME.toHexString(), quizSet._id);
+    expect(ready).not.toHaveProperty('cardsPending');
+    expect(QuizSet.parse(ready)).toEqual(ready);
+  });
+
+  it('실패한 퀴즈 작업은 카드 작업을 넣지 않는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    Object.assign(t.job(job._id), { status: 'failed', error: 'x' });
+    expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('failed');
+    expect(cardJobs(t)).toHaveLength(0);
+  });
+
+  it.each(['similar_quiz', 'today_review'])('%s 세트는 카드 작업을 넣지 않는다', async (type) => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const job = await t.aiJobs.enqueue({
+      type,
+      userId: ME.toHexString(),
+      targetType: 'quiz_set',
+      targetId: new Types.ObjectId().toHexString(),
+      input: { material: { id: materialId } },
+    });
+    const setId = new Types.ObjectId();
+    await t.sets.model.create({
+      _id: setId,
+      ownerId: ME,
+      materialId: new Types.ObjectId(materialId),
+      folderId: FOLDER,
+      source: 'ai_generated',
+      title: '복습',
+      status: 'generating',
+      progress: 0,
+      questionCount: 0,
+      questions: [],
+      jobId: new Types.ObjectId(job._id),
+      deletedAt: null,
+    } as never);
+    const questions = fullSet().map((q) => ({ ...q, srs: { state: 'learning' } }));
+    t.finish(job._id, { [type === 'similar_quiz' ? 'reviewQuestions' : 'questions']: questions });
+
+    expect((await t.service.findMine(ME.toHexString(), setId.toHexString())).status).toBe('ready');
+    expect(cardJobs(t)).toHaveLength(0);
   });
 });

@@ -12,7 +12,15 @@ const DEFAULT_SETTINGS = {
   theme: 'light',
   doubleTapEraser: true,
   leftHanded: false,
-} as const;
+  // 알림 종류별 켜기(NotificationService). 조용한 시간 {start,end}('HH:mm', 서울)은 기본 끔, 채팅방 음소거는 방 id 목록
+  notifyFriend: true,
+  notifyChat: true,
+  notifyRoom: true,
+  notifyStudy: true,
+  notifyAi: true,
+  quietHours: null as { start: string; end: string } | null,
+  mutedChatRoomIds: [] as string[],
+};
 
 /** 앱이 정해 둔 상태 값(packages/shared User.status) */
 const STATUSES = ['active', 'busy', 'resting', 'offline'] as const;
@@ -96,7 +104,7 @@ export function toAppUser(user: UserSource, streakDays = 0): AppUser {
     role: user.role ?? 'user',
     learnerType: oneOf(LEARNER_TYPES, user.learnerType, DEFAULT_LEARNER_TYPE),
     pointBalance: Number.isInteger(user.pointBalance) ? (user.pointBalance as number) : 0,
-    // 사용자가 바꾼 값을 우선하되, 앱이 읽는 8개 필드는 항상 채워서 내려보낸다
+    // 사용자가 바꾼 값을 우선하되, 앱이 읽는 필드는 항상 채워서 내려보낸다
     settings: { ...DEFAULT_SETTINGS, ...(user.settings ?? {}) },
     status: oneOf(STATUSES, user.status, 'active'),
     interestCategoryIds: (user.interestCategoryIds ?? []).map(String),

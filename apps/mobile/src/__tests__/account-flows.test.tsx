@@ -29,6 +29,7 @@ const mockApi = {
     update: jest.fn(),
     interestCategories: jest.fn(async () => []),
     withdraw: jest.fn(async () => {}),
+    presence: jest.fn(async () => {}),
   },
   auth: { logout: jest.fn(async () => {}) },
   study: {

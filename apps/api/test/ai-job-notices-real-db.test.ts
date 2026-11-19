@@ -54,6 +54,12 @@ describe.skipIf(!isLocal)('진짜 DB 노트 변환 완료 푸시', () => {
           return sendImpl();
         },
       } as never,
+      // 알림함 · AI 알림 설정은 ai-job-quiz-notices-real-db.test.ts에서 본다. 여기서는 모두 받는다
+      null as never,
+      {
+        saveToInbox: () => Promise.resolve(new Map([[String(user), 'n1']])),
+        pushAllowed: (ids: unknown[]) => Promise.resolve(ids),
+      } as never,
     );
 
   beforeAll(async () => {
@@ -321,7 +327,14 @@ describe.skipIf(!isLocal)('진짜 DB 노트 변환 완료 푸시', () => {
     );
     // 서버가 후보를 읽은 시점의 오래된 값: 시도 0번
     const stale = [
-      { _id: id, status: 'failed', userId: user, targetId: materialId, notice: { attempts: 0 } },
+      {
+        _id: id,
+        type: 'handwriting_summary',
+        status: 'failed',
+        userId: user,
+        targetId: materialId,
+        notice: { attempts: 0 },
+      },
     ];
     const chain = { sort: () => chain, limit: () => chain, lean: () => Promise.resolve(stale) };
     const spy = vi.spyOn(jobs, 'find').mockImplementation((() => chain) as never);

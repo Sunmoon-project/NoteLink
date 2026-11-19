@@ -153,3 +153,34 @@ def test_user_lanes_out_of_range_are_refused(monkeypatch: pytest.MonkeyPatch, va
     monkeypatch.setenv("AI_JOB_USER_LANES", value)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_the_background_lane_takes_a_pregen_before_older_card_jobs() -> None:
+    # 개념 카드 작업(#558)은 퀴즈마다 생겨 쌓일 수 있음: 새 노트의 미리 만들기가 그 뒤에서
+    # 기다리지 않게
+    col = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    for i, kind in enumerate(["quiz_flashcards", "quiz_flashcards", "quiz_pregen"]):
+        col.insert_one(
+            {
+                "type": kind,
+                "status": "queued",
+                "input": {},
+                "progress": 0,
+                "attempts": 0,
+                "createdAt": T0 + timedelta(seconds=i),
+            }
+        )
+    background = lanes_on(col, 1)[0][0]
+    done: list[str] = []
+
+    def fake(kind: str) -> Handler:
+        def handle(inp: JsonObject, report: JobReport) -> JsonObject:
+            done.append(kind)
+            return {}
+
+        return handle
+
+    handlers = {t: fake(t) for t in background.handlers}
+    for _ in range(3):
+        assert run_once(background.store, handlers, first=background.first)
+    assert done == ["quiz_pregen", "quiz_flashcards", "quiz_flashcards"]

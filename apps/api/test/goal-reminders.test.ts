@@ -179,6 +179,8 @@ describe('GoalRemindersService 대상 고르기', () => {
     devices?: string[];
     send?: (messages: { to: string }[]) => unknown;
     deleteFails?: boolean;
+    /** 공부 알림을 받는지(설정 · 조용한 시간, NotificationService.pushAllowed). 기본 받음 */
+    allowed?: boolean;
     /** 이 사람의 열린(끝나지 않은) 세션. 없으면 null */
     session?: {
       startedAt: Date;
@@ -248,6 +250,9 @@ describe('GoalRemindersService 대상 고르기', () => {
       devices as never,
       holidays as never,
       push as never,
+      {
+        pushAllowed: (ids: unknown[]) => Promise.resolve(opts.allowed === false ? [] : ids),
+      } as never,
     );
     return { service, push, filters, claims, devices, sessionFilters };
   }
@@ -263,6 +268,13 @@ describe('GoalRemindersService 대상 고르기', () => {
       lastRemindedOn: { $ne: TODAY },
     });
     expect(REMIND_MAX_ATTEMPTS).toBe(3);
+  });
+
+  it('공부 알림을 끈(또는 조용한 시간인) 사람에게는 보내지 않고 그날 표시만 남긴다(#560)', async () => {
+    const { service, push, claims } = setup({ goals: [goal()], totalSec: 0, allowed: false });
+    await service.runOnce(seoul('21:05'));
+    expect(push.send).not.toHaveBeenCalled();
+    expect(claims).toHaveLength(1);
   });
 
   it('시각이 지났고 목표보다 적게 공부했으면 남은 분과 data 로 보낸다(채널은 비움)', async () => {

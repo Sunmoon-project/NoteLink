@@ -14,6 +14,7 @@ import type {
   MaterialKind,
   MaterialSource,
   Message,
+  Notification,
   PlanTier,
   PointLedger,
   PublicHoliday,
@@ -103,6 +104,8 @@ export interface Api {
       > & { settings?: Partial<User['settings']> },
     ): Promise<User>;
     setStatus(status: User['status']): Promise<void>;
+    /** 앱이 앞에 있다는 신호(true) · 나감(false) */
+    presence(active: boolean, device?: string): Promise<void>;
     registerDevice(d: {
       platform: 'ios' | 'android';
       pushToken: string;
@@ -114,6 +117,13 @@ export interface Api {
     emailSendCode(): Promise<void>;
     /** 본인 인증번호를 확인한다 → 인증된 내 정보(emailVerified: true) */
     emailVerifyCode(code: string): Promise<User>;
+  };
+  /** 앱 안 알림함(#560). 최근 것부터, before(알림 id) 이전 것을 한 쪽씩 */
+  notifications: {
+    list(before?: string): Promise<{ items: Notification[]; nextCursor: string | null }>;
+    unreadCount(): Promise<number>;
+    markRead(id: string): Promise<void>;
+    readAll(): Promise<void>;
   };
   upload: {
     getSas(p: {
@@ -161,6 +171,8 @@ export interface Api {
     toggleTodo(id: string, done: boolean): Promise<void>;
     ddays(): Promise<DDay[]>;
     addDday(p: { title: string; date: string }): Promise<DDay>;
+    /** 과제 · 시험에서 온 D-day는 목록에서만 빠지고 할 일은 남는다 */
+    removeDday(id: string): Promise<void>;
     holidays(year: number): Promise<PublicHoliday[]>;
     setHolidayHidden(date: string, hidden: boolean): Promise<void>;
     customHolidays(): Promise<{ _id: string; name: string; date: string }[]>;

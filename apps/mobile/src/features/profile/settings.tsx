@@ -5,8 +5,17 @@ import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarDays, Check, ChevronRight, CircleAlert, Gift, Zap } from 'lucide-react-native';
+import {
+  Bell,
+  CalendarDays,
+  Check,
+  ChevronRight,
+  CircleAlert,
+  Gift,
+  Zap,
+} from 'lucide-react-native';
 import type { PlanTier, UserSettings } from '@notelink/shared';
+import { leavePresence } from '@/lib/presence';
 import { api, ApiError } from '@/lib/api';
 import { CodeBoxes } from '@/components/code-boxes';
 import { nicknameError } from '@/lib/validation';
@@ -92,7 +101,11 @@ export function SettingsScreen() {
         await api.me.withdraw();
         // 탈퇴한 계정의 오답 노트(기기 파일)도 지운다
         forgetWrongNotes(useAuth.getState().userId);
-      } else await api.auth.logout().catch(() => {});
+      } else {
+        // 로그아웃하면 친구에게 바로 오프라인으로 보이게 신호를 멈추고 거둔다(토큰을 지우기 전에)
+        await leavePresence();
+        await api.auth.logout().catch(() => {});
+      }
       failure = '기기의 로그인 정보를 지우지 못했어요. 다시 시도해 주세요';
       await useAuth.getState().signOut();
       clearAccountState(qc);
@@ -188,6 +201,12 @@ export function SettingsScreen() {
           />
         </View>
 
+        <Label>알림</Label>
+        <Group>
+          <Row icon={Bell} chevron onPress={() => router.push('/(tabs)/profile/notifications')}>
+            알림 설정
+          </Row>
+        </Group>
         <Label>학습</Label>
         <Group>
           <Row icon={CalendarDays} chevron onPress={() => openFeature('/record')}>

@@ -129,6 +129,8 @@ export const PATHS = {
   passwordReset: '/auth/password/reset',
   me: '/users/me',
   myStatus: '/users/me/status',
+  /** 앱이 앞에 있다는 신호: PUT(신호) · DELETE(나감). 친구에게 보이는 상태의 기준 */
+  myPresence: '/users/me/presence',
   /** 계정 이메일로 본인 인증번호를 보낸다 → 204. 이메일이 없으면 400 NO_EMAIL */
   myEmailSendCode: '/users/me/email/send-code',
   /** 본인 인증번호 확인 { code } → { data: User }(emailVerified: true) */
@@ -157,6 +159,7 @@ export const PATHS = {
   todos: '/todos',
   todo: (id: string) => `/todos/${seg(id)}`,
   ddays: '/ddays',
+  dday: (id: string) => `/ddays/${seg(id)}`,
   holidays: '/holidays',
   holiday: (date: string) => `/holidays/${seg(date)}`,
   customHolidays: '/holidays/custom',
@@ -169,6 +172,14 @@ export const PATHS = {
   timetableClasses: '/timetable/classes',
   timetableClass: (id: string) => `/timetable/classes/${seg(id)}`,
   timetableShares: '/timetable/shares',
+  // 알림함. 목록 ?before=<알림 id>&limit= → { data: { items: Notification[], nextCursor: string | null } }(최근 것부터)
+  notifications: '/notifications',
+  /** → { data: { count } } */
+  notificationsUnreadCount: '/notifications/unread-count',
+  /** → 204 */
+  notificationsReadAll: '/notifications/read-all',
+  /** PATCH → 204. 내 알림이 아니면 404 */
+  notificationRead: (id: string) => `/notifications/${seg(id)}/read`,
   // 소셜 · 채팅
   friends: '/friends',
   friend: (userId: string) => `/friends/${seg(userId)}`,

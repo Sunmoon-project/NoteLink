@@ -82,16 +82,51 @@ beforeEach(() => {
     (a, b) => String(a.userA) === String(b.userA) && String(a.userB) === String(b.userB),
   );
   shares = model([]);
-  service = new FriendsService(friendships as never, model(users) as never, shares as never);
+  // 알림은 notifications-real-db.test.ts에서 확인한다. 여기서는 받는 쪽 자리만 채운다
+  const notifier = { notify: async () => {} };
+  service = new FriendsService(
+    friendships as never,
+    model(users) as never,
+    shares as never,
+    notifier as never,
+  );
+});
+
+describe('알림 실패', () => {
+  it('알림 쪽(닉네임 조회 · 발송)이 실패해도 요청 · 수락은 성공한다', async () => {
+    const me = person('나');
+    const you = person('너');
+    const broken = model(users);
+    const findOne = broken.findOne;
+    // 존재 확인(exists)은 되고, 알림 문구용 닉네임 조회만 실패한다
+    broken.findOne = () => {
+      throw new Error('DB 오류');
+    };
+    const failing = new FriendsService(
+      friendships as never,
+      broken as never,
+      shares as never,
+      { notify: () => Promise.reject(new Error('push')) } as never,
+    );
+    await expect(failing.request(me, you, NOW)).resolves.toBeUndefined();
+    broken.findOne = findOne;
+    const [request] = await service.received(you);
+    broken.findOne = () => {
+      throw new Error('DB 오류');
+    };
+    await expect(failing.respond(you, request!._id, true, NOW)).resolves.toBeUndefined();
+    expect((await service.friends(me)).map((f) => f.nickname)).toEqual(['너']);
+  });
 });
 
 describe('친구 찾기', () => {
   it('닉네임이 같은 사람을 찾고, 나 · 탈퇴한 사람 · 빈 검색어는 뺀다', async () => {
     const me = person('나');
-    const jiwoo = person('지우');
+    const jiwoo = person('지우', { lastActiveAt: new Date() });
     person('탈퇴', { deletedAt: NOW });
     expect(await service.search(me, ' 지우 ')).toEqual([
-      { _id: jiwoo, userId: jiwoo, nickname: '지우', status: 'active' },
+      // 친구가 아닌 사람에게는 접속 상태를 알려 주지 않는다
+      { _id: jiwoo, userId: jiwoo, nickname: '지우', status: 'offline' },
     ]);
     expect(await service.search(me, '나')).toEqual([]);
     expect(await service.search(me, '탈퇴')).toEqual([]);
@@ -297,6 +332,41 @@ describe('친구 끊기와 다시 친구 되기', () => {
     });
     await service.remove(me, you);
     expect(shares.rows).toHaveLength(0);
+  });
+});
+
+// 실기기 피드백: 앱을 나가도 친구에게 '활동 중'으로 보였다(고른 상태만 보여 줬다)
+describe('친구에게 보이는 상태', () => {
+  const befriend = (me: string, id: string) =>
+    friendships.rows.push({
+      _id: new Types.ObjectId(),
+      ...pairOf(new Types.ObjectId(me), new Types.ObjectId(id)),
+      requesterId: new Types.ObjectId(me),
+      status: 'accepted',
+      requestedAt: NOW,
+    });
+
+  it('최근 2분 안에 앱이 신호를 보냈으면 고른 상태, 아니면(신호 없음 · 오래됨 · 나감) 오프라인', async () => {
+    const me = person('나');
+    const now = Date.now();
+    const cases = {
+      방금: { status: 'busy', lastActiveAt: new Date(now - 30_000) },
+      오래전: { status: 'active', lastActiveAt: new Date(now - 3 * 60_000) },
+      나감: { status: 'active', lastActiveAt: null },
+      신호없음: { status: 'resting' },
+    };
+    for (const [name, extra] of Object.entries(cases)) befriend(me, person(name, extra));
+    const shown = Object.fromEntries(
+      (await service.friends(me)).map((f) => [f.nickname, f.status]),
+    );
+    expect(shown).toEqual({
+      방금: 'busy',
+      오래전: 'offline',
+      나감: 'offline',
+      신호없음: 'offline',
+    });
+    // 찾기(친구 아닌 사람도 봄)는 접속 상태를 드러내지 않는다
+    expect((await service.search(me, '방금'))[0]!.status).toBe('offline');
   });
 });
 

@@ -205,6 +205,17 @@ it('오늘의 복습 세트를 마치면 보관함에 담지 않고 오늘의 �
   );
   expect(mockApi.quiz.saveToBox).not.toHaveBeenCalled();
 });
+// #561: 끝낸 세트는 목록의 completed가 바뀌므로 퀴즈 탭 맨 위 카드가 돌아오자마자 바뀌게 목록을 다시 읽는다
+it.each([
+  ['맞춤 퀴즈', false],
+  ['오늘의 복습', true],
+])('%s 세트를 마치면 퀴즈 목록을 다시 읽는다(#561)', async (_, today) => {
+  if (today) queryClient.setQueryData(['today-review'], { _id: quizSet._id, status: 'ready' });
+  queryClient.setQueryData(['quiz-sets'], [quizSet]);
+  await renderScreen(<QuizSolveScreen />, client());
+  await submit();
+  await waitFor(() => expect(queryClient.getQueryState(['quiz-sets'])?.isInvalidated).toBe(true));
+});
 it('완료 응답 전에 다른 계정으로 바뀌면 새 계정 보관함에 담지 않는다', async () => {
   const pending = deferred<{ pointsEarned: number; balance: number }>();
   mockApi.quiz.finish.mockReturnValueOnce(pending.promise);

@@ -156,6 +156,13 @@ function setup(
     materials as never,
     devices as never,
     push as never,
+    // 알림함 · AI 알림 설정은 ai-job-quiz-notices-real-db.test.ts에서 본다. 여기서는 모두 받는다
+    null as never,
+    {
+      saveToInbox: (input: { userIds: unknown[] }) =>
+        Promise.resolve(new Map(input.userIds.map((id) => [String(id), 'n1']))),
+      pushAllowed: (ids: unknown[]) => Promise.resolve(ids),
+    } as never,
   );
   // 기록 재시도 사이의 기다림은 테스트에서 실제로 기다리지 않는다
   const waits: number[] = [];
@@ -188,15 +195,25 @@ const failAll = () =>
   });
 
 describe('AiJobNoticesService 대상 고르기', () => {
-  it('요약 3종 · 노트 대상 · 성공/실패 · 최근 30분 · 시도 한도 안만 찾는다(취소 · 퀴즈 종류는 조건에 없다)', async () => {
+  it('요약 3종(노트) · 퀴즈 만들기 · 유사 문제(세트) · 기다린 미리 만들기 · 성공/실패 · 최근 30분 · 시도 한도 안만 찾는다(취소는 조건에 없다)', async () => {
     const { service, filters } = setup();
     await service.runOnce(NOW);
     expect(filters[0]).toMatchObject({
-      type: { $in: ['handwriting_summary', 'recording_summary', 'document_summary'] },
-      targetType: 'material',
       status: { $in: ['succeeded', 'failed'] },
       updatedAt: { $gte: new Date(NOW.getTime() - NOTICE_WINDOW_MS) },
-      $or: [{ 'notice.attempts': null }, { 'notice.attempts': { $lt: NOTICE_MAX_ATTEMPTS } }],
+      $and: [
+        {
+          $or: [
+            {
+              type: { $in: ['handwriting_summary', 'recording_summary', 'document_summary'] },
+              targetType: 'material',
+            },
+            { type: { $in: ['quiz_generate', 'similar_quiz'] }, targetType: 'quiz_set' },
+            { type: 'quiz_pregen', awaited: true },
+          ],
+        },
+        { $or: [{ 'notice.attempts': null }, { 'notice.attempts': { $lt: NOTICE_MAX_ATTEMPTS } }] },
+      ],
     });
   });
 

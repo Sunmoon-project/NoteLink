@@ -8,6 +8,8 @@ import { TokenService } from '../src/modules/auth/token.service.js';
 import { Timetable } from '../src/modules/calendar/schemas/timetable.schema.js';
 import { TimetableShare } from '../src/modules/calendar/schemas/timetable-share.schema.js';
 import { Friendship } from '../src/modules/social/schemas/friendship.schema.js';
+import { User } from '../src/modules/auth/schemas/user.schema.js';
+import { NotificationService } from '../src/modules/notification/notification.service.js';
 import { TimetableController } from '../src/modules/timetable/timetable.controller.js';
 import { TimetableService } from '../src/modules/timetable/timetable.service.js';
 import { TEST_USER_ID } from './shop-test-app.js';
@@ -28,6 +30,12 @@ export async function createTimetableTestApp(fakes: {
             { provide: getModelToken(Timetable.name), useValue: fakes.timetable },
             { provide: getModelToken(TimetableShare.name), useValue: fakes.share },
             { provide: getModelToken(Friendship.name), useValue: fakes.friendship },
+            // 공유 알림은 calendar-notices-real-db.test.ts에서 본다. 여기서는 닉네임 조회 · 알림 자리만 채운다
+            {
+                provide: getModelToken(User.name),
+                useValue: { findById: () => ({ lean: () => Promise.resolve({ nickname: '나' }) }) },
+            },
+            { provide: NotificationService, useValue: { notify: () => Promise.resolve() } },
             // 로그인 확인(JwtAuthGuard)이 쓰는 도구의 가짜: TEST_TOKEN만 통과시킨다
             {
                 provide: TokenService,

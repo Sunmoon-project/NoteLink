@@ -55,6 +55,11 @@ export interface NewAiJob {
   targetId: string;
   /** 처리기는 다른 컬렉션을 읽지 않으므로 처리에 필요한 자료를 모두 담는다(apps/ai jobs.py) */
   input: Record<string, unknown>;
+  /**
+   * 정해 둔 작업 id(없으면 새로 만듦). 한 대상에 작업을 한 번만 넣을 때 쓴다: 같은 id가 이미 있으면 MongoDB _id 고유
+   * 색인이 막아 E11000(code 11000)으로 실패한다(개념 카드 작업, #558)
+   */
+  id?: string;
 }
 
 /** 다시 시도 전에 입력을 새로 고치는 함수가 받는 값(작업의 대상과 지금 input) */
@@ -259,6 +264,7 @@ export class AiJobsService {
     // 이 요청의 held 표시(요청마다 다른 값). 확인이 늦어 지난 뒤 다시 시도가 같은 문서를 새로 잡았으면 그 held는 건드리지 않는다
     const mine = randomUUID();
     const created = await this.jobs.create({
+      ...(job.id ? { _id: serverObjectId(job.id, 'id') } : {}),
       type: job.type,
       userId,
       targetType: job.targetType,
@@ -339,6 +345,21 @@ export class AiJobsService {
         ...(typeof row.step === 'string' ? { step: row.step } : {}),
       }),
     );
+  }
+
+  /**
+   * 내 작업 input의 노트(input.material, 앱에는 보내지 않는 값). 없거나 남의 작업이면 null.
+   * 맞춤 퀴즈 작업에 넣었던 노트를 개념 카드 작업(quiz_flashcards, #558)에 그대로 넘길 때 쓴다.
+   * 다른 세트 · 풀이 · 노트 글은 읽지 않는다(input.material만). 서버 안에서 넘긴 id라 형식이 틀리면 서버 오류
+   */
+  async materialInputOf(userId: string, jobId: string): Promise<unknown> {
+    const row = await this.jobs
+      .findOne(
+        { _id: serverObjectId(jobId, 'jobId'), userId: serverObjectId(userId, 'userId') },
+        { 'input.material': 1 },
+      )
+      .lean<{ input?: { material?: unknown } | null }>();
+    return row?.input?.material ?? null;
   }
 
   /** 앱의 진행 상태 조회. 본인 작업만 */

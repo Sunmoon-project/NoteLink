@@ -1,15 +1,25 @@
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { MoreHorizontal, Search as SearchIcon } from 'lucide-react-native';
+import {
+  ChevronLeft,
+  FileText,
+  ImageIcon,
+  Images,
+  MoreHorizontal,
+  Plus,
+  Search as SearchIcon,
+} from 'lucide-react-native';
 import type { Message, User } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { socket } from '@/lib/socket';
-import { timeAgo } from '@/lib/dates';
+import { viewingChat } from '@/lib/notification-route';
+import { useChatMute } from '@/features/notifications';
+import { seoul, timeAgo, ymd } from '@/lib/dates';
 import { useSocket } from '@/hooks';
 import { toast } from '@/stores/toast';
 import {
@@ -25,12 +35,25 @@ import {
   Screen,
   Search,
   Sheet,
+  Toggle,
   Two,
   cx,
 } from '@/components/ui';
 import { useAuth } from '@/stores/auth';
 import { C, ICON, MOTION } from '@/theme';
 import { StatusText } from './drawer';
+import { UploadError } from '@/lib/upload';
+import {
+  AttachPicker,
+  ChatBubble,
+  newClientId,
+  openChatAttachment,
+  pendingMessage,
+  pickChatFile,
+  sendChatAttachment,
+  type AttachmentKind,
+  type PendingAttachment,
+} from '@/features/chat/attachment';
 
 // p.53~55 친구 추가 · 요청 · 채팅 · 삭제
 
@@ -218,7 +241,15 @@ export function ChatScreen() {
   } = useLocalSearchParams<{ id: string; name?: string; status?: User['status'] }>();
   const qc = useQueryClient();
   const room = useQuery({ queryKey: ['dm', id], queryFn: () => api.social.openDirect(id) });
+  const mute = useChatMute(room.data?._id);
+  // 이 채팅을 보는 동안에는 이 채팅의 새 메시지 배너를 띄우지 않는다(다른 화면으로 가면 다시 띄운다)
+  const chatRoomId = room.data?._id;
+  useFocusEffect(
+    useCallback(() => (chatRoomId ? viewingChat(chatRoomId) : undefined), [chatRoomId]),
+  );
   const pageRequestGeneration = useRef(0);
+  // 보내는 중인 첨부(FR-16-03): 다시 보낼 때 고른 파일 · 이미 올린 주소를 다시 쓴다
+  const attachments = useRef(new Map<string, PendingAttachment>());
   const history = useQuery({
     queryKey: ['messages', room.data?._id],
     queryFn: async (): Promise<DirectHistory> => {
@@ -228,7 +259,13 @@ export function ChatScreen() {
       const cached = qc.getQueryData<DirectHistory>(['messages', roomId]);
       const reconnectedDuringRequest = requestGeneration !== pageRequestGeneration.current;
       return {
-        messages: mergeMessages(fetched, cached?.messages ?? []),
+        // 화면을 떠났다 오면 보내다 만 첨부(기기 파일 주소 말풍선)는 다시 보낼 수 없으니 버린다
+        messages: mergeMessages(
+          fetched,
+          (cached?.messages ?? []).filter(
+            (x) => x._id !== x.clientId || attachments.current.has(x._id),
+          ),
+        ),
         hasMore: reconnectedDuringRequest
           ? (cached?.hasMore ?? fetched.length === DIRECT_MESSAGE_PAGE_SIZE)
           : fetched.length === DIRECT_MESSAGE_PAGE_SIZE || cached?.hasMore === true,
@@ -243,7 +280,20 @@ export function ChatScreen() {
   });
   const [v, setV] = useState('');
   const [menu, setMenu] = useState(false);
+  const [files, setFiles] = useState(false);
+  const [attach, setAttach] = useState(false);
   const [del, setDel] = useState(false);
+  // 헤더는 들어올 때 넘긴 상태가 아니라 친구 목록의 상태 · 아바타를 쓰고, 대화 중에도 1분마다 다시 읽는다(FR-16-01)
+  const friends = useQuery({
+    queryKey: ['friends'],
+    queryFn: api.social.friends,
+    refetchInterval: 60_000,
+  });
+  const friend = friends.data?.find((f) => f.userId === id);
+  const inFlight = useRef(new Set<string>());
+  const attachSeq = useRef(0);
+  const [failedIds, setFailedIds] = useState<string[]>([]);
+  const staleAt = useRef(0);
   const [olderLoading, setOlderLoading] = useState(false);
   const [olderError, setOlderError] = useState(false);
   const list = useRef<FlatList<Message>>(null);
@@ -256,8 +306,17 @@ export function ChatScreen() {
   const nearBottom = useRef(true);
   const receiveMessage = (m: Message) => {
     if (m.chatRoomId !== room.data?._id) return;
+    // 서버가 저장한 내 메시지가 오면(응답이든 방송이든) 같은 clientId의 보내는 중 말풍선을 바꾼다
+    const pending = m.senderId === myId && m.clientId !== m._id ? m.clientId : undefined;
+    // 응답 시간이 지나 실패로 바뀐 뒤 늦게 와도, 남은 첨부 기록 · 실패 표시를 정리한다
+    if (pending && attachments.current.delete(pending)) {
+      setFailedIds((ids) => ids.filter((x) => x !== pending));
+    }
     qc.setQueryData<DirectHistory>(['messages', m.chatRoomId], (previous) => ({
-      messages: mergeMessages(previous?.messages ?? [], [m]),
+      messages: mergeMessages(
+        (previous?.messages ?? []).filter((x) => !pending || x._id !== pending),
+        [m],
+      ),
       hasMore: previous?.hasMore ?? false,
       nextBefore: previous?.nextBefore,
     }));
@@ -355,6 +414,56 @@ export function ChatScreen() {
     );
     setV('');
   };
+  const deliverAttachment = async (clientId: string) => {
+    const entry = attachments.current.get(clientId);
+    const chatRoomId = room.data?._id;
+    if (!entry || !chatRoomId || inFlight.current.has(clientId)) return;
+    inFlight.current.add(clientId);
+    setFailedIds((ids) => ids.filter((x) => x !== clientId));
+    try {
+      const m = await sendChatAttachment(chatRoomId, clientId, entry);
+      attachments.current.delete(clientId);
+      receiveMessage(m);
+    } catch (e) {
+      setFailedIds((ids) => [...new Set([...ids, clientId])]);
+      if (e instanceof UploadError) toast(e.message);
+    } finally {
+      inFlight.current.delete(clientId);
+    }
+  };
+  /** + → 사진 · 파일(PDF) 고르기. 고르면 바로 말풍선을 띄우고(올리는 중) 보낸다 */
+  const pickAttachment = async (kind: AttachmentKind) => {
+    setAttach(false);
+    const chatRoomId = room.data?._id;
+    if (!chatRoomId) return toast('채팅을 준비하고 있어요. 잠시 후 다시 보내 주세요');
+    if (!myId) return toast('로그인 상태를 확인해 주세요');
+    const file = await pickChatFile(kind);
+    if (!file) return;
+    const clientId = newClientId(++attachSeq.current);
+    const entry = { kind, file };
+    attachments.current.set(clientId, entry);
+    receiveMessage(pendingMessage(chatRoomId, myId, clientId, entry));
+    void deliverAttachment(clientId);
+  };
+  /** 첨부 열기: 읽기 주소가 만료됐으면(1시간) 기록을 다시 읽어 새 주소로 연다 */
+  const openAttachment = (m: Message) =>
+    openChatAttachment(m, async () => {
+      const fresh = await history.refetch();
+      return fresh.data?.messages.find((x) => x._id === m._id)?.attachment?.url;
+    });
+  // 사진이 만료된 주소라 보이지 않으면 기록을 한 번 다시 읽는다(연달아 다시 읽지 않게 30초 간격)
+  const refreshStale = () => {
+    if (Date.now() - staleAt.current < 30_000) return;
+    staleAt.current = Date.now();
+    void history.refetch();
+  };
+  // 이 대화에서 주고받은 사진 · 파일(불러온 기록 안에서, 최근 것부터)
+  const shared = (history.data?.messages ?? [])
+    // 보내는 중 · 실패한 내 말풍선(기기 파일 주소)은 빼고 서버에 저장된 것만
+    .filter(
+      (m) => (m.type === 'image' || m.type === 'file') && m.attachment && m._id !== m.clientId,
+    )
+    .reverse();
   const remove = useMutation({
     mutationFn: () => api.social.remove(id),
     onSuccess: async () => {
@@ -398,35 +507,70 @@ export function ChatScreen() {
       <Screen
         scroll={false}
         footer={
-          <View className="flex-row items-center rounded-full bg-white px-4">
-            <TextInput
-              value={v}
-              onChangeText={setV}
-              onSubmitEditing={send}
-              returnKeyType="send"
-              placeholder="메시지 보내기"
-              placeholderTextColor={C.sub}
-              className="h-11 flex-1 text-subhead text-ink"
-            />
-            <Pressable onPress={send} hitSlop={8}>
-              <Text className="text-footnote font-semibold text-brand">전송</Text>
-            </Pressable>
+          <View className="gap-2">
+            {attach && <AttachPicker onPick={(kind) => void pickAttachment(kind)} />}
+            <View className="flex-row items-center gap-2 rounded-full bg-white pl-1.5 pr-4">
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="첨부"
+                onPress={() => setAttach((open) => !open)}
+                hitSlop={6}
+                className="h-8 w-8 items-center justify-center rounded-full bg-mint"
+              >
+                <Plus size={ICON.sm} color={C.brand} />
+              </Pressable>
+              <TextInput
+                value={v}
+                onChangeText={setV}
+                onSubmitEditing={send}
+                returnKeyType="send"
+                placeholder="메시지 보내기"
+                placeholderTextColor={C.sub}
+                className="h-11 flex-1 text-subhead text-ink"
+              />
+              <Pressable onPress={send} hitSlop={8}>
+                <Text className="text-footnote font-semibold text-brand">전송</Text>
+              </Pressable>
+            </View>
           </View>
         }
       >
-        <Header
-          right={
-            <Pressable accessibilityLabel="더보기" onPress={() => setMenu(true)} hitSlop={10}>
-              <MoreHorizontal size={ICON.md} color={C.sub} />
-            </Pressable>
-          }
-        />
-        <View className="-mt-2 mb-4 flex-row items-center gap-2">
-          <Avatar name={name} size={34} tone="mint" />
-          <View>
-            <Text className="text-callout font-bold text-ink">{name}</Text>
-            <StatusText status={status} />
+        {/* 맨 위 한 줄: 뒤로 · 상대 아바타 · 이름 · 지금 상태 · 주고받은 자료 · 더보기 */}
+        <View className="-mx-5 mb-3 flex-row items-center gap-2.5 border-b border-line px-3 pt-1 pb-3">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="뒤로"
+            onPress={() => router.back()}
+            hitSlop={10}
+            className="h-control w-control items-center justify-center"
+          >
+            <ChevronLeft size={ICON.lg} color={C.ink} />
+          </Pressable>
+          <Avatar name={name} uri={friend?.avatarUrl} size={38} tone="mint" />
+          <View className="flex-1">
+            <Text numberOfLines={1} className="text-headline font-bold text-ink">
+              {friend?.nickname ?? name}
+            </Text>
+            <StatusText status={friend?.status ?? status} />
           </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="주고받은 자료"
+            onPress={() => setFiles(true)}
+            hitSlop={8}
+            className="h-control w-control items-center justify-center"
+          >
+            <Images size={ICON.md} color={C.sub} />
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="더보기"
+            onPress={() => setMenu(true)}
+            hitSlop={8}
+            className="h-control w-control items-center justify-center"
+          >
+            <MoreHorizontal size={ICON.md} color={C.sub} />
+          </Pressable>
         </View>
         {history.isError && !history.data && (
           <View className="gap-2 py-3">
@@ -486,6 +630,22 @@ export function ChatScreen() {
                   </View>
                 </View>
               );
+            if (m.type === 'image' || m.type === 'file')
+              return (
+                <View className={cx(mine && 'items-end')}>
+                  <ChatBubble m={m} onOpen={(x) => void openAttachment(x)} onStale={refreshStale} />
+                  {failedIds.includes(m._id) && (
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => void deliverAttachment(m._id)}
+                    >
+                      <Text className="mt-1 text-caption2 text-danger">
+                        전송하지 못했어요 · 다시 보내기
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              );
             return (
               <View className={cx('flex-row', mine && 'justify-end')}>
                 <View
@@ -494,7 +654,11 @@ export function ChatScreen() {
                     mine ? 'bg-brand' : 'bg-white',
                   )}
                 >
-                  <Text className={cx('text-footnote', mine ? 'text-white' : 'text-ink')}>
+                  {/* 길게 누르면 복사 메뉴가 뜨게 글자를 고를 수 있게 한다 */}
+                  <Text
+                    selectable
+                    className={cx('text-footnote', mine ? 'text-white' : 'text-ink')}
+                  >
                     {m.text}
                   </Text>
                 </View>
@@ -504,7 +668,29 @@ export function ChatScreen() {
         />
         <Sheet open={menu} onClose={() => setMenu(false)}>
           <Group>
-            <Row>알림 설정은 준비 중이에요</Row>
+            <Row
+              icon={Images}
+              chevron
+              onPress={() => {
+                setMenu(false);
+                setFiles(true);
+              }}
+            >
+              주고받은 자료
+            </Row>
+            <Row
+              sub={mute.muted ? '새 메시지 알림을 받지 않아요' : undefined}
+              right={
+                <Toggle
+                  label="이 채팅 알림"
+                  on={!mute.muted}
+                  disabled={!mute.ready}
+                  onChange={mute.toggle}
+                />
+              }
+            >
+              이 채팅 알림
+            </Row>
             <Row
               danger
               onPress={() => {
@@ -515,6 +701,26 @@ export function ChatScreen() {
               친구 삭제
             </Row>
           </Group>
+        </Sheet>
+        <Sheet open={files} onClose={() => setFiles(false)} title="주고받은 자료">
+          {shared.length ? (
+            <Group>
+              {shared.map((m) => (
+                <Row
+                  key={m._id}
+                  icon={m.type === 'image' ? ImageIcon : FileText}
+                  sub={`${m.senderId === myId ? '나' : (friend?.nickname ?? name)} · ${ymd(seoul(m.createdAt)).slice(5).replace('-', '/')}`}
+                  onPress={() => void openAttachment(m)}
+                >
+                  {m.attachment!.name}
+                </Row>
+              ))}
+            </Group>
+          ) : (
+            <Text className="py-6 text-center text-footnote text-sub">
+              아직 주고받은 사진 · 파일이 없어요
+            </Text>
+          )}
         </Sheet>
         <Dialog open={del} onClose={() => setDel(false)}>
           <Text className="text-body font-bold text-ink">{name}님을 친구에서 삭제할까요?</Text>

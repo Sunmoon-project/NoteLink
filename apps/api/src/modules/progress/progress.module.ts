@@ -5,6 +5,7 @@ import { AuthModule } from '../auth/auth.module.js';
 import { HolidaysModule } from '../calendar/holidays.module.js';
 import { Todo, TodoSchema } from '../calendar/schemas/todo.schema.js';
 import { ExpoPushService } from '../notification/expo-push.service.js';
+import { NotificationModule } from '../notification/notification.module.js';
 import { Subject, SubjectSchema } from '../session/schemas/subject.schema.js';
 import { StudySession, StudySessionSchema } from '../session/schemas/study-session.schema.js';
 import { Device, DeviceSchema } from '../users/schemas/device.schema.js';
@@ -20,6 +21,7 @@ import { StudyProgressController } from './study-progress.controller.js';
 
 @Module({
     imports: [
+        NotificationModule, // 목표 리마인드가 공부 알림 설정을 따른다(#560)
         MongooseModule.forFeature([
             { name: DailyRecord.name, schema: DailyRecordSchema }, // 하루 기록(순공 초)을 읽어 통계를 만든다
             { name: WeeklyGoal.name, schema: WeeklyGoalSchema },
