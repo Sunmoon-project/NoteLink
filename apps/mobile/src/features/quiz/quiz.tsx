@@ -24,6 +24,7 @@ import {
   Brain,
   CircleCheck,
   FileText,
+  Folder,
   GraduationCap,
   Layers,
   PartyPopper,
@@ -33,7 +34,7 @@ import {
   Volume2,
   X,
 } from 'lucide-react-native';
-import { ERROR_CODES, type AiJob } from '@notelink/shared';
+import { ERROR_CODES, type AiJob, type Material } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useAiJobSubscription, useSocket, useTabRefresh } from '@/hooks';
@@ -73,6 +74,7 @@ import {
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
 import { AvatarCheer } from '@/features/tutor/cheer';
+import { readFolderMaterials } from '@/features/content/notes';
 import { recordWrong } from './wrong-review';
 import { TodayReviewCard, useTodayReview } from './today-review';
 import { useTourTarget } from '@/features/tutor/tour';
@@ -250,28 +252,51 @@ function ErrorAlert({ retry }: { retry: () => void }) {
   );
 }
 
-/** 퀴즈는 노트(자료) 하나로 만든다 (FR-38-02) — 폴더마다 정리가 끝난 자료를 모은다 */
-async function quizNotes() {
-  const folders = await api.content.folders();
-  const lists = await Promise.all(
-    folders.map(async (f) =>
-      (await api.content.materials(f._id))
-        .filter((m) => !m.processing || m.processing.status === 'done')
-        .map((m) => ({ ...m, subjectName: f.subjectName })),
-    ),
-  );
-  return lists.flat();
-}
+/** 퀴즈를 만들 수 있는 자료: 정리(요약)가 끝났거나 정리할 것이 없는 자료 */
+const quizReady = (m: Material) => !m.processing || m.processing.status === 'done';
 
+/**
+ * 퀴즈는 노트(자료) 하나로 만든다 (FR-38-02). 노트 탭처럼 1단계에서 학습 폴더를 고르고, 같은 화면을 그 폴더(`folderId`)로
+ * 한 번 더 열어 2단계에서 그 폴더의 정리 끝난 자료를 고른다(#575). 뒤로 가면 1단계로 돌아온다.
+ * 자료 목록은 노트 탭 폴더 화면과 같은 키 · 읽기(readFolderMaterials)로 그 폴더 한 번만 읽는다
+ */
 export function QuizNotesScreen() {
+  const { folderId } = useLocalSearchParams<{ folderId?: string }>();
   const openFeature = useFeatureNavigation();
-  const notes = useQuery({ queryKey: ['quiz-notes'], queryFn: quizNotes });
+  const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
+  const mats = useQuery({
+    queryKey: ['materials', folderId],
+    queryFn: ({ signal }) => readFolderMaterials(folderId!, signal),
+    enabled: !!folderId,
+  });
+  const folder = folders.data?.find((f) => f._id === folderId);
   const [picked, setPicked] = useState<string | null>(null);
   const offline = useNet((s) => s.state === 'offline');
   const [q, setQ] = useState('');
   const [menu, setMenu] = useState(false);
-  const list = (notes.data ?? []).filter((f) => f.title.includes(q));
+  const notes = (mats.data ?? []).filter(quizReady);
+  const folderList = (folders.data ?? []).filter((f) => f.title.includes(q));
+  // 노트 탭 폴더 화면(FolderScreen)처럼, 폴더 목록이 센 자료가 0개인데 자료 목록이 404면 실패가 아니라 빈 폴더다
+  const mats404 = !mats.data && (mats.error as { status?: number } | null)?.status === 404;
+  const emptyFolder = mats404 && folder?.materialCount === 0;
+  // 1단계는 폴더 목록, 2단계는 폴더 목록(제목 · 과목) + 그 폴더 자료 목록을 기준으로 오류 · 빈 상태를 보인다.
+  // 404는 폴더 목록이 와야 빈 폴더인지 알 수 있어, 폴더 목록을 읽는 동안에는 오류로 보이지 않는다
+  const failed = folderId
+    ? (folders.isError && !folders.data) ||
+      (mats.isError && !mats.data && !emptyFolder && !(mats404 && folders.isPending))
+    : folders.isError && !folders.data;
+  // 오류를 보이는 동안에는 고를 수 있는 자료 카드를 같이 보이지 않는다
+  const list = failed ? [] : notes.filter((f) => f.title.includes(q));
   const chosen = list.find((f) => f._id === picked);
+  const retry = () => {
+    if (folders.isError) void folders.refetch();
+    if (folderId && mats.isError) void mats.refetch();
+  };
+  const empty =
+    !failed &&
+    (folderId
+      ? (mats.isSuccess && notes.length === 0) || emptyFolder
+      : folders.isSuccess && folders.data.length === 0);
   const make = () =>
     chosen
       ? router.push({
@@ -283,10 +308,13 @@ export function QuizNotesScreen() {
     <Canvas>
       <Screen footer={chosen ? <Btn onPress={make}>이 노트로 퀴즈 만들기</Btn> : undefined}>
         <NetBanner />
-        <Header title="어떤 노트로 퀴즈를 만들까요?" large={false} />
+        <Header
+          title={folderId ? (folder?.title ?? '') : '어떤 노트로 퀴즈를 만들까요?'}
+          large={false}
+        />
         <Search value={q} onChangeText={setQ} placeholder="노트 검색" />
-        {notes.isError && !notes.data && <ErrorAlert retry={() => notes.refetch()} />}
-        {notes.isSuccess && notes.data.length === 0 && (
+        {failed && <ErrorAlert retry={retry} />}
+        {empty && (
           <View className="items-center py-16">
             <Text className="text-footnote text-sub">아직 노트가 없어요</Text>
             <Btn
@@ -296,6 +324,29 @@ export function QuizNotesScreen() {
             >
               노트 올리러 가기
             </Btn>
+          </View>
+        )}
+        {!folderId && (
+          // 노트 탭(NoteListScreen)과 같은 학습 폴더 카드
+          <View className="mt-6 flex-row flex-wrap justify-between gap-y-5">
+            {folderList.map((f) => (
+              <Card
+                key={f._id}
+                onPress={() =>
+                  router.push({ pathname: '/(tabs)/quiz/notes', params: { folderId: f._id } })
+                }
+                className="w-[47.5%] p-3.5"
+              >
+                <View className="h-20 items-center justify-center rounded-xl bg-mint">
+                  <Folder size={ICON.xl} color={C.brand} />
+                </View>
+                <Text className="mt-3 px-1 text-subhead font-semibold text-ink">{f.title}</Text>
+                <Text className="mt-0.5 px-1 pb-1 text-caption2 text-sub">
+                  {f.subjectName} · {seoul(f.createdAt).getMonth() + 1}/
+                  {seoul(f.createdAt).getDate()} · 자료 {f.materialCount}개
+                </Text>
+              </Card>
+            ))}
           </View>
         )}
         <View className="mt-3 flex-row flex-wrap justify-between gap-y-3">
@@ -322,8 +373,8 @@ export function QuizNotesScreen() {
                 </View>
                 <Text className="mt-2 px-1 text-footnote font-semibold text-ink">{f.title}</Text>
                 <Text className="px-1 text-caption2 text-sub">
-                  {f.subjectName} · {seoul(f.createdAt).getMonth() + 1}/
-                  {seoul(f.createdAt).getDate()}
+                  {folder?.subjectName && `${folder.subjectName} · `}
+                  {seoul(f.createdAt).getMonth() + 1}/{seoul(f.createdAt).getDate()}
                 </Text>
               </Card>
             </Animated.View>
