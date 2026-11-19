@@ -26,6 +26,13 @@ export const SIMILAR_TYPE = 'similar_quiz';
 export const TODAY_TYPE = 'today_review';
 /** 결과로 복습 상태(srsUpdates) · 무효 풀이(voidAnswers)를 옮기는 작업 */
 const REVIEW_TYPES: readonly string[] = [SIMILAR_TYPE, TODAY_TYPE];
+/** 개념 카드 작업(apps/ai services/quiz/flashcards.py TYPE, #558). 결과는 플래시카드 목록을 열 때 옮긴다 */
+export const CARDS_TYPE = 'quiz_flashcards';
+/**
+ * 세트가 ready가 되면 개념 카드 작업을 넣는 작업: 맞춤 퀴즈 · 미리 만들기(#558). 오답 복습 · 오늘의 복습은
+ * 기존 범위를 다시 묻는 것이라 만들지 않는다
+ */
+const CARD_TYPES: readonly string[] = [GENERATE_TYPE, PREGEN_TYPE];
 /**
  * 세트 하나의 문제 수. 처리기 입력 size로 보낸다(보내지 않으면 처리기 기본 10문제).
  * 처리기는 size개를 다 만들지 못하면 모자란 자리를 다시 돌리고, 그래도 모자라면 작업을 실패로
@@ -123,6 +130,7 @@ export interface QuizSetRow {
   sourceAttemptId?: Types.ObjectId | null;
   srsSavedAt?: Date | null;
   followUpPending?: boolean;
+  cardsPending?: boolean;
   reviewDay?: string | null;
   title: string;
   status: 'generating' | 'ready' | 'failed';
@@ -257,6 +265,15 @@ export function objectId(id: string, what: string): Types.ObjectId {
  * 미리 만들기로 만든 세트를 지웠을 때 이어받는 새 세트의 id(setIdFor). 지운 세트의 id에서 늘 같은 값이
  * 나와 동시에 이어받는 요청들이 같은 id를 쓴다
  */
+/**
+ * 세트의 개념 카드 작업 id(#558). 세트 id에서 늘 같은 값이 나와 같은 세트의 카드 작업은 하나만 넣을 수 있다
+ * (_id 고유 색인). nextSetId와 같은 방식(다른 접두어)
+ */
+export function cardsJobId(setId: Types.ObjectId): Types.ObjectId {
+  const digest = createHash('sha256').update(`flashcards-job:${setId.toHexString()}`).digest();
+  return new Types.ObjectId(digest.subarray(0, 12).toString('hex'));
+}
+
 export function nextSetId(id: Types.ObjectId): Types.ObjectId {
   const digest = createHash('sha256').update(`quiz-set-after:${id.toHexString()}`).digest();
   return new Types.ObjectId(digest.subarray(0, 12).toString('hex'));
@@ -527,6 +544,7 @@ export class QuizSetsService {
    */
   private async sync(row: QuizSetRow): Promise<{ quizSet: AppQuizSet; job: AppAiJob | null }> {
     if (row.followUpPending && row.status !== 'generating') await this.followUp(row);
+    if (row.cardsPending && row.status === 'ready') await this.ensureCards(row);
     if (row.status === 'ready') return { quizSet: toAppSet(row), job: null };
     const job = row.jobId ? await this.findJob(row) : null;
     if (row.status === 'failed') {
@@ -576,6 +594,10 @@ export class QuizSetsService {
     // 노트가 있는 만드는 중 세트(일반 퀴즈 · 오답 복습)가 끝나면 그 노트를 기다리던 풀이를 이어 받는다:
     // 「이어 받을 풀이 남음」을 세트와 함께 적고, 넣은 뒤에 지운다(실패하면 다음 조회가 다시)
     if (row.status === 'generating' && row.materialId) update['followUpPending'] = true;
+    // 맞춤 퀴즈 · 미리 만들기 세트가 ready가 되면 같은 범위의 개념 카드 작업을 넣는다(#558): 「카드 작업 남음」을
+    // 세트와 함께 적고, 넣은 뒤에 지운다. 넣지 못하면(일시 오류 · 서버가 그 사이 멈춤) 다음 조회가 다시 넣는다.
+    // 카드는 처리기가 따로 만들어 퀴즈 작업을 늦추지 않는다
+    if (update['status'] === 'ready' && job && CARD_TYPES.includes(job.type)) update['cardsPending'] = true;
     const updated = await this.sets
       .findOneAndUpdate(
         { _id: row._id, status: row.status },
@@ -584,9 +606,50 @@ export class QuizSetsService {
       )
       .lean<QuizSetRow>();
     if (updated?.followUpPending) await this.followUp(updated);
+    // 개념 카드 작업도 세트를 바꾼 뒤 바로 넣어 본다(표시는 위 갱신에 같이 적었다)
+    if (updated?.cardsPending) await this.ensureCards(updated);
     const current =
       updated ?? (await this.sets.findOne({ _id: row._id }).lean<QuizSetRow>()) ?? row;
     return { quizSet: toAppSet(current), job };
+  }
+
+  /**
+   * 「카드 작업 남음」(cardsPending)인 세트의 개념 카드 작업(quiz_flashcards, #558)을 넣고 표시를 지운다.
+   * 작업 id는 세트 id에서 정해져(cardsJobId) 같은 세트의 작업은 하나뿐이다: 여러 요청이 같이 넣거나 넣은 뒤 표시를
+   * 지우기 전에 멈춘 요청이 있어도 _id 고유 색인이 둘째를 막고(E11000 = 이미 넣음), 표시는 넣은 뒤에만 지운다
+   * (Codex 재리뷰: 먼저 지우면 넣기 전에 멈출 때 카드가 빠짐). 넣기 · 지우기가 실패하면 표시가 남아 다음 조회가
+   * 다시 해 본다(경고 로그만, 노트 · 문제 글은 넣지 않음). 카드는 퀴즈의 덤이라 실패해도 조회 · 세트는 그대로.
+   * 입력은 퀴즈 작업에 넣었던 노트(input.material)와 세트의 문제
+   */
+  private async ensureCards(set: QuizSetRow): Promise<void> {
+    const owner = set.ownerId.toHexString();
+    try {
+      const material = set.jobId ? await this.jobs.materialInputOf(owner, set.jobId.toHexString()) : null;
+      const questions = set.questions ?? [];
+      if (material && questions.length > 0) {
+        await this.jobs
+          .enqueue({
+            id: cardsJobId(set._id).toHexString(),
+            type: CARDS_TYPE,
+            userId: owner,
+            targetType: 'quiz_set',
+            targetId: set._id.toHexString(),
+            input: { material, questions: questions.map(toWorkerQuestion) },
+          })
+          .catch((e: unknown) => {
+            if (!isDuplicateKey(e)) throw e; // 이미 넣음
+          });
+      }
+      await this.sets
+        .findOneAndUpdate({ _id: set._id, cardsPending: true }, { $set: { cardsPending: false } })
+        .lean();
+    } catch (e) {
+      this.logger.warn(
+        `개념 카드 작업을 넣지 못했습니다(퀴즈는 그대로, 다음 조회에 다시, 세트 ${set._id.toHexString()}): ${
+          e instanceof Error ? e.name : typeof e
+        }`,
+      );
+    }
   }
 
   /**

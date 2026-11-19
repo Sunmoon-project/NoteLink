@@ -645,7 +645,11 @@ export function ChatScreen() {
                     mine ? 'bg-brand' : 'bg-white',
                   )}
                 >
-                  <Text className={cx('text-footnote', mine ? 'text-white' : 'text-ink')}>
+                  {/* 길게 누르면 복사 메뉴가 뜨게 글자를 고를 수 있게 한다 */}
+                  <Text
+                    selectable
+                    className={cx('text-footnote', mine ? 'text-white' : 'text-ink')}
+                  >
                     {m.text}
                   </Text>
                 </View>
