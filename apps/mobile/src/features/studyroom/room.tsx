@@ -52,6 +52,7 @@ import {
   type PendingAttachment,
 } from '@/features/chat/attachment';
 import { api, ApiError } from '@/lib/api';
+import { viewingChat } from '@/lib/notification-route';
 import { socket } from '@/lib/socket';
 import { hms, seoul, ymd } from '@/lib/dates';
 import { useNow, useSocket, useTabRefresh } from '@/hooks';
@@ -550,6 +551,11 @@ export function RoomScreen() {
   const [menu, setMenu] = useState(false);
   const [pick, setPick] = useState(false);
   const [chat, setChat] = useState(false);
+  // 방 채팅을 펼쳐 보는 동안에는 이 방 새 메시지 배너를 띄우지 않는다
+  useEffect(
+    () => (chat && chatId.data ? viewingChat(chatId.data) : undefined),
+    [chat, chatId.data],
+  );
   // 채팅 입력줄의 이모지 고르기 칸 · + 로 여는 첨부(사진 · 파일) 고르기
   const [emoji, setEmoji] = useState(false);
   const [attach, setAttach] = useState(false);

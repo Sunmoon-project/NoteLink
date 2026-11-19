@@ -3,15 +3,18 @@ import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { api } from './api';
+import { showBanner } from './notification-route';
 
 // FCM · APNs 푸시 (p.16: 메인 API가 푸시 발송). 기기 토큰을 서버에 등록한다.
 
 Notifications.setNotificationHandler({
   handleNotification: async ({ request }) => {
     const isRoomTimer = request.content.data?.type === 'study-room-timer';
+    // 지금 보고 있는 채팅방의 새 메시지는 띄우지 않는다(화면에 이미 보인다)
+    const show = showBanner(request.content.data);
     return {
-      shouldShowBanner: true,
-      shouldShowList: true,
+      shouldShowBanner: show,
+      shouldShowList: show,
       shouldPlaySound: isRoomTimer,
       shouldSetBadge: false,
     };

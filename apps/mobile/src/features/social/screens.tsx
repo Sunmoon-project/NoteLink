@@ -1,9 +1,9 @@
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronLeft,
@@ -17,6 +17,8 @@ import {
 import type { Message, User } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { socket } from '@/lib/socket';
+import { viewingChat } from '@/lib/notification-route';
+import { useChatMute } from '@/features/notifications';
 import { seoul, timeAgo, ymd } from '@/lib/dates';
 import { useSocket } from '@/hooks';
 import { toast } from '@/stores/toast';
@@ -33,6 +35,7 @@ import {
   Screen,
   Search,
   Sheet,
+  Toggle,
   Two,
   cx,
 } from '@/components/ui';
@@ -238,6 +241,12 @@ export function ChatScreen() {
   } = useLocalSearchParams<{ id: string; name?: string; status?: User['status'] }>();
   const qc = useQueryClient();
   const room = useQuery({ queryKey: ['dm', id], queryFn: () => api.social.openDirect(id) });
+  const mute = useChatMute(room.data?._id);
+  // 이 채팅을 보는 동안에는 이 채팅의 새 메시지 배너를 띄우지 않는다(다른 화면으로 가면 다시 띄운다)
+  const chatRoomId = room.data?._id;
+  useFocusEffect(
+    useCallback(() => (chatRoomId ? viewingChat(chatRoomId) : undefined), [chatRoomId]),
+  );
   const pageRequestGeneration = useRef(0);
   // 보내는 중인 첨부(FR-16-03): 다시 보낼 때 고른 파일 · 이미 올린 주소를 다시 쓴다
   const attachments = useRef(new Map<string, PendingAttachment>());
@@ -669,7 +678,19 @@ export function ChatScreen() {
             >
               주고받은 자료
             </Row>
-            <Row>알림 설정은 준비 중이에요</Row>
+            <Row
+              sub={mute.muted ? '새 메시지 알림을 받지 않아요' : undefined}
+              right={
+                <Toggle
+                  label="이 채팅 알림"
+                  on={!mute.muted}
+                  disabled={!mute.ready}
+                  onChange={mute.toggle}
+                />
+              }
+            >
+              이 채팅 알림
+            </Row>
             <Row
               danger
               onPress={() => {

@@ -5,7 +5,15 @@ import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarDays, Check, ChevronRight, CircleAlert, Gift, Zap } from 'lucide-react-native';
+import {
+  Bell,
+  CalendarDays,
+  Check,
+  ChevronRight,
+  CircleAlert,
+  Gift,
+  Zap,
+} from 'lucide-react-native';
 import type { PlanTier, UserSettings } from '@notelink/shared';
 import { leavePresence } from '@/lib/presence';
 import { api, ApiError } from '@/lib/api';
@@ -193,6 +201,12 @@ export function SettingsScreen() {
           />
         </View>
 
+        <Label>알림</Label>
+        <Group>
+          <Row icon={Bell} chevron onPress={() => router.push('/(tabs)/profile/notifications')}>
+            알림 설정
+          </Row>
+        </Group>
         <Label>학습</Label>
         <Group>
           <Row icon={CalendarDays} chevron onPress={() => openFeature('/record')}>

@@ -14,6 +14,7 @@ import type {
   MaterialKind,
   MaterialSource,
   Message,
+  Notification,
   PlanTier,
   PointLedger,
   PublicHoliday,
@@ -116,6 +117,13 @@ export interface Api {
     emailSendCode(): Promise<void>;
     /** 본인 인증번호를 확인한다 → 인증된 내 정보(emailVerified: true) */
     emailVerifyCode(code: string): Promise<User>;
+  };
+  /** 앱 안 알림함(#560). 최근 것부터, before(알림 id) 이전 것을 한 쪽씩 */
+  notifications: {
+    list(before?: string): Promise<{ items: Notification[]; nextCursor: string | null }>;
+    unreadCount(): Promise<number>;
+    markRead(id: string): Promise<void>;
+    readAll(): Promise<void>;
   };
   upload: {
     getSas(p: {

@@ -5,6 +5,10 @@ import { renderScreen, setParams } from '../test-utils';
 
 // 1:1 채팅에도 사진 · 문서를 보내고(FR-16-03), 맨 위에 상대 아바타 · 이름 · 지금 상태와 메뉴를 둔다(FR-16-01) — #554 PR 3
 const mockApi = {
+  me: {
+    get: jest.fn(async () => ({ _id: 'me', settings: { mutedChatRoomIds: [] as string[] } })),
+    update: jest.fn(async (_p: { settings: object }): Promise<object> => ({})),
+  },
   rooms: { join: jest.fn() },
   social: { openDirect: jest.fn(), messages: jest.fn(), friends: jest.fn(), remove: jest.fn() },
 };
@@ -237,4 +241,18 @@ it('응답 시간이 지나 실패로 바뀐 뒤 서버가 저장한 메시지�
   } finally {
     jest.useRealTimers();
   }
+});
+
+it('더보기 메뉴에 주고받은 자료와 이 채팅 알림 스위치가 함께 있고, 끄면 이 채팅을 음소거한다(#560)', async () => {
+  await renderScreen(<ChatScreen />);
+  await fireEvent.press(await screen.findByLabelText('더보기'));
+  expect(await screen.findByText('주고받은 자료')).toBeTruthy();
+  expect(screen.queryByText('알림 설정은 준비 중이에요')).toBeNull();
+  const toggle = await screen.findByLabelText('이 채팅 알림');
+  await waitFor(() => expect(screen.getByLabelText('이 채팅 알림').props.disabled).toBeFalsy());
+  expect(toggle.props.value).toBe(true);
+  await fireEvent(screen.getByLabelText('이 채팅 알림'), 'valueChange', false);
+  await waitFor(() =>
+    expect(mockApi.me.update).toHaveBeenCalledWith({ settings: { mutedChatRoomIds: ['room1'] } }),
+  );
 });

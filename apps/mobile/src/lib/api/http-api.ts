@@ -104,6 +104,12 @@ export const httpApi: Api = {
     emailSendCode: () => http.post(P.myEmailSendCode),
     emailVerifyCode: (code) => http.post(P.myEmailVerifyCode, { code }),
   },
+  notifications: {
+    list: (before) => http.get(P.notifications, before ? { before } : undefined),
+    unreadCount: async () => (await http.get<{ count: number }>(P.notificationsUnreadCount)).count,
+    markRead: (id) => http.patch(P.notificationRead(id), {}),
+    readAll: () => http.post(P.notificationsReadAll),
+  },
   upload: { getSas: (p) => http.post(P.uploadSas, p) },
   study: {
     today: () => http.get(P.studyToday),
