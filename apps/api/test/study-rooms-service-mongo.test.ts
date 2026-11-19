@@ -141,9 +141,9 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
         return count(filter);
       }) as never);
       try {
-        await expect(
-          service.invite(String(other), roomId, [String(friend)]),
-        ).rejects.toMatchObject({ status: 404, response: { code: 'ROOM_NOT_FOUND' } });
+        await expect(service.invite(String(other), roomId, [String(friend)])).rejects.toMatchObject(
+          { status: 404, response: { code: 'ROOM_NOT_FOUND' } },
+        );
       } finally {
         spy.mockRestore();
       }
@@ -165,20 +165,23 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
       );
     });
 
-    it.each(removals)('%s되면 초대 ID가 없는 기존 초대에 ID를 채우지 않는다', async (name, remove) => {
-      const created = await roomWithInviter(`${name} 중 초대 ID 채우기`);
-      await service.invite(String(other), created._id, [String(friend)]);
-      await rooms.updateOne(
-        { _id: created._id, 'members.userId': friend },
-        { $unset: { 'members.$.invitationId': 1 } },
-      );
+    it.each(removals)(
+      '%s되면 초대 ID가 없는 기존 초대에 ID를 채우지 않는다',
+      async (name, remove) => {
+        const created = await roomWithInviter(`${name} 중 초대 ID 채우기`);
+        await service.invite(String(other), created._id, [String(friend)]);
+        await rooms.updateOne(
+          { _id: created._id, 'members.userId': friend },
+          { $unset: { 'members.$.invitationId': 1 } },
+        );
 
-      const stored = await inviteWhile(created._id, () => remove(created._id));
+        const stored = await inviteWhile(created._id, () => remove(created._id));
 
-      const invited = stored.members.find((member) => member.userId.equals(friend));
-      expect(invited?.status).toBe('invited');
-      expect(invited?.invitationId ?? null).toBeNull();
-    });
+        const invited = stored.members.find((member) => member.userId.equals(friend));
+        expect(invited?.status).toBe('invited');
+        expect(invited?.invitationId ?? null).toBeNull();
+      },
+    );
   });
   afterAll(async () => {
     if (!connection) return;
@@ -387,5 +390,135 @@ describe.skipIf(!local)('스터디룸 생성·목록·상세 실제 MongoDB 서�
     await expect(service.getRoom(String(host), 'invalid')).rejects.toMatchObject({ status: 404 });
     await rooms.updateOne({ _id: created._id }, { $set: { closedAt: new Date() } });
     await expect(service.getRoom(String(host), created._id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  describe('카테고리 여러 개 · 대상(learnerType) · 관심 분야 추천 (#550)', () => {
+    const coding = new Types.ObjectId();
+    const english = new Types.ObjectId();
+    const hidden = new Types.ObjectId();
+    beforeEach(async () => {
+      await categories.collection.insertMany([
+        { _id: coding, name: '코딩', ownerId: null, isActive: true, deletedAt: null },
+        { _id: english, name: '영어', ownerId: null, isActive: true, deletedAt: null },
+        { _id: hidden, name: '숨김', ownerId: null, isActive: false, deletedAt: null },
+      ]);
+      await users.updateOne({ _id: host }, { $set: { learnerType: 'university' } });
+      await users.updateOne({ _id: other }, { $set: { learnerType: 'worker' } });
+    });
+
+    it('카테고리 id 여러 개로 만들면 순서대로 저장하고 첫 번째가 대표, 방장 learnerType을 복사한다', async () => {
+      const created = await service.create(String(host), {
+        title: '여러 분야',
+        categoryIds: [String(english), String(coding), String(english).toUpperCase()],
+        isPublic: true,
+      });
+      expect(created).toMatchObject({
+        categoryId: String(english),
+        categoryIds: [String(english), String(coding)],
+        categoryNames: ['영어', '코딩'],
+        categoryName: '영어',
+        learnerType: 'university',
+      });
+      const stored = await rooms.findById(created._id).lean().orFail();
+      expect(stored.categoryIds?.map(String)).toEqual([String(english), String(coding)]);
+      expect(stored.learnerType).toBe('university');
+      // 방장이 나중에 구분을 바꿔도 방 값은 그대로(만들 때 복사)
+      await users.updateOne({ _id: host }, { $set: { learnerType: 'worker' } });
+      expect((await service.getRoom(String(host), created._id)).learnerType).toBe('university');
+    });
+
+    it('비활성 · 없는 카테고리 id, 3개 넘는 카테고리, 카테고리 없음은 거절한다', async () => {
+      for (const categoryIds of [
+        [String(coding), String(hidden)],
+        [String(new Types.ObjectId())],
+        [String(coding), String(english), String(category), String(new Types.ObjectId())],
+        [],
+      ]) {
+        await expect(
+          service.create(String(host), { title: '거절', categoryIds, isPublic: true }),
+        ).rejects.toMatchObject({ status: 400 });
+      }
+      await expect(
+        service.create(String(host), { title: '거절', isPublic: true }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(await rooms.countDocuments()).toBe(0);
+    });
+
+    it('구 앱의 categoryName 요청도 받아 categoryIds 한 개로 저장한다', async () => {
+      const created = await service.create(String(host), {
+        title: '이름으로',
+        categoryName: '코딩',
+        isPublic: true,
+      });
+      expect(created).toMatchObject({
+        categoryIds: [String(coding)],
+        categoryNames: ['코딩'],
+        learnerType: 'university',
+      });
+    });
+
+    it('예전 방(categoryIds · learnerType 없음)은 읽을 때 [categoryId] · 방장 값으로 보정한다', async () => {
+      const legacy = new Types.ObjectId();
+      await rooms.collection.insertOne({
+        _id: legacy,
+        title: '예전 방',
+        categoryId: category,
+        hostId: other,
+        isPublic: true,
+        inviteCode: 'OLD001',
+        maxCapacity: 6,
+        memberCount: 1,
+        members: [{ _id: new Types.ObjectId(), userId: other, role: 'host', status: 'joined' }],
+        closedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      const expected = {
+        categoryId: String(category),
+        categoryIds: [String(category)],
+        categoryNames: ['수학'],
+        learnerType: 'worker',
+      };
+      expect((await service.list(String(host), 'recommended'))[0]).toMatchObject(expected);
+      expect((await service.list(String(other), 'mine'))[0]).toMatchObject(expected);
+      expect(await service.getRoom(String(other), String(legacy))).toMatchObject(expected);
+      // 방장이 구분을 정하지 않았거나 탈퇴했으면 null
+      await users.updateOne({ _id: other }, { $set: { learnerType: null } });
+      expect((await service.list(String(other), 'mine'))[0]!.learnerType).toBeNull();
+    });
+
+    it('추천은 내 관심 분야와 겹치는 방을 먼저, 나머지는 최신순으로 주고 개수 제한을 지킨다', async () => {
+      await users.updateOne({ _id: friend }, { $set: { interestCategoryIds: [coding] } });
+      const make = (title: string, ids: Types.ObjectId[]) =>
+        service.create(String(other), {
+          title,
+          categoryIds: ids.map(String),
+          isPublic: true,
+        });
+      const oldMatch = await make('예전 코딩', [english, coding]);
+      const plain1 = await make('영어만', [english]);
+      const newMatch = await make('새 코딩', [coding]);
+      const plain2 = await make('수학만', [category]);
+      const ids = (list: { _id: string }[]) => list.map((room) => room._id);
+      expect(ids(await service.list(String(friend), 'recommended'))).toEqual([
+        newMatch._id,
+        oldMatch._id,
+        plain2._id,
+        plain1._id,
+      ]);
+      expect(ids(await service.list(String(friend), 'recommended', 3))).toEqual([
+        newMatch._id,
+        oldMatch._id,
+        plain2._id,
+      ]);
+      expect(ids(await service.list(String(friend), 'recommended', 1))).toEqual([newMatch._id]);
+      // 관심 분야가 없으면 그냥 최신순
+      expect(ids(await service.list(String(host), 'recommended'))).toEqual([
+        plain2._id,
+        newMatch._id,
+        plain1._id,
+        oldMatch._id,
+      ]);
+    });
   });
 });
