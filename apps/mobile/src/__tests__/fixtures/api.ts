@@ -206,6 +206,9 @@ const HOLIDAYS = [
   ['12-25', '성탄절'],
 ] as const;
 
+/** 시험용 알림함. 시험이 직접 채우고 비운다 */
+export const mockInbox: Awaited<ReturnType<Api['notifications']['list']>>['items'] = [];
+
 export const mockApi: Api = {
   auth: {
     socialLogin: (_p, _token) =>
@@ -266,6 +269,19 @@ export const mockApi: Api = {
       if (code !== '123456') return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요');
       db.user.emailVerified = true;
       return structuredClone(db.user);
+    },
+  },
+  notifications: {
+    list: () => ok({ items: [...mockInbox], nextCursor: null }),
+    unreadCount: () => ok(mockInbox.filter((n) => !n.readAt).length),
+    markRead: (id) => {
+      const n = mockInbox.find((x) => x._id === id);
+      if (n && !n.readAt) n.readAt = new Date().toISOString();
+      return ok(undefined);
+    },
+    readAll: () => {
+      mockInbox.forEach((n) => (n.readAt ??= new Date().toISOString()));
+      return ok(undefined);
     },
   },
   upload: {

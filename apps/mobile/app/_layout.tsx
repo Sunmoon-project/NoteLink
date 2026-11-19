@@ -15,6 +15,7 @@ import { AppOverlays } from '@/components/AppOverlays';
 import { useOfflineCache } from '@/lib/offline-cache';
 import { useScreenBackground } from '@/lib/shop-themes';
 import { WeeklyGoalNotifications } from '@/features/session/weekly-goal-notifications';
+import { usePushTaps } from '@/features/notifications/push-taps';
 
 /** 설정 「오프라인 캐시」(QueryClientProvider 안에서) */
 function OfflineCache() {
@@ -58,8 +59,10 @@ export default function RootLayout() {
   useEffect(() => {
     if (!token) return;
     connectSocket();
-    registerPush().catch(() => {});
+    // 실패하면(권한 거부 · 네트워크) 서버 푸시 없이 지낸다. 원인을 찾을 수 있게 남긴다
+    registerPush().catch((e: unknown) => console.warn('[push] 기기 등록 실패', e));
   }, [token]);
+  usePushTaps(!!token);
   if (!ready) return null;
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

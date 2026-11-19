@@ -11,6 +11,7 @@ import { renderScreen, setParams } from '../test-utils';
 
 const mockApi = {
   rooms: { get: jest.fn(), chatRoomId: jest.fn(), report: jest.fn() },
+  me: { get: jest.fn(), update: jest.fn(async (_p: object) => ({})) },
   social: { messages: jest.fn() },
 };
 const mockUpload = jest.fn();
@@ -215,10 +216,21 @@ it('소켓 재접속 때 방 조회로 현재 서버 타이머 상태를 다시 
   expect(await screen.findByText('휴식 01:00')).toBeTruthy();
 });
 
-it('저장 API가 없는 방별 알림은 가짜 토글 대신 준비 중으로 표시한다', async () => {
+it('방 채팅 알림 스위치를 끄면 이 방 채팅을 음소거 목록에 넣는다(#560)', async () => {
+  mockApi.me.get.mockResolvedValue({ _id: 'me', settings: { mutedChatRoomIds: [] } });
   await renderScreen(<RoomSettingsScreen />, client());
-  expect(screen.queryByLabelText('알림')).toBeNull();
-  expect(screen.getByText(/알림.*준비 중/)).toBeTruthy();
+  expect(screen.queryByText(/알림.*준비 중/)).toBeNull();
+  await waitFor(() => expect(mockApi.me.get).toHaveBeenCalled());
+  // 내 설정 · 방 채팅 id를 다 읽은 뒤에 누른다(읽기 전에는 스위치가 아무것도 하지 않는다)
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await act(async () => {
+    fireEvent(await screen.findByLabelText('채팅 알림'), 'valueChange', false);
+  });
+  await waitFor(() =>
+    expect(mockApi.me.update).toHaveBeenCalledWith({ settings: { mutedChatRoomIds: ['chat-1'] } }),
+  );
 });
 
 const reportBody = '학습과 무관한 광고 링크를 계속 올립니다';

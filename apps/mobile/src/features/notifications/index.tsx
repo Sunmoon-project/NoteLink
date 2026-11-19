@@ -1,0 +1,300 @@
+import { useState } from 'react';
+import { View } from 'react-native';
+import { router } from 'expo-router';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Bell } from 'lucide-react-native';
+import type { Notification, UserSettings } from '@notelink/shared';
+import { Pressable } from '@/components/press';
+import { Text } from '@/components/text';
+import {
+  Canvas,
+  Empty,
+  Group,
+  Header,
+  Label,
+  Loading,
+  Row,
+  Screen,
+  Sheet,
+  Toggle,
+  cx,
+} from '@/components/ui';
+import { api } from '@/lib/api';
+import { timeAgo } from '@/lib/dates';
+import { routeFor } from '@/lib/notification-route';
+import { LoadError } from '@/features/progress/load-error';
+import { toast } from '@/stores/toast';
+import { C, ICON } from '@/theme';
+
+/** 홈 종 아이콘의 읽지 않은 수 · 알림함이 같이 쓰는 키 */
+export const UNREAD_KEY = ['notifications', 'unread'] as const;
+const LIST_KEY = ['notifications', 'list'] as const;
+
+/** 읽지 않은 알림 수(홈 종 아이콘) */
+export function useUnreadCount() {
+  return useQuery({ queryKey: UNREAD_KEY, queryFn: () => api.notifications.unreadCount() });
+}
+
+/** 알림을 눌렀을 때: 읽음 처리(실패해도 이동은 한다) 뒤 그 화면으로 */
+export function openNotification(n: Pick<Notification, '_id' | 'type' | 'data' | 'readAt'>) {
+  if (!n.readAt) void api.notifications.markRead(n._id).catch(() => {});
+  // 알림함은 type을 data 밖에 둔다(푸시 data에는 같이 들어 있다)
+  const to = routeFor({ ...n.data, type: n.type });
+  if (to) router.push(to);
+}
+
+export function InboxScreen() {
+  const qc = useQueryClient();
+  const list = useInfiniteQuery({
+    queryKey: LIST_KEY,
+    queryFn: ({ pageParam }) => api.notifications.list(pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: ['notifications'] });
+  };
+  const readAll = useMutation({
+    mutationFn: api.notifications.readAll,
+    onSuccess: refresh,
+    onError: () => toast('읽음 처리를 하지 못했어요. 다시 시도해 주세요'),
+  });
+  const items = list.data?.pages.flatMap((p) => p.items) ?? [];
+  const hasUnread = items.some((n) => !n.readAt);
+  return (
+    <Canvas>
+      <Screen refresh={{ refreshing: list.isRefetching, onRefresh: refresh }}>
+        <Header
+          title="알림"
+          right={
+            items.length > 0 && (
+              <Pressable
+                accessibilityRole="button"
+                disabled={!hasUnread || readAll.isPending}
+                onPress={() => readAll.mutate()}
+                hitSlop={8}
+              >
+                <Text
+                  className={cx(
+                    'text-footnote font-semibold',
+                    hasUnread ? 'text-brand' : 'text-sub',
+                  )}
+                >
+                  모두 읽음
+                </Text>
+              </Pressable>
+            )
+          }
+        />
+        {list.isError && !list.data && (
+          <LoadError message="알림을 불러오지 못했어요" retry={list.refetch} />
+        )}
+        {list.isPending && <Loading />}
+        {list.isSuccess && items.length === 0 && (
+          <Empty icon={<Bell size={32} color={C.brand} />} title="아직 받은 알림이 없어요" />
+        )}
+        {items.length > 0 && (
+          <Group>
+            {items.map((n) => (
+              <Row
+                key={n._id}
+                onPress={() => {
+                  openNotification(n);
+                  if (!n.readAt) setTimeout(refresh, 300);
+                }}
+                sub={`${n.body} · ${timeAgo(n.createdAt)}`}
+                right={!n.readAt ? <View className="h-2 w-2 rounded-full bg-brand" /> : undefined}
+              >
+                <Text
+                  className={cx('text-callout', n.readAt ? 'text-sub' : 'font-semibold text-ink')}
+                >
+                  {n.title}
+                </Text>
+              </Row>
+            ))}
+          </Group>
+        )}
+        {list.hasNextPage && (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void list.fetchNextPage()}
+            className="items-center py-4"
+          >
+            <Text className="text-footnote text-sub">
+              {list.isFetchingNextPage ? '불러오는 중…' : '더 보기'}
+            </Text>
+          </Pressable>
+        )}
+      </Screen>
+    </Canvas>
+  );
+}
+
+/** 사용자 설정 저장(낙관적 갱신). 설정 화면 · 채팅 음소거가 같이 쓴다 */
+function useSaveSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (s: Partial<UserSettings>) => api.me.update({ settings: s }),
+    onMutate: (s) =>
+      qc.setQueryData(['me'], (u: { settings: UserSettings } | undefined) =>
+        u ? { ...u, settings: { ...u.settings, ...s } } : u,
+      ),
+    onError: () => toast('설정을 저장하지 못했어요. 다시 시도해 주세요'),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['me'] }),
+  });
+}
+
+/** 이 채팅방(1:1 · 스터디룸) 알림 음소거. 서버가 settings.mutedChatRoomIds에 있는 방의 새 메시지 푸시를 보내지 않는다 */
+export function useChatMute(chatRoomId: string | undefined) {
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.me.get() });
+  const save = useSaveSettings();
+  const muted = me.data?.settings?.mutedChatRoomIds ?? [];
+  const on = !!chatRoomId && muted.includes(chatRoomId);
+  return {
+    ready: !!chatRoomId && !!me.data,
+    muted: on,
+    toggle: () => {
+      if (!chatRoomId || !me.data) return;
+      save.mutate({
+        mutedChatRoomIds: on ? muted.filter((x) => x !== chatRoomId) : [...muted, chatRoomId],
+      });
+    },
+  };
+}
+
+const KINDS: { key: keyof UserSettings; label: string; sub: string }[] = [
+  { key: 'notifyFriend', label: '친구', sub: '친구 요청 · 수락, 시간표 공유' },
+  { key: 'notifyChat', label: '채팅', sub: '1:1 · 스터디룸 새 메시지' },
+  { key: 'notifyRoom', label: '스터디룸', sub: '초대 · 공유 자료 · 타이머' },
+  { key: 'notifyStudy', label: '공부', sub: 'D-day · 오늘의 복습 · 반복 목표' },
+  { key: 'notifyAi', label: 'AI 작업', sub: '노트 정리 · 퀴즈 만들기 완료' },
+];
+const DEFAULT_QUIET = { start: '23:00', end: '07:00' };
+const HOURS = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
+
+export function NotificationSettingsScreen() {
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.me.get() });
+  const save = useSaveSettings();
+  const [pick, setPick] = useState<null | 'start' | 'end'>(null);
+  if (me.isError && !me.data)
+    return (
+      <Canvas>
+        <Screen>
+          <Header title="알림 설정" />
+          <LoadError message="설정을 불러오지 못했어요" retry={me.refetch} />
+        </Screen>
+      </Canvas>
+    );
+  if (!me.data) return <Loading />;
+  const s = me.data.settings;
+  const quiet = s.quietHours ?? null;
+  return (
+    <Canvas>
+      <Screen>
+        <Header title="알림 설정" />
+        <Label>받을 알림</Label>
+        <Group>
+          {KINDS.map((k) => (
+            <Row
+              key={k.key}
+              sub={k.sub}
+              right={
+                <Toggle
+                  label={`${k.label} 알림`}
+                  on={s[k.key] !== false}
+                  onChange={(v) => save.mutate({ [k.key]: v })}
+                />
+              }
+            >
+              {k.label}
+            </Row>
+          ))}
+        </Group>
+        <Text className="mt-2 px-1 text-caption text-sub">
+          스터디룸에서 내보내졌을 때는 설정과 상관없이 알려 드려요
+        </Text>
+        <Label>조용한 시간</Label>
+        <Group>
+          <Row
+            sub="이 시간에는 소리 · 배너 없이 알림함에만 남겨요"
+            right={
+              <Toggle
+                label="조용한 시간"
+                on={!!quiet}
+                onChange={(v) => save.mutate({ quietHours: v ? DEFAULT_QUIET : null })}
+              />
+            }
+          >
+            조용한 시간
+          </Row>
+          {quiet && (
+            <>
+              <Row
+                onPress={() => setPick('start')}
+                right={<Text className="text-footnote text-sub">{quiet.start}</Text>}
+              >
+                시작
+              </Row>
+              <Row
+                onPress={() => setPick('end')}
+                right={<Text className="text-footnote text-sub">{quiet.end}</Text>}
+              >
+                끝
+              </Row>
+            </>
+          )}
+        </Group>
+        <Sheet
+          open={!!pick && !!quiet}
+          onClose={() => setPick(null)}
+          title={pick === 'start' ? '시작 시각' : '끝 시각'}
+        >
+          <View className="flex-row flex-wrap gap-2 pb-2">
+            {HOURS.map((h) => {
+              const now = pick && quiet ? quiet[pick] : null;
+              return (
+                <Pressable
+                  key={h}
+                  accessibilityRole="button"
+                  onPress={() => {
+                    if (!pick || !quiet) return;
+                    save.mutate({ quietHours: { ...quiet, [pick]: h } });
+                    setPick(null);
+                  }}
+                  className={cx(
+                    'h-control w-[22%] items-center justify-center rounded-card',
+                    h === now ? 'bg-brand' : 'bg-fill',
+                  )}
+                >
+                  <Text className={cx('text-footnote', h === now ? 'text-white' : 'text-ink')}>
+                    {h}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </Sheet>
+      </Screen>
+    </Canvas>
+  );
+}
+
+/** 홈 상단 종 아이콘(읽지 않은 수 점) */
+export function BellButton() {
+  const unread = useUnreadCount();
+  const n = unread.data ?? 0;
+  return (
+    <Pressable
+      accessibilityLabel={n ? `알림 ${n}개 안 읽음` : '알림'}
+      onPress={() => router.push('/notifications')}
+      className="h-11 w-11 items-center justify-center rounded-full bg-white"
+    >
+      <Bell size={ICON.md} color={C.brand} />
+      {n > 0 && (
+        <View className="absolute -right-0.5 -top-0.5 h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1">
+          <Text className="text-caption2 text-white">{n > 99 ? '99+' : n}</Text>
+        </View>
+      )}
+    </Pressable>
+  );
+}

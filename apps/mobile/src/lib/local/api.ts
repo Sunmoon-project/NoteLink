@@ -567,6 +567,13 @@ const api: Api = {
       await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
     },
   },
+  // 기기 저장 모드에는 서버 알림이 없다: 알림함은 늘 비어 있다
+  notifications: {
+    list: () => ok({ items: [], nextCursor: null }),
+    unreadCount: () => ok(0),
+    markRead: () => ok(undefined),
+    readAll: () => ok(undefined),
+  },
   upload: {
     // 기기 저장 모드에서는 upload.ts가 파일을 앱 저장 공간에 바로 복사한다
     getSas: () => needServer('클라우드 업로드'),

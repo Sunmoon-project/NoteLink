@@ -49,6 +49,7 @@ import {
   cx,
 } from '@/components/ui';
 import { useAuth } from '@/stores/auth';
+import { useChatMute } from '@/features/notifications';
 import { C, ICON } from '@/theme';
 
 // p.78 신고 / p.79 타이머 / p.80 시간표 · OS 캘린더 / p.81 세부 설정 · 초대 · 나가기
@@ -747,6 +748,8 @@ export function RoomSettingsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const qc = useQueryClient();
   const room = useQuery({ queryKey: ['room', id], queryFn: () => api.rooms.get(id) });
+  const chatId = useQuery({ queryKey: ['room-chat', id], queryFn: () => api.rooms.chatRoomId(id) });
+  const mute = useChatMute(chatId.data);
   const [code, setCode] = useState(false);
   const [leave, setLeave] = useState(false);
   const out = useMutation({
@@ -769,8 +772,12 @@ export function RoomSettingsScreen() {
         <View className="overflow-hidden rounded-card bg-white">
           <View className="flex-row items-center gap-3 px-5 py-4">
             <Bell size={ICON.md} color={C.ink} />
-            <Text className="flex-1 text-subhead font-semibold text-ink">알림</Text>
-            <Text className="text-caption text-sub">알림 설정은 준비 중이에요</Text>
+            <Text className="flex-1 text-subhead font-semibold text-ink">채팅 알림</Text>
+            <Toggle
+              label="채팅 알림"
+              on={!mute.muted}
+              onChange={() => mute.ready && mute.toggle()}
+            />
           </View>
           <Pressable
             onPress={() => router.push({ pathname: '/room/invite', params: { id } })}
