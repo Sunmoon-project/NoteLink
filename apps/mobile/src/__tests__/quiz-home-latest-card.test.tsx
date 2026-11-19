@@ -67,6 +67,19 @@ it('오늘의 복습 세트는 오늘의 복습 카드가 보여 주므로 맨 �
   expect(screen.queryByText('오늘의 복습 · 11-19 · 2문제')).toBeNull();
 });
 
+it('지난 날의 안 푼 복습 사본(reviewDay)도 맨 위 카드로 고르지 않는다', async () => {
+  jest
+    .spyOn(api.quiz, 'sets')
+    .mockResolvedValue([
+      quizSet('done', '다 푼 퀴즈', { completed: true }),
+      quizSet('past', '오늘의 복습 · 11-16', { reviewDay: '2026-11-16' }),
+      quizSet('next', '안 푼 퀴즈', { reviewDay: null }),
+    ]);
+  await renderScreen(<QuizHomeScreen />, client());
+  expect(await screen.findByText('안 푼 퀴즈 · 2문제')).toBeTruthy();
+  expect(screen.queryByText('오늘의 복습 · 11-16 · 2문제')).toBeNull();
+});
+
 it('모두 풀었으면 카드만 숨기고 바로가기는 남긴다(유사 퀴즈는 가장 최근 세트로)', async () => {
   jest
     .spyOn(api.quiz, 'sets')

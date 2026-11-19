@@ -254,6 +254,8 @@ export const QuizSet = z.object({
   createdAt: date,
   // 세트를 끝까지 푼 풀이가 있으면 true. 세트 목록 · 오늘의 복습 응답만 채움(#561, 세트 하나 조회는 없음)
   completed: z.boolean().optional(),
+  // 오늘의 복습 세트만: 그 복습 날짜(서울 YYYY-MM-DD). 다른 세트는 null(#561, 없는 옛 서버 응답도 같게 본다)
+  reviewDay: z.string().nullable().optional(),
 });
 
 export const AttemptAnswer = z.object({

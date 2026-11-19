@@ -779,6 +779,31 @@ describe('QuizSetsService 조회', () => {
     expect(find).toHaveBeenCalledTimes(1);
   });
 
+  it('목록은 오늘의 복습 세트에 그 복습 날짜(reviewDay)를, 다른 세트에는 null을 싣는다(#561)', async () => {
+    const { service, addNote, finish, sets } = setup();
+    const m = await service.create(ME.toHexString(), await addNote());
+    finish(m.job._id, { questions: fullSet(), title: '맞춤 퀴즈' });
+    await sets.model.create({
+      ownerId: ME,
+      materialId: new Types.ObjectId(),
+      folderId: FOLDER,
+      sourceSetId: null,
+      reviewDay: '2026-11-16',
+      title: '오늘의 복습 · 11-16',
+      status: 'ready',
+      questionCount: 0,
+      questions: [],
+      jobId: null,
+      deletedAt: null,
+    } as never);
+    const list = await service.list(ME.toHexString());
+    expect(Object.fromEntries(list.map((s) => [s.title, s.reviewDay]))).toEqual({
+      '맞춤 퀴즈': null,
+      '오늘의 복습 · 11-16': '2026-11-16',
+    });
+    expect(list.every((s) => QuizSet.safeParse(s).success)).toBe(true);
+  });
+
   it('세트가 없으면 풀이를 읽지 않는다(#561)', async () => {
     const { service, attempts } = setup();
     const find = vi.spyOn(attempts.model, 'distinct');

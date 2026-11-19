@@ -99,6 +99,8 @@ export interface AppQuizSet {
    * 퀴즈 탭 맨 위 카드는 이 세트를 건너뛴다(#561)
    */
   completed?: boolean;
+  /** 오늘의 복습 세트만: 그 복습 날짜(서울 YYYY-MM-DD, seoulDay). 다른 세트는 null(#561) */
+  reviewDay: string | null;
 }
 
 /** DB에 저장한 문제 한 개(lean) */
@@ -190,6 +192,7 @@ export function toAppSet(row: QuizSetRow, progress?: number): AppQuizSet {
     questionCount: row.questionCount ?? row.questions?.length ?? 0,
     questions: (row.questions ?? []).map(toAppQuestion),
     createdAt: row.createdAt.toISOString(),
+    reviewDay: row.reviewDay ?? null,
   };
 }
 
