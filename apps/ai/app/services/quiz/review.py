@@ -89,12 +89,15 @@ class Progress(Protocol):
 
 
 @runtime_checkable
-class Checkpoint(Protocol):
-    """시도 사이에 남기는 값(작업 처리기 JobReport). 성공하면 처리기가 지웁니다."""
+class Attempts(Protocol):
+    """작업 처리기 JobReport의 시도 정보: 시도 사이에 남기는 값(성공하면 처리기가 지움)과
+    이번이 마지막 시도인지."""
 
     def load_checkpoint(self) -> object: ...
 
     def save_checkpoint(self, value: JsonObject) -> None: ...
+
+    def last_attempt(self) -> bool: ...
 
 
 # 일시적인 원인으로 0문제일 때 다시 시도하는 횟수(#553). 그 뒤에도 0문제면 성공으로 끝내 복습 상태를
@@ -545,53 +548,31 @@ def _empty_reason(judged: list[Judged], made: list[similar.Made]) -> str | None:
     return "no_note"
 
 
-def _retries(report: Checkpoint) -> tuple[int, int]:
-    """checkpoint에 남긴 (run이 올린 다시 시도 수, 그중 0문제 다시 시도 수). 없거나 이상하면 0."""
-    saved = report.load_checkpoint()
+def _retry_empty(report: Progress) -> bool:
+    """일시적인 원인의 0문제를 다시 시도할지. 다시 시도하면 횟수를 checkpoint에 남김.
 
-    def count(key: str) -> int:
-        n = saved.get(key) if isinstance(saved, dict) else None
-        return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 0
-
-    return count("retried"), count("emptyRetries")
-
-
-def _note_retry(report: Progress, *, empty: bool) -> bool:
-    """다시 시도를 올리기 전에 횟수를 checkpoint에 남김. 남기지 못하면 False(DB 오류).
-
+    다시 시도하지 않는 때: 이번이 마지막 시도(처리기가 멈춰 쓴 시도도 셈, Codex 리뷰 #555) ·
+    이미 EMPTY_RETRIES번 다시 했음 · 횟수를 저장하지 못함(DB 오류). 한도를 넘겨 실패하면 복습
+    상태가 옮겨지지 않으므로 성공으로 끝냅니다(/code-review).
+    시도 정보가 없는 report(시험의 진행률 함수)는 늘 다시 시도합니다. 앱의 '다시 시도'는 attempts를
+    0으로 되돌리고 checkpoint는 남기므로(ai-jobs.service.ts) 그 뒤 0문제는 바로 성공으로 끝냅니다.
     취소 · 잠금을 잃음(JobGoneError)은 그대로 올려 처리기가 멈추게 합니다.
     """
-    if not isinstance(report, Checkpoint):
+    if not isinstance(report, Attempts):
         return True
-    retried, emptied = _retries(report)
+    if report.last_attempt():
+        return False
+    saved = report.load_checkpoint()
+    n = saved.get("emptyRetries") if isinstance(saved, dict) else None
+    tried = n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 0
+    if tried >= EMPTY_RETRIES:
+        return False
     try:
-        report.save_checkpoint({"retried": retried + 1, "emptyRetries": emptied + empty})
+        report.save_checkpoint({"emptyRetries": tried + 1})
     except PyMongoError as e:
         log.warning("오답 복습: 다시 시도 횟수를 저장하지 못함(%s)", type(e).__name__)
         return False
     return True
-
-
-def _retry_empty(report: Progress) -> bool:
-    """일시적인 원인의 0문제를 다시 시도할지. 다시 시도하면 횟수를 checkpoint에 남김.
-
-    다시 시도하지 않는 때: 이미 EMPTY_RETRIES번 다시 했음 · 이번이 마지막 시도로 보임(run이
-    올린 다시 시도 수 + 1이 시도 한도, 모두 장애로 올린 것도 셈) · 횟수를 저장하지 못함. 한도를
-    넘겨 실패하면 복습 상태가 옮겨지지 않으므로 성공으로 끝냅니다(/code-review).
-    checkpoint가 없는 report(시험의 진행률 함수)는 횟수를 셀 수 없어 시도 한도만 봅니다.
-    앱의 '다시 시도'는 attempts만 0으로 되돌리고 checkpoint를 남기므로(ai-jobs.service.ts) 그때는
-    바로 성공으로 끝내기 쉽습니다(복습 상태를 지키는 쪽).
-    알려진 한계: 처리기가 멈춰(잠금이 끝나) 쓴 시도는 셀 수 없음. 그 뒤 마지막 시도에서 다시 시도를
-    올리면 작업이 실패합니다(처리 함수는 시도 횟수를 받지 않음).
-    """
-    if settings.ai_job_max_attempts <= 1:
-        return False
-    if not isinstance(report, Checkpoint):
-        return True
-    retried, emptied = _retries(report)
-    if emptied >= EMPTY_RETRIES or retried + 1 >= settings.ai_job_max_attempts:
-        return False
-    return _note_retry(report, empty=True)
 
 
 def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
@@ -686,7 +667,6 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
             log.warning("%s — 모두 거절, 다시 시도 안 함", _summary(judged, stopped, made))
             raise LlmRejectedError("문제 만들기 요청을 모두 거절함")
         log.warning("%s — 모두 장애, 다시 시도", _summary(judged, stopped, made))
-        _note_retry(report, empty=False)  # 0문제 다시 시도가 마지막 시도인지 알게(_retry_empty)
         raise LlmError("문제 만들기 호출이 모두 실패")
     # 한 문제도 못 만들었고, 일시적인 원인(장애 · 답 모양 오류)으로만 끝난 대상이 있음(#553)
     if all(m.question is None for m in made) and any(_passing(m) for m in made):

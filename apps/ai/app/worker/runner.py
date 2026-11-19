@@ -74,6 +74,12 @@ class JobReport(Report, Protocol):
         """이 작업이 쓴 Claude 비용(달러)을 작업 문서에 더함(#298)."""
         ...
 
+    def last_attempt(self) -> bool:
+        """이번이 시도 한도의 마지막 시도인지: 일시 오류로 다시 시도를 올려도 다시 넣지 않고 실패로
+        끝남. 처리기가 멈춰 쓴 시도도 셈(attempts). 오답 복습이 이때 0문제를 성공으로 끝내 복습
+        상태를 옮기려고 씀(#553)."""
+        ...
+
 
 AWAITED_CHECK_SEC = 5.0  # 처리 중인 작업의 awaited를 DB에서 다시 읽는 간격
 CANCEL_CHECK_SEC = 5.0  # 처리 중인 작업이 취소됐는지 DB에서 다시 읽는 간격(#263)
@@ -127,6 +133,9 @@ class _StoreReport:
 
     def canceled(self) -> threading.Event:
         return self._canceled
+
+    def last_attempt(self) -> bool:
+        return self._job.attempts >= self._store.max_attempts
 
     def add_cost(self, usd: float) -> None:
         self._store.add_cost(self._job, usd)
