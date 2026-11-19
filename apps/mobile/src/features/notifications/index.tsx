@@ -1,7 +1,13 @@
 import { useState } from 'react';
 import { View } from 'react-native';
 import { router } from 'expo-router';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  type QueryClient,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { Bell } from 'lucide-react-native';
 import type { Notification, UserSettings } from '@notelink/shared';
 import { Pressable } from '@/components/press';
@@ -20,6 +26,7 @@ import {
   cx,
 } from '@/components/ui';
 import { api } from '@/lib/api';
+import { queryClient } from '@/lib/query';
 import { timeAgo } from '@/lib/dates';
 import { routeFor } from '@/lib/notification-route';
 import { LoadError } from '@/features/progress/load-error';
@@ -35,9 +42,20 @@ export function useUnreadCount() {
   return useQuery({ queryKey: UNREAD_KEY, queryFn: () => api.notifications.unreadCount() });
 }
 
+/** 읽음 처리가 끝난 뒤에(실패해도) 알림함 · 읽지 않은 수를 다시 읽는다 */
+export function markNotificationRead(id: string, qc: QueryClient = queryClient) {
+  void api.notifications
+    .markRead(id)
+    .catch(() => {})
+    .finally(() => void qc.invalidateQueries({ queryKey: ['notifications'] }));
+}
+
 /** 알림을 눌렀을 때: 읽음 처리(실패해도 이동은 한다) 뒤 그 화면으로 */
-export function openNotification(n: Pick<Notification, '_id' | 'type' | 'data' | 'readAt'>) {
-  if (!n.readAt) void api.notifications.markRead(n._id).catch(() => {});
+export function openNotification(
+  n: Pick<Notification, '_id' | 'type' | 'data' | 'readAt'>,
+  qc?: QueryClient,
+) {
+  if (!n.readAt) markNotificationRead(n._id, qc);
   // 알림함은 type을 data 밖에 둔다(푸시 data에는 같이 들어 있다)
   const to = routeFor({ ...n.data, type: n.type });
   if (to) router.push(to);
@@ -59,8 +77,10 @@ export function InboxScreen() {
     onSuccess: refresh,
     onError: () => toast('읽음 처리를 하지 못했어요. 다시 시도해 주세요'),
   });
+  const unread = useUnreadCount();
   const items = list.data?.pages.flatMap((p) => p.items) ?? [];
-  const hasUnread = items.some((n) => !n.readAt);
+  // 아직 안 불러온 쪽에 안 읽은 알림이 있을 수 있어 서버 수도 본다
+  const hasUnread = (unread.data ?? 0) > 0 || items.some((n) => !n.readAt);
   return (
     <Canvas>
       <Screen refresh={{ refreshing: list.isRefetching, onRefresh: refresh }}>
@@ -98,12 +118,17 @@ export function InboxScreen() {
             {items.map((n) => (
               <Row
                 key={n._id}
-                onPress={() => {
-                  openNotification(n);
-                  if (!n.readAt) setTimeout(refresh, 300);
-                }}
+                onPress={() => openNotification(n, qc)}
                 sub={`${n.body} · ${timeAgo(n.createdAt)}`}
-                right={!n.readAt ? <View className="h-2 w-2 rounded-full bg-brand" /> : undefined}
+                right={
+                  !n.readAt ? (
+                    <View
+                      accessible
+                      accessibilityLabel="안 읽음"
+                      className="h-2 w-2 rounded-full bg-brand"
+                    />
+                  ) : undefined
+                }
               >
                 <Text
                   className={cx('text-callout', n.readAt ? 'text-sub' : 'font-semibold text-ink')}
@@ -134,11 +159,16 @@ export function InboxScreen() {
 function useSaveSettings() {
   const qc = useQueryClient();
   return useMutation({
+    // 차례로 보낸다: 음소거 목록처럼 배열 전체를 보내는 저장이 순서가 뒤바뀌어 덮이지 않게
+    scope: { id: 'settings' },
     mutationFn: (s: Partial<UserSettings>) => api.me.update({ settings: s }),
-    onMutate: (s) =>
+    onMutate: async (s) => {
+      // 진행 중인 다시 읽기가 방금 바꾼 값을 되돌리지 않게
+      await qc.cancelQueries({ queryKey: ['me'] });
       qc.setQueryData(['me'], (u: { settings: UserSettings } | undefined) =>
         u ? { ...u, settings: { ...u.settings, ...s } } : u,
-      ),
+      );
+    },
     onError: () => toast('설정을 저장하지 못했어요. 다시 시도해 주세요'),
     onSettled: () => qc.invalidateQueries({ queryKey: ['me'] }),
   });
@@ -185,7 +215,15 @@ export function NotificationSettingsScreen() {
         </Screen>
       </Canvas>
     );
-  if (!me.data) return <Loading />;
+  if (!me.data)
+    return (
+      <Canvas>
+        <Screen>
+          <Header title="알림 설정" />
+          <Loading />
+        </Screen>
+      </Canvas>
+    );
   const s = me.data.settings;
   const quiet = s.quietHours ?? null;
   return (
@@ -252,10 +290,14 @@ export function NotificationSettingsScreen() {
           <View className="flex-row flex-wrap gap-2 pb-2">
             {HOURS.map((h) => {
               const now = pick && quiet ? quiet[pick] : null;
+              // 시작 = 끝이면 서버가 조용한 시간을 끈 것으로 본다 → 고르지 못하게
+              const other = pick && quiet ? quiet[pick === 'start' ? 'end' : 'start'] : null;
               return (
                 <Pressable
                   key={h}
                   accessibilityRole="button"
+                  accessibilityState={{ selected: h === now, disabled: h === other }}
+                  disabled={h === other}
                   onPress={() => {
                     if (!pick || !quiet) return;
                     save.mutate({ quietHours: { ...quiet, [pick]: h } });
@@ -264,6 +306,7 @@ export function NotificationSettingsScreen() {
                   className={cx(
                     'h-control w-[22%] items-center justify-center rounded-card',
                     h === now ? 'bg-brand' : 'bg-fill',
+                    h === other && 'opacity-40',
                   )}
                 >
                   <Text className={cx('text-footnote', h === now ? 'text-white' : 'text-ink')}>

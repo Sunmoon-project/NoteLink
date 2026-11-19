@@ -83,6 +83,36 @@ describe('알림함', () => {
     await waitFor(() => expect(mockApi.notifications.readAll).toHaveBeenCalled());
   });
 
+  it('읽음 처리가 끝난 뒤에 읽지 않은 수를 다시 읽는다', async () => {
+    let done!: () => void;
+    mockApi.notifications.markRead.mockImplementationOnce(
+      () => new Promise<void>((r) => (done = r)),
+    );
+    mockApi.notifications.list.mockResolvedValue({ items: [item()], nextCursor: null });
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByText(/나나님이 친구 요청을 보냈어요/));
+    const before = mockApi.notifications.unreadCount.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 400));
+    expect(mockApi.notifications.unreadCount.mock.calls.length).toBe(before);
+    done();
+    await waitFor(() =>
+      expect(mockApi.notifications.unreadCount.mock.calls.length).toBeGreaterThan(before),
+    );
+  });
+
+  it('불러온 알림은 다 읽었어도 안 읽은 알림이 남아 있으면 모두 읽음을 누를 수 있다', async () => {
+    mockApi.notifications.unreadCount.mockResolvedValue(25);
+    mockApi.notifications.list.mockResolvedValue({
+      items: [item({ readAt: new Date().toISOString() })],
+      nextCursor: 'c1',
+    });
+    await renderScreen(<InboxScreen />);
+    await waitFor(() => expect(mockApi.notifications.unreadCount).toHaveBeenCalled());
+    await fireEvent.press(await screen.findByText('모두 읽음'));
+    await waitFor(() => expect(mockApi.notifications.readAll).toHaveBeenCalled());
+    mockApi.notifications.unreadCount.mockResolvedValue(0);
+  });
+
   it('비어 있으면 안내', async () => {
     mockApi.notifications.list.mockResolvedValue({ items: [], nextCursor: null });
     await renderScreen(<InboxScreen />);
@@ -118,6 +148,15 @@ describe('알림 설정', () => {
         settings: { quietHours: { start: '23:00', end: '07:00' } },
       }),
     );
+  });
+
+  it('끝 시각으로 시작과 같은 시각은 고를 수 없다(같으면 조용한 시간이 꺼진다)', async () => {
+    mockApi.me.get.mockResolvedValue(settings({ quietHours: { start: '23:00', end: '07:00' } }));
+    await renderScreen(<NotificationSettingsScreen />);
+    await fireEvent.press(await screen.findByText('07:00'));
+    const tiles = await screen.findAllByText('23:00');
+    await fireEvent.press(tiles[tiles.length - 1]!);
+    expect(mockApi.me.update).not.toHaveBeenCalled();
   });
 
   it('조용한 시간 시작 시각을 고른다', async () => {

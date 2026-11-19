@@ -710,14 +710,17 @@ export function Toggle({
   on,
   onChange,
   label,
+  disabled,
 }: {
   on: boolean;
   onChange: (v: boolean) => void;
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <Switch
       accessibilityLabel={label}
+      disabled={disabled}
       value={on}
       onValueChange={onChange}
       trackColor={{ true: C.brand, false: C.fill }}

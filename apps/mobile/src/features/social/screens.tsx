@@ -519,7 +519,8 @@ export function ChatScreen() {
                 <Toggle
                   label="이 채팅 알림"
                   on={!mute.muted}
-                  onChange={() => mute.ready && mute.toggle()}
+                  disabled={!mute.ready}
+                  onChange={mute.toggle}
                 />
               }
             >

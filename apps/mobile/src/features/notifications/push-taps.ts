@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { router } from 'expo-router';
 import * as Notifications from 'expo-notifications';
-import { api } from '@/lib/api';
+import { markNotificationRead } from './index';
 import { routeFor } from '@/lib/notification-route';
 import { queryClient } from '@/lib/query';
 
@@ -15,8 +15,8 @@ function open(r: Notifications.NotificationResponse | null) {
   handled.add(id);
   const data = r.notification.request.content.data as Record<string, unknown> | undefined;
   const notificationId = typeof data?.notificationId === 'string' ? data.notificationId : null;
-  if (notificationId) void api.notifications.markRead(notificationId).catch(() => {});
-  void queryClient.invalidateQueries({ queryKey: ['notifications'] });
+  if (notificationId) markNotificationRead(notificationId);
+  else void queryClient.invalidateQueries({ queryKey: ['notifications'] });
   const to = routeFor(data);
   if (to) router.push(to);
 }

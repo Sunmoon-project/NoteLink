@@ -47,6 +47,7 @@ SplashScreen.preventAutoHideAsync();
 export default function RootLayout() {
   const ready = useAuth((s) => s.ready);
   const token = useAuth((s) => s.tokens?.accessToken);
+  const onboarded = useAuth((s) => s.onboarded);
   useEffect(() => {
     useAuth.getState().load();
     // 기본은 세로 고정, 자동 측정 화면만 가로 (p.49)
@@ -62,7 +63,8 @@ export default function RootLayout() {
     // 실패하면(권한 거부 · 네트워크) 서버 푸시 없이 지낸다. 원인을 찾을 수 있게 남긴다
     registerPush().catch((e: unknown) => console.warn('[push] 기기 등록 실패', e));
   }, [token]);
-  usePushTaps(!!token);
+  // 약관 · 프로필 설정 전에는 알림을 눌러도 그 화면으로 보내지 않는다
+  usePushTaps(!!token && onboarded);
   if (!ready) return null;
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

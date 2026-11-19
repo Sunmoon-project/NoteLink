@@ -776,7 +776,8 @@ export function RoomSettingsScreen() {
             <Toggle
               label="채팅 알림"
               on={!mute.muted}
-              onChange={() => mute.ready && mute.toggle()}
+              disabled={!mute.ready}
+              onChange={mute.toggle}
             />
           </View>
           <Pressable
