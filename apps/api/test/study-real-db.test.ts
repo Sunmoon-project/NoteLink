@@ -5,7 +5,7 @@
 import { getConnectionToken, MongooseModule } from '@nestjs/mongoose';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { Types, type Connection } from 'mongoose';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { DailyRecord, DailyRecordSchema } from '../src/modules/progress/schemas/daily-record.schema.js';
@@ -20,6 +20,9 @@ const uri = process.env.MONGODB_VERIFY_URI;
 const isLocal = !!uri && /^mongodb:\/\/([^@/]*@)?(localhost|127\.0\.0\.1)[:/]/.test(uri);
 // 이 파일이 이번 실행에서만 쓰는 DB 이름 (다른 파일 · 다른 실행과 겹치지 않는다)
 const dbName = `notelink_verify_study_${process.pid}_${Date.now()}`;
+// 시험 기준 시각(서울 정오). 시험 데이터는 "오늘" 하루 기록만 만들어서, 진짜 시각으로 자정 직후(00:00~01:10)에 돌리면
+// 70분 전 세션이 전날로 넘어가 그날 기록이 없어 어긋난다(실제로는 세션을 시작할 때 그날 기록을 만든다)
+const BASE = new Date('2026-11-19T03:00:00Z');
 
 describe.skipIf(!uri)('진짜 DB 세션 동시 시작 확인', () => {
     let moduleRef: TestingModule;
@@ -47,6 +50,9 @@ describe.skipIf(!uri)('진짜 DB 세션 동시 시작 확인', () => {
         (await col('study_sessions').find({ userId }).toArray()) as unknown as { status: string; endReason: string | null }[];
 
     beforeAll(async () => {
+        // 날짜만 고정하고 시간은 그대로 흐르게 한다(타이머는 진짜)
+        vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+        vi.setSystemTime(BASE);
         if (!isLocal) throw new Error('localhost 주소가 아니라서 실행하지 않습니다');
         moduleRef = await Test.createTestingModule({
             imports: [
@@ -77,6 +83,7 @@ describe.skipIf(!uri)('진짜 DB 세션 동시 시작 확인', () => {
     }, 30000);
 
     afterAll(async () => {
+        vi.useRealTimers();
         if (conn) await conn.dropDatabase();
         await moduleRef?.close();
     });
