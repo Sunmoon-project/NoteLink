@@ -94,6 +94,10 @@ export const httpApi: Api = {
     get: () => http.get(P.me),
     update: (patch) => http.patch(P.me, patch),
     setStatus: (status) => http.patch(P.myStatus, { status }),
+    presence: (active, device) => {
+      const path = device ? `${P.myPresence}?device=${encodeURIComponent(device)}` : P.myPresence;
+      return active ? http.put(path, {}) : http.del(path);
+    },
     registerDevice: (d) => http.post(P.myDevices, d),
     changePlan: (tier) => http.patch(P.mySubscription, { tier }),
     withdraw: () => http.del(P.me),
@@ -133,6 +137,7 @@ export const httpApi: Api = {
     toggleTodo: (id, done) => http.patch(P.todo(id), { done }),
     ddays: () => http.get(P.ddays),
     addDday: (p) => http.post(P.ddays, p),
+    removeDday: (id) => http.del(P.dday(id)),
     holidays: (year) => http.get(P.holidays, { year }),
     setHolidayHidden: (date, hidden) => http.patch(P.holiday(date), { hidden }),
     customHolidays: () => http.get(P.customHolidays),

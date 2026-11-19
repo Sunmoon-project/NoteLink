@@ -1689,7 +1689,8 @@ function ChatBubble({
     );
   return (
     <View className="max-w-[78%] rounded-2xl bg-white px-3 py-2">
-      <Text className="text-footnote text-ink">
+      {/* 1:1 채팅처럼 길게 누르면 복사할 수 있게 */}
+      <Text selectable className="text-footnote text-ink">
         {m.type === 'image' || m.type === 'file'
           ? '첨부를 불러오지 못했어요'
           : (m.text ?? '공유 자료를 보냈어요')}

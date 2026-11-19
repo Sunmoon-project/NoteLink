@@ -379,3 +379,51 @@ def test_a_refused_two_answers_check_is_llm_refused() -> None:
     llm = FakeLlm({"Review": review, "Naturals": [LlmRejectedError("HTTP 413")] * 40})
     m = similar.make_similar(llm, question(qtype="어휘"), target(), 1, PAGE, 0, [])
     assert m.question is None and m.llm_down and m.llm_refused
+
+
+@pytest.mark.parametrize(
+    ("review", "checks", "steps", "rejected"),
+    [
+        # 코드 검사에서 모두 탈락
+        ([gen(FOUR)] * 3, [], ["코드 검사"] * 3, True),
+        # 생성 호출 실패 · 답 모양 오류 · 검사 모델 호출 실패: 정상 탈락이 아님
+        (
+            [gen(GOOD), {}, gen(GOOD)],
+            [LlmError("HTTP 503")] * 2,
+            ["검사 모델 호출 실패", "생성 답 모양", "검사 모델 호출 실패"],
+            False,
+        ),
+        # 둘째 시도는 빈칸 유형이라 빈칸 없는 초안은 코드 검사에서 떨어짐
+        (
+            [gen(GOOD), gen(GOOD), LlmError("HTTP 503")],
+            [{}],
+            ["검사 모델 답 모양", "코드 검사", "생성 호출 실패"],
+            True,
+        ),
+        (
+            [gen(GOOD), {}, gen(GOOD)],
+            [check("E")] * 2,
+            ["검사 모델 탈락", "생성 답 모양", "검사 모델 탈락"],
+            True,
+        ),
+        ([gen(GOOD)], [check("A")], ["통과"], False),
+    ],
+)
+def test_every_try_records_the_step_it_stopped_at(
+    review: list[JsonObject | LlmError],
+    checks: list[JsonObject | LlmError],
+    steps: list[str],
+    rejected: bool,
+) -> None:
+    # 오답 복습이 0문제일 때 이유를 로그로 남기려고(#553): 원문 없이 단계 이름만
+    llm = FakeLlm({"Review": review, "Check": checks})
+    m = similar.make_similar(llm, question(), target(), 1, PAGE, 0, [])
+    assert m.steps == steps and m.rejected is rejected
+
+
+def test_two_answers_check_steps_are_recorded() -> None:
+    review = [gen(GOOD), LlmError("HTTP 503"), gen(GOOD)]
+    llm = FakeLlm({"Review": review, "Naturals": [LlmError("HTTP 503")] * 40})
+    m = similar.make_similar(llm, question(qtype="어휘"), target(), 1, PAGE, 0, [])
+    assert m.steps == ["정답 둘 검사 못 함", "생성 호출 실패", "정답 둘 검사 못 함"]
+    assert not m.rejected

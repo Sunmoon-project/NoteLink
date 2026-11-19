@@ -1,9 +1,14 @@
-import { BadRequestException, NotFoundException, ValidationPipe } from '@nestjs/common';
-import { Types } from 'mongoose';
-import { describe, expect, it } from 'vitest';
+import { BadRequestException, Logger, NotFoundException, ValidationPipe } from '@nestjs/common';
+import { mongo, Types } from 'mongoose';
+import { describe, expect, it, vi } from 'vitest';
 
 import { DeleteFlashcardsDto, FLASHCARD_DELETE_MAX, SaveFlashcardDto } from '../src/modules/quiz/dto/flashcard.dto.js';
-import { FlashcardsService } from '../src/modules/quiz/flashcards.service.js';
+import {
+  autoCardId,
+  AUTO_CARD_MAX,
+  CARD_JOB_PULL_LIMIT,
+  FlashcardsService,
+} from '../src/modules/quiz/flashcards.service.js';
 import { FlashcardSchema } from '../src/modules/quiz/schemas/flashcard.schema.js';
 
 type Row = Record<string, unknown> & { _id: Types.ObjectId };
@@ -15,6 +20,10 @@ function fakeModels() {
   const sets: Row[] = [];
   const materials: Row[] = [];
   let clock = 0;
+  const bulkCalls: { ops: number; options: unknown }[] = [];
+  let bulkError: unknown = null;
+  const jobs: Row[] = [];
+  let jobsError: unknown = null;
   const lean = <T>(value: T) => ({ lean: () => Promise.resolve(value), select: () => ({ lean: () => Promise.resolve(value) }) });
 
   const cardModel = {
@@ -23,11 +32,39 @@ function fakeModels() {
       cards.push(row);
       return Promise.resolve({ toObject: () => row });
     },
-    find: (filter: { ownerId: Types.ObjectId; deletedAt: null }) => {
+    find: (filter: {
+      ownerId: Types.ObjectId;
+      deletedAt?: null;
+      materialId?: Types.ObjectId;
+      _id?: { $nin: Types.ObjectId[] };
+    }) => {
       const found = cards
         .filter((c) => same(c['ownerId'], filter.ownerId) && (c['deletedAt'] ?? null) === null)
         .sort((a, b) => (a['createdAt'] as Date).getTime() - (b['createdAt'] as Date).getTime());
-      return { sort: () => lean(found) };
+      // 자동 카드가 같은 노트의 카드 앞면을 읽는 질의(지운 카드 포함, 그 세트의 카드 id 빼고)
+      const ofNote = cards.filter(
+        (c) =>
+          same(c['ownerId'], filter.ownerId) &&
+          same(c['materialId'], filter.materialId) &&
+          !(filter._id?.$nin ?? []).some((id) => same(id, c._id)),
+      );
+      return { sort: () => lean(found), select: () => ({ lean: () => Promise.resolve(ofNote) }) };
+    },
+    // 자동 카드(saveFromQuizSet): _id 하나로 거르는 upsert($setOnInsert)만 흉내 낸다
+    // 이미 옮긴 카드 작업인지(그 세트의 카드 id가 하나라도 있음, 지운 카드 포함)
+    exists: (filter: { _id: { $in: Types.ObjectId[] } }) =>
+      Promise.resolve(cards.find((c) => filter._id.$in.some((id) => same(id, c._id))) ? { _id: 1 } : null),
+    bulkWrite: (
+      ops: { updateOne: { filter: { _id: Types.ObjectId }; update: { $setOnInsert: Row }; upsert: boolean } }[],
+      options: { ordered: boolean; timestamps?: boolean },
+    ) => {
+      bulkCalls.push({ ops: ops.length, options });
+      if (bulkError) return Promise.reject(bulkError);
+      for (const { updateOne: op } of ops) {
+        if (!op.upsert || cards.some((c) => same(c._id, op.filter._id))) continue;
+        cards.push({ ...op.update.$setOnInsert, _id: op.filter._id });
+      }
+      return Promise.resolve({});
     },
     updateMany: (filter: { _id: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId }, update: { $set: Row }) => {
       for (const c of cards) {
@@ -39,26 +76,86 @@ function fakeModels() {
     },
   };
   const setModel = {
-    findOne: (filter: { ownerId: Types.ObjectId; 'questions._id': Types.ObjectId }) =>
+    // 자동 카드 저장 전에 세트가 아직 있는지(saveFromQuizSet)
+    exists: (filter: { _id: Types.ObjectId; ownerId: Types.ObjectId; deletedAt: null }) =>
+      Promise.resolve(
+        sets.find((s) => same(s._id, filter._id) && same(s['ownerId'], filter.ownerId) && !s['deletedAt'])
+          ? { _id: filter._id }
+          : null,
+      ),
+    // 문제로 세트 찾기(save) 또는 세트 id로 찾기(pullCards). 둘 다 지운 세트는 뺀다
+    findOne: (filter: { ownerId: Types.ObjectId; 'questions._id'?: Types.ObjectId; _id?: Types.ObjectId }) =>
       lean(
         sets.find(
           (s) =>
             same(s['ownerId'], filter.ownerId) &&
             !s['deletedAt'] &&
-            (s['questions'] as Row[]).some((q) => same(q._id, filter['questions._id'])),
+            (filter._id
+              ? same(s._id, filter._id)
+              : (s['questions'] as Row[]).some((q) => same(q._id, filter['questions._id']))),
         ) ?? null,
       ),
   };
   const materialModel = {
-    findOne: (filter: { _id: Types.ObjectId; ownerId: Types.ObjectId }) =>
-      lean(materials.find((m) => same(m._id, filter._id) && same(m['ownerId'], filter.ownerId)) ?? null),
+    findOne: (filter: { _id: Types.ObjectId; ownerId: Types.ObjectId; deletedAt?: null }) =>
+      lean(
+        materials.find(
+          (m) =>
+            same(m._id, filter._id) &&
+            same(m['ownerId'], filter.ownerId) &&
+            (!('deletedAt' in filter) || !m['deletedAt']),
+        ) ?? null,
+      ),
+  };
+  // 끝난 개념 카드 작업(pullCards): find(조건).sort.limit.select.lean만
+  // 끝난 개념 카드 작업(pullCards): find(조건).sort(만든 차례).limit.select.lean, 옮김 표시(updateOne)만
+  const jobModel = {
+    find: (filter: { userId: Types.ObjectId; type: string; status: string }) => {
+      const found = jobs
+        .filter(
+          (j) =>
+            same(j['userId'], filter.userId) &&
+            j['type'] === filter.type &&
+            j['status'] === filter.status &&
+            ((j['result'] as Row | null)?.['flashcardsSavedAt'] ?? null) === null,
+        )
+        .sort((a, b) => (a['createdAt'] as Date).getTime() - (b['createdAt'] as Date).getTime());
+      const chain = {
+        sort: () => chain,
+        limit: (n: number) => ({
+          select: () => ({
+            lean: () => (jobsError ? Promise.reject(jobsError) : Promise.resolve(found.slice(0, n))),
+          }),
+        }),
+      };
+      return chain;
+    },
+    updateOne: (filter: { _id: Types.ObjectId }, update: { $set: Record<string, unknown> }) => {
+      const job = jobs.find((j) => same(j._id, filter._id));
+      if (job) job['result'] = { ...(job['result'] as Row), flashcardsSavedAt: update.$set['result.flashcardsSavedAt'] };
+      return Promise.resolve({});
+    },
   };
   const service = new FlashcardsService(
     cardModel as unknown as never,
     setModel as unknown as never,
     materialModel as unknown as never,
+    jobModel as unknown as never,
   );
-  return { cards, sets, materials, service };
+  return {
+    cards,
+    sets,
+    materials,
+    service,
+    bulkCalls,
+    failBulk: (e: unknown) => {
+      bulkError = e;
+    },
+    jobs,
+    failJobs: (e: unknown) => {
+      jobsError = e;
+    },
+  };
 }
 
 describe('플래시카드 서비스', () => {
@@ -224,3 +321,319 @@ describe('플래시카드 스키마', () => {
     expect(FlashcardSchema.indexes().some(([keys]) => 'ownerId' in keys && 'deletedAt' in keys && 'createdAt' in keys)).toBe(true);
   });
 });
+
+describe('맞춤 퀴즈 개념 카드 저장(saveFromQuizSet, #558)', () => {
+  const me = new Types.ObjectId();
+  const materialId = new Types.ObjectId();
+  const folderId = new Types.ObjectId();
+  /** 세트 한 줄. f를 주면 그 가짜 DB에 넣는다(카드는 지우지 않은 세트에만 쓴다) */
+  const set = (extra: Record<string, unknown> = {}, f?: ReturnType<typeof fakeModels>) => {
+    const row = { _id: new Types.ObjectId(), ownerId: me, materialId, folderId, ...extra };
+    f?.sets.push({ ...row, deletedAt: null, questions: [] });
+    // 세트의 노트도 지우지 않은 채로 둔다(이미 있으면 그대로)
+    const note = row.materialId as Types.ObjectId | null | undefined;
+    if (f && note && !f.materials.some((m) => same(m._id, note))) {
+      f.materials.push({ _id: note, ownerId: row.ownerId, folderId: null, deletedAt: null });
+    }
+    return row;
+  };
+  /** 처리기 result.flashcards 한 장(apps/ai services/quiz/flashcards.py) */
+  const card = (n: number, over: Record<string, unknown> = {}) => ({
+    front: `용어 ${n}`,
+    back: `뜻 ${n}`,
+    pageNo: 1,
+    concept: `개념 ${n}`,
+    ...over,
+  });
+  const five = () => [1, 2, 3, 4, 5].map((n) => card(n));
+
+  it('카드마다 세트 · 노트 · 폴더를 적어 저장하고, 내 목록에 차례대로 보인다', async () => {
+    const f = fakeModels();
+    const row = set({}, f);
+    await f.service.saveFromQuizSet(row, five());
+
+    const list = await f.service.list(me.toString());
+    expect(list.map((c) => [c.front, c.back])).toEqual([1, 2, 3, 4, 5].map((n) => [`용어 ${n}`, `뜻 ${n}`]));
+    expect(list[0]).toMatchObject({
+      _id: autoCardId(me, materialId, '용어 1').toString(),
+      materialId: materialId.toString(),
+      folderId: folderId.toString(),
+      sourceQuizSetId: row._id.toString(),
+      sourceQuestionId: null,
+      lastResult: null,
+    });
+    expect(f.cards[0]).toMatchObject({ ownerId: me, deletedAt: null });
+    // 한 번에 쓰고, 타임스탬프는 처음 넣을 때만(다시 옮길 때 지운 카드의 updatedAt을 바꾸지 않게)
+    expect(f.bulkCalls).toEqual([{ ops: 5, options: { ordered: false, timestamps: false } }]);
+  });
+
+  it('같은 세트를 여러 번 옮겨도 한 번만 생기고, 지운 카드는 다시 생기지 않는다', async () => {
+    const f = fakeModels();
+    const row = set({}, f);
+    await f.service.saveFromQuizSet(row, five());
+    const [first] = await f.service.list(me.toString());
+    await f.service.remove(me.toString(), [first!._id]);
+
+    await Promise.all([f.service.saveFromQuizSet(row, five()), f.service.saveFromQuizSet(row, five())]);
+
+    expect(f.cards).toHaveLength(5);
+    const list = await f.service.list(me.toString());
+    expect(list.map((c) => c.front)).toEqual(['용어 2', '용어 3', '용어 4', '용어 5']);
+  });
+
+  it('id는 사용자 · 노트 · 앞면(공백 무시)으로 정해진다', () => {
+    const other = new Types.ObjectId();
+    expect(autoCardId(me, materialId, '용어 1').equals(autoCardId(me, materialId, ' 용어1 '))).toBe(true);
+    const ids = new Set(
+      [
+        autoCardId(me, materialId, '용어 1'),
+        autoCardId(me, materialId, '용어 2'),
+        autoCardId(me, materialId, 'CO'),
+        autoCardId(me, materialId, 'Co'),
+        autoCardId(me, other, '용어 1'),
+        autoCardId(other, materialId, '용어 1'),
+        autoCardId(me, null, '용어 1'),
+      ].map((id) => id.toHexString()),
+    );
+    expect(ids.size).toBe(7);
+  });
+
+  it('같은 노트의 두 세트가 같은 앞면 카드를 동시에 옮겨도 한 장만 남는다(Codex 재리뷰)', async () => {
+    const f = fakeModels();
+    const a = set({}, f);
+    const b = set({}, f);
+
+    await Promise.all([
+      f.service.saveFromQuizSet(a, [card(1), card(2)]),
+      f.service.saveFromQuizSet(b, [card(1, { back: '다른 뜻 1' }), card(3)]),
+    ]);
+
+    expect(f.cards.map((c) => c['front']).sort()).toEqual(['용어 1', '용어 2', '용어 3']);
+  });
+
+  it('세트에 폴더가 없으면 노트의 폴더, 노트도 없으면 null', async () => {
+    const f = fakeModels();
+    const other = new Types.ObjectId();
+    f.materials.push({ _id: materialId, ownerId: me, folderId: other });
+    await f.service.saveFromQuizSet(set({ folderId: undefined }, f), [card(1)]);
+    await f.service.saveFromQuizSet(set({ folderId: null, materialId: null }, f), [card(2)]);
+    const list = await f.service.list(me.toString());
+    expect(list.map((c) => [c.folderId, c.materialId])).toEqual([
+      [other.toString(), materialId.toString()],
+      [null, null],
+    ]);
+  });
+
+  it('모양이 틀린 카드는 빼고 나머지만 저장한다(앞뒤 공백 지움, 차례는 처리기 순서 그대로)', async () => {
+    const f = fakeModels();
+    const row = set({}, f);
+    await f.service.saveFromQuizSet(row, [
+      card(1, { front: '  앞  ', back: ' 뒤 ' }),
+      null,
+      card(3, { front: '   ' }),
+      card(4, { back: 7 }),
+      card(5, { front: 'a'.repeat(1001) }),
+      card(6, { back: 'b'.repeat(2001) }),
+      card(7),
+    ]);
+    expect(f.cards.map((c) => [String(c._id), c['front'], c['back']])).toEqual([
+      [autoCardId(me, materialId, '앞').toString(), '앞', '뒤'],
+      [autoCardId(me, materialId, '용어 7').toString(), '용어 7', '뜻 7'],
+    ]);
+    // 만든 때는 처리기 순번만큼 1ms씩 늦어 목록이 처리기 차례를 지킨다(id는 해시라 차례가 없음)
+    const [first, second] = f.cards.map((c) => (c['createdAt'] as Date).getTime());
+    expect(second! - first!).toBe(6);
+  });
+
+  it(`한 세트에서 ${AUTO_CARD_MAX}장까지만, 배열이 아니거나 비면 쓰지 않는다`, async () => {
+    const f = fakeModels();
+    await f.service.saveFromQuizSet(set({}, f), Array.from({ length: AUTO_CARD_MAX + 3 }, (_, i) => card(i)));
+    expect(f.cards).toHaveLength(AUTO_CARD_MAX);
+    for (const raw of [undefined, null, '카드', {}, []]) await f.service.saveFromQuizSet(set({}, f), raw);
+    expect(f.bulkCalls).toHaveLength(1);
+  });
+
+  it('동시에 옮기다 같은 id가 먼저 들어간 것(중복 키)만 넘어가고, 다른 오류는 올린다', async () => {
+    const f = fakeModels();
+    const dup = new mongo.MongoBulkWriteError(
+      { message: 'E11000', code: 11000, writeErrors: [{ code: 11000 }, { code: 11000 }] } as never,
+      {} as never,
+    );
+    f.failBulk(dup);
+    await expect(f.service.saveFromQuizSet(set({}, f), five())).resolves.toBeUndefined();
+
+    const other = new mongo.MongoBulkWriteError(
+      { message: 'mixed', code: 11000, writeErrors: [{ code: 11000 }, { code: 121 }] } as never,
+      {} as never,
+    );
+    f.failBulk(other);
+    await expect(f.service.saveFromQuizSet(set({}, f), five())).rejects.toBe(other);
+    const down = new Error('network');
+    f.failBulk(down);
+    await expect(f.service.saveFromQuizSet(set({}, f), five())).rejects.toBe(down);
+  });
+
+  it('대소문자만 다른 앞면(CO 일산화탄소 · Co 코발트)은 다른 카드로 둘 다 쓴다(Codex 리뷰)', async () => {
+    const f = fakeModels();
+    await f.service.saveFromQuizSet(set({}, f), [card(1, { front: 'CO', back: '일산화탄소' })]);
+    await f.service.saveFromQuizSet(set({}, f), [card(1, { front: 'Co', back: '코발트' }), card(2, { front: ' C O ' })]);
+    expect(f.cards.map((c) => c['front'])).toEqual(['CO', 'Co']); // 공백만 다른 'C O'는 같은 카드
+  });
+
+  it('같은 노트의 다른 세트에 앞면이 같은 카드가 있으면(지운 카드 포함) 빼고 쓴다', async () => {
+    const f = fakeModels();
+    const first = set({}, f);
+    await f.service.saveFromQuizSet(first, [card(1), card(2)]);
+    const [one] = await f.service.list(me.toString());
+    await f.service.remove(me.toString(), [one!._id]); // 지운 카드도 다시 만들지 않는다
+
+    const second = set({}, f);
+    await f.service.saveFromQuizSet(second, [card(1, { front: '용어1' }), card(2, { front: ' 용어 2 ' }), card(3)]);
+
+    expect(f.cards.map((c) => [c['front'], String(c['sourceQuizSetId'])])).toEqual([
+      ['용어 1', String(first._id)],
+      ['용어 2', String(first._id)],
+      ['용어 3', String(second._id)],
+    ]);
+    // 다른 노트의 카드와는 비교하지 않는다
+    await f.service.saveFromQuizSet(set({ materialId: new Types.ObjectId() }, f), [card(1)]);
+    expect(f.cards).toHaveLength(4);
+  });
+
+  it('그 사이 노트를 지웠으면 쓰지 않는다(노트 · 폴더 지우기는 세트를 건드리지 않음)', async () => {
+    const f = fakeModels();
+    const row = set({}, f);
+    f.materials.find((m) => same(m._id, materialId))!['deletedAt'] = new Date();
+    await f.service.saveFromQuizSet(row, five());
+    expect(f.cards).toHaveLength(0);
+  });
+
+  it('그 사이 지운 세트 · 남의 세트에는 쓰지 않는다', async () => {
+    const f = fakeModels();
+    const gone = set({}, f);
+    f.sets[f.sets.length - 1]!['deletedAt'] = new Date();
+    await f.service.saveFromQuizSet(gone, five());
+    await f.service.saveFromQuizSet(set(), five()); // DB에 없는 세트
+    await f.service.saveFromQuizSet({ ...set({}, f), ownerId: new Types.ObjectId() }, five());
+    expect(f.cards).toHaveLength(0);
+    expect(f.bulkCalls).toHaveLength(0);
+  });
+});
+
+describe('목록을 열 때 끝난 개념 카드 작업을 옮기기(pullCards, #558)', () => {
+  const me = new Types.ObjectId();
+  const materialId = new Types.ObjectId();
+  const folderId = new Types.ObjectId();
+  let at = 0;
+  const card = (n: number) => ({ front: `용어 ${n}`, back: `뜻 ${n}`, pageNo: 1, concept: `개념 ${n}` });
+  /** 지우지 않은 세트 · 노트와 그 세트의 끝난 카드 작업 */
+  const addJob = (
+    f: ReturnType<typeof fakeModels>,
+    over: Record<string, unknown> = {},
+    cards: unknown = [1, 2, 3, 4, 5].map(card),
+  ) => {
+    const setId = new Types.ObjectId();
+    f.sets.push({ _id: setId, ownerId: me, materialId, folderId, deletedAt: null, questions: [] });
+    if (!f.materials.some((m) => same(m._id, materialId))) {
+      f.materials.push({ _id: materialId, ownerId: me, folderId, deletedAt: null });
+    }
+    f.jobs.push({
+      _id: new Types.ObjectId(),
+      userId: me,
+      type: 'quiz_flashcards',
+      status: 'succeeded',
+      targetType: 'quiz_set',
+      targetId: setId,
+      result: { flashcards: cards, flashcardsReason: null },
+      createdAt: new Date(Date.UTC(2026, 10, 19, 0, 0, at++)),
+      ...over,
+    });
+    return setId;
+  };
+
+  it('끝난 카드 작업의 카드가 목록에 보이고, 다시 열어도 다시 쓰지 않는다', async () => {
+    const f = fakeModels();
+    const setId = addJob(f);
+
+    const list = await f.service.list(me.toString());
+
+    expect(list.map((c) => c.front)).toEqual(['용어 1', '용어 2', '용어 3', '용어 4', '용어 5']);
+    expect(list[0]).toMatchObject({ sourceQuizSetId: setId.toString(), materialId: materialId.toString() });
+    await f.service.list(me.toString());
+    expect(f.bulkCalls).toHaveLength(1);
+  });
+
+  it('지운 카드는 다시 열어도 되살아나지 않는다', async () => {
+    const f = fakeModels();
+    addJob(f);
+    const [first] = await f.service.list(me.toString());
+    await f.service.remove(me.toString(), [first!._id]);
+
+    const again = await f.service.list(me.toString());
+
+    expect(again.map((c) => c.front)).toEqual(['용어 2', '용어 3', '용어 4', '용어 5']);
+    expect(f.cards).toHaveLength(5);
+  });
+
+  it('끝나지 않은 · 실패한 · 남의 · 다른 종류 작업, 지운 세트의 작업은 옮기지 않는다', async () => {
+    const f = fakeModels();
+    addJob(f, { status: 'running', result: null });
+    addJob(f, { status: 'failed' });
+    addJob(f, { userId: new Types.ObjectId() });
+    addJob(f, { type: 'quiz_generate' });
+    const gone = addJob(f);
+    f.sets.find((s) => same(s._id, gone))!['deletedAt'] = new Date();
+    addJob(f, {}, []);
+
+    expect(await f.service.list(me.toString())).toEqual([]);
+    expect(f.bulkCalls).toHaveLength(0);
+  });
+
+  it(`오래된 작업부터 ${CARD_JOB_PULL_LIMIT}개씩 옮기고, 남은 작업은 다음 조회에 옮긴다`, async () => {
+    const f = fakeModels();
+    const oldest = addJob(f, {}, [card(0)]);
+    for (let i = 1; i <= CARD_JOB_PULL_LIMIT; i++) addJob(f, {}, [card(i)]);
+
+    const first = await f.service.list(me.toString());
+    expect(first).toHaveLength(CARD_JOB_PULL_LIMIT);
+    expect(first.some((c) => c.sourceQuizSetId === oldest.toString())).toBe(true);
+
+    expect(await f.service.list(me.toString())).toHaveLength(CARD_JOB_PULL_LIMIT + 1);
+  });
+
+  it('카드를 하나도 쓰지 않은 작업(앞면이 모두 겹침 · 지운 세트)도 옮김 표시를 남겨 다시 읽지 않는다', async () => {
+    const f = fakeModels();
+    addJob(f);
+    addJob(f); // 같은 노트, 같은 앞면: 모두 겹쳐 쓰지 않음
+    const gone = addJob(f);
+    f.sets.find((s) => same(s._id, gone))!['deletedAt'] = new Date();
+
+    expect(await f.service.list(me.toString())).toHaveLength(5);
+    expect(f.jobs.every((j) => (j['result'] as Row)['flashcardsSavedAt'] instanceof Date)).toBe(true);
+    const calls = f.bulkCalls.length;
+    await f.service.list(me.toString());
+    expect(f.bulkCalls).toHaveLength(calls);
+  });
+
+  it('작업을 못 읽거나 한 작업을 못 옮겨도 목록은 그대로 주고, 나머지 작업은 옮긴다', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const f = fakeModels();
+    addJob(f);
+    f.failJobs(new Error('jobs down'));
+    expect(await f.service.list(me.toString())).toEqual([]);
+    f.failJobs(null);
+
+    f.failBulk(Object.assign(new Error('write failed 용어 1'), { code: 121 }));
+    expect(await f.service.list(me.toString())).toEqual([]);
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('Error 121'))).toBe(true);
+    expect(lines.some((l) => l.includes('용어'))).toBe(false); // 카드 글은 로그에 없음
+    // 쓰다 실패한 작업은 옮김 표시를 남기지 않는다
+    expect((f.jobs[0]!['result'] as Row)['flashcardsSavedAt']).toBeUndefined();
+    f.failBulk(null);
+
+    expect(await f.service.list(me.toString())).toHaveLength(5); // 다음 조회에 다시
+    warn.mockRestore();
+  });
+});
+

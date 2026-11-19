@@ -8,6 +8,7 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from '@/lib/query';
 import { connectSocket } from '@/lib/socket';
+import { startPresence } from '@/lib/presence';
 import { registerPush } from '@/lib/push';
 import { useAuth } from '@/stores/auth';
 import { DRAWER_SCREEN } from '@/features/social/drawer';
@@ -65,6 +66,9 @@ export default function RootLayout() {
   }, [token]);
   // 약관 · 프로필 설정 전에는 알림을 눌러도 그 화면으로 보내지 않는다
   usePushTaps(!!token && onboarded);
+  // 로그인한 동안 친구에게 접속 상태를 알린다(앞에 있을 때만, 나가면 거둔다)
+  const signedIn = !!token;
+  useEffect(() => (signedIn ? startPresence() : undefined), [signedIn]);
   if (!ready) return null;
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

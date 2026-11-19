@@ -45,6 +45,7 @@ describe.skipIf(!isLocal)('진짜 DB 할 일 · D-day 확인', () => {
     const get = (path: string, auth = AUTH) => http().get(`/api/v1${path}`).set(auth);
     const post = (path: string, body: object, auth = AUTH) => http().post(`/api/v1${path}`).set(auth).send(body);
     const patch = (path: string, body: object, auth = AUTH) => http().patch(`/api/v1${path}`).set(auth).send(body);
+    const del = (path: string, auth = AUTH) => http().delete(`/api/v1${path}`).set(auth);
     const base = { content: '할 일', todoType: 'general', dueDate: day(3), timeSlot: 'none', subjectName: null };
 
     beforeAll(async () => {
@@ -279,5 +280,30 @@ describe.skipIf(!isLocal)('진짜 DB 할 일 · D-day 확인', () => {
         expect(await col('todos').findOne({ userId: me, content: '직접 시간' })).toMatchObject({ timeSlot: 'custom', dueTime: '21:15' });
         const am = await post('/todos', { ...base, content: '오전', timeSlot: 'am', dueTime: '09:00' });
         expect(await col('todos').findOne({ _id: new Types.ObjectId(am.body.data._id) })).toMatchObject({ dueTime: null });
+    });
+
+    it('12) D-day를 지운다: 직접 만든 것은 없어지고, 과제에서 온 것은 D-day 목록에서만 빠지고 할 일은 남는다', async () => {
+        const manual = (await post('/ddays', { title: '지울 목표일', date: day(9) })).body.data._id as string;
+        const todo = (await post('/todos', { ...base, content: '지울 과제', todoType: 'assignment', dueDate: day(8) })).body.data;
+        const fromTodo = ((await get('/ddays')).body.data as { _id: string; title: string }[]).find((d) => d.title === '지울 과제')!;
+        expect(fromTodo).toBeDefined();
+
+        // 남의 D-day · 할 일 쪽 id(D-day 아님) · 잘못된 id는 404이고 아무것도 지우지 않는다
+        expect((await del(`/ddays/${manual}`, AUTH_OTHER)).status).toBe(404);
+        expect((await del(`/ddays/${todo._id}`)).status).toBe(404);
+        expect((await del('/ddays/xyz')).status).toBe(404);
+        expect(await col('todos').countDocuments({ _id: new Types.ObjectId(manual) })).toBe(1);
+
+        expect((await del(`/ddays/${manual}`)).status).toBe(204);
+        expect((await del(`/ddays/${fromTodo._id}`)).status).toBe(204);
+        const titles = ((await get('/ddays')).body.data as { title: string }[]).map((d) => d.title);
+        expect(titles).not.toContain('지울 목표일');
+        expect(titles).not.toContain('지울 과제');
+        // 날짜별 할 일에는 과제가 그대로 있고, 완료 표시도 여전히 된다
+        const dayList = (await get(`/todos?date=${day(8)}`)).body.data as { _id: string; content: string }[];
+        expect(dayList.map((t) => t.content)).toContain('지울 과제');
+        expect((await patch(`/todos/${todo._id}`, { done: true })).status).toBe(204);
+        // 이미 지운 것을 다시 지우면 404
+        expect((await del(`/ddays/${manual}`)).status).toBe(404);
     });
 });
