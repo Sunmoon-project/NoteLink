@@ -35,6 +35,8 @@ export type NotifyInput = {
   channelId?: string;
   /** false면 알림함에 남기지 않고 푸시만 보낸다(채팅 메시지 — 채팅 목록의 읽지 않은 수로 충분) */
   inbox?: boolean;
+  /** true면 종류별 끄기 · 조용한 시간을 무시한다(퇴장 조치처럼 당사자가 꼭 알아야 하는 알림) */
+  essential?: boolean;
 };
 
 export type InboxItem = {
@@ -97,18 +99,11 @@ export class NotificationService {
   }
 
   private async deliver(input: NotifyInput, now: Date): Promise<void> {
-    const ids = [...new Set(input.userIds.map(String))]
-      .filter((id) => isValidObjectId(id))
-      .map((id) => new Types.ObjectId(id));
-    if (!ids.length) return;
-    const people = await this.users
-      .find({ _id: { $in: ids }, deletedAt: null, withdrawingAt: null })
-      .select('_id settings')
-      .lean<Prefs[]>();
+    const people = await this.prefsOf(input.userIds);
     const chatRoomId = input.data?.chatRoomId == null ? null : String(input.data.chatRoomId);
     const targets = people.filter((p) => {
       const s = p.settings ?? {};
-      if (s[SETTING_KEY[input.category]] === false) return false;
+      if (!input.essential && s[SETTING_KEY[input.category]] === false) return false;
       if (input.category === 'chat' && chatRoomId) {
         const muted = Array.isArray(s.mutedChatRoomIds) ? s.mutedChatRoomIds : [];
         if (muted.includes(chatRoomId)) return false;
@@ -140,7 +135,9 @@ export class NotificationService {
       rows.forEach((r) => inboxIds.set(String(r.userId), String(r._id)));
     }
 
-    const pushTo = targets.filter((p) => !inQuietHours(p.settings?.quietHours, now));
+    const pushTo = input.essential
+      ? targets
+      : targets.filter((p) => !inQuietHours(p.settings?.quietHours, now));
     if (!pushTo.length) return;
     const devices = await this.devices
       .find({ userId: { $in: pushTo.map((p) => p._id) } }, { userId: 1, pushToken: 1 })
@@ -170,6 +167,33 @@ export class NotificationService {
       await this.devices.deleteMany({ pushToken: { $in: result.invalidTokens } });
     for (const { message, error } of result.failedTickets)
       this.logger.warn(`푸시 실패(${input.type}, ${message.to.slice(0, 22)}…): ${error}`);
+  }
+
+  /**
+   * 지금 이 종류의 푸시를 받을 사람(탈퇴 · 종류 끔 · 조용한 시간 제외). 알림함 없이 자기 방식으로 푸시하는 곳(스터디룸 타이머)이 쓴다
+   */
+  async pushAllowed(
+    userIds: (string | Types.ObjectId)[],
+    category: NotificationCategory,
+    now = new Date(),
+  ): Promise<Types.ObjectId[]> {
+    const people = await this.prefsOf(userIds);
+    return people
+      .filter((p) => p.settings?.[SETTING_KEY[category]] !== false)
+      .filter((p) => !inQuietHours(p.settings?.quietHours, now))
+      .map((p) => p._id);
+  }
+
+  /** 탈퇴하지 않은 사람들의 알림 설정 */
+  private prefsOf(userIds: (string | Types.ObjectId)[]): Promise<Prefs[]> {
+    const ids = [...new Set(userIds.map(String))]
+      .filter((id) => isValidObjectId(id))
+      .map((id) => new Types.ObjectId(id));
+    if (!ids.length) return Promise.resolve([]);
+    return this.users
+      .find({ _id: { $in: ids }, deletedAt: null, withdrawingAt: null })
+      .select('_id settings')
+      .lean<Prefs[]>();
   }
 
   /** 내 알림함. 최근 것부터, before(알림 id) 이전 것을 limit개 */

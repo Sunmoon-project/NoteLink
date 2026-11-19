@@ -192,6 +192,35 @@ describe.skipIf(!isLocal)('진짜 DB 공통 알림 · 알림함 · 친구 알림
     expect(await inbox(you)).toHaveLength(1);
   });
 
+  it('essential 알림은 종류를 꺼도 · 조용한 시간이어도 간다', async () => {
+    await users.updateOne(
+      { _id: you },
+      {
+        $set: {
+          'settings.notifyFriend': false,
+          'settings.quietHours': { start: '11:00', end: '13:00' },
+        },
+      },
+    );
+    await service.notify({ ...base, userIds: [you], essential: true }, NOON);
+    expect(await inbox(you)).toHaveLength(1);
+    expect(sent).toHaveLength(2);
+  });
+
+  it('pushAllowed: 종류를 끈 사람 · 조용한 시간인 사람 · 탈퇴한 사람을 뺀다(자기 방식으로 푸시하는 곳용)', async () => {
+    const third = new Types.ObjectId();
+    await users.create({ _id: third, nickname: '다다', email: null, deletedAt: NOON });
+    await users.updateOne({ _id: you }, { $set: { 'settings.notifyStudy': false } });
+    expect((await service.pushAllowed([me, you, third], 'study', NOON)).map(String)).toEqual([
+      String(me),
+    ]);
+    await users.updateOne(
+      { _id: me },
+      { $set: { 'settings.quietHours': { start: '11:00', end: '13:00' } } },
+    );
+    expect(await service.pushAllowed([me], 'study', NOON)).toEqual([]);
+  });
+
   it('탈퇴한 사람은 건너뛴다', async () => {
     await users.updateOne({ _id: you }, { $set: { deletedAt: NOON } });
     await service.notify({ ...base, userIds: [you] }, NOON);
