@@ -17,17 +17,32 @@ renderer.setClearColor(0x000000, 0);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.append(renderer.domElement);
 
-/** 물체가 꽉 차게(여백 8%) 앱과 같은 시야각 30도로 본다. tilt: 위에서 내려다보는 각(라디안) */
+/** 물체가 꽉 차게(여백 6%) 앱과 같은 시야각 30도로 본다. tilt: 위에서 내려다보는 각(라디안) */
 function shoot(root, tilt) {
   const scene = new THREE.Scene();
   scene.add(root);
   const box = new THREE.Box3().setFromObject(root);
   const c = box.getCenter(new THREE.Vector3());
-  const r = box.getBoundingSphere(new THREE.Sphere()).radius;
   const cam = new THREE.PerspectiveCamera(30, 1, 0.01, 50);
-  const d = (r * 1.08) / Math.sin(THREE.MathUtils.degToRad(15));
-  cam.position.set(c.x, c.y + Math.sin(tilt) * d, c.z + Math.cos(tilt) * d);
-  cam.lookAt(c);
+  const place = (d) => {
+    cam.position.set(c.x, c.y + Math.sin(tilt) * d, c.z + Math.cos(tilt) * d);
+    cam.lookAt(c);
+    cam.updateMatrixWorld();
+  };
+  // 상자 꼭짓점을 화면에 비춰 가장 먼 쪽이 가장자리 94%에 오게 거리를 맞춘다(두 번이면 수렴)
+  let d = box.getBoundingSphere(new THREE.Sphere()).radius / Math.sin(THREE.MathUtils.degToRad(15));
+  for (let k = 0; k < 3; k++) {
+    place(d);
+    let far = 0;
+    for (const x of [box.min.x, box.max.x])
+      for (const y of [box.min.y, box.max.y])
+        for (const z of [box.min.z, box.max.z]) {
+          const p = new THREE.Vector3(x, y, z).project(cam);
+          far = Math.max(far, Math.abs(p.x), Math.abs(p.y));
+        }
+    d *= far / 0.94;
+  }
+  place(d);
   renderer.render(scene, cam);
   return new Promise((ok) => renderer.domElement.toBlob(ok, 'image/png'));
 }
