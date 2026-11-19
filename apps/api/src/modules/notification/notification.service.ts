@@ -121,6 +121,7 @@ export class NotificationService {
     const inboxIds = new Map<string, string>();
     if (input.inbox !== false) {
       // 같은 collapseId의 예전 알림은 새것으로 바꾼다(거절 뒤 다시 요청하기를 되풀이해도 알림함에 쌓이지 않는다)
+      // ponytail: 지우기 · 넣기가 원자적이지 않아 같은 순간 두 번 오면 한 줄이 더 남을 수 있다(무해). 문제가 되면 {userId, collapseKey} 부분 유일 인덱스로
       if (input.collapseId)
         await this.notifications.deleteMany({
           userId: { $in: targets.map((p) => p._id) },

@@ -169,7 +169,7 @@ export const PATHS = {
   timetableClasses: '/timetable/classes',
   timetableClass: (id: string) => `/timetable/classes/${seg(id)}`,
   timetableShares: '/timetable/shares',
-  // 알림함. 목록 ?before=<알림 id>&limit= → { data: Notification[], nextCursor }(최근 것부터)
+  // 알림함. 목록 ?before=<알림 id>&limit= → { data: { items: Notification[], nextCursor: string | null } }(최근 것부터)
   notifications: '/notifications',
   /** → { data: { count } } */
   notificationsUnreadCount: '/notifications/unread-count',
