@@ -324,6 +324,7 @@ export function Screen({
   // 화면 아래끝이 키보드에 가리는 만큼을 직접 재서 띄운다. iOS는 KeyboardAvoidingView(padding)가 맡는다
   const keyboardFrame = useRef<View>(null);
   const keyboard = useKeyboardInset(keyboardFrame, Platform.OS === 'android' && avoidKeyboard);
+  const footerPad = inTabs ? 20 : Math.max(insets.bottom + 12, 24);
   // Canvas 안의 Screen은 canvas를 따로 주지 않아도 회색 바탕
   const outer = useSurface();
   const onCanvas = canvas || outer === 'canvas';
@@ -381,9 +382,9 @@ export function Screen({
             <View
               className="px-6 pt-4"
               // 아래 버튼이 탭 막대 · 홈 표시줄에 붙어 보이지 않게 (탭 안 20, 밖은 홈 표시줄 + 12).
-              // 키보드가 올라오면 키보드가 탭 막대 · 홈 표시줄을 덮으므로 그 여백은 빼고 키보드 위에 붙인다
+              // 키보드가 올라오면 키보드가 덮은 만큼 그 여백을 빼고 키보드 위에 붙인다(최소 12)
               style={{
-                paddingBottom: keyboard > 0 ? 12 : inTabs ? 20 : Math.max(insets.bottom + 12, 24),
+                paddingBottom: keyboard > 0 ? Math.max(12, footerPad - keyboard) : footerPad,
               }}
             >
               {footer}
@@ -1001,7 +1002,11 @@ export function Sheet({
   const focused = useIsFocused();
   // 안드로이드: 시트(Modal)도 edge-to-edge라 키보드만큼 줄지 않는다. 키보드가 가리는 만큼 시트 아래 여백을 늘린다(#567)
   const keyboardFrame = useRef<View>(null);
-  const keyboard = useKeyboardInset(keyboardFrame, Platform.OS === 'android' && open);
+  const keyboard = useKeyboardInset(
+    keyboardFrame,
+    // 내용(잴 View)이 실제로 그려진 뒤에 켠다: 닫히는 시트가 남아 있으면 mounted가 늦게 켜진다
+    Platform.OS === 'android' && open && mounted && focused,
+  );
   return (
     <Modal
       visible={mounted && focused}

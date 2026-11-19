@@ -18,6 +18,7 @@ export function useKeyboardInset(ref: RefObject<View | null>, enabled = true) {
     if (!enabled) return;
     // 잰 값이 늦게 돌아오는 사이 키보드가 내려가거나 다시 재면 그 값은 버린다(내려간 뒤 여백이 남지 않게)
     let turn = 0;
+    let pending: number | undefined;
     const measure = (top: number) => {
       const mine = ++turn;
       const node = ref.current;
@@ -26,8 +27,12 @@ export function useKeyboardInset(ref: RefObject<View | null>, enabled = true) {
         if (mine === turn) setInset(keyboardOverlap({ y, height }, top));
       });
     };
-    const show = (e: KeyboardEvent) => measure(e.endCoordinates.screenY);
+    const show = (e: KeyboardEvent) => {
+      if (pending !== undefined) cancelAnimationFrame(pending);
+      measure(e.endCoordinates.screenY);
+    };
     const hide = () => {
+      if (pending !== undefined) cancelAnimationFrame(pending);
       turn++;
       setInset(0);
     };
@@ -44,10 +49,12 @@ export function useKeyboardInset(ref: RefObject<View | null>, enabled = true) {
             Keyboard.addListener('keyboardDidHide', hide),
           ];
     // 키보드가 이미 떠 있을 때 켜지면(입력 중에 시트를 열거나 다음 화면으로 감) 다음 이벤트를 기다리지 않고 잰다
+    // 한 프레임 뒤에 재서 막 그려진 View(시트 Modal 등)의 레이아웃이 자리 잡은 값을 받는다
     const now = Keyboard.isVisible() ? Keyboard.metrics() : undefined;
-    if (now) measure(now.screenY);
+    if (now) pending = requestAnimationFrame(() => measure(now.screenY));
     return () => {
       turn++;
+      if (pending !== undefined) cancelAnimationFrame(pending);
       subs.forEach((sub) => sub.remove());
       setInset(0);
     };

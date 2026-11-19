@@ -1,4 +1,5 @@
-import { act, renderHook, screen } from '@testing-library/react-native';
+import { useState } from 'react';
+import { act, renderHook, screen, waitFor } from '@testing-library/react-native';
 import { Keyboard, Platform, StyleSheet, Text, View } from 'react-native';
 import { Screen, Sheet } from '../components/ui';
 import { keyboardOverlap, useKeyboardInset } from '../hooks/keyboard-inset';
@@ -77,7 +78,54 @@ describe('useKeyboardInset — 공용 훅(스터디룸에서 옮김)', () => {
           <Text>본문</Text>
         </Screen>,
       );
-      expect(paddings()).toContain(KEYBOARD);
+      await waitFor(() => expect(paddings()).toContain(KEYBOARD));
+    } finally {
+      visible.mockRestore();
+      metrics.mockRestore();
+    }
+  });
+
+  it('키보드가 떠 있는 채로 시트를 열면 시트도 바로 키보드 위로 올라간다', async () => {
+    Platform.OS = 'android';
+    const visible = jest.spyOn(Keyboard, 'isVisible').mockReturnValue(true);
+    const metrics = jest
+      .spyOn(Keyboard, 'metrics')
+      .mockReturnValue({ screenY: WINDOW - KEYBOARD, height: KEYBOARD, screenX: 0, width: 390 });
+    try {
+      let setOpen: (open: boolean) => void = () => {};
+      function Host() {
+        const [open, set] = useState(false);
+        setOpen = set;
+        return (
+          <Sheet open={open} onClose={() => {}}>
+            <Text>할 일 추가</Text>
+          </Sheet>
+        );
+      }
+      await renderScreen(<Host />);
+      await act(async () => setOpen(true));
+      await waitFor(() => expect(paddings()).toContain(KEYBOARD + 12));
+    } finally {
+      visible.mockRestore();
+      metrics.mockRestore();
+    }
+  });
+
+  it('바로 재기 전에 키보드가 내려가면 여백을 주지 않는다', async () => {
+    Platform.OS = 'android';
+    const visible = jest.spyOn(Keyboard, 'isVisible').mockReturnValue(true);
+    const metrics = jest
+      .spyOn(Keyboard, 'metrics')
+      .mockReturnValue({ screenY: WINDOW - KEYBOARD, height: KEYBOARD, screenX: 0, width: 390 });
+    try {
+      await renderScreen(
+        <Screen>
+          <Text>본문</Text>
+        </Screen>,
+      );
+      await hideKeyboard();
+      await act(async () => new Promise((r) => setTimeout(r, 50)));
+      expect(paddings()).not.toContain(KEYBOARD);
     } finally {
       visible.mockRestore();
       metrics.mockRestore();
@@ -159,6 +207,19 @@ describe('Screen — 안드로이드에서 키보드만큼 아래를 띄운다',
     await showKeyboard();
     expect(paddings()).toEqual(expect.arrayContaining([KEYBOARD, 12]));
     expect(paddings()).not.toContain(46);
+  });
+
+  it('키보드가 화면 아래를 조금만 덮으면 아래 버튼 줄은 덮이지 않은 여백만큼 남긴다', async () => {
+    Platform.OS = 'android';
+    frame = { y: 0, height: WINDOW - KEYBOARD + 10 }; // 아래끝 10만 키보드에 덮임
+    await renderScreen(
+      <Screen footer={<Text>저장</Text>}>
+        <Text>본문</Text>
+      </Screen>,
+    );
+    await showKeyboard();
+    // 여백 46 중 키보드가 덮은 10을 뺀 36
+    expect(paddings()).toEqual(expect.arrayContaining([10, 36]));
   });
 
   it('화면이 키보드를 직접 다루면(avoidKeyboard=false · 스터디룸) 공용 여백을 주지 않는다', async () => {
