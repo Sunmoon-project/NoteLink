@@ -90,9 +90,12 @@ export function DDayScreen() {
           {d.kind} · {d.source === 'todo' ? md(d.date) : d.date.replaceAll('-', '.')}
         </Text>
       </View>
-      <Badge tone={d.source === 'todo' ? 'sun' : d.daysLeft < 0 ? 'gray' : 'mint'}>
-        {dLabel(d.daysLeft)}
-      </Badge>
+      {/* Badge는 self-start라 줄에서 위로 붙는다. 감싸서 삭제 버튼과 세로 가운데를 맞춘다 */}
+      <View>
+        <Badge tone={d.source === 'todo' ? 'sun' : d.daysLeft < 0 ? 'gray' : 'mint'}>
+          {dLabel(d.daysLeft)}
+        </Badge>
+      </View>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${d.title} 삭제`}

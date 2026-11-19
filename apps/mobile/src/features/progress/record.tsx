@@ -192,7 +192,7 @@ export function RecordScreen() {
         <Swap k={mode}>
           {mode === '월간' ? (
             <>
-              <Text className="text-caption text-sub">이번주 순공시간</Text>
+              <Text className="text-subhead font-semibold text-ink">이번주 순공시간</Text>
               <Text className="text-title2 font-bold text-ink">
                 {weekly.data ? hm(weekly.data.totalSec) : '-'}
               </Text>
@@ -254,7 +254,7 @@ export function RecordScreen() {
                   <ChevronRight size={ICON.md} color={C.sub} />
                 </Card>
               ))}
-              <View className="mt-5 flex-row items-center justify-between">
+              <View className="mt-5 mb-3 flex-row items-center justify-between">
                 <Pressable accessibilityLabel="이전 달" onPress={() => shift(-1)} hitSlop={10}>
                   <ChevronLeft size={ICON.md} color={C.sub} />
                 </Pressable>
