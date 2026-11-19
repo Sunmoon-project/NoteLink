@@ -290,6 +290,44 @@ it('가장 최근 ready 세트가 오늘의 복습 세트여도 카드는 그 �
   });
 });
 
+const similarProgressSets = [
+  {
+    ...quizSet,
+    _id: 'similar-set',
+    title: '내 퀴즈 · 다시 보기',
+    status: 'ready',
+    sourceSetId: 'my-set',
+  },
+  { ...quizSet, _id: 'my-set', title: '내 퀴즈', status: 'ready', sourceSetId: null },
+];
+
+it('풀던 퀴즈가 유사 퀴즈 세트면 카드는 이어 풀기 대신 일반 퀴즈를 보여주고 진행 기록을 비운다', async () => {
+  mockApi.quiz.sets.mockResolvedValue(similarProgressSets);
+  useQuizProgress.getState().save({ ...answered, setId: 'similar-set', attemptId: 'similar-try' });
+  await renderScreen(<QuizHomeScreen />, client());
+  await fireEvent.press(await screen.findByText('퀴즈 풀기'));
+  expect(screen.queryByText('이어서 풀기')).toBeNull();
+  expect(screen.queryByText(/다시 보기/)).toBeNull();
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/play/solve',
+    params: { setId: 'my-set' },
+  });
+  expect(useQuizProgress.getState().progress).toBeNull();
+});
+
+it('홈이 화면에 보이지 않는 동안에는 유사 퀴즈 진행 기록을 지우지 않는다 (위에 뜬 풀이 화면 보호)', async () => {
+  mockApi.quiz.sets.mockResolvedValue(similarProgressSets);
+  useQuizProgress.getState().save({ ...answered, setId: 'similar-set', attemptId: 'similar-try' });
+  globalThis.mockFocused = false;
+  try {
+    await renderScreen(<QuizHomeScreen />, client());
+    expect(await screen.findByText('퀴즈 풀기')).toBeTruthy();
+    expect(useQuizProgress.getState().progress?.setId).toBe('similar-set');
+  } finally {
+    globalThis.mockFocused = undefined;
+  }
+});
+
 it('느린 생성 상태 조회가 끝날 때까지 다음 폴링을 시작하지 않는다', async () => {
   jest.useFakeTimers();
   const slow = deferred<AiJob>();
