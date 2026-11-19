@@ -8,7 +8,7 @@ import {
 } from '@/lib/chat-outbox';
 import { loadCompleteChatHistory } from '@/lib/chat-history';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Keyboard, Platform, View, type KeyboardEvent } from 'react-native';
+import { FlatList, Keyboard, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -49,6 +49,7 @@ import { api, ApiError } from '@/lib/api';
 import { socket } from '@/lib/socket';
 import { hms, seoul, ymd } from '@/lib/dates';
 import { useNow, useSocket, useTabRefresh } from '@/hooks';
+import { useKeyboardInset } from '@/hooks/keyboard-inset';
 import { toast } from '@/stores/toast';
 import {
   Alert,
@@ -442,34 +443,6 @@ export const CHAT_EMOJIS = [
   '🎉',
   '❤️',
 ];
-
-/** 화면 아래끝(창 기준)과 키보드 위끝이 겹치는 높이. 겹치지 않으면 0 */
-export const keyboardOverlap = (frame: { y: number; height: number }, keyboardTop: number) =>
-  Math.max(0, Math.round(frame.y + frame.height - keyboardTop));
-
-/**
- * 키보드가 이 화면을 가리는 높이. 공용 KeyboardAvoidingView는 부모 기준 위치로 계산해 실기기에서 입력줄이
- * 덜 올라가 채팅을 치는 내용이 키보드에 가렸다. 창 기준(measureInWindow)으로 재서 그만큼 올린다
- */
-export function useKeyboardInset(ref: React.RefObject<View | null>) {
-  const [inset, setInset] = useState(0);
-  useEffect(() => {
-    const ios = Platform.OS === 'ios';
-    const show = (e: KeyboardEvent) => {
-      const top = e.endCoordinates.screenY;
-      const node = ref.current;
-      if (!node) return;
-      node.measureInWindow((_x, y, _w, height) => setInset(keyboardOverlap({ y, height }, top)));
-    };
-    const subs = [
-      Keyboard.addListener(ios ? 'keyboardWillShow' : 'keyboardDidShow', show),
-      Keyboard.addListener(ios ? 'keyboardWillChangeFrame' : 'keyboardDidShow', show),
-      Keyboard.addListener(ios ? 'keyboardWillHide' : 'keyboardDidHide', () => setInset(0)),
-    ];
-    return () => subs.forEach((sub) => sub.remove());
-  }, [ref]);
-  return inset;
-}
 
 export function RoomScreen() {
   const insets = useSafeAreaInsets();

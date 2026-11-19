@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { Keyboard, Platform, type View } from 'react-native';
-import { carryStudyTime, keyboardOverlap, useKeyboardInset } from '../features/studyroom/room';
+import { carryStudyTime } from '../features/studyroom/room';
+import { keyboardOverlap, useKeyboardInset } from '../hooks/keyboard-inset';
 
 // 실기기 테스트: 스터디룸에서 채팅을 치면 입력줄이 키보드에 가려 무엇을 치는지 보이지 않았다
 describe('스터디룸 채팅 입력줄 — 키보드만큼 올리기', () => {

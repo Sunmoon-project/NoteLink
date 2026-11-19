@@ -54,6 +54,7 @@ import {
 } from 'lucide-react-native';
 import { C, EASE, EASE_SHEET, ICON, MOTION } from '@/theme';
 import { useEquippedTheme } from '@/lib/shop-themes';
+import { useKeyboardInset } from '@/hooks/keyboard-inset';
 
 // 공통 UI. 웹 프로토타입(ui.tsx)과 같은 이름 · 같은 모양으로 맞췄다.
 
@@ -319,6 +320,10 @@ export function Screen({
 }) {
   const insets = useSafeAreaInsets();
   const inTabs = useInTabs();
+  // 안드로이드는 edge-to-edge라 창이 키보드만큼 줄지 않고 KeyboardAvoidingView도 움직이지 않는다(#567).
+  // 화면 아래끝이 키보드에 가리는 만큼을 직접 재서 띄운다. iOS는 KeyboardAvoidingView(padding)가 맡는다
+  const keyboardFrame = useRef<View>(null);
+  const keyboard = useKeyboardInset(keyboardFrame, Platform.OS === 'android' && avoidKeyboard);
   // Canvas 안의 Screen은 canvas를 따로 주지 않아도 회색 바탕
   const outer = useSurface();
   const onCanvas = canvas || outer === 'canvas';
@@ -361,21 +366,31 @@ export function Screen({
       )}
       style={{ paddingTop: top ? insets.top : 0 }}
     >
-      <SurfaceCtx.Provider value={onCanvas ? 'canvas' : 'legacy'}>
-        <View className="flex-1">
-          {body}
-          {overlay}
-        </View>
-        {footer && (
-          <View
-            className="px-6 pt-4"
-            // 아래 버튼이 탭 막대 · 홈 표시줄에 붙어 보이지 않게 (탭 안 20, 밖은 홈 표시줄 + 12)
-            style={{ paddingBottom: inTabs ? 20 : Math.max(insets.bottom + 12, 24) }}
-          >
-            {footer}
+      <View
+        ref={keyboardFrame}
+        className="flex-1"
+        // 키보드가 가리는 만큼 아래를 띄워 입력칸 · 아래 버튼이 키보드 바로 위에 오게 한다(안드로이드)
+        style={keyboard > 0 ? { paddingBottom: keyboard } : undefined}
+      >
+        <SurfaceCtx.Provider value={onCanvas ? 'canvas' : 'legacy'}>
+          <View className="flex-1">
+            {body}
+            {overlay}
           </View>
-        )}
-      </SurfaceCtx.Provider>
+          {footer && (
+            <View
+              className="px-6 pt-4"
+              // 아래 버튼이 탭 막대 · 홈 표시줄에 붙어 보이지 않게 (탭 안 20, 밖은 홈 표시줄 + 12).
+              // 키보드가 올라오면 키보드가 탭 막대 · 홈 표시줄을 덮으므로 그 여백은 빼고 키보드 위에 붙인다
+              style={{
+                paddingBottom: keyboard > 0 ? 12 : inTabs ? 20 : Math.max(insets.bottom + 12, 24),
+              }}
+            >
+              {footer}
+            </View>
+          )}
+        </SurfaceCtx.Provider>
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -984,6 +999,9 @@ export function Sheet({
   // 다른 화면으로 옮겨 가면(딥링크 · 알림 등) 시트를 숨긴다. Modal은 화면 밖에 떠서, 숨기지 않으면
   // 새 화면 위에 남는다. 열림 상태는 그대로 두어 돌아오면 다시 보인다(onClose의 부수 효과는 부르지 않는다)
   const focused = useIsFocused();
+  // 안드로이드: 시트(Modal)도 edge-to-edge라 키보드만큼 줄지 않는다. 키보드가 가리는 만큼 시트 아래 여백을 늘린다(#567)
+  const keyboardFrame = useRef<View>(null);
+  const keyboard = useKeyboardInset(keyboardFrame, Platform.OS === 'android' && open);
   return (
     <Modal
       visible={mounted && focused}
@@ -996,46 +1014,55 @@ export function Sheet({
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         className="flex-1 justify-end"
       >
-        {open && (
-          <Animated.View
-            entering={FadeIn.duration(MOTION.enter)}
-            exiting={FadeOut.duration(MOTION.exit)}
-            className="absolute inset-0"
-          >
-            <Pressable accessibilityLabel="닫기" className="flex-1 bg-black/45" onPress={onClose} />
-          </Animated.View>
-        )}
-        {open && (
-          <Animated.View
-            entering={SlideInDown.duration(MOTION.enter).easing(EASE)}
-            exiting={SlideOutDown.duration(MOTION.exit).easing(EASE_SHEET)}
-            // 올라오는 동안 내용(불러온 목록 등)이 늘어나면 새 높이로 자리를 옮긴다.
-            // 없으면 처음 높이에 머물러 늘어난 만큼 아래가 화면 밖으로 잘린다(날짜별 할 일)
-            layout={LIST_LAYOUT}
-            accessibilityViewIsModal
-            className="max-h-[88%] rounded-t-sheet bg-white px-6 pt-2"
-            style={{ paddingBottom: Math.max(insets.bottom + 12, 28) }}
-          >
-            <View className="mb-3 h-1 w-10 self-center rounded-full bg-fill" />
-            {(title || right) && (
-              <View className="mb-3 flex-row items-center justify-between">
-                <Text className="text-headline font-bold text-ink">{title}</Text>
-                {right ?? (
-                  <Pressable
-                    accessibilityLabel="닫기"
-                    onPress={onClose}
-                    className="-mr-3 h-control w-control items-center justify-center"
-                  >
-                    <X size={ICON.md} color={C.sub} />
-                  </Pressable>
-                )}
-              </View>
-            )}
-            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-              <OnWhite>{children}</OnWhite>
-            </ScrollView>
-          </Animated.View>
-        )}
+        <View ref={keyboardFrame} className="flex-1 justify-end">
+          {open && (
+            <Animated.View
+              entering={FadeIn.duration(MOTION.enter)}
+              exiting={FadeOut.duration(MOTION.exit)}
+              className="absolute inset-0"
+            >
+              <Pressable
+                accessibilityLabel="닫기"
+                className="flex-1 bg-black/45"
+                onPress={onClose}
+              />
+            </Animated.View>
+          )}
+          {open && (
+            <Animated.View
+              entering={SlideInDown.duration(MOTION.enter).easing(EASE)}
+              exiting={SlideOutDown.duration(MOTION.exit).easing(EASE_SHEET)}
+              // 올라오는 동안 내용(불러온 목록 등)이 늘어나면 새 높이로 자리를 옮긴다.
+              // 없으면 처음 높이에 머물러 늘어난 만큼 아래가 화면 밖으로 잘린다(날짜별 할 일)
+              layout={LIST_LAYOUT}
+              accessibilityViewIsModal
+              className="max-h-[88%] rounded-t-sheet bg-white px-6 pt-2"
+              // 키보드가 올라오면 키보드 높이 + 12(키보드가 홈 표시줄을 덮는다). 흰 바탕은 키보드 뒤까지 이어진다
+              style={{
+                paddingBottom: keyboard > 0 ? keyboard + 12 : Math.max(insets.bottom + 12, 28),
+              }}
+            >
+              <View className="mb-3 h-1 w-10 self-center rounded-full bg-fill" />
+              {(title || right) && (
+                <View className="mb-3 flex-row items-center justify-between">
+                  <Text className="text-headline font-bold text-ink">{title}</Text>
+                  {right ?? (
+                    <Pressable
+                      accessibilityLabel="닫기"
+                      onPress={onClose}
+                      className="-mr-3 h-control w-control items-center justify-center"
+                    >
+                      <X size={ICON.md} color={C.sub} />
+                    </Pressable>
+                  )}
+                </View>
+              )}
+              <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+                <OnWhite>{children}</OnWhite>
+              </ScrollView>
+            </Animated.View>
+          )}
+        </View>
       </KeyboardAvoidingView>
     </Modal>
   );
