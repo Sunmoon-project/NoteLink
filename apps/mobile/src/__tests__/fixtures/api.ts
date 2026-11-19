@@ -1135,6 +1135,13 @@ export const mockApi: Api = {
       });
       return structuredClone(undefined);
     },
+    unequip: async (itemId) => {
+      await ok(undefined);
+      const target = db.userItems.find((u) => u.itemId === itemId && u.isOwned);
+      if (!target) return fail(ERROR_CODES.NOT_FOUND, '보유한 아이템이 아니에요');
+      target.isEquipped = false;
+      return structuredClone(undefined);
+    },
     ledger: (type) =>
       ok(db.ledger.filter((l) => !type || (type === 'earn' ? l.amount > 0 : l.amount < 0))),
   },

@@ -440,6 +440,33 @@ it('테마를 끼워도 장착한 아바타는 그대로이고, 같은 종류끼
   await expect(api.shop.equip('없는-아이템')).rejects.toThrow('보유한');
 });
 
+it('치장: 칸마다 하나씩 함께 끼고, 같은 칸은 바뀌며, 벗기면 그 칸만 풀린다', async () => {
+  const user = await signup('a@test.com');
+  const file = `user-${user._id}`;
+  const saved = JSON.parse(mockFiles.get(file)!);
+  saved.user.pointBalance = 100000;
+  mockFiles.set(file, JSON.stringify(saved));
+  resetLocalForTests();
+  await login('a@test.com');
+  for (const id of ['beanie', 'gradCap', 'roundGlasses', 'redScarf']) await api.shop.purchase(id);
+  for (const id of ['beanie', 'roundGlasses', 'redScarf']) await api.shop.equip(id);
+  await api.shop.equip('gradCap');
+  const on = async () =>
+    (await api.shop.myItems())
+      .filter((u) => u.isEquipped)
+      .map((u) => u.itemId)
+      .sort();
+  expect(await on()).toEqual(['gradCap', 'redScarf', 'roundGlasses']);
+  await api.shop.unequip('roundGlasses');
+  await api.shop.unequip('roundGlasses'); // 두 번 눌러도 그대로
+  expect(await on()).toEqual(['gradCap', 'redScarf']);
+  await expect(api.shop.unequip('sunglasses')).rejects.toThrow('보유한');
+  // 앱을 다시 켜도 남는다
+  resetLocalForTests();
+  await login('a@test.com');
+  expect(await on()).toEqual(['gradCap', 'redScarf']);
+});
+
 it('구매한 아바타를 낀 뒤 기본 아바타로 돌아갈 수 있고, 테마는 그대로다', async () => {
   const user = await signup('a@test.com');
   const file = `user-${user._id}`;

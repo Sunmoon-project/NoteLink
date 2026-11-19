@@ -24,7 +24,7 @@ import { ApiError } from '@/lib/api/http';
 import { C, ICON } from '@/theme';
 import { AnswerText } from './answer-text';
 import { Avatar3D, type Mood } from './avatar3d';
-import { useEquippedAvatar, useFocused } from './buddy';
+import { useEquippedAccessories, useEquippedAvatar, useFocused } from './buddy';
 
 export type Msg = {
   id: number;
@@ -119,6 +119,7 @@ function TutorStage({
 }) {
   const [w, setW] = useState(0);
   const focused = useFocused();
+  const acc = useEquippedAccessories();
   // 누르면 표정을 바꾸고 말풍선으로 한마디(답하는 중에는 답이 먼저라 받지 않는다)
   const [said, setSaid] = useState<{ n: number; mood: Mood; line: string } | null>(null);
   const turn = useRef(0);
@@ -207,7 +208,7 @@ function TutorStage({
           {/* 3D(GL) 화면이 터치를 가져가 누르기가 빗나가지 않게, 얼굴은 터치를 받지 않는다 */}
           <Animated.View style={hopStyle} pointerEvents="none">
             {/* 퀴즈처럼 다른 화면이 위에 쌓이면 3D를 내려 그리기 반복을 멈춘다 */}
-            {focused && <Avatar3D mood={face} avatarId={avatarId} size={BIG} />}
+            {focused && <Avatar3D mood={face} avatarId={avatarId} accessories={acc} size={BIG} />}
           </Animated.View>
         </Pressable>
       </Animated.View>

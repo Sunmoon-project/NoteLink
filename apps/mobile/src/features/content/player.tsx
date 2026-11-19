@@ -12,7 +12,7 @@ import { api } from '@/lib/api';
 import { paragraphs, rangeAt, segmentsIn } from '@/lib/transcript';
 import { toast } from '@/stores/toast';
 import { Avatar3D } from '@/features/tutor/avatar3d';
-import { canAsk, useEquippedAvatar } from '@/features/tutor/buddy';
+import { canAsk, useEquippedAccessories, useEquippedAvatar } from '@/features/tutor/buddy';
 import { CLOSED, lipsAt } from '@/features/tutor/lips';
 import { splitLines } from './captions';
 import { Captions } from './captions-view';
@@ -185,6 +185,7 @@ export function Player({
     playing: p.playing && !p.buffering,
   });
   const avatar = useEquippedAvatar();
+  const acc = useEquippedAccessories();
   const marking = useRef(false);
   const addMark = async () => {
     if (marking.current) return;
@@ -284,6 +285,7 @@ export function Player({
                     <Avatar3D
                       mood={p.playing ? 'talking' : 'idle'}
                       avatarId={avatar}
+                      accessories={acc}
                       size={64}
                       // head 구도는 얼굴을 꽉 채워 둥근 상자에서 귀 · 볼이 잘렸다 → 여백 있는 전체 구도
                       framing="full"

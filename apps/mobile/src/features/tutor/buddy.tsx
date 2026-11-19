@@ -22,6 +22,7 @@ import type { Material, ShopItem } from '@notelink/shared';
 import { api } from '@/lib/api';
 import { BASE_AVATAR, SHOP } from '@/lib/local/catalog';
 import { C } from '@/theme';
+import { accessoryId } from './accessories';
 import { Avatar3D } from './avatar3d';
 
 /** 장착한 상점 아바타 id(없으면 기본). 상점에서 장착을 바꾸면 ['my-items']가 새로 고쳐져 모양이 바뀐다 */
@@ -38,6 +39,15 @@ export const canAsk = (m: Pick<Material, 'processing' | 'summary' | 'pages'>) =>
   !!m.summary?.sections.length ||
   !!m.summary?.points.length ||
   !!m.pages?.some((p) => p.ocrText?.trim());
+
+/** 장착한 치장(악세서리 id). 모르는 상품(판매 끝 · 새 앱 전용)은 빼고, 못 읽으면 맨 얼굴 */
+export function useEquippedAccessories(): string[] {
+  const mine = useQuery({ queryKey: ['my-items'], queryFn: () => api.shop.myItems() });
+  return (mine.data ?? [])
+    .filter((u) => u.isEquipped)
+    .map((u) => accessoryId(u.itemId))
+    .filter((id): id is string => !!id);
+}
 
 export const LOCAL_AVATARS = [BASE_AVATAR, ...SHOP.filter((i) => i.category === 'avatar')];
 /**
@@ -154,6 +164,7 @@ const SAY_MS = 3500;
  */
 export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
   const avatar = useEquippedAvatar();
+  const acc = useEquippedAccessories();
   const focused = useFocused();
   const [hint, setHint] = useState(true);
   const [said, setSaid] = useState<string | null>(null);
@@ -302,6 +313,7 @@ export function TutorBuddy({ id, tucked }: { id: string; tucked: boolean }) {
               <Avatar3D
                 mood={said ? 'happy' : 'idle'}
                 avatarId={avatar}
+                accessories={acc}
                 size={SIZE - 4}
                 framing="head"
                 onReady={() => setReady(true)}

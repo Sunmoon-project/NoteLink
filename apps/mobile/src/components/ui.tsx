@@ -53,6 +53,7 @@ import {
   X,
 } from 'lucide-react-native';
 import { C, EASE, EASE_SHEET, ICON, MOTION } from '@/theme';
+import { useEquippedTheme } from '@/lib/shop-themes';
 
 // 공통 UI. 웹 프로토타입(ui.tsx)과 같은 이름 · 같은 모양으로 맞췄다.
 
@@ -72,12 +73,22 @@ const FILL: Record<Surface, string> = { canvas: 'bg-white', white: 'bg-fill', le
  * 개편된 화면의 바깥 틀: 회색 바탕 + 그 안 전부(Screen 밖에 붙는 Sheet · Dialog 포함)를 캔버스 면으로.
  * 시트를 Screen 밖에 두는 화면은 Screen canvas 대신 이것으로 감싼다
  */
-export const Canvas = ({ children, cream }: { children: ReactNode; cream?: boolean }) => (
-  <SurfaceCtx.Provider value="canvas">
-    {/* cream: 온보딩 · 로그인처럼 브랜드 인상을 남기는 화면 (그 위 칸 · 버튼은 캔버스와 같은 흰색) */}
-    <View className={cx('flex-1', cream ? 'bg-cream' : 'bg-canvas')}>{children}</View>
-  </SurfaceCtx.Provider>
-);
+export function Canvas({ children, cream }: { children: ReactNode; cream?: boolean }) {
+  // 상점에서 장착한 테마가 바탕색을 바꾼다(온보딩 · 로그인 크림은 그대로)
+  const theme = useEquippedTheme(!cream);
+  return (
+    <SurfaceCtx.Provider value="canvas">
+      {/* cream: 온보딩 · 로그인처럼 브랜드 인상을 남기는 화면 (그 위 칸 · 버튼은 캔버스와 같은 흰색) */}
+      <View
+        testID="canvas"
+        className={cx('flex-1', cream ? 'bg-cream' : 'bg-canvas')}
+        style={!cream && theme ? { backgroundColor: theme.canvas } : undefined}
+      >
+        {children}
+      </View>
+    </SurfaceCtx.Provider>
+  );
+}
 /** 흰 면(카드 · 시트) 안의 내용 — 칩 · 입력이 채움 바탕이 된다. 개편 전 화면에서는 그대로 둔다 */
 export const OnWhite = ({ children }: { children: ReactNode }) => {
   const surface = useSurface();

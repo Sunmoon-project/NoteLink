@@ -13,12 +13,32 @@ import { useAuth } from '@/stores/auth';
 import { DRAWER_SCREEN } from '@/features/social/drawer';
 import { AppOverlays } from '@/components/AppOverlays';
 import { useOfflineCache } from '@/lib/offline-cache';
+import { useScreenBackground } from '@/lib/shop-themes';
 import { WeeklyGoalNotifications } from '@/features/session/weekly-goal-notifications';
 
 /** 설정 「오프라인 캐시」(QueryClientProvider 안에서) */
 function OfflineCache() {
   useOfflineCache();
   return null;
+}
+
+/** 화면 쌓기. 바탕은 장착한 상점 테마를 따른다(테마 조회가 있어 QueryClientProvider 안에서) */
+function AppStack() {
+  const screenBg = useScreenBackground();
+  return (
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        contentStyle: { backgroundColor: screenBg },
+        // 앞으로 가면 오른쪽에서 들어오고 뒤로 가면 오른쪽으로 나간다 (두 플랫폼 같게)
+        animation: 'slide_from_right',
+        animationDuration: 280,
+      }}
+    >
+      {/* 친구 창은 홈 위에 겹쳐 뜬다. 투명 모달은 띄우기 전에 정해져야 해서 여기서 선언한다 */}
+      <Stack.Screen name="friends" options={DRAWER_SCREEN} />
+    </Stack>
+  );
 }
 
 SplashScreen.preventAutoHideAsync();
@@ -46,18 +66,7 @@ export default function RootLayout() {
       <QueryClientProvider client={queryClient}>
         <WeeklyGoalNotifications />
         <StatusBar style="dark" />
-        <Stack
-          screenOptions={{
-            headerShown: false,
-            contentStyle: { backgroundColor: '#fff' },
-            // 앞으로 가면 오른쪽에서 들어오고 뒤로 가면 오른쪽으로 나간다 (두 플랫폼 같게)
-            animation: 'slide_from_right',
-            animationDuration: 280,
-          }}
-        >
-          {/* 친구 창은 홈 위에 겹쳐 뜬다. 투명 모달은 띄우기 전에 정해져야 해서 여기서 선언한다 */}
-          <Stack.Screen name="friends" options={DRAWER_SCREEN} />
-        </Stack>
+        <AppStack />
         <AppOverlays />
         <OfflineCache />
       </QueryClientProvider>
