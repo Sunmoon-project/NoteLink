@@ -86,7 +86,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
         .limit(TIMER_SCAN_LIMIT)
         .lean();
       for (const room of pending) {
-        await this.deliverPending(String(room._id), room.timerRevision ?? 0);
+        await this.deliverPending(String(room._id), room.timerRevision ?? 0, now);
       }
 
       const due = await this.rooms
@@ -153,7 +153,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
       },
     );
     if (!claimed.matchedCount || !pending) return;
-    await this.deliverPending(String(room._id), room.timerRevision ?? 0);
+    await this.deliverPending(String(room._id), room.timerRevision ?? 0, now);
   }
 
   private pendingFor(
@@ -185,7 +185,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
     };
   }
 
-  private async deliverPending(roomId: string, revision: number): Promise<void> {
+  private async deliverPending(roomId: string, revision: number, now: Date): Promise<void> {
     if (!isValidObjectId(roomId)) return;
     const id = new Types.ObjectId(roomId);
     const leaseAcquiredAt = new Date();
@@ -226,6 +226,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
       const joinedUserIds = await this.notifications.pushAllowed(
         room.members.filter((member) => member.status === 'joined').map((member) => member.userId),
         'room',
+        now,
       );
       if (!joinedUserIds.length) {
         await this.clearPending(id, revision, pending.transitionAt);

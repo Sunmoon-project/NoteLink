@@ -110,8 +110,8 @@ export class StudyRoomsController {
     @Param('id') id: string,
     @Param('userId') userId: string,
   ) {
-    await this.rooms.kickMember(requireUserId(req), id, userId);
-    void this.notices.kicked(id, userId); // 당사자에게 알림(던지지 않는다)
+    const kicked = await this.rooms.kickMember(requireUserId(req), id, userId);
+    if (kicked) void this.notices.kicked(id, userId); // 당사자에게 알림(던지지 않는다)
     await this.gateway.evict(id, userId);
 
     // 남아 있는 참가자에게 목록이 변경됐다고 알림

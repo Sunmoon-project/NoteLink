@@ -103,21 +103,24 @@ export class StudyRoomNoticesService {
   }
 
   /** 퇴장 조치 당한 사람에게. 방 활동 알림을 꺼도 간다 */
-  async kicked(roomId: string, userId: string): Promise<void> {
+  async kicked(roomId: string, userId: string, now = new Date()): Promise<void> {
     try {
       if (!isValidObjectId(roomId)) return;
       const room = await this.rooms.findById(roomId, { title: 1 }).lean();
       if (!room) return;
-      await this.notifications.notify({
-        userIds: [userId],
-        category: 'room',
-        essential: true,
-        type: 'room-kicked',
-        title: '스터디룸',
-        body: `「${room.title}」에서 내보내졌어요`,
-        data: { roomId },
-        collapseId: `room-kick:${roomId}`,
-      });
+      await this.notifications.notify(
+        {
+          userIds: [userId],
+          category: 'room',
+          essential: true,
+          type: 'room-kicked',
+          title: '스터디룸',
+          body: `「${room.title}」에서 내보내졌어요`,
+          data: { roomId },
+          collapseId: `room-kick:${roomId}`,
+        },
+        now,
+      );
     } catch (error) {
       this.logger.warn(`퇴장 조치 알림을 보내지 못했어요(${roomId}): ${String(error)}`);
     }
@@ -130,6 +133,8 @@ export class StudyRoomNoticesService {
   ) {
     if (!userIds.length) return Promise.resolve();
     const id = String(data.chatRoomId);
+    // ponytail: 같은 채팅은 기기에서 마지막 메시지 하나로 바뀔 뿐 「새 메시지 N개」로 세지는 않는다(메시지마다 푸시).
+    // 연속 전송이 시끄러우면 몇 초 디바운스해 개수로 묶는다
     return this.notifications.notify({
       userIds,
       category: 'chat',

@@ -342,7 +342,7 @@ describe('스터디룸 Socket.IO', () => {
     expect(await joining).toMatchObject({ ok: true });
     await leaving;
 
-    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' });
+    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' } as never);
     expect(received).not.toHaveBeenCalled();
     a.off('chat:message', received);
   });
@@ -360,7 +360,7 @@ describe('스터디룸 Socket.IO', () => {
     expect(await oldJoin).toMatchObject({ ok: false });
     expect(await newJoin).toMatchObject({ ok: true });
 
-    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' });
+    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' } as never);
     await vi.waitFor(() => expect(received).toHaveBeenCalledOnce());
     a.off('chat:message', received);
   });

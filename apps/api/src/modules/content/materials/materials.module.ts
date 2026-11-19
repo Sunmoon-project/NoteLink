@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
-import { NotificationModule } from '../../notification/notification.module.js';
 import { MongooseModule } from '@nestjs/mongoose';
 
 import { AiJobsModule } from '../../../ai-jobs/ai-jobs.module.js';
 import { QuizSetsModule } from '../../../quiz-sets/quiz-sets.module.js';
 import { User, UserSchema } from '../../auth/schemas/user.schema.js';
 import { AuthModule } from '../../auth/auth.module.js';
+import { NotificationModule } from '../../notification/notification.module.js';
 import { AiJob, AiJobSchema } from '../../quiz/schemas/ai-job.schema.js';
 import { UploadsModule } from '../../upload/uploads.module.js';
 import {

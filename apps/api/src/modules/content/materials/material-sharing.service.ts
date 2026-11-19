@@ -222,7 +222,8 @@ export class MaterialSharingService {
       // 같은 노트를 동시에 공유한 다른 요청이 먼저 넣었다 — 이미 공유된 것과 같다(알리지 않는다)
       if (!onlyDuplicateKeys(e)) throw e;
     }
-    if (added > 0) await this.notifyShared(me, roomId, added);
+    // 알림은 기다리지 않는다(Expo가 느려도 공유 응답을 늦추지 않게). notifyShared는 던지지 않는다
+    if (added > 0) void this.notifyShared(me, roomId, added);
   }
 
   /** 방의 다른 멤버에게 「○○님이 「방」에 노트 n개를 공유했어요」. 실패해도 공유는 성공이다 */

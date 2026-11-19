@@ -47,7 +47,7 @@ export class StudyChatGateway {
       endsAt: state?.endsAt ?? null,
     });
   }
-  async notifyDirectMessage(message: { chatRoomId: string }) {
+  async notifyDirectMessage(message: ChatMessageView) {
     const channel = `direct-chat:${message.chatRoomId}`;
     const delivered: string[] = [];
     const recipients = await this.server
@@ -68,7 +68,7 @@ export class StudyChatGateway {
       }
     }
     // 그 채팅을 보고 있지 않은 상대에게 푸시(초대 카드는 방 활동 알림). 기다리지 않는다
-    void this.notices.chatMessage(message as ChatMessageView, delivered);
+    void this.notices.chatMessage(message, delivered);
   }
   @WebSocketServer() private server: Server;
   constructor(

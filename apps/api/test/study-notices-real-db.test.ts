@@ -6,7 +6,7 @@
 // MONGODB_VERIFY_URI가 localhost일 때만 돌고, 전용 DB를 만들고 끝나면 지운다. ExpoPushService는 가짜다.
 // 실행: MONGODB_VERIFY_URI="mongodb://localhost:27167/?directConnection=true" npm run test -w @notelink/api -- test/study-notices-real-db.test.ts
 import mongoose, { type Connection, type Model, Types } from 'mongoose';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
 import { MaterialSharingService } from '../src/modules/content/materials/material-sharing.service.js';
@@ -244,9 +244,17 @@ describe.skipIf(!isLocal)('진짜 DB 채팅 · 스터디룸 알림', () => {
     expect(await notifications.countDocuments()).toBe(0);
   });
 
-  it('퇴장 조치는 방 활동을 꺼도 당사자에게 간다', async () => {
-    await users.updateOne({ _id: b }, { $set: { 'settings.notifyRoom': false } });
-    await notices.kicked(roomId.toHexString(), b.toHexString());
+  it('퇴장 조치는 방 활동을 꺼도 · 조용한 시간이어도 당사자에게 간다', async () => {
+    await users.updateOne(
+      { _id: b },
+      {
+        $set: {
+          'settings.notifyRoom': false,
+          'settings.quietHours': { start: '11:00', end: '13:00' },
+        },
+      },
+    );
+    await notices.kicked(roomId.toHexString(), b.toHexString(), NOON);
     const rows = await notifications.find({ userId: b }).lean();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -270,6 +278,8 @@ describe.skipIf(!isLocal)('진짜 DB 채팅 · 스터디룸 알림', () => {
       target: { type: 'room', id: roomId.toHexString() },
     };
     await sharing.share(a.toHexString(), dto as never);
+    // 공유 응답은 알림을 기다리지 않는다
+    await vi.waitFor(async () => expect(await notifications.countDocuments()).toBe(2));
     const rows = await notifications.find({}).lean();
     expect(rows.map((r) => String(r.userId)).sort()).toEqual([String(b), String(c)].sort());
     expect(rows[0]).toMatchObject({
@@ -279,6 +289,7 @@ describe.skipIf(!isLocal)('진짜 DB 채팅 · 스터디룸 알림', () => {
     // 같은 노트를 다시 공유하면(새로 들어간 것이 없으면) 알리지 않는다
     sent = [];
     await sharing.share(a.toHexString(), dto as never);
+    await new Promise((r) => setTimeout(r, 100));
     expect(sent).toHaveLength(0);
   });
 
