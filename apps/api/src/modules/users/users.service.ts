@@ -28,6 +28,9 @@ import {
   rateLimited,
 } from '../auth/app-login/app-signup.service.js';
 import { PRESENCE_TTL_MS } from '../social/friends/friends.service.js';
+
+/** 접속 신호를 따로 기억하는 기기 수(한 계정). 넘으면 가장 오래 신호가 없던 기기부터 버린다 */
+const PRESENCE_MAX_DEVICES = 10;
 import { MAIL_SENDER, MailUnavailableError, type MailSender } from '../mail/mail-sender.js';
 import { ProgressService } from '../progress/progress.service.js';
 import { StudyRoomMembershipService } from '../studyroom/study-room-membership.service.js';
@@ -117,9 +120,27 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
     const key = device && /^[A-Za-z0-9_-]{1,64}$/.test(device) ? device : 'default';
     if (active) {
       const now = new Date();
+      // 한 번의 쓰기로: 이 기기 시각을 넣고, 2분 지난 기기를 지우고, 최근 PRESENCE_MAX_DEVICES개만 남긴다
+      // (기기 키는 앱이 만들어 보내므로 문서가 끝없이 커지지 않게). key는 위에서 [A-Za-z0-9_-]만 허용
+      const devices = {
+        $setField: { field: key, input: { $ifNull: ['$presenceDevices', {}] }, value: now },
+      };
+      const fresh = {
+        $filter: {
+          input: { $objectToArray: devices },
+          cond: { $gte: ['$$this.v', new Date(now.getTime() - PRESENCE_TTL_MS)] },
+        },
+      };
+      const recent = {
+        $lastN: {
+          n: PRESENCE_MAX_DEVICES,
+          input: { $sortArray: { input: fresh, sortBy: { v: 1 } } },
+        },
+      };
       await this.userModel.updateOne(
         { _id, deletedAt: null },
-        { $set: { lastActiveAt: now, [`presenceDevices.${key}`]: now } },
+        [{ $set: { lastActiveAt: now, presenceDevices: { $arrayToObject: recent } } }],
+        { updatePipeline: true },
       );
       return;
     }

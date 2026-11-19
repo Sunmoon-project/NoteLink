@@ -131,6 +131,32 @@ describe.skipIf(!isLocal)('진짜 DB 접속 신호 → 친구 목록 상태', ()
     expect(await friendStatus()).toBe('offline');
   });
 
+  it('신호마다 2분 지난 기기를 지우고, 기기는 최근 10개까지만 남긴다', async () => {
+    const devices = async () =>
+      Object.keys(
+        ((await conn.collection('users').findOne({ _id: friend }))?.presenceDevices ?? {}) as object,
+      );
+    await conn.collection('users').updateOne(
+      { _id: friend },
+      { $set: { presenceDevices: { stale: new Date(Date.now() - 3 * 60_000) } } },
+    );
+    const put = (d: string) =>
+      http().put(`/api/v1/users/me/presence?device=${d}`).set(as('token-friend')).expect(204);
+    await put('d0');
+    expect(await devices()).toEqual(['d0']);
+    // 하나씩 차례로 보내 신호 시각 순서를 정한다(같은 밀리초면 순서가 흐려진다)
+    for (let i = 1; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 2));
+      await put(`d${i}`);
+    }
+    const left = await devices();
+    expect(left).toHaveLength(10);
+    // 가장 오래된 d0 · d1을 버린다
+    expect(left.sort()).toEqual(
+      Array.from({ length: 10 }, (_, i) => `d${i + 2}`).sort(),
+    );
+  });
+
   it('로그인 없이는 신호를 보낼 수 없다', async () => {
     await http().put('/api/v1/users/me/presence').expect(401);
   });
