@@ -25,6 +25,7 @@ import {
   Mic,
   MicOff,
   NotebookPen,
+  Paperclip,
   Plus,
   Send,
   Settings,
@@ -1323,6 +1324,12 @@ export function RoomScreen() {
                   [Siren, '신고', () => router.push({ pathname: '/room/report', params: { id } })],
                   [Timer, '타이머', () => router.push({ pathname: '/room/timer', params: { id } })],
                   [Layers, '퀴즈', () => setPick(true)],
+                  // 방에 공유된 노트를 보는 길이 알림뿐이었다(#483 뒤). 실기기 피드백 2026-11-20
+                  [
+                    Paperclip,
+                    '공유 자료',
+                    () => router.push({ pathname: '/room/cards', params: { id } }),
+                  ],
                 ] as const
               ).map(([Ic, l, fn]) => (
                 <Pressable

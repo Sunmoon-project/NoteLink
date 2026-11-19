@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
+import { QueryClient } from '@tanstack/react-query';
 
 import { ShareScreen, SharedScreen } from '../features/content/detail';
 import { useToast } from '../stores/toast';
@@ -85,6 +86,17 @@ it('스터디룸으로 보내면 완료 화면에 스터디룸 이름이 간다'
     pathname: '/note-shared',
     params: expect.objectContaining({ to: '수능 국어방' }),
   });
+});
+
+it('스터디룸에 공유하면 그 방의 「공유 자료」 목록을 낡은 것으로 표시한다', async () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(['room-shared', 'r1'], { items: [], flashcards: [] });
+  await renderScreen(<ShareScreen />, qc);
+  await fireEvent.press(await screen.findByText('미적분 필기'));
+  await fireEvent.press(screen.getByText(/공유 대상을 선택해주세요/));
+  await fireEvent.press(await screen.findByText('수능 국어방'));
+  await fireEvent.press(screen.getByRole('button', { name: '공유하기' }));
+  await waitFor(() => expect(qc.getQueryState(['room-shared', 'r1'])?.isInvalidated).toBe(true));
 });
 
 it('참여 중인 스터디룸이 없으면 빈 안내를 보여 준다', async () => {

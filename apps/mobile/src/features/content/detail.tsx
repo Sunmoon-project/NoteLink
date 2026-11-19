@@ -691,6 +691,7 @@ const TABS = { 필기: 'handwriting', 학습자료: 'document', 녹음본: 'reco
 
 export function ShareScreen() {
   const { id, folderId } = useLocalSearchParams<{ id?: string; folderId?: string }>();
+  const qc = useQueryClient();
   const material = useQuery({
     queryKey: ['material', id],
     queryFn: () => api.content.material(id!),
@@ -734,7 +735,9 @@ export function ShareScreen() {
           ? e.message
           : '공유하지 못했어요. 연결을 확인하고 다시 시도해 주세요',
       ),
-    onSuccess: () =>
+    onSuccess: () => {
+      // 방의 「공유 자료」가 옛 목록을 들고 있지 않게
+      if (to?.type === 'room') void qc.invalidateQueries({ queryKey: ['room-shared', to.id] });
       router.replace({
         pathname: '/note-shared',
         params: {
@@ -743,7 +746,8 @@ export function ShareScreen() {
           tab,
           name: selected[0]?.title,
         },
-      }),
+      });
+    },
   });
   // 친구에게 보내기는 서버가 아직 막는다(400). 고를 수 없게 「곧 지원」으로만 보여 준다(#554)
   const targets = (rooms.data ?? []).map((r) => ({
