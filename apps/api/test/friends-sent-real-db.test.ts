@@ -117,7 +117,7 @@ describe.skipIf(!isLocal)('진짜 DB 내가 보낸 친구 요청', () => {
     expect(res.body.data).toEqual([people.pending.toHexString()]);
   });
 
-  it('거절당한 뒤 다시 요청하면 대기로 돌아가 상대의 받은 요청에 보이고 알림은 한 번 간다', async () => {
+  it('거절당한 뒤 하루 안에 다시 요청하면 대기로 돌아가 상대의 받은 요청에 보이지만 알림은 다시 보내지 않는다', async () => {
     notify.mockClear();
     await send('me', 'rejecter');
     const received = await http()
@@ -127,14 +127,40 @@ describe.skipIf(!isLocal)('진짜 DB 내가 보낸 친구 요청', () => {
     expect(
       (received.body.data as { requester: { userId: string } }[]).map((r) => r.requester.userId),
     ).toEqual([people.me.toHexString()]);
-    expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'friend-request', userIds: [people.rejecter] }),
-    );
+    expect(notify).not.toHaveBeenCalled();
     const sent = await http().get('/api/v1/friend-requests/sent').set(as('me')).expect(200);
     expect([...sent.body.data].sort()).toEqual(
       [people.pending, people.rejecter].map((id) => id.toHexString()).sort(),
     );
+  });
+
+  it('거절당한 뒤 하루가 지나 다시 요청하면 알림이 한 번 간다(하루 안의 되풀이는 묶는다)', async () => {
+    const [again] = (
+      await http().get('/api/v1/friend-requests/received').set(as('rejecter')).expect(200)
+    ).body.data as { _id: string }[];
+    await http()
+      .post(`/api/v1/friend-requests/${again!._id}/reject`)
+      .set(as('rejecter'))
+      .expect(204);
+    await conn
+      .collection('friendships')
+      .updateOne(
+        { _id: new Types.ObjectId(again!._id) },
+        { $set: { requestedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) } },
+      );
+    notify.mockClear();
+    await send('me', 'rejecter');
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'friend-request', userIds: [people.rejecter] }),
+    );
+    // 바로 또 거절 → 다시 요청: 하루 안이라 알림은 늘지 않는다
+    await http()
+      .post(`/api/v1/friend-requests/${again!._id}/reject`)
+      .set(as('rejecter'))
+      .expect(204);
+    await send('me', 'rejecter');
+    expect(notify).toHaveBeenCalledTimes(1);
   });
 
   it('받은 쪽에서 보면 비어 있다', async () => {
