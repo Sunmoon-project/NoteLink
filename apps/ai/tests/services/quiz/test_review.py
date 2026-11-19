@@ -1,11 +1,12 @@
 import copy
+import logging
 import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
 import pytest
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmRejectedError
 from app.services.quiz import review
 from tests.fakes import FakeLlm
 
@@ -352,6 +353,87 @@ def test_one_question_failing_does_not_fail_the_job() -> None:
     assert [t["made"] for t in result["targets"]] == [False, True]
     assert result["targets"][0]["why"] == ["HTTP 503"]
     assert [x["order"] for x in result["reviewQuestions"]] == [1]  # 못 만든 문제 번호는 비우지 않음
+
+
+def any_line(_: str) -> JsonObject:
+    return {"line": "노트에 없는 줄"}
+
+
+@pytest.mark.parametrize(
+    ("review", "checks"),
+    [
+        # q2(stack)는 생성 호출이 모두 실패, q1(be)은 검사 모델에서 정상 탈락(#553 배포 11/19)
+        ([LlmError("HTTP 503")] * 3 + [BE] * 3, [ok("E")] * 3),
+        # 생성 모델의 답 모양 오류만: 장애로 세지 않던 경우
+        ([{}] * 6, []),
+        # 검사 모델 · 생성 모델의 답 모양 오류만(둘째 시도는 빈칸 유형이라 생성 답 모양 오류로)
+        ([STACK, {}, STACK, BE, {}, BE], [{"answer": "Z"}] * 4),
+    ],
+)
+def test_nothing_made_for_a_passing_reason_is_retried(
+    review: list[JsonObject | LlmError], checks: list[JsonObject | LlmError]
+) -> None:
+    # 일시적인 원인으로 한 문제도 못 만들면 다시 해 볼 만함: 작업 처리기가 다시 시도하게
+    llm = FakeLlm({"Review": review, "Check": checks, "Line": any_line})
+    with pytest.raises(LlmError) as e:
+        run(llm, job_input())
+    assert not isinstance(e.value, LlmRejectedError)
+
+
+def test_nothing_made_because_drafts_were_rejected_ends_with_the_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # 모든 초안이 검사 모델에서 정상 탈락: 다시 해도 같기 쉬워 작업은 성공(복습 상태는 옮김)
+    llm = FakeLlm({"Review": [STACK] * 3 + [BE] * 3, "Check": [ok("E")] * 6, "Line": any_line})
+    with caplog.at_level(logging.INFO, logger="app.services.quiz.review"):
+        result, _ = run(llm, job_input())
+    assert result["reviewQuestions"] == [] and result["srsUpdates"]
+    assert result["emptyReason"] == "all_rejected"
+    logged = [r.getMessage() for r in caplog.records if r.name == "app.services.quiz.review"]
+    assert len(logged) == 1
+    assert "0/2문제" in logged[0] and "초안 6" in logged[0] and "all_rejected" in logged[0]
+    assert "검사 모델 탈락" in logged[0]
+    # 사용자 내용(답 · 개념 이름 · 노트)은 남기지 않음
+    assert not any(w in logged[0] for w in ("stack", "동사원형", "쌓다"))
+
+
+def test_a_refused_target_next_to_a_rejected_one_is_not_retried() -> None:
+    # 거절은 다시 보내도 같음(#272): 나머지가 정상 탈락이면 다시 시도하지 않음
+    review = [LlmRejectedError("HTTP 413")] * 3 + [BE] * 3
+    llm = FakeLlm({"Review": review, "Check": [ok("E")] * 3, "Line": any_line})
+    result, _ = run(llm, job_input())
+    assert result["reviewQuestions"] == [] and result["emptyReason"] == "all_rejected"
+
+
+def test_made_questions_leave_no_empty_reason(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.INFO, logger="app.services.quiz.review"):
+        result, _ = run(happy_llm(), job_input())
+    assert result["emptyReason"] is None
+    assert any("2/2문제" in r.getMessage() for r in caplog.records)
+
+
+def test_no_wrong_answer_is_the_reason_for_an_empty_set() -> None:
+    inp = job_input()
+    for a in inp["answers"]:
+        a["correct"] = True
+    result, _ = run(FakeLlm(), inp)
+    assert result["emptyReason"] == "no_wrong"
+
+
+def test_questions_missed_for_the_last_time_are_the_reason_for_an_empty_set() -> None:
+    inp = job_input()
+    tired = {"step": 0, "streak": 0, "reviews": 4, "state": "active", "lastResult": "wrong"}
+    for x in inp["sets"][0]["questions"][:2]:
+        x["srs"] = dict(tired)
+    result, _ = run(FakeLlm({"Line": any_line}), inp)
+    assert result["targets"] == [] and result["emptyReason"] == "all_stopped"
+
+
+def test_missing_note_text_is_the_reason_for_an_empty_set() -> None:
+    inp = job_input()
+    inp["notes"] = {}
+    result, _ = run(FakeLlm(), inp)
+    assert result["emptyReason"] == "no_note"
 
 
 # ---------- input 확인 ----------

@@ -25,9 +25,14 @@ result — NestJS가 읽어 quiz_sets에 반영합니다
                    UTC 시각으로(10/30 복습 = 2026-10-29T15:00Z)
   reviewQuestions  다시 보기 세트에 넣을 새 문제(못 만들었으면 []). 세트 문서는 NestJS가
                    만듭니다. 로컬은 제목 '<세트 제목> · 다시 보기', sourceSetId = quizSetId
+  emptyReason      reviewQuestions가 빈 이유(#553), 문제가 있으면 None. 다시 해도 0문제라 작업은
+                   성공으로 끝냄(복습 상태는 옮김): no_wrong(틀린 문제 없음) · all_stopped(틀린
+                   문제가 모두 5번째라 더 내지 않음) · no_note(노트 글이 없음) · all_rejected(초안이
+                   모두 검사에서 떨어짐 · 서버가 거절)
   nextReview       다시 보기 세트의 복습 날짜(서울 날짜 YYYY-MM-DD)
 """
 
+import logging
 import re
 import secrets
 import time
@@ -56,6 +61,8 @@ WEAK_DAYS = 30  # 약한 개념은 최근 30일 풀이를 합쳐 셈
 NOTE_LINES = 3  # 노트 줄을 찾아 줄 약한 개념 수
 OTHER = "기타"  # 개념 이름이 없는 문제
 SEOUL = timezone(timedelta(hours=9))  # '오늘'은 서울 자정에 바뀜(AGENTS.md). 서머타임 없음
+log = logging.getLogger(__name__)
+
 # 서비스에는 보기별 ○ △ ✕ 표시가 없어(10/25에 뺌) 틀린 이유(개념 · 혼동 · 실수 · 찍음)를
 # 고른 보기만으로 알 수 없음: 틀린 답은 모두 'wrong'
 PRIORITY = {"wrong": 0}
@@ -475,13 +482,47 @@ def _similar_for(
         why=m.why,
         reused_from=old["id"],
         unchecked=unchecked,
+        steps=m.steps,
+        rejected=m.rejected,
     )
+
+
+def _summary(judged: list[Judged], stopped: int, made: list[similar.Made]) -> str:
+    """오답 복습 결과 한 줄(#553). 수와 단계 이름만: 문제 원문 · 답 · 개념 · 노트는 남기지 않음."""
+    steps = [s for m in made for s in m.steps]
+    drafts = sum(s not in (similar.STEP_GEN_DOWN, similar.STEP_GEN_BAD) for s in steps)
+    out = Counter(s for s in steps if s != similar.STEP_PASS)
+    return (
+        f"오답 복습: {sum(m.question is not None for m in made)}/{len(made)}문제"
+        f"(틀림 {sum(1 for j in judged if j.reason)} · 복습 끝 {stopped}"
+        f" · 노트 없음 {sum(1 for m in made if not m.tries)} · 초안 {drafts}"
+        f" · 다시 냄 {sum(1 for m in made if m.reused_from)}"
+        f" · 못 씀 {' · '.join(f'{k} {n}' for k, n in out.most_common()) or '없음'})"
+    )
+
+
+def _empty_reason(judged: list[Judged], made: list[similar.Made]) -> str | None:
+    """reviewQuestions가 빈 이유(모듈 설명 result.emptyReason). 문제가 있으면 None."""
+    if any(m.question is not None for m in made):
+        return None
+    if not any(j.reason for j in judged):
+        return "no_wrong"
+    if not made:
+        return "all_stopped"
+    if not any(m.tries for m in made):
+        return "no_note"
+    return "all_rejected"
 
 
 def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     """similar_quiz 작업 하나.
 
     생성 호출이 모두 실패하면(LLM 장애) LlmError를 올려 작업 처리기가 나중에 다시 시도하게 합니다.
+    한 문제도 못 만들었는데 정상 탈락 없이 끝난 대상(일부 장애 · 답 모양 오류)이 있어도 다시
+    시도합니다(#553). 거절된 대상은 다시 보내도 같아 세지 않습니다(#272). 그 밖의 0문제(틀린
+    문제 없음 · 모두 검사 탈락 등)는 다시 해도 같아 이유(emptyReason)를 남기고 성공으로 끝냅니다:
+    작업이 실패하면 NestJS가 복습 상태(srsUpdates)를 옮기지 않습니다. 끝날 때 만든 수 · 탈락
+    단계를 로그로 남깁니다.
     """
     inp = parse(raw)
     attempt, sets, notes = inp.attempt, inp.sets, inp.notes
@@ -529,6 +570,7 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     )
     # 끝 조건: 5번 풀어도 못 익힌 문제(stopped)는 더 내지 않고 노트로 안내(noteLines)
     wrong = [j for j in judged if j.reason and after[j.q["id"]]["state"] != "stopped"]
+    stopped = sum(1 for j in judged if j.reason) - len(wrong)
     targets = sorted(
         wrong,
         key=lambda j: (PRIORITY[j.reason or "wrong"], -total.get(j.concept, 0), j.q["order"]),
@@ -558,10 +600,17 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         made.append(m)
         report(25 + 55 * (i + 1) // len(targets), "비슷한 문제 만들기")
     if made and all(m.llm_down for m in made):
+        log.warning("%s — 다시 시도", _summary(judged, stopped, made))
         # 모두 서버가 거절: 다시 해도 같아 다시 넣지 않게(#272)
         if all(m.llm_refused for m in made):
             raise LlmRejectedError("문제 만들기 요청을 모두 거절함")
         raise LlmError("문제 만들기 호출이 모두 실패")
+    # 한 문제도 못 만들었고, 일시적인 원인(장애 · 답 모양 오류)으로만 끝난 대상이 있음(#553)
+    if all(m.question is None for m in made) and any(
+        m.tries and not m.rejected and not m.llm_refused for m in made
+    ):
+        log.warning("%s — 다시 시도", _summary(judged, stopped, made))
+        raise LlmError("문제 만들기가 일시적인 오류로 한 문제도 못 만듦")
 
     # 4. LLM: 약한 개념(상위 3개)마다 노트 줄, 코드가 노트에 있는지 확인
     # 모두 맞힌 풀이는 복습 상태만 옮김(앱이 다시 보기를 안 보여 줌): 노트 줄 LLM 호출도 안 함
@@ -625,6 +674,11 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     updates = [
         {"quizSetId": attempt.quiz_set_id, "questionId": qid, "srs": s} for qid, s in after.items()
     ] + [{"quizSetId": holder[qid][0], "questionId": qid, "srs": s} for qid, s in moved_old.items()]
+    empty = _empty_reason(judged, made)
+    if empty in (None, "no_wrong"):
+        log.info("%s%s", _summary(judged, stopped, made), f" — 0문제: {empty}" if empty else "")
+    else:
+        log.warning("%s — 0문제: %s", _summary(judged, stopped, made), empty)
 
     return {
         "answers": [
@@ -666,5 +720,6 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         "noteLines": lines,
         "srsUpdates": updates,
         "reviewQuestions": new_qs,
+        "emptyReason": empty,
         "nextReview": (day + timedelta(days=srs.REVIEW_STEPS_DAYS[0])).isoformat(),
     }

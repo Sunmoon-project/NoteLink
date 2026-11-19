@@ -256,6 +256,18 @@ def guidance(q: Question, t: Target, avoid: list[str]) -> str:
     return text
 
 
+# 시도가 멈춘 단계(Made.steps). 원문 없이 단계 이름만: 로그에 그대로 남깁니다(#553)
+STEP_GEN_DOWN = "생성 호출 실패"
+STEP_GEN_BAD = "생성 답 모양"
+STEP_CODE = "코드 검사"
+STEP_TWO = "정답 둘 검사"
+STEP_TWO_DOWN = "정답 둘 검사 못 함"
+STEP_CHECK = "검사 모델 탈락"
+STEP_CHECK_DOWN = "검사 모델 호출 실패"
+STEP_CHECK_BAD = "검사 모델 답 모양"
+STEP_PASS = "통과"
+
+
 @dataclass
 class Made:
     """make_similar의 결과. question이 있으면 통과한 문제."""
@@ -273,6 +285,8 @@ class Made:
     reused_from: str | None = None  # 기존 문제를 다시 냈으면 그 문제 id
     # 다시 낸 기존 문제를 '정답 둘' 검사하지 못함(LLM 장애): 새 문제에 checked를 붙이지 않음
     unchecked: bool = False
+    steps: list[str] = field(default_factory=list)  # 시도마다 멈춘 단계(STEP_*)
+    rejected: bool = False  # 초안이 정상으로 떨어진 시도가 있었음(코드 · 정답 둘 · 검사 모델)
 
 
 def _draft(r: JsonObject) -> Draft | None:
@@ -363,6 +377,7 @@ def make_similar(
     실패한 시도 뒤에도 다음 시도 준비(LAST_TIP)는 같습니다.
     llm_refused: 모든 시도가 서버 거절(생성 · 정답 둘 검사 · 검사 모델)로 끝남.
     다시 보내도 같아 오답 복습이 작업을 다시 넣지 않습니다(#272).
+    steps에는 시도마다 멈춘 단계(STEP_*)를 차례로 남깁니다(오답 복습이 0문제일 때 로그, #553).
     """
     orig = q["prompt"] + (f"\n제시문: {q['passage']}" if q.get("passage") else "")
     first = q.get("type") or "규칙"
@@ -398,11 +413,13 @@ def make_similar(
             r = None
             down, out.why = down + 1, [str(e)]
             refused += isinstance(e, LlmRejectedError)
+            out.steps.append(STEP_GEN_DOWN)
         # 호출 실패 · 답 모양 오류(failed): 초안 잘못이 아니므로 재시도 지시(문제점)는 더하지 않음
         failed = r is None
         raw = None if r is None else _draft(r)
         if r is not None and raw is None:
             failed, out.why = True, ["답 모양이 맞지 않음"]
+            out.steps.append(STEP_GEN_BAD)
         if raw is not None:
             d = tidy(raw)
 
@@ -410,7 +427,9 @@ def make_similar(
                 return code_check(x, t, page_text, ty, seen)
 
             why, k = check(d)
+            step = STEP_CODE
             if not why:
+                step = STEP_TWO
                 hits: list[str] = []
                 d, why, k2, _, unchecked = quality.checked(
                     llm, d, check, page_text, ty, avoid, hits
@@ -420,6 +439,7 @@ def make_similar(
                 if unchecked:  # 검사하지 못한 초안은 쓰지 않음
                     down, failed, out.why = down + 1, True, ["정답 둘 검사 호출이 실패함"]
                     refused += unchecked == "refused"
+                    step = STEP_TWO_DOWN
             if not failed and not why and k is not None:
                 d = answer_as_option(d, k)
                 options, pos = place(d["options"], k, slot)
@@ -428,14 +448,20 @@ def make_similar(
                     seen.append(seen_draft(d))
                     out.question, out.answer_pos = {**d, "options": options}, LETTERS[pos]
                     out.type, out.why = ty, []
+                    out.steps.append(STEP_PASS)
+                    out.rejected = rejected
                     return out
                 if verdict in ("down", "refused"):
                     down, failed, out.why = down + 1, True, [said]
                     refused += verdict == "refused"
+                    step = STEP_CHECK_DOWN
                 elif verdict == "bad":  # 답 모양 오류: 재시도 지시에 문제점으로 넣지 않음
                     failed, out.why = True, [said]
+                    step = STEP_CHECK_BAD
                 else:
                     why = [f"검사 탈락(검수자 답 {said})"]
+                    step = STEP_CHECK
+            out.steps.append(step)
             if not failed:
                 rejected = True
                 out.why = why
@@ -447,6 +473,7 @@ def make_similar(
                 )
         if attempt == 1 and first in BLANK_TYPES:  # 실패한 시도 뒤에도 마지막 시도는 똑같이 준비
             notes += LAST_TIP
+    out.rejected = rejected
     out.llm_down = not rejected and 2 * down > out.tries
     # 시도마다 거절된 것만: 답 모양 오류가 섞이면 다시 하면 될 수도 있음(맞춤 퀴즈와 같은 기준)
     out.llm_refused = out.llm_down and refused == out.tries
