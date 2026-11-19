@@ -73,7 +73,8 @@ def test_similar_quiz_job_is_retried_later_when_the_llm_is_down(
     assert (doc["status"], doc["attempts"], doc["result"]) == ("queued", 1, None)
     assert doc["error"] == "AI 응답을 받지 못함(문제 만들기 호출이 모두 실패)"
     assert doc["retryAt"] > T0  # 기다렸다가 다시 가져감
-    assert "checkpoint" not in doc
+    # 마지막 시도의 0문제를 다시 시도하지 않으려고 다시 시도 수를 남김(review._retry_empty, #553)
+    assert doc["checkpoint"] == {"retried": 1, "emptyRetries": 0}
 
 
 def test_today_review_job_is_processed_and_its_result_saved(

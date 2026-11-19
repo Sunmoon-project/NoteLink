@@ -1,13 +1,18 @@
 import copy
 import logging
 import re
-from datetime import date, datetime, timedelta
+from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+import mongomock
 import pytest
+from pymongo.errors import AutoReconnect
 
 from app.clients.llm import JsonObject, LlmError, LlmRejectedError
 from app.services.quiz import review
+from app.worker.jobs import JobStore
+from app.worker.runner import run_once
 from tests.fakes import FakeLlm
 
 PAGE = """요청 동사 뒤에는 동사원형을 쓴다
@@ -432,29 +437,89 @@ def test_nothing_made_for_a_passing_reason_is_retried_only_once() -> None:
     report = CheckpointReport()
     with pytest.raises(LlmError):
         review.run(outage_llm(), job_input(), report)
-    assert report.saved == {"emptyRetries": 1}
+    assert report.saved == {"retried": 1, "emptyRetries": 1}
     result = review.run(outage_llm(), job_input(), report)
     assert result["reviewQuestions"] == [] and result["emptyReason"] == "transient"
     assert result["srsUpdates"]
 
 
-@pytest.mark.parametrize("saved", [None, {}, {"emptyRetries": "x"}, {"emptyRetries": True}, []])
+@pytest.mark.parametrize(
+    "saved", [None, {}, {"emptyRetries": "x"}, {"emptyRetries": True, "retried": -1}, []]
+)
 def test_a_missing_or_odd_checkpoint_counts_as_no_retry_yet(saved: object) -> None:
     report = CheckpointReport(saved)
     with pytest.raises(LlmError):
         review.run(outage_llm(), job_input(), report)
-    assert report.saved == {"emptyRetries": 1}
+    assert report.saved == {"retried": 1, "emptyRetries": 1}
 
 
 class BrokenCheckpoint(CheckpointReport):
     def save_checkpoint(self, value: JsonObject) -> None:
-        raise RuntimeError("DB 끊김")
+        raise AutoReconnect("DB 끊김")
 
 
 def test_a_retry_count_that_cannot_be_saved_ends_the_job_instead() -> None:
     # 횟수가 남지 않으면 한도까지 되풀이할 수 있어 성공으로 끝내 복습 상태를 옮김
     result = review.run(outage_llm(), job_input(), BrokenCheckpoint())
     assert result["emptyReason"] == "transient" and result["srsUpdates"]
+
+
+def test_no_retry_on_what_looks_like_the_last_attempt() -> None:
+    # 시도 1 · 2가 모두 장애로 다시 들어온 뒤(시도 한도 3) 시도 3의 0문제는 성공으로 끝냄
+    report = CheckpointReport({"retried": 2, "emptyRetries": 0})
+    result = review.run(outage_llm(), job_input(), report)
+    assert result["emptyReason"] == "transient" and result["srsUpdates"]
+
+
+def test_an_outage_on_every_target_is_counted_before_the_retry() -> None:
+    report = CheckpointReport()
+    with pytest.raises(LlmError):
+        review.run(FakeLlm({"Review": [LlmError("HTTP 503")] * 6}), job_input(), report)
+    assert report.saved == {"retried": 1, "emptyRetries": 0}
+
+
+def job_store(col: Any, now: list[datetime]) -> JobStore:
+    return JobStore(col, "w1", lock_sec=600, max_attempts=3, retry_delay_sec=30, now=lambda: now[0])
+
+
+@pytest.mark.parametrize(
+    ("first", "last"),
+    [
+        # 일시적인 0문제 → 한 번 다시 → 또 0문제면 성공
+        ([outage_llm], outage_llm),
+        # 모두 장애 2번 뒤 마지막 시도의 일시적인 0문제도 성공(/code-review 3차)
+        ([lambda: FakeLlm({"Review": [LlmError("HTTP 503")] * 6})] * 2, outage_llm),
+    ],
+)
+def test_the_worker_saves_review_dates_after_retrying(
+    first: list[Callable[[], FakeLlm]], last: Callable[[], FakeLlm]
+) -> None:
+    # 실제 작업 처리기(run_once · JobStore)로: 다시 넣기 · checkpoint 저장 · 성공할 때 지우기
+    col = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    col.insert_one(
+        {
+            "_id": "j1",
+            "type": review.TYPE,
+            "status": "queued",
+            "input": job_input(),
+            "progress": 0,
+            "attempts": 0,
+            "result": None,
+            "error": None,
+            "createdAt": DONE,
+        }
+    )
+    now = [DONE.replace(tzinfo=UTC)]
+    llms = [*(f() for f in first), last()]
+    handlers = {review.TYPE: lambda inp, report: review.run(llms.pop(0), inp, report)}
+    for _ in first:
+        assert run_once(job_store(col, now), handlers)
+        assert col.find_one({"_id": "j1"})["status"] == "queued"
+        now[0] += timedelta(minutes=5)
+    assert run_once(job_store(col, now), handlers)
+    doc = col.find_one({"_id": "j1"})
+    assert doc["status"] == "succeeded" and "checkpoint" not in doc
+    assert doc["result"]["emptyReason"] == "transient" and doc["result"]["srsUpdates"]
 
 
 def test_no_retry_when_the_job_may_run_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
