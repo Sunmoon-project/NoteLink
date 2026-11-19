@@ -19,7 +19,7 @@ import {
   ShoppingBasket,
   X,
 } from 'lucide-react-native';
-import { ERROR_CODES, type ShopItem } from '@notelink/shared';
+import { ERROR_CODES, type ShopItem, type UserItem } from '@notelink/shared';
 import { api, ApiError, NetworkError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { clock } from '@/lib/dates';
@@ -39,7 +39,7 @@ import {
   cx,
 } from '@/components/ui';
 import { C, ICON, MOTION } from '@/theme';
-import { accessoryId, previewLook } from '../tutor/accessories';
+import { ACCESSORIES, accessoryId } from '../tutor/accessories';
 import { itemArt } from './item-art';
 import { Avatar3D } from '../tutor/avatar3d';
 import { avatarModel, useEquippedAccessories, useEquippedAvatar } from '../tutor/buddy';
@@ -87,15 +87,36 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
 /** 지금 내 선생님 모습(장착 아바타의 3D 모델 + 장착 치장). 시트가 열릴 때 조회가 새로 붙지 않게 화면에서 읽는다 */
 type Look = { face: string; worn: string[] };
 const useLook = (): Look => ({ face: useEquippedAvatar(), worn: useEquippedAccessories() });
+/** 판매가 끝나 상품 목록에 없는 보유 치장: 보관함에 남겨 벗을 수 있게 이름만 채운 상품으로 */
+const goneDress = (u: UserItem): ShopItem | null => {
+  const a = ACCESSORIES[accessoryId(u.itemId) ?? ''];
+  if (!a || !u.isOwned) return null;
+  return {
+    _id: u.itemId,
+    category: a.slot,
+    name: a.name,
+    description: '판매가 끝난 치장이에요.',
+    price: 0,
+    avatarStyle: null,
+    thumbnailUrl: null,
+    assetUrl: '',
+    purchaseCount: 0,
+    isActive: false,
+    isDefault: false,
+  };
+};
 
 function DetailPreview({
   item,
   look: { face, worn },
+  asWorn = false,
   background = C.fill,
   size = 128,
 }: {
   item: ShopItem;
   look: Look;
+  /** 보관함 「현재 아바타」처럼 지금 실제 모습(장착 치장 포함). 아니면 그 상품 하나만 입혀 본다 */
+  asWorn?: boolean;
   background?: string;
   size?: number;
 }) {
@@ -107,7 +128,7 @@ function DetailPreview({
         ? themeOf(item._id)
         : null;
   if (theme) return <ThemePreview name={item.name} canvas={theme.canvas} />;
-  // 내 선생님 위에 이 상품을 입혀 본다. 치장은 같은 칸의 기존 것 대신
+  // 상품 미리보기는 그 상품만: 치장은 지금 아바타에 그 치장 하나, 아바타는 치장 없이
   const dress = isDress(item) ? accessoryId(item._id) : null;
   if (item.category !== 'avatar' && !dress) return <ItemPreview item={item} large />;
   return (
@@ -116,7 +137,7 @@ function DetailPreview({
       <Avatar3D
         mood="idle"
         avatarId={dress ? face : avatarModel(item._id, [item])}
-        accessories={dress ? previewLook(worn, dress) : worn}
+        accessories={asWorn ? worn : dress ? [dress] : []}
         size={size}
         background={background}
       />
@@ -226,6 +247,7 @@ function useShopData() {
   // 테마는 판매 목록이 아니라 내 아이템에서 본다(판매가 끝난 테마도 벗을 수 있게)
   const themes = (mine.data ?? []).filter((u) => u.isOwned && u.itemCategory === 'theme');
   return {
+    mine: mine.data ?? [],
     wornThemeId: themes.find((u) => u.isEquipped)?.itemId ?? null,
     hasTheme: themes.length > 0,
     points: me.data?.pointBalance ?? 0,
@@ -703,7 +725,13 @@ export function BoxScreen() {
     setOpened(key);
     setPick(owned.has(eq!) ? (all.data?.find((i) => i._id === eq) ?? null) : null);
   }
-  const mineList = (all.data ?? []).filter((i) => owned.has(i._id));
+  const onSale = all.data ?? [];
+  // 판매가 끝나 목록에서 빠진 치장도 내 아이템 기준으로 남겨 벗을 수 있게
+  const gone = shop.mine
+    .filter((u) => !onSale.some((i) => i._id === u.itemId))
+    .map(goneDress)
+    .filter((i): i is ShopItem => !!i);
+  const mineList = [...onSale.filter((i) => owned.has(i._id)), ...gone];
   // 테마를 하나라도 가졌을 때만 「기본 바탕」(= 장착한 테마 벗기)을 둔다
   const items = [BASE_AVATAR, ...(hasTheme ? [BASE_THEME] : []), ...mineList].filter((i) =>
     inTab(i, tab),
@@ -748,7 +776,7 @@ export function BoxScreen() {
           )}
           <View className="mt-3 h-32 items-center justify-center overflow-hidden rounded-2xl bg-mint">
             {/* 장착한 아바타는 선생님이 될 3D 얼굴로 (상자 bg-mint와 같은 바탕, 상자 안에 들어가는 크기) */}
-            <DetailPreview item={cur} look={look} background={C.mint} size={112} />
+            <DetailPreview item={cur} look={look} asWorn background={C.mint} size={112} />
             <View className="absolute right-3 bottom-3 rounded-full bg-white px-2 py-0.5">
               <Text className="text-caption2 text-ink">현재 아바타</Text>
             </View>

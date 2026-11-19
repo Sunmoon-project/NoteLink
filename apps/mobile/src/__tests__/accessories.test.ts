@@ -1,10 +1,5 @@
 import * as THREE from 'three';
-import {
-  ACCESSORIES,
-  accessoryId,
-  attachAccessories,
-  previewLook,
-} from '../features/tutor/accessories';
+import { ACCESSORIES, accessoryId, attachAccessories } from '../features/tutor/accessories';
 
 const tris = (o: THREE.Object3D) => {
   let n = 0;
@@ -66,14 +61,5 @@ describe('악세서리', () => {
       return head.children[0]!.position.y;
     };
     expect(y('narae')).toBeGreaterThan(y('base'));
-  });
-
-  it('미리보기: 지금 장착한 것 + 이 상품, 같은 칸의 기존 것은 빠진다', () => {
-    expect(previewLook(['roundGlasses', 'redScarf'], 'sunglasses')).toEqual([
-      'redScarf',
-      'sunglasses',
-    ]);
-    expect(previewLook(['beanie'], 'roundGlasses')).toEqual(['beanie', 'roundGlasses']);
-    expect(previewLook(['beanie'], 'nope')).toEqual(['beanie']);
   });
 });

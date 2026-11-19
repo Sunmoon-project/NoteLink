@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { C } from '@/theme';
 import type { Lips } from './lips';
-import { accessoryNames, attachAccessories } from './accessories';
+import { ACCESSORIES, accessoryNames, attachAccessories } from './accessories';
 import { bake, matcap } from './bake';
 
 // Hermes에는 FinalizationRegistry가 없다(three의 WebGLRenderer가 GPU 자원 정리에 씀).
@@ -104,10 +104,17 @@ export function eyeOpen(mood: Mood, n: number, blink: number) {
   if (mood === 'wink') return n === 0 ? 0.1 : 1;
   return blink;
 }
-const CAMERA: Record<Framing, { pos: [number, number, number]; at: number }> = {
+type Camera = { pos: [number, number, number]; at: number };
+const CAMERA: Record<Framing, Camera> = {
   full: { pos: [0, 0.5, 3.5], at: 0.44 },
   head: { pos: [0, 0.56, 2.9], at: 0.5 },
 };
+/** 모자를 쓰면 위로 높아지니 조금 물러나 올려 본다(곱슬 정수리 위 털모자 방울까지 화면 안에) */
+const HAT_CAMERA: Record<Framing, Camera> = {
+  full: { pos: [0, 0.64, 4.0], at: 0.56 },
+  head: { pos: [0, 0.7, 3.5], at: 0.64 },
+};
+export const cameraFor = (framing: Framing, hat: boolean) => (hat ? HAT_CAMERA : CAMERA)[framing];
 
 /**
  * 아바타 선생님 3D(expo-gl + three). 장착한 상점 아바타의 모델을 그린다. 그리기는 GL 쪽에서
@@ -207,7 +214,10 @@ export function Avatar3D({
       renderer.outputColorSpace = THREE.SRGBColorSpace;
 
       const scene = new THREE.Scene();
-      const cam = CAMERA[framing];
+      const cam = cameraFor(
+        framing,
+        acc.split(',').some((a) => ACCESSORIES[a]?.slot === 'hat'),
+      );
       const camera = new THREE.PerspectiveCamera(30, w / h, 0.1, 50);
       camera.position.set(...cam.pos);
       camera.lookAt(0, cam.at, 0);

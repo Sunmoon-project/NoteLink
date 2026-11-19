@@ -166,13 +166,6 @@ const bySlot = (ids: string[]) => {
   return [...m.values()];
 };
 
-/** 미리보기 모습: 지금 장착한 것에 이 상품을 더하고, 같은 칸의 기존 것은 뺀다 */
-export function previewLook(current: string[], item: string): string[] {
-  const slot = ACCESSORIES[item]?.slot;
-  if (!slot) return current;
-  return [...current.filter((id) => ACCESSORIES[id]?.slot !== slot), item];
-}
-
 /** 머리에 악세서리를 붙인다(bake 전, GL 밖에서). avatar: 3D 모델 이름(modelId) */
 export function attachAccessories(head: THREE.Object3D, ids: string[], avatar: string) {
   for (const id of bySlot(ids)) {

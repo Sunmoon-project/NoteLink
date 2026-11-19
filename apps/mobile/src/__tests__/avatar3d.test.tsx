@@ -73,7 +73,7 @@ jest.mock('three', () => {
 });
 
 // eslint-disable-next-line import/first
-import { Avatar3D } from '../features/tutor/avatar3d';
+import { Avatar3D, cameraFor } from '../features/tutor/avatar3d';
 
 const fakeGl = (i: number) => ({
   drawingBufferWidth: 200,
@@ -291,4 +291,27 @@ it('읽어 주는 이름에 쓰고 있는 치장을 넣는다', async () => {
   expect(screen.getByLabelText('아바타 선생님, 털모자 · 동그란 안경 착용')).toBeTruthy();
   await render(<Avatar3D mood="idle" avatarId="bora" />);
   expect(screen.getByLabelText('아바타 선생님')).toBeTruthy();
+});
+
+it('모자를 쓰면 정수리가 높은 얼굴(나래)도 모자 꼭대기가 화면 안에 든다', () => {
+  const THREE = jest.requireActual('three');
+  const { attachAccessories } = jest.requireActual('../features/tutor/accessories');
+  for (const framing of ['full', 'head'] as const)
+    for (const hat of ['beanie', 'gradCap']) {
+      // 모델의 머리(head)는 y -0.2에 있다(scripts/avatar-glb.mjs)
+      const head = new THREE.Group();
+      head.position.y = -0.2;
+      attachAccessories(head, [hat], 'narae');
+      head.updateMatrixWorld(true);
+      const top = new THREE.Box3().setFromObject(head).max.y;
+      const { pos, at } = cameraFor(framing, true);
+      const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
+      cam.position.set(...pos);
+      cam.lookAt(0, at, 0);
+      cam.updateMatrixWorld();
+      const y = new THREE.Vector3(0, top, 0).project(cam).y;
+      expect(y).toBeLessThan(0.95);
+    }
+  // 모자가 없으면 지금 구도 그대로
+  expect(cameraFor('full', false)).toEqual({ pos: [0, 0.5, 3.5], at: 0.44 });
 });

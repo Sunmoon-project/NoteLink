@@ -48,7 +48,7 @@ describe('상점 치장', () => {
     expect(screen.queryByText('보라 아바타')).toBeNull();
   });
 
-  it('치장 상세는 내 선생님(장착 아바타 + 다른 칸 장착 치장)에 이 치장을 씌워 보이고, 같은 칸 기존 것은 뺀다', async () => {
+  it('치장 상세는 지금 쓰는 아바타에 이 치장 하나만 씌워 보인다(이미 낀 다른 치장은 빼고)', async () => {
     jest
       .spyOn(api.shop, 'myItems')
       .mockResolvedValue([
@@ -60,14 +60,14 @@ describe('상점 치장', () => {
     await fireEvent.press(await screen.findByText('치장'));
     await fireEvent.press(await screen.findByText('선글라스'));
     expect(await screen.findByLabelText('선글라스 3D 미리보기')).toBeTruthy();
-    expect(screen.getByText('3D:bora+redScarf,sunglasses')).toBeTruthy();
+    expect(screen.getByText('3D:bora+sunglasses')).toBeTruthy();
   });
 
-  it('아바타 상세도 지금 장착한 치장을 씌워 보인다', async () => {
+  it('아바타 상세는 치장 없이 그 아바타만 보인다', async () => {
     jest.spyOn(api.shop, 'myItems').mockResolvedValue([own('beanie', 'hat', true)]);
     await renderScreen(<ShopScreen />);
     await fireEvent.press((await screen.findAllByText('지후 아바타'))[0]!);
-    expect(await screen.findByText('3D:jihoo+beanie')).toBeTruthy();
+    expect(await screen.findByText('3D:jihoo+')).toBeTruthy();
   });
 });
 
@@ -142,5 +142,32 @@ describe('보관함 치장 · 기본 바탕', () => {
     await fireEvent.press(await screen.findByText('치장'));
     expect(await screen.findByHintText('눌러서 벗을 수 있어요')).toBeTruthy();
     expect(screen.getAllByHintText('눌러서 벗을 수 있어요')).toHaveLength(1);
+  });
+
+  it('보관함 「현재 아바타」는 지금 실제 모습(장착 치장 포함), 고른 치장 시트는 그 치장 하나만', async () => {
+    jest
+      .spyOn(api.shop, 'myItems')
+      .mockResolvedValue([
+        own('bora', 'avatar', true),
+        own('beanie', 'hat', true),
+        own('redScarf', 'scarf', true),
+        own('sunglasses', 'glasses'),
+      ]);
+    await renderScreen(<BoxScreen />);
+    expect(await screen.findByText('3D:bora+beanie,redScarf')).toBeTruthy();
+    await fireEvent.press(await screen.findByText('치장'));
+    await fireEvent.press(await screen.findByText('선글라스'));
+    expect(await screen.findByText('3D:bora+sunglasses')).toBeTruthy();
+  });
+
+  it('판매가 끝나 목록에 없는 치장도 장착 중이면 보관함에 남아 벗을 수 있다', async () => {
+    const gone = '6e6f74656c696e6b73680009'; // 서버의 털모자(판매 종료로 상품 목록에서 빠짐)
+    jest.spyOn(api.shop, 'myItems').mockResolvedValue([own(gone, 'hat', true)]);
+    const unequip = jest.spyOn(api.shop, 'unequip').mockResolvedValue(undefined);
+    await renderScreen(<BoxScreen />);
+    await fireEvent.press(await screen.findByText('치장'));
+    await fireEvent.press(await screen.findByText('털모자'));
+    await fireEvent.press(await screen.findByText('벗기'));
+    await waitFor(() => expect(unequip).toHaveBeenCalledWith(gone));
   });
 });
