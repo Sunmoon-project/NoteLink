@@ -22,7 +22,16 @@ export const FRIEND_ERRORS = {
   ALREADY: 'FRIEND_ALREADY',
 } as const;
 
-type UserBrief = { _id: Types.ObjectId; nickname: string; status: string };
+type UserBrief = {
+  _id: Types.ObjectId;
+  nickname: string;
+  /** 찾기는 접속 상태를 보이지 않아 읽지 않는다 */
+  status?: string;
+  lastActiveAt?: Date | null;
+};
+
+/** 앱은 앞에 있는 동안 1분마다 신호를 보낸다. 마지막 신호가 이보다 오래되면 앱을 나간 것으로 본다 */
+export const PRESENCE_TTL_MS = 2 * 60_000;
 type Pair = { userA: Types.ObjectId; userB: Types.ObjectId };
 
 /** 두 사람을 늘 같은 순서(id 작은 쪽이 userA)로 둔다. 한 쌍에 문서가 하나만 생기게 하는 유일 인덱스의 기준이다 */
@@ -64,10 +73,11 @@ export class FriendsService {
     if (!name) return [];
     const user = await this.users
       .findOne({ nickname: name, deletedAt: null })
-      .select('_id nickname status')
+      .select('_id nickname')
       .lean<UserBrief>();
     if (!user || user._id.equals(me)) return [];
-    return [toFriend(user._id, user)];
+    // 찾기는 친구가 아닌 사람도 보므로 접속 상태를 알려 주지 않는다(친구 목록에서만 보인다)
+    return [toFriend(user._id, user, false)];
   }
 
   /**
@@ -157,7 +167,7 @@ export class FriendsService {
         ? [
             {
               _id: d._id.toHexString(),
-              requester: toFriend(d._id, user),
+              requester: toFriend(d._id, user, false),
               requestedAt: d.requestedAt.toISOString(),
             },
           ]
@@ -247,7 +257,7 @@ export class FriendsService {
     return docs
       .flatMap((d) => {
         const user = people.get(other(d).toHexString());
-        return user ? [toFriend(d._id, user)] : [];
+        return user ? [toFriend(d._id, user, true)] : [];
       })
       .sort((a, b) => a.nickname.localeCompare(b.nickname, 'ko'));
   }
@@ -275,7 +285,7 @@ export class FriendsService {
     if (!ids.length) return new Map();
     const docs = await this.users
       .find({ _id: { $in: ids }, deletedAt: null })
-      .select('_id nickname status')
+      .select('_id nickname status lastActiveAt')
       .lean<UserBrief[]>();
     return new Map(docs.map((u) => [u._id.toHexString(), u]));
   }
@@ -283,14 +293,20 @@ export class FriendsService {
 
 const STATUSES = ['active', 'busy', 'resting', 'offline'] as const;
 
-function toFriend(id: Types.ObjectId, user: UserBrief): Friend {
+/** live: 친구에게만 접속 상태를 보여 준다. 아니면(찾기 · 받은 요청) 늘 'offline' */
+function toFriend(id: Types.ObjectId, user: UserBrief, live: boolean): Friend {
   return {
     _id: id.toHexString(),
     userId: user._id.toHexString(),
     nickname: user.nickname,
-    // 사용자 상태가 계약 밖 값이면(옛 데이터) 오프라인으로 보여 준다
-    status: (STATUSES as readonly string[]).includes(user.status)
-      ? (user.status as Friend['status'])
-      : 'offline',
+    // 앱이 최근에 신호를 보냈을 때만 고른 상태를 보여 준다(앱을 나갔거나 꺼졌으면 오프라인).
+    // 상태가 계약 밖 값이어도(옛 데이터) 오프라인
+    status:
+      live &&
+      user.lastActiveAt &&
+      Date.now() - user.lastActiveAt.getTime() <= PRESENCE_TTL_MS &&
+      (STATUSES as readonly string[]).includes(user.status ?? '')
+        ? (user.status as Friend['status'])
+        : 'offline',
   };
 }
