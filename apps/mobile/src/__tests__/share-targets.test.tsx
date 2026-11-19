@@ -1,7 +1,9 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
+import { QueryClient } from '@tanstack/react-query';
 
 import { ShareScreen, SharedScreen } from '../features/content/detail';
+import { useToast } from '../stores/toast';
 import { renderScreen, setParams } from '../test-utils';
 
 // 공유 시트를 스터디룸 / 친구로 나누고, 서버가 아직 막는 친구 공유는 고르지 못하게 한다(FR-26-01, #554 PR 0)
@@ -10,9 +12,22 @@ const mockApi = {
   rooms: { mine: jest.fn() },
   social: { friends: jest.fn() },
 };
+class MockApiError extends Error {
+  constructor(
+    public code: string,
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
+}
 jest.mock('../lib/api', () => ({
   get api() {
     return mockApi;
+  },
+  // 모듈을 읽을 때는 아직 클래스가 없어서 쓸 때 꺼낸다
+  get ApiError() {
+    return MockApiError;
   },
 }));
 const mockEnv = { localData: false, apiUrl: 'https://api.example' };
@@ -73,6 +88,17 @@ it('스터디룸으로 보내면 완료 화면에 스터디룸 이름이 간다'
   });
 });
 
+it('스터디룸에 공유하면 그 방의 「공유 자료」 목록을 낡은 것으로 표시한다', async () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(['room-shared', 'r1'], { items: [], flashcards: [] });
+  await renderScreen(<ShareScreen />, qc);
+  await fireEvent.press(await screen.findByText('미적분 필기'));
+  await fireEvent.press(screen.getByText(/공유 대상을 선택해주세요/));
+  await fireEvent.press(await screen.findByText('수능 국어방'));
+  await fireEvent.press(screen.getByRole('button', { name: '공유하기' }));
+  await waitFor(() => expect(qc.getQueryState(['room-shared', 'r1'])?.isInvalidated).toBe(true));
+});
+
 it('참여 중인 스터디룸이 없으면 빈 안내를 보여 준다', async () => {
   mockApi.rooms.mine.mockResolvedValue([]);
   await openSheet();
@@ -85,11 +111,31 @@ it('서버 연결인데 친구가 없으면 빈 안내를 보여 준다', async 
   expect(await screen.findByText('아직 친구가 없어요')).toBeTruthy();
 });
 
-it('기기 저장 모드에서는 친구 칸에 서버 연결 안내를 보여 준다', async () => {
-  mockEnv.localData = true;
-  mockApi.social.friends.mockResolvedValue([]);
+// 실기기 피드백(2026-11-20): 친구 칸이 연결 문제처럼 읽혔다. 아직 열리지 않은 기능이라고만 말한다
+it.each([false, true])('친구 칸은 「곧 열려요」로만 안내한다(기기 저장 모드 %s)', async (local) => {
+  mockEnv.localData = local;
   await openSheet();
-  expect(await screen.findByText('서버에 연결하면 친구에게 보낼 수 있어요')).toBeTruthy();
+  expect(await screen.findByText('친구에게 보내기는 곧 열려요')).toBeTruthy();
+  expect(screen.queryByText(/서버에 연결하면/)).toBeNull();
+});
+
+it.each([
+  [
+    '서버가 거절(4xx)하면 서버 문구',
+    new MockApiError('NOT_FOUND', '스터디룸 정보를 찾을 수 없어요', 404),
+    '스터디룸 정보를 찾을 수 없어요',
+  ],
+  [
+    '연결 오류면 연결 문구',
+    new Error('Network request failed'),
+    '공유하지 못했어요. 연결을 확인하고 다시 시도해 주세요',
+  ],
+])('공유에 실패하면 %s를 띄운다', async (_name, error, message) => {
+  mockApi.content.share.mockRejectedValue(error);
+  await openSheet();
+  await fireEvent.press(await screen.findByText('수능 국어방'));
+  await fireEvent.press(screen.getByRole('button', { name: '공유하기' }));
+  await waitFor(() => expect(useToast.getState().msg).toBe(message));
 });
 
 it('완료 화면은 「○○ 스터디룸에」로 말한다', async () => {

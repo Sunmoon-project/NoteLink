@@ -23,6 +23,7 @@ import {
   Settings,
   Timer,
   UserPlus,
+  Users,
 } from 'lucide-react-native';
 import type { ReportType, TimerRule } from '@notelink/shared';
 import { api } from '@/lib/api';
@@ -945,6 +946,15 @@ export function RoomSettingsScreen() {
               onChange={(v) => hide.mutate(!v)}
             />
           </View>
+          <Pressable
+            onPress={() => router.push({ pathname: '/room/members', params: { id } })}
+            className="flex-row items-center gap-3 border-t border-fill px-5 py-4"
+          >
+            <Users size={ICON.md} color={C.ink} />
+            <Text className="text-subhead font-semibold text-ink">
+              {room.data ? `멤버 ${room.data.members.length}명` : '멤버'}
+            </Text>
+          </Pressable>
           <Pressable
             onPress={() => router.push({ pathname: '/room/invite', params: { id } })}
             className="flex-row items-center gap-3 border-t border-fill px-5 py-4"

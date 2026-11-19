@@ -4,7 +4,7 @@ import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronRight, FileText, Image, Pin } from 'lucide-react-native';
+import { Check, ChevronRight, FileText, Pin } from 'lucide-react-native';
 import { ERROR_CODES, MATERIAL_MAX_FILES, type AiJob } from '@notelink/shared';
 import { api, NetworkError } from '@/lib/api';
 import { uploadToBlob, UploadError } from '@/lib/upload';
@@ -37,7 +37,6 @@ import {
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
 import { Player } from './player';
-import { QuizFromNote } from './quiz-from-note';
 import { useSmoothProgress } from '@/hooks/smooth-progress';
 
 // p.66 AI 변환 중 · 정리 완료 / p.98 업로드 · 변환 중 연결 끊김 / p.99 LLM 오류
@@ -653,6 +652,8 @@ const defaultTitle = (kind: keyof typeof TITLE, name?: string, source?: string) 
 
 /* ── 정리 완료 (p.66 #21~23) ─────────────────────── */
 
+// 저장 전 미리보기라 「원본 보기」 · 「이 노트로 퀴즈 풀기」는 두지 않는다(저장한 뒤 상세 화면에 있다).
+// 실기기 피드백 2026-11-20, 필기 · 녹음 · 문서 모두 같은 규칙
 export function ResultScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const qc = useQueryClient();
@@ -703,22 +704,6 @@ export function ResultScreen() {
               <Text className="text-title3 font-bold text-ink">{mat.title}</Text>
             </View>
             <NoteBody sections={mat.summary?.sections ?? []} />
-            <Card
-              tone="white"
-              onPress={() =>
-                router.push({
-                  pathname: '/result/hand/[id]',
-                  params: { id, tab: '원본 이미지' },
-                })
-              }
-              className="mt-3 flex-row items-center px-4 py-3"
-            >
-              <View className="flex-1 flex-row items-center gap-1.5">
-                <Image size={ICON.xs} color={C.brand} />
-                <Text className="text-footnote text-ink">원본 필기 보기</Text>
-              </View>
-              <ChevronRight size={ICON.sm} color={C.sub} />
-            </Card>
           </>
         )}
         {mat.kind === 'recording' && (
@@ -740,14 +725,9 @@ export function ResultScreen() {
                 name: mat.title,
                 meta: mat.pages?.length ? `${mat.pages.length}페이지` : '원본 문서',
               }}
-              onOriginal={() =>
-                router.push({ pathname: '/result/doc/[id]', params: { id, tab: '원본 문서' } })
-              }
             />
           </>
         )}
-        {/* 정리가 끝나면 바로 퀴즈로 */}
-        <QuizFromNote material={mat} className="mt-4" />
       </Screen>
     </Canvas>
   );

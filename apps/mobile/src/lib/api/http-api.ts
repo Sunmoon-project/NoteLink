@@ -161,6 +161,7 @@ export const httpApi: Api = {
     search: (nickname) => http.get(P.userSearch, { nickname }),
     sendRequest: (userId) => http.post(P.friendRequests, { userId }),
     received: () => http.get(P.friendRequestsReceived),
+    sent: () => http.get(P.friendRequestsSent),
     respond: (id, accept) => http.post(P.friendRequestAction(id, accept ? 'accept' : 'reject')),
     remove: (userId) => http.del(P.friend(userId)),
     openDirect: (userId) => http.post(P.directChat, { userId }),

@@ -3,7 +3,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
-import { FileText, ImageIcon } from 'lucide-react-native';
+import { ChevronRight, FileText, ImageIcon, NotebookPen } from 'lucide-react-native';
 import type { Message } from '@notelink/shared';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
@@ -34,7 +34,9 @@ export const previewOf = (m: Message) =>
     ? '사진'
     : m.type === 'file'
       ? `파일 · ${m.attachment?.name ?? ''}`
-      : (m.text ?? '공유 자료');
+      : m.type === 'shared_item'
+        ? `노트 · ${m.text ?? ''}`
+        : (m.text ?? '공유 자료');
 
 export const sizeLabel = (bytes: number) =>
   bytes >= 1024 * 1024
@@ -157,7 +159,7 @@ export function AttachPicker({
   );
 }
 
-/** 말풍선: 글 · 사진(눌러서 크게) · 파일(눌러서 열기) */
+/** 말풍선: 글 · 사진(눌러서 크게) · 파일(눌러서 열기) · 방에 공유한 노트(눌러서 열기) */
 export function ChatBubble({
   m,
   onOpen,
@@ -205,6 +207,27 @@ export function ChatBubble({
             <Text className="text-caption2 text-sub">{sizeLabel(a.sizeBytes)}</Text>
           )}
         </View>
+      </Pressable>
+    );
+  // 노트를 방에 공유하면 서버가 남기는 자료 카드(글 = 노트 제목)
+  if (m.type === 'shared_item' && m.sharedItemId)
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`공유한 노트 ${m.text ?? ''} 열기`}
+        onPress={open}
+        className="max-w-[78%] flex-row items-center gap-2.5 rounded-2xl bg-white px-3 py-2.5"
+      >
+        <View className="h-9 w-9 items-center justify-center rounded-xl bg-mint">
+          <NotebookPen size={ICON.sm} color={C.brand} />
+        </View>
+        <View className="shrink">
+          <Text numberOfLines={1} className="text-footnote font-semibold text-ink">
+            {m.text || '공유한 노트'}
+          </Text>
+          <Text className="text-caption2 text-sub">공유한 노트 · 눌러서 열기</Text>
+        </View>
+        <ChevronRight size={ICON.sm} color={C.sub} />
       </Pressable>
     );
   return (

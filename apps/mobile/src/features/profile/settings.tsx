@@ -1,6 +1,6 @@
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Linking, ScrollView, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -327,18 +327,24 @@ export function SettingsScreen() {
       </Sheet>
       <Sheet open={sheet === 'help'} onClose={() => setSheet(null)} title="도움말 및 지원">
         <Group>
-          <Row chevron onPress={() => Linking.openURL('https://notelink.app/faq')}>
-            자주 묻는 질문
-          </Row>
-          <Row
-            chevron
-            onPress={() => Linking.openURL('mailto:help@notelink.app?subject=노트링크 문의')}
-          >
-            1:1 문의하기
-          </Row>
-          <Row chevron onPress={() => Linking.openURL('https://notelink.app/guide')}>
-            노트링크 사용 가이드
-          </Row>
+          {/* 예전 notelink.app 주소는 우리 사이트가 아니었다. 앱 안 화면으로 연다. 1:1 문의 메일은 받는 주소가 없어 뺐다 */}
+          {(
+            [
+              ['faq', '자주 묻는 질문'],
+              ['guide', '노트링크 사용 가이드'],
+            ] as const
+          ).map(([doc, label]) => (
+            <Row
+              key={doc}
+              chevron
+              onPress={() => {
+                setSheet(null);
+                router.push({ pathname: '/legal/[doc]', params: { doc } });
+              }}
+            >
+              {label}
+            </Row>
+          ))}
         </Group>
       </Sheet>
       <Sheet open={sheet === 'biz'} onClose={() => setSheet(null)} title="사업자 정보">
@@ -347,7 +353,6 @@ export function SettingsScreen() {
             '상호 · 노트링크 (5조)',
             '대표 · 노트링크 팀',
             '주소 · 충청남도 아산시 탕정면 선문로 221번길 70',
-            '문의 · help@notelink.app',
           ].map((t) => (
             <Text key={t} className="text-footnote text-ink/80">
               {t}

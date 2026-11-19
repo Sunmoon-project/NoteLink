@@ -113,6 +113,63 @@ export class StudyChatService {
     return this.serialize(message, user?.nickname);
   }
 
+  /**
+   * 방에 공유한 노트마다 방 채팅에 자료 카드(shared_item)를 남긴다. 글은 노트 제목, 누르면 앱이 sharedItemId 로 공유 자료를 연다.
+   * clientId 를 공유 항목으로 정해 같은 공유를 다시 보내도 카드는 하나다. 새로 만든 카드만 돌려준다(이미 있던 카드는 다시 보내지 않게)
+   */
+  async postSharedNotes(
+    roomId: string,
+    userId: string,
+    items: { sharedItemId: Types.ObjectId; title: string }[],
+  ) {
+    const chat = await this.getChat(roomId, userId);
+    const senderId = new Types.ObjectId(userId);
+    const created: string[] = [];
+    for (const item of items) {
+      const key = {
+        chatRoomId: chat._id,
+        senderId,
+        clientId: `room_share_${item.sharedItemId.toHexString()}`,
+      };
+      try {
+        const r = await this.messages.updateOne(
+          key,
+          {
+            $setOnInsert: {
+              ...key,
+              type: 'shared_item',
+              text: item.title,
+              sharedItemId: item.sharedItemId,
+            },
+          },
+          { upsert: true },
+        );
+        if (r.upsertedCount) created.push(key.clientId);
+      } catch (error) {
+        // 같은 공유를 동시에 보낸 다른 요청이 먼저 넣었다 — 그 카드는 이미 있다
+        if (
+          typeof error !== 'object' ||
+          error === null ||
+          !('code' in error) ||
+          error.code !== 11000
+        )
+          throw error;
+      }
+    }
+    if (!created.length) return { chatRoomId: String(chat._id), messages: [] };
+    const [rows, user] = await Promise.all([
+      this.messages
+        .find({ chatRoomId: chat._id, senderId, clientId: { $in: created } })
+        .sort({ createdAt: 1, _id: 1 })
+        .lean(),
+      this.users.findById(senderId, { nickname: 1 }).lean(),
+    ]);
+    return {
+      chatRoomId: String(chat._id),
+      messages: await Promise.all(rows.map((m) => this.serialize(m, user?.nickname))),
+    };
+  }
+
   /** 탈퇴 중이거나 탈퇴한 사용자는 방 멤버가 아닐 때와 같은 오류로 거절한다(라이브 토큰 · 소켓 입장 앞에서 쓴다). */
   async requireActiveUser(userId: string) {
     const active =
