@@ -30,7 +30,7 @@ const userItemModel = {
         lean: vi.fn().mockResolvedValue(filter.itemId.equals(owned.itemId) ? owned : null),
     })),
     updateMany: vi.fn().mockResolvedValue({ modifiedCount: 1 }),
-    updateOne: vi.fn().mockResolvedValue({ modifiedCount: 1 }),
+    updateOne: vi.fn().mockResolvedValue({ matchedCount: 1, modifiedCount: 1 }),
 };
 
 // 트랜잭션의 가짜 session. 장착의 쓰기들이 한 묶음으로 가는지 확인한다
@@ -152,5 +152,40 @@ describe('/api/v1/users/me/items', () => {
         expect(res.status).toBe(404);
         expect(userItemModel.findOne).not.toHaveBeenCalled();
         expect(connection.transaction).not.toHaveBeenCalled();
+    });
+
+    describe('DELETE /:itemId/equip (벗기)', () => {
+        const unequip = (id: string) =>
+            request(app.getHttpServer()).delete(`/api/v1/users/me/items/${id}/equip`).set(AUTH);
+
+        it('보유한 아이템이면 204, 그 아이템의 장착만 푼다', async () => {
+            const res = await unequip(owned.itemId.toString());
+            expect(res.status).toBe(204);
+            expect(userItemModel.updateOne).toHaveBeenCalledWith(
+                { userId: new Types.ObjectId(TEST_USER_ID), itemId: owned.itemId, isOwned: true },
+                { $set: { isEquipped: false } },
+            );
+            expect(userItemModel.updateMany).not.toHaveBeenCalled();
+        });
+
+        it('보유하지 않은 아이템이면 404와 { code, message }', async () => {
+            userItemModel.updateOne.mockResolvedValueOnce({ matchedCount: 0, modifiedCount: 0 });
+            const res = await unequip(new Types.ObjectId().toString());
+            expect(res.status).toBe(404);
+            expect(res.body).toEqual({ code: 'NOT_FOUND', message: expect.any(String) });
+        });
+
+        it('ID 모양이 틀리면 DB에 묻지 않고 404', async () => {
+            const res = await unequip('not-an-id');
+            expect(res.status).toBe(404);
+            expect(userItemModel.updateOne).not.toHaveBeenCalled();
+        });
+
+        it('로그인하지 않으면 401', async () => {
+            const res = await request(app.getHttpServer()).delete(
+                `/api/v1/users/me/items/${owned.itemId.toString()}/equip`,
+            );
+            expect(res.status).toBe(401);
+        });
     });
 });

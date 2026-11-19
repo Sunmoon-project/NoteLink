@@ -90,7 +90,8 @@ export const Notification = z.object({
 
 export const ShopItem = z.object({
   _id: id,
-  category: z.enum(['avatar', 'theme']),
+  // hat · glasses · scarf: 아바타 선생님 치장(종류마다 하나씩 장착)
+  category: z.enum(['avatar', 'theme', 'hat', 'glasses', 'scarf']),
   name: z.string(),
   description: z.string().nullable(),
   price: z.number().int(),
