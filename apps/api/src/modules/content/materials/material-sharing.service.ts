@@ -63,6 +63,15 @@ export class MaterialSharingService {
       .then((found) => found !== null);
   }
 
+  /** 공유자와 원본 소유자가 모두 정상 계정이어야 공유 내용을 읽을 수 있다. */
+  private async requireActiveUsers(userIds: Types.ObjectId[]): Promise<void> {
+    const uniqueIds = new Map(userIds.map((id) => [String(id), id]));
+    for (const id of uniqueIds.values()) {
+      if (!id || !(await this.users.exists({ _id: id, deletedAt: null, withdrawingAt: null })))
+        throw notFound('공유 자료');
+    }
+  }
+
   /**
    * 이 노트가 내가 현재 멤버인 방에 공유돼 있으면 노트 주인의 id, 아니면 null. 공유받은 사람의 읽기(상세 · 원본 주소)에서
    * 주인으로 읽기 위해 쓴다: 읽는 쪽은 이 id 를 노트 서비스에 그대로 넘겨 주인 기준으로 동작한다(작업 · 결과 옮기기가 주인 것).
@@ -268,6 +277,7 @@ export class MaterialSharingService {
         .findOne({ _id: item.quizSetId, deletedAt: null, status: 'ready' })
         .lean<QuizSetRow>();
       if (!quiz) throw notFound('공유 자료');
+      await this.requireActiveUsers([item.sharedBy, quiz.ownerId]);
       return { itemType: 'quiz' as const, quiz: toAppSet(quiz) };
     }
     if (item?.itemType === 'flashcards' && item.flashcardIds.length) {
@@ -275,6 +285,7 @@ export class MaterialSharingService {
         .find({ _id: { $in: item.flashcardIds }, deletedAt: null })
         .lean();
       if (!cards.length) throw notFound('공유 자료');
+      await this.requireActiveUsers([item.sharedBy, ...cards.map((card) => card.ownerId)]);
       return {
         itemType: 'flashcards' as const,
         cards: cards.map((card) => ({ front: card.front, back: card.back })),

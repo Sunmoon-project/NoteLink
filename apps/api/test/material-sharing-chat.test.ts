@@ -199,10 +199,97 @@ describe('채팅 학습 자료 공유', () => {
     });
   });
 
+  describe.each(['quiz', 'flashcards'] as const)('%s 공유 원본의 계정 상태', (kind) => {
+    it.each([
+      ['sharer', 'deletedAt'],
+      ['sharer', 'withdrawingAt'],
+      ['sharer', 'missing'],
+      ['owner', 'deletedAt'],
+      ['owner', 'withdrawingAt'],
+      ['owner', 'missing'],
+    ] as const)(
+      '%s 계정이 %s 상태가 되면 이전에 열리던 공유도 404가 된다',
+      async (target, status) => {
+        const x = setup();
+        const sharerId = new Types.ObjectId(friend);
+        const ownerId = new Types.ObjectId(owner);
+        const accounts = new Map<string, { deletedAt: Date | null; withdrawingAt: Date | null }>([
+          [friend, { deletedAt: null, withdrawingAt: null }],
+          [owner, { deletedAt: null, withdrawingAt: null }],
+        ]);
+        x.users.exists.mockImplementation(async (query) => {
+          const account = accounts.get(String(query._id));
+          return account &&
+            account.deletedAt === query.deletedAt &&
+            account.withdrawingAt === query.withdrawingAt
+            ? { _id: query._id }
+            : null;
+        });
+        x.shared.findOne.mockReturnValue(
+          lean({
+            itemType: kind,
+            sharedBy: sharerId,
+            quizSetId: itemId,
+            flashcardIds: [itemId],
+          }),
+        );
+        x.quizzes.findOne.mockReturnValue(
+          lean({
+            _id: itemId,
+            ownerId,
+            title: '공유 퀴즈',
+            status: 'ready',
+            questions: [],
+            createdAt: new Date('2026-11-19T00:00:00Z'),
+          }),
+        );
+        x.cards.find.mockReturnValue(lean([{ ownerId, front: '문제', back: '정답' }]));
+        await expect(x.service.findRoomItem(owner, room, String(sharedId))).resolves.toMatchObject({
+          itemType: kind,
+        });
+        const id = target === 'sharer' ? friend : owner;
+        if (status === 'missing') accounts.delete(id);
+        else accounts.get(id)![status] = new Date();
+        await expect(x.service.findRoomItem(owner, room, String(sharedId))).rejects.toMatchObject({
+          status: 404,
+          response: { code: 'NOT_FOUND' },
+        });
+      },
+    );
+  });
+
+  it('카드 묶음에 탈퇴한 다른 소유자의 카드가 섞이면 전체 공유를 거부한다', async () => {
+    const x = setup();
+    const inactiveOwner = new Types.ObjectId();
+    x.shared.findOne.mockReturnValue(
+      lean({
+        itemType: 'flashcards',
+        sharedBy: new Types.ObjectId(owner),
+        flashcardIds: [itemId, new Types.ObjectId()],
+      }),
+    );
+    x.cards.find.mockReturnValue(
+      lean([
+        { ownerId: new Types.ObjectId(owner), front: '정상', back: '정답' },
+        { ownerId: inactiveOwner, front: '차단', back: '비공개' },
+      ]),
+    );
+    x.users.exists.mockImplementation(async (query) =>
+      String(query._id) === String(inactiveOwner) ? null : { _id: query._id },
+    );
+    await expect(x.service.findRoomItem(owner, room, String(sharedId))).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
   it('방 참가자는 공유된 카드의 앞뒷면을 읽을 수 있다', async () => {
     const x = setup();
-    x.shared.findOne.mockReturnValue(lean({ itemType: 'flashcards', flashcardIds: [itemId] }));
-    x.cards.find.mockReturnValue(lean([{ front: '문제', back: '정답' }]));
+    x.shared.findOne.mockReturnValue(
+      lean({ itemType: 'flashcards', sharedBy: new Types.ObjectId(owner), flashcardIds: [itemId] }),
+    );
+    x.cards.find.mockReturnValue(
+      lean([{ ownerId: new Types.ObjectId(owner), front: '문제', back: '정답' }]),
+    );
     await expect(x.service.findRoomItem(owner, room, String(sharedId))).resolves.toEqual({
       itemType: 'flashcards',
       cards: [{ front: '문제', back: '정답' }],

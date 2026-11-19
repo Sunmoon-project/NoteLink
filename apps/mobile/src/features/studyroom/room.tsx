@@ -1145,45 +1145,60 @@ export function RoomScreen() {
               entering={RISE_IN}
               exiting={SWAP_OUT}
               className="mt-2 flex-1"
-              contentContainerClassName="gap-3 px-4 py-3"
-              renderItem={({ item: m }) => {
-                const mine = m.senderId === myId;
-                return (
-                  <Animated.View
-                    entering={fresh.current.has(m._id) ? POP_IN : undefined}
-                    className={cx(mine && 'items-end')}
-                  >
-                    {!mine && (
-                      <View className="flex-row items-center gap-1.5 mb-1">
-                        <MessageCircle size={ICON.xs} color={C.sub} />
-                        <Text className="text-caption2 text-sub">{m.senderNickname ?? '멤버'}</Text>
-                      </View>
-                    )}
-                    {m.type === 'shared_item' && m.sharedItemId ? (
-                      <Pressable
-                        accessibilityRole="button"
-                        onPress={() => void openSharedMessage(m.sharedItemId!)}
-                        className="max-w-[78%] rounded-2xl bg-white px-3 py-2"
-                      >
-                        <Text className="text-footnote text-ink">
-                          {m.text ?? '공유 자료를 보냈어요'}
-                        </Text>
-                        <Text className="text-caption2 text-brand">공유 자료 열기</Text>
-                      </Pressable>
-                    ) : (
-                      <ChatBubble m={m} onOpen={openAttachment} onStale={refreshStale} />
-                    )}
-                    {failedIds.includes(m._id) && (
-                      <Pressable
-                        accessibilityRole="button"
-                        onPress={() =>
-                          m.type === 'image' || m.type === 'file'
-                            ? void deliverAttachment(m._id)
-                            : deliver(m.chatRoomId, m._id, m.text ?? '')
-                        }
-                      >
-                        <Text className="mt-1 text-caption2 text-danger">
-                          전송하지 못했어요 · 다시 보내기
+            >
+              <FlatList
+                ref={list}
+                data={msgs}
+                keyExtractor={(m) => m._id}
+                onContentSizeChange={() => list.current?.scrollToEnd()}
+                className="flex-1"
+                contentContainerClassName="gap-3 px-4 py-3"
+                renderItem={({ item: m }) => {
+                  const mine = m.senderId === myId;
+                  return (
+                    <Animated.View
+                      entering={fresh.current.has(m._id) ? POP_IN : undefined}
+                      className={cx(mine && 'items-end')}
+                    >
+                      {!mine && (
+                        <View className="flex-row items-center gap-1.5 mb-1">
+                          <MessageCircle size={ICON.xs} color={C.sub} />
+                          <Text className="text-caption2 text-sub">
+                            {m.senderNickname ?? '멤버'}
+                          </Text>
+                        </View>
+                      )}
+                      {m.type === 'shared_item' && m.sharedItemId ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => void openSharedMessage(m.sharedItemId!)}
+                          className="max-w-[78%] rounded-2xl bg-white px-3 py-2"
+                        >
+                          <Text className="text-footnote text-ink">
+                            {m.text ?? '공유 자료를 보냈어요'}
+                          </Text>
+                          <Text className="text-caption2 text-brand">공유 자료 열기</Text>
+                        </Pressable>
+                      ) : (
+                        <ChatBubble m={m} onOpen={openAttachment} onStale={refreshStale} />
+                      )}
+                      {failedIds.includes(m._id) && (
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() =>
+                            m.type === 'image' || m.type === 'file'
+                              ? void deliverAttachment(m._id)
+                              : deliver(m.chatRoomId, m._id, m.text ?? '')
+                          }
+                        >
+                          <Text className="mt-1 text-caption2 text-danger">
+                            전송하지 못했어요 · 다시 보내기
+                          </Text>
+                        </Pressable>
+                      )}
+                      {mine && m.clientId === m._id && !failedIds.includes(m._id) && (
+                        <Text className="mt-1 text-caption2 text-sub">
+                          {conn === 'lost' || joinedRoom !== id ? '연결 후 전송 대기' : '전송 중'}
                         </Text>
                       )}
                       {mine && conn === 'back' && m === msgs[msgs.length - 1] && (
