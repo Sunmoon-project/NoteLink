@@ -252,6 +252,8 @@ it('불러온 이전 기록은 움직이지 않고, 새로 보낸 말풍선만 �
   };
   expect(await screen.findByText('예전 메시지')).toBeTruthy();
   expect(bubbleOf('예전 메시지')?.props.entering).toBeUndefined();
+  // 실기기 피드백: 1:1 채팅처럼 스터디룸 말풍선도 길게 눌러 복사할 수 있다
+  expect(screen.getByText('예전 메시지').props.selectable).toBe(true);
   await fireEvent.changeText(screen.getByPlaceholderText('채팅을 입력해 주세요'), '새 메시지');
   await fireEvent.press(screen.getByLabelText('전송'));
   expect(bubbleOf('새 메시지')?.props.entering).toBeDefined();

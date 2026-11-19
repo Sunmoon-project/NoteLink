@@ -939,22 +939,25 @@ const closingLeft = () => Math.max(0, closingUntil - Date.now());
 function useMounted(open: boolean) {
   const [mounted, setMounted] = useState(open);
   const [wasOpen, setWasOpen] = useState(open);
-  const [, wake] = useState(0);
+  const [woken, wake] = useState(0);
   if (wasOpen !== open) {
     setWasOpen(open);
     if (!open && mounted) markClosing();
   }
-  // 닫히는 Modal이 남아 있을 때 새 Modal을 띄우면 iOS가 무시한다. 다 닫힌 뒤에 띄운다
-  if (open && !mounted && closingLeft() === 0) setMounted(true);
+  // 닫히는 Modal이 남아 있을 때 새 Modal을 띄우면 iOS가 무시한다. 다 닫힌 뒤에 띄운다.
+  // 띄울지는 렌더가 다 끝난 뒤(effect)에 본다: 렌더 중에 보면 트리에서 뒤에 있는 시트가 닫힘을 알리기 전이라
+  // 앞 시트가 바로 떠 버린다(할 일 추가 → 날짜 시트로 돌아오면 날짜 시트가 버려져 화면이 반응하지 않았다)
   useEffect(() => {
     if (open && !mounted) {
-      const t = setTimeout(() => wake((n) => n + 1), closingLeft());
+      const left = closingLeft();
+      if (left === 0) return void setMounted(true);
+      const t = setTimeout(() => wake((n) => n + 1), left);
       return () => clearTimeout(t);
     }
     if (open || !mounted) return;
     const t = setTimeout(() => setMounted(false), MOTION.exit);
     return () => clearTimeout(t);
-  }, [open, mounted]);
+  }, [open, mounted, woken]);
   return mounted;
 }
 
