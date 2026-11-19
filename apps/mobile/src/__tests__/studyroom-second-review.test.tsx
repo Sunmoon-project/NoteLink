@@ -147,6 +147,15 @@ it.each([
   });
 });
 
+// 실기기 피드백(2026-11-20): #483 뒤 방에 공유된 노트를 볼 길이 알림뿐이었다
+it('스터디룸 도구의 「공유 자료」는 방에 공유된 자료 화면을 연다', async () => {
+  await renderScreen(<RoomScreen />, client());
+  await screen.findByText(room.title);
+  await fireEvent.press(screen.getByLabelText('도구'));
+  await fireEvent.press(screen.getByText('공유 자료'));
+  expect(router.push).toHaveBeenCalledWith({ pathname: '/room/cards', params: { id: room._id } });
+});
+
 it('늦게 입장해도 임의 집중 카운트다운을 만들지 않고 서버 종료시각만 유지한다', async () => {
   const qc = client();
   await renderScreen(<RoomScreen />, qc);
