@@ -18,6 +18,7 @@ import {
   TimetableShareSchema,
 } from '../src/modules/calendar/schemas/timetable-share.schema.js';
 import { MAIL_SENDER } from '../src/modules/mail/mail-sender.js';
+import { NotificationService } from '../src/modules/notification/notification.service.js';
 import { ProgressService } from '../src/modules/progress/progress.service.js';
 import { FriendsController } from '../src/modules/social/friends/friends.controller.js';
 import { FriendsService } from '../src/modules/social/friends/friends.service.js';
@@ -63,6 +64,7 @@ describe.skipIf(!isLocal)('진짜 DB 접속 신호 → 친구 목록 상태', ()
         // 이 시험이 쓰지 않는 의존성
         { provide: ProgressService, useValue: { streakDays: async () => 0 } },
         { provide: StudyRoomMembershipService, useValue: {} },
+        { provide: NotificationService, useValue: { notify: async () => {} } },
         { provide: EmailCodeService, useValue: {} },
         { provide: MAIL_SENDER, useValue: {} },
         {
