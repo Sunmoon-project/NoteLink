@@ -4,6 +4,7 @@ import { ERROR_CODES, type RoomSharedItem as AppRoomSharedItem } from '@notelink
 import { isValidObjectId, Model, Types } from 'mongoose';
 
 import { User } from '../../auth/schemas/user.schema.js';
+import { NotificationService } from '../../notification/notification.service.js';
 import { RoomSharedItem } from '../../studyroom/schemas/room-shared-item.schema.js';
 import { StudyRoom } from '../../studyroom/schemas/study-room.schema.js';
 import { Material } from '../schemas/material.schema.js';
@@ -39,6 +40,7 @@ export class MaterialSharingService {
     @InjectModel(StudyRoom.name) private readonly rooms: Model<StudyRoom>,
     @InjectModel(RoomSharedItem.name) private readonly shared: Model<RoomSharedItem>,
     @InjectModel(User.name) private readonly users: Model<User>,
+    private readonly notifications: NotificationService,
   ) {}
 
   /** 닫히지 않은 방에서 내가 현재 멤버(status: joined)인지. 방 id 형식이 틀려도 false */
@@ -196,8 +198,9 @@ export class MaterialSharingService {
     if (notes.length !== ids.length) throw notFound('노트');
     if (!(await this.isCurrentMember(me, dto.target.id))) throw notFound('스터디룸');
     const roomId = new Types.ObjectId(dto.target.id);
+    let added = 0;
     try {
-      await this.shared.bulkWrite(
+      const result = await this.shared.bulkWrite(
         notes.map((note) => ({
           updateOne: {
             filter: { roomId, itemType: 'material', materialId: note._id, deletedAt: null },
@@ -214,9 +217,36 @@ export class MaterialSharingService {
         })),
         { ordered: false },
       );
+      added = result.upsertedCount;
     } catch (e) {
-      // 같은 노트를 동시에 공유한 다른 요청이 먼저 넣었다 — 이미 공유된 것과 같다
+      // 같은 노트를 동시에 공유한 다른 요청이 먼저 넣었다 — 이미 공유된 것과 같다(알리지 않는다)
       if (!onlyDuplicateKeys(e)) throw e;
+    }
+    if (added > 0) await this.notifyShared(me, roomId, added);
+  }
+
+  /** 방의 다른 멤버에게 「○○님이 「방」에 노트 n개를 공유했어요」. 실패해도 공유는 성공이다 */
+  private async notifyShared(me: Types.ObjectId, roomId: Types.ObjectId, count: number) {
+    try {
+      const [room, sharer] = await Promise.all([
+        this.rooms.findById(roomId, { title: 1, members: 1 }).lean(),
+        this.users.findById(me, { nickname: 1 }).lean<{ nickname: string }>(),
+      ]);
+      if (!room) return;
+      await this.notifications.notify({
+        userIds: room.members
+          .filter((m) => m.status === 'joined' && !m.userId.equals(me))
+          .map((m) => m.userId),
+        category: 'room',
+        type: 'room-shared',
+        title: room.title,
+        body: `${sharer?.nickname ?? UNKNOWN_NICKNAME}님이 「${room.title}」에 노트 ${count}개를 공유했어요`,
+        data: { roomId: roomId.toHexString(), userId: me.toHexString() },
+        // 같은 사람이 같은 방에 여러 번 공유하면 알림함 · 기기에서 마지막 것 하나로 바뀐다
+        collapseId: `room-share:${roomId.toHexString()}:${me.toHexString()}`,
+      });
+    } catch {
+      // 알림은 덤이다
     }
   }
 }

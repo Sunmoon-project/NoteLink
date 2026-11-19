@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { NotificationModule } from '../../notification/notification.module.js';
 import { MongooseModule } from '@nestjs/mongoose';
 
 import { AiJobsModule } from '../../../ai-jobs/ai-jobs.module.js';
@@ -39,6 +40,8 @@ import { RecordingService } from './recording.service.js';
       { name: User.name, schema: UserSchema },
     ]),
     AiJobsModule,
+    // 방에 노트를 공유하면 다른 멤버에게 알림(#560)
+    NotificationModule,
     QuizSetsModule,
     UploadsModule,
     // JwtAuthGuard · TokenService

@@ -14,6 +14,7 @@ import {
 } from '@notelink/shared';
 import { isValidObjectId, type Model, Types } from 'mongoose';
 import { Device } from '../users/schemas/device.schema.js';
+import { NotificationService } from '../notification/notification.service.js';
 import { ExpoPushService, type ExpoPushMessage } from '../notification/expo-push.service.js';
 import { StudyRoom } from './schemas/study-room.schema.js';
 
@@ -57,6 +58,7 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
     @InjectModel(StudyRoom.name) private readonly rooms: Model<StudyRoom>,
     @InjectModel(Device.name) private readonly devices: Model<Device>,
     private readonly push: ExpoPushService,
+    private readonly notifications: NotificationService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -220,9 +222,11 @@ export class RoomTimerNotificationsService implements OnApplicationBootstrap, On
       const pending = room?.timerPendingNotification as PendingTimerNotification | null | undefined;
       if (!room || !pending) return;
 
-      const joinedUserIds = room.members
-        .filter((member) => member.status === 'joined')
-        .map((member) => member.userId);
+      // 방 활동 알림을 끈 사람 · 조용한 시간인 사람은 뺀다(#560)
+      const joinedUserIds = await this.notifications.pushAllowed(
+        room.members.filter((member) => member.status === 'joined').map((member) => member.userId),
+        'room',
+      );
       if (!joinedUserIds.length) {
         await this.clearPending(id, revision, pending.transitionAt);
         return;

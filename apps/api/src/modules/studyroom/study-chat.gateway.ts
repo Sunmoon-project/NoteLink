@@ -10,6 +10,7 @@ import type { Server, Socket } from 'socket.io';
 import type { StudyRoom, TimerRule } from '@notelink/shared';
 import { TokenService } from '../auth/token.service.js';
 import { StudyChatService } from './study-chat.service.js';
+import { StudyRoomNoticesService, type ChatMessageView } from './study-room-notices.service.js';
 
 @Injectable()
 @WebSocketGateway()
@@ -48,6 +49,7 @@ export class StudyChatGateway {
   }
   async notifyDirectMessage(message: { chatRoomId: string }) {
     const channel = `direct-chat:${message.chatRoomId}`;
+    const delivered: string[] = [];
     const recipients = await this.server
       .in(channel)
       .fetchSockets()
@@ -60,15 +62,19 @@ export class StudyChatGateway {
         const chat = await this.chat.requireChat(message.chatRoomId, userId);
         if (chat.type !== 'direct') throw new Error('not a direct chat member');
         recipient.emit('chat:message', message);
+        delivered.push(userId);
       } catch {
         await recipient.leave(channel);
       }
     }
+    // 그 채팅을 보고 있지 않은 상대에게 푸시(초대 카드는 방 활동 알림). 기다리지 않는다
+    void this.notices.chatMessage(message as ChatMessageView, delivered);
   }
   @WebSocketServer() private server: Server;
   constructor(
     private readonly tokens: TokenService,
     private readonly chat: StudyChatService,
+    private readonly notices: StudyRoomNoticesService,
   ) {}
 
   afterInit(server: Server) {
@@ -209,6 +215,7 @@ export class StudyChatGateway {
       ? `study-chat:${data.chatRoomId}`
       : `direct-chat:${data.chatRoomId}`;
     // 나간 사용자에게 전달하지 않도록 각 연결의 토큰과 현재 멤버십을 다시 검사한다.
+    const delivered: string[] = [];
     for (const recipient of await this.server.in(channel).fetchSockets()) {
       try {
         const token = recipient.handshake.auth?.token;
@@ -216,10 +223,13 @@ export class StudyChatGateway {
         const receiver = await this.tokens.verifyAccess(token);
         await this.chat.requireChat(data.chatRoomId, receiver.userId);
         recipient.emit('chat:message', message);
+        delivered.push(receiver.userId);
       } catch {
         await recipient.leave(channel);
       }
     }
+    // 소켓으로 받은 사람(그 채팅을 보고 있는 사람)을 뺀 멤버에게 푸시. 기다리지 않는다(보낸 사람 확인을 늦추지 않게)
+    void this.notices.chatMessage(message, delivered);
     return message;
   }
 }

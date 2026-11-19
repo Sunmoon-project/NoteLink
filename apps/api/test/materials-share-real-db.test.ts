@@ -68,6 +68,8 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       rooms as never,
       items as never,
       users as never,
+      // 공유 알림은 study-notices-real-db.test.ts에서 본다
+      { notify: async () => {} } as never,
     );
     // 공유받은 멤버의 읽기: 노트 서비스는 진짜 DB 로, 저장소 · 퀴즈 미리 만들기만 대역
     materialsService = new MaterialsService(

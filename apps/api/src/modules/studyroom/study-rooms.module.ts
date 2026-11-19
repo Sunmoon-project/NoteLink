@@ -24,6 +24,8 @@ import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schem
 import { Device, DeviceSchema } from '../users/schemas/device.schema.js';
 import { ExpoPushService } from '../notification/expo-push.service.js';
 import { RoomTimerNotificationsService } from './room-timer-notifications.service.js';
+import { StudyRoomNoticesService } from './study-room-notices.service.js';
+import { NotificationModule } from '../notification/notification.module.js';
 
 import { Timetable, TimetableSchema } from '../calendar/schemas/timetable.schema.js';
 import { StudyRoomScheduleController } from './study-room-schedule.controller.js';
@@ -33,6 +35,8 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
   imports: [
     AuthModule,
     UploadsModule,
+    // 채팅 · 초대 · 퇴장 조치 알림, 타이머 푸시의 알림 설정 확인(#560)
+    NotificationModule,
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
       { name: Category.name, schema: CategorySchema },
@@ -64,6 +68,7 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
     StudyRoomWithdrawnSweeper,
     ExpoPushService,
     RoomTimerNotificationsService,
+    StudyRoomNoticesService,
     ReportsService,
     ReportImageSweeper,
     StudyRoomScheduleService,
