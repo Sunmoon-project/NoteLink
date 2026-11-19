@@ -29,7 +29,7 @@ import {
   QuizSetsService,
   SIMILAR_TYPE,
   toAppSet,
-  toWorkerQuestion,
+  reviewInputQuestion,
   VALIDATION_FAILED,
 } from './quiz-sets.service.js';
 
@@ -416,7 +416,7 @@ export class SimilarQuizService {
       sets: sets.map((s) => ({
         id: s._id.toString(),
         materialId: s.materialId!.toString(),
-        questions: (s.questions ?? []).map(toWorkerQuestion),
+        questions: (s.questions ?? []).map((q) => reviewInputQuestion(q, attempt._id)),
       })),
       history: history.map((h) => ({
         id: h._id.toString(),

@@ -141,7 +141,7 @@ describe.skipIf(!uri)('진짜 DB 퀴즈 답 동시 제출 확인', () => {
 
             const result = await service.finish(me.toString(), attempt.id);
 
-            expect(result).toEqual({ pointsEarned: 12, balance: 112 });
+            expect(result).toEqual({ pointsEarned: 12, balance: 112, scheduled: 0, nextReviewDay: null });
             expect(await balanceOf(me)).toBe(112);
             const row = await rowOf(attempt.id);
             expect(row.finishedAt).toBeInstanceOf(Date);
@@ -159,7 +159,7 @@ describe.skipIf(!uri)('진짜 DB 퀴즈 답 동시 제출 확인', () => {
 
             const again = await service.finish(me.toString(), attempt.id);
 
-            expect(again).toEqual({ pointsEarned: 0, balance: 108 });
+            expect(again).toEqual({ pointsEarned: 0, balance: 108, scheduled: 0, nextReviewDay: null });
             expect(await balanceOf(me)).toBe(108);
             expect(await ledgerOf(me)).toHaveLength(1);
             expect(await rowOf(attempt.id)).toEqual(first);
@@ -194,7 +194,7 @@ describe.skipIf(!uri)('진짜 DB 퀴즈 답 동시 제출 확인', () => {
 
             const result = await service.finish(me.toString(), attempt.id);
 
-            expect(result).toEqual({ pointsEarned: 4, balance: 140 });
+            expect(result).toEqual({ pointsEarned: 4, balance: 140, scheduled: 0, nextReviewDay: null });
             expect((await rowOf(attempt.id)).pointsEarned).toBe(4);
             expect(await ledgerOf(me)).toHaveLength(2);
         });
@@ -205,7 +205,7 @@ describe.skipIf(!uri)('진짜 DB 퀴즈 답 동시 제출 확인', () => {
 
             const result = await service.finish(me.toString(), attempt.id);
 
-            expect(result).toEqual({ pointsEarned: 0, balance: 100 });
+            expect(result).toEqual({ pointsEarned: 0, balance: 100, scheduled: 0, nextReviewDay: null });
             expect(await ledgerOf(me)).toHaveLength(0);
             const row = await rowOf(attempt.id);
             expect(row.finishedAt).toBeInstanceOf(Date);
@@ -253,14 +253,14 @@ describe.skipIf(!uri)('진짜 DB 퀴즈 답 동시 제출 확인', () => {
 
             spy.mockRestore();
 
-            expect(await service.finish(me.toString(), attempt.id)).toEqual({ pointsEarned: 12, balance: 112 });
+            expect(await service.finish(me.toString(), attempt.id)).toEqual({ pointsEarned: 12, balance: 112, scheduled: 0, nextReviewDay: null });
             const done = await rowOf(attempt.id);
             expect(done.finishedAt).toBeInstanceOf(Date);
             expect(done.pointsEarned).toBe(12);
             expect(await balanceOf(me)).toBe(112);
             expect(await ledgerOf(me)).toHaveLength(1);
 
-            expect(await service.finish(me.toString(), attempt.id)).toEqual({ pointsEarned: 0, balance: 112 });
+            expect(await service.finish(me.toString(), attempt.id)).toEqual({ pointsEarned: 0, balance: 112, scheduled: 0, nextReviewDay: null });
             expect(await balanceOf(me)).toBe(112);
             expect(await ledgerOf(me)).toHaveLength(1);
         });

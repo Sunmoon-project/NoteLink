@@ -124,6 +124,7 @@ export interface QuestionRow {
   conceptTags?: string[];
   difficulty?: Difficulty | null;
   srs?: Record<string, unknown> | null;
+  srsAttemptId?: Types.ObjectId;
 }
 
 /** DB에서 읽은 세트 한 줄(lean) */
@@ -721,7 +722,11 @@ export class QuizSetsService {
         continue;
       await this.sets.updateOne(
         { _id: new Types.ObjectId(u.quizSetId), ownerId: row.ownerId },
-        { $set: { 'questions.$[q].srs': u.srs, 'questions.$[q].srsAt': at } },
+        // 퀴즈를 끝낼 때 쓴 처음 상태 표시(srsAttemptId)는 지운다: 이제 이 상태는 그 풀이만의 것이 아니다
+        {
+          $set: { 'questions.$[q].srs': u.srs, 'questions.$[q].srsAt': at },
+          $unset: { 'questions.$[q].srsAttemptId': '' },
+        },
         // srsAt이 없거나 이 세트보다 오래된 문제만(더 새 세트가 쓴 상태는 그대로)
         {
           arrayFilters: [
@@ -1043,6 +1048,14 @@ export function toWorkerQuestion(q: QuestionRow): Record<string, unknown> {
     ...(q.difficulty ? { difficulty: q.difficulty } : {}),
     srs: q.srs ?? null,
   };
+}
+
+/**
+ * 오답 복습 처리기에 넘길 문제. 이 풀이를 끝낼 때 처음 복습 상태를 쓴 문제(srsAttemptId)는 복습 상태 없이 넘긴다:
+ * 처리기가 이 풀이로 srs.update(None, …)를 다시 하므로, 쓴 상태를 넘기면 같은 풀이를 두 번 센다
+ */
+export function reviewInputQuestion(q: QuestionRow, attemptId: Types.ObjectId): Record<string, unknown> {
+  return toWorkerQuestion(q.srsAttemptId?.equals(attemptId) ? { ...q, srs: null } : q);
 }
 
 /** 처리기 결과의 문제들. 모양이 틀린 문제는 빼고 쓴다 */
