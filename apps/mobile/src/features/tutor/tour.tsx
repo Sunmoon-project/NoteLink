@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { View, useWindowDimensions } from 'react-native';
 import Animated, {
+  Easing,
   ReduceMotion,
   useAnimatedProps,
   useAnimatedStyle,
   useSharedValue,
-  withSpring,
+  withDelay,
+  withSequence,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
@@ -264,9 +266,22 @@ const FLOW = ['정리', '학습', '복습'];
 const TAB_BAR = 49; // iOS 기본 탭 막대 높이(홈 표시줄 제외)
 const PAD = 8; // 밝힌 자리 둘레 여백
 const R = ReduceMotion.System;
-// 자리를 옮길 때: 빠르게 떠나 살짝 넘었다 돌아오며 멈춘다(stageshow motion.md: 작은 표시만 튕김)
-const TRAVEL = { duration: 520, dampingRatio: 0.7, reduceMotion: R };
+// 밝힌 자리를 옮길 때: 튕기지 않고 짧게 미끄러져 멈춘다. 처음 안내에서 화면을 크게 오가 어지럽다는 피드백(2026-11-20)
+const TRAVEL = { duration: 240, easing: Easing.out(Easing.cubic), reduceMotion: R };
+// 설명 카드가 위아래를 바꿀 때: 화면을 가로질러 미끄러지지 않고 사라졌다 그 자리에 나타난다
+const FADE_OUT = 120;
+const FADE_IN = 160;
 const AnimatedPath = Animated.createAnimatedComponent(Path);
+
+/**
+ * 설명 카드를 탭 막대 바로 위(아래쪽)에 둘지. 밝힌 자리가 그 카드 자리와 겹칠 때만 false(위로 비킴).
+ * 탭 막대를 밝히면 카드 아래라 겹치지 않는다
+ */
+export function tourCardBelow(spot: Rect | null, H: number, bottomInset: number, cardH: number) {
+  const tabTop = H - bottomInset - TAB_BAR;
+  const cardTop = tabTop - 16 - cardH;
+  return !spot || spot.y + spot.h + PAD <= cardTop || spot.y >= tabTop - PAD;
+}
 
 /** 화면 전체를 어둡게 덮고 밝힐 자리만 둥근 사각형으로 뚫는다(evenodd) */
 function hole(W: number, H: number, x: number, y: number, w: number, h: number) {
@@ -280,16 +295,16 @@ function hole(W: number, H: number, x: number, y: number, w: number, h: number) 
   );
 }
 
-function useSpring(v: SharedValue<number>, to: number) {
+function useTravel(v: SharedValue<number>, to: number) {
   useEffect(() => {
-    v.set(withSpring(to, TRAVEL));
+    v.set(withTiming(to, TRAVEL));
   }, [v, to]);
 }
 
 /**
  * 처음 안내(코치 마크). 탭 화면 위에 떠서 단계마다 실제 화면으로 옮겨 가고, 눌러야 할 자리를
- * 밝힌 채 아바타가 설명한다. 밝힌 자리는 다음 자리로 "슉" 옮겨 가고, 설명 카드는 그 자리를
- * 가리지 않게 위아래로 비켜 선다. 아래 '건너뛰기'는 한 번 더 묻는다.
+ * 밝힌 채 아바타가 설명한다. 밝힌 자리는 다음 자리로 짧게 옮겨 가고, 설명 카드(아바타)는 탭 막대 위에
+ * 머물며 그 자리를 가릴 때만 사라졌다 위에 나타난다. 아래 '건너뛰기'는 한 번 더 묻는다.
  */
 export function TourCoach() {
   const step = useTour((s) => s.step);
@@ -355,10 +370,10 @@ export function TourCoach() {
   const y = useSharedValue(box.y);
   const w = useSharedValue(box.w);
   const h = useSharedValue(box.h);
-  useSpring(x, box.x);
-  useSpring(y, box.y);
-  useSpring(w, box.w);
-  useSpring(h, box.h);
+  useTravel(x, box.x);
+  useTravel(y, box.y);
+  useTravel(w, box.w);
+  useTravel(h, box.h);
   const dim = useAnimatedProps(() => ({ d: hole(W, H, x.get(), y.get(), w.get(), h.get()) }));
   const ring = useAnimatedStyle(() => ({
     left: x.get(),
@@ -368,17 +383,31 @@ export function TourCoach() {
     opacity: w.get() > 4 ? 1 : 0,
   }));
 
-  // 설명 카드: 밝힌 자리가 아래쪽이면 위로, 아니면 아래로 비켜 선다
-  const below = !spot || spot.y + spot.h / 2 < H * 0.55;
-  const cardAt = useSharedValue(0);
-  useEffect(() => {
-    cardAt.set(withTiming(below ? 1 : 0, { duration: 260, reduceMotion: R }));
-  }, [below, cardAt]);
+  // 설명 카드는 탭 막대 바로 위에 머문다. 밝힌 자리가 카드에 가려질 때만 위로 비켜 선다
+  // (탭 막대는 카드 아래라 가리지 않는다). 단계마다 위아래로 오가지 않게
   const [cardH, setCardH] = useState(0);
+  const cardTop = H - insets.bottom - TAB_BAR - 16 - cardH;
+  const below = tourCardBelow(spot, H, insets.bottom, cardH);
+  const cardAt = useSharedValue(below ? 1 : 0);
+  const cardFade = useSharedValue(1);
+  const firstSide = useRef(true);
+  useEffect(() => {
+    if (firstSide.current) {
+      firstSide.current = false;
+      return;
+    }
+    // 사라진 뒤 자리를 바꾸고 다시 나타난다(동작 줄이기면 바로 바뀐다)
+    cardFade.set(
+      withSequence(
+        withTiming(0, { duration: FADE_OUT, reduceMotion: R }),
+        withTiming(1, { duration: FADE_IN, reduceMotion: R }),
+      ),
+    );
+    cardAt.set(withDelay(FADE_OUT, withTiming(below ? 1 : 0, { duration: 0 }), R));
+  }, [below, cardAt, cardFade]);
   const card = useAnimatedStyle(() => {
     const top = insets.top + 56;
-    const bottom = H - insets.bottom - TAB_BAR - 16 - cardH;
-    return { top: top + (bottom - top) * cardAt.get() };
+    return { top: top + (cardTop - top) * cardAt.get(), opacity: cardFade.get() };
   });
 
   // 단계가 바뀌면 잠깐 말하고 멈춘다

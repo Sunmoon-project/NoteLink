@@ -683,7 +683,13 @@ export function ShareScreen() {
         throw new Error('공유 대상을 선택해주세요');
       return api.content.share({ materialIds: selectedIds, target: { type: to.type, id: to.id } });
     },
-    onError: () => toast('공유하지 못했어요. 대상과 연결을 확인해주세요'),
+    // 서버가 이유를 들어 거절(4xx)했으면 그 문구, 아니면 연결 문제로 안내한다
+    onError: (e) =>
+      toast(
+        e instanceof ApiError && e.status >= 400 && e.status < 500 && e.message
+          ? e.message
+          : '공유하지 못했어요. 연결을 확인하고 다시 시도해 주세요',
+      ),
     onSuccess: () =>
       router.replace({
         pathname: '/note-shared',
@@ -797,11 +803,9 @@ export function ShareScreen() {
             </Group>
           )}
           <Label>친구</Label>
-          {env.localData ? (
-            <Text className="px-1 text-footnote text-sub">
-              서버에 연결하면 친구에게 보낼 수 있어요
-            </Text>
-          ) : friends.isError && !friends.data ? (
+          {/* 친구에게 보내기는 아직 열리지 않았다(#554). 연결 문제처럼 읽히지 않게 모드와 상관없이 같은 안내 */}
+          <Text className="mb-2 px-1 text-footnote text-sub">친구에게 보내기는 곧 열려요</Text>
+          {env.localData ? null : friends.isError && !friends.data ? (
             <Text className="px-1 text-footnote text-sub">친구 목록을 불러오지 못했어요</Text>
           ) : (
             friends.isSuccess &&
