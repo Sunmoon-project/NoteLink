@@ -8,7 +8,7 @@ import {
 } from '@/lib/chat-outbox';
 import { loadCompleteChatHistory } from '@/lib/chat-history';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Keyboard, Platform, View, type KeyboardEvent } from 'react-native';
+import { FlatList, Keyboard, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -56,6 +56,7 @@ import { viewingChat } from '@/lib/notification-route';
 import { socket } from '@/lib/socket';
 import { hms, seoul, ymd } from '@/lib/dates';
 import { useNow, useSocket, useTabRefresh } from '@/hooks';
+import { useKeyboardInset } from '@/hooks/keyboard-inset';
 import { toast } from '@/stores/toast';
 import {
   Alert,
@@ -448,34 +449,6 @@ export const CHAT_EMOJIS = [
   '❤️',
 ];
 
-/** 화면 아래끝(창 기준)과 키보드 위끝이 겹치는 높이. 겹치지 않으면 0 */
-export const keyboardOverlap = (frame: { y: number; height: number }, keyboardTop: number) =>
-  Math.max(0, Math.round(frame.y + frame.height - keyboardTop));
-
-/**
- * 키보드가 이 화면을 가리는 높이. 공용 KeyboardAvoidingView는 부모 기준 위치로 계산해 실기기에서 입력줄이
- * 덜 올라가 채팅을 치는 내용이 키보드에 가렸다. 창 기준(measureInWindow)으로 재서 그만큼 올린다
- */
-export function useKeyboardInset(ref: React.RefObject<View | null>) {
-  const [inset, setInset] = useState(0);
-  useEffect(() => {
-    const ios = Platform.OS === 'ios';
-    const show = (e: KeyboardEvent) => {
-      const top = e.endCoordinates.screenY;
-      const node = ref.current;
-      if (!node) return;
-      node.measureInWindow((_x, y, _w, height) => setInset(keyboardOverlap({ y, height }, top)));
-    };
-    const subs = [
-      Keyboard.addListener(ios ? 'keyboardWillShow' : 'keyboardDidShow', show),
-      Keyboard.addListener(ios ? 'keyboardWillChangeFrame' : 'keyboardDidShow', show),
-      Keyboard.addListener(ios ? 'keyboardWillHide' : 'keyboardDidHide', () => setInset(0)),
-    ];
-    return () => subs.forEach((sub) => sub.remove());
-  }, [ref]);
-  return inset;
-}
-
 export function RoomScreen() {
   const insets = useSafeAreaInsets();
   const myId = useAuth((s) => s.userId);
@@ -562,7 +535,7 @@ export function RoomScreen() {
   // 보내는 중인 첨부: 다시 보낼 때 고른 파일 · 이미 올린 주소를 다시 쓴다
   const attachments = useRef(new Map<string, PendingAttachment>());
   const keyboardFrame = useRef<View>(null);
-  const keyboardInset = useKeyboardInset(keyboardFrame);
+  const [keyboardInset, onKeyboardFrameLayout] = useKeyboardInset(keyboardFrame);
   // 방을 떠나면(설정 · 카드 · 초대 등 다른 화면으로) 채팅을 닫고 키보드를 내린다. 돌아왔을 때 채팅 화면이 아니라
   // 캠 화면이 보이게: 채팅을 연 채로 다녀오면 뒤로 가기를 눌러도 계속 채팅 화면으로 돌아오는 것처럼 보였다
   useFocusEffect(
@@ -969,6 +942,7 @@ export function RoomScreen() {
       <Screen scroll={false} pad={false} avoidKeyboard={false}>
         <View
           ref={keyboardFrame}
+          onLayout={onKeyboardFrameLayout}
           className="flex-1"
           // 키보드가 가리는 만큼 화면 아래를 띄워 채팅 입력줄이 키보드 바로 위에 오게 한다
           style={{ paddingBottom: keyboardInset }}
