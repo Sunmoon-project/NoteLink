@@ -11,7 +11,7 @@ import Animated, {
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
-import { router, useIsFocused, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Speech from 'expo-speech';
 import { setAudioModeAsync } from 'expo-audio';
@@ -110,20 +110,11 @@ export function QuizHomeScreen() {
   const makeTarget = useTourTarget('quiz-make');
   const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
   const refresh = useTabRefresh(sets);
-  const saved = useQuizProgress((s) => s.progress);
-  const focused = useIsFocused();
-  const savedSet = saved ? sets.data?.find((s) => s._id === saved.setId) : undefined;
-  // 업데이트 전에 유사 퀴즈를 풀다 나간 기록은 이어 풀기로 보여 주지 않는다
-  const staleSimilar = !!savedSet?.sourceSetId;
-  const progress = staleSimilar ? null : saved;
-  useEffect(() => {
-    // reset은 풀이 화면의 소유권(generation)을 바꾸므로, 홈이 화면에 보일 때만 한다
-    if (staleSimilar && focused) useQuizProgress.getState().reset();
-  }, [staleSimilar, focused]);
+  const progress = useQuizProgress((s) => s.progress);
   // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」에는 넣지 않는다
   const todayId = useTodayReview().data?._id;
   const latest = progress
-    ? (savedSet ?? {
+    ? (sets.data?.find((s) => s._id === progress.setId) ?? {
         _id: progress.setId,
         title: '풀던 퀴즈',
         questionCount: 0,
