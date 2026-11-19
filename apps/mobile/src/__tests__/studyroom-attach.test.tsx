@@ -9,9 +9,18 @@ import { renderScreen, setParams } from '../test-utils';
 
 // 실기기 테스트: 스터디룸 채팅의 + 로 사진 · 파일을 보내고 싶다고 함
 const mockApi = {
-  rooms: { get: jest.fn(), leave: jest.fn(), chatRoomId: jest.fn(), setTimer: jest.fn() },
+  rooms: {
+    get: jest.fn(),
+    leave: jest.fn(),
+    chatRoomId: jest.fn(),
+    setTimer: jest.fn(),
+    shared: jest.fn(),
+  },
   social: { friends: jest.fn(), messages: jest.fn() },
+  content: { material: jest.fn() },
 };
+const mockFeature = jest.fn();
+jest.mock('../lib/feature-navigation', () => ({ useFeatureNavigation: () => mockFeature }));
 jest.mock('../lib/api', () => ({
   get api() {
     return mockApi;
@@ -303,5 +312,59 @@ describe('만료된 첨부 주소', () => {
     await fireEvent.press(await screen.findByLabelText('사진 x.jpg 크게 보기'));
     await waitFor(() => expect(mockShare).toHaveBeenCalledWith('file:///local/x.jpg'));
     expect(mockOpen).not.toHaveBeenCalled();
+  });
+});
+
+// 실기기 피드백(2026-11-20): 방에 공유한 노트가 채팅에 보이지 않았다. 서버가 남기는 자료 카드를 눌러 그 노트를 연다
+describe('방 채팅 자료 카드', () => {
+  const card = {
+    _id: 'm-card',
+    chatRoomId: 'chat-1',
+    senderId: 'friend',
+    senderNickname: '친구',
+    type: 'shared_item',
+    text: '프로세스 필기',
+    sharedItemId: 'rs-1',
+    createdAt: '2026-11-17T00:00:00.000Z',
+  };
+  const openChat = async () => {
+    mockApi.social.messages.mockResolvedValue([card]);
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText(room.title);
+    await waitFor(() =>
+      expect(mockEmit).toHaveBeenCalledWith('room:join', expect.anything(), expect.any(Function)),
+    );
+    await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+    return screen.findByLabelText('공유한 노트 프로세스 필기 열기');
+  };
+
+  it('카드를 누르면 방 공유 자료에서 그 항목을 찾아 노트 종류에 맞는 화면으로 연다', async () => {
+    mockApi.rooms.shared.mockResolvedValue({
+      items: [
+        {
+          _id: 'rs-1',
+          itemType: 'material',
+          materialId: 'n1',
+          quizSetId: null,
+          title: '프로세스 필기',
+        },
+      ],
+      flashcards: [],
+    });
+    mockApi.content.material.mockResolvedValue({ _id: 'n1', kind: 'handwriting' });
+    await fireEvent.press(await openChat());
+    await waitFor(() =>
+      expect(mockFeature).toHaveBeenCalledWith({
+        pathname: '/(tabs)/note/hand/[id]',
+        params: { id: 'n1' },
+      }),
+    );
+  });
+
+  it('공유가 지워져 목록에 없으면 열지 않고 안내한다', async () => {
+    mockApi.rooms.shared.mockResolvedValue({ items: [], flashcards: [] });
+    await fireEvent.press(await openChat());
+    await waitFor(() => expect(useToast.getState().msg).toBe('지워졌거나 더 볼 수 없는 자료예요'));
+    expect(mockFeature).not.toHaveBeenCalled();
   });
 });

@@ -615,6 +615,7 @@ export const mockApi: Api = {
     search: (q) => ok(S.searchable.filter((f) => q.trim() && f.nickname === q.trim())),
     sendRequest: () => ok(undefined),
     received: () => ok(db.requests),
+    sent: () => ok([]),
     respond: async (id, accept) => {
       await ok(undefined);
 

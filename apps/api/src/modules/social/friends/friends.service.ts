@@ -52,6 +52,9 @@ function objectId(id: string, what: string): Types.ObjectId {
   return new Types.ObjectId(id);
 }
 
+/** 거절된 쌍의 재요청 알림은 앞 요청에서 이만큼 지나야 다시 보낸다 */
+const REREQUEST_NOTIFY_MS = 24 * 60 * 60 * 1000;
+
 /**
  * 친구 찾기 · 요청 · 수락 · 거절 · 목록 · 삭제(FR-15). 한 쌍의 관계는 friendships 문서 하나로 둔다
  * (status: pending → accepted | rejected). 요청을 보낸 사람은 requesterId.
@@ -145,7 +148,9 @@ export class FriendsService {
       );
       // 양쪽이 동시에 다시 요청해 상대가 먼저 되살렸다 → 상대 요청이 있는 상태로 다시 처리해 친구가 된다
       if (revived.matchedCount === 0) return this.request(me, targetId, now);
-      await this.notifyRequest(meId, target, current._id);
+      // 거절 → 재요청을 되풀이해 상대에게 알림이 쌓이지 않게, 앞 요청이 하루 안이면 알림은 다시 보내지 않는다(요청은 되살린다)
+      if (now.getTime() - new Date(current.requestedAt).getTime() >= REREQUEST_NOTIFY_MS)
+        await this.notifyRequest(meId, target, current._id);
     }
   }
 
@@ -173,6 +178,25 @@ export class FriendsService {
           ]
         : [];
     });
+  }
+
+  /**
+   * 내가 보내고 아직 대기 중인 요청의 상대(탈퇴한 사람은 뺀다). 화면이 「요청 보냄」을 보이는 데 쓴다.
+   * 거절당한 요청은 빼서 다시 보낼 수 있게 한다(request() 가 대기로 되돌린다). 차단은 「요청 보냄」 그대로 둔다:
+   * 버튼이 바뀌는 것으로 차단을 알아채지 않게(request() 의 「차단 여부를 알리지 않는다」와 같은 원칙)
+   */
+  async sent(me: string): Promise<string[]> {
+    const meId = new Types.ObjectId(me);
+    const docs = await this.friendships
+      .find({
+        status: { $in: ['pending', 'blocked'] },
+        requesterId: meId,
+        $or: [{ userA: meId }, { userB: meId }],
+      })
+      .lean<Pair[]>();
+    const others = docs.map((d) => (d.userA.equals(meId) ? d.userB : d.userA));
+    const people = await this.briefs(others);
+    return others.map((id) => id.toHexString()).filter((id) => people.has(id));
   }
 
   /** 받은 요청을 수락하거나 거절한다. 내가 받은 대기 중 요청만 처리할 수 있다 */
