@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
-import { RoomScreen, urlExpired } from '../features/studyroom/room';
+import { RoomScreen } from '../features/studyroom/room';
+import { urlExpired } from '../features/chat/attachment';
 import { useAuth } from '../stores/auth';
 import { useNet } from '../stores/net';
 import { useToast } from '../stores/toast';
