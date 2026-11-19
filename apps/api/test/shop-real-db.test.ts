@@ -182,4 +182,50 @@ describe.skipIf(!uri)('진짜 DB 구매·장착 확인', () => {
         expect(again.status).toBe(201);
         expect(await balance()).toBe(before - 50);
     });
+
+    it('8) 모자 · 안경 · 목도리는 칸별로 하나씩 함께 장착되고, 같은 칸은 바뀌며, 벗을 수 있다', async () => {
+        const [hat1, hat2, glasses, scarf] = [new Types.ObjectId(), new Types.ObjectId(), new Types.ObjectId(), new Types.ObjectId()];
+        const cats = ['hat', 'hat', 'glasses', 'scarf'] as const;
+        await col('shop_items').insertMany(
+            [hat1, hat2, glasses, scarf].map((_id, i) => ({
+                _id, category: cats[i], name: `acc${i}`, price: 300, assetUrl: 'x', purchaseCount: 0,
+                isActive: true, isDefault: false, badge: null, createdAt: new Date(), updatedAt: new Date(),
+            })),
+        );
+        await col('user_items').insertMany(
+            [hat1, hat2, glasses, scarf].map((itemId, i) => ({
+                userId, itemId, itemCategory: cats[i], isOwned: true, isWished: false, isEquipped: false,
+                acquiredAt: new Date(), createdAt: new Date(), updatedAt: new Date(),
+            })),
+        );
+        const equip = (id: Types.ObjectId) =>
+            request(app.getHttpServer()).post(`/api/v1/users/me/items/${id.toString()}/equip`).set(AUTH);
+        const unequip = (id: Types.ObjectId) =>
+            request(app.getHttpServer()).delete(`/api/v1/users/me/items/${id.toString()}/equip`).set(AUTH);
+        const equipped = async () =>
+            (await col('user_items').find({ userId, isEquipped: true, itemCategory: { $in: [...cats] } }).toArray())
+                .map((u) => String(u['itemId']))
+                .sort();
+
+        for (const id of [hat1, glasses, scarf]) expect((await equip(id)).status).toBe(204);
+        expect(await equipped()).toEqual([hat1, glasses, scarf].map(String).sort());
+
+        expect((await equip(hat2)).status).toBe(204);
+        expect(await equipped()).toEqual([hat2, glasses, scarf].map(String).sort());
+
+        // 같은 칸을 거의 동시에 장착해도 모자는 하나
+        const raced = await Promise.all([equip(hat1), equip(hat2), equip(hat1), equip(hat2)]);
+        expect(raced.map((r) => r.status)).toEqual([204, 204, 204, 204]); // 막힌 쪽도 재시도로 성공
+        expect(await col('user_items').countDocuments({ userId, itemCategory: 'hat', isEquipped: true })).toBe(1);
+
+        expect((await unequip(glasses)).status).toBe(204);
+        expect((await unequip(glasses)).status).toBe(204); // 두 번 눌러도 같은 결과
+        expect(await col('user_items').countDocuments({ userId, itemCategory: 'glasses', isEquipped: true })).toBe(0);
+        expect(await col('user_items').countDocuments({ userId, itemCategory: 'scarf', isEquipped: true })).toBe(1);
+        expect((await unequip(new Types.ObjectId())).status).toBe(404);
+
+        const hats = await request(app.getHttpServer()).get('/api/v1/shop/items?category=hat');
+        expect(hats.status).toBe(200);
+        expect(hats.body.data.map((i: { _id: string }) => i._id).sort()).toEqual([hat1, hat2].map(String).sort());
+    });
 });
