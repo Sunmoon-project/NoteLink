@@ -9,7 +9,7 @@ import { ERROR_CODES, MATERIAL_MAX_FILES, type AiJob } from '@notelink/shared';
 import { api, NetworkError } from '@/lib/api';
 import { uploadToBlob, UploadError } from '@/lib/upload';
 import { aiWaiting, stageOf } from '@/lib/ai';
-import { notifyLocal } from '@/lib/push';
+import { notifyLocal, pushRegistered } from '@/lib/push';
 import { useBgJobs } from '@/stores/bg-jobs';
 import { useAiJobSubscription, useSocket } from '@/hooks';
 import { useDraft } from '@/stores/draft';
@@ -315,7 +315,8 @@ export function ConvertScreen() {
     handled.current = true;
     setJob(done);
     if (done.status === 'succeeded') {
-      if (bg.current && notify)
+      // 서버 푸시를 받는 기기면 서버가 같은 알림을 보낸다(#560)
+      if (bg.current && notify && !pushRegistered())
         notifyLocal('변환이 끝났어요', `${draft.title || '학습 자료'} 정리본을 확인해 보세요`);
       qc.invalidateQueries({ queryKey: ['materials'] });
       router.replace({ pathname: '/result/[id]', params: { id: done.targetId } });

@@ -183,6 +183,7 @@ function setup(opts: Opts = {}) {
       devices as never,
       users as never,
       push as never,
+      { pushAllowed: (ids: unknown[]) => Promise.resolve(ids) } as never,
     );
     // 기록 재시도 사이의 기다림은 테스트에서 실제로 기다리지 않는다
     const waits: number[] = [];

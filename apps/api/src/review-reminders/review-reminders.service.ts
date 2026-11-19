@@ -13,6 +13,7 @@ import {
   ExpoPushService,
   type ExpoPushMessage,
 } from '../modules/notification/expo-push.service.js';
+import { NotificationService } from '../modules/notification/notification.service.js';
 import { QuizSet } from '../modules/quiz/schemas/quiz-set.schema.js';
 import { seoulDate } from '../modules/session/study-time.js';
 import { Device } from '../modules/users/schemas/device.schema.js';
@@ -82,7 +83,7 @@ interface Unrecorded {
  * - 발송 결과와 기록 오류는 따로 다룬다: 푸시를 보낸 뒤 sent 기록이 실패해도 선점을 풀지 않고 sent 만 다시 쓴다
  *   (0.2초 · 0.5초 뒤, 그래도 실패하면 메모리에 보관했다가 다음 확인 때 먼저 다시 쓴다. 선점 만료 뒤에는 버린다).
  * - 시도 횟수가 한도에 닿은 채 선점이 만료된 claimed 는 gave_up 으로 닫는다.
- * - 푸시를 받을 기기가 없는 사용자는 조용히 건너뛴다(skipped). 사용자별 푸시 끄기 설정은 아직 없다.
+ * - 푸시를 받을 기기가 없는 사용자는 조용히 건너뛴다(skipped). 공부 알림을 껐거나 조용한 시간인 사용자도 그날은 건너뛴다(skipped).
  *
  * - 선점을 잃은 사용자는 목록에 남긴다: 선점을 가져간 서버가 보내기 전에 죽으면 집계가 하루 한 번이라 아무도 다시 보지 않기 때문이다.
  *   그 서버의 선점이 살아 있는 동안은 건드리지 않고 만료 정각에 이어받는다. 문서가 끝난 상태가 되거나 기다릴 시각이 날짜를
@@ -119,6 +120,7 @@ export class ReviewRemindersService implements OnApplicationBootstrap, OnModuleD
     @InjectModel(Device.name) private readonly devices: Model<Device>,
     @InjectModel(User.name) private readonly users: Model<User>,
     private readonly push: ExpoPushService,
+    private readonly notifications: NotificationService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -342,6 +344,9 @@ export class ReviewRemindersService implements OnApplicationBootstrap, OnModuleD
       .findOne({ _id: user.userId }, { deletedAt: 1, withdrawingAt: 1 })
       .lean<{ deletedAt?: Date | null; withdrawingAt?: Date | null } | null>();
     if (!account || account.deletedAt || account.withdrawingAt) return 'skipped';
+    // 공부 알림을 껐거나 조용한 시간이면 그날은 보내지 않는다(#560 알림 설정)
+    if (!(await this.notifications.pushAllowed([user.userId], 'study', clock())).length)
+      return 'skipped';
 
     // 집계 뒤에 지웠거나 다 익혔거나 오늘의 복습을 만들었을 수 있다: 보내기 직전에 다시 확인한다
     const count = await this.countDue(user.userId, day);

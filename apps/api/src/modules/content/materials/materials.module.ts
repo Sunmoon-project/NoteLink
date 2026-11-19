@@ -5,6 +5,7 @@ import { AiJobsModule } from '../../../ai-jobs/ai-jobs.module.js';
 import { QuizSetsModule } from '../../../quiz-sets/quiz-sets.module.js';
 import { User, UserSchema } from '../../auth/schemas/user.schema.js';
 import { AuthModule } from '../../auth/auth.module.js';
+import { NotificationModule } from '../../notification/notification.module.js';
 import { AiJob, AiJobSchema } from '../../quiz/schemas/ai-job.schema.js';
 import { UploadsModule } from '../../upload/uploads.module.js';
 import {
@@ -39,6 +40,8 @@ import { RecordingService } from './recording.service.js';
       { name: User.name, schema: UserSchema },
     ]),
     AiJobsModule,
+    // 방에 노트를 공유하면 다른 멤버에게 알림(#560)
+    NotificationModule,
     QuizSetsModule,
     UploadsModule,
     // JwtAuthGuard · TokenService

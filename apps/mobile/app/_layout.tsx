@@ -9,7 +9,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from '@/lib/query';
 import { connectSocket } from '@/lib/socket';
 import { startPresence } from '@/lib/presence';
-import { registerPush } from '@/lib/push';
+import { forgetPushRegistration, registerPush } from '@/lib/push';
 import { useAuth } from '@/stores/auth';
 import { DRAWER_SCREEN } from '@/features/social/drawer';
 import { AppOverlays } from '@/components/AppOverlays';
@@ -59,7 +59,8 @@ export default function RootLayout() {
   }, [ready]);
   // 로그인되면 실시간 연결 · 푸시 토큰 등록
   useEffect(() => {
-    if (!token) return;
+    // 로그아웃하면 이 기기의 서버 푸시 등록도 없던 것으로 본다(작업 완료는 로컬 알림으로)
+    if (!token) return forgetPushRegistration();
     connectSocket();
     // 실패하면(권한 거부 · 네트워크) 서버 푸시 없이 지낸다. 원인을 찾을 수 있게 남긴다
     registerPush().catch((e: unknown) => console.warn('[push] 기기 등록 실패', e));

@@ -19,8 +19,6 @@ import {
   CalendarDays,
   Camera,
   CameraOff,
-  FileText,
-  ImageIcon,
   Layers,
   Lock,
   MessageCircle,
@@ -39,12 +37,20 @@ import {
   X,
 } from 'lucide-react-native';
 import type { Message, RoomMember, RoomSharedItem, StudyRoom } from '@notelink/shared';
-import * as DocumentPicker from 'expo-document-picker';
-import * as ImagePicker from 'expo-image-picker';
-import * as Sharing from 'expo-sharing';
-import * as WebBrowser from 'expo-web-browser';
-import { Image } from 'react-native';
-import { UploadError, uploadToBlob, type LocalFile } from '@/lib/upload';
+import { UploadError } from '@/lib/upload';
+import {
+  ACK_TIMEOUT_MS,
+  AttachPicker,
+  ChatBubble,
+  newClientId,
+  openChatAttachment,
+  pendingMessage,
+  pickChatFile,
+  previewOf,
+  sendChatAttachment,
+  type AttachmentKind,
+  type PendingAttachment,
+} from '@/features/chat/attachment';
 import { api, ApiError } from '@/lib/api';
 import { viewingChat } from '@/lib/notification-route';
 import { socket } from '@/lib/socket';
@@ -82,8 +88,6 @@ import { InterestPicker } from '@/features/profile/interest-picker';
 import { learnerTypeLabel } from '@/lib/learner-type';
 
 // p.75 스터디룸 입장 · 만들기 / p.76 진입 · 채팅 / p.77 카드 / p.100 연결 끊김
-
-const ACK_TIMEOUT_MS = 8000;
 
 // 채팅 열기 · 캠 보기 전환. 바뀌는 쪽만 짧게(들어오기 MOTION.enter · 나가기 MOTION.exit) 투명도 · 세로 이동으로 움직인다.
 // 레이아웃 애니메이션은 UI 스레드에서 돌고, 기기의 「동작 줄이기」가 켜져 있으면 움직이지 않는다(ReduceMotion.System 기본값)
@@ -556,9 +560,7 @@ export function RoomScreen() {
   const [emoji, setEmoji] = useState(false);
   const [attach, setAttach] = useState(false);
   // 보내는 중인 첨부: 다시 보낼 때 고른 파일 · 이미 올린 주소를 다시 쓴다
-  const attachments = useRef(
-    new Map<string, { kind: 'image' | 'file'; file: LocalFile; blobUrl?: string }>(),
-  );
+  const attachments = useRef(new Map<string, PendingAttachment>());
   const keyboardFrame = useRef<View>(null);
   const keyboardInset = useKeyboardInset(keyboardFrame);
   // 방을 떠나면(설정 · 카드 · 초대 등 다른 화면으로) 채팅을 닫고 키보드를 내린다. 돌아왔을 때 채팅 화면이 아니라
@@ -860,29 +862,7 @@ export function RoomScreen() {
     inFlight.current.add(clientId);
     setFailedIds((ids) => ids.filter((x) => x !== clientId));
     try {
-      entry.blobUrl ??= await uploadToBlob(
-        entry.kind === 'image' ? 'image' : 'document',
-        entry.file,
-        undefined,
-        undefined,
-        'chat',
-      );
-      const blobUrl = entry.blobUrl;
-      const m = await new Promise<Message>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('timeout')), ACK_TIMEOUT_MS);
-        socket.emit(
-          'chat:send',
-          {
-            chatRoomId,
-            clientId,
-            attachment: { blobUrl, kind: entry.kind, name: entry.file.name },
-          },
-          (sent) => {
-            clearTimeout(timer);
-            resolve(sent);
-          },
-        );
-      });
+      const m = await sendChatAttachment(chatRoomId, clientId, entry);
       attachments.current.delete(clientId);
       receiveMessage(m, clientId);
     } catch (e) {
@@ -893,7 +873,7 @@ export function RoomScreen() {
     }
   };
   /** + → 사진 · 파일 고르기. 고르면 바로 말풍선을 띄우고(올리는 중) 보낸다 */
-  const pickAttachment = async (kind: 'image' | 'file') => {
+  const pickAttachment = async (kind: AttachmentKind) => {
     setAttach(false);
     if (!chatId.data) {
       void chatId.refetch();
@@ -901,58 +881,22 @@ export function RoomScreen() {
     }
     if (!myId) return toast('로그인 상태를 확인해 주세요');
     if (conn === 'lost' || !joinedChat.current) return toast('채팅에 연결된 뒤 다시 보내 주세요');
-    let file: LocalFile | undefined;
-    if (kind === 'image') {
-      const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
-      const a = r.canceled ? undefined : r.assets[0];
-      // 형식은 파일 이름(확장자)으로 정한다 — 서버가 확장자와 형식이 같은지 본다
-      if (a) file = { uri: a.uri, name: a.fileName ?? photoName(), size: a.fileSize };
-    } else {
-      const r = await DocumentPicker.getDocumentAsync({
-        type: 'application/pdf',
-        copyToCacheDirectory: true,
-      });
-      const a = r.canceled ? undefined : r.assets[0];
-      if (a) file = { uri: a.uri, name: a.name, mimeType: a.mimeType, size: a.size };
-    }
+    const file = await pickChatFile(kind);
     if (!file || !chatId.data) return;
     const clientId = newClientId(++messageSeq.current);
-    attachments.current.set(clientId, { kind, file });
+    const entry = { kind, file };
+    attachments.current.set(clientId, entry);
     fresh.current.add(clientId);
     setChat(true);
-    setMsgs((p) => [
-      ...p,
-      {
-        _id: clientId,
-        clientId,
-        chatRoomId: chatId.data!,
-        senderId: myId,
-        type: kind,
-        text: null,
-        attachment: { kind, name: file.name, sizeBytes: file.size ?? 0, url: file.uri },
-        sharedItemId: null,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
+    setMsgs((p) => [...p, pendingMessage(chatId.data!, myId, clientId, entry)]);
     void deliverAttachment(clientId);
   };
   /** 첨부 열기: 읽기 주소가 만료됐으면(1시간) 기록을 다시 읽어 새 주소로 연다 */
-  const openAttachment = async (m: Message) => {
-    let url = m.attachment?.url;
-    if (!url) return;
-    if (urlExpired(url) && !url.startsWith('file:')) {
+  const openAttachment = (m: Message) =>
+    openChatAttachment(m, async () => {
       const fresh = await history.refetch();
-      url = fresh.data?.find((x) => x._id === m._id)?.attachment?.url ?? url;
-      if (urlExpired(url)) return toast('첨부를 다시 불러오지 못했어요. 잠시 뒤 다시 눌러 주세요');
-    }
-    // 기기 저장 모드의 file:// 첨부는 브라우저가 열지 못한다(iOS는 http(s)만). 공유 시트의 미리보기로 연다(Codex #507 재리뷰)
-    if (url.startsWith('file:')) {
-      const ok = await Sharing.isAvailableAsync().catch(() => false);
-      if (!ok) return toast('이 기기에서는 파일을 열 수 없어요');
-      return void (await Sharing.shareAsync(url).catch(() => toast('파일을 열지 못했어요')));
-    }
-    await WebBrowser.openBrowserAsync(url).catch(() => toast('파일을 열지 못했어요'));
-  };
+      return fresh.data?.find((x) => x._id === m._id)?.attachment?.url;
+    });
   // 사진이 만료된 주소라 보이지 않으면 기록을 한 번 다시 읽어 새 주소를 받는다(연달아 다시 읽지 않게 30초 간격)
   const staleAt = useRef(0);
   const refreshStale = () => {
@@ -1296,25 +1240,10 @@ export function RoomScreen() {
             </Pressable>
           )}
           {attach && (
-            <Pop className="mx-5 mt-2 flex-row gap-2 rounded-2xl bg-white p-2">
-              {(
-                [
-                  ['image', ImageIcon, '사진'],
-                  ['file', FileText, '파일 (PDF)'],
-                ] as const
-              ).map(([kind, Ic, label]) => (
-                <Pressable
-                  key={kind}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${label} 보내기`}
-                  onPress={() => void pickAttachment(kind)}
-                  className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-mint py-3"
-                >
-                  <Ic size={ICON.sm} color={C.brand} />
-                  <Text className="text-subhead font-semibold text-ink">{label}</Text>
-                </Pressable>
-              ))}
-            </Pop>
+            <AttachPicker
+              className="mx-5 mt-2 flex-row gap-2 rounded-2xl bg-white p-2"
+              onPick={(kind) => void pickAttachment(kind)}
+            />
           )}
           {emoji && (
             <Pop className="mx-5 mt-2 flex-row flex-wrap gap-y-1 rounded-2xl bg-white px-1 py-2">
@@ -1615,95 +1544,6 @@ export function RoomCardsScreen() {
     </Canvas>
   );
 }
-
-/** 채팅 목록 위 한 줄 미리보기 */
-const previewOf = (m: Message) =>
-  m.type === 'image'
-    ? '사진'
-    : m.type === 'file'
-      ? `파일 · ${m.attachment?.name ?? ''}`
-      : (m.text ?? '공유 자료');
-
-const sizeLabel = (bytes: number) =>
-  bytes >= 1024 * 1024
-    ? `${(bytes / 1024 / 1024).toFixed(1)}MB`
-    : `${Math.max(1, Math.round(bytes / 1024))}KB`;
-
-/** 서명된 읽기 주소(SAS)의 만료 시각(se)이 지났거나 1분 안에 지나는지. se가 없으면 만료되지 않는 주소로 본다 */
-export const urlExpired = (url: string, now = Date.now()) => {
-  const se = /[?&]se=([^&]+)/.exec(url)?.[1];
-  if (!se) return false;
-  const at = Date.parse(decodeURIComponent(se));
-  return Number.isFinite(at) && at - now < 60_000;
-};
-
-/** 말풍선: 글 · 사진(눌러서 크게) · 파일(눌러서 열기) */
-function ChatBubble({
-  m,
-  onOpen,
-  onStale,
-}: {
-  m: Message;
-  onOpen: (m: Message) => void;
-  onStale: () => void;
-}) {
-  const a = m.attachment;
-  const open = () => onOpen(m);
-  if (m.type === 'image' && a)
-    return (
-      <Pressable
-        accessibilityRole="imagebutton"
-        accessibilityLabel={`사진 ${a.name} 크게 보기`}
-        onPress={open}
-      >
-        <Image
-          source={{ uri: a.url }}
-          className="h-44 w-44 rounded-2xl bg-fill"
-          resizeMode="cover"
-          onError={() => {
-            if (urlExpired(a.url)) onStale();
-          }}
-        />
-      </Pressable>
-    );
-  if (m.type === 'file' && a)
-    return (
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`파일 ${a.name} 열기`}
-        onPress={open}
-        className="max-w-[78%] flex-row items-center gap-2.5 rounded-2xl bg-white px-3 py-2.5"
-      >
-        <View className="h-9 w-9 items-center justify-center rounded-xl bg-mint">
-          <FileText size={ICON.sm} color={C.brand} />
-        </View>
-        <View className="shrink">
-          <Text numberOfLines={1} className="text-footnote font-semibold text-ink">
-            {a.name}
-          </Text>
-          {a.sizeBytes > 0 && (
-            <Text className="text-caption2 text-sub">{sizeLabel(a.sizeBytes)}</Text>
-          )}
-        </View>
-      </Pressable>
-    );
-  return (
-    <View className="max-w-[78%] rounded-2xl bg-white px-3 py-2">
-      {/* 1:1 채팅처럼 길게 누르면 복사할 수 있게 */}
-      <Text selectable className="text-footnote text-ink">
-        {m.type === 'image' || m.type === 'file'
-          ? '첨부를 불러오지 못했어요'
-          : (m.text ?? '공유 자료를 보냈어요')}
-      </Text>
-    </View>
-  );
-}
-
-/** 보낼 메시지의 기기 쪽 식별자(재전송 때 같은 메시지로 묶는다) */
-const newClientId = (seq: number) =>
-  `c${Date.now()}-${seq}-${Math.random().toString(36).slice(2, 10)}`;
-/** 이름 없이 고른 사진의 파일 이름 */
-const photoName = () => `photo-${Date.now()}.jpg`;
 
 /**
  * 멤버 목록을 새로 받을 때 각자의 오늘 공부시간(todaySec)을 이어 간다.

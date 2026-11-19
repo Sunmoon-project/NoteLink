@@ -99,9 +99,26 @@ export class NotificationService {
   }
 
   private async deliver(input: NotifyInput, now: Date): Promise<void> {
-    const people = await this.prefsOf(input.userIds);
+    const targets = this.targetsOf(await this.prefsOf(input.userIds), input);
+    if (!targets.length) return;
+    // 알림함 id를 푸시 data에 실어 앱이 눌렀을 때 읽음 처리할 수 있게 한다
+    const inboxIds =
+      input.inbox === false ? new Map<string, string>() : await this.store(targets, input);
+    await this.pushTo(targets, inboxIds, input, now);
+  }
+
+  /**
+   * 알림함에만 남긴다(탈퇴 · 종류를 끈 사람 제외). 남긴 사람 id → 알림 id.
+   * 발송 · 재시도를 직접 하는 곳(AI 작업 알림)이 쓰고, 푸시는 pushAllowed로 확인해 따로 보낸다
+   */
+  async saveToInbox(input: NotifyInput): Promise<Map<string, string>> {
+    const targets = this.targetsOf(await this.prefsOf(input.userIds), input);
+    return targets.length ? this.store(targets, input) : new Map();
+  }
+
+  private targetsOf(people: Prefs[], input: NotifyInput): Prefs[] {
     const chatRoomId = input.data?.chatRoomId == null ? null : String(input.data.chatRoomId);
-    const targets = people.filter((p) => {
+    return people.filter((p) => {
       const s = p.settings ?? {};
       if (!input.essential && s[SETTING_KEY[input.category]] === false) return false;
       if (input.category === 'chat' && chatRoomId) {
@@ -110,31 +127,37 @@ export class NotificationService {
       }
       return true;
     });
-    if (!targets.length) return;
+  }
 
-    // 알림함 id를 푸시 data에 실어 앱이 눌렀을 때 읽음 처리할 수 있게 한다
+  private async store(targets: Prefs[], input: NotifyInput): Promise<Map<string, string>> {
     const inboxIds = new Map<string, string>();
-    if (input.inbox !== false) {
-      // 같은 collapseId의 예전 알림은 새것으로 바꾼다(거절 뒤 다시 요청하기를 되풀이해도 알림함에 쌓이지 않는다)
-      // ponytail: 지우기 · 넣기가 원자적이지 않아 같은 순간 두 번 오면 한 줄이 더 남을 수 있다(무해). 문제가 되면 {userId, collapseKey} 부분 유일 인덱스로
-      if (input.collapseId)
-        await this.notifications.deleteMany({
-          userId: { $in: targets.map((p) => p._id) },
-          collapseKey: input.collapseId,
-        });
-      const rows = await this.notifications.insertMany(
-        targets.map((p) => ({
-          userId: p._id,
-          type: input.type,
-          title: input.title,
-          body: input.body,
-          data: input.data ?? null,
-          collapseKey: input.collapseId ?? null,
-        })),
-      );
-      rows.forEach((r) => inboxIds.set(String(r.userId), String(r._id)));
-    }
+    // 같은 collapseId의 예전 알림은 새것으로 바꾼다(거절 뒤 다시 요청하기를 되풀이해도 알림함에 쌓이지 않는다)
+    // ponytail: 지우기 · 넣기가 원자적이지 않아 같은 순간 두 번 오면 한 줄이 더 남을 수 있다(무해). 문제가 되면 {userId, collapseKey} 부분 유일 인덱스로
+    if (input.collapseId)
+      await this.notifications.deleteMany({
+        userId: { $in: targets.map((p) => p._id) },
+        collapseKey: input.collapseId,
+      });
+    const rows = await this.notifications.insertMany(
+      targets.map((p) => ({
+        userId: p._id,
+        type: input.type,
+        title: input.title,
+        body: input.body,
+        data: input.data ?? null,
+        collapseKey: input.collapseId ?? null,
+      })),
+    );
+    rows.forEach((r) => inboxIds.set(String(r.userId), String(r._id)));
+    return inboxIds;
+  }
 
+  private async pushTo(
+    targets: Prefs[],
+    inboxIds: Map<string, string>,
+    input: NotifyInput,
+    now: Date,
+  ): Promise<void> {
     const pushTo = input.essential
       ? targets
       : targets.filter((p) => !inQuietHours(p.settings?.quietHours, now));

@@ -1050,7 +1050,8 @@ export class StudyRoomsService {
     }
   }
 
-  async kickMember(hostUserId: string, roomId: string, targetUserId: string) {
+  /** 새로 내보냈으면 true, 이미 내보낸 사람이면 false(같은 요청 재시도 — 알림을 다시 보내지 않는다) */
+  async kickMember(hostUserId: string, roomId: string, targetUserId: string): Promise<boolean> {
     if (!isValidObjectId(hostUserId))
       throw new UnauthorizedException({
         code: 'AUTH_TOKEN_EXPIRED',
@@ -1100,11 +1101,12 @@ export class StudyRoomsService {
         closedAt: null,
         members: { $elemMatch: { userId: targetId, status: 'kicked', leaveReason: 'host_kick' } },
       });
-      if (alreadyKicked) return;
+      if (alreadyKicked) return false;
       throw new NotFoundException({
         code: 'NOT_FOUND',
         message: '방 또는 참여자를 찾을 수 없습니다.',
       });
     }
+    return true;
   }
 }
