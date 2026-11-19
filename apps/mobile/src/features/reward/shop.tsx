@@ -201,7 +201,11 @@ function useShopData() {
   const equippedIds = new Set((mine.data ?? []).filter((u) => u.isEquipped).map((u) => u.itemId));
   const equipped =
     mine.data?.find((u) => u.isEquipped && u.itemCategory === 'avatar')?.itemId ?? 'base';
+  // 테마는 판매 목록이 아니라 내 아이템에서 본다(판매가 끝난 테마도 벗을 수 있게)
+  const themes = (mine.data ?? []).filter((u) => u.isOwned && u.itemCategory === 'theme');
   return {
+    wornThemeId: themes.find((u) => u.isEquipped)?.itemId ?? null,
+    hasTheme: themes.length > 0,
     points: me.data?.pointBalance ?? 0,
     owned,
     wished,
@@ -306,7 +310,7 @@ export function ShopScreen() {
   const list =
     tab === '찜'
       ? (items.data ?? []).filter((i) => wished.has(i._id))
-      : (items.data ?? []).filter((i) => tab !== '치장' || isDress(i));
+      : (items.data ?? []).filter((i) => inTab(i, tab));
   const tryBuy = (it: ShopItem) => {
     if (buying.current || owned.has(it._id) || purchased.current.has(it._id)) return;
     // 잔액과 보유 내역을 읽기 전에는 포인트가 0인 것처럼 판단하지 않는다
@@ -664,7 +668,7 @@ export function BoxScreen() {
   const qc = useQueryClient();
   const shop = useShopData();
   const look = useLook();
-  const { owned, equipped, equippedIds, loaded } = shop;
+  const { owned, equipped, equippedIds, loaded, wornThemeId, hasTheme } = shop;
   const all = useQuery({ queryKey: ['shop', 'all'], queryFn: () => api.shop.items({}) });
   const [tab, setTab] = useState<'전체' | '아바타' | '치장' | '테마'>('전체');
   const [pick, setPick] = useState<ShopItem | null>(null);
@@ -678,34 +682,31 @@ export function BoxScreen() {
     setPick(owned.has(eq!) ? (all.data?.find((i) => i._id === eq) ?? null) : null);
   }
   const mineList = (all.data ?? []).filter((i) => owned.has(i._id));
-  // 장착한 테마(없으면 기본 바탕). 테마를 하나라도 가졌을 때만 「기본 바탕」을 둔다
-  const wornTheme = mineList.find((i) => i.category === 'theme' && equippedIds.has(i._id));
-  const hasTheme = mineList.some((i) => i.category === 'theme');
+  // 테마를 하나라도 가졌을 때만 「기본 바탕」(= 장착한 테마 벗기)을 둔다
   const items = [BASE_AVATAR, ...(hasTheme ? [BASE_THEME] : []), ...mineList].filter((i) =>
     inTab(i, tab),
   );
   const cur = [BASE_AVATAR, ...(all.data ?? [])].find((i) => i._id === equipped) ?? BASE_AVATAR;
   const isEquipped = (it: ShopItem) =>
-    it._id === BASE_THEME._id ? !wornTheme : equippedIds.has(it._id) || it._id === equipped;
+    it._id === BASE_THEME._id ? !wornThemeId : equippedIds.has(it._id) || it._id === equipped;
   // 장착 중인 치장은 시트에서 벗는다
   const takeOff = (it: ShopItem) => isDress(it) && isEquipped(it);
+  // 벗기인지는 누른 순간에 정해 넘긴다(완료 뒤 다시 계산하면 그새 갱신된 목록 때문에 문구가 뒤바뀔 수 있다)
   const equip = useMutation({
-    mutationFn: (it: ShopItem) => {
+    mutationFn: ({ it, off }: { it: ShopItem; off: boolean }) => {
       // 기본 바탕 = 장착한 테마 벗기
       if (it._id === BASE_THEME._id)
-        return wornTheme ? api.shop.unequip(wornTheme._id) : Promise.resolve();
+        return wornThemeId ? api.shop.unequip(wornThemeId) : Promise.resolve();
       if (it._id !== BASE_AVATAR._id && !owned.has(it._id))
         throw new Error('보유한 아이템만 장착할 수 있어요');
-      return takeOff(it) ? api.shop.unequip(it._id) : api.shop.equip(it._id);
+      return off ? api.shop.unequip(it._id) : api.shop.equip(it._id);
     },
-    onError: (_, it) =>
-      setMsg(
-        takeOff(it) ? '벗지 못했어요. 다시 시도해주세요' : '장착하지 못했어요. 다시 시도해주세요',
-      ),
-    onSuccess: (_, it) => {
+    onError: (_, { off }) =>
+      setMsg(off ? '벗지 못했어요. 다시 시도해주세요' : '장착하지 못했어요. 다시 시도해주세요'),
+    onSuccess: (_, { it, off }) => {
       qc.invalidateQueries({ queryKey: ['my-items'] });
       setPick(null);
-      setMsg(takeOff(it) ? `벗기 완료 · ${it.name}` : `장착 완료 · ${it.name}`);
+      setMsg(off ? `벗기 완료 · ${it.name}` : `장착 완료 · ${it.name}`);
     },
   });
   if (shop.error || (all.isError && !all.data))
@@ -805,7 +806,7 @@ export function BoxScreen() {
                 className="mt-4"
                 kind={takeOff(pick) ? 'outline' : 'primary'}
                 loading={equip.isPending}
-                onPress={() => equip.mutate(pick)}
+                onPress={() => equip.mutate({ it: pick, off: takeOff(pick) })}
               >
                 {takeOff(pick) ? '벗기' : '장착하기'}
               </Btn>

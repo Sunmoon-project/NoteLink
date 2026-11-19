@@ -112,4 +112,25 @@ describe('보관함 치장 · 기본 바탕', () => {
     await waitFor(() => expect(equip).toHaveBeenCalledWith('base'));
     expect(unequip).not.toHaveBeenCalled();
   });
+
+  it('장착한 테마가 판매 종료돼 목록에 없어도 「기본 바탕」으로 벗을 수 있다', async () => {
+    jest.spyOn(api.shop, 'myItems').mockResolvedValue([own('gone-theme', 'theme', true)]);
+    const unequip = jest.spyOn(api.shop, 'unequip').mockResolvedValue(undefined);
+    await renderScreen(<BoxScreen />);
+    await fireEvent.press(await screen.findByText('테마'));
+    await fireEvent.press(await screen.findByText('기본 바탕'));
+    await fireEvent.press(await screen.findByText('장착하기'));
+    await waitFor(() => expect(unequip).toHaveBeenCalledWith('gone-theme'));
+    expect(await screen.findByText('장착 완료 · 기본 바탕')).toBeTruthy();
+  });
+
+  it('치장을 벗으면 「벗기 완료」라고 알린다', async () => {
+    jest.spyOn(api.shop, 'myItems').mockResolvedValue([own('beanie', 'hat', true)]);
+    jest.spyOn(api.shop, 'unequip').mockResolvedValue(undefined);
+    await renderScreen(<BoxScreen />);
+    await fireEvent.press(await screen.findByText('치장'));
+    await fireEvent.press(await screen.findByText('털모자'));
+    await fireEvent.press(await screen.findByText('벗기'));
+    expect(await screen.findByText('벗기 완료 · 털모자')).toBeTruthy();
+  });
 });

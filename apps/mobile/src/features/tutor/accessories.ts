@@ -4,7 +4,9 @@ import * as THREE from 'three';
  * 아바타 선생님 치장(상점 hat · glasses · scarf). 외부 3D 파일 없이 얼굴(scripts/avatar-glb.mjs)과 같은
  * 말랑한 도형으로 런타임에 만든다. 좌표는 머리(head) 기준: 얼굴 중심 (0, 0.62, 0) 반지름 0.62,
  * 눈 y 0.66 · z 0.53, 귀 x ±0.6. Avatar3D가 bake 전에 head에 붙여 움직이지 않는 부품과 한 메시로 합친다
- * (그리기 횟수 그대로). 재질은 색만 쓰고(bake가 matcap으로 바꾼다), 캡슐은 expo-gl에서 안 그려져 쓰지 않는다
+ * (그리기 횟수 그대로). 재질은 색만 쓰고(bake가 matcap으로 바꾼다), 캡슐은 expo-gl에서 안 그려져 쓰지 않는다.
+ * 색 hex는 화면 색(tokens.js)이 아니라 상품 재질이라 얼굴(avatar-glb.mjs)처럼 여기에 둔다.
+ * GL이 안 되는 기기의 2D 얼굴(FlatFace)에는 치장을 그리지 않는다(의도)
  */
 export type Slot = 'hat' | 'glasses' | 'scarf';
 
@@ -122,7 +124,10 @@ export const ACCESSORIES: Record<string, { slot: Slot; build: () => THREE.Object
   },
 };
 
-/** 머리카락이 높은 아바타는 모자가 묻히지 않게 더 올린다(scripts/avatar-glb.mjs의 곱슬 정수리 ≈ 1.26) */
+/**
+ * 머리카락이 높은 아바타는 모자가 묻히지 않게 더 올린다(scripts/avatar-glb.mjs의 곱슬 정수리 ≈ 1.26).
+ * 양갈래(bora)는 머리 옆으로 달려 정수리가 기본과 같아 올리지 않는다
+ */
 const HAT_LIFT: Record<string, number> = { narae: 0.1 };
 
 /** 서버 상품은 id가 ObjectId라 고정 시드 id(apps/api shop-seed.ts idOf 7~11)로도 찾는다 */
