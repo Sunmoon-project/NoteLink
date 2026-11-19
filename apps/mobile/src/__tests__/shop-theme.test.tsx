@@ -4,7 +4,7 @@ import { Canvas } from '../components/ui';
 import { Text } from '../components/text';
 import { ShopScreen } from '../features/reward/shop';
 import { api } from '../lib/api';
-import { THEMES, themeOf } from '../lib/shop-themes';
+import { THEMES, themeOf, useScreenBackground } from '../lib/shop-themes';
 import { useAuth } from '../stores/auth';
 import { renderScreen } from '../test-utils';
 
@@ -107,5 +107,24 @@ describe('상점 상세 시트', () => {
   it('바다 테마 설명은 실제 동작(바탕색)과 맞다', async () => {
     const sea = (await api.shop.items({})).find((i) => i._id === 'sea')!;
     expect(sea.description).toBe('앱 바탕이 시원한 바다색으로 바뀌어요.');
+  });
+});
+
+describe('화면 틀(스택 · 탭바)도 장착 테마 바탕', () => {
+  const Probe = () => <Text>{useScreenBackground()}</Text>;
+  it('장착하면 테마 바탕색, 아니면 흰색', async () => {
+    jest.spyOn(api.shop, 'myItems').mockResolvedValue(seaMine(true) as never);
+    await renderScreen(<Probe />);
+    expect(await screen.findByText(THEMES.sea!.canvas)).toBeTruthy();
+  });
+  it('장착 안 했으면 흰색', async () => {
+    jest.spyOn(api.shop, 'myItems').mockResolvedValue(seaMine(false) as never);
+    await renderScreen(<Probe />);
+    expect(await screen.findByText('#fff')).toBeTruthy();
+  });
+  it('루트 스택의 화면 바탕과 탭바가 이 값을 쓴다(흰색 고정 아님)', () => {
+    const read = (f: string): string => jest.requireActual('fs').readFileSync(f, 'utf8');
+    expect(read('app/_layout.tsx')).toMatch(/contentStyle: \{ backgroundColor: screenBg \}/);
+    expect(read('app/(tabs)/_layout.tsx')).toMatch(/tabBarStyle: \{ backgroundColor: screenBg/);
   });
 });

@@ -14,6 +14,11 @@ const SEED_IDS: Record<string, string> = { '6e6f74656c696e6b73680006': 'sea' };
 export const themeOf = (itemId: string | undefined): Theme | null =>
   (itemId && THEMES[SEED_IDS[itemId] ?? itemId]) || null;
 
+/** 화면 틀(루트 스택 바탕 · 탭바)의 색: 장착한 테마 바탕, 없으면 흰색. 크림 화면은 각자 Canvas가 덮는다 */
+export function useScreenBackground() {
+  return useEquippedTheme()?.canvas ?? '#fff';
+}
+
 /** 장착한 테마. 로그인 전 · 보관함 조회 실패면 null(기본 바탕) */
 export function useEquippedTheme(enabled = true): Theme | null {
   const signedIn = useAuth((s) => !!s.userId);

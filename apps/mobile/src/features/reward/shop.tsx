@@ -40,6 +40,7 @@ import {
 } from '@/components/ui';
 import { C, ICON, MOTION } from '@/theme';
 import { accessoryId, previewLook } from '../tutor/accessories';
+import { itemArt } from './item-art';
 import { Avatar3D } from '../tutor/avatar3d';
 import { avatarModel, useEquippedAccessories, useEquippedAvatar } from '../tutor/buddy';
 
@@ -161,6 +162,27 @@ export function ItemPreview({
         accessibilityRole="image"
         accessibilityLabel={label}
         source={{ uri: item.thumbnailUrl }}
+        style={{ width: size, height: size }}
+        resizeMode="contain"
+      />
+    );
+  const art = itemArt(item);
+  if (art && 'swatch' in art)
+    // 바탕색 견본. 흰 카드 위에서도 보이게 얇은 테두리
+    return (
+      <View
+        accessibilityRole="image"
+        accessibilityLabel={label}
+        className="rounded-2xl border border-line"
+        style={{ width: size, height: size, backgroundColor: art.swatch }}
+      />
+    );
+  if (art)
+    return (
+      <Image
+        accessibilityRole="image"
+        accessibilityLabel={label}
+        source={art.image}
         style={{ width: size, height: size }}
         resizeMode="contain"
       />
@@ -768,6 +790,7 @@ export function BoxScreen() {
                 <Pressable
                   key={it._id}
                   onPress={() => (!isEquipped(it) || isDress(it)) && setPick(it)}
+                  accessibilityHint={takeOff(it) ? '눌러서 벗을 수 있어요' : undefined}
                   className="w-[47.5%] rounded-card bg-white p-2.5"
                 >
                   <View className="h-24 items-center justify-center rounded-xl bg-white">

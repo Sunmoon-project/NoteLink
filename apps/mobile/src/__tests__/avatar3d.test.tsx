@@ -285,3 +285,10 @@ describe('표정', () => {
     expect(h('flat-eye-0')).toBeLessThan(h('flat-eye-1'));
   });
 });
+
+it('읽어 주는 이름에 쓰고 있는 치장을 넣는다', async () => {
+  await render(<Avatar3D mood="idle" avatarId="bora" accessories={['beanie', 'roundGlasses']} />);
+  expect(screen.getByLabelText('아바타 선생님, 털모자 · 동그란 안경 착용')).toBeTruthy();
+  await render(<Avatar3D mood="idle" avatarId="bora" />);
+  expect(screen.getByLabelText('아바타 선생님')).toBeTruthy();
+});

@@ -133,4 +133,14 @@ describe('보관함 치장 · 기본 바탕', () => {
     await fireEvent.press(await screen.findByText('벗기'));
     expect(await screen.findByText('벗기 완료 · 털모자')).toBeTruthy();
   });
+
+  it('장착 중인 치장 카드는 누르면 벗을 수 있다고 알려 준다', async () => {
+    jest
+      .spyOn(api.shop, 'myItems')
+      .mockResolvedValue([own('beanie', 'hat', true), own('sunglasses', 'glasses')]);
+    await renderScreen(<BoxScreen />);
+    await fireEvent.press(await screen.findByText('치장'));
+    expect(await screen.findByHintText('눌러서 벗을 수 있어요')).toBeTruthy();
+    expect(screen.getAllByHintText('눌러서 벗을 수 있어요')).toHaveLength(1);
+  });
 });

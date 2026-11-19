@@ -40,9 +40,13 @@ const frame = (color: string) => {
   return [bridge, ...legs];
 };
 
-export const ACCESSORIES: Record<string, { slot: Slot; build: () => THREE.Object3D }> = {
+export const ACCESSORIES: Record<
+  string,
+  { slot: Slot; name: string; build: () => THREE.Object3D }
+> = {
   roundGlasses: {
     slot: 'glasses',
+    name: '동그란 안경',
     build: () =>
       group(
         ...[-1, 1].map((s) =>
@@ -53,6 +57,7 @@ export const ACCESSORIES: Record<string, { slot: Slot; build: () => THREE.Object
   },
   sunglasses: {
     slot: 'glasses',
+    name: '선글라스',
     build: () =>
       group(
         ...[-1, 1].map((s) => {
@@ -70,6 +75,7 @@ export const ACCESSORIES: Record<string, { slot: Slot; build: () => THREE.Object
   },
   beanie: {
     slot: 'hat',
+    name: '털모자',
     build: () => {
       const dome = part(
         new THREE.SphereGeometry(0.69, 14, 5, 0, Math.PI * 2, 0, Math.PI / 2),
@@ -88,6 +94,7 @@ export const ACCESSORIES: Record<string, { slot: Slot; build: () => THREE.Object
   },
   gradCap: {
     slot: 'hat',
+    name: '학사모',
     build: () => {
       const skull = part(
         new THREE.CylinderGeometry(0.44, 0.5, 0.26, 16, 1, true),
@@ -110,6 +117,7 @@ export const ACCESSORIES: Record<string, { slot: Slot; build: () => THREE.Object
   },
   redScarf: {
     slot: 'scarf',
+    name: '빨간 목도리',
     build: () => {
       const wrap = part(new THREE.TorusGeometry(0.4, 0.11, 6, 18), '#c0392b', [0, 0, 0]);
       wrap.rotation.x = Math.PI / 2;
@@ -141,6 +149,12 @@ const SEED_IDS: Record<string, string> = {
 /** 상품 id → 악세서리 id. 모르면 null(판매가 끝났거나 새 앱에만 있는 상품은 조용히 빼고 그린다) */
 export const accessoryId = (itemId: string): string | null =>
   ACCESSORIES[itemId] ? itemId : (SEED_IDS[itemId] ?? null);
+
+/** 읽어 주는 이름: 「털모자 · 동그란 안경」. 없으면 빈 글자 */
+export const accessoryNames = (ids: string[]) =>
+  bySlot(ids)
+    .map((id) => ACCESSORIES[id]!.name)
+    .join(' · ');
 
 /** 칸마다 하나만 남긴다(같은 칸이 둘이면 뒤의 것). 모르는 id는 뺀다 */
 const bySlot = (ids: string[]) => {
