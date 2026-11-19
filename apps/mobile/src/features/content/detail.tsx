@@ -22,6 +22,7 @@ import {
 } from 'lucide-react-native';
 import type { Material } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
+import { env } from '@/lib/env';
 import { toast } from '@/stores/toast';
 import { AiPending } from '@/components/AiPending';
 import {
@@ -671,7 +672,7 @@ export function ShareScreen() {
     if (initialTab) setTab(initialTab);
     setSel([material.data._id]);
   }
-  const [to, setTo] = useState<{ type: 'room' | 'friend'; id: string; name: string } | null>(null);
+  const [to, setTo] = useState<{ type: 'room'; id: string; name: string } | null>(null);
   const [pick, setPick] = useState(false);
   const list = (mats.data ?? []).filter((m) => m.kind === TABS[tab]);
   const selected = list.filter((m) => sel.includes(m._id));
@@ -694,14 +695,12 @@ export function ShareScreen() {
         },
       }),
   });
-  const targets = [
-    ...(rooms.data ?? []).map((r) => ({ type: 'room' as const, id: r._id, name: r.title })),
-    ...(friends.data ?? []).map((f) => ({
-      type: 'friend' as const,
-      id: f.userId,
-      name: `친구 · ${f.nickname}`,
-    })),
-  ];
+  // 친구에게 보내기는 서버가 아직 막는다(400). 고를 수 없게 「곧 지원」으로만 보여 준다(#554)
+  const targets = (rooms.data ?? []).map((r) => ({
+    type: 'room' as const,
+    id: r._id,
+    name: r.title,
+  }));
   return (
     <Canvas>
       <Screen
@@ -776,22 +775,48 @@ export function ShareScreen() {
           </View>
         </Pressable>
         <Sheet open={pick} onClose={() => setPick(false)} title="공유 대상">
-          <Group>
-            {targets.map((x) => (
-              <Row
-                key={x.type + x.id + x.name}
-                onPress={() => {
-                  setTo(x);
-                  setPick(false);
-                }}
-                right={
-                  to?.id === x.id && to?.type === x.type && <Check size={ICON.sm} color={C.brand} />
-                }
-              >
-                {x.name}
-              </Row>
-            ))}
-          </Group>
+          <Label>스터디룸</Label>
+          {rooms.isError && !rooms.data ? (
+            <Text className="px-1 text-footnote text-sub">스터디룸 목록을 불러오지 못했어요</Text>
+          ) : rooms.isSuccess && targets.length === 0 ? (
+            <Text className="px-1 text-footnote text-sub">참여 중인 스터디룸이 없어요</Text>
+          ) : (
+            <Group>
+              {targets.map((x) => (
+                <Row
+                  key={x.id}
+                  onPress={() => {
+                    setTo(x);
+                    setPick(false);
+                  }}
+                  right={to?.id === x.id && <Check size={ICON.sm} color={C.brand} />}
+                >
+                  {x.name}
+                </Row>
+              ))}
+            </Group>
+          )}
+          <Label>친구</Label>
+          {env.localData ? (
+            <Text className="px-1 text-footnote text-sub">
+              서버에 연결하면 친구에게 보낼 수 있어요
+            </Text>
+          ) : friends.isError && !friends.data ? (
+            <Text className="px-1 text-footnote text-sub">친구 목록을 불러오지 못했어요</Text>
+          ) : (
+            friends.isSuccess &&
+            (friends.data.length ? (
+              <Group>
+                {friends.data.map((f) => (
+                  <Row key={f.userId} right={<Badge tone="gray">곧 지원</Badge>}>
+                    {f.nickname}
+                  </Row>
+                ))}
+              </Group>
+            ) : (
+              <Text className="px-1 text-footnote text-sub">아직 친구가 없어요</Text>
+            ))
+          )}
         </Sheet>
       </Screen>
     </Canvas>
@@ -805,6 +830,8 @@ export function SharedScreen() {
     tab = '자료',
     name,
   } = useLocalSearchParams<{ to?: string; n?: string; tab?: string; name?: string }>();
+  // 지금 보낼 수 있는 대상은 스터디룸뿐이다(친구는 #554 PR 2에서 「○○님에게」). 「국어방 스터디룸」처럼 겹치지 않게
+  const where = to ? `${to}${/(방|스터디룸)$/.test(to) ? '' : ' 스터디룸'}에` : undefined;
   return (
     <Canvas>
       <Screen
@@ -816,7 +843,7 @@ export function SharedScreen() {
       >
         <Success
           title="공유가 완료됐어요!"
-          body={to ? `${to}에 ${tab} ${n}개를 공유했어요` : `${tab} ${n}개를 공유했어요`}
+          body={where ? `${where} ${tab} ${n}개를 공유했어요` : `${tab} ${n}개를 공유했어요`}
           card={
             <Card className="flex-row items-center gap-3 p-3">
               <View className="h-10 w-10 items-center justify-center rounded-lg bg-mint">
@@ -827,7 +854,7 @@ export function SharedScreen() {
                 <View className="flex-row items-center gap-1.5">
                   <Users size={ICON.xs} color={C.sub} />
                   <Text className="text-caption2 text-sub">
-                    {to ? `${to}으로 전송됨` : '전송됨'}
+                    {where ? `${where} 보냈어요` : '보냈어요'}
                   </Text>
                 </View>
               </View>
