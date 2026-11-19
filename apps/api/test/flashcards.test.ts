@@ -355,7 +355,7 @@ describe('맞춤 퀴즈 개념 카드 저장(saveFromQuizSet, #558)', () => {
     const list = await f.service.list(me.toString());
     expect(list.map((c) => [c.front, c.back])).toEqual([1, 2, 3, 4, 5].map((n) => [`용어 ${n}`, `뜻 ${n}`]));
     expect(list[0]).toMatchObject({
-      _id: autoCardId(row._id, 0).toString(),
+      _id: autoCardId(me, materialId, '용어 1').toString(),
       materialId: materialId.toString(),
       folderId: folderId.toString(),
       sourceQuizSetId: row._id.toString(),
@@ -381,15 +381,34 @@ describe('맞춤 퀴즈 개념 카드 저장(saveFromQuizSet, #558)', () => {
     expect(list.map((c) => c.front)).toEqual(['용어 2', '용어 3', '용어 4', '용어 5']);
   });
 
-  it('id는 세트와 순번으로 정해진다: 세트 안에서는 순번 차례, 다른 세트와는 겹치지 않는다', () => {
-    const a = set()._id;
-    const b = set()._id;
-    expect(autoCardId(a, 0).equals(autoCardId(a, 0))).toBe(true);
-    const ids = [0, 1, 2, 3, 4].map((i) => autoCardId(a, i).toHexString());
-    expect([...ids].sort()).toEqual(ids);
-    expect(new Set([...ids, ...[0, 1, 2, 3, 4].map((i) => autoCardId(b, i).toHexString())]).size).toBe(10);
-    // 만든 때(앞 4바이트)는 세트와 같다
-    expect(autoCardId(a, 3).getTimestamp()).toEqual(a.getTimestamp());
+  it('id는 사용자 · 노트 · 앞면(공백 무시)으로 정해진다', () => {
+    const other = new Types.ObjectId();
+    expect(autoCardId(me, materialId, '용어 1').equals(autoCardId(me, materialId, ' 용어1 '))).toBe(true);
+    const ids = new Set(
+      [
+        autoCardId(me, materialId, '용어 1'),
+        autoCardId(me, materialId, '용어 2'),
+        autoCardId(me, materialId, 'CO'),
+        autoCardId(me, materialId, 'Co'),
+        autoCardId(me, other, '용어 1'),
+        autoCardId(other, materialId, '용어 1'),
+        autoCardId(me, null, '용어 1'),
+      ].map((id) => id.toHexString()),
+    );
+    expect(ids.size).toBe(7);
+  });
+
+  it('같은 노트의 두 세트가 같은 앞면 카드를 동시에 옮겨도 한 장만 남는다(Codex 재리뷰)', async () => {
+    const f = fakeModels();
+    const a = set({}, f);
+    const b = set({}, f);
+
+    await Promise.all([
+      f.service.saveFromQuizSet(a, [card(1), card(2)]),
+      f.service.saveFromQuizSet(b, [card(1, { back: '다른 뜻 1' }), card(3)]),
+    ]);
+
+    expect(f.cards.map((c) => c['front']).sort()).toEqual(['용어 1', '용어 2', '용어 3']);
   });
 
   it('세트에 폴더가 없으면 노트의 폴더, 노트도 없으면 null', async () => {
@@ -405,7 +424,7 @@ describe('맞춤 퀴즈 개념 카드 저장(saveFromQuizSet, #558)', () => {
     ]);
   });
 
-  it('모양이 틀린 카드는 빼고 나머지만 저장한다(앞뒤 공백 지움, 순번은 처리기 차례 그대로)', async () => {
+  it('모양이 틀린 카드는 빼고 나머지만 저장한다(앞뒤 공백 지움, 차례는 처리기 순서 그대로)', async () => {
     const f = fakeModels();
     const row = set({}, f);
     await f.service.saveFromQuizSet(row, [
@@ -418,9 +437,12 @@ describe('맞춤 퀴즈 개념 카드 저장(saveFromQuizSet, #558)', () => {
       card(7),
     ]);
     expect(f.cards.map((c) => [String(c._id), c['front'], c['back']])).toEqual([
-      [autoCardId(row._id, 0).toString(), '앞', '뒤'],
-      [autoCardId(row._id, 6).toString(), '용어 7', '뜻 7'],
+      [autoCardId(me, materialId, '앞').toString(), '앞', '뒤'],
+      [autoCardId(me, materialId, '용어 7').toString(), '용어 7', '뜻 7'],
     ]);
+    // 만든 때는 처리기 순번만큼 1ms씩 늦어 목록이 처리기 차례를 지킨다(id는 해시라 차례가 없음)
+    const [first, second] = f.cards.map((c) => (c['createdAt'] as Date).getTime());
+    expect(second! - first!).toBe(6);
   });
 
   it(`한 세트에서 ${AUTO_CARD_MAX}장까지만, 배열이 아니거나 비면 쓰지 않는다`, async () => {

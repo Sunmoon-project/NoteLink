@@ -1447,6 +1447,16 @@ describe('QuizSetsService 개념 카드 작업(#558)', () => {
     expect(cardJobs(t).map((r) => String(r._id))).toEqual([cardsJobId(new Types.ObjectId(quizSet._id)).toHexString()]);
     expect(t.set(quizSet._id)['cardsPending']).toBe(true);
 
+    // 표시 지우기가 또 실패해도 목록도 그대로 준다(Codex 재리뷰 3차 제안)
+    spy.mockImplementation(((filter: Record<string, unknown>, ...rest: unknown[]) =>
+      'cardsPending' in filter
+        ? { lean: () => Promise.reject(new Error('write failed')) }
+        : (update as (...a: unknown[]) => unknown)(filter, ...rest)) as never);
+    const all = await t.service.list(ME.toHexString());
+    expect(all.map((x) => [x._id, x.status])).toEqual([[quizSet._id, 'ready']]);
+    expect(t.set(quizSet._id)['cardsPending']).toBe(true);
+    spy.mockImplementation(update as never);
+
     await t.service.findMine(ME.toHexString(), quizSet._id);
     expect(cardJobs(t)).toHaveLength(1); // 같은 id라 둘째는 막힘(이미 넣음)
     expect(t.set(quizSet._id)['cardsPending']).toBe(false);

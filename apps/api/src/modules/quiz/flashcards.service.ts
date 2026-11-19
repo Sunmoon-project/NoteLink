@@ -65,15 +65,19 @@ export interface CardSet {
 }
 
 /**
- * 세트의 index번째 자동 카드 id(#558). 세트 id와 순번에서 늘 같은 값이 나와, 같은 결과를 여러 번(동시에) 옮겨도
- * 카드가 한 번만 생기고, 지운 카드(deletedAt)는 문서가 남아 다시 생기지 않는다(upsert $setOnInsert).
- * 앞 4바이트는 세트의 만든 때, 다음 5바이트는 세트 id의 해시(같은 초 · 같은 프로세스의 세트도 갈라짐),
- * 끝 3바이트는 순번이라 한 세트의 카드는 순번 차례로 정렬된다(목록은 createdAt, _id 차례)
+ * 자동 카드 id(#558): 사용자 · 노트 · 앞면(frontKey)에서 늘 같은 값이 나온다. 그래서
+ * - 같은 결과를 여러 번(동시에) 옮겨도, 같은 노트의 다른 세트가 같은 앞면 카드를 동시에 옮겨도 _id 고유 색인이 한 장만
+ *   남긴다(Codex 재리뷰 3차: 앞면을 읽고 넣는 사이에 다른 세트가 넣으면 겹쳤음). 새 색인은 두지 않는다
+ * - 지운 카드(deletedAt)는 문서가 남아 같은 앞면으로 다시 생기지 않는다(upsert $setOnInsert)
+ * 노트가 없는 세트는 사용자 안에서 같은 앞면이면 같은 카드다
  */
-export function autoCardId(setId: Types.ObjectId, index: number): Types.ObjectId {
-  const hex = setId.toHexString();
-  const digest = createHash('sha256').update(`flashcard-of:${hex}`).digest('hex');
-  return new Types.ObjectId(hex.slice(0, 8) + digest.slice(0, 10) + index.toString(16).padStart(6, '0'));
+export function autoCardId(
+  ownerId: Types.ObjectId,
+  materialId: Types.ObjectId | null,
+  front: string,
+): Types.ObjectId {
+  const key = `flashcard:${ownerId.toHexString()}:${materialId?.toHexString() ?? '-'}:${frontKey(front)}`;
+  return new Types.ObjectId(createHash('sha256').update(key).digest('hex').slice(0, 24));
 }
 
 /** 처리기 result.flashcards 한 장 → 저장할 앞 · 뒤(앞뒤 공백 지움). 모양이 틀리면 null */
@@ -237,7 +241,7 @@ export class FlashcardsService {
   /**
    * 개념 카드 작업 결과(처리기 result.flashcards, #558)를 그 세트 주인의 카드로 저장한다(pullCards). 출처는 세트 · 노트 · 폴더이고 문제는 없다
    * (sourceQuestionId null: 퀴즈 문제가 아니라 같은 범위의 따로 만든 카드).
-   * id는 세트와 처리기 순번에서 정해(autoCardId) 없을 때만 넣는다: 여러 번 · 동시에 옮겨도 한 번만, 지운 카드는
+   * id는 사용자 · 노트 · 앞면에서 정해(autoCardId) 없을 때만 넣는다: 여러 번 · 동시에 옮겨도 한 번만, 지운 카드는
    * 되살리지 않는다. 모양이 틀린 카드는 빼고(순번은 처리기 차례 그대로), AUTO_CARD_MAX장까지만.
    * 그 사이 지운 세트 · 노트에는 쓰지 않는다. 동시에 넣다 생긴 중복 키 말고 쓰기 오류는 올린다(pullCards가 로그만 남김)
    */
@@ -263,13 +267,14 @@ export class FlashcardsService {
       if (!material) return;
       materialFolder = material.folderId ?? null;
     }
-    // 같은 노트로 퀴즈를 여러 번 만들면 같은 개념 카드가 세트마다 쌓인다: 그 노트의 카드(지운 카드 포함 —
-    // 지운 카드를 다시 만들지 않게)와 앞면이 같으면 뺀다(/code-review). 같은 세트를 다시 옮길 때는 id로 막는다
+    // 같은 노트로 퀴즈를 여러 번 만들면 같은 개념 카드가 세트마다 쌓인다: 그 노트의 카드(지운 카드 · 앱에서 저장한
+    // 카드 포함)와 앞면이 같으면 뺀다(/code-review). 자동 카드끼리는 id(사용자 · 노트 · 앞면)로도 막혀, 다른 세트가 같이
+    // 옮겨도 한 장만 남는다
     const known = new Set(
       materialId
         ? (
             await this.cards
-              .find({ ownerId: set.ownerId, materialId, _id: { $nin: cards.map((c) => autoCardId(set._id, c.index)) } })
+              .find({ ownerId: set.ownerId, materialId })
               .select({ front: 1 })
               .lean<{ front: string }[]>()
           ).map((c) => frontKey(c.front))
@@ -277,11 +282,12 @@ export class FlashcardsService {
     );
     const fresh = cards.filter((c) => !known.has(frontKey(c.card.front)));
     if (fresh.length === 0) return;
-    const now = new Date();
+    const now = Date.now();
     const folderId = set.folderId ?? materialFolder;
+    // id가 해시라 순서가 섞이므로, 만든 때를 1ms씩 달리 해 목록(createdAt 차례)이 처리기 차례를 지킨다
     const ops = fresh.map(({ index, card }) => ({
       updateOne: {
-        filter: { _id: autoCardId(set._id, index) },
+        filter: { _id: autoCardId(set.ownerId, materialId, card.front) },
         update: {
           $setOnInsert: {
             ownerId: set.ownerId,
@@ -292,8 +298,8 @@ export class FlashcardsService {
             sourceQuestionId: null,
             lastResult: null,
             deletedAt: null,
-            createdAt: now,
-            updatedAt: now,
+            createdAt: new Date(now + index),
+            updatedAt: new Date(now + index),
           },
         },
         upsert: true,
