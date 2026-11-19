@@ -68,8 +68,11 @@ function mergeMessages(...groups: Message[][]): Message[] {
 }
 
 export function FriendAddScreen() {
+  const qc = useQueryClient();
   const [q, setQ] = useState('');
   const [sent, setSent] = useState<string[]>([]);
+  // 예전에 보낸 대기 중 요청도 「요청 보냄」으로(다시 열어도)
+  const sentBefore = useQuery({ queryKey: ['friend-requests', 'sent'], queryFn: api.social.sent });
   const result = useQuery({
     queryKey: ['user-search', q],
     queryFn: () => api.social.search(q),
@@ -86,6 +89,8 @@ export function FriendAddScreen() {
       ),
     onSuccess: (_, userId) => {
       setSent((p) => [...p, userId]);
+      // 스터디룸 멤버 창도 같은 「보낸 요청」을 본다
+      void qc.invalidateQueries({ queryKey: ['friend-requests', 'sent'] });
       toast('친구 요청을 보냈어요');
     },
   });
@@ -125,7 +130,7 @@ export function FriendAddScreen() {
           <Text className="mt-4 text-caption text-sub">검색 결과 {found.length}</Text>
         )}
         {found.map((u) => {
-          const done = sent.includes(u.userId);
+          const done = sent.includes(u.userId) || !!sentBefore.data?.includes(u.userId);
           return (
             <View key={u.userId} className="mt-2 gap-2 border-b border-fill py-3">
               <View className="flex-row items-center gap-3">

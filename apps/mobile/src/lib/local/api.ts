@@ -901,6 +901,7 @@ const api: Api = {
     search: () => needServer('친구 찾기'),
     sendRequest: () => needServer('친구 요청'),
     received: () => ok([]),
+    sent: () => ok([]),
     respond: () => needServer('친구 요청 응답'),
     remove: () => ok(undefined),
     openDirect: (userId) =>

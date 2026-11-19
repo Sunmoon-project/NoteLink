@@ -175,6 +175,24 @@ export class FriendsService {
     });
   }
 
+  /**
+   * 내가 보내고 아직 받아들여지지 않은 요청의 상대(탈퇴한 사람은 뺀다). 화면이 「요청 보냄」을 보이는 데 쓴다.
+   * 거절 · 차단된 요청도 넣는다: 보낸 쪽이 버튼이 바뀌는 것으로 거절 · 차단을 알아채지 않게(request() 와 같은 원칙)
+   */
+  async sent(me: string): Promise<string[]> {
+    const meId = new Types.ObjectId(me);
+    const docs = await this.friendships
+      .find({
+        status: { $in: ['pending', 'rejected', 'blocked'] },
+        requesterId: meId,
+        $or: [{ userA: meId }, { userB: meId }],
+      })
+      .lean<Pair[]>();
+    const others = docs.map((d) => (d.userA.equals(meId) ? d.userB : d.userA));
+    const people = await this.briefs(others);
+    return others.map((id) => id.toHexString()).filter((id) => people.has(id));
+  }
+
   /** 받은 요청을 수락하거나 거절한다. 내가 받은 대기 중 요청만 처리할 수 있다 */
   async respond(me: string, requestId: string, accept: boolean, now = new Date()): Promise<void> {
     const meId = new Types.ObjectId(me);

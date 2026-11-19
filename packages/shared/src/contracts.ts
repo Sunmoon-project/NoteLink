@@ -185,6 +185,7 @@ export const PATHS = {
   friend: (userId: string) => `/friends/${seg(userId)}`,
   friendRequests: '/friend-requests',
   friendRequestsReceived: '/friend-requests/received',
+  friendRequestsSent: '/friend-requests/sent',
   friendRequestAction: (id: string, action: 'accept' | 'reject') =>
     `/friend-requests/${seg(id)}/${action}`,
   directChat: '/chat-rooms/direct',
