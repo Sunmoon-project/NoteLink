@@ -287,6 +287,7 @@ class Made:
     unchecked: bool = False
     steps: list[str] = field(default_factory=list)  # 시도마다 멈춘 단계(STEP_*)
     rejected: bool = False  # 초안이 정상으로 떨어진 시도가 있었음(코드 · 정답 둘 · 검사 모델)
+    refused: int = 0  # 서버가 거절한 시도 수(다시 보내도 같음, #272)
 
 
 def _draft(r: JsonObject) -> Draft | None:
@@ -449,7 +450,7 @@ def make_similar(
                     out.question, out.answer_pos = {**d, "options": options}, LETTERS[pos]
                     out.type, out.why = ty, []
                     out.steps.append(STEP_PASS)
-                    out.rejected = rejected
+                    out.rejected, out.refused = rejected, refused
                     return out
                 if verdict in ("down", "refused"):
                     down, failed, out.why = down + 1, True, [said]
@@ -473,7 +474,7 @@ def make_similar(
                 )
         if attempt == 1 and first in BLANK_TYPES:  # 실패한 시도 뒤에도 마지막 시도는 똑같이 준비
             notes += LAST_TIP
-    out.rejected = rejected
+    out.rejected, out.refused = rejected, refused
     out.llm_down = not rejected and 2 * down > out.tries
     # 시도마다 거절된 것만: 답 모양 오류가 섞이면 다시 하면 될 수도 있음(맞춤 퀴즈와 같은 기준)
     out.llm_refused = out.llm_down and refused == out.tries

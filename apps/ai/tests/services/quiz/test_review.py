@@ -388,10 +388,10 @@ def test_nothing_made_because_drafts_were_rejected_ends_with_the_reason(
     with caplog.at_level(logging.INFO, logger="app.services.quiz.review"):
         result, _ = run(llm, job_input())
     assert result["reviewQuestions"] == [] and result["srsUpdates"]
-    assert result["emptyReason"] == "all_rejected"
+    assert result["emptyReason"] == "rejected"
     logged = [r.getMessage() for r in caplog.records if r.name == "app.services.quiz.review"]
     assert len(logged) == 1
-    assert "0/2문제" in logged[0] and "초안 6" in logged[0] and "all_rejected" in logged[0]
+    assert "0/2문제" in logged[0] and "초안 6" in logged[0] and "rejected" in logged[0]
     assert "검사 모델 탈락" in logged[0]
     # 사용자 내용(답 · 개념 이름 · 노트)은 남기지 않음
     assert not any(w in logged[0] for w in ("stack", "동사원형", "쌓다"))
@@ -402,7 +402,64 @@ def test_a_refused_target_next_to_a_rejected_one_is_not_retried() -> None:
     review = [LlmRejectedError("HTTP 413")] * 3 + [BE] * 3
     llm = FakeLlm({"Review": review, "Check": [ok("E")] * 3, "Line": any_line})
     result, _ = run(llm, job_input())
-    assert result["reviewQuestions"] == [] and result["emptyReason"] == "all_rejected"
+    assert result["reviewQuestions"] == [] and result["emptyReason"] == "rejected"
+
+
+class CheckpointReport:
+    """작업 처리기 report처럼 진행률과 checkpoint를 받음."""
+
+    def __init__(self, saved: object = None) -> None:
+        self.saved = saved
+
+    def __call__(self, value: int, step: str | None = None) -> None:
+        pass
+
+    def load_checkpoint(self) -> object:
+        return self.saved
+
+    def save_checkpoint(self, value: JsonObject) -> None:
+        self.saved = value
+
+
+def outage_llm() -> FakeLlm:
+    # q2(stack)는 생성 호출이 모두 실패, q1(be)은 검사 모델에서 정상 탈락
+    review_ = [LlmError("HTTP 503")] * 3 + [BE] * 3
+    return FakeLlm({"Review": review_, "Check": [ok("E")] * 3, "Line": any_line})
+
+
+def test_nothing_made_for_a_passing_reason_is_retried_only_once() -> None:
+    # 시도 한도를 넘겨 실패하면 복습 상태가 옮겨지지 않으므로 한 번만 다시 시도(/code-review)
+    report = CheckpointReport()
+    with pytest.raises(LlmError):
+        review.run(outage_llm(), job_input(), report)
+    assert report.saved == {"emptyRetries": 1}
+    result = review.run(outage_llm(), job_input(), report)
+    assert result["reviewQuestions"] == [] and result["emptyReason"] == "transient"
+    assert result["srsUpdates"]
+
+
+@pytest.mark.parametrize("saved", [None, {}, {"emptyRetries": "x"}, {"emptyRetries": True}, []])
+def test_a_missing_or_odd_checkpoint_counts_as_no_retry_yet(saved: object) -> None:
+    report = CheckpointReport(saved)
+    with pytest.raises(LlmError):
+        review.run(outage_llm(), job_input(), report)
+    assert report.saved == {"emptyRetries": 1}
+
+
+def test_a_target_with_any_refused_try_is_not_retried() -> None:
+    # q2: 거절 2번 + 답 모양 오류 1번 → 다시 보내도 거절되기 쉬움. q1은 정상 탈락
+    review_ = [LlmRejectedError("HTTP 413"), {}, LlmRejectedError("HTTP 413")] + [BE] * 3
+    llm = FakeLlm({"Review": review_, "Check": [ok("E")] * 3, "Line": any_line})
+    result, _ = run(llm, job_input())
+    assert result["reviewQuestions"] == [] and result["emptyReason"] == "rejected"
+
+
+def test_refused_without_a_rejected_draft_is_not_called_rejected() -> None:
+    # 대상마다 거절 1번 + 답 모양 오류 2번: 장애(llm_down)도 아니고 검사에서 떨어진 초안도 없음
+    review_ = [LlmRejectedError("HTTP 413"), {}, {}] * 2
+    llm = FakeLlm({"Review": review_, "Line": any_line})
+    result, _ = run(llm, job_input())
+    assert result["reviewQuestions"] == [] and result["emptyReason"] == "refused"
 
 
 def test_made_questions_leave_no_empty_reason(caplog: pytest.LogCaptureFixture) -> None:

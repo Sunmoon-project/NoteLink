@@ -25,10 +25,11 @@ result — NestJS가 읽어 quiz_sets에 반영합니다
                    UTC 시각으로(10/30 복습 = 2026-10-29T15:00Z)
   reviewQuestions  다시 보기 세트에 넣을 새 문제(못 만들었으면 []). 세트 문서는 NestJS가
                    만듭니다. 로컬은 제목 '<세트 제목> · 다시 보기', sourceSetId = quizSetId
-  emptyReason      reviewQuestions가 빈 이유(#553), 문제가 있으면 None. 다시 해도 0문제라 작업은
-                   성공으로 끝냄(복습 상태는 옮김): no_wrong(틀린 문제 없음) · all_stopped(틀린
-                   문제가 모두 5번째라 더 내지 않음) · no_note(노트 글이 없음) · all_rejected(초안이
-                   모두 검사에서 떨어짐 · 서버가 거절)
+  emptyReason      reviewQuestions가 빈 이유(#553), 문제가 있으면 None. 작업은 성공으로 끝냄(복습
+                   상태는 옮김). 처리기 로그와 확인용: NestJS는 아직 읽지 않음(세트는 failed).
+                   no_wrong(틀린 문제 없음) · all_stopped(틀린 문제가 모두 5번째라 더 내지 않음) ·
+                   no_note(노트 글이 없음) · rejected(초안이 검사에서 떨어짐) · refused(서버가
+                   요청을 거절함) · transient(장애 · 답 모양 오류, 한 번 다시 해도 0문제)
   nextReview       다시 보기 세트의 복습 날짜(서울 날짜 YYYY-MM-DD)
 """
 
@@ -41,7 +42,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from app.clients.llm import JsonObject, Llm, LlmError, LlmRejectedError
 from app.core.config import settings
@@ -83,6 +84,20 @@ class Progress(Protocol):
     """진행률 알림. 작업 처리기의 report와 같은 모양."""
 
     def __call__(self, value: int, step: str | None = None) -> None: ...
+
+
+@runtime_checkable
+class Checkpoint(Protocol):
+    """시도 사이에 남기는 값(작업 처리기 JobReport). 성공하면 처리기가 지웁니다."""
+
+    def load_checkpoint(self) -> object: ...
+
+    def save_checkpoint(self, value: JsonObject) -> None: ...
+
+
+# 일시적인 원인으로 0문제일 때 다시 시도하는 횟수(#553). 그 뒤에도 0문제면 성공으로 끝내 복습 상태를
+# 옮김: 작업이 시도 한도를 넘겨 실패하면 NestJS가 srsUpdates를 옮기지 않음(/code-review)
+EMPTY_RETRIES = 1
 
 
 @dataclass(frozen=True)
@@ -496,33 +511,62 @@ def _summary(judged: list[Judged], stopped: int, made: list[similar.Made]) -> st
         f"오답 복습: {sum(m.question is not None for m in made)}/{len(made)}문제"
         f"(틀림 {sum(1 for j in judged if j.reason)} · 복습 끝 {stopped}"
         f" · 노트 없음 {sum(1 for m in made if not m.tries)} · 초안 {drafts}"
-        f" · 다시 냄 {sum(1 for m in made if m.reused_from)}"
+        f" · 다시 냄 {sum(1 for m in made if m.reused_from)} · 거절 {sum(m.refused for m in made)}"
         f" · 못 씀 {' · '.join(f'{k} {n}' for k, n in out.most_common()) or '없음'})"
     )
 
 
+def _passing(m: similar.Made) -> bool:
+    """다시 하면 만들 수도 있는 대상: LLM으로 만들어 봤고, 정상 탈락 · 거절 없이 장애 · 답 모양
+    오류로만 끝남. 거절이 한 번이라도 있으면 다시 보내도 같기 쉬움(#272)."""
+    return m.question is None and m.tries > 0 and not m.rejected and not m.refused
+
+
 def _empty_reason(judged: list[Judged], made: list[similar.Made]) -> str | None:
-    """reviewQuestions가 빈 이유(모듈 설명 result.emptyReason). 문제가 있으면 None."""
+    """reviewQuestions가 빈 이유(모듈 설명 result.emptyReason). 문제가 있으면 None.
+
+    여러 이유가 섞이면 다시 해 볼 만한 것부터: transient → rejected → refused → no_note.
+    """
     if any(m.question is not None for m in made):
         return None
     if not any(j.reason for j in judged):
         return "no_wrong"
     if not made:
         return "all_stopped"
-    if not any(m.tries for m in made):
-        return "no_note"
-    return "all_rejected"
+    if any(_passing(m) for m in made):
+        return "transient"
+    if any(m.rejected for m in made):
+        return "rejected"
+    if any(m.refused for m in made):
+        return "refused"
+    return "no_note"
+
+
+def _retry_empty(report: Progress) -> bool:
+    """일시적인 원인의 0문제를 다시 시도할지. 다시 시도하면 횟수를 checkpoint에 남김.
+
+    checkpoint가 없는 report(시험의 진행률 함수)는 횟수를 셀 수 없어 늘 다시 시도합니다.
+    앱의 '다시 시도'는 checkpoint를 남겨 두므로(ai-jobs.service.ts) 그때는 바로 성공으로 끝냅니다.
+    """
+    if not isinstance(report, Checkpoint):
+        return True
+    saved = report.load_checkpoint()
+    n = saved.get("emptyRetries") if isinstance(saved, dict) else None
+    tried = n if isinstance(n, int) and not isinstance(n, bool) else 0
+    if tried >= EMPTY_RETRIES:
+        return False
+    report.save_checkpoint({"emptyRetries": tried + 1})
+    return True
 
 
 def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     """similar_quiz 작업 하나.
 
     생성 호출이 모두 실패하면(LLM 장애) LlmError를 올려 작업 처리기가 나중에 다시 시도하게 합니다.
-    한 문제도 못 만들었는데 정상 탈락 없이 끝난 대상(일부 장애 · 답 모양 오류)이 있어도 다시
-    시도합니다(#553). 거절된 대상은 다시 보내도 같아 세지 않습니다(#272). 그 밖의 0문제(틀린
-    문제 없음 · 모두 검사 탈락 등)는 다시 해도 같아 이유(emptyReason)를 남기고 성공으로 끝냅니다:
-    작업이 실패하면 NestJS가 복습 상태(srsUpdates)를 옮기지 않습니다. 끝날 때 만든 수 · 탈락
-    단계를 로그로 남깁니다.
+    한 문제도 못 만들었는데 정상 탈락 · 거절 없이 끝난 대상(일부 장애 · 답 모양 오류)이 있으면
+    한 번(EMPTY_RETRIES) 다시 시도합니다(#553). 그 밖의 0문제(틀린 문제 없음 · 모두 검사 탈락 ·
+    다시 해도 장애 등)는 이유(emptyReason)를 남기고 성공으로 끝냅니다: 작업이 실패하면 NestJS가
+    복습 상태(srsUpdates)를 옮기지 않습니다. 끝날 때 만든 수 · 못 쓴 단계를 로그로 남깁니다.
     """
     inp = parse(raw)
     attempt, sets, notes = inp.attempt, inp.sets, inp.notes
@@ -606,11 +650,10 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
             raise LlmRejectedError("문제 만들기 요청을 모두 거절함")
         raise LlmError("문제 만들기 호출이 모두 실패")
     # 한 문제도 못 만들었고, 일시적인 원인(장애 · 답 모양 오류)으로만 끝난 대상이 있음(#553)
-    if all(m.question is None for m in made) and any(
-        m.tries and not m.rejected and not m.llm_refused for m in made
-    ):
-        log.warning("%s — 다시 시도", _summary(judged, stopped, made))
-        raise LlmError("문제 만들기가 일시적인 오류로 한 문제도 못 만듦")
+    if all(m.question is None for m in made) and any(_passing(m) for m in made):
+        if _retry_empty(report):
+            log.warning("%s — 다시 시도", _summary(judged, stopped, made))
+            raise LlmError("문제 만들기가 일시적인 오류로 한 문제도 못 만듦")
 
     # 4. LLM: 약한 개념(상위 3개)마다 노트 줄, 코드가 노트에 있는지 확인
     # 모두 맞힌 풀이는 복습 상태만 옮김(앱이 다시 보기를 안 보여 줌): 노트 줄 LLM 호출도 안 함
