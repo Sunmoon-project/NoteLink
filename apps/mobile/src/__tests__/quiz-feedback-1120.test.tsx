@@ -86,6 +86,16 @@ describe('유사 퀴즈', () => {
     });
   });
 
+  it('끝낸 세트가 하나도 없으면 유사 퀴즈 바로가기를 보이지 않는다(빈 id로 서버를 부르지 않게)', async () => {
+    jest
+      .spyOn(api.quiz, 'sets')
+      .mockResolvedValue([quizSet('copy', 'JS 기초 · 다시 보기'), quizSet('doing', '풀던 퀴즈')]);
+    await renderScreen(<QuizHomeScreen />, client());
+    await screen.findByText('퀴즈 보관함');
+    expect(screen.queryByText('유사 퀴즈')).toBeNull();
+    expect(screen.getByText('플래시 카드')).toBeTruthy();
+  });
+
   it('서버가 거절(4xx)하면 그 문구만 보여 주고 연결 오류 토스트는 띄우지 않는다', async () => {
     jest
       .spyOn(api.quiz, 'similar')

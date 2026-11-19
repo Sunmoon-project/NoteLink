@@ -179,27 +179,32 @@ export function QuizHomeScreen() {
                   [Archive, '퀴즈 보관함', '저장한 문제를 다시 풀어요', '/play/box'],
                   [Sparkles, '유사 퀴즈', '틀린 문제와 비슷한 문제를 풀어요', '/play/similar'],
                 ] as const
-              ).map(([Ic, l, sub, href]) => (
-                <View
-                  key={l}
-                  ref={l === '퀴즈 만들기' ? makeTarget : undefined}
-                  collapsable={false}
-                >
-                  <Row
-                    icon={Ic}
-                    sub={sub}
-                    chevron
-                    onPress={() =>
-                      router.push({
-                        pathname: href as never,
-                        params: { setId: href === '/play/similar' ? similarSetId : shortcutSetId },
-                      })
-                    }
+              )
+                // 유사 퀴즈는 끝낸 세트가 있어야 만들 수 있다: 없으면 빈 id로 서버를 부르지 않게 바로가기를 숨긴다
+                .filter(([, , , href]) => href !== '/play/similar' || similarSetId)
+                .map(([Ic, l, sub, href]) => (
+                  <View
+                    key={l}
+                    ref={l === '퀴즈 만들기' ? makeTarget : undefined}
+                    collapsable={false}
                   >
-                    {l}
-                  </Row>
-                </View>
-              ))}
+                    <Row
+                      icon={Ic}
+                      sub={sub}
+                      chevron
+                      onPress={() =>
+                        router.push({
+                          pathname: href as never,
+                          params: {
+                            setId: href === '/play/similar' ? similarSetId : shortcutSetId,
+                          },
+                        })
+                      }
+                    >
+                      {l}
+                    </Row>
+                  </View>
+                ))}
             </Group>
           </>
         ) : (
