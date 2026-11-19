@@ -1,12 +1,18 @@
 import copy
+import logging
 import re
-from datetime import date, datetime, timedelta
+from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+import mongomock
 import pytest
+from pymongo.errors import AutoReconnect
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject, LlmError, LlmRejectedError
 from app.services.quiz import review
+from app.worker.jobs import JobStore
+from app.worker.runner import run_once
 from tests.fakes import FakeLlm
 
 PAGE = """요청 동사 뒤에는 동사원형을 쓴다
@@ -352,6 +358,230 @@ def test_one_question_failing_does_not_fail_the_job() -> None:
     assert [t["made"] for t in result["targets"]] == [False, True]
     assert result["targets"][0]["why"] == ["HTTP 503"]
     assert [x["order"] for x in result["reviewQuestions"]] == [1]  # 못 만든 문제 번호는 비우지 않음
+
+
+def any_line(_: str) -> JsonObject:
+    return {"line": "노트에 없는 줄"}
+
+
+@pytest.mark.parametrize(
+    ("review", "checks"),
+    [
+        # q2(stack)는 생성 호출이 모두 실패, q1(be)은 검사 모델에서 정상 탈락(#553 배포 11/19)
+        ([LlmError("HTTP 503")] * 3 + [BE] * 3, [ok("E")] * 3),
+        # 생성 모델의 답 모양 오류만: 장애로 세지 않던 경우
+        ([{}] * 6, []),
+        # 검사 모델 · 생성 모델의 답 모양 오류만(둘째 시도는 빈칸 유형이라 생성 답 모양 오류로)
+        ([STACK, {}, STACK, BE, {}, BE], [{"answer": "Z"}] * 4),
+    ],
+)
+def test_nothing_made_for_a_passing_reason_is_retried(
+    review: list[JsonObject | LlmError], checks: list[JsonObject | LlmError]
+) -> None:
+    # 일시적인 원인으로 한 문제도 못 만들면 다시 해 볼 만함: 작업 처리기가 다시 시도하게
+    llm = FakeLlm({"Review": review, "Check": checks, "Line": any_line})
+    with pytest.raises(LlmError) as e:
+        run(llm, job_input())
+    assert not isinstance(e.value, LlmRejectedError)
+
+
+def test_nothing_made_because_drafts_were_rejected_ends_with_the_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # 모든 초안이 검사 모델에서 정상 탈락: 다시 해도 같기 쉬워 작업은 성공(복습 상태는 옮김)
+    llm = FakeLlm({"Review": [STACK] * 3 + [BE] * 3, "Check": [ok("E")] * 6, "Line": any_line})
+    with caplog.at_level(logging.INFO, logger="app.services.quiz.review"):
+        result, _ = run(llm, job_input())
+    assert result["reviewQuestions"] == [] and result["srsUpdates"]
+    assert result["emptyReason"] == "rejected"
+    logged = [r.getMessage() for r in caplog.records if r.name == "app.services.quiz.review"]
+    assert len(logged) == 1
+    assert "0/2문제" in logged[0] and "초안 6" in logged[0] and "rejected" in logged[0]
+    assert "검사 모델 탈락" in logged[0]
+    # 사용자 내용(답 · 개념 이름 · 노트)은 남기지 않음
+    assert not any(w in logged[0] for w in ("stack", "동사원형", "쌓다"))
+
+
+def test_a_refused_target_next_to_a_rejected_one_is_not_retried() -> None:
+    # 거절은 다시 보내도 같음(#272): 나머지가 정상 탈락이면 다시 시도하지 않음
+    review = [LlmRejectedError("HTTP 413")] * 3 + [BE] * 3
+    llm = FakeLlm({"Review": review, "Check": [ok("E")] * 3, "Line": any_line})
+    result, _ = run(llm, job_input())
+    assert result["reviewQuestions"] == [] and result["emptyReason"] == "rejected"
+
+
+class CheckpointReport:
+    """작업 처리기 report처럼 진행률 · checkpoint · 마지막 시도인지를 받음."""
+
+    def __init__(self, saved: object = None, *, last: bool = False) -> None:
+        self.saved, self.last = saved, last
+
+    def last_attempt(self) -> bool:
+        return self.last
+
+    def __call__(self, value: int, step: str | None = None) -> None:
+        pass
+
+    def load_checkpoint(self) -> object:
+        return self.saved
+
+    def save_checkpoint(self, value: JsonObject) -> None:
+        self.saved = value
+
+
+def outage_llm() -> FakeLlm:
+    # q2(stack)는 생성 호출이 모두 실패, q1(be)은 검사 모델에서 정상 탈락
+    review_ = [LlmError("HTTP 503")] * 3 + [BE] * 3
+    return FakeLlm({"Review": review_, "Check": [ok("E")] * 3, "Line": any_line})
+
+
+def test_nothing_made_for_a_passing_reason_is_retried_only_once() -> None:
+    # 시도 한도를 넘겨 실패하면 복습 상태가 옮겨지지 않으므로 한 번만 다시 시도(/code-review)
+    report = CheckpointReport()
+    with pytest.raises(LlmError):
+        review.run(outage_llm(), job_input(), report)
+    assert report.saved == {"emptyRetries": 1}
+    result = review.run(outage_llm(), job_input(), report)
+    assert result["reviewQuestions"] == [] and result["emptyReason"] == "transient"
+    assert result["srsUpdates"]
+
+
+@pytest.mark.parametrize(
+    "saved", [None, {}, {"emptyRetries": "x"}, {"emptyRetries": True}, {"emptyRetries": -1}, []]
+)
+def test_a_missing_or_odd_checkpoint_counts_as_no_retry_yet(saved: object) -> None:
+    report = CheckpointReport(saved)
+    with pytest.raises(LlmError):
+        review.run(outage_llm(), job_input(), report)
+    assert report.saved == {"emptyRetries": 1}
+
+
+class BrokenCheckpoint(CheckpointReport):
+    def save_checkpoint(self, value: JsonObject) -> None:
+        raise AutoReconnect("DB 끊김")
+
+
+def test_a_retry_count_that_cannot_be_saved_ends_the_job_instead() -> None:
+    # 횟수가 남지 않으면 한도까지 되풀이할 수 있어 성공으로 끝내 복습 상태를 옮김
+    result = review.run(outage_llm(), job_input(), BrokenCheckpoint())
+    assert result["emptyReason"] == "transient" and result["srsUpdates"]
+
+
+def test_no_retry_on_the_last_attempt() -> None:
+    # 다시 시도를 올려도 한도라 실패로 끝나므로 성공으로 끝냄(Codex 리뷰 #555)
+    report = CheckpointReport(last=True)
+    result = review.run(outage_llm(), job_input(), report)
+    assert result["emptyReason"] == "transient" and result["srsUpdates"]
+    assert report.saved is None
+
+
+def test_a_report_without_attempt_info_is_not_retried_when_the_limit_is_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review.settings, "ai_job_max_attempts", 1)
+    result, _ = run(outage_llm(), job_input())
+    assert result["emptyReason"] == "transient"
+
+
+def all_down() -> FakeLlm:
+    return FakeLlm({"Review": [LlmError("HTTP 503")] * 6})
+
+
+@pytest.mark.parametrize(
+    ("used", "first", "last", "limit"),
+    [
+        # 일시적인 0문제 → 한 번 다시 → 또 0문제면 성공
+        (0, [outage_llm], outage_llm, 3),
+        # 모두 장애 2번 뒤 마지막 시도의 일시적인 0문제도 성공(/code-review 3차)
+        (0, [all_down] * 2, outage_llm, 3),
+        # 앞 두 시도를 처리기가 멈춰 씀(잠금이 끝나 다시 가져감, Codex 리뷰 #555)
+        (2, [], outage_llm, 3),
+        # 시도 한도가 1
+        (0, [], outage_llm, 1),
+    ],
+)
+def test_the_worker_saves_review_dates_after_retrying(
+    used: int, first: list[Callable[[], FakeLlm]], last: Callable[[], FakeLlm], limit: int
+) -> None:
+    # 실제 작업 처리기(run_once · JobStore)로: 다시 넣기 · checkpoint 저장 · 성공할 때 지우기
+    col = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    col.insert_one(
+        {
+            "_id": "j1",
+            "type": review.TYPE,
+            "status": "queued",
+            "input": job_input(),
+            "progress": 0,
+            "attempts": used,
+            "result": None,
+            "error": None,
+            "createdAt": DONE,
+        }
+    )
+    now = [DONE.replace(tzinfo=UTC)]
+
+    def store() -> JobStore:
+        return JobStore(
+            col, "w1", lock_sec=600, max_attempts=limit, retry_delay_sec=30, now=lambda: now[0]
+        )
+
+    llms = [*(f() for f in first), last()]
+    handlers = {review.TYPE: lambda inp, report: review.run(llms.pop(0), inp, report)}
+    for _ in first:
+        assert run_once(store(), handlers)
+        assert col.find_one({"_id": "j1"})["status"] == "queued"
+        now[0] += timedelta(minutes=5)
+    assert run_once(store(), handlers)
+    doc = col.find_one({"_id": "j1"})
+    assert doc["status"] == "succeeded" and "checkpoint" not in doc
+    assert doc["result"]["emptyReason"] == "transient" and doc["result"]["srsUpdates"]
+
+
+def test_a_target_with_any_refused_try_is_not_retried() -> None:
+    # q2: 거절 2번 + 답 모양 오류 1번 → 다시 보내도 거절되기 쉬움. q1은 정상 탈락
+    review_ = [LlmRejectedError("HTTP 413"), {}, LlmRejectedError("HTTP 413")] + [BE] * 3
+    llm = FakeLlm({"Review": review_, "Check": [ok("E")] * 3, "Line": any_line})
+    result, _ = run(llm, job_input())
+    assert result["reviewQuestions"] == [] and result["emptyReason"] == "rejected"
+
+
+def test_refused_without_a_rejected_draft_is_not_called_rejected() -> None:
+    # 대상마다 거절 1번 + 답 모양 오류 2번: 장애(llm_down)도 아니고 검사에서 떨어진 초안도 없음
+    review_ = [LlmRejectedError("HTTP 413"), {}, {}] * 2
+    llm = FakeLlm({"Review": review_, "Line": any_line})
+    result, _ = run(llm, job_input())
+    assert result["reviewQuestions"] == [] and result["emptyReason"] == "refused"
+
+
+def test_made_questions_leave_no_empty_reason(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.INFO, logger="app.services.quiz.review"):
+        result, _ = run(happy_llm(), job_input())
+    assert result["emptyReason"] is None
+    assert any("2/2문제" in r.getMessage() for r in caplog.records)
+
+
+def test_no_wrong_answer_is_the_reason_for_an_empty_set() -> None:
+    inp = job_input()
+    for a in inp["answers"]:
+        a["correct"] = True
+    result, _ = run(FakeLlm(), inp)
+    assert result["emptyReason"] == "no_wrong"
+
+
+def test_questions_missed_for_the_last_time_are_the_reason_for_an_empty_set() -> None:
+    inp = job_input()
+    tired = {"step": 0, "streak": 0, "reviews": 4, "state": "active", "lastResult": "wrong"}
+    for x in inp["sets"][0]["questions"][:2]:
+        x["srs"] = dict(tired)
+    result, _ = run(FakeLlm({"Line": any_line}), inp)
+    assert result["targets"] == [] and result["emptyReason"] == "all_stopped"
+
+
+def test_missing_note_text_is_the_reason_for_an_empty_set() -> None:
+    inp = job_input()
+    inp["notes"] = {}
+    result, _ = run(FakeLlm(), inp)
+    assert result["emptyReason"] == "no_note"
 
 
 # ---------- input 확인 ----------

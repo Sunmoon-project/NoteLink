@@ -257,6 +257,9 @@ class StubReport:
     def canceled(self) -> threading.Event:
         return self._canceled
 
+    def last_attempt(self) -> bool:
+        return False
+
     def add_cost(self, usd: float) -> None:
         self.costs.append(usd)
 
