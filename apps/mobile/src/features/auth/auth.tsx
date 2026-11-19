@@ -10,6 +10,7 @@ import { BookOpen, Check, Sparkles } from 'lucide-react-native';
 import { ERROR_CODES, type LearnerType, type SocialProvider } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { InterestPicker } from '../profile/interest-picker';
+import { LEARNER_TYPES } from '@/lib/learner-type';
 import { getProviderToken, socialLoginReady } from '@/lib/social-auth';
 import { clearAccountState } from '@/lib/account';
 import {
@@ -754,11 +755,6 @@ export function TermsScreen() {
   );
 }
 
-const TYPES: [LearnerType, string][] = [
-  ['middle_high', '중·고등학생'],
-  ['university', '대학생'],
-  ['worker', '직장인'],
-];
 /** 관심 분야(온보딩 · 프로필 > 계정 정보에서 고른다). 서버 카테고리 형식은 정해지면 맞춘다 */
 
 export function ProfileSetupScreen() {
@@ -815,7 +811,7 @@ export function ProfileSetupScreen() {
         <FieldError msg={nickShown} />
         <Label>학습자 유형</Label>
         <View className="flex-row gap-2">
-          {TYPES.map(([k, l]) => (
+          {LEARNER_TYPES.map(([k, l]) => (
             <Chip key={k} on={type === k} onPress={() => setType(k)}>
               {l}
             </Chip>

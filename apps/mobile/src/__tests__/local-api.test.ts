@@ -319,7 +319,11 @@ it('같은 세션을 다시 끝내도 처음 정산을 돌려주고 포인트를
 
 it('방 타이머를 정하면 끝나는 시각을 계산해 소켓과 방 정보로 준다', async () => {
   await signup('a@test.com');
-  const room = await api.rooms.create({ title: '방', categoryName: '수학', isPublic: true });
+  const room = await api.rooms.create({
+    title: '방',
+    categoryIds: ['000000000000000000000001'],
+    isPublic: true,
+  });
   const heard: { endsAt: string | null; phase: string }[] = [];
   const { localSocket } = jest.requireActual<typeof import('../lib/socket')>('../lib/socket');
   const push = jest
@@ -357,7 +361,11 @@ it('같은 키로 동시에 등록해도 자료는 하나만 만들고, 다른 �
 
 it('방 타이머 저장이 실패하면 참여자에게 알리지 않는다', async () => {
   await signup('a@test.com');
-  const room = await api.rooms.create({ title: '방', categoryName: '수학', isPublic: true });
+  const room = await api.rooms.create({
+    title: '방',
+    categoryIds: ['000000000000000000000001'],
+    isPublic: true,
+  });
   const { localSocket } = jest.requireActual<typeof import('../lib/socket')>('../lib/socket');
   const push = jest.spyOn(localSocket, 'push').mockImplementation(() => {});
   const rule = {
@@ -597,4 +605,26 @@ describe('아이디 · 비밀번호 찾기(기기 저장 모드)', () => {
       'user_student',
     );
   });
+});
+
+it('기기 저장 모드도 방을 만들 때 고른 분야(첫 번째가 대표) 이름과 내 학습자 구분을 방에 담는다', async () => {
+  await signup('a@test.com');
+  await api.me.update({ learnerType: 'worker' });
+  const list = await api.me.interestCategories();
+  const [suneung, cert] = [
+    list.find((c) => c.name === '수능')!,
+    list.find((c) => c.name === '자격증')!,
+  ];
+  const room = await api.rooms.create({
+    title: '분야 방',
+    categoryIds: [suneung._id, cert._id],
+    isPublic: true,
+  });
+  expect(room).toMatchObject({
+    categoryId: suneung._id,
+    categoryIds: [suneung._id, cert._id],
+    categoryNames: ['수능', '자격증'],
+    learnerType: 'worker',
+  });
+  expect((await api.rooms.mine())[0]).toMatchObject({ categoryNames: ['수능', '자격증'] });
 });

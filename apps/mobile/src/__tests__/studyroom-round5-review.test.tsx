@@ -20,6 +20,12 @@ const mockApi = {
     setTimer: jest.fn(),
   },
   social: { friends: jest.fn(), messages: jest.fn() },
+  me: {
+    interestCategories: jest.fn(async () => [
+      { _id: 'c-math', name: '수학', parentId: null },
+      { _id: 'c-code', name: '코딩', parentId: null },
+    ]),
+  },
 };
 const mockConnectMedia = jest.fn();
 jest.mock('../lib/api', () => ({
@@ -171,7 +177,7 @@ describe('RoomCreateScreen', () => {
       screen.getByPlaceholderText('예) 파이썬 기초 스터디'),
       '  새 수학방  ',
     );
-    await fireEvent.press(screen.getByText('수학'));
+    await fireEvent.press(await screen.findByText('수학'));
     await fireEvent.press(screen.getByText('비공개'));
   }
   it('이름·카테고리·공개여부로 생성하고 방 목록을 갱신한 뒤 새 방으로 이동한다', async () => {
@@ -183,7 +189,7 @@ describe('RoomCreateScreen', () => {
     await waitFor(() =>
       expect(mockApi.rooms.create).toHaveBeenCalledWith({
         title: '새 수학방',
-        categoryName: '수학',
+        categoryIds: ['c-math'],
         isPublic: false,
       }),
     );

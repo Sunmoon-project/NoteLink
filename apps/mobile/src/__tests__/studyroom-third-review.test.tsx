@@ -162,7 +162,11 @@ it('실제 목업 타이머는 조회마다 시작하지 않고 절대 종료 �
     return promise;
   };
   const created = await response(
-    realMockApi.rooms.create({ title: '실제 목업 타이머', categoryName: '공부', isPublic: true }),
+    realMockApi.rooms.create({
+      title: '실제 목업 타이머',
+      categoryIds: ['000000000000000000000001'],
+      isPublic: true,
+    }),
   );
   const configured = await response(realMockApi.rooms.setTimer(created._id, rule));
   // 연결 검사를 통과해 서버가 설정을 적용한 시점부터 타이머가 시작한다.
