@@ -7,7 +7,7 @@ LLM 호출이 실패하면 요약 없이 노트 정리를 끝냄(None). 작업 �
 import re
 from typing import TypedDict
 
-from app.clients.llm import CANCELED, JsonObject, Llm, LlmError
+from app.clients.llm import CANCELED, JsonObject, Llm, LlmError, LlmSetupError
 from app.services.note.models import Chunk
 
 POINTS_MAX = 7
@@ -59,7 +59,7 @@ def clean(text: str) -> str:
 
 
 def summarize_note(llm: Llm, model: str, chunks: list[Chunk]) -> NoteSummary | None:
-    """핵심 요약 · 키워드. 남길 요약이 없거나 호출이 실패하면 None."""
+    """핵심 요약 · 키워드. 남길 요약이 없거나 호출이 실패하면 None(설정 오류도 노트 정리는 끝냄)."""
     body, orders = _listing(chunks)
     if not orders:
         return None
@@ -75,6 +75,8 @@ def summarize_note(llm: Llm, model: str, chunks: list[Chunk]) -> NoteSummary | N
     except LlmError as e:
         if str(e) == CANCELED:
             raise
+        return None
+    except LlmSetupError:
         return None
     points = _points(answer.get("points"), orders)
     if not points:

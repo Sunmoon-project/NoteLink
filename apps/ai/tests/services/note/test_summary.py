@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from app.clients.llm import CANCELED, LlmError
+from app.clients.llm import CANCELED, LlmError, LlmSetupError, LlmUsageLimitError
 from app.core.config import settings
 from app.services.note import job as note_job
 from app.services.note.models import Chunk
@@ -118,6 +118,31 @@ def test_a_failed_call_gives_no_summary_but_a_cancel_is_raised() -> None:
     assert summarize_note(llm, "m", CHUNKS) is None
     with pytest.raises(LlmError, match=re.escape(CANCELED)):
         summarize_note(FakeLlm({"note_summary": [LlmError(CANCELED)]}), "m", CHUNKS)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [LlmSetupError("HTTP 401"), LlmSetupError("키 없음", retry=False), LlmUsageLimitError("402")],
+)
+def test_a_setup_error_gives_no_summary(error: LlmSetupError) -> None:
+    assert summarize_note(FakeLlm({"note_summary": [error]}), "m", CHUNKS) is None
+
+
+def test_the_note_job_finishes_when_the_summary_hits_a_setup_error() -> None:
+    split = FakeLlm({"note_summary": [LlmSetupError("HTTP 401")]})
+
+    result = note_job.run(
+        FakeLlm(),
+        FakeOcr,
+        FakeVoyage(),
+        two_pages(),
+        lambda *a: None,
+        fetch=FakeFetch(),
+        split_llm=split,
+    )
+
+    assert result["summary"] is None
+    assert result["chunks"]
 
 
 def test_empty_note_calls_no_llm() -> None:

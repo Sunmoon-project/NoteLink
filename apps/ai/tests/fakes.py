@@ -4,9 +4,9 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from app.clients.llm import JsonObject, LlmError
+from app.clients.llm import JsonObject
 
-type Answer = JsonObject | LlmError
+type Answer = JsonObject | Exception
 # 답 목록(차례로 꺼냄), 또는 user 글을 보고 답하는 함수(부를 때마다)
 type Answers = list[Answer] | Callable[[str], Answer]
 # 준비하지 않아도 되는 호출의 답. 노트 정리마다 부르는 핵심 요약은 따로 보는 시험에서만 준비하고,
@@ -25,7 +25,7 @@ class Call:
 
 @dataclass
 class FakeLlm:
-    # 이름별 답. LlmError를 넣으면 그 차례에 예외를 던짐
+    # 이름별 답. 예외를 넣으면 그 차례에 던짐
     answers: dict[str, Answers] = field(default_factory=dict)
     calls: list[Call] = field(default_factory=list)
     backgrounded: bool = False  # background()로 받아 갔는지(SchoolLlm.background, #138)
@@ -57,7 +57,7 @@ class FakeLlm:
             a = queue.pop(0)
         else:
             raise AssertionError(f"준비하지 않은 LLM 호출: {name}")
-        if isinstance(a, LlmError):
+        if isinstance(a, Exception):
             raise a
         return a
 
