@@ -101,10 +101,14 @@ export function RoomMembersScreen() {
         <Group className="mt-2">
           {members.map((m) => (
             <View key={m.userId} testID={`member-${m.userId}`}>
-              <Row sub={m.role === 'host' ? '방장' : undefined} right={action(m.userId)}>
+              <Row right={action(m.userId)}>
                 <View className="flex-row items-center gap-3">
                   <Avatar name={m.nickname} uri={m.avatarUrl} size={36} tone="mint" />
-                  <Text className="flex-1 text-callout text-ink">{m.nickname}</Text>
+                  <View className="flex-1">
+                    <Text className="text-callout text-ink">{m.nickname}</Text>
+                    {/* 방장 표시는 이름 아래(Row 의 sub 는 아바타까지 감싼 칸 아래에 붙어 줄이 어긋난다) */}
+                    {m.role === 'host' && <Text className="text-caption text-sub">방장</Text>}
+                  </View>
                 </View>
               </Row>
             </View>
