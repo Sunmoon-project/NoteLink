@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react-native';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { RecordScreen } from '../features/progress/record';
 import { TimetableScreen } from '../features/calendar/screens';
@@ -35,4 +35,26 @@ it('기록 조회가 실패하면 0이나 고정 시각 대신 실패를 안내�
   expect(await screen.findByText('누적 기록을 불러오지 못했어요')).toBeTruthy();
   expect(screen.queryByText('오후 9시')).toBeNull();
   expect(screen.queryByText('0시간')).toBeNull();
+});
+
+// 실기기 피드백: 주간 · 월간을 누를 때마다 버튼 순서가 바뀌었다(월간 화면은 월간 · 주간, 주간 화면은 주간 · 월간)
+it('월간 · 주간을 바꿔도 버튼 순서는 그대로고 고른 칸만 바뀐다', async () => {
+  setParams({});
+  await renderScreen(<RecordScreen />, client());
+  const tabs = async () =>
+    (await screen.findAllByRole('tab')).map((t) => [
+      within(t).getByText(/^(월간|주간)$/).props.children,
+      t.props.accessibilityState?.selected,
+    ]);
+  expect(await tabs()).toEqual([
+    ['월간', true],
+    ['주간', false],
+  ]);
+  await fireEvent.press(screen.getByText('주간'));
+  await waitFor(async () =>
+    expect(await tabs()).toEqual([
+      ['월간', false],
+      ['주간', true],
+    ]),
+  );
 });

@@ -30,6 +30,7 @@ import {
   Screen,
   Segment,
   Sheet,
+  Swap,
   cx,
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
@@ -181,174 +182,180 @@ export function RecordScreen() {
             </Pressable>
           }
         />
-        {mode === '월간' ? (
-          <>
-            <Text className="text-caption text-sub">이번주 순공시간</Text>
-            <Text className="text-title2 font-bold text-ink">
-              {weekly.data ? hm(weekly.data.totalSec) : '-'}
-            </Text>
-            {weekly.data && (
-              <Text className="text-caption text-sub">
-                {diffLabel(weekly.data.diffFromLastWeekSec)}
+        {/* 월간 · 주간 버튼은 두 보기 위 같은 자리 · 같은 순서에 둔다(보기마다 따로 두면 누를 때마다 순서가 바뀌었다) */}
+        <Segment
+          items={['월간', '주간'] as const}
+          value={mode}
+          onChange={setMode}
+          className="mb-4 w-40 self-center"
+        />
+        <Swap k={mode}>
+          {mode === '월간' ? (
+            <>
+              <Text className="text-subhead font-semibold text-ink">이번주 순공시간</Text>
+              <Text className="text-title2 font-bold text-ink">
+                {weekly.data ? hm(weekly.data.totalSec) : '-'}
               </Text>
-            )}
-            {weekly.isError && !weekly.data && (
-              <View className="mt-2 gap-2">
-                <Text className="text-caption text-sub">이번주 기록을 불러오지 못했어요</Text>
-                <Btn small onPress={() => void weekly.refetch()}>
-                  이번주 기록 다시 시도
-                </Btn>
-              </View>
-            )}
-            <Label
-              right={
-                <Pressable onPress={() => router.push('/dday')}>
-                  <Text className="text-footnote text-brand">전체 ›</Text>
-                </Pressable>
-              }
-            >
-              다가오는 D-day
-            </Label>
-            {next && (
-              <Card
-                tone="white"
-                onPress={() => router.push('/dday')}
-                className="flex-row items-center gap-3 px-4 py-3"
-              >
-                <Target size={ICON.md} color={C.brand} />
-                <View className="flex-1">
-                  <Text className="text-subhead font-semibold text-ink">{next.title}</Text>
-                  <Text className="text-caption text-sub">
-                    {next.kind} · {md(next.date)}
-                  </Text>
-                </View>
-                <Badge tone="sun">{dLabel(next.daysLeft)}</Badge>
-              </Card>
-            )}
-            <Card onPress={() => router.push('/repeat')} className="mt-2 p-3">
-              <Text>+ 반복 목표 추가</Text>
-            </Card>
-            {goals.data?.map((goal) => (
-              <Card
-                key={goal._id}
-                tone="white"
-                onPress={() => router.push({ pathname: '/repeat', params: { id: goal._id } })}
-                className="mt-2 flex-row items-center gap-3 px-4 py-3"
-              >
-                <Repeat size={ICON.md} color={C.brand} />
-                <View className="flex-1">
-                  <Text className="text-subhead font-semibold text-ink">반복 목표</Text>
-                  <Text className="text-caption text-sub">
-                    {goal.name} · 연속 {goal.streak}주 달성 중
-                  </Text>
-                </View>
-                <ChevronRight size={ICON.md} color={C.sub} />
-              </Card>
-            ))}
-            <View className="mt-5 flex-row items-center justify-between">
-              <Pressable accessibilityLabel="이전 달" onPress={() => shift(-1)} hitSlop={10}>
-                <ChevronLeft size={ICON.md} color={C.sub} />
-              </Pressable>
-              <Text className="text-callout font-bold text-ink">
-                {y}년 {m}월
-              </Text>
-              <Pressable accessibilityLabel="다음 달" onPress={() => shift(1)} hitSlop={10}>
-                <ChevronRight size={ICON.md} color={C.sub} />
-              </Pressable>
-            </View>
-            <Segment
-              items={['월간', '주간'] as const}
-              value={mode}
-              onChange={setMode}
-              className="my-3 w-40 self-center"
-            />
-            <Month
-              ym={cursor}
-              holidays={holidayNames}
-              levels={levels}
-              dots={dots}
-              selected={day}
-              onPick={(d) => {
-                setDay(d);
-                setSheet('todo');
-              }}
-            />
-            {Object.entries(holidayNames)
-              .filter(([date]) => date.startsWith(cursor))
-              .map(([date, name]) => (
-                <Text key={date} className="text-caption text-danger">
-                  {date} · {name}
+              {weekly.data && (
+                <Text className="text-caption text-sub">
+                  {diffLabel(weekly.data.diffFromLastWeekSec)}
                 </Text>
-              ))}
-            {month.isError && !month.data && (
-              <LoadError message="이번 달 기록을 불러오지 못했어요" retry={month.refetch} />
-            )}
-            <Text className="mt-2 text-caption2 text-sub">
-              색이 진할수록 공부 시간이 길고, 점은 할 일이 있는 날이에요
-            </Text>
-            <Label
-              right={
-                <View className="flex-row gap-1">
-                  {(['all', '90d', '30d'] as const).map((x) => (
-                    <Pressable
-                      key={x}
-                      onPress={() => setRange(x)}
-                      className={cx(
-                        'rounded-full px-2 py-0.5',
-                        range === x ? 'bg-brand' : 'bg-white',
-                      )}
-                    >
-                      <Text
-                        className={cx('text-caption2', range === x ? 'text-white' : 'text-ink')}
-                      >
-                        {{ all: '전체', '90d': '90일', '30d': '30일' }[x]}
-                      </Text>
-                    </Pressable>
-                  ))}
+              )}
+              {weekly.isError && !weekly.data && (
+                <View className="mt-2 gap-2">
+                  <Text className="text-caption text-sub">이번주 기록을 불러오지 못했어요</Text>
+                  <Btn small onPress={() => void weekly.refetch()}>
+                    이번주 기록 다시 시도
+                  </Btn>
                 </View>
-              }
-            >
-              <Text className="text-footnote font-bold text-ink">누적 기록</Text>
-            </Label>
-            <View className="flex-row flex-wrap justify-between gap-y-2">
-              {[
-                ['총 순공시간', stats.data ? `${Math.round(stats.data.totalSec / 3600)}시간` : '-'],
-                ['공부한 날', stats.data ? `${stats.data.studyDays}일` : '-'],
-                ['최장 연속', stats.data ? `${stats.data.longestStreak}일` : '-'],
-                [
-                  '주로 공부한 시간',
-                  stats.data?.peakHour == null || stats.data.peakHour < 0
-                    ? '-'
-                    : `${stats.data.peakHour < 12 ? '오전' : '오후'} ${stats.data.peakHour % 12 || 12}시`,
-                ],
-              ].map(([k, v]) => (
-                <Card key={k} className="w-[48.5%] px-3 py-2.5">
-                  <Text className="text-caption2 text-sub">{k}</Text>
-                  <Text className="text-body font-bold text-ink">{v}</Text>
+              )}
+              <Label
+                right={
+                  <Pressable onPress={() => router.push('/dday')}>
+                    <Text className="text-footnote text-brand">전체 ›</Text>
+                  </Pressable>
+                }
+              >
+                다가오는 D-day
+              </Label>
+              {next && (
+                <Card
+                  tone="white"
+                  onPress={() => router.push('/dday')}
+                  className="flex-row items-center gap-3 px-4 py-3"
+                >
+                  <Target size={ICON.md} color={C.brand} />
+                  <View className="flex-1">
+                    <Text className="text-subhead font-semibold text-ink">{next.title}</Text>
+                    <Text className="text-caption text-sub">
+                      {next.kind} · {md(next.date)}
+                    </Text>
+                  </View>
+                  <Badge tone="sun">{dLabel(next.daysLeft)}</Badge>
+                </Card>
+              )}
+              <Card onPress={() => router.push('/repeat')} className="mt-2 p-3">
+                <Text>+ 반복 목표 추가</Text>
+              </Card>
+              {goals.data?.map((goal) => (
+                <Card
+                  key={goal._id}
+                  tone="white"
+                  onPress={() => router.push({ pathname: '/repeat', params: { id: goal._id } })}
+                  className="mt-2 flex-row items-center gap-3 px-4 py-3"
+                >
+                  <Repeat size={ICON.md} color={C.brand} />
+                  <View className="flex-1">
+                    <Text className="text-subhead font-semibold text-ink">반복 목표</Text>
+                    <Text className="text-caption text-sub">
+                      {goal.name} · 연속 {goal.streak}주 달성 중
+                    </Text>
+                  </View>
+                  <ChevronRight size={ICON.md} color={C.sub} />
                 </Card>
               ))}
-            </View>
-            {stats.isError && !stats.data && (
-              <View className="mt-2 gap-2">
-                <Text className="text-caption text-sub">누적 기록을 불러오지 못했어요</Text>
-                <Btn small onPress={() => void stats.refetch()}>
-                  누적 기록 다시 시도
-                </Btn>
+              <View className="mt-5 mb-3 flex-row items-center justify-between">
+                <Pressable accessibilityLabel="이전 달" onPress={() => shift(-1)} hitSlop={10}>
+                  <ChevronLeft size={ICON.md} color={C.sub} />
+                </Pressable>
+                <Text className="text-callout font-bold text-ink">
+                  {y}년 {m}월
+                </Text>
+                <Pressable accessibilityLabel="다음 달" onPress={() => shift(1)} hitSlop={10}>
+                  <ChevronRight size={ICON.md} color={C.sub} />
+                </Pressable>
               </View>
-            )}
-            <View className="mt-3 flex-row flex-wrap gap-[3px] rounded-card bg-white p-4">
-              {(stats.data?.heatmap ?? []).map((h) => (
-                <View
-                  key={h.studyDate}
-                  className="h-3 w-3 rounded-[2px]"
-                  style={{ backgroundColor: ['#eef0ec', '#c8dccf', '#7aa592', C.brand][h.level] }}
-                />
-              ))}
-            </View>
-          </>
-        ) : (
-          <WeekView onMonth={() => setMode('월간')} />
-        )}
+              <Month
+                ym={cursor}
+                holidays={holidayNames}
+                levels={levels}
+                dots={dots}
+                selected={day}
+                onPick={(d) => {
+                  setDay(d);
+                  setSheet('todo');
+                }}
+              />
+              {Object.entries(holidayNames)
+                .filter(([date]) => date.startsWith(cursor))
+                .map(([date, name]) => (
+                  <Text key={date} className="text-caption text-danger">
+                    {date} · {name}
+                  </Text>
+                ))}
+              {month.isError && !month.data && (
+                <LoadError message="이번 달 기록을 불러오지 못했어요" retry={month.refetch} />
+              )}
+              <Text className="mt-2 text-caption2 text-sub">
+                색이 진할수록 공부 시간이 길고, 점은 할 일이 있는 날이에요
+              </Text>
+              <Label
+                right={
+                  <View className="flex-row gap-1">
+                    {(['all', '90d', '30d'] as const).map((x) => (
+                      <Pressable
+                        key={x}
+                        onPress={() => setRange(x)}
+                        className={cx(
+                          'rounded-full px-2 py-0.5',
+                          range === x ? 'bg-brand' : 'bg-white',
+                        )}
+                      >
+                        <Text
+                          className={cx('text-caption2', range === x ? 'text-white' : 'text-ink')}
+                        >
+                          {{ all: '전체', '90d': '90일', '30d': '30일' }[x]}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                }
+              >
+                <Text className="text-footnote font-bold text-ink">누적 기록</Text>
+              </Label>
+              <View className="flex-row flex-wrap justify-between gap-y-2">
+                {[
+                  [
+                    '총 순공시간',
+                    stats.data ? `${Math.round(stats.data.totalSec / 3600)}시간` : '-',
+                  ],
+                  ['공부한 날', stats.data ? `${stats.data.studyDays}일` : '-'],
+                  ['최장 연속', stats.data ? `${stats.data.longestStreak}일` : '-'],
+                  [
+                    '주로 공부한 시간',
+                    stats.data?.peakHour == null || stats.data.peakHour < 0
+                      ? '-'
+                      : `${stats.data.peakHour < 12 ? '오전' : '오후'} ${stats.data.peakHour % 12 || 12}시`,
+                  ],
+                ].map(([k, v]) => (
+                  <Card key={k} className="w-[48.5%] px-3 py-2.5">
+                    <Text className="text-caption2 text-sub">{k}</Text>
+                    <Text className="text-body font-bold text-ink">{v}</Text>
+                  </Card>
+                ))}
+              </View>
+              {stats.isError && !stats.data && (
+                <View className="mt-2 gap-2">
+                  <Text className="text-caption text-sub">누적 기록을 불러오지 못했어요</Text>
+                  <Btn small onPress={() => void stats.refetch()}>
+                    누적 기록 다시 시도
+                  </Btn>
+                </View>
+              )}
+              <View className="mt-3 flex-row flex-wrap gap-[3px] rounded-card bg-white p-4">
+                {(stats.data?.heatmap ?? []).map((h) => (
+                  <View
+                    key={h.studyDate}
+                    className="h-3 w-3 rounded-[2px]"
+                    style={{ backgroundColor: ['#eef0ec', '#c8dccf', '#7aa592', C.brand][h.level] }}
+                  />
+                ))}
+              </View>
+            </>
+          ) : (
+            <WeekView />
+          )}
+        </Swap>
       </Screen>
       <TodoSheet
         open={sheet === 'todo'}
@@ -420,7 +427,7 @@ export function laneBlocks<T extends { top: number; h: number }>(items: T[]) {
   return placed.map((p) => ({ ...p, lanes: ends.length }));
 }
 
-function WeekView({ onMonth }: { onMonth: () => void }) {
+function WeekView() {
   const tt = useQuery({ queryKey: ['timetable'], queryFn: api.timetable.get });
   const rooms = useQuery({ queryKey: ['my-rooms'], queryFn: api.rooms.mine });
   const [offset, setOffset] = useState(0);
@@ -476,13 +483,7 @@ function WeekView({ onMonth }: { onMonth: () => void }) {
   ];
   return (
     <>
-      <Segment
-        items={['주간', '월간'] as const}
-        value="주간"
-        onChange={(v) => v === '월간' && onMonth()}
-        className="w-40"
-      />
-      <View className="mt-4 flex-row items-center justify-between">
+      <View className="flex-row items-center justify-between">
         <Pressable onPress={() => setOffset((o) => o - 1)} hitSlop={10}>
           <ChevronLeft size={ICON.md} color={C.sub} />
         </Pressable>

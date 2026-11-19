@@ -306,6 +306,8 @@ export const AiJobType = z.enum([
   'explain',
   'image_check',
   'note_ask',
+  // 맞춤 퀴즈 세트와 같은 범위의 개념 카드(#558). 세트가 ready가 되면 NestJS가 넣고, 앱은 보지 않는다
+  'quiz_flashcards',
 ]);
 export const AiJobStatus = z.enum(['queued', 'running', 'succeeded', 'failed', 'canceled']);
 export const AiJob = z.object({

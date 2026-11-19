@@ -199,6 +199,10 @@ class JobStore:
     def lock_sec(self) -> float:
         return self._lock.total_seconds()
 
+    @property
+    def max_attempts(self) -> int:
+        return self._max
+
     def claim(
         self, types: Iterable[str], awaited_types: Iterable[str] = (), first: Iterable[str] = ()
     ) -> Job | None:

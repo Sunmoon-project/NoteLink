@@ -100,6 +100,14 @@ export class User {
   @Prop({ required: true, type: String, default: 'active' })
   status: string;
 
+  // 앱이 앞에 있다는 마지막 신호(PUT /users/me/presence). 백그라운드로 가면 null. 친구에게 보이는 상태의 기준
+  @Prop({ type: Date, default: null })
+  lastActiveAt?: Date | null;
+
+  // 기기(앱 실행)별 마지막 접속 신호. 한 기기가 나가도 다른 기기의 신호로 lastActiveAt을 남긴다
+  @Prop({ type: Object, default: {} })
+  presenceDevices?: Record<string, Date>;
+
   // 다른 컬렉션(categories) 참조 배열
   @Prop({ type: [{ type: Types.ObjectId, ref: 'Category' }], default: [] })
   interestCategoryIds: Types.ObjectId[];

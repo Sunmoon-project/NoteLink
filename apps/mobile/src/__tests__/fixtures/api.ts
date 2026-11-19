@@ -251,6 +251,7 @@ export const mockApi: Api = {
       return structuredClone(void (db.user.status = status));
     },
     registerDevice: () => ok(undefined),
+    presence: () => ok(undefined),
     changePlan: async (tier) => {
       await ok(undefined);
 
@@ -491,6 +492,11 @@ export const mockApi: Api = {
         source: 'manual' as const,
         daysLeft: daysBetween(today(), p.date),
       });
+    },
+    removeDday: async (id) => {
+      await ok(undefined);
+      db.manualDdays = db.manualDdays.filter((x) => x._id !== id);
+      db.todos = db.todos.filter((t) => !(t.isDday && t._id === id));
     },
     holidays: (year) =>
       ok(
