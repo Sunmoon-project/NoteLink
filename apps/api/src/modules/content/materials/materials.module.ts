@@ -13,6 +13,7 @@ import {
   RoomSharedItemSchema,
 } from '../../studyroom/schemas/room-shared-item.schema.js';
 import { StudyRoom, StudyRoomSchema } from '../../studyroom/schemas/study-room.schema.js';
+import { StudyRoomsModule } from '../../studyroom/study-rooms.module.js';
 import { Folder, FolderSchema } from '../schemas/folder.schema.js';
 import { Material, MaterialSchema } from '../schemas/material.schema.js';
 import { MaterialSharingController } from './material-sharing.controller.js';
@@ -46,6 +47,8 @@ import { RecordingService } from './recording.service.js';
     UploadsModule,
     // JwtAuthGuard · TokenService
     AuthModule,
+    // 방에 노트를 공유하면 방 채팅에 자료 카드(StudyChatGateway). 스터디룸 모듈은 이 모듈을 모른다
+    StudyRoomsModule,
   ],
   controllers: [MaterialsController, RecordingController, MaterialSharingController],
   providers: [MaterialsService, RecordingService, MaterialSharingService],

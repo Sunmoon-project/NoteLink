@@ -7,6 +7,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
+import type { Types } from 'mongoose';
 import type { StudyRoom, TimerRule } from '@notelink/shared';
 import { TokenService } from '../auth/token.service.js';
 import { StudyChatService } from './study-chat.service.js';
@@ -214,22 +215,41 @@ export class StudyChatGateway {
     const channel = socket.rooms.has(`study-chat:${data.chatRoomId}`)
       ? `study-chat:${data.chatRoomId}`
       : `direct-chat:${data.chatRoomId}`;
-    // 나간 사용자에게 전달하지 않도록 각 연결의 토큰과 현재 멤버십을 다시 검사한다.
+    const delivered = await this.deliver(channel, data.chatRoomId, message);
+    // 소켓으로 받은 사람(그 채팅을 보고 있는 사람)을 뺀 멤버에게 푸시. 기다리지 않는다(보낸 사람 확인을 늦추지 않게)
+    void this.notices.chatMessage(message, delivered);
+    return message;
+  }
+
+  /**
+   * 노트를 방에 공유하면 방 채팅에 자료 카드를 올리고, 그 채팅을 보고 있는 멤버에게 바로 보낸다.
+   * 푸시는 보내지 않는다(공유가 이미 「노트를 공유했어요」 알림을 보낸다)
+   */
+  async postSharedNotes(
+    roomId: string,
+    userId: string,
+    items: { sharedItemId: Types.ObjectId; title: string }[],
+  ) {
+    const { chatRoomId, messages } = await this.chat.postSharedNotes(roomId, userId, items);
+    for (const message of messages)
+      await this.deliver(`study-chat:${chatRoomId}`, chatRoomId, message);
+  }
+
+  /** 나간 사용자에게 전달하지 않도록 각 연결의 토큰과 현재 멤버십을 다시 검사해 보낸다. 받은 사람 id 를 돌려준다 */
+  private async deliver(channel: string, chatRoomId: string, message: unknown) {
     const delivered: string[] = [];
     for (const recipient of await this.server.in(channel).fetchSockets()) {
       try {
         const token = recipient.handshake.auth?.token;
         if (typeof token !== 'string') throw new Error('unauthorized');
         const receiver = await this.tokens.verifyAccess(token);
-        await this.chat.requireChat(data.chatRoomId, receiver.userId);
+        await this.chat.requireChat(chatRoomId, receiver.userId);
         recipient.emit('chat:message', message);
         delivered.push(receiver.userId);
       } catch {
         await recipient.leave(channel);
       }
     }
-    // 소켓으로 받은 사람(그 채팅을 보고 있는 사람)을 뺀 멤버에게 푸시. 기다리지 않는다(보낸 사람 확인을 늦추지 않게)
-    void this.notices.chatMessage(message, delivered);
-    return message;
+    return delivered;
   }
 }
