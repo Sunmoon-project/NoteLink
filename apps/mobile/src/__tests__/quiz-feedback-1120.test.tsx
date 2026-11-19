@@ -100,6 +100,19 @@ describe('유사 퀴즈', () => {
   });
 });
 
+it('공용 토스트: 서버가 4xx로 거절하면 연결 문구 대신 서버 문구, 연결 · 5xx 오류는 연결 문구', async () => {
+  const run = (e: Error) =>
+    queryClient
+      .getMutationCache()
+      .build(queryClient, { mutationFn: () => Promise.reject(e) })
+      .execute(undefined)
+      .catch(() => {});
+  await run(new ApiError('VALIDATION_FAILED', '틀린 문제가 없어요', 409));
+  expect(useToast.getState().msg).toBe('틀린 문제가 없어요');
+  await run(new ApiError('INTERNAL', '서버 오류', 500));
+  expect(useToast.getState().msg).toContain('연결을 확인하고');
+});
+
 describe('오늘의 오답 복습 보기', () => {
   it('보기는 번호와 함께 여러 줄로 다 보이고, 지문(개념 이름)은 질문과 나눠 작게 보인다', async () => {
     useAuth.setState({ userId: 'u1' });
@@ -119,6 +132,15 @@ describe('오늘의 오답 복습 보기', () => {
 });
 
 describe('퀴즈 보관함', () => {
+  it('ㄱ·ㄴ·ㄷ처럼 여러 줄 지문은 풀이에 필요하므로 흐리게 줄이지 않는다', async () => {
+    const passage = 'ㄱ. 첫째 설명\nㄴ. 둘째 설명';
+    jest
+      .spyOn(api.quiz, 'box')
+      .mockResolvedValue([mc('b2', { prompt: `옳은 것은?\n\n${passage}` })]);
+    await renderScreen(<QuizBoxScreen />, client());
+    expect(String((await screen.findByText(passage)).props.className)).toContain('text-ink');
+  });
+
   it('객관식 문제는 보기를 번호와 함께 보여 준다', async () => {
     jest.spyOn(api.quiz, 'box').mockResolvedValue([mc('b1')]);
     await renderScreen(<QuizBoxScreen />, client());

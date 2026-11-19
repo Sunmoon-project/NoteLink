@@ -71,7 +71,7 @@ import {
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
 import { AvatarCheer } from '@/features/tutor/cheer';
-import { ChoiceRow, splitPrompt } from './choice';
+import { ChoiceRow, Passage, splitPrompt } from './choice';
 import { recordWrong } from './wrong-review';
 import { TodayReviewCard, useTodayReview } from './today-review';
 import { useTourTarget } from '@/features/tutor/tour';
@@ -1607,7 +1607,7 @@ export function QuizBoxScreen() {
             body="퀴즈를 풀고 다시 보고 싶은 문제를 보관하면 여기에 모여요."
           />
         )}
-        <View className="gap-3">
+        <View className="gap-4">
           {box.data?.map((q, n) => (
             <Animated.View
               key={q._id}
@@ -1624,11 +1624,7 @@ export function QuizBoxScreen() {
                     {splitPrompt(q.prompt)[0]}
                   </Text>
                 </View>
-                {!!splitPrompt(q.prompt)[1] && (
-                  <Text className="mt-2 pl-7 text-footnote leading-5 text-sub">
-                    {splitPrompt(q.prompt)[1]}
-                  </Text>
-                )}
+                <Passage prompt={q.prompt} mc={!!q.choices?.length} className="pl-7" />
                 {!!q.choices?.length && (
                   <View className="mt-3 gap-2 pl-7">
                     {q.choices.map((c, i) => (

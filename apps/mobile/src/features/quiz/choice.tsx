@@ -15,6 +15,35 @@ export function splitPrompt(prompt: string): [string, string | null] {
 }
 
 /**
+ * 질문 뒤 지문. 객관식에서 한 줄짜리 짧은 지문은 대개 개념 이름이라(질문과 겹쳐 보임) 작고 흐리게,
+ * 그 밖의 지문(ㄱ·ㄴ·ㄷ 보기 · 빈칸 문제 · 정의문)은 풀이에 필요하므로 질문과 같은 크기로 보여 준다
+ */
+export function Passage({
+  prompt,
+  mc,
+  className,
+}: {
+  prompt: string;
+  mc: boolean;
+  className?: string;
+}) {
+  const text = splitPrompt(prompt)[1];
+  if (!text) return null;
+  const concept = mc && !text.includes('\n') && text.length <= 40;
+  return (
+    <Text
+      className={cx(
+        'mt-2',
+        concept ? 'text-footnote leading-5 text-sub' : 'text-subhead leading-6 text-ink',
+        className,
+      )}
+    >
+      {text}
+    </Text>
+  );
+}
+
+/**
  * 퀴즈 풀이 화면의 보기 한 칸. 번호(①②③)를 앞에 붙이고, 글은 자르지 않고 줄을 넘겨 다 보인다.
  * onPress가 없으면 보여 주기만 한다(보관함). fill은 놓일 면에 맞춘 바탕(흰 카드 안이면 bg-canvas)
  */

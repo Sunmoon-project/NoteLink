@@ -11,7 +11,7 @@ import { queryClient } from '@/lib/query';
 import { dropDb, readDb, writeDb } from '@/lib/local/storage';
 import { useAuth } from '@/stores/auth';
 import { AvatarCheer } from '@/features/tutor/cheer';
-import { ChoiceRow, splitPrompt } from './choice';
+import { ChoiceRow, Passage, splitPrompt } from './choice';
 import { Avatar3D } from '@/features/tutor/avatar3d';
 import { useEquippedAccessories, useEquippedAvatar } from '@/features/tutor/buddy';
 import { useTour } from '@/features/tutor/tour';
@@ -227,11 +227,7 @@ export function WrongReviewScreen() {
               <Text className="mt-1 text-body font-bold leading-6 text-ink">
                 Q. {splitPrompt(q.prompt)[0]}
               </Text>
-              {!!splitPrompt(q.prompt)[1] && (
-                <Text className="mt-2 text-footnote leading-5 text-sub">
-                  {splitPrompt(q.prompt)[1]}
-                </Text>
-              )}
+              <Passage prompt={q.prompt} mc={!!options} />
               {options ? (
                 <View className="mt-4 gap-3.5">
                   {options.map((c, n) => (
