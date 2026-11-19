@@ -79,8 +79,7 @@ COVER = 0.6
 # 맨 끝 '다' 한 글자는 빼지 않음('바다' · '많다'는 그 낱말이 노트에 그대로 있음, /code-review)
 _END = re.compile(r"(?:입니다|합니다|됩니다|이다|한다|된다|는다|있다|없다|이며|이고)[\s.!]*$")
 _LATIN = re.compile(r"([a-z]+)")
-# text.norm이 지우는 글자(소문자로는 바꾸지 않음)
-_FRONT_PUNCT = re.compile(r"[\s\-_.·:()\[\]'\"~/,!?]+")
+_SPACE = re.compile(r"\s+")
 RUN = 4  # 뒷면에 쪽 글 그대로 있어야 하는 구간 길이(글자)
 # 카드 한 장 몫의 출력 토큰: 앞 80자 + 뒤 200자 + 개념 · JSON 키(한글은 글자당 1토큰 안팎)
 CARD_TOKENS = 700  # 한글이 글자당 2토큰 가까운 토크나이저도 덮게 넉넉히(상한일 뿐, /code-review)
@@ -166,9 +165,9 @@ def _front_in_note(front: str, page_text: str) -> bool:
 
 
 def _front_key(front: str) -> str:
-    """앞면 겹침 비교 값: 공백 · 문장부호만 뺌. 대소문자는 살림(CO 일산화탄소 · Co 코발트,
-    Codex 리뷰 #559). norm은 소문자로 바꿔 쓰지 않음."""
-    return _FRONT_PUNCT.sub("", unicodedata.normalize("NFC", front))
+    """앞면 겹침 비교 값: NFC 정규화 뒤 공백만 뺌(API flashcards.service.ts frontKey와 같음).
+    대소문자 · 기호는 살림: CO 일산화탄소 · Co 코발트, Cl 염소 · Cl- 염화 이온(Codex 리뷰 #559)."""
+    return _SPACE.sub("", unicodedata.normalize("NFC", front))
 
 
 def _check(raw: object, pages: dict[int, str], fronts: set[str]) -> tuple[JsonObject | None, str]:

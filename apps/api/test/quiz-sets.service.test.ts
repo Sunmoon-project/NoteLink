@@ -8,6 +8,7 @@ import {
   fitInput,
   INPUT_ATTEMPT_LIMIT,
   INPUT_BYTE_LIMIT,
+  cardsJobId,
   nextSetId,
   QUIZ_MIN_LINES,
   QUIZ_SET_SIZE,
@@ -1427,6 +1428,30 @@ describe('QuizSetsService 개념 카드 작업(#558)', () => {
 
     expect(cardJobs(t)).toHaveLength(1);
     expect(t.set(quizSet._id)['cardsPending']).toBe(false);
+  });
+
+  it('카드 작업 id는 세트에서 정해져, 넣은 뒤 표시를 지우기 전에 멈춰도 다음 조회가 같은 작업을 다시 넣지 않는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    t.finish(job._id, { questions: fullSet() });
+    // 표시 지우기(카드 표시가 조건에 든 갱신)만 한 번 실패: 작업은 넣었고 표시가 남음
+    const update = t.sets.model.findOneAndUpdate.bind(t.sets.model);
+    const spy = vi.spyOn(t.sets.model, 'findOneAndUpdate').mockImplementation(((filter: Record<string, unknown>, ...rest: unknown[]) =>
+      'cardsPending' in filter && spy.mock.calls.filter(([f]) => 'cardsPending' in (f as object)).length === 1
+        ? { lean: () => Promise.reject(new Error('write failed')) }
+        : (update as (...a: unknown[]) => unknown)(filter, ...rest)) as never);
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+    expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready'); // 조회는 그대로
+    expect(cardJobs(t).map((r) => String(r._id))).toEqual([cardsJobId(new Types.ObjectId(quizSet._id)).toHexString()]);
+    expect(t.set(quizSet._id)['cardsPending']).toBe(true);
+
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+    expect(cardJobs(t)).toHaveLength(1); // 같은 id라 둘째는 막힘(이미 넣음)
+    expect(t.set(quizSet._id)['cardsPending']).toBe(false);
+    spy.mockRestore();
+    warn.mockRestore();
   });
 
   it('카드 표시는 앱 응답에 나가지 않는다', async () => {

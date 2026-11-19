@@ -55,6 +55,11 @@ export interface NewAiJob {
   targetId: string;
   /** 처리기는 다른 컬렉션을 읽지 않으므로 처리에 필요한 자료를 모두 담는다(apps/ai jobs.py) */
   input: Record<string, unknown>;
+  /**
+   * 정해 둔 작업 id(없으면 새로 만듦). 한 대상에 작업을 한 번만 넣을 때 쓴다: 같은 id가 이미 있으면 MongoDB _id 고유
+   * 색인이 막아 E11000(code 11000)으로 실패한다(개념 카드 작업, #558)
+   */
+  id?: string;
 }
 
 /** 다시 시도 전에 입력을 새로 고치는 함수가 받는 값(작업의 대상과 지금 input) */
@@ -259,6 +264,7 @@ export class AiJobsService {
     // 이 요청의 held 표시(요청마다 다른 값). 확인이 늦어 지난 뒤 다시 시도가 같은 문서를 새로 잡았으면 그 held는 건드리지 않는다
     const mine = randomUUID();
     const created = await this.jobs.create({
+      ...(job.id ? { _id: serverObjectId(job.id, 'id') } : {}),
       type: job.type,
       userId,
       targetType: job.targetType,

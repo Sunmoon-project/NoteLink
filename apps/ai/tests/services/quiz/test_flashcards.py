@@ -453,3 +453,24 @@ def test_fronts_that_differ_only_in_case_are_different_cards() -> None:
     )
     cards, _ = flashcards.make(llm, {1: page}, [(1, "CO")], end=float("inf"))
     assert [c["front"] for c in cards] == ["CO", "Co"]
+
+
+def test_fronts_that_differ_only_in_a_symbol_are_different_cards() -> None:
+    page = "- Cl: 염소 원자, 17번 원소\n- Cl-: 염화 이온, 전자 하나를 얻음"
+    llm = fake(
+        {
+            flashcards.NAME: [
+                {
+                    "cards": [
+                        card("Cl", "염소 원자, 17번 원소", 1),
+                        card("Cl-", "염화 이온, 전자 하나를 얻음", 1),
+                        card(" C l ", "염소 원자, 17번 원소", 1),  # 공백만 다름: 같은 앞면
+                    ]
+                },
+                {"cards": []},
+            ]
+        }
+    )
+    cards, why = flashcards.make(llm, {1: page}, [(1, "Cl")], end=float("inf"))
+    assert [c["front"] for c in cards] == ["Cl", "Cl-"]
+    assert why is not None and flashcards.SAME_FRONT in why

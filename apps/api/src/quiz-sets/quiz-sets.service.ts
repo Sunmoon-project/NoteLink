@@ -265,6 +265,15 @@ export function objectId(id: string, what: string): Types.ObjectId {
  * 미리 만들기로 만든 세트를 지웠을 때 이어받는 새 세트의 id(setIdFor). 지운 세트의 id에서 늘 같은 값이
  * 나와 동시에 이어받는 요청들이 같은 id를 쓴다
  */
+/**
+ * 세트의 개념 카드 작업 id(#558). 세트 id에서 늘 같은 값이 나와 같은 세트의 카드 작업은 하나만 넣을 수 있다
+ * (_id 고유 색인). nextSetId와 같은 방식(다른 접두어)
+ */
+export function cardsJobId(setId: Types.ObjectId): Types.ObjectId {
+  const digest = createHash('sha256').update(`flashcards-job:${setId.toHexString()}`).digest();
+  return new Types.ObjectId(digest.subarray(0, 12).toString('hex'));
+}
+
 export function nextSetId(id: Types.ObjectId): Types.ObjectId {
   const digest = createHash('sha256').update(`quiz-set-after:${id.toHexString()}`).digest();
   return new Types.ObjectId(digest.subarray(0, 12).toString('hex'));
@@ -606,38 +615,40 @@ export class QuizSetsService {
 
   /**
    * 「카드 작업 남음」(cardsPending)인 세트의 개념 카드 작업(quiz_flashcards, #558)을 넣고 표시를 지운다.
-   * 표시를 조건부로 먼저 지워(그 요청만 넣음) 여러 요청이 같이 와도 한 번만 넣고, 그 세트의 카드 작업이 이미 있으면
-   * 넣지 않는다(표시를 지우기 전에 멈춘 요청). 넣지 못하면 표시를 되살려 다음 조회가 다시 넣는다(경고 로그만,
-   * 노트 · 문제 글은 넣지 않음). 카드는 퀴즈의 덤이라 실패해도 세트 상태 · 문제는 그대로.
+   * 작업 id는 세트 id에서 정해져(cardsJobId) 같은 세트의 작업은 하나뿐이다: 여러 요청이 같이 넣거나 넣은 뒤 표시를
+   * 지우기 전에 멈춘 요청이 있어도 _id 고유 색인이 둘째를 막고(E11000 = 이미 넣음), 표시는 넣은 뒤에만 지운다
+   * (Codex 재리뷰: 먼저 지우면 넣기 전에 멈출 때 카드가 빠짐). 넣기 · 지우기가 실패하면 표시가 남아 다음 조회가
+   * 다시 해 본다(경고 로그만, 노트 · 문제 글은 넣지 않음). 카드는 퀴즈의 덤이라 실패해도 조회 · 세트는 그대로.
    * 입력은 퀴즈 작업에 넣었던 노트(input.material)와 세트의 문제
    */
   private async ensureCards(set: QuizSetRow): Promise<void> {
-    const claimed = await this.sets
-      .findOneAndUpdate({ _id: set._id, cardsPending: true }, { $set: { cardsPending: false } })
-      .lean<QuizSetRow>();
-    if (!claimed) return;
     const owner = set.ownerId.toHexString();
-    const target = { type: CARDS_TYPE, targetType: 'quiz_set', targetId: set._id.toHexString() };
     try {
-      if (await this.jobs.findForTarget(owner, target)) return;
       const material = set.jobId ? await this.jobs.materialInputOf(owner, set.jobId.toHexString()) : null;
       const questions = set.questions ?? [];
-      if (!material || questions.length === 0) return;
-      await this.jobs.enqueue({
-        ...target,
-        userId: owner,
-        input: { material, questions: questions.map(toWorkerQuestion) },
-      });
+      if (material && questions.length > 0) {
+        await this.jobs
+          .enqueue({
+            id: cardsJobId(set._id).toHexString(),
+            type: CARDS_TYPE,
+            userId: owner,
+            targetType: 'quiz_set',
+            targetId: set._id.toHexString(),
+            input: { material, questions: questions.map(toWorkerQuestion) },
+          })
+          .catch((e: unknown) => {
+            if (!isDuplicateKey(e)) throw e; // 이미 넣음
+          });
+      }
+      await this.sets
+        .findOneAndUpdate({ _id: set._id, cardsPending: true }, { $set: { cardsPending: false } })
+        .lean();
     } catch (e) {
       this.logger.warn(
         `개념 카드 작업을 넣지 못했습니다(퀴즈는 그대로, 다음 조회에 다시, 세트 ${set._id.toHexString()}): ${
           e instanceof Error ? e.name : typeof e
         }`,
       );
-      await this.sets
-        .findOneAndUpdate({ _id: set._id }, { $set: { cardsPending: true } })
-        .lean()
-        .catch(() => undefined);
     }
   }
 
