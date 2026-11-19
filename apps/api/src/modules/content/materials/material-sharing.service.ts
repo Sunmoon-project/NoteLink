@@ -198,7 +198,7 @@ export class MaterialSharingService {
     if (notes.length !== ids.length) throw notFound('노트');
     if (!(await this.isCurrentMember(me, dto.target.id))) throw notFound('스터디룸');
     const roomId = new Types.ObjectId(dto.target.id);
-    let added = 0;
+    let added: number;
     try {
       const result = await this.shared.bulkWrite(
         notes.map((note) => ({
@@ -219,8 +219,10 @@ export class MaterialSharingService {
       );
       added = result.upsertedCount;
     } catch (e) {
-      // 같은 노트를 동시에 공유한 다른 요청이 먼저 넣었다 — 이미 공유된 것과 같다(알리지 않는다)
+      // 같은 노트를 동시에 공유한 다른 요청이 먼저 넣었다 — 그 노트는 이미 공유된 것과 같다.
+      // ordered: false 라 나머지는 들어갔을 수 있으니 오류에 담긴 결과에서 새로 넣은 수를 센다
       if (!onlyDuplicateKeys(e)) throw e;
+      added = (e as { result?: { upsertedCount?: number } }).result?.upsertedCount ?? 0;
     }
     // 알림은 기다리지 않는다(Expo가 느려도 공유 응답을 늦추지 않게). notifyShared는 던지지 않는다
     if (added > 0) void this.notifyShared(me, roomId, added);

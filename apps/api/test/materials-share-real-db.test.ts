@@ -162,6 +162,56 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       expect(await saved()).toHaveLength(2);
     });
 
+    it('일부는 새로 들어가고 일부는 동시 공유와 중복 키로 부딪혀도 새로 들어간 수만큼 알린다', async () => {
+      const a = await note();
+      const b = await note();
+      const roomId = await room([joined(owner), joined(friend)]);
+      await share(owner, [a], roomId);
+      // 동시에 같은 노트를 넣은 다른 요청과 부딪힌 것처럼: 이미 공유된 a와 겹치는 삽입을 같이 보내
+      // 진짜 DB가 b는 넣고 a는 E11000 으로 던지게 한다(ordered: false 부분 실패)
+      const racing = new Proxy(items, {
+        get: (m, k) =>
+          k === 'bulkWrite'
+            ? (ops: unknown[], opts: object) =>
+                m.bulkWrite(
+                  [
+                    ...(ops as never[]),
+                    {
+                      insertOne: {
+                        document: {
+                          roomId: new Types.ObjectId(roomId),
+                          itemType: 'material',
+                          materialId: new Types.ObjectId(a),
+                          sharedBy: owner,
+                          folderId,
+                          deletedAt: null,
+                        },
+                      },
+                    },
+                  ] as never,
+                  opts,
+                )
+            : Reflect.get(m, k),
+      });
+      const notify = vi.fn(async () => {});
+      const svc = new MaterialSharingService(
+        materials as never,
+        rooms as never,
+        racing as never,
+        users as never,
+        { notify } as never,
+      );
+      await svc.share(owner.toHexString(), {
+        materialIds: [a, b],
+        target: { type: 'room', id: roomId },
+      });
+      expect(await saved()).toHaveLength(2);
+      await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({ body: expect.stringContaining('노트 1개를 공유했어요') }),
+      );
+    });
+
     it('이미 지운 공유(deletedAt)가 있으면 새로 공유할 수 있다', async () => {
       const a = await note();
       const roomId = await room([joined(owner)]);
