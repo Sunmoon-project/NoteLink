@@ -255,6 +255,8 @@ export type ServerToClient = {
   'chat:message': (m: Message) => void;
   'room:presence': (p: { roomId: string; members: RoomMember[] }) => void;
   'room:members-changed': (payload: { roomId: string }) => void;
+  /** 스터디룸 목록(rooms:watch): 그 방 화면에 지금 들어와 있는 사람이 바뀌었다 */
+  'room:live': (p: { roomId: string; userIds: string[] }) => void;
   'room:timer': (p: {
     roomId: string;
     rule: TimerRule | null;
@@ -276,6 +278,12 @@ export type ClientToServer = {
     ack?: (r: { ok: boolean; missed?: Message[] }) => void,
   ) => void;
   'room:leave': (p: { roomId: string }) => void;
+  /** 스터디룸 목록이 보이는 동안 내 방들의 접속 현황을 받는다(멤버가 아닌 방은 live 에서 빠진다) */
+  'rooms:watch': (
+    p: { roomIds: string[] },
+    ack?: (r: { ok: boolean; live: Record<string, string[]> }) => void,
+  ) => void;
+  'rooms:unwatch': (p: { roomIds: string[] }) => void;
   'room:state': (p: { roomId: string; micOn: boolean; camOn: boolean; todaySec: number }) => void;
   /** 글은 text, 사진 · 파일은 채팅 경로에 먼저 올린 뒤 attachment로 보낸다 */
   'chat:send': (

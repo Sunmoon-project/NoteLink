@@ -54,6 +54,7 @@ import {
 import { api, ApiError } from '@/lib/api';
 import { viewingChat } from '@/lib/notification-route';
 import { socket } from '@/lib/socket';
+import { env } from '@/lib/env';
 import { hms, seoul, ymd } from '@/lib/dates';
 import { useNow, useSocket, useTabRefresh } from '@/hooks';
 import { useKeyboardInset } from '@/hooks/keyboard-inset';
@@ -85,6 +86,7 @@ import { useNet } from '@/stores/net';
 import { C, ICON, MOTION } from '@/theme';
 import { useLiveRoom } from '@/lib/livekit';
 import { LoadError } from './tools';
+import { useRoomsLive } from './room-live';
 import { InterestPicker } from '@/features/profile/interest-picker';
 import { learnerTypeLabel } from '@/lib/learner-type';
 
@@ -131,6 +133,12 @@ export function RoomListScreen() {
     onError: () => toast('스터디룸에서 나가지 못했어요. 다시 시도해주세요'),
   });
   const joined = mine.data ?? [];
+  const live = useRoomsLive(joined.map((r) => r._id));
+  // 카드 얼굴 · 접속 수는 방 멤버가 아니라 지금 그 방 화면에 들어와 있는 사람
+  const hereOf = (r: StudyRoom) =>
+    r.members.filter((m) => m.status === 'joined' && live[r._id]?.includes(m.userId));
+  // 이미 들어가 있는 방의 코드면 다시 참여하지 않고 그 방으로 보낸다(서버는 이미 멤버여도 200으로 같은 방을 돌려준다)
+  const already = v.length === 6 ? joined.find((r) => r.inviteCode === v) : undefined;
   const recList = (rec.data ?? []).filter(
     (r) => r.title.includes(q) && !joined.some((j) => j._id === r._id),
   );
@@ -166,11 +174,12 @@ export function RoomListScreen() {
                         {r.timerState?.phase === 'focus' && <Badge tone="sun">집중 중</Badge>}
                       </View>
                       <Text className="text-caption text-sub">
-                        {r.memberCount}명 · 코드 {r.inviteCode}
+                        {r.memberCount}명{hereOf(r).length ? ` · 접속 ${hereOf(r).length}` : ''} ·
+                        코드 {r.inviteCode}
                       </Text>
                       <RoomLabels room={r} className="mt-2" />
                     </View>
-                    <Faces members={r.members} />
+                    <Faces members={hereOf(r)} />
                   </Card>
                 </SwipeAction>
               </Animated.View>
@@ -284,19 +293,37 @@ export function RoomListScreen() {
           autoCapitalize="characters"
           className="mt-4 h-14 w-full rounded-xl border-2 border-brand/30 text-center tabular-nums text-title3 tracking-[6px] text-ink"
         />
+        {already && (
+          <Text className="mt-2 text-caption font-semibold text-brand">
+            이미 들어가 있는 스터디룸이에요
+          </Text>
+        )}
         <View className="mt-4 w-full">
           <Two>
             <Btn small kind="outline" onPress={() => setCode(false)}>
               취소
             </Btn>
-            <Btn
-              small
-              disabled={v.length < 6}
-              loading={join.isPending}
-              onPress={() => join.mutate(v)}
-            >
-              확인
-            </Btn>
+            {already ? (
+              <Btn
+                small
+                onPress={() => {
+                  setCode(false);
+                  setV('');
+                  router.push({ pathname: '/room/[id]', params: { id: already._id } });
+                }}
+              >
+                방으로 가기
+              </Btn>
+            ) : (
+              <Btn
+                small
+                disabled={v.length < 6}
+                loading={join.isPending}
+                onPress={() => join.mutate(v)}
+              >
+                확인
+              </Btn>
+            )}
           </Two>
         </View>
       </Dialog>
@@ -322,14 +349,18 @@ function RoomLabels({ room, className }: { room: StudyRoom; className?: string }
   );
 }
 
-/** 참여 중인 방의 참여자 얼굴을 겹쳐 보인다 (3명까지, 나머지는 +n) */
+/** 지금 그 방에 들어와 있는 사람의 얼굴을 겹쳐 보인다 (3명까지, 나머지는 +n) */
 function Faces({ members }: { members: RoomMember[] }) {
   const on = members.filter((m) => m.status === 'joined');
   if (!on.length) return null;
   return (
     <View className="flex-row items-center">
       {on.slice(0, 3).map((m, i) => (
-        <View key={m.userId} className={cx('rounded-full border-2 border-white', i > 0 && '-ml-2')}>
+        <View
+          key={m.userId}
+          accessibilityLabel={m.nickname}
+          className={cx('rounded-full border-2 border-white', i > 0 && '-ml-2')}
+        >
           <Avatar name={m.nickname} uri={m.avatarUrl} size={28} />
         </View>
       ))}
@@ -564,6 +595,8 @@ export function RoomScreen() {
     (ymd(seoul(membersAt)) === day ? (members.find((m) => m.userId === myId)?.todaySec ?? 0) : 0) +
     Math.max(0, Math.floor((now - Math.max(membersAt, midnight)) / 1000));
   const live = useLiveRoom(id, conn !== 'kicked' && !!room.data, mediaGeneration, mySec);
+  // 캠 · 음성이 붙기 전(실패 · 다시 연결 중 포함)에는 서버가 아는 「이 방 화면에 들어와 있는 사람」으로 대신 보인다
+  const socketHere = useRoomsLive([id])[id];
   const [v, setV] = useState('');
   const pending = useRef<QueuedChatMessage[]>([]);
   const joinedChat = useRef(false);
@@ -928,12 +961,16 @@ export function RoomScreen() {
     );
   if (!room.data) return <Loading />;
   const last = msgs[msgs.length - 1];
-  // 서버 멤버 목록은 참여 기록이라 뒤로 가서 나간 사람도 남는다. 미디어에 연결돼 있으면 지금 접속한 사람(+나)만 보인다
+  // 서버 멤버 목록은 참여 기록이라 뒤로 가서 나간 사람도 남는다. 미디어에 연결돼 있으면 지금 접속한 사람(+나)만 보인다.
+  // 연결되기 전(들어온 직후 · 실패 · 다시 붙는 중)에는 소켓 접속 현황으로, 그것도 받기 전이면 나만 —
+  // 멤버 전원을 그렸다가 지우면 깜빡인다. 미디어 · 서버가 없는 기기 저장 모드만 멤버를 모두 보인다
   const here = live.connected
     ? members.filter(
         (m) => m.userId === myId || live.participantState?.(m.userId)?.present !== false,
       )
-    : members;
+    : env.localData
+      ? members
+      : members.filter((m) => m.userId === myId || socketHere?.includes(m.userId));
   const tiles = chat ? here.slice(0, 2) : here;
   const remain = timer ? Math.max(0, Math.floor((timer.endsAt - now) / 1000)) : 0;
 
@@ -1012,14 +1049,23 @@ export function RoomScreen() {
                   layout={LIST_LAYOUT}
                   entering={SWAP_IN}
                   exiting={SWAP_OUT}
+                  // 테두리를 타일에 두면 영상(absolute 100%)이 그 안쪽에만 깔려 틈이 보인다: 타일은 테두리 없이 둥글게 자르고,
+                  // 말하는 중 테두리는 영상 위에 겹친 고리로 그린다
                   className={cx(
-                    'w-[48.5%] items-center justify-center rounded-2xl',
-                    'h-[118px] border-2',
+                    'w-[48.5%] items-center justify-center overflow-hidden rounded-2xl',
+                    'h-[118px]',
                     camOn ? 'bg-night' : 'bg-white',
-                    speaking ? 'border-brand' : 'border-transparent',
                   )}
                 >
                   {video}
+                  <View
+                    testID={`tile-ring-${m.userId}`}
+                    pointerEvents="none"
+                    className={cx(
+                      'absolute inset-0 rounded-2xl border-2',
+                      speaking ? 'border-brand' : 'border-transparent',
+                    )}
+                  />
                   {speaking && (
                     <View
                       accessibilityLabel={`${m.nickname} 말하는 중`}
