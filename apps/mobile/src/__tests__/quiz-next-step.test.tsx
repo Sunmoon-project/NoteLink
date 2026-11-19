@@ -91,7 +91,7 @@ it('틀린 문제가 있으면 복습 날짜를 알려 주고, 비슷한 문제 
   setParams({ setId: quizSet._id, results: '10', scheduled: '2', nextReviewDay: tomorrow });
   await renderScreen(<QuizReviewScreen />, client());
 
-  expect(await screen.findByText('틀린 1문제는 내일 다시 물어볼게요')).toBeTruthy();
+  expect(await screen.findByText('복습할 문제는 내일 다시 물어볼게요')).toBeTruthy();
   expect(screen.getByText(/^복습 일정에 넣었어요 · 다음 복습/)).toBeTruthy();
   await fireEvent.press(screen.getByRole('button', { name: /틀린 1문제 비슷한 문제로 지금 복습/ }));
   expect(router.push).toHaveBeenCalledWith({
