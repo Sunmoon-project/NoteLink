@@ -24,6 +24,7 @@ import { api, ApiError, NetworkError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { clock } from '@/lib/dates';
 import { BASE_AVATAR, BASE_THEME } from '@/lib/shop-items';
+import { themeOf } from '@/lib/shop-themes';
 import {
   Alert,
   Badge,
@@ -97,6 +98,14 @@ function DetailPreview({
   background?: string;
   size?: number;
 }) {
+  // 테마는 그 바탕색 위 미니 화면 모형(기본 바탕은 원래 바탕색)
+  const theme =
+    item._id === BASE_THEME._id
+      ? { canvas: C.canvas }
+      : item.category === 'theme'
+        ? themeOf(item._id)
+        : null;
+  if (theme) return <ThemePreview name={item.name} canvas={theme.canvas} />;
   // 내 선생님 위에 이 상품을 입혀 본다. 치장은 같은 칸의 기존 것 대신
   const dress = isDress(item) ? accessoryId(item._id) : null;
   if (item.category !== 'avatar' && !dress) return <ItemPreview item={item} large />;
@@ -110,6 +119,27 @@ function DetailPreview({
         size={size}
         background={background}
       />
+    </View>
+  );
+}
+
+/** 테마 미리보기: 그 바탕색 위에 흰 카드 두 줄 + 탭바를 올린 작은 화면 모형 */
+function ThemePreview({ name, canvas }: { name: string; canvas: string }) {
+  return (
+    <View
+      accessible
+      accessibilityRole="image"
+      accessibilityLabel={`${name} 바탕 미리보기`}
+      className="h-32 w-20 overflow-hidden rounded-xl p-2"
+      style={{ backgroundColor: canvas }}
+    >
+      <View className="h-6 rounded-xl bg-white" />
+      <View className="mt-1.5 h-10 rounded-xl bg-white" />
+      <View className="absolute right-0 bottom-0 left-0 h-5 flex-row items-center justify-around bg-white">
+        {[0, 1, 2].map((i) => (
+          <View key={i} className={cx('h-1.5 w-1.5 rounded-full', i ? 'bg-line' : 'bg-brand')} />
+        ))}
+      </View>
     </View>
   );
 }

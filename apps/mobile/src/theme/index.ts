@@ -7,6 +7,7 @@ const tokens = require('./tokens') as {
     | 'canvas'
     | 'fill'
     | 'cream'
+    | 'sea'
     | 'cream-2'
     | 'line'
     | 'brand'

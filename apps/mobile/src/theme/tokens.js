@@ -6,6 +6,7 @@ const colors = {
   canvas: '#f3f4f1', // 화면 바탕. 그 위에 테두리 없는 흰 카드를 올린다
   fill: '#eceee9', // 흰 카드 안의 입력 · 세그먼트 · 진행 막대 바탕
   cream: '#f1ede1', // 온보딩 · 빈 화면에만
+  sea: '#e6f1f5', // 상점 「바다 테마」를 장착했을 때의 화면 바탕(canvas 대신). 글자색 대비 4.5:1 이상
   'cream-2': '#e8e2d1',
   line: '#e7e3d7',
   brand: '#3b6e5b',

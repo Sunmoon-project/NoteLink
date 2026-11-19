@@ -85,7 +85,7 @@ export const SHOP: ShopItem[] = [
     _id: 'sea',
     category: 'theme',
     name: '바다 테마',
-    description: '시원한 파란 물결이 앱 전체를 감싸요.',
+    description: '앱 바탕이 시원한 바다색으로 바뀌어요.',
     price: 1000,
     avatarStyle: null,
     thumbnailUrl: '🌊',

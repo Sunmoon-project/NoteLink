@@ -96,6 +96,8 @@ describe('보관함 치장 · 기본 바탕', () => {
     );
     expect(names[0]).toBe('기본 바탕');
     await fireEvent.press(screen.getByText('기본 바탕'));
+    // 원래 바탕색 위 미니 화면 모형으로 미리 본다
+    expect(await screen.findByLabelText('기본 바탕 바탕 미리보기')).toBeTruthy();
     await fireEvent.press(await screen.findByText('장착하기'));
     await waitFor(() => expect(unequip).toHaveBeenCalledWith('sea'));
   });
