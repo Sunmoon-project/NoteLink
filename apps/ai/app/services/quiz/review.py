@@ -575,7 +575,7 @@ def _note_retry(report: Progress, *, empty: bool) -> bool:
 def _retry_empty(report: Progress) -> bool:
     """일시적인 원인의 0문제를 다시 시도할지. 다시 시도하면 횟수를 checkpoint에 남김.
 
-    다시 시도하지 않는 때: 이미 EMPTY_RETRIES번 다시 했음 · 이번이 마지막 시도로 보임(이 함수가
+    다시 시도하지 않는 때: 이미 EMPTY_RETRIES번 다시 했음 · 이번이 마지막 시도로 보임(run이
     올린 다시 시도 수 + 1이 시도 한도, 모두 장애로 올린 것도 셈) · 횟수를 저장하지 못함. 한도를
     넘겨 실패하면 복습 상태가 옮겨지지 않으므로 성공으로 끝냅니다(/code-review).
     checkpoint가 없는 report(시험의 진행률 함수)는 횟수를 셀 수 없어 시도 한도만 봅니다.
