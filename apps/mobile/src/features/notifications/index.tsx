@@ -165,11 +165,17 @@ function useSaveSettings() {
     onMutate: async (s) => {
       // 진행 중인 다시 읽기가 방금 바꾼 값을 되돌리지 않게
       await qc.cancelQueries({ queryKey: ['me'] });
+      const before = qc.getQueryData(['me']);
       qc.setQueryData(['me'], (u: { settings: UserSettings } | undefined) =>
         u ? { ...u, settings: { ...u.settings, ...s } } : u,
       );
+      return { before };
     },
-    onError: () => toast('설정을 저장하지 못했어요. 다시 시도해 주세요'),
+    onError: (_e, _s, ctx) => {
+      // 오프라인이면 다시 읽기도 실패하므로 저장 전 값으로 직접 되돌린다
+      if (ctx) qc.setQueryData(['me'], ctx.before);
+      toast('설정을 저장하지 못했어요. 다시 시도해 주세요');
+    },
     onSettled: () => qc.invalidateQueries({ queryKey: ['me'] }),
   });
 }

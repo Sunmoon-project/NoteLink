@@ -139,6 +139,19 @@ describe('알림 설정', () => {
     );
   });
 
+  it('저장에 실패하면(오프라인) 스위치를 원래 값으로 되돌린다', async () => {
+    // 처음만 읽히고 그 뒤 다시 읽기도 실패한다(네트워크 끊김)
+    mockApi.me.get.mockResolvedValueOnce(settings()).mockRejectedValue(new Error('offline'));
+    let fail!: (e: Error) => void;
+    mockApi.me.update.mockImplementationOnce(() => new Promise<object>((_, rej) => (fail = rej)));
+    await renderScreen(<NotificationSettingsScreen />);
+    await fireEvent(await screen.findByLabelText('채팅 알림'), 'valueChange', false);
+    await waitFor(() => expect(screen.getByLabelText('채팅 알림').props.value).toBe(false));
+    fail(new Error('offline'));
+    await waitFor(() => expect(screen.getByLabelText('채팅 알림').props.value).toBe(true));
+    mockApi.me.get.mockReset();
+  });
+
   it('조용한 시간을 켜면 23:00~07:00, 끄면 없앤다', async () => {
     mockApi.me.get.mockResolvedValue(settings());
     await renderScreen(<NotificationSettingsScreen />);
