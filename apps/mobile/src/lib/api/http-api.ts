@@ -220,6 +220,7 @@ export const httpApi: Api = {
     wish: async (itemId) => (await http.post<{ isWished: boolean }>(P.wish(itemId))).isWished,
     purchase: (itemId) => http.post(P.purchases, { itemId }),
     equip: (itemId) => http.post(P.equip(itemId)),
+    unequip: (itemId) => http.del(P.equip(itemId)),
     ledger: (type) => http.get(P.pointLedger, { type }),
   },
 };

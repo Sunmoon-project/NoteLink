@@ -23,7 +23,7 @@ import { ERROR_CODES, type ShopItem } from '@notelink/shared';
 import { api, ApiError, NetworkError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { clock } from '@/lib/dates';
-import { BASE_AVATAR } from '@/lib/shop-items';
+import { BASE_AVATAR, BASE_THEME } from '@/lib/shop-items';
 import {
   Alert,
   Badge,
@@ -38,12 +38,23 @@ import {
   cx,
 } from '@/components/ui';
 import { C, ICON, MOTION } from '@/theme';
+import { accessoryId, previewLook } from '../tutor/accessories';
 import { Avatar3D } from '../tutor/avatar3d';
-import { avatarModel } from '../tutor/buddy';
+import { avatarModel, useEquippedAccessories, useEquippedAvatar } from '../tutor/buddy';
 
 // p.91~95 상점 · 정렬 · 상세 · 구매 · 포인트 내역 · 보관함 / p.101 구매 중 연결 끊김
 
 type Sort = 'latest' | 'price' | 'popular';
+/** 아바타 선생님 치장(모자 · 안경 · 목도리). 상점 · 보관함에서는 「치장」 탭 하나로 묶는다 */
+const isDress = (i: ShopItem) =>
+  i.category === 'hat' || i.category === 'glasses' || i.category === 'scarf';
+const inTab = (i: ShopItem, tab: string) =>
+  tab === '전체' ||
+  (tab === '아바타'
+    ? i.category === 'avatar'
+    : tab === '치장'
+      ? isDress(i)
+      : i.category === 'theme');
 const SORT_LABEL: Record<Sort, string> = {
   latest: '최신순',
   price: '낮은 가격순',
@@ -71,22 +82,31 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
 
 /** 상품 그림: 이미지 주소면 그림으로, 아니면 이모지 글자로(small은 아바타 선생님 고르기 칸 크기) */
 /** 상세 창 · 보관함 「현재 아바타」 미리보기: 아바타는 선생님이 될 3D 얼굴로, 그 밖의 상품은 그림으로 */
+/** 지금 내 선생님 모습(장착 아바타의 3D 모델 + 장착 치장). 시트가 열릴 때 조회가 새로 붙지 않게 화면에서 읽는다 */
+type Look = { face: string; worn: string[] };
+const useLook = (): Look => ({ face: useEquippedAvatar(), worn: useEquippedAccessories() });
+
 function DetailPreview({
   item,
+  look: { face, worn },
   background = C.fill,
   size = 128,
 }: {
   item: ShopItem;
+  look: Look;
   background?: string;
   size?: number;
 }) {
-  if (item.category !== 'avatar') return <ItemPreview item={item} large />;
+  // 내 선생님 위에 이 상품을 입혀 본다. 치장은 같은 칸의 기존 것 대신
+  const dress = isDress(item) ? accessoryId(item._id) : null;
+  if (item.category !== 'avatar' && !dress) return <ItemPreview item={item} large />;
   return (
     <View accessibilityLabel={`${item.name} 3D 미리보기`}>
       {/* 상자와 같은 색으로 칠해 네모난 3D 바탕이 보이지 않게 */}
       <Avatar3D
         mood="idle"
-        avatarId={avatarModel(item._id, [item])}
+        avatarId={dress ? face : avatarModel(item._id, [item])}
+        accessories={dress ? previewLook(worn, dress) : worn}
         size={size}
         background={background}
       />
@@ -169,17 +189,19 @@ export function ShopScreen() {
   const openFeature = useFeatureNavigation();
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
-  const [tab, setTab] = useState<'전체' | '아바타' | '테마' | '찜'>('전체');
+  const [tab, setTab] = useState<'전체' | '아바타' | '치장' | '테마' | '찜'>('전체');
   const [sort, setSort] = useState<Sort>('latest');
   const items = useQuery({
     queryKey: ['shop', tab, sort],
     queryFn: () =>
       api.shop.items({
+        // 치장은 종류가 셋이라 전체를 받아 앱에서 거른다
         category: tab === '아바타' ? 'avatar' : tab === '테마' ? 'theme' : undefined,
         sort,
       }),
   });
   const shop = useShopData();
+  const look = useLook();
   const { points, owned, wished } = shop;
   const [sortOpen, setSortOpen] = useState(false);
   const [detail, setDetail] = useState<ShopItem | null>(null);
@@ -252,7 +274,9 @@ export function ShopScreen() {
   };
   // 찜 탭도 고른 정렬을 따른다 — '찜'은 카테고리가 없으므로 items가 정렬된 전체 목록이다
   const list =
-    tab === '찜' ? (items.data ?? []).filter((i) => wished.has(i._id)) : (items.data ?? []);
+    tab === '찜'
+      ? (items.data ?? []).filter((i) => wished.has(i._id))
+      : (items.data ?? []).filter((i) => tab !== '치장' || isDress(i));
   const tryBuy = (it: ShopItem) => {
     if (buying.current || owned.has(it._id) || purchased.current.has(it._id)) return;
     // 잔액과 보유 내역을 읽기 전에는 포인트가 0인 것처럼 판단하지 않는다
@@ -303,7 +327,7 @@ export function ShopScreen() {
           </Pressable>
           {(shop.pending || items.isPending) && <Loading />}
           <View className="mt-4 flex-row gap-1">
-            {(['전체', '아바타', '테마', '찜'] as const).map((t) => (
+            {(['전체', '아바타', '치장', '테마', '찜'] as const).map((t) => (
               <Pressable
                 key={t}
                 onPress={() => setTab(t)}
@@ -406,7 +430,7 @@ export function ShopScreen() {
           {detail && (
             <>
               <View className="h-36 items-center justify-center rounded-2xl bg-fill">
-                <DetailPreview item={detail} />
+                <DetailPreview item={detail} look={look} />
               </View>
               <View className="mt-3 flex-row items-center justify-between">
                 <Text className="text-body font-bold text-ink">{detail.name}</Text>
@@ -609,9 +633,10 @@ export function BoxScreen() {
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
   const shop = useShopData();
+  const look = useLook();
   const { owned, equipped, equippedIds, loaded } = shop;
   const all = useQuery({ queryKey: ['shop', 'all'], queryFn: () => api.shop.items({}) });
-  const [tab, setTab] = useState<'전체' | '아바타' | '테마'>('전체');
+  const [tab, setTab] = useState<'전체' | '아바타' | '치장' | '테마'>('전체');
   const [pick, setPick] = useState<ShopItem | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const { equip: eq } = useLocalSearchParams<{ equip?: string }>();
@@ -622,22 +647,35 @@ export function BoxScreen() {
     setOpened(key);
     setPick(owned.has(eq!) ? (all.data?.find((i) => i._id === eq) ?? null) : null);
   }
-  const items = [BASE_AVATAR, ...(all.data ?? []).filter((i) => owned.has(i._id))].filter(
-    (i) => tab === '전체' || (tab === '아바타' ? i.category === 'avatar' : i.category === 'theme'),
+  const mineList = (all.data ?? []).filter((i) => owned.has(i._id));
+  // 장착한 테마(없으면 기본 바탕). 테마를 하나라도 가졌을 때만 「기본 바탕」을 둔다
+  const wornTheme = mineList.find((i) => i.category === 'theme' && equippedIds.has(i._id));
+  const hasTheme = mineList.some((i) => i.category === 'theme');
+  const items = [BASE_AVATAR, ...(hasTheme ? [BASE_THEME] : []), ...mineList].filter((i) =>
+    inTab(i, tab),
   );
   const cur = [BASE_AVATAR, ...(all.data ?? [])].find((i) => i._id === equipped) ?? BASE_AVATAR;
-  const isEquipped = (it: ShopItem) => equippedIds.has(it._id) || it._id === equipped;
+  const isEquipped = (it: ShopItem) =>
+    it._id === BASE_THEME._id ? !wornTheme : equippedIds.has(it._id) || it._id === equipped;
+  // 장착 중인 치장은 시트에서 벗는다
+  const takeOff = (it: ShopItem) => isDress(it) && isEquipped(it);
   const equip = useMutation({
     mutationFn: (it: ShopItem) => {
+      // 기본 바탕 = 장착한 테마 벗기
+      if (it._id === BASE_THEME._id)
+        return wornTheme ? api.shop.unequip(wornTheme._id) : Promise.resolve();
       if (it._id !== BASE_AVATAR._id && !owned.has(it._id))
         throw new Error('보유한 아이템만 장착할 수 있어요');
-      return api.shop.equip(it._id);
+      return takeOff(it) ? api.shop.unequip(it._id) : api.shop.equip(it._id);
     },
-    onError: () => setMsg('장착하지 못했어요. 다시 시도해주세요'),
+    onError: (_, it) =>
+      setMsg(
+        takeOff(it) ? '벗지 못했어요. 다시 시도해주세요' : '장착하지 못했어요. 다시 시도해주세요',
+      ),
     onSuccess: (_, it) => {
       qc.invalidateQueries({ queryKey: ['my-items'] });
       setPick(null);
-      setMsg(`장착 완료 · ${it.name}`);
+      setMsg(takeOff(it) ? `벗기 완료 · ${it.name}` : `장착 완료 · ${it.name}`);
     },
   });
   if (shop.error || (all.isError && !all.data))
@@ -657,13 +695,13 @@ export function BoxScreen() {
           )}
           <View className="mt-3 h-32 items-center justify-center overflow-hidden rounded-2xl bg-mint">
             {/* 장착한 아바타는 선생님이 될 3D 얼굴로 (상자 bg-mint와 같은 바탕, 상자 안에 들어가는 크기) */}
-            <DetailPreview item={cur} background={C.mint} size={112} />
+            <DetailPreview item={cur} look={look} background={C.mint} size={112} />
             <View className="absolute right-3 bottom-3 rounded-full bg-white px-2 py-0.5">
               <Text className="text-caption2 text-ink">현재 아바타</Text>
             </View>
           </View>
           <View className="mt-3 flex-row gap-1">
-            {(['전체', '아바타', '테마'] as const).map((t) => (
+            {(['전체', '아바타', '치장', '테마'] as const).map((t) => (
               <Pressable
                 key={t}
                 onPress={() => setTab(t)}
@@ -698,7 +736,7 @@ export function BoxScreen() {
               {items.map((it) => (
                 <Pressable
                   key={it._id}
-                  onPress={() => !isEquipped(it) && setPick(it)}
+                  onPress={() => (!isEquipped(it) || isDress(it)) && setPick(it)}
                   className="w-[47.5%] rounded-card bg-white p-2.5"
                 >
                   <View className="h-24 items-center justify-center rounded-xl bg-white">
@@ -726,15 +764,20 @@ export function BoxScreen() {
           {pick && (
             <>
               <View className="h-36 items-center justify-center rounded-2xl bg-fill">
-                <DetailPreview item={pick} />
+                <DetailPreview item={pick} look={look} />
               </View>
               <View className="mt-3 flex-row items-center justify-between">
                 <Text className="text-body font-bold text-ink">{pick.name}</Text>
                 <Badge>보유중</Badge>
               </View>
               <Text className="mt-1 text-caption text-sub">{pick.description}</Text>
-              <Btn className="mt-4" loading={equip.isPending} onPress={() => equip.mutate(pick)}>
-                장착하기
+              <Btn
+                className="mt-4"
+                kind={takeOff(pick) ? 'outline' : 'primary'}
+                loading={equip.isPending}
+                onPress={() => equip.mutate(pick)}
+              >
+                {takeOff(pick) ? '벗기' : '장착하기'}
               </Btn>
             </>
           )}

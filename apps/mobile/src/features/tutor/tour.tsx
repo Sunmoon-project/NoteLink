@@ -19,7 +19,7 @@ import { Alert, Btn, Swap, cx } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/stores/auth';
 import { Avatar3D, type Mood } from './avatar3d';
-import { useEquippedAvatar } from './buddy';
+import { useEquippedAccessories, useEquippedAvatar } from './buddy';
 
 // 이 기기에서 처음 안내를 본(또는 건너뛴) 계정. 로그아웃해도 남겨 다시 보여 주지 않는다
 // 계정 기록(User.toured)이 우선이고, 이 기기 기록은 서버에 못 적었을 때를 받쳐 준다
@@ -296,6 +296,7 @@ export function TourCoach() {
   const go = useTour((s) => s.go);
   const userId = useAuth((s) => s.userId);
   const avatar = useEquippedAvatar();
+  const acc = useEquippedAccessories();
   const { width: W, height: H } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const [spot, setSpot] = useState<Rect | null>(null);
@@ -413,7 +414,7 @@ export function TourCoach() {
       >
         <View className="flex-row items-start gap-3">
           <View className="h-14 w-14 items-center justify-center overflow-hidden rounded-full bg-mint">
-            <Avatar3D mood={mood} avatarId={avatar} size={52} framing="head" />
+            <Avatar3D mood={mood} avatarId={avatar} accessories={acc} size={52} framing="head" />
           </View>
           <View className="flex-1">
             {/* 정리 → 학습 → 복습: 지금 설명하는 단계가 채워진다 */}

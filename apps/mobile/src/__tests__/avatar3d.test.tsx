@@ -200,6 +200,48 @@ it('움직이는 부품(눈 · 입)은 따로 두고 나머지는 한 메시로 
   add.mockRestore();
 });
 
+it('악세서리를 씌워도 머리에 합쳐 그리기 횟수는 그대로(눈 둘 · 입 · 얼굴 하나), 삼각형은 늘어난다', async () => {
+  const { Scene } = jest.requireActual('three');
+  const add = jest.spyOn(Scene.prototype, 'add');
+  const faceTris = async (accessories?: string[]) => {
+    add.mockClear();
+    mockGl.length = 0;
+    const view = await render(<Avatar3D mood="idle" avatarId="narae" accessories={accessories} />);
+    await glReady(1);
+    await createContext(0);
+    const head = (add.mock.calls[0]![0] as import('three').Object3D).getObjectByName('head')!;
+    const meshes: import('three').Mesh[] = [];
+    head.traverse(
+      (o) => (o as import('three').Mesh).isMesh && meshes.push(o as import('three').Mesh),
+    );
+    await view.unmount();
+    const face = meshes.find((m) => !['eyeL', 'eyeR', 'mouth'].includes(m.name))!;
+    return { count: meshes.length, tris: face.geometry.getAttribute('position').count / 3 };
+  };
+  const plain = await faceTris();
+  const dressed = await faceTris(['beanie', 'roundGlasses', 'redScarf']);
+  expect(dressed.count).toBe(4);
+  expect(plain.count).toBe(4);
+  expect(dressed.tris).toBeGreaterThan(plain.tris);
+  add.mockRestore();
+});
+
+it('악세서리를 바꾸면 그 모습으로 GL 화면을 새로 그리고 옛 반복은 멈춘다', async () => {
+  const view = await render(<Avatar3D mood="idle" avatarId="base" accessories={['beanie']} />);
+  await glReady(1);
+  await createContext(0);
+  await view.rerender(<Avatar3D mood="idle" avatarId="base" accessories={['gradCap']} />);
+  expect(mockRenderers[0]!.dispose).toHaveBeenCalled();
+  await glReady(2);
+  await createContext(mockGl.length - 1);
+  const now = mockRenderers.at(-1)!;
+  // 같은 모습을 새 배열로 넘기기만 하면(부모가 다시 그려도) GL 화면을 새로 만들지 않는다
+  await view.rerender(<Avatar3D mood="talking" avatarId="base" accessories={['gradCap']} />);
+  await wait(60);
+  expect(now.dispose).not.toHaveBeenCalled();
+  expect(now.render).toHaveBeenCalled();
+});
+
 it('lips를 넘기면 사인파 대신 그 입 모양으로 다가가고, 다문 입은 원래 크기', async () => {
   const { Scene } = jest.requireActual('three');
   const add = jest.spyOn(Scene.prototype, 'add');

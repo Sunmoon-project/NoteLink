@@ -1410,9 +1410,15 @@ const api: Api = {
       }
       const target = d.userItems.find((u) => u.itemId === itemId && u.isOwned);
       if (!target) return fail(ERROR_CODES.NOT_FOUND, '보유한 아이템이 아니에요', 404);
-      // 같은 종류(아바타 · 테마)끼리만 바꿔 낀다
+      // 같은 종류(아바타 · 테마 · 모자 · 안경 · 목도리)끼리만 바꿔 낀다
       for (const u of d.userItems)
         if (u.itemCategory === target.itemCategory) u.isEquipped = u === target;
+      return ok(undefined);
+    },
+    unequip: (itemId) => {
+      const target = db().userItems.find((u) => u.itemId === itemId && u.isOwned);
+      if (!target) return fail(ERROR_CODES.NOT_FOUND, '보유한 아이템이 아니에요', 404);
+      target.isEquipped = false;
       return ok(undefined);
     },
     ledger: (type) =>

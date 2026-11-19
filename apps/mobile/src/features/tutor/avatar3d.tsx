@@ -8,6 +8,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { C } from '@/theme';
 import type { Lips } from './lips';
+import { attachAccessories } from './accessories';
 
 // Hermes에는 FinalizationRegistry가 없다(three의 WebGLRenderer가 GPU 자원 정리에 씀).
 // 화면을 떠날 때 renderer.dispose()로 직접 정리하므로 등록만 받는 대체로 둔다
@@ -183,9 +184,12 @@ export function Avatar3D({
   background = C.mint,
   onReady,
   lips,
+  accessories,
 }: {
   mood: Mood;
   avatarId?: string | null;
+  /** 씌울 치장(악세서리 id, features/tutor/accessories). 칸마다 하나, 모르는 id는 무시 */
+  accessories?: string[];
   size?: number;
   framing?: Framing;
   /** 둘레와 같은 색으로 칠한다(투명 합성은 expo-gl에서 비어 보였다) */
@@ -199,6 +203,9 @@ export function Avatar3D({
   lips?: () => Lips;
 }) {
   const id = modelId(avatarId);
+  // 모습(아바타 + 치장)이 같으면 새 배열이 와도 다시 읽지 않게 글자로 비교한다
+  const acc = accessories?.join(',') ?? '';
+  const look = `${id}|${acc}`;
   const moodRef = useRef(mood);
   const ready = useRef(onReady);
   const lipsRef = useRef(lips);
@@ -209,7 +216,7 @@ export function Avatar3D({
   // 실패는 그 모델에만: 다른 아바타로 바꾸면 다시 3D로 읽어 본다
   const [failedId, setFailedId] = useState<string | null>(null);
   const failed = failedId === id;
-  const [model, setModel] = useState<{ id: string; root: THREE.Group } | null>(null);
+  const [model, setModel] = useState<{ look: string; root: THREE.Group } | null>(null);
   const reduce = useRef(false);
   // 그리기 반복을 멈추는 정리 함수(모델이 바뀌거나 화면을 떠날 때)
   const stop = useRef<(() => void) | null>(null);
@@ -222,14 +229,17 @@ export function Avatar3D({
   }, []);
   // 아바타 · 구도가 바뀌어 옛 GL 화면을 내리거나 화면을 떠나면 그리기 반복을 바로 멈춘다.
   // 커밋 중에 도는 layout 정리라, 새 GL 화면의 onContextCreate보다 늦게 돌아 새 반복을 멈추는 일이 없다
-  useLayoutEffect(() => () => stop.current?.(), [id, framing]);
+  useLayoutEffect(() => () => stop.current?.(), [look, framing]);
   useEffect(() => {
     let live = true;
     loadModel(id)
       .then((buf) => new GLTFLoader().parseAsync(buf, ''))
       .then((g) => {
         if (!live) return;
-        setModel({ id, root: g.scene });
+        // 치장은 GL 전에 머리에 붙여 둔다 → bake가 움직이지 않는 부품과 한 메시로 합쳐 그리기 횟수가 그대로다
+        const head = g.scene.getObjectByName('head');
+        if (head && acc) attachAccessories(head, acc.split(','), id);
+        setModel({ look, root: g.scene });
         // 전에 실패했던 모델을 다시 골라 이번에 읽었으면 2D에서 3D로 돌아온다
         setFailedId((f) => (f === id ? null : f));
       })
@@ -241,7 +251,7 @@ export function Avatar3D({
     return () => {
       live = false;
     };
-  }, [id]);
+  }, [id, acc, look]);
 
   const onContextCreate = (gl: ExpoWebGLRenderingContext, root: THREE.Group) => {
     try {
@@ -362,7 +372,7 @@ export function Avatar3D({
     }
   };
 
-  const loaded = model?.id === id ? model.root : null;
+  const loaded = model?.look === look ? model.root : null;
   return (
     <View
       accessibilityLabel="아바타 선생님"
@@ -373,8 +383,8 @@ export function Avatar3D({
         <FlatFace mood={mood} size={size} />
       ) : loaded ? (
         <GLView
-          // 아바타를 바꾸면 GL 화면을 새로 만든다
-          key={`${id}-${framing}`}
+          // 아바타 · 치장을 바꾸면 GL 화면을 새로 만든다
+          key={`${look}-${framing}`}
           style={{ width: size, height: size }}
           msaaSamples={0}
           onContextCreate={(gl) => onContextCreate(gl, loaded)}

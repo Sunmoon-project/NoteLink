@@ -284,13 +284,15 @@ export interface Api {
   };
   shop: {
     items(p: {
-      category?: 'avatar' | 'theme';
+      category?: ShopItem['category'];
       sort?: 'latest' | 'price' | 'popular';
     }): Promise<ShopItem[]>;
     myItems(): Promise<UserItem[]>;
     wish(itemId: string): Promise<boolean>;
     purchase(itemId: string): Promise<{ balance: number }>;
     equip(itemId: string): Promise<void>;
+    /** 벗기(치장 · 테마). 보유하면 이미 벗었어도 성공, 보유 안 하면 NOT_FOUND */
+    unequip(itemId: string): Promise<void>;
     ledger(type?: 'earn' | 'spend'): Promise<PointLedger[]>;
   };
 }
