@@ -185,6 +185,27 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 생성 알림', () => {
     expect(notice?.retryAt).toBeInstanceOf(Date);
   });
 
+  it('기다린 미리 만들기가 실패하면 세트가 없어도 다시 시도하지 않고 바로 실패를 알린다(퀴즈 탭으로)', async () => {
+    const { id } = await quizJob(
+      {
+        type: 'quiz_pregen',
+        status: 'failed',
+        targetType: 'material',
+        targetId: new Types.ObjectId(),
+        awaited: true,
+      },
+      { none: true },
+    );
+    await service.runOnce(NOW);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      title: '퀴즈를 만들지 못했어요. 다시 시도해 주세요',
+      data: { type: 'quiz-ready', status: 'failed' },
+    });
+    expect(sent[0]!.data.quizSetId).toBeUndefined();
+    expect((await jobs.findById(id).lean())!.notice?.state).toBe('sent');
+  });
+
   it('AI 알림을 끈 사람에게는 저장 · 푸시 모두 없다(작업은 skipped로 끝난다)', async () => {
     await users.updateOne({ _id: me }, { $set: { 'settings.notifyAi': false } });
     const { id } = await quizJob();

@@ -415,7 +415,7 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
 
   /**
    * 알림 내용. 지운 노트 · 다른 작업에 다시 연결된 노트, 지운 퀴즈 세트 · 이 작업의 것이 아닌 세트면 null(보내지 않는다).
-   * 이어받은 미리 만들기의 세트가 아직 없으면 'later'(다시 시도)
+   * 이어받은 미리 만들기의 세트가 아직 없으면 'later'(다시 시도). 실패한 퀴즈 작업은 세트를 보지 않고 실패를 알린다
    */
   private async contentOf(job: JobLean): Promise<
     | {
@@ -449,6 +449,15 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
         data: { type: 'note-summary', materialId, status: job.status },
       };
     }
+    const kind = job.type === 'similar_quiz' ? 'similar' : 'quiz';
+    // 실패하면 세트가 안 생길 수 있다: 세트를 찾지 않고 바로 알린다(앱은 quizSetId가 없으면 퀴즈 탭으로 간다)
+    if (job.status === 'failed')
+      return {
+        title: MESSAGES[kind].failed,
+        body: '퀴즈 탭에서 다시 만들 수 있어요', // 세트 제목을 모를 수 있다(알림함은 본문이 꼭 있어야 한다)
+        threadId: `quiz-job-${String(job._id)}`,
+        data: { type: 'quiz-ready', status: job.status },
+      };
     // 퀴즈 만들기 · 미리 만들기 모두 세트가 이 작업(jobId)을 가리킨다
     const set = await this.sets
       .findOne({ jobId: job._id, ownerId: job.userId, deletedAt: null }, { title: 1 })
@@ -457,7 +466,7 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
     if (!set) return job.type === PREGEN_TYPE ? 'later' : null;
     const quizSetId = String(set._id);
     return {
-      title: MESSAGES[job.type === 'similar_quiz' ? 'similar' : 'quiz'][job.status],
+      title: MESSAGES[kind][job.status],
       body: set.title ?? '',
       threadId: `quiz-${quizSetId}`,
       data: { type: 'quiz-ready', quizSetId, status: job.status },
