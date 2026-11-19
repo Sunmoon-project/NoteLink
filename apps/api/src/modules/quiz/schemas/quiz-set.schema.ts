@@ -87,6 +87,12 @@ export class QuizSet {
   @Prop({ type: Boolean, default: false })
   followUpPending?: boolean;
 
+  // 맞춤 퀴즈 · 미리 만들기 세트가 ready가 된 뒤 개념 카드 작업(quiz_flashcards, #558)을 아직 넣지 못했으면 true.
+  // ready로 바꾸는 갱신에 같이 적고, 세트 조회가 넣어 보고 지운다(QuizSetsService.ensureCards). 앱에는 보내지 않는다.
+  // 이 필드가 없는 기존 문서는 false로 본다
+  @Prop({ type: Boolean, default: false })
+  cardsPending?: boolean;
+
   // 오늘의 복습 세트의 날짜(서울 YYYY-MM-DD). 하루에 한 번만 만든다. 다른 세트는 null
   @Prop({ type: String, default: null })
   reviewDay?: string | null;

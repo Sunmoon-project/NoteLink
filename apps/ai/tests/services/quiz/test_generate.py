@@ -1560,3 +1560,12 @@ def test_a_setup_error_stops_waiting_drafts_even_before_the_main_thread_notices(
         run(llm, job(size=4))
     assert len(llm.named("Quiz")) == 1
     join_threads("quiz-draft")
+
+
+def test_the_quiz_job_does_not_make_cards() -> None:
+    # 개념 카드는 세트가 ready가 된 뒤 따로 만드는 작업(flashcards.py quiz_flashcards, #558): 퀴즈
+    # 작업은 카드 때문에 늦어지지 않음
+    llm = happy([GOOD["이질 아메바"], GOOD["람블편모충"]])
+    result, _ = run(llm, job())
+    assert "flashcards" not in result
+    assert {n for n, _ in llm.calls} == {"Quiz", generate.CHECK_NAME}

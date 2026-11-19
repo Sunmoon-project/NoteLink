@@ -40,6 +40,7 @@ export class AiJob {
       'explain',
       'image_check',
       'note_ask',
+      'quiz_flashcards', // 개념 카드(#558, apps/ai services/quiz/flashcards.py)
     ],
     type: String,
   })
