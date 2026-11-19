@@ -19,7 +19,7 @@ jest.mock('expo-secure-store', () => ({
   deleteItemAsync: jest.fn(async (key: string) => void mockStore.delete(key)),
 }));
 const mockApi = {
-  me: { get: jest.fn(), update: jest.fn(), withdraw: jest.fn(), presence: jest.fn(async () => {}) },
+  me: { get: jest.fn(), update: jest.fn(), withdraw: jest.fn() },
   auth: { logout: jest.fn(async () => {}) },
 };
 jest.mock('../lib/api', () => ({
@@ -30,6 +30,8 @@ jest.mock('../lib/api', () => ({
   NetworkError: class NetworkError extends Error {},
 }));
 jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
+const mockLeavePresence = jest.fn(async () => {});
+jest.mock('../lib/presence', () => ({ leavePresence: () => mockLeavePresence() }));
 jest.mock('../lib/socket', () => ({ disconnectSocket: jest.fn(), socket: { emit: jest.fn() } }));
 
 const user = { ...seedUser(), _id: 'settings-signout-user' };
@@ -142,15 +144,15 @@ it('설정 로그아웃의 기기 삭제 실패는 모든 계정 상태를 보�
   expect(SecureStore.deleteItemAsync).toHaveBeenCalledTimes(2);
 });
 
-// 실기기 피드백: 앱을 나가도 '활동 중' → 로그아웃하면 토큰을 지우기 전에 접속 신호를 거둔다
-it('로그아웃은 로그아웃 요청 전에 접속 신호를 거둔다', async () => {
+// 실기기 피드백: 앱을 나가도 '활동 중' → 로그아웃하면 토큰을 지우기 전에 신호를 멈추고 거둔다
+it('로그아웃은 로그아웃 요청 전에 접속 신호를 멈추고 거둔다', async () => {
   await useAuth.getState().signIn(tokens, user);
   await useAuth.getState().finishOnboarding();
   await renderScreen(<SettingsScreen />);
   await confirmSignOut();
   await waitFor(() => expect(mockApi.auth.logout).toHaveBeenCalled());
-  expect(mockApi.me.presence).toHaveBeenCalledWith(false);
-  expect(mockApi.me.presence.mock.invocationCallOrder[0]!).toBeLessThan(
+  expect(mockLeavePresence).toHaveBeenCalledTimes(1);
+  expect(mockLeavePresence.mock.invocationCallOrder[0]!).toBeLessThan(
     mockApi.auth.logout.mock.invocationCallOrder[0]!,
   );
 });

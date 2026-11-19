@@ -1,6 +1,6 @@
 import { AppState } from 'react-native';
 import { api } from '@/lib/api';
-import { PRESENCE_MS, startPresence } from '@/lib/presence';
+import { leavePresence, PRESENCE_MS, startPresence } from '@/lib/presence';
 
 // 실기기 피드백: 앱을 나가도 친구에게 '활동 중'으로 보였다 → 앞에 있는 동안만 신호를 보내고, 나가면 거둔다
 jest.mock('@/lib/api', () => ({ api: { me: { presence: jest.fn() } } }));
@@ -58,4 +58,15 @@ it('백그라운드에서 시작하면 앞에 나올 때까지 보내지 않고,
   await jest.advanceTimersByTimeAsync(PRESENCE_MS);
   expect(presence).toHaveBeenCalledTimes(2);
   stop();
+});
+
+it('로그아웃(leavePresence)은 타이머를 먼저 멈추고 신호를 거둬, 뒤에 신호가 다시 가지 않는다', async () => {
+  startPresence();
+  expect(presence).toHaveBeenLastCalledWith(true);
+  await leavePresence();
+  expect(presence).toHaveBeenLastCalledWith(false);
+  expect(remove).toHaveBeenCalled();
+  const calls = presence.mock.calls.length;
+  await jest.advanceTimersByTimeAsync(PRESENCE_MS * 3);
+  expect(presence).toHaveBeenCalledTimes(calls);
 });
