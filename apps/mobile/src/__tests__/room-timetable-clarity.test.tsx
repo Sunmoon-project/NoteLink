@@ -59,7 +59,8 @@ const schedule = {
 beforeEach(() => {
   jest.clearAllMocks();
   setParams({ id: 'r1' });
-  mockApi.rooms.get.mockResolvedValue({ _id: 'r1', title: '방' });
+  // 실제 방 응답처럼 members를 둔다(방 설정의 「멤버 n명」 줄이 쓴다)
+  mockApi.rooms.get.mockResolvedValue({ _id: 'r1', title: '방', members: [] });
   mockApi.rooms.schedule.mockResolvedValue(schedule);
 });
 
