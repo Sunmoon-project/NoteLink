@@ -671,3 +671,24 @@ it('기기 저장 모드도 방을 만들 때 고른 분야(첫 번째가 대표
   });
   expect((await api.rooms.mine())[0]).toMatchObject({ categoryNames: ['수능', '자격증'] });
 });
+
+// 실기기 피드백(2026-11-20): 서버처럼 기기 저장 모드도 방에 노트를 공유하면 방 채팅에 자료 카드를 남긴다
+it('방에 노트를 공유하면 방 채팅에 자료 카드가 하나 남고, 다시 공유해도 늘지 않는다', async () => {
+  await signup('a@test.com');
+  const room = await api.rooms.create({
+    title: '방',
+    categoryIds: ['000000000000000000000001'],
+    isPublic: true,
+  });
+  const f = await addFolder();
+  const { material: m } = await api.content.createMaterial(material(f._id));
+  const share = () =>
+    api.content.share({ materialIds: [m._id], target: { type: 'room', id: room._id } });
+  await share();
+  await share();
+  const chatId = await api.rooms.chatRoomId(room._id);
+  const cards = (await api.social.messages(chatId)).filter((x) => x.type === 'shared_item');
+  const [item] = (await api.rooms.shared(room._id)).items;
+  expect(cards).toEqual([expect.objectContaining({ text: '자료', sharedItemId: item!._id })]);
+  expect((await api.rooms.shared(room._id)).items).toHaveLength(1);
+});

@@ -7,8 +7,14 @@ import { useToast } from '../stores/toast';
 import { renderScreen, setParams } from '../test-utils';
 
 const mockApi = {
-  rooms: { get: jest.fn(), schedule: jest.fn(), shared: jest.fn(), setTimer: jest.fn() },
-  social: { friends: jest.fn() },
+  rooms: {
+    get: jest.fn(),
+    schedule: jest.fn(),
+    shared: jest.fn(),
+    setTimer: jest.fn(),
+    chatRoomId: jest.fn(),
+  },
+  social: { friends: jest.fn(), messages: jest.fn() },
   content: { material: jest.fn() },
 };
 const mockOpen = jest.fn();
@@ -47,6 +53,8 @@ beforeEach(() => {
   useAuth.setState({ userId: 'host' });
   mockApi.rooms.get.mockResolvedValue(room);
   mockApi.social.friends.mockResolvedValue([]);
+  mockApi.rooms.chatRoomId.mockResolvedValue('chat-1');
+  mockApi.social.messages.mockResolvedValue([]);
 });
 
 it.each([
@@ -125,6 +133,38 @@ it('공유 자료가 없으면 비어 있다고 안내한다', async () => {
   mockApi.rooms.shared.mockResolvedValue({ items: [], flashcards: [] });
   await renderScreen(<RoomCardsScreen />);
   expect(await screen.findByText('아직 공유된 자료가 없어요')).toBeTruthy();
+});
+
+// 실기기 피드백(2026-11-20): 방 채팅에 올린 사진 · 파일도 공유 자료에서 함께 본다
+it('공유 자료에 방 채팅에 올린 사진 · 파일을 최근 것부터 보여 준다', async () => {
+  mockApi.rooms.shared.mockResolvedValue({ items: [], flashcards: [] });
+  const att = (id: string, kind: 'image' | 'file', name: string, at: string) => ({
+    _id: id,
+    chatRoomId: 'chat-1',
+    senderId: 'u2',
+    senderNickname: '민수',
+    type: kind,
+    text: null,
+    sharedItemId: null,
+    attachment: { kind, name, sizeBytes: 10, url: `https://store/${name}` },
+    createdAt: at,
+  });
+  mockApi.social.messages.mockResolvedValue([
+    att('a1', 'image', '칠판.jpg', '2026-11-17T00:00:00.000Z'),
+    {
+      ...att('t1', 'image', 'x', '2026-11-17T01:00:00.000Z'),
+      type: 'text',
+      attachment: undefined,
+      text: '안녕',
+    },
+    att('a2', 'file', '요약.pdf', '2026-11-18T00:00:00.000Z'),
+  ]);
+  await renderScreen(<RoomCardsScreen />);
+  expect(await screen.findByText('채팅에 올린 사진 · 파일')).toBeTruthy();
+  const names = screen.getAllByText(/칠판\.jpg|요약\.pdf/).map((n) => n.props.children);
+  expect(names).toEqual(['요약.pdf', '칠판.jpg']);
+  expect(screen.queryByText('안녕')).toBeNull();
+  expect(screen.queryByText('아직 공유된 자료가 없어요')).toBeNull();
 });
 
 it('타이머는 방장만 저장할 수 있다', async () => {
