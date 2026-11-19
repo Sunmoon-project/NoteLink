@@ -604,14 +604,15 @@ export function TimerScreen() {
 }
 
 const DAYS = ['월', '화', '수', '목', '금', '토', '일'];
-// 멤버 구분 색(tokens member-1~6, 7번째부터 다시 처음). 클래스 이름을 통째로 적어야 tailwind가 찾는다
+// 멤버 구분 색(tokens member-1~6, 7번째부터 다시 처음). 클래스 이름을 통째로 적어야 tailwind가 찾는다.
+// 이니셜은 늘 진한 색 점 위 흰 글자(4.5:1 이상)라 바탕(tint)은 진하게 둬도 된다
 const MEMBER_COLORS = [
-  { bg: 'bg-member-1', tint: 'bg-member-1/15', text: 'text-member-1' },
-  { bg: 'bg-member-2', tint: 'bg-member-2/15', text: 'text-member-2' },
-  { bg: 'bg-member-3', tint: 'bg-member-3/15', text: 'text-member-3' },
-  { bg: 'bg-member-4', tint: 'bg-member-4/15', text: 'text-member-4' },
-  { bg: 'bg-member-5', tint: 'bg-member-5/15', text: 'text-member-5' },
-  { bg: 'bg-member-6', tint: 'bg-member-6/15', text: 'text-member-6' },
+  { bg: 'bg-member-1', tint: 'bg-member-1/30' },
+  { bg: 'bg-member-2', tint: 'bg-member-2/30' },
+  { bg: 'bg-member-3', tint: 'bg-member-3/30' },
+  { bg: 'bg-member-4', tint: 'bg-member-4/30' },
+  { bg: 'bg-member-5', tint: 'bg-member-5/30' },
+  { bg: 'bg-member-6', tint: 'bg-member-6/30' },
 ];
 const memberColor = (k: number) => MEMBER_COLORS[k % MEMBER_COLORS.length]!;
 const initial = (name: string) => Array.from(name)[0] ?? '?';
@@ -755,21 +756,16 @@ export function ScheduleScreen() {
                     onPress={() => setCell({ r, i })}
                     className={cx(
                       'mx-0.5 h-7 flex-1 flex-row items-center justify-center gap-0.5 rounded-md',
+                      // 혼자 바쁜 칸은 그 사람 색 바탕, 겹친 칸은 색 점만, 빈 칸은 바탕 없이 연한 선만
                       one
                         ? memberColor(one.k).tint
                         : !perMember && c === 1
-                          ? 'bg-brand/15'
-                          : busy.length
-                            ? 'bg-white'
-                            : 'bg-fill',
+                          ? 'bg-brand/30'
+                          : 'border border-line',
                       inBest(r, i) && 'border border-brand',
                     )}
                   >
-                    {one && (
-                      <Text className={cx('text-caption2 font-bold', memberColor(one.k).text)}>
-                        {initial(one.m.nickname)}
-                      </Text>
-                    )}
+                    {one && <MemberDot k={one.k} name={one.m.nickname} />}
                     {busy.length === 2 &&
                       busy.map((x) => <MemberDot key={x.k} k={x.k} name={x.m.nickname} />)}
                     {busy.length > 2 && (
