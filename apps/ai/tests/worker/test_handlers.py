@@ -231,8 +231,9 @@ def test_split_llm_is_made_once_or_shares_the_main_llm(monkeypatch: pytest.Monke
     assert handlers._split_llm() is own
 
 
-def test_only_pregen_runs_in_the_background_lane() -> None:
-    assert handlers.BACKGROUND == {"quiz_pregen"}
+def test_only_pregen_and_cards_run_in_the_background_lane() -> None:
+    # 개념 카드(quiz_flashcards, #558)도 사용자가 기다리지 않음
+    assert handlers.BACKGROUND == {"quiz_pregen", "quiz_flashcards"}
     assert handlers.BACKGROUND <= HANDLERS.keys()
 
 
@@ -256,6 +257,9 @@ class StubReport:
 
     def canceled(self) -> threading.Event:
         return self._canceled
+
+    def last_attempt(self) -> bool:
+        return False
 
     def add_cost(self, usd: float) -> None:
         self.costs.append(usd)

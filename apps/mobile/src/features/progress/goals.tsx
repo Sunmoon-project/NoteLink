@@ -29,6 +29,7 @@ import {
   NotebookPen,
   PartyPopper,
   Target,
+  X,
 } from 'lucide-react-native';
 import { ICON, C } from '@/theme';
 import { LoadError } from './load-error';
@@ -55,6 +56,17 @@ export function DDayScreen() {
       toast('D-day를 추가했어요');
     },
   });
+  // 확인 창은 닫히는 동안에도 보이므로 대상은 남겨 두고 열림만 바꾼다(닫히며 문구가 바뀌지 않게)
+  const [removing, setRemoving] = useState<DDay | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const remove = useMutation({
+    mutationFn: (id: string) => api.calendar.removeDday(id),
+    onError: () => toast('D-day를 삭제하지 못했어요. 다시 시도해주세요'),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ddays'] });
+      toast('D-day를 삭제했어요');
+    },
+  });
   const row = (d: DDay) => (
     <View key={d._id} className="flex-row items-center gap-3 border-b border-fill py-4">
       <View className="h-10 w-10 items-center justify-center rounded-full bg-white">
@@ -78,9 +90,24 @@ export function DDayScreen() {
           {d.kind} · {d.source === 'todo' ? md(d.date) : d.date.replaceAll('-', '.')}
         </Text>
       </View>
-      <Badge tone={d.source === 'todo' ? 'sun' : d.daysLeft < 0 ? 'gray' : 'mint'}>
-        {dLabel(d.daysLeft)}
-      </Badge>
+      {/* Badge는 self-start라 줄에서 위로 붙는다. 감싸서 삭제 버튼과 세로 가운데를 맞춘다 */}
+      <View>
+        <Badge tone={d.source === 'todo' ? 'sun' : d.daysLeft < 0 ? 'gray' : 'mint'}>
+          {dLabel(d.daysLeft)}
+        </Badge>
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${d.title} 삭제`}
+        disabled={remove.isPending}
+        onPress={() => {
+          setRemoving(d);
+          setConfirming(true);
+        }}
+        hitSlop={10}
+      >
+        <X size={ICON.sm} color={C.sub} />
+      </Pressable>
     </View>
   );
   return (
@@ -126,6 +153,22 @@ export function DDayScreen() {
           <Dashed onPress={() => setAdding(true)}>+ D-day 추가</Dashed>
         )}
       </Screen>
+      <Alert
+        open={confirming}
+        title="D-day를 삭제할까요?"
+        body={
+          removing?.source === 'todo'
+            ? `${removing.title}을(를) D-day 목록에서 뺄게요. 할 일은 그대로 남아요.`
+            : `${removing?.title ?? '이 D-day'}을(를) 삭제하면 복구할 수 없어요.`
+        }
+        secondary="취소"
+        onSecondary={() => setConfirming(false)}
+        primary="삭제"
+        onPrimary={() => {
+          if (removing) remove.mutate(removing._id);
+          setConfirming(false);
+        }}
+      />
     </Canvas>
   );
 }

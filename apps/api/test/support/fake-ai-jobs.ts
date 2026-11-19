@@ -19,7 +19,16 @@ export function createFakeJobs() {
   const model = {
     create: (data: Record<string, unknown>) => {
       const at = new Date(Date.UTC(2026, 10, 7, 0, 0, clock++));
-      const row: Row = { ...data, _id: new Types.ObjectId(), createdAt: at, updatedAt: at };
+      // 정해 둔 _id(NewAiJob.id)는 그대로 쓰고, MongoDB _id 고유 색인처럼 같은 id는 E11000으로 막는다
+      const row: Row = {
+        ...data,
+        _id: (data['_id'] as Types.ObjectId | undefined) ?? new Types.ObjectId(),
+        createdAt: at,
+        updatedAt: at,
+      };
+      if (rows.some((r) => String(r._id) === String(row._id))) {
+        return Promise.reject(Object.assign(new Error('E11000 duplicate key'), { code: 11000 }));
+      }
       rows.push(row);
       return Promise.resolve({ toObject: () => ({ ...row }) });
     },

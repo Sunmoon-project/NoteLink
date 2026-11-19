@@ -129,6 +129,8 @@ export const PATHS = {
   passwordReset: '/auth/password/reset',
   me: '/users/me',
   myStatus: '/users/me/status',
+  /** 앱이 앞에 있다는 신호: PUT(신호) · DELETE(나감). 친구에게 보이는 상태의 기준 */
+  myPresence: '/users/me/presence',
   /** 계정 이메일로 본인 인증번호를 보낸다 → 204. 이메일이 없으면 400 NO_EMAIL */
   myEmailSendCode: '/users/me/email/send-code',
   /** 본인 인증번호 확인 { code } → { data: User }(emailVerified: true) */
@@ -157,6 +159,7 @@ export const PATHS = {
   todos: '/todos',
   todo: (id: string) => `/todos/${seg(id)}`,
   ddays: '/ddays',
+  dday: (id: string) => `/ddays/${seg(id)}`,
   holidays: '/holidays',
   holiday: (date: string) => `/holidays/${seg(date)}`,
   customHolidays: '/holidays/custom',

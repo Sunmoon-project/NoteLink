@@ -519,6 +519,7 @@ const api: Api = {
       return ok(withStats(d));
     },
     setStatus: (status) => ok(void (db().user.status = status)),
+    presence: () => ok(undefined),
     // 기기 저장 모드는 메일을 보내지 않는다(가입 인증과 같게 6자리면 통과)
     emailSendCode: () =>
       db().user.email ? ok(undefined) : fail(ERROR_CODES.NO_EMAIL, '계정에 이메일이 없어요'),
@@ -834,6 +835,13 @@ const api: Api = {
       const x = { _id: uid('dd'), title: p.title, date: p.date, kind: '목표일' };
       db().manualDdays.push(x);
       return ok({ ...x, source: 'manual' as const, daysLeft: daysBetween(today(), p.date) });
+    },
+    removeDday: (id) => {
+      const d = db();
+      d.manualDdays = d.manualDdays.filter((x) => x._id !== id);
+      // 할 일에서 온 D-day는 D-day용 한 건만 지운다(날짜별 할 일은 남는다)
+      d.todos = d.todos.filter((t) => !(t.isDday && t._id === id));
+      return ok(undefined);
     },
     holidays: (year) => {
       const hidden = new Set(db().hiddenHolidays);

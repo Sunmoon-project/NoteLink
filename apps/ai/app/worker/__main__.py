@@ -24,6 +24,7 @@ from pymongo import MongoClient
 
 from app.clients.llm import JsonObject, llm_setup_problem
 from app.core.config import settings
+from app.services.quiz.generate import PREGEN_TYPE
 from app.worker.handlers import BACKGROUND, HANDLERS, HEAVY, use_spend
 from app.worker.jobs import JobStore, use_spool
 from app.worker.runner import Lane, run_lanes
@@ -57,7 +58,14 @@ def make_lanes(store: Callable[[str], JobStore], user_lanes: int) -> list[Lane]:
     """
     light = {t: h for t, h in HANDLERS.items() if t not in HEAVY}
     return [
-        Lane("background", store(":bg"), {t: h for t, h in HANDLERS.items() if t in BACKGROUND}),
+        # 미리 만들기를 먼저: 퀴즈마다 생기는 개념 카드 작업(#558)이 쌓여도 새 노트의 미리 만들기가
+        # 그 뒤에서 기다리지 않게(카드는 덤)
+        Lane(
+            "background",
+            store(":bg"),
+            {t: h for t, h in HANDLERS.items() if t in BACKGROUND},
+            first=frozenset({PREGEN_TYPE}),
+        ),
         # 사용자가 이어받은(awaited) 미리 만들기도 가져감: 다른 미리 만들기 뒤에서 기다리지 않게
         Lane(
             "user",

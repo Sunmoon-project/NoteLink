@@ -303,6 +303,20 @@ def test_db_error_while_running_is_retried_after_the_lock_ends(col: Any, broken:
     assert (doc["status"], doc["result"], doc["attempts"]) == ("succeeded", {"questions": 2}, 2)
 
 
+@pytest.mark.parametrize(("used", "last"), [(0, False), (1, False), (2, True)])
+def test_handler_knows_whether_this_is_the_last_attempt(col: Any, used: int, last: bool) -> None:
+    # 처리기가 멈춰 쓴 시도(잠금이 끝나 다시 가져감)도 attempts로 셈(#553 Codex 리뷰)
+    col.update_one({"_id": "j1"}, {"$set": {"attempts": used}})
+    seen: list[bool] = []
+
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        seen.append(report.last_attempt())
+        return {}
+
+    run(col, handler)
+    assert seen == [last]
+
+
 def test_handler_gets_back_what_it_saved_on_the_next_attempt(col: Any) -> None:
     now = [T0]
     s = JobStore(col, "w1", lock_sec=60, max_attempts=3, retry_delay_sec=30, now=lambda: now[0])

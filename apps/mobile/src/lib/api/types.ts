@@ -103,6 +103,8 @@ export interface Api {
       > & { settings?: Partial<User['settings']> },
     ): Promise<User>;
     setStatus(status: User['status']): Promise<void>;
+    /** 앱이 앞에 있다는 신호(true) · 나감(false) */
+    presence(active: boolean, device?: string): Promise<void>;
     registerDevice(d: {
       platform: 'ios' | 'android';
       pushToken: string;
@@ -161,6 +163,8 @@ export interface Api {
     toggleTodo(id: string, done: boolean): Promise<void>;
     ddays(): Promise<DDay[]>;
     addDday(p: { title: string; date: string }): Promise<DDay>;
+    /** 과제 · 시험에서 온 D-day는 목록에서만 빠지고 할 일은 남는다 */
+    removeDday(id: string): Promise<void>;
     holidays(year: number): Promise<PublicHoliday[]>;
     setHolidayHidden(date: string, hidden: boolean): Promise<void>;
     customHolidays(): Promise<{ _id: string; name: string; date: string }[]>;
