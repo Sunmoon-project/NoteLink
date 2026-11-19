@@ -359,3 +359,56 @@ it('보관함에서 사라진 문제는 빈 본문 대신 안내하고 설명 �
   expect(await screen.findByText('문제를 찾을 수 없어요')).toBeTruthy();
   expect(mockApi.quiz.explanation).not.toHaveBeenCalled();
 });
+
+const boxQuestions = [
+  { ...question, _id: 'box-a', prompt: '첫째 보관 문제', answer: '첫째 답' },
+  { ...question, _id: 'box-b', prompt: '둘째 보관 문제', answer: '둘째 답' },
+  { ...question, _id: 'box-c', prompt: '셋째 보관 문제', answer: '셋째 답' },
+];
+
+it('보관함은 처음에 모든 정답을 닫아 두고, 정답 보기를 누른 문제만 정답을 보여 준다', async () => {
+  mockApi.quiz.box.mockResolvedValue(boxQuestions);
+  await renderScreen(<QuizBoxScreen />, client());
+  await screen.findByText('첫째 보관 문제');
+  expect(screen.queryByText(/정답 ·/)).toBeNull();
+  expect(screen.getAllByText('정답 보기')).toHaveLength(3);
+  await fireEvent.press(screen.getAllByText('정답 보기')[1]!);
+  expect(screen.getByText('정답 · 둘째 답')).toBeTruthy();
+  expect(screen.queryByText('정답 · 첫째 답')).toBeNull();
+  expect(screen.queryByText('정답 · 셋째 답')).toBeNull();
+  expect(screen.getAllByText('정답 보기')).toHaveLength(2);
+});
+
+it('다른 문제를 지워 보관함을 다시 불러와도 펼쳐 둔 정답은 그대로, 나머지는 닫혀 있다', async () => {
+  mockApi.quiz.box.mockResolvedValue(boxQuestions);
+  await renderScreen(<QuizBoxScreen />, client());
+  await screen.findByText('셋째 보관 문제');
+  await fireEvent.press(screen.getAllByText('정답 보기').at(-1)!);
+  expect(screen.getByText('정답 · 셋째 답')).toBeTruthy();
+  mockApi.quiz.box.mockResolvedValue(boxQuestions.slice(1));
+  await fireEvent.press(screen.getByText('선택'));
+  await fireEvent.press(screen.getByLabelText('보관함 선택 box-a'));
+  await fireEvent.press(screen.getByRole('button', { name: '선택 삭제' }));
+  await waitFor(() => expect(screen.queryByText('첫째 보관 문제')).toBeNull());
+  expect(mockApi.quiz.deleteFromBox).toHaveBeenCalledWith(['box-a']);
+  expect(screen.getByText('정답 · 셋째 답')).toBeTruthy();
+  expect(screen.queryByText('정답 · 둘째 답')).toBeNull();
+});
+
+it('펼친 문제를 지운 뒤 같은 문제가 다시 보관되면 정답은 닫힌 채로 보인다', async () => {
+  mockApi.quiz.box.mockResolvedValue(boxQuestions);
+  const qc = client();
+  await renderScreen(<QuizBoxScreen />, qc);
+  await screen.findByText('셋째 보관 문제');
+  await fireEvent.press(screen.getAllByText('정답 보기').at(-1)!);
+  mockApi.quiz.box.mockResolvedValue(boxQuestions.slice(0, 2));
+  await fireEvent.press(screen.getByText('선택'));
+  await fireEvent.press(screen.getByLabelText('보관함 선택 box-c'));
+  await fireEvent.press(screen.getByRole('button', { name: '선택 삭제' }));
+  await waitFor(() => expect(screen.queryByText('셋째 보관 문제')).toBeNull());
+  // 화면이 떠 있는 동안 풀이 화면이 같은 문제를 다시 보관하고 보관함을 무효화한 경우
+  mockApi.quiz.box.mockResolvedValue(boxQuestions);
+  await act(async () => qc.invalidateQueries({ queryKey: ['quiz-box'] }));
+  expect(await screen.findByText('셋째 보관 문제')).toBeTruthy();
+  expect(screen.queryByText(/정답 ·/)).toBeNull();
+});
