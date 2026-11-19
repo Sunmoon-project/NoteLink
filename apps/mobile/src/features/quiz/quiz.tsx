@@ -1517,24 +1517,21 @@ export function CardsScreen() {
 export function QuizBoxScreen() {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<string[]>([]);
+  // 정답은 처음엔 모두 닫아 두고 「정답 보기」를 누른 문제만 펼친다.
+  // 다시 불러와도 유지하고, 지운 문제는 빼서 다시 보관돼도 닫힌 채로 보인다.
+  const [shown, setShown] = useState<string[]>([]);
   const remove = useMutation({
     mutationFn: (ids: string[]) => api.quiz.deleteFromBox(ids),
-    onSuccess: () => {
+    onSuccess: (_, ids) => {
       qc.invalidateQueries({ queryKey: ['quiz-box'] });
       setSelected([]);
+      setShown((p) => p.filter((id) => !ids.includes(id)));
       toast('선택한 퀴즈를 삭제했어요');
     },
     onError: () => toast('보관함에서 삭제하지 못했어요. 다시 시도해 주세요'),
   });
   const box = useQuery({ queryKey: ['quiz-box'], queryFn: api.quiz.box });
-  const [shown, setShown] = useState<string[]>([]);
   const [select, setSelect] = useState(false);
-  // 보관함을 불러오면 첫 퀴즈의 정답을 펼친다 (렌더 중 상태 조정)
-  const [loaded, setLoaded] = useState<typeof box.data>();
-  if (box.data && box.data !== loaded) {
-    setLoaded(box.data);
-    if (box.data[0]) setShown([box.data[0]._id]);
-  }
   if (box.isError && !box.data)
     return (
       <Canvas>
