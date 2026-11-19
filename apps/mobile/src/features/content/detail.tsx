@@ -566,7 +566,13 @@ export function DocDetailScreen() {
       return fileName;
     },
     onSuccess: (fileName) => router.push({ pathname: '/downloaded', params: { name: fileName } }),
-    onError: () => toast('다운로드하지 못했어요. 연결을 확인해 주세요'),
+    // 정리본은 기기에서 파일을 만드는 일이라 연결 문제가 아니다
+    onError: (_e, what) =>
+      toast(
+        what === 'summary'
+          ? '정리본을 저장하지 못했어요. 기기 저장 공간을 확인해 주세요'
+          : '다운로드하지 못했어요. 연결을 확인해 주세요',
+      ),
   });
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;

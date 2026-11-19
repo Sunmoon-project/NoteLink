@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import * as Sharing from 'expo-sharing';
 import { DocDetailScreen, summaryMarkdown } from '../features/content/detail';
 import { renderScreen, setParams } from '../test-utils';
+import { useToast } from '../stores/toast';
 
 // 실기기 피드백(2026-11-20): 문서 상세 「다운로드」가 정리본이 아닌 원본만 받았다
 const mockWritten: Record<string, string> = {};
@@ -96,4 +97,27 @@ it('정리가 아직 없으면 원본만 고를 수 있다', async () => {
   await fireEvent.press(await screen.findByText('다운로드'));
   expect(screen.getByText('원본 파일')).toBeTruthy();
   expect(screen.queryByText('정리본 (.md)')).toBeNull();
+});
+
+// #585 독립 검증: 정리본 저장은 기기 파일 일이라 실패해도 「연결을 확인해 주세요」가 맞지 않았다
+it('정리본 저장이 실패하면 연결이 아닌 파일 저장 실패로 알린다', async () => {
+  (Sharing.shareAsync as jest.Mock).mockRejectedValueOnce(new Error('disk'));
+  await renderScreen(<DocDetailScreen />);
+  await fireEvent.press(await screen.findByText('다운로드'));
+  await fireEvent.press(screen.getByText('정리본 (.md)'));
+  await waitFor(() =>
+    expect(useToast.getState().msg).toBe(
+      '정리본을 저장하지 못했어요. 기기 저장 공간을 확인해 주세요',
+    ),
+  );
+});
+
+it('원본 받기가 실패하면 전처럼 연결을 확인하라고 알린다', async () => {
+  mockApi.content.downloadUrl.mockRejectedValueOnce(new Error('net'));
+  await renderScreen(<DocDetailScreen />);
+  await fireEvent.press(await screen.findByText('다운로드'));
+  await fireEvent.press(screen.getByText('원본 파일'));
+  await waitFor(() =>
+    expect(useToast.getState().msg).toBe('다운로드하지 못했어요. 연결을 확인해 주세요'),
+  );
 });
