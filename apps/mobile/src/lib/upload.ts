@@ -57,6 +57,34 @@ const guessType = (name: string) => {
   );
 };
 
+/**
+ * 녹음의 실제 담는 형식(파일 앞 12바이트). 4~7번째 바이트가 'ftyp'면 MP4 계열(m4a)이다.
+ * 녹음 앱이 MP4(AAC 음성)를 .aac · .mp4 이름으로 저장하는 일이 있는데, 확장자대로 올리면
+ * Blob 이름 · 형식(audio/aac)과 내용이 달라 Azure Speech가 422로 거절한다(실기기 확인, #508 후속)
+ */
+export function isMp4Container(head: Uint8Array): boolean {
+  return head.length >= 8 && String.fromCharCode(...head.slice(4, 8)) === 'ftyp';
+}
+
+/** MP4 계열인데 확장자가 m4a가 아니면 이름 · 형식을 m4a로 맞춘다. 읽지 못하면 그대로 둔다 */
+function realAudio(file: File, f: LocalFile): LocalFile {
+  if (f.name.toLowerCase().endsWith('.m4a')) return f;
+  let head: Uint8Array;
+  try {
+    const handle = file.open();
+    try {
+      head = handle.readBytes(12);
+    } finally {
+      handle.close();
+    }
+  } catch {
+    return f;
+  }
+  if (!isMp4Container(head)) return f;
+  const dot = f.name.lastIndexOf('.');
+  return { ...f, name: `${dot < 0 ? f.name : f.name.slice(0, dot)}.m4a`, mimeType: 'audio/mp4' };
+}
+
 /** 올릴 수 없는 파일이거나 Blob이 2xx가 아닌 응답을 준 경우 */
 export class UploadError extends Error {}
 
@@ -68,6 +96,8 @@ export async function uploadToBlob(
   purpose?: 'report' | 'chat',
 ): Promise<string> {
   const file = new File(f.uri);
+  // 녹음은 확장자 대신 실제 내용으로 이름 · 형식을 정한다(서버 · Blob · Azure Speech가 모두 이 이름을 쓴다)
+  if (kind === 'audio' && !env.localData) f = realAudio(file, f);
   const contentType = f.mimeType ?? guessType(f.name);
   const sizeBytes = f.size ?? file.size ?? 0;
   // 호출하는 화면이 빠뜨려도 형식 · 용량 검사를 거친다

@@ -12,12 +12,14 @@ import { UsersController } from './users.controller.js';
 import { UsersService } from './users.service.js';
 import { InterestCategorySeedService } from './interest-category-seed.service.js';
 import { AuthModule } from '../auth/auth.module.js';
+import { MailModule } from '../mail/mail.module.js';
 import { ProgressModule } from '../progress/progress.module.js';
 import { StudyRoomsModule } from '../studyroom/study-rooms.module.js';
 
 @Module({
   imports: [
     AuthModule,
+    MailModule, // 이메일 본인 인증번호 메일
     ProgressModule, // 프로필의 연속 학습일(streakDays)
     StudyRoomsModule, // 탈퇴할 때 스터디룸에서 나간다(leaveRoom)
     MongooseModule.forFeature([

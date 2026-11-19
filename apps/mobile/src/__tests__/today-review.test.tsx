@@ -141,4 +141,12 @@ describe('오늘의 복습 카드', () => {
     fireEvent.press(await screen.findByText('복습 날짜가 된 3문제 풀기'));
     expect(router.push).toHaveBeenCalledWith({ pathname: '/play/solve', params: { setId: 't1' } });
   });
+
+  it('오늘 세트를 끝까지 풀었으면 마쳤다고 보여 주고 다시 풀게 하지 않는다', async () => {
+    mockApi.quiz.today.mockResolvedValue({ ...set('ready'), completed: true });
+    await renderScreen(<TodayReviewCard />);
+    fireEvent.press(await screen.findByText('오늘의 복습을 마쳤어요'));
+    expect(screen.queryByText('복습 날짜가 된 3문제 풀기')).toBeNull();
+    expect(router.push).not.toHaveBeenCalled();
+  });
 });

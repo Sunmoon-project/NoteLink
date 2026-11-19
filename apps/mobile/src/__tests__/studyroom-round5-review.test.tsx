@@ -142,11 +142,13 @@ it('같은 방의 미디어 접속 실패 뒤 다시 입장하면 새 연결을 
     .mockRejectedValueOnce(new Error('미디어 서버 일시 장애'))
     .mockResolvedValueOnce(media());
   await renderScreen(<RoomScreen />, client());
-  await screen.findByText(/캠·음성을 연결하지 못했어요/);
+  await screen.findByText('● 연결이 끊겼어요 · 다시 연결 중…');
   await kickOut();
   await fireEvent.press(await screen.findByText('다시 입장'));
   await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(2));
-  await waitFor(() => expect(screen.queryByText(/캠·음성을 연결하지 못했어요/)).toBeNull());
+  await waitFor(() => expect(screen.queryByText('● 연결이 끊겼어요 · 다시 연결 중…')).toBeNull(), {
+    timeout: 4000,
+  });
   expect(screen.getByText('듣기 켜짐')).toBeTruthy();
 });
 
@@ -272,42 +274,26 @@ describe('RoomSettingsScreen', () => {
   });
 });
 
-it('강제 퇴장 없이 최초 미디어 연결 실패를 화면에서 재시도하고 정상 연결로 복구한다', async () => {
+// 사용자 결정: 「미디어 다시 연결」 버튼과 오류 문구는 없애고, 끊김은 노란 띠로 알린 채 알아서 다시 붙는다
+it('최초 미디어 연결이 실패하면 노란 띠만 보이고, 버튼 없이 알아서 다시 연결해 복구한다', async () => {
   const pending = deferred<MediaConnection>();
   mockConnectMedia
     .mockRejectedValueOnce(new Error('최초 연결 실패'))
     .mockReturnValueOnce(pending.promise);
   await renderScreen(<RoomScreen />, client());
-  await screen.findByText(/캠·음성을 연결하지 못했어요/);
+  await screen.findByText('● 연결이 끊겼어요 · 다시 연결 중…');
   expect(screen.queryByText('스터디룸에서 나갔어요')).toBeNull();
-  await fireEvent.press(await screen.findByRole('button', { name: '미디어 다시 연결' }));
-  await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(2));
-  expect(screen.queryByRole('button', { name: '미디어 다시 연결' })).toBeNull();
+  expect(screen.queryByText('미디어 다시 연결')).toBeNull();
+  expect(screen.queryByText(/캠·음성을 연결하지 못했어요/)).toBeNull();
+  // 다시 연결됐어요 띠는 실제로 다시 연결됐을 때만
+  expect(screen.queryByText('다시 연결됐어요')).toBeNull();
+  await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(2), { timeout: 4000 });
   await act(async () => pending.resolve(media()));
   expect(await screen.findByText('듣기 켜짐')).toBeTruthy();
-  expect(screen.queryByText(/캠·음성을 연결하지 못했어요/)).toBeNull();
+  expect(screen.queryByText('● 연결이 끊겼어요 · 다시 연결 중…')).toBeNull();
 });
 
-it('미디어 재연결도 실패하면 다시 시도할 수 있고 오프라인에서는 새 연결을 시작하지 않는다', async () => {
-  mockConnectMedia
-    .mockRejectedValueOnce(new Error('최초 실패'))
-    .mockRejectedValueOnce(new Error('재연결 실패'))
-    .mockResolvedValueOnce(media());
-  await renderScreen(<RoomScreen />, client());
-  await fireEvent.press(await screen.findByRole('button', { name: '미디어 다시 연결' }));
-  await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(2));
-  await screen.findByRole('button', { name: '미디어 다시 연결' });
-  await act(async () => useNet.setState({ state: 'offline' }));
-  await fireEvent.press(screen.getByRole('button', { name: '미디어 다시 연결' }));
-  expect(mockConnectMedia).toHaveBeenCalledTimes(2);
-  expect(useToast.getState().msg).toBe('연결을 복구한 뒤 다시 시도해 주세요');
-  await act(async () => useNet.setState({ state: 'ok' }));
-  await fireEvent.press(screen.getByRole('button', { name: '미디어 다시 연결' }));
-  await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(3));
-  expect(await screen.findByText('듣기 켜짐')).toBeTruthy();
-});
-
-it('연결에 성공한 미디어만 종료되면 오류와 재연결 버튼을 표시하고 기존 연결을 정리한다', async () => {
+it('연결에 성공한 미디어가 끊기면 노란 띠를 보이고 기존 연결을 정리한 뒤 알아서 다시 붙는다', async () => {
   const first = media();
   mockConnectMedia.mockResolvedValueOnce(first).mockResolvedValueOnce(media());
   await renderScreen(<RoomScreen />, client());
@@ -317,10 +303,14 @@ it('연결에 성공한 미디어만 종료되면 오류와 재연결 버튼을 
     mockConnectMedia.mock.calls[0][1]();
   });
   expect(useNet.getState().state).toBe('ok');
-  await fireEvent.press(await screen.findByRole('button', { name: '미디어 다시 연결' }));
-  await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText('● 연결이 끊겼어요 · 다시 연결 중…')).toBeTruthy();
+  expect(screen.queryByText('미디어 다시 연결')).toBeNull();
+  // SDK가 끊김을 알리면(onDisconnected) 재시도한다
+  await act(async () => mockConnectMedia.mock.calls[0][2]());
+  await waitFor(() => expect(mockConnectMedia).toHaveBeenCalledTimes(2), { timeout: 4000 });
   await waitFor(() => expect(first.close).toHaveBeenCalledTimes(1));
   expect(await screen.findByText('듣기 켜짐')).toBeTruthy();
+  expect(screen.queryByText('● 연결이 끊겼어요 · 다시 연결 중…')).toBeNull();
 });
 
 describe('교시 시간표 편집', () => {

@@ -97,6 +97,8 @@ export const httpApi: Api = {
     registerDevice: (d) => http.post(P.myDevices, d),
     changePlan: (tier) => http.patch(P.mySubscription, { tier }),
     withdraw: () => http.del(P.me),
+    emailSendCode: () => http.post(P.myEmailSendCode),
+    emailVerifyCode: (code) => http.post(P.myEmailVerifyCode, { code }),
   },
   upload: { getSas: (p) => http.post(P.uploadSas, p) },
   study: {

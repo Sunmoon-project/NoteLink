@@ -11,10 +11,12 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
+import { useIsFocused } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
 import { Bookmark, Pause, Play, Repeat, Sparkles } from 'lucide-react-native';
 import { api } from '@/lib/api';
+import { paragraphs, rangeAt, segmentsIn } from '@/lib/transcript';
 import { toast } from '@/stores/toast';
 import { Btn, Chip, Loading, Sheet, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
@@ -30,6 +32,11 @@ const SPEEDS = [1, 1.25, 1.5, 2];
 function usePlayback(url: string | undefined, knownDuration: number) {
   const player = useAudioPlayer(url ? { uri: url } : null);
   const status = useAudioPlayerStatus(player);
+  // 탭 안의 스택 화면은 탭을 바꾸거나 다른 화면을 올려도 내려가지 않아 소리가 계속 났다 → 가려지면 일시정지
+  const focused = useIsFocused();
+  useEffect(() => {
+    if (!focused) player.pause();
+  }, [focused, player]);
   const duration = knownDuration || status.duration || 0;
   return {
     ready: !!url,
@@ -121,13 +128,13 @@ export function useResume(
 function LipSyncAvatar({ playing }: { playing: boolean }) {
   const open = useSharedValue(0.4);
   useEffect(() => {
-    if (playing) open.value = withRepeat(withTiming(1.6, { duration: 280 }), -1, true);
+    if (playing) open.set(withRepeat(withTiming(1.6, { duration: 280 }), -1, true));
     else {
       cancelAnimation(open);
-      open.value = withTiming(0.4);
+      open.set(withTiming(0.4));
     }
   }, [playing]); // eslint-disable-line react-hooks/exhaustive-deps
-  const mouth = useAnimatedStyle(() => ({ transform: [{ scaleY: open.value }] }));
+  const mouth = useAnimatedStyle(() => ({ transform: [{ scaleY: open.get() }] }));
   return (
     <View
       accessibilityLabel="아바타"
@@ -177,7 +184,11 @@ export function Player({
 
   const slide = rec.data?.slides.find((s) => p.pos >= s.startSec && p.pos < s.endSec);
   const segs = rec.data?.transcript.segments ?? [];
-  const cap = segs.findIndex((s) => p.pos >= s.startSec && p.pos < s.endSec);
+  // 요약 화면 아래 대본은 지금 슬라이드(또는 슬라이드 사이 구간)의 문장만. 전체를 한 덩어리로 보이면
+  // 42분 녹음은 읽을 수 없었다. 전체 대본은 「대본」 화면에서 슬라이드별 문단으로 본다
+  const range = rangeAt(rec.data?.slides ?? [], p.pos);
+  const near = segmentsIn(segs, range.lo, range.hi);
+  const cap = near.findIndex((s) => p.pos >= s.startSec && p.pos < s.endSec);
   const marking = useRef(false);
   const addMark = async () => {
     if (marking.current) return;
@@ -259,22 +270,45 @@ export function Player({
                 </Text>
               </View>
               <Text className="mt-1 text-caption leading-5 text-white/60">
-                {segs.length
-                  ? segs.map((s, i) => (
-                      <Text key={i} className={cx(i === cap && 'font-bold text-white')}>
-                        {s.text}{' '}
-                      </Text>
-                    ))
-                  : '대본은 AI 서버가 연결되면 음성 인식으로 만들어져요. 원본 녹음은 지금 들을 수 있어요.'}
+                {!segs.length
+                  ? '대본은 AI 서버가 연결되면 음성 인식으로 만들어져요. 원본 녹음은 지금 들을 수 있어요.'
+                  : near.length
+                    ? near.map((s, i) => (
+                        <Text key={s.startSec} className={cx(i === cap && 'font-bold text-white')}>
+                          {s.text}{' '}
+                        </Text>
+                      ))
+                    : '이 구간에는 말한 내용이 없어요'}
               </Text>
             </View>
           </>
         ) : (
           <ScrollView className="max-h-64 p-3" nestedScrollEnabled>
             <Text className="text-footnote font-bold text-white">전체 대본</Text>
-            <Text className="mt-2 text-caption leading-5 text-white/80">
-              {rec.data?.transcript.text || '아직 대본이 없어요 · AI 서버 연결 후 만들어져요'}
-            </Text>
+            {segs.length ? (
+              // 슬라이드별 문단(제목 · 시작 시각). 문단을 누르면 그 시각으로 옮겨 요약 슬라이드와 맞춰 볼 수 있다
+              paragraphs(rec.data.slides, segs).map((para) => (
+                <Pressable
+                  key={para.key}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${mmss(para.startSec)} ${para.title ?? '구간'}으로 이동`}
+                  onPress={() => p.seek(para.startSec)}
+                  className="mt-3"
+                >
+                  <Text className="text-caption2 font-semibold text-white/50">
+                    {mmss(para.startSec)}
+                    {para.title ? ` · ${para.title}` : ''}
+                  </Text>
+                  <Text className="mt-0.5 text-caption leading-5 text-white/80">
+                    {para.segments.map((s) => s.text).join(' ')}
+                  </Text>
+                </Pressable>
+              ))
+            ) : (
+              <Text className="mt-2 text-caption leading-5 text-white/80">
+                {rec.data?.transcript.text || '아직 대본이 없어요 · AI 서버 연결 후 만들어져요'}
+              </Text>
+            )}
           </ScrollView>
         )}
 
@@ -304,25 +338,27 @@ export function Player({
           </Text>
           <Pressable
             onPress={() => p.setRate(SPEEDS[(SPEEDS.indexOf(p.rate) + 1) % SPEEDS.length] ?? 1)}
-            className="rounded-full bg-white/15 px-2 py-0.5"
+            // 보이는 칩은 32, 위아래 6씩 넓혀 누르는 높이 44(시간 줄 높이는 거의 그대로)
+            hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+            className="h-8 justify-center rounded-full bg-white/15 px-3"
           >
-            <Text className="text-caption2 font-semibold text-white">{p.rate}x 배속</Text>
+            <Text className="text-caption font-semibold text-white">{p.rate}x 배속</Text>
           </Pressable>
         </View>
         <View className="mt-2 flex-row items-center justify-center gap-3 pb-1">
           <Pressable
             accessibilityLabel="북마크 추가"
             onPress={addMark}
-            className="h-10 w-10 items-center justify-center rounded-full bg-white"
+            className="h-12 w-12 items-center justify-center rounded-full bg-white"
           >
-            <Bookmark size={ICON.sm} color={C.danger} />
+            <Bookmark size={ICON.md} color={C.danger} />
           </Pressable>
           <Pressable
             accessibilityLabel="5초 뒤로"
             onPress={() => p.seek(p.pos - 5)}
-            className="h-10 w-10 items-center justify-center rounded-full bg-white/10"
+            className="h-12 w-12 items-center justify-center rounded-full bg-white/10"
           >
-            <Text className="text-caption2 font-bold text-white">◀5</Text>
+            <Text className="text-footnote font-bold text-white">◀5</Text>
           </Pressable>
           <Pressable
             accessibilityLabel={p.playing ? '일시정지' : '재생'}
@@ -338,19 +374,19 @@ export function Player({
           <Pressable
             accessibilityLabel="5초 앞으로"
             onPress={() => p.seek(p.pos + 5)}
-            className="h-10 w-10 items-center justify-center rounded-full bg-white/10"
+            className="h-12 w-12 items-center justify-center rounded-full bg-white/10"
           >
-            <Text className="text-caption2 font-bold text-white">5▶</Text>
+            <Text className="text-footnote font-bold text-white">5▶</Text>
           </Pressable>
           <Pressable
             accessibilityLabel="구간 반복"
             onPress={() => p.setLoop(!p.loop)}
             className={cx(
-              'h-10 w-10 items-center justify-center rounded-full',
+              'h-12 w-12 items-center justify-center rounded-full',
               p.loop ? 'bg-sun' : 'bg-brand',
             )}
           >
-            <Repeat size={ICON.sm} color={p.loop ? C.ink : '#fff'} />
+            <Repeat size={ICON.md} color={p.loop ? C.ink : '#fff'} />
           </Pressable>
         </View>
       </View>

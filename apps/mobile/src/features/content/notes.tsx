@@ -1,9 +1,10 @@
 import { useTour, useTourTarget } from '@/features/tutor/tour';
+import { InterestPicker } from '@/features/profile/interest-picker';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
-import Animated, { FadeIn, FadeInDown, FadeOut } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
@@ -32,6 +33,7 @@ import type { Material } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { toast } from '@/stores/toast';
 import { useDraft } from '@/stores/draft';
+import { retryingIn, useRetrying } from '@/stores/retrying';
 import {
   afterSheetClosed,
   Alert,
@@ -48,11 +50,14 @@ import {
   Screen,
   Search,
   Sheet,
+  SwipeAction,
   Tap,
   Title,
   cx,
   BACKDROP_IN,
   BACKDROP_OUT,
+  FADE_IN,
+  popInFrom,
 } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
 import { useTabRefresh } from '@/hooks';
@@ -124,6 +129,17 @@ export function NoteListScreen() {
     (f) => (tag === '전체' || f.subjectName === tag) && f.title.includes(q),
   );
   const tags = ['전체', ...new Set((folders.data ?? []).map((f) => f.subjectName ?? ''))];
+  // 폴더를 꾹 누르면 삭제 확인(폴더 안 ⋯ 메뉴와 같은 삭제)
+  const qc = useQueryClient();
+  const [removing, setRemoving] = useState<{ _id: string; title: string } | null>(null);
+  const delFolder = useMutation({
+    mutationFn: (folderId: string) => api.content.deleteFolder(folderId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['folders'] });
+      toast('폴더를 삭제했어요');
+    },
+    onError: () => toast('폴더를 삭제하지 못했어요. 다시 시도해 주세요'),
+  });
 
   const consumedUpload = useRef<string | undefined>(undefined);
   // 종료 요약에서 "필기 사진 / 녹음"을 누르고 들어온 경우 첫 폴더로 바로 이동
@@ -183,6 +199,7 @@ export function NoteListScreen() {
                   onPress={() =>
                     router.push({ pathname: '/(tabs)/note/folder/[id]', params: { id: f._id } })
                   }
+                  onLongPress={() => setRemoving(f)}
                   className="w-[47.5%] p-3.5"
                 >
                   <View className="h-20 items-center justify-center rounded-xl bg-mint">
@@ -207,6 +224,18 @@ export function NoteListScreen() {
       {!!folders.data?.length && (
         <Fab tour={addTarget} onPress={() => router.push('/note-new/tag')} />
       )}
+      <Alert
+        open={!!removing}
+        title="폴더를 삭제할까요?"
+        body={`${removing?.title ?? '이 폴더'}를 삭제하면 복구할 수 없어요.`}
+        secondary="취소"
+        onSecondary={() => setRemoving(null)}
+        primary="삭제"
+        onPrimary={() => {
+          if (removing) delFolder.mutate(removing._id);
+          setRemoving(null);
+        }}
+      />
     </Canvas>
   );
 }
@@ -223,25 +252,40 @@ const Steps = ({ n }: { n: 0 | 1 }) => (
 );
 
 export function NoteTagScreen() {
-  const [tag, setTag] = useState('수학');
+  // 관심 분야 고르기(가입 · 프로필)와 같은 목록 · 칩을 쓴다. 고른 분야 이름이 폴더의 과목(subjectName)이 된다
+  const categories = useQuery({
+    queryKey: ['interest-categories'],
+    queryFn: api.me.interestCategories,
+  });
+  // 목록을 못 받으면 예전 기본 과목으로 고른다
+  const list = categories.data?.length
+    ? categories.data
+    : categories.isError
+      ? TAGS.map((name) => ({ _id: name, name, parentId: null }))
+      : [];
+  const [picked, setPicked] = useState<string | null>(null);
+  const tag = list.find((c) => c._id === picked)?.name;
   return (
     <Canvas>
       <Screen
         footer={
-          <Btn onPress={() => router.push({ pathname: '/note-new/title', params: { tag } })}>
+          <Btn
+            disabled={!tag}
+            onPress={() => router.push({ pathname: '/note-new/title', params: { tag } })}
+          >
             다음
           </Btn>
         }
       >
         <Header title="태그 설정" right={<Steps n={0} />} />
-        <Text className="mt-4 mb-3 text-subhead font-semibold text-ink">과목을 선택해주세요</Text>
-        <View className="flex-row flex-wrap gap-2">
-          {TAGS.map((t) => (
-            <Chip key={t} on={tag === t} onPress={() => setTag(t)}>
-              {t}
-            </Chip>
-          ))}
-        </View>
+        <Text className="mt-4 mb-1 text-subhead font-semibold text-ink">과목을 선택해주세요</Text>
+        {categories.isPending && <Text className="text-caption text-sub">불러오는 중이에요</Text>}
+        {/* 한 폴더에 과목은 하나: 다른 칩을 누르면 바꾸고, 고른 칩을 다시 누르면 풀린다 */}
+        <InterestPicker
+          categories={list}
+          selected={picked ? [picked] : []}
+          onToggle={(id) => setPicked((p) => (p === id ? null : id))}
+        />
       </Screen>
     </Canvas>
   );
@@ -320,31 +364,36 @@ const asQueued = (m: Material): Material => ({
 });
 
 /**
- * 폴더 자료 목록을 읽는다. 다시 요약한 자료(retrying)는 목록 값 대신 그 자료만 따로 읽는다(서버가 이 자료의 작업 상태를
+ * 폴더 자료 목록을 읽는다. 다시 요약한 자료(useRetrying)는 목록 값 대신 그 자료만 따로 읽는다(서버가 이 자료의 작업 상태를
  * 맞춘다). 목록은 한 번에 일부 자료만 작업 상태를 맞춰, 실패한 자료가 많으면 다시 넣은 자료가 계속 실패로 보이고
- * 다시 읽기도 멈췄다(Codex #520 리뷰). 끝나면(done · failed) 목록에서 빼고, 읽지 못하면 정리 중으로 둔 채 다음에 다시 읽는다
+ * 다시 읽기도 멈췄다(Codex #520 리뷰). 끝나면(done · failed) 또는 목록에서 없어지면 추적을 풀고, 읽지 못하면 정리 중으로
+ * 둔 채 다음에 다시 읽는다. 추적은 폴더별 store에 있어 화면을 닫았다 열어도 이어진다(5차 리뷰)
  */
 export async function readFolderMaterials(
   folderId: string,
-  retrying: Set<string>,
+  signal?: AbortSignal,
 ): Promise<Material[]> {
   const list = await api.content.materials(folderId);
-  if (!retrying.size) return list;
+  const retrying = retryingIn(folderId);
+  if (!retrying.length) return list;
   const seen = new Set(list.map((m) => m._id));
-  for (const key of [...retrying]) if (!seen.has(key)) retrying.delete(key);
-  return Promise.all(
+  const ended = retrying.filter((mid) => !seen.has(mid));
+  const out = await Promise.all(
     list.map(async (m) => {
-      if (!retrying.has(m._id)) return m;
+      if (!retrying.includes(m._id)) return m;
       try {
         const fresh = await api.content.material(m._id);
         if (fresh.processing.status === 'done' || fresh.processing.status === 'failed')
-          retrying.delete(m._id);
+          ended.push(m._id);
         return fresh;
       } catch {
         return asQueued(m);
       }
     }),
   );
+  // 취소된 읽기(다시 요약 직후 invalidate 등)는 결과가 버려지므로, 그 사이 새로 넣은 추적을 풀지 않는다
+  if (ended.length && !signal?.aborted) useRetrying.getState().untrack(folderId, ended);
+  return out;
 }
 
 export function FolderScreen() {
@@ -354,13 +403,11 @@ export function FolderScreen() {
   const qc = useQueryClient();
   const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
   const folder = folders.data?.find((f) => f._id === id);
-  // 다시 요약을 넣고 아직 끝난 상태를 읽지 못한 자료
-  const retrying = useRef(new Set<string>());
   const mats = useQuery({
     queryKey: ['materials', id],
-    queryFn: () => readFolderMaterials(id, retrying.current),
+    queryFn: ({ signal }) => readFolderMaterials(id, signal),
     // 정리 중인 자료가 있으면(다시 요약 포함) 끝날 때까지 다시 읽어 진행 표시 · 다시 요약 버튼을 바로잡는다(Codex #519 리뷰)
-    refetchInterval: (q) => (retrying.current.size ? 3000 : materialsPollMs(q.state.data)),
+    refetchInterval: (q) => (retryingIn(id).length ? 3000 : materialsPollMs(q.state.data)),
   });
   // 서버에 폴더 자료 목록 경로가 아직 없을 때(404) 폴더 목록이 센 자료가 0개면 실패가 아니라 빈 폴더다.
   // 자료가 있다고 세었는데 목록을 못 읽으면 지금처럼 실패를 보여 준다(지운 폴더는 목록에 없어 여기도 실패).
@@ -373,6 +420,20 @@ export function FolderScreen() {
   const [dial, setDial] = useState(false);
   const [sheet, setSheet] = useState<null | 'hand' | 'rec' | 'doc' | 'more'>(upload ?? null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // 왼쪽으로 밀어 지울 자료(확인 대화상자를 거친다)
+  const [removing, setRemoving] = useState<Material | null>(null);
+  const delMaterial = useMutation({
+    mutationFn: (m: Material) => api.content.deleteMaterial(m._id),
+    onSuccess: (_, m) => {
+      qc.setQueryData<Material[]>(['materials', id], (list) =>
+        list?.filter((x) => x._id !== m._id),
+      );
+      void qc.invalidateQueries({ queryKey: ['materials', id] });
+      void qc.invalidateQueries({ queryKey: ['folders'] });
+      toast('자료를 삭제했어요');
+    },
+    onError: () => toast('삭제하지 못했어요. 다시 시도해 주세요'),
+  });
   const draft = useDraft();
   const del = useMutation({
     mutationFn: () => api.content.deleteFolder(id),
@@ -389,7 +450,7 @@ export function FolderScreen() {
     mutationFn: (m: Material) => api.ai.retry(m.processing.jobId!),
     onSuccess: (_job, m) => {
       // 바로 정리 중으로 보이고, 끝날 때까지 이 자료는 따로 읽는다(readFolderMaterials)
-      retrying.current.add(m._id);
+      useRetrying.getState().track(id, m._id);
       qc.setQueryData<Material[]>(['materials', id], (list) =>
         list?.map((x) => (x._id === m._id ? asQueued(x) : x)),
       );
@@ -517,48 +578,50 @@ export function FolderScreen() {
                     exiting={FadeOut.duration(MOTION.exit)}
                     className={cx(i > 0 && 'border-t border-fill')}
                   >
-                    <Tap
-                      scaleTo={0.99}
-                      onPress={() => open(m)}
-                      className="flex-row items-center gap-3.5 px-5 py-4"
-                    >
-                      <View
-                        className={cx('h-10 w-10 items-center justify-center rounded-xl', tile)}
+                    <SwipeAction label="삭제" name={m.title} onAction={() => setRemoving(m)}>
+                      <Tap
+                        scaleTo={0.99}
+                        onPress={() => open(m)}
+                        className="flex-row items-center gap-3.5 bg-white px-5 py-4"
                       >
-                        <KindIcon size={ICON.md} color={tint} />
-                      </View>
-                      <View className="flex-1">
-                        <Text className="text-subhead font-semibold text-ink">{m.title}</Text>
-                        <Text className="text-caption2 text-sub">
-                          {KIND[m.kind][1]} · {seoul(m.createdAt).getMonth() + 1}/
-                          {seoul(m.createdAt).getDate()} 업로드
-                          {m.kind === 'recording' && st !== 'failed' && ` · ${summaryState(m)}`}
-                          {st === 'failed' && <Text className="text-danger"> · 요약 실패</Text>}
-                        </Text>
-                      </View>
-                      {/* AI가 아직 처리 중인 자료는 화살표 대신 진행 표시, 요약에 실패한 자료는 다시 요약 */}
-                      {busy ? (
-                        <ActivityIndicator size="small" color={C.brand} />
-                      ) : st === 'failed' && m.processing.jobId ? (
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={`${m.title} 다시 요약`}
-                          hitSlop={8}
-                          disabled={resummarize.isPending}
-                          onPress={() => resummarize.mutate(m)}
-                          className="flex-row items-center gap-1 rounded-full bg-mint px-3 py-1.5"
+                        <View
+                          className={cx('h-10 w-10 items-center justify-center rounded-xl', tile)}
                         >
-                          {resummarize.isPending && resummarize.variables?._id === m._id ? (
-                            <ActivityIndicator size="small" color={C.brand} />
-                          ) : (
-                            <RotateCcw size={ICON.xs} color={C.brand} />
-                          )}
-                          <Text className="text-caption font-semibold text-brand">다시 요약</Text>
-                        </Pressable>
-                      ) : (
-                        <ChevronRight size={ICON.sm} color={C.sub} />
-                      )}
-                    </Tap>
+                          <KindIcon size={ICON.md} color={tint} />
+                        </View>
+                        <View className="flex-1">
+                          <Text className="text-subhead font-semibold text-ink">{m.title}</Text>
+                          <Text className="text-caption2 text-sub">
+                            {KIND[m.kind][1]} · {seoul(m.createdAt).getMonth() + 1}/
+                            {seoul(m.createdAt).getDate()} 업로드
+                            {m.kind === 'recording' && st !== 'failed' && ` · ${summaryState(m)}`}
+                            {st === 'failed' && <Text className="text-danger"> · 요약 실패</Text>}
+                          </Text>
+                        </View>
+                        {/* AI가 아직 처리 중인 자료는 화살표 대신 진행 표시, 요약에 실패한 자료는 다시 요약 */}
+                        {busy ? (
+                          <ActivityIndicator size="small" color={C.brand} />
+                        ) : st === 'failed' && m.processing.jobId ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`${m.title} 다시 요약`}
+                            hitSlop={8}
+                            disabled={resummarize.isPending}
+                            onPress={() => resummarize.mutate(m)}
+                            className="flex-row items-center gap-1 rounded-full bg-mint px-3 py-1.5"
+                          >
+                            {resummarize.isPending && resummarize.variables?._id === m._id ? (
+                              <ActivityIndicator size="small" color={C.brand} />
+                            ) : (
+                              <RotateCcw size={ICON.xs} color={C.brand} />
+                            )}
+                            <Text className="text-caption font-semibold text-brand">다시 요약</Text>
+                          </Pressable>
+                        ) : (
+                          <ChevronRight size={ICON.sm} color={C.sub} />
+                        )}
+                      </Tap>
+                    </SwipeAction>
                   </Animated.View>
                 );
               })}
@@ -581,8 +644,8 @@ export function FolderScreen() {
                 ['rec', '녹음 올리기 · 실시간 녹음', Mic],
                 ['hand', '필기 올리기', PenLine],
               ] as const
-            ).map(([k, l, Ic], i) => (
-              <Animated.View key={k} entering={FadeInDown.duration(180).delay(i * 30)}>
+            ).map(([k, l, Ic], i, all) => (
+              <Animated.View key={k} entering={popInFrom(all.length - 1 - i)}>
                 <Pressable
                   onPress={() => {
                     setDial(false);
@@ -690,6 +753,18 @@ export function FolderScreen() {
           del.mutate();
         }}
       />
+      <Alert
+        open={!!removing}
+        title="자료를 삭제할까요?"
+        body={`${removing?.title ?? '이 자료'}를 삭제하면 복구할 수 없어요.`}
+        secondary="취소"
+        onSecondary={() => setRemoving(null)}
+        primary="삭제"
+        onPrimary={() => {
+          if (removing) delMaterial.mutate(removing);
+          setRemoving(null);
+        }}
+      />
     </Canvas>
   );
 }
@@ -705,7 +780,7 @@ const UploadOpt = ({
   sub: string;
   onPress: () => void;
 }) => (
-  <Animated.View entering={FadeIn}>
+  <Animated.View entering={FADE_IN}>
     <Card onPress={onPress} className="mb-2 flex-row items-center gap-3 px-4 py-3.5">
       <View className="h-10 w-10 items-center justify-center rounded-xl bg-white">
         <Icon size={ICON.md} color={C.brand} />

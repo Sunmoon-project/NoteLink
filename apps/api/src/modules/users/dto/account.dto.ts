@@ -29,3 +29,10 @@ export class ChangePlanDto {
   @IsIn(['free', 'pro', 'max'])
   tier!: 'free' | 'pro' | 'max';
 }
+
+/** POST /users/me/email/verify-code — 메일로 받은 6자리 본인 인증번호 */
+export class VerifyIdentityCodeDto {
+  @IsString()
+  @Matches(/^\d{6}$/)
+  code!: string;
+}

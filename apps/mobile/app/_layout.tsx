@@ -10,6 +10,7 @@ import { queryClient } from '@/lib/query';
 import { connectSocket } from '@/lib/socket';
 import { registerPush } from '@/lib/push';
 import { useAuth } from '@/stores/auth';
+import { DRAWER_SCREEN } from '@/features/social/drawer';
 import { AppOverlays } from '@/components/AppOverlays';
 import { useOfflineCache } from '@/lib/offline-cache';
 import { WeeklyGoalNotifications } from '@/features/session/weekly-goal-notifications';
@@ -53,7 +54,10 @@ export default function RootLayout() {
             animation: 'slide_from_right',
             animationDuration: 280,
           }}
-        />
+        >
+          {/* 친구 창은 홈 위에 겹쳐 뜬다. 투명 모달은 띄우기 전에 정해져야 해서 여기서 선언한다 */}
+          <Stack.Screen name="friends" options={DRAWER_SCREEN} />
+        </Stack>
         <AppOverlays />
         <OfflineCache />
       </QueryClientProvider>

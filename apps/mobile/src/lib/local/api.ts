@@ -517,6 +517,16 @@ const api: Api = {
       return ok(withStats(d));
     },
     setStatus: (status) => ok(void (db().user.status = status)),
+    // 기기 저장 모드는 메일을 보내지 않는다(가입 인증과 같게 6자리면 통과)
+    emailSendCode: () =>
+      db().user.email ? ok(undefined) : fail(ERROR_CODES.NO_EMAIL, '계정에 이메일이 없어요'),
+    emailVerifyCode: (code) => {
+      if (!/^\d{6}$/.test(code))
+        return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요', 400);
+      const d = db();
+      d.user.emailVerified = true;
+      return ok(withStats(d));
+    },
     registerDevice: () => ok(undefined),
     changePlan: (tier) => {
       const d = db();

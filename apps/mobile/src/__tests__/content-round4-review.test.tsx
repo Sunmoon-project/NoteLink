@@ -130,7 +130,12 @@ describe('PR36 서버 사진 판정과 식별', () => {
 
 describe('PR36 편집 원문 보존', () => {
   it.each([
-    { name: '빈 제목의 본문', sections: [{ heading: '', body: '제목 없이 보존해야 할 본문' }] },
+    // 서버는 빈 제목을 400으로 거절한다(apps/api/test/materials.flow.test.ts) — 본문은 그대로 두고 「내용 N」 제목만 붙인다
+    {
+      name: '빈 제목의 본문',
+      sections: [{ heading: '', body: '제목 없이 보존해야 할 본문' }],
+      sent: [{ heading: '내용 1', body: '제목 없이 보존해야 할 본문' }],
+    },
     {
       name: '본문 줄바꿈과 빈 문단',
       sections: [
@@ -138,17 +143,29 @@ describe('PR36 편집 원문 보존', () => {
         { heading: '다음 절', body: '끝\n마지막' },
       ],
     },
-  ])('$name을 수정 없이 저장하면 구조와 문자열을 그대로 보존한다', async ({ sections }) => {
-    mockApi.content.material.mockResolvedValue(material(sections));
-    await renderScreen(<EditScreen />, client());
-    await waitFor(() =>
-      expect(screen.getByLabelText('노트 내용').props.value).toContain(sections[0]!.body),
-    );
-    await fireEvent.press(screen.getAllByText('저장')[0]!);
-    await waitFor(() =>
-      expect(mockApi.content.updateSummary).toHaveBeenCalledWith('material-round4', sections),
-    );
-  });
+  ])(
+    '$name을 수정 없이 저장하면 구조와 문자열을 그대로 보존한다',
+    async ({
+      sections,
+      sent,
+    }: {
+      sections: { heading: string; body: string }[];
+      sent?: { heading: string; body: string }[];
+    }) => {
+      mockApi.content.material.mockResolvedValue(material(sections));
+      await renderScreen(<EditScreen />, client());
+      await waitFor(() =>
+        expect(screen.getByLabelText('노트 내용').props.value).toContain(sections[0]!.body),
+      );
+      await fireEvent.press(screen.getAllByText('저장')[0]!);
+      await waitFor(() =>
+        expect(mockApi.content.updateSummary).toHaveBeenCalledWith(
+          'material-round4',
+          sent ?? sections,
+        ),
+      );
+    },
+  );
 });
 
 describe('PR36 녹음 대본 시간 구간', () => {

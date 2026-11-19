@@ -10,6 +10,8 @@ const mockRemote = {
   identity: 'friend-1',
   isMicrophoneEnabled: false,
   isCameraEnabled: false,
+  isSpeaking: false,
+  joinedAt: new Date('2026-11-02T00:00:00Z'),
   audioTrackPublications: new Map([['audio-1', { audioTrack: { setVolume: mockRemoteVolume } }]]),
   getTrackPublication: jest.fn(() => mockCameraPublication),
 };
@@ -61,6 +63,7 @@ jest.mock(
       Reconnected: 'Reconnected',
       Reconnecting: 'Reconnecting',
       Disconnected: 'Disconnected',
+      ActiveSpeakersChanged: 'ActiveSpeakersChanged',
     },
     Track: { Source: { Camera: 'camera' } },
   }),
@@ -73,6 +76,7 @@ beforeEach(() => {
   mockRoom.remoteParticipants.set('friend-1', mockRemote);
   mockRemote.isCameraEnabled = false;
   mockRemote.isMicrophoneEnabled = false;
+  mockRemote.isSpeaking = false;
   mockToken.mockResolvedValue({ url: 'wss://media.test', token: 'test-token' });
   mockStart.mockResolvedValue(undefined);
   mockStop.mockResolvedValue(undefined);
@@ -97,18 +101,50 @@ beforeEach(() => {
 it('원격 참가자의 켜기·끄기와 퇴장 상태를 LiveKit에서 읽는다', async () => {
   const changed = jest.fn();
   const connection = await connectMedia('room-1', changed);
-  expect(connection.participantState('friend-1')).toEqual({ camOn: false, micOn: false });
+  expect(connection.participantState('friend-1')).toEqual({
+    camOn: false,
+    micOn: false,
+    speaking: false,
+    present: true,
+    joinedAt: Date.parse('2026-11-02T00:00:00Z'),
+  });
   mockRemote.isCameraEnabled = true;
   mockRemote.isMicrophoneEnabled = true;
   mockEvents.get('TrackUnmuted')!();
   expect(changed).toHaveBeenCalled();
-  expect(connection.participantState('friend-1')).toEqual({ camOn: true, micOn: true });
+  expect(connection.participantState('friend-1')).toEqual({
+    camOn: true,
+    micOn: true,
+    speaking: false,
+    present: true,
+    joinedAt: Date.parse('2026-11-02T00:00:00Z'),
+  });
   mockRemote.isCameraEnabled = false;
   mockEvents.get('TrackMuted')!();
-  expect(connection.participantState('friend-1')).toEqual({ camOn: false, micOn: true });
+  expect(connection.participantState('friend-1')).toEqual({
+    camOn: false,
+    micOn: true,
+    speaking: false,
+    present: true,
+    joinedAt: Date.parse('2026-11-02T00:00:00Z'),
+  });
   mockRoom.remoteParticipants.delete('friend-1');
   mockEvents.get('ParticipantDisconnected')!();
-  expect(connection.participantState('friend-1')).toEqual({ camOn: false, micOn: false });
+  // 나간 사람은 present: false — 화면이 타일 · 접속 인원에서 뺀다
+  expect(connection.participantState('friend-1')).toEqual({
+    camOn: false,
+    micOn: false,
+    speaking: false,
+    present: false,
+    joinedAt: undefined,
+  });
+  // 말하는 사람이 바뀌면 다시 그린다(말하는 중 표시)
+  mockRoom.remoteParticipants.set('friend-1', mockRemote);
+  mockRemote.isSpeaking = true;
+  changed.mockClear();
+  mockEvents.get('ActiveSpeakersChanged')!();
+  expect(changed).toHaveBeenCalled();
+  expect(connection.participantState('friend-1').speaking).toBe(true);
   await connection.close();
 });
 
@@ -119,7 +155,13 @@ it('재연결 중에는 이전 참가자 미디어 상태를 표시하지 않는
   mockRoom.state = 'reconnecting';
   mockEvents.get('Reconnecting')!();
   expect(changed).toHaveBeenCalled();
-  expect(connection.participantState('friend-1')).toEqual({ camOn: false, micOn: false });
+  expect(connection.participantState('friend-1')).toEqual({
+    camOn: false,
+    micOn: false,
+    speaking: false,
+    present: false,
+    joinedAt: undefined,
+  });
   expect(connection.video('friend-1')).toBeNull();
   mockRoom.state = 'connected';
   mockEvents.get('Reconnected')!();

@@ -122,6 +122,17 @@ export class User {
   @Prop({ type: SubscriptionSchema })
   subscription?: Subscription;
 
+  // 학교 · 학년. 사용자가 프로필에서 적는 자유 글이라 본인 인증 없이 바꾼다(UpdateProfileDto 길이 제한)
+  @Prop({ type: String })
+  school?: string | null;
+
+  @Prop({ type: String })
+  grade?: string | null;
+
+  /** 계정 이메일을 인증번호로 확인한 시각(UsersService.verifyEmailCode). 이메일을 지우면 함께 지운다 */
+  @Prop({ type: Date, default: null })
+  emailVerifiedAt?: Date | null;
+
   /** 탈퇴를 시작한 시각. 이때부터 새 푸시 기기를 받지 않는다(UsersService.withdraw · registerDevice) */
   @Prop({ type: Date, default: null })
   withdrawingAt?: Date | null;

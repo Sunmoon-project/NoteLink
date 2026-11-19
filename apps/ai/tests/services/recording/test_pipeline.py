@@ -1,5 +1,7 @@
 import json
 import re
+import threading
+import time
 from collections.abc import Callable, Sequence
 
 import httpx2
@@ -23,6 +25,7 @@ from app.services.recording.pipeline import (
     TOKENS_PER_SLIDE,
     WINDOW_CHARS,
     WINDOW_MAX_MS,
+    WORKERS,
     SlideBody,
     WindowAnswer,
     assemble_slides,
@@ -113,7 +116,8 @@ def starts_of(slides: list[Slide]) -> list[int]:
 
 
 def build(llm: Llm, data: list[Sentence]) -> list[Slide]:
-    return organize(llm, data, 1000)["slides"]
+    """창을 차례로 묻는 정리(workers=1). 부른 순서 · 횟수를 보는 시험용. 동시에 묻기는 맨 아래."""
+    return organize(llm, data, 1000, workers=1)["slides"]
 
 
 def tagged_sentences(n: int, chars: int = 120) -> list[Sentence]:
@@ -1140,7 +1144,7 @@ def test_stop_during_fill_keeps_filled_slides_and_all_sentences() -> None:
     assert slide_windows(data) == [(0, 5)]
     llm = WindowLlm(all_starts)
 
-    result = organize(llm, data, 1000, should_stop=lambda: len(llm.fills) >= 2)
+    result = organize(llm, data, 1000, should_stop=lambda: len(llm.fills) >= 2, workers=1)
 
     assert llm.fills == [2, 2]
     slides = result["slides"]
@@ -1213,3 +1217,109 @@ def test_all_batches_are_filled_when_not_stopped(should_stop: Callable[[], bool]
     assert llm.fills == [2, 1]
     assert starts_of(result["slides"]) == [0, 1, 2]
     assert "warnings" not in result
+
+
+# ---------- 창 · 묶음을 동시에 묻기 ----------
+
+
+class SlowLlm(WindowLlm):
+    """WindowLlm처럼 답하되 호출마다 잠깐 기다리고, 동시에 도는 호출 수의 최댓값을 셈.
+
+    fail_at이 창 첫 문장 위치면 그 창에서 LlmError. 실패 뒤에 온 호출 수도 셈."""
+
+    def __init__(self, pick: Callable[[list[int]], Sequence[object]], fail_at: int = -1) -> None:
+        super().__init__(pick)
+        self.lock = threading.Lock()
+        self.now = 0
+        self.peak = 0
+        self.fail_at = fail_at
+
+    def call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: JsonObject,
+        name: str,
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+    ) -> JsonObject:
+        with self.lock:
+            self.now += 1
+            self.peak = max(self.peak, self.now)
+        try:
+            time.sleep(0.02)
+            first = re.search(r"^1 \[\d+초\]: s(\d+)", user, re.MULTILINE)
+            if name == SLIDES and first and int(first.group(1)) == self.fail_at:
+                raise LlmError("창 실패")
+            return super().call(
+                model, system, user, schema, name, max_tokens=max_tokens, temperature=temperature
+            )
+        finally:
+            with self.lock:
+                self.now -= 1
+
+
+def test_windows_are_asked_at_the_same_time_with_same_slides() -> None:
+    data = tagged_sentences(400)
+    assert len(slide_windows(data)) > WORKERS
+    llm = SlowLlm(every_third)
+
+    result = organize(llm, data, 1000)
+
+    assert 1 < llm.peak <= WORKERS
+    assert result == organize(WindowLlm(every_third), data, 1000, workers=1)
+    assert "warnings" not in result
+
+
+def test_fill_batches_are_asked_at_the_same_time_with_same_slides() -> None:
+    data = long_slides(12)  # 문장마다 슬라이드, 다시 받을 때 2장씩 → 묶음 6개
+    llm = SlowLlm(all_starts)
+
+    result = organize(llm, data, 1000)
+
+    assert 1 < llm.peak <= WORKERS
+    assert sorted(llm.fills) == [2] * 6
+    assert result == organize(WindowLlm(all_starts), data, 1000, workers=1)
+
+
+def test_failed_window_raises_and_sends_no_new_windows() -> None:
+    data = tagged_sentences(400)
+    windows = slide_windows(data)
+    llm = SlowLlm(every_third, fail_at=windows[1][0])
+
+    with pytest.raises(LlmError, match="창 실패"):
+        organize(llm, data, 1000)
+
+    # 실패한 창(2번째)과 함께 돌던 창까지만 보냄. 남은 창은 내지 않음
+    assert len(llm.windows) <= 1 + WORKERS < len(windows)
+    assert llm.fills == []
+
+
+def test_stop_in_parallel_keeps_leading_windows_and_marks_partial() -> None:
+    data = tagged_sentences(400)
+    windows = slide_windows(data)
+    stop = threading.Event()
+
+    def on_window(done: int, total: int) -> None:
+        stop.set()  # 첫 창이 끝나면 새 창을 내지 않음(이미 낸 창은 끝까지 기다림)
+
+    llm = SlowLlm(every_third)
+    result = organize(llm, data, 1000, on_window=on_window, should_stop=stop.is_set)
+
+    sent = len(llm.windows)
+    assert 1 <= sent <= WORKERS < len(windows)
+    # 낸 창은 모두 앞에서부터 이어지고, 결과는 그 창들의 끝까지
+    assert sorted(w[0] for w in llm.windows) == [s for s, _ in windows[:sent]]
+    assert result["slides"][-1]["sentenceEnd"] == windows[sent - 1][1]
+    assert result.get("warnings") == [{"code": "PARTIAL", "untilMs": result["slides"][-1]["endMs"]}]
+    assert result["sentences"] == data
+
+
+def test_workers_one_asks_one_at_a_time() -> None:
+    llm = SlowLlm(every_third)
+
+    organize(llm, tagged_sentences(400), 1000, workers=1)
+
+    assert llm.peak == 1

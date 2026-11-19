@@ -78,6 +78,9 @@ const motion = {
   enter: 280,
   exit: 180,
   stagger: 40,
+  // 곡선(cubic-bezier). ease: 들어옴 · 나감 · 자리 옮김 기본(Easing.out(cubic)보다 출발이 빠르다), sheet: iOS 시트 곡선
+  ease: [0.23, 1, 0.32, 1],
+  sheet: [0.32, 0.72, 0, 1],
 };
 
 // 그림자는 화면마다 주인공 하나에만 (홈 집중 카드). React Native boxShadow 값

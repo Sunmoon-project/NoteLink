@@ -110,6 +110,10 @@ export interface Api {
     }): Promise<void>;
     changePlan(tier: PlanTier): Promise<User>;
     withdraw(): Promise<void>;
+    /** 계정 이메일로 본인 인증번호를 보낸다. 이메일이 없으면 400 NO_EMAIL */
+    emailSendCode(): Promise<void>;
+    /** 본인 인증번호를 확인한다 → 인증된 내 정보(emailVerified: true) */
+    emailVerifyCode(code: string): Promise<User>;
   };
   upload: {
     getSas(p: {

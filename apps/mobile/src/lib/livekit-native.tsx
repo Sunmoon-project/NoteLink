@@ -14,8 +14,20 @@ export type MediaConnection = {
   toggleCam(): Promise<void>;
   toggleHearing(): Promise<void>;
   close(): Promise<void>;
-  participantState(userId: string): { camOn: boolean; micOn: boolean };
+  participantState(userId: string): ParticipantState;
   video(userId: string): ReactNode;
+};
+
+/**
+ * 한 사람의 미디어 상태. present: 지금 이 방 미디어에 접속해 있는지(서버 멤버 목록은 참여 기록이라 나간 사람도 남는다),
+ * joinedAt: 이번에 들어온 시각(ms) — 각자의 타이머를 그 사람 기준으로 센다, speaking: 말하는 중
+ */
+export type ParticipantState = {
+  camOn: boolean;
+  micOn: boolean;
+  speaking?: boolean;
+  present?: boolean;
+  joinedAt?: number;
 };
 
 // 오디오 세션은 앱에 하나다. 연결이 겹치면 마지막 연결이 닫힐 때만 끈다.
@@ -62,6 +74,8 @@ export async function connectMedia(
     RoomEvent.TrackUnmuted,
     RoomEvent.ParticipantConnected,
     RoomEvent.ParticipantDisconnected,
+    // 말하는 사람이 바뀔 때(말하는 중 표시)
+    RoomEvent.ActiveSpeakersChanged,
     RoomEvent.Reconnected,
     RoomEvent.Reconnecting,
     RoomEvent.Disconnected,
@@ -129,6 +143,9 @@ export async function connectMedia(
       return {
         camOn: participant?.isCameraEnabled ?? false,
         micOn: participant?.isMicrophoneEnabled ?? false,
+        speaking: participant?.isSpeaking ?? false,
+        present: !!participant,
+        joinedAt: participant?.joinedAt?.getTime(),
       };
     },
     video(userId) {

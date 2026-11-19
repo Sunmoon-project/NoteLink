@@ -38,6 +38,8 @@ export const EMAIL_CODE_SEND_POLICY: Record<
   },
   // 「하루」는 서울 자정에 바뀐다(README 규칙)
   recovery: { windowEnd: nextSeoulMidnight, maxSends: 3 },
+  // 본인 인증은 로그인한 계정의 지금 이메일로만 보낸다(남에게 보낼 수 없다). 인증해도 바뀌는 권한이 없어 하루 5번
+  identity: { windowEnd: nextSeoulMidnight, maxSends: 5 },
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;

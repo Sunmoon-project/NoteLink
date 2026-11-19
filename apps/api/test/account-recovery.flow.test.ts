@@ -80,6 +80,7 @@ describe('아이디 찾기 · 비밀번호 재설정 HTTP 흐름 (DB와 메일 �
         noAccount.push(to);
         return Promise.resolve();
       },
+      sendIdentityCode: () => Promise.resolve(),
     };
     // 이메일로 찾기(계정 찾기) · id로 찾기(토큰 검사) 둘 다
     const find = (f: { email?: string; deletedAt?: null; _id?: Types.ObjectId }) =>
