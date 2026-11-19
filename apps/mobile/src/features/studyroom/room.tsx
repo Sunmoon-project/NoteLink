@@ -1517,6 +1517,7 @@ export function RoomCardsScreen() {
               아직 공유된 자료가 없어요
             </Text>
           )}
+        {others.length > 0 && <Label>공유한 노트</Label>}
         {others.map((item) => (
           <Pressable
             key={item._id}

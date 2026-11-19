@@ -107,6 +107,8 @@ it.each([
   });
   mockApi.content.material.mockResolvedValue({ _id: 'mat-9', kind });
   await renderScreen(<RoomCardsScreen />);
+  // 아래 「채팅에 올린 사진 · 파일」과 같은 섹션 제목
+  expect(await screen.findByText('공유한 노트')).toBeTruthy();
   await fireEvent.press(await screen.findByText('공유 노트'));
   await waitFor(() => expect(mockOpen).toHaveBeenCalledWith({ pathname, params: { id: 'mat-9' } }));
   expect(mockApi.content.material).toHaveBeenCalledWith('mat-9');
