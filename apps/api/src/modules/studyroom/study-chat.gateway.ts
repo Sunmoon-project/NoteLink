@@ -12,6 +12,11 @@ import { TokenService } from '../auth/token.service.js';
 import { StudyChatService } from './study-chat.service.js';
 import { StudyRoomNoticesService, type ChatMessageView } from './study-room-notices.service.js';
 
+const LIVE_PREFIX = 'study-room:';
+const WATCH_PREFIX = 'study-room-watch:';
+/** 목록 한 번에 지켜보는 방 수 상한(참여 방 수보다 넉넉히) */
+const MAX_WATCH = 100;
+
 @Injectable()
 @WebSocketGateway()
 export class StudyChatGateway {
@@ -80,10 +85,75 @@ export class StudyChatGateway {
   afterInit(server: Server) {
     server.use((socket, next) => {
       void this.identity(socket).then(
-        () => next(),
+        (userId) => {
+          // 접속 현황(room:live)은 소켓 id 로만 알 수 있어 연결 때 확인한 사용자를 붙여 둔다
+          socket.data.userId = userId;
+          next();
+        },
         () => next(new Error('unauthorized')),
       );
     });
+    // 방 화면은 들어오면 room:join, 나가면 room:leave(끊기면 저절로 빠진다)로 study-room:<id> 채널을 드나든다.
+    // 들어오기는 멤버 확인이 끝난 뒤(joinRoom), 나가기는 채널에서 빠질 때마다 지켜보는 목록에 바로 알린다
+    server.of('/').adapter.on('leave-room', (channel: string) => {
+      if (channel.startsWith(LIVE_PREFIX)) this.notifyLive(channel.slice(LIVE_PREFIX.length));
+    });
+  }
+
+  private notifyLive(roomId: string) {
+    this.server
+      .to(`${WATCH_PREFIX}${roomId}`)
+      .emit('room:live', { roomId, userIds: this.liveUserIds(roomId) });
+  }
+
+  /** 지금 그 방 화면에 들어와 있는 사람: 입장(room:join)이 확정된 소켓만, 같은 사람의 여러 기기는 한 번 */
+  private liveUserIds(roomId: string) {
+    const sockets = this.server.of('/').sockets;
+    const ids = [...(this.server.of('/').adapter.rooms.get(`${LIVE_PREFIX}${roomId}`) ?? [])]
+      .map((id) => sockets.get(id)?.data)
+      .filter((data) => typeof data?.studyChats?.[roomId] === 'string')
+      .map((data) => data?.userId as unknown)
+      .filter((userId): userId is string => typeof userId === 'string');
+    return [...new Set(ids)];
+  }
+
+  /** 스터디룸 목록: 내 방들의 접속 현황을 지켜본다. 멤버가 아닌 방은 빼고 돌려준다 */
+  @SubscribeMessage('rooms:watch')
+  async watch(@ConnectedSocket() socket: Socket, @MessageBody() data: { roomIds?: unknown }) {
+    const roomIds = Array.isArray(data?.roomIds)
+      ? [...new Set(data.roomIds.filter((id): id is string => typeof id === 'string'))].slice(
+          0,
+          MAX_WATCH,
+        )
+      : [];
+    let watched: string[];
+    try {
+      const userId = await this.identity(socket);
+      const allowed = await Promise.all(
+        roomIds.map(async (roomId) => {
+          try {
+            await this.chat.requireMember(roomId, userId);
+            return roomId;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      watched = allowed.filter((roomId): roomId is string => roomId !== null);
+      await socket.join(watched.map((roomId) => `${WATCH_PREFIX}${roomId}`));
+    } catch {
+      return { ok: false, live: {} };
+    }
+    // 가입을 모두 마친 뒤 한꺼번에 계산한다: 이후 바뀐 것은 room:live 로 오고, 그 전 것이 뒤늦게 덮어쓰지 않는다
+    return { ok: true, live: Object.fromEntries(watched.map((id) => [id, this.liveUserIds(id)])) };
+  }
+
+  @SubscribeMessage('rooms:unwatch')
+  async unwatch(@ConnectedSocket() socket: Socket, @MessageBody() data: { roomIds?: unknown }) {
+    const roomIds = Array.isArray(data?.roomIds) ? data.roomIds : [];
+    for (const roomId of roomIds)
+      if (typeof roomId === 'string') await socket.leave(`${WATCH_PREFIX}${roomId}`);
+    return { ok: true };
   }
 
   private async identity(socket: Socket) {
@@ -115,6 +185,7 @@ export class StudyChatGateway {
       await this.chat.requireMember(roomId, userId);
       const subscriptions = (socket.data.studyChats ??= {});
       subscriptions[roomId] = channel;
+      this.notifyLive(roomId);
       return { ok: true, missed };
     } catch {
       if (channel) await socket.leave(channel);
@@ -175,18 +246,23 @@ export class StudyChatGateway {
   }
 
   async evict(roomId: string, userId: string) {
-    const sockets = await this.server.in(`study-room:${roomId}`).fetchSockets();
+    // 방 화면에 있는 소켓과 목록에서 접속 현황만 지켜보는 소켓 모두
+    const sockets = await this.server
+      .in([`study-room:${roomId}`, `${WATCH_PREFIX}${roomId}`])
+      .fetchSockets();
     for (const socket of sockets) {
       try {
         const token = socket.handshake.auth?.token;
         if (typeof token !== 'string') continue;
         if ((await this.tokens.verifyAccess(token)).userId !== userId) continue;
         await socket.leave(`study-room:${roomId}`);
+        await socket.leave(`${WATCH_PREFIX}${roomId}`);
         const channel = socket.data.studyChats?.[roomId];
         if (typeof channel === 'string') await socket.leave(channel);
       } catch {
         // 유효하지 않은 토큰도 더 이상 방 이벤트를 받지 못하게 한다.
         await socket.leave(`study-room:${roomId}`);
+        await socket.leave(`${WATCH_PREFIX}${roomId}`);
         const channel = socket.data.studyChats?.[roomId];
         if (typeof channel === 'string') await socket.leave(channel);
       }
