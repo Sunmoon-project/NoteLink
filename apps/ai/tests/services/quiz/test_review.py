@@ -475,6 +475,14 @@ def test_no_retry_on_the_last_attempt() -> None:
     assert report.saved is None
 
 
+def test_a_report_without_attempt_info_is_not_retried_when_the_limit_is_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review.settings, "ai_job_max_attempts", 1)
+    result, _ = run(outage_llm(), job_input())
+    assert result["emptyReason"] == "transient"
+
+
 def all_down() -> FakeLlm:
     return FakeLlm({"Review": [LlmError("HTTP 503")] * 6})
 

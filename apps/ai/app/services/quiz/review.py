@@ -554,12 +554,13 @@ def _retry_empty(report: Progress) -> bool:
     다시 시도하지 않는 때: 이번이 마지막 시도(처리기가 멈춰 쓴 시도도 셈, Codex 리뷰 #555) ·
     이미 EMPTY_RETRIES번 다시 했음 · 횟수를 저장하지 못함(DB 오류). 한도를 넘겨 실패하면 복습
     상태가 옮겨지지 않으므로 성공으로 끝냅니다(/code-review).
-    시도 정보가 없는 report(시험의 진행률 함수)는 늘 다시 시도합니다. 앱의 '다시 시도'는 attempts를
+    시도 정보가 없는 report(시험의 진행률 함수 등)는 시도 한도가 2 이상이면 다시 시도합니다(횟수를
+    셀 수 없음). 앱의 '다시 시도'는 attempts를
     0으로 되돌리고 checkpoint는 남기므로(ai-jobs.service.ts) 그 뒤 0문제는 바로 성공으로 끝냅니다.
     취소 · 잠금을 잃음(JobGoneError)은 그대로 올려 처리기가 멈추게 합니다.
     """
     if not isinstance(report, Attempts):
-        return True
+        return settings.ai_job_max_attempts > 1
     if report.last_attempt():
         return False
     saved = report.load_checkpoint()
@@ -580,7 +581,8 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
 
     생성 호출이 모두 실패하면(LLM 장애) LlmError를 올려 작업 처리기가 나중에 다시 시도하게 합니다.
     한 문제도 못 만들었는데 정상 탈락 · 거절 없이 끝난 대상(일부 장애 · 답 모양 오류)이 있으면
-    한 번(EMPTY_RETRIES) 다시 시도합니다(#553, _retry_empty). 그 밖의 0문제(틀린 문제 없음 · 모두
+    한 번(EMPTY_RETRIES) 다시 시도합니다(#553, _retry_empty). 마지막 시도(report.last_attempt)면
+    다시 시도하지 않습니다. 그 밖의 0문제(틀린 문제 없음 · 모두
     검사 탈락 · 한 번 다시 해도 일부 장애 등)는 이유(emptyReason)를 남기고 성공으로 끝냅니다: 작업이
     실패하면 NestJS가 복습 상태(srsUpdates)를 옮기지 않습니다. 모든 대상이 장애(llm_down)면 지금처럼
     시도할 때마다 다시 시도하고, 한도를 넘기면 작업이 실패합니다. 끝날 때 만든 수 · 못 쓴 단계를
