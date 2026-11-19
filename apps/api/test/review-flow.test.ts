@@ -67,6 +67,7 @@ function setup() {
     attempts.model,
     aiJobs,
     notePages,
+    { saveFromQuizSet: async () => undefined } as never, // 개념 카드(#558)는 이 시험 밖
   );
   const similar = new SimilarQuizService(
     sets.model,

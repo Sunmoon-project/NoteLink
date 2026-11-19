@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import math
 import re
 import threading
 import time
@@ -13,7 +14,7 @@ import pytest
 
 from app.clients.llm import JsonObject, LlmError, LlmRejectedError, LlmSetupError
 from app.core.config import settings
-from app.services.quiz import generate, srs
+from app.services.quiz import flashcards, generate, srs
 from app.services.quiz.generate import Chunk, PageInfo
 from app.services.quiz.review import InputError, seoul_midnight
 from tests.worker.test_handlers import run_job
@@ -61,6 +62,21 @@ def mixed_levels(monkeypatch: pytest.MonkeyPatch) -> None:
     """one_level을 풀고 실제 난이도 비율 · 유형 고르기로."""
     monkeypatch.setattr(generate.levels, "level_mix", REAL_LEVEL_MIX)
     monkeypatch.setattr(generate.levels, "order_types", REAL_ORDER_TYPES)
+
+
+REAL_CARDS = flashcards.make
+
+
+@pytest.fixture(autouse=True)
+def no_cards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """개념 카드(flashcards.make, #558)는 끔: 이 파일의 시험은 대부분 문제 호출만 세므로. 카드
+    시험은 「개념 카드」 시험이 이 설정을 풀고 봄(cards_on)."""
+    monkeypatch.setattr(flashcards, "make", lambda *a, **k: ([], None))
+
+
+@pytest.fixture
+def cards_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(flashcards, "make", REAL_CARDS)
 
 
 @pytest.fixture(autouse=True)
@@ -1172,7 +1188,8 @@ def test_all_drafts_of_a_round_are_checked_in_one_call() -> None:
     assert len(llm.named("Quiz")) == 4 and len(llm.named(generate.CHECK_NAME)) == 1
     # 정답 둘 검사 · 문제마다 풀기 · 2차 풀기는 따로 부르지 않음
     assert {n for n, _ in llm.calls} == {"Quiz", generate.CHECK_NAME}
-    assert [v for v, _ in steps if v >= 60] == [60, 70, 100]
+    # 마지막 100은 개념 카드 단계(#558)
+    assert [v for v, _ in steps if v >= 60] == [60, 70, 100, 100]
 
 
 def test_a_draft_the_checker_answers_otherwise_is_made_again_once_with_its_problem() -> None:
@@ -1560,3 +1577,153 @@ def test_a_setup_error_stops_waiting_drafts_even_before_the_main_thread_notices(
         run(llm, job(size=4))
     assert len(llm.named("Quiz")) == 1
     join_threads("quiz-draft")
+
+
+# ---------- 개념 카드(#558) ----------
+
+CARDS = [
+    {"front": "이질 아메바의 영양형", "back": "위족으로 운동하고 적혈구를 먹는다.", "pageNo": 1,
+     "concept": "이질 아메바"},
+    {"front": "람블편모충의 영양형", "back": "서양배 모양이고 흡착원판이 있다.", "pageNo": 2,
+     "concept": "람블편모충"},
+]  # fmt: skip
+
+
+@pytest.mark.usefixtures("cards_on")
+def test_cards_are_made_with_the_quiz_from_its_pages_and_concepts() -> None:
+    llm = happy([GOOD["이질 아메바"], GOOD["람블편모충"]])
+    llm.answers[flashcards.NAME] = quiz_from([{"cards": CARDS}, {"cards": []}])
+    result, _ = run(llm, job())
+    assert len(result["questions"]) == 2
+    assert result["flashcards"] == CARDS
+    assert result["flashcardsReason"] == "2/5장만 만듦"
+    first = llm.named(flashcards.NAME)[0]
+    # 문제를 나눈 쪽 글과 그 쪽 개념
+    assert '<노트 쪽="1">' in first and '<노트 쪽="2">' in first
+    assert all(name in first for name in NAMES)
+    assert dict(llm.models)[flashcards.NAME] == settings.quiz_gen_model
+
+
+@pytest.mark.usefixtures("cards_on")
+def test_a_failed_card_call_does_not_fail_the_quiz() -> None:
+    llm = happy([GOOD["이질 아메바"], GOOD["람블편모충"]])
+    llm.answers[flashcards.NAME] = lambda u: LlmError("HTTP 503")
+    result, _ = run(llm, job())
+    assert len(result["questions"]) == 2
+    assert result["flashcards"] == []
+    assert "카드 호출 실패" in result["flashcardsReason"]
+
+
+def gated_cards(gate: threading.Event, asked: threading.Event) -> Callable[[str], JsonObject]:
+    def slow(_: str) -> JsonObject:
+        asked.set()
+        gate.wait(10)
+        return {"cards": CARDS}
+
+    return slow
+
+
+@pytest.mark.usefixtures("cards_on")
+def test_the_quiz_waits_for_slow_cards_only_a_little(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 바로 요청: 퀴즈가 끝나면 카드를 WAIT_SEC까지만 기다리고 건너뜀(퀴즈를 늦추지 않음)
+    monkeypatch.setattr(flashcards, "WAIT_SEC", 0.2)
+    monkeypatch.setattr(flashcards, "POLL_SEC", 0.05)
+    gate, asked = threading.Event(), threading.Event()
+    llm = happy([GOOD["이질 아메바"], GOOD["람블편모충"]])
+    llm.answers[flashcards.NAME] = gated_cards(gate, asked)
+    try:
+        t0 = time.monotonic()
+        result, _ = run(llm, job())
+        took = time.monotonic() - t0
+    finally:
+        gate.set()
+    assert asked.is_set()  # 카드 호출은 퀴즈를 만드는 동안 이미 나감
+    assert len(result["questions"]) == 2
+    assert result["flashcards"] == []
+    assert result["flashcardsReason"] == f"0/5장만 만듦({flashcards.TIMEOUT})"
+    assert took < 3
+
+
+@pytest.mark.usefixtures("cards_on")
+def test_a_failed_quiz_stops_the_cards(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(flashcards, "POLL_SEC", 0.05)
+    gate, asked = threading.Event(), threading.Event()
+    llm = happy([LlmError("학교 LLM 503")] * 6)
+    llm.answers[flashcards.NAME] = gated_cards(gate, asked)
+    seen: list[Any] = []
+    real = generate._Cards.drop
+
+    def drop(self: Any) -> None:
+        seen.append(self)
+        real(self)
+
+    monkeypatch.setattr(generate._Cards, "drop", drop)
+    try:
+        with pytest.raises(LlmError):
+            run(llm, job(size=1))
+    finally:
+        gate.set()
+    (cards,) = seen
+    assert cards.end() == -math.inf  # 남은 호출은 보내지 않고, 기다리던 호출은 끊음
+
+
+@pytest.mark.parametrize(
+    ("mode", "hurry", "wait"),
+    [
+        (generate.FAST, None, "WAIT_SEC"),
+        (generate.STABLE, None, "CARD_SEC"),
+        (generate.STABLE, True, "WAIT_SEC"),  # 이어받은 미리 만들기는 사용자가 기다림
+    ],
+)
+def test_the_card_limit_follows_the_quiz(
+    monkeypatch: pytest.MonkeyPatch, mode: generate.Mode, hurry: bool | None, wait: str
+) -> None:
+    got: list[Any] = []
+
+    def capture(llm: Any, pages: Any, scope: Any, *, end: Any, clock: Any) -> Any:
+        got.append((end, clock, end() - clock()))
+        assert {p for p, _ in scope} == {1}
+        return [], None
+
+    monkeypatch.setattr(flashcards, "make", capture)
+    make(
+        happy([GOOD["이질 아메바"]]),
+        page1_job(size=1),
+        mode=mode,
+        hurry=(lambda: True) if hurry else None,
+    )
+    ((end, clock, during),) = got
+    # 퀴즈가 도는 동안은 작업 상한까지, 끝난 뒤에는 짧은 상한
+    assert during > generate.TOTAL_SEC * mode.patience - 5
+    assert 0 < end() - clock() <= getattr(flashcards, wait)
+
+
+def test_a_pregen_taken_over_after_the_quiz_gets_the_short_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    got: list[Any] = []
+    taken = [False]
+
+    def capture(llm: Any, pages: Any, scope: Any, *, end: Any, clock: Any) -> Any:
+        got.append((end, clock))
+        return [], None
+
+    monkeypatch.setattr(flashcards, "make", capture)
+    make(
+        happy([GOOD["이질 아메바"]]),
+        page1_job(size=1),
+        mode=generate.STABLE,
+        hurry=lambda: taken[0],
+    )
+    ((end, clock),) = got
+    assert end() - clock() > flashcards.WAIT_SEC
+    taken[0] = True  # 카드를 기다리는 사이 사용자가 이어받음: 상한을 다시 봄
+    assert end() - clock() <= flashcards.WAIT_SEC
+
+
+@pytest.mark.usefixtures("cards_on")
+def test_the_card_step_is_reported() -> None:
+    llm = happy([GOOD["이질 아메바"], GOOD["람블편모충"]])
+    llm.answers[flashcards.NAME] = quiz_from([{"cards": CARDS}, {"cards": []}])
+    _, steps = run(llm, job())
+    assert steps[-1] == (100, "개념 카드 만들기")

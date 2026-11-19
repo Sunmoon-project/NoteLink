@@ -60,6 +60,7 @@ function setup() {
     attempts.model,
     new AiJobsService(jobs.model),
     recordingPages,
+    { saveFromQuizSet: async () => undefined } as never, // 개념 카드(#558)는 이 시험 밖
   );
   /** 녹음 정리 작업을 넣는다 */
   const addSummaryJob = (over: Record<string, unknown> = {}) => {

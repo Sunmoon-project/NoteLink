@@ -8,7 +8,7 @@ import { FlashcardsService } from './flashcards.service.js';
 import { Flashcard, FlashcardSchema } from './schemas/flashcard.schema.js';
 import { QuizSet, QuizSetSchema } from './schemas/quiz-set.schema.js';
 
-/** 플래시카드 저장 · 조회 · 삭제(FR-55 · 56) */
+/** 플래시카드 저장 · 조회 · 삭제(FR-55 · 56). 맞춤 퀴즈의 개념 카드도 저장한다(QuizSetsModule, #558) */
 @Module({
   imports: [
     MongooseModule.forFeature([
@@ -20,5 +20,6 @@ import { QuizSet, QuizSetSchema } from './schemas/quiz-set.schema.js';
   ],
   controllers: [FlashcardsController],
   providers: [FlashcardsService],
+  exports: [FlashcardsService],
 })
 export class FlashcardsModule {}

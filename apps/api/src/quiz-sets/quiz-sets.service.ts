@@ -6,6 +6,7 @@ import { Model, mongo, Types } from 'mongoose';
 
 import { type AppAiJob, AiJobsService, PREGEN_TYPE } from '../ai-jobs/ai-jobs.service.js';
 import { Material, type MaterialDocument } from '../modules/content/schemas/material.schema.js';
+import { FlashcardsService } from '../modules/quiz/flashcards.service.js';
 import {
   QuizAttempt,
   type QuizAttemptDocument,
@@ -26,6 +27,11 @@ export const SIMILAR_TYPE = 'similar_quiz';
 export const TODAY_TYPE = 'today_review';
 /** 결과로 복습 상태(srsUpdates) · 무효 풀이(voidAnswers)를 옮기는 작업 */
 const REVIEW_TYPES: readonly string[] = [SIMILAR_TYPE, TODAY_TYPE];
+/**
+ * 결과의 개념 카드(result.flashcards)를 저장하는 작업: 맞춤 퀴즈 · 미리 만들기(#558). 처리기는 이 둘만 카드를
+ * 만든다(apps/ai services/quiz/flashcards.py). 오답 복습 · 오늘의 복습은 기존 범위를 다시 묻는 것이라 만들지 않는다
+ */
+const CARD_TYPES: readonly string[] = [GENERATE_TYPE, PREGEN_TYPE];
 /**
  * 세트 하나의 문제 수. 처리기 입력 size로 보낸다(보내지 않으면 처리기 기본 10문제).
  * 처리기는 size개를 다 만들지 못하면 모자란 자리를 다시 돌리고, 그래도 모자라면 작업을 실패로
@@ -281,6 +287,8 @@ export class QuizSetsService {
     private readonly jobs: AiJobsService,
     /** 녹음 노트의 대본을 퀴즈 입력 쪽으로(FR-38). 필기 노트는 쓰지 않는다 */
     private readonly recordingPages: RecordingNotePagesService,
+    /** 맞춤 퀴즈 결과의 개념 카드를 저장한다(#558) */
+    private readonly flashcards: FlashcardsService,
   ) {}
 
   /**
@@ -566,6 +574,12 @@ export class QuizSetsService {
     // 처리기가 뽑은 개념 이름은 세트를 ready로 바꾸기 전에 노트에 남긴다: 저장이 실패하면 세트도 그대로라
     // 다음 조회가 다시 옮기며 다시 저장한다(Codex 리뷰 #276). 같이 옮기는 요청이 모두 저장해도 같은 값
     if (update['status'] === 'ready' && job) await this.saveConcepts(row, job);
+    // 같은 범위의 개념 카드(#558)도 세트를 바꾸기 전에 쓴다. 카드 id가 세트와 순번에서 정해져 같이 옮기는
+    // 요청이 모두 써도, 다시 옮겨도 한 번만 생기고 지운 카드는 되살아나지 않는다
+    const cards = job?.result?.['flashcards'];
+    const hasCards = Array.isArray(cards) && cards.length > 0;
+    if (update['status'] === 'ready' && job && CARD_TYPES.includes(job.type) && hasCards)
+      await this.saveCards(row, cards);
     // 오답 복습은 틀린 문제들의 복습 상태(srsUpdates)를 세트를 바꾸기 전에 옮긴다(saveConcepts와 같은 이유).
     // 새 문제를 하나도 못 만들어 세트가 failed가 되어도 처리기가 끝냈으면 복습 상태는 옮긴다
     if (job && REVIEW_TYPES.includes(job.type) && job.status === 'succeeded')
@@ -587,6 +601,24 @@ export class QuizSetsService {
     const current =
       updated ?? (await this.sets.findOne({ _id: row._id }).lean<QuizSetRow>()) ?? row;
     return { quizSet: toAppSet(current), job };
+  }
+
+  /**
+   * 개념 카드를 저장한다(#558). 카드는 퀴즈의 덤이라 저장이 실패해도 세트는 ready로 옮긴다(경고 로그만):
+   * 카드 때문에 다 만든 퀴즈의 조회 · 목록이 실패하지 않게(/code-review). 그 세트의 카드는 다시 만들지 않는다.
+   * 로그에는 카드 글을 넣지 않는다(오류 이름 · 코드만)
+   */
+  private async saveCards(row: QuizSetRow, cards: unknown[]): Promise<void> {
+    try {
+      await this.flashcards.saveFromQuizSet(row, cards);
+    } catch (e) {
+      const code = typeof e === 'object' && e !== null ? (e as { code?: unknown }).code : undefined;
+      this.logger.warn(
+        `개념 카드를 저장하지 못했습니다(퀴즈는 그대로, 세트 ${row._id.toHexString()}): ${
+          e instanceof Error ? e.name : typeof e
+        }${code === undefined ? '' : ` ${String(code)}`}`,
+      );
+    }
   }
 
   /**
