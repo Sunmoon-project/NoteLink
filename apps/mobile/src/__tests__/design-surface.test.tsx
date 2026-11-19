@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react-native';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Canvas, Card, Chip, Input, Screen } from '../components/ui';
 
 jest.mock('expo-router', () => ({
@@ -49,12 +50,15 @@ it('캔버스 화면 위는 흰 칩, 흰 카드 안은 채움 칩이다', async 
 });
 
 it('Canvas 안이면 Screen 밖(시트 자리)도 캔버스 면이다', async () => {
+  // Canvas는 장착 테마를 읽는다(앱 루트처럼 QueryClient 안에서)
   await render(
-    <Canvas>
-      <Card>
-        <Chip>과목</Chip>
-      </Card>
-    </Canvas>,
+    <QueryClientProvider client={new QueryClient()}>
+      <Canvas>
+        <Card>
+          <Chip>과목</Chip>
+        </Card>
+      </Canvas>
+    </QueryClientProvider>,
   );
   expect(chipClass()).toContain('bg-fill');
 });

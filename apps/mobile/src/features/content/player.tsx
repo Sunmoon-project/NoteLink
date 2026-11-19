@@ -1,23 +1,22 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withTiming,
-  cancelAnimation,
-} from 'react-native-reanimated';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
-import { useIsFocused } from 'expo-router';
+import { router, useIsFocused } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
 import { Bookmark, Pause, Play, Repeat, Sparkles } from 'lucide-react-native';
 import { api } from '@/lib/api';
 import { paragraphs, rangeAt, segmentsIn } from '@/lib/transcript';
 import { toast } from '@/stores/toast';
+import { Avatar3D } from '@/features/tutor/avatar3d';
+import { canAsk, useEquippedAccessories, useEquippedAvatar } from '@/features/tutor/buddy';
+import { CLOSED, lipsAt } from '@/features/tutor/lips';
+import { splitLines } from './captions';
+import { Captions } from './captions-view';
+import { usePlaybackClock } from './clock';
 import { Btn, Chip, Loading, Sheet, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
@@ -30,7 +29,8 @@ const SPEEDS = [1, 1.25, 1.5, 2];
 
 /** 실제 녹음 파일을 expo-audio로 재생한다. 길이는 서버 값이 없으면 파일에서 읽는다 */
 function usePlayback(url: string | undefined, knownDuration: number) {
-  const player = useAudioPlayer(url ? { uri: url } : null);
+  // 상태는 0.25초마다(기본 0.5초). 그 사이는 usePlaybackClock이 프레임마다 이어 붙인다
+  const player = useAudioPlayer(url ? { uri: url } : null, { updateInterval: 250 });
   const status = useAudioPlayerStatus(player);
   // 탭 안의 스택 화면은 탭을 바꾸거나 다른 화면을 올려도 내려가지 않아 소리가 계속 났다 → 가려지면 일시정지
   const focused = useIsFocused();
@@ -43,9 +43,11 @@ function usePlayback(url: string | undefined, knownDuration: number) {
     duration,
     pos: status.currentTime,
     playing: status.playing,
+    buffering: status.isBuffering,
     rate: status.playbackRate || 1,
     loop: player.loop,
     toggle: () => (status.playing ? player.pause() : player.play()),
+    pause: () => player.pause(),
     seek: (s: number) => player.seekTo(Math.max(0, Math.min(duration, s))),
     setRate: (r: number) => player.setPlaybackRate(r),
     // expo-audio는 loop를 속성으로만 바꾼다
@@ -124,31 +126,6 @@ export function useResume(
   );
 }
 
-/** 아바타 입 모양 — 서버의 viseme(입 모양 9종) 연결 전까지 재생 중에 여닫는다 */
-function LipSyncAvatar({ playing }: { playing: boolean }) {
-  const open = useSharedValue(0.4);
-  useEffect(() => {
-    if (playing) open.set(withRepeat(withTiming(1.6, { duration: 280 }), -1, true));
-    else {
-      cancelAnimation(open);
-      open.set(withTiming(0.4));
-    }
-  }, [playing]); // eslint-disable-line react-hooks/exhaustive-deps
-  const mouth = useAnimatedStyle(() => ({ transform: [{ scaleY: open.get() }] }));
-  return (
-    <View
-      accessibilityLabel="아바타"
-      className="absolute right-3 -bottom-6 h-14 w-14 items-center justify-center rounded-full border-4 border-night bg-brand"
-    >
-      <View className="flex-row gap-2.5">
-        <View className="h-1.5 w-1.5 rounded-full bg-white" />
-        <View className="h-1.5 w-1.5 rounded-full bg-white" />
-      </View>
-      <Animated.View className="mt-1.5 h-1.5 w-3 rounded-full bg-white" style={mouth} />
-    </View>
-  );
-}
-
 export function Player({
   materialId,
   initialView = 'summary',
@@ -187,8 +164,28 @@ export function Player({
   // 요약 화면 아래 대본은 지금 슬라이드(또는 슬라이드 사이 구간)의 문장만. 전체를 한 덩어리로 보이면
   // 42분 녹음은 읽을 수 없었다. 전체 대본은 「대본」 화면에서 슬라이드별 문단으로 본다
   const range = rangeAt(rec.data?.slides ?? [], p.pos);
-  const near = segmentsIn(segs, range.lo, range.hi);
-  const cap = near.findIndex((s) => p.pos >= s.startSec && p.pos < s.endSec);
+  // 한 문장씩 띄운다(긴 구간도 상자가 짧게). 구간 끝에서는 다음 구간의 첫 문장을 미리 보인다
+  const [lines, then] = useMemo(() => {
+    const all = rec.data?.transcript.segments ?? [];
+    const next = all
+      .filter((s) => s.startSec >= range.hi)
+      .reduce<(typeof all)[number] | undefined>(
+        (a, s) => (!a || s.startSec < a.startSec ? s : a),
+        undefined,
+      );
+    return [
+      splitLines(segmentsIn(all, range.lo, range.hi)),
+      next ? splitLines([next])[0] : undefined,
+    ] as const;
+  }, [rec.data, range.lo, range.hi]);
+  // 버퍼링 중에는 소리가 멈춰 있으니 시계도 세운다(앞질러 달렸다가 뒤로 튀지 않게)
+  const { clock, posNow } = usePlaybackClock({
+    pos: p.pos,
+    rate: p.rate,
+    playing: p.playing && !p.buffering,
+  });
+  const avatar = useEquippedAvatar();
+  const acc = useEquippedAccessories();
   const marking = useRef(false);
   const addMark = async () => {
     if (marking.current) return;
@@ -233,6 +230,8 @@ export function Player({
       </View>
     );
   if (!mat.data || !rec.data) return <Loading />;
+  // 정리가 끝난 자료만 선생님에게 물을 수 있다(떠 있는 아바타와 같은 조건)
+  const ask = canAsk(mat.data);
   return (
     <>
       <View className="rounded-3xl bg-night p-3">
@@ -254,7 +253,6 @@ export function Player({
                       ))}
                     </View>
                   </View>
-                  <LipSyncAvatar playing={p.playing} />
                 </>
               ) : (
                 <Text className="text-caption text-white/60">
@@ -262,24 +260,53 @@ export function Player({
                 </Text>
               )}
             </View>
-            <View className="mt-8 rounded-lg border border-white/10 p-3">
+            <View className="mt-3 rounded-lg border border-white/10 p-3">
               <View className="flex-row items-center gap-1.5">
                 <Sparkles size={ICON.xs} color={'#fff'} />
                 <Text className="text-caption2 font-semibold text-white">
                   {p.playing ? '아바타 립싱크 재생 중' : '아바타 립싱크 일시정지'}
                 </Text>
               </View>
-              <Text className="mt-1 text-caption leading-5 text-white/60">
-                {!segs.length
-                  ? '대본은 AI 서버가 연결되면 음성 인식으로 만들어져요. 원본 녹음은 지금 들을 수 있어요.'
-                  : near.length
-                    ? near.map((s, i) => (
-                        <Text key={s.startSec} className={cx(i === cap && 'font-bold text-white')}>
-                          {s.text}{' '}
-                        </Text>
-                      ))
-                    : '이 구간에는 말한 내용이 없어요'}
-              </Text>
+              <View className="mt-2 flex-row gap-3">
+                {/* 말하는 사람과 글이 붙어 보이게 자막 왼쪽에. 입은 단어 시각 · 한글 모음으로 맞춘다 */}
+                {/* 누르면 이 자료의 선생님 대화(떠 있는 아바타 대신 여기가 입구). 소리가 겹치지 않게 재생은 먼저 멈춘다 */}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="아바타 선생님에게 물어보기"
+                  disabled={!ask}
+                  onPress={() => {
+                    p.pause();
+                    void Haptics.selectionAsync().catch(() => {});
+                    router.push({ pathname: '/tutor/[id]', params: { id: materialId } });
+                  }}
+                  className="items-center self-start"
+                >
+                  <View className="h-16 w-16 overflow-hidden rounded-2xl">
+                    <Avatar3D
+                      mood={p.playing ? 'talking' : 'idle'}
+                      avatarId={avatar}
+                      accessories={acc}
+                      size={64}
+                      // head 구도는 얼굴을 꽉 채워 둥근 상자에서 귀 · 볼이 잘렸다 → 여백 있는 전체 구도
+                      framing="full"
+                      background={C.night}
+                      lips={() => (p.playing ? lipsAt(lines, posNow()) : CLOSED)}
+                    />
+                  </View>
+                  {ask && <Text className="mt-1 text-caption2 text-white/60">물어보기</Text>}
+                </Pressable>
+                <View className="flex-1 justify-center">
+                  {lines.length ? (
+                    <Captions lines={lines} clock={clock} pos={p.pos} then={then} />
+                  ) : (
+                    <Text className="text-caption leading-5 text-white/60">
+                      {!segs.length
+                        ? '대본은 AI 서버가 연결되면 음성 인식으로 만들어져요. 원본 녹음은 지금 들을 수 있어요.'
+                        : '이 구간에는 말한 내용이 없어요'}
+                    </Text>
+                  )}
+                </View>
+              </View>
             </View>
           </>
         ) : (

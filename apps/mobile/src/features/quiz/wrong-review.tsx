@@ -12,7 +12,7 @@ import { dropDb, readDb, writeDb } from '@/lib/local/storage';
 import { useAuth } from '@/stores/auth';
 import { AvatarCheer } from '@/features/tutor/cheer';
 import { Avatar3D } from '@/features/tutor/avatar3d';
-import { useEquippedAvatar } from '@/features/tutor/buddy';
+import { useEquippedAccessories, useEquippedAvatar } from '@/features/tutor/buddy';
 import { useTour } from '@/features/tutor/tour';
 
 // 오답 노트: 퀴즈에서 틀린 문제를 기기에 모아 두었다가, 하루에 처음 앱을 열 때 다시 풀게 한다.
@@ -141,6 +141,7 @@ const OX = ['O', 'X'];
 export function WrongReviewScreen() {
   const userId = useAuth((s) => s.userId);
   const avatar = useEquippedAvatar();
+  const acc = useEquippedAccessories();
   // 연 순간의 목록으로 푼다(푸는 동안 맞힌 문제가 빠져도 순서가 흔들리지 않게)
   const [qs] = useState(() =>
     userId ? loadWrong(userId).items.slice(-DAILY_COUNT).reverse() : [],
@@ -201,7 +202,13 @@ export function WrongReviewScreen() {
         {done ? (
           <View className="items-center pt-10">
             <View className="h-24 w-24 items-center justify-center overflow-hidden rounded-full bg-mint">
-              <Avatar3D mood="talking" avatarId={avatar} size={92} framing="head" />
+              <Avatar3D
+                mood="talking"
+                avatarId={avatar}
+                accessories={acc}
+                size={92}
+                framing="head"
+              />
             </View>
             <Text className="mt-5 text-headline font-bold text-ink">
               {qs.length}문제 중 {score}문제를 맞혔어요

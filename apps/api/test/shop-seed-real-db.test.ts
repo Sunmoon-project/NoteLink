@@ -1,10 +1,10 @@
-// 진짜 MongoDB에서 상점 시드가 빈 DB에 6개를 넣고, 반복 · 동시에 돌려도 6개이며, 바꿔 둔 값을 덮어쓰지 않는지 보는 테스트.
+// 진짜 MongoDB에서 상점 시드가 빈 DB에 기본 아이템을 모두 넣고, 반복 · 동시에 돌려도 그 개수이며, 바꿔 둔 값을 덮어쓰지 않는지 보는 테스트.
 // MONGODB_VERIFY_URI가 있을 때만 돌고(없으면 건너뜀), localhost가 아니면 거부한다. 파일 고유 DB(notelink_verify_shop_seed_<pid>_<시각>)만 쓰고 끝나면 지운다.
 // 실행: $env:MONGODB_VERIFY_URI = "mongodb://localhost:27017/?directConnection=true"; npm run test -w @notelink/api -- test/shop-seed-real-db.test.ts
 import type { INestApplication } from '@nestjs/common';
 import { getConnectionToken, getModelToken, MongooseModule } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
-import { createConnection, type Connection, type Model } from 'mongoose';
+import { createConnection, Types, type Connection, type Model } from 'mongoose';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -59,25 +59,25 @@ describe.skipIf(!uri)('진짜 DB 상점 시드 확인', () => {
         await app?.close();
     });
 
-    it('빈 DB에 시드하면 상점 목록에 6개가 나온다', async () => {
+    it('빈 DB에 시드하면 상점 목록에 기본 아이템 전부가 나온다', async () => {
         expect(await count()).toBe(0);
-        await expect(seedShopItems(model)).resolves.toBe(6);
+        await expect(seedShopItems(model)).resolves.toBe(SHOP_SEED_ITEMS.length);
         const res = await request(app.getHttpServer()).get('/api/v1/shop/items');
         expect(res.status).toBe(200);
         expect(res.body.data.map((i: { name: string }) => i.name)).toEqual(SHOP_SEED_ITEMS.map((i) => i.name));
         expect(res.body.data.map((i: { _id: string }) => i._id)).toEqual(SHOP_SEED_ITEMS.map((i) => i.id));
     });
 
-    it('두 번 · 동시에 돌려도 6개 그대로다', async () => {
+    it('두 번 · 동시에 돌려도 개수 그대로다', async () => {
         await expect(seedShopItems(model)).resolves.toBe(0);
         await Promise.all([seedShopItems(model), seedShopItems(model), seedShopItems(model)]);
-        expect(await count()).toBe(6);
+        expect(await count()).toBe(SHOP_SEED_ITEMS.length);
     });
 
-    it('빈 DB에서 동시에 처음 돌려도 6개다', async () => {
+    it('빈 DB에서 동시에 처음 돌려도 개수 그대로다', async () => {
         await items().deleteMany({});
         await Promise.all([seedShopItems(model), seedShopItems(model), seedShopItems(model)]);
-        expect(await count()).toBe(6);
+        expect(await count()).toBe(SHOP_SEED_ITEMS.length);
     });
 
     it('바꿔 둔 가격 · 구매 수 · 판매 중지는 시드 후에도 그대로다', async () => {
@@ -88,7 +88,21 @@ describe.skipIf(!uri)('진짜 DB 상점 시드 확인', () => {
         expect(String(after!._id)).toBe(SHOP_SEED_ITEMS[0]!.id);
         expect(after).toMatchObject({ price: 777, purchaseCount: 42, isActive: false });
         expect(after!.updatedAt).toEqual(before!.updatedAt);
-        expect(await count()).toBe(6);
+        expect(await count()).toBe(SHOP_SEED_ITEMS.length);
+    });
+
+    it('옛 바다 테마 설명은 새 문구로 바뀌고, 운영자가 고친 설명은 그대로다', async () => {
+        const sea = SHOP_SEED_ITEMS[5]!;
+        const seaId = new Types.ObjectId(sea.id);
+        await items().updateOne({ _id: seaId }, { $set: { description: '시원한 파란 물결이 앱 전체를 감싸요.' } });
+        const before = (await items().findOne({ _id: seaId }))!['updatedAt'] as Date;
+        await seedShopItems(model);
+        const fixed = (await items().findOne({ _id: seaId }))!;
+        expect(fixed['description']).toBe(sea.description);
+        expect((fixed['updatedAt'] as Date).getTime()).toBeGreaterThan(before.getTime());
+        await items().updateOne({ _id: seaId }, { $set: { description: '운영자 문구' } });
+        await seedShopItems(model);
+        expect((await items().findOne({ _id: seaId }))!['description']).toBe('운영자 문구');
     });
 });
 
@@ -136,11 +150,11 @@ describe.skipIf(!uri)('진짜 DB 서버 시작 시 상점 시드 자동 실행',
         }
     });
 
-    it('빈 DB에서 app.init()만 해도 상점 아이템 6개가 들어간다', async () => {
+    it('빈 DB에서 app.init()만 해도 상점 기본 아이템이 모두 들어간다', async () => {
         delete process.env[SHOP_SEED_ENV];
         expect(await items().countDocuments()).toBe(0);
         await boot();
-        expect(await items().countDocuments()).toBe(6);
+        expect(await items().countDocuments()).toBe(SHOP_SEED_ITEMS.length);
         const names = (await items().find({}).sort({ createdAt: -1 }).toArray()).map((d) => d['name']);
         expect(names).toEqual(SHOP_SEED_ITEMS.map((i) => i.name));
     });
@@ -160,6 +174,6 @@ describe.skipIf(!uri)('진짜 DB 서버 시작 시 상점 시드 자동 실행',
 
         vi.restoreAllMocks();
         await boot();
-        expect(await items().countDocuments()).toBe(6);
+        expect(await items().countDocuments()).toBe(SHOP_SEED_ITEMS.length);
     });
 });

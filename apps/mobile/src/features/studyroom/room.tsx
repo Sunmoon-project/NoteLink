@@ -38,7 +38,7 @@ import {
   VolumeX,
   X,
 } from 'lucide-react-native';
-import type { Message, RoomMember, RoomSharedItem } from '@notelink/shared';
+import type { Message, RoomMember, RoomSharedItem, StudyRoom } from '@notelink/shared';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as Sharing from 'expo-sharing';
@@ -57,7 +57,6 @@ import {
   Btn,
   Canvas,
   Card,
-  Chip,
   Dialog,
   Header,
   Input,
@@ -78,6 +77,8 @@ import { useNet } from '@/stores/net';
 import { C, ICON, MOTION } from '@/theme';
 import { useLiveRoom } from '@/lib/livekit';
 import { LoadError } from './tools';
+import { InterestPicker } from '@/features/profile/interest-picker';
+import { learnerTypeLabel } from '@/lib/learner-type';
 
 // p.75 스터디룸 입장 · 만들기 / p.76 진입 · 채팅 / p.77 카드 / p.100 연결 끊김
 
@@ -161,6 +162,7 @@ export function RoomListScreen() {
                       <Text className="text-caption text-sub">
                         {r.memberCount}명 · 코드 {r.inviteCode}
                       </Text>
+                      <RoomLabels room={r} className="mt-2" />
                     </View>
                     <Faces members={r.members} />
                   </Card>
@@ -229,12 +231,10 @@ export function RoomListScreen() {
                   <Text className="text-subhead font-bold text-ink">{r.title}</Text>
                   <Badge>{`${r.memberCount}명 참여`}</Badge>
                 </View>
-                <View className="mt-2.5 flex-row gap-1">
-                  {r.tags?.map((t) => (
-                    <Badge key={t}>{t}</Badge>
-                  ))}
-                </View>
-                <Text className="mt-2.5 text-caption text-sub">{r.description}</Text>
+                <RoomLabels room={r} className="mt-2.5" />
+                {!!r.description && (
+                  <Text className="mt-2.5 text-caption text-sub">{r.description}</Text>
+                )}
               </Card>
             </Animated.View>
           ))}
@@ -298,6 +298,24 @@ export function RoomListScreen() {
   );
 }
 
+/**
+ * 방 카드의 카테고리 칩 + 대상 배지. 이름은 categoryNames만 쓴다(서버가 지워진 분야 이름을 빼므로
+ * categoryIds와 순서로 짝짓지 않는다). 예전 응답은 categoryName 하나, 대상이 없으면 배지를 숨긴다
+ */
+function RoomLabels({ room, className }: { room: StudyRoom; className?: string }) {
+  const names = room.categoryNames ?? (room.categoryName ? [room.categoryName] : []);
+  const target = learnerTypeLabel(room.learnerType);
+  if (!names.length && !target) return null;
+  return (
+    <View className={cx('flex-row flex-wrap gap-1', className)}>
+      {names.map((name) => (
+        <Badge key={name}>{name}</Badge>
+      ))}
+      {target && <Badge tone="gray">{target}</Badge>}
+    </View>
+  );
+}
+
 /** 참여 중인 방의 참여자 얼굴을 겹쳐 보인다 (3명까지, 나머지는 +n) */
 function Faces({ members }: { members: RoomMember[] }) {
   const on = members.filter((m) => m.status === 'joined');
@@ -317,13 +335,29 @@ function Faces({ members }: { members: RoomMember[] }) {
 /** 딥링크 · 알림으로 바로 들어오면 뒤로 갈 화면이 없다 — 그때는 스터디룸 탭으로 */
 const leaveRoom = () => (router.canGoBack() ? router.back() : router.replace('/(tabs)/studyroom'));
 
+const MAX_ROOM_CATEGORIES = 3;
+
 export function RoomCreateScreen() {
   const qc = useQueryClient();
   const [name, setName] = useState('');
-  const [cat, setCat] = useState('코딩');
+  // 관심 분야와 같은 목록 · 선택기에서 최대 3개, 먼저 고른 것이 대표
+  const categories = useQuery({
+    queryKey: ['interest-categories'],
+    queryFn: api.me.interestCategories,
+  });
+  const [cats, setCats] = useState<string[]>([]);
+  const toggle = (id: string) =>
+    setCats((cur) => {
+      if (cur.includes(id)) return cur.filter((c) => c !== id);
+      if (cur.length >= MAX_ROOM_CATEGORIES) {
+        toast(`카테고리는 ${MAX_ROOM_CATEGORIES}개까지 고를 수 있어요`);
+        return cur;
+      }
+      return [...cur, id];
+    });
   const [pub, setPub] = useState(true);
   const create = useMutation({
-    mutationFn: () => api.rooms.create({ title: name.trim(), categoryName: cat, isPublic: pub }),
+    mutationFn: () => api.rooms.create({ title: name.trim(), categoryIds: cats, isPublic: pub }),
     onError: () => toast('스터디룸을 만들지 못했어요. 다시 시도해주세요'),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ['rooms'] });
@@ -342,15 +376,17 @@ export function RoomCreateScreen() {
         </Label>
         <Input value={name} onChangeText={setName} placeholder="예) 파이썬 기초 스터디" autoFocus />
         <Label>
-          <Text className="text-footnote font-bold text-ink">카테고리</Text>
+          <Text className="text-footnote font-bold text-ink">
+            카테고리 <Text className="text-caption text-sub">최대 {MAX_ROOM_CATEGORIES}개</Text>
+          </Text>
         </Label>
-        <View className="flex-row gap-2">
-          {['코딩', '자격증', '수학', '영어'].map((c) => (
-            <Chip key={c} small on={cat === c} onPress={() => setCat(c)}>
-              {c}
-            </Chip>
-          ))}
-        </View>
+        {categories.isPending ? (
+          <Loading />
+        ) : categories.isError ? (
+          <LoadError message="카테고리를 불러오지 못했어요" retry={categories.refetch} />
+        ) : (
+          <InterestPicker categories={categories.data} selected={cats} onToggle={toggle} />
+        )}
         <Label>
           <Text className="text-footnote font-bold text-ink">공개 여부</Text>
         </Label>
@@ -376,7 +412,7 @@ export function RoomCreateScreen() {
         </View>
         <Btn
           className="mt-8"
-          disabled={!name.trim()}
+          disabled={!name.trim() || !cats.length}
           loading={create.isPending}
           onPress={() => create.mutate()}
         >

@@ -14,7 +14,14 @@ import { toast } from '@/stores/toast';
 import { LoadError } from '../progress/load-error';
 import { C, ICON } from '@/theme';
 import { Avatar3D, type Mood } from './avatar3d';
-import { LOCAL_AVATARS, readKnown, useEquippedAvatar, useEquippedItem, useFocused } from './buddy';
+import {
+  LOCAL_AVATARS,
+  readKnown,
+  useEquippedAccessories,
+  useEquippedAvatar,
+  useEquippedItem,
+  useFocused,
+} from './buddy';
 import { useTourTarget } from './tour';
 
 /**
@@ -26,6 +33,7 @@ export function AvatarTeacherScreen() {
   const equipped = useEquippedItem();
   // 미리보기도 다른 화면의 선생님과 같은 얼굴(판매가 끝난 상품은 기기에 적어 둔 모델)
   const face = useEquippedAvatar();
+  const acc = useEquippedAccessories();
   // 상점처럼 다른 화면이 위에 쌓이면 보이지 않는 3D를 그리지 않는다(TutorStage와 같게)
   const focused = useFocused();
   // 처음 안내(학습: 저에게 물어보기)가 이 무대의 3D 선생님을 밝힌다
@@ -94,7 +102,7 @@ export function AvatarTeacherScreen() {
           large={false}
         />
         <View ref={stage} collapsable={false} className="items-center rounded-card bg-mint py-3">
-          {focused && <Avatar3D mood={mood} avatarId={face} size={180} />}
+          {focused && <Avatar3D mood={mood} avatarId={face} accessories={acc} size={180} />}
         </View>
 
         <Label>내 아바타</Label>

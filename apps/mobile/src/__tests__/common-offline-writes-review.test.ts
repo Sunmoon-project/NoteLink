@@ -106,7 +106,13 @@ beforeAll(async () => {
     )
   )._id;
   ids.room = (
-    await settle(api.rooms.create({ title: '보존할 방', categoryName: '수학', isPublic: true }))
+    await settle(
+      api.rooms.create({
+        title: '보존할 방',
+        categoryIds: ['000000000000000000000001'],
+        isPublic: true,
+      }),
+    )
   )._id;
   ids.request = (await settle(api.social.received()))[0]!._id;
   ids.card = (await settle(api.quiz.flashcards()))[0]!._id;
@@ -233,7 +239,12 @@ const writes: [string, () => Promise<unknown>][] = [
   ['quiz.deleteFlashcards', () => api.quiz.deleteFlashcards([ids.card])],
   [
     'rooms.create',
-    () => api.rooms.create({ title: '실패할 방', categoryName: '수학', isPublic: true }),
+    () =>
+      api.rooms.create({
+        title: '실패할 방',
+        categoryIds: ['000000000000000000000001'],
+        isPublic: true,
+      }),
   ],
   ['rooms.join', () => api.rooms.join('ABCDEF')],
   ['rooms.leave', () => api.rooms.leave(ids.room)],

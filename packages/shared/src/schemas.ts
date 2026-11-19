@@ -90,7 +90,8 @@ export const Notification = z.object({
 
 export const ShopItem = z.object({
   _id: id,
-  category: z.enum(['avatar', 'theme']),
+  // hat · glasses · scarf: 아바타 선생님 치장(종류마다 하나씩 장착)
+  category: z.enum(['avatar', 'theme', 'hat', 'glasses', 'scarf']),
   name: z.string(),
   description: z.string().nullable(),
   price: z.number().int(),
@@ -513,8 +514,14 @@ export const RoomMember = z.object({
 export const StudyRoom = z.object({
   _id: id,
   title: z.string(),
+  /** 대표 카테고리(categoryIds의 첫 번째) */
   categoryId: id,
   categoryName: z.string().optional(),
+  /** 관심 분야와 같은 공용 카테고리 최대 3개. 서버가 예전 방도 [categoryId]로 채워 준다. */
+  categoryIds: z.array(id).optional(),
+  categoryNames: z.array(z.string()).optional(),
+  /** 대상: 방 만들 때 방장 프로필에서 복사. 방장이 정하지 않았으면 null */
+  learnerType: LearnerType.nullable().optional(),
   hostId: id,
   isPublic: z.boolean(),
   inviteCode: z.string(),

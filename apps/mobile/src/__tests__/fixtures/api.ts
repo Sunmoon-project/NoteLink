@@ -956,7 +956,8 @@ export const mockApi: Api = {
       const r = S.makeRoom({
         _id: uid('room'),
         title: p.title,
-        categoryName: p.categoryName,
+        categoryId: p.categoryIds[0],
+        categoryIds: p.categoryIds,
         isPublic: p.isPublic,
         inviteCode: Math.random().toString(36).slice(2, 8).toUpperCase(),
         hostId: 'u-me',
@@ -1136,6 +1137,13 @@ export const mockApi: Api = {
       db.userItems.forEach((u) => {
         if (u.itemCategory === selected.itemCategory) u.isEquipped = u.itemId === itemId;
       });
+      return structuredClone(undefined);
+    },
+    unequip: async (itemId) => {
+      await ok(undefined);
+      const target = db.userItems.find((u) => u.itemId === itemId && u.isOwned);
+      if (!target) return fail(ERROR_CODES.NOT_FOUND, '보유한 아이템이 아니에요');
+      target.isEquipped = false;
       return structuredClone(undefined);
     },
     ledger: (type) =>
