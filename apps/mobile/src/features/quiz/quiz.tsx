@@ -111,13 +111,16 @@ export function QuizHomeScreen() {
   const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
   const refresh = useTabRefresh(sets);
   const progress = useQuizProgress((s) => s.progress);
+  // 바로가기(유사 퀴즈 등)는 다 푼 세트도 쓰므로 가장 최근 ready 세트, 맨 위 카드는 아직 끝까지 풀지 않은 세트(#561)
+  const recent = sets.data?.find((s) => s.status === 'ready');
   const latest = progress
     ? (sets.data?.find((s) => s._id === progress.setId) ?? {
         _id: progress.setId,
         title: '풀던 퀴즈',
         questionCount: 0,
       })
-    : sets.data?.find((s) => s.status === 'ready');
+    : sets.data?.find((s) => s.status === 'ready' && !s.completed);
+  const shortcutSetId = progress ? latest?._id : recent?._id;
   // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」에는 넣지 않는다
   const todayId = useTodayReview().data?._id;
   const waiting = sets.data?.filter((s) => s.status === 'generating' && s._id !== todayId) ?? [];
@@ -135,29 +138,31 @@ export function QuizHomeScreen() {
             />
           </View>
         )}
-        {latest ? (
+        {shortcutSetId ? (
           <>
-            <Card
-              tone="mint"
-              onPress={() =>
-                router.push({ pathname: '/play/solve', params: { setId: latest._id } })
-              }
-              className="mt-1 p-6"
-            >
-              <Text className="text-caption text-sub">
-                {progress ? '이어서 풀기' : '퀴즈 풀기'}
-              </Text>
-              <Text className="text-body font-bold text-ink">
-                {latest.title}
-                {latest.questionCount > 0 ? ` · ${latest.questionCount}문제` : ''}
-              </Text>
-              {!!progress && latest.questionCount > 0 && (
-                <Progress
-                  value={Math.round((progress.index / latest.questionCount) * 100)}
-                  className="mt-2"
-                />
-              )}
-            </Card>
+            {latest && (
+              <Card
+                tone="mint"
+                onPress={() =>
+                  router.push({ pathname: '/play/solve', params: { setId: latest._id } })
+                }
+                className="mt-1 p-6"
+              >
+                <Text className="text-caption text-sub">
+                  {progress ? '이어서 풀기' : '퀴즈 풀기'}
+                </Text>
+                <Text className="text-body font-bold text-ink">
+                  {latest.title}
+                  {latest.questionCount > 0 ? ` · ${latest.questionCount}문제` : ''}
+                </Text>
+                {!!progress && latest.questionCount > 0 && (
+                  <Progress
+                    value={Math.round((progress.index / latest.questionCount) * 100)}
+                    className="mt-2"
+                  />
+                )}
+              </Card>
+            )}
             {/* 바로가기는 같은 모양 카드 격자 대신 한 그룹의 목록 행 (디자인 점검: 찍어 낸 카드 격자) */}
             <Label>바로가기</Label>
             <Group>
@@ -179,7 +184,7 @@ export function QuizHomeScreen() {
                     sub={sub}
                     chevron
                     onPress={() =>
-                      router.push({ pathname: href as never, params: { setId: latest._id } })
+                      router.push({ pathname: href as never, params: { setId: shortcutSetId } })
                     }
                   >
                     {l}
@@ -689,6 +694,8 @@ export function QuizSolveScreen() {
       // 사본이라 담지 않고, 끝냈다고 다시 읽어 카드가 「마쳤어요」로 바뀌게 한다
       // 그사이 다른 계정으로 바뀌었으면 담지 않는다(새 계정 보관함에 앞 계정 문제가 들어가지 않게)
       if (useAuth.getState().userId !== request.owner) return;
+      // 끝낸 세트는 목록에서 completed가 되므로, 퀴즈 탭 맨 위 카드가 돌아오자마자 다음 세트로 바뀌게 다시 읽는다(#561)
+      void queryClient.invalidateQueries({ queryKey: ['quiz-sets'] });
       const today = queryClient.getQueryData<{ _id: string } | null>(['today-review']);
       if (today?._id === request.setId)
         void queryClient.invalidateQueries({ queryKey: ['today-review'] });

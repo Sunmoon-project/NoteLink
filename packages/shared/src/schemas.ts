@@ -252,7 +252,7 @@ export const QuizSet = z.object({
   questionCount: z.number(),
   questions: z.array(Question),
   createdAt: date,
-  // 오늘의 복습만: 오늘 세트를 끝까지 푼 적이 있으면 true
+  // 세트를 끝까지 푼 풀이가 있으면 true(모든 세트, #561). 오늘의 복습 카드는 「마쳤어요」, 퀴즈 탭 맨 위 카드는 건너뜀
   completed: z.boolean().optional(),
 });
 
