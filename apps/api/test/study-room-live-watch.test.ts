@@ -168,3 +168,25 @@ describe('입장 확정 전', () => {
     for (const [payload] of live.mock.calls) expect(payload.userIds).not.toContain('gone');
   });
 });
+
+describe('지켜보기 중 강퇴(TOCTOU)', () => {
+  it('멤버 확인 뒤 채널에 넣는 사이 강퇴됐으면 지켜보기를 확정하지 않는다', async () => {
+    let calls = 0;
+    // 첫 확인은 멤버, 채널에 넣은 뒤 다시 확인할 때는 이미 강퇴된 상태
+    chat.requireMember.mockImplementation(async () => {
+      if (++calls > 1) throw new Error('kicked');
+    });
+    const watcher = await connect('w');
+    expect(await watcher.timeout(2000).emitWithAck('rooms:watch', { roomIds: ['r1'] })).toEqual({
+      ok: true,
+      live: {},
+    });
+    chat.requireMember.mockResolvedValue(undefined);
+    const live = vi.fn();
+    watcher.on('room:live', live);
+    const a = await connect('a');
+    await a.timeout(2000).emitWithAck('room:join', { roomId: 'r1' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(live).not.toHaveBeenCalled();
+  });
+});

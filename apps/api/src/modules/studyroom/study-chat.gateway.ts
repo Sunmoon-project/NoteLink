@@ -129,18 +129,25 @@ export class StudyChatGateway {
     let watched: string[];
     try {
       const userId = await this.identity(socket);
-      const allowed = await Promise.all(
-        roomIds.map(async (roomId) => {
-          try {
-            await this.chat.requireMember(roomId, userId);
-            return roomId;
-          } catch {
-            return null;
-          }
-        }),
-      );
-      watched = allowed.filter((roomId): roomId is string => roomId !== null);
-      await socket.join(watched.map((roomId) => `${WATCH_PREFIX}${roomId}`));
+      const members = async (ids: string[]) =>
+        (
+          await Promise.all(
+            ids.map(async (roomId) => {
+              try {
+                await this.chat.requireMember(roomId, userId);
+                return roomId;
+              } catch {
+                return null;
+              }
+            }),
+          )
+        ).filter((roomId): roomId is string => roomId !== null);
+      const allowed = await members(roomIds);
+      await socket.join(allowed.map((roomId) => `${WATCH_PREFIX}${roomId}`));
+      // 확인과 가입 사이에 강퇴(evict)되면 evict 가 이 채널을 못 찾는다: 가입한 뒤 다시 확인해 빠진 방은 뺀다(joinRoom 과 같은 방식)
+      watched = await members(allowed);
+      for (const roomId of allowed)
+        if (!watched.includes(roomId)) await socket.leave(`${WATCH_PREFIX}${roomId}`);
     } catch {
       return { ok: false, live: {} };
     }
