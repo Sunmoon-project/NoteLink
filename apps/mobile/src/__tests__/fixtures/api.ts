@@ -251,6 +251,7 @@ export const mockApi: Api = {
       return structuredClone(void (db.user.status = status));
     },
     registerDevice: () => ok(undefined),
+    presence: () => ok(undefined),
     changePlan: async (tier) => {
       await ok(undefined);
 

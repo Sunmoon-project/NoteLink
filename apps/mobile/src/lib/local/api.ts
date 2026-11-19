@@ -519,6 +519,7 @@ const api: Api = {
       return ok(withStats(d));
     },
     setStatus: (status) => ok(void (db().user.status = status)),
+    presence: () => ok(undefined),
     // 기기 저장 모드는 메일을 보내지 않는다(가입 인증과 같게 6자리면 통과)
     emailSendCode: () =>
       db().user.email ? ok(undefined) : fail(ERROR_CODES.NO_EMAIL, '계정에 이메일이 없어요'),

@@ -100,6 +100,10 @@ export class User {
   @Prop({ required: true, type: String, default: 'active' })
   status: string;
 
+  // 앱이 앞에 있다는 마지막 신호(PUT /users/me/presence). 백그라운드로 가면 null. 친구에게 보이는 상태의 기준
+  @Prop({ type: Date, default: null })
+  lastActiveAt?: Date | null;
+
   // 다른 컬렉션(categories) 참조 배열
   @Prop({ type: [{ type: Types.ObjectId, ref: 'Category' }], default: [] })
   interestCategoryIds: Types.ObjectId[];

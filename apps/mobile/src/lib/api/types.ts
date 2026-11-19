@@ -103,6 +103,8 @@ export interface Api {
       > & { settings?: Partial<User['settings']> },
     ): Promise<User>;
     setStatus(status: User['status']): Promise<void>;
+    /** 앱이 앞에 있다는 신호(true) · 나감(false) */
+    presence(active: boolean): Promise<void>;
     registerDevice(d: {
       platform: 'ios' | 'android';
       pushToken: string;

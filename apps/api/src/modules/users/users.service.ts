@@ -106,6 +106,18 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   /**
+   * 앱이 앞에 있다는 신호(active)와 앱을 나갔다는 신호. 친구 목록은 이 시각으로 오프라인을 가린다
+   * (FriendsService PRESENCE_TTL_MS). 고른 상태(status)는 건드리지 않는다. 한 번의 쓰기로 끝낸다(1분마다 온다)
+   */
+  async setPresence(userId: string, active: boolean): Promise<void> {
+    if (!isValidObjectId(userId)) return;
+    await this.userModel.updateOne(
+      { _id: new Types.ObjectId(userId), deletedAt: null },
+      { $set: { lastActiveAt: active ? new Date() : null } },
+    );
+  }
+
+  /**
    * 푸시 알림을 받을 기기를 등록한다. 같은 토큰이면 정보만 갱신하고, 다른 계정이 쓰던 토큰이면 이 계정으로 옮긴다
    * (한 기기에서 계정을 바꿔 로그인하면 이전 계정의 알림이 그 기기로 가지 않게).
    */
