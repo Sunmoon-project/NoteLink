@@ -299,6 +299,10 @@ export function ChatScreen() {
     if (m.chatRoomId !== room.data?._id) return;
     // 서버가 저장한 내 메시지가 오면(응답이든 방송이든) 같은 clientId의 보내는 중 말풍선을 바꾼다
     const pending = m.senderId === myId && m.clientId !== m._id ? m.clientId : undefined;
+    // 응답 시간이 지나 실패로 바뀐 뒤 늦게 와도, 남은 첨부 기록 · 실패 표시를 정리한다
+    if (pending && attachments.current.delete(pending)) {
+      setFailedIds((ids) => ids.filter((x) => x !== pending));
+    }
     qc.setQueryData<DirectHistory>(['messages', m.chatRoomId], (previous) => ({
       messages: mergeMessages(
         (previous?.messages ?? []).filter((x) => !pending || x._id !== pending),
@@ -446,7 +450,10 @@ export function ChatScreen() {
   };
   // 이 대화에서 주고받은 사진 · 파일(불러온 기록 안에서, 최근 것부터)
   const shared = (history.data?.messages ?? [])
-    .filter((m) => (m.type === 'image' || m.type === 'file') && m.attachment)
+    // 보내는 중 · 실패한 내 말풍선(기기 파일 주소)은 빼고 서버에 저장된 것만
+    .filter(
+      (m) => (m.type === 'image' || m.type === 'file') && m.attachment && m._id !== m.clientId,
+    )
     .reverse();
   const remove = useMutation({
     mutationFn: () => api.social.remove(id),

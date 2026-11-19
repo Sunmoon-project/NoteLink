@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { ChatScreen } from '../features/social/screens';
 import { useAuth } from '../stores/auth';
 import { renderScreen, setParams } from '../test-utils';
@@ -175,4 +175,66 @@ it('올리기가 실패하면 다시 보내기를 보이고, 누르면 다시 �
   await waitFor(() => expect(mockUpload).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(screen.queryByText('전송하지 못했어요 · 다시 보내기')).toBeNull());
   expect(screen.getAllByLabelText('파일 a.pdf 열기')).toHaveLength(1);
+});
+
+it('주고받은 자료에는 보내는 중 · 실패한 말풍선(기기 파일)을 넣지 않는다', async () => {
+  mockPickDoc.mockResolvedValue({
+    canceled: false,
+    assets: [{ uri: 'file:///a.pdf', name: 'a.pdf', mimeType: 'application/pdf', size: 10 }],
+  });
+  mockUpload.mockRejectedValueOnce(new Error('network'));
+  await renderScreen(<ChatScreen />);
+  await waitFor(() => expect(mockApi.social.messages).toHaveBeenCalled());
+  await fireEvent.press(screen.getByLabelText('첨부'));
+  await fireEvent.press(await screen.findByLabelText('파일 (PDF) 보내기'));
+  await screen.findByText('전송하지 못했어요 · 다시 보내기');
+  await fireEvent.press(screen.getByLabelText('주고받은 자료'));
+  expect(await screen.findByText('아직 주고받은 사진 · 파일이 없어요')).toBeTruthy();
+});
+
+it('응답 시간이 지나 실패로 바뀐 뒤 서버가 저장한 메시지가 늦게 오면 실패 표시 없이 하나만 남는다', async () => {
+  jest.useFakeTimers();
+  mockPickDoc.mockResolvedValue({
+    canceled: false,
+    assets: [{ uri: 'file:///a.pdf', name: 'a.pdf', mimeType: 'application/pdf', size: 10 }],
+  });
+  const handlers = new Map<string, (m: unknown) => void>();
+  const { socket } = jest.requireMock('../lib/socket');
+  socket.on.mockImplementation((event: string, handler: (m: unknown) => void) => {
+    handlers.set(event, handler);
+    return () => handlers.delete(event);
+  });
+  // 서버는 저장했지만 응답이 오지 않는다
+  let sent: Record<string, unknown> | undefined;
+  const base = mockEmit.getMockImplementation()!;
+  mockEmit.mockImplementation((event: string, data: Record<string, unknown>, ack?: Function) =>
+    event === 'chat:send' ? (sent = data) : base(event, data, ack),
+  );
+  try {
+    await renderScreen(<ChatScreen />);
+    await waitFor(() => expect(mockApi.social.messages).toHaveBeenCalled());
+    await fireEvent.press(screen.getByLabelText('첨부'));
+    await fireEvent.press(await screen.findByLabelText('파일 (PDF) 보내기'));
+    await waitFor(() => expect(sent).toBeDefined());
+    await act(() => jest.advanceTimersByTime(8_000));
+    await screen.findByText('전송하지 못했어요 · 다시 보내기');
+    // 늦게 온 방송(같은 clientId) → 실패 표시가 사라지고 말풍선은 하나
+    await act(() =>
+      handlers.get('chat:message')?.({
+        _id: 'srv-late',
+        clientId: sent!.clientId,
+        chatRoomId: 'room1',
+        senderId: 'me',
+        type: 'file',
+        text: null,
+        attachment: { kind: 'file', name: 'a.pdf', sizeBytes: 10, url: 'https://blob/signed.pdf' },
+        sharedItemId: null,
+        createdAt: '2026-11-19T02:00:00.000Z',
+      }),
+    );
+    expect(screen.queryByText('전송하지 못했어요 · 다시 보내기')).toBeNull();
+    expect(screen.getAllByLabelText('파일 a.pdf 열기')).toHaveLength(1);
+  } finally {
+    jest.useRealTimers();
+  }
 });
