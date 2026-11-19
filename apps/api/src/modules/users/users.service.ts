@@ -242,6 +242,8 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
     );
     await this.tokens.revokeAll(id, now);
     await this.devices.deleteMany({ userId: id });
+    // 알림함에는 다른 사람의 닉네임 · 방 이름이 들어 있다
+    await this.userModel.db.collection('notifications').deleteMany({ userId: id });
     await this.friendships.deleteMany({ $or: [{ userA: id }, { userB: id }] });
     await this.shares.deleteMany({ $or: [{ ownerId: id }, { friendId: id }] });
     // 참여 중인 스터디룸에서 나간다(방장이면 다음 멤버에게 넘기고, 마지막 사람이면 방을 닫는다). 소켓 · LiveKit 연결도 끊는다.

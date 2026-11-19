@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -10,6 +11,7 @@ import { isValidObjectId, Types, type Model } from 'mongoose';
 
 import { User } from '../../auth/schemas/user.schema.js';
 import { TimetableShare } from '../../calendar/schemas/timetable-share.schema.js';
+import { NotificationService } from '../../notification/notification.service.js';
 import { Friendship } from '../schemas/friendship.schema.js';
 
 /** 친구 기능의 오류 코드(앱은 문구를 그대로 보여 준다) */
@@ -47,10 +49,13 @@ function objectId(id: string, what: string): Types.ObjectId {
  */
 @Injectable()
 export class FriendsService {
+  private readonly logger = new Logger(FriendsService.name);
+
   constructor(
     @InjectModel(Friendship.name) private readonly friendships: Model<Friendship>,
     @InjectModel(User.name) private readonly users: Model<User>,
     @InjectModel(TimetableShare.name) private readonly shares: Model<TimetableShare>,
+    private readonly notifications: NotificationService,
   ) {}
 
   /** 닉네임으로 사람 찾기(닉네임은 유일하므로 정확히 같은 한 명). 나 · 탈퇴한 사람은 빼고, 이미 친구여도 보여 준다 */
@@ -91,12 +96,13 @@ export class FriendsService {
       .lean<Friendship & { _id: Types.ObjectId }>();
     if (!current) {
       try {
-        await this.friendships.create({
+        const created = await this.friendships.create({
           ...pair,
           requesterId: meId,
           status: 'pending',
           requestedAt: now,
         });
+        await this.notifyRequest(meId, target, created._id);
         return;
       } catch (error) {
         // 같은 순간 상대도 요청했다(유일 인덱스). 상대 요청이 남은 상태로 아래를 다시 탄다
@@ -118,6 +124,7 @@ export class FriendsService {
       );
       // 그사이 상태가 바뀌었으면(상대가 거절 · 끊기) 지금 상태로 다시 처리한다
       if (accepted.matchedCount === 0) return this.request(me, targetId, now);
+      await this.notifyAccepted(meId, current._id);
       return;
     }
     // 거절 · 차단 이후의 새 요청: 거절은 되살리고, 차단은 조용히 받아 둔 척한다(차단 여부를 알리지 않는다)
@@ -128,6 +135,7 @@ export class FriendsService {
       );
       // 양쪽이 동시에 다시 요청해 상대가 먼저 되살렸다 → 상대 요청이 있는 상태로 다시 처리해 친구가 된다
       if (revived.matchedCount === 0) return this.request(me, targetId, now);
+      await this.notifyRequest(meId, target, current._id);
     }
   }
 
@@ -176,6 +184,56 @@ export class FriendsService {
         message: '친구 요청을 찾을 수 없어요',
       });
     }
+    if (accept) await this.notifyAccepted(meId, id); // 거절은 알리지 않는다
+  }
+
+  /** 받는 사람에게 「○○님이 친구 요청을 보냈어요」. 알림 실패는 요청을 막지 않는다(던지지 않는다) */
+  private async notifyRequest(from: Types.ObjectId, to: Types.ObjectId, requestId: Types.ObjectId) {
+    try {
+      const name = await this.nicknameOf(from);
+      await this.notifications.notify({
+        userIds: [to],
+        category: 'friend',
+        type: 'friend-request',
+        title: '친구 요청',
+        body: `${name}님이 친구 요청을 보냈어요`,
+        data: { requestId: requestId.toHexString(), userId: from.toHexString() },
+        collapseId: `friend-req:${requestId.toHexString()}`,
+      });
+    } catch (error) {
+      // 알림은 덤이라 실패해도 요청 · 수락은 성공으로 끝낸다
+      this.logger.warn(`친구 알림을 보내지 못했어요: ${String(error)}`);
+    }
+  }
+
+  /** 요청을 보냈던 사람에게 「○○님과 친구가 되었어요」 */
+  private async notifyAccepted(by: Types.ObjectId, requestId: Types.ObjectId) {
+    try {
+      // 수락된 요청의 보낸 사람은 바뀌지 않는다(accepted 다음은 끊기로 문서가 지워질 뿐)
+      const done = await this.friendships.findOne({ _id: requestId }).lean<Friendship>();
+      if (!done) return;
+      const name = await this.nicknameOf(by);
+      await this.notifications.notify({
+        userIds: [done.requesterId],
+        category: 'friend',
+        type: 'friend-accepted',
+        title: '새 친구',
+        body: `${name}님과 친구가 되었어요`,
+        data: { requestId: requestId.toHexString(), userId: by.toHexString() },
+        collapseId: `friend-ok:${requestId.toHexString()}`,
+      });
+    } catch (error) {
+      // 알림은 덤이라 실패해도 요청 · 수락은 성공으로 끝낸다
+      this.logger.warn(`친구 알림을 보내지 못했어요: ${String(error)}`);
+    }
+  }
+
+  private async nicknameOf(id: Types.ObjectId): Promise<string> {
+    const user = await this.users
+      .findOne({ _id: id })
+      .select('nickname')
+      .lean<{ nickname: string }>();
+    return user?.nickname ?? '알 수 없는 사용자';
   }
 
   /** 내 친구 목록(닉네임 순). `_id`는 친구 관계 id, `userId`는 상대 사용자 id */

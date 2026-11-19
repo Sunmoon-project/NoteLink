@@ -27,6 +27,7 @@ import { SessionModule } from './modules/session/session.module.js';
 import { TimetableModule } from './modules/timetable/timetable.module.js';
 import { UploadsModule } from './modules/upload/uploads.module.js';
 import { FriendsModule } from './modules/social/friends/friends.module.js';
+import { NotificationModule } from './modules/notification/notification.module.js';
 
 @Module({
   imports: [
@@ -69,6 +70,8 @@ import { FriendsModule } from './modules/social/friends/friends.module.js';
     TimetableModule,
     // 친구 찾기 · 요청 · 목록 · 삭제(FR-15)
     FriendsModule,
+    // 앱 안 알림함 · 공통 알림 발송
+    NotificationModule,
     // 할 일 · D-day (FR-10)
     CalendarModule,
     // 공휴일 · 사용자 제외일 (FR-12)

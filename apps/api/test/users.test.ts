@@ -44,6 +44,7 @@ const model = {
   db: {
     collection: vi.fn(() => ({
       countDocuments: categoryCount,
+      deleteMany: vi.fn(async () => ({ deletedCount: 0 })),
       find: vi.fn(() => ({
         sort: () => ({ toArray: async () => [{ _id: activeId, name: '수능' }] }),
       })),
@@ -188,6 +189,36 @@ describe('내 프로필 API', () => {
     expect((await patch({})).status).toBe(400);
     expect((await patch({ nickname: null })).status).toBe(400);
     expect((await patch({ settings: { role: 'admin' } })).status).toBe(400);
+  });
+  it('알림 설정: 종류별 켜기 · 조용한 시간 · 채팅방 음소거를 받고, 형식이 틀리면 400', async () => {
+    const room = String(new Types.ObjectId());
+    const ok = await patch({
+      settings: {
+        notifyChat: false,
+        quietHours: { start: '23:00', end: '07:00' },
+        mutedChatRoomIds: [room],
+      },
+    });
+    expect(ok.status).toBe(200);
+    expect(model.findOneAndUpdate).toHaveBeenLastCalledWith(
+      expect.anything(),
+      {
+        $set: {
+          'settings.notifyChat': false,
+          'settings.quietHours': { start: '23:00', end: '07:00' },
+          'settings.mutedChatRoomIds': [room],
+        },
+      },
+      expect.anything(),
+    );
+    // 조용한 시간 끄기는 null
+    expect((await patch({ settings: { quietHours: null } })).status).toBe(200);
+    expect((await patch({ settings: { notifyAi: 'no' } })).status).toBe(400);
+    expect(
+      (await patch({ settings: { quietHours: { start: '25:00', end: '07:00' } } })).status,
+    ).toBe(400);
+    expect((await patch({ settings: { quietHours: { start: '23:00' } } })).status).toBe(400);
+    expect((await patch({ settings: { mutedChatRoomIds: ['x'] } })).status).toBe(400);
   });
   it('활성 카테고리는 허용하고 비활성·삭제·없는 카테고리는 거부한다', async () => {
     expect((await patch({ interestCategoryIds: [String(activeId)] })).status).toBe(200);
@@ -409,6 +440,8 @@ describe('내 계정: 상태 · 기기 · 요금제 · 탈퇴', () => {
     await http().delete('/api/v1/users/me').set(auth).expect(204);
     expect(revokeAll).toHaveBeenCalled();
     expect(cleanup.deleteMany).toHaveBeenCalled();
+    // 알림함도 지운다
+    expect(model.db.collection).toHaveBeenCalledWith('notifications');
     await http().delete('/api/v1/users/me').expect(401);
   });
 });

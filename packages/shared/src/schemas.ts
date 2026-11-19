@@ -21,6 +21,16 @@ export const UserSettings = z.object({
   theme: z.enum(['light', 'dark']),
   doubleTapEraser: z.boolean(),
   leftHanded: z.boolean(),
+  // 알림 설정. 서버는 늘 채워 보내지만 옛 캐시에는 없을 수 있어 선택으로 둔다(없으면 켜짐 · 조용한 시간 없음)
+  notifyFriend: z.boolean().optional(),
+  notifyChat: z.boolean().optional(),
+  notifyRoom: z.boolean().optional(),
+  notifyStudy: z.boolean().optional(),
+  notifyAi: z.boolean().optional(),
+  /** 'HH:mm'(서울). 푸시만 멈추고 알림함에는 남는다 */
+  quietHours: z.object({ start: z.string(), end: z.string() }).nullable().optional(),
+  /** 알림을 끈 채팅방 id(1:1 · 스터디룸 채팅방) */
+  mutedChatRoomIds: z.array(id).optional(),
 });
 
 export const User = z.object({

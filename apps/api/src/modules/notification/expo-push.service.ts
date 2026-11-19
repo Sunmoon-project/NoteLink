@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
 
+/** Expo 푸시 토큰 형식. 기기 등록 때 검사하지 않은 옛 토큰을 보내기 전에 거른다 */
+export const EXPO_PUSH_TOKEN = /^(?:Expo|Exponent)PushToken\[[^\]]+\]$/;
+
 export interface ExpoPushMessage {
   to: string;
   title: string;
