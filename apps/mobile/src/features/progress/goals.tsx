@@ -56,7 +56,9 @@ export function DDayScreen() {
       toast('D-day를 추가했어요');
     },
   });
+  // 확인 창은 닫히는 동안에도 보이므로 대상은 남겨 두고 열림만 바꾼다(닫히며 문구가 바뀌지 않게)
   const [removing, setRemoving] = useState<DDay | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const remove = useMutation({
     mutationFn: (id: string) => api.calendar.removeDday(id),
     onError: () => toast('D-day를 삭제하지 못했어요. 다시 시도해주세요'),
@@ -95,7 +97,10 @@ export function DDayScreen() {
         accessibilityRole="button"
         accessibilityLabel={`${d.title} 삭제`}
         disabled={remove.isPending}
-        onPress={() => setRemoving(d)}
+        onPress={() => {
+          setRemoving(d);
+          setConfirming(true);
+        }}
         hitSlop={10}
       >
         <X size={ICON.sm} color={C.sub} />
@@ -146,7 +151,7 @@ export function DDayScreen() {
         )}
       </Screen>
       <Alert
-        open={!!removing}
+        open={confirming}
         title="D-day를 삭제할까요?"
         body={
           removing?.source === 'todo'
@@ -154,11 +159,11 @@ export function DDayScreen() {
             : `${removing?.title ?? '이 D-day'}을(를) 삭제하면 복구할 수 없어요.`
         }
         secondary="취소"
-        onSecondary={() => setRemoving(null)}
+        onSecondary={() => setConfirming(false)}
         primary="삭제"
         onPrimary={() => {
           if (removing) remove.mutate(removing._id);
-          setRemoving(null);
+          setConfirming(false);
         }}
       />
     </Canvas>

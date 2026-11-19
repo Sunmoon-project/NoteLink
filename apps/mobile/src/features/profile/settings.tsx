@@ -92,7 +92,11 @@ export function SettingsScreen() {
         await api.me.withdraw();
         // 탈퇴한 계정의 오답 노트(기기 파일)도 지운다
         forgetWrongNotes(useAuth.getState().userId);
-      } else await api.auth.logout().catch(() => {});
+      } else {
+        // 로그아웃하면 친구에게 바로 오프라인으로 보이게 신호를 거둔다(토큰을 지우기 전에)
+        await api.me.presence(false).catch(() => {});
+        await api.auth.logout().catch(() => {});
+      }
       failure = '기기의 로그인 정보를 지우지 못했어요. 다시 시도해 주세요';
       await useAuth.getState().signOut();
       clearAccountState(qc);

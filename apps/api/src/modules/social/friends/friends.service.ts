@@ -23,7 +23,8 @@ export const FRIEND_ERRORS = {
 type UserBrief = {
   _id: Types.ObjectId;
   nickname: string;
-  status: string;
+  /** 찾기는 접속 상태를 보이지 않아 읽지 않는다 */
+  status?: string;
   lastActiveAt?: Date | null;
 };
 
@@ -246,7 +247,7 @@ function toFriend(id: Types.ObjectId, user: UserBrief, live: boolean): Friend {
       live &&
       user.lastActiveAt &&
       Date.now() - user.lastActiveAt.getTime() <= PRESENCE_TTL_MS &&
-      (STATUSES as readonly string[]).includes(user.status)
+      (STATUSES as readonly string[]).includes(user.status ?? '')
         ? (user.status as Friend['status'])
         : 'offline',
   };
