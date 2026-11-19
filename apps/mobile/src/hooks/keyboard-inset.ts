@@ -16,13 +16,21 @@ export function useKeyboardInset(ref: RefObject<View | null>, enabled = true) {
   const [inset, setInset] = useState(0);
   useEffect(() => {
     if (!enabled) return;
-    const show = (e: KeyboardEvent) => {
-      const top = e.endCoordinates.screenY;
+    // 잰 값이 늦게 돌아오는 사이 키보드가 내려가거나 다시 재면 그 값은 버린다(내려간 뒤 여백이 남지 않게)
+    let turn = 0;
+    const measure = (top: number) => {
+      const mine = ++turn;
       const node = ref.current;
       if (!node) return;
-      node.measureInWindow((_x, y, _w, height) => setInset(keyboardOverlap({ y, height }, top)));
+      node.measureInWindow((_x, y, _w, height) => {
+        if (mine === turn) setInset(keyboardOverlap({ y, height }, top));
+      });
     };
-    const hide = () => setInset(0);
+    const show = (e: KeyboardEvent) => measure(e.endCoordinates.screenY);
+    const hide = () => {
+      turn++;
+      setInset(0);
+    };
     // 안드로이드에는 Will 이벤트가 없다. 키보드 높이가 바뀌면(이모지 · 추천 줄) keyboardDidShow가 다시 온다
     const subs =
       Platform.OS === 'ios'
@@ -35,7 +43,11 @@ export function useKeyboardInset(ref: RefObject<View | null>, enabled = true) {
             Keyboard.addListener('keyboardDidShow', show),
             Keyboard.addListener('keyboardDidHide', hide),
           ];
+    // 키보드가 이미 떠 있을 때 켜지면(입력 중에 시트를 열거나 다음 화면으로 감) 다음 이벤트를 기다리지 않고 잰다
+    const now = Keyboard.isVisible() ? Keyboard.metrics() : undefined;
+    if (now) measure(now.screenY);
     return () => {
+      turn++;
       subs.forEach((sub) => sub.remove());
       setInset(0);
     };

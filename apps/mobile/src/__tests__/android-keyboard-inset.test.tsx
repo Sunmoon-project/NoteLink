@@ -65,6 +65,42 @@ describe('useKeyboardInset — 공용 훅(스터디룸에서 옮김)', () => {
     expect(keyboardOverlap({ y: 0, height: 400 }, 600)).toBe(0);
   });
 
+  it('키보드가 이미 떠 있을 때 켜지면 다음 이벤트를 기다리지 않고 바로 잰다', async () => {
+    Platform.OS = 'android';
+    const visible = jest.spyOn(Keyboard, 'isVisible').mockReturnValue(true);
+    const metrics = jest
+      .spyOn(Keyboard, 'metrics')
+      .mockReturnValue({ screenY: WINDOW - KEYBOARD, height: KEYBOARD, screenX: 0, width: 390 });
+    try {
+      await renderScreen(
+        <Screen>
+          <Text>본문</Text>
+        </Screen>,
+      );
+      expect(paddings()).toContain(KEYBOARD);
+    } finally {
+      visible.mockRestore();
+      metrics.mockRestore();
+    }
+  });
+
+  it('잰 값이 키보드가 내려간 뒤에 돌아오면 버린다(내려간 뒤 빈 여백이 남지 않는다)', async () => {
+    Platform.OS = 'android';
+    const late: (() => void)[] = [];
+    measure.mockImplementation(function (cb: (x: number, y: number, w: number, h: number) => void) {
+      late.push(() => cb(0, frame.y, 390, frame.height));
+    } as never);
+    await renderScreen(
+      <Screen>
+        <Text>본문</Text>
+      </Screen>,
+    );
+    await showKeyboard();
+    await hideKeyboard();
+    await act(async () => late.forEach((run) => run()));
+    expect(paddings()).not.toContain(KEYBOARD);
+  });
+
   it('끄면(enabled=false) 키보드를 듣지 않고 0을 돌려준다', async () => {
     Platform.OS = 'android';
     const ref = { current: {} as View };
