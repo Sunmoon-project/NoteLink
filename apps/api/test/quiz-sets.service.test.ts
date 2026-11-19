@@ -769,6 +769,65 @@ describe('QuizSetsService 조회', () => {
     expect(list[1]).toMatchObject({ status: 'ready', title: '첫 번째 퀴즈' });
   });
 
+  it('목록은 끝까지 푼 세트에 completed를 붙인다: 내 끝낸 풀이만, 풀이 조회는 한 번(#561)', async () => {
+    const { service, addNote, finish, attempts } = setup();
+    const made = [];
+    for (const title of ['끝냄', '푸는 중', '남이 끝냄', '안 풂']) {
+      const m = await service.create(ME.toHexString(), await addNote({ title }));
+      finish(m.job._id, { questions: fullSet(), title });
+      made.push(new Types.ObjectId(m.quizSet._id));
+    }
+    const [done, solving, theirs] = made;
+    const at = new Date('2026-11-19T03:00:00.000Z');
+    await attempts.model.create({ userId: ME, quizSetId: done, finishedAt: at } as never);
+    await attempts.model.create({ userId: ME, quizSetId: solving, finishedAt: null } as never);
+    await attempts.model.create({ userId: OTHER, quizSetId: theirs, finishedAt: at } as never);
+    // 같은 세트를 두 번 끝내도 한 번만
+    await attempts.model.create({ userId: ME, quizSetId: done, finishedAt: at } as never);
+    const find = vi.spyOn(attempts.model, 'distinct');
+    const list = await service.list(ME.toHexString());
+    const completed = Object.fromEntries(list.map((s) => [s.title, s.completed]));
+    expect(completed).toEqual({
+      끝냄: true,
+      '푸는 중': undefined,
+      '남이 끝냄': undefined,
+      '안 풂': undefined,
+    });
+    expect(find).toHaveBeenCalledTimes(1);
+  });
+
+  it('목록은 오늘의 복습 세트에 그 복습 날짜(reviewDay)를, 다른 세트에는 null을 싣는다(#561)', async () => {
+    const { service, addNote, finish, sets } = setup();
+    const m = await service.create(ME.toHexString(), await addNote());
+    finish(m.job._id, { questions: fullSet(), title: '맞춤 퀴즈' });
+    await sets.model.create({
+      ownerId: ME,
+      materialId: new Types.ObjectId(),
+      folderId: FOLDER,
+      sourceSetId: null,
+      reviewDay: '2026-11-16',
+      title: '오늘의 복습 · 11-16',
+      status: 'ready',
+      questionCount: 0,
+      questions: [],
+      jobId: null,
+      deletedAt: null,
+    } as never);
+    const list = await service.list(ME.toHexString());
+    expect(Object.fromEntries(list.map((s) => [s.title, s.reviewDay]))).toEqual({
+      '맞춤 퀴즈': null,
+      '오늘의 복습 · 11-16': '2026-11-16',
+    });
+    expect(list.every((s) => QuizSet.safeParse(s).success)).toBe(true);
+  });
+
+  it('세트가 없으면 풀이를 읽지 않는다(#561)', async () => {
+    const { service, attempts } = setup();
+    const find = vi.spyOn(attempts.model, 'distinct');
+    expect(await service.list(ME.toHexString())).toEqual([]);
+    expect(find).not.toHaveBeenCalled();
+  });
+
   it('남의 세트 · 없는 세트 · 형식이 틀린 id는 404', async () => {
     const { service, addNote } = setup();
     const theirs = await service.create(OTHER.toHexString(), await addNote({ ownerId: OTHER }));

@@ -1143,7 +1143,16 @@ const api: Api = {
     },
   },
   quiz: {
-    sets: () => ok(db().quizSets),
+    // 서버(QuizSetsService.withCompleted)처럼 끝낸 풀이가 있는 ready 세트에 completed를 붙인다(#561)
+    sets: () => {
+      const d = db();
+      const done = new Set(d.attempts.filter((a) => a.finishedAt).map((a) => a.quizSetId));
+      return ok(
+        d.quizSets.map((s) =>
+          s.status === 'ready' && done.has(s._id) ? { ...s, completed: true } : s,
+        ),
+      );
+    },
     createSet: (materialId) => {
       const d = db();
       const m = d.materials.find((x) => x._id === materialId);
