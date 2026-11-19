@@ -79,6 +79,7 @@ import { useLiveRoom } from '@/lib/livekit';
 import { LoadError } from './tools';
 import { InterestPicker } from '@/features/profile/interest-picker';
 import { learnerTypeLabel } from '@/lib/learner-type';
+import { useRoomOrientation } from './room-orientation';
 
 // p.75 스터디룸 입장 · 만들기 / p.76 진입 · 채팅 / p.77 카드 / p.100 연결 끊김
 
@@ -472,6 +473,7 @@ export function useKeyboardInset(ref: React.RefObject<View | null>) {
 }
 
 export function RoomScreen() {
+  useRoomOrientation();
   const openFeature = useFeatureNavigation();
   const insets = useSafeAreaInsets();
   const myId = useAuth((s) => s.userId);
@@ -1101,12 +1103,9 @@ export function RoomScreen() {
               const speaking = micOn && !!state?.speaking;
               const video = live.video(m.userId);
               return (
-                // 채팅을 열면 셋째 타일부터 사라지고 남은 타일이 제자리로 옮겨 간다(닫으면 반대로)
-                <Animated.View
+                // 카메라 회전 문제를 분리 확인하기 위해 영상 타일은 애니메이션 없는 View로 표시한다.
+                <View
                   key={m.userId}
-                  layout={LIST_LAYOUT}
-                  entering={SWAP_IN}
-                  exiting={SWAP_OUT}
                   className={cx(
                     'w-[48.5%] items-center justify-center rounded-2xl',
                     'h-[118px] border-2',
@@ -1163,7 +1162,7 @@ export function RoomScreen() {
                       <MicOff size={ICON.xs} color={camOn ? 'rgba(255,255,255,.5)' : C.sub} />
                     </View>
                   )}
-                </Animated.View>
+                </View>
               );
             })}
           </View>
