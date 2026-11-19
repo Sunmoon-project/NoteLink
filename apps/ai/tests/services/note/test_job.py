@@ -297,7 +297,13 @@ def test_progress_goes_through_steps_in_order_and_only_up() -> None:
     assert values == sorted(values)
     assert seen[0] == (0, "ocr")
     assert (25, "ocr") in seen and (50, "ocr") in seen  # 쪽 하나 끝날 때마다
-    assert [(50, "split"), (70, "refine"), (90, "embed"), (100, "embed")] == seen[-4:]
+    assert [
+        (50, "split"),
+        (70, "refine"),
+        (90, "summary"),
+        (95, "embed"),
+        (100, "embed"),
+    ] == seen[-5:]
 
 
 # ---------- 색 · 형광펜 사진 ----------
