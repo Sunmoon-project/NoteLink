@@ -199,6 +199,8 @@ export const PATHS = {
   materialRecording: (id: string) => `/materials/${seg(id)}/recording`,
   materialBookmarks: (id: string) => `/materials/${seg(id)}/bookmarks`,
   materialDownloadUrl: (id: string) => `/materials/${seg(id)}/download-url`,
+  /** 정리 결과 다시 만들기: 새 작업을 넣고, 성공할 때까지 노트는 옛 결과 그대로(하루 3회, 동시 1개) */
+  materialRegenerate: (id: string) => `/materials/${seg(id)}/regenerate`,
   materialShare: '/materials/share',
   /** 아바타에게 노트 묻기 → note_ask 작업(AiJob)을 돌려준다. 답은 aiJob으로 받아 result(NoteAskResult)에서 읽는다 */
   materialAsk: (id: string) => `/materials/${seg(id)}/ask`,

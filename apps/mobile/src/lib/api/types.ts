@@ -239,6 +239,8 @@ export interface Api {
     recording(materialId: string): Promise<Recording>;
     addBookmark(materialId: string, atSec: number): Promise<void>;
     downloadUrl(materialId: string): Promise<{ url: string; fileName: string }>;
+    /** 정리 결과 다시 만들기. 새 작업이 성공할 때까지 노트는 지금 결과 그대로 */
+    regenerate(materialId: string): Promise<{ material: Material; job: AiJob }>;
     share(p: {
       materialIds: string[];
       target: { type: 'room' | 'friend'; id: string };

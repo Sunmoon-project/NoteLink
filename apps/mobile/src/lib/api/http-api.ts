@@ -181,6 +181,7 @@ export const httpApi: Api = {
     recording: (id) => http.get(P.materialRecording(id)),
     addBookmark: (id, atSec) => http.post(P.materialBookmarks(id), { atSec }),
     downloadUrl: (id) => http.get(P.materialDownloadUrl(id)),
+    regenerate: (id) => http.post(P.materialRegenerate(id)),
     share: (p) => http.post(P.materialShare, p),
     checkImages: (files) => http.post(P.imageCheck, { files }),
     ask: (id, body) => http.post(P.materialAsk(id), body),
