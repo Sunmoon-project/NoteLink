@@ -172,7 +172,9 @@ it('공유 자료에 방 채팅에 올린 사진 · 파일을 최근 것부터 �
 it('타이머는 방장만 저장할 수 있다', async () => {
   useAuth.setState({ userId: 'member' });
   await renderScreen(<TimerScreen />);
-  expect(await screen.findByRole('button', { name: '방장만 바꿀 수 있어요' })).toBeDisabled();
+  // 방장이 아니면 저장 버튼 없이 읽기 전용 안내만(develop 점검 #5)
+  expect(await screen.findByText('방장만 바꿀 수 있어요')).toBeTruthy();
+  expect(screen.queryByText('저장하기')).toBeNull();
   expect(mockApi.rooms.setTimer).not.toHaveBeenCalled();
 });
 

@@ -1276,6 +1276,13 @@ export const Badge = ({
   );
 };
 
+/**
+ * 원 안에 넣을 이름 첫 글자(이모지 · 겹문자도 한 글자로). 프로필 · 친구 · 방 · 시간표가 같이 쓴다.
+ * 전에는 Avatar만 뒤에서 둘째 글자(실명 「최형욱」→「형」을 노린 첫 골격 값)를 써 닉네임 「큐에이」가 「에」로,
+ * 시간표에선 「큐」로 보였다(develop 점검 #6). 지금 넘기는 이름은 모두 닉네임이다
+ */
+export const initial = (name: string) => Array.from(name.trim())[0] ?? '?';
+
 export const Avatar = ({
   name,
   size = 44,
@@ -1309,7 +1316,7 @@ export const Avatar = ({
       className={cx('font-bold', tone === 'brand' ? 'text-white' : 'text-brand')}
       style={{ fontSize: face ? size * 0.55 : size * 0.4 }}
     >
-      {face ?? (name && name.length > 1 ? name.slice(-2, -1) : name)}
+      {face ?? (name ? initial(name) : name)}
     </Text>
   );
   return (

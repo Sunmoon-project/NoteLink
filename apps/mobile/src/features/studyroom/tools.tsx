@@ -48,6 +48,7 @@ import {
   Toggle,
   Two,
   cx,
+  initial,
 } from '@/components/ui';
 import { useAuth } from '@/stores/auth';
 import { useChatMute } from '@/features/notifications';
@@ -300,6 +301,8 @@ export function TimerScreen() {
   const myId = useAuth((s) => s.userId);
   const room = useQuery({ queryKey: ['room', id], queryFn: () => api.rooms.get(id) });
   const isHost = room.data?.hostId === myId;
+  // 방장이 아니면 읽기 전용: 전에는 다 바뀌는 것처럼 보이다가 저장만 막혀 나가면 사라졌다(develop 점검 #5)
+  const readOnly = !!room.data && !isHost;
   const [on, setOn] = useState(true);
   const [type, setType] = useState<TimerRule['type']>('pomodoro');
   const [focus, setFocus] = useState('50');
@@ -369,9 +372,11 @@ export function TimerScreen() {
     <Canvas>
       <Screen
         footer={
-          <Btn disabled={!isHost} loading={save.isPending} onPress={() => save.mutate()}>
-            {!room.data || isHost ? '저장하기' : '방장만 바꿀 수 있어요'}
-          </Btn>
+          !readOnly && (
+            <Btn disabled={!isHost} loading={save.isPending} onPress={() => save.mutate()}>
+              저장하기
+            </Btn>
+          )
         }
       >
         <View className="flex-row items-center gap-3 pt-3">
@@ -384,12 +389,18 @@ export function TimerScreen() {
           </Pressable>
           <View className="flex-1">
             <Text className="text-body font-bold text-ink">방 시간 규칙</Text>
-            <Text className="text-caption2 text-sub">방장 전용 · 멤버 전원</Text>
+            <Text className="text-caption2 text-sub">방장이 정하면 모두에게 적용돼요</Text>
           </View>
           <Pressable accessibilityLabel="도움말" onPress={() => setHelp(true)}>
             <HelpCircle size={ICON.md} color={C.sub} />
           </Pressable>
         </View>
+        {readOnly && (
+          <View className="mt-4 flex-row items-center gap-2 rounded-xl bg-white px-4 py-3">
+            <Lock size={ICON.xs} color={C.sub} />
+            <Text className="flex-1 text-caption text-sub">방장만 바꿀 수 있어요</Text>
+          </View>
+        )}
         <View className="mt-5 flex-row items-start justify-between">
           <View className="flex-1">
             <Text className="text-headline font-bold text-ink">함께 공부할 리듬을 정해요</Text>
@@ -397,7 +408,7 @@ export function TimerScreen() {
               설정한 시간은 모든 참여자에게 동시에 적용돼요.
             </Text>
           </View>
-          <Toggle label="방 시간 규칙" on={on} onChange={setOn} />
+          <Toggle label="방 시간 규칙" on={on} onChange={setOn} disabled={readOnly} />
         </View>
         <View className={cx(!on && 'opacity-40')} pointerEvents={on ? 'auto' : 'none'}>
           <Label>
@@ -412,6 +423,7 @@ export function TimerScreen() {
             ).map(([k, t, d, Ic]) => (
               <Pressable
                 key={k}
+                disabled={readOnly}
                 onPress={() => setType(k)}
                 className={cx(
                   'flex-1 flex-row items-center gap-2 rounded-xl border px-3 py-3',
@@ -450,6 +462,7 @@ export function TimerScreen() {
                 ).map(([p, d]) => (
                   <Pressable
                     key={p}
+                    disabled={readOnly}
                     onPress={() => {
                       const [f = '50', r = '10'] = p.split('/');
                       setFocus(f);
@@ -486,6 +499,7 @@ export function TimerScreen() {
                         <TextInput
                           value={v}
                           onChangeText={(t) => set(t.replace(/\D/g, ''))}
+                          editable={!readOnly}
                           keyboardType="number-pad"
                           className="flex-1 text-subhead text-ink"
                         />
@@ -499,12 +513,14 @@ export function TimerScreen() {
           )}
           <Label
             right={
-              <Pressable
-                onPress={() => editPeriod(0)}
-                className="rounded-full border border-brand/40 px-2 py-0.5"
-              >
-                <Text className="text-caption2 text-brand">시간표 편집</Text>
-              </Pressable>
+              !readOnly && (
+                <Pressable
+                  onPress={() => editPeriod(0)}
+                  className="rounded-full border border-brand/40 px-2 py-0.5"
+                >
+                  <Text className="text-caption2 text-brand">시간표 편집</Text>
+                </Pressable>
+              )
             }
           >
             <View>
@@ -517,7 +533,8 @@ export function TimerScreen() {
               <Pressable
                 key={i}
                 accessibilityRole="button"
-                accessibilityLabel={`${i + 1}교시 편집`}
+                accessibilityLabel={readOnly ? `${i + 1}교시` : `${i + 1}교시 편집`}
+                disabled={readOnly}
                 onPress={() => editPeriod(i)}
                 className={cx(
                   'flex-row items-center gap-3 rounded-xl px-3 py-2.5',
@@ -542,7 +559,7 @@ export function TimerScreen() {
                   </Text>
                   <Text className="text-caption2 text-sub">{p.label}</Text>
                 </View>
-                <Pencil size={ICON.md} color={C.brand} />
+                {!readOnly && <Pencil size={ICON.md} color={C.brand} />}
               </Pressable>
             ))}
           </View>
@@ -616,7 +633,6 @@ const MEMBER_COLORS = [
   { bg: 'bg-member-6', tint: 'bg-member-6/30' },
 ];
 const memberColor = (k: number) => MEMBER_COLORS[k % MEMBER_COLORS.length]!;
-const initial = (name: string) => Array.from(name)[0] ?? '?';
 const toMin = (t: string) => {
   const [h = 0, m = 0] = t.split(':').map(Number);
   return h * 60 + m;
@@ -711,14 +727,6 @@ export function ScheduleScreen() {
           </View>
           <Badge tone="gray">{`${s?.members.length ?? 0}명 연동중`}</Badge>
         </View>
-        <Text className="mt-4 text-footnote text-sub">
-          멤버들이 시간표에 적은 수업을 사람마다 다른 색으로 보여 줘요. 칸을 누르면 누가 무엇을
-          하는지 볼 수 있고, 초록 테두리는 모두 비는 가장 긴 시간이에요.
-        </Text>
-        <Text className="mt-1 text-caption text-sub">
-          내 수업 시간은 이 방 멤버에게 보여요. 수업 제목은 시간표를 공유한 친구에게만 보여요. 방
-          설정에서 이 방에만 시간을 숨길 수 있어요.
-        </Text>
         <View className="mt-2 flex-row flex-wrap gap-1.5">
           {s?.members.map((m, k) => (
             <View
