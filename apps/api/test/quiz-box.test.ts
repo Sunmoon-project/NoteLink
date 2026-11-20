@@ -211,6 +211,7 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
             return { lean: () => Promise.resolve({ _id: filter._id, seq: next }) };
         }),
     };
+    const setFinds: { filter: { _id?: { $in: Types.ObjectId[] } }; projection?: object }[] = []; // 세트 조회 기록
     // 노트(자료): 옛 세트의 노트는 내 폴더 A, 지운 노트도 폴더 A, 남의 노트도 하나. 조건에 deletedAt이 있으면 Mongo처럼 거른다
     const materialsModel = {
         find: vi.fn((filter: { _id: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; folderId: Types.ObjectId; deletedAt?: null }) => ({
@@ -231,7 +232,8 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         })),
     };
     const setsModel = {
-        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; 'questions._id'?: { $in: Types.ObjectId[] } }) => {
+        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; 'questions._id'?: { $in: Types.ObjectId[] } }, projection?: object) => {
+            setFinds.push({ filter, projection });
             const all = [
                 { _id: mineSetId, ownerId: ME, folderId: FOLDER_A, deletedAt: null, questions: mine },
                 { _id: mineBSetId, ownerId: ME, folderId: FOLDER_B, deletedAt: null, questions: mineB },
@@ -392,6 +394,20 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         const filter = materialsModel.find.mock.calls.at(-1)![0];
         expect(filter._id.$in.map(String).sort()).toEqual([legacyMaterial, deletedMaterial].map(String).sort());
         expect(filter.ownerId).toEqual(ME);
+    });
+
+    it('폴더로 열면 세트의 폴더 · 노트만 먼저 읽고, 문제는 그 폴더 세트만 읽는다', async () => {
+        await svc().save(ME.toString(), [sid(mine[0]!), sid(mineB[0]!), sid(loose[0]!), sid(legacy[0]!)]);
+        setFinds.length = 0;
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_B.toString()))).toEqual([sid(mineB[0]!)]);
+        expect(setFinds).toHaveLength(2);
+        expect(setFinds[0]!.projection).toEqual({ folderId: 1, materialId: 1 });
+        expect(setFinds[1]!.projection).toBeUndefined();
+        expect(setFinds[1]!.filter._id!.$in.map(String)).toEqual([String(mineBSetId)]);
+        // 그 폴더 세트가 없으면 문제를 읽지 않는다
+        setFinds.length = 0;
+        expect(await svc().box(ME.toString(), new Types.ObjectId().toString())).toEqual([]);
+        expect(setFinds).toHaveLength(1);
     });
 
     it('보관한 세트에 폴더 없는 세트가 없으면 노트를 읽지 않는다', async () => {

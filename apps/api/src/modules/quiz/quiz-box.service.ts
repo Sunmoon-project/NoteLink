@@ -47,10 +47,14 @@ export class QuizBoxService {
         const rows = await this.items.find({ userId: owner }).sort({ order: 1, savedAt: 1, _id: 1 }).lean<BoxRow[]>();
         if (rows.length === 0) return [];
         // 세트를 지워도(deletedAt) 문제 자체는 남아 있어서 보관함에는 계속 보인다
-        const all = await this.sets
-            .find({ _id: { $in: [...new Set(rows.map((r) => r.quizSetId.toString()))].map((id) => new Types.ObjectId(id)) }, ownerId: owner })
-            .lean<SetQuestions[]>();
-        const sets = folderId === undefined ? all : await this.inFolder(owner, new Types.ObjectId(folderId), all);
+        let setIds = [...new Set(rows.map((r) => r.quizSetId.toString()))].map((id) => new Types.ObjectId(id));
+        if (folderId !== undefined) {
+            // 폴더로 열면 먼저 세트의 폴더 · 노트만 읽어 그 폴더 세트를 고르고, 문제는 고른 세트만 읽는다
+            const heads = await this.sets.find({ _id: { $in: setIds }, ownerId: owner }, { folderId: 1, materialId: 1 }).lean<SetQuestions[]>();
+            setIds = (await this.inFolder(owner, new Types.ObjectId(folderId), heads)).map((s) => s._id);
+            if (setIds.length === 0) return [];
+        }
+        const sets = await this.sets.find({ _id: { $in: setIds }, ownerId: owner }).lean<SetQuestions[]>();
         const byId = new Map<string, QuestionRow>();
         for (const set of sets) for (const q of set.questions ?? []) byId.set(q._id.toString(), q);
         const result: AppQuestion[] = [];
