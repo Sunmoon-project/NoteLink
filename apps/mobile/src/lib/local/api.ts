@@ -963,12 +963,14 @@ const api: Api = {
       const goneQuestions = new Set(gone.flatMap((s) => s.questions.map((q) => q._id)));
       d.quizSets = d.quizSets.filter((s) => !goneSets.has(s._id));
       d.quizBox = d.quizBox.filter((q) => !goneQuestions.has(q._id));
-      // 카드는 출처(세트 · 노트)로만 고른다: 예전 기기 카드는 출처와 상관없이 첫 폴더 id 를 가져 폴더 id 로 고르면 다른
-      // 카드까지 지운다(code-review 3차)
+      // 카드는 출처(세트 · 노트 · 문제)로만 고른다: 예전 기기 카드는 출처와 상관없이 첫 폴더 id 를 가져 폴더 id 로 고르면 다른
+      // 카드까지 지운다(code-review 3차). 예전에 문제에서 만든 카드는 세트 · 노트 없이 문제 id 만 있어
+      // 출처 세트가 없는 카드만 문제로도 고른다(Codex 5차)
       d.flashcards = d.flashcards.filter(
         (f) =>
           !(f.sourceQuizSetId && goneSets.has(f.sourceQuizSetId)) &&
-          !(f.materialId && noteIds.has(f.materialId)),
+          !(f.materialId && noteIds.has(f.materialId)) &&
+          !(!f.sourceQuizSetId && f.sourceQuestionId && goneQuestions.has(f.sourceQuestionId)),
       );
       d.jobs = d.jobs.filter((j) => !goneSets.has(j.targetId) && !noteIds.has(j.targetId));
       // 기록을 저장한 뒤에 원본을 지운다. 저장이 실패하면 자료와 원본이 그대로 남는다

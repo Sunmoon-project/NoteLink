@@ -363,6 +363,44 @@ it('기기 저장 모드 폴더 삭제는 예전 카드(출처 없이 첫 폴더
   expect((await api.quiz.flashcards()).map((c) => c._id)).toEqual([old._id]);
 });
 
+it('기기 저장 모드 폴더 삭제는 예전 형식의 문제 카드(출처 세트 · 노트 없이 문제 id 만 가짐)도 지운다(Codex 5차)', async () => {
+  await signup('a@test.com');
+  const f = await addFolder();
+  const set = seedQuizForTests(['가'], { materialId: 'm-gone', folderId: f._id });
+  const q = set.questions[0]!;
+  const fromQuestion = await api.quiz.saveFlashcard({
+    front: '문제 카드',
+    back: '뒤',
+    sourceQuestionId: q._id,
+  });
+  const manual = await api.quiz.saveFlashcard({ front: '직접 만든 카드', back: '뒤' });
+  // 업데이트 전 saveFlashcard 는 문제에서 만든 카드도 출처 세트 · 노트를 null, 폴더는 첫 폴더 id 로 넣었다
+  for (const [name, json] of mockFiles) {
+    if (!json.includes(fromQuestion._id)) continue;
+    const d = JSON.parse(json) as {
+      flashcards: {
+        _id: string;
+        folderId: string | null;
+        materialId: string | null;
+        sourceQuizSetId: string | null;
+      }[];
+    };
+    for (const c of d.flashcards)
+      Object.assign(c, { folderId: f._id, materialId: null, sourceQuizSetId: null });
+    mockFiles.set(name, JSON.stringify(d));
+  }
+  resetLocalForTests();
+  await login('a@test.com');
+  expect(
+    (await api.quiz.flashcards()).find((c) => c._id === fromQuestion._id)?.sourceQuizSetId,
+  ).toBeNull();
+
+  await api.content.deleteFolder(f._id);
+
+  // 지운 세트의 문제로 만든 카드는 사라지고, 출처 없는 카드는 남는다
+  expect((await api.quiz.flashcards()).map((c) => c._id)).toEqual([manual._id]);
+});
+
 it('오프라인으로 실패한 변경은 연결이 돌아와도 남지 않는다', async () => {
   await signup('a@test.com');
   useNet.setState({ state: 'offline' });
