@@ -727,14 +727,6 @@ export function ScheduleScreen() {
           </View>
           <Badge tone="gray">{`${s?.members.length ?? 0}명 연동중`}</Badge>
         </View>
-        <Text className="mt-4 text-footnote text-sub">
-          멤버들이 시간표에 적은 수업을 사람마다 다른 색으로 보여 줘요. 칸을 누르면 누가 무엇을
-          하는지 볼 수 있고, 초록 테두리는 모두 비는 가장 긴 시간이에요.
-        </Text>
-        <Text className="mt-1 text-caption text-sub">
-          내 수업 시간은 이 방 멤버에게 보여요. 수업 제목은 시간표를 공유한 친구에게만 보여요. 방
-          설정에서 이 방에만 시간을 숨길 수 있어요.
-        </Text>
         <View className="mt-2 flex-row flex-wrap gap-1.5">
           {s?.members.map((m, k) => (
             <View
