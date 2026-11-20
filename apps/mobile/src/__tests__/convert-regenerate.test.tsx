@@ -33,6 +33,18 @@ jest.mock('../lib/api', () => ({
 jest.mock('../lib/socket', () => ({ socket: { emit: jest.fn(), on: () => () => {} } }));
 jest.mock('../lib/env', () => ({ env: { localData: false, apiUrl: 'https://api.example' } }));
 jest.mock('../lib/push', () => ({ notifyLocal: jest.fn() }));
+// 녹음 결과 화면의 플레이어(재생 · 3D 아바타)는 화면 확인에 필요 없어 가짜로 둔다
+jest.mock('expo-audio', () => ({
+  useAudioPlayer: () => ({
+    loop: false,
+    play: jest.fn(),
+    pause: jest.fn(),
+    seekTo: jest.fn(),
+    setPlaybackRate: jest.fn(),
+  }),
+  useAudioPlayerStatus: () => ({ currentTime: 0, duration: 200, playing: false, playbackRate: 1 }),
+}));
+jest.mock('../features/tutor/avatar3d', () => ({ Avatar3D: () => null }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),
@@ -129,4 +141,39 @@ it('하루 한도를 넘으면 서버 문구를 그대로 보인다', async () =
     expect(useToast.getState().msg).toBe('오늘은 다시 만들기를 3번 다 썼어요. 내일 다시 해 주세요'),
   );
   expect(mockApi.ai.job).not.toHaveBeenCalled();
+});
+
+// codex 3차 재리뷰(PR #581): 녹음은 플레이어가 슬라이드 · 대본을 따로(['recording', id]) 불러와, 자료만 다시 읽으면
+// 다시 만들기가 끝나도 옛 슬라이드가 그대로 보였다
+it('녹음을 다시 만들면 플레이어의 슬라이드 · 대본도 새 결과로 바꾼다', async () => {
+  const recordingNote = { ...note('강의'), title: '강의 녹음', kind: 'recording' };
+  const recording = (title: string) => ({
+    _id: 'm1',
+    materialId: 'm1',
+    audioUrl: 'https://blob.example/audio.m4a',
+    durationSec: 200,
+    slides: [{ index: 0, title, bullets: [], startSec: 0, endSec: 200 }],
+    transcript: { text: `${title} 대본`, segments: [] },
+  });
+  mockApi.content.material.mockResolvedValue(recordingNote);
+  mockApi.content.regenerate.mockResolvedValue({ material: recordingNote, job: job('queued') });
+  mockApi.content.recording.mockResolvedValue(recording('옛 슬라이드'));
+  jest.useFakeTimers();
+  try {
+    mockApi.ai.job.mockResolvedValue(job('running'));
+    await renderScreen(<ResultScreen />, client());
+    expect(await screen.findByText('옛 슬라이드')).toBeTruthy();
+    await askAndConfirm();
+    await waitFor(() => expect(mockApi.content.regenerate).toHaveBeenCalledWith('m1'));
+    mockApi.ai.job.mockResolvedValue(job('succeeded'));
+    mockApi.content.recording.mockResolvedValue(recording('새 슬라이드'));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1600);
+    });
+    expect(await screen.findByText('새 슬라이드')).toBeTruthy();
+    expect(screen.queryByText('옛 슬라이드')).toBeNull();
+    expect(useToast.getState().msg).toBe('결과를 새로 만들었어요');
+  } finally {
+    jest.useRealTimers();
+  }
 });
