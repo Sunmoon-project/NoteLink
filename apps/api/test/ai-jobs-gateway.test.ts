@@ -1233,6 +1233,52 @@ describe('AI 작업 진행률 소켓 — 다시 시도를 다른 서버가 받�
     await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: second }]));
   });
 
+  it('다시 구독하기 전에 새 실행이 끝나도, 늦게 돌아온 앞 실행의 결과를 다시 구독하지 않은 기기에 보내지 않고 새 결과를 보낸다', async () => {
+    tokens.verifyAccess.mockImplementation(async () => ({ userId: 'a' }));
+    const a = await connect('a');
+    const device = await connect('a2');
+    const got = record(a);
+    const gotDevice = record(device);
+    await subscribe(a);
+    await subscribe(device);
+    table.set(JOB, failed());
+    // done()의 결과 읽기: 다시 시도 전의 값(failed)을 읽은 채 응답만 늦게 온다
+    let releaseRead!: () => void;
+    const original = jobs.findMine.getMockImplementation()!;
+    jobs.findMine.mockImplementationOnce(async (userId: string, jobId: string) => {
+      const before = await original(userId, jobId);
+      await blocked((release) => (releaseRead = release));
+      return before;
+    });
+    const polling = gateway.poll();
+    await vi.waitFor(() => expect(releaseRead).toBeTypeOf('function'));
+    // 다른 서버가 다시 시도하고, 앱이 다시 구독하기 전에 처리기가 새 실행을 끝낸다
+    retryOnOtherServer(queued());
+    const second = appJob({
+      status: 'succeeded',
+      progress: 100,
+      updatedAt: '2026-11-16T00:06:00.000Z',
+    });
+    table.set(JOB, second);
+    // 다시 구독은 끝난 새 실행을 읽어 바로 받는다(방에는 들어가지 않음)
+    a.emit('ai:unsubscribe', { jobId: JOB });
+    await expect(subscribe(a)).resolves.toEqual({ ok: true });
+    await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: second }]));
+    releaseRead();
+    await polling;
+    await settle();
+    // 다시 구독하지 않은 기기는 앞 실행의 실패를 받지 않고 방에 남는다
+    expect(gotDevice.done).toEqual([]);
+    await gateway.poll();
+    await vi.waitFor(() => expect(gotDevice.done).toEqual([{ jobId: JOB, job: second }]));
+    await settle();
+    expect(got.done).toHaveLength(1);
+    // 모두 받은 뒤에는 더 지켜보지 않는다
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
   it('서버마다 시계가 달라 새 실행이 끝난 시각(처리기)이 다시 시도 시각(API)보다 앞서도 새 결과를 보낸다', async () => {
     const a = await connect('a');
     const got = record(a);

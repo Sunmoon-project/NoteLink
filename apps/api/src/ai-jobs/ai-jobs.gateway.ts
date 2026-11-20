@@ -45,8 +45,9 @@ interface Watch {
    */
   generation: number;
   /**
-   * 끝나지 않은 작업을 읽은 구독(join)이 끝난 차례 번호(AiJobsGateway.reads). done()의 결과 읽기가 이보다 먼저 나갔으면 그
-   * 결과는 앞 실행의 것일 수 있다: 끝난 작업은 다시 시도로만 다시 돈다. 다시 시도를 다른 서버가 받으면(스케일아웃) 이 서버의
+   * 이미 지켜보던 작업을 구독(join)이 읽은 차례 번호(AiJobsGateway.reads). 끝나지 않은 작업이면 방에 넣기 전, 끝난 작업이면
+   * 바로 보내기 전에 남긴다. done()의 결과 읽기가 이보다 먼저 나갔으면 그 결과는 앞 실행의 것일 수 있다: 끝난 작업은 다시
+   * 시도로만 다시 돌고, 다시 구독하기 전에 새 실행이 끝났을 수도 있다. 다시 시도를 다른 서버가 받으면(스케일아웃) 이 서버의
    * generation은 오르지 않으므로, 다시 시도 응답을 받은 앱이 이 서버로 다시 구독한 때로 가린다(#526 B11).
    * 서버마다 시계가 다르므로(다시 시도는 API, 끝냄은 처리기가 updatedAt을 씀) 시각이 아닌 이 서버 안의 순서로 본다
    */
@@ -142,14 +143,17 @@ export class AiJobsGateway implements OnModuleDestroy {
     const jobId = job._id;
     // 확인하는 사이 소켓이 끊겼으면 방에 넣지 않는다(끊긴 소켓을 넣으면 방에 남아 그 작업을 계속 읽음)
     if (!socket.connected) return { ok: false };
+    const existing = this.watched.get(jobId);
     if (FINISHED.has(job.status)) {
+      // 다른 서버가 다시 시도를 받고 다시 구독하기 전에 새 실행까지 끝났을 수 있다. 그 전에 나간 결과 읽기(앞 실행일 수
+      // 있음)를 방에 남은 다른 기기에 보내지 않게 남긴다(rejoined). 같은 실행이었으면 한 차례 늦게 보낼 뿐이다
+      if (existing) existing.rejoined = ++this.reads;
       socket.emit('ai:done', { jobId, job });
       return { ok: true };
     }
     // 이미 지켜보던 작업인데 끝나지 않은 상태를 읽었으면 다른 서버가 받은 다시 시도일 수 있다. 방에 넣기(await) 전에 남겨,
     // 그사이 돌아온 앞 실행의 결과를 이 소켓에 보내고 방에서 빼지 않게 한다(rejoined). 끝난 작업을 보내다 쌓인 일시 오류 수도
     // 앞 실행의 것이라 버린다(한도에 바로 닿아 새 구독을 끝내지 않게)
-    const existing = this.watched.get(jobId);
     if (existing) {
       existing.rejoined = ++this.reads;
       existing.doneFailures = undefined;
