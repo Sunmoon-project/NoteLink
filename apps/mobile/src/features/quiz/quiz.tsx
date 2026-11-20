@@ -1339,8 +1339,17 @@ function QuizNextStep({
 }
 
 export function QuizExplainScreen() {
-  const { qid, setId } = useLocalSearchParams<{ qid?: string; setId?: string }>();
-  const box = useQuery({ queryKey: ['quiz-box'], queryFn: () => api.quiz.box(), enabled: !setId });
+  const { qid, setId, folderId } = useLocalSearchParams<{
+    qid?: string;
+    setId?: string;
+    folderId?: string;
+  }>();
+  // 노트별 보관함(#601)에서 열면 그 화면이 이미 읽은 폴더 목록 캐시를 그대로 쓴다
+  const box = useQuery({
+    queryKey: folderId ? ['quiz-box', folderId] : ['quiz-box'],
+    queryFn: () => api.quiz.box(folderId),
+    enabled: !setId,
+  });
   const source = useQuery({
     queryKey: ['quiz-set', setId],
     queryFn: () => api.quiz.set(setId!),
@@ -1559,6 +1568,11 @@ function FolderFlash({ folderId }: { folderId: string }) {
           large={false}
         />
         {cards.isError && !cards.data && <ErrorAlert retry={() => cards.refetch()} />}
+        {cards.isPending && (
+          <View accessible accessibilityLabel="카드를 불러오는 중">
+            <Loading />
+          </View>
+        )}
         {cards.isSuccess && list.length === 0 && (
           <Empty
             icon={<Layers size={ICON.lg} color={C.brand} />}
@@ -1566,7 +1580,7 @@ function FolderFlash({ folderId }: { folderId: string }) {
             body={NO_CARDS}
           >
             <Btn small onPress={() => router.back()}>
-              퀴즈로 돌아가기
+              다른 노트 고르기
             </Btn>
           </Empty>
         )}
@@ -1688,6 +1702,11 @@ function FolderCards({ folderId }: { folderId: string }) {
           }
         />
         {cards.isError && !cards.data && <ErrorAlert retry={() => cards.refetch()} />}
+        {cards.isPending && (
+          <View accessible accessibilityLabel="카드를 불러오는 중">
+            <Loading />
+          </View>
+        )}
         {list?.length === 0 && (
           <Empty
             icon={<Layers size={ICON.lg} color={C.brand} />}
@@ -1856,7 +1875,7 @@ function FolderBox({ folderId }: { folderId: string }) {
                   <Chip
                     small
                     onPress={() =>
-                      router.push({ pathname: '/play/explain', params: { qid: q._id } })
+                      router.push({ pathname: '/play/explain', params: { qid: q._id, folderId } })
                     }
                   >
                     AI 설명 보기

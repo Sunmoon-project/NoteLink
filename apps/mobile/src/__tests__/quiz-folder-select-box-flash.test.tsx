@@ -6,6 +6,7 @@ import {
   CardsScreen,
   FlashScreen,
   QuizBoxScreen,
+  QuizExplainScreen,
   QuizHomeScreen,
   QuizNotesScreen,
 } from '../features/quiz/quiz';
@@ -187,6 +188,49 @@ describe('플래시 카드', () => {
     await renderScreen(<CardsScreen />, client());
     expect(await screen.findByText('이 노트로 퀴즈를 만들면 플래시 카드가 생겨요.')).toBeTruthy();
     expect(screen.queryByText('앞 e1')).toBeNull();
+  });
+});
+
+describe('2단계 보조 동작(code-review 2차)', () => {
+  it('노트 보관함에서 연 AI 설명은 그 폴더 보관함 캐시를 그대로 써서 보관함을 다시 읽지 않는다', async () => {
+    const box = jest.spyOn(api.quiz, 'box').mockResolvedValue([question('q1')]);
+    jest.spyOn(api.quiz, 'explanation').mockResolvedValue({ text: '설명' });
+    // 앱의 queryClient(lib/query.ts)처럼 30초 동안은 새로 읽지 않는다
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    setParams({ folderId: 'fA' });
+    const view = await renderScreen(<QuizBoxScreen />, qc);
+    await fireEvent.press(await screen.findByText('AI 설명 보기'));
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/play/explain',
+      params: { qid: 'q1', folderId: 'fA' },
+    });
+    await view.unmount();
+    setParams({ qid: 'q1', folderId: 'fA' });
+    await renderScreen(<QuizExplainScreen />, qc);
+    expect(await screen.findByText(/보관 문제 q1/)).toBeTruthy();
+    expect(box).toHaveBeenCalledTimes(1);
+  });
+
+  it('카드를 읽는 동안 불러오는 중을 보이고, 카드가 없으면 노트를 다시 고르게 한다', async () => {
+    let done!: (v: Flashcard[]) => void;
+    jest.spyOn(api.quiz, 'flashcards').mockReturnValue(new Promise((r) => (done = r)));
+    setParams({ folderId: 'fA' });
+    await renderScreen(<FlashScreen />, client());
+    expect(screen.getByLabelText('카드를 불러오는 중')).toBeTruthy();
+    await act(async () => done([card('e1', 'fB')]));
+    expect(await screen.findByText('저장한 플래시 카드가 없어요')).toBeTruthy();
+    expect(screen.queryByLabelText('카드를 불러오는 중')).toBeNull();
+    await fireEvent.press(screen.getByText('다른 노트 고르기'));
+    expect(router.back).toHaveBeenCalled();
+  });
+
+  it('모아보기도 카드를 읽는 동안 불러오는 중을 보인다', async () => {
+    jest.spyOn(api.quiz, 'flashcards').mockReturnValue(new Promise(() => {}));
+    setParams({ folderId: 'fA' });
+    await renderScreen(<CardsScreen />, client());
+    expect(screen.getByLabelText('카드를 불러오는 중')).toBeTruthy();
   });
 });
 
