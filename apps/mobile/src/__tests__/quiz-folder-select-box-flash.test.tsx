@@ -213,7 +213,7 @@ describe('2단계 보조 동작(code-review 2차)', () => {
     expect(box).toHaveBeenCalledTimes(1);
   });
 
-  it('카드를 읽는 동안 불러오는 중을 보이고, 카드가 없으면 노트를 다시 고르게 한다', async () => {
+  it('카드를 읽는 동안 불러오는 중을 보이고, 카드가 없으면 앞 화면으로 돌아가게 한다', async () => {
     let done!: (v: Flashcard[]) => void;
     jest.spyOn(api.quiz, 'flashcards').mockReturnValue(new Promise((r) => (done = r)));
     setParams({ folderId: 'fA' });
@@ -222,7 +222,7 @@ describe('2단계 보조 동작(code-review 2차)', () => {
     await act(async () => done([card('e1', 'fB')]));
     expect(await screen.findByText('저장한 플래시 카드가 없어요')).toBeTruthy();
     expect(screen.queryByLabelText('카드를 불러오는 중')).toBeNull();
-    await fireEvent.press(screen.getByText('다른 노트 고르기'));
+    await fireEvent.press(screen.getByText('돌아가기'));
     expect(router.back).toHaveBeenCalled();
   });
 

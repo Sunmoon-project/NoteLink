@@ -360,6 +360,11 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         expect(await svc().box(ME.toString(), 'not-an-id')).toEqual([]);
     });
 
+    it('목록 폴더가 빈 값이면 주지 않은 것처럼 전체다(앱 http-api · 기기 저장 모드와 같게)', async () => {
+        await svc().save(ME.toString(), [sid(mineB[0]!), sid(mine[0]!)]);
+        expect(idsOf(await svc().box(ME.toString(), ''))).toEqual([sid(mineB[0]!), sid(mine[0]!)]);
+    });
+
     it('남의 세트 문제가 섞이면 아무것도 담지 않고 404이고 번호도 받지 않는다', async () => {
         await expect(svc().save(ME.toString(), [sid(mine[0]!), sid(theirs[0]!)])).rejects.toBeInstanceOf(NotFoundException);
         expect(rows).toEqual([]);

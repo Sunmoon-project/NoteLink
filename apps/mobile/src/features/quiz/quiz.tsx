@@ -1580,7 +1580,7 @@ function FolderFlash({ folderId }: { folderId: string }) {
             body={NO_CARDS}
           >
             <Btn small onPress={() => router.back()}>
-              다른 노트 고르기
+              돌아가기
             </Btn>
           </Empty>
         )}
