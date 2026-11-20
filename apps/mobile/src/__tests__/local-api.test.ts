@@ -327,6 +327,18 @@ it('기기 저장 모드 폴더 삭제는 그 폴더의 퀴즈 · 보관함 문�
   await expect(api.ai.job(job._id)).rejects.toMatchObject({ status: 404 });
 });
 
+it('기기 저장 모드 세트 조회: 없는 id 는 다른 세트가 남아 있어도 404, 빈 id 는 가장 최근 세트(Codex 2차 #602)', async () => {
+  await signup('a@test.com');
+  const f = await addFolder();
+  const { material: m } = await api.content.createMaterial(material(f._id));
+  const gone = seedQuizForTests(['가'], { materialId: m._id, folderId: f._id });
+  const kept = seedQuizForTests(['나']);
+  await api.content.deleteFolder(f._id);
+
+  await expect(api.quiz.set(gone._id)).rejects.toMatchObject({ status: 404 });
+  expect((await api.quiz.set(''))._id).toBe(kept._id);
+});
+
 it('기기 저장 모드 폴더 삭제는 예전 카드(출처 없이 첫 폴더 id 를 가짐)를 지우지 않는다(code-review 3차)', async () => {
   await signup('a@test.com');
   const f = await addFolder();

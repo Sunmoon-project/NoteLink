@@ -97,7 +97,8 @@ async function dropDeletedProgress(qc: QueryClient, folderId: string) {
   const find = (id: string) =>
     qc.getQueryData<QuizSet>(['quiz-set', id]) ?? list.find((s) => s._id === id);
   const set = find(progress.setId);
-  if (set && set.folderId !== folderId) return;
+  // 폴더 id 가 없는(빈) 옛 세트는 노트로 지워질 수 있어 다른 폴더로 보지 않고 서버에 묻는다(Codex 2차)
+  if (set?.folderId && set.folderId !== folderId) return;
   const seen = new Set<string>();
   let cur = set;
   while (cur && !cur.reviewDay && cur.sourceSetId && !seen.has(cur.sourceSetId)) {
@@ -106,7 +107,7 @@ async function dropDeletedProgress(qc: QueryClient, folderId: string) {
   }
   if (cur?.reviewDay) return;
   const gone =
-    set && cur && !cur.sourceSetId
+    set?.folderId === folderId && cur && !cur.sourceSetId
       ? true
       : await api.quiz.set(progress.setId).then(
           () => false,

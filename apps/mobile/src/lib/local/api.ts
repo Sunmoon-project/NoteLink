@@ -1223,7 +1223,8 @@ const api: Api = {
       return ok({ quizSet: qs, job: queueJob('quiz_generate', 'quiz_set', qs._id) });
     },
     set: (id) => {
-      const qs = db().quizSets.find((q) => q._id === id) ?? db().quizSets[0];
+      // 빈 id 는 가장 최근 세트(퀴즈 홈 · 풀기 화면의 'latest'). id 를 주었는데 없으면 서버처럼 404(지운 세트, Codex 2차 #602)
+      const qs = id ? db().quizSets.find((q) => q._id === id) : db().quizSets[0];
       return qs ? ok(qs) : fail(ERROR_CODES.NOT_FOUND, '퀴즈를 찾을 수 없어요', 404);
     },
     startAttempt: (quizSetId) => {

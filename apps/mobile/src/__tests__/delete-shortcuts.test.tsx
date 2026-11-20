@@ -120,6 +120,16 @@ describe('풀던 퀴즈 진행(퀴즈 홈 「이어서 풀기」, code-review 3�
     expect(useQuizProgress.getState().progress?.setId).toBe('child');
   });
 
+  it('폴더 id 가 빈 옛 세트는 다른 폴더로 보지 않고 서버에 물어 404면 진행을 지운다(Codex 2차)', async () => {
+    progressOn('old');
+    const ask = jest
+      .spyOn(api.quiz, 'set')
+      .mockRejectedValue(new ApiError('NOT_FOUND', '퀴즈를 찾을 수 없어요', 404));
+    await deleteWith([{ _id: 'old', folderId: '', sourceSetId: null }]);
+    await waitFor(() => expect(useQuizProgress.getState().progress).toBeNull());
+    expect(ask).toHaveBeenCalledWith('old');
+  });
+
   it('캐시에 없는 세트는 서버가 404일 때만 진행을 지운다(Codex 1차)', async () => {
     progressOn('unknown');
     jest
