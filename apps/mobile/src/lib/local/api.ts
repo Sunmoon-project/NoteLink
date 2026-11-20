@@ -949,9 +949,28 @@ const api: Api = {
     },
     deleteFolder: async (id) => {
       const d = db();
-      const files = d.materials.filter((x) => x.folderId === id).flatMap((m) => m.files);
+      const notes = d.materials.filter((x) => x.folderId === id);
+      const files = notes.flatMap((m) => m.files);
       d.materials = d.materials.filter((m) => m.folderId !== id);
       d.folders = d.folders.filter((f) => f._id !== id);
+      // 서버(QuizCleanupService, #602)처럼 그 폴더의 퀴즈 세트 · 플래시카드 · 보관함 문제와 그 세트의 작업도 지운다. 풀이 기록은 남긴다.
+      // 노트의 작업은 자료 하나 지우기(deleteMaterial)처럼 종류와 상관없이 지운다: 기기 저장 모드는 노트 기록째 없앤다(서버는 소프트 삭제라 정리 작업을 남김)
+      const noteIds = new Set(notes.map((m) => m._id));
+      const inFolder = (x: { folderId?: string | null; materialId?: string | null }) =>
+        x.folderId === id || (!!x.materialId && noteIds.has(x.materialId));
+      const gone = d.quizSets.filter(inFolder);
+      const goneSets = new Set(gone.map((s) => s._id));
+      const goneQuestions = new Set(gone.flatMap((s) => s.questions.map((q) => q._id)));
+      d.quizSets = d.quizSets.filter((s) => !goneSets.has(s._id));
+      d.quizBox = d.quizBox.filter((q) => !goneQuestions.has(q._id));
+      // 카드는 출처(세트 · 노트)로만 고른다: 예전 기기 카드는 출처와 상관없이 첫 폴더 id 를 가져 폴더 id 로 고르면 다른
+      // 카드까지 지운다(code-review 3차)
+      d.flashcards = d.flashcards.filter(
+        (f) =>
+          !(f.sourceQuizSetId && goneSets.has(f.sourceQuizSetId)) &&
+          !(f.materialId && noteIds.has(f.materialId)),
+      );
+      d.jobs = d.jobs.filter((j) => !goneSets.has(j.targetId) && !noteIds.has(j.targetId));
       // 기록을 저장한 뒤에 원본을 지운다. 저장이 실패하면 자료와 원본이 그대로 남는다
       await ok(undefined);
       for (const f of files) dropFile(f.uri);
@@ -1273,13 +1292,18 @@ const api: Api = {
     flashcards: () => ok(db().flashcards),
     saveFlashcard: (p) => {
       const d = db();
+      // 서버(FlashcardsService.save)처럼 문제에서 만든 카드는 그 세트의 노트 · 폴더를, 출처 없는 카드는 null을 둔다.
+      // 폴더 삭제(deleteFolder)가 이 값으로 그 폴더의 카드만 지운다(#602)
+      const set = p.sourceQuestionId
+        ? d.quizSets.find((s) => s.questions.some((q) => q._id === p.sourceQuestionId))
+        : undefined;
       const f: Flashcard = {
         _id: uid('fc'),
-        materialId: null,
-        folderId: d.folders[0]?._id ?? 'none',
+        materialId: set?.materialId ?? null,
+        folderId: set?.folderId ?? null,
         front: p.front,
         back: p.back,
-        sourceQuizSetId: null,
+        sourceQuizSetId: set?._id ?? null,
         sourceQuestionId: p.sourceQuestionId ?? null,
         lastResult: null,
         createdAt: now(),
@@ -1575,12 +1599,14 @@ localSocket.onClient = (ev, args) => {
 };
 
 /** 테스트용: 문제가 다 만들어진 퀴즈를 넣는다 (기기 저장 모드는 퀴즈 생성을 AI 서버에 맡겨 직접 만들 수 없다) */
-export const seedQuizForTests = (answers: string[]) => {
+export const seedQuizForTests = (
+  answers: string[],
+  where: { materialId: string; folderId: string } = { materialId: 'm-test', folderId: 'f-test' },
+) => {
   const d = db();
   const qs: QuizSet = {
     _id: uid('qs'),
-    materialId: 'm-test',
-    folderId: 'f-test',
+    ...where,
     sourceSetId: null,
     title: '테스트 퀴즈',
     status: 'ready',

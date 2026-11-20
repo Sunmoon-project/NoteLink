@@ -428,6 +428,30 @@ export class AiJobsService {
   }
 
   /**
+   * 지운 대상의 아직 끝나지 않은 작업(queued · running · held)을 한 번에 canceled로 바꾼다(학습 폴더 삭제, #602).
+   * cancel과 달리 미리 만들기(quiz_pregen)도 멈춘다: 노트가 지워져 그 결과를 쓸 곳이 없다.
+   * 대상은 묶음마다 대상 종류 · id · 작업 종류로 고른다. 이미 끝난 작업은 그대로다. 바꾼 작업 수를 돌려준다
+   */
+  async cancelForTargets(
+    userId: string,
+    targets: { targetType: string; targetIds: string[]; types: readonly string[] }[],
+  ): Promise<number> {
+    const or = targets
+      .filter((t) => t.targetIds.length > 0 && t.types.length > 0)
+      .map((t) => ({
+        targetType: t.targetType,
+        targetId: { $in: t.targetIds.map((id) => serverObjectId(id, 'targetId')) },
+        type: { $in: [...t.types] },
+      }));
+    if (or.length === 0) return 0;
+    const res = await this.jobs.updateMany(
+      { userId: serverObjectId(userId, 'userId'), status: { $in: [...ACTIVE, HELD] }, $or: or },
+      { $set: { status: 'canceled' }, $unset: { heldAt: '', holdId: '' } },
+    );
+    return res.modifiedCount;
+  }
+
+  /**
    * 실패하거나 취소한 작업을 다시 넣는다. 처리기 규칙대로 attempts=0 · retryAt=null로 되돌리고
    * 지난 오류 · 결과를 지운다(중간 결과 checkpoint는 남겨 처리기가 다시 쓴다).
    * 아직 처리 중이거나 이미 성공한 작업은 바꾸지 않고 지금 상태를 돌려준다(앱의 '다시 시도'는

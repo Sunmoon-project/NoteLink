@@ -83,6 +83,7 @@ function setup() {
     attempts.model,
     aiJobs,
     new RecordingNotePagesService(jobs.model),
+    createFakeCollection().model as never,
   );
   const addNote = async (over: Record<string, unknown> = {}) => {
     const { _id } = (await materials.model.create({
