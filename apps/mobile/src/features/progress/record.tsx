@@ -346,8 +346,14 @@ export function RecordScreen() {
                 {(stats.data?.heatmap ?? []).map((h) => (
                   <View
                     key={h.studyDate}
+                    testID={`heatmap-${h.studyDate}`}
                     className="h-3 w-3 rounded-[2px]"
-                    style={{ backgroundColor: ['#eef0ec', '#c8dccf', '#7aa592', C.brand][h.level] }}
+                    // 서버 level 은 0~4 라서 3 이상은 월간 캘린더처럼 가장 진한 색을 쓴다
+                    style={{
+                      backgroundColor: ['#eef0ec', '#c8dccf', '#7aa592', C.brand][
+                        Math.min(h.level, 3)
+                      ],
+                    }}
                   />
                 ))}
               </View>
