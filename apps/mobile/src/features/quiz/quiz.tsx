@@ -769,6 +769,7 @@ export function QuizSolveScreen() {
   const [right, setRight] = useState<boolean | null>(previous?.right ?? null);
   const [results, setResults] = useState<boolean[]>(previous?.results ?? []);
   const [speaking, setSpeaking] = useState(false);
+  const [quit, setQuit] = useState(false);
   // 지금 유효한 읽기 요청 번호. 멈추기 · 화면 떠나기 · 다음 문제로 넘어가기에서 올려 준비 중인 읽기를 무효로 한다
   const speechToken = useRef(0);
   useEffect(
@@ -1047,10 +1048,21 @@ export function QuizSolveScreen() {
             </Btn>
           </View>
         )}
-        {from === 'room' && (
-          <Pressable onPress={() => router.back()} className="mt-3 flex-row items-center gap-2">
+        {/* 나가는 길이 가장자리 밀기뿐이었다(develop 점검 #8). 스터디룸에서 왔으면 그 버튼이 나가기를 겸한다 */}
+        {from === 'room' ? (
+          <Pressable onPress={() => setQuit(true)} className="mt-3 flex-row items-center gap-2">
             <ArrowLeft size={ICON.sm} color={C.ink} />
             <Text className="text-footnote text-ink">스터디룸으로</Text>
+          </Pressable>
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="풀이 닫기"
+            hitSlop={10}
+            onPress={() => setQuit(true)}
+            className="mt-1 -ml-2 h-control w-control items-center justify-center"
+          >
+            <X size={ICON.lg} color={C.ink} />
           </Pressable>
         )}
         <Progress value={((i + (right === null ? 0 : 1)) / qs.length) * 100} className="mt-5" />
@@ -1149,6 +1161,23 @@ export function QuizSolveScreen() {
           useAuth.getState().setExpired(false);
           router.push('/(auth)/login');
         }}
+      />
+      {/* 채점한 답은 서버에 바로 저장되고, 풀던 위치는 앱이 켜져 있는 동안 남아 퀴즈 탭 「이어서 풀기」로 돌아온다 */}
+      <Alert
+        open={quit}
+        tone="brand"
+        icon="?"
+        title="그만 풀까요?"
+        body="채점한 문제까지 저장돼요. 앱을 끄기 전에는 퀴즈 탭의 「이어서 풀기」로 이어 풀 수 있어요."
+        primary="계속 풀기"
+        onPrimary={() => setQuit(false)}
+        secondary="그만 풀기"
+        onSecondary={() => {
+          setQuit(false);
+          if (router.canGoBack()) router.back();
+          else router.replace('/(tabs)/quiz');
+        }}
+        onClose={() => setQuit(false)}
       />
     </Canvas>
   );
