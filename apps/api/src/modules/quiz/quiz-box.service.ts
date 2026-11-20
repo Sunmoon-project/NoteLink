@@ -31,15 +31,22 @@ export class QuizBoxService {
 
     /**
      * 내 보관함의 문제 (담은 순서, 정답 포함). 앱의 기기 저장 모드(먼저 담은 것이 앞)와 같다.
-     * order 순이고, order가 없는 옛 문서는 맨 앞에 savedAt 순으로 온다(없는 값은 숫자보다 앞에 정렬된다)
+     * order 순이고, order가 없는 옛 문서는 맨 앞에 savedAt 순으로 온다(없는 값은 숫자보다 앞에 정렬된다).
+     * folderId를 주면 그 학습 폴더에서 만든 세트(quiz_sets.folderId)의 문제만 돌려준다(#601). 폴더 정보가 없는 세트의 문제는
+     * 어느 폴더에도 나오지 않고, 형식이 틀린 id는 빈 목록이다. 주지 않으면 옛 앱처럼 전체
      */
-    async box(userId: string): Promise<AppQuestion[]> {
+    async box(userId: string, folderId?: string): Promise<AppQuestion[]> {
+        if (folderId !== undefined && !OBJECT_ID.test(folderId)) return [];
         const owner = new Types.ObjectId(userId);
         const rows = await this.items.find({ userId: owner }).sort({ order: 1, savedAt: 1, _id: 1 }).lean<BoxRow[]>();
         if (rows.length === 0) return [];
         // 세트를 지워도(deletedAt) 문제 자체는 남아 있어서 보관함에는 계속 보인다
         const sets = await this.sets
-            .find({ _id: { $in: [...new Set(rows.map((r) => r.quizSetId.toString()))].map((id) => new Types.ObjectId(id)) }, ownerId: owner })
+            .find({
+                _id: { $in: [...new Set(rows.map((r) => r.quizSetId.toString()))].map((id) => new Types.ObjectId(id)) },
+                ownerId: owner,
+                ...(folderId === undefined ? {} : { folderId: new Types.ObjectId(folderId) }),
+            })
             .lean<SetQuestions[]>();
         const byId = new Map<string, QuestionRow>();
         for (const set of sets) for (const q of set.questions ?? []) byId.set(q._id.toString(), q);

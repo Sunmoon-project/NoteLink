@@ -1254,7 +1254,17 @@ const api: Api = {
     // 기기 저장 모드의 오늘 복습은 기기 오답 노트(wrong-review)가 맡는다
     today: () => ok(null),
     startToday: () => needServer('오늘의 복습'),
-    box: () => ok(db().quizBox),
+    // 서버처럼 폴더를 주면 그 폴더 세트의 문제만, 세트를 못 찾는(폴더를 모르는) 문제는 뺀다(#601)
+    box: (folderId) => {
+      const d = db();
+      if (folderId === undefined) return ok(d.quizBox);
+      const inFolder = new Set(
+        d.quizSets
+          .filter((s) => s.folderId === folderId)
+          .flatMap((s) => s.questions.map((q) => q._id)),
+      );
+      return ok(d.quizBox.filter((q) => inFolder.has(q._id)));
+    },
     saveToBox: (questionIds) => {
       const d = db();
       const all = d.quizSets.flatMap((s) => s.questions);

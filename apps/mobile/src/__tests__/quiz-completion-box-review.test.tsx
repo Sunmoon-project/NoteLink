@@ -71,7 +71,8 @@ beforeEach(() => {
   useQuizProgress.getState().reset();
   useAuth.setState({ userId: 'owner', expired: false });
   useToast.setState({ msg: null });
-  setParams({ setId: quizSet._id });
+  // 보관함은 노트(학습 폴더)를 고른 2단계에서 문제를 보인다(#601). 다른 화면은 folderId를 쓰지 않는다
+  setParams({ setId: quizSet._id, folderId: 'fo1' });
   mockApi.quiz.set.mockResolvedValue(quizSet);
   mockApi.quiz.startAttempt.mockResolvedValue({ _id: 'box-attempt' });
   mockApi.quiz.answer.mockResolvedValue({ correct: true, correctAnswer: '답' });

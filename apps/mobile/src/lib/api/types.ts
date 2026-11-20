@@ -267,9 +267,7 @@ export interface Api {
       answer: string,
     ): Promise<{ correct: boolean; correctAnswer: string }>;
     /** scheduled · nextReviewDay: 이번에 복습 일정에 넣은 문제 수 · 그 날짜(서울 YYYY-MM-DD, FR-37). 옛 서버 · 기기 저장은 없음 */
-    finish(
-      attemptId: string,
-    ): Promise<{
+    finish(attemptId: string): Promise<{
       pointsEarned: number;
       balance: number;
       scheduled?: number;
@@ -281,7 +279,8 @@ export interface Api {
     today(): Promise<QuizSet | null>;
     /** 오늘의 복습 만들기(하루 한 번). 처음엔 만드는 중(generating) */
     startToday(): Promise<QuizSet>;
-    box(): Promise<Question[]>;
+    /** 보관한 문제(담은 순서). folderId를 주면 그 학습 폴더에서 만든 퀴즈의 문제만(#601) */
+    box(folderId?: string): Promise<Question[]>;
     /** 같은 문제 ID를 여러 번 저장해도 보관함에 한 번만 남긴다. */
     saveToBox(questionIds: string[]): Promise<Question[]>;
     deleteFromBox(questionIds: string[]): Promise<void>;

@@ -609,6 +609,17 @@ it('기기 저장 모드 퀴즈 목록: 풀이를 시작한 세트에 started를
   expect(await started()).toEqual({ [entered._id]: true, [other._id]: undefined });
 });
 
+it('기기 저장 모드 보관함: 폴더를 주면 그 폴더 세트의 문제만, 안 주면 지금처럼 전체를 돌려준다(#601)', async () => {
+  await signup('a@test.com');
+  const set = seedQuizForTests(['가', '나']); // 폴더 f-test
+  const [first, second] = set.questions;
+  await api.quiz.saveToBox([second!._id, first!._id]);
+  const ids = (list: { _id: string }[]) => list.map((q) => q._id);
+  expect(ids(await api.quiz.box())).toEqual([second!._id, first!._id]);
+  expect(ids(await api.quiz.box('f-test'))).toEqual([second!._id, first!._id]);
+  expect(await api.quiz.box('other-folder')).toEqual([]);
+});
+
 it('기기 저장 모드 가입: 인증번호가 6자리 숫자가 아니면 EMAIL_CODE_INVALID, 이메일 형식이 틀리면 보내지 않는다', async () => {
   await expect(api.auth.emailVerifyCode('a@test.com', '12ab56')).rejects.toMatchObject({
     code: ERROR_CODES.EMAIL_CODE_INVALID,

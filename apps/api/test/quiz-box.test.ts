@@ -64,6 +64,22 @@ describe('퀴즈 보관함 API 주소 · 입력 검증', () => {
         expect(fake.remove).toHaveBeenCalledWith(ME.toString(), [ID]);
     });
 
+    // #601 보관함을 노트(학습 폴더)별로 본다. folderId가 없으면 옛 앱처럼 전체
+    it('GET에 folderId를 주면 서비스에 그대로 넘기고, 없으면 전체(undefined)를 묻는다', async () => {
+        fake.box.mockClear();
+        expect((await http().get('/api/v1/quiz-box').query({ folderId: ID }).set(AUTH)).status).toBe(200);
+        expect(fake.box).toHaveBeenLastCalledWith(ME.toString(), ID);
+        expect((await http().get('/api/v1/quiz-box').set(AUTH)).status).toBe(200);
+        expect(fake.box).toHaveBeenLastCalledWith(ME.toString(), undefined);
+    });
+
+    it('folderId가 여러 개이거나 너무 길면 400', async () => {
+        fake.box.mockClear();
+        expect((await http().get(`/api/v1/quiz-box?folderId=${ID}&folderId=${ID}`).set(AUTH)).status).toBe(400);
+        expect((await http().get('/api/v1/quiz-box').query({ folderId: 'a'.repeat(101) }).set(AUTH)).status).toBe(400);
+        expect(fake.box).not.toHaveBeenCalled();
+    });
+
     it('questionIds가 배열의 문자열이 아니거나 너무 많거나 모르는 필드가 있으면 400', async () => {
         for (const body of [{}, { questionIds: 'a' }, { questionIds: [1] }, { questionIds: ['a'.repeat(101)] }, { questionIds: Array(BOX_MAX_IDS + 1).fill(ID) }, { questionIds: [], x: 1 }]) {
             expect((await http().post('/api/v1/quiz-box').set(AUTH).send(body)).status).toBe(400);
@@ -125,7 +141,15 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
     });
     const mineSetId = new Types.ObjectId();
     const otherSetId = new Types.ObjectId();
+    const mineBSetId = new Types.ObjectId();
+    const looseSetId = new Types.ObjectId();
+    // 폴더(#601): 내 세트는 폴더 A · B, 폴더 정보가 없는 옛 세트 하나, 남의 세트는 남의 폴더
+    const FOLDER_A = new Types.ObjectId();
+    const FOLDER_B = new Types.ObjectId();
+    const OTHER_FOLDER = new Types.ObjectId();
     const mine = [q(1, { choices: ['가', '나'], conceptTags: ['개념'], difficulty: '상' }), q(2), q(3), q(4)];
+    const mineB = [q(1)];
+    const loose = [q(1)];
     const theirs = [q(1)];
     const OTHER_USER = new Types.ObjectId();
     const sid = (x: { _id: Types.ObjectId }) => x._id.toString();
@@ -179,11 +203,15 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         }),
     };
     const setsModel = {
-        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; 'questions._id'?: { $in: Types.ObjectId[] } }) => {
+        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; folderId?: Types.ObjectId; 'questions._id'?: { $in: Types.ObjectId[] } }) => {
             const all = [
-                { _id: mineSetId, ownerId: ME, deletedAt: null, questions: mine },
-                { _id: otherSetId, ownerId: OTHER_USER, deletedAt: null, questions: theirs },
-            ].filter((st) => same(st.ownerId, filter.ownerId));
+                { _id: mineSetId, ownerId: ME, folderId: FOLDER_A, deletedAt: null, questions: mine },
+                { _id: mineBSetId, ownerId: ME, folderId: FOLDER_B, deletedAt: null, questions: mineB },
+                { _id: looseSetId, ownerId: ME, deletedAt: null, questions: loose },
+                { _id: otherSetId, ownerId: OTHER_USER, folderId: OTHER_FOLDER, deletedAt: null, questions: theirs },
+            ]
+                .filter((st) => same(st.ownerId, filter.ownerId))
+                .filter((st) => !('folderId' in filter) || ('folderId' in st && same(st.folderId, filter.folderId)));
             const hit = filter._id
                 ? all.filter((st) => filter._id!.$in.some((i) => same(i, st._id)))
                 : all.filter((st) => st.questions.some((qq) => filter['questions._id']!.$in.some((i) => same(i, qq._id))));
@@ -315,6 +343,21 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
     it('삽입이 실패하면 오류를 그대로 던진다', async () => {
         itemsModel.bulkWrite.mockImplementationOnce(() => Promise.reject(new Error('db down')));
         await expect(svc().save(ME.toString(), [sid(mine[0]!)])).rejects.toThrow('db down');
+    });
+
+    it('목록에 폴더를 주면 그 폴더 세트의 문제만 담은 순서로, 안 주면 지금처럼 전체를 돌려준다(#601)', async () => {
+        await svc().save(ME.toString(), [sid(mineB[0]!), sid(loose[0]!), sid(mine[1]!), sid(mine[0]!)]);
+        expect(idsOf(await svc().box(ME.toString()))).toEqual([sid(mineB[0]!), sid(loose[0]!), sid(mine[1]!), sid(mine[0]!)]);
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_A.toString()))).toEqual([sid(mine[1]!), sid(mine[0]!)]);
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_B.toString().toUpperCase()))).toEqual([sid(mineB[0]!)]);
+        // 폴더 정보가 없는 세트의 문제는 어느 폴더에도 나오지 않는다
+        expect(idsOf(await svc().box(ME.toString(), new Types.ObjectId().toString()))).toEqual([]);
+    });
+
+    it('목록 폴더가 남의 폴더 · 형식이 틀린 id면 빈 목록이다', async () => {
+        await svc().save(ME.toString(), [sid(mine[0]!)]);
+        expect(await svc().box(ME.toString(), OTHER_FOLDER.toString())).toEqual([]);
+        expect(await svc().box(ME.toString(), 'not-an-id')).toEqual([]);
     });
 
     it('남의 세트 문제가 섞이면 아무것도 담지 않고 404이고 번호도 받지 않는다', async () => {

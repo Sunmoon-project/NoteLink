@@ -147,12 +147,14 @@ describe('퀴즈 보관함', () => {
     jest
       .spyOn(api.quiz, 'box')
       .mockResolvedValue([mc('b2', { prompt: `옳은 것은?\n\n${passage}` })]);
+    setParams({ folderId: 'fo1' }); // 노트를 고른 2단계(#601)
     await renderScreen(<QuizBoxScreen />, client());
     expect(String((await screen.findByText(passage)).props.className)).toContain('text-ink');
   });
 
   it('객관식 문제는 보기를 번호와 함께 보여 준다', async () => {
     jest.spyOn(api.quiz, 'box').mockResolvedValue([mc('b1')]);
+    setParams({ folderId: 'fo1' }); // 노트를 고른 2단계(#601)
     await renderScreen(<QuizBoxScreen />, client());
     expect(await screen.findByText(`① ${LONG}`)).toBeTruthy();
     expect(screen.getByText('② 스트리밍 동작을 확인하려고 넣는다')).toBeTruthy();

@@ -203,7 +203,7 @@ export const httpApi: Api = {
     similar: (id) => http.post(P.similarQuiz(id)),
     today: () => http.get(P.todayReview),
     startToday: () => http.post(P.todayReview),
-    box: () => http.get(P.quizBox),
+    box: (folderId) => http.get(P.quizBox, folderId ? { folderId } : undefined),
     saveToBox: (questionIds) => http.post(P.quizBox, { questionIds }),
     deleteFromBox: (questionIds) =>
       postDeleteInChunks(`${P.quizBox}/delete`, 'questionIds', questionIds),
