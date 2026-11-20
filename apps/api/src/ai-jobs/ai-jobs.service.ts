@@ -235,7 +235,8 @@ export class AiJobsService {
 
   /**
    * 다시 시도로 끝난 작업이 처리기에 다시 들어갈 때(같은 작업 id) 알림을 받는다. 진행률 소켓(AiJobsGateway)이 그 전에
-   * 읽어 둔 앞 실행의 결과를 보내지 않게 한다(#523). 등록을 푸는 함수를 돌려준다
+   * 읽어 둔 앞 실행의 결과를 보내지 않게 한다(#523). 이 서버(프로세스) 안의 함수만 부르므로, 다른 서버가 받은 다시 시도는
+   * 게이트웨이가 DB 읽기로 따로 안다(#526 B11). 등록을 푸는 함수를 돌려준다
    */
   onRetry(listener: (jobId: string) => void): () => void {
     this.retried.add(listener);
