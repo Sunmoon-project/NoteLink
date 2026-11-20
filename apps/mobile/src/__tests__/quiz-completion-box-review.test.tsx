@@ -276,6 +276,13 @@ it.each([
     expect(screen.queryByText(/보관함에 담았어요/) !== null).toBe(saved);
   },
 );
+it('reviewDay를 보내지 않는 옛 서버라도 오늘의 복습 캐시와 같은 세트면 결과 화면에 담았다고 안내하지 않는다(#595)', async () => {
+  mockApi.quiz.set.mockResolvedValue(quizSet);
+  queryClient.setQueryData(['today-review'], { _id: quizSet._id, status: 'ready' });
+  await renderScreen(<QuizReviewScreen />, client());
+  expect(await screen.findByText(/AI 해설을 볼 수 있어요/)).toBeTruthy();
+  expect(screen.queryByText(/보관함에 담았어요/)).toBeNull();
+});
 it('결과를 모르면(results 없음) 번호를 기본색으로 두고 맞힌 수를 보여 주지 않는다', async () => {
   await renderScreen(<QuizReviewScreen />, client());
   expect(String((await screen.findByLabelText(/^1번/)).props.className)).toContain('bg-brand');

@@ -1096,6 +1096,11 @@ export function QuizReviewScreen() {
       </Canvas>
     );
   if (!set.data) return <Loading />;
+  // 오늘의 복습(지난 날 사본 포함)은 보관함에 담지 않으므로 그 안내를 뺀다. 완료 처리(QuizSolveScreen)와 같게
+  // reviewDay로 보고, reviewDay를 보내지 않는 옛 서버는 오늘의 복습 캐시 id로 본다(#595)
+  const reviewCopy =
+    !!set.data.reviewDay ||
+    queryClient.getQueryData<{ _id: string } | null>(['today-review'])?._id === set.data._id;
   return (
     <Canvas>
       <Screen
@@ -1125,9 +1130,8 @@ export function QuizReviewScreen() {
             </Text>
           </View>
           <Text className="mt-1 text-caption text-sub">
-            {/* 오늘의 복습(지난 날 사본 포함)은 보관함에 담지 않으므로 그 안내를 뺀다(#595) */}
             문제를 누르면 AI 해설을 볼 수 있어요
-            {set.data.reviewDay ? '' : ' · 푼 퀴즈는 보관함에 담았어요'}
+            {reviewCopy ? '' : ' · 푼 퀴즈는 보관함에 담았어요'}
           </Text>
         </View>
         <View className="mt-3">
