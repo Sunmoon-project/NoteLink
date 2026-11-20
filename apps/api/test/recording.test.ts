@@ -48,7 +48,7 @@ const RESULT = {
       sentenceEnd: 2,
       title: '미분 소개',
       summary: '미분은 변화율이다. 접선의 기울기로 본다.',
-      diagram: null,
+      diagram: { kind: 'cause', terms: ['변화율', '접선 기울기'], relations: [[0, 1]] },
     },
   ],
   chunks: [{ embedding: [0.1] }],
@@ -73,6 +73,7 @@ describe('녹음 정리 결과 → 재생 정보 (playbackFromResult)', () => {
           bullets: ['미분은 변화율이다.', '접선의 기울기로 본다.'],
           startSec: 0,
           endSec: 4,
+          diagram: { kind: 'cause', terms: ['변화율', '접선 기울기'], relations: [[0, 1]] },
         },
       ],
     });
@@ -120,8 +121,20 @@ describe('녹음 정리 결과 → 재생 정보 (playbackFromResult)', () => {
         { title: '요약 없음', summary: ' ', startMs: 0, endMs: 500 },
         { title: '', summary: '제목 없음.', startMs: 500, endMs: 1000 },
         { title: '길이 0', summary: '안 보임.', startMs: 1000, endMs: 1000 },
-        { title: '둘째', summary: '같은 말. 같은 말.', startMs: 1000, endMs: 3000 },
-        { title: '둘째', summary: '제목이 겹침.', startMs: 3000, endMs: 4000 },
+        {
+          title: '둘째',
+          summary: '같은 말. 같은 말.',
+          startMs: 1000,
+          endMs: 3000,
+          diagram: { kind: 'venn', terms: ['a', 'b'], relations: [] },
+        },
+        {
+          title: '둘째',
+          summary: '제목이 겹침.',
+          startMs: 3000,
+          endMs: 4000,
+          diagram: { kind: 'list', terms: ['a', 'b'], relations: [[0, 9]] },
+        },
       ],
     });
     expect(out.durationSec).toBe(0);
@@ -130,9 +143,24 @@ describe('녹음 정리 결과 → 재생 정보 (playbackFromResult)', () => {
       segments: [{ startSec: 0.01, endSec: 0.02, text: '남음' }],
     });
     expect(out.slides).toEqual([
-      { index: 0, title: '내용 1', bullets: ['제목 없음.'], startSec: 0.5, endSec: 1 },
-      { index: 1, title: '둘째', bullets: ['같은 말.'], startSec: 1, endSec: 3 },
-      { index: 2, title: '둘째 (2)', bullets: ['제목이 겹침.'], startSec: 3, endSec: 4 },
+      {
+        index: 0,
+        title: '내용 1',
+        bullets: ['제목 없음.'],
+        startSec: 0.5,
+        endSec: 1,
+        diagram: null,
+      },
+      // 모르는 kind 는 도식만 null, 범위 밖 관계는 그 관계만 뺀다
+      { index: 1, title: '둘째', bullets: ['같은 말.'], startSec: 1, endSec: 3, diagram: null },
+      {
+        index: 2,
+        title: '둘째 (2)',
+        bullets: ['제목이 겹침.'],
+        startSec: 3,
+        endSec: 4,
+        diagram: { kind: 'list', terms: ['a', 'b'], relations: [] },
+      },
     ]);
   });
 
@@ -361,7 +389,11 @@ describe.skipIf(!uri)('진짜 DB 녹음 재생 정보 (RecordingService)', () =>
       visemeUrl: null,
     });
     expect(rec.transcript.segments).toHaveLength(2);
-    expect(rec.slides[0]).toMatchObject({ index: 0, title: '미분 소개' });
+    expect(rec.slides[0]).toMatchObject({
+      index: 0,
+      title: '미분 소개',
+      diagram: { kind: 'cause', terms: ['변화율', '접선 기울기'], relations: [[0, 1]] },
+    });
     expect(JSON.stringify(rec)).not.toContain('embedding');
     expect(JSON.stringify(rec)).not.toContain('sig=AI');
     // 저장소 확인(HEAD) 없이 서명만, 긴 강의도 끊기지 않게 6시간

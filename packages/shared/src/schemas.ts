@@ -203,12 +203,23 @@ export const Material = z.object({
   createdAt: date,
 });
 
+// 녹음 정리가 슬라이드마다 만드는 도식 구조(apps/ai services/recording/models.py Diagram). 그리는 것은 앱.
+// relations 는 terms 안 위치(0부터) [from, to]. 받은 값은 diagramOf(diagram.ts)로 거른 뒤에 쓴다
+export const DiagramKind = z.enum(['sequence', 'contrast', 'hierarchy', 'cause', 'list']);
+export const Diagram = z.object({
+  kind: DiagramKind,
+  terms: z.array(z.string()),
+  relations: z.array(z.tuple([z.number(), z.number()])),
+});
+
 export const Slide = z.object({
   index: z.number(),
   title: z.string(),
   bullets: z.array(z.string()),
   startSec: z.number(),
   endSec: z.number(),
+  // 도식이 맞지 않는 슬라이드는 null. 도식을 보내기 전 서버 · 기기 저장 모드에는 없다
+  diagram: Diagram.nullable().optional(),
 });
 
 export const Recording = z.object({
@@ -679,6 +690,8 @@ export type MaterialSource = z.infer<typeof MaterialSource>;
 export type Material = z.infer<typeof Material>;
 export type Recording = z.infer<typeof Recording>;
 export type Slide = z.infer<typeof Slide>;
+export type Diagram = z.infer<typeof Diagram>;
+export type DiagramKind = z.infer<typeof DiagramKind>;
 export type Question = z.infer<typeof Question>;
 export type QuestionDifficulty = z.infer<typeof QuestionDifficulty>;
 export type NoteAskTurn = z.infer<typeof NoteAskTurn>;
