@@ -35,12 +35,46 @@ export function contrastRows(d: Diagram): [string, string | undefined][] {
   return rows;
 }
 
-/** 인과: 결과마다 원인을 모은다. 관계가 없으면 마지막 핵심어가 결과, 나머지가 원인 */
-export function causeGroups(d: Diagram): { causes: string[]; effect: string }[] {
-  if (!d.relations.length) return [{ causes: d.terms.slice(0, -1), effect: d.terms.at(-1)! }];
-  const by = new Map<number, number[]>();
-  for (const [a, b] of d.relations) by.set(b, [...(by.get(b) ?? []), a]);
-  return [...by].map(([b, as]) => ({ causes: as.map((a) => d.terms[a]!), effect: d.terms[b]! }));
+/**
+ * 흐름(순서 · 인과) 한 줄: 이어지는 관계(A→B, B→C)는 한 사슬 「A → B → C」. 갈라지면(A→B, A→C) 새 줄을
+ * 「A에서 → C」로 시작하고(from), 이미 그린 핵심어로 모이면(A→C, B→C) 줄 끝에 to 로 이름만 붙인다.
+ * 칩(terms)은 핵심어마다 한 번만. from · to 는 앞에서 그린 칩을 가리키는 흐린 글이다
+ */
+export type FlowRow = { from?: string; terms: string[]; to?: string };
+
+/** 순서 · 인과 줄. 관계가 없으면 순서는 핵심어 차례대로, 인과는 마지막이 결과(나머지 → 마지막) */
+export function flowRows(d: Diagram): FlowRow[] {
+  const n = d.terms.length;
+  const rel: [number, number][] = d.relations.length
+    ? d.relations
+    : d.kind === 'cause'
+      ? d.terms.slice(0, -1).map((_, i) => [i, n - 1])
+      : d.terms.slice(1).map((_, i) => [i, i + 1]);
+  const next = (i: number) => rel.filter(([a]) => a === i).map(([, b]) => b);
+  const hasIn = new Set(rel.map(([, b]) => b));
+  const seen = new Set<number>();
+  const rows: FlowRow[] = [];
+  const walk = (start: number, from?: number) => {
+    const row: FlowRow = { terms: [] };
+    if (from !== undefined) row.from = d.terms[from];
+    rows.push(row);
+    const branches: [number, number][] = [];
+    for (let cur: number | undefined = start; cur !== undefined;) {
+      seen.add(cur);
+      row.terms.push(d.terms[cur]!);
+      const outs = next(cur);
+      const fresh = outs.filter((b) => !seen.has(b));
+      const at = cur;
+      cur = fresh[0];
+      branches.push(...fresh.slice(1).map((b): [number, number] => [at, b]));
+      if (cur === undefined && outs.length) row.to = d.terms[outs[0]!];
+    }
+    for (const [a, b] of branches) if (!seen.has(b)) walk(b, a);
+  };
+  // 들어오는 관계가 없는 핵심어부터(앞 차례 먼저), 고리로만 이어진 것 · 관계에 없는 것은 그다음
+  d.terms.forEach((_, i) => !hasIn.has(i) && !seen.has(i) && walk(i));
+  d.terms.forEach((_, i) => !seen.has(i) && walk(i));
+  return rows;
 }
 
 /** 포함: 관계 [위, 아래]로 나무를 만들어 위에서부터 깊이와 함께. 부모는 첫 관계만, 고리로 못 닿은 핵심어는 맨 위 */
@@ -60,10 +94,15 @@ export function hierarchyRows(d: Diagram): { term: string; depth: number }[] {
   return out;
 }
 
+const flowLabel = (d: Diagram, then: string) =>
+  flowRows(d)
+    .map((r) => [r.from, ...r.terms, r.to].filter(Boolean).join(then))
+    .join('; ');
+
 /** 화면 읽기 도구가 읽을 도식 내용 */
 export function diagramLabel(d: Diagram): string {
   const body = {
-    sequence: () => d.terms.join(', 다음 '),
+    sequence: () => flowLabel(d, ', 다음 '),
     contrast: () =>
       contrastRows(d)
         .map(([a, b]) => (b ? `${a} 대 ${b}` : a))
@@ -72,10 +111,7 @@ export function diagramLabel(d: Diagram): string {
       hierarchyRows(d)
         .map((r) => (r.depth ? `${r.depth}단계 ${r.term}` : r.term))
         .join(', '),
-    cause: () =>
-      causeGroups(d)
-        .map((g) => `${g.causes.join('와 ')} 때문에 ${g.effect}`)
-        .join(', '),
+    cause: () => flowLabel(d, ', 그래서 '),
     list: () => d.terms.join(', '),
   }[d.kind]();
   return `도식(${KIND_NAME[d.kind]}): ${body}`;
@@ -95,19 +131,48 @@ function Term({ children, strong }: { children: string; strong?: boolean }) {
 
 const Right = () => <ArrowRight size={ICON.xs} color={ARROW} />;
 
+const Ref = ({ children }: { children: string }) => (
+  <Text className="text-caption2 text-white/50">{children}</Text>
+);
+
+/** 순서 · 인과: 줄마다 칩을 화살표로 잇는다(넘치면 줄바꿈). 인과는 마지막 결과 칩을 진하게 */
+function Flow({ d }: { d: Diagram }) {
+  return (
+    <View className="gap-1.5">
+      {flowRows(d).map((r, i) => (
+        <View key={i} className="flex-row flex-wrap items-center gap-1.5">
+          {r.from ? (
+            <>
+              <CornerDownRight size={ICON.xs} color={ARROW} />
+              <Ref>{r.from}</Ref>
+              <Right />
+            </>
+          ) : null}
+          {r.terms.map((t, j) => (
+            <Fragment key={j}>
+              {j > 0 && <Right />}
+              <Term strong={d.kind === 'cause' && !r.to && j === r.terms.length - 1 && j > 0}>
+                {t}
+              </Term>
+            </Fragment>
+          ))}
+          {r.to ? (
+            <>
+              <Right />
+              <Ref>{r.to}</Ref>
+            </>
+          ) : null}
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function Body({ d }: { d: Diagram }) {
   switch (d.kind) {
     case 'sequence':
-      return (
-        <View className="flex-row flex-wrap items-center gap-1.5">
-          {d.terms.map((t, i) => (
-            <Fragment key={i}>
-              {i > 0 && <Right />}
-              <Term>{t}</Term>
-            </Fragment>
-          ))}
-        </View>
-      );
+    case 'cause':
+      return <Flow d={d} />;
     case 'contrast':
       return (
         <View className="gap-1.5">
@@ -133,22 +198,6 @@ function Body({ d }: { d: Diagram }) {
             >
               {r.depth > 0 && <CornerDownRight size={ICON.xs} color={ARROW} />}
               <Term strong={r.depth === 0}>{r.term}</Term>
-            </View>
-          ))}
-        </View>
-      );
-    case 'cause':
-      return (
-        <View className="gap-2">
-          {causeGroups(d).map((g, i) => (
-            <View key={i} className="flex-row items-center gap-2">
-              <View className="shrink items-start gap-1">
-                {g.causes.map((c, j) => (
-                  <Term key={j}>{c}</Term>
-                ))}
-              </View>
-              <Right />
-              <Term strong>{g.effect}</Term>
             </View>
           ))}
         </View>
