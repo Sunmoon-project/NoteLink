@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { requireUserId } from '../../common/request-user.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
@@ -43,5 +43,12 @@ export class CalendarController {
     @HttpCode(HttpStatus.CREATED)
     async addDday(@Req() req: AuthenticatedRequest, @Body() body: CreateDdayDto): Promise<{ data: DdayView }> {
         return { data: await this.calendar.addDday(requireUserId(req), body) };
+    }
+
+    /** DELETE /api/v1/ddays/:id → 204. 과제 · 시험에서 온 D-day는 D-day 목록에서만 빠지고 할 일은 남는다 */
+    @Delete('ddays/:id')
+    @HttpCode(HttpStatus.NO_CONTENT)
+    async removeDday(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
+        await this.calendar.removeDday(requireUserId(req), id);
     }
 }

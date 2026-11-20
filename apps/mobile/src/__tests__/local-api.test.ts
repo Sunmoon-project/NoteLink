@@ -582,6 +582,22 @@ it('퀴즈 포인트는 하루 40P까지 쌓이고(28 → 12 → 0), 서울 자�
   jest.useRealTimers();
 });
 
+it('기기 저장 모드 퀴즈 목록: 풀이를 끝낸 세트에만 completed를 붙인다(#561)', async () => {
+  await signup('a@test.com');
+  const done = seedQuizForTests(['가']);
+  const other = seedQuizForTests(['나']);
+  const completed = async () =>
+    Object.fromEntries((await api.quiz.sets()).map((s) => [s._id, s.completed]));
+  expect(await completed()).toEqual({ [done._id]: undefined, [other._id]: undefined });
+  const a = await api.quiz.startAttempt(done._id);
+  await api.quiz.startAttempt(other._id);
+  await api.quiz.answer(a._id, done.questions[0]!._id, '가');
+  // 시작만 한 풀이는 끝낸 것이 아니다
+  expect(await completed()).toEqual({ [done._id]: undefined, [other._id]: undefined });
+  await api.quiz.finish(a._id);
+  expect(await completed()).toEqual({ [done._id]: true, [other._id]: undefined });
+});
+
 it('기기 저장 모드 가입: 인증번호가 6자리 숫자가 아니면 EMAIL_CODE_INVALID, 이메일 형식이 틀리면 보내지 않는다', async () => {
   await expect(api.auth.emailVerifyCode('a@test.com', '12ab56')).rejects.toMatchObject({
     code: ERROR_CODES.EMAIL_CODE_INVALID,
@@ -654,4 +670,25 @@ it('기기 저장 모드도 방을 만들 때 고른 분야(첫 번째가 대표
     learnerType: 'worker',
   });
   expect((await api.rooms.mine())[0]).toMatchObject({ categoryNames: ['수능', '자격증'] });
+});
+
+// 실기기 피드백(2026-11-20): 서버처럼 기기 저장 모드도 방에 노트를 공유하면 방 채팅에 자료 카드를 남긴다
+it('방에 노트를 공유하면 방 채팅에 자료 카드가 하나 남고, 다시 공유해도 늘지 않는다', async () => {
+  await signup('a@test.com');
+  const room = await api.rooms.create({
+    title: '방',
+    categoryIds: ['000000000000000000000001'],
+    isPublic: true,
+  });
+  const f = await addFolder();
+  const { material: m } = await api.content.createMaterial(material(f._id));
+  const share = () =>
+    api.content.share({ materialIds: [m._id], target: { type: 'room', id: room._id } });
+  await share();
+  await share();
+  const chatId = await api.rooms.chatRoomId(room._id);
+  const cards = (await api.social.messages(chatId)).filter((x) => x.type === 'shared_item');
+  const [item] = (await api.rooms.shared(room._id)).items;
+  expect(cards).toEqual([expect.objectContaining({ text: '자료', sharedItemId: item!._id })]);
+  expect((await api.rooms.shared(room._id)).items).toHaveLength(1);
 });

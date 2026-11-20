@@ -277,7 +277,10 @@ describe('다시 보기 세트 결과 옮기기(QuizSetsService.findMine)', () =
     const at = sets.rows.find((r) => String(r._id) === made._id)!['createdAt'] as Date;
     expect(updateOne).toHaveBeenCalledWith(
       { _id: new Types.ObjectId(s.set), ownerId: ME },
-      { $set: { 'questions.$[q].srs': srs, 'questions.$[q].srsAt': at } },
+      {
+        $set: { 'questions.$[q].srs': srs, 'questions.$[q].srsAt': at },
+        $unset: { 'questions.$[q].srsAttemptId': '' },
+      },
       { arrayFilters: [{ 'q._id': s.qs[0]!._id, 'q.srsAt': { $not: { $gt: at } } }] },
     );
   });
@@ -472,7 +475,10 @@ describe('복습 상태 옮기기: 동시 조회 · 실패', () => {
     // 같이 옮겨도 같은 값 · 같은 조건이라 몇 번 써도 결과가 같다
     expect(updateOne).toHaveBeenCalledWith(
       { _id: new Types.ObjectId(s.set), ownerId: ME },
-      { $set: { 'questions.$[q].srs': { step: 1 }, 'questions.$[q].srsAt': at } },
+      {
+        $set: { 'questions.$[q].srs': { step: 1 }, 'questions.$[q].srsAt': at },
+        $unset: { 'questions.$[q].srsAttemptId': '' },
+      },
       { arrayFilters: [{ 'q._id': s.qs[0]!._id, 'q.srsAt': { $not: { $gt: at } } }] },
     );
     expect(sets.rows.find((r) => String(r._id) === made._id)!['srsSavedAt']).toBeInstanceOf(Date);

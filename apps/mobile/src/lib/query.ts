@@ -1,12 +1,17 @@
 import { MutationCache, QueryClient } from '@tanstack/react-query';
-import { NetworkError } from './api';
+import { ApiError, NetworkError } from './api';
 import { toast } from '@/stores/toast';
 
 export const queryClient = new QueryClient({
   mutationCache: new MutationCache({
-    onError: (_error, _variables, _context, mutation) => {
-      if (!mutation.options.onError)
-        toast('요청을 완료하지 못했어요. 연결을 확인하고 다시 시도해주세요');
+    onError: (error, _variables, _context, mutation) => {
+      if (mutation.options.onError) return;
+      // 서버가 이유를 들어 거절(4xx)했으면 연결 문제가 아니므로 그 문구를 그대로 알린다
+      toast(
+        error instanceof ApiError && error.status >= 400 && error.status < 500 && error.message
+          ? error.message
+          : '요청을 완료하지 못했어요. 연결을 확인하고 다시 시도해주세요',
+      );
     },
   }),
   defaultOptions: {

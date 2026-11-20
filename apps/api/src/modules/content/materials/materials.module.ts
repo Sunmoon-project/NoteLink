@@ -5,6 +5,7 @@ import { AiJobsModule } from '../../../ai-jobs/ai-jobs.module.js';
 import { QuizSetsModule } from '../../../quiz-sets/quiz-sets.module.js';
 import { User, UserSchema } from '../../auth/schemas/user.schema.js';
 import { AuthModule } from '../../auth/auth.module.js';
+import { NotificationModule } from '../../notification/notification.module.js';
 import { AiJob, AiJobSchema } from '../../quiz/schemas/ai-job.schema.js';
 import { QuizSet, QuizSetSchema } from '../../quiz/schemas/quiz-set.schema.js';
 import { Flashcard, FlashcardSchema } from '../../quiz/schemas/flashcard.schema.js';
@@ -23,6 +24,7 @@ import { MaterialsController } from './materials.controller.js';
 import { MaterialsService } from './materials.service.js';
 import { RecordingController } from './recording.controller.js';
 import { RecordingService } from './recording.service.js';
+import { RegenQuota, RegenQuotaSchema } from './regen-quota.schema.js';
 
 /**
  * 노트(자료) 등록 · 조회 · 수정 · 삭제. 정리는 AI 작업(ai-jobs)으로 하고, 올린 파일의 읽기 주소는
@@ -42,8 +44,12 @@ import { RecordingService } from './recording.service.js';
       { name: RoomSharedItem.name, schema: RoomSharedItemSchema },
       // 공유한 사람의 닉네임
       { name: User.name, schema: UserSchema },
+      // 다시 만들기 하루 횟수
+      { name: RegenQuota.name, schema: RegenQuotaSchema },
     ]),
     AiJobsModule,
+    // 방에 노트를 공유하면 다른 멤버에게 알림(#560)
+    NotificationModule,
     QuizSetsModule,
     UploadsModule,
     // JwtAuthGuard · TokenService

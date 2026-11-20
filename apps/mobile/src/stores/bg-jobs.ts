@@ -3,7 +3,7 @@ import { AppState } from 'react-native';
 import { create } from 'zustand';
 import { api } from '@/lib/api';
 import { queryClient } from '@/lib/query';
-import { notifyLocal } from '@/lib/push';
+import { notifyLocal, pushRegistered } from '@/lib/push';
 import { useAuth } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 
@@ -80,7 +80,8 @@ async function checkOnce() {
     if (status === 'canceled') continue;
     const text = doneText(j, status === 'succeeded');
     if (AppState.currentState === 'active') toast(text);
-    else notifyLocal(text, '눌러서 앱에서 확인해 보세요').catch(() => {});
+    // 서버 푸시를 받는 기기면 서버가 같은 알림을 보낸다(#560)
+    else if (!pushRegistered()) notifyLocal(text, '눌러서 앱에서 확인해 보세요').catch(() => {});
   }
 }
 

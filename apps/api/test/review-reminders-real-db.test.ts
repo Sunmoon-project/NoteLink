@@ -21,6 +21,7 @@ import {
   ReviewReminder,
   ReviewReminderSchema,
 } from '../src/review-reminders/review-reminder.schema.js';
+import { NotificationService } from '../src/modules/notification/notification.service.js';
 import { ReviewRemindersService } from '../src/review-reminders/review-reminders.service.js';
 
 const uri = process.env.MONGODB_VERIFY_URI;
@@ -73,6 +74,7 @@ describe.skipIf(!isLocal)('진짜 DB 복습 알림', () => {
           return sendImpl();
         },
       } as never,
+      new NotificationService(null as never, users as never, null as never, null as never),
     );
     service.recordWait = () => Promise.resolve(); // 기록 다시 쓰기 사이의 기다림은 실제로 기다리지 않는다
     return service;
@@ -289,6 +291,17 @@ describe.skipIf(!isLocal)('진짜 DB 복습 알림', () => {
     for (const id of [withdrawing, deleted, noDevice]) {
       expect((await row(id))!.state).toBe('skipped');
     }
+  });
+
+  it('공부 알림을 끈 사람 · 조용한 시간인 사람에게는 보내지 않고 skipped 로 끝낸다(#560)', async () => {
+    const off = await user({ settings: { notifyStudy: false } });
+    const quiet = await user({ settings: { quietHours: { start: '18:00', end: '23:00' } } });
+    const normal = await user();
+    for (const id of [off, quiet, normal]) await quizSet(id, [dueQuestion()]);
+
+    await makeService().runOnce(NOW);
+    expect(sent.map((m) => m.to)).toEqual([token(normal.toHexString())]);
+    for (const id of [off, quiet]) expect((await row(id))!.state).toBe('skipped');
   });
 
   it('보내는 시각(19:00) 전에는 안 보내고, 그 이후에 보낸다', async () => {

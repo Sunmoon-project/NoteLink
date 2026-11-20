@@ -124,6 +124,9 @@ describe('1:1 채팅', () => {
     const theirs = screen.getByText('친구가 보낸 말');
     expect(mine.props.className).toContain('text-white');
     expect(theirs.props.className).toContain('text-ink');
+    // 실기기 피드백: 말풍선을 길게 눌러 복사할 수 있게 글자를 고를 수 있다
+    expect(mine.props.selectable).toBe(true);
+    expect(theirs.props.selectable).toBe(true);
   });
 });
 

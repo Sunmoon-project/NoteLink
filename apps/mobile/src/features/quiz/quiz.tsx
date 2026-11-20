@@ -56,13 +56,11 @@ import {
   LIST_LAYOUT,
   Label,
   Loading,
-  OnFill,
   Progress,
   RollUp,
   Row,
   Screen,
   Search,
-  Tap,
   Title,
   cx,
   BACKDROP_IN,
@@ -73,8 +71,10 @@ import {
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
 import { AvatarCheer } from '@/features/tutor/cheer';
+import { ChoiceRow, Passage, splitPrompt } from './choice';
 import { recordWrong } from './wrong-review';
 import { TodayReviewCard, useTodayReview } from './today-review';
+import { NextStepCard, reviewDayWord, type NextStep } from './next-step';
 import { useTourTarget } from '@/features/tutor/tour';
 import { seoul } from '@/lib/dates';
 import { aiWaiting } from '@/lib/ai';
@@ -111,15 +111,25 @@ export function QuizHomeScreen() {
   const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
   const refresh = useTabRefresh(sets);
   const progress = useQuizProgress((s) => s.progress);
+  // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」 · 맨 위 카드에는 넣지 않는다
+  const todayId = useTodayReview().data?._id;
+  // 바로가기(유사 퀴즈 등)는 다 푼 세트도 쓰므로 가장 최근 ready 세트, 맨 위 카드는 아직 끝까지 풀지 않은 세트(#561).
+  // 맨 위 카드는 오늘의 복습 세트(reviewDay, 지난 날 사본 포함)도 고르지 않는다. todayId는 reviewDay를 보내지 않는
+  // 옛 서버에서도 오늘 세트를 빼려고 함께 본다
+  const recent = sets.data?.find((s) => s.status === 'ready');
   const latest = progress
     ? (sets.data?.find((s) => s._id === progress.setId) ?? {
         _id: progress.setId,
         title: '풀던 퀴즈',
         questionCount: 0,
       })
-    : sets.data?.find((s) => s.status === 'ready');
-  // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」에는 넣지 않는다
-  const todayId = useTodayReview().data?._id;
+    : sets.data?.find(
+        (s) => s.status === 'ready' && !s.completed && !s.reviewDay && s._id !== todayId,
+      );
+  const shortcutSetId = progress ? latest?._id : recent?._id;
+  // 유사 퀴즈는 서버가 끝까지 푼 풀이로 만들므로 끝낸 세트(completed) 중 가장 최근 것을 넘긴다. 가장 최근 세트는
+  // 안 푼 「다시 보기」 · 풀던 세트일 수 있어 「먼저 이 퀴즈를 끝까지 풀어 주세요」가 떴다
+  const similarSetId = sets.data?.find((s) => s.status === 'ready' && s.completed)?._id;
   const waiting = sets.data?.filter((s) => s.status === 'generating' && s._id !== todayId) ?? [];
   return (
     <Canvas>
@@ -135,29 +145,31 @@ export function QuizHomeScreen() {
             />
           </View>
         )}
-        {latest ? (
+        {shortcutSetId ? (
           <>
-            <Card
-              tone="mint"
-              onPress={() =>
-                router.push({ pathname: '/play/solve', params: { setId: latest._id } })
-              }
-              className="mt-1 p-6"
-            >
-              <Text className="text-caption text-sub">
-                {progress ? '이어서 풀기' : '퀴즈 풀기'}
-              </Text>
-              <Text className="text-body font-bold text-ink">
-                {latest.title}
-                {latest.questionCount > 0 ? ` · ${latest.questionCount}문제` : ''}
-              </Text>
-              {!!progress && latest.questionCount > 0 && (
-                <Progress
-                  value={Math.round((progress.index / latest.questionCount) * 100)}
-                  className="mt-2"
-                />
-              )}
-            </Card>
+            {latest && (
+              <Card
+                tone="mint"
+                onPress={() =>
+                  router.push({ pathname: '/play/solve', params: { setId: latest._id } })
+                }
+                className="mt-1 p-6"
+              >
+                <Text className="text-caption text-sub">
+                  {progress ? '이어서 풀기' : '퀴즈 풀기'}
+                </Text>
+                <Text className="text-body font-bold text-ink">
+                  {latest.title}
+                  {latest.questionCount > 0 ? ` · ${latest.questionCount}문제` : ''}
+                </Text>
+                {!!progress && latest.questionCount > 0 && (
+                  <Progress
+                    value={Math.round((progress.index / latest.questionCount) * 100)}
+                    className="mt-2"
+                  />
+                )}
+              </Card>
+            )}
             {/* 바로가기는 같은 모양 카드 격자 대신 한 그룹의 목록 행 (디자인 점검: 찍어 낸 카드 격자) */}
             <Label>바로가기</Label>
             <Group>
@@ -168,24 +180,32 @@ export function QuizHomeScreen() {
                   [Archive, '퀴즈 보관함', '저장한 문제를 다시 풀어요', '/play/box'],
                   [Sparkles, '유사 퀴즈', '틀린 문제와 비슷한 문제를 풀어요', '/play/similar'],
                 ] as const
-              ).map(([Ic, l, sub, href]) => (
-                <View
-                  key={l}
-                  ref={l === '퀴즈 만들기' ? makeTarget : undefined}
-                  collapsable={false}
-                >
-                  <Row
-                    icon={Ic}
-                    sub={sub}
-                    chevron
-                    onPress={() =>
-                      router.push({ pathname: href as never, params: { setId: latest._id } })
-                    }
+              )
+                // 유사 퀴즈는 끝낸 세트가 있어야 만들 수 있다: 없으면 빈 id로 서버를 부르지 않게 바로가기를 숨긴다
+                .filter(([, , , href]) => href !== '/play/similar' || similarSetId)
+                .map(([Ic, l, sub, href]) => (
+                  <View
+                    key={l}
+                    ref={l === '퀴즈 만들기' ? makeTarget : undefined}
+                    collapsable={false}
                   >
-                    {l}
-                  </Row>
-                </View>
-              ))}
+                    <Row
+                      icon={Ic}
+                      sub={sub}
+                      chevron
+                      onPress={() =>
+                        router.push({
+                          pathname: href as never,
+                          params: {
+                            setId: href === '/play/similar' ? similarSetId : shortcutSetId,
+                          },
+                        })
+                      }
+                    >
+                      {l}
+                    </Row>
+                  </View>
+                ))}
             </Group>
           </>
         ) : (
@@ -689,6 +709,8 @@ export function QuizSolveScreen() {
       // 사본이라 담지 않고, 끝냈다고 다시 읽어 카드가 「마쳤어요」로 바뀌게 한다
       // 그사이 다른 계정으로 바뀌었으면 담지 않는다(새 계정 보관함에 앞 계정 문제가 들어가지 않게)
       if (useAuth.getState().userId !== request.owner) return;
+      // 끝낸 세트는 목록에서 completed가 되므로, 퀴즈 탭 맨 위 카드가 돌아오자마자 다음 세트로 바뀌게 다시 읽는다(#561)
+      void queryClient.invalidateQueries({ queryKey: ['quiz-sets'] });
       const today = queryClient.getQueryData<{ _id: string } | null>(['today-review']);
       if (today?._id === request.setId)
         void queryClient.invalidateQueries({ queryKey: ['today-review'] });
@@ -764,6 +786,10 @@ export function QuizSolveScreen() {
         points: String(completed.pointsEarned),
         // 문제마다 맞음(1) · 틀림(0): 결과 화면이 번호를 초록 · 빨강으로 칠한다
         results: answered.map(Number).join(''),
+        // 서버가 이번에 복습 일정에 넣은 문제 수 · 날짜(FR-37). 넣지 않았거나 옛 서버면 넘기지 않는다
+        ...(completed.scheduled && completed.nextReviewDay
+          ? { scheduled: String(completed.scheduled), nextReviewDay: completed.nextReviewDay }
+          : {}),
         ...(from === 'room' ? { from: 'room' } : {}),
       },
     });
@@ -962,16 +988,9 @@ export function QuizSolveScreen() {
                 </>
               )}
               {(q.choices ?? []).map((c, n) => (
-                <Tap
-                  key={c}
-                  onPress={() => choose(c)}
-                  className="min-h-14 justify-center overflow-hidden rounded-2xl bg-white px-5 py-4"
-                >
-                  <OnFill on={pick === c} fill="bg-mint" />
-                  <Text className="text-subhead text-ink">
-                    {'①②③④⑤'[n]} {c}
-                  </Text>
-                </Tap>
+                <ChoiceRow key={c} n={n} on={pick === c} onPress={() => choose(c)}>
+                  {c}
+                </ChoiceRow>
               ))}
             </View>
           </Animated.View>
@@ -1039,11 +1058,13 @@ export function QuizSolveScreen() {
 }
 
 export function QuizReviewScreen() {
-  const { setId, points, from, results } = useLocalSearchParams<{
+  const { setId, points, from, results, scheduled, nextReviewDay } = useLocalSearchParams<{
     setId?: string;
     points?: string;
     from?: string;
     results?: string;
+    scheduled?: string;
+    nextReviewDay?: string;
   }>();
   const set = useQuery({
     queryKey: ['quiz-set', setId ?? 'latest'],
@@ -1080,12 +1101,6 @@ export function QuizReviewScreen() {
             >
               확인
             </Btn>
-            <Pressable
-              onPress={() => router.push({ pathname: '/play/similar', params: { setId } })}
-              className="mt-3 self-center rounded-full bg-white px-4 py-2"
-            >
-              <Text className="text-caption text-sub">유사 퀴즈 생성하기</Text>
-            </Pressable>
           </>
         }
       >
@@ -1107,6 +1122,14 @@ export function QuizReviewScreen() {
           <Text className="mt-1 text-caption text-sub">
             문제를 누르면 AI 해설을 볼 수 있어요 · 푼 퀴즈는 보관함에 담았어요
           </Text>
+        </View>
+        <View className="mt-3">
+          <QuizNextStep
+            setId={set.data._id}
+            results={results}
+            reviewDay={Number(scheduled) > 0 ? nextReviewDay : undefined}
+            room={from === 'room'}
+          />
         </View>
         <View className="mt-5 gap-3">
           {qs.map((q, n) => (
@@ -1165,6 +1188,51 @@ export function QuizReviewScreen() {
       )}
     </Canvas>
   );
+}
+
+/**
+ * 퀴즈 결과의 다음 단계(FR-37): 틀린 문제는 비슷한 문제 복습(유사 퀴즈)으로, 그다음은 새 퀴즈로 잇는다.
+ * 복습 날짜는 서버가 이번에 일정에 넣었을 때만 말한다(오늘의 복습 · 기기 저장은 넣지 않음)
+ */
+function QuizNextStep({
+  setId,
+  results,
+  reviewDay,
+  room,
+}: {
+  setId: string;
+  results?: string;
+  reviewDay?: string;
+  room: boolean;
+}) {
+  const wrong = results ? [...results].filter((r) => r === '0').length : null;
+  const when = reviewDay ? reviewDayWord(reviewDay) : null;
+  const line =
+    wrong === null
+      ? undefined
+      : wrong > 0
+        ? when
+          ? // 이번에 일정에 넣은 문제가 틀린 문제라는 보장은 없다(이미 복습 중이던 문제는 날짜가 다름): 넣은 문제로 말한다
+            `복습할 문제는 ${when} 다시 물어볼게요`
+          : `틀린 ${wrong}문제, 비슷한 문제로 한 번 더 풀어 봐요`
+        : when
+          ? `다 맞혔어요! ${when} 한 번 더 확인해요`
+          : '다 맞혔어요!';
+  const steps: NextStep[] = [];
+  if (wrong !== 0)
+    steps.push({
+      icon: Sparkles,
+      label: wrong ? `틀린 ${wrong}문제 비슷한 문제로 지금 복습` : '비슷한 문제로 지금 복습',
+      sub: '틀린 개념을 다른 문제로 다시 풀어요',
+      onPress: () => router.push({ pathname: '/play/similar', params: { setId } }),
+    });
+  if (!room)
+    steps.push({
+      icon: Plus,
+      label: '다른 노트로 새 퀴즈',
+      onPress: () => router.dismissTo('/(tabs)/quiz/notes'),
+    });
+  return <NextStepCard line={line} reviewDay={reviewDay} steps={steps} />;
 }
 
 export function QuizExplainScreen() {
@@ -1261,6 +1329,8 @@ export function QuizSimilarScreen() {
   const generate = useMutation({
     mutationFn: () => api.quiz.similar(setId ?? ''),
     retry: false,
+    // 실패 문구는 화면 아래에 직접 보여 주므로 공용 토스트는 띄우지 않는다
+    onError: () => {},
   });
   // 서버는 「다시 보기」 세트를 만드는 중(generating)으로 돌려준다: 다 만들 때까지 세트를 다시 읽는다
   const making = generate.data?.status === 'generating' ? generate.data._id : null;
@@ -1517,24 +1587,21 @@ export function CardsScreen() {
 export function QuizBoxScreen() {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<string[]>([]);
+  // 정답은 처음엔 모두 닫아 두고 「정답 보기」를 누른 문제만 펼친다.
+  // 다시 불러와도 유지하고, 지운 문제는 빼서 다시 보관돼도 닫힌 채로 보인다.
+  const [shown, setShown] = useState<string[]>([]);
   const remove = useMutation({
     mutationFn: (ids: string[]) => api.quiz.deleteFromBox(ids),
-    onSuccess: () => {
+    onSuccess: (_, ids) => {
       qc.invalidateQueries({ queryKey: ['quiz-box'] });
       setSelected([]);
+      setShown((p) => p.filter((id) => !ids.includes(id)));
       toast('선택한 퀴즈를 삭제했어요');
     },
     onError: () => toast('보관함에서 삭제하지 못했어요. 다시 시도해 주세요'),
   });
   const box = useQuery({ queryKey: ['quiz-box'], queryFn: api.quiz.box });
-  const [shown, setShown] = useState<string[]>([]);
   const [select, setSelect] = useState(false);
-  // 보관함을 불러오면 첫 퀴즈의 정답을 펼친다 (렌더 중 상태 조정)
-  const [loaded, setLoaded] = useState<typeof box.data>();
-  if (box.data && box.data !== loaded) {
-    setLoaded(box.data);
-    if (box.data[0]) setShown([box.data[0]._id]);
-  }
   if (box.isError && !box.data)
     return (
       <Canvas>
@@ -1596,7 +1663,7 @@ export function QuizBoxScreen() {
             body="퀴즈를 풀고 다시 보고 싶은 문제를 보관하면 여기에 모여요."
           />
         )}
-        <View className="gap-2">
+        <View className="gap-4">
           {box.data?.map((q, n) => (
             <Animated.View
               key={q._id}
@@ -1609,8 +1676,20 @@ export function QuizBoxScreen() {
                   <View className="h-5 w-5 items-center justify-center rounded-full bg-brand">
                     <Text className="text-caption2 text-white">{n + 1}</Text>
                   </View>
-                  <Text className="flex-1 text-subhead leading-6 text-ink">{q.prompt}</Text>
+                  <Text className="flex-1 text-subhead leading-6 text-ink">
+                    {splitPrompt(q.prompt)[0]}
+                  </Text>
                 </View>
+                <Passage prompt={q.prompt} mc={!!q.choices?.length} className="pl-7" />
+                {!!q.choices?.length && (
+                  <View className="mt-3 gap-2 pl-7">
+                    {q.choices.map((c, i) => (
+                      <ChoiceRow key={c} n={i} fill="bg-canvas">
+                        {c}
+                      </ChoiceRow>
+                    ))}
+                  </View>
+                )}
                 {shown.includes(q._id) && (
                   <Animated.View entering={FADE_IN} className="mt-2 rounded-lg bg-mint px-3 py-2">
                     <Text className="text-footnote font-semibold text-brand">

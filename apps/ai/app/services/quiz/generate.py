@@ -340,6 +340,11 @@ def _chunk(raw: object, where: str) -> Chunk:
     return Chunk(order, title, list(path or []), text, page, auto)
 
 
+def parse_material(raw: object) -> Material:
+    """input.material을 확인해 꺼냅니다(개념 카드 작업도 씀, flashcards.run)."""
+    return _material(raw)
+
+
 def _material(raw: object) -> Material:
     w = "input.material"
     pages = parse_pages(need_list(raw, "pages", w), f"{w}.pages")

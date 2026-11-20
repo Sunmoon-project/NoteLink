@@ -94,11 +94,21 @@ export const httpApi: Api = {
     get: () => http.get(P.me),
     update: (patch) => http.patch(P.me, patch),
     setStatus: (status) => http.patch(P.myStatus, { status }),
+    presence: (active, device) => {
+      const path = device ? `${P.myPresence}?device=${encodeURIComponent(device)}` : P.myPresence;
+      return active ? http.put(path, {}) : http.del(path);
+    },
     registerDevice: (d) => http.post(P.myDevices, d),
     changePlan: (tier) => http.patch(P.mySubscription, { tier }),
     withdraw: () => http.del(P.me),
     emailSendCode: () => http.post(P.myEmailSendCode),
     emailVerifyCode: (code) => http.post(P.myEmailVerifyCode, { code }),
+  },
+  notifications: {
+    list: (before) => http.get(P.notifications, before ? { before } : undefined),
+    unreadCount: async () => (await http.get<{ count: number }>(P.notificationsUnreadCount)).count,
+    markRead: (id) => http.patch(P.notificationRead(id), {}),
+    readAll: () => http.post(P.notificationsReadAll),
   },
   upload: { getSas: (p) => http.post(P.uploadSas, p) },
   study: {
@@ -127,6 +137,7 @@ export const httpApi: Api = {
     toggleTodo: (id, done) => http.patch(P.todo(id), { done }),
     ddays: () => http.get(P.ddays),
     addDday: (p) => http.post(P.ddays, p),
+    removeDday: (id) => http.del(P.dday(id)),
     holidays: (year) => http.get(P.holidays, { year }),
     setHolidayHidden: (date, hidden) => http.patch(P.holiday(date), { hidden }),
     customHolidays: () => http.get(P.customHolidays),
@@ -151,6 +162,7 @@ export const httpApi: Api = {
     search: (nickname) => http.get(P.userSearch, { nickname }),
     sendRequest: (userId) => http.post(P.friendRequests, { userId }),
     received: () => http.get(P.friendRequestsReceived),
+    sent: () => http.get(P.friendRequestsSent),
     respond: (id, accept) => http.post(P.friendRequestAction(id, accept ? 'accept' : 'reject')),
     remove: (userId) => http.del(P.friend(userId)),
     openDirect: (userId) => http.post(P.directChat, { userId }),
@@ -170,6 +182,7 @@ export const httpApi: Api = {
     recording: (id) => http.get(P.materialRecording(id)),
     addBookmark: (id, atSec) => http.post(P.materialBookmarks(id), { atSec }),
     downloadUrl: (id) => http.get(P.materialDownloadUrl(id)),
+    regenerate: (id) => http.post(P.materialRegenerate(id)),
     share: (p) => http.post(P.materialShare, p),
     checkImages: (files) => http.post(P.imageCheck, { files }),
     ask: (id, body) => http.post(P.materialAsk(id), body),
@@ -208,6 +221,7 @@ export const httpApi: Api = {
     leave: (id) => http.post(P.leaveRoom(id)),
     setTimer: (id, rule) => http.put(P.roomTimer(id), rule),
     schedule: (id) => http.get(P.roomSchedule(id)),
+    setScheduleHidden: (id, hidden) => http.patch(P.roomScheduleVisibility(id), { hidden }),
     invite: (id, userIds) => http.post(P.roomInvites(id), { userIds }),
     shared: (id) => http.get(P.roomShared(id)),
     sharedItem: (id, itemId) => http.get(P.roomSharedItem(id, itemId)),

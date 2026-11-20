@@ -31,6 +31,13 @@ const SETTINGS_FIELDS = [
   'theme',
   'doubleTapEraser',
   'leftHanded',
+  'notifyFriend',
+  'notifyChat',
+  'notifyRoom',
+  'notifyStudy',
+  'notifyAi',
+  'quietHours',
+  'mutedChatRoomIds',
 ];
 
 const id = new Types.ObjectId();
@@ -148,6 +155,13 @@ describe('toAppUser', () => {
         theme: 'light',
         doubleTapEraser: true,
         leftHanded: false,
+        notifyFriend: true,
+        notifyChat: true,
+        notifyRoom: true,
+        notifyStudy: true,
+        notifyAi: true,
+        quietHours: null,
+        mutedChatRoomIds: [],
       });
     });
 
@@ -174,7 +188,7 @@ describe('toAppUser', () => {
       expect(user.settings.theme).toBe('dark');
       expect(user.settings.leftHanded).toBe(true);
       expect(user.settings.resumePlayback).toBe(true);
-      expect(Object.keys(user.settings)).toHaveLength(8);
+      expect(Object.keys(user.settings)).toHaveLength(SETTINGS_FIELDS.length);
     });
 
     it('포인트 · 상태 · 관심 분야를 그대로 쓴다', () => {

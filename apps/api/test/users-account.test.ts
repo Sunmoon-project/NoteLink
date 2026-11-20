@@ -44,6 +44,7 @@ function model(rows: Row[]) {
 const NOW = new Date('2026-11-13T00:00:00Z');
 let users: ReturnType<typeof model>;
 let devices: ReturnType<typeof model>;
+let notifications: ReturnType<typeof model>;
 let tokens: ReturnType<typeof model>;
 let friendships: ReturnType<typeof model>;
 let shares: ReturnType<typeof model>;
@@ -77,6 +78,14 @@ beforeEach(() => {
     },
   ]);
   devices = model([]);
+  // 알림함은 UsersService가 users 모델의 연결(db.collection)로 지운다
+  notifications = model([
+    { _id: new Types.ObjectId(), userId: me },
+    { _id: new Types.ObjectId(), userId: other },
+    // 남의 알림함이지만 내 닉네임이 든 알림(친구 요청 등)
+    { _id: new Types.ObjectId(), userId: other, data: { userId: me.toHexString() } },
+  ]);
+  Object.assign(users, { db: { collection: () => notifications } });
   tokens = model([
     { _id: new Types.ObjectId(), userId: me, revokedAt: null },
     { _id: new Types.ObjectId(), userId: other, revokedAt: null },
@@ -347,6 +356,9 @@ describe('회원 탈퇴', () => {
     expect(devices.rows).toHaveLength(0);
     expect(friendships.rows).toHaveLength(1); // 남끼리의 친구 관계는 남는다
     expect(shares.rows).toHaveLength(0);
+    // 내 알림함과, 남의 알림함 중 내가 보낸(내 닉네임이 든) 알림을 지운다
+    expect(notifications.rows.map((n) => String(n.userId))).toEqual([String(other)]);
+    expect(notifications.rows[0]!.data).toBeUndefined();
     // 다시 탈퇴하면 404(이미 탈퇴함)
     await expect(service.withdraw(me.toHexString())).rejects.toMatchObject({
       response: { code: 'NOT_FOUND' },

@@ -7,6 +7,7 @@ import {
   TimetableShare,
   TimetableShareSchema,
 } from '../../calendar/schemas/timetable-share.schema.js';
+import { NotificationModule } from '../../notification/notification.module.js';
 import { Friendship, FriendshipSchema } from '../schemas/friendship.schema.js';
 import { FriendsController } from './friends.controller.js';
 import { FriendsService } from './friends.service.js';
@@ -20,6 +21,7 @@ import { FriendsService } from './friends.service.js';
       { name: TimetableShare.name, schema: TimetableShareSchema },
     ]),
     AuthModule, // 로그인 확인(JwtAuthGuard)
+    NotificationModule, // 친구 요청 · 수락 알림(FR-15-04)
   ],
   controllers: [FriendsController],
   providers: [FriendsService],
