@@ -32,8 +32,9 @@ export function useSimilarMaking<A>(make: (arg: A) => Promise<QuizSet>) {
   const generate = useMutation({
     mutationFn: make,
     retry: false,
-    // 실패 문구는 화면 아래에 직접 보여 주므로 공용 토스트는 띄우지 않는다
-    onError: () => {},
+    // 실패 문구는 화면 아래에 직접 보여 주므로 공용 토스트는 띄우지 않는다. 같은 노트로 만드는 중이라 막혔을 수 있어(409)
+    // 세트 목록을 다시 읽는다: 고르기 화면이 그 세트를 보고 끝날 때까지 만들기를 막는다(code-review 3차)
+    onError: () => void qc.invalidateQueries({ queryKey: ['quiz-sets'] }),
   });
   const making = generate.data?.status === 'generating' ? generate.data._id : null;
   const poll = useQuery({
@@ -101,11 +102,32 @@ export function SimilarStatus({
 }
 
 /**
- * 유사 퀴즈를 만들 수 있는 세트: 끝까지 푼 ready 세트 중 노트가 있는 것. 오늘의 복습 세트(노트를 섞음)는 뺀다.
- * 서버(SimilarQuizService.createFromPicks)가 받는 세트와 같은 규칙. 퀴즈 홈 바로가기도 이것으로 보인다
+ * 유사 퀴즈를 만들 수 있는 세트: 끝까지 푼 ready 세트 중 노트 · 학습 폴더가 있는 것. 오늘의 복습 세트(노트를 섞음)는
+ * 뺀다. 서버(SimilarQuizService.createFromPicks)가 받는 세트와 같은 규칙. 퀴즈 홈 바로가기도 이것으로 보인다.
+ * 폴더 정보가 없는 옛 세트는 1단계(폴더)로 찾아갈 수 없으므로 뺀다(결과 화면의 유사 퀴즈로는 그대로 만든다)
  */
 export const canPickFrom = (s: QuizSet) =>
-  s.status === 'ready' && !!s.completed && !s.reviewDay && !!s.materialId && s.questions.length > 0;
+  s.status === 'ready' &&
+  !!s.completed &&
+  !s.reviewDay &&
+  !!s.materialId &&
+  !!s.folderId &&
+  s.questions.length > 0;
+
+/**
+ * 새 세트가 들어갈 노트: 고른 문제가 가장 많은 노트, 같으면 먼저(화면 차례) 고른 쪽. 서버(createFromPicks)와 같은 규칙.
+ * 서버는 노트마다 만드는 중인 세트를 하나만 두므로 이 노트로 만드는 중인 세트가 있으면 409다
+ */
+export function noteOf(ids: string[], sets: QuizSet[]): string | null {
+  const count = new Map<string, number>();
+  for (const id of ids) {
+    const s = sets.find((x) => x.questions.some((q) => q._id === id));
+    if (s) count.set(s.materialId, (count.get(s.materialId) ?? 0) + 1);
+  }
+  let best: [string, number] | null = null;
+  for (const e of count) if (!best || e[1] > best[1]) best = e;
+  return best?.[0] ?? null;
+}
 
 /** 2단계에 보이는 세트: 그 노트(학습 폴더)에서 고를 수 있는 세트 */
 export function pickableSets(sets: QuizSet[] | undefined, folderId: string): QuizSet[] {
@@ -137,8 +159,8 @@ const Box = ({ on }: { on: boolean }) => (
  * 체크해 둔다. 고른 문제(SIMILAR_PICK_MAX개까지)로 만든다. 하나도 고르지 않으면 만들 수 없다
  */
 export function SimilarPickScreen({ folderId }: { folderId: string }) {
-  // 이 노트(학습 폴더)로 만드는 중인 세트(퀴즈를 끝내면 바로 도는 오답 복습 등)가 있으면 서버가 409로 막는다(노트마다
-  // 만드는 중인 세트는 하나). 그동안은 만들기를 막고 목록을 다시 읽어 끝나면 풀어 준다(code-review 2차)
+  // 이 학습 폴더로 만드는 중인 세트(퀴즈를 끝내면 바로 도는 오답 복습 등)가 있으면 목록을 다시 읽어 끝나는 것을 본다.
+  // 만들기는 새 세트가 들어갈 노트(noteOf)로 만드는 중일 때만 막는다(서버 고유 색인과 같은 노트 단위, code-review 3차)
   const generatingHere = (list?: QuizSet[]) =>
     !!list?.some((s) => s.status === 'generating' && s.folderId === folderId);
   const sets = useQuery({
@@ -157,7 +179,10 @@ export function SimilarPickScreen({ folderId }: { folderId: string }) {
   const making = useSimilarMaking((ids: string[]) => api.quiz.similarPick(ids));
   // 결과 확인에 실패했을 때(checkFailed)도 체크를 막는다: 그때 버튼은 이미 넣은 세트를 다시 확인할 뿐이다
   const busy = making.generate.isPending || making.waiting || making.checkFailed;
-  const blocked = !making.generate.data && generatingHere(sets.data);
+  const note = noteOf(chosen, groups);
+  const blocked =
+    !making.generate.data &&
+    !!sets.data?.some((s) => s.status === 'generating' && !!note && s.materialId === note);
   const toggle = (q: Question) => {
     if (chosen.includes(q._id)) {
       setFull(false);

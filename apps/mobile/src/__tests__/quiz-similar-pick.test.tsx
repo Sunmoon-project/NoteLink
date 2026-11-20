@@ -255,3 +255,30 @@ describe('같은 노트로 만드는 중일 때(code-review 2차)', () => {
     expect(pick).toHaveBeenCalledWith(['a2', 'b1']);
   });
 });
+
+describe('code-review 3차', () => {
+  it('폴더 정보가 없는 옛 세트만 끝냈으면 퀴즈 홈에 유사 퀴즈 바로가기를 보이지 않는다', async () => {
+    jest
+      .spyOn(api.quiz, 'sets')
+      .mockResolvedValue([quizSet('o1', '', [question('o1q')], { wrongQuestionIds: ['o1q'] })]);
+    await renderScreen(<QuizHomeScreen />, client());
+    expect(await screen.findByText('퀴즈 보관함')).toBeTruthy();
+    expect(screen.queryByText('유사 퀴즈')).toBeNull();
+  });
+
+  it('같은 폴더의 다른 노트로 만드는 중이면 막지 않는다(서버도 노트마다 하나)', async () => {
+    const pick = jest.spyOn(api.quiz, 'similarPick').mockResolvedValue({ ...SETS[0]!, _id: 'new' });
+    const other = quizSet('r2', 'fA', [], {
+      status: 'generating',
+      completed: false,
+      materialId: 'm-other',
+    });
+    jest.spyOn(api.quiz, 'sets').mockResolvedValue([...SETS, other]);
+    setParams({ folderId: 'fA' });
+    await renderScreen(<QuizSimilarScreen />, client());
+    await screen.findByText('문제 a1');
+    expect(makeBtn().props.accessibilityState?.disabled).toBe(false);
+    await fireEvent.press(makeBtn());
+    expect(pick).toHaveBeenCalledWith(['a2', 'b1']);
+  });
+});

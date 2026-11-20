@@ -307,8 +307,10 @@ export class SimilarQuizService {
       },
       INPUT_BYTE_LIMIT,
       pickedSets.length,
-      // 여러 노트의 문제를 고르면 노트 하나하나는 짧아도 합쳐 넘을 수 있다(code-review)
-      '고른 문제의 노트가 합쳐 너무 길어요. 노트를 나눠 몇 개씩 골라 주세요',
+      // 여러 노트의 문제를 고르면 노트 하나하나는 짧아도 합쳐 넘을 수 있다(code-review). 노트가 하나면 기본 문구
+      count.size > 1
+        ? '고른 문제의 노트가 합쳐 너무 길어요. 노트를 나눠 몇 개씩 골라 주세요'
+        : undefined,
     );
 
     const newId = new Types.ObjectId();

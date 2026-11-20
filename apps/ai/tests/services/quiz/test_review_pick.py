@@ -235,3 +235,13 @@ def test_the_picked_question_itself_is_never_handed_back() -> None:
     assert result["reviewQuestions"] == []
     assert all(t["reusedFrom"] is None for t in result["targets"])
     assert result["emptyReason"] == "rejected"
+
+
+def test_a_long_picked_question_keeps_its_answer_in_the_prompt() -> None:
+    # 문제 글만 자르고 정답은 남긴다:
+    # 겹치지 않게 다른 내용을 물으려면 정답을 알아야 함(code-review 3차)
+    inp = pick_input(("s1", "q1", True), ("s1", "q2", True))
+    inp["sets"][0]["questions"][1]["prompt"] = "가" * 400
+    llm = llm_for("be", "stack", "fasten")
+    run(llm, inp)
+    assert "(정답: stack)" in llm.named("Review")[0].user
