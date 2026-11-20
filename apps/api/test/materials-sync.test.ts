@@ -68,7 +68,7 @@ describe('chunks → 요약 소제목 · 본문', () => {
     expect(titles).toEqual(['첫째', '둘째']);
   });
 
-  it('제목 없는 조각은 이전 조각의 소제목 아래에 이어 붙이고, 앞 조각이 없으면 "내용 n"', () => {
+  it('제목 없는 조각은 같은 쪽이면 앞 소제목 아래에 이어 붙이고, 앞 조각이 없으면 "n쪽"', () => {
     const { sections } = sectionsFromChunks([
       chunk(1, null, '머리말'),
       chunk(2, null, '이어서'),
@@ -76,9 +76,47 @@ describe('chunks → 요약 소제목 · 본문', () => {
       chunk(4, null, '예시'),
     ]);
     expect(sections).toEqual([
-      { heading: '내용 1', body: '머리말\n이어서' },
+      { heading: '1쪽', body: '머리말\n이어서' },
       { heading: '개념', body: '정의\n예시' },
     ]);
+  });
+
+  it('제목 없는 조각은 쪽이 바뀌면 "n쪽"으로 새 소제목을 열고, 쪽을 모르면 이어 붙이거나 "내용 n"', () => {
+    const on = (pageNo: number) => ({ lines: [{ pageNo }] });
+    const { sections } = sectionsFromChunks([
+      chunk(1, null, '첫 쪽', on(1)),
+      chunk(2, null, '첫 쪽 이어서', on(1)),
+      chunk(3, null, '둘째 쪽', on(2)),
+      chunk(4, '개념', '정의', on(2)),
+      chunk(5, null, '같은 쪽 예시', on(2)),
+      chunk(6, null, '셋째 쪽', on(3)),
+      chunk(7, null, '쪽 모름', { lines: [] }),
+    ]);
+    expect(sections).toEqual([
+      { heading: '1쪽', body: '첫 쪽\n첫 쪽 이어서' },
+      { heading: '2쪽', body: '둘째 쪽' },
+      { heading: '개념', body: '정의\n같은 쪽 예시' },
+      { heading: '3쪽', body: '셋째 쪽\n쪽 모름' },
+    ]);
+    expect(sectionsFromChunks([chunk(1, null, '처음', { lines: [] })]).sections).toEqual([
+      { heading: '내용 1', body: '처음' },
+    ]);
+  });
+
+  it('제목 없는 조각은 AI 소제목(headings)을 쓰고, 조각 제목이 있으면 조각 제목이 먼저', () => {
+    const headings = new Map([
+      [1, '아메바'],
+      [2, '쓰지 않음'],
+    ]);
+    const { sections, titles } = sectionsFromChunks(
+      [chunk(1, null, '위족으로 움직임'), chunk(2, '짚신벌레', '섬모'), chunk(3, null, '먹이')],
+      headings,
+    );
+    expect(sections).toEqual([
+      { heading: '아메바', body: '위족으로 움직임' },
+      { heading: '짚신벌레', body: '섬모\n먹이' },
+    ]);
+    expect(titles).toEqual(['짚신벌레']); // AI 소제목은 핵심 요약 대신 쓰는 제목 목록에 넣지 않음
   });
 
   it('같은 제목이 겹치면 번호를 붙이고, 빈 본문 · 모양이 틀린 조각은 건너뛴다', () => {
@@ -266,6 +304,37 @@ describe('작업 상태 → 노트 (syncFromJob)', () => {
       });
       expect(update['keywords']).toEqual(['미분', '적분']);
     }
+  });
+
+  it('AI 소제목(summary.headings)으로 제목 없는 필기 조각을 나누고, 모양이 틀린 소제목은 버린다', () => {
+    const update = syncFromJob(
+      row(),
+      job('succeeded', {
+        result: {
+          pages: [{ pageNo: 1, ocrText: 'a' }],
+          chunks: [chunk(1, null, '위족'), chunk(2, null, '섬모'), chunk(3, null, '출아')],
+          summary: {
+            points: [],
+            keywords: [],
+            headings: [
+              { order: 1, text: ' [?]아메바 ' },
+              { order: 1, text: '두 번째' },
+              { order: 2, text: '  ' },
+              { order: 0, text: '번호 틀림' },
+              { order: 3, text: '효모' },
+              '모양이 다름',
+            ],
+          },
+        },
+      }),
+    )!;
+    expect(update['summary']).toEqual({
+      sections: [
+        { heading: '아메바', body: '위족\n섬모' },
+        { heading: '효모', body: '출아' },
+      ],
+      points: [],
+    });
   });
 
   it('핵심 요약이 없으면 문서는 쪽 · 문제 번호만 있거나 글자가 적은 제목을 빼고 쓴다', () => {
