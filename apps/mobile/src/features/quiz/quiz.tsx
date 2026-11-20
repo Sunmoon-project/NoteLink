@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { TextInput, View } from 'react-native';
+import { AppState, type AppStateStatus, TextInput, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import Animated, {
@@ -11,7 +11,7 @@ import Animated, {
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useIsFocused, useLocalSearchParams } from 'expo-router';
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Speech from 'expo-speech';
 import { setAudioModeAsync } from 'expo-audio';
@@ -24,6 +24,7 @@ import {
   Brain,
   CircleCheck,
   FileText,
+  Folder,
   GraduationCap,
   Layers,
   PartyPopper,
@@ -33,7 +34,7 @@ import {
   Volume2,
   X,
 } from 'lucide-react-native';
-import { ERROR_CODES, type AiJob } from '@notelink/shared';
+import { ERROR_CODES, type AiJob, type Material, type QuizSet } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useAiJobSubscription, useSocket, useTabRefresh } from '@/hooks';
@@ -56,13 +57,11 @@ import {
   LIST_LAYOUT,
   Label,
   Loading,
-  OnFill,
   Progress,
   RollUp,
   Row,
   Screen,
   Search,
-  Tap,
   Title,
   cx,
   BACKDROP_IN,
@@ -73,10 +72,13 @@ import {
 import { NetBanner } from '@/components/NetBanner';
 import { C, ICON, MOTION } from '@/theme';
 import { AvatarCheer } from '@/features/tutor/cheer';
+import { ChoiceRow, Passage, splitPrompt } from './choice';
+import { readFolderMaterials } from '@/features/content/notes';
 import { recordWrong } from './wrong-review';
 import { TodayReviewCard, useTodayReview } from './today-review';
+import { NextStepCard, reviewDayWord, type NextStep } from './next-step';
 import { useTourTarget } from '@/features/tutor/tour';
-import { seoul } from '@/lib/dates';
+import { seoul, today as seoulToday } from '@/lib/dates';
 import { aiWaiting } from '@/lib/ai';
 import { AiPending } from '@/components/AiPending';
 
@@ -105,22 +107,65 @@ const Tutor = ({ size = 76 }: { size?: number }) => (
   </View>
 );
 
+/** 만드는 중인 퀴즈 세트가 있을 때 퀴즈 탭이 세트 목록을 다시 읽는 간격(#593) */
+const PENDING_POLL_MS = 4000;
+
+/**
+ * 앱이 앞에 나와 있는지. 앱이 뒤로 가도 화면 포커스는 그대로라 다시 읽기를 멈추려고 따로 본다(#593).
+ * 켜자마자는 상태를 아직 모를 수 있어(unknown) 뒤에 있다고 확실할 때만 멈춘다
+ */
+const isBackground = (s: AppStateStatus | null) => s === 'background' || s === 'inactive';
+function useAppActive() {
+  const [active, setActive] = useState(() => !isBackground(AppState.currentState));
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => setActive(!isBackground(s)));
+    return () => sub.remove();
+  }, []);
+  return active;
+}
+
 export function QuizHomeScreen() {
   // 처음 안내의 '퀴즈 만들기'가 짚는 자리
   const makeTarget = useTourTarget('quiz-make');
-  const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
+  // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」 · 맨 위 카드에는 넣지 않는다
+  const todayId = useTodayReview().data?._id;
+  const focused = useIsFocused();
+  const appActive = useAppActive();
+  // 오늘의 복습 세트는 오늘의 복습 카드가 따로 다시 읽고 보여 준다. 그 조회가 오기 전에도 빼려고 오늘(서울) reviewDay도
+  // 함께 본다. 지난 날 복습 세트는 그 카드에 나오지 않으므로 여기서 안내한다
+  const pending = (s: QuizSet) =>
+    s.status === 'generating' && s._id !== todayId && s.reviewDay !== seoulToday();
+  // 퀴즈를 끝내면 서버가 오답 복습(「다시 보기」) 세트를 저절로 만든다. 만드는 중 세트가 있으면 이 탭이 보이고
+  // 앱이 앞에 있는 동안에만 다시 읽어, 다 만들어지면 「AI 서버를 기다리고 있어요」 안내가 바로 사라지게 한다(#593)
+  const sets = useQuery({
+    queryKey: ['quiz-sets'],
+    queryFn: api.quiz.sets,
+    refetchInterval: (q) =>
+      focused && appActive && q.state.data?.some(pending) ? PENDING_POLL_MS : false,
+  });
   const refresh = useTabRefresh(sets);
   const progress = useQuizProgress((s) => s.progress);
+  // 바로가기(유사 퀴즈 등)는 다 푼 세트도 쓰므로 가장 최근 ready 세트, 맨 위 카드는 아직 끝까지 풀지 않은 세트(#561).
+  // 맨 위 카드는 오늘의 복습 세트(reviewDay, 지난 날 사본 포함)도 고르지 않는다. todayId는 reviewDay를 보내지 않는
+  // 옛 서버에서도 오늘 세트를 빼려고 함께 본다. 세트 종류(맞춤 · 유사 · 「다시 보기」)와 상관없이 한 번 들어갔으면
+  // (started) 끝까지 풀지 않았어도 고르지 않는다(#593). 단 풀던 진행(progress)이 있으면 그 세트를 「이어서 풀기」로
+  // 남긴다(#593 결정: 이어 풀 길을 지킴). 진행은 메모리라 앱을 다시 켜면 사라지고, 그때는 started로 빠진다
+  const recent = sets.data?.find((s) => s.status === 'ready');
   const latest = progress
     ? (sets.data?.find((s) => s._id === progress.setId) ?? {
         _id: progress.setId,
         title: '풀던 퀴즈',
         questionCount: 0,
       })
-    : sets.data?.find((s) => s.status === 'ready');
-  // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」에는 넣지 않는다
-  const todayId = useTodayReview().data?._id;
-  const waiting = sets.data?.filter((s) => s.status === 'generating' && s._id !== todayId) ?? [];
+    : sets.data?.find(
+        (s) =>
+          s.status === 'ready' && !s.completed && !s.reviewDay && s._id !== todayId && !s.started,
+      );
+  const shortcutSetId = progress ? latest?._id : recent?._id;
+  // 유사 퀴즈는 서버가 끝까지 푼 풀이로 만들므로 끝낸 세트(completed) 중 가장 최근 것을 넘긴다. 가장 최근 세트는
+  // 안 푼 「다시 보기」 · 풀던 세트일 수 있어 「먼저 이 퀴즈를 끝까지 풀어 주세요」가 떴다
+  const similarSetId = sets.data?.find((s) => s.status === 'ready' && s.completed)?._id;
+  const waiting = sets.data?.filter(pending) ?? [];
   return (
     <Canvas>
       <Screen refresh={refresh}>
@@ -135,29 +180,31 @@ export function QuizHomeScreen() {
             />
           </View>
         )}
-        {latest ? (
+        {shortcutSetId ? (
           <>
-            <Card
-              tone="mint"
-              onPress={() =>
-                router.push({ pathname: '/play/solve', params: { setId: latest._id } })
-              }
-              className="mt-1 p-6"
-            >
-              <Text className="text-caption text-sub">
-                {progress ? '이어서 풀기' : '퀴즈 풀기'}
-              </Text>
-              <Text className="text-body font-bold text-ink">
-                {latest.title}
-                {latest.questionCount > 0 ? ` · ${latest.questionCount}문제` : ''}
-              </Text>
-              {!!progress && latest.questionCount > 0 && (
-                <Progress
-                  value={Math.round((progress.index / latest.questionCount) * 100)}
-                  className="mt-2"
-                />
-              )}
-            </Card>
+            {latest && (
+              <Card
+                tone="mint"
+                onPress={() =>
+                  router.push({ pathname: '/play/solve', params: { setId: latest._id } })
+                }
+                className="mt-1 p-6"
+              >
+                <Text className="text-caption text-sub">
+                  {progress ? '이어서 풀기' : '퀴즈 풀기'}
+                </Text>
+                <Text className="text-body font-bold text-ink">
+                  {latest.title}
+                  {latest.questionCount > 0 ? ` · ${latest.questionCount}문제` : ''}
+                </Text>
+                {!!progress && latest.questionCount > 0 && (
+                  <Progress
+                    value={Math.round((progress.index / latest.questionCount) * 100)}
+                    className="mt-2"
+                  />
+                )}
+              </Card>
+            )}
             {/* 바로가기는 같은 모양 카드 격자 대신 한 그룹의 목록 행 (디자인 점검: 찍어 낸 카드 격자) */}
             <Label>바로가기</Label>
             <Group>
@@ -168,24 +215,32 @@ export function QuizHomeScreen() {
                   [Archive, '퀴즈 보관함', '저장한 문제를 다시 풀어요', '/play/box'],
                   [Sparkles, '유사 퀴즈', '틀린 문제와 비슷한 문제를 풀어요', '/play/similar'],
                 ] as const
-              ).map(([Ic, l, sub, href]) => (
-                <View
-                  key={l}
-                  ref={l === '퀴즈 만들기' ? makeTarget : undefined}
-                  collapsable={false}
-                >
-                  <Row
-                    icon={Ic}
-                    sub={sub}
-                    chevron
-                    onPress={() =>
-                      router.push({ pathname: href as never, params: { setId: latest._id } })
-                    }
+              )
+                // 유사 퀴즈는 끝낸 세트가 있어야 만들 수 있다: 없으면 빈 id로 서버를 부르지 않게 바로가기를 숨긴다
+                .filter(([, , , href]) => href !== '/play/similar' || similarSetId)
+                .map(([Ic, l, sub, href]) => (
+                  <View
+                    key={l}
+                    ref={l === '퀴즈 만들기' ? makeTarget : undefined}
+                    collapsable={false}
                   >
-                    {l}
-                  </Row>
-                </View>
-              ))}
+                    <Row
+                      icon={Ic}
+                      sub={sub}
+                      chevron
+                      onPress={() =>
+                        router.push({
+                          pathname: href as never,
+                          params: {
+                            setId: href === '/play/similar' ? similarSetId : shortcutSetId,
+                          },
+                        })
+                      }
+                    >
+                      {l}
+                    </Row>
+                  </View>
+                ))}
             </Group>
           </>
         ) : (
@@ -241,28 +296,51 @@ function ErrorAlert({ retry }: { retry: () => void }) {
   );
 }
 
-/** 퀴즈는 노트(자료) 하나로 만든다 (FR-38-02) — 폴더마다 정리가 끝난 자료를 모은다 */
-async function quizNotes() {
-  const folders = await api.content.folders();
-  const lists = await Promise.all(
-    folders.map(async (f) =>
-      (await api.content.materials(f._id))
-        .filter((m) => !m.processing || m.processing.status === 'done')
-        .map((m) => ({ ...m, subjectName: f.subjectName })),
-    ),
-  );
-  return lists.flat();
-}
+/** 퀴즈를 만들 수 있는 자료: 정리(요약)가 끝났거나 정리할 것이 없는 자료 */
+const quizReady = (m: Material) => !m.processing || m.processing.status === 'done';
 
+/**
+ * 퀴즈는 노트(자료) 하나로 만든다 (FR-38-02). 노트 탭처럼 1단계에서 학습 폴더를 고르고, 같은 화면을 그 폴더(`folderId`)로
+ * 한 번 더 열어 2단계에서 그 폴더의 정리 끝난 자료를 고른다(#575). 뒤로 가면 1단계로 돌아온다.
+ * 자료 목록은 노트 탭 폴더 화면과 같은 키 · 읽기(readFolderMaterials)로 그 폴더 한 번만 읽는다
+ */
 export function QuizNotesScreen() {
+  const { folderId } = useLocalSearchParams<{ folderId?: string }>();
   const openFeature = useFeatureNavigation();
-  const notes = useQuery({ queryKey: ['quiz-notes'], queryFn: quizNotes });
+  const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
+  const mats = useQuery({
+    queryKey: ['materials', folderId],
+    queryFn: ({ signal }) => readFolderMaterials(folderId!, signal),
+    enabled: !!folderId,
+  });
+  const folder = folders.data?.find((f) => f._id === folderId);
   const [picked, setPicked] = useState<string | null>(null);
   const offline = useNet((s) => s.state === 'offline');
   const [q, setQ] = useState('');
   const [menu, setMenu] = useState(false);
-  const list = (notes.data ?? []).filter((f) => f.title.includes(q));
+  const notes = (mats.data ?? []).filter(quizReady);
+  const folderList = (folders.data ?? []).filter((f) => f.title.includes(q));
+  // 노트 탭 폴더 화면(FolderScreen)처럼, 폴더 목록이 센 자료가 0개인데 자료 목록이 404면 실패가 아니라 빈 폴더다
+  const mats404 = !mats.data && (mats.error as { status?: number } | null)?.status === 404;
+  const emptyFolder = mats404 && folder?.materialCount === 0;
+  // 1단계는 폴더 목록, 2단계는 폴더 목록(제목 · 과목) + 그 폴더 자료 목록을 기준으로 오류 · 빈 상태를 보인다.
+  // 404는 폴더 목록이 와야 빈 폴더인지 알 수 있어, 폴더 목록을 읽는 동안에는 오류로 보이지 않는다
+  const failed = folderId
+    ? (folders.isError && !folders.data) ||
+      (mats.isError && !mats.data && !emptyFolder && !(mats404 && folders.isPending))
+    : folders.isError && !folders.data;
+  // 오류를 보이는 동안에는 고를 수 있는 자료 카드를 같이 보이지 않는다
+  const list = failed ? [] : notes.filter((f) => f.title.includes(q));
   const chosen = list.find((f) => f._id === picked);
+  const retry = () => {
+    if (folders.isError) void folders.refetch();
+    if (folderId && mats.isError) void mats.refetch();
+  };
+  const empty =
+    !failed &&
+    (folderId
+      ? (mats.isSuccess && notes.length === 0) || emptyFolder
+      : folders.isSuccess && folders.data.length === 0);
   const make = () =>
     chosen
       ? router.push({
@@ -274,10 +352,13 @@ export function QuizNotesScreen() {
     <Canvas>
       <Screen footer={chosen ? <Btn onPress={make}>이 노트로 퀴즈 만들기</Btn> : undefined}>
         <NetBanner />
-        <Header title="어떤 노트로 퀴즈를 만들까요?" large={false} />
+        <Header
+          title={folderId ? (folder?.title ?? '') : '어떤 노트로 퀴즈를 만들까요?'}
+          large={false}
+        />
         <Search value={q} onChangeText={setQ} placeholder="노트 검색" />
-        {notes.isError && !notes.data && <ErrorAlert retry={() => notes.refetch()} />}
-        {notes.isSuccess && notes.data.length === 0 && (
+        {failed && <ErrorAlert retry={retry} />}
+        {empty && (
           <View className="items-center py-16">
             <Text className="text-footnote text-sub">아직 노트가 없어요</Text>
             <Btn
@@ -287,6 +368,29 @@ export function QuizNotesScreen() {
             >
               노트 올리러 가기
             </Btn>
+          </View>
+        )}
+        {!folderId && (
+          // 노트 탭(NoteListScreen)과 같은 학습 폴더 카드
+          <View className="mt-6 flex-row flex-wrap justify-between gap-y-5">
+            {folderList.map((f) => (
+              <Card
+                key={f._id}
+                onPress={() =>
+                  router.push({ pathname: '/(tabs)/quiz/notes', params: { folderId: f._id } })
+                }
+                className="w-[47.5%] p-3.5"
+              >
+                <View className="h-20 items-center justify-center rounded-xl bg-mint">
+                  <Folder size={ICON.xl} color={C.brand} />
+                </View>
+                <Text className="mt-3 px-1 text-subhead font-semibold text-ink">{f.title}</Text>
+                <Text className="mt-0.5 px-1 pb-1 text-caption2 text-sub">
+                  {f.subjectName} · {seoul(f.createdAt).getMonth() + 1}/
+                  {seoul(f.createdAt).getDate()} · 자료 {f.materialCount}개
+                </Text>
+              </Card>
+            ))}
           </View>
         )}
         <View className="mt-3 flex-row flex-wrap justify-between gap-y-3">
@@ -313,8 +417,8 @@ export function QuizNotesScreen() {
                 </View>
                 <Text className="mt-2 px-1 text-footnote font-semibold text-ink">{f.title}</Text>
                 <Text className="px-1 text-caption2 text-sub">
-                  {f.subjectName} · {seoul(f.createdAt).getMonth() + 1}/
-                  {seoul(f.createdAt).getDate()}
+                  {folder?.subjectName && `${folder.subjectName} · `}
+                  {seoul(f.createdAt).getMonth() + 1}/{seoul(f.createdAt).getDate()}
                 </Text>
               </Card>
             </Animated.View>
@@ -681,6 +785,8 @@ export function QuizSolveScreen() {
       setId: string;
       attemptId: string;
       questionIds: string[];
+      /** 풀던 세트의 reviewDay. 오늘의 복습 세트(지난 날 사본 포함)만 날짜가 있다(#595) */
+      reviewDay?: string | null;
     }) => api.quiz.finish(request.attemptId),
     // 완료는 포인트를 적립하므로 응답 유실 시 자동으로 재전송하지 않는다.
     retry: false,
@@ -689,8 +795,12 @@ export function QuizSolveScreen() {
       // 사본이라 담지 않고, 끝냈다고 다시 읽어 카드가 「마쳤어요」로 바뀌게 한다
       // 그사이 다른 계정으로 바뀌었으면 담지 않는다(새 계정 보관함에 앞 계정 문제가 들어가지 않게)
       if (useAuth.getState().userId !== request.owner) return;
+      // 끝낸 세트는 목록에서 completed가 되므로, 퀴즈 탭 맨 위 카드가 돌아오자마자 다음 세트로 바뀌게 다시 읽는다(#561)
+      void queryClient.invalidateQueries({ queryKey: ['quiz-sets'] });
+      // 오늘의 복습인지는 세트의 reviewDay로 본다. 캐시는 비어 있을 수 있고(앱을 다시 켜고 이어 풀기),
+      // 지난 날 사본이면 오늘 세트와 id가 달라서다(#595). 캐시 id 비교는 reviewDay를 보내지 않는 옛 서버용으로 남긴다
       const today = queryClient.getQueryData<{ _id: string } | null>(['today-review']);
-      if (today?._id === request.setId)
+      if (request.reviewDay || today?._id === request.setId)
         void queryClient.invalidateQueries({ queryKey: ['today-review'] });
       else
         api.quiz
@@ -732,6 +842,9 @@ export function QuizSolveScreen() {
       api.quiz
         .startAttempt(set.data._id)
         .then((a) => {
+          // 풀이가 생기면 목록이 이 세트를 started로 알려 준다: 퀴즈 탭 맨 위 카드가 들어간 세트를
+          // 돌아오자마자 빼게 다시 읽는다(#593)
+          void queryClient.invalidateQueries({ queryKey: ['quiz-sets'] });
           if (active && ownsProgress()) setAttemptId(a._id);
         })
         .catch(() => {
@@ -764,6 +877,10 @@ export function QuizSolveScreen() {
         points: String(completed.pointsEarned),
         // 문제마다 맞음(1) · 틀림(0): 결과 화면이 번호를 초록 · 빨강으로 칠한다
         results: answered.map(Number).join(''),
+        // 서버가 이번에 복습 일정에 넣은 문제 수 · 날짜(FR-37). 넣지 않았거나 옛 서버면 넘기지 않는다
+        ...(completed.scheduled && completed.nextReviewDay
+          ? { scheduled: String(completed.scheduled), nextReviewDay: completed.nextReviewDay }
+          : {}),
         ...(from === 'room' ? { from: 'room' } : {}),
       },
     });
@@ -880,6 +997,7 @@ export function QuizSolveScreen() {
         setId: set.data._id,
         attemptId,
         questionIds: qs.map((x) => x._id),
+        reviewDay: set.data.reviewDay,
       });
       return;
     }
@@ -962,16 +1080,9 @@ export function QuizSolveScreen() {
                 </>
               )}
               {(q.choices ?? []).map((c, n) => (
-                <Tap
-                  key={c}
-                  onPress={() => choose(c)}
-                  className="min-h-14 justify-center overflow-hidden rounded-2xl bg-white px-5 py-4"
-                >
-                  <OnFill on={pick === c} fill="bg-mint" />
-                  <Text className="text-subhead text-ink">
-                    {'①②③④⑤'[n]} {c}
-                  </Text>
-                </Tap>
+                <ChoiceRow key={c} n={n} on={pick === c} onPress={() => choose(c)}>
+                  {c}
+                </ChoiceRow>
               ))}
             </View>
           </Animated.View>
@@ -1039,11 +1150,13 @@ export function QuizSolveScreen() {
 }
 
 export function QuizReviewScreen() {
-  const { setId, points, from, results } = useLocalSearchParams<{
+  const { setId, points, from, results, scheduled, nextReviewDay } = useLocalSearchParams<{
     setId?: string;
     points?: string;
     from?: string;
     results?: string;
+    scheduled?: string;
+    nextReviewDay?: string;
   }>();
   const set = useQuery({
     queryKey: ['quiz-set', setId ?? 'latest'],
@@ -1070,6 +1183,11 @@ export function QuizReviewScreen() {
       </Canvas>
     );
   if (!set.data) return <Loading />;
+  // 오늘의 복습(지난 날 사본 포함)은 보관함에 담지 않으므로 그 안내를 뺀다. 완료 처리(QuizSolveScreen)와 같게
+  // reviewDay로 보고, reviewDay를 보내지 않는 옛 서버는 오늘의 복습 캐시 id로 본다(#595)
+  const reviewCopy =
+    !!set.data.reviewDay ||
+    queryClient.getQueryData<{ _id: string } | null>(['today-review'])?._id === set.data._id;
   return (
     <Canvas>
       <Screen
@@ -1080,12 +1198,6 @@ export function QuizReviewScreen() {
             >
               확인
             </Btn>
-            <Pressable
-              onPress={() => router.push({ pathname: '/play/similar', params: { setId } })}
-              className="mt-3 self-center rounded-full bg-white px-4 py-2"
-            >
-              <Text className="text-caption text-sub">유사 퀴즈 생성하기</Text>
-            </Pressable>
           </>
         }
       >
@@ -1105,8 +1217,17 @@ export function QuizReviewScreen() {
             </Text>
           </View>
           <Text className="mt-1 text-caption text-sub">
-            문제를 누르면 AI 해설을 볼 수 있어요 · 푼 퀴즈는 보관함에 담았어요
+            문제를 누르면 AI 해설을 볼 수 있어요
+            {reviewCopy ? '' : ' · 푼 퀴즈는 보관함에 담았어요'}
           </Text>
+        </View>
+        <View className="mt-3">
+          <QuizNextStep
+            setId={set.data._id}
+            results={results}
+            reviewDay={Number(scheduled) > 0 ? nextReviewDay : undefined}
+            room={from === 'room'}
+          />
         </View>
         <View className="mt-5 gap-3">
           {qs.map((q, n) => (
@@ -1165,6 +1286,51 @@ export function QuizReviewScreen() {
       )}
     </Canvas>
   );
+}
+
+/**
+ * 퀴즈 결과의 다음 단계(FR-37): 틀린 문제는 비슷한 문제 복습(유사 퀴즈)으로, 그다음은 새 퀴즈로 잇는다.
+ * 복습 날짜는 서버가 이번에 일정에 넣었을 때만 말한다(오늘의 복습 · 기기 저장은 넣지 않음)
+ */
+function QuizNextStep({
+  setId,
+  results,
+  reviewDay,
+  room,
+}: {
+  setId: string;
+  results?: string;
+  reviewDay?: string;
+  room: boolean;
+}) {
+  const wrong = results ? [...results].filter((r) => r === '0').length : null;
+  const when = reviewDay ? reviewDayWord(reviewDay) : null;
+  const line =
+    wrong === null
+      ? undefined
+      : wrong > 0
+        ? when
+          ? // 이번에 일정에 넣은 문제가 틀린 문제라는 보장은 없다(이미 복습 중이던 문제는 날짜가 다름): 넣은 문제로 말한다
+            `복습할 문제는 ${when} 다시 물어볼게요`
+          : `틀린 ${wrong}문제, 비슷한 문제로 한 번 더 풀어 봐요`
+        : when
+          ? `다 맞혔어요! ${when} 한 번 더 확인해요`
+          : '다 맞혔어요!';
+  const steps: NextStep[] = [];
+  if (wrong !== 0)
+    steps.push({
+      icon: Sparkles,
+      label: wrong ? `틀린 ${wrong}문제 비슷한 문제로 지금 복습` : '비슷한 문제로 지금 복습',
+      sub: '틀린 개념을 다른 문제로 다시 풀어요',
+      onPress: () => router.push({ pathname: '/play/similar', params: { setId } }),
+    });
+  if (!room)
+    steps.push({
+      icon: Plus,
+      label: '다른 노트로 새 퀴즈',
+      onPress: () => router.dismissTo('/(tabs)/quiz/notes'),
+    });
+  return <NextStepCard line={line} reviewDay={reviewDay} steps={steps} />;
 }
 
 export function QuizExplainScreen() {
@@ -1261,6 +1427,8 @@ export function QuizSimilarScreen() {
   const generate = useMutation({
     mutationFn: () => api.quiz.similar(setId ?? ''),
     retry: false,
+    // 실패 문구는 화면 아래에 직접 보여 주므로 공용 토스트는 띄우지 않는다
+    onError: () => {},
   });
   // 서버는 「다시 보기」 세트를 만드는 중(generating)으로 돌려준다: 다 만들 때까지 세트를 다시 읽는다
   const making = generate.data?.status === 'generating' ? generate.data._id : null;
@@ -1517,24 +1685,21 @@ export function CardsScreen() {
 export function QuizBoxScreen() {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<string[]>([]);
+  // 정답은 처음엔 모두 닫아 두고 「정답 보기」를 누른 문제만 펼친다.
+  // 다시 불러와도 유지하고, 지운 문제는 빼서 다시 보관돼도 닫힌 채로 보인다.
+  const [shown, setShown] = useState<string[]>([]);
   const remove = useMutation({
     mutationFn: (ids: string[]) => api.quiz.deleteFromBox(ids),
-    onSuccess: () => {
+    onSuccess: (_, ids) => {
       qc.invalidateQueries({ queryKey: ['quiz-box'] });
       setSelected([]);
+      setShown((p) => p.filter((id) => !ids.includes(id)));
       toast('선택한 퀴즈를 삭제했어요');
     },
     onError: () => toast('보관함에서 삭제하지 못했어요. 다시 시도해 주세요'),
   });
   const box = useQuery({ queryKey: ['quiz-box'], queryFn: api.quiz.box });
-  const [shown, setShown] = useState<string[]>([]);
   const [select, setSelect] = useState(false);
-  // 보관함을 불러오면 첫 퀴즈의 정답을 펼친다 (렌더 중 상태 조정)
-  const [loaded, setLoaded] = useState<typeof box.data>();
-  if (box.data && box.data !== loaded) {
-    setLoaded(box.data);
-    if (box.data[0]) setShown([box.data[0]._id]);
-  }
   if (box.isError && !box.data)
     return (
       <Canvas>
@@ -1596,7 +1761,7 @@ export function QuizBoxScreen() {
             body="퀴즈를 풀고 다시 보고 싶은 문제를 보관하면 여기에 모여요."
           />
         )}
-        <View className="gap-2">
+        <View className="gap-4">
           {box.data?.map((q, n) => (
             <Animated.View
               key={q._id}
@@ -1609,8 +1774,20 @@ export function QuizBoxScreen() {
                   <View className="h-5 w-5 items-center justify-center rounded-full bg-brand">
                     <Text className="text-caption2 text-white">{n + 1}</Text>
                   </View>
-                  <Text className="flex-1 text-subhead leading-6 text-ink">{q.prompt}</Text>
+                  <Text className="flex-1 text-subhead leading-6 text-ink">
+                    {splitPrompt(q.prompt)[0]}
+                  </Text>
                 </View>
+                <Passage prompt={q.prompt} mc={!!q.choices?.length} className="pl-7" />
+                {!!q.choices?.length && (
+                  <View className="mt-3 gap-2 pl-7">
+                    {q.choices.map((c, i) => (
+                      <ChoiceRow key={c} n={i} fill="bg-canvas">
+                        {c}
+                      </ChoiceRow>
+                    ))}
+                  </View>
+                )}
                 {shown.includes(q._id) && (
                   <Animated.View entering={FADE_IN} className="mt-2 rounded-lg bg-mint px-3 py-2">
                     <Text className="text-footnote font-semibold text-brand">

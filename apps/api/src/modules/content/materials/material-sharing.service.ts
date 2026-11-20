@@ -1,11 +1,13 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES, type RoomSharedItem as AppRoomSharedItem } from '@notelink/shared';
 import { isValidObjectId, Model, Types } from 'mongoose';
 
 import { User } from '../../auth/schemas/user.schema.js';
+import { NotificationService } from '../../notification/notification.service.js';
 import { RoomSharedItem } from '../../studyroom/schemas/room-shared-item.schema.js';
 import { StudyRoom } from '../../studyroom/schemas/study-room.schema.js';
+import { StudyChatGateway } from '../../studyroom/study-chat.gateway.js';
 import { Material } from '../schemas/material.schema.js';
 import type { ShareMaterialsDto } from './dto/share-materials.dto.js';
 
@@ -39,6 +41,9 @@ export class MaterialSharingService {
     @InjectModel(StudyRoom.name) private readonly rooms: Model<StudyRoom>,
     @InjectModel(RoomSharedItem.name) private readonly shared: Model<RoomSharedItem>,
     @InjectModel(User.name) private readonly users: Model<User>,
+    private readonly notifications: NotificationService,
+    // 공유한 노트를 방 채팅에 자료 카드로 올린다. 없으면(시험) 카드 없이 공유만 한다
+    @Optional() private readonly roomChat?: StudyChatGateway,
   ) {}
 
   /** 닫히지 않은 방에서 내가 현재 멤버(status: joined)인지. 방 id 형식이 틀려도 false */
@@ -191,13 +196,14 @@ export class MaterialSharingService {
       (id) => new Types.ObjectId(id),
     );
     const notes = await this.materials
-      .find({ _id: { $in: ids }, ownerId: me, deletedAt: null }, { folderId: 1 })
-      .lean<{ _id: Types.ObjectId; folderId: Types.ObjectId }[]>();
+      .find({ _id: { $in: ids }, ownerId: me, deletedAt: null }, { folderId: 1, title: 1 })
+      .lean<{ _id: Types.ObjectId; folderId: Types.ObjectId; title: string }[]>();
     if (notes.length !== ids.length) throw notFound('노트');
     if (!(await this.isCurrentMember(me, dto.target.id))) throw notFound('스터디룸');
     const roomId = new Types.ObjectId(dto.target.id);
+    let added: number;
     try {
-      await this.shared.bulkWrite(
+      const result = await this.shared.bulkWrite(
         notes.map((note) => ({
           updateOne: {
             filter: { roomId, itemType: 'material', materialId: note._id, deletedAt: null },
@@ -214,9 +220,76 @@ export class MaterialSharingService {
         })),
         { ordered: false },
       );
+      added = result.upsertedCount;
     } catch (e) {
-      // 같은 노트를 동시에 공유한 다른 요청이 먼저 넣었다 — 이미 공유된 것과 같다
+      // 같은 노트를 동시에 공유한 다른 요청이 먼저 넣었다 — 그 노트는 이미 공유된 것과 같다.
+      // ordered: false 라 나머지는 들어갔을 수 있으니 오류에 담긴 결과에서 새로 넣은 수를 센다
       if (!onlyDuplicateKeys(e)) throw e;
+      added = (e as { result?: { upsertedCount?: number } }).result?.upsertedCount ?? 0;
+    }
+    // 알림은 기다리지 않는다(Expo가 느려도 공유 응답을 늦추지 않게). notifyShared는 던지지 않는다
+    if (added > 0) void this.notifyShared(me, roomId, added);
+    await this.postCards(userId, roomId, notes);
+  }
+
+  /**
+   * 방 채팅에 공유한 노트마다 자료 카드를 올린다(이미 있는 카드는 그대로). 이미 공유돼 있던 노트도 카드가 없으면 채운다
+   * (전에 카드 없이 공유했거나 지난 요청이 카드 전에 끊긴 경우). 카드는 덤이라 실패해도 공유는 성공이다
+   */
+  private async postCards(
+    userId: string,
+    roomId: Types.ObjectId,
+    notes: { _id: Types.ObjectId; title: string }[],
+  ) {
+    if (!this.roomChat) return;
+    try {
+      const rows = await this.shared
+        .find(
+          {
+            roomId,
+            itemType: 'material',
+            materialId: { $in: notes.map((n) => n._id) },
+            deletedAt: null,
+          },
+          { materialId: 1 },
+        )
+        .lean<{ _id: Types.ObjectId; materialId: Types.ObjectId }[]>();
+      const titles = new Map(notes.map((n) => [n._id.toHexString(), n.title]));
+      await this.roomChat.postSharedNotes(
+        roomId.toHexString(),
+        userId,
+        notes
+          .map((n) => rows.find((r) => r.materialId.equals(n._id)))
+          .filter((r) => r !== undefined)
+          .map((r) => ({ sharedItemId: r._id, title: titles.get(r.materialId.toHexString())! })),
+      );
+    } catch {
+      // 카드는 덤이다
+    }
+  }
+
+  /** 방의 다른 멤버에게 「○○님이 「방」에 노트 n개를 공유했어요」. 실패해도 공유는 성공이다 */
+  private async notifyShared(me: Types.ObjectId, roomId: Types.ObjectId, count: number) {
+    try {
+      const [room, sharer] = await Promise.all([
+        this.rooms.findById(roomId, { title: 1, members: 1 }).lean(),
+        this.users.findById(me, { nickname: 1 }).lean<{ nickname: string }>(),
+      ]);
+      if (!room) return;
+      await this.notifications.notify({
+        userIds: room.members
+          .filter((m) => m.status === 'joined' && !m.userId.equals(me))
+          .map((m) => m.userId),
+        category: 'room',
+        type: 'room-shared',
+        title: room.title,
+        body: `${sharer?.nickname ?? UNKNOWN_NICKNAME}님이 「${room.title}」에 노트 ${count}개를 공유했어요`,
+        data: { roomId: roomId.toHexString(), userId: me.toHexString() },
+        // 같은 사람이 같은 방에 여러 번 공유하면 알림함 · 기기에서 마지막 것 하나로 바뀐다
+        collapseId: `room-share:${roomId.toHexString()}:${me.toHexString()}`,
+      });
+    } catch {
+      // 알림은 덤이다
     }
   }
 }

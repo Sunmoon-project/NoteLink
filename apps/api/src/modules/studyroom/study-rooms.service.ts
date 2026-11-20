@@ -114,13 +114,17 @@ export class StudyRoomsService {
     );
     const ineligibleMember = targetsToInvite.some((targetId) => {
       const existing = room.members.find((member) => member.userId.equals(targetId));
-      return !!existing && (
-        existing.status !== 'left' ||
-        (existing.leaveReason !== 'voluntary' && existing.leaveReason != null)
+      return (
+        !!existing &&
+        (existing.status !== 'left' ||
+          (existing.leaveReason !== 'voluntary' && existing.leaveReason != null))
       );
     });
     if (ineligibleMember)
-      throw new ForbiddenException({ code: 'ROOM_BANNED', message: '퇴장 조치된 사용자는 초대할 수 없습니다.' });
+      throw new ForbiddenException({
+        code: 'ROOM_BANNED',
+        message: '퇴장 조치된 사용자는 초대할 수 없습니다.',
+      });
     const activeMemberCount = room.members.filter((member) =>
       ['joined', 'invited'].includes(member.status),
     ).length;
@@ -130,7 +134,10 @@ export class StudyRoomsService {
 
     if (targetsToInvite.length) {
       const invitedAt = new Date();
-      const reinviteInvitations = reinviteIds.map((userId) => ({ userId, invitationId: randomUUID() }));
+      const reinviteInvitations = reinviteIds.map((userId) => ({
+        userId,
+        invitationId: randomUUID(),
+      }));
       const newInvitations = newInviteIds.map((userId) => ({ userId, invitationId: randomUUID() }));
       const eligibility = [
         ...newInviteIds.map((targetId) => ({
@@ -223,11 +230,11 @@ export class StudyRoomsService {
                   },
                   {
                     $map: {
-                    input: { $literal: newInvitations },
-                    as: 'invitation',
+                      input: { $literal: newInvitations },
+                      as: 'invitation',
                       in: {
-                      userId: '$$invitation.userId',
-                      invitationId: '$$invitation.invitationId',
+                        userId: '$$invitation.userId',
+                        invitationId: '$$invitation.invitationId',
                         role: 'member',
                         status: 'invited',
                         invitedAt: { $literal: invitedAt },
@@ -245,9 +252,7 @@ export class StudyRoomsService {
         const latest = await this.rooms.findById(roomObjectId).lean();
         const stillJoined =
           latest?.closedAt == null &&
-          latest?.members.some(
-            (item) => item.userId.equals(inviterId) && item.status === 'joined',
-          );
+          latest?.members.some((item) => item.userId.equals(inviterId) && item.status === 'joined');
         if (!stillJoined) throw notJoined();
         const hasUninvitedTarget = targetsToInvite.some((targetId) => {
           const member = latest?.members.find((item) => item.userId.equals(targetId));
@@ -286,9 +291,10 @@ export class StudyRoomsService {
       !(await this.rooms.exists({ _id: roomObjectId, closedAt: null, members: inviterJoined }))
     )
       throw notJoined();
-    const latestRoom = targetsToInvite.length || legacyInvitedIds.length
-      ? await this.rooms.findById(roomObjectId).lean()
-      : room;
+    const latestRoom =
+      targetsToInvite.length || legacyInvitedIds.length
+        ? await this.rooms.findById(roomObjectId).lean()
+        : room;
     const invitations = targetObjectIds.flatMap((targetId) => {
       const member = latestRoom?.members.find((item) => item.userId.equals(targetId));
       return member?.status === 'invited' && member.invitationId
@@ -1050,7 +1056,8 @@ export class StudyRoomsService {
     }
   }
 
-  async kickMember(hostUserId: string, roomId: string, targetUserId: string) {
+  /** 새로 내보냈으면 true, 이미 내보낸 사람이면 false(같은 요청 재시도 — 알림을 다시 보내지 않는다) */
+  async kickMember(hostUserId: string, roomId: string, targetUserId: string): Promise<boolean> {
     if (!isValidObjectId(hostUserId))
       throw new UnauthorizedException({
         code: 'AUTH_TOKEN_EXPIRED',
@@ -1100,11 +1107,12 @@ export class StudyRoomsService {
         closedAt: null,
         members: { $elemMatch: { userId: targetId, status: 'kicked', leaveReason: 'host_kick' } },
       });
-      if (alreadyKicked) return;
+      if (alreadyKicked) return false;
       throw new NotFoundException({
         code: 'NOT_FOUND',
         message: '방 또는 참여자를 찾을 수 없습니다.',
       });
     }
+    return true;
   }
 }

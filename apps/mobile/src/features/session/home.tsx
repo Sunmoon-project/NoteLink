@@ -10,6 +10,7 @@ import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { Flame, Pause, Play, Plus, RotateCw, Square, Target, Users } from 'lucide-react-native';
 import { api } from '@/lib/api';
+import { BellButton } from '@/features/notifications';
 import { dLabel, goalLabel, hm, hms, seoul, ymd } from '@/lib/dates';
 import { useNow, useTabRefresh } from '@/hooks';
 import { useAuth } from '@/stores/auth';
@@ -187,13 +188,16 @@ export function HomeScreen() {
               <Text className="text-caption text-sub">노트링크와 함께 학습을 시작해보세요</Text>
             )}
           </View>
-          <Pressable
-            accessibilityLabel="친구"
-            onPress={() => openFeature('/friends')}
-            className="h-11 w-11 items-center justify-center rounded-full bg-white"
-          >
-            <Users size={ICON.md} color={C.brand} />
-          </Pressable>
+          <View className="flex-row gap-2">
+            <BellButton />
+            <Pressable
+              accessibilityLabel="친구"
+              onPress={() => openFeature('/friends')}
+              className="h-11 w-11 items-center justify-center rounded-full bg-white"
+            >
+              <Users size={ICON.md} color={C.brand} />
+            </Pressable>
+          </View>
         </View>
 
         {has && nextDday && (

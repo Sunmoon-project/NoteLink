@@ -7,9 +7,16 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
+import type { Types } from 'mongoose';
 import type { StudyRoom, TimerRule } from '@notelink/shared';
 import { TokenService } from '../auth/token.service.js';
 import { StudyChatService } from './study-chat.service.js';
+import { StudyRoomNoticesService, type ChatMessageView } from './study-room-notices.service.js';
+
+const LIVE_PREFIX = 'study-room:';
+const WATCH_PREFIX = 'study-room-watch:';
+/** 목록 한 번에 지켜보는 방 수 상한(참여 방 수보다 넉넉히) */
+const MAX_WATCH = 100;
 
 @Injectable()
 @WebSocketGateway()
@@ -46,8 +53,9 @@ export class StudyChatGateway {
       endsAt: state?.endsAt ?? null,
     });
   }
-  async notifyDirectMessage(message: { chatRoomId: string }) {
+  async notifyDirectMessage(message: ChatMessageView) {
     const channel = `direct-chat:${message.chatRoomId}`;
+    const delivered: string[] = [];
     const recipients = await this.server
       .in(channel)
       .fetchSockets()
@@ -60,24 +68,100 @@ export class StudyChatGateway {
         const chat = await this.chat.requireChat(message.chatRoomId, userId);
         if (chat.type !== 'direct') throw new Error('not a direct chat member');
         recipient.emit('chat:message', message);
+        delivered.push(userId);
       } catch {
         await recipient.leave(channel);
       }
     }
+    // 그 채팅을 보고 있지 않은 상대에게 푸시(초대 카드는 방 활동 알림). 기다리지 않는다
+    void this.notices.chatMessage(message, delivered);
   }
   @WebSocketServer() private server: Server;
   constructor(
     private readonly tokens: TokenService,
     private readonly chat: StudyChatService,
+    private readonly notices: StudyRoomNoticesService,
   ) {}
 
   afterInit(server: Server) {
     server.use((socket, next) => {
       void this.identity(socket).then(
-        () => next(),
+        (userId) => {
+          // 접속 현황(room:live)은 소켓 id 로만 알 수 있어 연결 때 확인한 사용자를 붙여 둔다
+          socket.data.userId = userId;
+          next();
+        },
         () => next(new Error('unauthorized')),
       );
     });
+    // 방 화면은 들어오면 room:join, 나가면 room:leave(끊기면 저절로 빠진다)로 study-room:<id> 채널을 드나든다.
+    // 들어오기는 멤버 확인이 끝난 뒤(joinRoom), 나가기는 채널에서 빠질 때마다 지켜보는 목록에 바로 알린다
+    server.of('/').adapter.on('leave-room', (channel: string) => {
+      if (channel.startsWith(LIVE_PREFIX)) this.notifyLive(channel.slice(LIVE_PREFIX.length));
+    });
+  }
+
+  private notifyLive(roomId: string) {
+    this.server
+      .to(`${WATCH_PREFIX}${roomId}`)
+      .emit('room:live', { roomId, userIds: this.liveUserIds(roomId) });
+  }
+
+  /** 지금 그 방 화면에 들어와 있는 사람: 입장(room:join)이 확정된 소켓만, 같은 사람의 여러 기기는 한 번 */
+  private liveUserIds(roomId: string) {
+    const sockets = this.server.of('/').sockets;
+    const ids = [...(this.server.of('/').adapter.rooms.get(`${LIVE_PREFIX}${roomId}`) ?? [])]
+      .map((id) => sockets.get(id)?.data)
+      .filter((data) => typeof data?.studyChats?.[roomId] === 'string')
+      .map((data) => data?.userId as unknown)
+      .filter((userId): userId is string => typeof userId === 'string');
+    return [...new Set(ids)];
+  }
+
+  /** 스터디룸 목록: 내 방들의 접속 현황을 지켜본다. 멤버가 아닌 방은 빼고 돌려준다 */
+  @SubscribeMessage('rooms:watch')
+  async watch(@ConnectedSocket() socket: Socket, @MessageBody() data: { roomIds?: unknown }) {
+    const roomIds = Array.isArray(data?.roomIds)
+      ? [...new Set(data.roomIds.filter((id): id is string => typeof id === 'string'))].slice(
+          0,
+          MAX_WATCH,
+        )
+      : [];
+    let watched: string[];
+    try {
+      const userId = await this.identity(socket);
+      const members = async (ids: string[]) =>
+        (
+          await Promise.all(
+            ids.map(async (roomId) => {
+              try {
+                await this.chat.requireMember(roomId, userId);
+                return roomId;
+              } catch {
+                return null;
+              }
+            }),
+          )
+        ).filter((roomId): roomId is string => roomId !== null);
+      const allowed = await members(roomIds);
+      await socket.join(allowed.map((roomId) => `${WATCH_PREFIX}${roomId}`));
+      // 확인과 가입 사이에 강퇴(evict)되면 evict 가 이 채널을 못 찾는다: 가입한 뒤 다시 확인해 빠진 방은 뺀다(joinRoom 과 같은 방식)
+      watched = await members(allowed);
+      for (const roomId of allowed)
+        if (!watched.includes(roomId)) await socket.leave(`${WATCH_PREFIX}${roomId}`);
+    } catch {
+      return { ok: false, live: {} };
+    }
+    // 가입을 모두 마친 뒤 한꺼번에 계산한다: 이후 바뀐 것은 room:live 로 오고, 그 전 것이 뒤늦게 덮어쓰지 않는다
+    return { ok: true, live: Object.fromEntries(watched.map((id) => [id, this.liveUserIds(id)])) };
+  }
+
+  @SubscribeMessage('rooms:unwatch')
+  async unwatch(@ConnectedSocket() socket: Socket, @MessageBody() data: { roomIds?: unknown }) {
+    const roomIds = Array.isArray(data?.roomIds) ? data.roomIds : [];
+    for (const roomId of roomIds)
+      if (typeof roomId === 'string') await socket.leave(`${WATCH_PREFIX}${roomId}`);
+    return { ok: true };
   }
 
   private async identity(socket: Socket) {
@@ -109,6 +193,7 @@ export class StudyChatGateway {
       await this.chat.requireMember(roomId, userId);
       const subscriptions = (socket.data.studyChats ??= {});
       subscriptions[roomId] = channel;
+      this.notifyLive(roomId);
       return { ok: true, missed };
     } catch {
       if (channel) await socket.leave(channel);
@@ -169,17 +254,23 @@ export class StudyChatGateway {
   }
 
   async evict(roomId: string, userId: string) {
-    const sockets = await this.server.in(`study-room:${roomId}`).fetchSockets();
+    // 방 화면에 있는 소켓과 목록에서 접속 현황만 지켜보는 소켓 모두
+    const sockets = await this.server
+      .in([`study-room:${roomId}`, `${WATCH_PREFIX}${roomId}`])
+      .fetchSockets();
     for (const socket of sockets) {
       try {
         const token = socket.handshake.auth?.token;
         if (typeof token !== 'string') continue;
         if ((await this.tokens.verifyAccess(token)).userId !== userId) continue;
+        // 지켜보기부터 뺀다: study-room 에서 빠지면 접속 현황(room:live)이 지켜보는 채널로 나가는데, 강퇴된 사람이 받지 않게
+        await socket.leave(`${WATCH_PREFIX}${roomId}`);
         await socket.leave(`study-room:${roomId}`);
         const channel = socket.data.studyChats?.[roomId];
         if (typeof channel === 'string') await socket.leave(channel);
       } catch {
         // 유효하지 않은 토큰도 더 이상 방 이벤트를 받지 못하게 한다.
+        await socket.leave(`${WATCH_PREFIX}${roomId}`);
         await socket.leave(`study-room:${roomId}`);
         const channel = socket.data.studyChats?.[roomId];
         if (typeof channel === 'string') await socket.leave(channel);
@@ -208,18 +299,41 @@ export class StudyChatGateway {
     const channel = socket.rooms.has(`study-chat:${data.chatRoomId}`)
       ? `study-chat:${data.chatRoomId}`
       : `direct-chat:${data.chatRoomId}`;
-    // 나간 사용자에게 전달하지 않도록 각 연결의 토큰과 현재 멤버십을 다시 검사한다.
+    const delivered = await this.deliver(channel, data.chatRoomId, message);
+    // 소켓으로 받은 사람(그 채팅을 보고 있는 사람)을 뺀 멤버에게 푸시. 기다리지 않는다(보낸 사람 확인을 늦추지 않게)
+    void this.notices.chatMessage(message, delivered);
+    return message;
+  }
+
+  /**
+   * 노트를 방에 공유하면 방 채팅에 자료 카드를 올리고, 그 채팅을 보고 있는 멤버에게 바로 보낸다.
+   * 푸시는 보내지 않는다(공유가 이미 「노트를 공유했어요」 알림을 보낸다)
+   */
+  async postSharedNotes(
+    roomId: string,
+    userId: string,
+    items: { sharedItemId: Types.ObjectId; title: string }[],
+  ) {
+    const { chatRoomId, messages } = await this.chat.postSharedNotes(roomId, userId, items);
+    for (const message of messages)
+      await this.deliver(`study-chat:${chatRoomId}`, chatRoomId, message);
+  }
+
+  /** 나간 사용자에게 전달하지 않도록 각 연결의 토큰과 현재 멤버십을 다시 검사해 보낸다. 받은 사람 id 를 돌려준다 */
+  private async deliver(channel: string, chatRoomId: string, message: unknown) {
+    const delivered: string[] = [];
     for (const recipient of await this.server.in(channel).fetchSockets()) {
       try {
         const token = recipient.handshake.auth?.token;
         if (typeof token !== 'string') throw new Error('unauthorized');
         const receiver = await this.tokens.verifyAccess(token);
-        await this.chat.requireChat(data.chatRoomId, receiver.userId);
+        await this.chat.requireChat(chatRoomId, receiver.userId);
         recipient.emit('chat:message', message);
+        delivered.push(receiver.userId);
       } catch {
         await recipient.leave(channel);
       }
     }
-    return message;
+    return delivered;
   }
 }

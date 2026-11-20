@@ -519,6 +519,7 @@ const api: Api = {
       return ok(withStats(d));
     },
     setStatus: (status) => ok(void (db().user.status = status)),
+    presence: () => ok(undefined),
     // 기기 저장 모드는 메일을 보내지 않는다(가입 인증과 같게 6자리면 통과)
     emailSendCode: () =>
       db().user.email ? ok(undefined) : fail(ERROR_CODES.NO_EMAIL, '계정에 이메일이 없어요'),
@@ -566,6 +567,13 @@ const api: Api = {
       // (남은 비밀번호는 어떤 계정과도 이어지지 않는다)
       await SecureStore.deleteItemAsync(pwKey(id)).catch(() => {});
     },
+  },
+  // 기기 저장 모드에는 서버 알림이 없다: 알림함은 늘 비어 있다
+  notifications: {
+    list: () => ok({ items: [], nextCursor: null }),
+    unreadCount: () => ok(0),
+    markRead: () => ok(undefined),
+    readAll: () => ok(undefined),
   },
   upload: {
     // 기기 저장 모드에서는 upload.ts가 파일을 앱 저장 공간에 바로 복사한다
@@ -835,6 +843,13 @@ const api: Api = {
       db().manualDdays.push(x);
       return ok({ ...x, source: 'manual' as const, daysLeft: daysBetween(today(), p.date) });
     },
+    removeDday: (id) => {
+      const d = db();
+      d.manualDdays = d.manualDdays.filter((x) => x._id !== id);
+      // 할 일에서 온 D-day는 D-day용 한 건만 지운다(날짜별 할 일은 남는다)
+      d.todos = d.todos.filter((t) => !(t.isDday && t._id === id));
+      return ok(undefined);
+    },
     holidays: (year) => {
       const hidden = new Set(db().hiddenHolidays);
       return ok(
@@ -886,6 +901,7 @@ const api: Api = {
     search: () => needServer('친구 찾기'),
     sendRequest: () => needServer('친구 요청'),
     received: () => ok([]),
+    sent: () => ok([]),
     respond: () => needServer('친구 요청 응답'),
     remove: () => ok(undefined),
     openDirect: (userId) =>
@@ -1062,6 +1078,8 @@ const api: Api = {
         ?.bookmarks.push({ atSec });
       return ok(undefined);
     },
+    // 기기 저장 모드는 AI 정리를 하지 않는다
+    regenerate: () => needServer('정리 결과 다시 만들기'),
     downloadUrl: (id) => {
       const m = db().materials.find((x) => x._id === id);
       const f = m?.files[0];
@@ -1074,8 +1092,32 @@ const api: Api = {
       for (const materialId of p.materialIds) {
         const m = d.materials.find((x) => x._id === materialId);
         if (!m) continue;
+        // 서버처럼 이미 공유된 노트는 건너뛰고, 새로 공유한 노트는 방 채팅에 자료 카드를 남긴다
+        if (
+          d.roomShared.some(
+            (x) =>
+              x.roomId === p.target.id && x.itemType === 'material' && x.materialId === materialId,
+          )
+        )
+          continue;
+        const sharedId = uid('rs');
+        const chatRoomId = `room-chat-${p.target.id}`;
+        d.messages[chatRoomId] = [
+          ...(d.messages[chatRoomId] ?? []),
+          {
+            _id: uid('msg'),
+            chatRoomId,
+            senderId: d.user._id,
+            senderNickname: me(d).nickname,
+            type: 'shared_item',
+            text: m.title,
+            sharedItemId: sharedId,
+            createdAt: now(),
+            clientId: `room_share_${sharedId}`,
+          },
+        ];
         d.roomShared.push({
-          _id: uid('rs'),
+          _id: sharedId,
           roomId: p.target.id,
           sharedBy: d.user._id,
           sharedByNickname: me(d).nickname,
@@ -1128,7 +1170,20 @@ const api: Api = {
     },
   },
   quiz: {
-    sets: () => ok(db().quizSets),
+    // 서버(QuizSetsService.withCompleted)처럼 ready 세트에 끝낸 풀이가 있으면 completed(#561),
+    // 시작한 풀이가 있으면 started(#593)를 붙인다
+    sets: () => {
+      const d = db();
+      const done = new Set(d.attempts.filter((a) => a.finishedAt).map((a) => a.quizSetId));
+      const started = new Set(d.attempts.map((a) => a.quizSetId));
+      return ok(
+        d.quizSets.map((s) =>
+          s.status === 'ready' && started.has(s._id)
+            ? { ...s, started: true, ...(done.has(s._id) ? { completed: true } : {}) }
+            : s,
+        ),
+      );
+    },
     createSet: (materialId) => {
       const d = db();
       const m = d.materials.find((x) => x._id === materialId);
@@ -1334,13 +1389,29 @@ const api: Api = {
         ),
       );
       const out: RoomSchedule = {
-        members: [{ nickname: me(d).nickname, emoji: '✏️' }],
+        members: [
+          {
+            id: me(d).userId,
+            nickname: me(d).nickname,
+            emoji: '✏️',
+            blocks: d.classes.flatMap((c) =>
+              c.days.map((wd) => ({
+                day: (wd + 6) % 7,
+                start: c.startTime,
+                end: c.endTime,
+                title: c.subjectName,
+              })),
+            ),
+          },
+        ],
         grid,
         startHour,
         matches: [],
       };
       return ok(out);
     },
+    // 기기 저장 모드는 나 혼자라 숨길 상대가 없다
+    setScheduleHidden: (_id, hidden) => ok({ hidden }),
     invite: () => needServer('친구 초대'),
     shared: (id) => {
       const d = db();

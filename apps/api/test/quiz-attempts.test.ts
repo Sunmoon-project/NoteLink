@@ -49,7 +49,8 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       .overrideProvider(getModelToken(RefreshToken.name))
       .useValue(createFakeRefreshTokens().model)
       .overrideProvider(getModelToken(QuizSet.name))
-      .useValue(sets.model)
+      // 복습 일정 쓰기(bulkWrite)는 가짜 컬렉션에 없다: 쓴 수만 돌려주고, 실제 쓰기는 quiz-first-review-real-db.test.ts가 본다
+      .useValue(Object.assign(sets.model, { bulkWrite: (ops: unknown[]) => Promise.resolve({ modifiedCount: ops.length }) }))
       .overrideProvider(getModelToken(QuizAttempt.name))
       .useValue(attempts.model)
       .overrideProvider(getModelToken(User.name))
@@ -300,7 +301,9 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       const attempt = await startWithCorrect(['DNA', '리보솜']);
       const res = await finish(attempt._id).expect(200);
 
-      expect(res.body).toEqual({ data: { pointsEarned: 8, balance: 108 } });
+      expect(res.body).toEqual({
+        data: { pointsEarned: 8, balance: 108, scheduled: 2, nextReviewDay: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) },
+      });
       expect(earnQuiz).toHaveBeenCalledTimes(1);
       expect(earnQuiz).toHaveBeenCalledWith(me.toHexString(), 2, expect.anything());
       expect(stored().finishedAt).toBeInstanceOf(Date);
@@ -314,7 +317,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
 
       const res = await finish(attempt._id).expect(200);
 
-      expect(res.body).toEqual({ data: { pointsEarned: 0, balance: 104 } });
+      expect(res.body).toEqual({ data: { pointsEarned: 0, balance: 104, scheduled: 0, nextReviewDay: null } });
       expect(earnQuiz).toHaveBeenCalledTimes(1);
       expect(stored().finishedAt).toEqual(firstFinishedAt);
       expect((attempts.rows[0] as unknown as { pointsEarned: number }).pointsEarned).toBe(4);
@@ -325,7 +328,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       earnQuiz.mockResolvedValueOnce(0);
       const res = await finish(attempt._id).expect(200);
 
-      expect(res.body).toEqual({ data: { pointsEarned: 0, balance: 100 } });
+      expect(res.body).toEqual({ data: { pointsEarned: 0, balance: 100, scheduled: 0, nextReviewDay: null } });
       expect(stored().finishedAt).toBeInstanceOf(Date);
       expect((attempts.rows[0] as unknown as { pointsEarned: number }).pointsEarned).toBe(0);
     });

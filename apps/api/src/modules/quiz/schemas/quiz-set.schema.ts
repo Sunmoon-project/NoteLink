@@ -50,6 +50,11 @@ export class Question {
   // srs를 쓴 오답 복습 세트를 만든 시각. 더 새 세트의 상태만 덮어써, 늦게 옮긴 오래된 결과가 되돌리지 않게 한다
   @Prop({ type: Date, default: undefined })
   srsAt?: Date;
+
+  // 퀴즈를 끝낼 때 처음 복습 상태를 쓴 풀이(FR-37). 그 풀이로 오답 복습을 만들 때 처리기에 이 문제를 복습 상태 없이
+  // 넘겨, 같은 풀이를 두 번 세지 않게 한다. 오답 복습 · 오늘의 복습이 srs를 다시 쓰면 지운다
+  @Prop({ type: Types.ObjectId, default: undefined })
+  srsAttemptId?: Types.ObjectId;
 }
 
 export const QuestionSchema = SchemaFactory.createForClass(Question);
@@ -86,6 +91,12 @@ export class QuizSet {
   // 세트 조회가 다시 넣어 보고 지운다(QuizSetsService.followUp)
   @Prop({ type: Boolean, default: false })
   followUpPending?: boolean;
+
+  // 맞춤 퀴즈 · 미리 만들기 세트가 ready가 된 뒤 개념 카드 작업(quiz_flashcards, #558)을 아직 넣지 못했으면 true.
+  // ready로 바꾸는 갱신에 같이 적고, 세트 조회가 넣어 보고 지운다(QuizSetsService.ensureCards). 앱에는 보내지 않는다.
+  // 이 필드가 없는 기존 문서는 false로 본다
+  @Prop({ type: Boolean, default: false })
+  cardsPending?: boolean;
 
   // 오늘의 복습 세트의 날짜(서울 YYYY-MM-DD). 하루에 한 번만 만든다. 다른 세트는 null
   @Prop({ type: String, default: null })

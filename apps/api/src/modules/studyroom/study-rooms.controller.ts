@@ -20,6 +20,7 @@ import { StudyChatService } from './study-chat.service.js';
 import { StudyChatGateway } from './study-chat.gateway.js';
 import { StudyLiveService } from './study-live.service.js';
 import { StudyRoomMembershipService } from './study-room-membership.service.js';
+import { StudyRoomNoticesService } from './study-room-notices.service.js';
 import { InviteStudyRoomDto } from './dto/invite-study-room.dto.js';
 import { SetRoomTimerDto } from './dto/set-room-timer.dto.js';
 
@@ -32,6 +33,7 @@ export class StudyRoomsController {
     private readonly gateway: StudyChatGateway,
     private readonly live: StudyLiveService,
     private readonly membership: StudyRoomMembershipService,
+    private readonly notices: StudyRoomNoticesService,
   ) {}
 
   @Post()
@@ -108,7 +110,8 @@ export class StudyRoomsController {
     @Param('id') id: string,
     @Param('userId') userId: string,
   ) {
-    await this.rooms.kickMember(requireUserId(req), id, userId);
+    const kicked = await this.rooms.kickMember(requireUserId(req), id, userId);
+    if (kicked) void this.notices.kicked(id, userId); // 당사자에게 알림(던지지 않는다)
     await this.gateway.evict(id, userId);
 
     // 남아 있는 참가자에게 목록이 변경됐다고 알림

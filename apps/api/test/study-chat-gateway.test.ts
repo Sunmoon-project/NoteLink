@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { TokenService } from '../src/modules/auth/token.service.js';
 import { StudyChatGateway } from '../src/modules/studyroom/study-chat.gateway.js';
 import { StudyChatService } from '../src/modules/studyroom/study-chat.service.js';
+import { StudyRoomNoticesService } from '../src/modules/studyroom/study-room-notices.service.js';
 
 const message = {
   _id: 'msg',
@@ -26,6 +27,7 @@ const chat = {
   sendAttachment: vi.fn(),
 };
 const tokens = { verifyAccess: vi.fn() };
+const notices = { chatMessage: vi.fn(async () => {}) };
 let app: INestApplication;
 let a: Socket;
 let b: Socket;
@@ -36,6 +38,7 @@ beforeAll(async () => {
       StudyChatGateway,
       { provide: StudyChatService, useValue: chat },
       { provide: TokenService, useValue: tokens },
+      { provide: StudyRoomNoticesService, useValue: notices },
     ],
   }).compile();
   app = module.createNestApplication();
@@ -247,6 +250,13 @@ describe('스터디룸 Socket.IO', () => {
     finish(message);
     expect(await ack).toEqual(message);
     await vi.waitFor(() => expect(onMessage).toHaveBeenCalledWith(message));
+    // 소켓으로 받은 사람(보낸 사람 포함)을 알려 그 사람들은 푸시에서 빠지게 한다
+    const [sentMessage, delivered] = notices.chatMessage.mock.calls.at(-1) as unknown as [
+      typeof message,
+      string[],
+    ];
+    expect(sentMessage).toEqual(message);
+    expect([...delivered].sort()).toEqual(['a', 'b']);
     b.off('chat:message', onMessage);
   });
   // 스터디룸 채팅 사진 · 파일: 같은 chat:send에 attachment를 담아 보낸다
@@ -309,6 +319,11 @@ describe('스터디룸 Socket.IO', () => {
     } as never);
     await vi.waitFor(() => expect(receivedA).toHaveBeenCalledOnce());
     expect(receivedB).not.toHaveBeenCalled();
+    // 초대 카드도 알림으로 넘긴다(만료된 b는 받은 사람에서 빠진다)
+    expect(notices.chatMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'study_room_invite' }),
+      ['a'],
+    );
 
     a.off('chat:message', receivedA);
     b.off('chat:message', receivedB);
@@ -327,7 +342,7 @@ describe('스터디룸 Socket.IO', () => {
     expect(await joining).toMatchObject({ ok: true });
     await leaving;
 
-    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' });
+    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' } as never);
     expect(received).not.toHaveBeenCalled();
     a.off('chat:message', received);
   });
@@ -345,7 +360,7 @@ describe('스터디룸 Socket.IO', () => {
     expect(await oldJoin).toMatchObject({ ok: false });
     expect(await newJoin).toMatchObject({ ok: true });
 
-    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' });
+    await app.get(StudyChatGateway).notifyDirectMessage({ chatRoomId: 'chat' } as never);
     await vi.waitFor(() => expect(received).toHaveBeenCalledOnce());
     a.off('chat:message', received);
   });

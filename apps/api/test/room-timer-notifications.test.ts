@@ -78,12 +78,16 @@ beforeEach(() => {
   push.send.mockResolvedValue({ invalidTokens: [], failedTickets: [] });
 });
 
+// 알림 설정 확인(NotificationService.pushAllowed)은 study-notices-real-db.test.ts에서 본다. 여기서는 모두 받는다
+const allowAll = { pushAllowed: async (ids: unknown[]) => ids };
+
 describe('RoomTimerNotificationsService', () => {
   it('다음 단계 변경 때 joined 멤버 기기에만 기본 알림음을 포함해 푸시한다', async () => {
     const service = new RoomTimerNotificationsService(
       rooms as never,
       devices as never,
       push as never,
+      allowAll as never,
     );
     await service.runOnce(now);
 
@@ -138,6 +142,7 @@ describe('RoomTimerNotificationsService', () => {
       rooms as never,
       devices as never,
       push as never,
+      allowAll as never,
     );
     await service.runOnce(now);
     expect(push.send).not.toHaveBeenCalled();
@@ -186,6 +191,7 @@ describe('RoomTimerNotificationsService', () => {
         rooms as never,
         devices as never,
         push as never,
+        allowAll as never,
       );
       await service.runOnce(leaseStart);
     } finally {
@@ -270,11 +276,13 @@ describe('RoomTimerNotificationsService', () => {
         rooms as never,
         devices as never,
         push as never,
+        allowAll as never,
       );
       const secondInstance = new RoomTimerNotificationsService(
         rooms as never,
         devices as never,
         push as never,
+        allowAll as never,
       );
       const firstRun = firstInstance.runOnce(leaseStart);
       await pushStarted;
@@ -300,6 +308,7 @@ describe('RoomTimerNotificationsService', () => {
       rooms as never,
       devices as never,
       push as never,
+      allowAll as never,
     );
 
     await service.runOnce(now);
@@ -365,6 +374,7 @@ describe('RoomTimerNotificationsService', () => {
       rooms as never,
       devices as never,
       push as never,
+      allowAll as never,
     );
 
     await service.runOnce(new Date());
@@ -438,6 +448,7 @@ describe('RoomTimerNotificationsService', () => {
       rooms as never,
       devices as never,
       push as never,
+      allowAll as never,
     );
 
     await service.runOnce(now);
@@ -520,6 +531,7 @@ describe('RoomTimerNotificationsService', () => {
       rooms as never,
       devices as never,
       push as never,
+      allowAll as never,
     );
 
     await service.runOnce(new Date());
@@ -616,11 +628,13 @@ describe('RoomTimerNotificationsService', () => {
         rooms as never,
         devices as never,
         push as never,
+        allowAll as never,
       );
       const secondInstance = new RoomTimerNotificationsService(
         rooms as never,
         devices as never,
         push as never,
+        allowAll as never,
       );
       const firstRun = firstInstance.runOnce(leaseStart);
       await cleanupStarted;
@@ -682,6 +696,7 @@ describe('RoomTimerNotificationsService', () => {
       rooms as never,
       devices as never,
       push as never,
+      allowAll as never,
     );
 
     await service.runOnce(schedulerNow);

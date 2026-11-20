@@ -44,6 +44,35 @@ it('시트를 닫으며 여는 확인 창은 시트가 다 닫힌 뒤에 뜬다 
   expect(screen.getByText('확인 창')).toBeTruthy();
 });
 
+// 날짜 시트(앞) → 할 일 추가 시트(뒤) → 추가 후 날짜 시트로 돌아오기: 앞에 그려지는 시트가 다시 열릴 때도
+// 뒤 시트가 다 닫힌 뒤에 떠야 한다. 먼저 뜨면 iOS가 겹친 Modal을 버려, 그 뒤로 날짜를 눌러도 아무 반응이 없었다
+function BackToEarlierSheet() {
+  const [step, setStep] = useState<'list' | 'add'>('add');
+  return (
+    <>
+      <Sheet open={step === 'list'} onClose={() => {}}>
+        <Text>날짜별 할 일</Text>
+      </Sheet>
+      <Sheet open={step === 'add'} onClose={() => {}}>
+        <Pressable onPress={() => setStep('list')}>
+          <Text>추가하기</Text>
+        </Pressable>
+      </Sheet>
+    </>
+  );
+}
+
+it('앞에 그려지는 시트로 돌아갈 때도 뒤 시트가 다 닫힌 뒤에 뜬다', async () => {
+  await renderScreen(<BackToEarlierSheet />);
+  // 앞 시험에서 닫힌 시트의 닫힘 시간이 남아 있으면 이 시험이 우연히 통과한다. 다 지나간 뒤에 시작한다
+  await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+  jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+  await fireEvent.press(await screen.findByText('추가하기'));
+  expect(screen.queryByText('날짜별 할 일')).toBeNull();
+  await act(async () => void jest.advanceTimersByTime(400));
+  expect(screen.getByText('날짜별 할 일')).toBeTruthy();
+});
+
 it('afterSheetClosed는 시트가 닫히는 시간만큼 기다린다', async () => {
   jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
   let done = false;

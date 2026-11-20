@@ -26,6 +26,13 @@ export const SIMILAR_TYPE = 'similar_quiz';
 export const TODAY_TYPE = 'today_review';
 /** 결과로 복습 상태(srsUpdates) · 무효 풀이(voidAnswers)를 옮기는 작업 */
 const REVIEW_TYPES: readonly string[] = [SIMILAR_TYPE, TODAY_TYPE];
+/** 개념 카드 작업(apps/ai services/quiz/flashcards.py TYPE, #558). 결과는 플래시카드 목록을 열 때 옮긴다 */
+export const CARDS_TYPE = 'quiz_flashcards';
+/**
+ * 세트가 ready가 되면 개념 카드 작업을 넣는 작업: 맞춤 퀴즈 · 미리 만들기(#558). 오답 복습 · 오늘의 복습은
+ * 기존 범위를 다시 묻는 것이라 만들지 않는다
+ */
+const CARD_TYPES: readonly string[] = [GENERATE_TYPE, PREGEN_TYPE];
 /**
  * 세트 하나의 문제 수. 처리기 입력 size로 보낸다(보내지 않으면 처리기 기본 10문제).
  * 처리기는 size개를 다 만들지 못하면 모자란 자리를 다시 돌리고, 그래도 모자라면 작업을 실패로
@@ -93,8 +100,19 @@ export interface AppQuizSet {
   questionCount: number;
   questions: AppQuestion[];
   createdAt: string;
-  /** 오늘의 복습만: 오늘 세트를 끝까지 푼 적이 있으면 true(앱은 다시 풀게 하지 않고 마쳤다고 보여 준다) */
+  /**
+   * 세트를 끝까지 푼 풀이(finishedAt)가 있으면 true, 없으면 넣지 않는다(withCompleted). 세트 목록 · 오늘의 복습
+   * 응답만 채운다(세트 하나 조회 등은 넣지 않음). 오늘의 복습 카드는 다시 풀게 하지 않고 마쳤다고 보여 주고,
+   * 퀴즈 탭 맨 위 카드는 이 세트를 건너뛴다(#561)
+   */
   completed?: boolean;
+  /**
+   * 세트를 시작한 풀이가 있으면(끝내지 않았어도) true, 없으면 넣지 않는다(withCompleted). 풀기 화면에 들어가면
+   * 풀이가 생기므로 「들어간 적 있음」 뜻이다. 퀴즈 탭 맨 위 카드는 들어간 세트를 건너뛴다(#593)
+   */
+  started?: boolean;
+  /** 오늘의 복습 세트만: 그 복습 날짜(서울 YYYY-MM-DD, seoulDay). 다른 세트는 null(#561) */
+  reviewDay: string | null;
 }
 
 /** DB에 저장한 문제 한 개(lean) */
@@ -111,6 +129,7 @@ export interface QuestionRow {
   conceptTags?: string[];
   difficulty?: Difficulty | null;
   srs?: Record<string, unknown> | null;
+  srsAttemptId?: Types.ObjectId;
 }
 
 /** DB에서 읽은 세트 한 줄(lean) */
@@ -123,6 +142,7 @@ export interface QuizSetRow {
   sourceAttemptId?: Types.ObjectId | null;
   srsSavedAt?: Date | null;
   followUpPending?: boolean;
+  cardsPending?: boolean;
   reviewDay?: string | null;
   title: string;
   status: 'generating' | 'ready' | 'failed';
@@ -186,6 +206,7 @@ export function toAppSet(row: QuizSetRow, progress?: number): AppQuizSet {
     questionCount: row.questionCount ?? row.questions?.length ?? 0,
     questions: (row.questions ?? []).map(toAppQuestion),
     createdAt: row.createdAt.toISOString(),
+    reviewDay: row.reviewDay ?? null,
   };
 }
 
@@ -257,6 +278,15 @@ export function objectId(id: string, what: string): Types.ObjectId {
  * 미리 만들기로 만든 세트를 지웠을 때 이어받는 새 세트의 id(setIdFor). 지운 세트의 id에서 늘 같은 값이
  * 나와 동시에 이어받는 요청들이 같은 id를 쓴다
  */
+/**
+ * 세트의 개념 카드 작업 id(#558). 세트 id에서 늘 같은 값이 나와 같은 세트의 카드 작업은 하나만 넣을 수 있다
+ * (_id 고유 색인). nextSetId와 같은 방식(다른 접두어)
+ */
+export function cardsJobId(setId: Types.ObjectId): Types.ObjectId {
+  const digest = createHash('sha256').update(`flashcards-job:${setId.toHexString()}`).digest();
+  return new Types.ObjectId(digest.subarray(0, 12).toString('hex'));
+}
+
 export function nextSetId(id: Types.ObjectId): Types.ObjectId {
   const digest = createHash('sha256').update(`quiz-set-after:${id.toHexString()}`).digest();
   return new Types.ObjectId(digest.subarray(0, 12).toString('hex'));
@@ -485,13 +515,40 @@ export class QuizSetsService {
     });
   }
 
-  /** 내 퀴즈 세트(최근 것부터). 만드는 중인 세트는 작업 결과를 먼저 옮긴다 */
+  /** 내 퀴즈 세트(최근 것부터). 만드는 중인 세트는 작업 결과를 먼저 옮기고, 끝까지 푼 세트에 completed를 붙인다 */
   async list(userId: string): Promise<AppQuizSet[]> {
+    const owner = objectId(userId, '퀴즈');
     const rows = await this.sets
-      .find({ ownerId: objectId(userId, '퀴즈'), deletedAt: null })
+      .find({ ownerId: owner, deletedAt: null })
       .sort({ createdAt: -1 })
       .lean<QuizSetRow[]>();
-    return Promise.all(rows.map(async (row) => (await this.sync(row)).quizSet));
+    const synced = await Promise.all(rows.map(async (row) => (await this.sync(row)).quizSet));
+    return this.withCompleted(owner, synced);
+  }
+
+  /**
+   * ready 세트 중 이 사용자가 끝까지 푼 풀이(finishedAt)가 있는 세트에 completed: true(#561), 시작한 풀이가
+   * 있는 세트에 started: true(#593)를 붙인다. 세트 수와 상관없이 풀이는 두 번(끝낸 · 시작한)만 읽는다.
+   * 오늘의 복습 조회(TodayReviewService.get)도 같이 쓴다
+   */
+  async withCompleted(owner: Types.ObjectId, sets: AppQuizSet[]): Promise<AppQuizSet[]> {
+    const ready = sets.filter((s) => s.status === 'ready').map((s) => new Types.ObjectId(s._id));
+    if (ready.length === 0) return sets;
+    const mine = { userId: owner, quizSetId: { $in: ready } };
+    // 같은 세트를 여러 번 풀었어도 세트마다 한 줄(distinct)
+    const [finished, begun] = (await Promise.all([
+      this.attempts.distinct('quizSetId', { ...mine, finishedAt: { $ne: null } }),
+      this.attempts.distinct('quizSetId', mine),
+    ])) as [Types.ObjectId[], Types.ObjectId[]];
+    const done = new Set(finished.map((id) => id.toString()));
+    const started = new Set(begun.map((id) => id.toString()));
+    // 끝낸 풀이도 시작한 풀이다. 두 조회가 따로 읽으므로 completed는 started와 상관없이 끝낸 풀이로만 정한다
+    return sets.map((s) => {
+      if (s.status !== 'ready') return s;
+      const finishedHere = done.has(s._id);
+      if (!finishedHere && !started.has(s._id)) return s;
+      return { ...s, started: true, ...(finishedHere ? { completed: true } : {}) };
+    });
   }
 
   /** 세트 하나. 만드는 중이면 작업 결과를 먼저 옮긴다 */
@@ -527,6 +584,7 @@ export class QuizSetsService {
    */
   private async sync(row: QuizSetRow): Promise<{ quizSet: AppQuizSet; job: AppAiJob | null }> {
     if (row.followUpPending && row.status !== 'generating') await this.followUp(row);
+    if (row.cardsPending && row.status === 'ready') await this.ensureCards(row);
     if (row.status === 'ready') return { quizSet: toAppSet(row), job: null };
     const job = row.jobId ? await this.findJob(row) : null;
     if (row.status === 'failed') {
@@ -576,6 +634,11 @@ export class QuizSetsService {
     // 노트가 있는 만드는 중 세트(일반 퀴즈 · 오답 복습)가 끝나면 그 노트를 기다리던 풀이를 이어 받는다:
     // 「이어 받을 풀이 남음」을 세트와 함께 적고, 넣은 뒤에 지운다(실패하면 다음 조회가 다시)
     if (row.status === 'generating' && row.materialId) update['followUpPending'] = true;
+    // 맞춤 퀴즈 · 미리 만들기 세트가 ready가 되면 같은 범위의 개념 카드 작업을 넣는다(#558): 「카드 작업 남음」을
+    // 세트와 함께 적고, 넣은 뒤에 지운다. 넣지 못하면(일시 오류 · 서버가 그 사이 멈춤) 다음 조회가 다시 넣는다.
+    // 카드는 처리기가 따로 만들어 퀴즈 작업을 늦추지 않는다
+    if (update['status'] === 'ready' && job && CARD_TYPES.includes(job.type))
+      update['cardsPending'] = true;
     const updated = await this.sets
       .findOneAndUpdate(
         { _id: row._id, status: row.status },
@@ -584,9 +647,52 @@ export class QuizSetsService {
       )
       .lean<QuizSetRow>();
     if (updated?.followUpPending) await this.followUp(updated);
+    // 개념 카드 작업도 세트를 바꾼 뒤 바로 넣어 본다(표시는 위 갱신에 같이 적었다)
+    if (updated?.cardsPending) await this.ensureCards(updated);
     const current =
       updated ?? (await this.sets.findOne({ _id: row._id }).lean<QuizSetRow>()) ?? row;
     return { quizSet: toAppSet(current), job };
+  }
+
+  /**
+   * 「카드 작업 남음」(cardsPending)인 세트의 개념 카드 작업(quiz_flashcards, #558)을 넣고 표시를 지운다.
+   * 작업 id는 세트 id에서 정해져(cardsJobId) 같은 세트의 작업은 하나뿐이다: 여러 요청이 같이 넣거나 넣은 뒤 표시를
+   * 지우기 전에 멈춘 요청이 있어도 _id 고유 색인이 둘째를 막고(E11000 = 이미 넣음), 표시는 넣은 뒤에만 지운다
+   * (Codex 재리뷰: 먼저 지우면 넣기 전에 멈출 때 카드가 빠짐). 넣기 · 지우기가 실패하면 표시가 남아 다음 조회가
+   * 다시 해 본다(경고 로그만, 노트 · 문제 글은 넣지 않음). 카드는 퀴즈의 덤이라 실패해도 조회 · 세트는 그대로.
+   * 입력은 퀴즈 작업에 넣었던 노트(input.material)와 세트의 문제
+   */
+  private async ensureCards(set: QuizSetRow): Promise<void> {
+    const owner = set.ownerId.toHexString();
+    try {
+      const material = set.jobId
+        ? await this.jobs.materialInputOf(owner, set.jobId.toHexString())
+        : null;
+      const questions = set.questions ?? [];
+      if (material && questions.length > 0) {
+        await this.jobs
+          .enqueue({
+            id: cardsJobId(set._id).toHexString(),
+            type: CARDS_TYPE,
+            userId: owner,
+            targetType: 'quiz_set',
+            targetId: set._id.toHexString(),
+            input: { material, questions: questions.map(toWorkerQuestion) },
+          })
+          .catch((e: unknown) => {
+            if (!isDuplicateKey(e)) throw e; // 이미 넣음
+          });
+      }
+      await this.sets
+        .findOneAndUpdate({ _id: set._id, cardsPending: true }, { $set: { cardsPending: false } })
+        .lean();
+    } catch (e) {
+      this.logger.warn(
+        `개념 카드 작업을 넣지 못했습니다(퀴즈는 그대로, 다음 조회에 다시, 세트 ${set._id.toHexString()}): ${
+          e instanceof Error ? e.name : typeof e
+        }`,
+      );
+    }
   }
 
   /**
@@ -630,7 +736,11 @@ export class QuizSetsService {
         continue;
       await this.sets.updateOne(
         { _id: new Types.ObjectId(u.quizSetId), ownerId: row.ownerId },
-        { $set: { 'questions.$[q].srs': u.srs, 'questions.$[q].srsAt': at } },
+        // 퀴즈를 끝낼 때 쓴 처음 상태 표시(srsAttemptId)는 지운다: 이제 이 상태는 그 풀이만의 것이 아니다
+        {
+          $set: { 'questions.$[q].srs': u.srs, 'questions.$[q].srsAt': at },
+          $unset: { 'questions.$[q].srsAttemptId': '' },
+        },
         // srsAt이 없거나 이 세트보다 오래된 문제만(더 새 세트가 쓴 상태는 그대로)
         {
           arrayFilters: [
@@ -952,6 +1062,14 @@ export function toWorkerQuestion(q: QuestionRow): Record<string, unknown> {
     ...(q.difficulty ? { difficulty: q.difficulty } : {}),
     srs: q.srs ?? null,
   };
+}
+
+/**
+ * 오답 복습 처리기에 넘길 문제. 이 풀이를 끝낼 때 처음 복습 상태를 쓴 문제(srsAttemptId)는 복습 상태 없이 넘긴다:
+ * 처리기가 이 풀이로 srs.update(None, …)를 다시 하므로, 쓴 상태를 넘기면 같은 풀이를 두 번 센다
+ */
+export function reviewInputQuestion(q: QuestionRow, attemptId: Types.ObjectId): Record<string, unknown> {
+  return toWorkerQuestion(q.srsAttemptId?.equals(attemptId) ? { ...q, srs: null } : q);
 }
 
 /** 처리기 결과의 문제들. 모양이 틀린 문제는 빼고 쓴다 */

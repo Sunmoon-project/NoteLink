@@ -8,7 +8,7 @@ import {
 } from '@/lib/chat-outbox';
 import { loadCompleteChatHistory } from '@/lib/chat-history';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Keyboard, Platform, View, type KeyboardEvent } from 'react-native';
+import { FlatList, Keyboard, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -27,6 +27,7 @@ import {
   Mic,
   MicOff,
   NotebookPen,
+  Paperclip,
   Plus,
   Send,
   Settings,
@@ -39,16 +40,27 @@ import {
   X,
 } from 'lucide-react-native';
 import type { Message, RoomMember, RoomSharedItem, StudyRoom } from '@notelink/shared';
-import * as DocumentPicker from 'expo-document-picker';
-import * as ImagePicker from 'expo-image-picker';
-import * as Sharing from 'expo-sharing';
-import * as WebBrowser from 'expo-web-browser';
-import { Image } from 'react-native';
-import { UploadError, uploadToBlob, type LocalFile } from '@/lib/upload';
+import { UploadError } from '@/lib/upload';
+import {
+  ACK_TIMEOUT_MS,
+  AttachPicker,
+  ChatBubble,
+  newClientId,
+  openChatAttachment,
+  pendingMessage,
+  pickChatFile,
+  previewOf,
+  sendChatAttachment,
+  type AttachmentKind,
+  type PendingAttachment,
+} from '@/features/chat/attachment';
 import { api, ApiError } from '@/lib/api';
+import { viewingChat } from '@/lib/notification-route';
 import { socket } from '@/lib/socket';
+import { env } from '@/lib/env';
 import { hms, seoul, ymd } from '@/lib/dates';
 import { useNow, useSocket, useTabRefresh } from '@/hooks';
+import { useKeyboardInset } from '@/hooks/keyboard-inset';
 import { toast } from '@/stores/toast';
 import {
   Alert,
@@ -58,6 +70,7 @@ import {
   Canvas,
   Card,
   Dialog,
+  Group,
   Header,
   Input,
   LIST_LAYOUT,
@@ -71,18 +84,18 @@ import {
   cx,
   Pop,
   POP_IN,
+  Row,
 } from '@/components/ui';
 import { useAuth } from '@/stores/auth';
 import { useNet } from '@/stores/net';
 import { C, ICON, MOTION } from '@/theme';
 import { useLiveRoom } from '@/lib/livekit';
 import { LoadError } from './tools';
+import { useRoomsLive } from './room-live';
 import { InterestPicker } from '@/features/profile/interest-picker';
 import { learnerTypeLabel } from '@/lib/learner-type';
 
 // p.75 스터디룸 입장 · 만들기 / p.76 진입 · 채팅 / p.77 카드 / p.100 연결 끊김
-
-const ACK_TIMEOUT_MS = 8000;
 
 // 채팅 열기 · 캠 보기 전환. 바뀌는 쪽만 짧게(들어오기 MOTION.enter · 나가기 MOTION.exit) 투명도 · 세로 이동으로 움직인다.
 // 레이아웃 애니메이션은 UI 스레드에서 돌고, 기기의 「동작 줄이기」가 켜져 있으면 움직이지 않는다(ReduceMotion.System 기본값)
@@ -125,6 +138,12 @@ export function RoomListScreen() {
     onError: () => toast('스터디룸에서 나가지 못했어요. 다시 시도해주세요'),
   });
   const joined = mine.data ?? [];
+  const live = useRoomsLive(joined.map((r) => r._id));
+  // 카드 얼굴 · 접속 수는 방 멤버가 아니라 지금 그 방 화면에 들어와 있는 사람
+  const hereOf = (r: StudyRoom) =>
+    r.members.filter((m) => m.status === 'joined' && live[r._id]?.includes(m.userId));
+  // 이미 들어가 있는 방의 코드면 다시 참여하지 않고 그 방으로 보낸다(서버는 이미 멤버여도 200으로 같은 방을 돌려준다)
+  const already = v.length === 6 ? joined.find((r) => r.inviteCode === v) : undefined;
   const recList = (rec.data ?? []).filter(
     (r) => r.title.includes(q) && !joined.some((j) => j._id === r._id),
   );
@@ -160,11 +179,12 @@ export function RoomListScreen() {
                         {r.timerState?.phase === 'focus' && <Badge tone="sun">집중 중</Badge>}
                       </View>
                       <Text className="text-caption text-sub">
-                        {r.memberCount}명 · 코드 {r.inviteCode}
+                        {r.memberCount}명{hereOf(r).length ? ` · 접속 ${hereOf(r).length}` : ''} ·
+                        코드 {r.inviteCode}
                       </Text>
                       <RoomLabels room={r} className="mt-2" />
                     </View>
-                    <Faces members={r.members} />
+                    <Faces members={hereOf(r)} />
                   </Card>
                 </SwipeAction>
               </Animated.View>
@@ -278,19 +298,37 @@ export function RoomListScreen() {
           autoCapitalize="characters"
           className="mt-4 h-14 w-full rounded-xl border-2 border-brand/30 text-center tabular-nums text-title3 tracking-[6px] text-ink"
         />
+        {already && (
+          <Text className="mt-2 text-caption font-semibold text-brand">
+            이미 들어가 있는 스터디룸이에요
+          </Text>
+        )}
         <View className="mt-4 w-full">
           <Two>
             <Btn small kind="outline" onPress={() => setCode(false)}>
               취소
             </Btn>
-            <Btn
-              small
-              disabled={v.length < 6}
-              loading={join.isPending}
-              onPress={() => join.mutate(v)}
-            >
-              확인
-            </Btn>
+            {already ? (
+              <Btn
+                small
+                onPress={() => {
+                  setCode(false);
+                  setV('');
+                  router.push({ pathname: '/room/[id]', params: { id: already._id } });
+                }}
+              >
+                방으로 가기
+              </Btn>
+            ) : (
+              <Btn
+                small
+                disabled={v.length < 6}
+                loading={join.isPending}
+                onPress={() => join.mutate(v)}
+              >
+                확인
+              </Btn>
+            )}
           </Two>
         </View>
       </Dialog>
@@ -316,14 +354,18 @@ function RoomLabels({ room, className }: { room: StudyRoom; className?: string }
   );
 }
 
-/** 참여 중인 방의 참여자 얼굴을 겹쳐 보인다 (3명까지, 나머지는 +n) */
+/** 지금 그 방에 들어와 있는 사람의 얼굴을 겹쳐 보인다 (3명까지, 나머지는 +n) */
 function Faces({ members }: { members: RoomMember[] }) {
   const on = members.filter((m) => m.status === 'joined');
   if (!on.length) return null;
   return (
     <View className="flex-row items-center">
       {on.slice(0, 3).map((m, i) => (
-        <View key={m.userId} className={cx('rounded-full border-2 border-white', i > 0 && '-ml-2')}>
+        <View
+          key={m.userId}
+          accessibilityLabel={m.nickname}
+          className={cx('rounded-full border-2 border-white', i > 0 && '-ml-2')}
+        >
           <Avatar name={m.nickname} uri={m.avatarUrl} size={28} />
         </View>
       ))}
@@ -443,34 +485,6 @@ export const CHAT_EMOJIS = [
   '❤️',
 ];
 
-/** 화면 아래끝(창 기준)과 키보드 위끝이 겹치는 높이. 겹치지 않으면 0 */
-export const keyboardOverlap = (frame: { y: number; height: number }, keyboardTop: number) =>
-  Math.max(0, Math.round(frame.y + frame.height - keyboardTop));
-
-/**
- * 키보드가 이 화면을 가리는 높이. 공용 KeyboardAvoidingView는 부모 기준 위치로 계산해 실기기에서 입력줄이
- * 덜 올라가 채팅을 치는 내용이 키보드에 가렸다. 창 기준(measureInWindow)으로 재서 그만큼 올린다
- */
-export function useKeyboardInset(ref: React.RefObject<View | null>) {
-  const [inset, setInset] = useState(0);
-  useEffect(() => {
-    const ios = Platform.OS === 'ios';
-    const show = (e: KeyboardEvent) => {
-      const top = e.endCoordinates.screenY;
-      const node = ref.current;
-      if (!node) return;
-      node.measureInWindow((_x, y, _w, height) => setInset(keyboardOverlap({ y, height }, top)));
-    };
-    const subs = [
-      Keyboard.addListener(ios ? 'keyboardWillShow' : 'keyboardDidShow', show),
-      Keyboard.addListener(ios ? 'keyboardWillChangeFrame' : 'keyboardDidShow', show),
-      Keyboard.addListener(ios ? 'keyboardWillHide' : 'keyboardDidHide', () => setInset(0)),
-    ];
-    return () => subs.forEach((sub) => sub.remove());
-  }, [ref]);
-  return inset;
-}
-
 export function RoomScreen() {
   const insets = useSafeAreaInsets();
   const myId = useAuth((s) => s.userId);
@@ -546,15 +560,18 @@ export function RoomScreen() {
   const [menu, setMenu] = useState(false);
   const [pick, setPick] = useState(false);
   const [chat, setChat] = useState(false);
+  // 방 채팅을 펼쳐 보는 동안에는 이 방 새 메시지 배너를 띄우지 않는다
+  useEffect(
+    () => (chat && chatId.data ? viewingChat(chatId.data) : undefined),
+    [chat, chatId.data],
+  );
   // 채팅 입력줄의 이모지 고르기 칸 · + 로 여는 첨부(사진 · 파일) 고르기
   const [emoji, setEmoji] = useState(false);
   const [attach, setAttach] = useState(false);
   // 보내는 중인 첨부: 다시 보낼 때 고른 파일 · 이미 올린 주소를 다시 쓴다
-  const attachments = useRef(
-    new Map<string, { kind: 'image' | 'file'; file: LocalFile; blobUrl?: string }>(),
-  );
+  const attachments = useRef(new Map<string, PendingAttachment>());
   const keyboardFrame = useRef<View>(null);
-  const keyboardInset = useKeyboardInset(keyboardFrame);
+  const [keyboardInset, onKeyboardFrameLayout] = useKeyboardInset(keyboardFrame);
   // 방을 떠나면(설정 · 카드 · 초대 등 다른 화면으로) 채팅을 닫고 키보드를 내린다. 돌아왔을 때 채팅 화면이 아니라
   // 캠 화면이 보이게: 채팅을 연 채로 다녀오면 뒤로 가기를 눌러도 계속 채팅 화면으로 돌아오는 것처럼 보였다
   useFocusEffect(
@@ -583,6 +600,8 @@ export function RoomScreen() {
     (ymd(seoul(membersAt)) === day ? (members.find((m) => m.userId === myId)?.todaySec ?? 0) : 0) +
     Math.max(0, Math.floor((now - Math.max(membersAt, midnight)) / 1000));
   const live = useLiveRoom(id, conn !== 'kicked' && !!room.data, mediaGeneration, mySec);
+  // 캠 · 음성이 붙기 전(실패 · 다시 연결 중 포함)에는 서버가 아는 「이 방 화면에 들어와 있는 사람」으로 대신 보인다
+  const socketHere = useRoomsLive([id])[id];
   const [v, setV] = useState('');
   const pending = useRef<QueuedChatMessage[]>([]);
   const joinedChat = useRef(false);
@@ -854,29 +873,7 @@ export function RoomScreen() {
     inFlight.current.add(clientId);
     setFailedIds((ids) => ids.filter((x) => x !== clientId));
     try {
-      entry.blobUrl ??= await uploadToBlob(
-        entry.kind === 'image' ? 'image' : 'document',
-        entry.file,
-        undefined,
-        undefined,
-        'chat',
-      );
-      const blobUrl = entry.blobUrl;
-      const m = await new Promise<Message>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('timeout')), ACK_TIMEOUT_MS);
-        socket.emit(
-          'chat:send',
-          {
-            chatRoomId,
-            clientId,
-            attachment: { blobUrl, kind: entry.kind, name: entry.file.name },
-          },
-          (sent) => {
-            clearTimeout(timer);
-            resolve(sent);
-          },
-        );
-      });
+      const m = await sendChatAttachment(chatRoomId, clientId, entry);
       attachments.current.delete(clientId);
       receiveMessage(m, clientId);
     } catch (e) {
@@ -887,7 +884,7 @@ export function RoomScreen() {
     }
   };
   /** + → 사진 · 파일 고르기. 고르면 바로 말풍선을 띄우고(올리는 중) 보낸다 */
-  const pickAttachment = async (kind: 'image' | 'file') => {
+  const pickAttachment = async (kind: AttachmentKind) => {
     setAttach(false);
     if (!chatId.data) {
       void chatId.refetch();
@@ -895,58 +892,25 @@ export function RoomScreen() {
     }
     if (!myId) return toast('로그인 상태를 확인해 주세요');
     if (conn === 'lost' || !joinedChat.current) return toast('채팅에 연결된 뒤 다시 보내 주세요');
-    let file: LocalFile | undefined;
-    if (kind === 'image') {
-      const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
-      const a = r.canceled ? undefined : r.assets[0];
-      // 형식은 파일 이름(확장자)으로 정한다 — 서버가 확장자와 형식이 같은지 본다
-      if (a) file = { uri: a.uri, name: a.fileName ?? photoName(), size: a.fileSize };
-    } else {
-      const r = await DocumentPicker.getDocumentAsync({
-        type: 'application/pdf',
-        copyToCacheDirectory: true,
-      });
-      const a = r.canceled ? undefined : r.assets[0];
-      if (a) file = { uri: a.uri, name: a.name, mimeType: a.mimeType, size: a.size };
-    }
+    const file = await pickChatFile(kind);
     if (!file || !chatId.data) return;
     const clientId = newClientId(++messageSeq.current);
-    attachments.current.set(clientId, { kind, file });
+    const entry = { kind, file };
+    attachments.current.set(clientId, entry);
     fresh.current.add(clientId);
     setChat(true);
-    setMsgs((p) => [
-      ...p,
-      {
-        _id: clientId,
-        clientId,
-        chatRoomId: chatId.data!,
-        senderId: myId,
-        type: kind,
-        text: null,
-        attachment: { kind, name: file.name, sizeBytes: file.size ?? 0, url: file.uri },
-        sharedItemId: null,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
+    setMsgs((p) => [...p, pendingMessage(chatId.data!, myId, clientId, entry)]);
     void deliverAttachment(clientId);
   };
   /** 첨부 열기: 읽기 주소가 만료됐으면(1시간) 기록을 다시 읽어 새 주소로 연다 */
-  const openAttachment = async (m: Message) => {
-    let url = m.attachment?.url;
-    if (!url) return;
-    if (urlExpired(url) && !url.startsWith('file:')) {
-      const fresh = await history.refetch();
-      url = fresh.data?.find((x) => x._id === m._id)?.attachment?.url ?? url;
-      if (urlExpired(url)) return toast('첨부를 다시 불러오지 못했어요. 잠시 뒤 다시 눌러 주세요');
-    }
-    // 기기 저장 모드의 file:// 첨부는 브라우저가 열지 못한다(iOS는 http(s)만). 공유 시트의 미리보기로 연다(Codex #507 재리뷰)
-    if (url.startsWith('file:')) {
-      const ok = await Sharing.isAvailableAsync().catch(() => false);
-      if (!ok) return toast('이 기기에서는 파일을 열 수 없어요');
-      return void (await Sharing.shareAsync(url).catch(() => toast('파일을 열지 못했어요')));
-    }
-    await WebBrowser.openBrowserAsync(url).catch(() => toast('파일을 열지 못했어요'));
-  };
+  const openShared = useOpenShared(id);
+  const openAttachment = (m: Message) =>
+    m.type === 'shared_item' && m.sharedItemId
+      ? openShared.openById(m.sharedItemId)
+      : openChatAttachment(m, async () => {
+          const fresh = await history.refetch();
+          return fresh.data?.find((x) => x._id === m._id)?.attachment?.url;
+        });
   // 사진이 만료된 주소라 보이지 않으면 기록을 한 번 다시 읽어 새 주소를 받는다(연달아 다시 읽지 않게 30초 간격)
   const staleAt = useRef(0);
   const refreshStale = () => {
@@ -1005,12 +969,16 @@ export function RoomScreen() {
     );
   if (!room.data) return <Loading />;
   const last = msgs[msgs.length - 1];
-  // 서버 멤버 목록은 참여 기록이라 뒤로 가서 나간 사람도 남는다. 미디어에 연결돼 있으면 지금 접속한 사람(+나)만 보인다
+  // 서버 멤버 목록은 참여 기록이라 뒤로 가서 나간 사람도 남는다. 미디어에 연결돼 있으면 지금 접속한 사람(+나)만 보인다.
+  // 연결되기 전(들어온 직후 · 실패 · 다시 붙는 중)에는 소켓 접속 현황으로, 그것도 받기 전이면 나만 —
+  // 멤버 전원을 그렸다가 지우면 깜빡인다. 미디어 · 서버가 없는 기기 저장 모드만 멤버를 모두 보인다
   const here = live.connected
     ? members.filter(
         (m) => m.userId === myId || live.participantState?.(m.userId)?.present !== false,
       )
-    : members;
+    : env.localData
+      ? members
+      : members.filter((m) => m.userId === myId || socketHere?.includes(m.userId));
   const tiles = chat ? here.slice(0, 2) : here;
   const remain = timer ? Math.max(0, Math.floor((timer.endsAt - now) / 1000)) : 0;
 
@@ -1019,6 +987,7 @@ export function RoomScreen() {
       <Screen scroll={false} pad={false} avoidKeyboard={false}>
         <View
           ref={keyboardFrame}
+          onLayout={onKeyboardFrameLayout}
           className="flex-1"
           // 키보드가 가리는 만큼 화면 아래를 띄워 채팅 입력줄이 키보드 바로 위에 오게 한다
           style={{ paddingBottom: keyboardInset }}
@@ -1088,14 +1057,23 @@ export function RoomScreen() {
                   layout={LIST_LAYOUT}
                   entering={SWAP_IN}
                   exiting={SWAP_OUT}
+                  // 테두리를 타일에 두면 영상(absolute 100%)이 그 안쪽에만 깔려 틈이 보인다: 타일은 테두리 없이 둥글게 자르고,
+                  // 말하는 중 테두리는 영상 위에 겹친 고리로 그린다
                   className={cx(
-                    'w-[48.5%] items-center justify-center rounded-2xl',
-                    'h-[118px] border-2',
+                    'w-[48.5%] items-center justify-center overflow-hidden rounded-2xl',
+                    'h-[118px]',
                     camOn ? 'bg-night' : 'bg-white',
-                    speaking ? 'border-brand' : 'border-transparent',
                   )}
                 >
                   {video}
+                  <View
+                    testID={`tile-ring-${m.userId}`}
+                    pointerEvents="none"
+                    className={cx(
+                      'absolute inset-0 rounded-2xl border-2',
+                      speaking ? 'border-brand' : 'border-transparent',
+                    )}
+                  />
                   {speaking && (
                     <View
                       accessibilityLabel={`${m.nickname} 말하는 중`}
@@ -1290,25 +1268,10 @@ export function RoomScreen() {
             </Pressable>
           )}
           {attach && (
-            <Pop className="mx-5 mt-2 flex-row gap-2 rounded-2xl bg-white p-2">
-              {(
-                [
-                  ['image', ImageIcon, '사진'],
-                  ['file', FileText, '파일 (PDF)'],
-                ] as const
-              ).map(([kind, Ic, label]) => (
-                <Pressable
-                  key={kind}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${label} 보내기`}
-                  onPress={() => void pickAttachment(kind)}
-                  className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-mint py-3"
-                >
-                  <Ic size={ICON.sm} color={C.brand} />
-                  <Text className="text-subhead font-semibold text-ink">{label}</Text>
-                </Pressable>
-              ))}
-            </Pop>
+            <AttachPicker
+              className="mx-5 mt-2 flex-row gap-2 rounded-2xl bg-white p-2"
+              onPick={(kind) => void pickAttachment(kind)}
+            />
           )}
           {emoji && (
             <Pop className="mx-5 mt-2 flex-row flex-wrap gap-y-1 rounded-2xl bg-white px-1 py-2">
@@ -1414,6 +1377,12 @@ export function RoomScreen() {
                   [Siren, '신고', () => router.push({ pathname: '/room/report', params: { id } })],
                   [Timer, '타이머', () => router.push({ pathname: '/room/timer', params: { id } })],
                   [Layers, '퀴즈', () => setPick(true)],
+                  // 방에 공유된 노트를 보는 길이 알림뿐이었다(#483 뒤). 실기기 피드백 2026-11-20
+                  [
+                    Paperclip,
+                    '공유 자료',
+                    () => router.push({ pathname: '/room/cards', params: { id } }),
+                  ],
                 ] as const
               ).map(([Ic, l, fn]) => (
                 <Pressable
@@ -1506,11 +1475,9 @@ const Ctl = ({
   </Pressable>
 );
 
-export function RoomCardsScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+/** 방에 공유된 자료를 종류에 맞는 화면으로 연다(공유 자료 화면 · 방 채팅 자료 카드가 같이 쓴다) */
+function useOpenShared(roomId: string) {
   const openFeature = useFeatureNavigation();
-  const shared = useQuery({ queryKey: ['room-shared', id], queryFn: () => api.rooms.shared(id) });
-  const others = shared.data?.items.filter((i) => i.itemType !== 'flashcards') ?? [];
   const qc = useQueryClient();
   const opening = useRef(new Set<string>());
   // 공유 항목에는 노트 종류가 없어서 노트를 조회해 종류에 맞는 화면으로 연다(상세 화면과 같은 캐시 키)
@@ -1543,6 +1510,43 @@ export function RoomCardsScreen() {
       void openMaterial(item, item.materialId);
     else toast('이 자료를 열 수 없어요');
   };
+  /** 방 채팅 자료 카드: 공유 항목 id 로 방 공유 자료에서 찾아 연다(공유를 지웠거나 볼 수 없으면 안내) */
+  const openById = async (sharedItemId: string) => {
+    try {
+      const list = await qc.fetchQuery({
+        queryKey: ['room-shared', roomId],
+        queryFn: () => api.rooms.shared(roomId),
+      });
+      const item = list.items.find((i) => i._id === sharedItemId);
+      if (item) openItem(item);
+      else toast('지워졌거나 더 볼 수 없는 자료예요');
+    } catch {
+      toast('이 자료를 열 수 없어요');
+    }
+  };
+  return { openItem, openById };
+}
+
+export function RoomCardsScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const shared = useQuery({ queryKey: ['room-shared', id], queryFn: () => api.rooms.shared(id) });
+  const others = shared.data?.items.filter((i) => i.itemType !== 'flashcards') ?? [];
+  const { openItem } = useOpenShared(id);
+  // 방 채팅에 올린 사진 · 파일도 여기서 모아 본다(1:1 채팅 「주고받은 자료」와 같은 방식, 최근 것부터)
+  const chatId = useQuery({ queryKey: ['room-chat', id], queryFn: () => api.rooms.chatRoomId(id) });
+  const files = useQuery({
+    queryKey: ['room-files', chatId.data],
+    queryFn: () => loadCompleteChatHistory((before) => api.social.messages(chatId.data!, before)),
+    enabled: !!chatId.data,
+  });
+  const attachments = (files.data ?? [])
+    .filter((m) => (m.type === 'image' || m.type === 'file') && m.attachment)
+    .reverse();
+  const openFile = (m: Message) =>
+    openChatAttachment(m, async () => {
+      const fresh = await files.refetch();
+      return fresh.data?.find((x) => x._id === m._id)?.attachment?.url;
+    });
   const [flip, setFlip] = useState<string[]>([]);
   const owner = shared.data?.items.find((i) => i.itemType === 'flashcards')?.sharedByNickname;
   return (
@@ -1558,11 +1562,15 @@ export function RoomCardsScreen() {
         {shared.isError && !shared.data && (
           <LoadError message="공유 자료를 불러오지 못했어요" retry={shared.refetch} />
         )}
-        {shared.isSuccess && others.length === 0 && shared.data.flashcards.length === 0 && (
-          <Text className="py-12 text-center text-footnote text-sub">
-            아직 공유된 자료가 없어요
-          </Text>
-        )}
+        {shared.isSuccess &&
+          others.length === 0 &&
+          shared.data.flashcards.length === 0 &&
+          attachments.length === 0 && (
+            <Text className="py-12 text-center text-footnote text-sub">
+              아직 공유된 자료가 없어요
+            </Text>
+          )}
+        {others.length > 0 && <Label>공유한 노트</Label>}
         {others.map((item) => (
           <Pressable
             key={item._id}
@@ -1576,6 +1584,23 @@ export function RoomCardsScreen() {
             </Text>
           </Pressable>
         ))}
+        {attachments.length > 0 && (
+          <>
+            <Label>채팅에 올린 사진 · 파일</Label>
+            <Group>
+              {attachments.map((m) => (
+                <Row
+                  key={m._id}
+                  icon={m.type === 'image' ? ImageIcon : FileText}
+                  sub={`${m.senderNickname ?? '멤버'} · ${ymd(seoul(m.createdAt)).slice(5).replace('-', '/')}`}
+                  onPress={() => void openFile(m)}
+                >
+                  {m.attachment!.name}
+                </Row>
+              ))}
+            </Group>
+          </>
+        )}
         {!!shared.data?.flashcards.length && (
           <Text className="mt-3 text-caption text-sub">
             {owner ? `${owner}님이 공유한 플래시 카드` : '공유된 플래시 카드'} · 탭해서 뒤집기
@@ -1609,94 +1634,6 @@ export function RoomCardsScreen() {
     </Canvas>
   );
 }
-
-/** 채팅 목록 위 한 줄 미리보기 */
-const previewOf = (m: Message) =>
-  m.type === 'image'
-    ? '사진'
-    : m.type === 'file'
-      ? `파일 · ${m.attachment?.name ?? ''}`
-      : (m.text ?? '공유 자료');
-
-const sizeLabel = (bytes: number) =>
-  bytes >= 1024 * 1024
-    ? `${(bytes / 1024 / 1024).toFixed(1)}MB`
-    : `${Math.max(1, Math.round(bytes / 1024))}KB`;
-
-/** 서명된 읽기 주소(SAS)의 만료 시각(se)이 지났거나 1분 안에 지나는지. se가 없으면 만료되지 않는 주소로 본다 */
-export const urlExpired = (url: string, now = Date.now()) => {
-  const se = /[?&]se=([^&]+)/.exec(url)?.[1];
-  if (!se) return false;
-  const at = Date.parse(decodeURIComponent(se));
-  return Number.isFinite(at) && at - now < 60_000;
-};
-
-/** 말풍선: 글 · 사진(눌러서 크게) · 파일(눌러서 열기) */
-function ChatBubble({
-  m,
-  onOpen,
-  onStale,
-}: {
-  m: Message;
-  onOpen: (m: Message) => void;
-  onStale: () => void;
-}) {
-  const a = m.attachment;
-  const open = () => onOpen(m);
-  if (m.type === 'image' && a)
-    return (
-      <Pressable
-        accessibilityRole="imagebutton"
-        accessibilityLabel={`사진 ${a.name} 크게 보기`}
-        onPress={open}
-      >
-        <Image
-          source={{ uri: a.url }}
-          className="h-44 w-44 rounded-2xl bg-fill"
-          resizeMode="cover"
-          onError={() => {
-            if (urlExpired(a.url)) onStale();
-          }}
-        />
-      </Pressable>
-    );
-  if (m.type === 'file' && a)
-    return (
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`파일 ${a.name} 열기`}
-        onPress={open}
-        className="max-w-[78%] flex-row items-center gap-2.5 rounded-2xl bg-white px-3 py-2.5"
-      >
-        <View className="h-9 w-9 items-center justify-center rounded-xl bg-mint">
-          <FileText size={ICON.sm} color={C.brand} />
-        </View>
-        <View className="shrink">
-          <Text numberOfLines={1} className="text-footnote font-semibold text-ink">
-            {a.name}
-          </Text>
-          {a.sizeBytes > 0 && (
-            <Text className="text-caption2 text-sub">{sizeLabel(a.sizeBytes)}</Text>
-          )}
-        </View>
-      </Pressable>
-    );
-  return (
-    <View className="max-w-[78%] rounded-2xl bg-white px-3 py-2">
-      <Text className="text-footnote text-ink">
-        {m.type === 'image' || m.type === 'file'
-          ? '첨부를 불러오지 못했어요'
-          : (m.text ?? '공유 자료를 보냈어요')}
-      </Text>
-    </View>
-  );
-}
-
-/** 보낼 메시지의 기기 쪽 식별자(재전송 때 같은 메시지로 묶는다) */
-const newClientId = (seq: number) =>
-  `c${Date.now()}-${seq}-${Math.random().toString(36).slice(2, 10)}`;
-/** 이름 없이 고른 사진의 파일 이름 */
-const photoName = () => `photo-${Date.now()}.jpg`;
 
 /**
  * 멤버 목록을 새로 받을 때 각자의 오늘 공부시간(todaySec)을 이어 간다.

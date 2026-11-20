@@ -17,6 +17,7 @@ import { TokenService } from '../src/modules/auth/token.service.js';
 import { FLASHCARD_DELETE_MAX } from '../src/modules/quiz/dto/flashcard.dto.js';
 import { FlashcardsController } from '../src/modules/quiz/flashcards.controller.js';
 import { FlashcardsService } from '../src/modules/quiz/flashcards.service.js';
+import { AiJob, AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
 import { Flashcard, FlashcardSchema } from '../src/modules/quiz/schemas/flashcard.schema.js';
 import { QuizSet, QuizSetSchema } from '../src/modules/quiz/schemas/quiz-set.schema.js';
 
@@ -48,6 +49,7 @@ describe.skipIf(!uri)('진짜 DB 플래시카드 확인', () => {
           { name: Flashcard.name, schema: FlashcardSchema },
           { name: QuizSet.name, schema: QuizSetSchema },
           { name: Material.name, schema: MaterialSchema },
+          { name: AiJob.name, schema: AiJobSchema }, // 목록이 끝난 개념 카드 작업을 읽는다(#558)
           { name: User.name, schema: UserSchema },
         ]),
       ],

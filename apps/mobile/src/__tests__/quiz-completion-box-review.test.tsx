@@ -86,6 +86,14 @@ afterEach(() => {
   queryClient.clear();
   useQuizProgress.getState().reset();
 });
+// #593: 풀기 화면에 들어가면 서버가 그 세트를 started로 알려 주므로, 퀴즈 탭 맨 위 카드가 돌아오자마자
+// 들어간 세트를 빼게 목록을 다시 읽는다
+it('풀기 화면에 들어가 풀이를 시작하면 퀴즈 목록을 다시 읽는다(#593)', async () => {
+  queryClient.setQueryData(['quiz-sets'], [quizSet]);
+  await renderScreen(<QuizSolveScreen />, client());
+  await waitFor(() => expect(mockApi.quiz.startAttempt).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(queryClient.getQueryState(['quiz-sets'])?.isInvalidated).toBe(true));
+});
 async function submit() {
   await fireEvent.press(await screen.findByText('① 답'));
   await fireEvent.press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
@@ -205,6 +213,41 @@ it('오늘의 복습 세트를 마치면 보관함에 담지 않고 오늘의 �
   );
   expect(mockApi.quiz.saveToBox).not.toHaveBeenCalled();
 });
+// #595: 오늘의 복습인지는 세트의 reviewDay로 본다. 캐시가 비었거나(앱을 다시 켜고 이어 풀기) 지난 날 사본이어도 담지 않는다
+it.each([
+  ['오늘의 복습 캐시가 비어 있어도', undefined],
+  ['지난 날 복습 사본이라 캐시가 다른 세트여도', { _id: 'today-set', status: 'ready' }],
+])(
+  '%s reviewDay가 있는 세트를 마치면 보관함에 담지 않고 오늘의 복습을 다시 읽는다(#595)',
+  async (_, today) => {
+    mockApi.quiz.set.mockResolvedValue({ ...quizSet, reviewDay: '2026-11-19' });
+    if (today) queryClient.setQueryData(['today-review'], today);
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+    await renderScreen(<QuizSolveScreen />, client());
+    await submit();
+    await waitFor(() => expect(router.replace).toHaveBeenCalled());
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['today-review'] });
+    expect(mockApi.quiz.saveToBox).not.toHaveBeenCalled();
+    invalidate.mockRestore();
+  },
+);
+it('reviewDay가 null인 일반 세트는 지금처럼 보관함에 담는다(#595)', async () => {
+  mockApi.quiz.set.mockResolvedValue({ ...quizSet, reviewDay: null });
+  await renderScreen(<QuizSolveScreen />, client());
+  await submit();
+  await waitFor(() => expect(mockApi.quiz.saveToBox).toHaveBeenCalledWith([question._id]));
+});
+// #561: 끝낸 세트는 목록의 completed가 바뀌므로 퀴즈 탭 맨 위 카드가 돌아오자마자 바뀌게 목록을 다시 읽는다
+it.each([
+  ['맞춤 퀴즈', false],
+  ['오늘의 복습', true],
+])('%s 세트를 마치면 퀴즈 목록을 다시 읽는다(#561)', async (_, today) => {
+  if (today) queryClient.setQueryData(['today-review'], { _id: quizSet._id, status: 'ready' });
+  queryClient.setQueryData(['quiz-sets'], [quizSet]);
+  await renderScreen(<QuizSolveScreen />, client());
+  await submit();
+  await waitFor(() => expect(queryClient.getQueryState(['quiz-sets'])?.isInvalidated).toBe(true));
+});
 it('완료 응답 전에 다른 계정으로 바뀌면 새 계정 보관함에 담지 않는다', async () => {
   const pending = deferred<{ pointsEarned: number; balance: number }>();
   mockApi.quiz.finish.mockReturnValueOnce(pending.promise);
@@ -228,6 +271,25 @@ it('결과 화면은 맞힌 문제 번호를 초록, 틀린 문제 번호를 빨
   expect(String(screen.getByLabelText('2번 틀림').props.className)).toContain('bg-danger');
   expect(screen.queryByText('선택')).toBeNull();
   expect(screen.queryByRole('button', { name: '보관함에 저장' })).toBeNull();
+});
+it.each([
+  ['오늘의 복습 세트', '2026-11-19', false],
+  ['일반 세트', null, true],
+])(
+  '%s 결과 화면은 실제로 보관함에 담을 때만 담았다고 안내한다(#595)',
+  async (_, reviewDay, saved) => {
+    mockApi.quiz.set.mockResolvedValue({ ...quizSet, reviewDay });
+    await renderScreen(<QuizReviewScreen />, client());
+    expect(await screen.findByText(/AI 해설을 볼 수 있어요/)).toBeTruthy();
+    expect(screen.queryByText(/보관함에 담았어요/) !== null).toBe(saved);
+  },
+);
+it('reviewDay를 보내지 않는 옛 서버라도 오늘의 복습 캐시와 같은 세트면 결과 화면에 담았다고 안내하지 않는다(#595)', async () => {
+  mockApi.quiz.set.mockResolvedValue(quizSet);
+  queryClient.setQueryData(['today-review'], { _id: quizSet._id, status: 'ready' });
+  await renderScreen(<QuizReviewScreen />, client());
+  expect(await screen.findByText(/AI 해설을 볼 수 있어요/)).toBeTruthy();
+  expect(screen.queryByText(/보관함에 담았어요/)).toBeNull();
 });
 it('결과를 모르면(results 없음) 번호를 기본색으로 두고 맞힌 수를 보여 주지 않는다', async () => {
   await renderScreen(<QuizReviewScreen />, client());
@@ -347,4 +409,57 @@ it('보관함에서 사라진 문제는 빈 본문 대신 안내하고 설명 �
   await renderScreen(<QuizExplainScreen />, client());
   expect(await screen.findByText('문제를 찾을 수 없어요')).toBeTruthy();
   expect(mockApi.quiz.explanation).not.toHaveBeenCalled();
+});
+
+const boxQuestions = [
+  { ...question, _id: 'box-a', prompt: '첫째 보관 문제', answer: '첫째 답' },
+  { ...question, _id: 'box-b', prompt: '둘째 보관 문제', answer: '둘째 답' },
+  { ...question, _id: 'box-c', prompt: '셋째 보관 문제', answer: '셋째 답' },
+];
+
+it('보관함은 처음에 모든 정답을 닫아 두고, 정답 보기를 누른 문제만 정답을 보여 준다', async () => {
+  mockApi.quiz.box.mockResolvedValue(boxQuestions);
+  await renderScreen(<QuizBoxScreen />, client());
+  await screen.findByText('첫째 보관 문제');
+  expect(screen.queryByText(/정답 ·/)).toBeNull();
+  expect(screen.getAllByText('정답 보기')).toHaveLength(3);
+  await fireEvent.press(screen.getAllByText('정답 보기')[1]!);
+  expect(screen.getByText('정답 · 둘째 답')).toBeTruthy();
+  expect(screen.queryByText('정답 · 첫째 답')).toBeNull();
+  expect(screen.queryByText('정답 · 셋째 답')).toBeNull();
+  expect(screen.getAllByText('정답 보기')).toHaveLength(2);
+});
+
+it('다른 문제를 지워 보관함을 다시 불러와도 펼쳐 둔 정답은 그대로, 나머지는 닫혀 있다', async () => {
+  mockApi.quiz.box.mockResolvedValue(boxQuestions);
+  await renderScreen(<QuizBoxScreen />, client());
+  await screen.findByText('셋째 보관 문제');
+  await fireEvent.press(screen.getAllByText('정답 보기').at(-1)!);
+  expect(screen.getByText('정답 · 셋째 답')).toBeTruthy();
+  mockApi.quiz.box.mockResolvedValue(boxQuestions.slice(1));
+  await fireEvent.press(screen.getByText('선택'));
+  await fireEvent.press(screen.getByLabelText('보관함 선택 box-a'));
+  await fireEvent.press(screen.getByRole('button', { name: '선택 삭제' }));
+  await waitFor(() => expect(screen.queryByText('첫째 보관 문제')).toBeNull());
+  expect(mockApi.quiz.deleteFromBox).toHaveBeenCalledWith(['box-a']);
+  expect(screen.getByText('정답 · 셋째 답')).toBeTruthy();
+  expect(screen.queryByText('정답 · 둘째 답')).toBeNull();
+});
+
+it('펼친 문제를 지운 뒤 같은 문제가 다시 보관되면 정답은 닫힌 채로 보인다', async () => {
+  mockApi.quiz.box.mockResolvedValue(boxQuestions);
+  const qc = client();
+  await renderScreen(<QuizBoxScreen />, qc);
+  await screen.findByText('셋째 보관 문제');
+  await fireEvent.press(screen.getAllByText('정답 보기').at(-1)!);
+  mockApi.quiz.box.mockResolvedValue(boxQuestions.slice(0, 2));
+  await fireEvent.press(screen.getByText('선택'));
+  await fireEvent.press(screen.getByLabelText('보관함 선택 box-c'));
+  await fireEvent.press(screen.getByRole('button', { name: '선택 삭제' }));
+  await waitFor(() => expect(screen.queryByText('셋째 보관 문제')).toBeNull());
+  // 화면이 떠 있는 동안 풀이 화면이 같은 문제를 다시 보관하고 보관함을 무효화한 경우
+  mockApi.quiz.box.mockResolvedValue(boxQuestions);
+  await act(async () => qc.invalidateQueries({ queryKey: ['quiz-box'] }));
+  expect(await screen.findByText('셋째 보관 문제')).toBeTruthy();
+  expect(screen.queryByText(/정답 ·/)).toBeNull();
 });

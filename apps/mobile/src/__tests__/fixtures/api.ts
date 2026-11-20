@@ -206,6 +206,9 @@ const HOLIDAYS = [
   ['12-25', '성탄절'],
 ] as const;
 
+/** 시험용 알림함. 시험이 직접 채우고 비운다 */
+export const mockInbox: Awaited<ReturnType<Api['notifications']['list']>>['items'] = [];
+
 export const mockApi: Api = {
   auth: {
     socialLogin: (_p, _token) =>
@@ -251,6 +254,7 @@ export const mockApi: Api = {
       return structuredClone(void (db.user.status = status));
     },
     registerDevice: () => ok(undefined),
+    presence: () => ok(undefined),
     changePlan: async (tier) => {
       await ok(undefined);
 
@@ -266,6 +270,19 @@ export const mockApi: Api = {
       if (code !== '123456') return fail(ERROR_CODES.EMAIL_CODE_INVALID, '인증번호가 맞지 않아요');
       db.user.emailVerified = true;
       return structuredClone(db.user);
+    },
+  },
+  notifications: {
+    list: () => ok({ items: [...mockInbox], nextCursor: null }),
+    unreadCount: () => ok(mockInbox.filter((n) => !n.readAt).length),
+    markRead: (id) => {
+      const n = mockInbox.find((x) => x._id === id);
+      if (n && !n.readAt) n.readAt = new Date().toISOString();
+      return ok(undefined);
+    },
+    readAll: () => {
+      mockInbox.forEach((n) => (n.readAt ??= new Date().toISOString()));
+      return ok(undefined);
     },
   },
   upload: {
@@ -492,6 +509,11 @@ export const mockApi: Api = {
         daysLeft: daysBetween(today(), p.date),
       });
     },
+    removeDday: async (id) => {
+      await ok(undefined);
+      db.manualDdays = db.manualDdays.filter((x) => x._id !== id);
+      db.todos = db.todos.filter((t) => !(t.isDday && t._id === id));
+    },
     holidays: (year) =>
       ok(
         HOLIDAYS.map(([md, name]) => ({
@@ -593,6 +615,7 @@ export const mockApi: Api = {
     search: (q) => ok(S.searchable.filter((f) => q.trim() && f.nickname === q.trim())),
     sendRequest: () => ok(undefined),
     received: () => ok(db.requests),
+    sent: () => ok([]),
     respond: async (id, accept) => {
       await ok(undefined);
 
@@ -749,6 +772,25 @@ export const mockApi: Api = {
         url: 'https://notelinkblob.blob.core.windows.net/uploads/sample.pdf',
         fileName: db.materials.find((m) => m._id === id)?.title ?? '연습문제.pdf',
       }),
+    regenerate: (id) => {
+      const material = db.materials.find((m) => m._id === id)!;
+      return ok({
+        material: structuredClone(material),
+        job: {
+          _id: `regen-${id}`,
+          type: 'handwriting_summary',
+          status: 'queued',
+          targetType: 'material',
+          targetId: id,
+          progress: 0,
+          attempts: 0,
+          result: null,
+          error: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      });
+    },
     share: () => ok(undefined),
     checkImages: (files) =>
       ok(
@@ -1007,6 +1049,7 @@ export const mockApi: Api = {
       });
       return structuredClone(room);
     },
+    setScheduleHidden: (_id: string, hidden: boolean) => ok({ hidden }),
     schedule: () =>
       ok({
         members: [
