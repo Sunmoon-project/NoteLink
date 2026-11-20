@@ -762,6 +762,16 @@ export class QuizSetsService {
           .catch((e: unknown) => {
             if (!isDuplicateKey(e)) throw e; // 이미 넣음
           });
+        // 세트를 읽은 뒤 넣기 전에 세트가 지워졌으면(학습 폴더 삭제, #602) 넣은 카드 작업을 멈춘다. 폴더 삭제의 작업
+        // 취소(QuizCleanupService.afterRemove)가 먼저 끝났을 수 있어 넣은 쪽이 다시 본다(Codex 4차)
+        const alive = await this.sets
+          .findOne({ _id: set._id, ownerId: set.ownerId, deletedAt: null }, { _id: 1 })
+          .lean();
+        if (!alive) {
+          await this.jobs.cancelForTargets(owner, [
+            { targetType: 'quiz_set', targetIds: [set._id.toHexString()], types: [CARDS_TYPE] },
+          ]);
+        }
       }
       await this.sets
         .findOneAndUpdate({ _id: set._id, cardsPending: true }, { $set: { cardsPending: false } })

@@ -1574,6 +1574,44 @@ describe('QuizSetsService 개념 카드 작업(#558)', () => {
     warn.mockRestore();
   });
 
+  it('카드 작업 입력을 읽는 사이 세트가 지워지면(학습 폴더 삭제, #602) 넣은 카드 작업을 취소한다(Codex 4차)', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    t.finish(job._id, { questions: fullSet() });
+    // 조회가 세트를 읽은 뒤 카드 입력을 읽는 사이 폴더 삭제와 그 정리(afterRemove의 작업 취소)가 끝난다
+    const input = t.aiJobs.materialInputOf.bind(t.aiJobs);
+    const read = vi.spyOn(t.aiJobs, 'materialInputOf').mockImplementationOnce(async (...a) => {
+      const material = await input(...a);
+      t.set(quizSet._id)['deletedAt'] = new Date();
+      return material;
+    });
+    const cancel = vi.spyOn(t.aiJobs, 'cancelForTargets').mockResolvedValue(1);
+
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+
+    expect(cardJobs(t)).toHaveLength(1); // 넣은 뒤에 지운 것을 알았다
+    expect(cancel).toHaveBeenCalledWith(ME.toHexString(), [
+      { targetType: 'quiz_set', targetIds: [quizSet._id], types: ['quiz_flashcards'] },
+    ]);
+    read.mockRestore();
+    cancel.mockRestore();
+  });
+
+  it('지우지 않은 세트는 카드 작업을 넣고 취소하지 않는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+    t.finish(job._id, { questions: fullSet() });
+    const cancel = vi.spyOn(t.aiJobs, 'cancelForTargets').mockResolvedValue(0);
+
+    await t.service.findMine(ME.toHexString(), quizSet._id);
+
+    expect(cardJobs(t)).toHaveLength(1);
+    expect(cancel).not.toHaveBeenCalled();
+    cancel.mockRestore();
+  });
+
   it('카드 표시는 앱 응답에 나가지 않는다', async () => {
     const t = setup();
     const materialId = await t.addNote();
