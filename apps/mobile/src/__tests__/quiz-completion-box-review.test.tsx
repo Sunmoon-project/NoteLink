@@ -86,6 +86,14 @@ afterEach(() => {
   queryClient.clear();
   useQuizProgress.getState().reset();
 });
+// #593: 풀기 화면에 들어가면 서버가 그 세트를 started로 알려 주므로, 퀴즈 탭 맨 위 카드가 돌아오자마자
+// 들어간 세트를 빼게 목록을 다시 읽는다
+it('풀기 화면에 들어가 풀이를 시작하면 퀴즈 목록을 다시 읽는다(#593)', async () => {
+  queryClient.setQueryData(['quiz-sets'], [quizSet]);
+  await renderScreen(<QuizSolveScreen />, client());
+  await waitFor(() => expect(mockApi.quiz.startAttempt).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(queryClient.getQueryState(['quiz-sets'])?.isInvalidated).toBe(true));
+});
 async function submit() {
   await fireEvent.press(await screen.findByText('① 답'));
   await fireEvent.press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
