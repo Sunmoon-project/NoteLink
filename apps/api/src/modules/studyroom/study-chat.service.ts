@@ -16,6 +16,9 @@ const ATTACHMENT_READ_MS = 60 * 60_000;
 const ATTACHMENT_STORAGE = { image: 'image', file: 'document' } as const;
 type AttachmentKind = keyof typeof ATTACHMENT_STORAGE;
 
+/** 방 채팅 자료 카드 중 노트가 아닌 것(sharePreview.kind) */
+const SHARED_KINDS = new Set(['quiz', 'flashcards']);
+
 @Injectable()
 export class StudyChatService {
   constructor(
@@ -115,12 +118,13 @@ export class StudyChatService {
 
   /**
    * 방에 공유한 노트마다 방 채팅에 자료 카드(shared_item)를 남긴다. 글은 노트 제목, 누르면 앱이 sharedItemId 로 공유 자료를 연다.
+   * 퀴즈 · 플래시카드 카드는 종류(kind)를 sharePreview 에 적어 앱이 카드 모양을 고르게 한다(노트는 적지 않는다 — 전에 남긴 카드와 같게)
    * clientId 를 공유 항목으로 정해 같은 공유를 다시 보내도 카드는 하나다. 새로 만든 카드만 돌려준다(이미 있던 카드는 다시 보내지 않게)
    */
   async postSharedNotes(
     roomId: string,
     userId: string,
-    items: { sharedItemId: Types.ObjectId; title: string }[],
+    items: { sharedItemId: Types.ObjectId; title: string; kind?: 'quiz' | 'flashcards' }[],
   ) {
     const chat = await this.getChat(roomId, userId);
     const senderId = new Types.ObjectId(userId);
@@ -140,6 +144,7 @@ export class StudyChatService {
               type: 'shared_item',
               text: item.title,
               sharedItemId: item.sharedItemId,
+              ...(item.kind ? { sharePreview: { kind: item.kind } } : {}),
             },
           },
           { upsert: true },
@@ -463,6 +468,9 @@ export class StudyChatService {
       type: m.type,
       text: m.text ?? null,
       sharedItemId: m.sharedItemId ? String(m.sharedItemId) : null,
+      ...(m.type === 'shared_item' && SHARED_KINDS.has(m.sharePreview?.kind as string)
+        ? { sharedKind: m.sharePreview!.kind as 'quiz' | 'flashcards' }
+        : {}),
       ...(m.studyRoomInvite ? { studyRoomInvite: m.studyRoomInvite } : {}),
       ...(attachment ? { attachment } : {}),
       createdAt: m.createdAt?.toISOString(),

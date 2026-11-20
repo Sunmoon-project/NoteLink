@@ -47,3 +47,13 @@ RoomSharedItemSchema.index(
     partialFilterExpression: { itemType: 'material', deletedAt: null },
   },
 );
+
+// 같은 방에 같은 퀴즈도 한 번만(#481). 카드 묶음은 고른 조합이 매번 다를 수 있어 막지 않는다
+RoomSharedItemSchema.index(
+  { roomId: 1, quizSetId: 1 },
+  {
+    name: 'room_quiz_unique',
+    unique: true,
+    partialFilterExpression: { itemType: 'quiz', deletedAt: null },
+  },
+);

@@ -110,9 +110,10 @@ function onlyDuplicates(e: unknown): boolean {
   return errors.length > 0 && errors.every((w) => w?.code === DUPLICATE_KEY);
 }
 
-const idOrNull = (id: Types.ObjectId | null | undefined): string | null => (id ? id.toString() : null);
+const idOrNull = (id: Types.ObjectId | null | undefined): string | null =>
+  id ? id.toString() : null;
 
-function toApp(row: FlashcardRow): AppFlashcard {
+export function toAppFlashcard(row: FlashcardRow): AppFlashcard {
   return {
     _id: row._id.toString(),
     materialId: idOrNull(row.materialId),
@@ -148,7 +149,7 @@ export class FlashcardsService {
       .find({ ownerId, deletedAt: null })
       .sort({ createdAt: 1, _id: 1 })
       .lean<FlashcardRow[]>();
-    return rows.map(toApp);
+    return rows.map(toAppFlashcard);
   }
 
   /**
@@ -194,7 +195,7 @@ export class FlashcardsService {
       lastResult: null,
       deletedAt: null,
     });
-    return toApp(created.toObject() as unknown as FlashcardRow);
+    return toAppFlashcard(created.toObject() as unknown as FlashcardRow);
   }
 
   /**
@@ -207,14 +208,29 @@ export class FlashcardsService {
    * 오래된 것부터 CARD_JOB_PULL_LIMIT개씩. 작업마다 따로: 하나가 실패해도 나머지는 옮긴다
    */
   private async pullCards(ownerId: Types.ObjectId): Promise<void> {
-    let jobs: { _id: Types.ObjectId; targetId: Types.ObjectId; result?: Record<string, unknown> | null }[];
+    let jobs: {
+      _id: Types.ObjectId;
+      targetId: Types.ObjectId;
+      result?: Record<string, unknown> | null;
+    }[];
     try {
       jobs = await this.jobs
-        .find({ userId: ownerId, type: CARDS_TYPE, status: 'succeeded', 'result.flashcardsSavedAt': null })
+        .find({
+          userId: ownerId,
+          type: CARDS_TYPE,
+          status: 'succeeded',
+          'result.flashcardsSavedAt': null,
+        })
         .sort({ createdAt: 1 })
         .limit(CARD_JOB_PULL_LIMIT)
         .select({ targetId: 1, 'result.flashcards': 1 })
-        .lean<{ _id: Types.ObjectId; targetId: Types.ObjectId; result?: Record<string, unknown> | null }[]>();
+        .lean<
+          {
+            _id: Types.ObjectId;
+            targetId: Types.ObjectId;
+            result?: Record<string, unknown> | null;
+          }[]
+        >();
     } catch (e) {
       this.logger.warn(`끝난 개념 카드 작업을 읽지 못했습니다(목록은 그대로): ${errorName(e)}`);
       return;
@@ -250,7 +266,9 @@ export class FlashcardsService {
     const cards = raw
       .slice(0, AUTO_CARD_MAX)
       .map((item, index) => ({ index, card: autoCard(item) }))
-      .filter((c): c is { index: number; card: { front: string; back: string } } => c.card !== null);
+      .filter(
+        (c): c is { index: number; card: { front: string; back: string } } => c.card !== null,
+      );
     if (cards.length === 0) return;
     // 그 사이 사용자가 세트나 노트를 지웠으면 쓰지 않는다(지운 퀴즈 · 노트의 카드가 목록에 새로 생기지 않게,
     // /code-review). 노트 · 폴더 지우기는 세트를 건드리지 않아 세트만 보면 놓친다.
@@ -315,7 +333,9 @@ export class FlashcardsService {
 
   /** 내 카드만 지운다(deletedAt). 없거나 남의 카드 id, 형식이 틀린 id는 조용히 넘어간다 */
   async remove(userId: string, ids: string[]): Promise<void> {
-    const valid = [...new Set(ids.filter((id) => OBJECT_ID.test(id)))].map((id) => new Types.ObjectId(id));
+    const valid = [...new Set(ids.filter((id) => OBJECT_ID.test(id)))].map(
+      (id) => new Types.ObjectId(id),
+    );
     if (valid.length === 0) return;
     await this.cards.updateMany(
       { _id: { $in: valid }, ownerId: new Types.ObjectId(userId), deletedAt: null },

@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { RoomScreen } from '../features/studyroom/room';
-import { urlExpired } from '../features/chat/attachment';
+import { previewOf, urlExpired } from '../features/chat/attachment';
 import { useAuth } from '../stores/auth';
 import { useNet } from '../stores/net';
 import { useToast } from '../stores/toast';
@@ -360,6 +360,41 @@ describe('방 채팅 자료 카드', () => {
       }),
     );
   });
+
+  // #481: 퀴즈 · 플래시카드 카드는 종류에 맞게 보이고 공유 항목 화면으로 연다
+  it.each([
+    ['quiz', '교착 상태 퀴즈', '공유한 퀴즈', '공유한 퀴즈 · 눌러서 풀기', '퀴즈 · 교착 상태 퀴즈'],
+    [
+      'flashcards',
+      '플래시카드 2장',
+      '공유한 플래시카드',
+      '공유한 플래시카드 · 눌러서 보기',
+      '플래시카드 2장',
+    ],
+  ] as const)(
+    '%s 카드는 종류에 맞는 문구로 보이고 눌러서 공유 항목 화면을 연다',
+    async (kind, text, label, sub, preview) => {
+      const shared = { ...card, text, sharedKind: kind };
+      expect(previewOf(shared as never)).toBe(preview);
+      mockApi.social.messages.mockResolvedValue([shared]);
+      mockApi.rooms.shared.mockResolvedValue({
+        items: [{ _id: 'rs-1', itemType: kind, materialId: null, quizSetId: 'set-1', title: text }],
+        flashcards: [],
+      });
+      await renderScreen(<RoomScreen />, client());
+      await screen.findByText(room.title);
+      await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+      const button = await screen.findByLabelText(`${label} ${text} 열기`);
+      expect(screen.getByText(sub)).toBeTruthy();
+      await fireEvent.press(button);
+      await waitFor(() =>
+        expect(mockFeature).toHaveBeenCalledWith({
+          pathname: '/room/shared-item',
+          params: { id: room._id, item: 'rs-1' },
+        }),
+      );
+    },
+  );
 
   it('공유가 지워져 목록에 없으면 열지 않고 안내한다', async () => {
     mockApi.rooms.shared.mockResolvedValue({ items: [], flashcards: [] });

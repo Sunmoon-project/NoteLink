@@ -618,6 +618,8 @@ export const Message = z.object({
     })
     .optional(),
   sharedItemId: id.nullable(),
+  /** 방 채팅 자료 카드(shared_item)의 종류. 없으면 노트(#481 전에 남긴 카드 포함) */
+  sharedKind: z.enum(['quiz', 'flashcards']).optional(),
   studyRoomInvite: z
     .object({ roomId: id, title: z.string(), inviteCode: z.string() })
     .nullable()

@@ -1433,6 +1433,9 @@ const api: Api = {
       const cardIds = new Set(items.flatMap((x) => x.flashcardIds));
       return ok({ items, flashcards: d.flashcards.filter((f) => cardIds.has(f._id)) });
     },
+    // 기기 저장 모드는 나 혼자라 공유받을 멤버가 없다
+    shareStudyItem: () => needServer('퀴즈 · 플래시카드 공유'),
+    sharedItem: () => needServer('공유 자료 열기'),
     livekitToken: () => needServer('캠 · 음성'),
     report: () => needServer('신고'),
     chatRoomId: (id) => ok(`room-chat-${id}`),

@@ -1074,6 +1074,26 @@ export const mockApi: Api = {
         ],
       }),
     invite: () => ok(undefined),
+    shareStudyItem: () => ok(undefined),
+    sharedItem: (id, itemId) =>
+      ok({
+        item: {
+          _id: itemId,
+          roomId: id,
+          sharedBy: 'u-sumin',
+          sharedByNickname: '수민',
+          itemType: 'flashcards' as const,
+          quizSetId: null,
+          folderId: null,
+          materialId: null,
+          questionIds: [],
+          flashcardIds: db.flashcards.map((c) => c._id),
+          title: `플래시카드 ${db.flashcards.length}장`,
+          createdAt: now(),
+        },
+        quiz: null,
+        flashcards: structuredClone(db.flashcards),
+      }),
     shared: (id) =>
       ok({
         items: [
