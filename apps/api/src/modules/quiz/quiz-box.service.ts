@@ -13,6 +13,8 @@ const NOT_FOUND = { code: 'NOT_FOUND', message: '보관할 문제를 찾을 수 
 
 interface SetQuestions {
     _id: Types.ObjectId;
+    folderId?: Types.ObjectId | null;
+    materialId?: Types.ObjectId | null;
     questions?: QuestionRow[];
 }
 interface BoxRow {
@@ -45,13 +47,10 @@ export class QuizBoxService {
         const rows = await this.items.find({ userId: owner }).sort({ order: 1, savedAt: 1, _id: 1 }).lean<BoxRow[]>();
         if (rows.length === 0) return [];
         // 세트를 지워도(deletedAt) 문제 자체는 남아 있어서 보관함에는 계속 보인다
-        const sets = await this.sets
-            .find({
-                _id: { $in: [...new Set(rows.map((r) => r.quizSetId.toString()))].map((id) => new Types.ObjectId(id)) },
-                ownerId: owner,
-                ...(folderId === undefined ? {} : { $or: await this.inFolder(owner, new Types.ObjectId(folderId)) }),
-            })
+        const all = await this.sets
+            .find({ _id: { $in: [...new Set(rows.map((r) => r.quizSetId.toString()))].map((id) => new Types.ObjectId(id)) }, ownerId: owner })
             .lean<SetQuestions[]>();
+        const sets = folderId === undefined ? all : await this.inFolder(owner, new Types.ObjectId(folderId), all);
         const byId = new Map<string, QuestionRow>();
         for (const set of sets) for (const q of set.questions ?? []) byId.set(q._id.toString(), q);
         const result: AppQuestion[] = [];
@@ -62,10 +61,22 @@ export class QuizBoxService {
         return result;
     }
 
-    /** 그 폴더의 세트 조건: 세트의 폴더가 그 폴더이거나, 폴더가 없고 노트가 그 폴더에 있는 세트(지운 노트도 플래시 카드처럼 센다) */
-    private async inFolder(owner: Types.ObjectId, folder: Types.ObjectId) {
-        const notes = await this.materials.find({ ownerId: owner, folderId: folder }, { _id: 1 }).lean<{ _id: Types.ObjectId }[]>();
-        return [{ folderId: folder }, { folderId: null, materialId: { $in: notes.map((n) => n._id) } }];
+    /**
+     * 그 폴더의 세트만 남긴다: 세트의 폴더가 그 폴더이거나, 폴더가 없고 노트가 그 폴더에 있는 세트(지운 노트도 플래시 카드처럼 센다).
+     * 노트는 폴더 없는 세트가 있을 때만, 그 세트들의 노트만 읽는다
+     */
+    private async inFolder(owner: Types.ObjectId, folder: Types.ObjectId, sets: SetQuestions[]): Promise<SetQuestions[]> {
+        const noteIds = [...new Set(sets.filter((s) => !s.folderId && s.materialId).map((s) => s.materialId!.toString()))];
+        const inFolderNotes = new Set<string>();
+        if (noteIds.length > 0) {
+            const notes = await this.materials
+                .find({ _id: { $in: noteIds.map((id) => new Types.ObjectId(id)) }, ownerId: owner, folderId: folder }, { _id: 1 })
+                .lean<{ _id: Types.ObjectId }[]>();
+            for (const n of notes) inFolderNotes.add(n._id.toString());
+        }
+        return sets.filter((s) =>
+            s.folderId ? s.folderId.toString() === folder.toString() : !!s.materialId && inFolderNotes.has(s.materialId.toString()),
+        );
     }
 
     /**

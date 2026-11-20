@@ -148,6 +148,8 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
     const looseSetId = new Types.ObjectId();
     const legacySetId = new Types.ObjectId();
     const legacyMaterial = new Types.ObjectId();
+    const deletedSetId = new Types.ObjectId();
+    const deletedMaterial = new Types.ObjectId();
     // 폴더(#601): 내 세트는 폴더 A · B, 폴더 정보가 없는 옛 세트 하나, 남의 세트는 남의 폴더
     const FOLDER_A = new Types.ObjectId();
     const FOLDER_B = new Types.ObjectId();
@@ -156,6 +158,7 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
     const mineB = [q(1)];
     const loose = [q(1)];
     const legacy = [q(1)]; // 폴더 없이 노트(materialId)만 적힌 옛 세트 — 노트는 폴더 A에 있다
+    const ofDeletedNote = [q(1)]; // 폴더 없이 노트만 적힌 옛 세트 — 노트는 폴더 A에 있었고 지워졌다
     const theirs = [q(1)];
     const OTHER_USER = new Types.ObjectId();
     const sid = (x: { _id: Types.ObjectId }) => x._id.toString();
@@ -208,34 +211,36 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
             return { lean: () => Promise.resolve({ _id: filter._id, seq: next }) };
         }),
     };
-    // Mongo처럼 folderId: null은 값이 없거나 null인 세트와 맞는다
-    type SetCond = { folderId?: Types.ObjectId | null; materialId?: { $in: Types.ObjectId[] } };
-    const matchSet = (st: { folderId?: Types.ObjectId; materialId?: Types.ObjectId }, c: SetCond) =>
-        (!('folderId' in c) || (c.folderId === null ? st.folderId == null : same(st.folderId, c.folderId))) &&
-        (!c.materialId || (!!st.materialId && c.materialId.$in.some((i) => same(i, st.materialId))));
-    // 노트(자료): 옛 세트의 노트는 내 폴더 A, 남의 노트도 하나
+    // 노트(자료): 옛 세트의 노트는 내 폴더 A, 지운 노트도 폴더 A, 남의 노트도 하나. 조건에 deletedAt이 있으면 Mongo처럼 거른다
     const materialsModel = {
-        find: (filter: { ownerId: Types.ObjectId; folderId: Types.ObjectId }) => ({
+        find: vi.fn((filter: { _id: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; folderId: Types.ObjectId; deletedAt?: null }) => ({
             lean: () =>
                 Promise.resolve(
                     [
-                        { _id: legacyMaterial, ownerId: ME, folderId: FOLDER_A },
-                        { _id: new Types.ObjectId(), ownerId: OTHER_USER, folderId: OTHER_FOLDER },
-                    ].filter((m) => same(m.ownerId, filter.ownerId) && same(m.folderId, filter.folderId)),
+                        { _id: legacyMaterial, ownerId: ME, folderId: FOLDER_A, deletedAt: null },
+                        { _id: deletedMaterial, ownerId: ME, folderId: FOLDER_A, deletedAt: new Date() },
+                        { _id: new Types.ObjectId(), ownerId: OTHER_USER, folderId: OTHER_FOLDER, deletedAt: null },
+                    ].filter(
+                        (m) =>
+                            filter._id.$in.some((i) => same(i, m._id)) &&
+                            same(m.ownerId, filter.ownerId) &&
+                            same(m.folderId, filter.folderId) &&
+                            (!('deletedAt' in filter) || m.deletedAt === null),
+                    ),
                 ),
-        }),
+        })),
     };
     const setsModel = {
-        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; $or?: SetCond[]; 'questions._id'?: { $in: Types.ObjectId[] } }) => {
+        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; 'questions._id'?: { $in: Types.ObjectId[] } }) => {
             const all = [
                 { _id: mineSetId, ownerId: ME, folderId: FOLDER_A, deletedAt: null, questions: mine },
                 { _id: mineBSetId, ownerId: ME, folderId: FOLDER_B, deletedAt: null, questions: mineB },
                 { _id: looseSetId, ownerId: ME, deletedAt: null, questions: loose },
                 { _id: legacySetId, ownerId: ME, materialId: legacyMaterial, deletedAt: null, questions: legacy },
+                { _id: deletedSetId, ownerId: ME, materialId: deletedMaterial, deletedAt: null, questions: ofDeletedNote },
                 { _id: otherSetId, ownerId: OTHER_USER, folderId: OTHER_FOLDER, deletedAt: null, questions: theirs },
             ]
-                .filter((st) => same(st.ownerId, filter.ownerId))
-                .filter((st) => !filter.$or || filter.$or.some((c) => matchSet(st, c)));
+                .filter((st) => same(st.ownerId, filter.ownerId));
             const hit = filter._id
                 ? all.filter((st) => filter._id!.$in.some((i) => same(i, st._id)))
                 : all.filter((st) => st.questions.some((qq) => filter['questions._id']!.$in.some((i) => same(i, qq._id))));
@@ -379,10 +384,21 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         expect(idsOf(await svc().box(ME.toString(), new Types.ObjectId().toString()))).toEqual([]);
     });
 
-    it('폴더 없이 노트만 적힌 옛 세트의 문제는 그 노트의 폴더에 나온다(플래시 카드처럼)', async () => {
-        await svc().save(ME.toString(), [sid(legacy[0]!), sid(mine[0]!), sid(mineB[0]!)]);
-        expect(idsOf(await svc().box(ME.toString(), FOLDER_A.toString()))).toEqual([sid(legacy[0]!), sid(mine[0]!)]);
+    it('폴더 없이 노트만 적힌 옛 세트의 문제는 그 노트의 폴더에 나온다(플래시 카드처럼, 지운 노트도)', async () => {
+        await svc().save(ME.toString(), [sid(legacy[0]!), sid(mine[0]!), sid(ofDeletedNote[0]!), sid(mineB[0]!)]);
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_A.toString()))).toEqual([sid(legacy[0]!), sid(mine[0]!), sid(ofDeletedNote[0]!)]);
         expect(idsOf(await svc().box(ME.toString(), FOLDER_B.toString()))).toEqual([sid(mineB[0]!)]);
+        // 노트는 폴더 없는 세트의 노트만, 내 것 중에서 읽는다
+        const filter = materialsModel.find.mock.calls.at(-1)![0];
+        expect(filter._id.$in.map(String).sort()).toEqual([legacyMaterial, deletedMaterial].map(String).sort());
+        expect(filter.ownerId).toEqual(ME);
+    });
+
+    it('보관한 세트에 폴더 없는 세트가 없으면 노트를 읽지 않는다', async () => {
+        await svc().save(ME.toString(), [sid(mine[0]!), sid(mineB[0]!)]);
+        materialsModel.find.mockClear();
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_A.toString()))).toEqual([sid(mine[0]!)]);
+        expect(materialsModel.find).not.toHaveBeenCalled();
     });
 
     it('목록 폴더가 남의 폴더 · 형식이 틀린 id면 빈 목록이다', async () => {

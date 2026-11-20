@@ -622,6 +622,18 @@ it('기기 저장 모드 보관함: 폴더를 주면 그 폴더 세트의 문제
   expect(ids(await api.quiz.box(''))).toEqual([second!._id, first!._id]);
 });
 
+it('기기 저장 모드 보관함: 폴더 없이 노트만 적힌 세트는 서버처럼 그 노트의 폴더에 나온다(#601)', async () => {
+  await signup('a@test.com');
+  const f = await addFolder();
+  const { material: m } = await api.content.createMaterial(material(f._id));
+  const set = seedQuizForTests(['가']);
+  // 폴더를 적지 않던 옛 세트처럼 만든다(시드 세트는 메모리의 같은 객체라 바로 바뀐다)
+  Object.assign(set, { folderId: undefined, materialId: m._id });
+  await api.quiz.saveToBox([set.questions[0]!._id]);
+  expect((await api.quiz.box(f._id)).map((q) => q._id)).toEqual([set.questions[0]!._id]);
+  expect(await api.quiz.box('f-test')).toEqual([]);
+});
+
 it('기기 저장 모드 가입: 인증번호가 6자리 숫자가 아니면 EMAIL_CODE_INVALID, 이메일 형식이 틀리면 보내지 않는다', async () => {
   await expect(api.auth.emailVerifyCode('a@test.com', '12ab56')).rejects.toMatchObject({
     code: ERROR_CODES.EMAIL_CODE_INVALID,

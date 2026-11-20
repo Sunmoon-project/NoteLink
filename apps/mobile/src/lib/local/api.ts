@@ -1258,7 +1258,8 @@ const api: Api = {
     box: (folderId) => {
       const d = db();
       if (!folderId) return ok(d.quizBox); // 실서버(http-api)처럼 빈 값은 전체
-      // 폴더가 없는 세트는 서버처럼 노트(materialId)의 폴더로 본다
+      // 폴더가 없는 세트는 서버처럼 노트(materialId)의 폴더로 본다. 서버와 달리 기기 저장 모드는 노트를 지우면
+      // 목록에서 아예 빼므로, 지운 노트의 폴더 없는 세트는 어느 폴더에도 나오지 않는다(기기 저장 세트는 늘 폴더가 있다)
       const folderOf = (s: QuizSet) =>
         s.folderId || d.materials.find((m) => m._id === s.materialId)?.folderId;
       const inFolder = new Set(
