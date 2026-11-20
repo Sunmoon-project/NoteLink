@@ -30,3 +30,15 @@ it('잘못된 관계만 뺀다(범위 밖 · 소수 · 자기 자신 · 중복 �
   ]);
   expect(diagramOf({ kind: 'list', terms: ['a', 'b'] })?.relations).toEqual([]);
 });
+
+it('핵심어는 2~4개까지(처리기와 같음) — 5개는 도식 전체를 null', () => {
+  const t = ['a', 'b', 'c', 'd', 'e'];
+  expect(diagramOf({ kind: 'list', terms: t.slice(0, 4), relations: [] })?.terms).toHaveLength(4);
+  expect(diagramOf({ kind: 'list', terms: t, relations: [] })).toBeNull();
+});
+
+it('핵심어는 다듬은 뒤 20자까지 — 21자는 도식 전체를 null', () => {
+  const ok = '가'.repeat(20);
+  expect(diagramOf({ kind: 'list', terms: [` ${ok} `, 'b'], relations: [] })?.terms[0]).toBe(ok);
+  expect(diagramOf({ kind: 'list', terms: [ok + '가', 'b'], relations: [] })).toBeNull();
+});

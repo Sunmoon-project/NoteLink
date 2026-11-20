@@ -164,6 +164,21 @@ describe('녹음 정리 결과 → 재생 정보 (playbackFromResult)', () => {
     ]);
   });
 
+  it('핵심어가 5개이거나 21자를 넘는 도식은 처리기처럼 도식만 null(슬라이드는 남김)', () => {
+    const slide = (terms: string[]) => ({
+      title: '제목',
+      summary: '요약.',
+      startMs: 0,
+      endMs: 1000,
+      diagram: { kind: 'list', terms, relations: [] },
+    });
+    for (const terms of [['a', 'b', 'c', 'd', 'e'], ['가'.repeat(21), 'b']]) {
+      const { slides } = playbackFromResult({ sentences: [], slides: [slide(terms)] });
+      expect(slides).toHaveLength(1);
+      expect(slides[0]?.diagram).toBeNull();
+    }
+  });
+
   it('문장의 단어 시각(words)을 초로 바꿔 대본 구간에 함께 넘긴다(앱 자막 채움 · 립싱크)', () => {
     const out = playbackFromResult({
       sentences: [
