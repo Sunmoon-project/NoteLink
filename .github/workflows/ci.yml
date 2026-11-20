@@ -119,6 +119,25 @@ jobs:
         env:
           MONGODB_VERIFY_URI: mongodb://127.0.0.1:27017/?directConnection=true
         run: npm run test -w apps/api -- test/materials-share-real-db.test.ts
+      # 트랜잭션을 쓰는 시험은 replica set이 있어야 돈다. 위 mongodb 서비스(standalone)는 그대로 두고 27018에 하나 더 띄운다
+      - name: Replica set MongoDB 띄우기
+        run: |
+          docker run -d --name mongo-rs -p 27018:27017 mongo:8.0.0 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do
+            docker exec mongo-rs mongosh --quiet --eval 'db.adminCommand("ping").ok' >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec mongo-rs mongosh --quiet --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "127.0.0.1:27017" }] })'
+          for i in $(seq 1 30); do
+            [ "$(docker exec mongo-rs mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && exit 0
+            sleep 2
+          done
+          echo "::error::replica set이 primary가 되지 않았습니다"
+          exit 1
+      - name: Replica set MongoDB integration
+        env:
+          MONGODB_VERIFY_URI: mongodb://127.0.0.1:27018/?directConnection=true
+        run: npm run test -w apps/api -- test/materials-regenerate-real-db.test.ts test/quiz-first-review-real-db.test.ts test/friends-sent-real-db.test.ts test/room-share-cards-real-db.test.ts
       - name: Test
         run: npm test
 

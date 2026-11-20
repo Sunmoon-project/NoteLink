@@ -691,6 +691,9 @@ export function ResultScreen() {
         setRegenJob(null);
         // 노트 조회가 끝난 작업의 결과를 옮긴다
         await m.refetch();
+        // 녹음 플레이어는 슬라이드 · 대본을 따로(['recording', id]) 불러오므로, 옮긴 뒤 그것도 새로 읽는다
+        if (j.status === 'succeeded')
+          await qc.invalidateQueries({ queryKey: ['recording', id], exact: true });
         toast(
           j.status === 'succeeded'
             ? '결과를 새로 만들었어요'
