@@ -306,6 +306,16 @@ export interface Api {
     setScheduleHidden(id: string, hidden: boolean): Promise<{ hidden: boolean }>;
     invite(id: string, userIds: string[]): Promise<void>;
     shared(id: string): Promise<{ items: RoomSharedItem[]; flashcards: Flashcard[] }>;
+    /** 내 퀴즈 하나 또는 고른 플래시카드들을 방에 공유(방 채팅에 자료 카드가 올라간다, #481) */
+    shareStudyItem(
+      id: string,
+      body: { kind: 'quiz'; quizSetId: string } | { kind: 'flashcards'; flashcardIds: string[] },
+    ): Promise<void>;
+    /** 방에 공유된 퀴즈(문제 · 정답) · 플래시카드 묶음 열기. 방 멤버만 */
+    sharedItem(
+      id: string,
+      itemId: string,
+    ): Promise<{ item: RoomSharedItem; quiz: QuizSet | null; flashcards: Flashcard[] }>;
     livekitToken(id: string): Promise<{ token: string; url: string }>;
     report(p: {
       roomId: string;

@@ -312,7 +312,7 @@ export class StudyChatGateway {
   async postSharedNotes(
     roomId: string,
     userId: string,
-    items: { sharedItemId: Types.ObjectId; title: string }[],
+    items: { sharedItemId: Types.ObjectId; title: string; kind?: 'quiz' | 'flashcards' }[],
   ) {
     const { chatRoomId, messages } = await this.chat.postSharedNotes(roomId, userId, items);
     for (const message of messages)

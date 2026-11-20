@@ -1564,8 +1564,9 @@ function useOpenShared(roomId: string) {
     }
   };
   const openItem = (item: RoomSharedItem) => {
-    if (item.itemType === 'quiz' && item.quizSetId)
-      openFeature({ pathname: '/play/solve', params: { setId: item.quizSetId, from: 'room' } });
+    // 퀴즈 · 카드 묶음은 남의 것이라 내 풀이 · 카드 화면이 아니라 공유 항목 화면에서 연다(기록은 남기지 않는다, #481)
+    if (item.itemType === 'quiz' || item.itemType === 'flashcards')
+      openFeature({ pathname: '/room/shared-item', params: { id: roomId, item: item._id } });
     else if (item.itemType === 'material' && item.materialId)
       void openMaterial(item, item.materialId);
     else toast('이 자료를 열 수 없어요');
@@ -1590,7 +1591,7 @@ function useOpenShared(roomId: string) {
 export function RoomCardsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const shared = useQuery({ queryKey: ['room-shared', id], queryFn: () => api.rooms.shared(id) });
-  const others = shared.data?.items.filter((i) => i.itemType !== 'flashcards') ?? [];
+  const others = shared.data?.items ?? [];
   const { openItem } = useOpenShared(id);
   // 방 채팅에 올린 사진 · 파일도 여기서 모아 본다(1:1 채팅 「주고받은 자료」와 같은 방식, 최근 것부터)
   const chatId = useQuery({ queryKey: ['room-chat', id], queryFn: () => api.rooms.chatRoomId(id) });
@@ -1630,7 +1631,7 @@ export function RoomCardsScreen() {
               아직 공유된 자료가 없어요
             </Text>
           )}
-        {others.length > 0 && <Label>공유한 노트</Label>}
+        {others.length > 0 && <Label>공유한 자료</Label>}
         {others.map((item) => (
           <Pressable
             key={item._id}
@@ -1640,7 +1641,12 @@ export function RoomCardsScreen() {
           >
             <Text className="flex-1 text-footnote font-semibold text-ink">{item.title}</Text>
             <Text className="text-caption2 text-sub">
-              {item.sharedByNickname} · {item.itemType === 'quiz' ? '퀴즈' : '자료'}
+              {item.sharedByNickname} ·{' '}
+              {item.itemType === 'quiz'
+                ? '퀴즈'
+                : item.itemType === 'flashcards'
+                  ? '플래시카드'
+                  : '노트'}
             </Text>
           </Pressable>
         ))}
