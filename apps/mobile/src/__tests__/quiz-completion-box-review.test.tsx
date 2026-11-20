@@ -205,6 +205,30 @@ it('오늘의 복습 세트를 마치면 보관함에 담지 않고 오늘의 �
   );
   expect(mockApi.quiz.saveToBox).not.toHaveBeenCalled();
 });
+// #595: 오늘의 복습인지는 세트의 reviewDay로 본다. 캐시가 비었거나(앱을 다시 켜고 이어 풀기) 지난 날 사본이어도 담지 않는다
+it.each([
+  ['오늘의 복습 캐시가 비어 있어도', undefined],
+  ['지난 날 복습 사본이라 캐시가 다른 세트여도', { _id: 'today-set', status: 'ready' }],
+])(
+  '%s reviewDay가 있는 세트를 마치면 보관함에 담지 않고 오늘의 복습을 다시 읽는다(#595)',
+  async (_, today) => {
+    mockApi.quiz.set.mockResolvedValue({ ...quizSet, reviewDay: '2026-11-19' });
+    if (today) queryClient.setQueryData(['today-review'], today);
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+    await renderScreen(<QuizSolveScreen />, client());
+    await submit();
+    await waitFor(() => expect(router.replace).toHaveBeenCalled());
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['today-review'] });
+    expect(mockApi.quiz.saveToBox).not.toHaveBeenCalled();
+    invalidate.mockRestore();
+  },
+);
+it('reviewDay가 null인 일반 세트는 지금처럼 보관함에 담는다(#595)', async () => {
+  mockApi.quiz.set.mockResolvedValue({ ...quizSet, reviewDay: null });
+  await renderScreen(<QuizSolveScreen />, client());
+  await submit();
+  await waitFor(() => expect(mockApi.quiz.saveToBox).toHaveBeenCalledWith([question._id]));
+});
 // #561: 끝낸 세트는 목록의 completed가 바뀌므로 퀴즈 탭 맨 위 카드가 돌아오자마자 바뀌게 목록을 다시 읽는다
 it.each([
   ['맞춤 퀴즈', false],
@@ -239,6 +263,25 @@ it('결과 화면은 맞힌 문제 번호를 초록, 틀린 문제 번호를 빨
   expect(String(screen.getByLabelText('2번 틀림').props.className)).toContain('bg-danger');
   expect(screen.queryByText('선택')).toBeNull();
   expect(screen.queryByRole('button', { name: '보관함에 저장' })).toBeNull();
+});
+it.each([
+  ['오늘의 복습 세트', '2026-11-19', false],
+  ['일반 세트', null, true],
+])(
+  '%s 결과 화면은 실제로 보관함에 담을 때만 담았다고 안내한다(#595)',
+  async (_, reviewDay, saved) => {
+    mockApi.quiz.set.mockResolvedValue({ ...quizSet, reviewDay });
+    await renderScreen(<QuizReviewScreen />, client());
+    expect(await screen.findByText(/AI 해설을 볼 수 있어요/)).toBeTruthy();
+    expect(screen.queryByText(/보관함에 담았어요/) !== null).toBe(saved);
+  },
+);
+it('reviewDay를 보내지 않는 옛 서버라도 오늘의 복습 캐시와 같은 세트면 결과 화면에 담았다고 안내하지 않는다(#595)', async () => {
+  mockApi.quiz.set.mockResolvedValue(quizSet);
+  queryClient.setQueryData(['today-review'], { _id: quizSet._id, status: 'ready' });
+  await renderScreen(<QuizReviewScreen />, client());
+  expect(await screen.findByText(/AI 해설을 볼 수 있어요/)).toBeTruthy();
+  expect(screen.queryByText(/보관함에 담았어요/)).toBeNull();
 });
 it('결과를 모르면(results 없음) 번호를 기본색으로 두고 맞힌 수를 보여 주지 않는다', async () => {
   await renderScreen(<QuizReviewScreen />, client());

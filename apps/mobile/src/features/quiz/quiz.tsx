@@ -752,6 +752,8 @@ export function QuizSolveScreen() {
       setId: string;
       attemptId: string;
       questionIds: string[];
+      /** 풀던 세트의 reviewDay. 오늘의 복습 세트(지난 날 사본 포함)만 날짜가 있다(#595) */
+      reviewDay?: string | null;
     }) => api.quiz.finish(request.attemptId),
     // 완료는 포인트를 적립하므로 응답 유실 시 자동으로 재전송하지 않는다.
     retry: false,
@@ -762,8 +764,10 @@ export function QuizSolveScreen() {
       if (useAuth.getState().userId !== request.owner) return;
       // 끝낸 세트는 목록에서 completed가 되므로, 퀴즈 탭 맨 위 카드가 돌아오자마자 다음 세트로 바뀌게 다시 읽는다(#561)
       void queryClient.invalidateQueries({ queryKey: ['quiz-sets'] });
+      // 오늘의 복습인지는 세트의 reviewDay로 본다. 캐시는 비어 있을 수 있고(앱을 다시 켜고 이어 풀기),
+      // 지난 날 사본이면 오늘 세트와 id가 달라서다(#595). 캐시 id 비교는 reviewDay를 보내지 않는 옛 서버용으로 남긴다
       const today = queryClient.getQueryData<{ _id: string } | null>(['today-review']);
-      if (today?._id === request.setId)
+      if (request.reviewDay || today?._id === request.setId)
         void queryClient.invalidateQueries({ queryKey: ['today-review'] });
       else
         api.quiz
@@ -957,6 +961,7 @@ export function QuizSolveScreen() {
         setId: set.data._id,
         attemptId,
         questionIds: qs.map((x) => x._id),
+        reviewDay: set.data.reviewDay,
       });
       return;
     }
@@ -1142,6 +1147,11 @@ export function QuizReviewScreen() {
       </Canvas>
     );
   if (!set.data) return <Loading />;
+  // 오늘의 복습(지난 날 사본 포함)은 보관함에 담지 않으므로 그 안내를 뺀다. 완료 처리(QuizSolveScreen)와 같게
+  // reviewDay로 보고, reviewDay를 보내지 않는 옛 서버는 오늘의 복습 캐시 id로 본다(#595)
+  const reviewCopy =
+    !!set.data.reviewDay ||
+    queryClient.getQueryData<{ _id: string } | null>(['today-review'])?._id === set.data._id;
   return (
     <Canvas>
       <Screen
@@ -1171,7 +1181,8 @@ export function QuizReviewScreen() {
             </Text>
           </View>
           <Text className="mt-1 text-caption text-sub">
-            문제를 누르면 AI 해설을 볼 수 있어요 · 푼 퀴즈는 보관함에 담았어요
+            문제를 누르면 AI 해설을 볼 수 있어요
+            {reviewCopy ? '' : ' · 푼 퀴즈는 보관함에 담았어요'}
           </Text>
         </View>
         <View className="mt-3">
