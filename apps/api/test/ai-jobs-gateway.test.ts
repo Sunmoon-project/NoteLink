@@ -1279,6 +1279,40 @@ describe('AI 작업 진행률 소켓 — 다시 시도를 다른 서버가 받�
     expect(jobs.progressOf).not.toHaveBeenCalled();
   });
 
+  it('일시 오류가 쌓인 뒤 다시 구독하기 전에 새 실행이 끝나도, 앞 실행의 오류 수로 다른 기기의 구독을 끝내지 않는다', async () => {
+    tokens.verifyAccess.mockImplementation(async () => ({ userId: 'a' }));
+    const a = await connect('a');
+    const device = await connect('a2');
+    const got = record(a);
+    const gotDevice = record(device);
+    await subscribe(a);
+    await subscribe(device);
+    table.set(JOB, failed());
+    // 앞 실행: 결과 읽기가 4번 일시 오류(한도 5번의 바로 앞)
+    for (let i = 0; i < 4; i++) {
+      jobs.findMine.mockRejectedValueOnce(new Error('db down'));
+      await gateway.poll();
+    }
+    // 다른 서버가 다시 시도하고, 앱이 다시 구독하기 전에 처리기가 새 실행을 끝낸다
+    retryOnOtherServer(queued());
+    const second = appJob({
+      status: 'succeeded',
+      progress: 100,
+      updatedAt: '2026-11-16T00:06:00.000Z',
+    });
+    table.set(JOB, second);
+    a.emit('ai:unsubscribe', { jobId: JOB });
+    await expect(subscribe(a)).resolves.toEqual({ ok: true });
+    await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: second }]));
+    // 새 실행의 결과 읽기가 한 번 일시 오류 → 그만 지켜보지 않고 다음 차례에 보낸다
+    jobs.findMine.mockRejectedValueOnce(new Error('db down'));
+    await gateway.poll();
+    await settle();
+    expect(gotDevice.done).toEqual([]);
+    await gateway.poll();
+    await vi.waitFor(() => expect(gotDevice.done).toEqual([{ jobId: JOB, job: second }]));
+  });
+
   it('서버마다 시계가 달라 새 실행이 끝난 시각(처리기)이 다시 시도 시각(API)보다 앞서도 새 결과를 보낸다', async () => {
     const a = await connect('a');
     const got = record(a);

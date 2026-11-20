@@ -143,20 +143,18 @@ export class AiJobsGateway implements OnModuleDestroy {
     const jobId = job._id;
     // 확인하는 사이 소켓이 끊겼으면 방에 넣지 않는다(끊긴 소켓을 넣으면 방에 남아 그 작업을 계속 읽음)
     if (!socket.connected) return { ok: false };
+    // 이미 지켜보던 작업을 다시 구독했으면 다른 서버가 받은 다시 시도일 수 있다(끝나지 않은 새 실행, 또는 다시 구독하기 전에
+    // 끝난 새 실행). 보내거나 방에 넣기(await) 전에 남겨, 그 전에 나간 결과 읽기(앞 실행일 수 있음)를 이 소켓 · 방에 남은
+    // 다른 기기에 보내고 방에서 빼지 않게 한다(rejoined). 끝난 작업을 보내다 쌓인 일시 오류 수도 앞 실행의 것이라 버린다
+    // (한도에 바로 닿아 새 구독을 끝내지 않게). 같은 실행이었으면 한 차례 늦게 보내고 몇 번 더 해 볼 뿐이다
     const existing = this.watched.get(jobId);
-    if (FINISHED.has(job.status)) {
-      // 다른 서버가 다시 시도를 받고 다시 구독하기 전에 새 실행까지 끝났을 수 있다. 그 전에 나간 결과 읽기(앞 실행일 수
-      // 있음)를 방에 남은 다른 기기에 보내지 않게 남긴다(rejoined). 같은 실행이었으면 한 차례 늦게 보낼 뿐이다
-      if (existing) existing.rejoined = ++this.reads;
-      socket.emit('ai:done', { jobId, job });
-      return { ok: true };
-    }
-    // 이미 지켜보던 작업인데 끝나지 않은 상태를 읽었으면 다른 서버가 받은 다시 시도일 수 있다. 방에 넣기(await) 전에 남겨,
-    // 그사이 돌아온 앞 실행의 결과를 이 소켓에 보내고 방에서 빼지 않게 한다(rejoined). 끝난 작업을 보내다 쌓인 일시 오류 수도
-    // 앞 실행의 것이라 버린다(한도에 바로 닿아 새 구독을 끝내지 않게)
     if (existing) {
       existing.rejoined = ++this.reads;
       existing.doneFailures = undefined;
+    }
+    if (FINISHED.has(job.status)) {
+      socket.emit('ai:done', { jobId, job });
+      return { ok: true };
     }
     await socket.join(roomOf(jobId));
     const progress = toProgress(job);
