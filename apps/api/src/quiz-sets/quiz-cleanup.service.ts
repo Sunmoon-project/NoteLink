@@ -16,8 +16,6 @@ export interface QuizScope {
 
 /** 오늘의 복습에서 이어졌는지 거슬러 오를 때 읽는 필드 */
 const LINEAGE = { _id: 1, reviewDay: 1, sourceSetId: 1 };
-/** 거슬러 오르는 최대 단계(고리가 생겨도 끝나게) */
-const LINEAGE_LIMIT = 50;
 interface LineageRow {
   _id: Types.ObjectId;
   reviewDay?: string | null;
@@ -78,9 +76,12 @@ export class QuizCleanupService {
     const byId = new Map(rows.map((r) => [String(r._id), r]));
     const fromToday = async (row: LineageRow): Promise<boolean> => {
       let cur: LineageRow | null = row;
-      for (let i = 0; cur && i < LINEAGE_LIMIT; i++) {
+      // 끝이나 이미 지나온 세트(고리)를 만날 때까지 오른다. 횟수로 끊지 않는다(Codex 1차)
+      const seen = new Set<string>([String(row._id)]);
+      while (cur) {
         if (cur.reviewDay) return true;
-        if (!cur.sourceSetId) return false;
+        if (!cur.sourceSetId || seen.has(String(cur.sourceSetId))) return false;
+        seen.add(String(cur.sourceSetId));
         cur =
           byId.get(String(cur.sourceSetId)) ??
           (await this.sets.findOne({ _id: cur.sourceSetId }, LINEAGE, opts).lean<LineageRow>());

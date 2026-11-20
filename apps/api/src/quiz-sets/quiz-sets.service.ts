@@ -462,10 +462,13 @@ export class QuizSetsService {
     set: Pick<QuizSetRow, 'reviewDay' | 'sourceSetId'>,
   ): Promise<boolean> {
     let cur: Pick<QuizSetRow, 'reviewDay' | 'sourceSetId'> | null = set;
-    // 이어 만든 횟수만큼만 거슬러 오른다(고리가 생겨도 끝나게 횟수를 묶음)
-    for (let i = 0; cur && i < INPUT_SET_LIMIT; i++) {
+    // 끝(원본 없음)이나 이미 지나온 세트(고리)를 만날 때까지 오른다. 횟수로 끊지 않는다(Codex 1차: 끊으면 깊이 이어 만든
+    // 오늘의 복습 세트를 지울 수 있음). 고리 안의 세트는 모두 reviewDay가 없어 오늘의 복습에서 온 것이 아니다
+    const seen = new Set<string>();
+    while (cur) {
       if (cur.reviewDay) return true;
-      if (!cur.sourceSetId) return false;
+      if (!cur.sourceSetId || seen.has(String(cur.sourceSetId))) return false;
+      seen.add(String(cur.sourceSetId));
       cur = await this.sets
         .findOne({ _id: cur.sourceSetId }, { reviewDay: 1, sourceSetId: 1 })
         .lean<Pick<QuizSetRow, 'reviewDay' | 'sourceSetId'>>();

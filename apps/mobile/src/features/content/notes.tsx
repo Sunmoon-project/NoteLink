@@ -81,21 +81,40 @@ const FOLDER_DELETE_KEYS = [
   'today-review',
 ] as const;
 const refreshAfterFolderDelete = (qc: QueryClient, folderId: string) => {
-  // 풀던 퀴즈가 지운 폴더의 세트면 진행도 지운다: 퀴즈 홈의 「이어서 풀기」가 지운 세트를 가리키지 않게(code-review 3차).
-  // 오늘의 복습 · 거기서 이어 만든 오답 복습은 서버가 남기므로(여러 폴더 문제를 섞음) 진행도 남긴다
-  const progress = useQuizProgress.getState().progress;
-  if (progress) {
-    const list = qc.getQueryData<QuizSet[]>(['quiz-sets']) ?? [];
-    const find = (id: string) =>
-      qc.getQueryData<QuizSet>(['quiz-set', id]) ?? list.find((s) => s._id === id);
-    const set = find(progress.setId);
-    let cur = set;
-    for (let i = 0; cur && !cur.reviewDay && cur.sourceSetId && i < 50; i++)
-      cur = find(cur.sourceSetId);
-    if (set?.folderId === folderId && !cur?.reviewDay) useQuizProgress.getState().reset();
-  }
+  void dropDeletedProgress(qc, folderId);
   for (const key of FOLDER_DELETE_KEYS) void qc.invalidateQueries({ queryKey: [key] });
 };
+
+/**
+ * 풀던 퀴즈가 지운 폴더의 세트면 진행도 지운다: 퀴즈 홈의 「이어서 풀기」가 지운 세트를 가리키지 않게(code-review 3차).
+ * 오늘의 복습 · 거기서 이어 만든 오답 복습은 서버가 남기므로(여러 폴더 문제를 섞음) 진행도 남긴다. 캐시로 원본까지 거슬러
+ * 오를 수 있을 때만 캐시로 정하고, 모르면 서버에 그 세트가 남았는지 물어 404일 때만 지운다(Codex 1차)
+ */
+async function dropDeletedProgress(qc: QueryClient, folderId: string) {
+  const progress = useQuizProgress.getState().progress;
+  if (!progress) return;
+  const list = qc.getQueryData<QuizSet[]>(['quiz-sets']) ?? [];
+  const find = (id: string) =>
+    qc.getQueryData<QuizSet>(['quiz-set', id]) ?? list.find((s) => s._id === id);
+  const set = find(progress.setId);
+  if (set && set.folderId !== folderId) return;
+  const seen = new Set<string>();
+  let cur = set;
+  while (cur && !cur.reviewDay && cur.sourceSetId && !seen.has(cur.sourceSetId)) {
+    seen.add(cur.sourceSetId);
+    cur = find(cur.sourceSetId);
+  }
+  if (cur?.reviewDay) return;
+  const gone =
+    set && cur && !cur.sourceSetId
+      ? true
+      : await api.quiz.set(progress.setId).then(
+          () => false,
+          (e: unknown) => e instanceof ApiError && e.status === 404,
+        );
+  if (gone && useQuizProgress.getState().progress?.setId === progress.setId)
+    useQuizProgress.getState().reset();
+}
 const KIND = {
   recording: [Mic, '녹음'],
   handwriting: [PenLine, '필기'],

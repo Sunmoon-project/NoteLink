@@ -3,7 +3,7 @@ import { QueryClient } from '@tanstack/react-query';
 import type { Folder, Material, StudyRoom } from '@notelink/shared';
 import { FolderScreen, NoteListScreen } from '../features/content/notes';
 import { RoomListScreen } from '../features/studyroom/room';
-import { api } from '../lib/api';
+import { api, ApiError } from '../lib/api';
 import { useQuizProgress } from '../stores/quiz-progress';
 import { renderScreen, setParams } from '../test-utils';
 
@@ -110,6 +110,23 @@ describe('풀던 퀴즈 진행(퀴즈 홈 「이어서 풀기」, code-review 3�
     progressOn('other');
     await deleteWith([{ _id: 'other', folderId: 'f2', sourceSetId: null }]);
     expect(useQuizProgress.getState().progress?.setId).toBe('other');
+  });
+
+  it('원본을 캐시에서 찾지 못하면 서버에 묻고, 세트가 남아 있으면(오늘의 복습에서 이어 만든 세트 등) 진행을 남긴다(Codex 1차)', async () => {
+    progressOn('child');
+    const ask = jest.spyOn(api.quiz, 'set').mockResolvedValue({ _id: 'child' } as never);
+    await deleteWith([{ _id: 'child', folderId: 'f1', sourceSetId: 'not-cached' }]);
+    await waitFor(() => expect(ask).toHaveBeenCalledWith('child'));
+    expect(useQuizProgress.getState().progress?.setId).toBe('child');
+  });
+
+  it('캐시에 없는 세트는 서버가 404일 때만 진행을 지운다(Codex 1차)', async () => {
+    progressOn('unknown');
+    jest
+      .spyOn(api.quiz, 'set')
+      .mockRejectedValue(new ApiError('NOT_FOUND', '퀴즈를 찾을 수 없어요', 404));
+    await deleteWith([]);
+    await waitFor(() => expect(useQuizProgress.getState().progress).toBeNull());
   });
 });
 
