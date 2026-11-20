@@ -803,16 +803,19 @@ export function ResultScreen() {
   );
 }
 
+/** 섹션마다 카드 하나 */
 export const NoteBody = ({ sections }: { sections: { heading: string; body: string }[] }) => (
-  <Card className="gap-5 p-5">
+  <View className="gap-3">
     {sections.map((s, i) => (
       // 제목이 같은(또는 빈) 섹션이 있어도 겹치지 않게 순서로 구분한다
-      <View key={i}>
-        <Text className="text-subhead font-bold text-ink">{s.heading}</Text>
-        <RichBody body={s.body} />
+      <View key={i} testID="note-section">
+        <Card className="p-5">
+          <Text className="text-subhead font-bold text-ink">{s.heading}</Text>
+          <RichBody body={s.body} />
+        </Card>
       </View>
     ))}
-  </Card>
+  </View>
 );
 
 /** 편집기 툴바가 넣는 표시(# 제목 · - 목록 · **굵게** · [글](주소))를 기호 없이 그린다 */
