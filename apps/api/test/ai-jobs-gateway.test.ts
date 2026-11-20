@@ -1072,3 +1072,219 @@ describe('AI 작업 진행률 소켓 (ai:subscribe)', () => {
     await vi.waitFor(() => expect(got.progress.at(-1)?.progress).toBe(33), { timeout: 3000 });
   });
 });
+
+/**
+ * API 서버가 여러 대일 때(App Service 스케일아웃). 앱의 소켓은 이 서버(gateway)에 붙어 있고, 다시 시도 요청(HTTP)은
+ * 다른 서버가 받는다. 두 서버는 같은 DB(table)를 보지만 다시 시도 알림(AiJobsService.onRetry)은 그 요청을 받은 서버
+ * 안에서만 불린다(#526 B11)
+ */
+describe('AI 작업 진행률 소켓 — 다시 시도를 다른 서버가 받을 때', () => {
+  /** 다른 서버의 게이트웨이가 등록한 다시 시도 알림 */
+  const otherListeners = new Set<(jobId: string) => void>();
+  let other: INestApplication;
+
+  beforeAll(async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        AiJobsGateway,
+        {
+          provide: AiJobsService,
+          useValue: {
+            onRetry: (listener: (jobId: string) => void) => {
+              otherListeners.add(listener);
+              return () => otherListeners.delete(listener);
+            },
+            findMine: async (userId: string, jobId: string) => {
+              const job = table.get(jobId.toLowerCase());
+              if (!job || userId !== 'a') throw new NotFoundException();
+              return job;
+            },
+            progressOf: async () => [],
+          },
+        },
+        { provide: TokenService, useValue: tokens },
+      ],
+    }).compile();
+    other = module.createNestApplication();
+    await other.listen(0, '127.0.0.1');
+  });
+  afterAll(async () => {
+    await other?.close();
+  });
+
+  /** 다른 서버의 AiJobsService.retry: 같은 DB의 작업을 새 실행으로 바꾸고 그 서버 안의 알림만 부른다 */
+  const retryOnOtherServer = (job: AppAiJob) => {
+    table.set(job._id, job);
+    otherListeners.forEach((listener) => listener(job._id));
+  };
+  const queued = () =>
+    appJob({
+      status: 'queued',
+      progress: 0,
+      step: undefined,
+      updatedAt: '2026-11-16T00:05:00.000Z',
+    });
+  const failed = () => appJob({ status: 'failed', progress: 30, error: 'AI_JOB_FAILED' });
+
+  it('결과 읽기가 다시 시도를 쓰기 전에 나가 다시 구독을 마친 뒤에 돌아와도 앞 실행의 결과를 보내지 않고 새 구독을 지킨다', async () => {
+    tokens.verifyAccess.mockImplementation(async () => ({ userId: 'a' }));
+    const a = await connect('a');
+    // 같은 사용자의 다른 기기: 다시 시도하지 않아 다시 구독하지도 않는다
+    const device = await connect('a2');
+    const got = record(a);
+    const gotDevice = record(device);
+    await subscribe(a);
+    await subscribe(device);
+    table.set(JOB, failed());
+    // done()의 결과 읽기: 다시 시도 전의 값(failed)을 읽은 채 응답만 늦게 온다
+    let releaseRead!: () => void;
+    const original = jobs.findMine.getMockImplementation()!;
+    jobs.findMine.mockImplementationOnce(async (userId: string, jobId: string) => {
+      const before = await original(userId, jobId);
+      await blocked((release) => (releaseRead = release));
+      return before;
+    });
+    const polling = gateway.poll();
+    await vi.waitFor(() => expect(releaseRead).toBeTypeOf('function'));
+    // 다시 시도는 다른 서버가 받고, 응답을 받은 앱은 이 서버에 붙은 소켓으로 해지한 뒤 다시 구독한다
+    retryOnOtherServer(queued());
+    a.emit('ai:unsubscribe', { jobId: JOB });
+    await expect(subscribe(a)).resolves.toEqual({ ok: true });
+    releaseRead();
+    await polling;
+    await settle();
+    // 앞 실행의 실패를 받으면 앱(ConvertScreen.finish)은 지금 실행이 실패한 것으로 보고 조회도 멈춘다
+    expect(got.done).toEqual([]);
+    expect(gotDevice.done).toEqual([]);
+    // 두 소켓 모두 방에 남아 새 실행의 진행률 · 결과를 받는다
+    table.set(JOB, appJob({ progress: 15, updatedAt: '2026-11-16T00:05:00.000Z' }));
+    await gateway.poll();
+    await vi.waitFor(() => {
+      expect(got.progress.at(-1)?.progress).toBe(15);
+      expect(gotDevice.progress.at(-1)?.progress).toBe(15);
+    });
+    const second = appJob({
+      status: 'succeeded',
+      progress: 100,
+      updatedAt: '2026-11-16T00:06:00.000Z',
+    });
+    table.set(JOB, second);
+    await gateway.poll();
+    await vi.waitFor(() => {
+      expect(got.done).toEqual([{ jobId: JOB, job: second }]);
+      expect(gotDevice.done).toEqual([{ jobId: JOB, job: second }]);
+    });
+  });
+
+  it('일시 오류가 쌓인 뒤 결과 읽기를 기다리는 사이 다시 시도 · 다시 구독되고 그 읽기가 실패해도 새 구독을 지킨다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    table.set(JOB, failed());
+    // 결과 읽기가 4번 일시 오류(한도 5번의 바로 앞)
+    for (let i = 0; i < 4; i++) {
+      jobs.findMine.mockRejectedValueOnce(new Error('db down'));
+      await gateway.poll();
+    }
+    // 다섯 번째 읽기: 기다리는 사이 다른 서버가 다시 시도 · 이 서버로 다시 구독, 그 뒤 일시 오류로 실패
+    let releaseRead!: () => void;
+    jobs.findMine.mockImplementationOnce(async () => {
+      await blocked((release) => (releaseRead = release));
+      throw new Error('db down');
+    });
+    const polling = gateway.poll();
+    await vi.waitFor(() => expect(releaseRead).toBeTypeOf('function'));
+    retryOnOtherServer(queued());
+    a.emit('ai:unsubscribe', { jobId: JOB });
+    await expect(subscribe(a)).resolves.toEqual({ ok: true });
+    releaseRead();
+    await polling;
+    // 앞 실행의 일시 오류로 그만 지켜보지 않는다(finish()가 새 구독까지 방에서 빼지 않음)
+    table.set(JOB, appJob({ progress: 15, updatedAt: '2026-11-16T00:05:00.000Z' }));
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.progress.at(-1)?.progress).toBe(15));
+    expect(got.done).toEqual([]);
+  });
+
+  it('다시 구독한 소켓: 앞 실행에서 쌓인 일시 오류 수는 처음부터 센다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    table.set(JOB, failed());
+    for (let i = 0; i < 4; i++) {
+      jobs.findMine.mockRejectedValueOnce(new Error('db down'));
+      await gateway.poll();
+    }
+    retryOnOtherServer(queued());
+    a.emit('ai:unsubscribe', { jobId: JOB });
+    await expect(subscribe(a)).resolves.toEqual({ ok: true });
+    // 새 실행이 끝났는데 결과 읽기가 한 번 일시 오류 → 그만 지켜보지 않고 다음 차례에 보낸다
+    const second = appJob({
+      status: 'succeeded',
+      progress: 100,
+      updatedAt: '2026-11-16T00:06:00.000Z',
+    });
+    table.set(JOB, second);
+    jobs.findMine.mockRejectedValueOnce(new Error('db down'));
+    await gateway.poll();
+    await settle();
+    expect(got.done).toEqual([]);
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: second }]));
+  });
+
+  it('서버마다 시계가 달라 새 실행이 끝난 시각(처리기)이 다시 시도 시각(API)보다 앞서도 새 결과를 보낸다', async () => {
+    const a = await connect('a');
+    const got = record(a);
+    await subscribe(a);
+    table.set(JOB, failed());
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.done).toHaveLength(1));
+    // 다시 시도는 다른 서버(시계가 빠름)가 00:05로 쓰고, 앱은 이 서버로 다시 구독한다
+    retryOnOtherServer(queued());
+    a.emit('ai:unsubscribe', { jobId: JOB });
+    await expect(subscribe(a)).resolves.toEqual({ ok: true });
+    // 처리기(시계가 느림)가 곧바로 실패로 끝내며 00:04로 쓴다
+    const second = appJob({
+      status: 'failed',
+      progress: 0,
+      error: 'INVALID_FILE',
+      updatedAt: '2026-11-16T00:04:00.000Z',
+    });
+    table.set(JOB, second);
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.done.at(-1)).toEqual({ jobId: JOB, job: second }));
+    expect(got.done).toHaveLength(2);
+    // 보낸 뒤에는 더 지켜보지 않는다(끝없이 다시 읽지 않음)
+    jobs.progressOf.mockClear();
+    await gateway.poll();
+    expect(jobs.progressOf).not.toHaveBeenCalled();
+  });
+
+  it('다시 구독하지 않은 기기만 지켜봐도, 새 실행을 읽으면 앞 실행에서 쌓인 일시 오류 수를 처음부터 센다', async () => {
+    const device = await connect('a');
+    const got = record(device);
+    await subscribe(device);
+    table.set(JOB, failed());
+    for (let i = 0; i < 4; i++) {
+      jobs.findMine.mockRejectedValueOnce(new Error('db down'));
+      await gateway.poll();
+    }
+    // 다시 시도는 다른 기기 · 다른 서버에서. 이 서버는 반복 읽기로만 새 실행을 본다
+    retryOnOtherServer(queued());
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.progress.at(-1)?.status).toBe('queued'));
+    const second = appJob({
+      status: 'succeeded',
+      progress: 100,
+      updatedAt: '2026-11-16T00:06:00.000Z',
+    });
+    table.set(JOB, second);
+    jobs.findMine.mockRejectedValueOnce(new Error('db down'));
+    await gateway.poll();
+    await settle();
+    expect(got.done).toEqual([]);
+    await gateway.poll();
+    await vi.waitFor(() => expect(got.done).toEqual([{ jobId: JOB, job: second }]));
+  });
+});
