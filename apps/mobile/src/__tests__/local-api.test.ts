@@ -634,6 +634,28 @@ it('기기 저장 모드 보관함: 폴더 없이 노트만 적힌 세트는 서
   expect(await api.quiz.box('f-test')).toEqual([]);
 });
 
+it('기기 저장 모드: 폴더를 지워도 보관 문제 · 카드는 남아 전체(폴더 없이)로 보고 지울 수 있다(#601 Codex 2차)', async () => {
+  await signup('a@test.com');
+  const f = await addFolder();
+  const set = seedQuizForTests(['가']);
+  Object.assign(set, { folderId: f._id });
+  const q = set.questions[0]!;
+  await api.quiz.saveToBox([q._id]);
+  const c = await api.quiz.saveFlashcard({ front: '앞', back: '뒤', sourceQuestionId: q._id });
+  expect(c.folderId).toBe(f._id);
+  await api.content.deleteFolder(f._id);
+  // 1단계 폴더 목록에서는 사라지지만 항목은 남는다
+  expect((await api.content.folders()).map((x) => x._id)).not.toContain(f._id);
+  const ids = (list: { _id: string }[]) => list.map((x) => x._id);
+  expect(ids(await api.quiz.box())).toEqual([q._id]);
+  expect(ids(await api.quiz.flashcards())).toEqual([c._id]);
+  // 전체 보기에서 지우면 사라진다
+  await api.quiz.deleteFromBox([q._id]);
+  await api.quiz.deleteFlashcards([c._id]);
+  expect(await api.quiz.box()).toEqual([]);
+  expect(await api.quiz.flashcards()).toEqual([]);
+});
+
 it('기기 저장 모드 가입: 인증번호가 6자리 숫자가 아니면 EMAIL_CODE_INVALID, 이메일 형식이 틀리면 보내지 않는다', async () => {
   await expect(api.auth.emailVerifyCode('a@test.com', '12ab56')).rejects.toMatchObject({
     code: ERROR_CODES.EMAIL_CODE_INVALID,

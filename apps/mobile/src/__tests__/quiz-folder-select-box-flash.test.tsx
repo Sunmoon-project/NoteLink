@@ -351,3 +351,42 @@ describe('전체 보기(지운 노트의 항목, Codex 1차)', () => {
     });
   });
 });
+
+// Codex 2차: 전체 보기에서 지운 노트의 항목을 실제로 골라 지우면 목록에서 빠진다(저장 → 폴더 삭제 → 조회 → 삭제의
+// 기기 저장 동작은 local-api.test.ts 「폴더를 지워도 보관 문제 · 카드는 남아…」가 본다)
+describe('전체 보기에서 지우기(Codex 2차)', () => {
+  it('보관함 전체에서 지운 노트의 문제를 골라 지우면 목록에서 빠진다', async () => {
+    let left = [question('q9')];
+    const box = jest.spyOn(api.quiz, 'box').mockImplementation(async () => left);
+    const del = jest.spyOn(api.quiz, 'deleteFromBox').mockImplementation(async (ids) => {
+      left = left.filter((q) => !ids.includes(q._id));
+    });
+    setParams({ folderId: ALL_FOLDERS });
+    await renderScreen(<QuizBoxScreen />, client());
+    expect(await screen.findByText('보관 문제 q9')).toBeTruthy();
+    await fireEvent.press(screen.getByText('선택'));
+    await fireEvent.press(screen.getByLabelText('보관함 선택 q9'));
+    await fireEvent.press(screen.getByText('선택 삭제'));
+    expect(del).toHaveBeenCalledWith(['q9']);
+    expect(await screen.findByText('보관한 퀴즈가 없어요')).toBeTruthy();
+    // 다시 읽어도 전체(폴더 없이)로 묻는다
+    for (const call of box.mock.calls) expect(call).toEqual([undefined]);
+  });
+
+  it('카드 모아보기 전체에서 지운 노트의 카드를 골라 지우면 목록에서 빠진다', async () => {
+    let left = [card('m1', 'fA'), card('g1', 'fGone')];
+    jest.spyOn(api.quiz, 'flashcards').mockImplementation(async () => left);
+    const del = jest.spyOn(api.quiz, 'deleteFlashcards').mockImplementation(async (ids) => {
+      left = left.filter((c) => !ids.includes(c._id));
+    });
+    setParams({ folderId: ALL_FOLDERS });
+    await renderScreen(<CardsScreen />, client());
+    expect(await screen.findByText('앞 g1')).toBeTruthy();
+    await fireEvent.press(screen.getByText('선택'));
+    await fireEvent.press(screen.getByText('앞 g1'));
+    await fireEvent.press(screen.getByText('1장 삭제'));
+    expect(del).toHaveBeenCalledWith(['g1']);
+    await waitFor(() => expect(screen.queryByText('앞 g1')).toBeNull());
+    expect(screen.getByText('앞 m1')).toBeTruthy();
+  });
+});
