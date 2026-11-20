@@ -1258,9 +1258,12 @@ const api: Api = {
     box: (folderId) => {
       const d = db();
       if (!folderId) return ok(d.quizBox); // 실서버(http-api)처럼 빈 값은 전체
+      // 폴더가 없는 세트는 서버처럼 노트(materialId)의 폴더로 본다
+      const folderOf = (s: QuizSet) =>
+        s.folderId || d.materials.find((m) => m._id === s.materialId)?.folderId;
       const inFolder = new Set(
         d.quizSets
-          .filter((s) => s.folderId === folderId)
+          .filter((s) => folderOf(s) === folderId)
           .flatMap((s) => s.questions.map((q) => q._id)),
       );
       return ok(d.quizBox.filter((q) => inFolder.has(q._id)));

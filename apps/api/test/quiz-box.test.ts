@@ -12,6 +12,7 @@ import { QuizBoxService } from '../src/modules/quiz/quiz-box.service.js';
 import { BOX_MAX_IDS } from '../src/modules/quiz/dto/quiz-box.dto.js';
 import type { QuizBoxCounter } from '../src/modules/quiz/schemas/quiz-box-counter.schema.js';
 import type { QuizBoxItem } from '../src/modules/quiz/schemas/quiz-box-item.schema.js';
+import type { Material } from '../src/modules/content/schemas/material.schema.js';
 import type { QuizSet } from '../src/modules/quiz/schemas/quiz-set.schema.js';
 
 const ME = new Types.ObjectId();
@@ -91,6 +92,7 @@ describe('퀴즈 보관함 API 주소 · 입력 검증', () => {
 describe('QuizBoxService (가짜 모델)', () => {
     const itemsModel = { find: vi.fn(), bulkWrite: vi.fn(), deleteMany: vi.fn() };
     const setsModel = { find: vi.fn() };
+    const materialsModel = { find: vi.fn() };
     const countersModel = { findOneAndUpdate: vi.fn() };
     const connection = { transaction: (fn: (tx: object) => Promise<unknown>) => fn({}) };
     const svc = () =>
@@ -99,6 +101,7 @@ describe('QuizBoxService (가짜 모델)', () => {
             countersModel as unknown as Model<QuizBoxCounter>,
             setsModel as unknown as Model<QuizSet>,
             connection as unknown as Connection,
+            materialsModel as unknown as Model<Material>,
         );
 
     it('담기: 형식이 틀린 id가 있으면 DB를 거치지 않고 404', async () => {
@@ -143,6 +146,8 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
     const otherSetId = new Types.ObjectId();
     const mineBSetId = new Types.ObjectId();
     const looseSetId = new Types.ObjectId();
+    const legacySetId = new Types.ObjectId();
+    const legacyMaterial = new Types.ObjectId();
     // 폴더(#601): 내 세트는 폴더 A · B, 폴더 정보가 없는 옛 세트 하나, 남의 세트는 남의 폴더
     const FOLDER_A = new Types.ObjectId();
     const FOLDER_B = new Types.ObjectId();
@@ -150,6 +155,7 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
     const mine = [q(1, { choices: ['가', '나'], conceptTags: ['개념'], difficulty: '상' }), q(2), q(3), q(4)];
     const mineB = [q(1)];
     const loose = [q(1)];
+    const legacy = [q(1)]; // 폴더 없이 노트(materialId)만 적힌 옛 세트 — 노트는 폴더 A에 있다
     const theirs = [q(1)];
     const OTHER_USER = new Types.ObjectId();
     const sid = (x: { _id: Types.ObjectId }) => x._id.toString();
@@ -202,16 +208,34 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
             return { lean: () => Promise.resolve({ _id: filter._id, seq: next }) };
         }),
     };
+    // Mongo처럼 folderId: null은 값이 없거나 null인 세트와 맞는다
+    type SetCond = { folderId?: Types.ObjectId | null; materialId?: { $in: Types.ObjectId[] } };
+    const matchSet = (st: { folderId?: Types.ObjectId; materialId?: Types.ObjectId }, c: SetCond) =>
+        (!('folderId' in c) || (c.folderId === null ? st.folderId == null : same(st.folderId, c.folderId))) &&
+        (!c.materialId || (!!st.materialId && c.materialId.$in.some((i) => same(i, st.materialId))));
+    // 노트(자료): 옛 세트의 노트는 내 폴더 A, 남의 노트도 하나
+    const materialsModel = {
+        find: (filter: { ownerId: Types.ObjectId; folderId: Types.ObjectId }) => ({
+            lean: () =>
+                Promise.resolve(
+                    [
+                        { _id: legacyMaterial, ownerId: ME, folderId: FOLDER_A },
+                        { _id: new Types.ObjectId(), ownerId: OTHER_USER, folderId: OTHER_FOLDER },
+                    ].filter((m) => same(m.ownerId, filter.ownerId) && same(m.folderId, filter.folderId)),
+                ),
+        }),
+    };
     const setsModel = {
-        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; folderId?: Types.ObjectId; 'questions._id'?: { $in: Types.ObjectId[] } }) => {
+        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; $or?: SetCond[]; 'questions._id'?: { $in: Types.ObjectId[] } }) => {
             const all = [
                 { _id: mineSetId, ownerId: ME, folderId: FOLDER_A, deletedAt: null, questions: mine },
                 { _id: mineBSetId, ownerId: ME, folderId: FOLDER_B, deletedAt: null, questions: mineB },
                 { _id: looseSetId, ownerId: ME, deletedAt: null, questions: loose },
+                { _id: legacySetId, ownerId: ME, materialId: legacyMaterial, deletedAt: null, questions: legacy },
                 { _id: otherSetId, ownerId: OTHER_USER, folderId: OTHER_FOLDER, deletedAt: null, questions: theirs },
             ]
                 .filter((st) => same(st.ownerId, filter.ownerId))
-                .filter((st) => !('folderId' in filter) || ('folderId' in st && same(st.folderId, filter.folderId)));
+                .filter((st) => !filter.$or || filter.$or.some((c) => matchSet(st, c)));
             const hit = filter._id
                 ? all.filter((st) => filter._id!.$in.some((i) => same(i, st._id)))
                 : all.filter((st) => st.questions.some((qq) => filter['questions._id']!.$in.some((i) => same(i, qq._id))));
@@ -239,6 +263,7 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
             countersModel as unknown as Model<QuizBoxCounter>,
             setsModel as unknown as Model<QuizSet>,
             connection as unknown as Connection,
+            materialsModel as unknown as Model<Material>,
         );
     const idsOf = (list: { _id: string }[]) => list.map((x) => x._id);
 
@@ -352,6 +377,12 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         expect(idsOf(await svc().box(ME.toString(), FOLDER_B.toString().toUpperCase()))).toEqual([sid(mineB[0]!)]);
         // 폴더 정보가 없는 세트의 문제는 어느 폴더에도 나오지 않는다
         expect(idsOf(await svc().box(ME.toString(), new Types.ObjectId().toString()))).toEqual([]);
+    });
+
+    it('폴더 없이 노트만 적힌 옛 세트의 문제는 그 노트의 폴더에 나온다(플래시 카드처럼)', async () => {
+        await svc().save(ME.toString(), [sid(legacy[0]!), sid(mine[0]!), sid(mineB[0]!)]);
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_A.toString()))).toEqual([sid(legacy[0]!), sid(mine[0]!)]);
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_B.toString()))).toEqual([sid(mineB[0]!)]);
     });
 
     it('목록 폴더가 남의 폴더 · 형식이 틀린 id면 빈 목록이다', async () => {
