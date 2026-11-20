@@ -618,6 +618,8 @@ it('기기 저장 모드 보관함: 폴더를 주면 그 폴더 세트의 문제
   expect(ids(await api.quiz.box())).toEqual([second!._id, first!._id]);
   expect(ids(await api.quiz.box('f-test'))).toEqual([second!._id, first!._id]);
   expect(await api.quiz.box('other-folder')).toEqual([]);
+  // 실서버(http-api)처럼 빈 값은 폴더를 주지 않은 것과 같다
+  expect(ids(await api.quiz.box(''))).toEqual([second!._id, first!._id]);
 });
 
 it('기기 저장 모드 가입: 인증번호가 6자리 숫자가 아니면 EMAIL_CODE_INVALID, 이메일 형식이 틀리면 보내지 않는다', async () => {

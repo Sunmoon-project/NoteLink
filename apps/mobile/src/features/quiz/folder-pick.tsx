@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Folder as FolderIcon } from 'lucide-react-native';
 import type { Folder } from '@notelink/shared';
 import { Text } from '@/components/text';
-import { Btn, Canvas, Card, Empty, Header, Screen, Search } from '@/components/ui';
+import { Btn, Canvas, Card, Empty, Header, Loading, Screen, Search } from '@/components/ui';
 import { NetBanner } from '@/components/NetBanner';
 import { api } from '@/lib/api';
 import { seoul } from '@/lib/dates';
@@ -76,6 +76,14 @@ export function FolderPickScreen({
             title="아직 노트가 없어요"
             body="노트를 올리고 퀴즈를 만들면 노트별로 모여요."
           />
+        )}
+        {folders.isPending && (
+          <View accessible accessibilityLabel="노트를 불러오는 중">
+            <Loading />
+          </View>
+        )}
+        {folders.isSuccess && folders.data.length > 0 && list.length === 0 && (
+          <Text className="py-16 text-center text-footnote text-sub">찾는 노트가 없어요</Text>
         )}
         <FolderGrid folders={list} onPick={onPick} />
       </Screen>

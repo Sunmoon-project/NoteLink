@@ -1257,7 +1257,7 @@ const api: Api = {
     // 서버처럼 폴더를 주면 그 폴더 세트의 문제만, 세트를 못 찾는(폴더를 모르는) 문제는 뺀다(#601)
     box: (folderId) => {
       const d = db();
-      if (folderId === undefined) return ok(d.quizBox);
+      if (!folderId) return ok(d.quizBox); // 실서버(http-api)처럼 빈 값은 전체
       const inFolder = new Set(
         d.quizSets
           .filter((s) => s.folderId === folderId)

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { PATHS, type Flashcard, type Folder, type Question, type QuizSet } from '@notelink/shared';
@@ -106,6 +106,21 @@ describe('퀴즈 보관함', () => {
     await httpApi.quiz.box();
     expect(get).toHaveBeenNthCalledWith(1, PATHS.quizBox, { folderId: 'fA' });
     expect(get).toHaveBeenNthCalledWith(2, PATHS.quizBox, undefined);
+  });
+});
+
+describe('폴더 고르기(1단계)', () => {
+  it('폴더를 읽는 동안 불러오는 중을, 검색에 맞는 노트가 없으면 안내를 보인다', async () => {
+    let done!: (v: typeof FOLDERS) => void;
+    jest.spyOn(api.content, 'folders').mockReturnValue(new Promise((r) => (done = r)));
+    await renderScreen(<QuizBoxScreen />, client());
+    expect(screen.getByLabelText('노트를 불러오는 중')).toBeTruthy();
+    await act(async () => done(FOLDERS));
+    expect(await screen.findByText('수학 폴더')).toBeTruthy();
+    expect(screen.queryByLabelText('노트를 불러오는 중')).toBeNull();
+    await fireEvent.changeText(screen.getByPlaceholderText('노트 검색'), '과학');
+    expect(screen.getByText('찾는 노트가 없어요')).toBeTruthy();
+    expect(screen.queryByText('수학 폴더')).toBeNull();
   });
 });
 
