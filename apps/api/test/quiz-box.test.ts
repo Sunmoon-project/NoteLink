@@ -12,6 +12,7 @@ import { QuizBoxService } from '../src/modules/quiz/quiz-box.service.js';
 import { BOX_MAX_IDS } from '../src/modules/quiz/dto/quiz-box.dto.js';
 import type { QuizBoxCounter } from '../src/modules/quiz/schemas/quiz-box-counter.schema.js';
 import type { QuizBoxItem } from '../src/modules/quiz/schemas/quiz-box-item.schema.js';
+import type { Material } from '../src/modules/content/schemas/material.schema.js';
 import type { QuizSet } from '../src/modules/quiz/schemas/quiz-set.schema.js';
 
 const ME = new Types.ObjectId();
@@ -64,6 +65,22 @@ describe('퀴즈 보관함 API 주소 · 입력 검증', () => {
         expect(fake.remove).toHaveBeenCalledWith(ME.toString(), [ID]);
     });
 
+    // #601 보관함을 노트(학습 폴더)별로 본다. folderId가 없으면 옛 앱처럼 전체
+    it('GET에 folderId를 주면 서비스에 그대로 넘기고, 없으면 전체(undefined)를 묻는다', async () => {
+        fake.box.mockClear();
+        expect((await http().get('/api/v1/quiz-box').query({ folderId: ID }).set(AUTH)).status).toBe(200);
+        expect(fake.box).toHaveBeenLastCalledWith(ME.toString(), ID);
+        expect((await http().get('/api/v1/quiz-box').set(AUTH)).status).toBe(200);
+        expect(fake.box).toHaveBeenLastCalledWith(ME.toString(), undefined);
+    });
+
+    it('folderId가 여러 개이거나 너무 길면 400', async () => {
+        fake.box.mockClear();
+        expect((await http().get(`/api/v1/quiz-box?folderId=${ID}&folderId=${ID}`).set(AUTH)).status).toBe(400);
+        expect((await http().get('/api/v1/quiz-box').query({ folderId: 'a'.repeat(101) }).set(AUTH)).status).toBe(400);
+        expect(fake.box).not.toHaveBeenCalled();
+    });
+
     it('questionIds가 배열의 문자열이 아니거나 너무 많거나 모르는 필드가 있으면 400', async () => {
         for (const body of [{}, { questionIds: 'a' }, { questionIds: [1] }, { questionIds: ['a'.repeat(101)] }, { questionIds: Array(BOX_MAX_IDS + 1).fill(ID) }, { questionIds: [], x: 1 }]) {
             expect((await http().post('/api/v1/quiz-box').set(AUTH).send(body)).status).toBe(400);
@@ -75,6 +92,7 @@ describe('퀴즈 보관함 API 주소 · 입력 검증', () => {
 describe('QuizBoxService (가짜 모델)', () => {
     const itemsModel = { find: vi.fn(), bulkWrite: vi.fn(), deleteMany: vi.fn() };
     const setsModel = { find: vi.fn() };
+    const materialsModel = { find: vi.fn() };
     const countersModel = { findOneAndUpdate: vi.fn() };
     const connection = { transaction: (fn: (tx: object) => Promise<unknown>) => fn({}) };
     const svc = () =>
@@ -83,6 +101,7 @@ describe('QuizBoxService (가짜 모델)', () => {
             countersModel as unknown as Model<QuizBoxCounter>,
             setsModel as unknown as Model<QuizSet>,
             connection as unknown as Connection,
+            materialsModel as unknown as Model<Material>,
         );
 
     it('담기: 형식이 틀린 id가 있으면 DB를 거치지 않고 404', async () => {
@@ -125,7 +144,21 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
     });
     const mineSetId = new Types.ObjectId();
     const otherSetId = new Types.ObjectId();
+    const mineBSetId = new Types.ObjectId();
+    const looseSetId = new Types.ObjectId();
+    const legacySetId = new Types.ObjectId();
+    const legacyMaterial = new Types.ObjectId();
+    const deletedSetId = new Types.ObjectId();
+    const deletedMaterial = new Types.ObjectId();
+    // 폴더(#601): 내 세트는 폴더 A · B, 폴더 정보가 없는 옛 세트 하나, 남의 세트는 남의 폴더
+    const FOLDER_A = new Types.ObjectId();
+    const FOLDER_B = new Types.ObjectId();
+    const OTHER_FOLDER = new Types.ObjectId();
     const mine = [q(1, { choices: ['가', '나'], conceptTags: ['개념'], difficulty: '상' }), q(2), q(3), q(4)];
+    const mineB = [q(1)];
+    const loose = [q(1)];
+    const legacy = [q(1)]; // 폴더 없이 노트(materialId)만 적힌 옛 세트 — 노트는 폴더 A에 있다
+    const ofDeletedNote = [q(1)]; // 폴더 없이 노트만 적힌 옛 세트 — 노트는 폴더 A에 있었고 지워졌다
     const theirs = [q(1)];
     const OTHER_USER = new Types.ObjectId();
     const sid = (x: { _id: Types.ObjectId }) => x._id.toString();
@@ -178,12 +211,38 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
             return { lean: () => Promise.resolve({ _id: filter._id, seq: next }) };
         }),
     };
+    const setFinds: { filter: { _id?: { $in: Types.ObjectId[] } }; projection?: object }[] = []; // 세트 조회 기록
+    // 노트(자료): 옛 세트의 노트는 내 폴더 A, 지운 노트도 폴더 A, 남의 노트도 하나. 조건에 deletedAt이 있으면 Mongo처럼 거른다
+    const materialsModel = {
+        find: vi.fn((filter: { _id: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; folderId: Types.ObjectId; deletedAt?: null }) => ({
+            lean: () =>
+                Promise.resolve(
+                    [
+                        { _id: legacyMaterial, ownerId: ME, folderId: FOLDER_A, deletedAt: null },
+                        { _id: deletedMaterial, ownerId: ME, folderId: FOLDER_A, deletedAt: new Date() },
+                        { _id: new Types.ObjectId(), ownerId: OTHER_USER, folderId: OTHER_FOLDER, deletedAt: null },
+                    ].filter(
+                        (m) =>
+                            filter._id.$in.some((i) => same(i, m._id)) &&
+                            same(m.ownerId, filter.ownerId) &&
+                            same(m.folderId, filter.folderId) &&
+                            (!('deletedAt' in filter) || m.deletedAt === null),
+                    ),
+                ),
+        })),
+    };
     const setsModel = {
-        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; 'questions._id'?: { $in: Types.ObjectId[] } }) => {
+        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; 'questions._id'?: { $in: Types.ObjectId[] } }, projection?: object) => {
+            setFinds.push({ filter, projection });
             const all = [
-                { _id: mineSetId, ownerId: ME, deletedAt: null, questions: mine },
-                { _id: otherSetId, ownerId: OTHER_USER, deletedAt: null, questions: theirs },
-            ].filter((st) => same(st.ownerId, filter.ownerId));
+                { _id: mineSetId, ownerId: ME, folderId: FOLDER_A, deletedAt: null, questions: mine },
+                { _id: mineBSetId, ownerId: ME, folderId: FOLDER_B, deletedAt: null, questions: mineB },
+                { _id: looseSetId, ownerId: ME, deletedAt: null, questions: loose },
+                { _id: legacySetId, ownerId: ME, materialId: legacyMaterial, deletedAt: null, questions: legacy },
+                { _id: deletedSetId, ownerId: ME, materialId: deletedMaterial, deletedAt: null, questions: ofDeletedNote },
+                { _id: otherSetId, ownerId: OTHER_USER, folderId: OTHER_FOLDER, deletedAt: null, questions: theirs },
+            ]
+                .filter((st) => same(st.ownerId, filter.ownerId));
             const hit = filter._id
                 ? all.filter((st) => filter._id!.$in.some((i) => same(i, st._id)))
                 : all.filter((st) => st.questions.some((qq) => filter['questions._id']!.$in.some((i) => same(i, qq._id))));
@@ -211,6 +270,7 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
             countersModel as unknown as Model<QuizBoxCounter>,
             setsModel as unknown as Model<QuizSet>,
             connection as unknown as Connection,
+            materialsModel as unknown as Model<Material>,
         );
     const idsOf = (list: { _id: string }[]) => list.map((x) => x._id);
 
@@ -315,6 +375,57 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
     it('삽입이 실패하면 오류를 그대로 던진다', async () => {
         itemsModel.bulkWrite.mockImplementationOnce(() => Promise.reject(new Error('db down')));
         await expect(svc().save(ME.toString(), [sid(mine[0]!)])).rejects.toThrow('db down');
+    });
+
+    it('목록에 폴더를 주면 그 폴더 세트의 문제만 담은 순서로, 안 주면 지금처럼 전체를 돌려준다(#601)', async () => {
+        await svc().save(ME.toString(), [sid(mineB[0]!), sid(loose[0]!), sid(mine[1]!), sid(mine[0]!)]);
+        expect(idsOf(await svc().box(ME.toString()))).toEqual([sid(mineB[0]!), sid(loose[0]!), sid(mine[1]!), sid(mine[0]!)]);
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_A.toString()))).toEqual([sid(mine[1]!), sid(mine[0]!)]);
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_B.toString().toUpperCase()))).toEqual([sid(mineB[0]!)]);
+        // 폴더 정보가 없는 세트의 문제는 어느 폴더에도 나오지 않는다
+        expect(idsOf(await svc().box(ME.toString(), new Types.ObjectId().toString()))).toEqual([]);
+    });
+
+    it('폴더 없이 노트만 적힌 옛 세트의 문제는 그 노트의 폴더에 나온다(플래시 카드처럼, 지운 노트도)', async () => {
+        await svc().save(ME.toString(), [sid(legacy[0]!), sid(mine[0]!), sid(ofDeletedNote[0]!), sid(mineB[0]!)]);
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_A.toString()))).toEqual([sid(legacy[0]!), sid(mine[0]!), sid(ofDeletedNote[0]!)]);
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_B.toString()))).toEqual([sid(mineB[0]!)]);
+        // 노트는 폴더 없는 세트의 노트만, 내 것 중에서 읽는다
+        const filter = materialsModel.find.mock.calls.at(-1)![0];
+        expect(filter._id.$in.map(String).sort()).toEqual([legacyMaterial, deletedMaterial].map(String).sort());
+        expect(filter.ownerId).toEqual(ME);
+    });
+
+    it('폴더로 열면 세트의 폴더 · 노트만 먼저 읽고, 문제는 그 폴더 세트만 읽는다', async () => {
+        await svc().save(ME.toString(), [sid(mine[0]!), sid(mineB[0]!), sid(loose[0]!), sid(legacy[0]!)]);
+        setFinds.length = 0;
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_B.toString()))).toEqual([sid(mineB[0]!)]);
+        expect(setFinds).toHaveLength(2);
+        expect(setFinds[0]!.projection).toEqual({ folderId: 1, materialId: 1 });
+        expect(setFinds[1]!.projection).toBeUndefined();
+        expect(setFinds[1]!.filter._id!.$in.map(String)).toEqual([String(mineBSetId)]);
+        // 그 폴더 세트가 없으면 문제를 읽지 않는다
+        setFinds.length = 0;
+        expect(await svc().box(ME.toString(), new Types.ObjectId().toString())).toEqual([]);
+        expect(setFinds).toHaveLength(1);
+    });
+
+    it('보관한 세트에 폴더 없는 세트가 없으면 노트를 읽지 않는다', async () => {
+        await svc().save(ME.toString(), [sid(mine[0]!), sid(mineB[0]!)]);
+        materialsModel.find.mockClear();
+        expect(idsOf(await svc().box(ME.toString(), FOLDER_A.toString()))).toEqual([sid(mine[0]!)]);
+        expect(materialsModel.find).not.toHaveBeenCalled();
+    });
+
+    it('목록 폴더가 남의 폴더 · 형식이 틀린 id면 빈 목록이다', async () => {
+        await svc().save(ME.toString(), [sid(mine[0]!)]);
+        expect(await svc().box(ME.toString(), OTHER_FOLDER.toString())).toEqual([]);
+        expect(await svc().box(ME.toString(), 'not-an-id')).toEqual([]);
+    });
+
+    it('목록 폴더가 빈 값이면 주지 않은 것처럼 전체다(앱 http-api · 기기 저장 모드와 같게)', async () => {
+        await svc().save(ME.toString(), [sid(mineB[0]!), sid(mine[0]!)]);
+        expect(idsOf(await svc().box(ME.toString(), ''))).toEqual([sid(mineB[0]!), sid(mine[0]!)]);
     });
 
     it('남의 세트 문제가 섞이면 아무것도 담지 않고 404이고 번호도 받지 않는다', async () => {
