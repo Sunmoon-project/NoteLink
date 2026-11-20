@@ -130,25 +130,49 @@ it('ready 세트가 없을 때만 빈 상태를 보여 준다', async () => {
   expect(screen.queryByText('유사 퀴즈')).toBeNull();
 });
 
-// #593: 한 번 들어간(started) 「다시 보기」 세트(sourceSetId)는 맨 위 카드로 고르지 않는다
-it('들어간 적 있는 다시 보기 세트는 건너뛰고, 처음 다 만들어진 다시 보기 세트는 보여 준다', async () => {
+// #593 결정(11/20): 맨 위 「퀴즈 풀기」 카드는 세트 종류와 상관없이 한 번 들어간(started) 세트를 고르지 않는다.
+// 처음 다 만들어진(들어간 적 없는) 세트는 그대로 보여 준다
+it.each([
+  ['맞춤 퀴즈', { sourceSetId: null }],
+  ['유사 퀴즈', { sourceSetId: 'a' }],
+  ['다시 보기', { sourceSetId: 'b' }],
+] as const)(
+  '들어간 적 있는 %s 세트는 끝까지 풀지 않았어도 카드에서 빠진다',
+  async (title, over) => {
+    jest
+      .spyOn(api.quiz, 'sets')
+      .mockResolvedValue([
+        quizSet('seen', `본 ${title}`, { ...over, started: true }),
+        quizSet('fresh', `새 ${title}`, over),
+      ]);
+    await renderScreen(<QuizHomeScreen />, client());
+    expect(await screen.findByText(`새 ${title} · 2문제`)).toBeTruthy();
+    expect(screen.queryByText(`본 ${title} · 2문제`)).toBeNull();
+  },
+);
+
+// #593 결정: 「이어서 풀기」(풀던 진행)는 숨기지 않는다. 들어갔다 끝내지 않고 나온 세트도 이어 풀 수 있어야 한다.
+// 진행은 메모리라 앱을 다시 켜면 사라지고, 그때는 started로 카드에서 빠진다
+it('들어간 세트라도 풀던 진행이 있으면 이어서 풀기로 남긴다', async () => {
   jest
     .spyOn(api.quiz, 'sets')
     .mockResolvedValue([
       quizSet('seen', '본 퀴즈 · 다시 보기', { sourceSetId: 'a', started: true }),
-      quizSet('fresh', '새 퀴즈 · 다시 보기', { sourceSetId: 'b' }),
+      quizSet('next', '안 푼 퀴즈'),
     ]);
+  useQuizProgress.getState().save({
+    setId: 'seen',
+    attemptId: 'a1',
+    index: 1,
+    answerText: '',
+    pick: null,
+    right: null,
+    results: [true],
+  });
   await renderScreen(<QuizHomeScreen />, client());
-  expect(await screen.findByText('새 퀴즈 · 다시 보기 · 2문제')).toBeTruthy();
-  expect(screen.queryByText('본 퀴즈 · 다시 보기 · 2문제')).toBeNull();
-});
-
-it('다시 보기가 아닌 세트는 들어간 적이 있어도 지금처럼 카드에 보여 준다', async () => {
-  jest
-    .spyOn(api.quiz, 'sets')
-    .mockResolvedValue([quizSet('mine', '맞춤 퀴즈', { sourceSetId: null, started: true })]);
-  await renderScreen(<QuizHomeScreen />, client());
-  expect(await screen.findByText('맞춤 퀴즈 · 2문제')).toBeTruthy();
+  expect(await screen.findByText('본 퀴즈 · 다시 보기 · 2문제')).toBeTruthy();
+  expect(screen.getByText('이어서 풀기')).toBeTruthy();
+  expect(screen.queryByText('안 푼 퀴즈 · 2문제')).toBeNull();
 });
 
 describe('만드는 중 안내(#593)', () => {

@@ -145,8 +145,9 @@ export function QuizHomeScreen() {
   const progress = useQuizProgress((s) => s.progress);
   // 바로가기(유사 퀴즈 등)는 다 푼 세트도 쓰므로 가장 최근 ready 세트, 맨 위 카드는 아직 끝까지 풀지 않은 세트(#561).
   // 맨 위 카드는 오늘의 복습 세트(reviewDay, 지난 날 사본 포함)도 고르지 않는다. todayId는 reviewDay를 보내지 않는
-  // 옛 서버에서도 오늘 세트를 빼려고 함께 본다. 「다시 보기」 세트(sourceSetId)는 한 번 들어갔으면(started) 끝까지
-  // 풀지 않았어도 고르지 않는다(#593)
+  // 옛 서버에서도 오늘 세트를 빼려고 함께 본다. 세트 종류(맞춤 · 유사 · 「다시 보기」)와 상관없이 한 번 들어갔으면
+  // (started) 끝까지 풀지 않았어도 고르지 않는다(#593). 단 풀던 진행(progress)이 있으면 그 세트를 「이어서 풀기」로
+  // 남긴다(#593 결정: 이어 풀 길을 지킴). 진행은 메모리라 앱을 다시 켜면 사라지고, 그때는 started로 빠진다
   const recent = sets.data?.find((s) => s.status === 'ready');
   const latest = progress
     ? (sets.data?.find((s) => s._id === progress.setId) ?? {
@@ -156,11 +157,7 @@ export function QuizHomeScreen() {
       })
     : sets.data?.find(
         (s) =>
-          s.status === 'ready' &&
-          !s.completed &&
-          !s.reviewDay &&
-          s._id !== todayId &&
-          !(s.sourceSetId && s.started),
+          s.status === 'ready' && !s.completed && !s.reviewDay && s._id !== todayId && !s.started,
       );
   const shortcutSetId = progress ? latest?._id : recent?._id;
   // 유사 퀴즈는 서버가 끝까지 푼 풀이로 만들므로 끝낸 세트(completed) 중 가장 최근 것을 넘긴다. 가장 최근 세트는
@@ -790,7 +787,7 @@ export function QuizSolveScreen() {
       api.quiz
         .startAttempt(set.data._id)
         .then((a) => {
-          // 풀이가 생기면 목록이 이 세트를 started로 알려 준다: 퀴즈 탭 맨 위 카드가 들어간 「다시 보기」 세트를
+          // 풀이가 생기면 목록이 이 세트를 started로 알려 준다: 퀴즈 탭 맨 위 카드가 들어간 세트를
           // 돌아오자마자 빼게 다시 읽는다(#593)
           void queryClient.invalidateQueries({ queryKey: ['quiz-sets'] });
           if (active && ownsProgress()) setAttemptId(a._id);

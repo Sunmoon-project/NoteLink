@@ -108,7 +108,7 @@ export interface AppQuizSet {
   completed?: boolean;
   /**
    * 세트를 시작한 풀이가 있으면(끝내지 않았어도) true, 없으면 넣지 않는다(withCompleted). 풀기 화면에 들어가면
-   * 풀이가 생기므로 「들어간 적 있음」 뜻이다. 퀴즈 탭 맨 위 카드는 들어간 「다시 보기」 세트를 건너뛴다(#593)
+   * 풀이가 생기므로 「들어간 적 있음」 뜻이다. 퀴즈 탭 맨 위 카드는 들어간 세트를 건너뛴다(#593)
    */
   started?: boolean;
   /** 오늘의 복습 세트만: 그 복습 날짜(서울 YYYY-MM-DD, seoulDay). 다른 세트는 null(#561) */
