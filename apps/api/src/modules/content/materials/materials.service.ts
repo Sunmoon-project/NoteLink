@@ -972,7 +972,8 @@ export class MaterialsService implements OnModuleInit {
   /**
    * 노트 수정. `saved: true` 는 저장 시각을 남기고(이미 저장했으면 그대로), `summary` 는 소제목 · 본문을 통째로
    * 바꾸고 개념 이름 캐시(concepts)를 비운다(글이 바뀌었으므로 다음 퀴즈 때 처리기가 다시 뽑는다).
-   * 둘 중 하나만 보낸다. 정리가 끝나기 전의 노트는 요약을 고칠 수 없다(끝나면 결과가 덮어쓴다): 409 NOTE_NOT_READY
+   * 둘 중 하나만 보낸다. 정리가 끝나기 전의 노트는 요약을 고칠 수 없다(끝나면 결과가 덮어쓴다): 409 NOTE_NOT_READY.
+   * 「다시 만들기」 중인 노트(processing.regenJobId)도 같다(성공하면 새 결과가 고친 글을 덮어쓴다)
    */
   async update(userId: string, id: string, dto: UpdateMaterialDto): Promise<AppMaterial> {
     const owner = new Types.ObjectId(userId);
@@ -991,10 +992,19 @@ export class MaterialsService implements OnModuleInit {
           code: ERROR_CODES.NOTE_NOT_READY,
           message: '아직 정리 중인 노트라 요약을 고칠 수 없어요',
         });
+      const regenerating = () =>
+        notReady('다시 만드는 중이라 요약을 고칠 수 없어요. 끝나면 다시 해 주세요');
+      if (row.processing.regenJobId) throw regenerating();
       const sections = dto.summary.sections.map((s) => ({ heading: s.heading, body: s.body }));
-      await this.materials.updateOne(mine, {
-        $set: { summary: { sections, points: row.summary?.points ?? [] }, concepts: [] },
-      });
+      // 읽은 뒤 다시 만들기가 자리를 잡았으면 새 결과가 고친 글을 덮어쓰므로, 저장 조건에서도 다시 만드는 중이 아닐 때만 바꾼다
+      const saved = await this.materials.updateOne(
+        { ...mine, 'processing.status': 'done', 'processing.regenJobId': null },
+        { $set: { summary: { sections, points: row.summary?.points ?? [] }, concepts: [] } },
+      );
+      if (saved.matchedCount === 0) {
+        if (!(await this.currentRow(row))) throw notFound('노트');
+        throw regenerating();
+      }
     } else {
       await this.materials.updateOne({ ...mine, savedAt: null }, { $set: { savedAt: new Date() } });
     }

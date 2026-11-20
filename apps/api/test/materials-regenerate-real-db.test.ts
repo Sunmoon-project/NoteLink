@@ -1,6 +1,6 @@
 // 진짜 MongoDB에서 정리 결과 「다시 만들기」(POST /materials/:id/regenerate)를 본다(실기기 피드백 2026-11-20).
 // 확인하는 것: 같은 원본 · 같은 입력으로 새 작업을 넣고 노트는 옛 결과를 유지, 새 작업이 성공하면 그때만 결과를 바꿈,
-// 실패하면 옛 결과 유지, 남의 노트 404, 정리 중 · 다시 만드는 중 409, 한 사람 하루(서울 자정) 3회, 넘으면 429.
+// 실패하면 옛 결과 유지, 다시 만드는 중 요약 수정 409, 남의 노트 404, 정리 중 · 다시 만드는 중 409, 한 사람 하루(서울 자정) 3회, 넘으면 429.
 // MONGODB_VERIFY_URI가 localhost일 때만 돌고, 전용 DB를 만들고 끝나면 지운다.
 // 실행: MONGODB_VERIFY_URI="mongodb://localhost:27047/?directConnection=true" npx vitest run test/materials-regenerate-real-db.test.ts
 import { ConflictException, HttpException, NotFoundException } from '@nestjs/common';
@@ -148,6 +148,35 @@ describe.skipIf(!isLocal)('진짜 DB 정리 결과 다시 만들기', () => {
       await expect(service.regenerate(me.toHexString(), id)).resolves.toBeTruthy();
     },
   );
+
+  // codex 3차 재리뷰(PR #581): 다시 만드는 중에도 노트는 done 이라 요약을 고칠 수 있었고, 끝나면 새 결과가 고친 글을 덮어썼다
+  it('다시 만드는 동안에는 요약을 고칠 수 없고(409), 끝난 뒤 고친 글은 그대로 남는다', async () => {
+    const { id } = await doneNote();
+    const { job } = await service.regenerate(me.toHexString(), id);
+    const edit = { summary: { sections: [{ heading: '내가 고침', body: '고친 본문' }] } };
+    const blocked = await service.update(me.toHexString(), id, edit).catch((e: unknown) => e);
+    expect(blocked).toBeInstanceOf(ConflictException);
+    expect((blocked as ConflictException).getResponse()).toMatchObject({
+      code: 'NOTE_NOT_READY',
+      message: '다시 만드는 중이라 요약을 고칠 수 없어요. 끝나면 다시 해 주세요',
+    });
+    // 노트를 읽은 뒤에 다시 만들기가 자리를 잡은 경우(경합)도 저장 조건에서 막는다
+    const row = await materials.findById(id).lean();
+    const stale = { ...row!, processing: { ...row!.processing, regenJobId: null } };
+    const sync = vi.spyOn(service, 'sync').mockResolvedValueOnce(stale as never);
+    await expect(service.update(me.toHexString(), id, edit)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    sync.mockRestore();
+    expect(await headings(id)).toEqual(['미분']);
+
+    await finish(job._id, 'succeeded', result('적분'));
+    expect(await headings(id)).toEqual(['적분']);
+    await service.update(me.toHexString(), id, edit);
+    expect(await headings(id)).toEqual(['내가 고침']);
+    // 다음 조회에서도 고친 글이 덮이지 않는다
+    expect(await headings(id)).toEqual(['내가 고침']);
+  });
 
   it('남의 노트 · 없는 노트는 404 이고 한도를 쓰지 않는다', async () => {
     const { id } = await doneNote();
