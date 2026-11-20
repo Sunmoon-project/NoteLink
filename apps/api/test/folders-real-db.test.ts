@@ -105,7 +105,7 @@ describe.skipIf(!uri)('진짜 DB 학습 폴더 확인', () => {
       materials as never,
       jobs as never,
     );
-    quizBox = new QuizBoxService(items, counters, sets, conn);
+    quizBox = new QuizBoxService(items, counters, sets, conn, materials);
     today = new TodayReviewService(
       sets as never,
       attempts as never,

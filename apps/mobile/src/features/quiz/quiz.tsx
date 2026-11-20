@@ -24,7 +24,6 @@ import {
   Brain,
   CircleCheck,
   FileText,
-  Folder,
   GraduationCap,
   Layers,
   PartyPopper,
@@ -34,7 +33,13 @@ import {
   Volume2,
   X,
 } from 'lucide-react-native';
-import { ERROR_CODES, type AiJob, type Material, type QuizSet } from '@notelink/shared';
+import {
+  ERROR_CODES,
+  type AiJob,
+  type Flashcard,
+  type Material,
+  type QuizSet,
+} from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useAiJobSubscription, useSocket, useTabRefresh } from '@/hooks';
@@ -74,6 +79,7 @@ import { C, ICON, MOTION } from '@/theme';
 import { AvatarCheer } from '@/features/tutor/cheer';
 import { ChoiceRow, Passage, splitPrompt } from './choice';
 import { readFolderMaterials } from '@/features/content/notes';
+import { ALL_FOLDERS, boxFolder, FolderGrid, FolderPickScreen } from './folder-pick';
 import { recordWrong } from './wrong-review';
 import { TodayReviewCard, useTodayReview } from './today-review';
 import { NextStepCard, reviewDayWord, type NextStep } from './next-step';
@@ -106,6 +112,9 @@ const Tutor = ({ size = 76 }: { size?: number }) => (
     <GraduationCap size={Math.round(size * 0.46)} color={C.brand} strokeWidth={1.8} />
   </View>
 );
+
+/** 플래시 카드가 없을 때 안내(#601): 카드는 퀴즈를 만들면 그 노트로 자동으로 생긴다(#557) */
+const NO_CARDS = '이 노트로 퀴즈를 만들면 플래시 카드가 생겨요.';
 
 /** 만드는 중인 퀴즈 세트가 있을 때 퀴즈 탭이 세트 목록을 다시 읽는 간격(#593) */
 const PENDING_POLL_MS = 4000;
@@ -341,6 +350,7 @@ export function QuizNotesScreen() {
     (folderId
       ? (mats.isSuccess && notes.length === 0) || emptyFolder
       : folders.isSuccess && folders.data.length === 0);
+  const folderParams = folderId ? { folderId } : {};
   const make = () =>
     chosen
       ? router.push({
@@ -371,27 +381,13 @@ export function QuizNotesScreen() {
           </View>
         )}
         {!folderId && (
-          // 노트 탭(NoteListScreen)과 같은 학습 폴더 카드
-          <View className="mt-6 flex-row flex-wrap justify-between gap-y-5">
-            {folderList.map((f) => (
-              <Card
-                key={f._id}
-                onPress={() =>
-                  router.push({ pathname: '/(tabs)/quiz/notes', params: { folderId: f._id } })
-                }
-                className="w-[47.5%] p-3.5"
-              >
-                <View className="h-20 items-center justify-center rounded-xl bg-mint">
-                  <Folder size={ICON.xl} color={C.brand} />
-                </View>
-                <Text className="mt-3 px-1 text-subhead font-semibold text-ink">{f.title}</Text>
-                <Text className="mt-0.5 px-1 pb-1 text-caption2 text-sub">
-                  {f.subjectName} · {seoul(f.createdAt).getMonth() + 1}/
-                  {seoul(f.createdAt).getDate()} · 자료 {f.materialCount}개
-                </Text>
-              </Card>
-            ))}
-          </View>
+          // 노트 탭(NoteListScreen)과 같은 학습 폴더 카드(보관함 · 플래시 카드 1단계와 같은 격자, #601)
+          <FolderGrid
+            folders={folderList}
+            onPick={(id) =>
+              router.push({ pathname: '/(tabs)/quiz/notes', params: { folderId: id } })
+            }
+          />
         )}
         <View className="mt-3 flex-row flex-wrap justify-between gap-y-3">
           {list.map((f) => (
@@ -444,8 +440,17 @@ export function QuizNotesScreen() {
           >
             {(
               [
-                ['플래시 카드', Layers, () => router.push('/play/flash')],
-                ['퀴즈 보관함', Archive, () => router.push('/play/box')],
+                // 2단계(폴더를 고른 뒤)면 그 폴더의 카드 · 보관 문제를 바로, 1단계면 폴더 고르기부터 연다(#601)
+                [
+                  '플래시 카드',
+                  Layers,
+                  () => router.push({ pathname: '/play/flash', params: folderParams }),
+                ],
+                [
+                  '퀴즈 보관함',
+                  Archive,
+                  () => router.push({ pathname: '/play/box', params: folderParams }),
+                ],
                 [
                   '새 노트 올리고 만들기',
                   FileText,
@@ -1334,8 +1339,13 @@ function QuizNextStep({
 }
 
 export function QuizExplainScreen() {
-  const { qid, setId } = useLocalSearchParams<{ qid?: string; setId?: string }>();
-  const box = useQuery({ queryKey: ['quiz-box'], queryFn: api.quiz.box, enabled: !setId });
+  const { qid, setId, folderId } = useLocalSearchParams<{
+    qid?: string;
+    setId?: string;
+    folderId?: string;
+  }>();
+  // 노트별 보관함(#601)에서 열면 그 화면이 이미 읽은 폴더 목록 캐시를 그대로 쓴다
+  const box = useQuery({ ...boxQuery(folderId), enabled: !setId });
   const source = useQuery({
     queryKey: ['quiz-set', setId],
     queryFn: () => api.quiz.set(setId!),
@@ -1502,7 +1512,36 @@ export function QuizSimilarScreen() {
   );
 }
 
+/**
+ * 카드는 만든 노트(학습 폴더)별로 본다(#601). 폴더 정보가 없는 예전 카드 · 지운 노트의 카드는 어느 노트에도 보이지 않고
+ * 「전체 보기」(ALL_FOLDERS)에서만 보인다
+ */
+const inFolder = (cards: Flashcard[] | undefined, folderId: string) =>
+  folderId === ALL_FOLDERS ? (cards ?? []) : (cards ?? []).filter((c) => c.folderId === folderId);
+
+/** 보관함 쿼리: 폴더별 키는 ['quiz-box', 폴더], 전체는 ['quiz-box']라 보관함 화면과 AI 설명이 같은 캐시를 쓴다 */
+const boxQuery = (folderId?: string) => {
+  const folder = boxFolder(folderId);
+  return {
+    queryKey: folder ? ['quiz-box', folder] : ['quiz-box'],
+    queryFn: () => api.quiz.box(folder),
+  };
+};
+
+/** 플래시 카드: 1단계에서 노트(학습 폴더)를 고르고, 같은 화면을 그 폴더(`folderId`)로 다시 열어 그 노트의 카드를 넘겨 본다(#601) */
 export function FlashScreen() {
+  const { folderId } = useLocalSearchParams<{ folderId?: string }>();
+  if (!folderId)
+    return (
+      <FolderPickScreen
+        title="플래시 카드"
+        onPick={(id) => router.push({ pathname: '/play/flash', params: { folderId: id } })}
+      />
+    );
+  return <FolderFlash folderId={folderId} />;
+}
+
+function FolderFlash({ folderId }: { folderId: string }) {
   const { i: start } = useLocalSearchParams<{ i?: string }>();
   const cards = useQuery({ queryKey: ['flashcards'], queryFn: api.quiz.flashcards });
   const [i, setI] = useState(() =>
@@ -1510,7 +1549,7 @@ export function FlashScreen() {
   );
   // 카드는 문제(앞면)부터 보이고, 누르면 정답(뒷면)으로 뒤집는다
   const [back, setBack] = useState(false);
-  const list = cards.data ?? [];
+  const list = inFolder(cards.data, folderId);
   const index = Math.max(0, Math.min(i, list.length - 1));
   if (cards.isSuccess && i !== index) {
     setI(index);
@@ -1522,7 +1561,10 @@ export function FlashScreen() {
       <Screen
         footer={
           list.length > 0 ? (
-            <Btn kind="outline" onPress={() => router.push('/play/cards')}>
+            <Btn
+              kind="outline"
+              onPress={() => router.push({ pathname: '/play/cards', params: { folderId } })}
+            >
               모아보기
             </Btn>
           ) : undefined
@@ -1534,14 +1576,19 @@ export function FlashScreen() {
           large={false}
         />
         {cards.isError && !cards.data && <ErrorAlert retry={() => cards.refetch()} />}
+        {cards.isPending && (
+          <View accessible accessibilityLabel="카드를 불러오는 중">
+            <Loading />
+          </View>
+        )}
         {cards.isSuccess && list.length === 0 && (
           <Empty
             icon={<Layers size={ICON.lg} color={C.brand} />}
             title="저장한 플래시 카드가 없어요"
-            body="유사 퀴즈에서 ‘플래시카드 저장’을 누르면 외울 내용이 여기에 모여요."
+            body={NO_CARDS}
           >
             <Btn small onPress={() => router.back()}>
-              퀴즈로 돌아가기
+              돌아가기
             </Btn>
           </Empty>
         )}
@@ -1610,8 +1657,21 @@ export function FlashScreen() {
 }
 
 export function CardsScreen() {
+  const { folderId } = useLocalSearchParams<{ folderId?: string }>();
+  if (!folderId)
+    return (
+      <FolderPickScreen
+        title="플래시 카드 모아보기"
+        onPick={(id) => router.push({ pathname: '/play/cards', params: { folderId: id } })}
+      />
+    );
+  return <FolderCards folderId={folderId} />;
+}
+
+function FolderCards({ folderId }: { folderId: string }) {
   const qc = useQueryClient();
   const cards = useQuery({ queryKey: ['flashcards'], queryFn: api.quiz.flashcards });
+  const list = cards.data && inFolder(cards.data, folderId);
   const [select, setSelect] = useState(false);
   const [sel, setSel] = useState<string[]>([]);
   const del = useMutation({
@@ -1639,10 +1699,10 @@ export function CardsScreen() {
       >
         <Header
           title="플래시 카드 모아보기"
-          sub={cards.data?.length ? `${cards.data.length}장` : undefined}
+          sub={list?.length ? `${list.length}장` : undefined}
           large={false}
           right={
-            !!cards.data?.length && (
+            !!list?.length && (
               <Chip small on={select} onPress={() => setSelect((x) => !x)}>
                 {select ? '취소' : '선택'}
               </Chip>
@@ -1650,15 +1710,20 @@ export function CardsScreen() {
           }
         />
         {cards.isError && !cards.data && <ErrorAlert retry={() => cards.refetch()} />}
-        {cards.isSuccess && cards.data.length === 0 && (
+        {cards.isPending && (
+          <View accessible accessibilityLabel="카드를 불러오는 중">
+            <Loading />
+          </View>
+        )}
+        {list?.length === 0 && (
           <Empty
             icon={<Layers size={ICON.lg} color={C.brand} />}
             title="저장한 플래시 카드가 없어요"
-            body="유사 퀴즈에서 ‘플래시카드 저장’을 누르면 외울 내용이 여기에 모여요."
+            body={NO_CARDS}
           />
         )}
         <View className="flex-row flex-wrap justify-between gap-y-3">
-          {cards.data?.map((c, i) => (
+          {list?.map((c, i) => (
             <Pressable
               key={c._id}
               onPress={() =>
@@ -1666,7 +1731,7 @@ export function CardsScreen() {
                   ? setSel((p) =>
                       p.includes(c._id) ? p.filter((x) => x !== c._id) : [...p, c._id],
                     )
-                  : router.replace({ pathname: '/play/flash', params: { i: String(i) } })
+                  : router.replace({ pathname: '/play/flash', params: { i: String(i), folderId } })
               }
               className={cx(
                 'h-36 w-[48.5%] items-center justify-center rounded-card border bg-white p-3',
@@ -1682,7 +1747,20 @@ export function CardsScreen() {
   );
 }
 
+/** 퀴즈 보관함: 1단계에서 노트(학습 폴더)를 고르고, 같은 화면을 그 폴더(`folderId`)로 다시 열어 그 노트의 보관 문제를 본다(#601) */
 export function QuizBoxScreen() {
+  const { folderId } = useLocalSearchParams<{ folderId?: string }>();
+  if (!folderId)
+    return (
+      <FolderPickScreen
+        title="퀴즈 보관함"
+        onPick={(id) => router.push({ pathname: '/play/box', params: { folderId: id } })}
+      />
+    );
+  return <FolderBox folderId={folderId} />;
+}
+
+function FolderBox({ folderId }: { folderId: string }) {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<string[]>([]);
   // 정답은 처음엔 모두 닫아 두고 「정답 보기」를 누른 문제만 펼친다.
@@ -1698,7 +1776,8 @@ export function QuizBoxScreen() {
     },
     onError: () => toast('보관함에서 삭제하지 못했어요. 다시 시도해 주세요'),
   });
-  const box = useQuery({ queryKey: ['quiz-box'], queryFn: api.quiz.box });
+  // 키 앞부분이 ['quiz-box']라 담기 · 지우기의 무효화가 폴더별 목록에도 닿는다
+  const box = useQuery(boxQuery(folderId));
   const [select, setSelect] = useState(false);
   if (box.isError && !box.data)
     return (
@@ -1804,7 +1883,7 @@ export function QuizBoxScreen() {
                   <Chip
                     small
                     onPress={() =>
-                      router.push({ pathname: '/play/explain', params: { qid: q._id } })
+                      router.push({ pathname: '/play/explain', params: { qid: q._id, folderId } })
                     }
                   >
                     AI 설명 보기

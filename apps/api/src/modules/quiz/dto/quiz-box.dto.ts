@@ -1,4 +1,4 @@
-import { ArrayMaxSize, IsArray, IsString, MaxLength } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsOptional, IsString, MaxLength } from 'class-validator';
 
 /**
  * 한 번에 담거나 지우는 문제 수 상한. 앱은 고른 문제를 개수 제한 없이 한 번에 보내서 많이 골라도 400이 되지 않게 넉넉히 잡되,
@@ -14,4 +14,13 @@ export class QuestionIdsDto {
     @IsString({ each: true })
     @MaxLength(100, { each: true })
     questionIds!: string[];
+}
+
+// GET /quiz-box?folderId= (#601): 그 학습 폴더에서 만든 세트의 문제만 본다. 없으면 옛 앱처럼 전체.
+// 형식이 틀린 id는 400이 아니라 "그 폴더에 보관한 문제가 없음"과 같게 빈 목록으로 보낸다(서비스가 확인)
+export class QuizBoxQueryDto {
+    @IsOptional()
+    @IsString()
+    @MaxLength(100)
+    folderId?: string;
 }

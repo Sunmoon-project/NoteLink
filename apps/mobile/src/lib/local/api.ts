@@ -1274,7 +1274,21 @@ const api: Api = {
     // 기기 저장 모드의 오늘 복습은 기기 오답 노트(wrong-review)가 맡는다
     today: () => ok(null),
     startToday: () => needServer('오늘의 복습'),
-    box: () => ok(db().quizBox),
+    // 서버처럼 폴더를 주면 그 폴더 세트의 문제만, 세트를 못 찾는(폴더를 모르는) 문제는 뺀다(#601)
+    box: (folderId) => {
+      const d = db();
+      if (!folderId) return ok(d.quizBox); // 실서버(http-api)처럼 빈 값은 전체
+      // 폴더가 없는 세트는 서버처럼 노트(materialId)의 폴더로 본다. 서버와 달리 기기 저장 모드는 노트를 지우면
+      // 목록에서 아예 빼므로, 지운 노트의 폴더 없는 세트는 어느 폴더에도 나오지 않는다(기기 저장 세트는 늘 폴더가 있다)
+      const folderOf = (s: QuizSet) =>
+        s.folderId || d.materials.find((m) => m._id === s.materialId)?.folderId;
+      const inFolder = new Set(
+        d.quizSets
+          .filter((s) => folderOf(s) === folderId)
+          .flatMap((s) => s.questions.map((q) => q._id)),
+      );
+      return ok(d.quizBox.filter((q) => inFolder.has(q._id)));
+    },
     saveToBox: (questionIds) => {
       const d = db();
       const all = d.quizSets.flatMap((s) => s.questions);

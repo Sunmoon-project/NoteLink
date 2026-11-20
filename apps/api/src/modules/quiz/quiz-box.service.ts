@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { type Connection, Model, Types } from 'mongoose';
 
+import { Material } from '../content/schemas/material.schema.js';
 import { toAppQuestion, type AppQuestion, type QuestionRow } from '../../quiz-sets/quiz-sets.service.js';
 import { QuizBoxCounter } from './schemas/quiz-box-counter.schema.js';
 import { QuizBoxItem } from './schemas/quiz-box-item.schema.js';
@@ -12,6 +13,8 @@ const NOT_FOUND = { code: 'NOT_FOUND', message: '보관할 문제를 찾을 수 
 
 interface SetQuestions {
     _id: Types.ObjectId;
+    folderId?: Types.ObjectId | null;
+    materialId?: Types.ObjectId | null;
     questions?: QuestionRow[];
 }
 interface BoxRow {
@@ -27,20 +30,31 @@ export class QuizBoxService {
         @InjectModel(QuizBoxCounter.name) private readonly counters: Model<QuizBoxCounter>,
         @InjectModel(QuizSet.name) private readonly sets: Model<QuizSet>, // 읽기만 한다
         @InjectConnection() private readonly connection: Connection,
+        @InjectModel(Material.name) private readonly materials: Model<Material>, // 폴더 없는 옛 세트의 노트 폴더를 읽기만 한다
     ) { }
 
     /**
      * 내 보관함의 문제 (담은 순서, 정답 포함). 앱의 기기 저장 모드(먼저 담은 것이 앞)와 같다.
-     * order 순이고, order가 없는 옛 문서는 맨 앞에 savedAt 순으로 온다(없는 값은 숫자보다 앞에 정렬된다)
+     * order 순이고, order가 없는 옛 문서는 맨 앞에 savedAt 순으로 온다(없는 값은 숫자보다 앞에 정렬된다).
+     * folderId를 주면 그 학습 폴더에서 만든 세트(quiz_sets.folderId)의 문제만 돌려준다(#601). 폴더 없이 노트(materialId)만
+     * 적힌 옛 세트는 플래시 카드(FlashcardsService.folderOfMaterial)처럼 그 노트의 폴더로 본다. 둘 다 없는 세트의 문제는
+     * 어느 폴더에도 나오지 않고, 형식이 틀린 id는 빈 목록이다. 주지 않거나 빈 값이면 옛 앱처럼 전체(앱 http-api · 기기 저장 모드와 같다)
      */
-    async box(userId: string): Promise<AppQuestion[]> {
+    async box(userId: string, folderId?: string): Promise<AppQuestion[]> {
+        if (folderId === '') folderId = undefined;
+        if (folderId !== undefined && !OBJECT_ID.test(folderId)) return [];
         const owner = new Types.ObjectId(userId);
         const rows = await this.items.find({ userId: owner }).sort({ order: 1, savedAt: 1, _id: 1 }).lean<BoxRow[]>();
         if (rows.length === 0) return [];
         // 세트를 지워도(deletedAt) 문제 자체는 남아 있어서 보관함에는 계속 보인다
-        const sets = await this.sets
-            .find({ _id: { $in: [...new Set(rows.map((r) => r.quizSetId.toString()))].map((id) => new Types.ObjectId(id)) }, ownerId: owner })
-            .lean<SetQuestions[]>();
+        let setIds = [...new Set(rows.map((r) => r.quizSetId.toString()))].map((id) => new Types.ObjectId(id));
+        if (folderId !== undefined) {
+            // 폴더로 열면 먼저 세트의 폴더 · 노트만 읽어 그 폴더 세트를 고르고, 문제는 고른 세트만 읽는다
+            const heads = await this.sets.find({ _id: { $in: setIds }, ownerId: owner }, { folderId: 1, materialId: 1 }).lean<SetQuestions[]>();
+            setIds = (await this.inFolder(owner, new Types.ObjectId(folderId), heads)).map((s) => s._id);
+            if (setIds.length === 0) return [];
+        }
+        const sets = await this.sets.find({ _id: { $in: setIds }, ownerId: owner }).lean<SetQuestions[]>();
         const byId = new Map<string, QuestionRow>();
         for (const set of sets) for (const q of set.questions ?? []) byId.set(q._id.toString(), q);
         const result: AppQuestion[] = [];
@@ -49,6 +63,24 @@ export class QuizBoxService {
             if (q) result.push(toAppQuestion(q)); // 문제가 사라진 항목은 건너뛴다
         }
         return result;
+    }
+
+    /**
+     * 그 폴더의 세트만 남긴다: 세트의 폴더가 그 폴더이거나, 폴더가 없고 노트가 그 폴더에 있는 세트(지운 노트도 플래시 카드처럼 센다).
+     * 노트는 폴더 없는 세트가 있을 때만, 그 세트들의 노트만 읽는다
+     */
+    private async inFolder(owner: Types.ObjectId, folder: Types.ObjectId, sets: SetQuestions[]): Promise<SetQuestions[]> {
+        const noteIds = [...new Set(sets.filter((s) => !s.folderId && s.materialId).map((s) => s.materialId!.toString()))];
+        const inFolderNotes = new Set<string>();
+        if (noteIds.length > 0) {
+            const notes = await this.materials
+                .find({ _id: { $in: noteIds.map((id) => new Types.ObjectId(id)) }, ownerId: owner, folderId: folder }, { _id: 1 })
+                .lean<{ _id: Types.ObjectId }[]>();
+            for (const n of notes) inFolderNotes.add(n._id.toString());
+        }
+        return sets.filter((s) =>
+            s.folderId ? s.folderId.toString() === folder.toString() : !!s.materialId && inFolderNotes.has(s.materialId.toString()),
+        );
     }
 
     /**
