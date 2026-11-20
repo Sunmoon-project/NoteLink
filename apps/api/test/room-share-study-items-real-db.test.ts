@@ -7,7 +7,10 @@ import mongoose, { type Connection, type Model, Types } from 'mongoose';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
-import { MaterialSharingService } from '../src/modules/content/materials/material-sharing.service.js';
+import {
+  MaterialSharingService,
+  SHARED_ITEMS_MAX,
+} from '../src/modules/content/materials/material-sharing.service.js';
 import { Material, MaterialSchema } from '../src/modules/content/schemas/material.schema.js';
 import { Flashcard, FlashcardSchema } from '../src/modules/quiz/schemas/flashcard.schema.js';
 import { QuizSet, QuizSetSchema } from '../src/modules/quiz/schemas/quiz-set.schema.js';
@@ -319,6 +322,42 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 · 플래시카드 방 공유', () =
     await cards.updateMany({ _id: { $in: [c1, c2] } }, { deletedAt: new Date() });
     await expect(
       sharing.openRoomItem(member.toHexString(), R, cardItem!._id),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('공유 자료가 목록 한도(100개)보다 많이 쌓여도 가장 오래된 퀴즈를 열 수 있다', async () => {
+    const t0 = Date.now() - 10_000_000;
+    const oldQuiz = new Types.ObjectId();
+    const base = { roomId, sharedBy: owner, questionIds: [], deletedAt: null, folderId };
+    await items.collection.insertMany([
+      {
+        _id: oldQuiz,
+        ...base,
+        itemType: 'quiz',
+        quizSetId: quiz,
+        flashcardIds: [],
+        createdAt: new Date(t0),
+      },
+      ...Array.from({ length: SHARED_ITEMS_MAX + 1 }, (_, i) => ({
+        _id: new Types.ObjectId(),
+        ...base,
+        itemType: 'flashcards',
+        flashcardIds: [c1],
+        createdAt: new Date(t0 + 1000 * (i + 1)),
+      })),
+    ]);
+    const listed = (await sharing.listRoomItems(member.toHexString(), R)).items;
+    expect(listed).toHaveLength(SHARED_ITEMS_MAX);
+    expect(listed.some((i) => i._id === oldQuiz.toHexString())).toBe(false);
+    const opened = await sharing.openRoomItem(member.toHexString(), R, oldQuiz.toHexString());
+    expect(opened.quiz?.title).toBe('교착 상태 퀴즈');
+    // 한도 밖이어도 권한 판단은 그대로
+    await expect(
+      sharing.openRoomItem(outsider.toHexString(), R, oldQuiz.toHexString()),
+    ).rejects.toMatchObject({ status: 404 });
+    await users.updateOne({ _id: owner }, { withdrawingAt: new Date() });
+    await expect(
+      sharing.openRoomItem(member.toHexString(), R, oldQuiz.toHexString()),
     ).rejects.toMatchObject({ status: 404 });
   });
 

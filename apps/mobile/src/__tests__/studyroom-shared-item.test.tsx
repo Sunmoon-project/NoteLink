@@ -74,6 +74,18 @@ it('공유받은 퀴즈를 기기에서 채점하며 풀고, 서버 풀이 · �
   Object.values(mockApi.quiz).forEach((fn) => expect(fn).not.toHaveBeenCalled());
 });
 
+it('선택지가 빈 배열인 문제는 단답형으로 풀린다', async () => {
+  mockApi.rooms.sharedItem.mockResolvedValue({
+    item: item({ itemType: 'quiz', title: '빈 선택지' }),
+    quiz: { title: '빈 선택지', questions: [question('q1', '준비 상태는?', [], '준비')] },
+    flashcards: [],
+  });
+  await renderScreen(<RoomSharedItemScreen />);
+  await fireEvent.changeText(await screen.findByPlaceholderText('답을 입력하세요'), '준비');
+  await fireEvent.press(screen.getByRole('button', { name: '채점하기' }));
+  expect(screen.getByText('맞았어요')).toBeTruthy();
+});
+
 it('공유받은 카드 묶음을 고른 순서대로 보고 눌러서 뒤집는다', async () => {
   mockApi.rooms.sharedItem.mockResolvedValue({
     item: item({ itemType: 'flashcards', title: '플래시카드 2장' }),

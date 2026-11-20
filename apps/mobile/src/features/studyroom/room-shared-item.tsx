@@ -89,7 +89,7 @@ function SharedQuiz({ questions }: { questions: Question[] }) {
         {i + 1} / {questions.length}
       </Text>
       <Text className="text-callout font-semibold leading-6 text-ink">{q.prompt}</Text>
-      {q.choices ? (
+      {q.choices?.length ? (
         q.choices.map((c) => (
           <Pressable
             key={c}

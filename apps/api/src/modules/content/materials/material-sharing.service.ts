@@ -116,8 +116,20 @@ export class MaterialSharingService {
     userId: string,
     roomId: string,
   ): Promise<{ items: AppRoomSharedItem[]; flashcards: never[] }> {
-    const me = new Types.ObjectId(userId);
-    if (!(await this.isCurrentMember(me, roomId))) throw notFound('스터디룸');
+    if (!(await this.isCurrentMember(new Types.ObjectId(userId), roomId)))
+      throw notFound('스터디룸');
+    return { items: await this.visibleRoomItems(roomId, {}, SHARED_ITEMS_MAX), flashcards: [] };
+  }
+
+  /**
+   * 방의 공유 항목 중 지금 보이는 것(지운 공유 · 원본이 없어진 것 · 탈퇴한 사람이 공유한 것은 뺀다)을 최근 것부터.
+   * 목록(listRoomItems)과 단건 열기(openRoomItem)가 같은 판단을 쓴다. extra 로 항목을 좁히고, limit 은 뺀 뒤에 자른다
+   */
+  private async visibleRoomItems(
+    roomId: string,
+    extra: Record<string, unknown>,
+    limit?: number,
+  ): Promise<AppRoomSharedItem[]> {
     const live = (from: string, local: string, as: string) => ({
       $lookup: {
         from,
@@ -143,7 +155,7 @@ export class MaterialSharingService {
       quiz: { title: string }[];
       cards: { _id: Types.ObjectId }[];
     }>([
-      { $match: { roomId: new Types.ObjectId(roomId), deletedAt: null } },
+      { $match: { roomId: new Types.ObjectId(roomId), deletedAt: null, ...extra } },
       { $sort: { createdAt: -1, _id: -1 } },
       live(this.materials.collection.name, 'materialId', 'note'),
       live(this.quizSets.collection.name, 'quizSetId', 'quiz'),
@@ -176,7 +188,7 @@ export class MaterialSharingService {
         },
       },
       { $match: { 'sharer.0': { $exists: true } } },
-      { $limit: SHARED_ITEMS_MAX },
+      ...(limit ? [{ $limit: limit }] : []),
     ]);
     const sharers = [...new Set(rows.map((r) => r.sharedBy.toHexString()))];
     const people = sharers.length
@@ -188,31 +200,28 @@ export class MaterialSharingService {
           .lean<{ _id: Types.ObjectId; nickname: string }[]>()
       : [];
     const nicknames = new Map(people.map((u) => [u._id.toHexString(), u.nickname]));
-    return {
-      items: rows.map((r) => ({
-        _id: r._id.toHexString(),
-        roomId: r.roomId.toHexString(),
-        sharedBy: r.sharedBy.toHexString(),
-        sharedByNickname: nicknames.get(r.sharedBy.toHexString()) ?? UNKNOWN_NICKNAME,
-        itemType: r.itemType,
-        quizSetId: r.itemType === 'quiz' ? r.quizSetId!.toHexString() : null,
-        folderId: r.folderId ? r.folderId.toHexString() : null,
-        materialId: r.itemType === 'material' ? r.materialId!.toHexString() : null,
-        questionIds: [],
-        // 지운 카드는 빼고 고른 순서대로
-        flashcardIds: r.flashcardIds
-          .filter((id) => r.cards.some((c) => c._id.equals(id)))
-          .map((id) => id.toHexString()),
-        title:
-          r.itemType === 'material'
-            ? r.note[0]!.title
-            : r.itemType === 'quiz'
-              ? r.quiz[0]!.title
-              : cardsTitle(r.cards.length),
-        createdAt: r.createdAt.toISOString(),
-      })),
-      flashcards: [],
-    };
+    return rows.map((r) => ({
+      _id: r._id.toHexString(),
+      roomId: r.roomId.toHexString(),
+      sharedBy: r.sharedBy.toHexString(),
+      sharedByNickname: nicknames.get(r.sharedBy.toHexString()) ?? UNKNOWN_NICKNAME,
+      itemType: r.itemType,
+      quizSetId: r.itemType === 'quiz' ? r.quizSetId!.toHexString() : null,
+      folderId: r.folderId ? r.folderId.toHexString() : null,
+      materialId: r.itemType === 'material' ? r.materialId!.toHexString() : null,
+      questionIds: [],
+      // 지운 카드는 빼고 고른 순서대로
+      flashcardIds: r.flashcardIds
+        .filter((id) => r.cards.some((c) => c._id.equals(id)))
+        .map((id) => id.toHexString()),
+      title:
+        r.itemType === 'material'
+          ? r.note[0]!.title
+          : r.itemType === 'quiz'
+            ? r.quiz[0]!.title
+            : cardsTitle(r.cards.length),
+      createdAt: r.createdAt.toISOString(),
+    }));
   }
 
   /**
@@ -224,8 +233,15 @@ export class MaterialSharingService {
     roomId: string,
     itemId: string,
   ): Promise<{ item: AppRoomSharedItem; quiz: AppQuizSet | null; flashcards: AppFlashcard[] }> {
-    const { items } = await this.listRoomItems(userId, roomId);
-    const item = items.find((i) => i._id === itemId && i.itemType !== 'material');
+    if (!(await this.isCurrentMember(new Types.ObjectId(userId), roomId)))
+      throw notFound('스터디룸');
+    // 목록의 개수 한도와 상관없이 공유 항목 id 로 바로 찾는다(잘못된 id 는 404)
+    const [item] = isValidObjectId(itemId)
+      ? await this.visibleRoomItems(roomId, {
+          _id: new Types.ObjectId(itemId),
+          itemType: { $ne: 'material' },
+        })
+      : [];
     if (!item) throw notFound('공유 자료');
     if (item.itemType === 'quiz') {
       const row = await this.quizSets
