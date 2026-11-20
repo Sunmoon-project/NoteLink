@@ -11,7 +11,7 @@ type Answer = JsonObject | Exception
 type Answers = list[Answer] | Callable[[str], Answer]
 # 준비하지 않아도 되는 호출의 답. 노트 정리마다 부르는 핵심 요약은 따로 보는 시험에서만 준비하고,
 # 준비하지 않으면 빈 요약으로 답하며 calls에 남기지 않음(다른 호출 수를 세는 시험이 그대로)
-DEFAULTS: dict[str, JsonObject] = {"note_summary": {"points": [], "keywords": []}}
+DEFAULTS: dict[str, JsonObject] = {"note_summary": {"points": [], "keywords": [], "headings": []}}
 
 
 @dataclass

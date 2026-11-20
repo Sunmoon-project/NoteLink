@@ -3,7 +3,7 @@
 input   {pages: [{pageNo, imageUrl}], subject?: 글, seeds?: [{topic, terms: [{term, url?}]}]}
         pageNo는 업로드 순서(1부터). 여러 쪽 PDF는 pageNo부터 쪽 수만큼 번호를 차지함
 result  {pages: [{pageNo, ocrText}], lineResults, chunks: [노트 조각 + embedding],
-         summary: {points, keywords} | null, warnings}
+         summary: {points, keywords, headings} | null, warnings}
         chunks는 맞춤 퀴즈 input의 material.chunks에 그대로 들어감(quiz.generate)
         warnings는 녹음처럼 {code, ...} 목록. 지금은 색 · 형광펜을 찾지 못한 쪽만
         {code: NO_COLOR, pageNo(놓인 번호), reason: pdf | download | decode | size}

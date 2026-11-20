@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.services.note import job as note_job
 from app.services.note.models import Chunk
 from app.services.note.summary import (
+    HEADING_MAX_CHARS,
     INPUT_MAX_CHARS,
     KEYWORDS_MAX,
     POINT_MAX_CHARS,
@@ -39,8 +40,12 @@ CHUNKS = [
 ]
 
 
-def answer(points: list[dict[str, Any]], keywords: list[Any]) -> FakeLlm:
-    return FakeLlm({"note_summary": [{"points": points, "keywords": keywords}]})
+def answer(
+    points: list[dict[str, Any]], keywords: list[Any], headings: list[Any] | None = None
+) -> FakeLlm:
+    return FakeLlm(
+        {"note_summary": [{"points": points, "keywords": keywords, "headings": headings or []}]}
+    )
 
 
 def test_points_and_keywords_come_from_the_note() -> None:
@@ -60,6 +65,7 @@ def test_points_and_keywords_come_from_the_note() -> None:
             "board of directors는 복합명사로 이사회를 뜻한다.",
         ],
         "keywords": ["복합명사", "동사원형", "board of directors"],
+        "headings": [],
     }
     (call,) = llm.named("note_summary")
     assert call.model == "claude-haiku-5-5"
@@ -83,7 +89,42 @@ def test_points_without_valid_refs_and_made_up_keywords_are_dropped() -> None:
 
     got = summarize_note(llm, "m", CHUNKS)
 
-    assert got == {"points": ["공백이 많은 요약"], "keywords": ["이사회"]}
+    assert got == {"points": ["공백이 많은 요약"], "keywords": ["이사회"], "headings": []}
+
+
+def test_untitled_paragraphs_get_headings_from_their_own_words() -> None:
+    chunks = [
+        chunk(1, "주장 동사 뒤에는 동사원형", "주장"),
+        chunk(2, "아메바는 위족으로 움직인다\n먹이를 감싸서 먹는다"),
+        chunk(3, "짚신벌레는 섬모로 헤엄친다"),
+        chunk(4, "세포 분열"),
+        chunk(5, "효모는 출아법으로 번식"),
+    ]
+    llm = answer(
+        [],
+        [],
+        [
+            {"ref": 2, "text": " 아메바의  운동 "},
+            {"ref": 2, "text": "아메바 두 번째"},  # 문단마다 하나
+            {"ref": 1, "text": "주장 동사"},  # 제목이 있는 문단
+            {"ref": 3, "text": "광합성"},  # 문단 글에 없는 낱말
+            {"ref": 4, "text": "세포" + "가" * HEADING_MAX_CHARS},
+            {"ref": 9, "text": "효모"},  # 보내지 않은 문단
+            {"ref": True, "text": "효모"},
+            "모양이 다름",
+            {"ref": 5, "text": "[?]효모 번식"},
+        ],
+    )
+
+    got = summarize_note(llm, "m", chunks)
+
+    assert got == {
+        "points": [],
+        "keywords": [],
+        "headings": [{"order": 2, "text": "아메바의 운동"}, {"order": 5, "text": "효모 번식"}],
+    }
+    (call,) = llm.named("note_summary")
+    assert "[1] 주장" in call.user and "[2]* 아메바" in call.user
 
 
 def test_no_usable_point_gives_no_summary() -> None:
@@ -109,8 +150,9 @@ def test_long_notes_send_only_the_first_paragraphs() -> None:
 
     (call,) = llm.named("note_summary")
     assert len(call.user) < INPUT_MAX_CHARS + 100
-    assert "[1] 1번" in call.user and "[4]" not in call.user
-    assert got == {"points": ["앞 문단"], "keywords": []}  # 보내지 않은 문단은 근거가 될 수 없음
+    assert "[1]* 1번" in call.user and "[4]" not in call.user
+    # 보내지 않은 문단은 근거가 될 수 없음
+    assert got == {"points": ["앞 문단"], "keywords": [], "headings": []}
 
 
 def sent_note(llm: FakeLlm) -> str:
@@ -126,8 +168,9 @@ def test_the_paragraph_that_overflows_fills_the_rest_of_the_limit() -> None:
 
     body = sent_note(llm)
     assert len(body) == INPUT_MAX_CHARS
-    assert "[2] 2번 나" in body and "[3]" not in body
-    assert got == {"points": ["뒤 문단 요약"], "keywords": []}  # 잘라 보낸 문단도 근거가 됨
+    assert "[2]* 2번 나" in body and "[3]" not in body
+    # 잘라 보낸 문단도 근거가 됨
+    assert got == {"points": ["뒤 문단 요약"], "keywords": [], "headings": []}
 
 
 def test_a_tiny_rest_is_not_filled_with_a_cut_paragraph() -> None:
@@ -146,7 +189,7 @@ def test_a_short_note_may_have_fewer_than_three_points() -> None:
 
     got = summarize_note(llm, "m", CHUNKS)
 
-    assert got == {"points": ["주장 동사 뒤 that절은 동사원형"], "keywords": []}
+    assert got == {"points": ["주장 동사 뒤 that절은 동사원형"], "keywords": [], "headings": []}
 
 
 def test_a_failed_call_gives_no_summary_but_a_cancel_is_raised() -> None:
@@ -203,7 +246,7 @@ def test_the_note_job_returns_the_summary_from_the_split_llm() -> None:
         split_llm=split,
     )
 
-    assert result["summary"] == {"points": ["아메바 두 종류"], "keywords": []}
+    assert result["summary"] == {"points": ["아메바 두 종류"], "keywords": [], "headings": []}
     assert split.named("note_summary")[0].model == settings.note_split_model
     assert llm.calls == []
 
