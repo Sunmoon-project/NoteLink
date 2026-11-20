@@ -249,7 +249,7 @@ export class SimilarQuizService {
     const picked = ids.map((id) => ({ id, set: holder.get(id) }));
     if (picked.some((p) => !p.set)) throw notFound('문제');
     const pickedSets = [...new Map(picked.map((p) => [p.set!._id.toString(), p.set!])).values()];
-    if (new Set(pickedSets.map((x) => String(x.folderId))).size > 1)
+    if (new Set(pickedSets.map((x) => String(x.folderId ?? ''))).size > 1)
       throw badRequest('한 노트의 문제만 골라 주세요');
 
     // 세트마다 마지막으로 끝낸 풀이(최근 것부터 읽어 세트마다 첫 줄)

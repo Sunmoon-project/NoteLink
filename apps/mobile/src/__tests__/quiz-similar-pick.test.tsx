@@ -66,7 +66,7 @@ const SETS: QuizSet[] = [
   quizSet('s3', 'fA', [question('c1')], { completed: false }),
   quizSet('s4', 'fB', [question('d1')], { wrongQuestionIds: ['d1'] }),
   quizSet('s5', 'fA', [question('e1')], { reviewDay: '2026-11-20', wrongQuestionIds: ['e1'] }),
-  quizSet('s6', 'fA', [], { status: 'generating', completed: false }),
+  quizSet('s6', 'fB', [], { status: 'generating', completed: false }),
 ];
 
 const checkbox = (id: string) => screen.getByLabelText(`유사 퀴즈 고르기 문제 ${id}`);
@@ -230,5 +230,28 @@ describe('서버가 받는 세트만(code-review)', () => {
     await renderScreen(<QuizHomeScreen />, client());
     expect(await screen.findByText('퀴즈 보관함')).toBeTruthy();
     expect(screen.queryByText('유사 퀴즈')).toBeNull();
+  });
+});
+
+describe('같은 노트로 만드는 중일 때(code-review 2차)', () => {
+  it('퀴즈를 끝낸 직후처럼 이 노트로 만드는 중인 세트가 있으면 만들기를 막고, 끝나면 풀어 준다', async () => {
+    const pick = jest.spyOn(api.quiz, 'similarPick').mockResolvedValue({ ...SETS[0]!, _id: 'new' });
+    const making = quizSet('r1', 'fA', [], { status: 'generating', completed: false });
+    const sets = jest.spyOn(api.quiz, 'sets').mockResolvedValue([...SETS, making]);
+    setParams({ folderId: 'fA' });
+    await renderScreen(<QuizSimilarScreen />, client());
+    await screen.findByText('문제 a1');
+    const btn = () =>
+      screen.getByRole('button', { name: /끝나면 만들 수 있어요|유사 퀴즈 만들기/ });
+    expect(btn().props.accessibilityState?.disabled).toBe(true);
+    await fireEvent.press(btn());
+    expect(pick).not.toHaveBeenCalled();
+    // 만드는 중인 세트가 끝나면(다시 읽은 목록) 만들 수 있다
+    sets.mockResolvedValue(SETS);
+    await waitFor(() => expect(makeBtn().props.accessibilityState?.disabled).toBe(false), {
+      timeout: 6000,
+    });
+    await fireEvent.press(makeBtn());
+    expect(pick).toHaveBeenCalledWith(['a2', 'b1']);
   });
 });

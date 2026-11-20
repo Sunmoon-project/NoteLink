@@ -137,7 +137,15 @@ const Box = ({ on }: { on: boolean }) => (
  * 체크해 둔다. 고른 문제(SIMILAR_PICK_MAX개까지)로 만든다. 하나도 고르지 않으면 만들 수 없다
  */
 export function SimilarPickScreen({ folderId }: { folderId: string }) {
-  const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
+  // 이 노트(학습 폴더)로 만드는 중인 세트(퀴즈를 끝내면 바로 도는 오답 복습 등)가 있으면 서버가 409로 막는다(노트마다
+  // 만드는 중인 세트는 하나). 그동안은 만들기를 막고 목록을 다시 읽어 끝나면 풀어 준다(code-review 2차)
+  const generatingHere = (list?: QuizSet[]) =>
+    !!list?.some((s) => s.status === 'generating' && s.folderId === folderId);
+  const sets = useQuery({
+    queryKey: ['quiz-sets'],
+    queryFn: api.quiz.sets,
+    refetchInterval: (q) => (generatingHere(q.state.data) ? 3000 : false),
+  });
   const groups = pickableSets(sets.data, folderId);
   // 체크를 바꾸기 전에는 틀린 문제가 기본 체크다. 한 번 바꾸면 그 뒤로는 사용자가 고른 대로(세트를 다시 읽어도)
   const [picked, setPicked] = useState<string[] | null>(null);
@@ -147,7 +155,9 @@ export function SimilarPickScreen({ folderId }: { folderId: string }) {
   const order = groups.flatMap((s) => s.questions.map((q) => q._id));
   const chosen = (picked ?? defaultPicks(groups)).filter((id) => order.includes(id));
   const making = useSimilarMaking((ids: string[]) => api.quiz.similarPick(ids));
-  const busy = making.generate.isPending || making.waiting;
+  // 결과 확인에 실패했을 때(checkFailed)도 체크를 막는다: 그때 버튼은 이미 넣은 세트를 다시 확인할 뿐이다
+  const busy = making.generate.isPending || making.waiting || making.checkFailed;
+  const blocked = !making.generate.data && generatingHere(sets.data);
   const toggle = (q: Question) => {
     if (chosen.includes(q._id)) {
       setFull(false);
@@ -165,15 +175,17 @@ export function SimilarPickScreen({ folderId }: { folderId: string }) {
       <Screen
         footer={
           <Btn
-            loading={busy}
-            disabled={chosen.length === 0}
+            loading={making.generate.isPending || making.waiting}
+            disabled={!making.checkFailed && (chosen.length === 0 || blocked)}
             onPress={() => (making.checkFailed ? void making.poll.refetch() : send())}
           >
             {making.checkFailed
               ? '다시 확인'
-              : making.generate.isError || making.failed
-                ? '다시 시도'
-                : `유사 퀴즈 만들기 · ${chosen.length}문제 골랐어요`}
+              : blocked
+                ? '이 노트로 만드는 중인 퀴즈가 끝나면 만들 수 있어요'
+                : making.generate.isError || making.failed
+                  ? '다시 시도'
+                  : `유사 퀴즈 만들기 · ${chosen.length}문제 골랐어요`}
           </Btn>
         }
       >

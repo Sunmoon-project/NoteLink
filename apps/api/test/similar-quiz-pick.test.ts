@@ -44,7 +44,6 @@ function setup() {
   const sets = createFakeCollection<QuizSetDocument>(unique);
   const materials = createFakeCollection<MaterialDocument>();
   const attempts = createFakeCollection<QuizAttemptDocument>();
-  Object.assign(attempts.model, { aggregate: vi.fn().mockResolvedValue([]) });
   const updateOne = vi.fn().mockResolvedValue({ modifiedCount: 1 });
   Object.assign(sets.model, { updateOne });
   const jobs = createFakeJobs();

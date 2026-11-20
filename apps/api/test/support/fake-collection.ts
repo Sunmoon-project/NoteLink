@@ -53,9 +53,14 @@ export function matches(row: Record<string, unknown>, filter: Filter): boolean {
     if (key === '$or') return (want as Filter[]).some((f) => matches(row, f));
     if (key === '$expr') return expr(row, want as Expr);
     // 'data.userId'처럼 점으로 이은 경로는 MongoDB처럼 안쪽 필드를 본다. 중간에 배열이 있으면('questions._id')
-    // MongoDB처럼 원소 중 하나라도 맞으면 맞다
+    // 원소마다 따라간다
     const found = pathValues(row, key.split('.'));
-    if (found.length !== 1) return found.some((value) => matchValue(value, want));
+    // MongoDB처럼 배열이면 원소 중 하나라도 맞으면 맞다. 단 $ne는 어느 원소도 같지 않아야 맞다
+    if (found.length !== 1) {
+      return isOps(want) && '$ne' in want
+        ? found.every((value) => matchValue(value, want))
+        : found.some((value) => matchValue(value, want));
+    }
     return matchValue(found[0], want);
   });
 }
@@ -148,6 +153,35 @@ export function createFakeCollection<D>(unique?: (a: Row, b: Row) => boolean) {
       return chain;
     },
     /** MongoDB distinct처럼 조건에 맞는 행의 필드 값을 겹치지 않게(ObjectId는 문자열로 비교) */
+    /**
+     * 서비스가 쓰는 꼴만: $match · $sort(필드 하나, 날짜) · $group({ _id: '$필드', 이름: { $first: '$필드' } }).
+     * 다른 단계는 던져 테스트가 잡아낸다(테스트가 aggregate를 따로 바꿔 끼울 수 있다)
+     */
+    aggregate: (pipeline: Record<string, unknown>[]) => {
+      let out: Record<string, unknown>[] = rows.map((r) => clone(r));
+      for (const stage of pipeline) {
+        const [[op, arg]] = Object.entries(stage) as [[string, unknown]];
+        if (op === '$match') out = out.filter((r) => matches(r, arg as Filter));
+        else if (op === '$sort') {
+          const [[key, dir]] = Object.entries(arg as Record<string, 1 | -1>) as [[string, 1 | -1]];
+          out = [...out].sort((a, b) => dir * (time(a[key]) - time(b[key])));
+        } else if (op === '$group') {
+          const { _id, ...fields } = arg as Record<string, unknown>;
+          const groups = new Map<string, Record<string, unknown>>();
+          for (const r of out) {
+            const id = r[String(_id).slice(1)];
+            if (groups.has(String(id))) continue;
+            const g: Record<string, unknown> = { _id: id };
+            for (const [k, v] of Object.entries(fields)) {
+              g[k] = r[String((v as { $first: string }).$first).slice(1)];
+            }
+            groups.set(String(id), g);
+          }
+          out = [...groups.values()];
+        } else return Promise.reject(new Error(`가짜 컬렉션이 모르는 aggregate 단계: ${op}`));
+      }
+      return Promise.resolve(out);
+    },
     distinct: (field: string, filter: Filter = {}) => {
       const seen = new Map<string, unknown>();
       for (const r of rows.filter((row) => matches(row, filter))) {

@@ -129,7 +129,7 @@ export interface FinishedRow {
 }
 
 /** 그 풀이에서 틀린 문제 id. 무효 풀이(결함 문제, 오늘의 복습이 정함)는 틀린 것으로 보지 않는다 */
-export const wrongIdsOf = (a: FinishedRow): string[] =>
+export const wrongIdsOf = (a: Pick<FinishedRow, 'answers'>): string[] =>
   (a.answers ?? []).filter((x) => !x.correct && !x.void).map((x) => x.questionId.toString());
 
 /** DB에 저장한 문제 한 개(lean) */
@@ -553,22 +553,24 @@ export class QuizSetsService {
     if (ready.length === 0) return sets;
     const mine = { userId: owner, quizSetId: { $in: ready } };
     const finishedOnly = { ...mine, finishedAt: { $ne: null } };
-    // 같은 세트를 여러 번 풀었어도 세트마다 한 줄(distinct). 틀린 문제는 끝낸 풀이를 최근 것부터 읽어 세트마다 첫 풀이로
+    // 같은 세트를 여러 번 풀었어도 세트마다 한 줄(distinct). 틀린 문제는 세트마다 마지막으로 끝낸 풀이 하나만 DB에서
+    // 골라 받는다(세트 수만큼만 오고, 풀이가 쌓여도 응답에 실려 오는 양은 같다, code-review 2차)
     const [finished, begun, lastRows] = (await Promise.all([
       this.attempts.distinct('quizSetId', finishedOnly),
       this.attempts.distinct('quizSetId', mine),
-      this.attempts
-        .find(finishedOnly, { quizSetId: 1, answers: 1, finishedAt: 1 })
-        .sort({ finishedAt: -1 })
-        .lean<FinishedRow[]>(),
-    ])) as [Types.ObjectId[], Types.ObjectId[], FinishedRow[]];
+      this.attempts.aggregate<{ _id: Types.ObjectId; answers?: FinishedRow['answers'] }>([
+        { $match: finishedOnly },
+        { $sort: { finishedAt: -1 } },
+        { $group: { _id: '$quizSetId', answers: { $first: '$answers' } } },
+      ]),
+    ])) as [
+      Types.ObjectId[],
+      Types.ObjectId[],
+      { _id: Types.ObjectId; answers?: FinishedRow['answers'] }[],
+    ];
     const done = new Set(finished.map((id) => id.toString()));
     const started = new Set(begun.map((id) => id.toString()));
-    const wrong = new Map<string, string[]>();
-    for (const a of lastRows) {
-      const key = a.quizSetId.toString();
-      if (!wrong.has(key)) wrong.set(key, wrongIdsOf(a));
-    }
+    const wrong = new Map(lastRows.map((a) => [String(a._id), wrongIdsOf(a)] as const));
     // 끝낸 풀이도 시작한 풀이다. 두 조회가 따로 읽으므로 completed는 started와 상관없이 끝낸 풀이로만 정한다
     return sets.map((s) => {
       if (s.status !== 'ready') return s;
