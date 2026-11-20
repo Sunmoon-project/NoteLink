@@ -25,8 +25,9 @@ const quizSet = (_id: string, title: string, over: Partial<QuizSet> = {}) =>
     title,
     status: 'ready',
     questionCount: 2,
-    // 유사 퀴즈 바로가기는 노트 · 문제가 있는 끝낸 세트가 있어야 보인다(#605, canPickFrom)
+    // 유사 퀴즈 바로가기는 노트 · 폴더 · 문제가 있는 끝낸 세트가 있어야 보인다(#605, canPickFrom)
     materialId: 'm1',
+    folderId: 'f1',
     questions: [
       {
         _id: `${_id}-q1`,
