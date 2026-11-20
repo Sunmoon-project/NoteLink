@@ -243,6 +243,12 @@ def guidance(q: Question, t: Target, avoid: list[str]) -> str:
         text = (
             "학생은 이 문제를 틀렸다. 노트에 적힌 설명을 그대로 확인하는 쉬운 문제로 낸다." + keep
         )
+    elif t.picked:
+        # 고른 문제를 다시 바탕으로 쓸 때는 틀렸어도 맞혔다고 말하지 않음(code-review)
+        text = (
+            "학생이 복습하려고 고른 문제다. 같은 개념을 다른 문장이나 상황으로 다시 확인하는"
+            " 문제로 낸다." + keep
+        )
     else:
         text = (
             "학생은 지난번에 맞혔다. 같은 개념을 다른 문장이나 상황으로 다시 확인하는 문제로 낸다."
@@ -363,8 +369,12 @@ def make_similar(
     slot: int,
     seen: list[Seen],
     avoid: list[str] | None = None,
+    related: str = "",
 ) -> Made:
     """q와 같은 개념을 묻는 새 문제 1개. 통과하면 seen에 더합니다(같은 세트의 다음 문제 겹침 검사).
+
+    related는 학생 상황 뒤에 붙이는 「함께 고른 문제」 안내(오답 복습의 고른 문제 모드, #605).
+    비면 붙이지 않습니다.
 
     slot은 세트 안 순번: 정답 자리를 A~E에 고르게 놓습니다(text.place).
     세 번째 시도는 처음 유형으로 돌아가되, 그때까지 걸린 보기를 avoid에 더해 줍니다. 노트가
@@ -397,7 +407,8 @@ def make_similar(
             f'<노트 쪽="{page_no}">\n{page_text[:2500]}\n</노트>\n\n'
             f"개념: {t.concept}\n문제 유형: {ty} — {TYPES[ty][0]}\npassage: {TYPES[ty][1]}\n"
             f"원래 문제(이 문장과 상황은 다시 쓰지 않는다): {orig}\n원래 정답: {q['answer']}\n"
-            f"학생 상황: {guidance(q, t, avoid)}{notes}{retry_tip(ty) if notes else ''}\n\n"
+            f"학생 상황: {guidance(q, t, avoid)}{notes}{retry_tip(ty) if notes else ''}\n"
+            f"{related}\n"
             "이 노트로 복습 문제 1개를 만들어라."
         )
         try:

@@ -50,15 +50,20 @@ export const boxFolder = (folderId?: string) =>
   folderId && folderId !== ALL_FOLDERS ? folderId : undefined;
 
 /**
- * 퀴즈 보관함 · 플래시 카드의 1단계(#601): 어느 노트(학습 폴더)의 항목을 볼지 고른다.
- * 폴더 목록은 노트 탭 · 퀴즈 만들기와 같은 키로 한 번만 읽는다. 지운 노트의 항목은 「전체 보기」로 본다
+ * 퀴즈 보관함 · 플래시 카드(#601) · 유사 퀴즈(#605)의 1단계: 어느 노트(학습 폴더)의 항목을 볼지 고른다.
+ * 폴더 목록은 노트 탭 · 퀴즈 만들기와 같은 키로 한 번만 읽는다. 지운 노트의 항목은 「전체 보기」로 본다.
+ * 유사 퀴즈는 한 노트의 문제만 고르므로 전체 보기를 두지 않는다(all = false)
  */
 export function FolderPickScreen({
   title,
   onPick,
+  sub = '어떤 노트를 볼까요?',
+  all = true,
 }: {
   title: string;
   onPick: (folderId: string) => void;
+  sub?: string;
+  all?: boolean;
 }) {
   const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders });
   const [q, setQ] = useState('');
@@ -67,16 +72,18 @@ export function FolderPickScreen({
     <Canvas>
       <Screen>
         <NetBanner />
-        <Header title={title} sub="어떤 노트를 볼까요?" large={false} />
+        <Header title={title} sub={sub} large={false} />
         <Search value={q} onChangeText={setQ} placeholder="노트 검색" />
-        <View className="mt-4 flex-row items-center gap-3">
-          <Text className="flex-1 text-caption text-sub">
-            지운 노트의 항목도 전체 보기에서 볼 수 있어요
-          </Text>
-          <Btn small kind="outline" onPress={() => onPick(ALL_FOLDERS)}>
-            전체 보기
-          </Btn>
-        </View>
+        {all && (
+          <View className="mt-4 flex-row items-center gap-3">
+            <Text className="flex-1 text-caption text-sub">
+              지운 노트의 항목도 전체 보기에서 볼 수 있어요
+            </Text>
+            <Btn small kind="outline" onPress={() => onPick(ALL_FOLDERS)}>
+              전체 보기
+            </Btn>
+          </View>
+        )}
         {folders.isError && !folders.data && (
           <Empty
             icon={<FolderIcon size={ICON.lg} color={C.brand} />}

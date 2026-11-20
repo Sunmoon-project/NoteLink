@@ -64,6 +64,15 @@ WEAK_DAYS = 30  # 약한 개념은 최근 30일 풀이를 합쳐 셈
 NOTE_LINES = 3  # 노트 줄을 찾아 줄 약한 개념 수
 OTHER = "기타"  # 개념 이름이 없는 문제
 SEOUL = timezone(timedelta(hours=9))  # '오늘'은 서울 자정에 바뀜(AGENTS.md). 서머타임 없음
+# 고른 문제 모드(#605): 고른 문제 전체를 함께 참고해 총 3문제(완우 11/20). 고른 문제마다 1개가 아님
+PICK_MODE = "pick"
+PICK_SET_SIZE = 3
+# 바탕 문제를 바꿔 가며 만들어 보는 횟수 상한: 문제 하나가 못 만들어지면 다음 고른 문제로 넘어감.
+# make_similar가 바탕마다 최대 3번 시도하므로 생성 호출은 18번까지
+PICK_SEEDS = 6
+# 함께 고른 문제를 생성 프롬프트에 넣을 때 문제 하나의 글자 수(문제 + 정답).
+# NestJS 상한(SIMILAR_PICK_MAX, 10개)이면 1,500자 안팎으로 노트 발췌(2,500자)보다 짧음
+RELATED_CHARS = 150
 log = logging.getLogger(__name__)
 
 # 서비스에는 보기별 ○ △ ✕ 표시가 없어(10/25에 뺌) 틀린 이유(개념 · 혼동 · 실수 · 찍음)를
@@ -253,6 +262,18 @@ def parse(raw: JsonObject) -> ReviewInput:
         },
         "input",
     )
+    sets = parse_sets(raw)
+    if attempt.quiz_set_id not in sets:
+        raise InputError("input.sets에 이번 세트가 없음")
+    history = [
+        _attempt(h, f"input.history[{i}]") for i, h in enumerate(need_list(raw, "history", "input"))
+    ]
+    notes = parse_notes(need(raw, "notes", dict, "input"))
+    return ReviewInput(attempt, sets, history, notes)
+
+
+def parse_sets(raw: JsonObject) -> dict[str, QuizSet]:
+    """input.sets [{id, materialId, questions}] → {세트 id: 세트}."""
     sets = {}
     for i, s in enumerate(need_list(raw, "sets", "input")):
         w = f"input.sets[{i}]"
@@ -261,13 +282,7 @@ def parse(raw: JsonObject) -> ReviewInput:
             for j, q in enumerate(need_list(s, "questions", w))
         ]
         sets[need(s, "id", str, w)] = QuizSet(need(s, "materialId", str, w), qs)
-    if attempt.quiz_set_id not in sets:
-        raise InputError("input.sets에 이번 세트가 없음")
-    history = [
-        _attempt(h, f"input.history[{i}]") for i, h in enumerate(need_list(raw, "history", "input"))
-    ]
-    notes = parse_notes(need(raw, "notes", dict, "input"))
-    return ReviewInput(attempt, sets, history, notes)
+    return sets
 
 
 def parse_notes(notes_raw: dict[str, Any]) -> Notes:
@@ -465,15 +480,21 @@ def _similar_for(
     seen: list[Seen],
     used: list[str],
     skip: set[str],
+    reason: Literal["wrong", "right"] = "wrong",
+    related: str = "",
 ) -> similar.Made:
-    """대상 하나의 다시 보기 문제. 새로 못 만들고 모델이 기존 문제만 다시 쓰면 그 기존 문제를 냄."""
+    """대상 하나의 다시 보기 문제. 새로 못 만들고 모델이 기존 문제만 다시 쓰면 그 기존 문제를 냄.
+
+    reason · related는 고른 문제 모드(run_pick)가 씀: 맞힌 문제 · 다시 바탕으로 쓰는 문제는
+    'right'(다른 답도 됨), related는 함께 고른 문제 안내(make_similar).
+    """
     if t.material is None or t.page is None:
         return similar.Made(why=["노트 글이 없음"])
     text = notes[t.material][t.page]
     # 노트가 정답과 같은 묶음으로 적은 유의어는 오답 보기로 쓰지 않음
     avoid = quality.group_words(t.q["answer"], text) if short_answer(t.q["answer"]) else []
-    target = Target("wrong", t.q["answer"], t.concept, used)
-    m = similar.make_similar(llm, t.q, target, t.page, text, slot, seen, avoid)
+    target = Target(reason, t.q["answer"], t.concept, used, picked=bool(related))
+    m = similar.make_similar(llm, t.q, target, t.page, text, slot, seen, avoid, related)
     if m.question is not None or not m.drafts:
         return m
     old = similar.reuse_existing(t.q, m.drafts, seen, used, skip)
@@ -539,6 +560,14 @@ def _empty_reason(judged: list[Judged], made: list[similar.Made]) -> str | None:
         return "no_wrong"
     if not made:
         return "all_stopped"
+    return _why_empty(made)
+
+
+def _why_empty(made: list[similar.Made]) -> str:
+    """만들어 본 대상이 있는데 0문제인 이유(_empty_reason).
+
+    transient → rejected → refused → no_note 차례.
+    """
     if any(_passing(m) for m in made):
         return "transient"
     if any(m.rejected for m in made):
@@ -587,7 +616,10 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     실패하면 NestJS가 복습 상태(srsUpdates)를 옮기지 않습니다. 모든 대상이 장애(llm_down)면 지금처럼
     시도할 때마다 다시 시도하고, 한도를 넘기면 작업이 실패합니다. 끝날 때 만든 수 · 못 쓴 단계를
     로그로 남깁니다.
+    input.mode가 'pick'이면 고른 문제 모드(run_pick)로 돕니다.
     """
+    if raw.get("mode") == PICK_MODE:
+        return run_pick(llm, raw, report)
     inp = parse(raw)
     attempt, sets, notes = inp.attempt, inp.sets, inp.notes
     quiz = sets[attempt.quiz_set_id]
@@ -786,4 +818,173 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
         "reviewQuestions": new_qs,
         "emptyReason": empty,
         "nextReview": (day + timedelta(days=srs.REVIEW_STEPS_DAYS[0])).isoformat(),
+    }
+
+
+# ---------------------------------------------------------------- pick mode (#605)
+
+
+@dataclass(frozen=True)
+class Pick:
+    """사용자가 고른 문제 하나.
+
+    wrong은 그 세트를 마지막으로 끝낸 풀이에서 틀렸는지(NestJS가 정함).
+    """
+
+    set_id: str
+    q: Question
+    wrong: bool
+
+
+def parse_pick(raw: JsonObject) -> tuple[list[Pick], dict[str, QuizSet], Notes]:
+    """고른 문제 모드의 input.
+
+    picks [{quizSetId, questionId, wrong}] · sets · notes(sets · notes는 run과 같은 모양).
+    고른 문제가 없거나 sets에 없는 문제를 고르면 InputError.
+    같은 문제를 두 번 고르면 한 번만 씁니다.
+    """
+    sets = parse_sets(raw)
+    picks: list[Pick] = []
+    for i, p in enumerate(need_list(raw, "picks", "input")):
+        w = f"input.picks[{i}]"
+        sid, qid = need(p, "quizSetId", str, w), need(p, "questionId", str, w)
+        wrong = need(p, "wrong", bool, w)
+        q = next((x for x in sets[sid].questions if x["id"] == qid), None) if sid in sets else None
+        if q is None:
+            raise InputError(f"{w}의 {qid}가 input.sets에 없음")
+        if all(x.q["id"] != qid for x in picks):
+            picks.append(Pick(sid, q, wrong))
+    if not picks:
+        raise InputError("input.picks가 비었음")
+    return picks, sets, parse_notes(need(raw, "notes", dict, "input"))
+
+
+def _related(picks: list[Pick]) -> str:
+    """생성 프롬프트에 넣는 함께 고른 문제(문제 하나 RELATED_CHARS자까지)."""
+    lines = [
+        f"- {(p.q['prompt'] + ' (정답: ' + p.q['answer'] + ')')[:RELATED_CHARS]}" for p in picks
+    ]
+    return (
+        "학생이 복습하려고 함께 고른 문제(이 문장과 상황은 다시 쓰지 않는다."
+        " 세트의 다른 문제와 겹치지 않게 다른 내용을 묻는다):\n" + "\n".join(lines) + "\n"
+    )
+
+
+def _seed_order(picks: list[Pick]) -> list[Pick]:
+    """바탕 문제 차례: 틀린 문제부터 고른 순서대로, 서로 다른 개념을 먼저(같은 개념은 뒤로)."""
+    first: list[Pick] = []
+    later: list[Pick] = []
+    concepts: set[str] = set()
+    for p in [p for p in picks if p.wrong] + [p for p in picks if not p.wrong]:
+        c = concept_of(p.q)
+        (later if c in concepts else first).append(p)
+        concepts.add(c)
+    return first + later
+
+
+def run_pick(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
+    """고른 문제 모드(#605): 고른 문제 전체를 함께 참고해 유사 퀴즈를 총 PICK_SET_SIZE문제 만듦.
+
+    풀이 판단 · 약한 개념 · 노트 줄 · 복습 상태는 하지 않음: 복습 상태(srs)는 풀이를 끝낼 때
+    도는 오답 복습이 이미 옮겼으므로 여기서 또 옮기면 같은 풀이를 두 번 셈. 새 문제에도 srs를
+    붙이지 않아 복습 일정에 넣지 않음(srsUpdates는 빈 목록).
+    바탕 문제는 _seed_order 차례로 돌려 가며 씀: 바탕 하나로 못 만들면 다음 바탕으로
+    넘어가고(최대 PICK_SEEDS번), 고른 문제가 3개보다 적으면 같은 문제를 다시 바탕으로 씀.
+    틀린 문제를 처음 바탕으로 쓸 때만 틀린 낱말을 다시 묻고(run과 같음), 맞힌 문제 · 다시 쓰는
+    바탕은 다른 답도 됨('right'). 모든 생성 프롬프트에 고른 문제 전체를 함께 넣음(_related).
+    장애 · 0문제 다시 시도 · 기존 문제 다시 내기는 run과 같음.
+    """
+    picks, sets, notes = parse_pick(raw)
+    order = _seed_order(picks)
+    related = _related(picks)
+    report(15, "고른 문제 정리")
+    seen: list[Seen] = [seen_question(q) for s in sets.values() for q in s.questions]
+    has_notes = any(notes.values())
+    used: list[str] = []
+    # 다시 내지 않을 기존 문제: 고른 문제 자체(그대로 다시 내면 새 문제가 아님, code-review) ·
+    # 이미 다시 낸 문제. 복습 상태를 옮기지 않으므로 run처럼 「그 문제를 다시 냄」이
+    # 간격 반복이 되지 않음
+    skip: set[str] = {p.q["id"] for p in picks}
+    times: Counter[str] = Counter()
+    tried: list[tuple[Judged, similar.Made]] = []
+    count = 0
+    for n in range(PICK_SEEDS):
+        if count >= PICK_SET_SIZE:
+            break
+        p = order[n % len(order)]
+        again = times[p.q["id"]] > 0
+        times[p.q["id"]] += 1
+        j = Judged(p.q, not p.wrong, judge(not p.wrong), concept_of(p.q))
+        if has_notes:
+            j.material, j.page = locate(p.q, notes, sets[p.set_id].material_id)
+        reason: Literal["wrong", "right"] = "wrong" if p.wrong and not again else "right"
+        m = _similar_for(llm, j, notes, count, seen, used, skip, reason, related)
+        if m.question is not None:
+            used.append(m.question["answer"])
+            if m.reused_from:
+                skip.add(m.reused_from)
+            count += 1
+        tried.append((j, m))
+        report(15 + 70 * count // PICK_SET_SIZE, "비슷한 문제 만들기")
+    made = [m for _, m in tried]
+    summary = _summary([], 0, made).replace("오답 복습:", "고른 문제로 유사 퀴즈:", 1)
+    if all(m.llm_down for m in made):
+        if all(m.llm_refused for m in made):
+            log.warning("%s — 모두 거절, 다시 시도 안 함", summary)
+            raise LlmRejectedError("문제 만들기 요청을 모두 거절함")
+        log.warning("%s — 모두 장애, 다시 시도", summary)
+        raise LlmError("문제 만들기 호출이 모두 실패")
+    if count == 0 and any(_passing(m) for m in made) and _retry_empty(report):
+        log.warning("%s — 다시 시도", summary)
+        raise LlmError("문제 만들기가 일시적인 오류로 한 문제도 못 만듦")
+
+    new_qs: list[JsonObject] = []
+    for j, m in tried:
+        if m.question is None:
+            continue
+        g = m.question
+        new_qs.append(
+            {
+                "id": new_id(),
+                "order": len(new_qs) + 1,
+                "type": (ty := "빈칸" if "____" in g["passage"] else m.type),
+                "difficulty": similar.difficulty_of(ty),
+                "prompt": g["stem"],
+                "passage": g["passage"] or None,
+                "choices": g["options"],
+                "answer": g["answer"],
+                "explanation": g.get("explanation"),
+                "conceptTags": [j.concept],
+            }
+        )
+    empty = None if new_qs else _why_empty(made)
+    if empty:
+        log.warning("%s — 0문제: %s", summary, empty)
+    else:
+        log.info("%s", summary)
+    report(95, "정리")
+    return {
+        "answers": [],
+        "weakConcepts": [],
+        "targets": [
+            {
+                "questionId": j.q["id"],
+                "order": j.q["order"],
+                "reason": j.reason,
+                "concept": j.concept,
+                "materialId": j.material,
+                "pageNo": j.page,
+                "made": m.question is not None,
+                "type": m.type,
+                "tries": m.tries,
+                "why": m.why or None,
+                "reusedFrom": m.reused_from,
+            }
+            for j, m in tried
+        ],
+        "noteLines": [],
+        "srsUpdates": [],
+        "reviewQuestions": new_qs,
+        "emptyReason": empty,
+        "nextReview": None,
     }

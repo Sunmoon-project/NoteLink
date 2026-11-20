@@ -25,7 +25,20 @@ const quizSet = (_id: string, title: string, over: Partial<QuizSet> = {}) =>
     title,
     status: 'ready',
     questionCount: 2,
-    questions: [],
+    // 유사 퀴즈 바로가기는 노트 · 문제가 있는 끝낸 세트가 있어야 보인다(#605, canPickFrom)
+    materialId: 'm1',
+    questions: [
+      {
+        _id: `${_id}-q1`,
+        order: 1,
+        type: 'short_answer',
+        prompt: '문제',
+        choices: null,
+        answer: '답',
+        explanation: null,
+        conceptTags: [],
+      },
+    ],
     ...over,
   }) as QuizSet;
 
@@ -82,7 +95,7 @@ it('지난 날의 안 푼 복습 사본(reviewDay)도 맨 위 카드로 고르�
   expect(screen.queryByText('오늘의 복습 · 11-16 · 2문제')).toBeNull();
 });
 
-it('모두 풀었으면 카드만 숨기고 바로가기는 남긴다(유사 퀴즈는 가장 최근 세트로)', async () => {
+it('모두 풀었으면 카드만 숨기고 바로가기는 남긴다(유사 퀴즈는 노트 고르기부터, #605)', async () => {
   jest
     .spyOn(api.quiz, 'sets')
     .mockResolvedValue([
@@ -95,10 +108,7 @@ it('모두 풀었으면 카드만 숨기고 바로가기는 남긴다(유사 퀴
   expect(screen.queryByText(/다 푼 퀴즈 ·/)).toBeNull();
   expect(screen.queryByText('아직 만들어진 퀴즈가 없어요')).toBeNull();
   await fireEvent.press(screen.getByText('유사 퀴즈'));
-  expect(router.push).toHaveBeenCalledWith({
-    pathname: '/play/similar',
-    params: { setId: 'done' },
-  });
+  expect(router.push).toHaveBeenCalledWith({ pathname: '/play/similar', params: {} });
 });
 
 it('풀던 진행이 있으면 다 푼 표시와 상관없이 그 세트를 이어서 풀게 한다', async () => {

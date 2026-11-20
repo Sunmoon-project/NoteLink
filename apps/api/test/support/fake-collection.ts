@@ -52,27 +52,36 @@ export function matches(row: Record<string, unknown>, filter: Filter): boolean {
   return Object.entries(filter).every(([key, want]) => {
     if (key === '$or') return (want as Filter[]).some((f) => matches(row, f));
     if (key === '$expr') return expr(row, want as Expr);
-    // 'data.userId'처럼 점으로 이은 경로는 MongoDB처럼 안쪽 필드를 본다
-    const value = key
-      .split('.')
-      .reduce<unknown>((v, k) => (v as Record<string, unknown> | undefined)?.[k], row);
-    if (want === null) return value === null || value === undefined;
-    if (!isOps(want)) return same(value, want);
-    // 연산자가 여럿이면 MongoDB처럼 모두 맞아야 한다(예: { $gte, $lte } 기간)
-    const checks: boolean[] = [];
-    // MongoDB처럼 $in의 null은 필드가 없는 문서에도 맞는다
-    if (want.$in) checks.push(want.$in.some((w) => (w === null ? value == null : same(value, w))));
-    if ('$ne' in want) {
-      checks.push(
-        want.$ne === null ? value !== null && value !== undefined : !same(value, want.$ne),
-      );
-    }
-    if (want.$lte) checks.push(time(value) <= want.$lte.getTime());
-    if (want.$gt) checks.push(time(value) > want.$gt.getTime());
-    if (want.$gte) checks.push(time(value) >= want.$gte.getTime());
-    if (want.$lt !== undefined) checks.push(typeof value === 'number' && value < want.$lt);
-    return checks.length > 0 && checks.every(Boolean);
+    // 'data.userId'처럼 점으로 이은 경로는 MongoDB처럼 안쪽 필드를 본다. 중간에 배열이 있으면('questions._id')
+    // MongoDB처럼 원소 중 하나라도 맞으면 맞다
+    const found = pathValues(row, key.split('.'));
+    if (found.length !== 1) return found.some((value) => matchValue(value, want));
+    return matchValue(found[0], want);
   });
+}
+
+/** 경로의 값들. 중간에 배열이 있으면 원소마다 따라가 모두 모은다(배열이 없으면 값 하나) */
+function pathValues(v: unknown, keys: string[]): unknown[] {
+  if (keys.length === 0) return [v];
+  if (Array.isArray(v)) return v.flatMap((x) => pathValues(x, keys));
+  return pathValues((v as Record<string, unknown> | undefined)?.[keys[0]!], keys.slice(1));
+}
+
+function matchValue(value: unknown, want: unknown): boolean {
+  if (want === null) return value === null || value === undefined;
+  if (!isOps(want)) return same(value, want);
+  // 연산자가 여럿이면 MongoDB처럼 모두 맞아야 한다(예: { $gte, $lte } 기간)
+  const checks: boolean[] = [];
+  // MongoDB처럼 $in의 null은 필드가 없는 문서에도 맞는다
+  if (want.$in) checks.push(want.$in.some((w) => (w === null ? value == null : same(value, w))));
+  if ('$ne' in want) {
+    checks.push(want.$ne === null ? value !== null && value !== undefined : !same(value, want.$ne));
+  }
+  if (want.$lte) checks.push(time(value) <= want.$lte.getTime());
+  if (want.$gt) checks.push(time(value) > want.$gt.getTime());
+  if (want.$gte) checks.push(time(value) >= want.$gte.getTime());
+  if (want.$lt !== undefined) checks.push(typeof value === 'number' && value < want.$lt);
+  return checks.length > 0 && checks.every(Boolean);
 }
 
 /** structuredClone은 ObjectId를 일반 객체로 바꾸므로 ObjectId · Date는 그대로 두고 복사한다 */

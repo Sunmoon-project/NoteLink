@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { SIMILAR_PICK_MAX } from '@notelink/shared';
 import { Model, mongo, Types } from 'mongoose';
 
 import { AiJobsService } from '../ai-jobs/ai-jobs.service.js';
@@ -18,6 +19,7 @@ import { QuizSet, type QuizSetDocument } from '../modules/quiz/schemas/quiz-set.
 import { RecordingNotePagesService } from './recording-note-pages.service.js';
 import {
   type AppQuizSet,
+  type FinishedRow,
   INPUT_ATTEMPT_LIMIT,
   INPUT_BYTE_LIMIT,
   INPUT_SET_LIMIT,
@@ -29,8 +31,10 @@ import {
   QuizSetsService,
   SIMILAR_TYPE,
   toAppSet,
+  toWorkerQuestion,
   reviewInputQuestion,
   VALIDATION_FAILED,
+  wrongIdsOf,
 } from './quiz-sets.service.js';
 
 /** 오답 복습이 약한 개념을 셀 때 보는 기간(apps/ai services/quiz/review.py WEAK_DAYS) */
@@ -45,6 +49,8 @@ interface AttemptRow {
 }
 
 const conflict = (message: string) => new ConflictException({ code: VALIDATION_FAILED, message });
+const badRequest = (message: string) =>
+  new BadRequestException({ code: VALIDATION_FAILED, message });
 
 /** 같은 노트로 만드는 중인 세트가 있어 지금은 오답 복습을 넣지 못함(응답은 409 그대로). 자동 시작은 기다리게 둔다 */
 class ReviewBlocked extends ConflictException {}
@@ -205,6 +211,144 @@ export class SimilarQuizService {
         code: VALIDATION_FAILED,
         message: '이 노트로 퀴즈를 만드는 중이에요. 끝나면 다시 시도해 주세요',
       });
+    }
+  }
+
+  /**
+   * 고른 문제로 유사 퀴즈(POST /quiz-sets/similar, #605). 한 학습 폴더에서 끝낸 퀴즈의 문제를 골라 보내면, 오답 복습
+   * 작업(similar_quiz)을 고른 문제 모드(input.mode = 'pick')로 넣고 결과를 담을 「유사 퀴즈」 세트를 만드는 중으로
+   * 만든다. 처리기는 고른 문제 전체를 함께 참고해 총 3문제를 만들고 복습 상태(srs)는 옮기지 않는다(review.py run_pick).
+   * - 같은 id는 한 번만. 0개 · SIMILAR_PICK_MAX개 넘음 · 다른 학습 폴더의 문제가 섞임은 400
+   * - 내 세트(지우지 않음 · ready · 오늘의 복습 아님)에 없는 문제(남의 문제 · 지운 세트 · 형식이 틀린 id)는 404
+   * - 끝까지 푼 풀이가 없는 세트의 문제는 409. 틀림은 그 세트를 마지막으로 끝낸 풀이로 정한다
+   * - 새 세트의 노트(materialId)는 고른 문제가 가장 많은 노트(같으면 먼저 고른 쪽), 폴더는 고른 문제의 폴더.
+   *   그 노트로 만드는 중인 세트가 있으면(고유 색인) 넣은 작업을 거두고 409
+   */
+  async createFromPicks(userId: string, questionIds: string[]): Promise<AppQuizSet> {
+    const owner = objectId(userId, '퀴즈');
+    const ids = [...new Set(questionIds)];
+    if (ids.length === 0 || ids.length > SIMILAR_PICK_MAX) {
+      throw new BadRequestException({
+        code: VALIDATION_FAILED,
+        message: `유사 퀴즈는 문제를 1~${SIMILAR_PICK_MAX}개 골라 주세요`,
+      });
+    }
+    if (!ids.every((id) => /^[0-9a-f]{24}$/i.test(id))) throw notFound('문제');
+    const found = await this.sets
+      .find({
+        ownerId: owner,
+        deletedAt: null,
+        status: 'ready',
+        reviewDay: null,
+        materialId: { $ne: null },
+        'questions._id': { $in: ids.map((id) => new Types.ObjectId(id)) },
+      })
+      .lean<QuizSetRow[]>();
+    const holder = new Map<string, QuizSetRow>();
+    for (const set of found) for (const q of set.questions ?? []) holder.set(q._id.toString(), set);
+    const picked = ids.map((id) => ({ id, set: holder.get(id) }));
+    if (picked.some((p) => !p.set)) throw notFound('문제');
+    const pickedSets = [...new Map(picked.map((p) => [p.set!._id.toString(), p.set!])).values()];
+    if (new Set(pickedSets.map((x) => String(x.folderId))).size > 1)
+      throw badRequest('한 노트의 문제만 골라 주세요');
+
+    // 세트마다 마지막으로 끝낸 풀이(최근 것부터 읽어 세트마다 첫 줄)
+    const last = new Map<string, FinishedRow>();
+    const finished = await this.attempts
+      .find({
+        userId: owner,
+        quizSetId: { $in: pickedSets.map((x) => x._id) },
+        finishedAt: { $ne: null },
+      })
+      .sort({ finishedAt: -1 })
+      .lean<FinishedRow[]>();
+    for (const a of finished)
+      if (!last.has(a.quizSetId.toString())) last.set(a.quizSetId.toString(), a);
+    if (pickedSets.some((x) => !last.has(x._id.toString())))
+      throw conflict('먼저 이 퀴즈를 끝까지 풀어 주세요');
+    const wrong = new Set(pickedSets.flatMap((x) => wrongIdsOf(last.get(x._id.toString())!)));
+
+    const count = new Map<string, number>();
+    for (const p of picked) {
+      const m = p.set!.materialId!.toString();
+      count.set(m, (count.get(m) ?? 0) + 1);
+    }
+    // Map은 넣은 순서를 지키므로 수가 같으면 먼저 고른 노트
+    const materialId = [...count.entries()].reduce((a, b) => (b[1] > a[1] ? b : a))[0];
+    const base = pickedSets.find((x) => x.materialId!.toString() === materialId)!;
+    const note = await this.materials
+      .findOne({ _id: base.materialId!, ownerId: owner }, { title: 1 })
+      .lean<{ title?: string }>();
+
+    const recent = await this.sets
+      .find({ ownerId: owner, deletedAt: null, status: 'ready', materialId: { $ne: null } })
+      .sort({ createdAt: -1 })
+      .limit(INPUT_SET_LIMIT)
+      .lean<QuizSetRow[]>();
+    const others = recent
+      .filter((x) => !pickedSets.some((p) => String(p._id) === String(x._id)))
+      .slice(0, Math.max(0, INPUT_SET_LIMIT - pickedSets.length));
+    const sets = [...pickedSets, ...others];
+    const input = fitReviewInput(
+      {
+        mode: 'pick',
+        picks: picked.map((p) => ({
+          quizSetId: p.set!._id.toString(),
+          questionId: p.id,
+          wrong: wrong.has(p.id),
+        })),
+        sets: sets.map((x) => ({
+          id: x._id.toString(),
+          materialId: x.materialId!.toString(),
+          questions: (x.questions ?? []).map((q) => toWorkerQuestion(q)),
+        })),
+        history: [],
+        notes: await this.notesOf(owner, sets),
+      },
+      INPUT_BYTE_LIMIT,
+      pickedSets.length,
+      // 여러 노트의 문제를 고르면 노트 하나하나는 짧아도 합쳐 넘을 수 있다(code-review)
+      '고른 문제의 노트가 합쳐 너무 길어요. 노트를 나눠 몇 개씩 골라 주세요',
+    );
+
+    const newId = new Types.ObjectId();
+    const job = await this.jobs.enqueue({
+      type: SIMILAR_TYPE,
+      userId,
+      targetType: 'quiz_set',
+      targetId: newId.toString(),
+      input,
+    });
+    try {
+      const created = await this.sets.create({
+        _id: newId,
+        ownerId: owner,
+        materialId: base.materialId,
+        folderId: base.folderId,
+        source: 'ai_generated',
+        sourceSetId: null,
+        sourceAttemptId: null,
+        title: `${note?.title || base.title} · 유사 퀴즈`,
+        status: 'generating',
+        progress: 0,
+        questionCount: 0,
+        questions: [],
+        jobId: new Types.ObjectId(job._id),
+        deletedAt: null,
+      });
+      return toAppSet(created.toObject<QuizSetRow>(), job.progress);
+    } catch (e) {
+      if (!isDuplicateKey(e)) {
+        // 저장됐는지 알 수 없는 오류: 세트를 읽어 확인한다(create와 같음)
+        const saved = await this.savedSet(newId, owner);
+        if (saved === 'unknown') throw e;
+        if (saved?.jobId?.toString() === job._id) return toAppSet(saved, job.progress);
+        await this.cancelQuietly(userId, job._id);
+        throw e;
+      }
+      // 같은 노트로 만드는 중인 세트가 있다(고유 색인): 넣은 작업은 거두고 기다리게 한다
+      await this.jobs.cancel(userId, job._id);
+      throw conflict('이 노트로 퀴즈를 만드는 중이에요. 끝나면 다시 시도해 주세요');
     }
   }
 
@@ -387,20 +531,6 @@ export class SimilarQuizService {
       .sort({ finishedAt: -1 })
       .limit(INPUT_ATTEMPT_LIMIT)
       .lean<AttemptRow[]>();
-    const materialIds = [...new Set(sets.map((s) => s.materialId!.toString()))];
-    const notes = await this.materials
-      .find(
-        { _id: { $in: materialIds.map((id) => new Types.ObjectId(id)) }, ownerId: owner },
-        { pages: 1, kind: 1, processing: 1 },
-      )
-      .lean<
-        {
-          _id: Types.ObjectId;
-          kind?: string;
-          pages?: PageRow[];
-          processing?: { jobId?: Types.ObjectId | null };
-        }[]
-      >();
     // 무효 풀이(결함 문제, 오늘의 복습이 정함)는 처리기가 없는 풀이로 본다
     const answers = (a: AttemptRow) =>
       (a.answers ?? []).map((x) => ({
@@ -424,14 +554,36 @@ export class SimilarQuizService {
         finishedAt: h.finishedAt.toISOString(),
         answers: answers(h),
       })),
-      notes: Object.fromEntries(
-        await Promise.all(
-          notes.map(
-            async (m) => [m._id.toString(), await this.notePages.notePages(owner, m)] as const,
-          ),
+      notes: await this.notesOf(owner, sets),
+    });
+  }
+
+  /** 세트들이 가리키는 노트의 글(녹음 노트는 대본에서). 처리기 입력의 notes {materialId: [{pageNo, ocrText}]} */
+  private async notesOf(
+    owner: Types.ObjectId,
+    sets: QuizSetRow[],
+  ): Promise<Record<string, { pageNo: number; ocrText: string }[]>> {
+    const materialIds = [...new Set(sets.map((s) => s.materialId!.toString()))];
+    const notes = await this.materials
+      .find(
+        { _id: { $in: materialIds.map((id) => new Types.ObjectId(id)) }, ownerId: owner },
+        { pages: 1, kind: 1, processing: 1 },
+      )
+      .lean<
+        {
+          _id: Types.ObjectId;
+          kind?: string;
+          pages?: PageRow[];
+          processing?: { jobId?: Types.ObjectId | null };
+        }[]
+      >();
+    return Object.fromEntries(
+      await Promise.all(
+        notes.map(
+          async (m) => [m._id.toString(), await this.notePages.notePages(owner, m)] as const,
         ),
       ),
-    });
+    );
   }
 }
 
@@ -446,34 +598,41 @@ export interface ReviewInput extends Record<string, unknown> {
   notes: Record<string, { pageNo: number; ocrText: string }[]>;
 }
 
+/** 입력 크기 맞추기(fitReviewInput)가 보는 부분: 오답 복습 · 고른 문제 모드(#605) 입력이 같이 쓴다 */
+type FitInput = Pick<ReviewInput, 'sets' | 'history' | 'notes'>;
+
 const bsonBytes = (key: string, value: unknown) => mongo.BSON.calculateObjectSize({ [key]: value });
 
 /**
  * 입력을 limit 바이트(BSON) 안으로 줄인다(ai_jobs 문서가 MongoDB 한도를 넘지 않게, 맞춤 퀴즈 fitInput과 같은 방식).
- * 이번 세트(sets[0]) · 그 노트 · 이번 풀이는 꼭 넣고, 넘으면 400. 나머지 세트는 최근 것부터 그 세트의 풀이 ·
- * 노트 글과 함께 들어갈 만큼만 넣는다
+ * 앞 required개 세트(오답 복습은 이번 세트 sets[0], 고른 문제 모드는 고른 문제의 세트들) · 그 노트 · 그 풀이는 꼭
+ * 넣고, 넘으면 400. 나머지 세트는 최근 것부터 그 세트의 풀이 · 노트 글과 함께 들어갈 만큼만 넣는다
  */
-export function fitReviewInput(input: ReviewInput, limit = INPUT_BYTE_LIMIT): ReviewInput {
-  const [first, ...rest] = input.sets;
+export function fitReviewInput<T extends FitInput>(
+  input: T,
+  limit = INPUT_BYTE_LIMIT,
+  required = 1,
+  tooLong = '노트가 너무 길어 유사 퀴즈를 만들 수 없어요. 노트를 나눠 올려 주세요',
+): T {
+  const head = input.sets.slice(0, required);
+  const rest = input.sets.slice(required);
+  const headIds = new Set(head.map((x) => x.id));
   const historyOf = (id: string) => input.history.filter((h) => h.quizSetId === id);
-  const noteIds = new Set<string>(first ? [first.materialId] : []);
+  const noteIds = new Set<string>(head.map((x) => x.materialId));
   const base = {
     ...input,
-    sets: first ? [first] : [],
-    history: first ? historyOf(first.id) : [],
-    notes:
-      first && input.notes[first.materialId]
-        ? { [first.materialId]: input.notes[first.materialId]! }
-        : {},
+    sets: head,
+    history: input.history.filter((h) => headIds.has(h.quizSetId)),
+    notes: Object.fromEntries(Object.entries(input.notes).filter(([id]) => noteIds.has(id))),
   };
   let total = mongo.BSON.calculateObjectSize(base);
   if (total > limit) {
     throw new BadRequestException({
       code: VALIDATION_FAILED,
-      message: '노트가 너무 길어 유사 퀴즈를 만들 수 없어요. 노트를 나눠 올려 주세요',
+      message: tooLong,
     });
   }
-  const kept = new Set<string>(first ? [first.id] : []);
+  const kept = new Set<string>(headIds);
   for (const set of rest) {
     const note = input.notes[set.materialId];
     const noteSize = note && !noteIds.has(set.materialId) ? bsonBytes(set.materialId, note) : 0;

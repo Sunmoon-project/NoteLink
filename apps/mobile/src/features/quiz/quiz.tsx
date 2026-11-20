@@ -80,6 +80,7 @@ import { AvatarCheer } from '@/features/tutor/cheer';
 import { ChoiceRow, Passage, splitPrompt } from './choice';
 import { readFolderMaterials } from '@/features/content/notes';
 import { ALL_FOLDERS, boxFolder, FolderGrid, FolderPickScreen } from './folder-pick';
+import { canPickFrom, SimilarPickScreen, SimilarStatus, useSimilarMaking } from './similar-pick';
 import { recordWrong } from './wrong-review';
 import { TodayReviewCard, useTodayReview } from './today-review';
 import { NextStepCard, reviewDayWord, type NextStep } from './next-step';
@@ -171,9 +172,9 @@ export function QuizHomeScreen() {
           s.status === 'ready' && !s.completed && !s.reviewDay && s._id !== todayId && !s.started,
       );
   const shortcutSetId = progress ? latest?._id : recent?._id;
-  // 유사 퀴즈는 서버가 끝까지 푼 풀이로 만들므로 끝낸 세트(completed) 중 가장 최근 것을 넘긴다. 가장 최근 세트는
-  // 안 푼 「다시 보기」 · 풀던 세트일 수 있어 「먼저 이 퀴즈를 끝까지 풀어 주세요」가 떴다
-  const similarSetId = sets.data?.find((s) => s.status === 'ready' && s.completed)?._id;
+  // 유사 퀴즈는 끝까지 푼 퀴즈의 문제로 만든다: 끝낸 세트(completed)가 있을 때만 바로가기를 보인다. 세트는 넘기지 않고
+  // 노트 → 문제를 고르게 한다(#605)
+  const canSimilar = !!sets.data?.some(canPickFrom);
   const waiting = sets.data?.filter(pending) ?? [];
   return (
     <Canvas>
@@ -225,8 +226,8 @@ export function QuizHomeScreen() {
                   [Sparkles, '유사 퀴즈', '틀린 문제와 비슷한 문제를 풀어요', '/play/similar'],
                 ] as const
               )
-                // 유사 퀴즈는 끝낸 세트가 있어야 만들 수 있다: 없으면 빈 id로 서버를 부르지 않게 바로가기를 숨긴다
-                .filter(([, , , href]) => href !== '/play/similar' || similarSetId)
+                // 유사 퀴즈는 끝낸 세트가 있어야 만들 수 있다: 없으면 고를 문제가 없으니 바로가기를 숨긴다
+                .filter(([, , , href]) => href !== '/play/similar' || canSimilar)
                 .map(([Ic, l, sub, href]) => (
                   <View
                     key={l}
@@ -240,9 +241,7 @@ export function QuizHomeScreen() {
                       onPress={() =>
                         router.push({
                           pathname: href as never,
-                          params: {
-                            setId: href === '/play/similar' ? similarSetId : shortcutSetId,
-                          },
+                          params: href === '/play/similar' ? {} : { setId: shortcutSetId },
                         })
                       }
                     >
@@ -1460,47 +1459,35 @@ export function QuizExplainScreen() {
   );
 }
 
+/**
+ * 유사 퀴즈. 퀴즈 결과 화면에서 세트를 넘기면(setId) 그 세트를 마지막으로 푼 풀이의 틀린 문제로 만든다(기존 흐름).
+ * 퀴즈 홈 바로가기는 세트를 넘기지 않는다(#605): 1단계 노트(학습 폴더) 고르기 → 2단계 그 노트에서 끝낸 퀴즈의 문제
+ * 고르기(SimilarPickScreen) → 고른 문제를 함께 참고해 만든다
+ */
 export function QuizSimilarScreen() {
-  const { setId } = useLocalSearchParams<{ setId?: string }>();
-  const qc = useQueryClient();
-  const generate = useMutation({
-    mutationFn: () => api.quiz.similar(setId ?? ''),
-    retry: false,
-    // 실패 문구는 화면 아래에 직접 보여 주므로 공용 토스트는 띄우지 않는다
-    onError: () => {},
-  });
-  // 서버는 「다시 보기」 세트를 만드는 중(generating)으로 돌려준다: 다 만들 때까지 세트를 다시 읽는다
-  const making = generate.data?.status === 'generating' ? generate.data._id : null;
-  const poll = useQuery({
-    queryKey: ['quiz-set', making],
-    queryFn: () => api.quiz.set(making!),
-    enabled: !!making,
-    refetchInterval: (q) => (q.state.data && q.state.data.status !== 'generating' ? false : 1500),
-  });
-  const done =
-    poll.data && poll.data.status === 'ready'
-      ? poll.data
-      : generate.data?.status === 'ready'
-        ? generate.data
-        : null;
-  const failed = poll.data?.status === 'failed' || generate.data?.status === 'failed';
-  // 다 만들면 일반 퀴즈와 같은 흐름: 풀이 화면에서 풀고, 마지막에 결과 · 정답 · AI 해설을 본다
-  useEffect(() => {
-    if (!done) return;
-    qc.invalidateQueries({ queryKey: ['quiz-sets'] });
-    router.replace({ pathname: '/play/solve', params: { setId: done._id } });
-  }, [done?._id]); // eslint-disable-line react-hooks/exhaustive-deps
-  // 결과 조회가 실패하면(연결 끊김 · 서버 오류) 「만드는 중」만 되풀이하지 않고 알린 뒤 다시 확인하게 한다
-  // 앞서 받은 진행 상태(generating)가 남아 있어도 마지막 조회가 실패했으면 알린다(다 만든 · 실패한 세트는 제외)
-  const checkFailed = !!making && poll.isError && !done && !failed;
-  const waiting = (!!making && !done && !failed && !checkFailed) || !!done;
+  const { setId, folderId } = useLocalSearchParams<{ setId?: string; folderId?: string }>();
+  if (setId) return <SimilarFromSet setId={setId} />;
+  if (folderId) return <SimilarPickScreen folderId={folderId} />;
+  return (
+    <FolderPickScreen
+      title="유사 퀴즈"
+      sub="어느 노트의 문제로 만들까요?"
+      all={false}
+      onPick={(id) => router.push({ pathname: '/play/similar', params: { folderId: id } })}
+    />
+  );
+}
+
+function SimilarFromSet({ setId }: { setId: string }) {
+  const making = useSimilarMaking(() => api.quiz.similar(setId));
+  const { generate, poll, failed, checkFailed, waiting } = making;
   return (
     <Canvas>
       <Screen
         footer={
           <Btn
             loading={generate.isPending || waiting}
-            onPress={() => (checkFailed ? void poll.refetch() : generate.mutate())}
+            onPress={() => (checkFailed ? void poll.refetch() : generate.mutate(undefined))}
           >
             {checkFailed
               ? '다시 확인'
@@ -1516,26 +1503,7 @@ export function QuizSimilarScreen() {
           title="틀린 문제와 비슷한 문제를 만들어요"
           body="원본과 같은 난이도로 새 문제를 만들어요. 다 만들면 바로 풀고, 마지막에 정답과 AI 해설을 볼 수 있어요."
         />
-        {checkFailed && (
-          <Text className="text-center text-footnote leading-5 text-danger">
-            만든 결과를 확인하지 못했어요. 연결을 확인하고 다시 확인해 주세요.
-          </Text>
-        )}
-        {waiting && (
-          <View className="items-center">
-            <Progress value={poll.data?.progress ?? 0} className="w-40" />
-            <Text className="mt-2 text-center text-footnote leading-5 text-sub">
-              틀린 문제와 비슷한 문제를 만들고 있어요 · {poll.data?.progress ?? 0}%
-            </Text>
-          </View>
-        )}
-        {(generate.isError || failed) && (
-          <Text className="text-center text-footnote leading-5 text-danger">
-            {generate.error instanceof ApiError && !failed
-              ? generate.error.message
-              : '생성 결과를 받지 못했어요. 다시 시도하면 새로 만들어요.'}
-          </Text>
-        )}
+        <SimilarStatus s={making} />
       </Screen>
     </Canvas>
   );
