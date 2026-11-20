@@ -245,3 +245,12 @@ def test_a_long_picked_question_keeps_its_answer_in_the_prompt() -> None:
     llm = llm_for("be", "stack", "fasten")
     run(llm, inp)
     assert "(정답: stack)" in llm.named("Review")[0].user
+
+
+def test_a_picked_question_with_a_passage_shows_it_in_the_prompt() -> None:
+    # 제시문에 핵심이 있는 문제도 함께 고른 문제 안내에 맥락이 들어간다(Codex 1차)
+    inp = pick_input(("s1", "q1", True), ("s1", "q2", True))
+    inp["sets"][0]["questions"][1]["passage"] = "창고에 상자를 차곡차곡"
+    llm = llm_for("be", "stack", "fasten")
+    run(llm, inp)
+    assert "제시문: 창고에 상자를 차곡차곡" in llm.named("Review")[0].user

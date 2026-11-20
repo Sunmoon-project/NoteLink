@@ -252,18 +252,22 @@ export class SimilarQuizService {
     if (new Set(pickedSets.map((x) => String(x.folderId ?? ''))).size > 1)
       throw badRequest('한 노트의 문제만 골라 주세요');
 
-    // 세트마다 마지막으로 끝낸 풀이(최근 것부터 읽어 세트마다 첫 줄)
-    const last = new Map<string, FinishedRow>();
-    const finished = await this.attempts
-      .find({
-        userId: owner,
-        quizSetId: { $in: pickedSets.map((x) => x._id) },
-        finishedAt: { $ne: null },
-      })
-      .sort({ finishedAt: -1 })
-      .lean<FinishedRow[]>();
-    for (const a of finished)
-      if (!last.has(a.quizSetId.toString())) last.set(a.quizSetId.toString(), a);
+    // 세트마다 마지막으로 끝낸 풀이 하나만 DB에서 골라 받는다(풀이가 쌓여도 받는 양은 세트 수만큼, Codex 1차)
+    const latest = await this.attempts.aggregate<{
+      _id: Types.ObjectId;
+      answers?: FinishedRow['answers'];
+    }>([
+      {
+        $match: {
+          userId: owner,
+          quizSetId: { $in: pickedSets.map((x) => x._id) },
+          finishedAt: { $ne: null },
+        },
+      },
+      { $sort: { finishedAt: -1 } },
+      { $group: { _id: '$quizSetId', answers: { $first: '$answers' } } },
+    ]);
+    const last = new Map(latest.map((a) => [String(a._id), a] as const));
     if (pickedSets.some((x) => !last.has(x._id.toString())))
       throw conflict('먼저 이 퀴즈를 끝까지 풀어 주세요');
     const wrong = new Set(pickedSets.flatMap((x) => wrongIdsOf(last.get(x._id.toString())!)));

@@ -176,10 +176,13 @@ export function SimilarPickScreen({ folderId }: { folderId: string }) {
   // 고른 수 · 상한 · 보내기에서 모두 뺀다(code-review)
   const order = groups.flatMap((s) => s.questions.map((q) => q._id));
   const chosen = (picked ?? defaultPicks(groups)).filter((id) => order.includes(id));
+  // 서버로 보낼 차례(화면 차례: 세트 · 문제 순). 노트 판단(noteOf)도 이 차례로 해야 서버와 같은 노트를 고른다
+  // (같은 수일 때 먼저 고른 쪽, Codex 1차)
+  const ordered = order.filter((id) => chosen.includes(id));
   const making = useSimilarMaking((ids: string[]) => api.quiz.similarPick(ids));
   // 결과 확인에 실패했을 때(checkFailed)도 체크를 막는다: 그때 버튼은 이미 넣은 세트를 다시 확인할 뿐이다
   const busy = making.generate.isPending || making.waiting || making.checkFailed;
-  const note = noteOf(chosen, groups);
+  const note = noteOf(ordered, groups);
   const blocked =
     !making.generate.data &&
     !!sets.data?.some((s) => s.status === 'generating' && !!note && s.materialId === note);
@@ -194,7 +197,7 @@ export function SimilarPickScreen({ folderId }: { folderId: string }) {
     }
   };
   // 고른 차례가 아니라 화면 차례(세트 · 문제 순)로 보낸다
-  const send = () => making.generate.mutate(order.filter((id) => chosen.includes(id)));
+  const send = () => making.generate.mutate(ordered);
   return (
     <Canvas>
       <Screen

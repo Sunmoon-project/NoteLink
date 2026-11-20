@@ -282,3 +282,29 @@ describe('code-review 3차', () => {
     expect(pick).toHaveBeenCalledWith(['a2', 'b1']);
   });
 });
+
+describe('Codex 1차', () => {
+  it('두 노트에서 같은 수를 고르면 다시 체크한 차례와 상관없이 화면 차례로 노트를 정한다(서버와 같게)', async () => {
+    const pick = jest.spyOn(api.quiz, 'similarPick').mockResolvedValue({ ...SETS[0]!, _id: 'new' });
+    const a = quizSet('s1', 'fA', [question('a1'), question('a2', 2)], {
+      materialId: 'mA',
+      wrongQuestionIds: ['a2'],
+    });
+    const b = quizSet('s2', 'fA', [question('b1')], { materialId: 'mB', wrongQuestionIds: ['b1'] });
+    // 뒤 노트(mB)로 만드는 중: 새 세트는 화면에서 먼저인 mA로 들어가므로 막지 않는다
+    const busyB = quizSet('r1', 'fA', [], {
+      status: 'generating',
+      completed: false,
+      materialId: 'mB',
+    });
+    jest.spyOn(api.quiz, 'sets').mockResolvedValue([a, b, busyB]);
+    setParams({ folderId: 'fA' });
+    await renderScreen(<QuizSimilarScreen />, client());
+    await screen.findByText('문제 a1');
+    await fireEvent.press(checkbox('a2'));
+    await fireEvent.press(checkbox('a2')); // 고른 차례는 b1 → a2가 됨
+    expect(makeBtn().props.accessibilityState?.disabled).toBe(false);
+    await fireEvent.press(makeBtn());
+    expect(pick).toHaveBeenCalledWith(['a2', 'b1']);
+  });
+});

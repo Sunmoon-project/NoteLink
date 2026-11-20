@@ -175,9 +175,14 @@ describe('SimilarQuizService.createFromPicks', () => {
       finishedAt: new Date(),
       answers: a.qs.map((q) => ({ questionId: q._id, correct: true })),
     } as never);
+    // 풀이 전체를 읽지 않고 세트마다 최신 1건만 집계로 받는다(Codex 1차)
+    const find = vi.spyOn(attempts.model, 'find');
+    const aggregate = vi.spyOn(attempts.model, 'aggregate');
     await similar.createFromPicks(ME.toHexString(), [a.ids[0]!]);
     const input = jobs.rows.at(-1)!['input'] as { picks: { wrong: boolean }[] };
     expect(input.picks[0]!.wrong).toBe(false);
+    expect(aggregate).toHaveBeenCalledTimes(1);
+    expect(find).not.toHaveBeenCalled();
   });
 
   it('남의 문제 · 지운 세트 · 없는 문제 · 형식이 틀린 id가 섞이면 404이고 작업을 넣지 않는다', async () => {

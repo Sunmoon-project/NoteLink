@@ -860,8 +860,16 @@ def parse_pick(raw: JsonObject) -> tuple[list[Pick], dict[str, QuizSet], Notes]:
 
 
 def _related(picks: list[Pick]) -> str:
-    """생성 프롬프트에 넣는 함께 고른 문제. 문제 글은 RELATED_CHARS자까지, 정답은 자르지 않음."""
-    lines = [f"- {p.q['prompt'][:RELATED_CHARS]} (정답: {p.q['answer']})" for p in picks]
+    """생성 프롬프트에 넣는 함께 고른 문제.
+
+    문제 글(제시문이 있으면 그 발췌까지, Codex 1차)은 RELATED_CHARS자까지, 정답은 자르지 않음.
+    """
+
+    def text(q: Question) -> str:
+        passage = q.get("passage")
+        return q["prompt"] + (f" / 제시문: {passage}" if passage else "")
+
+    lines = [f"- {text(p.q)[:RELATED_CHARS]} (정답: {p.q['answer']})" for p in picks]
     return (
         "학생이 복습하려고 함께 고른 문제(이 문장과 상황은 다시 쓰지 않는다."
         " 세트의 다른 문제와 겹치지 않게 다른 내용을 묻는다):\n" + "\n".join(lines) + "\n"
