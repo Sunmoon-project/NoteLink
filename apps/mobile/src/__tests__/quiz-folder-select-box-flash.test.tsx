@@ -17,6 +17,7 @@ import { queryClient } from '../lib/query';
 import { useQuizProgress } from '../stores/quiz-progress';
 import { DEMO_FOLDER, makeMaterial } from './fixtures/seed';
 import { renderScreen, setParams } from '../test-utils';
+import { ALL_FOLDERS } from '../features/quiz/folder-pick';
 
 // #601 퀴즈 보관함 · 플래시카드도 퀴즈 만들기(#575)처럼 1단계 노트(학습 폴더) → 2단계 그 노트의 항목으로 고른다
 jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
@@ -298,5 +299,55 @@ describe('들어가는 길', () => {
     for (const pathname of ['/play/flash', '/play/box'])
       expect(calls.find((to) => to.pathname === pathname)?.params?.folderId).toBeUndefined();
     await waitFor(() => expect(calls).toHaveLength(2));
+  });
+});
+
+// Codex 1차: 폴더를 지워도(FoldersService.remove) 보관 문제 · 카드는 남는다. 노트를 고르지 않고 전체를 보는 길이 있어야
+// 지운 노트 · 폴더 정보가 없는 옛 항목도 다시 보고 지울 수 있다
+describe('전체 보기(지운 노트의 항목, Codex 1차)', () => {
+  it('폴더가 하나도 없어도 1단계에 「전체 보기」가 있고, 누르면 전체로 다시 연다', async () => {
+    jest.spyOn(api.content, 'folders').mockResolvedValue([]);
+    await renderScreen(<QuizBoxScreen />, client());
+    expect(await screen.findByText('아직 노트가 없어요')).toBeTruthy();
+    await fireEvent.press(screen.getByText('전체 보기'));
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/play/box',
+      params: { folderId: ALL_FOLDERS },
+    });
+  });
+
+  it('보관함 전체는 폴더 없이 서버에 묻고, AI 설명도 같은 전체 캐시를 쓴다', async () => {
+    const box = jest.spyOn(api.quiz, 'box').mockResolvedValue([question('q9')]);
+    jest.spyOn(api.quiz, 'explanation').mockResolvedValue({ text: '설명' });
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    setParams({ folderId: ALL_FOLDERS });
+    const view = await renderScreen(<QuizBoxScreen />, qc);
+    expect(await screen.findByText('보관 문제 q9')).toBeTruthy();
+    // 폴더 없이(전체) 한 번만 묻는다
+    expect(box.mock.calls).toEqual([[undefined]]);
+    await fireEvent.press(screen.getByText('AI 설명 보기'));
+    await view.unmount();
+    const [[to]] = (router.push as jest.Mock).mock.calls;
+    setParams(to.params);
+    await renderScreen(<QuizExplainScreen />, qc);
+    expect(await screen.findByText(/보관 문제 q9/)).toBeTruthy();
+    expect(box).toHaveBeenCalledTimes(1);
+  });
+
+  it('플래시 카드 · 모아보기 전체는 지운 노트 · 폴더 정보가 없는 카드까지 모두 보인다', async () => {
+    const gone = card('g1', 'fGone');
+    jest.spyOn(api.quiz, 'flashcards').mockResolvedValue([...CARDS, gone]);
+    setParams({ folderId: ALL_FOLDERS });
+    await renderScreen(<CardsScreen />, client());
+    for (const id of ['m1', 'e1', 'old', 'm2', 'g1'])
+      expect(await screen.findByText(`앞 ${id}`)).toBeTruthy();
+    expect(screen.getByText('5장')).toBeTruthy();
+    await fireEvent.press(screen.getByText('앞 g1'));
+    expect(router.replace).toHaveBeenCalledWith({
+      pathname: '/play/flash',
+      params: { i: '4', folderId: ALL_FOLDERS },
+    });
   });
 });

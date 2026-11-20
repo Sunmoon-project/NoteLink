@@ -40,8 +40,18 @@ export function FolderGrid({
 }
 
 /**
+ * 1단계에서 「전체 보기」를 고르면 넘기는 folderId. 폴더를 지워도(FoldersService.remove) 보관 문제 · 카드는 남고,
+ * 폴더 정보가 없는 옛 항목도 있어서 노트를 고르지 않고 전체를 보는 길로 쓴다(#601 Codex 1차)
+ */
+export const ALL_FOLDERS = 'all';
+
+/** 보관함을 읽을 폴더: 전체 보기 · 빈 값이면 undefined(전체) */
+export const boxFolder = (folderId?: string) =>
+  folderId && folderId !== ALL_FOLDERS ? folderId : undefined;
+
+/**
  * 퀴즈 보관함 · 플래시 카드의 1단계(#601): 어느 노트(학습 폴더)의 항목을 볼지 고른다.
- * 폴더 목록은 노트 탭 · 퀴즈 만들기와 같은 키로 한 번만 읽는다
+ * 폴더 목록은 노트 탭 · 퀴즈 만들기와 같은 키로 한 번만 읽는다. 지운 노트의 항목은 「전체 보기」로 본다
  */
 export function FolderPickScreen({
   title,
@@ -59,6 +69,14 @@ export function FolderPickScreen({
         <NetBanner />
         <Header title={title} sub="어떤 노트를 볼까요?" large={false} />
         <Search value={q} onChangeText={setQ} placeholder="노트 검색" />
+        <View className="mt-4 flex-row items-center gap-3">
+          <Text className="flex-1 text-caption text-sub">
+            지운 노트의 항목도 전체 보기에서 볼 수 있어요
+          </Text>
+          <Btn small kind="outline" onPress={() => onPick(ALL_FOLDERS)}>
+            전체 보기
+          </Btn>
+        </View>
         {folders.isError && !folders.data && (
           <Empty
             icon={<FolderIcon size={ICON.lg} color={C.brand} />}

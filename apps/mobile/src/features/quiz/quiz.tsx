@@ -79,7 +79,7 @@ import { C, ICON, MOTION } from '@/theme';
 import { AvatarCheer } from '@/features/tutor/cheer';
 import { ChoiceRow, Passage, splitPrompt } from './choice';
 import { readFolderMaterials } from '@/features/content/notes';
-import { FolderGrid, FolderPickScreen } from './folder-pick';
+import { ALL_FOLDERS, boxFolder, FolderGrid, FolderPickScreen } from './folder-pick';
 import { recordWrong } from './wrong-review';
 import { TodayReviewCard, useTodayReview } from './today-review';
 import { NextStepCard, reviewDayWord, type NextStep } from './next-step';
@@ -1345,11 +1345,7 @@ export function QuizExplainScreen() {
     folderId?: string;
   }>();
   // 노트별 보관함(#601)에서 열면 그 화면이 이미 읽은 폴더 목록 캐시를 그대로 쓴다
-  const box = useQuery({
-    queryKey: folderId ? ['quiz-box', folderId] : ['quiz-box'],
-    queryFn: () => api.quiz.box(folderId),
-    enabled: !setId,
-  });
+  const box = useQuery({ ...boxQuery(folderId), enabled: !setId });
   const source = useQuery({
     queryKey: ['quiz-set', setId],
     queryFn: () => api.quiz.set(setId!),
@@ -1516,9 +1512,21 @@ export function QuizSimilarScreen() {
   );
 }
 
-/** 카드는 만든 노트(학습 폴더)별로 본다(#601). 폴더 정보가 없는 예전 카드는 어느 노트에도 보이지 않는다 */
+/**
+ * 카드는 만든 노트(학습 폴더)별로 본다(#601). 폴더 정보가 없는 예전 카드 · 지운 노트의 카드는 어느 노트에도 보이지 않고
+ * 「전체 보기」(ALL_FOLDERS)에서만 보인다
+ */
 const inFolder = (cards: Flashcard[] | undefined, folderId: string) =>
-  (cards ?? []).filter((c) => c.folderId === folderId);
+  folderId === ALL_FOLDERS ? (cards ?? []) : (cards ?? []).filter((c) => c.folderId === folderId);
+
+/** 보관함 쿼리: 폴더별 키는 ['quiz-box', 폴더], 전체는 ['quiz-box']라 보관함 화면과 AI 설명이 같은 캐시를 쓴다 */
+const boxQuery = (folderId?: string) => {
+  const folder = boxFolder(folderId);
+  return {
+    queryKey: folder ? ['quiz-box', folder] : ['quiz-box'],
+    queryFn: () => api.quiz.box(folder),
+  };
+};
 
 /** 플래시 카드: 1단계에서 노트(학습 폴더)를 고르고, 같은 화면을 그 폴더(`folderId`)로 다시 열어 그 노트의 카드를 넘겨 본다(#601) */
 export function FlashScreen() {
@@ -1769,7 +1777,7 @@ function FolderBox({ folderId }: { folderId: string }) {
     onError: () => toast('보관함에서 삭제하지 못했어요. 다시 시도해 주세요'),
   });
   // 키 앞부분이 ['quiz-box']라 담기 · 지우기의 무효화가 폴더별 목록에도 닿는다
-  const box = useQuery({ queryKey: ['quiz-box', folderId], queryFn: () => api.quiz.box(folderId) });
+  const box = useQuery(boxQuery(folderId));
   const [select, setSelect] = useState(false);
   if (box.isError && !box.data)
     return (
