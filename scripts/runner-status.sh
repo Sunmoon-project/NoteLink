@@ -554,7 +554,7 @@ main() {
   read_usage
   usage_level
   echo "러너 $CODEX_RUNNER: $CUR_STATUS (작업 중: $BUSY) ${ERROR_MSG:+— $ERROR_MSG}"
-  echo "지난 상태: ${PREV_STATUS:-없음} (연속 확인 실패 $PREV_ERR번) · $(queue_line)"
+  echo "지난 상태: ${PREV_STATUS:-없음} (연속 확인 실패 ${PREV_ERR}번) · $(queue_line)"
   echo "$(usage_line) · 지난 단계: ${PREV_USAGE:-없음}"
 
   EMBEDS=""
