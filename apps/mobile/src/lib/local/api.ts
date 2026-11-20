@@ -1170,13 +1170,17 @@ const api: Api = {
     },
   },
   quiz: {
-    // 서버(QuizSetsService.withCompleted)처럼 끝낸 풀이가 있는 ready 세트에 completed를 붙인다(#561)
+    // 서버(QuizSetsService.withCompleted)처럼 ready 세트에 끝낸 풀이가 있으면 completed(#561),
+    // 시작한 풀이가 있으면 started(#593)를 붙인다
     sets: () => {
       const d = db();
       const done = new Set(d.attempts.filter((a) => a.finishedAt).map((a) => a.quizSetId));
+      const started = new Set(d.attempts.map((a) => a.quizSetId));
       return ok(
         d.quizSets.map((s) =>
-          s.status === 'ready' && done.has(s._id) ? { ...s, completed: true } : s,
+          s.status === 'ready' && started.has(s._id)
+            ? { ...s, started: true, ...(done.has(s._id) ? { completed: true } : {}) }
+            : s,
         ),
       );
     },

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { TextInput, View } from 'react-native';
+import { AppState, type AppStateStatus, TextInput, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import Animated, {
@@ -11,7 +11,7 @@ import Animated, {
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useIsFocused, useLocalSearchParams } from 'expo-router';
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Speech from 'expo-speech';
 import { setAudioModeAsync } from 'expo-audio';
@@ -33,7 +33,7 @@ import {
   Volume2,
   X,
 } from 'lucide-react-native';
-import { ERROR_CODES, type AiJob } from '@notelink/shared';
+import { ERROR_CODES, type AiJob, type QuizSet } from '@notelink/shared';
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useAiJobSubscription, useSocket, useTabRefresh } from '@/hooks';
@@ -76,7 +76,7 @@ import { recordWrong } from './wrong-review';
 import { TodayReviewCard, useTodayReview } from './today-review';
 import { NextStepCard, reviewDayWord, type NextStep } from './next-step';
 import { useTourTarget } from '@/features/tutor/tour';
-import { seoul } from '@/lib/dates';
+import { seoul, today as seoulToday } from '@/lib/dates';
 import { aiWaiting } from '@/lib/ai';
 import { AiPending } from '@/components/AiPending';
 
@@ -105,17 +105,48 @@ const Tutor = ({ size = 76 }: { size?: number }) => (
   </View>
 );
 
+/** 만드는 중인 퀴즈 세트가 있을 때 퀴즈 탭이 세트 목록을 다시 읽는 간격(#593) */
+const PENDING_POLL_MS = 4000;
+
+/**
+ * 앱이 앞에 나와 있는지. 앱이 뒤로 가도 화면 포커스는 그대로라 다시 읽기를 멈추려고 따로 본다(#593).
+ * 켜자마자는 상태를 아직 모를 수 있어(unknown) 뒤에 있다고 확실할 때만 멈춘다
+ */
+const isBackground = (s: AppStateStatus | null) => s === 'background' || s === 'inactive';
+function useAppActive() {
+  const [active, setActive] = useState(() => !isBackground(AppState.currentState));
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => setActive(!isBackground(s)));
+    return () => sub.remove();
+  }, []);
+  return active;
+}
+
 export function QuizHomeScreen() {
   // 처음 안내의 '퀴즈 만들기'가 짚는 자리
   const makeTarget = useTourTarget('quiz-make');
-  const sets = useQuery({ queryKey: ['quiz-sets'], queryFn: api.quiz.sets });
-  const refresh = useTabRefresh(sets);
-  const progress = useQuizProgress((s) => s.progress);
   // 오늘의 복습은 위 카드가 진행률을 보여 주므로 「퀴즈 생성 중」 · 맨 위 카드에는 넣지 않는다
   const todayId = useTodayReview().data?._id;
+  const focused = useIsFocused();
+  const appActive = useAppActive();
+  // 오늘의 복습 세트는 오늘의 복습 카드가 따로 다시 읽고 보여 준다. 그 조회가 오기 전에도 빼려고 오늘(서울) reviewDay도
+  // 함께 본다. 지난 날 복습 세트는 그 카드에 나오지 않으므로 여기서 안내한다
+  const pending = (s: QuizSet) =>
+    s.status === 'generating' && s._id !== todayId && s.reviewDay !== seoulToday();
+  // 퀴즈를 끝내면 서버가 오답 복습(「다시 보기」) 세트를 저절로 만든다. 만드는 중 세트가 있으면 이 탭이 보이고
+  // 앱이 앞에 있는 동안에만 다시 읽어, 다 만들어지면 「AI 서버를 기다리고 있어요」 안내가 바로 사라지게 한다(#593)
+  const sets = useQuery({
+    queryKey: ['quiz-sets'],
+    queryFn: api.quiz.sets,
+    refetchInterval: (q) =>
+      focused && appActive && q.state.data?.some(pending) ? PENDING_POLL_MS : false,
+  });
+  const refresh = useTabRefresh(sets);
+  const progress = useQuizProgress((s) => s.progress);
   // 바로가기(유사 퀴즈 등)는 다 푼 세트도 쓰므로 가장 최근 ready 세트, 맨 위 카드는 아직 끝까지 풀지 않은 세트(#561).
   // 맨 위 카드는 오늘의 복습 세트(reviewDay, 지난 날 사본 포함)도 고르지 않는다. todayId는 reviewDay를 보내지 않는
-  // 옛 서버에서도 오늘 세트를 빼려고 함께 본다
+  // 옛 서버에서도 오늘 세트를 빼려고 함께 본다. 「다시 보기」 세트(sourceSetId)는 한 번 들어갔으면(started) 끝까지
+  // 풀지 않았어도 고르지 않는다(#593)
   const recent = sets.data?.find((s) => s.status === 'ready');
   const latest = progress
     ? (sets.data?.find((s) => s._id === progress.setId) ?? {
@@ -124,13 +155,18 @@ export function QuizHomeScreen() {
         questionCount: 0,
       })
     : sets.data?.find(
-        (s) => s.status === 'ready' && !s.completed && !s.reviewDay && s._id !== todayId,
+        (s) =>
+          s.status === 'ready' &&
+          !s.completed &&
+          !s.reviewDay &&
+          s._id !== todayId &&
+          !(s.sourceSetId && s.started),
       );
   const shortcutSetId = progress ? latest?._id : recent?._id;
   // 유사 퀴즈는 서버가 끝까지 푼 풀이로 만들므로 끝낸 세트(completed) 중 가장 최근 것을 넘긴다. 가장 최근 세트는
   // 안 푼 「다시 보기」 · 풀던 세트일 수 있어 「먼저 이 퀴즈를 끝까지 풀어 주세요」가 떴다
   const similarSetId = sets.data?.find((s) => s.status === 'ready' && s.completed)?._id;
-  const waiting = sets.data?.filter((s) => s.status === 'generating' && s._id !== todayId) ?? [];
+  const waiting = sets.data?.filter(pending) ?? [];
   return (
     <Canvas>
       <Screen refresh={refresh}>
@@ -754,6 +790,9 @@ export function QuizSolveScreen() {
       api.quiz
         .startAttempt(set.data._id)
         .then((a) => {
+          // 풀이가 생기면 목록이 이 세트를 started로 알려 준다: 퀴즈 탭 맨 위 카드가 들어간 「다시 보기」 세트를
+          // 돌아오자마자 빼게 다시 읽는다(#593)
+          void queryClient.invalidateQueries({ queryKey: ['quiz-sets'] });
           if (active && ownsProgress()) setAttemptId(a._id);
         })
         .catch(() => {

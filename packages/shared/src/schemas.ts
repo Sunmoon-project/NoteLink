@@ -264,6 +264,9 @@ export const QuizSet = z.object({
   createdAt: date,
   // 세트를 끝까지 푼 풀이가 있으면 true. 세트 목록 · 오늘의 복습 응답만 채움(#561, 세트 하나 조회는 없음)
   completed: z.boolean().optional(),
+  // 세트를 시작한 풀이가 있으면(풀기 화면에 들어갔으면, 끝내지 않았어도) true. 세트 목록 · 오늘의 복습 응답만 채움(#593).
+  // 없는 옛 서버 응답은 「들어간 적 없음」으로 본다
+  started: z.boolean().optional(),
   // 오늘의 복습 세트만: 그 복습 날짜(서울 YYYY-MM-DD). 다른 세트는 null(#561, 없는 옛 서버 응답도 같게 본다)
   reviewDay: z.string().nullable().optional(),
 });

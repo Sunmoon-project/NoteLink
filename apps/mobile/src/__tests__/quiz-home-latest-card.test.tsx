@@ -1,4 +1,5 @@
-import { fireEvent, screen } from '@testing-library/react-native';
+import { act, fireEvent, screen } from '@testing-library/react-native';
+import { AppState, type AppStateStatus } from 'react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import type { QuizSet } from '@notelink/shared';
@@ -6,6 +7,7 @@ import { QuizHomeScreen } from '../features/quiz/quiz';
 import { api } from '../lib/api';
 import { useQuizProgress } from '../stores/quiz-progress';
 import { renderScreen, setParams } from '../test-utils';
+import { today } from '../lib/dates';
 
 jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
@@ -126,4 +128,116 @@ it('ready 세트가 없을 때만 빈 상태를 보여 준다', async () => {
   await renderScreen(<QuizHomeScreen />, client());
   expect(await screen.findByText('아직 만들어진 퀴즈가 없어요')).toBeTruthy();
   expect(screen.queryByText('유사 퀴즈')).toBeNull();
+});
+
+// #593: 한 번 들어간(started) 「다시 보기」 세트(sourceSetId)는 맨 위 카드로 고르지 않는다
+it('들어간 적 있는 다시 보기 세트는 건너뛰고, 처음 다 만들어진 다시 보기 세트는 보여 준다', async () => {
+  jest
+    .spyOn(api.quiz, 'sets')
+    .mockResolvedValue([
+      quizSet('seen', '본 퀴즈 · 다시 보기', { sourceSetId: 'a', started: true }),
+      quizSet('fresh', '새 퀴즈 · 다시 보기', { sourceSetId: 'b' }),
+    ]);
+  await renderScreen(<QuizHomeScreen />, client());
+  expect(await screen.findByText('새 퀴즈 · 다시 보기 · 2문제')).toBeTruthy();
+  expect(screen.queryByText('본 퀴즈 · 다시 보기 · 2문제')).toBeNull();
+});
+
+it('다시 보기가 아닌 세트는 들어간 적이 있어도 지금처럼 카드에 보여 준다', async () => {
+  jest
+    .spyOn(api.quiz, 'sets')
+    .mockResolvedValue([quizSet('mine', '맞춤 퀴즈', { sourceSetId: null, started: true })]);
+  await renderScreen(<QuizHomeScreen />, client());
+  expect(await screen.findByText('맞춤 퀴즈 · 2문제')).toBeTruthy();
+});
+
+describe('만드는 중 안내(#593)', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.useRealTimers();
+    globalThis.mockFocused = undefined;
+  });
+
+  it('만드는 중인 세트가 있으면 다시 읽어, 다 만들어지면 안내가 사라진다', async () => {
+    const sets = jest
+      .spyOn(api.quiz, 'sets')
+      .mockResolvedValueOnce([
+        quizSet('making', '퀴즈 · 다시 보기', { status: 'generating', sourceSetId: 'a' }),
+      ])
+      .mockResolvedValue([quizSet('making', '퀴즈 · 다시 보기', { sourceSetId: 'a' })]);
+    await renderScreen(<QuizHomeScreen />, client());
+    expect(await screen.findByText(/AI 서버를 기다리고 있어요/)).toBeTruthy();
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(sets).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText('퀴즈 · 다시 보기 · 2문제')).toBeTruthy();
+    expect(screen.queryByText(/AI 서버를 기다리고 있어요/)).toBeNull();
+    // 다 만들어지면 더 읽지 않는다
+    await act(async () => jest.advanceTimersByTime(20_000));
+    expect(sets).toHaveBeenCalledTimes(2);
+  });
+
+  it('만드는 중인 세트가 없으면 주기적으로 읽지 않는다', async () => {
+    const sets = jest.spyOn(api.quiz, 'sets').mockResolvedValue([quizSet('next', '안 푼 퀴즈')]);
+    await renderScreen(<QuizHomeScreen />, client());
+    expect(await screen.findByText('안 푼 퀴즈 · 2문제')).toBeTruthy();
+    await act(async () => jest.advanceTimersByTime(20_000));
+    expect(sets).toHaveBeenCalledTimes(1);
+  });
+
+  it('앱이 뒤로 가면 멈추고, 다시 앞으로 나오면 이어서 읽는다', async () => {
+    const listeners: ((s: AppStateStatus) => void)[] = [];
+    jest.spyOn(AppState, 'addEventListener').mockImplementation(((
+      _: string,
+      fn: (s: AppStateStatus) => void,
+    ) => {
+      listeners.push(fn);
+      return { remove: jest.fn() };
+    }) as never);
+    const sets = jest
+      .spyOn(api.quiz, 'sets')
+      .mockResolvedValue([quizSet('making', '만드는 퀴즈', { status: 'generating' })]);
+    await renderScreen(<QuizHomeScreen />, client());
+    expect(await screen.findByText(/AI 서버를 기다리고 있어요/)).toBeTruthy();
+    await act(async () => listeners.forEach((fn) => fn('background')));
+    await act(async () => jest.advanceTimersByTime(20_000));
+    expect(sets).toHaveBeenCalledTimes(1);
+    await act(async () => listeners.forEach((fn) => fn('active')));
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(sets).toHaveBeenCalledTimes(2);
+  });
+
+  it('오늘의 복습 세트(오늘 reviewDay)가 만드는 중인 것만으로는 다시 읽지도 안내하지도 않는다', async () => {
+    const sets = jest
+      .spyOn(api.quiz, 'sets')
+      .mockResolvedValue([
+        quizSet('today', '오늘의 복습', { status: 'generating', reviewDay: today() }),
+        quizSet('next', '안 푼 퀴즈'),
+      ]);
+    await renderScreen(<QuizHomeScreen />, client());
+    expect(await screen.findByText('안 푼 퀴즈 · 2문제')).toBeTruthy();
+    expect(screen.queryByText(/AI 서버를 기다리고 있어요/)).toBeNull();
+    await act(async () => jest.advanceTimersByTime(20_000));
+    expect(sets).toHaveBeenCalledTimes(1);
+  });
+
+  it('지난 날 복습 세트가 만드는 중이면 오늘의 복습 카드에 나오지 않으므로 여기서 안내한다', async () => {
+    jest
+      .spyOn(api.quiz, 'sets')
+      .mockResolvedValue([
+        quizSet('past', '오늘의 복습 · 11-16', { status: 'generating', reviewDay: '2026-11-16' }),
+      ]);
+    await renderScreen(<QuizHomeScreen />, client());
+    expect(await screen.findByText(/AI 서버를 기다리고 있어요/)).toBeTruthy();
+  });
+
+  it('퀴즈 탭이 보이지 않으면 만드는 중이어도 다시 읽지 않는다', async () => {
+    globalThis.mockFocused = false;
+    const sets = jest
+      .spyOn(api.quiz, 'sets')
+      .mockResolvedValue([quizSet('making', '만드는 퀴즈', { status: 'generating' })]);
+    await renderScreen(<QuizHomeScreen />, client());
+    expect(await screen.findByText(/AI 서버를 기다리고 있어요/)).toBeTruthy();
+    await act(async () => jest.advanceTimersByTime(20_000));
+    expect(sets).toHaveBeenCalledTimes(1);
+  });
 });

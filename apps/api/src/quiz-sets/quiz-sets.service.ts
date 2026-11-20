@@ -106,6 +106,11 @@ export interface AppQuizSet {
    * 퀴즈 탭 맨 위 카드는 이 세트를 건너뛴다(#561)
    */
   completed?: boolean;
+  /**
+   * 세트를 시작한 풀이가 있으면(끝내지 않았어도) true, 없으면 넣지 않는다(withCompleted). 풀기 화면에 들어가면
+   * 풀이가 생기므로 「들어간 적 있음」 뜻이다. 퀴즈 탭 맨 위 카드는 들어간 「다시 보기」 세트를 건너뛴다(#593)
+   */
+  started?: boolean;
   /** 오늘의 복습 세트만: 그 복습 날짜(서울 YYYY-MM-DD, seoulDay). 다른 세트는 null(#561) */
   reviewDay: string | null;
 }
@@ -522,22 +527,28 @@ export class QuizSetsService {
   }
 
   /**
-   * ready 세트 중 이 사용자가 끝까지 푼 풀이(finishedAt)가 있는 세트에 completed: true를 붙인다(#561).
-   * 세트 수와 상관없이 풀이는 한 번만 읽는다. 오늘의 복습 조회(TodayReviewService.get)도 같이 쓴다
+   * ready 세트 중 이 사용자가 끝까지 푼 풀이(finishedAt)가 있는 세트에 completed: true(#561), 시작한 풀이가
+   * 있는 세트에 started: true(#593)를 붙인다. 세트 수와 상관없이 풀이는 두 번(끝낸 · 시작한)만 읽는다.
+   * 오늘의 복습 조회(TodayReviewService.get)도 같이 쓴다
    */
   async withCompleted(owner: Types.ObjectId, sets: AppQuizSet[]): Promise<AppQuizSet[]> {
     const ready = sets.filter((s) => s.status === 'ready').map((s) => new Types.ObjectId(s._id));
     if (ready.length === 0) return sets;
-    // 같은 세트를 여러 번 끝냈어도 세트마다 한 줄(distinct)
-    const finished = (await this.attempts.distinct('quizSetId', {
-      userId: owner,
-      quizSetId: { $in: ready },
-      finishedAt: { $ne: null },
-    })) as Types.ObjectId[];
+    const mine = { userId: owner, quizSetId: { $in: ready } };
+    // 같은 세트를 여러 번 풀었어도 세트마다 한 줄(distinct)
+    const [finished, begun] = (await Promise.all([
+      this.attempts.distinct('quizSetId', { ...mine, finishedAt: { $ne: null } }),
+      this.attempts.distinct('quizSetId', mine),
+    ])) as [Types.ObjectId[], Types.ObjectId[]];
     const done = new Set(finished.map((id) => id.toString()));
-    return sets.map((s) =>
-      s.status === 'ready' && done.has(s._id) ? { ...s, completed: true } : s,
-    );
+    const started = new Set(begun.map((id) => id.toString()));
+    // 끝낸 풀이도 시작한 풀이다. 두 조회가 따로 읽으므로 completed는 started와 상관없이 끝낸 풀이로만 정한다
+    return sets.map((s) => {
+      if (s.status !== 'ready') return s;
+      const finishedHere = done.has(s._id);
+      if (!finishedHere && !started.has(s._id)) return s;
+      return { ...s, started: true, ...(finishedHere ? { completed: true } : {}) };
+    });
   }
 
   /** 세트 하나. 만드는 중이면 작업 결과를 먼저 옮긴다 */
@@ -626,7 +637,8 @@ export class QuizSetsService {
     // 맞춤 퀴즈 · 미리 만들기 세트가 ready가 되면 같은 범위의 개념 카드 작업을 넣는다(#558): 「카드 작업 남음」을
     // 세트와 함께 적고, 넣은 뒤에 지운다. 넣지 못하면(일시 오류 · 서버가 그 사이 멈춤) 다음 조회가 다시 넣는다.
     // 카드는 처리기가 따로 만들어 퀴즈 작업을 늦추지 않는다
-    if (update['status'] === 'ready' && job && CARD_TYPES.includes(job.type)) update['cardsPending'] = true;
+    if (update['status'] === 'ready' && job && CARD_TYPES.includes(job.type))
+      update['cardsPending'] = true;
     const updated = await this.sets
       .findOneAndUpdate(
         { _id: row._id, status: row.status },
@@ -653,7 +665,9 @@ export class QuizSetsService {
   private async ensureCards(set: QuizSetRow): Promise<void> {
     const owner = set.ownerId.toHexString();
     try {
-      const material = set.jobId ? await this.jobs.materialInputOf(owner, set.jobId.toHexString()) : null;
+      const material = set.jobId
+        ? await this.jobs.materialInputOf(owner, set.jobId.toHexString())
+        : null;
       const questions = set.questions ?? [];
       if (material && questions.length > 0) {
         await this.jobs

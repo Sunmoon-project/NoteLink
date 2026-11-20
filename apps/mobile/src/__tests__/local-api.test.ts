@@ -598,6 +598,17 @@ it('기기 저장 모드 퀴즈 목록: 풀이를 끝낸 세트에만 completed�
   expect(await completed()).toEqual({ [done._id]: true, [other._id]: undefined });
 });
 
+it('기기 저장 모드 퀴즈 목록: 풀이를 시작한 세트에 started를 붙인다, 끝내지 않았어도(#593)', async () => {
+  await signup('a@test.com');
+  const entered = seedQuizForTests(['가']);
+  const other = seedQuizForTests(['나']);
+  const started = async () =>
+    Object.fromEntries((await api.quiz.sets()).map((s) => [s._id, s.started]));
+  expect(await started()).toEqual({ [entered._id]: undefined, [other._id]: undefined });
+  await api.quiz.startAttempt(entered._id);
+  expect(await started()).toEqual({ [entered._id]: true, [other._id]: undefined });
+});
+
 it('기기 저장 모드 가입: 인증번호가 6자리 숫자가 아니면 EMAIL_CODE_INVALID, 이메일 형식이 틀리면 보내지 않는다', async () => {
   await expect(api.auth.emailVerifyCode('a@test.com', '12ab56')).rejects.toMatchObject({
     code: ERROR_CODES.EMAIL_CODE_INVALID,
