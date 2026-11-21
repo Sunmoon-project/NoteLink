@@ -127,6 +127,28 @@ def test_untitled_paragraphs_get_headings_from_their_own_words() -> None:
     assert "[1] 주장" in call.user and "[2]* 아메바" in call.user
 
 
+def test_english_headings_need_a_whole_word_from_the_paragraph() -> None:
+    chunks = [
+        chunk(1, "central nervous system controls the body"),
+        chunk(2, "Mitosis makes two cells"),
+        chunk(3, "그 밖의 내용"),
+    ]
+    llm = answer(
+        [],
+        [],
+        [
+            {"ref": 1, "text": "cell division"},  # 앞 두 글자(ce)만 겹침
+            {"ref": 2, "text": "mitosis 과정"},  # 대소문자는 무시
+            {"ref": 3, "text": "a b"},  # 한 글자 낱말만
+        ],
+    )
+
+    got = summarize_note(llm, "m", chunks)
+
+    assert got is not None
+    assert got["headings"] == [{"order": 2, "text": "mitosis 과정"}]
+
+
 def test_no_usable_point_gives_no_summary() -> None:
     assert summarize_note(answer([{"text": "x", "refs": [9]}], ["이사회"]), "m", CHUNKS) is None
 

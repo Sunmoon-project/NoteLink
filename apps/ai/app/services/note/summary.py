@@ -20,6 +20,8 @@ INPUT_MAX_CHARS = 12_000  # LLM에 보내는 노트 글 상한(앞 문단부터,
 PART_MIN_CHARS = 100  # 남은 자리가 이보다 작으면 다음 문단을 잘라 넣지 않음
 SEPARATOR = "\n\n"
 UNCERTAIN = re.compile(r"\[\?\]\s*")
+LATIN_WORD = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+HANGUL_WORD = re.compile(r"[가-힣]{2,}")
 
 SUMMARY_SYSTEM = (
     "너는 학생의 노트를 읽고 핵심 요약과 키워드를 뽑는 도우미다. "
@@ -171,7 +173,7 @@ def _keywords(raw: object, body: str) -> list[str]:
 
 
 def _headings(raw: object, untitled: dict[int, str]) -> list[Heading]:
-    """제목 없는 문단마다 소제목 하나. 그 문단 글과 낱말(앞 두 글자)이 하나도 겹치지 않으면 뺌."""
+    """제목 없는 문단마다 소제목 하나. 그 문단 글과 겹치는 낱말이 없으면 뺌(_grounded)."""
     out: dict[int, str] = {}
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
@@ -183,6 +185,14 @@ def _headings(raw: object, untitled: dict[int, str]) -> list[Heading]:
         text = " ".join(clean(text).split())
         if source is None or ref in out or not 2 <= len(text) <= HEADING_MAX_CHARS:
             continue
-        if any(len(w) >= 2 and w[:2] in source for w in text.split()):
+        if _grounded(text, source):
             out[ref] = text
     return [{"order": k, "text": v} for k, v in sorted(out.items())]
+
+
+def _grounded(heading: str, source: str) -> bool:
+    """영문 낱말은 같은 낱말이(대소문자 무시), 한글 낱말은 앞 두 글자가 문단에 있어야 함."""
+    words = {w.lower() for w in LATIN_WORD.findall(source)}
+    if any(len(w) >= 2 and w.lower() in words for w in LATIN_WORD.findall(heading)):
+        return True
+    return any(w[:2] in source for w in HANGUL_WORD.findall(heading))
