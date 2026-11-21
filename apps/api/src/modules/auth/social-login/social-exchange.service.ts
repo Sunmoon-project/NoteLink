@@ -40,6 +40,8 @@ export interface SocialLoginResult {
   accessToken: string;
   refreshToken: string;
   user: AppUser;
+  /** 이번 로그인이 계정을 새로 만들었는지(탈퇴 뒤 같은 소셜 계정으로 온 경우 포함 · PROF-013) */
+  isNewUser: boolean;
 }
 
 /** PKCE(S256): SHA-256(codeVerifier)의 base64url 이 로그인을 시작할 때 보낸 code_challenge 와 같아야 한다 */
@@ -100,6 +102,12 @@ export class SocialExchangeService {
       undefined,
       user.sessionVersion ?? 0,
     );
-    return { accessToken, refreshToken, user: toAppUser(user) };
+    return {
+      accessToken,
+      refreshToken,
+      user: toAppUser(user),
+      // 콜백이 이번에 계정을 만들었을 때만 true. 필드가 없는 예전 시도(배포 전에 시작한 로그인)는 false
+      isNewUser: attempt.created === true,
+    };
   }
 }
