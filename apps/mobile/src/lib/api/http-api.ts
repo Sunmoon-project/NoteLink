@@ -188,7 +188,7 @@ export const httpApi: Api = {
   },
   ai: {
     job: (id) => http.get(P.aiJob(id)),
-    cancel: (id) => http.post(P.aiJobCancel(id)),
+    cancel: (id, body) => http.post(P.aiJobCancel(id), body),
     retry: (id) => http.post(P.aiJobRetry(id)),
   },
   quiz: {

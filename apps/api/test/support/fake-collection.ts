@@ -190,6 +190,18 @@ export function createFakeCollection<D>(unique?: (a: Row, b: Row) => boolean) {
       }
       return Promise.resolve([...seen.values()]);
     },
+    /** 맞는 행을 모두 바꾼다($set · $unset). 세트에 취소 표시를 적고 거둘 때(QuizSetsService.cancelWaiting) 쓴다 */
+    updateMany: (
+      filter: Filter,
+      update: { $set?: Record<string, unknown>; $unset?: Record<string, unknown> },
+    ) => {
+      const found = rows.filter((r) => matches(r, filter));
+      for (const row of found) {
+        Object.assign(row, update.$set);
+        for (const key of Object.keys(update.$unset ?? {})) delete row[key];
+      }
+      return Promise.resolve({ matchedCount: found.length, modifiedCount: found.length });
+    },
     findOneAndUpdate: (
       filter: Filter,
       update: { $set?: Record<string, unknown> },

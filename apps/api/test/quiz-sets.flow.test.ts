@@ -136,6 +136,50 @@ describe('퀴즈 세트 주소 (/api/v1/quiz-sets)', () => {
     expect(sets.rows[0]?.['deletedAt']).toBeInstanceOf(Date);
   });
 
+  it('취소 본문에 세트 번호(quizSetId)를 실으면 그 세트를 지우고, 형식이 틀린 본문은 400 · 남의 세트 번호는 404', async () => {
+    const materialId = await addNote();
+    const res = await http().post(api(PATHS.quizSets)).set(auth).send({ materialId }).expect(201);
+    const { quizSet, job } = res.body.data;
+    const others = await sets.model.create({
+      ownerId: new Types.ObjectId(),
+      materialId: new Types.ObjectId(),
+      title: '남의 퀴즈',
+      status: 'generating',
+      jobId: new Types.ObjectId(job._id),
+      deletedAt: null,
+    } as never);
+    const otherId = String((others as unknown as { _id: Types.ObjectId })._id);
+
+    const bad = await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(auth)
+      .send({ quizSetId: 3 })
+      .expect(400);
+    expect(bad.body).toMatchObject({ code: 'VALIDATION_FAILED' });
+    const foreign = await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(auth)
+      .send({ quizSetId: otherId })
+      .expect(404);
+    expect(foreign.body).toMatchObject({ code: 'NOT_FOUND' });
+    await http()
+      .get(api(PATHS.quizSet(quizSet._id)))
+      .set(auth)
+      .expect(200);
+
+    await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(auth)
+      .send({ quizSetId: quizSet._id })
+      .expect(204);
+
+    await http()
+      .get(api(PATHS.quizSet(quizSet._id)))
+      .set(auth)
+      .expect(404);
+    expect(sets.rows.find((r) => String(r._id) === otherId)?.['deletedAt']).toBeNull();
+  });
+
   it.each([[{}], [{ materialId: 3 }], [{ materialId: '' }]])(
     '본문 %j는 400 VALIDATION_FAILED',
     async (body) => {

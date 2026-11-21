@@ -1,5 +1,6 @@
 import type {
   AiJob,
+  AiJobCancelBody,
   NoteAskBody,
   AuthTokens,
   CalendarShare,
@@ -253,7 +254,8 @@ export interface Api {
   };
   ai: {
     job(id: string): Promise<AiJob>;
-    cancel(id: string): Promise<void>;
+    /** body.quizSetId: 퀴즈 세트를 만들던 작업이면 그 세트 번호. 서버는 그 세트만 정리한다(#642) */
+    cancel(id: string, body?: AiJobCancelBody): Promise<void>;
     retry(id: string): Promise<AiJob>;
   };
   quiz: {

@@ -346,6 +346,18 @@ export const AiJob = z.object({
   updatedAt: date,
 });
 
+/**
+ * AI 작업 취소 — POST /ai-jobs/:id/cancel 본문(선택). quizSetId: 퀴즈를 만들던 세트를 취소할 때 그 세트 번호.
+ * 서버는 그 세트만 정리한다(같은 작업을 새로 이어받은 다른 세트는 건드리지 않음). 없으면(옛 앱 · 다른 작업) 작업 id로만 취소.
+ * 세트 번호는 서버 id 형식(24자리 16진수)이어야 한다(아니면 400)
+ */
+export const AiJobCancelBody = z.object({
+  quizSetId: z
+    .string()
+    .regex(/^[0-9a-f]{24}$/i)
+    .optional(),
+});
+
 /** 아바타 노트 묻고 답하기 — POST /materials/:id/ask 본문. history는 앞선 대화(오래된 순) */
 export const NoteAskTurn = z.object({
   role: z.enum(['user', 'avatar']),
@@ -697,6 +709,7 @@ export type Diagram = z.infer<typeof Diagram>;
 export type DiagramKind = z.infer<typeof DiagramKind>;
 export type Question = z.infer<typeof Question>;
 export type QuestionDifficulty = z.infer<typeof QuestionDifficulty>;
+export type AiJobCancelBody = z.infer<typeof AiJobCancelBody>;
 export type NoteAskTurn = z.infer<typeof NoteAskTurn>;
 export type NoteAskBody = z.input<typeof NoteAskBody>;
 export type NoteAskResult = z.infer<typeof NoteAskResult>;
