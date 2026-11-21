@@ -72,19 +72,27 @@ it.each([
   await waitFor(() => expect(screen.queryByText(text)).toBeNull());
 });
 
-it('공유된 퀴즈와 자료를 서버가 준 id로 연다', async () => {
+it('공유된 퀴즈 · 카드 묶음은 공유 항목 화면으로(남의 퀴즈라 내 풀이 화면이 아니라), 노트는 노트 화면으로 연다', async () => {
   mockApi.rooms.shared.mockResolvedValue({
     items: [
       item({ _id: 'q', itemType: 'quiz', quizSetId: 'set-1', title: '중간고사 퀴즈' }),
+      item({ _id: 'c', itemType: 'flashcards', flashcardIds: ['c1'], title: '플래시카드 1장' }),
       item({ _id: 'm', itemType: 'material', materialId: 'mat-1', title: '필기 자료' }),
     ],
     flashcards: [],
   });
   await renderScreen(<RoomCardsScreen />);
+  expect(await screen.findByText('민수 · 퀴즈')).toBeTruthy();
+  expect(screen.getByText('민수 · 플래시카드')).toBeTruthy();
   await fireEvent.press(await screen.findByText('중간고사 퀴즈'));
   expect(mockOpen).toHaveBeenCalledWith({
-    pathname: '/play/solve',
-    params: { setId: 'set-1', from: 'room' },
+    pathname: '/room/shared-item',
+    params: { id: 'r1', item: 'q' },
+  });
+  await fireEvent.press(screen.getByText('플래시카드 1장'));
+  expect(mockOpen).toHaveBeenCalledWith({
+    pathname: '/room/shared-item',
+    params: { id: 'r1', item: 'c' },
   });
   mockApi.content.material.mockResolvedValue({ _id: 'mat-1', kind: 'document' });
   await fireEvent.press(screen.getByText('필기 자료'));
@@ -108,7 +116,7 @@ it.each([
   mockApi.content.material.mockResolvedValue({ _id: 'mat-9', kind });
   await renderScreen(<RoomCardsScreen />);
   // 아래 「채팅에 올린 사진 · 파일」과 같은 섹션 제목
-  expect(await screen.findByText('공유한 노트')).toBeTruthy();
+  expect(await screen.findByText('공유한 자료')).toBeTruthy();
   await fireEvent.press(await screen.findByText('공유 노트'));
   await waitFor(() => expect(mockOpen).toHaveBeenCalledWith({ pathname, params: { id: 'mat-9' } }));
   expect(mockApi.content.material).toHaveBeenCalledWith('mat-9');
@@ -172,7 +180,9 @@ it('공유 자료에 방 채팅에 올린 사진 · 파일을 최근 것부터 �
 it('타이머는 방장만 저장할 수 있다', async () => {
   useAuth.setState({ userId: 'member' });
   await renderScreen(<TimerScreen />);
-  expect(await screen.findByRole('button', { name: '방장만 바꿀 수 있어요' })).toBeDisabled();
+  // 방장이 아니면 저장 버튼 없이 읽기 전용 안내만(develop 점검 #5)
+  expect(await screen.findByText('방장만 바꿀 수 있어요')).toBeTruthy();
+  expect(screen.queryByText('저장하기')).toBeNull();
   expect(mockApi.rooms.setTimer).not.toHaveBeenCalled();
 });
 

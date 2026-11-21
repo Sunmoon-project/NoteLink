@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { Material } from '@notelink/shared';
+import { aiStateOf, type AiState } from '@/lib/ai';
 import { ScrollView, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
@@ -17,6 +19,7 @@ import { CLOSED, lipsAt } from '@/features/tutor/lips';
 import { splitLines } from './captions';
 import { Captions } from './captions-view';
 import { usePlaybackClock } from './clock';
+import { RecordingDiagram } from './recording-diagram';
 import { Btn, Chip, Loading, Sheet, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
@@ -126,6 +129,14 @@ export function useResume(
   );
 }
 
+/** 대본이 없을 때 처리 상태별 안내 — 서버 모드에서 실패 · 빈 녹음에도 「서버가 연결되면」이 나왔다(develop 점검 #4) */
+const NO_TRANSCRIPT: Record<AiState, string> = {
+  failed: '대본을 만들지 못했어요. 원본 녹음은 지금 들을 수 있어요.',
+  working: '대본을 만들고 있어요. 원본 녹음은 지금 들을 수 있어요.',
+  done: '녹음에서 말한 내용을 찾지 못했어요.',
+  waiting: '대본은 AI 서버가 연결되면 음성 인식으로 만들어져요. 원본 녹음은 지금 들을 수 있어요.',
+};
+
 export function Player({
   materialId,
   initialView = 'summary',
@@ -139,6 +150,11 @@ export function Player({
   const rec = useQuery({
     queryKey: ['recording', materialId],
     queryFn: () => api.content.recording(materialId),
+    // 서버가 대본을 만드는 중이면 끝날 때까지 다시 읽는다(「만들고 있어요」에 멈춰 있지 않게)
+    refetchInterval: () =>
+      aiStateOf(qc.getQueryData<Material>(['material', materialId])?.processing) === 'working'
+        ? 3000
+        : false,
   });
   const mat = useQuery({
     queryKey: ['material', materialId],
@@ -253,6 +269,7 @@ export function Player({
                       ))}
                     </View>
                   </View>
+                  <RecordingDiagram diagram={slide.diagram} />
                 </>
               ) : (
                 <Text className="text-caption text-white/60">
@@ -300,9 +317,9 @@ export function Player({
                     <Captions lines={lines} clock={clock} pos={p.pos} then={then} />
                   ) : (
                     <Text className="text-caption leading-5 text-white/60">
-                      {!segs.length
-                        ? '대본은 AI 서버가 연결되면 음성 인식으로 만들어져요. 원본 녹음은 지금 들을 수 있어요.'
-                        : '이 구간에는 말한 내용이 없어요'}
+                      {segs.length
+                        ? '이 구간에는 말한 내용이 없어요'
+                        : NO_TRANSCRIPT[aiStateOf(mat.data?.processing)]}
                     </Text>
                   )}
                 </View>

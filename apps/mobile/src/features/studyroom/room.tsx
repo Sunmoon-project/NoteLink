@@ -8,7 +8,7 @@ import {
 } from '@/lib/chat-outbox';
 import { loadCompleteChatHistory } from '@/lib/chat-history';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Keyboard, View } from 'react-native';
+import { FlatList, Keyboard, ScrollView, View, useWindowDimensions } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -92,6 +92,7 @@ import { C, ICON, MOTION } from '@/theme';
 import { useLiveRoom } from '@/lib/livekit';
 import { LoadError } from './tools';
 import { useRoomsLive } from './room-live';
+import { useRoomOrientation } from './room-orientation';
 import { InterestPicker } from '@/features/profile/interest-picker';
 import { learnerTypeLabel } from '@/lib/learner-type';
 
@@ -487,6 +488,12 @@ export const CHAT_EMOJIS = [
 
 export function RoomScreen() {
   const insets = useSafeAreaInsets();
+  useRoomOrientation();
+  // 휴대폰을 눕히면 타일은 한 줄에 셋, 방 제목은 위 막대로, 조작 버튼과 채팅 줄은 한 줄로 모아 세로 높이를 아낀다
+  const screenSize = useWindowDimensions();
+  const landscape = screenSize.width > screenSize.height;
+  // 좌우 여백(px-4) 32와 타일 사이(gap-2) 8 두 번을 뺀 너비를 셋으로 나눈다
+  const landscapeTile = (screenSize.width - insets.left - insets.right - 32 - 16) / 3;
   const myId = useAuth((s) => s.userId);
   const { id } = useLocalSearchParams<{ id: string }>();
   const timerGeneration = useRef(0);
@@ -979,7 +986,7 @@ export function RoomScreen() {
     : env.localData
       ? members
       : members.filter((m) => m.userId === myId || socketHere?.includes(m.userId));
-  const tiles = chat ? here.slice(0, 2) : here;
+  const tiles = chat ? here.slice(0, landscape ? 3 : 2) : here;
   const remain = timer ? Math.max(0, Math.floor((timer.endsAt - now) / 1000)) : 0;
 
   return (
@@ -990,7 +997,12 @@ export function RoomScreen() {
           onLayout={onKeyboardFrameLayout}
           className="flex-1"
           // 키보드가 가리는 만큼 화면 아래를 띄워 채팅 입력줄이 키보드 바로 위에 오게 한다
-          style={{ paddingBottom: keyboardInset }}
+          // 가로일 때 노치 · 둥근 모서리 쪽(좌우) 안전 여백
+          style={{
+            paddingBottom: keyboardInset,
+            paddingLeft: insets.left,
+            paddingRight: insets.right,
+          }}
         >
           {/* 캠 · 음성이 끊겨도 같은 노란 띠로 알린다(미디어는 알아서 다시 붙는다 — useLiveRoom 재시도) */}
           {(conn === 'lost' || (!!live.reconnecting && conn !== 'kicked')) && (
@@ -1017,6 +1029,17 @@ export function RoomScreen() {
               >
                 <ArrowLeft size={ICON.lg} color={C.ink} />
               </Pressable>
+              {landscape && (
+                <View className="flex-1 flex-row items-center gap-2 px-3">
+                  <Text numberOfLines={1} className="flex-1 text-subhead font-bold text-ink">
+                    {room.data.title}
+                  </Text>
+                  {timer && (
+                    <Badge tone="dark">{`${timer.label} ${remain >= 3600 ? hms(remain) : hms(remain).slice(3)}`}</Badge>
+                  )}
+                  <Badge tone="gray">{`${here.length}명 접속중`}</Badge>
+                </View>
+              )}
               <Pressable
                 accessibilityLabel="세부 설정"
                 onPress={() => router.push({ pathname: '/room/settings', params: { id } })}
@@ -1025,7 +1048,7 @@ export function RoomScreen() {
                 <Settings size={ICON.md} color={C.ink} />
               </Pressable>
             </View>
-            {!chat && (
+            {!chat && !landscape && (
               <Animated.View
                 entering={SWAP_IN}
                 exiting={SWAP_OUT}
@@ -1041,7 +1064,8 @@ export function RoomScreen() {
               </Animated.View>
             )}
           </View>
-          <View className="flex-row flex-wrap justify-between gap-y-2.5 px-4 pt-3">
+          {/* 가로에서는 세 줄째부터 스크롤한다(세로 높이가 두 줄뿐) */}
+          <TileGrid landscape={landscape}>
             {tiles.map((m) => {
               const me = m.userId === myId;
               const state = live.participantState?.(m.userId);
@@ -1059,9 +1083,10 @@ export function RoomScreen() {
                   exiting={SWAP_OUT}
                   // 테두리를 타일에 두면 영상(absolute 100%)이 그 안쪽에만 깔려 틈이 보인다: 타일은 테두리 없이 둥글게 자르고,
                   // 말하는 중 테두리는 영상 위에 겹친 고리로 그린다
+                  style={landscape ? { width: landscapeTile } : undefined}
                   className={cx(
-                    'w-[48.5%] items-center justify-center overflow-hidden rounded-2xl',
-                    'h-[118px]',
+                    'items-center justify-center overflow-hidden rounded-2xl',
+                    landscape ? 'h-[100px]' : 'h-[118px] w-[48.5%]',
                     camOn ? 'bg-night' : 'bg-white',
                   )}
                 >
@@ -1125,7 +1150,7 @@ export function RoomScreen() {
                 </Animated.View>
               );
             })}
-          </View>
+          </TileGrid>
 
           {chat && chatId.isError && !chatId.data && (
             <LoadError message="채팅방을 불러오지 못했어요" retry={chatId.refetch} />
@@ -1192,8 +1217,16 @@ export function RoomScreen() {
               />
             </Animated.View>
           ) : (
-            <Animated.View entering={RISE_IN} exiting={SINK_OUT} className="mt-auto px-5 pb-2">
-              <View className="flex-row gap-3">
+            <Animated.View
+              testID="room-controls"
+              entering={RISE_IN}
+              exiting={SINK_OUT}
+              className={cx(
+                'mt-auto',
+                landscape ? 'flex-row items-center gap-3 px-4 pt-1' : 'px-5 pb-2',
+              )}
+            >
+              <View className={cx('flex-row', landscape ? 'flex-[3] gap-2' : 'gap-3')}>
                 <Ctl
                   on={live.micOn}
                   onPress={live.toggleMic}
@@ -1204,6 +1237,7 @@ export function RoomScreen() {
                       <MicOff size={ICON.sm} color={C.sub} />
                     )
                   }
+                  compact={landscape}
                   label={`내 마이크 ${live.micOn ? '켜짐' : '꺼짐'}`}
                 />
                 <Ctl
@@ -1216,6 +1250,7 @@ export function RoomScreen() {
                       <CameraOff size={ICON.sm} color={C.sub} />
                     )
                   }
+                  compact={landscape}
                   label={`내 카메라 ${live.camOn ? '켜짐' : '꺼짐'}`}
                 />
                 <Ctl
@@ -1228,12 +1263,18 @@ export function RoomScreen() {
                       <VolumeX size={ICON.sm} color={C.sub} />
                     )
                   }
+                  compact={landscape}
                   label={`듣기 ${live.hearing ? '켜짐' : '꺼짐'}`}
                   sub="내 학습하는 소리만"
                   strong
                 />
               </View>
-              <View className="mt-3 flex-row items-center rounded-2xl bg-white px-4 py-3">
+              <View
+                className={cx(
+                  'flex-row items-center rounded-2xl bg-white px-4 py-3',
+                  landscape ? 'flex-[2]' : 'mt-3',
+                )}
+              >
                 <Pressable
                   onPress={() => setChat(true)}
                   className="flex-1 flex-row items-center gap-2"
@@ -1451,6 +1492,7 @@ const Ctl = ({
   label,
   sub,
   strong,
+  compact,
 }: {
   on: boolean;
   onPress: () => void;
@@ -1458,12 +1500,15 @@ const Ctl = ({
   label: string;
   sub?: string;
   strong?: boolean;
+  /** 가로 화면: 낮게, 설명 줄 없이 */
+  compact?: boolean;
 }) => (
   <Pressable
     onPress={onPress}
     accessibilityState={{ selected: on }}
     className={cx(
-      'h-16 flex-1 items-center justify-center gap-0.5 rounded-2xl',
+      'flex-1 items-center justify-center gap-0.5 rounded-2xl',
+      compact ? 'h-12' : 'h-16',
       strong && on ? 'border border-brand/30 bg-mint' : 'bg-white',
     )}
   >
@@ -1471,9 +1516,24 @@ const Ctl = ({
     <Text className={cx('mt-0.5 text-caption2 font-semibold', on ? 'text-ink' : 'text-sub')}>
       {label}
     </Text>
-    {sub && <Text className="text-caption2 text-sub">{sub}</Text>}
+    {sub && !compact && <Text className="text-caption2 text-sub">{sub}</Text>}
   </Pressable>
 );
+
+/** 캠 타일 묶음. 세로는 한 줄에 둘(타일 너비 48.5%), 가로는 한 줄에 셋(너비는 화면에서 계산)이고 넘치면 스크롤한다 */
+const TileGrid = ({ landscape, children }: { landscape: boolean; children: React.ReactNode }) =>
+  landscape ? (
+    <ScrollView
+      testID="room-tiles"
+      className="grow-0 shrink"
+      contentContainerClassName="flex-row flex-wrap gap-2 px-4 pt-1"
+      showsVerticalScrollIndicator={false}
+    >
+      {children}
+    </ScrollView>
+  ) : (
+    <View className="flex-row flex-wrap justify-between gap-y-2.5 px-4 pt-3">{children}</View>
+  );
 
 /** 방에 공유된 자료를 종류에 맞는 화면으로 연다(공유 자료 화면 · 방 채팅 자료 카드가 같이 쓴다) */
 function useOpenShared(roomId: string) {
@@ -1504,8 +1564,9 @@ function useOpenShared(roomId: string) {
     }
   };
   const openItem = (item: RoomSharedItem) => {
-    if (item.itemType === 'quiz' && item.quizSetId)
-      openFeature({ pathname: '/play/solve', params: { setId: item.quizSetId, from: 'room' } });
+    // 퀴즈 · 카드 묶음은 남의 것이라 내 풀이 · 카드 화면이 아니라 공유 항목 화면에서 연다(기록은 남기지 않는다, #481)
+    if (item.itemType === 'quiz' || item.itemType === 'flashcards')
+      openFeature({ pathname: '/room/shared-item', params: { id: roomId, item: item._id } });
     else if (item.itemType === 'material' && item.materialId)
       void openMaterial(item, item.materialId);
     else toast('이 자료를 열 수 없어요');
@@ -1530,7 +1591,7 @@ function useOpenShared(roomId: string) {
 export function RoomCardsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const shared = useQuery({ queryKey: ['room-shared', id], queryFn: () => api.rooms.shared(id) });
-  const others = shared.data?.items.filter((i) => i.itemType !== 'flashcards') ?? [];
+  const others = shared.data?.items ?? [];
   const { openItem } = useOpenShared(id);
   // 방 채팅에 올린 사진 · 파일도 여기서 모아 본다(1:1 채팅 「주고받은 자료」와 같은 방식, 최근 것부터)
   const chatId = useQuery({ queryKey: ['room-chat', id], queryFn: () => api.rooms.chatRoomId(id) });
@@ -1570,7 +1631,7 @@ export function RoomCardsScreen() {
               아직 공유된 자료가 없어요
             </Text>
           )}
-        {others.length > 0 && <Label>공유한 노트</Label>}
+        {others.length > 0 && <Label>공유한 자료</Label>}
         {others.map((item) => (
           <Pressable
             key={item._id}
@@ -1580,7 +1641,12 @@ export function RoomCardsScreen() {
           >
             <Text className="flex-1 text-footnote font-semibold text-ink">{item.title}</Text>
             <Text className="text-caption2 text-sub">
-              {item.sharedByNickname} · {item.itemType === 'quiz' ? '퀴즈' : '자료'}
+              {item.sharedByNickname} ·{' '}
+              {item.itemType === 'quiz'
+                ? '퀴즈'
+                : item.itemType === 'flashcards'
+                  ? '플래시카드'
+                  : '노트'}
             </Text>
           </Pressable>
         ))}

@@ -66,6 +66,12 @@ function fakeModels() {
       }
       return Promise.resolve({});
     },
+    // 저장 뒤 세트가 지워졌을 때 방금 만든 카드 지우기(save, #602)
+    updateOne: (filter: { _id: Types.ObjectId }, update: { $set: Row }) => {
+      const c = cards.find((x) => same(x._id, filter._id));
+      if (c) Object.assign(c, update.$set);
+      return Promise.resolve({});
+    },
     updateMany: (filter: { _id: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId }, update: { $set: Row }) => {
       for (const c of cards) {
         if (filter._id.$in.some((i) => same(i, c._id)) && same(c['ownerId'], filter.ownerId) && !c['deletedAt']) {
@@ -191,6 +197,24 @@ describe('플래시카드 서비스', () => {
       back: 'DNA',
     });
     expect(f.cards[0]!['ownerId']).toEqual(new Types.ObjectId(me));
+  });
+
+  it('확인한 뒤 저장하기 전에 세트가 지워지면(학습 폴더 삭제, #602) 그 카드도 지우고 404(Codex 1차)', async () => {
+    const f = fakeModels();
+    const { questionId } = addSet(f, me);
+    const model = (f.service as unknown as { cards: { create: (d: Record<string, unknown>) => Promise<unknown> } }).cards;
+    const create = model.create;
+    model.create = (d) => {
+      f.sets[0]!['deletedAt'] = new Date(); // 확인과 저장 사이에 폴더 삭제와 그 정리가 끝난다
+      return create(d);
+    };
+
+    await expect(
+      f.service.save(me, { front: 'a', back: 'b', sourceQuestionId: questionId.toString() }),
+    ).rejects.toMatchObject({ status: 404 });
+
+    expect(f.cards[0]!['deletedAt']).toBeInstanceOf(Date);
+    expect(await f.service.list(me)).toEqual([]);
   });
 
   it('세트에 폴더가 없으면 자료의 폴더를 쓴다', async () => {
@@ -346,6 +370,23 @@ describe('맞춤 퀴즈 개념 카드 저장(saveFromQuizSet, #558)', () => {
     ...over,
   });
   const five = () => [1, 2, 3, 4, 5].map((n) => card(n));
+
+  it('확인한 뒤 쓰기 전에 세트가 지워지면(학습 폴더 삭제, #602) 이 세트로 넣은 카드를 지운다(Codex 1차)', async () => {
+    const f = fakeModels();
+    const row = set({}, f);
+    const model = (f.service as unknown as { cards: { bulkWrite: (...a: never[]) => Promise<unknown> } }).cards;
+    const bulk = model.bulkWrite;
+    model.bulkWrite = (...a: never[]) => {
+      f.sets[0]!['deletedAt'] = new Date(); // 확인과 쓰기 사이에 폴더 삭제와 그 정리가 끝난다
+      return bulk(...a);
+    };
+
+    await f.service.saveFromQuizSet(row, five());
+
+    expect(f.cards).toHaveLength(5);
+    expect(f.cards.every((c) => c['deletedAt'] instanceof Date)).toBe(true);
+    expect(await f.service.list(me.toString())).toEqual([]);
+  });
 
   it('카드마다 세트 · 노트 · 폴더를 적어 저장하고, 내 목록에 차례대로 보인다', async () => {
     const f = fakeModels();

@@ -267,9 +267,7 @@ export interface Api {
       answer: string,
     ): Promise<{ correct: boolean; correctAnswer: string }>;
     /** scheduled · nextReviewDay: 이번에 복습 일정에 넣은 문제 수 · 그 날짜(서울 YYYY-MM-DD, FR-37). 옛 서버 · 기기 저장은 없음 */
-    finish(
-      attemptId: string,
-    ): Promise<{
+    finish(attemptId: string): Promise<{
       pointsEarned: number;
       balance: number;
       scheduled?: number;
@@ -277,11 +275,14 @@ export interface Api {
     }>;
     explanation(questionId: string): Promise<{ text: string }>;
     similar(quizSetId: string): Promise<QuizSet>;
+    /** 고른 문제로 유사 퀴즈(#605, 한 노트의 문제 SIMILAR_PICK_MAX개까지). 처음엔 만드는 중(generating) */
+    similarPick(questionIds: string[]): Promise<QuizSet>;
     /** 오늘의 복습 세트(오늘 만든 것, 없으면 null) */
     today(): Promise<QuizSet | null>;
     /** 오늘의 복습 만들기(하루 한 번). 처음엔 만드는 중(generating) */
     startToday(): Promise<QuizSet>;
-    box(): Promise<Question[]>;
+    /** 보관한 문제(담은 순서). folderId를 주면 그 학습 폴더에서 만든 퀴즈의 문제만(#601) */
+    box(folderId?: string): Promise<Question[]>;
     /** 같은 문제 ID를 여러 번 저장해도 보관함에 한 번만 남긴다. */
     saveToBox(questionIds: string[]): Promise<Question[]>;
     deleteFromBox(questionIds: string[]): Promise<void>;
@@ -307,6 +308,16 @@ export interface Api {
     setScheduleHidden(id: string, hidden: boolean): Promise<{ hidden: boolean }>;
     invite(id: string, userIds: string[]): Promise<void>;
     shared(id: string): Promise<{ items: RoomSharedItem[]; flashcards: Flashcard[] }>;
+    /** 내 퀴즈 하나 또는 고른 플래시카드들을 방에 공유(방 채팅에 자료 카드가 올라간다, #481) */
+    shareStudyItem(
+      id: string,
+      body: { kind: 'quiz'; quizSetId: string } | { kind: 'flashcards'; flashcardIds: string[] },
+    ): Promise<void>;
+    /** 방에 공유된 퀴즈(문제 · 정답) · 플래시카드 묶음 열기. 방 멤버만 */
+    sharedItem(
+      id: string,
+      itemId: string,
+    ): Promise<{ item: RoomSharedItem; quiz: QuizSet | null; flashcards: Flashcard[] }>;
     livekitToken(id: string): Promise<{ token: string; url: string }>;
     report(p: {
       roomId: string;

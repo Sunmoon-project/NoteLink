@@ -38,10 +38,14 @@ export function uniqueHeading(heading: string, used: Set<string>): string {
 
 /**
  * 노트 정리 결과의 조각(chunks: apps/ai services/note/models.py Chunk)을 요약 소제목 · 본문으로.
- * 조각의 제목(title)이 소제목이다. 제목 없는 조각은 앞 조각의 소제목 아래에 이어 붙이고(앞 조각이 없으면
- * "내용 n"으로 새 소제목), embedding · 줄 위치 같은 값은 노트에 저장하지 않는다
+ * 조각의 제목(title)이 소제목이고, 없으면 AI 가 지은 소제목(headings: 문단 번호 → 소제목)을 쓴다.
+ * 둘 다 없는 조각은 같은 쪽이면 앞 소제목 아래에 이어 붙이고, 쪽이 바뀌거나 앞 조각이 없으면
+ * "n쪽"(쪽을 모르면 "내용 n")으로 새 소제목을 연다. embedding · 줄 위치 같은 값은 노트에 저장하지 않는다
  */
-export function sectionsFromChunks(raw: unknown): { sections: Section[]; titles: string[] } {
+export function sectionsFromChunks(
+  raw: unknown,
+  headings: ReadonlyMap<number, string> = new Map(),
+): { sections: Section[]; titles: string[] } {
   const chunks = (Array.isArray(raw) ? raw : []).filter(isRecord);
   const ordered = [...chunks].sort(
     (a, b) =>
@@ -51,21 +55,34 @@ export function sectionsFromChunks(raw: unknown): { sections: Section[]; titles:
   const sections: Section[] = [];
   const used = new Set<string>();
   const titles: string[] = [];
+  let lastPage: number | null = null;
   for (const chunk of ordered) {
     const body = clean(chunk['text']);
     if (!body) continue;
     const title = clean(chunk['title']);
     if (title && !titles.includes(title)) titles.push(title);
+    const order = chunk['order'];
+    const heading = title ?? (typeof order === 'number' ? headings.get(order) : undefined);
+    const page = firstPage(chunk);
     const last = sections[sections.length - 1];
-    if (title) {
-      sections.push({ heading: uniqueHeading(title, used), body });
-    } else if (last) {
+    if (heading) {
+      sections.push({ heading: uniqueHeading(heading, used), body });
+    } else if (last && (page === null || page === lastPage)) {
       last.body = `${last.body}\n${body}`;
     } else {
-      sections.push({ heading: uniqueHeading(`내용 ${sections.length + 1}`, used), body });
+      const name = page === null ? `내용 ${sections.length + 1}` : `${page}쪽`;
+      sections.push({ heading: uniqueHeading(name, used), body });
     }
+    if (page !== null) lastPage = page;
   }
   return { sections: fitSections(sections), titles };
+}
+
+/** 조각 첫 줄의 쪽 번호(lines[0].pageNo). 없으면 null */
+function firstPage(chunk: Record<string, unknown>): number | null {
+  const lines = chunk['lines'];
+  const first: unknown = Array.isArray(lines) ? lines[0] : undefined;
+  return isRecord(first) && isCount(first['pageNo']) ? first['pageNo'] : null;
 }
 
 /** 개념 태그(concept)에서 키워드. 퀴즈 처리기처럼 자동으로 붙인 것(conceptStatus === 'auto')만, 중복 없이 */
@@ -87,10 +104,14 @@ export function pointsFromTitles(titles: string[]): string[] {
 }
 
 /**
- * 노트 정리 결과의 요약(result.summary: {points, keywords}, apps/ai services/note/summary.py).
- * 글이 아닌 값 · 빈 글 · 중복은 뺀다. 없거나 모양이 다르면 빈 목록
+ * 노트 정리 결과의 요약(result.summary: {points, keywords, headings}, apps/ai services/note/summary.py).
+ * 글이 아닌 값 · 빈 글 · 중복은 뺀다. 없거나 모양이 다르면 빈 목록. headings 는 문단 번호 → 소제목
  */
-export function summaryFromResult(raw: unknown): { points: string[]; keywords: string[] } {
+export function summaryFromResult(raw: unknown): {
+  points: string[];
+  keywords: string[];
+  headings: Map<number, string>;
+} {
   const list = (v: unknown, max: number) => {
     const out: string[] = [];
     for (const item of Array.isArray(v) ? v : []) {
@@ -101,9 +122,16 @@ export function summaryFromResult(raw: unknown): { points: string[]; keywords: s
     return out;
   };
   const summary = isRecord(raw) ? raw : {};
+  const headings = new Map<number, string>();
+  for (const item of Array.isArray(summary['headings']) ? summary['headings'] : []) {
+    if (!isRecord(item) || !isCount(item['order']) || headings.has(item['order'])) continue;
+    const value = clean(item['text']);
+    if (value) headings.set(item['order'], value);
+  }
   return {
     points: list(summary['points'], POINTS_MAX),
     keywords: list(summary['keywords'], KEYWORDS_MAX),
+    headings,
   };
 }
 
@@ -194,8 +222,8 @@ export function syncFromJob(row: MaterialRow, job: AppAiJob): Record<string, unk
 
   const pages = matchPages(row, result['pages']);
   if (!pages) return failed;
-  const { sections, titles } = sectionsFromChunks(result['chunks']);
   const made = summaryFromResult(result['summary']);
+  const { sections, titles } = sectionsFromChunks(result['chunks'], made.headings);
   // AI 가 만든 핵심 요약이 없으면(예전 결과 · 요약 실패) 문서는 걸러낸 조각 제목으로 대신한다
   const points =
     made.points.length > 0 ? made.points : row.kind === 'document' ? pointsFromTitles(titles) : [];

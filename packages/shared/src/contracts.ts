@@ -100,6 +100,11 @@ export const MATERIAL_MAX_FILES = 50;
  * 앱은 이보다 많으면 나눠서 보낸다
  */
 export const IMAGE_CHECK_MAX_FILES = 20;
+/**
+ * 유사 퀴즈를 만들 때 한 번에 고를 수 있는 문제 수(POST /quiz-sets/similar, #605). 고른 문제는 모두 AI 생성
+ * 프롬프트에 함께 들어가므로(apps/ai services/quiz/review.py RELATED_CHARS) 프롬프트가 노트 발췌보다 길어지지 않게 둔다
+ */
+export const SIMILAR_PICK_MAX = 10;
 
 /** 경로 조각 인코딩 — id에 '/'나 '..'가 들어와도 다른 경로로 새지 않게 한다 */
 const seg = (v: string) => encodeURIComponent(v);
@@ -213,6 +218,8 @@ export const PATHS = {
   quizSets: '/quiz-sets',
   quizSet: (id: string) => `/quiz-sets/${seg(id)}`,
   similarQuiz: (id: string) => `/quiz-sets/${seg(id)}/similar`,
+  /** 고른 문제로 유사 퀴즈(#605): 본문 { questionIds }(한 학습 폴더의 문제, SIMILAR_PICK_MAX개까지) → 만드는 중인 세트 */
+  similarQuizPick: '/quiz-sets/similar',
   /** 오늘의 복습: GET 오늘 만든 세트(없으면 null) · POST 만들기(하루 한 번, 만드는 중이면 세트 조회로 기다림) */
   todayReview: '/quiz-sets/today',
   quizAttempts: '/quiz-attempts',
@@ -232,6 +239,8 @@ export const PATHS = {
   roomScheduleVisibility: (id: string) => `/study-rooms/${seg(id)}/schedule/visibility`,
   roomInvites: (id: string) => `/study-rooms/${seg(id)}/invites`,
   roomShared: (id: string) => `/study-rooms/${seg(id)}/shared-items`,
+  roomSharedItem: (id: string, itemId: string) =>
+    `/study-rooms/${seg(id)}/shared-items/${seg(itemId)}`,
   livekitToken: (id: string) => `/study-rooms/${seg(id)}/livekit-token`,
   roomChatRoom: (id: string) => `/study-rooms/${seg(id)}/chat-room`,
   reports: '/reports',

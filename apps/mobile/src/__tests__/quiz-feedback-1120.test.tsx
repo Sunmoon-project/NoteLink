@@ -30,7 +30,28 @@ jest.mock('../lib/local/storage', () => ({
 
 const client = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
 const quizSet = (_id: string, title: string, over: Partial<QuizSet> = {}) =>
-  ({ _id, title, status: 'ready', questionCount: 2, questions: [], ...over }) as QuizSet;
+  ({
+    _id,
+    title,
+    status: 'ready',
+    questionCount: 2,
+    // 유사 퀴즈 바로가기는 노트 · 폴더 · 문제가 있는 끝낸 세트가 있어야 보인다(#605, canPickFrom)
+    materialId: 'm1',
+    folderId: 'f1',
+    questions: [
+      {
+        _id: `${_id}-q1`,
+        order: 1,
+        type: 'short_answer',
+        prompt: '문제',
+        choices: null,
+        answer: '답',
+        explanation: null,
+        conceptTags: [],
+      },
+    ],
+    ...over,
+  }) as QuizSet;
 const LONG =
   'await new Promise((resolve) => setTimeout(resolve, 2000))처럼 Promise로 감싸 기다린다';
 const mc = (id: string, over: Partial<Question> = {}): Question => ({
@@ -60,7 +81,7 @@ afterEach(() => {
 });
 
 describe('유사 퀴즈', () => {
-  it('바로가기는 끝까지 푼 가장 최근 세트로 연다(안 푼 다시 보기 · 풀던 세트는 건너뜀)', async () => {
+  it('바로가기는 끝까지 푼 세트가 있으면 보이고, 세트를 넘기지 않고 노트 고르기부터 연다(#605)', async () => {
     jest
       .spyOn(api.quiz, 'sets')
       .mockResolvedValue([
@@ -80,10 +101,7 @@ describe('유사 퀴즈', () => {
     await renderScreen(<QuizHomeScreen />, client());
     await screen.findByText('풀던 퀴즈 · 2문제');
     await fireEvent.press(screen.getByText('유사 퀴즈'));
-    expect(router.push).toHaveBeenCalledWith({
-      pathname: '/play/similar',
-      params: { setId: 'done' },
-    });
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/play/similar', params: {} });
   });
 
   it('끝낸 세트가 하나도 없으면 유사 퀴즈 바로가기를 보이지 않는다(빈 id로 서버를 부르지 않게)', async () => {
@@ -147,12 +165,14 @@ describe('퀴즈 보관함', () => {
     jest
       .spyOn(api.quiz, 'box')
       .mockResolvedValue([mc('b2', { prompt: `옳은 것은?\n\n${passage}` })]);
+    setParams({ folderId: 'fo1' }); // 노트를 고른 2단계(#601)
     await renderScreen(<QuizBoxScreen />, client());
     expect(String((await screen.findByText(passage)).props.className)).toContain('text-ink');
   });
 
   it('객관식 문제는 보기를 번호와 함께 보여 준다', async () => {
     jest.spyOn(api.quiz, 'box').mockResolvedValue([mc('b1')]);
+    setParams({ folderId: 'fo1' }); // 노트를 고른 2단계(#601)
     await renderScreen(<QuizBoxScreen />, client());
     expect(await screen.findByText(`① ${LONG}`)).toBeTruthy();
     expect(screen.getByText('② 스트리밍 동작을 확인하려고 넣는다')).toBeTruthy();

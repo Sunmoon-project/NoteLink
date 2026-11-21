@@ -100,3 +100,17 @@ it('상세 화면은 # 제목 · - 목록 · **굵게** 표시대로 그린다(�
   expect(screen.getByText('중요')).toBeTruthy();
   expect(screen.queryByText(/\*\*/)).toBeNull();
 });
+
+it('상세 화면은 소제목마다 카드를 따로 그린다', async () => {
+  await renderScreen(
+    <NoteBody
+      sections={[
+        { heading: '아메바', body: '위족으로 움직인다' },
+        { heading: '2쪽', body: '섬모로 헤엄친다' },
+      ]}
+    />,
+  );
+  expect(screen.getAllByTestId('note-section')).toHaveLength(2);
+  expect(screen.getByText('아메바')).toBeTruthy();
+  expect(screen.getByText('2쪽')).toBeTruthy();
+});

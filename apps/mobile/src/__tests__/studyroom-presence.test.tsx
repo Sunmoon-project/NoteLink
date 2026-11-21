@@ -30,6 +30,12 @@ jest.mock('expo-secure-store', () => ({
   deleteItemAsync: jest.fn(),
 }));
 jest.mock('expo-file-system', () => ({ UploadType: { BINARY_CONTENT: 0 }, File: jest.fn() }));
+// 화면 크기: 기본은 세로 휴대폰, 가로 시험에서만 눕힌다
+let mockWindow = { width: 390, height: 844, scale: 3, fontScale: 1 };
+jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({
+  __esModule: true,
+  default: () => mockWindow,
+}));
 
 const member = (userId: string, nickname: string) => ({
   userId,
@@ -69,6 +75,7 @@ const live = (over: Partial<ReturnType<typeof useLiveRoom>> = {}) =>
   }) as ReturnType<typeof useLiveRoom>;
 
 beforeEach(() => {
+  mockWindow = { width: 390, height: 844, scale: 3, fontScale: 1 };
   jest.spyOn(Date, 'now').mockImplementation(() => mockNow);
   useAuth.setState({ userId: 'me' });
   useNet.setState({ state: 'ok' });
@@ -142,4 +149,36 @@ it('다시 시도하지 않는 미디어 실패에는 「다시 연결 중」 �
   await renderScreen(<RoomScreen />, client());
   expect(await screen.findByText('알고리즘 스터디')).toBeTruthy();
   expect(screen.queryByText('● 연결이 끊겼어요 · 다시 연결 중…')).toBeNull();
+});
+
+// 사용자 보고(#573): 휴대폰을 눕히면 세로용 2열 타일 · 큰 버튼이 화면을 넘쳤다
+describe('휴대폰을 가로로 눕히면', () => {
+  const tileOf = (name: string) => {
+    let node = screen.getByText(name).parent;
+    while (node && !String(node.props.className).includes('rounded-2xl')) node = node.parent;
+    return node!;
+  };
+
+  it('세로에서는 지금처럼 한 줄에 두 타일이다', async () => {
+    jest.mocked(useLiveRoom).mockReturnValue(live());
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText('앞선이');
+    expect(String(tileOf('앞선이').props.className)).toContain('w-[48.5%]');
+  });
+
+  it('한 줄에 세 타일 · 방 제목은 위 막대에 · 조작 버튼과 채팅 줄은 한 줄로 놓는다', async () => {
+    mockWindow = { width: 844, height: 390, scale: 3, fontScale: 1 };
+    jest.mocked(useLiveRoom).mockReturnValue(live());
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText('앞선이');
+    const tile = tileOf('앞선이');
+    expect(String(tile.props.className)).not.toContain('w-[48.5%]');
+    // 좌우 여백 32 · 타일 사이 8 두 번을 뺀 너비를 셋으로 나눈다
+    expect(tile.props.style).toEqual(expect.objectContaining({ width: (844 - 32 - 16) / 3 }));
+    expect(screen.getByTestId('room-tiles')).toBeTruthy();
+    expect(String(screen.getByTestId('room-controls').props.className)).toContain('flex-row');
+    expect(screen.getByText('알고리즘 스터디')).toBeTruthy();
+    // 조작 버튼은 낮게(설명 줄 없이)
+    expect(screen.queryByText('내 학습하는 소리만')).toBeNull();
+  });
 });

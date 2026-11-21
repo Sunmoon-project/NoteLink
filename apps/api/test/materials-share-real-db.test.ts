@@ -21,6 +21,8 @@ import {
   RoomSharedItem,
   RoomSharedItemSchema,
 } from '../src/modules/studyroom/schemas/room-shared-item.schema.js';
+import { Flashcard, FlashcardSchema } from '../src/modules/quiz/schemas/flashcard.schema.js';
+import { QuizSet, QuizSetSchema } from '../src/modules/quiz/schemas/quiz-set.schema.js';
 import { StudyRoom, StudyRoomSchema } from '../src/modules/studyroom/schemas/study-room.schema.js';
 
 const uri = process.env.MONGODB_VERIFY_URI;
@@ -68,6 +70,8 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       rooms as never,
       items as never,
       users as never,
+      conn.model(QuizSet.name, QuizSetSchema) as never,
+      conn.model(Flashcard.name, FlashcardSchema) as never,
       // 공유 알림은 study-notices-real-db.test.ts에서 본다
       { notify: async () => {} } as never,
     );
@@ -199,6 +203,8 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
         rooms as never,
         racing as never,
         users as never,
+        conn.model(QuizSet.name, QuizSetSchema) as never,
+        conn.model(Flashcard.name, FlashcardSchema) as never,
         { notify } as never,
       );
       await svc.share(owner.toHexString(), {

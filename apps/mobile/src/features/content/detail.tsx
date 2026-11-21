@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Linking, View } from 'react-native';
+import { ActivityIndicator, Linking, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -16,7 +16,9 @@ import {
   List,
   MoreHorizontal,
   Pencil,
+  RotateCcw,
   Share2,
+  Sparkles,
   Trash2,
   Users,
 } from 'lucide-react-native';
@@ -51,12 +53,19 @@ import { PageImages, usePageTurn } from './page-images';
 import { TutorBuddy, canAsk, useTuckOnScroll } from '@/features/tutor/buddy';
 import { seoul } from '@/lib/dates';
 import { QuizFromNote } from './quiz-from-note';
+import { useResummarize } from './resummarize';
+import { aiStateOf } from '@/lib/ai';
 
 // p.67~73 필기 · 녹음 · 문서 상세 / 편집 / 다운로드 / 공유 / 삭제
 
 function useMaterial() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const q = useQuery({ queryKey: ['material', id], queryFn: () => api.content.material(id) });
+  const q = useQuery({
+    queryKey: ['material', id],
+    queryFn: () => api.content.material(id),
+    // 서버가 정리 중이면(다시 요약 포함) 끝날 때까지 다시 읽어 결과 · 실패를 바로 보인다
+    refetchInterval: (q) => (aiStateOf(q.state.data?.processing) === 'working' ? 3000 : false),
+  });
   // 이미 불러온 자료가 있으면 재조회 실패로 화면을 지우지 않는다
   return { id, m: q.data, isError: q.isError && !q.data, error: q.error, refetch: q.refetch };
 }
@@ -100,6 +109,69 @@ function OriginalFile({ m }: { m: Material }) {
       <Btn loading={busy} onPress={open}>
         원본 파일 열기
       </Btn>
+    </View>
+  );
+}
+
+/**
+ * 정리 결과가 빈 자료의 안내. 전에는 처리 상태를 보지 않고 늘 「AI 서버를 기다리고 있어요」라 실패한 자료도
+ * 기다리는 것처럼 보였다(develop 점검 #3). 실패면 다시 요약(폴더 목록과 같은 경로), 처리 중이면 진행 표시,
+ * 기기 저장 모드일 때만 서버 대기 안내
+ */
+function SummaryStatus({
+  m,
+  what,
+  failed,
+  retry,
+  working,
+  empty,
+  hint,
+}: {
+  m: Material;
+  what: string;
+  failed: string;
+  retry: string;
+  working: string;
+  empty: string;
+  hint?: string;
+}) {
+  const resummarize = useResummarize();
+  const state = aiStateOf(m.processing);
+  if (state === 'waiting') return <AiPending what={what} hint={hint} />;
+  const [title, sub] =
+    state === 'failed'
+      ? [failed, hint ?? (m.processing.jobId ? '다시 눌러 정리해 볼 수 있어요.' : undefined)]
+      : state === 'working'
+        ? [working, '끝나면 여기에 바로 보여요.']
+        : [empty, hint];
+  return (
+    <View className="flex-row items-center gap-3 rounded-2xl bg-mint p-4">
+      {state === 'working' ? (
+        <ActivityIndicator size="small" color={C.brand} />
+      ) : (
+        <Sparkles size={ICON.md} color={state === 'failed' ? C.danger : C.brand} />
+      )}
+      <View className="flex-1">
+        <Text className="text-subhead font-semibold text-ink">{title}</Text>
+        {!!sub && <Text className="mt-0.5 text-footnote text-sub">{sub}</Text>}
+      </View>
+      {state === 'failed' && !!m.processing.jobId && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={retry}
+          hitSlop={8}
+          disabled={resummarize.isPending}
+          onPress={() => resummarize.mutate(m)}
+          className="flex-row items-center gap-1 rounded-full bg-white px-3 py-1.5"
+        >
+          {resummarize.isPending ? (
+            <ActivityIndicator size="small" color={C.brand} />
+          ) : (
+            <RotateCcw size={ICON.xs} color={C.brand} />
+          )}
+          <Text className="text-caption font-semibold text-brand">{retry}</Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -279,7 +351,15 @@ export function HandDetailScreen() {
             m.summary?.sections.length ? (
               <NoteBody sections={m.summary.sections} />
             ) : (
-              <AiPending what="필기 정리" hint="직접 정리하려면 '편집하기'를 눌러 써 보세요." />
+              <SummaryStatus
+                m={m}
+                what="필기 정리"
+                failed="정리하지 못했어요"
+                retry="다시 정리"
+                working="필기를 정리하고 있어요"
+                empty="정리된 내용이 없어요"
+                hint="직접 정리하려면 '편집하기'를 눌러 써 보세요."
+              />
             )
           ) : (
             <View className="gap-3">
@@ -608,7 +688,14 @@ export function DocDetailScreen() {
             {m.summary?.points.length ? (
               <DocSummary points={m.summary.points} keywords={m.keywords} />
             ) : (
-              <AiPending what="문서 요약" />
+              <SummaryStatus
+                m={m}
+                what="문서 요약"
+                failed="요약하지 못했어요"
+                retry="다시 요약"
+                working="문서 요약을 만들고 있어요"
+                empty="요약할 내용을 찾지 못했어요"
+              />
             )}
             {/* 편집하기로 고친 글(섹션)도 보인다 — 전에는 핵심 요약만 보여 문서를 고쳐도 바뀐 게 없어 보였다 */}
             {!!m.summary?.sections.length && (

@@ -64,10 +64,10 @@ beforeEach(() => {
   mockApi.rooms.schedule.mockResolvedValue(schedule);
 });
 
-it('화면 설명과 멤버 범례를 보여 주고, 아무도 없는 칸은 비워 둔다', async () => {
+it('설명 문단 없이 멤버 범례를 보여 주고, 아무도 없는 칸은 비워 둔다', async () => {
   await renderScreen(<ScheduleScreen />);
-  expect(screen.getByText(/칸을 누르면/)).toBeTruthy();
-  // 설명은 바로, 범례는 일정을 받은 뒤에 그려진다
+  expect(screen.queryByText(/칸을 누르면/)).toBeNull();
+  // 범례는 일정을 받은 뒤에 그려진다
   for (const n of ['노트', '구글', '한결'])
     expect(await screen.findByLabelText(`범례 ${n}`)).toBeTruthy();
   const empty = screen.getByLabelText('월 11:00 · 모두 비어 있음');
@@ -105,7 +105,7 @@ it('예전 서버(멤버별 일정 없음)면 바쁜 칸을 한 가지 색으로
   expect(await screen.findByLabelText('월 9:00 · 누군가 일정 있음')).toBeTruthy();
 });
 
-it('공개 범위를 알리고, 시간을 숨긴 멤버는 범례에 「비공개」 · 시트에 「시간 비공개」 · 추천 시간에 「n명은 빼고 계산」으로만 보인다', async () => {
+it('시간표 위 설명 문단 없이, 시간을 숨긴 멤버는 범례에 「비공개」 · 시트에 「시간 비공개」 · 추천 시간에 「n명은 빼고 계산」으로만 보인다', async () => {
   mockApi.rooms.schedule.mockResolvedValue({
     ...schedule,
     // 숨긴 별은 서버가 격자에서도 뺀다(화 9시 = 모두 빔)
@@ -115,7 +115,8 @@ it('공개 범위를 알리고, 시간을 숨긴 멤버는 범례에 「비공�
     ],
   });
   await renderScreen(<ScheduleScreen />);
-  expect(screen.getByText(/내 수업 시간은 이 방 멤버에게 보여요/)).toBeTruthy();
+  expect(screen.queryByText(/내 수업 시간은 이 방 멤버에게 보여요/)).toBeNull();
+  expect(screen.queryByText(/초록 테두리는 모두 비는/)).toBeNull();
   expect(await screen.findByText('별 · 비공개')).toBeTruthy();
   expect(screen.getByText('시간을 숨긴 1명은 빼고 계산했어요')).toBeTruthy();
   expect(screen.queryByText(/비공개 일정 있음/)).toBeNull();

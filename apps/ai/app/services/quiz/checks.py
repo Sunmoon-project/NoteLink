@@ -108,6 +108,9 @@ class Target:
     # 지난번 맞혔어도 원래 정답을 다시 물음(오늘의 복습이 결함 문제를 같은 낱말로 바꿀 때). 이때는
     # 오늘의 복습의 같은 낱말 기준(text.same_word: 띄어쓰기만 다른 똑같은 답)으로 봅니다
     keep_answer: bool = False
+    # 사용자가 복습하려고 고른 문제(오답 복습의 고른 문제 모드, #605).
+    # 학생 상황 안내만 바꿈(similar.guidance)
+    picked: bool = False
 
 
 def too_close(d: Draft, seen: list[Seen], concept: str = "", ty: str = "") -> bool:

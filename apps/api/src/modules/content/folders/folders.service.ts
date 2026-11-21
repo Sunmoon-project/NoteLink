@@ -3,6 +3,7 @@ import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES, FolderCreateBody } from '@notelink/shared';
 import { type Connection, Model, Types } from 'mongoose';
 
+import { QuizCleanupService, type QuizScope } from '../../../quiz-sets/quiz-cleanup.service.js';
 import { Subject } from '../../session/schemas/subject.schema.js';
 import { Folder } from '../schemas/folder.schema.js';
 import { Material } from '../schemas/material.schema.js';
@@ -42,6 +43,8 @@ export class FoldersService {
     @InjectModel(Material.name) private readonly materials: Model<Material>,
     @InjectModel(Subject.name) private readonly subjects: Model<Subject>,
     @InjectConnection() private readonly connection: Connection,
+    /** 폴더의 퀴즈 세트 · 플래시카드 · 보관함 항목을 같은 트랜잭션으로 지운다(#602) */
+    private readonly quizCleanup: QuizCleanupService,
   ) {}
 
   /** 내 폴더(지우지 않은 것, 최근에 바뀐 순)와 폴더마다 지우지 않은 자료 수 */
@@ -82,8 +85,10 @@ export class FoldersService {
   }
 
   /**
-   * 폴더와 그 안의 지우지 않은 노트를 한 트랜잭션으로 지운 것으로 표시한다(소프트 삭제): 둘 다 지워지거나 둘 다 그대로다.
-   * 이미 지운 노트의 지운 시각은 바꾸지 않는다. 노트의 진행 중인 작업 · 퀴즈 세트 · 원본 파일은 건드리지 않는다.
+   * 폴더와 그 안의 지우지 않은 노트, 그 폴더의 퀴즈 세트 · 플래시카드(소프트 삭제) · 보관함 항목(하드 삭제)을 한
+   * 트랜잭션으로 지운다(#602): 모두 지워지거나 모두 그대로다. 풀이 기록 · 원본 파일 · 노트 정리 작업은 건드리지 않고,
+   * 오늘의 복습 세트는 다른 폴더 문제가 섞여 남긴다(QuizCleanupService). 이미 지운 노트의 지운 시각은 바꾸지 않는다.
+   * 커밋 뒤 그 폴더의 진행 중인 퀴즈 AI 작업을 취소한다(실패해도 삭제는 성공).
    * 남의 폴더 · 지운 폴더 · 없는 폴더 · 잘못된 id 는 404
    */
   async remove(userId: string, id: string): Promise<void> {
@@ -92,19 +97,28 @@ export class FoldersService {
     if (!/^[0-9a-f]{24}$/i.test(id)) throw notFound();
     const _id = new Types.ObjectId(id);
     const ownerId = new Types.ObjectId(userId);
+    const now = new Date();
+    let scope: QuizScope = { folderId: _id, materialIds: [] };
+    let removedSets: Types.ObjectId[] = [];
     await this.connection.transaction(async (session) => {
-      const now = new Date();
       const folder = await this.folders.findOneAndUpdate(
         { _id, ownerId, deletedAt: null },
         { $set: { deletedAt: now } },
         { session },
       );
       if (!folder) throw notFound();
+      // 전에 지운 노트도 범위에 넣는다: 노트 하나 지우기는 퀴즈를 건드리지 않아 그 세트 · 카드가 아직 살아 있다
+      const notes = await this.materials
+        .find({ ownerId, folderId: _id }, { _id: 1 }, { session })
+        .lean<{ _id: Types.ObjectId }[]>();
+      scope = { folderId: _id, materialIds: notes.map((n) => n._id) };
       await this.materials.updateMany(
         { ownerId, folderId: _id, deletedAt: null },
         { $set: { deletedAt: now } },
         { session },
       );
+      removedSets = await this.quizCleanup.removeFor(ownerId, scope, now, session);
     });
+    await this.quizCleanup.afterRemove(userId, ownerId, scope, now, removedSets);
   }
 }

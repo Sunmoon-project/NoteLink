@@ -14,6 +14,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { configureApp } from '../src/app.setup.js';
 import { User, UserSchema } from '../src/modules/auth/schemas/user.schema.js';
+import { Material, MaterialSchema } from '../src/modules/content/schemas/material.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
 import { BOX_MAX_IDS } from '../src/modules/quiz/dto/quiz-box.dto.js';
 import { QuizBoxController } from '../src/modules/quiz/quiz-box.controller.js';
@@ -65,6 +66,7 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 보관함 확인', () => {
                     { name: QuizBoxItem.name, schema: QuizBoxItemSchema },
                     { name: QuizBoxCounter.name, schema: QuizBoxCounterSchema },
                     { name: QuizSet.name, schema: QuizSetSchema },
+                    { name: Material.name, schema: MaterialSchema },
                     { name: User.name, schema: UserSchema },
                 ]),
             ],
