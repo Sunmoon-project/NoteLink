@@ -108,15 +108,15 @@ export class SimilarQuizService {
       throw conflict('틀린 문제가 없어요');
     // 자동 오답 복습이 꺼져 있으면(기본, #625) 복습 상태는 퀴즈를 끝낼 때 이미 옮겼다: 결과 화면의 유사 퀴즈(옛 앱 · 노트
     // 폴더가 없는 세트 · 오늘의 복습)는 복습 상태를 옮기지 않는 고르기 모드(run_pick)로 그 풀이의 틀린 문제로 만든다.
-    // 오답 복습(run)으로 만들면 같은 풀이를 한 번 더 세어 연속 정답이 두 번 셈해진다. 만든 세트에는 원본 세트 · 풀이를
-    // 남겨(sourceSetId · sourceAttemptId), 같은 풀이로 다시 누르면 만드는 중 · 다 만든 그 세트(설정을 끄기 전에 만든
-    // 「다시 보기」 세트 포함)를 돌려준다. 오늘의 복습에서 이어 만든 세트로도 보인다(폴더 삭제에서 남김, 앱이 원본을 거슬러 오름).
+    // 오답 복습(run)으로 만들면 같은 풀이를 한 번 더 세어 연속 정답이 두 번 셈해진다. 만든 세트에는 그 풀이만 남겨
+    // (sourceAttemptId), 같은 풀이로 다시 누르면 만드는 중 · 다 만든 그 세트(설정을 끄기 전에 만든 「다시 보기」 세트 포함)를
+    // 돌려준다. 원본 세트(sourceSetId)는 남기지 않는다: 그 필드는 「복습 상태를 옮기는 오답 복습 세트」 표시라, 남기면
+    // 만드는 동안 오늘의 복습이 원본의 문제를 고르지 않는다(TodayReviewService.reviewingSources, Codex 1차).
     // 틀린 문제는 세트 크기(5문제)보다 많을 수 없어 SIMILAR_PICK_MAX(10)로 자르는 일은 없다
     if (attemptId === undefined && !autoSimilarOnFinish()) {
       const made = await this.sets
         .findOne({
           ownerId: owner,
-          sourceSetId: source._id,
           sourceAttemptId: attempt._id,
           deletedAt: null,
           status: { $in: ['generating', 'ready'] },
@@ -125,10 +125,7 @@ export class SimilarQuizService {
       if (made) return this.quizSets.findMine(userId, made._id.toString());
       const wrong = wrongIdsOf(attempt);
       if (wrong.length === 0) throw conflict('틀린 문제가 없어요');
-      return this.createFromPicks(userId, wrong.slice(0, SIMILAR_PICK_MAX), {
-        sourceSetId: source._id,
-        sourceAttemptId: attempt._id,
-      });
+      return this.createFromPicks(userId, wrong.slice(0, SIMILAR_PICK_MAX), attempt._id);
     }
     // 자동 시작(attemptId)만 「기다림」을 쓴다. 이미 이 풀이로 만든 세트가 있으면 결과를 맞추기(findMine) 전에
     // 표시부터 지운다: 맞추다 이어 받기(catchUp)가 돌아도 이 풀이를 다시 고르지 않게
@@ -261,12 +258,12 @@ export class SimilarQuizService {
     userId: string,
     questionIds: string[],
     /**
-     * 결과 화면의 유사 퀴즈(create)가 그 세트 · 풀이의 틀린 문제로 만들 때(#625): 오늘의 복습 세트의 문제도 받고,
-     * 새 세트에 원본 세트 · 풀이를 남긴다
+     * 결과 화면의 유사 퀴즈(create)가 그 풀이의 틀린 문제로 만들 때(#625): 오늘의 복습 세트의 문제도 받고, 새 세트에
+     * 그 풀이(sourceAttemptId)를 남긴다. 원본 세트(sourceSetId)는 남기지 않는다(복습 상태를 옮기지 않으므로)
      */
-    from?: { sourceSetId: Types.ObjectId; sourceAttemptId: Types.ObjectId },
+    fromAttempt?: Types.ObjectId,
   ): Promise<AppQuizSet> {
-    const withReviewDay = from !== undefined;
+    const withReviewDay = fromAttempt !== undefined;
     const owner = objectId(userId, '퀴즈');
     const ids = [...new Set(questionIds)];
     if (ids.length === 0 || ids.length > SIMILAR_PICK_MAX) {
@@ -375,8 +372,8 @@ export class SimilarQuizService {
         materialId: base.materialId,
         folderId: base.folderId,
         source: 'ai_generated',
-        sourceSetId: from?.sourceSetId ?? null,
-        sourceAttemptId: from?.sourceAttemptId ?? null,
+        sourceSetId: null,
+        sourceAttemptId: fromAttempt ?? null,
         title: `${note?.title || base.title} · 유사 퀴즈`,
         status: 'generating',
         progress: 0,

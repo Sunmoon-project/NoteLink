@@ -9,6 +9,7 @@ import { autoSimilarOnFinish } from '../src/quiz-sets/auto-similar.js';
 import { QuizSetsService, SIMILAR_TYPE } from '../src/quiz-sets/quiz-sets.service.js';
 import { RecordingNotePagesService } from '../src/quiz-sets/recording-note-pages.service.js';
 import { SimilarQuizService } from '../src/quiz-sets/similar-quiz.service.js';
+import { type TodayInput, TodayReviewService } from '../src/quiz-sets/today-review.service.js';
 import { createFakeCollection, type Row } from './support/fake-collection.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
 
@@ -64,6 +65,14 @@ function setup() {
     quizSets,
     pages,
   );
+  const today = new TodayReviewService(
+    sets.model,
+    attempts.model,
+    materials.model,
+    aiJobs,
+    quizSets,
+    pages,
+  );
   /** 노트 · ready 세트 · 끝낸 풀이(wrong 번째 문제를 틀림, voids 번째 답은 무효) */
   const seed = async (
     over: { wrong?: number[]; voids?: number[]; reviewDay?: string; folder?: boolean } = {},
@@ -101,7 +110,7 @@ function setup() {
     } as never)) as unknown as { _id: Types.ObjectId };
     return { note: note._id, set: set._id, attempt: attempt._id, qs };
   };
-  return { sets, attempts, jobs, quizSets, similar, seed, updateOne };
+  return { sets, attempts, jobs, quizSets, similar, today, seed, updateOne };
 }
 
 afterEach(() => {
@@ -135,7 +144,7 @@ describe('결과 화면의 유사 퀴즈(create, 세트로 만들기) — 자동
     expect(out).toMatchObject({
       status: 'generating',
       title: '세포 생물학 · 유사 퀴즈',
-      sourceSetId: s.set.toHexString(),
+      sourceSetId: null,
     });
     expect(jobs.rows).toHaveLength(1);
     const job = jobs.rows[0]!;
@@ -171,13 +180,29 @@ describe('결과 화면의 유사 퀴즈(create, 세트로 만들기) — 자동
     expect(jobs.rows).toHaveLength(0);
   });
 
-  it('만든 세트에 원본 세트 · 풀이를 남긴다: 오늘의 복습에서 이어 만든 세트로 보고(폴더 삭제에서 남김) 앱이 원본을 거슬러 오른다', async () => {
+  it('만든 세트에는 그 풀이만 남기고 원본 세트는 남기지 않는다(복습 상태를 옮기는 오답 복습 세트가 아니므로)', async () => {
     const { similar, seed, sets } = setup();
     const s = await seed({ reviewDay: '2026-11-20' });
     const out = await similar.create(ME.toHexString(), s.set.toHexString());
-    expect(out.sourceSetId).toBe(s.set.toHexString());
+    expect(out.sourceSetId).toBeNull();
     const row = sets.rows.find((r) => String(r._id) === out._id)!;
     expect(String(row['sourceAttemptId'])).toBe(s.attempt.toHexString());
+  });
+
+  // Codex 리뷰 1차: 원본 세트(sourceSetId)를 남기면 오늘의 복습이 「오답 복습이 곧 복습 상태를 바꾸는 세트」로 보고 그 세트의
+  // 문제를 고르지 않는다(TodayReviewService.reviewingSources). 고르기 모드는 복습 상태를 옮기지 않으므로 빼면 안 된다
+  it('유사 퀴즈를 만드는 중에 오늘의 복습을 시작해도 원본 세트의 복습할 문제를 고른다', async () => {
+    const { similar, today, seed, jobs } = setup();
+    const s = await seed();
+    const made = await similar.create(ME.toHexString(), s.set.toHexString());
+    expect(made.status).toBe('generating');
+
+    await today.start(ME.toHexString(), new Date('2026-11-21T03:00:00Z'));
+
+    const input = jobs.rows.at(-1)!['input'] as TodayInput;
+    const source = input.sets.find((x) => x.id === s.set.toHexString())!;
+    expect(source).toBeDefined();
+    expect(source.deletedAt).toBeUndefined();
   });
 
   it('같은 풀이로 다시 누르면 만드는 중 · 다 만든 그 세트를 돌려주고 작업을 더 넣지 않는다(실패한 세트는 새로 만듦)', async () => {
