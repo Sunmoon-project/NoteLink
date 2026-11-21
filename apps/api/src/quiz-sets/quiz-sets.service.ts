@@ -1289,18 +1289,24 @@ function reviewQuestions(raw: unknown): QuestionRow[] {
 }
 
 /**
- * 성공한 작업의 결과로 세트를 ready로 바꾸는 값. 쓸 문제가 없으면 null(세트를 failed로).
- * 모양이 틀린 문제를 빼면 번호가 비므로 처리기의 order 차례대로 1부터 다시 매긴다(/code-review)
+ * 성공한 작업의 결과에서 세트에 넣을 수 있는 문제들(모양이 틀린 문제는 뺀다). 세트 동기화(readyUpdate)와
+ * 작업 완료 알림(ai-job-notices.service.ts, #634)이 같은 규칙으로 문제를 센다
  */
-function readyUpdate(job: AppAiJob): Record<string, unknown> | null {
+export function resultQuestions(job: Pick<AppAiJob, 'type' | 'result'>): QuestionRow[] {
   // 오답 복습(similar_quiz)은 새 문제를 reviewQuestions에 담고, 문제마다 처음 복습 상태(srs)를 준다
   // 오늘의 복습도 문제마다 복습 상태(srs)를 가진 사본을 questions에 담는다
   const similar = job.type === SIMILAR_TYPE;
   const keepSrs = similar || job.type === TODAY_TYPE;
   const raw = job.result?.[similar ? 'reviewQuestions' : 'questions'];
-  const sorted = (keepSrs ? reviewQuestions(raw) : workerQuestions(raw)).sort(
-    (a, b) => a.order - b.order,
-  );
+  return keepSrs ? reviewQuestions(raw) : workerQuestions(raw);
+}
+
+/**
+ * 성공한 작업의 결과로 세트를 ready로 바꾸는 값. 쓸 문제가 없으면 null(세트를 failed로).
+ * 모양이 틀린 문제를 빼면 번호가 비므로 처리기의 order 차례대로 1부터 다시 매긴다(/code-review)
+ */
+function readyUpdate(job: AppAiJob): Record<string, unknown> | null {
+  const sorted = resultQuestions(job).sort((a, b) => a.order - b.order);
   const questions = sorted.map((q, i) => ({
     ...q,
     order: i + 1,
