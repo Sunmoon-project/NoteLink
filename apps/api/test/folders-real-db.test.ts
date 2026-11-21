@@ -257,6 +257,14 @@ describe.skipIf(!uri)('진짜 DB 학습 폴더 확인', () => {
     });
   });
   describe('폴더 삭제 — 그 폴더의 퀴즈 · 플래시카드 · 보관함 항목도 같이 지우기 (#602)', () => {
+    // 유사 퀴즈(similar.create)는 오답 복습 작업(run)으로 만드는 경로를 본다: 자동 오답 복습이 켜졌을 때(#625)의 경로.
+    // 꺼진 기본 설정의 고르기 모드 경로는 similar-quiz-auto-off.test.ts가 본다
+    beforeAll(() => {
+      vi.stubEnv('AUTO_SIMILAR_ON_FINISH', 'true');
+    });
+    afterAll(() => {
+      vi.unstubAllEnvs();
+    });
     const col = (name: string) => conn.collection(name);
     const row = (name: string, id: Types.ObjectId) => col(name).findOne({ _id: id });
     const question = (prompt: string) => ({
