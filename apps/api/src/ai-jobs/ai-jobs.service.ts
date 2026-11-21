@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
-import { HttpException, HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
-import { ERROR_CODES } from '@notelink/shared';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { AiJobCancelBody, ERROR_CODES } from '@notelink/shared';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
@@ -78,15 +84,18 @@ export type InputRefresher = (ctx: InputRefreshContext) => Promise<Record<string
 
 /**
  * 작업 종류별로 등록하는 「앱의 취소」 함수(#626). 작업을 넣은 모듈이 멈추기 전후로 그 대상(퀴즈 세트 등)을 정리한다.
- * 받은 cancel()을 꼭 한 번 불러 작업을 멈춘다: 지울 대상을 멈추기 전에 고르고, 취소로 멈췄을 때만 정리하게 하려고
+ * 받은 cancel()을 한 번 불러 작업을 멈춘다: 지울 대상을 멈추기 전에 고르고, 취소로 멈췄을 때만 정리하게 하려고
  * 순서를 그 모듈에 맡긴다. cancel()은 작업이 이 취소로 멈췄는지 돌려준다(canceled로 바꿈 · 이미 canceled · 도는 미리
  * 만들기의 이어받기를 풂이면 true. 취소가 닿기 전에 끝난 작업은 false).
  * 같은 작업에 여러 번 불릴 수 있어(앱이 두 번 누름) 여러 번 불려도 같은 결과여야 한다. 던지면 취소 응답도 오류가 된다
- * (작업은 이미 멈췄으므로 앱이 다시 누르면 다시 부른다)
+ * (작업은 이미 멈췄으므로 앱이 다시 누르면 다시 부른다).
+ * quizSetId는 앱이 본문에 실은 세트 번호(#642, 없으면 옛 앱). 그 세트가 이미 정리됐으면 cancel()을 부르지 않아도 된다:
+ * 같은 작업을 새로 이어받은 다른 세트가 있을 수 있어, 다시 온 옛 취소가 작업을 멈추지 않게
  */
 export type CancelHandler = (ctx: {
   userId: string;
   jobId: string;
+  quizSetId?: string;
   cancel: () => Promise<boolean>;
 }) => Promise<void>;
 
@@ -467,17 +476,27 @@ export class AiJobsService {
   /**
    * 앱의 취소(POST /ai-jobs/:id/cancel). 그 작업 종류에 등록한 함수가 있으면 그 함수가 cancel을 불러 멈추고 대상을
    * 정리한다(#626, CancelHandler). 없으면 cancel만. 남의 작업 · 없는 작업은 함수를 부르지 않고 404.
+   * 본문(선택, packages/shared AiJobCancelBody)의 quizSetId는 그 함수에 넘긴다: 그 세트만 정리하게(#642). 형식이 틀리면 400.
    * 서버 안의 취소(세트 저장 실패 등)는 cancel을 바로 쓰므로 함수를 부르지 않는다
    */
-  async cancelByUser(userId: string, jobId: string): Promise<void> {
+  async cancelByUser(userId: string, jobId: string, body: unknown = {}): Promise<void> {
+    // 본문은 선택(옛 앱은 보내지 않음). 형식이 틀리면 작업을 찾기 전에 400
+    const parsed = AiJobCancelBody.safeParse(body ?? {});
+    if (!parsed.success)
+      throw new BadRequestException({
+        code: ERROR_CODES.VALIDATION,
+        message: '취소 요청을 확인해 주세요',
+      });
     const filter = { _id: objectId(jobId), userId: objectId(userId) };
     const found = await this.jobs.findOne(filter, { type: 1 }).lean<Pick<AiJobRow, 'type'>>();
     if (!found) throw notFound();
     const handler = this.cancelHandlers.get(found.type);
     if (!handler) return this.cancel(userId, jobId);
+    const { quizSetId } = parsed.data;
     await handler({
       userId,
       jobId,
+      ...(quizSetId === undefined ? {} : { quizSetId }),
       cancel: () => this.stop(userId, jobId),
     });
   }

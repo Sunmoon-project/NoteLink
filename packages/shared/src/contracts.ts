@@ -212,6 +212,7 @@ export const PATHS = {
   imageCheck: '/images/check',
   // AI 작업
   aiJob: (id: string) => `/ai-jobs/${seg(id)}`,
+  /** 취소. 본문(선택) AiJobCancelBody { quizSetId }: 퀴즈 세트를 만들던 작업이면 그 세트만 정리한다 */
   aiJobCancel: (id: string) => `/ai-jobs/${seg(id)}/cancel`,
   aiJobRetry: (id: string) => `/ai-jobs/${seg(id)}/retry`,
   // 퀴즈

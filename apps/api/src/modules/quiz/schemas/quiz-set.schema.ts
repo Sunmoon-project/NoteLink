@@ -132,6 +132,12 @@ export class QuizSet {
   @Prop({ type: Types.ObjectId, ref: 'AiJob', default: null })
   jobId?: Types.ObjectId | null;
 
+  // 앱이 만드는 중인 이 세트를 취소한 시각(#642). 작업을 멈추기 전에 적어, 세트를 지우지 못한 채 작업이 끝나도 다음
+  // 조회가 결과를 옮기지 않고 지운다(QuizSetsService.sync · canceledFirst). 앱에는 보내지 않는다.
+  // 이 필드가 없는 기존 문서는 취소하지 않은 세트로 본다(변환 없음)
+  @Prop({ type: Date })
+  cancelRequestedAt?: Date;
+
   @Prop({ type: Date, default: null })
   deletedAt?: Date | null;
 }
