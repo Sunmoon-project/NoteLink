@@ -24,7 +24,7 @@ if [[ "${1:-}" == "--check" ]]; then
   # 주석(via -c 경로)은 다를 수 있어 버전 줄만 비교
   for f in requirements.lock requirements-dev.lock; do
     if ! diff <(grep -E '^[A-Za-z0-9]' "$f") <(grep -E '^[A-Za-z0-9]' "$tmp/$f"); then
-      echo "::error::apps/ai/$f가 requirements*.txt와 맞지 않습니다. bash apps/ai/lock.sh를 실행해 커밋하세요"
+      echo "::error::apps/ai/${f}가 requirements*.txt와 맞지 않습니다. bash apps/ai/lock.sh를 실행해 커밋하세요"
       exit 1
     fi
   done

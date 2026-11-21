@@ -2,21 +2,39 @@ import { useState } from 'react';
 import { View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
-import { ChevronRight } from 'lucide-react-native';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Check, ChevronRight, Share2 } from 'lucide-react-native';
 
 import { Text } from '@/components/text';
 import { Btn, Canvas, Header, Loading, Screen, cx } from '@/components/ui';
 import { api } from '@/lib/api';
+import { toast } from '@/stores/toast';
 import { C, ICON } from '@/theme';
 
-/** 스터디룸을 떠나지 않고 내 폴더의 퀴즈 또는 저장한 플래시카드를 연다. */
+/**
+ * 스터디룸을 떠나지 않고 내 폴더의 퀴즈 또는 저장한 플래시카드를 연다. 퀴즈는 하나씩, 카드는 골라서 방 채팅에 공유한다(#481)
+ */
 export function RoomLibraryScreen() {
-  const { type } = useLocalSearchParams<{ id: string; type?: string }>();
+  const { id, type } = useLocalSearchParams<{ id: string; type?: string }>();
   const isQuiz = type === 'quiz';
   const isCards = type === 'flashcards';
   const [folderId, setFolderId] = useState<string | null>(null);
   const [flipped, setFlipped] = useState<string[]>([]);
+  // 카드 고르기: null이면 보기(누르면 뒤집기), 배열이면 고르는 중(누르면 고르기)
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const share = useMutation({
+    mutationFn: (body: Parameters<typeof api.rooms.shareStudyItem>[1]) =>
+      api.rooms.shareStudyItem(id, body),
+    onSuccess: (_r, body) => {
+      toast(`방 채팅에 ${body.kind === 'quiz' ? '퀴즈를' : '플래시카드를'} 공유했어요`);
+      router.back();
+    },
+    onError: () => toast('공유하지 못했어요. 다시 시도해 주세요'),
+  });
+  const togglePick = (cardId: string) =>
+    setPicked((p) =>
+      p?.includes(cardId) ? p.filter((x) => x !== cardId) : [...(p ?? []), cardId],
+    );
   const folders = useQuery({
     queryKey: ['folders'],
     queryFn: api.content.folders,
@@ -69,9 +87,20 @@ export function RoomLibraryScreen() {
             onPress={() => {
               setFolderId(null);
               setFlipped([]);
+              setPicked(null);
             }}
           >
             폴더 목록
+          </Btn>
+        )}
+        {selected && isCards && (
+          <Btn
+            kind="outline"
+            small
+            className="mt-2"
+            onPress={() => setPicked((p) => (p ? null : []))}
+          >
+            {picked ? '고르기 취소' : '골라서 공유'}
           </Btn>
         )}
         {(folders.isPending || data.isPending) && <Loading />}
@@ -119,23 +148,38 @@ export function RoomLibraryScreen() {
           readyQuizzes
             .filter((quiz) => inFolder(quiz.folderId))
             .map((quiz) => (
-              <Pressable
+              <View
                 key={quiz._id}
-                accessibilityRole="button"
-                onPress={() =>
-                  router.push({
-                    pathname: '/play/solve',
-                    params: { setId: quiz._id, from: 'room' },
-                  })
-                }
-                className="mt-3 flex-row items-center justify-between rounded-xl bg-white px-4 py-4"
+                className="mt-3 flex-row items-center rounded-xl bg-white py-1 pl-4 pr-2"
               >
-                <View className="flex-1">
-                  <Text className="text-callout font-semibold text-ink">{quiz.title}</Text>
-                  <Text className="mt-1 text-caption text-sub">{quiz.questionCount}문제</Text>
-                </View>
-                <ChevronRight size={ICON.sm} color={C.sub} />
-              </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() =>
+                    router.push({
+                      pathname: '/play/solve',
+                      params: { setId: quiz._id, from: 'room' },
+                    })
+                  }
+                  className="flex-1 flex-row items-center py-3"
+                >
+                  <View className="flex-1">
+                    <Text className="text-callout font-semibold text-ink">{quiz.title}</Text>
+                    <Text className="mt-1 text-caption text-sub">{quiz.questionCount}문제</Text>
+                  </View>
+                  <ChevronRight size={ICON.sm} color={C.sub} />
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`${quiz.title} 방에 공유`}
+                  disabled={share.isPending}
+                  onPress={() => share.mutate({ kind: 'quiz', quizSetId: quiz._id })}
+                  hitSlop={6}
+                  className="ml-2 flex-row items-center gap-1 rounded-full bg-mint px-3 py-2"
+                >
+                  <Share2 size={ICON.xs} color={C.brand} />
+                  <Text className="text-caption font-semibold text-brand">공유</Text>
+                </Pressable>
+              </View>
             ))}
         {selected &&
           isCards &&
@@ -143,18 +187,41 @@ export function RoomLibraryScreen() {
             .filter((card) => inFolder(card.folderId))
             .map((card) => {
               const back = flipped.includes(card._id);
+              const on = !!picked?.includes(card._id);
               return (
                 <Pressable
                   key={card._id}
                   accessibilityRole="button"
-                  accessibilityLabel={`${back ? '정답' : '문제'}: ${back ? card.back : card.front}. 눌러서 카드를 뒤집기`}
+                  accessibilityLabel={`${back ? '정답' : '문제'}: ${back ? card.back : card.front}. ${picked ? '눌러서 고르기' : '눌러서 카드를 뒤집기'}`}
                   onPress={() =>
-                    setFlipped((prev) =>
-                      back ? prev.filter((id) => id !== card._id) : [...prev, card._id],
-                    )
+                    picked
+                      ? togglePick(card._id)
+                      : setFlipped((prev) =>
+                          back ? prev.filter((x) => x !== card._id) : [...prev, card._id],
+                        )
                   }
-                  className={cx('mt-3 rounded-xl px-4 py-5', back ? 'bg-brand' : 'bg-white')}
+                  className={cx(
+                    'mt-3 rounded-xl px-4 py-5',
+                    back ? 'bg-brand' : 'bg-white',
+                    picked && 'pr-12',
+                    on && 'border-2 border-brand',
+                  )}
                 >
+                  {picked && (
+                    <Pressable
+                      accessibilityRole="checkbox"
+                      accessibilityLabel={`${card.front} 고르기`}
+                      accessibilityState={{ checked: on }}
+                      onPress={() => togglePick(card._id)}
+                      hitSlop={10}
+                      className={cx(
+                        'absolute right-3 top-3 h-6 w-6 items-center justify-center rounded-md border-2',
+                        on ? 'border-brand bg-brand' : 'border-line bg-white',
+                      )}
+                    >
+                      {on && <Check size={ICON.xs} color="#fff" />}
+                    </Pressable>
+                  )}
                   <Text className={cx('text-caption', back ? 'text-white' : 'text-sub')}>
                     {back ? '정답' : '문제'}
                   </Text>
@@ -169,6 +236,16 @@ export function RoomLibraryScreen() {
                 </Pressable>
               );
             })}
+        {picked && (
+          <Btn
+            className="mt-4"
+            disabled={picked.length === 0}
+            loading={share.isPending}
+            onPress={() => share.mutate({ kind: 'flashcards', flashcardIds: picked })}
+          >
+            {picked.length ? `${picked.length}장 방에 공유` : '공유할 카드를 골라 주세요'}
+          </Btn>
+        )}
       </Screen>
     </Canvas>
   );

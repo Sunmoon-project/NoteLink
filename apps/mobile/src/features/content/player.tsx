@@ -19,6 +19,7 @@ import { CLOSED, lipsAt } from '@/features/tutor/lips';
 import { splitLines } from './captions';
 import { Captions } from './captions-view';
 import { usePlaybackClock } from './clock';
+import { RecordingDiagram } from './recording-diagram';
 import { Btn, Chip, Loading, Sheet, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
 
@@ -268,6 +269,7 @@ export function Player({
                       ))}
                     </View>
                   </View>
+                  <RecordingDiagram diagram={slide.diagram} />
                 </>
               ) : (
                 <Text className="text-caption text-white/60">

@@ -267,7 +267,7 @@ pull() {  # $1 = 앱. 배포와 같은 Key Vault에서 받음(#393)
     fi
     echo "있던 .env를 apps/$app/${bak##*/}로 남겼습니다"
   fi
-  mv "$tmp" "$env" || die "$env를 쓰지 못했습니다"
+  mv "$tmp" "$env" || die "${env}를 쓰지 못했습니다"
   trap - EXIT
   echo "apps/$app/.env: Key Vault에서 ${count}개, 로컬 기본값 ${localed}개, .env.local이 ${overridden}개 덮어씀, 건너뜀 ${skipped}개"
   [ -z "$local_names" ] \
@@ -306,9 +306,9 @@ push() {  # $1 = 변수
   localized=$(local_apps_of "$var")
   # '로컬:' 값이 있는 변수(DB 주소 등)는 pull이 Key Vault 값을 쓰지 않음: 이 push는 배포 앱만 바꿈
   [ -z "$localized" ] \
-    || echo "env-vault: $var는 ${localized// / · }의 pull이 '로컬:' 값을 쓰므로, 이 값은 팀원 로컬이 아니라 배포 앱만 바꿉니다(로컬에서 쓰려면 .env.local)" >&2
+    || echo "env-vault: ${var}는 ${localized// / · }의 pull이 '로컬:' 값을 쓰므로, 이 값은 팀원 로컬이 아니라 배포 앱만 바꿉니다(로컬에서 쓰려면 .env.local)" >&2
   [ -n "$users" ] \
-    || echo "env-vault: $var는 ai · api의 .env.production에 없습니다(이름을 확인하세요. 새 변수면 .env.production에도 적습니다)" >&2
+    || echo "env-vault: ${var}는 ai · api의 .env.production에 없습니다(이름을 확인하세요. 새 변수면 .env.production에도 적습니다)" >&2
   read_value
   value=$VALUE
   [ -n "$value" ] || die "값이 비었습니다"

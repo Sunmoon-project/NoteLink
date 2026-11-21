@@ -7,6 +7,8 @@ import { User, UserSchema } from '../../auth/schemas/user.schema.js';
 import { AuthModule } from '../../auth/auth.module.js';
 import { NotificationModule } from '../../notification/notification.module.js';
 import { AiJob, AiJobSchema } from '../../quiz/schemas/ai-job.schema.js';
+import { Flashcard, FlashcardSchema } from '../../quiz/schemas/flashcard.schema.js';
+import { QuizSet, QuizSetSchema } from '../../quiz/schemas/quiz-set.schema.js';
 import { UploadsModule } from '../../upload/uploads.module.js';
 import {
   RoomSharedItem,
@@ -40,6 +42,9 @@ import { RegenQuota, RegenQuotaSchema } from './regen-quota.schema.js';
       { name: RoomSharedItem.name, schema: RoomSharedItemSchema },
       // 공유한 사람의 닉네임
       { name: User.name, schema: UserSchema },
+      // 방에 공유한 퀴즈 · 플래시카드(#481): 주인 확인 · 제목 · 내용을 읽기만 한다
+      { name: QuizSet.name, schema: QuizSetSchema },
+      { name: Flashcard.name, schema: FlashcardSchema },
       // 다시 만들기 하루 횟수
       { name: RegenQuota.name, schema: RegenQuotaSchema },
     ]),

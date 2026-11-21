@@ -31,6 +31,7 @@ const JOB_PROJECTION = {
   'result.slides.summary': 1,
   'result.slides.startMs': 1,
   'result.slides.endMs': 1,
+  'result.slides.diagram': 1,
 };
 
 const notFound = () =>

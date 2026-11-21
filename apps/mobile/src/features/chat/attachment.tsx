@@ -3,7 +3,14 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
-import { ChevronRight, FileText, ImageIcon, NotebookPen } from 'lucide-react-native';
+import {
+  ChevronRight,
+  FileText,
+  ImageIcon,
+  Layers,
+  ListChecks,
+  NotebookPen,
+} from 'lucide-react-native';
 import type { Message } from '@notelink/shared';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
@@ -35,8 +42,17 @@ export const previewOf = (m: Message) =>
     : m.type === 'file'
       ? `파일 · ${m.attachment?.name ?? ''}`
       : m.type === 'shared_item'
-        ? `노트 · ${m.text ?? ''}`
+        ? m.sharedKind === 'flashcards'
+          ? (m.text ?? '플래시카드') // 글이 이미 「플래시카드 N장」
+          : `${m.sharedKind === 'quiz' ? '퀴즈' : '노트'} · ${m.text ?? ''}`
         : (m.text ?? '공유 자료');
+
+/** 방 채팅 자료 카드의 종류별 이름 · 그림 · 누르면 하는 일(sharedKind 가 없으면 노트, #481) */
+const SHARED_CARD = {
+  note: { name: '공유한 노트', Icon: NotebookPen, action: '눌러서 열기' },
+  quiz: { name: '공유한 퀴즈', Icon: ListChecks, action: '눌러서 풀기' },
+  flashcards: { name: '공유한 플래시카드', Icon: Layers, action: '눌러서 보기' },
+} as const;
 
 export const sizeLabel = (bytes: number) =>
   bytes >= 1024 * 1024
@@ -209,27 +225,31 @@ export function ChatBubble({
         </View>
       </Pressable>
     );
-  // 노트를 방에 공유하면 서버가 남기는 자료 카드(글 = 노트 제목)
-  if (m.type === 'shared_item' && m.sharedItemId)
+  // 노트 · 퀴즈 · 플래시카드를 방에 공유하면 서버가 남기는 자료 카드(글 = 노트 · 퀴즈 제목, 「플래시카드 N장」)
+  if (m.type === 'shared_item' && m.sharedItemId) {
+    const { name, Icon, action } = SHARED_CARD[m.sharedKind ?? 'note'];
     return (
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`공유한 노트 ${m.text ?? ''} 열기`}
+        accessibilityLabel={`${name} ${m.text ?? ''} 열기`}
         onPress={open}
         className="max-w-[78%] flex-row items-center gap-2.5 rounded-2xl bg-white px-3 py-2.5"
       >
         <View className="h-9 w-9 items-center justify-center rounded-xl bg-mint">
-          <NotebookPen size={ICON.sm} color={C.brand} />
+          <Icon size={ICON.sm} color={C.brand} />
         </View>
         <View className="shrink">
           <Text numberOfLines={1} className="text-footnote font-semibold text-ink">
-            {m.text || '공유한 노트'}
+            {m.text || name}
           </Text>
-          <Text className="text-caption2 text-sub">공유한 노트 · 눌러서 열기</Text>
+          <Text className="text-caption2 text-sub">
+            {name} · {action}
+          </Text>
         </View>
         <ChevronRight size={ICON.sm} color={C.sub} />
       </Pressable>
     );
+  }
   return (
     <View className="max-w-[78%] rounded-2xl bg-white px-3 py-2">
       {/* 길게 누르면 복사할 수 있게 */}

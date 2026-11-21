@@ -29,7 +29,7 @@ wait -n
 code=$?
 if [ "$stopping" -eq 0 ]; then
   if kill -0 "$worker" 2>/dev/null; then who="웹 서버"; else who="작업 처리기"; fi
-  echo "$who가 끝났습니다(코드 $code). 나머지도 멈추고 끝냅니다" >&2
+  echo "${who}가 끝났습니다(코드 $code). 나머지도 멈추고 끝냅니다" >&2
   stop_all
 fi
 # 둘 다 끝날 때까지. 기다리는 중에 신호가 오면 trap이 다시 전달하고(처리기는 바로 끝남) 계속 기다림
