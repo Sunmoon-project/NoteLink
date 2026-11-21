@@ -19,6 +19,8 @@ Claude(ClaudeLlm, 공식 SDK anthropic)
   - SDK 자체 재시도는 끔(max_retries=0): 다시 보내기는 아래 규칙대로 여기서 함
   - 응답의 토큰 수로 비용을 셈(claude_cost). 작업마다 ai_jobs.llmUsd에 쌓고(Metered), 합계가
     CLAUDE_BUDGET_USD에 닿으면 다음 호출부터 학교 LLM으로 넘김(Budgeted, #298)
+  - 모델별 응답 수 · 토큰 · 비용은 작업마다 모아(JobUsage) 작업이 끝날 때 로그 한 줄로 남김(#621).
+    학교 LLM 응답도 토큰을 셈(비용 0)
   - 긴 시스템 프롬프트(CACHE_MIN_SYSTEM_CHARS 이상)는 프롬프트 캐시 블록으로 보냄(FR-23)
 
 학교 LLM: 10/21 시험에서 확인한 서버 특성을 여기서 처리합니다.
@@ -519,8 +521,10 @@ class SchoolLlm(PacedLlm):
             res = self._client.post("/chat/completions", json=body)
         except httpx2.TransportError as e:
             raise _TransportError(type(e).__name__) from e
-        text = _content(res) if res.status_code == 200 else None
-        return res.status_code, res.headers.get("retry-after"), text
+        if res.status_code != 200:
+            return res.status_code, res.headers.get("retry-after"), None
+        charge(0.0, str(body["model"]), *_school_tokens(res))  # 비용은 없고 토큰만(#621)
+        return 200, res.headers.get("retry-after"), _content(res)
 
 
 # Claude: 학교 LLM에 맞춰 둔 max_tokens를 이만큼 늘림. 같은 한국어도 토큰이 더 많고, 쓰지 않은
@@ -593,7 +597,14 @@ def claude_cost(
 
 
 class _Meter:
-    usd = 0.0
+    """metering 블록 하나에서 쓴 것: 비용 · 모델별 [응답 수, 입력 토큰, 출력 토큰, 비용](#621) ·
+    학교 LLM으로 넘긴 호출 수 · 그 호출을 보낸 예산(Budgeted)."""
+
+    def __init__(self) -> None:
+        self.usd = 0.0
+        self.models: dict[str, list[float]] = {}
+        self.fallbacks = 0
+        self.budget: Budgeted | None = None
 
 
 _meters = threading.local()  # 스레드마다 지금 열려 있는 계량기들(metering이 겹칠 수 있음)
@@ -622,10 +633,26 @@ def metering() -> Iterator[_Meter]:
         stack.remove(meter)
 
 
-def charge(usd: float) -> None:
-    """이 스레드에 열린 계량기 모두에 더함. ClaudeLlm이 응답마다 부름."""
+def charge(usd: float, model: str = "", input_tokens: int = 0, output_tokens: int = 0) -> None:
+    """이 스레드에 열린 계량기 모두에 더함. ClaudeLlm · SchoolLlm이 응답마다 부름.
+
+    model을 주면 그 모델의 응답 수 · 토큰 · 비용도 셈(작업 비용 로그, #621). 입력 토큰은 프롬프트
+    캐시 토큰까지 더한 값."""
     for meter in _open_meters():
         meter.usd += usd
+        if model:
+            row = meter.models.setdefault(model, [0, 0, 0, 0.0])
+            row[0] += 1
+            row[1] += input_tokens
+            row[2] += output_tokens
+            row[3] += usd
+
+
+def _note_route(budget: "Budgeted", *, fallback: bool) -> None:
+    """Budgeted가 호출을 보낼 때: 이 스레드의 계량기에 예산과 학교 LLM으로 넘긴 수를 적음(#621)."""
+    for meter in _open_meters():
+        meter.budget = budget
+        meter.fallbacks += fallback
 
 
 class ClaudeLlm(PacedLlm):
@@ -712,14 +739,11 @@ class ClaudeLlm(PacedLlm):
             return 200, None, None
         # 잘린 답 · 거절 · 못 읽는 답도 청구됨: 답을 읽기 전에 셈(#298)
         usage = msg.usage
-        usd = claude_cost(
-            str(body["model"]),
-            usage.input_tokens,
-            usage.output_tokens,
-            usage.cache_creation_input_tokens or 0,
-            usage.cache_read_input_tokens or 0,
-        )
-        charge(usd)
+        model = str(body["model"])
+        cache_write = usage.cache_creation_input_tokens or 0
+        cache_read = usage.cache_read_input_tokens or 0
+        usd = claude_cost(model, usage.input_tokens, usage.output_tokens, cache_write, cache_read)
+        charge(usd, model, usage.input_tokens + cache_write + cache_read, usage.output_tokens)
         if self._cost_hook is not None:
             self._cost_hook(usd)
         if msg.stop_reason == "refusal":
@@ -776,6 +800,18 @@ def _content(res: httpx2.Response) -> str | None:
     return content if isinstance(content, str) else None
 
 
+def _school_tokens(res: httpx2.Response) -> tuple[int, int]:
+    """학교 LLM 응답의 (입력, 출력) 토큰. usage가 없거나 모양이 다르면 0(#621)."""
+    try:
+        usage = res.json()["usage"]
+        tokens = (usage["prompt_tokens"], usage["completion_tokens"])
+    except (ValueError, KeyError, TypeError):
+        return 0, 0
+    if all(isinstance(t, int) and not isinstance(t, bool) for t in tokens):
+        return tokens
+    return 0, 0
+
+
 class Paced(Protocol):
     """처리기가 프로세스에 하나 두는 연결: 호출과, 사용자 작업에 양보하는 연결(#138)."""
 
@@ -799,10 +835,13 @@ class Metered:
 
     호출이 실패해도(잘린 답 · 다시 보내기 끝에 실패) 그때까지 쓴 비용은 넘김. on_cost가 실패해도
     호출 결과는 그대로 돌려줌(비용 기록 때문에 작업을 실패시키지 않음).
+    usage가 있으면 모델별 응답 수 · 토큰 · 비용도 거기에 모음(작업 비용 로그, #621).
     """
 
-    def __init__(self, llm: Llm, on_cost: Callable[[float], None]) -> None:
-        self._llm, self._on_cost = llm, on_cost
+    def __init__(
+        self, llm: Llm, on_cost: Callable[[float], None], usage: "JobUsage | None" = None
+    ) -> None:
+        self._llm, self._on_cost, self._usage = llm, on_cost, usage
 
     def call(
         self,
@@ -827,6 +866,8 @@ class Metered:
                     temperature=temperature,
                 )
             finally:
+                if self._usage is not None:
+                    self._usage.add(meter)
                 if meter.usd:
                     try:
                         self._on_cost(meter.usd)
@@ -893,9 +934,14 @@ class Spend:
                     self._db = value
                     if self._base is None:
                         self._base, self._local_at_base = value, self._local
+        known = self.known()
+        return math.inf if known is None else known
+
+    def known(self) -> float | None:
+        """DB를 읽지 않고 지금 아는 합계(total과 같은 셈). 한 번도 못 읽었으면 None(#621)."""
         with self._lock:
             if self._db is None or self._base is None:
-                return math.inf
+                return None
             return max(self._db, self._base + self._local - self._local_at_base)
 
 
@@ -917,10 +963,8 @@ class _Routed:
         temperature: float = 0.0,
     ) -> JsonObject:
         if self._budget.over():
-            return self._school().call(
-                self._budget.school_model(model), system, user, schema, name,
-                max_tokens=max_tokens, temperature=temperature,
-            )  # fmt: skip
+            return self._to_school(model, system, user, schema, name, max_tokens, temperature)
+        _note_route(self._budget, fallback=False)
         with metering() as meter:
             try:
                 return self._claude.call(
@@ -937,7 +981,23 @@ class _Routed:
             finally:
                 if not self._budget.hooked:  # 응답마다 이미 넘긴 클라이언트는 다시 더하지 않음
                     self._budget.spend.add(meter.usd)
-        return self._school().call(
+        return self._to_school(model, system, user, schema, name, max_tokens, temperature)
+
+    def _to_school(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        schema: JsonObject,
+        name: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> JsonObject:
+        school = (
+            self._school()
+        )  # 설정이 없으면 LlmSetupError: 넘긴 수에 넣지 않음(/code-review #621)
+        _note_route(self._budget, fallback=True)
+        return school.call(
             self._budget.school_model(model), system, user, schema, name,
             max_tokens=max_tokens, temperature=temperature,
         )  # fmt: skip
@@ -971,6 +1031,10 @@ class Budgeted:
         if isinstance(claude, PacedLlm):
             claude.set_gate(self.over)
             claude.set_cost_hook(self.spend.add)
+
+    @property
+    def limit(self) -> float:
+        return self._limit
 
     def exhaust(self) -> None:
         self.spend.exhausted = True
@@ -1014,6 +1078,76 @@ class Budgeted:
         return _Routed(
             self, self._claude.background(awaited), lambda: self._school_llm().background(awaited)
         )
+
+
+def _usd(value: float) -> str:
+    """로그에 쓸 달러: 소수 넷째 자리까지, 끝의 0은 뺌($0.071 · $65 · $0).
+
+    0보다 크지만 넷째 자리에서 0이 되는 값은 <$0.0001: 비용 없는 학교 LLM과 구분(/code-review #621).
+    """
+    if 0 < value < 0.00005:
+        return "<$0.0001"
+    return "$" + f"{value:,.4f}".rstrip("0").rstrip(".")
+
+
+def _provider_of(model: str) -> str:
+    return "claude" if model.startswith("claude-") else "school"
+
+
+class JobUsage:
+    """작업 하나가 쓴 LLM: 모델별 응답 수 · 토큰 · 비용, 학교 LLM으로 넘긴 수(#621).
+
+    작업 연결(Metered)이 호출마다 더하고, 처리기가 작업이 끝날 때 summary()를 로그에 남김.
+    퀴즈 자리처럼 여러 스레드가 함께 더하므로 잠금. 프롬프트 · 답 · 사용자 정보는 담지 않음.
+    로그는 처리 함수가 돌아온 때 기준: 시간 상한으로 기다리지 않고 둔 호출이 그 뒤에 끝나면
+    llmUsd에는 쌓이지만 로그 줄에는 빠짐(/code-review #621).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._usd = 0.0
+        self._models: dict[str, list[float]] = {}
+        self._fallbacks = 0
+        self._budget: Budgeted | None = None
+
+    def add(self, meter: _Meter) -> None:
+        with self._lock:
+            self._usd += meter.usd
+            for model, part in meter.models.items():
+                row = self._models.setdefault(model, [0, 0, 0, 0.0])
+                for k, v in enumerate(part):
+                    row[k] += v
+            self._fallbacks += meter.fallbacks
+            self._budget = meter.budget or self._budget
+
+    @property
+    def usd(self) -> float:
+        with self._lock:
+            return self._usd
+
+    def summary(self, provider: str | None = None) -> str:
+        """'LLM claude · <모델> 3회 입력 12,345/출력 2,345 $0.071 · … · 합계 $0.09 · 누적 $0.5/$65'
+
+        맨 앞은 실제로 답을 받은 제공자(모델 이름으로 가름, 둘 다면 claude+school). 호출이 없으면
+        provider(없으면 LLM_PROVIDER). 모델은 비용이 큰 것부터. 누적은 예산(Budgeted)을 거친 호출이
+        있을 때 그 합계의 지금 값
+        (Spend.known: DB를 다시 읽지 않음). 한 번도 못 읽었으면 뺌.
+        """
+        with self._lock:
+            models = sorted(self._models.items(), key=lambda m: (-m[1][3], m[0]))
+            usd, fallbacks, budget = self._usd, self._fallbacks, self._budget
+        used = sorted({_provider_of(model) for model, _ in models})
+        parts = [f"LLM {'+'.join(used) or provider or settings.llm_provider}"]
+        parts += [
+            f"{model} {n:.0f}회 입력 {i:,.0f}/출력 {o:,.0f} {_usd(cost)}"
+            for model, (n, i, o, cost) in models
+        ] or ["호출 없음"]
+        if fallbacks:
+            parts.append(f"학교 LLM으로 넘김 {fallbacks}회")
+        parts.append(f"합계 {_usd(usd)}")
+        if budget is not None and (total := budget.spend.known()) is not None:
+            parts.append(f"누적 {_usd(total)}/{_usd(budget.limit)}")
+        return " · ".join(parts)
 
 
 # 제공자에 맞는 모델 이름인지 볼 설정(환경 변수 이름은 대문자)

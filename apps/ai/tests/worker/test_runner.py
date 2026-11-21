@@ -1,5 +1,7 @@
+import logging
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -7,7 +9,16 @@ import mongomock
 import pytest
 from pymongo.errors import AutoReconnect
 
-from app.clients.llm import JsonObject, LlmError, LlmRejectedError, LlmSetupError
+from app.clients.llm import (
+    JsonObject,
+    LlmError,
+    LlmRejectedError,
+    LlmSetupError,
+    Metered,
+    charge,
+    claude_cost,
+)
+from app.core.config import settings
 from app.worker import runner
 from app.worker.jobs import Job, JobStore
 from app.worker.runner import (
@@ -618,3 +629,84 @@ def test_a_lane_takes_awaited_then_first_kinds_then_older_jobs(col: Any) -> None
         pass
     assert done == ["p1", "h1", "j1"]
     assert col.find_one({"_id": "p0"})["status"] == "queued"
+
+
+# ---------- 작업 비용 로그(#621) ----------
+
+
+def charging_handler(end: Callable[[], object]) -> Handler:
+    """Claude 호출 둘(Sonnet · Haiku)을 이 작업 연결로 부른 뒤 end()를 돌려주거나 던짐."""
+
+    class Priced:
+        def call(self, model: str, *a: Any, **kw: Any) -> JsonObject:
+            charge(claude_cost(model, 1000, 200), model, 1000, 200)
+            return {}
+
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        llm = Metered(Priced(), report.add_cost, report.llm_usage())
+        llm.call("claude-sonnet-5-5", "s", "u", {}, "X")
+        llm.call("claude-haiku-5-5", "s", "u", {}, "X")
+        result = end()
+        if isinstance(result, BaseException):
+            raise result
+        return {"ok": True}
+
+    return handler
+
+
+def cost_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("작업 비용")]
+
+
+@pytest.fixture
+def claude_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "llm_provider", "claude")
+
+
+COST_LINE = (
+    "작업 비용 j1 (quiz_generate): LLM claude"
+    " · claude-sonnet-5-5 1회 입력 1,000/출력 200 $0.004"
+    " · claude-haiku-5-5 1회 입력 1,000/출력 200 $0.0002 · 합계 $0.0042"
+)
+
+
+@pytest.mark.usefixtures("claude_provider")
+@pytest.mark.parametrize(
+    ("end", "status"),
+    [
+        (lambda: None, "succeeded"),
+        (lambda: LlmError("HTTP 503"), "queued"),  # 다시 시도
+        (lambda: LlmRejectedError("HTTP 413"), "failed"),
+        (lambda: RuntimeError("코드 오류"), "failed"),
+    ],
+)
+def test_a_finished_job_logs_its_llm_cost_once(
+    col: Any, caplog: pytest.LogCaptureFixture, end: Callable[[], object], status: str
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.worker.runner")
+    doc = run(col, charging_handler(end))
+    assert doc["status"] == status
+    assert doc["llmUsd"] == pytest.approx(0.0042)
+    assert cost_lines(caplog) == [COST_LINE]
+
+
+@pytest.mark.usefixtures("claude_provider")
+def test_a_canceled_job_also_logs_its_llm_cost(col: Any, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="app.worker.runner")
+
+    def cancel() -> None:
+        col.update_one({"_id": "j1"}, {"$set": {"status": "canceled"}})  # 앱에서 취소
+
+    doc = run(col, charging_handler(cancel))
+    assert doc["status"] == "canceled"
+    assert cost_lines(caplog) == [COST_LINE]
+
+
+@pytest.mark.usefixtures("claude_provider")
+def test_a_job_that_failed_before_any_call_logs_no_calls(
+    col: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.worker.runner")
+    col.update_one({"_id": "j1"}, {"$set": {"input": "문자열"}})
+    run(col, lambda inp, report: {})
+    assert cost_lines(caplog) == ["작업 비용 j1 (quiz_generate): LLM claude · 호출 없음 · 합계 $0"]

@@ -21,6 +21,10 @@
 (JobStore.release). 처리 중에는 풀지 않습니다: 다시 넣은 작업을 다른 처리기가 가져가 같은 작업을
 둘이 함께 만들지 않게.
 
+작업이 끝나면(성공 · 실패 · 취소 모두) 그 작업의 LLM 사용량을 로그 한 줄로 남깁니다(#621):
+「작업 비용 <id> (<종류>): LLM claude · <모델> 3회 입력 …/출력 … $0.071 · … · 합계 · 누적/한도」.
+처리 함수는 report.llm_usage()를 작업 연결(llm.Metered)에 넘겨 모읍니다.
+
 반복(Lane)은 여럿 둘 수 있습니다(run_lanes). 한 반복은 작업을 하나씩 처리하므로, 오래 걸리는
 미리 만들기(quiz_pregen)는 따로 돌려 사용자 작업을 막지 않게 합니다(#138).
 """
@@ -34,7 +38,13 @@ from typing import Protocol
 
 from pymongo.errors import PyMongoError
 
-from app.clients.llm import JsonObject, LlmError, LlmRejectedError, LlmSetupError
+from app.clients.llm import (
+    JobUsage,
+    JsonObject,
+    LlmError,
+    LlmRejectedError,
+    LlmSetupError,
+)
 from app.worker.jobs import Job, JobGoneError, JobStore
 
 log = logging.getLogger(__name__)
@@ -80,6 +90,10 @@ class JobReport(Report, Protocol):
         상태를 옮기려고 씀(#553)."""
         ...
 
+    def llm_usage(self) -> JobUsage:
+        """이 작업의 LLM 사용량을 모을 곳(llm.Metered에 넘김). 작업이 끝나면 로그에 남음(#621)."""
+        ...
+
 
 AWAITED_CHECK_SEC = 5.0  # 처리 중인 작업의 awaited를 DB에서 다시 읽는 간격
 CANCEL_CHECK_SEC = 5.0  # 처리 중인 작업이 취소됐는지 DB에서 다시 읽는 간격(#263)
@@ -94,9 +108,11 @@ class _StoreReport:
         job: Job,
         *,
         canceled: threading.Event,
+        usage: JobUsage | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._store, self._job, self._clock = store, job, clock
+        self._usage = JobUsage() if usage is None else usage
         self._canceled = canceled  # 하트비트와 같은 Event여야 취소가 처리 함수에 닿음
         self._awaited = job.awaited
         self._checked = clock()
@@ -139,6 +155,9 @@ class _StoreReport:
 
     def add_cost(self, usd: float) -> None:
         self._store.add_cost(self._job, usd)
+
+    def llm_usage(self) -> JobUsage:
+        return self._usage
 
 
 class _Heartbeat:
@@ -216,12 +235,14 @@ def run_once(
         return False
 
     canceled = threading.Event()
+    usage = JobUsage()
     try:
         if not isinstance(job.input, dict):
             raise JobInputError("input이 객체가 아님")
         every = heartbeat_sec or store.lock_sec / 3
+        report = _StoreReport(store, job, canceled=canceled, usage=usage)
         with _Heartbeat(store, job, every, canceled):
-            result = handlers[job.type](job.input, _StoreReport(store, job, canceled=canceled))
+            result = handlers[job.type](job.input, report)
         store.succeed(job, result)
         log.info("작업 완료 %s (%s)", job.id, job.type)
     except JobGoneError:
@@ -247,7 +268,19 @@ def run_once(
     except Exception:
         log.exception("작업 %s (%s) 처리 중 오류", job.id, job.type)
         _fail(store, job, "처리 중 오류", retry=False)
+    finally:
+        _log_cost(job, usage)
     return True
+
+
+def _log_cost(job: Job, usage: JobUsage) -> None:
+    """작업이 끝날 때(성공 · 실패 · 취소 · DB 오류 모두) 이 작업의 LLM 사용량 한 줄(#621).
+
+    로그를 만들다 실패해도 작업 처리에는 영향 없게 경고만 남김."""
+    try:
+        log.info("작업 비용 %s (%s): %s", job.id, job.type, usage.summary())
+    except Exception:
+        log.warning("작업 %s: 비용 로그를 남기지 못함", job.id, exc_info=True)
 
 
 def _fail(store: JobStore, job: Job, error: str, *, retry: bool) -> None:
