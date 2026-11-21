@@ -333,6 +333,7 @@ export class SimilarQuizService {
       targetId: newId.toString(),
       input,
     });
+    let made: QuizSetRow;
     try {
       const created = await this.sets.create({
         _id: newId,
@@ -350,13 +351,16 @@ export class SimilarQuizService {
         jobId: new Types.ObjectId(job._id),
         deletedAt: null,
       });
-      return toAppSet(created.toObject<QuizSetRow>(), job.progress);
+      made = created.toObject<QuizSetRow>();
     } catch (e) {
       if (!isDuplicateKey(e)) {
         // 저장됐는지 알 수 없는 오류: 세트를 읽어 확인한다(create와 같음)
         const saved = await this.savedSet(newId, owner);
         if (saved === 'unknown') throw e;
-        if (saved?.jobId?.toString() === job._id) return toAppSet(saved, job.progress);
+        if (saved?.jobId?.toString() === job._id) {
+          if (await this.quizSets.dropIfFolderGone(userId, saved)) throw notFound('노트');
+          return toAppSet(saved, job.progress);
+        }
         await this.cancelQuietly(userId, job._id);
         throw e;
       }
@@ -364,6 +368,9 @@ export class SimilarQuizService {
       await this.jobs.cancel(userId, job._id);
       throw conflict('이 노트로 퀴즈를 만드는 중이에요. 끝나면 다시 시도해 주세요');
     }
+    // 고른 문제를 확인한 뒤 세트를 넣기 전에 학습 폴더가 지워졌으면 이 세트도 지우고 작업을 취소한 뒤 404(#602, create와 같음)
+    if (await this.quizSets.dropIfFolderGone(userId, made)) throw notFound('노트');
+    return toAppSet(made, job.progress);
   }
 
   /**

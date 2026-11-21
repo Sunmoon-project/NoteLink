@@ -10,7 +10,7 @@ import { readQuestionIds } from '../src/quiz-sets/quiz-sets.controller.js';
 import { QuizSetsService, SIMILAR_TYPE } from '../src/quiz-sets/quiz-sets.service.js';
 import { fitReviewInput, SimilarQuizService } from '../src/quiz-sets/similar-quiz.service.js';
 import { RecordingNotePagesService } from '../src/quiz-sets/recording-note-pages.service.js';
-import { createFakeCollection, type Row } from './support/fake-collection.js';
+import { createFakeCollection, matches, type Row } from './support/fake-collection.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
 
 // 유사 퀴즈 고르기(#605): 노트(학습 폴더)에서 끝낸 퀴즈의 문제를 골라 POST /quiz-sets/similar { questionIds }
@@ -254,6 +254,57 @@ describe('SimilarQuizService.createFromPicks', () => {
       status: 409,
     });
     expect(jobs.rows.at(-1)!['status']).toBe('canceled');
+  });
+
+  it('노트만 지웠고 학습 폴더가 남아 있으면 세트를 그대로 만든다(#602)', async () => {
+    const { similar, note, seed, materials, folders, updateOne } = setup();
+    const cell = await note('세포 생물학');
+    const a = await seed(cell._id);
+    folders.rows.push({ _id: FOLDER, ownerId: ME, deletedAt: null });
+    Object.assign(
+      materials.rows.find((r) => String(r._id) === String(cell._id))!,
+      {
+        deletedAt: new Date(),
+      },
+    );
+    const out = await similar.createFromPicks(ME.toHexString(), [a.ids[0]!]);
+    expect(out).toMatchObject({ status: 'generating', materialId: cell._id.toHexString() });
+    expect(updateOne).not.toHaveBeenCalled();
+  });
+
+  it('고른 문제를 확인한 뒤 세트를 넣기 전에 학습 폴더가 지워졌으면 세트를 지우고 작업을 취소한 뒤 404(#602)', async () => {
+    const { similar, note, seed, materials, folders, jobs, updateOne } = setup();
+    // 진행 중인 작업 취소(AiJobsService.cancelForTargets)가 쓰는 updateMany
+    Object.assign(jobs.model, {
+      updateMany: (filter: Record<string, unknown>, update: { $set: Row }) => {
+        const hit = jobs.rows.filter((r) => matches(r, filter));
+        for (const r of hit) Object.assign(r, update.$set);
+        return Promise.resolve({ modifiedCount: hit.length });
+      },
+    });
+    const cell = await note('세포 생물학');
+    const a = await seed(cell._id);
+    // 폴더 삭제가 고른 문제 확인과 세트 넣기 사이에 커밋된 경우: 노트 · 폴더는 지워졌고, 고른 세트는 아직
+    // 정리(QuizCleanupService)되지 않아 확인을 통과한다
+    folders.rows.push({ _id: FOLDER, ownerId: ME, deletedAt: new Date() });
+    Object.assign(
+      materials.rows.find((r) => String(r._id) === String(cell._id))!,
+      {
+        deletedAt: new Date(),
+      },
+    );
+    await expect(similar.createFromPicks(ME.toHexString(), [a.ids[0]!])).rejects.toMatchObject({
+      status: 404,
+    });
+    const job = jobs.rows.at(-1)!;
+    expect(job['type']).toBe(SIMILAR_TYPE);
+    expect(job['status']).toBe('canceled');
+    // 방금 넣은 「유사 퀴즈」 세트를 지운다
+    expect(updateOne).toHaveBeenCalledTimes(1);
+    const [where, change] = updateOne.mock.calls[0]! as [Row, { $set: Row }];
+    expect(String(where._id)).toBe(String(job['targetId']));
+    expect(where['deletedAt']).toBeNull();
+    expect(change.$set['deletedAt']).toBeInstanceOf(Date);
   });
 
   it('작업이 끝나면 만든 문제를 넣어 ready로 바꾸고, 복습 상태(srs)는 건드리지 않는다', async () => {
