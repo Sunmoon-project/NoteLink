@@ -113,6 +113,42 @@ def test_long_notes_send_only_the_first_paragraphs() -> None:
     assert got == {"points": ["앞 문단"], "keywords": []}  # 보내지 않은 문단은 근거가 될 수 없음
 
 
+def sent_note(llm: FakeLlm) -> str:
+    (call,) = llm.named("note_summary")
+    return call.user.split("<note>\n", 1)[1].rsplit("\n</note>", 1)[0]
+
+
+def test_the_paragraph_that_overflows_fills_the_rest_of_the_limit() -> None:
+    first = chunk(1, "1번 " + "가" * 9_990)  # "[1] " 포함 9,997자
+    llm = answer([{"text": "뒤 문단 요약", "refs": [2]}], [])
+
+    got = summarize_note(llm, "m", [first, chunk(2, "2번 " + "나" * 5000), chunk(3, "3번")])
+
+    body = sent_note(llm)
+    assert len(body) == INPUT_MAX_CHARS
+    assert "[2] 2번 나" in body and "[3]" not in body
+    assert got == {"points": ["뒤 문단 요약"], "keywords": []}  # 잘라 보낸 문단도 근거가 됨
+
+
+def test_a_tiny_rest_is_not_filled_with_a_cut_paragraph() -> None:
+    first = chunk(1, "1번 " + "가" * (INPUT_MAX_CHARS - 60))
+    llm = answer([{"text": "앞 문단", "refs": [1]}], [])
+
+    summarize_note(llm, "m", [first, chunk(2, "2번 " + "나" * 500), chunk(3, "3번 짧음")])
+
+    body = sent_note(llm)
+    assert "[2]" not in body and "[3]" not in body  # 남은 자리가 작으면 거기서 멈춤
+    assert len(body) <= INPUT_MAX_CHARS
+
+
+def test_a_short_note_may_have_fewer_than_three_points() -> None:
+    llm = answer([{"text": "주장 동사 뒤 that절은 동사원형", "refs": [1]}], [])
+
+    got = summarize_note(llm, "m", CHUNKS)
+
+    assert got == {"points": ["주장 동사 뒤 that절은 동사원형"], "keywords": []}
+
+
 def test_a_failed_call_gives_no_summary_but_a_cancel_is_raised() -> None:
     llm = FakeLlm({"note_summary": [LlmError("HTTP 503")]})
     assert summarize_note(llm, "m", CHUNKS) is None

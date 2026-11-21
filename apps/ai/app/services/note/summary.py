@@ -14,13 +14,16 @@ POINTS_MAX = 7
 KEYWORDS_MAX = 10
 POINT_MAX_CHARS = 120
 KEYWORD_MAX_CHARS = 30
-INPUT_MAX_CHARS = 12_000  # LLM에 보내는 노트 글 상한(앞 문단부터)
+INPUT_MAX_CHARS = 12_000  # LLM에 보내는 노트 글 상한(앞 문단부터, 구분 줄 포함)
+PART_MIN_CHARS = 100  # 남은 자리가 이보다 작으면 다음 문단을 잘라 넣지 않음
+SEPARATOR = "\n\n"
 UNCERTAIN = re.compile(r"\[\?\]\s*")
 
 SUMMARY_SYSTEM = (
     "너는 학생의 노트를 읽고 핵심 요약과 키워드를 뽑는 도우미다. "
     "<note>에 있는 내용만 쓰고, 없는 사실을 더하지 않는다. "
-    "핵심 요약은 3~7개, 각각 한 문장으로 무엇을 알아야 하는지 쓰고, "
+    "핵심 요약은 최대 7개(보통 3~7개, 노트가 짧으면 더 적게), "
+    "각각 한 문장으로 무엇을 알아야 하는지 쓰고, "
     "근거가 된 문단 번호를 refs에 넣는다. "
     "페이지 · 문제 번호(P.137, Q.7 같은 것)만 있는 줄은 요약하지 않는다. "
     "키워드는 노트에 나온 그대로의 낱말 · 용어를 최대 10개 고른다. "
@@ -85,7 +88,7 @@ def summarize_note(llm: Llm, model: str, chunks: list[Chunk]) -> NoteSummary | N
 
 
 def _listing(chunks: list[Chunk]) -> tuple[str, set[int]]:
-    """번호를 붙인 문단 글(앞에서부터 INPUT_MAX_CHARS까지)과 보낸 문단 번호."""
+    """번호 붙인 문단 글(앞부터 INPUT_MAX_CHARS까지, 넘치는 문단은 남은 만큼)과 보낸 문단 번호."""
     parts: list[str] = []
     orders: set[int] = set()
     size = 0
@@ -95,13 +98,16 @@ def _listing(chunks: list[Chunk]) -> tuple[str, set[int]]:
             continue
         title = clean(c["title"] or "").strip()
         head = f"{title}\n" if title and not text.startswith(title) else ""
-        part = f"[{c['order']}] {head}{text}"[:INPUT_MAX_CHARS]
-        if parts and size + len(part) > INPUT_MAX_CHARS:
+        part = f"[{c['order']}] {head}{text}"
+        room = INPUT_MAX_CHARS - size - (len(SEPARATOR) if parts else 0)
+        if room < min(len(part), PART_MIN_CHARS):
             break
-        parts.append(part)
+        parts.append(part[:room])
         orders.add(c["order"])
-        size += len(part)
-    return "\n\n".join(parts), orders
+        size += len(parts[-1]) + (len(SEPARATOR) if len(parts) > 1 else 0)
+        if len(part) > room:
+            break
+    return SEPARATOR.join(parts), orders
 
 
 def _points(raw: object, orders: set[int]) -> list[str]:
