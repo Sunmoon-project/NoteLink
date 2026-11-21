@@ -399,7 +399,12 @@ def test_handwriting_counts_both_the_llm_and_the_split_llm(
     monkeypatch.setattr(handlers.note_job.settings, "note_refine_enabled", True)
     rows = [f"- 내용 {i} " + "가" * 40 for i in range(15)]
     llm = PricedLlm({"note_topics": [{"topics": []}]})
-    split = PricedLlm({"note_split": lambda user: {"starts": [1, 4]}})
+    split = PricedLlm(
+        {
+            "note_split": lambda user: {"starts": [1, 4]},
+            "note_summary": [{"points": [], "keywords": []}],  # 핵심 요약도 split 연결로 청구
+        }
+    )
     url = note_input()["pages"][0]["imageUrl"]
     note_fakes(monkeypatch, llm, FakeOcr({url: read(ocr_page(*rows))}))
     monkeypatch.setattr(handlers, "_split_llm", lambda: split)
