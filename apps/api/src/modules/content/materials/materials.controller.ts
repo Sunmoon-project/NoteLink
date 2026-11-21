@@ -70,6 +70,20 @@ export class MaterialsController {
     };
   }
 
+  /** 정리 결과 다시 만들기: 같은 원본 · 같은 입력으로 새 작업을 넣는다. 성공할 때까지 노트는 옛 결과 그대로 */
+  @Post('materials/:id/regenerate')
+  async regenerate(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ): Promise<{ data: { material: Material; job: AiJob } }> {
+    return {
+      data: (await this.materials.regenerate(requireUserId(req), id)) as {
+        material: Material;
+        job: AiJob;
+      },
+    };
+  }
+
   /** 노트 한 개. 정리 중이면 끝난 작업의 결과를 먼저 옮긴다 */
   @Get('materials/:id')
   async findOne(

@@ -52,24 +52,41 @@ export function matches(row: Record<string, unknown>, filter: Filter): boolean {
   return Object.entries(filter).every(([key, want]) => {
     if (key === '$or') return (want as Filter[]).some((f) => matches(row, f));
     if (key === '$expr') return expr(row, want as Expr);
-    const value = row[key];
-    if (want === null) return value === null || value === undefined;
-    if (!isOps(want)) return same(value, want);
-    // 연산자가 여럿이면 MongoDB처럼 모두 맞아야 한다(예: { $gte, $lte } 기간)
-    const checks: boolean[] = [];
-    // MongoDB처럼 $in의 null은 필드가 없는 문서에도 맞는다
-    if (want.$in) checks.push(want.$in.some((w) => (w === null ? value == null : same(value, w))));
-    if ('$ne' in want) {
-      checks.push(
-        want.$ne === null ? value !== null && value !== undefined : !same(value, want.$ne),
-      );
+    // 'data.userId'처럼 점으로 이은 경로는 MongoDB처럼 안쪽 필드를 본다. 중간에 배열이 있으면('questions._id')
+    // 원소마다 따라간다
+    const found = pathValues(row, key.split('.'));
+    // MongoDB처럼 배열이면 원소 중 하나라도 맞으면 맞다. 단 $ne는 어느 원소도 같지 않아야 맞다
+    if (found.length !== 1) {
+      return isOps(want) && '$ne' in want
+        ? found.every((value) => matchValue(value, want))
+        : found.some((value) => matchValue(value, want));
     }
-    if (want.$lte) checks.push(time(value) <= want.$lte.getTime());
-    if (want.$gt) checks.push(time(value) > want.$gt.getTime());
-    if (want.$gte) checks.push(time(value) >= want.$gte.getTime());
-    if (want.$lt !== undefined) checks.push(typeof value === 'number' && value < want.$lt);
-    return checks.length > 0 && checks.every(Boolean);
+    return matchValue(found[0], want);
   });
+}
+
+/** 경로의 값들. 중간에 배열이 있으면 원소마다 따라가 모두 모은다(배열이 없으면 값 하나) */
+function pathValues(v: unknown, keys: string[]): unknown[] {
+  if (keys.length === 0) return [v];
+  if (Array.isArray(v)) return v.flatMap((x) => pathValues(x, keys));
+  return pathValues((v as Record<string, unknown> | undefined)?.[keys[0]!], keys.slice(1));
+}
+
+function matchValue(value: unknown, want: unknown): boolean {
+  if (want === null) return value === null || value === undefined;
+  if (!isOps(want)) return same(value, want);
+  // 연산자가 여럿이면 MongoDB처럼 모두 맞아야 한다(예: { $gte, $lte } 기간)
+  const checks: boolean[] = [];
+  // MongoDB처럼 $in의 null은 필드가 없는 문서에도 맞는다
+  if (want.$in) checks.push(want.$in.some((w) => (w === null ? value == null : same(value, w))));
+  if ('$ne' in want) {
+    checks.push(want.$ne === null ? value !== null && value !== undefined : !same(value, want.$ne));
+  }
+  if (want.$lte) checks.push(time(value) <= want.$lte.getTime());
+  if (want.$gt) checks.push(time(value) > want.$gt.getTime());
+  if (want.$gte) checks.push(time(value) >= want.$gte.getTime());
+  if (want.$lt !== undefined) checks.push(typeof value === 'number' && value < want.$lt);
+  return checks.length > 0 && checks.every(Boolean);
 }
 
 /** structuredClone은 ObjectId를 일반 객체로 바꾸므로 ObjectId · Date는 그대로 두고 복사한다 */
@@ -86,7 +103,7 @@ function clone<T>(value: T): T {
 export const query = <T>(value: T) => ({ lean: () => Promise.resolve(value) });
 
 /**
- * 메모리 컬렉션. 서비스가 쓰는 create · find(.sort · .skip · .limit) · findOne · findOneAndUpdate($set)만 만든다.
+ * 메모리 컬렉션. 서비스가 쓰는 create · find(.sort · .skip · .limit) · findOne · distinct · findOneAndUpdate($set)만 만든다.
  * unique는 MongoDB 고유 색인처럼 create를 E11000으로 막는다(같은 키의 행이 이미 있으면).
  */
 /** D는 서비스가 받는 모델의 문서 타입(예: QuizSetDocument) */
@@ -134,6 +151,44 @@ export function createFakeCollection<D>(unique?: (a: Row, b: Row) => boolean) {
         lean: () => Promise.resolve(found.map((r) => clone(r))),
       };
       return chain;
+    },
+    /** MongoDB distinct처럼 조건에 맞는 행의 필드 값을 겹치지 않게(ObjectId는 문자열로 비교) */
+    /**
+     * 서비스가 쓰는 꼴만: $match · $sort(필드 하나, 날짜) · $group({ _id: '$필드', 이름: { $first: '$필드' } }).
+     * 다른 단계는 던져 테스트가 잡아낸다(테스트가 aggregate를 따로 바꿔 끼울 수 있다)
+     */
+    aggregate: (pipeline: Record<string, unknown>[]) => {
+      let out: Record<string, unknown>[] = rows.map((r) => clone(r));
+      for (const stage of pipeline) {
+        const [[op, arg]] = Object.entries(stage) as [[string, unknown]];
+        if (op === '$match') out = out.filter((r) => matches(r, arg as Filter));
+        else if (op === '$sort') {
+          const [[key, dir]] = Object.entries(arg as Record<string, 1 | -1>) as [[string, 1 | -1]];
+          out = [...out].sort((a, b) => dir * (time(a[key]) - time(b[key])));
+        } else if (op === '$group') {
+          const { _id, ...fields } = arg as Record<string, unknown>;
+          const groups = new Map<string, Record<string, unknown>>();
+          for (const r of out) {
+            const id = r[String(_id).slice(1)];
+            if (groups.has(String(id))) continue;
+            const g: Record<string, unknown> = { _id: id };
+            for (const [k, v] of Object.entries(fields)) {
+              g[k] = r[String((v as { $first: string }).$first).slice(1)];
+            }
+            groups.set(String(id), g);
+          }
+          out = [...groups.values()];
+        } else return Promise.reject(new Error(`가짜 컬렉션이 모르는 aggregate 단계: ${op}`));
+      }
+      return Promise.resolve(out);
+    },
+    distinct: (field: string, filter: Filter = {}) => {
+      const seen = new Map<string, unknown>();
+      for (const r of rows.filter((row) => matches(row, filter))) {
+        const v = r[field];
+        if (v !== undefined && !seen.has(String(v))) seen.set(String(v), v);
+      }
+      return Promise.resolve([...seen.values()]);
     },
     findOneAndUpdate: (
       filter: Filter,

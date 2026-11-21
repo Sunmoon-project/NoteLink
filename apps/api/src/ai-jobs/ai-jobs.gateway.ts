@@ -44,6 +44,14 @@ interface Watch {
    * 보내지도 · 방에서 빼지도 않는다
    */
   generation: number;
+  /**
+   * 이미 지켜보던 작업을 구독(join)이 읽은 차례 번호(AiJobsGateway.reads). 끝나지 않은 작업이면 방에 넣기 전, 끝난 작업이면
+   * 바로 보내기 전에 남긴다. done()의 결과 읽기가 이보다 먼저 나갔으면 그 결과는 앞 실행의 것일 수 있다: 끝난 작업은 다시
+   * 시도로만 다시 돌고, 다시 구독하기 전에 새 실행이 끝났을 수도 있다. 다시 시도를 다른 서버가 받으면(스케일아웃) 이 서버의
+   * generation은 오르지 않으므로, 다시 시도 응답을 받은 앱이 이 서버로 다시 구독한 때로 가린다(#526 B11).
+   * 서버마다 시계가 다르므로(다시 시도는 API, 끝냄은 처리기가 updatedAt을 씀) 시각이 아닌 이 서버 안의 순서로 본다
+   */
+  rejoined?: number;
 }
 const signature = (p: AiJobProgress) => `${p.status}|${p.progress}|${p.step ?? ''}`;
 
@@ -63,6 +71,8 @@ export class AiJobsGateway implements OnModuleDestroy {
   private readonly watched = new Map<string, Watch>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private polling = false;
+  /** 결과 읽기 · 다시 구독의 순서 번호(Watch.rejoined). 이 서버 안에서만 늘린다 */
+  private reads = 0;
   /** 같은 소켓 · 작업의 구독과 해지를 받은 순서대로 처리한다(구독 확인 중에 온 해지가 먼저 끝나지 않게) */
   private readonly operations = new WeakMap<Socket, Map<string, Promise<unknown>>>();
 
@@ -75,6 +85,7 @@ export class AiJobsGateway implements OnModuleDestroy {
     private readonly tokens: TokenService,
     private readonly jobs: AiJobsService,
   ) {
+    // 이 서버(프로세스)가 받은 다시 시도만 알린다. 다른 서버가 받은 다시 시도는 join() · check()의 DB 읽기로 안다
     this.offRetry = jobs.onRetry((jobId) => {
       const watch = this.watched.get(jobId);
       if (!watch) return;
@@ -132,6 +143,15 @@ export class AiJobsGateway implements OnModuleDestroy {
     const jobId = job._id;
     // 확인하는 사이 소켓이 끊겼으면 방에 넣지 않는다(끊긴 소켓을 넣으면 방에 남아 그 작업을 계속 읽음)
     if (!socket.connected) return { ok: false };
+    // 이미 지켜보던 작업을 다시 구독했으면 다른 서버가 받은 다시 시도일 수 있다(끝나지 않은 새 실행, 또는 다시 구독하기 전에
+    // 끝난 새 실행). 보내거나 방에 넣기(await) 전에 남겨, 그 전에 나간 결과 읽기(앞 실행일 수 있음)를 이 소켓 · 방에 남은
+    // 다른 기기에 보내고 방에서 빼지 않게 한다(rejoined). 끝난 작업을 보내다 쌓인 일시 오류 수도 앞 실행의 것이라 버린다
+    // (한도에 바로 닿아 새 구독을 끝내지 않게). 같은 실행이었으면 한 차례 늦게 보내고 몇 번 더 해 볼 뿐이다
+    const existing = this.watched.get(jobId);
+    if (existing) {
+      existing.rejoined = ++this.reads;
+      existing.doneFailures = undefined;
+    }
     if (FINISHED.has(job.status)) {
       socket.emit('ai:done', { jobId, job });
       return { ok: true };
@@ -191,6 +211,8 @@ export class AiJobsGateway implements OnModuleDestroy {
         finished.push(this.done(row.jobId, watch.userId));
         continue;
       }
+      // 끝난 작업을 보내다 쌓인 일시 오류 수는 끝나지 않은 상태를 읽으면(다른 서버가 받은 다시 시도) 버린다
+      watch.doneFailures = undefined;
       const now = signature(row);
       if (watch.last === now) continue;
       watch.last = now;
@@ -204,7 +226,8 @@ export class AiJobsGateway implements OnModuleDestroy {
    * (StudyChatGateway.notifyDirectMessage와 같은 방식). 진행률만 보내는 ai:progress는 확인하지 않는다.
    * 결과는 토큰을 모두 확인한 뒤 보내기 바로 전에 읽는다. 먼저 읽으면 토큰을 확인하는 사이 다시 시도된 작업(같은 작업 id)의
    * 앞 실행 결과를 보내고, finish()로 다시 시도하며 다시 구독한 소켓까지 방에서 뺀다(#523). 앱(ConvertScreen.finish)은
-   * 작업 id만 보므로 그 결과를 지금 실행의 실패로 받는다
+   * 작업 id만 보므로 그 결과를 지금 실행의 실패로 받는다. 다시 시도를 다른 서버가 받아 generation이 오르지 않아도, 결과
+   * 읽기를 보낸 뒤에 이 서버로 다시 구독해 끝나지 않은 작업을 읽었으면(Watch.rejoined) 그 결과는 보내지 않는다
    */
   private async done(jobId: string, userId: string) {
     // 시작할 때의 지켜보기 · 다시 시도 세대. 보내기 전에 바뀌었으면 이 처리는 앞 실행의 것이다
@@ -235,21 +258,30 @@ export class AiJobsGateway implements OnModuleDestroy {
       }),
     );
     let job: Awaited<ReturnType<AiJobsService['findMine']>>;
+    // 결과 읽기를 보낸 차례. 그 뒤에 끝나지 않은 작업을 읽은 다시 구독이 끝났으면 이 읽기는 앞 실행의 것일 수 있다
+    // (다른 서버가 받은 다시 시도). 같은 실행의 늦은 구독 읽기였어도 한 차례(1초) 늦게 보낼 뿐이다
+    const issued = ++this.reads;
+    const superseded = () => (this.watched.get(jobId)?.rejoined ?? 0) > issued;
     try {
       job = await this.jobs.findMine(userId, jobId);
     } catch (error) {
       // 그사이 지워졌으면 더 지켜보지 않는다. DB 일시 오류면 그대로 두어 다음 차례에 다시 보낸다.
       // 그사이 다시 시도됐으면 앞 실행의 오류로 세지 않는다: 한도에 닿아 finish()가 새 구독까지 지우지 않게
       if (error instanceof NotFoundException) this.finish(jobId);
-      else if (!stale()) this.retryLater(jobId, error);
+      else if (!stale() && !superseded()) this.retryLater(jobId, error);
       return;
     }
     const watch = this.watched.get(jobId);
     // 끝나지 않았거나(다시 시도로 처리기에 다시 들어감) 그사이 다시 시도됐으면(결과 읽기가 다시 시도를 쓰기 전에 나갔을 수
     // 있음) 보내지도 · 방에서 빼지도 않고 계속 지켜본다. 다시 시도하며 다시 구독한 소켓 · 다른 기기가 새 실행을 받게 한다.
-    // 이 검사 뒤에는 기다리지 않고 보내므로, 다시 시도 응답이 나간 뒤에 앞 실행의 결과가 나가지 않는다
-    if (!FINISHED.has(job.status) || stale()) {
-      if (watch) watch.last = undefined;
+    // 이 검사 뒤에는 기다리지 않고 보내므로, 이 서버가 받은 다시 시도는 그 응답이 나간 뒤에 앞 실행의 결과가 나가지 않는다.
+    // 다른 서버가 받은 다시 시도는 앱이 이 서버로 다시 구독한 뒤부터만 가릴 수 있다(rejoined)
+    if (!FINISHED.has(job.status) || stale() || superseded()) {
+      if (watch) {
+        watch.last = undefined;
+        // 새 실행이다(다른 서버가 받은 다시 시도는 여기서 처음 알 수도 있다). 앞 실행의 일시 오류 수를 넘기지 않는다
+        watch.doneFailures = undefined;
+      }
       return;
     }
     // 실행이 바뀌었으면(다시 시도된 작업이 다시 끝남) 앞 실행의 보낸 기록 · 실패 수를 버린다.

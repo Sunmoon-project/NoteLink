@@ -1,4 +1,5 @@
-import type { AiJob } from '@notelink/shared';
+import type { AiJob, Material } from '@notelink/shared';
+import { env } from './env';
 
 /** AI 서버가 없어(기기 저장 모드 · AI 점검 중) 작업이 대기열에 머무는 단계 이름 */
 export const AI_WAITING_STEP = 'AI 서버 연결 대기';
@@ -6,6 +7,21 @@ export const AI_WAITING_STEP = 'AI 서버 연결 대기';
 /** 서버가 붙을 때까지 처리되지 않고 기다리는 작업인지 (FR-65-05) */
 export const aiWaiting = (job?: Pick<AiJob, 'status' | 'step'> | null) =>
   !!job && job.status === 'queued' && job.step === AI_WAITING_STEP;
+
+/**
+ * 정리 결과가 빈 자료가 지금 어떤 상태인지(노트 상세 · 녹음 플레이어가 같은 판단을 쓴다).
+ * failed 실패 · done 끝났는데 결과가 없음 · working 서버가 처리 중 · waiting 기기 저장 모드라 서버를 기다림.
+ * 서버 모드에서 「서버가 연결되면」은 거짓이라 기기 저장 모드에서만 waiting이다(develop 점검 #3 · #4)
+ */
+export type AiState = 'failed' | 'done' | 'working' | 'waiting';
+export const aiStateOf = (p?: Pick<Material['processing'], 'status'> | null): AiState =>
+  p?.status === 'failed'
+    ? 'failed'
+    : p?.status === 'done'
+      ? 'done'
+      : env.localData
+        ? 'waiting'
+        : 'working';
 
 /**
  * AI 처리기가 알려 주는 단계(ai_jobs.step) → 변환 화면 단계(1 인식 · 2 정리 · 3 요약).

@@ -117,7 +117,11 @@ def _handler(run: _Run, *, background: bool = False) -> Handler:
         llm = _llm()
         conn: Llm = llm.background(report.awaited) if background else llm
         try:  # Claude 비용은 이 작업 문서에 쌓음(#298)
-            return run(Stopping(Metered(conn, report.add_cost), report.canceled()), inp, report)
+            return run(
+                Stopping(Metered(conn, report.add_cost, report.llm_usage()), report.canceled()),
+                inp,
+                report,
+            )
         except review.InputError as e:  # generate.NoQuestionsError는 code를 붙여 앱이 구분
             raise JobInputError(str(e), code=e.code) from e
 
@@ -156,7 +160,7 @@ def recording_summary(inp: JsonObject, report: JobReport) -> JsonObject:
     작업이 취소되면 남은 LLM 호출을 보내지 않습니다(#263). 음성 인식은 한 번의 긴 호출이라
     보낸 뒤에는 멈추지 못합니다.
     """
-    llm = Stopping(Metered(_llm(), report.add_cost), report.canceled())
+    llm = Stopping(Metered(_llm(), report.add_cost, report.llm_usage()), report.canceled())
     try:
         return recording_job.run(
             llm, _speech, _voyage(), inp, report, checkpoint=report, fetch=_fetch_slides
@@ -176,8 +180,8 @@ def handwriting_summary(inp: JsonObject, report: JobReport) -> JsonObject:
     올려 다시 시도 없이 바로 실패합니다(자세한 내용은 로그에만).
     작업이 취소되면 남은 LLM 호출을 보내지 않고, OCR은 쪽마다 진행률을 쓸 때 멈춥니다.
     """
-    llm = Stopping(Metered(_llm(), report.add_cost), report.canceled())
-    split = Stopping(Metered(_split_llm(), report.add_cost), report.canceled())
+    llm = Stopping(Metered(_llm(), report.add_cost, report.llm_usage()), report.canceled())
+    split = Stopping(Metered(_split_llm(), report.add_cost, report.llm_usage()), report.canceled())
     try:
         return note_job.run(
             llm, _ocr, _voyage(), inp, report, checkpoint=report, fetch=download, split_llm=split

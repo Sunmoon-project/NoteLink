@@ -24,8 +24,14 @@ import { Friendship, FriendshipSchema } from '../social/schemas/friendship.schem
 import { Device, DeviceSchema } from '../users/schemas/device.schema.js';
 import { ExpoPushService } from '../notification/expo-push.service.js';
 import { RoomTimerNotificationsService } from './room-timer-notifications.service.js';
+import { StudyRoomNoticesService } from './study-room-notices.service.js';
+import { NotificationModule } from '../notification/notification.module.js';
 
 import { Timetable, TimetableSchema } from '../calendar/schemas/timetable.schema.js';
+import {
+  TimetableShare,
+  TimetableShareSchema,
+} from '../calendar/schemas/timetable-share.schema.js';
 import { StudyRoomScheduleController } from './study-room-schedule.controller.js';
 import { StudyRoomScheduleService } from './study-room-schedule.service.js';
 
@@ -33,6 +39,8 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
   imports: [
     AuthModule,
     UploadsModule,
+    // 채팅 · 초대 · 퇴장 조치 알림, 타이머 푸시의 알림 설정 확인(#560)
+    NotificationModule,
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
       { name: Category.name, schema: CategorySchema },
@@ -44,6 +52,8 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
       { name: Device.name, schema: DeviceSchema },
       // 공용 일정(StudyRoomScheduleService)
       { name: Timetable.name, schema: TimetableSchema },
+      // 일정 제목을 보여 줄지 정하는 시간표 공유(읽기만)
+      { name: TimetableShare.name, schema: TimetableShareSchema },
     ]),
   ],
   controllers: [
@@ -53,7 +63,8 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
     StudyRoomScheduleController,
   ],
   // 회원 탈퇴가 스터디룸에서 나가기를 쓴다(UsersModule). 소켓 · LiveKit 은 이 묶음 서비스 안에 둔다
-  exports: [StudyRoomMembershipService],
+  // 노트 공유가 방 채팅에 자료 카드를 올린다(MaterialsModule)
+  exports: [StudyRoomMembershipService, StudyChatGateway],
   providers: [
     StudyRoomsService,
     StudyRoomMembershipService,
@@ -64,6 +75,7 @@ import { StudyRoomScheduleService } from './study-room-schedule.service.js';
     StudyRoomWithdrawnSweeper,
     ExpoPushService,
     RoomTimerNotificationsService,
+    StudyRoomNoticesService,
     ReportsService,
     ReportImageSweeper,
     StudyRoomScheduleService,

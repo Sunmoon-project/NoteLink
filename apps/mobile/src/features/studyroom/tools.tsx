@@ -21,9 +21,9 @@ import {
   Lock,
   Pencil,
   Settings,
-  Sparkles,
   Timer,
   UserPlus,
+  Users,
 } from 'lucide-react-native';
 import type { ReportType, TimerRule } from '@notelink/shared';
 import { api } from '@/lib/api';
@@ -44,11 +44,14 @@ import {
   Screen,
   Search,
   Sheet,
+  afterSheetClosed,
   Toggle,
   Two,
   cx,
+  initial,
 } from '@/components/ui';
 import { useAuth } from '@/stores/auth';
+import { useChatMute } from '@/features/notifications';
 import { C, ICON } from '@/theme';
 
 // p.78 신고 / p.79 타이머 / p.80 시간표 · OS 캘린더 / p.81 세부 설정 · 초대 · 나가기
@@ -298,6 +301,8 @@ export function TimerScreen() {
   const myId = useAuth((s) => s.userId);
   const room = useQuery({ queryKey: ['room', id], queryFn: () => api.rooms.get(id) });
   const isHost = room.data?.hostId === myId;
+  // 방장이 아니면 읽기 전용: 전에는 다 바뀌는 것처럼 보이다가 저장만 막혀 나가면 사라졌다(develop 점검 #5)
+  const readOnly = !!room.data && !isHost;
   const [on, setOn] = useState(true);
   const [type, setType] = useState<TimerRule['type']>('pomodoro');
   const [focus, setFocus] = useState('50');
@@ -367,9 +372,11 @@ export function TimerScreen() {
     <Canvas>
       <Screen
         footer={
-          <Btn disabled={!isHost} loading={save.isPending} onPress={() => save.mutate()}>
-            {!room.data || isHost ? '저장하기' : '방장만 바꿀 수 있어요'}
-          </Btn>
+          !readOnly && (
+            <Btn disabled={!isHost} loading={save.isPending} onPress={() => save.mutate()}>
+              저장하기
+            </Btn>
+          )
         }
       >
         <View className="flex-row items-center gap-3 pt-3">
@@ -382,12 +389,18 @@ export function TimerScreen() {
           </Pressable>
           <View className="flex-1">
             <Text className="text-body font-bold text-ink">방 시간 규칙</Text>
-            <Text className="text-caption2 text-sub">방장 전용 · 멤버 전원</Text>
+            <Text className="text-caption2 text-sub">방장이 정하면 모두에게 적용돼요</Text>
           </View>
           <Pressable accessibilityLabel="도움말" onPress={() => setHelp(true)}>
             <HelpCircle size={ICON.md} color={C.sub} />
           </Pressable>
         </View>
+        {readOnly && (
+          <View className="mt-4 flex-row items-center gap-2 rounded-xl bg-white px-4 py-3">
+            <Lock size={ICON.xs} color={C.sub} />
+            <Text className="flex-1 text-caption text-sub">방장만 바꿀 수 있어요</Text>
+          </View>
+        )}
         <View className="mt-5 flex-row items-start justify-between">
           <View className="flex-1">
             <Text className="text-headline font-bold text-ink">함께 공부할 리듬을 정해요</Text>
@@ -395,7 +408,7 @@ export function TimerScreen() {
               설정한 시간은 모든 참여자에게 동시에 적용돼요.
             </Text>
           </View>
-          <Toggle label="방 시간 규칙" on={on} onChange={setOn} />
+          <Toggle label="방 시간 규칙" on={on} onChange={setOn} disabled={readOnly} />
         </View>
         <View className={cx(!on && 'opacity-40')} pointerEvents={on ? 'auto' : 'none'}>
           <Label>
@@ -410,6 +423,7 @@ export function TimerScreen() {
             ).map(([k, t, d, Ic]) => (
               <Pressable
                 key={k}
+                disabled={readOnly}
                 onPress={() => setType(k)}
                 className={cx(
                   'flex-1 flex-row items-center gap-2 rounded-xl border px-3 py-3',
@@ -448,6 +462,7 @@ export function TimerScreen() {
                 ).map(([p, d]) => (
                   <Pressable
                     key={p}
+                    disabled={readOnly}
                     onPress={() => {
                       const [f = '50', r = '10'] = p.split('/');
                       setFocus(f);
@@ -484,6 +499,7 @@ export function TimerScreen() {
                         <TextInput
                           value={v}
                           onChangeText={(t) => set(t.replace(/\D/g, ''))}
+                          editable={!readOnly}
                           keyboardType="number-pad"
                           className="flex-1 text-subhead text-ink"
                         />
@@ -497,12 +513,14 @@ export function TimerScreen() {
           )}
           <Label
             right={
-              <Pressable
-                onPress={() => editPeriod(0)}
-                className="rounded-full border border-brand/40 px-2 py-0.5"
-              >
-                <Text className="text-caption2 text-brand">시간표 편집</Text>
-              </Pressable>
+              !readOnly && (
+                <Pressable
+                  onPress={() => editPeriod(0)}
+                  className="rounded-full border border-brand/40 px-2 py-0.5"
+                >
+                  <Text className="text-caption2 text-brand">시간표 편집</Text>
+                </Pressable>
+              )
             }
           >
             <View>
@@ -515,7 +533,8 @@ export function TimerScreen() {
               <Pressable
                 key={i}
                 accessibilityRole="button"
-                accessibilityLabel={`${i + 1}교시 편집`}
+                accessibilityLabel={readOnly ? `${i + 1}교시` : `${i + 1}교시 편집`}
+                disabled={readOnly}
                 onPress={() => editPeriod(i)}
                 className={cx(
                   'flex-row items-center gap-3 rounded-xl px-3 py-2.5',
@@ -540,7 +559,7 @@ export function TimerScreen() {
                   </Text>
                   <Text className="text-caption2 text-sub">{p.label}</Text>
                 </View>
-                <Pencil size={ICON.md} color={C.brand} />
+                {!readOnly && <Pencil size={ICON.md} color={C.brand} />}
               </Pressable>
             ))}
           </View>
@@ -602,6 +621,29 @@ export function TimerScreen() {
   );
 }
 
+const DAYS = ['월', '화', '수', '목', '금', '토', '일'];
+// 멤버 구분 색(tokens member-1~6, 7번째부터 다시 처음). 클래스 이름을 통째로 적어야 tailwind가 찾는다.
+// 이니셜은 늘 진한 색 점 위 흰 글자(4.5:1 이상)라 바탕(tint)은 진하게 둬도 된다
+const MEMBER_COLORS = [
+  { bg: 'bg-member-1', tint: 'bg-member-1/30' },
+  { bg: 'bg-member-2', tint: 'bg-member-2/30' },
+  { bg: 'bg-member-3', tint: 'bg-member-3/30' },
+  { bg: 'bg-member-4', tint: 'bg-member-4/30' },
+  { bg: 'bg-member-5', tint: 'bg-member-5/30' },
+  { bg: 'bg-member-6', tint: 'bg-member-6/30' },
+];
+const memberColor = (k: number) => MEMBER_COLORS[k % MEMBER_COLORS.length]!;
+const toMin = (t: string) => {
+  const [h = 0, m = 0] = t.split(':').map(Number);
+  return h * 60 + m;
+};
+/** 멤버 색 동그라미 + 이니셜(색만으로 구분하지 않게) */
+const MemberDot = ({ k, name }: { k: number; name: string }) => (
+  <View className={cx('h-4 w-4 items-center justify-center rounded-full', memberColor(k).bg)}>
+    <Text className="text-caption2 font-bold text-white">{initial(name)}</Text>
+  </View>
+);
+
 export function ScheduleScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const room = useQuery({ queryKey: ['room', id], queryFn: () => api.rooms.get(id) });
@@ -625,6 +667,31 @@ export function ScheduleScreen() {
     if (r.action === 'saved') toast('기기 캘린더에 일정을 추가했어요');
   };
   const s = sch.data;
+  const [cell, setCell] = useState<{ r: number; i: number } | null>(null);
+  // 멤버별 일정(blocks)을 주는 서버면 사람마다 색을, 예전 서버면 바쁜 칸만 한 색으로 칠한다
+  const perMember = !!s?.members.length && s.members.every((m) => m.blocks);
+  /** 이 칸(r행 = 시간, i열 = 월~일)에 걸친 멤버와 그 일정 */
+  const busyAt = (r: number, i: number) => {
+    if (!s || !perMember) return [];
+    const from = (s.startHour + r) * 60;
+    return s.members
+      .map((m, k) => ({
+        m,
+        k,
+        b: m.blocks!.filter(
+          (b) => b.day === i && toMin(b.start) < from + 60 && toMin(b.end) > from,
+        ),
+      }))
+      .filter((x) => x.b.length);
+  };
+  const best = s?.matches.find((m) => m.best);
+  // 시간을 숨긴 멤버는 서버가 격자 · 추천 계산에서 뺀다
+  const hiddenCount = s?.members.filter((m) => m.hidden).length ?? 0;
+  const inBest = (r: number, i: number) =>
+    !!best &&
+    best.day.startsWith(DAYS[i]!) &&
+    s!.startHour + r >= toMin(best.start) / 60 &&
+    s!.startHour + r < toMin(best.end) / 60;
   if (sch.isError && !sch.data)
     return (
       <Canvas>
@@ -660,19 +727,23 @@ export function ScheduleScreen() {
           </View>
           <Badge tone="gray">{`${s?.members.length ?? 0}명 연동중`}</Badge>
         </View>
-        <Text className="mt-4 mb-2 text-caption text-sub">스터디룸 멤버 일정 현황</Text>
-        <View className="flex-row flex-wrap gap-1.5">
-          {s?.members.map((m) => (
-            <View key={m.nickname} className="rounded-full bg-white px-3 py-1">
+        <View className="mt-2 flex-row flex-wrap gap-1.5">
+          {s?.members.map((m, k) => (
+            <View
+              key={m.id ?? m.nickname}
+              accessibilityLabel={`범례 ${m.nickname}`}
+              className="flex-row items-center gap-1.5 rounded-full bg-white px-3 py-1"
+            >
+              {perMember ? <MemberDot k={k} name={m.nickname} /> : <Text>{m.emoji}</Text>}
               <Text className="text-caption2 text-ink">
-                {m.emoji} {m.nickname}
+                {m.hidden ? `${m.nickname} · 비공개` : m.nickname}
               </Text>
             </View>
           ))}
         </View>
         <View className="mt-3 rounded-card bg-white p-4">
           <View className="flex-row pl-9">
-            {['월', '화', '수', '목', '금', '토', '일'].map((d) => (
+            {DAYS.map((d) => (
               <Text key={d} className="flex-1 text-center text-caption2 text-sub">
                 {d}
               </Text>
@@ -681,34 +752,57 @@ export function ScheduleScreen() {
           {s?.grid.map((row, r) => (
             <View key={r} className="mt-1 flex-row items-center">
               <Text className="w-9 text-caption2 text-sub">{s.startHour + r}:00</Text>
-              {row.map((c, i) => (
-                <Pressable
-                  key={i}
-                  accessibilityLabel={`${['월', '화', '수', '목', '금', '토', '일'][i]} ${s.startHour + r}:00 일정 추가`}
-                  disabled={c !== 2}
-                  onPress={() =>
-                    addToCalendar(
-                      ['월', '화', '수', '목', '금', '토', '일'][i]!,
-                      `${s.startHour + r}:00`,
-                      `${s.startHour + r + 1}:00`,
-                    )
-                  }
-                  className={cx(
-                    'mx-0.5 h-6 flex-1 items-center justify-center rounded-md',
-                    c === 2 ? 'border border-brand bg-mint' : c === 1 ? 'bg-brand/15' : 'bg-fill',
-                  )}
-                >
-                  {c === 2 && <Sparkles size={ICON.md} color={C.brand} />}
-                </Pressable>
-              ))}
+              {row.map((c, i) => {
+                const busy = busyAt(r, i);
+                const label = perMember
+                  ? busy.length
+                    ? busy.map((x) => x.m.nickname).join(', ')
+                    : c === 2
+                      ? '모두 비어 있음'
+                      : '비어 있음'
+                  : c === 1
+                    ? '누군가 일정 있음'
+                    : c === 2
+                      ? '모두 비어 있음'
+                      : '비어 있음';
+                const one = busy.length === 1 ? busy[0]! : null;
+                return (
+                  <Pressable
+                    key={i}
+                    accessibilityLabel={`${DAYS[i]} ${s.startHour + r}:00 · ${label}`}
+                    onPress={() => setCell({ r, i })}
+                    className={cx(
+                      'mx-0.5 h-7 flex-1 flex-row items-center justify-center gap-0.5 rounded-md',
+                      // 혼자 바쁜 칸은 그 사람 색 바탕, 겹친 칸은 색 점만, 빈 칸은 바탕 없이 연한 선만
+                      one ? memberColor(one.k).tint : !perMember && c === 1 && 'bg-brand/30',
+                      // 테두리 색은 하나만 붙인다(둘 다 붙으면 tailwind 순서로 연한 선이 이긴다)
+                      inBest(r, i)
+                        ? 'border border-brand'
+                        : !one && (perMember || c !== 1) && 'border border-line',
+                    )}
+                  >
+                    {one && <MemberDot k={one.k} name={one.m.nickname} />}
+                    {busy.length === 2 &&
+                      busy.map((x) => <MemberDot key={x.k} k={x.k} name={x.m.nickname} />)}
+                    {busy.length > 2 && (
+                      <>
+                        <MemberDot k={busy[0]!.k} name={busy[0]!.m.nickname} />
+                        <Text className="text-caption2 text-sub">{`+${busy.length - 1}`}</Text>
+                      </>
+                    )}
+                  </Pressable>
+                );
+              })}
             </View>
           ))}
         </View>
         <View className="mt-3 rounded-card bg-white p-4">
-          <View className="flex-row items-center gap-1.5">
-            <Sparkles size={ICON.xs} color={C.brand} />
-            <Text className="text-footnote font-bold text-ink">실시간 매칭된 공통 가능 시간</Text>
-          </View>
+          <Text className="text-footnote font-bold text-ink">모두 비는 시간</Text>
+          {hiddenCount > 0 && (
+            <Text className="mt-0.5 text-caption text-sub">
+              {`시간을 숨긴 ${hiddenCount}명은 빼고 계산했어요`}
+            </Text>
+          )}
           {s?.matches.length === 0 && (
             <Text className="py-3 text-center text-caption text-sub">
               아직 공통 가능 시간이 없어요
@@ -739,6 +833,61 @@ export function ScheduleScreen() {
           ))}
         </View>
       </Screen>
+      <Sheet
+        open={!!cell}
+        onClose={() => setCell(null)}
+        title={
+          cell &&
+          s &&
+          `${DAYS[cell.i]}요일 ${s.startHour + cell.r}:00 – ${s.startHour + cell.r + 1}:00`
+        }
+      >
+        {cell && s && perMember
+          ? s.members.map((m, k) => {
+              const mine = busyAt(cell.r, cell.i).find((x) => x.k === k)?.b ?? [];
+              return (
+                <View key={m.id ?? m.nickname} className="flex-row items-start gap-3 py-2">
+                  <MemberDot k={k} name={m.nickname} />
+                  <Text className="w-24 text-subhead text-ink" numberOfLines={1}>
+                    {m.nickname}
+                  </Text>
+                  <View className="flex-1">
+                    {m.hidden ? (
+                      <Text className="text-subhead text-sub">시간 비공개</Text>
+                    ) : mine.length ? (
+                      mine.map((b, j) => (
+                        <Text key={j} className="text-subhead text-ink">
+                          {`${b.title || '수업 있음'} · ${b.start}–${b.end}`}
+                        </Text>
+                      ))
+                    ) : (
+                      <Text className="text-subhead text-sub">비어 있음</Text>
+                    )}
+                  </View>
+                </View>
+              );
+            })
+          : cell &&
+            s && (
+              <Text className="py-2 text-subhead text-ink">
+                {s.grid[cell.r]?.[cell.i] === 1 ? '누군가 일정이 있어요' : '모두 비어 있어요'}
+              </Text>
+            )}
+        {cell && s && s.grid[cell.r]?.[cell.i] === 2 && busyAt(cell.r, cell.i).length === 0 && (
+          <Btn
+            className="mt-3"
+            onPress={() => {
+              const h = s.startHour + cell.r;
+              const day = DAYS[cell.i]!;
+              setCell(null);
+              // 시트(Modal)가 닫힌 뒤 OS 캘린더 화면을 띄운다
+              void afterSheetClosed().then(() => addToCalendar(day, `${h}:00`, `${h + 1}:00`));
+            }}
+          >
+            기기 캘린더에 추가
+          </Btn>
+        )}
+      </Sheet>
     </Canvas>
   );
 }
@@ -747,6 +896,17 @@ export function RoomSettingsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const qc = useQueryClient();
   const room = useQuery({ queryKey: ['room', id], queryFn: () => api.rooms.get(id) });
+  const chatId = useQuery({ queryKey: ['room-chat', id], queryFn: () => api.rooms.chatRoomId(id) });
+  const mute = useChatMute(chatId.data);
+  // 이 방 시간표에서 내 수업 시간 보이기(멤버별 일정을 주는 서버에서만 켜고 끈다)
+  const myId = useAuth((st) => st.userId);
+  const sch = useQuery({ queryKey: ['room-schedule', id], queryFn: () => api.rooms.schedule(id) });
+  const mine = sch.data?.members.find((m) => m.id && m.id === myId);
+  const hide = useMutation({
+    mutationFn: (hidden: boolean) => api.rooms.setScheduleHidden(id, hidden),
+    onError: () => toast('설정을 바꾸지 못했어요. 다시 시도해주세요'),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['room-schedule', id] }),
+  });
   const [code, setCode] = useState(false);
   const [leave, setLeave] = useState(false);
   const out = useMutation({
@@ -769,9 +929,40 @@ export function RoomSettingsScreen() {
         <View className="overflow-hidden rounded-card bg-white">
           <View className="flex-row items-center gap-3 px-5 py-4">
             <Bell size={ICON.md} color={C.ink} />
-            <Text className="flex-1 text-subhead font-semibold text-ink">알림</Text>
-            <Text className="text-caption text-sub">알림 설정은 준비 중이에요</Text>
+            <Text className="flex-1 text-subhead font-semibold text-ink">채팅 알림</Text>
+            <Toggle
+              label="채팅 알림"
+              on={!mute.muted}
+              disabled={!mute.ready}
+              onChange={mute.toggle}
+            />
           </View>
+          <View className="flex-row items-center gap-3 border-t border-fill px-5 py-4">
+            <CalendarDays size={ICON.md} color={C.ink} />
+            <View className="flex-1">
+              <Text className="text-subhead font-semibold text-ink">
+                이 방에 내 시간표 시간 보이기
+              </Text>
+              <Text className="text-caption text-sub">
+                끄면 이 방에서 내 시간이 시간표와 추천 시간에 쓰이지 않아요
+              </Text>
+            </View>
+            <Toggle
+              label="이 방에 내 시간표 시간 보이기"
+              on={hide.isPending ? !hide.variables : !mine?.hidden}
+              disabled={!mine || hide.isPending}
+              onChange={(v) => hide.mutate(!v)}
+            />
+          </View>
+          <Pressable
+            onPress={() => router.push({ pathname: '/room/members', params: { id } })}
+            className="flex-row items-center gap-3 border-t border-fill px-5 py-4"
+          >
+            <Users size={ICON.md} color={C.ink} />
+            <Text className="text-subhead font-semibold text-ink">
+              {room.data ? `멤버 ${room.data.members.length}명` : '멤버'}
+            </Text>
+          </Pressable>
           <Pressable
             onPress={() => router.push({ pathname: '/room/invite', params: { id } })}
             className="flex-row items-center gap-3 border-t border-fill px-5 py-4"

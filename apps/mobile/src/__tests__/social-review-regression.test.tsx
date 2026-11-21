@@ -183,10 +183,12 @@ describe('PR33 친구 삭제', () => {
   it('삭제 성공 후 친구 캐시를 갱신하고 방을 닫는다', async () => {
     const qc = client();
     qc.setQueryData(['friends'], [{ userId: 'friend-1' }]);
+    // 채팅 헤더가 친구 목록을 보고 있어 무효화 즉시 다시 읽는다 — 무효화 요청 자체를 확인한다(#554 PR 3)
+    const invalidate = jest.spyOn(qc, 'invalidateQueries');
     await openDelete(qc);
     await fireEvent.press(screen.getByText('삭제'));
     await waitFor(() => expect(mockApi.social.remove).toHaveBeenCalledWith('friend-1'));
-    await waitFor(() => expect(qc.getQueryState(['friends'])?.isInvalidated).toBe(true));
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['friends'] }));
     expect(router.back).toHaveBeenCalledTimes(1);
   });
   it('삭제 실패 시 친구와 대화방을 유지하고 실패를 안내한다', async () => {

@@ -28,6 +28,15 @@ export function readMaterialId(body: unknown): string {
   return value;
 }
 
+/** POST 본문 `{ questionIds }`(유사 퀴즈 고르기, #605). 빈 글자가 없는 문자열 배열이 아니면 400. 개수 · id 형식은 서비스가 본다 */
+export function readQuestionIds(body: unknown): string[] {
+  const value = (body as { questionIds?: unknown } | null | undefined)?.questionIds;
+  if (!Array.isArray(value) || !value.every((v) => typeof v === 'string' && v.length > 0)) {
+    throw new BadRequestException({ code: VALIDATION_FAILED, message: '고른 문제가 필요해요' });
+  }
+  return value as string[];
+}
+
 /**
  * 맞춤 퀴즈 세트(#175). 전역 접두사가 붙어 `/api/v1/quiz-sets`가 된다(packages/shared PATHS.quizSets · quizSet).
  * 응답 모양은 앱의 로컬 모의 API(apps/mobile/src/lib/local/api.ts `quiz.sets` · `createSet` · `set`)와 같다.
@@ -67,6 +76,18 @@ export class QuizSetsController {
   @Post('today')
   async startToday(@Req() req: AuthenticatedRequest): Promise<{ data: AppQuizSet }> {
     return { data: await this.todayReview.start(userOf(req)) };
+  }
+
+  /**
+   * 고른 문제로 유사 퀴즈(packages/shared PATHS.similarQuizPick, #605). 한 학습 폴더에서 끝낸 퀴즈의 문제를 골라
+   * 보내면 그 문제들을 함께 참고해 만드는 「유사 퀴즈」 세트를 만드는 중으로 돌려준다. 앱은 세트 조회로 기다린다
+   */
+  @Post('similar')
+  async createSimilarFromPicks(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: unknown,
+  ): Promise<{ data: AppQuizSet }> {
+    return { data: await this.similar.createFromPicks(userOf(req), readQuestionIds(body)) };
   }
 
   @Get(':id')

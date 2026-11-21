@@ -1,4 +1,4 @@
-import type { Recording } from '@notelink/shared';
+import { diagramOf, type Recording } from '@notelink/shared';
 
 import { isRecord, text, uniqueHeading } from './material-sync.js';
 
@@ -44,7 +44,7 @@ function wordsOf(v: unknown): { text: string; startSec: number; endSec: number }
 /**
  * 녹음 정리 결과(apps/ai services/recording/models.py RecordingResult)를 재생 화면 값(packages/shared
  * Recording 의 길이 · 대본 · 슬라이드)으로. 문장(sentences)은 대본 구간(segments, 단어 시각이 있으면 words 도), 슬라이드는 제목 + 요약 문장
- * 글머리로 바꾼다. 형식이 틀린 항목은 빼고, 요약이 빈 슬라이드도 노트 요약(material-sync sectionsFromSlides)처럼
+ * 글머리(도식은 diagramOf 로 거른 값, 틀리면 null)로 바꾼다. 형식이 틀린 항목은 빼고, 요약이 빈 슬라이드도 노트 요약(material-sync sectionsFromSlides)처럼
  * 빼며 같은 제목은 노트 요약처럼 "(2)"를 붙인다. 시간 구간이 틀린 슬라이드는 재생 화면에서만 빠진다(노트 요약에는
  * 남는다). 결과 자체가 없거나 틀리면 빈 값
  */
@@ -66,13 +66,16 @@ export function playbackFromResult(result: unknown): Playback {
     .flatMap((s) => {
       const at = span(s);
       const summary = text(s['summary']);
-      return at && summary ? [{ title: text(s['title']), summary, at }] : [];
+      return at && summary
+        ? [{ title: text(s['title']), summary, at, diagram: diagramOf(s['diagram']) }]
+        : [];
     })
-    .map(({ title, summary, at }, index) => ({
+    .map(({ title, summary, at, diagram }, index) => ({
       index,
       title: uniqueHeading(title ?? `내용 ${index + 1}`, used),
       bullets: bulletsOf(summary),
       ...at,
+      diagram,
     }));
   return {
     durationSec: durationMs === null ? 0 : durationMs / 1000,

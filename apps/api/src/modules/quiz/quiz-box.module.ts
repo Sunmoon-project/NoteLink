@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 
 import { AuthModule } from '../auth/auth.module.js';
+import { Material, MaterialSchema } from '../content/schemas/material.schema.js';
 import { QuizBoxController } from './quiz-box.controller.js';
 import { QuizBoxService } from './quiz-box.service.js';
 import { QuizBoxCounter, QuizBoxCounterSchema } from './schemas/quiz-box-counter.schema.js';
@@ -15,6 +16,7 @@ import { QuizSet, QuizSetSchema } from './schemas/quiz-set.schema.js';
             { name: QuizBoxItem.name, schema: QuizBoxItemSchema },
             { name: QuizBoxCounter.name, schema: QuizBoxCounterSchema },
             { name: QuizSet.name, schema: QuizSetSchema }, // 내 세트인지 · 문제 내용을 읽기만 한다
+            { name: Material.name, schema: MaterialSchema }, // 폴더 없는 옛 세트의 노트 폴더를 읽기만 한다(#601)
         ]),
         AuthModule, // 로그인 확인(JwtAuthGuard)에 필요한 도구를 가져온다
     ],

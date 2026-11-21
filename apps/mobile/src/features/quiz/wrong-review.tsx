@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { AppState, View } from 'react-native';
 import { router } from 'expo-router';
 import type { Question } from '@notelink/shared';
+import { Plus } from 'lucide-react-native';
 import { Text } from '@/components/text';
-import { Btn, Canvas, Chip, Header, Input, Screen } from '@/components/ui';
+import { Btn, Canvas, Header, Input, Screen } from '@/components/ui';
 import { api } from '@/lib/api';
 import { today } from '@/lib/dates';
 import { env } from '@/lib/env';
@@ -11,9 +12,11 @@ import { queryClient } from '@/lib/query';
 import { dropDb, readDb, writeDb } from '@/lib/local/storage';
 import { useAuth } from '@/stores/auth';
 import { AvatarCheer } from '@/features/tutor/cheer';
+import { ChoiceRow, Passage, splitPrompt } from './choice';
 import { Avatar3D } from '@/features/tutor/avatar3d';
 import { useEquippedAccessories, useEquippedAvatar } from '@/features/tutor/buddy';
 import { useTour } from '@/features/tutor/tour';
+import { NextStepCard } from './next-step';
 
 // 오답 노트: 퀴즈에서 틀린 문제를 기기에 모아 두었다가, 하루에 처음 앱을 열 때 다시 풀게 한다.
 // ponytail: 기기 저장(계정별 파일). 서버에 오답 목록 API가 생기면 그쪽으로 옮긴다
@@ -218,23 +221,39 @@ export function WrongReviewScreen() {
                 ? '모두 맞혔어요! 맞힌 문제는 오답 노트에서 뺐어요.'
                 : '맞힌 문제는 오답 노트에서 뺐어요.\n아직 헷갈린 문제는 내일 다시 나와요.'}
             </Text>
+            <View className="mt-8 self-stretch">
+              <NextStepCard
+                steps={[
+                  {
+                    icon: Plus,
+                    label: '새 퀴즈 풀기',
+                    sub: '노트를 골라 새 문제를 풀어요',
+                    onPress: () => router.dismissTo('/(tabs)/quiz/notes'),
+                  },
+                ]}
+              />
+            </View>
           </View>
         ) : (
           q && (
             <View className="mt-2">
               {!!q.setTitle && <Text className="text-caption text-sub">{q.setTitle}</Text>}
-              <Text className="mt-1 text-body font-bold leading-6 text-ink">Q. {q.prompt}</Text>
+              <Text className="mt-1 text-body font-bold leading-6 text-ink">
+                Q. {splitPrompt(q.prompt)[0]}
+              </Text>
+              <Passage prompt={q.prompt} mc={!!options} />
               {options ? (
-                <View className="mt-4 gap-2">
-                  {options.map((c) => (
-                    <Chip
+                <View className="mt-4 gap-3.5">
+                  {options.map((c, n) => (
+                    <ChoiceRow
                       key={c}
+                      n={n}
                       on={picked === c}
                       onPress={() => answer(c)}
                       disabled={picked !== null}
                     >
                       {c}
-                    </Chip>
+                    </ChoiceRow>
                   ))}
                 </View>
               ) : (

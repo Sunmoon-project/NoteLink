@@ -1,9 +1,10 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Req, UseGuards } from '@nestjs/common';
-import type { RoomSharedItem } from '@notelink/shared';
+import type { Flashcard, QuizSet, RoomSharedItem } from '@notelink/shared';
 
 import { requireUserId } from '../../../common/request-user.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../../auth/jwt-auth.guard.js';
 import { ShareMaterialsDto } from './dto/share-materials.dto.js';
+import { ShareStudyItemDto } from './dto/share-study-item.dto.js';
 import { MaterialSharingService } from './material-sharing.service.js';
 
 /** 노트 공유 주소 (packages/shared PATHS.materialShare · roomShared) */
@@ -29,5 +30,26 @@ export class MaterialSharingController {
     @Param('id') id: string,
   ): Promise<{ data: { items: RoomSharedItem[]; flashcards: never[] } }> {
     return { data: await this.sharing.listRoomItems(requireUserId(req), id) };
+  }
+
+  /** 내 퀴즈 하나 또는 고른 플래시카드들을 방에 공유한다(#481). 본문 없이 204 */
+  @Post('study-rooms/:id/shared-items')
+  @HttpCode(204)
+  async shareStudyItem(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: ShareStudyItemDto,
+  ): Promise<void> {
+    await this.sharing.shareStudyItem(requireUserId(req), id, body);
+  }
+
+  /** 방에 공유된 퀴즈(문제 · 정답) · 플래시카드 묶음을 연다. 현재 멤버만(아니면 404) */
+  @Get('study-rooms/:id/shared-items/:itemId')
+  async openRoomItem(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Param('itemId') itemId: string,
+  ): Promise<{ data: { item: RoomSharedItem; quiz: QuizSet | null; flashcards: Flashcard[] } }> {
+    return { data: await this.sharing.openRoomItem(requireUserId(req), id, itemId) };
   }
 }

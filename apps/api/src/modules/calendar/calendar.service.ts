@@ -144,6 +144,19 @@ export class CalendarService {
             daysLeft: daysBetween(seoulDate(now), dto.date),
         };
     }
+
+    /**
+     * D-day를 지운다. D-day 목록용 한 건(isDday)만 지우므로 과제 · 시험이면 날짜별 할 일은 그대로 남는다.
+     * 내 것이 아니거나 D-day가 아니면 404
+     */
+    async removeDday(userId: string, id: string): Promise<void> {
+        const { deletedCount } = await this.todoModel.deleteOne({
+            _id: toObjectId(id),
+            userId: new Types.ObjectId(userId),
+            isDday: true,
+        });
+        if (!deletedCount) throw new NotFoundException(NOT_FOUND);
+    }
 }
 
 /** 오늘 이후(0 포함)는 적은 순, 지난 날짜(음수)는 그 뒤에 가장 최근에 지난 것부터 */

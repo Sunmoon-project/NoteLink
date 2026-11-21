@@ -8,7 +8,7 @@ import mongomock
 import pytest
 
 from app.clients.docint import OcrUnavailableError
-from app.clients.llm import JsonObject, Llm, LlmError, LlmRejectedError
+from app.clients.llm import JobUsage, JsonObject, Llm, LlmError, LlmRejectedError, charge
 from app.worker import handlers
 from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobStore
@@ -242,6 +242,7 @@ class StubReport:
         self._awaited = awaited
         self._canceled = threading.Event()
         self.costs: list[float] = []
+        self.usage = JobUsage()
 
     def __call__(self, value: int, step: str | None = None) -> None:
         pass
@@ -263,6 +264,9 @@ class StubReport:
 
     def add_cost(self, usd: float) -> None:
         self.costs.append(usd)
+
+    def llm_usage(self) -> JobUsage:
+        return self.usage
 
 
 def test_a_pregen_runs_in_stable_mode_and_hurries_when_taken_over(
@@ -364,3 +368,49 @@ def test_similar_quiz_rejections_mixed_with_outages_are_retried(
     llm = FakeLlm({"Review": errors})
     doc = run_job(monkeypatch, llm, job_input())
     assert (doc["status"], doc["attempts"]) == ("queued", 1)
+
+
+# ---------- 작업 비용 로그(#621) ----------
+
+
+class PricedLlm(FakeLlm):
+    """답마다 model 이름 · 토큰으로 청구하는 가짜(ClaudeLlm처럼)."""
+
+    def call(self, model: str, *a: Any, **kw: Any) -> Any:
+        charge(0.001, model, 100, 10)
+        return super().call(model, *a, **kw)
+
+
+def test_quiz_handlers_count_llm_usage_for_the_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(llm: Llm, inp: Any, report: Any) -> dict[str, Any]:
+        llm.call("claude-haiku-5-5", "s", "u", {}, "X")
+        return {}
+
+    monkeypatch.setattr(handlers, "_llm", lambda: PricedLlm({"X": [{}]}))
+    report = StubReport(awaited=False)
+    handlers._handler(fake_run)({}, report)
+    assert report.costs == [0.001]
+    assert "claude-haiku-5-5 1회 입력 100/출력 10 $0.001" in report.usage.summary()
+
+
+def test_handwriting_counts_both_the_llm_and_the_split_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handlers.note_job.settings, "note_refine_enabled", True)
+    rows = [f"- 내용 {i} " + "가" * 40 for i in range(15)]
+    llm = PricedLlm({"note_topics": [{"topics": []}]})
+    split = PricedLlm(
+        {
+            "note_split": lambda user: {"starts": [1, 4]},
+            "note_summary": [{"points": [], "keywords": []}],  # 핵심 요약도 split 연결로 청구
+        }
+    )
+    url = note_input()["pages"][0]["imageUrl"]
+    note_fakes(monkeypatch, llm, FakeOcr({url: read(ocr_page(*rows))}))
+    monkeypatch.setattr(handlers, "_split_llm", lambda: split)
+    report = StubReport(awaited=False)
+
+    handlers.handwriting_summary(note_input(), report)
+
+    calls = len(llm.calls) + len(split.calls)
+    assert report.usage.usd == pytest.approx(0.001 * calls)

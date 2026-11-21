@@ -235,7 +235,8 @@ export class AiJobsService {
 
   /**
    * 다시 시도로 끝난 작업이 처리기에 다시 들어갈 때(같은 작업 id) 알림을 받는다. 진행률 소켓(AiJobsGateway)이 그 전에
-   * 읽어 둔 앞 실행의 결과를 보내지 않게 한다(#523). 등록을 푸는 함수를 돌려준다
+   * 읽어 둔 앞 실행의 결과를 보내지 않게 한다(#523). 이 서버(프로세스) 안의 함수만 부르므로, 다른 서버가 받은 다시 시도는
+   * 게이트웨이가 DB 읽기로 따로 안다(#526 B11). 등록을 푸는 함수를 돌려준다
    */
   onRetry(listener: (jobId: string) => void): () => void {
     this.retried.add(listener);
@@ -424,6 +425,30 @@ export class AiJobsService {
       .lean();
     if (row) return;
     if ((await this.jobs.exists(filter)) === null) throw notFound();
+  }
+
+  /**
+   * 지운 대상의 아직 끝나지 않은 작업(queued · running · held)을 한 번에 canceled로 바꾼다(학습 폴더 삭제, #602).
+   * cancel과 달리 미리 만들기(quiz_pregen)도 멈춘다: 노트가 지워져 그 결과를 쓸 곳이 없다.
+   * 대상은 묶음마다 대상 종류 · id · 작업 종류로 고른다. 이미 끝난 작업은 그대로다. 바꾼 작업 수를 돌려준다
+   */
+  async cancelForTargets(
+    userId: string,
+    targets: { targetType: string; targetIds: string[]; types: readonly string[] }[],
+  ): Promise<number> {
+    const or = targets
+      .filter((t) => t.targetIds.length > 0 && t.types.length > 0)
+      .map((t) => ({
+        targetType: t.targetType,
+        targetId: { $in: t.targetIds.map((id) => serverObjectId(id, 'targetId')) },
+        type: { $in: [...t.types] },
+      }));
+    if (or.length === 0) return 0;
+    const res = await this.jobs.updateMany(
+      { userId: serverObjectId(userId, 'userId'), status: { $in: [...ACTIVE, HELD] }, $or: or },
+      { $set: { status: 'canceled' }, $unset: { heldAt: '', holdId: '' } },
+    );
+    return res.modifiedCount;
   }
 
   /**
