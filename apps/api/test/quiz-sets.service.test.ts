@@ -2143,6 +2143,78 @@ describe('QuizSetsService 취소 요청에 세트 번호(quizSetId)를 실으면
     expect(t.set(quizSet._id)['deletedAt']).toBeNull();
   });
 
+  describe('같은 세트의 취소 두 건이 겹치고 그사이 새 세트가 이어받아도 새 세트의 이어받기를 풀지 않는다(Codex 1차)', () => {
+    const start = async () => {
+      const t = setup();
+      const materialId = await t.addNote();
+      const p = await pregen(t, materialId);
+      const first = await t.service.create(ME.toHexString(), materialId);
+      let again: Awaited<ReturnType<typeof t.service.create>> | undefined;
+      /** 다른 취소가 끝까지 돌아 첫 세트를 지우고, 같은 노트로 다시 만든다 */
+      const interleave = async () => {
+        await cancel(t, p._id, first.quizSet._id);
+        again = await t.service.create(ME.toHexString(), materialId);
+      };
+      return { t, p, first, interleave, again: () => again! };
+    };
+
+    it('표시를 적기 전에 끼어들면(세트를 이미 지움) 작업을 멈추지 않는다', async () => {
+      const { t, p, first, interleave, again } = await start();
+      const updateMany = t.sets.model.updateMany.bind(t.sets.model);
+      vi.spyOn(t.sets.model, 'updateMany').mockImplementationOnce(
+        (async (...args: Parameters<typeof updateMany>) => (
+          await interleave(),
+          updateMany(...args)
+        )) as never,
+      );
+
+      await cancel(t, p._id, first.quizSet._id);
+
+      expect(again().quizSet._id).not.toBe(first.quizSet._id);
+      expect(t.set(again().quizSet._id)['deletedAt']).toBeNull();
+      expect(t.job(p._id)).toMatchObject({ status: 'queued', awaited: true });
+    });
+
+    it('표시를 적은 뒤 멈추기 전에 끼어들면 멈춘 뒤 새 세트의 이어받기를 되살린다', async () => {
+      const { t, p, first, interleave, again } = await start();
+      const update = t.jobs.model.findOneAndUpdate.bind(t.jobs.model);
+      const spy = vi.spyOn(t.jobs.model, 'findOneAndUpdate').mockImplementation(((
+        ...args: Parameters<typeof update>
+      ) => {
+        if ((args[1] as { $set?: { awaited?: boolean } }).$set?.awaited !== false)
+          return update(...args);
+        spy.mockRestore();
+        return { lean: async () => (await interleave(), update(...args).lean()) };
+      }) as never);
+
+      await cancel(t, p._id, first.quizSet._id);
+
+      expect(t.set(again().quizSet._id)['deletedAt']).toBeNull();
+      expect(t.job(p._id)).toMatchObject({ status: 'queued', awaited: true });
+      expect((await t.service.findMine(ME.toHexString(), again().quizSet._id)).status).toBe(
+        'generating',
+      );
+    });
+
+    it('이어받은 뒤 세트를 넣기 전에 이어받기가 풀려도 넣은 뒤 다시 켠다', async () => {
+      const t = setup();
+      const materialId = await t.addNote();
+      const p = await pregen(t, materialId);
+      const create = t.sets.model.create.bind(t.sets.model);
+      vi.spyOn(t.sets.model, 'create').mockImplementationOnce(((
+        ...args: Parameters<typeof create>
+      ) => {
+        t.job(p._id)['awaited'] = false; // 옛 취소의 stop이 이 사이에 닿음
+        return create(...args);
+      }) as never);
+
+      const made = await t.service.create(ME.toHexString(), materialId);
+
+      expect(made.job._id).toBe(p._id);
+      expect(t.job(p._id)['awaited']).toBe(true);
+    });
+  });
+
   it('세트 번호가 문자열이 아니면 400이고 아무것도 바꾸지 않는다', async () => {
     const t = setup();
     const { quizSet, job } = await t.service.create(ME.toHexString(), await t.addNote());

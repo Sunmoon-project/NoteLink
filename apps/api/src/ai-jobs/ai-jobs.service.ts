@@ -646,6 +646,26 @@ export class AiJobsService {
   }
 
   /**
+   * 이 미리 만들기(quiz_pregen)가 아직 끝나지 않았으면 이어받기를 다시 켠다(awaited=true, #642). 이어받은 세트가 있는데
+   * 그사이 옛 취소의 stop이 이어받기를 풀었을 때 되살린다(QuizSetsService.createOnce · cancelWaiting). 끝났거나 다른 종류면
+   * 그대로. 서버 안에서 넘긴 id라 형식이 틀리면 서버 오류
+   */
+  async awaitAgain(userId: string, jobId: string): Promise<void> {
+    await this.jobs
+      .findOneAndUpdate(
+        {
+          _id: serverObjectId(jobId, 'jobId'),
+          userId: serverObjectId(userId, 'userId'),
+          type: PREGEN_TYPE,
+          status: { $in: ACTIVE },
+        },
+        { $set: { awaited: true } },
+        { projection: { _id: 1 } },
+      )
+      .lean();
+  }
+
+  /**
    * 같은 대상의 미리 만들기(quiz_pregen)가 아직 끝나지 않았으면 이어받는다: 새 작업을 넣지 않고
    * awaited=true를 켜서 처리기가 사용자 작업처럼 먼저 처리하게 한다(#134 · #138).
    * 넣으면 같은 퀴즈를 두 번 만들기 때문이다. 이어받을 작업이 없으면 null(호출하는 쪽이 새로 넣는다).

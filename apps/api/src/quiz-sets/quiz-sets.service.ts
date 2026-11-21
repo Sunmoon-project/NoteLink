@@ -405,10 +405,13 @@ export class QuizSetsService implements OnModuleInit {
     const waiting = await this.waitingSets(ownerId, jobId, ctx.quizSetId);
     if (waiting.length === 0 && ctx.quizSetId !== undefined) return;
     if (waiting.length > 0) {
-      await this.sets.updateMany(
+      const marked = await this.sets.updateMany(
         { _id: { $in: waiting }, ownerId, status: { $ne: 'ready' }, deletedAt: null },
         { $set: { cancelRequestedAt: new Date() } },
       );
+      // 고른 뒤 그 세트를 같은 취소의 다른 요청이 지웠거나 ready가 됐으면 작업도 멈추지 않는다: 그사이 새 세트가 같은
+      // 미리 만들기를 이어받았을 수 있다(Codex 1차)
+      if (ctx.quizSetId !== undefined && marked.matchedCount === 0) return;
     }
     // 이 취소가 멈추지 못함: 앞 취소가 멈춘 뒤 끝난 작업이면(지우다 실패한 채) 마저 지운다. 늦은 취소면 세트를 그대로 두고
     // 방금 적은 표시를 거둔다: 나중에 작업이 다시 시도 · 서버 안의 취소로 바뀌어도 그 세트를 지우지 않게(code-review)
@@ -422,6 +425,22 @@ export class QuizSetsService implements OnModuleInit {
       return;
     }
     await this.dropSets(ctx.userId, waiting);
+    await this.keepAwaited(ownerId, jobId);
+  }
+
+  /**
+   * 이 작업을 기다리는, 취소하지 않은 만드는 중 세트가 있으면 미리 만들기의 이어받기를 다시 켠다(Codex 1차). 같은 세트의 취소
+   * 두 건이 겹쳐 한쪽이 세트를 지운 뒤 새 세트가 다시 이어받으면, 늦게 도는 쪽의 stop이 새 세트의 이어받기를 풀 수 있어서다.
+   * 새 세트를 넣기 전에 풀린 경우는 넣는 쪽이 넣은 뒤 다시 켠다(createOnce). 미리 만들기가 아니거나 끝났으면 바꾸지 않는다
+   */
+  private async keepAwaited(ownerId: Types.ObjectId, jobId: Types.ObjectId): Promise<void> {
+    const other = await this.sets
+      .findOne(
+        { ownerId, jobId, status: 'generating', deletedAt: null, cancelRequestedAt: null },
+        { _id: 1 },
+      )
+      .lean();
+    if (other) await this.jobs.awaitAgain(ownerId.toHexString(), jobId.toHexString());
   }
 
   /**
@@ -559,6 +578,12 @@ export class QuizSetsService implements OnModuleInit {
         deletedAt: null,
       });
       saved = true;
+      // 이어받은 뒤 세트를 넣기 전에 옛 취소의 stop이 이어받기를 풀었을 수 있어 넣은 뒤 다시 켠다(Codex 1차, keepAwaited)
+      // 이어받기는 처리 순서만 바꾸므로 실패해도 세트 만들기는 그대로 돌려준다
+      if (takenOver)
+        await this.jobs.awaitAgain(userId, takenOver._id).catch((e: unknown) => {
+          this.logger.warn(`이어받기를 다시 켜지 못했습니다(세트는 그대로): ${String(e)}`);
+        });
       const row = created.toObject<QuizSetRow>();
       // 노트를 확인한 뒤 세트를 넣기 전에 학습 폴더가 지워졌으면 이 세트도 지우고(작업도 취소) 404(#602)
       if (await this.dropIfFolderGone(userId, row)) throw notFound('노트');
