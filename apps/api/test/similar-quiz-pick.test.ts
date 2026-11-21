@@ -44,6 +44,8 @@ function setup() {
   const sets = createFakeCollection<QuizSetDocument>(unique);
   const materials = createFakeCollection<MaterialDocument>();
   const attempts = createFakeCollection<QuizAttemptDocument>();
+  // 세트를 넣은 뒤 노트의 학습 폴더가 지워졌는지 본다(QuizSetsService.folderGone, #602)
+  const folders = createFakeCollection();
   const updateOne = vi.fn().mockResolvedValue({ modifiedCount: 1 });
   Object.assign(sets.model, { updateOne });
   const jobs = createFakeJobs();
@@ -55,6 +57,7 @@ function setup() {
     attempts.model,
     aiJobs,
     recordingPages,
+    folders.model as never,
   );
   const similar = new SimilarQuizService(
     sets.model,
@@ -108,7 +111,7 @@ function setup() {
     } as never);
     return { set: set._id.toHexString(), qs, ids: qs.map((q) => q._id.toHexString()) };
   };
-  return { sets, attempts, jobs, materials, quizSets, similar, note, seed, updateOne };
+  return { sets, attempts, jobs, materials, folders, quizSets, similar, note, seed, updateOne };
 }
 
 describe('readQuestionIds(POST /quiz-sets/similar 본문)', () => {
