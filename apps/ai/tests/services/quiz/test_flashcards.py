@@ -3,6 +3,7 @@
 import re
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -99,7 +100,7 @@ def test_a_card_whose_back_is_not_in_the_note_is_dropped_and_refilled_once() -> 
     assert why is None
     assert [c["front"] for c in cards] == [c["front"] for c in [*GOOD[:4], GOOD[4]]]
     again = llm.named(flashcards.NAME)[1].user
-    assert "1장" in again
+    assert f"플래시카드 {1 + flashcards.SPARE}장" in again  # 모자란 1장 + 여유(#631)
     assert flashcards.NOT_IN_NOTE in again  # 앞 카드의 문제점을 알려 줌
     assert "이질 아메바의 영양형" in again  # 이미 만든 앞면은 다시 만들지 않게
 
@@ -251,7 +252,7 @@ def test_a_front_needs_most_of_its_words_in_the_note() -> None:
     assert cards == [] and why is not None and flashcards.FRONT_NOT_IN_NOTE in why
 
 
-def test_the_output_limit_fits_five_cards() -> None:
+def test_the_output_limit_fits_the_cards_asked_for() -> None:
     limits: list[int] = []
 
     class Capture(FakeLlm):
@@ -260,8 +261,8 @@ def test_the_output_limit_fits_five_cards() -> None:
             return super().call(*a, max_tokens=max_tokens, **k)
 
     make(Capture({flashcards.NAME: [{"cards": GOOD}], flashcards.VERIFY_NAME: all_match}))
-    # 앞 80자 + 뒤 200자 + 개념 · JSON 키가 5장(한글은 글자당 1토큰 안팎)
-    assert limits[0] == 200 + flashcards.CARD_TOKENS * 5
+    # 앞 80자 + 뒤 200자 + 개념 · JSON 키가 요청한 8장(5장 + 여유, #631)(한글은 글자당 1토큰 안팎)
+    assert limits[0] == 200 + flashcards.CARD_TOKENS * (flashcards.COUNT + flashcards.SPARE)
     assert flashcards.CARD_TOKENS * 1 >= flashcards.FRONT_MAX + flashcards.BACK_MAX + 60
 
 
@@ -474,3 +475,82 @@ def test_fronts_that_differ_only_in_a_symbol_are_different_cards() -> None:
     cards, why = flashcards.make(llm, {1: page}, [(1, "Cl")], end=float("inf"))
     assert [c["front"] for c in cards] == ["Cl", "Cl-"]
     assert why is not None and flashcards.SAME_FRONT in why
+
+
+# ---------- 여유 있게 받아 5장 고르기(#631, TestQA QUIZ-024) ----------
+
+# 코드 검사를 통과하는 카드 3장 더(GOOD과 앞면이 다름)
+EXTRA = [
+    card("이질 아메바 포낭형", "4핵, 인체 감염형"),
+    card("대장 아메바의 병원성", "비병원성이다.", concept="대장 아메바"),
+    card("질편모충", "성 접촉으로 감염된다.", 2, "질편모충"),
+]
+
+
+def rejects(*fronts: str) -> Callable[[str], JsonObject]:
+    """앞뒤 짝 검사: 앞면이 fronts인 카드만 틀림."""
+
+    def check(user: str) -> JsonObject:
+        shown = re.findall(r"^앞: (.*)$", user, re.M)
+        return {"results": [{"matches": f not in fronts} for f in shown]}
+
+    return check
+
+
+def fronts_of(cards: list[JsonObject]) -> list[str]:
+    return [str(c["front"]) for c in cards]
+
+
+def test_the_first_call_asks_for_spare_cards_and_keeps_five_that_pass() -> None:
+    # 8장 중 3장 탈락(뒷면이 노트에 없음 1 · 앞뒤 짝 2): 보충 호출 없이 남은 5장
+    first = [GOOD[0], MADE_UP, GOOD[1], EXTRA[0], GOOD[2], EXTRA[1], GOOD[3], EXTRA[2]]
+    llm = fake({flashcards.NAME: [{"cards": first}]}, rejects(GOOD[1]["front"], EXTRA[1]["front"]))
+    cards, why = make(llm)
+    assert why is None
+    assert fronts_of(cards) == fronts_of([GOOD[0], EXTRA[0], GOOD[2], GOOD[3], EXTRA[2]])
+    calls = llm.named(flashcards.NAME)
+    assert len(calls) == 1 and len(llm.named(flashcards.VERIFY_NAME)) == 1
+    asked = flashcards.COUNT + flashcards.SPARE
+    assert f"플래시카드 {asked}장" in calls[0].user
+    assert calls[0].schema["properties"]["cards"]["maxItems"] == asked
+
+
+def test_cards_past_five_that_pass_are_left_out() -> None:
+    llm = fake({flashcards.NAME: [{"cards": [*EXTRA, *GOOD]}]})
+    cards, why = make(llm)
+    assert why is None
+    assert fronts_of(cards) == fronts_of([*EXTRA, *GOOD[:2]])
+
+
+def test_the_pair_check_sees_at_most_the_cards_asked_for() -> None:
+    # 모델이 요청보다 많이 돌려줘도(Claude는 maxItems를 설명으로만 받음) 검사는 요청 수까지
+    many = [*GOOD, *EXTRA, card("포낭형", "4핵, 인체 감염형")]
+    llm = fake({flashcards.NAME: [{"cards": many}]})
+    cards, why = make(llm)
+    assert len(cards) == flashcards.COUNT and why is None
+    shown = re.findall(r"^카드 \d+ ", llm.named(flashcards.VERIFY_NAME)[0].user, re.M)
+    assert len(shown) == flashcards.COUNT + flashcards.SPARE
+
+
+def test_a_short_first_round_is_refilled_with_spare_cards() -> None:
+    first = [GOOD[0], MADE_UP, GOOD[1]]  # 2장만 통과
+    second = [GOOD[2], MADE_UP, GOOD[3], GOOD[4], EXTRA[0]]
+    llm = fake({flashcards.NAME: [{"cards": first}, {"cards": second}]})
+    cards, why = make(llm)
+    assert why is None
+    assert fronts_of(cards) == fronts_of(GOOD)
+    calls = llm.named(flashcards.NAME)
+    assert len(calls) == 2
+    asked = flashcards.COUNT - 2 + flashcards.SPARE  # 모자란 3장 + 여유
+    assert f"플래시카드 {asked}장" in calls[1].user
+    assert calls[1].schema["properties"]["cards"]["maxItems"] == asked
+    assert "이질 아메바의 영양형" in calls[1].user  # 이미 만든 앞면은 다시 만들지 않게
+
+
+def test_still_short_after_the_refill_keeps_what_was_made_in_two_calls() -> None:
+    llm = fake({flashcards.NAME: [{"cards": [GOOD[0], MADE_UP]}, {"cards": [GOOD[1], MADE_UP]}]})
+    cards, why = make(llm)
+    assert fronts_of(cards) == fronts_of(GOOD[:2])
+    assert why == f"2/5장만 만듦({flashcards.NOT_IN_NOTE})"
+    assert len(llm.named(flashcards.NAME)) == 2  # 카드 만들기 호출은 2번까지
+    assert len(llm.named(flashcards.VERIFY_NAME)) == 2
