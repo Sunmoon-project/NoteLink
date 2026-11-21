@@ -137,7 +137,7 @@ jobs:
       - name: Replica set MongoDB integration
         env:
           MONGODB_VERIFY_URI: mongodb://127.0.0.1:27018/?directConnection=true
-        run: npm run test -w apps/api -- test/materials-regenerate-real-db.test.ts test/quiz-first-review-real-db.test.ts test/friends-sent-real-db.test.ts test/room-share-cards-real-db.test.ts
+        run: npm run test -w apps/api -- test/materials-regenerate-real-db.test.ts test/quiz-first-review-real-db.test.ts test/friends-sent-real-db.test.ts test/room-share-cards-real-db.test.ts test/folders-real-db.test.ts
       - name: Test
         run: npm test
 

@@ -60,6 +60,7 @@ function setup() {
     attempts.model,
     new AiJobsService(jobs.model),
     recordingPages,
+    createFakeCollection().model as never,
   );
   /** 녹음 정리 작업을 넣는다 */
   const addSummaryJob = (over: Record<string, unknown> = {}) => {

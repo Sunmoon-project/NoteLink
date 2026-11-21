@@ -103,7 +103,9 @@ export class QuizBoxService {
             // 기존 항목 확인 · 번호 배정 · 삽입을 한 트랜잭션으로 묶는다. 같은 사람의 카운터 문서를 함께 쓰므로 겹치는 요청은
             // 쓰기 충돌로 다시 시도되고, 다시 시도된 쪽은 먼저 끝난 요청이 넣은 문제를 "이미 담긴 문제"로 보고 번호를 받지 않는다
             // (번호만 먼저 받고 삽입이 뒤바뀌어 순서가 역전되는 일이 없다)
+            let added: string[] = [];
             await this.connection.transaction(async (session) => {
+                added = [];
                 // 이미 담긴 문제는 그대로 둔다(담은 시각 · 순서 번호가 바뀌지 않는다). 새 문제만 번호를 받는다
                 const existing = await this.items
                     .find({ userId: owner, questionId: { $in: ids.map((id) => new Types.ObjectId(id)) } }, { questionId: 1 }, { session })
@@ -111,6 +113,7 @@ export class QuizBoxService {
                 const have = new Set(existing.map((e) => e.questionId.toString()));
                 const fresh = ids.filter((id) => !have.has(id));
                 if (fresh.length === 0) return;
+                added = fresh;
                 // 새로 담을 개수만큼 번호 묶음을 한 번에 받는다 → 이 요청의 문제들은 이어진 번호라 다른 요청과 섞이지 않는다
                 const counter = await this.counters
                     .findOneAndUpdate({ _id: owner }, { $inc: { seq: fresh.length } }, { upsert: true, returnDocument: 'after', session })
@@ -131,8 +134,25 @@ export class QuizBoxService {
                     { ordered: false, session },
                 );
             });
+            await this.dropIfSetGone(owner, added, setOf);
         }
         return this.box(userId);
+    }
+
+    /**
+     * 확인한 뒤 담기 전에 세트가 지워졌으면(학습 폴더 삭제, #602) 이 요청이 새로 담은 항목을 뺀다. 폴더 삭제의 정리가 끝난
+     * 뒤에 담겼을 수 있어 담은 쪽이 다시 본다. 원래 있던 항목(지운 세트의 문제도 보관함에 남음)은 건드리지 않는다
+     */
+    private async dropIfSetGone(owner: Types.ObjectId, added: string[], setOf: Map<string, Types.ObjectId>): Promise<void> {
+        if (added.length === 0) return;
+        const setIds = [...new Set(added.map((id) => setOf.get(id)!.toString()))].map((id) => new Types.ObjectId(id));
+        const gone = await this.sets.find({ _id: { $in: setIds }, ownerId: owner, deletedAt: { $ne: null } }, { _id: 1 }).lean<{ _id: Types.ObjectId }[]>();
+        if (gone.length === 0) return;
+        await this.items.deleteMany({
+            userId: owner,
+            questionId: { $in: added.map((id) => new Types.ObjectId(id)) },
+            quizSetId: { $in: gone.map((g) => g._id) },
+        });
     }
 
     /** 내 보관함에서 문제를 뺀다. 보관함에 없는 문제 · 형식이 틀린 id는 앱처럼 그냥 넘어가고, 남의 보관함은 건드리지 않는다 */

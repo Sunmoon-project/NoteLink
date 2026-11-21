@@ -195,7 +195,17 @@ export class FlashcardsService {
       lastResult: null,
       deletedAt: null,
     });
-    return toAppFlashcard(created.toObject() as unknown as FlashcardRow);
+    // 확인한 뒤 저장하기 전에 세트가 지워졌으면(학습 폴더 삭제, #602) 방금 만든 카드도 지우고 확인 때와 같은 404.
+    // 폴더 삭제의 정리가 끝난 뒤에 저장됐을 수 있어 저장한 쪽이 다시 본다
+    const row = created.toObject() as unknown as FlashcardRow;
+    if (
+      source &&
+      !(await this.sets.exists({ _id: source.sourceQuizSetId, ownerId, deletedAt: null }))
+    ) {
+      await this.cards.updateOne({ _id: row._id }, { $set: { deletedAt: new Date() } });
+      throw new NotFoundException({ code: NOT_FOUND, message: '문제를 찾을 수 없어요' });
+    }
+    return toAppFlashcard(row);
   }
 
   /**
@@ -328,6 +338,19 @@ export class FlashcardsService {
       await this.cards.bulkWrite(ops, { ordered: false, timestamps: false });
     } catch (e) {
       if (!onlyDuplicates(e)) throw e;
+    }
+    // 확인한 뒤 쓰기 전에 세트가 지워졌으면(학습 폴더 삭제, #602) 이 세트로 넣은 카드를 지운다. 폴더 삭제의 정리가 끝난
+    // 뒤에 들어갔을 수 있어 쓴 쪽이 다시 본다
+    if (!(await this.sets.exists({ _id: set._id, ownerId: set.ownerId, deletedAt: null }))) {
+      await this.cards.updateMany(
+        {
+          _id: { $in: ops.map((o) => o.updateOne.filter._id) },
+          ownerId: set.ownerId,
+          sourceQuizSetId: set._id,
+          deletedAt: null,
+        },
+        { $set: { deletedAt: new Date() } },
+      );
     }
   }
 

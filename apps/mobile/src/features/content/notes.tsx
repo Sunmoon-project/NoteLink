@@ -6,7 +6,7 @@ import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import {
@@ -29,9 +29,10 @@ import {
   Trash2,
   X,
 } from 'lucide-react-native';
-import type { Material } from '@notelink/shared';
-import { api } from '@/lib/api';
+import type { Material, QuizSet } from '@notelink/shared';
+import { api, ApiError } from '@/lib/api';
 import { toast } from '@/stores/toast';
+import { useQuizProgress } from '@/stores/quiz-progress';
 import { useDraft } from '@/stores/draft';
 import { retryingIn, useRetrying } from '@/stores/retrying';
 import { asQueued, useResummarize } from './resummarize';
@@ -68,6 +69,54 @@ import { seoul } from '@/lib/dates';
 // p.58~60 노트 목록 · 새 자료 · 강의 상세 · 올리기 방식 선택
 
 const TAGS = ['수학', '영어', '국어', '과학', '사회', '자격증', '기타'];
+
+/**
+ * 폴더를 지우면 서버가 그 폴더의 퀴즈 세트 · 플래시카드 · 보관함 문제도 지우므로(#602) 퀴즈 탭이 쓰는 캐시도 새로 읽게 한다
+ */
+const FOLDER_DELETE_KEYS = [
+  'folders',
+  'quiz-sets',
+  'quiz-set',
+  'flashcards',
+  'quiz-box',
+  'today-review',
+] as const;
+const refreshAfterFolderDelete = (qc: QueryClient, folderId: string) => {
+  void dropDeletedProgress(qc, folderId);
+  for (const key of FOLDER_DELETE_KEYS) void qc.invalidateQueries({ queryKey: [key] });
+};
+
+/**
+ * 풀던 퀴즈가 지운 폴더의 세트면 진행도 지운다: 퀴즈 홈의 「이어서 풀기」가 지운 세트를 가리키지 않게(code-review 3차).
+ * 오늘의 복습 · 거기서 이어 만든 오답 복습은 서버가 남기므로(여러 폴더 문제를 섞음) 진행도 남긴다. 캐시로 원본까지 거슬러
+ * 오를 수 있을 때만 캐시로 정하고, 모르면 서버에 그 세트가 남았는지 물어 404일 때만 지운다(Codex 1차)
+ */
+async function dropDeletedProgress(qc: QueryClient, folderId: string) {
+  const progress = useQuizProgress.getState().progress;
+  if (!progress) return;
+  const list = qc.getQueryData<QuizSet[]>(['quiz-sets']) ?? [];
+  const find = (id: string) =>
+    qc.getQueryData<QuizSet>(['quiz-set', id]) ?? list.find((s) => s._id === id);
+  const set = find(progress.setId);
+  // 폴더 id 가 없는(빈) 옛 세트는 노트로 지워질 수 있어 다른 폴더로 보지 않고 서버에 묻는다(Codex 2차)
+  if (set?.folderId && set.folderId !== folderId) return;
+  const seen = new Set<string>();
+  let cur = set;
+  while (cur && !cur.reviewDay && cur.sourceSetId && !seen.has(cur.sourceSetId)) {
+    seen.add(cur.sourceSetId);
+    cur = find(cur.sourceSetId);
+  }
+  if (cur?.reviewDay) return;
+  const gone =
+    set?.folderId === folderId && cur && !cur.sourceSetId
+      ? true
+      : await api.quiz.set(progress.setId).then(
+          () => false,
+          (e: unknown) => e instanceof ApiError && e.status === 404,
+        );
+  if (gone && useQuizProgress.getState().progress?.setId === progress.setId)
+    useQuizProgress.getState().reset();
+}
 const KIND = {
   recording: [Mic, '녹음'],
   handwriting: [PenLine, '필기'],
@@ -135,8 +184,8 @@ export function NoteListScreen() {
   const [removing, setRemoving] = useState<{ _id: string; title: string } | null>(null);
   const delFolder = useMutation({
     mutationFn: (folderId: string) => api.content.deleteFolder(folderId),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['folders'] });
+    onSuccess: (_, folderId) => {
+      refreshAfterFolderDelete(qc, folderId);
       toast('폴더를 삭제했어요');
     },
     onError: () => toast('폴더를 삭제하지 못했어요. 다시 시도해 주세요'),
@@ -433,7 +482,7 @@ export function FolderScreen() {
   const del = useMutation({
     mutationFn: () => api.content.deleteFolder(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['folders'] });
+      refreshAfterFolderDelete(qc, id);
       router.back();
       toast('폴더를 삭제했어요');
     },

@@ -5,6 +5,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, mongo, Types } from 'mongoose';
 
 import { type AppAiJob, AiJobsService, PREGEN_TYPE } from '../ai-jobs/ai-jobs.service.js';
+import { Folder, type FolderDocument } from '../modules/content/schemas/folder.schema.js';
 import { Material, type MaterialDocument } from '../modules/content/schemas/material.schema.js';
 import {
   QuizAttempt,
@@ -28,6 +29,13 @@ export const TODAY_TYPE = 'today_review';
 const REVIEW_TYPES: readonly string[] = [SIMILAR_TYPE, TODAY_TYPE];
 /** 개념 카드 작업(apps/ai services/quiz/flashcards.py TYPE, #558). 결과는 플래시카드 목록을 열 때 옮긴다 */
 export const CARDS_TYPE = 'quiz_flashcards';
+/** 퀴즈 세트를 대상(targetType 'quiz_set')으로 넣는 작업. 세트를 지우면 같이 취소한다(#602) */
+export const SET_JOB_TYPES: readonly string[] = [
+  GENERATE_TYPE,
+  SIMILAR_TYPE,
+  TODAY_TYPE,
+  CARDS_TYPE,
+];
 /**
  * 세트가 ready가 되면 개념 카드 작업을 넣는 작업: 맞춤 퀴즈 · 미리 만들기(#558). 오답 복습 · 오늘의 복습은
  * 기존 범위를 다시 묻는 것이라 만들지 않는다
@@ -311,6 +319,8 @@ export class QuizSetsService {
     private readonly jobs: AiJobsService,
     /** 녹음 노트의 대본을 퀴즈 입력 쪽으로(FR-38). 필기 노트는 쓰지 않는다 */
     private readonly recordingPages: RecordingNotePagesService,
+    /** 세트를 넣은 뒤 노트의 학습 폴더가 지워졌는지 읽기만 한다(folderGone, #602) */
+    @InjectModel(Folder.name) private readonly folders: Model<FolderDocument>,
   ) {}
 
   /**
@@ -393,6 +403,8 @@ export class QuizSetsService {
         targetId: setId.toString(),
         input: await this.generateInput(owner, material, pages),
       }));
+    // 세트를 넣은 뒤의 오류(폴더 확인 · 결과 옮기기)에는 넣은 작업을 거두지 않는다: 세트가 그 작업을 가리킨다
+    let saved = false;
     try {
       const created = await this.sets.create({
         _id: setId,
@@ -410,7 +422,10 @@ export class QuizSetsService {
         // 고유 색인(quiz-set.schema.ts)이 deletedAt이 null인 세트만 센다
         deletedAt: null,
       });
+      saved = true;
       const row = created.toObject<QuizSetRow>();
+      // 노트를 확인한 뒤 세트를 넣기 전에 학습 폴더가 지워졌으면 이 세트도 지우고(작업도 취소) 404(#602)
+      if (await this.dropIfFolderGone(userId, row)) throw notFound('노트');
       if (!reused) return { quizSet: toAppSet(row, job.progress), job };
       // 끝난 작업이라 결과를 바로 옮겨 ready로(만드는 중으로 넣어 같은 노트의 고유 색인도 거친다)
       const synced = await this.sync(row);
@@ -420,7 +435,7 @@ export class QuizSetsService {
       // 같은 노트의 세트를 다른 요청이 먼저 만들었으면 그 세트를 돌려준다. 이때 이어받은 미리 만들기는
       // 먼저 만든 세트도 같은 작업을 이어받았으니 그대로 둔다. 끝난 미리 만들기는 거둘 것이 없다
       const duplicate = isDuplicateKey(e);
-      if (!reused && !(duplicate && job.type === PREGEN_TYPE)) {
+      if (!saved && !reused && !(duplicate && job.type === PREGEN_TYPE)) {
         await this.jobs.cancel(userId, job._id);
       }
       if (!duplicate) throw e;
@@ -437,6 +452,63 @@ export class QuizSetsService {
       }
       return this.generatingSet(owner, material._id);
     }
+  }
+
+  /**
+   * 오늘의 복습 세트이거나 오늘의 복습에서 이어 만든 오답 복습 세트(sourceSetId를 거슬러 올라가 reviewDay가 있는 세트)인지.
+   * 이런 세트는 첫 문제(baseSetId)의 노트 · 폴더만 가지지만 여러 폴더 문제를 섞는다(#602)
+   */
+  private async fromTodayReview(
+    set: Pick<QuizSetRow, 'reviewDay' | 'sourceSetId'>,
+  ): Promise<boolean> {
+    let cur: Pick<QuizSetRow, 'reviewDay' | 'sourceSetId'> | null = set;
+    // 끝(원본 없음)이나 이미 지나온 세트(고리)를 만날 때까지 오른다. 횟수로 끊지 않는다(Codex 1차: 끊으면 깊이 이어 만든
+    // 오늘의 복습 세트를 지울 수 있음). 고리 안의 세트는 모두 reviewDay가 없어 오늘의 복습에서 온 것이 아니다
+    const seen = new Set<string>();
+    while (cur) {
+      if (cur.reviewDay) return true;
+      if (!cur.sourceSetId || seen.has(String(cur.sourceSetId))) return false;
+      seen.add(String(cur.sourceSetId));
+      cur = await this.sets
+        .findOne({ _id: cur.sourceSetId }, { reviewDay: 1, sourceSetId: 1 })
+        .lean<Pick<QuizSetRow, 'reviewDay' | 'sourceSetId'>>();
+    }
+    return false;
+  }
+
+  /**
+   * 노트가 학습 폴더째 지워졌는지(#602). 노트가 지워졌고 그 폴더도 지워졌을 때만 true: 노트 하나만 지운 것은 퀴즈를
+   * 그대로 두므로(폴더 삭제 때만 같이 지움) 여기서도 지운 것으로 보지 않는다. 없는 노트 · 폴더는 false(지금처럼 둠)
+   */
+  async folderGone(owner: Types.ObjectId, materialId: Types.ObjectId): Promise<boolean> {
+    const note = await this.materials
+      .findOne({ _id: materialId, ownerId: owner }, { deletedAt: 1, folderId: 1 })
+      .lean<{ deletedAt?: Date | null; folderId?: Types.ObjectId | null }>();
+    if (!note?.deletedAt || !note.folderId) return false;
+    const folder = await this.folders
+      .findOne({ _id: note.folderId, ownerId: owner }, { deletedAt: 1 })
+      .lean<{ deletedAt?: Date | null }>();
+    return !!folder?.deletedAt;
+  }
+
+  /**
+   * 방금 넣은 세트의 노트가 학습 폴더째 지워졌으면(#602) 세트를 지우고 그 세트 · 노트의 진행 중인 퀴즈 작업을 취소한 뒤
+   * true. 폴더 삭제는 노트 확인과 세트 넣기 사이에 커밋되면 이 세트를 보지 못하므로 넣은 쪽이 넣은 뒤에 다시 본다(커밋
+   * 전에 넣었으면 폴더 삭제 쪽의 커밋 뒤 정리가 잡는다, QuizCleanupService)
+   */
+  async dropIfFolderGone(userId: string, set: QuizSetRow): Promise<boolean> {
+    if (!set.materialId || !(await this.folderGone(set.ownerId, set.materialId))) return false;
+    // 오늘의 복습에서 이어 만든 오답 복습은 여러 폴더 문제를 섞어 폴더 삭제에서 남긴다(QuizCleanupService.removeFor와 같음)
+    if (await this.fromTodayReview(set)) return false;
+    await this.sets.updateOne(
+      { _id: set._id, ownerId: set.ownerId, deletedAt: null },
+      { $set: { deletedAt: new Date() } },
+    );
+    await this.jobs.cancelForTargets(userId, [
+      { targetType: 'quiz_set', targetIds: [set._id.toString()], types: SET_JOB_TYPES },
+      { targetType: 'material', targetIds: [set.materialId.toString()], types: [PREGEN_TYPE] },
+    ]);
+    return true;
   }
 
   /**
@@ -506,13 +578,21 @@ export class QuizSetsService {
       .findOne({ ownerId: owner, materialId: material._id, deletedAt: null })
       .lean<QuizSetRow>();
     if (hasSet) return null;
-    return this.jobs.enqueue({
+    const job = await this.jobs.enqueue({
       type: PREGEN_TYPE,
       userId,
       targetType: 'material',
       targetId: materialId,
       input: await this.generateInput(owner, material, pages),
     });
+    // 노트를 확인한 뒤 넣기 전에 학습 폴더가 지워졌으면 넣은 작업을 멈춘다(#602, 쓸 곳이 없는 AI 호출을 줄임)
+    if (await this.folderGone(owner, material._id)) {
+      await this.jobs.cancelForTargets(userId, [
+        { targetType: 'material', targetIds: [materialId], types: [PREGEN_TYPE] },
+      ]);
+      return null;
+    }
+    return job;
   }
 
   /** 내 퀴즈 세트(최근 것부터). 만드는 중인 세트는 작업 결과를 먼저 옮기고, 끝까지 푼 세트에 completed를 붙인다 */
@@ -682,6 +762,16 @@ export class QuizSetsService {
           .catch((e: unknown) => {
             if (!isDuplicateKey(e)) throw e; // 이미 넣음
           });
+        // 세트를 읽은 뒤 넣기 전에 세트가 지워졌으면(학습 폴더 삭제, #602) 넣은 카드 작업을 멈춘다. 폴더 삭제의 작업
+        // 취소(QuizCleanupService.afterRemove)가 먼저 끝났을 수 있어 넣은 쪽이 다시 본다(Codex 4차)
+        const alive = await this.sets
+          .findOne({ _id: set._id, ownerId: set.ownerId, deletedAt: null }, { _id: 1 })
+          .lean();
+        if (!alive) {
+          await this.jobs.cancelForTargets(owner, [
+            { targetType: 'quiz_set', targetIds: [set._id.toHexString()], types: [CARDS_TYPE] },
+          ]);
+        }
       }
       await this.sets
         .findOneAndUpdate({ _id: set._id, cardsPending: true }, { $set: { cardsPending: false } })

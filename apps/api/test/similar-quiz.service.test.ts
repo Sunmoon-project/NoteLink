@@ -60,6 +60,7 @@ function setup() {
     attempts.model,
     aiJobs,
     recordingPages,
+    createFakeCollection().model as never,
   );
   const similar = new SimilarQuizService(
     sets.model,

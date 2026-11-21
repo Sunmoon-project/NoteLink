@@ -7,6 +7,7 @@ import { type Connection, type Model, Types } from 'mongoose';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
+import { Folder, FolderSchema } from '../src/modules/content/schemas/folder.schema.js';
 import { Material, MaterialSchema } from '../src/modules/content/schemas/material.schema.js';
 import { AiJob, AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
 import { QuizAttempt, QuizAttemptSchema } from '../src/modules/quiz/schemas/quiz-attempt.schema.js';
@@ -41,6 +42,7 @@ describe.skipIf(!uri)('진짜 DB 오답 복습 상태 쓰기', () => {
           { name: Material.name, schema: MaterialSchema },
           { name: QuizAttempt.name, schema: QuizAttemptSchema },
           { name: AiJob.name, schema: AiJobSchema },
+          { name: Folder.name, schema: FolderSchema }, // QuizSetsService.folderGone(#602)
         ]),
       ],
       providers: [QuizSetsService, AiJobsService, RecordingNotePagesService],

@@ -164,6 +164,8 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
     const sid = (x: { _id: Types.ObjectId }) => x._id.toString();
 
     let rows: Row[];
+    /** 지운 세트 id(학습 폴더 삭제 등, #602) */
+    let goneSets: Set<string>;
     const findCalls: { filter: { questionId?: unknown }; options?: { session?: unknown } }[] = [];
     let seqs: Map<string, number>;
     const same = (a: unknown, b: unknown) => String(a) === String(b);
@@ -202,7 +204,15 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
             }
             return Promise.resolve({});
         }),
-        deleteMany: vi.fn(),
+        deleteMany: vi.fn((filter: { userId: Types.ObjectId; questionId: { $in: Types.ObjectId[] }; quizSetId: { $in: Types.ObjectId[] } }) => {
+            rows = rows.filter(
+                (r) =>
+                    !(same(r.userId, filter.userId) &&
+                        filter.questionId.$in.some((i) => same(i, r.questionId)) &&
+                        filter.quizSetId.$in.some((i) => same(i, r.quizSetId))),
+            );
+            return Promise.resolve({});
+        }),
     };
     const countersModel = {
         findOneAndUpdate: vi.fn((filter: { _id: Types.ObjectId }, update: { $inc: { seq: number } }, _options?: { session?: unknown }) => {
@@ -232,17 +242,20 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
         })),
     };
     const setsModel = {
-        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; 'questions._id'?: { $in: Types.ObjectId[] } }, projection?: object) => {
+        find: (filter: { _id?: { $in: Types.ObjectId[] }; ownerId: Types.ObjectId; deletedAt?: null | { $ne: null }; 'questions._id'?: { $in: Types.ObjectId[] } }, projection?: object) => {
             setFinds.push({ filter, projection });
             const all = [
-                { _id: mineSetId, ownerId: ME, folderId: FOLDER_A, deletedAt: null, questions: mine },
-                { _id: mineBSetId, ownerId: ME, folderId: FOLDER_B, deletedAt: null, questions: mineB },
-                { _id: looseSetId, ownerId: ME, deletedAt: null, questions: loose },
-                { _id: legacySetId, ownerId: ME, materialId: legacyMaterial, deletedAt: null, questions: legacy },
-                { _id: deletedSetId, ownerId: ME, materialId: deletedMaterial, deletedAt: null, questions: ofDeletedNote },
-                { _id: otherSetId, ownerId: OTHER_USER, folderId: OTHER_FOLDER, deletedAt: null, questions: theirs },
+                { _id: mineSetId, ownerId: ME, folderId: FOLDER_A, questions: mine },
+                { _id: mineBSetId, ownerId: ME, folderId: FOLDER_B, questions: mineB },
+                { _id: looseSetId, ownerId: ME, questions: loose },
+                { _id: legacySetId, ownerId: ME, materialId: legacyMaterial, questions: legacy },
+                { _id: deletedSetId, ownerId: ME, materialId: deletedMaterial, questions: ofDeletedNote },
+                { _id: otherSetId, ownerId: OTHER_USER, folderId: OTHER_FOLDER, questions: theirs },
             ]
-                .filter((st) => same(st.ownerId, filter.ownerId));
+                .map((st) => ({ ...st, deletedAt: goneSets.has(String(st._id)) ? new Date() : null }))
+                .filter((st) => same(st.ownerId, filter.ownerId))
+                // 지우지 않은 세트만(null) · 지운 세트만({ $ne: null }) 조건
+                .filter((st) => !('deletedAt' in filter) || (filter.deletedAt === null ? st.deletedAt === null : st.deletedAt !== null));
             const hit = filter._id
                 ? all.filter((st) => filter._id!.$in.some((i) => same(i, st._id)))
                 : all.filter((st) => st.questions.some((qq) => filter['questions._id']!.$in.some((i) => same(i, qq._id))));
@@ -276,12 +289,28 @@ describe('QuizBoxService 담기 · 목록 · 순서 (메모리 가짜 모델)', 
 
     beforeEach(() => {
         rows = [];
+        goneSets = new Set();
         seqs = new Map();
         itemsModel.bulkWrite.mockClear();
         countersModel.findOneAndUpdate.mockClear();
         lock = Promise.resolve();
         sessions.length = 0;
         findCalls.length = 0;
+    });
+
+    it('확인한 뒤 담기 전에 세트가 지워지면(학습 폴더 삭제, #602) 이 요청이 새로 담은 항목만 뺀다(Codex 1차)', async () => {
+        await svc().save(ME.toString(), [sid(mine[0]!)]);
+        // 세트를 확인한 뒤 담는 사이 폴더 삭제와 그 정리가 끝난다
+        itemsModel.bulkWrite.mockImplementationOnce((ops) => {
+            goneSets.add(String(mineSetId));
+            for (const { updateOne } of ops) rows.push({ ...updateOne.update.$setOnInsert });
+            return Promise.resolve({});
+        });
+
+        await svc().save(ME.toString(), [sid(mine[1]!), sid(mine[0]!)]);
+
+        // 새로 담은 문제는 빠지고, 전에 담아 둔 문제는 그대로(보관함은 지운 세트의 문제도 보여 줌)
+        expect(rows.map((r) => String(r.questionId))).toEqual([sid(mine[0]!)]);
     });
 
     it('담으면 보낸 순서대로 이어진 번호가 붙고, 목록은 앱 모양(정답 포함)으로 번호 순으로 나온다', async () => {

@@ -298,6 +298,8 @@ describe.skipIf(!uri)('진짜 DB 노트 등록', () => {
       materials as never,
       {} as never,
       conn,
+      // 이 시험은 폴더 · 노트만 본다. 퀴즈 정리는 folders-real-db.test.ts(#602)
+      { removeFor: vi.fn().mockResolvedValue([]), afterRemove: vi.fn() } as never,
     );
     let registered = 0;
     let rejected = 0;

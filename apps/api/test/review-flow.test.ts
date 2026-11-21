@@ -67,6 +67,7 @@ function setup() {
     attempts.model,
     aiJobs,
     notePages,
+    createFakeCollection().model as never,
   );
   const similar = new SimilarQuizService(
     sets.model,

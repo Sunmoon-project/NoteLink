@@ -40,8 +40,8 @@ export function FolderGrid({
 }
 
 /**
- * 1단계에서 「전체 보기」를 고르면 넘기는 folderId. 폴더를 지워도(FoldersService.remove) 보관 문제 · 카드는 남고,
- * 폴더 정보가 없는 옛 항목도 있어서 노트를 고르지 않고 전체를 보는 길로 쓴다(#601 Codex 1차)
+ * 1단계에서 「전체 보기」를 고르면 넘기는 folderId. 폴더 정보가 없는 옛 항목 · 출처 없는 카드도 있어서 노트를 고르지 않고
+ * 전체를 보는 길로 쓴다(#601 Codex 1차). 폴더를 지우면 그 폴더의 보관 문제 · 카드는 함께 지워진다(#602)
  */
 export const ALL_FOLDERS = 'all';
 
