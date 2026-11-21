@@ -275,6 +275,8 @@ export interface Api {
     }>;
     explanation(questionId: string): Promise<{ text: string }>;
     similar(quizSetId: string): Promise<QuizSet>;
+    /** 고른 문제로 유사 퀴즈(#605, 한 노트의 문제 SIMILAR_PICK_MAX개까지). 처음엔 만드는 중(generating) */
+    similarPick(questionIds: string[]): Promise<QuizSet>;
     /** 오늘의 복습 세트(오늘 만든 것, 없으면 null) */
     today(): Promise<QuizSet | null>;
     /** 오늘의 복습 만들기(하루 한 번). 처음엔 만드는 중(generating) */

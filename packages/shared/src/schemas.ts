@@ -280,6 +280,9 @@ export const QuizSet = z.object({
   started: z.boolean().optional(),
   // 오늘의 복습 세트만: 그 복습 날짜(서울 YYYY-MM-DD). 다른 세트는 null(#561, 없는 옛 서버 응답도 같게 본다)
   reviewDay: z.string().nullable().optional(),
+  // 끝낸 세트만: 마지막으로 끝낸 풀이에서 틀린 문제 id(무효 풀이 제외). 세트 목록 응답만 채움(#605, 유사 퀴즈 고르기의
+  // 기본 체크). 없는 옛 서버 응답은 「틀린 문제 없음」으로 본다
+  wrongQuestionIds: z.array(id).optional(),
 });
 
 export const AttemptAnswer = z.object({

@@ -942,6 +942,8 @@ export const mockApi: Api = {
         },
         900,
       ),
+    similarPick: () =>
+      ok({ ...S.makeQuizSet('m', '유사 퀴즈'), questions: S.SIMILAR, questionCount: 3 }, 900),
     box: () => ok(db.quizBox),
     saveToBox: async (questionIds) => {
       await ok(undefined);

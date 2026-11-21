@@ -121,7 +121,24 @@ export interface AppQuizSet {
   started?: boolean;
   /** 오늘의 복습 세트만: 그 복습 날짜(서울 YYYY-MM-DD, seoulDay). 다른 세트는 null(#561) */
   reviewDay: string | null;
+  /**
+   * 끝낸 세트만: 마지막으로 끝낸 풀이에서 틀린 문제 id(무효 풀이 제외, withCompleted). 세트 목록 · 오늘의 복습 응답만
+   * 채운다. 유사 퀴즈 고르기(#605)가 틀린 문제를 처음부터 체크해 둔다
+   */
+  wrongQuestionIds?: string[];
 }
+
+/** 끝낸 풀이에서 틀린 문제를 읽을 만큼(withCompleted · 유사 퀴즈 고르기) */
+export interface FinishedRow {
+  _id: Types.ObjectId;
+  quizSetId: Types.ObjectId;
+  finishedAt: Date;
+  answers?: { questionId: Types.ObjectId; correct: boolean; void?: boolean | string }[];
+}
+
+/** 그 풀이에서 틀린 문제 id. 무효 풀이(결함 문제, 오늘의 복습이 정함)는 틀린 것으로 보지 않는다 */
+export const wrongIdsOf = (a: Pick<FinishedRow, 'answers'>): string[] =>
+  (a.answers ?? []).filter((x) => !x.correct && !x.void).map((x) => x.questionId.toString());
 
 /** DB에 저장한 문제 한 개(lean) */
 export interface QuestionRow {
@@ -615,19 +632,35 @@ export class QuizSetsService {
     const ready = sets.filter((s) => s.status === 'ready').map((s) => new Types.ObjectId(s._id));
     if (ready.length === 0) return sets;
     const mine = { userId: owner, quizSetId: { $in: ready } };
-    // 같은 세트를 여러 번 풀었어도 세트마다 한 줄(distinct)
-    const [finished, begun] = (await Promise.all([
-      this.attempts.distinct('quizSetId', { ...mine, finishedAt: { $ne: null } }),
+    const finishedOnly = { ...mine, finishedAt: { $ne: null } };
+    // 같은 세트를 여러 번 풀었어도 세트마다 한 줄(distinct). 틀린 문제는 세트마다 마지막으로 끝낸 풀이 하나만 DB에서
+    // 골라 받는다(세트 수만큼만 오고, 풀이가 쌓여도 응답에 실려 오는 양은 같다, code-review 2차)
+    const [finished, begun, lastRows] = (await Promise.all([
+      this.attempts.distinct('quizSetId', finishedOnly),
       this.attempts.distinct('quizSetId', mine),
-    ])) as [Types.ObjectId[], Types.ObjectId[]];
+      this.attempts.aggregate<{ _id: Types.ObjectId; answers?: FinishedRow['answers'] }>([
+        { $match: finishedOnly },
+        { $sort: { finishedAt: -1 } },
+        { $group: { _id: '$quizSetId', answers: { $first: '$answers' } } },
+      ]),
+    ])) as [
+      Types.ObjectId[],
+      Types.ObjectId[],
+      { _id: Types.ObjectId; answers?: FinishedRow['answers'] }[],
+    ];
     const done = new Set(finished.map((id) => id.toString()));
     const started = new Set(begun.map((id) => id.toString()));
+    const wrong = new Map(lastRows.map((a) => [String(a._id), wrongIdsOf(a)] as const));
     // 끝낸 풀이도 시작한 풀이다. 두 조회가 따로 읽으므로 completed는 started와 상관없이 끝낸 풀이로만 정한다
     return sets.map((s) => {
       if (s.status !== 'ready') return s;
       const finishedHere = done.has(s._id);
       if (!finishedHere && !started.has(s._id)) return s;
-      return { ...s, started: true, ...(finishedHere ? { completed: true } : {}) };
+      return {
+        ...s,
+        started: true,
+        ...(finishedHere ? { completed: true, wrongQuestionIds: wrong.get(s._id) ?? [] } : {}),
+      };
     });
   }
 
@@ -1158,7 +1191,10 @@ export function toWorkerQuestion(q: QuestionRow): Record<string, unknown> {
  * 오답 복습 처리기에 넘길 문제. 이 풀이를 끝낼 때 처음 복습 상태를 쓴 문제(srsAttemptId)는 복습 상태 없이 넘긴다:
  * 처리기가 이 풀이로 srs.update(None, …)를 다시 하므로, 쓴 상태를 넘기면 같은 풀이를 두 번 센다
  */
-export function reviewInputQuestion(q: QuestionRow, attemptId: Types.ObjectId): Record<string, unknown> {
+export function reviewInputQuestion(
+  q: QuestionRow,
+  attemptId: Types.ObjectId,
+): Record<string, unknown> {
   return toWorkerQuestion(q.srsAttemptId?.equals(attemptId) ? { ...q, srs: null } : q);
 }
 

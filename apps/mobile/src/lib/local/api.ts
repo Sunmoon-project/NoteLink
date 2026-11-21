@@ -1273,6 +1273,7 @@ const api: Api = {
     },
     explanation: () => needServer('AI 설명'),
     similar: () => needServer('유사 퀴즈'),
+    similarPick: () => needServer('유사 퀴즈'),
     // 기기 저장 모드의 오늘 복습은 기기 오답 노트(wrong-review)가 맡는다
     today: () => ok(null),
     startToday: () => needServer('오늘의 복습'),

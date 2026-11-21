@@ -201,6 +201,7 @@ export const httpApi: Api = {
     finish: (attemptId) => http.post(P.attemptFinish(attemptId)),
     explanation: (questionId) => http.get(P.explanation(questionId)),
     similar: (id) => http.post(P.similarQuiz(id)),
+    similarPick: (questionIds) => http.post(P.similarQuizPick, { questionIds }),
     today: () => http.get(P.todayReview),
     startToday: () => http.post(P.todayReview),
     box: (folderId) => http.get(P.quizBox, folderId ? { folderId } : undefined),
