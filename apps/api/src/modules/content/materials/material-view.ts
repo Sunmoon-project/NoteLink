@@ -16,6 +16,7 @@ export interface MaterialRow {
     progress?: number;
     jobId?: Types.ObjectId | null;
     regenJobId?: Types.ObjectId | null;
+    lastRegenJobId?: Types.ObjectId | null;
     checkedAt?: Date;
   };
   summary?: { sections: { heading: string; body: string }[]; points?: string[] } | null;
