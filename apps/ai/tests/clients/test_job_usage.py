@@ -240,3 +240,37 @@ def test_a_call_that_ends_after_the_job_is_logged_on_its_own(
         "작업 비용 j1 (quiz_generate) 늦게 끝난 호출: LLM claude"
         " · claude-haiku-5-5 1회 입력 1/출력 1 $0.25 · 합계 $0.25"
     ]
+
+
+class HookLock:
+    """잠금을 풀 때 한 번 hook을 부름: 잠금 구간 사이에 다른 스레드가 끼어드는 순서를 만듦."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.hook: Any = None
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self._lock.release()
+        hook, self.hook = self.hook, None
+        if hook:
+            hook()
+
+
+def test_a_call_added_while_closing_is_in_exactly_one_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # 닫기와 값 복사 사이에 더해진 호출이 작업 줄 · 늦은 줄에 함께 들어가지 않음(Codex 재리뷰 #622)
+    caplog.set_level(logging.INFO, logger="app.clients.llm")
+    usage = JobUsage()
+    usage.add(meter_of("claude-sonnet-5-5", 0.5))
+    lock = HookLock()
+    usage._lock = lock  # type: ignore[assignment]
+    lock.hook = lambda: usage.add(meter_of("claude-haiku-5-5", 0.25))
+    line = usage.close("j1 (quiz_generate)")
+    late = [r.getMessage() for r in caplog.records]
+    assert line.endswith("합계 $0.5") and "claude-haiku" not in line
+    assert len(late) == 1 and late[0].endswith("합계 $0.25")
+    assert usage.usd == 0.75

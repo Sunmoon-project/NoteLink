@@ -1130,10 +1130,14 @@ class JobUsage:
         self._budget = meter.budget or self._budget
 
     def close(self, job: str) -> str:
-        """작업이 끝남: 지금까지의 summary(). 이 뒤에 더해진 호출은 job 이름으로 따로 로그."""
+        """작업이 끝남: 지금까지의 summary(). 이 뒤에 더해진 호출은 job 이름으로 따로 로그.
+
+        닫기와 값 복사를 한 잠금 안에서: 그 사이 더해진 호출이 두 줄에 함께 들어가지 않게
+        (Codex 재리뷰 #622)."""
         with self._lock:
             self._closed = job
-        return self.summary()
+            snapshot = self._snapshot()
+        return self._format(*snapshot)
 
     @property
     def usd(self) -> float:
@@ -1149,8 +1153,24 @@ class JobUsage:
         모델별 값은 잠금 안에서 복사해 합계와 같은 시점으로 씀(Codex 리뷰 #622).
         """
         with self._lock:
-            rows = [(model, tuple(row)) for model, row in self._models.items()]
-            usd, fallbacks, budget = self._usd, self._fallbacks, self._budget
+            snapshot = self._snapshot()
+        return self._format(*snapshot, provider)
+
+    def _snapshot(
+        self,
+    ) -> tuple[list[tuple[str, tuple[float, ...]]], float, int, "Budgeted | None"]:
+        """잠금 안에서: 모델별 값 · 합계 · 넘긴 수 · 예산을 같은 시점으로 복사."""
+        rows = [(model, tuple(row)) for model, row in self._models.items()]
+        return rows, self._usd, self._fallbacks, self._budget
+
+    @staticmethod
+    def _format(
+        rows: list[tuple[str, tuple[float, ...]]],
+        usd: float,
+        fallbacks: int,
+        budget: "Budgeted | None",
+        provider: str | None = None,
+    ) -> str:
         models = sorted(rows, key=lambda m: (-m[1][3], m[0]))
         used = sorted({_provider_of(model) for model, _ in models})
         parts = [f"LLM {'+'.join(used) or provider or settings.llm_provider}"]
