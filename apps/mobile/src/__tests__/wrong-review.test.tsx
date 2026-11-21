@@ -226,7 +226,14 @@ describe('오답 복습 화면', () => {
 
   it('답을 고르기 전에만 건너뛰기가 있고, 답을 본 뒤 · 결과 화면에서는 없다', async () => {
     recordWrong('u1', q('a'));
+    recordWrong('u1', q('b'));
     await renderScreen(<WrongReviewScreen />);
+    expect(screen.getByRole('button', { name: '오늘 복습 건너뛰기' })).toBeTruthy();
+    await fireEvent.press(screen.getByText('② 나'));
+    expect(screen.queryByRole('button', { name: '오늘 복습 건너뛰기' })).toBeNull();
+    // 다음 문제로 넘어가면 다시 보인다(Codex 1차)
+    await fireEvent.press(screen.getByText('다음 문제'));
+    expect(screen.getByText('Q. 문제 b')).toBeTruthy();
     expect(screen.getByRole('button', { name: '오늘 복습 건너뛰기' })).toBeTruthy();
     await fireEvent.press(screen.getByText('② 나'));
     // 마지막 문제에서 결과를 건너뛰고 닫지 않게 「복습 마치기」만 남긴다
