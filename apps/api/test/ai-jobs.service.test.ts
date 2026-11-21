@@ -225,21 +225,26 @@ describe('AiJobsService.cancelByUser (앱의 취소, #626)', () => {
     expect(stopped).toEqual([true, true, false]);
   });
 
-  it('멈춘 뒤 다른 요청이 미리 만들기를 다시 이어받았으면 false', async () => {
-    const t = setup();
-    const { _id } = await t.add({ type: 'quiz_pregen', targetType: 'material', targetId: NOTE });
-    t.row(_id)['awaited'] = true;
-    const original = t.service.cancel.bind(t.service);
-    vi.spyOn(t.service, 'cancel').mockImplementation(async (...args) => {
-      await original(...args);
-      t.row(_id)['awaited'] = true; // 그사이 다른 요청이 다시 이어받음
-    });
-    let stopped: boolean | undefined;
-    t.service.registerCancelHandler('quiz_pregen', async (ctx) => {
-      stopped = await ctx.cancel();
-    });
-    await t.service.cancelByUser(ME, _id);
-    expect(stopped).toBe(false);
+  it('이어받기를 푼 바로 뒤에 미리 만들기가 끝나도 true(바꾼 결과로 정함, Codex 2차)', async () => {
+    const { service, add, row, rows, model, stopped } = withHandler();
+    const { _id } = await add({ type: 'quiz_pregen', targetType: 'material', targetId: NOTE });
+    row(_id)['awaited'] = true;
+    const update = model.findOneAndUpdate.bind(model);
+    vi.spyOn(model, 'findOneAndUpdate').mockImplementation(((
+      ...args: Parameters<typeof update>
+    ) => {
+      const q = update(...args);
+      // 이어받기를 풀자마자 처리기가 끝냄
+      if ((args[1] as { $set?: { awaited?: boolean } }).$set?.awaited === false)
+        Object.assign(
+          rows.find((r) => String(r._id) === _id)!,
+          { status: 'succeeded' },
+        );
+      return q;
+    }) as never);
+    await service.cancelByUser(ME, _id);
+    expect(row(_id)['status']).toBe('succeeded');
+    expect(stopped).toEqual([true]);
   });
 
   it('canceled 작업을 또 취소해도 true(앞 정리가 실패했어도 다시 눌러 마저 하게)', async () => {

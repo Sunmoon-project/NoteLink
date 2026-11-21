@@ -78,9 +78,9 @@ export type InputRefresher = (ctx: InputRefreshContext) => Promise<Record<string
 
 /**
  * 작업 종류별로 등록하는 「앱의 취소」 함수(#626). 작업을 넣은 모듈이 멈추기 전후로 그 대상(퀴즈 세트 등)을 정리한다.
- * 받은 cancel()을 꼭 한 번 불러 작업을 멈춘다: 지울 대상을 멈추기 전에 고르고, 멈춘 뒤에도 취소로 멈춘 상태일 때만
- * 정리하게 하려고 순서를 그 모듈에 맡긴다. cancel()은 지금 작업이 이 취소로 멈춘 상태인지 돌려준다(canceled이거나,
- * 미리 만들기면 이어받기가 풀린 채 아직 도는 중. 취소가 닿기 전에 끝난 작업은 false).
+ * 받은 cancel()을 꼭 한 번 불러 작업을 멈춘다: 지울 대상을 멈추기 전에 고르고, 취소로 멈췄을 때만 정리하게 하려고
+ * 순서를 그 모듈에 맡긴다. cancel()은 작업이 이 취소로 멈췄는지 돌려준다(canceled로 바꿈 · 이미 canceled · 도는 미리
+ * 만들기의 이어받기를 풂이면 true. 취소가 닿기 전에 끝난 작업은 false).
  * 같은 작업에 여러 번 불릴 수 있어(앱이 두 번 누름) 여러 번 불려도 같은 결과여야 한다. 던지면 취소 응답도 오류가 된다
  * (작업은 이미 멈췄으므로 앱이 다시 누르면 다시 부른다)
  */
@@ -432,6 +432,15 @@ export class AiJobsService {
    * 여러 번 불러도 같다(앱이 두 번 취소해도 뒤에서 만들던 작업은 남는다, Codex 리뷰 #236).
    */
   async cancel(userId: string, jobId: string): Promise<void> {
+    await this.stop(userId, jobId);
+  }
+
+  /**
+   * cancel의 본체. 이 취소로 작업이 멈춘 상태인지 돌려준다: 이 호출이 canceled로 바꿨거나 미리 만들기의 이어받기를
+   * 풀었으면(도는 중이었음) true, 이미 canceled였으면 true, 취소가 닿기 전에 끝났으면(succeeded · failed) false.
+   * 바꾼 결과로 정하므로 바꾼 바로 뒤에 미리 만들기가 끝나도 true다(Codex 2차)
+   */
+  private async stop(userId: string, jobId: string): Promise<boolean> {
     const filter = { _id: objectId(jobId), userId: objectId(userId) };
     const pregen = await this.jobs
       .findOneAndUpdate(
@@ -440,7 +449,7 @@ export class AiJobsService {
         { projection: { _id: 1 } },
       )
       .lean();
-    if (pregen) return;
+    if (pregen) return true;
     // held(다시 시도의 한도 확인 중 · 확인 도중 멈춤)도 취소한다. 취소하면 release가 열지 않는다
     const row = await this.jobs
       .findOneAndUpdate(
@@ -449,8 +458,10 @@ export class AiJobsService {
         { projection: { _id: 1 } },
       )
       .lean();
-    if (row) return;
-    if ((await this.jobs.exists(filter)) === null) throw notFound();
+    if (row) return true;
+    const now = await this.jobs.findOne(filter, { status: 1 }).lean<Pick<AiJobRow, 'status'>>();
+    if (!now) throw notFound();
+    return now.status === 'canceled';
   }
 
   /**
@@ -467,17 +478,7 @@ export class AiJobsService {
     await handler({
       userId,
       jobId,
-      cancel: async () => {
-        await this.cancel(userId, jobId);
-        const row = await this.jobs
-          .findOne(filter, { type: 1, status: 1, awaited: 1 })
-          .lean<Pick<AiJobRow, 'type' | 'status' | 'awaited'>>();
-        if (!row) return false;
-        return (
-          row.status === 'canceled' ||
-          (row.type === PREGEN_TYPE && ACTIVE.includes(row.status) && row.awaited === false)
-        );
-      },
+      cancel: () => this.stop(userId, jobId),
     });
   }
 

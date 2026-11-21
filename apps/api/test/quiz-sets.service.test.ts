@@ -1685,6 +1685,19 @@ describe('QuizSetsService 생성 중 취소하면 세트를 지운다(#626)', ()
       },
     });
 
+  /** 취소가 미리 만들기의 이어받기를 푼(awaited=false) 바로 뒤, 세트를 지우기 전에 then을 한 번 끼워 넣는다 */
+  const afterRelease = (t: ReturnType<typeof setup>, then: () => Promise<void>) => {
+    const update = t.jobs.model.findOneAndUpdate.bind(t.jobs.model);
+    const spy = vi.spyOn(t.jobs.model, 'findOneAndUpdate').mockImplementation(((
+      ...args: Parameters<typeof update>
+    ) => {
+      const q = update(...args);
+      if ((args[1] as { $set?: { awaited?: boolean } }).$set?.awaited !== false) return q;
+      spy.mockRestore();
+      return { lean: async () => (await then(), q.lean()) };
+    }) as never);
+  };
+
   it('만드는 중에 취소하면 작업은 canceled, 세트는 deletedAt이고 목록 · 조회에서 빠진다', async () => {
     const t = setup();
     const { quizSet, job } = await t.service.create(ME.toHexString(), await t.addNote());
@@ -1784,10 +1797,8 @@ describe('QuizSetsService 생성 중 취소하면 세트를 지운다(#626)', ()
     const materialId = await t.addNote();
     const p = await pregen(t, materialId);
     const first = await t.service.create(ME.toHexString(), materialId);
-    const cancel = t.aiJobs.cancel.bind(t.aiJobs);
     let again: Awaited<ReturnType<typeof t.service.create>> | undefined;
-    vi.spyOn(t.aiJobs, 'cancel').mockImplementationOnce(async (...args) => {
-      await cancel(...args);
+    afterRelease(t, async () => {
       again = await t.service.create(ME.toHexString(), materialId); // 나갔다 곧바로 다시 들어옴
     });
 
@@ -1801,6 +1812,24 @@ describe('QuizSetsService 생성 중 취소하면 세트를 지운다(#626)', ()
     expect((await t.service.findMine(ME.toHexString(), again!.quizSet._id)).status).toBe(
       'generating',
     );
+  });
+
+  it('이어받기를 푼 바로 뒤에 미리 만들기가 끝나도 세트를 지우고, 다음 만들기가 그 결과로 바로 ready 세트를 만든다(Codex 2차)', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    const first = await t.service.create(ME.toHexString(), materialId);
+    afterRelease(t, async () => {
+      t.finish(p._id, { questions: fullSet(), title: '세포 생물학 퀴즈', concepts: ['세포막'] });
+    });
+
+    await t.aiJobs.cancelByUser(ME.toHexString(), p._id);
+
+    expect(t.job(p._id)['status']).toBe('succeeded');
+    expect(t.set(first.quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+    const again = await t.service.create(ME.toHexString(), materialId);
+    expect(again.quizSet.status).toBe('ready');
+    expect(again.job._id).toBe(p._id);
   });
 
   it('미리 만들기 세트를 지우다 실패해도 다시 취소하면 마저 지운다(Codex 1차)', async () => {
