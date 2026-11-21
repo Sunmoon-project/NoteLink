@@ -444,6 +444,28 @@ describe('QuizSetsService 작업 결과 반영', () => {
     });
   });
 
+  it('검사를 통과한 표시(checked: true)만 문제에 저장하고 앱에는 보내지 않는다(#625)', async () => {
+    const { service, addNote, finish, set } = setup();
+    const materialId = await addNote();
+    const { quizSet, job } = await service.create(ME.toHexString(), materialId);
+    finish(job._id, {
+      questions: [
+        workerQuestion(1, { checked: true }),
+        workerQuestion(2),
+        workerQuestion(3, { checked: 'yes' }),
+        ...fullSet(4).slice(0, QUIZ_SET_SIZE - 3),
+      ],
+      title: '세포 생물학 맞춤 퀴즈 · 11-08',
+      concepts: null,
+    });
+
+    const ready = await service.findMine(ME.toHexString(), quizSet._id);
+    const stored = set(quizSet._id)['questions'] as Record<string, unknown>[];
+    expect(stored.slice(0, 3).map((q) => q['checked'])).toEqual([true, undefined, undefined]);
+    expect(ready.questions.some((q) => 'checked' in q)).toBe(false);
+    expect(QuizSet.parse(ready)).toEqual(ready);
+  });
+
   it('난이도는 하 · 중 · 상만 저장하고, 없거나 다른 값이면 문제는 두고 null로(#268)', async () => {
     const { service, addNote, finish, set } = setup();
     const materialId = await addNote();

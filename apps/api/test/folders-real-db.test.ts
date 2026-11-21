@@ -257,6 +257,14 @@ describe.skipIf(!uri)('진짜 DB 학습 폴더 확인', () => {
     });
   });
   describe('폴더 삭제 — 그 폴더의 퀴즈 · 플래시카드 · 보관함 항목도 같이 지우기 (#602)', () => {
+    // 유사 퀴즈(similar.create)는 오답 복습 작업(run)으로 만드는 경로를 본다: 자동 오답 복습이 켜졌을 때(#625)의 경로.
+    // 꺼진 기본 설정의 고르기 모드 경로는 similar-quiz-auto-off.test.ts가 본다
+    beforeAll(() => {
+      vi.stubEnv('AUTO_SIMILAR_ON_FINISH', 'true');
+    });
+    afterAll(() => {
+      vi.unstubAllEnvs();
+    });
     const col = (name: string) => conn.collection(name);
     const row = (name: string, id: Types.ObjectId) => col(name).findOne({ _id: id });
     const question = (prompt: string) => ({
@@ -741,6 +749,51 @@ describe.skipIf(!uri)('진짜 DB 학습 폴더 확인', () => {
       const made = await similar.create(me.toHexString(), String(source._id));
 
       expect((await row('quiz_sets', new Types.ObjectId(made._id)))?.deletedAt).toBeNull();
+    });
+
+    it('자동 오답 복습이 꺼진 기본 설정(고르기 모드, #625)에서도 오늘의 복습에서 만든 유사 퀴즈는 기준 폴더 삭제에 남는다(Codex 2차)', async () => {
+      vi.stubEnv('AUTO_SIMILAR_ON_FINISH', '');
+      try {
+        const { f, note, source } = await similarSource('오늘의 복습 기준 폴더 · 고르기');
+        await col('quiz_sets').updateOne(
+          { _id: source._id },
+          { $set: { reviewDay: '2026-09-02' } },
+        );
+        await service.remove(me.toHexString(), f._id);
+        expect((await row('materials', note))?.deletedAt).toBeInstanceOf(Date);
+
+        // 기준 폴더가 이미 지워진 오늘의 복습에서 만들어도 바로 지우지 않는다(오늘의 복습에서 이어 만든 세트)
+        const made = await similar.create(me.toHexString(), String(source._id));
+        const id = new Types.ObjectId(made._id);
+        const job = await col('ai_jobs').findOne({ targetId: id });
+        expect((job?.input as { mode?: string } | undefined)?.mode).toBe('pick');
+        expect((await row('quiz_sets', id))?.deletedAt).toBeNull();
+        expect(String((await row('quiz_sets', id))?.sourceSetId)).toBe(String(source._id));
+      } finally {
+        vi.stubEnv('AUTO_SIMILAR_ON_FINISH', 'true');
+      }
+    });
+
+    it('기본 설정에서 오늘의 복습으로 만든 유사 퀴즈는 그 뒤 기준 폴더를 지워도 남는다(Codex 3차)', async () => {
+      vi.stubEnv('AUTO_SIMILAR_ON_FINISH', '');
+      try {
+        const { f, source } = await similarSource('오늘의 복습 기준 폴더 · 고르기 뒤 삭제');
+        await col('quiz_sets').updateOne(
+          { _id: source._id },
+          { $set: { reviewDay: '2026-09-03' } },
+        );
+        const made = await similar.create(me.toHexString(), String(source._id));
+        const id = new Types.ObjectId(made._id);
+        expect((await row('quiz_sets', id))?.deletedAt).toBeNull();
+
+        await service.remove(me.toHexString(), f._id);
+
+        // 오늘의 복습(원본)과 거기서 이어 만든 유사 퀴즈는 여러 폴더 문제를 섞으므로 남긴다
+        expect((await row('quiz_sets', source._id))?.deletedAt).toBeNull();
+        expect((await row('quiz_sets', id))?.deletedAt).toBeNull();
+      } finally {
+        vi.stubEnv('AUTO_SIMILAR_ON_FINISH', 'true');
+      }
     });
 
     it('세트를 넣은 뒤 폴더 확인이 실패하면 오류를 올리고 넣은 작업은 거두지 않는다(code-review 2차)', async () => {

@@ -55,6 +55,11 @@ export class Question {
   // 넘겨, 같은 풀이를 두 번 세지 않게 한다. 오답 복습 · 오늘의 복습이 srs를 다시 쓰면 지운다
   @Prop({ type: Types.ObjectId, default: undefined })
   srsAttemptId?: Types.ObjectId;
+
+  // 만들 때 '정답 둘' 검사를 통과한 문제(맞춤 퀴즈, #625). 퀴즈를 끝낼 때 처음 복습 상태에 checked: true로 옮겨 오늘의
+  // 복습이 다시 검사하지 않게 한다. 서버 · 처리기 안에서만 쓰고 앱에는 보내지 않는다. 이 필드가 없는 기존 문제는 검사 전으로 본다
+  @Prop({ type: Boolean, default: undefined })
+  checked?: boolean;
 }
 
 export const QuestionSchema = SchemaFactory.createForClass(Question);

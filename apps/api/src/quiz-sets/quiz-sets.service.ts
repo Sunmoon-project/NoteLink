@@ -161,6 +161,7 @@ export interface QuestionRow {
   difficulty?: Difficulty | null;
   srs?: Record<string, unknown> | null;
   srsAttemptId?: Types.ObjectId;
+  checked?: boolean;
 }
 
 /** DB에서 읽은 세트 한 줄(lean) */
@@ -293,6 +294,9 @@ export function fromWorkerQuestion(raw: unknown): QuestionRow | null {
     // 하 · 중 · 상이 아니면 null(난이도 하나 때문에 문제를 빼지 않음)
     difficulty: difficultyOf(q['difficulty']),
     srs: null,
+    // 만들 때 '정답 둘' 검사를 통과한 문제(맞춤 퀴즈 generate.py, #625). 처음 복습 상태에 checked로 옮겨 오늘의 복습이
+    // 다시 검사하지 않게 한다. 표시가 없는 문제(옛 문제 · 검사가 애매해 남겨 둔 초안으로 채운 문제)는 그대로 검사한다
+    ...(q['checked'] === true ? { checked: true } : {}),
   };
 }
 

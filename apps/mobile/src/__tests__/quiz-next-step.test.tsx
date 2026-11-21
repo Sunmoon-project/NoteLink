@@ -104,6 +104,62 @@ it('틀린 문제가 있으면 복습 날짜를 알려 주고, 비슷한 문제 
   expect(screen.queryByText('유사 퀴즈 생성하기')).toBeNull();
 });
 
+// #625: 퀴즈를 끝내도 유사 퀴즈를 저절로 만들지 않는다. 노트 폴더가 있는 세트는 고르기 화면(#610, 틀린 문제를 처음부터
+// 체크)으로 보내고, 오늘의 복습 · 폴더가 없는 옛 세트만 그 세트로 만든다(위 시험)
+it('노트 폴더가 있는 세트는 「비슷한 문제로 지금 복습」을 그 노트의 고르기 화면으로 연다', async () => {
+  mockApi.quiz.set.mockResolvedValue({ ...quizSet, materialId: 'note-1', folderId: 'folder-1' });
+  setParams({ setId: quizSet._id, results: '10' });
+  await renderScreen(<QuizReviewScreen />, client());
+
+  await fireEvent.press(
+    await screen.findByRole('button', { name: /틀린 1문제 비슷한 문제로 지금 복습/ }),
+  );
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/play/similar',
+    params: { folderId: 'folder-1' },
+  });
+});
+
+it('오늘의 복습 세트는 폴더가 있어도 그 세트로 유사 퀴즈를 만든다(고르기 화면은 오늘의 복습을 보이지 않음)', async () => {
+  mockApi.quiz.set.mockResolvedValue({
+    ...quizSet,
+    materialId: 'note-1',
+    folderId: 'folder-1',
+    reviewDay: '2026-11-21',
+  });
+  setParams({ setId: quizSet._id, results: '10' });
+  await renderScreen(<QuizReviewScreen />, client());
+
+  await fireEvent.press(
+    await screen.findByRole('button', { name: /틀린 1문제 비슷한 문제로 지금 복습/ }),
+  );
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/play/similar',
+    params: { setId: quizSet._id },
+  });
+});
+
+// Codex 3차: 원본 세트가 있는 세트(오늘의 복습 · 다른 세트에서 이어 만든 유사 퀴즈 · 다시 보기)는 고르기 화면으로 보내면
+// 앱의 고르기 생성이 원본 연결 없이 만들어 오늘의 복습 계보(폴더 삭제 보호)가 끊긴다. 서버가 원본을 남기는 세트 경로로
+it('원본 세트가 있는 세트(이어 만든 세트)는 폴더가 있어도 그 세트로 유사 퀴즈를 만든다', async () => {
+  mockApi.quiz.set.mockResolvedValue({
+    ...quizSet,
+    materialId: 'note-1',
+    folderId: 'folder-1',
+    sourceSetId: 'today-set',
+  });
+  setParams({ setId: quizSet._id, results: '10' });
+  await renderScreen(<QuizReviewScreen />, client());
+
+  await fireEvent.press(
+    await screen.findByRole('button', { name: /틀린 1문제 비슷한 문제로 지금 복습/ }),
+  );
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/play/similar',
+    params: { setId: quizSet._id },
+  });
+});
+
 it('다 맞혔으면 다음 복습 날짜만 알려 주고, 비슷한 문제 복습은 내지 않는다', async () => {
   setParams({ setId: quizSet._id, results: '11', scheduled: '2', nextReviewDay: tomorrow });
   await renderScreen(<QuizReviewScreen />, client());
