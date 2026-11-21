@@ -76,6 +76,20 @@ export interface InputRefreshContext {
  */
 export type InputRefresher = (ctx: InputRefreshContext) => Promise<Record<string, unknown>>;
 
+/**
+ * 작업 종류별로 등록하는 「앱의 취소」 함수(#626). 작업을 넣은 모듈이 멈추기 전후로 그 대상(퀴즈 세트 등)을 정리한다.
+ * 받은 cancel()을 꼭 한 번 불러 작업을 멈춘다: 지울 대상을 멈추기 전에 고르고, 취소로 멈췄을 때만 정리하게 하려고
+ * 순서를 그 모듈에 맡긴다. cancel()은 작업이 이 취소로 멈췄는지 돌려준다(canceled로 바꿈 · 이미 canceled · 도는 미리
+ * 만들기의 이어받기를 풂이면 true. 취소가 닿기 전에 끝난 작업은 false).
+ * 같은 작업에 여러 번 불릴 수 있어(앱이 두 번 누름) 여러 번 불려도 같은 결과여야 한다. 던지면 취소 응답도 오류가 된다
+ * (작업은 이미 멈췄으므로 앱이 다시 누르면 다시 부른다)
+ */
+export type CancelHandler = (ctx: {
+  userId: string;
+  jobId: string;
+  cancel: () => Promise<boolean>;
+}) => Promise<void>;
+
 /** 앱에 보내는 작업 모양(packages/shared AiJob). input · 잠금 · 중간 결과는 보내지 않는다 */
 export interface AppAiJob {
   _id: string;
@@ -228,6 +242,9 @@ export class AiJobsService {
   /** 다시 시도 전에 input을 새로 만드는 함수(작업 종류별). 등록하지 않은 종류는 input을 그대로 쓴다 */
   private readonly refreshers = new Map<string, InputRefresher>();
 
+  /** 앱의 취소에서 부를 함수(작업 종류별, #626). 등록하지 않은 종류는 취소만 한다 */
+  private readonly cancelHandlers = new Map<string, CancelHandler>();
+
   /** 다시 시도로 같은 작업 id가 처리기에 다시 들어갔을 때 부를 함수(AiJobsGateway) */
   private readonly retried = new Set<(jobId: string) => void>();
 
@@ -250,6 +267,14 @@ export class AiJobsService {
    */
   registerInputRefresher(type: string, refresher: InputRefresher): void {
     this.refreshers.set(type, refresher);
+  }
+
+  /**
+   * 이 종류의 작업을 앱이 취소할 때(cancelByUser) 부를 함수를 등록한다(#626). 의존은 그 모듈 → 이 서비스 한 방향.
+   * 같은 종류를 다시 등록하면 덮어쓴다
+   */
+  registerCancelHandler(type: string, handler: CancelHandler): void {
+    this.cancelHandlers.set(type, handler);
   }
 
   /**
@@ -402,10 +427,20 @@ export class AiJobsService {
    * 멈추고 결과를 버린다(apps/ai runner, #263).
    * 이미 끝난 작업(succeeded · failed · canceled)은 그대로 둔다(앱이 두 번 눌러도 같은 결과).
    * 미리 만들기(quiz_pregen)는 지우지 않고 이어받기만 푼다(awaited=false): 사용자가 기다리기를
-   * 그만둔 것이라, 처리기가 뒤에서 마저 만들어 두면 그 노트의 퀴즈 세트가 나중에 ready가 된다.
+   * 그만둔 것이라, 처리기가 뒤에서 마저 만들어 두면 그 노트의 다음 퀴즈 요청이 결과를 바로 쓴다(앱의 취소는 기다리던
+   * 세트를 지우므로(cancelByUser, #626) 그 세트가 ready가 되지는 않는다).
    * 여러 번 불러도 같다(앱이 두 번 취소해도 뒤에서 만들던 작업은 남는다, Codex 리뷰 #236).
    */
   async cancel(userId: string, jobId: string): Promise<void> {
+    await this.stop(userId, jobId);
+  }
+
+  /**
+   * cancel의 본체. 이 취소로 작업이 멈춘 상태인지 돌려준다: 이 호출이 canceled로 바꿨거나 미리 만들기의 이어받기를
+   * 풀었으면(도는 중이었음) true, 이미 canceled였으면 true, 취소가 닿기 전에 끝났으면(succeeded · failed) false.
+   * 바꾼 결과로 정하므로 바꾼 바로 뒤에 미리 만들기가 끝나도 true다(Codex 2차)
+   */
+  private async stop(userId: string, jobId: string): Promise<boolean> {
     const filter = { _id: objectId(jobId), userId: objectId(userId) };
     const pregen = await this.jobs
       .findOneAndUpdate(
@@ -414,7 +449,7 @@ export class AiJobsService {
         { projection: { _id: 1 } },
       )
       .lean();
-    if (pregen) return;
+    if (pregen) return true;
     // held(다시 시도의 한도 확인 중 · 확인 도중 멈춤)도 취소한다. 취소하면 release가 열지 않는다
     const row = await this.jobs
       .findOneAndUpdate(
@@ -423,8 +458,28 @@ export class AiJobsService {
         { projection: { _id: 1 } },
       )
       .lean();
-    if (row) return;
-    if ((await this.jobs.exists(filter)) === null) throw notFound();
+    if (row) return true;
+    const now = await this.jobs.findOne(filter, { status: 1 }).lean<Pick<AiJobRow, 'status'>>();
+    if (!now) throw notFound();
+    return now.status === 'canceled';
+  }
+
+  /**
+   * 앱의 취소(POST /ai-jobs/:id/cancel). 그 작업 종류에 등록한 함수가 있으면 그 함수가 cancel을 불러 멈추고 대상을
+   * 정리한다(#626, CancelHandler). 없으면 cancel만. 남의 작업 · 없는 작업은 함수를 부르지 않고 404.
+   * 서버 안의 취소(세트 저장 실패 등)는 cancel을 바로 쓰므로 함수를 부르지 않는다
+   */
+  async cancelByUser(userId: string, jobId: string): Promise<void> {
+    const filter = { _id: objectId(jobId), userId: objectId(userId) };
+    const found = await this.jobs.findOne(filter, { type: 1 }).lean<Pick<AiJobRow, 'type'>>();
+    if (!found) throw notFound();
+    const handler = this.cancelHandlers.get(found.type);
+    if (!handler) return this.cancel(userId, jobId);
+    await handler({
+      userId,
+      jobId,
+      cancel: () => this.stop(userId, jobId),
+    });
   }
 
   /**

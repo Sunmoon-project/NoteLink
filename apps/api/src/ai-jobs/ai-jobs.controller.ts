@@ -36,11 +36,14 @@ export class AiJobsController {
     return { data: await this.jobs.findMine(userOf(req), id) };
   }
 
-  /** 아직 끝나지 않았으면 취소한다. 이미 끝난 작업이어도 같은 204(앱이 두 번 눌러도 같음) */
+  /**
+   * 아직 끝나지 않았으면 취소한다. 이미 끝난 작업이어도 같은 204(앱이 두 번 눌러도 같음).
+   * 만드는 중인 맞춤 퀴즈를 취소하면 그 세트도 지운다(#626, QuizSetsService.dropCanceled)
+   */
   @Post(':id/cancel')
   @HttpCode(HttpStatus.NO_CONTENT)
   async cancel(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
-    await this.jobs.cancel(userOf(req), id);
+    await this.jobs.cancelByUser(userOf(req), id);
   }
 
   /** 실패 · 취소한 작업을 다시 넣는다. 다시 넣지 않은 경우(처리 중 · 성공)도 지금 상태를 돌려준다 */

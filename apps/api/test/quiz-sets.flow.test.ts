@@ -26,6 +26,7 @@ describe('퀴즈 세트 주소 (/api/v1/quiz-sets)', () => {
   const materials = createFakeCollection();
   const me = new Types.ObjectId();
   let auth: { Authorization: string };
+  let otherAuth: { Authorization: string };
 
   beforeAll(async () => {
     stubAppEnv();
@@ -47,6 +48,8 @@ describe('퀴즈 세트 주소 (/api/v1/quiz-sets)', () => {
     await app.init();
     const { accessToken } = await moduleRef.get(TokenService).issue(me.toHexString());
     auth = { Authorization: `Bearer ${accessToken}` };
+    const other = await moduleRef.get(TokenService).issue(new Types.ObjectId().toHexString());
+    otherAuth = { Authorization: `Bearer ${other.accessToken}` };
   });
 
   afterAll(async () => {
@@ -95,6 +98,42 @@ describe('퀴즈 세트 주소 (/api/v1/quiz-sets)', () => {
     expect(one.body.data).toMatchObject({ _id: quizSet._id, status: 'generating' });
     const list = await http().get(api(PATHS.quizSets)).set(auth).expect(200);
     expect(list.body.data.map((s: { _id: string }) => s._id)).toEqual([quizSet._id]);
+  });
+
+  it('만드는 중에 앱이 취소하면(POST /ai-jobs/:id/cancel) 세트가 목록 · 조회에서 빠진다(#626)', async () => {
+    const materialId = await addNote();
+    const res = await http().post(api(PATHS.quizSets)).set(auth).send({ materialId }).expect(201);
+    const { quizSet, job } = res.body.data;
+
+    // 남의 취소는 없는 작업과 같게 404이고 세트는 그대로
+    await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(otherAuth)
+      .expect(404);
+    await http()
+      .get(api(PATHS.quizSet(quizSet._id)))
+      .set(auth)
+      .expect(200);
+
+    await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(auth)
+      .expect(204);
+    // 두 번 눌러도 같은 204
+    await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(auth)
+      .expect(204);
+
+    const list = await http().get(api(PATHS.quizSets)).set(auth).expect(200);
+    expect(list.body.data).toEqual([]);
+    const one = await http()
+      .get(api(PATHS.quizSet(quizSet._id)))
+      .set(auth)
+      .expect(404);
+    expect(one.body).toMatchObject({ code: 'NOT_FOUND' });
+    expect(sets.rows).toHaveLength(1);
+    expect(sets.rows[0]?.['deletedAt']).toBeInstanceOf(Date);
   });
 
   it.each([[{}], [{ materialId: 3 }], [{ materialId: '' }]])(
