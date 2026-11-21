@@ -52,6 +52,15 @@ export function createFakeJobs() {
       const row = rows.find((r) => matches(r, filter));
       return Promise.resolve(row ? { _id: row._id } : null);
     },
+    // 맞는 행을 모두 바꾼다($set · $unset). 지운 대상의 작업을 한 번에 멈출 때(cancelForTargets) 쓴다
+    updateMany: (filter: Filter, update: Update) => {
+      const found = rows.filter((r) => matches(r, filter));
+      for (const row of found) {
+        Object.assign(row, update.$set);
+        for (const key of Object.keys(update.$unset ?? {})) delete row[key];
+      }
+      return Promise.resolve({ modifiedCount: found.length });
+    },
     findOneAndUpdate: (filter: Filter, update: Update, options: Options = {}) => {
       const found = rows.filter((r) => matches(r, filter));
       if (options.sort) found.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());

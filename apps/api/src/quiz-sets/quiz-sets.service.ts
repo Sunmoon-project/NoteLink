@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  type OnModuleInit,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, mongo, Types } from 'mongoose';
 
@@ -326,7 +332,7 @@ export const isDuplicateKey = (e: unknown) =>
  * 남의 노트 · 세트는 없는 것과 같게 404로 답한다.
  */
 @Injectable()
-export class QuizSetsService {
+export class QuizSetsService implements OnModuleInit {
   private typeStatsCache?: { expiresAt: number; value: TypeStats };
   private typeStatsPending?: Promise<TypeStats>;
   constructor(
@@ -347,6 +353,43 @@ export class QuizSetsService {
    */
   afterReview?: (row: QuizSetRow) => Promise<unknown>;
   private readonly logger = new Logger(QuizSetsService.name);
+
+  /** 앱이 맞춤 퀴즈 · 이어받은 미리 만들기를 취소하면 기다리던 세트를 지우도록 ai-jobs에 등록한다(#626) */
+  onModuleInit(): void {
+    for (const type of [GENERATE_TYPE, PREGEN_TYPE]) {
+      this.jobs.registerCancelHandler(type, ({ userId, jobId }) =>
+        this.dropCanceled(userId, jobId),
+      );
+    }
+  }
+
+  /**
+   * 앱의 취소로 멈춘 작업(AiJobsService.cancelByUser)을 기다리던 세트를 지운다(소프트 삭제 deletedAt, #626). 문제가 없는
+   * failed 세트가 남지 않게 한다. 이미 ready가 된 세트는 그대로(작업이 먼저 끝난 늦은 취소, 문제가 있는 퀴즈).
+   * 세트에 딸린 개념 카드 작업(quiz_flashcards)도 멈춘다: 보통 ready 세트에만 있지만 세트가 ready로 바뀌는 순간과
+   * 겹치면 넣을 수 있다(넣는 쪽도 지운 세트면 멈춘다, ensureCards). 여러 번 불려도 같다(지운 세트는 다시 고르지 않음).
+   * 미리 만들기는 뒤에서 계속 돌고, 다 만들면 다음 퀴즈 요청이 결과를 쓴다(unusedPregen은 지운 미완성 세트를 세지 않음)
+   */
+  async dropCanceled(userId: string, jobId: string): Promise<void> {
+    const ownerId = objectId(userId, '퀴즈');
+    const pending = {
+      ownerId,
+      jobId: objectId(jobId, '퀴즈'),
+      status: { $ne: 'ready' },
+      deletedAt: null,
+    };
+    const rows = await this.sets.find(pending, { _id: 1 }).lean<Pick<QuizSetRow, '_id'>[]>();
+    const dropped: string[] = [];
+    for (const { _id } of rows) {
+      const gone = await this.sets
+        .findOneAndUpdate({ ...pending, _id }, { $set: { deletedAt: new Date() } })
+        .lean();
+      if (gone) dropped.push(_id.toHexString());
+    }
+    await this.jobs.cancelForTargets(userId, [
+      { targetType: 'quiz_set', targetIds: dropped, types: [CARDS_TYPE] },
+    ]);
+  }
 
   /**
    * 노트로 맞춤 퀴즈 세트를 만든다. 응답 모양은 앱의 로컬 모의 API(quiz.createSet)와 같은 { quizSet, job }.
@@ -549,7 +592,8 @@ export class QuizSetsService {
 
   /**
    * 아직 세트로 쓰지 않은 끝난 미리 만들기(#274). 넣었던 노트 글이 지금과 같고, 쓸 문제가 있고,
-   * 그 작업을 가리키는 세트가 없을 때만(지운 세트 포함: 지운 퀴즈를 되살리지 않는다).
+   * 그 작업을 가리키는 세트가 없을 때만(지운 ready 세트 포함: 지운 퀴즈를 되살리지 않는다. ready가 되기 전에
+   * 취소해 지운 세트는 빼고 센다, #626).
    * 이어받아 만든 세트도 jobId로 그 작업을 가리키므로 같은 결과를 두 번 쓰지 않는다
    */
   private async unusedPregen(
@@ -561,9 +605,12 @@ export class QuizSetsService {
     const found = await this.jobs.finishedPregen(userId, 'material', material._id.toString());
     if (!found || !samePages(found.pages, pages) || !readyUpdate(found.job)) return null;
     const jobId = new Types.ObjectId(found.job._id);
-    const used = await this.sets
-      .findOne({ ownerId: owner, $or: [{ _id: jobId }, { jobId }] })
-      .lean<QuizSetRow>();
+    const sets = await this.sets
+      .find({ ownerId: owner, $or: [{ _id: jobId }, { jobId }] }, { status: 1, deletedAt: 1 })
+      .lean<Pick<QuizSetRow, 'status' | 'deletedAt'>[]>();
+    // 기다리다 취소해 지운 세트(ready가 되기 전에 지움, #626)는 퀴즈를 보인 적이 없어 쓴 것으로 세지 않는다. ready 전에
+    // 세트를 지우는 다른 길은 학습 폴더 삭제뿐인데, 그때는 노트도 지워져 이 노트로 다시 만들 수 없다(create · pregenerate가 404)
+    const used = sets.some((s) => !s.deletedAt || s.status === 'ready');
     return used ? null : found.job;
   }
 

@@ -173,6 +173,91 @@ describe('AiJobsService.cancel', () => {
   });
 });
 
+describe('AiJobsService.cancelByUser (앱의 취소, #626)', () => {
+  const withHandler = () => {
+    const t = setup();
+    const handler = vi.fn().mockResolvedValue(undefined);
+    t.service.registerCancelHandler('quiz_generate', handler);
+    t.service.registerCancelHandler('quiz_pregen', handler);
+    return { ...t, handler };
+  };
+
+  it.each(['queued', 'running'])(
+    '%s 작업을 취소하면 그 종류에 등록한 함수를 부른다',
+    async (status) => {
+      const { service, add, row, handler } = withHandler();
+      const { _id } = await add();
+      row(_id)['status'] = status;
+      await service.cancelByUser(ME, _id);
+      expect(row(_id)['status']).toBe('canceled');
+      expect(handler).toHaveBeenCalledExactlyOnceWith({ userId: ME, jobId: _id });
+    },
+  );
+
+  it.each(['succeeded', 'failed'])(
+    '취소가 닿기 전에 끝난(%s) 작업은 부르지 않는다(늦은 취소)',
+    async (status) => {
+      const { service, add, row, handler } = withHandler();
+      const { _id } = await add();
+      row(_id)['status'] = status;
+      await service.cancelByUser(ME, _id);
+      expect(row(_id)['status']).toBe(status);
+      expect(handler).not.toHaveBeenCalled();
+    },
+  );
+
+  it('이 호출이 이어받기를 푼 미리 만들기만 부른다(이미 풀림 · 이어받지 않음 · 이미 끝남은 부르지 않음)', async () => {
+    const { service, add, row, handler } = withHandler();
+    const { _id } = await add({ type: 'quiz_pregen', targetType: 'material', targetId: NOTE });
+    await service.cancelByUser(ME, _id); // 아무도 이어받지 않은 미리 만들기
+    expect(handler).not.toHaveBeenCalled();
+
+    row(_id)['awaited'] = true;
+    await service.cancelByUser(ME, _id);
+    expect(row(_id)).toMatchObject({ status: 'queued', awaited: false });
+    expect(handler).toHaveBeenCalledExactlyOnceWith({ userId: ME, jobId: _id });
+
+    await service.cancelByUser(ME, _id); // 이미 풀림(두 번 누름)
+    expect(handler).toHaveBeenCalledOnce();
+
+    row(_id)['awaited'] = true;
+    row(_id)['status'] = 'succeeded';
+    await service.cancelByUser(ME, _id);
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it('canceled 작업을 또 취소하면 다시 부른다(앞 정리가 실패했어도 마저 하게, 등록한 쪽은 여러 번 불려도 같다)', async () => {
+    const { service, add, handler } = withHandler();
+    const { _id } = await add();
+    await service.cancelByUser(ME, _id);
+    await service.cancelByUser(ME, _id);
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it('등록하지 않은 종류는 취소만 한다', async () => {
+    const { service, add, row, handler } = withHandler();
+    const { _id } = await add({ type: 'similar_quiz' });
+    await service.cancelByUser(ME, _id);
+    expect(row(_id)['status']).toBe('canceled');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('남의 작업은 404이고 부르지 않는다', async () => {
+    const { service, add, row, handler } = withHandler();
+    const { _id } = await add();
+    await expect(service.cancelByUser(OTHER, _id)).rejects.toMatchObject(notFound);
+    expect(row(_id)['status']).toBe('queued');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('서버 안의 취소(cancel)는 부르지 않는다', async () => {
+    const { service, add, handler } = withHandler();
+    const { _id } = await add();
+    await service.cancel(ME, _id);
+    expect(handler).not.toHaveBeenCalled();
+  });
+});
+
 describe('AiJobsService.retry', () => {
   it.each(['failed', 'canceled'])(
     '%s 작업은 처리기 규칙대로 되돌려 다시 넣는다',

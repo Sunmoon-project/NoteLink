@@ -10,8 +10,10 @@ import { configureApp } from '../src/app.setup.js';
 import { RefreshToken } from '../src/modules/auth/schemas/refresh-token.schema.js';
 import { TokenService } from '../src/modules/auth/token.service.js';
 import { AiJob } from '../src/modules/quiz/schemas/ai-job.schema.js';
+import { QuizSet } from '../src/modules/quiz/schemas/quiz-set.schema.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeJobs, LATER } from './support/fake-ai-jobs.js';
+import { createFakeCollection } from './support/fake-collection.js';
 import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
 
 const api = (path: string) => `/api/v1${path}`;
@@ -32,6 +34,9 @@ describe('AI 작업 주소 (/api/v1/ai-jobs/:id · cancel · retry)', () => {
       .useValue(createFakeRefreshTokens().model)
       .overrideProvider(getModelToken(AiJob.name))
       .useValue(fakeJobs.model)
+      // 맞춤 퀴즈 작업을 취소하면 기다리던 세트를 찾아 지운다(#626). 이 시험의 작업은 세트가 없다
+      .overrideProvider(getModelToken(QuizSet.name))
+      .useValue(createFakeCollection().model)
       .compile();
     app = moduleRef.createNestApplication();
     configureApp(app);

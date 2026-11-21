@@ -85,6 +85,7 @@ function setup() {
     new RecordingNotePagesService(jobs.model),
     createFakeCollection().model as never,
   );
+  service.onModuleInit();
   const addNote = async (over: Record<string, unknown> = {}) => {
     const { _id } = (await materials.model.create({
       ownerId: ME,
@@ -616,7 +617,7 @@ describe('QuizSetsService 리뷰 반영(/code-review)', () => {
     (sets.model as unknown as { create: unknown }).create = create;
   });
 
-  it('이어받은 미리 만들기는 앱이 취소해도 지우지 않고 이어받기만 푼다', async () => {
+  it('이어받은 미리 만들기는 앱이 취소해도 멈추지 않고 이어받기만 푼다(세트는 지움, #626)', async () => {
     const { service, aiJobs, addNote, job } = setup();
     const materialId = await addNote();
     const pregen = await aiJobs.enqueue({
@@ -627,9 +628,9 @@ describe('QuizSetsService 리뷰 반영(/code-review)', () => {
       input: {},
     });
     const { quizSet } = await service.create(ME.toHexString(), materialId);
-    await aiJobs.cancel(ME.toHexString(), pregen._id);
+    await aiJobs.cancelByUser(ME.toHexString(), pregen._id);
     expect(job(pregen._id)).toMatchObject({ status: 'queued', awaited: false });
-    expect((await service.findMine(ME.toHexString(), quizSet._id)).status).toBe('generating');
+    await expect(service.findMine(ME.toHexString(), quizSet._id)).rejects.toMatchObject(notFound);
   });
 
   it('order가 정수가 아닌 문제는 뺀다(처리기 parse_question은 정수만 받는다)', async () => {
@@ -672,9 +673,10 @@ describe('QuizSetsService 리뷰 반영(/code-review)', () => {
       input: {},
     });
     const first = await service.create(ME.toHexString(), materialId);
-    await aiJobs.cancel(ME.toHexString(), pregen._id);
+    await aiJobs.cancelByUser(ME.toHexString(), pregen._id);
     const again = await service.create(ME.toHexString(), materialId);
-    expect(again.quizSet._id).toBe(first.quizSet._id);
+    // 취소한 세트는 지웠으므로(#626) 새 세트가 같은 미리 만들기를 이어받는다
+    expect(again.quizSet._id).not.toBe(first.quizSet._id);
     expect(again.job).toMatchObject({ _id: pregen._id, awaited: true });
     expect(job(pregen._id)).toMatchObject({ status: 'queued', awaited: true });
   });
@@ -1662,4 +1664,169 @@ describe('QuizSetsService 개념 카드 작업(#558)', () => {
     expect((await t.service.findMine(ME.toHexString(), setId.toHexString())).status).toBe('ready');
     expect(cardJobs(t)).toHaveLength(0);
   });
+});
+
+describe('QuizSetsService 생성 중 취소하면 세트를 지운다(#626)', () => {
+  /** 노트 정리 뒤 넣은 미리 만들기. 입력의 노트 글은 addNote의 글이 있는 쪽과 같다(끝난 결과를 다시 쓸 수 있게) */
+  const pregen = (t: ReturnType<typeof setup>, materialId: string) =>
+    t.aiJobs.enqueue({
+      type: 'quiz_pregen',
+      userId: ME.toHexString(),
+      targetType: 'material',
+      targetId: materialId,
+      input: {
+        day: '2026-11-10',
+        size: QUIZ_SET_SIZE,
+        material: {
+          id: materialId,
+          title: '세포 생물학',
+          pages: [{ pageNo: 1, ocrText: NOTE_TEXT }],
+        },
+      },
+    });
+
+  it('만드는 중에 취소하면 작업은 canceled, 세트는 deletedAt이고 목록 · 조회에서 빠진다', async () => {
+    const t = setup();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), await t.addNote());
+
+    await t.aiJobs.cancelByUser(ME.toHexString(), job._id);
+
+    expect(t.job(job._id)['status']).toBe('canceled');
+    expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+    expect(await t.service.list(ME.toHexString())).toEqual([]);
+    await expect(t.service.findMine(ME.toHexString(), quizSet._id)).rejects.toMatchObject(notFound);
+  });
+
+  it('조회가 먼저 failed로 바꾼 세트도 지운다', async () => {
+    const t = setup();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), await t.addNote());
+    await t.aiJobs.cancel(ME.toHexString(), job._id); // 앱의 취소가 세트를 지우기 전에 다른 조회가 끼어듦
+    await t.service.list(ME.toHexString());
+    expect(t.set(quizSet._id)['status']).toBe('failed');
+
+    await t.aiJobs.cancelByUser(ME.toHexString(), job._id);
+
+    expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+  });
+
+  it('취소가 닿기 전에 작업이 끝났으면(늦은 취소) 지우지 않고 ready로 둔다', async () => {
+    const t = setup();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), await t.addNote());
+    t.finish(job._id, { questions: fullSet(), title: 't' });
+
+    await t.aiJobs.cancelByUser(ME.toHexString(), job._id);
+
+    expect(t.job(job._id)['status']).toBe('succeeded');
+    expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+    expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
+  });
+
+  it('두 번 취소해도 오류 없이 같은 결과(세트 하나만 지움)', async () => {
+    const t = setup();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), await t.addNote());
+
+    await t.aiJobs.cancelByUser(ME.toHexString(), job._id);
+    const deletedAt = t.set(quizSet._id)['deletedAt'];
+    await t.aiJobs.cancelByUser(ME.toHexString(), job._id);
+
+    expect(t.sets.rows).toHaveLength(1);
+    expect(t.set(quizSet._id)['deletedAt']).toBe(deletedAt);
+    expect(t.job(job._id)['status']).toBe('canceled');
+  });
+
+  it('남의 작업은 404이고 세트 · 작업을 그대로 둔다', async () => {
+    const t = setup();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), await t.addNote());
+
+    await expect(t.aiJobs.cancelByUser(OTHER.toHexString(), job._id)).rejects.toMatchObject(
+      notFound,
+    );
+
+    expect(t.job(job._id)['status']).toBe('queued');
+    expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+  });
+
+  it('미리 만들기를 이어받은 세트는 지우고, 미리 만들기는 뒤에서 계속해 다음 요청이 다시 이어받는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    const first = await t.service.create(ME.toHexString(), materialId);
+    expect(first.job._id).toBe(p._id);
+
+    await t.aiJobs.cancelByUser(ME.toHexString(), p._id);
+
+    expect(t.job(p._id)).toMatchObject({ status: 'queued', awaited: false });
+    expect(t.set(first.quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+    expect(await t.service.list(ME.toHexString())).toEqual([]);
+    const again = await t.service.create(ME.toHexString(), materialId);
+    expect(again.quizSet._id).not.toBe(first.quizSet._id);
+    expect(again.job).toMatchObject({ _id: p._id, awaited: true });
+  });
+
+  it('취소한 뒤 미리 만들기가 끝나면 다음 요청은 새 작업 없이 그 결과로 바로 ready 세트를 만든다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    const first = await t.service.create(ME.toHexString(), materialId);
+    await t.aiJobs.cancelByUser(ME.toHexString(), p._id);
+    t.finish(p._id, { questions: fullSet(), title: '세포 생물학 퀴즈', concepts: ['세포막'] });
+
+    const again = await t.service.create(ME.toHexString(), materialId);
+
+    expect(again.quizSet._id).not.toBe(first.quizSet._id);
+    expect(again.quizSet.status).toBe('ready');
+    expect(again.job._id).toBe(p._id);
+    expect(quizJobs(t).map((r) => r['type'])).toEqual(['quiz_pregen']);
+  });
+
+  it('세트에 딸린 개념 카드 작업도 멈춘다', async () => {
+    const t = setup();
+    const { quizSet, job } = await t.service.create(ME.toHexString(), await t.addNote());
+    const cards = await t.aiJobs.enqueue({
+      id: cardsJobId(new Types.ObjectId(quizSet._id)).toHexString(),
+      type: 'quiz_flashcards',
+      userId: ME.toHexString(),
+      targetType: 'quiz_set',
+      targetId: quizSet._id,
+      input: {},
+    });
+
+    await t.aiJobs.cancelByUser(ME.toHexString(), job._id);
+
+    expect(t.job(cards._id)['status']).toBe('canceled');
+  });
+
+  it.each(['similar_quiz', 'today_review'])(
+    '%s 작업의 취소는 세트를 지우지 않는다(이번 범위는 맞춤 퀴즈 · 미리 만들기)',
+    async (type) => {
+      const t = setup();
+      const setId = new Types.ObjectId();
+      const job = await t.aiJobs.enqueue({
+        type,
+        userId: ME.toHexString(),
+        targetType: 'quiz_set',
+        targetId: setId.toHexString(),
+        input: {},
+      });
+      await t.sets.model.create({
+        _id: setId,
+        ownerId: ME,
+        materialId: null,
+        folderId: FOLDER,
+        source: 'ai_generated',
+        title: '복습',
+        status: 'generating',
+        progress: 0,
+        questionCount: 0,
+        questions: [],
+        jobId: new Types.ObjectId(job._id),
+        deletedAt: null,
+      } as never);
+
+      await t.aiJobs.cancelByUser(ME.toHexString(), job._id);
+
+      expect(t.job(job._id)['status']).toBe('canceled');
+      expect(t.set(setId.toHexString())['deletedAt']).toBeNull();
+    },
+  );
 });
