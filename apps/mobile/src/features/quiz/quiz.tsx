@@ -145,8 +145,9 @@ export function QuizHomeScreen() {
   // 함께 본다. 지난 날 복습 세트는 그 카드에 나오지 않으므로 여기서 안내한다
   const pending = (s: QuizSet) =>
     s.status === 'generating' && s._id !== todayId && s.reviewDay !== seoulToday();
-  // 퀴즈를 끝내면 서버가 오답 복습(「다시 보기」) 세트를 저절로 만든다. 만드는 중 세트가 있으면 이 탭이 보이고
-  // 앱이 앞에 있는 동안에만 다시 읽어, 다 만들어지면 「AI 서버를 기다리고 있어요」 안내가 바로 사라지게 한다(#593)
+  // 만드는 중 세트(맞춤 퀴즈 · 유사 퀴즈 등)가 있으면 이 탭이 보이고 앱이 앞에 있는 동안에만 다시 읽어, 다 만들어지면
+  // 「AI 서버를 기다리고 있어요」 안내가 바로 사라지게 한다(#593). 퀴즈를 끝낸 뒤 저절로 만드는 「다시 보기」 세트는
+  // 서버 설정이 켜졌을 때만 생긴다(#625, 기본 꺼짐)
   const sets = useQuery({
     queryKey: ['quiz-sets'],
     queryFn: api.quiz.sets,
@@ -1257,6 +1258,12 @@ export function QuizReviewScreen() {
         <View className="mt-3">
           <QuizNextStep
             setId={set.data._id}
+            // 노트 폴더가 있는 세트는 고르기 화면(#610)으로. 오늘의 복습(노트를 섞음) · 폴더가 없는 옛 세트는 그 세트로 만든다
+            pickFolder={
+              set.data.folderId && set.data.materialId && !reviewCopy
+                ? set.data.folderId
+                : undefined
+            }
             results={results}
             reviewDay={Number(scheduled) > 0 ? nextReviewDay : undefined}
             room={from === 'room'}
@@ -1323,15 +1330,19 @@ export function QuizReviewScreen() {
 
 /**
  * 퀴즈 결과의 다음 단계(FR-37): 틀린 문제는 비슷한 문제 복습(유사 퀴즈)으로, 그다음은 새 퀴즈로 잇는다.
- * 복습 날짜는 서버가 이번에 일정에 넣었을 때만 말한다(오늘의 복습 · 기기 저장은 넣지 않음)
+ * 복습 날짜는 서버가 이번에 일정에 넣었을 때만 말한다(오늘의 복습 · 기기 저장은 넣지 않음).
+ * 유사 퀴즈는 퀴즈를 끝내도 저절로 만들지 않는다(#625, 사용자가 누를 때만). pickFolder가 있으면 그 노트의 고르기 화면
+ * (#610, 마지막 풀이에서 틀린 문제를 처음부터 체크)으로, 없으면(오늘의 복습 · 폴더가 없는 옛 세트) 이 세트로 만든다
  */
 function QuizNextStep({
   setId,
+  pickFolder,
   results,
   reviewDay,
   room,
 }: {
   setId: string;
+  pickFolder?: string;
   results?: string;
   reviewDay?: string;
   room: boolean;
@@ -1355,7 +1366,11 @@ function QuizNextStep({
       icon: Sparkles,
       label: wrong ? `틀린 ${wrong}문제 비슷한 문제로 지금 복습` : '비슷한 문제로 지금 복습',
       sub: '틀린 개념을 다른 문제로 다시 풀어요',
-      onPress: () => router.push({ pathname: '/play/similar', params: { setId } }),
+      onPress: () =>
+        router.push({
+          pathname: '/play/similar',
+          params: pickFolder ? { folderId: pickFolder } : { setId },
+        }),
     });
   if (!room)
     steps.push({

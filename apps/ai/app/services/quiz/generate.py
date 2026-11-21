@@ -68,7 +68,9 @@ input — NestJS가 작업을 만들 때 담습니다. ObjectId는 문자열, �
 
 result — NestJS가 quiz_sets에 새 세트로 저장합니다(materialId · folderId는 노트에서)
   questions  새 세트 문제(order 1부터, srs는 null: 아직 풀지 않음). 늘 size개. difficulty(하 · 중 ·
-             상)는 유형으로 정한 처음 난이도(similar.difficulty_of, #268). 저장은 NestJS와 맞춘 뒤
+             상)는 유형으로 정한 처음 난이도(similar.difficulty_of, #268). checked(true, #625)는
+             검사 모델이 '정답이 하나뿐 · 노트로 정해짐'(pass)이라 본 문제에만 붙임: 모자라 남겨 둔
+             애매한 초안(unsure)으로 채운 문제에는 없음. 저장은 NestJS와 맞춘 뒤
   title      '<노트 제목> 맞춤 퀴즈 · MM-DD'
   concepts   새로 뽑은 개념 이름(materials.concepts에 저장). 노트에 이름이 있었으면 null
   pages      [{pageNo, weight, plain, share, wrong, mastered}] 쪽마다 배분(앱 안내 · 확인용).
@@ -89,8 +91,9 @@ size개를 다 만들지 못하면 짧은 결과로 끝내지 않습니다(앱�
     다시 시도 없음). 문제를 받은 뒤 다음 판의 장애는 받은 문제를 버리지 않고 남겨 둔 초안으로 채움
   - 그 밖(초안이 모두 버려짐): NoQuestionsError(바로 실패, 코드 NO_QUESTIONS,
     'k/n문제만 만듦(이유)'). 다시 할지는 앱의 '다시 시도'에 맡김
-알려진 한계(로컬과 같음): 새 문제의 srs는 null이라, 처음 푼 뒤 복습 상태에 checked가 없어 오늘의
-복습이 '정답 둘' 검사를 한 번 더 합니다.
+새 문제의 srs는 null입니다. 검사를 통과한 문제(checked)는 NestJS가 퀴즈를 끝낼 때 처음 복습
+상태에 checked를 넣어, 오늘의 복습이 '정답 둘' 검사를 다시 하지 않습니다(#625). checked가 없는
+문제(애매한 초안으로 채운 문제 · 이 표시 전에 만든 옛 문제)는 오늘의 복습이 한 번 검사합니다.
 """
 
 import logging
@@ -301,6 +304,8 @@ class Made:
     rejected: bool = False  # 서버가 생성 요청을 거절함(LlmRejectedError, #262)
     # 초안 잘못(다음 판에 문제점으로 알림). 호출 실패 · 답 모양 오류는 초안 잘못이 아님
     fault: bool = False
+    # 검사 모델이 pass로 봄('정답 둘' 검사 통과, #625). 결과 문제에 checked로 붙임
+    passed: bool = False
 
 
 @dataclass(frozen=True)
@@ -1115,6 +1120,8 @@ def run(
             # 쓰지 않음(실험 1)
             "difficulty": lv.get(r.type or "") or similar.difficulty_of(r.type),
             "srs": None,
+            # '정답 둘' 검사를 통과한 문제만(#625): 오늘의 복습이 다시 검사하지 않게
+            **({"checked": True} if r.passed else {}),
         }
         for i, r in enumerate(made, 1)
         if r.question is not None
@@ -1297,6 +1304,7 @@ def _make_all(
             passed = []
             for r, (v, said) in zip(ready, verdicts, strict=True):
                 if v == "pass":
+                    r.passed = True
                     passed.append(r)
                     continue
                 r.why = (

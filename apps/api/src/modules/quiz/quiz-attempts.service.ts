@@ -5,8 +5,8 @@ import { type ClientSession, type Connection, Model, Types } from 'mongoose';
 import { User, type UserDocument } from '../auth/schemas/user.schema.js';
 import { PointService } from '../reward/point/point.service.js';
 import { seoulDate } from '../session/study-time.js';
-import { firstReview } from '../../quiz-sets/first-review.js';
-import { dayEnd } from '../../review-reminders/review-remind.js';
+import { autoSimilarOnFinish } from '../../quiz-sets/auto-similar.js';
+import { reviewWrites } from '../../quiz-sets/first-review.js';
 import { QuizAttempt, type QuizAttemptDocument } from './schemas/quiz-attempt.schema.js';
 import { QuizSet, type QuizSetDocument } from './schemas/quiz-set.schema.js';
 
@@ -50,7 +50,7 @@ interface ClosedAttempt {
     quizSetId: Types.ObjectId;
     correctCount: number;
     finishedAt: Date;
-    answers?: { questionId: Types.ObjectId; correct: boolean }[];
+    answers?: { questionId: Types.ObjectId; correct: boolean; void?: boolean | string }[];
 }
 
 interface AttemptRow {
@@ -207,10 +207,17 @@ export class QuizAttemptsService {
     }
 
     /**
-     * 처음 끝낸 풀이의 푼 문제 중 복습 상태가 없는 문제에 처음 복습 상태(firstReview, 처리기 srs.py와 같은 값)를 쓴다(FR-37).
-     * 맞힌 문제도 넣는다: 처리기도 처음 푼 문제는 맞힘 · 틀림 모두 1일 뒤로 잡는다(오답 복습 review.py와 같음).
-     * 오늘의 복습 · 복습 알림이 고르는 세트(ready, 노트 있음)만 넣는다. 이미 복습 중인 문제(오늘의 복습 · 다시 보기 문제 등)는
-     * 그대로 둔다. 같은 트랜잭션이라 포인트와 함께 한 번만 쓴다
+     * 처음 끝낸 풀이의 푼 문제에 복습 상태를 쓴다(FR-37 · #625). 같은 트랜잭션이라 포인트와 함께 한 번만 쓴다.
+     * - 복습 상태가 없는 문제: 처음 상태(firstReview, 처리기 srs.py와 같은 값). 맞힌 문제도 넣는다: 처리기도 처음 푼
+     *   문제는 맞힘 · 틀림 모두 1일 뒤로 잡는다. 만들 때 검사를 통과한 문제(checked)는 그 표시를 붙인다
+     * - 이미 복습 중인 문제(오늘의 복습 사본 · 다시 보기 문제 등): 자동 오답 복습이 꺼져 있으면(기본) 다음 상태
+     *   (nextReview = srs.py update)를 쓴다. 상태와 상관없이 다시 셈하는 것은 오답 복습(review.py run)과 같다.
+     *   켜져 있으면 그 처리기가 옮기므로 그대로 둔다(두 번 세지 않게)
+     * - 무효 답은 빼고, 그 상태를 이 풀이보다 늦게 쓴 문제(srsAt)는 그대로 둔다(reviewWrites)
+     * 오늘의 복습 · 복습 알림이 고르는 세트(ready, 노트 있음)만 넣는다. 처음 상태에는 이 풀이(srsAttemptId)를 남긴다:
+     * 그 풀이로 오답 복습을 만들 때 처리기에 복습 상태 없이 넘겨 같은 풀이를 두 번 세지 않게 한다(reviewInputQuestion).
+     * 다음 상태를 쓴 문제는 표시를 지운다(saveSrs와 같음: 이제 이 상태는 그 풀이만의 것이 아니다).
+     * 돌려주는 값: 복습 중으로 남은(날짜가 있는) 문제 수와 그중 가장 이른 복습 날짜(서울)
      */
     private async scheduleFirstReview(owner: Types.ObjectId, attempt: ClosedAttempt, session: ClientSession) {
         const none = { scheduled: 0, nextReviewDay: null };
@@ -220,27 +227,50 @@ export class QuizAttemptsService {
                 { questions: 1 },
                 { session },
             )
-            .lean<{ questions?: { _id: Types.ObjectId; srs?: unknown }[] }>();
-        const unscheduled = new Set((set?.questions ?? []).filter((q) => q.srs == null).map((q) => q._id.toString()));
-        const picks = (attempt.answers ?? []).filter((a) => unscheduled.has(a.questionId.toString()));
-        if (!picks.length) return none;
+            .lean<{ questions?: { _id: Types.ObjectId; srs?: unknown; srsAt?: Date; checked?: boolean }[] }>();
         const at = attempt.finishedAt;
+        const writes = reviewWrites(set?.questions ?? [], attempt.answers ?? [], at, autoSimilarOnFinish());
+        if (!writes.length) return none;
         const result = await this.sets.bulkWrite(
-            picks.map((a) => ({
-                updateOne: {
-                    filter: { _id: attempt.quizSetId, questions: { $elemMatch: { _id: a.questionId, srs: null } } },
-                    update: {
-                        $set: {
-                            'questions.$.srs': firstReview(a.correct, at),
-                            'questions.$.srsAt': at,
-                            'questions.$.srsAttemptId': attempt._id,
+            writes.map((w) => {
+                const questionId = new Types.ObjectId(w.questionId);
+                return w.first
+                    ? {
+                        updateOne: {
+                            filter: {
+                                _id: attempt.quizSetId,
+                                questions: { $elemMatch: { _id: questionId, srs: { $in: [null, {}] } } },
+                            },
+                            update: {
+                                $set: {
+                                    'questions.$.srs': w.srs,
+                                    'questions.$.srsAt': at,
+                                    'questions.$.srsAttemptId': attempt._id,
+                                },
+                            },
                         },
-                    },
-                },
-            })),
+                    }
+                    : {
+                        updateOne: {
+                            filter: {
+                                _id: attempt.quizSetId,
+                                questions: { $elemMatch: { _id: questionId, srsAt: { $not: { $gt: at } } } },
+                            },
+                            update: {
+                                $set: { 'questions.$.srs': w.srs, 'questions.$.srsAt': at },
+                                $unset: { 'questions.$.srsAttemptId': '' },
+                            },
+                        },
+                    };
+            }),
             { session },
         );
-        const scheduled = result.modifiedCount;
-        return scheduled ? { scheduled, nextReviewDay: seoulDate(dayEnd(seoulDate(at))) } : none;
+        if (!result.modifiedCount) return none;
+        // 같은 트랜잭션에서 읽은 값으로 정했으므로 쓴 그대로다
+        const due = writes
+            .map((w) => w.srs['dueAt'])
+            .filter((d): d is Date => d instanceof Date)
+            .sort((a, b) => a.getTime() - b.getTime());
+        return due.length ? { scheduled: due.length, nextReviewDay: seoulDate(due[0]!) } : none;
     }
 }

@@ -16,6 +16,7 @@ import {
   type QuizAttemptDocument,
 } from '../modules/quiz/schemas/quiz-attempt.schema.js';
 import { QuizSet, type QuizSetDocument } from '../modules/quiz/schemas/quiz-set.schema.js';
+import { autoSimilarOnFinish } from './auto-similar.js';
 import { RecordingNotePagesService } from './recording-note-pages.service.js';
 import {
   type AppQuizSet,
@@ -105,6 +106,25 @@ export class SimilarQuizService {
     if (!attempt) throw conflict('먼저 이 퀴즈를 끝까지 풀어 주세요');
     if (needWrong && !(attempt.answers ?? []).some((a) => !a.correct))
       throw conflict('틀린 문제가 없어요');
+    // 자동 오답 복습이 꺼져 있으면(기본, #625) 복습 상태는 퀴즈를 끝낼 때 이미 옮겼다: 결과 화면의 유사 퀴즈(옛 앱 · 노트
+    // 폴더가 없는 세트 · 오늘의 복습)는 복습 상태를 옮기지 않는 고르기 모드(run_pick)로 그 풀이의 틀린 문제로 만든다.
+    // 오답 복습(run)으로 만들면 같은 풀이를 한 번 더 세어 연속 정답이 두 번 셈해진다. 이 풀이로 이미 만든(만드는 중 ·
+    // 다 만든) 「다시 보기」 세트가 있으면(설정을 끄기 전에 끝낸 풀이) 그 세트를 돌려준다
+    if (attemptId === undefined && !autoSimilarOnFinish()) {
+      const made = await this.sets
+        .findOne({
+          ownerId: owner,
+          sourceSetId: source._id,
+          sourceAttemptId: attempt._id,
+          deletedAt: null,
+          status: { $in: ['generating', 'ready'] },
+        })
+        .lean<QuizSetRow>();
+      if (made) return this.quizSets.findMine(userId, made._id.toString());
+      const wrong = wrongIdsOf(attempt);
+      if (wrong.length === 0) throw conflict('틀린 문제가 없어요');
+      return this.createFromPicks(userId, wrong.slice(0, SIMILAR_PICK_MAX), true);
+    }
     // 자동 시작(attemptId)만 「기다림」을 쓴다. 이미 이 풀이로 만든 세트가 있으면 결과를 맞추기(findMine) 전에
     // 표시부터 지운다: 맞추다 이어 받기(catchUp)가 돌아도 이 풀이를 다시 고르지 않게
     const auto = attemptId !== undefined;
@@ -232,7 +252,12 @@ export class SimilarQuizService {
    * - 새 세트의 노트(materialId)는 고른 문제가 가장 많은 노트(같으면 먼저 고른 쪽), 폴더는 고른 문제의 폴더.
    *   그 노트로 만드는 중인 세트가 있으면(고유 색인) 넣은 작업을 거두고 409
    */
-  async createFromPicks(userId: string, questionIds: string[]): Promise<AppQuizSet> {
+  async createFromPicks(
+    userId: string,
+    questionIds: string[],
+    /** 오늘의 복습 세트의 문제도 받는다: 결과 화면의 유사 퀴즈(create)가 그 세트의 틀린 문제로 만들 때(#625) */
+    withReviewDay = false,
+  ): Promise<AppQuizSet> {
     const owner = objectId(userId, '퀴즈');
     const ids = [...new Set(questionIds)];
     if (ids.length === 0 || ids.length > SIMILAR_PICK_MAX) {
@@ -247,7 +272,7 @@ export class SimilarQuizService {
         ownerId: owner,
         deletedAt: null,
         status: 'ready',
-        reviewDay: null,
+        ...(withReviewDay ? {} : { reviewDay: null }),
         materialId: { $ne: null },
         'questions._id': { $in: ids.map((id) => new Types.ObjectId(id)) },
       })
@@ -374,8 +399,9 @@ export class SimilarQuizService {
   }
 
   /**
-   * 퀴즈를 끝내면 바로 오답 복습을 시작한다(풀이 끝내기 뒤에 부름). 모두 맞혀도 시작한다: 복습 상태(연속 정답 ·
-   * 다음 복습 날짜)는 이 처리기만 옮기므로, 안 하면 오늘의 복습을 다 맞혀도 다음 날 같은 문제가 나온다.
+   * 퀴즈를 끝내면 바로 오답 복습을 시작한다(풀이 끝내기 뒤에 부름, 설정 AUTO_SIMILAR_ON_FINISH가 켜졌을 때만 #625).
+   * 모두 맞혀도 시작한다: 설정이 켜져 있으면 이미 복습 중인 문제의 복습 상태(연속 정답 · 다음 복습 날짜)는 이 처리기만
+   * 옮기므로, 안 하면 오늘의 복습을 다 맞혀도 다음 날 같은 문제가 나온다(꺼져 있으면 퀴즈를 끝낼 때 API가 옮긴다).
    * 무효 풀이만 있거나 노트가 없는 세트 ·
    * 이미 만든 풀이 등 만들 수 없는 경우는 조용히 넘어간다: 풀이 끝내기 응답과 포인트에는 영향이 없다.
    * 결과 화면의 유사 퀴즈는 같은 세트를 이어받아(만드는 중 · 다 만든 세트) 기다리지 않고 바로 연다
@@ -419,7 +445,8 @@ export class SimilarQuizService {
    * 세트에 「이어 받을 풀이 남음」이 남는다(다음 조회가 다시). 완료 시각 경계가 아니라 표시로 찾아 같은 시각의 풀이도 빠지지 않는다
    */
   private async catchUp(row: QuizSetRow): Promise<void> {
-    if (!row.materialId) return;
+    // 자동 오답 복습이 꺼져 있으면(기본, #625) 기다리던 풀이(reviewPending)에도 작업을 넣지 않는다. 표시는 남아도 해가 없다
+    if (!row.materialId || !autoSimilarOnFinish()) return;
     const sameNote = await this.sets
       .find({ ownerId: row.ownerId, materialId: row.materialId }, { _id: 1 })
       .lean<{ _id: Types.ObjectId }[]>();

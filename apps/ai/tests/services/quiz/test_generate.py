@@ -417,6 +417,8 @@ def test_a_quiz_is_made_page_by_page() -> None:
     ]
     assert [q["choices"].index(q["answer"]) for q in qs] == [0, 1]  # 정답 자리를 A~E에 고르게
     assert all(q["srs"] is None and q["type"] == "정의" and len(q["id"]) == 24 for q in qs)
+    # 검사 모델이 pass로 본 문제는 '정답 둘' 검사를 통과한 표시(#625)
+    assert all(q["checked"] is True for q in qs)
     assert result["title"] == "기생충 1 원충류 맞춤 퀴즈 · 11-04"
     assert result["concepts"] is None and result["failed"] == []
     assert [(p["pageNo"], p["share"], p["plain"]) for p in result["pages"]] == [
@@ -1212,6 +1214,8 @@ def test_an_unsure_draft_fills_the_set_when_the_second_round_fails() -> None:
     result, _ = run(llm, page1_job(size=1))
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
     assert result["failed"] == []
+    # 애매한 초안은 검사를 통과하지 않았으므로 checked가 없음: 오늘의 복습이 다시 검사(#625)
+    assert "checked" not in result["questions"][0]
 
 
 def test_an_unsure_draft_is_not_used_when_the_second_round_passes() -> None:
@@ -1219,6 +1223,7 @@ def test_an_unsure_draft_is_not_used_when_the_second_round_passes() -> None:
     llm = happy([GOOD["이질 아메바"], GOOD["대장 아메바"]], sure=lambda b: unsure not in b)
     result, _ = run(llm, page1_job(size=1))
     assert [q["answer"] for q in result["questions"]] == ["대장 아메바"]
+    assert result["questions"][0]["checked"] is True
 
 
 def test_a_concept_may_be_asked_twice_from_another_angle() -> None:
@@ -1384,6 +1389,7 @@ def test_a_second_round_check_outage_fills_from_kept_drafts_alone() -> None:
     )
     result, _ = run(llm, page1_job(size=1))
     assert [q["answer"] for q in result["questions"]] == ["이질 아메바"]
+    assert "checked" not in result["questions"][0]
 
 
 def test_a_draft_filled_from_kept_is_not_reported_as_not_made(
