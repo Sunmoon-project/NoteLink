@@ -310,6 +310,32 @@ describe('SocialLoginService.handleGoogleCallback', () => {
       expect(s.rows[0]).toMatchObject({ outcome: 'signed_in', userId: s.userId });
     });
 
+    // PROF-013(#637): 코드 교환이 앱에 「새 계정으로 가입했어요」를 알릴 수 있게 새로 만들었는지도 적는다
+    it('이번에 계정을 새로 만들었으면 created: true 를 시도에 기록한다', async () => {
+      const s = setup();
+      const { oauthState } = await started(s);
+
+      await s.service.handleCallback('google', callbackOf(oauthState));
+
+      expect(s.rows[0]).toMatchObject({ outcome: 'signed_in', created: true });
+    });
+
+    it('이미 있던 계정이면 created: false 를 기록한다', async () => {
+      const s = setup({
+        user: () =>
+          Promise.resolve({
+            kind: 'signed_in',
+            userId: new Types.ObjectId(),
+            created: false,
+          } as SocialUserResult),
+      });
+      const { oauthState } = await started(s);
+
+      await s.service.handleCallback('google', callbackOf(oauthState));
+
+      expect(s.rows[0]).toMatchObject({ outcome: 'signed_in', created: false });
+    });
+
     it('앱에 내준 코드는 원문이 아니라 해시로 저장한다', async () => {
       const s = setup();
       const { oauthState } = await started(s);
@@ -373,7 +399,7 @@ describe('SocialLoginService.handleGoogleCallback', () => {
 
       expect(parse(href).params.get('code')).not.toBeNull();
       expect(parse(href).params.get('state')).toBe(PARAMS.appState);
-      expect(s.rows[0]).toMatchObject({ outcome: 'account_exists', userId: null });
+      expect(s.rows[0]).toMatchObject({ outcome: 'account_exists', userId: null, created: false });
     });
   });
 

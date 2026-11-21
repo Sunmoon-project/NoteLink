@@ -86,6 +86,14 @@ export function OnboardingScreen() {
   );
 }
 
+/**
+ * 간편 로그인이 계정을 새로 만들었을 때(서버 isNewUser) 알리는 문구. 탈퇴한 계정은 되살리지 않아서,
+ * 탈퇴 뒤 같은 소셜 계정으로 들어오면 새 계정이 된다(PROF-013) — 예전 기록이 그대로라고 오해하지 않게 한다.
+ * 서버는 처음 가입과 탈퇴 뒤 재가입을 구분하지 못해(탈퇴 때 소셜 연동을 지운다) 탈퇴를 단정하지 않는 조건문으로 쓴다
+ */
+export const NEW_ACCOUNT_NOTICE =
+  '새 계정으로 가입했어요. 예전에 탈퇴한 계정이 있었다면 그 기록은 되살릴 수 없어요';
+
 /** 로그인 · 가입이 끝난 뒤 공통 처리 */
 function useFinishSignIn() {
   const qc = useQueryClient();
@@ -98,6 +106,8 @@ function useFinishSignIn() {
       .getState()
       .signIn({ accessToken: r.accessToken, refreshToken: r.refreshToken }, r.user);
     qc.setQueryData(['me'], r.user);
+    // 옛 서버는 보내지 않는다(undefined) — 그때는 지금처럼 안내 없이 이어진다
+    if (r.isNewUser === true) toast(NEW_ACCOUNT_NOTICE);
     const progress = useQuizProgress.getState().progress;
     router.replace(
       useAuth.getState().onboarded

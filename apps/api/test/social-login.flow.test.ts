@@ -45,6 +45,7 @@ interface Attempt {
   codeHash: string | null;
   outcome: string | null;
   expiresAt: Date;
+  created?: boolean;
 }
 interface UserRow {
   _id: Types.ObjectId;
@@ -343,6 +344,40 @@ describe('구글 로그인 전체 흐름: 시작 → 콜백 → 코드 교환 (�
 
       expect(users).toHaveLength(1);
       expect(b.body.data.user._id).toBe(a.body.data.user._id);
+    });
+
+    it('처음 로그인은 새 계정(isNewUser: true), 그 뒤 같은 계정으로 다시 오면 false', async () => {
+      const first = await loginUntilCode();
+      const a = await exchange(first.code, first.app_.codeVerifier);
+      expect(a.body.data.isNewUser).toBe(true);
+
+      const second = await loginUntilCode();
+      const b = await exchange(second.code, second.app_.codeVerifier);
+
+      expect(b.body.data.isNewUser).toBe(false);
+    });
+
+    // PROF-013(#637): 탈퇴(UsersService.withdraw)는 소셜 연동 · 이메일을 지우고 deletedAt 을 적는다.
+    // 같은 구글 계정으로 다시 오면 탈퇴 계정을 되살리지 않고 새 계정을 만들며, 앱이 알릴 수 있게 isNewUser: true
+    it('탈퇴 뒤 같은 구글 계정으로 다시 오면 탈퇴 계정이 아닌 새 계정이고 isNewUser: true', async () => {
+      const first = await loginUntilCode();
+      const a = await exchange(first.code, first.app_.codeVerifier);
+      const withdrawn = users[0]!;
+      Object.assign(withdrawn, {
+        deletedAt: new Date(),
+        email: null,
+        socialAccounts: [],
+      });
+
+      const again = await loginUntilCode();
+      const b = await exchange(again.code, again.app_.codeVerifier);
+
+      expect(b.status).toBe(200);
+      expect(users).toHaveLength(2);
+      expect(b.body.data.user._id).not.toBe(a.body.data.user._id);
+      expect(b.body.data.user._id).not.toBe(String(withdrawn._id));
+      expect(b.body.data.isNewUser).toBe(true);
+      expect(AuthTokens.parse(b.body.data).isNewUser).toBe(true);
     });
 
     it('기기마다 다른 refresh 토큰을 받고, 각각 저장된다', async () => {
