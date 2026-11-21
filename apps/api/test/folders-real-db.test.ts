@@ -751,6 +751,29 @@ describe.skipIf(!uri)('진짜 DB 학습 폴더 확인', () => {
       expect((await row('quiz_sets', new Types.ObjectId(made._id)))?.deletedAt).toBeNull();
     });
 
+    it('자동 오답 복습이 꺼진 기본 설정(고르기 모드, #625)에서도 오늘의 복습에서 만든 유사 퀴즈는 기준 폴더 삭제에 남는다(Codex 2차)', async () => {
+      vi.stubEnv('AUTO_SIMILAR_ON_FINISH', '');
+      try {
+        const { f, note, source } = await similarSource('오늘의 복습 기준 폴더 · 고르기');
+        await col('quiz_sets').updateOne(
+          { _id: source._id },
+          { $set: { reviewDay: '2026-09-02' } },
+        );
+        await service.remove(me.toHexString(), f._id);
+        expect((await row('materials', note))?.deletedAt).toBeInstanceOf(Date);
+
+        // 기준 폴더가 이미 지워진 오늘의 복습에서 만들어도 바로 지우지 않는다(오늘의 복습에서 이어 만든 세트)
+        const made = await similar.create(me.toHexString(), String(source._id));
+        const id = new Types.ObjectId(made._id);
+        const job = await col('ai_jobs').findOne({ targetId: id });
+        expect((job?.input as { mode?: string } | undefined)?.mode).toBe('pick');
+        expect((await row('quiz_sets', id))?.deletedAt).toBeNull();
+        expect(String((await row('quiz_sets', id))?.sourceSetId)).toBe(String(source._id));
+      } finally {
+        vi.stubEnv('AUTO_SIMILAR_ON_FINISH', 'true');
+      }
+    });
+
     it('세트를 넣은 뒤 폴더 확인이 실패하면 오류를 올리고 넣은 작업은 거두지 않는다(code-review 2차)', async () => {
       const f = await service.create(me.toHexString(), {
         title: '폴더 확인 실패',

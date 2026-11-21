@@ -144,7 +144,7 @@ describe('결과 화면의 유사 퀴즈(create, 세트로 만들기) — 자동
     expect(out).toMatchObject({
       status: 'generating',
       title: '세포 생물학 · 유사 퀴즈',
-      sourceSetId: null,
+      sourceSetId: s.set.toHexString(),
     });
     expect(jobs.rows).toHaveLength(1);
     const job = jobs.rows[0]!;
@@ -180,13 +180,16 @@ describe('결과 화면의 유사 퀴즈(create, 세트로 만들기) — 자동
     expect(jobs.rows).toHaveLength(0);
   });
 
-  it('만든 세트에는 그 풀이만 남기고 원본 세트는 남기지 않는다(복습 상태를 옮기는 오답 복습 세트가 아니므로)', async () => {
+  // Codex 2차: 원본 세트를 남겨야 오늘의 복습에서 이어 만든 세트로 보여 폴더 삭제에서 남는다(실제 DB는 folders-real-db.test.ts).
+  // 복습 상태를 옮기지 않는 세트(srsSavedAt)로 적어, 오늘의 복습이 원본 문제를 빼지 않게 한다(아래 시험, Codex 1차)
+  it('만든 세트에 원본 세트 · 풀이를 남기고, 복습 상태를 옮기지 않는 세트(srsSavedAt)로 적는다', async () => {
     const { similar, seed, sets } = setup();
     const s = await seed({ reviewDay: '2026-11-20' });
     const out = await similar.create(ME.toHexString(), s.set.toHexString());
-    expect(out.sourceSetId).toBeNull();
+    expect(out.sourceSetId).toBe(s.set.toHexString());
     const row = sets.rows.find((r) => String(r._id) === out._id)!;
     expect(String(row['sourceAttemptId'])).toBe(s.attempt.toHexString());
+    expect(row['srsSavedAt']).toBeInstanceOf(Date);
   });
 
   // Codex 리뷰 1차: 원본 세트(sourceSetId)를 남기면 오늘의 복습이 「오답 복습이 곧 복습 상태를 바꾸는 세트」로 보고 그 세트의
