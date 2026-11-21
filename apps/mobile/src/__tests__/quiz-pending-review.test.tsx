@@ -134,7 +134,9 @@ it('채점 응답 대기 중 화면을 떠났다가 돌아오면 입력을 보�
 
 it('이전 화면의 늦은 채점 응답은 새 화면에서 저장한 다른 풀이 상태를 덮어쓰지 않는다', async () => {
   const oldAnswer = deferred<{ correct: boolean; correctAnswer: string }>();
-  mockApi.quiz.answer.mockReturnValue(oldAnswer.promise);
+  // 새 화면의 답도 채점을 기다리게 둔다: 진행은 답을 낸 뒤부터 저장하므로(#630) 새 화면도 답을 내 상태를 남긴다
+  const newAnswer = deferred<{ correct: boolean; correctAnswer: string }>();
+  mockApi.quiz.answer.mockReturnValueOnce(oldAnswer.promise).mockReturnValue(newAnswer.promise);
   const qc = client();
   const first = await renderScreen(<QuizSolveScreen />, qc);
   await waitFor(() => expect(mockApi.quiz.startAttempt).toHaveBeenCalledTimes(1));
@@ -154,11 +156,14 @@ it('이전 화면의 늦은 채점 응답은 새 화면에서 저장한 다른 �
     await screen.findByPlaceholderText('답을 입력해주세요'),
     '새 화면에서 쓰는 답',
   );
+  await userEvent.setup().press(screen.getByRole('button', { name: '답 제출' }));
+  await waitFor(() => expect(mockApi.quiz.answer).toHaveBeenCalledTimes(2));
   await waitFor(() =>
     expect(useQuizProgress.getState().progress).toMatchObject({
       setId: newerSetId,
       answerText: '새 화면에서 쓰는 답',
-      pick: null,
+      pick: '새 화면에서 쓰는 답',
+      right: null,
     }),
   );
   const newerProgress = useQuizProgress.getState().progress;

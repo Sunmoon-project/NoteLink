@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { fireEvent, render, screen } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Avatar, initial } from '../components/ui';
@@ -113,7 +113,7 @@ describe('#8 퀴즈 풀이 닫기', () => {
   });
   afterEach(() => useQuizProgress.getState().reset());
 
-  it('위의 닫기(X)는 확인을 거쳐 나가고, 푼 데까지는 지우지 않는다', async () => {
+  it('위의 닫기(X)는 확인을 거쳐 나가고, 답을 내지 않았으면 진행을 남기지 않는다', async () => {
     await renderScreen(<QuizSolveScreen />, qc());
     await fireEvent.press(await screen.findByRole('button', { name: '풀이 닫기' }));
     expect(screen.getByText('그만 풀까요?')).toBeTruthy();
@@ -123,8 +123,9 @@ describe('#8 퀴즈 풀이 닫기', () => {
     await fireEvent.press(screen.getByRole('button', { name: '풀이 닫기' }));
     await fireEvent.press(screen.getByText('그만 풀기'));
     expect(router.back).toHaveBeenCalled();
-    // 같은 풀이는 퀴즈 탭에서 이어 풀 수 있게 진행이 남아 있다
-    await waitFor(() => expect(useQuizProgress.getState().progress?.setId).toBe('s1'));
+    // 답을 하나도 내지 않고 나가면 퀴즈 탭에 「이어서 풀기」로 뜨지 않게 진행을 남기지 않는다(#630, QUIZ-011).
+    // 한 문제라도 답한 풀이를 이어 푸는 것은 quiz-resume-empty.test.tsx가 본다
+    expect(useQuizProgress.getState().progress).toBeNull();
   });
 
   it('스터디룸에서 왔으면 닫기 대신 「스터디룸으로」 하나만 있고 같은 확인을 거친다', async () => {
