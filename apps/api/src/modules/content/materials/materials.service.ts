@@ -709,6 +709,7 @@ export class MaterialsService implements OnModuleInit {
   /**
    * 「다시 만들기」 작업을 노트에 옮긴다. 성공하고 결과를 쓸 수 있을 때만 결과와 jobId 를 새 작업으로 바꾸고,
    * 실패 · 취소 · 쓸 수 없는 결과면 regenJobId 만 지워 옛 결과를 그대로 둔다. 처리 중이면 그대로.
+   * regenJobId 를 지울 때는 그 작업을 lastRegenJobId 에 남긴다: 알림이 노트를 먼저 연 뒤에 끝난 실패도 알린다(#639).
    * 작업이 없으면: 방금 자리를 잡고 작업을 넣는 중일 수 있어 CLAIM_TTL_MS 가 지난 뒤에만(작업 id 의 만든 시각) 지운다
    */
   private async syncRegen(
@@ -725,14 +726,11 @@ export class MaterialsService implements OnModuleInit {
         ? syncFromJob({ ...row, processing: { ...row.processing, status: 'processing' } }, job)
         : null;
     const applied = update?.['processing.status'] === 'done';
+    const clear = { 'processing.regenJobId': null, 'processing.lastRegenJobId': regenId };
     const updated = await this.materials
       .findOneAndUpdate(
         { _id: row._id, ownerId: row.ownerId, deletedAt: null, 'processing.regenJobId': regenId },
-        {
-          $set: applied
-            ? { ...update, 'processing.jobId': regenId, 'processing.regenJobId': null }
-            : { 'processing.regenJobId': null },
-        },
+        { $set: applied ? { ...update, 'processing.jobId': regenId, ...clear } : clear },
         { returnDocument: 'after' },
       )
       .lean<MaterialRow>();

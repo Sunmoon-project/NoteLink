@@ -418,11 +418,12 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
 
   /**
    * 알림 내용. 지운 노트 · 다른 작업에 다시 연결된 노트, 지운 퀴즈 세트 · 이 작업의 것이 아닌 세트면 null(보내지 않는다).
-   * 노트는 이 작업이 노트의 현재 작업(processing.jobId)이거나 현재 다시 만들기 작업(processing.regenJobId)일 때만
-   * 알린다: 다시 만들기는 노트 동기화(syncRegen) 전까지 regenJobId 에만 걸려 있다(#616 Codex 2차).
+   * 노트는 이 작업이 노트의 현재 작업(processing.jobId) · 현재 다시 만들기 작업(processing.regenJobId) ·
+   * 마지막으로 끝난 다시 만들기 작업(processing.lastRegenJobId)일 때만 알린다: 다시 만들기는 노트 동기화(syncRegen)
+   * 전까지 regenJobId 에만 걸려 있고(#616 Codex 2차), 동기화가 그 값을 지우면 lastRegenJobId 에 남는다(#639).
    * 이어받은 미리 만들기의 세트가 아직 없으면 'later'(다시 시도). 실패한 퀴즈 작업은 세트를 보지 않고 실패를 알린다.
-   * 유사 문제는 작업이 성공해도 새 문제를 하나도 못 만들면 세트가 failed 로 끝나므로(#553) 세트의 상태 · 문제 수를
-   * 보고 0개면 실패를 알린다(#634)
+   * 퀴즈 작업(유사 문제 · 퀴즈 만들기 · 미리 만들기)은 성공해도 쓸 문제를 하나도 못 만들면 세트가 failed 로 끝나므로
+   * (#553, readyUpdate) 세트의 상태 · 문제 수를 보고 0개면 실패를 알린다(#634, #639)
    */
   private async contentOf(job: JobLean): Promise<
     | {
@@ -438,22 +439,36 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
       const material = await this.materials
         .findOne(
           { _id: job.targetId },
-          { deletedAt: 1, title: 1, 'processing.jobId': 1, 'processing.regenJobId': 1 },
+          {
+            deletedAt: 1,
+            title: 1,
+            'processing.jobId': 1,
+            'processing.regenJobId': 1,
+            'processing.lastRegenJobId': 1,
+          },
         )
         .lean<{
           deletedAt?: Date | null;
           title?: string | null;
-          processing?: { jobId?: Types.ObjectId | null; regenJobId?: Types.ObjectId | null };
+          processing?: {
+            jobId?: Types.ObjectId | null;
+            regenJobId?: Types.ObjectId | null;
+            lastRegenJobId?: Types.ObjectId | null;
+          };
         } | null>();
       const id = String(job._id);
       const isJob = String(material?.processing?.jobId ?? '') === id;
       const isRegen = String(material?.processing?.regenJobId ?? '') === id;
-      if (!material || material.deletedAt || !(isJob || isRegen)) return null;
-      // 동기화 전의 다시 만들기가 성공했어도 결과를 쓸 수 없으면 노트는 옛 결과 그대로다(syncRegen): 실패로 알린다
-      const status =
-        job.status === 'succeeded' && !isJob && !(await this.regenApplies(job))
-          ? 'failed'
-          : job.status;
+      // 필드가 없는 옛 문서는 여기서 걸리지 않는다(지금처럼 옛 작업으로 본다)
+      const isLastRegen = String(material?.processing?.lastRegenJobId ?? '') === id;
+      if (!material || material.deletedAt || !(isJob || isRegen || isLastRegen)) return null;
+      // 다시 만들기가 성공했어도 결과를 쓸 수 없으면 노트는 옛 결과 그대로다(syncRegen): 실패로 알린다.
+      // 동기화 전(regenJobId)이든 노트를 먼저 열어 동기화가 끝낸 뒤(lastRegenJobId, #639)든 같은 판정이다
+      const unusable = !isJob && job.status === 'succeeded' && !(await this.regenApplies(job));
+      // 동기화가 끝낸 다시 만들기(lastRegenJobId)가 성공했고 쓸 수 있는 결과인데 jobId 가 아니면, 동기화 뒤에
+      // 다시 시도(AiJobsService.retry)해 성공한 것이다: 노트에 반영되지 않으므로 알리지 않는다(지금처럼, code-review)
+      if (!isJob && !isRegen && job.status === 'succeeded' && !unusable) return null;
+      const status = unusable ? 'failed' : job.status;
       const materialId = String(job.targetId);
       return {
         title: MESSAGES.summary[status],
@@ -485,7 +500,7 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
       } | null>();
     // 미리 만들기는 이어받은(awaited) 뒤 세트를 만든다: 그 사이에 확인했으면 조금 뒤 다시 본다
     if (!set) return job.type === PREGEN_TYPE ? 'later' : null;
-    if (job.type === SIMILAR_TYPE && !(await this.madeSimilar(job, set))) return failed();
+    if (!(await this.madeQuestions(job, set))) return failed();
     const quizSetId = String(set._id);
     return {
       title: MESSAGES[kind][job.status],
@@ -522,11 +537,12 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
-   * 성공한 유사 문제 작업이 문제를 1개 이상 만들었는지(#634). 세트가 이미 ready 이고 문제가 있으면 그대로 믿는다.
-   * 그 밖에는(세트 동기화 전 generating · 0개라 failed · 앞선 실패로 failed 였다가 다시 시도해 성공) 세트 동기화가
-   * 결국 내릴 판정과 같도록 작업 결과를 세트 동기화와 같은 규칙(resultQuestions)으로 센다
+   * 성공한 퀴즈 작업(유사 문제 #634 · 퀴즈 만들기 · 미리 만들기 #639)이 쓸 문제를 1개 이상 만들었는지.
+   * 세트가 이미 ready 이고 문제가 있으면 그대로 믿는다. 그 밖에는(세트 동기화 전 generating · 0개라 failed ·
+   * 앞선 실패로 failed 였다가 다시 시도해 성공) 세트 동기화가 결국 내릴 판정과 같도록 작업 결과를
+   * 세트 동기화와 같은 규칙(resultQuestions: 유사 문제는 reviewQuestions, 그 밖은 questions)으로 센다
    */
-  private async madeSimilar(
+  private async madeQuestions(
     job: JobLean,
     set: { status?: string | null; questionCount?: number | null },
   ): Promise<boolean> {
