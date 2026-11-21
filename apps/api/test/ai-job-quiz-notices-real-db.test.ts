@@ -99,7 +99,7 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 생성 알림', () => {
   /** 끝난 작업 + 그 작업을 가리키는 퀴즈 세트(바로 넣는다: 필수 필드를 다 채우지 않는다) */
   const quizJob = async (
     over: Record<string, unknown> = {},
-    set: { deletedAt?: Date | null; none?: boolean } = {},
+    set: { deletedAt?: Date | null; none?: boolean; status?: string; questionCount?: number } = {},
   ) => {
     const setId = new Types.ObjectId();
     const job = await jobs.create({
@@ -123,6 +123,7 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 생성 알림', () => {
         title: '영어 단어',
         jobId: job._id,
         deletedAt: set.deletedAt ?? null,
+        ...(set.status ? { status: set.status, questionCount: set.questionCount ?? 0 } : {}),
       });
     return { id: job._id, setId };
   };
@@ -144,12 +145,28 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 생성 알림', () => {
 
   it('실패 · 유사 문제는 문구가 다르다', async () => {
     await quizJob({ status: 'failed' });
-    await quizJob({ type: 'similar_quiz' });
+    // 유사 문제는 세트의 상태 · 문제 수를 본다(#634): 문제가 있는 ready 세트
+    await quizJob({ type: 'similar_quiz' }, { status: 'ready', questionCount: 3 });
     await service.runOnce(NOW);
     expect(sent.map((m) => m.title).sort()).toEqual([
       '유사 문제가 준비됐어요',
       '퀴즈를 만들지 못했어요. 다시 시도해 주세요',
     ]);
+  });
+
+  it('유사 문제를 하나도 못 만들어 세트가 failed 면 「준비됐어요」 대신 실패를 알린다(#634, COM-004)', async () => {
+    const { id } = await quizJob(
+      { type: 'similar_quiz', result: { reviewQuestions: [], srsUpdates: [] } },
+      { status: 'failed' },
+    );
+    await service.runOnce(NOW);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      title: '유사 문제를 만들지 못했어요. 다시 시도해 주세요',
+      data: { type: 'quiz-ready', status: 'failed' },
+    });
+    expect(sent[0]!.data.quizSetId).toBeUndefined();
+    expect((await jobs.findById(id).lean())!.notice?.state).toBe('sent');
   });
 
   it('사용자가 기다린 미리 만들기(awaited)만 알리고, 기다리지 않은 것 · 지운 세트 · 세트 없는 것은 알리지 않는다', async () => {
