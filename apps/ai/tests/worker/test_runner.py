@@ -710,3 +710,37 @@ def test_a_job_that_failed_before_any_call_logs_no_calls(
     col.update_one({"_id": "j1"}, {"$set": {"input": "문자열"}})
     run(col, lambda inp, report: {})
     assert cost_lines(caplog) == ["작업 비용 j1 (quiz_generate): LLM claude · 호출 없음 · 합계 $0"]
+
+
+@pytest.mark.usefixtures("claude_provider")
+def test_a_call_left_running_by_the_handler_is_logged_when_it_ends(
+    col: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    # 시간 상한으로 기다리지 않고 둔 호출(Codex 리뷰 #622): 작업 줄 뒤에 따로 한 줄
+    caplog.set_level(logging.INFO)
+    answer = threading.Event()
+
+    class Slow:
+        def call(self, model: str, *a: Any, **kw: Any) -> JsonObject:
+            answer.wait(5)
+            charge(claude_cost(model, 1000, 200), model, 1000, 200)
+            return {}
+
+    late: list[threading.Thread] = []
+
+    def handler(inp: JsonObject, report: JobReport) -> JsonObject:
+        llm = Metered(Slow(), report.add_cost, report.llm_usage())
+        late.append(
+            threading.Thread(target=llm.call, args=("claude-sonnet-5-5", "s", "u", {}, "X"))
+        )
+        late[0].start()
+        return {}
+
+    run(col, handler)
+    answer.set()
+    late[0].join(5)
+    assert cost_lines(caplog) == [
+        "작업 비용 j1 (quiz_generate): LLM claude · 호출 없음 · 합계 $0",
+        "작업 비용 j1 (quiz_generate) 늦게 끝난 호출: LLM claude"
+        " · claude-sonnet-5-5 1회 입력 1,000/출력 200 $0.004 · 합계 $0.004",
+    ]

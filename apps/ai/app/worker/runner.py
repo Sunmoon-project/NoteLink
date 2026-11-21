@@ -276,9 +276,12 @@ def run_once(
 def _log_cost(job: Job, usage: JobUsage) -> None:
     """작업이 끝날 때(성공 · 실패 · 취소 · DB 오류 모두) 이 작업의 LLM 사용량 한 줄(#621).
 
+    처리 함수가 기다리지 않고 둔 호출이 이 뒤에 끝나면 JobUsage가 그 호출만 따로 한 줄 남김.
+
     로그를 만들다 실패해도 작업 처리에는 영향 없게 경고만 남김."""
     try:
-        log.info("작업 비용 %s (%s): %s", job.id, job.type, usage.summary())
+        name = f"{job.id} ({job.type})"
+        log.info("작업 비용 %s: %s", name, usage.close(name))
     except Exception:
         log.warning("작업 %s: 비용 로그를 남기지 못함", job.id, exc_info=True)
 

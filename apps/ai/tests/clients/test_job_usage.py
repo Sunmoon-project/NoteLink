@@ -3,12 +3,14 @@
 실제 호출 없음(가짜 서버 · 가짜 LLM).
 """
 
+import logging
 import threading
 from typing import Any
 
 import httpx2
 import pytest
 
+from app.clients import llm as llm_module
 from app.clients.llm import (
     Budgeted,
     JobUsage,
@@ -17,6 +19,7 @@ from app.clients.llm import (
     Spend,
     charge,
     claude_cost,
+    metering,
 )
 from app.core.config import settings
 from tests.clients import test_llm as school_fakes
@@ -189,3 +192,51 @@ def test_a_fallback_that_could_not_reach_the_school_llm_is_not_counted() -> None
     with pytest.raises(LlmSetupError):
         Metered(b, lambda usd: None, usage).call("claude-sonnet-5-5", "s", "u", SCHEMA, "X")
     assert "학교 LLM으로 넘김" not in usage.summary()
+
+
+# ---------- Codex 리뷰 #622 반영 ----------
+
+
+def meter_of(model: str, usd: float) -> Any:
+    with metering() as m:
+        charge(usd, model, 1, 1)
+    return m
+
+
+def test_the_summary_uses_one_snapshot_even_while_calls_are_added(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 문구를 만드는 사이 다른 스레드가 더해도 모델별 값과 합계가 같은 시점
+    usage = JobUsage()
+    usage.add(meter_of("claude-sonnet-5-5", 2.0))
+    usage.add(meter_of("claude-haiku-5-5", 1.0))
+    real = llm_module._usd
+    added: list[bool] = []
+
+    def adding(value: float) -> str:
+        if not added:
+            added.append(True)
+            usage.add(meter_of("claude-haiku-5-5", 1.0))
+        return real(value)
+
+    monkeypatch.setattr(llm_module, "_usd", adding)
+    assert usage.summary() == (
+        "LLM claude · claude-sonnet-5-5 1회 입력 1/출력 1 $2"
+        " · claude-haiku-5-5 1회 입력 1/출력 1 $1 · 합계 $3"
+    )
+
+
+def test_a_call_that_ends_after_the_job_is_logged_on_its_own(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.clients.llm")
+    usage = JobUsage()
+    usage.add(meter_of("claude-sonnet-5-5", 0.5))
+    assert usage.close("j1 (quiz_generate)").endswith("합계 $0.5")
+    usage.add(meter_of("claude-haiku-5-5", 0.25))  # 시간 상한 뒤 늦게 끝난 호출
+    usage.add(meter_of("", 0.0))  # 아무것도 쓰지 않은 호출은 남기지 않음
+    lines = [r.getMessage() for r in caplog.records]
+    assert lines == [
+        "작업 비용 j1 (quiz_generate) 늦게 끝난 호출: LLM claude"
+        " · claude-haiku-5-5 1회 입력 1/출력 1 $0.25 · 합계 $0.25"
+    ]

@@ -1097,10 +1097,10 @@ def _provider_of(model: str) -> str:
 class JobUsage:
     """작업 하나가 쓴 LLM: 모델별 응답 수 · 토큰 · 비용, 학교 LLM으로 넘긴 수(#621).
 
-    작업 연결(Metered)이 호출마다 더하고, 처리기가 작업이 끝날 때 summary()를 로그에 남김.
+    작업 연결(Metered)이 호출마다 더하고, 처리기가 작업이 끝날 때 close()로 로그 줄을 받음.
     퀴즈 자리처럼 여러 스레드가 함께 더하므로 잠금. 프롬프트 · 답 · 사용자 정보는 담지 않음.
-    로그는 처리 함수가 돌아온 때 기준: 시간 상한으로 기다리지 않고 둔 호출이 그 뒤에 끝나면
-    llmUsd에는 쌓이지만 로그 줄에는 빠짐(/code-review #621).
+    시간 상한으로 기다리지 않고 둔 호출이 close() 뒤에 끝나면 그 호출만 '늦게 끝난 호출' 줄로
+    따로 남김: 로그 합이 llmUsd와 같게(Codex 리뷰 #622).
     """
 
     def __init__(self) -> None:
@@ -1109,16 +1109,31 @@ class JobUsage:
         self._models: dict[str, list[float]] = {}
         self._fallbacks = 0
         self._budget: Budgeted | None = None
+        self._closed: str | None = None  # close()에 받은 작업 이름: 그 뒤 add는 따로 로그
 
     def add(self, meter: _Meter) -> None:
         with self._lock:
-            self._usd += meter.usd
-            for model, part in meter.models.items():
-                row = self._models.setdefault(model, [0, 0, 0, 0.0])
-                for k, v in enumerate(part):
-                    row[k] += v
-            self._fallbacks += meter.fallbacks
-            self._budget = meter.budget or self._budget
+            self._merge(meter)
+            late = self._closed
+        if late is not None and (meter.usd or meter.models or meter.fallbacks):
+            once = JobUsage()
+            once._merge(meter)
+            log.info("작업 비용 %s 늦게 끝난 호출: %s", late, once.summary())
+
+    def _merge(self, meter: _Meter) -> None:
+        self._usd += meter.usd
+        for model, part in meter.models.items():
+            row = self._models.setdefault(model, [0, 0, 0, 0.0])
+            for k, v in enumerate(part):
+                row[k] += v
+        self._fallbacks += meter.fallbacks
+        self._budget = meter.budget or self._budget
+
+    def close(self, job: str) -> str:
+        """작업이 끝남: 지금까지의 summary(). 이 뒤에 더해진 호출은 job 이름으로 따로 로그."""
+        with self._lock:
+            self._closed = job
+        return self.summary()
 
     @property
     def usd(self) -> float:
@@ -1130,12 +1145,13 @@ class JobUsage:
 
         맨 앞은 실제로 답을 받은 제공자(모델 이름으로 가름, 둘 다면 claude+school). 호출이 없으면
         provider(없으면 LLM_PROVIDER). 모델은 비용이 큰 것부터. 누적은 예산(Budgeted)을 거친 호출이
-        있을 때 그 합계의 지금 값
-        (Spend.known: DB를 다시 읽지 않음). 한 번도 못 읽었으면 뺌.
+        있을 때 그 합계의 지금 값(Spend.known: DB를 다시 읽지 않음). 한 번도 못 읽었으면 뺌.
+        모델별 값은 잠금 안에서 복사해 합계와 같은 시점으로 씀(Codex 리뷰 #622).
         """
         with self._lock:
-            models = sorted(self._models.items(), key=lambda m: (-m[1][3], m[0]))
+            rows = [(model, tuple(row)) for model, row in self._models.items()]
             usd, fallbacks, budget = self._usd, self._fallbacks, self._budget
+        models = sorted(rows, key=lambda m: (-m[1][3], m[0]))
         used = sorted({_provider_of(model) for model, _ in models})
         parts = [f"LLM {'+'.join(used) or provider or settings.llm_provider}"]
         parts += [
