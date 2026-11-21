@@ -774,6 +774,28 @@ describe.skipIf(!uri)('진짜 DB 학습 폴더 확인', () => {
       }
     });
 
+    it('기본 설정에서 오늘의 복습으로 만든 유사 퀴즈는 그 뒤 기준 폴더를 지워도 남는다(Codex 3차)', async () => {
+      vi.stubEnv('AUTO_SIMILAR_ON_FINISH', '');
+      try {
+        const { f, source } = await similarSource('오늘의 복습 기준 폴더 · 고르기 뒤 삭제');
+        await col('quiz_sets').updateOne(
+          { _id: source._id },
+          { $set: { reviewDay: '2026-09-03' } },
+        );
+        const made = await similar.create(me.toHexString(), String(source._id));
+        const id = new Types.ObjectId(made._id);
+        expect((await row('quiz_sets', id))?.deletedAt).toBeNull();
+
+        await service.remove(me.toHexString(), f._id);
+
+        // 오늘의 복습(원본)과 거기서 이어 만든 유사 퀴즈는 여러 폴더 문제를 섞으므로 남긴다
+        expect((await row('quiz_sets', source._id))?.deletedAt).toBeNull();
+        expect((await row('quiz_sets', id))?.deletedAt).toBeNull();
+      } finally {
+        vi.stubEnv('AUTO_SIMILAR_ON_FINISH', 'true');
+      }
+    });
+
     it('세트를 넣은 뒤 폴더 확인이 실패하면 오류를 올리고 넣은 작업은 거두지 않는다(code-review 2차)', async () => {
       const f = await service.create(me.toHexString(), {
         title: '폴더 확인 실패',

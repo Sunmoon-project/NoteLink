@@ -139,6 +139,27 @@ it('오늘의 복습 세트는 폴더가 있어도 그 세트로 유사 퀴즈�
   });
 });
 
+// Codex 3차: 원본 세트가 있는 세트(오늘의 복습 · 다른 세트에서 이어 만든 유사 퀴즈 · 다시 보기)는 고르기 화면으로 보내면
+// 앱의 고르기 생성이 원본 연결 없이 만들어 오늘의 복습 계보(폴더 삭제 보호)가 끊긴다. 서버가 원본을 남기는 세트 경로로
+it('원본 세트가 있는 세트(이어 만든 세트)는 폴더가 있어도 그 세트로 유사 퀴즈를 만든다', async () => {
+  mockApi.quiz.set.mockResolvedValue({
+    ...quizSet,
+    materialId: 'note-1',
+    folderId: 'folder-1',
+    sourceSetId: 'today-set',
+  });
+  setParams({ setId: quizSet._id, results: '10' });
+  await renderScreen(<QuizReviewScreen />, client());
+
+  await fireEvent.press(
+    await screen.findByRole('button', { name: /틀린 1문제 비슷한 문제로 지금 복습/ }),
+  );
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/play/similar',
+    params: { setId: quizSet._id },
+  });
+});
+
 it('다 맞혔으면 다음 복습 날짜만 알려 주고, 비슷한 문제 복습은 내지 않는다', async () => {
   setParams({ setId: quizSet._id, results: '11', scheduled: '2', nextReviewDay: tomorrow });
   await renderScreen(<QuizReviewScreen />, client());

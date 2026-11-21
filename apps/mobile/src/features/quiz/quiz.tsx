@@ -1258,9 +1258,10 @@ export function QuizReviewScreen() {
         <View className="mt-3">
           <QuizNextStep
             setId={set.data._id}
-            // 노트 폴더가 있는 세트는 고르기 화면(#610)으로. 오늘의 복습(노트를 섞음) · 폴더가 없는 옛 세트는 그 세트로 만든다
+            // 노트 폴더가 있는 세트는 고르기 화면(#610)으로. 오늘의 복습(노트를 섞음) · 폴더가 없는 옛 세트 · 원본 세트가 있는
+            // 세트(이어 만든 세트: 고르기로 만들면 오늘의 복습 계보가 끊김, Codex 3차)는 그 세트로 만든다(서버가 원본을 남김)
             pickFolder={
-              set.data.folderId && set.data.materialId && !reviewCopy
+              set.data.folderId && set.data.materialId && !reviewCopy && !set.data.sourceSetId
                 ? set.data.folderId
                 : undefined
             }
@@ -1333,7 +1334,7 @@ export function QuizReviewScreen() {
  * 복습 날짜는 서버가 이번에 일정을 정했을 때(scheduled > 0)만 말한다. 처음 푼 문제뿐 아니라 오늘의 복습처럼 이미 복습
  * 중인 문제도 다음 날짜로 옮기면 넣는다(#625, 설정이 꺼진 기본). 다 익혔거나 그만 낸 문제 · 기기 저장은 날짜가 없다.
  * 유사 퀴즈는 퀴즈를 끝내도 저절로 만들지 않는다(#625, 사용자가 누를 때만). pickFolder가 있으면 그 노트의 고르기 화면
- * (#610, 마지막 풀이에서 틀린 문제를 처음부터 체크)으로, 없으면(오늘의 복습 · 폴더가 없는 옛 세트) 이 세트로 만든다
+ * (#610, 마지막 풀이에서 틀린 문제를 처음부터 체크)으로, 없으면(오늘의 복습 · 폴더가 없는 옛 세트 · 이어 만든 세트) 이 세트로 만든다
  */
 function QuizNextStep({
   setId,
