@@ -357,32 +357,53 @@ export class QuizSetsService implements OnModuleInit {
   /** 앱이 맞춤 퀴즈 · 이어받은 미리 만들기를 취소하면 기다리던 세트를 지우도록 ai-jobs에 등록한다(#626) */
   onModuleInit(): void {
     for (const type of [GENERATE_TYPE, PREGEN_TYPE]) {
-      this.jobs.registerCancelHandler(type, ({ userId, jobId }) =>
-        this.dropCanceled(userId, jobId),
-      );
+      this.jobs.registerCancelHandler(type, (ctx) => this.cancelWaiting(ctx));
     }
   }
 
   /**
-   * 앱의 취소로 멈춘 작업(AiJobsService.cancelByUser)을 기다리던 세트를 지운다(소프트 삭제 deletedAt, #626). 문제가 없는
-   * failed 세트가 남지 않게 한다. 이미 ready가 된 세트는 그대로(작업이 먼저 끝난 늦은 취소, 문제가 있는 퀴즈).
-   * 세트에 딸린 개념 카드 작업(quiz_flashcards)도 멈춘다: 보통 ready 세트에만 있지만 세트가 ready로 바뀌는 순간과
-   * 겹치면 넣을 수 있다(넣는 쪽도 지운 세트면 멈춘다, ensureCards). 여러 번 불려도 같다(지운 세트는 다시 고르지 않음).
-   * 미리 만들기는 뒤에서 계속 돌고, 다 만들면 다음 퀴즈 요청이 결과를 쓴다(unusedPregen은 지운 미완성 세트를 세지 않음)
+   * 앱의 취소(AiJobsService.cancelByUser, #626): 작업을 멈추고, 그 작업을 기다리던 세트를 지운다(소프트 삭제 deletedAt).
+   * 문제가 없는 failed 세트가 남지 않게 한다.
+   * - 지울 세트는 멈추기 전에 고른다: 멈춘 뒤 다른 요청이 같은 미리 만들기를 새 세트로 다시 이어받아도 그 세트는 고르지
+   *   않는다(createOnce는 이어받기가 풀린 세트를 돌려주지 않고 새 세트를 만든다)
+   * - 멈춘 뒤 작업이 이 취소로 멈춘 상태일 때만 지운다: 취소가 닿기 전에 끝난 작업(늦은 취소)의 세트는 그대로 두고,
+   *   그사이 다른 요청이 미리 만들기를 다시 이어받았으면(이어받기가 다시 켜짐) 지우지 않는다
+   * - 미리 만들기는 뒤에서 계속 돌고, 다 만들면 다음 퀴즈 요청이 결과를 쓴다(unusedPregen은 지운 미완성 세트를 세지 않음)
+   * 여러 번 불려도 같다. 앞 호출이 지우다 실패했어도 다시 취소하면 마저 지운다(작업은 이미 멈춘 상태)
    */
-  async dropCanceled(userId: string, jobId: string): Promise<void> {
+  private async cancelWaiting(ctx: {
+    userId: string;
+    jobId: string;
+    cancel: () => Promise<boolean>;
+  }): Promise<void> {
+    const ownerId = objectId(ctx.userId, '퀴즈');
+    const waiting = await this.sets
+      .find(
+        { ownerId, jobId: objectId(ctx.jobId, '퀴즈'), status: { $ne: 'ready' }, deletedAt: null },
+        { _id: 1 },
+      )
+      .lean<Pick<QuizSetRow, '_id'>[]>();
+    if (!(await ctx.cancel())) return;
+    await this.dropSets(
+      ctx.userId,
+      waiting.map((r) => r._id),
+    );
+  }
+
+  /**
+   * 아직 ready가 아닌 내 세트들을 지우고(deletedAt) 딸린 개념 카드 작업(quiz_flashcards)도 멈춘다(#626). 카드 작업은 보통
+   * ready 세트에만 있지만 세트가 ready로 바뀌는 순간과 겹치면 넣을 수 있다(넣는 쪽도 지운 세트면 멈춘다, ensureCards).
+   * 이미 ready가 됐거나 지운 세트는 건너뛴다
+   */
+  private async dropSets(userId: string, setIds: Types.ObjectId[]): Promise<void> {
     const ownerId = objectId(userId, '퀴즈');
-    const pending = {
-      ownerId,
-      jobId: objectId(jobId, '퀴즈'),
-      status: { $ne: 'ready' },
-      deletedAt: null,
-    };
-    const rows = await this.sets.find(pending, { _id: 1 }).lean<Pick<QuizSetRow, '_id'>[]>();
     const dropped: string[] = [];
-    for (const { _id } of rows) {
+    for (const _id of setIds) {
       const gone = await this.sets
-        .findOneAndUpdate({ ...pending, _id }, { $set: { deletedAt: new Date() } })
+        .findOneAndUpdate(
+          { _id, ownerId, status: { $ne: 'ready' }, deletedAt: null },
+          { $set: { deletedAt: new Date() } },
+        )
         .lean();
       if (gone) dropped.push(_id.toHexString());
     }
@@ -431,12 +452,11 @@ export class QuizSetsService implements OnModuleInit {
     pages: { pageNo: number; ocrText: string }[],
   ): Promise<{ quizSet: AppQuizSet; job: AppAiJob } | null> {
     const existing = await this.generatingSet(owner, material._id);
-    if (existing) {
-      // 앱이 한 번 떠나 이어받기가 풀린 미리 만들기면 다시 이어받는다(사용자가 다시 기다린다)
-      if (existing.job.type !== PREGEN_TYPE) return existing;
-      const resumed = await this.jobs.takeOverPregen(userId, 'material', material._id.toString());
-      return resumed?._id === existing.job._id ? { ...existing, job: resumed } : existing;
-    }
+    // 앱이 취소해 이어받기가 풀린 미리 만들기를 기다리던 세트는 취소 중이거나 지우다 실패해 남은 세트다(#626). 다시
+    // 이어받아 돌려주면 취소가 이 세트를 지워 새 화면이 404를 받으므로, 마저 지우고 아래에서 새 세트로 이어받는다
+    if (existing?.job.type === PREGEN_TYPE && existing.job.awaited === false) {
+      await this.dropSets(userId, [new Types.ObjectId(existing.quizSet._id)]);
+    } else if (existing) return existing;
     if (pages.length === 0) {
       throw new BadRequestException({
         code: VALIDATION_FAILED,

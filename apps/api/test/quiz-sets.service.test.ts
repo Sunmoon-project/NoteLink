@@ -1779,6 +1779,62 @@ describe('QuizSetsService 생성 중 취소하면 세트를 지운다(#626)', ()
     expect(quizJobs(t).map((r) => r['type'])).toEqual(['quiz_pregen']);
   });
 
+  it('취소가 이어받기를 푼 뒤 세트를 지우기 전에 다시 만들면, 새 세트로 이어받고 취소는 새 세트를 지우지 않는다(Codex 1차)', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    const first = await t.service.create(ME.toHexString(), materialId);
+    const cancel = t.aiJobs.cancel.bind(t.aiJobs);
+    let again: Awaited<ReturnType<typeof t.service.create>> | undefined;
+    vi.spyOn(t.aiJobs, 'cancel').mockImplementationOnce(async (...args) => {
+      await cancel(...args);
+      again = await t.service.create(ME.toHexString(), materialId); // 나갔다 곧바로 다시 들어옴
+    });
+
+    await t.aiJobs.cancelByUser(ME.toHexString(), p._id);
+
+    expect(again!.quizSet._id).not.toBe(first.quizSet._id);
+    expect(again!.job).toMatchObject({ _id: p._id, awaited: true });
+    expect(t.set(first.quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+    expect(t.set(again!.quizSet._id)['deletedAt']).toBeNull();
+    expect(t.job(p._id)).toMatchObject({ status: 'queued', awaited: true });
+    expect((await t.service.findMine(ME.toHexString(), again!.quizSet._id)).status).toBe(
+      'generating',
+    );
+  });
+
+  it('미리 만들기 세트를 지우다 실패해도 다시 취소하면 마저 지운다(Codex 1차)', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    const { quizSet } = await t.service.create(ME.toHexString(), materialId);
+    vi.spyOn(t.sets.model, 'findOneAndUpdate').mockImplementationOnce(() => {
+      throw new Error('DB 쓰기 실패');
+    });
+
+    await expect(t.aiJobs.cancelByUser(ME.toHexString(), p._id)).rejects.toThrow('DB 쓰기 실패');
+    expect(t.job(p._id)).toMatchObject({ status: 'queued', awaited: false });
+    expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+
+    await t.aiJobs.cancelByUser(ME.toHexString(), p._id);
+
+    expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+  });
+
+  it('지우다 실패해 이어받기가 풀린 채 남은 세트는 다음 만들기가 마저 지우고 새 세트로 이어받는다', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    const first = await t.service.create(ME.toHexString(), materialId);
+    await t.aiJobs.cancel(ME.toHexString(), p._id); // 이어받기만 풀리고 세트는 남은 상태
+
+    const again = await t.service.create(ME.toHexString(), materialId);
+
+    expect(t.set(first.quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+    expect(again.quizSet._id).not.toBe(first.quizSet._id);
+    expect(again.job).toMatchObject({ _id: p._id, awaited: true });
+  });
+
   it('세트에 딸린 개념 카드 작업도 멈춘다', async () => {
     const t = setup();
     const { quizSet, job } = await t.service.create(ME.toHexString(), await t.addNote());

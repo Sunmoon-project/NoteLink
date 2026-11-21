@@ -77,11 +77,18 @@ export interface InputRefreshContext {
 export type InputRefresher = (ctx: InputRefreshContext) => Promise<Record<string, unknown>>;
 
 /**
- * 작업 종류별로 등록하는 「앱의 취소로 작업을 멈춘 뒤」 함수(#626). 작업을 넣은 모듈이 그 대상(퀴즈 세트 등)을 정리한다.
+ * 작업 종류별로 등록하는 「앱의 취소」 함수(#626). 작업을 넣은 모듈이 멈추기 전후로 그 대상(퀴즈 세트 등)을 정리한다.
+ * 받은 cancel()을 꼭 한 번 불러 작업을 멈춘다: 지울 대상을 멈추기 전에 고르고, 멈춘 뒤에도 취소로 멈춘 상태일 때만
+ * 정리하게 하려고 순서를 그 모듈에 맡긴다. cancel()은 지금 작업이 이 취소로 멈춘 상태인지 돌려준다(canceled이거나,
+ * 미리 만들기면 이어받기가 풀린 채 아직 도는 중. 취소가 닿기 전에 끝난 작업은 false).
  * 같은 작업에 여러 번 불릴 수 있어(앱이 두 번 누름) 여러 번 불려도 같은 결과여야 한다. 던지면 취소 응답도 오류가 된다
  * (작업은 이미 멈췄으므로 앱이 다시 누르면 다시 부른다)
  */
-export type CancelHandler = (ctx: { userId: string; jobId: string }) => Promise<void>;
+export type CancelHandler = (ctx: {
+  userId: string;
+  jobId: string;
+  cancel: () => Promise<boolean>;
+}) => Promise<void>;
 
 /** 앱에 보내는 작업 모양(packages/shared AiJob). input · 잠금 · 중간 결과는 보내지 않는다 */
 export interface AppAiJob {
@@ -235,7 +242,7 @@ export class AiJobsService {
   /** 다시 시도 전에 input을 새로 만드는 함수(작업 종류별). 등록하지 않은 종류는 input을 그대로 쓴다 */
   private readonly refreshers = new Map<string, InputRefresher>();
 
-  /** 앱의 취소로 작업을 멈춘 뒤 부를 함수(작업 종류별, #626). 등록하지 않은 종류는 취소만 한다 */
+  /** 앱의 취소에서 부를 함수(작업 종류별, #626). 등록하지 않은 종류는 취소만 한다 */
   private readonly cancelHandlers = new Map<string, CancelHandler>();
 
   /** 다시 시도로 같은 작업 id가 처리기에 다시 들어갔을 때 부를 함수(AiJobsGateway) */
@@ -263,7 +270,7 @@ export class AiJobsService {
   }
 
   /**
-   * 이 종류의 작업을 앱이 취소해 멈췄을 때(cancelByUser) 부를 함수를 등록한다(#626). 의존은 그 모듈 → 이 서비스 한 방향.
+   * 이 종류의 작업을 앱이 취소할 때(cancelByUser) 부를 함수를 등록한다(#626). 의존은 그 모듈 → 이 서비스 한 방향.
    * 같은 종류를 다시 등록하면 덮어쓴다
    */
   registerCancelHandler(type: string, handler: CancelHandler): void {
@@ -425,23 +432,15 @@ export class AiJobsService {
    * 여러 번 불러도 같다(앱이 두 번 취소해도 뒤에서 만들던 작업은 남는다, Codex 리뷰 #236).
    */
   async cancel(userId: string, jobId: string): Promise<void> {
-    await this.stop(userId, jobId);
-  }
-
-  /**
-   * cancel의 본체. 이 호출이 바꾼 것을 돌려준다: 'released'(미리 만들기의 이어받기를 풂) · 'canceled'(canceled로 바꿈) ·
-   * null(이미 끝났거나 이미 풀린 미리 만들기라 바꾼 것이 없음)
-   */
-  private async stop(userId: string, jobId: string): Promise<'released' | 'canceled' | null> {
     const filter = { _id: objectId(jobId), userId: objectId(userId) };
     const pregen = await this.jobs
       .findOneAndUpdate(
         { ...filter, type: PREGEN_TYPE, status: { $in: ACTIVE } },
         { $set: { awaited: false } },
-        { projection: { _id: 1, awaited: 1 } },
+        { projection: { _id: 1 } },
       )
-      .lean<{ awaited?: boolean }>();
-    if (pregen) return pregen.awaited === true ? 'released' : null;
+      .lean();
+    if (pregen) return;
     // held(다시 시도의 한도 확인 중 · 확인 도중 멈춤)도 취소한다. 취소하면 release가 열지 않는다
     const row = await this.jobs
       .findOneAndUpdate(
@@ -450,29 +449,36 @@ export class AiJobsService {
         { projection: { _id: 1 } },
       )
       .lean();
-    if (row) return 'canceled';
+    if (row) return;
     if ((await this.jobs.exists(filter)) === null) throw notFound();
-    return null;
   }
 
   /**
-   * 앱의 취소(POST /ai-jobs/:id/cancel). cancel처럼 멈추고, 그 작업 종류에 등록한 함수를 부른다(#626):
-   * - 이 호출이 canceled로 바꿨거나 미리 만들기의 이어받기를 풀었을 때
-   * - 이미 canceled인 작업을 또 취소할 때(앞 호출의 정리가 실패했어도 앱이 다시 눌러 마저 하게). canceled 작업은 다시
-   *   시도 말고는 되살아나지 않아 새 세트가 기다릴 수 없다
-   * 부르지 않을 때: 취소가 닿기 전에 끝난 작업(succeeded · failed, 늦은 취소는 결과를 그대로 둔다), 이미 이어받기가 풀린
-   * 미리 만들기(그 뒤 다른 요청이 다시 이어받았을 수 있어 바뀐 것이 없으면 건드리지 않음), 서버 안의 취소(cancel)
+   * 앱의 취소(POST /ai-jobs/:id/cancel). 그 작업 종류에 등록한 함수가 있으면 그 함수가 cancel을 불러 멈추고 대상을
+   * 정리한다(#626, CancelHandler). 없으면 cancel만. 남의 작업 · 없는 작업은 함수를 부르지 않고 404.
+   * 서버 안의 취소(세트 저장 실패 등)는 cancel을 바로 쓰므로 함수를 부르지 않는다
    */
   async cancelByUser(userId: string, jobId: string): Promise<void> {
-    const changed = await this.stop(userId, jobId);
-    const row = await this.jobs
-      .findOne({ _id: objectId(jobId), userId: objectId(userId) }, { type: 1, status: 1 })
-      .lean<Pick<AiJobRow, 'type' | 'status'>>();
-    const handler = row ? this.cancelHandlers.get(row.type) : undefined;
-    if (!row || !handler) return;
-    if (changed !== null || (row.type !== PREGEN_TYPE && row.status === 'canceled')) {
-      await handler({ userId, jobId });
-    }
+    const filter = { _id: objectId(jobId), userId: objectId(userId) };
+    const found = await this.jobs.findOne(filter, { type: 1 }).lean<Pick<AiJobRow, 'type'>>();
+    if (!found) throw notFound();
+    const handler = this.cancelHandlers.get(found.type);
+    if (!handler) return this.cancel(userId, jobId);
+    await handler({
+      userId,
+      jobId,
+      cancel: async () => {
+        await this.cancel(userId, jobId);
+        const row = await this.jobs
+          .findOne(filter, { type: 1, status: 1, awaited: 1 })
+          .lean<Pick<AiJobRow, 'type' | 'status' | 'awaited'>>();
+        if (!row) return false;
+        return (
+          row.status === 'canceled' ||
+          (row.type === PREGEN_TYPE && ACTIVE.includes(row.status) && row.awaited === false)
+        );
+      },
+    });
   }
 
   /**
