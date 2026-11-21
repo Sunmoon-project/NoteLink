@@ -1877,13 +1877,30 @@ describe('QuizSetsService 생성 중 취소하면 세트를 지운다(#626)', ()
     const materialId = await t.addNote();
     const p = await pregen(t, materialId);
     const first = await t.service.create(ME.toHexString(), materialId);
-    await t.aiJobs.cancel(ME.toHexString(), p._id); // 이어받기만 풀리고 세트는 남은 상태
+    // 앱의 취소가 표시를 적고 이어받기를 푼 뒤 세트를 지우지 못한 상태(#642: 취소한 세트는 표시로 가린다)
+    t.set(first.quizSet._id)['cancelRequestedAt'] = new Date();
+    await t.aiJobs.cancel(ME.toHexString(), p._id);
 
     const again = await t.service.create(ME.toHexString(), materialId);
 
     expect(t.set(first.quizSet._id)['deletedAt']).toBeInstanceOf(Date);
     expect(again.quizSet._id).not.toBe(first.quizSet._id);
     expect(again.job).toMatchObject({ _id: p._id, awaited: true });
+  });
+
+  it('취소 표시 없이 이어받기만 풀린 세트(겹친 옛 취소의 늦은 stop)는 지우지 않고 이어받기를 되살려 돌려준다(#642 Codex 2차)', async () => {
+    const t = setup();
+    const materialId = await t.addNote();
+    const p = await pregen(t, materialId);
+    const first = await t.service.create(ME.toHexString(), materialId);
+    await t.aiJobs.cancel(ME.toHexString(), p._id); // 표시 없이 이어받기만 풀림
+
+    const again = await t.service.create(ME.toHexString(), materialId);
+
+    expect(again.quizSet._id).toBe(first.quizSet._id);
+    expect(again.job).toMatchObject({ _id: p._id, awaited: true });
+    expect(t.job(p._id)['awaited']).toBe(true);
+    expect(t.set(first.quizSet._id)['deletedAt']).toBeNull();
   });
 
   it('세트에 딸린 개념 카드 작업도 멈춘다', async () => {
@@ -2194,6 +2211,64 @@ describe('QuizSetsService 취소 요청에 세트 번호(quizSetId)를 실으면
       expect((await t.service.findMine(ME.toHexString(), again().quizSet._id)).status).toBe(
         'generating',
       );
+    });
+
+    it('멈춘 뒤 이어받기를 되살리기 전에 같은 노트로 다시 만들어도 새 세트를 지우지 않고 그 세트를 돌려준다(Codex 2차)', async () => {
+      const { t, p, first, interleave, again } = await start();
+      const update = t.jobs.model.findOneAndUpdate.bind(t.jobs.model);
+      let third: Awaited<ReturnType<typeof t.service.create>> | undefined;
+      const spy = vi.spyOn(t.jobs.model, 'findOneAndUpdate').mockImplementation(((
+        ...args: Parameters<typeof update>
+      ) => {
+        if ((args[1] as { $set?: { awaited?: boolean } }).$set?.awaited !== false)
+          return update(...args);
+        spy.mockRestore();
+        return {
+          lean: async () => {
+            await interleave(); // 다른 취소가 첫 세트를 지우고 새 세트가 이어받음
+            const row = await update(...args).lean(); // 늦은 stop이 새 세트의 이어받기를 풂
+            third = await t.service.create(ME.toHexString(), first.quizSet.materialId);
+            return row;
+          },
+        };
+      }) as never);
+
+      await cancel(t, p._id, first.quizSet._id);
+
+      expect(third!.quizSet._id).toBe(again().quizSet._id);
+      expect(t.set(again().quizSet._id)['deletedAt']).toBeNull();
+      expect(t.job(p._id)).toMatchObject({ status: 'queued', awaited: true });
+    });
+
+    it('되살린 뒤 새 세트를 취소했는데 지우다 실패하고 작업이 끝나도, 조회 · 재취소가 ready 대신 지운다(Codex 2차)', async () => {
+      const t = setup();
+      const materialId = await t.addNote();
+      const p = await pregen(t, materialId);
+      const { quizSet } = await t.service.create(ME.toHexString(), materialId);
+      failDropOnce(t);
+      await expect(cancel(t, p._id, quizSet._id)).rejects.toThrow('DB 쓰기 실패');
+      t.job(p._id)['awaited'] = true; // 겹친 요청의 늦은 되살리기
+      t.finish(p._id, { questions: fullSet(), title: '세포 생물학 퀴즈', concepts: ['세포막'] });
+
+      await cancel(t, p._id, quizSet._id);
+      expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+      expect(await t.service.list(ME.toHexString())).toEqual([]);
+    });
+
+    it('되살린 뒤 지우다 실패한 세트는 재취소 없이 다음 조회가 지운다(Codex 2차)', async () => {
+      const t = setup();
+      const materialId = await t.addNote();
+      const p = await pregen(t, materialId);
+      const { quizSet } = await t.service.create(ME.toHexString(), materialId);
+      failDropOnce(t);
+      await expect(cancel(t, p._id, quizSet._id)).rejects.toThrow('DB 쓰기 실패');
+      t.job(p._id)['awaited'] = true;
+      t.finish(p._id, { questions: fullSet(), title: '세포 생물학 퀴즈', concepts: ['세포막'] });
+
+      await expect(t.service.findMine(ME.toHexString(), quizSet._id)).rejects.toMatchObject(
+        notFound,
+      );
+      expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
     });
 
     it('이어받은 뒤 세트를 넣기 전에 이어받기가 풀려도 넣은 뒤 다시 켠다', async () => {
