@@ -43,6 +43,13 @@ export class SocialLoginAttempt {
   @Prop({ type: String, enum: SOCIAL_LOGIN_OUTCOMES, default: null })
   outcome: SocialLoginOutcome | null;
 
+  /**
+   * 제공자 인증 뒤 계정을 이번에 새로 만들었는지(findOrCreate 의 created). 코드 교환이 앱에 그대로 알린다(isNewUser).
+   * 탈퇴한 계정은 되살리지 않아 탈퇴 뒤 같은 소셜 계정으로 오면 새 계정이 된다 — 앱이 이를 안내한다(PROF-013)
+   */
+  @Prop({ type: Boolean, default: false })
+  created: boolean;
+
   /** 이 시각이 지나면 쓸 수 없다. 시작 직후에는 길게, 코드를 내준 뒤에는 짧게 줄인다 */
   @Prop({ required: true, type: Date })
   expiresAt: Date;

@@ -86,6 +86,10 @@ describe('SocialLoginAttempt 스키마', () => {
       expect(attempt.codeHash).toBeNull();
     });
 
+    it('계정을 새로 만들었는지(created)는 false 다 (PROF-013 · #637)', () => {
+      expect(attemptOf().created).toBe(false);
+    });
+
     it('제공자 인증이 끝나면 userId와 codeHash를 채울 수 있다', () => {
       const userId = new Types.ObjectId();
       const attempt = attemptOf({ userId, codeHash: 'a'.repeat(64) });
