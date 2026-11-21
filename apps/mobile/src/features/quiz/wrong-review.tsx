@@ -140,6 +140,7 @@ export function useDailyWrongReview(ready: boolean) {
 /* ── 화면 ── */
 
 const OX = ['O', 'X'];
+const SKIP = '오늘 복습 건너뛰기';
 
 export function WrongReviewScreen() {
   const userId = useAuth((s) => s.userId);
@@ -170,6 +171,14 @@ export function WrongReviewScreen() {
     setTyped('');
   };
   const options = q?.choices?.length ? q.choices : q?.type === 'ox' ? OX : null;
+  const main =
+    picked !== null ? (
+      <Btn onPress={next}>{i + 1 < qs.length ? '다음 문제' : '복습 마치기'}</Btn>
+    ) : !options ? (
+      <Btn disabled={!typed.trim()} onPress={() => answer(typed)}>
+        확인
+      </Btn>
+    ) : null;
 
   return (
     <Canvas>
@@ -178,12 +187,19 @@ export function WrongReviewScreen() {
           done ? (
             <Btn onPress={() => router.back()}>확인</Btn>
           ) : picked !== null ? (
-            <Btn onPress={next}>{i + 1 < qs.length ? '다음 문제' : '복습 마치기'}</Btn>
-          ) : !options ? (
-            <Btn disabled={!typed.trim()} onPress={() => answer(typed)}>
-              확인
-            </Btn>
-          ) : null
+            // 답을 본 뒤에는 다음으로만 넘어간다(마지막 문제에서 결과를 건너뛰고 닫지 않게)
+            main
+          ) : (
+            // 건너뛰기는 머리의 작은 회색 글자라 찾기 어려웠다(QUIZ-018). 다른 화면의 보조 버튼처럼
+            // 주 버튼 아래에 같은 크기 · 덜 강조한 모양으로 둔다(convert.tsx 「다시 만들기」).
+            // 문제 바로 아래라 '이 문제만 넘기기'로 읽히지 않게, 오늘 복습 전체를 닫는다고 적는다
+            <View className="gap-2">
+              {main}
+              <Btn kind="cream" onPress={() => router.back()}>
+                {SKIP}
+              </Btn>
+            </View>
+          )
         }
       >
         <Header
@@ -194,13 +210,6 @@ export function WrongReviewScreen() {
               : `지난번에 틀린 문제 ${qs.length}개 중 ${Math.min(i + 1, qs.length)}번째`
           }
           large={false}
-          right={
-            !done && (
-              <Btn small kind="ghost" onPress={() => router.back()}>
-                건너뛰기
-              </Btn>
-            )
-          }
         />
         {done ? (
           <View className="items-center pt-10">

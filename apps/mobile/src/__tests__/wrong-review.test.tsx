@@ -203,8 +203,35 @@ describe('오답 복습 화면', () => {
   it('건너뛰면 닫는다', async () => {
     recordWrong('u1', q('a'));
     await renderScreen(<WrongReviewScreen />);
-    await fireEvent.press(screen.getByText('건너뛰기'));
+    await fireEvent.press(screen.getByRole('button', { name: '오늘 복습 건너뛰기' }));
     expect(router.back).toHaveBeenCalled();
     expect(loadWrong('u1').items).toHaveLength(1);
+  });
+
+  // QUIZ-018: 머리 오른쪽의 작은 회색 글자라 찾기 어려웠다 → 아래 버튼 줄에 주 버튼과 같은 크기로
+  it('건너뛰기는 화면 아래 주 버튼 다음에 같은 크기로 보인다(QUIZ-018)', async () => {
+    recordWrong('u1', q('a', { type: 'short_answer', choices: null, answer: '엽록체' }));
+    await renderScreen(<WrongReviewScreen />);
+    const buttons = screen.getAllByRole('button');
+    const skip = screen.getByRole('button', { name: '오늘 복습 건너뛰기' });
+    const submit = screen.getByRole('button', { name: '확인' });
+    // 머리(뒤로 버튼 옆)가 아니라 아래 버튼 줄: 확인 버튼 뒤에 온다
+    expect(buttons.indexOf(skip)).toBeGreaterThan(buttons.indexOf(submit));
+    // small(h-control)이 아닌 주 버튼과 같은 기본 높이
+    expect(String(submit.props.className)).toMatch(/\bh-control-lg\b/);
+    expect(String(skip.props.className)).toMatch(/\bh-control-lg\b/);
+    // 흐린 회색 글자(ghost)가 아니라 바탕이 있는 버튼
+    expect(String(skip.props.className)).toMatch(/\bbg-white\b/);
+  });
+
+  it('답을 고르기 전에만 건너뛰기가 있고, 답을 본 뒤 · 결과 화면에서는 없다', async () => {
+    recordWrong('u1', q('a'));
+    await renderScreen(<WrongReviewScreen />);
+    expect(screen.getByRole('button', { name: '오늘 복습 건너뛰기' })).toBeTruthy();
+    await fireEvent.press(screen.getByText('② 나'));
+    // 마지막 문제에서 결과를 건너뛰고 닫지 않게 「복습 마치기」만 남긴다
+    expect(screen.queryByRole('button', { name: '오늘 복습 건너뛰기' })).toBeNull();
+    await fireEvent.press(screen.getByText('복습 마치기'));
+    expect(screen.queryByRole('button', { name: '오늘 복습 건너뛰기' })).toBeNull();
   });
 });
