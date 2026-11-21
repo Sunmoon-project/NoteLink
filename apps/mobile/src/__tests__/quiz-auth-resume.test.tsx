@@ -168,3 +168,51 @@ it('만료 안내→로그인→풀이 재마운트 후 기존 풀이 ID·문제
     params: { setId, points: '120', results: '11' },
   });
 });
+
+// #630: 답을 내기 전에는 진행을 저장하지 않지만, 첫 문제에서 로그인이 만료되면 남겨 다시 로그인하면 돌아온다
+it('첫 문제에서 답을 내기 전에 만료돼도 다시 로그인하면 같은 풀이 · 미제출 답안으로 돌아온다', async () => {
+  // 주관식이 첫 문제인 세트(입력만 하고 아직 내지 않음)
+  mockApi.quiz.set.mockResolvedValue({
+    ...quizSet,
+    questions: [quizSet.questions[1], quizSet.questions[0]],
+  });
+  await signedIn();
+  const qc = client();
+  const quiz = await renderScreen(
+    <>
+      <QuizSolveScreen />
+      <AppOverlays />
+    </>,
+    qc,
+  );
+  await waitFor(() => expect(mockApi.quiz.startAttempt).toHaveBeenCalledTimes(1));
+  await fireEvent.changeText(await screen.findByPlaceholderText('답을 입력해주세요'), '첫 입력');
+  // 답을 내기 전에는 진행이 없다
+  expect(useQuizProgress.getState().progress).toBeNull();
+  await act(async () => useAuth.getState().setExpired(true));
+  // 풀이 화면의 로컬 안내 다음에 렌더되는 전역 ExpiredDialog를 누른다(만료 표시를 끄고 로그인으로)
+  const loginButtons = await screen.findAllByText('다시 로그인');
+  await fireEvent.press(loginButtons[loginButtons.length - 1]!);
+  await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/(auth)/login'));
+  expect(useQuizProgress.getState().progress).toMatchObject({
+    setId,
+    attemptId,
+    index: 0,
+    answerText: '첫 입력',
+    results: [],
+  });
+  await quiz.unmount();
+
+  const login = await renderScreen(<LoginScreen />, qc);
+  await submitLogin();
+  await waitFor(() =>
+    expect(router.replace).toHaveBeenLastCalledWith({ pathname: '/play/solve', params: { setId } }),
+  );
+  await login.unmount();
+  setParams({ setId });
+  await renderScreen(<QuizSolveScreen />, qc);
+  expect(await screen.findByText('이어 풀 두 번째 문제')).toBeTruthy();
+  expect(screen.getByText('복습 퀴즈 1 / 2')).toBeTruthy();
+  expect(screen.getByPlaceholderText('답을 입력해주세요').props.value).toBe('첫 입력');
+  expect(mockApi.quiz.startAttempt).toHaveBeenCalledTimes(1);
+});
