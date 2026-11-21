@@ -24,6 +24,13 @@ const colors = {
   correct: '#1f7a4a', // 흰 바탕 5.33 · correct-soft 위 4.63
   'correct-soft': '#e6f2ea', // 정답 표시줄 바탕 (글자는 correct)
   peach: '#eecaa6', // 퀴즈 아바타 배경
+  // 스터디룸 시간표의 멤버 구분 색(순서대로, 7번째부터 다시 처음). 흰 이니셜이 4.5:1 이상 · 남색 · 보라 없음
+  'member-1': '#3b6e5b',
+  'member-2': '#2a62c4',
+  'member-3': '#a85a10',
+  'member-4': '#b8403a',
+  'member-5': '#8a6100',
+  'member-6': '#4f6b78',
   // 간편 로그인 버튼 — 각 회사 로그인 버튼 규격의 바탕색
   kakao: '#fee500',
   naver: '#03c75a',

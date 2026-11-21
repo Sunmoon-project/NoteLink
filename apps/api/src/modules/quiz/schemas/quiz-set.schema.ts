@@ -50,6 +50,11 @@ export class Question {
   // srs를 쓴 오답 복습 세트를 만든 시각. 더 새 세트의 상태만 덮어써, 늦게 옮긴 오래된 결과가 되돌리지 않게 한다
   @Prop({ type: Date, default: undefined })
   srsAt?: Date;
+
+  // 퀴즈를 끝낼 때 처음 복습 상태를 쓴 풀이(FR-37). 그 풀이로 오답 복습을 만들 때 처리기에 이 문제를 복습 상태 없이
+  // 넘겨, 같은 풀이를 두 번 세지 않게 한다. 오답 복습 · 오늘의 복습이 srs를 다시 쓰면 지운다
+  @Prop({ type: Types.ObjectId, default: undefined })
+  srsAttemptId?: Types.ObjectId;
 }
 
 export const QuestionSchema = SchemaFactory.createForClass(Question);

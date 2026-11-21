@@ -525,6 +525,27 @@ describe('PR36 녹음·변환 결과 조회 복구', () => {
       }),
     );
   });
+  // 실기기 피드백(2026-11-20): 저장 전 미리보기에 원본 보기 · 퀴즈 풀기 줄을 두지 않는다(세 종류 같은 규칙)
+  it.each(['handwriting', 'recording', 'document'] as const)(
+    '%s 변환 결과에는 원본 보기 · 이 노트로 퀴즈 풀기가 없다',
+    async (kind) => {
+      mockApi.content.material.mockResolvedValue({
+        _id: 'material1',
+        folderId: 'folder1',
+        kind,
+        title: '결과',
+        createdAt: '2026-11-01T00:00:00Z',
+        processing: { status: 'done', progress: 100, jobId: null },
+        summary: { points: ['요점'], sections: [{ heading: '제목', body: '본문' }] },
+        keywords: [],
+        bookmarks: [],
+      });
+      await renderScreen(<ResultScreen />, client());
+      await screen.findByRole('button', { name: '학습자료에 저장' });
+      expect(screen.queryByText(/원본 (필기|문서) 보기|원본 보기/)).toBeNull();
+      expect(screen.queryByText(/이 노트로 퀴즈/)).toBeNull();
+    },
+  );
   it('결과 조회 실패 화면에서 뒤로 이동할 수 있다', async () => {
     mockApi.content.material.mockRejectedValueOnce(new Error('결과 조회 실패'));
     await renderScreen(<ResultScreen />, client());

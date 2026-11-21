@@ -21,6 +21,16 @@ export const UserSettings = z.object({
   theme: z.enum(['light', 'dark']),
   doubleTapEraser: z.boolean(),
   leftHanded: z.boolean(),
+  // 알림 설정. 서버는 늘 채워 보내지만 옛 캐시에는 없을 수 있어 선택으로 둔다(없으면 켜짐 · 조용한 시간 없음)
+  notifyFriend: z.boolean().optional(),
+  notifyChat: z.boolean().optional(),
+  notifyRoom: z.boolean().optional(),
+  notifyStudy: z.boolean().optional(),
+  notifyAi: z.boolean().optional(),
+  /** 'HH:mm'(서울). 푸시만 멈추고 알림함에는 남는다 */
+  quietHours: z.object({ start: z.string(), end: z.string() }).nullable().optional(),
+  /** 알림을 끈 채팅방 id(1:1 · 스터디룸 채팅방) */
+  mutedChatRoomIds: z.array(id).optional(),
 });
 
 export const User = z.object({
@@ -193,12 +203,23 @@ export const Material = z.object({
   createdAt: date,
 });
 
+// 녹음 정리가 슬라이드마다 만드는 도식 구조(apps/ai services/recording/models.py Diagram). 그리는 것은 앱.
+// relations 는 terms 안 위치(0부터) [from, to]. 받은 값은 diagramOf(diagram.ts)로 거른 뒤에 쓴다
+export const DiagramKind = z.enum(['sequence', 'contrast', 'hierarchy', 'cause', 'list']);
+export const Diagram = z.object({
+  kind: DiagramKind,
+  terms: z.array(z.string()),
+  relations: z.array(z.tuple([z.number(), z.number()])),
+});
+
 export const Slide = z.object({
   index: z.number(),
   title: z.string(),
   bullets: z.array(z.string()),
   startSec: z.number(),
   endSec: z.number(),
+  // 도식이 맞지 않는 슬라이드는 null. 도식을 보내기 전 서버 · 기기 저장 모드에는 없다
+  diagram: Diagram.nullable().optional(),
 });
 
 export const Recording = z.object({
@@ -252,8 +273,16 @@ export const QuizSet = z.object({
   questionCount: z.number(),
   questions: z.array(Question),
   createdAt: date,
-  // 오늘의 복습만: 오늘 세트를 끝까지 푼 적이 있으면 true
+  // 세트를 끝까지 푼 풀이가 있으면 true. 세트 목록 · 오늘의 복습 응답만 채움(#561, 세트 하나 조회는 없음)
   completed: z.boolean().optional(),
+  // 세트를 시작한 풀이가 있으면(풀기 화면에 들어갔으면, 끝내지 않았어도) true. 세트 목록 · 오늘의 복습 응답만 채움(#593).
+  // 없는 옛 서버 응답은 「들어간 적 없음」으로 본다
+  started: z.boolean().optional(),
+  // 오늘의 복습 세트만: 그 복습 날짜(서울 YYYY-MM-DD). 다른 세트는 null(#561, 없는 옛 서버 응답도 같게 본다)
+  reviewDay: z.string().nullable().optional(),
+  // 끝낸 세트만: 마지막으로 끝낸 풀이에서 틀린 문제 id(무효 풀이 제외). 세트 목록 응답만 채움(#605, 유사 퀴즈 고르기의
+  // 기본 체크). 없는 옛 서버 응답은 「틀린 문제 없음」으로 본다
+  wrongQuestionIds: z.array(id).optional(),
 });
 
 export const AttemptAnswer = z.object({
@@ -603,6 +632,8 @@ export const Message = z.object({
     })
     .optional(),
   sharedItemId: id.nullable(),
+  /** 방 채팅 자료 카드(shared_item)의 종류. 없으면 노트(#481 전에 남긴 카드 포함) */
+  sharedKind: z.enum(['quiz', 'flashcards']).optional(),
   studyRoomInvite: z
     .object({ roomId: id, title: z.string(), inviteCode: z.string() })
     .nullable()
@@ -662,6 +693,8 @@ export type MaterialSource = z.infer<typeof MaterialSource>;
 export type Material = z.infer<typeof Material>;
 export type Recording = z.infer<typeof Recording>;
 export type Slide = z.infer<typeof Slide>;
+export type Diagram = z.infer<typeof Diagram>;
+export type DiagramKind = z.infer<typeof DiagramKind>;
 export type Question = z.infer<typeof Question>;
 export type QuestionDifficulty = z.infer<typeof QuestionDifficulty>;
 export type NoteAskTurn = z.infer<typeof NoteAskTurn>;

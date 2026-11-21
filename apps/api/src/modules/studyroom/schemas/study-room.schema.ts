@@ -41,6 +41,10 @@ export class RoomMember {
 
   @Prop({ type: Date, default: null })
   kickedAt?: Date | null;
+
+  /** true면 이 방 시간표에서 내 수업 시간(blocks)을 숨긴다. 없으면 보인다(마이그레이션 없음) */
+  @Prop({ type: Boolean })
+  hideSchedule?: boolean;
 }
 export const RoomMemberSchema = SchemaFactory.createForClass(RoomMember);
 

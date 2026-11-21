@@ -19,15 +19,17 @@ describe.skipIf(!local)('로컬 MongoDB 동시 참여', () => {
       .createConnection(uri!, { serverSelectionTimeoutMS: 5000 })
       .asPromise();
     model = connection.model(StudyRoom.name, StudyRoomSchema, collection);
+    const hostId = new Types.ObjectId();
     await model.create({
       title: '임시 테스트',
       categoryId: new Types.ObjectId(),
-      hostId: new Types.ObjectId(),
+      hostId,
       inviteCode: 'TEST99',
       isPublic: true,
       memberCount: 1,
       maxCapacity: 2,
-      members: [],
+      // 실제 방처럼 방장도 members에 들어 있어야 빈 자리가 1개로 계산된다
+      members: [{ userId: hostId, role: 'host', status: 'joined', joinedAt: new Date() }],
     });
     const users = { findOne: () => ({ lean: async () => ({ _id: ids[0] }) }) };
     service = new StudyRoomsService(model, users as never, {} as never, {} as never);
@@ -46,7 +48,7 @@ describe.skipIf(!local)('로컬 MongoDB 동시 참여', () => {
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     const room = await model.findOne({ inviteCode: 'TEST99' }).lean().orFail();
     expect(room.memberCount).toBe(2);
-    expect(room.members).toHaveLength(1);
+    expect(room.members).toHaveLength(2);
   });
   it('자진 퇴장자는 기존 기록으로 재입장하고 방장 강퇴 후에는 재입장할 수 없다', async () => {
     const room = await model.create({

@@ -76,7 +76,7 @@ describe('스터디룸 퇴장', () => {
   it('방장만 다른 참여자를 강퇴할 수 있도록 조건을 적용한다', async () => {
     const target = new Types.ObjectId();
     rooms.updateOne.mockResolvedValue({ matchedCount: 1 });
-    await service.kickMember(String(userId), String(roomId), String(target));
+    expect(await service.kickMember(String(userId), String(roomId), String(target))).toBe(true);
     const [filter, update] = rooms.updateOne.mock.calls[0]!;
     expect(filter).toMatchObject({
       hostId: userId,
@@ -94,9 +94,10 @@ describe('스터디룸 퇴장', () => {
     const target = new Types.ObjectId();
     rooms.updateOne.mockResolvedValue({ matchedCount: 0 });
     rooms.exists.mockResolvedValueOnce({ _id: roomId }).mockResolvedValueOnce(null);
+    // 이미 강퇴됨: 성공이지만 새로 내보낸 것은 아니다(알림을 다시 보내지 않는다)
     await expect(
       service.kickMember(String(userId), String(roomId), String(target)),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
     expect(rooms.exists).toHaveBeenCalledWith(
       expect.objectContaining({
         hostId: userId,

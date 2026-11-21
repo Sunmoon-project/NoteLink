@@ -100,6 +100,11 @@ export const MATERIAL_MAX_FILES = 50;
  * 앱은 이보다 많으면 나눠서 보낸다
  */
 export const IMAGE_CHECK_MAX_FILES = 20;
+/**
+ * 유사 퀴즈를 만들 때 한 번에 고를 수 있는 문제 수(POST /quiz-sets/similar, #605). 고른 문제는 모두 AI 생성
+ * 프롬프트에 함께 들어가므로(apps/ai services/quiz/review.py RELATED_CHARS) 프롬프트가 노트 발췌보다 길어지지 않게 둔다
+ */
+export const SIMILAR_PICK_MAX = 10;
 
 /** 경로 조각 인코딩 — id에 '/'나 '..'가 들어와도 다른 경로로 새지 않게 한다 */
 const seg = (v: string) => encodeURIComponent(v);
@@ -129,6 +134,8 @@ export const PATHS = {
   passwordReset: '/auth/password/reset',
   me: '/users/me',
   myStatus: '/users/me/status',
+  /** 앱이 앞에 있다는 신호: PUT(신호) · DELETE(나감). 친구에게 보이는 상태의 기준 */
+  myPresence: '/users/me/presence',
   /** 계정 이메일로 본인 인증번호를 보낸다 → 204. 이메일이 없으면 400 NO_EMAIL */
   myEmailSendCode: '/users/me/email/send-code',
   /** 본인 인증번호 확인 { code } → { data: User }(emailVerified: true) */
@@ -157,6 +164,7 @@ export const PATHS = {
   todos: '/todos',
   todo: (id: string) => `/todos/${seg(id)}`,
   ddays: '/ddays',
+  dday: (id: string) => `/ddays/${seg(id)}`,
   holidays: '/holidays',
   holiday: (date: string) => `/holidays/${seg(date)}`,
   customHolidays: '/holidays/custom',
@@ -169,11 +177,20 @@ export const PATHS = {
   timetableClasses: '/timetable/classes',
   timetableClass: (id: string) => `/timetable/classes/${seg(id)}`,
   timetableShares: '/timetable/shares',
+  // 알림함. 목록 ?before=<알림 id>&limit= → { data: { items: Notification[], nextCursor: string | null } }(최근 것부터)
+  notifications: '/notifications',
+  /** → { data: { count } } */
+  notificationsUnreadCount: '/notifications/unread-count',
+  /** → 204 */
+  notificationsReadAll: '/notifications/read-all',
+  /** PATCH → 204. 내 알림이 아니면 404 */
+  notificationRead: (id: string) => `/notifications/${seg(id)}/read`,
   // 소셜 · 채팅
   friends: '/friends',
   friend: (userId: string) => `/friends/${seg(userId)}`,
   friendRequests: '/friend-requests',
   friendRequestsReceived: '/friend-requests/received',
+  friendRequestsSent: '/friend-requests/sent',
   friendRequestAction: (id: string, action: 'accept' | 'reject') =>
     `/friend-requests/${seg(id)}/${action}`,
   directChat: '/chat-rooms/direct',
@@ -187,6 +204,8 @@ export const PATHS = {
   materialRecording: (id: string) => `/materials/${seg(id)}/recording`,
   materialBookmarks: (id: string) => `/materials/${seg(id)}/bookmarks`,
   materialDownloadUrl: (id: string) => `/materials/${seg(id)}/download-url`,
+  /** 정리 결과 다시 만들기: 새 작업을 넣고, 성공할 때까지 노트는 옛 결과 그대로(하루 3회, 동시 1개) */
+  materialRegenerate: (id: string) => `/materials/${seg(id)}/regenerate`,
   materialShare: '/materials/share',
   /** 아바타에게 노트 묻기 → note_ask 작업(AiJob)을 돌려준다. 답은 aiJob으로 받아 result(NoteAskResult)에서 읽는다 */
   materialAsk: (id: string) => `/materials/${seg(id)}/ask`,
@@ -199,6 +218,8 @@ export const PATHS = {
   quizSets: '/quiz-sets',
   quizSet: (id: string) => `/quiz-sets/${seg(id)}`,
   similarQuiz: (id: string) => `/quiz-sets/${seg(id)}/similar`,
+  /** 고른 문제로 유사 퀴즈(#605): 본문 { questionIds }(한 학습 폴더의 문제, SIMILAR_PICK_MAX개까지) → 만드는 중인 세트 */
+  similarQuizPick: '/quiz-sets/similar',
   /** 오늘의 복습: GET 오늘 만든 세트(없으면 null) · POST 만들기(하루 한 번, 만드는 중이면 세트 조회로 기다림) */
   todayReview: '/quiz-sets/today',
   quizAttempts: '/quiz-attempts',
@@ -215,8 +236,11 @@ export const PATHS = {
   leaveRoom: (id: string) => `/study-rooms/${seg(id)}/leave`,
   roomTimer: (id: string) => `/study-rooms/${seg(id)}/timer-rule`,
   roomSchedule: (id: string) => `/study-rooms/${seg(id)}/schedule`,
+  roomScheduleVisibility: (id: string) => `/study-rooms/${seg(id)}/schedule/visibility`,
   roomInvites: (id: string) => `/study-rooms/${seg(id)}/invites`,
   roomShared: (id: string) => `/study-rooms/${seg(id)}/shared-items`,
+  roomSharedItem: (id: string, itemId: string) =>
+    `/study-rooms/${seg(id)}/shared-items/${seg(itemId)}`,
   livekitToken: (id: string) => `/study-rooms/${seg(id)}/livekit-token`,
   roomChatRoom: (id: string) => `/study-rooms/${seg(id)}/chat-room`,
   reports: '/reports',
@@ -244,6 +268,8 @@ export type ServerToClient = {
   'chat:message': (m: Message) => void;
   'room:presence': (p: { roomId: string; members: RoomMember[] }) => void;
   'room:members-changed': (payload: { roomId: string }) => void;
+  /** 스터디룸 목록(rooms:watch): 그 방 화면에 지금 들어와 있는 사람이 바뀌었다 */
+  'room:live': (p: { roomId: string; userIds: string[] }) => void;
   'room:timer': (p: {
     roomId: string;
     rule: TimerRule | null;
@@ -265,6 +291,12 @@ export type ClientToServer = {
     ack?: (r: { ok: boolean; missed?: Message[] }) => void,
   ) => void;
   'room:leave': (p: { roomId: string }) => void;
+  /** 스터디룸 목록이 보이는 동안 내 방들의 접속 현황을 받는다(멤버가 아닌 방은 live 에서 빠진다) */
+  'rooms:watch': (
+    p: { roomIds: string[] },
+    ack?: (r: { ok: boolean; live: Record<string, string[]> }) => void,
+  ) => void;
+  'rooms:unwatch': (p: { roomIds: string[] }) => void;
   'room:state': (p: { roomId: string; micOn: boolean; camOn: boolean; todaySec: number }) => void;
   /** 글은 text, 사진 · 파일은 채팅 경로에 먼저 올린 뒤 attachment로 보낸다 */
   'chat:send': (

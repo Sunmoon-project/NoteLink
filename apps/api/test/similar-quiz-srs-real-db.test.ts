@@ -7,6 +7,7 @@ import { type Connection, type Model, Types } from 'mongoose';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
+import { Folder, FolderSchema } from '../src/modules/content/schemas/folder.schema.js';
 import { Material, MaterialSchema } from '../src/modules/content/schemas/material.schema.js';
 import { AiJob, AiJobSchema } from '../src/modules/quiz/schemas/ai-job.schema.js';
 import { QuizAttempt, QuizAttemptSchema } from '../src/modules/quiz/schemas/quiz-attempt.schema.js';
@@ -41,6 +42,7 @@ describe.skipIf(!uri)('진짜 DB 오답 복습 상태 쓰기', () => {
           { name: Material.name, schema: MaterialSchema },
           { name: QuizAttempt.name, schema: QuizAttemptSchema },
           { name: AiJob.name, schema: AiJobSchema },
+          { name: Folder.name, schema: FolderSchema }, // QuizSetsService.folderGone(#602)
         ]),
       ],
       providers: [QuizSetsService, AiJobsService, RecordingNotePagesService],
@@ -223,5 +225,22 @@ describe.skipIf(!uri)('진짜 DB 오답 복습 상태 쓰기', () => {
     await service.findMine(ME.toHexString(), a);
     expect(await stepOfQ()).toBe(5);
     expect((await setOf(a))!.srsSavedAt).toBeInstanceOf(Date);
+  });
+  it('오답 복습 결과를 옮기면 퀴즈를 끝낼 때 남긴 처음 상태 표시(srsAttemptId, FR-37)를 지운다', async () => {
+    await resetQ();
+    await sets.updateOne(
+      { _id: SOURCE },
+      {
+        $set: {
+          'questions.0.srsAttemptId': new Types.ObjectId(),
+          'questions.0.srsAt': new Date('2026-11-01T00:00:00Z'),
+        },
+      },
+    );
+    const a = await reviewSet('2026-11-26T00:00:00Z', 1);
+    await service.findMine(ME.toHexString(), a);
+    const q = (await sets.findById(SOURCE).lean())!.questions[0]!;
+    expect(q.srsAttemptId).toBeUndefined();
+    expect(await stepOfQ()).toBe(1);
   });
 });

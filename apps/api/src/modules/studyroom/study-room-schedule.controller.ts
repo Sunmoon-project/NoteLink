@@ -1,7 +1,8 @@
-import { Controller, Get, Header, Param, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Header, Param, Patch, Req, UseGuards } from '@nestjs/common';
 
 import { requireUserId } from '../../common/request-user.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { ScheduleVisibilityDto } from './dto/schedule-visibility.dto.js';
 import { StudyRoomScheduleService } from './study-room-schedule.service.js';
 
 /**
@@ -17,5 +18,15 @@ export class StudyRoomScheduleController {
   @Header('Cache-Control', 'no-store')
   async schedule(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
     return { data: await this.schedules.schedule(id, requireUserId(req)) };
+  }
+
+  /** 이 방 시간표에서 내 수업 시간 숨기기 · 다시 보이기 */
+  @Patch(':id/schedule/visibility')
+  async visibility(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: ScheduleVisibilityDto,
+  ) {
+    return { data: await this.schedules.setScheduleHidden(id, requireUserId(req), body.hidden) };
   }
 }

@@ -27,6 +27,10 @@ import {
   mailUnavailable,
   rateLimited,
 } from '../auth/app-login/app-signup.service.js';
+import { PRESENCE_TTL_MS } from '../social/friends/friends.service.js';
+
+/** 접속 신호를 따로 기억하는 기기 수(한 계정). 넘으면 가장 오래 신호가 없던 기기부터 버린다 */
+const PRESENCE_MAX_DEVICES = 10;
 import { MAIL_SENDER, MailUnavailableError, type MailSender } from '../mail/mail-sender.js';
 import { ProgressService } from '../progress/progress.service.js';
 import { StudyRoomMembershipService } from '../studyroom/study-room-membership.service.js';
@@ -103,6 +107,59 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
   async setStatus(userId: string, dto: UpdateStatusDto): Promise<void> {
     const id = await this.activeId(userId);
     await this.userModel.updateOne({ _id: id }, { $set: { status: dto.status } });
+  }
+
+  /**
+   * 앱이 앞에 있다는 신호(active)와 앱을 나갔다는 신호. 친구 목록은 lastActiveAt으로 오프라인을 가린다
+   * (FriendsService PRESENCE_TTL_MS). 고른 상태(status)는 건드리지 않는다.
+   * 기기마다 마지막 신호를 presenceDevices에 따로 둔다: 한 기기가 나가도 다른 기기가 앞에 있으면 접속 상태를 남긴다
+   */
+  async setPresence(userId: string, active: boolean, device?: string): Promise<void> {
+    if (!isValidObjectId(userId)) return;
+    const _id = new Types.ObjectId(userId);
+    const key = device && /^[A-Za-z0-9_-]{1,64}$/.test(device) ? device : 'default';
+    if (active) {
+      const now = new Date();
+      // 한 번의 쓰기로: 이 기기 시각을 넣고, 2분 지난 기기를 지우고, 최근 PRESENCE_MAX_DEVICES개만 남긴다
+      // (기기 키는 앱이 만들어 보내므로 문서가 끝없이 커지지 않게). key는 위에서 [A-Za-z0-9_-]만 허용
+      const devices = {
+        $setField: { field: key, input: { $ifNull: ['$presenceDevices', {}] }, value: now },
+      };
+      const fresh = {
+        $filter: {
+          input: { $objectToArray: devices },
+          cond: { $gte: ['$$this.v', new Date(now.getTime() - PRESENCE_TTL_MS)] },
+        },
+      };
+      const recent = {
+        $lastN: {
+          n: PRESENCE_MAX_DEVICES,
+          input: { $sortArray: { input: fresh, sortBy: { v: 1 } } },
+        },
+      };
+      await this.userModel.updateOne(
+        { _id, deletedAt: null },
+        [{ $set: { lastActiveAt: now, presenceDevices: { $arrayToObject: recent } } }],
+        { updatePipeline: true },
+      );
+      return;
+    }
+    const user = await this.userModel
+      .findOne({ _id, deletedAt: null })
+      .select('lastActiveAt presenceDevices')
+      .lean<{ lastActiveAt?: Date | null; presenceDevices?: Record<string, Date> }>();
+    if (!user) return;
+    // 나간 기기를 빼고, 2분 안에 신호를 보낸 기기만 남긴다(꺼져서 거두지 못한 기기도 여기서 정리된다)
+    const fresh = Object.entries(user.presenceDevices ?? {}).filter(
+      ([k, at]) => k !== key && Date.now() - new Date(at).getTime() <= PRESENCE_TTL_MS,
+    );
+    const last = fresh.reduce<Date | null>((m, [, at]) => (!m || at > m ? new Date(at) : m), null);
+    // ponytail: 읽고 쓰는 사이 다른 기기의 신호가 오면(lastActiveAt이 바뀜) 덮어쓰지 않고 그 신호를 살린다.
+    // 그때 나간 기기의 기록은 남아 최대 2분 '활동 중'으로 보일 수 있다. 정확히 하려면 파이프라인 업데이트로 한 번에
+    await this.userModel.updateOne(
+      { _id, deletedAt: null, lastActiveAt: user.lastActiveAt ?? null },
+      { $set: { lastActiveAt: last, presenceDevices: Object.fromEntries(fresh) } },
+    );
   }
 
   /**
@@ -242,6 +299,10 @@ export class UsersService implements OnApplicationBootstrap, OnModuleDestroy {
     );
     await this.tokens.revokeAll(id, now);
     await this.devices.deleteMany({ userId: id });
+    // 내 알림함, 그리고 남의 알림함 중 내가 일으킨 알림(문구에 내 닉네임이 든다. data.userId = 일으킨 사람)
+    await this.userModel.db
+      .collection('notifications')
+      .deleteMany({ $or: [{ userId: id }, { 'data.userId': id.toHexString() }] });
     await this.friendships.deleteMany({ $or: [{ userA: id }, { userB: id }] });
     await this.shares.deleteMany({ $or: [{ ownerId: id }, { friendId: id }] });
     // 참여 중인 스터디룸에서 나간다(방장이면 다음 멤버에게 넘기고, 마지막 사람이면 방을 닫는다). 소켓 · LiveKit 연결도 끊는다.

@@ -4,12 +4,12 @@ import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronRight, FileText, Image, Pin } from 'lucide-react-native';
+import { Check, ChevronRight, FileText, Pin } from 'lucide-react-native';
 import { ERROR_CODES, MATERIAL_MAX_FILES, type AiJob } from '@notelink/shared';
-import { api, NetworkError } from '@/lib/api';
+import { api, ApiError, NetworkError } from '@/lib/api';
 import { uploadToBlob, UploadError } from '@/lib/upload';
 import { aiWaiting, stageOf } from '@/lib/ai';
-import { notifyLocal } from '@/lib/push';
+import { notifyLocal, pushRegistered } from '@/lib/push';
 import { useBgJobs } from '@/stores/bg-jobs';
 import { useAiJobSubscription, useSocket } from '@/hooks';
 import { useDraft } from '@/stores/draft';
@@ -36,8 +36,8 @@ import {
   cx,
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
+import { AiPending } from '@/components/AiPending';
 import { Player } from './player';
-import { QuizFromNote } from './quiz-from-note';
 import { useSmoothProgress } from '@/hooks/smooth-progress';
 
 // p.66 AI 변환 중 · 정리 완료 / p.98 업로드 · 변환 중 연결 끊김 / p.99 LLM 오류
@@ -315,7 +315,8 @@ export function ConvertScreen() {
     handled.current = true;
     setJob(done);
     if (done.status === 'succeeded') {
-      if (bg.current && notify)
+      // 서버 푸시를 받는 기기면 서버가 같은 알림을 보낸다(#560)
+      if (bg.current && notify && !pushRegistered())
         notifyLocal('변환이 끝났어요', `${draft.title || '학습 자료'} 정리본을 확인해 보세요`);
       qc.invalidateQueries({ queryKey: ['materials'] });
       router.replace({ pathname: '/result/[id]', params: { id: done.targetId } });
@@ -652,6 +653,8 @@ const defaultTitle = (kind: keyof typeof TITLE, name?: string, source?: string) 
 
 /* ── 정리 완료 (p.66 #21~23) ─────────────────────── */
 
+// 저장 전 미리보기라 「원본 보기」 · 「이 노트로 퀴즈 풀기」는 두지 않는다(저장한 뒤 상세 화면에 있다).
+// 실기기 피드백 2026-11-20, 필기 · 녹음 · 문서 모두 같은 규칙
 export function ResultScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const qc = useQueryClient();
@@ -667,6 +670,44 @@ export function ResultScreen() {
       toast('학습자료에 저장했어요');
     },
   });
+  // 다시 만들기: 서버가 새 작업을 넣고, 성공할 때까지 노트는 지금 결과 그대로다(실패하면 지금 결과가 남는다)
+  const [askRegen, setAskRegen] = useState(false);
+  const [regenJob, setRegenJob] = useState<string | null>(null);
+  const regen = useMutation({
+    mutationFn: () => api.content.regenerate(id),
+    onSuccess: ({ job }) => setRegenJob(job._id),
+    // 하루 한도(429) · 이미 다시 만드는 중(409)은 서버 문구 그대로
+    onError: (e) =>
+      toast(e instanceof ApiError ? e.message : '다시 만들지 못했어요. 연결을 확인해 주세요'),
+  });
+  useEffect(() => {
+    if (!regenJob) return;
+    let over = false;
+    const t = setInterval(async () => {
+      try {
+        const j = await api.ai.job(regenJob);
+        if (over || !['succeeded', 'failed', 'canceled'].includes(j.status)) return;
+        over = true;
+        setRegenJob(null);
+        // 노트 조회가 끝난 작업의 결과를 옮긴다
+        await m.refetch();
+        // 녹음 플레이어는 슬라이드 · 대본을 따로(['recording', id]) 불러오므로, 옮긴 뒤 그것도 새로 읽는다
+        if (j.status === 'succeeded')
+          await qc.invalidateQueries({ queryKey: ['recording', id], exact: true });
+        toast(
+          j.status === 'succeeded'
+            ? '결과를 새로 만들었어요'
+            : '다시 만들지 못했어요. 지금 결과는 그대로예요',
+        );
+      } catch {
+        // 연결이 잠깐 끊겨도 다음 확인에서 이어 본다
+      }
+    }, 1500);
+    return () => {
+      over = true;
+      clearInterval(t);
+    };
+  }, [regenJob]); // eslint-disable-line react-hooks/exhaustive-deps
   if (m.isError && !m.data)
     return (
       <Canvas>
@@ -690,11 +731,29 @@ export function ResultScreen() {
     <Canvas>
       <Screen
         footer={
-          <Btn loading={save.isPending} onPress={() => save.mutate()}>
-            학습자료에 저장
-          </Btn>
+          <View className="gap-2">
+            <Btn loading={save.isPending} disabled={!!regenJob} onPress={() => save.mutate()}>
+              학습자료에 저장
+            </Btn>
+            <Btn
+              kind="cream"
+              loading={regen.isPending || !!regenJob}
+              disabled={save.isPending}
+              onPress={() => setAskRegen(true)}
+            >
+              다시 만들기
+            </Btn>
+          </View>
         }
       >
+        {regenJob && (
+          <View className="mb-3">
+            <AiPending
+              what="다시 만들기"
+              hint="새 결과가 나오면 바로 바꿔 보여 드려요. 그때까지 지금 결과는 그대로예요."
+            />
+          </View>
+        )}
         {mat.kind === 'handwriting' && (
           <>
             <Header title="노트 정리 완료" large={false} />
@@ -702,22 +761,6 @@ export function ResultScreen() {
               <Text className="text-title3 font-bold text-ink">{mat.title}</Text>
             </View>
             <NoteBody sections={mat.summary?.sections ?? []} />
-            <Card
-              tone="white"
-              onPress={() =>
-                router.push({
-                  pathname: '/result/hand/[id]',
-                  params: { id, tab: '원본 이미지' },
-                })
-              }
-              className="mt-3 flex-row items-center px-4 py-3"
-            >
-              <View className="flex-1 flex-row items-center gap-1.5">
-                <Image size={ICON.xs} color={C.brand} />
-                <Text className="text-footnote text-ink">원본 필기 보기</Text>
-              </View>
-              <ChevronRight size={ICON.sm} color={C.sub} />
-            </Card>
           </>
         )}
         {mat.kind === 'recording' && (
@@ -739,29 +782,40 @@ export function ResultScreen() {
                 name: mat.title,
                 meta: mat.pages?.length ? `${mat.pages.length}페이지` : '원본 문서',
               }}
-              onOriginal={() =>
-                router.push({ pathname: '/result/doc/[id]', params: { id, tab: '원본 문서' } })
-              }
             />
           </>
         )}
-        {/* 정리가 끝나면 바로 퀴즈로 */}
-        <QuizFromNote material={mat} className="mt-4" />
       </Screen>
+      <Alert
+        open={askRegen}
+        tone="sun"
+        title="결과를 다시 만들까요?"
+        body="새 결과가 나오면 지금 결과는 사라져요. 다시 만들기는 하루 3번까지 할 수 있어요."
+        secondary="그대로 두기"
+        onSecondary={() => setAskRegen(false)}
+        primary="다시 만들기"
+        onPrimary={() => {
+          setAskRegen(false);
+          regen.mutate();
+        }}
+      />
     </Canvas>
   );
 }
 
+/** 섹션마다 카드 하나 */
 export const NoteBody = ({ sections }: { sections: { heading: string; body: string }[] }) => (
-  <Card className="gap-5 p-5">
+  <View className="gap-3">
     {sections.map((s, i) => (
       // 제목이 같은(또는 빈) 섹션이 있어도 겹치지 않게 순서로 구분한다
-      <View key={i}>
-        <Text className="text-subhead font-bold text-ink">{s.heading}</Text>
-        <RichBody body={s.body} />
+      <View key={i} testID="note-section">
+        <Card className="p-5">
+          <Text className="text-subhead font-bold text-ink">{s.heading}</Text>
+          <RichBody body={s.body} />
+        </Card>
       </View>
     ))}
-  </Card>
+  </View>
 );
 
 /** 편집기 툴바가 넣는 표시(# 제목 · - 목록 · **굵게** · [글](주소))를 기호 없이 그린다 */

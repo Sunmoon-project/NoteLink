@@ -1,12 +1,21 @@
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Linking, ScrollView, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarDays, Check, ChevronRight, CircleAlert, Gift, Zap } from 'lucide-react-native';
+import {
+  Bell,
+  CalendarDays,
+  Check,
+  ChevronRight,
+  CircleAlert,
+  Gift,
+  Zap,
+} from 'lucide-react-native';
 import type { PlanTier, UserSettings } from '@notelink/shared';
+import { leavePresence } from '@/lib/presence';
 import { api, ApiError } from '@/lib/api';
 import { CodeBoxes } from '@/components/code-boxes';
 import { nicknameError } from '@/lib/validation';
@@ -92,7 +101,11 @@ export function SettingsScreen() {
         await api.me.withdraw();
         // 탈퇴한 계정의 오답 노트(기기 파일)도 지운다
         forgetWrongNotes(useAuth.getState().userId);
-      } else await api.auth.logout().catch(() => {});
+      } else {
+        // 로그아웃하면 친구에게 바로 오프라인으로 보이게 신호를 멈추고 거둔다(토큰을 지우기 전에)
+        await leavePresence();
+        await api.auth.logout().catch(() => {});
+      }
       failure = '기기의 로그인 정보를 지우지 못했어요. 다시 시도해 주세요';
       await useAuth.getState().signOut();
       clearAccountState(qc);
@@ -188,6 +201,12 @@ export function SettingsScreen() {
           />
         </View>
 
+        <Label>알림</Label>
+        <Group>
+          <Row icon={Bell} chevron onPress={() => router.push('/(tabs)/profile/notifications')}>
+            알림 설정
+          </Row>
+        </Group>
         <Label>학습</Label>
         <Group>
           <Row icon={CalendarDays} chevron onPress={() => openFeature('/record')}>
@@ -308,18 +327,24 @@ export function SettingsScreen() {
       </Sheet>
       <Sheet open={sheet === 'help'} onClose={() => setSheet(null)} title="도움말 및 지원">
         <Group>
-          <Row chevron onPress={() => Linking.openURL('https://notelink.app/faq')}>
-            자주 묻는 질문
-          </Row>
-          <Row
-            chevron
-            onPress={() => Linking.openURL('mailto:help@notelink.app?subject=노트링크 문의')}
-          >
-            1:1 문의하기
-          </Row>
-          <Row chevron onPress={() => Linking.openURL('https://notelink.app/guide')}>
-            노트링크 사용 가이드
-          </Row>
+          {/* 예전 notelink.app 주소는 우리 사이트가 아니었다. 앱 안 화면으로 연다. 1:1 문의 메일은 받는 주소가 없어 뺐다 */}
+          {(
+            [
+              ['faq', '자주 묻는 질문'],
+              ['guide', '노트링크 사용 가이드'],
+            ] as const
+          ).map(([doc, label]) => (
+            <Row
+              key={doc}
+              chevron
+              onPress={() => {
+                setSheet(null);
+                router.push({ pathname: '/legal/[doc]', params: { doc } });
+              }}
+            >
+              {label}
+            </Row>
+          ))}
         </Group>
       </Sheet>
       <Sheet open={sheet === 'biz'} onClose={() => setSheet(null)} title="사업자 정보">
@@ -328,7 +353,6 @@ export function SettingsScreen() {
             '상호 · 노트링크 (5조)',
             '대표 · 노트링크 팀',
             '주소 · 충청남도 아산시 탕정면 선문로 221번길 70',
-            '문의 · help@notelink.app',
           ].map((t) => (
             <Text key={t} className="text-footnote text-ink/80">
               {t}

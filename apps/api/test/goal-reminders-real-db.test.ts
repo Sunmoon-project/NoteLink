@@ -62,6 +62,8 @@ describe.skipIf(!isLocal)('진짜 DB 반복 목표 리마인드 푸시', () => {
           return sendImpl(messages);
         },
       } as never,
+      // 알림 설정은 notifications-real-db.test.ts에서 본다. 여기서는 모두 받는다
+      { pushAllowed: (ids: unknown[]) => Promise.resolve(ids) } as never,
     );
 
   beforeAll(async () => {

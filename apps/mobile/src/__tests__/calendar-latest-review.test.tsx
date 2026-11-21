@@ -1,3 +1,4 @@
+import { StyleSheet } from 'react-native';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
@@ -15,6 +16,7 @@ import { api } from '../lib/api';
 import { useToast } from '../stores/toast';
 import { today } from '../lib/dates';
 import { useAuth } from '../stores/auth';
+import { C } from '@/theme';
 import { renderScreen, setParams } from '../test-utils';
 
 const mockStored = new Map<string, string>();
@@ -330,6 +332,18 @@ it('공부 기록이 없어 주요 공부 시간이 -1이면 -로 표시한다',
   await renderScreen(<RecordScreen />, client());
   expect(await screen.findByText('주로 공부한 시간')).toBeTruthy();
   expect(screen.queryByText(/오[전후] -?\d+시/)).toBeNull();
+});
+it('잔디는 서버 level 4(하루 2시간 이상)도 가장 진한 색으로 칠한다', async () => {
+  const data = await api.study.stats('all');
+  const heatmap = data.heatmap.map((h, i) => ({ ...h, level: i === 0 ? 4 : i === 1 ? 3 : 0 }));
+  jest.spyOn(api.study, 'stats').mockResolvedValue({ ...data, heatmap });
+  await renderScreen(<RecordScreen />, client());
+  const color = async (i: number) =>
+    StyleSheet.flatten((await screen.findByTestId(`heatmap-${heatmap[i]!.studyDate}`)).props.style)
+      .backgroundColor;
+  expect(await color(0)).toBe(C.brand);
+  expect(await color(0)).toBe(await color(1));
+  expect(await color(2)).not.toBe(C.brand);
 });
 it('주간 보기도 07시와 23시 수업을 시간 범위 안에 표시한다', async () => {
   jest.spyOn(api.timetable, 'get').mockResolvedValue({

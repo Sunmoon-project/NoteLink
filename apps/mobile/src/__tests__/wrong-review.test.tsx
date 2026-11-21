@@ -175,7 +175,7 @@ describe('오답 복습 화면', () => {
     // 오래된 오답(a)부터
     expect(screen.getByText('Q. 문제 a')).toBeTruthy();
     expect(screen.getByText('광합성 퀴즈')).toBeTruthy();
-    await fireEvent.press(screen.getByText('나'));
+    await fireEvent.press(screen.getByText('② 나'));
     expect(screen.getByText('정답이에요')).toBeTruthy();
     expect(screen.getByText('해설 a')).toBeTruthy();
     await fireEvent.press(screen.getByText('다음 문제'));
@@ -189,6 +189,15 @@ describe('오답 복습 화면', () => {
     expect(loadWrong('u1').items.map((x) => x._id)).toEqual(['b']);
     await fireEvent.press(screen.getByText('확인'));
     expect(router.back).toHaveBeenCalled();
+  });
+
+  it('복습을 마치면 다음 단계로 새 퀴즈를 권한다(FR-37)', async () => {
+    recordWrong('u1', q('a'));
+    await renderScreen(<WrongReviewScreen />);
+    await fireEvent.press(screen.getByText('② 나'));
+    await fireEvent.press(screen.getByText('복습 마치기'));
+    await fireEvent.press(screen.getByRole('button', { name: /새 퀴즈 풀기/ }));
+    expect(router.dismissTo).toHaveBeenCalledWith('/(tabs)/quiz/notes');
   });
 
   it('건너뛰면 닫는다', async () => {

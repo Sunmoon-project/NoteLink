@@ -150,15 +150,15 @@ export async function connectMedia(
     },
     video(userId) {
       if (closed || room.state !== 'connected') return null;
-      const participant =
-        room.localParticipant.identity === userId
-          ? room.localParticipant
-          : room.remoteParticipants.get(userId);
+      const mine = room.localParticipant.identity === userId;
+      const participant = mine ? room.localParticipant : room.remoteParticipants.get(userId);
       const publication = participant?.getTrackPublication(Track.Source.Camera);
       if (!participant || !publication?.track || publication.isMuted) return null;
       return (
         <VideoTrack
           trackRef={{ participant, publication, source: Track.Source.Camera }}
+          // 내 캠은 전면 카메라라 거울처럼 보여 준다(보내는 영상은 그대로라 상대에게는 바르게 보인다)
+          mirror={mine}
           style={{ width: '100%', height: '100%', position: 'absolute', borderRadius: 16 }}
         />
       );

@@ -1,8 +1,10 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { QueryClient } from '@tanstack/react-query';
 import type { Folder, Material, StudyRoom } from '@notelink/shared';
 import { FolderScreen, NoteListScreen } from '../features/content/notes';
 import { RoomListScreen } from '../features/studyroom/room';
-import { api } from '../lib/api';
+import { api, ApiError } from '../lib/api';
+import { useQuizProgress } from '../stores/quiz-progress';
 import { renderScreen, setParams } from '../test-utils';
 
 jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
@@ -48,6 +50,108 @@ it('폴더를 꾹 누르면 삭제 확인이 뜨고, 삭제를 누르면 그 폴
   expect(await screen.findByText('폴더를 삭제할까요?')).toBeTruthy();
   await fireEvent.press(screen.getByText('삭제'));
   await waitFor(() => expect(del).toHaveBeenCalledWith('f1'));
+});
+
+// 폴더를 지우면 서버가 그 폴더의 퀴즈 · 카드 · 보관함도 지우므로 퀴즈 탭 캐시도 새로 읽는다(#602)
+const QUIZ_KEYS = ['folders', 'quiz-sets', 'quiz-set', 'flashcards', 'quiz-box', 'today-review'];
+const refreshed = (spy: jest.SpyInstance) =>
+  spy.mock.calls.map(([f]) => (f as { queryKey: string[] }).queryKey[0]);
+
+it('폴더 목록에서 폴더를 지우면 퀴즈 세트 · 플래시카드 · 보관함 · 오늘의 복습 캐시도 새로 읽는다', async () => {
+  jest.spyOn(api.content, 'folders').mockResolvedValue([folder]);
+  jest.spyOn(api.content, 'deleteFolder').mockResolvedValue();
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = jest.spyOn(qc, 'invalidateQueries');
+  await renderScreen(<NoteListScreen />, qc);
+  await fireEvent(await screen.findByText('수학 폴더'), 'longPress');
+  await fireEvent.press(await screen.findByText('삭제'));
+  await waitFor(() => expect(refreshed(invalidate)).toEqual(expect.arrayContaining(QUIZ_KEYS)));
+});
+
+describe('풀던 퀴즈 진행(퀴즈 홈 「이어서 풀기」, code-review 3차)', () => {
+  const progressOn = (setId: string) =>
+    useQuizProgress.getState().save({
+      setId,
+      attemptId: 'a1',
+      index: 1,
+      answerText: '',
+      pick: null,
+      right: null,
+      results: [true],
+    });
+  const deleteWith = async (sets: Record<string, unknown>[]) => {
+    jest.spyOn(api.content, 'folders').mockResolvedValue([folder]);
+    jest.spyOn(api.content, 'deleteFolder').mockResolvedValue();
+    // 지운 뒤 다시 읽는 목록에는 지운 세트가 없다
+    jest.spyOn(api.quiz, 'sets').mockResolvedValue([]);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(['quiz-sets'], sets);
+    await renderScreen(<NoteListScreen />, qc);
+    await fireEvent(await screen.findByText('수학 폴더'), 'longPress');
+    await fireEvent.press(await screen.findByText('삭제'));
+    await waitFor(() => expect(api.content.deleteFolder).toHaveBeenCalledWith('f1'));
+    await screen.findByText('폴더를 삭제했어요').catch(() => undefined);
+  };
+  afterEach(() => useQuizProgress.getState().reset());
+
+  it('지운 폴더의 세트를 풀던 진행은 지운다', async () => {
+    progressOn('s1');
+    await deleteWith([{ _id: 's1', folderId: 'f1', sourceSetId: null }]);
+    await waitFor(() => expect(useQuizProgress.getState().progress).toBeNull());
+  });
+
+  it('다른 폴더 세트 · 오늘의 복습(서버가 남김)을 풀던 진행은 남긴다', async () => {
+    progressOn('today');
+    await deleteWith([
+      { _id: 'today', folderId: 'f1', sourceSetId: null, reviewDay: '2026-11-20' },
+      { _id: 'other', folderId: 'f2', sourceSetId: null },
+    ]);
+    expect(useQuizProgress.getState().progress?.setId).toBe('today');
+    progressOn('other');
+    await deleteWith([{ _id: 'other', folderId: 'f2', sourceSetId: null }]);
+    expect(useQuizProgress.getState().progress?.setId).toBe('other');
+  });
+
+  it('원본을 캐시에서 찾지 못하면 서버에 묻고, 세트가 남아 있으면(오늘의 복습에서 이어 만든 세트 등) 진행을 남긴다(Codex 1차)', async () => {
+    progressOn('child');
+    const ask = jest.spyOn(api.quiz, 'set').mockResolvedValue({ _id: 'child' } as never);
+    await deleteWith([{ _id: 'child', folderId: 'f1', sourceSetId: 'not-cached' }]);
+    await waitFor(() => expect(ask).toHaveBeenCalledWith('child'));
+    expect(useQuizProgress.getState().progress?.setId).toBe('child');
+  });
+
+  it('폴더 id 가 빈 옛 세트는 다른 폴더로 보지 않고 서버에 물어 404면 진행을 지운다(Codex 2차)', async () => {
+    progressOn('old');
+    const ask = jest
+      .spyOn(api.quiz, 'set')
+      .mockRejectedValue(new ApiError('NOT_FOUND', '퀴즈를 찾을 수 없어요', 404));
+    await deleteWith([{ _id: 'old', folderId: '', sourceSetId: null }]);
+    await waitFor(() => expect(useQuizProgress.getState().progress).toBeNull());
+    expect(ask).toHaveBeenCalledWith('old');
+  });
+
+  it('캐시에 없는 세트는 서버가 404일 때만 진행을 지운다(Codex 1차)', async () => {
+    progressOn('unknown');
+    jest
+      .spyOn(api.quiz, 'set')
+      .mockRejectedValue(new ApiError('NOT_FOUND', '퀴즈를 찾을 수 없어요', 404));
+    await deleteWith([]);
+    await waitFor(() => expect(useQuizProgress.getState().progress).toBeNull());
+  });
+});
+
+it('폴더 안 메뉴에서 폴더를 지워도 퀴즈 탭 캐시를 새로 읽는다', async () => {
+  jest.spyOn(api.content, 'folders').mockResolvedValue([folder]);
+  jest.spyOn(api.content, 'materials').mockResolvedValue([]);
+  jest.spyOn(api.content, 'deleteFolder').mockResolvedValue();
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = jest.spyOn(qc, 'invalidateQueries');
+  setParams({ id: 'f1' });
+  await renderScreen(<FolderScreen />, qc);
+  await fireEvent.press(await screen.findByLabelText('폴더 옵션'));
+  await fireEvent.press(await screen.findByText('폴더 삭제'));
+  await fireEvent.press(await screen.findByText('삭제'));
+  await waitFor(() => expect(refreshed(invalidate)).toEqual(expect.arrayContaining(QUIZ_KEYS)));
 });
 
 it('자료를 왼쪽으로 밀면 나오는 삭제 버튼을 누르면 확인 뒤 그 자료를 지운다', async () => {

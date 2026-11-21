@@ -274,3 +274,11 @@ it('연결이 겹치면 마지막 연결이 닫힐 때만 오디오 세션을 �
   await next.close();
   expect(mockStop).toHaveBeenCalledTimes(1);
 });
+
+it('전면 카메라인 내 영상만 거울처럼 보이고 상대 영상은 보낸 그대로 보인다', async () => {
+  const connection = await connectMedia('room-1', jest.fn());
+  const mine = connection.video('me') as { props: { mirror?: boolean } };
+  const friend = connection.video('friend-1') as { props: { mirror?: boolean } };
+  expect(mine.props.mirror).toBe(true);
+  expect(friend.props.mirror).toBe(false);
+});

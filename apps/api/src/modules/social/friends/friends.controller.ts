@@ -61,6 +61,12 @@ export class FriendsController {
     return { data: await this.friends.received(requireUserId(req)) };
   }
 
+  /** GET /friend-requests/sent — 내가 보낸 대기 중 요청의 상대 userId */
+  @Get('friend-requests/sent')
+  async sent(@Req() req: AuthenticatedRequest): Promise<{ data: string[] }> {
+    return { data: await this.friends.sent(requireUserId(req)) };
+  }
+
   /** POST /friend-requests/:id/accept → 204 */
   @Post('friend-requests/:id/accept')
   @HttpCode(HttpStatus.NO_CONTENT)

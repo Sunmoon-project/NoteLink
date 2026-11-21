@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 
 import { User, UserSchema } from '../modules/auth/schemas/user.schema.js';
 import { ExpoPushService } from '../modules/notification/expo-push.service.js';
+import { NotificationModule } from '../modules/notification/notification.module.js';
 import { QuizSet, QuizSetSchema } from '../modules/quiz/schemas/quiz-set.schema.js';
 import { Device, DeviceSchema } from '../modules/users/schemas/device.schema.js';
 import { ReviewReminder, ReviewReminderSchema } from './review-reminder.schema.js';
@@ -14,6 +15,7 @@ import { ReviewRemindersService } from './review-reminders.service.js';
  */
 @Module({
   imports: [
+    NotificationModule, // 공부 알림 설정 · 조용한 시간(#560)
     MongooseModule.forFeature([
       { name: QuizSet.name, schema: QuizSetSchema }, // 복습할 문제 집계 · 오늘의 복습 세트 확인(읽기만)
       { name: ReviewReminder.name, schema: ReviewReminderSchema }, // 사용자 · 날짜마다 한 번 표시

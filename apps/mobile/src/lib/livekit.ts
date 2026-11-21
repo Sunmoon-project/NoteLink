@@ -139,7 +139,7 @@ export function useLiveRoom(roomId: string, enabled = true, generation = 0, toda
     toggleMic: () => control('toggleMic'),
     toggleCam: () => control('toggleCam'),
     toggleHearing: () => control('toggleHearing'),
-    // 미디어에 연결되지 않았으면 누가 접속해 있는지 모른다(present 없음) — 화면은 방 멤버를 모두 보인다
+    // 미디어에 연결되지 않았으면 누가 접속해 있는지 모른다(present 없음) — 방 화면은 소켓 접속 현황(useRoomsLive)으로 대신 보인다
     participantState: (userId: string): ParticipantState =>
       room?.connected ? room.participantState(userId) : { camOn: false, micOn: false },
     video: (userId: string) => (room?.connected ? room.video(userId) : null),
