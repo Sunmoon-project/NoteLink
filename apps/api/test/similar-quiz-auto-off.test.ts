@@ -135,7 +135,7 @@ describe('결과 화면의 유사 퀴즈(create, 세트로 만들기) — 자동
     expect(out).toMatchObject({
       status: 'generating',
       title: '세포 생물학 · 유사 퀴즈',
-      sourceSetId: null,
+      sourceSetId: s.set.toHexString(),
     });
     expect(jobs.rows).toHaveLength(1);
     const job = jobs.rows[0]!;
@@ -169,6 +169,38 @@ describe('결과 화면의 유사 퀴즈(create, 세트로 만들기) — 자동
       status: 409,
     });
     expect(jobs.rows).toHaveLength(0);
+  });
+
+  it('만든 세트에 원본 세트 · 풀이를 남긴다: 오늘의 복습에서 이어 만든 세트로 보고(폴더 삭제에서 남김) 앱이 원본을 거슬러 오른다', async () => {
+    const { similar, seed, sets } = setup();
+    const s = await seed({ reviewDay: '2026-11-20' });
+    const out = await similar.create(ME.toHexString(), s.set.toHexString());
+    expect(out.sourceSetId).toBe(s.set.toHexString());
+    const row = sets.rows.find((r) => String(r._id) === out._id)!;
+    expect(String(row['sourceAttemptId'])).toBe(s.attempt.toHexString());
+  });
+
+  it('같은 풀이로 다시 누르면 만드는 중 · 다 만든 그 세트를 돌려주고 작업을 더 넣지 않는다(실패한 세트는 새로 만듦)', async () => {
+    const { similar, seed, sets, jobs } = setup();
+    const s = await seed();
+    const first = await similar.create(ME.toHexString(), s.set.toHexString());
+    // 만드는 중에 다시 누름(같은 노트 만드는 중 색인에 막혀 409가 되지 않게)
+    expect((await similar.create(ME.toHexString(), s.set.toHexString()))._id).toBe(first._id);
+    // 다 만든 뒤 다시 누름
+    Object.assign(
+      sets.rows.find((r) => String(r._id) === first._id)!,
+      { status: 'ready' },
+    );
+    expect((await similar.create(ME.toHexString(), s.set.toHexString()))._id).toBe(first._id);
+    expect(jobs.rows).toHaveLength(1);
+    // 실패로 끝났으면 다시 만든다
+    Object.assign(
+      sets.rows.find((r) => String(r._id) === first._id)!,
+      { status: 'failed' },
+    );
+    const again = await similar.create(ME.toHexString(), s.set.toHexString());
+    expect(again._id).not.toBe(first._id);
+    expect(jobs.rows).toHaveLength(2);
   });
 
   it('설정을 끄기 전에 그 풀이로 만든 「다시 보기」 세트가 있으면 그 세트를 돌려주고 작업을 더 넣지 않는다', async () => {
