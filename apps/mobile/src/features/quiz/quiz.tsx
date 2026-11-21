@@ -43,7 +43,7 @@ import {
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useAiJobSubscription, useSocket, useTabRefresh } from '@/hooks';
-import { useQuizProgress } from '@/stores/quiz-progress';
+import { useQuizProgress, type QuizProgress } from '@/stores/quiz-progress';
 import { queryClient } from '@/lib/query';
 import { useBgJobs } from '@/stores/bg-jobs';
 import { useAuth } from '@/stores/auth';
@@ -121,6 +121,13 @@ const NO_CARDS = '이 노트로 퀴즈를 만들면 플래시 카드가 생겨�
 const PENDING_POLL_MS = 4000;
 
 /**
+ * 이어 풀 진행인지: 한 문제라도 답을 냈으면(채점 결과가 있음 · 첫 문제를 넘김 · 낸 답의 채점을 기다리는 중) 이어 풀
+ * 것이 있다. 들어가기만 하고 답을 내지 않은 진행(답 0개 · 첫 문제)은 아니다(#630, TestQA QUIZ-011)
+ */
+const hasAnswered = (p: Pick<QuizProgress, 'index' | 'results' | 'pick'> | null) =>
+  !!p && (p.results.length > 0 || p.index > 0 || p.pick !== null);
+
+/**
  * 앱이 앞에 나와 있는지. 앱이 뒤로 가도 화면 포커스는 그대로라 다시 읽기를 멈추려고 따로 본다(#593).
  * 켜자마자는 상태를 아직 모를 수 있어(unknown) 뒤에 있다고 확실할 때만 멈춘다
  */
@@ -155,7 +162,8 @@ export function QuizHomeScreen() {
       focused && appActive && q.state.data?.some(pending) ? PENDING_POLL_MS : false,
   });
   const refresh = useTabRefresh(sets);
-  const progress = useQuizProgress((s) => s.progress);
+  // 답한 문제가 없는 진행은 이어 풀 것이 없으므로 무시한다(#630). 고치기 전에 남은 빈 진행도 여기서 걸러진다
+  const progress = useQuizProgress((s) => (hasAnswered(s.progress) ? s.progress : null));
   // 바로가기(유사 퀴즈 등)는 다 푼 세트도 쓰므로 가장 최근 ready 세트, 맨 위 카드는 아직 끝까지 풀지 않은 세트(#561).
   // 맨 위 카드는 오늘의 복습 세트(reviewDay, 지난 날 사본 포함)도 고르지 않는다. todayId는 reviewDay를 보내지 않는
   // 옛 서버에서도 오늘 세트를 빼려고 함께 본다. 세트 종류(맞춤 · 유사 · 「다시 보기」)와 상관없이 한 번 들어갔으면
@@ -860,14 +868,40 @@ export function QuizSolveScreen() {
       active = false;
     };
   }, [set.data?._id, startRound]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 이 화면이 진행을 저장했는지. 첫 답의 채점이 실패해 답 없는 상태로 돌아가면 그때 저장한 진행을 지우려고 본다
+  const savedProgress = useRef(false);
+  // 진행은 첫 답을 낸 뒤부터 저장한다. 들어갔다 답 없이 나온 세트가 퀴즈 탭 맨 위에 「이어서 풀기」로 뜨지 않게
+  // (#630, TestQA QUIZ-011). 답 없이 나가면 서버 풀이만 남고(started), 다시 들어가면 새 풀이로 시작한다.
+  // 로그인이 만료되면 답이 없어도 저장한다: 다시 로그인하면 이 세트 · 입력한 답으로 돌아온다(FR-67-01). 이 빈 진행은
+  // 퀴즈 탭 맨 위 카드가 hasAnswered로 거른다
   useEffect(() => {
-    if (set.data && !finish.isSuccess && ownsProgress()) {
-      useQuizProgress
-        .getState()
-        .save({ setId: set.data._id, attemptId, index: i, answerText, pick, right, results });
-      screenGeneration.current = useQuizProgress.getState().generation;
-    }
-  }, [set.data, attemptId, i, answerText, pick, right, results, finish.isSuccess, ownsProgress]);
+    if (!set.data || finish.isSuccess || !ownsProgress()) return;
+    const store = useQuizProgress.getState();
+    if (hasAnswered({ index: i, results, pick }) || expired) {
+      store.save({ setId: set.data._id, attemptId, index: i, answerText, pick, right, results });
+      savedProgress.current = true;
+    } else if (
+      savedProgress.current &&
+      store.progress?.setId === set.data._id &&
+      store.progress.attemptId === attemptId
+    ) {
+      // 첫 답을 내며 저장한 진행이 채점 실패로 답 없는 상태가 됐다: 이어 풀 것이 없으니 지운다
+      store.reset();
+      savedProgress.current = false;
+    } else return;
+    screenGeneration.current = useQuizProgress.getState().generation;
+  }, [
+    set.data,
+    attemptId,
+    i,
+    answerText,
+    pick,
+    right,
+    results,
+    expired,
+    finish.isSuccess,
+    ownsProgress,
+  ]);
   const completedSetId = set.data?._id ?? activeSetId;
   const completed = useQuizProgress((state) =>
     state.progress?.setId === completedSetId ? state.progress?.completed : undefined,
@@ -915,7 +949,9 @@ export function QuizSolveScreen() {
           <Btn
             className="mt-4"
             onPress={() => {
-              if (ownsProgress()) useQuizProgress.getState().reset();
+              // 이 세트의 진행만 지운다. 답을 내기 전에는 저장하지 않으므로 다른 세트의 진행이 남아 있을 수 있다(#630)
+              if (ownsProgress() && useQuizProgress.getState().progress?.setId === set.data?._id)
+                useQuizProgress.getState().reset();
               router.back();
             }}
           >
