@@ -869,27 +869,23 @@ export function QuizSolveScreen() {
     };
   }, [set.data?._id, startRound]); // eslint-disable-line react-hooks/exhaustive-deps
   // 이 화면이 진행을 저장했는지. 첫 답의 채점이 실패해 답 없는 상태로 돌아가면 그때 저장한 진행을 지우려고 본다
-  const savedProgress = useRef(false);
   // 진행은 첫 답을 낸 뒤부터 저장한다. 들어갔다 답 없이 나온 세트가 퀴즈 탭 맨 위에 「이어서 풀기」로 뜨지 않게
   // (#630, TestQA QUIZ-011). 답 없이 나가면 서버 풀이만 남고(started), 다시 들어가면 새 풀이로 시작한다.
-  // 로그인이 만료되면 답이 없어도 저장한다: 다시 로그인하면 이 세트 · 입력한 답으로 돌아온다(FR-67-01). 이 빈 진행은
-  // 퀴즈 탭 맨 위 카드가 hasAnswered로 거른다
+  // 로그인이 만료되면 답이 없어도 저장한다: 다시 로그인하면 이 세트 · 입력한 답으로 돌아온다(FR-67-01). 「다시 로그인」 ·
+  // 「나중에」가 만료 표시를 끄더라도 남긴 진행은 지우지 않는다(Codex #633 1차). 이 빈 진행은 퀴즈 탭 맨 위 카드가
+  // hasAnswered로 거른다. 첫 답의 채점이 실패했을 때의 정리는 choose가 한다
   useEffect(() => {
-    if (!set.data || finish.isSuccess || !ownsProgress()) return;
-    const store = useQuizProgress.getState();
-    if (hasAnswered({ index: i, results, pick }) || expired) {
-      store.save({ setId: set.data._id, attemptId, index: i, answerText, pick, right, results });
-      savedProgress.current = true;
-    } else if (
-      savedProgress.current &&
-      store.progress?.setId === set.data._id &&
-      store.progress.attemptId === attemptId
+    if (
+      set.data &&
+      !finish.isSuccess &&
+      (hasAnswered({ index: i, results, pick }) || expired) &&
+      ownsProgress()
     ) {
-      // 첫 답을 내며 저장한 진행이 채점 실패로 답 없는 상태가 됐다: 이어 풀 것이 없으니 지운다
-      store.reset();
-      savedProgress.current = false;
-    } else return;
-    screenGeneration.current = useQuizProgress.getState().generation;
+      useQuizProgress
+        .getState()
+        .save({ setId: set.data._id, attemptId, index: i, answerText, pick, right, results });
+      screenGeneration.current = useQuizProgress.getState().generation;
+    }
   }, [
     set.data,
     attemptId,
@@ -1010,6 +1006,15 @@ export function QuizSolveScreen() {
       // 로그인 만료: 풀던 내용은 그대로 두고 다이얼로그 (p.101)
       if (e instanceof ApiError && e.code === ERROR_CODES.TOKEN_EXPIRED)
         useAuth.getState().setExpired(true);
+      else if (!hasAnswered({ index: i, results, pick: null })) {
+        // 첫 답의 채점이 실패해 답 없는 상태로 돌아간다: 그 답을 내며 저장한 이 풀이의 진행은 이어 풀 것이 없으니
+        // 지운다(#630). 로그인 만료면 다시 로그인해 돌아오게 남긴다
+        const store = useQuizProgress.getState();
+        if (store.progress?.setId === set.data?._id && store.progress?.attemptId === attemptId) {
+          store.reset();
+          screenGeneration.current = useQuizProgress.getState().generation;
+        }
+      }
       setPick(null);
       toast('답안을 저장하지 못했어요. 다시 시도해주세요');
     } finally {

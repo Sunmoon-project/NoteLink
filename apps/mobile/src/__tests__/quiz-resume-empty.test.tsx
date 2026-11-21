@@ -1,5 +1,6 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, userEvent, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
+import { router } from 'expo-router';
 import type { QuizSet } from '@notelink/shared';
 import { QuizHomeScreen, QuizSolveScreen } from '../features/quiz/quiz';
 import { queryClient } from '../lib/query';
@@ -130,12 +131,26 @@ it('1문제 답하고 나오면 그 세트를 이어서 풀기로 보여 준다'
 });
 
 it('첫 답의 채점이 실패하면 그 답을 내며 저장한 진행을 지운다', async () => {
-  mockApi.quiz.answer.mockRejectedValueOnce(new Error('network'));
+  let fail!: (e: Error) => void;
+  mockApi.quiz.answer.mockReturnValueOnce(
+    new Promise((_, reject) => {
+      fail = reject;
+    }),
+  );
   const seen = quizSet('seen', '본 퀴즈');
   const view = await enter(seen);
-  await fireEvent.press(screen.getByText('① 답'));
-  await waitFor(() => expect(mockApi.quiz.answer).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(useQuizProgress.getState().progress).toBeNull());
+  await userEvent.setup().press(screen.getByText('① 답'));
+  // 답을 내면 채점을 기다리는 동안에도 진행을 남긴다(나갔다 돌아와 다시 낼 수 있게)
+  await waitFor(() =>
+    expect(useQuizProgress.getState().progress).toMatchObject({
+      setId: 'seen',
+      pick: '답',
+      right: null,
+      results: [],
+    }),
+  );
+  await act(async () => fail(new Error('network')));
+  expect(useQuizProgress.getState().progress).toBeNull();
   await view.unmount();
 
   await home([{ ...seen, started: true }, quizSet('fresh', '새 퀴즈')]);
@@ -156,18 +171,28 @@ it('첫 문제에서 로그인이 만료되면 답이 없어도 세트 · 입력
     right: null,
     results: [true],
   });
-  await enter(typed);
+  const view = await enter(typed);
   await fireEvent.changeText(screen.getByPlaceholderText('답을 입력해주세요'), '쓰던 답');
   await act(async () => useAuth.getState().setExpired(true));
-  await waitFor(() =>
-    expect(useQuizProgress.getState().progress).toMatchObject({
-      setId: 'typed',
-      attemptId: 'attempt-1',
-      index: 0,
-      answerText: '쓰던 답',
-      results: [],
-    }),
-  );
+  const kept = {
+    setId: 'typed',
+    attemptId: 'attempt-1',
+    index: 0,
+    answerText: '쓰던 답',
+    results: [],
+  };
+  await waitFor(() => expect(useQuizProgress.getState().progress).toMatchObject(kept));
+  // 「다시 로그인」은 만료 표시를 먼저 끄고 로그인 화면으로 간다: 남긴 진행을 지우지 않는다(Codex #633 1차)
+  await fireEvent.press(screen.getByText('다시 로그인'));
+  expect(useAuth.getState().expired).toBe(false);
+  expect(router.push).toHaveBeenCalledWith('/(auth)/login');
+  expect(useQuizProgress.getState().progress).toMatchObject(kept);
+  await view.unmount();
+  // 같은 계정으로 다시 로그인하면 풀기 화면이 같은 풀이 · 입력으로 다시 열린다
+  await renderScreen(<QuizSolveScreen />, client());
+  expect(await screen.findByText('주관식 퀴즈 문제 1')).toBeTruthy();
+  expect(screen.getByPlaceholderText('답을 입력해주세요').props.value).toBe('쓰던 답');
+  expect(mockApi.quiz.startAttempt).toHaveBeenCalledTimes(1);
 });
 
 it('문제 없는 세트에서 돌아가도 다른 세트를 풀던 진행은 지우지 않는다', async () => {
