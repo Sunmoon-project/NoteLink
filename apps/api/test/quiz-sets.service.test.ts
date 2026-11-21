@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { AiJob, QuizSet } from '@notelink/shared';
 import { mongo, Types } from 'mongoose';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import {
@@ -2255,20 +2255,32 @@ describe('QuizSetsService 취소 요청에 세트 번호(quizSetId)를 실으면
       expect(await t.service.list(ME.toHexString())).toEqual([]);
     });
 
-    it('되살린 뒤 지우다 실패한 세트는 재취소 없이 다음 조회가 지운다(Codex 2차)', async () => {
-      const t = setup();
-      const materialId = await t.addNote();
-      const p = await pregen(t, materialId);
-      const { quizSet } = await t.service.create(ME.toHexString(), materialId);
-      failDropOnce(t);
-      await expect(cancel(t, p._id, quizSet._id)).rejects.toThrow('DB 쓰기 실패');
-      t.job(p._id)['awaited'] = true;
-      t.finish(p._id, { questions: fullSet(), title: '세포 생물학 퀴즈', concepts: ['세포막'] });
+    it('되살린 뒤 지우다 실패한 세트는 재취소 없이 30초 뒤 조회가 지우고, 그 전에도 ready로 옮기지 않는다(Codex 2차 · #644)', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(new Date('2026-11-22T03:00:00Z'));
+        const t = setup();
+        const materialId = await t.addNote();
+        const p = await pregen(t, materialId);
+        const { quizSet } = await t.service.create(ME.toHexString(), materialId);
+        failDropOnce(t);
+        await expect(cancel(t, p._id, quizSet._id)).rejects.toThrow('DB 쓰기 실패');
+        t.job(p._id)['awaited'] = true;
+        t.finish(p._id, { questions: fullSet(), title: '세포 생물학 퀴즈', concepts: ['세포막'] });
 
-      await expect(t.service.findMine(ME.toHexString(), quizSet._id)).rejects.toMatchObject(
-        notFound,
-      );
-      expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+        // 표시가 적힌 지 30초 안: 취소 요청이 아직 처리 중일 수 있어 지우지도, 결과를 옮기지도 않는다
+        vi.setSystemTime(new Date('2026-11-22T03:00:29Z'));
+        expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('generating');
+        expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+
+        vi.setSystemTime(new Date('2026-11-22T03:00:30Z'));
+        await expect(t.service.findMine(ME.toHexString(), quizSet._id)).rejects.toMatchObject(
+          notFound,
+        );
+        expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('이어받은 뒤 세트를 넣기 전에 이어받기가 풀려도 넣은 뒤 다시 켠다', async () => {
@@ -2300,5 +2312,120 @@ describe('QuizSetsService 취소 요청에 세트 번호(quizSetId)를 실으면
 
     expect(t.job(job._id)['status']).toBe('queued');
     expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+  });
+
+  describe('늦은 취소가 표시를 적고 거두기 전에 조회가 끼어도 완성된 세트를 지우지 않는다(#644, Codex #643 3차)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** 맞춤 퀴즈 · 이어받은 미리 만들기 세트를 만들고 작업만 끝낸다(세트는 아직 generating) */
+    const finished = async (usePregen: boolean) => {
+      const t = setup();
+      const materialId = await t.addNote();
+      const p = usePregen ? await pregen(t, materialId) : null;
+      const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+      if (p) expect(job._id).toBe(p._id);
+      t.finish(job._id, { questions: fullSet(), title: 't', concepts: ['세포막'] });
+      return { t, materialId, quizSet, job };
+    };
+    /** 취소 요청이 표시를 적은 직후(늦은 취소로 판정해 거두기 전)에 run을 끼워 넣는다 */
+    const afterMark = (t: ReturnType<typeof setup>, run: () => Promise<unknown>) => {
+      const updateMany = t.sets.model.updateMany.bind(t.sets.model);
+      vi.spyOn(t.sets.model, 'updateMany').mockImplementationOnce((async (
+        ...args: Parameters<typeof updateMany>
+      ) => {
+        const res = await updateMany(...args);
+        await run();
+        return res;
+      }) as never);
+    };
+
+    it.each([
+      ['맞춤 퀴즈', false],
+      ['미리 만들기', true],
+    ])(
+      '%s: 그 사이 목록 · 세트 조회가 세트를 지우지 않고, 표시를 거둔 뒤 ready',
+      async (_, usePregen) => {
+        const { t, quizSet, job } = await finished(usePregen);
+        let between: { list: string[]; status: string } | undefined;
+        afterMark(t, async () => {
+          expect(t.set(quizSet._id)['cancelRequestedAt']).toBeInstanceOf(Date);
+          between = {
+            list: (await t.service.list(ME.toHexString())).map((s) => s.status),
+            status: (await t.service.findMine(ME.toHexString(), quizSet._id)).status,
+          };
+        });
+
+        await cancel(t, job._id, quizSet._id);
+
+        // 그 사이에는 취소가 정해지지 않아 만드는 중으로 둔다
+        expect(between).toEqual({ list: ['generating'], status: 'generating' });
+        expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+        expect(t.set(quizSet._id)['cancelRequestedAt']).toBeUndefined();
+        expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
+      },
+    );
+
+    it('그 사이 같은 노트로 다시 만들어도 세트를 지우지 않고 그 세트를 돌려준다', async () => {
+      const { t, materialId, quizSet, job } = await finished(false);
+      let made: Awaited<ReturnType<typeof t.service.create>> | undefined;
+      afterMark(t, async () => {
+        made = await t.service.create(ME.toHexString(), materialId);
+      });
+
+      await cancel(t, job._id, quizSet._id);
+
+      expect(made!.quizSet._id).toBe(quizSet._id);
+      expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+      expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
+    });
+
+    it('조회가 표시 없는 세트를 읽은 뒤 표시가 적혀 옮기기가 막혀도 지우지 않고, 표시를 거두면 ready', async () => {
+      const { t, quizSet } = await finished(false);
+      const findMine = t.aiJobs.findMine.bind(t.aiJobs);
+      // 조회(sync)가 표시 없는 세트를 읽은 뒤 작업을 읽는 사이 늦은 취소가 표시만 적음(아직 거두기 전)
+      vi.spyOn(t.aiJobs, 'findMine').mockImplementationOnce(async (userId, jobId) => {
+        t.set(quizSet._id)['cancelRequestedAt'] = new Date();
+        return findMine(userId, jobId);
+      });
+
+      expect((await t.service.list(ME.toHexString())).map((s) => s.status)).toEqual(['generating']);
+      expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+
+      delete t.set(quizSet._id)['cancelRequestedAt']; // 늦은 취소가 표시를 거둠
+      expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
+    });
+
+    it.each([
+      ['맞춤 퀴즈', false],
+      ['미리 만들기', true],
+    ])(
+      '%s: 취소 요청이 표시만 적고 죽으면 30초 안에는 만드는 중으로 두고, 30초 뒤 조회가 지운다',
+      async (_, usePregen) => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date('2026-11-22T03:00:00Z'));
+        const { t, quizSet } = await finished(usePregen);
+        t.set(quizSet._id)['cancelRequestedAt'] = new Date(); // 표시를 적은 뒤 요청이 죽음
+
+        vi.setSystemTime(new Date('2026-11-22T03:00:29Z'));
+        expect((await t.service.list(ME.toHexString())).map((s) => s.status)).toEqual([
+          'generating',
+        ]);
+        vi.setSystemTime(new Date('2026-11-22T03:00:30Z'));
+        expect(await t.service.list(ME.toHexString())).toEqual([]);
+        expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+      },
+    );
+
+    it('오래된 표시가 남은 끝난 세트는 조회가 지금처럼 바로 지운다', async () => {
+      const { t, quizSet } = await finished(true);
+      t.set(quizSet._id)['cancelRequestedAt'] = new Date(Date.now() - 31_000);
+
+      await expect(t.service.findMine(ME.toHexString(), quizSet._id)).rejects.toMatchObject(
+        notFound,
+      );
+      expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+    });
   });
 });
