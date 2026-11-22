@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { View } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import {
   type QueryClient,
   useInfiniteQuery,
@@ -331,6 +331,15 @@ export function NotificationSettingsScreen() {
 /** 홈 상단 종 아이콘(읽지 않은 수 점) */
 export function BellButton() {
   const unread = useUnreadCount();
+  // 홈이 보일 때마다 다시 읽는다: 30초 캐시라 그 사이 온 알림 수가 늦게 바뀌었다(PROF-007).
+  // 이미 읽는 중이면(처음 그릴 때 useQuery가 읽기 시작) 겹쳐 보내지 않는다
+  const qc = useQueryClient();
+  useFocusEffect(
+    useCallback(() => {
+      if (qc.getQueryState(UNREAD_KEY)?.fetchStatus !== 'fetching')
+        void qc.refetchQueries({ queryKey: UNREAD_KEY, exact: true });
+    }, [qc]),
+  );
   const n = unread.data ?? 0;
   return (
     <Pressable
