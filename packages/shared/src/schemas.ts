@@ -542,6 +542,25 @@ export const TimetableShare = z.object({
   mode: z.enum(['full', 'free_only']),
   sharedAt: date,
 });
+/**
+ * 나에게 공유된 친구 시간표의 수업(GET /timetable/shared). 빈 시간만(free_only) 공유면 과목명 · 장소는 null이고,
+ * 요일 하나씩 겹치거나 이어진 수업을 합친 바쁜 시간 덩어리다
+ */
+export const SharedTimetableClass = z.object({
+  days: z.array(z.number().int().min(0).max(6)),
+  startTime: z.string(),
+  endTime: z.string(),
+  subjectName: z.string().nullable(),
+  location: z.string().nullable(),
+});
+/** 나에게 공유된 친구 시간표 한 건(지금 친구이고 지금 관계로 한 공유만, 공유한 순서) */
+export const SharedTimetable = z.object({
+  ownerId: id,
+  nickname: z.string(),
+  mode: z.enum(['full', 'free_only']),
+  sharedAt: date,
+  classes: z.array(SharedTimetableClass),
+});
 
 /* ── 6. 스터디룸 · 채팅 · 소셜 ──────────────────── */
 
@@ -768,6 +787,8 @@ export type CalendarShare = z.infer<typeof CalendarShare>;
 export type TimetableClass = z.infer<typeof TimetableClass>;
 export type Timetable = z.infer<typeof Timetable>;
 export type TimetableShare = z.infer<typeof TimetableShare>;
+export type SharedTimetableClass = z.infer<typeof SharedTimetableClass>;
+export type SharedTimetable = z.infer<typeof SharedTimetable>;
 export type TimerRule = z.infer<typeof TimerRule>;
 export type RoomMember = z.infer<typeof RoomMember>;
 export type StudyRoom = z.infer<typeof StudyRoom>;
