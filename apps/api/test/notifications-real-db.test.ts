@@ -17,6 +17,10 @@ import {
   NotificationSchema,
 } from '../src/modules/notification/schemas/notification.schema.js';
 import { FriendsService } from '../src/modules/social/friends/friends.service.js';
+import {
+  FriendSharedItem,
+  FriendSharedItemSchema,
+} from '../src/modules/social/schemas/friend-shared-item.schema.js';
 import { Friendship, FriendshipSchema } from '../src/modules/social/schemas/friendship.schema.js';
 import { Device, DeviceSchema } from '../src/modules/users/schemas/device.schema.js';
 
@@ -79,7 +83,13 @@ describe.skipIf(!isLocal)('진짜 DB 공통 알림 · 알림함 · 친구 알림
       devices as never,
       push as never,
     );
-    friends = new FriendsService(friendships as never, users as never, shares as never, service);
+    friends = new FriendsService(
+      friendships as never,
+      users as never,
+      shares as never,
+      service,
+      conn.model(FriendSharedItem.name, FriendSharedItemSchema) as never,
+    );
   });
 
   afterAll(async () => {

@@ -1,11 +1,13 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { FriendAddScreen, ChatScreen } from '../features/social/screens';
 import { useAuth } from '../stores/auth';
+import { useToast } from '../stores/toast';
 import { renderScreen, setParams } from '../test-utils';
 import { router } from 'expo-router';
 
 const mockApi = {
   rooms: { join: jest.fn() },
+  content: { friendShare: jest.fn() },
   social: {
     search: jest.fn(),
     sendRequest: jest.fn(async () => {}),
@@ -162,4 +164,27 @@ it('1:1 채팅의 스터디룸 초대 카드에서 참여 코드를 제출하고
     pathname: '/room/[id]',
     params: { id: 'joined-room' },
   });
+});
+
+// 친구가 보낸 노트(#554): 1:1 채팅에 공유 카드로 오고, 끝난 공유는 누르면 「공유가 끝났어요」
+it('1:1 채팅의 노트 공유 카드를 누르면 공유를 열어 보고, 끝났으면 안내한다', async () => {
+  jest.mocked(router.push).mockClear();
+  setParams({ id: 'u1', name: '지우' });
+  mockApi.social.messages.mockResolvedValue([
+    {
+      _id: 'share-card-1',
+      chatRoomId: 'room1',
+      senderId: 'u1',
+      type: 'shared_item',
+      text: '미적분 필기',
+      sharedItemId: 's1',
+      createdAt: '2026-11-22T00:00:00.000Z',
+    },
+  ]);
+  mockApi.content.friendShare.mockResolvedValue({ _id: 's1', active: false, mine: false });
+  await renderScreen(<ChatScreen />);
+  await fireEvent.press(await screen.findByLabelText('공유한 노트 미적분 필기 열기'));
+  await waitFor(() => expect(mockApi.content.friendShare).toHaveBeenCalledWith('s1'));
+  await waitFor(() => expect(useToast.getState().msg).toBe('공유가 끝났어요'));
+  expect(router.push).not.toHaveBeenCalled();
 });

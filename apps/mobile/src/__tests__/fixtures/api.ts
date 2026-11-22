@@ -8,6 +8,7 @@ import {
   type Message,
   type QuizAttempt,
   type QuizSet,
+  type SharedTimetable,
   type StudySession,
   type TimetableShare,
 } from '@notelink/shared';
@@ -321,6 +322,10 @@ export const mockApi: Api = {
       db.items.push(it);
       return structuredClone(it);
     },
+    removeItem: async (id) => {
+      await ok(undefined);
+      db.items = db.items.filter((i) => i._id !== id);
+    },
     startSession: async (p) => {
       await ok(undefined, 80);
 
@@ -609,6 +614,7 @@ export const mockApi: Api = {
       return structuredClone(undefined);
     },
     shares: () => ok(db.timetableShares),
+    shared: () => ok([] as SharedTimetable[]),
   },
   social: {
     friends: () => ok(db.friends),
@@ -792,6 +798,9 @@ export const mockApi: Api = {
       });
     },
     share: () => ok(undefined),
+    friendShare: () => fail('NOT_FOUND', '공유 정보를 찾을 수 없어요', 404),
+    revokeFriendShare: () => ok(undefined),
+    copyFriendShare: () => ok({ _id: 'copy', folderId: 'f1' }),
     checkImages: (files) =>
       ok(
         files.map((f) => ({

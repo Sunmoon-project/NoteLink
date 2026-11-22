@@ -56,7 +56,12 @@ export const BOOKMARK_MAX = 200;
 export const IDEMPOTENCY_KEY_MAX = 128;
 
 /** 노트 종류 → 업로드 종류(UPLOAD_RULES · blob 경로 uploads/<업로드 종류>/<userId>/) */
-const UPLOAD_KIND = { handwriting: 'image', document: 'document', recording: 'audio' } as const;
+/** 노트 종류 → 올린 파일 경로의 종류(uploads/<종류>/<사용자>/) */
+export const UPLOAD_KIND = {
+  handwriting: 'image',
+  document: 'document',
+  recording: 'audio',
+} as const;
 /** 노트 종류 → AI 작업 종류. 문서도 노트 정리 처리기(handwriting_summary)가 읽는다(apps/ai worker/handlers.py) */
 const JOB_TYPE = {
   handwriting: 'handwriting_summary',

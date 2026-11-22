@@ -9,9 +9,13 @@ from app.clients.llm import JsonObject
 type Answer = JsonObject | Exception
 # 답 목록(차례로 꺼냄), 또는 user 글을 보고 답하는 함수(부를 때마다)
 type Answers = list[Answer] | Callable[[str], Answer]
-# 준비하지 않아도 되는 호출의 답. 노트 정리마다 부르는 핵심 요약은 따로 보는 시험에서만 준비하고,
-# 준비하지 않으면 빈 요약으로 답하며 calls에 남기지 않음(다른 호출 수를 세는 시험이 그대로)
-DEFAULTS: dict[str, JsonObject] = {"note_summary": {"points": [], "keywords": [], "headings": []}}
+# 준비하지 않아도 되는 호출의 답. 노트 정리마다 부르는 핵심 요약 · 사진마다 부르는 도식 찾기는
+# 따로 보는 시험에서만 준비하고, 준비하지 않으면 빈 답으로 답하며 calls에 남기지 않음(다른 호출
+# 수를 세는 시험이 그대로)
+DEFAULTS: dict[str, JsonObject] = {
+    "note_summary": {"points": [], "keywords": [], "headings": []},
+    "note_diagrams": {"diagrams": []},
+}
 
 
 @dataclass
@@ -21,6 +25,7 @@ class Call:
     user: str
     schema: JsonObject
     name: str
+    image: bytes | None = None
 
 
 @dataclass
@@ -46,10 +51,11 @@ class FakeLlm:
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
         if name in DEFAULTS and name not in self.answers:
             return DEFAULTS[name]
-        self.calls.append(Call(model, system, user, schema, name))
+        self.calls.append(Call(model, system, user, schema, name, image))
         queue = self.answers.get(name)
         if callable(queue):
             a = queue(user)

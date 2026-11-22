@@ -73,6 +73,19 @@ export class StudyRoomNoticesService {
           });
           return;
         }
+        if (message.type === 'shared_item') {
+          // 친구에게 보낸 노트(#554): 알림함에도 남긴다(친구 알림). 여러 개를 보내면 마지막 것 하나로 바뀐다
+          await this.notifications.notify({
+            userIds: others,
+            category: 'friend',
+            type: 'friend-share',
+            title: '노트 공유',
+            body: `${name}님이 「${message.text ?? ''}」 노트를 보냈어요`,
+            data: { chatRoomId, messageId: message._id, userId: sender },
+            collapseId: `friend-share:${chatRoomId}:${sender}`,
+          });
+          return;
+        }
         await this.pushChat(
           others.filter((id) => !delivered.includes(String(id))),
           { title: name, body: preview(message) },

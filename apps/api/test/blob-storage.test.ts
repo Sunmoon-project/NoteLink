@@ -433,3 +433,30 @@ describe('올린 파일 지우기 (deleteUpload)', () => {
     expect(remove).not.toHaveBeenCalled();
   });
 });
+
+describe('친구 노트 사본 복사 (copyUpload, #554)', () => {
+  const from = `uploads/image/${owner}/`;
+  const to = 'uploads/image/64b7f0c2a1b2c3d4e5f60720/';
+  const source = `${base}/${from}${file}`;
+
+  it('주인 폴더의 파일을 내 폴더 새 이름으로 서버 간 복사한다', async () => {
+    const begin = vi
+      .spyOn(BlockBlobClient.prototype, 'beginCopyFromURL')
+      .mockResolvedValue({ pollUntilDone: async () => ({}) } as never);
+    const out = await service().copyUpload(source, from, to);
+    expect(out).toMatch(new RegExp(`^${base}/${to}[0-9a-f-]{36}\\.jpg$`));
+    expect(begin.mock.calls[0]![0]).toMatch(new RegExp(`^${source}\\?`));
+  });
+
+  it('컨테이너 밖 · 쿼리 붙은 주소 · 주인 폴더 밖(다른 사용자 · 신고 임시 경로) 파일은 복사하지 않는다', async () => {
+    const begin = vi.spyOn(BlockBlobClient.prototype, 'beginCopyFromURL');
+    for (const u of [
+      'https://example.com/a.jpg',
+      `${source}?sv=x`,
+      source.replace(owner, '507f1f77bcf86cd799439012'),
+      incoming,
+    ])
+      await expect(service().copyUpload(u, from, to)).rejects.toBeInstanceOf(BadRequestException);
+    expect(begin).not.toHaveBeenCalled();
+  });
+});

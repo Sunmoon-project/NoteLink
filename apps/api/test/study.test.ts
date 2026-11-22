@@ -27,13 +27,14 @@ let subject: Record<string, unknown> | null;
 const dailyModel = {
     findOneAndUpdate: vi.fn(() => ({ lean: vi.fn(() => Promise.resolve(record)) })),
     findOne: vi.fn(() => ({ lean: vi.fn(() => Promise.resolve(record)) })),
-    updateOne: vi.fn().mockResolvedValue({ modifiedCount: 1 }),
+    updateOne: vi.fn().mockResolvedValue({ matchedCount: 1, modifiedCount: 1 }),
 };
 const sessionModel = {
     create: vi.fn().mockResolvedValue([{}]),
     find: vi.fn(() => ({ lean: vi.fn(() => Promise.resolve(openRows)) })),
     findOne: vi.fn(() => ({ lean: vi.fn(() => Promise.resolve(row)) })),
     updateOne: vi.fn().mockResolvedValue({ modifiedCount: 1 }),
+    countDocuments: vi.fn().mockResolvedValue(0),
 };
 const subjectModel = {
     find: vi.fn(() => ({
@@ -153,6 +154,24 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
             );
         });
 
+        it('지운 항목(deletedAt)은 오늘 목록에서 빼고, 하루 합계는 그대로 둔다 (HOME-002)', async () => {
+            const goneId = new Types.ObjectId();
+            (record as { items: object[] }).items.push({
+                _id: goneId,
+                title: '지운 항목',
+                subjectId: null,
+                subjectName: '영어',
+                goalMin: null,
+                accumulatedSec: 300,
+                deletedAt: secondsAgo(60),
+            });
+            const res = await request(app.getHttpServer()).get(api('/study/today')).set(AUTH);
+
+            expect(res.status).toBe(200);
+            expect(res.body.data.items.map((i: { _id: string }) => i._id)).toEqual([itemId.toString()]);
+            expect(res.body.data.totalSec).toBe(600);
+        });
+
         it('UTC로는 아직 어제여도 서울이 다음 날이면 서울 날짜로 찾는다', async () => {
             vi.setSystemTime(new Date('2026-11-04T15:30:00.000Z')); // 서울 11/05 00:30
             await request(app.getHttpServer()).get(api('/study/today')).set(AUTH);
@@ -240,6 +259,132 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
         });
     });
 
+    describe('DELETE /study/items/:id (HOME-002)', () => {
+        const del = (id: string) => request(app.getHttpServer()).delete(api(`/study/items/${id}`)).set(AUTH);
+        const lean = (value: Record<string, unknown> | null) => ({ lean: vi.fn(() => Promise.resolve(value)) });
+        // findOne({ ..., 'items._id' }, { 'items.$': 1 })가 돌려주는 모양: 그 항목 하나만 담긴 기록
+        const found = (item: Record<string, unknown>) => ({ _id: new Types.ObjectId(), items: [item] });
+        const baseItem = () => ({ _id: itemId, title: '수학 문제집', subjectId: null, subjectName: '수학', goalMin: 60, accumulatedSec: 600 });
+
+        it('로그인하지 않으면 401', async () => {
+            const res = await request(app.getHttpServer()).delete(api(`/study/items/${itemId.toString()}`));
+            expect(res.status).toBe(401);
+            expect(res.body).toEqual({ code: 'AUTH_TOKEN_EXPIRED', message: expect.any(String) });
+        });
+
+        it('내 항목이면 deletedAt만 채워 숨기고 204 — 쌓인 시간 · 하루 합계는 건드리지 않는다', async () => {
+            dailyModel.findOne.mockImplementationOnce(() => lean(found(baseItem())));
+
+            const res = await del(itemId.toString());
+
+            expect(res.status).toBe(204);
+            // 오늘(서울) 기록에서만 찾고, 찾기 · 지우기 · 열린 세션 확인이 모두 한 트랜잭션이다
+            expect(connection.transaction).toHaveBeenCalledTimes(1);
+            expect(dailyModel.findOne).toHaveBeenCalledWith(
+                { userId: owner, studyDate: TODAY, 'items._id': itemId },
+                { 'items.$': 1 },
+                { session: tx },
+            );
+            expect(dailyModel.updateOne).toHaveBeenCalledTimes(1);
+            expect(dailyModel.updateOne).toHaveBeenCalledWith(
+                { userId: owner, studyDate: TODAY, items: { $elemMatch: { _id: itemId, deletedAt: null } } },
+                { $set: { 'items.$.deletedAt': NOW } },
+                { session: tx },
+            );
+            // 그 항목으로 열린 세션(측정 · 일시정지)이 있는지 본다
+            expect(sessionModel.countDocuments).toHaveBeenCalledWith(
+                { userId: owner, studyItemId: itemId, status: { $ne: 'ended' } },
+                { session: tx },
+            );
+        });
+
+        it('남의 항목 · 없는 항목 · 지난 날 항목이면 404 NOT_FOUND (내 오늘 기록에서만 찾는다)', async () => {
+            dailyModel.findOne.mockImplementationOnce(() => lean(null));
+
+            const res = await del(new Types.ObjectId().toString());
+
+            expect(res.status).toBe(404);
+            expect(res.body).toEqual({ code: 'NOT_FOUND', message: expect.any(String) });
+            expect(dailyModel.updateOne).not.toHaveBeenCalled();
+        });
+
+        it('ObjectId 모양이 아닌 id는 DB에 묻지 않고 404', async () => {
+            const res = await del('not-an-id');
+
+            expect(res.status).toBe(404);
+            expect(res.body).toEqual({ code: 'NOT_FOUND', message: expect.any(String) });
+            expect(dailyModel.findOne).not.toHaveBeenCalled();
+        });
+
+        it('이미 지운 항목이면 다시 불러도 204 — 처음 지운 시각을 바꾸지 않는다 (멱등)', async () => {
+            dailyModel.findOne.mockImplementationOnce(() => lean(found({ ...baseItem(), deletedAt: secondsAgo(600) })));
+
+            const res = await del(itemId.toString());
+
+            expect(res.status).toBe(204);
+            expect(dailyModel.updateOne).not.toHaveBeenCalled();
+        });
+
+        it('그 항목으로 측정 중(일시정지 포함)인 세션이 있으면 409 STUDY_ITEM_IN_SESSION, 지우지 않는다', async () => {
+            dailyModel.findOne.mockImplementationOnce(() => lean(found(baseItem())));
+            sessionModel.countDocuments.mockResolvedValueOnce(1);
+            let aborted = false;
+            connection.transaction.mockImplementationOnce(async (work: (session: typeof tx) => Promise<unknown>) => {
+                try {
+                    return await work(tx);
+                } catch (error) {
+                    aborted = true; // 진짜 DB에서는 여기서 deletedAt 쓰기가 되돌려진다
+                    throw error;
+                }
+            });
+
+            const res = await del(itemId.toString());
+
+            expect(res.status).toBe(409);
+            expect(res.body).toEqual({ code: 'STUDY_ITEM_IN_SESSION', message: expect.any(String) });
+            expect(aborted).toBe(true);
+        });
+
+        it('지운 항목으로 새 타이머를 시작하면 404 (목록에서 사라진 항목)', async () => {
+            record = makeRecord();
+            (record.items as Record<string, unknown>[])[0]!.deletedAt = secondsAgo(30);
+            // 가짜 DB: 찾는 조건이 지운 항목을 빼면(deletedAt: null) 이 기록은 맞지 않는다
+            dailyModel.updateOne.mockImplementationOnce((filter?: unknown) =>
+                Promise.resolve({ matchedCount: JSON.stringify(filter).includes('"deletedAt":null') ? 0 : 1, modifiedCount: 0 }),
+            );
+
+            const res = await request(app.getHttpServer())
+                .post(api('/study-sessions'))
+                .set(AUTH)
+                .send({ studyItemId: itemId.toString(), mode: 'personal' });
+
+            expect(res.status).toBe(404);
+            expect(sessionModel.create).not.toHaveBeenCalled();
+            expect(sessionModel.find).not.toHaveBeenCalled(); // 앞 세션도 정산하지 않는다
+        });
+
+        it('지운 항목의 세션이 끝나도(앞서 시작해 둔 세션) 하루 합계 · 그 항목 누적에 그대로 쌓는다 — 기록은 남는다', async () => {
+            record = makeRecord();
+            (record.items as Record<string, unknown>[])[0]!.deletedAt = secondsAgo(30);
+
+            const res = await request(app.getHttpServer())
+                .post(api(`/study-sessions/${sessionId.toString()}/end`))
+                .set(AUTH)
+                .send({ clientDurationSec: 0, endReason: 'manual' });
+
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual({ data: { durationSec: 700, pointsEarned: 20 } });
+            expect(dailyModel.updateOne).toHaveBeenCalledWith(
+                { userId: owner, studyDate: TODAY },
+                {
+                    $inc: { totalSec: 700, personalSec: 700, 'items.$[item].accumulatedSec': 700 },
+                    $set: { streakOk: true },
+                },
+                { arrayFilters: [{ 'item._id': itemId }], session: tx },
+            );
+        });
+    });
+
     describe('POST /study-sessions', () => {
         const start = (body: object) => request(app.getHttpServer()).post(api('/study-sessions')).set(AUTH).send(body);
 
@@ -269,9 +414,12 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
                 pauses: [],
             });
             // 오늘 기록 안에 그 항목이 있는지 확인한 뒤 만든다
-            expect(dailyModel.findOne).toHaveBeenCalledWith(
-                { userId: owner, studyDate: TODAY, 'items._id': itemId },
-                { _id: 1 },
+            // 오늘 기록에 지우지 않은 그 항목이 있는지, 트랜잭션 안에서 그 기록을 써서 확인한다 —
+            // 동시에 온 항목 지우기와 쓰기 충돌이 나게 해 지운 항목 위에서 타이머가 돌지 않게 한다 (HOME-002)
+            expect(dailyModel.updateOne).toHaveBeenCalledWith(
+                { userId: owner, studyDate: TODAY, items: { $elemMatch: { _id: itemId, deletedAt: null } } },
+                { $set: { updatedAt: NOW } },
+                { session: tx },
             );
             expect(sessionModel.create).toHaveBeenCalledWith(
                 [expect.objectContaining({ userId: owner, studyItemId: itemId, mode: 'personal', status: 'running' })],
@@ -430,12 +578,14 @@ describe('공부 기록 API (/study, /subjects, /study-sessions)', () => {
         });
 
         it('오늘 기록에 없는 항목이면 404 { code, message }, 세션을 만들지 않는다', async () => {
-            record = null;
+            // 트랜잭션 안의 항목 확인(updateOne)이 아무 기록에도 맞지 않는다
+            dailyModel.updateOne.mockResolvedValueOnce({ matchedCount: 0, modifiedCount: 0 });
             const res = await start({ studyItemId: new Types.ObjectId().toString(), mode: 'personal' });
             expect(res.status).toBe(404);
             expect(res.body).toEqual({ code: 'NOT_FOUND', message: expect.any(String) });
             expect(sessionModel.create).not.toHaveBeenCalled();
-            expect(connection.transaction).not.toHaveBeenCalled();
+            // 항목이 없으면 열린 세션을 정산하지도 않는다
+            expect(sessionModel.find).not.toHaveBeenCalled();
         });
 
         it('항목 ID 모양이 틀리거나 모드가 틀리면 400', async () => {

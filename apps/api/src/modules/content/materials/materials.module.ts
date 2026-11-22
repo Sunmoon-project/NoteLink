@@ -18,6 +18,12 @@ import { StudyRoom, StudyRoomSchema } from '../../studyroom/schemas/study-room.s
 import { StudyRoomsModule } from '../../studyroom/study-rooms.module.js';
 import { Folder, FolderSchema } from '../schemas/folder.schema.js';
 import { Material, MaterialSchema } from '../schemas/material.schema.js';
+import {
+  FriendSharedItem,
+  FriendSharedItemSchema,
+} from '../../social/schemas/friend-shared-item.schema.js';
+import { Friendship, FriendshipSchema } from '../../social/schemas/friendship.schema.js';
+import { FriendShareService } from './friend-share.service.js';
 import { MaterialSharingController } from './material-sharing.controller.js';
 import { MaterialSharingService } from './material-sharing.service.js';
 import { MaterialsController } from './materials.controller.js';
@@ -45,6 +51,9 @@ import { RegenQuota, RegenQuotaSchema } from './regen-quota.schema.js';
       // 방에 공유한 퀴즈 · 플래시카드(#481): 주인 확인 · 제목 · 내용을 읽기만 한다
       { name: QuizSet.name, schema: QuizSetSchema },
       { name: Flashcard.name, schema: FlashcardSchema },
+      // 친구에게 보낸 노트(#554): 저장 · 친구 관계 확인
+      { name: FriendSharedItem.name, schema: FriendSharedItemSchema },
+      { name: Friendship.name, schema: FriendshipSchema },
       // 다시 만들기 하루 횟수
       { name: RegenQuota.name, schema: RegenQuotaSchema },
     ]),
@@ -59,6 +68,6 @@ import { RegenQuota, RegenQuotaSchema } from './regen-quota.schema.js';
     StudyRoomsModule,
   ],
   controllers: [MaterialsController, RecordingController, MaterialSharingController],
-  providers: [MaterialsService, RecordingService, MaterialSharingService],
+  providers: [MaterialsService, RecordingService, MaterialSharingService, FriendShareService],
 })
 export class MaterialsModule {}

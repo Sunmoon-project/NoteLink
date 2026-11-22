@@ -9,6 +9,11 @@ describe('PATHS', () => {
     expect(PATHS.chatMessages('a/b?c')).toBe('/chat-rooms/a%2Fb%3Fc/messages');
   });
 
+  it('공부 항목 하나의 주소(DELETE /study/items/:id, HOME-002)', () => {
+    expect(PATHS.studyItem('abc123')).toBe('/study/items/abc123');
+    expect(PATHS.studyItem('a/b')).toBe('/study/items/a%2Fb');
+  });
+
   it('평범한 id는 그대로 둔다', () => {
     expect(PATHS.studySessionAction('abc123', 'end')).toBe('/study-sessions/abc123/end');
     expect(PATHS.studySessionAction('abc123', 'heartbeat')).toBe(
@@ -37,6 +42,10 @@ describe('이메일 가입 · 로그인 계약', () => {
       LOGIN_LOCKED: 'LOGIN_LOCKED',
       IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
     });
+  });
+
+  it('측정 중인 공부 항목을 지우려 한 오류 코드(409, HOME-002)', () => {
+    expect(ERROR_CODES.STUDY_ITEM_IN_SESSION).toBe('STUDY_ITEM_IN_SESSION');
   });
 
   it('퀴즈 만들기가 처리 중인 취소를 만난 오류 코드(409, #644)', () => {

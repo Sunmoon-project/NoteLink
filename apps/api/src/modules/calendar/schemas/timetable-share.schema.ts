@@ -30,3 +30,4 @@ export class TimetableShare {
 
 export const TimetableShareSchema = SchemaFactory.createForClass(TimetableShare);
 TimetableShareSchema.index({ ownerId: 1, friendId: 1 }, { unique: true }); // 친구 한 명당 공유 한 건
+TimetableShareSchema.index({ friendId: 1, sharedAt: 1 }); // 나에게 공유된 시간표(GET /timetable/shared)

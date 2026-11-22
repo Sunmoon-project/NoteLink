@@ -14,6 +14,7 @@ import {
   type QuizSet,
   type RecurringGoal,
   type RoomSharedItem,
+  type SharedTimetable,
   type StudyItem,
   type StudyRoom,
   type StudySession,
@@ -614,7 +615,23 @@ const api: Api = {
       d.items.push(it);
       return ok(it);
     },
+    // 기기 저장 모드: 시간은 세션 기록(sessions)에서 세므로 항목만 빼도 하루 · 주간 합계는 그대로다(서버의 숨김과 같은 결과).
+    // 이미 지운(없는) 항목은 서버처럼 다시 불러도 성공으로 본다
+    removeItem: (id) => {
+      const d = db();
+      if (d.sessions.some((s) => s.studyItemId === id && s.status !== 'ended'))
+        return fail(
+          ERROR_CODES.STUDY_ITEM_IN_SESSION,
+          '측정 중인 공부 항목은 공부를 끝낸 뒤 지울 수 있어요',
+          409,
+        );
+      d.items = d.items.filter((i) => i._id !== id);
+      return ok(undefined);
+    },
     startSession: async (p) => {
+      // 서버처럼 목록에 없는(지운) 항목으로는 시작하지 않는다(HOME-002)
+      if (!db().items.some((i) => i._id === p.studyItemId))
+        return fail(ERROR_CODES.NOT_FOUND, '존재하지 않는 공부 항목이에요', 404);
       await ok(undefined);
       const s: StudySession = {
         _id: uid('ss'),
@@ -895,6 +912,8 @@ const api: Api = {
     },
     share: () => needServer('시간표 공유'),
     shares: () => ok([] as TimetableShare[]),
+    // 친구 시간표는 서버에만 있다(혼자 쓰는 로컬 모드는 받은 공유가 없다)
+    shared: () => ok([] as SharedTimetable[]),
   },
   social: {
     friends: () => ok([]),
@@ -1110,19 +1129,19 @@ const api: Api = {
     share: (p) => {
       const d = db();
       if (p.target.type !== 'room') return needServer('친구에게 자료 공유');
+      const roomId = p.target.id;
       for (const materialId of p.materialIds) {
         const m = d.materials.find((x) => x._id === materialId);
         if (!m) continue;
         // 서버처럼 이미 공유된 노트는 건너뛰고, 새로 공유한 노트는 방 채팅에 자료 카드를 남긴다
         if (
           d.roomShared.some(
-            (x) =>
-              x.roomId === p.target.id && x.itemType === 'material' && x.materialId === materialId,
+            (x) => x.roomId === roomId && x.itemType === 'material' && x.materialId === materialId,
           )
         )
           continue;
         const sharedId = uid('rs');
-        const chatRoomId = `room-chat-${p.target.id}`;
+        const chatRoomId = `room-chat-${roomId}`;
         d.messages[chatRoomId] = [
           ...(d.messages[chatRoomId] ?? []),
           {
@@ -1139,7 +1158,7 @@ const api: Api = {
         ];
         d.roomShared.push({
           _id: sharedId,
-          roomId: p.target.id,
+          roomId,
           sharedBy: d.user._id,
           sharedByNickname: me(d).nickname,
           itemType: 'material',
@@ -1154,6 +1173,10 @@ const api: Api = {
       }
       return ok(undefined);
     },
+    // 친구에게 보내기는 서버에만 있다(기기 저장 모드는 친구도 없다)
+    friendShare: () => needServer('친구에게 받은 자료'),
+    revokeFriendShare: () => needServer('친구에게 보낸 자료'),
+    copyFriendShare: () => needServer('친구에게 받은 자료'),
     // 필기 여부 · 흐림 판별은 AI 서버가 한다. 기기에서는 형식 · 용량만 확인하고 통과시킨다
     checkImages: (files) => ok(files.map((f) => ({ name: f.name, verdict: 'ok' as const }))),
     // 서버 AI 대신 노트에서 질문과 가장 많이 겹치는 부분을 골라 바로 답한다(완료된 작업으로)

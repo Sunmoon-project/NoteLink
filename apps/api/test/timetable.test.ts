@@ -1,5 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
-import { Timetable } from '@notelink/shared';
+import { SharedTimetable, Timetable } from '@notelink/shared';
 import { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,14 +11,21 @@ type ClassRow = { _id: Types.ObjectId; subjectName: string; days: number[]; star
 type TtRow = { _id: Types.ObjectId; userId: Types.ObjectId; classes: ClassRow[]; updatedAt: Date };
 type ShareRow = { _id: Types.ObjectId; ownerId: Types.ObjectId; friendId: Types.ObjectId; mode: string; sharedAt: Date; friendshipId?: Types.ObjectId | null };
 type FriendRow = { _id?: Types.ObjectId; userA: Types.ObjectId; userB: Types.ObjectId; status: string };
+type UserRow = { _id: Types.ObjectId; nickname: string; deletedAt?: Date | null; withdrawingAt?: Date | null };
 
 let tts: TtRow[];
 let shares: ShareRow[];
 let friendships: FriendRow[];
+let users: UserRow[];
 
 const ME = new Types.ObjectId(TEST_USER_ID);
 
+const has = (list: Types.ObjectId[], id: Types.ObjectId) => list.some((x) => x.equals(id));
 const timetableModel = {
+    /** 받은 공유의 주인들 시간표: { userId: { $in } } */
+    find: vi.fn((f: { userId: { $in: Types.ObjectId[] } }) => ({
+        lean: vi.fn(() => Promise.resolve(tts.filter((t) => has(f.userId.$in, t.userId)))),
+    })),
     findOne: vi.fn((f: { userId: Types.ObjectId }) => ({
         lean: vi.fn(() => Promise.resolve(tts.find((t) => t.userId.equals(f.userId)) ?? null)),
     })),
@@ -85,8 +92,9 @@ const shareModel = {
         );
         return Promise.resolve({});
     }),
-    find: vi.fn((f: { ownerId: Types.ObjectId }) => {
-        const rows = shares.filter((s) => s.ownerId.equals(f.ownerId));
+    /** 내가 공유한 것({ ownerId }) 또는 나에게 공유된 것({ friendId }) */
+    find: vi.fn((f: { ownerId?: Types.ObjectId; friendId?: Types.ObjectId }) => {
+        const rows = shares.filter((s) => (!f.ownerId || s.ownerId.equals(f.ownerId)) && (!f.friendId || s.friendId.equals(f.friendId)));
         const chain = {
             sort: vi.fn(() => {
                 rows.sort((a, b) => a.sharedAt.getTime() - b.sharedAt.getTime());
@@ -104,7 +112,6 @@ const friendshipModel = {
     ),
     find: vi.fn((f: FriendFilter) => {
         const [a, b] = f.$or as [{ userA: Types.ObjectId; userB: { $in: Types.ObjectId[] } }, { userB: Types.ObjectId; userA: { $in: Types.ObjectId[] } }];
-        const has = (list: Types.ObjectId[], id: Types.ObjectId) => list.some((x) => x.equals(id));
         const rows = friendships.filter(
             (r) => r.status === f.status && ((r.userA.equals(a.userA) && has(a.userB.$in, r.userB)) || (r.userB.equals(b.userB) && has(b.userA.$in, r.userA))),
         );
@@ -112,6 +119,23 @@ const friendshipModel = {
         for (const r of rows) r._id ??= new Types.ObjectId();
         return { lean: vi.fn(() => Promise.resolve(rows)) };
     }),
+};
+
+/** 닉네임 조회. deletedAt · withdrawingAt 조건이 있으면 그 값이 없는(null) 사람만 */
+const userModel = {
+    findById: vi.fn(() => ({ lean: vi.fn(() => Promise.resolve({ nickname: '나' })) })),
+    find: vi.fn((f: { _id: { $in: Types.ObjectId[] }; deletedAt?: null; withdrawingAt?: null }) => ({
+        lean: vi.fn(() =>
+            Promise.resolve(
+                users.filter(
+                    (u) =>
+                        has(f._id.$in, u._id) &&
+                        (!('deletedAt' in f) || u.deletedAt == null) &&
+                        (!('withdrawingAt' in f) || u.withdrawingAt == null),
+                ),
+            ),
+        ),
+    })),
 };
 
 const MATH = { subjectName: '수학 II', days: [4, 2], startTime: '10:00', endTime: '11:30', location: '공학관 301', color: '#dfece4' };
@@ -124,7 +148,7 @@ describe('시간표 API (/timetable)', () => {
     const shareWith = (friendIds: string[], mode = 'full') => http().post(url('/shares')).set(AUTH).send({ friendIds, mode });
 
     beforeAll(async () => {
-        app = await createTimetableTestApp({ timetable: timetableModel, share: shareModel, friendship: friendshipModel });
+        app = await createTimetableTestApp({ timetable: timetableModel, share: shareModel, friendship: friendshipModel, user: userModel });
     });
     afterAll(async () => {
         await app.close();
@@ -133,11 +157,12 @@ describe('시간표 API (/timetable)', () => {
         tts = [];
         shares = [];
         friendships = [];
+        users = [];
         vi.clearAllMocks();
     });
 
     it('로그인 없이는 401', async () => {
-        for (const path of [url(), url('/shares')]) {
+        for (const path of [url(), url('/shares'), url('/shared')]) {
             const res = await http().get(path);
             expect(res.status).toBe(401);
             expect(res.body.code).toBe('AUTH_TOKEN_EXPIRED');
@@ -379,6 +404,129 @@ describe('시간표 API (/timetable)', () => {
         ])('잘못된 공유 요청은 400: %s', async (_label, body) => {
             expect((await http().post(url('/shares')).set(AUTH).send(body)).status).toBe(400);
             expect(shares).toHaveLength(0);
+        });
+    });
+
+    describe('받은 공유 (GET /timetable/shared)', () => {
+        const shared = () => http().get(url('/shared')).set(AUTH);
+        const lesson = (subjectName: string, days: number[], startTime: string, endTime: string, location = '공학관'): ClassRow => ({
+            _id: new Types.ObjectId(),
+            subjectName,
+            days,
+            startTime,
+            endTime,
+            location,
+            color: '#abcdef',
+            source: 'manual',
+        });
+        /** 친구 한 명: 사용자 · 수락된 관계 · 시간표(수업이 있으면) · 그 관계로 나에게 한 공유 */
+        const friendWith = (nickname: string, mode: 'full' | 'free_only', classes: ClassRow[], sharedAt = new Date('2026-11-20T00:00:00Z')) => {
+            const id = new Types.ObjectId();
+            const link = new Types.ObjectId();
+            users.push({ _id: id, nickname, deletedAt: null, withdrawingAt: null });
+            friendships.push({ _id: link, userA: id, userB: ME, status: 'accepted' });
+            if (classes.length) tts.push({ _id: new Types.ObjectId(), userId: id, classes, updatedAt: new Date() });
+            const share: ShareRow = { _id: new Types.ObjectId(), ownerId: id, friendId: ME, mode, sharedAt, friendshipId: link };
+            shares.push(share);
+            return { id, link, share };
+        };
+
+        it('받은 공유가 없으면 빈 목록', async () => {
+            const res = await shared();
+            expect(res.status).toBe(200);
+            expect(res.body.data).toEqual([]);
+        });
+
+        it('전체 공개로 받은 시간표는 닉네임 · 방식 · 수업(과목명 · 장소)과 함께 공유한 순서로 보이고 계약을 통과한다', async () => {
+            const later = friendWith('나중', 'full', [lesson('국어', [3], '13:00', '14:00')], new Date('2026-11-21T00:00:00Z'));
+            const first = friendWith('먼저', 'full', [lesson('수학 II', [4, 2], '10:00', '11:30', '공학관 301')]);
+            const res = await shared();
+            expect(res.status).toBe(200);
+            expect(res.body.data.map((t: { nickname: string }) => t.nickname)).toEqual(['먼저', '나중']);
+            expect(res.body.data[0]).toEqual({
+                ownerId: first.id.toHexString(),
+                nickname: '먼저',
+                mode: 'full',
+                sharedAt: '2026-11-20T00:00:00.000Z',
+                classes: [{ days: [4, 2], startTime: '10:00', endTime: '11:30', subjectName: '수학 II', location: '공학관 301' }],
+            });
+            expect(res.body.data[1].ownerId).toBe(later.id.toHexString());
+            for (const t of res.body.data) expect(SharedTimetable.safeParse(t).success).toBe(true);
+        });
+
+        it('빈 시간만 공유했으면 과목명 · 장소 없이, 요일별로 겹치거나 이어진 수업을 합친 바쁜 시간만 준다', async () => {
+            friendWith('빈시간', 'free_only', [
+                lesson('비밀 과목 A', [1, 3], '09:00', '10:00', '비밀 강의실'),
+                lesson('비밀 과목 B', [1], '10:00', '11:00'), // 월 09:00-10:00 에 이어짐
+                lesson('비밀 과목 C', [1], '10:30', '12:00'), // 겹침
+                lesson('비밀 과목 D', [1], '14:00', '15:00'), // 떨어짐
+            ]);
+            const res = await shared();
+            expect(res.status).toBe(200);
+            expect(res.body.data[0].mode).toBe('free_only');
+            expect(res.body.data[0].classes).toEqual([
+                { days: [1], startTime: '09:00', endTime: '12:00', subjectName: null, location: null },
+                { days: [1], startTime: '14:00', endTime: '15:00', subjectName: null, location: null },
+                { days: [3], startTime: '09:00', endTime: '10:00', subjectName: null, location: null },
+            ]);
+            expect(JSON.stringify(res.body)).not.toMatch(/비밀/);
+            expect(SharedTimetable.safeParse(res.body.data[0]).success).toBe(true);
+        });
+
+        it('장소가 없는 수업은 location null, 닉네임이 비어 있으면 「알 수 없음」', async () => {
+            const blank = friendWith('', 'full', [lesson('체육', [5], '09:00', '10:00', '')]);
+            const res = await shared();
+            expect(res.body.data[0]).toMatchObject({ ownerId: blank.id.toHexString(), nickname: '알 수 없음' });
+            expect(res.body.data[0].classes[0].location).toBeNull();
+            expect(SharedTimetable.safeParse(res.body.data[0]).success).toBe(true);
+        });
+
+        it('공유했지만 수업을 아직 안 넣은 친구는 빈 수업 목록으로 보인다', async () => {
+            friendWith('빈 시간표', 'full', []);
+            const res = await shared();
+            expect(res.body.data).toHaveLength(1);
+            expect(res.body.data[0].classes).toEqual([]);
+        });
+
+        it('권한: 나에게 공유하지 않은 시간표는 보이지 않는다(남에게 한 공유 · 내가 한 공유 · 공유 없는 친구)', async () => {
+            const other = friendWith('남에게만', 'full', [lesson('남의 과목', [1], '09:00', '10:00')]);
+            other.share.friendId = new Types.ObjectId(); // 이 친구는 다른 사람에게만 공유했다
+            const noShare = friendWith('공유 안 함', 'full', [lesson('안 보일 과목', [2], '09:00', '10:00')]);
+            shares = shares.filter((s) => s !== noShare.share);
+            // 내가 그 친구에게 한 공유(방향이 반대)
+            shares.push({ _id: new Types.ObjectId(), ownerId: ME, friendId: noShare.id, mode: 'full', sharedAt: new Date(), friendshipId: noShare.link });
+            const res = await shared();
+            expect(res.status).toBe(200);
+            expect(res.body.data).toEqual([]);
+            expect(JSON.stringify(res.body)).not.toMatch(/과목/);
+        });
+
+        it('권한: 친구가 아닌 사람 · 수락 전 관계의 공유 줄은 보이지 않는다', async () => {
+            const stranger = friendWith('모르는 사람', 'full', [lesson('낯선 과목', [1], '09:00', '10:00')]);
+            friendships = friendships.filter((f) => !f._id?.equals(stranger.link));
+            const pending = friendWith('대기 중', 'full', [lesson('대기 과목', [1], '09:00', '10:00')]);
+            friendships.find((f) => f._id?.equals(pending.link))!.status = 'pending';
+            const res = await shared();
+            expect(res.body.data).toEqual([]);
+        });
+
+        it('권한: 친구를 끊었다 다시 맺었으면 예전 관계로 한 공유는 보이지 않고, 관계 id가 없는 예전 공유는 보인다', async () => {
+            const renewed = friendWith('다시 친구', 'full', [lesson('예전 공유 과목', [1], '09:00', '10:00')]);
+            renewed.share.friendshipId = new Types.ObjectId(); // 끊긴 예전 관계로 만든 공유
+            const legacy = friendWith('예전 공유', 'full', [lesson('보이는 과목', [2], '09:00', '10:00')]);
+            legacy.share.friendshipId = null;
+            const res = await shared();
+            expect(res.body.data.map((t: { nickname: string }) => t.nickname)).toEqual(['예전 공유']);
+        });
+
+        it('탈퇴했거나 탈퇴 중인 사람의 시간표는 보이지 않는다', async () => {
+            const gone = friendWith('탈퇴함', 'full', [lesson('a', [1], '09:00', '10:00')]);
+            users.find((u) => u._id.equals(gone.id))!.deletedAt = new Date();
+            const leaving = friendWith('탈퇴 중', 'full', [lesson('b', [1], '09:00', '10:00')]);
+            users.find((u) => u._id.equals(leaving.id))!.withdrawingAt = new Date();
+            friendWith('남은 친구', 'full', [lesson('c', [1], '09:00', '10:00')]);
+            const res = await shared();
+            expect(res.body.data.map((t: { nickname: string }) => t.nickname)).toEqual(['남은 친구']);
         });
     });
 });

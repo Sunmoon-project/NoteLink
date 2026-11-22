@@ -114,6 +114,7 @@ export const httpApi: Api = {
   study: {
     today: () => http.get(P.studyToday),
     addItem: (p) => http.post(P.studyItems, p),
+    removeItem: (id) => http.del(P.studyItem(id)),
     startSession: (p) => http.post(P.studySessions, p),
     pauseSession: (id) => http.post(P.studySessionAction(id, 'pause')),
     resumeSession: (id) => http.post(P.studySessionAction(id, 'resume')),
@@ -155,6 +156,7 @@ export const httpApi: Api = {
     removeClass: (id) => http.del(P.timetableClass(id)),
     share: (p) => http.post(P.timetableShares, p),
     shares: () => http.get(P.timetableShares),
+    shared: () => http.get(P.timetableShared),
   },
   social: {
     friends: () => http.get(P.friends),
@@ -183,6 +185,10 @@ export const httpApi: Api = {
     downloadUrl: (id) => http.get(P.materialDownloadUrl(id)),
     regenerate: (id) => http.post(P.materialRegenerate(id)),
     share: (p) => http.post(P.materialShare, p),
+    friendShare: (id) => http.get(P.friendShare(id)),
+    revokeFriendShare: (id) => http.del(P.friendShare(id)),
+    copyFriendShare: (id, folderId) =>
+      http.post(P.friendShareCopy(id), folderId ? { folderId } : {}),
     checkImages: (files) => http.post(P.imageCheck, { files }),
     ask: (id, body) => http.post(P.materialAsk(id), body),
   },

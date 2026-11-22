@@ -5,6 +5,7 @@ OCR 오타는 한글 글자 수가 같은 경우가 대부분이라(기생충 �
 """
 
 import re
+import threading
 import unicodedata
 from collections import defaultdict
 from collections.abc import Iterable
@@ -87,6 +88,9 @@ class TermDict:
         )
 
 
+_KIWI_LOCK = threading.Lock()  # 노트 정리가 동시에 돌 때 모델을 한 번만 읽고 한 번에 하나만 부름
+
+
 @cache
 def _kiwi() -> Any:
     from kiwipiepy import Kiwi  # type: ignore[import-untyped]  # 모델을 처음 쓸 때만 읽음
@@ -94,9 +98,14 @@ def _kiwi() -> Any:
     return Kiwi()
 
 
+def _tokenize(word: str) -> Any:
+    with _KIWI_LOCK:
+        return _kiwi().tokenize(word)
+
+
 def is_common(word: str) -> bool:
     """이미 있는 보통 낱말. 오타 후보에서 뺌."""
-    toks = _kiwi().tokenize(word)
+    toks = _tokenize(word)
     return len(toks) == 1 and toks[0].tag.startswith("NN") and toks[0].score > COMMON_SCORE
 
 
@@ -105,7 +114,7 @@ def is_noun_like(word: str) -> bool:
 
     관형사는 허용: 오타가 관형사 + 명사로 읽히기도 함.
     """
-    toks = _kiwi().tokenize(word)
+    toks = _tokenize(word)
     if len(toks) == 1 and toks[0].tag.startswith("MA"):
         return False
     return not any(t.tag.startswith(("V", "E", "IC")) for t in toks)

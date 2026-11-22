@@ -657,6 +657,7 @@ export function Row({
   chevron,
   danger,
   icon: Icon,
+  selected,
 }: {
   children: ReactNode;
   sub?: ReactNode;
@@ -666,6 +667,8 @@ export function Row({
   danger?: boolean;
   /** 왼쪽 아이콘 (lucide 컴포넌트) */
   icon?: LucideIcon;
+  /** 여러 개 고르는 목록에서 골랐는지(화면 낭독기가 「선택됨」으로 읽는다) */
+  selected?: boolean;
 }) {
   const inner = (
     <>
@@ -688,6 +691,7 @@ export function Row({
   return onPress ? (
     <Pressable
       accessibilityRole="button"
+      accessibilityState={selected === undefined ? undefined : { selected }}
       onPress={onPress}
       // 꽉 찬 목록 행은 줄이지 않고 바탕만 어둡게(iOS 목록처럼)
       scaleTo={1}

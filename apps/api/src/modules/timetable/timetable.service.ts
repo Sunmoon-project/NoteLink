@@ -36,6 +36,24 @@ export interface ShareView {
     sharedAt: string;
 }
 
+/** 나에게 공유된 친구 시간표의 수업 (공유 계약 SharedTimetableClass). 빈 시간만 공유면 과목명 · 장소는 null */
+export interface SharedClassView {
+    days: number[];
+    startTime: string;
+    endTime: string;
+    subjectName: string | null;
+    location: string | null;
+}
+
+/** 나에게 공유된 친구 시간표 (공유 계약 SharedTimetable) */
+export interface SharedTimetableView {
+    ownerId: string;
+    nickname: string;
+    mode: ShareMode;
+    sharedAt: string;
+    classes: SharedClassView[];
+}
+
 type TimetableLean = Timetable & { _id: Types.ObjectId; updatedAt: Date };
 type ShareLean = TimetableShare & { _id: Types.ObjectId };
 
@@ -212,6 +230,47 @@ export class TimetableService {
         return docs.map((d) => ({ _id: d._id.toString(), friendId: d.friendId.toString(), mode: d.mode, sharedAt: d.sharedAt.toISOString() }));
     }
 
+    /**
+     * 나에게 공유된 친구 시간표 (공유한 순서). 지금 수락된 친구이고, 그 공유가 지금 관계로 만든 것(또는 관계 id가 없는
+     * 예전 공유)일 때만 준다 — 끊긴 관계 · 끊었다 다시 맺기 전 관계의 공유는 보이지 않는다(스터디룸 일정의 제목 규칙과 같다).
+     * 주인이 탈퇴했거나 탈퇴 중이면 뺀다. 빈 시간만 공유면 과목명 · 장소 없이 요일별로 합친 바쁜 시간만 준다
+     */
+    async sharedWithMe(userId: string): Promise<SharedTimetableView[]> {
+        const me = new Types.ObjectId(userId);
+        const rows = await this.shareModel.find({ friendId: me }).sort({ sharedAt: 1 }).lean<ShareLean[]>();
+        if (rows.length === 0) return [];
+        const links = await this.friendLinks(me, rows.map((r) => r.ownerId.toHexString()));
+        const valid = rows.filter((r) => {
+            const now = links.get(r.ownerId.toHexString());
+            return !!now && (!r.friendshipId || r.friendshipId.equals(now));
+        });
+        if (valid.length === 0) return [];
+        const owners = valid.map((r) => r.ownerId);
+        const [people, tables] = await Promise.all([
+            this.userModel
+                .find({ _id: { $in: owners }, deletedAt: null, withdrawingAt: null }, { nickname: 1 })
+                .lean<{ _id: Types.ObjectId; nickname?: string }[]>(),
+            this.timetableModel
+                .find({ userId: { $in: owners } }, { userId: 1, classes: 1 })
+                .lean<{ userId: Types.ObjectId; classes?: TimetableClass[] }[]>(),
+        ]);
+        const nick = new Map(people.map((u) => [u._id.toHexString(), u.nickname || '알 수 없음']));
+        const classesOf = new Map(tables.map((t) => [t.userId.toHexString(), t.classes ?? []]));
+        return valid
+            .filter((r) => nick.has(r.ownerId.toHexString()))
+            .map((r) => {
+                const owner = r.ownerId.toHexString();
+                const classes = classesOf.get(owner) ?? [];
+                return {
+                    ownerId: owner,
+                    nickname: nick.get(owner)!,
+                    mode: r.mode,
+                    sharedAt: r.sharedAt.toISOString(),
+                    classes: r.mode === 'full' ? classes.map(toSharedClass) : busyBlocks(classes),
+                };
+            });
+    }
+
     /** 주어진 사용자 중 나와 수락된 친구 관계인 사람 → 그 친구 관계 문서 id */
     private async friendLinks(owner: Types.ObjectId, candidates: string[]): Promise<Map<string, Types.ObjectId>> {
         const ids = candidates.map((id) => new Types.ObjectId(id));
@@ -237,6 +296,54 @@ function duplicateKeyIndexes(error: unknown): number[] | null {
     const list = (Array.isArray(raw) ? raw : raw ? [raw] : []) as { code?: unknown; index?: unknown }[];
     if (!list.length || !list.every((e) => e.code === 11000 && typeof e.index === 'number')) return null;
     return list.map((e) => e.index as number);
+}
+
+/** 전체 공개 공유의 수업: 색 · id · source 는 빼고(앱이 친구별 색을 쓴다) 시간 · 과목명 · 장소만 */
+function toSharedClass(cls: TimetableClass): SharedClassView {
+    return {
+        days: cls.days,
+        startTime: cls.startTime,
+        endTime: cls.endTime,
+        subjectName: cls.subjectName,
+        location: cls.location || null, // 장소가 없으면(빈 글자 · 예전 형식의 없음) null 하나로
+    };
+}
+
+const toMinutes = (t: string) => {
+    const [h = 0, m = 0] = t.split(':').map(Number);
+    return h * 60 + m;
+};
+
+/**
+ * 빈 시간만 공유: 요일마다 겹치거나 이어진 수업을 하나로 합친 바쁜 시간 덩어리(요일 · 시작 순). 과목명 · 장소는 없고,
+ * 수업 경계도 합쳐서 몇 과목인지 알 수 없게 한다
+ */
+function busyBlocks(classes: TimetableClass[]): SharedClassView[] {
+    const byDay = new Map<number, { start: string; end: string }[]>();
+    for (const c of classes) {
+        for (const d of c.days) {
+            if (!byDay.has(d)) byDay.set(d, []);
+            byDay.get(d)!.push({ start: c.startTime, end: c.endTime });
+        }
+    }
+    const blocks: SharedClassView[] = [];
+    for (const day of [...byDay.keys()].sort((a, b) => a - b)) {
+        const spans = byDay.get(day)!.sort((a, b) => toMinutes(a.start) - toMinutes(b.start));
+        let cur: { start: string; end: string } | null = null;
+        const flush = () => {
+            if (cur) blocks.push({ days: [day], startTime: cur.start, endTime: cur.end, subjectName: null, location: null });
+        };
+        for (const s of spans) {
+            if (cur && toMinutes(s.start) <= toMinutes(cur.end)) {
+                if (toMinutes(s.end) > toMinutes(cur.end)) cur.end = s.end;
+            } else {
+                flush();
+                cur = { ...s };
+            }
+        }
+        flush();
+    }
+    return blocks;
 }
 
 function toClassView(cls: TimetableClass): ClassView {

@@ -1054,6 +1054,7 @@ class TickingLlm(WindowLlm):
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
         self.now[0] += self.sec_per_window
         return super().call(

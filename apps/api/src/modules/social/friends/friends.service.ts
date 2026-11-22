@@ -12,6 +12,7 @@ import { isValidObjectId, Types, type Model } from 'mongoose';
 import { User } from '../../auth/schemas/user.schema.js';
 import { TimetableShare } from '../../calendar/schemas/timetable-share.schema.js';
 import { NotificationService } from '../../notification/notification.service.js';
+import { FriendSharedItem } from '../schemas/friend-shared-item.schema.js';
 import { Friendship } from '../schemas/friendship.schema.js';
 
 /** 친구 기능의 오류 코드(앱은 문구를 그대로 보여 준다) */
@@ -68,6 +69,7 @@ export class FriendsService {
     @InjectModel(User.name) private readonly users: Model<User>,
     @InjectModel(TimetableShare.name) private readonly shares: Model<TimetableShare>,
     private readonly notifications: NotificationService,
+    @InjectModel(FriendSharedItem.name) private readonly friendShares: Model<FriendSharedItem>,
   ) {}
 
   /** 닉네임으로 사람 찾기(닉네임은 유일하므로 정확히 같은 한 명). 나 · 탈퇴한 사람은 빼고, 이미 친구여도 보여 준다 */
@@ -302,6 +304,8 @@ export class FriendsService {
       ],
       friendshipId: { $in: ended ? [ended._id, null] : [null] },
     });
+    // 끊은 관계로 보낸 노트 공유도 지운다(#554). 다시 친구가 되면 관계 id 가 달라 옛 공유는 살아나지 않는다
+    if (ended) await this.friendShares.deleteMany({ friendshipId: ended._id });
   }
 
   /** 탈퇴하지 않은 사람들의 닉네임 · 상태 */

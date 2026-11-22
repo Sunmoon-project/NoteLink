@@ -1,6 +1,9 @@
 import json
 import logging
+import threading
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -320,6 +323,83 @@ def test_photo_colors_become_emphasis() -> None:
     assert marks[0]["color"] == "red"
 
 
+# ---------- 도식 ----------
+
+AMOEBA = {"kind": "contrast", "terms": ["영양형 위족", "포낭형"], "relations": [[1, 2]]}
+
+
+def diagram_llm(*answers: JsonObject | Exception) -> FakeLlm:
+    return FakeLlm(answers={"note_diagrams": list(answers)})
+
+
+def test_a_photo_diagram_leaves_the_body_and_is_placed_after_the_line_above() -> None:
+    llm = diagram_llm({"diagrams": [{**AMOEBA, "top": 0.2, "bottom": 0.45}]})
+
+    result = run_direct({"pages": [{"pageNo": 1, "imageUrl": URL1}]}, llm=llm)
+
+    (call,) = llm.named("note_diagrams")
+    assert call.model == settings.note_split_model
+    assert call.image is not None and call.image[:2] == b"\xff\xd8"  # JPEG
+    assert result["diagrams"] == [
+        {
+            "after": "1. 이질 아메바",
+            "diagram": {"kind": "contrast", "terms": AMOEBA["terms"], "relations": [[0, 1]]},
+        }
+    ]
+    assert result["pages"] == [{"pageNo": 1, "ocrText": "1. 이질 아메바"}]
+    assert [c["text"] for c in result["chunks"]] == ["1. 이질 아메바"]
+
+
+def test_a_failed_diagram_call_keeps_the_note_going() -> None:
+    llm = diagram_llm(LlmError("HTTP 500"))
+
+    result = run_direct({"pages": [{"pageNo": 1, "imageUrl": URL1}]}, llm=llm)
+
+    assert result["diagrams"] == []
+    assert result["pages"][0]["ocrText"] == "1. 이질 아메바\n- 영양형 위족\n포낭형"
+
+
+def test_pages_without_a_usable_photo_are_not_sent() -> None:
+    llm = diagram_llm()
+    pdf = read(ocr_page("1. 개요", "내용", unit="inch"))
+    ocr = FakeOcr({PDF_URL: pdf, URL2: note_read()})
+    fetch = FakeFetch({URL2: DownloadError("HTTP 403")})
+
+    result = run_direct(
+        {"pages": [{"pageNo": 1, "imageUrl": PDF_URL}, {"pageNo": 2, "imageUrl": URL2}]},
+        llm=llm,
+        ocr=ocr,
+        fetch=fetch,
+    )
+
+    assert llm.named("note_diagrams") == [] and result["diagrams"] == []
+
+
+def test_retry_keeps_the_diagrams_without_asking_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    found = {"diagrams": [{**AMOEBA, "top": 0.2, "bottom": 0.45}]}
+    fresh = run_direct(two_pages(), llm=diagram_llm(found, found))
+    col = queued_job(two_pages())
+    attempt(monkeypatch, col, llm=diagram_llm(found, found), voyage=voyage_down())
+    again = diagram_llm()
+
+    doc = attempt(monkeypatch, col, llm=again, ocr=expired_sas())
+
+    assert doc["status"] == "succeeded" and again.named("note_diagrams") == []
+    assert doc["result"]["diagrams"] == json.loads(json.dumps(fresh["diagrams"]))
+    assert len(doc["result"]["diagrams"]) == 2
+
+
+def test_a_broken_saved_diagram_runs_ocr_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job({"pages": [{"pageNo": 1, "imageUrl": URL1}]})
+    attempt(monkeypatch, col, voyage=voyage_down())
+    col.update_one({"_id": "j1"}, {"$set": {"checkpoint.uploads.0.diagrams": [{"top": 2}]}})
+    ocr = FakeOcr()
+
+    doc = attempt(monkeypatch, col, ocr=ocr)
+
+    assert doc["status"] == "succeeded" and ocr.urls == [URL1]
+
+
 def no_color(page_no: int, reason: str) -> dict[str, Any]:
     return {"code": "NO_COLOR", "pageNo": page_no, "reason": reason}
 
@@ -370,6 +450,49 @@ def test_page_size_that_is_not_a_number_skips_colors_without_download(
     assert fetch.urls == [URL2]
     assert result["warnings"] == [no_color(1, "size")]
     assert len(result["chunks"]) == 2
+
+
+class OverlapFetch(FakeFetch):
+    """동시에 색 찾기 중인 사진 수의 최대치를 잼."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lock, self.now, self.most = threading.Lock(), 0, 0
+
+    def __call__(self, url: str) -> bytes:
+        with self.lock:
+            self.now += 1
+            self.most = max(self.most, self.now)
+        time.sleep(0.05)
+        with self.lock:
+            self.now -= 1
+        return super().__call__(url)
+
+
+@pytest.mark.parametrize(("budget", "most"), [(W * H - 1, 1), (2 * W * H - 1, 1), (2 * W * H, 2)])
+def test_photos_taken_together_stay_within_the_pixel_budget(
+    monkeypatch: pytest.MonkeyPatch, budget: int, most: int
+) -> None:
+    # 노트 정리 두 개가 동시에 돌 때(AI_JOB_HEAVY_LANES=2) 픽셀 합이 넘으면 한 장씩 올림
+    monkeypatch.setattr(note_job, "IMAGE_BUDGET_PIXELS", budget)
+    fetch = OverlapFetch()
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(lambda _: run_direct(two_pages(), fetch=fetch), range(2)))
+    assert fetch.most == most
+    assert all(len(r["chunks"]) == 2 and not r["warnings"] for r in results)
+
+
+def test_diagram_call_runs_after_the_photo_is_let_go(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 도식 찾기(LLM)를 기다리는 동안 다른 노트 정리가 사진을 올릴 수 있게
+    held: list[int] = []
+
+    def find(llm: Any, model: str, jpeg: bytes) -> list[Any]:
+        held.append(note_job._PIXELS._used)
+        return []
+
+    monkeypatch.setattr(note_job, "find_diagrams", find)
+    run_direct(two_pages())
+    assert held == [0, 0]
 
 
 @pytest.mark.parametrize("missing", ["width", "height"])

@@ -11,6 +11,7 @@ import type {
   Folder,
   Friend,
   FriendRequest,
+  FriendShare,
   Material,
   MaterialKind,
   MaterialSource,
@@ -27,6 +28,7 @@ import type {
   ReportType,
   RoomSharedItem,
   ShopItem,
+  SharedTimetable,
   SocialProvider,
   StudyItem,
   StudyRoom,
@@ -146,6 +148,11 @@ export interface Api {
   study: {
     today(): Promise<DailyRecord>;
     addItem(p: { title: string; subjectName: string; goalMin: number | null }): Promise<StudyItem>;
+    /**
+     * 오늘 목록에서 공부 항목을 지운다(HOME-002). 서버는 기록(쌓인 시간 · 통계)을 남기고 목록에서만 숨긴다.
+     * 이미 지운 항목도 성공, 측정 중(일시정지 포함)이면 409 STUDY_ITEM_IN_SESSION
+     */
+    removeItem(id: string): Promise<void>;
     startSession(p: { studyItemId: string; mode: StudySession['mode'] }): Promise<StudySession>;
     pauseSession(id: string): Promise<void>;
     resumeSession(id: string): Promise<void>;
@@ -204,6 +211,8 @@ export interface Api {
     share(p: { friendIds: string[]; mode: 'full' | 'free_only' }): Promise<void>;
     /** 내가 시간표를 공유 중인 친구들 (FR-14-05 '공유 중' 표시) */
     shares(): Promise<TimetableShare[]>;
+    /** 나에게 공유된 친구 시간표(SOC-009 주간 보기에 겹쳐 그림). 빈 시간만 공유면 과목명 없이 바쁜 시간만 */
+    shared(): Promise<SharedTimetable[]>;
   };
   social: {
     friends(): Promise<Friend[]>;
@@ -242,10 +251,17 @@ export interface Api {
     downloadUrl(materialId: string): Promise<{ url: string; fileName: string }>;
     /** 정리 결과 다시 만들기. 새 작업이 성공할 때까지 노트는 지금 결과 그대로 */
     regenerate(materialId: string): Promise<{ material: Material; job: AiJob }>;
+    /** 스터디룸 하나(id) 또는 친구 여러 명(ids, 50명까지)에게 노트를 보낸다(#554) */
     share(p: {
       materialIds: string[];
-      target: { type: 'room' | 'friend'; id: string };
+      target: { type: 'room'; id: string } | { type: 'friend'; ids: string[] };
     }): Promise<void>;
+    /** 친구에게 보낸 노트(1:1 채팅 공유 카드). 끝난 공유는 active: false, 친구를 끊었으면 404 */
+    friendShare(id: string): Promise<FriendShare>;
+    /** 보낸 사람이 공유를 끝낸다 */
+    revokeFriendShare(id: string): Promise<void>;
+    /** 받은 노트를 내 노트로 복사(정리 끝난 노트만). 폴더를 안 주면 최근에 쓴 내 폴더 */
+    copyFriendShare(id: string, folderId?: string): Promise<{ _id: string; folderId: string }>;
     checkImages(
       files: { name: string; sizeBytes: number; uri: string }[],
     ): Promise<{ name: string; verdict: ImageVerdict }[]>;

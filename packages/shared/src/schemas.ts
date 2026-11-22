@@ -183,6 +183,19 @@ export const MaterialPage = z.object({
 
 export const Bookmark = z.object({ atSec: z.number(), label: z.string().optional() });
 
+// 녹음 정리가 슬라이드마다 만드는 도식 구조(apps/ai services/recording/models.py Diagram). 그리는 것은 앱.
+// relations 는 terms 안 위치(0부터) [from, to]. 받은 값은 diagramOf(diagram.ts)로 거른 뒤에 쓴다
+export const DiagramKind = z.enum(['sequence', 'contrast', 'hierarchy', 'cause', 'list']);
+export const Diagram = z.object({
+  kind: DiagramKind,
+  terms: z.array(z.string()),
+  relations: z.array(z.tuple([z.number(), z.number()])),
+});
+
+// 필기 사진에서 찾은 도식(apps/ai services/note/diagrams.py). 앱이 정리본 본문에서 after 와 같은 줄 뒤에 그린다
+// (after 가 null 이거나 그 줄을 못 찾으면 첫 소제목 앞 · 마지막 소제목 끝)
+export const NoteDiagram = z.object({ after: z.string().nullable(), diagram: Diagram });
+
 export const Material = z.object({
   _id: id,
   folderId: id,
@@ -205,16 +218,9 @@ export const Material = z.object({
   keywords: z.array(z.string()),
   bookmarks: z.array(Bookmark),
   pages: z.array(MaterialPage).optional(),
+  // 도식이 없는 노트 · 도식을 보내기 전 서버 · 기기 저장 모드에는 없다
+  diagrams: z.array(NoteDiagram).optional(),
   createdAt: date,
-});
-
-// 녹음 정리가 슬라이드마다 만드는 도식 구조(apps/ai services/recording/models.py Diagram). 그리는 것은 앱.
-// relations 는 terms 안 위치(0부터) [from, to]. 받은 값은 diagramOf(diagram.ts)로 거른 뒤에 쓴다
-export const DiagramKind = z.enum(['sequence', 'contrast', 'hierarchy', 'cause', 'list']);
-export const Diagram = z.object({
-  kind: DiagramKind,
-  terms: z.array(z.string()),
-  relations: z.array(z.tuple([z.number(), z.number()])),
 });
 
 export const Slide = z.object({
@@ -536,6 +542,25 @@ export const TimetableShare = z.object({
   mode: z.enum(['full', 'free_only']),
   sharedAt: date,
 });
+/**
+ * 나에게 공유된 친구 시간표의 수업(GET /timetable/shared). 빈 시간만(free_only) 공유면 과목명 · 장소는 null이고,
+ * 요일 하나씩 겹치거나 이어진 수업을 합친 바쁜 시간 덩어리다
+ */
+export const SharedTimetableClass = z.object({
+  days: z.array(z.number().int().min(0).max(6)),
+  startTime: z.string(),
+  endTime: z.string(),
+  subjectName: z.string().nullable(),
+  location: z.string().nullable(),
+});
+/** 나에게 공유된 친구 시간표 한 건(지금 친구이고 지금 관계로 한 공유만, 공유한 순서) */
+export const SharedTimetable = z.object({
+  ownerId: id,
+  nickname: z.string(),
+  mode: z.enum(['full', 'free_only']),
+  sharedAt: date,
+  classes: z.array(SharedTimetableClass),
+});
 
 /* ── 6. 스터디룸 · 채팅 · 소셜 ──────────────────── */
 
@@ -600,6 +625,25 @@ export const RoomSharedItem = z.object({
   questionIds: z.array(id),
   flashcardIds: z.array(id),
   title: z.string(),
+  createdAt: date,
+});
+
+/**
+ * 친구에게 보낸 노트 하나(#554, GET friend-shares/:id). 1:1 채팅 공유 카드(shared_item)의 sharedItemId 가 이 _id 다.
+ * active 가 false 면(철회 · 친구 끊김 · 노트를 지움 · 보낸 사람 탈퇴) 받은 사람은 열 수 없고 앱은 「공유가 끝났어요」를 보인다
+ */
+export const FriendShare = z.object({
+  _id: id,
+  materialId: id,
+  ownerId: id,
+  ownerNickname: z.string(),
+  friendId: id,
+  /** 노트의 지금 제목 · 종류. 노트가 없어졌으면 빈 제목 · null */
+  title: z.string(),
+  kind: z.enum(['handwriting', 'recording', 'document']).nullable(),
+  active: z.boolean(),
+  /** 내가 보낸 공유인지(철회 버튼) */
+  mine: z.boolean(),
   createdAt: date,
 });
 
@@ -711,6 +755,7 @@ export type Material = z.infer<typeof Material>;
 export type Recording = z.infer<typeof Recording>;
 export type Slide = z.infer<typeof Slide>;
 export type Diagram = z.infer<typeof Diagram>;
+export type NoteDiagram = z.infer<typeof NoteDiagram>;
 export type DiagramKind = z.infer<typeof DiagramKind>;
 export type Question = z.infer<typeof Question>;
 export type QuestionDifficulty = z.infer<typeof QuestionDifficulty>;
@@ -742,10 +787,13 @@ export type CalendarShare = z.infer<typeof CalendarShare>;
 export type TimetableClass = z.infer<typeof TimetableClass>;
 export type Timetable = z.infer<typeof Timetable>;
 export type TimetableShare = z.infer<typeof TimetableShare>;
+export type SharedTimetableClass = z.infer<typeof SharedTimetableClass>;
+export type SharedTimetable = z.infer<typeof SharedTimetable>;
 export type TimerRule = z.infer<typeof TimerRule>;
 export type RoomMember = z.infer<typeof RoomMember>;
 export type StudyRoom = z.infer<typeof StudyRoom>;
 export type RoomSharedItem = z.infer<typeof RoomSharedItem>;
+export type FriendShare = z.infer<typeof FriendShare>;
 export type ReportType = z.infer<typeof ReportType>;
 export type Report = z.infer<typeof Report>;
 export type ChatRoom = z.infer<typeof ChatRoom>;

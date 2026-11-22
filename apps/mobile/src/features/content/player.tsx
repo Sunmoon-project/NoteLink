@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Material } from '@notelink/shared';
 import { aiStateOf, type AiState } from '@/lib/ai';
 import { ScrollView, View } from 'react-native';
+import { GestureDetector } from 'react-native-gesture-handler';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -19,6 +20,7 @@ import { CLOSED, lipsAt } from '@/features/tutor/lips';
 import { splitLines } from './captions';
 import { Captions } from './captions-view';
 import { usePlaybackClock } from './clock';
+import { useScrub } from './scrub';
 import { RecordingDiagram } from './recording-diagram';
 import { Btn, Chip, Loading, Sheet, cx } from '@/components/ui';
 import { C, ICON } from '@/theme';
@@ -155,10 +157,13 @@ export function Player({
   materialId,
   initialView = 'summary',
   openBookmarks = false,
+  readOnly = false,
 }: {
   materialId: string;
   initialView?: 'summary' | 'text';
   openBookmarks?: boolean;
+  /** 친구에게 받은 녹음(#554): 북마크를 더할 수 없다(주인의 노트라 서버가 막는다) */
+  readOnly?: boolean;
 }) {
   const qc = useQueryClient();
   const rec = useQuery({
@@ -181,7 +186,7 @@ export function Player({
   const [view, setView] = useState(initialView);
   const [sheet, setSheet] = useState(openBookmarks);
   const [marks, setMarks] = useState<number[]>([]);
-  const [barW, setBarW] = useState(1);
+  const scrub = useScrub(p.pos, duration, p.seek);
   // 저장된 북마크를 불러오면 목록을 채운다 (렌더 중 상태 조정)
   const [loaded, setLoaded] = useState<typeof mat.data>();
   if (mat.data && mat.data !== loaded) {
@@ -370,29 +375,42 @@ export function Player({
           </ScrollView>
         )}
 
-        <Pressable
-          className="mt-4 h-6 justify-center px-1"
-          onLayout={(e) => setBarW(e.nativeEvent.layout.width)}
-          onPress={(e) => p.seek((e.nativeEvent.locationX / barW) * duration)}
-        >
-          <View className="h-1 rounded-full bg-white/20">
-            <View className="h-1 rounded-full bg-white" style={{ width: percent(p.pos) }} />
-          </View>
-          {marks.map((m) => (
-            <View
-              key={m}
-              className="absolute top-2 h-1.5 w-1.5 rounded-full bg-sun"
-              style={{ left: percent(m) }}
-            />
-          ))}
+        <GestureDetector gesture={scrub.gesture}>
           <View
-            className="absolute h-4 w-4 rounded-full bg-white"
-            style={{ left: percent(p.pos), marginLeft: -4 }}
-          />
-        </Pressable>
+            className="mt-4 h-6 justify-center px-1"
+            onLayout={(e) => scrub.setWidth(e.nativeEvent.layout.width)}
+            accessible
+            accessibilityRole="adjustable"
+            accessibilityLabel="재생 위치"
+            accessibilityValue={{ text: `${mmss(scrub.shown)} / ${mmss(duration)}` }}
+            accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+            onAccessibilityAction={(e) =>
+              scrub.nudge(e.nativeEvent.actionName === 'increment' ? 5 : -5)
+            }
+          >
+            <View className="h-1 rounded-full bg-white/20">
+              <View className="h-1 rounded-full bg-white" style={{ width: percent(scrub.shown) }} />
+            </View>
+            {marks.map((m) => (
+              <View
+                key={m}
+                className="absolute top-2 h-1.5 w-1.5 rounded-full bg-sun"
+                style={{ left: percent(m) }}
+              />
+            ))}
+            <View
+              className="absolute h-4 w-4 rounded-full bg-white"
+              style={{
+                left: percent(scrub.shown),
+                marginLeft: -8,
+                transform: [{ scale: scrub.dragging ? 1.5 : 1 }],
+              }}
+            />
+          </View>
+        </GestureDetector>
         <View className="flex-row items-center justify-between px-1">
           <Text className="tabular-nums text-caption2 text-white/60">
-            {mmss(p.pos)} / {mmss(duration)}
+            {mmss(scrub.shown)} / {mmss(duration)}
           </Text>
           <Pressable
             onPress={() => p.setRate(SPEEDS[(SPEEDS.indexOf(p.rate) + 1) % SPEEDS.length] ?? 1)}
@@ -404,13 +422,15 @@ export function Player({
           </Pressable>
         </View>
         <View className="mt-2 flex-row items-center justify-center gap-3 pb-1">
-          <Pressable
-            accessibilityLabel="북마크 추가"
-            onPress={addMark}
-            className="h-12 w-12 items-center justify-center rounded-full bg-white"
-          >
-            <Bookmark size={ICON.md} color={C.danger} />
-          </Pressable>
+          {!readOnly && (
+            <Pressable
+              accessibilityLabel="북마크 추가"
+              onPress={addMark}
+              className="h-12 w-12 items-center justify-center rounded-full bg-white"
+            >
+              <Bookmark size={ICON.md} color={C.danger} />
+            </Pressable>
+          )}
           <Pressable
             accessibilityLabel="5초 뒤로"
             onPress={() => p.seek(p.pos - 5)}

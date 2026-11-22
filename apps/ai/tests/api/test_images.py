@@ -25,7 +25,19 @@ READABLE = {
     "pages": [{"words": [{"confidence": 0.9}]}],
 }
 BLURRY = {**READABLE, "pages": [{"words": [{"confidence": 0.1}]}]}
-PRINTED = {"content": "printed", "styles": []}
+TOO_LITTLE_TEXT = {"content": "printed", "styles": []}  # 글자가 거의 없는 사진(풍경 · 간판)
+# 손글씨 표시 없이 여러 줄 읽힌 인쇄물 · 한글 필기(#651)
+PRINTED_LINES = ["제2장 세포의 구조", "세포막은 인지질 이중층으로 되어 있다."]
+PRINTED_PAGE = {
+    "content": "\n".join(PRINTED_LINES),
+    "styles": [],
+    "pages": [
+        {
+            "lines": [{"content": line} for line in PRINTED_LINES],
+            "words": [{"confidence": 0.9}],
+        }
+    ],
+}
 
 
 def file(name: str) -> ImageCheckFile:
@@ -136,14 +148,17 @@ def test_authorize_still_returns_503_for_non_ascii_credentials_when_token_is_not
 
 
 def test_check_maps_each_file_to_its_verdict_in_request_order() -> None:
-    reader = FakeReader({"a.jpg": READABLE, "b.jpg": BLURRY, "c.jpg": PRINTED})
+    reader = FakeReader(
+        {"a.jpg": READABLE, "b.jpg": BLURRY, "c.jpg": TOO_LITTLE_TEXT, "d.jpg": PRINTED_PAGE}
+    )
 
-    result = _check([file("c.jpg"), file("a.jpg"), file("b.jpg")], make(reader))
+    result = _check([file("c.jpg"), file("a.jpg"), file("b.jpg"), file("d.jpg")], make(reader))
 
     assert [(r.name, r.verdict) for r in result] == [
         ("c.jpg", "not_handwriting"),
         ("a.jpg", "ok"),
         ("b.jpg", "blurry"),
+        ("d.jpg", "ok"),
     ]
 
 

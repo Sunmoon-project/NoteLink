@@ -52,6 +52,7 @@ import {
 } from '@/components/ui';
 import { useAuth } from '@/stores/auth';
 import { useChatMute } from '@/features/notifications';
+import { conflictMessage, periodConflicts } from './period-conflicts';
 import { C, ICON } from '@/theme';
 
 // p.78 신고 / p.79 타이머 / p.80 시간표 · OS 캘린더 / p.81 세부 설정 · 초대 · 나가기
@@ -294,6 +295,7 @@ const PERIODS = [
   { start: '10:00', end: '10:50', label: '2교시' },
   { start: '11:00', end: '11:50', label: '3교시' },
 ];
+const validTime = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 
 export function TimerScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -301,6 +303,21 @@ export function TimerScreen() {
   const myId = useAuth((s) => s.userId);
   const room = useQuery({ queryKey: ['room', id], queryFn: () => api.rooms.get(id) });
   const isHost = room.data?.hostId === myId;
+  // 교시가 멤버 수업과 겹치는지 보려고 방 시간표를 읽는다(TestQA ROOM-013, #657). 겹쳐도 경고만 하고 저장은 막지 않는다.
+  // 못 읽거나 멤버별 일정(blocks)을 주지 않는 예전 서버면 경고 없이 지금처럼 편집한다
+  const sch = useQuery({ queryKey: ['room-schedule', id], queryFn: () => api.rooms.schedule(id) });
+  const schMembers = sch.data?.members ?? [];
+  // 방 규칙을 불러오기 전(기본 교시)에는 비교하지 않는다 — 방의 교시가 아닌 것에 경고가 잠깐 뜨지 않게
+  const compared = !!room.data && schMembers.length > 0 && schMembers.every((m) => m.blocks);
+  // 비교할 수업 시간이 하나도 없으면(아무도 등록 안 함 · 모두 숨김) 「겹치는 교시가 없어요」 대신 확인하지 못했다고 알린다
+  const anyBlocks = schMembers.some((m) => m.blocks?.length);
+  const conflictOf = (p: { start: string; end: string }) =>
+    compared ? conflictMessage(periodConflicts(p, schMembers, myId)) : null;
+  // 시간을 숨긴 멤버는 서버가 blocks를 비워 준다 — 그 사람 시간은 비교하지 않고 몇 명인지만 알린다(나는 따로)
+  const hiddenCount = compared
+    ? schMembers.filter((m) => m.hidden && !(myId && m.id === myId)).length
+    : 0;
+  const meHidden = compared && schMembers.some((m) => m.hidden && !!myId && m.id === myId);
   // 방장이 아니면 읽기 전용: 전에는 다 바뀌는 것처럼 보이다가 저장만 막혀 나가면 사라졌다(develop 점검 #5)
   const readOnly = !!room.data && !isHost;
   const [on, setOn] = useState(true);
@@ -318,19 +335,31 @@ export function TimerScreen() {
     setPeriodError(null);
     setEditing({ ...(periods[index] ?? PERIODS[0]!), index });
   };
+  /** 교시 적용을 막는 입력 문제(형식 · 순서 · 다른 교시와 겹침). 없으면 null */
+  const periodProblem = ({ index, start, end }: { index: number; start: string; end: string }) =>
+    !validTime(start) || !validTime(end) || start >= end
+      ? 'format'
+      : periods.some((period, i) => i !== index && start < period.end && end > period.start)
+        ? 'overlap'
+        : null;
   const applyPeriod = () => {
     if (!editing) return;
-    const validTime = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
     const { index, start, end, label } = editing;
-    if (!validTime(start) || !validTime(end) || start >= end)
+    const problem = periodProblem(editing);
+    if (problem === 'format')
       return setPeriodError('시작·종료 시간을 HH:MM 형식과 순서에 맞게 입력해 주세요');
-    if (periods.some((period, i) => i !== index && start < period.end && end > period.start))
+    if (problem === 'overlap')
       return setPeriodError('다른 교시와 시간이 겹치지 않게 입력해 주세요');
     const next = [...periods];
     next[index] = { start, end, label: label.trim() };
     setPeriods(next.sort((a, b) => a.start.localeCompare(b.start)));
     setEditing(null);
   };
+  // 입력 중인 교시가 멤버 수업과 겹치면 경고(적용은 된다). 적용이 막히는 입력이면 경고하지 않고,
+  // 형식 · 교시끼리 겹침 안내(periodError, #649)가 떠 있으면 그것만 보인다
+  const editingConflict = editing && !periodProblem(editing) ? conflictOf(editing) : null;
+  const periodWarnings = periods.map(conflictOf);
+  const conflictedCount = periodWarnings.filter(Boolean).length;
   const [help, setHelp] = useState(false);
   // 방의 시간 규칙을 처음 불러왔을 때만 입력값을 채운다 — 재조회가 입력을 덮어쓰지 않게 (렌더 중 상태 조정)
   const r = room.data?.timerRule;
@@ -563,6 +592,9 @@ export function TimerScreen() {
                     {p.start} - {p.end}
                   </Text>
                   <Text className="text-caption2 text-sub">{p.label}</Text>
+                  {periodWarnings[i] && (
+                    <Text className="text-caption2 text-danger">{periodWarnings[i]}</Text>
+                  )}
                 </View>
                 {!readOnly && <Pencil size={ICON.md} color={C.brand} />}
               </Pressable>
@@ -577,6 +609,27 @@ export function TimerScreen() {
                 ? `집중 ${focus}분 → 휴식 ${rest}분 × ${repeat}회 · 총 ${(Number(focus) + Number(rest)) * repeat}분`
                 : `${periods.length}교시 · ${periods[0]?.start ?? ''} → ${periods.at(-1)?.end ?? ''}`}
             </Text>
+            {type === 'period' && compared && (
+              <Text
+                className={cx('mt-1 text-caption', conflictedCount ? 'text-danger' : 'text-sub')}
+              >
+                {conflictedCount
+                  ? `${conflictedCount}개 교시가 멤버 수업과 겹쳐요 · 저장은 할 수 있어요`
+                  : anyBlocks
+                    ? '멤버 수업과 겹치는 교시가 없어요'
+                    : '비교할 수 있는 멤버 수업 시간이 없어 겹치는지 확인하지 못했어요'}
+              </Text>
+            )}
+            {type === 'period' && hiddenCount > 0 && (
+              <Text className="mt-0.5 text-caption2 text-sub">
+                {`시간을 숨긴 ${hiddenCount}명은 빼고 확인했어요`}
+              </Text>
+            )}
+            {type === 'period' && meHidden && (
+              <Text className="mt-0.5 text-caption2 text-sub">
+                이 방에서 내 수업 시간을 숨겨 내 수업은 확인하지 않았어요
+              </Text>
+            )}
           </View>
         </View>
       </Screen>
@@ -607,10 +660,16 @@ export function TimerScreen() {
                 />
               </View>
             ))}
-            {periodError && (
+            {periodError ? (
               <Text accessibilityRole="alert" className="text-caption text-danger">
                 {periodError}
               </Text>
+            ) : (
+              editingConflict && (
+                <Text className="text-caption text-danger">
+                  {`${editingConflict} · 그래도 적용할 수 있어요`}
+                </Text>
+              )
             )}
             <Btn onPress={applyPeriod}>교시 적용</Btn>
             <Btn kind="outline" onPress={() => setEditing(null)}>

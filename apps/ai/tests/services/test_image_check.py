@@ -4,7 +4,10 @@ import pytest
 
 from app.services.image_check import (
     MIN_HANDWRITTEN_CHARS,
+    MIN_LINE_CHARS,
     MIN_OCR_CONFIDENCE,
+    MIN_READABLE_CHARS,
+    MIN_READABLE_LINES,
     verdict_from_read,
 )
 
@@ -44,7 +47,7 @@ def test_returns_blurry_when_average_ocr_confidence_is_below_threshold() -> None
     assert verdict_from_read(result) == "blurry"
 
 
-def test_returns_not_handwriting_for_printed_or_empty_content() -> None:
+def test_returns_not_handwriting_for_short_or_empty_content() -> None:
     assert verdict_from_read({"content": "printed text", "styles": []}) == "not_handwriting"
     assert verdict_from_read({"content": "  ", "styles": []}) == "not_handwriting"
 
@@ -169,3 +172,125 @@ def test_malformed_styles_pages_and_words_are_skipped() -> None:
     assert verdict_from_read({"content": "abc", "styles": None, "pages": None}) == (
         "not_handwriting"
     )
+
+
+# ---------- 손글씨 표시 없이 글자가 충분히 읽힌 사진(NOTE-006, #651) ----------
+
+
+def text_result(lines: list[Any], *, confidence: float = 0.9) -> dict[str, Any]:
+    """손글씨 표시(styles)가 하나도 없는 Read 결과. content는 줄을 줄바꿈으로 이은 것."""
+    return {
+        "content": "\n".join(ln["content"] for ln in lines),
+        "styles": [],
+        "pages": [{"lines": lines, "words": [{"confidence": confidence}]}],
+    }
+
+
+def lines_of(*texts: str) -> list[dict[str, Any]]:
+    return [{"content": t} for t in texts]
+
+
+def test_korean_handwriting_without_a_handwriting_style_is_ok() -> None:
+    # 한글 손글씨에는 Azure Read가 isHandwritten 표시를 잘 붙이지 않는다. 글자가 읽히면 통과
+    result = text_result(
+        lines_of("광합성의 명반응은 틸라코이드에서", "암반응(캘빈 회로)은 스트로마")
+    )
+
+    assert verdict_from_read(result) == "ok"
+
+
+def test_printed_textbook_page_is_ok() -> None:
+    # 인쇄물 · 교재 사진도 받는다(완우 결정 11/22)
+    result = text_result(
+        lines_of("제2장 세포의 구조", "세포막은 인지질 이중층으로 되어 있다.", "핵은 DNA를 담는다.")
+    )
+
+    assert verdict_from_read(result) == "ok"
+
+
+def test_readable_text_thresholds_are_inclusive() -> None:
+    per_line = -(
+        -MIN_READABLE_CHARS // MIN_READABLE_LINES
+    )  # 올림: 줄마다 이만큼이면 합이 기준 이상
+    at = text_result(lines_of(*["가" * per_line] * MIN_READABLE_LINES))
+    fewer_lines = text_result(lines_of(*["가" * MIN_READABLE_CHARS * 2] * (MIN_READABLE_LINES - 1)))
+    # 줄 수는 채우고 글자 수만 하나 모자란다(두 줄로 나눠 MIN_READABLE_CHARS - 1자)
+    short = MIN_READABLE_CHARS - 1
+    assert short // 2 >= MIN_LINE_CHARS and MIN_READABLE_LINES == 2
+    fewer_chars = text_result(lines_of("가" * (short - short // 2), "나" * (short // 2)))
+
+    assert verdict_from_read(at) == "ok"
+    assert verdict_from_read(fewer_lines) == "not_handwriting"
+    assert verdict_from_read(fewer_chars) == "not_handwriting"
+
+
+def test_whitespace_and_symbols_are_not_counted_as_readable_chars() -> None:
+    # 공백까지 세면 기준을 넘지만, 공백을 빼면 MIN_READABLE_CHARS - 1자다
+    half = (MIN_READABLE_CHARS - 1) // 2
+    first = " ".join("가" * half)
+    second = " ".join("나" * (MIN_READABLE_CHARS - 1 - half))
+    result = text_result(lines_of(first, second))
+    result["content"] = f"{first}\n   \t  \n{second}"
+    assert len(result["content"]) >= MIN_READABLE_CHARS
+
+    assert verdict_from_read(result) == "not_handwriting"
+    # 구분선 · 화살표 같은 기호만 많은 사진(자 · 양식 테두리)
+    ruler = text_result(lines_of("-" * 30, "0 1 2 3 4 5 →"))
+    assert verdict_from_read(ruler) == "not_handwriting"
+
+
+def test_landscape_or_sign_photo_with_a_little_text_is_not_handwriting() -> None:
+    # 풍경 · 간판 사진: 짧은 글자 한두 줄만 읽힌다
+    assert verdict_from_read(text_result(lines_of("STOP"))) == "not_handwriting"
+    assert verdict_from_read(text_result(lines_of("김밥천국", "24시"))) == "not_handwriting"
+    # 한 줄에 글자가 많아도(현수막 한 줄) 줄 수가 모자라면 필기 자료로 보지 않는다
+    banner = text_result(lines_of("선문대학교 개교 기념 축제 행사장 안내 정문 앞 광장"))
+    assert verdict_from_read(banner) == "not_handwriting"
+    # 현수막 옆 잡티(「1」 · 「.」)가 한 줄로 읽혀도 줄로 세지 않는다
+    stray = text_result(lines_of("선문대학교 개교 기념 축제 행사장 안내 정문 앞 광장", "1", "."))
+    assert verdict_from_read(stray) == "not_handwriting"
+
+
+def test_a_line_needs_min_line_chars_to_count() -> None:
+    text = "가" * MIN_READABLE_CHARS
+    at = text_result(lines_of(text, "나" * MIN_LINE_CHARS))
+    below = text_result(lines_of(text, "나" * (MIN_LINE_CHARS - 1)))
+
+    assert verdict_from_read(at) == "ok"
+    assert verdict_from_read(below) == "not_handwriting"
+
+
+def test_blank_photo_is_not_handwriting() -> None:
+    blank = {"content": "", "styles": [], "pages": [{"lines": [], "words": []}]}
+
+    assert verdict_from_read(blank) == "not_handwriting"
+
+
+def test_lines_are_counted_across_pages_and_blank_or_malformed_lines_are_skipped() -> None:
+    text = "가" * MIN_READABLE_CHARS
+    across_pages = {
+        "content": f"{text}\n나다",
+        "styles": [],
+        "pages": [{"lines": [{"content": text}]}, {"lines": [{"content": "나다"}]}],
+    }
+    padded = {
+        "content": text,
+        "styles": [],
+        "pages": [
+            {"lines": [{"content": text}, {"content": "  "}, {"content": None}, "x", None]},
+            "p",
+            None,
+            {"lines": None},
+        ],
+    }
+
+    assert verdict_from_read(across_pages) == "ok"
+    assert verdict_from_read(padded) == "not_handwriting"  # 글자 있는 줄이 1줄뿐
+
+
+def test_blurry_still_takes_precedence_over_readable_text() -> None:
+    result = text_result(
+        lines_of("광합성의 명반응은 틸라코이드에서", "암반응은 스트로마"), confidence=0.1
+    )
+
+    assert verdict_from_read(result) == "blurry"

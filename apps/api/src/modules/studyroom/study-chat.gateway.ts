@@ -319,6 +319,18 @@ export class StudyChatGateway {
       await this.deliver(`study-chat:${chatRoomId}`, chatRoomId, message);
   }
 
+  /**
+   * 친구에게 보낸 노트를 1:1 채팅 카드로 올리고, 채팅을 보고 있으면 바로 보내고 아니면 푸시 · 알림(notices.chatMessage)
+   */
+  async postFriendShares(
+    senderId: string,
+    friendId: string,
+    items: { shareId: Types.ObjectId; title: string }[],
+  ) {
+    const messages = await this.chat.postFriendShares(senderId, friendId, items);
+    for (const message of messages) await this.notifyDirectMessage(message);
+  }
+
   /** 나간 사용자에게 전달하지 않도록 각 연결의 토큰과 현재 멤버십을 다시 검사해 보낸다. 받은 사람 id 를 돌려준다 */
   private async deliver(channel: string, chatRoomId: string, message: unknown) {
     const delivered: string[] = [];

@@ -42,6 +42,7 @@ Claude(ClaudeLlm, 공식 SDK anthropic)
   - 408 · 409 · 425 · 5xx · 연결 오류  조금씩 늘려 기다린 뒤 다시 보냄(retries번까지)
 """
 
+import base64
 import email.utils
 import json
 import logging
@@ -183,11 +184,19 @@ class Stopping:
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> "JsonObject":
         with stop_on(self._event, self._why):
             check_stop()  # 가짜 LLM처럼 stop_on을 보지 않는 클라이언트에도
             return self._llm.call(
-                model, system, user, schema, name, max_tokens=max_tokens, temperature=temperature
+                model,
+                system,
+                user,
+                schema,
+                name,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                image=image,
             )
 
 
@@ -204,6 +213,7 @@ class Llm(Protocol):
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject: ...
 
 
@@ -322,8 +332,9 @@ class PacedLlm:
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
-        return self._call(model, system, user, schema, name, max_tokens, temperature, _never)
+        return self._call(model, system, user, schema, name, max_tokens, temperature, _never, image)
 
     def _call(
         self,
@@ -335,6 +346,7 @@ class PacedLlm:
         max_tokens: int,
         temperature: float,
         background: Callable[[], bool],
+        image: bytes | None = None,
     ) -> JsonObject:
         """요청 본문을 만들어 self._send(body, background)."""
         raise NotImplementedError
@@ -498,6 +510,7 @@ class SchoolLlm(PacedLlm):
         max_tokens: int,
         temperature: float,
         background: Callable[[], bool],
+        image: bytes | None = None,
     ) -> JsonObject:
         body: JsonObject = {
             "model": model,
@@ -505,7 +518,7 @@ class SchoolLlm(PacedLlm):
             "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": _school_user(user, image)},
             ],
             "response_format": {
                 "type": "json_schema",
@@ -707,13 +720,14 @@ class ClaudeLlm(PacedLlm):
         max_tokens: int,
         temperature: float,  # Claude에는 보내지 않음(모듈 설명)
         background: Callable[[], bool],
+        image: bytes | None = None,
     ) -> JsonObject:
         no_think = model.startswith(CLAUDE_NO_THINK)
         body: JsonObject = {
             "model": model,
             "max_tokens": max_tokens * CLAUDE_TOKEN_SCALE + (0 if no_think else CLAUDE_THINK_ROOM),
             "system": _system_param(system),
-            "messages": [{"role": "user", "content": user}],
+            "messages": [{"role": "user", "content": _claude_user(user, image)}],
             "output_config": {
                 "effort": self._effort,
                 "format": {"type": "json_schema", "schema": self._wire_schema(schema)},
@@ -752,6 +766,23 @@ class ClaudeLlm(PacedLlm):
         return 200, None, text
 
 
+def _school_user(user: str, image: bytes | None) -> str | list[JsonObject]:
+    """사진이 있으면 사진(JPEG data URL) 다음 글(OpenAI 호환 형식)."""
+    if image is None:
+        return user
+    url = "data:image/jpeg;base64," + base64.b64encode(image).decode()
+    return [{"type": "image_url", "image_url": {"url": url}}, {"type": "text", "text": user}]
+
+
+def _claude_user(user: str, image: bytes | None) -> str | list[JsonObject]:
+    """사진이 있으면 사진(JPEG base64 블록) 다음 글."""
+    if image is None:
+        return user
+    data = base64.b64encode(image).decode()
+    source = {"type": "base64", "media_type": "image/jpeg", "data": data}
+    return [{"type": "image", "source": source}, {"type": "text", "text": user}]
+
+
 def _system_param(system: str) -> str | list[TextBlockParam]:
     """긴 시스템 프롬프트는 캐시 표시를 단 블록 하나로(CACHE_MIN_SYSTEM_CHARS). 짧으면 그대로."""
     if len(system) < CACHE_MIN_SYSTEM_CHARS:
@@ -786,9 +817,10 @@ class _Background:
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
         return self._llm._call(
-            model, system, user, schema, name, max_tokens, temperature, self._yields
+            model, system, user, schema, name, max_tokens, temperature, self._yields, image
         )
 
 
@@ -825,6 +857,7 @@ class Paced(Protocol):
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject: ...
 
     def background(self, awaited: Callable[[], bool] = _never) -> Llm: ...
@@ -853,6 +886,7 @@ class Metered:
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
         with metering() as meter:
             try:
@@ -864,6 +898,7 @@ class Metered:
                     name,
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    image=image,
                 )
             finally:
                 if self._usage is not None:
@@ -961,9 +996,12 @@ class _Routed:
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
         if self._budget.over():
-            return self._to_school(model, system, user, schema, name, max_tokens, temperature)
+            return self._to_school(
+                model, system, user, schema, name, max_tokens, temperature, image
+            )
         _note_route(self._budget, fallback=False)
         with metering() as meter:
             try:
@@ -975,13 +1013,14 @@ class _Routed:
                     name,
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    image=image,
                 )
             except LlmUsageLimitError:
                 self._budget.exhaust()  # Console 한도가 먼저 닿음: 이 호출부터 학교 LLM
             finally:
                 if not self._budget.hooked:  # 응답마다 이미 넘긴 클라이언트는 다시 더하지 않음
                     self._budget.spend.add(meter.usd)
-        return self._to_school(model, system, user, schema, name, max_tokens, temperature)
+        return self._to_school(model, system, user, schema, name, max_tokens, temperature, image)
 
     def _to_school(
         self,
@@ -992,6 +1031,7 @@ class _Routed:
         name: str,
         max_tokens: int,
         temperature: float,
+        image: bytes | None,
     ) -> JsonObject:
         school = (
             self._school()
@@ -999,7 +1039,7 @@ class _Routed:
         _note_route(self._budget, fallback=True)
         return school.call(
             self._budget.school_model(model), system, user, schema, name,
-            max_tokens=max_tokens, temperature=temperature,
+            max_tokens=max_tokens, temperature=temperature, image=image,
         )  # fmt: skip
 
 
@@ -1069,9 +1109,17 @@ class Budgeted:
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
         return self._routed.call(
-            model, system, user, schema, name, max_tokens=max_tokens, temperature=temperature
+            model,
+            system,
+            user,
+            schema,
+            name,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            image=image,
         )
 
     def background(self, awaited: Callable[[], bool] = _never) -> Llm:

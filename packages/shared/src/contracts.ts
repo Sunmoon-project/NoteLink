@@ -29,6 +29,8 @@ export const ERROR_CODES = {
   IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
   /** 같은 노트의 퀴즈 만들기가 아직 처리 중인 취소를 만났다. 잠시 뒤 다시 시도한다 (409, POST /quiz-sets) */
   QUIZ_CANCEL_PENDING: 'QUIZ_CANCEL_PENDING',
+  /** 측정 중(일시정지 포함)인 공부 항목은 지울 수 없다. 공부를 끝낸 뒤 다시 지운다 (409, DELETE /study/items/:id) */
+  STUDY_ITEM_IN_SESSION: 'STUDY_ITEM_IN_SESSION',
   /** 입력 형식 오류 (이메일 · 필수 값 등) */
   VALIDATION: 'VALIDATION_FAILED',
   EMAIL_TAKEN: 'EMAIL_TAKEN',
@@ -150,6 +152,8 @@ export const PATHS = {
   // 학습 기록 · 목표
   studyToday: '/study/today',
   studyItems: '/study/items',
+  /** DELETE → 204. 오늘 목록에서만 숨기고 쌓인 시간 · 통계는 남긴다. 남의 것 · 없는 것 · 지난 날 항목 404, 이미 지운 것도 204, 측정 중이면 409 */
+  studyItem: (id: string) => `/study/items/${seg(id)}`,
   studySessions: '/study-sessions',
   studySession: (id: string) => `/study-sessions/${seg(id)}`,
   studySessionAction: (id: string, action: 'pause' | 'resume' | 'heartbeat' | 'end') =>
@@ -179,6 +183,8 @@ export const PATHS = {
   timetableClasses: '/timetable/classes',
   timetableClass: (id: string) => `/timetable/classes/${seg(id)}`,
   timetableShares: '/timetable/shares',
+  /** 나에게 공유된 친구 시간표 → { data: SharedTimetable[] } */
+  timetableShared: '/timetable/shared',
   // 알림함. 목록 ?before=<알림 id>&limit= → { data: { items: Notification[], nextCursor: string | null } }(최근 것부터)
   notifications: '/notifications',
   /** → { data: { count } } */
@@ -209,6 +215,10 @@ export const PATHS = {
   /** 정리 결과 다시 만들기: 새 작업을 넣고, 성공할 때까지 노트는 옛 결과 그대로(하루 3회, 동시 1개) */
   materialRegenerate: (id: string) => `/materials/${seg(id)}/regenerate`,
   materialShare: '/materials/share',
+  /** 친구에게 보낸 노트(#554): GET 열기(FriendShare) · DELETE 철회(보낸 사람) */
+  friendShare: (id: string) => `/friend-shares/${seg(id)}`,
+  /** 받은 노트를 내 노트로 복사. 본문(선택) { folderId } → 새 Material */
+  friendShareCopy: (id: string) => `/friend-shares/${seg(id)}/copy`,
   /** 아바타에게 노트 묻기 → note_ask 작업(AiJob)을 돌려준다. 답은 aiJob으로 받아 result(NoteAskResult)에서 읽는다 */
   materialAsk: (id: string) => `/materials/${seg(id)}/ask`,
   imageCheck: '/images/check',

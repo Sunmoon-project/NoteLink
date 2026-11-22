@@ -175,6 +175,69 @@ export class StudyChatService {
     };
   }
 
+  /**
+   * 친구에게 보낸 노트마다 그 친구와의 1:1 채팅에 공유 카드(shared_item, sharedItemId = 친구 공유 id)를 남긴다(#554).
+   * sendRoomInvite 와 같은 모양: clientId 를 공유 id 로 정해 다시 보내도 카드는 하나, 새로 만든 카드만 돌려준다.
+   * 친구가 아니거나 상대가 탈퇴했으면 getDirectChat 이 404 를 던진다
+   */
+  async postFriendShares(
+    senderId: string,
+    friendId: string,
+    items: { shareId: Types.ObjectId; title: string }[],
+  ) {
+    const chat = await this.getDirectChat(senderId, friendId);
+    const sender = new Types.ObjectId(senderId);
+    const created: string[] = [];
+    for (const item of items) {
+      const key = {
+        chatRoomId: chat._id,
+        senderId: sender,
+        clientId: `friend_share_${item.shareId.toHexString()}`,
+      };
+      try {
+        const r = await this.messages.updateOne(
+          key,
+          {
+            $setOnInsert: {
+              ...key,
+              type: 'shared_item',
+              text: item.title,
+              sharedItemId: item.shareId,
+            },
+          },
+          { upsert: true },
+        );
+        if (r.upsertedCount) created.push(key.clientId);
+      } catch (error) {
+        // 같은 공유를 동시에 보낸 다른 요청이 먼저 넣었다
+        if ((error as { code?: unknown } | null)?.code !== 11000) throw error;
+      }
+    }
+    if (!created.length) return [];
+    const [rows, user] = await Promise.all([
+      this.messages
+        .find({ chatRoomId: chat._id, senderId: sender, clientId: { $in: created } })
+        .sort({ createdAt: 1, _id: 1 })
+        .lean(),
+      this.users.findById(sender, { nickname: 1 }).lean(),
+    ]);
+    const last = rows[rows.length - 1]!;
+    await this.chats.updateOne(
+      { _id: chat._id },
+      {
+        $set: {
+          lastMessage: {
+            type: 'shared_item',
+            text: last.text,
+            senderId: sender,
+            createdAt: (last as { createdAt?: Date }).createdAt ?? new Date(),
+          },
+        },
+      },
+    );
+    return Promise.all(rows.map((m) => this.serialize(m, user?.nickname)));
+  }
+
   /** 탈퇴 중이거나 탈퇴한 사용자는 방 멤버가 아닐 때와 같은 오류로 거절한다(라이브 토큰 · 소켓 입장 앞에서 쓴다). */
   async requireActiveUser(userId: string) {
     const active =
