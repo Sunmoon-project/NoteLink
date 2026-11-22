@@ -175,6 +175,27 @@ it('이전 화면의 늦은 채점 응답은 새 화면에서 저장한 다른 �
   expect(screen.queryByText('정답이에요')).toBeNull();
 });
 
+it('같은 노트의 취소가 처리 중이라 409 QUIZ_CANCEL_PENDING 이면 일반 실패 창으로 잠시 뒤 다시 시도를 안내한다(#644)', async () => {
+  mockApi.quiz.createSet.mockRejectedValue(
+    new ApiError(
+      ERROR_CODES.QUIZ_CANCEL_PENDING,
+      '취소를 처리하는 중이에요. 잠시 뒤 다시 시도해 주세요',
+      409,
+    ),
+  );
+  setParams({ materialId: 'canceling-material', title: '취소 중인 노트' });
+  await renderScreen(<QuizGenScreen />, client());
+  await waitFor(() => expect(mockApi.quiz.createSet).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('문제를 만들지 못했어요')).toBeTruthy();
+  expect(screen.getByText('노트는 그대로 있어요. 잠시 후 다시 시도해 주세요.')).toBeTruthy();
+
+  fireEvent.press(screen.getByText('다시 시도'));
+  expect(router.replace).toHaveBeenCalledWith({
+    pathname: '/play/gen',
+    params: { materialId: 'canceling-material', title: '취소 중인 노트' },
+  });
+});
+
 it('세트 생성 전 크레딧 부족으로 거절되면 가짜 생성 결과나 빈 세트 이동을 제공하지 않는다', async () => {
   const message = 'AI 크레딧이 부족해 문제를 생성하지 못했습니다';
   mockApi.quiz.createSet.mockRejectedValue(

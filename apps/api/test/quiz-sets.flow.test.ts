@@ -12,6 +12,7 @@ import { TokenService } from '../src/modules/auth/token.service.js';
 import { AiJob } from '../src/modules/quiz/schemas/ai-job.schema.js';
 import { QuizAttempt } from '../src/modules/quiz/schemas/quiz-attempt.schema.js';
 import { QuizSet } from '../src/modules/quiz/schemas/quiz-set.schema.js';
+import { QuizSetsService } from '../src/quiz-sets/quiz-sets.service.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
 import { createFakeCollection } from './support/fake-collection.js';
@@ -178,6 +179,33 @@ describe('퀴즈 세트 주소 (/api/v1/quiz-sets)', () => {
       .set(auth)
       .expect(404);
     expect(sets.rows.find((r) => String(r._id) === otherId)?.['deletedAt']).toBeNull();
+  });
+
+  it('같은 노트 다시 만들기가 처리 중인 취소를 1초 기다려도 끝나지 않으면 409 QUIZ_CANCEL_PENDING, 세트는 그대로(#644)', async () => {
+    const materialId = await addNote();
+    const res = await http().post(api(PATHS.quizSets)).set(auth).send({ materialId }).expect(201);
+    const { quizSet } = res.body.data;
+    // 취소 요청이 표시를 적은 채 처리 중(작업은 아직 돎)
+    const row = sets.rows.find((r) => String(r._id) === quizSet._id)!;
+    row['cancelRequestedAt'] = new Date();
+    const service = app.get(QuizSetsService);
+    const sleep = service.sleep;
+    service.sleep = async () => undefined;
+    try {
+      const again = await http()
+        .post(api(PATHS.quizSets))
+        .set(auth)
+        .send({ materialId })
+        .expect(409);
+      expect(again.body).toEqual({
+        code: 'QUIZ_CANCEL_PENDING',
+        message: '취소를 처리하는 중이에요. 잠시 뒤 다시 시도해 주세요',
+      });
+    } finally {
+      service.sleep = sleep;
+    }
+    expect(row['deletedAt']).toBeNull();
+    expect(sets.rows).toHaveLength(1);
   });
 
   it.each([[{}], [{ materialId: 3 }], [{ materialId: '' }]])(

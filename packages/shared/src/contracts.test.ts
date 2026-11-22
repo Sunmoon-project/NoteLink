@@ -39,6 +39,10 @@ describe('이메일 가입 · 로그인 계약', () => {
     });
   });
 
+  it('퀴즈 만들기가 처리 중인 취소를 만난 오류 코드(409, #644)', () => {
+    expect(ERROR_CODES.QUIZ_CANCEL_PENDING).toBe('QUIZ_CANCEL_PENDING');
+  });
+
   it('기존 오류 코드의 값은 바뀌지 않았다 (앱이 이미 쓰고 있다)', () => {
     expect(ERROR_CODES.TOKEN_EXPIRED).toBe('AUTH_TOKEN_EXPIRED');
     expect(ERROR_CODES.EMAIL_TAKEN).toBe('EMAIL_TAKEN');

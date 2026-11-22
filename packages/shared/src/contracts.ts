@@ -27,6 +27,8 @@ export const ERROR_CODES = {
   NOTE_NOT_READY: 'NOTE_NOT_READY',
   /** 같은 Idempotency-Key로 다른 내용을 보냈거나, 그 키로 만든 자료를 이미 지웠다 (409) */
   IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
+  /** 같은 노트의 퀴즈 만들기가 아직 처리 중인 취소를 만났다. 잠시 뒤 다시 시도한다 (409, POST /quiz-sets) */
+  QUIZ_CANCEL_PENDING: 'QUIZ_CANCEL_PENDING',
   /** 입력 형식 오류 (이메일 · 필수 값 등) */
   VALIDATION: 'VALIDATION_FAILED',
   EMAIL_TAKEN: 'EMAIL_TAKEN',

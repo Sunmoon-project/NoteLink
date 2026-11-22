@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto';
 
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
   type OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { ERROR_CODES } from '@notelink/shared';
 import { Model, mongo, Types } from 'mongoose';
 
 import { type AppAiJob, AiJobsService, PREGEN_TYPE } from '../ai-jobs/ai-jobs.service.js';
@@ -931,8 +933,9 @@ export class QuizSetsService implements OnModuleInit {
    * 작업이 아직 돌고 표시가 방금(CANCEL_SETTLE_GRACE_MS 안) 적혔으면 그 취소가 처리 중이라(표시를 적고 → 멈춰 보고 →
    * 늦었으면 거둠), 읽은 직후 작업이 끝나면 늦은 취소가 지켜야 할 세트를 지울 수 있다(Codex #643 4차). 그래서
    * CANCEL_WAIT_STEP_MS마다 작업 · 세트를 다시 읽으며 최대 CANCEL_WAIT_MS 그 취소가 끝나기를 기다린다. 그사이 표시가
-   * 사라졌거나(늦은 취소가 거둠) 세트가 지워졌거나(그 취소가 지움) ready면 다시 본다. 오래된 표시(요청이 죽음)거나 다
-   * 기다려도 그대로면 지금처럼 지운다
+   * 사라졌거나(늦은 취소가 거둠) 세트가 지워졌거나(그 취소가 지움) ready면 다시 본다. 오래된 표시(요청이 죽음)는 지금처럼
+   * 지운다. 다 기다려도 그 취소가 처리 중이면 지우지 않고 409 QUIZ_CANCEL_PENDING으로 잠시 뒤 다시 하게 한다(Codex #643
+   * 5차: 마지막 읽기 직후 작업이 끝나도 늦은 취소의 세트를 지키게 — 지우는 건 그 취소가 멈춘 게 확인됐거나 표시가 오래됐을 때뿐)
    */
   private async dropCanceled(
     userId: string,
@@ -948,7 +951,13 @@ export class QuizSetsService implements OnModuleInit {
         .lean<Pick<QuizSetRow, 'status' | 'deletedAt' | 'cancelRequestedAt'>>();
       if (!row || row.deletedAt || row.status === 'ready' || !row.cancelRequestedAt) return false;
       const age = Date.now() - new Date(row.cancelRequestedAt).getTime();
-      if (age >= CANCEL_SETTLE_GRACE_MS || waited >= CANCEL_WAIT_MS) return true;
+      if (age >= CANCEL_SETTLE_GRACE_MS) return true;
+      if (waited >= CANCEL_WAIT_MS) {
+        throw new ConflictException({
+          code: ERROR_CODES.QUIZ_CANCEL_PENDING,
+          message: '취소를 처리하는 중이에요. 잠시 뒤 다시 시도해 주세요',
+        });
+      }
       await this.sleep(CANCEL_WAIT_STEP_MS);
     }
   }

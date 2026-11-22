@@ -2612,15 +2612,44 @@ describe('QuizSetsService 취소 요청에 세트 번호(quizSetId)를 실으면
       },
     );
 
-    it('취소 요청이 표시만 적고 끝나지 않으면 200ms 간격으로 최대 1초 기다린 뒤 지금처럼 지우고 새 세트로 만든다', async () => {
+    it('취소가 1초(200ms × 5) 안에 끝나지 않으면 세트를 지우지 않고 409 QUIZ_CANCEL_PENDING(Codex 5차)', async () => {
       const { t, materialId, quizSet, sleeps } = await canceling(false);
 
-      const made = await t.service.create(ME.toHexString(), materialId);
+      await expect(t.service.create(ME.toHexString(), materialId)).rejects.toMatchObject({
+        status: 409,
+        response: {
+          code: 'QUIZ_CANCEL_PENDING',
+          message: '취소를 처리하는 중이에요. 잠시 뒤 다시 시도해 주세요',
+        },
+      });
 
       expect(sleeps).toEqual([200, 200, 200, 200, 200]);
-      expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
-      expect(made.quizSet._id).not.toBe(quizSet._id);
+      expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+      expect(t.sets.rows).toHaveLength(1);
     });
+
+    it.each([
+      ['맞춤 퀴즈', false],
+      ['미리 만들기', true],
+    ])(
+      '%s: 1초 기다림의 마지막 작업 조회 직후 작업이 끝나도 지우지 않고(409), 늦은 취소가 표시를 거두면 ready(Codex 5차)',
+      async (_, usePregen) => {
+        const { t, materialId, quizSet, job } = await canceling(usePregen);
+        // 1번째 조회는 generatingSet, 2~7번째는 기다림의 각 회차(0 · 200 · … · 1000ms). 마지막 조회 직후 작업이 끝남
+        afterJobRead(t, 7, () =>
+          t.finish(job._id, { questions: fullSet(), title: 't', concepts: ['세포막'] }),
+        );
+
+        await expect(t.service.create(ME.toHexString(), materialId)).rejects.toMatchObject({
+          status: 409,
+          response: { code: 'QUIZ_CANCEL_PENDING' },
+        });
+
+        expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+        delete t.set(quizSet._id)['cancelRequestedAt']; // 그 취소가 멈추지 못해 늦은 취소로 표시를 거둠
+        expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
+      },
+    );
 
     it('기다리는 사이 표시가 30초를 넘기면(가짜 시계) 처리 중인 취소가 아니라 더 기다리지 않고 지운다', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
