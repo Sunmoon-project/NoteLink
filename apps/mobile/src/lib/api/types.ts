@@ -27,6 +27,7 @@ import type {
   ReportType,
   RoomSharedItem,
   ShopItem,
+  SharedTimetable,
   SocialProvider,
   StudyItem,
   StudyRoom,
@@ -204,6 +205,8 @@ export interface Api {
     share(p: { friendIds: string[]; mode: 'full' | 'free_only' }): Promise<void>;
     /** 내가 시간표를 공유 중인 친구들 (FR-14-05 '공유 중' 표시) */
     shares(): Promise<TimetableShare[]>;
+    /** 나에게 공유된 친구 시간표(SOC-009 주간 보기에 겹쳐 그림). 빈 시간만 공유면 과목명 없이 바쁜 시간만 */
+    shared(): Promise<SharedTimetable[]>;
   };
   social: {
     friends(): Promise<Friend[]>;

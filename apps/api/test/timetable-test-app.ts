@@ -22,6 +22,8 @@ export async function createTimetableTestApp(fakes: {
     timetable: object;
     share: object;
     friendship: object;
+    /** 받은 공유의 닉네임 · 탈퇴 확인용. 없으면 공유 알림 닉네임만 채운다 */
+    user?: object;
 }): Promise<INestApplication> {
     const moduleRef = await Test.createTestingModule({
         controllers: [TimetableController],
@@ -33,7 +35,7 @@ export async function createTimetableTestApp(fakes: {
             // 공유 알림은 calendar-notices-real-db.test.ts에서 본다. 여기서는 닉네임 조회 · 알림 자리만 채운다
             {
                 provide: getModelToken(User.name),
-                useValue: { findById: () => ({ lean: () => Promise.resolve({ nickname: '나' }) }) },
+                useValue: fakes.user ?? { findById: () => ({ lean: () => Promise.resolve({ nickname: '나' }) }) },
             },
             { provide: NotificationService, useValue: { notify: () => Promise.resolve() } },
             // 로그인 확인(JwtAuthGuard)이 쓰는 도구의 가짜: TEST_TOKEN만 통과시킨다

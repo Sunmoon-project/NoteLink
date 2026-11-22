@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import {
   CalendarDays,
@@ -433,9 +433,50 @@ export function laneBlocks<T extends { top: number; h: number }>(items: T[]) {
   return placed.map((p) => ({ ...p, lanes: ends.length }));
 }
 
+/** 친구 시간표 색(배경 · 왼쪽 띠). 공유받은 순서대로 돌려 쓴다 */
+const FRIEND_COLORS = [
+  { bg: '#f8dede', bar: '#d77a7a' },
+  { bg: '#dde8f8', bar: '#6d93cf' },
+  { bg: '#f7edd2', bar: '#c9a23f' },
+  { bg: '#e8def6', bar: '#9a7ad0' },
+  { bg: '#d6f1ec', bar: '#45a594' },
+  { bg: '#f6dfee', bar: '#c56ea6' },
+];
+
 function WeekView() {
   const tt = useQuery({ queryKey: ['timetable'], queryFn: api.timetable.get });
   const rooms = useQuery({ queryKey: ['my-rooms'], queryFn: api.rooms.mine });
+  // SOC-009: 나에게 공유된 친구 시간표를 겹쳐 그린다. 끈 친구만 기억한다(새로 공유받은 친구는 켜진 채로 보인다)
+  // 친구를 끊거나 공유가 바뀌면 바로 사라져야 하므로 늘 오래된 것으로 보고(열 때마다 다시 읽음), 다른 화면에 다녀와도 다시 읽는다
+  const friends = useQuery({
+    queryKey: ['timetable', 'shared'],
+    queryFn: api.timetable.shared,
+    staleTime: 0,
+  });
+  const refetchFriends = friends.refetch;
+  const focusedOnce = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      // 처음 열 때는 위 쿼리가 읽는다
+      if (focusedOnce.current) void refetchFriends();
+      focusedOnce.current = true;
+    }, [refetchFriends]),
+  );
+  const [hiddenFriends, setHiddenFriends] = useState<ReadonlySet<string>>(new Set());
+  const toggleFriend = (ownerId: string) =>
+    setHiddenFriends((prev) => {
+      const next = new Set(prev);
+      if (next.has(ownerId)) next.delete(ownerId);
+      else next.add(ownerId);
+      return next;
+    });
+  const friendList = (friends.data ?? []).map((f, i) => ({
+    ...f,
+    color: FRIEND_COLORS[i % FRIEND_COLORS.length]!,
+  }));
+  const friendClasses = friendList
+    .filter((f) => !hiddenFriends.has(f.ownerId))
+    .flatMap((f) => f.classes.map((c) => ({ ...c, friend: f })));
   const [offset, setOffset] = useState(0);
   const base = addDays(seoul(), offset * 7);
   const sun = addDays(base, -base.getDay());
@@ -460,14 +501,23 @@ function WeekView() {
   const starts = [
     ...(tt.data?.classes ?? []).map((c) => toH(c.startTime)),
     ...roomPeriods.map((p) => toH(p.start)),
+    ...friendClasses.map((c) => toH(c.startTime)),
   ];
   const ends = [
     ...(tt.data?.classes ?? []).map((c) => toH(c.endTime)),
     ...roomPeriods.map((p) => toH(p.end)),
+    ...friendClasses.map((c) => toH(c.endTime)),
   ];
   const START = Math.min(9, ...starts.map(Math.floor));
   const END = Math.max(23, ...ends.map(Math.ceil));
-  const blocks = [
+  const blocks: {
+    day: number;
+    top: number;
+    h: number;
+    label: string;
+    bg: string;
+    bar?: string;
+  }[] = [
     ...(tt.data?.classes ?? []).flatMap((c) =>
       c.days.map((d) => ({
         day: d,
@@ -475,6 +525,17 @@ function WeekView() {
         h: toH(c.endTime) - toH(c.startTime),
         label: c.subjectName,
         bg: c.color,
+      })),
+    ),
+    // 친구 수업: 친구별 색 + 왼쪽 띠. 빈 시간만 공유면 과목명이 없어 「바쁨」
+    ...friendClasses.flatMap((c) =>
+      c.days.map((d) => ({
+        day: d,
+        top: toH(c.startTime) - START,
+        h: toH(c.endTime) - toH(c.startTime),
+        label: `${c.friend.nickname} · ${c.subjectName ?? '바쁨'}`,
+        bg: c.friend.color.bg,
+        bar: c.friend.color.bar,
       })),
     ),
     ...roomPeriods.flatMap((p) =>
@@ -500,6 +561,34 @@ function WeekView() {
           <ChevronRight size={ICON.md} color={C.sub} />
         </Pressable>
       </View>
+      {friendList.length > 0 && (
+        <View className="mt-3 flex-row flex-wrap gap-1.5">
+          {friendList.map((f) => {
+            const on = !hiddenFriends.has(f.ownerId);
+            return (
+              <Pressable
+                key={f.ownerId}
+                testID={`friend-chip-${f.ownerId}`}
+                accessibilityRole="button"
+                accessibilityState={{ selected: on }}
+                accessibilityLabel={`${f.nickname} 시간표 ${on ? '숨기기' : '보이기'}`}
+                onPress={() => toggleFriend(f.ownerId)}
+                className={cx(
+                  'flex-row items-center gap-1 rounded-full border px-2.5 py-1',
+                  on ? 'border-transparent' : 'border-fill opacity-50',
+                )}
+                style={on ? { backgroundColor: f.color.bg } : undefined}
+              >
+                <View className="h-2 w-2 rounded-full" style={{ backgroundColor: f.color.bar }} />
+                <Text className="text-caption2 text-ink">
+                  {f.nickname}
+                  {f.mode === 'free_only' ? ' · 빈 시간' : ''}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
       <View className="mt-3 flex-row pl-7">
         {days.map((d) => (
           <View key={d.getDate()} className="flex-1 items-center">
@@ -557,6 +646,7 @@ function WeekView() {
                     top: b.top,
                     height: b.h,
                     backgroundColor: b.bg,
+                    ...(b.bar ? { borderLeftWidth: 3, borderLeftColor: b.bar } : null),
                   }}
                 >
                   <Text className="text-caption2 leading-3 text-ink">{b.label}</Text>
@@ -569,7 +659,20 @@ function WeekView() {
       {tt.isError && !tt.data && (
         <LoadError message="시간표를 불러오지 못했어요" retry={tt.refetch} />
       )}
-      <Text className="mt-2 text-caption2 text-sub">● 시간표 자동연동 ● 스터디룸 교시 일정</Text>
+      <Text className="mt-2 text-caption2 text-sub">
+        ● 시간표 자동연동 ● 스터디룸 교시 일정 ● 친구 시간표
+      </Text>
+      {friends.data && friends.data.length === 0 && (
+        <Text className="mt-1 text-caption2 text-sub">공유받은 친구 시간표가 없어요</Text>
+      )}
+      {friends.isError && !friends.data && (
+        <View className="mt-2">
+          <Text>친구 시간표를 불러오지 못했어요</Text>
+          <Btn small onPress={() => void friends.refetch()}>
+            친구 시간표 다시 시도
+          </Btn>
+        </View>
+      )}
       {rooms.isError && (
         <View className="mt-2">
           <Text>스터디룸 일정을 불러오지 못했어요</Text>

@@ -8,6 +8,7 @@ import {
   type Message,
   type QuizAttempt,
   type QuizSet,
+  type SharedTimetable,
   type StudySession,
   type TimetableShare,
 } from '@notelink/shared';
@@ -609,6 +610,7 @@ export const mockApi: Api = {
       return structuredClone(undefined);
     },
     shares: () => ok(db.timetableShares),
+    shared: () => ok([] as SharedTimetable[]),
   },
   social: {
     friends: () => ok(db.friends),

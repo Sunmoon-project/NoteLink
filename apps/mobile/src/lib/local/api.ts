@@ -14,6 +14,7 @@ import {
   type QuizSet,
   type RecurringGoal,
   type RoomSharedItem,
+  type SharedTimetable,
   type StudyItem,
   type StudyRoom,
   type StudySession,
@@ -895,6 +896,8 @@ const api: Api = {
     },
     share: () => needServer('시간표 공유'),
     shares: () => ok([] as TimetableShare[]),
+    // 친구 시간표는 서버에만 있다(혼자 쓰는 로컬 모드는 받은 공유가 없다)
+    shared: () => ok([] as SharedTimetable[]),
   },
   social: {
     friends: () => ok([]),
