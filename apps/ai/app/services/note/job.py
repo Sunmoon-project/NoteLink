@@ -26,7 +26,9 @@ EmbedUnavailableError)는 그대로 올립니다. OCR 키 · 권한 오류(OcrSe
 import json
 import logging
 import math
+import threading
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypedDict, TypeIs, get_args
 
@@ -66,6 +68,10 @@ NO_COLOR = "NO_COLOR"
 # 색 찾기용 사진의 최대 픽셀 수(폭 × 높이). 20MB 압축 파일도 풀면 훨씬 커질 수 있어 OCR 쪽
 # 크기로 먼저 거름(5천만 픽셀 BGR ≈ 150MB, 색 계산용 Lab float32 ≈ 600MB)
 IMAGE_MAX_PIXELS = 50_000_000
+# 색 찾기는 1MP당 약 40MB를 씀. 이보다 큰 사진은 노트 정리가 동시에 돌아도 한 장씩
+# (AI_JOB_HEAVY_LANES)
+BIG_IMAGE_PIXELS = 20_000_000
+_BIG_IMAGE_LOCK = threading.Lock()
 OCR_END = 50
 SPLIT_END = 70
 REFINE_END = 90
@@ -254,12 +260,15 @@ def _read(
                 f"노트가 {NOTE_MAX_PAGES}쪽을 넘음({total}쪽 이상)", code=TOO_MANY_PAGES
             )
         page: NotePage = {"pageNo": start, "read": read}
-        image = _image(fetch, url, read)
-        if isinstance(image, str):
-            warnings.append({"code": "NO_COLOR", "pageNo": start, "reason": image})
-        elif image is not None:
-            page["image"] = image
-        uploads.append(_Upload(start, span, page_lines(page)))
+        with _BIG_IMAGE_LOCK if _is_big(read) else nullcontext():
+            image = _image(fetch, url, read)
+            if isinstance(image, str):
+                warnings.append({"code": "NO_COLOR", "pageNo": start, "reason": image})
+            elif image is not None:
+                page["image"] = image
+            uploads.append(_Upload(start, span, page_lines(page)))
+            del image  # 잠금을 풀기 전에 사진을 놓음
+            page.pop("image", None)
         nxt = start + span
         report(OCR_END * i // len(pages), "ocr")  # 취소됐으면 여기서 멈춤(저장하지 않음)
         if i == len(pages):
@@ -267,6 +276,15 @@ def _read(
         if saver is not None:
             saver.save(uploads[-1], warnings)
     return uploads, warnings
+
+
+def _is_big(read: dict[str, Any]) -> bool:
+    """색 찾기에 BIG_IMAGE_PIXELS보다 큰 사진을 쓰는 쪽."""
+    pages = read.get("pages") or []
+    if len(pages) != 1 or pages[0].get("unit") != "pixel":
+        return False
+    size = _page_size(pages[0])
+    return size is not None and size[0] * size[1] > BIG_IMAGE_PIXELS
 
 
 def _image(

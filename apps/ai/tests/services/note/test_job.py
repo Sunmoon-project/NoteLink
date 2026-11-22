@@ -1,6 +1,9 @@
 import json
 import logging
+import threading
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -370,6 +373,36 @@ def test_page_size_that_is_not_a_number_skips_colors_without_download(
     assert fetch.urls == [URL2]
     assert result["warnings"] == [no_color(1, "size")]
     assert len(result["chunks"]) == 2
+
+
+class OverlapFetch(FakeFetch):
+    """동시에 색 찾기 중인 사진 수의 최대치를 잼."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lock, self.now, self.most = threading.Lock(), 0, 0
+
+    def __call__(self, url: str) -> bytes:
+        with self.lock:
+            self.now += 1
+            self.most = max(self.most, self.now)
+        time.sleep(0.05)
+        with self.lock:
+            self.now -= 1
+        return super().__call__(url)
+
+
+@pytest.mark.parametrize(("big_pixels", "most"), [(W * H - 1, 1), (W * H, 2)])
+def test_big_photos_take_colors_one_at_a_time(
+    monkeypatch: pytest.MonkeyPatch, big_pixels: int, most: int
+) -> None:
+    # 노트 정리 두 개가 동시에 돌 때(AI_JOB_HEAVY_LANES=2) 큰 사진은 한 장씩만 메모리에 올림
+    monkeypatch.setattr(note_job, "BIG_IMAGE_PIXELS", big_pixels)
+    fetch = OverlapFetch()
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(lambda _: run_direct(two_pages(), fetch=fetch), range(2)))
+    assert fetch.most == most
+    assert all(len(r["chunks"]) == 2 and not r["warnings"] for r in results)
 
 
 @pytest.mark.parametrize("missing", ["width", "height"])
