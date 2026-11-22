@@ -296,4 +296,82 @@ describe.skipIf(!uri)('진짜 DB 세션 동시 시작 확인', () => {
         await study.end(userId.toString(), stale.toString(), { clientDurationSec: 0, endReason: 'manual' });
         expect(await study.heartbeat(userId.toString(), stale.toString())).toBe(false);
     });
+    // ── 공부 항목 지우기 (HOME-002): 기록은 남기고 목록에서만 숨김 ──
+    const itemOf = async (userId: Types.ObjectId, itemId: Types.ObjectId) => {
+        const doc = (await col('daily_records').findOne({ userId })) as unknown as {
+            totalSec: number;
+            items: { _id: Types.ObjectId; accumulatedSec: number; deletedAt?: Date | null }[];
+        };
+        return { totalSec: doc.totalSec, item: doc.items.find((i) => i._id.equals(itemId)) };
+    };
+    const openFor = (userId: Types.ObjectId) => col('study_sessions').countDocuments({ userId, status: { $ne: 'ended' } });
+
+    it('j) 지우면 deletedAt만 채워 오늘 목록에서 빠지고, 하루 합계 · 그 항목 누적은 그대로 · 지운 항목으로는 시작하지 않는다', async () => {
+        const { userId, itemId } = await newUserWithItem();
+        await col('daily_records').updateOne(
+            { userId },
+            { $set: { totalSec: 600, personalSec: 600, 'items.0.accumulatedSec': 600 } },
+        );
+
+        expect(await study.removeItem(userId.toString(), itemId.toString())).toBe('deleted');
+
+        const { totalSec, item } = await itemOf(userId, itemId);
+        expect(item?.deletedAt).toBeInstanceOf(Date);
+        expect(item?.accumulatedSec).toBe(600);
+        expect(totalSec).toBe(600);
+        const today = await study.today(userId.toString());
+        expect(today.items).toEqual([]);
+        expect(today.totalSec).toBe(600);
+        expect(await study.startSession(userId.toString(), { studyItemId: itemId.toString(), mode: 'personal' })).toBeUndefined();
+        expect(await openFor(userId)).toBe(0);
+    });
+
+    it('k) 측정 중(일시정지 포함)이면 in_session이고 트랜잭션이 되돌려져 deletedAt이 남지 않는다', async () => {
+        const { userId, itemId } = await newUserWithItem();
+        await insertOpen(userId, itemId, { startedAt: new Date(Date.now() - 5 * MIN), status: 'paused' });
+
+        expect(await study.removeItem(userId.toString(), itemId.toString())).toBe('in_session');
+        expect((await itemOf(userId, itemId)).item?.deletedAt ?? null).toBeNull();
+        expect((await study.today(userId.toString())).items.map((i) => i._id)).toEqual([itemId.toString()]);
+    });
+
+    it('l) 동시에 두 번 지워도 둘 다 deleted이고, 다시 지워도 처음 지운 시각이 그대로다(멱등)', async () => {
+        const { userId, itemId } = await newUserWithItem();
+        const results = await Promise.all([
+            study.removeItem(userId.toString(), itemId.toString()),
+            study.removeItem(userId.toString(), itemId.toString()),
+        ]);
+        expect(results).toEqual(['deleted', 'deleted']);
+        const first = (await itemOf(userId, itemId)).item?.deletedAt;
+        expect(first).toBeInstanceOf(Date);
+
+        expect(await study.removeItem(userId.toString(), itemId.toString())).toBe('deleted');
+        expect((await itemOf(userId, itemId)).item?.deletedAt).toEqual(first);
+        // 남의 항목 · 없는 항목은 not_found
+        expect(await study.removeItem(new Types.ObjectId().toString(), itemId.toString())).toBe('not_found');
+        expect(await study.removeItem(userId.toString(), new Types.ObjectId().toString())).toBe('not_found');
+    });
+
+    it('m) 지우기와 시작이 동시에 와도 "지운 항목 위의 열린 세션"은 생기지 않는다(한쪽이 쓰기 충돌로 다시 실행)', async () => {
+        for (let round = 0; round < 5; round += 1) {
+            const { userId, itemId } = await newUserWithItem();
+            const [removed, started] = await Promise.all([
+                study.removeItem(userId.toString(), itemId.toString()),
+                study.startSession(userId.toString(), { studyItemId: itemId.toString(), mode: 'personal' }),
+            ]);
+            const deleted = !!(await itemOf(userId, itemId)).item?.deletedAt;
+            const open = await openFor(userId);
+            if (started) {
+                // 시작이 이겼다 → 지우기는 측정 중이라 거절, 항목은 남는다
+                expect(removed).toBe('in_session');
+                expect(deleted).toBe(false);
+                expect(open).toBe(1);
+            } else {
+                // 지우기가 이겼다 → 시작은 지운 항목이라 없음, 열린 세션도 없다
+                expect(removed).toBe('deleted');
+                expect(deleted).toBe(true);
+                expect(open).toBe(0);
+            }
+        }
+    });
 });

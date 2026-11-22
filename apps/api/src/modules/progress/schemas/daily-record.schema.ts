@@ -18,6 +18,11 @@ export class StudyItem {
 
     @Prop({ required: true, default: 0, min: 0 })
     accumulatedSec: number; // 그날 이 항목에 쌓인 공부 시간
+
+    // 사용자가 홈 목록에서 지운 시각(HOME-002). 기록은 남기고 목록에서만 숨긴다 — 쌓인 시간 · 하루 합계 · 과목 시간 · 목표 판정은
+    // 그대로 센다. 선택 필드라 이 칸이 생기기 전 항목에는 없다(없음 = 지우지 않음, 기존 데이터 변환 없음)
+    @Prop({ type: Date })
+    deletedAt?: Date | null;
 }
 export const StudyItemSchema = SchemaFactory.createForClass(StudyItem);
 

@@ -147,6 +147,11 @@ export interface Api {
   study: {
     today(): Promise<DailyRecord>;
     addItem(p: { title: string; subjectName: string; goalMin: number | null }): Promise<StudyItem>;
+    /**
+     * 오늘 목록에서 공부 항목을 지운다(HOME-002). 서버는 기록(쌓인 시간 · 통계)을 남기고 목록에서만 숨긴다.
+     * 이미 지운 항목도 성공, 측정 중(일시정지 포함)이면 409 STUDY_ITEM_IN_SESSION
+     */
+    removeItem(id: string): Promise<void>;
     startSession(p: { studyItemId: string; mode: StudySession['mode'] }): Promise<StudySession>;
     pauseSession(id: string): Promise<void>;
     resumeSession(id: string): Promise<void>;

@@ -4,7 +4,7 @@ import { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { parsePausedUntil } from '../src/modules/progress/recurring-goals.service.js';
+import { parsePausedUntil, toDayStudy } from '../src/modules/progress/recurring-goals.service.js';
 import { createRecurringGoalsTestApp } from './recurring-goals-test-app.js';
 import { AUTH, TEST_USER_ID } from './shop-test-app.js';
 
@@ -526,5 +526,25 @@ describe('반복 목표 streak 계산 연결 (가짜 DB)', () => {
             const bad = await request(app.getHttpServer()).patch(`/api/v1/goals/recurring/${created.body.data._id}`).set(AUTH).send({ todayMin: 'x' });
             expect(bad.status).toBe(400);
         });
+    });
+});
+
+describe('지운 공부 항목의 기록 (HOME-002)', () => {
+    it('과목별 시간 칸이 없는 옛 기록에서도 지운 항목(deletedAt)의 시간을 과목 시간에 그대로 센다', () => {
+        const math = new Types.ObjectId();
+        const day = toDayStudy({
+            studyDate: '2026-11-22',
+            totalSec: 1500,
+            items: [
+                { subjectId: math, accumulatedSec: 900 },
+                // 지운 항목도 쌓인 시간은 남는다 — 목록에서만 숨긴다
+                { subjectId: math, accumulatedSec: 600, deletedAt: new Date('2026-11-22T05:00:00Z') } as {
+                    subjectId: Types.ObjectId;
+                    accumulatedSec: number;
+                },
+            ],
+        });
+        expect(day.totalSec).toBe(1500);
+        expect(day.bySubject.get(math.toString())).toBe(1500);
     });
 });
