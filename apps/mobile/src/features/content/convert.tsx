@@ -1,11 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { AppState, Linking, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronRight, FileText, Pin } from 'lucide-react-native';
-import { ERROR_CODES, MATERIAL_MAX_FILES, type AiJob } from '@notelink/shared';
+import {
+  ERROR_CODES,
+  MATERIAL_MAX_FILES,
+  type AiJob,
+  type Diagram,
+  type NoteDiagram,
+} from '@notelink/shared';
 import { api, ApiError, NetworkError } from '@/lib/api';
 import { uploadToBlob, UploadError } from '@/lib/upload';
 import { aiWaiting, stageOf } from '@/lib/ai';
@@ -38,6 +44,7 @@ import {
 import { C, ICON } from '@/theme';
 import { AiPending } from '@/components/AiPending';
 import { Player } from './player';
+import { RecordingDiagram } from './recording-diagram';
 import { useSmoothProgress } from '@/hooks/smooth-progress';
 
 // p.66 AI 변환 중 · 정리 완료 / p.98 업로드 · 변환 중 연결 끊김 / p.99 LLM 오류
@@ -760,7 +767,7 @@ export function ResultScreen() {
             <View className="mb-3 flex-row items-center gap-2">
               <Text className="text-title3 font-bold text-ink">{mat.title}</Text>
             </View>
-            <NoteBody sections={mat.summary?.sections ?? []} />
+            <NoteBody sections={mat.summary?.sections ?? []} diagrams={mat.diagrams} />
           </>
         )}
         {mat.kind === 'recording' && (
@@ -803,43 +810,104 @@ export function ResultScreen() {
   );
 }
 
-/** 섹션마다 카드 하나 */
-export const NoteBody = ({ sections }: { sections: { heading: string; body: string }[] }) => (
-  <View className="gap-3">
-    {sections.map((s, i) => (
-      // 제목이 같은(또는 빈) 섹션이 있어도 겹치지 않게 순서로 구분한다
-      <View key={i} testID="note-section">
-        <Card className="p-5">
-          <Text className="text-subhead font-bold text-ink">{s.heading}</Text>
-          <RichBody body={s.body} />
-        </Card>
-      </View>
-    ))}
-  </View>
-);
+type Section = { heading: string; body: string };
+/** 섹션 하나에 놓을 도식: 본문 앞(before), 본문 n번째 줄(0부터) 뒤(after) */
+export type PlacedDiagrams = { before: Diagram[]; after: Map<number, Diagram[]> };
+
+/** 편집기 표시(# · -)와 앞뒤 공백을 뺀 줄 */
+const plainLine = (line: string) =>
+  line
+    .trim()
+    .replace(/^(?:# |- )/, '')
+    .trim();
+
+/**
+ * 필기 도식(FR-19)을 섹션 본문의 줄 사이에 놓는다. after 와 같은 줄을 앞 도식을 놓은 줄부터 찾아 그 뒤에(같은 앵커는 차례대로 쌓임).
+ * after 가 null 이면 첫 섹션 맨 앞, 고친 글에서 그 줄을 못 찾으면 마지막 섹션 끝
+ */
+export function placeDiagrams(sections: Section[], diagrams: NoteDiagram[]): PlacedDiagrams[] {
+  const out = sections.map((): PlacedDiagrams => ({ before: [], after: new Map() }));
+  const lines = sections.map((s) => s.body.split('\n').map(plainLine));
+  const put = (si: number, li: number, d: Diagram) =>
+    out[si]!.after.set(li, [...(out[si]!.after.get(li) ?? []), d]);
+  let at = { s: 0, l: 0 }; // 마지막으로 놓은 줄. 같은 앵커가 이어지면 그 줄 뒤에 차례로 쌓는다
+  for (const { after, diagram } of diagrams) {
+    if (!sections.length) break;
+    if (after === null) {
+      out[0]!.before.push(diagram);
+      continue;
+    }
+    const want = plainLine(after);
+    let found: { s: number; l: number } | null = null;
+    for (let si = at.s; si < sections.length && !found; si += 1) {
+      const from = si === at.s ? at.l : 0;
+      const li = lines[si]!.indexOf(want, from);
+      if (li >= 0) found = { s: si, l: li };
+    }
+    if (found) {
+      put(found.s, found.l, diagram);
+      at = found;
+    } else {
+      const last = sections.length - 1;
+      put(last, lines[last]!.length - 1, diagram);
+    }
+  }
+  return out;
+}
+
+/** 섹션마다 카드 하나. 필기 도식(diagrams)은 본문 줄 사이에 밝은 도식으로 그린다 */
+export const NoteBody = ({
+  sections,
+  diagrams = [],
+}: {
+  sections: Section[];
+  diagrams?: NoteDiagram[];
+}) => {
+  const placed = placeDiagrams(sections, diagrams);
+  return (
+    <View className="gap-3">
+      {sections.map((s, i) => (
+        // 제목이 같은(또는 빈) 섹션이 있어도 겹치지 않게 순서로 구분한다
+        <View key={i} testID="note-section">
+          <Card className="p-5">
+            <Text className="text-subhead font-bold text-ink">{s.heading}</Text>
+            <RichBody body={s.body} diagrams={placed[i]!} />
+          </Card>
+        </View>
+      ))}
+    </View>
+  );
+};
+
+const Drawn = ({ list }: { list: Diagram[] | undefined }) =>
+  (list ?? []).map((d, i) => <RecordingDiagram key={i} diagram={d} tone="paper" />);
 
 /** 편집기 툴바가 넣는 표시(# 제목 · - 목록 · **굵게** · [글](주소))를 기호 없이 그린다 */
-function RichBody({ body }: { body: string }) {
+function RichBody({ body, diagrams }: { body: string; diagrams: PlacedDiagrams }) {
   return (
     <View className="mt-0.5 gap-0.5">
-      {body.split('\n').map((line, i) =>
-        line.startsWith('# ') ? (
-          <Text key={i} className="mt-1 text-callout font-bold text-ink">
-            <Inline text={line.slice(2)} />
-          </Text>
-        ) : (
-          <Text key={i} className="text-caption text-ink/70">
-            {line.startsWith('- ') ? (
-              <>
-                {'• '}
-                <Inline text={line.slice(2)} />
-              </>
-            ) : (
-              <Inline text={line} />
-            )}
-          </Text>
-        ),
-      )}
+      <Drawn list={diagrams.before} />
+      {body.split('\n').map((line, i) => (
+        <Fragment key={i}>
+          {line.startsWith('# ') ? (
+            <Text className="mt-1 text-callout font-bold text-ink">
+              <Inline text={line.slice(2)} />
+            </Text>
+          ) : (
+            <Text className="text-caption text-ink/70">
+              {line.startsWith('- ') ? (
+                <>
+                  {'• '}
+                  <Inline text={line.slice(2)} />
+                </>
+              ) : (
+                <Inline text={line} />
+              )}
+            </Text>
+          )}
+          <Drawn list={diagrams.after.get(i)} />
+        </Fragment>
+      ))}
     </View>
   );
 }
