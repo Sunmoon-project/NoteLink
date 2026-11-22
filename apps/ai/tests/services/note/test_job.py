@@ -392,12 +392,12 @@ class OverlapFetch(FakeFetch):
         return super().__call__(url)
 
 
-@pytest.mark.parametrize(("big_pixels", "most"), [(W * H - 1, 1), (W * H, 2)])
-def test_big_photos_take_colors_one_at_a_time(
-    monkeypatch: pytest.MonkeyPatch, big_pixels: int, most: int
+@pytest.mark.parametrize(("budget", "most"), [(W * H - 1, 1), (2 * W * H - 1, 1), (2 * W * H, 2)])
+def test_photos_taken_together_stay_within_the_pixel_budget(
+    monkeypatch: pytest.MonkeyPatch, budget: int, most: int
 ) -> None:
-    # 노트 정리 두 개가 동시에 돌 때(AI_JOB_HEAVY_LANES=2) 큰 사진은 한 장씩만 메모리에 올림
-    monkeypatch.setattr(note_job, "BIG_IMAGE_PIXELS", big_pixels)
+    # 노트 정리 두 개가 동시에 돌 때(AI_JOB_HEAVY_LANES=2) 픽셀 합이 넘으면 한 장씩 올림
+    monkeypatch.setattr(note_job, "IMAGE_BUDGET_PIXELS", budget)
     fetch = OverlapFetch()
     with ThreadPoolExecutor(2) as pool:
         results = list(pool.map(lambda _: run_direct(two_pages(), fetch=fetch), range(2)))

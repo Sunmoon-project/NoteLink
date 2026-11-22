@@ -27,8 +27,8 @@ import json
 import logging
 import math
 import threading
-from collections.abc import Callable
-from contextlib import nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypedDict, TypeIs, get_args
 
@@ -68,10 +68,33 @@ NO_COLOR = "NO_COLOR"
 # 색 찾기용 사진의 최대 픽셀 수(폭 × 높이). 20MB 압축 파일도 풀면 훨씬 커질 수 있어 OCR 쪽
 # 크기로 먼저 거름(5천만 픽셀 BGR ≈ 150MB, 색 계산용 Lab float32 ≈ 600MB)
 IMAGE_MAX_PIXELS = 50_000_000
-# 색 찾기는 1MP당 약 40MB를 씀. 이보다 큰 사진은 노트 정리가 동시에 돌아도 한 장씩
-# (AI_JOB_HEAVY_LANES)
-BIG_IMAGE_PIXELS = 20_000_000
-_BIG_IMAGE_LOCK = threading.Lock()
+# 색 찾기는 1MP당 약 40MB를 씀. 노트 정리가 동시에 돌아도(AI_JOB_HEAVY_LANES) 함께 색을 찾는
+# 사진의 픽셀 합이 이것을 넘지 않게 기다림
+IMAGE_BUDGET_PIXELS = IMAGE_MAX_PIXELS
+
+
+class _PixelBudget:
+    """프로세스 전체에서 동시에 메모리에 올린 사진 픽셀 합의 상한."""
+
+    def __init__(self) -> None:
+        self._used = 0
+        self._cond = threading.Condition()
+
+    @contextmanager
+    def hold(self, pixels: int) -> Iterator[None]:
+        pixels = min(pixels, IMAGE_BUDGET_PIXELS)
+        with self._cond:
+            self._cond.wait_for(lambda: self._used + pixels <= IMAGE_BUDGET_PIXELS)
+            self._used += pixels
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._used -= pixels
+                self._cond.notify_all()
+
+
+_PIXELS = _PixelBudget()
 OCR_END = 50
 SPLIT_END = 70
 REFINE_END = 90
@@ -260,7 +283,7 @@ def _read(
                 f"노트가 {NOTE_MAX_PAGES}쪽을 넘음({total}쪽 이상)", code=TOO_MANY_PAGES
             )
         page: NotePage = {"pageNo": start, "read": read}
-        with _BIG_IMAGE_LOCK if _is_big(read) else nullcontext():
+        with _PIXELS.hold(_photo_pixels(read)):
             image = _image(fetch, url, read)
             if isinstance(image, str):
                 warnings.append({"code": "NO_COLOR", "pageNo": start, "reason": image})
@@ -278,13 +301,15 @@ def _read(
     return uploads, warnings
 
 
-def _is_big(read: dict[str, Any]) -> bool:
-    """색 찾기에 BIG_IMAGE_PIXELS보다 큰 사진을 쓰는 쪽."""
+def _photo_pixels(read: dict[str, Any]) -> int:
+    """색 찾기에 내려받을 사진의 픽셀 수. 내려받지 않는 쪽은 0."""
     pages = read.get("pages") or []
     if len(pages) != 1 or pages[0].get("unit") != "pixel":
-        return False
+        return 0
     size = _page_size(pages[0])
-    return size is not None and size[0] * size[1] > BIG_IMAGE_PIXELS
+    if size is None or size[0] * size[1] > IMAGE_MAX_PIXELS:
+        return 0
+    return size[0] * size[1]
 
 
 def _image(
