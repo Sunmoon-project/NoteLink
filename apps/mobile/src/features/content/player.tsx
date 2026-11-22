@@ -62,6 +62,9 @@ export function usePlayback(url: string | undefined, knownDuration: number) {
 
 const posKey = (materialId: string) => `notelink.playpos.${materialId}`;
 const RESUME_MARGIN = 5; // 처음 · 끝 5초 안이면 이어듣지 않는다(거의 처음이거나 다 들음)
+// 옮기기가 반영됐다고 보는 오차. 이어듣기 대상은 6초부터라, 넓으면(5초) 옮기기가 실패한 채 0초부터 재생된 상태도
+// 「옮겨짐」으로 봐 지난 자리를 덮어쓴다(#624 Codex 리뷰)
+const SEEK_SETTLE = 1.5;
 
 /**
  * 이어듣기(설정 「이어듣기」): 켜져 있으면 녹음마다 멈춘 자리를 기기에 적어 두고, 다시 열면 그 자리부터.
@@ -90,7 +93,7 @@ export function useResume(
   const seeking = useRef(-1);
   const settled = (pos: number) => {
     if (seeking.current < 0) return true;
-    if (Math.abs(pos - seeking.current) >= RESUME_MARGIN) return false;
+    if (Math.abs(pos - seeking.current) >= SEEK_SETTLE) return false;
     seeking.current = -1;
     return true;
   };

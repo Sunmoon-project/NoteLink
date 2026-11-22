@@ -119,3 +119,31 @@ it('지난 자리로 옮기는 동안(아직 0초) 0초를 적어 지난 자리�
   await view.unmount();
   expect(mockStore.get('notelink.playpos.m1')).toBe('30');
 });
+
+// Codex 리뷰(#624): 6초처럼 처음 가까운 자리는 옮기기가 실패한 채 0초부터 재생돼 나가도 지난 자리를 덮어쓰지 않는다
+it('지난 자리(6초)로 옮기기가 반영되지 않은 채 0초부터 재생돼 나가도 지난 자리를 지킨다', async () => {
+  meWith(true);
+  mockStore.set('notelink.playpos.m1', '6');
+  const { seek, view } = await run(0);
+  await waitFor(() => expect(seek).toHaveBeenCalledWith(6));
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await view.rerender({ at: 1.1 });
+  await act(async () => {});
+  await view.unmount();
+  expect(mockStore.get('notelink.playpos.m1')).toBe('6');
+});
+
+it('지난 자리(6초) 근처로 옮겨진 뒤에는 듣는 자리를 다시 적는다', async () => {
+  meWith(true);
+  mockStore.set('notelink.playpos.m1', '6');
+  const { seek, view } = await run(0);
+  await waitFor(() => expect(seek).toHaveBeenCalledWith(6));
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await view.rerender({ at: 6.2 }); // 옮기기 반영
+  await view.rerender({ at: 40 });
+  await waitFor(() => expect(mockStore.get('notelink.playpos.m1')).toBe('40'));
+});
