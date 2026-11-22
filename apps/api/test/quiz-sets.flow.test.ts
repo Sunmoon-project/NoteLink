@@ -12,6 +12,7 @@ import { TokenService } from '../src/modules/auth/token.service.js';
 import { AiJob } from '../src/modules/quiz/schemas/ai-job.schema.js';
 import { QuizAttempt } from '../src/modules/quiz/schemas/quiz-attempt.schema.js';
 import { QuizSet } from '../src/modules/quiz/schemas/quiz-set.schema.js';
+import { QuizSetsService } from '../src/quiz-sets/quiz-sets.service.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeJobs } from './support/fake-ai-jobs.js';
 import { createFakeCollection } from './support/fake-collection.js';
@@ -26,6 +27,7 @@ describe('퀴즈 세트 주소 (/api/v1/quiz-sets)', () => {
   const materials = createFakeCollection();
   const me = new Types.ObjectId();
   let auth: { Authorization: string };
+  let otherAuth: { Authorization: string };
 
   beforeAll(async () => {
     stubAppEnv();
@@ -47,6 +49,8 @@ describe('퀴즈 세트 주소 (/api/v1/quiz-sets)', () => {
     await app.init();
     const { accessToken } = await moduleRef.get(TokenService).issue(me.toHexString());
     auth = { Authorization: `Bearer ${accessToken}` };
+    const other = await moduleRef.get(TokenService).issue(new Types.ObjectId().toHexString());
+    otherAuth = { Authorization: `Bearer ${other.accessToken}` };
   });
 
   afterAll(async () => {
@@ -95,6 +99,113 @@ describe('퀴즈 세트 주소 (/api/v1/quiz-sets)', () => {
     expect(one.body.data).toMatchObject({ _id: quizSet._id, status: 'generating' });
     const list = await http().get(api(PATHS.quizSets)).set(auth).expect(200);
     expect(list.body.data.map((s: { _id: string }) => s._id)).toEqual([quizSet._id]);
+  });
+
+  it('만드는 중에 앱이 취소하면(POST /ai-jobs/:id/cancel) 세트가 목록 · 조회에서 빠진다(#626)', async () => {
+    const materialId = await addNote();
+    const res = await http().post(api(PATHS.quizSets)).set(auth).send({ materialId }).expect(201);
+    const { quizSet, job } = res.body.data;
+
+    // 남의 취소는 없는 작업과 같게 404이고 세트는 그대로
+    await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(otherAuth)
+      .expect(404);
+    await http()
+      .get(api(PATHS.quizSet(quizSet._id)))
+      .set(auth)
+      .expect(200);
+
+    await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(auth)
+      .expect(204);
+    // 두 번 눌러도 같은 204
+    await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(auth)
+      .expect(204);
+
+    const list = await http().get(api(PATHS.quizSets)).set(auth).expect(200);
+    expect(list.body.data).toEqual([]);
+    const one = await http()
+      .get(api(PATHS.quizSet(quizSet._id)))
+      .set(auth)
+      .expect(404);
+    expect(one.body).toMatchObject({ code: 'NOT_FOUND' });
+    expect(sets.rows).toHaveLength(1);
+    expect(sets.rows[0]?.['deletedAt']).toBeInstanceOf(Date);
+  });
+
+  it('취소 본문에 세트 번호(quizSetId)를 실으면 그 세트를 지우고, 형식이 틀린 본문은 400 · 남의 세트 번호는 404', async () => {
+    const materialId = await addNote();
+    const res = await http().post(api(PATHS.quizSets)).set(auth).send({ materialId }).expect(201);
+    const { quizSet, job } = res.body.data;
+    const others = await sets.model.create({
+      ownerId: new Types.ObjectId(),
+      materialId: new Types.ObjectId(),
+      title: '남의 퀴즈',
+      status: 'generating',
+      jobId: new Types.ObjectId(job._id),
+      deletedAt: null,
+    } as never);
+    const otherId = String((others as unknown as { _id: Types.ObjectId })._id);
+
+    const bad = await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(auth)
+      .send({ quizSetId: 3 })
+      .expect(400);
+    expect(bad.body).toMatchObject({ code: 'VALIDATION_FAILED' });
+    const foreign = await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(auth)
+      .send({ quizSetId: otherId })
+      .expect(404);
+    expect(foreign.body).toMatchObject({ code: 'NOT_FOUND' });
+    await http()
+      .get(api(PATHS.quizSet(quizSet._id)))
+      .set(auth)
+      .expect(200);
+
+    await http()
+      .post(api(PATHS.aiJobCancel(job._id)))
+      .set(auth)
+      .send({ quizSetId: quizSet._id })
+      .expect(204);
+
+    await http()
+      .get(api(PATHS.quizSet(quizSet._id)))
+      .set(auth)
+      .expect(404);
+    expect(sets.rows.find((r) => String(r._id) === otherId)?.['deletedAt']).toBeNull();
+  });
+
+  it('같은 노트 다시 만들기가 처리 중인 취소를 1초 기다려도 끝나지 않으면 409 QUIZ_CANCEL_PENDING, 세트는 그대로(#644)', async () => {
+    const materialId = await addNote();
+    const res = await http().post(api(PATHS.quizSets)).set(auth).send({ materialId }).expect(201);
+    const { quizSet } = res.body.data;
+    // 취소 요청이 표시를 적은 채 처리 중(작업은 아직 돎)
+    const row = sets.rows.find((r) => String(r._id) === quizSet._id)!;
+    row['cancelRequestedAt'] = new Date();
+    const service = app.get(QuizSetsService);
+    const sleep = service.sleep;
+    service.sleep = async () => undefined;
+    try {
+      const again = await http()
+        .post(api(PATHS.quizSets))
+        .set(auth)
+        .send({ materialId })
+        .expect(409);
+      expect(again.body).toEqual({
+        code: 'QUIZ_CANCEL_PENDING',
+        message: '취소를 처리하는 중이에요. 잠시 뒤 다시 시도해 주세요',
+      });
+    } finally {
+      service.sleep = sleep;
+    }
+    expect(row['deletedAt']).toBeNull();
+    expect(sets.rows).toHaveLength(1);
   });
 
   it.each([[{}], [{ materialId: 3 }], [{ materialId: '' }]])(

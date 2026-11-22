@@ -33,6 +33,8 @@ interface Attempt {
   codeHash: string | null;
   outcome: string | null;
   expiresAt: Date;
+  /** 콜백(findOrCreate)이 이번에 계정을 새로 만들었는지 */
+  created?: boolean;
 }
 interface UserRow {
   _id: Types.ObjectId;
@@ -122,6 +124,7 @@ function setup() {
       codeHash: hashCode(code),
       outcome: 'signed_in',
       expiresAt: new Date(Date.now() + 2 * 60 * 1000),
+      created: false,
       ...overrides,
     };
     attempts.push(attempt);
@@ -210,7 +213,37 @@ describe('SocialExchangeService.exchange', () => {
 
       expect(AuthTokens.safeParse(JSON.parse(JSON.stringify(result))).success).toBe(true);
     });
+  });
 
+  // PROF-013(#637): 탈퇴한 계정은 되살리지 않아서, 탈퇴 뒤 같은 소셜 계정으로 들어오면 콜백이 새 계정을 만든다.
+  // 앱이 「새 계정으로 가입했어요」를 알릴 수 있게 새 계정 여부를 함께 돌려준다
+  describe('새 계정 여부 (isNewUser)', () => {
+    it('콜백이 이번에 계정을 새로 만들었으면(created: true) true', async () => {
+      const s = setup();
+      s.issued({ created: true });
+
+      const result = await s.service.exchange('google', body);
+
+      expect(result.isNewUser).toBe(true);
+      expect(AuthTokens.parse(JSON.parse(JSON.stringify(result))).isNewUser).toBe(true);
+    });
+
+    it('이미 있던 계정이면(created: false) false', async () => {
+      const s = setup();
+      s.issued({ created: false });
+
+      expect((await s.service.exchange('google', body)).isNewUser).toBe(false);
+    });
+
+    it('필드가 없는 시도(배포 전에 시작한 로그인)는 새 계정이라고 단정하지 않는다(false)', async () => {
+      const s = setup();
+      s.issued({ created: undefined });
+
+      expect((await s.service.exchange('google', body)).isNewUser).toBe(false);
+    });
+  });
+
+  describe('응답 내용', () => {
     it('비밀번호 해시 · 소셜 연동 정보를 응답에 싣지 않는다', async () => {
       const s = setup();
       s.issued();

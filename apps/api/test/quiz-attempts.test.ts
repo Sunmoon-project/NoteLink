@@ -12,6 +12,7 @@ import { User } from '../src/modules/auth/schemas/user.schema.js';
 import { PointService } from '../src/modules/reward/point/point.service.js';
 import { QuizAttempt } from '../src/modules/quiz/schemas/quiz-attempt.schema.js';
 import { QuizSet } from '../src/modules/quiz/schemas/quiz-set.schema.js';
+import { SimilarQuizService } from '../src/quiz-sets/similar-quiz.service.js';
 import { createAppModuleBuilder, stubAppEnv } from './support/app-module.js';
 import { createFakeCollection } from './support/fake-collection.js';
 import { createFakeRefreshTokens } from './support/fake-refresh-tokens.js';
@@ -34,6 +35,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
   const q1 = new Types.ObjectId();
   const q2 = new Types.ObjectId();
   let auth: { Authorization: string };
+  let similar: SimilarQuizService;
 
   beforeAll(async () => {
     stubAppEnv();
@@ -62,6 +64,7 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
     configureApp(app);
     await app.init();
     const { accessToken } = await moduleRef.get(TokenService).issue(me.toHexString());
+    similar = moduleRef.get(SimilarQuizService);
     auth = { Authorization: `Bearer ${accessToken}` };
   });
 
@@ -356,6 +359,25 @@ describe('퀴즈 풀이 주소 (/api/v1/quiz-attempts)', () => {
       expect(stored().finishedAt).toBeNull();
       expect(earnQuiz).not.toHaveBeenCalled();
       expect(balance()).toBe(100);
+    });
+
+    // #625: 퀴즈를 끝낼 때 사용자가 요청하지 않은 LLM 작업(자동 오답 복습)은 설정이 켜졌을 때만
+    it('자동 오답 복습 설정이 꺼져 있으면(기본) 끝낸 뒤 오답 복습을 시작하지 않는다', async () => {
+      const startAfterFinish = vi.spyOn(similar, 'startAfterFinish').mockResolvedValue(null);
+      const attempt = await startWithCorrect(['틀림', '리보솜']);
+      await finish(attempt._id).expect(200);
+      expect(startAfterFinish).not.toHaveBeenCalled();
+      startAfterFinish.mockRestore();
+    });
+
+    it('설정(AUTO_SIMILAR_ON_FINISH=true)이 켜져 있으면 예전처럼 끝낸 뒤 그 풀이로 오답 복습을 시작한다', async () => {
+      vi.stubEnv('AUTO_SIMILAR_ON_FINISH', 'true');
+      const startAfterFinish = vi.spyOn(similar, 'startAfterFinish').mockResolvedValue(null);
+      const attempt = await startWithCorrect(['틀림', '리보솜']);
+      await finish(attempt._id).expect(200);
+      expect(startAfterFinish).toHaveBeenCalledWith(me.toHexString(), attempt._id);
+      startAfterFinish.mockRestore();
+      vi.stubEnv('AUTO_SIMILAR_ON_FINISH', '');
     });
 
     it('끝낸 뒤 답을 내면 400 VALIDATION_FAILED', async () => {

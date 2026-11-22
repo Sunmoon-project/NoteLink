@@ -1,13 +1,15 @@
-"""노트 정리 작업(ai_jobs). 쪽마다 OCR → 색 · 형광펜 → [?] → 읽는 순서 → 조각 → 임베딩.
+"""노트 정리 작업(ai_jobs). 쪽마다 OCR → 색 · 형광펜 → [?] → 읽는 순서 → 조각 → 핵심 요약 → 임베딩.
 
 input   {pages: [{pageNo, imageUrl}], subject?: 글, seeds?: [{topic, terms: [{term, url?}]}]}
         pageNo는 업로드 순서(1부터). 여러 쪽 PDF는 pageNo부터 쪽 수만큼 번호를 차지함
-result  {pages: [{pageNo, ocrText}], lineResults, chunks: [노트 조각 + embedding], warnings}
+result  {pages: [{pageNo, ocrText}], lineResults, chunks: [노트 조각 + embedding],
+         summary: {points, keywords, headings} | null, warnings}
         chunks는 맞춤 퀴즈 input의 material.chunks에 그대로 들어감(quiz.generate)
         warnings는 녹음처럼 {code, ...} 목록. 지금은 색 · 형광펜을 찾지 못한 쪽만
         {code: NO_COLOR, pageNo(놓인 번호), reason: pdf | download | decode | size}
 
-진행률 단계: ocr 0→50(쪽 하나 끝날 때마다), split 50→70, refine 70→90, embed 90→100.
+진행률 단계: ocr 0→50(쪽 하나 끝날 때마다), split 50→70, refine 70→90, summary 90→95,
+embed 95→100.
 거절은 InputError(코드가 있으면 앱이 구분), 일시 오류(LlmError · OcrUnavailableError ·
 EmbedUnavailableError)는 그대로 올립니다. OCR 키 · 권한 오류(OcrSetupError)는 파일 문제가
 아니므로 InputError로 바꾸지 않습니다. 오류 문구에 사진 주소(SAS)를 넣지 않습니다.
@@ -49,6 +51,7 @@ from app.services.note.pipeline import (
     split_with_llm,
 )
 from app.services.note.seeds import SeedTerm, TopicSeed
+from app.services.note.summary import summarize_note
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +69,7 @@ IMAGE_MAX_PIXELS = 50_000_000
 OCR_END = 50
 SPLIT_END = 70
 REFINE_END = 90
+SUMMARY_END = 95
 # checkpoint 저장 상한(BSON). Mongo 문서 상한 16MiB에서 input · 진행 상태 등 다른 필드 몫을 남김
 CHECKPOINT_MAX_BYTES = 12 * 1024 * 1024
 # checkpoint 형식 번호. 다르면(이번 형식 이전 포함) 깨진 값처럼 OCR부터 다시 함
@@ -133,7 +137,7 @@ def run(
 ) -> JsonObject:
     """ocr는 OCR을 할 때만 만듭니다. fetch는 색 찾기용 사진을 내려받음(시험에서 바꿈).
 
-    split_llm은 문단 나누기에만 씀(없으면 llm)."""
+    split_llm은 문단 나누기 · 핵심 요약에 씀(없으면 llm)."""
     pages = _pages(inp.get("pages"))
     subject = inp.get("subject")
     if subject is not None and not isinstance(subject, str):
@@ -148,13 +152,16 @@ def run(
     chunks = split_with_llm(split_llm or llm, settings.note_split_model, note["chunks"])
     report(SPLIT_END, "refine")
     chunks = refine_note(llm, settings.note_refine_model, chunks, subject or "", seeds)
-    report(REFINE_END, "embed")
+    report(REFINE_END, "summary")
+    summary = summarize_note(split_llm or llm, settings.note_split_model, chunks)
+    report(SUMMARY_END, "embed")
     vectors = embedder.embed(embed_texts(chunks), "document")
     report(100, "embed")
     return {
         "pages": note["pages"],
         "lineResults": note["lineResults"],
         "chunks": [{**c, "embedding": v} for c, v in zip(chunks, vectors, strict=True)],
+        "summary": summary,
         "warnings": warnings,
     }
 

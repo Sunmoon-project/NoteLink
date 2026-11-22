@@ -380,7 +380,15 @@ export function CalSharedScreen() {
 /* ── p.56 시간표 ─────────────────────────────────── */
 
 const COLORS = ['#dfece4', '#e3e8f4', '#f6dfdf', '#faf0cf', '#efe9da'] as const;
-const WEEK = ['월', '화', '수', '목', '금'];
+// 요일 번호는 서버와 같이 0=일 ... 6=토. 화면은 월요일부터 일요일까지(ROOM-021: 전에는 월~금뿐이라 주말 수업을 넣지 못했다)
+const DAY_NAME = ['일', '월', '화', '수', '목', '금', '토'];
+const WEEK = [1, 2, 3, 4, 5, 6, 0];
+/** 요일 번호들을 월요일부터 순서대로 「월 · 토 · 일」 */
+const dayList = (days: number[]) =>
+  [...days]
+    .sort((a, b) => WEEK.indexOf(a) - WEEK.indexOf(b))
+    .map((d) => DAY_NAME[d])
+    .join(' · ');
 
 export function TimetableScreen() {
   const qc = useQueryClient();
@@ -424,7 +432,7 @@ export function TimetableScreen() {
         <View className="flex-row pl-6">
           {WEEK.map((d) => (
             <Text key={d} className="flex-1 text-center text-caption text-sub">
-              {d}
+              {DAY_NAME[d]}
             </Text>
           ))}
         </View>
@@ -441,7 +449,7 @@ export function TimetableScreen() {
             </View>
           ))}
           <View className="absolute inset-0 left-6 flex-row">
-            {[1, 2, 3, 4, 5].map((d) => (
+            {WEEK.map((d) => (
               <View key={d} className="relative flex-1">
                 {laneBlocks(
                   classes
@@ -487,7 +495,7 @@ export function TimetableScreen() {
       <ShareTimetableSheet open={sheet === 'share'} onClose={() => setSheet(null)} />
       <Sheet open={!!pick} onClose={() => setPick(null)} title={pick?.subjectName}>
         <Text className="text-footnote text-sub">
-          {pick?.days.map((d) => WEEK[d - 1]).join(' · ')} · {pick?.startTime} – {pick?.endTime}
+          {dayList(pick?.days ?? [])} · {pick?.startTime} – {pick?.endTime}
           {pick?.location ? ` · ${pick.location}` : ''}
         </Text>
         <Btn
@@ -544,20 +552,20 @@ function AddClassSheet({ open, onClose }: { open: boolean; onClose: () => void }
       <Label>과목명</Label>
       <Input value={name} onChangeText={setName} placeholder="예) 수학" />
       <Label>요일</Label>
-      <View className="flex-row gap-2">
-        {WEEK.map((d, i) => {
-          const on = days.includes(i + 1);
+      <View className="flex-row justify-between">
+        {WEEK.map((d) => {
+          const on = days.includes(d);
           return (
             <Pressable
               key={d}
-              onPress={() => setDays((p) => (on ? p.filter((x) => x !== i + 1) : [...p, i + 1]))}
+              onPress={() => setDays((p) => (on ? p.filter((x) => x !== d) : [...p, d]))}
               className={cx(
                 'h-10 w-10 items-center justify-center rounded-full',
                 on ? 'bg-brand' : 'bg-fill',
               )}
             >
               <Text className={cx('text-footnote font-semibold', on ? 'text-white' : 'text-sub')}>
-                {d}
+                {DAY_NAME[d]}
               </Text>
             </Pressable>
           );

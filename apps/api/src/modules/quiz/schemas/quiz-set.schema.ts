@@ -55,6 +55,11 @@ export class Question {
   // 넘겨, 같은 풀이를 두 번 세지 않게 한다. 오답 복습 · 오늘의 복습이 srs를 다시 쓰면 지운다
   @Prop({ type: Types.ObjectId, default: undefined })
   srsAttemptId?: Types.ObjectId;
+
+  // 만들 때 '정답 둘' 검사를 통과한 문제(맞춤 퀴즈, #625). 퀴즈를 끝낼 때 처음 복습 상태에 checked: true로 옮겨 오늘의
+  // 복습이 다시 검사하지 않게 한다. 서버 · 처리기 안에서만 쓰고 앱에는 보내지 않는다. 이 필드가 없는 기존 문제는 검사 전으로 본다
+  @Prop({ type: Boolean, default: undefined })
+  checked?: boolean;
 }
 
 export const QuestionSchema = SchemaFactory.createForClass(Question);
@@ -126,6 +131,18 @@ export class QuizSet {
   // 문제를 만드는 AI 작업(ai_jobs). 미리 만들기를 이어받으면 그 작업(targetType 'material')을 가리킨다(#175)
   @Prop({ type: Types.ObjectId, ref: 'AiJob', default: null })
   jobId?: Types.ObjectId | null;
+
+  // 앱이 만드는 중인 이 세트를 취소한 시각(#642). 작업을 멈추기 전에 적어, 세트를 지우지 못한 채 작업이 끝나도 다음
+  // 조회가 결과를 옮기지 않고 지운다(QuizSetsService.sync · canceledFirst). 앱에는 보내지 않는다.
+  // 이 필드가 없는 기존 문서는 취소하지 않은 세트로 본다(변환 없음)
+  @Prop({ type: Date })
+  cancelRequestedAt?: Date;
+
+  // 앱의 취소가 작업을 멈춘 시각(Codex #643 6차). 멈춘 직후 이 세트에 적어, 세트를 지우지 못한 채 작업이 끝나도 「이 세트의
+  // 취소가 멈춤」으로 바로 지운다. 미리 만들기의 이어받기 풀림(ai_jobs.awaited=false)은 작업 하나에 하나라 어느 세트의
+  // 취소인지 몰라 판단에 쓰지 않는다. 앱에는 보내지 않는다. 이 필드가 없는 기존 문서는 멈추지 않은 것으로 본다(변환 없음)
+  @Prop({ type: Date })
+  cancelStoppedAt?: Date;
 
   @Prop({ type: Date, default: null })
   deletedAt?: Date | null;

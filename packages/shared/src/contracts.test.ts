@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ERROR_CODES, PATHS } from './contracts.js';
-import { DailyRecord, Material, Notification, QuizSet } from './schemas.js';
+import { AuthTokens, DailyRecord, Material, Notification, QuizSet } from './schemas.js';
 
 describe('PATHS', () => {
   it('경로 조각을 인코딩해 다른 경로로 새지 않게 한다', () => {
@@ -39,6 +39,10 @@ describe('이메일 가입 · 로그인 계약', () => {
     });
   });
 
+  it('퀴즈 만들기가 처리 중인 취소를 만난 오류 코드(409, #644)', () => {
+    expect(ERROR_CODES.QUIZ_CANCEL_PENDING).toBe('QUIZ_CANCEL_PENDING');
+  });
+
   it('기존 오류 코드의 값은 바뀌지 않았다 (앱이 이미 쓰고 있다)', () => {
     expect(ERROR_CODES.TOKEN_EXPIRED).toBe('AUTH_TOKEN_EXPIRED');
     expect(ERROR_CODES.EMAIL_TAKEN).toBe('EMAIL_TAKEN');
@@ -74,6 +78,48 @@ describe('schemas', () => {
   it('알 수 없는 퀴즈 상태는 거절한다', () => {
     const r = QuizSet.shape.status.safeParse('unknown');
     expect(r.success).toBe(false);
+  });
+
+  // PROF-013(#637): 소셜 로그인이 계정을 새로 만들었는지 앱에 알린다(탈퇴한 계정은 되살리지 않는다)
+  describe('로그인 응답의 새 계정 여부(isNewUser)', () => {
+    const user = {
+      _id: 'u1',
+      email: null,
+      nickname: '김노트',
+      role: 'user',
+      learnerType: 'university',
+      pointBalance: 0,
+      settings: {
+        resumePlayback: true,
+        keepScreenOnWhileRecording: true,
+        subtitleLanguage: '한국어',
+        pageTurn: 'swipe',
+        offlineCache: false,
+        theme: 'light',
+        doubleTapEraser: true,
+        leftHanded: false,
+      },
+      status: 'active',
+      interestCategoryIds: [],
+      streakDays: 0,
+      createdAt: '2026-11-21T13:05:00Z',
+    };
+    const tokens = { accessToken: 'a', refreshToken: 'r', user };
+
+    it('새 계정 여부를 그대로 넘긴다', () => {
+      const r = AuthTokens.safeParse({ ...tokens, isNewUser: true });
+      expect(r.success && r.data.isNewUser).toBe(true);
+    });
+
+    it('필드가 없는 옛 서버의 응답도 받는다', () => {
+      const r = AuthTokens.safeParse(tokens);
+      expect(r.success).toBe(true);
+      expect(r.success && r.data.isNewUser).toBeUndefined();
+    });
+
+    it('참 · 거짓이 아니면 거절한다', () => {
+      expect(AuthTokens.safeParse({ ...tokens, isNewUser: 'yes' }).success).toBe(false);
+    });
   });
 });
 

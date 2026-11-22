@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import type { MaterialDocument } from '../src/modules/content/schemas/material.schema.js';
@@ -133,6 +133,15 @@ function setup() {
     notePages,
   };
 }
+
+// 이 파일은 퀴즈를 끝낸 뒤 자동 오답 복습이 켜졌을 때(AUTO_SIMILAR_ON_FINISH=true, 되돌리기용 #625)의 동작을 본다.
+// 꺼졌을 때(기본)는 similar-quiz-auto-off.test.ts가 본다
+beforeAll(() => {
+  vi.stubEnv('AUTO_SIMILAR_ON_FINISH', 'true');
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('퀴즈를 끝내면 오답 복습 시작(SimilarQuizService.startAfterFinish)', () => {
   it('틀린 문제가 있으면 다시 보기 세트를 만들고 작업을 넣는다', async () => {

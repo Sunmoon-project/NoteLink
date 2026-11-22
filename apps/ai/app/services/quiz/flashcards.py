@@ -20,8 +20,9 @@ result — NestJS가 사용자가 플래시카드 목록을 열 때 flashcards�
 
 검사(코드): 모양 · 쪽(보여 준 쪽만) · 길이 · 앞뒤가 같음 · 앞면 겹침, 앞면 낱말이 그 쪽 글에 있음,
 뒷면 글이 그 쪽 노트 글에 있음(grounded). 그다음 검사 모델이 한 호출로 앞뒤 짝을 봄(뒷면이 그 앞면의
-뜻 · 답인지, _verify). 떨어진 카드는 빼고, 모자라면 보충 호출은 한 번까지(앞
-카드의 문제점 · 이미 만든 앞면을 알려 줌).
+뜻 · 답인지, _verify). 떨어질 몫을 생각해 COUNT + SPARE장을 요청하고, 통과한 카드 중 앞에서부터
+COUNT장을 씀(#631, TestQA QUIZ-024). 모자라면 보충 호출은 한 번까지(모자란 수 + SPARE장, 앞
+카드의 문제점 · 이미 만든 앞면을 알려 줌). 카드 만들기 호출은 지금처럼 2번까지.
 
 카드는 퀴즈의 덤입니다: 호출 실패 · 시간 초과 · 설정 오류 · 코드 오류가 나도 예외를 올리지 않고
 (다시 하면 되는 서버 거절 401 · 403 · 404만 올려 작업 처리기가 다시 시도)
@@ -66,6 +67,12 @@ TYPE = "quiz_flashcards"
 
 NAME = "Flashcards"  # 카드 호출 이름
 COUNT = 5  # 세트마다 카드 수(회의 결정)
+# 검사로 떨어질 몫을 생각해 호출마다 더 요청하는 카드 수(#631, TestQA QUIZ-024). 딱 COUNT장만
+# 요청하면 몇 장만 떨어져도 보충 한 번으로 다 채우지 못해 5장 미만이 흔했음. 검사 기준은 그대로
+# 두고 호출 수도 늘리지 않음. 늘어나는 것은 호출 하나의 출력: Claude는 출력 토큰 비용(쓴 만큼만
+# 청구), 학교 LLM(기본값 · Claude 비용 한도 뒤)은 응답 시간이라 JOB_SEC에 닿기 쉬워짐.
+# 더 늘리기 전에 학교 LLM 카드 호출 시간(로그 「개념 카드: n/5장, 초」)을 볼 것
+SPARE = 3
 TEXT_CAP = 2500  # 쪽마다 보여 주는 글(generate.TEXT_CAP과 같음)
 CARD_CHARS = 10000  # 한 호출에 보여 주는 쪽 글 합계: 학교 LLM 문맥 안(generate.CHECK_CHARS 근처)
 FRONT_MAX = 80
@@ -369,13 +376,13 @@ def make(
     why: list[str] = []
     faults: list[str] = []  # 카드 탈락 이유(보충 호출에 알림). 호출 장애는 넣지 않음
     for again in (False, True):
-        k = COUNT - len(cards)
+        k = COUNT - len(cards) + SPARE  # 요청 수: 모자란 수 + 여유
         if limit() - now() < MIN_SEC:
             why.append(TIMEOUT)
             break
         notes = "\n\n".join(f'<노트 쪽="{p}">\n{t}\n</노트>' for p, t in sorted(shown.items()))
         user = (
-            f"{notes}\n\n개념(가능하면 이 개념들로, 한 개념에 한 장): {', '.join(names)}\n"
+            f"{notes}\n\n개념(가능하면 이 개념들부터, 한 개념에 한 장): {', '.join(names)}\n"
             f"이 노트로 플래시카드 {k}장을 만들어라."
         )
         if again and cards:
@@ -389,9 +396,11 @@ def make(
                 why.append(BAD_SHAPE)
                 faults.append(BAD_SHAPE)
                 continue
-            picked: list[JsonObject] = []  # 코드 검사를 통과한 카드(앞뒤 짝 검사 전)
+            # 코드 검사를 통과한 카드(앞뒤 짝 검사 전). 요청 수(k)까지만: 모델이 더 돌려줘도
+            # (Claude는 maxItems를 설명으로만 받음) 짝 검사 호출이 커지지 않게
+            picked: list[JsonObject] = []
             for raw in got:
-                if len(cards) + len(picked) >= COUNT:
+                if len(picked) >= k:
                     break
                 c, bad = _check(raw, shown, fronts | {_front_key(x["front"]) for x in picked})
                 if c is None:
@@ -425,6 +434,8 @@ def make(
                 why.append(NOT_PAIRED)
                 faults.append(NOT_PAIRED)
                 continue
+            if len(cards) >= COUNT:  # 여유로 받아 통과한 나머지는 버림(앞에서부터 COUNT장)
+                break
             cards.append(c)
             fronts.add(_front_key(c["front"]))
         if len(cards) >= COUNT:

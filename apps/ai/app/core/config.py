@@ -49,8 +49,8 @@ class Settings(BaseSettings):
     quiz_gen_model: str = ""  # 문제 만들기
     quiz_check_model: str = ""  # 만든 문제를 직접 풀어 보는 검사
     llm_call_gap_sec: float | None = None
-    note_split_model: str = ""  # 노트 문단 경계 고르기 (글자는 고치지 않음)
-    # 문단 나누기만 다른 LLM으로. 비우면 LLM_PROVIDER를 따름
+    note_split_model: str = ""  # 노트 문단 경계 고르기 · 핵심 요약 (글자는 고치지 않음)
+    # 문단 나누기 · 핵심 요약만 다른 LLM으로. 비우면 LLM_PROVIDER를 따름
     note_split_provider: Literal["claude", "school"] | None = None
     # 노트 후처리(오타 고치기 · 개념 태그). 과목 용어 사전이 준비될 때까지 꺼 둠
     note_refine_enabled: bool = False
@@ -99,7 +99,7 @@ class Settings(BaseSettings):
 
     @property
     def split_provider(self) -> Literal["claude", "school"]:
-        """문단 나누기가 쓰는 LLM 제공자."""
+        """문단 나누기 · 핵심 요약이 쓰는 LLM 제공자."""
         return self.note_split_provider or self.llm_provider
 
     def provider_of(self, field: str) -> Literal["claude", "school"]:

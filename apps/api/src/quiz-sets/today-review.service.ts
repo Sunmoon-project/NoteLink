@@ -242,11 +242,20 @@ export class TodayReviewService {
    * 처리기 입력: 사용자의 세트 전부(지운 세트도 deletedAt과 함께: 그 풀이를 약한 개념 · 무효 풀이에 셈) ·
    * 끝낸 풀이 · 노트 글. 노트가 없는 세트(만드는 중인 오늘의 복습 등)는 처리기가 받지 않아 뺀다
    */
-  /** 오답 복습(비슷한 문제 세트)을 아직 만드는 중인 원본 세트 id */
+  /**
+   * 오답 복습(비슷한 문제 세트)을 아직 만드는 중인 원본 세트 id. 복습 상태를 옮기지 않는 세트(고르기 모드 유사 퀴즈,
+   * 만들 때 srsSavedAt을 적음, #625)는 원본의 복습 상태를 바꾸지 않으므로 세지 않는다
+   */
   private async reviewingSources(owner: Types.ObjectId): Promise<string[]> {
     const rows = await this.sets
       .find(
-        { ownerId: owner, status: 'generating', deletedAt: null, sourceSetId: { $ne: null } },
+        {
+          ownerId: owner,
+          status: 'generating',
+          deletedAt: null,
+          sourceSetId: { $ne: null },
+          srsSavedAt: null,
+        },
         { sourceSetId: 1 },
       )
       .lean<{ sourceSetId: Types.ObjectId }[]>();

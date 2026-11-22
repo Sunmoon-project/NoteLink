@@ -43,7 +43,7 @@ import {
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { useAiJobSubscription, useSocket, useTabRefresh } from '@/hooks';
-import { useQuizProgress } from '@/stores/quiz-progress';
+import { useQuizProgress, type QuizProgress } from '@/stores/quiz-progress';
 import { queryClient } from '@/lib/query';
 import { useBgJobs } from '@/stores/bg-jobs';
 import { useAuth } from '@/stores/auth';
@@ -121,6 +121,13 @@ const NO_CARDS = '이 노트로 퀴즈를 만들면 플래시 카드가 생겨�
 const PENDING_POLL_MS = 4000;
 
 /**
+ * 이어 풀 진행인지: 한 문제라도 답을 냈으면(채점 결과가 있음 · 첫 문제를 넘김 · 낸 답의 채점을 기다리는 중) 이어 풀
+ * 것이 있다. 들어가기만 하고 답을 내지 않은 진행(답 0개 · 첫 문제)은 아니다(#630, TestQA QUIZ-011)
+ */
+const hasAnswered = (p: Pick<QuizProgress, 'index' | 'results' | 'pick'> | null) =>
+  !!p && (p.results.length > 0 || p.index > 0 || p.pick !== null);
+
+/**
  * 앱이 앞에 나와 있는지. 앱이 뒤로 가도 화면 포커스는 그대로라 다시 읽기를 멈추려고 따로 본다(#593).
  * 켜자마자는 상태를 아직 모를 수 있어(unknown) 뒤에 있다고 확실할 때만 멈춘다
  */
@@ -145,8 +152,9 @@ export function QuizHomeScreen() {
   // 함께 본다. 지난 날 복습 세트는 그 카드에 나오지 않으므로 여기서 안내한다
   const pending = (s: QuizSet) =>
     s.status === 'generating' && s._id !== todayId && s.reviewDay !== seoulToday();
-  // 퀴즈를 끝내면 서버가 오답 복습(「다시 보기」) 세트를 저절로 만든다. 만드는 중 세트가 있으면 이 탭이 보이고
-  // 앱이 앞에 있는 동안에만 다시 읽어, 다 만들어지면 「AI 서버를 기다리고 있어요」 안내가 바로 사라지게 한다(#593)
+  // 만드는 중 세트(맞춤 퀴즈 · 유사 퀴즈 등)가 있으면 이 탭이 보이고 앱이 앞에 있는 동안에만 다시 읽어, 다 만들어지면
+  // 「AI 서버를 기다리고 있어요」 안내가 바로 사라지게 한다(#593). 퀴즈를 끝낸 뒤 저절로 만드는 「다시 보기」 세트는
+  // 서버 설정이 켜졌을 때만 생긴다(#625, 기본 꺼짐)
   const sets = useQuery({
     queryKey: ['quiz-sets'],
     queryFn: api.quiz.sets,
@@ -154,7 +162,8 @@ export function QuizHomeScreen() {
       focused && appActive && q.state.data?.some(pending) ? PENDING_POLL_MS : false,
   });
   const refresh = useTabRefresh(sets);
-  const progress = useQuizProgress((s) => s.progress);
+  // 답한 문제가 없는 진행은 이어 풀 것이 없으므로 무시한다(#630). 고치기 전에 남은 빈 진행도 여기서 걸러진다
+  const progress = useQuizProgress((s) => (hasAnswered(s.progress) ? s.progress : null));
   // 바로가기(유사 퀴즈 등)는 다 푼 세트도 쓰므로 가장 최근 ready 세트, 맨 위 카드는 아직 끝까지 풀지 않은 세트(#561).
   // 맨 위 카드는 오늘의 복습 세트(reviewDay, 지난 날 사본 포함)도 고르지 않는다. todayId는 reviewDay를 보내지 않는
   // 옛 서버에서도 오늘 세트를 빼려고 함께 본다. 세트 종류(맞춤 · 유사 · 「다시 보기」)와 상관없이 한 번 들어갔으면
@@ -505,6 +514,8 @@ export function QuizGenScreen() {
   const [failureMessage, setFailureMessage] = useState('');
   const canceled = useRef(false);
   const activeJob = useRef<string | null>(null);
+  // 취소에 실을 세트 번호(#642). setId(state)는 다시 그린 뒤에야 바뀌어 activeJob과 같이 ref로도 둔다
+  const activeSet = useRef<string | null>(null);
   const completedJob = useRef<string | null>(null);
   useEffect(() => {
     let disposed = false;
@@ -513,10 +524,14 @@ export function QuizGenScreen() {
       .createSet(materialId)
       .then((r) => {
         if (disposed || canceled.current) {
-          api.ai.cancel(r.job._id).catch(() => toast('생성 취소를 확인하지 못했어요'));
+          // 그 세트만 정리하게 세트 번호를 싣는다(같은 작업을 이어받은 다른 세트는 서버가 건드리지 않음, #642)
+          api.ai
+            .cancel(r.job._id, { quizSetId: r.quizSet._id })
+            .catch(() => toast('생성 취소를 확인하지 못했어요'));
           return;
         }
         activeJob.current = r.job._id;
+        activeSet.current = r.quizSet._id;
         setJob(r.job);
         setSetId(r.quizSet._id);
       })
@@ -614,7 +629,10 @@ export function QuizGenScreen() {
               canceled.current = true;
               if (activeJob.current)
                 api.ai
-                  .cancel(activeJob.current)
+                  .cancel(
+                    activeJob.current,
+                    activeSet.current ? { quizSetId: activeSet.current } : undefined,
+                  )
                   .catch(() => toast('생성 취소를 확인하지 못했어요'));
               router.back();
             }}
@@ -859,14 +877,36 @@ export function QuizSolveScreen() {
       active = false;
     };
   }, [set.data?._id, startRound]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 이 화면이 진행을 저장했는지. 첫 답의 채점이 실패해 답 없는 상태로 돌아가면 그때 저장한 진행을 지우려고 본다
+  // 진행은 첫 답을 낸 뒤부터 저장한다. 들어갔다 답 없이 나온 세트가 퀴즈 탭 맨 위에 「이어서 풀기」로 뜨지 않게
+  // (#630, TestQA QUIZ-011). 답 없이 나가면 서버 풀이만 남고(started), 다시 들어가면 새 풀이로 시작한다.
+  // 로그인이 만료되면 답이 없어도 저장한다: 다시 로그인하면 이 세트 · 입력한 답으로 돌아온다(FR-67-01). 「다시 로그인」 ·
+  // 「나중에」가 만료 표시를 끄더라도 남긴 진행은 지우지 않는다(Codex #633 1차). 이 빈 진행은 퀴즈 탭 맨 위 카드가
+  // hasAnswered로 거른다. 첫 답의 채점이 실패했을 때의 정리는 choose가 한다
   useEffect(() => {
-    if (set.data && !finish.isSuccess && ownsProgress()) {
+    if (
+      set.data &&
+      !finish.isSuccess &&
+      (hasAnswered({ index: i, results, pick }) || expired) &&
+      ownsProgress()
+    ) {
       useQuizProgress
         .getState()
         .save({ setId: set.data._id, attemptId, index: i, answerText, pick, right, results });
       screenGeneration.current = useQuizProgress.getState().generation;
     }
-  }, [set.data, attemptId, i, answerText, pick, right, results, finish.isSuccess, ownsProgress]);
+  }, [
+    set.data,
+    attemptId,
+    i,
+    answerText,
+    pick,
+    right,
+    results,
+    expired,
+    finish.isSuccess,
+    ownsProgress,
+  ]);
   const completedSetId = set.data?._id ?? activeSetId;
   const completed = useQuizProgress((state) =>
     state.progress?.setId === completedSetId ? state.progress?.completed : undefined,
@@ -914,7 +954,9 @@ export function QuizSolveScreen() {
           <Btn
             className="mt-4"
             onPress={() => {
-              if (ownsProgress()) useQuizProgress.getState().reset();
+              // 이 세트의 진행만 지운다. 답을 내기 전에는 저장하지 않으므로 다른 세트의 진행이 남아 있을 수 있다(#630)
+              if (ownsProgress() && useQuizProgress.getState().progress?.setId === set.data?._id)
+                useQuizProgress.getState().reset();
               router.back();
             }}
           >
@@ -973,6 +1015,15 @@ export function QuizSolveScreen() {
       // 로그인 만료: 풀던 내용은 그대로 두고 다이얼로그 (p.101)
       if (e instanceof ApiError && e.code === ERROR_CODES.TOKEN_EXPIRED)
         useAuth.getState().setExpired(true);
+      else if (!hasAnswered({ index: i, results, pick: null })) {
+        // 첫 답의 채점이 실패해 답 없는 상태로 돌아간다: 그 답을 내며 저장한 이 풀이의 진행은 이어 풀 것이 없으니
+        // 지운다(#630). 로그인 만료면 다시 로그인해 돌아오게 남긴다
+        const store = useQuizProgress.getState();
+        if (store.progress?.setId === set.data?._id && store.progress?.attemptId === attemptId) {
+          store.reset();
+          screenGeneration.current = useQuizProgress.getState().generation;
+        }
+      }
       setPick(null);
       toast('답안을 저장하지 못했어요. 다시 시도해주세요');
     } finally {
@@ -1257,6 +1308,13 @@ export function QuizReviewScreen() {
         <View className="mt-3">
           <QuizNextStep
             setId={set.data._id}
+            // 노트 폴더가 있는 세트는 고르기 화면(#610)으로. 오늘의 복습(노트를 섞음) · 폴더가 없는 옛 세트 · 원본 세트가 있는
+            // 세트(이어 만든 세트: 고르기로 만들면 오늘의 복습 계보가 끊김, Codex 3차)는 그 세트로 만든다(서버가 원본을 남김)
+            pickFolder={
+              set.data.folderId && set.data.materialId && !reviewCopy && !set.data.sourceSetId
+                ? set.data.folderId
+                : undefined
+            }
             results={results}
             reviewDay={Number(scheduled) > 0 ? nextReviewDay : undefined}
             room={from === 'room'}
@@ -1323,15 +1381,20 @@ export function QuizReviewScreen() {
 
 /**
  * 퀴즈 결과의 다음 단계(FR-37): 틀린 문제는 비슷한 문제 복습(유사 퀴즈)으로, 그다음은 새 퀴즈로 잇는다.
- * 복습 날짜는 서버가 이번에 일정에 넣었을 때만 말한다(오늘의 복습 · 기기 저장은 넣지 않음)
+ * 복습 날짜는 서버가 이번에 일정을 정했을 때(scheduled > 0)만 말한다. 처음 푼 문제뿐 아니라 오늘의 복습처럼 이미 복습
+ * 중인 문제도 다음 날짜로 옮기면 넣는다(#625, 설정이 꺼진 기본). 다 익혔거나 그만 낸 문제 · 기기 저장은 날짜가 없다.
+ * 유사 퀴즈는 퀴즈를 끝내도 저절로 만들지 않는다(#625, 사용자가 누를 때만). pickFolder가 있으면 그 노트의 고르기 화면
+ * (#610, 마지막 풀이에서 틀린 문제를 처음부터 체크)으로, 없으면(오늘의 복습 · 폴더가 없는 옛 세트 · 이어 만든 세트) 이 세트로 만든다
  */
 function QuizNextStep({
   setId,
+  pickFolder,
   results,
   reviewDay,
   room,
 }: {
   setId: string;
+  pickFolder?: string;
   results?: string;
   reviewDay?: string;
   room: boolean;
@@ -1355,7 +1418,11 @@ function QuizNextStep({
       icon: Sparkles,
       label: wrong ? `틀린 ${wrong}문제 비슷한 문제로 지금 복습` : '비슷한 문제로 지금 복습',
       sub: '틀린 개념을 다른 문제로 다시 풀어요',
-      onPress: () => router.push({ pathname: '/play/similar', params: { setId } }),
+      onPress: () =>
+        router.push({
+          pathname: '/play/similar',
+          params: pickFolder ? { folderId: pickFolder } : { setId },
+        }),
     });
   if (!room)
     steps.push({

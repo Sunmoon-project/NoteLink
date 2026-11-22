@@ -1,6 +1,6 @@
 import { Types } from 'mongoose';
 import { Logger } from '@nestjs/common';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AiJobsService } from '../src/ai-jobs/ai-jobs.service.js';
 import type { MaterialDocument } from '../src/modules/content/schemas/material.schema.js';
@@ -107,6 +107,15 @@ function setup() {
   };
   return { sets, attempts, jobs, materials, quizSets, similar, seed, updateOne };
 }
+
+// 이 파일은 퀴즈를 끝낸 뒤 자동 오답 복습이 켜졌을 때(AUTO_SIMILAR_ON_FINISH=true, 되돌리기용 #625)의 동작을 본다.
+// 꺼졌을 때(기본)는 similar-quiz-auto-off.test.ts가 본다
+beforeAll(() => {
+  vi.stubEnv('AUTO_SIMILAR_ON_FINISH', 'true');
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('SimilarQuizService.create', () => {
   it('마지막 풀이로 오답 복습 작업을 넣고 「다시 보기」 세트를 만드는 중으로 돌려준다', async () => {

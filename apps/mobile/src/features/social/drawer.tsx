@@ -49,7 +49,13 @@ export const DRAWER_SCREEN = {
 export function SocialDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const insets = useSafeAreaInsets();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me.get, enabled: open });
-  const friends = useQuery({ queryKey: ['friends'], queryFn: api.social.friends, enabled: open });
+  // 친구 상태(활동 중 · 쉬는 중)는 다시 읽어야만 바뀐다: 30초 캐시가 남아 있어도 창을 열 때마다 새로 읽는다(SOC-002)
+  const friends = useQuery({
+    queryKey: ['friends'],
+    queryFn: api.social.friends,
+    enabled: open,
+    refetchOnMount: 'always',
+  });
   const requests = useQuery({
     queryKey: ['friend-requests'],
     queryFn: api.social.received,

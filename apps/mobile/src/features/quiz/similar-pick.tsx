@@ -159,7 +159,7 @@ const Box = ({ on }: { on: boolean }) => (
  * 체크해 둔다. 고른 문제(SIMILAR_PICK_MAX개까지)로 만든다. 하나도 고르지 않으면 만들 수 없다
  */
 export function SimilarPickScreen({ folderId }: { folderId: string }) {
-  // 이 학습 폴더로 만드는 중인 세트(퀴즈를 끝내면 바로 도는 오답 복습 등)가 있으면 목록을 다시 읽어 끝나는 것을 본다.
+  // 이 학습 폴더로 만드는 중인 세트(맞춤 퀴즈 · 앞서 만든 유사 퀴즈 등)가 있으면 목록을 다시 읽어 끝나는 것을 본다.
   // 만들기는 새 세트가 들어갈 노트(noteOf)로 만드는 중일 때만 막는다(서버 고유 색인과 같은 노트 단위, code-review 3차)
   const generatingHere = (list?: QuizSet[]) =>
     !!list?.some((s) => s.status === 'generating' && s.folderId === folderId);

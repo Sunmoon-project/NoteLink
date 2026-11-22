@@ -75,6 +75,11 @@ export const AuthTokens = z.object({
   accessToken: z.string(),
   refreshToken: z.string(),
   user: User,
+  /**
+   * 간편 로그인이 이번에 계정을 새로 만들었는지. 탈퇴한 계정은 되살리지 않아서, 탈퇴 뒤 같은 소셜 계정으로
+   * 들어오면 새 계정이 된다 — 앱은 이때 안내한다(PROF-013). 이메일 로그인 · 옛 서버는 보내지 않는다
+   */
+  isNewUser: z.boolean().optional(),
 });
 export const SocialProvider = z.enum(['kakao', 'naver', 'google']);
 
@@ -344,6 +349,18 @@ export const AiJob = z.object({
   error: z.string().nullable(),
   createdAt: date,
   updatedAt: date,
+});
+
+/**
+ * AI 작업 취소 — POST /ai-jobs/:id/cancel 본문(선택). quizSetId: 퀴즈를 만들던 세트를 취소할 때 그 세트 번호.
+ * 서버는 그 세트만 정리한다(같은 작업을 새로 이어받은 다른 세트는 건드리지 않음). 없으면(옛 앱 · 다른 작업) 작업 id로만 취소.
+ * 세트 번호는 서버 id 형식(24자리 16진수)이어야 한다(아니면 400)
+ */
+export const AiJobCancelBody = z.object({
+  quizSetId: z
+    .string()
+    .regex(/^[0-9a-f]{24}$/i)
+    .optional(),
 });
 
 /** 아바타 노트 묻고 답하기 — POST /materials/:id/ask 본문. history는 앞선 대화(오래된 순) */
@@ -697,6 +714,7 @@ export type Diagram = z.infer<typeof Diagram>;
 export type DiagramKind = z.infer<typeof DiagramKind>;
 export type Question = z.infer<typeof Question>;
 export type QuestionDifficulty = z.infer<typeof QuestionDifficulty>;
+export type AiJobCancelBody = z.infer<typeof AiJobCancelBody>;
 export type NoteAskTurn = z.infer<typeof NoteAskTurn>;
 export type NoteAskBody = z.input<typeof NoteAskBody>;
 export type NoteAskResult = z.infer<typeof NoteAskResult>;
