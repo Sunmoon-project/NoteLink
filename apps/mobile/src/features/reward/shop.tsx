@@ -300,9 +300,12 @@ export function ShopScreen() {
   const wishing = useRef(new Set<string>());
   const wish = useMutation({
     mutationFn: (it: ShopItem) => api.shop.wish(it._id),
-    onSuccess: (isWished, it) => {
+    onSuccess: async (isWished, it) => {
       // 응답대로 고친 뒤 다시 읽는다. 다시 읽기(invalidate)는 먼저 시작한 읽기(찜 전 상태일 수 있음)를
-      // 되돌리지 않고 조용히 멈춘 뒤 새로 읽어, 늦게 온 찜 전 목록이 응답을 덮지 않는다
+      // 되돌리지 않고 조용히 멈춘 뒤 새로 읽어, 늦게 온 찜 전 목록이 응답을 덮지 않는다.
+      // 단, 아직 한 번도 못 읽었으면 invalidate가 진행 중인 처음 읽기를 그대로 이어받으므로 그 읽기를 먼저 버린다
+      if (qc.getQueryData(['my-items']) === undefined)
+        await qc.cancelQueries({ queryKey: ['my-items'] });
       qc.setQueryData<UserItem[]>(['my-items'], (list) => {
         if (!list) return list;
         if (list.some((u) => u.itemId === it._id))

@@ -115,3 +115,30 @@ it('응답의 isWished를 바로 그리고, 먼저 시작한 내 아이템 다�
   await act(async () => fresh.resolve(wishedNow()));
   expect(screen.getAllByLabelText('찜 해제')).toHaveLength(1);
 });
+
+it('내 아이템을 처음 읽는 중에 찜 응답이 와도, 늦게 온 찜 전 목록이 하트를 되돌리지 않는다', async () => {
+  // 처음 읽기는 찜 전 목록([])을 늦게 돌려주고, 그 뒤 다시 읽기는 서버의 지금 상태(찜됨)를 돌려준다
+  const first = deferred<UserItem[]>();
+  const wish = jest.spyOn(api.shop, 'wish').mockResolvedValue(true);
+  let calls = 0;
+  jest.spyOn(api.shop, 'myItems').mockImplementation(async () =>
+    calls++
+      ? [
+          {
+            _id: 'ui-wished',
+            itemId: wish.mock.calls[0]![0],
+            itemCategory: 'avatar',
+            isOwned: false,
+            isWished: true,
+            isEquipped: false,
+            acquiredAt: null,
+          },
+        ]
+      : first.promise,
+  );
+  await renderScreen(<ShopScreen />, client());
+  await fireEvent.press((await screen.findAllByLabelText('찜'))[0]!);
+  await waitFor(() => expect(wish).toHaveBeenCalledTimes(1));
+  await act(async () => first.resolve([]));
+  expect(await screen.findAllByLabelText('찜 해제')).toHaveLength(1);
+});
