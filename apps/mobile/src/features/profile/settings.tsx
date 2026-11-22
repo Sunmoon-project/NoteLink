@@ -65,6 +65,16 @@ const gb = (b: number) => {
   return b ? unit(Math.max(b / 1024, 0.1), 'KB') : '0KB';
 };
 
+/** 프로필 줄: 「선문고 2학년 · 이메일」. 학교 · 학년이 비면 이메일만 */
+export const profileLine = (u: {
+  school?: string | null;
+  grade?: string | null;
+  email?: string | null;
+}) =>
+  [[u.school?.replace('등학교', ''), u.grade].filter(Boolean).join(' '), u.email]
+    .filter(Boolean)
+    .join(' · ');
+
 /** 앱 버전은 app.config.ts의 version을 읽는다 */
 const APP_VERSION = Constants.expoConfig?.version ?? '-';
 export function SettingsScreen() {
@@ -150,9 +160,7 @@ export function SettingsScreen() {
           >
             <View className="flex-1">
               <Text className="text-title3 font-bold text-ink">{u.nickname}</Text>
-              <Text className="text-caption text-sub">
-                {u.school?.replace('등학교', '')} {u.grade} · {u.email}
-              </Text>
+              <Text className="text-caption text-sub">{profileLine(u)}</Text>
             </View>
             <ChevronRight size={ICON.md} color={C.sub} />
           </Pressable>
@@ -169,37 +177,40 @@ export function SettingsScreen() {
             {`${tier} 플랜`}
           </Row>
         </Group>
-        {/* 쓰는 양은 구획으로 — 눌러서 하는 일이 없어 카드로 감싸지 않는다 */}
-        <View className="mt-5 px-1">
-          <View className="flex-row justify-between">
-            <Text className="text-caption text-sub">저장 공간</Text>
-            <Text className="text-caption text-sub">
-              {gb(u.usage?.storageBytes ?? 0)} / {gb(u.usage?.storageLimitBytes ?? 0)}
-            </Text>
+        {/* 쓰는 양은 구획으로 — 눌러서 하는 일이 없어 카드로 감싸지 않는다.
+            서버가 아직 집계하지 않으면(usage 없음) 0으로 꾸며 보이지 않고 구획을 숨긴다 */}
+        {u.usage && (
+          <View className="mt-5 px-1">
+            <View className="flex-row justify-between">
+              <Text className="text-caption text-sub">저장 공간</Text>
+              <Text className="text-caption text-sub">
+                {gb(u.usage.storageBytes ?? 0)} / {gb(u.usage.storageLimitBytes ?? 0)}
+              </Text>
+            </View>
+            <Progress
+              value={Math.max(
+                2,
+                ((u.usage.storageBytes ?? 0) / (u.usage.storageLimitBytes || 1)) * 100,
+              )}
+              className="mt-1.5"
+            />
+            <View className="mt-4 flex-row justify-between">
+              <Text className="text-caption text-sub">AI 크레딧</Text>
+              <Text className="text-caption text-sub">
+                {u.usage.aiCredits ?? 0}
+                {u.usage.aiCreditLimit ? ` / ${u.usage.aiCreditLimit}` : ''}
+              </Text>
+            </View>
+            <Progress
+              value={
+                u.usage.aiCreditLimit
+                  ? Math.max(2, ((u.usage.aiCredits ?? 0) / u.usage.aiCreditLimit) * 100)
+                  : 0
+              }
+              className="mt-1.5"
+            />
           </View>
-          <Progress
-            value={Math.max(
-              2,
-              ((u.usage?.storageBytes ?? 0) / (u.usage?.storageLimitBytes || 1)) * 100,
-            )}
-            className="mt-1.5"
-          />
-          <View className="mt-4 flex-row justify-between">
-            <Text className="text-caption text-sub">AI 크레딧</Text>
-            <Text className="text-caption text-sub">
-              {u.usage?.aiCredits ?? 0}
-              {u.usage?.aiCreditLimit ? ` / ${u.usage.aiCreditLimit}` : ''}
-            </Text>
-          </View>
-          <Progress
-            value={
-              u.usage?.aiCreditLimit
-                ? Math.max(2, ((u.usage.aiCredits ?? 0) / u.usage.aiCreditLimit) * 100)
-                : 0
-            }
-            className="mt-1.5"
-          />
-        </View>
+        )}
 
         <Label>알림</Label>
         <Group>

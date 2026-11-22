@@ -54,8 +54,10 @@ export const diffLabel = (sec: number) => {
 export const goalLabel = (min: number | null) =>
   !min ? '목표 없음' : min >= 60 ? `${min / 60}시간` : `${min}분`;
 export const timeAgo = (iso: string) => {
-  const h = (Date.now() - new Date(iso).getTime()) / 3600000;
-  if (h < 1) return '방금';
+  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (m < 1) return '방금';
+  if (m < 60) return `${m}분 전`;
+  const h = m / 60;
   if (h < 24) return `${Math.floor(h)}시간 전`;
   return `${Math.floor(h / 24)}일 전`;
 };

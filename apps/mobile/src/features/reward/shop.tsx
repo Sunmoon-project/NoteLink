@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleCheck,
+  Coins,
   Frown,
   Heart,
   Package,
@@ -31,6 +32,7 @@ import {
   Btn,
   Canvas,
   Dialog,
+  Empty,
   LIST_LAYOUT,
   Loading,
   Roll,
@@ -293,10 +295,20 @@ export function ShopScreen() {
   const buying = useRef(false);
   const purchased = useRef(new Set<string>());
 
+  // 서버 찜은 토글이라 응답 전에 또 누르면 두 번 뒤집힌다: 진행 중엔 무시
+  const wishing = useRef(false);
   const wish = useMutation({
     mutationFn: api.shop.wish,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['my-items'] }),
+    onSettled: () => {
+      wishing.current = false;
+    },
   });
+  const toggleWish = (id: string) => {
+    if (wishing.current) return;
+    wishing.current = true;
+    wish.mutate(id);
+  };
   const buy = useMutation({
     mutationFn: (it: ShopItem) => api.shop.purchase(it._id),
     retry: false,
@@ -468,7 +480,7 @@ export function ShopScreen() {
                   </Pressable>
                   <Pressable
                     accessibilityLabel={wished.has(it._id) ? '찜 해제' : '찜'}
-                    onPress={() => wish.mutate(it._id)}
+                    onPress={() => toggleWish(it._id)}
                     hitSlop={8}
                     className="absolute top-3.5 right-3.5"
                   >
@@ -517,7 +529,7 @@ export function ShopScreen() {
                 ) : (
                   <Pressable
                     accessibilityLabel="찜"
-                    onPress={() => wish.mutate(detail._id)}
+                    onPress={() => toggleWish(detail._id)}
                     className="h-8 w-8 items-center justify-center rounded-full bg-fill"
                   >
                     <Heart
@@ -677,6 +689,19 @@ export function PointsScreen() {
         </View>
         <View className="mt-2">
           {(ledger.isPending || shop.pending) && <Loading />}
+          {ledger.data?.length === 0 && (
+            <Empty
+              icon={<Coins size={32} color={C.brand} />}
+              title={
+                tab === '사용'
+                  ? '아직 사용한 내역이 없어요'
+                  : tab === '적립'
+                    ? '아직 적립한 내역이 없어요'
+                    : '아직 포인트 내역이 없어요'
+              }
+              body="퀴즈를 풀고 공부하면 포인트가 쌓여요"
+            />
+          )}
           {ledger.data?.map((l) => (
             <Animated.View
               key={l._id}

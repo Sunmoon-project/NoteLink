@@ -37,6 +37,8 @@ describe('화면을 떠나 기다리는 AI 작업', () => {
     await checkBgJobs();
     expect(mockToast).toHaveBeenCalledWith("'자료구조' 퀴즈를 다 만들었어요");
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['quiz-sets'] });
+    // TestQA 3차 PROF-007: 푸시를 못 받아도 알림함 · 종 숫자를 바로 새로 읽는다
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['notifications'] });
     expect(useBgJobs.getState().jobs.map((j) => j.jobId)).toEqual(['m1']);
     invalidate.mockRestore();
   });
