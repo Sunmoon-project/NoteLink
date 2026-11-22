@@ -69,3 +69,13 @@ jest.mock('react-native-gesture-handler/ReanimatedSwipeable', () => {
   Swipeable.displayName = 'ReanimatedSwipeable';
   return { __esModule: true, default: Swipeable };
 });
+
+// 진행바 끌기(react-native-gesture-handler v3 훅)는 네이티브 워클릿이 필요해 시험 환경에서 돌지 않는다.
+// 제스처는 빈 값으로 두고, 끌기 · 놓기 계산은 scrub.test.tsx가 useScrubState로 직접 본다
+jest.mock('react-native-gesture-handler', () => ({
+  GestureHandlerRootView: ({ children }) => children,
+  GestureDetector: ({ children }) => children,
+  usePanGesture: () => ({}),
+  useTapGesture: () => ({}),
+  useExclusiveGestures: () => ({}),
+}));

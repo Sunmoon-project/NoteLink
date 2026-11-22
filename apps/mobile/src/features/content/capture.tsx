@@ -39,7 +39,8 @@ import {
 } from 'lucide-react-native';
 import { api, type ImageVerdict } from '@/lib/api';
 import { ApiError, NetworkError } from '@/lib/api/http';
-import { editPhoto } from '@/lib/image-edit';
+import { cropPhoto, editPhoto } from '@/lib/image-edit';
+import { frameCropRect, type Box } from '@/lib/frame-crop';
 import { toast } from '@/stores/toast';
 import { checkFile, uploadToBlob, UploadError, type LocalFile } from '@/lib/upload';
 import { audioFileIssue, CONTENT_MIN, documentIssue, recordingIssue } from '@/lib/content-check';
@@ -96,6 +97,9 @@ export function CameraScreen() {
   const [facing, setFacing] = useState<'back' | 'front'>('back');
   const [pages, setPages] = useState<LocalFile[]>([]);
   const [busy, setBusy] = useState(false);
+  // 미리보기(화면 전체)와 틀의 크기·위치 — 찍은 사진에서 틀 안쪽만 남기려고 잰다
+  const previewSize = useRef({ width: 0, height: 0 });
+  const frameBox = useRef<Box | null>(null);
   if (!perm) return <View className="flex-1 bg-black" />;
   if (!perm.granted) return <NeedPermission onGrant={request} canAsk={perm.canAskAgain} />;
 
@@ -105,11 +109,16 @@ export function CameraScreen() {
     try {
       const p = await cam.current?.takePictureAsync({ quality: 0.85 });
       if (!p) return;
-      const f: LocalFile = {
+      let f: LocalFile = {
         uri: p.uri,
         name: `${scan ? 'scan' : 'note'}_${Date.now()}.jpg`,
         mimeType: 'image/jpeg',
       };
+      // 틀 밖은 버린다. 잴 수 없거나 자르다 실패하면 전체 사진을 그대로 쓴다.
+      if (frameBox.current && previewSize.current.width)
+        try {
+          f = await cropPhoto(f, frameCropRect(previewSize.current, frameBox.current, p));
+        } catch {}
       if (scan) setPages((x) => [...x, f]);
       else {
         useDraft.getState().set({ files: [f] });
@@ -143,6 +152,7 @@ export function CameraScreen() {
     <View
       className="flex-1 bg-black"
       style={{ paddingTop: insets.top, paddingBottom: insets.bottom + 16 }}
+      onLayout={(e) => (previewSize.current = e.nativeEvent.layout)}
     >
       <StatusBar style="light" />
       <CameraView
@@ -163,6 +173,7 @@ export function CameraScreen() {
         {scan ? '문서를 프레임 안에 맞춰주세요' : '필기한 종이를 프레임 안에 맞춰주세요'}
       </Text>
       <View
+        onLayout={(e) => (frameBox.current = e.nativeEvent.layout)}
         className={cx(
           'mx-auto mt-4 aspect-[3/4] w-[85%] rounded-xl border-2',
           scan ? 'border-brand' : 'border-dashed border-brand/80',
