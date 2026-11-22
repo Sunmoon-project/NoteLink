@@ -28,6 +28,7 @@ import { env } from '@/lib/env';
 import { toast } from '@/stores/toast';
 import { AiPending } from '@/components/AiPending';
 import {
+  afterSheetClosed,
   Badge,
   Btn,
   Canvas,
@@ -620,6 +621,9 @@ export function DocDetailScreen() {
   const [pick, setPick] = useState(false);
   const download = useMutation({
     mutationFn: async (what: 'summary' | 'original') => {
+      // 고르기 시트(Modal)가 닫히는 중에 공유 시트를 띄우면 Modal과 함께 사라져 shareAsync가 끝나지 않았다
+      // (스피너가 계속 돌고 완료 화면이 안 뜸, iOS QA TC-NOTE-021) → 다 닫힌 뒤에 띄운다
+      await afterSheetClosed();
       if (what === 'summary') {
         // 파일 이름에 쓸 수 없는 글자는 뺀다
         const fileName = `${m!.title.replace(/[\\/:*?"<>|]/g, ' ').trim() || '정리본'}.md`;

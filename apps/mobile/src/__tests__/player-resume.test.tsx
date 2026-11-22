@@ -1,7 +1,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
-import { useResume } from '../features/content/player';
+import { usePlayback, useResume } from '../features/content/player';
+import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { api } from '../lib/api';
 
 const mockStore = new Map<string, string>();
@@ -88,4 +89,61 @@ it('지난 자리를 읽는 동안 화면을 닫으면 아무것도 적지 않�
   // 닫힌 플레이어를 옮기거나 알리지도 않는다
   expect(seek).not.toHaveBeenCalled();
   expect(mockToast).not.toHaveBeenCalled();
+});
+
+// iOS QA(TC-NOTE-026, 2026-11-21): 녹음 파일을 불러오기 전에 지난 자리로 옮기면 iOS 플레이어가 무시해 00:00에 머물고,
+// 곧이어 0초가 적혀 지난 자리마저 지워졌다 → 파일을 다 불러온(ready) 뒤에 옮긴다
+it('녹음 파일을 다 불러오기 전(isLoaded false)에는 재생 준비 전으로 두어 지난 자리로 옮기지 않는다', async () => {
+  jest.mocked(useAudioPlayer).mockReturnValue({ loop: false } as never);
+  const status = { currentTime: 0, duration: 0, playing: false, playbackRate: 1, isLoaded: false };
+  jest.mocked(useAudioPlayerStatus).mockImplementation(() => status as never);
+  const view = await renderHook(() => usePlayback('https://blob.example/a.m4a', 205));
+  expect(view.result.current.ready).toBe(false);
+  status.isLoaded = true;
+  await view.rerender({});
+  expect(view.result.current.ready).toBe(true);
+});
+
+it('지난 자리로 옮기는 동안(아직 0초) 0초를 적어 지난 자리를 지우지 않는다', async () => {
+  meWith(true);
+  mockStore.set('notelink.playpos.m1', '30');
+  const { seek, view } = await run(0);
+  await waitFor(() => expect(seek).toHaveBeenCalledWith(30));
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  // 옮기기가 반영되기 전 상태 갱신(0초)이 한 번 더 와도 그대로
+  await view.rerender({ at: 0.25 });
+  await act(async () => {});
+  expect(mockStore.get('notelink.playpos.m1')).toBe('30');
+  await view.unmount();
+  expect(mockStore.get('notelink.playpos.m1')).toBe('30');
+});
+
+// Codex 리뷰(#624): 6초처럼 처음 가까운 자리는 옮기기가 실패한 채 0초부터 재생돼 나가도 지난 자리를 덮어쓰지 않는다
+it('지난 자리(6초)로 옮기기가 반영되지 않은 채 0초부터 재생돼 나가도 지난 자리를 지킨다', async () => {
+  meWith(true);
+  mockStore.set('notelink.playpos.m1', '6');
+  const { seek, view } = await run(0);
+  await waitFor(() => expect(seek).toHaveBeenCalledWith(6));
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await view.rerender({ at: 1.1 });
+  await act(async () => {});
+  await view.unmount();
+  expect(mockStore.get('notelink.playpos.m1')).toBe('6');
+});
+
+it('지난 자리(6초) 근처로 옮겨진 뒤에는 듣는 자리를 다시 적는다', async () => {
+  meWith(true);
+  mockStore.set('notelink.playpos.m1', '6');
+  const { seek, view } = await run(0);
+  await waitFor(() => expect(seek).toHaveBeenCalledWith(6));
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await view.rerender({ at: 6.2 }); // 옮기기 반영
+  await view.rerender({ at: 40 });
+  await waitFor(() => expect(mockStore.get('notelink.playpos.m1')).toBe('40'));
 });
