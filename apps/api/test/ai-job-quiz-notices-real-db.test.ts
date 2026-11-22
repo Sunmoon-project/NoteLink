@@ -152,6 +152,24 @@ describe.skipIf(!isLocal)('진짜 DB 퀴즈 생성 알림', () => {
     ]);
   });
 
+  // TestQA 3차 COM-004: 작업은 성공으로 끝났지만 쓸 문제가 0개면 세트는 failed가 된다 → 「준비됐어요」 대신 실패 문구
+  it('끝났지만 문제가 0개면 준비됐다고 하지 않고 실패로 알린다', async () => {
+    await quizJob({
+      type: 'similar_quiz',
+      result: { reviewQuestions: [], emptyReason: 'no_wrong' },
+    });
+    await quizJob({ result: { questions: [] } });
+    await quizJob({ result: { questions: [{ order: 1 }] } });
+    await service.runOnce(NOW);
+    expect(sent.map((m) => m.title).sort()).toEqual([
+      '유사 문제를 만들지 못했어요. 다시 시도해 주세요',
+      '퀴즈가 준비됐어요',
+      '퀴즈를 만들지 못했어요. 다시 시도해 주세요',
+    ]);
+    const empty = sent.filter((m) => m.title.includes('못했어요'));
+    expect(empty.every((m) => m.data.status === 'failed' && !m.data.quizSetId)).toBe(true);
+  });
+
   it('사용자가 기다린 미리 만들기(awaited)만 알리고, 기다리지 않은 것 · 지운 세트 · 세트 없는 것은 알리지 않는다', async () => {
     const materialId = new Types.ObjectId();
     await quizJob({
