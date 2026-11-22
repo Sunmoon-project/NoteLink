@@ -3,13 +3,15 @@ import { View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useFocusEffect } from 'expo-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useKeepAwake } from 'expo-keep-awake';
 import { Accelerometer } from 'expo-sensors';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { Flame, Pause, Play, Plus, RotateCw, Square, Target, Users } from 'lucide-react-native';
+import { ERROR_CODES, type DailyRecord, type StudyItem } from '@notelink/shared';
 import { api } from '@/lib/api';
+import { ApiError } from '@/lib/api/http';
 import { BellButton } from '@/features/notifications';
 import { dLabel, goalLabel, hm, hms, seoul, ymd } from '@/lib/dates';
 import { useNow, useTabRefresh } from '@/hooks';
@@ -18,6 +20,7 @@ import { toast } from '@/stores/toast';
 import { AUTO_END_MS, useSession } from '@/stores/session';
 import { useDevicePrefs } from '@/stores/device-prefs';
 import {
+  Alert,
   Badge,
   Btn,
   Canvas,
@@ -38,6 +41,9 @@ import { weeklyProgress } from './weekly-progress';
 
 // p.46~49 홈 · 공부 측정
 
+/** 측정 중(일시정지 포함)인 항목은 지우지 않는다 — 공부를 끝내 시간을 정산한 뒤 지운다(HOME-002) */
+const IN_SESSION_MSG = '측정 중인 항목은 공부를 끝낸 뒤 삭제할 수 있어요';
+
 export function HomeScreen() {
   const qc = useQueryClient();
   const openFeature = useFeatureNavigation();
@@ -52,6 +58,26 @@ export function HomeScreen() {
   const s = useSession();
   const running = !!s.since;
   const [sheet, setSheet] = useState<null | 'add' | 'goal'>(null);
+  // 항목을 길게 누르면 삭제 확인(HOME-002). 서버는 기록(쌓인 시간 · 통계)을 남기고 목록에서만 숨긴다
+  const [removing, setRemoving] = useState<Pick<StudyItem, '_id' | 'title'> | null>(null);
+  const removeItem = useMutation({
+    mutationFn: (id: string) => api.study.removeItem(id),
+    onSuccess: (_, id) => {
+      // 다시 읽기 전에 바로 목록에서 뺀다. 합계는 그대로라 목록만 고친다
+      qc.setQueriesData<DailyRecord>(
+        { queryKey: ['study', 'today'] },
+        (d) => d && { ...d, items: d.items.filter((i) => i._id !== id) },
+      );
+      void qc.invalidateQueries({ queryKey: ['study', 'today'] });
+      toast('공부 항목을 삭제했어요');
+    },
+    onError: (e) =>
+      toast(
+        e instanceof ApiError && e.code === ERROR_CODES.STUDY_ITEM_IN_SESSION
+          ? IN_SESSION_MSG
+          : '공부 항목을 삭제하지 못했어요. 다시 시도해 주세요',
+      ),
+  });
 
   const items = today.data?.items ?? [];
   const has = items.length > 0;
@@ -94,6 +120,11 @@ export function HomeScreen() {
       if (switching && useAuth.getState().userId === owner)
         await qc.invalidateQueries({ queryKey: ['study'] });
     }
+  };
+  const askRemove = (it: Pick<StudyItem, '_id' | 'title'>) => {
+    if (it._id === s.itemId) return toast(IN_SESSION_MSG);
+    Haptics.selectionAsync();
+    setRemoving({ _id: it._id, title: it.title });
   };
   const ending = useRef(false);
   // 다른 화면을 보는 중이면 자동 종료로 화면을 끌고 가지 않는다
@@ -365,21 +396,33 @@ export function HomeScreen() {
                   <View
                     className={cx('h-8 w-1 rounded-full', on ? 'bg-brand' : 'bg-transparent')}
                   />
-                  <View className="flex-1">
-                    <Text className="text-callout font-semibold text-ink">{it.title}</Text>
-                    <Text className="text-caption text-sub">
-                      {it.subjectName} ·{' '}
-                      {it.goalMin ? `목표 ${goalLabel(it.goalMin)}` : goalLabel(null)}
-                    </Text>
-                  </View>
-                  <Text
-                    className={cx(
-                      'tabular-nums text-subhead font-semibold',
-                      on ? 'text-brand' : 'text-ink/80',
-                    )}
+                  {/* 제목 · 시간 칸을 길게 누르면 삭제 확인. 스크린 리더는 동작 메뉴의 '삭제'로 같은 일을 한다 */}
+                  <Pressable
+                    accessibilityLabel={it.title}
+                    accessibilityHint="길게 누르면 삭제할 수 있어요"
+                    accessibilityActions={[{ name: 'longpress', label: '삭제' }]}
+                    onAccessibilityAction={(e) => {
+                      if (e.nativeEvent.actionName === 'longpress') askRemove(it);
+                    }}
+                    onLongPress={() => askRemove(it)}
+                    className="flex-1 flex-row items-center gap-3.5"
                   >
-                    {hms(live(it._id, it.accumulatedSec))}
-                  </Text>
+                    <View className="flex-1">
+                      <Text className="text-callout font-semibold text-ink">{it.title}</Text>
+                      <Text className="text-caption text-sub">
+                        {it.subjectName} ·{' '}
+                        {it.goalMin ? `목표 ${goalLabel(it.goalMin)}` : goalLabel(null)}
+                      </Text>
+                    </View>
+                    <Text
+                      className={cx(
+                        'tabular-nums text-subhead font-semibold',
+                        on ? 'text-brand' : 'text-ink/80',
+                      )}
+                    >
+                      {hms(live(it._id, it.accumulatedSec))}
+                    </Text>
+                  </Pressable>
                   <Pressable
                     accessibilityLabel={`${it.title} ${play ? '일시정지' : '시작'}`}
                     onPress={() => toggle(it._id)}
@@ -439,6 +482,18 @@ export function HomeScreen() {
       </Screen>
       <AddItemSheet open={sheet === 'add'} onClose={() => setSheet(null)} />
       <WeekGoalSheet open={sheet === 'goal'} onClose={() => setSheet(null)} />
+      <Alert
+        open={!!removing}
+        title="공부 항목을 삭제할까요?"
+        body={`‘${removing?.title ?? ''}’ 항목을 목록에서 지워요. 지금까지 공부한 시간과 기록은 그대로 남아요.`}
+        secondary="취소"
+        onSecondary={() => setRemoving(null)}
+        primary="삭제"
+        onPrimary={() => {
+          if (removing) removeItem.mutate(removing._id);
+          setRemoving(null);
+        }}
+      />
     </Canvas>
   );
 }

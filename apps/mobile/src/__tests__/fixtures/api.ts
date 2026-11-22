@@ -321,6 +321,10 @@ export const mockApi: Api = {
       db.items.push(it);
       return structuredClone(it);
     },
+    removeItem: async (id) => {
+      await ok(undefined);
+      db.items = db.items.filter((i) => i._id !== id);
+    },
     startSession: async (p) => {
       await ok(undefined, 80);
 

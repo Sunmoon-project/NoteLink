@@ -157,7 +157,37 @@ export class StudyService {
     }
 
     /**
-     * 세션 시작. 오늘 기록에 없는 공부 항목이면 undefined.
+     * 공부 항목 지우기(HOME-002): 기록은 남기고 항목에 deletedAt만 채워 오늘 목록에서 숨긴다.
+     * 쌓인 시간(accumulatedSec) · 하루 합계 · 과목 시간(subjectSec)은 건드리지 않아 통계 · 학습 기록 · 목표 판정에 계속 들어간다.
+     * - 'deleted': 지웠다 · 이미 지운 항목이다(멱등 — 처음 지운 시각을 그대로 둔다)
+     * - 'not_found': 내 항목이 아니거나 없다(남의 항목인지 알려 주지 않는다)
+     * - 'in_session': 이 항목으로 측정 중 · 일시정지 중인 세션이 있다. 공부를 끝낸 뒤 지운다
+     */
+    async removeItem(userId: string, itemId: string): Promise<'deleted' | 'not_found' | 'in_session'> {
+        if (!isValidObjectId(itemId)) return 'not_found';
+        const owner = new Types.ObjectId(userId);
+        const id = new Types.ObjectId(itemId);
+
+        const record = await this.dailyModel
+            .findOne({ userId: owner, 'items._id': id }, { 'items.$': 1 })
+            .lean<{ items?: { deletedAt?: Date | null }[] }>();
+        const item = record?.items?.[0];
+        if (!item) return 'not_found';
+        if (item.deletedAt) return 'deleted';
+
+        const open = await this.sessionModel.exists({ userId: owner, studyItemId: id, status: { $ne: 'ended' } });
+        if (open) return 'in_session';
+
+        // 아직 안 지운 항목일 때만 채운다 → 동시에 두 번 지워도 처음 시각이 남는다
+        await this.dailyModel.updateOne(
+            { userId: owner, items: { $elemMatch: { _id: id, deletedAt: null } } },
+            { $set: { 'items.$.deletedAt': new Date() } },
+        );
+        return 'deleted';
+    }
+
+    /**
+     * 세션 시작. 오늘 기록에 없거나 지운 공부 항목이면 undefined.
      * 이 사람이 이미 열어 둔 세션(달리는 중 · 멈춘 중)이 있으면 먼저 정산하며 닫는다.
      * 한 사람이 동시에 여러 세션을 돌려 시간 · 포인트를 부풀리지 못하게 하고, 앱이 꺼져서 남은 세션도 정리한다
      */
@@ -167,7 +197,8 @@ export class StudyService {
         const studyItemId = new Types.ObjectId(dto.studyItemId);
 
         const record = await this.dailyModel
-            .findOne({ userId: owner, studyDate, 'items._id': studyItemId }, { _id: 1 })
+            // 지운 항목(deletedAt)으로는 시작하지 않는다(목록에서 사라진 항목). deletedAt: null은 칸이 없는 옛 항목도 맞는다
+            .findOne({ userId: owner, studyDate, items: { $elemMatch: { _id: studyItemId, deletedAt: null } } }, { _id: 1 })
             .lean<{ _id: Types.ObjectId }>();
         if (!record) return undefined;
 
@@ -512,7 +543,8 @@ function toDailyView(doc: DailyRecordLean): DailyRecordView {
         personalSec: doc.personalSec,
         roomSec: doc.roomSec,
         streakOk: doc.streakOk,
-        items: doc.items.map(toItemView),
+        // 지운 항목은 목록에서만 뺀다. 합계(totalSec 등)에는 그 항목의 시간도 그대로 들어 있다
+        items: doc.items.filter((item) => !item.deletedAt).map(toItemView),
     };
 }
 

@@ -29,6 +29,8 @@ export const ERROR_CODES = {
   IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
   /** 같은 노트의 퀴즈 만들기가 아직 처리 중인 취소를 만났다. 잠시 뒤 다시 시도한다 (409, POST /quiz-sets) */
   QUIZ_CANCEL_PENDING: 'QUIZ_CANCEL_PENDING',
+  /** 측정 중(일시정지 포함)인 공부 항목은 지울 수 없다. 공부를 끝낸 뒤 다시 지운다 (409, DELETE /study/items/:id) */
+  STUDY_ITEM_IN_SESSION: 'STUDY_ITEM_IN_SESSION',
   /** 입력 형식 오류 (이메일 · 필수 값 등) */
   VALIDATION: 'VALIDATION_FAILED',
   EMAIL_TAKEN: 'EMAIL_TAKEN',
@@ -150,6 +152,8 @@ export const PATHS = {
   // 학습 기록 · 목표
   studyToday: '/study/today',
   studyItems: '/study/items',
+  /** DELETE → 204. 목록에서만 숨기고 쌓인 시간 · 통계는 남긴다. 남의 것 · 없는 것 404, 이미 지운 것도 204, 측정 중이면 409 */
+  studyItem: (id: string) => `/study/items/${seg(id)}`,
   studySessions: '/study-sessions',
   studySession: (id: string) => `/study-sessions/${seg(id)}`,
   studySessionAction: (id: string, action: 'pause' | 'resume' | 'heartbeat' | 'end') =>

@@ -114,6 +114,7 @@ export const httpApi: Api = {
   study: {
     today: () => http.get(P.studyToday),
     addItem: (p) => http.post(P.studyItems, p),
+    removeItem: (id) => http.del(P.studyItem(id)),
     startSession: (p) => http.post(P.studySessions, p),
     pauseSession: (id) => http.post(P.studySessionAction(id, 'pause')),
     resumeSession: (id) => http.post(P.studySessionAction(id, 'resume')),

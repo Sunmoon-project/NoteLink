@@ -614,6 +614,19 @@ const api: Api = {
       d.items.push(it);
       return ok(it);
     },
+    // 기기 저장 모드: 시간은 세션 기록(sessions)에서 세므로 항목만 빼도 하루 · 주간 합계는 그대로다(서버의 숨김과 같은 결과).
+    // 이미 지운(없는) 항목은 서버처럼 다시 불러도 성공으로 본다
+    removeItem: (id) => {
+      const d = db();
+      if (d.sessions.some((s) => s.studyItemId === id && s.status !== 'ended'))
+        return fail(
+          ERROR_CODES.STUDY_ITEM_IN_SESSION,
+          '측정 중인 공부 항목은 공부를 끝낸 뒤 지울 수 있어요',
+          409,
+        );
+      d.items = d.items.filter((i) => i._id !== id);
+      return ok(undefined);
+    },
     startSession: async (p) => {
       await ok(undefined);
       const s: StudySession = {
