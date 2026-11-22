@@ -1,5 +1,12 @@
 import { act, renderHook } from '@testing-library/react-native';
-import { scrubTime, useScrubState } from '../features/content/scrub';
+import { scrubTime, useScrub, useScrubState } from '../features/content/scrub';
+
+// 제스처 훅은 받은 설정을 그대로 돌려줘, 시험이 실제 Pan 콜백을 부를 수 있게 한다
+jest.mock('react-native-gesture-handler', () => ({
+  usePanGesture: (config: unknown) => config,
+  useTapGesture: (config: unknown) => config,
+  useExclusiveGestures: (pan: unknown, tap: unknown) => ({ pan, tap }),
+}));
 
 describe('scrubTime', () => {
   it('가로 위치를 시각으로 바꾸고 바 밖은 0~끝에 고정한다', async () => {
@@ -70,5 +77,46 @@ describe('useScrubState', () => {
     await act(async () => h.result.current.cancel());
     expect(h.result.current.shown).toBe(10);
     expect(seek).not.toHaveBeenCalled();
+  });
+});
+
+describe('useScrub 제스처', () => {
+  type Pan = {
+    activeOffsetX: [number, number];
+    failOffsetY: [number, number];
+    onActivate: (e: { x: number }) => void;
+    onDeactivate: (e: { canceled: boolean }) => void;
+    onFinalize: (e: { canceled: boolean }) => void;
+  };
+  const setup = async () => {
+    const seek = jest.fn();
+    const h = await renderHook(() => useScrub(10, 100, seek));
+    await act(async () => h.result.current.setWidth(200));
+    const pan = () => (h.result.current.gesture as unknown as { pan: Pan }).pan;
+    return { seek, h, pan };
+  };
+
+  it('끌다가 제스처가 취소되면 seek 없이 원위치', async () => {
+    const { seek, h, pan } = await setup();
+    await act(async () => pan().onActivate({ x: 120 }));
+    await act(async () => pan().onDeactivate({ canceled: true }));
+    await act(async () => pan().onFinalize({ canceled: true }));
+    expect(seek).not.toHaveBeenCalled();
+    expect(h.result.current.shown).toBe(10);
+  });
+
+  it('정상으로 놓으면 seek 한 번', async () => {
+    const { seek, pan } = await setup();
+    await act(async () => pan().onActivate({ x: 120 }));
+    await act(async () => pan().onDeactivate({ canceled: false }));
+    await act(async () => pan().onFinalize({ canceled: false }));
+    expect(seek).toHaveBeenCalledTimes(1);
+    expect(seek).toHaveBeenCalledWith(60);
+  });
+
+  it('가로로 움직일 때만 켜지고 세로 스와이프는 스크롤에 넘긴다', async () => {
+    const { pan } = await setup();
+    expect(pan().activeOffsetX).toEqual([expect.any(Number), expect.any(Number)]);
+    expect(pan().failOffsetY).toEqual([expect.any(Number), expect.any(Number)]);
   });
 });

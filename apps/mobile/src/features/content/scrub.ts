@@ -52,10 +52,13 @@ export function useScrub(pos: number, duration: number, seek: (s: number) => voi
   const st = useScrubState(pos, duration, seek);
   const pan = usePanGesture({
     runOnJS: true,
-    minDistance: 4,
+    // 가로로 4px 움직여야 켜지고, 먼저 세로로 8px 가면 실패해 바깥 세로 스크롤에 넘긴다
+    activeOffsetX: [-4, 4],
+    failOffsetY: [-8, 8],
     onActivate: (e) => st.move(e.x),
     onUpdate: (e) => st.move(e.x),
-    onDeactivate: st.end,
+    // 취소로 끝나면 seek하지 않고 원위치
+    onDeactivate: (e) => (e.canceled ? st.cancel() : st.end()),
     onFinalize: st.cancel,
   });
   const tap = useTapGesture({ runOnJS: true, onActivate: (e) => st.tap(e.x) });
