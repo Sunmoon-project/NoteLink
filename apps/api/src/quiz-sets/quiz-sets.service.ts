@@ -421,9 +421,12 @@ export class QuizSetsService implements OnModuleInit {
    *   이미 지웠거나 ready면 작업도 멈추지 않는다: 같은 미리 만들기를 새 세트가 다시 이어받았을 수 있어, 다시 온 옛 취소가
    *   새 세트의 이어받기를 풀거나 새 세트를 지우지 않게. 번호가 없으면(옛 앱) 이 작업을 기다리던 세트를 모두 고른다
    * - 고른 세트에 취소 표시(cancelRequestedAt)를 멈추기 전에 적는다: 지우다 실패한 채 작업이 끝나도 다음 조회(sync)가
-   *   결과를 옮기지 않고 지운다(cancelSettled). 이 취소가 작업을 멈추지 못했으면(늦은 취소) 이번에 적은 표시를 거둔다
+   *   결과를 옮기지 않고 지운다(cancelSettled). 이 취소가 작업을 멈추지 못했으면(늦은 취소) 이번에 적은 표시를 거둔다.
+   *   표시는 처음 적힌 시각을 지킨다($min, #644)
    * - 멈춘 뒤 취소하지 않은 다른 만드는 중 세트가 그 미리 만들기를 기다리면 이어받기를 되살린다(keepAwaited)
-   * 여러 번 불려도 같다. 앞 호출이 지우다 실패했으면 다시 취소할 때 마저 지운다(작업이 그사이 끝났어도: 앞 표시가 남음)
+   * 여러 번 불려도 같다. 앞 호출이 지우다 실패했으면 다시 취소할 때 마저 지운다(작업이 그사이 끝났어도: 앞 표시가 남음).
+   * 단 작업이 그 취소로 멈춘 흔적이 없고 앞 표시가 30초 안이면 앞 요청이 아직 처리 중일 수 있어 그 표시를 그대로 두고,
+   * 30초 뒤 조회가 지운다(#644)
    */
   private async cancelWaiting(ctx: {
     userId: string;
@@ -436,10 +439,13 @@ export class QuizSetsService implements OnModuleInit {
     const waiting = await this.waitingSets(ownerId, jobId, ctx.quizSetId);
     if (waiting.length === 0 && ctx.quizSetId !== undefined) return;
     const ids = waiting.map((w) => w._id);
+    // 이 요청이 적는 표시 시각. 이미 표시가 있으면 더 이른(처음) 시각을 남긴다($min): 다시 취소해도 30초 유예가 다시
+    // 시작되지 않고(#644), 늦은 취소는 이 시각 그대로인 표시만 거둔다(다른 요청이 적은 표시는 건드리지 않음)
+    const mark = new Date();
     if (ids.length > 0) {
       const marked = await this.sets.updateMany(
         { _id: { $in: ids }, ownerId, status: { $ne: 'ready' }, deletedAt: null },
-        { $set: { cancelRequestedAt: new Date() } },
+        { $min: { cancelRequestedAt: mark } },
       );
       // 고른 뒤 그 세트를 같은 취소의 다른 요청이 지웠거나 ready가 됐으면 작업도 멈추지 않는다: 그사이 새 세트가 같은
       // 미리 만들기를 이어받았을 수 있다(Codex 1차)
@@ -447,14 +453,18 @@ export class QuizSetsService implements OnModuleInit {
     }
     if (!(await ctx.cancel())) {
       // 이 취소가 멈추지 못함(작업이 이미 끝남). 앞 취소가 멈춘 작업이면 마저 지운다: 작업 흔적(canceledFirst)이 있거나,
-      // 앞 취소의 표시가 남은 세트(앞 취소가 멈춘 뒤 지우다 실패함 — 늦은 취소는 표시를 거두므로, Codex 2차). 그 밖은 늦은
-      // 취소라 세트를 그대로 두고 이번에 적은 표시를 거둔다(code-review)
-      const earlier = canceledFirst(await this.jobs.findMine(ctx.userId, ctx.jobId));
-      const fresh = earlier ? [] : waiting.filter((w) => !w.marked).map((w) => w._id);
-      const drop = earlier ? ids : waiting.filter((w) => w.marked).map((w) => w._id);
-      if (fresh.length > 0) {
+      // 앞 취소의 표시가 30초 넘게 남은 세트(앞 취소가 멈춘 뒤 지우다 실패했거나 요청이 죽음 — 늦은 취소는 표시를 거두므로,
+      // Codex 2차 · cancelSettled). 방금 적힌 앞 표시는 그 요청이 아직 늦은 취소인지 가리는 중일 수 있어 그 요청에 맡긴다
+      // (#644: 두 번 누른 늦은 취소가 세트를 지우지 않게. 앞 취소가 지우다 실패한 것이면 30초 뒤 조회가 지운다).
+      // 그 밖은 늦은 취소라 세트를 그대로 두고 이 요청이 적은 표시만 거둔다(code-review)
+      const job = await this.jobs.findMine(ctx.userId, ctx.jobId);
+      const drop = waiting
+        .filter((w) => canceledFirst(job) || (w.markedAt && cancelSettled(job, w.markedAt)))
+        .map((w) => w._id);
+      const keep = ids.filter((id) => !drop.includes(id));
+      if (keep.length > 0) {
         await this.sets.updateMany(
-          { _id: { $in: fresh }, ownerId },
+          { _id: { $in: keep }, ownerId, cancelRequestedAt: mark },
           { $unset: { cancelRequestedAt: '' } },
         );
       }
@@ -488,10 +498,10 @@ export class QuizSetsService implements OnModuleInit {
     ownerId: Types.ObjectId,
     jobId: Types.ObjectId,
     quizSetId: string | undefined,
-  ): Promise<{ _id: Types.ObjectId; marked: boolean }[]> {
+  ): Promise<{ _id: Types.ObjectId; markedAt?: Date }[]> {
     const pick = (r: Pick<QuizSetRow, '_id' | 'cancelRequestedAt'>) => ({
       _id: r._id,
-      marked: !!r.cancelRequestedAt,
+      ...(r.cancelRequestedAt ? { markedAt: r.cancelRequestedAt } : {}),
     });
     if (quizSetId === undefined) {
       const rows = await this.sets

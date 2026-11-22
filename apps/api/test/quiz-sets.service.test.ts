@@ -2240,20 +2240,47 @@ describe('QuizSetsService 취소 요청에 세트 번호(quizSetId)를 실으면
       expect(t.job(p._id)).toMatchObject({ status: 'queued', awaited: true });
     });
 
-    it('되살린 뒤 새 세트를 취소했는데 지우다 실패하고 작업이 끝나도, 조회 · 재취소가 ready 대신 지운다(Codex 2차)', async () => {
-      const t = setup();
-      const materialId = await t.addNote();
-      const p = await pregen(t, materialId);
-      const { quizSet } = await t.service.create(ME.toHexString(), materialId);
-      failDropOnce(t);
-      await expect(cancel(t, p._id, quizSet._id)).rejects.toThrow('DB 쓰기 실패');
-      t.job(p._id)['awaited'] = true; // 겹친 요청의 늦은 되살리기
-      t.finish(p._id, { questions: fullSet(), title: '세포 생물학 퀴즈', concepts: ['세포막'] });
+    it.each([
+      ['30초 뒤 재취소는 바로', 31_000],
+      ['30초 안 재취소는 ready로 옮기지 않고 첫 표시의 30초 뒤 조회가', 10_000],
+    ])(
+      '되살린 뒤 새 세트를 취소했는데 지우다 실패하고 작업이 끝나도, %s 지운다(Codex 2차 · #644)',
+      async (_, after) => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          const start = new Date('2026-11-22T03:00:00Z');
+          vi.setSystemTime(start);
+          const t = setup();
+          const materialId = await t.addNote();
+          const p = await pregen(t, materialId);
+          const { quizSet } = await t.service.create(ME.toHexString(), materialId);
+          failDropOnce(t);
+          await expect(cancel(t, p._id, quizSet._id)).rejects.toThrow('DB 쓰기 실패');
+          t.job(p._id)['awaited'] = true; // 겹친 요청의 늦은 되살리기
+          t.finish(p._id, {
+            questions: fullSet(),
+            title: '세포 생물학 퀴즈',
+            concepts: ['세포막'],
+          });
 
-      await cancel(t, p._id, quizSet._id);
-      expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
-      expect(await t.service.list(ME.toHexString())).toEqual([]);
-    });
+          vi.setSystemTime(new Date(start.getTime() + after));
+          await cancel(t, p._id, quizSet._id);
+          if (after < 30_000) {
+            // 재취소는 표시 시각을 새로 쓰지 않는다(30초가 다시 시작되지 않음)
+            expect(t.set(quizSet._id)['cancelRequestedAt']).toEqual(start);
+            expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+            expect((await t.service.list(ME.toHexString())).map((s) => s.status)).toEqual([
+              'generating',
+            ]);
+            vi.setSystemTime(new Date(start.getTime() + 30_000));
+          }
+          expect(await t.service.list(ME.toHexString())).toEqual([]);
+          expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
 
     it('되살린 뒤 지우다 실패한 세트는 재취소 없이 30초 뒤 조회가 지우고, 그 전에도 ready로 옮기지 않는다(Codex 2차 · #644)', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
@@ -2426,6 +2453,41 @@ describe('QuizSetsService 취소 요청에 세트 번호(quizSetId)를 실으면
         notFound,
       );
       expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+    });
+
+    it.each([
+      ['맞춤 퀴즈', false],
+      ['미리 만들기', true],
+    ])(
+      '%s: 늦은 취소 두 건이 겹쳐 뒤 요청이 앞 요청의 방금 적힌 표시를 읽어도 세트를 지우지 않고 ready(code-review)',
+      async (_, usePregen) => {
+        const { t, quizSet, job } = await finished(usePregen);
+        afterMark(t, () => cancel(t, job._id, quizSet._id)); // 두 번 누름 · 재전송
+
+        await cancel(t, job._id, quizSet._id);
+
+        expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+        expect(t.set(quizSet._id)['cancelRequestedAt']).toBeUndefined();
+        expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
+      },
+    );
+
+    it('뒤 요청이 표시를 읽은 뒤 앞 늦은 취소가 표시를 거두고 뒤 요청이 다시 적어도, 뒤 요청이 자기 표시를 거둬 ready(code-review)', async () => {
+      const { t, quizSet, job } = await finished(false);
+      t.set(quizSet._id)['cancelRequestedAt'] = new Date(); // 앞 늦은 취소가 적은 표시(아직 처리 중)
+      const updateMany = t.sets.model.updateMany.bind(t.sets.model);
+      vi.spyOn(t.sets.model, 'updateMany').mockImplementationOnce((async (
+        ...args: Parameters<typeof updateMany>
+      ) => {
+        delete t.set(quizSet._id)['cancelRequestedAt']; // 앞 늦은 취소가 표시를 거둠
+        return updateMany(...args);
+      }) as never);
+
+      await cancel(t, job._id, quizSet._id);
+
+      expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+      expect(t.set(quizSet._id)['cancelRequestedAt']).toBeUndefined();
+      expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
     });
   });
 });
