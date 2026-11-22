@@ -156,7 +156,7 @@ describe('방 시간 규칙 화면', () => {
     expect(screen.queryByText(/그래도 적용할 수 있어요/)).toBeNull();
   });
 
-  it('시간표를 등록한 멤버가 없으면 「겹치는 교시가 없어요」 대신 확인하지 못했다고 알린다', async () => {
+  it('비교할 수 있는 수업 시간이 없으면 「겹치는 교시가 없어요」 대신 확인하지 못했다고 알린다', async () => {
     mockApi.rooms.schedule.mockResolvedValue({
       members: [
         { id: 'host', nickname: '방장', emoji: '✏️', blocks: [] },
@@ -168,9 +168,30 @@ describe('방 시간 규칙 화면', () => {
     });
     await renderScreen(<TimerScreen />);
     expect(
-      await screen.findByText('시간표를 등록한 멤버가 없어 수업과 겹치는지 확인하지 못했어요'),
+      await screen.findByText('비교할 수 있는 멤버 수업 시간이 없어 겹치는지 확인하지 못했어요'),
     ).toBeTruthy();
     expect(screen.queryByText('멤버 수업과 겹치는 교시가 없어요')).toBeNull();
+  });
+
+  it('모든 멤버가 시간을 숨겼으면 비교하지 못했다고 알리고 숨긴 인원 · 내 숨김을 안내한다', async () => {
+    mockApi.rooms.schedule.mockResolvedValue({
+      members: [
+        { id: 'host', nickname: '방장', emoji: '✏️', hidden: true, blocks: [] },
+        { id: 'u1', nickname: '민수', emoji: '✏️', hidden: true, blocks: [] },
+      ],
+      grid: [],
+      startHour: 9,
+      matches: [],
+    });
+    await renderScreen(<TimerScreen />);
+    expect(
+      await screen.findByText('비교할 수 있는 멤버 수업 시간이 없어 겹치는지 확인하지 못했어요'),
+    ).toBeTruthy();
+    expect(screen.getByText('시간을 숨긴 1명은 빼고 확인했어요')).toBeTruthy();
+    expect(
+      screen.getByText('이 방에서 내 수업 시간을 숨겨 내 수업은 확인하지 않았어요'),
+    ).toBeTruthy();
+    expect(screen.queryByText(/겹쳐요/)).toBeNull();
   });
 
   it('내가 이 방에서 시간을 숨겼으면 숨긴 인원에 나를 세지 않고 따로 알린다', async () => {

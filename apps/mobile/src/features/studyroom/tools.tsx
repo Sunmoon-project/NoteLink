@@ -309,7 +309,7 @@ export function TimerScreen() {
   const schMembers = sch.data?.members ?? [];
   // 방 규칙을 불러오기 전(기본 교시)에는 비교하지 않는다 — 방의 교시가 아닌 것에 경고가 잠깐 뜨지 않게
   const compared = !!room.data && schMembers.length > 0 && schMembers.every((m) => m.blocks);
-  // 시간표를 등록한 멤버가 아무도 없으면 「겹치는 교시가 없어요」 대신 그렇다고 알린다
+  // 비교할 수업 시간이 하나도 없으면(아무도 등록 안 함 · 모두 숨김) 「겹치는 교시가 없어요」 대신 확인하지 못했다고 알린다
   const anyBlocks = schMembers.some((m) => m.blocks?.length);
   const conflictOf = (p: { start: string; end: string }) =>
     compared ? conflictMessage(periodConflicts(p, schMembers, myId)) : null;
@@ -617,7 +617,7 @@ export function TimerScreen() {
                   ? `${conflictedCount}개 교시가 멤버 수업과 겹쳐요 · 저장은 할 수 있어요`
                   : anyBlocks
                     ? '멤버 수업과 겹치는 교시가 없어요'
-                    : '시간표를 등록한 멤버가 없어 수업과 겹치는지 확인하지 못했어요'}
+                    : '비교할 수 있는 멤버 수업 시간이 없어 겹치는지 확인하지 못했어요'}
               </Text>
             )}
             {type === 'period' && hiddenCount > 0 && (
