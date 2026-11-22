@@ -56,6 +56,7 @@ import { seoul } from '@/lib/dates';
 import { QuizFromNote } from './quiz-from-note';
 import { useResummarize } from './resummarize';
 import { aiStateOf } from '@/lib/ai';
+import { FriendShareFooter, useFriendShare } from './friend-share';
 
 // p.67~73 필기 · 녹음 · 문서 상세 / 편집 / 다운로드 / 공유 / 삭제
 
@@ -318,34 +319,39 @@ export function HandDetailScreen() {
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
   const buddy = useTuckOnScroll();
+  const shared = useFriendShare();
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
     <Canvas>
       <Screen
         onScroll={buddy.onScroll}
-        overlay={canAsk(m) && <TutorBuddy id={id} tucked={buddy.tucked} />}
+        overlay={canAsk(m) && !shared.readOnly && <TutorBuddy id={id} tucked={buddy.tucked} />}
         footer={
-          <Two>
-            <Btn
-              kind="outline"
-              onPress={() => router.push({ pathname: '/note-share', params: { id } })}
-            >
-              공유하기
-            </Btn>
-            <Btn onPress={() => router.push({ pathname: '/edit/[id]', params: { id } })}>
-              편집하기
-            </Btn>
-          </Two>
+          shared.shareId ? (
+            <FriendShareFooter shareId={shared.shareId} />
+          ) : (
+            <Two>
+              <Btn
+                kind="outline"
+                onPress={() => router.push({ pathname: '/note-share', params: { id } })}
+              >
+                공유하기
+              </Btn>
+              <Btn onPress={() => router.push({ pathname: '/edit/[id]', params: { id } })}>
+                편집하기
+              </Btn>
+            </Two>
+          )
         }
       >
         <Header
           title={m.title}
           sub={dateLabel(m, '필기')}
           large={false}
-          right={<More onPress={() => setOpt(true)} />}
+          right={!shared.readOnly && <More onPress={() => setOpt(true)} />}
         />
-        <QuizFromNote material={m} className="mb-3" />
+        {!shared.readOnly && <QuizFromNote material={m} className="mb-3" />}
         <Segment items={['정리된 노트', '원본 이미지'] as const} value={tab} onChange={setTab} />
         <View className="mt-4">
           {tab === '정리된 노트' ? (
@@ -579,19 +585,20 @@ export function RecDetailScreen() {
   const { id, m, isError, refetch } = useMaterial();
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
+  const shared = useFriendShare();
   if (isError) return <MaterialError retry={refetch} />;
   if (!m) return <Loading />;
   return (
     <Canvas>
       {/* 떠 있는 아바타 선생님은 두지 않는다: 플레이어 자막 옆 3D 아바타가 녹음에 맞춰 말한다(GL 화면 하나) */}
-      <Screen>
+      <Screen footer={shared.shareId ? <FriendShareFooter shareId={shared.shareId} /> : undefined}>
         <Header
           title={view === 'text' ? '원문 텍스트 보기' : m.title}
           sub={dateLabel(m, '녹음')}
           large={false}
-          right={<More onPress={() => setOpt(true)} />}
+          right={!shared.readOnly && <More onPress={() => setOpt(true)} />}
         />
-        <QuizFromNote material={m} className="mb-3" />
+        {!shared.readOnly && <QuizFromNote material={m} className="mb-3" />}
         <View className="mb-3 flex-row items-center gap-2">
           {view === 'text' && <Text className="text-caption text-sub">{m.title}</Text>}
           {subject && <Badge>{subject}</Badge>}
@@ -603,6 +610,7 @@ export function RecDetailScreen() {
           materialId={id}
           initialView={view === 'text' ? 'text' : 'summary'}
           openBookmarks={!!bookmarks}
+          readOnly={shared.readOnly}
         />
       </Screen>
       <FileOptions m={m} open={opt} onClose={() => setOpt(false)} />
@@ -618,6 +626,7 @@ export function DocDetailScreen() {
   const [opt, setOpt] = useState(false);
   const subject = useSubject(m?.folderId);
   const buddy = useTuckOnScroll();
+  const shared = useFriendShare();
   const [pick, setPick] = useState(false);
   const download = useMutation({
     mutationFn: async (what: 'summary' | 'original') => {
@@ -664,28 +673,32 @@ export function DocDetailScreen() {
     <Canvas>
       <Screen
         onScroll={buddy.onScroll}
-        overlay={canAsk(m) && <TutorBuddy id={id} tucked={buddy.tucked} />}
+        overlay={canAsk(m) && !shared.readOnly && <TutorBuddy id={id} tucked={buddy.tucked} />}
         footer={
-          <Two>
-            <Btn
-              kind="outline"
-              onPress={() => router.push({ pathname: '/note-share', params: { id } })}
-            >
-              공유하기
-            </Btn>
-            <Btn loading={download.isPending} onPress={() => setPick(true)}>
-              다운로드
-            </Btn>
-          </Two>
+          shared.shareId ? (
+            <FriendShareFooter shareId={shared.shareId} />
+          ) : (
+            <Two>
+              <Btn
+                kind="outline"
+                onPress={() => router.push({ pathname: '/note-share', params: { id } })}
+              >
+                공유하기
+              </Btn>
+              <Btn loading={download.isPending} onPress={() => setPick(true)}>
+                다운로드
+              </Btn>
+            </Two>
+          )
         }
       >
         <Header
           title={m.title}
           sub={`${dateLabel(m, '문서')}${m.pages?.length ? ` · ${m.pages.length}페이지` : ''}`}
           large={false}
-          right={<More onPress={() => setOpt(true)} />}
+          right={!shared.readOnly && <More onPress={() => setOpt(true)} />}
         />
-        <QuizFromNote material={m} className="mb-3" />
+        {!shared.readOnly && <QuizFromNote material={m} className="mb-3" />}
         <Segment items={['요약', '원본 문서'] as const} value={tab} onChange={setTab} />
         {tab === '요약' ? (
           <View className="mt-4">
@@ -786,6 +799,9 @@ export function DownloadedScreen() {
 
 const TABS = { 필기: 'handwriting', 학습자료: 'document', 녹음본: 'recording' } as const;
 
+/** 한 번에 보낼 수 있는 친구 수(서버 SHARE_MAX_FRIENDS · 시간표 공유와 같다) */
+const SHARE_MAX_FRIENDS = 50;
+
 export function ShareScreen() {
   const { id, folderId } = useLocalSearchParams<{ id?: string; folderId?: string }>();
   const qc = useQueryClient();
@@ -814,16 +830,42 @@ export function ShareScreen() {
     if (initialTab) setTab(initialTab);
     setSel([material.data._id]);
   }
+  const targets = (rooms.data ?? []).map((r) => ({
+    type: 'room' as const,
+    id: r._id,
+    name: r.title,
+  }));
   const [to, setTo] = useState<{ type: 'room'; id: string; name: string } | null>(null);
+  // 친구는 여러 명 고른다(#554). 스터디룸을 고르면 비우고, 친구를 고르면 스터디룸을 비운다(한 번에 한 쪽)
+  const [pals, setPals] = useState<string[]>([]);
   const [pick, setPick] = useState(false);
+  const friendList = env.localData ? [] : (friends.data ?? []);
+  const chosen = friendList.filter((f) => pals.includes(f.userId));
+  const roomOk = !!to && targets.some((t) => t.id === to.id);
+  const togglePal = (userId: string) => {
+    setTo(null);
+    setPals((p) => {
+      if (p.includes(userId)) return p.filter((x) => x !== userId);
+      if (p.length >= SHARE_MAX_FRIENDS) {
+        toast(`친구는 한 번에 ${SHARE_MAX_FRIENDS}명까지 보낼 수 있어요`);
+        return p;
+      }
+      return [...p, userId];
+    });
+  };
   const list = (mats.data ?? []).filter((m) => m.kind === TABS[tab]);
   const selected = list.filter((m) => sel.includes(m._id));
   const selectedIds = selected.map((m) => m._id);
+  const ready = !!selectedIds.length && (roomOk || chosen.length > 0);
   const share = useMutation({
     mutationFn: () => {
-      if (!to || !targets.some((t) => t.type === to.type && t.id === to.id) || !selectedIds.length)
-        throw new Error('공유 대상을 선택해주세요');
-      return api.content.share({ materialIds: selectedIds, target: { type: to.type, id: to.id } });
+      if (!ready) throw new Error('공유 대상을 선택해주세요');
+      return api.content.share({
+        materialIds: selectedIds,
+        target: roomOk
+          ? { type: 'room', id: to!.id }
+          : { type: 'friend', ids: chosen.map((f) => f.userId) },
+      });
     },
     // 서버가 이유를 들어 거절(4xx)했으면 그 문구, 아니면 연결 문제로 안내한다
     onError: (e) =>
@@ -834,11 +876,13 @@ export function ShareScreen() {
       ),
     onSuccess: () => {
       // 방의 「공유 자료」가 옛 목록을 들고 있지 않게
-      if (to?.type === 'room') void qc.invalidateQueries({ queryKey: ['room-shared', to.id] });
+      if (roomOk) void qc.invalidateQueries({ queryKey: ['room-shared', to!.id] });
       router.replace({
         pathname: '/note-shared',
         params: {
-          to: to!.name,
+          ...(roomOk
+            ? { to: to!.name }
+            : { to: chosen[0]!.nickname, kind: 'friend', more: String(chosen.length - 1) }),
           n: String(selectedIds.length),
           tab,
           name: selected[0]?.title,
@@ -846,25 +890,18 @@ export function ShareScreen() {
       });
     },
   });
-  // 친구에게 보내기는 서버가 아직 막는다(400). 고를 수 없게 「곧 지원」으로만 보여 준다(#554)
-  const targets = (rooms.data ?? []).map((r) => ({
-    type: 'room' as const,
-    id: r._id,
-    name: r.title,
-  }));
+  const label = to
+    ? to.name
+    : chosen.length
+      ? chosen.length > 1
+        ? `${chosen[0]!.nickname}님 외 ${chosen.length - 1}명`
+        : `${chosen[0]!.nickname}님`
+      : '공유 대상을 선택해주세요';
   return (
     <Canvas>
       <Screen
         footer={
-          <Btn
-            disabled={
-              !selectedIds.length ||
-              !to ||
-              !targets.some((t) => t.type === to.type && t.id === to.id)
-            }
-            loading={share.isPending}
-            onPress={() => share.mutate()}
-          >
+          <Btn disabled={!ready} loading={share.isPending} onPress={() => share.mutate()}>
             공유하기
           </Btn>
         }
@@ -915,14 +952,14 @@ export function ShareScreen() {
         </View>
         <Label>공유 대상</Label>
         <Pressable
+          // 보내는 동안 대상을 바꾸면 완료 화면 문구가 실제로 보낸 대상과 달라진다
+          disabled={share.isPending}
           onPress={() => setPick(true)}
           className="h-10 flex-row items-center self-start rounded-full bg-white px-4"
         >
           <View className="flex-row items-center gap-1.5">
             <Users size={ICON.xs} color={C.brand} />
-            <Text className="text-footnote text-ink">
-              {to?.name ?? '공유 대상을 선택해주세요'} ⌄
-            </Text>
+            <Text className="text-footnote text-ink">{label} ⌄</Text>
           </View>
         </Pressable>
         <Sheet open={pick} onClose={() => setPick(false)} title="공유 대상">
@@ -938,6 +975,7 @@ export function ShareScreen() {
                   key={x.id}
                   onPress={() => {
                     setTo(x);
+                    setPals([]);
                     setPick(false);
                   }}
                   right={to?.id === x.id && <Check size={ICON.sm} color={C.brand} />}
@@ -948,26 +986,38 @@ export function ShareScreen() {
             </Group>
           )}
           <Label>친구</Label>
-          {/* 친구에게 보내기는 아직 열리지 않았다(#554). 연결 문제처럼 읽히지 않게 모드와 상관없이 같은 안내 */}
-          <Text className="mb-2 px-1 text-footnote text-sub">친구에게 보내기는 곧 열려요</Text>
-          {env.localData ? null : friends.isError && !friends.data ? (
+          {env.localData ? (
+            // 기기 저장 모드에는 친구가 없다. 연결 문제처럼 읽히지 않게 무엇을 하면 되는지만 말한다
+            <Text className="px-1 text-footnote text-sub">
+              서버에 연결하면 친구에게 보낼 수 있어요
+            </Text>
+          ) : friends.isError && !friends.data ? (
             <Text className="px-1 text-footnote text-sub">친구 목록을 불러오지 못했어요</Text>
           ) : (
             friends.isSuccess &&
-            (friends.data.length ? (
-              <Group>
-                {friends.data.map((f) => (
-                  // 이름과 「곧 지원」을 한 번에 읽고, 고를 수 없는 줄임을 알린다
-                  <View
-                    key={f.userId}
-                    accessible
-                    accessibilityLabel={`${f.nickname}, 곧 지원`}
-                    accessibilityState={{ disabled: true }}
-                  >
-                    <Row right={<Badge tone="gray">곧 지원</Badge>}>{f.nickname}</Row>
-                  </View>
-                ))}
-              </Group>
+            (friendList.length ? (
+              <>
+                <Group>
+                  {friendList.map((f) => {
+                    const on = pals.includes(f.userId);
+                    return (
+                      <Row
+                        key={f.userId}
+                        selected={on}
+                        onPress={() => togglePal(f.userId)}
+                        right={on && <Check size={ICON.sm} color={C.brand} />}
+                      >
+                        {f.nickname}
+                      </Row>
+                    );
+                  })}
+                </Group>
+                {chosen.length > 0 && (
+                  <Btn className="mt-3" onPress={() => setPick(false)}>
+                    {`친구 ${chosen.length}명 고르기`}
+                  </Btn>
+                )}
+              </>
             ) : (
               <Text className="px-1 text-footnote text-sub">아직 친구가 없어요</Text>
             ))
@@ -984,9 +1034,23 @@ export function SharedScreen() {
     n = '1',
     tab = '자료',
     name,
-  } = useLocalSearchParams<{ to?: string; n?: string; tab?: string; name?: string }>();
-  // 지금 보낼 수 있는 대상은 스터디룸뿐이다(친구는 #554 PR 2에서 「○○님에게」). 「국어방 스터디룸」처럼 겹치지 않게
-  const where = to ? `${to}${/(방|스터디룸)$/.test(to) ? '' : ' 스터디룸'}에` : undefined;
+    kind,
+    more = '0',
+  } = useLocalSearchParams<{
+    to?: string;
+    n?: string;
+    tab?: string;
+    name?: string;
+    kind?: 'friend';
+    more?: string;
+  }>();
+  // 친구는 「민지님에게」 · 「민지님 외 2명에게」, 스터디룸은 「국어방 스터디룸」처럼 겹치지 않게
+  const others = Number(more) || 0;
+  const where = !to
+    ? undefined
+    : kind === 'friend'
+      ? `${to}님${others > 0 ? ` 외 ${others}명` : ''}에게`
+      : `${to}${/(방|스터디룸)$/.test(to) ? '' : ' 스터디룸'}에`;
   return (
     <Canvas>
       <Screen

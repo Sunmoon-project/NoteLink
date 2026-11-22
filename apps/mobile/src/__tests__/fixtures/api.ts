@@ -792,6 +792,9 @@ export const mockApi: Api = {
       });
     },
     share: () => ok(undefined),
+    friendShare: () => fail('NOT_FOUND', '공유 정보를 찾을 수 없어요', 404),
+    revokeFriendShare: () => ok(undefined),
+    copyFriendShare: () => ok({ _id: 'copy', folderId: 'f1' }),
     checkImages: (files) =>
       ok(
         files.map((f) => ({
