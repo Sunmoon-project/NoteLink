@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, within } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react-native';
 import { TimerScreen } from '../features/studyroom/tools';
 import { conflictMessage, periodConflicts } from '../features/studyroom/period-conflicts';
 import { useAuth } from '../stores/auth';
@@ -231,6 +231,9 @@ describe('방 시간 규칙 화면', () => {
     await renderScreen(<TimerScreen />);
     await screen.findByLabelText('2교시 편집');
     expect(screen.queryByText(/겹쳐요/)).toBeNull();
+    // 기본 교시는 방 정보(rooms.get)를 받기 전에도 그려지고, 그동안은 방장인지 몰라 저장 버튼이 꺼져 있다.
+    // 느린 CI 에서 버튼이 켜지기 전에 누르지 않게 방 정보를 받아 버튼이 켜질 때까지 기다린다(#669)
+    await waitFor(() => expect(screen.getByText('저장하기')).toBeEnabled());
     await fireEvent.press(screen.getByText('저장하기'));
     expect(mockApi.rooms.setTimer).toHaveBeenCalled();
   });
