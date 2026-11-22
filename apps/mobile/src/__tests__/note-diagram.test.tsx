@@ -31,6 +31,16 @@ it('같은 글의 줄이 둘이면 앞 도식 다음 줄부터 찾는다(차례 
   expect([...placed[0]!.after.keys()]).toEqual([1, 2]);
 });
 
+it('같은 after 를 가진 도식 여럿은 차례대로 모두 그 줄 뒤에 둔다(끝으로 밀리지 않음)', () => {
+  const first = d('포도당 분해', ['가', '나']);
+  const second = d('포도당 분해', ['다', '라']);
+  const next = d('산소가 없으면 발효');
+  const placed = placeDiagrams(SECTIONS, [first, second, next]);
+  expect(placed[0]!.after.get(0)).toEqual([first.diagram, second.diagram]);
+  expect(placed[0]!.after.get(1)).toEqual([next.diagram]);
+  expect(placed[1]!.after.size).toBe(0);
+});
+
 it('도식이 없으면 그리지 않고, 있으면 그 줄 바로 뒤에 밝은 도식을 그린다', async () => {
   await render(<NoteBody sections={SECTIONS} />);
   expect(screen.queryByTestId('recording-diagram')).toBeNull();

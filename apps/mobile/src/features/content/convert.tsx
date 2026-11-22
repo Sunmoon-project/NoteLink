@@ -822,7 +822,7 @@ const plainLine = (line: string) =>
     .trim();
 
 /**
- * 필기 도식(FR-19)을 섹션 본문의 줄 사이에 놓는다. after 와 같은 줄을 앞 도식을 놓은 자리 다음부터 찾아 그 뒤에.
+ * 필기 도식(FR-19)을 섹션 본문의 줄 사이에 놓는다. after 와 같은 줄을 앞 도식을 놓은 줄부터 찾아 그 뒤에(같은 앵커는 차례대로 쌓임).
  * after 가 null 이면 첫 섹션 맨 앞, 고친 글에서 그 줄을 못 찾으면 마지막 섹션 끝
  */
 export function placeDiagrams(sections: Section[], diagrams: NoteDiagram[]): PlacedDiagrams[] {
@@ -830,7 +830,7 @@ export function placeDiagrams(sections: Section[], diagrams: NoteDiagram[]): Pla
   const lines = sections.map((s) => s.body.split('\n').map(plainLine));
   const put = (si: number, li: number, d: Diagram) =>
     out[si]!.after.set(li, [...(out[si]!.after.get(li) ?? []), d]);
-  let at = { s: 0, l: -1 }; // 마지막으로 놓은 줄
+  let at = { s: 0, l: 0 }; // 마지막으로 놓은 줄. 같은 앵커가 이어지면 그 줄 뒤에 차례로 쌓는다
   for (const { after, diagram } of diagrams) {
     if (!sections.length) break;
     if (after === null) {
@@ -840,7 +840,7 @@ export function placeDiagrams(sections: Section[], diagrams: NoteDiagram[]): Pla
     const want = plainLine(after);
     let found: { s: number; l: number } | null = null;
     for (let si = at.s; si < sections.length && !found; si += 1) {
-      const from = si === at.s ? at.l + 1 : 0;
+      const from = si === at.s ? at.l : 0;
       const li = lines[si]!.indexOf(want, from);
       if (li >= 0) found = { s: si, l: li };
     }
