@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { AppState } from 'react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient } from '@tanstack/react-query';
 import type { SharedTimetable } from '@notelink/shared';
 import { RecordScreen } from '../features/progress/record';
@@ -15,7 +16,37 @@ jest.mock('expo-secure-store', () => ({
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn() }));
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+
+// jest.setup.js 의 expo-router 목은 useFocusEffect 가 아무것도 하지 않는다. 이 파일에서만 포커스 콜백을 모아 두고,
+// 화면에 처음 들어오고(focus) · 떠나고(blur) · 돌아오게 한다
+const routerMock = jest.requireMock<{ useFocusEffect: (cb: () => unknown) => void }>('expo-router');
+const noFocus = routerMock.useFocusEffect;
+const focusCallbacks = new Set<() => (() => void) | void>();
+let cleanups: (() => void)[] = [];
+const focus = () =>
+  act(() => {
+    cleanups = [...focusCallbacks].map((cb) => cb()).filter((f): f is () => void => !!f);
+  });
+const blur = () => act(() => cleanups.forEach((f) => f()));
+// 앱이 다시 앞으로 나옴
+let appListeners: ((s: string) => void)[] = [];
+const foreground = () => act(() => appListeners.forEach((f) => f('active')));
+
+beforeEach(() => {
+  focusCallbacks.clear();
+  cleanups = [];
+  appListeners = [];
+  routerMock.useFocusEffect = (cb) => void focusCallbacks.add(cb as () => (() => void) | void);
+  jest.spyOn(AppState, 'addEventListener').mockImplementation(((
+    _: string,
+    fn: (s: string) => void,
+  ) => {
+    appListeners.push(fn);
+    return { remove: () => (appListeners = appListeners.filter((f) => f !== fn)) };
+  }) as never);
+});
 afterEach(() => {
+  routerMock.useFocusEffect = noFocus;
   qc.clear();
   jest.restoreAllMocks();
 });
@@ -113,6 +144,58 @@ it('주간 보기를 다시 열면 친구 시간표를 다시 읽어, 끊긴 친
   expect(await screen.findByText('공유받은 친구 시간표가 없어요')).toBeTruthy();
   expect(screen.queryByText('민지 · 수학 II')).toBeNull();
   expect(shared).toHaveBeenCalledTimes(2);
+});
+
+it('다른 화면에 다녀오면 친구 시간표를 다시 읽는다(30초 안이어도)', async () => {
+  mine();
+  const shared = jest.spyOn(api.timetable, 'shared').mockResolvedValue(FRIENDS);
+  await open();
+  await screen.findByText('민지 · 수학 II');
+  await focus(); // 처음 들어옴: 쿼리가 이미 읽었으므로 다시 읽지 않는다
+  expect(shared).toHaveBeenCalledTimes(1);
+  await blur();
+  shared.mockResolvedValue([]); // 그사이 친구를 끊었다
+  await focus();
+  expect(await screen.findByText('공유받은 친구 시간표가 없어요')).toBeTruthy();
+  expect(screen.queryByText('민지 · 수학 II')).toBeNull();
+  expect(shared).toHaveBeenCalledTimes(2);
+});
+
+it('주간 보기가 떠 있는 동안 앱이 다시 앞으로 나오면 친구 시간표를 다시 읽는다', async () => {
+  mine();
+  const shared = jest.spyOn(api.timetable, 'shared').mockResolvedValue(FRIENDS);
+  await open();
+  await screen.findByText('민지 · 수학 II');
+  await focus();
+  shared.mockResolvedValue([]);
+  await foreground();
+  expect(await screen.findByText('공유받은 친구 시간표가 없어요')).toBeTruthy();
+  expect(shared).toHaveBeenCalledTimes(2);
+  // 화면을 떠나면 더는 듣지 않는다
+  await blur();
+  await foreground();
+  expect(shared).toHaveBeenCalledTimes(2);
+});
+
+it('이전에 받은 내용이 있어도 다시 읽기에 실패하면 알리고 다시 시도할 수 있다', async () => {
+  mine();
+  const shared = jest.spyOn(api.timetable, 'shared').mockResolvedValue(FRIENDS);
+  await open();
+  await screen.findByText('민지 · 수학 II');
+  await focus();
+  await blur();
+  shared.mockRejectedValueOnce(new Error('network'));
+  await focus();
+  expect(
+    await screen.findByText('친구 시간표를 새로 고치지 못했어요. 이전에 받은 내용이에요'),
+  ).toBeTruthy();
+  shared.mockResolvedValue([]);
+  await fireEvent.press(screen.getByText('친구 시간표 다시 시도'));
+  expect(await screen.findByText('공유받은 친구 시간표가 없어요')).toBeTruthy();
+  expect(
+    screen.queryByText('친구 시간표를 새로 고치지 못했어요. 이전에 받은 내용이에요'),
+  ).toBeNull();
+  expect(shared).toHaveBeenCalledTimes(3);
 });
 
 it('공유받은 시간표가 없으면 안내 한 줄만 보인다', async () => {

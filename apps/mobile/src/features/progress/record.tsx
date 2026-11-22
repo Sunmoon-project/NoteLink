@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { View } from 'react-native';
+import { AppState, View } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -447,7 +447,8 @@ function WeekView() {
   const tt = useQuery({ queryKey: ['timetable'], queryFn: api.timetable.get });
   const rooms = useQuery({ queryKey: ['my-rooms'], queryFn: api.rooms.mine });
   // SOC-009: 나에게 공유된 친구 시간표를 겹쳐 그린다. 끈 친구만 기억한다(새로 공유받은 친구는 켜진 채로 보인다)
-  // 친구를 끊거나 공유가 바뀌면 바로 사라져야 하므로 늘 오래된 것으로 보고(열 때마다 다시 읽음), 다른 화면에 다녀와도 다시 읽는다
+  // 친구를 끊거나 공유가 바뀌면 바로 사라져야 하므로 늘 오래된 것으로 보고(열 때마다 다시 읽음), 다른 화면에 다녀오거나
+  // 앱이 다시 앞으로 나와도 다시 읽는다(useTabRefresh 는 30초가 지난 것만 읽어 따로 둔다)
   const friends = useQuery({
     queryKey: ['timetable', 'shared'],
     queryFn: api.timetable.shared,
@@ -460,6 +461,11 @@ function WeekView() {
       // 처음 열 때는 위 쿼리가 읽는다
       if (focusedOnce.current) void refetchFriends();
       focusedOnce.current = true;
+      // 이 화면이 보이는 동안 앱이 다시 앞으로 나오면
+      const sub = AppState.addEventListener('change', (s) => {
+        if (s === 'active') void refetchFriends();
+      });
+      return () => sub.remove();
     }, [refetchFriends]),
   );
   const [hiddenFriends, setHiddenFriends] = useState<ReadonlySet<string>>(new Set());
@@ -665,9 +671,14 @@ function WeekView() {
       {friends.data && friends.data.length === 0 && (
         <Text className="mt-1 text-caption2 text-sub">공유받은 친구 시간표가 없어요</Text>
       )}
-      {friends.isError && !friends.data && (
+      {friends.isError && (
         <View className="mt-2">
-          <Text>친구 시간표를 불러오지 못했어요</Text>
+          {/* 예전 내용이 있어도 새로 읽기에 실패하면 알린다(끊긴 친구 · 바뀐 공유를 아직 모를 수 있다) */}
+          <Text>
+            {friends.data
+              ? '친구 시간표를 새로 고치지 못했어요. 이전에 받은 내용이에요'
+              : '친구 시간표를 불러오지 못했어요'}
+          </Text>
           <Btn small onPress={() => void friends.refetch()}>
             친구 시간표 다시 시도
           </Btn>
