@@ -348,6 +348,13 @@ export function canceledFirst(job: Pick<AppAiJob, 'type' | 'status' | 'awaited'>
  */
 export const CANCEL_SETTLE_GRACE_MS = 30_000;
 
+/**
+ * 같은 노트 다시 만들기(createOnce)가 처리 중인 취소(방금 적힌 표시 + 아직 도는 작업)를 만나면 그 취소가 끝나기를
+ * 기다리는 최대 시간과 다시 읽는 간격(Codex #643 4차). 취소 요청 한 건은 ms 단위라 1초면 거의 늘 끝난다
+ */
+export const CANCEL_WAIT_MS = 1_000;
+export const CANCEL_WAIT_STEP_MS = 200;
+
 /** 아직 도는 작업인지(queued · running) */
 const isActive = (job: Pick<AppAiJob, 'status'>) =>
   job.status === 'queued' || job.status === 'running';
@@ -400,6 +407,8 @@ export class QuizSetsService implements OnModuleInit {
    * 주입 대신 넣는 이유: SimilarQuizService가 이 서비스를 받으므로 서로 받으면 순환 의존
    */
   afterReview?: (row: QuizSetRow) => Promise<unknown>;
+  /** ms만큼 기다린다(dropCanceled). 시험이 바꿔 끼운다 */
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   private readonly logger = new Logger(QuizSetsService.name);
 
   /** 앱이 맞춤 퀴즈 · 이어받은 미리 만들기를 취소하면 기다리던 세트를 지우도록 ai-jobs에 등록한다(#626) */
@@ -593,17 +602,17 @@ export class QuizSetsService implements OnModuleInit {
     // 지워 새 화면이 404를 받으므로, 마저 지우고 아래에서 새 세트로 이어받는다. 작업이 끝났는데 방금 적힌 표시뿐인 세트는
     // 그 취소가 늦은 취소로 거둘 수 있어 지우지 않고 돌려준다(generatingSet canceled, #644)
     if (existing?.canceled) {
-      // 읽은 뒤 작업이 끝나 그 취소가 늦은 취소가 됐을 수 있다(Codex #646 1차): 지우기 직전에 작업을 다시 읽어, 그 취소로
-      // 멈춘 흔적 없이 끝났으면 지우지 않고 처음부터 다시 본다(null → create가 한 번 더). 지울 때도 표시가 남아 있을 때만
-      // 지운다(그사이 늦은 취소가 표시를 거뒀으면 지우지 않고 다시 봄)
-      const now = await this.jobOf(userId, existing.job._id);
-      if (now && !isActive(now) && !canceledFirst(now)) return null;
-      const dropped = await this.dropSets(userId, [new Types.ObjectId(existing.quizSet._id)], {
+      // 읽은 뒤 작업이 끝나 그 취소가 늦은 취소가 됐을 수 있다(Codex #646 1차 · #643 4차): 처리 중인 취소면 끝나기를 짧게
+      // 기다린 뒤 판단하고(dropCanceled), 지우지 않을 때는 처음부터 다시 본다(null → create가 한 번 더). 지울 때도 표시가
+      // 남아 있을 때만 지운다(그사이 늦은 취소가 표시를 거뒀으면 지우지 않고 다시 봄)
+      const setId = new Types.ObjectId(existing.quizSet._id);
+      if (!(await this.dropCanceled(userId, setId, existing.job._id))) return null;
+      const dropped = await this.dropSets(userId, [setId], {
         cancelRequestedAt: { $ne: null },
       });
       if (dropped === 0) {
         const left = await this.sets
-          .findOne({ _id: new Types.ObjectId(existing.quizSet._id) }, { deletedAt: 1 })
+          .findOne({ _id: setId }, { deletedAt: 1 })
           .lean<Pick<QuizSetRow, 'deletedAt'>>();
         if (left && !left.deletedAt) return null;
       }
@@ -914,6 +923,34 @@ export class QuizSetsService implements OnModuleInit {
     // 취소한 뒤 지우지 못해 남았던 세트는 이번 동기화가 지웠다(#642)
     if (!quizSet) throw notFound('퀴즈');
     return quizSet;
+  }
+
+  /**
+   * 다시 만들기(createOnce)가 만난 취소 세트를 지울지(true) 처음부터 다시 볼지(false). 작업을 다시 읽어 없거나 그 취소로
+   * 멈췄으면(canceledFirst) 지우고, 그 취소로 멈춘 흔적 없이 끝났으면 늦은 취소가 될 수 있어 다시 본다(Codex #646 1차).
+   * 작업이 아직 돌고 표시가 방금(CANCEL_SETTLE_GRACE_MS 안) 적혔으면 그 취소가 처리 중이라(표시를 적고 → 멈춰 보고 →
+   * 늦었으면 거둠), 읽은 직후 작업이 끝나면 늦은 취소가 지켜야 할 세트를 지울 수 있다(Codex #643 4차). 그래서
+   * CANCEL_WAIT_STEP_MS마다 작업 · 세트를 다시 읽으며 최대 CANCEL_WAIT_MS 그 취소가 끝나기를 기다린다. 그사이 표시가
+   * 사라졌거나(늦은 취소가 거둠) 세트가 지워졌거나(그 취소가 지움) ready면 다시 본다. 오래된 표시(요청이 죽음)거나 다
+   * 기다려도 그대로면 지금처럼 지운다
+   */
+  private async dropCanceled(
+    userId: string,
+    setId: Types.ObjectId,
+    jobId: string,
+  ): Promise<boolean> {
+    for (let waited = 0; ; waited += CANCEL_WAIT_STEP_MS) {
+      const job = await this.jobOf(userId, jobId);
+      if (!job || canceledFirst(job)) return true;
+      if (!isActive(job)) return false;
+      const row = await this.sets
+        .findOne({ _id: setId }, { status: 1, deletedAt: 1, cancelRequestedAt: 1 })
+        .lean<Pick<QuizSetRow, 'status' | 'deletedAt' | 'cancelRequestedAt'>>();
+      if (!row || row.deletedAt || row.status === 'ready' || !row.cancelRequestedAt) return false;
+      const age = Date.now() - new Date(row.cancelRequestedAt).getTime();
+      if (age >= CANCEL_SETTLE_GRACE_MS || waited >= CANCEL_WAIT_MS) return true;
+      await this.sleep(CANCEL_WAIT_STEP_MS);
+    }
   }
 
   /**

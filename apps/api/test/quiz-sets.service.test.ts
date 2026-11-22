@@ -86,6 +86,8 @@ function setup() {
     createFakeCollection().model as never,
   );
   service.onModuleInit();
+  // 처리 중인 취소를 기다리는 시간(createOnce)은 실제로 쉬지 않는다
+  service.sleep = async () => undefined;
   const addNote = async (over: Record<string, unknown> = {}) => {
     const { _id } = (await materials.model.create({
       ownerId: ME,
@@ -2528,6 +2530,148 @@ describe('QuizSetsService 취소 요청에 세트 번호(quizSetId)를 실으면
       expect(t.set(quizSet._id)['deletedAt']).toBeNull();
       expect(t.set(quizSet._id)['cancelRequestedAt']).toBeUndefined();
       expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
+    });
+  });
+
+  describe('같은 노트 다시 만들기가 처리 중인 취소를 만나면 짧게 기다린 뒤 판단한다(Codex #643 4차)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** 작업이 아직 도는 만드는 중 세트에 취소 요청이 방금 표시를 적은 상태(처리 중). 기다림(sleep)은 기록만 한다 */
+    const canceling = async (usePregen: boolean, markedAt = new Date()) => {
+      const t = setup();
+      const materialId = await t.addNote();
+      if (usePregen) await pregen(t, materialId);
+      const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+      t.set(quizSet._id)['cancelRequestedAt'] = markedAt;
+      const sleeps: number[] = [];
+      let onSleep: () => void = () => undefined;
+      t.service.sleep = async (ms: number) => {
+        sleeps.push(ms);
+        onSleep();
+      };
+      return {
+        t,
+        materialId,
+        quizSet,
+        job,
+        sleeps,
+        whileSleeping: (f: () => void) => (onSleep = f),
+      };
+    };
+    /** n번째 작업 조회(findMine) 직후에 run(읽은 값은 run 전 것) */
+    const afterJobRead = (t: ReturnType<typeof setup>, n: number, run: () => void) => {
+      const findMine = t.aiJobs.findMine.bind(t.aiJobs);
+      let calls = 0;
+      vi.spyOn(t.aiJobs, 'findMine').mockImplementation(async (userId, jobId) => {
+        const read = await findMine(userId, jobId);
+        if (++calls === n) run();
+        return read;
+      });
+    };
+
+    it.each([
+      ['맞춤 퀴즈', false],
+      ['미리 만들기', true],
+    ])(
+      '%s: 두 번째 작업 조회가 도는 작업을 읽은 직후 작업이 끝나도(취소는 판정 중) 지우지 않고, 늦은 취소가 표시를 거두면 ready',
+      async (_, usePregen) => {
+        const { t, materialId, quizSet, job, whileSleeping } = await canceling(usePregen);
+        // 1번째 조회는 generatingSet(도는 작업 → 취소 세트), 2번째는 지우기 전 다시 읽기. 그 직후 작업이 끝남
+        afterJobRead(t, 2, () =>
+          t.finish(job._id, { questions: fullSet(), title: 't', concepts: ['세포막'] }),
+        );
+        // 기다리는 사이 취소 요청이 멈추지 못해(늦은 취소) 표시를 거둠
+        whileSleeping(() => delete t.set(quizSet._id)['cancelRequestedAt']);
+
+        await t.service.create(ME.toHexString(), materialId);
+
+        expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+        expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
+      },
+    );
+
+    it.each([
+      ['맞춤 퀴즈', false],
+      ['미리 만들기', true],
+    ])(
+      '%s: 기다리는 사이 그 취소가 작업을 멈추면 세트를 지우고 새 세트로 만든다',
+      async (_, usePregen) => {
+        const { t, materialId, quizSet, job, sleeps, whileSleeping } = await canceling(usePregen);
+        whileSleeping(() =>
+          Object.assign(t.job(job._id), usePregen ? { awaited: false } : { status: 'canceled' }),
+        );
+
+        const made = await t.service.create(ME.toHexString(), materialId);
+
+        expect(sleeps).toEqual([200]);
+        expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+        expect(made.quizSet._id).not.toBe(quizSet._id);
+        expect(made.quizSet.status).toBe('generating');
+      },
+    );
+
+    it('취소 요청이 표시만 적고 끝나지 않으면 200ms 간격으로 최대 1초 기다린 뒤 지금처럼 지우고 새 세트로 만든다', async () => {
+      const { t, materialId, quizSet, sleeps } = await canceling(false);
+
+      const made = await t.service.create(ME.toHexString(), materialId);
+
+      expect(sleeps).toEqual([200, 200, 200, 200, 200]);
+      expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+      expect(made.quizSet._id).not.toBe(quizSet._id);
+    });
+
+    it('기다리는 사이 표시가 30초를 넘기면(가짜 시계) 처리 중인 취소가 아니라 더 기다리지 않고 지운다', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-11-22T03:00:00Z'));
+      const { t, materialId, quizSet, sleeps } = await canceling(
+        true,
+        new Date(Date.now() - 29_500),
+      );
+      t.service.sleep = async (ms: number) => {
+        sleeps.push(ms);
+        vi.setSystemTime(new Date(Date.now() + ms));
+      };
+
+      await t.service.create(ME.toHexString(), materialId);
+
+      // 29.5 → 29.7 → 29.9 → 30.1초: 세 번 기다린 뒤 지움
+      expect(sleeps).toEqual([200, 200, 200]);
+      expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+    });
+
+    it('오래된 표시(30초 넘음)는 처리 중인 취소가 아니라 기다리지 않고 지금처럼 지운다', async () => {
+      const { t, materialId, quizSet, sleeps } = await canceling(
+        false,
+        new Date(Date.now() - 31_000),
+      );
+
+      const made = await t.service.create(ME.toHexString(), materialId);
+
+      expect(sleeps).toEqual([]);
+      expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+      expect(made.quizSet._id).not.toBe(quizSet._id);
+    });
+
+    it('기본 기다림은 주어진 시간 뒤에 끝난다(가짜 시계)', async () => {
+      vi.useFakeTimers();
+      const t = setup();
+      let done = false;
+      // setup()은 기다림을 바로 끝나게 바꾸므로 기본 구현은 새 인스턴스에서 본다
+      const fresh = new QuizSetsService(
+        t.sets.model,
+        t.materials.model,
+        t.attempts.model,
+        t.aiJobs,
+        new RecordingNotePagesService(t.jobs.model),
+        createFakeCollection().model as never,
+      );
+      void fresh.sleep(200).then(() => (done = true));
+      await vi.advanceTimersByTimeAsync(199);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toBe(true);
     });
   });
 });
