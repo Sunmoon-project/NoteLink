@@ -403,6 +403,7 @@ def test_handwriting_counts_both_the_llm_and_the_split_llm(
         {
             "note_split": lambda user: {"starts": [1, 4]},
             "note_summary": [{"points": [], "keywords": []}],  # 핵심 요약도 split 연결로 청구
+            "note_diagrams": [{"diagrams": []}],  # 사진 도식 찾기도 split 연결로 청구
         }
     )
     url = note_input()["pages"][0]["imageUrl"]

@@ -1,9 +1,12 @@
-"""노트 정리 작업(ai_jobs). 쪽마다 OCR → 색 · 형광펜 → [?] → 읽는 순서 → 조각 → 핵심 요약 → 임베딩.
+"""노트 정리 작업(ai_jobs). 쪽마다 OCR → 색 · 형광펜 → [?] → 도식 → 읽는 순서 → 조각 → 핵심 요약 →
+임베딩.
 
 input   {pages: [{pageNo, imageUrl}], subject?: 글, seeds?: [{topic, terms: [{term, url?}]}]}
         pageNo는 업로드 순서(1부터). 여러 쪽 PDF는 pageNo부터 쪽 수만큼 번호를 차지함
 result  {pages: [{pageNo, ocrText}], lineResults, chunks: [노트 조각 + embedding],
-         summary: {points, keywords, headings} | null, warnings}
+         summary: {points, keywords, headings} | null,
+         diagrams: [{after: 바로 앞 본문 줄 글 | null, diagram: {kind, terms, relations}}],
+         warnings}
         chunks는 맞춤 퀴즈 input의 material.chunks에 그대로 들어감(quiz.generate)
         warnings는 녹음처럼 {code, ...} 목록. 지금은 색 · 형광펜을 찾지 못한 쪽만
         {code: NO_COLOR, pageNo(놓인 번호), reason: pdf | download | decode | size}
@@ -14,6 +17,8 @@ embed 95→100.
 EmbedUnavailableError)는 그대로 올립니다. OCR 키 · 권한 오류(OcrSetupError)는 파일 문제가
 아니므로 InputError로 바꾸지 않습니다. 오류 문구에 사진 주소(SAS)를 넣지 않습니다.
 색 찾기용 사진을 쓰지 못하면 색 없이 계속하고 warnings에 NO_COLOR로 남깁니다.
+도식은 색 찾기용 사진(사진 한 장)이 있는 쪽만 LLM에 보내 찾고(services/note/diagrams.py), 도식에
+담긴 핵심어 줄은 본문에서 뺍니다. 못 찾거나 호출이 실패하면 도식 없이 계속합니다.
 업로드 하나의 OCR · 색 찾기가 끝날 때마다 그때까지의 업로드를 {pageNo(놓인 번호), pages(차지한
 쪽 수), lines(처리한 줄)}로 checkpoint에 저장하고, 다시 시도할 때 값이 검사를 통과하면 저장된
 업로드의 OCR과 내려받기를 건너뛰고 그다음 업로드부터 합니다(과금 · SAS 만료를 피함. 뒤쪽 파일의
@@ -38,6 +43,13 @@ from app.clients.docint import DownloadError, OcrError, OcrUnavailableError, dow
 from app.clients.llm import JsonObject, Llm
 from app.clients.voyage import InputType
 from app.core.config import settings
+from app.services.note.diagrams import (
+    PageDiagram,
+    drop_diagram_lines,
+    find_diagrams,
+    page_diagram,
+    place_diagrams,
+)
 from app.services.note.emphasis import Image
 from app.services.note.models import Line, Word
 from app.services.note.pipeline import (
@@ -66,6 +78,8 @@ NO_COLOR = "NO_COLOR"
 # 색 찾기용 사진의 최대 픽셀 수(폭 × 높이). 20MB 압축 파일도 풀면 훨씬 커질 수 있어 OCR 쪽
 # 크기로 먼저 거름(5천만 픽셀 BGR ≈ 150MB, 색 계산용 Lab float32 ≈ 600MB)
 IMAGE_MAX_PIXELS = 50_000_000
+# 도식 찾기에 보내는 사진의 긴 변(픽셀). 시험(1200×1600)에서 위치 · 글자를 잘 읽은 크기
+DIAGRAM_IMAGE_SIDE = 1600
 OCR_END = 50
 SPLIT_END = 70
 REFINE_END = 90
@@ -122,6 +136,7 @@ class _Upload:
     page_no: int  # 놓인 번호(앞 PDF가 번호를 차지하면 밀림)
     pages: int  # 차지한 쪽 수
     lines: list[Line]
+    diagrams: list[PageDiagram]
 
 
 def run(
@@ -143,7 +158,7 @@ def run(
     if subject is not None and not isinstance(subject, str):
         raise InputError("input.subject가 글자가 아님")
     seeds = _seeds(inp.get("seeds"))
-    uploads, warnings = _read(ocr, fetch, pages, report, checkpoint)
+    uploads, warnings = _read(ocr, fetch, pages, report, checkpoint, split_llm or llm)
     _check_text(uploads)
     lines = [ln for u in uploads for ln in u.lines]
     numbers = [n for u in uploads for n in range(u.page_no, u.page_no + u.pages)]
@@ -154,6 +169,7 @@ def run(
     chunks = refine_note(llm, settings.note_refine_model, chunks, subject or "", seeds)
     report(REFINE_END, "summary")
     summary = summarize_note(split_llm or llm, settings.note_split_model, chunks)
+    diagrams = place_diagrams(chunks, lines, [(u.page_no, u.diagrams) for u in uploads])
     report(SUMMARY_END, "embed")
     vectors = embedder.embed(embed_texts(chunks), "document")
     report(100, "embed")
@@ -162,6 +178,7 @@ def run(
         "lineResults": note["lineResults"],
         "chunks": [{**c, "embedding": v} for c, v in zip(chunks, vectors, strict=True)],
         "summary": summary,
+        "diagrams": diagrams,
         "warnings": warnings,
     }
 
@@ -226,6 +243,7 @@ def _read(
     pages: list[tuple[int, str]],
     report: Report,
     checkpoint: Checkpoint | None,
+    llm: Llm,
 ) -> tuple[list[_Upload], list[NoColor]]:
     uploads: list[_Upload] = []
     warnings: list[NoColor] = []
@@ -259,7 +277,12 @@ def _read(
             warnings.append({"code": "NO_COLOR", "pageNo": start, "reason": image})
         elif image is not None:
             page["image"] = image
-        uploads.append(_Upload(start, span, page_lines(page)))
+        lines = page_lines(page)
+        found: list[PageDiagram] = []
+        if "image" in page:
+            found = find_diagrams(llm, settings.note_split_model, _jpeg(page["image"]))
+            lines = drop_diagram_lines(lines, found)
+        uploads.append(_Upload(start, span, lines, found))
         nxt = start + span
         report(OCR_END * i // len(pages), "ocr")  # 취소됐으면 여기서 멈춤(저장하지 않음)
         if i == len(pages):
@@ -301,6 +324,20 @@ def _image(
     return np.asarray(image, dtype=np.uint8)
 
 
+def _jpeg(image: Image) -> bytes:
+    """도식 찾기에 보낼 JPEG. 긴 변이 DIAGRAM_IMAGE_SIDE보다 크면 줄임."""
+    height, width = image.shape[:2]
+    scale = DIAGRAM_IMAGE_SIDE / max(height, width)
+    small: np.ndarray = image
+    if scale < 1:
+        size = (round(width * scale), round(height * scale))
+        small = cv2.resize(image, size, interpolation=cv2.INTER_AREA)
+    ok, data = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if not ok:  # BGR uint8는 늘 됨
+        raise ValueError("JPEG로 바꾸지 못함")
+    return data.tobytes()
+
+
 def _page_size(page: object) -> tuple[int, int] | None:
     """OCR 쪽의 (폭, 높이) 픽셀. 없거나 숫자가 아니면 None."""
     if not isinstance(page, dict):
@@ -321,13 +358,16 @@ def _check_text(uploads: list[_Upload]) -> None:
 
 # ---------------------------------------------------------------- checkpoint
 #
-# {version: 2, colors: [색 이름], uploads: [{pageNo, pages, lines: [줄]}], warnings: [NoColor]}
+# {version: 2, colors: [색 이름], uploads: [{pageNo, pages, lines: [줄], diagrams?: [도식]}],
+#  warnings: [NoColor]}
 # uploads는 input.pages의 앞에서부터 끝낸 것만. 수가 input보다 적으면 그다음 업로드부터 이어서 읽음
 # 줄   [id, page, text, x0, x1, y0, y1, hand, 단어들]  ← BSON 배열(키 이름을 줄마다 되풀이하지 않음)
 # 단어들 [[start, end, confidence, hand, colorDiff, color, baseColor, highlight(, text)], ...]의
 #      JSON 글자. BSON 배열은 원소마다 형식 · 번호 키가 붙어 단어 수십만 개면 커서 글자로 묶음
 #      hand · colorDiff는 1 · 0 · -1(없음), 색은 colors의 번호 · -1(없음),
 #      text는 줄 글자 text[start:end]와 다를 때만. 단어 상자(polygon)는 색 찾기에만 써서 뺌
+# 도식 {kind, terms, relations(1부터), top, bottom}: LLM 답과 같은 모양이라 같은 검사
+#      (page_diagram)로 다시 읽음. 이 키가 없던 저장값은 도식 없음
 # 숫자는 반올림하지 않음(JSON · BSON 모두 float 그대로 되돌아옴) → 다시 만든 결과가 처음과 같음
 
 
@@ -346,7 +386,8 @@ class _Saver:
 
     def _pack(self, u: _Upload) -> JsonObject:
         lines = [_pack_line(ln, self._colors) for ln in u.lines]
-        return {"pageNo": u.page_no, "pages": u.pages, "lines": lines}
+        diagrams = [_pack_diagram(d) for d in u.diagrams]
+        return {"pageNo": u.page_no, "pages": u.pages, "lines": lines, "diagrams": diagrams}
 
     def save(self, upload: _Upload, warnings: list[NoColor]) -> None:
         if self._full:
@@ -380,6 +421,11 @@ def _pack_line(ln: Line, colors: dict[str, int]) -> list[object]:
         ln["hand"],
         json.dumps(words, ensure_ascii=False, separators=(",", ":")),
     ]
+
+
+def _pack_diagram(d: PageDiagram) -> JsonObject:
+    relations = [[a + 1, b + 1] for a, b in d["diagram"]["relations"]]
+    return {**d["diagram"], "relations": relations, "top": d["top"], "bottom": d["bottom"]}
 
 
 def _pack_word(w: Word, line_text: str, colors: dict[str, int]) -> list[object]:
@@ -473,9 +519,18 @@ def _saved_uploads(raw: object, pages: list[tuple[int, str]], colors: list[str])
             _saved_line(ln, start, start + span, colors, f"uploads[{i}].lines[{j}]")
             for j, ln in enumerate(lines)
         ]
-        out.append(_Upload(start, span, kept))
+        out.append(_Upload(start, span, kept, _saved_diagrams(u.get("diagrams", []), error)))
         nxt = start + span
     return out
+
+
+def _saved_diagrams(raw: object, error: InputError) -> list[PageDiagram]:
+    if not isinstance(raw, list):
+        raise error
+    out = [page_diagram(d) for d in raw]
+    if any(d is None for d in out):
+        raise error
+    return [d for d in out if d is not None]
 
 
 def _saved_line(raw: object, lo: int, hi: int, colors: list[str], where: str) -> Line:

@@ -320,6 +320,83 @@ def test_photo_colors_become_emphasis() -> None:
     assert marks[0]["color"] == "red"
 
 
+# ---------- 도식 ----------
+
+AMOEBA = {"kind": "contrast", "terms": ["영양형 위족", "포낭형"], "relations": [[1, 2]]}
+
+
+def diagram_llm(*answers: JsonObject | Exception) -> FakeLlm:
+    return FakeLlm(answers={"note_diagrams": list(answers)})
+
+
+def test_a_photo_diagram_leaves_the_body_and_is_placed_after_the_line_above() -> None:
+    llm = diagram_llm({"diagrams": [{**AMOEBA, "top": 0.2, "bottom": 0.45}]})
+
+    result = run_direct({"pages": [{"pageNo": 1, "imageUrl": URL1}]}, llm=llm)
+
+    (call,) = llm.named("note_diagrams")
+    assert call.model == settings.note_split_model
+    assert call.image is not None and call.image[:2] == b"\xff\xd8"  # JPEG
+    assert result["diagrams"] == [
+        {
+            "after": "1. 이질 아메바",
+            "diagram": {"kind": "contrast", "terms": AMOEBA["terms"], "relations": [[0, 1]]},
+        }
+    ]
+    assert result["pages"] == [{"pageNo": 1, "ocrText": "1. 이질 아메바"}]
+    assert [c["text"] for c in result["chunks"]] == ["1. 이질 아메바"]
+
+
+def test_a_failed_diagram_call_keeps_the_note_going() -> None:
+    llm = diagram_llm(LlmError("HTTP 500"))
+
+    result = run_direct({"pages": [{"pageNo": 1, "imageUrl": URL1}]}, llm=llm)
+
+    assert result["diagrams"] == []
+    assert result["pages"][0]["ocrText"] == "1. 이질 아메바\n- 영양형 위족\n포낭형"
+
+
+def test_pages_without_a_usable_photo_are_not_sent() -> None:
+    llm = diagram_llm()
+    pdf = read(ocr_page("1. 개요", "내용", unit="inch"))
+    ocr = FakeOcr({PDF_URL: pdf, URL2: note_read()})
+    fetch = FakeFetch({URL2: DownloadError("HTTP 403")})
+
+    result = run_direct(
+        {"pages": [{"pageNo": 1, "imageUrl": PDF_URL}, {"pageNo": 2, "imageUrl": URL2}]},
+        llm=llm,
+        ocr=ocr,
+        fetch=fetch,
+    )
+
+    assert llm.named("note_diagrams") == [] and result["diagrams"] == []
+
+
+def test_retry_keeps_the_diagrams_without_asking_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    found = {"diagrams": [{**AMOEBA, "top": 0.2, "bottom": 0.45}]}
+    fresh = run_direct(two_pages(), llm=diagram_llm(found, found))
+    col = queued_job(two_pages())
+    attempt(monkeypatch, col, llm=diagram_llm(found, found), voyage=voyage_down())
+    again = diagram_llm()
+
+    doc = attempt(monkeypatch, col, llm=again, ocr=expired_sas())
+
+    assert doc["status"] == "succeeded" and again.named("note_diagrams") == []
+    assert doc["result"]["diagrams"] == json.loads(json.dumps(fresh["diagrams"]))
+    assert len(doc["result"]["diagrams"]) == 2
+
+
+def test_a_broken_saved_diagram_runs_ocr_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    col = queued_job({"pages": [{"pageNo": 1, "imageUrl": URL1}]})
+    attempt(monkeypatch, col, voyage=voyage_down())
+    col.update_one({"_id": "j1"}, {"$set": {"checkpoint.uploads.0.diagrams": [{"top": 2}]}})
+    ocr = FakeOcr()
+
+    doc = attempt(monkeypatch, col, ocr=ocr)
+
+    assert doc["status"] == "succeeded" and ocr.urls == [URL1]
+
+
 def no_color(page_no: int, reason: str) -> dict[str, Any]:
     return {"code": "NO_COLOR", "pageNo": page_no, "reason": reason}
 

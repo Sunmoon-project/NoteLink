@@ -88,6 +88,7 @@ class ScriptLlm:
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
         self.calls.append((name, user))
         self.models.append((name, model))
