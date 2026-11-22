@@ -22,10 +22,12 @@ jest.mock('expo-haptics', () => ({
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 const clients: QueryClient[] = [];
 function client() {
@@ -141,4 +143,31 @@ it('내 아이템을 처음 읽는 중에 찜 응답이 와도, 늦게 온 찜 �
   await waitFor(() => expect(wish).toHaveBeenCalledTimes(1));
   await act(async () => first.resolve([]));
   expect(await screen.findAllByLabelText('찜 해제')).toHaveLength(1);
+});
+
+it('다른 상품의 찜은 동시에 보내고, 실패한 찜은 잠금이 풀려 다시 누를 수 있다', async () => {
+  jest.spyOn(api.shop, 'myItems').mockResolvedValue([]);
+  const slow = deferred<boolean>();
+  const failed = deferred<boolean>();
+  const wish = jest
+    .spyOn(api.shop, 'wish')
+    .mockImplementationOnce(() => slow.promise)
+    .mockImplementationOnce(() => failed.promise);
+  await renderScreen(<ShopScreen />, client());
+  const hearts = await screen.findAllByLabelText('찜');
+  // 첫 상품 요청 중에도 다른 상품은 보낸다
+  await fireEvent.press(hearts[0]!);
+  await fireEvent.press(hearts[1]!);
+  expect(wish).toHaveBeenCalledTimes(2);
+  expect(wish.mock.calls[0]![0]).not.toBe(wish.mock.calls[1]![0]);
+  // 두 번째 상품은 실패 → 잠금이 풀려 다시 보낼 수 있다
+  await act(async () => failed.reject(new Error('network')));
+  wish.mockResolvedValueOnce(true);
+  await fireEvent.press(screen.getAllByLabelText('찜')[1]!);
+  await waitFor(() => expect(wish).toHaveBeenCalledTimes(3));
+  expect(wish.mock.calls[2]![0]).toBe(wish.mock.calls[1]![0]);
+  // 첫 상품은 아직 요청 중이라 또 눌러도 보내지 않는다
+  await fireEvent.press(screen.getAllByLabelText('찜')[0]!);
+  expect(wish).toHaveBeenCalledTimes(3);
+  await act(async () => slow.resolve(true));
 });
