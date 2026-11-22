@@ -113,6 +113,7 @@ export class SocialLoginService {
         {
           outcome: result.kind,
           userId: result.kind === 'signed_in' ? result.userId : null,
+          created: result.kind === 'signed_in' && result.created,
           expiresAt: new Date(Date.now() + CODE_TTL_MS),
         },
       );

@@ -46,6 +46,14 @@ export class Processing {
   @Prop({ type: Types.ObjectId, ref: 'AiJob', default: null })
   regenJobId?: Types.ObjectId | null;
 
+  /**
+   * 마지막으로 끝난 「다시 만들기」 작업(서버 전용, 앱 응답에는 없다). 노트 동기화(syncRegen)가 regenJobId 를 지울 때
+   * 그 값을 남긴다: 알림(ai-job-notices.service.ts)이 노트를 먼저 연 뒤에 끝난 다시 만들기의 실패도 알 수 있게(#639).
+   * 기존 문서는 없음 = 지금처럼(옛 작업으로 본다)
+   */
+  @Prop({ type: Types.ObjectId, ref: 'AiJob' })
+  lastRegenJobId?: Types.ObjectId | null;
+
   /** 목록 조회가 이 노트의 작업 상태를 마지막으로 확인한 시각. 서버 전용(앱 응답에는 없다). 실패한 노트를 돌아가며 확인하려고 쓴다 */
   @Prop({ type: Date })
   checkedAt?: Date;

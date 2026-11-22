@@ -75,6 +75,11 @@ export const AuthTokens = z.object({
   accessToken: z.string(),
   refreshToken: z.string(),
   user: User,
+  /**
+   * 간편 로그인이 이번에 계정을 새로 만들었는지. 탈퇴한 계정은 되살리지 않아서, 탈퇴 뒤 같은 소셜 계정으로
+   * 들어오면 새 계정이 된다 — 앱은 이때 안내한다(PROF-013). 이메일 로그인 · 옛 서버는 보내지 않는다
+   */
+  isNewUser: z.boolean().optional(),
 });
 export const SocialProvider = z.enum(['kakao', 'naver', 'google']);
 
