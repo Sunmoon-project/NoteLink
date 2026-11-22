@@ -450,6 +450,22 @@ describe.skipIf(!isLocal)('진짜 DB 친구에게 노트 보내기', () => {
     expect(await materials.countDocuments({ ownerId: f1 })).toBe(0);
   });
 
+  it('복사 마지막에 폴더 갱신이 실패하면 넣은 노트 · 작업 · 사본 파일을 모두 지운다', async () => {
+    await send([n1], [f1]);
+    const spy = vi.spyOn(folders, 'updateOne').mockRejectedValueOnce(new Error('db down'));
+    try {
+      await expect(friendShares.copy(hex(f1), hex((await shareOf(f1))._id))).rejects.toThrow(
+        'db down',
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(copies.length).toBeGreaterThan(0);
+    expect(blobs.deleteCopy).toHaveBeenCalledTimes(copies.length);
+    expect(await materials.countDocuments({ ownerId: f1 })).toBe(0);
+    expect(await jobs.countDocuments({ userId: f1 })).toBe(0);
+  });
+
   it('복사: 주인이 아직 안 열어 정리 결과가 반영 안 된 노트도 먼저 반영(sync)해서 복사한다', async () => {
     await send([n2], [f1]);
     sync.mockImplementationOnce(async (row: unknown) => ({

@@ -206,7 +206,7 @@ export class FriendShareService {
    * 받은 노트를 내 노트로 복사한다. 살아 있는 공유의 받은 사람만(아니면 404), 정리가 끝난(done) 노트만(아니면 409).
    * 노트 문서와 정리 결과(AI 작업 결과)를 내 것으로 새로 만들고, 원본 파일(쪽 사진 · 문서 · 녹음)은 Azure 서버 간 복사로
    * 내 업로드 경로에 사본을 둔다(받은 사람 저장 용량이 원본만큼 는다). 폴더는 고른 내 폴더, 없으면 최근에 쓴 내 폴더.
-   * 퀴즈 · 플래시카드 · 북마크 같은 보낸 사람의 학습 기록은 옮기지 않는다. 중간에 실패하면 만든 사본 파일 · 작업을 지운다.
+   * 퀴즈 · 플래시카드 · 북마크 같은 보낸 사람의 학습 기록은 옮기지 않는다. 중간에 실패하면 만든 사본 노트 · 파일 · 작업을 지운다.
    * ponytail: 두 번 누르면 사본이 둘 생긴다(앱이 누르는 동안 버튼을 막는다). 문제가 되면 공유마다 사본 id 를 남겨 돌려준다
    */
   async copy(userId: string, shareId: string, folderId?: string) {
@@ -248,6 +248,7 @@ export class FriendShareService {
     ];
     const copied = new Map<string, string>();
     let jobId: Types.ObjectId | null = null;
+    let inserted: Types.ObjectId | null = null;
     try {
       if (sources.length) {
         if (!this.blobs) this.blobsMissing();
@@ -319,10 +320,13 @@ export class FriendShareService {
         createdAt: now,
         updatedAt: now,
       });
+      inserted = materialId;
       await this.folders.updateOne({ _id: folder._id }, { $set: { updatedAt: now } });
       return { _id: materialId.toHexString(), folderId: folder._id.toHexString() };
     } catch (error) {
-      // 반쯤 만든 사본(파일 · 작업)을 지운다. 노트는 마지막에 넣으므로 노트가 있으면 여기 오지 않는다
+      // 반쯤 만든 사본(노트 · 파일 · 작업)을 지운다. 노트를 넣은 뒤 폴더 갱신이 실패해도 노트까지 지운다
+      if (inserted)
+        await this.materials.collection.deleteOne({ _id: inserted }).catch(() => undefined);
       if (jobId) await this.jobs.deleteOne({ _id: jobId }).catch(() => undefined);
       if (this.blobs) await Promise.all([...copied.values()].map((u) => this.blobs!.deleteCopy(u)));
       throw error;
