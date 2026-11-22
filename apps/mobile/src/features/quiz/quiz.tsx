@@ -514,6 +514,8 @@ export function QuizGenScreen() {
   const [failureMessage, setFailureMessage] = useState('');
   const canceled = useRef(false);
   const activeJob = useRef<string | null>(null);
+  // 취소에 실을 세트 번호(#642). setId(state)는 다시 그린 뒤에야 바뀌어 activeJob과 같이 ref로도 둔다
+  const activeSet = useRef<string | null>(null);
   const completedJob = useRef<string | null>(null);
   useEffect(() => {
     let disposed = false;
@@ -522,10 +524,14 @@ export function QuizGenScreen() {
       .createSet(materialId)
       .then((r) => {
         if (disposed || canceled.current) {
-          api.ai.cancel(r.job._id).catch(() => toast('생성 취소를 확인하지 못했어요'));
+          // 그 세트만 정리하게 세트 번호를 싣는다(같은 작업을 이어받은 다른 세트는 서버가 건드리지 않음, #642)
+          api.ai
+            .cancel(r.job._id, { quizSetId: r.quizSet._id })
+            .catch(() => toast('생성 취소를 확인하지 못했어요'));
           return;
         }
         activeJob.current = r.job._id;
+        activeSet.current = r.quizSet._id;
         setJob(r.job);
         setSetId(r.quizSet._id);
       })
@@ -623,7 +629,10 @@ export function QuizGenScreen() {
               canceled.current = true;
               if (activeJob.current)
                 api.ai
-                  .cancel(activeJob.current)
+                  .cancel(
+                    activeJob.current,
+                    activeSet.current ? { quizSetId: activeSet.current } : undefined,
+                  )
                   .catch(() => toast('생성 취소를 확인하지 못했어요'));
               router.back();
             }}

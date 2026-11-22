@@ -280,6 +280,34 @@ describe('AiJobsService.cancelByUser (앱의 취소, #626)', () => {
     await service.cancel(ME, _id);
     expect(handler).not.toHaveBeenCalled();
   });
+
+  it('본문의 세트 번호(quizSetId)를 등록한 함수에 넘기고, 없으면(옛 앱 · 빈 본문) 넘기지 않는다', async () => {
+    const { service, add, handler } = withHandler();
+    const { _id } = await add();
+    const setId = new Types.ObjectId().toHexString();
+    await service.cancelByUser(ME, _id, { quizSetId: setId });
+    await service.cancelByUser(ME, _id, {});
+    await service.cancelByUser(ME, _id);
+    expect(handler.mock.calls.map(([ctx]) => (ctx as { quizSetId?: string }).quizSetId)).toEqual([
+      setId,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it.each([[{ quizSetId: 3 }], [{ quizSetId: null }], [{ quizSetId: 'qs1' }], ['문자열 본문']])(
+    '본문 %j는 400 VALIDATION_FAILED이고 함수를 부르지 않는다',
+    async (body) => {
+      const { service, add, row, handler } = withHandler();
+      const { _id } = await add();
+      await expect(service.cancelByUser(ME, _id, body)).rejects.toMatchObject({
+        status: 400,
+        response: { code: 'VALIDATION_FAILED' },
+      });
+      expect(row(_id)['status']).toBe('queued');
+      expect(handler).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('AiJobsService.retry', () => {

@@ -94,8 +94,26 @@ it('생성 응답 전 취소해도 뒤늦게 생긴 서버 작업을 취소하�
   await fireEvent.press(screen.getByText('취소'));
   expect(router.back).toHaveBeenCalledTimes(1);
   await act(async () => delayed.resolve(created));
-  await waitFor(() => expect(cancel).toHaveBeenCalledWith(created.job._id));
+  // 뒤늦게 받은 그 세트만 정리하게 세트 번호를 싣는다
+  await waitFor(() =>
+    expect(cancel).toHaveBeenCalledWith(created.job._id, { quizSetId: created.quizSet._id }),
+  );
   expect(router.replace).not.toHaveBeenCalled();
+});
+
+it('만드는 중에 취소 버튼을 누르면 받은 세트 번호(quizSetId)를 실어 취소하고 돌아간다', async () => {
+  const created = await api.quiz.createSet('ma1');
+  const running = { ...created.job, status: 'running' as const, step: undefined, progress: 10 };
+  jest.spyOn(api.quiz, 'createSet').mockResolvedValue({ ...created, job: running });
+  jest.spyOn(api.ai, 'job').mockResolvedValue(running);
+  const cancel = jest.spyOn(api.ai, 'cancel').mockResolvedValue(undefined);
+  setParams({ materialId: 'ma1', title: '취소할 노트' });
+  await renderScreen(<QuizGenScreen />, client());
+  await screen.findByText('퀴즈 탭에서 기다리기');
+  await fireEvent.press(screen.getByText('취소'));
+  expect(cancel).toHaveBeenCalledTimes(1);
+  expect(cancel).toHaveBeenCalledWith(running._id, { quizSetId: created.quizSet._id });
+  expect(router.back).toHaveBeenCalledTimes(1);
 });
 
 it('유사 퀴즈가 다 만들어지면 풀이 화면으로 바로 넘어가고, 응답 대기 중 연속으로 눌러도 한 번만 만든다', async () => {
