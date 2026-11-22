@@ -137,6 +137,11 @@ export function SettingsScreen() {
   const s = u.settings;
   const set = (k: keyof UserSettings) => (v: boolean) => update.mutate({ [k]: v });
   const tier = { free: 'Free', pro: 'Pro', max: 'MAX' }[u.subscription?.tier ?? 'free'];
+  // 학교 · 학년 · 이메일 중 값 있는 것만 잇는다(비어 있으면 「 · 이메일」처럼 점으로 시작했다)
+  const profileLine = [u.school?.replace('등학교', ''), u.grade, u.email]
+    .map((v) => v?.trim())
+    .filter(Boolean)
+    .join(' · ');
   return (
     <Canvas>
       <Screen scrollRef={scroll}>
@@ -150,9 +155,7 @@ export function SettingsScreen() {
           >
             <View className="flex-1">
               <Text className="text-title3 font-bold text-ink">{u.nickname}</Text>
-              <Text className="text-caption text-sub">
-                {u.school?.replace('등학교', '')} {u.grade} · {u.email}
-              </Text>
+              {!!profileLine && <Text className="text-caption text-sub">{profileLine}</Text>}
             </View>
             <ChevronRight size={ICON.md} color={C.sub} />
           </Pressable>
