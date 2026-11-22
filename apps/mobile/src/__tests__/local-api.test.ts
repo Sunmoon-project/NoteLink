@@ -205,18 +205,28 @@ describe('자정을 넘긴 세션', () => {
 });
 
 describe('공부 항목 지우기 (HOME-002)', () => {
+  afterEach(() => jest.useRealTimers());
+
   it('지우면 목록에서만 빠지고 쌓인 시간은 그대로, 지운 항목으로는 시작할 수 없고 다시 지워도 성공', async () => {
+    jest.useFakeTimers({
+      now: Date.parse('2026-11-22T12:00:00+09:00'),
+      doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask', 'setTimeout', 'clearTimeout'],
+    });
     await signup('a@test.com');
     const item = await api.study.addItem({ title: '수학', subjectName: '수학', goalMin: null });
     const s = await api.study.startSession({ studyItemId: item._id, mode: 'personal' });
-    await api.study.endSession(s._id, { clientDurationSec: 0, endReason: 'manual' });
-    const before = (await api.study.today()).totalSec;
+    jest.setSystemTime(Date.parse('2026-11-22T12:10:00+09:00'));
+    await api.study.endSession(s._id, { clientDurationSec: 600, endReason: 'manual' });
+    const before = await api.study.today();
+    expect(before.totalSec).toBe(600);
+    expect(before.items[0]!.accumulatedSec).toBe(600);
 
     await api.study.removeItem(item._id);
 
     const after = await api.study.today();
     expect(after.items).toEqual([]);
-    expect(after.totalSec).toBe(before);
+    expect(after.totalSec).toBe(600);
+    expect((await api.study.weekly()).totalSec).toBe(600);
     await expect(
       api.study.startSession({ studyItemId: item._id, mode: 'personal' }),
     ).rejects.toMatchObject({ code: ERROR_CODES.NOT_FOUND, status: 404 });
