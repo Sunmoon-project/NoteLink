@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleCheck,
+  Coins,
   Frown,
   Heart,
   Package,
@@ -31,6 +32,7 @@ import {
   Btn,
   Canvas,
   Dialog,
+  Empty,
   LIST_LAYOUT,
   Loading,
   Roll,
@@ -662,6 +664,12 @@ export function ShopScreen() {
   );
 }
 
+const EMPTY_LEDGER = {
+  전체: '아직 포인트 내역이 없어요',
+  적립: '아직 적립한 포인트가 없어요',
+  사용: '아직 사용한 포인트가 없어요',
+} as const;
+
 export function PointsScreen() {
   const insets = useSafeAreaInsets();
   const shop = useShopData();
@@ -705,6 +713,10 @@ export function PointsScreen() {
         </View>
         <View className="mt-2">
           {(ledger.isPending || shop.pending) && <Loading />}
+          {/* 0건이면 빈 화면이 아니라 탭에 맞는 문구(SHOP-008) */}
+          {!shop.pending && ledger.data?.length === 0 && (
+            <Empty icon={<Coins size={32} color={C.brand} />} title={EMPTY_LEDGER[tab]} />
+          )}
           {ledger.data?.map((l) => (
             <Animated.View
               key={l._id}
