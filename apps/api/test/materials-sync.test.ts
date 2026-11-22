@@ -9,7 +9,7 @@ import {
   sectionsFromSlides,
   syncFromJob,
 } from '../src/modules/content/materials/material-sync.js';
-import type { MaterialRow } from '../src/modules/content/materials/material-view.js';
+import { toAppMaterial, type MaterialRow } from '../src/modules/content/materials/material-view.js';
 
 const page = (pageNo: number, imageUrl = `https://b/c/${pageNo}.jpg`) => ({
   pageNo,
@@ -381,6 +381,31 @@ describe('작업 상태 → 노트 (syncFromJob)', () => {
     expect(update).toMatchObject({ 'processing.status': 'done', summary: null, keywords: [] });
   });
 
+  it('필기 도식: 그릴 수 있는 것만 옮기고 앞 줄(after)의 [?] 는 지운다. 없으면 빈 목록', () => {
+    const seq = { kind: 'sequence', terms: ['해당과정', 'TCA 회로'], relations: [[0, 1]] };
+    const base = { pages: [{ pageNo: 1, ocrText: '첫 쪽' }], chunks: [chunk(1, '본문', '제목')] };
+    const update = syncFromJob(
+      row(),
+      job('succeeded', {
+        result: {
+          ...base,
+          diagrams: [
+            { after: ' [?]포도당 분해 ', diagram: seq },
+            { after: null, diagram: { ...seq, kind: 'list' } },
+            { after: '빈 글은 null', diagram: { ...seq, terms: ['하나'] } }, // 그릴 수 없음
+            { after: 3, diagram: seq }, // after 가 글이 아님
+            'x',
+          ],
+        },
+      }),
+    )!;
+    expect(update['diagrams']).toEqual([
+      { after: '포도당 분해', diagram: { ...seq, relations: [[0, 1]] } },
+      { after: null, diagram: { ...seq, kind: 'list' } },
+    ]);
+    expect(syncFromJob(row(), job('succeeded', { result: base }))!['diagrams']).toEqual([]);
+  });
+
   it('성공했지만 쓸 결과가 없거나 쪽이 어긋나면 실패', () => {
     expect(syncFromJob(row(), job('succeeded', { result: null }))).toMatchObject({
       'processing.status': 'failed',
@@ -410,8 +435,20 @@ describe('작업 상태 → 노트 (syncFromJob)', () => {
       concepts: [],
     });
     expect(update).not.toHaveProperty('pages');
+    expect(update).not.toHaveProperty('diagrams');
     expect(syncFromJob(rec, job('succeeded', { result: { slides: [] } }))).toMatchObject({
       'processing.status': 'failed',
     });
+  });
+});
+
+describe('노트 응답의 도식 (toAppMaterial)', () => {
+  it('도식이 있을 때만 보낸다(없는 노트 · 예전 노트는 키 없음)', () => {
+    const diagram = { kind: 'list' as const, terms: ['가', '나'], relations: [] };
+    expect(toAppMaterial(row({ diagrams: [{ after: '본문', diagram }] })).diagrams).toEqual([
+      { after: '본문', diagram },
+    ]);
+    expect(toAppMaterial(row({ diagrams: [] }))).not.toHaveProperty('diagrams');
+    expect(toAppMaterial(row())).not.toHaveProperty('diagrams');
   });
 });
