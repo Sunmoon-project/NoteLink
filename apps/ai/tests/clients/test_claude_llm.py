@@ -132,6 +132,23 @@ def test_sonnet_request_uses_structured_outputs_without_thinking_or_temperature(
     assert s.headers[0]["anthropic-version"] == "2026-10-21"
 
 
+def test_an_image_goes_before_the_text_as_a_base64_block() -> None:
+    s = Server(message('{"natural": []}'))
+    s.client().call("claude-sonnet-5-5", "시스템", "사용자", SCHEMA, "N", image=b"\xff\xd8jpg")
+    assert s.bodies[0]["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9hqcGc="},
+                },
+                {"type": "text", "text": "사용자"},
+            ],
+        }
+    ]
+
+
 def test_haiku_keeps_default_thinking_and_gets_room_for_it() -> None:
     s = Server(message('{"natural": []}', thinking=True))
 

@@ -61,6 +61,7 @@ class SystemLlm(WindowLlm):
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
         self.systems.append((name, system))
         return super().call(

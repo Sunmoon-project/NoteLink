@@ -1,3 +1,5 @@
+import { diagramOf, type NoteDiagram } from '@notelink/shared';
+
 import type { AppAiJob } from '../../../ai-jobs/ai-jobs.service.js';
 import type { MaterialRow } from './material-view.js';
 import { fitSections, type Section } from './summary-fit.js';
@@ -135,6 +137,21 @@ export function summaryFromResult(raw: unknown): {
   };
 }
 
+/**
+ * 노트 정리 결과의 도식(result.diagrams: [{after, diagram}], apps/ai services/note/diagrams.py).
+ * 그릴 수 없는 도식(diagramOf 가 null)과 모양이 틀린 것은 뺀다. after 는 요약 본문처럼 [?] 를 지운 글, 비면 null
+ */
+export function diagramsFromResult(raw: unknown): NoteDiagram[] {
+  const out: NoteDiagram[] = [];
+  for (const item of (Array.isArray(raw) ? raw : []).filter(isRecord)) {
+    const after = item['after'];
+    const diagram = diagramOf(item['diagram']);
+    if (!diagram || (after !== null && typeof after !== 'string')) continue;
+    out.push({ after: clean(after), diagram });
+  }
+  return out;
+}
+
 /** 녹음 정리 결과의 슬라이드(apps/ai services/recording/models.py Slide)를 요약 소제목 · 본문으로 */
 export function sectionsFromSlides(raw: unknown): Section[] {
   const sections: Section[] = [];
@@ -233,5 +250,6 @@ export function syncFromJob(row: MaterialRow, job: AppAiJob): Record<string, unk
     pages,
     summary: sections.length > 0 ? { sections, points } : null,
     keywords: keywords.slice(0, KEYWORDS_MAX),
+    diagrams: diagramsFromResult(result['diagrams']),
   };
 }

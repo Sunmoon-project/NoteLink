@@ -350,7 +350,7 @@ export function HandDetailScreen() {
         <View className="mt-4">
           {tab === '정리된 노트' ? (
             m.summary?.sections.length ? (
-              <NoteBody sections={m.summary.sections} />
+              <NoteBody sections={m.summary.sections} diagrams={m.diagrams} />
             ) : (
               <SummaryStatus
                 m={m}
@@ -705,7 +705,7 @@ export function DocDetailScreen() {
             {!!m.summary?.sections.length && (
               <>
                 <Label>정리된 내용</Label>
-                <NoteBody sections={m.summary.sections} />
+                <NoteBody sections={m.summary.sections} diagrams={m.diagrams} />
               </>
             )}
             {subject && (

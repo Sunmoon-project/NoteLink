@@ -329,11 +329,11 @@ def _parse_body(item: JsonObject) -> SlideBody | None:
     return SlideBody(
         title.strip()[:TITLE_MAX_CHARS],
         " ".join(kept[:SUMMARY_MAX_SENTENCES])[:SUMMARY_MAX_CHARS],
-        _parse_diagram(item.get("diagram")),
+        parse_diagram(item.get("diagram")),
     )
 
 
-def _parse_diagram(raw: object) -> Diagram | None:
+def parse_diagram(raw: object) -> Diagram | None:
     """구조가 잘못된 도식은 None. 도식 때문에 다시 묻지 않고, 잘못된 관계는 그것만 버림."""
     if not isinstance(raw, dict):
         return None
