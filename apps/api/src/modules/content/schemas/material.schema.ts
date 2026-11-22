@@ -1,4 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { DiagramKind } from '@notelink/shared';
 import { HydratedDocument, Types } from 'mongoose';
 
 // 내장 문서: MaterialPage (공용 스키마 MaterialPage를 따름)
@@ -88,11 +89,7 @@ export const SummarySchema = SchemaFactory.createForClass(Summary);
 // 내장 문서: Diagram (도식 구조, 공용 스키마 Diagram). relations 는 terms 안 위치(0부터) [from, to]
 @Schema({ _id: false })
 export class DiagramShape {
-  @Prop({
-    required: true,
-    type: String,
-    enum: ['sequence', 'contrast', 'hierarchy', 'cause', 'list'],
-  })
+  @Prop({ required: true, type: String, enum: DiagramKind.options })
   kind: string;
 
   @Prop({ type: [String], default: [] })
