@@ -162,16 +162,20 @@ export class FriendShareService {
         deletedAt?: Date | null;
       }>(),
     ]);
+    const mine = row.ownerId.equals(me);
+    const active = !!note && (await this.isLive(row));
+    // 끝난 공유는 받은 사람에게 노트의 지금 제목 · 종류를 알려 주지 않는다(보낸 사람이 바꿨을 수 있다)
+    const shown = active || mine;
     return {
       _id: row._id.toHexString(),
       materialId: row.materialId.toHexString(),
       ownerId: row.ownerId.toHexString(),
       ownerNickname: owner && !owner.deletedAt ? owner.nickname : UNKNOWN_NICKNAME,
       friendId: row.friendId.toHexString(),
-      title: note?.title ?? '',
-      kind: note?.kind ?? null,
-      active: !!note && (await this.isLive(row)),
-      mine: row.ownerId.equals(me),
+      title: shown ? (note?.title ?? '') : '',
+      kind: shown ? (note?.kind ?? null) : null,
+      active,
+      mine,
       createdAt: row.createdAt.toISOString(),
     };
   }
@@ -247,10 +251,9 @@ export class FriendShareService {
     try {
       if (sources.length) {
         if (!this.blobs) this.blobsMissing();
-        const prefix = uploadFolder(
-          UPLOAD_KIND[note.kind as keyof typeof UPLOAD_KIND] ?? 'document',
-          userId,
-        );
+        const kind = UPLOAD_KIND[note.kind as keyof typeof UPLOAD_KIND] ?? 'document';
+        const from = uploadFolder(kind, row.ownerId.toHexString());
+        const prefix = uploadFolder(kind, userId);
         for (const url of sources) {
           const reserved = await this.quota.reserve(userId);
           if (!reserved.ok)
@@ -262,7 +265,7 @@ export class FriendShareService {
               },
               HttpStatus.TOO_MANY_REQUESTS,
             );
-          copied.set(url, await this.blobs!.copyUpload(url, prefix));
+          copied.set(url, await this.blobs!.copyUpload(url, from, prefix));
         }
       }
       const job = note.processing.jobId

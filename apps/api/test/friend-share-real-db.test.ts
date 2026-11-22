@@ -58,7 +58,7 @@ describe.skipIf(!isLocal)('진짜 DB 친구에게 노트 보내기', () => {
   const sync = vi.fn(async (row: unknown) => row);
   const reserve = vi.fn((): { ok: true } | { ok: false; retryAfterMs: number } => ({ ok: true }));
   const blobs = {
-    copyUpload: vi.fn(async (url: string, prefix: string) => {
+    copyUpload: vi.fn(async (url: string, _from: string, prefix: string) => {
       const out = `${BLOB}/${prefix}${new Types.ObjectId().toHexString()}${url.slice(url.lastIndexOf('.'))}`;
       copies.push(out);
       return out;
@@ -338,8 +338,16 @@ describe.skipIf(!isLocal)('진짜 DB 친구에게 노트 보내기', () => {
     await friendShares.revoke(hex(owner), hex(row._id));
     await friendShares.revoke(hex(owner), hex(row._id)); // 두 번째도 그대로
     expect(await sharing.ownerOfShared(hex(f1), hex(n1))).toBeNull();
-    expect(await friendShares.open(hex(f1), hex(row._id))).toMatchObject({ active: false });
-    expect(await friendShares.open(hex(owner), hex(row._id))).toMatchObject({ mine: true });
+    // 끝난 공유는 받은 사람에게 노트 제목 · 종류를 보여 주지 않는다(보낸 사람은 본다)
+    expect(await friendShares.open(hex(f1), hex(row._id))).toMatchObject({
+      active: false,
+      title: '',
+      kind: null,
+    });
+    expect(await friendShares.open(hex(owner), hex(row._id))).toMatchObject({
+      mine: true,
+      title: '운영체제 강의',
+    });
     // 철회한 뒤 다시 보내면 새 공유 · 새 카드
     await send([n1], [f1]);
     expect(await shares.countDocuments({ revokedAt: null })).toBe(1);
@@ -390,8 +398,10 @@ describe.skipIf(!isLocal)('진짜 DB 친구에게 노트 보내기', () => {
     // 북마크는 보낸 사람의 메모라 옮기지 않는다
     expect(copy.bookmarks).toEqual([]);
     expect(copy.processing.status).toBe('done');
+    // 원본은 보낸 사람의 올린 파일 폴더 안이어야 복사한다
     expect(blobs.copyUpload).toHaveBeenCalledWith(
       `${BLOB}/uploads/audio/${hex(owner)}/a.m4a`,
+      `uploads/audio/${hex(owner)}/`,
       `uploads/audio/${hex(f1)}/`,
     );
     expect(copy.blobUrls).toEqual(copies);
