@@ -31,7 +31,7 @@ const hhmmss = (s: number) => new Date(Math.max(0, s) * 1000).toISOString().slic
 const SPEEDS = [1, 1.25, 1.5, 2];
 
 /** 실제 녹음 파일을 expo-audio로 재생한다. 길이는 서버 값이 없으면 파일에서 읽는다 */
-function usePlayback(url: string | undefined, knownDuration: number) {
+export function usePlayback(url: string | undefined, knownDuration: number) {
   // 상태는 0.25초마다(기본 0.5초). 그 사이는 usePlaybackClock이 프레임마다 이어 붙인다
   const player = useAudioPlayer(url ? { uri: url } : null, { updateInterval: 250 });
   const status = useAudioPlayerStatus(player);
@@ -42,7 +42,8 @@ function usePlayback(url: string | undefined, knownDuration: number) {
   }, [focused, player]);
   const duration = knownDuration || status.duration || 0;
   return {
-    ready: !!url,
+    // 파일을 다 불러온 뒤에야 옮기기(seekTo)가 먹는다: 그 전에 옮기면 iOS가 무시해 00:00에 머물렀다(TC-NOTE-026)
+    ready: !!url && status.isLoaded,
     duration,
     pos: status.currentTime,
     playing: status.playing,
@@ -61,6 +62,9 @@ function usePlayback(url: string | undefined, knownDuration: number) {
 
 const posKey = (materialId: string) => `notelink.playpos.${materialId}`;
 const RESUME_MARGIN = 5; // 처음 · 끝 5초 안이면 이어듣지 않는다(거의 처음이거나 다 들음)
+// 옮기기가 반영됐다고 보는 오차. 이어듣기 대상은 6초부터라, 넓으면(5초) 옮기기가 실패한 채 0초부터 재생된 상태도
+// 「옮겨짐」으로 봐 지난 자리를 덮어쓴다(#624 Codex 리뷰)
+const SEEK_SETTLE = 1.5;
 
 /**
  * 이어듣기(설정 「이어듣기」): 켜져 있으면 녹음마다 멈춘 자리를 기기에 적어 두고, 다시 열면 그 자리부터.
@@ -84,6 +88,15 @@ export function useResume(
     [],
   );
   const saved = useRef(-1);
+  // 지난 자리로 옮긴 뒤 플레이어 상태가 그 자리에 닿기 전까지는 적지 않는다. 옮기기 전 상태(0초)를 적으면
+  // 지난 자리가 지워져 다음에도 처음부터 들었다(TC-NOTE-026)
+  const seeking = useRef(-1);
+  const settled = (pos: number) => {
+    if (seeking.current < 0) return true;
+    if (Math.abs(pos - seeking.current) >= SEEK_SETTLE) return false;
+    seeking.current = -1;
+    return true;
+  };
   const latest = useRef({ on, pos: p.pos, duration: p.duration });
   useEffect(() => {
     latest.current = { on, pos: p.pos, duration: p.duration };
@@ -106,6 +119,7 @@ export function useResume(
         const at = Number(v);
         if (at > RESUME_MARGIN && at < p.duration - RESUME_MARGIN) {
           saved.current = at;
+          seeking.current = at;
           p.seek(at);
           toast(`지난번 ${mmss(at)}부터 이어서 들어요`);
         }
@@ -117,13 +131,13 @@ export function useResume(
   }, [on, p.ready, p.duration]); // eslint-disable-line react-hooks/exhaustive-deps
   // 듣는 동안 5초마다, 화면을 떠날 때 한 번 더 적는다
   useEffect(() => {
-    if (on && restored.current && Math.abs(p.pos - Math.max(0, saved.current)) >= 5)
-      write(p.pos, p.duration);
+    if (!on || !restored.current || !settled(p.pos)) return;
+    if (Math.abs(p.pos - Math.max(0, saved.current)) >= 5) write(p.pos, p.duration);
   }, [on, p.pos]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(
     () => () => {
       const l = latest.current;
-      if (l.on && restored.current) write(l.pos, l.duration);
+      if (l.on && restored.current && settled(l.pos)) write(l.pos, l.duration);
     },
     [], // eslint-disable-line react-hooks/exhaustive-deps
   );

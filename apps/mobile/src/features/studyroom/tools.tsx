@@ -312,15 +312,20 @@ export function TimerScreen() {
   const [editing, setEditing] = useState<(TimerRule['periods'][number] & { index: number }) | null>(
     null,
   );
-  const editPeriod = (index: number) => setEditing({ ...(periods[index] ?? PERIODS[0]!), index });
+  // 입력 안내는 대화상자 안에: iOS에서 대화상자(Modal)는 따로 뜬 창이라 토스트가 그 뒤에 가려진다(TestQA ROOM-013)
+  const [periodError, setPeriodError] = useState<string | null>(null);
+  const editPeriod = (index: number) => {
+    setPeriodError(null);
+    setEditing({ ...(periods[index] ?? PERIODS[0]!), index });
+  };
   const applyPeriod = () => {
     if (!editing) return;
     const validTime = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
     const { index, start, end, label } = editing;
     if (!validTime(start) || !validTime(end) || start >= end)
-      return toast('시작·종료 시간을 HH:MM 형식과 순서에 맞게 입력해 주세요');
+      return setPeriodError('시작·종료 시간을 HH:MM 형식과 순서에 맞게 입력해 주세요');
     if (periods.some((period, i) => i !== index && start < period.end && end > period.start))
-      return toast('다른 교시와 시간이 겹치지 않게 입력해 주세요');
+      return setPeriodError('다른 교시와 시간이 겹치지 않게 입력해 주세요');
     const next = [...periods];
     next[index] = { start, end, label: label.trim() };
     setPeriods(next.sort((a, b) => a.start.localeCompare(b.start)));
@@ -594,13 +599,19 @@ export function TimerScreen() {
                 <TextInput
                   accessibilityLabel={label}
                   value={editing[field]}
-                  onChangeText={(value) =>
-                    setEditing((current) => (current ? { ...current, [field]: value } : current))
-                  }
+                  onChangeText={(value) => {
+                    setPeriodError(null);
+                    setEditing((current) => (current ? { ...current, [field]: value } : current));
+                  }}
                   className="mt-1 rounded-xl bg-fill px-3 py-2.5 text-ink"
                 />
               </View>
             ))}
+            {periodError && (
+              <Text accessibilityRole="alert" className="text-caption text-danger">
+                {periodError}
+              </Text>
+            )}
             <Btn onPress={applyPeriod}>교시 적용</Btn>
             <Btn kind="outline" onPress={() => setEditing(null)}>
               취소

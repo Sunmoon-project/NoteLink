@@ -76,7 +76,15 @@ interface JobLean {
   targetId: Types.ObjectId;
   /** 후보를 읽은 때의 값이라 오래됐을 수 있다. 시도 횟수 판정에는 선점 응답의 값을 쓴다 */
   notice?: { attempts?: number } | null;
+  /** 퀴즈 작업 결과의 문제 목록(첫 문제만 읽는다: 비었는지만 본다) */
+  result?: { questions?: unknown[]; reviewQuestions?: unknown[] } | null;
 }
+
+/** 성공으로 끝났지만 쓸 문제가 0개인 퀴즈 작업(세트는 failed가 된다, quiz-sets readyUpdate) */
+const noQuestions = (job: JobLean) => {
+  const list = job.result?.[job.type === 'similar_quiz' ? 'reviewQuestions' : 'questions'];
+  return Array.isArray(list) && list.length === 0;
+};
 
 type Outcome = 'sent' | 'skipped' | 'retry';
 
@@ -179,7 +187,15 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
                 },
               ],
             },
-            { type: 1, status: 1, userId: 1, targetId: 1, notice: 1 },
+            {
+              type: 1,
+              status: 1,
+              userId: 1,
+              targetId: 1,
+              notice: 1,
+              'result.questions': { $slice: 1 },
+              'result.reviewQuestions': { $slice: 1 },
+            },
           )
           .sort({ _id: 1 })
           .limit(NOTICE_PAGE)
@@ -485,7 +501,8 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
       threadId: `quiz-job-${String(job._id)}`,
       data: { type: 'quiz-ready', status: 'failed' },
     });
-    if (job.status === 'failed') return failed();
+    // 성공했어도 문제가 0개면 세트는 failed가 되므로 「준비됐어요」 대신 실패로 알린다(세트를 못 찾아도, TestQA COM-004)
+    if (job.status === 'failed' || noQuestions(job)) return failed();
     // 퀴즈 만들기 · 미리 만들기 모두 세트가 이 작업(jobId)을 가리킨다
     const set = await this.sets
       .findOne(

@@ -121,3 +121,20 @@ it('원본 받기가 실패하면 전처럼 연결을 확인하라고 알린다'
     expect(useToast.getState().msg).toBe('다운로드하지 못했어요. 연결을 확인해 주세요'),
   );
 });
+
+// iOS QA(TC-NOTE-021, 2026-11-21): 고르기 시트(Modal)가 닫히는 중에 공유 시트를 띄우면 Modal과 함께 사라져
+// shareAsync가 끝나지 않았다(스피너가 계속 돌고 완료 화면이 안 뜸) → 시트가 다 닫힌 뒤에 띄운다
+it('공유 시트는 고르기 시트가 다 닫힌 뒤에 띄운다', async () => {
+  const g = globalThis as { MODAL_CLOSE_MS?: number };
+  g.MODAL_CLOSE_MS = 300;
+  try {
+    await renderScreen(<DocDetailScreen />);
+    await fireEvent.press(await screen.findByText('다운로드'));
+    await fireEvent.press(screen.getByText('정리본 (.md)'));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(Sharing.shareAsync).not.toHaveBeenCalled();
+    await waitFor(() => expect(Sharing.shareAsync).toHaveBeenCalled());
+  } finally {
+    delete g.MODAL_CLOSE_MS;
+  }
+});

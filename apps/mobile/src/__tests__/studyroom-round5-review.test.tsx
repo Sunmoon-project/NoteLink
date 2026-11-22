@@ -358,7 +358,8 @@ describe('교시 시간표 편집', () => {
     await fireEvent.press(screen.getByRole('button', { name: '교시 적용' }));
     expect(screen.getByLabelText('교시 시작')).toBeTruthy();
     expect(screen.getByText('09:00 - 09:50')).toBeTruthy();
-    expect(useToast.getState().msg).toBeTruthy();
+    // 안내는 대화상자 안에(iOS에서 토스트는 대화상자 뒤에 가려진다, TestQA ROOM-013)
+    expect(screen.getByRole('alert')).toBeTruthy();
     expect(mockApi.rooms.setTimer).not.toHaveBeenCalled();
   });
   it('다른 교시 행에서 열어 편집하다 취소하면 기존 내용을 유지한다', async () => {
