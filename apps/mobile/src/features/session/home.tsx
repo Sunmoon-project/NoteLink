@@ -396,9 +396,9 @@ export function HomeScreen() {
                   <View
                     className={cx('h-8 w-1 rounded-full', on ? 'bg-brand' : 'bg-transparent')}
                   />
-                  {/* 제목 · 시간 칸을 길게 누르면 삭제 확인. 스크린 리더는 동작 메뉴의 '삭제'로 같은 일을 한다 */}
+                  {/* 제목 · 시간 칸을 길게 누르면 삭제 확인. 스크린 리더는 동작 메뉴의 '삭제'로 같은 일을 한다.
+                      라벨을 따로 주지 않아 제목 · 과목 · 목표 · 시간을 전처럼 모두 읽는다 */}
                   <Pressable
-                    accessibilityLabel={it.title}
                     accessibilityHint="길게 누르면 삭제할 수 있어요"
                     accessibilityActions={[{ name: 'longpress', label: '삭제' }]}
                     onAccessibilityAction={(e) => {

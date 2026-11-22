@@ -152,7 +152,7 @@ export const PATHS = {
   // 학습 기록 · 목표
   studyToday: '/study/today',
   studyItems: '/study/items',
-  /** DELETE → 204. 목록에서만 숨기고 쌓인 시간 · 통계는 남긴다. 남의 것 · 없는 것 404, 이미 지운 것도 204, 측정 중이면 409 */
+  /** DELETE → 204. 오늘 목록에서만 숨기고 쌓인 시간 · 통계는 남긴다. 남의 것 · 없는 것 · 지난 날 항목 404, 이미 지운 것도 204, 측정 중이면 409 */
   studyItem: (id: string) => `/study/items/${seg(id)}`,
   studySessions: '/study-sessions',
   studySession: (id: string) => `/study-sessions/${seg(id)}`,

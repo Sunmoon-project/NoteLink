@@ -157,7 +157,7 @@ export class StudyService {
     }
 
     /**
-     * 공부 항목 지우기(HOME-002): 기록은 남기고 항목에 deletedAt만 채워 오늘 목록에서 숨긴다.
+     * 공부 항목 지우기(HOME-002): 기록은 남기고 오늘 항목에 deletedAt만 채워 오늘 목록에서 숨긴다(지난 날 항목은 404).
      * 쌓인 시간(accumulatedSec) · 하루 합계 · 과목 시간(subjectSec)은 건드리지 않아 통계 · 학습 기록 · 목표 판정에 계속 들어간다.
      * - 'deleted': 지웠다 · 이미 지운 항목이다(멱등 — 처음 지운 시각을 그대로 둔다)
      * - 'not_found': 내 항목이 아니거나 없다(남의 항목인지 알려 주지 않는다)
@@ -168,22 +168,38 @@ export class StudyService {
         const owner = new Types.ObjectId(userId);
         const id = new Types.ObjectId(itemId);
 
-        const record = await this.dailyModel
-            .findOne({ userId: owner, 'items._id': id }, { 'items.$': 1 })
-            .lean<{ items?: { deletedAt?: Date | null }[] }>();
-        const item = record?.items?.[0];
-        if (!item) return 'not_found';
-        if (item.deletedAt) return 'deleted';
+        const studyDate = seoulDate(new Date());
 
-        const open = await this.sessionModel.exists({ userId: owner, studyItemId: id, status: { $ne: 'ended' } });
-        if (open) return 'in_session';
+        // 지우기와 열린 세션 확인을 한 트랜잭션으로. 세션 시작(startSession)도 트랜잭션 안에서 같은 하루 기록을 먼저 쓰므로
+        // 둘이 겹치면 쓰기 충돌로 한쪽이 다시 실행된다 → 시작이 먼저면 여기서 열린 세션이 보여 409, 지우기가 먼저면 시작이 404.
+        // 지운 항목 위에서 타이머가 도는 일이 없다
+        try {
+            return await this.connection.transaction(async (tx) => {
+                const record = await this.dailyModel
+                    .findOne({ userId: owner, studyDate, 'items._id': id }, { 'items.$': 1 }, { session: tx })
+                    .lean<{ items?: { deletedAt?: Date | null }[] }>();
+                const item = record?.items?.[0];
+                if (!item) return 'not_found' as const;
+                if (item.deletedAt) return 'deleted' as const;
 
-        // 아직 안 지운 항목일 때만 채운다 → 동시에 두 번 지워도 처음 시각이 남는다
-        await this.dailyModel.updateOne(
-            { userId: owner, items: { $elemMatch: { _id: id, deletedAt: null } } },
-            { $set: { 'items.$.deletedAt': new Date() } },
-        );
-        return 'deleted';
+                // 아직 안 지운 항목일 때만 채운다 → 동시에 두 번 지워도 처음 시각이 남는다
+                await this.dailyModel.updateOne(
+                    { userId: owner, studyDate, items: { $elemMatch: { _id: id, deletedAt: null } } },
+                    { $set: { 'items.$.deletedAt': new Date() } },
+                    { session: tx },
+                );
+                const open = await this.sessionModel.countDocuments(
+                    { userId: owner, studyItemId: id, status: { $ne: 'ended' } },
+                    { session: tx },
+                );
+                // 측정 중이면 트랜잭션을 되돌려 deletedAt을 쓰지 않는다
+                if (open > 0) throw new ItemInSessionError();
+                return 'deleted' as const;
+            });
+        } catch (error) {
+            if (error instanceof ItemInSessionError) return 'in_session';
+            throw error;
+        }
     }
 
     /**
@@ -196,14 +212,17 @@ export class StudyService {
         const studyDate = seoulDate(new Date());
         const studyItemId = new Types.ObjectId(dto.studyItemId);
 
-        const record = await this.dailyModel
-            // 지운 항목(deletedAt)으로는 시작하지 않는다(목록에서 사라진 항목). deletedAt: null은 칸이 없는 옛 항목도 맞는다
-            .findOne({ userId: owner, studyDate, items: { $elemMatch: { _id: studyItemId, deletedAt: null } } }, { _id: 1 })
-            .lean<{ _id: Types.ObjectId }>();
-        if (!record) return undefined;
-
         // 열린 세션 정산 + 새 세션 만들기를 한 묶음으로. 트랜잭션 안이라 await를 순서대로 쓴다
-        const run = (): Promise<StudySessionView> => this.connection.transaction(async (tx) => {
+        const run = (): Promise<StudySessionView | undefined> => this.connection.transaction(async (tx) => {
+            // 오늘 기록에 지우지 않은 그 항목이 있을 때만 시작한다(deletedAt: null은 칸이 없는 옛 항목도 맞는다).
+            // 읽기 대신 그 기록을 써서(updatedAt) 동시에 온 항목 지우기(removeItem)와 쓰기 충돌이 나게 한다 — 지운 항목 위에서 타이머가 돌지 않게
+            const touched = await this.dailyModel.updateOne(
+                { userId: owner, studyDate, items: { $elemMatch: { _id: studyItemId, deletedAt: null } } },
+                { $set: { updatedAt: new Date() } },
+                { session: tx },
+            );
+            if (touched.matchedCount === 0) return undefined;
+
             const open = await this.sessionModel
                 .find({ userId: owner, status: { $ne: 'ended' } }, null, { session: tx })
                 .lean<StudySessionLean[]>();
@@ -517,6 +536,9 @@ export class StudyService {
         return existing;
     }
 }
+
+/** 지우려는 항목으로 열린 세션이 있어 지우기 트랜잭션을 되돌릴 때 쓰는 표시 */
+class ItemInSessionError extends Error {}
 
 /** MongoDB 중복 키 오류(unique 인덱스 위반)인지 */
 function isDuplicateKeyError(error: unknown): boolean {
