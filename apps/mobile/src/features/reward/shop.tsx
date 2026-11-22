@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleCheck,
+  Coins,
   Frown,
   Heart,
   Package,
@@ -31,6 +32,7 @@ import {
   Btn,
   Canvas,
   Dialog,
+  Empty,
   LIST_LAYOUT,
   Loading,
   Roll,
@@ -293,10 +295,41 @@ export function ShopScreen() {
   const buying = useRef(false);
   const purchased = useRef(new Set<string>());
 
+  // 찜은 서버에서 토글이다: 그 아이템 요청 중에 또 보내면 두 번 뒤집혀 화면과 실제가 어긋났다(SHOP-004).
+  // 요청 중인 아이템은 다시 보내지 않고, 응답의 isWished를 바로 그린다
+  const wishing = useRef(new Set<string>());
   const wish = useMutation({
-    mutationFn: api.shop.wish,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['my-items'] }),
+    mutationFn: (it: ShopItem) => api.shop.wish(it._id),
+    onSuccess: async (isWished, it) => {
+      // 응답대로 고친 뒤 다시 읽는다. 다시 읽기(invalidate)는 먼저 시작한 읽기(찜 전 상태일 수 있음)를
+      // 되돌리지 않고 조용히 멈춘 뒤 새로 읽어, 늦게 온 찜 전 목록이 응답을 덮지 않는다.
+      // 단, 아직 한 번도 못 읽었으면 invalidate가 진행 중인 처음 읽기를 그대로 이어받으므로 그 읽기를 먼저 버린다
+      if (qc.getQueryData(['my-items']) === undefined)
+        await qc.cancelQueries({ queryKey: ['my-items'] });
+      qc.setQueryData<UserItem[]>(['my-items'], (list) => {
+        if (!list) return list;
+        if (list.some((u) => u.itemId === it._id))
+          return list.map((u) => (u.itemId === it._id ? { ...u, isWished } : u));
+        const added: UserItem = {
+          _id: `wish-${it._id}`,
+          itemId: it._id,
+          itemCategory: it.category,
+          isOwned: false,
+          isWished,
+          isEquipped: false,
+          acquiredAt: null,
+        };
+        return [...list, added];
+      });
+      void qc.invalidateQueries({ queryKey: ['my-items'] });
+    },
+    onSettled: (_data, _error, it) => void wishing.current.delete(it._id),
   });
+  const toggleWish = (it: ShopItem) => {
+    if (wishing.current.has(it._id)) return;
+    wishing.current.add(it._id);
+    wish.mutate(it);
+  };
   const buy = useMutation({
     mutationFn: (it: ShopItem) => api.shop.purchase(it._id),
     retry: false,
@@ -468,7 +501,7 @@ export function ShopScreen() {
                   </Pressable>
                   <Pressable
                     accessibilityLabel={wished.has(it._id) ? '찜 해제' : '찜'}
-                    onPress={() => wish.mutate(it._id)}
+                    onPress={() => toggleWish(it)}
                     hitSlop={8}
                     className="absolute top-3.5 right-3.5"
                   >
@@ -517,7 +550,7 @@ export function ShopScreen() {
                 ) : (
                   <Pressable
                     accessibilityLabel="찜"
-                    onPress={() => wish.mutate(detail._id)}
+                    onPress={() => toggleWish(detail)}
                     className="h-8 w-8 items-center justify-center rounded-full bg-fill"
                   >
                     <Heart
@@ -634,6 +667,12 @@ export function ShopScreen() {
   );
 }
 
+const EMPTY_LEDGER = {
+  전체: '아직 포인트 내역이 없어요',
+  적립: '아직 적립한 포인트가 없어요',
+  사용: '아직 사용한 포인트가 없어요',
+} as const;
+
 export function PointsScreen() {
   const insets = useSafeAreaInsets();
   const shop = useShopData();
@@ -677,6 +716,10 @@ export function PointsScreen() {
         </View>
         <View className="mt-2">
           {(ledger.isPending || shop.pending) && <Loading />}
+          {/* 0건이면 빈 화면이 아니라 탭에 맞는 문구(SHOP-008) */}
+          {!shop.pending && ledger.data?.length === 0 && (
+            <Empty icon={<Coins size={32} color={C.brand} />} title={EMPTY_LEDGER[tab]} />
+          )}
           {ledger.data?.map((l) => (
             <Animated.View
               key={l._id}
