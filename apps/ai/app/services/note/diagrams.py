@@ -6,6 +6,7 @@
 놓이게 그 줄 글(after)을 붙여 돌려줌. 앱이 본문에서 그 줄을 찾아 그 뒤에 그림.
 """
 
+import logging
 import re
 from typing import TypedDict, TypeIs
 
@@ -20,9 +21,11 @@ from app.services.recording.pipeline import (
     parse_diagram,
 )
 
+log = logging.getLogger(__name__)
+
 DIAGRAMS_MAX = 3  # 한 쪽에 남기는 도식 수(위에서부터)
-# 핵심어 줄을 찾는 범위를 위아래로 넓히는 몫(쪽 높이 대비). 시험 사진에서 모델이 준 범위가 마지막
-# 칸보다 0.05쯤 안쪽일 때가 있었음. 핵심어와 같은 줄만 빼므로 넓혀도 본문은 잘 지워지지 않음
+# 핵심어 줄을 찾는 범위를 아래로 넓히는 몫(쪽 높이 대비). 시험 사진에서 모델이 준 아래끝이 마지막
+# 칸보다 0.05쯤 안쪽일 때가 있었음. 위로는 넓히지 않음: 도식 바로 위 소제목이 핵심어와 같으면 지워짐
 MARGIN = 0.05
 UNSURE = re.compile(r"\[\?\]")
 NOT_WORD = re.compile(r"[\W_]+")  # 띄어쓰기 · 화살표 · 글머리표는 비교에서 뺌
@@ -108,8 +111,10 @@ def find_diagrams(llm: Llm, model: str, image: bytes) -> list[PageDiagram]:
     except LlmError as e:
         if str(e) == CANCELED:
             raise
+        log.warning("도식을 찾지 못해 도식 없이 계속함: %s", e)
         return []
-    except LlmSetupError:
+    except LlmSetupError as e:  # 키 · 사용 한도: 노트 정리는 도식 없이 계속
+        log.warning("도식 호출 설정 오류로 도식 없이 계속함: %s", e)
         return []
     raw = answer.get("diagrams")
     out = [d for item in (raw if isinstance(raw, list) else []) if (d := page_diagram(item))]
@@ -134,6 +139,11 @@ def _fraction(v: object) -> TypeIs[int | float]:
 
 
 def _plain(text: str) -> str:
+    """비교용 글: [?] · 띄어쓰기 · 기호를 뺌.
+
+    after 는 이와 달리 줄 글 그대로 보내고, API(material-sync clean: [?] 지우고 다듬기)와
+    앱(convert placeDiagrams plainLine: # · - 표시 빼기)이 각자 맞춤.
+    """
     return NOT_WORD.sub("", UNSURE.sub("", text))
 
 
@@ -143,7 +153,7 @@ def drop_diagram_lines(lines: list[Line], diagrams: list[PageDiagram]) -> list[L
     def inside(ln: Line) -> bool:
         y = (ln["y0"] + ln["y1"]) / 2
         for d in diagrams:
-            if d["top"] - MARGIN <= y <= d["bottom"] + MARGIN:
+            if d["top"] <= y <= d["bottom"] + MARGIN:
                 rest = _plain(ln["text"])
                 for term in sorted(map(_plain, d["diagram"]["terms"]), key=len, reverse=True):
                     rest = rest.replace(term, "")
@@ -166,6 +176,7 @@ def place_diagrams(
     middle = {(ln["page"], ln["id"]): (ln["y0"] + ln["y1"]) / 2 for ln in lines}
     order: list[tuple[int, float, str]] = []  # (쪽, 세로 가운데, 줄 글)
     for c in sorted(chunks, key=lambda c: c["order"]):
+        # 조각 글의 n번째 줄 = lines[n] (cut_chunk 등이 지키는 짝. 오타 고치기는 줄 안 낱말만 바꿈)
         for ref, text in zip(c["lines"], c["text"].split("\n"), strict=False):
             ys = [middle.get((ref["pageNo"], i), 0.0) for i in ref["lineIds"]]
             order.append((ref["pageNo"], max(ys, default=0.0), text))

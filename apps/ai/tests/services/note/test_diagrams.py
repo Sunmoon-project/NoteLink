@@ -91,9 +91,13 @@ def test_only_lines_of_kept_terms_inside_the_diagram_are_dropped() -> None:
 
 def test_lines_just_outside_the_reported_range_are_still_checked() -> None:
     # 시험 사진에서 모델이 준 아래끝이 마지막 칸보다 0.05 안쪽일 때가 있었음(MARGIN)
-    lines = [line("본문", 0.1, 0.5, 0.05, lid=1), line("TCA 회로", 0.3, 0.6, 0.63, lid=2)]
+    lines = [
+        line("본문", 0.1, 0.5, 0.05, lid=1),
+        line("해당과정", 0.1, 0.5, 0.17, lid=3),  # 도식 바로 위 소제목: 위로는 넓히지 않음
+        line("TCA 회로", 0.3, 0.6, 0.63, lid=2),
+    ]
     kept = drop_diagram_lines(lines, [{"top": 0.2, "bottom": 0.6, "diagram": dict(SEQ)}])  # type: ignore[typeddict-item]
-    assert [ln["id"] for ln in kept] == [1]
+    assert [ln["id"] for ln in kept] == [1, 3]
 
 
 def test_a_line_holding_two_terms_is_dropped() -> None:
