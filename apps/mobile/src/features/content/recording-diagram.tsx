@@ -3,12 +3,40 @@ import { View } from 'react-native';
 import { ArrowRight, CornerDownRight } from 'lucide-react-native';
 import { diagramOf, type Diagram } from '@notelink/shared';
 import { Text } from '@/components/text';
-import { ICON } from '@/theme';
+import { C, ICON } from '@/theme';
 
 // 녹음 요약 슬라이드의 도식(FR-23). AI가 만든 구조(kind · terms · relations)를 칩과 화살표로 그린다.
-// 어두운 슬라이드 카드(bg-night) 안에 붙으므로 흰 글 · 반투명 흰 칩을 쓴다
+// 어두운 슬라이드 카드(bg-night) 안에서는 흰 글 · 반투명 흰 칩(night), 필기 정리본의 흰 카드(FR-19)
+// 안에서는 진한 글 · 민트 칩(paper)을 쓴다
 
-const ARROW = 'rgba(255,255,255,0.6)';
+type Tone = 'night' | 'paper';
+const TONES = {
+  night: {
+    arrow: 'rgba(255,255,255,0.6)',
+    chip: 'rounded-full bg-white/10 px-2.5 py-1',
+    strong: 'rounded-full bg-white/20 px-2.5 py-1',
+    term: 'text-caption2 font-semibold text-white',
+    strongTerm: 'text-caption2 font-semibold text-white',
+    ref: 'text-caption2 text-white/50',
+    faint: 'text-caption2 text-white/40',
+    dot: 'h-1.5 w-1.5 rounded-full bg-white/60',
+    item: 'text-caption2 text-white',
+    box: 'mt-3 rounded-xl border border-white/10 p-3',
+  },
+  paper: {
+    arrow: C.sub,
+    chip: 'rounded-full bg-mint px-2.5 py-1',
+    strong: 'rounded-full bg-brand px-2.5 py-1',
+    term: 'text-caption2 font-semibold text-ink',
+    strongTerm: 'text-caption2 font-semibold text-white', // 진한 칩(brand) 위
+    ref: 'text-caption2 text-sub',
+    faint: 'text-caption2 text-sub',
+    dot: 'h-1.5 w-1.5 rounded-full bg-brand',
+    item: 'text-caption2 text-ink',
+    box: 'my-2 rounded-xl border border-line p-3',
+  },
+} satisfies Record<Tone, Record<string, string>>;
+type Palette = (typeof TONES)[Tone];
 const KIND_NAME: Record<Diagram['kind'], string> = {
   sequence: '순서',
   contrast: '대비',
@@ -117,49 +145,45 @@ export function diagramLabel(d: Diagram): string {
   return `도식(${KIND_NAME[d.kind]}): ${body}`;
 }
 
-function Term({ children, strong }: { children: string; strong?: boolean }) {
+function Term({ t, children, strong }: { t: Palette; children: string; strong?: boolean }) {
   return (
-    <View
-      className={
-        strong ? 'rounded-full bg-white/20 px-2.5 py-1' : 'rounded-full bg-white/10 px-2.5 py-1'
-      }
-    >
-      <Text className="text-caption2 font-semibold text-white">{children}</Text>
+    <View className={strong ? t.strong : t.chip}>
+      <Text className={strong ? t.strongTerm : t.term}>{children}</Text>
     </View>
   );
 }
 
-const Right = () => <ArrowRight size={ICON.xs} color={ARROW} />;
+const Right = ({ t }: { t: Palette }) => <ArrowRight size={ICON.xs} color={t.arrow} />;
 
-const Ref = ({ children }: { children: string }) => (
-  <Text className="text-caption2 text-white/50">{children}</Text>
+const Ref = ({ t, children }: { t: Palette; children: string }) => (
+  <Text className={t.ref}>{children}</Text>
 );
 
 /** 순서 · 인과: 줄마다 칩을 화살표로 잇는다(넘치면 줄바꿈). 인과는 마지막 결과 칩을 진하게 */
-function Flow({ d }: { d: Diagram }) {
+function Flow({ d, t }: { d: Diagram; t: Palette }) {
   return (
     <View className="gap-1.5">
       {flowRows(d).map((r, i) => (
         <View key={i} className="flex-row flex-wrap items-center gap-1.5">
           {r.from ? (
             <>
-              <CornerDownRight size={ICON.xs} color={ARROW} />
-              <Ref>{r.from}</Ref>
-              <Right />
+              <CornerDownRight size={ICON.xs} color={t.arrow} />
+              <Ref t={t}>{r.from}</Ref>
+              <Right t={t} />
             </>
           ) : null}
-          {r.terms.map((t, j) => (
+          {r.terms.map((term, j) => (
             <Fragment key={j}>
-              {j > 0 && <Right />}
-              <Term strong={d.kind === 'cause' && !r.to && j === r.terms.length - 1 && j > 0}>
-                {t}
+              {j > 0 && <Right t={t} />}
+              <Term t={t} strong={d.kind === 'cause' && !r.to && j === r.terms.length - 1 && j > 0}>
+                {term}
               </Term>
             </Fragment>
           ))}
           {r.to ? (
             <>
-              <Right />
-              <Ref>{r.to}</Ref>
+              <Right t={t} />
+              <Ref t={t}>{r.to}</Ref>
             </>
           ) : null}
         </View>
@@ -168,21 +192,21 @@ function Flow({ d }: { d: Diagram }) {
   );
 }
 
-function Body({ d }: { d: Diagram }) {
+function Body({ d, t }: { d: Diagram; t: Palette }) {
   switch (d.kind) {
     case 'sequence':
     case 'cause':
-      return <Flow d={d} />;
+      return <Flow d={d} t={t} />;
     case 'contrast':
       return (
         <View className="gap-1.5">
           {contrastRows(d).map(([a, b], i) => (
             <View key={i} className="flex-row items-center gap-2">
               <View className="flex-1 items-end">
-                <Term>{a}</Term>
+                <Term t={t}>{a}</Term>
               </View>
-              <Text className="text-caption2 text-white/40">vs</Text>
-              <View className="flex-1 items-start">{b ? <Term>{b}</Term> : null}</View>
+              <Text className={t.faint}>vs</Text>
+              <View className="flex-1 items-start">{b ? <Term t={t}>{b}</Term> : null}</View>
             </View>
           ))}
         </View>
@@ -196,8 +220,10 @@ function Body({ d }: { d: Diagram }) {
               className="flex-row items-center gap-1"
               style={{ paddingLeft: r.depth * 16 }}
             >
-              {r.depth > 0 && <CornerDownRight size={ICON.xs} color={ARROW} />}
-              <Term strong={r.depth === 0}>{r.term}</Term>
+              {r.depth > 0 && <CornerDownRight size={ICON.xs} color={t.arrow} />}
+              <Term t={t} strong={r.depth === 0}>
+                {r.term}
+              </Term>
             </View>
           ))}
         </View>
@@ -205,10 +231,10 @@ function Body({ d }: { d: Diagram }) {
     case 'list':
       return (
         <View className="gap-1">
-          {d.terms.map((t, i) => (
+          {d.terms.map((term, i) => (
             <View key={i} className="flex-row items-center gap-2">
-              <View className="h-1.5 w-1.5 rounded-full bg-white/60" />
-              <Text className="text-caption2 text-white">{t}</Text>
+              <View className={t.dot} />
+              <Text className={t.item}>{term}</Text>
             </View>
           ))}
         </View>
@@ -216,19 +242,23 @@ function Body({ d }: { d: Diagram }) {
   }
 }
 
-/** 슬라이드 도식. 값이 없거나 그릴 수 없으면(모르는 kind · 핵심어 부족 등) 아무것도 그리지 않는다 */
-export function RecordingDiagram({ diagram }: { diagram: unknown }) {
+/**
+ * 슬라이드 · 필기 정리본 도식. 값이 없거나 그릴 수 없으면(모르는 kind · 핵심어 부족 등) 아무것도 그리지 않는다.
+ * tone 은 놓이는 카드 바탕: night(어두운 슬라이드, 기본) · paper(흰 카드)
+ */
+export function RecordingDiagram({ diagram, tone = 'night' }: { diagram: unknown; tone?: Tone }) {
   const d = diagramOf(diagram);
   if (!d) return null;
+  const t = TONES[tone];
   return (
     <View
       testID="recording-diagram"
       accessible
       accessibilityLabel={diagramLabel(d)}
-      className="mt-3 rounded-xl border border-white/10 p-3"
+      className={t.box}
     >
-      <Text className="mb-2 text-caption2 text-white/40">{KIND_NAME[d.kind]}</Text>
-      <Body d={d} />
+      <Text className={`mb-2 ${t.faint}`}>{KIND_NAME[d.kind]}</Text>
+      <Body d={d} t={t} />
     </View>
   );
 }
