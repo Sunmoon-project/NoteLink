@@ -525,15 +525,19 @@ export class QuizSetsService implements OnModuleInit {
   /**
    * 아직 ready가 아닌 내 세트들을 지우고(deletedAt) 딸린 개념 카드 작업(quiz_flashcards)도 멈춘다(#626). 카드 작업은 보통
    * ready 세트에만 있지만 세트가 ready로 바뀌는 순간과 겹치면 넣을 수 있다(넣는 쪽도 지운 세트면 멈춘다, ensureCards).
-   * 이미 ready가 됐거나 지운 세트는 건너뛴다
+   * 이미 ready가 됐거나 지운 세트는 건너뛴다. when: 지울 때 더 맞아야 할 조건(createOnce: 취소 표시가 남음). 지운 수를 돌려준다
    */
-  private async dropSets(userId: string, setIds: Types.ObjectId[]): Promise<void> {
+  private async dropSets(
+    userId: string,
+    setIds: Types.ObjectId[],
+    when: Record<string, unknown> = {},
+  ): Promise<number> {
     const ownerId = objectId(userId, '퀴즈');
     const dropped: string[] = [];
     for (const _id of setIds) {
       const gone = await this.sets
         .findOneAndUpdate(
-          { _id, ownerId, status: { $ne: 'ready' }, deletedAt: null },
+          { ...when, _id, ownerId, status: { $ne: 'ready' }, deletedAt: null },
           { $set: { deletedAt: new Date() } },
         )
         .lean();
@@ -542,6 +546,7 @@ export class QuizSetsService implements OnModuleInit {
     await this.jobs.cancelForTargets(userId, [
       { targetType: 'quiz_set', targetIds: dropped, types: [CARDS_TYPE] },
     ]);
+    return dropped.length;
   }
 
   /**
@@ -588,7 +593,20 @@ export class QuizSetsService implements OnModuleInit {
     // 지워 새 화면이 404를 받으므로, 마저 지우고 아래에서 새 세트로 이어받는다. 작업이 끝났는데 방금 적힌 표시뿐인 세트는
     // 그 취소가 늦은 취소로 거둘 수 있어 지우지 않고 돌려준다(generatingSet canceled, #644)
     if (existing?.canceled) {
-      await this.dropSets(userId, [new Types.ObjectId(existing.quizSet._id)]);
+      // 읽은 뒤 작업이 끝나 그 취소가 늦은 취소가 됐을 수 있다(Codex #646 1차): 지우기 직전에 작업을 다시 읽어, 그 취소로
+      // 멈춘 흔적 없이 끝났으면 지우지 않고 처음부터 다시 본다(null → create가 한 번 더). 지울 때도 표시가 남아 있을 때만
+      // 지운다(그사이 늦은 취소가 표시를 거뒀으면 지우지 않고 다시 봄)
+      const now = await this.jobOf(userId, existing.job._id);
+      if (now && !isActive(now) && !canceledFirst(now)) return null;
+      const dropped = await this.dropSets(userId, [new Types.ObjectId(existing.quizSet._id)], {
+        cancelRequestedAt: { $ne: null },
+      });
+      if (dropped === 0) {
+        const left = await this.sets
+          .findOne({ _id: new Types.ObjectId(existing.quizSet._id) }, { deletedAt: 1 })
+          .lean<Pick<QuizSetRow, 'deletedAt'>>();
+        if (left && !left.deletedAt) return null;
+      }
     } else if (existing) {
       // 취소하지 않았는데 이어받기가 풀린 세트(겹친 옛 취소의 stop이 늦게 닿음)는 지우지 않고 이어받기를 되살려 돌려준다
       // (Codex 2차: 지우면 이미 이 세트를 받은 화면이 404)
@@ -1169,9 +1187,14 @@ export class QuizSetsService implements OnModuleInit {
     return base?.materialId ? { materialId: base.materialId, folderId: base.folderId } : {};
   }
 
-  private async findJob(row: QuizSetRow): Promise<AppAiJob | null> {
+  private findJob(row: QuizSetRow): Promise<AppAiJob | null> {
+    return this.jobOf(row.ownerId.toString(), row.jobId!.toString());
+  }
+
+  /** 내 작업을 읽는다. 없으면 null */
+  private async jobOf(userId: string, jobId: string): Promise<AppAiJob | null> {
     try {
-      return await this.jobs.findMine(row.ownerId.toString(), row.jobId!.toString());
+      return await this.jobs.findMine(userId, jobId);
     } catch (e) {
       if (e instanceof NotFoundException) return null;
       throw e;

@@ -2408,6 +2408,46 @@ describe('QuizSetsService 취소 요청에 세트 번호(quizSetId)를 실으면
       expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
     });
 
+    it('다시 만들기가 도는 작업을 읽은 뒤 작업이 끝나고 늦은 취소가 표시를 거두면, 취소 세트로 지우지 않는다(Codex #646 1차)', async () => {
+      const t = setup();
+      const materialId = await t.addNote();
+      const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+      t.set(quizSet._id)['cancelRequestedAt'] = new Date(); // 취소 요청이 표시를 적음(처리 중)
+      const findMine = t.aiJobs.findMine.bind(t.aiJobs);
+      // 다시 만들기(createOnce)가 도는 작업을 읽은 직후, 작업이 끝나고 그 취소가 늦은 취소로 표시를 거둠
+      vi.spyOn(t.aiJobs, 'findMine').mockImplementationOnce(async (userId, jobId) => {
+        const read = await findMine(userId, jobId);
+        t.finish(job._id, { questions: fullSet(), title: 't', concepts: ['세포막'] });
+        delete t.set(quizSet._id)['cancelRequestedAt'];
+        return read;
+      });
+
+      await t.service.create(ME.toHexString(), materialId);
+
+      expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+      expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
+    });
+
+    it('다시 만들기가 표시 + 도는 작업을 읽은 뒤 작업이 끝났는데 표시가 아직 남아 있어도(취소가 판정 중) 지우지 않는다(Codex #646 1차)', async () => {
+      const t = setup();
+      const materialId = await t.addNote();
+      const { quizSet, job } = await t.service.create(ME.toHexString(), materialId);
+      t.set(quizSet._id)['cancelRequestedAt'] = new Date();
+      const findMine = t.aiJobs.findMine.bind(t.aiJobs);
+      vi.spyOn(t.aiJobs, 'findMine').mockImplementationOnce(async (userId, jobId) => {
+        const read = await findMine(userId, jobId);
+        t.finish(job._id, { questions: fullSet(), title: 't', concepts: ['세포막'] });
+        return read;
+      });
+
+      const made = await t.service.create(ME.toHexString(), materialId);
+
+      expect(made.quizSet._id).toBe(quizSet._id);
+      expect(t.set(quizSet._id)['deletedAt']).toBeNull();
+      delete t.set(quizSet._id)['cancelRequestedAt']; // 그 취소가 늦은 취소로 표시를 거둠
+      expect((await t.service.findMine(ME.toHexString(), quizSet._id)).status).toBe('ready');
+    });
+
     it('조회가 표시 없는 세트를 읽은 뒤 표시가 적혀 옮기기가 막혀도 지우지 않고, 표시를 거두면 ready', async () => {
       const { t, quizSet } = await finished(false);
       const findMine = t.aiJobs.findMine.bind(t.aiJobs);
