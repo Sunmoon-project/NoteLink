@@ -1,10 +1,9 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { fireEvent, renderHook, screen, waitFor } from '@testing-library/react-native';
 import { timeAgo } from '../lib/dates';
 import { profileLine, SettingsScreen } from '../features/profile/settings';
 import { PointsScreen, ShopScreen } from '../features/reward/shop';
 import { api } from '../lib/api';
 import { renderScreen } from '../test-utils';
-import { renderHook } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { UNREAD_REFETCH_MS, useUnreadCount } from '../features/notifications';
 
