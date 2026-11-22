@@ -13,6 +13,9 @@ import { toast } from '@/stores/toast';
 // 친구에게 받은 · 보낸 노트(#554). 1:1 채팅 공유 카드 → 노트 상세(?share=공유 id) → 읽기 전용 · 내 노트로 복사 · 공유 끝내기
 
 const ENDED = '공유가 끝났어요';
+/** 받은 사람이 노트를 열어 둔 동안 철회 · 친구 끊김을 알아채는 주기(알림 수 UNREAD_REFETCH_MS 처럼 다시 읽기) */
+const FRIEND_SHARE_REFETCH_MS = 30_000;
+const gone = (e: unknown) => e instanceof ApiError && e.status === 404;
 
 export const notePath = (kind: MaterialKind | null) =>
   kind === 'handwriting'
@@ -60,6 +63,11 @@ export function useFriendShare() {
     queryFn: () => api.content.friendShare(share!),
     enabled: !!share,
     staleTime: 0,
+    // 살아 있는 받은 공유만 다시 묻는다. 끝났거나(404 포함) 내가 보낸 공유면 멈춘다
+    refetchInterval: (q) =>
+      q.state.data?.active && !q.state.data.mine && !gone(q.state.error)
+        ? FRIEND_SHARE_REFETCH_MS
+        : false,
   });
   // 불러오는 동안에도 받은 사람으로 본다(주인 버튼이 잠깐 보였다 사라지지 않게)
   return {
@@ -98,14 +106,11 @@ export function FriendShareFooter({ shareId }: { shareId: string }) {
       toast('공유를 끝냈어요');
     },
   });
+  // 열어 둔 사이 친구를 끊으면 공유가 지워져 404 다. 다시 묻다 404 가 나면 예전 data 가 남아 있어도 끝난 공유다
+  if (gone(error)) return <Text className="py-3 text-center text-footnote text-sub">{ENDED}</Text>;
   if (!data)
     return error ? (
-      // 열어 둔 사이 친구를 끊으면 공유가 지워져 404 다
-      <Text className="py-3 text-center text-footnote text-sub">
-        {error instanceof ApiError && error.status === 404
-          ? ENDED
-          : '공유 정보를 불러오지 못했어요'}
-      </Text>
+      <Text className="py-3 text-center text-footnote text-sub">공유 정보를 불러오지 못했어요</Text>
     ) : null;
   if (!data.active) return <Text className="py-3 text-center text-footnote text-sub">{ENDED}</Text>;
   return (

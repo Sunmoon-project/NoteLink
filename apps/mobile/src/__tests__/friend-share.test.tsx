@@ -224,6 +224,34 @@ describe('공유 카드에서 연 노트', () => {
     expect(screen.queryByText('편집하기')).toBeNull();
   });
 
+  // Codex 1차 리뷰: 화면을 연 동안 보낸 사람이 철회해도 다시 묻지 않아 계속 살아 있는 공유처럼 보였다
+  it.each([
+    ['철회', () => mockApi.content.friendShare.mockResolvedValue({ ...share, active: false })],
+    [
+      '친구 끊김(404)',
+      () =>
+        mockApi.content.friendShare.mockRejectedValue(
+          new MockApiError('NOT_FOUND', '공유 정보를 찾을 수 없어요', 404),
+        ),
+    ],
+  ])(
+    '받은 사람이 열어 둔 사이 %s되면 30초 안에 「공유가 끝났어요」로 바뀐다',
+    async (_n, arrange) => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+      try {
+        setParams({ id: 'n1', share: 's1' });
+        await renderScreen(<HandDetailScreen />);
+        expect(await screen.findByRole('button', { name: '내 노트로 복사' })).toBeTruthy();
+        arrange();
+        await act(async () => jest.advanceTimersByTime(30_000));
+        expect(await screen.findByText('공유가 끝났어요')).toBeTruthy();
+        expect(screen.queryByRole('button', { name: '내 노트로 복사' })).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
   it('받은 녹음은 북마크를 더할 수 없다(주인 노트)', async () => {
     setParams({ id: 'n1', share: 's1' });
     mockApi.content.material.mockResolvedValue({
