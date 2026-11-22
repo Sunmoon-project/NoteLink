@@ -1,19 +1,33 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Req, UseGuards } from '@nestjs/common';
-import type { Flashcard, QuizSet, RoomSharedItem } from '@notelink/shared';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import type { Flashcard, FriendShare, QuizSet, RoomSharedItem } from '@notelink/shared';
 
 import { requireUserId } from '../../../common/request-user.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../../auth/jwt-auth.guard.js';
-import { ShareMaterialsDto } from './dto/share-materials.dto.js';
+import { CopyFriendShareDto, ShareMaterialsDto } from './dto/share-materials.dto.js';
 import { ShareStudyItemDto } from './dto/share-study-item.dto.js';
+import { FriendShareService } from './friend-share.service.js';
 import { MaterialSharingService } from './material-sharing.service.js';
 
 /** 노트 공유 주소 (packages/shared PATHS.materialShare · roomShared) */
 @Controller()
 @UseGuards(JwtAuthGuard)
 export class MaterialSharingController {
-  constructor(private readonly sharing: MaterialSharingService) {}
+  constructor(
+    private readonly sharing: MaterialSharingService,
+    private readonly friendShares: FriendShareService,
+  ) {}
 
-  /** 내 노트를 스터디룸에 공유한다. 본문 없이 204 */
+  /** 내 노트를 스터디룸(target.id) 또는 친구들(target.ids, #554)에게 공유한다. 본문 없이 204 */
   @Post('materials/share')
   @HttpCode(204)
   async share(@Req() req: AuthenticatedRequest, @Body() body: ShareMaterialsDto): Promise<void> {
@@ -51,5 +65,34 @@ export class MaterialSharingController {
     @Param('itemId') itemId: string,
   ): Promise<{ data: { item: RoomSharedItem; quiz: QuizSet | null; flashcards: Flashcard[] } }> {
     return { data: await this.sharing.openRoomItem(requireUserId(req), id, itemId) };
+  }
+
+  /** 친구에게 보낸 노트 하나(1:1 채팅 공유 카드를 열 때). 보낸 사람 · 받은 사람만(아니면 404) */
+  @Get('friend-shares/:id')
+  async openFriendShare(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ): Promise<{ data: FriendShare }> {
+    return { data: await this.friendShares.open(requireUserId(req), id) };
+  }
+
+  /** 보낸 사람이 친구 공유를 끝낸다. 본문 없이 204 */
+  @Delete('friend-shares/:id')
+  @HttpCode(204)
+  async revokeFriendShare(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ): Promise<void> {
+    await this.friendShares.revoke(requireUserId(req), id);
+  }
+
+  /** 받은 노트를 내 노트로 복사한다 → 새 노트 id · 넣은 폴더 */
+  @Post('friend-shares/:id/copy')
+  async copyFriendShare(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: CopyFriendShareDto,
+  ): Promise<{ data: { _id: string; folderId: string } }> {
+    return { data: await this.friendShares.copy(requireUserId(req), id, body.folderId) };
   }
 }

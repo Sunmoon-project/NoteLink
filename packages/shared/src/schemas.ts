@@ -603,6 +603,25 @@ export const RoomSharedItem = z.object({
   createdAt: date,
 });
 
+/**
+ * 친구에게 보낸 노트 하나(#554, GET friend-shares/:id). 1:1 채팅 공유 카드(shared_item)의 sharedItemId 가 이 _id 다.
+ * active 가 false 면(철회 · 친구 끊김 · 노트를 지움 · 보낸 사람 탈퇴) 받은 사람은 열 수 없고 앱은 「공유가 끝났어요」를 보인다
+ */
+export const FriendShare = z.object({
+  _id: id,
+  materialId: id,
+  ownerId: id,
+  ownerNickname: z.string(),
+  friendId: id,
+  /** 노트의 지금 제목 · 종류. 노트가 없어졌으면 빈 제목 · null */
+  title: z.string(),
+  kind: z.enum(['handwriting', 'recording', 'document']).nullable(),
+  active: z.boolean(),
+  /** 내가 보낸 공유인지(철회 버튼) */
+  mine: z.boolean(),
+  createdAt: date,
+});
+
 export const ReportType = z.enum(['abusive_language', 'spam', 'disturbing', 'obscene', 'other']);
 export const Report = z.object({
   _id: id,
@@ -746,6 +765,7 @@ export type TimerRule = z.infer<typeof TimerRule>;
 export type RoomMember = z.infer<typeof RoomMember>;
 export type StudyRoom = z.infer<typeof StudyRoom>;
 export type RoomSharedItem = z.infer<typeof RoomSharedItem>;
+export type FriendShare = z.infer<typeof FriendShare>;
 export type ReportType = z.infer<typeof ReportType>;
 export type Report = z.infer<typeof Report>;
 export type ChatRoom = z.infer<typeof ChatRoom>;

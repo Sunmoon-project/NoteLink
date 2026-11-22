@@ -29,6 +29,6 @@ import { UploadsService } from './uploads.service.js';
     UploadQuotaService,
     UploadsService,
   ],
-  exports: [BlobStorageService, StorageScopeService],
+  exports: [BlobStorageService, StorageScopeService, UploadQuotaService],
 })
 export class UploadsModule {}

@@ -68,6 +68,7 @@ const NOW = new Date('2026-11-13T00:00:00Z');
 let users: Row[];
 let friendships: ReturnType<typeof model>;
 let shares: ReturnType<typeof model>;
+let noteShares: ReturnType<typeof model>;
 let service: FriendsService;
 const person = (nickname: string, extra: Record<string, unknown> = {}) => {
   const row = { _id: new Types.ObjectId(), nickname, status: 'active', deletedAt: null, ...extra };
@@ -82,6 +83,7 @@ beforeEach(() => {
     (a, b) => String(a.userA) === String(b.userA) && String(a.userB) === String(b.userB),
   );
   shares = model([]);
+  noteShares = model([]);
   // 알림은 notifications-real-db.test.ts에서 확인한다. 여기서는 받는 쪽 자리만 채운다
   const notifier = { notify: async () => {} };
   service = new FriendsService(
@@ -89,6 +91,7 @@ beforeEach(() => {
     model(users) as never,
     shares as never,
     notifier as never,
+    noteShares as never,
   );
 });
 
@@ -107,6 +110,7 @@ describe('알림 실패', () => {
       broken as never,
       shares as never,
       { notify: () => Promise.reject(new Error('push')) } as never,
+      noteShares as never,
     );
     await expect(failing.request(me, you, NOW)).resolves.toBeUndefined();
     broken.findOne = findOne;
@@ -317,6 +321,23 @@ describe('친구 끊기와 다시 친구 되기', () => {
     await service.remove(me, you);
     expect(shares.rows).toHaveLength(1);
     expect(String(shares.rows[0]!.ownerId)).toBe(you);
+  });
+
+  it('끊은 관계로 보낸 노트 공유를 지우고, 다른 관계의 노트 공유는 남긴다(#554)', async () => {
+    const me = person('나');
+    const you = person('지우');
+    await service.request(me, you, NOW);
+    const [req] = await service.received(you);
+    await service.respond(you, req!._id, true);
+    const ended = friendships.rows[0]!._id;
+    const other = new Types.ObjectId();
+    noteShares.rows.push(
+      { _id: new Types.ObjectId(), friendshipId: ended },
+      { _id: new Types.ObjectId(), friendshipId: ended },
+      { _id: new Types.ObjectId(), friendshipId: other },
+    );
+    await service.remove(me, you);
+    expect(noteShares.rows.map((r) => String(r.friendshipId))).toEqual([String(other)]);
   });
 
   it('관계 id가 없는 예전 공유도 친구를 끊으면 함께 지운다', async () => {
