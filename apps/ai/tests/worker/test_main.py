@@ -1,6 +1,7 @@
 import signal
 import threading
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -13,7 +14,7 @@ from app.core.config import Settings, settings
 from app.worker import __main__ as entry
 from app.worker.handlers import BACKGROUND, HANDLERS, HEAVY
 from app.worker.jobs import JobStore
-from app.worker.runner import Handler, JobReport, Lane, run_once
+from app.worker.runner import Handler, JobReport, Lane, run_lanes, run_once
 
 
 def test_worker_refuses_to_start_without_db_address(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -249,3 +250,46 @@ def test_the_background_lane_takes_a_pregen_before_older_card_jobs() -> None:
     for _ in range(3):
         assert run_once(background.store, handlers, first=background.first)
     assert done == ["quiz_pregen", "quiz_flashcards", "quiz_flashcards"]
+
+
+def test_two_heavy_lanes_really_run_two_note_jobs_side_by_side() -> None:
+    # 두 정리가 모두 Barrier에 닿아야 끝남: 하나씩 돌면 기다리다 깨져 작업이 실패함
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    for i, job_id in enumerate(["h1", "h2"]):
+        col.insert_one(
+            {
+                "_id": job_id,
+                "type": "handwriting_summary",
+                "status": "queued",
+                "input": {},
+                "progress": 0,
+                "attempts": 0,
+                "createdAt": T0 + timedelta(seconds=i),
+            }
+        )
+    both = threading.Barrier(2, timeout=5)
+    stop = threading.Event()
+    finished: list[str] = []
+
+    def heavy(inp: JsonObject, report: JobReport) -> JsonObject:
+        both.wait()
+        finished.append("h")
+        if len(finished) == 2:
+            stop.set()
+        return {}
+
+    def light(inp: JsonObject, report: JobReport) -> JsonObject:
+        return {}
+
+    lanes = [
+        replace(lane, handlers={t: heavy if t in HEAVY else light for t in lane.handlers})
+        for lane in lanes_on(col, 3, 2)[0]
+    ]
+    runner = threading.Thread(
+        target=run_lanes, args=(lanes,), kwargs={"poll_sec": 0.01, "stop": stop}
+    )
+    runner.start()
+    runner.join(10)
+    stop.set()
+    runner.join(10)
+    assert [d["status"] for d in col.find({}, sort=[("_id", 1)])] == ["succeeded", "succeeded"]

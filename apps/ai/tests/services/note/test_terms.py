@@ -1,5 +1,11 @@
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
+import pytest
+
+from app.services.note import terms
 from app.services.note.terms import (
     TermDict,
     is_common,
@@ -60,3 +66,31 @@ def test_kiwi_gives_the_same_answers_from_many_threads() -> None:
     with ThreadPoolExecutor(8) as pool:
         together = list(pool.map(lambda w: (is_common(w), is_noun_like(w)), words))
     assert together == alone
+
+
+def test_kiwi_is_built_once_when_threads_call_it_first_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kiwipiepy  # type: ignore[import-untyped]
+
+    real, built = kiwipiepy.Kiwi, []
+
+    def slow_kiwi() -> Any:
+        built.append(1)
+        time.sleep(0.2)  # 만드는 동안 다른 스레드가 들어오게
+        return real()
+
+    terms._kiwi.cache_clear()
+    monkeypatch.setattr(kiwipiepy, "Kiwi", slow_kiwi)
+    start = threading.Barrier(8)
+
+    def call(word: str) -> bool:
+        start.wait()
+        return is_common(word)
+
+    try:
+        with ThreadPoolExecutor(8) as pool:
+            assert all(pool.map(call, ["성숙"] * 8))
+        assert len(built) == 1
+    finally:
+        terms._kiwi.cache_clear()  # 다음 시험은 진짜 Kiwi로 다시 만듦
