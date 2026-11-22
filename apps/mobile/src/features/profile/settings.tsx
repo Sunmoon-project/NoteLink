@@ -65,13 +65,14 @@ const gb = (b: number) => {
   return b ? unit(Math.max(b / 1024, 0.1), 'KB') : '0KB';
 };
 
-/** 프로필 줄: 「선문고 2학년 · 이메일」. 학교 · 학년이 비면 이메일만 */
+/** 프로필 줄: 학교(줄임) · 학년 · 이메일 중 값 있는 것만 잇는다(비어 있으면 「 · 이메일」처럼 점으로 시작했다) */
 export const profileLine = (u: {
   school?: string | null;
   grade?: string | null;
   email?: string | null;
 }) =>
-  [[u.school?.replace('등학교', ''), u.grade].filter(Boolean).join(' '), u.email]
+  [u.school?.replace('등학교', ''), u.grade, u.email]
+    .map((v) => v?.trim())
     .filter(Boolean)
     .join(' · ');
 
@@ -147,6 +148,7 @@ export function SettingsScreen() {
   const s = u.settings;
   const set = (k: keyof UserSettings) => (v: boolean) => update.mutate({ [k]: v });
   const tier = { free: 'Free', pro: 'Pro', max: 'MAX' }[u.subscription?.tier ?? 'free'];
+  const line = profileLine(u);
   return (
     <Canvas>
       <Screen scrollRef={scroll}>
@@ -160,7 +162,7 @@ export function SettingsScreen() {
           >
             <View className="flex-1">
               <Text className="text-title3 font-bold text-ink">{u.nickname}</Text>
-              <Text className="text-caption text-sub">{profileLine(u)}</Text>
+              {!!line && <Text className="text-caption text-sub">{line}</Text>}
             </View>
             <ChevronRight size={ICON.md} color={C.sub} />
           </Pressable>

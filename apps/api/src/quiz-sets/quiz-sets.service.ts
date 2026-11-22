@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto';
 
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
   type OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { ERROR_CODES } from '@notelink/shared';
 import { Model, mongo, Types } from 'mongoose';
 
 import { type AppAiJob, AiJobsService, PREGEN_TYPE } from '../ai-jobs/ai-jobs.service.js';
@@ -182,6 +184,10 @@ export interface QuizSetRow {
   questionCount?: number;
   questions?: QuestionRow[];
   jobId?: Types.ObjectId | null;
+  /** 앱이 이 세트를 취소한 시각(#642). 없으면 취소하지 않은 세트 */
+  cancelRequestedAt?: Date;
+  /** 앱의 취소가 이 세트를 기다리던 작업을 멈춘 시각(Codex #643 6차). 없으면 멈추지 않음 */
+  cancelStoppedAt?: Date;
   deletedAt?: Date | null;
   createdAt: Date;
 }
@@ -327,6 +333,59 @@ export function nextSetId(id: Types.ObjectId): Types.ObjectId {
   return new Types.ObjectId(digest.subarray(0, 12).toString('hex'));
 }
 
+/**
+ * 앱이 취소한 세트(cancelRequestedAt, #642)의 작업이 그 세트의 취소로 멈췄는지: 그 세트에 멈춤 표시(cancelStoppedAt)가
+ * 있거나 작업이 canceled다. 작업이 없으면 옮길 결과도 없어 true. 취소가 닿기 전에 끝난 작업(늦은 취소)은 false.
+ * 미리 만들기는 취소가 멈추지 않고 이어받기만 풀어(awaited=false, AiJobsService.stop) 그 표시가 작업 하나에 하나라, 같은
+ * 미리 만들기를 다른 세트가 다시 이어받은 뒤 옛 취소가 늦게 푼 것과 이 세트의 취소가 푼 것을 가릴 수 없다(Codex #643 6차).
+ * 그래서 이 세트의 취소가 멈춘 직후 그 세트에 적는 cancelStoppedAt으로 본다(cancelWaiting). 맞춤 퀴즈 작업은 세트 하나만
+ * 기다려 canceled가 곧 그 세트의 취소다
+ */
+export function canceledFirst(
+  job: Pick<AppAiJob, 'status'> | null,
+  stoppedAt?: Date | null,
+): boolean {
+  if (!job || stoppedAt) return true;
+  return job.status === 'canceled';
+}
+
+/**
+ * 취소 표시가 적힌 지 이만큼 지나야 끝난 작업이라는 이유만으로 세트를 지운다(#644). 그 전에는 표시를 적은 취소 요청이 아직
+ * 늦은 취소인지 가리는 중일 수 있다(표시를 적고 → 멈춰 보고 → 늦었으면 거둠, 한 요청 안 ms 단위). 요청이 중간에 죽어
+ * 남은 표시는 이 시간 뒤 조회가 정리한다
+ */
+export const CANCEL_SETTLE_GRACE_MS = 30_000;
+
+/**
+ * 같은 노트 다시 만들기(createOnce)가 처리 중인 취소(방금 적힌 표시 + 아직 도는 작업)를 만나면 그 취소가 끝나기를
+ * 기다리는 최대 시간과 다시 읽는 간격(Codex #643 4차). 취소 요청 한 건은 ms 단위라 1초면 거의 늘 끝난다
+ */
+export const CANCEL_WAIT_MS = 1_000;
+export const CANCEL_WAIT_STEP_MS = 200;
+
+/** 아직 도는 작업인지(queued · running) */
+const isActive = (job: Pick<AppAiJob, 'status'>) =>
+  job.status === 'queued' || job.status === 'running';
+
+/**
+ * 취소 표시(cancelRequestedAt)가 남은 세트를 지울 때인지(#642): 작업이 없거나 그 세트의 취소로 멈췄으면
+ * (canceledFirst, cancelStoppedAt) 바로, 끝난 작업(succeeded · failed · canceled)이면 표시가 적힌 지 CANCEL_SETTLE_GRACE_MS 뒤에(#644).
+ * 취소 요청은 늦은 취소(작업이 먼저 끝남)면 표시를 거두므로, 끝난 작업에 오래 남은 표시는 앞 취소가 작업을 멈춘 뒤 세트를
+ * 지우지 못했거나 요청이 중간에 죽은 것이다 — 미리 만들기의 이어받기 표시(awaited)는 겹친 요청이 다시 켜고 끌 수 있어
+ * 판단에 쓰지 않는다(Codex 2차 · 6차, 그 세트의 멈춤 표시 cancelStoppedAt을 본다). 방금 적힌 표시는 그 취소가 아직 늦은 취소인지 가리는 중일 수
+ * 있어 기다린다(Codex #643 3차: 그 사이 조회가 지우면 늦은 취소가 지켜야 할 완성된 세트를 잃음). 아직 도는 작업은 그
+ * 취소가 아직 진행 중일 수 있어 기다린다
+ */
+export function cancelSettled(
+  job: Pick<AppAiJob, 'status'> | null,
+  set: { cancelRequestedAt: Date; cancelStoppedAt?: Date | null },
+  now: Date = new Date(),
+): boolean {
+  if (!job || canceledFirst(job, set.cancelStoppedAt)) return true;
+  if (isActive(job)) return false;
+  return now.getTime() - new Date(set.cancelRequestedAt).getTime() >= CANCEL_SETTLE_GRACE_MS;
+}
+
 export const isDuplicateKey = (e: unknown) =>
   typeof e === 'object' && e !== null && (e as { code?: unknown }).code === DUPLICATE_KEY;
 
@@ -356,6 +415,8 @@ export class QuizSetsService implements OnModuleInit {
    * 주입 대신 넣는 이유: SimilarQuizService가 이 서비스를 받으므로 서로 받으면 순환 의존
    */
   afterReview?: (row: QuizSetRow) => Promise<unknown>;
+  /** ms만큼 기다린다(dropCanceled). 시험이 바꿔 끼운다 */
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   private readonly logger = new Logger(QuizSetsService.name);
 
   /** 앱이 맞춤 퀴즈 · 이어받은 미리 만들기를 취소하면 기다리던 세트를 지우도록 ai-jobs에 등록한다(#626) */
@@ -373,39 +434,140 @@ export class QuizSetsService implements OnModuleInit {
    * - 멈춘 뒤 작업이 이 취소로 멈춘 상태일 때만 지운다: 취소가 닿기 전에 끝난 작업(늦은 취소)의 세트는 그대로 두고,
    *   그사이 다른 요청이 미리 만들기를 다시 이어받았으면(이어받기가 다시 켜짐) 지우지 않는다
    * - 미리 만들기는 뒤에서 계속 돌고, 다 만들면 다음 퀴즈 요청이 결과를 쓴다(unusedPregen은 지운 미완성 세트를 세지 않음)
-   * 여러 번 불려도 같다. 앞 호출이 지우다 실패했어도 다시 취소하면 마저 지운다(작업은 이미 멈춘 상태)
+   * - 앱이 세트 번호(quizSetId, #642)를 실으면 그 세트만 고른다. 남의 세트 · 이 작업을 기다리지 않는 세트는 404. 그 세트를
+   *   이미 지웠거나 ready면 작업도 멈추지 않는다: 같은 미리 만들기를 새 세트가 다시 이어받았을 수 있어, 다시 온 옛 취소가
+   *   새 세트의 이어받기를 풀거나 새 세트를 지우지 않게. 번호가 없으면(옛 앱) 이 작업을 기다리던 세트를 모두 고른다
+   * - 고른 세트에 취소 표시(cancelRequestedAt)를 멈추기 전에 적는다: 지우다 실패한 채 작업이 끝나도 다음 조회(sync)가
+   *   결과를 옮기지 않고 지운다(cancelSettled). 이 취소가 작업을 멈추지 못했으면(늦은 취소) 이번에 적은 표시를 거둔다.
+   *   표시는 처음 적힌 시각을 지킨다($min, #644)
+   * - 멈춘 뒤 취소하지 않은 다른 만드는 중 세트가 그 미리 만들기를 기다리면 이어받기를 되살린다(keepAwaited)
+   * 여러 번 불려도 같다. 앞 호출이 지우다 실패했으면 다시 취소할 때 마저 지운다(작업이 그사이 끝났어도: 앞 표시가 남음).
+   * 단 작업이 그 취소로 멈춘 흔적이 없고 앞 표시가 30초 안이면 앞 요청이 아직 처리 중일 수 있어 그 표시를 그대로 두고,
+   * 30초 뒤 조회가 지운다(#644)
    */
   private async cancelWaiting(ctx: {
     userId: string;
     jobId: string;
+    quizSetId?: string;
     cancel: () => Promise<boolean>;
   }): Promise<void> {
     const ownerId = objectId(ctx.userId, '퀴즈');
-    const waiting = await this.sets
-      .find(
-        { ownerId, jobId: objectId(ctx.jobId, '퀴즈'), status: { $ne: 'ready' }, deletedAt: null },
+    const jobId = objectId(ctx.jobId, '퀴즈');
+    const ids = await this.waitingSets(ownerId, jobId, ctx.quizSetId);
+    if (ids.length === 0 && ctx.quizSetId !== undefined) return;
+    // 이 요청이 적는 표시 시각. 이미 표시가 있으면 더 이른(처음) 시각을 남긴다($min): 다시 취소해도 30초 유예가 다시
+    // 시작되지 않고(#644), 늦은 취소는 이 시각 그대로인 표시만 거둔다(다른 요청이 적은 표시는 건드리지 않음)
+    const mark = new Date();
+    if (ids.length > 0) {
+      const marked = await this.sets.updateMany(
+        { _id: { $in: ids }, ownerId, status: { $ne: 'ready' }, deletedAt: null },
+        { $min: { cancelRequestedAt: mark } },
+      );
+      // 고른 뒤 그 세트를 같은 취소의 다른 요청이 지웠거나 ready가 됐으면 작업도 멈추지 않는다: 그사이 새 세트가 같은
+      // 미리 만들기를 이어받았을 수 있다(Codex 1차)
+      if (ctx.quizSetId !== undefined && marked.matchedCount === 0) return;
+    }
+    if (!(await ctx.cancel())) {
+      // 이 취소가 멈추지 못함(작업이 이미 끝남). 앞 취소가 멈춘 작업이면 마저 지운다: 그 세트의 멈춤 표시나 맞춤 퀴즈 작업의
+      // canceled(canceledFirst — 미리 만들기의 이어받기 풀림은 다른 세트의 옛 취소일 수 있어 보지 않음, Codex 6차)가 있거나,
+      // 앞 취소의 표시가 30초 넘게 남은 세트(앞 취소가 멈춘 뒤 지우다 실패했거나 요청이 죽음 — 늦은 취소는 표시를 거두므로,
+      // Codex 2차 · cancelSettled). 방금 적힌 앞 표시는 그 요청이 아직 늦은 취소인지 가리는 중일 수 있어 그 요청에 맡긴다
+      // (#644: 두 번 누른 늦은 취소가 세트를 지우지 않게. 앞 취소가 지우다 실패한 것이면 30초 뒤 조회가 지운다).
+      // 그 밖은 늦은 취소라 세트를 그대로 두고 이 요청이 적은 표시만 거둔다(code-review).
+      // 판단은 고를 때 읽은 값이 아니라 지금 세트로 한다: 멈추기를 기다리는 사이 다른 요청이 멈추고 표시를 적었을 수 있다
+      // (Codex 7차). 표시를 거둘 때도 멈춤 표시가 없는 세트만 거둬, 그사이 다른 요청이 멈춘 세트를 되살리지 않는다
+      const job = await this.jobs.findMine(ctx.userId, ctx.jobId);
+      const now = await this.sets
+        .find({ _id: { $in: ids }, ownerId }, { cancelRequestedAt: 1, cancelStoppedAt: 1 })
+        .lean<Pick<QuizSetRow, '_id' | 'cancelRequestedAt' | 'cancelStoppedAt'>[]>();
+      const drop = now
+        .filter(
+          (r) =>
+            canceledFirst(job, r.cancelStoppedAt) ||
+            (r.cancelRequestedAt &&
+              cancelSettled(job, {
+                cancelRequestedAt: r.cancelRequestedAt,
+                cancelStoppedAt: r.cancelStoppedAt,
+              })),
+        )
+        .map((r) => r._id);
+      const keep = ids.filter((id) => !drop.some((d) => d.equals(id)));
+      if (keep.length > 0) {
+        await this.sets.updateMany(
+          { _id: { $in: keep }, ownerId, cancelRequestedAt: mark, cancelStoppedAt: null },
+          { $unset: { cancelRequestedAt: '' } },
+        );
+      }
+      if (drop.length > 0) await this.dropSets(ctx.userId, drop);
+      return;
+    }
+    // 이 취소가 작업을 멈췄다고 고른 세트에 적는다(Codex 6차): 지우다 실패한 채 작업이 끝나도 그 세트의 취소가 멈춘 것으로
+    // 바로 지운다(canceledFirst). 미리 만들기의 이어받기 풀림은 작업 하나에 하나라 세트를 가리지 못한다.
+    // 취소 표시도 같이 다시 적는다($min): 그사이 겹친 늦은 취소가 같은 시각의 표시를 거뒀어도 「멈춤 표시가 있으면 취소
+    // 표시도 있다」가 지켜져, 표시로 취소한 세트를 가리는 모든 경로(sync · settle · createOnce)가 이 세트를 놓치지 않는다(Codex 7차)
+    if (ids.length > 0) {
+      await this.sets.updateMany(
+        { _id: { $in: ids }, ownerId, status: { $ne: 'ready' }, deletedAt: null },
+        { $min: { cancelStoppedAt: new Date(), cancelRequestedAt: mark } },
+      );
+    }
+    await this.dropSets(ctx.userId, ids);
+    await this.keepAwaited(ownerId, jobId);
+  }
+
+  /**
+   * 이 작업을 기다리는, 취소하지 않은 만드는 중 세트가 있으면 미리 만들기의 이어받기를 다시 켠다(Codex 1차). 같은 세트의 취소
+   * 두 건이 겹쳐 한쪽이 세트를 지운 뒤 새 세트가 다시 이어받으면, 늦게 도는 쪽의 stop이 새 세트의 이어받기를 풀 수 있어서다.
+   * 새 세트를 넣기 전에 풀린 경우는 넣는 쪽이 넣은 뒤 다시 켠다(createOnce). 미리 만들기가 아니거나 끝났으면 바꾸지 않는다
+   */
+  private async keepAwaited(ownerId: Types.ObjectId, jobId: Types.ObjectId): Promise<void> {
+    const other = await this.sets
+      .findOne(
+        { ownerId, jobId, status: 'generating', deletedAt: null, cancelRequestedAt: null },
         { _id: 1 },
       )
-      .lean<Pick<QuizSetRow, '_id'>[]>();
-    if (!(await ctx.cancel())) return;
-    await this.dropSets(
-      ctx.userId,
-      waiting.map((r) => r._id),
-    );
+      .lean();
+    if (other) await this.jobs.awaitAgain(ownerId.toHexString(), jobId.toHexString());
+  }
+
+  /**
+   * 앱의 취소가 정리할 세트(cancelWaiting). quizSetId가 있으면 그 세트 하나: 내 세트이고 이 작업을 가리켜야 하며(아니면
+   * 404) 아직 지우지 않았고 ready가 아닐 때만 고른다. 없으면 이 작업을 기다리는 아직 ready가 아닌 내 세트 모두
+   */
+  private async waitingSets(
+    ownerId: Types.ObjectId,
+    jobId: Types.ObjectId,
+    quizSetId: string | undefined,
+  ): Promise<Types.ObjectId[]> {
+    if (quizSetId === undefined) {
+      const rows = await this.sets
+        .find({ ownerId, jobId, status: { $ne: 'ready' }, deletedAt: null }, { _id: 1 })
+        .lean<Pick<QuizSetRow, '_id'>[]>();
+      return rows.map((r) => r._id);
+    }
+    const target = await this.sets
+      .findOne({ _id: objectId(quizSetId, '퀴즈'), ownerId }, { jobId: 1, status: 1, deletedAt: 1 })
+      .lean<Pick<QuizSetRow, '_id' | 'jobId' | 'status' | 'deletedAt'>>();
+    if (!target || !target.jobId?.equals(jobId)) throw notFound('퀴즈');
+    return target.deletedAt || target.status === 'ready' ? [] : [target._id];
   }
 
   /**
    * 아직 ready가 아닌 내 세트들을 지우고(deletedAt) 딸린 개념 카드 작업(quiz_flashcards)도 멈춘다(#626). 카드 작업은 보통
    * ready 세트에만 있지만 세트가 ready로 바뀌는 순간과 겹치면 넣을 수 있다(넣는 쪽도 지운 세트면 멈춘다, ensureCards).
-   * 이미 ready가 됐거나 지운 세트는 건너뛴다
+   * 이미 ready가 됐거나 지운 세트는 건너뛴다. when: 지울 때 더 맞아야 할 조건(createOnce: 취소 표시가 남음). 지운 수를 돌려준다
    */
-  private async dropSets(userId: string, setIds: Types.ObjectId[]): Promise<void> {
+  private async dropSets(
+    userId: string,
+    setIds: Types.ObjectId[],
+    when: Record<string, unknown> = {},
+  ): Promise<number> {
     const ownerId = objectId(userId, '퀴즈');
     const dropped: string[] = [];
     for (const _id of setIds) {
       const gone = await this.sets
         .findOneAndUpdate(
-          { _id, ownerId, status: { $ne: 'ready' }, deletedAt: null },
+          { ...when, _id, ownerId, status: { $ne: 'ready' }, deletedAt: null },
           { $set: { deletedAt: new Date() } },
         )
         .lean();
@@ -414,6 +576,7 @@ export class QuizSetsService implements OnModuleInit {
     await this.jobs.cancelForTargets(userId, [
       { targetType: 'quiz_set', targetIds: dropped, types: [CARDS_TYPE] },
     ]);
+    return dropped.length;
   }
 
   /**
@@ -456,11 +619,33 @@ export class QuizSetsService implements OnModuleInit {
     pages: { pageNo: number; ocrText: string }[],
   ): Promise<{ quizSet: AppQuizSet; job: AppAiJob } | null> {
     const existing = await this.generatingSet(owner, material._id);
-    // 앱이 취소해 이어받기가 풀린 미리 만들기를 기다리던 세트는 취소 중이거나 지우다 실패해 남은 세트다(#626). 다시
-    // 이어받아 돌려주면 취소가 이 세트를 지워 새 화면이 404를 받으므로, 마저 지우고 아래에서 새 세트로 이어받는다
-    if (existing?.job.type === PREGEN_TYPE && existing.job.awaited === false) {
-      await this.dropSets(userId, [new Types.ObjectId(existing.quizSet._id)]);
-    } else if (existing) return existing;
+    // 앱이 취소한(취소 표시) 세트는 취소 중이거나 지우다 실패해 남은 세트다(#626 · #642). 다시 돌려주면 취소가 이 세트를
+    // 지워 새 화면이 404를 받으므로, 마저 지우고 아래에서 새 세트로 이어받는다. 작업이 끝났는데 방금 적힌 표시뿐인 세트는
+    // 그 취소가 늦은 취소로 거둘 수 있어 지우지 않고 돌려준다(generatingSet canceled, #644)
+    if (existing?.canceled) {
+      // 읽은 뒤 작업이 끝나 그 취소가 늦은 취소가 됐을 수 있다(Codex #646 1차 · #643 4차): 처리 중인 취소면 끝나기를 짧게
+      // 기다린 뒤 판단하고(dropCanceled), 지우지 않을 때는 처음부터 다시 본다(null → create가 한 번 더). 지울 때도 표시가
+      // 남아 있을 때만 지운다(그사이 늦은 취소가 표시를 거뒀으면 지우지 않고 다시 봄)
+      const setId = new Types.ObjectId(existing.quizSet._id);
+      if (!(await this.dropCanceled(userId, setId, existing.job._id))) return null;
+      const dropped = await this.dropSets(userId, [setId], {
+        cancelRequestedAt: { $ne: null },
+      });
+      if (dropped === 0) {
+        const left = await this.sets
+          .findOne({ _id: setId }, { deletedAt: 1 })
+          .lean<Pick<QuizSetRow, 'deletedAt'>>();
+        if (left && !left.deletedAt) return null;
+      }
+    } else if (existing) {
+      // 취소하지 않았는데 이어받기가 풀린 세트(겹친 옛 취소의 stop이 늦게 닿음)는 지우지 않고 이어받기를 되살려 돌려준다
+      // (Codex 2차: 지우면 이미 이 세트를 받은 화면이 404)
+      if (existing.job.type === PREGEN_TYPE && existing.job.awaited === false) {
+        await this.jobs.awaitAgain(userId, existing.job._id);
+        return { quizSet: existing.quizSet, job: { ...existing.job, awaited: true } };
+      }
+      return { quizSet: existing.quizSet, job: existing.job };
+    }
     if (pages.length === 0) {
       throw new BadRequestException({
         code: VALIDATION_FAILED,
@@ -507,12 +692,20 @@ export class QuizSetsService implements OnModuleInit {
         deletedAt: null,
       });
       saved = true;
+      // 이어받은 뒤 세트를 넣기 전에 옛 취소의 stop이 이어받기를 풀었을 수 있어 넣은 뒤 다시 켠다(Codex 1차, keepAwaited)
+      // 이어받기는 처리 순서만 바꾸므로 실패해도 세트 만들기는 그대로 돌려준다
+      if (takenOver)
+        await this.jobs.awaitAgain(userId, takenOver._id).catch((e: unknown) => {
+          this.logger.warn(`이어받기를 다시 켜지 못했습니다(세트는 그대로): ${String(e)}`);
+        });
       const row = created.toObject<QuizSetRow>();
       // 노트를 확인한 뒤 세트를 넣기 전에 학습 폴더가 지워졌으면 이 세트도 지우고(작업도 취소) 404(#602)
       if (await this.dropIfFolderGone(userId, row)) throw notFound('노트');
       if (!reused) return { quizSet: toAppSet(row, job.progress), job };
       // 끝난 작업이라 결과를 바로 옮겨 ready로(만드는 중으로 넣어 같은 노트의 고유 색인도 거친다)
+      // 방금 넣은 세트라 취소 표시가 없어 지워지지 않는다(quizSet: null은 취소한 세트뿐)
       const synced = await this.sync(row);
+      if (!synced.quizSet) throw notFound('퀴즈');
       return { quizSet: synced.quizSet, job: synced.job ?? job };
     } catch (e) {
       // 세트를 저장하지 못했으면 넣은 작업은 거둔다(이어받은 미리 만들기는 이어받기만 풀린다).
@@ -531,10 +724,12 @@ export class QuizSetsService implements OnModuleInit {
           .lean<QuizSetRow>();
         if (first) {
           const synced = await this.sync(first);
-          return { quizSet: synced.quizSet, job: synced.job ?? job };
+          // 먼저 만든 세트를 앱이 그사이 취소해 지웠으면 같은 노트의 만드는 중인 세트를 찾는다
+          if (synced.quizSet) return { quizSet: synced.quizSet, job: synced.job ?? job };
         }
       }
-      return this.generatingSet(owner, material._id);
+      const other = await this.generatingSet(owner, material._id);
+      return other && !other.canceled ? { quizSet: other.quizSet, job: other.job } : null;
     }
   }
 
@@ -691,7 +886,11 @@ export class QuizSetsService implements OnModuleInit {
       .sort({ createdAt: -1 })
       .lean<QuizSetRow[]>();
     const synced = await Promise.all(rows.map(async (row) => (await this.sync(row)).quizSet));
-    return this.withCompleted(owner, synced);
+    // 취소한 뒤 지우지 못해 남았던 세트는 이번 동기화가 지웠다(#642)
+    return this.withCompleted(
+      owner,
+      synced.filter((s): s is AppQuizSet => s !== null),
+    );
   }
 
   /**
@@ -741,21 +940,72 @@ export class QuizSetsService implements OnModuleInit {
       .findOne({ _id: objectId(setId, '퀴즈'), ownerId: objectId(userId, '퀴즈'), deletedAt: null })
       .lean<QuizSetRow>();
     if (!row) throw notFound('퀴즈');
-    return (await this.sync(row)).quizSet;
+    const { quizSet } = await this.sync(row);
+    // 취소한 뒤 지우지 못해 남았던 세트는 이번 동기화가 지웠다(#642)
+    if (!quizSet) throw notFound('퀴즈');
+    return quizSet;
   }
 
-  /** 같은 노트의 만드는 중인 세트. 작업이 이미 끝났으면 결과를 옮기고, 그래도 만드는 중일 때만 돌려준다 */
+  /**
+   * 다시 만들기(createOnce)가 만난 취소 세트를 지울지(true) 처음부터 다시 볼지(false). 작업 · 세트를 다시 읽어 작업이 없거나
+   * 그 세트의 취소로 멈췄으면(canceledFirst: 세트의 멈춤 표시 · 맞춤 퀴즈 canceled, Codex 6차) 지우고, 그 취소로 멈춘 흔적 없이 끝났으면 늦은 취소가 될 수 있어 다시 본다(Codex #646 1차).
+   * 작업이 아직 돌고 표시가 방금(CANCEL_SETTLE_GRACE_MS 안) 적혔으면 그 취소가 처리 중이라(표시를 적고 → 멈춰 보고 →
+   * 늦었으면 거둠), 읽은 직후 작업이 끝나면 늦은 취소가 지켜야 할 세트를 지울 수 있다(Codex #643 4차). 그래서
+   * CANCEL_WAIT_STEP_MS마다 작업 · 세트를 다시 읽으며 최대 CANCEL_WAIT_MS 그 취소가 끝나기를 기다린다. 그사이 표시가
+   * 사라졌거나(늦은 취소가 거둠) 세트가 지워졌거나(그 취소가 지움) ready면 다시 본다. 오래된 표시(요청이 죽음)는 지금처럼
+   * 지운다. 다 기다려도 그 취소가 처리 중이면 지우지 않고 409 QUIZ_CANCEL_PENDING으로 잠시 뒤 다시 하게 한다(Codex #643
+   * 5차: 마지막 읽기 직후 작업이 끝나도 늦은 취소의 세트를 지키게 — 지우는 건 그 취소가 멈춘 게 확인됐거나 표시가 오래됐을 때뿐)
+   */
+  private async dropCanceled(
+    userId: string,
+    setId: Types.ObjectId,
+    jobId: string,
+  ): Promise<boolean> {
+    for (let waited = 0; ; waited += CANCEL_WAIT_STEP_MS) {
+      // 작업을 먼저 읽는다: 그 뒤 취소가 멈추고 표시를 적거나 세트를 지우면 아래 세트 읽기가 본다
+      const job = await this.jobOf(userId, jobId);
+      if (!job) return true;
+      const row = await this.sets
+        .findOne(
+          { _id: setId },
+          { status: 1, deletedAt: 1, cancelRequestedAt: 1, cancelStoppedAt: 1 },
+        )
+        .lean<Pick<QuizSetRow, 'status' | 'deletedAt' | 'cancelRequestedAt' | 'cancelStoppedAt'>>();
+      if (!row || row.deletedAt || row.status === 'ready' || !row.cancelRequestedAt) return false;
+      if (canceledFirst(job, row.cancelStoppedAt)) return true;
+      if (!isActive(job)) return false;
+      const age = Date.now() - new Date(row.cancelRequestedAt).getTime();
+      if (age >= CANCEL_SETTLE_GRACE_MS) return true;
+      if (waited >= CANCEL_WAIT_MS) {
+        throw new ConflictException({
+          code: ERROR_CODES.QUIZ_CANCEL_PENDING,
+          message: '취소를 처리하는 중이에요. 잠시 뒤 다시 시도해 주세요',
+        });
+      }
+      await this.sleep(CANCEL_WAIT_STEP_MS);
+    }
+  }
+
+  /**
+   * 같은 노트의 만드는 중인 세트. 작업이 이미 끝났으면 결과를 옮기고, 그래도 만드는 중일 때만 돌려준다.
+   * canceled: 앱이 취소 표시를 적은, 아직 도는 작업의 세트(#642, 앱 응답에는 넣지 않는다). 작업이 끝났는데 남은 세트는
+   * 방금 적힌 표시뿐이라(오래된 표시는 sync가 지움) 그 취소가 늦은 취소로 거둘 수 있어 취소한 세트로 보지 않는다(#644)
+   */
   private async generatingSet(
     owner: Types.ObjectId,
     materialId: Types.ObjectId,
-  ): Promise<{ quizSet: AppQuizSet; job: AppAiJob } | null> {
+  ): Promise<{ quizSet: AppQuizSet; job: AppAiJob; canceled: boolean } | null> {
     const row = await this.sets
       .findOne({ ownerId: owner, materialId, status: 'generating', deletedAt: null })
       .lean<QuizSetRow>();
     if (!row) return null;
     const synced = await this.sync(row);
-    return synced.quizSet.status === 'generating' && synced.job
-      ? { quizSet: synced.quizSet, job: synced.job }
+    return synced.quizSet?.status === 'generating' && synced.job
+      ? {
+          quizSet: synced.quizSet,
+          job: synced.job,
+          canceled: !!row.cancelRequestedAt && isActive(synced.job),
+        }
       : null;
   }
 
@@ -765,12 +1015,30 @@ export class QuizSetsService implements OnModuleInit {
    * 같이 옮겨도 한 번만 반영된다.
    * failed 세트도 작업이 나중에 성공했으면(ai-jobs의 다시 시도, 뒤에서 마저 만든 미리 만들기) ready로
    * 되살린다. 다시 만드는 중으로는 되돌리지 않는다(그 사이 같은 노트에 새 세트가 있을 수 있다).
+   * 앱이 취소했는데(cancelRequestedAt) 지우지 못한 채 남은 세트는 작업이 끝났거나 그 취소로 멈췄으면(cancelSettled) 결과를
+   * 옮기지 않고 지운 뒤 quizSet: null을 돌려준다(#642). 늦은 취소(작업이 먼저 끝남)는 취소 요청이 표시를 거둬 지금처럼 옮긴다.
+   * 끝난 작업에 방금 적힌 표시는 그 취소 요청이 아직 늦은 취소인지 가리는 중일 수 있어 지우지도 옮기지도 않는다(#644)
    */
-  private async sync(row: QuizSetRow): Promise<{ quizSet: AppQuizSet; job: AppAiJob | null }> {
+  private async sync(
+    row: QuizSetRow,
+  ): Promise<{ quizSet: AppQuizSet | null; job: AppAiJob | null }> {
     if (row.followUpPending && row.status !== 'generating') await this.followUp(row);
     if (row.cardsPending && row.status === 'ready') await this.ensureCards(row);
     if (row.status === 'ready') return { quizSet: toAppSet(row), job: null };
     const job = row.jobId ? await this.findJob(row) : null;
+    if (
+      row.cancelRequestedAt &&
+      cancelSettled(job, {
+        cancelRequestedAt: row.cancelRequestedAt,
+        cancelStoppedAt: row.cancelStoppedAt,
+      })
+    ) {
+      await this.dropSets(row.ownerId.toHexString(), [row._id]);
+      return { quizSet: null, job };
+    }
+    // 끝난 작업인데 방금 적힌 표시: 취소 요청이 아직 늦은 취소인지 가리는 중이라 지우지도 결과를 옮기지도 않고 지금대로
+    // 둔다(#644). 늦은 취소면 표시를 거둔 뒤 다음 조회가 옮기고, 그 취소가 지우거나 요청이 죽었으면 30초 뒤 조회가 지운다
+    if (row.cancelRequestedAt && job && !isActive(job)) return { quizSet: toAppSet(row), job };
     if (row.status === 'failed') {
       const ready = job?.status === 'succeeded' ? readyUpdate(job) : null;
       if (ready) return this.settle(row, ready, job);
@@ -804,7 +1072,7 @@ export class QuizSetsService implements OnModuleInit {
     row: QuizSetRow,
     update: Record<string, unknown>,
     job: AppAiJob | null,
-  ): Promise<{ quizSet: AppQuizSet; job: AppAiJob | null }> {
+  ): Promise<{ quizSet: AppQuizSet | null; job: AppAiJob | null }> {
     // 처리기가 뽑은 개념 이름은 세트를 ready로 바꾸기 전에 노트에 남긴다: 저장이 실패하면 세트도 그대로라
     // 다음 조회가 다시 옮기며 다시 저장한다(Codex 리뷰 #276). 같이 옮기는 요청이 모두 저장해도 같은 값
     if (update['status'] === 'ready' && job) await this.saveConcepts(row, job);
@@ -823,9 +1091,11 @@ export class QuizSetsService implements OnModuleInit {
     // 카드는 처리기가 따로 만들어 퀴즈 작업을 늦추지 않는다
     if (update['status'] === 'ready' && job && CARD_TYPES.includes(job.type))
       update['cardsPending'] = true;
+    // 세트를 읽은 뒤 앱이 취소 표시를 적었으면 바꾸지 않는다(#642, 읽은 세트에는 아직 표시가 없어 위 sync가 거르지 못한
+    // 경우). 표시는 맞춤 퀴즈 · 미리 만들기 세트에만 적으므로 다른 세트에는 늘 맞는 조건이다
     const updated = await this.sets
       .findOneAndUpdate(
-        { _id: row._id, status: row.status },
+        { _id: row._id, status: row.status, cancelRequestedAt: null },
         { $set: update },
         { returnDocument: 'after' },
       )
@@ -835,6 +1105,21 @@ export class QuizSetsService implements OnModuleInit {
     if (updated?.cardsPending) await this.ensureCards(updated);
     const current =
       updated ?? (await this.sets.findOne({ _id: row._id }).lean<QuizSetRow>()) ?? row;
+    // 위 조건에 막혔으면(그사이 앱이 취소함, 작업은 이미 끝남) 지울 때인 세트(cancelSettled)나 그사이 지운 세트는 돌려주지
+    // 않고 여기서 지운다(이미 지웠으면 건너뜀). 방금 적힌 표시는 그 취소가 늦은 취소일 수 있어 옮기지 않은 채 돌려준다(#644)
+    if (
+      !updated &&
+      current.cancelRequestedAt &&
+      current.status !== 'ready' &&
+      (current.deletedAt ||
+        cancelSettled(job, {
+          cancelRequestedAt: current.cancelRequestedAt,
+          cancelStoppedAt: current.cancelStoppedAt,
+        }))
+    ) {
+      await this.dropSets(row.ownerId.toHexString(), [row._id]);
+      return { quizSet: null, job };
+    }
     return { quizSet: toAppSet(current), job };
   }
 
@@ -982,9 +1267,14 @@ export class QuizSetsService implements OnModuleInit {
     return base?.materialId ? { materialId: base.materialId, folderId: base.folderId } : {};
   }
 
-  private async findJob(row: QuizSetRow): Promise<AppAiJob | null> {
+  private findJob(row: QuizSetRow): Promise<AppAiJob | null> {
+    return this.jobOf(row.ownerId.toString(), row.jobId!.toString());
+  }
+
+  /** 내 작업을 읽는다. 없으면 null */
+  private async jobOf(userId: string, jobId: string): Promise<AppAiJob | null> {
     try {
-      return await this.jobs.findMine(row.ownerId.toString(), row.jobId!.toString());
+      return await this.jobs.findMine(userId, jobId);
     } catch (e) {
       if (e instanceof NotFoundException) return null;
       throw e;
@@ -1289,18 +1579,24 @@ function reviewQuestions(raw: unknown): QuestionRow[] {
 }
 
 /**
- * 성공한 작업의 결과로 세트를 ready로 바꾸는 값. 쓸 문제가 없으면 null(세트를 failed로).
- * 모양이 틀린 문제를 빼면 번호가 비므로 처리기의 order 차례대로 1부터 다시 매긴다(/code-review)
+ * 성공한 작업의 결과에서 세트에 넣을 수 있는 문제들(모양이 틀린 문제는 뺀다). 세트 동기화(readyUpdate)와
+ * 작업 완료 알림(ai-job-notices.service.ts, #634)이 같은 규칙으로 문제를 센다
  */
-function readyUpdate(job: AppAiJob): Record<string, unknown> | null {
+export function resultQuestions(job: Pick<AppAiJob, 'type' | 'result'>): QuestionRow[] {
   // 오답 복습(similar_quiz)은 새 문제를 reviewQuestions에 담고, 문제마다 처음 복습 상태(srs)를 준다
   // 오늘의 복습도 문제마다 복습 상태(srs)를 가진 사본을 questions에 담는다
   const similar = job.type === SIMILAR_TYPE;
   const keepSrs = similar || job.type === TODAY_TYPE;
   const raw = job.result?.[similar ? 'reviewQuestions' : 'questions'];
-  const sorted = (keepSrs ? reviewQuestions(raw) : workerQuestions(raw)).sort(
-    (a, b) => a.order - b.order,
-  );
+  return keepSrs ? reviewQuestions(raw) : workerQuestions(raw);
+}
+
+/**
+ * 성공한 작업의 결과로 세트를 ready로 바꾸는 값. 쓸 문제가 없으면 null(세트를 failed로).
+ * 모양이 틀린 문제를 빼면 번호가 비므로 처리기의 order 차례대로 1부터 다시 매긴다(/code-review)
+ */
+function readyUpdate(job: AppAiJob): Record<string, unknown> | null {
+  const sorted = resultQuestions(job).sort((a, b) => a.order - b.order);
   const questions = sorted.map((q, i) => ({
     ...q,
     order: i + 1,

@@ -55,7 +55,7 @@ describe('TestQA 3차 버그 묶음', () => {
     expect(profileLine({ email: 'a@b.c' })).toBe('a@b.c');
     expect(profileLine({ school: '', grade: '', email: 'a@b.c' })).toBe('a@b.c');
     expect(profileLine({ school: '선문고등학교', grade: '2학년', email: 'a@b.c' })).toBe(
-      '선문고 2학년 · a@b.c',
+      '선문고 · 2학년 · a@b.c',
     );
     expect(profileLine({ grade: '2학년', email: 'a@b.c' })).toBe('2학년 · a@b.c');
   });
@@ -94,6 +94,6 @@ describe('TestQA 3차 버그 묶음', () => {
     jest.spyOn(api.shop, 'ledger').mockResolvedValue([]);
     await renderScreen(<PointsScreen />);
     await fireEvent.press(await screen.findByText('사용'));
-    await waitFor(() => expect(screen.getByText('아직 사용한 내역이 없어요')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('아직 사용한 포인트가 없어요')).toBeTruthy());
   });
 });

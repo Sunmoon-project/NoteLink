@@ -53,11 +53,14 @@ export const diffLabel = (sec: number) => {
 };
 export const goalLabel = (min: number | null) =>
   !min ? '목표 없음' : min >= 60 ? `${min / 60}시간` : `${min}분`;
+/** 방금(1분 미만) · N분 전 · N시간 전 · N일 전 */
 export const timeAgo = (iso: string) => {
-  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-  if (m < 1) return '방금';
-  if (m < 60) return `${m}분 전`;
-  const h = m / 60;
+  const min = (Date.now() - new Date(iso).getTime()) / 60000;
+  // 시각이 비었거나 깨졌으면 「NaN일 전」 대신 아무것도 적지 않는다
+  if (Number.isNaN(min)) return '';
+  if (min < 1) return '방금';
+  if (min < 60) return `${Math.floor(min)}분 전`;
+  const h = min / 60;
   if (h < 24) return `${Math.floor(h)}시간 전`;
   return `${Math.floor(h / 24)}일 전`;
 };

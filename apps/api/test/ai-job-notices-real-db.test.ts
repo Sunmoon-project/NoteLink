@@ -92,7 +92,13 @@ describe.skipIf(!isLocal)('진짜 DB 노트 변환 완료 푸시', () => {
   /** 노트(바로 넣는다: 필수 필드를 다 채우지 않는다)와 그 노트를 가리키는 끝난 작업을 만든다 */
   const noteWithJob = async (
     over: Record<string, unknown> = {},
-    note: { deletedAt?: Date | null; jobId?: 'self' | Types.ObjectId | null } = {},
+    note: {
+      deletedAt?: Date | null;
+      jobId?: 'self' | Types.ObjectId | null;
+      regenJobId?: 'self' | Types.ObjectId | null;
+      /** undefined 면 필드가 없는 옛 문서 */
+      lastRegenJobId?: 'self' | Types.ObjectId | null;
+    } = {},
   ) => {
     const materialId = new Types.ObjectId();
     const job = await jobs.create({
@@ -116,6 +122,12 @@ describe.skipIf(!isLocal)('진짜 DB 노트 변환 완료 푸시', () => {
       title: '영어 필기',
       processing: {
         jobId: note.jobId === undefined || note.jobId === 'self' ? job._id : note.jobId,
+        regenJobId: note.regenJobId === 'self' ? job._id : (note.regenJobId ?? null),
+        ...(note.lastRegenJobId === undefined
+          ? {}
+          : {
+              lastRegenJobId: note.lastRegenJobId === 'self' ? job._id : note.lastRegenJobId,
+            }),
       },
     });
     return { id: job._id, materialId };
@@ -199,6 +211,44 @@ describe.skipIf(!isLocal)('진짜 DB 노트 변환 완료 푸시', () => {
       expect(r.notice?.attempts).toBe(1); // 두 번째 확인에서 다시 고르지 않았다
     }
     expect((await row(deleted.id))!.updatedAt).toEqual(before);
+  });
+
+  it('다시 만들기 작업(regenJobId)이 노트 동기화 전에 끝나면 알리고, 다른 다시 만들기가 걸린 옛 작업은 skipped(#634)', async () => {
+    // 노트에 쓸 수 있는 결과(녹음 정리 슬라이드)여야 「끝났어요」다. 쓸 수 없으면 실패로 알린다(syncRegen 과 같은 판정)
+    const regen = await noteWithJob(
+      {
+        type: 'recording_summary',
+        result: { slides: [{ title: '도입', summary: '시작', startMs: 0, endMs: 1 }] },
+      },
+      { jobId: new Types.ObjectId(), regenJobId: 'self' },
+    );
+    await materials.collection.updateOne(
+      { _id: regen.materialId },
+      { $set: { kind: 'recording', 'processing.status': 'done' } },
+    );
+    const stale = await noteWithJob(
+      {},
+      { jobId: new Types.ObjectId(), regenJobId: new Types.ObjectId() },
+    );
+    await makeService().runOnce(NOW);
+    expect(sent.map((m) => m.title)).toEqual(['노트 정리가 끝났어요']);
+    expect((await row(regen.id))!.notice?.state).toBe('sent');
+    expect((await row(stale.id))!.notice?.state).toBe('skipped');
+  });
+
+  it('노트를 먼저 열어 regenJobId 가 지워진 뒤 실패한 다시 만들기(lastRegenJobId)는 실패를 알리고, 그보다 옛 작업은 skipped(#639)', async () => {
+    const last = await noteWithJob(
+      { status: 'failed' },
+      { jobId: new Types.ObjectId(), regenJobId: null, lastRegenJobId: 'self' },
+    );
+    const stale = await noteWithJob(
+      { status: 'failed' },
+      { jobId: new Types.ObjectId(), regenJobId: null, lastRegenJobId: new Types.ObjectId() },
+    );
+    await makeService().runOnce(NOW);
+    expect(sent.map((m) => m.title)).toEqual(['노트 정리에 실패했어요. 다시 시도해 주세요']);
+    expect((await row(last.id))!.notice?.state).toBe('sent');
+    expect((await row(stale.id))!.notice?.state).toBe('skipped');
   });
 
   it('선점한 서버가 죽어 claimed 로 남으면 2분 뒤 다른 서버가 이어받는다', async () => {

@@ -8,6 +8,8 @@ import { InjectModel } from '@nestjs/mongoose';
 import { randomUUID } from 'node:crypto';
 import { type Model, Types } from 'mongoose';
 
+import { syncFromJob } from '../modules/content/materials/material-sync.js';
+import type { MaterialRow } from '../modules/content/materials/material-view.js';
 import { Material } from '../modules/content/schemas/material.schema.js';
 import {
   ExpoPushService,
@@ -17,7 +19,8 @@ import { NotificationService } from '../modules/notification/notification.servic
 import { AiJob } from '../modules/quiz/schemas/ai-job.schema.js';
 import { QuizSet } from '../modules/quiz/schemas/quiz-set.schema.js';
 import { Device } from '../modules/users/schemas/device.schema.js';
-import { PREGEN_TYPE } from './ai-jobs.service.js';
+import { resultQuestions, SIMILAR_TYPE } from '../quiz-sets/quiz-sets.service.js';
+import { type AppAiJob, PREGEN_TYPE } from './ai-jobs.service.js';
 
 /** 끝난 작업을 확인하는 간격 */
 const NOTICE_SCAN_MS = 60_000;
@@ -431,7 +434,12 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
 
   /**
    * 알림 내용. 지운 노트 · 다른 작업에 다시 연결된 노트, 지운 퀴즈 세트 · 이 작업의 것이 아닌 세트면 null(보내지 않는다).
-   * 이어받은 미리 만들기의 세트가 아직 없으면 'later'(다시 시도). 실패한 퀴즈 작업은 세트를 보지 않고 실패를 알린다
+   * 노트는 이 작업이 노트의 현재 작업(processing.jobId) · 현재 다시 만들기 작업(processing.regenJobId) ·
+   * 마지막으로 끝난 다시 만들기 작업(processing.lastRegenJobId)일 때만 알린다: 다시 만들기는 노트 동기화(syncRegen)
+   * 전까지 regenJobId 에만 걸려 있고(#616 Codex 2차), 동기화가 그 값을 지우면 lastRegenJobId 에 남는다(#639).
+   * 이어받은 미리 만들기의 세트가 아직 없으면 'later'(다시 시도). 실패한 퀴즈 작업은 세트를 보지 않고 실패를 알린다.
+   * 퀴즈 작업(유사 문제 · 퀴즈 만들기 · 미리 만들기)은 성공해도 쓸 문제를 하나도 못 만들면 세트가 failed 로 끝나므로
+   * (#553, readyUpdate) 세트의 상태 · 문제 수를 보고 0개면 실패를 알린다(#634, #639)
    */
   private async contentOf(job: JobLean): Promise<
     | {
@@ -445,42 +453,71 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
   > {
     if (SUMMARY_TYPES.includes(job.type)) {
       const material = await this.materials
-        .findOne({ _id: job.targetId }, { deletedAt: 1, title: 1, 'processing.jobId': 1 })
+        .findOne(
+          { _id: job.targetId },
+          {
+            deletedAt: 1,
+            title: 1,
+            'processing.jobId': 1,
+            'processing.regenJobId': 1,
+            'processing.lastRegenJobId': 1,
+          },
+        )
         .lean<{
           deletedAt?: Date | null;
           title?: string | null;
-          processing?: { jobId?: Types.ObjectId | null };
+          processing?: {
+            jobId?: Types.ObjectId | null;
+            regenJobId?: Types.ObjectId | null;
+            lastRegenJobId?: Types.ObjectId | null;
+          };
         } | null>();
-      if (
-        !material ||
-        material.deletedAt ||
-        String(material.processing?.jobId ?? '') !== String(job._id)
-      )
-        return null;
+      const id = String(job._id);
+      const isJob = String(material?.processing?.jobId ?? '') === id;
+      const isRegen = String(material?.processing?.regenJobId ?? '') === id;
+      // 필드가 없는 옛 문서는 여기서 걸리지 않는다(지금처럼 옛 작업으로 본다)
+      const isLastRegen = String(material?.processing?.lastRegenJobId ?? '') === id;
+      if (!material || material.deletedAt || !(isJob || isRegen || isLastRegen)) return null;
+      // 다시 만들기가 성공했어도 결과를 쓸 수 없으면 노트는 옛 결과 그대로다(syncRegen): 실패로 알린다.
+      // 동기화 전(regenJobId)이든 노트를 먼저 열어 동기화가 끝낸 뒤(lastRegenJobId, #639)든 같은 판정이다
+      const unusable = !isJob && job.status === 'succeeded' && !(await this.regenApplies(job));
+      // 동기화가 끝낸 다시 만들기(lastRegenJobId)가 성공했고 쓸 수 있는 결과인데 jobId 가 아니면, 동기화 뒤에
+      // 다시 시도(AiJobsService.retry)해 성공한 것이다: 노트에 반영되지 않으므로 알리지 않는다(지금처럼, code-review)
+      if (!isJob && !isRegen && job.status === 'succeeded' && !unusable) return null;
+      const status = unusable ? 'failed' : job.status;
       const materialId = String(job.targetId);
       return {
-        title: MESSAGES.summary[job.status],
+        title: MESSAGES.summary[status],
         body: material.title ?? '', // 제목이 없으면 본문은 비운다
         threadId: `note-summary-${materialId}`,
-        data: { type: 'note-summary', materialId, status: job.status },
+        data: { type: 'note-summary', materialId, status },
       };
     }
-    const kind = job.type === 'similar_quiz' ? 'similar' : 'quiz';
-    // 실패하면 세트가 안 생길 수 있다: 세트를 찾지 않고 바로 알린다(앱은 quizSetId가 없으면 퀴즈 탭으로 간다).
-    // 성공했어도 문제가 0개면 세트는 failed가 되므로 「준비됐어요」 대신 실패로 알린다(TestQA COM-004)
-    if (job.status === 'failed' || noQuestions(job))
-      return {
-        title: MESSAGES[kind].failed,
-        body: '퀴즈 탭에서 다시 만들 수 있어요', // 세트 제목을 모를 수 있다(알림함은 본문이 꼭 있어야 한다)
-        threadId: `quiz-job-${String(job._id)}`,
-        data: { type: 'quiz-ready', status: 'failed' },
-      };
+    const kind = job.type === SIMILAR_TYPE ? 'similar' : 'quiz';
+    // 실패하면 세트가 안 생길 수 있다: 세트를 찾지 않고 바로 알린다(앱은 quizSetId가 없으면 퀴즈 탭으로 간다)
+    const failed = () => ({
+      title: MESSAGES[kind].failed,
+      body: '퀴즈 탭에서 다시 만들 수 있어요', // 세트 제목을 모를 수 있다(알림함은 본문이 꼭 있어야 한다)
+      threadId: `quiz-job-${String(job._id)}`,
+      data: { type: 'quiz-ready', status: 'failed' },
+    });
+    // 성공했어도 문제가 0개면 세트는 failed가 되므로 「준비됐어요」 대신 실패로 알린다(세트를 못 찾아도, TestQA COM-004)
+    if (job.status === 'failed' || noQuestions(job)) return failed();
     // 퀴즈 만들기 · 미리 만들기 모두 세트가 이 작업(jobId)을 가리킨다
     const set = await this.sets
-      .findOne({ jobId: job._id, ownerId: job.userId, deletedAt: null }, { title: 1 })
-      .lean<{ _id: Types.ObjectId; title?: string | null } | null>();
+      .findOne(
+        { jobId: job._id, ownerId: job.userId, deletedAt: null },
+        { title: 1, status: 1, questionCount: 1 },
+      )
+      .lean<{
+        _id: Types.ObjectId;
+        title?: string | null;
+        status?: string | null;
+        questionCount?: number | null;
+      } | null>();
     // 미리 만들기는 이어받은(awaited) 뒤 세트를 만든다: 그 사이에 확인했으면 조금 뒤 다시 본다
     if (!set) return job.type === PREGEN_TYPE ? 'later' : null;
+    if (!(await this.madeQuestions(job, set))) return failed();
     const quizSetId = String(set._id);
     return {
       title: MESSAGES[kind][job.status],
@@ -488,6 +525,49 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
       threadId: `quiz-${quizSetId}`,
       data: { type: 'quiz-ready', quizSetId, status: job.status },
     };
+  }
+
+  /**
+   * 성공한 다시 만들기 작업의 결과를 노트에 쓸 수 있는지. 노트 동기화(MaterialsService.syncRegen)와 같은 판정이다:
+   * 처리 중으로 보고 syncFromJob 이 처리 완료(done)를 내면 결과를 바꾸고, 아니면 regenJobId 만 지워 옛 결과를 둔다
+   */
+  private async regenApplies(job: JobLean): Promise<boolean> {
+    // 쪽 · 결과까지 읽으므로 동기화 전의 성공한 다시 만들기에서만 부른다
+    const [material, full] = await Promise.all([
+      this.materials.findOne({ _id: job.targetId }).lean<MaterialRow | null>(),
+      this.jobs.findOne({ _id: job._id }, { status: 1, progress: 1, result: 1 }).lean<{
+        status: string;
+        progress?: number;
+        result?: Record<string, unknown> | null;
+      } | null>(),
+    ]);
+    if (!material || !full) return false;
+    const update = syncFromJob(
+      { ...material, processing: { ...material.processing, status: 'processing' } },
+      {
+        status: full.status,
+        progress: full.progress ?? 0,
+        result: full.result ?? null,
+      } as AppAiJob,
+    );
+    return update?.['processing.status'] === 'done';
+  }
+
+  /**
+   * 성공한 퀴즈 작업(유사 문제 #634 · 퀴즈 만들기 · 미리 만들기 #639)이 쓸 문제를 1개 이상 만들었는지.
+   * 세트가 이미 ready 이고 문제가 있으면 그대로 믿는다. 그 밖에는(세트 동기화 전 generating · 0개라 failed ·
+   * 앞선 실패로 failed 였다가 다시 시도해 성공) 세트 동기화가 결국 내릴 판정과 같도록 작업 결과를
+   * 세트 동기화와 같은 규칙(resultQuestions: 유사 문제는 reviewQuestions, 그 밖은 questions)으로 센다
+   */
+  private async madeQuestions(
+    job: JobLean,
+    set: { status?: string | null; questionCount?: number | null },
+  ): Promise<boolean> {
+    if (set.status === 'ready' && (set.questionCount ?? 0) > 0) return true;
+    const full = await this.jobs
+      .findOne({ _id: job._id }, { type: 1, result: 1 })
+      .lean<{ type: string; result?: Record<string, unknown> | null } | null>();
+    return !!full && resultQuestions({ type: full.type, result: full.result ?? null }).length > 0;
   }
 
   /** 결과를 기록한다. 내 선점(claimId)일 때만 쓴다: 그사이 다시 시도로 notice가 지워졌으면 아무것도 바꾸지 않는다 */

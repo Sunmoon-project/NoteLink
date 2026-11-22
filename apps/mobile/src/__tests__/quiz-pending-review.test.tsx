@@ -134,7 +134,9 @@ it('채점 응답 대기 중 화면을 떠났다가 돌아오면 입력을 보�
 
 it('이전 화면의 늦은 채점 응답은 새 화면에서 저장한 다른 풀이 상태를 덮어쓰지 않는다', async () => {
   const oldAnswer = deferred<{ correct: boolean; correctAnswer: string }>();
-  mockApi.quiz.answer.mockReturnValue(oldAnswer.promise);
+  // 새 화면의 답도 채점을 기다리게 둔다: 진행은 답을 낸 뒤부터 저장하므로(#630) 새 화면도 답을 내 상태를 남긴다
+  const newAnswer = deferred<{ correct: boolean; correctAnswer: string }>();
+  mockApi.quiz.answer.mockReturnValueOnce(oldAnswer.promise).mockReturnValue(newAnswer.promise);
   const qc = client();
   const first = await renderScreen(<QuizSolveScreen />, qc);
   await waitFor(() => expect(mockApi.quiz.startAttempt).toHaveBeenCalledTimes(1));
@@ -154,11 +156,14 @@ it('이전 화면의 늦은 채점 응답은 새 화면에서 저장한 다른 �
     await screen.findByPlaceholderText('답을 입력해주세요'),
     '새 화면에서 쓰는 답',
   );
+  await userEvent.setup().press(screen.getByRole('button', { name: '답 제출' }));
+  await waitFor(() => expect(mockApi.quiz.answer).toHaveBeenCalledTimes(2));
   await waitFor(() =>
     expect(useQuizProgress.getState().progress).toMatchObject({
       setId: newerSetId,
       answerText: '새 화면에서 쓰는 답',
-      pick: null,
+      pick: '새 화면에서 쓰는 답',
+      right: null,
     }),
   );
   const newerProgress = useQuizProgress.getState().progress;
@@ -168,6 +173,27 @@ it('이전 화면의 늦은 채점 응답은 새 화면에서 저장한 다른 �
   expect(useQuizProgress.getState().progress).toEqual(newerProgress);
   expect(screen.getByPlaceholderText('답을 입력해주세요').props.value).toBe('새 화면에서 쓰는 답');
   expect(screen.queryByText('정답이에요')).toBeNull();
+});
+
+it('같은 노트의 취소가 처리 중이라 409 QUIZ_CANCEL_PENDING 이면 일반 실패 창으로 잠시 뒤 다시 시도를 안내한다(#644)', async () => {
+  mockApi.quiz.createSet.mockRejectedValue(
+    new ApiError(
+      ERROR_CODES.QUIZ_CANCEL_PENDING,
+      '취소를 처리하는 중이에요. 잠시 뒤 다시 시도해 주세요',
+      409,
+    ),
+  );
+  setParams({ materialId: 'canceling-material', title: '취소 중인 노트' });
+  await renderScreen(<QuizGenScreen />, client());
+  await waitFor(() => expect(mockApi.quiz.createSet).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('문제를 만들지 못했어요')).toBeTruthy();
+  expect(screen.getByText('노트는 그대로 있어요. 잠시 후 다시 시도해 주세요.')).toBeTruthy();
+
+  fireEvent.press(screen.getByText('다시 시도'));
+  expect(router.replace).toHaveBeenCalledWith({
+    pathname: '/play/gen',
+    params: { materialId: 'canceling-material', title: '취소 중인 노트' },
+  });
 });
 
 it('세트 생성 전 크레딧 부족으로 거절되면 가짜 생성 결과나 빈 세트 이동을 제공하지 않는다', async () => {

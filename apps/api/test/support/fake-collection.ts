@@ -190,6 +190,30 @@ export function createFakeCollection<D>(unique?: (a: Row, b: Row) => boolean) {
       }
       return Promise.resolve([...seen.values()]);
     },
+    /**
+     * 맞는 행을 모두 바꾼다($set · $unset · $min). 세트에 취소 표시를 적고 거둘 때(QuizSetsService.cancelWaiting) 쓴다.
+     * $min은 날짜만: 필드가 없으면 적고, 날짜가 있으면 더 이른 쪽을 남긴다(MongoDB처럼 null은 날짜보다 작아 그대로 둔다)
+     */
+    updateMany: (
+      filter: Filter,
+      update: {
+        $set?: Record<string, unknown>;
+        $unset?: Record<string, unknown>;
+        $min?: Record<string, Date>;
+      },
+    ) => {
+      const found = rows.filter((r) => matches(r, filter));
+      for (const row of found) {
+        Object.assign(row, update.$set);
+        for (const key of Object.keys(update.$unset ?? {})) delete row[key];
+        for (const [key, at] of Object.entries(update.$min ?? {})) {
+          const cur = row[key];
+          if (cur === undefined || (cur instanceof Date && at.getTime() < cur.getTime()))
+            row[key] = at;
+        }
+      }
+      return Promise.resolve({ matchedCount: found.length, modifiedCount: found.length });
+    },
     findOneAndUpdate: (
       filter: Filter,
       update: { $set?: Record<string, unknown> },
