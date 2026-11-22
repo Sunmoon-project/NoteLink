@@ -346,15 +346,17 @@ export class BlobStorageService {
   /**
    * 이 컨테이너 안의 파일 하나를 prefix 아래 새 `<uuid>.<확장자>` 로 서버 간 복사한다(친구 노트 「내 노트로 복사」, #554).
    * 앱을 거치지 않고 Azure 가 복사한다(녹음 500MB 까지라 동기 복사 한도 256MB 를 넘을 수 있어 비동기 복사를 끝까지 기다린다).
-   * 컨테이너 밖 주소면 400, 원본이 없으면 400, 그 밖의 실패는 503. 새 주소(SAS 없음)를 돌려준다
+   * 컨테이너 밖 · sourcePrefix(원본 주인의 올린 파일 폴더) 밖 주소면 400, 원본이 없으면 400, 그 밖의 실패는 503. 새 주소(SAS 없음)를 돌려준다
    */
-  async copyUpload(sourceUrl: string, prefix: string): Promise<string> {
+  async copyUpload(sourceUrl: string, sourcePrefix: string, prefix: string): Promise<string> {
     const store = this.requireStore();
     const container = store.client.getContainerClient(store.config.container);
     const base = `${container.url}/`;
     const name = sourceUrl.startsWith(base) ? sourceUrl.slice(base.length) : '';
     const source = name ? container.getBlockBlobClient(name) : null;
-    if (!source || source.url !== sourceUrl) throw badFile('사용할 수 없는 파일 주소예요');
+    // 원본은 그 노트 주인의 올린 파일 폴더 안이어야 한다(다른 사람 · 다른 용도의 파일을 복사하지 않게)
+    if (!source || source.url !== sourceUrl || !name.startsWith(sourcePrefix))
+      throw badFile('사용할 수 없는 파일 주소예요');
     const dot = name.lastIndexOf('.');
     const ext = dot > name.lastIndexOf('/') ? name.slice(dot + 1).toLowerCase() : '';
     const target = container.getBlockBlobClient(
