@@ -204,6 +204,39 @@ describe('자정을 넘긴 세션', () => {
   });
 });
 
+describe('공부 항목 지우기 (HOME-002)', () => {
+  it('지우면 목록에서만 빠지고 쌓인 시간은 그대로, 지운 항목으로는 시작할 수 없고 다시 지워도 성공', async () => {
+    await signup('a@test.com');
+    const item = await api.study.addItem({ title: '수학', subjectName: '수학', goalMin: null });
+    const s = await api.study.startSession({ studyItemId: item._id, mode: 'personal' });
+    await api.study.endSession(s._id, { clientDurationSec: 0, endReason: 'manual' });
+    const before = (await api.study.today()).totalSec;
+
+    await api.study.removeItem(item._id);
+
+    const after = await api.study.today();
+    expect(after.items).toEqual([]);
+    expect(after.totalSec).toBe(before);
+    await expect(
+      api.study.startSession({ studyItemId: item._id, mode: 'personal' }),
+    ).rejects.toMatchObject({ code: ERROR_CODES.NOT_FOUND, status: 404 });
+    await expect(api.study.removeItem(item._id)).resolves.toBeUndefined();
+  });
+
+  it('측정 중(일시정지 포함)인 항목은 409 로 거절하고 남긴다', async () => {
+    await signup('a@test.com');
+    const item = await api.study.addItem({ title: '수학', subjectName: '수학', goalMin: null });
+    const s = await api.study.startSession({ studyItemId: item._id, mode: 'personal' });
+    await api.study.pauseSession(s._id);
+
+    await expect(api.study.removeItem(item._id)).rejects.toMatchObject({
+      code: ERROR_CODES.STUDY_ITEM_IN_SESSION,
+      status: 409,
+    });
+    expect((await api.study.today()).items.map((i) => i._id)).toEqual([item._id]);
+  });
+});
+
 it('서버 없이는 캘린더 공유 링크를 만들지 않는다', async () => {
   await signup('a@test.com');
   await expect(

@@ -628,6 +628,9 @@ const api: Api = {
       return ok(undefined);
     },
     startSession: async (p) => {
+      // 서버처럼 목록에 없는(지운) 항목으로는 시작하지 않는다(HOME-002)
+      if (!db().items.some((i) => i._id === p.studyItemId))
+        return fail(ERROR_CODES.NOT_FOUND, '존재하지 않는 공부 항목이에요', 404);
       await ok(undefined);
       const s: StudySession = {
         _id: uid('ss'),
