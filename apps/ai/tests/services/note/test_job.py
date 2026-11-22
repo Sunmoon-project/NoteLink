@@ -1,6 +1,9 @@
 import json
 import logging
+import threading
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -447,6 +450,49 @@ def test_page_size_that_is_not_a_number_skips_colors_without_download(
     assert fetch.urls == [URL2]
     assert result["warnings"] == [no_color(1, "size")]
     assert len(result["chunks"]) == 2
+
+
+class OverlapFetch(FakeFetch):
+    """동시에 색 찾기 중인 사진 수의 최대치를 잼."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lock, self.now, self.most = threading.Lock(), 0, 0
+
+    def __call__(self, url: str) -> bytes:
+        with self.lock:
+            self.now += 1
+            self.most = max(self.most, self.now)
+        time.sleep(0.05)
+        with self.lock:
+            self.now -= 1
+        return super().__call__(url)
+
+
+@pytest.mark.parametrize(("budget", "most"), [(W * H - 1, 1), (2 * W * H - 1, 1), (2 * W * H, 2)])
+def test_photos_taken_together_stay_within_the_pixel_budget(
+    monkeypatch: pytest.MonkeyPatch, budget: int, most: int
+) -> None:
+    # 노트 정리 두 개가 동시에 돌 때(AI_JOB_HEAVY_LANES=2) 픽셀 합이 넘으면 한 장씩 올림
+    monkeypatch.setattr(note_job, "IMAGE_BUDGET_PIXELS", budget)
+    fetch = OverlapFetch()
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(lambda _: run_direct(two_pages(), fetch=fetch), range(2)))
+    assert fetch.most == most
+    assert all(len(r["chunks"]) == 2 and not r["warnings"] for r in results)
+
+
+def test_diagram_call_runs_after_the_photo_is_let_go(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 도식 찾기(LLM)를 기다리는 동안 다른 노트 정리가 사진을 올릴 수 있게
+    held: list[int] = []
+
+    def find(llm: Any, model: str, jpeg: bytes) -> list[Any]:
+        held.append(note_job._PIXELS._used)
+        return []
+
+    monkeypatch.setattr(note_job, "find_diagrams", find)
+    run_direct(two_pages())
+    assert held == [0, 0]
 
 
 @pytest.mark.parametrize("missing", ["width", "height"])

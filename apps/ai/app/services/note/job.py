@@ -31,7 +31,9 @@ EmbedUnavailableError)는 그대로 올립니다. OCR 키 · 권한 오류(OcrSe
 import json
 import logging
 import math
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypedDict, TypeIs, get_args
 
@@ -78,6 +80,33 @@ NO_COLOR = "NO_COLOR"
 # 색 찾기용 사진의 최대 픽셀 수(폭 × 높이). 20MB 압축 파일도 풀면 훨씬 커질 수 있어 OCR 쪽
 # 크기로 먼저 거름(5천만 픽셀 BGR ≈ 150MB, 색 계산용 Lab float32 ≈ 600MB)
 IMAGE_MAX_PIXELS = 50_000_000
+# 색 찾기는 1MP당 약 40MB를 씀. 노트 정리가 동시에 돌아도(AI_JOB_HEAVY_LANES) 함께 색을 찾는
+# 사진의 픽셀 합이 이것을 넘지 않게 기다림
+IMAGE_BUDGET_PIXELS = IMAGE_MAX_PIXELS
+
+
+class _PixelBudget:
+    """프로세스 전체에서 동시에 메모리에 올린 사진 픽셀 합의 상한."""
+
+    def __init__(self) -> None:
+        self._used = 0
+        self._cond = threading.Condition()
+
+    @contextmanager
+    def hold(self, pixels: int) -> Iterator[None]:
+        pixels = min(pixels, IMAGE_BUDGET_PIXELS)
+        with self._cond:
+            self._cond.wait_for(lambda: self._used + pixels <= IMAGE_BUDGET_PIXELS)
+            self._used += pixels
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._used -= pixels
+                self._cond.notify_all()
+
+
+_PIXELS = _PixelBudget()
 # 도식 찾기에 보내는 사진의 긴 변(픽셀). 시험(1200×1600)에서 위치 · 글자를 잘 읽은 크기
 DIAGRAM_IMAGE_SIDE = 1600
 OCR_END = 50
@@ -272,15 +301,19 @@ def _read(
                 f"노트가 {NOTE_MAX_PAGES}쪽을 넘음({total}쪽 이상)", code=TOO_MANY_PAGES
             )
         page: NotePage = {"pageNo": start, "read": read}
-        image = _image(fetch, url, read)
-        if isinstance(image, str):
-            warnings.append({"code": "NO_COLOR", "pageNo": start, "reason": image})
-        elif image is not None:
-            page["image"] = image
-        lines = page_lines(page)
+        with _PIXELS.hold(_photo_pixels(read)):
+            image = _image(fetch, url, read)
+            if isinstance(image, str):
+                warnings.append({"code": "NO_COLOR", "pageNo": start, "reason": image})
+            elif image is not None:
+                page["image"] = image
+            lines = page_lines(page)
+            small = _jpeg(page["image"]) if "image" in page else None
+            del image  # 잠금을 풀기 전에 사진을 놓음. 도식 찾기(LLM)는 줄인 JPEG로 잠금 밖에서
+            page.pop("image", None)
         found: list[PageDiagram] = []
-        if "image" in page:
-            found = find_diagrams(llm, settings.note_split_model, _jpeg(page["image"]))
+        if small is not None:
+            found = find_diagrams(llm, settings.note_split_model, small)
             lines = drop_diagram_lines(lines, found)
         uploads.append(_Upload(start, span, lines, found))
         nxt = start + span
@@ -290,6 +323,17 @@ def _read(
         if saver is not None:
             saver.save(uploads[-1], warnings)
     return uploads, warnings
+
+
+def _photo_pixels(read: dict[str, Any]) -> int:
+    """색 찾기에 내려받을 사진의 픽셀 수. 내려받지 않는 쪽은 0."""
+    pages = read.get("pages") or []
+    if len(pages) != 1 or pages[0].get("unit") != "pixel":
+        return 0
+    size = _page_size(pages[0])
+    if size is None or size[0] * size[1] > IMAGE_MAX_PIXELS:
+        return 0
+    return size[0] * size[1]
 
 
 def _image(
