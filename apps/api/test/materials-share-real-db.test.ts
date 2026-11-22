@@ -263,17 +263,25 @@ describe.skipIf(!uri)('진짜 DB 노트 공유', () => {
       expect(await saved()).toEqual([]);
     });
 
-    it('친구에게 공유는 400 VALIDATION_FAILED 이고 아무것도 저장하지 않는다', async () => {
+    it('친구 대상은 친구 공유(FriendShareService)로 넘기고 방 공유는 남기지 않는다(#554)', async () => {
       const a = await note();
-      await expect(
-        sharing.share(owner.toHexString(), {
-          materialIds: [a],
-          target: { type: 'friend', id: friend.toHexString() },
-        }),
-      ).rejects.toMatchObject({
-        status: 400,
-        response: { code: 'VALIDATION_FAILED', message: '친구에게 공유는 아직 지원하지 않아요' },
+      const friendShare = vi.fn(async () => {});
+      const svc = new MaterialSharingService(
+        materials as never,
+        rooms as never,
+        items as never,
+        users as never,
+        conn.model(QuizSet.name, QuizSetSchema) as never,
+        conn.model(Flashcard.name, FlashcardSchema) as never,
+        { notify: async () => {} } as never,
+        undefined,
+        { share: friendShare } as never,
+      );
+      await svc.share(owner.toHexString(), {
+        materialIds: [a],
+        target: { type: 'friend', ids: [friend.toHexString()] },
       });
+      expect(friendShare).toHaveBeenCalledWith(owner.toHexString(), [a], [friend.toHexString()]);
       expect(await saved()).toEqual([]);
     });
 

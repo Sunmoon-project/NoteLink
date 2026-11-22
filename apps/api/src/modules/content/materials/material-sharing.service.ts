@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { ERROR_CODES, type RoomSharedItem as AppRoomSharedItem } from '@notelink/shared';
 import { isValidObjectId, Model, Types } from 'mongoose';
@@ -18,6 +23,7 @@ import { StudyRoom } from '../../studyroom/schemas/study-room.schema.js';
 import { StudyChatGateway } from '../../studyroom/study-chat.gateway.js';
 import { Material } from '../schemas/material.schema.js';
 import type { ShareMaterialsDto } from './dto/share-materials.dto.js';
+import { FriendShareService } from './friend-share.service.js';
 import type { ShareStudyItemDto } from './dto/share-study-item.dto.js';
 
 const DUPLICATE_KEY = 11000;
@@ -59,6 +65,8 @@ export class MaterialSharingService {
     private readonly notifications: NotificationService,
     // 공유한 노트를 방 채팅에 자료 카드로 올린다. 없으면(시험) 카드 없이 공유만 한다
     @Optional() private readonly roomChat?: StudyChatGateway,
+    // 친구에게 보내기(#554). 없으면(옛 시험) 친구 공유는 없는 것과 같다
+    @Optional() private readonly friendShares?: FriendShareService,
   ) {}
 
   /** 닫히지 않은 방에서 내가 현재 멤버(status: joined)인지. 방 id 형식이 틀려도 false */
@@ -89,13 +97,16 @@ export class MaterialSharingService {
     const sharedIn = await this.shared
       .find({ materialId: noteId, itemType: 'material', deletedAt: null }, { roomId: 1 })
       .lean<{ roomId: Types.ObjectId }[]>();
-    if (sharedIn.length === 0) return null;
-    const member = await this.rooms.exists({
-      _id: { $in: sharedIn.map((item) => item.roomId) },
-      closedAt: null,
-      members: { $elemMatch: { userId: me, status: 'joined' } },
-    });
-    if (!member) return null;
+    const member =
+      sharedIn.length > 0 &&
+      (await this.rooms.exists({
+        _id: { $in: sharedIn.map((item) => item.roomId) },
+        closedAt: null,
+        members: { $elemMatch: { userId: me, status: 'joined' } },
+      }));
+    // 방이 아니면 친구가 나에게 보낸 살아 있는 공유인지(#554)
+    if (!member && !(await this.friendShares?.isSharedWith(userId, noteId, note.ownerId)))
+      return null;
     // 주인이 탈퇴했거나(탈퇴 유예 포함) 계정이 없으면 공유도 없는 것과 같다(FR-03-08). 캘린더 공유와 같은 조건
     const ownerActive = await this.users.exists({
       _id: note.ownerId,
@@ -338,17 +349,21 @@ export class MaterialSharingService {
   }
 
   /**
-   * 내 노트를 방에 공유한다. 노트가 하나라도 내 것이 아니거나 지웠으면, 방이 없거나 내가 현재 멤버가 아니면 404 이고
+   * 내 노트를 방에 공유한다(친구 대상은 FriendShareService.share). 노트가 하나라도 내 것이 아니거나 지웠으면, 방이 없거나 내가 현재 멤버가 아니면 404 이고
    * 아무것도 저장하지 않는다(확인을 모두 마친 뒤에만 쓴다). 이미 공유된 노트는 건너뛴다.
    * 트랜잭션 없이 노트마다 upsert 라, 쓰는 도중 실패해도 같은 요청을 다시 보내면 빠진 것만 채워진다.
    * 동시에 같은 요청이 와도 부분 unique 인덱스(room_material_unique)가 하나만 남긴다
    */
   async share(userId: string, dto: ShareMaterialsDto): Promise<void> {
-    if (dto.target.type === 'friend')
-      throw new BadRequestException({
-        code: ERROR_CODES.VALIDATION,
-        message: '친구에게 공유는 아직 지원하지 않아요',
-      });
+    if (dto.target.type === 'friend') {
+      if (!this.friendShares)
+        throw new ServiceUnavailableException({
+          code: ERROR_CODES.VALIDATION,
+          message: '지금은 친구에게 보낼 수 없어요',
+        });
+      return this.friendShares.share(userId, dto.materialIds, dto.target.ids ?? []);
+    }
+    const roomTarget = dto.target.id ?? '';
     const me = new Types.ObjectId(userId);
     const ids = [...new Set(dto.materialIds.map((id) => id.toLowerCase()))].map(
       (id) => new Types.ObjectId(id),
@@ -357,8 +372,8 @@ export class MaterialSharingService {
       .find({ _id: { $in: ids }, ownerId: me, deletedAt: null }, { folderId: 1, title: 1 })
       .lean<{ _id: Types.ObjectId; folderId: Types.ObjectId; title: string }[]>();
     if (notes.length !== ids.length) throw notFound('노트');
-    if (!(await this.isCurrentMember(me, dto.target.id))) throw notFound('스터디룸');
-    const roomId = new Types.ObjectId(dto.target.id);
+    if (!(await this.isCurrentMember(me, roomTarget))) throw notFound('스터디룸');
+    const roomId = new Types.ObjectId(roomTarget);
     let added: number;
     try {
       const result = await this.shared.bulkWrite(

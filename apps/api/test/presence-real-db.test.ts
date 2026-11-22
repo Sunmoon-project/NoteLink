@@ -22,6 +22,10 @@ import { NotificationService } from '../src/modules/notification/notification.se
 import { ProgressService } from '../src/modules/progress/progress.service.js';
 import { FriendsController } from '../src/modules/social/friends/friends.controller.js';
 import { FriendsService } from '../src/modules/social/friends/friends.service.js';
+import {
+  FriendSharedItem,
+  FriendSharedItemSchema,
+} from '../src/modules/social/schemas/friend-shared-item.schema.js';
 import { Friendship, FriendshipSchema } from '../src/modules/social/schemas/friendship.schema.js';
 import { StudyRoomMembershipService } from '../src/modules/studyroom/study-room-membership.service.js';
 import { Device, DeviceSchema } from '../src/modules/users/schemas/device.schema.js';
@@ -55,6 +59,7 @@ describe.skipIf(!isLocal)('진짜 DB 접속 신호 → 친구 목록 상태', ()
           { name: Device.name, schema: DeviceSchema },
           { name: Friendship.name, schema: FriendshipSchema },
           { name: TimetableShare.name, schema: TimetableShareSchema },
+          { name: FriendSharedItem.name, schema: FriendSharedItemSchema },
         ]),
       ],
       controllers: [UsersController, FriendsController],
