@@ -85,6 +85,37 @@ export class Summary {
 
 export const SummarySchema = SchemaFactory.createForClass(Summary);
 
+// 내장 문서: Diagram (도식 구조, 공용 스키마 Diagram). relations 는 terms 안 위치(0부터) [from, to]
+@Schema({ _id: false })
+export class DiagramShape {
+  @Prop({
+    required: true,
+    type: String,
+    enum: ['sequence', 'contrast', 'hierarchy', 'cause', 'list'],
+  })
+  kind: string;
+
+  @Prop({ type: [String], default: [] })
+  terms: string[];
+
+  @Prop({ type: [[Number]], default: [] })
+  relations: [number, number][];
+}
+
+export const DiagramShapeSchema = SchemaFactory.createForClass(DiagramShape);
+
+// 내장 문서: NoteDiagram (공용 스키마 Material.diagrams). after 는 바로 앞 본문 줄 글
+@Schema({ _id: false })
+export class NoteDiagram {
+  @Prop({ type: String, default: null })
+  after: string | null;
+
+  @Prop({ type: DiagramShapeSchema, required: true })
+  diagram: DiagramShape;
+}
+
+export const NoteDiagramSchema = SchemaFactory.createForClass(NoteDiagram);
+
 // 내장 문서: Bookmark (녹음 북마크)
 @Schema({ _id: false })
 export class Bookmark {
@@ -135,6 +166,10 @@ export class Material {
 
   @Prop({ type: [String], default: [] })
   keywords: string[];
+
+  /** 필기 사진에서 찾은 도식(apps/ai services/note/diagrams.py). 노트 정리가 끝날 때마다 새로 채운다 */
+  @Prop({ type: [NoteDiagramSchema], default: [] })
+  diagrams: NoteDiagram[];
 
   /**
    * 퀴즈 처리기가 뽑은 개념 이름(apps/ai services/quiz/generate.py 결과 concepts). 다음 퀴즈 입력에 넣어

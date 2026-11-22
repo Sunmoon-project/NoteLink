@@ -1,4 +1,4 @@
-import type { Material, MaterialKind, MaterialSource } from '@notelink/shared';
+import type { Material, MaterialKind, MaterialSource, NoteDiagram } from '@notelink/shared';
 import type { Types } from 'mongoose';
 
 /** DB에서 읽은 노트 한 줄(lean). 서비스가 쓰는 필드만 적는다 */
@@ -21,6 +21,7 @@ export interface MaterialRow {
   };
   summary?: { sections: { heading: string; body: string }[]; points?: string[] } | null;
   keywords?: string[];
+  diagrams?: NoteDiagram[];
   concepts?: string[];
   bookmarks?: { atSec: number; label?: string }[];
   pages?: {
@@ -73,6 +74,9 @@ export function toAppMaterial(row: MaterialRow, pageUrl?: (blobUrl: string) => s
     })),
     createdAt: row.createdAt.toISOString(),
   };
+  if (row.diagrams && row.diagrams.length > 0) {
+    out.diagrams = row.diagrams.map((d) => ({ after: d.after ?? null, diagram: d.diagram }));
+  }
   if (pageUrl && row.pages && row.pages.length > 0) {
     out.pages = row.pages.map((p) => ({
       pageNo: p.pageNo,

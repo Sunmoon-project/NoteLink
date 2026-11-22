@@ -183,6 +183,19 @@ export const MaterialPage = z.object({
 
 export const Bookmark = z.object({ atSec: z.number(), label: z.string().optional() });
 
+// 녹음 정리가 슬라이드마다 만드는 도식 구조(apps/ai services/recording/models.py Diagram). 그리는 것은 앱.
+// relations 는 terms 안 위치(0부터) [from, to]. 받은 값은 diagramOf(diagram.ts)로 거른 뒤에 쓴다
+export const DiagramKind = z.enum(['sequence', 'contrast', 'hierarchy', 'cause', 'list']);
+export const Diagram = z.object({
+  kind: DiagramKind,
+  terms: z.array(z.string()),
+  relations: z.array(z.tuple([z.number(), z.number()])),
+});
+
+// 필기 사진에서 찾은 도식(apps/ai services/note/diagrams.py). 앱이 정리본 본문에서 after 와 같은 줄 뒤에 그린다
+// (after 가 null 이거나 그 줄을 못 찾으면 첫 소제목 앞 · 마지막 소제목 끝)
+export const NoteDiagram = z.object({ after: z.string().nullable(), diagram: Diagram });
+
 export const Material = z.object({
   _id: id,
   folderId: id,
@@ -205,16 +218,9 @@ export const Material = z.object({
   keywords: z.array(z.string()),
   bookmarks: z.array(Bookmark),
   pages: z.array(MaterialPage).optional(),
+  // 도식이 없는 노트 · 도식을 보내기 전 서버 · 기기 저장 모드에는 없다
+  diagrams: z.array(NoteDiagram).optional(),
   createdAt: date,
-});
-
-// 녹음 정리가 슬라이드마다 만드는 도식 구조(apps/ai services/recording/models.py Diagram). 그리는 것은 앱.
-// relations 는 terms 안 위치(0부터) [from, to]. 받은 값은 diagramOf(diagram.ts)로 거른 뒤에 쓴다
-export const DiagramKind = z.enum(['sequence', 'contrast', 'hierarchy', 'cause', 'list']);
-export const Diagram = z.object({
-  kind: DiagramKind,
-  terms: z.array(z.string()),
-  relations: z.array(z.tuple([z.number(), z.number()])),
 });
 
 export const Slide = z.object({
@@ -711,6 +717,7 @@ export type Material = z.infer<typeof Material>;
 export type Recording = z.infer<typeof Recording>;
 export type Slide = z.infer<typeof Slide>;
 export type Diagram = z.infer<typeof Diagram>;
+export type NoteDiagram = z.infer<typeof NoteDiagram>;
 export type DiagramKind = z.infer<typeof DiagramKind>;
 export type Question = z.infer<typeof Question>;
 export type QuestionDifficulty = z.infer<typeof QuestionDifficulty>;
