@@ -138,6 +138,12 @@ export class QuizSet {
   @Prop({ type: Date })
   cancelRequestedAt?: Date;
 
+  // 앱의 취소가 작업을 멈춘 시각(Codex #643 6차). 멈춘 직후 이 세트에 적어, 세트를 지우지 못한 채 작업이 끝나도 「이 세트의
+  // 취소가 멈춤」으로 바로 지운다. 미리 만들기의 이어받기 풀림(ai_jobs.awaited=false)은 작업 하나에 하나라 어느 세트의
+  // 취소인지 몰라 판단에 쓰지 않는다. 앱에는 보내지 않는다. 이 필드가 없는 기존 문서는 멈추지 않은 것으로 본다(변환 없음)
+  @Prop({ type: Date })
+  cancelStoppedAt?: Date;
+
   @Prop({ type: Date, default: null })
   deletedAt?: Date | null;
 }
