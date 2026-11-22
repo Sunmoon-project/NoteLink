@@ -104,7 +104,8 @@ beforeEach(() => {
 });
 
 const hook = async () => {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // 앱처럼 기본 캐시 30초(src/lib/query.ts)
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   );
@@ -138,6 +139,16 @@ describe('1:1 채팅 공유 카드 열기', () => {
     const open = await hook();
     await act(() => open.current('s1'));
     expect(router.push).not.toHaveBeenCalled();
+    expect(useToast.getState().msg).toBe('공유가 끝났어요');
+  });
+
+  it('한 번 연 뒤 끝난 공유는 캐시가 남아 있어도 다시 물어 「공유가 끝났어요」', async () => {
+    const open = await hook();
+    await act(() => open.current('s1'));
+    expect(router.push).toHaveBeenCalledTimes(1);
+    mockApi.content.friendShare.mockResolvedValue({ ...share, active: false });
+    await act(() => open.current('s1'));
+    expect(router.push).toHaveBeenCalledTimes(1);
     expect(useToast.getState().msg).toBe('공유가 끝났어요');
   });
 

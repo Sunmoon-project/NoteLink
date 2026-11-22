@@ -36,6 +36,8 @@ export function useOpenFriendShare() {
       const share = await qc.fetchQuery({
         queryKey: ['friend-share', shareId],
         queryFn: () => api.content.friendShare(shareId),
+        // 앱 기본 30초 캐시를 쓰면 방금 끝난 공유도 열린다. 카드를 누를 때마다 서버에 묻는다
+        staleTime: 0,
       });
       if (!share.active && !share.mine) return toast(ENDED);
       openFeature({
@@ -57,6 +59,7 @@ export function useFriendShare() {
     queryKey: ['friend-share', share],
     queryFn: () => api.content.friendShare(share!),
     enabled: !!share,
+    staleTime: 0,
   });
   // 불러오는 동안에도 받은 사람으로 본다(주인 버튼이 잠깐 보였다 사라지지 않게)
   return {
