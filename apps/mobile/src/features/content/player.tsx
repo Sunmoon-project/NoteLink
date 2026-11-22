@@ -157,10 +157,13 @@ export function Player({
   materialId,
   initialView = 'summary',
   openBookmarks = false,
+  readOnly = false,
 }: {
   materialId: string;
   initialView?: 'summary' | 'text';
   openBookmarks?: boolean;
+  /** 친구에게 받은 녹음(#554): 북마크를 더할 수 없다(주인의 노트라 서버가 막는다) */
+  readOnly?: boolean;
 }) {
   const qc = useQueryClient();
   const rec = useQuery({
@@ -419,13 +422,15 @@ export function Player({
           </Pressable>
         </View>
         <View className="mt-2 flex-row items-center justify-center gap-3 pb-1">
-          <Pressable
-            accessibilityLabel="북마크 추가"
-            onPress={addMark}
-            className="h-12 w-12 items-center justify-center rounded-full bg-white"
-          >
-            <Bookmark size={ICON.md} color={C.danger} />
-          </Pressable>
+          {!readOnly && (
+            <Pressable
+              accessibilityLabel="북마크 추가"
+              onPress={addMark}
+              className="h-12 w-12 items-center justify-center rounded-full bg-white"
+            >
+              <Bookmark size={ICON.md} color={C.danger} />
+            </Pressable>
+          )}
           <Pressable
             accessibilityLabel="5초 뒤로"
             onPress={() => p.seek(p.pos - 5)}

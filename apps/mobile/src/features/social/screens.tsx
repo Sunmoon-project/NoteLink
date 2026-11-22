@@ -43,6 +43,7 @@ import { useAuth } from '@/stores/auth';
 import { C, ICON, MOTION } from '@/theme';
 import { StatusText } from './drawer';
 import { UploadError } from '@/lib/upload';
+import { useOpenFriendShare } from '@/features/content/friend-share';
 import {
   AttachPicker,
   ChatBubble,
@@ -450,6 +451,8 @@ export function ChatScreen() {
     receiveMessage(pendingMessage(chatRoomId, myId, clientId, entry));
     void deliverAttachment(clientId);
   };
+  // 친구가 보낸 노트 카드(#554): 읽기 전용으로 열거나 끝난 공유면 「공유가 끝났어요」
+  const openFriendShare = useOpenFriendShare();
   /** 첨부 열기: 읽기 주소가 만료됐으면(1시간) 기록을 다시 읽어 새 주소로 연다 */
   const openAttachment = (m: Message) =>
     openChatAttachment(m, async () => {
@@ -633,6 +636,16 @@ export function ChatScreen() {
                       스터디룸 참여하기
                     </Btn>
                   </View>
+                </View>
+              );
+            if (m.type === 'shared_item' && m.sharedItemId)
+              return (
+                <View className={cx(mine && 'items-end')}>
+                  <ChatBubble
+                    m={m}
+                    onOpen={(x) => void openFriendShare(x.sharedItemId!)}
+                    onStale={refreshStale}
+                  />
                 </View>
               );
             if (m.type === 'image' || m.type === 'file')

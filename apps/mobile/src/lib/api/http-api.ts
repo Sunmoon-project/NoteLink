@@ -183,6 +183,10 @@ export const httpApi: Api = {
     downloadUrl: (id) => http.get(P.materialDownloadUrl(id)),
     regenerate: (id) => http.post(P.materialRegenerate(id)),
     share: (p) => http.post(P.materialShare, p),
+    friendShare: (id) => http.get(P.friendShare(id)),
+    revokeFriendShare: (id) => http.del(P.friendShare(id)),
+    copyFriendShare: (id, folderId) =>
+      http.post(P.friendShareCopy(id), folderId ? { folderId } : {}),
     checkImages: (files) => http.post(P.imageCheck, { files }),
     ask: (id, body) => http.post(P.materialAsk(id), body),
   },

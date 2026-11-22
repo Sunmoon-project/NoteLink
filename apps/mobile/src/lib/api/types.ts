@@ -11,6 +11,7 @@ import type {
   Folder,
   Friend,
   FriendRequest,
+  FriendShare,
   Material,
   MaterialKind,
   MaterialSource,
@@ -242,10 +243,17 @@ export interface Api {
     downloadUrl(materialId: string): Promise<{ url: string; fileName: string }>;
     /** 정리 결과 다시 만들기. 새 작업이 성공할 때까지 노트는 지금 결과 그대로 */
     regenerate(materialId: string): Promise<{ material: Material; job: AiJob }>;
+    /** 스터디룸 하나(id) 또는 친구 여러 명(ids, 50명까지)에게 노트를 보낸다(#554) */
     share(p: {
       materialIds: string[];
-      target: { type: 'room' | 'friend'; id: string };
+      target: { type: 'room'; id: string } | { type: 'friend'; ids: string[] };
     }): Promise<void>;
+    /** 친구에게 보낸 노트(1:1 채팅 공유 카드). 끝난 공유는 active: false, 친구를 끊었으면 404 */
+    friendShare(id: string): Promise<FriendShare>;
+    /** 보낸 사람이 공유를 끝낸다 */
+    revokeFriendShare(id: string): Promise<void>;
+    /** 받은 노트를 내 노트로 복사(정리 끝난 노트만). 폴더를 안 주면 최근에 쓴 내 폴더 */
+    copyFriendShare(id: string, folderId?: string): Promise<{ _id: string; folderId: string }>;
     checkImages(
       files: { name: string; sizeBytes: number; uri: string }[],
     ): Promise<{ name: string; verdict: ImageVerdict }[]>;

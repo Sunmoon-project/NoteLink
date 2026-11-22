@@ -1110,19 +1110,19 @@ const api: Api = {
     share: (p) => {
       const d = db();
       if (p.target.type !== 'room') return needServer('친구에게 자료 공유');
+      const roomId = p.target.id;
       for (const materialId of p.materialIds) {
         const m = d.materials.find((x) => x._id === materialId);
         if (!m) continue;
         // 서버처럼 이미 공유된 노트는 건너뛰고, 새로 공유한 노트는 방 채팅에 자료 카드를 남긴다
         if (
           d.roomShared.some(
-            (x) =>
-              x.roomId === p.target.id && x.itemType === 'material' && x.materialId === materialId,
+            (x) => x.roomId === roomId && x.itemType === 'material' && x.materialId === materialId,
           )
         )
           continue;
         const sharedId = uid('rs');
-        const chatRoomId = `room-chat-${p.target.id}`;
+        const chatRoomId = `room-chat-${roomId}`;
         d.messages[chatRoomId] = [
           ...(d.messages[chatRoomId] ?? []),
           {
@@ -1139,7 +1139,7 @@ const api: Api = {
         ];
         d.roomShared.push({
           _id: sharedId,
-          roomId: p.target.id,
+          roomId,
           sharedBy: d.user._id,
           sharedByNickname: me(d).nickname,
           itemType: 'material',
@@ -1154,6 +1154,10 @@ const api: Api = {
       }
       return ok(undefined);
     },
+    // 친구에게 보내기는 서버에만 있다(기기 저장 모드는 친구도 없다)
+    friendShare: () => needServer('친구에게 받은 자료'),
+    revokeFriendShare: () => needServer('친구에게 보낸 자료'),
+    copyFriendShare: () => needServer('친구에게 받은 자료'),
     // 필기 여부 · 흐림 판별은 AI 서버가 한다. 기기에서는 형식 · 용량만 확인하고 통과시킨다
     checkImages: (files) => ok(files.map((f) => ({ name: f.name, verdict: 'ok' as const }))),
     // 서버 AI 대신 노트에서 질문과 가장 많이 겹치는 부분을 골라 바로 답한다(완료된 작업으로)
