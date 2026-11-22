@@ -1,6 +1,7 @@
 import { Image } from 'react-native';
 import { File } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
+import type { Box } from './frame-crop';
 import type { LocalFile } from './upload';
 
 export async function editPhoto(
@@ -25,6 +26,20 @@ export async function editPhoto(
   return {
     uri: result.uri,
     name: file.name.replace(/\.[^.]+$/, '') + '-edited.jpg',
+    mimeType: 'image/jpeg',
+    size: new File(result.uri).size,
+  };
+}
+
+/** 사진에서 주어진 픽셀 영역만 잘라 JPEG로 저장한다 (카메라 틀 밖을 버릴 때) */
+export async function cropPhoto(file: LocalFile, box: Box): Promise<LocalFile> {
+  const context = ImageManipulator.manipulate(file.uri);
+  context.crop({ originX: box.x, originY: box.y, width: box.width, height: box.height });
+  const rendered = await context.renderAsync();
+  const result = await rendered.saveAsync({ format: SaveFormat.JPEG, compress: 0.9 });
+  return {
+    uri: result.uri,
+    name: file.name,
     mimeType: 'image/jpeg',
     size: new File(result.uri).size,
   };
