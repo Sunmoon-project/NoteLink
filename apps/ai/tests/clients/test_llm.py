@@ -106,6 +106,19 @@ def test_call_sends_headers_schema_and_returns_parsed_json() -> None:
     assert "chat_template_kwargs" not in body
 
 
+def test_an_image_goes_before_the_text_as_a_data_url() -> None:
+    server = Server(reply('{"answer": "A"}'))
+    server.client().call("gemma-4-26b", "sys", "user", SCHEMA, "Check", image=b"\xff\xd8jpg")
+    user = json.loads(server.requests[0].content)["messages"][1]
+    assert user == {
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9hqcGc="}},
+            {"type": "text", "text": "user"},
+        ],
+    }
+
+
 def test_qwen_calls_turn_thinking_off() -> None:
     server = Server(reply("{}"))
     server.client().call("qwen-27b", "sys", "user", SCHEMA, "Check")

@@ -93,6 +93,7 @@ class WindowLlm:
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
         self.models.append(model)
         if name == FILL:
@@ -943,6 +944,7 @@ class PieceLlm(WindowLlm):
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
         ids = [int(m) for m in re.findall(r"^\d+ \[\d+초\]: s(\d+)", user, re.MULTILINE)]
         queue = self.errors.get((ids[0], len(ids))) if ids else None
@@ -1244,6 +1246,7 @@ class SlowLlm(WindowLlm):
         *,
         max_tokens: int = 1500,
         temperature: float = 0.0,
+        image: bytes | None = None,
     ) -> JsonObject:
         with self.lock:
             self.now += 1

@@ -30,6 +30,7 @@ from app.clients.llm import (
     Metered,
     PacedLlm,
     Spend,
+    Stopping,
     charge,
     claude_cost,
     fallback_school_llm,
@@ -278,6 +279,15 @@ def test_at_the_limit_calls_go_to_the_school_llm_with_its_models() -> None:
     b.call("claude-haiku-5-5", "s", "u", SCHEMA, "X")
     b.call("gemma-4-26b", "s", "u", SCHEMA, "X")  # 모르는 이름은 그대로
     assert [c.model for c in school.calls] == ["gemma-4-26b", "qwen-27b", "gemma-4-26b"]
+
+
+def test_an_image_reaches_claude_and_the_school_llm_through_every_wrapper() -> None:
+    claude, school = FakeLlm(answers={"X": [{}]}), FakeLlm(answers={"X": [{}]})
+    for spent, llm in ((10.0, claude), (80.0, school)):
+        b = budgeted(spent, claude, school)
+        wrapped = Stopping(Metered(b, lambda usd: None), threading.Event())
+        wrapped.call("claude-sonnet-5-5", "s", "u", SCHEMA, "X", image=b"jpg")
+        assert llm.calls[-1].image == b"jpg"
 
 
 def test_crossing_the_limit_switches_the_next_call() -> None:
