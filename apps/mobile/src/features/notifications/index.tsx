@@ -37,9 +37,16 @@ import { C, ICON } from '@/theme';
 export const UNREAD_KEY = ['notifications', 'unread'] as const;
 const LIST_KEY = ['notifications', 'list'] as const;
 
-/** 읽지 않은 알림 수(홈 종 아이콘) */
+/** 서버는 AI 작업 알림 등을 알림함에 1분 주기로 쌓는다(ai-job-notices NOTICE_SCAN_MS). 푸시를 못 받는 기기에서도 늦지 않게 */
+export const UNREAD_REFETCH_MS = 60_000;
+
+/** 읽지 않은 알림 수(홈 종 아이콘). 보고 있는 동안 주기적으로 다시 읽는다(TestQA PROF-007) */
 export function useUnreadCount() {
-  return useQuery({ queryKey: UNREAD_KEY, queryFn: () => api.notifications.unreadCount() });
+  return useQuery({
+    queryKey: UNREAD_KEY,
+    queryFn: () => api.notifications.unreadCount(),
+    refetchInterval: UNREAD_REFETCH_MS,
+  });
 }
 
 /** 읽음 처리가 끝난 뒤에(실패해도) 알림함 · 읽지 않은 수를 다시 읽는다 */

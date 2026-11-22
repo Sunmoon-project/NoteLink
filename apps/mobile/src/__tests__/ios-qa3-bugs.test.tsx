@@ -4,6 +4,9 @@ import { profileLine, SettingsScreen } from '../features/profile/settings';
 import { PointsScreen, ShopScreen } from '../features/reward/shop';
 import { api } from '../lib/api';
 import { renderScreen } from '../test-utils';
+import { renderHook } from '@testing-library/react-native';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { UNREAD_REFETCH_MS, useUnreadCount } from '../features/notifications';
 
 jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
@@ -30,6 +33,22 @@ describe('TestQA 3차 버그 묶음', () => {
     expect(timeAgo(ago(59 * 60_000))).toBe('59분 전');
     expect(timeAgo(ago(2 * 3600_000))).toBe('2시간 전');
     expect(timeAgo(ago(3 * 86400_000))).toBe('3일 전');
+  });
+
+  it('PROF-007: 종 숫자는 보고 있는 동안 주기적으로 다시 읽는다(푸시가 없어도)', async () => {
+    jest.useFakeTimers();
+    const count = jest.spyOn(api.notifications, 'unreadCount').mockResolvedValue(0);
+    const qc = new QueryClient();
+    const { unmount } = await renderHook(() => useUnreadCount(), {
+      wrapper: ({ children }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>,
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(count).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(UNREAD_REFETCH_MS);
+    expect(count).toHaveBeenCalledTimes(2);
+    await unmount();
+    count.mockRestore();
+    jest.useRealTimers();
   });
 
   it('PROF-004: 학교 · 학년이 비면 이메일만, 있으면 앞에 붙인다', () => {

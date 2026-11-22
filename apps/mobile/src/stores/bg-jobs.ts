@@ -78,8 +78,6 @@ async function checkOnce() {
     });
     if (j.kind === 'material') void queryClient.invalidateQueries({ queryKey: ['folders'] });
     if (status === 'canceled') continue;
-    // 서버가 같은 알림을 알림함에도 쌓는다: 푸시를 못 받는 기기에서도 종 숫자가 바로 바뀌게
-    void queryClient.invalidateQueries({ queryKey: ['notifications'] });
     const text = doneText(j, status === 'succeeded');
     if (AppState.currentState === 'active') toast(text);
     // 서버 푸시를 받는 기기면 서버가 같은 알림을 보낸다(#560)
