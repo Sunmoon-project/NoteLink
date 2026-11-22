@@ -83,14 +83,14 @@ def test_first_signal_asks_to_stop_and_the_next_one_ends_at_once(first: signal.S
 T0 = datetime(2026, 11, 18, 9, 0, tzinfo=UTC)
 
 
-def lanes_on(col: Any, user_lanes: int) -> tuple[list[Lane], list[str]]:
+def lanes_on(col: Any, user_lanes: int, heavy_lanes: int = 1) -> tuple[list[Lane], list[str]]:
     workers: list[str] = []
 
     def store(suffix: str) -> JobStore:
         workers.append("w1" + suffix)
         return JobStore(col, workers[-1], lock_sec=60, max_attempts=3, retry_delay_sec=30)
 
-    return entry.make_lanes(store, user_lanes), workers
+    return entry.make_lanes(store, user_lanes, heavy_lanes), workers
 
 
 def test_one_user_lane_is_the_same_as_before() -> None:
@@ -153,6 +153,71 @@ def test_user_lanes_out_of_range_are_refused(monkeypatch: pytest.MonkeyPatch, va
     monkeypatch.setenv("AI_JOB_USER_LANES", value)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("value", ["0", "3"])
+def test_heavy_lanes_out_of_range_are_refused(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("AI_JOB_HEAVY_LANES", value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_heavy_lanes_default_to_one() -> None:
+    assert Settings(_env_file=None).ai_job_heavy_lanes == 1  # type: ignore[call-arg]
+
+
+def test_two_heavy_lanes_take_heavy_jobs_first_and_the_rest_stay_light() -> None:
+    lanes, _ = lanes_on(mongomock.MongoClient(tz_aware=True).db.ai_jobs, 4, 2)
+    assert [lane.name for lane in lanes] == ["background", "user", "user-2", "user-3", "user-4"]
+    for lane in lanes[1:3]:
+        assert lane.handlers.keys() == HANDLERS.keys() and lane.first == HEAVY
+    for lane in lanes[3:]:
+        assert lane.handlers.keys() == HANDLERS.keys() - HEAVY and not lane.first
+
+
+def test_heavy_lanes_never_exceed_user_lanes() -> None:
+    # 모든 반복이 무거운 종류를 받으면 먼저 가져가지 않음: 가벼운 작업이 그 뒤에서 기다리지 않게
+    lanes, _ = lanes_on(mongomock.MongoClient(tz_aware=True).db.ai_jobs, 1, 2)
+    assert [lane.name for lane in lanes] == ["background", "user"]
+    assert lanes[1].handlers is HANDLERS and not lanes[1].first
+
+
+def test_two_heavy_lanes_run_two_note_jobs_at_once() -> None:
+    col: Any = mongomock.MongoClient(tz_aware=True).db.ai_jobs
+    for i, job_id in enumerate(["h1", "h2", "q1"]):
+        col.insert_one(
+            {
+                "_id": job_id,
+                "type": "quiz_generate" if job_id == "q1" else "handwriting_summary",
+                "status": "queued",
+                "input": {},
+                "progress": 0,
+                "attempts": 0,
+                "createdAt": T0 + timedelta(seconds=i),
+            }
+        )
+    _, first, second, light = lanes_on(col, 3, 2)[0]
+    done: list[tuple[str, str]] = []
+
+    def run(lane: Lane) -> None:
+        def fake(kind: str) -> Handler:
+            def handle(inp: JsonObject, report: JobReport) -> JsonObject:
+                done.append((lane.name, kind))
+                return {}
+
+            return handle
+
+        handlers = {t: fake(t) for t in lane.handlers}
+        assert run_once(lane.store, handlers, awaited_only=lane.awaited_only, first=lane.first)
+
+    run(first)
+    run(second)
+    run(light)
+    assert done == [
+        ("user", "handwriting_summary"),
+        ("user-2", "handwriting_summary"),
+        ("user-3", "quiz_generate"),
+    ]
 
 
 def test_the_background_lane_takes_a_pregen_before_older_card_jobs() -> None:
