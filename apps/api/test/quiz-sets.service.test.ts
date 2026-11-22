@@ -2745,9 +2745,11 @@ describe('QuizSetsService 취소 요청에 세트 번호(quizSetId)를 실으면
     const done = (t: ReturnType<typeof setup>, jobId: string) =>
       t.finish(jobId, { questions: fullSet(), title: 't', concepts: ['세포막'] });
 
-    it('작업이 끝난 뒤 B에 온 늦은 취소는 B를 지우지 않고 ready', async () => {
+    it('작업이 끝난 뒤(되살리기도 못 함) B에 온 늦은 취소는 B를 지우지 않고 ready', async () => {
       const { t, p, b } = await reTaken();
       done(t, p._id);
+      await t.aiJobs.awaitAgain(ME.toHexString(), p._id); // 끝난 작업이라 되살리지 못함(Codex 7차 권장 순서)
+      expect(t.job(p._id)['awaited']).toBe(false);
 
       await cancel(t, p._id, b._id);
 
@@ -2776,6 +2778,64 @@ describe('QuizSetsService 취소 요청에 세트 번호(quizSetId)를 실으면
         response: { code: 'QUIZ_CANCEL_PENDING' },
       });
       expect(t.set(b._id)['deletedAt']).toBeNull();
+    });
+
+    it('겹친 취소: 앞 요청이 멈추기 전 다른 요청이 멈추고 지우다 실패한 뒤 작업이 끝나도, 앞 요청이 표시를 거둬 세트를 되살리지 않는다(Codex 7차)', async () => {
+      const t = setup();
+      const materialId = await t.addNote();
+      const p = await pregen(t, materialId);
+      const { quizSet } = await t.service.create(ME.toHexString(), materialId);
+      const update = t.jobs.model.findOneAndUpdate.bind(t.jobs.model);
+      // 앞 요청이 표시를 적고 멈추기(stop) 직전에 기다리는 동안: 다른 요청이 멈추고 지우다 실패 → 작업이 끝남
+      const spy = vi.spyOn(t.jobs.model, 'findOneAndUpdate').mockImplementation(((
+        ...args: Parameters<typeof update>
+      ) => {
+        if ((args[1] as { $set?: { awaited?: boolean } }).$set?.awaited !== false)
+          return update(...args);
+        spy.mockRestore();
+        return {
+          lean: async () => {
+            failDropOnce(t);
+            await expect(cancel(t, p._id, quizSet._id)).rejects.toThrow('DB 쓰기 실패');
+            done(t, p._id);
+            return update(...args).lean();
+          },
+        };
+      }) as never);
+
+      await cancel(t, p._id, quizSet._id); // 앞 요청: 멈추지 못함(작업이 끝남)
+
+      expect(t.set(quizSet._id)['cancelStoppedAt']).toBeInstanceOf(Date);
+      expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
+      expect(await t.service.list(ME.toHexString())).toEqual([]);
+      await expect(t.service.findMine(ME.toHexString(), quizSet._id)).rejects.toMatchObject(
+        notFound,
+      );
+    });
+
+    it('늦은 취소가 표시를 거두기 직전 다른 요청이 멈춤 표시를 적어도, 취소 표시를 거두지 않아 조회가 지운다(Codex 7차)', async () => {
+      const t = setup();
+      const materialId = await t.addNote();
+      const p = await pregen(t, materialId);
+      const { quizSet } = await t.service.create(ME.toHexString(), materialId);
+      done(t, p._id);
+      t.set(quizSet._id)['cancelRequestedAt'] = new Date(); // 다른 요청이 적은 표시(처리 중)
+      const updateMany = t.sets.model.updateMany.bind(t.sets.model);
+      const spy = vi.spyOn(t.sets.model, 'updateMany').mockImplementation((async (
+        ...args: Parameters<typeof updateMany>
+      ) => {
+        if ((args[1] as { $unset?: Record<string, unknown> }).$unset) {
+          spy.mockRestore();
+          t.set(quizSet._id)['cancelStoppedAt'] = new Date(); // 그 요청이 멈췄다고 적음(지우기 전)
+        }
+        return updateMany(...args);
+      }) as never);
+
+      await cancel(t, p._id, quizSet._id); // 이 요청은 늦은 취소
+
+      expect(t.set(quizSet._id)['cancelRequestedAt']).toBeInstanceOf(Date);
+      expect(await t.service.list(ME.toHexString())).toEqual([]);
+      expect(t.set(quizSet._id)['deletedAt']).toBeInstanceOf(Date);
     });
 
     it('취소가 미리 만들기를 멈추면 그 세트에 멈춤 표시(cancelStoppedAt)를 적어, 지우다 실패하고 작업이 끝나도 조회가 바로 지운다', async () => {

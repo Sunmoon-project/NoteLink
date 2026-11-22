@@ -453,9 +453,8 @@ export class QuizSetsService implements OnModuleInit {
   }): Promise<void> {
     const ownerId = objectId(ctx.userId, '퀴즈');
     const jobId = objectId(ctx.jobId, '퀴즈');
-    const waiting = await this.waitingSets(ownerId, jobId, ctx.quizSetId);
-    if (waiting.length === 0 && ctx.quizSetId !== undefined) return;
-    const ids = waiting.map((w) => w._id);
+    const ids = await this.waitingSets(ownerId, jobId, ctx.quizSetId);
+    if (ids.length === 0 && ctx.quizSetId !== undefined) return;
     // 이 요청이 적는 표시 시각. 이미 표시가 있으면 더 이른(처음) 시각을 남긴다($min): 다시 취소해도 30초 유예가 다시
     // 시작되지 않고(#644), 늦은 취소는 이 시각 그대로인 표시만 거둔다(다른 요청이 적은 표시는 건드리지 않음)
     const mark = new Date();
@@ -474,20 +473,28 @@ export class QuizSetsService implements OnModuleInit {
       // 앞 취소의 표시가 30초 넘게 남은 세트(앞 취소가 멈춘 뒤 지우다 실패했거나 요청이 죽음 — 늦은 취소는 표시를 거두므로,
       // Codex 2차 · cancelSettled). 방금 적힌 앞 표시는 그 요청이 아직 늦은 취소인지 가리는 중일 수 있어 그 요청에 맡긴다
       // (#644: 두 번 누른 늦은 취소가 세트를 지우지 않게. 앞 취소가 지우다 실패한 것이면 30초 뒤 조회가 지운다).
-      // 그 밖은 늦은 취소라 세트를 그대로 두고 이 요청이 적은 표시만 거둔다(code-review)
+      // 그 밖은 늦은 취소라 세트를 그대로 두고 이 요청이 적은 표시만 거둔다(code-review).
+      // 판단은 고를 때 읽은 값이 아니라 지금 세트로 한다: 멈추기를 기다리는 사이 다른 요청이 멈추고 표시를 적었을 수 있다
+      // (Codex 7차). 표시를 거둘 때도 멈춤 표시가 없는 세트만 거둬, 그사이 다른 요청이 멈춘 세트를 되살리지 않는다
       const job = await this.jobs.findMine(ctx.userId, ctx.jobId);
-      const drop = waiting
+      const now = await this.sets
+        .find({ _id: { $in: ids }, ownerId }, { cancelRequestedAt: 1, cancelStoppedAt: 1 })
+        .lean<Pick<QuizSetRow, '_id' | 'cancelRequestedAt' | 'cancelStoppedAt'>[]>();
+      const drop = now
         .filter(
-          (w) =>
-            canceledFirst(job, w.stoppedAt) ||
-            (w.markedAt &&
-              cancelSettled(job, { cancelRequestedAt: w.markedAt, cancelStoppedAt: w.stoppedAt })),
+          (r) =>
+            canceledFirst(job, r.cancelStoppedAt) ||
+            (r.cancelRequestedAt &&
+              cancelSettled(job, {
+                cancelRequestedAt: r.cancelRequestedAt,
+                cancelStoppedAt: r.cancelStoppedAt,
+              })),
         )
-        .map((w) => w._id);
-      const keep = ids.filter((id) => !drop.includes(id));
+        .map((r) => r._id);
+      const keep = ids.filter((id) => !drop.some((d) => d.equals(id)));
       if (keep.length > 0) {
         await this.sets.updateMany(
-          { _id: { $in: keep }, ownerId, cancelRequestedAt: mark },
+          { _id: { $in: keep }, ownerId, cancelRequestedAt: mark, cancelStoppedAt: null },
           { $unset: { cancelRequestedAt: '' } },
         );
       }
@@ -495,11 +502,13 @@ export class QuizSetsService implements OnModuleInit {
       return;
     }
     // 이 취소가 작업을 멈췄다고 고른 세트에 적는다(Codex 6차): 지우다 실패한 채 작업이 끝나도 그 세트의 취소가 멈춘 것으로
-    // 바로 지운다(canceledFirst). 미리 만들기의 이어받기 풀림은 작업 하나에 하나라 세트를 가리지 못한다
+    // 바로 지운다(canceledFirst). 미리 만들기의 이어받기 풀림은 작업 하나에 하나라 세트를 가리지 못한다.
+    // 취소 표시도 같이 다시 적는다($min): 그사이 겹친 늦은 취소가 같은 시각의 표시를 거뒀어도 「멈춤 표시가 있으면 취소
+    // 표시도 있다」가 지켜져, 표시로 취소한 세트를 가리는 모든 경로(sync · settle · createOnce)가 이 세트를 놓치지 않는다(Codex 7차)
     if (ids.length > 0) {
       await this.sets.updateMany(
         { _id: { $in: ids }, ownerId, status: { $ne: 'ready' }, deletedAt: null },
-        { $min: { cancelStoppedAt: new Date() } },
+        { $min: { cancelStoppedAt: new Date(), cancelRequestedAt: mark } },
       );
     }
     await this.dropSets(ctx.userId, ids);
@@ -529,34 +538,18 @@ export class QuizSetsService implements OnModuleInit {
     ownerId: Types.ObjectId,
     jobId: Types.ObjectId,
     quizSetId: string | undefined,
-  ): Promise<{ _id: Types.ObjectId; markedAt?: Date; stoppedAt?: Date }[]> {
-    const pick = (r: Pick<QuizSetRow, '_id' | 'cancelRequestedAt' | 'cancelStoppedAt'>) => ({
-      _id: r._id,
-      ...(r.cancelRequestedAt ? { markedAt: r.cancelRequestedAt } : {}),
-      ...(r.cancelStoppedAt ? { stoppedAt: r.cancelStoppedAt } : {}),
-    });
+  ): Promise<Types.ObjectId[]> {
     if (quizSetId === undefined) {
       const rows = await this.sets
-        .find(
-          { ownerId, jobId, status: { $ne: 'ready' }, deletedAt: null },
-          { _id: 1, cancelRequestedAt: 1, cancelStoppedAt: 1 },
-        )
-        .lean<Pick<QuizSetRow, '_id' | 'cancelRequestedAt' | 'cancelStoppedAt'>[]>();
-      return rows.map(pick);
+        .find({ ownerId, jobId, status: { $ne: 'ready' }, deletedAt: null }, { _id: 1 })
+        .lean<Pick<QuizSetRow, '_id'>[]>();
+      return rows.map((r) => r._id);
     }
     const target = await this.sets
-      .findOne(
-        { _id: objectId(quizSetId, '퀴즈'), ownerId },
-        { jobId: 1, status: 1, deletedAt: 1, cancelRequestedAt: 1, cancelStoppedAt: 1 },
-      )
-      .lean<
-        Pick<
-          QuizSetRow,
-          '_id' | 'jobId' | 'status' | 'deletedAt' | 'cancelRequestedAt' | 'cancelStoppedAt'
-        >
-      >();
+      .findOne({ _id: objectId(quizSetId, '퀴즈'), ownerId }, { jobId: 1, status: 1, deletedAt: 1 })
+      .lean<Pick<QuizSetRow, '_id' | 'jobId' | 'status' | 'deletedAt'>>();
     if (!target || !target.jobId?.equals(jobId)) throw notFound('퀴즈');
-    return target.deletedAt || target.status === 'ready' ? [] : [pick(target)];
+    return target.deletedAt || target.status === 'ready' ? [] : [target._id];
   }
 
   /**
