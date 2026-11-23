@@ -165,7 +165,7 @@ it('만료 안내→로그인→풀이 재마운트 후 기존 풀이 ID·문제
   expect(mockApi.quiz.saveToBox).toHaveBeenCalledWith(['first', 'second']);
   expect(router.replace).toHaveBeenLastCalledWith({
     pathname: '/play/review',
-    params: { setId, points: '120', results: '11' },
+    params: { setId, points: '120', results: '11', picks: JSON.stringify(['정답', '기억할 답']) },
   });
 });
 

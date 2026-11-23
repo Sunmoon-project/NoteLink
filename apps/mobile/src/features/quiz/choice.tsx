@@ -1,7 +1,9 @@
+import { X } from 'lucide-react-native';
 import type { ReactNode } from 'react';
 import { View } from 'react-native';
 import { Text } from '@/components/text';
 import { cx, OnFill, Tap } from '@/components/ui';
+import { C, ICON } from '@/theme';
 
 const NUM = '①②③④⑤⑥⑦⑧⑨⑩';
 
@@ -51,6 +53,7 @@ export function ChoiceRow({
   n,
   children,
   on = false,
+  wrong = false,
   onPress,
   disabled,
   fill = 'bg-white',
@@ -58,6 +61,8 @@ export function ChoiceRow({
   n: number;
   children: ReactNode;
   on?: boolean;
+  /** 결과 화면: 내가 고른 오답 보기. 빨간 테두리와 X 표시 */
+  wrong?: boolean;
   onPress?: () => void;
   disabled?: boolean;
   fill?: string;
@@ -68,9 +73,18 @@ export function ChoiceRow({
       <Text className="flex-1 text-subhead leading-6 text-ink">
         {NUM[n] ?? `${n + 1}.`} {children}
       </Text>
+      {wrong && (
+        <View accessibilityLabel="내가 고른 오답" className="ml-2">
+          <X size={ICON.sm} color={C.danger} />
+        </View>
+      )}
     </>
   );
-  const cls = cx('min-h-14 flex-row items-center overflow-hidden rounded-2xl px-5 py-4', fill);
+  const cls = cx(
+    'min-h-14 flex-row items-center overflow-hidden rounded-2xl px-5 py-4',
+    fill,
+    wrong && 'border-2 border-danger',
+  );
   return onPress ? (
     <Tap onPress={onPress} disabled={disabled} accessibilityRole="button" className={cls}>
       {body}

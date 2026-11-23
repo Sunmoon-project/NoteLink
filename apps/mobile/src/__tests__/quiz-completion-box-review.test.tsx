@@ -107,7 +107,13 @@ it('스터디룸에서 퀴즈를 마치면 결과 화면에도 복귀 경로를 
   await waitFor(() =>
     expect(router.replace).toHaveBeenCalledWith({
       pathname: '/play/review',
-      params: { setId: quizSet._id, points: '120', results: '1', from: 'room' },
+      params: {
+        setId: quizSet._id,
+        points: '120',
+        results: '1',
+        picks: JSON.stringify(['답']),
+        from: 'room',
+      },
     }),
   );
 });
@@ -148,7 +154,7 @@ it.each([
     await waitFor(() =>
       expect(router.replace).toHaveBeenCalledWith({
         pathname: '/play/review',
-        params: { setId: quizSet._id, points: '120', results: '1' },
+        params: { setId: quizSet._id, points: '120', results: '1', picks: JSON.stringify(['답']) },
       }),
     );
     expect(mockApi.quiz.finish).toHaveBeenCalledTimes(1);
@@ -202,7 +208,7 @@ it('보관함에 담지 못하면 안내하고, 결과 화면으로는 그대로
   await waitFor(() => expect(useToast.getState().msg).toContain('보관함에 담지 못했어요'));
   expect(router.replace).toHaveBeenCalledWith({
     pathname: '/play/review',
-    params: { setId: quizSet._id, points: '120', results: '1' },
+    params: { setId: quizSet._id, points: '120', results: '1', picks: JSON.stringify(['답']) },
   });
 });
 it('오늘의 복습 세트를 마치면 보관함에 담지 않고 오늘의 복습을 다시 읽는다', async () => {
@@ -272,6 +278,47 @@ it('결과 화면은 맞힌 문제 번호를 초록, 틀린 문제 번호를 빨
   expect(String(screen.getByLabelText('2번 틀림').props.className)).toContain('bg-danger');
   expect(screen.queryByText('선택')).toBeNull();
   expect(screen.queryByRole('button', { name: '보관함에 저장' })).toBeNull();
+});
+it('결과 화면은 내가 고른 오답 보기에 X 표시를 하고, 맞힌 문제에는 표시하지 않는다', async () => {
+  const choices = ['addEventListener', 'querySelector', 'setTimeout'];
+  setParams({
+    setId: quizSet._id,
+    results: '01',
+    picks: JSON.stringify(['querySelector', 'addEventListener']),
+  });
+  mockApi.quiz.set.mockResolvedValue({
+    ...quizSet,
+    questionCount: 2,
+    questions: [
+      { ...question, choices, answer: 'addEventListener' },
+      { ...question, _id: 'box-q2', choices, answer: 'addEventListener' },
+    ],
+  });
+  await renderScreen(<QuizReviewScreen />, client());
+  expect(await screen.findAllByText('② querySelector')).toHaveLength(2);
+  // 오답 표시는 1번 문제에서 고른 querySelector 한 곳뿐
+  expect(screen.getAllByLabelText('내가 고른 오답')).toHaveLength(1);
+});
+it('결과 화면은 객관식 보기를 전부 보여 주고, 단답형은 정답만 보여 준다', async () => {
+  mockApi.quiz.set.mockResolvedValue({
+    ...quizSet,
+    questionCount: 2,
+    questions: [
+      {
+        ...question,
+        choices: ['addEventListener', 'querySelector', 'setTimeout'],
+        answer: 'addEventListener',
+      },
+      { ...question, _id: 'box-q2', type: 'short_answer', choices: null, answer: 'Promise' },
+    ],
+  });
+  await renderScreen(<QuizReviewScreen />, client());
+  expect(await screen.findByText('① addEventListener')).toBeTruthy();
+  expect(screen.getByText('② querySelector')).toBeTruthy();
+  expect(screen.getByText('③ setTimeout')).toBeTruthy();
+  expect(screen.getByText('A. addEventListener')).toBeTruthy();
+  expect(screen.getByText('A. Promise')).toBeTruthy();
+  expect(screen.queryByText(/^① Promise/)).toBeNull();
 });
 it.each([
   ['오늘의 복습 세트', '2026-11-19', false],
