@@ -306,6 +306,7 @@ export class FriendShareService {
         avatarItemId: null,
         processing: { status: 'done', progress: 100, jobId, regenJobId: null },
         summary: note.summary ?? null,
+        ...(note.summaryFormat ? { summaryFormat: note.summaryFormat } : {}),
         keywords: note.keywords ?? [],
         concepts: note.concepts ?? [],
         // 북마크는 보낸 사람의 메모라 옮기지 않는다

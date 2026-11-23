@@ -8,7 +8,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { randomUUID } from 'node:crypto';
 import { type Model, Types } from 'mongoose';
 
-import { syncFromJob } from '../modules/content/materials/material-sync.js';
+import { noItems, syncFromJob } from '../modules/content/materials/material-sync.js';
 import type { MaterialRow } from '../modules/content/materials/material-view.js';
 import { Material } from '../modules/content/schemas/material.schema.js';
 import {
@@ -550,7 +550,10 @@ export class AiJobNoticesService implements OnApplicationBootstrap, OnModuleDest
         result: full.result ?? null,
       } as AppAiJob,
     );
-    return update?.['processing.status'] === 'done';
+    // 고른 양식의 항목이 0개면 다시 만들기는 지금 결과를 두므로(syncRegen) 성공으로 알리지 않는다(FR-19)
+    const empty =
+      material.kind !== 'recording' && noItems({ result: full.result ?? null } as AppAiJob);
+    return update?.['processing.status'] === 'done' && !empty;
   }
 
   /**

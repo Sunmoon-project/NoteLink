@@ -719,7 +719,9 @@ export function ResultScreen() {
         if (j.status === 'succeeded')
           await qc.invalidateQueries({ queryKey: ['recording', id], exact: true });
         const wanted = regenFormat.current;
-        const kept = !!wanted && (after.data?.summaryFormat ?? 'points') !== wanted;
+        // 다시 읽기가 실패하면 캐시의 옛 양식으로 판단하지 않는다
+        const kept =
+          !!wanted && after.isSuccess && (after.data.summaryFormat ?? 'points') !== wanted;
         toast(
           j.status === 'succeeded' && kept
             ? `이 노트에서는 ${formatName(wanted)} 양식을 만들 수 없어요. 지금 결과는 그대로예요`

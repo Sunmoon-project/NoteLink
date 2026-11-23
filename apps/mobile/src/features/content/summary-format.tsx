@@ -29,8 +29,9 @@ export function FormatSheet({
   onClose: () => void;
   note?: string;
 }) {
-  const first = FORMATS.find((f) => f.value !== current)!.value;
-  const [picked, setPicked] = useState<SummaryFormat>(first);
+  // 처음 만들 때는 기본(핵심 요약)을 골라 두고, 다시 만들기는 직접 고르게 비워 둔다
+  const first: SummaryFormat | null = current ? null : 'points';
+  const [picked, setPicked] = useState<SummaryFormat | null>(first);
   // 열 때마다 처음 고른 값으로 되돌린다(렌더 중 비교 — 효과에서 상태를 바꾸지 않게)
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
@@ -73,7 +74,7 @@ export function FormatSheet({
           );
         })}
         {note && <Text className="px-1 text-caption text-sub">{note}</Text>}
-        <Btn className="mt-2" onPress={() => onPick(picked)}>
+        <Btn className="mt-2" disabled={!picked} onPress={() => picked && onPick(picked)}>
           이 모습으로 만들기
         </Btn>
       </View>

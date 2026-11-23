@@ -26,6 +26,7 @@ INPUT_MAX_CHARS = 12_000  # LLM에 보내는 노트 글 상한(앞 문단부터,
 PART_MIN_CHARS = 100  # 남은 자리가 이보다 작으면 다음 문단을 잘라 넣지 않음
 SEPARATOR = "\n\n"
 UNCERTAIN = re.compile(r"\[\?\]\s*")
+PARA_MARK = re.compile(r"\[\d+\]\*? ")  # _listing 이 문단 앞에 붙인 번호(노트 글이 아님)
 LATIN_WORD = re.compile(r"[A-Za-z][A-Za-z0-9]*")
 HANGUL_WORD = re.compile(r"[가-힣]{2,}")
 
@@ -103,6 +104,7 @@ class Heading(TypedDict):
 class Item(TypedDict):
     head: str | None  # qa: 질문, terms: 용어, 그 밖: None
     text: str
+    refs: list[int]  # 근거 문단 번호(검사를 통과한 것)
 
 
 class NoteSummary(TypedDict):
@@ -121,7 +123,7 @@ def clean(text: str) -> str:
 def summarize_note(
     llm: Llm, model: str, chunks: list[Chunk], fmt: object = "points"
 ) -> NoteSummary | None:
-    """양식(fmt)대로 요약 · 키워드 · 소제목. 남길 것이 없거나 호출이 실패하면 None(설정 오류도)."""
+    """양식(fmt)대로 요약 · 키워드 · 소제목. 보낼 문단이 없거나 호출 실패면 None(설정 오류도)."""
     fmt = fmt if isinstance(fmt, str) and fmt in FORMATS else "points"
     body, orders, untitled = _listing(chunks)
     if not orders:
@@ -143,8 +145,8 @@ def summarize_note(
         return None
     items = _items(answer.get("points"), orders, fmt, body)
     headings = _headings(answer.get("headings"), untitled)
-    if not items and not headings:
-        return None
+    # 항목 · 소제목이 없어도 양식 결과로 돌려준다. API 가 「이 양식으로는 못 만듦」으로 알아보고
+    # 다시 만들기면 지금 결과를 둔다(None 은 호출 실패 · 보낼 문단 없음뿐)
     return {
         "format": fmt,
         "items": items,
@@ -202,11 +204,11 @@ def _items(raw: object, orders: set[int], fmt: str, body: str) -> list[Item]:
             head = " ".join(clean(raw_head).split()) if isinstance(raw_head, str) else ""
             if not head or len(head) > HEAD_MAX_CHARS:
                 continue
-            if fmt == "terms" and head not in body:
+            if fmt == "terms" and head not in PARA_MARK.sub("", body):
                 continue  # 노트에 없는 용어
         if any(o["text"] == text and o["head"] == head for o in out):
             continue
-        out.append({"head": head, "text": text})
+        out.append({"head": head, "text": text, "refs": list(dict.fromkeys(refs))})
         if len(out) >= ITEMS_MAX[fmt]:
             break
     return out

@@ -813,7 +813,8 @@ export class MaterialsService implements OnModuleInit {
         { _id, 'processing.regenJobId': regenId },
         { $set: { 'processing.regenJobId': null } },
       );
-    const day = seoulDay(new Date());
+    // 돌려줄 때(syncRegen)도 같은 날짜를 쓰도록 작업 id 의 시각으로 정한다
+    const day = seoulDay(regenId.getTimestamp());
     if (!(await this.reserveRegen(owner, day))) {
       await release();
       throw regenExhausted();

@@ -154,8 +154,11 @@ def test_english_headings_need_a_whole_word_from_the_paragraph() -> None:
     assert got["headings"] == [{"order": 2, "text": "mitosis 과정"}]
 
 
-def test_no_usable_point_gives_no_summary() -> None:
-    assert summarize_note(answer([{"text": "x", "refs": [9]}], ["이사회"]), "m", CHUNKS) is None
+def test_no_usable_point_gives_empty_items_but_keeps_keywords() -> None:
+    got = summarize_note(answer([{"text": "x", "refs": [9]}], ["이사회"]), "m", CHUNKS)
+
+    assert got is not None
+    assert (got["items"], got["points"], got["keywords"]) == ([], [], ["이사회"])
 
 
 def test_at_most_seven_points_and_ten_keywords() -> None:
@@ -286,8 +289,10 @@ def test_the_note_job_returns_the_summary_from_the_split_llm() -> None:
     assert llm.calls == []
 
 
-def test_the_note_job_result_has_no_summary_when_none_is_made() -> None:
-    assert run_direct(two_pages())["summary"] is None
+def test_the_note_job_result_has_empty_items_when_none_is_made() -> None:
+    summary = run_direct(two_pages())["summary"]
+
+    assert summary is not None and summary["items"] == [] and summary["format"] == "points"
 
 
 # ── 양식(FR-19) ─────────────────────────────
@@ -304,7 +309,7 @@ def test_points_format_items_have_no_head() -> None:
     llm, got = formatted("points", [{"text": "동사원형을 쓴다.", "refs": [1]}])
 
     assert got["format"] == "points"
-    assert got["items"] == [{"head": None, "text": "동사원형을 쓴다."}]
+    assert got["items"] == [{"head": None, "text": "동사원형을 쓴다.", "refs": [1]}]
     assert got["points"] == ["동사원형을 쓴다."]
     (call,) = llm.named("note_summary")
     assert "head" not in call.schema["properties"]["points"]["items"]["properties"]
@@ -321,7 +326,9 @@ def test_qa_items_flatten_to_question_dash_answer() -> None:
     )
 
     assert got["format"] == "qa"
-    assert got["items"] == [{"head": "이사회는 영어로?", "text": "board of directors다."}]
+    assert got["items"] == [
+        {"head": "이사회는 영어로?", "text": "board of directors다.", "refs": [3]}
+    ]
     assert got["points"] == ["이사회는 영어로? — board of directors다."]
     (call,) = llm.named("note_summary")
     assert "질문" in call.system
@@ -334,10 +341,11 @@ def test_terms_head_must_appear_in_the_note() -> None:
         [
             {"head": "board of directors", "text": "이사회.", "refs": [3]},
             {"head": "지어낸 용어", "text": "노트에 없음.", "refs": [3]},
+            {"head": "[1]", "text": "문단 번호는 노트 글이 아님.", "refs": [1]},
         ],
     )
 
-    assert got["items"] == [{"head": "board of directors", "text": "이사회."}]
+    assert got["items"] == [{"head": "board of directors", "text": "이사회.", "refs": [3]}]
     assert got["points"] == ["board of directors: 이사회."]
 
 

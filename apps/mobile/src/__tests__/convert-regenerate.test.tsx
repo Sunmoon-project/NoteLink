@@ -97,6 +97,8 @@ it('지금 양식이 문답이면 문답을 고를 수 없고 핵심 요약은 �
   await renderScreen(<ResultScreen />, client());
   await fireEvent.press(await screen.findByRole('button', { name: '다시 만들기' }));
   expect(screen.getByRole('radio', { name: '문답' })).toBeDisabled();
+  // 다시 만들기는 미리 골라 두지 않는다 — 직접 고를 때까지 만들기 버튼이 잠겨 있다
+  expect(screen.getByRole('button', { name: '이 모습으로 만들기' })).toBeDisabled();
   expect(screen.getByText('문답 · 지금 양식')).toBeTruthy();
   await fireEvent.press(screen.getByRole('radio', { name: '핵심 요약' }));
   await fireEvent.press(screen.getByRole('button', { name: '이 모습으로 만들기' }));
