@@ -539,6 +539,23 @@ def test_history_counts_right_answers_days_since_the_last_one_and_its_review_int
     assert generate.history(g.sets, g.attempts, "m1", notes)[1].days is None
 
 
+def test_answers_at_the_same_time_take_the_shorter_review_interval_in_any_order() -> None:
+    # 같은 개념을 같은 풀이에서 푼 두 문제(간격 7일 · 1일): 답 순서와 상관없이 짧은 간격(덜
+    # 기억함)으로(Codex 리뷰 #683 제안: 나중에 돈 답의 간격을 써 순서만 바꿔도 가중치가 달라졌음)
+    long = stored("q3", "이질 아메바", "이질 아메바", "mastered")
+    short = stored("q5", "이질 아메바", "이질 아메바", "active")
+    short["srs"]["step"] = 0
+    both = [{"questionId": "q3", "correct": True}, {"questionId": "q5", "correct": False}]
+    for answers in (both, both[::-1]):
+        one = {**attempt("q3", True), "answers": answers}
+        sets = [{"id": "s1", "materialId": "m1", "questions": [long, short]}]
+        inp = job(sets=sets, attempts=[one])
+        g = generate.parse(inp)
+        notes = {"m1": generate.note_pages(g.material)}
+        per = generate.history(g.sets, g.attempts, "m1", notes, today=g.day)
+        assert (per[1].days, per[1].interval) == (3, 1)
+
+
 # ---------- 문제 만들기 (LLM) ----------
 
 

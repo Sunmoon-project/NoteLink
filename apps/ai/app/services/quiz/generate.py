@@ -570,8 +570,15 @@ def history(
     stopped: dict[str, datetime] = {}  # 개념: 멈춘 문제가 끝난 때(가장 나중)
     active: set[str] = set()
     page_of: dict[str, int] = {}
-    # 개념: (마지막으로 푼 때, 그 문제의 복습 간격). 풀이가 입력에서 빠진 익힌 문제는 끝난 때로
+    # 개념: (마지막으로 푼 때, 그 문제의 복습 간격). 풀이가 입력에서 빠진 익힌 문제는 끝난 때로.
+    # 같은 때에 푼 문제가 여럿이면 짧은 간격(덜 기억함): 답 순서로 결과가 바뀌지 않게(Codex #683)
     seen: dict[str, tuple[datetime, int]] = {}
+
+    def mark(c: str, at: datetime, gap: int) -> None:
+        old = seen.get(c)
+        if old is None or (at, -gap) > (old[0], -old[1]):
+            seen[c] = (at, gap)
+
     for s in sets:
         for q in s.questions:
             st = q.get("srs")
@@ -588,8 +595,8 @@ def history(
                 when[c] = max(when.get(c, at), at)
             if state == "mastered":
                 page_of.setdefault(c, home(s, q)[1])
-                if at > seen.get(c, (datetime.min, 0))[0]:
-                    seen[c] = (at, _interval(q))
+                if at > datetime.min:
+                    mark(c, at, _interval(q))
     mastered = {
         c for c, at in learned.items() if c not in active and stopped.get(c, datetime.min) <= at
     }
@@ -610,8 +617,7 @@ def history(
                 wrong[c] += 1
             else:
                 right[c] += 1
-            if a.finished_at >= seen.get(c, (datetime.min, 0))[0]:
-                seen[c] = (a.finished_at, _interval(hit))
+            mark(c, a.finished_at, _interval(hit))
     # 다 익힌 개념은 틀린 적이 없어도 셈(로컬은 틀린 답이 있는 개념만 봤음, /code-review 11/04)
     per_page: defaultdict[int, PageInfo] = defaultdict(PageInfo)
     for c in mastered:
@@ -623,8 +629,8 @@ def history(
             per_page[page_of[c]].weak.append(c)
     for c, n in right.items():
         per_page[page_of[c]].right += n
-    # 쪽의 지난 날 · 간격은 그 쪽에서 가장 나중에 푼 개념으로
-    for c, (at, gap) in sorted(seen.items(), key=lambda kv: kv[1][0]):
+    # 쪽의 지난 날 · 간격은 그 쪽에서 가장 나중에 푼 개념으로(같은 때면 짧은 간격이 마지막에 남음)
+    for c, (at, gap) in sorted(seen.items(), key=lambda kv: (kv[1][0], -kv[1][1])):
         info = per_page[page_of[c]]
         info.interval = gap
         info.days = (today - seoul_day(at)).days if today else None
