@@ -1,6 +1,7 @@
 import { act, fireEvent, screen } from '@testing-library/react-native';
 import type { StudyRoom } from '@notelink/shared';
 import { router } from 'expo-router';
+import { Platform } from 'react-native';
 import { RoomListScreen } from '../features/studyroom/room';
 import { api, ApiError } from '../lib/api';
 import { renderScreen } from '../test-utils';
@@ -112,5 +113,31 @@ describe('스터디룸 목록 · 지금 접속 중', () => {
     // 고쳐 쓰면 지난 오류는 지운다
     await fireEvent.changeText(input, 'zz999');
     expect(screen.queryByText('스터디룸을 찾을 수 없습니다.')).toBeNull();
+  });
+  it('참여 요청이 진행 중일 때 코드를 고쳐도 추가 참여 요청은 나가지 않는다', async () => {
+    const join = jest.spyOn(api.rooms, 'join').mockReturnValue(new Promise(() => {}));
+    await renderScreen(<RoomListScreen />);
+    await screen.findByText('알고리즘 스터디');
+    await fireEvent.press(screen.getByText('코드로 참여하기'));
+    const input = screen.getByPlaceholderText('예) AB3F9K');
+    await fireEvent.changeText(input, 'zz9999');
+    await fireEvent.press(screen.getByRole('button', { name: '확인' }));
+    // 응답이 오기 전에 다른 코드로 고쳐도 「확인」은 로딩 그대로여야 한다(reset하면 isPending이 풀려 되살아난다)
+    await fireEvent.changeText(input, 'yy8888');
+    expect(screen.queryByRole('button', { name: '확인' })).toBeNull();
+    expect(join).toHaveBeenCalledTimes(1);
+    expect(join).toHaveBeenCalledWith('ZZ9999');
+  });
+  it('안드로이드에서는 visible-password 자판으로 띄운다', async () => {
+    const was = Platform.OS;
+    Platform.OS = 'android';
+    try {
+      await renderScreen(<RoomListScreen />);
+      await screen.findByText('알고리즘 스터디');
+      await fireEvent.press(screen.getByText('코드로 참여하기'));
+      expect(screen.getByPlaceholderText('예) AB3F9K').props.keyboardType).toBe('visible-password');
+    } finally {
+      Platform.OS = was;
+    }
   });
 });

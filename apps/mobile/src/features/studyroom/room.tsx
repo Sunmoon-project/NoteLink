@@ -297,7 +297,8 @@ export function RoomListScreen() {
           autoFocus
           value={v}
           onChangeText={(t) => {
-            join.reset();
+            // 요청 중에 reset하면 isPending이 풀려 다른 코드로 중복 제출된다 → 실패 표시만 지운다
+            if (join.isError) join.reset();
             setV(
               t
                 .toUpperCase()
