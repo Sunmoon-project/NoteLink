@@ -785,6 +785,7 @@ export function QuizSolveScreen() {
   const [pick, setPick] = useState<string | null>(previous?.right == null ? null : previous.pick);
   const [right, setRight] = useState<boolean | null>(previous?.right ?? null);
   const [results, setResults] = useState<boolean[]>(previous?.results ?? []);
+  const [picks, setPicks] = useState<string[]>(previous?.picks ?? []);
   const [speaking, setSpeaking] = useState(false);
   const [quit, setQuit] = useState(false);
   // 지금 유효한 읽기 요청 번호. 멈추기 · 화면 떠나기 · 다음 문제로 넘어가기에서 올려 준비 중인 읽기를 무효로 한다
@@ -890,9 +891,16 @@ export function QuizSolveScreen() {
       (hasAnswered({ index: i, results, pick }) || expired) &&
       ownsProgress()
     ) {
-      useQuizProgress
-        .getState()
-        .save({ setId: set.data._id, attemptId, index: i, answerText, pick, right, results });
+      useQuizProgress.getState().save({
+        setId: set.data._id,
+        attemptId,
+        index: i,
+        answerText,
+        pick,
+        right,
+        results,
+        picks,
+      });
       screenGeneration.current = useQuizProgress.getState().generation;
     }
   }, [
@@ -903,6 +911,7 @@ export function QuizSolveScreen() {
     pick,
     right,
     results,
+    picks,
     expired,
     finish.isSuccess,
     ownsProgress,
@@ -914,6 +923,7 @@ export function QuizSolveScreen() {
   useEffect(() => {
     if (!completed || !completedSetId || !ownsProgress() || !attemptId) return;
     const answered = useQuizProgress.getState().progress?.results ?? [];
+    const picked = useQuizProgress.getState().progress?.picks ?? [];
     useQuizProgress.getState().reset();
     router.replace({
       pathname: '/play/review',
@@ -922,6 +932,8 @@ export function QuizSolveScreen() {
         points: String(completed.pointsEarned),
         // 문제마다 맞음(1) · 틀림(0): 결과 화면이 번호를 초록 · 빨강으로 칠한다
         results: answered.map(Number).join(''),
+        // 문제마다 낸 답: 결과 화면이 고른 오답 보기를 표시한다. 옛 진행처럼 개수가 안 맞으면 넘기지 않는다
+        ...(picked.length === answered.length ? { picks: JSON.stringify(picked) } : {}),
         // 서버가 이번에 복습 일정에 넣은 문제 수 · 날짜(FR-37). 넣지 않았거나 옛 서버면 넘기지 않는다
         ...(completed.scheduled && completed.nextReviewDay
           ? { scheduled: String(completed.scheduled), nextReviewDay: completed.nextReviewDay }
@@ -1003,6 +1015,7 @@ export function QuizSolveScreen() {
       if (!r.correct) recordWrong(screenOwner, q, set.data?.title);
       setRight(r.correct);
       setResults((x) => [...x, r.correct]);
+      setPicks((x) => [...x, c]);
       clearTimeout(autoNext.current);
       autoNext.current = setTimeout(next, AUTO_NEXT_MS);
       Haptics.notificationAsync(
@@ -1233,12 +1246,23 @@ export function QuizSolveScreen() {
   );
 }
 
+/** 결과 화면 picks 파라미터(JSON 문자열 배열). 없거나 깨졌으면 빈 배열 */
+function parsePicks(raw?: string): string[] {
+  try {
+    const v: unknown = JSON.parse(raw ?? '[]');
+    return Array.isArray(v) ? v.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
 export function QuizReviewScreen() {
-  const { setId, points, from, results, scheduled, nextReviewDay } = useLocalSearchParams<{
+  const { setId, points, from, results, picks, scheduled, nextReviewDay } = useLocalSearchParams<{
     setId?: string;
     points?: string;
     from?: string;
     results?: string;
+    picks?: string;
     scheduled?: string;
     nextReviewDay?: string;
   }>();
@@ -1252,6 +1276,7 @@ export function QuizReviewScreen() {
     if (points) qc.invalidateQueries({ queryKey: ['me'] });
   }, [points]); // eslint-disable-line react-hooks/exhaustive-deps
   const qs = set.data?.questions ?? [];
+  const picked = parsePicks(picks);
   if (set.isError && !set.data)
     return (
       <Canvas>
@@ -1355,7 +1380,13 @@ export function QuizReviewScreen() {
               {!!q.choices?.length && (
                 <View className="mt-3 gap-2">
                   {q.choices.map((c, i) => (
-                    <ChoiceRow key={c} n={i} on={c === q.answer} fill="bg-canvas">
+                    <ChoiceRow
+                      key={c}
+                      n={i}
+                      on={c === q.answer}
+                      wrong={c !== q.answer && picked[n] === c}
+                      fill="bg-canvas"
+                    >
                       {c}
                     </ChoiceRow>
                   ))}

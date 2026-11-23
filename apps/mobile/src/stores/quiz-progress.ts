@@ -8,6 +8,8 @@ export type QuizProgress = {
   pick: string | null;
   right: boolean | null;
   results: boolean[];
+  /** 문제마다 낸 답(results와 같은 순서). 결과 화면이 고른 오답 보기를 표시한다. 옛 진행에는 없다 */
+  picks?: string[];
   completed?: {
     pointsEarned: number;
     balance: number;
