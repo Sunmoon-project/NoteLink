@@ -128,6 +128,19 @@ describe('스터디룸 목록 · 지금 접속 중', () => {
     expect(join).toHaveBeenCalledTimes(1);
     expect(join).toHaveBeenCalledWith('ZZ9999');
   });
+  it('참여 요청이 진행 중일 때 창을 닫았다 다시 열어도 추가 참여 요청은 나가지 않는다', async () => {
+    const join = jest.spyOn(api.rooms, 'join').mockReturnValue(new Promise(() => {}));
+    await renderScreen(<RoomListScreen />);
+    await screen.findByText('알고리즘 스터디');
+    await fireEvent.press(screen.getByText('코드로 참여하기'));
+    await fireEvent.changeText(screen.getByPlaceholderText('예) AB3F9K'), 'zz9999');
+    await fireEvent.press(screen.getByRole('button', { name: '확인' }));
+    await fireEvent.press(screen.getByRole('button', { name: '취소' }));
+    await fireEvent.press(screen.getByText('코드로 참여하기'));
+    // 닫을 때 reset하면 isPending이 풀려 「확인」이 되살아난다
+    expect(screen.queryByRole('button', { name: '확인' })).toBeNull();
+    expect(join).toHaveBeenCalledTimes(1);
+  });
   it('안드로이드에서는 visible-password 자판으로 띄운다', async () => {
     const was = Platform.OS;
     Platform.OS = 'android';

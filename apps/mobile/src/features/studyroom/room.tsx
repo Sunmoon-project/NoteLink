@@ -127,7 +127,11 @@ export function RoomListScreen() {
     },
     // 코드 입력 창이 떠 있으면 전역 토스트가 Modal 뒤에 가려지므로 창 안에 적는다
     onError: (e) => {
-      if (!code) toast(joinMessage(e));
+      if (!code) {
+        toast(joinMessage(e));
+        // 창이 닫힌 채 실패하면 다시 열 때 묵은 오류가 보이지 않게 지운다
+        join.reset();
+      }
     },
   });
   // 목록에서 왼쪽으로 밀어 나가기(방 설정의 「채팅방 나가기」와 같은 동작 · 확인을 거친다)
@@ -146,7 +150,8 @@ export function RoomListScreen() {
   });
   const closeCode = () => {
     setCode(false);
-    join.reset();
+    // 요청 중에 reset하면 isPending이 풀려 다시 열었을 때 다른 코드로 중복 제출된다 → 실패 표시만 지운다
+    if (join.isError) join.reset();
   };
   const joined = mine.data ?? [];
   const live = useRoomsLive(joined.map((r) => r._id));
