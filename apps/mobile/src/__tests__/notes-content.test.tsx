@@ -59,9 +59,13 @@ describe('AI 변환 다시 시도', () => {
   it('다시 시도로 새 작업이 생기면 그 작업을 구독한다', async () => {
     const emit = jest.spyOn(socket, 'emit');
     useMockFlags.setState({ llmFail: true });
-    useDraft
-      .getState()
-      .set({ folderId: 'fo1', kind: 'handwriting', files: [page('A')], title: '테스트 노트' });
+    useDraft.getState().set({
+      folderId: 'fo1',
+      kind: 'handwriting',
+      files: [page('A')],
+      title: '테스트 노트',
+      format: 'points',
+    });
     await renderScreen(<ConvertScreen />);
     const subs = () =>
       emit.mock.calls
@@ -127,7 +131,13 @@ describe('스캔 제목', () => {
   it('제목을 정하지 않은 스캔은 기계식 파일 이름 대신 날짜 제목으로 올린다', async () => {
     const spy = created();
     useDraft.getState().reset();
-    useDraft.getState().set({ folderId: 'fo1', kind: 'document', source: 'scan', files: [scan] });
+    useDraft.getState().set({
+      folderId: 'fo1',
+      kind: 'document',
+      source: 'scan',
+      files: [scan],
+      format: 'points',
+    });
     await renderScreen(<ConvertScreen />);
     await waitFor(() => expect(spy).toHaveBeenCalled(), { timeout: 5000 });
     expect(spy.mock.calls.at(-1)![0]).toMatchObject({ title: scanTitle() });
@@ -135,7 +145,13 @@ describe('스캔 제목', () => {
 
   it('스캔 확인에서 고친 제목으로 올린다', async () => {
     useDraft.getState().reset();
-    useDraft.getState().set({ folderId: 'fo1', kind: 'document', source: 'scan', files: [scan] });
+    useDraft.getState().set({
+      folderId: 'fo1',
+      kind: 'document',
+      source: 'scan',
+      files: [scan],
+      format: 'points',
+    });
     await renderScreen(<ScanCheckScreen />);
     await fireEvent.changeText(screen.getByPlaceholderText(scanTitle()), '광합성 프린트');
     expect(useDraft.getState().title).toBe('광합성 프린트');

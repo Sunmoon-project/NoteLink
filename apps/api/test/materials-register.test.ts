@@ -105,6 +105,20 @@ describe('노트 등록 (MaterialsService.register)', () => {
     t = setup();
   });
 
+  it('양식(FR-19)을 노트에 적고 작업 입력에 싣는다', async () => {
+    await t.service.register(
+      me.toHexString(),
+      dto({ blobUrls: [url('image', 1, 'jpg')], format: 'qa' }),
+    );
+    const stored = (t.materials.create.mock.calls[0]![0] as unknown[])[0] as {
+      summaryFormat?: string;
+    };
+    expect(stored.summaryFormat).toBe('qa');
+    expect(t.jobs.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({ format: 'qa' }) }),
+    );
+  });
+
   it('필기: 쪽을 만들고 노트 정리 작업을 넣는다. 파일 주소는 AI에는 읽기 SAS(24시간), DB에는 SAS 없이', async () => {
     const urls = [url('image', 1, 'jpg'), url('image', 2, 'png')];
     const { material, job } = await t.service.register(me.toHexString(), dto({ blobUrls: urls }));
@@ -120,6 +134,7 @@ describe('노트 등록 (MaterialsService.register)', () => {
           { pageNo: 2, imageUrl: `${urls[1]}?sig=SECRET` },
         ],
         subject: '수학',
+        format: 'points',
       },
     });
     // 내 폴더 경로(uploads/<업로드 종류>/<내 userId>/)로 검사한다

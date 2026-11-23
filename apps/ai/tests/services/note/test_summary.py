@@ -40,6 +40,11 @@ CHUNKS = [
 ]
 
 
+def legacy(got: Any) -> dict[str, Any]:
+    """양식 이전부터 있던 키만(points · keywords · headings)."""
+    return {k: got[k] for k in ("points", "keywords", "headings")}
+
+
 def answer(
     points: list[dict[str, Any]], keywords: list[Any], headings: list[Any] | None = None
 ) -> FakeLlm:
@@ -59,7 +64,7 @@ def test_points_and_keywords_come_from_the_note() -> None:
 
     got = summarize_note(llm, "claude-haiku-5-5", CHUNKS)
 
-    assert got == {
+    assert legacy(got) == {
         "points": [
             "주장 · 요구 동사 뒤 that절에는 (should) + 동사원형을 쓴다.",
             "board of directors는 복합명사로 이사회를 뜻한다.",
@@ -89,7 +94,7 @@ def test_points_without_valid_refs_and_made_up_keywords_are_dropped() -> None:
 
     got = summarize_note(llm, "m", CHUNKS)
 
-    assert got == {"points": ["공백이 많은 요약"], "keywords": ["이사회"], "headings": []}
+    assert legacy(got) == {"points": ["공백이 많은 요약"], "keywords": ["이사회"], "headings": []}
 
 
 def test_untitled_paragraphs_get_headings_from_their_own_words() -> None:
@@ -118,7 +123,7 @@ def test_untitled_paragraphs_get_headings_from_their_own_words() -> None:
 
     got = summarize_note(llm, "m", chunks)
 
-    assert got == {
+    assert legacy(got) == {
         "points": [],
         "keywords": [],
         "headings": [{"order": 2, "text": "아메바의 운동"}, {"order": 5, "text": "효모 번식"}],
@@ -149,8 +154,11 @@ def test_english_headings_need_a_whole_word_from_the_paragraph() -> None:
     assert got["headings"] == [{"order": 2, "text": "mitosis 과정"}]
 
 
-def test_no_usable_point_gives_no_summary() -> None:
-    assert summarize_note(answer([{"text": "x", "refs": [9]}], ["이사회"]), "m", CHUNKS) is None
+def test_no_usable_point_gives_empty_items_but_keeps_keywords() -> None:
+    got = summarize_note(answer([{"text": "x", "refs": [9]}], ["이사회"]), "m", CHUNKS)
+
+    assert got is not None
+    assert (got["items"], got["points"], got["keywords"]) == ([], [], ["이사회"])
 
 
 def test_at_most_seven_points_and_ten_keywords() -> None:
@@ -174,7 +182,7 @@ def test_long_notes_send_only_the_first_paragraphs() -> None:
     assert len(call.user) < INPUT_MAX_CHARS + 100
     assert "[1]* 1번" in call.user and "[4]" not in call.user
     # 보내지 않은 문단은 근거가 될 수 없음
-    assert got == {"points": ["앞 문단"], "keywords": [], "headings": []}
+    assert legacy(got) == {"points": ["앞 문단"], "keywords": [], "headings": []}
 
 
 def sent_note(llm: FakeLlm) -> str:
@@ -192,7 +200,7 @@ def test_the_paragraph_that_overflows_fills_the_rest_of_the_limit() -> None:
     assert len(body) == INPUT_MAX_CHARS
     assert "[2]* 2번 나" in body and "[3]" not in body
     # 잘라 보낸 문단도 근거가 됨
-    assert got == {"points": ["뒤 문단 요약"], "keywords": [], "headings": []}
+    assert legacy(got) == {"points": ["뒤 문단 요약"], "keywords": [], "headings": []}
 
 
 def test_a_tiny_rest_is_not_filled_with_a_cut_paragraph() -> None:
@@ -211,7 +219,11 @@ def test_a_short_note_may_have_fewer_than_three_points() -> None:
 
     got = summarize_note(llm, "m", CHUNKS)
 
-    assert got == {"points": ["주장 동사 뒤 that절은 동사원형"], "keywords": [], "headings": []}
+    assert legacy(got) == {
+        "points": ["주장 동사 뒤 that절은 동사원형"],
+        "keywords": [],
+        "headings": [],
+    }
 
 
 def test_a_failed_call_gives_no_summary_but_a_cancel_is_raised() -> None:
@@ -268,10 +280,101 @@ def test_the_note_job_returns_the_summary_from_the_split_llm() -> None:
         split_llm=split,
     )
 
-    assert result["summary"] == {"points": ["아메바 두 종류"], "keywords": [], "headings": []}
+    assert legacy(result["summary"]) == {
+        "points": ["아메바 두 종류"],
+        "keywords": [],
+        "headings": [],
+    }
     assert split.named("note_summary")[0].model == settings.note_split_model
     assert llm.calls == []
 
 
-def test_the_note_job_result_has_no_summary_when_none_is_made() -> None:
-    assert run_direct(two_pages())["summary"] is None
+def test_the_note_job_result_has_empty_items_when_none_is_made() -> None:
+    summary = run_direct(two_pages())["summary"]
+
+    assert summary is not None and summary["items"] == [] and summary["format"] == "points"
+
+
+# ── 양식(FR-19) ─────────────────────────────
+
+
+def formatted(fmt: str, points: list[dict[str, Any]], keywords: list[Any] | None = None) -> Any:
+    llm = FakeLlm(
+        {"note_summary": [{"points": points, "keywords": keywords or [], "headings": []}]}
+    )
+    return llm, summarize_note(llm, "m", CHUNKS, fmt)
+
+
+def test_points_format_items_have_no_head() -> None:
+    llm, got = formatted("points", [{"text": "동사원형을 쓴다.", "refs": [1]}])
+
+    assert got["format"] == "points"
+    assert got["items"] == [{"head": None, "text": "동사원형을 쓴다.", "refs": [1]}]
+    assert got["points"] == ["동사원형을 쓴다."]
+    (call,) = llm.named("note_summary")
+    assert "head" not in call.schema["properties"]["points"]["items"]["properties"]
+
+
+def test_qa_items_flatten_to_question_dash_answer() -> None:
+    llm, got = formatted(
+        "qa",
+        [
+            {"head": "이사회는 영어로?", "text": "board of directors다.", "refs": [3]},
+            {"head": "근거 없는 질문", "text": "답", "refs": [9]},
+            {"head": "질" * 31, "text": "앞말이 너무 김", "refs": [1]},
+        ],
+    )
+
+    assert got["format"] == "qa"
+    assert got["items"] == [
+        {"head": "이사회는 영어로?", "text": "board of directors다.", "refs": [3]}
+    ]
+    assert got["points"] == ["이사회는 영어로? — board of directors다."]
+    (call,) = llm.named("note_summary")
+    assert "질문" in call.system
+    assert "head" in call.schema["properties"]["points"]["items"]["required"]
+
+
+def test_terms_head_must_appear_in_the_note() -> None:
+    _, got = formatted(
+        "terms",
+        [
+            {"head": "board of directors", "text": "이사회.", "refs": [3]},
+            {"head": "지어낸 용어", "text": "노트에 없음.", "refs": [3]},
+            {"head": "[1]", "text": "문단 번호는 노트 글이 아님.", "refs": [1]},
+        ],
+    )
+
+    assert got["items"] == [{"head": "board of directors", "text": "이사회.", "refs": [3]}]
+    assert got["points"] == ["board of directors: 이사회."]
+
+
+def test_brief_keeps_at_most_three() -> None:
+    _, got = formatted("brief", [{"text": f"{i}번째 줄", "refs": [1]} for i in range(6)])
+
+    assert [i["text"] for i in got["items"]] == ["0번째 줄", "1번째 줄", "2번째 줄"]
+
+
+def test_unknown_format_falls_back_to_points() -> None:
+    _, got = formatted("table", [{"text": "동사원형", "refs": [1]}])
+
+    assert got["format"] == "points"
+
+
+def test_no_items_keeps_headings_and_keywords() -> None:
+    llm = FakeLlm(
+        {
+            "note_summary": [
+                {
+                    "points": [],
+                    "keywords": ["이사회"],
+                    "headings": [{"ref": 2, "text": "P.138 문제"}],
+                }
+            ]
+        }
+    )
+    chunks = [chunk(1, "주장 동사", "주장"), chunk(2, "P.138 문제 풀이")]
+
+    got = summarize_note(llm, "m", chunks, "qa")
+
+    assert got is not None and got["items"] == [] and got["points"] == []

@@ -27,7 +27,7 @@ import { Material } from '../schemas/material.schema.js';
 import type { CreateMaterialDto } from './dto/create-material.dto.js';
 import type { UpdateMaterialDto } from './dto/update-material.dto.js';
 import { type ListCursor } from './list-cursor.js';
-import { syncFromJob } from './material-sync.js';
+import { noItems, syncFromJob } from './material-sync.js';
 import { type MaterialRow, toAppMaterial } from './material-view.js';
 import { RegenQuota } from './regen-quota.schema.js';
 
@@ -80,6 +80,8 @@ const conflict = (message: string) =>
   new ConflictException({ code: ERROR_CODES.IDEMPOTENCY_CONFLICT, message });
 /** 정리 결과 「다시 만들기」를 한 사람이 하루(서울 날짜)에 할 수 있는 횟수 */
 export const REGENERATE_DAILY_LIMIT = 3;
+/** 항목 0개 실패로 하루 횟수를 돌려주는 상한(FR-19). 빈 결과가 나는 양식을 되풀이해 AI 호출을 끝없이 쓰지 못하게 */
+export const REGEN_REFUND_MAX = 2;
 const notReady = (message: string) =>
   new ConflictException({ code: ERROR_CODES.NOTE_NOT_READY, message });
 const regenExhausted = () =>
@@ -98,12 +100,14 @@ function jobInput(
   kind: keyof typeof JOB_TYPE,
   files: UploadedFile[],
   subjectName: string | undefined,
+  format: string | undefined,
 ): Record<string, unknown> {
   return kind === 'recording'
     ? { audioUrl: files[0]!.readUrl, sizeBytes: files[0]!.sizeBytes }
     : {
         pages: files.map((f, i) => ({ pageNo: i + 1, imageUrl: f.readUrl })),
         ...(subjectName ? { subject: subjectName } : {}),
+        format: format ?? 'points',
       };
 }
 
@@ -134,6 +138,8 @@ interface NormalizedBody {
   description: string | null;
   blobUrls: string[];
   avatarItemId: string | null;
+  /** 정리 양식(FR-19). 녹음 · points 는 undefined(같은 요청의 옛 지문과 같게) */
+  format?: string;
 }
 
 const normalize = (dto: CreateMaterialDto): NormalizedBody => ({
@@ -144,6 +150,9 @@ const normalize = (dto: CreateMaterialDto): NormalizedBody => ({
   description: dto.description ? dto.description : null,
   blobUrls: dto.blobUrls,
   avatarItemId: dto.avatarItemId ? dto.avatarItemId.toLowerCase() : null,
+  ...(dto.kind !== 'recording' && dto.format && dto.format !== 'points'
+    ? { format: dto.format }
+    : {}),
 });
 
 /** 같은 내용이면 같은 값. 키가 같은데 내용이 다른 요청을 가린다 */
@@ -158,6 +167,7 @@ export const fingerprintOf = (body: NormalizedBody): string =>
         body.description,
         body.blobUrls,
         body.avatarItemId,
+        ...(body.format ? [body.format] : []),
       ]),
     )
     .digest('hex');
@@ -308,6 +318,7 @@ export class MaterialsService implements OnModuleInit {
               title: body.title,
               description: body.description,
               avatarItemId: body.avatarItemId ? new Types.ObjectId(body.avatarItemId) : null,
+              ...(body.kind !== 'recording' ? { summaryFormat: body.format ?? 'points' } : {}),
               processing: { status: 'queued', progress: 0, jobId: null },
               // 이미지는 업로드마다 한 쪽. PDF 는 한 쪽으로 두었다가 정리가 끝나면 쪽 수만큼 펼친다
               pages:
@@ -454,7 +465,7 @@ export class MaterialsService implements OnModuleInit {
         userId,
         targetType: 'material',
         targetId: material._id.toString(),
-        input: jobInput(kind, files, subjectName),
+        input: jobInput(kind, files, subjectName, material.summaryFormat),
       });
       const linked = await this.materials
         .findOneAndUpdate(
@@ -730,7 +741,27 @@ export class MaterialsService implements OnModuleInit {
       job?.status === 'succeeded'
         ? syncFromJob({ ...row, processing: { ...row.processing, status: 'processing' } }, job)
         : null;
-    const applied = update?.['processing.status'] === 'done';
+    // 고른 양식의 항목이 하나도 안 나오면(FR-19) 실패로 보고 지금 결과 · 양식을 둔다. 하루 횟수는 돌려준다
+    const empty =
+      update?.['processing.status'] === 'done' && row.kind !== 'recording' && noItems(job);
+    const applied = update?.['processing.status'] === 'done' && !empty;
+    // 돌려주기를 옮기기보다 먼저 한다: 돌려주기가 실패하면 regenJobId 가 남아 다음 조회가 다시 시도한다.
+    // 작업 id 로 한 번만 돌려주므로 동시 조회 · 재시도에도 겹치지 않는다
+    if (empty)
+      try {
+        await this.regenQuotas!.updateOne(
+          {
+            ownerId: row.ownerId,
+            day: seoulDay(regenId.getTimestamp()),
+            count: { $gt: 0 },
+            refunds: { $not: { $gte: REGEN_REFUND_MAX } },
+            refundedJobs: { $ne: regenId },
+          },
+          { $inc: { count: -1, refunds: 1 }, $addToSet: { refundedJobs: regenId } },
+        );
+      } catch {
+        return row; // 옮기지 않고 둔다 — 다음 조회가 돌려주기부터 다시
+      }
     const clear = { 'processing.regenJobId': null, 'processing.lastRegenJobId': regenId };
     const updated = await this.materials
       .findOneAndUpdate(
@@ -748,7 +779,11 @@ export class MaterialsService implements OnModuleInit {
    * 남의 노트 · 없는 노트 404, 정리 중이거나 다시 만드는 중이면 409, 하루 REGENERATE_DAILY_LIMIT 회를 넘으면 429.
    * 자리(regenJobId)를 먼저 원자적으로 잡아 동시에 눌러도 작업은 하나이고, 거절 · 실패한 요청은 한도를 쓰지 않는다
    */
-  async regenerate(userId: string, id: string): Promise<{ material: AppMaterial; job: AppAiJob }> {
+  async regenerate(
+    userId: string,
+    id: string,
+    format?: string,
+  ): Promise<{ material: AppMaterial; job: AppAiJob }> {
     const owner = new Types.ObjectId(userId);
     const _id = objectId(id);
     const found = await this.materials
@@ -760,6 +795,11 @@ export class MaterialsService implements OnModuleInit {
     if (row.processing.status !== 'done' || !(row.kind in JOB_TYPE))
       throw notReady('정리가 끝난 노트만 다시 만들 수 있어요');
     const kind = row.kind as keyof typeof JOB_TYPE;
+    // 양식(FR-19): 녹음은 무시. 지금 양식과 같은 양식은 결과가 거의 같아 받지 않는다(안 보내면 지금 양식)
+    const current = row.summaryFormat ?? 'points';
+    if (kind !== 'recording' && format && format === current)
+      throw invalid('지금 양식과 다른 양식을 골라 주세요');
+    const nextFormat = kind === 'recording' ? undefined : (format ?? current);
     const regenId = new Types.ObjectId();
     const claimed = await this.materials
       .findOneAndUpdate(
@@ -780,7 +820,8 @@ export class MaterialsService implements OnModuleInit {
         { _id, 'processing.regenJobId': regenId },
         { $set: { 'processing.regenJobId': null } },
       );
-    const day = seoulDay(new Date());
+    // 돌려줄 때(syncRegen)도 같은 날짜를 쓰도록 작업 id 의 시각으로 정한다
+    const day = seoulDay(regenId.getTimestamp());
     if (!(await this.reserveRegen(owner, day))) {
       await release();
       throw regenExhausted();
@@ -796,7 +837,7 @@ export class MaterialsService implements OnModuleInit {
         userId,
         targetType: 'material',
         targetId: id,
-        input: jobInput(kind, files, folder?.subjectName),
+        input: jobInput(kind, files, folder?.subjectName, nextFormat),
       });
       return { material: await this.view(claimed), job };
     } catch (e) {
@@ -1002,7 +1043,13 @@ export class MaterialsService implements OnModuleInit {
       // 읽은 뒤 다시 만들기가 자리를 잡았으면 새 결과가 고친 글을 덮어쓰므로, 저장 조건에서도 다시 만드는 중이 아닐 때만 바꾼다
       const saved = await this.materials.updateOne(
         { ...mine, 'processing.status': 'done', 'processing.regenJobId': null },
-        { $set: { summary: { sections, points: row.summary?.points ?? [] }, concepts: [] } },
+        {
+          $set: {
+            // 양식 항목(items · format)은 소제목 · 본문 편집과 상관없으니 그대로 둔다
+            summary: { ...row.summary, sections, points: row.summary?.points ?? [] },
+            concepts: [],
+          },
+        },
       );
       if (saved.matchedCount === 0) {
         if (!(await this.currentRow(row))) throw notFound('노트');

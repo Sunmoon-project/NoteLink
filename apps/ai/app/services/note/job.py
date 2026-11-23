@@ -4,7 +4,7 @@
 input   {pages: [{pageNo, imageUrl}], subject?: 글, seeds?: [{topic, terms: [{term, url?}]}]}
         pageNo는 업로드 순서(1부터). 여러 쪽 PDF는 pageNo부터 쪽 수만큼 번호를 차지함
 result  {pages: [{pageNo, ocrText}], lineResults, chunks: [노트 조각 + embedding],
-         summary: {points, keywords, headings} | null,
+         summary: {format, items, points, keywords, headings} | null,
          diagrams: [{after: 바로 앞 본문 줄 글 | null, diagram: {kind, terms, relations}}],
          warnings}
         chunks는 맞춤 퀴즈 input의 material.chunks에 그대로 들어감(quiz.generate)
@@ -197,7 +197,7 @@ def run(
     report(SPLIT_END, "refine")
     chunks = refine_note(llm, settings.note_refine_model, chunks, subject or "", seeds)
     report(REFINE_END, "summary")
-    summary = summarize_note(split_llm or llm, settings.note_split_model, chunks)
+    summary = summarize_note(split_llm or llm, settings.note_split_model, chunks, inp.get("format"))
     diagrams = place_diagrams(chunks, lines, [(u.page_no, u.diagrams) for u in uploads])
     report(SUMMARY_END, "embed")
     vectors = embedder.embed(embed_texts(chunks), "document")

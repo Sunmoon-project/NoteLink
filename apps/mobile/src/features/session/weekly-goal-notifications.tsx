@@ -51,10 +51,7 @@ export function WeeklyGoalNotifications() {
         stale.map(async (notification) => {
           const data = notification.content.data;
           await Notifications.cancelScheduledNotificationAsync(notification.identifier);
-          if (
-            typeof data?.userId === 'string' &&
-            typeof data.weekStart === 'string'
-          )
+          if (typeof data?.userId === 'string' && typeof data.weekStart === 'string')
             await SecureStore.deleteItemAsync(keyFor(data.userId, data.weekStart));
         }),
       );
@@ -134,13 +131,7 @@ export function WeeklyGoalNotifications() {
     return () => {
       cancelled = true;
     };
-  }, [
-    active,
-    userId,
-    goal.data,
-    weekly.data,
-    session,
-  ]);
+  }, [active, userId, goal.data, weekly.data, session]);
 
   useEffect(() => {
     if (!active || !userId) return;

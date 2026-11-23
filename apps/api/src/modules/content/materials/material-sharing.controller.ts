@@ -11,11 +11,13 @@ import {
 } from '@nestjs/common';
 import type { Flashcard, FriendShare, QuizSet, RoomSharedItem } from '@notelink/shared';
 
+import { Types } from 'mongoose';
+
 import { requireUserId } from '../../../common/request-user.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../../auth/jwt-auth.guard.js';
 import { CopyFriendShareDto, ShareMaterialsDto } from './dto/share-materials.dto.js';
 import { ShareStudyItemDto } from './dto/share-study-item.dto.js';
-import { FriendShareService } from './friend-share.service.js';
+import { FriendShareService, notFound } from './friend-share.service.js';
 import { MaterialSharingService } from './material-sharing.service.js';
 
 /** 노트 공유 주소 (packages/shared PATHS.materialShare · roomShared) */
@@ -94,5 +96,28 @@ export class MaterialSharingController {
     @Body() body: CopyFriendShareDto,
   ): Promise<{ data: { _id: string; folderId: string } }> {
     return { data: await this.friendShares.copy(requireUserId(req), id, body.folderId) };
+  }
+
+  /**
+   * 방 · 친구에게 공유받은 남의 노트를 고른 내 폴더(없으면 최근 폴더)로 가져온다 → 새 노트 id · 넣은 폴더.
+   * 볼 수 없는 노트 · 내 노트는 404(내 노트는 가져올 일이 없다)
+   */
+  @Post('materials/:id/copy')
+  async copyShared(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: CopyFriendShareDto,
+  ): Promise<{ data: { _id: string; folderId: string } }> {
+    const userId = requireUserId(req);
+    const ownerId = await this.sharing.ownerOfShared(userId, id);
+    if (!ownerId || ownerId === userId) throw notFound('노트');
+    return {
+      data: await this.friendShares.copyNote(
+        userId,
+        new Types.ObjectId(ownerId),
+        new Types.ObjectId(id),
+        body.folderId,
+      ),
+    };
   }
 }

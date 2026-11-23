@@ -49,6 +49,7 @@ import {
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
 import { DocSummary, NoteBody } from './convert';
+import { SummaryCard, summaryItemsMarkdown } from './summary-format';
 import { Player } from './player';
 import { PageImages, usePageTurn } from './page-images';
 import { TutorBuddy, canAsk, useTuckOnScroll } from '@/features/tutor/buddy';
@@ -56,7 +57,7 @@ import { seoul } from '@/lib/dates';
 import { QuizFromNote } from './quiz-from-note';
 import { useResummarize } from './resummarize';
 import { aiStateOf } from '@/lib/ai';
-import { FriendShareFooter, useFriendShare } from './friend-share';
+import { FriendShareFooter, ImportButton, useFriendShare } from './friend-share';
 
 // p.67~73 필기 · 녹음 · 문서 상세 / 편집 / 다운로드 / 공유 / 삭제
 
@@ -138,11 +139,16 @@ function SummaryStatus({
   hint?: string;
 }) {
   const resummarize = useResummarize();
+  // 남의 노트는 다시 정리할 수 없다(주인 작업이라 404)
+  const { readOnly } = useFriendShare();
   const state = aiStateOf(m.processing);
   if (state === 'waiting') return <AiPending what={what} hint={hint} />;
   const [title, sub] =
     state === 'failed'
-      ? [failed, hint ?? (m.processing.jobId ? '다시 눌러 정리해 볼 수 있어요.' : undefined)]
+      ? [
+          failed,
+          hint ?? (m.processing.jobId && !readOnly ? '다시 눌러 정리해 볼 수 있어요.' : undefined),
+        ]
       : state === 'working'
         ? [working, '끝나면 여기에 바로 보여요.']
         : [empty, hint];
@@ -157,7 +163,7 @@ function SummaryStatus({
         <Text className="text-subhead font-semibold text-ink">{title}</Text>
         {!!sub && <Text className="mt-0.5 text-footnote text-sub">{sub}</Text>}
       </View>
-      {state === 'failed' && !!m.processing.jobId && (
+      {state === 'failed' && !!m.processing.jobId && !readOnly && (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={retry}
@@ -192,8 +198,8 @@ function useSubject(folderId?: string) {
 /** 정리본을 마크다운으로: 제목 · 핵심 요약 · 정리된 내용 · 키워드 (서버에는 정리본 파일이 없어 앱이 만든다) */
 export function summaryMarkdown(m: Pick<Material, 'title' | 'summary' | 'keywords'>): string {
   const out = [`# ${m.title}`];
-  if (m.summary?.points.length)
-    out.push('## 핵심 요약', m.summary.points.map((p) => `- ${p}`).join('\n'));
+  const top = summaryItemsMarkdown(m.summary).trimEnd();
+  if (top) out.push(top);
   for (const s of m.summary?.sections ?? []) out.push(`## ${s.heading}`, s.body);
   if (m.keywords.length) out.push('## 키워드', m.keywords.join(' · '));
   return out.join('\n\n') + '\n';
@@ -330,6 +336,8 @@ export function HandDetailScreen() {
         footer={
           shared.shareId ? (
             <FriendShareFooter shareId={shared.shareId} />
+          ) : shared.room ? (
+            <ImportButton id={id} kind={m.kind} />
           ) : (
             <Two>
               <Btn
@@ -356,7 +364,10 @@ export function HandDetailScreen() {
         <View className="mt-4">
           {tab === '정리된 노트' ? (
             m.summary?.sections.length ? (
-              <NoteBody sections={m.summary.sections} diagrams={m.diagrams} />
+              <>
+                <SummaryCard summary={m.summary} />
+                <NoteBody sections={m.summary.sections} diagrams={m.diagrams} />
+              </>
             ) : (
               <SummaryStatus
                 m={m}
@@ -365,7 +376,14 @@ export function HandDetailScreen() {
                 retry="다시 정리"
                 working="필기를 정리하고 있어요"
                 empty="정리된 내용이 없어요"
-                hint="직접 정리하려면 '편집하기'를 눌러 써 보세요."
+                hint={
+                  !shared.readOnly
+                    ? "직접 정리하려면 '편집하기'를 눌러 써 보세요."
+                    : // 정리가 끝나지 않은 노트는 가져오기도 거절된다(409) — 올린 사람이 다시 정리해야 한다
+                      aiStateOf(m.processing) === 'failed'
+                      ? '올린 사람이 다시 정리하면 볼 수 있어요.'
+                      : '내 폴더로 가져오면 직접 정리할 수 있어요.'
+                }
               />
             )
           ) : (
@@ -591,7 +609,15 @@ export function RecDetailScreen() {
   return (
     <Canvas>
       {/* 떠 있는 아바타 선생님은 두지 않는다: 플레이어 자막 옆 3D 아바타가 녹음에 맞춰 말한다(GL 화면 하나) */}
-      <Screen footer={shared.shareId ? <FriendShareFooter shareId={shared.shareId} /> : undefined}>
+      <Screen
+        footer={
+          shared.shareId ? (
+            <FriendShareFooter shareId={shared.shareId} />
+          ) : shared.room ? (
+            <ImportButton id={id} kind={m.kind} />
+          ) : undefined
+        }
+      >
         <Header
           title={view === 'text' ? '원문 텍스트 보기' : m.title}
           sub={dateLabel(m, '녹음')}
@@ -677,6 +703,8 @@ export function DocDetailScreen() {
         footer={
           shared.shareId ? (
             <FriendShareFooter shareId={shared.shareId} />
+          ) : shared.room ? (
+            <ImportButton id={id} kind={m.kind} />
           ) : (
             <Two>
               <Btn
@@ -703,7 +731,7 @@ export function DocDetailScreen() {
         {tab === '요약' ? (
           <View className="mt-4">
             {m.summary?.points.length ? (
-              <DocSummary points={m.summary.points} keywords={m.keywords} />
+              <DocSummary points={m.summary.points} summary={m.summary} keywords={m.keywords} />
             ) : (
               <SummaryStatus
                 m={m}

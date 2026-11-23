@@ -99,7 +99,8 @@ it('공유된 퀴즈 · 카드 묶음은 공유 항목 화면으로(남의 퀴�
   await waitFor(() =>
     expect(mockOpen).toHaveBeenCalledWith({
       pathname: '/note-view/doc/[id]',
-      params: { id: 'mat-1' },
+      // 남(민수)이 올린 노트는 방 id 를 붙여 읽기 전용으로 연다
+      params: { id: 'mat-1', room: 'r1' },
     }),
   );
 });
@@ -119,8 +120,35 @@ it.each([
   // 아래 「채팅에 올린 사진 · 파일」과 같은 섹션 제목
   expect(await screen.findByText('공유한 자료')).toBeTruthy();
   await fireEvent.press(await screen.findByText('공유 노트'));
-  await waitFor(() => expect(mockOpen).toHaveBeenCalledWith({ pathname, params: { id: 'mat-9' } }));
+  await waitFor(() =>
+    expect(mockOpen).toHaveBeenCalledWith({ pathname, params: { id: 'mat-9', room: 'r1' } }),
+  );
   expect(mockApi.content.material).toHaveBeenCalledWith('mat-9');
+});
+
+it('내가 올린 노트는 방 id 없이 내 노트처럼 연다(편집 · 공유 그대로)', async () => {
+  useAuth.setState({ userId: 'me' });
+  mockApi.rooms.shared.mockResolvedValue({
+    items: [
+      item({
+        _id: 'm',
+        itemType: 'material',
+        materialId: 'mat-9',
+        title: '공유 노트',
+        sharedBy: 'me',
+      }),
+    ],
+    flashcards: [],
+  });
+  mockApi.content.material.mockResolvedValue({ _id: 'mat-9', kind: 'document' });
+  await renderScreen(<RoomCardsScreen />);
+  await fireEvent.press(await screen.findByText('공유 노트'));
+  await waitFor(() =>
+    expect(mockOpen).toHaveBeenCalledWith({
+      pathname: '/note-view/doc/[id]',
+      params: { id: 'mat-9' },
+    }),
+  );
 });
 
 it('공유 노트를 조회하지 못하면 토스트로 알리고, 조회 중 같은 항목을 또 눌러도 한 번만 조회한다', async () => {
