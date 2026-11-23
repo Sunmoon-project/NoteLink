@@ -18,6 +18,10 @@ export class RegenQuota {
   @Prop({ required: true, type: Number })
   count: number;
 
+  /** 항목 0개 실패로 돌려준 횟수(FR-19). 하루 REGEN_REFUND_MAX 번까지만 돌려준다. 옛 문서에는 없다 */
+  @Prop({ type: Number })
+  refunds?: number;
+
   @Prop({ required: true, type: Date })
   expiresAt: Date;
 }

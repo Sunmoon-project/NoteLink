@@ -196,6 +196,21 @@ describe.skipIf(!isLocal)('진짜 DB 정리 결과 다시 만들기', () => {
     expect(after.summary).toMatchObject({ format: 'terms', points: ['적분: 넓이'] });
   });
 
+  it('양식 항목이 0개면 지금 결과를 두고 하루 횟수를 돌려준다 — 하루 2번까지만', async () => {
+    const { id } = await doneNote();
+    for (let i = 0; i < 3; i += 1) {
+      const { job } = await service.regenerate(me.toHexString(), id, 'qa');
+      await finish(job._id, 'succeeded', {
+        ...result('적분'),
+        summary: { format: 'qa', items: [], points: [] },
+      });
+      const after = await service.findMine(me.toHexString(), id);
+      expect(after.summary?.sections[0]?.heading).toBe('미분');
+      expect(after.summaryFormat).toBe('points');
+    }
+    expect(await quotas.findOne({}).lean()).toMatchObject({ count: 1, refunds: 2 });
+  });
+
   it('요약을 고쳐도 양식 항목(items · format)은 남는다', async () => {
     const { id } = await doneNote();
     const { job } = await service.regenerate(me.toHexString(), id, 'qa');

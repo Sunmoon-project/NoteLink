@@ -80,6 +80,8 @@ const conflict = (message: string) =>
   new ConflictException({ code: ERROR_CODES.IDEMPOTENCY_CONFLICT, message });
 /** 정리 결과 「다시 만들기」를 한 사람이 하루(서울 날짜)에 할 수 있는 횟수 */
 export const REGENERATE_DAILY_LIMIT = 3;
+/** 항목 0개 실패로 하루 횟수를 돌려주는 상한(FR-19). 빈 결과가 나는 양식을 되풀이해 AI 호출을 끝없이 쓰지 못하게 */
+export const REGEN_REFUND_MAX = 2;
 const notReady = (message: string) =>
   new ConflictException({ code: ERROR_CODES.NOTE_NOT_READY, message });
 const regenExhausted = () =>
@@ -753,8 +755,13 @@ export class MaterialsService implements OnModuleInit {
       .lean<MaterialRow>();
     if (empty && updated)
       await this.regenQuotas!.updateOne(
-        { ownerId: row.ownerId, day: seoulDay(regenId.getTimestamp()), count: { $gt: 0 } },
-        { $inc: { count: -1 } },
+        {
+          ownerId: row.ownerId,
+          day: seoulDay(regenId.getTimestamp()),
+          count: { $gt: 0 },
+          refunds: { $not: { $gte: REGEN_REFUND_MAX } },
+        },
+        { $inc: { count: -1, refunds: 1 } },
       );
     return updated ?? this.currentRow(row);
   }
