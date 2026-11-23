@@ -322,6 +322,7 @@ export class FriendShareService {
         avatarItemId: null,
         processing: { status: 'done', progress: 100, jobId, regenJobId: null },
         summary: note.summary ?? null,
+        ...(note.summaryFormat ? { summaryFormat: note.summaryFormat } : {}),
         keywords: note.keywords ?? [],
         // 필기 도식도 함께(없으면 사본에서 빠진다)
         diagrams: note.diagrams ?? [],

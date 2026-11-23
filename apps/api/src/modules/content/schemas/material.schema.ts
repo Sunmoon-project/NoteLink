@@ -82,6 +82,17 @@ export class Summary {
 
   @Prop({ type: [String], default: [] })
   points: string[];
+
+  // 정리 양식(FR-19, points · qa · terms · brief). 양식 전 결과 · 녹음에는 없다
+  @Prop({ type: String })
+  format?: string;
+
+  // 양식대로 받은 요약 항목(head: qa 질문 · terms 용어, 그 밖 null)
+  @Prop({
+    type: [{ _id: false, head: { type: String, default: null }, text: String }],
+    default: undefined,
+  })
+  items?: { head: string | null; text: string }[];
 }
 
 export const SummarySchema = SchemaFactory.createForClass(Summary);
@@ -160,6 +171,10 @@ export class Material {
 
   @Prop({ type: SummarySchema, default: null })
   summary?: Summary | null;
+
+  // 이 노트의 지금 정리 양식(FR-19). 없으면 points. 다시 만들기는 성공해 결과를 옮길 때만 바꾼다
+  @Prop({ type: String })
+  summaryFormat?: string;
 
   @Prop({ type: [String], default: [] })
   keywords: string[];

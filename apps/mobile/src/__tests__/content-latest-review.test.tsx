@@ -121,7 +121,12 @@ const deferred = <T,>() => {
 beforeEach(() => {
   jest.clearAllMocks();
   useDraft.getState().reset();
-  useDraft.getState().set({ kind: 'handwriting', files: [localPhoto], folderId: 'folder1' });
+  useDraft.getState().set({
+    kind: 'handwriting',
+    files: [localPhoto],
+    folderId: 'folder1',
+    format: 'points',
+  });
   setParams({ id: 'material1' });
   mockUpload.mockResolvedValue(blobUrl);
   mockCheckFile.mockReturnValue({ ok: true });
@@ -637,6 +642,39 @@ describe('PR36 검사 Blob 재사용', () => {
     expect(mockUpload).toHaveBeenCalledTimes(2);
     expect(mockUpload.mock.calls[1]?.[1]).toEqual(editedPhoto);
   });
+});
+
+// FR-19: 필기 · 문서는 올리기 전에 정리 양식을 묻고, 고른 양식을 등록 요청에 싣는다
+it('양식을 묻기 전에는 올리지 않고, 고른 양식(문답)으로 등록한다', async () => {
+  useDraft.getState().set({ format: null });
+  await renderScreen(<ConvertScreen />, client());
+  expect(await screen.findByText('어떤 모습으로 정리할까요?')).toBeTruthy();
+  expect(mockUpload).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByRole('radio', { name: '문답' }));
+  await fireEvent.press(screen.getByRole('button', { name: '이 모습으로 만들기' }));
+  await waitFor(() =>
+    expect(mockApi.content.createMaterial).toHaveBeenCalledWith(
+      expect.objectContaining({ format: 'qa' }),
+    ),
+  );
+});
+
+it('양식 시트를 닫으면 핵심 요약으로 진행하고, 녹음은 묻지 않는다', async () => {
+  useDraft.getState().set({ format: null });
+  const first = await renderScreen(<ConvertScreen />, client());
+  await fireEvent.press((await screen.findAllByLabelText('닫기'))[0]!);
+  await waitFor(() =>
+    expect(mockApi.content.createMaterial).toHaveBeenCalledWith(
+      expect.objectContaining({ format: 'points' }),
+    ),
+  );
+  await first.unmount();
+  mockApi.content.createMaterial.mockClear();
+  useDraft.getState().set({ kind: 'recording', format: null });
+  await renderScreen(<ConvertScreen />, client());
+  await waitFor(() => expect(mockApi.content.createMaterial).toHaveBeenCalled());
+  expect(screen.queryByText('어떤 모습으로 정리할까요?')).toBeNull();
+  expect(mockApi.content.createMaterial.mock.calls[0][0]).not.toHaveProperty('format');
 });
 
 it.each([

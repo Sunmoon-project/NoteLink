@@ -183,7 +183,8 @@ export const httpApi: Api = {
     recording: (id) => http.get(P.materialRecording(id)),
     addBookmark: (id, atSec) => http.post(P.materialBookmarks(id), { atSec }),
     downloadUrl: (id) => http.get(P.materialDownloadUrl(id)),
-    regenerate: (id) => http.post(P.materialRegenerate(id)),
+    regenerate: (id, format) =>
+      http.post(P.materialRegenerate(id), format ? { format } : undefined),
     share: (p) => http.post(P.materialShare, p),
     friendShare: (id) => http.get(P.friendShare(id)),
     revokeFriendShare: (id) => http.del(P.friendShare(id)),

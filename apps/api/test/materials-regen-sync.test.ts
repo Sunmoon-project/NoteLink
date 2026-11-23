@@ -10,7 +10,10 @@ import type { MaterialRow } from '../src/modules/content/materials/material-view
 
 const userId = new Types.ObjectId();
 
-function setup(job: { status: string; result?: Record<string, unknown> | null } | null) {
+function setup(
+  job: { status: string; result?: Record<string, unknown> | null } | null,
+  base: Partial<MaterialRow> = {},
+) {
   const old = new Types.ObjectId();
   // 만든 지 오래된 작업 id(작업이 없을 때 「방금 자리를 잡는 중」으로 보지 않게)
   const regenId = Types.ObjectId.createFromTime(Math.floor(Date.now() / 1000) - 3600);
@@ -23,6 +26,7 @@ function setup(job: { status: string; result?: Record<string, unknown> | null } 
     title: '영어 녹음',
     processing: { status: 'done', progress: 100, jobId: old, regenJobId: regenId },
     createdAt: new Date(),
+    ...base,
   };
   const writes: { filter: Record<string, unknown>; set: Record<string, unknown> }[] = [];
   const materials = {
@@ -47,6 +51,15 @@ function setup(job: { status: string; result?: Record<string, unknown> | null } 
         },
       ),
   };
+  const refunds: Record<string, unknown>[] = [];
+  const regenQuotas = {
+    fail: false,
+    updateOne: (filter: Record<string, unknown>) => {
+      if (regenQuotas.fail) return Promise.reject(new Error('down'));
+      refunds.push(filter);
+      return Promise.resolve({});
+    },
+  };
   const service = new MaterialsService(
     materials as never,
     {} as never,
@@ -54,8 +67,9 @@ function setup(job: { status: string; result?: Record<string, unknown> | null } 
     {} as never,
     {} as never,
     {} as never,
+    regenQuotas as never,
   );
-  return { service, row, writes, old, regenId };
+  return { service, row, writes, old, regenId, refunds, regenQuotas };
 }
 
 describe('다시 만들기 동기화는 지우는 regenJobId 를 lastRegenJobId 에 남긴다(#639)', () => {
@@ -111,5 +125,95 @@ describe('다시 만들기 동기화는 지우는 regenJobId 를 lastRegenJobId 
     const { service, row, writes } = setup({ status: 'running' });
     await service.sync(userId.toHexString(), row);
     expect(writes).toHaveLength(0);
+  });
+});
+
+describe('양식 다시 만들기(FR-19)', () => {
+  const page = { pageNo: 1, imageUrl: 'https://b/u/1.jpg', sizeBytes: 1 };
+  const note: Partial<MaterialRow> = {
+    kind: 'handwriting',
+    source: 'camera',
+    pages: [page],
+    summaryFormat: 'points',
+  };
+  const result = (summary: unknown) => ({
+    pages: [{ pageNo: 1, ocrText: '세포 호흡' }],
+    chunks: [{ order: 1, title: '해당과정', text: '포도당이 나뉜다' }],
+    summary,
+  });
+
+  it('고른 양식 항목이 나오면 결과 · 양식을 바꾼다', async () => {
+    const { service, row, writes, refunds } = setup(
+      {
+        status: 'succeeded',
+        result: result({
+          format: 'qa',
+          items: [{ head: '무엇이 나뉘나?', text: '포도당' }],
+          points: ['무엇이 나뉘나? — 포도당'],
+          keywords: [],
+          headings: [],
+        }),
+      },
+      note,
+    );
+    await service.sync(userId.toHexString(), row);
+    expect(writes[0]!.set).toMatchObject({
+      'processing.status': 'done',
+      summaryFormat: 'qa',
+      summary: {
+        format: 'qa',
+        items: [{ head: '무엇이 나뉘나?', text: '포도당' }],
+        points: ['무엇이 나뉘나? — 포도당'],
+      },
+    });
+    expect(refunds).toEqual([]);
+  });
+
+  it('항목이 0개면 옛 결과 · 양식을 두고 하루 횟수를 돌려준다', async () => {
+    const { service, row, writes, refunds, regenId } = setup(
+      {
+        status: 'succeeded',
+        result: result({ format: 'terms', items: [], points: [], keywords: [], headings: [] }),
+      },
+      note,
+    );
+    await service.sync(userId.toHexString(), row);
+    expect(writes[0]!.set).toEqual({
+      'processing.regenJobId': null,
+      'processing.lastRegenJobId': regenId,
+    });
+    expect(refunds).toHaveLength(1);
+    // 같은 작업은 한 번만 돌려준다(동시 조회 · 재시도)
+    expect(refunds[0]).toMatchObject({ refundedJobs: { $ne: regenId } });
+  });
+
+  it('요약 호출이 실패해(summary: null) 새 양식을 못 만들면 옛 결과를 두고 돌려준다', async () => {
+    const { service, row, writes, refunds, regenId } = setup(
+      { status: 'succeeded', result: result(null) },
+      note,
+    );
+    await service.sync(userId.toHexString(), row);
+    expect(writes[0]!.set).toEqual({
+      'processing.regenJobId': null,
+      'processing.lastRegenJobId': regenId,
+    });
+    expect(refunds).toHaveLength(1);
+  });
+
+  it('돌려주기가 실패하면 옮기지 않고 regenJobId 를 남겨 다음 조회가 다시 돌려준다', async () => {
+    const { service, row, writes, refunds, regenQuotas } = setup(
+      {
+        status: 'succeeded',
+        result: result({ format: 'terms', items: [], points: [], keywords: [], headings: [] }),
+      },
+      note,
+    );
+    regenQuotas.fail = true;
+    await service.sync(userId.toHexString(), row);
+    expect(writes).toEqual([]);
+    regenQuotas.fail = false;
+    await service.sync(userId.toHexString(), row);
+    expect(refunds).toHaveLength(1);
+    expect(writes).toHaveLength(1);
   });
 });

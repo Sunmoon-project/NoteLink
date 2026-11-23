@@ -1,4 +1,10 @@
-import type { Material, MaterialKind, MaterialSource, NoteDiagram } from '@notelink/shared';
+import type {
+  Material,
+  MaterialKind,
+  MaterialSource,
+  NoteDiagram,
+  SummaryFormat,
+} from '@notelink/shared';
 import type { Types } from 'mongoose';
 
 /** DB에서 읽은 노트 한 줄(lean). 서비스가 쓰는 필드만 적는다 */
@@ -19,7 +25,13 @@ export interface MaterialRow {
     lastRegenJobId?: Types.ObjectId | null;
     checkedAt?: Date;
   };
-  summary?: { sections: { heading: string; body: string }[]; points?: string[] } | null;
+  summary?: {
+    sections: { heading: string; body: string }[];
+    points?: string[];
+    format?: string;
+    items?: { head: string | null; text: string }[];
+  } | null;
+  summaryFormat?: string;
   keywords?: string[];
   diagrams?: NoteDiagram[];
   concepts?: string[];
@@ -65,8 +77,13 @@ export function toAppMaterial(row: MaterialRow, pageUrl?: (blobUrl: string) => s
       ? {
           sections: row.summary.sections.map((s) => ({ heading: s.heading, body: s.body })),
           points: row.summary.points ?? [],
+          ...(row.summary.format ? { format: row.summary.format as SummaryFormat } : {}),
+          ...(row.summary.items
+            ? { items: row.summary.items.map((i) => ({ head: i.head ?? null, text: i.text })) }
+            : {}),
         }
       : null,
+    ...(row.summaryFormat ? { summaryFormat: row.summaryFormat as SummaryFormat } : {}),
     keywords: row.keywords ?? [],
     bookmarks: (row.bookmarks ?? []).map((b) => ({
       atSec: b.atSec,

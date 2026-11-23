@@ -84,6 +84,7 @@ beforeEach(() => {
   useDraft.getState().reset();
   useDraft.getState().set({
     folderId: 'folder2',
+    format: 'points',
     files: [{ uri: 'file://a.jpg', name: 'a.jpg', mimeType: 'image/jpeg' }],
     title: '노트',
   });

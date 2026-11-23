@@ -178,6 +178,81 @@ describe.skipIf(!isLocal)('진짜 DB 정리 결과 다시 만들기', () => {
     expect(await headings(id)).toEqual(['내가 고침']);
   });
 
+  it('양식(FR-19): 고른 양식을 작업 입력에 싣고, 지금 양식과 같으면 400 · 한도를 쓰지 않는다', async () => {
+    const { id } = await doneNote();
+    const same = await service.regenerate(me.toHexString(), id, 'points').catch((e: unknown) => e);
+    expect((same as { getStatus?: () => number }).getStatus?.()).toBe(400);
+    expect(await quotas.countDocuments()).toBe(0);
+    const { job } = await service.regenerate(me.toHexString(), id, 'terms');
+    expect((await jobs.findById(job._id).lean())!.input).toMatchObject({ format: 'terms' });
+    // 성공해 옮기기 전까지 노트의 양식은 그대로
+    expect((await service.findMine(me.toHexString(), id)).summaryFormat).toBe('points');
+    await finish(job._id, 'succeeded', {
+      ...result('적분'),
+      summary: { format: 'terms', items: [{ head: '적분', text: '넓이' }], points: ['적분: 넓이'] },
+    });
+    const after = await service.findMine(me.toHexString(), id);
+    expect(after.summaryFormat).toBe('terms');
+    expect(after.summary).toMatchObject({ format: 'terms', points: ['적분: 넓이'] });
+  });
+
+  it('양식 항목이 0개면 지금 결과를 두고 하루 횟수를 돌려준다 — 하루 2번까지만', async () => {
+    const { id } = await doneNote();
+    for (let i = 0; i < 3; i += 1) {
+      const { job } = await service.regenerate(me.toHexString(), id, 'qa');
+      await finish(job._id, 'succeeded', {
+        ...result('적분'),
+        summary: { format: 'qa', items: [], points: [] },
+      });
+      const after = await service.findMine(me.toHexString(), id);
+      expect(after.summary?.sections[0]?.heading).toBe('미분');
+      expect(after.summaryFormat).toBe('points');
+    }
+    expect(await quotas.findOne({}).lean()).toMatchObject({ count: 1, refunds: 2 });
+  });
+
+  it('빈 결과를 동시에 · 거듭 조회해도 횟수는 한 번만 돌려준다', async () => {
+    const { id } = await doneNote();
+    // 먼저 성공한 다시 만들기 하나(count 1) — 돌려줄 횟수가 남아 있어도 겹치지 않는지 본다
+    const first = await service.regenerate(me.toHexString(), id, 'terms');
+    await finish(first.job._id, 'succeeded', {
+      ...result('적분'),
+      summary: { format: 'terms', items: [{ head: '적분', text: '넓이' }], points: ['적분: 넓이'] },
+    });
+    await service.findMine(me.toHexString(), id);
+    const { job } = await service.regenerate(me.toHexString(), id, 'qa');
+    await finish(job._id, 'succeeded', {
+      ...result('적분'),
+      summary: { format: 'qa', items: [], points: [] },
+    });
+    await Promise.all(Array.from({ length: 5 }, () => service.findMine(me.toHexString(), id)));
+    await service.findMine(me.toHexString(), id);
+    const quota = await quotas.findOne({}).lean();
+    expect(quota).toMatchObject({ count: 1, refunds: 1 });
+    expect(quota!.refundedJobs!.map(String)).toEqual([job._id]);
+  });
+
+  it('요약을 고쳐도 양식 항목(items · format)은 남는다', async () => {
+    const { id } = await doneNote();
+    const { job } = await service.regenerate(me.toHexString(), id, 'qa');
+    await finish(job._id, 'succeeded', {
+      ...result('적분'),
+      summary: {
+        format: 'qa',
+        items: [{ head: '적분은?', text: '넓이' }],
+        points: ['적분은? — 넓이'],
+      },
+    });
+    await service.findMine(me.toHexString(), id);
+    const edited = await service.update(me.toHexString(), id, {
+      summary: { sections: [{ heading: '고친 제목', body: '고친 본문' }] },
+    } as never);
+    expect(edited.summary).toMatchObject({
+      format: 'qa',
+      items: [{ head: '적분은?', text: '넓이' }],
+    });
+  });
+
   it('남의 노트 · 없는 노트는 404 이고 한도를 쓰지 않는다', async () => {
     const { id } = await doneNote();
     await expect(service.regenerate(other.toHexString(), id)).rejects.toBeInstanceOf(

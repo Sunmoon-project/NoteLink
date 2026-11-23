@@ -1,4 +1,4 @@
-import { MATERIAL_MAX_FILES, MaterialKind, MaterialSource } from '@notelink/shared';
+import { MATERIAL_MAX_FILES, MaterialKind, MaterialSource, SummaryFormat } from '@notelink/shared';
 import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -47,4 +47,12 @@ export class CreateMaterialDto {
   blobUrls: string[];
 
   @IsOptional() @IsMongoId() avatarItemId?: string | null;
+
+  // 정리 양식(FR-19). 없으면 points. 녹음은 무시한다
+  @IsOptional() @IsIn(SummaryFormat.options) format?: SummaryFormat;
+}
+
+/** 다시 만들기 본문. format 이 없으면 그 노트의 지금 양식 */
+export class RegenerateMaterialDto {
+  @IsOptional() @IsIn(SummaryFormat.options) format?: SummaryFormat;
 }

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { MaterialKind, MaterialSource } from '@notelink/shared';
+import type { MaterialKind, MaterialSource, SummaryFormat } from '@notelink/shared';
 import type { LocalFile } from '@/lib/upload';
 
 // 촬영 · 선택한 파일을 업로드(AI 변환) 화면까지 넘겨주는 임시 보관함
@@ -16,6 +16,8 @@ type Draft = {
   title: string;
   description: string;
   avatar: string | null;
+  /** 정리 양식(FR-19). null 이면 변환 화면이 시작하기 전에 묻는다 */
+  format: SummaryFormat | null;
   set: (
     p: Partial<
       Omit<
@@ -44,6 +46,7 @@ const empty = {
   title: '',
   description: '',
   avatar: null,
+  format: null as SummaryFormat | null,
 };
 
 export const useDraft = create<Draft>((set, get) => ({
