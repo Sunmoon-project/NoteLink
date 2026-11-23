@@ -87,8 +87,50 @@ function NeedPermission({ onGrant, canAsk }: { onGrant: () => void; canAsk: bool
 export const scanPages = (prev: LocalFile[], pages: LocalFile[], append: boolean) =>
   append ? [...prev, ...pages] : pages;
 
+/**
+ * 필기 사진 모드에서 새 사진이 들어갈 자리(#678).
+ * - `at`(다시 촬영): 목록 안이면 그 자리. 그사이 사진이 지워져 목록 밖이면 기존 사진을 건드리지 않게 맨 뒤
+ * - `append`(「+ 사진 추가」로 이어 찍기): 맨 뒤
+ * - 둘 다 없으면 null — 처음 촬영이라 찍은 사진으로 새로 시작한다
+ */
+export function photoSlot(prev: LocalFile[], at?: string, append?: string): number | null {
+  if (at !== undefined) {
+    const i = Number(at);
+    return Number.isInteger(i) && i >= 0 && i < prev.length ? i : prev.length;
+  }
+  return append === '1' ? prev.length : null;
+}
+
+/** photoSlot 자리에 새 사진을 넣는다. 그 자리의 사진만 바뀌고 나머지 순서는 그대로다 */
+export const placePhotos = (prev: LocalFile[], added: LocalFile[], slot: number | null) =>
+  slot === null ? added : [...prev.slice(0, slot), ...added, ...prev.slice(slot + 1)];
+
+/** 같은 사진(주소)이 두 번 들어가지 않게 앞의 것만 남긴다 */
+const uniqueByUri = (files: LocalFile[]) =>
+  files.filter((file, index, all) => all.findIndex((f) => f.uri === file.uri) === index);
+
+const tooManyPhotos = () => toast(`사진은 한 노트에 ${MATERIAL_MAX_FILES}장까지 올릴 수 있어요`);
+
+/** 기기 검사(형식 · 용량)를 통과한 사진 수 — 걸러진 사진은 올리지 않으므로 상한에 세지 않는다 */
+const countUploadable = (files: LocalFile[]) =>
+  files.filter((f) => checkFile('image', f).ok).length;
+
+/**
+ * 「다시 촬영」으로 갈 카메라 주소. 사진이 여러 장이면 그 자리만 바꾸게 자리를 넘기고,
+ * 한 장뿐이면 처음 촬영과 같으므로 넘기지 않는다(카메라의 갤러리 버튼도 예전처럼 여러 장을 고름)
+ */
+const retakeHref = (index: number, total: number) =>
+  total > 1
+    ? { pathname: '/capture/camera' as const, params: { at: String(index) } }
+    : '/capture/camera';
+
 export function CameraScreen() {
-  const { mode, append } = useLocalSearchParams<{ mode?: 'scan'; append?: '1' }>();
+  const { mode, append, at } = useLocalSearchParams<{
+    mode?: 'scan';
+    append?: '1';
+    /** 다시 촬영할 사진의 자리(선택한 사진 목록 기준) */
+    at?: string;
+  }>();
   const scan = mode === 'scan';
   const insets = useSafeAreaInsets();
   const [perm, request] = useCameraPermissions();
@@ -124,31 +166,55 @@ export function CameraScreen() {
       } else if (__DEV__) console.warn('[scan-crop] 틀 · 미리보기 크기를 못 재 전체 사진을 씀');
       if (scan) setPages((x) => [...x, f]);
       else {
-        useDraft.getState().set({ files: [f] });
-        router.replace('/capture/photo-check');
+        // 이어 찍기 · 다시 촬영이면 그 자리에만 넣고 다른 사진은 남긴다(#678)
+        const prev = useDraft.getState().files;
+        const slot = photoSlot(prev, at, append);
+        // 뒤에 붙일 때는 남은 칸을 다시 본다(「+ 사진 추가」에서 봤어도 그사이 목록이 바뀔 수 있음)
+        if (slot === prev.length && countUploadable(prev) >= MATERIAL_MAX_FILES)
+          return tooManyPhotos();
+        useDraft.getState().set({ files: placePhotos(prev, [f], slot) });
+        router.replace({ pathname: '/capture/photo-check', params: { at: String(slot ?? 0) } });
       }
     } finally {
       setBusy(false);
     }
   };
   const openGallery = async () => {
+    const before = useDraft.getState().files;
+    const slot = photoSlot(before, at, append);
+    const retake = slot !== null && slot < before.length;
+    // 이어 찍기면 남은 칸만큼, 다시 촬영이면 그 자리 한 장만 고른다
+    const room =
+      slot === null
+        ? MATERIAL_MAX_FILES
+        : retake
+          ? 1
+          : MATERIAL_MAX_FILES - countUploadable(before);
+    if (room <= 0) return tooManyPhotos();
     const r = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
-      allowsMultipleSelection: true,
-      selectionLimit: MATERIAL_MAX_FILES,
+      allowsMultipleSelection: room > 1,
+      selectionLimit: room,
       quality: 0.85,
     });
     if (r.canceled) return;
-    useDraft.getState().set({
-      source: 'gallery',
-      files: r.assets.map((a, i) => ({
-        uri: a.uri,
-        name: a.fileName ?? `photo_${i + 1}.jpg`,
-        mimeType: a.mimeType,
-        size: a.fileSize,
-      })),
-    });
-    router.replace('/capture/picked');
+    const picked: LocalFile[] = r.assets.map((a, i) => ({
+      uri: a.uri,
+      name: a.fileName ?? `photo_${i + 1}.jpg`,
+      mimeType: a.mimeType,
+      size: a.fileSize,
+    }));
+    if (slot === null) useDraft.getState().set({ source: 'gallery', files: picked });
+    else {
+      // 고르는 동안 목록이 바뀌었을 수 있어 지금 목록에서 자리를 다시 잡는다.
+      // 출처는 바꾸지 않는다 — 카메라로 시작한 초안은 다음 「+ 사진 추가」도 카메라로 간다
+      const prev = useDraft.getState().files;
+      useDraft
+        .getState()
+        .set({ files: uniqueByUri(placePhotos(prev, picked, photoSlot(prev, at, append))) });
+    }
+    // 「+ 사진 추가」 · 다시 촬영으로 왔으면 아래에 있는 선택한 사진 화면으로 돌아가고, 없으면 이 화면을 바꾼다
+    router.dismissTo('/capture/picked');
   };
 
   return (
@@ -250,7 +316,12 @@ export function CameraScreen() {
 
 /** p.61 #11 사진 확인 */
 export function PhotoCheckScreen() {
-  const file = useDraft((s) => s.files[0]);
+  // 확인 · 보정할 사진의 자리 — 이어 찍은 마지막 장이나 다시 찍은 장(#678). 없으면 첫 장(처음 촬영)
+  const { at } = useLocalSearchParams<{ at?: string }>();
+  const asked = Number(at);
+  const index = Number.isInteger(asked) && asked >= 0 ? asked : 0;
+  const file = useDraft((s) => s.files[index]);
+  const total = useDraft((s) => s.files.length);
   const [rot, setRot] = useState(0);
   const [saving, setSaving] = useState(false);
   const saveLock = useRef(false);
@@ -286,8 +357,12 @@ export function PhotoCheckScreen() {
     setSaving(true);
     try {
       const edited = preview;
-      useDraft.getState().set({ files: [edited, ...useDraft.getState().files.slice(1)] });
-      router.replace('/capture/picked');
+      const files = useDraft.getState().files;
+      // 보정은 확인한 그 사진 자리에만 넣는다. 다른 사진은 그대로 둔다
+      useDraft.getState().set({ files: files.map((f, i) => (i === index ? edited : f)) });
+      // 「+ 사진 추가」 · 다시 촬영으로 왔으면 아래의 선택한 사진 화면으로 돌아간다(같은 화면을 또 쌓지 않음).
+      // 처음 촬영이면 선택한 사진 화면이 없으므로 이 화면을 바꾼다
+      router.dismissTo('/capture/picked');
     } catch {
       toast('사진을 보정하지 못했어요. 다시 시도해 주세요');
     } finally {
@@ -300,7 +375,7 @@ export function PhotoCheckScreen() {
       <Screen
         footer={
           <Two>
-            <Btn kind="outline" onPress={() => router.replace('/capture/camera')}>
+            <Btn kind="outline" onPress={() => router.replace(retakeHref(index, total))}>
               다시 촬영
             </Btn>
             <Btn disabled={!file || !previewReady} loading={saving} onPress={apply}>
@@ -385,7 +460,7 @@ export function imageCheckName(index: number, name: string): string {
 
 /** p.62 #13 선택 사진 확인 + p.102 이미지 검사 (기기 → 서버 POST /images/check) */
 export function PickedScreen() {
-  const { files, fileVersion, set } = useDraft();
+  const { files, fileVersion, source, set } = useDraft();
   const [dlg, setDlg] = useState<null | 'bad' | 'blurry'>(null);
   // 1) 형식 · 용량은 기기에서 먼저
   const local = Object.fromEntries(files.map((f) => [f.uri, checkFile('image', f)]));
@@ -494,10 +569,11 @@ export function PickedScreen() {
   const notHand = files.filter((f) => v(f) === 'not_handwriting');
   const blurry = files.find((f) => v(f) === 'blurry');
   const remove = (uri: string) => set({ files: files.filter((f) => f.uri !== uri) });
+  // 기기에서 이미 걸러진 사진은 올리지 않으므로 남은 칸에 세지 않는다
+  const roomLeft = MATERIAL_MAX_FILES - checkable.length;
   const selectPhotos = async (append: boolean) => {
-    // 기기에서 이미 걸러진 사진은 올리지 않으므로 세지 않는다
-    const room = append ? MATERIAL_MAX_FILES - checkable.length : MATERIAL_MAX_FILES;
-    if (room <= 0) return toast(`사진은 한 노트에 ${MATERIAL_MAX_FILES}장까지 올릴 수 있어요`);
+    const room = append ? roomLeft : MATERIAL_MAX_FILES;
+    if (room <= 0) return tooManyPhotos();
     const r = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsMultipleSelection: true,
@@ -506,7 +582,7 @@ export function PickedScreen() {
     });
     if (!r.canceled)
       set({
-        files: [
+        files: uniqueByUri([
           ...(append ? useDraft.getState().files : []),
           ...r.assets.map((a, i) => ({
             uri: a.uri,
@@ -514,11 +590,23 @@ export function PickedScreen() {
             mimeType: a.mimeType,
             size: a.fileSize,
           })),
-        ].filter((file, index, all) => all.findIndex((f) => f.uri === file.uri) === index),
+        ]),
       });
   };
   const reselect = () => selectPhotos(false);
-  const addPhotos = () => selectPhotos(true);
+  // 카메라로 시작했으면 카메라로 이어 찍고(찍은 사진은 뒤에 붙음), 아니면 갤러리에서 고른다(#678).
+  // push 라 카메라에서 닫으면 이 화면으로 돌아온다
+  const addPhotos = () => {
+    if (source !== 'camera') return selectPhotos(true);
+    if (roomLeft <= 0) return tooManyPhotos();
+    router.push({ pathname: '/capture/camera', params: { append: '1' } });
+  };
+  // 흐린 사진 자리만 다시 찍는다 — 다른 사진은 남긴다(#678)
+  const retakeBlurry = () => {
+    setDlg(null);
+    if (!blurry) return;
+    router.push(retakeHref(files.indexOf(blurry), files.length));
+  };
   const next = () => {
     if (tooMany || !check.isSuccess || check.isFetching || prohibited.length || notHand.length)
       return;
@@ -654,7 +742,7 @@ export function PickedScreen() {
           secondary="그대로 올리기"
           onSecondary={() => router.replace('/convert')}
           primary="다시 촬영"
-          onPrimary={() => router.replace('/capture/camera')}
+          onPrimary={retakeBlurry}
         />
       </Screen>
     </Canvas>
