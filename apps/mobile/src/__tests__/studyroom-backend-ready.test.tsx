@@ -98,16 +98,17 @@ it('공유된 퀴즈 · 카드 묶음은 공유 항목 화면으로(남의 퀴�
   await fireEvent.press(screen.getByText('필기 자료'));
   await waitFor(() =>
     expect(mockOpen).toHaveBeenCalledWith({
-      pathname: '/(tabs)/note/doc/[id]',
+      pathname: '/note-view/doc/[id]',
       params: { id: 'mat-1' },
     }),
   );
 });
 
 it.each([
-  ['handwriting', '/(tabs)/note/hand/[id]'],
-  ['document', '/(tabs)/note/doc/[id]'],
-  ['recording', '/(tabs)/note/rec/[id]'],
+  // 탭 밖 노트 보기로 연다. 탭 경로면 (tabs) 가 겹쳐 쌓여 뒤로 가기가 홈으로 간다(#674)
+  ['handwriting', '/note-view/hand/[id]'],
+  ['document', '/note-view/doc/[id]'],
+  ['recording', '/note-view/rec/[id]'],
 ] as const)('공유된 %s 노트는 종류에 맞는 화면으로 연다', async (kind, pathname) => {
   mockApi.rooms.shared.mockResolvedValue({
     items: [item({ _id: 'm', itemType: 'material', materialId: 'mat-9', title: '공유 노트' })],

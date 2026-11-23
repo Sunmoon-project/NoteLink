@@ -1,8 +1,10 @@
 import { act, fireEvent, screen } from '@testing-library/react-native';
 import type { StudyRoom } from '@notelink/shared';
 import { router } from 'expo-router';
+import { Platform } from 'react-native';
 import { RoomListScreen } from '../features/studyroom/room';
-import { api } from '../lib/api';
+import { api, ApiError } from '../lib/api';
+import { useToast } from '../stores/toast';
 import { renderScreen } from '../test-utils';
 
 // 스터디룸 목록 카드의 얼굴은 방 멤버가 아니라 「지금 그 방에 들어와 있는 사람」(rooms:watch · room:live)
@@ -54,6 +56,7 @@ const room = {
 } as unknown as StudyRoom;
 
 beforeEach(() => {
+  useToast.setState({ msg: null });
   mockHandlers.clear();
   mockEmit.mockReset();
   mockEmit.mockImplementation((ev: string, _p: unknown, ack?: (r: unknown) => void) => {
@@ -95,5 +98,96 @@ describe('스터디룸 목록 · 지금 접속 중', () => {
     await fireEvent.press(screen.getByRole('button', { name: '방으로 가기' }));
     expect(join).not.toHaveBeenCalled();
     expect(router.push).toHaveBeenCalledWith({ pathname: '/room/[id]', params: { id: 'r1' } });
+  });
+  it('코드 입력 칸은 영문 자판으로 뜨고, 참여에 실패하면 이유를 창 안에 보여 준다(토스트는 Modal에 가려진다)', async () => {
+    jest
+      .spyOn(api.rooms, 'join')
+      .mockRejectedValue(new ApiError('ROOM_NOT_FOUND', '스터디룸을 찾을 수 없습니다.', 404));
+    await renderScreen(<RoomListScreen />);
+    await screen.findByText('알고리즘 스터디');
+    await fireEvent.press(screen.getByText('코드로 참여하기'));
+    const input = screen.getByPlaceholderText('예) AB3F9K');
+    // 한글 자판이면 영문자가 자모(ㅁㅠ…)로 들어와 지워지고 숫자만 남아 「확인」이 켜지지 않는다
+    expect(input.props.keyboardType).toBe('ascii-capable');
+    await fireEvent.changeText(input, 'zz9999');
+    await fireEvent.press(screen.getByRole('button', { name: '확인' }));
+    expect(await screen.findByText('스터디룸을 찾을 수 없습니다.')).toBeTruthy();
+    // 창이 떠 있으면 토스트는 쓰지 않는다
+    expect(useToast.getState().msg).toBeNull();
+    // 고쳐 쓰면 지난 오류는 지운다
+    await fireEvent.changeText(input, 'zz999');
+    expect(screen.queryByText('스터디룸을 찾을 수 없습니다.')).toBeNull();
+  });
+  it('참여 요청이 진행 중일 때 코드를 고쳐도 추가 참여 요청은 나가지 않는다', async () => {
+    const join = jest.spyOn(api.rooms, 'join').mockReturnValue(new Promise(() => {}));
+    await renderScreen(<RoomListScreen />);
+    await screen.findByText('알고리즘 스터디');
+    await fireEvent.press(screen.getByText('코드로 참여하기'));
+    const input = screen.getByPlaceholderText('예) AB3F9K');
+    await fireEvent.changeText(input, 'zz9999');
+    await fireEvent.press(screen.getByRole('button', { name: '확인' }));
+    // 응답이 오기 전에 다른 코드로 고쳐도 「확인」은 로딩 그대로여야 한다(reset하면 isPending이 풀려 되살아난다)
+    await fireEvent.changeText(input, 'yy8888');
+    expect(screen.queryByRole('button', { name: '확인' })).toBeNull();
+    expect(join).toHaveBeenCalledTimes(1);
+    expect(join).toHaveBeenCalledWith('ZZ9999');
+  });
+  it('참여 요청이 진행 중일 때 창을 닫았다 다시 열어도 추가 참여 요청은 나가지 않는다', async () => {
+    const join = jest.spyOn(api.rooms, 'join').mockReturnValue(new Promise(() => {}));
+    await renderScreen(<RoomListScreen />);
+    await screen.findByText('알고리즘 스터디');
+    await fireEvent.press(screen.getByText('코드로 참여하기'));
+    await fireEvent.changeText(screen.getByPlaceholderText('예) AB3F9K'), 'zz9999');
+    await fireEvent.press(screen.getByRole('button', { name: '확인' }));
+    await fireEvent.press(screen.getByRole('button', { name: '취소' }));
+    await fireEvent.press(screen.getByText('코드로 참여하기'));
+    // 닫을 때 reset하면 isPending이 풀려 「확인」이 되살아난다
+    expect(screen.queryByRole('button', { name: '확인' })).toBeNull();
+    expect(join).toHaveBeenCalledTimes(1);
+  });
+  it('창을 닫은 뒤 참여 요청이 실패하면 토스트로 알리고, 다시 열면 묵은 오류 없이 다시 제출할 수 있다', async () => {
+    let fail: (e: unknown) => void = () => {};
+    const join = jest
+      .spyOn(api.rooms, 'join')
+      .mockReturnValueOnce(new Promise((_, rej) => (fail = rej)))
+      .mockReturnValue(new Promise(() => {}));
+    await renderScreen(<RoomListScreen />);
+    await screen.findByText('알고리즘 스터디');
+    await fireEvent.press(screen.getByText('코드로 참여하기'));
+    await fireEvent.changeText(screen.getByPlaceholderText('예) AB3F9K'), 'zz9999');
+    await fireEvent.press(screen.getByRole('button', { name: '확인' }));
+    await fireEvent.press(screen.getByRole('button', { name: '취소' }));
+    await act(async () =>
+      fail(new ApiError('ROOM_NOT_FOUND', '스터디룸을 찾을 수 없습니다.', 404)),
+    );
+    expect(useToast.getState().msg).toBe('스터디룸을 찾을 수 없습니다.');
+    await fireEvent.press(screen.getByText('코드로 참여하기'));
+    expect(screen.queryByText('스터디룸을 찾을 수 없습니다.')).toBeNull();
+    await fireEvent.changeText(screen.getByPlaceholderText('예) AB3F9K'), 'zz9999');
+    await fireEvent.press(screen.getByRole('button', { name: '확인' }));
+    expect(join).toHaveBeenCalledTimes(2);
+  });
+  it('참여에 성공하면 창을 닫고 그 방으로 간다', async () => {
+    jest.spyOn(api.rooms, 'join').mockResolvedValue({ ...room, _id: 'r9' });
+    await renderScreen(<RoomListScreen />);
+    await screen.findByText('알고리즘 스터디');
+    await fireEvent.press(screen.getByText('코드로 참여하기'));
+    await fireEvent.changeText(screen.getByPlaceholderText('예) AB3F9K'), 'zz9999');
+    await fireEvent.press(screen.getByRole('button', { name: '확인' }));
+    await act(async () => {});
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/room/[id]', params: { id: 'r9' } });
+    expect(screen.queryByPlaceholderText('예) AB3F9K')).toBeNull();
+  });
+  it('안드로이드에서는 visible-password 자판으로 띄운다', async () => {
+    const was = Platform.OS;
+    Platform.OS = 'android';
+    try {
+      await renderScreen(<RoomListScreen />);
+      await screen.findByText('알고리즘 스터디');
+      await fireEvent.press(screen.getByText('코드로 참여하기'));
+      expect(screen.getByPlaceholderText('예) AB3F9K').props.keyboardType).toBe('visible-password');
+    } finally {
+      Platform.OS = was;
+    }
   });
 });

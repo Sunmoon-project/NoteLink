@@ -80,6 +80,7 @@ it('다 풀면 서버가 복습 일정에 넣은 수와 날짜를 결과 화면�
         setId: quizSet._id,
         points: '4',
         results: '1',
+        picks: JSON.stringify(['답']),
         scheduled: '1',
         nextReviewDay: tomorrow,
       },

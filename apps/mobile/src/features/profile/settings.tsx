@@ -41,7 +41,6 @@ import {
   Input,
   Label,
   Loading,
-  Progress,
   Row,
   Screen,
   Sheet,
@@ -57,14 +56,6 @@ import Constants from 'expo-constants';
 // p.43~45 프로필 · 설정 · 계정 정보 · 닉네임 · 요금제
 
 const PAGE = { swipe: '좌우 스와이프', scroll: '위아래 스크롤', tap: '탭해서 넘기기' } as const;
-// 1MB 아래를 MB로 반올림하면 자료를 올려도 0MB로 보인다: 단위를 낮추고 작은 값은 소수 한 자리까지
-const gb = (b: number) => {
-  const unit = (n: number, u: string) => `${n < 10 ? Math.round(n * 10) / 10 : Math.round(n)}${u}`;
-  if (b >= 1024 ** 3) return unit(b / 1024 ** 3, 'GB');
-  if (b >= 1024 ** 2) return unit(b / 1024 ** 2, 'MB');
-  return b ? unit(Math.max(b / 1024, 0.1), 'KB') : '0KB';
-};
-
 /** 프로필 줄: 학교(줄임) · 학년 · 이메일 중 값 있는 것만 잇는다(비어 있으면 「 · 이메일」처럼 점으로 시작했다) */
 export const profileLine = (u: {
   school?: string | null;
@@ -179,40 +170,6 @@ export function SettingsScreen() {
             {`${tier} 플랜`}
           </Row>
         </Group>
-        {/* 쓰는 양은 구획으로 — 눌러서 하는 일이 없어 카드로 감싸지 않는다.
-            서버가 아직 집계하지 않으면(usage 없음) 0으로 꾸며 보이지 않고 구획을 숨긴다 */}
-        {u.usage && (
-          <View className="mt-5 px-1">
-            <View className="flex-row justify-between">
-              <Text className="text-caption text-sub">저장 공간</Text>
-              <Text className="text-caption text-sub">
-                {gb(u.usage.storageBytes ?? 0)} / {gb(u.usage.storageLimitBytes ?? 0)}
-              </Text>
-            </View>
-            <Progress
-              value={Math.max(
-                2,
-                ((u.usage.storageBytes ?? 0) / (u.usage.storageLimitBytes || 1)) * 100,
-              )}
-              className="mt-1.5"
-            />
-            <View className="mt-4 flex-row justify-between">
-              <Text className="text-caption text-sub">AI 크레딧</Text>
-              <Text className="text-caption text-sub">
-                {u.usage.aiCredits ?? 0}
-                {u.usage.aiCreditLimit ? ` / ${u.usage.aiCreditLimit}` : ''}
-              </Text>
-            </View>
-            <Progress
-              value={
-                u.usage.aiCreditLimit
-                  ? Math.max(2, ((u.usage.aiCredits ?? 0) / u.usage.aiCreditLimit) * 100)
-                  : 0
-              }
-              className="mt-1.5"
-            />
-          </View>
-        )}
 
         <Label>알림</Label>
         <Group>

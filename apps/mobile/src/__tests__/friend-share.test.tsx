@@ -113,11 +113,11 @@ const hook = async () => {
 };
 
 describe('1:1 채팅 공유 카드 열기', () => {
-  it('살아 있는 공유는 노트 상세를 공유 id 와 함께 연다', async () => {
+  it('살아 있는 공유는 탭 밖 노트 보기를 공유 id 와 함께 연다(뒤로 가면 채팅, #674)', async () => {
     const open = await hook();
     await act(() => open.current('s1'));
     expect(router.push).toHaveBeenCalledWith({
-      pathname: '/(tabs)/note/hand/[id]',
+      pathname: '/note-view/hand/[id]',
       params: { id: 'n1', share: 's1' },
     });
   });
@@ -170,10 +170,13 @@ describe('공유 카드에서 연 노트', () => {
     expect(screen.queryByText('공유하기')).toBeNull();
     await fireEvent.press(screen.getByRole('button', { name: '내 노트로 복사' }));
     await waitFor(() => expect(mockApi.content.copyFriendShare).toHaveBeenCalledWith('s1'));
-    expect(router.replace).toHaveBeenCalledWith({
-      pathname: '/(tabs)/note/hand/[id]',
-      params: { id: 'n2' },
-    });
+    // 사본은 내 노트라 있던 노트 탭으로 돌아가 연다((tabs) 를 겹쳐 쌓지 않게, #674)
+    expect(router.dismissTo).toHaveBeenCalledWith(
+      { pathname: '/(tabs)/note/hand/[id]', params: { id: 'n2' } },
+      { withAnchor: true },
+    );
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(router.push).not.toHaveBeenCalled();
     expect(useToast.getState().msg).toBe('내 노트로 복사했어요');
   });
 

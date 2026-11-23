@@ -22,6 +22,10 @@ import { Timetable, TimetableSchema } from '../src/modules/calendar/schemas/time
 import { NotificationService } from '../src/modules/notification/notification.service.js';
 import { FriendsController } from '../src/modules/social/friends/friends.controller.js';
 import { FriendsService } from '../src/modules/social/friends/friends.service.js';
+import {
+  FriendSharedItem,
+  FriendSharedItemSchema,
+} from '../src/modules/social/schemas/friend-shared-item.schema.js';
 import { Friendship, FriendshipSchema } from '../src/modules/social/schemas/friendship.schema.js';
 import { TimetableController } from '../src/modules/timetable/timetable.controller.js';
 import { TimetableService } from '../src/modules/timetable/timetable.service.js';
@@ -102,6 +106,7 @@ describe.skipIf(!isLocal)('진짜 DB 공유받은 친구 시간표', () => {
           { name: Friendship.name, schema: FriendshipSchema },
           { name: TimetableShare.name, schema: TimetableShareSchema },
           { name: Timetable.name, schema: TimetableSchema },
+          { name: FriendSharedItem.name, schema: FriendSharedItemSchema },
         ]),
       ],
       controllers: [FriendsController, TimetableController],

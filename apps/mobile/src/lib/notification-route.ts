@@ -1,4 +1,4 @@
-import type { Href } from 'expo-router';
+import { router, type Href } from 'expo-router';
 
 /** 알림 data(푸시 · 알림함 공통). 서버가 넣는 값: type과 종류별 id(apps/api의 각 알림 서비스) */
 type Data = Record<string, unknown> | null | undefined;
@@ -48,6 +48,17 @@ export function routeFor(data: Data): Href | null {
     default:
       return null;
   }
+}
+
+/**
+ * 알림이 가리키는 화면으로 간다(알림함 · 푸시 공통).
+ * 탭 화면(`/(tabs)/…`)은 있던 (tabs) 로 돌아가 그 탭을 연다(dismissTo). push 하면 루트 Stack 에 (tabs) 가 하나 더 쌓여
+ * 뒤로 가기가 홈으로 새고 그 탭이 연 화면에 고정된다(#674). 탭 밖 화면은 지금 화면 위에 쌓아 뒤로 가면 돌아온다
+ */
+export function openRoute(to: Href) {
+  const path = typeof to === 'string' ? to : to.pathname;
+  if (path.startsWith('/(tabs)')) router.dismissTo(to);
+  else router.push(to);
 }
 
 /** 지금 화면에 보이는 채팅방(1:1 · 스터디룸). 그 방의 새 메시지는 앱 안 배너를 띄우지 않는다 */

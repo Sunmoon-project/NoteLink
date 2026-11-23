@@ -1,5 +1,6 @@
 import Animated, { FadeIn, FadeInDown, FadeOut, FadeOutDown } from 'react-native-reanimated';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
+import { noteViewPath } from '@/lib/note-routes';
 import {
   addChatOutbox,
   readChatOutbox,
@@ -8,7 +9,7 @@ import {
 } from '@/lib/chat-outbox';
 import { loadCompleteChatHistory } from '@/lib/chat-history';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Keyboard, ScrollView, View, useWindowDimensions } from 'react-native';
+import { FlatList, Keyboard, Platform, ScrollView, View, useWindowDimensions } from 'react-native';
 import { Pressable } from '@/components/press';
 import { Text, TextInput } from '@/components/text';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -105,6 +106,8 @@ const SWAP_OUT = FadeOut.duration(MOTION.exit);
 const RISE_IN = FadeInDown.duration(MOTION.enter);
 const SINK_OUT = FadeOutDown.duration(MOTION.exit);
 
+const joinMessage = (e: unknown) => (e instanceof ApiError ? e.message : '입장하지 못했어요');
+
 export function RoomListScreen() {
   const mine = useQuery({ queryKey: ['rooms', 'mine'], queryFn: api.rooms.mine });
   const rec = useQuery({ queryKey: ['rooms', 'recommended'], queryFn: api.rooms.recommended });
@@ -122,7 +125,14 @@ export function RoomListScreen() {
       setV('');
       router.push({ pathname: '/room/[id]', params: { id: r._id } });
     },
-    onError: (e) => toast(e instanceof ApiError ? e.message : '입장하지 못했어요'),
+    // 코드 입력 창이 떠 있으면 전역 토스트가 Modal 뒤에 가려지므로 창 안에 적는다
+    onError: (e) => {
+      if (!code) {
+        toast(joinMessage(e));
+        // 창이 닫힌 채 실패하면 다시 열 때 묵은 오류가 보이지 않게 지운다
+        join.reset();
+      }
+    },
   });
   // 목록에서 왼쪽으로 밀어 나가기(방 설정의 「채팅방 나가기」와 같은 동작 · 확인을 거친다)
   const [leaving, setLeaving] = useState<{
@@ -138,6 +148,11 @@ export function RoomListScreen() {
     },
     onError: () => toast('스터디룸에서 나가지 못했어요. 다시 시도해주세요'),
   });
+  const closeCode = () => {
+    setCode(false);
+    // 요청 중에 reset하면 isPending이 풀려 다시 열었을 때 다른 코드로 중복 제출된다 → 실패 표시만 지운다
+    if (join.isError) join.reset();
+  };
   const joined = mine.data ?? [];
   const live = useRoomsLive(joined.map((r) => r._id));
   // 카드 얼굴 · 접속 수는 방 멤버가 아니라 지금 그 방 화면에 들어와 있는 사람
@@ -277,7 +292,7 @@ export function RoomListScreen() {
           setLeaving(null);
         }}
       />
-      <Dialog open={code} onClose={() => setCode(false)}>
+      <Dialog open={code} onClose={closeCode}>
         <View className="h-11 w-11 items-center justify-center rounded-full bg-mint">
           <Lock size={ICON.md} color={C.brand} />
         </View>
@@ -286,17 +301,23 @@ export function RoomListScreen() {
         <TextInput
           autoFocus
           value={v}
-          onChangeText={(t) =>
+          onChangeText={(t) => {
+            // 요청 중에 reset하면 isPending이 풀려 다른 코드로 중복 제출된다 → 실패 표시만 지운다
+            if (join.isError) join.reset();
             setV(
               t
                 .toUpperCase()
                 .replace(/[^A-Z0-9]/g, '')
                 .slice(0, 6),
-            )
-          }
+            );
+          }}
           placeholder="예) AB3F9K"
           placeholderTextColor={C.sub}
           autoCapitalize="characters"
+          // 한글 자판이면 영문자가 자모로 들어와 아래 정리에서 지워지고 숫자만 남는다 → 영문 자판으로 띄운다
+          keyboardType={Platform.OS === 'ios' ? 'ascii-capable' : 'visible-password'}
+          autoCorrect={false}
+          spellCheck={false}
           className="mt-4 h-14 w-full rounded-xl border-2 border-brand/30 text-center tabular-nums text-title3 tracking-[6px] text-ink"
         />
         {already && (
@@ -304,9 +325,14 @@ export function RoomListScreen() {
             이미 들어가 있는 스터디룸이에요
           </Text>
         )}
+        {join.isError && (
+          <Text className="mt-2 text-caption font-semibold text-danger">
+            {joinMessage(join.error)}
+          </Text>
+        )}
         <View className="mt-4 w-full">
           <Two>
-            <Btn small kind="outline" onPress={() => setCode(false)}>
+            <Btn small kind="outline" onPress={closeCode}>
               취소
             </Btn>
             {already ? (
@@ -1550,13 +1576,8 @@ function useOpenShared(roomId: string) {
         queryFn: () => api.content.material(materialId),
         staleTime: 30_000,
       });
-      const pathname =
-        note.kind === 'handwriting'
-          ? '/(tabs)/note/hand/[id]'
-          : note.kind === 'recording'
-            ? '/(tabs)/note/rec/[id]'
-            : '/(tabs)/note/doc/[id]';
-      openFeature({ pathname, params: { id: materialId } });
+      // 탭 밖 노트 보기로 연다. 탭 경로로 열면 (tabs) 가 겹쳐 쌓여 뒤로 가기가 방이 아니라 홈으로 간다(#674)
+      openFeature({ pathname: noteViewPath(note.kind), params: { id: materialId } });
     } catch {
       toast('이 자료를 열 수 없어요');
     } finally {
