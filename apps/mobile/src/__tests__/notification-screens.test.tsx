@@ -76,6 +76,17 @@ describe('알림함', () => {
     expect(mockApi.notifications.markRead).not.toHaveBeenCalled();
   });
 
+  it('탭 화면으로 가는 알림은 있던 (tabs) 로 돌아가 연다(#674)', async () => {
+    mockApi.notifications.list.mockResolvedValue({
+      items: [item({ type: 'room-kicked', body: '방에서 내보내졌어요', data: { roomId: 'r1' } })],
+      nextCursor: null,
+    });
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByText(/방에서 내보내졌어요/));
+    expect(router.dismissTo).toHaveBeenCalledWith('/(tabs)/studyroom');
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
   it('모두 읽음', async () => {
     mockApi.notifications.list.mockResolvedValue({ items: [item()], nextCursor: null });
     await renderScreen(<InboxScreen />);

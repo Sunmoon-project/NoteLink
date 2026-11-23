@@ -1,5 +1,6 @@
 import Animated, { FadeIn, FadeInDown, FadeOut, FadeOutDown } from 'react-native-reanimated';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
+import { noteViewPath } from '@/lib/note-routes';
 import {
   addChatOutbox,
   readChatOutbox,
@@ -1550,13 +1551,8 @@ function useOpenShared(roomId: string) {
         queryFn: () => api.content.material(materialId),
         staleTime: 30_000,
       });
-      const pathname =
-        note.kind === 'handwriting'
-          ? '/(tabs)/note/hand/[id]'
-          : note.kind === 'recording'
-            ? '/(tabs)/note/rec/[id]'
-            : '/(tabs)/note/doc/[id]';
-      openFeature({ pathname, params: { id: materialId } });
+      // 탭 밖 노트 보기로 연다. 탭 경로로 열면 (tabs) 가 겹쳐 쌓여 뒤로 가기가 방이 아니라 홈으로 간다(#674)
+      openFeature({ pathname: noteViewPath(note.kind), params: { id: materialId } });
     } catch {
       toast('이 자료를 열 수 없어요');
     } finally {
