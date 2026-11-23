@@ -35,10 +35,13 @@ ai_jobs.type = 'quiz_pregen': 노트를 만들 때 NestJS가 넣는 첫 맞춤 �
   개념 이름이 없는 노트는 먼저 쪽마다 이름을 뽑습니다(concepts.for_page, 쪽마다 동시에). 뽑은
   이름은 result.concepts로 노트에 저장되어 다음 퀴즈부터는 뽑지 않습니다.
 
-쪽마다 문제 수(코드):
-  가중치 = 1 + 1.5 × (그 쪽에서 아직 못 익힌 개념의 틀린 답 수) − 0.7 × (그 쪽의 다 익힌
-  개념 수)(0.3 이상), 그다음 큰 나머지 순으로 반올림. 배운 것이 없는 쪽은 가중치 1이라
-  새 내용도 나옵니다.
+쪽마다 문제 수(코드, #682):
+  가중치 = 지금 풀면 틀릴 확률 1 − P × R(MIN_WEIGHT 이상), 그다음 큰 나머지 순으로 반올림.
+  P(아는 확률)는 그 쪽의 맞힌 답 · 아직 못 익힌 개념의 틀린 답을 이 사용자의 정답률 쪽으로 평활한
+  값, R(기억 확률)은 마지막으로 푼 뒤 지난 날과 복습 간격(SRS 1 · 3 · 7일)으로 본 망각 곡선.
+  처음 보는 쪽은 사용자 정답률만큼 안다고 봐 새 내용도 나오고, 익힌 쪽은 잊을 때쯤 다시 나옵니다.
+  상수 · 출처는 PRIOR_WEIGHT 위 주석. 예전 식 1 + 1.5 × 오답 − 0.7 × 익힌 개념(0.3 이상)은 근거
+  기록이 없던 시작값이었습니다.
   다 익힌 개념이 있는 쪽이 0문제가 되면 한 문제로 다시 확인합니다(6문제 이상일 때). 그 한
   문제는 문제 수가 가장 많은 쪽에서 빼고, 그 쪽이 한 문제뿐인데 틀린 답이나 다 익힌 개념이
   있으면 다시 확인을 건너뜁니다(아직 틀리는 쪽이 0문제가 되지 않게).
@@ -73,8 +76,10 @@ result — NestJS가 quiz_sets에 새 세트로 저장합니다(materialId · fo
              애매한 초안(unsure)으로 채운 문제에는 없음. 저장은 NestJS와 맞춘 뒤
   title      '<노트 제목> 맞춤 퀴즈 · MM-DD'
   concepts   새로 뽑은 개념 이름(materials.concepts에 저장). 노트에 이름이 있었으면 null
-  pages      [{pageNo, weight, plain, share, wrong, mastered}] 쪽마다 배분(앱 안내 · 확인용).
-             plain은 기록 없이 고르게 나눴을 때, share는 실제로 나눈 문제 수
+  pages      [{pageNo, weight, plain, share, wrong, mastered, right, p, r, days, interval}] 쪽마다
+             배분(앱 안내 · 확인용). plain은 기록 없이 고르게 나눴을 때, share는 실제로 나눈 문제
+             수. right · p · r · days · interval은 가중치를 만든 맞힌 답 · 아는 확률 · 기억 확률 ·
+             지난 날 · 복습 간격(#682, 기록이 쌓이면 상수를 맞출 자료. 모르는 날 · 간격은 null)
   failed     [{pageNo, why}] 못 만든 자리(마지막으로 시도한 쪽과 탈락 이유). 다 채우므로 늘 []
   levels     {target: {난이도: 문제 수}, weak: 약한 난이도 또는 null,
              user: {난이도: [푼 수, 틀린 수]}}
@@ -117,7 +122,7 @@ from app.clients.llm import (
     Stopping,
 )
 from app.core.config import settings
-from app.services.quiz import combo, concepts, levels, similar
+from app.services.quiz import combo, concepts, levels, similar, srs
 from app.services.quiz.checks import Seen, Target, code_check, seen_draft, seen_question, too_close
 from app.services.quiz.models import CHOICES, LETTERS, Draft, Notes, Page, Question
 from app.services.quiz.review import (
@@ -133,6 +138,7 @@ from app.services.quiz.review import (
     parse_notes,
     parse_pages,
     parse_question,
+    seoul_day,
     utc_date,
 )
 from app.services.quiz.text import (
@@ -192,6 +198,21 @@ UNCHECKED = "검사 모델의 답 모양이 맞지 않음"
 WHY_SHOWN = 5  # 오류 글에 담는 탈락 이유 수(자리가 많아도 ai_jobs.error가 길어지지 않게)
 GROUP_TYPE = "분류"
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+# 쪽 배분 가중치(#682) = 지금 풀면 틀릴 확률 1 − P × R. 상수는 공개 기본값 · 지금 SRS에서 가져온
+# 시작값이고, 기록이 쌓이면 다음 답의 정답 여부 예측(로그 손실)으로 맞출 값(FSRS · Duolingo HLR처럼)
+# - 비례: 최적 복습 빈도는 「잊었을 확률」에 비례(Tabibian et al., PNAS 2019 「Memorize」)
+# - P(아는 확률) = (맞힌 답 + K × m0) / (맞힌 답 + 못 익힌 개념의 틀린 답 + K): Beta-Bernoulli
+#   평균(라플라스 규칙, BKT와 같은 틀). m0는 이 사용자의 정답률(경험적 베이즈)
+# - R(기억 확률) = (1 + F × t / S) ^ D: FSRS-4.5/5 망각 곡선(t = S일 때 0.9). S는 SRS 사다리
+#   (srs.REVIEW_STEPS_DAYS 1 · 3 · 7일)를 「90% 기억하는 날」로 봄
+PRIOR_WEIGHT = 2  # K: 사전값을 답 몇 개만큼 믿나(Beta(1,1)과 같은 강도)
+PRIOR_RATE = 0.5  # 풀이 기록이 없을 때 m0
+CURVE_FACTOR = 19 / 81  # F: R(S) = 0.9가 되게(FSRS-4.5/5)
+CURVE_DECAY = -0.5  # D: FSRS-4.5/5 지수(FSRS-6은 사용자마다 맞춤)
+# 가중치 하한: 모두 맞힌 사용자(m0 = 1)는 새 쪽도 P = R = 1이라 0, 모든 쪽이 0이면 나눗셈 오류.
+# 답 몇 개로 「틀릴 확률 0」이라 단정하지 않는 안전값(0보다 크기만 하면 됨, 예전 식 0.3의 역할)
+MIN_WEIGHT = 0.05
 
 # 영어 기능어: 영어 문장 과목(토익)인지 용어만 영어인 과목인지 가름
 FUNC = {
@@ -275,10 +296,14 @@ class GenerateInput:
 
 @dataclass
 class PageInfo:
-    """한 쪽의 학습 기록: 아직 못 익힌 개념의 틀린 답 수 · 다 익힌 개념."""
+    """한 쪽의 학습 기록: 아직 못 익힌 개념의 틀린 답 수 · 다 익힌 개념 · 맞힌 답 수 ·
+    마지막으로 푼 뒤 지난 날(서울 날짜, 모르면 None) · 그때 푼 문제의 복습 간격(일)."""
 
     wrong: int = 0
     mastered: int = 0
+    right: int = 0
+    days: int | None = None
+    interval: int | None = None
     weak: list[str] = field(default_factory=list)
     done: list[str] = field(default_factory=list)
     # 마지막 단계: 이미 물은 개념 → 그 개념을 물은 유형들. 같은 개념은 다른 유형 · 다른 각도로만
@@ -510,8 +535,10 @@ def history(
     material_id: str,
     notes: Notes,
     where: dict[str, tuple[str, int]] | None = None,
+    today: date | None = None,
 ) -> defaultdict[int, PageInfo]:
-    """쪽마다: 아직 못 익힌 개념의 틀린 답 수 · 다 익힌 개념.
+    """쪽마다: 아직 못 익힌 개념의 틀린 답 수 · 다 익힌 개념 · 맞힌 답 수 · 마지막으로 푼 뒤
+    지난 날(today는 서울 날짜, 없으면 모름) · 그때 푼 문제의 복습 간격.
 
     저장된 문제에는 출처 쪽이 없어 낱말로 쪽에 놓습니다(text.locate). where는 문제마다 놓인
     (materialId, pageNo)를 담아 두는 곳이라, 넘기면 run의 겹침 검사가 같은 자리를 다시 씁니다.
@@ -543,6 +570,15 @@ def history(
     stopped: dict[str, datetime] = {}  # 개념: 멈춘 문제가 끝난 때(가장 나중)
     active: set[str] = set()
     page_of: dict[str, int] = {}
+    # 개념: (마지막으로 푼 때, 그 문제의 복습 간격). 풀이가 입력에서 빠진 익힌 문제는 끝난 때로.
+    # 같은 때에 푼 문제가 여럿이면 짧은 간격(덜 기억함): 답 순서로 결과가 바뀌지 않게(Codex #683)
+    seen: dict[str, tuple[datetime, int]] = {}
+
+    def mark(c: str, at: datetime, gap: int) -> None:
+        old = seen.get(c)
+        if old is None or (at, -gap) > (old[0], -old[1]):
+            seen[c] = (at, gap)
+
     for s in sets:
         for q in s.questions:
             st = q.get("srs")
@@ -559,10 +595,13 @@ def history(
                 when[c] = max(when.get(c, at), at)
             if state == "mastered":
                 page_of.setdefault(c, home(s, q)[1])
+                if at > datetime.min:
+                    mark(c, at, _interval(q))
     mastered = {
         c for c, at in learned.items() if c not in active and stopped.get(c, datetime.min) <= at
     }
     wrong: Counter[str] = Counter()
+    right: Counter[str] = Counter()
     for a in attempts:
         qset = by_id.get(a.quiz_set_id)
         if qset is None:
@@ -571,15 +610,14 @@ def history(
         for qid, correct, void in a.answers:
             hit = qm.get(qid)
             c = concept_of(hit) if hit else OTHER
-            if (
-                hit
-                and c != OTHER
-                and not void
-                and judge(correct)
-                and home(qset, hit)[0] == material_id
-            ):
-                page_of.setdefault(c, home(qset, hit)[1])
+            if not hit or c == OTHER or void or home(qset, hit)[0] != material_id:
+                continue
+            page_of.setdefault(c, home(qset, hit)[1])
+            if judge(correct):
                 wrong[c] += 1
+            else:
+                right[c] += 1
+            mark(c, a.finished_at, _interval(hit))
     # 다 익힌 개념은 틀린 적이 없어도 셈(로컬은 틀린 답이 있는 개념만 봤음, /code-review 11/04)
     per_page: defaultdict[int, PageInfo] = defaultdict(PageInfo)
     for c in mastered:
@@ -589,17 +627,58 @@ def history(
         if c not in mastered:
             per_page[page_of[c]].wrong += n
             per_page[page_of[c]].weak.append(c)
+    for c, n in right.items():
+        per_page[page_of[c]].right += n
+    # 쪽의 지난 날 · 간격은 그 쪽에서 가장 나중에 푼 개념으로(같은 때면 짧은 간격이 마지막에 남음)
+    for c, (at, gap) in sorted(seen.items(), key=lambda kv: (kv[1][0], -kv[1][1])):
+        info = per_page[page_of[c]]
+        info.interval = gap
+        info.days = (today - seoul_day(at)).days if today else None
     return per_page
 
 
+def _interval(q: Question) -> int:
+    """문제의 복습 간격(일): SRS 사다리 칸, 다 익힌 문제는 마지막 칸, 복습 상태가 없으면 첫 칸."""
+    st = q.get("srs")
+    steps = srs.REVIEW_STEPS_DAYS
+    if not st:
+        return steps[0]
+    if st.get("state") == "mastered":
+        return steps[-1]
+    return steps[min(max(st.get("step", 0), 0), len(steps) - 1)]
+
+
+def user_rate(attempts: list[Attempt]) -> float:
+    """m0: 이 사용자의 정답률(무효가 아닌 모든 풀이). 기록이 없으면 PRIOR_RATE."""
+    marks = [correct for a in attempts for _, correct, void in a.answers if not void]
+    return sum(marks) / len(marks) if marks else PRIOR_RATE
+
+
+def known(info: PageInfo, rate: float) -> float:
+    """P: 이 쪽을 아는 확률(맞힌 답 · 못 익힌 개념의 틀린 답을 사용자 정답률 쪽으로 평활)."""
+    return (info.right + PRIOR_WEIGHT * rate) / (info.right + info.wrong + PRIOR_WEIGHT)
+
+
+def recall(info: PageInfo) -> float:
+    """R: 아직 기억할 확률. 처음 보는 쪽 · 지난 날을 모르는 쪽은 1, 오늘보다 나중에 푼 기록은
+    0일로, 간격을 모르면 사다리 첫 칸."""
+    if info.days is None:
+        return 1.0
+    gap = info.interval or srs.REVIEW_STEPS_DAYS[0]
+    return float((1 + CURVE_FACTOR * max(info.days, 0) / gap) ** CURVE_DECAY)
+
+
 def allocate(
-    pages: dict[int, str], per_page: defaultdict[int, PageInfo], n: int
+    pages: dict[int, str], per_page: defaultdict[int, PageInfo], n: int, rate: float = PRIOR_RATE
 ) -> tuple[dict[int, float], dict[int, int], dict[int, int]]:
-    """(가중치, 나눈 문제 수, 고르게 나눴을 때). 5줄 이상인 쪽만."""
+    """(가중치, 나눈 문제 수, 고르게 나눴을 때). 5줄 이상인 쪽만. rate는 사용자 정답률(m0)."""
     usable = [p for p, t in pages.items() if askable(t)]
     if not usable:
         return {}, {}, {}
-    weight = {p: max(0.3, 1 + 1.5 * per_page[p].wrong - 0.7 * per_page[p].mastered) for p in usable}
+    # 지금 풀면 틀릴 확률(#682, 상수 근거는 PRIOR_WEIGHT 위 주석)
+    weight = {
+        p: max(MIN_WEIGHT, 1 - known(per_page[p], rate) * recall(per_page[p])) for p in usable
+    }
     total = sum(weight.values())
     raw = {p: n * w / total for p, w in weight.items()}
     share = {p: int(v) for p, v in raw.items()}
@@ -1061,9 +1140,10 @@ def run(
         report(10, "개념 이름 뽑기")
 
     where: dict[str, tuple[str, int]] = {}
-    per_page = history(inp.sets, inp.attempts, m.id, notes, where)
+    per_page = history(inp.sets, inp.attempts, m.id, notes, where, inp.day)
     korean = is_korean_subject(pages)
-    weight, share, plain = allocate(pages, per_page, n)
+    rate = user_rate(inp.attempts)
+    weight, share, plain = allocate(pages, per_page, n, rate)
     report(15, "쪽마다 문제 수 나누기")
 
     # 겹침 검사는 이 노트 세트의 문제와, 다른 세트에서 낱말로 이 노트에 놓이는 문제(여러 노트를
@@ -1126,7 +1206,7 @@ def run(
         for i, r in enumerate(made, 1)
         if r.question is not None
     ]
-    out = _result(qs, title, new_names, weight, share, plain, per_page, [])
+    out = _result(qs, title, new_names, weight, share, plain, per_page, [], rate)
     # 앱 안내 · 확인용: 목표 비율, 약한 난이도, 이 사용자의 난이도별 (푼 수, 틀린 수)
     out["levels"] = {
         "target": mix,
@@ -1393,6 +1473,7 @@ def _result(
     plain: dict[int, int],
     per_page: defaultdict[int, PageInfo],
     failed: list[JsonObject],
+    rate: float = PRIOR_RATE,
 ) -> JsonObject:
     return {
         "questions": qs,
@@ -1401,11 +1482,17 @@ def _result(
         "pages": [
             {
                 "pageNo": p,
-                "weight": round(weight[p], 2),
+                "weight": round(weight[p], 3),
                 "plain": plain[p],
                 "share": share[p],
                 "wrong": per_page[p].wrong,
                 "mastered": per_page[p].mastered,
+                # 가중치를 만든 값(#682): 기록이 쌓이면 상수를 맞출 자료
+                "right": per_page[p].right,
+                "p": round(known(per_page[p], rate), 3),
+                "r": round(recall(per_page[p]), 3),
+                "days": per_page[p].days,
+                "interval": per_page[p].interval,
             }
             for p in sorted(weight)
         ],

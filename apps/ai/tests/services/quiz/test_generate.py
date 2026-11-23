@@ -224,9 +224,16 @@ def pages_of(n: int, lines: int = 5) -> dict[int, str]:
     return {p: "\n".join(f"{p}쪽 {i}줄" for i in range(lines)) for p in range(1, n + 1)}
 
 
+def learned(right: int = 2, days: int = 0, **more: Any) -> PageInfo:
+    """다 익힌 개념 하나가 있는 쪽: 연속 2번 맞혀(srs.MASTER_STREAK) 복습 간격 7일."""
+    base: dict[str, Any] = {"mastered": 1, "done": ["말라리아"], **more}
+    return PageInfo(**base, right=right, days=days, interval=7)
+
+
 def test_a_new_note_is_shared_out_evenly_and_spread_over_pages() -> None:
     weight, share, plain = generate.allocate(pages_of(21), defaultdict(PageInfo), 10)
-    assert set(weight.values()) == {1.0}
+    # 기록이 없으면 모든 쪽이 사전값 정답률(PRIOR_RATE)만큼 안다고 봄: 같은 가중치 0.5
+    assert set(weight.values()) == {1 - generate.PRIOR_RATE}
     assert sum(share.values()) == 10 and max(share.values()) == 1
     assert sorted(p for p, k in share.items() if k) != list(range(1, 11))  # 앞 10쪽에 몰리지 않음
     assert plain == {p: (1 if p <= 10 else 0) for p in range(1, 22)}
@@ -235,9 +242,10 @@ def test_a_new_note_is_shared_out_evenly_and_spread_over_pages() -> None:
 def test_pages_with_unlearned_wrong_answers_get_more_and_learned_ones_still_one() -> None:
     per = defaultdict(PageInfo)
     per[2] = PageInfo(wrong=2, weak=["람블편모충"])
-    per[3] = PageInfo(mastered=3, done=["a", "b", "c"])
+    per[3] = learned(right=6, mastered=3, done=["a", "b", "c"])
     weight, share, _ = generate.allocate(pages_of(3), per, 10)
-    assert weight == {1: 1.0, 2: 4.0, 3: 0.3}
+    # 1 − P: 새 쪽 P = 0.5, 오답 2개 P = (0 + 2 × 0.5) / (0 + 2 + 2), 맞힌 답 6개 P = 7 / 8
+    assert weight == pytest.approx({1: 0.5, 2: 0.75, 3: 0.125})
     assert share[2] > share[1] and share[3] == 1  # 다 익힌 쪽도 한 문제로 다시 확인
     assert sum(share.values()) == 10
 
@@ -247,16 +255,16 @@ def test_a_page_with_wrong_answers_does_not_give_its_question_to_a_learned_page(
     # (/code-review #94)
     per = defaultdict(PageInfo)
     per[1] = PageInfo(wrong=1, weak=["이질 아메바"])
-    per[12] = PageInfo(mastered=1, done=["말라리아"])
+    per[12] = learned()
     _, share, _ = generate.allocate(pages_of(12), per, 6)
     assert share[1] == 1 and share[12] == 1 and sum(share.values()) == 6
-    # 틀린 답과 다 익힌 개념이 함께 있어 한 문제를 받은 쪽 중 가중치가 가장 작은 쪽(0.4)도 빼지
+    # 틀린 답과 다 익힌 개념이 함께 있어 한 문제를 받은 쪽(가중치 2/7, 새 쪽 0.5보다 작음)도 빼지
     # 않음: 7쪽 · 6문제면 1쪽이 반올림으로 한 문제를 받고 몫이 모두 0 · 1
     per = defaultdict(PageInfo)
-    per[1] = PageInfo(wrong=1, mastered=3, weak=["이질 아메바"], done=["a", "b", "c"])
-    per[7] = PageInfo(mastered=1, done=["말라리아"])
+    per[1] = learned(right=4, wrong=1, mastered=3, weak=["이질 아메바"], done=["a", "b", "c"])
+    per[7] = learned()
     weight, share, _ = generate.allocate(pages_of(7), per, 6)
-    assert weight[1] == pytest.approx(0.4) and max(share.values()) == 1
+    assert weight[1] == pytest.approx(2 / 7) and max(share.values()) == 1
     assert share[1] == 1 and share[7] == 1 and sum(share.values()) == 6
 
 
@@ -281,6 +289,84 @@ def test_short_pages_are_not_asked() -> None:
     weight, share, _ = generate.allocate(pages, defaultdict(PageInfo), 4)
     assert list(weight) == [1] and share == {1: 4}
     assert generate.allocate({2: "한 줄"}, defaultdict(PageInfo), 4) == ({}, {}, {})
+
+
+def test_the_weight_is_the_chance_of_getting_the_page_wrong_now() -> None:
+    # #682 가중치 = 1 − P(아는 확률) × R(기억 확률), 사용자 정답률 70%(배분식 제안 ①b 표)
+    per = defaultdict(PageInfo)
+    per[2] = PageInfo(wrong=1, days=0, interval=1)
+    per[3] = PageInfo(wrong=4, days=0, interval=1)
+    per[4] = learned(days=0)
+    per[5] = learned(days=30)
+    weight, _, _ = generate.allocate(pages_of(5), per, 5, 0.7)
+    assert weight[1] == pytest.approx(0.3)  # 처음 보는 쪽: P = 0.7, R = 1
+    assert weight[2] == pytest.approx(1 - 1.4 / 3)  # 0.53
+    assert weight[3] == pytest.approx(1 - 1.4 / 6)  # 0.77: 오답이 많아도 1을 넘지 않음
+    assert weight[4] == pytest.approx(0.15)  # 방금 익힌 쪽은 새 쪽의 절반
+    assert weight[5] == pytest.approx(0.40, abs=0.005)  # 30일 뒤에는 새 쪽보다 높음(잊을 때쯤 다시)
+    assert weight[3] > weight[2] > weight[5] > weight[1] > weight[4]
+
+
+def test_recall_follows_the_forgetting_curve_and_unknown_times_count_as_fresh() -> None:
+    # FSRS-4.5/5 곡선: 복습 간격만큼 지나면 기억 확률 0.9
+    assert generate.recall(PageInfo(days=7, interval=7)) == pytest.approx(0.9)
+    assert generate.recall(PageInfo()) == 1.0  # 처음 보는 쪽
+    assert generate.recall(PageInfo(right=1, interval=3)) == 1.0  # 지난 날을 모름(오늘 없음)
+    assert generate.recall(PageInfo(days=-3, interval=1)) == 1.0  # 오늘보다 나중에 푼 기록
+    # 간격을 모르면 사다리 첫 칸(1일)
+    assert generate.recall(PageInfo(days=1)) == pytest.approx(0.9)
+
+
+def test_a_user_who_got_everything_right_still_gets_questions_shared_out() -> None:
+    # 모두 맞힌 사용자(m0 = 1)는 새 쪽도 P = R = 1이라 1 − P × R = 0: 하한이 없으면 합이 0이라
+    # 나눗셈 오류
+    weight, share, _ = generate.allocate(pages_of(4), defaultdict(PageInfo), 5, 1.0)
+    assert set(weight.values()) == {generate.MIN_WEIGHT}
+    assert sum(share.values()) == 5 and max(share.values()) == 2
+    per = defaultdict(PageInfo, {1: learned(right=9), 2: PageInfo(wrong=1)})
+    weight, share, _ = generate.allocate(pages_of(3), per, 5, 1.0)
+    assert weight[1] == weight[3] == generate.MIN_WEIGHT and weight[2] == pytest.approx(1 / 3)
+    assert sum(share.values()) == 5 and share[2] == max(share.values())
+
+
+TOEIC = [1, 2, 4, 5, 6, 8, 9, 10, 11, 12]  # 10/22 토익 1일차 노트의 물을 수 있는 쪽
+
+
+def kinds(per: defaultdict[int, PageInfo], share: dict[int, int]) -> tuple[int, int, int, int]:
+    """(새 쪽, 다 익힌 쪽, 약한 쪽이 받은 문제 수, 한 쪽 최대) — 배분식 제안 5절 표의 칸."""
+    new = sum(k for p, k in share.items() if not (per[p].wrong or per[p].right))
+    done = sum(k for p, k in share.items() if per[p].mastered and not per[p].wrong)
+    weak = sum(k for p, k in share.items() if per[p].wrong)
+    return new, done, weak, max(share.values())
+
+
+@pytest.mark.parametrize(("n", "want"), [(5, (0, 0, 5, 1)), (10, (4, 0, 6, 1))])
+def test_toeic_day_one_matches_the_simulation(n: int, want: tuple[int, ...]) -> None:
+    # 배분식 제안 5절 C(실기록 오답, 맞힌 답 0 가정), 사용자 정답률 70%. 지금 식은 10문제에서
+    # 새 쪽 0 · 한 쪽 3문제였음
+    per = defaultdict(PageInfo)
+    for p, w in zip(TOEIC, [2, 1, 0, 0, 1, 0, 2, 0, 4, 1], strict=True):
+        if w:
+            per[p] = PageInfo(wrong=w, days=0, interval=1)
+    pages = {p: pages_of(p)[p] for p in TOEIC}
+    _, share, _ = generate.allocate(pages, per, n, 0.7)
+    assert kinds(per, share) == want
+
+
+@pytest.mark.parametrize(("days", "want"), [(0, (2, 0, 3, 1)), (30, (0, 2, 3, 1))])
+def test_learned_pages_come_back_in_five_questions_when_forgotten(
+    days: int, want: tuple[int, ...]
+) -> None:
+    # 배분식 제안 5절 D: 3개념 익힘(1 · 9 · 11쪽) · 약함(2 · 6 · 12쪽) · 새 쪽 4, 실서비스 5문제.
+    # keep 규칙은 6문제 이상에서만 돌아 지금 식은 30일 뒤에도 익힌 쪽 0문제였음
+    per = defaultdict(PageInfo)
+    for p in (1, 9, 11):
+        per[p] = learned(days=days)
+    for p in (2, 6, 12):
+        per[p] = PageInfo(wrong=1, weak=[f"c{p}"], days=days, interval=1)
+    pages = {p: pages_of(p)[p] for p in TOEIC}
+    _, share, _ = generate.allocate(pages, per, 5, 0.7)
+    assert kinds(per, share) == want
 
 
 def test_subject_and_types() -> None:
@@ -392,6 +478,21 @@ def test_history_counts_wrong_answers_per_page_and_learned_concepts() -> None:
     assert (per[1].wrong, per[1].mastered, per[1].done) == (0, 1, ["이질 아메바"])
 
 
+def test_the_result_keeps_what_each_page_weight_was_made_of() -> None:
+    # #682 결과 pages[]에 P · R · 지난 날 · 간격을 남겨 나중에 상수를 기록으로 맞춤. run은 오늘
+    # (input.day)과 사용자 정답률을 넘김: 1쪽은 11/04 기준 10일 전에 익힘, 맞힌 답만 있어 정답률 1
+    qs = [stored("q3", "이질 아메바", "이질 아메바", "mastered")]
+    old = {**attempt("q3", True), "finishedAt": "2026-10-25T06:00:00Z"}
+    inp = job(sets=[{"id": "s1", "materialId": "m1", "questions": qs}], attempts=[old])
+    result, _ = run(happy([GOOD["대장 아메바"], GOOD["람블편모충"]]), inp)
+    r10 = (1 + 19 / 81 * 10 / 7) ** -0.5
+    keys = ("pageNo", "weight", "right", "p", "r", "days", "interval", "share")
+    assert [tuple(p[k] for k in keys) for p in result["pages"]] == [
+        (1, round(1 - r10, 3), 1, 1.0, round(r10, 3), 10, 7, 1),
+        (2, generate.MIN_WEIGHT, 0, 1.0, 1.0, None, None, 1),
+    ]
+
+
 def test_questions_of_other_notes_do_not_count() -> None:
     other = "Ⅰ. 선충류\n1. 람블편모충과 다른 회충\n- 한국\n- 높다\n- 크다"
     inp = job(
@@ -403,6 +504,56 @@ def test_questions_of_other_notes_do_not_count() -> None:
     notes = {**g.notes, "m1": generate.note_pages(g.material)}
     per = generate.history(g.sets, g.attempts, "m1", notes)
     assert all(p.wrong == 0 for p in per.values())
+
+
+def test_history_counts_right_answers_days_since_the_last_one_and_its_review_interval() -> None:
+    # #682 새 가중치의 입력: 맞힌 답 · 마지막으로 푼 뒤 지난 날(서울 날짜) · 그 문제의 복습 간격
+    active = stored("q1", "람블편모충", "람블편모충", "active")
+    active["srs"]["step"] = 0  # 틀려서 사다리 첫 칸(1일)
+    qs = [
+        stored("q3", "이질 아메바", "이질 아메바", "mastered"),  # 1쪽, 다 익힘 → 7일
+        active,  # 2쪽
+        stored("q2", "질편모충", "질편모충"),  # 2쪽, 복습 상태가 없는 옛 문제 → 1일
+    ]
+    at = {"q3": "2026-10-25T06:00:00Z", "q1": "2026-11-01T06:00:00Z", "q2": "2026-11-03T06:00:00Z"}
+    late = "2026-10-28T16:00:00Z"  # UTC로는 10/28이지만 서울로는 10/29 01시
+    inp = job(
+        sets=[{"id": "s1", "materialId": "m1", "questions": qs}],
+        attempts=[
+            {**attempt("q3", True), "finishedAt": at["q3"]},
+            {**attempt("q3", True), "id": "a-q3-2", "finishedAt": late},
+            {**attempt("q1", False), "finishedAt": at["q1"]},
+            {**attempt("q2", True), "finishedAt": at["q2"]},
+            # 무효 풀이는 맞힌 답 · 마지막으로 푼 때 · 정답률 어디에도 넣지 않음
+            {**attempt("q1", True, void=True), "id": "a-v", "finishedAt": "2026-11-04T01:00:00Z"},
+        ],
+    )
+    g = generate.parse(inp)
+    notes = {"m1": generate.note_pages(g.material)}
+    per = generate.history(g.sets, g.attempts, "m1", notes, today=g.day)
+    assert (per[1].right, per[1].wrong, per[1].days, per[1].interval) == (2, 0, 6, 7)
+    assert (per[2].right, per[2].wrong, per[2].days, per[2].interval) == (1, 1, 1, 1)
+    assert generate.user_rate(g.attempts) == 0.75  # 무효 1개를 뺀 4개 중 3개
+    assert generate.user_rate([]) == generate.PRIOR_RATE
+    # 오늘을 모르면 지난 날도 모름(기억 확률 1로 봄)
+    assert generate.history(g.sets, g.attempts, "m1", notes)[1].days is None
+
+
+def test_answers_at_the_same_time_take_the_shorter_review_interval_in_any_order() -> None:
+    # 같은 개념을 같은 풀이에서 푼 두 문제(간격 7일 · 1일): 답 순서와 상관없이 짧은 간격(덜
+    # 기억함)으로(Codex 리뷰 #683 제안: 나중에 돈 답의 간격을 써 순서만 바꿔도 가중치가 달라졌음)
+    long = stored("q3", "이질 아메바", "이질 아메바", "mastered")
+    short = stored("q5", "이질 아메바", "이질 아메바", "active")
+    short["srs"]["step"] = 0
+    both = [{"questionId": "q3", "correct": True}, {"questionId": "q5", "correct": False}]
+    for answers in (both, both[::-1]):
+        one = {**attempt("q3", True), "answers": answers}
+        sets = [{"id": "s1", "materialId": "m1", "questions": [long, short]}]
+        inp = job(sets=sets, attempts=[one])
+        g = generate.parse(inp)
+        notes = {"m1": generate.note_pages(g.material)}
+        per = generate.history(g.sets, g.attempts, "m1", notes, today=g.day)
+        assert (per[1].days, per[1].interval) == (3, 1)
 
 
 # ---------- 문제 만들기 (LLM) ----------
@@ -426,6 +577,14 @@ def test_a_quiz_is_made_page_by_page() -> None:
         (1, 1, 1),
         (2, 1, 1),
     ]
+    # 기록이 없는 쪽: 사전값 정답률만큼 앎, 기억 확률 1, 지난 날 · 간격 없음(#682)
+    assert {k: result["pages"][0][k] for k in ("weight", "p", "r", "days", "interval")} == {
+        "weight": 0.5,
+        "p": 0.5,
+        "r": 1.0,
+        "days": None,
+        "interval": None,
+    }
     assert steps[-1][0] == 100
     gen = llm.named("Quiz")
     assert "개념 목록(이 안에서 고른다): 이질 아메바, 대장 아메바" in gen[0]
@@ -645,10 +804,12 @@ def test_the_weight_does_not_drop_when_the_fifth_wrong_answer_stops_a_question()
         g = generate.parse(job(sets=sets, attempts=[old, *answers]))
         pages = generate.note_pages(g.material)
         per = generate.history(g.sets, g.attempts, "m1", {"m1": pages})
-        weights.append(generate.allocate(pages, per, 2)[0][1])
+        weights.append(generate.allocate(pages, per, 2, generate.user_rate(g.attempts))[0][1])
         states.append(st["state"])
     assert states[-2:] == ["active", "stopped"]  # 마지막 오답에 멈춤(횟수는 srs가 정함)
-    assert weights == [1 + 1.5 * n for n in range(1, srs.MAX_REVIEWS + 1)]  # 오답마다 오름
+    # 오답마다 오름(#682): 1 − (맞힌 1 + 2 × 정답률 1/(n+1)) / (1 + 오답 n + 2), 지난 날은 모름
+    want = [1 - (1 + 2 / (n + 1)) / (n + 3) for n in range(1, srs.MAX_REVIEWS + 1)]
+    assert weights == pytest.approx(want) and weights == sorted(set(weights))
 
 
 def test_a_concept_learned_again_after_it_stopped_is_mastered() -> None:
