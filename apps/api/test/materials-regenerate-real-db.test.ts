@@ -211,6 +211,27 @@ describe.skipIf(!isLocal)('진짜 DB 정리 결과 다시 만들기', () => {
     expect(await quotas.findOne({}).lean()).toMatchObject({ count: 1, refunds: 2 });
   });
 
+  it('빈 결과를 동시에 · 거듭 조회해도 횟수는 한 번만 돌려준다', async () => {
+    const { id } = await doneNote();
+    // 먼저 성공한 다시 만들기 하나(count 1) — 돌려줄 횟수가 남아 있어도 겹치지 않는지 본다
+    const first = await service.regenerate(me.toHexString(), id, 'terms');
+    await finish(first.job._id, 'succeeded', {
+      ...result('적분'),
+      summary: { format: 'terms', items: [{ head: '적분', text: '넓이' }], points: ['적분: 넓이'] },
+    });
+    await service.findMine(me.toHexString(), id);
+    const { job } = await service.regenerate(me.toHexString(), id, 'qa');
+    await finish(job._id, 'succeeded', {
+      ...result('적분'),
+      summary: { format: 'qa', items: [], points: [] },
+    });
+    await Promise.all(Array.from({ length: 5 }, () => service.findMine(me.toHexString(), id)));
+    await service.findMine(me.toHexString(), id);
+    const quota = await quotas.findOne({}).lean();
+    expect(quota).toMatchObject({ count: 1, refunds: 1 });
+    expect(quota!.refundedJobs!.map(String)).toEqual([job._id]);
+  });
+
   it('요약을 고쳐도 양식 항목(items · format)은 남는다', async () => {
     const { id } = await doneNote();
     const { job } = await service.regenerate(me.toHexString(), id, 'qa');
