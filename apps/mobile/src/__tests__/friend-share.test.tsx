@@ -296,4 +296,43 @@ describe('공유 카드에서 연 노트', () => {
     expect(await screen.findByRole('button', { name: '내 폴더로 가져오기' })).toBeTruthy();
     expect(screen.queryByLabelText('북마크 추가')).toBeNull();
   });
+  // 남의 노트는 다시 정리할 수 없다(주인 작업이라 404) — 가져오기 안내만
+  const failed = {
+    ...note,
+    summary: undefined,
+    processing: { status: 'failed', progress: 0, jobId: 'j1' },
+  };
+
+  it('받은 노트가 정리에 실패했으면 「다시 정리」 없이 가져오기 안내', async () => {
+    setParams({ id: 'n1', share: 's1' });
+    mockApi.content.material.mockResolvedValue(failed);
+    await renderScreen(<HandDetailScreen />);
+    expect(await screen.findByText('내 폴더로 가져오면 직접 정리할 수 있어요.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '다시 정리' })).toBeNull();
+  });
+
+  it('내 노트가 정리에 실패했으면 「다시 정리」와 편집 안내는 그대로', async () => {
+    setParams({ id: 'n1' });
+    mockApi.content.material.mockResolvedValue(failed);
+    await renderScreen(<HandDetailScreen />);
+    expect(await screen.findByRole('button', { name: '다시 정리' })).toBeTruthy();
+    expect(screen.getByText("직접 정리하려면 '편집하기'를 눌러 써 보세요.")).toBeTruthy();
+  });
+
+  it.each([
+    ['받은 녹음', { id: 'n1', share: 's1' }, true],
+    ['내 녹음', { id: 'n1' }, false],
+  ])('%s: 아바타 선생님 묻기 잠김 = %s', async (_, params, locked) => {
+    setParams(params);
+    mockApi.content.material.mockResolvedValue({
+      ...note,
+      kind: 'recording',
+      source: 'live_recording',
+    });
+    mockApi.content.friendShare.mockResolvedValue({ ...share, kind: 'recording' });
+    await renderScreen(<RecDetailScreen />);
+    const ask = await screen.findByRole('button', { name: '아바타 선생님에게 물어보기' });
+    if (locked) expect(ask).toBeDisabled();
+    else expect(ask).not.toBeDisabled();
+  });
 });

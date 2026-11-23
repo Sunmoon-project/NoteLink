@@ -372,7 +372,11 @@ export function HandDetailScreen() {
                 retry="다시 정리"
                 working="필기를 정리하고 있어요"
                 empty="정리된 내용이 없어요"
-                hint="직접 정리하려면 '편집하기'를 눌러 써 보세요."
+                hint={
+                  shared.readOnly
+                    ? '내 폴더로 가져오면 직접 정리할 수 있어요.'
+                    : "직접 정리하려면 '편집하기'를 눌러 써 보세요."
+                }
               />
             )
           ) : (
