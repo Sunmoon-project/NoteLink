@@ -109,7 +109,9 @@ beforeEach(() => {
   jest.clearAllMocks();
   setParams({});
   useDraft.getState().reset();
-  useDraft.getState().set({ files: [firstPhoto], kind: 'handwriting' });
+  // 「+ 사진 추가」는 시작한 방법을 따른다(#678). 이 묶음은 갤러리로 시작한 경우를 본다 —
+  // 초안 기본 출처는 'camera' 라 적지 않으면 카메라로 간다(카메라 경우는 capture-camera-add 시험)
+  useDraft.getState().set({ files: [firstPhoto], kind: 'handwriting', source: 'gallery' });
   mockApi.content.checkImages.mockImplementation(async (files: { name: string }[]) =>
     files.map((file) => ({ name: file.name, verdict: 'ok' })),
   );
