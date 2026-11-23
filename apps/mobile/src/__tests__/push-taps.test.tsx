@@ -35,6 +35,14 @@ it('누르면 읽음 처리하고 그 화면으로 간다', async () => {
   expect(router.push).toHaveBeenCalledWith('/requests');
 });
 
+it('탭 화면으로 가는 알림은 있던 (tabs) 로 돌아가 연다(push 로 (tabs) 를 겹쳐 쌓지 않는다, #674)', async () => {
+  await renderHook(() => usePushTaps(true));
+  await waitFor(() => expect(mockTap).not.toBeNull());
+  mockTap!(response('p3', { type: 'today-review' }));
+  expect(router.dismissTo).toHaveBeenCalledWith('/(tabs)/quiz');
+  expect(router.push).not.toHaveBeenCalled();
+});
+
 it('알림으로 앱을 연 경우 그 알림으로 한 번만 간다(다시 그려도 반복하지 않는다)', async () => {
   mockLast = response('p2', { type: 'dday-remind' });
   const { rerender, unmount } = await renderHook(({ on }: { on: boolean }) => usePushTaps(on), {

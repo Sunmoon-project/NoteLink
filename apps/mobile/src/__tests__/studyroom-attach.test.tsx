@@ -355,7 +355,7 @@ describe('방 채팅 자료 카드', () => {
     await fireEvent.press(await openChat());
     await waitFor(() =>
       expect(mockFeature).toHaveBeenCalledWith({
-        pathname: '/(tabs)/note/hand/[id]',
+        pathname: '/note-view/hand/[id]',
         params: { id: 'n1' },
       }),
     );

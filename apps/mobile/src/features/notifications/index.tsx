@@ -28,7 +28,7 @@ import {
 import { api } from '@/lib/api';
 import { queryClient } from '@/lib/query';
 import { timeAgo } from '@/lib/dates';
-import { routeFor } from '@/lib/notification-route';
+import { openRoute, routeFor } from '@/lib/notification-route';
 import { LoadError } from '@/features/progress/load-error';
 import { toast } from '@/stores/toast';
 import { C, ICON } from '@/theme';
@@ -65,7 +65,7 @@ export function openNotification(
   if (!n.readAt) markNotificationRead(n._id, qc);
   // 알림함은 type을 data 밖에 둔다(푸시 data에는 같이 들어 있다)
   const to = routeFor({ ...n.data, type: n.type });
-  if (to) router.push(to);
+  if (to) openRoute(to);
 }
 
 export function InboxScreen() {

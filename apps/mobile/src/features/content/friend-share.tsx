@@ -1,13 +1,13 @@
 import { useRef } from 'react';
 import { View } from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { MaterialKind } from '@notelink/shared';
 
 import { Text } from '@/components/text';
 import { Btn } from '@/components/ui';
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
+import { noteViewPath, openMyNote } from '@/lib/note-routes';
 import { toast } from '@/stores/toast';
 
 // 친구에게 받은 · 보낸 노트(#554). 1:1 채팅 공유 카드 → 노트 상세(?share=공유 id) → 읽기 전용 · 내 노트로 복사 · 공유 끝내기
@@ -16,13 +16,6 @@ const ENDED = '공유가 끝났어요';
 /** 받은 사람이 노트를 열어 둔 동안 철회 · 친구 끊김을 알아채는 주기(알림 수 UNREAD_REFETCH_MS 처럼 다시 읽기) */
 const FRIEND_SHARE_REFETCH_MS = 30_000;
 const gone = (e: unknown) => e instanceof ApiError && e.status === 404;
-
-export const notePath = (kind: MaterialKind | null) =>
-  kind === 'handwriting'
-    ? '/(tabs)/note/hand/[id]'
-    : kind === 'recording'
-      ? '/(tabs)/note/rec/[id]'
-      : '/(tabs)/note/doc/[id]';
 
 /**
  * 1:1 채팅 공유 카드를 눌렀을 때. 받은 사람에게 끝난 공유(철회 · 친구 끊김 · 노트 지움 · 보낸 사람 탈퇴)는 「공유가 끝났어요」.
@@ -43,8 +36,9 @@ export function useOpenFriendShare() {
         staleTime: 0,
       });
       if (!share.active && !share.mine) return toast(ENDED);
+      // 채팅 위에 탭 밖 노트 보기로 연다(뒤로 가면 채팅, #674)
       openFeature({
-        pathname: notePath(share.kind),
+        pathname: noteViewPath(share.kind),
         params: { id: share.materialId, share: share._id },
       });
     } catch (e) {
@@ -95,7 +89,8 @@ export function FriendShareFooter({ shareId }: { shareId: string }) {
       void qc.invalidateQueries({ queryKey: ['materials', made.folderId] });
       void qc.invalidateQueries({ queryKey: ['folders'] });
       toast('내 노트로 복사했어요');
-      router.replace({ pathname: notePath(data?.kind ?? null), params: { id: made._id } });
+      // 사본은 내 노트다. 채팅 · 노트 보기를 닫고 있던 노트 탭에서 연다((tabs) 를 겹쳐 쌓지 않게, #674)
+      openMyNote(data?.kind, made._id);
     },
   });
   const revoke = useMutation({
