@@ -212,7 +212,8 @@ interface AttemptRow {
   _id: Types.ObjectId;
   quizSetId: Types.ObjectId;
   finishedAt: Date;
-  answers?: { questionId: Types.ObjectId; correct: boolean }[];
+  // void: 오늘의 복습이 결함 문제라 무효로 한 풀이(true 또는 이유 글, quiz-attempt.schema)
+  answers?: { questionId: Types.ObjectId; correct: boolean; void?: boolean | string }[];
 }
 
 export function toAppQuestion(q: QuestionRow): AppQuestion {
@@ -1344,9 +1345,11 @@ export class QuizSetsService implements OnModuleInit {
         id: a._id.toString(),
         quizSetId: a.quizSetId.toString(),
         finishedAt: a.finishedAt.toISOString(),
+        // 무효 풀이(void)는 그대로: 처리기가 맞힌 답 · 틀린 답 · 정답률 셈에서 뺌(Codex 리뷰 #683)
         answers: (a.answers ?? []).map((x) => ({
           questionId: x.questionId.toString(),
           correct: x.correct,
+          ...(x.void ? { void: x.void } : {}),
         })),
       })),
       notes: Object.fromEntries(

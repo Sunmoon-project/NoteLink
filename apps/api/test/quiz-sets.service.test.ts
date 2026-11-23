@@ -369,6 +369,14 @@ describe('QuizSetsService.create', () => {
       finishedAt,
       answers: [{ questionId: qid, correct: false, answer: '단백질', tries: 1 }],
     } as never);
+    // 오늘의 복습이 결함 문제라 무효로 한 풀이(void)는 그대로 넘긴다: 처리기가 셈에서 뺌(Codex 리뷰 #683)
+    const earlier = new Date('2026-11-06T03:00:00Z');
+    await attempts.model.create({
+      userId: ME,
+      quizSetId: old._id,
+      finishedAt: earlier,
+      answers: [{ questionId: qid, correct: true, void: '정답이 둘' }],
+    } as never);
     await attempts.model.create({ userId: ME, quizSetId: old._id, finishedAt: null } as never);
     await attempts.model.create({ userId: OTHER, quizSetId: old._id, finishedAt } as never);
 
@@ -399,6 +407,12 @@ describe('QuizSetsService.create', () => {
         quizSetId: old._id.toHexString(),
         finishedAt: finishedAt.toISOString(),
         answers: [{ questionId: qid.toHexString(), correct: false }],
+      },
+      {
+        id: expect.any(String),
+        quizSetId: old._id.toHexString(),
+        finishedAt: earlier.toISOString(),
+        answers: [{ questionId: qid.toHexString(), correct: true, void: '정답이 둘' }],
       },
     ]);
     expect(input['notes']).toEqual({ [otherNote]: [{ pageNo: 4, ocrText: 'DNA' }] });
