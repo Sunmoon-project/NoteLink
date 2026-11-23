@@ -8,7 +8,7 @@ import { HandDetailScreen, RecDetailScreen } from '../features/content/detail';
 import { useToast } from '../stores/toast';
 import { renderScreen, setParams } from '../test-utils';
 
-// 친구에게 받은 · 보낸 노트(#554 PR 2): 1:1 채팅 카드로 열기 · 읽기 전용 · 내 노트로 복사 · 공유 끝내기 · 끝난 공유
+// 친구에게 받은 · 보낸 노트(#554 PR 2): 1:1 채팅 카드로 열기 · 읽기 전용 · 내 폴더로 가져오기 · 공유 끝내기 · 끝난 공유
 const mockApi = {
   content: {
     material: jest.fn(),

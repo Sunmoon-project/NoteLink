@@ -13,7 +13,7 @@ import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { noteViewPath, openMyNote } from '@/lib/note-routes';
 import { toast } from '@/stores/toast';
 
-// 친구에게 받은 · 보낸 노트(#554). 1:1 채팅 공유 카드 → 노트 상세(?share=공유 id) → 읽기 전용 · 내 노트로 복사 · 공유 끝내기
+// 친구에게 받은 · 보낸 노트(#554). 1:1 채팅 공유 카드 → 노트 상세(?share=공유 id) → 읽기 전용 · 내 폴더로 가져오기 · 공유 끝내기
 
 const ENDED = '공유가 끝났어요';
 /** 받은 사람이 노트를 열어 둔 동안 철회 · 친구 끊김을 알아채는 주기(알림 수 UNREAD_REFETCH_MS 처럼 다시 읽기) */
@@ -142,7 +142,7 @@ export function ImportButton({ id, kind }: { id: string; kind?: MaterialKind }) 
   );
 }
 
-/** 공유 카드에서 연 노트의 아래 버튼: 받은 사람은 「내 노트로 복사」, 보낸 사람은 「공유 끝내기」. 끝난 공유는 안내만 */
+/** 공유 카드에서 연 노트의 아래 버튼: 받은 사람은 「내 폴더로 가져오기」, 보낸 사람은 「공유 끝내기」. 끝난 공유는 안내만 */
 export function FriendShareFooter({ shareId }: { shareId: string }) {
   const qc = useQueryClient();
   const { data, error } = useFriendShare();
