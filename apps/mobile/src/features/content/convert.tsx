@@ -113,13 +113,14 @@ async function cancelLostRegistration(request: Parameters<typeof api.content.cre
   }
 }
 
-const pickedScreen = (kind: keyof typeof DETAIL, source: string) =>
-  kind === 'document'
-    ? '/capture/picked-file'
-    : kind === 'recording'
-      ? '/capture/rec-upload'
-      : source === 'scan'
-        ? '/capture/scan-check'
+/** 서버에 닿기 전 취소하면 돌아갈 원본 화면. 문서 스캔도 kind가 document라 스캔을 먼저 본다(「선택한 파일」로 빠지지 않게) */
+export const pickedScreen = (kind: keyof typeof DETAIL, source: string) =>
+  source === 'scan'
+    ? '/capture/scan-check'
+    : kind === 'document'
+      ? '/capture/picked-file'
+      : kind === 'recording'
+        ? '/capture/rec-upload'
         : '/capture/picked';
 
 /** 원본은 저장됐고 AI 정리는 서버를 기다리는 상태 */
