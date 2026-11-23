@@ -11,7 +11,10 @@ import {
   type AiJob,
   type Diagram,
   type NoteDiagram,
+  type Material,
+  type SummaryFormat,
 } from '@notelink/shared';
+import { FormatSheet, formatName, SummaryCard } from './summary-format';
 import { api, ApiError, NetworkError } from '@/lib/api';
 import { uploadToBlob, UploadError } from '@/lib/upload';
 import { aiWaiting, stageOf } from '@/lib/ai';
@@ -210,6 +213,13 @@ export function ConvertScreen() {
   const [checking, setChecking] = useState(false);
   // 서버에 등록되기 전(올리기 · 등록 단계)에 실패한 이유와, 그 뒤 다시 시도한 횟수
   const [uploadFail, setUploadFail] = useState<{ reason: string; tries: number } | null>(null);
+  // 정리 양식(FR-19): 필기 · 문서는 올리기 전에 묻는다. 닫으면 기본(핵심 요약)으로 진행한다
+  const [askFormat, setAskFormat] = useState(kind !== 'recording' && draft.format === null);
+  const startWith = (format: SummaryFormat) => {
+    useDraft.getState().set({ format });
+    setAskFormat(false);
+    void run();
+  };
 
   const requireFolder = () => {
     if (!draft.folderId) throw new Error('자료를 넣을 폴더가 없어요');
@@ -254,6 +264,9 @@ export function ConvertScreen() {
         description: draft.description,
         blobUrls: [...blobs.current],
         avatarItemId: draft.avatar,
+        ...(draft.kind !== 'recording'
+          ? { format: useDraft.getState().format ?? ('points' as const) }
+          : {}),
       };
       const r = await api.content.createMaterial(sent);
       if (canceled.current) {
@@ -285,7 +298,7 @@ export function ConvertScreen() {
     }
   };
   useEffect(() => {
-    run();
+    if (!askFormat) run();
     const sub = AppState.addEventListener('change', (s) => {
       bg.current = s !== 'active';
       setInBg(bg.current);
@@ -650,6 +663,7 @@ export function ConvertScreen() {
         primary="취소하기"
         onPrimary={doCancel}
       />
+      <FormatSheet open={askFormat} onPick={startWith} onClose={() => startWith('points')} />
     </Canvas>
   );
 }
@@ -681,8 +695,10 @@ export function ResultScreen() {
   // 다시 만들기: 서버가 새 작업을 넣고, 성공할 때까지 노트는 지금 결과 그대로다(실패하면 지금 결과가 남는다)
   const [askRegen, setAskRegen] = useState(false);
   const [regenJob, setRegenJob] = useState<string | null>(null);
+  // 다시 만들 때 고른 양식. 그 양식으로 아무것도 못 만들면 노트의 양식이 그대로라 알아본다(FR-19)
+  const regenFormat = useRef<SummaryFormat | null>(null);
   const regen = useMutation({
-    mutationFn: () => api.content.regenerate(id),
+    mutationFn: (format: SummaryFormat) => api.content.regenerate(id, format),
     onSuccess: ({ job }) => setRegenJob(job._id),
     // 하루 한도(429) · 이미 다시 만드는 중(409)은 서버 문구 그대로
     onError: (e) =>
@@ -698,14 +714,18 @@ export function ResultScreen() {
         over = true;
         setRegenJob(null);
         // 노트 조회가 끝난 작업의 결과를 옮긴다
-        await m.refetch();
+        const after = await m.refetch();
         // 녹음 플레이어는 슬라이드 · 대본을 따로(['recording', id]) 불러오므로, 옮긴 뒤 그것도 새로 읽는다
         if (j.status === 'succeeded')
           await qc.invalidateQueries({ queryKey: ['recording', id], exact: true });
+        const wanted = regenFormat.current;
+        const kept = !!wanted && (after.data?.summaryFormat ?? 'points') !== wanted;
         toast(
-          j.status === 'succeeded'
-            ? '결과를 새로 만들었어요'
-            : '다시 만들지 못했어요. 지금 결과는 그대로예요',
+          j.status === 'succeeded' && kept
+            ? `이 노트에서는 ${formatName(wanted)} 양식을 만들 수 없어요. 지금 결과는 그대로예요`
+            : j.status === 'succeeded'
+              ? '결과를 새로 만들었어요'
+              : '다시 만들지 못했어요. 지금 결과는 그대로예요',
         );
       } catch {
         // 연결이 잠깐 끊겨도 다음 확인에서 이어 본다
@@ -743,14 +763,17 @@ export function ResultScreen() {
             <Btn loading={save.isPending} disabled={!!regenJob} onPress={() => save.mutate()}>
               학습자료에 저장
             </Btn>
-            <Btn
-              kind="cream"
-              loading={regen.isPending || !!regenJob}
-              disabled={save.isPending}
-              onPress={() => setAskRegen(true)}
-            >
-              다시 만들기
-            </Btn>
+            {/* 녹음은 결과가 슬라이드라 양식이 없다. 다시 만들어도 같은 결과라 버튼을 두지 않는다(FR-19) */}
+            {mat.kind !== 'recording' && (
+              <Btn
+                kind="cream"
+                loading={regen.isPending || !!regenJob}
+                disabled={save.isPending}
+                onPress={() => setAskRegen(true)}
+              >
+                다시 만들기
+              </Btn>
+            )}
           </View>
         }
       >
@@ -768,6 +791,7 @@ export function ResultScreen() {
             <View className="mb-3 flex-row items-center gap-2">
               <Text className="text-title3 font-bold text-ink">{mat.title}</Text>
             </View>
+            <SummaryCard summary={mat.summary} />
             <NoteBody sections={mat.summary?.sections ?? []} diagrams={mat.diagrams} />
           </>
         )}
@@ -785,6 +809,7 @@ export function ResultScreen() {
             <Header title="문서 요약 완료" />
             <DocSummary
               points={mat.summary?.points ?? []}
+              summary={mat.summary}
               keywords={mat.keywords}
               file={{
                 name: mat.title,
@@ -794,17 +819,15 @@ export function ResultScreen() {
           </>
         )}
       </Screen>
-      <Alert
+      <FormatSheet
         open={askRegen}
-        tone="sun"
-        title="결과를 다시 만들까요?"
-        body="새 결과가 나오면 지금 결과는 사라져요. 다시 만들기는 하루 3번까지 할 수 있어요."
-        secondary="그대로 두기"
-        onSecondary={() => setAskRegen(false)}
-        primary="다시 만들기"
-        onPrimary={() => {
+        current={mat.summaryFormat ?? 'points'}
+        note="새 결과가 나오면 지금 결과는 사라져요. 다시 만들기는 하루 3번까지 할 수 있어요."
+        onClose={() => setAskRegen(false)}
+        onPick={(format) => {
           setAskRegen(false);
-          regen.mutate();
+          regenFormat.current = format;
+          regen.mutate(format);
         }}
       />
     </Canvas>
@@ -948,11 +971,14 @@ function Inline({ text }: { text: string }) {
 
 export function DocSummary({
   points,
+  summary,
   keywords,
   file,
   onOriginal,
 }: {
   points: string[];
+  /** 양식 항목(FR-19)이 있으면 양식대로 그린다. 없으면 points 를 핵심 요약으로 */
+  summary?: Material['summary'];
   keywords: string[];
   file?: { name: string; meta: string };
   onOriginal?: () => void;
@@ -970,18 +996,26 @@ export function DocSummary({
           </View>
         </Card>
       )}
-      <View className="flex-row items-center gap-1.5 mt-5 mb-2">
-        <Pin size={ICON.sm} color={C.sub} />
-        <Text className="text-subhead font-bold text-ink">핵심 요약</Text>
-      </View>
-      <Card className="gap-3 p-5">
-        {points.map((p) => (
-          <View key={p} className="flex-row gap-2">
-            <Text className="text-brand">•</Text>
-            <Text className="flex-1 text-footnote text-ink">{p}</Text>
+      {summary?.items?.length ? (
+        <View className="mt-5">
+          <SummaryCard summary={summary} />
+        </View>
+      ) : (
+        <>
+          <View className="flex-row items-center gap-1.5 mt-5 mb-2">
+            <Pin size={ICON.sm} color={C.sub} />
+            <Text className="text-subhead font-bold text-ink">핵심 요약</Text>
           </View>
-        ))}
-      </Card>
+          <Card className="gap-3 p-5">
+            {points.map((p) => (
+              <View key={p} className="flex-row gap-2">
+                <Text className="text-brand">•</Text>
+                <Text className="flex-1 text-footnote text-ink">{p}</Text>
+              </View>
+            ))}
+          </Card>
+        </>
+      )}
       <Label>키워드</Label>
       <View className="flex-row flex-wrap gap-2">
         {keywords.map((k) => (

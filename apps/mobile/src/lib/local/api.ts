@@ -1042,6 +1042,7 @@ const api: Api = {
           title: p.title,
           description: p.description ?? null,
           avatarItemId: p.avatarItemId ?? null,
+          ...(p.kind !== 'recording' ? { summaryFormat: p.format ?? 'points' } : {}),
           processing: { status: 'queued', progress: 0, jobId: null },
           summary: null,
           keywords: [],
@@ -1084,7 +1085,7 @@ const api: Api = {
     updateSummary: (id, sections) => {
       const m = db().materials.find((x) => x._id === id);
       if (!m) return fail(ERROR_CODES.NOT_FOUND, '자료를 찾을 수 없어요', 404);
-      m.summary = { sections, points: m.summary?.points ?? [] };
+      m.summary = { ...m.summary, sections, points: m.summary?.points ?? [] };
       const { files: _f, ...rest } = m;
       return ok(rest as Material);
     },

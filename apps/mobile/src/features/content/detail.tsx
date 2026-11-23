@@ -49,6 +49,7 @@ import {
 } from '@/components/ui';
 import { C, ICON } from '@/theme';
 import { DocSummary, NoteBody } from './convert';
+import { SummaryCard, summaryItemsMarkdown } from './summary-format';
 import { Player } from './player';
 import { PageImages, usePageTurn } from './page-images';
 import { TutorBuddy, canAsk, useTuckOnScroll } from '@/features/tutor/buddy';
@@ -192,8 +193,8 @@ function useSubject(folderId?: string) {
 /** 정리본을 마크다운으로: 제목 · 핵심 요약 · 정리된 내용 · 키워드 (서버에는 정리본 파일이 없어 앱이 만든다) */
 export function summaryMarkdown(m: Pick<Material, 'title' | 'summary' | 'keywords'>): string {
   const out = [`# ${m.title}`];
-  if (m.summary?.points.length)
-    out.push('## 핵심 요약', m.summary.points.map((p) => `- ${p}`).join('\n'));
+  const top = summaryItemsMarkdown(m.summary).trimEnd();
+  if (top) out.push(top);
   for (const s of m.summary?.sections ?? []) out.push(`## ${s.heading}`, s.body);
   if (m.keywords.length) out.push('## 키워드', m.keywords.join(' · '));
   return out.join('\n\n') + '\n';
@@ -356,7 +357,10 @@ export function HandDetailScreen() {
         <View className="mt-4">
           {tab === '정리된 노트' ? (
             m.summary?.sections.length ? (
-              <NoteBody sections={m.summary.sections} diagrams={m.diagrams} />
+              <>
+                <SummaryCard summary={m.summary} />
+                <NoteBody sections={m.summary.sections} diagrams={m.diagrams} />
+              </>
             ) : (
               <SummaryStatus
                 m={m}
@@ -703,7 +707,7 @@ export function DocDetailScreen() {
         {tab === '요약' ? (
           <View className="mt-4">
             {m.summary?.points.length ? (
-              <DocSummary points={m.summary.points} keywords={m.keywords} />
+              <DocSummary points={m.summary.points} summary={m.summary} keywords={m.keywords} />
             ) : (
               <SummaryStatus
                 m={m}

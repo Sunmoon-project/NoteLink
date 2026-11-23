@@ -13,6 +13,7 @@ import type {
   FriendRequest,
   FriendShare,
   Material,
+  SummaryFormat,
   MaterialKind,
   MaterialSource,
   Message,
@@ -241,6 +242,8 @@ export interface Api {
       description?: string;
       blobUrls: string[];
       avatarItemId?: string | null;
+      /** 정리 양식(FR-19). 없으면 서버가 points. 녹음은 보내지 않는다 */
+      format?: SummaryFormat;
     }): Promise<{ material: Material; job: AiJob }>;
     material(id: string): Promise<Material>;
     saveMaterial(id: string): Promise<void>;
@@ -250,7 +253,10 @@ export interface Api {
     addBookmark(materialId: string, atSec: number): Promise<void>;
     downloadUrl(materialId: string): Promise<{ url: string; fileName: string }>;
     /** 정리 결과 다시 만들기. 새 작업이 성공할 때까지 노트는 지금 결과 그대로 */
-    regenerate(materialId: string): Promise<{ material: Material; job: AiJob }>;
+    regenerate(
+      materialId: string,
+      format?: SummaryFormat,
+    ): Promise<{ material: Material; job: AiJob }>;
     /** 스터디룸 하나(id) 또는 친구 여러 명(ids, 50명까지)에게 노트를 보낸다(#554) */
     share(p: {
       materialIds: string[];
