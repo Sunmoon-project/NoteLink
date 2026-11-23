@@ -115,10 +115,13 @@ export function CameraScreen() {
         mimeType: 'image/jpeg',
       };
       // 틀 밖은 버린다. 잴 수 없거나 자르다 실패하면 전체 사진을 그대로 쓴다.
-      if (frameBox.current && previewSize.current.width)
+      if (frameBox.current && previewSize.current.width) {
         try {
           f = await cropPhoto(f, frameCropRect(previewSize.current, frameBox.current, p));
-        } catch {}
+        } catch (e) {
+          if (__DEV__) console.warn('[scan-crop] 틀 자르기 실패 — 전체 사진을 씀', e);
+        }
+      } else if (__DEV__) console.warn('[scan-crop] 틀 · 미리보기 크기를 못 재 전체 사진을 씀');
       if (scan) setPages((x) => [...x, f]);
       else {
         useDraft.getState().set({ files: [f] });
