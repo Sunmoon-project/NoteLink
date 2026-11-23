@@ -373,9 +373,12 @@ export function HandDetailScreen() {
                 working="필기를 정리하고 있어요"
                 empty="정리된 내용이 없어요"
                 hint={
-                  shared.readOnly
-                    ? '내 폴더로 가져오면 직접 정리할 수 있어요.'
-                    : "직접 정리하려면 '편집하기'를 눌러 써 보세요."
+                  !shared.readOnly
+                    ? "직접 정리하려면 '편집하기'를 눌러 써 보세요."
+                    : // 정리가 끝나지 않은 노트는 가져오기도 거절된다(409) — 올린 사람이 다시 정리해야 한다
+                      aiStateOf(m.processing) === 'failed'
+                      ? '올린 사람이 다시 정리하면 볼 수 있어요.'
+                      : '내 폴더로 가져오면 직접 정리할 수 있어요.'
                 }
               />
             )

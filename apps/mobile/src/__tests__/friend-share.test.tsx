@@ -303,11 +303,12 @@ describe('공유 카드에서 연 노트', () => {
     processing: { status: 'failed', progress: 0, jobId: 'j1' },
   };
 
-  it('받은 노트가 정리에 실패했으면 「다시 정리」 없이 가져오기 안내', async () => {
+  it('받은 노트가 정리에 실패했으면 「다시 정리」 없이 올린 사람의 재정리 안내(가져오기도 409)', async () => {
     setParams({ id: 'n1', share: 's1' });
     mockApi.content.material.mockResolvedValue(failed);
     await renderScreen(<HandDetailScreen />);
-    expect(await screen.findByText('내 폴더로 가져오면 직접 정리할 수 있어요.')).toBeTruthy();
+    expect(await screen.findByText('올린 사람이 다시 정리하면 볼 수 있어요.')).toBeTruthy();
+    expect(screen.queryByText('내 폴더로 가져오면 직접 정리할 수 있어요.')).toBeNull();
     expect(screen.queryByRole('button', { name: '다시 정리' })).toBeNull();
   });
 
@@ -317,6 +318,13 @@ describe('공유 카드에서 연 노트', () => {
     await renderScreen(<HandDetailScreen />);
     expect(await screen.findByRole('button', { name: '다시 정리' })).toBeTruthy();
     expect(screen.getByText("직접 정리하려면 '편집하기'를 눌러 써 보세요.")).toBeTruthy();
+  });
+
+  it('받은 노트가 정리됐지만 내용이 비었으면 가져오기 안내', async () => {
+    setParams({ id: 'n1', share: 's1' });
+    mockApi.content.material.mockResolvedValue({ ...note, summary: undefined });
+    await renderScreen(<HandDetailScreen />);
+    expect(await screen.findByText('내 폴더로 가져오면 직접 정리할 수 있어요.')).toBeTruthy();
   });
 
   it.each([
