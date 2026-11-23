@@ -59,17 +59,13 @@ describe('TestQA 3차 버그 묶음', () => {
     expect(profileLine({ grade: '2학년', email: 'a@b.c' })).toBe('2학년 · a@b.c');
   });
 
-  it('PROF-001: 서버가 쓰는 양(usage)을 안 주면 0으로 꾸미지 않고 구획을 숨긴다', async () => {
+  it('PROF-001: 설정 화면에 저장 공간 · AI 크레딧 쓰는 양 구획은 없다(서버가 usage를 줘도)', async () => {
     const me = await api.me.get();
-    const get = jest.spyOn(api.me, 'get').mockResolvedValue({ ...me, usage: undefined });
-    const view = await renderScreen(<SettingsScreen />);
+    const get = jest.spyOn(api.me, 'get').mockResolvedValue(me);
+    await renderScreen(<SettingsScreen />);
     await screen.findByText(me.nickname);
     expect(screen.queryByText('저장 공간')).toBeNull();
     expect(screen.queryByText('AI 크레딧')).toBeNull();
-    await view.unmount();
-    get.mockResolvedValue(me);
-    await renderScreen(<SettingsScreen />);
-    expect(await screen.findByText('저장 공간')).toBeTruthy();
     get.mockRestore();
   });
 
