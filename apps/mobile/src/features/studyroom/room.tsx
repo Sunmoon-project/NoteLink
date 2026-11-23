@@ -1564,6 +1564,7 @@ const TileGrid = ({ landscape, children }: { landscape: boolean; children: React
 /** 방에 공유된 자료를 종류에 맞는 화면으로 연다(공유 자료 화면 · 방 채팅 자료 카드가 같이 쓴다) */
 function useOpenShared(roomId: string) {
   const openFeature = useFeatureNavigation();
+  const myId = useAuth((s) => s.userId);
   const qc = useQueryClient();
   const opening = useRef(new Set<string>());
   // 공유 항목에는 노트 종류가 없어서 노트를 조회해 종류에 맞는 화면으로 연다(상세 화면과 같은 캐시 키)
@@ -1577,7 +1578,11 @@ function useOpenShared(roomId: string) {
         staleTime: 30_000,
       });
       // 탭 밖 노트 보기로 연다. 탭 경로로 열면 (tabs) 가 겹쳐 쌓여 뒤로 가기가 방이 아니라 홈으로 간다(#674)
-      openFeature({ pathname: noteViewPath(note.kind), params: { id: materialId } });
+      // 남이 올린 노트는 room 을 붙여 읽기 전용으로 연다(편집 · 공유 · 선생님 · 퀴즈 대신 「내 폴더로 가져오기」)
+      openFeature({
+        pathname: noteViewPath(note.kind),
+        params: item.sharedBy === myId ? { id: materialId } : { id: materialId, room: roomId },
+      });
     } catch {
       toast('이 자료를 열 수 없어요');
     } finally {

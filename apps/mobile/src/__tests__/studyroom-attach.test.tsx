@@ -356,7 +356,8 @@ describe('방 채팅 자료 카드', () => {
     await waitFor(() =>
       expect(mockFeature).toHaveBeenCalledWith({
         pathname: '/note-view/hand/[id]',
-        params: { id: 'n1' },
+        // 남이 올린 노트라 방 id 를 붙여 읽기 전용으로 연다
+        params: { id: 'n1', room: room._id },
       }),
     );
   });

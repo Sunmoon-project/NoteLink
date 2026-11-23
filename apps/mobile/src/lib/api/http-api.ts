@@ -189,6 +189,7 @@ export const httpApi: Api = {
     revokeFriendShare: (id) => http.del(P.friendShare(id)),
     copyFriendShare: (id, folderId) =>
       http.post(P.friendShareCopy(id), folderId ? { folderId } : {}),
+    copyMaterial: (id, folderId) => http.post(P.materialCopy(id), { folderId }),
     checkImages: (files) => http.post(P.imageCheck, { files }),
     ask: (id, body) => http.post(P.materialAsk(id), body),
   },

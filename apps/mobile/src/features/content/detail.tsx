@@ -56,7 +56,7 @@ import { seoul } from '@/lib/dates';
 import { QuizFromNote } from './quiz-from-note';
 import { useResummarize } from './resummarize';
 import { aiStateOf } from '@/lib/ai';
-import { FriendShareFooter, useFriendShare } from './friend-share';
+import { FriendShareFooter, ImportButton, useFriendShare } from './friend-share';
 
 // p.67~73 필기 · 녹음 · 문서 상세 / 편집 / 다운로드 / 공유 / 삭제
 
@@ -330,6 +330,8 @@ export function HandDetailScreen() {
         footer={
           shared.shareId ? (
             <FriendShareFooter shareId={shared.shareId} />
+          ) : shared.room ? (
+            <ImportButton id={id} kind={m.kind} />
           ) : (
             <Two>
               <Btn
@@ -591,7 +593,15 @@ export function RecDetailScreen() {
   return (
     <Canvas>
       {/* 떠 있는 아바타 선생님은 두지 않는다: 플레이어 자막 옆 3D 아바타가 녹음에 맞춰 말한다(GL 화면 하나) */}
-      <Screen footer={shared.shareId ? <FriendShareFooter shareId={shared.shareId} /> : undefined}>
+      <Screen
+        footer={
+          shared.shareId ? (
+            <FriendShareFooter shareId={shared.shareId} />
+          ) : shared.room ? (
+            <ImportButton id={id} kind={m.kind} />
+          ) : undefined
+        }
+      >
         <Header
           title={view === 'text' ? '원문 텍스트 보기' : m.title}
           sub={dateLabel(m, '녹음')}
@@ -677,6 +687,8 @@ export function DocDetailScreen() {
         footer={
           shared.shareId ? (
             <FriendShareFooter shareId={shared.shareId} />
+          ) : shared.room ? (
+            <ImportButton id={id} kind={m.kind} />
           ) : (
             <Two>
               <Btn

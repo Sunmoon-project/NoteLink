@@ -14,7 +14,7 @@ const mockApi = {
     material: jest.fn(),
     friendShare: jest.fn(),
     recording: jest.fn(),
-    copyFriendShare: jest.fn(),
+    copyMaterial: jest.fn(),
     revokeFriendShare: jest.fn(),
     folders: jest.fn(),
   },
@@ -160,16 +160,43 @@ describe('1:1 채팅 공유 카드 열기', () => {
   });
 });
 
+const FOLDER = {
+  _id: 'f1',
+  title: '생리학',
+  subjectId: null,
+  subjectName: '의학',
+  materialCount: 2,
+  createdAt: '2026-11-01T00:00:00.000Z',
+  updatedAt: '2026-11-01T00:00:00.000Z',
+};
+
+describe('스터디룸에서 연 남의 노트(?room=)', () => {
+  it('편집 · 공유 · 퀴즈 · 선생님 없이 「내 폴더로 가져오기」만 둔다', async () => {
+    setParams({ id: 'n1', room: 'r1' });
+    mockApi.content.copyMaterial.mockResolvedValue({ _id: 'n2', folderId: 'f1' });
+    mockApi.content.folders.mockResolvedValue([FOLDER]);
+    await renderScreen(<HandDetailScreen />);
+    await fireEvent.press(await screen.findByRole('button', { name: '내 폴더로 가져오기' }));
+    expect(screen.queryByText('편집하기')).toBeNull();
+    expect(screen.queryByText('공유하기')).toBeNull();
+    expect(screen.queryByLabelText('파일 옵션')).toBeNull();
+    await fireEvent.press(await screen.findByText('생리학'));
+    await waitFor(() => expect(mockApi.content.copyMaterial).toHaveBeenCalledWith('n1', 'f1'));
+  });
+});
+
 describe('공유 카드에서 연 노트', () => {
-  it('받은 사람: 읽기 전용(편집 · 공유 · 더보기 없음)이고 「내 노트로 복사」로 사본을 연다', async () => {
+  it('받은 사람: 읽기 전용(편집 · 공유 · 더보기 없음)이고 「내 폴더로 가져오기」로 고른 폴더에 사본을 연다', async () => {
     setParams({ id: 'n1', share: 's1' });
-    mockApi.content.copyFriendShare.mockResolvedValue({ _id: 'n2', folderId: 'f1' });
+    mockApi.content.copyMaterial.mockResolvedValue({ _id: 'n2', folderId: 'f1' });
+    mockApi.content.folders.mockResolvedValue([FOLDER]);
     await renderScreen(<HandDetailScreen />);
     expect(await screen.findByText('민지님이 보낸 노트 · 읽기 전용')).toBeTruthy();
     expect(screen.queryByText('편집하기')).toBeNull();
     expect(screen.queryByText('공유하기')).toBeNull();
-    await fireEvent.press(screen.getByRole('button', { name: '내 노트로 복사' }));
-    await waitFor(() => expect(mockApi.content.copyFriendShare).toHaveBeenCalledWith('s1'));
+    await fireEvent.press(screen.getByRole('button', { name: '내 폴더로 가져오기' }));
+    await fireEvent.press(await screen.findByText('생리학'));
+    await waitFor(() => expect(mockApi.content.copyMaterial).toHaveBeenCalledWith('n1', 'f1'));
     // 사본은 내 노트라 있던 노트 탭으로 돌아가 연다((tabs) 를 겹쳐 쌓지 않게, #674)
     expect(router.dismissTo).toHaveBeenCalledWith(
       { pathname: '/(tabs)/note/hand/[id]', params: { id: 'n2' } },
@@ -177,16 +204,18 @@ describe('공유 카드에서 연 노트', () => {
     );
     expect(router.replace).not.toHaveBeenCalled();
     expect(router.push).not.toHaveBeenCalled();
-    expect(useToast.getState().msg).toBe('내 노트로 복사했어요');
+    expect(useToast.getState().msg).toBe('내 폴더로 가져왔어요');
   });
 
   it('복사를 서버가 거절하면(정리 중 409) 그 문구', async () => {
     setParams({ id: 'n1', share: 's1' });
-    mockApi.content.copyFriendShare.mockRejectedValue(
+    mockApi.content.copyMaterial.mockRejectedValue(
       new MockApiError('NOTE_NOT_READY', '노트 정리가 끝난 뒤에 복사할 수 있어요', 409),
     );
+    mockApi.content.folders.mockResolvedValue([FOLDER]);
     await renderScreen(<HandDetailScreen />);
-    await fireEvent.press(await screen.findByRole('button', { name: '내 노트로 복사' }));
+    await fireEvent.press(await screen.findByRole('button', { name: '내 폴더로 가져오기' }));
+    await fireEvent.press(await screen.findByText('생리학'));
     await waitFor(() =>
       expect(useToast.getState().msg).toBe('노트 정리가 끝난 뒤에 복사할 수 있어요'),
     );
@@ -244,11 +273,11 @@ describe('공유 카드에서 연 노트', () => {
       try {
         setParams({ id: 'n1', share: 's1' });
         await renderScreen(<HandDetailScreen />);
-        expect(await screen.findByRole('button', { name: '내 노트로 복사' })).toBeTruthy();
+        expect(await screen.findByRole('button', { name: '내 폴더로 가져오기' })).toBeTruthy();
         arrange();
         await act(async () => jest.advanceTimersByTime(30_000));
         expect(await screen.findByText('공유가 끝났어요')).toBeTruthy();
-        expect(screen.queryByRole('button', { name: '내 노트로 복사' })).toBeNull();
+        expect(screen.queryByRole('button', { name: '내 폴더로 가져오기' })).toBeNull();
       } finally {
         jest.useRealTimers();
       }
@@ -264,7 +293,7 @@ describe('공유 카드에서 연 노트', () => {
     });
     mockApi.content.friendShare.mockResolvedValue({ ...share, kind: 'recording' });
     await renderScreen(<RecDetailScreen />);
-    expect(await screen.findByRole('button', { name: '내 노트로 복사' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '내 폴더로 가져오기' })).toBeTruthy();
     expect(screen.queryByLabelText('북마크 추가')).toBeNull();
   });
 });

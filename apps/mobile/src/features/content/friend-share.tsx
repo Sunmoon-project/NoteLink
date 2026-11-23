@@ -1,10 +1,13 @@
-import { useRef } from 'react';
-import { View } from 'react-native';
+import { useRef, useState } from 'react';
+import { Pressable, ScrollView, View } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { Text } from '@/components/text';
-import { Btn } from '@/components/ui';
+import { Folder as FolderIcon } from 'lucide-react-native';
+import type { MaterialKind } from '@notelink/shared';
+import { Btn, Loading, Sheet } from '@/components/ui';
+import { C, ICON } from '@/theme';
 import { api, ApiError } from '@/lib/api';
 import { useFeatureNavigation } from '@/lib/feature-navigation';
 import { noteViewPath, openMyNote } from '@/lib/note-routes';
@@ -49,9 +52,12 @@ export function useOpenFriendShare() {
   };
 }
 
-/** 노트 상세가 공유 카드에서 열렸는지. 받은 사람이면 readOnly(편집 · 삭제 · 공유 · 묻기를 숨긴다) */
+/**
+ * 노트 상세가 남의 노트로 열렸는지: 친구 공유 카드(?share=, 받은 사람) 또는 스터디룸에서 남이 올린 노트(?room=).
+ * readOnly 면 편집 · 삭제 · 공유 · 선생님 · 퀴즈를 숨기고 「내 폴더로 가져오기」만 둔다
+ */
 export function useFriendShare() {
-  const { share } = useLocalSearchParams<{ share?: string }>();
+  const { share, room } = useLocalSearchParams<{ share?: string; room?: string }>();
   const q = useQuery({
     queryKey: ['friend-share', share],
     queryFn: () => api.content.friendShare(share!),
@@ -66,10 +72,74 @@ export function useFriendShare() {
   // 불러오는 동안에도 받은 사람으로 본다(주인 버튼이 잠깐 보였다 사라지지 않게)
   return {
     shareId: share,
+    room,
     data: q.data,
     error: q.error,
-    readOnly: !!share && !q.data?.mine,
+    readOnly: (!!share && !q.data?.mine) || !!room,
   };
+}
+
+/** 남의 노트를 고른 내 폴더로 복사한다. 길게 한 줄 버튼 → 폴더 고르기 시트 → 사본을 내 노트 탭에서 연다 */
+export function ImportButton({ id, kind }: { id: string; kind?: MaterialKind }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const folders = useQuery({ queryKey: ['folders'], queryFn: api.content.folders, enabled: open });
+  const copy = useMutation({
+    mutationFn: (folderId: string) => api.content.copyMaterial(id, folderId),
+    onError: (e) =>
+      toast(
+        e instanceof ApiError && e.status >= 400 && e.status < 500 && e.message
+          ? e.message
+          : '연결을 확인하고 다시 시도해 주세요',
+      ),
+    onSuccess: (made) => {
+      setOpen(false);
+      void qc.invalidateQueries({ queryKey: ['materials', made.folderId] });
+      void qc.invalidateQueries({ queryKey: ['folders'] });
+      toast('내 폴더로 가져왔어요');
+      openMyNote(kind, made._id);
+    },
+  });
+  return (
+    <>
+      <Btn loading={copy.isPending} onPress={() => setOpen(true)}>
+        내 폴더로 가져오기
+      </Btn>
+      <Sheet
+        open={open}
+        onClose={() => !copy.isPending && setOpen(false)}
+        title="어느 폴더로 가져올까요?"
+      >
+        {folders.isPending ? (
+          <Loading />
+        ) : !folders.data?.length ? (
+          <Text className="py-8 text-center text-footnote text-sub">
+            {folders.isError ? '폴더를 불러오지 못했어요' : '가져올 폴더를 먼저 만들어 주세요'}
+          </Text>
+        ) : (
+          <ScrollView className="max-h-96">
+            {folders.data.map((f) => (
+              <Pressable
+                key={f._id}
+                accessibilityRole="button"
+                disabled={copy.isPending}
+                onPress={() => copy.mutate(f._id)}
+                className="flex-row items-center gap-3 rounded-xl px-2 py-3.5 active:bg-mint"
+              >
+                <FolderIcon size={ICON.md} color={C.brand} />
+                <View className="flex-1">
+                  <Text className="text-body font-semibold text-ink">{f.title}</Text>
+                  <Text className="text-caption2 text-sub">
+                    {f.subjectName} · 자료 {f.materialCount}개
+                  </Text>
+                </View>
+              </Pressable>
+            ))}
+          </ScrollView>
+        )}
+      </Sheet>
+    </>
+  );
 }
 
 /** 공유 카드에서 연 노트의 아래 버튼: 받은 사람은 「내 노트로 복사」, 보낸 사람은 「공유 끝내기」. 끝난 공유는 안내만 */
@@ -82,17 +152,6 @@ export function FriendShareFooter({ shareId }: { shareId: string }) {
         ? e.message
         : '연결을 확인하고 다시 시도해 주세요',
     );
-  const copy = useMutation({
-    mutationFn: () => api.content.copyFriendShare(shareId),
-    onError: fail,
-    onSuccess: (made) => {
-      void qc.invalidateQueries({ queryKey: ['materials', made.folderId] });
-      void qc.invalidateQueries({ queryKey: ['folders'] });
-      toast('내 노트로 복사했어요');
-      // 사본은 내 노트다. 채팅 · 노트 보기를 닫고 있던 노트 탭에서 연다((tabs) 를 겹쳐 쌓지 않게, #674)
-      openMyNote(data?.kind, made._id);
-    },
-  });
   const revoke = useMutation({
     mutationFn: () => api.content.revokeFriendShare(shareId),
     onError: fail,
@@ -118,9 +177,7 @@ export function FriendShareFooter({ shareId }: { shareId: string }) {
           공유 끝내기
         </Btn>
       ) : (
-        <Btn loading={copy.isPending} onPress={() => copy.mutate()}>
-          내 노트로 복사
-        </Btn>
+        <ImportButton id={data.materialId} kind={data.kind ?? undefined} />
       )}
     </View>
   );
