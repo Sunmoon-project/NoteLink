@@ -20,7 +20,7 @@ import type { Response } from 'express';
 import { requireUserId } from '../../../common/request-user.js';
 import { type AuthenticatedRequest, JwtAuthGuard } from '../../auth/jwt-auth.guard.js';
 import { AddBookmarkDto } from './dto/add-bookmark.dto.js';
-import { CreateMaterialDto } from './dto/create-material.dto.js';
+import { CreateMaterialDto, RegenerateMaterialDto } from './dto/create-material.dto.js';
 import { ListMaterialsQuery } from './dto/list-materials.query.js';
 import { UpdateMaterialDto } from './dto/update-material.dto.js';
 import { encodeCursor, NEXT_CURSOR_HEADER, parseListQuery } from './list-cursor.js';
@@ -70,14 +70,18 @@ export class MaterialsController {
     };
   }
 
-  /** 정리 결과 다시 만들기: 같은 원본 · 같은 입력으로 새 작업을 넣는다. 성공할 때까지 노트는 옛 결과 그대로 */
+  /**
+   * 정리 결과 다시 만들기: 같은 원본으로 새 작업을 넣는다. 성공할 때까지 노트는 옛 결과 그대로.
+   * format(FR-19)을 주면 그 양식으로(지금 양식과 같으면 400), 없으면 지금 양식으로
+   */
   @Post('materials/:id/regenerate')
   async regenerate(
     @Req() req: AuthenticatedRequest,
     @Param('id') id: string,
+    @Body() body: RegenerateMaterialDto,
   ): Promise<{ data: { material: Material; job: AiJob } }> {
     return {
-      data: (await this.materials.regenerate(requireUserId(req), id)) as {
+      data: (await this.materials.regenerate(requireUserId(req), id, body?.format)) as {
         material: Material;
         job: AiJob;
       },

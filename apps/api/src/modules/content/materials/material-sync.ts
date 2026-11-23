@@ -113,6 +113,9 @@ export function summaryFromResult(raw: unknown): {
   points: string[];
   keywords: string[];
   headings: Map<number, string>;
+  /** 양식(FR-19). 양식 전 AI 결과에는 없다 */
+  format?: string;
+  items?: { head: string | null; text: string }[];
 } {
   const list = (v: unknown, max: number) => {
     const out: string[] = [];
@@ -130,11 +133,31 @@ export function summaryFromResult(raw: unknown): {
     const value = clean(item['text']);
     if (value) headings.set(item['order'], value);
   }
+  const format = typeof summary['format'] === 'string' ? summary['format'] : undefined;
+  const items: { head: string | null; text: string }[] = [];
+  for (const item of Array.isArray(summary['items']) ? summary['items'] : []) {
+    if (!isRecord(item)) continue;
+    const value = clean(item['text']);
+    if (value) items.push({ head: clean(item['head']) || null, text: value });
+  }
   return {
+    // 양식 항목은 펴서 points 에도 온다(qa 「질문 — 답」 · terms 「용어: 뜻」) — 퀴즈 · 아바타 묻기가 읽는다
     points: list(summary['points'], POINTS_MAX),
     keywords: list(summary['keywords'], KEYWORDS_MAX),
     headings,
+    ...(format ? { format, items: items.slice(0, POINTS_MAX) } : {}),
   };
+}
+
+/**
+ * 다시 만들기 결과가 고른 양식의 항목을 하나도 못 냈음(FR-19). 양식을 모르는 옛 AI 결과 · 요약 호출 실패(summary 없음)는
+ * 예전처럼 본문만 바꾼다(배포 순서 api → ai 사이에 다시 만들기가 모두 실패하지 않게)
+ */
+export function noItems(job: AppAiJob | null): boolean {
+  const result = job && isRecord(job.result) ? job.result : {};
+  if (!isRecord(result['summary'])) return false;
+  const made = summaryFromResult(result['summary']);
+  return made.format !== undefined && (made.items ?? []).length === 0;
 }
 
 /**
@@ -248,7 +271,11 @@ export function syncFromJob(row: MaterialRow, job: AppAiJob): Record<string, unk
   return {
     ...done,
     pages,
-    summary: sections.length > 0 ? { sections, points } : null,
+    summary:
+      sections.length > 0
+        ? { sections, points, ...(made.format ? { format: made.format, items: made.items } : {}) }
+        : null,
+    ...(made.format ? { summaryFormat: made.format } : {}),
     keywords: keywords.slice(0, KEYWORDS_MAX),
     diagrams: diagramsFromResult(result['diagrams']),
   };

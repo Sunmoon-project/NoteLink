@@ -196,6 +196,11 @@ export const Diagram = z.object({
 // (after 가 null 이거나 그 줄을 못 찾으면 첫 소제목 앞 · 마지막 소제목 끝)
 export const NoteDiagram = z.object({ after: z.string().nullable(), diagram: Diagram });
 
+// 노트 정리 양식(FR-19): 위쪽 요약 칸의 모습. 본문(sections)은 양식과 상관없이 같다
+export const SummaryFormat = z.enum(['points', 'qa', 'terms', 'brief']);
+// 요약 항목: qa 는 head = 질문, terms 는 head = 용어, 그 밖은 head = null
+export const SummaryItem = z.object({ head: z.string().nullable(), text: z.string() });
+
 export const Material = z.object({
   _id: id,
   folderId: id,
@@ -213,8 +218,13 @@ export const Material = z.object({
     .object({
       sections: z.array(z.object({ heading: z.string(), body: z.string() })),
       points: z.array(z.string()),
+      // 양식을 보내기 전 서버 · 기기 저장 모드 · 녹음에는 없다(없으면 points 로 그린다)
+      format: SummaryFormat.optional(),
+      items: z.array(SummaryItem).optional(),
     })
     .nullable(),
+  // 이 노트의 지금 양식(다시 만들기 시트가 이 값으로 열린다). 없으면 points
+  summaryFormat: SummaryFormat.optional(),
   keywords: z.array(z.string()),
   bookmarks: z.array(Bookmark),
   pages: z.array(MaterialPage).optional(),
@@ -752,6 +762,8 @@ export type FolderCreateBody = z.infer<typeof FolderCreateBody>;
 export type MaterialKind = z.infer<typeof MaterialKind>;
 export type MaterialSource = z.infer<typeof MaterialSource>;
 export type Material = z.infer<typeof Material>;
+export type SummaryFormat = z.infer<typeof SummaryFormat>;
+export type SummaryItem = z.infer<typeof SummaryItem>;
 export type Recording = z.infer<typeof Recording>;
 export type Slide = z.infer<typeof Slide>;
 export type Diagram = z.infer<typeof Diagram>;
