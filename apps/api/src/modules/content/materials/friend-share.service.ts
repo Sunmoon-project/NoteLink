@@ -27,7 +27,7 @@ import { UploadQuotaService } from '../../upload/upload-quota.service.js';
 
 const UNKNOWN_NICKNAME = '알 수 없는 사용자';
 
-const notFound = (what: string) =>
+export const notFound = (what: string) =>
   new NotFoundException({ code: ERROR_CODES.NOT_FOUND, message: `${what} 정보를 찾을 수 없어요` });
 
 type ShareRow = {
@@ -210,14 +210,30 @@ export class FriendShareService {
    * ponytail: 두 번 누르면 사본이 둘 생긴다(앱이 누르는 동안 버튼을 막는다). 문제가 되면 공유마다 사본 id 를 남겨 돌려준다
    */
   async copy(userId: string, shareId: string, folderId?: string) {
-    const me = new Types.ObjectId(userId);
     const row = await this.row(shareId);
-    if (!row || !row.friendId.equals(me) || !(await this.isLive(row))) throw notFound('공유');
+    if (!row || !row.friendId.equals(new Types.ObjectId(userId)) || !(await this.isLive(row)))
+      throw notFound('공유');
+    return this.copyNote(userId, row.ownerId, row.materialId, folderId, '공유');
+  }
+
+  /**
+   * 남의 노트(ownerId 의 materialId)를 내 폴더로 복사한다. 볼 수 있는지(받은 공유 · 방 공유)는 부르는 쪽이 먼저 확인한다.
+   * 친구 공유 복사와 「내 폴더로 가져오기」(POST /materials/:id/copy, 방 · 친구 공유 모두)가 같이 쓴다
+   */
+  async copyNote(
+    userId: string,
+    ownerId: Types.ObjectId,
+    materialId: Types.ObjectId,
+    folderId: string | undefined,
+    what = '노트',
+  ) {
+    const me = new Types.ObjectId(userId);
+    const row = { ownerId };
     const found = await this.materials
-      .findOne({ _id: row.materialId, ownerId: row.ownerId, deletedAt: null })
+      .findOne({ _id: materialId, ownerId, deletedAt: null })
       .lean<MaterialRow>();
-    const note = found && (await this.notes.sync(row.ownerId.toHexString(), found));
-    if (!note) throw notFound('공유');
+    const note = found && (await this.notes.sync(ownerId.toHexString(), found));
+    if (!note) throw notFound(what);
     if (note.processing.status !== 'done')
       throw new ConflictException({
         code: ERROR_CODES.NOTE_NOT_READY,
@@ -307,6 +323,8 @@ export class FriendShareService {
         processing: { status: 'done', progress: 100, jobId, regenJobId: null },
         summary: note.summary ?? null,
         keywords: note.keywords ?? [],
+        // 필기 도식도 함께(없으면 사본에서 빠진다)
+        diagrams: note.diagrams ?? [],
         concepts: note.concepts ?? [],
         // 북마크는 보낸 사람의 메모라 옮기지 않는다
         bookmarks: [],

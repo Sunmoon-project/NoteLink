@@ -1177,6 +1177,7 @@ const api: Api = {
     friendShare: () => needServer('친구에게 받은 자료'),
     revokeFriendShare: () => needServer('친구에게 보낸 자료'),
     copyFriendShare: () => needServer('친구에게 받은 자료'),
+    copyMaterial: () => needServer('공유받은 자료'),
     // 필기 여부 · 흐림 판별은 AI 서버가 한다. 기기에서는 형식 · 용량만 확인하고 통과시킨다
     checkImages: (files) => ok(files.map((f) => ({ name: f.name, verdict: 'ok' as const }))),
     // 서버 AI 대신 노트에서 질문과 가장 많이 겹치는 부분을 골라 바로 답한다(완료된 작업으로)

@@ -262,6 +262,8 @@ export interface Api {
     revokeFriendShare(id: string): Promise<void>;
     /** 받은 노트를 내 노트로 복사(정리 끝난 노트만). 폴더를 안 주면 최근에 쓴 내 폴더 */
     copyFriendShare(id: string, folderId?: string): Promise<{ _id: string; folderId: string }>;
+    /** 공유받은 남의 노트(방 · 친구)를 고른 내 폴더로 가져온다 */
+    copyMaterial(id: string, folderId: string): Promise<{ _id: string; folderId: string }>;
     checkImages(
       files: { name: string; sizeBytes: number; uri: string }[],
     ): Promise<{ name: string; verdict: ImageVerdict }[]>;

@@ -23,7 +23,12 @@ import ViewRec from '../../app/note-view/rec/[id]';
 const mockApi = {
   rooms: { get: jest.fn(), shared: jest.fn(), chatRoomId: jest.fn() },
   social: { friends: jest.fn(), messages: jest.fn() },
-  content: { material: jest.fn(), friendShare: jest.fn(), copyFriendShare: jest.fn() },
+  content: {
+    material: jest.fn(),
+    friendShare: jest.fn(),
+    copyMaterial: jest.fn(),
+    folders: jest.fn(),
+  },
   notifications: { markRead: jest.fn(async () => {}), unreadCount: jest.fn(async () => 0) },
 };
 jest.mock('expo-router', () => jest.requireActual('expo-router'));
@@ -211,9 +216,20 @@ it.each([
   // 같은 종류(필기) 상세 위라도 그 자리를 바꾸지 않고 위에 쌓는다(상세는 id 마다 다른 화면)
   ['노트 탭에서 내 필기 상세를 보던 중이면 뒤로 가면 그 상세', '/note/hand/n5', '/note/hand/n5'],
 ] as const)(
-  '「내 노트로 복사」 뒤에는 있던 노트 탭에서 사본을 연다 — %s',
+  '「내 폴더로 가져오기」 뒤에는 있던 노트 탭에서 사본을 연다 — %s',
   async (_n, visited, back) => {
-    mockApi.content.copyFriendShare.mockResolvedValue({ _id: 'n2', folderId: 'f1' });
+    mockApi.content.copyMaterial.mockResolvedValue({ _id: 'n2', folderId: 'f1' });
+    mockApi.content.folders.mockResolvedValue([
+      {
+        _id: 'f1',
+        title: '생리학',
+        subjectId: null,
+        subjectName: '의학',
+        materialCount: 0,
+        createdAt: '2026-11-20T00:00:00.000Z',
+        updatedAt: '2026-11-20T00:00:00.000Z',
+      },
+    ]);
     const r = app();
     await r;
     if (visited) {
@@ -222,7 +238,8 @@ it.each([
     }
     await act(async () => router.push({ pathname: '/chat/[id]', params: { id: 'u1' } }));
     await fireEvent.press(await screen.findByText('공유 카드'));
-    await fireEvent.press(await screen.findByRole('button', { name: '내 노트로 복사' }));
+    await fireEvent.press(await screen.findByRole('button', { name: '내 폴더로 가져오기' }));
+    await fireEvent.press(await screen.findByText('생리학'));
     expect(await screen.findByText('필기 상세 n2')).toBeTruthy();
     expect(r.getPathname()).toBe('/note/hand/n2');
     expect(countTabs(r.getRouterState() as NavState)).toBe(1);

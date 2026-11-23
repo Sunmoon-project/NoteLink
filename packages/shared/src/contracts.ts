@@ -219,6 +219,8 @@ export const PATHS = {
   friendShare: (id: string) => `/friend-shares/${seg(id)}`,
   /** 받은 노트를 내 노트로 복사. 본문(선택) { folderId } → 새 Material */
   friendShareCopy: (id: string) => `/friend-shares/${seg(id)}/copy`,
+  /** 방 · 친구에게 공유받은 남의 노트를 내 폴더로 가져오기(복사) */
+  materialCopy: (id: string) => `/materials/${seg(id)}/copy`,
   /** 아바타에게 노트 묻기 → note_ask 작업(AiJob)을 돌려준다. 답은 aiJob으로 받아 result(NoteAskResult)에서 읽는다 */
   materialAsk: (id: string) => `/materials/${seg(id)}/ask`,
   imageCheck: '/images/check',
