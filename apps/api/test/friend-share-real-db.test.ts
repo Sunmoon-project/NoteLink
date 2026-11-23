@@ -387,6 +387,11 @@ describe.skipIf(!isLocal)('진짜 DB 친구에게 노트 보내기', () => {
 
   it('내 노트로 복사: 노트 · 정리 결과 · 녹음 파일 사본을 내 폴더에 만든다(보낸 사람 SAS 는 옮기지 않음)', async () => {
     await send([n1], [f1]);
+    await materials.updateOne(
+      { _id: n1 },
+      { $set: { diagrams: [{ after: '첫 줄', diagram: { kind: 'flow', nodes: [], edges: [] } }] } },
+      { strict: false },
+    );
     const row = await shareOf(f1);
     const out = await friendShares.copy(hex(f1), hex(row._id));
     expect(out.folderId).toBe(hex(f1Folder));
@@ -395,6 +400,8 @@ describe.skipIf(!isLocal)('진짜 DB 친구에게 노트 보내기', () => {
     expect(copy.title).toBe('운영체제 강의');
     expect(copy.kind).toBe('recording');
     expect(copy.summary?.points).toEqual(['핵심']);
+    // 필기 도식도 사본에 남는다
+    expect(copy.diagrams).toHaveLength(1);
     // 북마크는 보낸 사람의 메모라 옮기지 않는다
     expect(copy.bookmarks).toEqual([]);
     expect(copy.processing.status).toBe('done');

@@ -266,7 +266,8 @@ export function Player({
     );
   if (!mat.data || !rec.data) return <Loading />;
   // 정리가 끝난 자료만 선생님에게 물을 수 있다(떠 있는 아바타와 같은 조건)
-  const ask = canAsk(mat.data);
+  // 남의 노트(읽기 전용)는 가져오기 전까지 선생님에게 묻지 않는다
+  const ask = canAsk(mat.data) && !readOnly;
   return (
     <>
       <View className="rounded-3xl bg-night p-3">

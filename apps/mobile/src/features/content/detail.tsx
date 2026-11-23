@@ -138,11 +138,16 @@ function SummaryStatus({
   hint?: string;
 }) {
   const resummarize = useResummarize();
+  // 남의 노트는 다시 정리할 수 없다(주인 작업이라 404)
+  const { readOnly } = useFriendShare();
   const state = aiStateOf(m.processing);
   if (state === 'waiting') return <AiPending what={what} hint={hint} />;
   const [title, sub] =
     state === 'failed'
-      ? [failed, hint ?? (m.processing.jobId ? '다시 눌러 정리해 볼 수 있어요.' : undefined)]
+      ? [
+          failed,
+          hint ?? (m.processing.jobId && !readOnly ? '다시 눌러 정리해 볼 수 있어요.' : undefined),
+        ]
       : state === 'working'
         ? [working, '끝나면 여기에 바로 보여요.']
         : [empty, hint];
@@ -157,7 +162,7 @@ function SummaryStatus({
         <Text className="text-subhead font-semibold text-ink">{title}</Text>
         {!!sub && <Text className="mt-0.5 text-footnote text-sub">{sub}</Text>}
       </View>
-      {state === 'failed' && !!m.processing.jobId && (
+      {state === 'failed' && !!m.processing.jobId && !readOnly && (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={retry}

@@ -323,6 +323,8 @@ export class FriendShareService {
         processing: { status: 'done', progress: 100, jobId, regenJobId: null },
         summary: note.summary ?? null,
         keywords: note.keywords ?? [],
+        // 필기 도식도 함께(없으면 사본에서 빠진다)
+        diagrams: note.diagrams ?? [],
         concepts: note.concepts ?? [],
         // 북마크는 보낸 사람의 메모라 옮기지 않는다
         bookmarks: [],
