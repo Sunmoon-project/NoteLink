@@ -53,7 +53,9 @@ function setup(
   };
   const refunds: Record<string, unknown>[] = [];
   const regenQuotas = {
+    fail: false,
     updateOne: (filter: Record<string, unknown>) => {
+      if (regenQuotas.fail) return Promise.reject(new Error('down'));
       refunds.push(filter);
       return Promise.resolve({});
     },
@@ -67,7 +69,7 @@ function setup(
     {} as never,
     regenQuotas as never,
   );
-  return { service, row, writes, old, regenId, refunds };
+  return { service, row, writes, old, regenId, refunds, regenQuotas };
 }
 
 describe('다시 만들기 동기화는 지우는 regenJobId 를 lastRegenJobId 에 남긴다(#639)', () => {
@@ -181,5 +183,37 @@ describe('양식 다시 만들기(FR-19)', () => {
       'processing.lastRegenJobId': regenId,
     });
     expect(refunds).toHaveLength(1);
+    // 같은 작업은 한 번만 돌려준다(동시 조회 · 재시도)
+    expect(refunds[0]).toMatchObject({ refundedJobs: { $ne: regenId } });
+  });
+
+  it('요약 호출이 실패해(summary: null) 새 양식을 못 만들면 옛 결과를 두고 돌려준다', async () => {
+    const { service, row, writes, refunds, regenId } = setup(
+      { status: 'succeeded', result: result(null) },
+      note,
+    );
+    await service.sync(userId.toHexString(), row);
+    expect(writes[0]!.set).toEqual({
+      'processing.regenJobId': null,
+      'processing.lastRegenJobId': regenId,
+    });
+    expect(refunds).toHaveLength(1);
+  });
+
+  it('돌려주기가 실패하면 옮기지 않고 regenJobId 를 남겨 다음 조회가 다시 돌려준다', async () => {
+    const { service, row, writes, refunds, regenQuotas } = setup(
+      {
+        status: 'succeeded',
+        result: result({ format: 'terms', items: [], points: [], keywords: [], headings: [] }),
+      },
+      note,
+    );
+    regenQuotas.fail = true;
+    await service.sync(userId.toHexString(), row);
+    expect(writes).toEqual([]);
+    regenQuotas.fail = false;
+    await service.sync(userId.toHexString(), row);
+    expect(refunds).toHaveLength(1);
+    expect(writes).toHaveLength(1);
   });
 });

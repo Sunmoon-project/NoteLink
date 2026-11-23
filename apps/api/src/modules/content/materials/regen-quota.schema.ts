@@ -22,6 +22,10 @@ export class RegenQuota {
   @Prop({ type: Number })
   refunds?: number;
 
+  /** 돌려준 다시 만들기 작업 id. 같은 작업을 두 번 돌려주지 않게(옮기기 전에 돌려주고, 실패하면 다음 조회가 다시 시도) */
+  @Prop({ type: [Types.ObjectId], default: undefined })
+  refundedJobs?: Types.ObjectId[];
+
   @Prop({ required: true, type: Date })
   expiresAt: Date;
 }

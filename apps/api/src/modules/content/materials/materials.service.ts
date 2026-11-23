@@ -745,6 +745,23 @@ export class MaterialsService implements OnModuleInit {
     const empty =
       update?.['processing.status'] === 'done' && row.kind !== 'recording' && noItems(job);
     const applied = update?.['processing.status'] === 'done' && !empty;
+    // 돌려주기를 옮기기보다 먼저 한다: 돌려주기가 실패하면 regenJobId 가 남아 다음 조회가 다시 시도한다.
+    // 작업 id 로 한 번만 돌려주므로 동시 조회 · 재시도에도 겹치지 않는다
+    if (empty)
+      try {
+        await this.regenQuotas!.updateOne(
+          {
+            ownerId: row.ownerId,
+            day: seoulDay(regenId.getTimestamp()),
+            count: { $gt: 0 },
+            refunds: { $not: { $gte: REGEN_REFUND_MAX } },
+            refundedJobs: { $ne: regenId },
+          },
+          { $inc: { count: -1, refunds: 1 }, $addToSet: { refundedJobs: regenId } },
+        );
+      } catch {
+        return row; // 옮기지 않고 둔다 — 다음 조회가 돌려주기부터 다시
+      }
     const clear = { 'processing.regenJobId': null, 'processing.lastRegenJobId': regenId };
     const updated = await this.materials
       .findOneAndUpdate(
@@ -753,16 +770,6 @@ export class MaterialsService implements OnModuleInit {
         { returnDocument: 'after' },
       )
       .lean<MaterialRow>();
-    if (empty && updated)
-      await this.regenQuotas!.updateOne(
-        {
-          ownerId: row.ownerId,
-          day: seoulDay(regenId.getTimestamp()),
-          count: { $gt: 0 },
-          refunds: { $not: { $gte: REGEN_REFUND_MAX } },
-        },
-        { $inc: { count: -1, refunds: 1 } },
-      );
     return updated ?? this.currentRow(row);
   }
 

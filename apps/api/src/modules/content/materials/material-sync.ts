@@ -155,6 +155,8 @@ export function summaryFromResult(raw: unknown): {
  */
 export function noItems(job: AppAiJob | null): boolean {
   const result = job && isRecord(job.result) ? job.result : {};
+  // 요약 호출 실패(summary: null)도 새 양식을 못 만든 것 — 지금 결과를 둔다. 키가 없는 결과(옛 형식)는 그대로 옮긴다
+  if (result['summary'] === null) return true;
   if (!isRecord(result['summary'])) return false;
   const made = summaryFromResult(result['summary']);
   return made.format !== undefined && (made.items ?? []).length === 0;
