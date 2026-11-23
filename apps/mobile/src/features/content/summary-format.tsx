@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import type { Material, SummaryFormat } from '@notelink/shared';
-import { Btn, Sheet } from '@/components/ui';
+import { Btn, Card, Sheet } from '@/components/ui';
 
 // 노트 정리 양식(FR-19). 위쪽 요약 칸의 모습만 바뀌고 본문은 그대로다
 export const FORMATS: { value: SummaryFormat; name: string; hint: string }[] = [
@@ -93,14 +93,14 @@ export function SummaryCard({ summary }: { summary: Summary | null | undefined }
     : summary.points.map((text) => ({ head: null, text }));
   if (items.length === 0) return null;
   return (
-    <View className="mb-3 rounded-3xl bg-surface px-5 py-4">
-      <Text className="mb-2 text-callout font-bold text-ink">{formatName(format)}</Text>
+    <Card className="mb-3 p-5">
+      <Text className="mb-2 text-subhead font-bold text-ink">{formatName(format)}</Text>
       {format === 'qa' ? (
         <View className="gap-3">
           {items.map((i, n) => (
             <View key={n}>
-              <Text className="text-body font-bold text-ink">Q. {i.head}</Text>
-              <Text className="mt-0.5 text-body text-sub">{i.text}</Text>
+              <Text className="text-footnote font-bold text-ink">Q. {i.head}</Text>
+              <Text className="mt-0.5 text-footnote text-sub">{i.text}</Text>
             </View>
           ))}
         </View>
@@ -111,20 +111,20 @@ export function SummaryCard({ summary }: { summary: Summary | null | undefined }
               <View className="rounded-full bg-mint px-2.5 py-0.5">
                 <Text className="text-footnote font-semibold text-brand">{i.head}</Text>
               </View>
-              <Text className="flex-1 text-body text-sub">{i.text}</Text>
+              <Text className="flex-1 text-footnote text-sub">{i.text}</Text>
             </View>
           ))}
         </View>
       ) : (
         <View className="gap-1.5">
           {items.map((i, n) => (
-            <Text key={n} className="text-body text-sub">
+            <Text key={n} className="text-footnote text-sub">
               • {i.text}
             </Text>
           ))}
         </View>
       )}
-    </View>
+    </Card>
   );
 }
 
