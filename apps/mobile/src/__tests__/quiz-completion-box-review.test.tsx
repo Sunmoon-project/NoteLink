@@ -273,6 +273,27 @@ it('결과 화면은 맞힌 문제 번호를 초록, 틀린 문제 번호를 빨
   expect(screen.queryByText('선택')).toBeNull();
   expect(screen.queryByRole('button', { name: '보관함에 저장' })).toBeNull();
 });
+it('결과 화면은 객관식 보기를 전부 보여 주고, 단답형은 정답만 보여 준다', async () => {
+  mockApi.quiz.set.mockResolvedValue({
+    ...quizSet,
+    questionCount: 2,
+    questions: [
+      {
+        ...question,
+        choices: ['addEventListener', 'querySelector', 'setTimeout'],
+        answer: 'addEventListener',
+      },
+      { ...question, _id: 'box-q2', type: 'short_answer', choices: null, answer: 'Promise' },
+    ],
+  });
+  await renderScreen(<QuizReviewScreen />, client());
+  expect(await screen.findByText('① addEventListener')).toBeTruthy();
+  expect(screen.getByText('② querySelector')).toBeTruthy();
+  expect(screen.getByText('③ setTimeout')).toBeTruthy();
+  expect(screen.getByText('A. addEventListener')).toBeTruthy();
+  expect(screen.getByText('A. Promise')).toBeTruthy();
+  expect(screen.queryByText(/^① Promise/)).toBeNull();
+});
 it.each([
   ['오늘의 복습 세트', '2026-11-19', false],
   ['일반 세트', null, true],

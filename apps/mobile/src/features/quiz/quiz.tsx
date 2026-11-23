@@ -1351,6 +1351,16 @@ export function QuizReviewScreen() {
                 </View>
                 <Text className="flex-1 text-footnote text-ink">Q. {q.prompt}</Text>
               </View>
+              {/* 객관식 · OX는 보기를 전부 보여 주고 정답 보기를 칠한다(풀이 화면과 같은 ChoiceRow) */}
+              {!!q.choices?.length && (
+                <View className="mt-3 gap-2">
+                  {q.choices.map((c, i) => (
+                    <ChoiceRow key={c} n={i} on={c === q.answer} fill="bg-canvas">
+                      {c}
+                    </ChoiceRow>
+                  ))}
+                </View>
+              )}
               <View className="mt-3 rounded-xl bg-mint px-3 py-2.5">
                 <Text className="text-caption text-brand">A. {q.answer}</Text>
               </View>
