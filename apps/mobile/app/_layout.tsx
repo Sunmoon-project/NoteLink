@@ -39,6 +39,12 @@ function AppStack() {
     >
       {/* 친구 창은 홈 위에 겹쳐 뜬다. 투명 모달은 띄우기 전에 정해져야 해서 여기서 선언한다 */}
       <Stack.Screen name="friends" options={DRAWER_SCREEN} />
+      {/* 공부 종료 요약도 같은 이유: 화면 안에서 정하면 카드로 쌓인 뒤 모달로 바뀌며 다시 만들어져
+          실기기(Release)에서 까만 화면으로 멈췄다 */}
+      <Stack.Screen
+        name="summary"
+        options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }}
+      />
     </Stack>
   );
 }

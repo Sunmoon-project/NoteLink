@@ -96,12 +96,14 @@ it('상세 화면은 # 제목 · - 목록 · **굵게** 표시대로 그린다(�
     <NoteBody sections={[{ heading: '정리', body: '# 큰 제목\n- 항목\n**중요** 내용' }]} />,
   );
   expect(screen.getByText('큰 제목')).toBeTruthy();
-  expect(screen.getByText('• 항목')).toBeTruthy();
+  // 점은 글 왼쪽에 따로 그려 줄이 넘어가도 글이 점 오른쪽에 맞춰 흐른다. - 기호는 보이지 않는다
+  expect(screen.getByText('항목')).toBeTruthy();
+  expect(screen.queryByText(/^- /)).toBeNull();
   expect(screen.getByText('중요')).toBeTruthy();
   expect(screen.queryByText(/\*\*/)).toBeNull();
 });
 
-it('상세 화면은 소제목마다 카드를 따로 그린다', async () => {
+it('상세 화면은 한 카드 안에 소제목마다 구역을 나누고 차례 번호(01 · 02)를 붙인다', async () => {
   await renderScreen(
     <NoteBody
       sections={[
@@ -113,4 +115,6 @@ it('상세 화면은 소제목마다 카드를 따로 그린다', async () => {
   expect(screen.getAllByTestId('note-section')).toHaveLength(2);
   expect(screen.getByText('아메바')).toBeTruthy();
   expect(screen.getByText('2쪽')).toBeTruthy();
+  expect(screen.getByText('01')).toBeTruthy();
+  expect(screen.getByText('02')).toBeTruthy();
 });

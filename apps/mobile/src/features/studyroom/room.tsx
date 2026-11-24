@@ -1423,7 +1423,11 @@ export function RoomScreen() {
               className="absolute top-2 right-14"
             >
               <Pressable
-                onPress={() => setChat(false)}
+                // 뒤로 가기(back)처럼 키보드도 내린다: 채팅 입력 중에 누르면 캠 화면 위에 자판이 남았다
+                onPress={() => {
+                  setChat(false);
+                  Keyboard.dismiss();
+                }}
                 // 오른쪽 위 설정 버튼과 겹치지 않게 그 왼쪽에 둔다
                 className="rounded-full bg-black/40 px-2 py-0.5"
               >

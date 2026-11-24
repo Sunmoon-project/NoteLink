@@ -397,6 +397,20 @@ describe('스터디룸 뒤로 가기와 채팅', () => {
     dismiss.mockRestore();
   });
 
+  it('채팅 중 「캠 보기」를 누르면 채팅을 닫고 키보드도 내린다(캠 화면 위에 자판이 남지 않게)', async () => {
+    mockConnectMedia.mockResolvedValue(media());
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    await renderScreen(<RoomScreen />, client());
+    await screen.findByText(room.title);
+    await fireEvent(screen.getByPlaceholderText('채팅을 입력해 주세요'), 'focus');
+    dismiss.mockClear();
+    await fireEvent.press(await screen.findByText('캠 보기'));
+    expect(dismiss).toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByText('캠 보기')).toBeNull());
+    expect(router.back).not.toHaveBeenCalled();
+    dismiss.mockRestore();
+  });
+
   it('채팅을 연 채로 다른 화면에 다녀오면 채팅이 닫혀 있다', async () => {
     mockConnectMedia.mockResolvedValue(media());
     const dismiss = jest.spyOn(Keyboard, 'dismiss');

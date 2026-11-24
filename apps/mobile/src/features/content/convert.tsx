@@ -881,7 +881,10 @@ export function placeDiagrams(sections: Section[], diagrams: NoteDiagram[]): Pla
   return out;
 }
 
-/** 섹션마다 카드 하나. 필기 도식(diagrams)은 본문 줄 사이에 밝은 도식으로 그린다 */
+/**
+ * 정리된 내용을 카드 하나에 섹션 차례(01 · 02 …)로 묶고 섹션 사이는 가는 선으로 나눈다(섹션마다 카드를 쌓아
+ * 화면이 조각나 보이던 것). 필기 도식(diagrams)은 본문 줄 사이에 밝은 도식으로 그린다
+ */
 export const NoteBody = ({
   sections,
   diagrams = [],
@@ -891,17 +894,20 @@ export const NoteBody = ({
 }) => {
   const placed = placeDiagrams(sections, diagrams);
   return (
-    <View className="gap-3">
+    <Card className="px-5 py-1">
       {sections.map((s, i) => (
         // 제목이 같은(또는 빈) 섹션이 있어도 겹치지 않게 순서로 구분한다
-        <View key={i} testID="note-section">
-          <Card className="p-5">
-            <Text className="text-subhead font-bold text-ink">{s.heading}</Text>
-            <RichBody body={s.body} diagrams={placed[i]!} />
-          </Card>
+        <View key={i} testID="note-section" className={cx('py-4', i > 0 && 'border-t border-fill')}>
+          <View className="flex-row items-center gap-2">
+            <Text className="text-caption font-bold tabular-nums text-brand">
+              {String(i + 1).padStart(2, '0')}
+            </Text>
+            <Text className="flex-1 text-callout font-bold text-ink">{s.heading}</Text>
+          </View>
+          <RichBody body={s.body} diagrams={placed[i]!} />
         </View>
       ))}
-    </View>
+    </Card>
   );
 };
 
@@ -911,26 +917,23 @@ const Drawn = ({ list }: { list: Diagram[] | undefined }) =>
 /** 편집기 툴바가 넣는 표시(# 제목 · - 목록 · **굵게** · [글](주소))를 기호 없이 그린다 */
 function RichBody({ body, diagrams }: { body: string; diagrams: PlacedDiagrams }) {
   return (
-    <View className="mt-0.5 gap-0.5">
+    <View className="mt-2 gap-1.5">
       <Drawn list={diagrams.before} />
       {body.split('\n').map((line, i) => (
         <Fragment key={i}>
           {line.startsWith('# ') ? (
-            <Text className="mt-1 text-callout font-bold text-ink">
+            <Text className="mt-1 text-subhead font-bold text-ink">
               <Inline text={line.slice(2)} />
             </Text>
-          ) : (
-            <Text className="text-caption text-ink/70">
-              {line.startsWith('- ') ? (
-                <>
-                  {'• '}
-                  <Inline text={line.slice(2)} />
-                </>
-              ) : (
-                <Inline text={line} />
-              )}
-            </Text>
-          )}
+          ) : line.trim() ? (
+            // 줄마다 한 문장이라 핵심 요약처럼 점을 앞에 두고, 줄이 넘어가도 글이 점 오른쪽에 맞춰 흐르게
+            <View className="flex-row gap-2">
+              <Text className="text-subhead leading-6 text-brand">•</Text>
+              <Text className="flex-1 text-subhead leading-6 text-ink/80">
+                <Inline text={line.startsWith('- ') ? line.slice(2) : line} />
+              </Text>
+            </View>
+          ) : null}
           <Drawn list={diagrams.after.get(i)} />
         </Fragment>
       ))}

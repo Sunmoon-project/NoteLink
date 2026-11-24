@@ -745,9 +745,6 @@ export function QuizReadyScreen() {
   );
 }
 
-/** 채점 결과를 보여 주는 시간. 그 뒤 저절로 다음 문제로 */
-export const AUTO_NEXT_MS = 1200;
-
 export function QuizSolveScreen() {
   const { setId, from } = useLocalSearchParams<{ setId?: string; from?: string }>();
   const [previous] = useState(() => {
@@ -942,9 +939,7 @@ export function QuizSolveScreen() {
       },
     });
   }, [completed, attemptId, completedSetId, ownsProgress, from]);
-  // 채점이 끝나면 잠깐 결과를 보여 주고 다음 문제로(마지막 문제면 결과로) 넘어간다. 다시 풀기는 두지 않는다
-  const autoNext = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(autoNext.current), []);
+  // 채점 결과는 「다음 문제 풀기」를 누를 때까지 둔다(해설 · 정답을 다 읽고 넘어가게). 다시 풀기는 두지 않는다
   if (set.isError && !set.data)
     return (
       <Canvas>
@@ -1016,8 +1011,6 @@ export function QuizSolveScreen() {
       setRight(r.correct);
       setResults((x) => [...x, r.correct]);
       setPicks((x) => [...x, c]);
-      clearTimeout(autoNext.current);
-      autoNext.current = setTimeout(next, AUTO_NEXT_MS);
       Haptics.notificationAsync(
         r.correct
           ? Haptics.NotificationFeedbackType.Success
@@ -1045,7 +1038,6 @@ export function QuizSolveScreen() {
   };
   const next = () => {
     if (!ownsProgress()) return toast('다른 풀이를 진행 중이에요. 풀던 퀴즈를 다시 열어주세요');
-    clearTimeout(autoNext.current);
     if (finishing.current || completing) return;
     // 읽던 · 읽으려고 준비 중인 앞 문제는 무효로 하고 멈춘다(다음 문제에서 앞 문제를 읽지 않게)
     speechToken.current++;
@@ -1088,7 +1080,7 @@ export function QuizSolveScreen() {
               {speaking ? '읽어주는 중… (탭해서 멈춤)' : '음성으로 듣기'}
             </Btn>
           ) : right !== null ? (
-            // 맞든 틀리든 잠깐 결과를 보여 준 뒤 저절로 넘어간다(기다리지 않으려면 눌러서 바로)
+            // 맞든 틀리든 눌러야만 넘어간다
             <Btn loading={finish.isPending || completing} onPress={next}>
               다음 문제 풀기
             </Btn>
@@ -1446,13 +1438,19 @@ function QuizNextStep({
     wrong === null
       ? undefined
       : wrong > 0
-        ? when
-          ? // 이번에 일정에 넣은 문제가 틀린 문제라는 보장은 없다(이미 복습 중이던 문제는 날짜가 다름): 넣은 문제로 말한다
-            `복습할 문제는 ${when} 다시 물어볼게요`
-          : `틀린 ${wrong}문제, 비슷한 문제로 한 번 더 풀어 봐요`
+        ? // 3D 선생님이 복습 흐름(지금 비슷한 문제 → 복습 날 오늘의 복습)을 차례로 알려 준다.
+          // 이번에 일정에 넣은 문제가 틀린 문제라는 보장은 없다(이미 복습 중이던 문제는 날짜가 다름): 넣은 문제로 말한다
+          [
+            `틀린 ${wrong}문제는 지금 비슷한 문제로 한 번 더 풀면 더 오래 기억해요.`,
+            when ? `복습할 문제는 ${when} 「오늘의 복습」에서 다시 물어볼게요.` : '',
+          ]
+            .filter(Boolean)
+            .join('\n')
         : when
-          ? `다 맞혔어요! ${when} 한 번 더 확인해요`
-          : '다 맞혔어요!';
+          ? `다 맞혔어요! 잊을 즈음인 ${when} 「오늘의 복습」에서 한 번 더 확인해요.`
+          : room
+            ? '다 맞혔어요!'
+            : '다 맞혔어요! 다른 노트로 새 퀴즈를 풀어 봐요.';
   const steps: NextStep[] = [];
   if (wrong !== 0)
     steps.push({
@@ -1703,19 +1701,36 @@ function FolderFlash({ folderId }: { folderId: string }) {
               accessibilityRole="button"
               accessibilityLabel="카드 뒤집기"
               onPress={() => setBack((b) => !b)}
-              className="h-80 items-center justify-center rounded-card bg-white px-6"
+              className={cx(
+                'min-h-80 rounded-card px-6 pt-12 pb-10',
+                back ? 'bg-mint' : 'items-center justify-center bg-white',
+              )}
             >
-              <Animated.Text
-                key={`${i}-${back}`}
-                entering={FADE_IN}
-                className="text-center text-title3 leading-8 font-bold text-ink"
-              >
-                {back ? c.back : c.front}
-              </Animated.Text>
-              <Text className="absolute top-4 text-caption font-semibold text-brand">
+              {back ? (
+                // 정답은 1~2문장 설명이라 굵은 가운데 정렬 대신 본문처럼 왼쪽 정렬 · 넉넉한 줄 간격으로,
+                // 무엇의 답인지 문제를 위에 작게 둔다. 길면 카드가 늘어난다(고정 높이에서 잘리던 것)
+                <Animated.View key={`${i}-back`} entering={FADE_IN} className="gap-4">
+                  <Text className="text-footnote text-sub" numberOfLines={2}>
+                    {c.front}
+                  </Text>
+                  <View className="h-px bg-brand/15" />
+                  <Text className="text-body leading-7 text-ink">{c.back}</Text>
+                </Animated.View>
+              ) : (
+                <Animated.Text
+                  key={`${i}-front`}
+                  entering={FADE_IN}
+                  className="text-center text-title3 leading-8 font-bold text-ink"
+                >
+                  {c.front}
+                </Animated.Text>
+              )}
+              <Text className="absolute top-4 left-6 text-caption font-semibold text-brand">
                 {back ? '정답' : '문제'}
               </Text>
-              <Text className="absolute bottom-4 text-caption2 text-sub">눌러서 뒤집기</Text>
+              <Text className="absolute right-0 bottom-4 left-0 text-center text-caption2 text-sub">
+                눌러서 뒤집기
+              </Text>
             </Pressable>
           </View>
         )}
