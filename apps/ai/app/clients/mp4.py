@@ -13,6 +13,9 @@ _CONTAINERS = {b"moov", b"trak", b"mdia", b"minf", b"stbl"}
 # 한 단계 상자 수 상한. 정상 녹음은 수십 개뿐이고, 8바이트 상자를 반복한 큰 파일이 튜플 수천만 개를
 # 만들지 않게 막음(넘으면 고치지 않고 원래 422)
 MAX_BOXES = 10_000
+# 컨테이너 중첩 상한(moov 포함 단계 수). 정상 길은 moov>trak>mdia>minf>stbl 다섯 단계이고,
+# 끝없이 겹친 파일이 파이썬 재귀 한도(RecursionError)에 닿지 않게 막음
+MAX_DEPTH = 16
 
 
 def _boxes(data: bytes | bytearray, start: int, end: int) -> list[tuple[bytes, int, int, int]]:
@@ -40,10 +43,12 @@ def _boxes(data: bytes | bytearray, start: int, end: int) -> list[tuple[bytes, i
     return out
 
 
-def _shift_offsets(moov: bytearray, start: int, end: int, shift: int) -> None:
+def _shift_offsets(moov: bytearray, start: int, end: int, shift: int, depth: int = 0) -> None:
+    if depth >= MAX_DEPTH:  # depth 0 = moov 안
+        raise ValueError("상자가 너무 깊이 겹침")
     for kind, at, head, size in _boxes(moov, start, end):
         if kind in _CONTAINERS:
-            _shift_offsets(moov, at + head, at + size, shift)
+            _shift_offsets(moov, at + head, at + size, shift, depth + 1)
         elif kind in (b"stco", b"co64"):
             wide = kind == b"co64"
             fmt, step = (">Q", 8) if wide else (">I", 4)
