@@ -264,6 +264,20 @@ describe.skipIf(!isLocal)('진짜 DB 공통 알림 · 알림함 · 친구 알림
     expect(await service.unreadCount(me.toHexString())).toBe(1);
   });
 
+  it('여러 개 삭제 · 모두 삭제: 내 알림만 지우고 남의 알림은 그대로', async () => {
+    for (let i = 0; i < 3; i++)
+      await service.notify({ ...base, title: `t${i}`, collapseId: `c${i}`, userIds: [you] }, NOON);
+    await service.notify({ ...base, collapseId: 'other', userIds: [me] }, NOON);
+    const items = (await service.list(you.toHexString(), {})).items;
+    const mine = String((await inbox(me))[0]!._id);
+    await service.removeMany(you.toHexString(), [items[0]!._id, items[1]!._id, mine, 'nope']);
+    expect((await service.list(you.toHexString(), {})).items.map((n) => n.title)).toEqual(['t0']);
+    expect(await inbox(me)).toHaveLength(1);
+    await service.removeAll(you.toHexString());
+    expect((await service.list(you.toHexString(), {})).items).toHaveLength(0);
+    expect(await inbox(me)).toHaveLength(1);
+  });
+
   it('알림 삭제: 내 알림만 지우고, 남의 알림 · 없는 알림 · 잘못된 id는 404', async () => {
     await service.notify({ ...base, userIds: [you] }, NOON);
     await service.notify({ ...base, collapseId: 'other', userIds: [me] }, NOON);
