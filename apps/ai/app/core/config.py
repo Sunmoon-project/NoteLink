@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     recording_model: str = ""  # 녹음 슬라이드 만들기 (경계 · 제목 · 요약 · 도식)
     # 2시간 녹음: LLM 약 39번 × (간격 2.2초 + 응답 약 75초) ≈ 50분 + STT 약 10분
     recording_job_max_sec: int = 3600
+    # moov가 끝인 m4a를 앞으로 옮긴 사본으로 전사(Azure Speech 알려진 문제 1006). 고쳐지면 끔
+    recording_faststart: bool = True
+    recording_copy_container: str = "processed"
 
     @field_validator("llm_call_gap_sec", "note_split_provider", mode="before")
     @classmethod

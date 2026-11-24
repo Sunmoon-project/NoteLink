@@ -6,9 +6,12 @@ from typing import Any
 
 import mongomock
 import pytest
+from pydantic import SecretStr
 
 from app.clients.docint import OcrUnavailableError
 from app.clients.llm import JobUsage, JsonObject, Llm, LlmError, LlmRejectedError, charge
+from app.core.config import settings
+from app.services.recording.faststart import FaststartSpeech
 from app.worker import handlers
 from app.worker.handlers import HANDLERS
 from app.worker.jobs import JobStore
@@ -415,3 +418,17 @@ def test_handwriting_counts_both_the_llm_and_the_split_llm(
 
     calls = len(llm.calls) + len(split.calls)
     assert report.usage.usd == pytest.approx(0.001 * calls)
+
+
+def test_speech_is_wrapped_to_fix_moov_only_when_on_and_linked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plain = object()
+    monkeypatch.setattr(handlers, "speech", lambda: plain)
+    monkeypatch.setattr(handlers, "blob_service", lambda: object())
+    for on, link, wrapped in [(True, "x", True), (False, "x", False), (True, "", False)]:
+        monkeypatch.setattr(settings, "recording_faststart", on)
+        monkeypatch.setattr(settings, "azure_storage_connection_string", SecretStr(link))
+        handlers._speech.cache_clear()
+        assert isinstance(handlers._speech(), FaststartSpeech) is wrapped
+    handlers._speech.cache_clear()

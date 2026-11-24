@@ -6,7 +6,8 @@
 import threading
 from collections.abc import Callable
 
-from app.clients.docint import Ocr, OcrUnavailableError, docint, download
+from app.clients.audio_store import BlobAudioStore
+from app.clients.docint import Ocr, OcrUnavailableError, blob_service, docint, download
 from app.clients.llm import (
     Clients,
     JsonObject,
@@ -19,12 +20,14 @@ from app.clients.llm import (
     make_llm,
     make_split_llm,
 )
-from app.clients.speech import Speech, SpeechUnavailableError, speech
+from app.clients.speech import SpeechUnavailableError, speech
 from app.clients.voyage import EmbedUnavailableError, Voyage, voyage
+from app.core.config import settings
 from app.services.note import ask
 from app.services.note import job as note_job
 from app.services.quiz import flashcards, generate, review, today
 from app.services.recording import job as recording_job
+from app.services.recording.faststart import FaststartSpeech
 from app.services.recording.slides import download_slides
 from app.worker.runner import Handler, JobInputError, JobReport
 
@@ -88,8 +91,13 @@ def _split_llm() -> Paced:
 
 
 @_Once
-def _speech() -> Speech:
-    return speech()
+def _speech() -> recording_job.Transcriber:
+    """moov를 앞으로 옮긴 사본으로 전사(설정이 켜져 있고 저장소 연결이 있을 때)."""
+    stt = speech()
+    linked = bool(settings.azure_storage_connection_string.get_secret_value())
+    if not settings.recording_faststart or not linked:
+        return stt
+    return FaststartSpeech(stt, BlobAudioStore(blob_service(), settings.recording_copy_container))
 
 
 @_Once
