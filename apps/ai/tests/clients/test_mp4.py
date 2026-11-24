@@ -1,6 +1,6 @@
 import struct
 
-from app.clients.mp4 import faststart
+from app.clients.mp4 import MAX_BOXES, faststart
 
 
 def box(kind: bytes, body: bytes) -> bytes:
@@ -83,3 +83,18 @@ def test_moov_with_size_zero_gets_real_size() -> None:
     (size,) = struct.unpack(">I", out[at : at + 4])
     assert out[at + size + 4 : at + size + 8] == b"mdat"
     assert chunks(out) == AUDIO
+
+
+def test_too_many_small_boxes_returns_none() -> None:
+    free = box(b"free", b"") * (MAX_BOXES + 1)
+    assert faststart(FTYP + free + box(b"mdat", b"x") + moov(offsets(b"stco", [0]))) is None
+
+
+def test_chunk_table_longer_than_its_box_returns_none() -> None:
+    broken = box(b"stco", b"\0\0\0\0" + struct.pack(">I", 99) + struct.pack(">I", 1))
+    assert faststart(FTYP + box(b"mdat", b"x") + moov(broken)) is None
+
+
+def test_stco_offset_overflowing_32_bits_returns_none() -> None:
+    near_max = offsets(b"stco", [0xFFFFFFFF - 10])
+    assert faststart(FTYP + box(b"mdat", b"x") + moov(near_max)) is None

@@ -10,6 +10,9 @@ import struct
 
 # stco · co64(조각 위치 표)까지 내려가는 길에 있는 상자들
 _CONTAINERS = {b"moov", b"trak", b"mdia", b"minf", b"stbl"}
+# 한 단계 상자 수 상한. 정상 녹음은 수십 개뿐이고, 8바이트 상자를 반복한 큰 파일이 튜플 수천만 개를
+# 만들지 않게 막음(넘으면 고치지 않고 원래 422)
+MAX_BOXES = 10_000
 
 
 def _boxes(data: bytes | bytearray, start: int, end: int) -> list[tuple[bytes, int, int, int]]:
@@ -31,6 +34,8 @@ def _boxes(data: bytes | bytearray, start: int, end: int) -> list[tuple[bytes, i
         if size < head or i + size > end:
             raise ValueError("상자 길이가 맞지 않음")
         out.append((kind, i, head, size))
+        if len(out) > MAX_BOXES:
+            raise ValueError("상자가 너무 많음")
         i += size
     return out
 
