@@ -326,7 +326,12 @@ def test_note_ask_job_saves_the_avatar_answer(monkeypatch: pytest.MonkeyPatch) -
             ]
         }
     )
-    inp = {"title": "운영체제", "context": "교착 상태", "history": [], "question": "뭐예요?"}
+    inp = {
+        "title": "운영체제",
+        "context": "## 교착 상태\n네 가지 조건",
+        "history": [],
+        "question": "뭐예요?",
+    }
     doc = run_job(monkeypatch, llm, inp, kind="note_ask")
     assert doc["status"] == "succeeded"
     assert doc["result"] == {

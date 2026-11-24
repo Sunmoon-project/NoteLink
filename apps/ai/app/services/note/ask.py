@@ -14,7 +14,8 @@ result
   reason    false일 때 off_topic(자료 밖) · unsafe(위험한 질문), true면 None
   answer    아바타가 말할 답(존댓말. 문단은 빈 줄로, 나열은 한 줄에 하나씩 '1. ' · '- ',
             핵심 용어만 **굵게**)
-  refs      답의 근거가 된 노트 소제목(최대 MAX_REFS개, 없으면 [])
+  refs      답의 근거가 된 노트 소제목(최대 MAX_REFS개, 없으면 []). 모델이 적은 것 중 context에
+            실제로 있는 소제목(## 줄 · [N쪽])만 남긴다
 
 노트 글은 사용자가 올린 자료라 그 안의 지시는 따르지 않습니다(시스템 글에 적음).
 """
@@ -124,6 +125,39 @@ def _history(raw: Any) -> list[tuple[str, str]]:
     return out
 
 
+HEADING = re.compile(r"^##\s+(.+?)\s*$|^\[(\d+쪽)\]\s*$", re.MULTILINE)
+
+
+def _key(text: str) -> str:
+    """소제목 비교용: 앞의 #과 [] · 띄어쓰기 차이는 보지 않음"""
+    return re.sub(r"\s+", "", text.strip().lstrip("#").strip("[]"))
+
+
+def headings(context: str) -> list[str]:
+    """노트 글의 소제목(## 줄 · [N쪽]), 나온 순서대로"""
+    return [(m.group(1) or m.group(2)).strip() for m in HEADING.finditer(context)]
+
+
+def known_refs(raw: object, context: str) -> list[str]:
+    """모델이 적은 근거 중 노트에 실제로 있는 소제목만, 노트에 적힌 글 그대로(중복 없이,
+    최대 MAX_REFS개). 모델이 지어내거나 바꿔 적은 소제목이 「근거 · …」로 화면에 나가지 않게 한다.
+    배열이 아니면(문자열 · 숫자) 근거 없이 답만 쓴다: 문자열을 그대로 돌면 글자별 참조가 된다"""
+    names = headings(context)
+    exact = set(names)
+    keyed: dict[str, str] = {}
+    for n in names:
+        keyed.setdefault(_key(n), n)
+    out: list[str] = []
+    for r in raw if isinstance(raw, list) else []:
+        if not isinstance(r, str):
+            continue
+        # 글자 그대로 있으면 그것, 없을 때만 띄어쓰기 · # 차이를 무시하고 찾음
+        name = r.strip() if r.strip() in exact else keyed.get(_key(r))
+        if name and name not in out:
+            out.append(name)
+    return out[:MAX_REFS]
+
+
 def prompt(title: str, context: str, history: list[tuple[str, str]], question: str) -> str:
     talk = "\n".join(f"{who}: {text}" for who, text in history)
     return (
@@ -161,12 +195,8 @@ def run(llm: Llm, raw: JsonObject, report: Progress) -> JsonObject:
     answer = out.get("answer")
     if not isinstance(answer, str) or not answer.strip():
         raise LlmError("빈 답")  # 일시 오류처럼 시도 한도 안에서 다시
-    # 답은 멀쩡한데 refs만 배열이 아니면(문자열 · 숫자) 근거 없이 답만 쓴다.
-    # 문자열을 그대로 돌면 글자별 참조가 되고, 숫자는 TypeError로 작업이 실패한다
-    raw_refs = out.get("refs")
-    items = raw_refs if isinstance(raw_refs, list) else []
-    refs = [r.strip() for r in items if isinstance(r, str) and r.strip()]
-    return {"answerable": True, "reason": None, "answer": answer.strip(), "refs": refs[:MAX_REFS]}
+    refs = known_refs(out.get("refs"), context)
+    return {"answerable": True, "reason": None, "answer": answer.strip(), "refs": refs}
 
 
 def refusal(reason: str) -> JsonObject:
