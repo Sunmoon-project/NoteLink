@@ -136,6 +136,7 @@ export interface Api {
     unreadCount(): Promise<number>;
     markRead(id: string): Promise<void>;
     readAll(): Promise<void>;
+    remove(id: string): Promise<void>;
   };
   upload: {
     getSas(p: {

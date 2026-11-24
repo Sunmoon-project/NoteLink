@@ -281,6 +281,11 @@ export const mockApi: Api = {
       if (n && !n.readAt) n.readAt = new Date().toISOString();
       return ok(undefined);
     },
+    remove: (id) => {
+      const i = mockInbox.findIndex((x) => x._id === id);
+      if (i >= 0) mockInbox.splice(i, 1);
+      return ok(undefined);
+    },
     readAll: () => {
       mockInbox.forEach((n) => (n.readAt ??= new Date().toISOString()));
       return ok(undefined);

@@ -193,6 +193,7 @@ export const PATHS = {
   notificationsReadAll: '/notifications/read-all',
   /** PATCH → 204. 내 알림이 아니면 404 */
   notificationRead: (id: string) => `/notifications/${seg(id)}/read`,
+  notification: (id: string) => `/notifications/${seg(id)}`,
   // 소셜 · 채팅
   friends: '/friends',
   friend: (userId: string) => `/friends/${seg(userId)}`,

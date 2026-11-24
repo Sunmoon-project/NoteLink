@@ -1,5 +1,6 @@
 import {
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -53,5 +54,12 @@ export class NotificationController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async read(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
     await this.notifications.markRead(requireUserId(req), id);
+  }
+
+  /** DELETE /notifications/:id → 204. 알림함에서 지운다. 내 알림이 아니면 404 */
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(@Req() req: AuthenticatedRequest, @Param('id') id: string): Promise<void> {
+    await this.notifications.remove(requireUserId(req), id);
   }
 }

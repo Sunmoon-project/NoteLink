@@ -20,6 +20,7 @@ const mockApi = {
     unreadCount: jest.fn(async () => 0),
     markRead: jest.fn(async () => {}),
     readAll: jest.fn(async () => {}),
+    remove: jest.fn(async (_id: string) => {}),
   },
 };
 jest.mock('../lib/api', () => ({
@@ -87,6 +88,36 @@ describe('알림함', () => {
     expect(router.push).not.toHaveBeenCalled();
   });
 
+  it('옆으로 밀어 「삭제」를 누르면 바로 지우고 목록에서 뺀다', async () => {
+    mockApi.notifications.list.mockResolvedValueOnce({ items: [item()], nextCursor: null });
+    mockApi.notifications.list.mockResolvedValue({ items: [], nextCursor: null });
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByLabelText('친구 요청 삭제'));
+    await waitFor(() => expect(mockApi.notifications.remove).toHaveBeenCalledWith('n1'));
+    await waitFor(() => expect(screen.queryByText(/나나님이 친구 요청을 보냈어요/)).toBeNull());
+    expect(router.push).not.toHaveBeenCalled();
+  });
+  it('지우지 못하면 알림을 목록에 되돌린다(다시 읽기도 실패해도)', async () => {
+    mockApi.notifications.list.mockResolvedValueOnce({ items: [item()], nextCursor: null });
+    mockApi.notifications.list.mockRejectedValue(new Error('offline'));
+    mockApi.notifications.remove.mockRejectedValueOnce(new Error('offline'));
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByLabelText('친구 요청 삭제'));
+    await waitFor(() => expect(mockApi.notifications.remove).toHaveBeenCalled());
+    expect(await screen.findByText(/나나님이 친구 요청을 보냈어요/)).toBeTruthy();
+  });
+  it('꾹 누르면 한 번 묻고, 「삭제」를 골라야 지운다', async () => {
+    mockApi.notifications.list.mockResolvedValue({ items: [item()], nextCursor: null });
+    await renderScreen(<InboxScreen />);
+    await fireEvent(await screen.findByText(/나나님이 친구 요청을 보냈어요/), 'longPress');
+    expect(await screen.findByText('알림을 삭제할까요?')).toBeTruthy();
+    await fireEvent.press(screen.getByText('취소'));
+    expect(mockApi.notifications.remove).not.toHaveBeenCalled();
+    await fireEvent(screen.getByText(/나나님이 친구 요청을 보냈어요/), 'longPress');
+    await fireEvent.press(await screen.findByRole('button', { name: '삭제' }));
+    await waitFor(() => expect(mockApi.notifications.remove).toHaveBeenCalledWith('n1'));
+    expect(router.push).not.toHaveBeenCalled();
+  });
   it('모두 읽음', async () => {
     mockApi.notifications.list.mockResolvedValue({ items: [item()], nextCursor: null });
     await renderScreen(<InboxScreen />);

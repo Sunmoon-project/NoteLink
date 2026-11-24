@@ -13,6 +13,7 @@ import type { Notification, UserSettings } from '@notelink/shared';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import {
+  Alert,
   Canvas,
   Empty,
   Group,
@@ -22,6 +23,7 @@ import {
   Row,
   Screen,
   Sheet,
+  SwipeAction,
   Toggle,
   cx,
 } from '@/components/ui';
@@ -36,6 +38,8 @@ import { C, ICON } from '@/theme';
 /** 홈 종 아이콘의 읽지 않은 수 · 알림함이 같이 쓰는 키 */
 export const UNREAD_KEY = ['notifications', 'unread'] as const;
 const LIST_KEY = ['notifications', 'list'] as const;
+const REMOVE_KEY = ['notifications', 'remove'] as const;
+type InboxPages = { pages: { items: Notification[] }[] };
 
 /** 서버는 AI 작업 알림 등을 알림함에 1분 주기로 쌓는다(ai-job-notices NOTICE_SCAN_MS). 푸시를 못 받는 기기에서도 늦지 않게 */
 export const UNREAD_REFETCH_MS = 60_000;
@@ -84,6 +88,34 @@ export function InboxScreen() {
     onSuccess: refresh,
     onError: () => toast('읽음 처리를 하지 못했어요. 다시 시도해 주세요'),
   });
+  // 옆으로 밀어 「삭제」를 누르면 바로, 꾹 누르면 한 번 묻고 지운다. 목록에서 먼저 빼고 실패하면 다시 읽는다
+  const [removing, setRemoving] = useState<Notification | null>(null);
+  const remove = useMutation({
+    mutationKey: REMOVE_KEY,
+    mutationFn: (id: string) => api.notifications.remove(id),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: LIST_KEY });
+      const before = qc.getQueryData<InboxPages>(LIST_KEY);
+      qc.setQueryData<InboxPages>(LIST_KEY, (d) =>
+        d
+          ? {
+              ...d,
+              pages: d.pages.map((p) => ({ ...p, items: p.items.filter((n) => n._id !== id) })),
+            }
+          : d,
+      );
+      return { before };
+    },
+    onError: (_e, _id, ctx) => {
+      // 다시 읽기마저 실패해도 지우지 못한 알림이 목록에 남게 되돌린다
+      if (ctx?.before) qc.setQueryData(LIST_KEY, ctx.before);
+      toast('알림을 지우지 못했어요. 다시 시도해 주세요');
+    },
+    // 여러 개를 잇달아 지우면 마지막 삭제가 끝난 뒤에만 다시 읽는다(먼저 끝난 응답이 아직 지우는 중인 알림을 되살리지 않게)
+    onSettled: () => {
+      if (qc.isMutating({ mutationKey: REMOVE_KEY }) === 1) refresh();
+    },
+  });
   const unread = useUnreadCount();
   const items = list.data?.pages.flatMap((p) => p.items) ?? [];
   // 아직 안 불러온 쪽에 안 읽은 알림이 있을 수 있어 서버 수도 본다
@@ -123,26 +155,39 @@ export function InboxScreen() {
         {items.length > 0 && (
           <Group>
             {items.map((n) => (
-              <Row
+              <SwipeAction
                 key={n._id}
-                onPress={() => openNotification(n, qc)}
-                sub={`${n.body} · ${timeAgo(n.createdAt)}`}
-                right={
-                  !n.readAt ? (
-                    <View
-                      accessible
-                      accessibilityLabel="안 읽음"
-                      className="h-2 w-2 rounded-full bg-brand"
-                    />
-                  ) : undefined
-                }
+                label="삭제"
+                name={n.title}
+                onAction={() => remove.mutate(n._id)}
               >
-                <Text
-                  className={cx('text-callout', n.readAt ? 'text-sub' : 'font-semibold text-ink')}
-                >
-                  {n.title}
-                </Text>
-              </Row>
+                {/* 흰 바탕: 밀기 전에는 뒤의 빨간 삭제 칸이 비치지 않게 */}
+                <View className="bg-white">
+                  <Row
+                    onPress={() => openNotification(n, qc)}
+                    onLongPress={() => setRemoving(n)}
+                    sub={`${n.body} · ${timeAgo(n.createdAt)}`}
+                    right={
+                      !n.readAt ? (
+                        <View
+                          accessible
+                          accessibilityLabel="안 읽음"
+                          className="h-2 w-2 rounded-full bg-brand"
+                        />
+                      ) : undefined
+                    }
+                  >
+                    <Text
+                      className={cx(
+                        'text-callout',
+                        n.readAt ? 'text-sub' : 'font-semibold text-ink',
+                      )}
+                    >
+                      {n.title}
+                    </Text>
+                  </Row>
+                </View>
+              </SwipeAction>
             ))}
           </Group>
         )}
@@ -158,6 +203,18 @@ export function InboxScreen() {
           </Pressable>
         )}
       </Screen>
+      <Alert
+        open={!!removing}
+        title="알림을 삭제할까요?"
+        body={removing?.title ?? ''}
+        secondary="취소"
+        onSecondary={() => setRemoving(null)}
+        primary="삭제"
+        onPrimary={() => {
+          if (removing) remove.mutate(removing._id);
+          setRemoving(null);
+        }}
+      />
     </Canvas>
   );
 }

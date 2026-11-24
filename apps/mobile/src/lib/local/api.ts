@@ -575,6 +575,7 @@ const api: Api = {
     unreadCount: () => ok(0),
     markRead: () => ok(undefined),
     readAll: () => ok(undefined),
+    remove: () => ok(undefined),
   },
   upload: {
     // 기기 저장 모드에서는 upload.ts가 파일을 앱 저장 공간에 바로 복사한다

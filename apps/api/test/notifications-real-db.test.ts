@@ -3,6 +3,7 @@
 // 탈퇴한 사람 제외, 알림함 목록(커서) · 읽지 않은 수 · 읽음 · 모두 읽음(남의 알림은 못 건드림), 친구 요청 · 수락 알림.
 // MONGODB_VERIFY_URI가 localhost일 때만 돌고, 이번 실행에서만 쓰는 전용 DB를 만들고 끝나면 지운다. ExpoPushService는 가짜다.
 // 실행: MONGODB_VERIFY_URI="mongodb://localhost:27167/?directConnection=true" npm run test -w @notelink/api -- test/notifications-real-db.test.ts
+import { NotFoundException } from '@nestjs/common';
 import mongoose, { type Connection, type Model, Types } from 'mongoose';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -261,6 +262,21 @@ describe.skipIf(!isLocal)('진짜 DB 공통 알림 · 알림함 · 친구 알림
     await service.markAllRead(you.toHexString(), NOON);
     expect(await service.unreadCount(you.toHexString())).toBe(0);
     expect(await service.unreadCount(me.toHexString())).toBe(1);
+  });
+
+  it('알림 삭제: 내 알림만 지우고, 남의 알림 · 없는 알림 · 잘못된 id는 404', async () => {
+    await service.notify({ ...base, userIds: [you] }, NOON);
+    await service.notify({ ...base, collapseId: 'other', userIds: [me] }, NOON);
+    const [yours] = (await service.list(you.toHexString(), {})).items;
+    const mine = (await inbox(me))[0]!;
+    await expect(service.remove(you.toHexString(), String(mine._id))).rejects.toThrow(
+      NotFoundException,
+    );
+    await expect(service.remove(you.toHexString(), 'nope')).rejects.toThrow(NotFoundException);
+    await service.remove(you.toHexString(), yours!._id);
+    expect((await service.list(you.toHexString(), {})).items).toHaveLength(0);
+    await expect(service.remove(you.toHexString(), yours!._id)).rejects.toThrow(NotFoundException);
+    expect(await inbox(me)).toHaveLength(1);
   });
 
   it('친구 요청을 보내면 받는 사람에게 알림이 간다(거절 뒤 다시 요청해도)', async () => {

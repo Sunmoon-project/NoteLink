@@ -261,6 +261,18 @@ export class NotificationService {
     if (updated.matchedCount === 0 && !(await this.notifications.exists(mine))) throw notFound();
   }
 
+  /** 알림함에서 하나 지운다. 남의 알림 · 없는 알림은 404 */
+  async remove(userId: string, id: string): Promise<void> {
+    const notFound = () =>
+      new NotFoundException({ code: ERROR_CODES.NOT_FOUND, message: '알림을 찾을 수 없어요' });
+    if (!isValidObjectId(id)) throw notFound();
+    const { deletedCount } = await this.notifications.deleteOne({
+      _id: new Types.ObjectId(id),
+      userId: new Types.ObjectId(userId),
+    });
+    if (deletedCount === 0) throw notFound();
+  }
+
   async markAllRead(userId: string, now = new Date()): Promise<void> {
     await this.notifications.updateMany(
       { userId: new Types.ObjectId(userId), readAt: null },

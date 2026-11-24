@@ -654,6 +654,7 @@ export function Row({
   sub,
   right,
   onPress,
+  onLongPress,
   chevron,
   danger,
   icon: Icon,
@@ -663,6 +664,8 @@ export function Row({
   sub?: ReactNode;
   right?: ReactNode;
   onPress?: () => void;
+  /** 꾹 누르기(예: 알림 삭제 확인) */
+  onLongPress?: () => void;
   chevron?: boolean;
   danger?: boolean;
   /** 왼쪽 아이콘 (lucide 컴포넌트) */
@@ -693,6 +696,7 @@ export function Row({
       accessibilityRole="button"
       accessibilityState={selected === undefined ? undefined : { selected }}
       onPress={onPress}
+      onLongPress={onLongPress}
       // 꽉 찬 목록 행은 줄이지 않고 바탕만 어둡게(iOS 목록처럼)
       scaleTo={1}
       className={cx(cls, 'active:bg-black/5')}
