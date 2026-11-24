@@ -133,13 +133,9 @@ def _key(text: str) -> str:
     return re.sub(r"\s+", "", text.strip().lstrip("#").strip("[]"))
 
 
-def headings(context: str) -> dict[str, str]:
-    """노트 글의 소제목(## 줄 · [N쪽]) → 비교 열쇠별 원래 글"""
-    out: dict[str, str] = {}
-    for m in HEADING.finditer(context):
-        name = (m.group(1) or m.group(2)).strip()
-        out.setdefault(_key(name), name)
-    return out
+def headings(context: str) -> list[str]:
+    """노트 글의 소제목(## 줄 · [N쪽]), 나온 순서대로"""
+    return [(m.group(1) or m.group(2)).strip() for m in HEADING.finditer(context)]
 
 
 def known_refs(raw: object, context: str) -> list[str]:
@@ -147,9 +143,16 @@ def known_refs(raw: object, context: str) -> list[str]:
     최대 MAX_REFS개). 모델이 지어내거나 바꿔 적은 소제목이 「근거 · …」로 화면에 나가지 않게 한다.
     배열이 아니면(문자열 · 숫자) 근거 없이 답만 쓴다: 문자열을 그대로 돌면 글자별 참조가 된다"""
     names = headings(context)
+    exact = set(names)
+    keyed: dict[str, str] = {}
+    for n in names:
+        keyed.setdefault(_key(n), n)
     out: list[str] = []
     for r in raw if isinstance(raw, list) else []:
-        name = names.get(_key(r)) if isinstance(r, str) else None
+        if not isinstance(r, str):
+            continue
+        # 글자 그대로 있으면 그것, 없을 때만 띄어쓰기 · # 차이를 무시하고 찾음
+        name = r.strip() if r.strip() in exact else keyed.get(_key(r))
         if name and name not in out:
             out.append(name)
     return out[:MAX_REFS]

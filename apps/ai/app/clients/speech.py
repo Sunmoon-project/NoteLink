@@ -100,9 +100,11 @@ class Speech:
         except _BadAudioError as e:
             # moov가 끝에 있는 m4a: 앞으로 옮긴 사본을 파일로 보냄. 고칠 수 없으면 원래 오류(422)
             try:
-                fixed = faststart(self._fetch(audio_url))
-            except DownloadError:
-                raise SpeechError(str(e)) from None
+                data = self._fetch(audio_url)
+            except DownloadError as d:
+                # 내려받기 실패(시간 초과 · 503)는 파일 문제가 아님: 작업을 다시 시도하게
+                raise SpeechUnavailableError(f"녹음 내려받기 실패({d})") from None
+            fixed = faststart(data)
             if fixed is None:
                 raise SpeechError(str(e)) from None
         files = {

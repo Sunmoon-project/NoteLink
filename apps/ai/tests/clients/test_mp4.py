@@ -66,3 +66,20 @@ def test_already_fast_or_not_mp4_or_broken_returns_none() -> None:
     assert faststart(b"ID3\x03not an mp4 file at all") is None
     assert faststart(slow_file()[:-5]) is None  # 끝이 잘림
     assert faststart(FTYP + box(b"mdat", b"x")) is None  # moov 없음
+
+
+def test_moov_not_last_box_returns_none() -> None:
+    # mdat → moov → mdat: 뒤 mdat의 조각은 밀리지 않아 다루지 않음
+    assert faststart(slow_file() + box(b"mdat", b"tail")) is None
+
+
+def test_moov_with_size_zero_gets_real_size() -> None:
+    data = bytearray(slow_file())
+    at = data.index(b"moov") - 4
+    data[at : at + 4] = b"\0\0\0\0"  # 크기 0 = 파일 끝까지
+    out = faststart(bytes(data))
+    assert out is not None
+    at = out.index(b"moov") - 4
+    (size,) = struct.unpack(">I", out[at : at + 4])
+    assert out[at + size + 4 : at + size + 8] == b"mdat"
+    assert chunks(out) == AUDIO

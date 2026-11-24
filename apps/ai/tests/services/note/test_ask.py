@@ -113,6 +113,13 @@ def test_refs_keep_only_headings_that_are_in_the_note() -> None:
     assert out["refs"] == ["핵심", "교착 상태", "3쪽"]
 
 
+def test_refs_prefer_the_exact_heading_over_a_spacing_twin() -> None:
+    context = "## AB\n가\n\n## A B\n나"
+    reply = {"answerable": True, "answer": "네.", "refs": ["A B", "A  B"]}
+    out = ask.run(FakeLlm({"note_ask": [reply]}), job_input(context=context), noop)
+    assert out["refs"] == ["A B", "AB"]
+
+
 def test_refs_all_made_up_become_empty() -> None:
     reply = {"answerable": True, "answer": "네 가지예요.", "refs": ["전자 전달 사슬"]}
     out = ask.run(FakeLlm({"note_ask": [reply]}), job_input(), noop)

@@ -66,9 +66,14 @@ def faststart(data: bytes) -> bytes | None:
             return None  # 조각난(fragmented) MP4는 다루지 않음
         _, mdat_at, _, _ = top[kinds.index(b"mdat")]
         _, moov_at, moov_head, moov_size = top[kinds.index(b"moov")]
-        if moov_at < mdat_at:
+        # moov가 맨 끝 상자일 때만 다룸: 뒤에 다른 mdat가 있으면 그 조각은 밀리지 않아 계산이 달라짐
+        if moov_at < mdat_at or top[-1][0] != b"moov":
             return None
         moov = bytearray(data[moov_at : moov_at + moov_size])
+        if (
+            moov_head == 8
+        ):  # 크기 0(「파일 끝까지」)이면 옮긴 뒤 뒤 상자까지 먹으므로 실제 크기로 적음
+            struct.pack_into(">I", moov, 0, moov_size)
         # moov를 첫 mdat 바로 앞에 넣으면 그 뒤의 소리 데이터가 moov 길이만큼 밀린다
         _shift_offsets(moov, moov_head, moov_size, moov_size)
     except (ValueError, struct.error):

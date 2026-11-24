@@ -283,10 +283,23 @@ def test_moov_at_end_is_moved_and_sent_as_file() -> None:
     assert sent["audio"] == ("audio/mp4", faststart(slow_file()))
 
 
-@pytest.mark.parametrize(
-    "data", [b"ID3 mp3 file", DownloadError("HTTP 403")], ids=["not-fixable", "download-fails"]
-)
-def test_undecodable_audio_that_cannot_be_fixed_stays_a_422(data: bytes | Exception) -> None:
+def test_download_failure_while_fixing_is_retryable() -> None:
+    s = Server(bad_audio())
+    _, fetch = fetcher(DownloadError("시간 초과"))
+    client = Speech(
+        "https://speech.example.test/",
+        "speech-key",
+        transport=httpx2.MockTransport(s.handle),
+        sleep=s.slept.append,
+        fetch=fetch,
+    )
+    with pytest.raises(SpeechUnavailableError) as e:
+        client.transcribe(AUDIO_URL)
+    assert "secret-sas" not in str(e.value)
+
+
+def test_undecodable_audio_that_cannot_be_fixed_stays_a_422() -> None:
+    data = b"ID3 mp3 file"
     s = Server(bad_audio())
     _, fetch = fetcher(data)
     client = Speech(
