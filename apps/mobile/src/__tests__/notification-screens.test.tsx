@@ -1,5 +1,6 @@
 // 알림함 · 알림 설정 · 채팅 음소거(#560)
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Text } from 'react-native';
 import {
@@ -127,6 +128,39 @@ describe('알림함', () => {
     await act(async () => failA(new Error('offline')));
     expect(await screen.findByText(/나나님이 친구 요청을 보냈어요/)).toBeTruthy();
     expect(screen.queryByText(/퀴즈가 준비됐어요/)).toBeNull();
+  });
+  it('지우는 사이 그 알림이 다른 쪽으로 다시 들어오면, 실패해도 한 번만 보인다', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // 앞 시험이 남긴 한 번짜리 응답을 비운다
+    mockApi.notifications.list.mockReset();
+    mockApi.notifications.remove.mockReset();
+    mockApi.notifications.list.mockResolvedValueOnce({ items: [item()], nextCursor: 'n1' });
+    mockApi.notifications.list.mockRejectedValue(new Error('offline'));
+    let failA!: (e: Error) => void;
+    mockApi.notifications.remove.mockImplementationOnce(
+      () => new Promise<void>((_ok, no) => (failA = no)),
+    );
+    await renderScreen(<InboxScreen />, qc);
+    await fireEvent.press(await screen.findByLabelText('친구 요청 삭제'));
+    await waitFor(() => expect(screen.queryByText(/나나님이 친구 요청을 보냈어요/)).toBeNull());
+    // 새로고침으로 둘째 쪽에 다시 들어온 상태
+    await act(async () =>
+      qc.setQueryData(['notifications', 'list'], {
+        pageParams: [undefined, 'x'],
+        pages: [
+          { items: [item({ _id: 'n9', title: '새 알림', body: '새 소식' })], nextCursor: 'x' },
+          { items: [item()], nextCursor: null },
+        ],
+      }),
+    );
+    await act(async () => failA(new Error('offline')));
+    // 이미 둘째 쪽에 있으므로 첫 쪽에 다시 넣지 않는다(목록 전체에 한 번만)
+    const pages = qc.getQueryData<{ pages: { items: { _id: string }[] }[] }>([
+      'notifications',
+      'list',
+    ])!.pages;
+    expect(pages.flatMap((p) => p.items).filter((n) => n._id === 'n1')).toHaveLength(1);
+    expect(pages[1]!.items.map((n) => n._id)).toEqual(['n1']);
   });
   it('꾹 누르면 한 번 묻고, 「삭제」를 골라야 지운다', async () => {
     mockApi.notifications.list.mockResolvedValue({ items: [item()], nextCursor: null });

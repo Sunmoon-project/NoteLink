@@ -117,21 +117,19 @@ export function InboxScreen() {
       // 목록 전체를 지우기 전으로 되돌리면 그 사이 지운 다른 알림까지 되살아난다. 실패한 것만 제자리(최신 순)에 넣는다
       const r = ctx?.removed;
       if (r)
-        qc.setQueryData<InboxPages>(LIST_KEY, (d) =>
-          d
-            ? {
-                ...d,
-                pages: d.pages.map((p, page) =>
-                  page !== r.page || p.items.some((n) => n._id === r.item._id)
-                    ? p
-                    : {
-                        ...p,
-                        items: [...p.items, r.item].sort((x, y) => (x._id < y._id ? 1 : -1)),
-                      },
-                ),
-              }
-            : d,
-        );
+        qc.setQueryData<InboxPages>(LIST_KEY, (d) => {
+          // 새로고침 등으로 이미 (다른 쪽에라도) 다시 들어와 있으면 넣지 않는다. 쪽 수가 줄었으면 마지막 쪽에
+          if (!d || d.pages.some((p) => p.items.some((n) => n._id === r.item._id))) return d;
+          const at = Math.min(r.page, d.pages.length - 1);
+          return {
+            ...d,
+            pages: d.pages.map((p, page) =>
+              page !== at
+                ? p
+                : { ...p, items: [...p.items, r.item].sort((x, y) => (x._id < y._id ? 1 : -1)) },
+            ),
+          };
+        });
       toast('알림을 지우지 못했어요. 다시 시도해 주세요');
     },
     // 여러 개를 잇달아 지우면 마지막 삭제가 끝난 뒤에만 다시 읽는다(먼저 끝난 응답이 아직 지우는 중인 알림을 되살리지 않게)
