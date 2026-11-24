@@ -1,6 +1,6 @@
 import struct
 
-from app.clients.mp4 import MAX_BOXES, faststart
+from app.clients.mp4 import MAX_BOXES, MAX_DEPTH, faststart
 
 
 def box(kind: bytes, body: bytes) -> bytes:
@@ -98,3 +98,25 @@ def test_chunk_table_longer_than_its_box_returns_none() -> None:
 def test_stco_offset_overflowing_32_bits_returns_none() -> None:
     near_max = offsets(b"stco", [0xFFFFFFFF - 10])
     assert faststart(FTYP + box(b"mdat", b"x") + moov(near_max)) is None
+
+
+def test_deeply_nested_containers_returns_none() -> None:
+    # 재귀 한도(1000)를 넘게 겹쳐도 RecursionError 없이 None
+    inner = offsets(b"stco", [len(FTYP) + 8])
+    for _ in range(2000):
+        inner = box(b"trak", inner)
+    data = FTYP + box(b"mdat", AUDIO[0]) + box(b"moov", inner)
+    assert faststart(data) is None
+
+
+def nested(levels: int) -> bytes:
+    """moov 포함 컨테이너 levels 단계 안에 stco"""
+    inner = offsets(b"stco", [len(FTYP) + 8])
+    for _ in range(levels - 1):
+        inner = box(b"stbl", inner)
+    return FTYP + box(b"mdat", AUDIO[0]) + box(b"moov", inner)
+
+
+def test_nesting_limit_is_exact() -> None:
+    assert faststart(nested(MAX_DEPTH)) is not None
+    assert faststart(nested(MAX_DEPTH + 1)) is None
