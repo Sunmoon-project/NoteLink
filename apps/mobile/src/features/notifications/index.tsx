@@ -97,20 +97,41 @@ export function InboxScreen() {
     mutationFn: (id: string) => api.notifications.remove(id),
     onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: LIST_KEY });
-      const before = qc.getQueryData<InboxPages>(LIST_KEY);
+      // 지우는 알림과 그 자리(쪽)를 기억해 둔다. 실패하면 이것 하나만 되돌린다
+      let removed: { page: number; item: Notification } | undefined;
       qc.setQueryData<InboxPages>(LIST_KEY, (d) =>
         d
           ? {
               ...d,
-              pages: d.pages.map((p) => ({ ...p, items: p.items.filter((n) => n._id !== id) })),
+              pages: d.pages.map((p, page) => {
+                const item = p.items.find((n) => n._id === id);
+                if (item) removed = { page, item };
+                return item ? { ...p, items: p.items.filter((n) => n._id !== id) } : p;
+              }),
             }
           : d,
       );
-      return { before };
+      return { removed };
     },
     onError: (_e, _id, ctx) => {
-      // 다시 읽기마저 실패해도 지우지 못한 알림이 목록에 남게 되돌린다
-      if (ctx?.before) qc.setQueryData(LIST_KEY, ctx.before);
+      // 목록 전체를 지우기 전으로 되돌리면 그 사이 지운 다른 알림까지 되살아난다. 실패한 것만 제자리(최신 순)에 넣는다
+      const r = ctx?.removed;
+      if (r)
+        qc.setQueryData<InboxPages>(LIST_KEY, (d) =>
+          d
+            ? {
+                ...d,
+                pages: d.pages.map((p, page) =>
+                  page !== r.page || p.items.some((n) => n._id === r.item._id)
+                    ? p
+                    : {
+                        ...p,
+                        items: [...p.items, r.item].sort((x, y) => (x._id < y._id ? 1 : -1)),
+                      },
+                ),
+              }
+            : d,
+        );
       toast('알림을 지우지 못했어요. 다시 시도해 주세요');
     },
     // 여러 개를 잇달아 지우면 마지막 삭제가 끝난 뒤에만 다시 읽는다(먼저 끝난 응답이 아직 지우는 중인 알림을 되살리지 않게)

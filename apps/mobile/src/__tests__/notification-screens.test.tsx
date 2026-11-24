@@ -1,5 +1,5 @@
 // 알림함 · 알림 설정 · 채팅 음소거(#560)
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import { Text } from 'react-native';
 import {
@@ -107,6 +107,24 @@ describe('알림함', () => {
     await fireEvent.press(await screen.findByLabelText('친구 요청 삭제'));
     await waitFor(() => expect(mockApi.notifications.remove).toHaveBeenCalled());
     expect(await screen.findByText(/나나님이 친구 요청을 보냈어요/)).toBeTruthy();
+  });
+  it('잇달아 지우다 앞의 것만 실패하면 그것만 되돌리고, 지운 다른 알림은 되살리지 않는다', async () => {
+    mockApi.notifications.list.mockResolvedValueOnce({
+      items: [item(), item({ _id: 'n2', title: '퀴즈 완성', body: '퀴즈가 준비됐어요' })],
+      nextCursor: null,
+    });
+    mockApi.notifications.list.mockRejectedValue(new Error('offline'));
+    let failA!: (e: Error) => void;
+    mockApi.notifications.remove
+      .mockImplementationOnce(() => new Promise<void>((_ok, no) => (failA = no)))
+      .mockResolvedValueOnce(undefined);
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByLabelText('친구 요청 삭제'));
+    await fireEvent.press(await screen.findByLabelText('퀴즈 완성 삭제'));
+    await waitFor(() => expect(mockApi.notifications.remove).toHaveBeenCalledTimes(2));
+    await act(async () => failA(new Error('offline')));
+    expect(await screen.findByText(/나나님이 친구 요청을 보냈어요/)).toBeTruthy();
+    expect(screen.queryByText(/퀴즈가 준비됐어요/)).toBeNull();
   });
   it('꾹 누르면 한 번 묻고, 「삭제」를 골라야 지운다', async () => {
     mockApi.notifications.list.mockResolvedValue({ items: [item()], nextCursor: null });
