@@ -8,11 +8,12 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { Bell } from 'lucide-react-native';
+import { Bell, Check } from 'lucide-react-native';
 import type { Notification, UserSettings } from '@notelink/shared';
 import { Pressable } from '@/components/press';
 import { Text } from '@/components/text';
 import {
+  Alert,
   Canvas,
   Empty,
   Group,
@@ -22,6 +23,7 @@ import {
   Row,
   Screen,
   Sheet,
+  SwipeAction,
   Toggle,
   cx,
 } from '@/components/ui';
@@ -36,6 +38,10 @@ import { C, ICON } from '@/theme';
 /** 홈 종 아이콘의 읽지 않은 수 · 알림함이 같이 쓰는 키 */
 export const UNREAD_KEY = ['notifications', 'unread'] as const;
 const LIST_KEY = ['notifications', 'list'] as const;
+const REMOVE_KEY = ['notifications', 'remove'] as const;
+/** POST /notifications/delete가 한 번에 받는 수(RemoveNotificationsDto) */
+const BULK_MAX = 100;
+type InboxPages = { pages: { items: Notification[] }[] };
 
 /** 서버는 AI 작업 알림 등을 알림함에 1분 주기로 쌓는다(ai-job-notices NOTICE_SCAN_MS). 푸시를 못 받는 기기에서도 늦지 않게 */
 export const UNREAD_REFETCH_MS = 60_000;
@@ -84,8 +90,66 @@ export function InboxScreen() {
     onSuccess: refresh,
     onError: () => toast('읽음 처리를 하지 못했어요. 다시 시도해 주세요'),
   });
+  // 옆으로 밀어 「삭제」를 누르면 바로, 꾹 누르면 한 번 묻고 지운다. 목록에서 먼저 빼고 실패하면 다시 읽는다
+  const [removing, setRemoving] = useState<Notification | null>(null);
+  const remove = useMutation({
+    mutationKey: REMOVE_KEY,
+    mutationFn: (id: string) => api.notifications.remove(id),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: LIST_KEY });
+      const before = qc.getQueryData<InboxPages>(LIST_KEY);
+      qc.setQueryData<InboxPages>(LIST_KEY, (d) =>
+        d
+          ? {
+              ...d,
+              pages: d.pages.map((p) => ({ ...p, items: p.items.filter((n) => n._id !== id) })),
+            }
+          : d,
+      );
+      return { before };
+    },
+    onError: (_e, _id, ctx) => {
+      // 다시 읽기마저 실패해도 지우지 못한 알림이 목록에 남게 되돌린다
+      if (ctx?.before) qc.setQueryData(LIST_KEY, ctx.before);
+      toast('알림을 지우지 못했어요. 다시 시도해 주세요');
+    },
+    // 여러 개를 잇달아 지우면 마지막 삭제가 끝난 뒤에만 다시 읽는다(먼저 끝난 응답이 아직 지우는 중인 알림을 되살리지 않게)
+    onSettled: () => {
+      if (qc.isMutating({ mutationKey: REMOVE_KEY }) === 1) refresh();
+    },
+  });
+  // 편집: 줄을 눌러 고르고 「삭제」. 「전체 선택」은 아직 불러오지 않은 알림까지 모두 지운다
+  const [editing, setEditing] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [all, setAll] = useState(false);
+  const [confirmBulk, setConfirmBulk] = useState(false);
+  const stopEditing = () => {
+    setEditing(false);
+    setPicked(new Set());
+    setAll(false);
+  };
+  const bulk = useMutation({
+    mutationFn: async (ids: string[] | 'all') => {
+      if (ids === 'all') return api.notifications.removeAll();
+      // 서버는 한 번에 100개까지 받는다
+      for (let i = 0; i < ids.length; i += BULK_MAX)
+        await api.notifications.removeMany(ids.slice(i, i + BULK_MAX));
+    },
+    onError: () => toast('알림을 지우지 못했어요. 다시 시도해 주세요'),
+    onSettled: refresh,
+  });
   const unread = useUnreadCount();
   const items = list.data?.pages.flatMap((p) => p.items) ?? [];
+  const isPicked = (id: string) => all || picked.has(id);
+  const pickedCount = all ? items.length : picked.size;
+  const toggle = (id: string) => {
+    // 전체 선택에서 하나를 빼면 지금 보이는 것 중 나머지만 고른 상태가 된다
+    const next = new Set(all ? items.map((n) => n._id) : picked);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setAll(false);
+    setPicked(next);
+  };
   // 아직 안 불러온 쪽에 안 읽은 알림이 있을 수 있어 서버 수도 본다
   const hasUnread = (unread.data ?? 0) > 0 || items.some((n) => !n.readAt);
   return (
@@ -94,22 +158,37 @@ export function InboxScreen() {
         <Header
           title="알림"
           right={
-            items.length > 0 && (
-              <Pressable
-                accessibilityRole="button"
-                disabled={!hasUnread || readAll.isPending}
-                onPress={() => readAll.mutate()}
-                hitSlop={8}
-              >
-                <Text
-                  className={cx(
-                    'text-footnote font-semibold',
-                    hasUnread ? 'text-brand' : 'text-sub',
-                  )}
-                >
-                  모두 읽음
-                </Text>
+            editing ? (
+              <Pressable accessibilityRole="button" onPress={stopEditing} hitSlop={8}>
+                <Text className="text-footnote font-semibold text-brand">완료</Text>
               </Pressable>
+            ) : (
+              items.length > 0 && (
+                <View className="flex-row items-center gap-4">
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={!hasUnread || readAll.isPending}
+                    onPress={() => readAll.mutate()}
+                    hitSlop={8}
+                  >
+                    <Text
+                      className={cx(
+                        'text-footnote font-semibold',
+                        hasUnread ? 'text-brand' : 'text-sub',
+                      )}
+                    >
+                      모두 읽음
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setEditing(true)}
+                    hitSlop={8}
+                  >
+                    <Text className="text-footnote font-semibold text-brand">편집</Text>
+                  </Pressable>
+                </View>
+              )
             )
           }
         />
@@ -120,29 +199,98 @@ export function InboxScreen() {
         {list.isSuccess && items.length === 0 && (
           <Empty icon={<Bell size={32} color={C.brand} />} title="아직 받은 알림이 없어요" />
         )}
-        {items.length > 0 && (
+        {editing && items.length > 0 && (
+          <View className="mb-3 flex-row items-center justify-between px-1">
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setPicked(new Set());
+                setAll(!all);
+              }}
+              hitSlop={8}
+            >
+              <Text className="text-footnote font-semibold text-brand">
+                {all ? '선택 해제' : '전체 선택'}
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={all ? '모든 알림 삭제' : `고른 알림 ${pickedCount}개 삭제`}
+              disabled={pickedCount === 0 || bulk.isPending}
+              onPress={() => setConfirmBulk(true)}
+              hitSlop={8}
+            >
+              <Text
+                className={cx(
+                  'text-footnote font-semibold',
+                  pickedCount ? 'text-danger' : 'text-sub',
+                )}
+              >
+                삭제{pickedCount ? ` (${all && list.hasNextPage ? '전체' : pickedCount})` : ''}
+              </Text>
+            </Pressable>
+          </View>
+        )}
+        {editing && items.length > 0 && (
           <Group>
             {items.map((n) => (
               <Row
                 key={n._id}
-                onPress={() => openNotification(n, qc)}
+                selected={isPicked(n._id)}
+                onPress={() => toggle(n._id)}
                 sub={`${n.body} · ${timeAgo(n.createdAt)}`}
                 right={
-                  !n.readAt ? (
-                    <View
-                      accessible
-                      accessibilityLabel="안 읽음"
-                      className="h-2 w-2 rounded-full bg-brand"
-                    />
-                  ) : undefined
+                  <View
+                    className={cx(
+                      'h-6 w-6 items-center justify-center rounded-full border-2',
+                      isPicked(n._id) ? 'border-brand bg-brand' : 'border-line',
+                    )}
+                  >
+                    {isPicked(n._id) && <Check size={14} color="#fff" strokeWidth={3} />}
+                  </View>
                 }
               >
-                <Text
-                  className={cx('text-callout', n.readAt ? 'text-sub' : 'font-semibold text-ink')}
-                >
-                  {n.title}
-                </Text>
+                <Text className="text-callout text-ink">{n.title}</Text>
               </Row>
+            ))}
+          </Group>
+        )}
+        {!editing && items.length > 0 && (
+          <Group>
+            {items.map((n) => (
+              <SwipeAction
+                key={n._id}
+                label="삭제"
+                name={n.title}
+                onAction={() => remove.mutate(n._id)}
+              >
+                {/* 흰 바탕: 밀기 전에는 뒤의 빨간 삭제 칸이 비치지 않게 */}
+                <View className="bg-white">
+                  <Row
+                    onPress={() => openNotification(n, qc)}
+                    onLongPress={() => setRemoving(n)}
+                    sub={`${n.body} · ${timeAgo(n.createdAt)}`}
+                    right={
+                      !n.readAt ? (
+                        <View
+                          accessible
+                          accessibilityLabel="안 읽음"
+                          className="h-2 w-2 rounded-full bg-brand"
+                        />
+                      ) : undefined
+                    }
+                  >
+                    <Text
+                      className={cx(
+                        'text-callout',
+                        n.readAt ? 'text-sub' : 'font-semibold text-ink',
+                      )}
+                    >
+                      {n.title}
+                    </Text>
+                  </Row>
+                </View>
+              </SwipeAction>
             ))}
           </Group>
         )}
@@ -158,6 +306,32 @@ export function InboxScreen() {
           </Pressable>
         )}
       </Screen>
+      <Alert
+        open={confirmBulk}
+        title={all ? '알림을 모두 삭제할까요?' : `알림 ${pickedCount}개를 삭제할까요?`}
+        body="삭제한 알림은 되돌릴 수 없어요."
+        secondary="취소"
+        onSecondary={() => setConfirmBulk(false)}
+        primary="삭제"
+        onPrimary={() => {
+          setConfirmBulk(false);
+          // 보내는 순간 편집을 끝낸다(늦게 끝난 응답이 그 사이 다시 시작한 편집을 닫지 않게)
+          bulk.mutate(all ? 'all' : [...picked]);
+          stopEditing();
+        }}
+      />
+      <Alert
+        open={!!removing}
+        title="알림을 삭제할까요?"
+        body={removing?.title ?? ''}
+        secondary="취소"
+        onSecondary={() => setRemoving(null)}
+        primary="삭제"
+        onPrimary={() => {
+          if (removing) remove.mutate(removing._id);
+          setRemoving(null);
+        }}
+      />
     </Canvas>
   );
 }

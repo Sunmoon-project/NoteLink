@@ -136,6 +136,11 @@ export interface Api {
     unreadCount(): Promise<number>;
     markRead(id: string): Promise<void>;
     readAll(): Promise<void>;
+    remove(id: string): Promise<void>;
+    /** 고른 알림 여러 개 지우기(최대 100개) */
+    removeMany(ids: string[]): Promise<void>;
+    /** 알림함 모두 비우기 */
+    removeAll(): Promise<void>;
   };
   upload: {
     getSas(p: {
