@@ -115,7 +115,10 @@ def fixed_moov(moov: bytes, atoms: list[Atom], order: list[Atom]) -> bytes:
         raise NotFixableError("소리 위치가 파일 밖")
 
     buf = bytearray(moov)
-    _fix(buf, 8, len(buf), shift)
+    size = struct.unpack(">I", buf[:4])[0]
+    if size == 0:  # 파일 끝까지: 앞으로 옮기면 뒤 atom까지 덮으므로 실제 크기를 적음
+        buf[:4] = struct.pack(">I", len(buf))
+    _fix(buf, 16 if size == 1 else 8, len(buf), shift)
     return bytes(buf)
 
 

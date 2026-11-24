@@ -36,9 +36,13 @@ def mp4(
     co64: bool = False,
     big_mdat: bool = False,
     free: bool = False,
+    moov_head: str = "",
     chunks: int = 3,
 ) -> tuple[bytes, list[bytes]]:
-    """작은 MP4와 소리 조각들. moov 안 위치표는 실제 조각 위치를 가리킴."""
+    """작은 MP4와 소리 조각들. moov 안 위치표는 실제 조각 위치를 가리킴.
+
+    moov_head: big은 64비트 크기 머리, zero는 크기 칸 0(파일 끝까지, moov가 끝일 때만).
+    """
     pieces = [bytes([65 + i]) * (10 + i) for i in range(chunks)]
     payload = b"".join(pieces)
     width = 8 if co64 else 4
@@ -47,9 +51,12 @@ def mp4(
         fmt = ">Q" if co64 else ">I"
         table = struct.pack(">II", 0, len(offsets)) + b"".join(struct.pack(fmt, o) for o in offsets)
         stbl = box(b"stbl", box(b"stsd", b"\0" * 8) + box(b"co64" if co64 else b"stco", table))
-        return box(
-            b"moov", box(b"mvhd", b"\0" * 20) + box(b"trak", box(b"mdia", box(b"minf", stbl)))
-        )
+        body = box(b"mvhd", b"\0" * 20) + box(b"trak", box(b"mdia", box(b"minf", stbl)))
+        if moov_head == "big":
+            return big_box(b"moov", body)
+        if moov_head == "zero" and not moov_first:
+            return struct.pack(">I4s", 0, b"moov") + body
+        return box(b"moov", body)
 
     ftyp = box(b"ftyp", b"M4A \0\0\0\0M4A isom")
     moov_size = len(moov([0] * chunks))
@@ -290,3 +297,29 @@ def test_blob_copy_splits_long_ranges_into_blocks(monkeypatch: pytest.MonkeyPatc
     assert copy.url.startswith(service.blob.url + "?") and "sig=" in copy.url
     with pytest.raises(AudioUnavailableError):
         store.delete(copy.name)
+
+
+@pytest.mark.parametrize("head", ["zero", "big"])
+def test_moov_with_size_to_the_end_or_a_64_bit_size_moves_whole(head: str) -> None:
+    back, pieces = mp4(False, moov_head=head)
+    front, _ = mp4(True, moov_head="big" if head == "big" else "")
+    fixed = build(FakeStore({"a": back}), "a")
+    assert fixed == front
+    assert [a.kind for a in top_atoms(FakeStore({"f": fixed}), "f")] == [b"ftyp", b"moov", b"mdat"]
+    got = [fixed[o : o + len(p)] for o, p in zip(chunk_offsets(fixed), pieces, strict=True)]
+    assert got == pieces
+
+
+def test_the_copy_is_deleted_when_its_read_address_cannot_be_made(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_sas(**kw: object) -> str:
+        raise ValueError("서명 실패")
+
+    monkeypatch.setattr(audio_store, "generate_blob_sas", no_sas)
+    service = FakeService()
+    deleted: list[bool] = []
+    service.blob.delete_blob = lambda: deleted.append(True)  # type: ignore[method-assign]
+    with pytest.raises(ValueError):
+        BlobAudioStore(service, "processed").copy("src", [Bytes(b"moov")])  # type: ignore[arg-type]
+    assert deleted == [True]

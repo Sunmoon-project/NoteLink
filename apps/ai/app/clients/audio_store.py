@@ -84,7 +84,14 @@ class BlobAudioStore:
             blob.commit_block_list(ids, content_settings=ContentSettings("audio/mp4"))
 
         _guard(go)
-        return Copy(self._read_url(name), name)
+        try:
+            return Copy(self._read_url(name), name)
+        except Exception:
+            try:
+                blob.delete_blob()
+            except Exception:  # 처음 오류를 올림
+                pass
+            raise
 
     def delete(self, name: str) -> None:
         _guard(lambda: self._service.get_blob_client(self._container, name).delete_blob())
