@@ -7,6 +7,9 @@ import { useQuizProgress } from '../stores/quiz-progress';
 import { useToast } from '../stores/toast';
 import { renderScreen, setParams } from '../test-utils';
 
+// 마지막 문제의 버튼은 「결과 보기」, 그 앞은 「다음 문제 풀기」
+const NEXT_OR_DONE = /^(다음 문제 풀기|결과 보기)$/;
+
 // 실기기 테스트: 퀴즈 「음성으로 듣기」를 눌러도 소리가 나지 않았다(아이폰 무음 스위치 · 오디오 설정)
 const mockStore = new Map<string, string>();
 jest.mock('expo-secure-store', () => ({
@@ -146,7 +149,7 @@ describe('읽기 준비 중 취소', () => {
     expect(await screen.findByText('중간 난이도 문제')).toBeTruthy();
     await fireEvent.press(screen.getByText('음성으로 듣기'));
     await fireEvent.press(screen.getByText(/정답/));
-    await fireEvent.press(await screen.findByText('다음 문제 풀기'));
+    await fireEvent.press(await screen.findByText(NEXT_OR_DONE));
     expect(await screen.findByText('난이도가 없는 문제')).toBeTruthy();
     await act(async () => release());
     expect(mockSpeak).not.toHaveBeenCalled();

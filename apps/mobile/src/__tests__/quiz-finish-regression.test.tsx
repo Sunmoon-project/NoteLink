@@ -4,6 +4,9 @@ import { QuizSolveScreen } from '../features/quiz/quiz';
 import { api } from '../lib/api';
 import { renderScreen, setParams } from '../test-utils';
 
+// 마지막 문제의 버튼은 「결과 보기」, 그 앞은 「다음 문제 풀기」
+const NEXT_OR_DONE = /^(다음 문제 풀기|결과 보기)$/;
+
 jest.mock('../lib/env', () => ({ env: { localData: true, apiUrl: 'http://api' } }));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
@@ -40,7 +43,7 @@ it('마지막 문제 완료 요청 중 다시 눌러도 완료를 한 번만 제
   setParams({ setId: original._id });
   await renderScreen(<QuizSolveScreen />);
   await fireEvent.press(await screen.findByText(`① ${question.answer}`));
-  const next = await screen.findByRole('button', { name: '다음 문제 풀기' });
+  const next = await screen.findByRole('button', { name: NEXT_OR_DONE });
   const user = userEvent.setup();
   try {
     await user.press(next);

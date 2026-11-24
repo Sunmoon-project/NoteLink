@@ -261,6 +261,33 @@ export class NotificationService {
     if (updated.matchedCount === 0 && !(await this.notifications.exists(mine))) throw notFound();
   }
 
+  /** 알림함에서 하나 지운다. 남의 알림 · 없는 알림은 404 */
+  async remove(userId: string, id: string): Promise<void> {
+    const notFound = () =>
+      new NotFoundException({ code: ERROR_CODES.NOT_FOUND, message: '알림을 찾을 수 없어요' });
+    if (!isValidObjectId(id)) throw notFound();
+    const { deletedCount } = await this.notifications.deleteOne({
+      _id: new Types.ObjectId(id),
+      userId: new Types.ObjectId(userId),
+    });
+    if (deletedCount === 0) throw notFound();
+  }
+
+  /** 고른 알림 중 내 것만 지운다. 잘못된 id · 남의 알림은 건너뛴다 */
+  async removeMany(userId: string, ids: string[]): Promise<void> {
+    const valid = ids.filter((id) => isValidObjectId(id)).map((id) => new Types.ObjectId(id));
+    if (!valid.length) return;
+    await this.notifications.deleteMany({
+      _id: { $in: valid },
+      userId: new Types.ObjectId(userId),
+    });
+  }
+
+  /** 내 알림함을 모두 비운다 */
+  async removeAll(userId: string): Promise<void> {
+    await this.notifications.deleteMany({ userId: new Types.ObjectId(userId) });
+  }
+
   async markAllRead(userId: string, now = new Date()): Promise<void> {
     await this.notifications.updateMany(
       { userId: new Types.ObjectId(userId), readAt: null },

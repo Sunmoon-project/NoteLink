@@ -109,6 +109,9 @@ export const httpApi: Api = {
     unreadCount: async () => (await http.get<{ count: number }>(P.notificationsUnreadCount)).count,
     markRead: (id) => http.patch(P.notificationRead(id), {}),
     readAll: () => http.post(P.notificationsReadAll),
+    remove: (id) => http.del(P.notification(id)),
+    removeMany: (ids) => http.post(P.notificationsDelete, { ids }),
+    removeAll: () => http.del(P.notifications),
   },
   upload: { getSas: (p) => http.post(P.uploadSas, p) },
   study: {

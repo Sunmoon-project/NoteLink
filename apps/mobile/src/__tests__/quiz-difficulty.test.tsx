@@ -6,6 +6,9 @@ import { useAuth } from '../stores/auth';
 import { useQuizProgress } from '../stores/quiz-progress';
 import { renderScreen, setParams } from '../test-utils';
 
+// 마지막 문제의 버튼은 「결과 보기」, 그 앞은 「다음 문제 풀기」
+const NEXT_OR_DONE = /^(다음 문제 풀기|결과 보기)$/;
+
 // 문제마다 처리기가 정한 난이도(#268)를 진행 줄에 보여 준다. 난이도가 없는 문제(그 전에 만든 문제)는 그대로
 const mockStore = new Map<string, string>();
 jest.mock('expo-secure-store', () => ({
@@ -80,7 +83,7 @@ it('문제의 난이도를 진행 줄에 붙이고, 난이도가 없으면 붙�
 
   await waitFor(() => expect(mockApi.quiz.startAttempt).toHaveBeenCalledTimes(1));
   await fireEvent.press(await screen.findByText('① 정답'));
-  await fireEvent.press(await screen.findByText('다음 문제 풀기'));
+  await fireEvent.press(await screen.findByText(NEXT_OR_DONE));
   expect(await screen.findByText('난이도가 없는 문제')).toBeTruthy();
   expect(screen.getByText('복습 퀴즈 2 / 2')).toBeTruthy();
   qc.clear();

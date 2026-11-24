@@ -10,6 +10,9 @@ import { useAuth } from '../stores/auth';
 import { useQuizProgress } from '../stores/quiz-progress';
 import { renderScreen, setParams } from '../test-utils';
 
+// 마지막 문제의 버튼은 「결과 보기」, 그 앞은 「다음 문제 풀기」
+const NEXT_OR_DONE = /^(다음 문제 풀기|결과 보기)$/;
+
 const mockApi = {
   quiz: {
     set: jest.fn(),
@@ -72,7 +75,7 @@ it('다 풀면 서버가 복습 일정에 넣은 수와 날짜를 결과 화면�
   setParams({ setId: quizSet._id });
   await renderScreen(<QuizSolveScreen />, client());
   await fireEvent.press(await screen.findByText('① 답'));
-  await fireEvent.press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
+  await fireEvent.press(await screen.findByRole('button', { name: NEXT_OR_DONE }));
   await waitFor(() =>
     expect(router.replace).toHaveBeenCalledWith({
       pathname: '/play/review',
@@ -92,7 +95,9 @@ it('틀린 문제가 있으면 복습 날짜를 알려 주고, 비슷한 문제 
   setParams({ setId: quizSet._id, results: '10', scheduled: '2', nextReviewDay: tomorrow });
   await renderScreen(<QuizReviewScreen />, client());
 
-  expect(await screen.findByText('복습할 문제는 내일 다시 물어볼게요')).toBeTruthy();
+  expect(
+    await screen.findByText(/복습할 문제는 내일 「오늘의 복습」에서 다시 물어볼게요\./),
+  ).toBeTruthy();
   expect(screen.getByText(/^복습 일정에 넣었어요 · 다음 복습/)).toBeTruthy();
   await fireEvent.press(screen.getByRole('button', { name: /틀린 1문제 비슷한 문제로 지금 복습/ }));
   expect(router.push).toHaveBeenCalledWith({
@@ -165,7 +170,9 @@ it('다 맞혔으면 다음 복습 날짜만 알려 주고, 비슷한 문제 복
   setParams({ setId: quizSet._id, results: '11', scheduled: '2', nextReviewDay: tomorrow });
   await renderScreen(<QuizReviewScreen />, client());
 
-  expect(await screen.findByText('다 맞혔어요! 내일 한 번 더 확인해요')).toBeTruthy();
+  expect(
+    await screen.findByText('다 맞혔어요! 잊을 즈음인 내일 「오늘의 복습」에서 한 번 더 확인해요.'),
+  ).toBeTruthy();
   expect(screen.getByText(/^복습 일정에 넣었어요/)).toBeTruthy();
   expect(screen.queryByRole('button', { name: /비슷한 문제/ })).toBeNull();
   expect(screen.getByRole('button', { name: /다른 노트로 새 퀴즈/ })).toBeTruthy();
@@ -175,7 +182,9 @@ it('복습 일정에 새로 넣지 않았으면(오늘의 복습 · 기기 저�
   setParams({ setId: quizSet._id, results: '10' });
   await renderScreen(<QuizReviewScreen />, client());
 
-  expect(await screen.findByText('틀린 1문제, 비슷한 문제로 한 번 더 풀어 봐요')).toBeTruthy();
+  expect(
+    await screen.findByText('틀린 1문제는 지금 비슷한 문제로 한 번 더 풀면 더 오래 기억해요.'),
+  ).toBeTruthy();
   expect(screen.queryByText(/복습 일정에 넣었어요/)).toBeNull();
   expect(screen.getByRole('button', { name: /틀린 1문제 비슷한 문제로 지금 복습/ })).toBeTruthy();
 });

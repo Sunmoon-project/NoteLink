@@ -1,5 +1,6 @@
 // 알림함 · 알림 설정 · 채팅 음소거(#560)
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { QueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Text } from 'react-native';
 import {
@@ -20,6 +21,9 @@ const mockApi = {
     unreadCount: jest.fn(async () => 0),
     markRead: jest.fn(async () => {}),
     readAll: jest.fn(async () => {}),
+    remove: jest.fn(async (_id: string) => {}),
+    removeMany: jest.fn(async (_ids: string[]) => {}),
+    removeAll: jest.fn(async () => {}),
   },
 };
 jest.mock('../lib/api', () => ({
@@ -87,6 +91,158 @@ describe('알림함', () => {
     expect(router.push).not.toHaveBeenCalled();
   });
 
+  it('옆으로 밀어 「삭제」를 누르면 바로 지우고 목록에서 뺀다', async () => {
+    mockApi.notifications.list.mockResolvedValueOnce({ items: [item()], nextCursor: null });
+    mockApi.notifications.list.mockResolvedValue({ items: [], nextCursor: null });
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByLabelText('친구 요청 삭제'));
+    await waitFor(() => expect(mockApi.notifications.remove).toHaveBeenCalledWith('n1'));
+    await waitFor(() => expect(screen.queryByText(/나나님이 친구 요청을 보냈어요/)).toBeNull());
+    expect(router.push).not.toHaveBeenCalled();
+  });
+  it('지우지 못하면 알림을 목록에 되돌린다(다시 읽기도 실패해도)', async () => {
+    mockApi.notifications.list.mockResolvedValueOnce({ items: [item()], nextCursor: null });
+    mockApi.notifications.list.mockRejectedValue(new Error('offline'));
+    mockApi.notifications.remove.mockRejectedValueOnce(new Error('offline'));
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByLabelText('친구 요청 삭제'));
+    await waitFor(() => expect(mockApi.notifications.remove).toHaveBeenCalled());
+    expect(await screen.findByText(/나나님이 친구 요청을 보냈어요/)).toBeTruthy();
+  });
+  it('잇달아 지우다 앞의 것만 실패하면 그것만 되돌리고, 지운 다른 알림은 되살리지 않는다', async () => {
+    mockApi.notifications.list.mockResolvedValueOnce({
+      items: [item(), item({ _id: 'n2', title: '퀴즈 완성', body: '퀴즈가 준비됐어요' })],
+      nextCursor: null,
+    });
+    mockApi.notifications.list.mockRejectedValue(new Error('offline'));
+    let failA!: (e: Error) => void;
+    mockApi.notifications.remove
+      .mockImplementationOnce(() => new Promise<void>((_ok, no) => (failA = no)))
+      .mockResolvedValueOnce(undefined);
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByLabelText('친구 요청 삭제'));
+    // 첫 알림이 목록에서 빠져 줄이 다시 그려진 뒤에 둘째를 누른다(그려지는 중인 줄을 누르면 눌리지 않는다)
+    await waitFor(() => expect(screen.queryByText(/나나님이 친구 요청을 보냈어요/)).toBeNull());
+    await fireEvent.press(await screen.findByLabelText('퀴즈 완성 삭제'));
+    await waitFor(() => expect(mockApi.notifications.remove).toHaveBeenCalledTimes(2));
+    await act(async () => failA(new Error('offline')));
+    expect(await screen.findByText(/나나님이 친구 요청을 보냈어요/)).toBeTruthy();
+    expect(screen.queryByText(/퀴즈가 준비됐어요/)).toBeNull();
+  });
+  it('지우는 사이 그 알림이 다른 쪽으로 다시 들어오면, 실패해도 한 번만 보인다', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // 앞 시험이 남긴 한 번짜리 응답을 비운다
+    mockApi.notifications.list.mockReset();
+    mockApi.notifications.remove.mockReset();
+    mockApi.notifications.list.mockResolvedValueOnce({ items: [item()], nextCursor: 'n1' });
+    mockApi.notifications.list.mockRejectedValue(new Error('offline'));
+    let failA!: (e: Error) => void;
+    mockApi.notifications.remove.mockImplementationOnce(
+      () => new Promise<void>((_ok, no) => (failA = no)),
+    );
+    await renderScreen(<InboxScreen />, qc);
+    await fireEvent.press(await screen.findByLabelText('친구 요청 삭제'));
+    await waitFor(() => expect(screen.queryByText(/나나님이 친구 요청을 보냈어요/)).toBeNull());
+    // 새로고침으로 둘째 쪽에 다시 들어온 상태
+    await act(async () =>
+      qc.setQueryData(['notifications', 'list'], {
+        pageParams: [undefined, 'x'],
+        pages: [
+          { items: [item({ _id: 'n9', title: '새 알림', body: '새 소식' })], nextCursor: 'x' },
+          { items: [item()], nextCursor: null },
+        ],
+      }),
+    );
+    await act(async () => failA(new Error('offline')));
+    // 이미 둘째 쪽에 있으므로 첫 쪽에 다시 넣지 않는다(목록 전체에 한 번만)
+    const pages = qc.getQueryData<{ pages: { items: { _id: string }[] }[] }>([
+      'notifications',
+      'list',
+    ])!.pages;
+    expect(pages.flatMap((p) => p.items).filter((n) => n._id === 'n1')).toHaveLength(1);
+    expect(pages[1]!.items.map((n) => n._id)).toEqual(['n1']);
+  });
+  it('꾹 누르면 한 번 묻고, 「삭제」를 골라야 지운다', async () => {
+    mockApi.notifications.list.mockResolvedValue({ items: [item()], nextCursor: null });
+    await renderScreen(<InboxScreen />);
+    await fireEvent(await screen.findByText(/나나님이 친구 요청을 보냈어요/), 'longPress');
+    expect(await screen.findByText('알림을 삭제할까요?')).toBeTruthy();
+    await fireEvent.press(screen.getByText('취소'));
+    expect(mockApi.notifications.remove).not.toHaveBeenCalled();
+    await fireEvent(screen.getByText(/나나님이 친구 요청을 보냈어요/), 'longPress');
+    await fireEvent.press(await screen.findByRole('button', { name: '삭제' }));
+    await waitFor(() => expect(mockApi.notifications.remove).toHaveBeenCalledWith('n1'));
+    expect(router.push).not.toHaveBeenCalled();
+  });
+  it('편집에서 고른 알림만 지운다', async () => {
+    mockApi.notifications.list.mockResolvedValue({
+      items: [
+        item(),
+        item({ _id: 'n2', title: '퀴즈 완성' }),
+        item({ _id: 'n3', title: '새 메시지' }),
+      ],
+      nextCursor: null,
+    });
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByText('편집'));
+    await fireEvent.press(screen.getByText('친구 요청'));
+    await fireEvent.press(screen.getByText('새 메시지'));
+    // 누르면 이동하지 않고 고르기만 한다
+    expect(router.push).not.toHaveBeenCalled();
+    expect(mockApi.notifications.markRead).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByLabelText('고른 알림 2개 삭제'));
+    expect(await screen.findByText('알림 2개를 삭제할까요?')).toBeTruthy();
+    await fireEvent.press(screen.getByRole('button', { name: '삭제' }));
+    await waitFor(() =>
+      expect(mockApi.notifications.removeMany).toHaveBeenCalledWith(['n1', 'n3']),
+    );
+    expect(mockApi.notifications.removeAll).not.toHaveBeenCalled();
+    // 다 지우면 편집을 끝낸다
+    expect(await screen.findByText('편집')).toBeTruthy();
+  });
+  it('전체 선택 삭제는 아직 안 불러온 알림까지 모두 지운다, 하나를 빼면 나머지만 지운다', async () => {
+    mockApi.notifications.list.mockResolvedValue({
+      items: [item(), item({ _id: 'n2', title: '퀴즈 완성' })],
+      nextCursor: 'n2',
+    });
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByText('편집'));
+    await fireEvent.press(screen.getByText('전체 선택'));
+    expect(screen.getByText('삭제 (전체)')).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('모든 알림 삭제'));
+    expect(await screen.findByText('알림을 모두 삭제할까요?')).toBeTruthy();
+    await fireEvent.press(screen.getByRole('button', { name: '취소' }));
+    // 하나를 빼면 보이는 것 중 나머지만
+    await fireEvent.press(screen.getByText('퀴즈 완성'));
+    await fireEvent.press(screen.getByLabelText('고른 알림 1개 삭제'));
+    await fireEvent.press(await screen.findByRole('button', { name: '삭제' }));
+    await waitFor(() => expect(mockApi.notifications.removeMany).toHaveBeenCalledWith(['n1']));
+    expect(mockApi.notifications.removeAll).not.toHaveBeenCalled();
+  });
+  it('전체 선택 뒤 삭제하면 모두 지운다', async () => {
+    mockApi.notifications.list.mockResolvedValue({ items: [item()], nextCursor: null });
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByText('편집'));
+    await fireEvent.press(screen.getByText('전체 선택'));
+    await fireEvent.press(screen.getByLabelText('모든 알림 삭제'));
+    await fireEvent.press(await screen.findByRole('button', { name: '삭제' }));
+    await waitFor(() => expect(mockApi.notifications.removeAll).toHaveBeenCalled());
+  });
+  it('100개가 넘게 고르면 100개씩 나눠 지운다', async () => {
+    const many = Array.from({ length: 120 }, (_, i) => item({ _id: `n${i}`, title: `알림${i}` }));
+    mockApi.notifications.list.mockResolvedValue({ items: many, nextCursor: null });
+    await renderScreen(<InboxScreen />);
+    await fireEvent.press(await screen.findByText('편집'));
+    await fireEvent.press(screen.getByText('전체 선택'));
+    await fireEvent.press(screen.getByText('알림0'));
+    await fireEvent.press(screen.getByLabelText('고른 알림 119개 삭제'));
+    await fireEvent.press(await screen.findByRole('button', { name: '삭제' }));
+    await waitFor(() => expect(mockApi.notifications.removeMany).toHaveBeenCalledTimes(2));
+    const [a, b] = mockApi.notifications.removeMany.mock.calls.map(([ids]) => ids);
+    expect(a).toHaveLength(100);
+    expect(b).toHaveLength(19);
+    expect([...a!, ...b!]).toEqual(many.slice(1).map((n) => n._id));
+  });
   it('모두 읽음', async () => {
     mockApi.notifications.list.mockResolvedValue({ items: [item()], nextCursor: null });
     await renderScreen(<InboxScreen />);

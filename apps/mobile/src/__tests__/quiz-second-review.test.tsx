@@ -7,6 +7,9 @@ import { useAuth } from '../stores/auth';
 import { useQuizProgress, type QuizProgress } from '../stores/quiz-progress';
 import { renderScreen, setParams } from '../test-utils';
 
+// 마지막 문제의 버튼은 「결과 보기」, 그 앞은 「다음 문제 풀기」
+const NEXT_OR_DONE = /^(다음 문제 풀기|결과 보기)$/;
+
 const mockApi = {
   quiz: {
     set: jest.fn(),
@@ -101,7 +104,7 @@ async function pendingFinish() {
   mockApi.quiz.finish.mockReturnValue(pending.promise);
   useQuizProgress.getState().save(answered);
   const view = await renderScreen(<QuizSolveScreen />, client());
-  await userEvent.setup().press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
+  await userEvent.setup().press(await screen.findByRole('button', { name: NEXT_OR_DONE }));
   await waitFor(() => expect(mockApi.quiz.finish).toHaveBeenCalledWith(attemptId));
   return { pending, view };
 }

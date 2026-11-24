@@ -13,6 +13,9 @@ import { useQuizProgress } from '../stores/quiz-progress';
 import { useToast } from '../stores/toast';
 import { renderScreen, setParams } from '../test-utils';
 
+// 마지막 문제의 버튼은 「결과 보기」, 그 앞은 「다음 문제 풀기」
+const NEXT_OR_DONE = /^(다음 문제 풀기|결과 보기)$/;
+
 const mockApi = {
   quiz: {
     set: jest.fn(),
@@ -97,7 +100,7 @@ it('풀기 화면에 들어가 풀이를 시작하면 퀴즈 목록을 다시 �
 });
 async function submit() {
   await fireEvent.press(await screen.findByText('① 답'));
-  await fireEvent.press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
+  await fireEvent.press(await screen.findByRole('button', { name: NEXT_OR_DONE }));
   await waitFor(() => expect(mockApi.quiz.finish).toHaveBeenCalledTimes(1));
 }
 it('스터디룸에서 퀴즈를 마치면 결과 화면에도 복귀 경로를 유지한다', async () => {
@@ -192,9 +195,9 @@ it('퀴즈를 마치면 세트의 모든 문제를 보관함에 담고 보관함
   queryClient.setQueryData(['quiz-box'], []);
   await renderScreen(<QuizSolveScreen />, client());
   await fireEvent.press(await screen.findByText('① 답'));
-  await fireEvent.press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
+  await fireEvent.press(await screen.findByRole('button', { name: NEXT_OR_DONE }));
   await fireEvent.press(await screen.findByText('① 답'));
-  await fireEvent.press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
+  await fireEvent.press(await screen.findByRole('button', { name: NEXT_OR_DONE }));
   await waitFor(() =>
     expect(mockApi.quiz.saveToBox).toHaveBeenCalledWith([question._id, second._id]),
   );
@@ -435,7 +438,7 @@ it('재진입 후 완료 요청이 실패하면 안내하고 대기 잠금을 �
   await screen.findByRole('button', { disabled: true });
   await act(async () => reject(new Error('완료 실패')));
   await waitFor(() => expect(useToast.getState().msg).toContain('완료 결과를 저장하지 못'));
-  const retry = await screen.findByRole('button', { name: '다음 문제 풀기' });
+  const retry = await screen.findByRole('button', { name: NEXT_OR_DONE });
   expect(retry).not.toBeDisabled();
   await fireEvent.press(retry);
   await waitFor(() => expect(mockApi.quiz.finish).toHaveBeenCalledTimes(2));
