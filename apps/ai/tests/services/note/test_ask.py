@@ -101,6 +101,24 @@ def test_empty_answer_is_retried_as_llm_error() -> None:
         ask.run(llm, job_input(), noop)
 
 
+def test_refs_keep_only_headings_that_are_in_the_note() -> None:
+    context = "## 교착 상태\n네 가지 조건.\n\n## 핵심\n- 상호 배제\n\n[3쪽]\n쪽 글"
+    reply = {
+        "answerable": True,
+        "answer": "네 가지예요.",
+        # 없는 제목 · # 붙임 · 띄어쓰기 다름 · 중복 · 쪽 표시
+        "refs": ["기아 상태", "## 핵심", "교착  상태", "교착 상태", "3쪽"],
+    }
+    out = ask.run(FakeLlm({"note_ask": [reply]}), job_input(context=context), noop)
+    assert out["refs"] == ["핵심", "교착 상태", "3쪽"]
+
+
+def test_refs_all_made_up_become_empty() -> None:
+    reply = {"answerable": True, "answer": "네 가지예요.", "refs": ["전자 전달 사슬"]}
+    out = ask.run(FakeLlm({"note_ask": [reply]}), job_input(), noop)
+    assert out["refs"] == []
+
+
 @pytest.mark.parametrize("refs", ["교착 상태", 3, None, {"a": 1}])
 def test_refs_that_are_not_a_list_are_dropped_and_answer_kept(refs: object) -> None:
     llm = FakeLlm({"note_ask": [{"answerable": True, "answer": "네 가지예요.", "refs": refs}]})

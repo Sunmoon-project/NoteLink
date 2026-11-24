@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from email.parser import BytesParser
 from email.policy import HTTP
 
@@ -6,7 +7,9 @@ import httpx2
 import pytest
 
 from app.clients import speech as speech_module
+from app.clients.docint import DownloadError
 from app.clients.llm import USER_AGENT
+from app.clients.mp4 import faststart
 from app.clients.speech import (
     API_VERSION,
     NoSpeechError,
@@ -18,6 +21,7 @@ from app.clients.speech import (
     Word,
 )
 from app.core.config import settings
+from tests.clients.test_mp4 import slow_file
 
 AUDIO_URL = "https://blob.example.test/recordings/a.m4a?sig=secret-sas"
 
@@ -222,3 +226,93 @@ def test_speech_factory_requires_endpoint_and_key(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(settings, "azure_speech_endpoint", "")
     with pytest.raises(SpeechError, match="AZURE_SPEECH"):
         speech_module.speech()
+
+
+def bad_audio() -> httpx2.Response:
+    return httpx2.Response(
+        422,
+        json={
+            "code": "UnprocessableEntity",
+            "message": "The audio stream could not be decoded with the provided configuration.",
+            "innerError": {"code": "InvalidAudioFormat"},
+        },
+    )
+
+
+def fields(request: httpx2.Request) -> dict[str, tuple[str | None, bytes]]:
+    head = f"Content-Type: {request.headers['content-type']}\r\n\r\n".encode()
+    parts = BytesParser(policy=HTTP).parsebytes(head + request.content).iter_parts()
+    out: dict[str, tuple[str | None, bytes]] = {}
+    for part in parts:
+        payload = part.get_payload(decode=True)
+        assert isinstance(payload, bytes)
+        out[str(part.get_param("name", header="content-disposition"))] = (
+            part.get_content_type(),
+            payload,
+        )
+    return out
+
+
+def fetcher(data: bytes | Exception) -> tuple[list[str], Callable[[str], bytes]]:
+    seen: list[str] = []
+
+    def fetch(url: str) -> bytes:
+        seen.append(url)
+        if isinstance(data, Exception):
+            raise data
+        return data
+
+    return seen, fetch
+
+
+def test_moov_at_end_is_moved_and_sent_as_file() -> None:
+    s = Server(bad_audio(), result(HELLO))
+    seen, fetch = fetcher(slow_file())
+    client = Speech(
+        "https://speech.example.test/",
+        "speech-key",
+        transport=httpx2.MockTransport(s.handle),
+        sleep=s.slept.append,
+        fetch=fetch,
+    )
+    out = client.transcribe(AUDIO_URL)
+    assert out.phrases[0].text == "안녕하세요 여러분."
+    assert seen == [AUDIO_URL]
+    sent = fields(s.requests[1])
+    assert json.loads(sent["definition"][1]) == {"locales": ["ko-KR"]}  # 주소는 다시 보내지 않음
+    assert sent["audio"] == ("audio/mp4", faststart(slow_file()))
+
+
+@pytest.mark.parametrize(
+    "data", [b"ID3 mp3 file", DownloadError("HTTP 403")], ids=["not-fixable", "download-fails"]
+)
+def test_undecodable_audio_that_cannot_be_fixed_stays_a_422(data: bytes | Exception) -> None:
+    s = Server(bad_audio())
+    _, fetch = fetcher(data)
+    client = Speech(
+        "https://speech.example.test/",
+        "speech-key",
+        transport=httpx2.MockTransport(s.handle),
+        sleep=s.slept.append,
+        fetch=fetch,
+    )
+    with pytest.raises(SpeechError, match="422") as e:
+        client.transcribe(AUDIO_URL)
+    assert not isinstance(e.value, SpeechUnavailableError | NoSpeechError)
+    assert "secret-sas" not in str(e.value)
+    assert len(s.requests) == 1
+
+
+def test_fixed_file_still_undecodable_is_a_422() -> None:
+    s = Server(bad_audio(), bad_audio())
+    _, fetch = fetcher(slow_file())
+    client = Speech(
+        "https://speech.example.test/",
+        "speech-key",
+        transport=httpx2.MockTransport(s.handle),
+        sleep=s.slept.append,
+        fetch=fetch,
+    )
+    with pytest.raises(SpeechError, match="422"):
+        client.transcribe(AUDIO_URL)
+    assert len(s.requests) == 2

@@ -1,5 +1,8 @@
 """Azure AI Speech 빠른 전사 클라이언트. 녹음은 Blob 읽기 전용 주소로 넘김.
 
+주소로 넘긴 녹음을 Azure가 풀지 못하면(InvalidAudioFormat) 내려받아, 재생 정보(moov)가 끝에 있는
+m4a면 앞으로 옮긴 사본을 파일로 직접 보냄(app.clients.mp4).
+
 오류 문구에 주소(SAS)를 넣지 않습니다.
 """
 
@@ -12,12 +15,18 @@ from typing import Any
 
 import httpx2
 
+from app.clients.docint import DownloadError, download
 from app.clients.llm import USER_AGENT
+from app.clients.mp4 import faststart
 from app.core.config import settings
 
 API_VERSION = "2025-10-15"
 LOCALE = "ko-KR"
 PATH = "/speechtotext/transcriptions:transcribe"
+# 녹음 작업 상한(services/recording/job.py RECORDING_MAX_BYTES)과 같음.
+# ponytail: 고칠 때 파일 전체를 메모리에 올림(최대 약 2배). 큰 녹음이 잦아지면 임시 파일로 바꾸기
+AUDIO_MAX_BYTES = 250_000_000
+AUDIO_DOWNLOAD_SEC = 600.0
 
 
 class SpeechError(Exception):
@@ -30,6 +39,14 @@ class SpeechUnavailableError(SpeechError):
 
 class NoSpeechError(SpeechError):
     """인식된 말이 없음(무음 · 잡음)."""
+
+
+class _BadAudioError(SpeechError):
+    """Azure가 오디오를 풀지 못함(HTTP 422 InvalidAudioFormat)."""
+
+
+def _fetch_audio(url: str) -> bytes:
+    return download(url, max_bytes=AUDIO_MAX_BYTES, timeout=AUDIO_DOWNLOAD_SEC)
 
 
 @dataclass(frozen=True)
@@ -63,6 +80,7 @@ class Speech:
         timeout: float = 1800.0,  # 동기 호출이라 긴 녹음은 응답까지 오래 걸림
         transport: httpx2.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        fetch: Callable[[str], bytes] = _fetch_audio,
     ) -> None:
         self._client = httpx2.Client(
             base_url=endpoint.rstrip("/"),
@@ -72,10 +90,31 @@ class Speech:
         )
         self._retries = retries
         self._sleep = sleep
+        self._fetch = fetch
 
     def transcribe(self, audio_url: str) -> Transcript:
         """녹음 주소 → 한국어 문장 · 단어별 시각. 말이 없으면 NoSpeechError."""
         definition = json.dumps({"locales": [LOCALE], "audioUrl": audio_url})
+        try:
+            return self._post({"definition": (None, definition)})
+        except _BadAudioError as e:
+            # moov가 끝에 있는 m4a: 앞으로 옮긴 사본을 파일로 보냄. 고칠 수 없으면 원래 오류(422)
+            try:
+                fixed = faststart(self._fetch(audio_url))
+            except DownloadError:
+                raise SpeechError(str(e)) from None
+            if fixed is None:
+                raise SpeechError(str(e)) from None
+        files = {
+            "definition": (None, json.dumps({"locales": [LOCALE]})),
+            "audio": ("audio.m4a", fixed, "audio/mp4"),
+        }
+        try:
+            return self._post(files)
+        except _BadAudioError as e:
+            raise SpeechError(str(e)) from None
+
+    def _post(self, files: dict[str, Any]) -> Transcript:
         err = "retries"
         for attempt in range(self._retries + 1):
             wait = float(2 ** (attempt + 1))
@@ -83,7 +122,7 @@ class Speech:
                 res = self._client.post(
                     PATH,
                     params={"api-version": API_VERSION},
-                    files={"definition": (None, definition)},
+                    files=files,
                 )
             except httpx2.TransportError as e:
                 err = type(e).__name__
@@ -91,6 +130,8 @@ class Speech:
                 if res.status_code == 429 or res.status_code >= 500:
                     err = f"HTTP {res.status_code}"
                     wait = _retry_after(res) or wait
+                elif res.status_code == 422 and _invalid_audio(res):
+                    raise _BadAudioError(f"HTTP {res.status_code}")
                 elif res.status_code != 200:
                     raise SpeechError(f"HTTP {res.status_code}")  # 다시 보내도 같음
                 else:
@@ -98,6 +139,15 @@ class Speech:
             if attempt < self._retries:
                 self._sleep(wait)
         raise SpeechUnavailableError(err)
+
+
+def _invalid_audio(res: httpx2.Response) -> bool:
+    try:
+        body = res.json()
+        inner = body.get("innerError") or {}
+        return "InvalidAudioFormat" in (body.get("code"), inner.get("code"))
+    except (ValueError, AttributeError):
+        return False
 
 
 def _retry_after(res: httpx2.Response) -> float | None:
