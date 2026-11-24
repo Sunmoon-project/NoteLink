@@ -6,6 +6,9 @@ import { useAuth } from '../stores/auth';
 import { useQuizProgress, type QuizProgress } from '../stores/quiz-progress';
 import { renderScreen, setParams } from '../test-utils';
 
+// 마지막 문제의 버튼은 「결과 보기」, 그 앞은 「다음 문제 풀기」
+const NEXT_OR_DONE = /^(다음 문제 풀기|결과 보기)$/;
+
 const mockApi = {
   quiz: { set: jest.fn(), startAttempt: jest.fn(), finish: jest.fn(), saveToBox: jest.fn() },
 };
@@ -89,7 +92,7 @@ it.each([
   '$label가 전역 진행을 대체하면 스택의 A 화면은 완료 요청·삭제·이동을 실행하지 않는다',
   async ({ nextSet, nextAttempt }) => {
     await renderScreen(<QuizSolveScreen />, client());
-    const finish = await screen.findByRole('button', { name: '다음 문제 풀기' });
+    const finish = await screen.findByRole('button', { name: NEXT_OR_DONE });
     const progressB: QuizProgress = {
       ...progressA,
       setId: nextSet,
@@ -112,7 +115,7 @@ it.each([
 
 it('화면과 저장 상태의 세트·풀이 ID가 일치하면 화면의 풀이 ID만 완료하고 결과로 이동한다', async () => {
   await renderScreen(<QuizSolveScreen />, client());
-  await userEvent.setup().press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
+  await userEvent.setup().press(await screen.findByRole('button', { name: NEXT_OR_DONE }));
   await waitFor(() => expect(mockApi.quiz.finish).toHaveBeenCalledWith(attemptId));
   expect(mockApi.quiz.finish).toHaveBeenCalledTimes(1);
   await waitFor(() =>

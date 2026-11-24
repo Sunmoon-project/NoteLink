@@ -6,6 +6,9 @@ import { useAuth } from '../stores/auth';
 import { useQuizProgress, type QuizProgress } from '../stores/quiz-progress';
 import { renderScreen, setParams } from '../test-utils';
 
+// 마지막 문제의 버튼은 「결과 보기」, 그 앞은 「다음 문제 풀기」
+const NEXT_OR_DONE = /^(다음 문제 풀기|결과 보기)$/;
+
 const mockApi = {
   quiz: {
     set: jest.fn(),
@@ -121,7 +124,7 @@ async function saveB() {
 it('중간 문제의 A 화면에서 B 진행 저장 후 다음 문제를 눌러도 B 진행을 덮어쓰지 않는다', async () => {
   useQuizProgress.getState().save(progressA);
   await renderScreen(<QuizSolveScreen />, client());
-  const next = await screen.findByRole('button', { name: '다음 문제 풀기' });
+  const next = await screen.findByRole('button', { name: NEXT_OR_DONE });
   await saveB();
   await userEvent.setup().press(next);
   expect(useQuizProgress.getState().progress).toEqual(progressB);
@@ -174,7 +177,7 @@ it('A 세트 재조회 응답이 새 객체로 바뀌어도 전역 B 진행을 �
   useQuizProgress.getState().save(progressA);
   const qc = client();
   await renderScreen(<QuizSolveScreen />, qc);
-  await screen.findByRole('button', { name: '다음 문제 풀기' });
+  await screen.findByRole('button', { name: NEXT_OR_DONE });
   await saveB();
   mockApi.quiz.set.mockResolvedValue({ ...quizSet, title: '외부에서 재조회한 A 세트' });
   await act(async () => {
@@ -202,7 +205,7 @@ it('완료 대기 중 동일 풀이의 저장·재조회로 객체만 바뀌면 
   useQuizProgress.getState().save({ ...progressA, index: 1, results: [true, true] });
   const qc = client();
   await renderScreen(<QuizSolveScreen />, qc);
-  await userEvent.setup().press(await screen.findByRole('button', { name: '다음 문제 풀기' }));
+  await userEvent.setup().press(await screen.findByRole('button', { name: NEXT_OR_DONE }));
   await waitFor(() => expect(mockApi.quiz.finish).toHaveBeenCalledWith(attemptId));
   await act(async () => {
     const current = useQuizProgress.getState().progress!;
@@ -236,13 +239,15 @@ it('틀리면 오답 노트에 넣고 고른 답과 정답을 보여 주고, 「
   await waitLong();
   expect(screen.queryByText('A 마지막 문제')).toBeNull();
   expect(screen.getByText('오답이에요')).toBeTruthy();
+  // 뒤에 문제가 남아 있으면 「다음 문제 풀기」
+  expect(screen.queryByRole('button', { name: '결과 보기' })).toBeNull();
   await userEvent.setup().press(screen.getByRole('button', { name: '다음 문제 풀기' }));
   expect(await screen.findByText('A 마지막 문제')).toBeTruthy();
   expect(useQuizProgress.getState().progress).toMatchObject({ index: 1, results: [false] });
   expect(mockRecordWrong).toHaveBeenCalledTimes(1);
 });
 
-it('마지막 문제는 채점 뒤 기다려도 완료하지 않고, 눌러야 완료하며 맞음 · 틀림을 결과 화면에 넘긴다', async () => {
+it('마지막 문제는 채점 뒤 기다려도 완료하지 않고, 「결과 보기」를 눌러야 완료하며 맞음 · 틀림을 결과 화면에 넘긴다', async () => {
   mockApi.quiz.finish.mockResolvedValue({ pointsEarned: 120, balance: 120 });
   mockApi.quiz.answer.mockResolvedValueOnce({ correct: false, correctAnswer: '정답' });
   useQuizProgress
@@ -254,7 +259,9 @@ it('마지막 문제는 채점 뒤 기다려도 완료하지 않고, 눌러야 �
   expect(await screen.findByText('오답이에요')).toBeTruthy();
   await waitLong();
   expect(mockApi.quiz.finish).not.toHaveBeenCalled();
-  await userEvent.setup().press(screen.getByRole('button', { name: '다음 문제 풀기' }));
+  // 다음 문제가 없는데 「다음 문제 풀기」로 보이지 않게
+  expect(screen.queryByRole('button', { name: '다음 문제 풀기' })).toBeNull();
+  await userEvent.setup().press(screen.getByRole('button', { name: '결과 보기' }));
   await waitFor(() => expect(mockApi.quiz.finish).toHaveBeenCalledWith(attemptId));
   await waitFor(() =>
     expect(router.replace).toHaveBeenCalledWith({

@@ -1080,9 +1080,9 @@ export function QuizSolveScreen() {
               {speaking ? '읽어주는 중… (탭해서 멈춤)' : '음성으로 듣기'}
             </Btn>
           ) : right !== null ? (
-            // 맞든 틀리든 눌러야만 넘어간다
+            // 맞든 틀리든 눌러야만 넘어간다. 마지막 문제는 눌러야 끝나고 포인트 · 복습 일정이 저장되므로 「결과 보기」
             <Btn loading={finish.isPending || completing} onPress={next}>
-              다음 문제 풀기
+              {i >= qs.length - 1 ? '결과 보기' : '다음 문제 풀기'}
             </Btn>
           ) : (
             <Btn loading>채점 중</Btn>
