@@ -10,6 +10,9 @@ import { useQuizProgress } from '../stores/quiz-progress';
 import { useToast } from '../stores/toast';
 import { renderScreen, setParams } from '../test-utils';
 
+// 마지막 문제의 버튼은 「결과 보기」, 그 앞은 「다음 문제 풀기」
+const NEXT_OR_DONE = /^(다음 문제 풀기|결과 보기)$/;
+
 const mockStore = new Map<string, string>();
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async (key: string) => mockStore.get(key) ?? null),
@@ -125,7 +128,7 @@ it('만료 안내→로그인→풀이 재마운트 후 기존 풀이 ID·문제
   );
   await waitFor(() => expect(mockApi.quiz.startAttempt).toHaveBeenCalledTimes(1));
   await fireEvent.press(await screen.findByText('① 정답'));
-  await fireEvent.press(await screen.findByText('다음 문제 풀기'));
+  await fireEvent.press(await screen.findByText(NEXT_OR_DONE));
   await fireEvent.changeText(await screen.findByPlaceholderText('답을 입력해주세요'), '기억할 답');
   await waitFor(() =>
     expect(useQuizProgress.getState().progress).toMatchObject({
@@ -158,7 +161,7 @@ it('만료 안내→로그인→풀이 재마운트 후 기존 풀이 ID·문제
   await waitFor(() =>
     expect(mockApi.quiz.answer).toHaveBeenLastCalledWith(attemptId, 'second', '기억할 답'),
   );
-  await fireEvent.press(await screen.findByText('다음 문제 풀기'));
+  await fireEvent.press(await screen.findByText(NEXT_OR_DONE));
   await waitFor(() => expect(mockApi.quiz.finish).toHaveBeenCalledWith(attemptId));
   await waitFor(() => expect(useQuizProgress.getState().progress).toBeNull());
   // 복원한 풀이도 마치면 세트 문제를 모두 보관함에 담고, 두 문제 다 맞힌 결과를 넘긴다
