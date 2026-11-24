@@ -120,6 +120,8 @@ describe('알림함', () => {
       .mockResolvedValueOnce(undefined);
     await renderScreen(<InboxScreen />);
     await fireEvent.press(await screen.findByLabelText('친구 요청 삭제'));
+    // 첫 알림이 목록에서 빠져 줄이 다시 그려진 뒤에 둘째를 누른다(그려지는 중인 줄을 누르면 눌리지 않는다)
+    await waitFor(() => expect(screen.queryByText(/나나님이 친구 요청을 보냈어요/)).toBeNull());
     await fireEvent.press(await screen.findByLabelText('퀴즈 완성 삭제'));
     await waitFor(() => expect(mockApi.notifications.remove).toHaveBeenCalledTimes(2));
     await act(async () => failA(new Error('offline')));
